@@ -137,6 +137,119 @@ class TestFollow(unittest.TestCase):
             self.assertEqual(ollama_tui.follow(None, out=io.StringIO()), 1)
 
 
+class TestCompletions(unittest.TestCase):
+    """Tab 補完の候補（ローカルコマンド / スキル名 / on|off）。"""
+
+    def test_local_commands_are_offered_for_a_leading_slash(self):
+        self.assertIn("/help", ollama_tui.completions("/he", "/he"))
+        offered = ollama_tui.completions("/", "/")
+        for name in ("/help", "/keys", "/quit", "/status"):
+            self.assertIn(name, offered)
+
+    def test_on_off_is_offered_after_a_toggle_command(self):
+        self.assertEqual(ollama_tui.completions("/tools ", ""), ["on", "off"])
+        self.assertEqual(ollama_tui.completions("/think o", "o"), ["on", "off"])
+
+    def test_skill_names_join_the_same_candidates(self):
+        with mock.patch.object(ollama_tui.ollama_skills, "list_skills",
+                               return_value=[("pdf", Path("/s/pdf.md"))]):
+            self.assertIn("/pdf", ollama_tui.completions("/p", "/p"))
+
+    def test_a_slash_inside_the_prompt_body_offers_nothing(self):
+        """本文中の `/`（パス・日付）で候補を出すと Tab がただの邪魔になる。"""
+        self.assertEqual(ollama_tui.completions("要約して docs/", "docs/"), [])
+        self.assertEqual(ollama_tui.completions("hello /he", "/he"), [])
+
+    def test_unreadable_skills_do_not_break_completion(self):
+        with mock.patch.object(ollama_tui.ollama_skills, "list_skills",
+                               side_effect=OSError("boom")):
+            self.assertIn("/help", ollama_tui.completions("/h", "/h"))
+
+
+class TestLineReader(unittest.TestCase):
+    def test_non_tty_falls_back_to_plain_reading(self):
+        """非 tty で編集用のエスケープを吐くと capture-pane / テストの比較が壊れる。"""
+        out, in_ = io.StringIO(), io.StringIO("ひとつめ\n")
+        with mock.patch.object(ollama_tui, "_readline", mock.MagicMock()) as rl:
+            reader = ollama_tui.LineReader(out, in_)
+            self.assertFalse(reader.enabled)
+            self.assertEqual(reader.read("> "), "ひとつめ\n")
+            self.assertIsNone(reader.read("> "), "読み切ったら EOF")
+            reader.close()
+        self.assertEqual(rl.set_completer.call_count, 0, "readline を触らない")
+        self.assertEqual(out.getvalue(), "> > ", "プロンプトは素で出す")
+
+    def _tty_streams(self):
+        stdin, stdout = _Tty(), _Tty()
+        return mock.patch.object(ollama_tui.sys, "stdin", stdin), \
+            mock.patch.object(ollama_tui.sys, "stdout", stdout), stdin, stdout
+
+    def test_a_real_terminal_enables_editing_and_completion(self):
+        in_patch, out_patch, stdin, stdout = self._tty_streams()
+        rl = mock.MagicMock(__doc__="GNU readline")
+        with in_patch, out_patch, mock.patch.object(ollama_tui, "_readline", rl):
+            reader = ollama_tui.LineReader(stdout, stdin)
+            self.assertTrue(reader.enabled)
+        self.assertEqual(rl.set_completer.call_args_list[0].args[0], reader._complete)
+        bound = " ".join(c.args[0] for c in rl.parse_and_bind.call_args_list)
+        self.assertIn("tab: complete", bound)
+        # 語の区切りが既定のままだと `/he` の補完対象が `he` になり候補が出ない。
+        self.assertEqual(rl.set_completer_delims.call_args.args[0], " \t\n")
+
+    def test_libedit_uses_its_own_bind_syntax(self):
+        """macOS 標準の readline 互換実装は `tab: complete` を解さない。"""
+        in_patch, out_patch, stdin, stdout = self._tty_streams()
+        rl = mock.MagicMock(__doc__="libedit wrapper")
+        with in_patch, out_patch, mock.patch.object(ollama_tui, "_readline", rl):
+            ollama_tui.LineReader(stdout, stdin)
+        bound = " ".join(c.args[0] for c in rl.parse_and_bind.call_args_list)
+        self.assertIn("bind ^I rl_complete", bound)
+
+    def test_env_switch_turns_editing_off(self):
+        in_patch, out_patch, stdin, stdout = self._tty_streams()
+        with in_patch, out_patch, mock.patch.object(ollama_tui, "_readline", mock.MagicMock()), \
+                mock.patch.dict(ollama_tui.os.environ, {"AGENT_OLLAMA_NO_READLINE": "1"}):
+            self.assertFalse(ollama_tui.LineReader(stdout, stdin).enabled)
+
+    def test_setup_failure_degrades_to_plain_reading(self):
+        """端末や実装差で構成に失敗しても、入力が読めなくなるよりはよい。"""
+        in_patch, out_patch, stdin, stdout = self._tty_streams()
+        rl = mock.MagicMock(__doc__="GNU readline")
+        rl.set_completer_delims.side_effect = RuntimeError("no")
+        with in_patch, out_patch, mock.patch.object(ollama_tui, "_readline", rl):
+            self.assertFalse(ollama_tui.LineReader(stdout, stdin).enabled)
+
+    def test_history_is_loaded_and_saved_around_the_session(self):
+        in_patch, out_patch, stdin, stdout = self._tty_streams()
+        rl = mock.MagicMock(__doc__="GNU readline")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "sub" / "tui-history"
+            with in_patch, out_patch, mock.patch.object(ollama_tui, "_readline", rl), \
+                    mock.patch.dict(ollama_tui.os.environ,
+                                    {"AGENT_OLLAMA_HISTORY": str(path)}):
+                reader = ollama_tui.LineReader(stdout, stdin)
+                reader.close()
+            self.assertTrue(path.parent.is_dir(), "置き場は書く前に作る")
+        self.assertEqual(rl.read_history_file.call_args.args[0], str(path))
+        self.assertEqual(rl.write_history_file.call_args.args[0], str(path))
+
+    def test_missing_history_file_is_not_an_error(self):
+        in_patch, out_patch, stdin, stdout = self._tty_streams()
+        rl = mock.MagicMock(__doc__="GNU readline")
+        rl.read_history_file.side_effect = FileNotFoundError
+        with in_patch, out_patch, mock.patch.object(ollama_tui, "_readline", rl):
+            self.assertTrue(ollama_tui.LineReader(stdout, stdin).enabled, "初回起動でも動く")
+
+    def test_history_path_follows_the_env_override(self):
+        with mock.patch.dict(ollama_tui.os.environ, {"AGENT_OLLAMA_HISTORY": "~/hist"}):
+            self.assertEqual(ollama_tui.history_path(), Path.home() / "hist")
+        with mock.patch.dict(ollama_tui.os.environ, {}, clear=False):
+            ollama_tui.os.environ.pop("AGENT_OLLAMA_HISTORY", None)
+            # ログ（gc の対象）とは別の場所へ置く: 履歴は人の入力で、証跡ではない。
+            self.assertNotIn(ollama_tui.ollama_events.log_dir(),
+                             ollama_tui.history_path().parents)
+
+
 class TestRepl(unittest.TestCase):
     def _run(self, script: str, runner=None):
         calls: "list[str]" = []
@@ -193,6 +306,63 @@ class TestRepl(unittest.TestCase):
         _rc, text, calls = self._run("/skills\n/quit\n")
         self.assertEqual(calls, [])
         self.assertTrue(text.strip(), "何かは表示される（一覧か、無いという案内）")
+
+    def test_keys_command_lists_the_editing_keys(self):
+        _rc, text, calls = self._run("/keys\n/quit\n")
+        self.assertEqual(calls, [], "キーの確認で LLM を呼ばない")
+        for key in ("Ctrl-R", "Tab", "Ctrl-C", "~/.inputrc"):
+            self.assertIn(key, text)
+        self.assertIn("行編集が無効です", text,
+                      "非 tty では効かないことを黙らずに言う")
+
+    def test_ctrl_c_while_typing_cancels_the_line_only(self):
+        """入力中の Ctrl-C は行を捨てるだけ（shell と同じ）。終了ではない。"""
+        reads = [KeyboardInterrupt(), "やって", "/quit"]
+
+        class _Reader:
+            enabled = True
+
+            def read(self, _prompt):
+                value = reads.pop(0)
+                if isinstance(value, BaseException):
+                    raise value
+                return value
+
+            def close(self):
+                pass
+
+        calls = []
+        out = io.StringIO()
+        with mock.patch.object(ollama_tui, "LineReader", lambda *_a, **_k: _Reader()):
+            rc = ollama_tui.repl(lambda prompt, **_kw: calls.append(prompt) or "本文",
+                                 model="m", tools=False, out=out, in_=io.StringIO())
+        self.assertEqual(rc, 0)
+        self.assertEqual(calls, ["やって"], "取り消した行は送られず、次の行は通る")
+
+    def test_reader_is_closed_even_when_the_runner_explodes(self):
+        """履歴の保存は終わり方に依らない（落ちたセッションの入力も残す）。"""
+        closed = []
+
+        class _Reader:
+            enabled = False
+
+            def __init__(self):
+                self._lines = iter(["やって", None])
+
+            def read(self, _prompt):
+                return next(self._lines)
+
+            def close(self):
+                closed.append(True)
+
+        def boom(_prompt, **_kw):
+            raise RuntimeError("推論に失敗")
+
+        with mock.patch.object(ollama_tui, "LineReader", lambda *_a, **_k: _Reader()):
+            rc = ollama_tui.repl(boom, model="m", tools=False, out=io.StringIO(),
+                                 in_=io.StringIO())
+        self.assertEqual(rc, 0)
+        self.assertEqual(closed, [True])
 
 
 if __name__ == "__main__":
