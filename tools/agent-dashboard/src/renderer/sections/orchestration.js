@@ -437,7 +437,8 @@ function orchProfilesPanelHtml(overview) {
 
 // ワークロード別の「用途 / ロール / ノード種別」候補（agents.<key> 上書きのキー補完）。
 // project: AGENT_PURPOSES / flow: 役割＋ノード kind / amigos: ロール id は動的（自由入力）/
-// routine（kiro-loop）: エージェント選択をしない（tmux 送信）ため用途別なし。
+// routine: 定常業務は 1 セッションに 1 つの対話 CLI を起こすだけで用途の区別が無いため、
+//   機能単位（agent_cli / model）だけを持つ（その宣言は定常業務の起動に効く）。
 const ORCH_AGENT_KEYS = {
   project: ['plan', 'review', 'prioritize', 'route', 'adjudicate', 'verify',
     'distill', 'assess', 'repo_map', 'doctor'],
@@ -452,9 +453,11 @@ function orchAgentsEditorHtml(wl, wc) {
   const agents = wc.agents || {};
   const keys = Object.keys(agents);
   const known = ORCH_AGENT_KEYS[wl];
-  // routine は用途別の概念が無い（kiro-loop は CLI/モデルを選ばない）ため編集 UI を出さない。
+  // routine は用途別の概念が無い（1 セッションに 1 つの CLI を起こすだけ）ため編集 UI を
+  // 出さない。上の「エージェント / モデル」は定常業務の起動にそのまま効く。
   if (known && known.length === 0 && wl === 'routine') {
-    return '<div class="orch-agents-none"><small class="muted">定常業務では、用途ごとの変更はできません。</small></div>';
+    return '<div class="orch-agents-none"><small class="muted">定常業務では、上のエージェントとモデルが'
+      + 'そのまま起動に使われます（用途ごとの変更はできません）。</small></div>';
   }
   const listId = `orch-keys-${esc(wl)}`;
   const datalist = (known && known.length)

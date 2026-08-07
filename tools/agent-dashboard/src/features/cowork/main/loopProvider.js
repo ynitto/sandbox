@@ -578,7 +578,12 @@ function sendArgsFor(job) {
   return pane ? ['send', '-s', pane, name] : ['send', name];
 }
 
-function makeLoopProvider(cfg) {
+// cfg は cowork セクション、config は**アプリ設定の全体**。全体を受け取るのは、起動する
+// 対話 CLI の解決が cowork の外（全体設定の実行制御 / ⚙ アシスタント設定）に依っているから。
+// 以前はここで `{ cowork: cfg }` を組み直しており、その時点で orchestration も agent も
+// 落ちていた＝どう設定しても定常業務は既定の CLI で起動していた。
+function makeLoopProvider(cfg, config = null) {
+  const appConfig = config || { cowork: cfg };
   const provider = cfg.loopProvider || 'kiro-loop';
   const command = cfg.loopCommand || provider;
   return {
@@ -593,11 +598,13 @@ function makeLoopProvider(cfg) {
         // プロンプトを直接送る。呼び出し側（cowork.runLoop / runStateMachine）が
         // kiro-loop.yml の本文やステートマシン実行文を解決して渡してくる。
         if (job.prompt) {
-          // 起動する対話 CLI は agent_cli 設定（＝CLI 定義）から解決する。
-          // cfg.chatCommand は明示上書きとして残る（S9-3）。
+          // 起動する対話 CLI は全体設定（実行制御の workloads.routine）→ ⚙ アシスタント設定
+          // → プロジェクト設定の順で解決する。cfg.chatCommand は明示上書き（S9-3）。
+          // 呼び出し側（cowork.runLoop / runStateMachine）が解決済みなら再解決しない
+          // ——開始コマンドの計画と同じ CLI でなければ、送る先と送る中身がずれる。
           const { coworkChatLaunch } = require('./cowork');
           return runChatWindow({
-            ...coworkChatLaunch({ cowork: cfg }, job.cwd || job.repo),
+            ...(job.launch || coworkChatLaunch(appConfig, job.cwd || job.repo)),
             prompt: job.prompt,
             cwd: job.cwd || job.repo,
             sessionCommands: job.sessionCommands,

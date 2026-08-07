@@ -319,7 +319,11 @@ CLI チャット（tmux でエージェント CLI を対話起動する窓）は
 宣言（host.yaml `repos[]`）でローカルクローンを解決できたパスで、解決できないリポジトリは
 理由付きの非活性で見せる（一覧から消えるより「なぜ選べないか」が分かる方がよい）。起動 argv は
 CLI 定義の対話モード（[`agent-cli-plugin-design.md`](./agent-cli-plugin-design.md)）から組み、
-cowork の tmux 実行も同じ定義を通る（`chatCommand` 設定は明示上書きへ降格）。tmux セッション名は
+cowork の tmux 実行も同じ定義を通る（`chatCommand` 設定は明示上書きへ降格し、既定は空）。
+定常業務はさらに**全体設定 →「実行制御」→「機能ごとのエージェントとモデル」の定常業務**
+（agent-control 契約の `workloads.routine.agent_cli` / `model`、空欄なら `defaults`）を
+⚙ アシスタント設定より優先して読む——管理面が「この機能はこの CLI とこのモデルで」と宣言する
+のが agent-control の役目で、それが起動に効かないなら宣言する意味が無い。tmux セッション名は
 `<cli>:<cwd>` ——起動先を選べるようにした以上、同名で再 attach して別リポジトリの作業中
 セッションへ合流しないためだ。
 

@@ -22,7 +22,7 @@
 
 | 画面 | 契約のキー | 読む側 |
 |---|---|---|
-| エージェント → 機能ごとのエージェントとモデル | `workloads.<wl>.agent_cli` / `model` / `agents` / `degraded` | 各エンジン |
+| エージェント → 機能ごとのエージェントとモデル | `workloads.<wl>.agent_cli` / `model` / `agents` / `degraded` | 各エンジン（`routine` は dashboard 自身＝定常業務の tmux 起動） |
 | 実行制御 → 実行の許可・停止 | `workloads.<wl>.lifecycle` | 各エンジン |
 | 実行制御 → 同時に動かす数（自動実行） | `workloads.flow.concurrency`（`max_runs` / `workers`） | agent-flow |
 

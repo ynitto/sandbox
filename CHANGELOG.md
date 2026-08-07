@@ -7,6 +7,33 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-dashboard: 定常業務が全体設定のエージェント指定を無視して常に kiro-cli で起動していたのを直した
+
+全体設定 →「実行制御」→「機能ごとのエージェントとモデル」の**定常業務**（agent-control 契約の
+`workloads.routine.agent_cli` / `model`）に `ollama` を指定しても、定常業務の実行はいつも
+`kiro-cli chat --trust-all-tools` を tmux で起こしていた。**設定はしてあるのに効かない**という、
+画面からは原因の見えない失敗になっていた。原因は 2 つ重なっていた。
+
+- `cowork.chatCommand` の**既定値**が `kiro-cli chat --trust-all-tools` だった。設定の保存は
+  既定値も `config.json` へ書き戻すので、誰も触っていなくても「明示上書きが常に載っている」
+  状態になり、CLI 定義からの解決へ一度も到達しなかった。既定を空へ改め、既存の
+  `config.json` に残る旧既定値は「人が選んだ上書き」ではなく残骸として無視する
+- 定常業務の実行経路が `{ cowork: … }` だけを組み直して CLI 解決を呼んでいた。その時点で
+  全体設定（`orchestration`）も ⚙ アシスタント設定（`agent`）も落ちており、何を設定しても
+  既定へ倒れていた。実行側へアプリ設定の全体を渡すようにした
+
+あわせて、定常業務の起動が `workloads.routine`（空欄なら `defaults`）を **⚙ アシスタント設定
+より優先**して読むようにした。管理面が「この機能はこの CLI とこのモデルで」と宣言するのが
+agent-control の役目で、それが起動に効かないなら宣言する意味が無い。宣言がモデルだけなら
+CLI は下位の解決のままモデルだけ差し替える。起動 argv は従来どおり CLI 定義
+（`agents/<name>.json` の `interactive`）が正典なので、`ollama` のように**モデル名を argv に
+載せる CLI**（`agent-ollama --tui --think off <model>`）も指定どおりに起動する。入力受付の
+待ち方（`ready_pattern`）とセッション開始コマンドの `when.agent_cli` 判定も、解決した CLI の
+ものを使う——kiro 固定のまま ollama のセッションへ送ると、待ち受けも送る内容もずれる。
+
+指定した名前の CLI 定義が見つからないときは、従来どおり下位の解決へ倒して定常業務は止めないが、
+黙っては落とさず警告に残す（設定ミスに気付けないまま別の CLI で走り続けるのを避ける）。
+
 ### agent-ollama: TUI の入力行で矢印キー・履歴・Tab 補完が効くようにした
 
 `--tui` は 1 行を素の `readline()` で読んでいたため、**矢印キーがエスケープ列のまま本文へ
