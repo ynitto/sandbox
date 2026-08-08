@@ -48,6 +48,16 @@
 #   extra_args: []           # 定義の argv 末尾に足す追加フラグ
 
 # ---------------------------------------------------------------------------
+# environment handoff（Phase 2C — opt-in）
+# ---------------------------------------------------------------------------
+# ペイン起動時に HOME / AGENT_HOME / agent 定義 env を明示し、必要なら root prompt
+# 先頭へ [ENV]...[/ENV] を付ける（Ralph child には付けない）。token 値は含めない。
+# environment_handoff:
+#   prompt: false
+#   skill_home: null
+#   token_env_names: []
+
+# ---------------------------------------------------------------------------
 # kiro-cli の起動オプション（全ワークスペース共通・agent_cli 未指定時のみ）
 # ---------------------------------------------------------------------------
 kiro_options:
@@ -86,6 +96,14 @@ slot_timeout_seconds: 7200    # スロット強制解放までの猶予時間（
 cooldown_seconds: 30          # セマフォ解放後の再取得待機時間（秒）。デフォルト 0 = 無効。
                               # 設定すると、一度実行したペインは指定秒数の間セマフォを取得できず、
                               # 他のペインに実行機会が回るようになる（公平性の確保）。
+
+# ---------------------------------------------------------------------------
+# Phase 2A: external pane（既存 tmux へ送る。起動・cleanup・cancel しない）
+# ---------------------------------------------------------------------------
+# external_panes:
+#   - name: existing-reviewer
+#     tmux_target: review:0.1
+#     agent_cli: codex          # optional。未指定は daemon 既定 profile
 
 # ---------------------------------------------------------------------------
 # 定期プロンプトの定義
@@ -205,3 +223,32 @@ prompts:
     exclude_from_concurrency: true   # このプロンプトは max_concurrent の制限対象外にする
                                      # 軽量な確認タスクや緊急タスクに有用
     enabled: false                   # 一時的に無効化する
+
+  # ---- Phase 2A: Ralph（N 回の work iteration。最終回に要約指示）----
+  # - name: "Nightly refactor"
+  #   mode: ralph
+  #   max_iterations: 5              # 必須・1..100。別枠 finalize は無い
+  #   prompt: "対象を調査し、改善を実装してください"
+  #   interval_minutes: 1440
+  #   enabled: false
+
+  # ---- Phase 2A: oneshot（都度 ephemeral pane。clean_session と併用不可）----
+  # - name: "Isolated review"
+  #   oneshot: true
+  #   prompt: "現在の差分をレビューしてください"
+  #   interval_minutes: 60
+  #   enabled: false
+
+  # ---- Phase 2A: clean_session（N 件 DONE 後に save→clear→exit→pane 破棄）----
+  # - name: "long-running-worker"
+  #   clean_session: 10
+  #   prompt: "キューを1件処理してください"
+  #   interval_minutes: 10
+  #   enabled: false
+
+  # ---- Phase 2A: external pane へ配送 ----
+  # - name: "external-review"
+  #   target: existing-reviewer      # external_panes.name
+  #   prompt: "現在の差分をレビューしてください"
+  #   interval_minutes: 60
+  #   enabled: false

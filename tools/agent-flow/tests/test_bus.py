@@ -777,6 +777,47 @@ class CleanupCommandTests(unittest.TestCase):
         self.assertTrue(args.json)
 
 
+class EnsureRunContractAdoptionTests(unittest.TestCase):
+    """再投入（resume / inherit 後）の ensure_run が meta の契約欠けを補うこと。
+
+    worker と検証 runner は meta しか読まない。作成時に workspace ルーティングが決まらず
+    read-only で固まった run は、以後の再投入で --workspace を渡し続けても meta が null の
+    まま＝成果ブランチが永久に push されない（実際に req-…-document-msbqiswv-1-r0 で発生）。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="kf-adopt-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.bus = kf.Bus(self.tmp, "run1")
+
+    def test_missing_workspace_is_adopted_on_reensure(self):
+        self.bus.ensure_run("req")                       # 作成時: ルーティング未決＝read-only
+        ws = {"url": "https://example.com/r.git", "branch": "ap/t-1"}
+        self.bus.ensure_run("req", workspace=ws)         # 再投入: 今回は契約が決まっている
+        self.assertEqual(self.bus.run_workspace(), ws)
+
+    def test_existing_workspace_is_never_replaced(self):
+        ws = {"url": "https://example.com/r.git", "base": "af/old-run"}
+        self.bus.ensure_run("req", workspace=ws)
+        self.bus.ensure_run("req", workspace={"url": "https://example.com/other.git"})
+        self.assertEqual(self.bus.run_workspace(), ws)   # inherit の base 差し替えを壊さない
+
+    def test_verification_plan_is_refreshed_to_latest(self):
+        self.bus.ensure_run("req", verification_plan={"version": 1, "workspace": "",
+                                                      "digest": "sha256:old"})
+        new = {"version": 1, "workspace": "r", "digest": "sha256:new"}
+        self.bus.ensure_run("req", verification_plan=new)
+        meta = kf.read_json(self.bus.meta_path)
+        self.assertEqual(meta["verification_plan"], new)
+
+    def test_reensure_without_contract_changes_nothing(self):
+        ws = {"url": "https://example.com/r.git"}
+        self.bus.ensure_run("req", workspace=ws,
+                            verification_plan={"version": 1, "digest": "sha256:x"})
+        before = kf.read_json(self.bus.meta_path)
+        self.bus.ensure_run("req")                       # 契約を渡さない再投入（従来どおり不変）
+        self.assertEqual(kf.read_json(self.bus.meta_path), before)
+
+
 class ArtifactProtocolTests(unittest.TestCase):
     """中間成果物のファイル参照プロトコル（依存タスクの成果物を決定的パスで受け渡す）。"""
 

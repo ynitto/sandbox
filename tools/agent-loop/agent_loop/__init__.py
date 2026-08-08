@@ -14,6 +14,7 @@ _FRAGMENTS = (
     "cliprofile",
     "semaphore",
     "dispatch",
+    "execution",
     "inbox",
     "cron",
     "config",
@@ -22,11 +23,13 @@ _FRAGMENTS = (
     "control",
     "tmux_util",
     "session",
+    "sandbox",
     "scheduler",
     "webhook",
     "doctor",
     "interactive",
     "sendcmd",
+    "update",
     "cli",
 )
 

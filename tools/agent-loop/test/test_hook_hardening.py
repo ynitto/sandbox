@@ -20,6 +20,7 @@ def _base_scheduler():
     s._hook_cache_lock = al.threading.Lock()
     s._hook_quarantine = set()
     s._lock = al.threading.Lock()
+    s._workspace = ""
     return s
 
 
@@ -107,6 +108,7 @@ class HookHardeningTests(unittest.TestCase):
                 {"id": "normal", "name": "normal", "prompt": "ok", "event_hook": None,
                  "next_run_at": 0, "scheduled": True, "enabled": True},
             ]
+            s._workspace = ""
             with mock.patch.object(al, "_HOOK_TIMEOUT_SEC", 0.01):
                 s._fire_due_schedules(1)
 

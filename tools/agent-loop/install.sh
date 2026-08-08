@@ -219,6 +219,40 @@ EOF
 
 "$PYTHON_CMD" -m zipapp "${BUILD_DIR}" -o "${INSTALL_PATH}" -p "/usr/bin/env ${PYTHON_CMD}"
 chmod +x "${INSTALL_PATH}"
+
+BUILD_INFO_FILE="${BUILD_DIR}/build-info.json"
+REMOTE_URL=""
+BRANCH_NAME="main"
+COMMIT_SHA=""
+if git -C "${SCRIPT_DIR}" rev-parse --is-inside-work-tree &>/dev/null; then
+  REMOTE_URL="$(git -C "${SCRIPT_DIR}" remote get-url origin 2>/dev/null || true)"
+  BRANCH_NAME="$(git -C "${SCRIPT_DIR}" rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)"
+  COMMIT_SHA="$(git -C "${SCRIPT_DIR}" rev-parse HEAD 2>/dev/null || true)"
+fi
+if [[ -z "${REMOTE_URL}" ]]; then
+  REMOTE_URL="unknown"
+fi
+if [[ -z "${COMMIT_SHA}" ]]; then
+  COMMIT_SHA="unknown"
+fi
+BUILT_AT="$(date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +"%Y-%m-%dT%H:%M:%S")"
+cat > "${BUILD_INFO_FILE}" <<EOF
+{
+  "version": 1,
+  "commit": "${COMMIT_SHA}",
+  "remote": "${REMOTE_URL}",
+  "branch": "${BRANCH_NAME}",
+  "built_at": "${BUILT_AT}"
+}
+EOF
+"$PYTHON_CMD" -c "
+import zipfile
+from pathlib import Path
+exe = Path('${INSTALL_PATH}')
+info = Path('${BUILD_INFO_FILE}')
+with zipfile.ZipFile(exe, 'a') as zf:
+    zf.write(info, 'build-info.json')
+"
 ok "インストールしました: ${INSTALL_PATH}（zipapp）"
 
 # 付属の agent-send も同じ prefix へ（単一ファイル）

@@ -3,7 +3,7 @@
 > 決定日: 2026-08-08  
 > 対象: `tools/agent-loop/`  
 > 関連: `docs/designs/agent-loop-design.md`、`tools/agent-loop/DESIGN.md`  
-> 状態: 設計承認済み・Phase 1 実装済み（Phase 2 未実装）
+> 状態: 設計承認済み・Phase 1 / Phase 2 実装済み
 
 Phase 2の設定契約、状態遷移、失敗処理、検証、PR境界は
 `docs/plans/2026-08-08-agent-loop-phase2-detailed-design.md`を正典とする。

@@ -16,6 +16,10 @@ class ProcessCleanupTests(unittest.TestCase):
         mgr._tmux_names = {}
         mgr._prompt_cwds = {}
         mgr._owners = {}
+        mgr._ownership = {}
+        mgr._generation = {}
+        mgr._effective_model = {}
+        mgr._launch_fingerprint = {}
         mgr._instr_rev = {}
         mgr._lock = __import__("threading").Lock()
         mgr._split_direction = "horizontal"

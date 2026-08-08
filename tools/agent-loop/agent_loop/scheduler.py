@@ -139,6 +139,61 @@ def validate_entries(
 
         preflight = str(entry.get("preflight", "")).strip() or None
 
+        # Phase 2A fields（型・組合せ不正は fail-closed で ValueError）
+        mode = str(entry.get("mode") or "normal").strip() or "normal"
+        if mode not in ("normal", "ralph"):
+            raise ValueError(f"entry {name!r}: mode は normal|ralph です: {mode!r}")
+        max_iterations = entry.get("max_iterations")
+        if mode == "ralph":
+            if max_iterations is None:
+                raise ValueError(f"entry {name!r}: mode=ralph には max_iterations が必要です")
+            try:
+                max_iterations = int(max_iterations)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"entry {name!r}: max_iterations が不正です") from exc
+            if max_iterations < 1 or max_iterations > 100:
+                raise ValueError(
+                    f"entry {name!r}: max_iterations は 1..100 です: {max_iterations}"
+                )
+        elif max_iterations is not None:
+            try:
+                max_iterations = int(max_iterations)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"entry {name!r}: max_iterations が不正です") from exc
+
+        oneshot = entry.get("oneshot", False)
+        if oneshot is not False and oneshot is not True:
+            # YAML の true/false 以外を拒否
+            if isinstance(oneshot, (int, float)) and oneshot in (0, 1):
+                oneshot = bool(oneshot)
+            else:
+                raise ValueError(f"entry {name!r}: oneshot は bool です: {oneshot!r}")
+        else:
+            oneshot = bool(oneshot)
+
+        clean_session = entry.get("clean_session")
+        if clean_session is not None:
+            try:
+                clean_session = int(clean_session)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"entry {name!r}: clean_session は正整数です") from exc
+            if clean_session < 1:
+                raise ValueError(f"entry {name!r}: clean_session は正整数です: {clean_session}")
+
+        target = str(entry.get("target", "")).strip() or None
+        event_hook_config = entry.get("event_hook_config")
+        if event_hook_config is not None and not isinstance(event_hook_config, dict):
+            raise ValueError(f"entry {name!r}: event_hook_config は dict です")
+
+        if mode == "ralph" and oneshot:
+            raise ValueError(f"entry {name!r}: mode=ralph と oneshot は併用できません")
+        if oneshot and clean_session is not None:
+            raise ValueError(f"entry {name!r}: oneshot と clean_session は併用できません")
+        if target and (oneshot or clean_session is not None):
+            raise ValueError(
+                f"entry {name!r}: external target と oneshot/clean_session は併用できません"
+            )
+
         normalized.append({
             "id": prompt_id,
             "name": name,
@@ -156,10 +211,19 @@ def validate_entries(
             "exclude_from_concurrency": bool(entry.get("exclude_from_concurrency", False)),
             "event_hook": event_hook,
             "event_hook_fallback": event_hook_fallback,
+            "event_hook_config": dict(event_hook_config) if isinstance(event_hook_config, dict) else None,
             "webhook": webhook,
             "adaptive": adaptive,
             "preflight": preflight,
             "scheduled": scheduled,
+            "mode": mode,
+            "max_iterations": max_iterations if mode == "ralph" else None,
+            "oneshot": oneshot,
+            "clean_session": clean_session,
+            "target": target,
+            # oneshot runtime（process-local）
+            "overlap_pending": None,
+            "oneshot_state": "IDLE",
         })
 
     return normalized
@@ -200,9 +264,19 @@ class PeriodicScheduler:
         self._inflight_ack_paths: set[str] = set()
         self._health: dict[str, Any] = {}
         self._input_recovery = False
+        self._environment_handoff: dict[str, Any] = {
+            "prompt": False,
+            "skill_home": None,
+            "token_env_names": [],
+        }
         self._mem_ok_streak = 0
         self._mem_paused = False
         self._preflight_cache: dict[str, tuple[float, Any]] = {}
+        # Phase 2A process-local runtime
+        self._executions: dict[str, dict[str, Any]] = {}
+        self._sessions: dict[str, dict[str, Any]] = {}
+        self._external_panes: dict[str, dict[str, Any]] = {}
+        self._external_profiles: dict[str, Any] = {}  # name → CliProfile
         self._set_entries(entries, allow_immediate_once=True)
 
     # ---- 設定 / 状態 -------------------------------------------------------
@@ -212,12 +286,43 @@ class PeriodicScheduler:
         *,
         workspace: str | None = None,
         health: dict[str, Any] | None = None,
+        environment_handoff: dict[str, Any] | None = None,
+        external_panes: list[dict[str, Any]] | None = None,
     ) -> None:
         if workspace is not None:
             self._workspace = workspace
         if health is not None and isinstance(health, dict):
             self._health = dict(health)
             self._input_recovery = bool(health.get("input_recovery", False))
+        if environment_handoff is not None:
+            self._environment_handoff = dict(environment_handoff)
+        if external_panes is not None:
+            self.set_external_panes(external_panes)
+
+    def set_external_panes(self, raw: Any) -> bool:
+        """external_panes を validate して atomic 交換。不正時は旧 map を維持して False。"""
+        try:
+            normalized = validate_external_panes(raw)
+        except Exception as exc:
+            log.error("external_panes 検証失敗のため現行を維持します: %s", exc)
+            return False
+        profiles: dict[str, Any] = {}
+        for item in normalized:
+            cli_name = item.get("agent_cli")
+            if cli_name:
+                try:
+                    profiles[item["name"]] = _resolve_cli_profile(
+                        {"agent_cli": cli_name}, project_dir=self._workspace or None
+                    )
+                except Exception as exc:
+                    log.error(
+                        "external_panes[%s] の agent_cli 検証失敗: %s", item["name"], exc
+                    )
+                    return False
+        with self._lock:
+            self._external_panes = {p["name"]: p for p in normalized}
+            self._external_profiles = profiles
+        return True
 
     def _release_slot(self, pane_id: str | None) -> None:
         if self._semaphore is not None and pane_id:
@@ -225,14 +330,14 @@ class PeriodicScheduler:
 
     def _update_entry(self, entry_id: str, **fields: Any) -> None:
         with self._lock:
-            for e in self._entries:
+            for e in getattr(self, "_entries", []) or []:
                 if e.get("id") == entry_id:
                     e.update(fields)
                     break
 
     def _find_entry(self, entry_id: str) -> dict[str, Any] | None:
         with self._lock:
-            for e in self._entries:
+            for e in getattr(self, "_entries", []) or []:
                 if e.get("id") == entry_id or e.get("name") == entry_id:
                     return e.copy()
         return None
@@ -274,10 +379,16 @@ class PeriodicScheduler:
                 e["next_run_at"] = old.get("next_run_at", e["next_run_at"])
                 if "next_clear_at" in old:
                     e["next_clear_at"] = old.get("next_clear_at")
+                # Phase 2A: success_count は sessions 側。oneshot overlap は継承。
+                if "overlap_pending" in old:
+                    e["overlap_pending"] = old.get("overlap_pending")
+                if "oneshot_state" in old:
+                    e["oneshot_state"] = old.get("oneshot_state")
             keep_ids = {str(e.get("id")) for e in normalized}
             self._pending = [
                 r for r in self._pending
-                if str(r.get("entry_id")) in keep_ids or r.get("source") in ("send", "inbox", "webhook")
+                if str(r.get("entry_id")) in keep_ids
+                or r.get("source") in ("send", "inbox", "webhook", "ralph")
             ]
             for entry in normalized:
                 old = old_by_id.get(str(entry.get("id")))
@@ -308,45 +419,101 @@ class PeriodicScheduler:
             return self._active_count
 
     def _begin_active(self, req: dict[str, Any]) -> None:
+        """root execution 単位で active_count を増やす（Ralph child は増えない）。"""
+        try:
+            exec_meta = normalize_execution(req.get("meta"), request_id=str(req.get("id", "")))
+        except ValueError:
+            exec_meta = default_execution(str(req.get("id", "")))
+        root_id = str(exec_meta.get("root_id") or req.get("id", ""))
         with self._lock:
-            request_id = str(req.get("id", ""))
-            if request_id in self._active_ids:
+            if root_id in self._active_ids:
                 return
-            self._active_ids.add(request_id)
+            self._active_ids.add(root_id)
             self._active_count += 1
 
     def _end_active(self, req: dict[str, Any], status: str | None = None,
-                    pane_id: str | None = None) -> None:
+                    pane_id: str | None = None, reason: str | None = None) -> None:
+        try:
+            exec_meta = normalize_execution(req.get("meta"), request_id=str(req.get("id", "")))
+        except ValueError:
+            exec_meta = default_execution(str(req.get("id", "")))
+        root_id = str(exec_meta.get("root_id") or req.get("id", ""))
         with self._lock:
-            request_id = str(req.get("id", ""))
-            if request_id not in self._active_ids:
+            if root_id not in self._active_ids:
                 return
-            self._active_ids.discard(request_id)
+            self._active_ids.discard(root_id)
             self._active_count = max(0, self._active_count - 1)
-        if (status and (req.get("meta") or {}).get("wait")
-                and send_response_path(request_id).is_file()):
+        wait = bool((req.get("meta") or {}).get("wait"))
+        if status and (wait or send_response_path(root_id).is_file()):
             try:
-                write_send_response(request_id, status, pane_id=pane_id)
+                mapped = {
+                    "completed": "completed",
+                    "DONE": "completed",
+                    "failed": "failed",
+                    "FAILED": "failed",
+                    "CANCELED": "failed",
+                    "canceled": "failed",
+                }.get(status, status)
+                write_send_response(
+                    root_id, mapped, pane_id=pane_id,
+                    step=int(exec_meta.get("step") or 1),
+                    max_steps=int(exec_meta.get("max_steps") or 1),
+                    reason=reason,
+                )
             except OSError as exc:
-                log.warning("send response の更新に失敗しました (%s): %s", request_id, exc)
+                log.warning("send response の更新に失敗しました (%s): %s", root_id, exc)
 
-    def _track_active(self, req: dict[str, Any], pane_id: str,
-                      on_complete: Any = None) -> None:
-        request_id = str(req.get("id", ""))
+    def _track_active(
+        self,
+        req: dict[str, Any],
+        pane_id: str,
+        on_complete: Any = None,
+        *,
+        hold_slot: bool = False,
+        profile: Any = None,
+        generation: int | None = None,
+    ) -> None:
+        try:
+            exec_meta = normalize_execution(req.get("meta"), request_id=str(req.get("id", "")))
+        except ValueError:
+            exec_meta = default_execution(str(req.get("id", "")))
+        root_id = str(exec_meta.get("root_id") or req.get("id", ""))
         if ((req.get("meta") or {}).get("wait")
-                and send_response_path(request_id).is_file()):
+                or send_response_path(root_id).is_file()):
             try:
-                write_send_response(request_id, "processing", pane_id=pane_id)
+                write_send_response(
+                    root_id, "processing", pane_id=pane_id,
+                    step=int(exec_meta.get("step") or 1),
+                    max_steps=int(exec_meta.get("max_steps") or 1),
+                )
             except OSError as exc:
-                log.warning("send response の更新に失敗しました (%s): %s", request_id, exc)
+                log.warning("send response の更新に失敗しました (%s): %s", root_id, exc)
+
+        expected_gen = generation
 
         def complete() -> None:
-            if callable(on_complete):
-                on_complete()
-            self._end_active(req, "completed", pane_id)
+            if expected_gen is not None:
+                session_key = str(exec_meta.get("session_key") or req.get("entry_id") or "")
+                current = self._session_mgr.get_generation(session_key) if session_key else 0
+                # oneshot: pane generation 照合
+                if session_key and current and current != expected_gen:
+                    log.warning(
+                        "SlotMonitor: 古い generation の完了を無視します "
+                        "(pane=%s expected=%s current=%s)",
+                        pane_id, expected_gen, current,
+                    )
+                    return
+            try:
+                if callable(on_complete):
+                    on_complete()
+                else:
+                    self._on_execution_complete(req, pane_id)
+            except Exception:
+                log.warning("execution complete 処理に失敗しました", exc_info=True)
+                self._fail_execution(req, pane_id, reason="callback_error")
 
         def fail() -> None:
-            self._end_active(req, "failed", pane_id)
+            self._fail_execution(req, pane_id, reason="pane_or_timeout")
 
         if self._slot_monitor is not None:
             self._slot_monitor.track(
@@ -354,9 +521,339 @@ class PeriodicScheduler:
                 on_complete=complete,
                 on_failure=fail,
                 initial_content_hash=(req.get("meta") or {}).pop("_pane_hash_before_send", None),
+                hold_slot=hold_slot,
+                profile=profile,
             )
         else:
             complete()
+
+    # ---- Phase 2A execution helpers ----------------------------------------
+
+    def _execution_meta(self, req: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return normalize_execution(req.get("meta"), request_id=str(req.get("id", "")))
+        except ValueError as exc:
+            log.warning("execution metadata 不正: %s", exc)
+            raise
+
+    def _ensure_req_execution(self, req: dict[str, Any], entry: dict[str, Any] | None) -> dict[str, Any]:
+        """request meta.execution を entry / CLI 指定から埋めて正規化する。"""
+        meta = req.setdefault("meta", {})
+        raw = meta.get("execution")
+        if not isinstance(raw, dict):
+            raw = {}
+            meta["execution"] = raw
+        entry = entry or {}
+        if "kind" not in raw:
+            mode = str(entry.get("mode") or "normal")
+            raw["kind"] = "ralph" if mode == "ralph" else "normal"
+        if raw.get("kind") == "ralph" and "max_steps" not in raw:
+            raw["max_steps"] = int(entry.get("max_iterations") or 1)
+        if "session_policy" not in raw:
+            if entry.get("oneshot"):
+                raw["session_policy"] = "oneshot"
+            elif entry.get("target"):
+                raw["session_policy"] = "external"
+            elif raw.get("sandbox_id") or meta.get("sandbox"):
+                raw["session_policy"] = "sandbox"
+            else:
+                raw["session_policy"] = "persistent"
+        if "target_kind" not in raw:
+            raw["target_kind"] = "external" if (
+                entry.get("target") or raw.get("session_policy") == "external"
+            ) else "managed"
+        if "target" not in raw and entry.get("target"):
+            raw["target"] = entry.get("target")
+        if "session_key" not in raw or not raw.get("session_key"):
+            raw["session_key"] = str(entry.get("id") or req.get("entry_id") or "")
+        if "root_id" not in raw or not raw.get("root_id"):
+            raw["root_id"] = str(req.get("id", ""))
+        if meta.get("force"):
+            raw["force_ready"] = True
+            raw["skip_preflight"] = True
+        if meta.get("model") and "model" not in raw:
+            raw["model"] = meta.get("model")
+        return normalize_execution(meta, request_id=str(req.get("id", "")))
+
+    def _executions_map(self) -> dict[str, dict[str, Any]]:
+        if not hasattr(self, "_executions"):
+            self._executions = {}
+        return self._executions
+
+    def _sessions_map(self) -> dict[str, dict[str, Any]]:
+        if not hasattr(self, "_sessions"):
+            self._sessions = {}
+        return self._sessions
+
+    def _external_panes_map(self) -> dict[str, dict[str, Any]]:
+        if not hasattr(self, "_external_panes"):
+            self._external_panes = {}
+        if not hasattr(self, "_external_profiles"):
+            self._external_profiles = {}
+        return self._external_panes
+
+    def _upsert_execution(self, root_id: str, **fields: Any) -> dict[str, Any]:
+        with self._lock:
+            cur = self._executions_map().setdefault(root_id, {
+                "state": "STARTING",
+                "entry_id": "",
+                "pane_id": None,
+                "step": 1,
+                "max_steps": 1,
+                "slot_lease": None,
+                "started_at": time.time(),
+                "session_policy": "persistent",
+                "overlap_pending": False,
+                "cleanup_pending": False,
+            })
+            cur.update(fields)
+            return dict(cur)
+
+    def _pop_execution(self, root_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            return self._executions_map().pop(root_id, None)
+
+    def _session_runtime(self, session_key: str) -> dict[str, Any]:
+        with self._lock:
+            return self._sessions_map().setdefault(session_key, {
+                "pane_id": None,
+                "ownership": "managed-persistent",
+                "generation": 0,
+                "effective_model": None,
+                "launch_fingerprint": "",
+                "success_count": 0,
+                "sandbox_id": None,
+                "cleanup_failed": False,
+            })
+
+    def _build_model_launch_spec(
+        self,
+        *,
+        model: str | None,
+        cwd: str,
+        ownership: str = "managed-persistent",
+    ) -> dict[str, Any] | None:
+        """model 指定時に agentcore で argv を組み立てる。不要なら None。"""
+        if model is None and (_CLI_PROFILE.is_legacy or not _CLI_PROFILE.argv):
+            return None
+        argv: list[str]
+        profile_name = _CLI_PROFILE.name
+        if model is not None and not _CLI_PROFILE.is_legacy and _AGENTCLI_MOD is not None:
+            try:
+                spec = _CLI_PROFILE.spec or _AGENTCLI_MOD.load_cli(
+                    profile_name, project_dir=self._workspace or None
+                )
+                argv = list(_AGENTCLI_MOD.interactive_cmd(spec, str(model)))
+            except Exception as exc:
+                raise RuntimeError(f"model argv 組み立て失敗: {exc}") from exc
+        elif _CLI_PROFILE.argv:
+            argv = list(_CLI_PROFILE.argv)
+        else:
+            return None
+        return make_launch_spec(
+            argv=argv,
+            cwd=cwd,
+            profile_name=profile_name,
+            effective_model=model,
+            ownership=ownership,
+        )
+
+    def _enqueue_ralph_child(self, req: dict[str, Any], pane_id: str) -> None:
+        exec_meta = self._execution_meta(req)
+        root_id = str(exec_meta["root_id"])
+        step = int(exec_meta["step"])
+        max_steps = int(exec_meta["max_steps"])
+        next_step = step + 1
+        original = str((req.get("meta") or {}).get("original_prompt") or req.get("prompt", ""))
+        child_prompt = build_ralph_prompt(original, next_step, max_steps)
+        child_meta = dict(req.get("meta") or {})
+        child_exec = dict(exec_meta)
+        child_exec["step"] = next_step
+        child_meta["execution"] = child_exec
+        child_meta["original_prompt"] = original
+        child_meta.pop("_pane_hash_before_send", None)
+        child = make_dispatch_request(
+            source="ralph",
+            entry_id=str(req.get("entry_id", "")),
+            prompt=child_prompt,
+            cwd=req.get("cwd"),
+            priority="high",
+            meta=child_meta,
+        )
+        self._upsert_execution(
+            root_id, state="ITERATING" if next_step < max_steps else "FINALIZING",
+            step=next_step, pane_id=pane_id,
+        )
+        with self._lock:
+            self._pending.insert(0, child)
+        _log_dispatch("execution_step_completed", req, next_step=next_step)
+
+    def _on_execution_complete(self, req: dict[str, Any], pane_id: str) -> None:
+        exec_meta = self._execution_meta(req)
+        root_id = str(exec_meta["root_id"])
+        kind = str(exec_meta.get("kind") or "normal")
+        policy = str(exec_meta.get("session_policy") or "persistent")
+        step = int(exec_meta.get("step") or 1)
+        max_steps = int(exec_meta.get("max_steps") or 1)
+        session_key = str(exec_meta.get("session_key") or req.get("entry_id") or "")
+        entry_id = str(req.get("entry_id") or "")
+
+        if kind == "ralph" and step < max_steps:
+            self._enqueue_ralph_child(req, pane_id)
+            return
+
+        # terminal success
+        if session_key:
+            sess = self._session_runtime(session_key)
+            with self._lock:
+                sess["success_count"] = int(sess.get("success_count") or 0) + 1
+                sess["pane_id"] = pane_id
+                success_count = int(sess["success_count"])
+        else:
+            success_count = 0
+
+        entry = self._find_entry(entry_id) if entry_id else None
+        clean_n = int(entry.get("clean_session") or 0) if entry else 0
+        need_cleanup = False
+        if policy == "oneshot" or policy == "sandbox":
+            need_cleanup = True
+        elif clean_n > 0 and success_count >= clean_n:
+            need_cleanup = True
+
+        if need_cleanup and policy != "external":
+            self._run_session_cleanup(
+                req, pane_id, session_key=session_key,
+                reason="oneshot" if policy == "oneshot" else (
+                    "sandbox" if policy == "sandbox" else "clean_session"
+                ),
+            )
+        else:
+            self._release_slot(pane_id)
+            self._upsert_execution(root_id, state="DONE", pane_id=pane_id, step=step)
+            self._end_active(req, "completed", pane_id)
+            self._pop_execution(root_id)
+            _log_dispatch("execution_terminal", req, state="DONE")
+
+        if policy == "oneshot" and entry_id:
+            self._finish_oneshot(entry_id)
+
+    def _fail_execution(self, req: dict[str, Any], pane_id: str | None,
+                        *, reason: str = "failed") -> None:
+        try:
+            exec_meta = self._execution_meta(req)
+        except ValueError:
+            exec_meta = default_execution(str(req.get("id", "")))
+        root_id = str(exec_meta.get("root_id") or req.get("id", ""))
+        policy = str(exec_meta.get("session_policy") or "persistent")
+        session_key = str(exec_meta.get("session_key") or req.get("entry_id") or "")
+        try:
+            if self._slot_monitor is not None and pane_id:
+                self._slot_monitor.untrack(pane_id)
+        except Exception:
+            pass
+        if policy in ("oneshot", "sandbox") and session_key:
+            try:
+                self._session_mgr.cleanup_managed_pane(session_key)
+            except Exception:
+                log.warning("fail cleanup 失敗 session=%s", session_key, exc_info=True)
+            if policy == "sandbox":
+                sid = exec_meta.get("sandbox_id") or (req.get("meta") or {}).get("sandbox_id")
+                if sid:
+                    cleanup_sandbox(str(sid), retain_reason="cleanup_failed")
+        self._release_slot(pane_id)
+        self._upsert_execution(root_id, state="FAILED", pane_id=pane_id)
+        self._end_active(req, "failed", pane_id, reason=reason)
+        self._pop_execution(root_id)
+        if policy == "oneshot":
+            self._finish_oneshot(str(req.get("entry_id") or ""))
+        _log_dispatch("execution_terminal", req, state="FAILED", reason=reason)
+
+    def _run_session_cleanup(
+        self,
+        req: dict[str, Any],
+        pane_id: str,
+        *,
+        session_key: str,
+        reason: str,
+    ) -> None:
+        """save→clear→exit（定義分）の後に process cleanup。slot は finally で解放。"""
+        exec_meta = self._execution_meta(req)
+        root_id = str(exec_meta["root_id"])
+        log.info("event=session_cleanup_started root_id=%s reason=%s", root_id, reason)
+        try:
+            if reason == "clean_session":
+                for cmd in (
+                    getattr(_CLI_PROFILE, "save_command", "") or "",
+                    getattr(_CLI_PROFILE, "clear_command", "") or "",
+                    getattr(_CLI_PROFILE, "exit_command", "") or "",
+                ):
+                    if not cmd:
+                        continue
+                    try:
+                        self._session_mgr.send_prompt(session_key, cmd)
+                        deadline = time.time() + float(
+                            getattr(self._session_mgr, "_startup_timeout", 60) or 60
+                        )
+                        while time.time() < deadline:
+                            if not self._session_mgr.is_pane_alive(session_key):
+                                break
+                            if _CLI_PROFILE.is_ready(_capture_pane(pane_id)):
+                                break
+                            time.sleep(0.2)
+                    except Exception:
+                        log.warning("cleanup command 送信失敗: %s", cmd, exc_info=True)
+            ok = self._session_mgr.cleanup_managed_pane(session_key)
+            if not ok and self._session_mgr.get_pane_id(session_key):
+                with self._lock:
+                    sess = self._sessions.setdefault(session_key, {})
+                    sess["cleanup_failed"] = True
+                log.warning("event=session_cleanup_failed session=%s", session_key)
+            else:
+                with self._lock:
+                    sess = self._sessions.setdefault(session_key, {})
+                    sess["cleanup_failed"] = False
+                    sess["success_count"] = 0
+                    sess["pane_id"] = None
+            if reason == "sandbox":
+                sid = exec_meta.get("sandbox_id") or (req.get("meta") or {}).get("sandbox_id")
+                wait = bool((req.get("meta") or {}).get("wait"))
+                if sid:
+                    if wait:
+                        cleanup_sandbox(str(sid))
+                    else:
+                        cleanup_sandbox(str(sid), retain_reason="retained_nonwait")
+            log.info("event=session_cleanup_completed root_id=%s", root_id)
+        finally:
+            self._release_slot(pane_id)
+            self._upsert_execution(root_id, state="DONE", pane_id=pane_id)
+            # clean_session / oneshot cleanup 後も元 root は DONE
+            status = "completed"
+            if reason == "oneshot" and (self._sessions.get(session_key) or {}).get("cleanup_failed"):
+                status = "failed"
+            self._end_active(req, status, pane_id)
+            self._pop_execution(root_id)
+
+    def _finish_oneshot(self, entry_id: str) -> None:
+        if not entry_id:
+            return
+        pending_req = None
+        with self._lock:
+            for e in self._entries:
+                if str(e.get("id")) == entry_id:
+                    e["oneshot_state"] = "IDLE"
+                    pending_req = e.get("overlap_pending")
+                    e["overlap_pending"] = None
+                    break
+        if isinstance(pending_req, dict):
+            self._accept_request(pending_req)
+
+    def _resolve_dispatch_profile(self, exec_meta: dict[str, Any]) -> Any:
+        if exec_meta.get("target_kind") == "external":
+            name = str(exec_meta.get("target") or "")
+            with self._lock:
+                self._external_panes_map()
+                return self._external_profiles.get(name) or _CLI_PROFILE
+        return _CLI_PROFILE
 
     def run_state(self) -> str:
         return self._run_state
@@ -383,11 +880,15 @@ class PeriodicScheduler:
 
     def _accept_request(self, req: dict[str, Any]) -> bool:
         """debounce / schedule coalesce のうえ pending へ入れる。"""
-        if self._draining:
+        source = str(req.get("source", ""))
+        # draining 中でも開始済み Ralph child は継続
+        if self._draining and source != "ralph":
             return False
         dedupe = str(req.get("dedupe_key") or _dedupe_key(str(req.get("entry_id", "")), str(req.get("prompt", ""))))
         req["dedupe_key"] = dedupe
-        if self._debouncer.is_duplicate(dedupe):
+        # Ralph child / oneshot overlap は debounce しない
+        skip_debounce = source == "ralph" or bool((req.get("meta") or {}).get("_skip_debounce"))
+        if not skip_debounce and self._debouncer.is_duplicate(dedupe):
             _log_dispatch("request_debounced", req)
             request_id = str(req.get("id", ""))
             if ((req.get("meta") or {}).get("wait")
@@ -398,8 +899,24 @@ class PeriodicScheduler:
                     log.warning("send response の更新に失敗しました (%s): %s", request_id, exc)
             return True  # 成功扱いで破棄
 
-        source = str(req.get("source", ""))
         entry_id = str(req.get("entry_id", ""))
+        # oneshot overlap coalesce（PROCESSING/COMPLETING 中は 1 件だけ）
+        entry = self._find_entry(entry_id) if entry_id else None
+        if entry and entry.get("oneshot") and source != "ralph":
+            state = str(entry.get("oneshot_state") or "IDLE")
+            if state in ("PROCESSING", "COMPLETING"):
+                with self._lock:
+                    for e in self._entries:
+                        if str(e.get("id")) != entry_id:
+                            continue
+                        if e.get("overlap_pending") is None:
+                            e["overlap_pending"] = req
+                            _log_dispatch("oneshot_overlap_coalesced", req)
+                        else:
+                            _log_dispatch("oneshot_overlap_coalesced", req, dropped=True)
+                        break
+                return True
+
         with self._lock:
             if source == "schedule":
                 for existing in self._pending:
@@ -566,7 +1083,9 @@ class PeriodicScheduler:
             "name": name,
             "entry_id": entry.get("id"),
             "event_hook_fallback": bool(entry.get("event_hook_fallback")),
+            "event_hook_config": entry.get("event_hook_config") or {},
             "cwd": entry.get("cwd"),
+            "workspace": getattr(self, "_workspace", "") or "",
         }
         fallback_flag = "1" if entry.get("event_hook_fallback") else "0"
         env_overrides = {
@@ -791,11 +1310,27 @@ class PeriodicScheduler:
 
     # ---- dispatch ----------------------------------------------------------
 
+    def _maybe_prepend_env_block(self, prompt: str, req: dict[str, Any] | None) -> str:
+        handoff = getattr(self, "_environment_handoff", None) or {}
+        if not handoff.get("prompt"):
+            return prompt
+        if req is not None and str(req.get("source", "")) == "ralph":
+            return prompt
+        block = build_env_prompt_block(
+            handoff,
+            agent_cli=_CLI_PROFILE.name,
+            agent_home=agent_home_dir(),
+        )
+        if not prompt:
+            return block
+        return f"{block}\n\n{prompt}"
+
     def _dispatch_prompt(self, entry: dict[str, Any], pane_id: str | None,
                          *, req: dict[str, Any] | None = None) -> bool:
         name = str(entry.get("name", ""))
         prompt_id = str(entry.get("id", ""))
         prompt = str(entry.get("prompt", ""))
+        prompt = self._maybe_prepend_env_block(prompt, req)
         should_clear = bool(entry.get("_should_clear", False))
         fresh_context_interval = entry.get("fresh_context_interval_minutes")
 
@@ -834,17 +1369,30 @@ class PeriodicScheduler:
                 if pane_id and req is not None:
                     on_complete = None
                     meta = req.get("meta") or {}
+                    hold_slot = bool(meta.get("_hold_slot"))
+                    profile = meta.get("_dispatch_profile")
+                    generation = meta.get("_generation")
                     if meta.get("inbox_cleanup"):
                         pid = str(meta.get("prompt_id") or prompt_id)
-                        on_complete = lambda: self._session_mgr.remove_session(
-                            pid, owner="inbox", pane_id=pane_id
-                        )
-                    self._track_active(req, pane_id, on_complete=on_complete)
+
+                        def on_complete() -> None:
+                            self._session_mgr.remove_session(
+                                pid, owner="inbox", pane_id=pane_id
+                            )
+                            self._end_active(req, "completed", pane_id)
+
+                    self._track_active(
+                        req, pane_id, on_complete=on_complete,
+                        hold_slot=hold_slot, profile=profile,
+                        generation=int(generation) if generation is not None else None,
+                    )
                 _log_dispatch("dispatch_sent", req)
                 return True
             else:
-                self._release_slot(pane_id)
-                if not self._stop_event.is_set():
+                # Ralph lease 中はここでは解放せず fail_execution に任せる
+                if not (req and (req.get("meta") or {}).get("_hold_slot")):
+                    self._release_slot(pane_id)
+                if not self._stop_event.is_set() and not (req and (req.get("meta") or {}).get("_hold_slot")):
                     log.warning("[%s] 送信失敗。ペイン再起動を試みます。", name)
                     try:
                         self._session_mgr.restart_pane(prompt_id)
@@ -853,7 +1401,8 @@ class PeriodicScheduler:
                 _log_dispatch("dispatch_failed", req)
                 return False
         except Exception as exc:
-            self._release_slot(pane_id)
+            if not (req and (req.get("meta") or {}).get("_hold_slot")):
+                self._release_slot(pane_id)
             log.error("[%s] 予期しないエラー: %s", name, exc, exc_info=True)
             _log_dispatch("dispatch_failed", req)
             return False
@@ -910,14 +1459,37 @@ class PeriodicScheduler:
                 "slash": [],
                 "fresh_context": False,
             }
+        elif entry is None and source == "ralph":
+            log.warning("ralph child: エントリが見つかりません entry_id=%s", req.get("entry_id"))
+            self._fail_execution(req, None, reason="entry_missing")
+            return "discard"
         elif entry is None:
             log.warning("dispatch: エントリが見つかりません entry_id=%s", req.get("entry_id"))
             self._finalize_ack(req, success=False)
             return "discard"
 
-        if not self._run_preflight(req, entry):
+        try:
+            exec_meta = self._ensure_req_execution(req, entry)
+        except ValueError as exc:
+            log.warning("dispatch: execution 不正: %s", exc)
+            self._finalize_ack(req, success=False)
+            return "discard"
+
+        is_ralph_child = source == "ralph"
+        force_ready = bool(exec_meta.get("force_ready"))
+        skip_preflight = bool(exec_meta.get("skip_preflight")) or is_ralph_child
+        target_kind = str(exec_meta.get("target_kind") or "managed")
+        policy = str(exec_meta.get("session_policy") or "persistent")
+        root_id = str(exec_meta.get("root_id") or req.get("id", ""))
+
+        # cleanup_failed session は新 request を止める
+        session_key = str(exec_meta.get("session_key") or entry.get("id") or "")
+        if session_key and (self._sessions_map().get(session_key) or {}).get("cleanup_failed"):
+            log.warning("[%s] cleanup_failed のため保留します。", entry.get("name", ""))
+            return "defer"
+
+        if not skip_preflight and not self._run_preflight(req, entry):
             _log_dispatch("dispatch_blocked_preflight", req)
-            # inbox 等は再投入ループを避けるため消費する（hook ack は呼ばない）
             self._finalize_ack(req, success=True)
             return "discard"
 
@@ -928,44 +1500,177 @@ class PeriodicScheduler:
             prompt_id = str((req.get("meta") or {}).get("prompt_id") or f"inbox-{req.get('id', '')[:8]}")
             name = str((req.get("meta") or {}).get("session_name") or name)
 
-        cwd = req.get("cwd") or entry.get("cwd")
+        cwd = req.get("cwd") or entry.get("cwd") or getattr(self, "_workspace", "") or ""
         dispatch_entry = dict(entry)
         dispatch_entry["id"] = prompt_id
         dispatch_entry["name"] = name
-        dispatch_entry["prompt"] = str(req.get("prompt", ""))
+        # Ralph: step に応じた prompt を組み立て（root 初回も）
+        original = str((req.get("meta") or {}).get("original_prompt") or req.get("prompt", ""))
+        if exec_meta.get("kind") == "ralph":
+            req.setdefault("meta", {})["original_prompt"] = original
+            if not is_ralph_child:
+                dispatch_entry["prompt"] = build_ralph_prompt(
+                    original, int(exec_meta["step"]), int(exec_meta["max_steps"])
+                )
+            else:
+                dispatch_entry["prompt"] = str(req.get("prompt", ""))
+        else:
+            dispatch_entry["prompt"] = str(req.get("prompt", ""))
         if cwd:
             dispatch_entry["cwd"] = cwd
         dispatch_entry["_should_clear"] = bool(
             (req.get("meta") or {}).get("_should_clear", False)
-        )
+        ) and not is_ralph_child
 
-        if not self._session_mgr.ensure_session(prompt_id, name, owner=owner):
-            log.warning("[%s] 対応セッションの準備に失敗したため保留します。", name)
-            return "defer"
+        profile = self._resolve_dispatch_profile(exec_meta)
+        pane_id: str | None = None
+        generation: int | None = None
+        acquire_slot = True
 
-        # cwd 上書き（request 指定時）
-        if cwd:
-            with self._session_mgr._lock:
-                self._session_mgr._prompt_cwds[prompt_id] = str(cwd)
+        # ---- external pane ----
+        if target_kind == "external":
+            ext_name = str(exec_meta.get("target") or entry.get("target") or "")
+            with self._lock:
+                ext = self._external_panes_map().get(ext_name)
+            if ext is None:
+                log.warning("external pane 未定義: %s", ext_name)
+                return "discard"
+            pane_id = resolve_external_tmux_pane(str(ext["tmux_target"]))
+            if pane_id is None:
+                log.warning(
+                    "event=external_target_unavailable name=%s target=%s",
+                    ext_name, ext.get("tmux_target"),
+                )
+                return "defer"  # pending 保持
+            acquire_slot = False  # external は semaphore を取らない
+        else:
+            # sandbox create（root のみ）
+            if policy == "sandbox" and not is_ralph_child and not exec_meta.get("sandbox_id"):
+                repo = resolve_git_toplevel(cwd)
+                if repo is None:
+                    self._fail_execution(req, None, reason="not_a_git_repo")
+                    return "discard"
+                try:
+                    reg = create_sandbox(repo_root=repo, request_id=root_id)
+                except Exception as exc:
+                    log.error("sandbox 作成失敗: %s", exc)
+                    self._fail_execution(req, None, reason="sandbox_create_failed")
+                    return "discard"
+                exec_meta["sandbox_id"] = reg["id"]
+                req["meta"]["execution"] = exec_meta
+                req["meta"]["sandbox_id"] = reg["id"]
+                cwd = reg["path"]
+                dispatch_entry["cwd"] = cwd
+                if send_response_path(root_id).is_file():
+                    write_send_response(root_id, "queued", sandbox_path=reg["path"])
 
-        pane_id = self._session_mgr.get_pane_id(prompt_id)
-        if pane_id is None:
-            log.warning("[%s] 対応ペインを解決できないため保留します。", name)
-            return "defer"
+            ownership = (
+                "managed-ephemeral"
+                if policy in ("oneshot", "sandbox")
+                else "managed-persistent"
+            )
+            model = exec_meta.get("model")
+            try:
+                launch_spec = self._build_model_launch_spec(
+                    model=model,
+                    cwd=str(cwd or getattr(self, "_workspace", "") or ""),
+                    ownership=ownership,
+                )
+            except RuntimeError as exc:
+                log.error("[%s] %s", name, exc)
+                self._fail_execution(req, None, reason="model_argv_failed")
+                return "discard"
+
+            # model mismatch on existing pane
+            get_pane = getattr(self._session_mgr, "get_pane_id", None)
+            get_model = getattr(self._session_mgr, "get_effective_model", None)
+            existing_pane = get_pane(prompt_id) if callable(get_pane) else None
+            if launch_spec is not None and existing_pane and callable(get_model):
+                existing_model = get_model(prompt_id)
+                if existing_model != launch_spec.get("effective_model"):
+                    self._fail_execution(req, None, reason="model_mismatch")
+                    return "discard"
+
+            ensure = getattr(self._session_mgr, "ensure_session")
+            try:
+                ensured = ensure(prompt_id, name, owner=owner, launch_spec=launch_spec)
+            except TypeError:
+                # Phase 1 stubs without launch_spec kwarg
+                ensured = ensure(prompt_id, name, owner=owner)
+            if not ensured:
+                if launch_spec is not None and callable(get_pane) and get_pane(prompt_id):
+                    self._fail_execution(req, None, reason="model_mismatch")
+                    return "discard"
+                log.warning("[%s] 対応セッションの準備に失敗したため保留します。", name)
+                return "defer"
+
+            if cwd and hasattr(self._session_mgr, "_prompt_cwds") and hasattr(self._session_mgr, "_lock"):
+                with self._session_mgr._lock:
+                    self._session_mgr._prompt_cwds[prompt_id] = str(cwd)
+
+            pane_id = get_pane(prompt_id) if callable(get_pane) else None
+            get_gen = getattr(self._session_mgr, "get_generation", None)
+            generation = get_gen(prompt_id) if callable(get_gen) else None
+            if pane_id is None:
+                log.warning("[%s] 対応ペインを解決できないため保留します。", name)
+                return "defer"
+
+        # SlotMonitor ownership — force でも迂回しない
         if self._slot_monitor is not None and self._slot_monitor.is_tracking(pane_id):
-            return "defer"
+            # Ralph child は同じ pane の monitor が外れた後に来る想定
+            if not is_ralph_child:
+                return "defer"
+
         ready_content = _capture_pane(pane_id)
-        if not _CLI_PROFILE.is_ready(ready_content):
+        if not force_ready and not profile.is_ready(ready_content):
             return "defer"
         req.setdefault("meta", {})["_pane_hash_before_send"] = hashlib.sha256(
             ready_content.encode("utf-8", errors="replace")
         ).hexdigest()
 
+        # slot lease
+        hold_slot = (
+            exec_meta.get("kind") == "ralph"
+            or policy in ("oneshot", "sandbox")
+            or bool(entry.get("clean_session"))
+        )
         exclude = bool(entry.get("exclude_from_concurrency", False))
-        if self._semaphore is not None and not exclude:
+        with self._lock:
+            existing_exec = self._executions_map().get(root_id)
+            has_lease = bool(existing_exec and existing_exec.get("slot_lease"))
+        if acquire_slot and self._semaphore is not None and not exclude and not has_lease:
             acq = self._try_acquire_slot(entry, pane_id)
             if acq == "defer":
                 return "defer"
+            self._upsert_execution(
+                root_id, slot_lease=pane_id, entry_id=str(entry.get("id")),
+                session_policy=policy, max_steps=int(exec_meta.get("max_steps") or 1),
+            )
+        elif has_lease:
+            pass  # child reuses lease
+        elif not acquire_slot:
+            self._upsert_execution(
+                root_id, slot_lease=None, entry_id=str(entry.get("id")),
+                session_policy=policy, max_steps=int(exec_meta.get("max_steps") or 1),
+            )
+
+        # ralph / oneshot state
+        step = int(exec_meta.get("step") or 1)
+        max_steps = int(exec_meta.get("max_steps") or 1)
+        if exec_meta.get("kind") == "ralph":
+            state = "FINALIZING" if step >= max_steps else ("STARTING" if step == 1 else "ITERATING")
+            self._upsert_execution(
+                root_id, state=state, step=step, pane_id=pane_id,
+                max_steps=max_steps, session_policy=policy,
+            )
+        if policy == "oneshot":
+            self._update_entry(str(entry.get("id")), oneshot_state="PROCESSING")
+
+        req.setdefault("meta", {})["_hold_slot"] = hold_slot and acquire_slot
+        req["meta"]["_dispatch_profile"] = profile
+        if generation is not None:
+            req["meta"]["_generation"] = generation
+        req["meta"]["execution"] = exec_meta
 
         ack_path = str((req.get("ack") or {}).get("path") or "")
         self._begin_active(req)
@@ -974,36 +1679,57 @@ class PeriodicScheduler:
                 self._inflight_ack_paths.add(ack_path)
         ok = False
         try:
-            ok = self._dispatch_prompt(dispatch_entry, pane_id, req=req)
+            if target_kind == "external":
+                ok = send_prompt_to_session(pane_id, str(dispatch_entry.get("prompt", "")))
+                if ok:
+                    self._track_active(
+                        req, pane_id, hold_slot=False, profile=profile,
+                    )
+            else:
+                ok = self._dispatch_prompt(dispatch_entry, pane_id, req=req)
         finally:
             if not ok:
-                self._end_active(req)
+                if hold_slot or exec_meta.get("kind") == "ralph":
+                    self._fail_execution(req, pane_id, reason="send_failed")
+                else:
+                    self._end_active(req)
 
         if ok:
-            if source == "hook" and entry.get("event_hook"):
+            if source == "hook" and entry.get("event_hook") and not is_ralph_child:
                 self._call_hook_ack(entry)
             self._finalize_ack(req, success=True)
             with self._lock:
                 if ack_path:
                     self._inflight_ack_paths.discard(ack_path)
-            _log_dispatch("dispatch_completed", req)
-            if entry.get("adaptive") and not entry.get("cron"):
+            _log_dispatch("dispatch_completed", req, step=step, max_steps=max_steps)
+            if entry.get("adaptive") and not entry.get("cron") and not is_ralph_child:
                 self._update_entry(
                     str(entry.get("id")),
                     next_run_at=self._next_run_at_for_entry(entry, outcome="activity"),
                 )
             return "done"
 
-        # 送信失敗は webhook と同様 requeue（defer）して消失を避ける
-        return "defer"
+        return "defer" if not (hold_slot or exec_meta.get("kind") == "ralph") else "discard"
 
     def _try_dispatch_adhoc(self, req: dict[str, Any]) -> str:
         """スケジュール外 send（pane/session 指定）。"""
+        try:
+            exec_meta = self._ensure_req_execution(req, None)
+        except ValueError:
+            exec_meta = default_execution(str(req.get("id", "")))
+        force_ready = bool(exec_meta.get("force_ready") or (req.get("meta") or {}).get("force"))
+
         target = str((req.get("meta") or {}).get("target") or req.get("entry_id") or "")
         if not target:
             return "discard"
         prompt = str(req.get("prompt", ""))
-        # 管理下ペインなら entry id 解決
+        if exec_meta.get("kind") == "ralph":
+            original = str((req.get("meta") or {}).get("original_prompt") or prompt)
+            req.setdefault("meta", {})["original_prompt"] = original
+            prompt = build_ralph_prompt(
+                original, int(exec_meta.get("step") or 1), int(exec_meta.get("max_steps") or 1)
+            )
+
         pane_id = _resolve_target_pane(target) if not target.startswith("%") else target
         if target.startswith("%"):
             pane_id = target
@@ -1013,15 +1739,19 @@ class PeriodicScheduler:
             log.warning("adhoc send: ペインを解決できません target=%s", target)
             return "defer"
         if self._slot_monitor is not None and self._slot_monitor.is_tracking(pane_id):
-            return "defer"
+            return "defer"  # force でも active ownership は迂回しない
         ready_content = _capture_pane(pane_id)
-        if not _CLI_PROFILE.is_ready(ready_content):
+        if not force_ready and not _CLI_PROFILE.is_ready(ready_content):
             return "defer"
         req.setdefault("meta", {})["_pane_hash_before_send"] = hashlib.sha256(
             ready_content.encode("utf-8", errors="replace")
         ).hexdigest()
 
-        if self._semaphore is not None:
+        hold_slot = exec_meta.get("kind") == "ralph"
+        root_id = str(exec_meta.get("root_id") or req.get("id", ""))
+        with self._lock:
+            has_lease = bool((self._executions_map().get(root_id) or {}).get("slot_lease"))
+        if self._semaphore is not None and not has_lease:
             elapsed = self._semaphore.slot_elapsed(pane_id)
             if elapsed is not None and elapsed < self._semaphore.slot_timeout:
                 return "defer"
@@ -1029,16 +1759,22 @@ class PeriodicScheduler:
                 return "defer"
             if not self._semaphore.acquire(pane_id):
                 return "defer"
+            self._upsert_execution(root_id, slot_lease=pane_id, max_steps=int(exec_meta.get("max_steps") or 1))
 
+        req.setdefault("meta", {})["_hold_slot"] = hold_slot
+        req["meta"]["execution"] = exec_meta
         self._begin_active(req)
         ok = send_prompt_to_session(pane_id, prompt)
         if ok:
-            self._track_active(req, pane_id)
+            self._track_active(req, pane_id, hold_slot=hold_slot)
             self._finalize_ack(req, success=True)
             _log_dispatch("dispatch_completed", req)
             return "done"
-        self._end_active(req)
-        self._release_slot(pane_id)
+        if hold_slot:
+            self._fail_execution(req, pane_id, reason="send_failed")
+        else:
+            self._end_active(req)
+            self._release_slot(pane_id)
         return "defer"
 
     def _finalize_ack(self, req: dict[str, Any], *, success: bool) -> None:
@@ -1148,42 +1884,104 @@ class PeriodicScheduler:
         self._draining = True
         self._run_state = "draining"
         with self._lock:
-            discarded = len(self._pending)
-            self._pending.clear()
-            # 未開始 send-requests を破棄
+            # 開始済み Ralph child だけ残す。未開始 root は破棄。
+            keep: list[dict[str, Any]] = []
+            discarded = 0
+            executions = self._executions_map()
+            for req in getattr(self, "_pending", []) or []:
+                if req.get("source") == "ralph":
+                    root = str(
+                        ((req.get("meta") or {}).get("execution") or {}).get("root_id")
+                        or ""
+                    )
+                    if root and root in executions:
+                        keep.append(req)
+                        continue
+                discarded += 1
+            self._pending = keep
             for req in load_send_requests():
                 if self._request_matches_workspace(req) and claim_send_request(req, str(os.getpid())):
                     remove_send_request_file(req)
                     discarded += 1
-            self._external_queues.clear()
+            if hasattr(self, "_external_queues"):
+                self._external_queues.clear()
+            # oneshot overlap 破棄
+            for e in getattr(self, "_entries", []) or []:
+                if e.get("overlap_pending") is not None:
+                    e["overlap_pending"] = None
+                    discarded += 1
         log.info("event=drain_started discarded=%d", discarded)
 
     def _cancel_target(self, target: str) -> bool:
         if not target:
             return False
-        # entry id / name / pane
-        entry = self._find_entry(target)
+        # external pane は停止拒否（観測解除のみ）
+        with self._lock:
+            ext_map = self._external_panes_map()
+            if target in ext_map:
+                log.warning("cancel: external pane は停止できません: %s", target)
+                return False
+            for name, ext in ext_map.items():
+                if target == ext.get("tmux_target"):
+                    log.warning("cancel: external pane は停止できません: %s", name)
+                    return False
+
+        entry = self._find_entry(target) if hasattr(self, "_entries") else None
         prompt_id = str(entry["id"]) if entry else None
         pane_id: str | None = None
         if entry:
             pane_id = self._session_mgr.get_pane_id(prompt_id)  # type: ignore[arg-type]
         if target.startswith("%"):
             pane_id = target
-            # pane から prompt_id を逆引き
             with self._session_mgr._lock:
                 for pid, p in self._session_mgr._panes.items():
                     if p == target:
                         prompt_id = pid
                         break
+        # root_id 指定でも cancel
+        with self._lock:
+            executions = self._executions_map()
+            if target in executions:
+                ex = executions[target]
+                prompt_id = prompt_id or str(ex.get("entry_id") or "")
+                pane_id = pane_id or ex.get("pane_id")
+
         if prompt_id is None and pane_id is None:
             log.warning("cancel: 不明なターゲットです: %s", target)
             return False
+
+        # Ralph chain 全体を pending から除去
+        with self._lock:
+            pending = list(getattr(self, "_pending", []) or [])
+            self._pending = [
+                r for r in pending
+                if str(((r.get("meta") or {}).get("execution") or {}).get("root_id") or r.get("id"))
+                not in {target, prompt_id}
+                and str(r.get("entry_id")) != str(prompt_id)
+            ]
+            if prompt_id:
+                for e in getattr(self, "_entries", []) or []:
+                    if str(e.get("id")) == str(prompt_id):
+                        e["overlap_pending"] = None
+                        e["oneshot_state"] = "IDLE"
+
         if prompt_id:
             if self._slot_monitor is not None and pane_id:
                 self._slot_monitor.fail(pane_id)
             elif self._semaphore is not None and pane_id:
                 self._semaphore.release(pane_id)
             self._session_mgr.cleanup_managed_pane(prompt_id)
+            with self._lock:
+                executions = self._executions_map()
+                dead = [
+                    rid for rid, ex in executions.items()
+                    if str(ex.get("entry_id")) == str(prompt_id) or rid == target
+                ]
+                for rid in dead:
+                    executions.pop(rid, None)
+                    getattr(self, "_active_ids", set()).discard(rid)
+                if hasattr(self, "_active_ids"):
+                    self._active_count = len(self._active_ids)
             log.info("event=cancel_done target=%s prompt_id=%s", target, prompt_id)
             return True
         return False
@@ -1252,31 +2050,92 @@ class PeriodicScheduler:
                     cwd = hook_result["cwd"]
                 source = "hook"
 
+            meta: dict[str, Any] = {
+                "entry_name": name,
+                "_should_clear": should_clear,
+            }
+            if entry.get("mode") == "ralph":
+                meta["execution"] = {
+                    "kind": "ralph",
+                    "max_steps": int(entry.get("max_iterations") or 1),
+                    "session_key": prompt_id,
+                }
+            if entry.get("oneshot"):
+                meta.setdefault("execution", {})["session_policy"] = "oneshot"
+            if entry.get("target"):
+                meta.setdefault("execution", {})["target_kind"] = "external"
+                meta.setdefault("execution", {})["target"] = entry.get("target")
+                meta.setdefault("execution", {})["session_policy"] = "external"
+
             req = make_dispatch_request(
                 source=source,
                 entry_id=prompt_id,
                 prompt=prompt_text,
                 cwd=cwd,
                 priority="normal",
-                meta={
-                    "entry_name": name,
-                    "_should_clear": should_clear,
-                },
+                meta=meta,
             )
             self._accept_request(req)
             # スケジュール時刻は受付時に進める（保留中でも二重発火しない）。coalesce で 1 件維持。
-            outcome = "activity" if source == "hook" else "idle"
-            # 実際の activity は送信成功時に再調整。ここでは次回枠を確保。
             self._update_entry(prompt_id, next_run_at=self._next_run_at_for_entry(entry, outcome="idle"))
 
-    def _process_pending(self) -> None:
-        if self._draining or self._run_state == "paused":
+    def _prewarm_oneshot(self, now: float) -> None:
+        """oneshot: next_run_at - startup_timeout で pane を事前起動（slot は取らない）。"""
+        timeout = float(getattr(self._session_mgr, "_startup_timeout", 60) or 60)
+        with self._lock:
+            entries = [e.copy() for e in (getattr(self, "_entries", []) or [])]
+        for entry in entries:
+            if not entry.get("oneshot"):
+                continue
+            if not entry.get("scheduled", True):
+                continue
+            state = str(entry.get("oneshot_state") or "IDLE")
+            if state != "IDLE":
+                continue
+            next_run = float(entry.get("next_run_at") or 0)
+            if now < next_run - timeout:
+                continue
+            if now >= next_run:
+                continue  # 発火時刻は通常 dispatch へ
+            prompt_id = str(entry.get("id", ""))
+            name = str(entry.get("name", ""))
+            if self._session_mgr.get_pane_id(prompt_id):
+                continue
+            log.info("event=oneshot_warming entry_id=%s", prompt_id)
+            self._update_entry(prompt_id, oneshot_state="WARMING_UP")
+            ownership = "managed-ephemeral"
+            cwd = str(entry.get("cwd") or self._workspace)
+            try:
+                launch_spec = self._build_model_launch_spec(
+                    model=None, cwd=cwd, ownership=ownership,
+                )
+                ok = self._session_mgr.ensure_session(
+                    prompt_id, name, owner="scheduled", launch_spec=launch_spec,
+                )
+            except Exception:
+                ok = False
+            if ok:
+                self._update_entry(prompt_id, oneshot_state="READY")
+            else:
+                self._update_entry(prompt_id, oneshot_state="IDLE")
+
+    def _process_pending(self, *, ralph_only: bool = False) -> None:
+        if not ralph_only and (self._draining or self._run_state == "paused"):
             return
         while True:
             with self._lock:
                 if not self._pending:
                     return
-                req = self._pending.pop(0)
+                if ralph_only:
+                    idx = next(
+                        (i for i, r in enumerate(self._pending) if r.get("source") == "ralph"),
+                        None,
+                    )
+                    if idx is None:
+                        return
+                    req = self._pending.pop(idx)
+                else:
+                    req = self._pending.pop(0)
                 ack_path = str((req.get("ack") or {}).get("path") or "")
                 if ack_path:
                     self._inflight_ack_paths.add(ack_path)
@@ -1350,11 +2209,16 @@ class PeriodicScheduler:
             self._write_loop_state_extras()
 
             if gate == "pause":
+                # drain 中は開始済み Ralph child だけ処理する
+                if self._draining:
+                    self._process_pending(ralph_only=True)
+                    self._write_loop_state_extras()
                 continue
 
             # run
             self._drain_send_requests()
             self._drain_external_to_pending()
+            self._prewarm_oneshot(now)
             self._fire_due_schedules(now)
             self._process_pending()
             self._write_loop_state_extras()

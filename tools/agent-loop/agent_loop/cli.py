@@ -86,6 +86,11 @@ def main() -> None:
 """,
     )
     parser.add_argument(
+        "--version",
+        action="version",
+        version=format_version_line(),
+    )
+    parser.add_argument(
         "--log-level",
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
@@ -170,6 +175,34 @@ def main() -> None:
         metavar="SEC",
         help="--wait 時のタイムアウト秒（既定: 600）",
     )
+    send_parser.add_argument(
+        "--model",
+        default=None,
+        metavar="MODEL",
+        help="起動 model（既存 pane と不一致なら失敗。daemon 必須）",
+    )
+    send_parser.add_argument(
+        "--sandbox",
+        action="store_true",
+        help="git worktree sandbox で実行（daemon 必須）",
+    )
+    send_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="visual ready / preflight のみ迂回（daemon 必須）",
+    )
+    send_parser.add_argument(
+        "--ralph",
+        action="store_true",
+        help="Ralph 反復実行（--max-iterations 必須。daemon 必須）",
+    )
+    send_parser.add_argument(
+        "--max-iterations",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Ralph の work iteration 数（1..100）",
+    )
 
     msg_parser = subparsers.add_parser(
         "msg",
@@ -222,6 +255,8 @@ def main() -> None:
     subparsers.add_parser("drain", help="新規受付を止め、実行中完了後に daemon を終了する")
     subparsers.add_parser("reload", help="設定の transactional reload を要求する")
 
+    subparsers.add_parser("update", help="zipapp インストールを git remote から更新する")
+
     args = parser.parse_args()
 
     logging.getLogger().setLevel(args.log_level)
@@ -254,6 +289,10 @@ def main() -> None:
 
     if args.subcommand in ("pause", "resume", "cancel", "drain", "reload"):
         _cmd_lifecycle(args, cwd)
+        return
+
+    if args.subcommand == "update":
+        cmd_update(args)
         return
 
     running_pid = _find_running_daemon(cwd)
@@ -315,6 +354,7 @@ def main() -> None:
 
     startup_timeout = int(config.get("startup_timeout", 60))
     split_direction = args.split_direction or str(config.get("split_direction", "horizontal"))
+    environment_handoff = normalize_environment_handoff(config)
     if split_direction not in ("horizontal", "vertical"):
         log.warning("split_direction の値が不正なため horizontal を使用します: %s", split_direction)
         split_direction = "horizontal"
@@ -350,11 +390,15 @@ def main() -> None:
                 max_concurrent, slot_timeout_seconds, cooldown_seconds,
             )
 
-    # 起動時 stale slot クリーンアップ（常時）
+    # 起動時 stale slot / sandbox クリーンアップ（常時）
     cleanup_stale_slots_on_startup(
         slot_timeout_seconds,
         cooldown_seconds=cooldown_seconds,
     )
+    try:
+        cleanup_stale_sandboxes()
+    except Exception as exc:
+        log.warning("stale sandbox クリーンアップに失敗しました: %s", exc)
 
     health_cfg = config.get("health") if isinstance(config.get("health"), dict) else {}
     freeze_timeout = int(health_cfg.get("freeze_timeout_seconds", 0) or 0)
@@ -376,7 +420,13 @@ def main() -> None:
         startup_timeout=startup_timeout,
         uses_concurrency_agent=uses_concurrency_agent,
     )
+    session_mgr.configure_environment_handoff(
+        environment_handoff,
+        user_home=Path.home().resolve(),
+    )
     _session_mgr_ref = session_mgr
+
+    register_daemon_update_lock()
 
     log.info("カレントディレクトリを起動対象に設定しました: %s", cwd)
 
@@ -414,7 +464,12 @@ def main() -> None:
         session_mgr, entries, semaphore=semaphore, slot_monitor=slot_monitor,
         workspace=str(cwd.resolve()),
     )
-    scheduler.configure_runtime(workspace=str(cwd.resolve()), health=health_cfg)
+    scheduler.configure_runtime(
+        workspace=str(cwd.resolve()),
+        health=health_cfg,
+        environment_handoff=environment_handoff,
+        external_panes=config.get("external_panes") or [],
+    )
     _scheduler_ref = scheduler
 
     # カレントディレクトリ配下の .agent/agent-loop.yml から定期プロンプトを読み込み

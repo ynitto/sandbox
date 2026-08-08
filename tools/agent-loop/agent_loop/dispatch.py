@@ -230,16 +230,26 @@ def write_send_response(
     status: str,
     *,
     pane_id: str | None = None,
+    step: int | None = None,
+    max_steps: int | None = None,
+    sandbox_path: str | None = None,
+    reason: str | None = None,
     base_dir: Path | None = None,
 ) -> Path:
     """`send --wait`用のrequest単位状態をatomicに記録する。"""
     path = send_response_path(request_id, base_dir)
-    _atomic_write_json(path, {
+    prev = read_send_response(request_id, base_dir) or {}
+    data = {
         "request_id": request_id,
         "status": status,
-        "pane_id": pane_id,
+        "pane_id": pane_id if pane_id is not None else prev.get("pane_id"),
+        "step": step if step is not None else prev.get("step"),
+        "max_steps": max_steps if max_steps is not None else prev.get("max_steps"),
+        "sandbox_path": sandbox_path if sandbox_path is not None else prev.get("sandbox_path"),
+        "reason": reason if reason is not None else prev.get("reason"),
         "updated_at": time.time(),
-    })
+    }
+    _atomic_write_json(path, data)
     return path
 
 

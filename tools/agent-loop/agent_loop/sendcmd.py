@@ -486,6 +486,36 @@ def cmd_send(args: argparse.Namespace, cwd: Path) -> None:
         print("[agent-loop] ERROR: プロンプトが空です。", file=sys.stderr)
         sys.exit(1)
 
+    # Phase 2A CLI 検証
+    use_ralph = bool(getattr(args, "ralph", False))
+    max_iterations = getattr(args, "max_iterations", None)
+    use_sandbox = bool(getattr(args, "sandbox", False))
+    use_force = bool(getattr(args, "force", False))
+    use_model = getattr(args, "model", None)
+    if use_model is not None:
+        use_model = str(use_model).strip() or None
+
+    if max_iterations is not None and not use_ralph:
+        print("[agent-loop] ERROR: --max-iterations は --ralph と併用してください。", file=sys.stderr)
+        sys.exit(2)
+    if use_ralph and max_iterations is None:
+        print("[agent-loop] ERROR: --ralph には --max-iterations N が必要です。", file=sys.stderr)
+        sys.exit(2)
+    if use_ralph and use_force:
+        print("[agent-loop] ERROR: --force と --ralph は併用できません。", file=sys.stderr)
+        sys.exit(2)
+    if use_ralph:
+        try:
+            max_iterations = int(max_iterations)
+        except (TypeError, ValueError):
+            print("[agent-loop] ERROR: --max-iterations は整数です。", file=sys.stderr)
+            sys.exit(2)
+        if max_iterations < 1 or max_iterations > 100:
+            print("[agent-loop] ERROR: --max-iterations は 1..100 です。", file=sys.stderr)
+            sys.exit(2)
+
+    needs_daemon = bool(use_ralph or use_sandbox or use_force or use_model)
+
     target = getattr(args, "session", None)
     if not target:
         states = _read_all_states()
@@ -554,6 +584,19 @@ def cmd_send(args: argparse.Namespace, cwd: Path) -> None:
     if profile is not None:
         failure_pattern = getattr(profile, "failure_pattern", None)
 
+    if needs_daemon and daemon_pid is None:
+        print(
+            "[agent-loop] ERROR: --ralph/--sandbox/--force/--model は同じ workspace の daemon が必要です。",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if use_sandbox:
+        repo = resolve_git_toplevel(work_dir or cwd)
+        if repo is None:
+            print("[agent-loop] ERROR: --sandbox は git repository 内でのみ使えます。", file=sys.stderr)
+            sys.exit(2)
+
     if daemon_pid is None:
         if _pane_is_busy(send_target) or not _pane_has_prompt(_capture_pane(send_target)):
             print(f"[agent-loop] ERROR: ペイン {send_target} は現在処理中です。", file=sys.stderr)
@@ -573,9 +616,42 @@ def cmd_send(args: argparse.Namespace, cwd: Path) -> None:
 
     wait = bool(getattr(args, "wait", False))
     request_id = uuid.uuid4().hex
+    exec_meta: dict[str, Any] = {
+        "kind": "ralph" if use_ralph else "normal",
+        "root_id": request_id,
+        "step": 1,
+        "max_steps": int(max_iterations) if use_ralph else 1,
+        "session_policy": "sandbox" if use_sandbox else "persistent",
+        "session_key": entry_id,
+        "target_kind": "managed",
+        "target": None,
+        "model": use_model,
+        "sandbox_id": None,
+        "force_ready": use_force,
+        "skip_preflight": use_force,
+    }
+    meta: dict[str, Any] = {
+        "target": send_target,
+        "workspace": str(cwd.resolve()),
+        "wait": wait,
+        "execution": exec_meta,
+        "original_prompt": prompt_text,
+    }
+    if use_force:
+        meta["force"] = True
+    if use_model:
+        meta["model"] = use_model
+    if use_sandbox:
+        meta["sandbox"] = True
+        meta["repo_root"] = str(resolve_git_toplevel(work_dir or cwd) or "")
+
     if wait:
         try:
-            write_send_response(request_id, "queued")
+            write_send_response(
+                request_id, "queued",
+                step=1,
+                max_steps=int(exec_meta["max_steps"]),
+            )
         except OSError as exc:
             print(f"[agent-loop] ERROR: 完了待ち状態の作成に失敗しました: {exc}", file=sys.stderr)
             sys.exit(1)
@@ -586,11 +662,7 @@ def cmd_send(args: argparse.Namespace, cwd: Path) -> None:
             cwd=str(work_dir) if work_dir else None,
             priority=priority,
             request_id=request_id,
-            meta={
-                "target": send_target,
-                "workspace": str(cwd.resolve()),
-                "wait": wait,
-            },
+            meta=meta,
         )
     except Exception as exc:
         remove_send_response(request_id)
@@ -603,11 +675,16 @@ def cmd_send(args: argparse.Namespace, cwd: Path) -> None:
     )
     if not wait:
         return
-    sys.exit(_wait_for_send_completion(
+    code = _wait_for_send_completion(
         request_id,
         response_timeout=response_timeout,
         failure_pattern=failure_pattern if isinstance(failure_pattern, str) else None,
-    ))
+    )
+    # daemon_lost: response が消えて heartbeat も無い場合は exit 1
+    if code == 2:
+        # timeout — 既定
+        pass
+    sys.exit(code)
 
 
 def cmd_msg(args: argparse.Namespace) -> None:

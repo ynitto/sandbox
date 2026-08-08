@@ -4,7 +4,8 @@
 
 > 最終更新: 2026-08-08  
 > 対象: `agent_loop/` パッケージ（断片合成）  
-> Phase 1: `docs/plans/2026-08-08-agent-loop-phased-enhancement-design.md`
+> Phase 1: `docs/plans/2026-08-08-agent-loop-phased-enhancement-design.md`  
+> Phase 2: `docs/plans/2026-08-08-agent-loop-phase2-detailed-design.md`
 
 ---
 
@@ -16,7 +17,10 @@ agent-loop は **tmux + kiro-cli** を組み合わせ、設定ファイルで定
 - エージェント CLI プロセスを tmux ペインとして起動・死活監視・再起動
 - schedule / event_hook / webhook / inbox / CLI send を `PeriodicScheduler` の唯一の dispatch gate 経由で配送
 - 複数デーモン間で同時実行数を制御（ファイルベースセマフォ）と pending FIFO（上限時は破棄せず保留）
-- `ls` / `send` / `pause` / `resume` / `cancel` / `drain` / `reload` / `doctor` による外部操作
+- `ls` / `send`（`--ralph` / `--sandbox` / `--force` / `--model`）/ `pause` / `resume` / `cancel` / `drain` / `reload` / `doctor` / `update` による外部操作
+- Phase 2A: Ralph、oneshot、clean_session、external pane、sandbox（`execution.py` / `sandbox.py`）
+- Phase 2B: event fallback / GitLab / file watch（`hooks/`、core 非依存）
+- Phase 2C: environment handoff、zipapp self-update（`update.py`）
 
 エージェント CLI は既定で kiro-cli だが、設定 `agent_cli` により `agents/<name>.json`
 契約（agentcore.agentcli で解決）の別 CLI へ差し替えられる。担当は `agent_loop/cliprofile.py`

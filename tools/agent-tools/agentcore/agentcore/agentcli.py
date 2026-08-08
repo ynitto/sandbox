@@ -233,6 +233,9 @@ def normalize(name: str, raw: dict, path) -> dict:
             "clear_command": (str(inter_raw["clear_command"])
                               if "clear_command" in inter_raw and inter_raw["clear_command"] is not None
                               else "/clear"),
+            # save/exit は未定義または空 = 非サポート（推測しない）
+            "save_command": str(inter_raw.get("save_command") or ""),
+            "exit_command": str(inter_raw.get("exit_command") or ""),
             "prompt_inject": inject,
         }
     else:
