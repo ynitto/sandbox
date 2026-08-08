@@ -46,7 +46,11 @@ function grab(name) {
 
 assert.match(html, /<meta name="viewport" content="width=device-width, initial-scale=1"/);
 assert.match(html, /data-tab="history"[^>]*>成果</);
-assert.match(html, /data-tab="cowork"[^>]*[^>]*>定常業務</);
+// 道具の名前（定常業務・ミッション…）は**左メニューの領域名**が持つ。右のタブはその領域の
+// 中の画面なので、領域名を繰り返さずに中身の名前を付ける（定常業務 → 作業／実行の記録／設定）。
+assert.match(html, /data-tab="cowork"[^>]*>作業</);
+assert.match(html, /data-tab="routine-runs"[^>]*>実行の記録</);
+assert.match(html, /data-tab="routine-settings"[^>]*>設定</);
 assert.match(html, /data-tab="amigos"[^>]*>ミッション</);
 assert.ok(html.includes('id="dlg-kiro-loop"'), '実行状況はダイアログとして表示します');
 assert.ok(!html.includes('id="tab-btn-kiro-loop"'), '実行状況をメインタブとして重複表示しません');
@@ -55,7 +59,9 @@ assert.ok(
   'ミッションタブは定常業務の左に置きます'
 );
 assert.ok(!html.includes('tab-scope-label'), '全体設定の左に補助ラベルを置きません');
-assert.match(html, /data-tab="project-settings"[^>]*>プロジェクト設定</);
+// タブは領域の中の画面なので、領域名を繰り返さない短い名前にする（設定）。
+// どの設定かは左メニュー（プロジェクト領域 or 全体設定）が示す。
+assert.match(html, /data-tab="project-settings"[^>]*>設定</);
 assert.match(html, /data-tab="orchestration"[^>]*>全体設定</);
 const projectHeader = html.slice(html.indexOf('<header id="project-header">'), html.indexOf('<nav id="tabs">'));
 assert.match(projectHeader, /id="btn-cli-chat"[^>]*disabled/);
@@ -143,9 +149,22 @@ for (const id of ['cfg-roots', 'cfg-autodiscover', 'cfg-project-command', 'cfg-f
   'cfg-git-pull', 'cfg-git-autopush']) {
   assert.ok(!renderer.includes(`id="${id}"`), `${id} は削除済みのはず`);
 }
-for (const section of ['app', 'usage', 'agents', 'instructions', 'control', 'sync', 'routine', 'integrations']) {
+// 全体設定に残すのは「端末のすべてのワークロードに効くもの」と「このアプリ自身の設定」だけ。
+// 特定の agent-* だけに効く設定はその道具の領域へ移した（利用状況 → 利用状況領域、
+// 定常業務 → 定常業務領域の設定タブ）。どこを触ればどこに効くかを置き場所で示す。
+for (const section of ['app', 'agents', 'instructions', 'control', 'sync', 'integrations']) {
   assert.ok(renderer.includes(`id: '${section}'`), `全体設定に ${section} 分類が必要です`);
 }
+const globalSections = renderer.slice(
+  renderer.indexOf('const GLOBAL_SETTINGS_SECTIONS = ['),
+  renderer.indexOf('];', renderer.indexOf('const GLOBAL_SETTINGS_SECTIONS = ['))
+);
+for (const section of ['usage', 'routine']) {
+  assert.ok(!globalSections.includes(`id: '${section}'`),
+    `${section} は道具ごとの設定なので全体設定に置きません`);
+}
+assert.ok(renderer.includes('function renderRoutineSettings('), '定常業務の設定は領域のタブが持ちます');
+assert.ok(renderer.includes('function renderUsage('), '利用状況は自分の領域が持ちます');
 assert.ok(renderer.includes('data-global-settings-section="${item.id}"'), '分類タブに設定IDを付けます');
 assert.ok(renderer.includes('role="tablist"'), '設定分類はアクセシブルなタブとして表示します');
 assert.ok(renderer.includes('role="tabpanel"'), '設定内容と分類タブを関連付けます');
@@ -175,13 +194,14 @@ assert.ok(!renderer.includes('id="btn-amigos-budget-save"'), '旧予算管理の
 for (const label of ['利用状況', 'エージェント', '共通指示', '実行制御']) {
   assert.ok(renderer.includes(`label: '${label}'`), `全体設定に「${label}」タブが必要です`);
 }
+// 利用状況の受け側は全体設定ではなく利用状況領域（sections/usage.js）。
 const usageSettingsSource = renderer.slice(
-  renderer.indexOf('function globalSettingsUsageHtml('),
-  renderer.indexOf('\nfunction globalSettingsInstructionsHtml(')
+  renderer.indexOf('function renderUsage('),
+  renderer.indexOf('}', renderer.indexOf("revealGlobalSettingsPanels(pane, 'usage')"))
 );
 const agentSettingsSource = renderer.slice(
   renderer.indexOf('function globalSettingsAgentsHtml('),
-  renderer.indexOf('\nfunction globalSettingsUsageHtml(')
+  renderer.indexOf('\nfunction globalSettingsInstructionsHtml(')
 );
 const instructionSettingsSource = renderer.slice(
   renderer.indexOf('function globalSettingsInstructionsHtml('),

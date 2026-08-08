@@ -965,17 +965,22 @@ function orchInventoryPanelHtml(overview) {
   </section>`;
 }
 
+// 全体設定に残すのは「この端末のすべてのワークロードに効くもの」と「このアプリ自身の
+// 設定」だけ。特定の agent-* だけに効く設定はその道具の領域へ置いた——利用状況
+// （agent-audit）は利用状況領域へ、定常業務（cowork）は定常業務領域の設定タブへ、
+// プロジェクトの定義はプロジェクト設定へ。どこを触ればどこに効くのかを、設定の置き場所
+// そのもので示す（全部を 1 ページに集めると、効く範囲が読めなくなる）。
 const GLOBAL_SETTINGS_SECTIONS = [
   { id: 'app', label: 'アプリ' },
-  { id: 'usage', label: '利用状況' },
   { id: 'agents', label: 'エージェント' },
   { id: 'instructions', label: '共通指示' },
   { id: 'control', label: '実行制御' },
   { id: 'sync', label: '同期と実行' },
-  { id: 'routine', label: '定常業務' },
   { id: 'integrations', label: '外部連携' },
 ];
-const ORCHESTRATION_SETTINGS_SECTIONS = new Set(['usage', 'agents', 'instructions', 'control']);
+// 領域へ移した設定（保存時の表示名の解決に使う。移設後も保存経路は 1 本のまま）
+const RELOCATED_SETTINGS_LABELS = { usage: '利用状況', routine: '定常業務' };
+const ORCHESTRATION_SETTINGS_SECTIONS = new Set(['agents', 'instructions', 'control']);
 
 function globalSettingsPaneHtml(id, content) {
   const active = state.globalSettingsSection === id;
@@ -1182,12 +1187,8 @@ function globalSettingsAgentsHtml(overview) {
 // 面の中身は features/agent-audit.js が出し、agent-audit が使えない端末では台帳集計
 // （orchBudgetPanelHtml）へフォールバックする。上限・配分の設定は「実行制御」が持ち、
 // この節はその上限をゲージの分母として読むだけ。
-function globalSettingsUsageHtml(overview) {
-  const notice = overview && overview.error
-    ? `<div class="empty compact"><strong>上限の情報を読み込めませんでした</strong><span>${esc(overview.error)}</span></div>`
-    : '';
-  return `${notice}${globalSettingsPanelsHtml('usage')}`;
-}
+// 面の受け側は sections/usage.js（利用状況領域）へ移した。全体設定は「端末のすべての
+// ワークロードに効く設定」だけを持つ場所になり、道具ごとの実績値はその道具の領域が出す。
 
 function globalSettingsInstructionsHtml(overview) {
   if (!overview) return '<div class="empty compact">共通指示を読み込んでいます。</div>';
@@ -1229,12 +1230,10 @@ function renderOrchestration() {
         <select id="global-settings-select">${options}</select>
       </label>
       ${globalSettingsPaneHtml('app', globalSettingsAppHtml())}
-      ${globalSettingsPaneHtml('usage', globalSettingsUsageHtml(ov))}
       ${globalSettingsPaneHtml('agents', globalSettingsAgentsHtml(ov))}
       ${globalSettingsPaneHtml('instructions', globalSettingsInstructionsHtml(ov))}
       ${globalSettingsPaneHtml('control', globalSettingsControlHtml(ov))}
       ${globalSettingsPaneHtml('sync', globalSettingsSyncHtml())}
-      ${globalSettingsPaneHtml('routine', globalSettingsRoutineHtml())}
       ${globalSettingsPaneHtml('integrations', globalSettingsIntegrationsHtml())}
     </div>`;
   populateSettingsFields();
@@ -1291,7 +1290,6 @@ function setupGlobalSettings(root) {
     'btn-save-app-settings': 'app',
     'btn-save-agent-settings': 'agents',
     'btn-save-sync-settings': 'sync',
-    'btn-save-routine-settings': 'routine',
     'btn-save-integrations-settings': 'integrations',
   };
   for (const [id, section] of Object.entries(saveButtons)) {
@@ -1299,13 +1297,8 @@ function setupGlobalSettings(root) {
     const label = (GLOBAL_SETTINGS_SECTIONS.find((item) => item.id === section) || {}).label || '全体';
     if (button) button.addEventListener('click', () => guard(`${label}設定の保存`, () => saveGlobalSettingsSection(section)));
   }
-  const coworkOpen = root.querySelector('#btn-settings-cowork-open');
-  if (coworkOpen) coworkOpen.addEventListener('click', openCoworkFromSettings);
-  const coworkAddRoot = root.querySelector('#btn-settings-cowork-add-root');
-  if (coworkAddRoot) coworkAddRoot.addEventListener('click', addCoworkRoot);
-  for (const btn of root.querySelectorAll('[data-drop-cowork-root]')) {
-    btn.addEventListener('click', () => dropCoworkRoot(btn.dataset.dropCoworkRoot));
-  }
+  // 定常業務の設定（roots の登録・解除・各コマンド）の配線は sections/routines.js が持つ。
+  // 設定そのものを定常業務領域へ移したので、配線も一緒に移した。
   const diagBtn = root.querySelector('#btn-setup-diagnostics');
   if (diagBtn) diagBtn.addEventListener('click', () => runSetupDiagnostics(root));
 }

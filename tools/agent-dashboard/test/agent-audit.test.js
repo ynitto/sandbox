@@ -294,26 +294,33 @@ test('refresh は間隔が設定されているときだけ定期収集を起動
   }
 });
 
-test('監査は独立タブを持たず、feature スクリプトを bootstrap より先に読む', () => {
+test('監査は利用状況領域の 1 タブで、feature スクリプトを bootstrap より先に読む', () => {
   const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'index.html'), 'utf8');
-  // 扱う数字がプロジェクトごとではないので、プロジェクトのタブ列には並べない。
+  // 画面の名前は利用者の言葉（利用状況）で、実装名（agent-audit）をタブに出さない。
   assert.doesNotMatch(html, /data-tab="agent-audit"/);
   assert.doesNotMatch(html, /id="tab-agent-audit"/);
+  assert.match(html, /data-tab="usage"[^>]*data-area="usage"[^>]*>利用状況</);
   const feature = html.indexOf('features/agent-audit.js');
   assert.ok(feature > 0);
   assert.ok(feature < html.indexOf('bootstrap.js'), 'bootstrap より先に読み込む');
 });
 
-test('監査は全体設定の「利用状況」へ差し込まれる', () => {
+test('監査は「利用状況」領域へ差し込まれる', () => {
   const src = fs.readFileSync(
     path.join(__dirname, '..', 'src', 'renderer', 'features', 'agent-audit.js'), 'utf8');
+  // 差し込みの仕組みは変えていない（登録先のキーは 'usage' のまま）。
   assert.match(src, /registerGlobalSettingsPanel\('usage', \{/);
   assert.match(src, /id: 'agent-audit'/);
   assert.doesNotMatch(src, /registerFeatureTab/);
-  // 受け側: 既存の利用量（ノード予算の集計）と同じ節に並べる
+  // 受け側だけが全体設定から利用状況領域へ移った。ナビが領域単位になり、
+  // 「プロジェクトごとの数字ではないから独立タブを持てない」という制約が無くなったため。
+  const usage = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'renderer', 'sections', 'usage.js'), 'utf8');
+  assert.match(usage, /function renderUsage[\s\S]*globalSettingsPanelsHtml\('usage'\)/);
   const orch = fs.readFileSync(
     path.join(__dirname, '..', 'src', 'renderer', 'sections', 'orchestration.js'), 'utf8');
-  assert.match(orch, /function globalSettingsUsageHtml[\s\S]*globalSettingsPanelsHtml\('usage'\)/);
+  assert.doesNotMatch(orch, /globalSettingsPanelsHtml\('usage'\)/,
+    '全体設定は利用状況の面を持たない（同じ面を 2 か所に置かない）');
 });
 
 test('差し込まれた面は登録・描画・表示通知の一巡で動く', () => {

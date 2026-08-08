@@ -130,13 +130,28 @@ function lineageGroups(runs) {
 }
 
 // タブを切り替える（initTabs のクリックと同じ DOM 操作をプログラムから行う）。
+// 別領域のタブを名指しで開いたとき（ホームの対応待ち → プロジェクトの要対応 など）は、
+// 左メニューの選択も一緒に動かす——左で選んだものと右に出るものがずれた状態を作らない。
 function switchTab(name) {
+  const target = document.querySelector(`.tab[data-tab="${name}"]`);
+  if (target && target.dataset.area && target.dataset.area !== state.area) {
+    state.area = target.dataset.area;
+    try {
+      localStorage.setItem('kpv:area', state.area);
+    } catch {
+      /* localStorage が使えなくてもタブの切り替えは成立する */
+    }
+    renderAreaNav();
+    renderAreaLists();
+  }
+  applyAreaTabs();
   document
     .querySelectorAll('.tab')
     .forEach((t) => t.classList.toggle('active', t.dataset.tab === name));
   document.querySelectorAll('.tabpane').forEach((pane) => pane.classList.remove('active'));
   const pane = $(`tab-${name}`);
   if (pane) pane.classList.add('active');
+  renderAreaHeader();
   if (name === 'needs') refreshGitLab(false); // 要対応タブに GitLab レビュー待ちを併載しているため
   if (featureTabs.has(name)) renderFeatureTab(name); // 登録済みフィーチャータブは遷移時に描画
 }

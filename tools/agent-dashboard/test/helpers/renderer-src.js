@@ -12,8 +12,9 @@ const RENDERER_DIR = path.join(__dirname, '..', '..', 'src', 'renderer');
 
 // index.html の読み込み順に合わせたセクション順（結合順は表示に影響しないが、意味的に揃える）。
 const SECTION_ORDER = [
-  'overview', 'backlog', 'authoring', 'form-edit', 'needs', 'flow',
-  'node-detail', 'gitlab', 'history', 'amigos', 'orchestration', 'cowork', 'kiro-loop',
+  'home', 'overview', 'backlog', 'authoring', 'form-edit', 'needs', 'flow',
+  'node-detail', 'gitlab', 'history', 'amigos', 'orchestration', 'cowork',
+  'routines', 'usage', 'kiro-loop',
 ];
 
 function read() {

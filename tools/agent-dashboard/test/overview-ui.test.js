@@ -156,7 +156,10 @@ const amigosForProject = new Function(
   );
 }
 
-assert.match(html, /id="dlg-cowork-history"/, '定常業務の実行履歴ダイアログがある');
+// 実行の記録は定常業務領域の 1 タブ。動かす画面と結果を追う画面が同じ領域に並ぶので、
+// 同じ内容のダイアログ（旧 dlg-cowork-history）は置かない。
+assert.match(html, /data-tab="routine-runs"[^>]*>実行の記録/, '定常業務に実行の記録タブがある');
+assert.ok(!html.includes('id="dlg-cowork-history"'), '実行履歴のダイアログは残さない');
 assert.ok(renderer.includes('data-cowork-history'), '定常業務に履歴ボタンがある');
 assert.ok(!renderer.includes('すべてのプロジェクトを表示'), '他プロジェクトを表示する切替を置かない');
 
@@ -166,13 +169,15 @@ assert.match(html, /data-feature="agent-project"/);
 assert.match(html, /data-tab="backlog"[^>]*>タスク/);
 assert.match(html, /data-tab="flow"[^>]*>実行/);
 assert.ok(!html.includes('id="btn-project-settings"'), '浮いたプロジェクト設定ボタンを残さない');
-assert.match(html, /data-tab="project-settings"[^>]*>プロジェクト設定/);
+assert.match(html, /data-tab="project-settings"[^>]*>設定/);
 assert.match(html, /class="nav-group"[^>]+aria-labelledby="projects-group-title"/);
 assert.match(html, /id="projects-group-title"[^>]*>プロジェクト</);
 assert.match(html, /id="project-list"/);
 const commonHeader = html.slice(html.indexOf('class="sidebar-header"'), html.indexOf('</div>\n      </div>', html.indexOf('class="sidebar-header"')));
 assert.ok(commonHeader.includes('id="btn-doctor"'), 'AI相談は共通ヘッダーに置く');
-assert.ok(commonHeader.includes('id="btn-refresh"') && commonHeader.includes('id="btn-settings"'));
+assert.ok(commonHeader.includes('id="btn-refresh"'));
+// 設定の入口は領域ナビ末尾の「全体設定」1 つ。同じ場所へ行く歯車を共通ヘッダーに並べない。
+assert.ok(!commonHeader.includes('id="btn-settings"'), '設定の歯車ボタンは置かない');
 assert.ok(!commonHeader.includes('id="btn-new-project"'), '新規作成は共通ヘッダーに置かない');
 const projectGroup = html.slice(html.indexOf('id="projects-group-title"'), html.indexOf('id="project-list"'));
 assert.ok(projectGroup.includes('id="btn-new-project"'), '新規作成はプロジェクトグループに置く');
