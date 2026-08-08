@@ -1,0 +1,44 @@
+# Observation Sidecar Format Definition (Idempotent & Branch-independent)
+id: observation-sidecar-v1.0
+identity:
+  schema_version: "1.0"
+  description: "Common observation sidecar definition for run brief/archive/decisions"
+attributes:
+  - name: identity
+    type: string
+    required: true
+    desc: "Unique identifier for the observation instance"
+  - name: input
+    type: object
+    required: true
+    properties:
+      data_source: string
+      timestamp_ms: integer
+      metadata: object
+  - name: outcome
+    type: object
+    required: false
+    properties:
+      result_code: string (2XX/4XX/5XX)
+      message: string
+      processed_at: ISO8601_timestamp
+  - name: candidate
+    type: array
+    items:
+      schema_version: "1.0"
+      identity: string
+      outcome_ref: object # refs to the 'outcome' attribute above
+      privacy_level: enum [public, internal, restricted]
+    description: |
+      Candidate artifacts derived from observations (e.g., run-brief, archive entries)
+  - name: privacy
+    type: object
+    required: true
+    properties:
+      classification: string # public/internal/restricted/encrypted
+      retention_policy_id: string
+      dpo_contact_email: optional-string
+
+# Idempotent ingest guarantee (git-mesh-order-independent):
+ingest_order_dependent: false
+merge_strategy: "by-observation-id"
