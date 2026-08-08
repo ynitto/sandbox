@@ -70,6 +70,16 @@ def _build_parser() -> argparse.ArgumentParser:
                      help="対象を絞る CLI 名（複数可。省略時は transcript のある全 CLI）")
     rc.add_argument("--dry-run", action="store_true", dest="dry_run")
 
+    se = sub.add_parser("sessions", help="CLI ネイティブセッションの検索・本文取得（JSON 出力）")
+    se.add_argument("--cli", help="対象の CLI 名（agents/<name>.json の name）")
+    se.add_argument("--since", help="この時刻（ISO8601）以降に更新のあったセッションだけ")
+    se.add_argument("--until", help="この時刻（ISO8601）以前に開始したセッションだけ")
+    se.add_argument("--cwd-contains", dest="cwd_contains",
+                    help="cwd にこの文字列を含むセッションだけ")
+    se.add_argument("--limit", type=int, default=20)
+    se.add_argument("--messages", metavar="NATIVE_ID",
+                    help="このセッションの会話本文（messages）も含めて返す")
+
     sub.add_parser("doctor", help="源泉の到達性・session_log 宣言の棚卸し")
 
     up = sub.add_parser("update", help="自己更新（スキルリポジトリから取り込み）")
@@ -116,6 +126,9 @@ def main(argv=None) -> int:
     if args.command == "reclean":
         from .reclean import cmd_reclean
         return cmd_reclean(args)
+    if args.command == "sessions":
+        from .sessions import cmd_sessions
+        return cmd_sessions(args)
     if args.command == "doctor":
         from .doctor import cmd_doctor
         return cmd_doctor(args)

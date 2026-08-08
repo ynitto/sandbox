@@ -336,7 +336,8 @@ auto-heal はこの世代交代を使いません。heal は同一 run の再開
     tasks/<id>.json    ノード仕様
     claims/<id>/<who>.json
     waits/<id>.json    park 記録（承認待ち。秘密は載せない）
-    results/<id>.json  成果（output / data / artifacts / who / node / status）
+    results/<id>.json  成果（output / data / artifacts / who / node / status。
+                       agent executor では実行に使った agent_cli / model も）
     artifacts/<id>/    中間成果物のファイル
     events/<who>.jsonl 追記専用ログ
     final.json         全結果のサマリ
@@ -355,7 +356,7 @@ auto-heal はこの世代交代を使いません。heal は同一 run の再開
 
 `node_state` はこの表から導出されます。優先順位は result（終端）、生存リース内の claim、生存リース内の wait、`tasks/` があれば pending、なければ unknown です。
 
-**`<who>` には PC 名が入ります**（`<node_id>-w<i>`、auto-heal の世代は `<node_id>-h<n>w<i>`。綴りは `agentcore.protocol.safe_name` の規則）。2026-07-27 までは `worker-<i>` 固定で、共有バスに 2 台が参加すると両者が `claims/<id>/worker-1.json` と `events/worker-1.jsonl` という同一パスへ書きました——この表の「ファイル名が衝突しない」という不変条件そのものの破れです。あわせて **`results/<id>.json` には実行した PC を `node` として書きます**（`agent-flow status` の `by pc` 行・doctor の signals・dashboard の run 詳細はこのフィールドを読む。読み手が `who` の綴りを割って PC を当てにいくと、名義の作り方の 2 実装目になるため）。
+**`<who>` には PC 名が入ります**（`<node_id>-w<i>`、auto-heal の世代は `<node_id>-h<n>w<i>`。綴りは `agentcore.protocol.safe_name` の規則）。2026-07-27 までは `worker-<i>` 固定で、共有バスに 2 台が参加すると両者が `claims/<id>/worker-1.json` と `events/worker-1.jsonl` という同一パスへ書きました——この表の「ファイル名が衝突しない」という不変条件そのものの破れです。あわせて **`results/<id>.json` には実行した PC を `node` として書きます**（`agent-flow status` の `by pc` 行・doctor の signals・dashboard の run 詳細はこのフィールドを読む。読み手が `who` の綴りを割って PC を当てにいくと、名義の作り方の 2 実装目になるため）。同じ理由で、agent executor は**実行に使ったエージェントを `agent_cli` / `model` として claimed イベントと result に書きます**——実効解決（`_agent_for`: control 上書き・縮退込み）は実行時にしか分からず、読み手（dashboard のノード詳細）に設定からの再解決をさせないためです。
 
 ### B. サブコマンドと主なオプション
 

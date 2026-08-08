@@ -38,6 +38,9 @@ agent-audit tasks                    # 洞察 → 改善タスク（JSON を std
 agent-audit calibrate [--write]      # rates 較正の提案（--write で budget config へ）
 agent-audit gc [--dry-run]           # 保持期限での掃除（通常は collect が定期実行）
 agent-audit reclean [--agent-cli N]  # clean ルール改訂後に既存 transcript を再生成
+agent-audit sessions --cli N [--since T --until T --cwd-contains S] [--messages ID]
+                                     # CLI ネイティブセッションの検索・本文取得（JSON。
+                                     # dashboard の「ノードの会話を見る」導線が使う読み取り口）
 agent-audit doctor                   # 源泉の到達性・clean 宣言の点検
 ```
 

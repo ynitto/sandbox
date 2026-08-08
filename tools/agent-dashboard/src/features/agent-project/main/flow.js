@@ -243,6 +243,10 @@ function readRun(runDir) {
     const result = readJson(path.join(runDir, 'results', `${id}.json`));
     let state = 'pending';
     let who = null;
+    // 実行に使ったエージェント CLI / モデル（agent executor の結果に記録がある場合のみ。
+    // 書き手は agent-flow — こちらで設定から再解決はしない）
+    let agentCli = null;
+    let agentModel = null;
     // 実行した PC（結果レコードの node。agent-flow の worker が書く）。who の綴りから
     // 推測はしない——名義の作り方の 2 実装目になる（同じ理由で agent-flow 側も
     // `results/<node>.json` の node フィールドを正典にしている）。
@@ -260,6 +264,8 @@ function readRun(runDir) {
       state = result.status === 'failed' ? 'failed' : 'done';
       who = result.who || null;
       pc = result.node || null;
+      agentCli = result.agent_cli || null;
+      agentModel = result.model || null;
       finishedAt = result.finished_at || null;
       output = typeof result.output === 'string' ? result.output : null;
       data = result.data !== undefined ? result.data : null;
@@ -313,6 +319,8 @@ function readRun(runDir) {
       state,
       who,
       pc, // 実行した PC（結果に記録があるときだけ。旧い結果は null）
+      agentCli, // 実行に使ったエージェント CLI（結果に記録があるときだけ）
+      agentModel, // 同モデル（null = CLI 既定）
       finishedAt,
       heartbeatAt,
       leaseUntil,
@@ -531,6 +539,10 @@ function readNodeEvents(runDir, perNode = 10) {
       kind: ev.kind,
       who: ev.who || '',
       status: ev.status || null,
+      // claimed イベントに書き手（agent-flow）が残した実効エージェント。実行中ノードの
+      // 表示に使う（result 確定前はこれが唯一の記録）
+      agentCli: ev.agent_cli || null,
+      agentModel: ev.model || null,
     });
   }
   for (const nid of Object.keys(byNode)) {

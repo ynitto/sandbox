@@ -67,6 +67,29 @@ test('stats は --json の応答をそのまま返す', async () => {
   assert.deepEqual(data, { period: 'total', tools: [] });
 });
 
+test('sessions は絞り込み引数を組み立て、JSON の一覧を返す', async () => {
+  const data = await audit.sessions({}, {
+    cli: 'claude',
+    sinceIso: '2026-08-03T10:00:00Z',
+    untilIso: '2026-08-03T11:00:00Z',
+    nativeId: 's-1',
+    limit: 1,
+  }, async (script) => {
+    assert.match(script, /'sessions' '--cli' 'claude' '--since' '2026-08-03T10:00:00Z'/);
+    assert.match(script, /'--until' '2026-08-03T11:00:00Z' '--messages' 's-1' '--limit' '1'/);
+    return okResult('{"sessions":[{"native_id":"s-1","messages":[{"role":"User","text":"直して"}]}]}');
+  });
+  assert.equal(data.sessions[0].native_id, 's-1');
+  assert.equal(data.sessions[0].messages[0].role, 'User');
+});
+
+test('sessions は失敗時に stderr を理由として投げる', async () => {
+  await assert.rejects(
+    audit.sessions({}, { cli: 'claude' }, async () => (
+      { ok: false, status: 2, stdout: '', stderr: 'agent-audit が見つかりません', error: '' })),
+    /agent-audit が見つかりません/);
+});
+
 test('doctor は非ゼロ終了でも本文を返し、投げない', async () => {
   const result = await audit.doctor({}, async () => (
     { ok: false, status: 2, stdout: '点検: 源泉に届きません', stderr: '', error: '' }));

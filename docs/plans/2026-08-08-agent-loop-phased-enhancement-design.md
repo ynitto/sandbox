@@ -5,6 +5,9 @@
 > 関連: `docs/designs/agent-loop-design.md`、`tools/agent-loop/DESIGN.md`  
 > 状態: 設計承認済み・Phase 1 実装済み（Phase 2 未実装）
 
+Phase 2の設定契約、状態遷移、失敗処理、検証、PR境界は
+`docs/plans/2026-08-08-agent-loop-phase2-detailed-design.md`を正典とする。
+
 ## 1. 概要
 
 別forkのkiro-loopで検討された拡張を、現在のagent-loopへそのまま移植するのではなく、既存のマルチエージェントCLI対応と外部契約を保ったまま段階導入する。

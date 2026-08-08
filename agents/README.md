@@ -98,7 +98,9 @@ chat モードのように、人が `/skill-name` と書いたテキストを送
 | `copilot.json` | `copilot` | best-effort |
 | `codex.json` | `codex exec` | enforced（`--sandbox read-only`）。スキル起動は `$name` |
 | `cursor.json` | `cursor-agent` | best-effort（`--mode ask`） |
-| `ollama.json` | `ollama run <model>` | enforced（ツールを持たない） |
+| `ollama.json` | `agent-ollama <model>` | enforced（readonly はツールを持たない） |
+| `ollama-json.json` | 同上 + `--format json` | enforced（道具なし。JSON 契約の役割用） |
+| `ollama-read.json` | 同上 + `--tools read` | enforced（write でも読み取り専用コマンドだけ） |
 | `opencode.json` | `opencode run`（`agent-opencode` 経由） | best-effort（`--agent plan` は edit を拒むが bash は拒まない） |
 
 `opencode.json` だけは本体（`opencode`）を直接呼ばず `agent-opencode`（tools/opencode）を

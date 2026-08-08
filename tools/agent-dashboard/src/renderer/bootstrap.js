@@ -23,6 +23,7 @@ async function init() {
   $('btn-delivery-review-close').addEventListener('click', () => $('dlg-delivery-review').close());
   $('btn-settings').addEventListener('click', () => openGlobalSettings('app'));
   $('btn-technical-info-close').addEventListener('click', () => $('dlg-technical-info').close());
+  $('btn-node-chat-close').addEventListener('click', () => $('dlg-node-chat').close());
   $('btn-cw-cancel').addEventListener('click', () => $('dlg-cowork-work').close());
   $('cw-type').addEventListener('change', updateCoworkWorkFields);
   const chClose = $('btn-cowork-history-close');

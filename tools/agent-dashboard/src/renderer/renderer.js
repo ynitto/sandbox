@@ -1819,6 +1819,7 @@ function setupPolling() {
         $('dlg-edit-policy').open ||
         $('dlg-edit-repos').open
         || $('dlg-need-output').open
+        || ($('dlg-node-chat') && $('dlg-node-chat').open)
         || $('dlg-delivery-review').open
         || $('dlg-doctor').open
         || ($('dlg-cowork-work') && $('dlg-cowork-work').open)

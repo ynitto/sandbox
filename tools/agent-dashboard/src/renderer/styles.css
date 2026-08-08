@@ -2957,6 +2957,16 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
 .amigos-member p { margin: 8px 0 0; line-height: 1.55; overflow-wrap: anywhere; }
 .amigos-member-note { padding-top: 8px; border-top: 1px solid var(--border); color: var(--muted); }
 .amigos-member .amigos-claim-btn { min-height: 40px; margin: 10px 0 0; line-height: normal; }
+/* 工程のエージェント会話（dlg-node-chat）: 役割ラベル付きの素朴なメッセージ列 */
+.node-chat-body { display: flex; flex-direction: column; gap: 8px; max-height: 62vh; overflow: auto; }
+.node-chat-meta { font-size: 11px; overflow-wrap: anywhere; }
+.node-chat-msg { padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg2); }
+.node-chat-msg.is-user { background: var(--bg3); }
+.node-chat-msg strong { display: block; margin-bottom: 4px; color: var(--muted); font-size: 12px; }
+.node-chat-msg pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; line-height: 1.55; }
+.node-chat-pick { display: flex; flex-direction: column; gap: 3px; align-items: flex-start; text-align: left; }
+.node-chat-pick .mono { overflow-wrap: anywhere; }
+
 .amigos-conversation { display: flex; flex-direction: column; gap: 8px; }
 .amigos-message { border: 1px solid var(--border); border-radius: 8px; background: var(--bg2); }
 .amigos-message.is-attention { border-color: rgba(255, 184, 77, 0.55); }

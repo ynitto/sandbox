@@ -332,13 +332,18 @@ class Bus:
 
     def write_result(self, node_id: str, who: str, status: str, output: str,
                      data=None, artifacts=None, node: "str | None" = None,
-                     kind: "str | None" = None) -> None:
+                     kind: "str | None" = None, agent_cli: "str | None" = None,
+                     model: "str | None" = None) -> None:
         """ノードの結果を確定する。
 
         `node` は**実行した PC**（node_id の正規形）。`who`（worker の名義）にも PC 名は
         入るが、読み手（`agent-flow status` の内訳・doctor・dashboard の run 詳細）が名義を
         文字列として割って PC を推測するのは「同じ規則の 2 実装」を作る——書き手が事実として
-        1 フィールドに残す。旧い結果（このフィールドが無い）を読む側は `who` へ落ちる。"""
+        1 フィールドに残す。旧い結果（このフィールドが無い）を読む側は `who` へ落ちる。
+
+        `agent_cli` / `model` は**実行に使ったエージェント**（agent executor のみ）。
+        実効解決（`_agent_for`: control 上書き・縮退込み）は実行時にしか分からないため、
+        読み手（dashboard のノード詳細）が設定から推測するのではなく書き手が事実を残す。"""
         rec = {
             "id": node_id,
             "who": who,
@@ -350,6 +355,10 @@ class Bus:
             rec["node"] = node
         if kind:
             rec["kind"] = kind
+        if agent_cli:
+            rec["agent_cli"] = agent_cli
+        if model:
+            rec["model"] = model
         if data is not None:  # 構造化成果（任意）。エージェント間を JSON で流す
             rec["data"] = data
         if artifacts:  # 生成した中間成果物（run_dir 相対パス）。後続が参照できる

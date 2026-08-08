@@ -151,6 +151,25 @@ R2/12 decode 経過 4m12s  out=210tk  ctx 4.2k/8.2k (51%)      ← TUI のステ
 `@agent-usage`（その実行で使った累計トークン = 台帳向け）と `@agent-context`
 （いま文脈がどれだけ埋まっているか）は**意味が違う**ので行を分けてある。
 
+**圧縮して続行するループは持たない**（非目標）。圧縮 1 回は会話全体の再 prefill 1 回で、
+繰り返した時点で停滞が確定し、要約のたびに情報欠落だけが積み上がる。文脈が尽きたら
+途中成果と `@agent-note` を返して止まり、**続きはタスクを割って新しい会話でやる**。
+`context_exhausted` は定義の `errors` で `env` に分類してある——`transient` にすると
+エンジンが同じ入力で再試行し、同じ壁に同じ時間を掛けてぶつかり続ける。
+
+運用側で先に余裕を確保しておく（サーバ既定に任せない）:
+
+```bash
+export AGENT_OLLAMA_OPTIONS='{"num_ctx": 32768}'   # 呼び出し単位で明示する
+export OLLAMA_FLASH_ATTENTION=1                    # KV キャッシュ量子化の前提
+export OLLAMA_KV_CACHE_TYPE=q8_0                   # 同上（RAM を稼ぐ）
+export OLLAMA_KEEP_ALIVE=1h                        # 冷起動の除去
+export OLLAMA_NUM_PARALLEL=1                       # 先頭キャッシュが効く前提
+```
+
+上限は「KV キャッシュ込みで物理 RAM に収まること」。**スワップに落ちた瞬間、遅いではなく
+停滞になる**——モデル選定でも `num_ctx` でも、ここだけは越えない。
+
 ### think・スキル・rich
 
 - **`--think on|off`** は CLI オプション（API の `think` フィールドへ直結）。既定は

@@ -55,6 +55,13 @@
     同名の定義を置けば同梱定義を上書きできる。新しい CLI もファイルを 1 枚足すだけで使える
   - 定義を解決できない `agent_cli` は明示エラー（黙って別の CLI へ倒さない）
   - モデルは設定 `model:` で指定（省略時は各 CLI の既定。実行層 agent-flow 側は agent-flow.yaml の `agent_cli` / `model` で揃える）
+  - 処理ごとの権限は `agents[purpose].readonly: true` で宣言できる（既定 false = 従来どおり
+    書き込みモード）。宣言してよいのは**読まない系**——材料を全部プロンプトで受け取り
+    文章か JSON を返すだけの処理（adjudicate / assess / distill / prioritize / route / plan）。
+    読む系（repo_map / doctor / review）に付けると CLI の readonly 実装がツールを削るため
+    探索そのものを失う。クラウド CLI では判断だけの呼び出しから
+    `--dangerously-skip-permissions` 等が外れる（設計:
+    [agent-ollama-expansion-design.md](../../docs/designs/agent-ollama-expansion-design.md) §5）
 
 ```bash
 bash tools/agent-tools/install.sh                         # agent-project / agent-flow / agent-amigos を

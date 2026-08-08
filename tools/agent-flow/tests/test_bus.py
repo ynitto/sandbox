@@ -867,6 +867,47 @@ class ArtifactProtocolTests(unittest.TestCase):
         self.assertEqual(r["status"], "done")
         self.assertIn(os.path.join("artifacts", "t1", "result.bin"), r["artifacts"])
 
+    def test_worker_records_effective_agent_in_result_and_claimed(self):
+        # 実行に使ったエージェント CLI / モデルは書き手（worker）が claimed イベントと
+        # result に事実として残す——読み手（dashboard）に設定からの再解決をさせない
+        bus = self.bus
+        bus.write_graph({"nodes": {"t1": {"goal": "g", "deps": [], "kind": "work"}},
+                         "iteration": 0})
+        bus.write_task({"id": "t1", "goal": "g", "deps": [], "kind": "work"})
+        bus.set_status("running")
+        args = mock.Mock(bus=self.tmp, run_id="run1", git=None, node_id="w1",
+                         executor="agent", model=None, lease=60, poll=0,
+                         keep_alive=False, idle_exit=True)
+        with mock.patch.object(kf, "execute_agent", return_value=("ok", None)), \
+             mock.patch.object(kf, "_agent_for", return_value=("claude", "opus")), \
+             mock.patch.object(kf, "make_bus", return_value=bus):
+            kf.cmd_work(args)
+        r = bus.read_result("t1")
+        self.assertEqual(r["agent_cli"], "claude")
+        self.assertEqual(r["model"], "opus")
+        with open(os.path.join(bus.run_dir, "events", "w1.jsonl")) as f:
+            events = [json.loads(line) for line in f if line.strip()]
+        claimed = [e for e in events if e.get("kind") == "claimed"]
+        self.assertEqual(claimed[0]["agent_cli"], "claude")
+        self.assertEqual(claimed[0]["model"], "opus")
+
+    def test_worker_stub_result_has_no_agent_fields(self):
+        # stub executor は LLM を呼ばない＝エージェント記録を書かない（従来形のまま）
+        bus = self.bus
+        bus.write_graph({"nodes": {"t1": {"goal": "g", "deps": [], "kind": "work"}},
+                         "iteration": 0})
+        bus.write_task({"id": "t1", "goal": "g", "deps": [], "kind": "work"})
+        bus.set_status("running")
+        args = mock.Mock(bus=self.tmp, run_id="run1", git=None, node_id="w1",
+                         executor="stub", model=None, lease=60, poll=0,
+                         keep_alive=False, idle_exit=True)
+        with mock.patch.object(kf, "execute_stub", return_value=("ok", None)), \
+             mock.patch.object(kf, "make_bus", return_value=bus):
+            kf.cmd_work(args)
+        r = bus.read_result("t1")
+        self.assertNotIn("agent_cli", r)
+        self.assertNotIn("model", r)
+
     def test_worker_records_exception_data_on_failure(self):
         # executor が例外に載せた構造化データ（gitlab 却下の issue_iid / guidance 等）は
         # 承認と対称に failed result の data として残る（消費側の文字列マッチ依存を無くす）

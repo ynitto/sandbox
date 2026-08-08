@@ -172,7 +172,16 @@ def cmd_work(args) -> int:
         if not bus.try_claim(nid, who, args.lease):
             continue  # 競り負け
         log(who, f"claim 成功: {nid} [{kind}] — {node['goal'][:55]}")
-        bus.event(who, "claimed", node=nid)
+        # 実行に使うエージェント（agent executor のみ）。実効解決（control 上書き・縮退込み）は
+        # ここでしか分からないので、claimed イベントと result に事実として残す——読み手
+        # （dashboard のノード詳細）に設定からの再解決（同じ規則の 2 実装）をさせない。
+        # ponytail: claim 時の 1 回だけ解決。実行中に control が変わると数分ずれうる。
+        agent_cli = agent_model = None
+        if args.executor == "agent":
+            agent_cli, _model_ov = _agent_for(kind)
+            agent_model = _model_ov or (getattr(args, "model", None) or None)
+        bus.event(who, "claimed", node=nid,
+                  **({"agent_cli": agent_cli, "model": agent_model} if agent_cli else {}))
 
         # throttle（バックプレッシャ）: 同時未決着イシューが上限に達していたら、起票せず
         # throttled park して claim を解放する。エラーにはしない＝人のレビュー速度に発行を
@@ -321,7 +330,8 @@ def cmd_work(args) -> int:
             rdata = {**(rdata if isinstance(rdata, dict) else {}), "delivery": delivery}
         # 実行した PC を結果に残す（読み手が who の綴りを割って推測しないで済むように）
         bus.write_result(nid, who, rstatus, output, rdata, artifacts=artifacts,
-                         node=this_pc(args), kind=kind)
+                         node=this_pc(args), kind=kind,
+                         agent_cli=agent_cli, model=agent_model)
         bus.event(who, "result", node=nid, status=rstatus)
         bus.sync_push(f"result {nid} [{rstatus}] by {who}")
         log(who, f"完了: {nid} [{rstatus}]")

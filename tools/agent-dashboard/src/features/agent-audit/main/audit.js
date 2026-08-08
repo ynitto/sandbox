@@ -180,6 +180,23 @@ async function stats(cfg, period, runShell = defaultRunShell) {
   return parseJson(r.stdout);
 }
 
+// CLI ネイティブセッションの検索・本文取得（flow ノードの「会話を見る」導線）。
+// セッションストアの読みは agent-audit の 1 実装が正で、ここは引数を渡すだけ。
+// 会話はローカルの記録なので、他端末で実行されたノードでは空が返る（呼び出し側が示す）。
+async function sessions(cfg, { cli, sinceIso, untilIso, cwdContains, nativeId, limit } = {}, runShell = defaultRunShell) {
+  const settings = auditSettings(cfg);
+  const sub = ['sessions'];
+  if (cli) sub.push('--cli', String(cli));
+  if (sinceIso) sub.push('--since', String(sinceIso));
+  if (untilIso) sub.push('--until', String(untilIso));
+  if (cwdContains) sub.push('--cwd-contains', String(cwdContains));
+  if (nativeId) sub.push('--messages', String(nativeId));
+  if (limit) sub.push('--limit', String(limit));
+  const r = await runShell(buildScript(settings, sub), 60000, settings.distro);
+  if (!r.ok) throw new Error(failureMessage(r, '会話の記録を取得できませんでした'));
+  return parseJson(r.stdout);
+}
+
 // doctor は設定不備でも非ゼロ終了しうるので、失敗も throw せず本文ごと返す
 // （点検結果そのものが見たい情報）。
 async function doctor(cfg, runShell = defaultRunShell) {
@@ -188,4 +205,4 @@ async function doctor(cfg, runShell = defaultRunShell) {
   return { ok: r.ok, status: r.status, detail: detailOf(r), error: r.ok ? '' : failureMessage(r, '点検を実行できませんでした') };
 }
 
-module.exports = { auditSettings, buildScript, parseJson, collect, usage, summary, stats, doctor };
+module.exports = { auditSettings, buildScript, parseJson, collect, usage, summary, stats, sessions, doctor };

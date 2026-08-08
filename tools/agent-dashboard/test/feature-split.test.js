@@ -289,8 +289,8 @@ test('agent-audit は LLM 不使用段（収集・集計・点検）の API だ�
     saveConfig: () => ({}),
   });
   assert.deepStrictEqual(registered.sort(),
-    ['agentAudit:collect', 'agentAudit:doctor', 'agentAudit:stats', 'agentAudit:usage',
-     'agentAudit:summary'].sort());
+    ['agentAudit:collect', 'agentAudit:doctor', 'agentAudit:sessions', 'agentAudit:stats',
+     'agentAudit:usage', 'agentAudit:summary'].sort());
   const api = auditFeature.preloadApi();
   const calls = [];
   const usage = api.agentAuditUsage((channel, args) => {

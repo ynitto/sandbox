@@ -163,6 +163,100 @@ function nodeProgressLine(node) {
   return bits.length ? `<div class="muted" style="margin-top:4px">${bits.join(' ／ ')}</div>` : '';
 }
 
+// ノードの実効エージェント（CLI / モデル）。書き手は agent-flow——確定済みは result、
+// 実行中は直近の claimed イベントに記録がある（設定からの再解決はしない）。
+// 旧い run や stub/gitlab executor の run には記録が無い＝null（行ごと出さない）。
+function nodeAgentInfo(node) {
+  if (node.agentCli) return { cli: node.agentCli, model: node.agentModel || null };
+  const ev = nodeTimeline(node.id).find((e) => e.kind === 'claimed' && e.agentCli);
+  return ev ? { cli: ev.agentCli, model: ev.agentModel || null } : null;
+}
+
+// 実行エージェントの行: どの CLI・モデルがこの工程を実行した（している）かと、
+// その会話（CLI のネイティブセッション記録）を開くボタン。
+function nodeAgentLine(node) {
+  const info = nodeAgentInfo(node);
+  if (!info) return '';
+  return `<div class="muted" style="margin-top:4px">実行エージェント:
+    <strong>${esc(info.cli)}</strong>（${info.model ? `モデル ${esc(info.model)}` : 'CLI 既定モデル'}）
+    <button type="button" class="subtle-action" data-node-chat="${esc(node.id)}"
+      title="この工程を実行したエージェントの会話記録（この端末の CLI セッション）を開きます">会話を見る</button>
+  </div>`;
+}
+
+// この工程のエージェント会話を開く。会話は CLI のネイティブセッション記録（ローカル）に
+// しかないので、読みは agent-audit の 1 実装（sessions サブコマンド）へ委ね、ここは
+// 「この試行の時間帯 × その CLI」で絞って人に見せるだけ。複数候補は人が選ぶ（C4）。
+async function openNodeChat(nodeId) {
+  const run = state.flowRun && state.flowRun.run;
+  const node = run && (run.nodes || {})[nodeId];
+  if (!node) return;
+  const info = nodeAgentInfo(node);
+  if (!info) return;
+  // 時間窓: この試行の開始（直近 claimed）〜終了（実行中は今）。前後 2 分の余白で
+  // クローン準備・ストア書き込みの遅延を吸収する。
+  const claims = nodeTimeline(nodeId).filter((e) => e.kind === 'claimed');
+  const startedAt = claims.length ? Date.parse(claims[0].ts) : NaN;
+  const endedAt = node.finishedAt ? Date.parse(node.finishedAt) : Date.now();
+  const PAD_MS = 2 * 60 * 1000;
+  const sinceIso = isNaN(startedAt) ? null : new Date(startedAt - PAD_MS).toISOString();
+  const untilIso = isNaN(endedAt) ? null : new Date(endedAt + PAD_MS).toISOString();
+  const body = $('node-chat-body');
+  $('node-chat-title').textContent = `${nodeId} — ${info.cli} との会話`;
+  body.innerHTML = '<div class="empty">会話の記録を探しています…</div>';
+  $('dlg-node-chat').showModal();
+  const res = await guard('会話の取得', () =>
+    api.agentAuditSessions({ cli: info.cli, sinceIso, untilIso }));
+  if (res === undefined) {
+    $('dlg-node-chat').close();
+    return;
+  }
+  const sessions = (res && res.sessions) || [];
+  if (!sessions.length) {
+    body.innerHTML = `<div class="empty">この時間帯（${fmtTime(claims.length ? claims[0].ts : null) || '不明'} 〜）の
+      ${esc(info.cli)} の会話記録が見つかりません。${
+        node.pc ? `この工程は端末 ${esc(node.pc)} で実行されました。` : ''
+      }会話の記録は実行した端末にだけあります。</div>`;
+    return;
+  }
+  if (sessions.length === 1) {
+    await renderNodeChatTranscript(info.cli, sessions[0], body);
+    return;
+  }
+  body.innerHTML =
+    '<p class="muted">同じ時間帯に複数の会話があります。作業ディレクトリと時間で選んでください。</p>' +
+    sessions.map((s) => `<button type="button" class="node-chat-pick" data-native-id="${esc(s.native_id)}">
+        <strong>${fmtTime(s.created_at)} 〜 ${fmtTime(s.updated_at)}</strong>
+        <span class="mono">${esc(s.cwd || '（作業ディレクトリ不明）')}</span>
+        <span class="muted">${Number(s.turns) || 0} 往復${s.model ? ` ／ ${esc(s.model)}` : ''}</span>
+      </button>`).join('');
+  for (const b of body.querySelectorAll('button[data-native-id]')) {
+    b.addEventListener('click', () => {
+      const s = sessions.find((x) => x.native_id === b.dataset.nativeId);
+      if (s) renderNodeChatTranscript(info.cli, s, body);
+    });
+  }
+}
+
+async function renderNodeChatTranscript(cli, session, body) {
+  body.innerHTML = '<div class="empty">会話を読み込んでいます…</div>';
+  const res = await guard('会話の取得', () =>
+    api.agentAuditSessions({ cli, nativeId: session.native_id, limit: 1 }));
+  if (res === undefined) return;
+  const full = ((res && res.sessions) || [])[0];
+  const messages = (full && full.messages) || [];
+  if (!messages.length) {
+    body.innerHTML = '<div class="empty">この会話に表示できる本文がありません。</div>';
+    return;
+  }
+  body.innerHTML =
+    `<div class="muted mono node-chat-meta">${esc(session.cwd || '')}（記録: ${esc(session.store || '')}）</div>` +
+    messages.map((m) => `<div class="node-chat-msg${m.role === 'User' ? ' is-user' : ''}">
+        <strong>${m.role === 'User' ? '指示' : 'エージェント'}</strong>
+        <pre>${esc(m.text || '')}</pre>
+      </div>`).join('');
+}
+
 // 関連 GitLab イシューのブロック。承認/却下は結果から、実行中は決定的タスクトークンで検索。
 // GitLab と突き合わせ済み（クローズ反映）なら、その結果もイシュー情報の供給源にする。
 function nodeIssueBlock(run, node) {
@@ -273,6 +367,7 @@ function renderFlowNode(run, node, retryUi, advice) {
       ${nodeFateLine(run, effState, retryUi, advice)}
       ${nodeParkLine(node)}
       ${nodeProgressLine(node)}
+      ${nodeAgentLine(node)}
       ${nodeIssueBlock(run, node)}
       ${node.output || node.data ? '<button type="button" class="subtle-action" data-open-technical-info>出力の詳細を開く</button>' : ''}
       ${timeline}
@@ -730,6 +825,9 @@ function bindFlowDetail(root) {
   }
   const technicalInfo = root.querySelector('[data-open-technical-info]');
   if (technicalInfo) technicalInfo.addEventListener('click', openTechnicalInfo);
+  for (const btn of root.querySelectorAll('button[data-node-chat]')) {
+    btn.addEventListener('click', () => openNodeChat(btn.dataset.nodeChat));
+  }
   for (const btn of root.querySelectorAll('button[data-run-artifacts]')) {
     btn.addEventListener('click', () => openRunArtifacts(btn.dataset.runArtifacts));
   }
