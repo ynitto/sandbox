@@ -31,13 +31,6 @@ async function init() {
   $('btn-node-chat-close').addEventListener('click', () => $('dlg-node-chat').close());
   $('btn-cw-cancel').addEventListener('click', () => $('dlg-cowork-work').close());
   $('cw-type').addEventListener('change', updateCoworkWorkFields);
-  const chClose = $('btn-cowork-history-close');
-  if (chClose) {
-    chClose.addEventListener('click', () => {
-      state.coworkHistory = null;
-      $('dlg-cowork-history').close();
-    });
-  }
   $('btn-cw-ok').addEventListener('click', async (ev) => { ev.preventDefault(); await applyCoworkWorkDialog(); });
   setupAmigosDialogs();
   $('btn-cw-save-cancel').addEventListener('click', () => $('dlg-cowork-save').close());
@@ -77,6 +70,10 @@ async function init() {
   });
   // 新規プロジェクト作成
   $('btn-new-project').addEventListener('click', openNewProject);
+  // 定常業務の作業フォルダ登録（定常業務領域のサイドバー ＋）。設定タブの「フォルダを登録」と
+  // 同じ入口で、宣言の置き場（cowork.roots）も 1 つのまま。
+  const addRoutineRoot = $('btn-add-routine-root');
+  if (addRoutineRoot) addRoutineRoot.addEventListener('click', () => addCoworkRoot());
   $('btn-np-cancel').addEventListener('click', () => $('dlg-new-project').close());
   $('btn-np-submit').addEventListener('click', submitNewProject);
   $('np-add-repo').addEventListener('click', () => addRepoRow());
@@ -123,11 +120,14 @@ async function init() {
   await refreshDiscovery();
   await refreshCowork();
   await refreshOrchestration();
+  // 前回の対象を裏で復元しておく（右ペインの中身が温まる）。**領域は復元しない**——
+  // 起動の着地点はホーム（横断ビュー）で、そこから人がどこへ行くかを選ぶ。
   const last = localStorage.getItem('kpv:selected');
   const all = state.discovery.projects;
   const target = all.find((p) => p.dir === last) || all[0];
   if (target) await selectProject(target.dir);
   else renderAllTabs();
+  switchArea('home');
   setupPolling();
 }
 

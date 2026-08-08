@@ -5,8 +5,12 @@
 // 読み込み順は index.html を参照（core → sections → features → bootstrap）。
 
 // ---------------------------------------------------------------------------
-// 定常業務の実行履歴とログ
+// 定常業務の実行履歴とログ（定常業務領域の「実行の記録」タブの中身）
 // ---------------------------------------------------------------------------
+//
+// 以前はダイアログ（dlg-cowork-history）で見せていた。定常業務が独立した領域になり、
+// 「動かす（作業）」と「動いた結果を追う（実行の記録）」が同じ領域の別タブになったので、
+// 同じ内容をダイアログでも出すのはやめた——同じ話題の画面を 2 か所に置かない。
 
 function fmtLogSize(bytes) {
   const n = Number(bytes) || 0;
@@ -15,33 +19,41 @@ function fmtLogSize(bytes) {
   return `${n} B`;
 }
 
-async function openCoworkHistory(id, name) {
-  const dlg = $('dlg-cowork-history');
-  if (!dlg || !api.coworkItemLogs) return;
+// 実行の記録を読み込む（読み込んだものは state.coworkHistory に置き、記録タブが描く）。
+async function loadCoworkHistory(id, name) {
+  if (!api.coworkItemLogs) return;
   state.coworkHistory = { id, name, loading: true };
-  $('cowork-history-title').textContent = `実行履歴とログ — ${name || id}`;
-  $('cowork-history-body').innerHTML = '<p class="muted">読み込んでいます…</p>';
-  if (!dlg.open) dlg.showModal();
+  renderRoutineRuns();
   const res = await state.coworkHistoryCache.load(
     id,
-    () => guard('実行履歴の読込', () => api.coworkItemLogs(id))
+    () => guard('実行の記録の読込', () => api.coworkItemLogs(id))
   );
-  if (!state.coworkHistory || state.coworkHistory.id !== id) return; // 閉じられた/切替済み
+  if (!state.coworkHistory || state.coworkHistory.id !== id) return; // 切替済み
   if (!res) {
-    $('cowork-history-body').innerHTML = '<p class="muted">実行履歴を読み込めませんでした。</p>';
+    state.coworkHistory = { id, name, error: true };
+    renderRoutineRuns();
     return;
   }
   state.coworkHistory = { id, name: res.name || name, ...res, file: '', text: '' };
-  renderCoworkHistory();
-  // 最新ログがあれば自動で開く
+  renderRoutineRuns();
+  // 最新ログがあれば自動で開く（記録タブを開いた人が最初に見たいのは直近の実行）
   const first = (res.logs || [])[0];
   if (first) await selectCoworkLog(first.file);
 }
 
-function renderCoworkHistory() {
-  const m = state.coworkHistory;
-  const body = $('cowork-history-body');
-  if (!m || !body) return;
+// 「実行の記録」タブへ移り、その作業の記録を読み込む（作業タブの記録ボタンから）。
+async function openCoworkHistory(id, name) {
+  switchTab('routine-runs');
+  await loadCoworkHistory(id, name);
+}
+
+// 記録の本体（実行履歴の表 + ログ一覧 + ログ本文）。置き場所を問わない純粋な組み立て。
+function coworkHistoryBodyHtml(m) {
+  if (!m) {
+    return '<div class="empty compact">左の作業を選ぶと、その実行の記録を表示します。</div>';
+  }
+  if (m.loading) return '<p class="muted">読み込んでいます…</p>';
+  if (m.error) return '<p class="muted">実行の記録を読み込めませんでした。</p>';
   const historyRows = (m.history || []).map((h) => `
     <tr>
       <td class="mono">${esc(fmtTime(h.at))}</td>
@@ -55,7 +67,7 @@ function renderCoworkHistory() {
       </button>
       <span class="muted">${esc(fmtTime(new Date(l.mtimeMs).toISOString()))} ・ ${esc(fmtLogSize(l.size))}</span>
     </li>`).join('');
-  body.innerHTML = `
+  return `
     <section class="cowork-history-runs">
       <h3>この画面からの実行（新しい順）</h3>
       ${historyRows
@@ -74,7 +86,10 @@ function renderCoworkHistory() {
           </div>`
         : '<p class="muted">ログファイルが見つかりません（.kiro-loop/logs・.statemachine-use/logs 等）。</p>'}
     </section>`;
-  body.querySelectorAll('[data-cowork-log]').forEach((btn) =>
+}
+
+function bindCoworkHistoryBody(root) {
+  root.querySelectorAll('[data-cowork-log]').forEach((btn) =>
     btn.addEventListener('click', () => selectCoworkLog(btn.dataset.coworkLog)));
 }
 
@@ -86,5 +101,5 @@ async function selectCoworkLog(file) {
   if (!res) return;
   state.coworkHistory.file = res.file;
   state.coworkHistory.text = (res.truncated ? `…（先頭 ${fmtLogSize(res.size - res.text.length)} を省略・末尾のみ表示）\n` : '') + (res.text || '（空のログ）');
-  renderCoworkHistory();
+  renderRoutineRuns();
 }

@@ -78,10 +78,6 @@ function registerCorePortalCards() {
         t.paused ? `一時停止 ${t.paused}` : '',
         t.quarantined ? `停止中 ${t.quarantined}` : '',
       ].filter(Boolean).join('・');
-      // 「概要を開く」は agent-project のプロジェクトを選んでいるときだけ（定常業務専用
-      // フォルダの選択中に押させると、隠れている概要タブへ遷移してしまう）。
-      const selected = projects.find((x) => x && x.dir === state.selectedDir);
-      const canOpen = !!selected && selected.isProject !== false;
       return `<div class="portal-card-heading">
           <span class="summary-kicker">まとまった開発を任せる</span>
           <h3>プロジェクト</h3>
@@ -89,9 +85,7 @@ function registerCorePortalCards() {
         <p class="portal-card-count">${facts}</p>
         <p class="muted">目標（charter）からタスクへ分解し、検証と検収で完成させます。</p>
         <div class="portal-card-actions">
-          ${canOpen
-            ? '<button type="button" class="primary-inline" data-portal-tab="overview">概要を開く</button>'
-            : '<span class="muted">サイドバーからプロジェクトを選ぶと詳細を確認できます。</span>'}
+          <button type="button" class="primary-inline" data-portal-area="projects">プロジェクトを開く</button>
         </div>`;
     },
   });
@@ -110,7 +104,7 @@ function registerCorePortalCards() {
           : '登録された作業はまだありません'}</p>
         <p class="muted">定期実行と手順つき作業を登録し、実行と履歴をここから確認します。</p>
         <div class="portal-card-actions">
-          <button type="button" class="primary-inline" data-portal-tab="cowork">定常業務を開く</button>
+          <button type="button" class="primary-inline" data-portal-area="routines">定常業務を開く</button>
         </div>`;
     },
   });
@@ -132,17 +126,21 @@ function registerCorePortalCards() {
           : '進行中のミッションはありません'}</p>
         <p class="muted">依頼したミッションの進行・担当・納品をここから確認します。</p>
         <div class="portal-card-actions">
-          <button type="button" class="primary-inline" data-portal-tab="amigos">ミッションを開く</button>
+          <button type="button" class="primary-inline" data-portal-area="missions">ミッションを開く</button>
         </div>`;
     },
   });
 }
 
 // カードの定番遷移はコアが 1 か所で配線する（各カードは data 属性を書くだけ）。
-//   data-portal-tab="<tab>"          … そのタブへ移動
+//   data-portal-area="<area>"        … その領域へ移動（左メニューを押したのと同じ）
+//   data-portal-tab="<tab>"          … その領域のそのタブへ移動
 //   data-portal-settings="<section>" … 全体設定の節へ移動
-//   data-portal-needs="<dir>"        … プロジェクトを選んで要対応タブへ
+//   data-portal-needs="<dir>"        … そのプロジェクトを選び、プロジェクト領域の要対応へ
 function wirePortalHome(pane) {
+  for (const btn of pane.querySelectorAll('[data-portal-area]')) {
+    btn.addEventListener('click', () => switchArea(btn.dataset.portalArea));
+  }
   for (const btn of pane.querySelectorAll('[data-portal-tab]')) {
     btn.addEventListener('click', () => switchTab(btn.dataset.portalTab));
   }
@@ -152,7 +150,7 @@ function wirePortalHome(pane) {
   for (const btn of pane.querySelectorAll('[data-portal-needs]')) {
     btn.addEventListener('click', async () => {
       await selectProject(btn.dataset.portalNeeds);
-      switchTab('needs');
+      switchTab('needs'); // switchTab が領域もプロジェクトへ合わせる
     });
   }
   for (const entry of portalCardEntries()) {

@@ -4,7 +4,22 @@
   const feature = factory(root);
   if (typeof module !== 'undefined' && module.exports) module.exports = feature;
   if (typeof root.registerFeatureTab === 'function') {
-    root.registerFeatureTab('participation', { render: feature.render, refresh: feature.refresh });
+    root.registerFeatureTab('participation', {
+      render: feature.render,
+      refresh: feature.refresh,
+      // 領域ナビの出し分けと件数バッジ。募集も引き受けた仕事も無い端末では領域ごと出さない
+      // （開いても空の画面へ誘導しない）。判定はこの feature が持つ——core は
+      // 何が「募集」なのかを知らないままでいられる。
+      //
+      // **引き受けたものが 1 件でもあれば、募集が尽きても領域は残す。** 最後の 1 件を
+      // 引き受けた瞬間に領域ごと消えると、いま起こしたばかりの仕事の結果を追えなくなる。
+      available: () => feature.candidatesFromState().length > 0 || feature.joinedRecords().length > 0,
+      badge: () => {
+        const n = feature.candidatesFromState().length;
+        return n ? { text: String(n), title: `参加できる仕事 ${n} 件` } : null;
+      },
+    });
+    root.registerFeatureTab('participation-status', { render: feature.renderStatus });
   }
   // ホーム（ポータル）へのサマリーカード。募集が無ければ '' を返してカードごと出さない
   // （参加タブの「候補が無ければ隠す」と同じ判断を 1 か所＝この feature が持つ）。
@@ -137,6 +152,95 @@
     }
   }
 
+  // この端末が引き受けた（引き受けを依頼した）仕事。**新しい取得経路は作らない**——
+  // 板の公示（state.boardViews）・投函した指示の受理状況（state.boardCommands）・
+  // 板が返す自分の入札（board.myBids）という、参加画面が既に読んでいるものだけで組む。
+  function joinedRecords() {
+    const appState = typeof state !== 'undefined' ? state : (root.state || {});
+    const board = appState.boardStatus || null;
+    const commands = appState.boardCommands || {};
+    const mine = new Set(((board && board.myBids) || []).map(String));
+    const out = [];
+    for (const view of appState.boardViews || []) {
+      if (!view || view.target !== 'board') continue;
+      const sent = commands[view.id];
+      if (!mine.has(String(view.id)) && !sent) continue;
+      out.push({
+        id: view.id,
+        title: view.title || view.id,
+        goal: view.goal || '',
+        phase: view.phase || '',
+        kind: view.workload === 'amigos' ? 'ミッションの依頼' : 'プロジェクト作業の依頼',
+        awarded: mine.has(String(view.id)),
+        sent: sent || null,
+      });
+    }
+    return out;
+  }
+
+  // 指示の届き方（送信済み → 受理済み → 失敗）。押しても何も起きない、を可視化する。
+  function deliveryLabel(record) {
+    if (record.sent && record.sent.state === 'error') {
+      return { text: `指示が通りませんでした: ${record.sent.error || ''}`, tone: 'is-error' };
+    }
+    if (record.awarded) return { text: 'この端末が引き受けています', tone: '' };
+    if (record.sent && record.sent.state === 'pending') return { text: '引き受けを依頼済み（受理待ち）', tone: '' };
+    if (record.sent && record.sent.state === 'done') return { text: '引き受けの依頼は受理されました', tone: '' };
+    return { text: '', tone: '' };
+  }
+
+  const PHASE_LABELS = {
+    open: '募集中', bidding: '入札中', awarded: '担当が決まりました',
+    running: '実行中', done: '完了', failed: '失敗', cancelled: '中止',
+  };
+
+  // 「参加の状況」タブ。参加したあと何が起きたかを、参加したのと同じ領域で追えるようにする。
+  function statusHtml(records, statuses) {
+    const session = Object.entries(statuses || {})
+      .filter(([, s]) => s && (s.joined || s.error))
+      .map(([key, s]) => ({ key, ...s }));
+    if (!records.length && !session.length) {
+      return '<div class="participation-empty"><strong>まだ引き受けた仕事はありません</strong>'
+        + '<p>「参加できる仕事」から引き受けると、ここで結果を追えます。</p></div>';
+    }
+    const rows = records.map((r) => {
+      const delivery = deliveryLabel(r);
+      return `<article class="participation-card">
+        <div class="participation-card-heading">
+          <span class="participation-type">${escHtml(r.kind)}</span>
+          <h3>${escHtml(r.title)}</h3>
+        </div>
+        ${r.goal ? `<p class="participation-goal">${escHtml(r.goal)}</p>` : ''}
+        <p class="participation-context">状態: ${escHtml(PHASE_LABELS[r.phase] || r.phase || '不明')}</p>
+        ${delivery.text
+          ? `<p class="participation-feedback ${delivery.tone}" role="status">${escHtml(delivery.text)}</p>`
+          : ''}
+      </article>`;
+    }).join('');
+    const sessionRows = session.map((s) => `<li class="${s.error ? 'is-error' : ''}">
+      ${escHtml(s.error || s.message || '')}</li>`).join('');
+    return `${records.length ? `<div class="participation-grid">${rows}</div>` : ''}
+      ${session.length
+        ? `<section class="participation-session">
+            <h3>この画面から起こした参加</h3>
+            <ul class="participation-session-list">${sessionRows}</ul>
+          </section>`
+        : ''}`;
+  }
+
+  function renderStatus() {
+    if (!root.document) return;
+    const pane = root.document.getElementById('tab-participation-status');
+    if (!pane) return;
+    pane.innerHTML = `<section class="participation-page" aria-labelledby="participation-status-title">
+      <header class="area-page-header">
+        <h2 id="participation-status-title">参加の状況</h2>
+        <p class="muted">この端末が引き受けた仕事と、送った引き受けの依頼が届いたかを確認します。</p>
+      </header>
+      ${statusHtml(joinedRecords(), statuses)}
+    </section>`;
+  }
+
   // ホーム（ポータル）のカード。募集が無いときは '' で不参加（カードを出さない）。
   function portalCardHtml() {
     const count = candidatesFromState().length;
@@ -148,7 +252,7 @@
       <p class="portal-card-count"><strong>${count}</strong> 件の募集があります</p>
       <p class="muted">プロジェクト作業・ミッション・よその端末からの依頼に、この端末から参加できます。</p>
       <div class="portal-card-actions">
-        <button type="button" class="primary-inline" data-portal-tab="participation">参加できる仕事を見る</button>
+        <button type="button" class="primary-inline" data-portal-area="participation">参加できる仕事を見る</button>
       </div>`;
   }
 
@@ -184,6 +288,6 @@
 
   return {
     participationHtml, joinCandidate, candidatesFromState, refresh, render, escHtml,
-    portalCardHtml,
+    portalCardHtml, joinedRecords, statusHtml, renderStatus, deliveryLabel,
   };
 });

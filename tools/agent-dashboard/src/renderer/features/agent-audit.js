@@ -1,8 +1,12 @@
 'use strict';
 
-// 監査（agent-audit の呼び出しと閲覧）— 全体設定タブの「利用状況」の面。
+// 監査（agent-audit の呼び出しと閲覧）— 「利用状況」領域の面。
 //
-// 独立したタブではなく全体設定へ置くのは、扱う数字が**プロジェクトごとではない**ため。
+// 以前は全体設定の 1 節だった（扱う数字が**プロジェクトごとではない**のに、タブが
+// プロジェクト単位だったため）。ナビが領域（ワークロード）単位になり、その制約が
+// 無くなったので、agent-audit も他の agent-* と同じく自分の領域を持つ。差し込みの
+// 仕組み（registerGlobalSettingsPanel('usage', …)）はそのままで、受け側だけが
+// 全体設定から sections/usage.js へ移った。
 //
 // **利用状況の数字はここが 1 か所で出す。** 以前はこの節に 2 つの集計が並んでいた——
 // ノード予算の台帳から画面が自分で足した「利用量」と、agent-audit が集計した「実測の
@@ -36,7 +40,7 @@
     });
   }
   // ホーム（ポータル）へのサマリーカード。数字はここに出さない——利用状況の数字は
-  // 全体設定「利用状況」の 1 か所で出す（C7: 同じ話題の数字を 2 か所に置かない）。
+  // 利用状況領域の 1 か所で出す（C7: 同じ話題の数字を 2 か所に置かない）。
   // このカードは入口だけを担う。
   if (typeof root.registerPortalCard === 'function') {
     root.registerPortalCard('usage', { order: 50, html: feature.portalCardHtml });
@@ -613,7 +617,7 @@
       </div>
       <p class="muted">トークン利用量と実行品質を、全体設定の「利用状況」で確認できます。</p>
       <div class="portal-card-actions">
-        <button type="button" class="primary-inline" data-portal-settings="usage">利用状況を確認</button>
+        <button type="button" class="primary-inline" data-portal-area="usage">利用状況を確認</button>
       </div>`;
   }
 

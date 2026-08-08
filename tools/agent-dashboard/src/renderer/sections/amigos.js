@@ -48,6 +48,14 @@ function amigosForProject(amigos, projectFolder) {
   return { ...source, homes, missions, deliveries, orphanMissions, errors: [] };
 }
 
+// この端末にミッションか依頼先ホームがあるか。ミッション領域を左メニューに出すかの判定で、
+// **プロジェクト選択で絞らない**——ミッションは端末（ノード）の話で、どのプロジェクトを
+// 選んでいるかとは無関係だから。領域の中の表示は従来どおり選択中プロジェクトで絞る。
+function amigosNodeHasWork() {
+  const a = state.amigos;
+  return !!(a && ((a.missions && a.missions.length) || (a.homes && a.homes.length)));
+}
+
 // ミッションも依頼先ホームも無いときはタブを隠す（cowork と同じ流儀）。
 function updateAmigosTabVisibility() {
   const btn = $('tab-btn-amigos');
@@ -63,9 +71,11 @@ function updateAmigosTabVisibility() {
   pane.classList.toggle('hidden', !show);
   pane.hidden = !show;
   if (!show && btn.classList.contains('active')) {
-    const fallback = [...document.querySelectorAll('.tab')]
-      .find((tab) => tab !== btn && !tab.hidden && !tab.classList.contains('hidden'));
+    // 退避先は同じ領域の中から探す（領域をまたいで勝手に飛ばない）。
+    // ミッション領域はタブが 1 本なので、行き先が無ければホームへ戻す。
+    const fallback = areaTabButtons(state.area).find((tab) => tab !== btn);
     if (fallback) switchTab(fallback.dataset.tab);
+    else switchArea('home');
   }
 }
 

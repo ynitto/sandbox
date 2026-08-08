@@ -30,8 +30,12 @@
           </button>
         </div>
       </div>
+      <!-- 領域ナビ（第一ナビ）。右ペインはここで選んだ領域の中身になる。
+           中身は renderAreaNav() が組む（使える領域と件数バッジが状況で変わるため）。 -->
+      <nav id="area-nav" class="area-nav" aria-label="機能を選ぶ"></nav>
       <div id="tree" class="navigation-tree">
-        <section class="nav-group" data-feature="agent-project" aria-labelledby="projects-group-title">
+        <section class="nav-group" data-feature="agent-project" data-area-list="projects"
+          aria-labelledby="projects-group-title">
           <div class="nav-group-header">
             <h2 id="projects-group-title">プロジェクト</h2>
             <button id="btn-new-project" aria-label="プロジェクトを作成" title="プロジェクトを作成">
@@ -40,13 +44,32 @@
           </div>
           <div id="project-list"></div>
         </section>
+        <!-- 定常業務の対象フォルダ。プロジェクトと同じ「選ぶと右ペインがその対象になる」列。 -->
+        <section class="nav-group" data-feature="cowork" data-area-list="routines"
+          aria-labelledby="routines-group-title">
+          <div class="nav-group-header">
+            <h2 id="routines-group-title">作業フォルダ</h2>
+            <button id="btn-add-routine-root" aria-label="フォルダを登録" title="フォルダを登録">
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 5v14M5 12h14"/></svg>
+            </button>
+          </div>
+          <div id="routine-list"></div>
+        </section>
       </div>
       <div id="sidebar-footer" class="muted"></div>
+      <!-- 端末全体に効く設定は領域ナビの末尾に固定する（どの領域からも 1 クリック） -->
+      <nav id="area-nav-footer" class="area-nav area-nav-footer" aria-label="設定"></nav>
     </aside>
 
     <!-- ======== メイン ======== -->
     <main id="main">
       <header id="project-header">
+        <!-- 領域の見出し。プロジェクト以外の領域では、プロジェクト用のヘッダーの代わりに
+             こちらを出す（左で選んだものと右の見出しを一致させる）。 -->
+        <div id="area-header" class="area-header hidden" hidden>
+          <h2 id="area-header-title"></h2>
+          <p id="area-header-desc" class="muted"></p>
+        </div>
         <div class="project-header-main">
           <div id="project-title">
             <span id="project-name" class="muted">プロジェクトを選択してください</span>
@@ -68,21 +91,29 @@
         <div id="project-meta" class="muted" aria-live="polite"></div>
       </header>
 
+      <!-- タブは「左で選んだ領域」の内部ナビ。data-area がその所属で、領域の絞り込みは
+           applyAreaTabs() が area-off クラスで行う（feature 側の .hidden とは別のしるし）。
+           タブが 1 本しか無い領域では、この列ごと畳む。 -->
       <nav id="tabs">
-        <button class="tab active" data-tab="home" data-feature="base" id="tab-btn-home">ホーム</button>
-        <button class="tab" data-tab="overview" data-feature="agent-project">概要</button>
-        <button class="tab" data-tab="backlog" data-feature="agent-project">タスク</button>
-        <button class="tab" data-tab="needs" data-feature="agent-project">要対応 <span id="needs-badge" class="badge hidden"></span></button>
-        <button class="tab" data-tab="flow" data-feature="agent-project">実行</button>
-        <button class="tab" data-tab="history" data-feature="agent-project">成果</button>
-        <button class="tab hidden" data-tab="amigos" data-feature="amigos" id="tab-btn-amigos" hidden>ミッション</button>
-        <button class="tab hidden" data-tab="cowork" data-feature="cowork" id="tab-btn-cowork" hidden>定常業務</button>
-        <button class="tab hidden" data-tab="participation" data-feature="participation"
-          id="tab-btn-participation" hidden>参加</button>
+        <button class="tab active" data-tab="home" data-area="home" data-feature="base" id="tab-btn-home">ホーム</button>
+        <button class="tab" data-tab="overview" data-area="projects" data-feature="agent-project">概要</button>
+        <button class="tab" data-tab="backlog" data-area="projects" data-feature="agent-project">タスク</button>
+        <button class="tab" data-tab="needs" data-area="projects" data-feature="agent-project">要対応 <span id="needs-badge" class="badge hidden"></span></button>
+        <button class="tab" data-tab="flow" data-area="projects" data-feature="agent-project">実行</button>
+        <button class="tab" data-tab="history" data-area="projects" data-feature="agent-project">成果</button>
+        <button class="tab hidden" data-tab="amigos" data-area="missions" data-feature="amigos" id="tab-btn-amigos" hidden>ミッション</button>
+        <button class="tab hidden" data-tab="cowork" data-area="routines" data-feature="cowork" id="tab-btn-cowork" hidden>作業</button>
+        <button class="tab" data-tab="routine-runs" data-area="routines" data-feature="cowork" id="tab-btn-routine-runs">実行の記録</button>
+        <button class="tab" data-tab="routine-settings" data-area="routines" data-feature="cowork" id="tab-btn-routine-settings">定常業務の設定</button>
+        <button class="tab hidden" data-tab="participation" data-area="participation" data-feature="participation"
+          id="tab-btn-participation" hidden>参加できる仕事</button>
+        <button class="tab" data-tab="participation-status" data-area="participation" data-feature="participation"
+          id="tab-btn-participation-status">参加の状況</button>
+        <button class="tab" data-tab="usage" data-area="usage" data-feature="agent-audit" id="tab-btn-usage">利用状況</button>
         <span class="tab-utility-group">
-          <button class="tab tab-project-settings hidden" data-tab="project-settings" data-feature="agent-project"
+          <button class="tab tab-project-settings hidden" data-tab="project-settings" data-area="projects" data-feature="agent-project"
             id="tab-btn-project-settings" hidden>プロジェクト設定</button>
-          <button class="tab tab-global-settings" data-tab="orchestration" data-feature="orchestration" id="tab-btn-orchestration"
+          <button class="tab tab-global-settings" data-tab="orchestration" data-area="settings" data-feature="orchestration" id="tab-btn-orchestration"
             title="すべてのプロジェクトで使う設定">全体設定</button>
         </span>
       </nav>
@@ -95,8 +126,12 @@
         <div id="tab-flow" class="tabpane" data-feature="agent-project"></div>
         <div id="tab-history" class="tabpane" data-feature="agent-project"></div>
         <div id="tab-cowork" class="tabpane" data-feature="cowork"></div>
+        <div id="tab-routine-runs" class="tabpane" data-feature="cowork"></div>
+        <div id="tab-routine-settings" class="tabpane" data-feature="cowork"></div>
         <div id="tab-amigos" class="tabpane" data-feature="amigos"></div>
         <div id="tab-participation" class="tabpane hidden" data-feature="participation" hidden></div>
+        <div id="tab-participation-status" class="tabpane" data-feature="participation"></div>
+        <div id="tab-usage" class="tabpane" data-feature="agent-audit"></div>
         <div id="tab-project-settings" class="tabpane" data-feature="agent-project"></div>
         <div id="tab-orchestration" class="tabpane" data-feature="orchestration"></div>
       </section>
@@ -281,13 +316,9 @@
     <div id="node-chat-body" class="node-chat-body"></div>
   </dialog>
 
-  <dialog id="dlg-cowork-history" class="wide output-dialog">
-    <div class="dialog-heading">
-      <div><span class="summary-kicker">定常業務</span><h2 id="cowork-history-title">実行履歴とログ</h2></div>
-      <button id="btn-cowork-history-close" aria-label="実行履歴を閉じる">閉じる</button>
-    </div>
-    <div id="cowork-history-body" class="cowork-history-body"></div>
-  </dialog>
+  <!-- 定常業務の実行履歴は「定常業務 → 実行の記録」タブへ移した（ダイアログは廃止）。
+       動かす画面と結果を追う画面が同じ領域の別タブに並ぶので、同じ内容をダイアログでも
+       出す理由が無くなった。 -->
 
   <dialog id="dlg-need-output" class="wide output-dialog">
     <div class="dialog-heading">
@@ -765,6 +796,8 @@
   <script src="sections/amigos.js"></script>
   <script src="sections/orchestration.js"></script>
   <script src="sections/cowork.js"></script>
+  <script src="sections/routines.js"></script>
+  <script src="sections/usage.js"></script>
   <script src="sections/kiro-loop.js"></script>
   <script src="../features/participation/model.js"></script>
   <script src="features/participation.js"></script>

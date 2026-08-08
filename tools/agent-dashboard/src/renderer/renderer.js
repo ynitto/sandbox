@@ -6,6 +6,8 @@ const $ = (id) => document.getElementById(id);
 
 const state = {
   config: null,
+  // 領域（ワークロード）— サイドバーの第一ナビ。右ペインはこの領域の中身になる。
+  area: 'home',
   discovery: { projects: [], instances: [] },
   selectedDir: null, // 選択中プロジェクトのディレクトリ
   project: null, // readProject のスナップショット
@@ -168,6 +170,68 @@ const STATUS_LABELS = {
 function statusLabel(status) {
   const s = String(status || '');
   return STATUS_LABELS[s] || s;
+}
+
+// ---------------------------------------------------------------------------
+// 領域（ワークロード）— サイドバーの第一ナビ
+// ---------------------------------------------------------------------------
+//
+// このアプリは agent-* ファミリー全体の入口なので、**左で選ぶのは「どの道具の話か」**で、
+// 右ペインのタブはその領域の中の画面（内部ナビ）になる。以前はプロジェクトの一覧しか
+// 左に無いのに、右のタブ列へ定常業務・ミッション・参加が混ざっていた——左で選んだものと
+// 右に出るものが一致しない状態で、どの道具を操作しているのかが画面から読めなかった。
+//
+//   id       … 領域の識別子（タブの data-area・サイドバー節の data-area-list と対応）
+//   label    … 左メニューの表示名
+//   desc     … 右ペイン見出しの一行説明（プロジェクト領域だけは対象の名前を出すので持たない）
+//   list     … サイドバーに対象一覧を出す領域だけが持つ（値は data-area-list）
+//   footer   … 領域ナビの末尾へ固定する（設定）
+//
+// 領域を足す手順は「AREAS に 1 行足し、タブへ data-area を書く」の 2 手。どのタブが
+// どの領域に属するかは HTML（data-area）が正で、ここでは列挙と表示名だけを持つ。
+const AREAS = [
+  { id: 'home', label: 'ホーム', desc: '判断待ちと各ワークロードの状況を横断して見ます。' },
+  { id: 'projects', label: 'プロジェクト', list: 'projects' },
+  {
+    id: 'routines',
+    label: '定常業務',
+    list: 'routines',
+    desc: '繰り返す作業を登録し、この端末で動かして記録を残します。',
+  },
+  { id: 'missions', label: 'ミッション', desc: 'チームへ依頼したミッションの進行と納品を見ます。' },
+  { id: 'participation', label: '参加', desc: 'この端末で引き受けられる仕事を見て、参加します。' },
+  { id: 'usage', label: '利用状況', desc: 'この端末のトークン利用量と実行品質を見ます。' },
+  {
+    id: 'settings',
+    label: '全体設定',
+    footer: true,
+    desc: 'この端末のすべてのワークロードに効く設定です。',
+  },
+];
+
+function areaById(id) {
+  return AREAS.find((a) => a.id === String(id)) || AREAS[0];
+}
+
+// この端末で使っていない道具は左メニューに並べない（開いても空の画面へ誘導しない）。
+// 「まだ登録が無いだけ」の領域は出す——登録の入口がその領域にあるため、隠すと入れられない。
+// 判定を持っているのが feature モジュール側の領域は、その登録簿の available() に聞く
+// （core が各 feature の中身を知らないままで済む）。
+function areaAvailable(id) {
+  const hooks = featureTabs.get(String(id));
+  if (hooks && typeof hooks.available === 'function') {
+    try {
+      return !!hooks.available();
+    } catch {
+      return false;
+    }
+  }
+  if (id === 'missions') return amigosNodeHasWork();
+  return true;
+}
+
+function visibleAreas() {
+  return AREAS.filter((a) => areaAvailable(a.id));
 }
 
 // タスクを「完了（納品）」にするまでに人が何をすべきか。
@@ -664,6 +728,8 @@ async function refreshDiscovery() {
   state.discovery = await api.discover();
   await refreshBoard();
   renderTree();
+  renderAreaNav();
+  renderAreaLists();
   checkNeedsNotifications();
 }
 
@@ -822,8 +888,59 @@ function renderTree() {
   $('sidebar-footer').textContent = `稼働中 ${running} ／ 更新 ${new Date().toLocaleTimeString('ja-JP')}`;
 
   for (const el of tree.querySelectorAll('.project-item[data-dir]')) {
-    el.addEventListener('click', () => selectProject(el.dataset.dir, { reveal: true }));
+    el.addEventListener('click', () => selectProject(el.dataset.dir));
   }
+  renderRoutineList();
+}
+
+// 定常業務の対象フォルダ一覧（定常業務領域のサイドバー）。プロジェクト一覧と同じ形にする
+// ——「左で対象を選び、右でその中身を見る」という読み方を領域が変わっても揃えるため。
+// 並べるのは定常業務専用フォルダ（kind=routine）と、作業を登録してあるプロジェクトの両方。
+// agent-project のプロジェクトでも定常業務を回している端末はあるので、片方だけにしない。
+function renderRoutineList() {
+  const list = $('routine-list');
+  if (!list) return;
+  const folders = routineFolders();
+  if (!folders.length) {
+    list.innerHTML =
+      '<div class="empty compact">作業フォルダがまだありません。＋ から登録してください。</div>';
+    return;
+  }
+  list.innerHTML = folders
+    .map((p) => {
+      const count = coworkItemsForFolder(p.dir).length;
+      return `<button type="button" class="project-item ${state.selectedDir === p.dir ? 'selected' : ''}"
+        data-routine-dir="${esc(p.dir)}" aria-current="${state.selectedDir === p.dir ? 'true' : 'false'}"
+        title="${esc(p.dir)}">
+        <span class="dot ${p.running ? 'running' : ''}"></span>
+        <span class="name">${esc(p.label)}</span>
+        ${count ? `<span class="badge" title="登録した作業 ${count} 件">${count}</span>` : ''}
+      </button>`;
+    })
+    .join('');
+  for (const el of list.querySelectorAll('.project-item[data-routine-dir]')) {
+    el.addEventListener('click', () => selectProject(el.dataset.routineDir));
+  }
+}
+
+// 定常業務の対象になるフォルダ（発見済みで、この PC から届くものだけ）。
+function routineFolders() {
+  return (state.discovery.projects || [])
+    .filter((p) => p && p.exists !== false)
+    .map((p) => ({
+      dir: p.workspace || p.dir,
+      label: p.charterName || p.name || p.dir,
+      running: !!p.running,
+      kind: p.kind,
+    }))
+    .filter((p) => p.dir && (p.kind === 'routine' || coworkItemsForFolder(p.dir).length));
+}
+
+// そのフォルダに登録された作業。設定側の宣言と発見結果の両方を見る（cowork の一覧と同じ種）。
+function coworkItemsForFolder(folder) {
+  const items = (state.cowork && Array.isArray(state.cowork.items)) ? state.cowork.items : [];
+  if (!folder) return [];
+  return items.filter((item) => item && coworkPathKey(item.repo) === coworkPathKey(folder));
 }
 
 // 実行エンジンは宣言しているが、この PC からはフォルダに届かないプロジェクトの行。
@@ -860,11 +977,10 @@ function engineEmptyMessage() {
   return 'このエンジンにはプロジェクトが登録されていません。実行する PC の agent-project.host.yaml にプロジェクトを追加してください。';
 }
 
-// opts.reveal: 人がプロジェクトを選ぶ操作（サイドバー・ディープリンク）では、ホーム（ポータル）
-// を見ていたらそのプロジェクトの画面へ移る。起動時の前回選択の復元では移らない——
-// 最初の画面はホーム（横断ビュー）のまま、プロジェクトの文脈だけを裏で温めておく。
-async function selectProject(dir, opts) {
-  const reveal = !!(opts && opts.reveal);
+// 対象（プロジェクト／作業フォルダ）を選ぶ。**領域は動かさない**——一覧はその領域の中に
+// あるので、選んだだけで別の領域へ飛ぶと左メニューの選択と食い違う。領域をまたぐ遷移
+// （ホームの対応待ち・ディープリンク）は呼び出し側が switchArea / switchTab で明示する。
+async function selectProject(dir) {
   if (state.selectedDir !== dir) {
     state.flowRunId = null;
     state.flowRun = null;
@@ -876,10 +992,7 @@ async function selectProject(dir, opts) {
   // 起動先候補はプロジェクトごとに違う（レジストリとノード宣言の交差）。選択のたびに引き直す。
   state.cliChatCwdChoices = [];
   renderTree();
-  if (reveal && activeTab() === 'home') {
-    const p = (state.discovery.projects || []).find((x) => x && x.dir === dir);
-    switchTab(p && p.isProject === false ? 'cowork' : 'overview');
-  }
+  renderAreaHeader();
   await Promise.all([reloadProject(), refreshCliChatCwdChoices()]);
 }
 
@@ -1195,6 +1308,9 @@ async function openCliChat() {
 
 function renderAllTabs() {
   const ui = captureUiState();
+  renderAreaNav();
+  renderAreaLists();
+  renderAreaHeader();
   renderCliChatButton();
   renderOverview();
   renderBacklog();
@@ -1203,6 +1319,9 @@ function renderAllTabs() {
   renderGitLab();
   renderHistory();
   renderCowork();
+  renderRoutineRuns();
+  renderRoutineSettings();
+  renderUsage();
   renderAmigos();
   renderProjectSettings();
   if ((!state.globalSettingsDirty && !state.orchInstructionsDirty && !state.orchSessionDirty) || !$('tab-orchestration').childElementCount) renderOrchestration();
@@ -1213,20 +1332,149 @@ function renderAllTabs() {
 
 function activeTab() {
   const el = document.querySelector('.tab.active');
-  return el ? el.dataset.tab : 'overview';
+  return el ? el.dataset.tab : 'home';
+}
+
+// 左メニューの件数バッジ。領域を開かずに「そこに何件あるか」が分かると、開く順番を
+// 決められる。数字を持たない領域はバッジを出さない（0 を並べても情報にならない）。
+function areaBadge(id) {
+  if (id === 'projects') {
+    const model = portalHomeModel((state.discovery && state.discovery.projects) || []);
+    if (!model.totals.needs) return null;
+    return { text: String(model.totals.needs), tone: 'warn', title: `要対応 ${model.totals.needs} 件` };
+  }
+  if (id === 'routines') {
+    const n = coworkItemCount();
+    return n ? { text: String(n), title: `登録した作業 ${n} 件` } : null;
+  }
+  if (id === 'missions') {
+    const n = ((state.amigos && state.amigos.missions) || []).length;
+    return n ? { text: String(n), title: `ミッション ${n} 件` } : null;
+  }
+  const hooks = featureTabs.get(String(id));
+  if (hooks && typeof hooks.badge === 'function') {
+    try {
+      return hooks.badge();
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function renderAreaNav() {
+  const main = $('area-nav');
+  const footer = $('area-nav-footer');
+  if (!main || !footer) return;
+  const areas = visibleAreas();
+  const html = (list) =>
+    list
+      .map((a) => {
+        const badge = areaBadge(a.id);
+        const on = state.area === a.id;
+        return `<button type="button" class="area-item ${on ? 'active' : ''}" data-area="${esc(a.id)}"
+          aria-current="${on ? 'page' : 'false'}" title="${esc(a.desc || a.label)}">
+          <span class="area-item-label">${esc(a.label)}</span>
+          ${badge
+            ? `<span class="badge ${esc(badge.tone || '')}" title="${esc(badge.title || '')}">${esc(badge.text)}</span>`
+            : ''}
+        </button>`;
+      })
+      .join('');
+  main.innerHTML = html(areas.filter((a) => !a.footer));
+  footer.innerHTML = html(areas.filter((a) => a.footer));
+  for (const btn of document.querySelectorAll('.area-nav [data-area]')) {
+    btn.addEventListener('click', () => switchArea(btn.dataset.area));
+  }
+  // 選んでいた領域が使えなくなったら（募集が尽きた等）ホームへ退避する
+  if (!areas.some((a) => a.id === state.area)) switchArea('home');
+}
+
+// サイドバーの対象一覧は領域ごとに違う（プロジェクト領域はプロジェクト、定常業務領域は
+// 作業フォルダ）。一覧を持たない領域では節ごと隠す——選ぶものが無いのに見出しだけ残ると、
+// 何を選べばよいのか分からない空欄になる。
+function renderAreaLists() {
+  const area = areaById(state.area);
+  for (const section of document.querySelectorAll('#tree [data-area-list]')) {
+    const on = section.dataset.areaList === area.list;
+    section.classList.toggle('hidden', !on);
+    section.hidden = !on;
+  }
+}
+
+// その領域に属し、かつ feature 側が隠していないタブ。
+// 領域による絞り込み（area-off）と feature による出し分け（.hidden）は別の判断なので、
+// 別のしるしで重ねる——片方を使い回すと、領域を切り替えただけで feature の判断が消える。
+function areaTabButtons(areaId) {
+  return [...document.querySelectorAll('#tabs .tab')].filter(
+    (tab) => tab.dataset.area === String(areaId) && !tab.hidden && !tab.classList.contains('hidden')
+  );
+}
+
+function applyAreaTabs() {
+  const area = areaById(state.area);
+  const visible = areaTabButtons(area.id);
+  for (const tab of document.querySelectorAll('#tabs .tab')) {
+    tab.classList.toggle('area-off', !visible.includes(tab));
+  }
+  // タブが 1 本しか無い領域ではタブ列を畳む。選択肢のないタブは見出しの重複でしかない。
+  const tabs = $('tabs');
+  if (tabs) {
+    const collapse = visible.length <= 1;
+    tabs.classList.toggle('hidden', collapse);
+    tabs.hidden = collapse;
+  }
+  return visible;
+}
+
+// 右ペインの見出しを領域に合わせる。プロジェクト領域だけは対象（プロジェクト）が主語なので
+// 従来のヘッダーを出し、それ以外の領域では領域の見出しを出す。
+function renderAreaHeader() {
+  const area = areaById(state.area);
+  const isProjects = area.id === 'projects';
+  const header = $('area-header');
+  const main = document.querySelector('#project-header .project-header-main');
+  const meta = $('project-meta');
+  for (const [el, show] of [[header, !isProjects], [main, isProjects], [meta, isProjects]]) {
+    if (!el) continue;
+    el.classList.toggle('hidden', !show);
+    el.hidden = !show;
+  }
+  if (isProjects || !header) return;
+  $('area-header-title').textContent = area.label;
+  // 対象一覧を持つ領域では、選んでいるものの名前まで見出しに出す（左の選択と右の見出しを揃える）
+  const selected = area.list ? selectedAreaItemName() : '';
+  $('area-header-desc').textContent = selected ? `${selected} — ${area.desc || ''}` : area.desc || '';
+}
+
+function selectedAreaItemName() {
+  const dir = selectedProjectFolder();
+  if (!dir) return '';
+  const p = (state.discovery.projects || []).find((x) => x && (x.dir === dir || x.root === dir));
+  return p ? p.charterName || p.name || '' : '';
+}
+
+function switchArea(id) {
+  const area = areaById(id);
+  state.area = area.id;
+  try {
+    localStorage.setItem('kpv:area', area.id);
+  } catch {
+    /* localStorage が使えなくても領域の切り替えは成立する */
+  }
+  renderAreaNav();
+  renderAreaLists();
+  const visible = applyAreaTabs();
+  const current = document.querySelector('.tab.active');
+  if (!current || !visible.includes(current)) {
+    if (visible.length) return switchTab(visible[0].dataset.tab);
+  }
+  renderAreaHeader();
 }
 
 function initTabs() {
   for (const tab of document.querySelectorAll('.tab')) {
-    tab.addEventListener('click', () => {
-      document.querySelectorAll('.tab').forEach((t) => t.classList.remove('active'));
-      document.querySelectorAll('.tabpane').forEach((p) => p.classList.remove('active'));
-      tab.classList.add('active');
-      $(`tab-${tab.dataset.tab}`).classList.add('active');
-      if (tab.dataset.tab === 'needs') refreshGitLab(false);
-      // 登録済みフィーチャータブは切り替え時に即描画（初回表示を空にしない）
-      if (featureTabs.has(tab.dataset.tab)) renderFeatureTab(tab.dataset.tab);
-    });
+    tab.addEventListener('click', () => switchTab(tab.dataset.tab));
   }
 }
 
@@ -1257,10 +1505,12 @@ function populateSettingsFields() {
   $('cfg-rv-mode').value = cfg.reviewViewer.mode || 'protocol';
   $('cfg-rv-exepath').value = cfg.reviewViewer.exePath || '';
   $('cfg-rv-command').value = cfg.reviewViewer.command || '';
+  // 定常業務の欄は定常業務領域の設定タブにある。全体設定を描いただけの時点では
+  // まだ存在しないことがあるので、ある時だけ値を入れる（両方の画面から呼ばれる）。
   const cw = cfg.cowork || {};
-  $('cfg-cowork-loop-provider').value = cw.loopProvider || 'kiro-loop';
-  $('cfg-cowork-loop-command').value = cw.loopCommand || 'kiro-loop';
-  $('cfg-cowork-sm-command').value = cw.stateMachineCommand || 'statemachine-use';
+  if ($('cfg-cowork-loop-provider')) $('cfg-cowork-loop-provider').value = cw.loopProvider || 'kiro-loop';
+  if ($('cfg-cowork-loop-command')) $('cfg-cowork-loop-command').value = cw.loopCommand || 'kiro-loop';
+  if ($('cfg-cowork-sm-command')) $('cfg-cowork-sm-command').value = cw.stateMachineCommand || 'statemachine-use';
 }
 
 function openGlobalSettings(section = 'app') {
@@ -1430,7 +1680,10 @@ async function saveGlobalSettingsSection(section) {
   state.globalSettingsDirty = false;
   setupPolling();
   await refreshAll();
-  const label = (GLOBAL_SETTINGS_SECTIONS.find((item) => item.id === section) || {}).label || '設定';
+  // 領域へ移した設定（定常業務など）も同じ保存経路を通るので、表示名は両方から引く。
+  const label = (GLOBAL_SETTINGS_SECTIONS.find((item) => item.id === section) || {}).label
+    || RELOCATED_SETTINGS_LABELS[section]
+    || '設定';
   toast(`${label}の設定を保存しました`, true);
 }
 
@@ -1855,7 +2108,6 @@ function setupPolling() {
         || $('dlg-doctor').open
         || ($('dlg-cowork-work') && $('dlg-cowork-work').open)
         || ($('dlg-cowork-save') && $('dlg-cowork-save').open)
-        || ($('dlg-cowork-history') && $('dlg-cowork-history').open)
         || ($('dlg-amigos-post') && $('dlg-amigos-post').open)
         || ($('dlg-amigos-detail') && $('dlg-amigos-detail').open)
       )
@@ -1884,7 +2136,10 @@ function handleOpenTarget({ url }) {
       (name && state.discovery.projects.find((x) => x.name === name)) ||
       null;
     if (p) {
-      await selectProject(p.dir, { reveal: true });
+      await selectProject(p.dir);
+      // 通知やディープリンクから来た人は、そのプロジェクトの画面を見に来ている。
+      // 領域まで合わせないと、ホームを見たまま裏で選択だけが変わることになる。
+      switchArea('projects');
       return;
     }
     toast(`プロジェクトが見つかりません: ${name || root || ''}`);
@@ -1945,8 +2200,10 @@ function workspaceFeatureModel(discovery, selectedDir, coworkCount) {
   };
 }
 
-// 定常業務タブは常に表示する（作業が未登録のプロジェクトでも、空状態から追加へ導ける）。
-// agent-project 系タブだけはワークスペースの内容に応じて出し分ける。
+// 定常業務のタブは常に表示する（作業が未登録のフォルダでも、空状態から追加へ導ける）。
+// agent-project 系タブだけは、選んでいるものがプロジェクトでないときに出さない。
+// 領域が分かれてからは、プロジェクト領域にはプロジェクトしか並ばないのでほぼ起きないが、
+// 選択が領域をまたいで残ることはあるので護りとして残す。
 function updateCoworkTabVisibility() {
   const btn = $('tab-btn-cowork');
   const pane = $('tab-cowork');
@@ -1958,15 +2215,19 @@ function updateCoworkTabVisibility() {
     el.classList.toggle('hidden', !features.agentProject);
     el.hidden = !features.agentProject;
   }
-  // 定常業務タブ・ペインは常時表示（隠さない）。
+  // 定常業務タブ・ペインは常時表示（隠さない）。どこに出すかは領域の絞り込みが決める。
   btn.classList.remove('hidden');
   btn.hidden = false;
   pane.classList.remove('hidden');
   pane.hidden = false;
   const current = document.querySelector('.tab.active');
   if (!current || current.hidden || current.classList.contains('hidden')) {
-    // 現在のタブが隠れたときは、既定タブ（無ければ常時表示の定常業務）へ退避する。
-    switchTab(features.defaultTab || 'cowork');
+    // 現在のタブが隠れたら、**同じ領域の中で**開けるタブへ退避する。
+    // 領域そのものは勝手に変えない——人が左で選んだものを画面が横取りしない。
+    const visible = areaTabButtons(state.area);
+    if (visible.length) switchTab(visible[0].dataset.tab);
+  } else {
+    applyAreaTabs();
   }
 }
 
