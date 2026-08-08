@@ -294,6 +294,12 @@ function discoverCoworkItems(config) {
     const rk = _pathKey(root);
     if (seenRoots.has(rk)) continue;                 // 同一実体の root を二重走査しない
     seenRoots.add(rk);
+    // root = 登録したフォルダ（cowork.roots または実行エンジンのプロジェクト）。
+    // folder = 設定ファイル（.kiro / .statemachine）が実際にあるフォルダで、走査の深さの
+    // ぶんだけ root の下にありうる。**この 2 つは役割が違う**——実行の cwd と画面での
+    // 所属は登録したフォルダ（root）、プロンプト本文とログの在り処は設定のあるフォルダ
+    // （repo）。同じものとして扱うと、サブフォルダに設定を置いた作業がどのフォルダの
+    // 一覧にも出てこなくなる。
     for (const mk of scanForCoworkConfigs(root, scanDepth)) {
       const folder = mk.folder;
       const fk = _pathKey(folder);
@@ -327,6 +333,7 @@ function discoverCoworkItems(config) {
             type: 'loop',
             name: e.name || `定期実行 ${idx + 1}`,
             repo: folder,
+            root,
             schedule,
             prompt: kiro.texts[idx] || '',
             enabled: e.enabled !== false,
@@ -346,6 +353,7 @@ function discoverCoworkItems(config) {
           type: 'state-machine',
           name: meta.name || smName,
           repo: folder,
+          root,
           workflow: smName,
           description: meta.description || '',
           schedule,

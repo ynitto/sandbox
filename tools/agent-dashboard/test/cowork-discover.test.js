@@ -198,7 +198,7 @@ test('統合ステートマシンの実行は対プロンプト名を kiro-loop 
   const proj = path.join(root, 'projS');
   writeKiro(proj, PAIRED_YAML);
   writeSm(proj, 'release', 'name: "リリース"\nstates:\n  s: {}\n');
-  const config = { ...engineConfig([root]), cowork: { loopCommand: 'echo', items: [] } };
+  const config = { ...engineConfig([root]), cowork: { loopCommand: 'echo', runWindow: false, items: [] } };
   const sm = cowork.overview(config).items.find((i) => i.type === 'state-machine');
   const r = cowork.runStateMachine(config, sm.id, '');
   assert.ok(r.ok, `echo が成功する: ${r.error || r.stderr}`);
@@ -270,7 +270,12 @@ test('overview は config + discovered をマージし source と state を付�
   const ov = cowork.overview({ ...engineConfig([root]), cowork: { items: [] } });
   assert.strictEqual(ov.items.length, 3);
   assert.ok(ov.items.every((i) => i.source === 'discovered' && i.state));
-  assert.deepStrictEqual(ov.discoveredRepos, [path.join(root, 'projD')]);
+  // 所属は**登録したフォルダ**（走査ルート）。設定ファイルがその下のサブフォルダにあっても、
+  // 画面で選ぶフォルダはこちらなので、鍵もこちらで持つ（root ＝ 実行時の cwd）。
+  assert.deepStrictEqual(ov.discoveredRepos, [root]);
+  assert.deepStrictEqual([...new Set(ov.items.map((i) => i.root))], [root]);
+  assert.deepStrictEqual([...new Set(ov.items.map((i) => i.repo))], [path.join(root, 'projD')],
+    '設定ファイルの在り処（repo）は従来どおりサブフォルダを指す');
 });
 
 // --- 書き戻し（外科的） ---

@@ -99,9 +99,26 @@ test('decodeCliOutput は不正 UTF-8 を Shift_JIS として読む', () => {
   assert.strictEqual(cowork.decodeCliOutput(Buffer.from('ok', 'utf8')), 'ok');
 });
 
+// 定常業務の実行は既定で別ウィンドウ。ここを win32 に絞っていたころは、macOS / Linux で
+// main プロセスの spawnSync（最大 60 秒）へ落ちて画面が固まっていた（IPC が 1 つも返らない）。
+test('別ウィンドウ実行は Windows 専用ではない（固まる同期実行へ落とさない）', () => {
+  const { supportsRunWindow } = cowork_loopProvider;
+  assert.strictEqual(supportsRunWindow('win32'), true);
+  assert.strictEqual(supportsRunWindow('darwin'), true, 'macOS は Terminal で開ける');
+  assert.strictEqual(supportsRunWindow('linux', (name) => (name === 'xterm' ? '/usr/bin/xterm' : '')), true);
+  // 端末エミュレータが 1 つも無い環境（CI 等）だけ、従来の同期実行へ落とす
+  assert.strictEqual(supportsRunWindow('linux', () => ''), false);
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'features', 'cowork', 'main', 'loopProvider.js'), 'utf8'
+  );
+  const run = src.slice(src.indexOf('    run(job) {'), src.indexOf('  };\n}\n\nmodule.exports'));
+  assert.ok(run.includes('supportsRunWindow()'), '実行の分岐は「窓を開けるか」で決める');
+  assert.ok(!/process\.platform === 'win32'/.test(run), 'OS 名で分岐しない');
+});
+
 test('loop 実行は kiro-loop の send サブコマンドでプロンプト名を送る（run は存在しない）', () => {
   // command を echo に差し替えて、組み立てられた引数だけを検証する
-  const r = makeLoopProvider({ loopCommand: 'echo' }).run({ id: '毎朝レビュー', cwd: os.tmpdir() });
+  const r = makeLoopProvider({ loopCommand: 'echo', runWindow: false }).run({ id: '毎朝レビュー', cwd: os.tmpdir() });
   assert.ok(r.ok, `echo が成功する: ${r.error || r.stderr}`);
   assert.strictEqual(r.stdout, 'send 毎朝レビュー');
 });
@@ -112,10 +129,10 @@ test('loop 実行は送信先ペインを引けたら -s で明示する（複�
   const origFind = tmux.findPane;
   tmux.findPane = ({ name }) => (name === '毎朝レビュー' ? '%12' : '');
   try {
-    const hit = makeLoopProvider({ loopCommand: 'echo' }).run({ id: '毎朝レビュー', cwd: os.tmpdir() });
+    const hit = makeLoopProvider({ loopCommand: 'echo', runWindow: false }).run({ id: '毎朝レビュー', cwd: os.tmpdir() });
     assert.strictEqual(hit.stdout, 'send -s %12 毎朝レビュー');
     // 引けないときは従来どおり CLI の自動解決に任せる
-    const miss = makeLoopProvider({ loopCommand: 'echo' }).run({ id: '未知の作業', cwd: os.tmpdir() });
+    const miss = makeLoopProvider({ loopCommand: 'echo', runWindow: false }).run({ id: '未知の作業', cwd: os.tmpdir() });
     assert.strictEqual(miss.stdout, 'send 未知の作業');
   } finally {
     tmux.findPane = origFind;
@@ -123,7 +140,7 @@ test('loop 実行は送信先ペインを引けたら -s で明示する（複�
 });
 
 test('loop 実行は明示 args があればそれを優先する', () => {
-  const r = makeLoopProvider({ loopCommand: 'echo' }).run({ id: 'X', args: ['send', '-s', 'sess', 'X'], cwd: os.tmpdir() });
+  const r = makeLoopProvider({ loopCommand: 'echo', runWindow: false }).run({ id: 'X', args: ['send', '-s', 'sess', 'X'], cwd: os.tmpdir() });
   assert.ok(r.ok);
   assert.strictEqual(r.stdout, 'send -s sess X');
 });
@@ -630,6 +647,7 @@ test('state-machine 実行は statemachine-use スキルを発動するプロン
   const repo = os.tmpdir();
   const config = { cowork: {
     loopCommand: 'echo',
+    runWindow: false,   // 引数の組み立てを見るテスト（窓を開く経路は別テスト）
     items: [{ id: 'sm1', type: 'state-machine', name: 'リリース', workflow: 'release', repo }],
   } };
   const r = cowork.runStateMachine(config, 'sm1', '');
@@ -644,6 +662,7 @@ test('runLoop / runStateMachine は実行履歴（historyFile）へ記録し rea
   const historyFile = path.join(repo, 'history.jsonl');
   const config = { cowork: {
     loopCommand: 'echo',
+    runWindow: false,
     historyFile,
     items: [
       { id: 'daily', type: 'loop', name: '毎朝レビュー', repo },

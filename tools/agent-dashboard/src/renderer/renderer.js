@@ -930,6 +930,11 @@ function renderRoutineList() {
 }
 
 // 定常業務の対象になるフォルダ（発見済みで、この PC から届くものだけ）。
+//
+// **定常業務専用フォルダ（cowork.roots）と、プロジェクトとして登録したフォルダの両方**を
+// 並べる。走査（discoverCoworkItems）はもともと両方を回っているので、片方しか並べないと
+// 「一覧に無いフォルダの作業が画面に出てくる」ことになる。作業がまだ 0 件のフォルダも
+// 並べる——選べないと、そのフォルダに最初の 1 件を作れない。
 function routineFolders() {
   return (state.discovery.projects || [])
     .filter((p) => p && p.exists !== false)
@@ -939,16 +944,21 @@ function routineFolders() {
       running: !!p.running,
       kind: p.kind,
     }))
-    .filter((p) => p.dir && (p.kind === 'routine' || coworkItemsForFolder(p.dir).length));
+    .filter((p) => p.dir);
+}
+
+// その作業がどのフォルダの話か。**登録したフォルダ（root）が所属**で、設定ファイルの
+// 在り処（repo）ではない——設定をサブフォルダに置いた作業は、repo で括るとどのフォルダの
+// 一覧にも出てこない。手で登録した作業は root を持たないので repo ＞ cwd の順に落とす。
+function coworkItemFolder(item) {
+  return (item && (item.root || item.repo || item.cwd)) || '';
 }
 
 // そのフォルダに登録された作業。設定側の宣言と発見結果の両方を見る（cowork の一覧と同じ種）。
-// 突き合わせは repo ＞ cwd の順（作業タブの coworkVisibleEntries と同じ式）。手で登録した
-// 作業は cwd しか持たないことがあり、repo だけで見ると一覧から消える。
 function coworkItemsForFolder(folder) {
   const items = (state.cowork && Array.isArray(state.cowork.items)) ? state.cowork.items : [];
   if (!folder) return [];
-  return items.filter((item) => item && coworkPathKey(item.repo || item.cwd) === coworkPathKey(folder));
+  return items.filter((item) => item && coworkPathKey(coworkItemFolder(item)) === coworkPathKey(folder));
 }
 
 // 定常業務のうち**人が手を打つべきもの**。動いていないのに失敗で終わっている作業だけを
@@ -1518,13 +1528,17 @@ function areaItems(areaId) {
   if (areaId === 'projects') {
     return (state.discovery.projects || [])
       .filter((p) => p && p.exists && isProjectAreaItem(p))
-      .map((p) => ({ dir: p.dir, attention: Math.max(0, Number(p.needsCount) || 0) }));
+      .map((p) => ({
+        dir: p.dir,
+        attention: Math.max(0, Number(p.needsCount) || 0),
+        works: Math.max(0, Number(p.backlogCount) || 0),
+      }));
   }
   if (areaId === 'routines') {
-    return routineFolders().map((f) => ({
-      dir: f.dir,
-      attention: coworkAttentionItems(coworkItemsForFolder(f.dir)).length,
-    }));
+    return routineFolders().map((f) => {
+      const items = coworkItemsForFolder(f.dir);
+      return { dir: f.dir, attention: coworkAttentionItems(items).length, works: items.length };
+    });
   }
   return [];
 }
@@ -1541,15 +1555,23 @@ function areaItems(areaId) {
 async function alignAreaSelection(areaId) {
   const items = areaItems(areaId);
   if (!items.length) return;                       // 対象一覧を持たない領域・まだ何も無い領域
-  if (items.some((it) => it.dir === state.selectedDir)) {
-    state.areaSelection[areaId] = state.selectedDir;
-    return;
-  }
+  // その領域で前に見ていたものが最優先（人がその領域で選んだ結果なので、空でも尊重する）。
   const remembered = items.find((it) => it.dir === state.areaSelection[areaId]);
+  // 記憶が無いときは、持ち込んだ選択が**その領域で中身を持つときだけ**引き継ぐ。
+  // 同じフォルダが両方の領域に並ぶので（プロジェクトのフォルダでも定常業務は回せる）、
+  // 素通しにすると、隣のフォルダに 6 件あるのに空の画面へ着地することになる。
+  const current = items.find((it) => it.dir === state.selectedDir);
+  const carried = current && (current.works > 0 || current.attention > 0) ? current : null;
   const attention = items
     .filter((it) => it.attention > 0)
     .sort((a, b) => b.attention - a.attention)[0];
-  await selectProject((remembered || attention || items[0]).dir);
+  const populated = items.find((it) => it.works > 0);
+  const target = remembered || carried || attention || populated || items[0];
+  if (target.dir === state.selectedDir) {
+    state.areaSelection[areaId] = target.dir;
+    return;
+  }
+  await selectProject(target.dir);
 }
 
 async function switchArea(id) {

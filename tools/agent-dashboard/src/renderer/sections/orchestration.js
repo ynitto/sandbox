@@ -1113,19 +1113,33 @@ function boardParticipationHtml() {
 // 定常業務画面はプロジェクトを 1 つ選んでから開く画面なので、実行エンジンがまだ動いて
 // いない初期状態（選べるプロジェクトが 1 つも無い）では最初の 1 件を登録できなかった。
 // 全体設定はプロジェクト選択に依存しないので、そこからなら初期状態でも登録できる。
+// 定常業務の対象フォルダ。**この画面で登録したフォルダ（cowork.roots）と、プロジェクトと
+// して登録済みのフォルダの両方**を並べる。走査はもともと両方を回っていて、片方だけ出すと
+// 「一覧に無いフォルダの作業が定常業務画面に出てくる」ことになり、どこから来たのか読めない。
+// プロジェクト側は登録簿が違う（実行エンジンの host.yaml）ので、ここからは解除できない
+// ——押せない理由を書いて出す方が、出さずに黙っているより短く済む。
 function globalSettingsCoworkRootsHtml() {
   const roots = ((state.config && state.config.cowork) || {}).roots || [];
-  const rows = roots.map((r) => `<li>
-    <code class="mono">${esc(String(r))}</code>
-    <button type="button" class="linklike" data-drop-cowork-root="${esc(String(r))}">登録を解除</button>
-  </li>`).join('');
+  const declared = new Set(roots.map((r) => coworkPathKey(r)));
+  const managed = (state.discovery.projects || [])
+    .filter((p) => p && p.kind !== 'routine' && p.dir && !declared.has(coworkPathKey(p.dir)));
+  const rows = [
+    ...roots.map((r) => `<li>
+      <code class="mono">${esc(String(r))}</code>
+      <button type="button" class="linklike" data-drop-cowork-root="${esc(String(r))}">登録を解除</button>
+    </li>`),
+    ...managed.map((p) => `<li>
+      <code class="mono">${esc(String(p.dir))}</code>
+      <span class="muted">プロジェクトとして登録されているため、ここでは解除できません</span>
+    </li>`),
+  ].join('');
   return `<div class="field">
     <label>定常業務のフォルダ</label>
-    <p class="field-help">実行エンジンが担当していないフォルダ（kiro-loop の設定や .statemachine/ を
-      持つだけのフォルダ）を、定常業務画面で扱えるようにします。実行エンジンが担当している
-      プロジェクトは登録不要です。</p>
+    <p class="field-help">定常業務を探すフォルダの一覧です。実行エンジンが担当していないフォルダ
+      （kiro-loop の設定や .statemachine/ を持つだけのフォルダ）はここで登録します。実行エンジンが
+      担当しているプロジェクトは登録不要で、自動でこの一覧に並びます。</p>
     ${rows ? `<ul class="settings-root-list">${rows}</ul>`
-      : '<p class="muted">登録されたフォルダはありません。</p>'}
+      : '<p class="muted">対象のフォルダはありません。</p>'}
     <div class="row"><button type="button" id="btn-settings-cowork-add-root">フォルダを登録</button></div>
   </div>`;
 }
@@ -1791,7 +1805,7 @@ function coworkVisibleEntries(draft, selectedDir) {
   const entries = (draft || []).map((item, index) => ({ item, index }));
   if (!selectedDir) return [];
   const key = coworkPathKey(selectedDir);
-  return entries.filter(({ item }) => coworkPathKey(item.repo || item.cwd) === key);
+  return entries.filter(({ item }) => coworkPathKey(coworkItemFolder(item)) === key);
 }
 
 function coworkEntryId(item, index) {
@@ -1909,7 +1923,7 @@ function coworkHasProjectConfig(cowork, projectFolder) {
   const key = coworkPathKey(projectFolder);
   return !!key && (
     ((cowork && cowork.discoveredRepos) || []).some((repo) => coworkPathKey(repo) === key)
-    || ((cowork && cowork.items) || []).some((item) => coworkPathKey(item.repo || item.cwd) === key)
+    || ((cowork && cowork.items) || []).some((item) => coworkPathKey(coworkItemFolder(item)) === key)
   );
 }
 
@@ -1921,7 +1935,7 @@ function coworkRunBannerHtml() {
   }
   if (r.phase === 'ok') {
     if (r.launched) {
-      return `<div class="cowork-run-banner ok" role="status">「${esc(r.name || r.id)}」を別ウィンドウ（WSL tmux）で開始しました — 開いたウィンドウで進行を確認できます</div>`;
+      return `<div class="cowork-run-banner ok" role="status">「${esc(r.name || r.id)}」を別ウィンドウ（ターミナル / tmux）で開始しました — 開いたウィンドウで進行を確認できます</div>`;
     }
     return `<div class="cowork-run-banner ok" role="status">「${esc(r.name || r.id)}」の実行が完了しました${r.message ? ` — ${esc(r.message)}` : ''}</div>`;
   }
@@ -2057,7 +2071,7 @@ function bindCoworkDetailActions(root, folder) {
     toast(
       res && res.ok
         ? (res.launched
-          ? `「${name}」を別ウィンドウ（WSL tmux）で開始しました`
+          ? `「${name}」を別ウィンドウ（ターミナル / tmux）で開始しました`
           : `「${name}」を実行しました`)
         : `「${name}」を実行できませんでした: ${message}`,
       !!(res && res.ok)

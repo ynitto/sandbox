@@ -7,7 +7,8 @@ module.exports = {
     loopCommand: 'kiro-loop',
     nextLoopProvider: 'agent-loop',
     stateMachineCommand: 'statemachine-use',
-    // Windows では実行を新しいウィンドウ（WSL tmux）で開始し、進行を見られるようにする。
+    // 実行は新しいウィンドウ（Windows は WSL、macOS は Terminal、Linux は端末エミュレータ）の
+    // tmux で開始し、進行を見られるようにする。false にすると main プロセスを止める同期実行。
     // false で従来の非表示実行（spawnSync）に戻す。
     runWindow: true,
     // ウィンドウ実行時に tmux セッションで起動するインタラクティブ CLI の**明示上書き**。

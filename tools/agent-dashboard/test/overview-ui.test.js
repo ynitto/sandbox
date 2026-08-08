@@ -90,15 +90,17 @@ assert.deepStrictEqual(
 // eslint-disable-next-line no-new-func
 const coworkPathKey = new Function(`${grab('coworkPathKey')}; return coworkPathKey;`)();
 // eslint-disable-next-line no-new-func
+const coworkItemFolder = new Function(`${grab('coworkItemFolder')}; return coworkItemFolder;`)();
+// eslint-disable-next-line no-new-func
 const coworkVisibleEntries = new Function(
-  'coworkPathKey',
+  'coworkPathKey', 'coworkItemFolder',
   `${grab('coworkVisibleEntries')}; return coworkVisibleEntries;`
-)(coworkPathKey);
+)(coworkPathKey, coworkItemFolder);
 // eslint-disable-next-line no-new-func
 const coworkHasProjectConfig = new Function(
-  'coworkPathKey',
+  'coworkPathKey', 'coworkItemFolder',
   `${grab('coworkHasProjectConfig')}; return coworkHasProjectConfig;`
-)(coworkPathKey);
+)(coworkPathKey, coworkItemFolder);
 
 assert.strictEqual(coworkPathKey('\\\\wsl.localhost\\Ubuntu\\home\\me\\proj\\'), '/home/me/proj');
 assert.strictEqual(coworkPathKey('/home/me/proj'), '/home/me/proj');
@@ -124,6 +126,12 @@ assert.strictEqual(coworkPathKey('C:\\Users\\Me\\proj'), 'c:/users/me/proj');
   assert.strictEqual(coworkHasProjectConfig({ discoveredRepos: ['/home/me/proj-a'] }, '/home/me/proj-b'), false);
   assert.strictEqual(coworkHasProjectConfig({ items: [{ repo: '/home/me/proj-b' }] }, '/home/me/proj-b'), true,
     '手動追加した作業だけのプロジェクトも定常業務を表示する');
+  // 所属は登録したフォルダ（root）。設定ファイルがサブフォルダにある作業も、登録した
+  // フォルダの一覧に出す（repo で括ると、どのフォルダを選んでも出てこない）。
+  const nested = [{ id: 'n', root: '/home/me/proj-b', repo: '/home/me/proj-b/packages/api' }];
+  assert.deepStrictEqual(coworkVisibleEntries(nested, '/home/me/proj-b').map((e) => e.item.id), ['n'],
+    'サブフォルダに設定がある作業は登録フォルダの一覧に出る');
+  assert.strictEqual(coworkHasProjectConfig({ items: nested }, '/home/me/proj-b'), true);
 }
 
 // ミッションは端末（ノード）の話で、選択中プロジェクトでは絞らない。ミッションが自分の

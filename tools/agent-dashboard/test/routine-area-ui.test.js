@@ -44,6 +44,7 @@ function constLine(name) {
 const body = [
   constLine('COWORK_ATTENTION_STATUS'),
   fn('coworkPathKey'),
+  fn('coworkItemFolder'),
   fn('coworkItemsForFolder'),
   fn('coworkAttentionItems'),
   fn('isProjectAreaItem'),
@@ -122,10 +123,11 @@ async function main() {
 // --- 2) 領域を開いたら、その領域の対象を選び直す --------------------------------
 
 {
+  // 持ち込んだ選択（プロジェクト領域のフォルダ）はこの領域では中身が無いので引き継がない。
   const state = makeState({ items: [work('a', 'unknown')] });
   const { alignAreaSelection, calls } = load(state);
   await alignAreaSelection('routines');
-  assert.deepStrictEqual(calls, [ROUTINE_DIR], '前の領域のプロジェクトを持ち込まない');
+  assert.deepStrictEqual(calls, [ROUTINE_DIR], '空のフォルダに着地させず、作業のあるフォルダを開く');
   assert.strictEqual(state.areaSelection.routines, ROUTINE_DIR);
   console.log('ok - 定常業務を開くと定常業務のフォルダが選ばれる');
 }
@@ -138,6 +140,16 @@ async function main() {
   assert.deepStrictEqual(calls, [], '領域の中の対象を選んでいるなら選び直さない');
   assert.strictEqual(state.areaSelection.routines, ROUTINE_DIR, '選択中の対象を覚える');
   console.log('ok - 領域の中の選択は横取りしない');
+}
+
+{
+  // 持ち込んだ選択がその領域でも中身を持つなら、そのまま引き継ぐ（勝手に移さない）。
+  const state = makeState({ items: [work('a', 'unknown', PROJECT_DIR)] });
+  const { alignAreaSelection, calls } = load(state);
+  await alignAreaSelection('routines');
+  assert.deepStrictEqual(calls, [], '選択中のフォルダに作業があるなら移動しない');
+  assert.strictEqual(state.areaSelection.routines, PROJECT_DIR);
+  console.log('ok - 中身のある選択は領域をまたいでも引き継ぐ');
 }
 
 {
@@ -184,11 +196,14 @@ async function main() {
     [PROJECT_DIR],
     '定常業務専用フォルダはプロジェクト領域の一覧に出さない'
   );
+  // 定常業務は両方（登録フォルダ ＋ プロジェクトとして登録したフォルダ）を対象にする。
+  // 走査はもともと両方を回っているので、片方だけ並べると一覧に無いフォルダの作業が出てくる。
   assert.deepStrictEqual(
     areaItems('routines').map((x) => x.dir),
-    [ROUTINE_DIR],
-    '作業を持つフォルダは定常業務領域の一覧に出る'
+    [PROJECT_DIR, ROUTINE_DIR],
+    '定常業務の対象は登録フォルダとプロジェクトのフォルダの両方'
   );
+  assert.deepStrictEqual(areaItems('routines').map((x) => x.works), [0, 1], '作業の件数も持つ');
   assert.ok(
     src.includes('p.exists && isProjectAreaItem(p)'),
     'サイドバーの一覧も同じ条件で絞る（一覧と照合の食い違いを作らない）'
