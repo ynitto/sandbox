@@ -619,7 +619,7 @@ const LEGACY_CHAT_COMMAND = 'kiro-cli chat --trust-all-tools';
 //
 // 起動する CLI とモデルの解決順は CLIチャット・対話診断と同じ interactiveLaunchSpec に
 // 集約する（＝全体設定の workloads.routine.agent_cli / model が最優先）。ollama のように
-// 起動 argv にモデル名が要る CLI（`agent-ollama --tui --think off <model>`）でも、
+// 起動 argv にモデル名が要る CLI（`agent-ollama --tui --think on <model>`）でも、
 // 定義（agents/<name>.json の interactive）どおりの argv がそのまま組み上がる。
 // `cowork.chatCommand` は明示上書き（空なら解決結果）。
 // 解決できないとき（定義が見つからない等）は従来の文字列へ落として、定常業務を止めない。

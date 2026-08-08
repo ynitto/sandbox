@@ -73,7 +73,7 @@ test('全体設定の workloads.routine で指定したエージェントとモ�
   assert.strictEqual(launch.model, 'qwen3:8b');
   // agents/ollama.json の interactive 定義どおりの argv（モデル名は argv の一部）。
   assert.deepStrictEqual(launch.chatCommand,
-    ['agent-ollama', '--tui', '--think', 'off', 'qwen3:8b']);
+    ['agent-ollama', '--tui', '--think', 'on', 'qwen3:8b']);
   // 入力受付の待ち方も CLI 定義から来る（kiro の固定パターンを使い回さない）。
   assert.strictEqual(launch.readyPattern, '^[[:space:]]*>[[:space:]]*$');
 });
@@ -114,7 +114,7 @@ test('全体設定がモデルだけの宣言なら、CLI は下位の解決の�
   assert.strictEqual(launch.cli, 'ollama');
   assert.strictEqual(launch.model, 'llama3.1');
   assert.deepStrictEqual(launch.chatCommand,
-    ['agent-ollama', '--tui', '--think', 'off', 'llama3.1']);
+    ['agent-ollama', '--tui', '--think', 'on', 'llama3.1']);
 });
 
 test('全体設定に定義の無いエージェント名が入っていても定常業務を止めない（警告して下位へ）', () => {
@@ -178,7 +178,7 @@ test('定常業務の実行は全体設定で指定した CLI のウィンドウ
       .run({ id: '毎朝レビュー', cwd: emptyRepo(), prompt: 'レビューしてください' });
     assert.strictEqual(res.ok, true);
     const body = fs.readFileSync(res.scriptFile, 'utf8');
-    assert.ok(body.includes("'agent-ollama' '--tui' '--think' 'off' 'qwen3:8b'"),
+    assert.ok(body.includes("'agent-ollama' '--tui' '--think' 'on' 'qwen3:8b'"),
       `全体設定どおりの対話 CLI を tmux で起こす: ${body.slice(0, 400)}`);
     assert.ok(!body.includes('kiro-cli'), 'kiro-cli へ固定で倒れない');
     assert.ok(body.includes('レビューしてください'), '解決済みプロンプト本文を送る');
@@ -206,7 +206,7 @@ test('定常業務一覧からの実行（runLoop）も全体設定どおりの 
   withWin32(() => {
     const res = cowork.runLoop(config, '毎朝レビュー');
     const body = fs.readFileSync(res.scriptFile, 'utf8');
-    assert.ok(body.includes("'agent-ollama' '--tui' '--think' 'off' 'qwen3:8b'"),
+    assert.ok(body.includes("'agent-ollama' '--tui' '--think' 'on' 'qwen3:8b'"),
       '一覧から実行しても全体設定の CLI で起こす');
     assert.ok(body.includes('直近の変更をレビューしてください'), '定期プロンプト本文を送る');
   });
