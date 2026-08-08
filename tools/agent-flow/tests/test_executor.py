@@ -929,7 +929,10 @@ class CallExecutorDispatchTests(unittest.TestCase):
             return "成果"
 
         dep_results = {"t1": {"output": "ok", "data": {"items": [{"id": "a"}, {"id": "b"}]}}}
-        with mock.patch.object(kf, "run_agent", side_effect=fake_run_agent):
+        # flow-worker スキルを無効化して組み込み fallback プロンプトを通す
+        # （インストール済みスキルの prompt.py は compact 描画に未対応でも壊れない設計のため）
+        with mock.patch.object(kf, "_flow_worker_prompt", return_value=None), \
+             mock.patch.object(kf, "run_agent", side_effect=fake_run_agent):
             kf.execute_agent("synthesize", "統合", dep_results, None)
         self.assertIn('data: {"items":[{"id":"a"},{"id":"b"}]}', captured["prompt"])
 
@@ -942,7 +945,8 @@ class CallExecutorDispatchTests(unittest.TestCase):
             return "成果"
 
         dep_results = {"t1": {"output": "ok", "data": {"items": [{"id": "a"}, {"id": "b"}]}}}
-        with mock.patch.object(kf, "run_agent", side_effect=fake_run_agent):
+        with mock.patch.object(kf, "_flow_worker_prompt", return_value=None), \
+             mock.patch.object(kf, "run_agent", side_effect=fake_run_agent):
             kf.execute_agent("synthesize", "統合", dep_results, None, prompt_table=True)
         self.assertIn("items[2]{id}:", captured["prompt"])
 
@@ -995,7 +999,9 @@ class CallExecutorDispatchTests(unittest.TestCase):
         repair = {"of": "t1-work", "output": "前回はここまでできた",
                   "issues": ["境界値の扱いが違う", "テストが1件失敗"],
                   "artifact_dir": "/tmp/bus/artifacts/t1-work", "delivered": True}
-        with mock.patch.object(kf, "run_agent", side_effect=fake_run_agent):
+        # repair_note 未対応のスキルが入っていても壊れない設計のため、組み込み経路で検証する
+        with mock.patch.object(kf, "_flow_worker_prompt", return_value=None), \
+             mock.patch.object(kf, "run_agent", side_effect=fake_run_agent):
             kf.execute_agent("work", "修正して", {}, None, repair=repair)
         prompt = captured["prompt"]
         self.assertIn("前回 t1-work として実行され", prompt)
