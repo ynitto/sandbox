@@ -3,7 +3,7 @@
 > 決定日: 2026-08-08  
 > 対象: `tools/agent-loop/`  
 > 関連: `docs/designs/agent-loop-design.md`、`tools/agent-loop/DESIGN.md`  
-> 状態: 設計承認済み・未実装
+> 状態: 設計承認済み・Phase 1 実装済み（Phase 2 未実装）
 
 ## 1. 概要
 

@@ -5,6 +5,72 @@ from __future__ import annotations
 # メイン
 # ---------------------------------------------------------------------------
 
+def _cmd_lifecycle(args: argparse.Namespace, cwd: Path) -> None:
+    """pause / resume / cancel / drain / reload を running daemon へ file mailbox で渡す。"""
+    pid = _find_running_daemon(cwd)
+    cmd = str(args.subcommand)
+    if cmd in ("pause", "resume"):
+        set_local_pause(str(cwd.resolve()), cmd == "pause")
+        print(f"[agent-loop] local pause を {'有効' if cmd == 'pause' else '解除'}にしました", file=sys.stderr)
+        if pid is None:
+            print("[agent-loop] 実行中の daemon はありません（loop-control のみ更新）", file=sys.stderr)
+            sys.exit(0)
+        write_loop_command(pid, cmd)
+        sys.exit(0)
+
+    if pid is None:
+        print("[agent-loop] ERROR: 実行中の daemon が見つかりません", file=sys.stderr)
+        sys.exit(1)
+
+    if cmd == "cancel":
+        target = str(getattr(args, "target", "") or "")
+        if not target:
+            print("[agent-loop] ERROR: cancel には target が必要です", file=sys.stderr)
+            sys.exit(1)
+        # 不明 target は daemon 側でも失敗し得る。CLI では mailbox 書き込み後、
+        # 管理下に無い場合は事前チェックで非 0。
+        states = _read_all_states()
+        known = False
+        for st in states:
+            if int(st.get("pid", 0)) != pid:
+                continue
+            for s in st.get("sessions", []):
+                if target in (s.get("pane"), s.get("id"), s.get("name")):
+                    known = True
+                    break
+        if not known:
+            print(f"[agent-loop] ERROR: 不明なターゲットです: {target}", file=sys.stderr)
+            sys.exit(1)
+        write_loop_command(pid, "cancel", {"target": target})
+        print(f"[agent-loop] cancel を要求しました: {target}", file=sys.stderr)
+        sys.exit(0)
+
+    if cmd == "drain":
+        write_loop_command(pid, "drain")
+        print("[agent-loop] drain を要求しました", file=sys.stderr)
+        sys.exit(0)
+
+    if cmd == "reload":
+        # YAML を読んで entries を payload に載せる（daemon が validate → 次 tick 交換）
+        try:
+            config, _, has_local = load_config(cwd)
+            entries = list(config.get("prompts") or [])
+            if not has_local:
+                entries = load_vscode_periodic_prompts(cwd)
+            ws = load_prompt_config(str(cwd))
+            if ws:
+                entries = ws
+        except Exception as exc:
+            print(f"[agent-loop] ERROR: 設定の読み込みに失敗しました: {exc}", file=sys.stderr)
+            sys.exit(1)
+        write_loop_command(pid, "reload", {"entries": entries})
+        print("[agent-loop] reload を要求しました", file=sys.stderr)
+        sys.exit(0)
+
+    print(f"[agent-loop] ERROR: 未知のコマンド: {cmd}", file=sys.stderr)
+    sys.exit(1)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="kiro-cli を定期プロンプトで自動操作するスクリプト",
@@ -86,6 +152,24 @@ def main() -> None:
         metavar="DIR",
         help="作業ディレクトリ（省略時: カレントディレクトリ）",
     )
+    send_parser.add_argument(
+        "--wait",
+        action="store_true",
+        help="キュー受付後、対象ペインの busy→ready を待つ",
+    )
+    send_parser.add_argument(
+        "--priority",
+        choices=["high", "normal", "low"],
+        default="normal",
+        help="dispatch 優先度（既定: normal）",
+    )
+    send_parser.add_argument(
+        "--response-timeout",
+        type=float,
+        default=None,
+        metavar="SEC",
+        help="--wait 時のタイムアウト秒（既定: 600）",
+    )
 
     msg_parser = subparsers.add_parser(
         "msg",
@@ -116,6 +200,28 @@ def main() -> None:
         help="登録済みエージェントの一覧を表示する",
     )
 
+    doctor_parser = subparsers.add_parser(
+        "doctor",
+        help="設定・状態・slot・send-request を診断する",
+    )
+    doctor_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="findings を JSON で出力する",
+    )
+    doctor_parser.add_argument(
+        "--fix",
+        action="store_true",
+        help="安全な修復のみ実行（dir 作成、dead slot 削除、破損 request 隔離）",
+    )
+
+    subparsers.add_parser("pause", help="local pause（新規 dispatch / pane 起動を停止）")
+    subparsers.add_parser("resume", help="local pause だけを解除する")
+    cancel_parser = subparsers.add_parser("cancel", help="managed な entry/pane を停止・解放する")
+    cancel_parser.add_argument("target", help="entry id / name / pane id")
+    subparsers.add_parser("drain", help="新規受付を止め、実行中完了後に daemon を終了する")
+    subparsers.add_parser("reload", help="設定の transactional reload を要求する")
+
     args = parser.parse_args()
 
     logging.getLogger().setLevel(args.log_level)
@@ -140,6 +246,14 @@ def main() -> None:
 
     if args.subcommand == "agents":
         cmd_agents()
+        return
+
+    if args.subcommand == "doctor":
+        cmd_doctor(args)
+        return
+
+    if args.subcommand in ("pause", "resume", "cancel", "drain", "reload"):
+        _cmd_lifecycle(args, cwd)
         return
 
     running_pid = _find_running_daemon(cwd)
@@ -236,6 +350,17 @@ def main() -> None:
                 max_concurrent, slot_timeout_seconds, cooldown_seconds,
             )
 
+    # 起動時 stale slot クリーンアップ（常時）
+    started_at = time.time()
+    cleanup_stale_slots_on_startup(
+        slot_timeout_seconds,
+        daemon_started_at=started_at,
+        cooldown_seconds=cooldown_seconds,
+    )
+
+    health_cfg = config.get("health") if isinstance(config.get("health"), dict) else {}
+    freeze_timeout = int(health_cfg.get("freeze_timeout_seconds", 0) or 0)
+
     # グローバル参照（cleanup / シグナルハンドラ用）
     global _session_mgr_ref, _scheduler_ref, _slot_monitor_ref, _stop_event_ref
     global _webhook_server_ref, _inbox_watcher_ref
@@ -259,13 +384,44 @@ def main() -> None:
 
     agent_name = str(config.get("agent_name", "")).strip()
     monitor_semaphore = semaphore or (GlobalSemaphore(0) if agent_name else None)
+
+    slot_monitor_box: list[SlotMonitor | None] = [None]
+
+    def _on_freeze(pane_id: str) -> None:
+        mon = slot_monitor_box[0]
+        with session_mgr._lock:
+            items = list(session_mgr._panes.items())
+        for prompt_id, p in items:
+            if p != pane_id:
+                continue
+            log.warning("freeze を検知したためペインを再起動します: %s", pane_id)
+            if mon is not None:
+                mon.untrack(pane_id)
+            if semaphore is not None:
+                semaphore.release(pane_id)
+            try:
+                session_mgr.restart_pane(prompt_id)
+            except RuntimeError as exc:
+                log.error("freeze 再起動失敗: %s", exc)
+            return
+
     slot_monitor: SlotMonitor | None = (
-        SlotMonitor(monitor_semaphore, slot_timeout_seconds)
+        SlotMonitor(
+            monitor_semaphore,
+            slot_timeout_seconds,
+            freeze_timeout_seconds=freeze_timeout,
+            on_freeze=_on_freeze,
+        )
         if monitor_semaphore is not None else None
     )
+    slot_monitor_box[0] = slot_monitor
     _slot_monitor_ref = slot_monitor
 
-    scheduler = PeriodicScheduler(session_mgr, entries, semaphore=semaphore, slot_monitor=slot_monitor)
+    scheduler = PeriodicScheduler(
+        session_mgr, entries, semaphore=semaphore, slot_monitor=slot_monitor,
+        workspace=str(cwd.resolve()),
+    )
+    scheduler.configure_runtime(workspace=str(cwd.resolve()), health=health_cfg)
     _scheduler_ref = scheduler
 
     # カレントディレクトリ配下の .agent/agent-loop.yml から定期プロンプトを読み込み
@@ -293,6 +449,7 @@ def main() -> None:
             semaphore=semaphore,
             slot_monitor=slot_monitor,
             poll_interval=inbox_poll_seconds,
+            scheduler=scheduler,
         )
         inbox_watcher.start()
         _inbox_watcher_ref = inbox_watcher
@@ -327,7 +484,7 @@ def main() -> None:
     # セッション監視スレッド起動
     monitor_thread = threading.Thread(
         target=_monitor_loop,
-        args=(session_mgr, stop_event),
+        args=(session_mgr, stop_event, scheduler, health_cfg),
         name="session-monitor",
         daemon=True,
     )

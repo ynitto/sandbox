@@ -41,6 +41,7 @@ class SessionManager:
         # グローバル指示: ペインごとに「最後に注入した instructions.revision」を覚え、
         # revision が変わったときだけ次の送信に前置する（長寿命チャットの文脈を汚さない）。
         self._instr_rev: dict[str, int] = {}
+        self._state_extras: dict[str, Any] = {}
         self._lock = threading.Lock()
 
         self._tmux_bin: str | None = None
@@ -547,6 +548,142 @@ class SessionManager:
 
         return None
 
+    def is_managed_pane(self, pane_id: str) -> bool:
+        """pane_id がこの SessionManager の管理下か。"""
+        with self._lock:
+            return pane_id in self._panes.values()
+
+    def _resolve_prompt_id_for_pane(self, pane_id: str) -> str | None:
+        with self._lock:
+            for prompt_id, managed in self._panes.items():
+                if managed == pane_id:
+                    return prompt_id
+        return None
+
+    @staticmethod
+    def _get_pane_pid(pane_id: str) -> int | None:
+        """tmux からペインの shell PID を取得する。"""
+        result = _tmux_cmd("display-message", "-p", "-t", pane_id, "#{pane_pid}")
+        if result.returncode != 0:
+            return None
+        raw = (result.stdout or "").strip()
+        try:
+            pid = int(raw)
+        except ValueError:
+            return None
+        return pid if pid > 0 else None
+
+    @staticmethod
+    def _enumerate_descendant_pids(root_pid: int) -> list[int]:
+        """ps から root_pid と子孫 PID を深さ降順で列挙する（葉から kill する）。"""
+        result = subprocess.run(
+            ["ps", "-eo", "pid=", "ppid="],
+            capture_output=True, text=True, check=False,
+        )
+        if result.returncode != 0:
+            return [root_pid]
+        children: dict[int, list[int]] = {}
+        for line in (result.stdout or "").splitlines():
+            parts = line.split()
+            if len(parts) != 2:
+                continue
+            try:
+                pid, ppid = int(parts[0]), int(parts[1])
+            except ValueError:
+                continue
+            children.setdefault(ppid, []).append(pid)
+
+        depths: dict[int, int] = {root_pid: 0}
+        queue = [root_pid]
+        while queue:
+            current = queue.pop(0)
+            for child in children.get(current, []):
+                if child in depths:
+                    continue
+                depths[child] = depths[current] + 1
+                queue.append(child)
+
+        ordered = sorted(depths.keys(), key=lambda p: depths[p], reverse=True)
+        return ordered
+
+    @staticmethod
+    def _signal_pids(pids: list[int], sig: signal.Signals) -> None:
+        for pid in pids:
+            if pid <= 0:
+                continue
+            try:
+                os.kill(pid, sig)
+            except ProcessLookupError:
+                pass
+            except PermissionError:
+                log.warning("PID %d へ signal %s を送れません（権限不足）。", pid, sig.name)
+
+    def kill_process_tree(self, pane_id: str, grace_seconds: float = 2.0) -> None:
+        """managed pane の process tree を停止し tmux pane を削除する。
+
+        PID 解決に失敗した場合は kill-pane のみ行い、広い process group へ signal を送らない。
+        slot / monitor 解放は呼び出し元の責務。
+        """
+        if not self.is_managed_pane(pane_id):
+            log.warning("kill_process_tree: 管理外ペイン %s をスキップします。", pane_id)
+            return
+
+        root_pid = self._get_pane_pid(pane_id)
+        if root_pid is None:
+            log.warning("kill_process_tree: PID 解決失敗 (pane=%s)。kill-pane のみ実行します。", pane_id)
+        else:
+            descendants = self._enumerate_descendant_pids(root_pid)
+            self._signal_pids(descendants, signal.SIGTERM)
+            if grace_seconds > 0:
+                time.sleep(grace_seconds)
+            survivors = [pid for pid in descendants if self._pid_is_alive(pid)]
+            self._signal_pids(survivors, signal.SIGKILL)
+
+        if self._pane_exists(pane_id):
+            try:
+                window_target = self._window_target_from_pane(pane_id)
+                _tmux_cmd("kill-pane", "-t", pane_id, capture=False)
+                _tmux_cmd("select-layout", "-t", window_target, self._layout_name(), capture=False)
+            except RuntimeError:
+                _tmux_cmd("kill-pane", "-t", pane_id, capture=False)
+
+    @staticmethod
+    def _pid_is_alive(pid: int) -> bool:
+        try:
+            os.kill(pid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+
+    def cleanup_managed_pane(self, prompt_id: str, grace_seconds: float = 2.0) -> bool:
+        """prompt_id の managed pane を process tree ごと停止し管理から外す。"""
+        with self._lock:
+            pane_id = self._panes.get(prompt_id)
+        if pane_id is None:
+            return False
+        self.kill_process_tree(pane_id, grace_seconds=grace_seconds)
+        with self._lock:
+            if self._panes.get(prompt_id) == pane_id:
+                self._panes.pop(prompt_id, None)
+                self._prompt_names.pop(prompt_id, None)
+                self._tmux_names.pop(prompt_id, None)
+                self._prompt_cwds.pop(prompt_id, None)
+                self._owners.pop(prompt_id, None)
+                self._instr_rev.pop(prompt_id, None)
+        self.write_state()
+        return True
+
+    @staticmethod
+    def capture_visible_input_tail(pane_id: str, lines: int = 3) -> str:
+        """入力残留判定用にペイン末尾の可視行を返す。"""
+        content = _capture_pane(pane_id)
+        tail_lines = [ln.rstrip() for ln in content.splitlines() if ln.strip()]
+        if not tail_lines:
+            return ""
+        return "\n".join(tail_lines[-max(lines, 1):])
+
     def restart_if_dead(self) -> None:
         with self._lock:
             items = list(self._panes.items())
@@ -569,11 +706,17 @@ class SessionManager:
     def _state_file_path(self) -> Path:
         return _STATE_DIR / f"{os.getpid()}.json"
 
+    def set_state_extras(self, extras: dict[str, Any]) -> None:
+        """loop-state に載せる追加フィールド（run_state 等）。"""
+        with self._lock:
+            self._state_extras = dict(extras or {})
+
     def write_state(self) -> None:
         """現在のペイン状態をファイルに書き出す（ls/send サブコマンドが参照する）。"""
         with self._lock:
             items = list(self._panes.items())
             names = dict(self._prompt_names)
+            extras = dict(getattr(self, "_state_extras", {}) or {})
         sessions_data = []
         for prompt_id, pane_target in items:
             sessions_data.append({
@@ -589,6 +732,7 @@ class SessionManager:
             "updated_at": time.time(),
             "sessions": sessions_data,
         }
+        data.update(extras)
         try:
             _STATE_DIR.mkdir(parents=True, exist_ok=True)
             self._state_file_path().write_text(

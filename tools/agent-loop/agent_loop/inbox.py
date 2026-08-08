@@ -1,5 +1,5 @@
 from __future__ import annotations
-# inbox.py — 元 agent-loop.py の 410-533 行目（機械分割・内容無改変）。
+# inbox.py — エージェント間メッセージ受信ウォッチャー。
 # 単体 import しない。agent_loop/__init__.py が共有名前空間へ順に exec 合成する。
 # ---------------------------------------------------------------------------
 # エージェント間メッセージ受信ウォッチャー
@@ -11,16 +11,7 @@ class InboxWatcher:
     メッセージファイル: ~/.kiro/agents/<agent_name>/inbox/<timestamp>_<uuid>.json
     処理済みアーカイブ: ~/.kiro/agents/<agent_name>/inbox/.processed/
 
-    メッセージ JSON スキーマ:
-      id          (str)   メッセージ固有 ID
-      from        (str)   送信元エージェント名
-      to          (str)   宛先エージェント名
-      created_at  (float) 作成日時 (Unix timestamp)
-      subject     (str)   件名（省略可）
-      body        (str)   本文
-      reply_to    (str)   返信元メッセージ ID（省略可。返信先エージェント名は from を使う）
-      correlation_id (str) 会話追跡用 ID（省略可）
-      cwd         (str)   送信元の作業ディレクトリ（省略可）
+    配送は PeriodicScheduler の dispatch gate 経由。tmux 送信成功後に .processed/ へ移動する。
     """
 
     def __init__(
@@ -30,11 +21,13 @@ class InboxWatcher:
         semaphore: "GlobalSemaphore | None" = None,
         slot_monitor: "SlotMonitor | None" = None,
         poll_interval: int = 5,
+        scheduler: "PeriodicScheduler | None" = None,
     ) -> None:
         self._agent_name = agent_name
         self._session_mgr = session_mgr
         self._semaphore = semaphore
         self._slot_monitor = slot_monitor
+        self._scheduler = scheduler
         self._poll_interval = poll_interval
         self._inbox_dir = _AGENTS_DIR / agent_name / "inbox"
         self._processed_dir = self._inbox_dir / ".processed"
@@ -63,32 +56,56 @@ class InboxWatcher:
                 log.error("[InboxWatcher] ポーリングエラー: %s", exc, exc_info=True)
 
     def _check_inbox(self) -> None:
-        """受信ボックスの未処理メッセージを走査してディスパッチする。"""
+        """受信ボックスの未処理メッセージを走査して enqueue する。"""
         msg_files = sorted(self._inbox_dir.glob("*.json"))
         for msg_file in msg_files:
+            if self._scheduler is not None and self._scheduler.has_pending_ack_path(str(msg_file)):
+                continue
             try:
                 data = json.loads(msg_file.read_text(encoding="utf-8"))
             except (json.JSONDecodeError, OSError) as exc:
                 log.warning("[InboxWatcher] メッセージ読み込みエラー (%s): %s", msg_file.name, exc)
                 continue
 
-            dispatched = self._try_dispatch(data)
-            if dispatched:
-                dest = self._processed_dir / msg_file.name
-                try:
-                    msg_file.rename(dest)
-                except OSError as exc:
-                    log.warning("[InboxWatcher] アーカイブ移動エラー (%s): %s", msg_file.name, exc)
+            if self._enqueue_message(data, msg_file):
                 log.info(
-                    "[InboxWatcher] メッセージ処理完了: from=%s subject=%r",
+                    "[InboxWatcher] メッセージをキューへ投入: from=%s subject=%r",
                     data.get("from", "?"),
                     data.get("subject", ""),
                 )
             else:
-                log.debug("[InboxWatcher] メッセージ保留中 (busy/semaphore): %s", msg_file.name)
+                log.debug("[InboxWatcher] メッセージ保留中 (drain/busy): %s", msg_file.name)
+
+    def _enqueue_message(self, data: dict[str, Any], msg_file: Path) -> bool:
+        """Scheduler gate へ投入する。受付できたら True。"""
+        prompt_text = self._build_prompt(data)
+        prompt_id = f"inbox-{data.get('id', uuid.uuid4().hex[:8])}"
+        name = f"inbox:{data.get('from', '?')}"
+        req = make_dispatch_request(
+            source="inbox",
+            entry_id=prompt_id,
+            prompt=prompt_text,
+            cwd=str(data["cwd"]) if data.get("cwd") else None,
+            priority="normal",
+            ack={
+                "kind": "inbox_file",
+                "path": str(msg_file),
+                "processed_dir": str(self._processed_dir),
+            },
+            meta={
+                "prompt_id": prompt_id,
+                "session_name": name,
+                "inbox_cleanup": True,
+                "from": data.get("from"),
+            },
+        )
+        if self._scheduler is not None:
+            return self._scheduler.enqueue_request(req)
+        # scheduler 未設定時の後方互換（テスト用）
+        return self._try_dispatch(data)
 
     def _try_dispatch(self, data: dict[str, Any]) -> bool:
-        """セッションへメッセージをディスパッチする。成功時 True。"""
+        """レガシー直接送信（scheduler なし / 回帰テスト用）。"""
         prompt_id = f"inbox-{data.get('id', uuid.uuid4().hex[:8])}"
         name = f"inbox:{data.get('from', '?')}"
 

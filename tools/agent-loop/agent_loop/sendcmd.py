@@ -361,26 +361,71 @@ def cmd_slot_release() -> None:
     sys.exit(0)
 
 
+def _resolve_send_entry_id(prompt_arg: str, prompt_text: str, target: str, cwd: Path) -> tuple[str, str]:
+    """(entry_id, resolved_prompt)。スケジュール名一致ならその entry id。"""
+    ws_prompts = load_prompt_config(str(cwd))
+    for p in ws_prompts:
+        if p.get("name") == prompt_arg:
+            eid = str(p.get("id") or p.get("name") or target)
+            return eid, str(p.get("prompt", "")).strip() or prompt_text
+    # 共通 config の prompts も見る
+    try:
+        cfg, _, _ = load_config(cwd)
+        for p in cfg.get("prompts") or []:
+            if isinstance(p, dict) and p.get("name") == prompt_arg:
+                eid = str(p.get("id") or p.get("name") or target)
+                return eid, str(p.get("prompt", "")).strip() or prompt_text
+    except Exception:
+        pass
+    return target, prompt_text
+
+
+def _wait_for_send_completion(
+    pane_id: str,
+    *,
+    response_timeout: float,
+    failure_pattern: str | None,
+) -> int:
+    """busy→ready を待つ。0=ready, 1=death/failure, 2=timeout。"""
+    deadline = time.time() + max(response_timeout, 1.0)
+    saw_busy = False
+    fail_re = None
+    if failure_pattern:
+        try:
+            fail_re = re.compile(failure_pattern, re.IGNORECASE | re.MULTILINE)
+        except re.error:
+            fail_re = None
+
+    while time.time() < deadline:
+        # pane 生存
+        r = _tmux_cmd("display-message", "-p", "-t", pane_id, "#{pane_id}")
+        if r.returncode != 0:
+            print(f"[agent-loop] ERROR: ペイン {pane_id} が終了しました", file=sys.stderr)
+            return 1
+        content = _capture_pane(pane_id)
+        if fail_re is not None and fail_re.search(content):
+            print("[agent-loop] ERROR: failure_pattern に一致しました", file=sys.stderr)
+            return 1
+        busy_slot = _pane_is_busy(pane_id)
+        ready = _pane_has_prompt(content)
+        if busy_slot or not ready:
+            saw_busy = True
+        elif saw_busy and ready:
+            return 0
+        time.sleep(0.5)
+
+    print(f"[agent-loop] ERROR: response_timeout ({int(response_timeout)}秒) を超過しました", file=sys.stderr)
+    return 2
+
+
 def cmd_send(args: argparse.Namespace, cwd: Path) -> None:
-    """プロンプトを tmux セッションのエージェント CLI に送信する。"""
-    # agent_cli 指定の設定があれば待機判定と起動 argv をその CLI に合わせる。
-    # 補助コマンドなので解決失敗は WARNING + 従来判定で続行（デーモンと違い fail fast しない）。
+    """プロンプトを永続 send-request キューへ投入する（daemon が配送）。"""
     try:
         send_config, _, _ = load_config(cwd)
     except Exception:
         send_config = {}
-    profile = _init_cli_profile_from_config(send_config, project_dir=cwd, strict=False)
-    if profile is not None and profile.argv:
-        cli_argv = list(profile.argv)
-        if shutil.which(cli_argv[0]) is None:
-            print(f"[agent-loop] ERROR: エージェント CLI '{cli_argv[0]}' が PATH に見つかりません。", file=sys.stderr)
-            sys.exit(1)
-    else:
-        kiro_bin = shutil.which("kiro-cli")
-        if kiro_bin is None:
-            print("[agent-loop] ERROR: kiro-cli が PATH に見つかりません。", file=sys.stderr)
-            sys.exit(1)
-        cli_argv = [kiro_bin, "chat", "--trust-all-tools"]
+    # 待機判定用にプロファイルを初期化（--wait 時）
+    _init_cli_profile_from_config(send_config, project_dir=cwd, strict=False)
 
     prompt_arg = " ".join(args.prompt).strip()
     if not prompt_arg:
@@ -388,8 +433,6 @@ def cmd_send(args: argparse.Namespace, cwd: Path) -> None:
         sys.exit(1)
 
     target = getattr(args, "session", None)
-
-    # --session 未指定時は状態ファイルから送信先ペインを自動解決する
     if not target:
         states = _read_all_states()
         alive_sessions = [
@@ -421,60 +464,60 @@ def cmd_send(args: argparse.Namespace, cwd: Path) -> None:
             sys.exit(1)
 
     prompt_text = _resolve_prompt_text(prompt_arg, cwd)
-    print(f"[agent-loop] 送信するプロンプト:\n{prompt_text}\n", file=sys.stderr)
-
-    # ターゲットペインを解決する。
-    # 既に kiro ペインが存在する場合は ensure_cli_session を呼ばない。
-    # kiro-cli が処理中（プロンプト非表示）でも誤って再起動しないようにするため。
-    if target.startswith("%"):
-        r = _tmux_cmd("display-message", "-p", "-t", target, "#{pane_id}")
-        if r.returncode != 0:
-            print(f"[agent-loop] ERROR: ペイン '{target}' が見つかりません。", file=sys.stderr)
-            sys.exit(1)
-        send_target = target
-    elif _session_name_exists(target):
-        existing_pane = _find_kiro_pane_in_session(target)
-        if existing_pane:
-            print(f"[agent-loop] セッション '{target}' の kiro ペイン {existing_pane} を使用します。", file=sys.stderr)
-            send_target = existing_pane
-        else:
-            print(f"[agent-loop] ERROR: セッション '{target}' に kiro ペインが見つかりません。", file=sys.stderr)
-            print("  agent-loop ls で確認するか、agent-loop send でスタンドアロンセッションを作成してください。", file=sys.stderr)
-            sys.exit(1)
-    else:
-        # セッションが存在しない場合のみ新規作成
-        if not ensure_cli_session(target, work_dir, cli_argv):
-            sys.exit(1)
-        resolved = _resolve_target_pane(target)
-        if resolved is None:
-            print(f"[agent-loop] ERROR: kiro-cli ペインが見つかりません (session={target})。", file=sys.stderr)
-            sys.exit(1)
-        send_target = resolved
-
-    # kiro-cli が処理中なら送信を拒否する
-    # スロットファイルがある場合はそちらを優先、なければプロンプト検出にフォールバック
-    if _pane_is_busy(send_target) or not _pane_has_prompt(_capture_pane(send_target)):
-        print(
-            f"[agent-loop] ERROR: ペイン {send_target} は現在処理中です。完了後に再送してください。",
-            file=sys.stderr,
-        )
+    entry_id, prompt_text = _resolve_send_entry_id(prompt_arg, prompt_text, target, cwd)
+    priority = str(getattr(args, "priority", None) or "normal")
+    if priority not in ("high", "normal", "low"):
+        print(f"[agent-loop] ERROR: --priority は high|normal|low です: {priority}", file=sys.stderr)
         sys.exit(1)
 
-    # 管理デーモンが max_concurrent > 0 の場合はスロットを取得してから送信する。
-    # これにより送信後の処理中にデーモンが別のプロンプトを送り込むのを防ぐ。
-    # スロットは SlotMonitor がプロンプト復帰を検知した際に自動解放する。
-    if not _try_acquire_slot_for_send(send_target):
-        print(
-            "[agent-loop] ERROR: 同時実行数が上限に達しています。他のペインの処理が完了してから再送してください。",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+    # CLI 側 debounce（同一 entry+prompt が直近 3 秒）
+    dedupe = _dedupe_key(entry_id, prompt_text)
+    if not hasattr(cmd_send, "_debouncer"):
+        cmd_send._debouncer = RequestDebouncer()  # type: ignore[attr-defined]
+    if cmd_send._debouncer.is_duplicate(dedupe):  # type: ignore[attr-defined]
+        print("[agent-loop] 同一内容の送信要求を debounce しました（受付済み扱い）", file=sys.stderr)
+        sys.exit(0)
 
-    if send_prompt_to_session(send_target, prompt_text):
-        print("[agent-loop] 完了しました", file=sys.stderr)
-    else:
-        print("[agent-loop] WARN: 応答待ちがタイムアウトしました", file=sys.stderr)
-        sys.exit(2)
+    req = write_send_request(
+        entry_id=entry_id,
+        prompt=prompt_text,
+        cwd=str(work_dir) if work_dir else None,
+        priority=priority,
+        meta={"target": target, "workspace": str(cwd.resolve())},
+    )
+    print(
+        f"[agent-loop] 送信要求を受け付けました (request_id={req['id']} entry_id={entry_id} priority={priority})",
+        file=sys.stderr,
+    )
+
+    if not getattr(args, "wait", False):
+        sys.exit(0)
+
+    # --wait: 対象ペインの busy→ready
+    pane_id = _resolve_target_pane(target) if not str(target).startswith("%") else str(target)
+    if pane_id is None and str(target).startswith("%"):
+        pane_id = str(target)
+    if pane_id is None:
+        # セッション名のまま待つ
+        pane_id = str(target)
+
+    response_timeout = float(
+        getattr(args, "response_timeout", None)
+        or send_config.get("response_timeout", 600)
+        or 600
+    )
+    failure_pattern = None
+    profile = globals().get("_CLI_PROFILE")
+    if profile is not None:
+        failure_pattern = getattr(profile, "failure_pattern", None)
+
+    # キュー受付直後はまだ ready のままなので、busy 遷移を待つ
+    code = _wait_for_send_completion(
+        pane_id,
+        response_timeout=response_timeout,
+        failure_pattern=failure_pattern if isinstance(failure_pattern, str) else None,
+    )
+    sys.exit(code)
 
 
 def cmd_msg(args: argparse.Namespace) -> None:

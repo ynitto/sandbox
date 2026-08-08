@@ -269,10 +269,33 @@ def command_loop(
 # セッション監視ループ（別スレッド）
 # ---------------------------------------------------------------------------
 
-def _monitor_loop(session_mgr: SessionManager, stop_event: threading.Event) -> None:
-    """死んだセッションを定期的に検出して再起動する。"""
-    while not stop_event.wait(10):
+def _monitor_loop(
+    session_mgr: SessionManager,
+    stop_event: threading.Event,
+    scheduler: "PeriodicScheduler | None" = None,
+    health: dict[str, Any] | None = None,
+) -> None:
+    """死んだセッションを定期的に検出して再起動する。health 監視もここで行う。"""
+    health = health or {}
+    interval = float(health.get("check_interval_seconds", 10) or 10)
+    interval = max(interval, 1.0)
+    while not stop_event.wait(interval):
         session_mgr.restart_if_dead()
+        if scheduler is not None:
+            try:
+                scheduler.check_memory_pressure()
+                scheduler.check_pane_rss()
+            except Exception as exc:
+                log.warning("health チェック中にエラー: %s", exc)
+            session_mgr.set_state_extras({
+                "run_state": scheduler.run_state(),
+                "queue_depth": scheduler.queue_depth(),
+                "active_count": scheduler.active_count(),
+                "health": {
+                    "mem_paused": scheduler._mem_paused,
+                    "input_recovery": scheduler._input_recovery,
+                },
+            })
         session_mgr.write_state()
 
 

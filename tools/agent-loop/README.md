@@ -77,10 +77,19 @@ agent-loop
 ```
 agent-loop [--log-level LEVEL] [--split-direction horizontal|vertical] [--no-auto-attach]
 agent-loop ls
-agent-loop send [-s SESSION] [-d DIR] PROMPT
+agent-loop send [-s SESSION] [-d DIR] [--wait] [--priority high|normal|low] PROMPT
+agent-loop pause | resume | cancel TARGET | drain | reload
+agent-loop doctor [--json] [--fix]
 agent-loop msg --to AGENT [OPTIONS] [BODY]
 agent-loop agents
 ```
+
+- `send` は永続キュー（`~/.agents/send-requests/`）へ受付した時点で終了します（`--wait` だけ busy→ready を待つ）。
+- `pause` / `resume` は local pause（`resume` は agent-control / budget の pause を迂回しません）。
+- `cancel` は managed な entry / pane だけを停止・slot 解放します。
+- `drain` は新規受付を止め、実行中完了後に daemon を終了します。
+- `reload` は設定を検証してから次 tick で一括交換します（失敗時は旧設定を維持）。
+- `doctor` は YAML / slot / send-request 等を診断します。
 
 `--no-auto-attach` はtmux外で専用セッションへ自動接続しない場合に使います。多重起動は
 `~/.agents/loop-state/`（旧 `~/.agent/` は移行時のみ）にある生存プロセスのcwdで判定します。

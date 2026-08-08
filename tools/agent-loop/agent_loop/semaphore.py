@@ -155,19 +155,23 @@ class GlobalSemaphore:
                 data = json.loads(slot_file.read_text(encoding="utf-8"))
                 pid = int(data.get("pid", 0))
                 acquired_at = float(data.get("acquired_at", 0))
-
-                if now - acquired_at > self._slot_timeout:
-                    slot_file.unlink(missing_ok=True)
-                    continue
+                timed_out = now - acquired_at > self._slot_timeout
 
                 if pid > 0:
                     try:
                         os.kill(pid, 0)
+                        if timed_out:
+                            log.warning(
+                                "生存 PID のスロットがタイムアウト超過ですが保持します: %s (pid=%d)",
+                                slot_file.name, pid,
+                            )
                         count += 1
                     except ProcessLookupError:
                         slot_file.unlink(missing_ok=True)
                     except PermissionError:
                         count += 1  # 他ユーザーのプロセスは生きているとみなす
+                elif timed_out:
+                    slot_file.unlink(missing_ok=True)
                 else:
                     count += 1
             except (json.JSONDecodeError, OSError, ValueError):
@@ -176,6 +180,92 @@ class GlobalSemaphore:
                 except OSError:
                     pass
         return count
+
+
+def _pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def cleanup_stale_slots_on_startup(
+    slot_timeout: int = _DEFAULT_SLOT_TIMEOUT,
+    daemon_started_at: float | None = None,
+    *,
+    cooldown_seconds: int = 0,
+    slots_dir: Path | None = None,
+) -> dict[str, int]:
+    """daemon 起動時に stale slot / cooldown を走査して整理する。
+
+    JSON 破損または PID 死亡 → 削除。PID 生存 → timeout 超過でも保持（warning）。
+    cooldown は期限切れのみ削除。
+    """
+    root = Path(slots_dir) if slots_dir is not None else _SLOTS_DIR
+    root.mkdir(parents=True, exist_ok=True)
+    mutex = root / ".lock"
+    stats = {"slots_deleted": 0, "cooldowns_deleted": 0, "slots_kept_alive": 0}
+
+    try:
+        with open(mutex, "w") as f:
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX)
+                now = time.time()
+                for slot_file in list(root.glob("pane_*.json")):
+                    try:
+                        data = json.loads(slot_file.read_text(encoding="utf-8"))
+                    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+                        slot_file.unlink(missing_ok=True)
+                        stats["slots_deleted"] += 1
+                        continue
+
+                    pid = int(data.get("pid", 0))
+                    acquired_at = float(data.get("acquired_at", 0))
+                    timed_out = now - acquired_at > slot_timeout
+
+                    if pid > 0 and _pid_alive(pid):
+                        if timed_out:
+                            log.warning(
+                                "起動時クリーンアップ: 生存 PID のスロットを保持します: %s (pid=%d)",
+                                slot_file.name, pid,
+                            )
+                        stats["slots_kept_alive"] += 1
+                        continue
+
+                    if pid > 0 or timed_out:
+                        slot_file.unlink(missing_ok=True)
+                        stats["slots_deleted"] += 1
+
+                for cooldown_file in list(root.glob("cooldown_*.json")):
+                    try:
+                        data = json.loads(cooldown_file.read_text(encoding="utf-8"))
+                        released_at = float(data.get("released_at", 0))
+                        if cooldown_seconds <= 0:
+                            continue
+                        if now - released_at > cooldown_seconds:
+                            cooldown_file.unlink(missing_ok=True)
+                            stats["cooldowns_deleted"] += 1
+                    except (json.JSONDecodeError, OSError, ValueError):
+                        cooldown_file.unlink(missing_ok=True)
+                        stats["cooldowns_deleted"] += 1
+            finally:
+                fcntl.flock(f, fcntl.LOCK_UN)
+    except OSError as exc:
+        log.warning("stale slot クリーンアップ中にエラーが発生しました: %s", exc)
+
+    if daemon_started_at is not None:
+        marker = root / ".daemon_started_at"
+        try:
+            marker.write_text(json.dumps({"started_at": daemon_started_at}), encoding="utf-8")
+        except OSError:
+            pass
+
+    return stats
 
 
 class SlotMonitor:
@@ -188,22 +278,38 @@ class SlotMonitor:
     _POLL_INTERVAL = 2.0
     _START_WAIT_TIMEOUT = 60.0  # kiro-cli が処理を始めるまでの最大待機秒数（固定）
 
-    def __init__(self, semaphore: GlobalSemaphore, slot_timeout_seconds: int = _DEFAULT_SLOT_TIMEOUT) -> None:
+    def __init__(
+        self,
+        semaphore: GlobalSemaphore,
+        slot_timeout_seconds: int = _DEFAULT_SLOT_TIMEOUT,
+        freeze_timeout_seconds: int = 0,
+        on_freeze: Any = None,
+    ) -> None:
         self._semaphore = semaphore
         self._slot_timeout = slot_timeout_seconds
+        self._freeze_timeout = max(int(freeze_timeout_seconds), 0)
+        self._on_freeze = on_freeze
         self._lock = threading.Lock()
-        # pane_id → state / acquired_at / optional on_complete
+        # pane_id → state / acquired_at / optional callbacks / freeze hash
         self._pending: dict[str, dict[str, Any]] = {}
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
 
-    def track(self, pane_id: str, on_complete: Any = None) -> None:
+    def track(
+        self,
+        pane_id: str,
+        on_complete: Any = None,
+        on_freeze: Any = None,
+    ) -> None:
         """ペインの処理完了監視を開始する。"""
         with self._lock:
             self._pending[pane_id] = {
                 "state": "waiting_start",
                 "acquired_at": time.time(),
                 "on_complete": on_complete,
+                "on_freeze": on_freeze,
+                "content_hash": None,
+                "hash_unchanged_since": None,
             }
 
     def untrack(self, pane_id: str) -> None:
@@ -269,9 +375,42 @@ class SlotMonitor:
             if is_idle:
                 log.info("SlotMonitor: ペイン %s の処理完了を検知。スロットを解放します。", pane_id)
                 self._release(pane_id, notify_complete=True)
-            elif now - acquired_at > self._slot_timeout:
-                log.warning("SlotMonitor: ペイン %s がタイムアウト。スロットを強制解放します。", pane_id)
-                self._release(pane_id, keep_for_completion=True)
+            else:
+                if self._freeze_timeout > 0:
+                    self._check_freeze(pane_id, content, entry, now)
+                if now - acquired_at > self._slot_timeout:
+                    log.warning("SlotMonitor: ペイン %s がタイムアウト。スロットを強制解放します。", pane_id)
+                    self._release(pane_id, keep_for_completion=True)
+
+    def _check_freeze(
+        self,
+        pane_id: str,
+        content: str,
+        entry: dict[str, Any],
+        now: float,
+    ) -> None:
+        """busy 中の画面 hash が freeze_timeout 変化しない場合に on_freeze を呼ぶ。"""
+        content_hash = hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()
+        with self._lock:
+            current = self._pending.get(pane_id)
+            if current is not entry or current.get("state") != "processing":
+                return
+            prev_hash = current.get("content_hash")
+            if prev_hash != content_hash:
+                current["content_hash"] = content_hash
+                current["hash_unchanged_since"] = now
+                return
+            unchanged_since = float(current.get("hash_unchanged_since") or now)
+            if now - unchanged_since < self._freeze_timeout:
+                return
+            callback = current.get("on_freeze") or self._on_freeze
+            current["hash_unchanged_since"] = now  # 連続発火を防ぐ
+        if callable(callback):
+            log.warning("SlotMonitor: ペイン %s が freeze 状態です。回復処理を呼び出します。", pane_id)
+            try:
+                callback(pane_id)
+            except Exception:
+                log.warning("SlotMonitor: freeze 回復処理に失敗しました (pane=%s)。", pane_id, exc_info=True)
 
     def _release(
         self,

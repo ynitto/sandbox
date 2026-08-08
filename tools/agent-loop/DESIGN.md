@@ -2,8 +2,9 @@
 
 > **由来**: `tools/kiro-loop/DESIGN.md` を置換せずクローンし改称。実装は `agent_loop/` パッケージ。
 
-> 最終更新: 2026-05-04  
-> 対象ファイル: `agent-loop.py`（約 2570 行）
+> 最終更新: 2026-08-08  
+> 対象: `agent_loop/` パッケージ（断片合成）  
+> Phase 1: `docs/plans/2026-08-08-agent-loop-phased-enhancement-design.md`
 
 ---
 
@@ -12,10 +13,10 @@
 agent-loop は **tmux + kiro-cli** を組み合わせ、設定ファイルで定義したプロンプトを定期的に自動送信するデーモンスクリプト。
 
 主な役割:
-- `kiro-cli chat` プロセスを tmux ペインとして起動・死活監視・再起動
-- 定期プロンプトを指定インターバルでペインへ送信
-- 複数デーモン間で kiro-cli の同時実行数を制御（ファイルベースセマフォ）
-- `ls` / `send` サブコマンドによる外部操作
+- エージェント CLI プロセスを tmux ペインとして起動・死活監視・再起動
+- schedule / event_hook / webhook / inbox / CLI send を `PeriodicScheduler` の唯一の dispatch gate 経由で配送
+- 複数デーモン間で同時実行数を制御（ファイルベースセマフォ）と pending FIFO（上限時は破棄せず保留）
+- `ls` / `send` / `pause` / `resume` / `cancel` / `drain` / `reload` / `doctor` による外部操作
 
 エージェント CLI は既定で kiro-cli だが、設定 `agent_cli` により `agents/<name>.json`
 契約（agentcore.agentcli で解決）の別 CLI へ差し替えられる。担当は `agent_loop/cliprofile.py`
@@ -31,7 +32,7 @@ idle_quiet_sec）・クリアコマンド・スキル起動記号を定義から
 ```
 agent-loop (引数なし)
     │
-    ├─ サブコマンドあり → ls / send / slot-release を実行して終了
+    ├─ サブコマンドあり → ls / send / pause / resume / cancel / drain / reload / doctor / slot-release 等
     │
     ├─ 同一 cwd のデーモンが既に起動中 → スキップして終了
     │
@@ -149,9 +150,11 @@ cwd が変わらない限り同じセッション名が生成される。
 - `webhook`（`{hook, secret, secret_header}` に正規化、無ければ None）を正規化エントリに保持
 
 **event_hook**:
-- スケジュール発火のたびにフックの `check() -> str | None` を呼ぶ（`importlib` でインプロセス実行、`mtime` でキャッシュ）
-- `str` を返せばその文字列を `prompt` として送信、`None` ならそのサイクルはスキップ
-- `event_hook_fallback: true` のとき、フック呼び出し前に環境変数 `AGENT_LOOP_EVENT_HOOK_FALLBACK=1` を設定する（false なら `0`）。フック側はこれを見て「更新が無いときでもフィルター条件に合致する対象をランダム送信する」等のフォールバックを自己判断する。`AGENT_LOOP_PROMPT_NAME` にエントリ名も渡す。環境変数は呼び出し後に元へ戻す（scheduler は単一スレッドのため安全）
+- スケジュール発火のたびにフックの `check()` / `check(hook_config)` を呼ぶ（`importlib`、`mtime` キャッシュ）
+- 戻り値: `None`（スキップ） / `str`（prompt） / `dict{prompt, cwd?, vars?}`（`vars` は webhook と同じ `str.format_map`）
+- 30 秒 timeout で隔離し、完了または reload まで同じ hook を再実行しない
+- 配送成功（tmux 送信成功）後だけ `ack()` を呼ぶ
+- `event_hook_fallback` / `AGENT_LOOP_PROMPT_NAME` の環境変数受け渡しは従来どおり
 - 同梱例: `hooks/gitlab-issue-hook.py` / `hooks/gitlab-mr-hook.py`
 
 **inbound webhook**（`event_hook` のプッシュ版・provider 非依存）:
@@ -168,39 +171,30 @@ cwd が変わらない限り同じセッション名が生成される。
   `str.format_map(_SafeDict(...))` で注入（未定義キーは `{key}` のまま残す）。HTTP スレッドは
   完成プロンプトを `scheduler.enqueue_external(name, text)` で name 別の bounded deque
   （`_external_queues`、上限 `_WEBHOOK_QUEUE_MAX`）へ積んで即 `202` を返す
-- 実 dispatch は `_run_loop` の `_drain_external_one()`（1 サイクル 1 件）が担当。session 準備・
-  セマフォ判定を通し、未準備/上限時は `appendleft` で積み直す（再起動でキューは消える＝at-most-once）
-- hook のロードは event_hook と共通の `_load_hook_module`（HTTP/scheduler の複数スレッドから
-  呼ばれるため `_hook_cache_lock` で保護）
-- 同梱例: `hooks/gitlab-mr-webhook.py`（GitLab MR）/ `hooks/generic-webhook.py`（非 GitLab 最小例）
-- 詳細設計: `docs/designs/agent-loop-design.md`（「機能 2: 汎用 inbound Webhook」）
+- 実 dispatch は `_run_loop` が外部 deque を内部 pending へ移し、lifecycle / preflight / slot /
+  ready 判定を通して送信する。未準備/上限時は pending に戻す（再起動でメモリキューは消える＝at-most-once）
+- hook のロードは event_hook と共通の `_load_hook_module`（`_hook_cache_lock` で保護）
+- 同梱例: `hooks/gitlab-mr-webhook.py` / `hooks/generic-webhook.py`
+- 詳細: `docs/designs/agent-loop-design.md` および Phase 1 設計書
 
 **`_run_loop` の処理フロー**（1 秒ごと）:
 ```
-各エントリについて:
-  webhook あり かつ 外部キューに要素あり?
-    → _drain_external_one()（1 件送信 or 保留で積み直し）してこのエントリは終了
-  now >= next_run_at? → No: スキップ
-  fresh_context: should_clear を決定
-  event_hook あり? → check() を呼ぶ
-    None → next_run_at を更新してスキップ
-    str  → entry["prompt"] を上書き
-  ensure_session() でペイン確保
-  max_concurrent > 0 かつ exclude_from_concurrency でない場合:
-    _acquire_slot() でセマフォ取得
-    取得失敗 → _try_enqueue_for_pane() でキューへ、next_run_at を +interval
-  _dispatch_prompt() でプロンプト送信
-  next_run_at = now + interval
-
-_drain_pane_queue() でキュー済みプロンプトを送信試行
+lifecycle 判定（stop > drain > control pause > budget > local pause > run）
+loop-commands / send-requests を drain
+webhook 外部キュー → pending（entry ごと最大処理）
+期限到来の schedule/hook を pending へ（entry あたり schedule は最大 1 件 coalesce）
+pending を priority + FIFO で処理:
+  debounce → preflight → session 準備 → slot → ready → tmux 送信 → ack
+busy / slot 上限 → pending へ戻す（要求を消失させない）
 ```
 
 **fresh_context 機能**:
-- `fresh_context: true` → 毎回送信前に `/clear` を送信
-- `fresh_context_interval_minutes` を指定すると、その間隔でのみ `/clear` を実行（通常送信は毎回）
+- `fresh_context: true` → 毎回送信前にクリアコマンドを送信
+- `fresh_context_interval_minutes` を指定すると、その間隔でのみクリア（通常送信は毎回）
 
-**pane queue**:  
-同時実行数が上限に達した場合、プロンプトをキューに積んで次サイクルで再試行する。ペイン単位で管理し、同じペインに複数エントリが競合した場合は `scheduled_at` が早いものを残す。
+**dispatch pending queue**（旧「pane queue」相当）:  
+長寿命 pane は維持し、`max_concurrent` は同時処理中の dispatch 数。上限到達時は request を
+FIFO で保留し、同じ entry の定期発火は最大 1 件へ coalesce する。
 
 ---
 
@@ -221,6 +215,10 @@ _drain_pane_queue() でキュー済みプロンプトを送信試行
 ~/.agents/
 ├── agent-loop.yaml            グローバル設定ファイル（load_config が参照）
 ├── agent-loop.log             ローテートログ（7世代保持）
+├── send-requests/             CLI send の永続受付キュー
+├── loop-commands/<pid>/       pause/cancel/drain/reload の file mailbox
+├── loop-control/              workspace 単位の persistent local pause
+├── loop-adaptive/             adaptive interval 状態
 ├── agents/
 │   └── agent-loop-concurrency.json   install.sh が自動生成する agent 設定
 ├── slots/
@@ -228,7 +226,7 @@ _drain_pane_queue() でキュー済みプロンプトを送信試行
 │   ├── pane_<ID>.json        実行中スロット
 │   └── cooldown_<ID>.json    クールダウン記録
 └── loop-state/
-    └── <pid>.json            デーモン状態（ls/send が参照）
+    └── <pid>.json            デーモン状態（run_state / queue_depth / health 等）
 
 <project>/
 └── .agents/
@@ -290,16 +288,15 @@ tmux 外で起動された場合（`$TMUX` 未設定）、`_auto_attach_tmux_if_
 
 ```
 PeriodicScheduler._run_loop()
+    ├─ request を pending へ（schedule coalesce / webhook / send-requests / inbox）
     ├─ GlobalSemaphore.acquire(pane_id)
-    │      成功 → _dispatch_prompt()
-    │              ├─ send_prompt() 成功 → SlotMonitor.track(pane_id)
-    │              └─ send_prompt() 失敗 → semaphore.release(pane_id)
-    │      失敗 → ログ出力してスキップ（next_run_at を +interval に更新）
-    │
-    └─ [次のインターバルで再試行]
+    │      成功 → tmux 送信 → SlotMonitor.track(pane_id)
+    │      失敗 → pending へ戻す（要求は保持）
+    └─ SlotMonitor / session-monitor が完了・freeze・health を監視
 
 SlotMonitor._run_loop() [別スレッド]
-    ├─ ペイン: waiting_start → processing → semaphore.release()  [プロンプト復帰検知]
+    ├─ ペイン: waiting_start → processing → semaphore.release()  [ready 復帰]
+    ├─ freeze_timeout（opt-in）: busy 中 hash 不変 → on_freeze
     └─ タイムアウト時: 強制 semaphore.release()
 
 kiro-cli agent hook (stop)
@@ -319,22 +316,18 @@ kiro-cli agent hook (stop)
 
 | 条件 | 挙動 |
 |---|---|
-| 対象ペイン自身がスロット保持中（前回実行が未完了） | `next_run_at` を +30 秒に更新してスキップ。30 秒後に再試行 |
+| 対象ペイン自身がスロット保持中（前回実行が未完了） | request を pending に戻し、後続 tick で再試行 |
 | 対象ペインのスロットがタイムアウト超過 | スロットを強制解放して今回の送信を続行 |
-| クールダウン中 | `next_run_at` をクールダウン終了時刻に更新してスキップ |
-| グローバル上限到達（他ペインがスロットを消費） | ログ + stderr メッセージを出してスキップ。`next_run_at` を +interval に更新し次のサイクルで再試行 |
-
-スキップされた回は **失われる**（キューには積まない）。次のインターバルで通常通り再試行される。
+| クールダウン中 | request を pending に戻す |
+| グローバル上限到達（他ペインがスロットを消費） | request を pending に戻す（消失させない）。schedule は entry あたり最大 1 件へ coalesce |
 
 ### `send` サブコマンド
 
 | 条件 | 挙動 |
 |---|---|
-| 対象ペインがスロット保持中（`_pane_is_busy`） | エラーメッセージを出して `exit 1` |
-| 対象ペインのプロンプトが非表示（処理中） | エラーメッセージを出して `exit 1` |
-| グローバル上限到達（他ペインがスロットを消費） | エラーメッセージを出して `exit 1` |
-
-手動 `send` はリトライせず即時終了する。ユーザーが完了を待って再実行すること。
+| 通常 | `~/.agents/send-requests/` へ atomic 書き込み後に終了（受付完了） |
+| 同一 entry+本文が 3 秒以内 | debounce で成功扱い破棄 |
+| `--wait` | busy→ready で 0、pane/process 終了または `failure_pattern` で 1、timeout で 2 |
 
 ### `command_loop` の `send` コマンド（デーモン内インタラクティブ）
 

@@ -64,6 +64,20 @@ kiro_options:
 startup_timeout: 60        # kiro-cli 起動待ち上限
 
 # ---------------------------------------------------------------------------
+# ヘルス監視（Phase 1 — opt-in。0 / false = 無効）
+# ---------------------------------------------------------------------------
+# health:
+#   check_interval_seconds: 10
+#   freeze_timeout_seconds: 0   # busy 中の画面 hash が変化しない場合の freeze 検知（秒）
+#   max_pane_rss_mb: 0          # ready pane の RSS 上限（MB）
+#   min_free_memory_mb: 0      # 空きメモリ下限（MB）。下回ると local pause（2 回連続 OK で自動 resume）
+#   input_recovery: false      # ready + 入力残留時に 1 回だけ再送
+#
+# local pause / 操作:
+#   agent-loop pause|resume|cancel TARGET|drain|reload
+#   pause は ~/.agents/loop-control/ に永続。resume は local pause のみ解除。
+
+# ---------------------------------------------------------------------------
 # 同時実行数制御（複数 agent-loop プロセス間で共有）
 # ---------------------------------------------------------------------------
 max_concurrent: 3             # kiro-cli の最大同時実行タスク数（0 = 無制限、デフォルト）
@@ -91,6 +105,14 @@ prompts:
       4. 全スレッドがクローズしたら python scripts/gl.py add-mr-comment MR_IID --body "全指摘に対応しました。再レビューをお願いします。" を投稿
       未解決スレッドがなければ「対応待ちのコメントはありません」と報告して終了。
     interval_minutes: 60   # 1 時間ごとに確認
+    # adaptive:                 # cron 以外で有効。enabled: true が必須（暗黙有効にしない）
+    #   enabled: true
+    #   min_interval_seconds: 60
+    #   max_interval_seconds: 1800
+    #   backoff_factor: 1.5
+    #   idle_threshold: 3
+    #   jitter: 0.2
+    # preflight: ~/hooks/should_dispatch.py  # should_dispatch(request, cfg)->bool。例外/timeout は fail-open
     enabled: true
 
   # ---- GitLab Issue ワーカー: 自分にアサインされた Issue を拾って実行 ----
