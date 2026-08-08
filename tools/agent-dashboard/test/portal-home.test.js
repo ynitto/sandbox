@@ -134,6 +134,11 @@ const agentAudit = fs.readFileSync(path.join(RENDERER_DIR, 'features', 'agent-au
   // 起動時はホームへ着地する（前回の対象は裏で復元するだけ）
   const bootstrap = fs.readFileSync(path.join(RENDERER_DIR, 'bootstrap.js'), 'utf8');
   assert.ok(bootstrap.includes("switchArea('home')"), '起動時の着地点はホーム');
+  // 左メニューの出し分けは各取得結果に依存する。起動時に全部そろえないと、その領域は
+  // 最初の巡回まで（自動更新を切っていれば永久に）左メニューから消えたままになる。
+  for (const refresh of ['refreshDiscovery()', 'refreshCowork()', 'refreshAmigos()', 'refreshOrchestration()']) {
+    assert.ok(bootstrap.includes(refresh), `起動時に ${refresh} を呼ぶ（領域の出し分けの材料）`);
+  }
   console.log('ok - 領域と対象の選択が互いを横取りしない');
 }
 
@@ -194,7 +199,76 @@ const portalHomeModel = new Function(`${grab('portalHomeModel')}; return portalH
   console.log('ok - ホームは読み取りと画面遷移だけ');
 }
 
-// --- 7) カードと領域は登録簿で差し込む ----------------------------------------
+// --- 7) 1 画面の失敗が他の画面を道連れにしない -------------------------------
+//
+// 実障害: 定常業務の設定を描く段で、まだ描かれていない全体設定の入力欄へ代入しようとして
+// 例外が出た。描画が 1 本の連鎖だったため、そこから後ろ（利用状況・ミッション・
+// プロジェクト設定・全体設定・参加）が**全部空**になり、左メニューから開いても何も出ない
+// 状態が固定した。原因（欄の有無）と、被害の広がり方（連鎖）の両方を固定する。
+
+{
+  const src = fs.readFileSync(path.join(RENDERER_DIR, 'renderer.js'), 'utf8');
+  const body = src.slice(src.indexOf('function renderAllTabs('), src.indexOf('function activeTab('));
+  const calls = [...body.matchAll(/^\s{2}(render[A-Za-z]+)\(/gm)].map((m) => m[1]);
+  // renderAllTabs が直に呼んでよいのは renderPane と、ナビ側の少数の再描画だけ。
+  const allowed = new Set(['renderPane', 'renderAreaNav', 'renderAreaLists', 'renderAreaHeader']);
+  for (const name of calls) {
+    assert.ok(allowed.has(name), `renderAllTabs は ${name} を renderPane 経由で呼ぶ（失敗を1画面に閉じ込める）`);
+  }
+  assert.ok(body.includes('for (const [name] of featureTabs) renderPane('),
+    'フィーチャータブの描画も 1 つずつ隔離する');
+  const pane = src.slice(src.indexOf('function renderPane('), src.indexOf('function renderAllTabs('));
+  assert.ok(pane.includes('catch') && pane.includes('uiLog'), '失敗は握りつぶさずコンソールへ残す');
+  console.log('ok - 1 画面の描画失敗がほかの画面を空にしない');
+}
+
+{
+  // populateSettingsFields は全体設定と定常業務の設定の両方から呼ばれる。相手の画面が
+  // まだ描かれていなければその欄は DOM に無いので、「あるものにだけ入れる」でなければ落ちる。
+  const fn = grab('populateSettingsFields');
+  const present = new Map();
+  // 定常業務の設定だけが描かれている状況（全体設定の cfg-* はまだ無い）
+  for (const id of ['cfg-cowork-loop-provider', 'cfg-cowork-loop-command', 'cfg-cowork-sm-command']) {
+    present.set(id, { value: '', checked: false });
+  }
+  const doc = { getElementById: (id) => present.get(id) || null };
+  const state = {
+    config: {
+      projects: { refreshSec: 5 }, notifications: {}, engine: {}, agent: {},
+      gitlab: {}, reviewViewer: {}, cowork: { loopProvider: 'agent-loop' }, delegation: {},
+    },
+  };
+  // eslint-disable-next-line no-new-func
+  const run = new Function('document', 'state', `
+    const $ = (id) => document.getElementById(id);
+    ${fn}
+    return populateSettingsFields;
+  `)(doc, state);
+  run(); // 例外が出ないこと自体が検証（出れば renderAllTabs ごと落ちる）
+  assert.strictEqual(present.get('cfg-cowork-loop-provider').value, 'agent-loop',
+    'その画面にある欄には値が入る');
+  assert.ok(!fn.includes("$('cfg-refresh').value"), '欄の存在を前提にした素の代入を残さない');
+  console.log('ok - 設定の欄は「あるものにだけ入れる」（画面が分かれても落ちない）');
+}
+
+{
+  const switchAreaSrc = renderer.slice(
+    renderer.indexOf('function switchArea('),
+    renderer.indexOf('function initTabs(')
+  );
+  assert.ok(switchAreaSrc.includes('!visible.length'),
+    '出せるタブが無い領域を、押しても何も起きない行き止まりにしない');
+  assert.ok(switchAreaSrc.includes("switchArea('home')"), '行き止まりならホームへ着地させる');
+  // ミッション領域は「左メニューに出す条件」と「タブを出す条件」を同じ式にする
+  const amigos = fs.readFileSync(path.join(RENDERER_DIR, 'sections', 'amigos.js'), 'utf8');
+  assert.ok(amigos.includes('const show = amigosNodeHasWork();'),
+    'ミッションのタブ可視性は領域の出し分けと同じ根拠を使う');
+  assert.ok(!amigos.includes('amigosForProject'),
+    'ミッションは端末の話なので、選択中プロジェクトで絞らない');
+  console.log('ok - 左メニューに出ている領域は必ずどこかへ着地する');
+}
+
+// --- 8) カードと領域は登録簿で差し込む ----------------------------------------
 
 {
   assert.ok(renderer.includes('function registerPortalCard('), 'コアにカード登録簿がある');

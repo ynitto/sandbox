@@ -1298,27 +1298,46 @@ async function openCliChat() {
   }
 }
 
+// 1 つの画面の描画が失敗しても、ほかの画面まで道連れにしない。
+// 領域ごとに独立した画面を並べるポータルで描画を 1 本の連鎖にすると、どこか 1 か所の
+// 例外で**それ以降の領域が全部空になる**（実際に起きた: 設定欄の取り違えで全体設定・
+// プロジェクト設定・参加が丸ごと出なくなった）。失敗はその画面に閉じ込め、原因は
+// 開発者コンソールへ残す。
+function renderPane(name, render) {
+  try {
+    render();
+  } catch (err) {
+    uiLog(`render failed: ${name}`, String((err && err.stack) || err));
+  }
+}
+
 function renderAllTabs() {
   const ui = captureUiState();
+  renderPane('cliChat', renderCliChatButton);
+  renderPane('overview', renderOverview);
+  renderPane('backlog', renderBacklog);
+  renderPane('needs', renderNeeds);
+  renderPane('flow', renderFlow);
+  renderPane('gitlab', renderGitLab);
+  renderPane('history', renderHistory);
+  renderPane('cowork', renderCowork);
+  renderPane('routine-runs', renderRoutineRuns);
+  renderPane('routine-settings', renderRoutineSettings);
+  renderPane('usage', renderUsage);
+  renderPane('amigos', renderAmigos);
+  renderPane('project-settings', renderProjectSettings);
+  renderPane('orchestration', () => {
+    if ((!state.globalSettingsDirty && !state.orchInstructionsDirty && !state.orchSessionDirty)
+      || !$('tab-orchestration').childElementCount) renderOrchestration();
+  });
+  renderPane('kiro-loop', renderKiroLoopTerminal);
+  for (const [name] of featureTabs) renderPane(name, () => renderFeatureTab(name));
+  // ナビは**画面を描いたあと**に組む。どのタブを出せるかは各画面が描画のなかで決める
+  // （募集が無ければ参加タブを隠す等）ので、先に組むと 1 周遅れの状態が出る。
   renderAreaNav();
   renderAreaLists();
+  applyAreaTabs();
   renderAreaHeader();
-  renderCliChatButton();
-  renderOverview();
-  renderBacklog();
-  renderNeeds();
-  renderFlow();
-  renderGitLab();
-  renderHistory();
-  renderCowork();
-  renderRoutineRuns();
-  renderRoutineSettings();
-  renderUsage();
-  renderAmigos();
-  renderProjectSettings();
-  if ((!state.globalSettingsDirty && !state.orchInstructionsDirty && !state.orchSessionDirty) || !$('tab-orchestration').childElementCount) renderOrchestration();
-  renderKiroLoopTerminal();
-  for (const [name] of featureTabs) renderFeatureTab(name);
   restoreUiState(ui);
 }
 
@@ -1466,6 +1485,12 @@ function switchArea(id) {
   renderAreaNav();
   renderAreaLists();
   const visible = applyAreaTabs();
+  // 出せるタブが 1 つも無い領域は、押しても何も起きない行き止まりになる。左メニューに
+  // 出ている以上は必ずどこかへ着地させる——ホームへ戻し、理由はコンソールへ残す。
+  if (!visible.length) {
+    uiLog('area has no visible tab', area.id);
+    if (area.id !== 'home') return switchArea('home');
+  }
   const current = document.querySelector('.tab.active');
   if (!current || !visible.includes(current)) {
     if (visible.length) return switchTab(visible[0].dataset.tab);
@@ -1479,39 +1504,50 @@ function initTabs() {
   }
 }
 
+// 設定の入力欄へ現在値を入れる。
+//
+// **欄が「まだ無い」ことは正常**。設定は効く範囲ごとに別の画面へ散っていて（全体設定 /
+// 定常業務領域の設定 / …）、この関数はどちらの画面からも呼ばれる。相手の画面がまだ
+// 描かれていなければその欄は DOM に無い。以前は素で代入していたため、定常業務の設定を
+// 先に描いた回で null への代入となり、**描画の連鎖ごと落ちて後続の画面が全部空になった**。
+// 欄の有無で分岐を増やさず、「あるものにだけ入れる」を 1 か所の代入口に閉じ込める。
 function populateSettingsFields() {
   const cfg = state.config;
-  $('cfg-refresh').value = cfg.projects ? cfg.projects.refreshSec : 5;
-  $('cfg-engine-distro').value = (cfg.engine && cfg.engine.distro) || '';
-  $('cfg-engine-home').value = (cfg.engine && cfg.engine.home) || '';
-  if ($('cfg-node-commands-dir')) {
-    $('cfg-node-commands-dir').value = (cfg.delegation && cfg.delegation.nodeCommandsDir) || '';
-  }
-  $('cfg-notify').checked = !(cfg.notifications && cfg.notifications.enabled === false);
-  $('cfg-needs-sla').value = cfg.projects && cfg.projects.needsSlaHours !== undefined ? cfg.projects.needsSlaHours : 24;
-  if ($('cfg-role')) $('cfg-role').value = cfg.role === 'viewer' ? 'viewer' : 'engineer';
-  $('cfg-flow-bus').value = (cfg.projects && cfg.projects.flowBus) || '';
-  $('cfg-flow-bus-by-project').value = Object.entries(
+  const setValue = (id, value) => {
+    const el = $(id);
+    if (el) el.value = value;
+  };
+  const setChecked = (id, value) => {
+    const el = $(id);
+    if (el) el.checked = value;
+  };
+  setValue('cfg-refresh', cfg.projects ? cfg.projects.refreshSec : 5);
+  setValue('cfg-engine-distro', (cfg.engine && cfg.engine.distro) || '');
+  setValue('cfg-engine-home', (cfg.engine && cfg.engine.home) || '');
+  setValue('cfg-node-commands-dir', (cfg.delegation && cfg.delegation.nodeCommandsDir) || '');
+  setChecked('cfg-notify', !(cfg.notifications && cfg.notifications.enabled === false));
+  setValue('cfg-needs-sla', cfg.projects && cfg.projects.needsSlaHours !== undefined ? cfg.projects.needsSlaHours : 24);
+  setValue('cfg-role', cfg.role === 'viewer' ? 'viewer' : 'engineer');
+  setValue('cfg-flow-bus', (cfg.projects && cfg.projects.flowBus) || '');
+  setValue('cfg-flow-bus-by-project', Object.entries(
     (cfg.projects && cfg.projects.flowBusByProject) || {}
   )
     .map(([name, bus]) => `${name} = ${bus}`)
-    .join('\n');
+    .join('\n'));
   // 空欄 = 未設定（プロジェクト設定 → 既定 kiro のフォールバック）。'kiro' で埋めると
   // 保存時に「明示 kiro」が固定され、プロジェクトの agent_cli が二度と効かなくなる。
-  $('cfg-agent-cli').value = (cfg.agent && cfg.agent.cli) || '';
-  $('cfg-agent-model').value = (cfg.agent && cfg.agent.model) || '';
-  $('cfg-agent-timeout').value = (cfg.agent && cfg.agent.timeoutSec) || 180;
-  $('cfg-gl-url').value = cfg.gitlab.baseUrl || '';
-  $('cfg-gl-token').value = cfg.gitlab.token || '';
-  $('cfg-rv-mode').value = cfg.reviewViewer.mode || 'protocol';
-  $('cfg-rv-exepath').value = cfg.reviewViewer.exePath || '';
-  $('cfg-rv-command').value = cfg.reviewViewer.command || '';
-  // 定常業務の欄は定常業務領域の設定タブにある。全体設定を描いただけの時点では
-  // まだ存在しないことがあるので、ある時だけ値を入れる（両方の画面から呼ばれる）。
+  setValue('cfg-agent-cli', (cfg.agent && cfg.agent.cli) || '');
+  setValue('cfg-agent-model', (cfg.agent && cfg.agent.model) || '');
+  setValue('cfg-agent-timeout', (cfg.agent && cfg.agent.timeoutSec) || 180);
+  setValue('cfg-gl-url', (cfg.gitlab && cfg.gitlab.baseUrl) || '');
+  setValue('cfg-gl-token', (cfg.gitlab && cfg.gitlab.token) || '');
+  setValue('cfg-rv-mode', (cfg.reviewViewer && cfg.reviewViewer.mode) || 'protocol');
+  setValue('cfg-rv-exepath', (cfg.reviewViewer && cfg.reviewViewer.exePath) || '');
+  setValue('cfg-rv-command', (cfg.reviewViewer && cfg.reviewViewer.command) || '');
   const cw = cfg.cowork || {};
-  if ($('cfg-cowork-loop-provider')) $('cfg-cowork-loop-provider').value = cw.loopProvider || 'kiro-loop';
-  if ($('cfg-cowork-loop-command')) $('cfg-cowork-loop-command').value = cw.loopCommand || 'kiro-loop';
-  if ($('cfg-cowork-sm-command')) $('cfg-cowork-sm-command').value = cw.stateMachineCommand || 'statemachine-use';
+  setValue('cfg-cowork-loop-provider', cw.loopProvider || 'kiro-loop');
+  setValue('cfg-cowork-loop-command', cw.loopCommand || 'kiro-loop');
+  setValue('cfg-cowork-sm-command', cw.stateMachineCommand || 'statemachine-use');
 }
 
 function openGlobalSettings(section = 'app') {
