@@ -101,8 +101,18 @@ class CliProfile:
             self.idle_quiet_sec = float(inter.get("idle_quiet_sec") or 0)
         except (TypeError, ValueError):
             self.idle_quiet_sec = 0.0
-        raw_clear = inter.get("clear_command", "/clear") if inter else "/clear"
-        self.clear_command = "/clear" if raw_clear is None else str(raw_clear)
+        # clear/save/exit: 未定義または空文字 = その操作をサポートしない（推測しない）
+        if inter and "clear_command" in inter:
+            raw_clear = inter.get("clear_command")
+            self.clear_command = "" if raw_clear is None else str(raw_clear)
+        elif inter:
+            self.clear_command = "/clear"  # interactive あり・未指定は従来既定
+        else:
+            self.clear_command = "/clear"  # legacy
+        raw_save = (inter or {}).get("save_command", "")
+        self.save_command = "" if raw_save is None else str(raw_save)
+        raw_exit = (inter or {}).get("exit_command", "")
+        self.exit_command = "" if raw_exit is None else str(raw_exit)
         self.skill_command_prefix = str((spec or {}).get("skill_command_prefix") or "/")
         self.failure_pattern = str(inter.get("failure_pattern") or "") or None
         # 静穏判定用: pane_id → (直近内容のハッシュ, 最終変化時刻)

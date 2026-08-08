@@ -81,16 +81,25 @@ def _run_once(scheduler):
 class GitLabIssueHookTests(unittest.TestCase):
     def test_update_advances_only_after_ack(self):
         issues = [
-            {"iid": 1, "updated_at": "2026-08-02T00:00:01Z"},
-            {"iid": 2, "updated_at": "2026-08-02T00:00:02Z"},
+            {"iid": 1, "updated_at": "2026-08-02T00:00:01Z", "labels": []},
+            {"iid": 2, "updated_at": "2026-08-02T00:00:02Z", "labels": []},
+        ]
+        cfg = {"entry_id": "test-entry", "cwd": "/tmp/repo"}
+        updated_issues = [
+            issues,
+            [issues[0], {**issues[1], "updated_at": "2026-08-03T00:00:03Z"}],
+            [issues[0], {**issues[1], "updated_at": "2026-08-03T00:00:03Z"}],
+            [{**issues[0], "updated_at": "2026-08-04T00:00:04Z"},
+             {**issues[1], "updated_at": "2026-08-03T00:00:03Z"}],
         ]
         with tempfile.TemporaryDirectory() as tmp, \
-            mock.patch.object(hook, "STATE_FILE", pathlib.Path(tmp, "state.json")), \
-             mock.patch.object(hook, "_get_issues", return_value=issues):
-            first = hook.check()
-            retried = hook.check()
+             mock.patch.object(hook, "hook_state_dir", return_value=pathlib.Path(tmp)), \
+             mock.patch.object(hook, "_fetch_issues", side_effect=[(i, "g/p") for i in updated_issues]):
+            self.assertIsNone(hook.check(cfg))
+            first = hook.check(cfg)
+            retried = hook.check(cfg)
             hook.ack()
-            second = hook.check()
+            second = hook.check(cfg)
         self.assertIn('"iid": 2', first)
         self.assertIn('"iid": 2', retried)
         self.assertIn('"iid": 1', second)

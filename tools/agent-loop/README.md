@@ -80,10 +80,14 @@ agent-loop ls
 agent-loop send [-s SESSION] [-d DIR] [--wait] [--priority high|normal|low] PROMPT
 agent-loop pause | resume | cancel TARGET | drain | reload
 agent-loop doctor [--json] [--fix]
+agent-loop update
 agent-loop msg --to AGENT [OPTIONS] [BODY]
 agent-loop agents
+agent-loop --version
 ```
 
+- `agent-loop --version` は zipapp 内 `build-info.json` の commit、source 実行時は `git describe` / `dev` を表示します。
+- `agent-loop update` は zipapp インストールのみ対象です（source / pip / symlink は理由付きで非 0）。稼働 daemon がある場合は update lock により拒否されます。成功後も実行中 daemon は自動再起動しません。
 - 同じworkspaceのdaemon稼働中は、`send`を永続キュー（`~/.agents/send-requests/`）へ受付します。daemon不在時は従来どおりstandalone sessionへ直接送信します。
 - `send --wait`はrequest ID単位の完了状態を待ち、別requestのbusy/ready遷移を完了扱いしません。
 - `pause` / `resume` は local pause（`resume` は agent-control / budget の pause を迂回しません）。
@@ -94,6 +98,19 @@ agent-loop agents
 
 `--no-auto-attach` はtmux外で専用セッションへ自動接続しない場合に使います。多重起動は
 `~/.agents/loop-state/`（旧 `~/.agent/` は移行時のみ）にある生存プロセスのcwdで判定します。
+
+### environment handoff（opt-in）
+
+```yaml
+environment_handoff:
+  prompt: false
+  skill_home: null
+  token_env_names: []
+```
+
+- ペイン起動時に `HOME` と `AGENT_HOME`（および agent 定義の `env`）を tmux 起動環境へ明示します。
+- `prompt: true` のとき、root プロンプト先頭へ `[ENV]...[/ENV]` を付けます（Ralph child には付けません）。
+- `token_env_names` は `[A-Z_][A-Z0-9_]*` のみ受理し、値は `SET|UNSET` だけを渡します。
 
 ## 設定ファイル形式 (YAML)
 

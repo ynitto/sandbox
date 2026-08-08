@@ -242,6 +242,102 @@ def load_prompt_config(base_path: str) -> list[dict[str, Any]]:
     return []
 
 
+# ---------------------------------------------------------------------------
+# environment handoff（Phase 2C）
+# ---------------------------------------------------------------------------
+
+_TOKEN_ENV_NAME_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
+
+
+def normalize_environment_handoff(config: dict[str, Any]) -> dict[str, Any]:
+    """environment_handoff 設定を正規化する。"""
+    raw = config.get("environment_handoff")
+    if raw is None:
+        return {"prompt": False, "skill_home": None, "token_env_names": []}
+    if not isinstance(raw, dict):
+        return {"prompt": False, "skill_home": None, "token_env_names": []}
+
+    prompt = bool(raw.get("prompt", False))
+    skill_home = raw.get("skill_home")
+    if skill_home is not None:
+        skill_home = str(skill_home).strip() or None
+
+    token_names: list[str] = []
+    raw_tokens = raw.get("token_env_names")
+    if isinstance(raw_tokens, list):
+        for item in raw_tokens:
+            name = str(item or "").strip()
+            if not name:
+                continue
+            if _TOKEN_ENV_NAME_RE.fullmatch(name):
+                token_names.append(name)
+    return {
+        "prompt": prompt,
+        "skill_home": skill_home,
+        "token_env_names": token_names,
+    }
+
+
+def detect_runtime_os() -> str:
+    try:
+        system = sys.platform
+    except Exception:  # noqa: BLE001
+        return "unknown"
+    if system == "darwin":
+        return "darwin"
+    if system.startswith("linux"):
+        return "linux"
+    return "unknown"
+
+
+def detect_runtime_shell() -> str:
+    if sys.platform == "win32":
+        return "powershell"
+    if sys.platform.startswith("linux"):
+        try:
+            with open("/proc/version", encoding="utf-8", errors="replace") as fh:
+                if "microsoft" in fh.read().lower():
+                    return "wsl"
+        except OSError:
+            pass
+        return "posix"
+    if sys.platform == "darwin":
+        return "posix"
+    return "posix"
+
+
+def build_env_prompt_block(
+    handoff: dict[str, Any],
+    *,
+    agent_cli: str,
+    agent_home: Path,
+) -> str:
+    """[ENV]...[/ENV] ブロックを組み立てる（値は token 名の SET/UNSET のみ）。"""
+    skill_home = handoff.get("skill_home")
+    skill_value = "UNSET"
+    if skill_home:
+        resolved = Path(str(skill_home)).expanduser()
+        if resolved.is_dir():
+            skill_value = str(resolved.resolve())
+
+    lines = [
+        "[ENV]",
+        f"os={detect_runtime_os()}",
+        f"shell={detect_runtime_shell()}",
+        f"agent_cli={agent_cli}",
+        f"agent_home={agent_home.resolve()}",
+        f"skill_home={skill_value}",
+    ]
+    for name in handoff.get("token_env_names") or []:
+        token_name = str(name)
+        if not _TOKEN_ENV_NAME_RE.fullmatch(token_name):
+            continue
+        state = "SET" if os.environ.get(token_name) else "UNSET"
+        lines.append(f"token.{token_name}={state}")
+    lines.append("[/ENV]")
+    return "\n".join(lines)
+
+
 def save_prompt_config(base_path: str, prompts: list[dict[str, Any]]) -> bool:
     """起動ディレクトリ配下の既存 YAML、または既定 .yml に prompts を保存する。"""
     path = _prompt_file(base_path)

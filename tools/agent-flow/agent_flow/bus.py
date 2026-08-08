@@ -54,7 +54,8 @@ class Bus:
                    references: "list[dict] | None" = None,
                    verification_plan: "dict | None" = None) -> None:
         self.ensure_dirs()
-        if read_json(self.meta_path) is None:
+        meta = read_json(self.meta_path)
+        if meta is None:
             meta = {
                 "request": request,
                 # この run（=バックログ単位）の唯一の書込先リポジトリ（worker が clone し、
@@ -75,6 +76,29 @@ class Bus:
                 base = _vp_result_rev(os.getcwd())
                 if base:
                     meta["base_rev"] = base
+            write_json_atomic(self.meta_path, meta)
+            return
+        # 再投入（resume / inherit 後）: 投入側が今回渡してきた契約で meta の欠けを補う。
+        # worker と検証 runner は meta しか読まないため、作成時に workspace ルーティングが
+        # 決まらず read-only で固まった run は、以後の再投入で argv に --workspace を渡し
+        # 続けても永久に commit/push されない（成果ブランチが生まれない静かな機能欠落）。
+        # workspace は「無い → 有る」の補充だけ行い、既存 spec の差し替えはしない
+        # （inherit が done の commit を保つため base を旧ブランチへ差した spec を壊さない）。
+        changed = False
+        cur_ws = meta.get("workspace")
+        if isinstance(workspace, dict) and workspace.get("url") \
+                and not (isinstance(cur_ws, dict) and cur_ws.get("url")):
+            meta["workspace"] = workspace
+            changed = True
+        # verification_plan は最新の投入正本へ更新する。settle は常に「今の正本」と検算する
+        # ため、作成時の古い plan（例: workspace 未解決時の digest）のままだと runner の
+        # receipt が fail-close で捨てられ続ける。inherit 直後（_seed_from は plan を
+        # 引き継がない）の欠落もここで埋まる。
+        if isinstance(verification_plan, dict) \
+                and meta.get("verification_plan") != verification_plan:
+            meta["verification_plan"] = verification_plan
+            changed = True
+        if changed:
             write_json_atomic(self.meta_path, meta)
 
     def snapshot_instructions(self) -> bool:

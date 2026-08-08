@@ -486,6 +486,36 @@ def cmd_send(args: argparse.Namespace, cwd: Path) -> None:
         print("[agent-loop] ERROR: プロンプトが空です。", file=sys.stderr)
         sys.exit(1)
 
+    # Phase 2A CLI 検証
+    use_ralph = bool(getattr(args, "ralph", False))
+    max_iterations = getattr(args, "max_iterations", None)
+    use_sandbox = bool(getattr(args, "sandbox", False))
+    use_force = bool(getattr(args, "force", False))
+    use_model = getattr(args, "model", None)
+    if use_model is not None:
+        use_model = str(use_model).strip() or None
+
+    if max_iterations is not None and not use_ralph:
+        print("[agent-loop] ERROR: --max-iterations は --ralph と併用してください。", file=sys.stderr)
+        sys.exit(2)
+    if use_ralph and max_iterations is None:
+        print("[agent-loop] ERROR: --ralph には --max-iterations N が必要です。", file=sys.stderr)
+        sys.exit(2)
+    if use_ralph and use_force:
+        print("[agent-loop] ERROR: --force と --ralph は併用できません。", file=sys.stderr)
+        sys.exit(2)
+    if use_ralph:
+        try:
+            max_iterations = int(max_iterations)
+        except (TypeError, ValueError):
+            print("[agent-loop] ERROR: --max-iterations は整数です。", file=sys.stderr)
+            sys.exit(2)
+        if max_iterations < 1 or max_iterations > 100:
+            print("[agent-loop] ERROR: --max-iterations は 1..100 です。", file=sys.stderr)
+            sys.exit(2)
+
+    needs_daemon = bool(use_ralph or use_sandbox or use_force or use_model)
+
     target = getattr(args, "session", None)
     if not target:
         states = _read_all_states()

@@ -1,50 +1,28 @@
 #!/usr/bin/env python3
-"""GitLab MR ポーリングフック（agent-loop の event_hook として実行される）
+"""GitLab merge request polling hook with event fallback (agent-loop event_hook)."""
+from __future__ import annotations
 
-agent-loop の scheduler スレッド内で同期実行される。`check()` が:
-
-  - **更新あり**: フィルター条件に合致するオープン MR のうち、前回チェックから
-    「新規追加」または「更新（updated_at 変化 = コメント/コミット追加など）」
-    されたものが 1 件でもあれば、その最新 1 件を送信プロンプトとして返す。
-  - **更新なし + フォールバック有効**: 更新が無くても、フィルター条件に合致する
-    MR からランダムに 1 件選んで送信プロンプトを返す（未解決スレッドの取り
-    こぼし防止）。フォールバックの有効/無効は agent-loop の YAML
-    `event_hook_fallback: true`（→ 環境変数 `AGENT_LOOP_EVENT_HOOK_FALLBACK=1`）
-    で制御する。
-  - **更新なし + フォールバック無効**: None を返して今回はスキップ。
-
-「更新なしフォールバック」はイベント検知のたび（check() の呼び出しごと）に
-評価される。
-
-scheduler スレッドをブロックしないよう、ネットワーク呼び出しには短い timeout
-を設定している。設定値は主に環境変数で上書きできる。
-"""
 import json
 import os
-import random
-import subprocess
+import sys
 from pathlib import Path
+from typing import Any
 
-# --- 設定（環境変数で上書き可能）---------------------------------------
-GL_PY = os.environ.get("AGENT_LOOP_GL_PY", "scripts/gl.py")
-WORKDIR = os.environ.get("AGENT_LOOP_GL_CWD") or None
-PYTHON = os.environ.get("AGENT_LOOP_PYTHON", "python")
-TIMEOUT = int(os.environ.get("AGENT_LOOP_GL_TIMEOUT", "20"))
+_HOOKS_DIR = Path(__file__).resolve().parent
+if str(_HOOKS_DIR) not in sys.path:
+    sys.path.insert(0, str(_HOOKS_DIR))
 
-# --- フィルター条件（環境変数で上書き可能）-----------------------------
+from _event_fallback import EventCandidate, PendingAck, apply_ack, normalize_state, select_event
+from _gitlab_client import GitLabError, connect_from_cwd, event_key, list_merge_requests
+from _hook_util import hook_state_dir, load_json, save_json_atomic
+
+STATE_FILE_NAME = "events.json"
+
 MR_STATE = os.environ.get("AGENT_LOOP_MR_STATE", "opened")
-# 自分担当 MR に絞る場合は assignee のユーザー名を指定する（list-mrs は
-# サーバー側 assignee フィルタを持たないためクライアント側で絞り込む）。
 MR_ASSIGNEE = os.environ.get("AGENT_LOOP_MR_ASSIGNEE", "")
 MR_SOURCE_BRANCH_PREFIX = os.environ.get("AGENT_LOOP_MR_SOURCE_BRANCH_PREFIX", "")
+GL_PY = os.environ.get("AGENT_LOOP_GL_PY", "scripts/gl.py")
 
-# 状態ファイル（iid -> updated_at を記録）。
-STATE_FILE = Path(
-    os.environ.get("AGENT_LOOP_MR_STATE_FILE", "")
-    or (Path.home() / ".agents" / "hooks" / "gitlab-mr-state.json")
-)
-
-# --- プロンプトテンプレート --------------------------------------------
 _PROMPT = (
     "自分にアサインされたオープン MR の未解決ディスカッションを確認してください。\n"
     "対象 MR (iid={iid}): {title}\n{web_url}\n\n"
@@ -60,69 +38,30 @@ _PROMPT = (
     "未解決スレッドが無ければ「対応待ちのコメントはありません」と報告して終了。\n\n"
     "MR の詳細:\n{mr_json}"
 )
-_FALLBACK_PREFIX = (
-    "（フォールバック）新着の更新はありませんでした。取りこぼし防止のため、"
-    "以下の MR の未解決スレッドを念のため確認してください。何も無ければそのまま"
-    "終了して構いません。\n\n"
-)
+_REPLAY_PREFIX = "（再確認）以下の MR の未解決スレッドを念のため確認してください。\n\n"
+_FALLBACK_PREFIX = "（フォールバック）"
+
+_runtime: dict[str, Any] = {
+    "entry_id": None,
+    "state_path": None,
+    "pending": None,
+    "state": None,
+}
 
 
-def _run_gl(*gl_args: str):
-    """gl.py を実行して JSON をパースして返す。失敗時は None。"""
-    cmd = [PYTHON, GL_PY, *gl_args]
-    try:
-        r = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=TIMEOUT, cwd=WORKDIR
-        )
-    except (subprocess.TimeoutExpired, OSError):
-        return None
-    if r.returncode != 0:
-        return None
-    try:
-        return json.loads(r.stdout)
-    except json.JSONDecodeError:
-        return None
+def _state_path(entry_id: str) -> Path:
+    return hook_state_dir(entry_id) / STATE_FILE_NAME
 
 
-def _matches_assignee(mr: dict) -> bool:
-    if not MR_ASSIGNEE:
-        return True
-    names = {a.get("username") for a in (mr.get("assignees") or [])}
-    assignee = mr.get("assignee") or {}
-    if assignee.get("username"):
-        names.add(assignee["username"])
-    return MR_ASSIGNEE in names
+def _load_state(path: Path) -> dict[str, Any]:
+    return normalize_state(load_json(path, {}))
 
 
-def _get_mrs() -> list[dict] | None:
-    args = ["list-mrs", "--state", MR_STATE]
-    if MR_SOURCE_BRANCH_PREFIX:
-        args += ["--source-branch-prefix", MR_SOURCE_BRANCH_PREFIX]
-    data = _run_gl(*args)
-    if not isinstance(data, list):
-        return None
-    return [mr for mr in data if _matches_assignee(mr)]
+def _save_state(path: Path, state: dict[str, Any]) -> None:
+    save_json_atomic(path, state)
 
 
-def _load_state() -> dict[str, str]:
-    try:
-        raw = json.loads(STATE_FILE.read_text(encoding="utf-8"))
-        return {str(k): str(v) for k, v in raw.get("mrs", {}).items()}
-    except Exception:
-        return {}
-
-
-def _save_state(state: dict[str, str]) -> None:
-    try:
-        STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        STATE_FILE.write_text(
-            json.dumps({"mrs": state}, ensure_ascii=False), encoding="utf-8"
-        )
-    except OSError:
-        pass
-
-
-def _format_prompt(mr: dict, *, fallback: bool) -> str:
+def _format_prompt(mr: dict[str, Any], *, prefix: str = "") -> str:
     body = _PROMPT.format(
         iid=mr.get("iid", ""),
         title=mr.get("title", ""),
@@ -130,34 +69,85 @@ def _format_prompt(mr: dict, *, fallback: bool) -> str:
         gl_py=GL_PY,
         mr_json=json.dumps(mr, ensure_ascii=False, indent=2),
     )
-    return (_FALLBACK_PREFIX + body) if fallback else body
+    return prefix + body
 
 
-def check() -> str | None:
-    fallback_enabled = os.environ.get("AGENT_LOOP_EVENT_HOOK_FALLBACK") == "1"
+def _mr_candidates(mrs: list[dict[str, Any]], project_path: str) -> list[EventCandidate]:
+    out: list[EventCandidate] = []
+    for mr in mrs:
+        iid = mr.get("iid")
+        if iid is None:
+            continue
+        version = str(mr.get("updated_at") or "")
+        key = event_key(project_path, "mr", iid)
+        out.append(EventCandidate(key=key, version=version, sort_key=version, payload=mr))
+    return out
 
-    mrs = _get_mrs()
-    if not mrs:
+
+def _fetch_mrs(hook_config: dict[str, Any] | None) -> tuple[list[dict[str, Any]], str] | None:
+    cwd = (hook_config or {}).get("cwd")
+    workspace = (hook_config or {}).get("workspace")
+    try:
+        conn, token = connect_from_cwd(cwd, workspace)
+        mrs = list_merge_requests(
+            conn,
+            token,
+            state=MR_STATE,
+            assignee=MR_ASSIGNEE,
+            source_branch_prefix=MR_SOURCE_BRANCH_PREFIX,
+        )
+        return mrs, conn.project_path
+    except GitLabError:
         return None
 
-    prev = _load_state()
-    curr = {str(m["iid"]): str(m.get("updated_at", "")) for m in mrs if "iid" in m}
 
-    changed = [
-        m for m in mrs
-        if "iid" in m and prev.get(str(m["iid"])) != str(m.get("updated_at", ""))
-    ]
-    _save_state(curr)
+def check(hook_config: dict[str, Any] | None = None) -> str | None:
+    global _runtime
+    entry_id = str((hook_config or {}).get("entry_id") or "default")
+    path = _state_path(entry_id)
+    _runtime = {"entry_id": entry_id, "state_path": path, "pending": None, "state": None}
 
-    if changed:
-        changed.sort(key=lambda m: str(m.get("updated_at", "")), reverse=True)
-        return _format_prompt(changed[0], fallback=False)
+    fetched = _fetch_mrs(hook_config)
+    if fetched is None:
+        return None
+    mrs, project_path = fetched
+    candidates = _mr_candidates(mrs, project_path)
+    state = _load_state(path)
 
-    if fallback_enabled:
-        return _format_prompt(random.choice(mrs), fallback=True)
+    def fmt_new(c: EventCandidate) -> str:
+        return _format_prompt(c.payload)
 
-    return None
+    def fmt_replay(c: EventCandidate) -> str:
+        return _format_prompt(c.payload, prefix=_REPLAY_PREFIX)
+
+    result, pending, updated = select_event(
+        candidates,
+        state,
+        hook_config,
+        format_new=fmt_new,
+        format_replay=fmt_replay,
+    )
+
+    if pending is None and not state.get("baseline_done"):
+        _save_state(path, updated)
+        return None
+
+    _runtime["pending"] = pending
+    _runtime["state"] = state
+    if isinstance(result, str) and pending and pending.kind == "fallback":
+        return _FALLBACK_PREFIX + result
+    return result if isinstance(result, str) else None
+
+
+def ack() -> None:
+    pending: PendingAck | None = _runtime.get("pending")
+    path: Path | None = _runtime.get("state_path")
+    state: dict[str, Any] | None = _runtime.get("state")
+    if pending is None or path is None or state is None:
+        return
+    _save_state(path, apply_ack(state, pending))
+    _runtime["pending"] = None
 
 
 if __name__ == "__main__":
-    print(check())
+    print(check({"entry_id": "manual"}))

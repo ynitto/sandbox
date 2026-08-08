@@ -1,56 +1,27 @@
 #!/usr/bin/env python3
-"""GitLab イシューポーリングフック（agent-loop の event_hook として実行される）
+"""GitLab issue polling hook with event fallback (agent-loop event_hook)."""
+from __future__ import annotations
 
-agent-loop の scheduler スレッド内で同期実行される。`check()` が:
-
-  - **更新あり**: フィルター条件に合致するイシューのうち、前回チェックから
-    「新規追加」または「更新（updated_at 変化）」されたものが 1 件でもあれば、
-    その最新 1 件を送信プロンプトとして返す。
-  - **更新なし + フォールバック有効**: 更新が無くても、フィルター条件に合致する
-    イシューからランダムに 1 件選んで送信プロンプトを返す。
-    フォールバックの有効/無効は agent-loop の YAML `event_hook_fallback: true`
-    （→ 環境変数 `AGENT_LOOP_EVENT_HOOK_FALLBACK=1`）で制御する。
-  - **更新なし + フォールバック無効**: None を返して今回はスキップ。
-
-「更新なしフォールバック」はイベント検知のたび（check() の呼び出しごと）に
-評価される。つまり毎サイクル、更新が無ければランダム送信する。
-
-scheduler スレッドをブロックしないよう、ネットワーク呼び出しには短い timeout
-を設定している。設定値は主に環境変数で上書きできる（agent-loop プロセスへ
-export しておく）。
-"""
 import json
 import os
-import random
-import subprocess
+import sys
 from pathlib import Path
+from typing import Any
 
-# --- 設定（環境変数で上書き可能）---------------------------------------
-# gl.py のパス（gitlab-idd スキル同梱）。
-GL_PY = os.environ.get("AGENT_LOOP_GL_PY", "scripts/gl.py")
-# gl.py を実行する作業ディレクトリ（git remote から host/project を解決するため）。
-WORKDIR = os.environ.get("AGENT_LOOP_GL_CWD") or None
-# Python インタプリタ（環境により python3 / py に読み替え）。
-PYTHON = os.environ.get("AGENT_LOOP_PYTHON", "python")
-# サブプロセスのタイムアウト（秒）。
-TIMEOUT = int(os.environ.get("AGENT_LOOP_GL_TIMEOUT", "20"))
+_HOOKS_DIR = Path(__file__).resolve().parent
+if str(_HOOKS_DIR) not in sys.path:
+    sys.path.insert(0, str(_HOOKS_DIR))
 
-# --- フィルター条件（環境変数で上書き可能）-----------------------------
+from _event_fallback import EventCandidate, PendingAck, apply_ack, normalize_state, select_event
+from _gitlab_client import GitLabError, connect_from_cwd, event_key, list_issues
+from _hook_util import hook_state_dir, load_json, save_json_atomic
+
+STATE_FILE_NAME = "events.json"
+
 ISSUE_STATE = os.environ.get("AGENT_LOOP_ISSUE_STATE", "opened")
-ISSUE_LABELS = os.environ.get("AGENT_LOOP_ISSUE_LABELS", "")     # 例: "status:open,assignee:any"
-ISSUE_ASSIGNEE = os.environ.get("AGENT_LOOP_ISSUE_ASSIGNEE", "")  # 例: "MY_USER"
+ISSUE_LABELS = os.environ.get("AGENT_LOOP_ISSUE_LABELS", "")
+ISSUE_ASSIGNEE = os.environ.get("AGENT_LOOP_ISSUE_ASSIGNEE", "")
 
-# 状態ファイル（iid -> updated_at を記録）。
-STATE_FILE = Path(
-    os.environ.get("AGENT_LOOP_ISSUE_STATE_FILE", "")
-    or (Path.home() / ".agents" / "hooks" / "gitlab-issue-state.json")
-)
-
-# check() が返したイベントの状態。配送成功後に ack() が永続化する。
-_pending_state: dict[str, str] | None = None
-
-# --- プロンプトテンプレート --------------------------------------------
-# ラベルに応じて切り替える。先にマッチしたものを採用する。
 _LABEL_PROMPTS: dict[str, str] = {
     "priority:critical": (
         "緊急イシューが割り当てられました。最優先で gitlab-idd スキルの"
@@ -65,114 +36,119 @@ _DEFAULT_PROMPT = (
     "新しいイシューが割り当てられました。gitlab-idd スキルのワーカーロールを"
     "実行して、このイシューを実装・報告してください。\n\n{issue_json}"
 )
-# フォールバック（更新が無いとき）に付与する前置き。
-_FALLBACK_PREFIX = (
-    "（フォールバック）新着の更新はありませんでした。手の空きを利用して、"
-    "以下の未対応イシューを 1 件進めてください。優先度が低ければ着手不要と"
-    "判断して構いません。\n\n"
-)
+_REPLAY_PREFIX = "（再確認）以下の open issue を点検してください。\n\n"
+_FALLBACK_PREFIX = "（フォールバック）"
 
 
-def _run_gl(*gl_args: str):
-    """gl.py を実行して JSON をパースして返す。失敗時は None。"""
-    cmd = [PYTHON, GL_PY, *gl_args]
-    try:
-        r = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=TIMEOUT, cwd=WORKDIR
-        )
-    except (subprocess.TimeoutExpired, OSError):
-        return None
-    if r.returncode != 0:
-        return None
-    try:
-        return json.loads(r.stdout)
-    except json.JSONDecodeError:
-        return None
+_runtime: dict[str, Any] = {
+    "entry_id": None,
+    "state_path": None,
+    "pending": None,
+    "state": None,
+}
 
 
-def _get_issues() -> list[dict] | None:
-    args = ["list-issues", "--state", ISSUE_STATE]
-    if ISSUE_LABELS:
-        args += ["--label", ISSUE_LABELS]
-    if ISSUE_ASSIGNEE:
-        args += ["--assignee", ISSUE_ASSIGNEE]
-    data = _run_gl(*args)
-    return data if isinstance(data, list) else None
+def _state_path(entry_id: str) -> Path:
+    return hook_state_dir(entry_id) / STATE_FILE_NAME
 
 
-def _load_state() -> dict[str, str]:
-    try:
-        raw = json.loads(STATE_FILE.read_text(encoding="utf-8"))
-        return {str(k): str(v) for k, v in raw.get("issues", {}).items()}
-    except Exception:
-        return {}
+def _load_state(path: Path) -> dict[str, Any]:
+    return normalize_state(load_json(path, {}))
 
 
-def _save_state(state: dict[str, str]) -> None:
-    try:
-        STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        STATE_FILE.write_text(
-            json.dumps({"issues": state}, ensure_ascii=False), encoding="utf-8"
-        )
-    except OSError:
-        pass
+def _save_state(path: Path, state: dict[str, Any]) -> None:
+    save_json_atomic(path, state)
 
 
-def _format_prompt(issue: dict, *, fallback: bool) -> str:
+def _format_prompt(issue: dict[str, Any], *, prefix: str = "") -> str:
     issue_json = json.dumps(issue, ensure_ascii=False, indent=2)
     template = _DEFAULT_PROMPT
     for label in issue.get("labels", []):
         if label in _LABEL_PROMPTS:
             template = _LABEL_PROMPTS[label]
             break
-    body = template.format(issue_json=issue_json)
-    return (_FALLBACK_PREFIX + body) if fallback else body
+    return prefix + template.format(issue_json=issue_json)
 
 
-def check() -> str | None:
-    global _pending_state
-    _pending_state = None
-    fallback_enabled = os.environ.get("AGENT_LOOP_EVENT_HOOK_FALLBACK") == "1"
+def _issue_candidates(
+    issues: list[dict[str, Any]],
+    project_path: str,
+) -> list[EventCandidate]:
+    out: list[EventCandidate] = []
+    for issue in issues:
+        iid = issue.get("iid")
+        if iid is None:
+            continue
+        version = str(issue.get("updated_at") or "")
+        key = event_key(project_path, "issue", iid)
+        out.append(EventCandidate(key=key, version=version, sort_key=version, payload=issue))
+    return out
 
-    issues = _get_issues()
-    if not issues:
+
+def _fetch_issues(hook_config: dict[str, Any] | None) -> tuple[list[dict[str, Any]], str] | None:
+    cwd = (hook_config or {}).get("cwd")
+    workspace = (hook_config or {}).get("workspace")
+    try:
+        conn, token = connect_from_cwd(cwd, workspace)
+        issues = list_issues(
+            conn,
+            token,
+            state=ISSUE_STATE,
+            labels=ISSUE_LABELS,
+            assignee=ISSUE_ASSIGNEE,
+        )
+        return issues, conn.project_path
+    except GitLabError:
         return None
 
-    prev = _load_state()
-    curr = {str(i["iid"]): str(i.get("updated_at", "")) for i in issues if "iid" in i}
 
-    # 新規 iid もしくは updated_at が変わったイシュー = 「更新あり」
-    changed = [
-        i for i in issues
-        if "iid" in i and prev.get(str(i["iid"])) != str(i.get("updated_at", ""))
-    ]
-    if changed:
-        changed.sort(key=lambda i: str(i.get("updated_at", "")), reverse=True)
-        selected = changed[0]
-        selected_id = str(selected["iid"])
-        # 返した 1 件だけを既読化する。未返却の同時更新は次回 check() に残す。
-        next_state = {iid: prev[iid] for iid in curr if iid in prev}
-        next_state[selected_id] = curr[selected_id]
-        _pending_state = next_state
-        return _format_prompt(selected, fallback=False)
+def check(hook_config: dict[str, Any] | None = None) -> str | None:
+    global _runtime
+    entry_id = str((hook_config or {}).get("entry_id") or "default")
+    path = _state_path(entry_id)
+    _runtime = {"entry_id": entry_id, "state_path": path, "pending": None, "state": None}
 
-    _save_state(curr)
+    fetched = _fetch_issues(hook_config)
+    if fetched is None:
+        return None
+    issues, project_path = fetched
+    candidates = _issue_candidates(issues, project_path)
+    state = _load_state(path)
 
-    # ここから先は「更新なし」。フォールバックが有効なら毎回ランダム送信する。
-    if fallback_enabled:
-        return _format_prompt(random.choice(issues), fallback=True)
+    def fmt_new(c: EventCandidate) -> str:
+        return _format_prompt(c.payload)
 
-    return None
+    def fmt_replay(c: EventCandidate) -> str:
+        return _format_prompt(c.payload, prefix=_REPLAY_PREFIX)
+
+    result, pending, updated = select_event(
+        candidates,
+        state,
+        hook_config,
+        format_new=fmt_new,
+        format_replay=fmt_replay,
+    )
+
+    if pending is None and not state.get("baseline_done"):
+        _save_state(path, updated)
+        return None
+
+    _runtime["pending"] = pending
+    _runtime["state"] = state
+    if isinstance(result, str) and pending and pending.kind == "fallback":
+        return _FALLBACK_PREFIX + result
+    return result if isinstance(result, str) else None
 
 
 def ack() -> None:
-    """直前の check() が返した更新を配送済みとして確定する。"""
-    global _pending_state
-    if _pending_state is not None:
-        _save_state(_pending_state)
-        _pending_state = None
+    pending: PendingAck | None = _runtime.get("pending")
+    path: Path | None = _runtime.get("state_path")
+    state: dict[str, Any] | None = _runtime.get("state")
+    if pending is None or path is None or state is None:
+        return
+    _save_state(path, apply_ack(state, pending))
+    _runtime["pending"] = None
 
 
 if __name__ == "__main__":
-    # 手動デバッグ用: 単体実行すると check() の結果を表示する。
-    print(check())
+    print(check({"entry_id": "manual"}))

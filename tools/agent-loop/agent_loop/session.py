@@ -38,11 +38,22 @@ class SessionManager:
         self._prompt_cwds: dict[str, str | None] = {}
         self._owners: dict[str, str] = {}
         self._restart_locks: dict[str, threading.Lock] = {}
+        # Phase 2A: ownership / generation / effective_model / launch fingerprint
+        self._ownership: dict[str, str] = {}  # managed-persistent | managed-ephemeral
+        self._generation: dict[str, int] = {}
+        self._effective_model: dict[str, str | None] = {}
+        self._launch_fingerprint: dict[str, str] = {}
         # グローバル指示: ペインごとに「最後に注入した instructions.revision」を覚え、
         # revision が変わったときだけ次の送信に前置する（長寿命チャットの文脈を汚さない）。
         self._instr_rev: dict[str, int] = {}
         self._state_extras: dict[str, Any] = {}
         self._lock = threading.Lock()
+        self._user_home = str(Path.home().resolve())
+        self._environment_handoff: dict[str, Any] = {
+            "prompt": False,
+            "skill_home": None,
+            "token_env_names": [],
+        }
 
         self._tmux_bin: str | None = None
         self._layout_window_target: str | None = None
@@ -194,6 +205,42 @@ class SessionManager:
     def get_target_path(self) -> str:
         return self._target_path
 
+    def get_user_home(self) -> str:
+        return self._user_home
+
+    def configure_environment_handoff(
+        self,
+        handoff: dict[str, Any],
+        *,
+        user_home: "Path | str | None" = None,
+    ) -> None:
+        self._environment_handoff = dict(handoff or {})
+        if user_home is not None:
+            self._user_home = str(Path(user_home).expanduser().resolve())
+
+    def _build_launch_env(self) -> dict[str, str]:
+        env: dict[str, str] = {
+            "HOME": self._user_home,
+            "AGENT_HOME": str(agent_home_dir().resolve()),
+        }
+        spec = _CLI_PROFILE.spec or {}
+        agent_env = spec.get("env")
+        if isinstance(agent_env, dict):
+            for key, value in agent_env.items():
+                name = str(key)
+                if not name or name == "PATH":
+                    continue
+                env[name] = str(value)
+        return env
+
+    def _format_launch_command(self, argv: list[str], launch_env: dict[str, str]) -> str:
+        env_prefix = "env " + " ".join(
+            f"{shlex.quote(key)}={shlex.quote(value)}"
+            for key, value in sorted(launch_env.items())
+        )
+        cmd = " ".join(shlex.quote(arg) for arg in argv)
+        return f"{env_prefix} {cmd}"
+
     # ------------------------------------------------------------------
     # ペイン起動 / 停止
     # ------------------------------------------------------------------
@@ -212,33 +259,56 @@ class SessionManager:
         prompt_name: str,
         cwd: str | None = None,
         owner: str = "scheduled",
+        launch_spec: dict[str, Any] | None = None,
     ) -> bool:
         """新しいエージェント CLI ペインを起動して管理下に登録する。"""
         if shutil.which("tmux") is None:
             raise RuntimeError("tmux が PATH に見つかりません。`sudo apt install tmux` を実行してください。")
 
-        # agent_cli 指定時は定義（agents/<name>.json の interactive）から組み立てた argv、
-        # 未指定（legacy）は従来の kiro-cli 組み立て。
-        if not _CLI_PROFILE.is_legacy and _CLI_PROFILE.argv:
-            full_argv = list(_CLI_PROFILE.argv)
+        spec = dict(launch_spec) if launch_spec else None
+        profile_name = _CLI_PROFILE.name
+        effective_model: str | None = None
+        ownership = "managed-persistent"
+
+        if spec is not None:
+            full_argv = list(spec.get("argv") or [])
+            if not full_argv:
+                raise RuntimeError("launch_spec.argv が空です")
             cli_bin = shutil.which(full_argv[0])
             if cli_bin is None:
                 raise RuntimeError(
-                    f"エージェント CLI '{full_argv[0]}'（agent_cli: {_CLI_PROFILE.name}）が"
-                    " PATH に見つかりません。インストールしてください。")
+                    f"エージェント CLI '{full_argv[0]}' が PATH に見つかりません。")
             full_argv[0] = cli_bin
+            session_cwd = self._resolve_cwd(str(spec.get("cwd") or cwd or "") or None)
+            profile_name = str(spec.get("profile_name") or profile_name)
+            effective_model = spec.get("effective_model")
+            ownership = str(spec.get("ownership") or ownership)
+            launch_env = self._build_launch_env()
+            for k, v in dict(spec.get("env") or {}).items():
+                if k and k != "PATH":
+                    launch_env[str(k)] = str(v)
         else:
-            kiro_bin = shutil.which("kiro-cli")
-            if kiro_bin is None:
-                raise RuntimeError("kiro-cli が PATH に見つかりません。インストールしてください。")
-            cmd_args = ["chat"] + self._kiro_args_base[:]
-            if self._uses_concurrency_agent:
-                agent_file = Path.home() / ".kiro" / "agents" / f"{CONCURRENCY_AGENT_NAME}.json"
-                if agent_file.is_file():
-                    cmd_args += ["--agent", CONCURRENCY_AGENT_NAME]
-            full_argv = [kiro_bin, *cmd_args]
-
-        session_cwd = self._resolve_cwd(cwd)
+            # agent_cli 指定時は定義から組み立てた argv、未指定は従来の kiro-cli。
+            if not _CLI_PROFILE.is_legacy and _CLI_PROFILE.argv:
+                full_argv = list(_CLI_PROFILE.argv)
+                cli_bin = shutil.which(full_argv[0])
+                if cli_bin is None:
+                    raise RuntimeError(
+                        f"エージェント CLI '{full_argv[0]}'（agent_cli: {_CLI_PROFILE.name}）が"
+                        " PATH に見つかりません。インストールしてください。")
+                full_argv[0] = cli_bin
+            else:
+                kiro_bin = shutil.which("kiro-cli")
+                if kiro_bin is None:
+                    raise RuntimeError("kiro-cli が PATH に見つかりません。インストールしてください。")
+                cmd_args = ["chat"] + self._kiro_args_base[:]
+                if self._uses_concurrency_agent:
+                    agent_file = Path.home() / ".kiro" / "agents" / f"{CONCURRENCY_AGENT_NAME}.json"
+                    if agent_file.is_file():
+                        cmd_args += ["--agent", CONCURRENCY_AGENT_NAME]
+                full_argv = [kiro_bin, *cmd_args]
+            session_cwd = self._resolve_cwd(cwd)
+            launch_env = self._build_launch_env()
 
         # セッション開始コマンド（agent-session-commands）の process モード。ペインを作る
         # **前**に走らせる。前準備が終わっていない環境でエージェントを動かさないため、
@@ -247,7 +317,7 @@ class SessionManager:
             log.error("プロンプト '%s' はセッション開始コマンドの失敗により起動しません。", prompt_name)
             return False
 
-        cmd = " ".join(shlex.quote(arg) for arg in full_argv)
+        cmd = self._format_launch_command(full_argv, launch_env)
 
         try:
             pane_target = self._create_worker_pane(cmd, session_cwd)
@@ -256,22 +326,27 @@ class SessionManager:
             return False
 
         attach_session_name = self.get_attach_session_name()
+        fp = launch_fingerprint(profile_name, full_argv, session_cwd)
 
         with self._lock:
             self._panes[prompt_id] = pane_target
             self._prompt_names[prompt_id] = prompt_name
             self._tmux_names[prompt_id] = attach_session_name
-            self._prompt_cwds[prompt_id] = cwd
+            self._prompt_cwds[prompt_id] = cwd if cwd is not None else session_cwd
             self._owners[prompt_id] = owner
+            self._ownership[prompt_id] = ownership
+            self._generation[prompt_id] = int(self._generation.get(prompt_id, 0)) + 1
+            self._effective_model[prompt_id] = effective_model
+            self._launch_fingerprint[prompt_id] = fp
             if prompt_id not in self._restart_locks:
                 self._restart_locks[prompt_id] = threading.Lock()
 
         log.info(
-            "プロンプト '%s' 用ペインを起動しました (pane=%s, tmux=%s, args=%s)。",
-            prompt_name, pane_target, attach_session_name, self._kiro_args_base,
+            "プロンプト '%s' 用ペインを起動しました (pane=%s, tmux=%s, ownership=%s, gen=%s)。",
+            prompt_name, pane_target, attach_session_name, ownership,
+            self._generation.get(prompt_id),
         )
         # chat モードは、CLI が入力を受け付ける状態になってから業務プロンプトより先に送る。
-        # ペインの生成と「プロンプトが出ている」は別の瞬間なので、ここで待ってから送信する。
         self._send_session_chat_commands(pane_target, session_cwd)
         self.write_state()
         return True
@@ -315,6 +390,10 @@ class SessionManager:
             self._tmux_names.pop(prompt_id, None)
             self._prompt_cwds.pop(prompt_id, None)
             self._owners.pop(prompt_id, None)
+            self._ownership.pop(prompt_id, None)
+            self._effective_model.pop(prompt_id, None)
+            self._launch_fingerprint.pop(prompt_id, None)
+            # generation は残して古い monitor callback が誤解放しないよう照合可能にする
             self._instr_rev.pop(prompt_id, None)
 
         if pane_target is not None and self._pane_exists(pane_target):
@@ -337,15 +416,38 @@ class SessionManager:
         prompt_id: str,
         prompt_name: str,
         owner: str = "scheduled",
+        launch_spec: dict[str, Any] | None = None,
     ) -> bool:
-        """セッションが存在しない場合は起動する。成功時 True を返す。"""
+        """セッションが存在しない場合は起動する。成功時 True を返す。
+
+        external pane は登録しない（呼び出し側で SessionManager を使わない）。
+        """
         with self._lock:
             existing = self._panes.get(prompt_id)
             cwd = self._prompt_cwds.get(prompt_id)
             existing_owner = self._owners.get(prompt_id, "scheduled")
+            existing_model = self._effective_model.get(prompt_id)
         if existing is not None:
-            return existing_owner == owner
-        return self._start_pane(prompt_id, prompt_name, cwd, owner)
+            if existing_owner != owner:
+                return False
+            if launch_spec is not None:
+                want_model = launch_spec.get("effective_model")
+                if existing_model != want_model:
+                    return False  # model_mismatch — 呼び出し側で失敗扱いにする
+            return True
+        return self._start_pane(prompt_id, prompt_name, cwd, owner, launch_spec=launch_spec)
+
+    def get_generation(self, prompt_id: str) -> int:
+        with self._lock:
+            return int(self._generation.get(prompt_id, 0))
+
+    def get_effective_model(self, prompt_id: str) -> str | None:
+        with self._lock:
+            return self._effective_model.get(prompt_id)
+
+    def get_ownership(self, prompt_id: str) -> str | None:
+        with self._lock:
+            return self._ownership.get(prompt_id)
 
     def get_pane_id(self, prompt_id: str) -> str | None:
         """prompt_id に対応するペイン ID を返す（なければ None）。"""
@@ -466,13 +568,20 @@ class SessionManager:
             restart_lock.release()
 
     def sync_entries(self, entries: list[dict[str, Any]]) -> None:
-        """エントリ一覧に合わせてペインを起動/停止する。"""
+        """エントリ一覧に合わせてペインを起動/停止する。
+
+        oneshot / external target は daemon 起動時に一括作成しない。
+        """
         desired: dict[str, str] = {}
         desired_cwd: dict[str, str | None] = {}
         for entry in entries:
             prompt_id = str(entry.get("id", "")).strip()
             if not prompt_id:
                 continue
+            if entry.get("oneshot"):
+                continue
+            if entry.get("target"):
+                continue  # external pane — SessionManager に登録しない
             prompt_name = str(entry.get("name", prompt_id)).strip() or prompt_id
             desired[prompt_id] = prompt_name
             desired_cwd[prompt_id] = str(entry.get("cwd", "")).strip() or None
@@ -664,6 +773,9 @@ class SessionManager:
                 self._tmux_names.pop(prompt_id, None)
                 self._prompt_cwds.pop(prompt_id, None)
                 self._owners.pop(prompt_id, None)
+                self._ownership.pop(prompt_id, None)
+                self._effective_model.pop(prompt_id, None)
+                self._launch_fingerprint.pop(prompt_id, None)
                 self._instr_rev.pop(prompt_id, None)
         self.write_state()
         return True

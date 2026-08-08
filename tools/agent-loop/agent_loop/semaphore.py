@@ -294,8 +294,14 @@ class SlotMonitor:
         on_failure: Any = None,
         on_freeze: Any = None,
         initial_content_hash: str | None = None,
+        hold_slot: bool = False,
+        profile: Any = None,
     ) -> None:
-        """ペインの処理完了監視を開始する。"""
+        """ペインの処理完了監視を開始する。
+
+        hold_slot=True のとき完了時に semaphore を解放しない（Ralph / cleanup lease）。
+        profile 未指定時は daemon 既定 CliProfile を is_idle に使う。
+        """
         with self._lock:
             self._pending[pane_id] = {
                 "state": "waiting_start",
@@ -306,6 +312,8 @@ class SlotMonitor:
                 "content_hash": None,
                 "hash_unchanged_since": None,
                 "initial_content_hash": initial_content_hash,
+                "hold_slot": bool(hold_slot),
+                "profile": profile,
             }
 
     def untrack(self, pane_id: str) -> None:
@@ -361,8 +369,13 @@ class SlotMonitor:
 
         # 待機/処理中の判定は CLI ごとに方法が違うため CliProfile が行う（ready/busy
         # パターン、パターンで判定できない CLI は静穏判定）。legacy は従来と同一。
+        # external pane 等は track 時の optional profile を優先する。
+        with self._lock:
+            entry_for_profile = self._pending.get(pane_id)
+            profile = (entry_for_profile or {}).get("profile") if entry_for_profile else None
         content = _capture_pane(pane_id)
-        is_idle = _CLI_PROFILE.is_idle(pane_id, content)
+        idle_profile = profile if profile is not None else _CLI_PROFILE
+        is_idle = idle_profile.is_idle(pane_id, content)
         now = time.time()
 
         if state == "waiting_start":
@@ -429,14 +442,20 @@ class SlotMonitor:
     ) -> None:
         with self._lock:
             entry = self._pending.get(pane_id)
-            release_slot = entry is None or not entry.get("slot_released", False)
-            if entry is not None and release_slot:
+            hold_slot = bool(entry.get("hold_slot")) if entry else False
+            release_slot = (
+                not hold_slot
+                and (entry is None or not entry.get("slot_released", False))
+            )
+            if entry is not None and (release_slot or hold_slot):
                 entry["slot_released"] = True
+            profile = entry.get("profile") if entry else None
             if entry and keep_for_completion and callable(entry.get("on_complete")):
                 entry["acquired_at"] = float("inf")
             elif not notify_complete and not notify_failure:
                 self._pending.pop(pane_id, None)
-        _CLI_PROFILE.forget_pane(pane_id)
+        forget_profile = profile if profile is not None else _CLI_PROFILE
+        forget_profile.forget_pane(pane_id)
         if release_slot:
             self._semaphore.release(pane_id)
         callback = None
