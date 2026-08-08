@@ -14,7 +14,7 @@ const RENDERER_DIR = path.join(__dirname, '..', '..', 'src', 'renderer');
 const SECTION_ORDER = [
   'home', 'overview', 'backlog', 'authoring', 'form-edit', 'needs', 'flow',
   'node-detail', 'gitlab', 'history', 'amigos', 'orchestration', 'cowork',
-  'routines', 'usage', 'kiro-loop',
+  'routines', 'usage',
 ];
 
 function read() {

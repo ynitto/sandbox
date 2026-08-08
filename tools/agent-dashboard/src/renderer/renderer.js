@@ -58,11 +58,11 @@ const state = {
   amigos: null, // amigos:overview のスナップショット { missions, budget, errors }
   amigosBudgetSaving: false,
   amigosReject: null, // 修正依頼ダイアログの対象 { home, missionId }
-  // kiro-loop 端末
-  kiroLoopTerm: null, // { repo, name, target, session, items, text, error, at }
-  kiroLoopCache: RoutineUiCache.createBoundedAsyncCache({ max: 8, ttlMs: 30000 }), // repo → session list
-  kiroLoopStateCache: RoutineUiCache.createBoundedAsyncCache({ max: 8, ttlMs: 10000 }), // repo → status summary
-  kiroLoopTimer: null,
+  // 定常業務の agent-loop 端末
+  routineAgentTerm: null, // { repo, name, target, session, items, text, error, at }
+  routineAgentCache: RoutineUiCache.createBoundedAsyncCache({ max: 8, ttlMs: 30000 }), // repo → session list
+  routineAgentStateCache: RoutineUiCache.createBoundedAsyncCache({ max: 8, ttlMs: 10000 }), // repo → status summary
+  routineAgentTimer: null,
   coworkRun: null,       // { id, phase: 'running'|'ok'|'error', message, at }
   coworkHistory: null,   // 履歴ダイアログのモデル { id, name, logs, history, file, text }
   timer: null,
@@ -1371,7 +1371,6 @@ function renderAllTabs() {
     if ((!state.globalSettingsDirty && !state.orchInstructionsDirty && !state.orchSessionDirty)
       || !$('tab-orchestration').childElementCount) renderOrchestration();
   });
-  renderPane('kiro-loop', renderKiroLoopTerminal);
   for (const [name] of featureTabs) renderPane(name, () => renderFeatureTab(name));
   // ナビは**画面を描いたあと**に組む。どのタブを出せるかは各画面が描画のなかで決める
   // （募集が無ければ参加タブを隠す等）ので、先に組むと 1 周遅れの状態が出る。
@@ -2301,7 +2300,7 @@ function coworkDraft() {
   // 発見項目（source:'discovered'）も編集できるよう、overview のマージ済み一覧を種にする。
   // **overview 未取得のうちは種を確定させない**——初回描画は refreshCowork より先に走るので、
   // ここで空配列をキャッシュすると、あとから発見項目が届いても画面が空のまま固まる
-  // （.kiro/kiro-loop.yml があるのに定常業務が出ない、の正体）。
+  // （.agents/agent-loop.yml があるのに定常業務が出ない、の正体）。
   const merged = (state.cowork && Array.isArray(state.cowork.items)) ? state.cowork.items : null;
   if (!merged) return configuredCoworkItems();
   if (!state.coworkDraft) state.coworkDraft = merged.map((x) => ({ ...x }));
@@ -2331,7 +2330,7 @@ function selectedProjectFolder() {
 }
 
 // 選択中workspaceが提供する画面を決める。設定rootsはagent-project以外の
-// kiro-loop専用フォルダも含むため、登録されているだけではagent-project扱いにしない。
+// agent-loop専用フォルダも含むため、登録されているだけではagent-project扱いにしない。
 function workspaceFeatureModel(discovery, selectedDir, coworkCount) {
   const projects = (discovery && discovery.projects) || [];
   const selected = projects.find((project) => project && project.dir === selectedDir) || null;

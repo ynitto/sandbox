@@ -72,8 +72,10 @@ def _resume_run(bus: Bus, daemon_id: str, args, base: list, req_id: str, req: di
     if n > max_r:
         return None
     p = (spawn or _spawn_orchestrator)(base, args, req_id, req)
+    view = bus.run_view(req_id)
+    view.set_phase("executing" if view.read_graph() else "planning", daemon_id)
     bus.touch_run(req_id, lease_window)   # 引き継ぎ直後に生存リースを張る（孤児の再判定を防ぐ）
-    bus.run_view(req_id).event(daemon_id, "run-resumed", run=req_id, resume=n)
+    view.event(daemon_id, "run-resumed", run=req_id, resume=n)
     bus.sync_push(f"run {req_id} resumed（孤児を引き継ぎ #{n}）")
     return p
 

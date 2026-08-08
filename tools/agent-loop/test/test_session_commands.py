@@ -50,6 +50,16 @@ class SessionCommandsTests(unittest.TestCase):
         """コマンドが無い / 読めないときは「開始してよい」を返す（ペイン起動を止めない）。"""
         self.assertTrue(al.run_session_commands({"engine": "agent-loop"}))
 
+    def test_legacy_engine_is_read_with_warning_and_matches_agent_loop(self):
+        self._write({"commands": [
+            {"id": "legacy", "run": "true", "when": {"engines": ["kiro-loop"]}},
+        ]})
+        with self.assertLogs(level="WARNING") as logs:
+            data = al._load_session_commands()
+        self.assertIn("非推奨", "\n".join(logs.output))
+        self.assertTrue(al.session_command_matches(
+            data["commands"][0]["when"], {"engine": "agent-loop"}))
+
     # -- 計画の決定性（dashboard の JS plan() と同一結果） --------------------
 
     def test_placeholders_expand_without_quoting(self):
@@ -64,6 +74,8 @@ class SessionCommandsTests(unittest.TestCase):
         self.assertFalse(al.session_command_matches(when, {"engine": "agent-flow", "workload": "routine"}))
         self.assertTrue(al.session_command_matches(None, {"engine": "agent-flow"}))
         self.assertTrue(al.session_command_matches(when, {}))
+        self.assertTrue(al.session_command_matches(
+            {"engines": ["kiro-loop"]}, {"engine": "agent-loop"}))
 
     def test_chat_is_allowed_on_resident_engine(self):
         data = {"commands": [{"id": "c", "mode": "chat", "run": "docs を読んで"}]}

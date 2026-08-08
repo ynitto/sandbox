@@ -1,6 +1,6 @@
 'use strict';
 
-// 制御面分離（base / agent-project / kiro-loop / cowork / amigos / participation）の配線テスト。
+// 制御面分離（base / agent-project / routines / cowork / amigos / participation）の配線テスト。
 // Electron は起動せず、feature 列挙・preload 合成・互換シムだけを検証する。
 
 const assert = require('assert');
@@ -20,7 +20,7 @@ test('features に各制御面が並ぶ', () => {
   const features = loadFeatures();
   const ids = features.map((f) => f.id);
   assert.deepStrictEqual(ids,
-    ['agent-project', 'kiro-loop', 'cowork', 'amigos', 'orchestration', 'delegation', 'participation',
+    ['agent-project', 'routines', 'cowork', 'amigos', 'orchestration', 'delegation', 'participation',
      'agent-audit']);
 });
 
@@ -61,8 +61,8 @@ test('agent-project preload に discover / flowRuns がある', () => {
   assert.deepStrictEqual(calls, [['dashboard:discover', undefined]]);
 });
 
-test('kiro-loop は tmux 視聴・構造化状態・復旧送信 API を登録する', () => {
-  const loop = loadFeatures().find((f) => f.id === 'kiro-loop');
+test('routines は tmux 視聴・構造化状態・復旧送信 API を登録する', () => {
+  const loop = loadFeatures().find((f) => f.id === 'routines');
   const registered = [];
   loop.registerIpc({
     handle: (channel) => registered.push(channel),
@@ -71,14 +71,14 @@ test('kiro-loop は tmux 視聴・構造化状態・復旧送信 API を登録�
   });
   assert.deepStrictEqual(
     registered.sort(),
-    ['kiroLoop:capture', 'kiroLoop:listSessions', 'kiroLoop:send', 'kiroLoop:state'].sort()
+    ['routineAgent:capture', 'routineAgent:listSessions', 'routineAgent:send', 'routineAgent:state'].sort()
   );
   const api = loop.preloadApi();
-  assert.strictEqual(typeof api.kiroLoopListSessions, 'function');
-  assert.strictEqual(typeof api.kiroLoopCapture, 'function');
-  assert.strictEqual(typeof api.kiroLoopState, 'function');
-  assert.strictEqual(typeof api.kiroLoopSend, 'function');
-  assert.ok(loop.configDefaults.kiroLoop);
+  assert.strictEqual(typeof api.routineAgentListSessions, 'function');
+  assert.strictEqual(typeof api.routineAgentCapture, 'function');
+  assert.strictEqual(typeof api.routineAgentState, 'function');
+  assert.strictEqual(typeof api.routineAgentSend, 'function');
+  assert.ok(loop.configDefaults.routines);
 });
 
 
@@ -103,6 +103,15 @@ test('cowork は定期実行と定型業務 API を登録する', () => {
   assert.deepStrictEqual(calls, [['cowork:overview', {}]]);
   assert.strictEqual(overview({ probeProcess: true }), 'ok');
   assert.deepStrictEqual(calls[1], ['cowork:overview', { probeProcess: true }]);
+  const runLoop = api.coworkRunLoop((channel, args) => {
+    calls.push([channel, args]);
+    return 'started';
+  });
+  assert.strictEqual(runLoop('job-1', { target: 'main' }), 'started');
+  assert.deepStrictEqual(calls[2], [
+    'cowork:runLoop',
+    { itemId: 'job-1', parameters: { target: 'main' } },
+  ]);
   assert.deepStrictEqual(cowork.configDefaults.cowork.items, []);
 });
 
@@ -154,8 +163,8 @@ test('base / feature の入口ファイルが存在する', () => {
     'base/main/config.js',
     'features/index.js',
     'features/agent-project/index.js',
-    'features/kiro-loop/index.js',
-    'features/kiro-loop/README.md',
+    'features/routines/index.js',
+    'features/routines/README.md',
     'features/cowork/index.js',
     'features/cowork/README.md',
     'features/amigos/index.js',
@@ -186,7 +195,7 @@ test('base / feature の入口ファイルが存在する', () => {
 test('HTML に data-feature マーカーがある', () => {
   const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'index.html'), 'utf8');
   assert.ok(html.includes('data-feature="agent-project"'));
-  assert.ok(html.includes('data-feature="kiro-loop"'));
+  assert.ok(html.includes('data-feature="routines"'));
   assert.ok(html.includes('data-feature="cowork"'));
   assert.ok(html.includes('tab-cowork'));
   assert.ok(html.includes('data-feature="amigos"'));

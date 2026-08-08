@@ -568,7 +568,9 @@ SlotMonitor の状態遷移は従来の「プロンプト消失 → processing �
 
 inbox を共有しているため、新旧系統のデーモンは相互にメッセージを送り合えます。逆に言えば、メッセージスキーマ（特に `reply_to` の意味）の変更は両系統に同時に効く相互運用上の変更点であり、片側だけの改変は過去に非互換バグを生みました（2026-08-02 監査 D2、解消済み）。
 
-新機能・設計更新は agent-loop 系統へ寄せます。kiro-loop 側にだけある資産は `stub/kiro-cli-stub.py` とそれを使う `test/test_stub.py` の 2 点だけで（テスト総数は agent-loop 33 : kiro-loop 4）、退役時にここへ移します。`setup-token-reduction.py` は移植せず、汎用注入契約へ畳んで退役させます（計画 F9）。
+新機能・設計更新は agent-loop 系統へ寄せます。kiro-loop 側にだけあった
+`stub/kiro-cli-stub.py` とその `test/test_stub.py` は Phase 0 / S2 で agent-loop へ退避済みです。
+`setup-token-reduction.py` は移植せず、汎用注入契約へ畳んで退役させます（計画 F9）。
 
 ### C. 統合した旧文書
 

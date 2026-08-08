@@ -13,13 +13,14 @@ from __future__ import annotations
 # 副作用のあるコマンドの到達範囲を、各ノードのローカル設定ファイルへ閉じ込める（非伝播が
 # 本契約の不変条件）。単発系にはチャットセッションが無いため chat モードはスキップする。
 #
-# 計画（展開・when 判定・合計秒の有界化）は dashboard（JS）・kiro-loop / agent-loop（Python）と
+# 計画（展開・when 判定・合計秒の有界化）は dashboard（JS）・agent-loop（Python）と
 # 同一結果になるよう決定的に保つ。stdlib のみ。
 
 _SESSION_COMMANDS_DEFAULT_TIMEOUT = 60
 _SESSION_COMMANDS_DEFAULT_MAX_TOTAL = 120
 _SESSION_COMMANDS_HARD_MAX_TOTAL = 600
-_SESSION_COMMANDS_CHAT_ENGINES = ("kiro-loop", "agent-loop", "dashboard")
+_SESSION_COMMANDS_CHAT_ENGINES = ("agent-loop", "dashboard")
+_SESSION_COMMANDS_LEGACY_ENGINE = "kiro-loop"
 _SESSION_COMMANDS_PLACEHOLDER_RE = re.compile(
     r"\{(cwd|workspace|engine|workload|agent_cli|model|run_id|node_id)\}"
 )
@@ -88,9 +89,13 @@ def session_command_matches(when: "dict | None", ctx: "dict | None") -> bool:
         if not isinstance(values, list):
             continue
         allowed = [str(v).strip() for v in values if str(v).strip()]
+        if key == "engines":
+            allowed = ["agent-loop" if v == _SESSION_COMMANDS_LEGACY_ENGINE else v for v in allowed]
         if not allowed:
             continue
         actual = str(c.get(ctx_key) or "").strip()
+        if key == "engines" and actual == _SESSION_COMMANDS_LEGACY_ENGINE:
+            actual = "agent-loop"
         if not actual:
             continue
         if actual not in allowed:
@@ -117,6 +122,8 @@ def plan_session_commands(data: "dict | None", ctx: "dict | None") -> list:
         return out
     c = ctx if isinstance(ctx, dict) else {}
     engine = str(c.get("engine") or "").strip()
+    if engine == _SESSION_COMMANDS_LEGACY_ENGINE:
+        engine = "agent-loop"
     budget = _session_commands_clamp_total(data.get("max_total_timeout"))
     spent = 0
     bundled = []

@@ -38,7 +38,7 @@ function toWslCwd(p) {
   return winDriveToWsl(p);
 }
 
-// コマンド設定（例 `python3 ~/tools/kiro-loop/kiro-loop.py`）を argv 配列へ分解する。
+// コマンド設定（例 `python3 ~/tools/agent-loop/agent-loop.py`）を argv 配列へ分解する。
 // クォート（"…" / '…'）で空白入りパスも表せる（agent-project/actions.js と同じ規則）。
 // 全体を 1 トークンとして引用すると `'python3 /path/…': not found` になり実行できない。
 function splitCommand(command) {
@@ -99,7 +99,7 @@ function sh(command, args, options = {}) {
   const argv = (args || []).map(String);
   const tokens = splitCommand(command);
   if (process.platform === 'win32') {
-    // kiro-loop / agent-loop（と statemachine-use を発動するプロンプト送信）は WSL 側にしか
+    // agent-loop / agent-loop（と statemachine-use を発動するプロンプト送信）は WSL 側にしか
     // 無い想定。リポジトリが Windows ドライブ上でも wsl.exe 経由でプロジェクトルートから
     // 実行する（Windows で直接 spawn すると ENOENT になる）。
     const cwd = toWslCwd(options.cwd);
@@ -127,7 +127,7 @@ function sh(command, args, options = {}) {
 }
 
 // 実行を「見える」ようにする WSL 側スクリプト。send の出力を表示しつつ tee で拾い、
-// 出力中のペイン ID（%N。kiro-loop send が送信先を stderr に出す）からセッションを
+// 出力中のペイン ID（%N。agent-loop send が送信先を stderr に出す）からセッションを
 // 特定できたらそのまま tmux attach する——実行の様子を同じウィンドウで見続けられる。
 // 特定できない・失敗したときはウィンドウを開いたまま（read）にして原因を読めるようにする。
 function windowScript(command, argv, cwd) {
@@ -379,7 +379,7 @@ function runInWindow(command, args, options = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// インタラクティブ実行（kiro-loop を介さない直接 tmux + kiro-cli）
+// インタラクティブ実行（agent-loop を介さない直接 tmux + kiro-cli）
 // ---------------------------------------------------------------------------
 
 // リポジトリごとに安定した tmux セッション名。'kiro' 接頭辞なので端末タブの
@@ -400,9 +400,9 @@ function chatSessionName(linuxCwd, cli = '', prefix = 'agent-chat') {
 }
 
 // kiro-cli をインタラクティブ起動した tmux セッションへプロンプトを直接送るスクリプト。
-// kiro-loop は実行しない: セッションが無ければ作り、kiro-cli の入力プロンプト
-// （`> ` / `!>` 等 — kiro-loop の _PROMPT_RE と同じ判定）を待ってから
-// set-buffer + paste-buffer + Enter（kiro-loop の _send_to_pane と同じ安全送信）で
+// agent-loop は実行しない: セッションが無ければ作り、kiro-cli の入力プロンプト
+// （`> ` / `!>` 等 — agent-loop の _PROMPT_RE と同じ判定）を待ってから
+// set-buffer + paste-buffer + Enter（agent-loop の _send_to_pane と同じ安全送信）で
 // 送信し、そのままアタッチして実行の様子を見せる。
 // セッション開始コマンド（agent-session-commands）の process モードを、tmux セッションを
 // **新規作成するときだけ** 走らせるシェル片。cwd が WSL 側にあるため、Electron main では
@@ -420,7 +420,7 @@ function sessionProcessLines(entries) {
   }).join('');
 }
 
-// 送信テキストは 1 行へ畳む（kiro-loop の送信と同じ）。改行を含めて送ると kiro-cli 等が
+// 送信テキストは 1 行へ畳む（agent-loop の送信と同じ）。改行を含めて送ると kiro-cli 等が
 // 途中で確定してしまうため、複数行は空白でつなぐ。
 function oneLine(s) {
   return String(s == null ? '' : s).replace(/\r?\n/g, ' ').trim();
@@ -547,7 +547,7 @@ function chatWindowScript({ chatCommand, cwd, session, prompt, sessionCommands,
         (chatLines
           ? (sendPrompt ? `if [ $__new -eq 1 ]; then ${chatLines}fi; ` : chatLines)
           : '') +
-        // 業務プロンプトも kiro-loop と同じ send-keys（テキストと Enter を分けて）で送る。
+        // 業務プロンプトも agent-loop と同じ send-keys（テキストと Enter を分けて）で送る。
         // promptOnNewOnly は「既存セッションへは送らない」（S9-4 の対話診断）——会話が
         // 続いているところへ同じブリーフを再投入すると文脈が二重になる。
         (sendPrompt
@@ -589,7 +589,7 @@ function sendArgsFor(job) {
   if (!name) return ['send'];
   let pane;
   try {
-    pane = require('../../kiro-loop/main/tmux').findPane({ repo: job.cwd || job.repo, name });
+    pane = require('../../routines/main/tmux').findPane({ repo: job.cwd || job.repo, name });
   } catch {
     pane = '';   // 解決できなければ従来どおり CLI の自動解決に任せる
   }
@@ -614,9 +614,9 @@ function makeLoopProvider(cfg, config = null) {
       // Linux は見つかった端末）。`cowork.runWindow: false` で従来の非表示 spawnSync に戻せる
       // ——ただしそちらは main プロセスを最大 60 秒止めるので、既定にはしない。
       if (cfg.runWindow !== false && supportsRunWindow()) {
-        // job.prompt があれば kiro-loop を介さず、tmux + kiro-cli（インタラクティブ）へ
+        // job.prompt があれば agent-loop を介さず、tmux + kiro-cli（インタラクティブ）へ
         // プロンプトを直接送る。呼び出し側（cowork.runLoop / runStateMachine）が
-        // kiro-loop.yml の本文やステートマシン実行文を解決して渡してくる。
+        // agent-loop.yml の本文やステートマシン実行文を解決して渡してくる。
         if (job.prompt) {
           // 起動する対話 CLI は全体設定（実行制御の workloads.routine）→ ⚙ アシスタント設定
           // → プロジェクト設定の順で解決する。cfg.chatCommand は明示上書き（S9-3）。
@@ -633,8 +633,8 @@ function makeLoopProvider(cfg, config = null) {
         // 明示 args（レガシー）の項目は従来どおり <loopCommand> をウィンドウで実行する
         return runInWindow(command, sendArgsFor(job), { cwd: job.cwd || job.repo });
       }
-      // kiro-loop / agent-loop に `run` サブコマンドは無い。単発実行は
-      // `send <プロンプト名>` — cwd（ワークスペース）の .kiro/kiro-loop.* から
+      // agent-loop / agent-loop に `run` サブコマンドは無い。単発実行は
+      // `send <プロンプト名>` — cwd（ワークスペース）の .kiro/agent-loop.* から
       // 定期プロンプト名を解決してセッションへ送信する（送信のみで応答は待たない）。
       return sh(command, sendArgsFor(job), { cwd: job.cwd || job.repo, timeoutMs: job.timeoutMs || 60000 });
     },

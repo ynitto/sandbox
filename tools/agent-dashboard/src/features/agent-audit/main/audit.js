@@ -1,7 +1,7 @@
 'use strict';
 
 // agent-audit CLI をヘッドレスで 1 回呼ぶ。Windows では WSL（wsl.exe）経由、
-// Linux ではローカルの bash で実行する（kiro-loop の exec と同じ流儀）。
+// Linux ではローカルの bash で実行する（agent-loop の exec と同じ流儀）。
 //
 // ダッシュボードから呼ぶのは LLM を使わない決定的なサブコマンドだけ
 // （collect / usage / stats / doctor）。extract / distill などの LLM 段は呼ばない —
@@ -10,7 +10,7 @@
 // （集計ロジックをこちらへ複製しない）。
 const { spawn } = require('child_process');
 
-const exec = require('../../kiro-loop/main/exec');
+const exec = require('../../routines/main/exec');
 
 const PERIODS = new Set(['day', 'month', 'total']);
 const GROUP_KEYS = new Set(['workload', 'tool', 'agent_cli', 'model', 'ref', 'node']);

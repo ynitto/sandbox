@@ -10,7 +10,7 @@
 
 async function init() {
   setupDialogLayouts();
-  setupKiroLoopDialog();
+  setupRoutineAgentDialog();
   // ホーム（ポータル）はコアのフィーチャータブ登録簿を自分でも使う（sections/home.js は
   // 関数宣言のみ、という読み込み順契約を守るため、登録はここで行う）。features/*.js の
   // カード（参加・利用状況）は各モジュールが load 時に登録済み。

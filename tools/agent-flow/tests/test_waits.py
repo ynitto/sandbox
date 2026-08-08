@@ -442,6 +442,8 @@ class SessionCommandsTests(unittest.TestCase):
         self.assertFalse(kf.session_command_matches(when, {"engine": "kiro-loop", "workload": "flow"}))
         self.assertTrue(kf.session_command_matches(None, {"engine": "kiro-loop"}))
         self.assertTrue(kf.session_command_matches(when, {}))
+        self.assertTrue(kf.session_command_matches(
+            {"engines": ["kiro-loop"]}, {"engine": "agent-loop"}))
 
     def test_chat_is_skipped_on_single_shot_engine(self):
         data = {"commands": [{"id": "c", "mode": "chat", "run": "docs を読んで"}]}

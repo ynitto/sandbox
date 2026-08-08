@@ -67,6 +67,21 @@ test('save は patch をマージし revision を単調増加させ未知キー�
   assert.strictEqual(raw.future_key, 'keep', '未知キーは書換で失われない');
 });
 
+test('旧 engine は警告つきで読み、新規保存では agent-loop だけを書く', () => {
+  const dir = tmpdir('sesscmd-legacy-engine-');
+  fs.writeFileSync(path.join(dir, 'session.json'), JSON.stringify({
+    version: 1,
+    revision: 2,
+    commands: [{ id: 'legacy', run: 'echo hi', when: { engines: ['kiro-loop'] } }],
+  }));
+  const loaded = sc.loadSessionCommands(dir);
+  assert.ok(loaded.warnings[0].includes('非推奨'));
+  assert.deepStrictEqual(loaded.commands[0].when.engines, ['agent-loop']);
+  sc.saveSessionCommands(cfgWith(dir), {});
+  const raw = JSON.parse(fs.readFileSync(path.join(dir, 'session.json'), 'utf8'));
+  assert.deepStrictEqual(raw.commands[0].when.engines, ['agent-loop']);
+});
+
 test('save は ID か実行内容が欠けた行と ID 重複を拒否する', () => {
   const dir = tmpdir('sesscmd-invalid-');
   assert.throws(
@@ -99,7 +114,7 @@ test('resolveSessionDir は設定 → 環境変数 → 共通ホームの順で�
 // ---------------------------------------------------------------------------
 
 test('プレースホルダは決定的に展開し、未定義は空文字へ落とす', () => {
-  const ctx = { cwd: '/w/repo', engine: 'kiro-loop' };
+  const ctx = { cwd: '/w/repo', engine: 'agent-loop' };
   assert.strictEqual(sc.expandPlaceholders('git -C {cwd} fetch', ctx), 'git -C /w/repo fetch');
   assert.strictEqual(sc.expandPlaceholders('run {node_id} now', ctx), 'run  now');
   assert.strictEqual(sc.expandPlaceholders('{unknown}', ctx), '{unknown}', '契約外の名前は触らない');
@@ -110,9 +125,10 @@ test('プレースホルダ展開はクォートを足さない（引用は利�
   assert.strictEqual(out, 'cd /w/my repo && ls');
 });
 
-test('when は指定した軸をすべて満たすときだけ通る（AND 結合）', () => {
-  const when = { engines: ['kiro-loop'], workloads: ['routine'] };
-  assert.strictEqual(sc.matchesWhen(when, { engine: 'kiro-loop', workload: 'routine' }), true);
+test('when は指定した軸をすべて満たし、旧 loop 名も新名として通る', () => {
+  const when = { engines: ['agent-loop'], workloads: ['routine'] };
+  assert.strictEqual(sc.matchesWhen(when, { engine: 'agent-loop', workload: 'routine' }), true);
+  assert.strictEqual(sc.matchesWhen({ engines: ['kiro-loop'] }, { engine: 'agent-loop' }), true);
   assert.strictEqual(sc.matchesWhen(when, { engine: 'agent-flow', workload: 'routine' }), false);
   assert.strictEqual(sc.matchesWhen(null, { engine: 'agent-flow' }), true, '省略は全適用');
   assert.strictEqual(sc.matchesWhen(when, {}), true, '判定材料が無い軸では絞らない');
@@ -120,7 +136,7 @@ test('when は指定した軸をすべて満たすときだけ通る（AND 結�
 
 test('plan は enabled=false を完全な no-op にする', () => {
   const data = { enabled: false, commands: [{ id: 'a', run: 'echo hi' }] };
-  assert.deepStrictEqual(sc.plan(data, { engine: 'kiro-loop' }), []);
+  assert.deepStrictEqual(sc.plan(data, { engine: 'agent-loop' }), []);
 });
 
 
@@ -132,7 +148,7 @@ test('chat はコマンドごとに従来ペースト式とまとめ依頼式を
       { id: 'docs', mode: 'chat', strategy: 'bundle', run: 'docs を読む' },
       { id: 'skill', mode: 'chat', strategy: 'bundle', run: 'skill-selector を使う' },
     ],
-  }, { engine: 'kiro-loop' });
+  }, { engine: 'agent-loop' });
   assert.strictEqual(entries.length, 2);
   assert.strictEqual(entries[0].id, 'slash');
   assert.strictEqual(entries[0].strategy, 'paste');
@@ -145,7 +161,7 @@ test('chat はコマンドごとに従来ペースト式とまとめ依頼式を
 
 test('plan は chat を単発系で no-session としてスキップする', () => {
   const data = { commands: [{ id: 'c', mode: 'chat', run: 'docs を読んで' }] };
-  const onLoop = sc.plan(data, { engine: 'kiro-loop' });
+  const onLoop = sc.plan(data, { engine: 'agent-loop' });
   assert.strictEqual(onLoop[0].skip, null);
   const onFlow = sc.plan(data, { engine: 'agent-flow' });
   assert.strictEqual(onFlow[0].skip, 'no-session', '理由を残す（黙って落とさない）');
@@ -153,7 +169,7 @@ test('plan は chat を単発系で no-session としてスキップする', () 
 
 test('plan は when で外れた行も理由つきで残す（UI が灰色で見せられる）', () => {
   const data = { commands: [{ id: 'a', run: 'echo hi', when: { engines: ['agent-flow'] } }] };
-  const entries = sc.plan(data, { engine: 'kiro-loop' });
+  const entries = sc.plan(data, { engine: 'agent-loop' });
   assert.strictEqual(entries.length, 1);
   assert.strictEqual(entries[0].skip, 'when');
 });
@@ -167,14 +183,14 @@ test('plan は合計上限秒で timeout を切り詰め、超えた行を budge
       { id: 'c', run: 'z', timeout: 30 },
     ],
   };
-  const entries = sc.plan(data, { engine: 'kiro-loop' });
+  const entries = sc.plan(data, { engine: 'agent-loop' });
   assert.strictEqual(entries[0].timeout, 60);
   assert.strictEqual(entries[1].timeout, 40, '残り予算へ切り詰める');
   assert.strictEqual(entries[2].skip, 'budget');
 });
 
 test('plan は cwd 省略時にセッションの cwd を使い、既定 timeout を埋める', () => {
-  const entries = sc.plan({ commands: [{ id: 'a', run: 'echo hi' }] }, { engine: 'kiro-loop', cwd: '/w' });
+  const entries = sc.plan({ commands: [{ id: 'a', run: 'echo hi' }] }, { engine: 'agent-loop', cwd: '/w' });
   assert.strictEqual(entries[0].cwd, '/w');
   assert.strictEqual(entries[0].timeout, sc.DEFAULT_TIMEOUT);
   assert.strictEqual(entries[0].on_error, 'warn', '既定は続行（フェイルセーフ）');
@@ -288,7 +304,7 @@ test('プロンプトを送らない起動（CLIチャット）は毎回「エ�
 test('業務プロンプトを送る定常ループでは chat 前準備を新規セッション時だけ送る（二重送信を避ける）', () => {
   const entries = sc.plan(
     { commands: [{ id: 'prime', mode: 'chat', run: 'docs を読んで' }] },
-    { engine: 'kiro-loop', cwd: '/w' }
+    { engine: 'agent-loop', cwd: '/w' }
   );
   const script = loopProvider.chatWindowScript({
     chatCommand: 'kiro-cli chat', cwd: '/w', session: 's',
@@ -354,6 +370,7 @@ test('設定カードは保存・追加の動線を持つ（実行内容のプ�
   assert.ok(src.includes('通常は設定しなくても使えます'), '設定が任意であることを明示する');
   assert.ok(src.includes('orch-sess-bundle'), 'コマンドごとにまとめ依頼を選ぶチェックボックスが無い');
   assert.ok(src.includes('まとめて依頼'), 'まとめ依頼の表示文言が無い');
+  assert.ok(src.includes('placeholder="agent-loop, agent-flow"'), '新規入力の例に旧 engine 名を出さない');
   assert.ok(/id="btn-orch-sess-save" class="primary-inline"[^>]*>保存</.test(src),
     '保存操作は共通の色と短い文言にする');
 });
