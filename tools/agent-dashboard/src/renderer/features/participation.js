@@ -7,13 +7,10 @@
     root.registerFeatureTab('participation', {
       render: feature.render,
       refresh: feature.refresh,
-      // 領域ナビの出し分けと件数バッジ。募集も引き受けた仕事も無い端末では領域ごと出さない
-      // （開いても空の画面へ誘導しない）。判定はこの feature が持つ——core は
-      // 何が「募集」なのかを知らないままでいられる。
-      //
-      // **引き受けたものが 1 件でもあれば、募集が尽きても領域は残す。** 最後の 1 件を
-      // 引き受けた瞬間に領域ごと消えると、いま起こしたばかりの仕事の結果を追えなくなる。
-      available: () => feature.candidatesFromState().length > 0 || feature.joinedRecords().length > 0,
+      // **左メニューには常に出す。** 以前は募集が 0 件のとき領域ごと隠していたが、
+      // 出たり消えたりするメニューは「さっきあった項目が無い」と探させるだけで、
+      // 募集が無いこと自体も人が知りたい情報である（画面がそれを一言で言う）。
+      available: () => true,
       badge: () => {
         const n = feature.candidatesFromState().length;
         return n ? { text: String(n), title: `参加できる仕事 ${n} 件` } : null;
@@ -33,6 +30,17 @@
   const escHtml = (value) => String(value == null ? '' : value)
     .replace(/[&<>"']/g, (char) => ESC[char]);
 
+  // カードは **1 行の見出し ＋ 1 行の手がかり ＋ ボタン**。以前は依頼文（goal）を丸ごと
+  // 載せていたので 1 枚が縦に伸び、募集が数件あるだけでスクロールしないと比べられなかった。
+  // 長い本文は title 属性（ホバー）へ回し、選ぶのに要る情報だけを表に出す。
+  function candidateMeta(candidate) {
+    if (candidate.workload === 'flow') {
+      const n = Number(candidate.available || 0);
+      return [candidate.context, n ? `未着手の工程 ${n} 件` : ''].filter(Boolean).join(' ・ ');
+    }
+    return candidate.context || '';
+  }
+
   function participationHtml(candidates, statuses) {
     if (!(candidates || []).length) {
       return '<div class="participation-empty"><strong>現在参加できる仕事はありません</strong><p>新しい募集が見つかると、ここに表示されます。</p></div>';
@@ -42,9 +50,7 @@
       const type = candidate.workload === 'amigos'
         ? 'ミッション'
         : candidate.workload === 'board' ? 'よその端末からの依頼' : 'プロジェクト作業';
-      const detail = candidate.workload === 'flow' && candidate.available > 1
-        ? `実行できる作業 ${candidate.available} 件`
-        : candidate.context || '';
+      const meta = candidateMeta(candidate);
       // 引き受けられない端末では**理由を添えて押させない**。押せるのに何も起きない
       // 状態を作らないのが、この画面に板を載せる条件だった。
       const joined = status.joined || candidate.joined;
@@ -62,10 +68,9 @@
       return `<article class="participation-card">
         <div class="participation-card-heading">
           <span class="participation-type">${type}</span>
-          <h3>${escHtml(candidate.title)}</h3>
+          <h3 title="${escHtml(candidate.goal || candidate.title)}">${escHtml(candidate.title)}</h3>
         </div>
-        ${candidate.goal ? `<p class="participation-goal">${escHtml(candidate.goal)}</p>` : ''}
-        ${detail ? `<p class="participation-context">${escHtml(detail)}</p>` : ''}
+        ${meta ? `<p class="participation-context">${escHtml(meta)}</p>` : ''}
         <div class="participation-card-action">
           <button type="button" class="primary-inline participation-join"
             data-participation-key="${escHtml(candidate.key)}"${status.busy || joined || blocked ? ' disabled' : ''}>${escHtml(label)}</button>
@@ -265,13 +270,9 @@
     for (const key of Object.keys(statuses)) {
       if (!keys.has(key)) delete statuses[key];
     }
-    const active = button.classList.contains('active');
-    const visible = currentCandidates.length > 0 || active;
-    setVisibility(button, pane, visible);
-    if (!visible) {
-      pane.innerHTML = '';
-      return;
-    }
+    // 募集が 0 件でもタブは出す（領域と同じ判断）。**空であることも画面が言う**——
+    // タブごと消えると、募集が無いのか自分が見落としたのかを人が確かめられない。
+    setVisibility(button, pane, true);
     pane.innerHTML = `<section class="participation-page" aria-labelledby="participation-title">
       <header class="participation-header">
         <div>
@@ -280,6 +281,15 @@
           <p>自動実行を有効にしている端末は自動で参加します。必要なときだけ手動で参加してください。</p>
         </div>
       </header>
+      <details class="participation-criteria" data-ui-key="participation-criteria">
+        <summary>ここに何が出るか</summary>
+        <ul>
+          <li><strong>プロジェクト作業</strong>: 選択中のプロジェクトの実行のうち、まだ誰も取っていない工程が残っているもの。
+            実行中の run も出ます——動いていること自体は「この端末が手伝える工程がある」ことと矛盾しません。</li>
+          <li><strong>ミッション</strong>: 担当端末が決まっていない役割。</li>
+          <li><strong>よその端末からの依頼</strong>: 委譲公示板で募集中の依頼。</li>
+        </ul>
+      </details>
       ${participationHtml(currentCandidates, statuses)}
     </section>`;
     wire(pane);

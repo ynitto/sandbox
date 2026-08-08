@@ -213,7 +213,7 @@ test('orchestration はノード予算 v2 / 制御 / ドロップイン API を�
      'orchestration:calibrate', 'orchestration:controlSave', 'orchestration:instructionsSave',
      'orchestration:lifecycle', 'orchestration:overview', 'orchestration:profilesApply',
      'orchestration:profilesEvaluate', 'orchestration:profilesSave', 'orchestration:rebalance',
-     'orchestration:sessionCommandsPreview', 'orchestration:sessionCommandsSave',
+     'orchestration:sessionCommandsSave',
      'orchestration:skillsInventory'].sort());
   const api = orch.preloadApi();
   const calls = [];

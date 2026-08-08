@@ -40,16 +40,30 @@
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
   gap: 14px;
 }
+/* 1 枚を低く保つ。カードは「何の仕事か」「どこの話か」「参加する」の 3 つだけを持ち、
+   依頼文の全文は載せない（見出しの title 属性で読める）。募集が数件あるとき、
+   スクロールせずに横並びで比べられることの方が、本文を全部見せるより効く。 */
 .participation-card {
   display: flex;
   min-width: 0;
   flex-direction: column;
-  gap: 12px;
-  padding: 18px;
+  gap: 8px;
+  padding: 14px 16px;
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--bg2);
 }
+.participation-card-heading h3 {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow-wrap: anywhere;
+}
+/* 「ここに何が出るか」— 条件は畳んでおき、知りたい人だけが開く。 */
+.participation-criteria { margin: 10px 0 14px; color: var(--muted); font-size: 13px; }
+.participation-criteria summary { min-height: 34px; display: flex; align-items: center; cursor: pointer; }
+.participation-criteria ul { margin: 4px 0 0; padding-left: 18px; display: grid; gap: 4px; }
 .participation-card-heading {
   display: grid;
   gap: 6px;
@@ -571,6 +585,20 @@ button:disabled { opacity: 0.4; cursor: default; }
 }
 .overview-version-heading h2 { margin: 0; font-size: 18px; }
 .overview-version-heading p { margin: 5px 0 0; color: var(--muted); }
+/* プロジェクト共通チェック（概要の 1 枚）。コマンドは長い 1 行になりがちなので、
+   枠の中だけで横に送り、下の案内と縦に積む。 */
+.project-check-command {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg3);
+  overflow-x: auto;
+  white-space: pre;
+}
+.project-check-setup { display: grid; gap: 8px; margin-top: 12px; }
+.project-check-setup p { margin: 0; color: var(--muted); }
+.project-check-setup pre { margin: 0; padding: 10px 12px; border-radius: 6px; background: var(--bg3); overflow-x: auto; }
 .overview-version-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
@@ -1927,11 +1955,16 @@ table.list tr.clickable:hover { background: var(--bg2); }
 .run-item .req .prose-inline { display: inline; }
 .run-item-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
 
+/* タスクグラフは**それだけで縦に送れる**ようにする。工程が増えるとグラフだけで画面 2〜3 枚
+   ぶんになり、下の受入確認や凡例、右の工程の内容まで一緒に流れていた（見比べながら読めない）。
+   高さを画面のおよそ半分で止め、溢れた分はこの枠の中で送る。 */
 #graph-box {
   background: var(--bg2);
   border: 1px solid var(--border);
   border-radius: 6px;
+  max-height: min(58vh, 620px);
   overflow: auto;
+  overscroll-behavior: contain;
   margin: 10px 0;
 }
 #graph-box.graph-mode-plan { overflow-x: hidden; }
@@ -3249,7 +3282,57 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
 .orch-agents-none { margin-top: 8px; }
 
 /* 実行プロファイル自動選択 */
-.orch-profile-apply-to-row { align-items: center; gap: 16px; flex-wrap: wrap; }
+/* エージェントの自動切り替え: 1 段 = 1 行のカード。上から順に使う（順序は行の位置が示す）。 */
+.orch-profile-toggle { display: flex; align-items: center; gap: 8px; margin: 10px 0 4px; }
+.orch-profile-apply-to-row { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 10px; }
+.orch-profile-tiers { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.orch-profile-tier {
+  display: grid;
+  grid-template-columns: 34px minmax(120px, 0.8fr) minmax(200px, 2fr) minmax(150px, 1fr) auto;
+  align-items: end;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+}
+.orch-profile-tier-rank { align-self: center; }
+.orch-profile-tier-no {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  background: var(--bg3);
+  color: var(--muted);
+  font-size: 12px;
+}
+.orch-profile-tier-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; font-size: 12px; color: var(--muted); }
+.orch-profile-tier-field input { width: 100%; }
+/* 列の見出しは先頭の段だけ。2 段目以降で繰り返すと、同じ言葉が縦に並ぶだけで読む量が増える
+   （読み上げには残す）。 */
+.orch-profile-tier:not(:first-child) .orch-profile-tier-field > span:first-child {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.orch-profile-ratio-input { display: flex; align-items: center; gap: 6px; color: var(--fg); }
+.orch-profile-ratio-input input { width: 84px; }
+.orch-profile-tier .orch-tier-remove { min-height: 36px; }
+.orch-profile-empty { padding: 12px; border: 1px dashed var(--border); border-radius: 8px; }
+.orch-profile-controls { align-items: center; gap: 12px; margin-top: 10px; }
+.orch-profile-advanced { margin-top: 12px; }
+.orch-profile-advanced summary { min-height: 36px; display: flex; align-items: center; cursor: pointer; color: var(--muted); }
+.orch-profile-advanced-grid { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 8px; }
+.orch-profile-advanced-grid label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+.orch-profile-advanced-grid input, .orch-profile-advanced-grid select { min-width: 160px; }
+@media (max-width: 900px) {
+  .orch-profile-tier { grid-template-columns: 1fr; align-items: stretch; }
+  .orch-profile-tier-rank { justify-self: start; }
+}
 .orch-profile-apply-to { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
 .orch-profile-preview { margin-top: 10px; padding: 10px 12px; border: 1px dashed var(--border); border-radius: 8px; }
 .orch-profile-preview > strong { display: block; margin-bottom: 6px; font-size: 12px; color: var(--muted); }
@@ -3328,6 +3411,19 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
 /* セッション開始コマンド（agent-session-commands）パネル */
 .orch-sess-enabled { display: flex; gap: 6px; align-items: center; margin-top: 8px; }
 .orch-sess-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); flex: 1 1 180px; min-width: 0; }
+/* チェックボックスは 1 行の操作。縦積みフィールド（.orch-sess-field）の型を借りると、
+   入力欄と同じ幅まで引き伸ばされてラベルが離れ、行の中で浮いていた。 */
+.orch-sess-strategy {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.orch-sess-strategy input { flex: none; width: auto; margin: 0; }
 .orch-sess-field textarea, .orch-sess-field input, .orch-sess-field select { width: 100%; }
 .orch-sess-narrow { flex: 0 0 140px; }
 .orch-sess-list { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; }

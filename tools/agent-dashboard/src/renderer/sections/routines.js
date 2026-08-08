@@ -32,31 +32,27 @@ function renderRoutineRuns() {
     </section>`;
     return;
   }
-  const list = entries
-    .map((item) => `<button type="button" role="tab" class="cowork-routine-option ${selected === item.id ? 'selected' : ''}"
-      aria-selected="${selected === item.id ? 'true' : 'false'}" data-routine-run="${esc(item.id)}"
-      title="${esc(item.name || item.id)}">
-      <span class="name">${esc(item.name || item.id)}</span>
-      <span class="muted">${esc(coworkKindLabel(item.type))}</span>
-    </button>`)
-    .join('');
+  // 選択 UI は作業タブと同じ部品を使う。以前はここだけ独自の行を並べていて、作業タブの
+  // カード（名前 ＋ 状態 ＋ 予定 ＋ 最終実行）と形が揃わず、同じ「作業を選ぶ」操作なのに
+  // 別の画面に見えていた（検索も件数も無かった）。
+  const picker = coworkRoutineSelectorHtml(
+    entries.map((item, index) => ({ item, index })),
+    selected,
+    '記録を見る作業',
+    'routine-runs-picker-label',
+    'routine-runs'
+  );
   pane.innerHTML = `<section class="routine-page">
     <div class="cowork-split-view">
-      <section class="cowork-list-pane" role="tablist" aria-label="記録を見る作業">${list}</section>
+      <section class="cowork-list-pane">${picker}</section>
       <section class="cowork-detail-pane" id="routine-runs-body">${coworkHistoryBodyHtml(state.coworkHistory)}</section>
     </div>
   </section>`;
-  for (const btn of pane.querySelectorAll('[data-routine-run]')) {
-    btn.addEventListener('click', () => {
-      const item = entries.find((x) => x.id === btn.dataset.routineRun);
-      loadCoworkHistory(btn.dataset.routineRun, item ? item.name : '');
-    });
-  }
+  bindCoworkRoutineSelector(pane, (id) => {
+    const item = entries.find((x) => x.id === id);
+    loadCoworkHistory(id, item ? item.name : '');
+  });
   bindCoworkHistoryBody(pane);
-}
-
-function coworkKindLabel(type) {
-  return type === 'state-machine' ? '手順付き作業' : '繰り返し作業';
 }
 
 // 定常業務の設定タブ。全体設定にあった「定常業務」節をそのまま領域の中へ移した。

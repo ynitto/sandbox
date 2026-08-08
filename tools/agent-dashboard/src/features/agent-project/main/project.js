@@ -12,7 +12,7 @@ const os = require('os');
 const path = require('path');
 const { readToolConfig } = require('./toolconfig');
 const { reposFileName } = require('./authoring');
-const { agentDirCandidates } = require('../../../base/main/agent-home');
+const { agentDirCandidates, userHomeRoots } = require('../../../base/main/agent-home');
 const { extractWindowsPath } = require('../../../base/main/wsl');
 
 // agent-project.py と同じ正規表現
@@ -1640,7 +1640,10 @@ function discover(cfg) {
   // が、セレクタには並べて定常業務タブを開けるようにする。**engine 由来が既に居る実体には
   // 足さない**——project エントリは backlog / charter / needs / 検収を持ち、routine エントリは
   // cowork タブしか持たないので、routine で上書きすると機能が消える。
-  for (const raw of (((cfg && cfg.cowork) || {}).roots || [])) {
+  // ユーザーホームは登録簿に無くても常に並べる（`~/.kiro/kiro-loop.yml` に置いた定期処理は
+  // どの登録簿にも載らないので、明示しないと画面から永久に見えない）。Windows では WSL 側の
+  // ホームも並ぶ——定常業務のエンジンはそちらで動く。
+  for (const raw of [...(((cfg && cfg.cowork) || {}).roots || []), ...userHomeRoots()]) {
     const declared = String(raw || '').trim();
     if (!declared) continue;
     const expanded = declared.replace(/^~(?=$|\/|\\)/, os.homedir());

@@ -30,3 +30,12 @@ function renderUsage() {
   // 収集は CLI を起こすので、画面を開いたときだけ取りに行く（描き直すたびには走らせない）。
   if (activeTab() === 'usage') revealGlobalSettingsPanels(pane, 'usage');
 }
+
+// 収集の設定は別タブ（他の領域と同じ「見る画面」と「決める画面」の分け方）。
+// 数字を読みに来た人が、その下に続く設定欄まで毎回スクロールで越えずに済む。
+function renderUsageSettings() {
+  const pane = $('tab-usage-settings');
+  if (!pane) return;
+  pane.innerHTML = `<section class="usage-page">${globalSettingsPanelsHtml('usage-settings')}</section>`;
+  wireGlobalSettingsPanels(pane);
+}

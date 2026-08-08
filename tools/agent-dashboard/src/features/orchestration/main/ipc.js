@@ -7,19 +7,6 @@ const instructions = require('./instructions');
 const sessionCommands = require('./sessionCommands');
 const profiles = require('./profiles');
 
-// 全体設定で選ばれている CLI のスキル起動記号（agents/<name>.json の skill_command_prefix）。
-// 解決できない名前・定義の破損はプレビューを止める理由にならないので既定 `/` へ倒す。
-function configuredSkillCommandPrefix(cfg) {
-  const agentCli = require('../../agent-project/main/agentCli');
-  const name = String(((cfg || {}).agent || {}).cli || '').trim().toLowerCase();
-  if (!name) return '/';
-  try {
-    return agentCli.skillCommandPrefix(agentCli.loadCli(name));
-  } catch {
-    return '/';
-  }
-}
-
 function registerIpc(ctx) {
   const { handle, loadConfig } = ctx;
 
@@ -80,25 +67,10 @@ function registerIpc(ctx) {
   );
   handle('orchestration:skillsInventory', () => instructions.skillsInventory(loadConfig()));
 
-  // セッション開始コマンド（agent-session-commands 契約）の保存（revision +1）と、
-  // エンジンを指定した実行計画のプレビュー（プレースホルダ展開・when 判定・有界化まで済んだもの）。
+  // セッション開始コマンド（agent-session-commands 契約）の保存（revision +1）。
   handle('orchestration:sessionCommandsSave', (payload) =>
     sessionCommands.saveSessionCommands(loadConfig(), payload || {})
   );
-  handle('orchestration:sessionCommandsPreview', (payload) => {
-    const p = payload || {};
-    const cfg = loadConfig();
-    const data = p.data || sessionCommands.loadSessionCommands(
-      sessionCommands.resolveSessionDir(cfg)
-    );
-    // スキル起動の行頭記号（codex は `$`）はプレビューにも効かせる——「確認した内容」と
-    // 実際に送られる内容が食い違うと、プレビューが嘘をつく。
-    const context = { ...(p.context || {}) };
-    if (context.skill_command_prefix === undefined) {
-      context.skill_command_prefix = configuredSkillCommandPrefix(cfg);
-    }
-    return sessionCommands.plan(data, context);
-  });
 }
 
 module.exports = { registerIpc };

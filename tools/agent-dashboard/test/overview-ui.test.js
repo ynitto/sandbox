@@ -270,7 +270,10 @@ assert.match(css, /\.sidebar-actions button,[\s\S]*?min-width: 44px; height: 44p
   assert.ok(!out.includes('/secret/skills'), '内部の保存パスは表示しない');
   assert.ok(!out.includes('class="orch-skill-on"'), '大量のチェックボックス一覧を表示しない');
   assert.ok(out.includes('data-ui-key="orch-instr-preview"'), 'プレビューの開閉状態を復元できるキーがある');
-  assert.ok(out.includes('未反映（2/3）'), '実行サービスの未反映バッジが出る');
+  // 「実行サービスへの反映状況」表は外した。何を伝える枠なのかが画面から読めず、同じ話題は
+  // 実行制御の「設定の反映」列が持つ（同じ話題の表を 2 か所に置かない）。
+  assert.ok(!out.includes('未反映（2/3）'), '反映状況の表は残さない');
+  assert.ok(!out.includes('instructions_revision_applied'), '反映状況の根拠も読まない');
   assert.ok(out.includes('agent-instructions rev:3'), 'プレビューが描画結果を出す');
 }
 {

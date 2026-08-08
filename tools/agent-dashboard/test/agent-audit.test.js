@@ -294,12 +294,15 @@ test('refresh は間隔が設定されているときだけ定期収集を起動
   }
 });
 
-test('監査は利用状況領域の 1 タブで、feature スクリプトを bootstrap より先に読む', () => {
+test('監査は利用状況領域の「利用量」と「設定」に分かれ、feature スクリプトを bootstrap より先に読む', () => {
   const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'index.html'), 'utf8');
   // 画面の名前は利用者の言葉（利用状況）で、実装名（agent-audit）をタブに出さない。
   assert.doesNotMatch(html, /data-tab="agent-audit"/);
   assert.doesNotMatch(html, /id="tab-agent-audit"/);
-  assert.match(html, /data-tab="usage"[^>]*data-area="usage"[^>]*>利用状況</);
+  // 見る画面と決める画面を分ける（他の領域と同じ形）。タブは領域名を繰り返さない。
+  assert.match(html, /data-tab="usage"[^>]*data-area="usage"[^>]*>利用量</);
+  assert.match(html, /data-tab="usage-settings"[\s\S]{0,80}data-area="usage"/);
+  assert.match(html, /id="tab-usage-settings"/);
   const feature = html.indexOf('features/agent-audit.js');
   assert.ok(feature > 0);
   assert.ok(feature < html.indexOf('bootstrap.js'), 'bootstrap より先に読み込む');
@@ -317,6 +320,8 @@ test('監査は「利用状況」領域へ差し込まれる', () => {
   const usage = fs.readFileSync(
     path.join(__dirname, '..', 'src', 'renderer', 'sections', 'usage.js'), 'utf8');
   assert.match(usage, /function renderUsage[\s\S]*globalSettingsPanelsHtml\('usage'\)/);
+  assert.match(usage, /function renderUsageSettings[\s\S]*globalSettingsPanelsHtml\('usage-settings'\)/);
+  assert.match(src, /registerGlobalSettingsPanel\('usage-settings', \{/);
   const orch = fs.readFileSync(
     path.join(__dirname, '..', 'src', 'renderer', 'sections', 'orchestration.js'), 'utf8');
   assert.doesNotMatch(orch, /globalSettingsPanelsHtml\('usage'\)/,

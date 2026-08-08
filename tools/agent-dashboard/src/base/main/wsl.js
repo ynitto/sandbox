@@ -110,10 +110,37 @@ function explainFailure(r, distro, scriptPath, run) {
   return lines.join('\n');
 }
 
+// WSL 既定ディストロのホームを、このビュアーから開ける Windows パスで返す（win32 以外は ''）。
+//
+// 定常業務のエンジン（kiro-loop / statemachine-use）は WSL 側で動くので、人が「ホーム」と
+// 言うときの実体も WSL 側のホームである。Windows の %USERPROFILE% だけを見ると、
+// `~/.kiro/kiro-loop.yml` に置いた定期処理がどこからも見つからない。
+//
+// 読み方は launchArgs と同じ extractWindowsPath（ログインシェルのバナーを飛ばして
+// パス行だけ拾う）。既定ランナーのときだけ 60 秒キャッシュする——プロジェクト発見は
+// 数秒ごとに回るので、毎回 wsl.exe を起こすと Windows では体感で分かるほど遅くなる。
+let _wslHomeCache = { at: 0, dir: '' };
+function wslHomeDir(run = defaultRunner) {
+  if (process.platform !== 'win32') return '';
+  const cached = run === defaultRunner;
+  const now = Date.now();
+  if (cached && now - _wslHomeCache.at < 60000) return _wslHomeCache.dir;
+  let dir = '';
+  try {
+    const r = run('wsl.exe', ['-e', 'sh', '-lc', 'command -v wslpath >/dev/null && wslpath -w "$HOME"']);
+    if (r.status === 0) dir = extractWindowsPath(r.stdout);
+  } catch {
+    /* WSL 無し。ホームが 1 つ（Windows 側）になるだけで、他の経路は動く */
+  }
+  if (cached) _wslHomeCache = { at: now, dir };
+  return dir;
+}
+
 module.exports = {
   SCRIPT_MISSING_EXIT,
   decodeWslOutput,
   extractWindowsPath,
   launchArgs,
   verifyWslLaunch,
+  wslHomeDir,
 };

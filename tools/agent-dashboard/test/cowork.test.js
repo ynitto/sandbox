@@ -9,6 +9,12 @@ const { spawnSync } = require('child_process');
 const cowork = require('../src/features/cowork/main/cowork');
 const cowork_loopProvider = require('../src/features/cowork/main/loopProvider');
 const wslMain = require('../src/base/main/wsl');
+
+// 定常業務の走査ルートには**常にユーザーホーム**が入る（`~/.kiro/kiro-loop.yml` を拾うため）。
+// テストでは実機のホームを覗かせない——結果が実行環境の持ち物で変わってしまう。
+const HOME_STUB = fs.mkdtempSync(path.join(os.tmpdir(), 'home-stub-'));
+process.env.HOME = HOME_STUB;
+process.env.USERPROFILE = HOME_STUB;
 const {
   makeLoopProvider, winDriveToWsl, toWslCwd, sh: providerSh,
 } = cowork_loopProvider;

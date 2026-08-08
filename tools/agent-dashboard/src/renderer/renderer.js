@@ -48,7 +48,7 @@ const state = {
   coworkDraft: null,
   coworkEditIndex: -1,
   coworkSelections: {}, // project path → selected routine id
-  coworkSearches: { cowork: '' },
+  coworkSearches: { cowork: '', 'routine-runs': '' },
   coworkHistoryCache: RoutineUiCache.createBoundedAsyncCache({ max: 12, ttlMs: 60000 }),
   // 委譲公示板（agent-board）の観測。板は端末単位なのでプロジェクト選択と独立。
   boardStatus: null,   // engine/status.json の board ブロック（参加状況・手動入札の可否）
@@ -71,7 +71,6 @@ const state = {
   globalSettingsDirty: false,
   orchInstructionsDirty: false, // 共通指示・推奨スキルの未保存入力（ポーリング再描画から保護）
   orchSessionDirty: false,      // セッション開始コマンドの未保存入力（同上）
-  orchSessionPreview: null,     // { engine, entries } プレビューの取得結果
   // 要対応（needs）の前回カウント。増分を検知して OS 通知する（張り付き監視の解消）。
   // initialized=false の初回はベースライン取得のみで通知しない（起動時の殺到を避ける）。
   notify: { counts: {}, initialized: false },
@@ -1363,6 +1362,7 @@ function renderAllTabs() {
   renderPane('routine-runs', renderRoutineRuns);
   renderPane('routine-settings', renderRoutineSettings);
   renderPane('usage', renderUsage);
+  renderPane('usage-settings', renderUsageSettings);
   renderPane('amigos', renderAmigos);
   renderPane('project-settings', renderProjectSettings);
   renderPane('orchestration', () => {
@@ -1684,15 +1684,19 @@ function projectCheckHtml(p) {
   const check = p && p.projectCheck;
   if (!check) return '';
   const configured = check.configured ?? Boolean(check.command && String(check.command).trim());
-  const setup = configured ? '' : `<div class="need-resolution">
-    <span class="label-chip">設定</span>
+  // 未設定のときの案内。**要対応カードの装飾（need-resolution）を借りない**——別の画面の
+  // 部品を持ち込むと、見出しの直後に色付きの帯が挟まって概要の流れが切れる。
+  const setup = configured ? '' : `<div class="project-check-setup">
     <p>state repo の共通チェックを <code>regression_cmd</code> に1度だけ設定します。</p>
     <pre class="mono">regression_cmd: './tools/check'</pre>
     ${check.configFile ? `<div class="summary-actions">
       <button class="summary-link secondary" data-project-check-open="${esc(check.configFile)}">自動検出した設定ファイルを開く</button>
     </div>` : ''}
   </div>`;
-  return `<section class="overview-version-section" aria-labelledby="project-check-title">
+  // コマンドは長い 1 行になりがち（`make -s smoke && npm test -- --run` 等）。素の
+  // <code> は行内要素なので、見出しの直後へ回り込んで折り返しも効かず、枠から溢れていた。
+  // 独立したブロックにして、溢れる分はその枠の中で横スクロールさせる。
+  return `<section class="overview-version-section project-check" aria-labelledby="project-check-title">
     <div class="overview-version-heading">
       <div>
         <h2 id="project-check-title">プロジェクト共通チェック</h2>
@@ -1700,7 +1704,7 @@ function projectCheckHtml(p) {
       </div>
       <div class="summary-actions"><span class="badge ${configured ? 'info' : 'warn'}">${configured ? '設定済み' : '未設定'}</span></div>
     </div>
-    ${check.command ? `<code>${esc(check.command)}</code>` : ''}
+    ${check.command ? `<pre class="mono project-check-command">${esc(check.command)}</pre>` : ''}
     ${setup}
   </section>`;
 }
