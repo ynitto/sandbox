@@ -3,6 +3,14 @@
 > 旧 `kiro-projects-viewer` 系統から移行した後継実装。
 > 改称方針: [`docs/designs/agent-tools-rename-design.md`](../../docs/designs/agent-tools-rename-design.md)。
 
+**agent-\* ファミリー全体（プロジェクト / 定常業務 / ミッション / 参加 / 利用状況）の
+横断ポータル（見出しは「エージェントポータル」）。** 最初の画面**ホーム**が、全プロジェクト
+横断の「あなたの対応待ち」と各ワークロードの入口カードを 1 枚で見せ、そこから各画面へ
+移動する（カードは `registerPortalCard` 登録簿で各制御面が差し込む。設計:
+[`docs/plans/2026-08-08-agent-dashboard-portal-design.md`](../../docs/plans/2026-08-08-agent-dashboard-portal-design.md)）。
+プロジェクトを選ぶ操作（サイドバー・通知クリック）だけがホームからそのプロジェクトの
+画面へ移り、起動時の前回選択の復元はホームを維持する。
+
 **複数の agent-project プロセスを束ねて可視化し、入出力を git 経由で編集・検収する GUI。**
 各プロジェクト（1 プロジェクト = 1 ディレクトリ = 1 プロセス）の状態共有リポジトリの clone を
 登録するだけで、Windows から WSL・別ホストで稼働する本体をドライブできる——上位からの指示・
@@ -26,9 +34,10 @@ agent-audit の呼び出しと閲覧（`src/features/agent-audit/`）を同じ�
 
 1. `renderer.js`（**core**）— `state` / `$` / 共有定数・ユーティリティ・発見/プロジェクト選択・
    タブ制御・ポーリング・git pull と、フィーチャータブ登録簿（`registerFeatureTab`）を宣言。**最初**に読む。
-2. `sections/*.js` — 各タブの描画（overview / backlog / needs / flow / node-detail / gitlab /
-   history / amigos / orchestration / cowork / kiro-loop）。中身は関数宣言のみで load 時実行を持たない
-   ため、相互の順序は不問。
+2. `sections/*.js` — 各タブの描画（home / overview / backlog / needs / flow / node-detail /
+   gitlab / history / amigos / orchestration / cowork / kiro-loop）。中身は関数宣言のみで
+   load 時実行を持たないため、相互の順序は不問（home のタブ登録とコアカードの登録は
+   bootstrap.js の `init()` が行う）。
 3. `features/*.js` — `registerFeatureTab` で自分のタブを差し込む独立モジュール。
 4. `bootstrap.js` — `init()` の定義と呼び出し。全関数が出揃った後に動くよう**最後**に読む。
 
@@ -107,6 +116,7 @@ agent-flow が一度だけ実行し、agent-project が receipt を検算して�
 
 | タブ | データソース |
 |------|-------------|
+| ホーム | 発見結果（`engine/status.json` 由来の一覧と各プロジェクトの要対応件数）だけで組む横断ビュー。プロジェクト単位の「あなたの対応待ち」（件数降順・クリックで要対応タブへ）と、各ワークロードの入口カード。ホームのために新しいファイル読み込みは増やさない |
 | 概要 | `charter.md`（goal / deliverables / acceptance）・`project.json`（acceptance PASS 履歴）・`backlog/` 集計・`policy.md`・`claims/`・`run-log.jsonl`・`DELIVERY.md`・`status.json`（daemon の生存信号。`engine/status.json` で分からないときのフォールバック） |
 | バックログ | `backlog/<id>.md`（1 ファイル = 1 タスク。status / priority / verify / after 等）・`archive/<id>.md`（done） |
 | 要対応 | `needs/<id>.md`（MADR 形式。blocked / review / milestone。「ファイルを開いて回答」でエディタへ） |

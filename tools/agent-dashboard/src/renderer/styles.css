@@ -3364,3 +3364,47 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
 .audit-detail pre { max-height: 260px; overflow: auto; background: var(--bg2); padding: 8px;
   border-radius: 6px; white-space: pre-wrap; }
 .audit-settings .field { max-width: 640px; }
+
+/* ホーム（ポータル）: agent-* ファミリー全体の横断ビュー。
+   カードの枠は参加タブのカードと同じ体裁に揃える（同じ「入口の並び」だから）。 */
+.portal-home { display: flex; flex-direction: column; gap: 20px; max-width: 1080px; }
+.portal-home-header p { margin: 4px 0 0; color: var(--muted); }
+.portal-queue { display: flex; flex-direction: column; gap: 8px; }
+.portal-queue h3 { margin: 0; display: flex; align-items: center; gap: 8px; }
+.portal-queue-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg2);
+  text-align: left;
+  cursor: pointer;
+}
+.portal-queue-row:hover { border-color: var(--accent); }
+.portal-queue-row .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.portal-queue-go { color: var(--muted); white-space: nowrap; }
+.portal-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
+  gap: 14px;
+}
+.portal-card {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 10px;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg2);
+}
+.portal-card h3 { margin: 2px 0 0; }
+.portal-card p { margin: 0; }
+.portal-card-count strong { font-size: 1.2em; }
+.portal-card-actions { margin-top: auto; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+@media (max-width: 720px) {
+  .portal-cards { grid-template-columns: 1fr; }
+}

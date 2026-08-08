@@ -25,7 +25,10 @@ function maxDetailsDepth(source) {
   return max;
 }
 
-assert.ok(html.includes('<h1>プロジェクト管理</h1>'));
+// アプリの見出しはポータル（agent-* ファミリー全体の横断ビュー）としての名前。
+// 「プロジェクト管理」は agent-project 専用面だった頃の名前で、戻さない。
+assert.ok(html.includes('<h1>エージェントポータル</h1>'));
+assert.ok(!html.includes('<h1>プロジェクト管理</h1>'));
 assert.ok(html.includes('この作業を相談'));
 assert.ok(!html.includes('AIに相談'));
 assert.ok(!html.includes('担当の構成をJSONで指定します'));

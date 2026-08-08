@@ -1,6 +1,7 @@
 # agent-dashboard — 複数エージェントを束ねる操作面 設計書
 
-> 作成 2026-07-14 ／ 最終更新 2026-08-01（要対応の判断面と再計画を含む工程表示を反映）
+> 作成 2026-07-14 ／ 最終更新 2026-08-08（ポータル化 第 1 段: ホーム（横断ビュー）と
+> ポータルカード登録簿を反映。設計: [`docs/plans/2026-08-08-agent-dashboard-portal-design.md`](../plans/2026-08-08-agent-dashboard-portal-design.md)）
 > 実装: `tools/agent-dashboard/`（Electron。本番依存は `diff2html` / `yaml` の 2 つだけ。テスト 70 ファイル・`npm test`）
 > 読む契約: [`schemas/node-budget.schema.json`](../../schemas/node-budget.schema.json) /
 > [`schemas/agent-control.schema.json`](../../schemas/agent-control.schema.json) /
@@ -198,6 +199,15 @@ agent-audit の源泉の 1 つ（`budget-ledger`）で、そこへ CLI のセッ
 分だけ agent-audit の集計の方が確かなので、同じ話題の数字を 2 つ置く理由が無かった（C7）。
 上限（node-budget）はゲージの分母として読むだけで、**期間が一致するときだけ**残量を出す。
 agent-audit を使えない端末では台帳だけの集計へフォールバックし、どちらを見ているかを明示する。
+
+登録簿は 3 つ目もある: `registerPortalCard(id, { order, html, wire })`。最初の画面
+**ホーム（ポータル）**——どの制御面にも属さない base のタブ——へ、各制御面が自分の
+サマリーカード（入口）を差し込む。コアはどのカードが載るかを知らず、agent-project も
+他の制御面と同じ 1 枚のカードとして並ぶ（ポータル化の設計判断は
+[`docs/plans/2026-08-08-agent-dashboard-portal-design.md`](../plans/2026-08-08-agent-dashboard-portal-design.md)）。
+`html()` が `''` を返したカードは出さない（未利用の制御面を隠す判断を各 feature が持つ）。
+ホームの横断要対応キューは discover() が既に持つ `needsCount` だけで組み、
+新しい取得経路を作らない（`test/portal-home.test.js` が固定）。
 
 **トレードオフ**: グローバル汚染と、順序契約を破ったときの壊れ方が分かりにくいこと。
 名前衝突は人が気をつけるしかない。
@@ -539,7 +549,8 @@ CLI では「このCLIでは助言のみを保証できません」を先に出�
 
 **動いているもの**: §4 の 7 制御面すべて、§6 の人のアクション一式、§7 の通知・SLA・AI 補助・
 投入時リンティング、kiro-loop の構造化状態と復旧送信、この PC の役割切り替え
-（`engineer` / `viewer`）。テストは `npm test` で 70 ファイル・全緑。
+（`engineer` / `viewer`）、ホーム（ポータル。横断要対応キュー第 1 段＝プロジェクト単位の
+件数とジャンプ）。テストは `npm test` で全緑。
 
 **未実装の改善余地**（元の改善提案から、実装が無いものだけ残した）:
 
@@ -547,7 +558,7 @@ CLI では「このCLIでは助言のみを保証できません」を先に出�
 |---|---|---|
 | 基準中心の検証 UI（残り） | 入力・保存は正規形化済み（2026-07-31: 保存は `task_acceptance_criteria` / `verification_commands` のみ。受入基準×証跡の表示は既存の検証レコード経由で receipt が流れ込む）。残りは受入基準・判定・証拠を通常表示にし、plan digest・成果 revision・実行コマンドを「検証の詳細」へ折りたたむタスク詳細の再構成 | task / charter verify の統一 |
 | 外部通知ルーティング | OS 通知と同じイベントを webhook にも流す（オプトイン・要約のみ・書き込み権限なし） | 在席していない・複数人運用 |
-| 横断「要対応キュー」 | プロジェクト横断で要対応を 1 キューに集約し、緊急度 × 滞留時間でソート | 朝一の人待ち一掃 |
+| 横断「要対応キュー」（残り） | 第 1 段（プロジェクト単位の件数とジャンプ）はホームで実装済み。残りは要対応 1 件単位の集約と緊急度 × 滞留時間ソート（表示時に読み、ポーリングでは件数だけ追う形で設計してから） | 朝一の人待ち一掃 |
 | 条件付き自動承認 | 人が事前に決めた安全条件（検証 receipt の PASS ∧ 差分小 ∧ AI リスク低 等）で公式の `commands/` approve を自動投函。既定オフ | 触る回数そのものを減らす |
 | 決定メモリ | 過去の approve / reject と理由（`decisions/` の DR）を索引し、類似の判断を提示。繰り返す差し戻し理由は `policy.md` へ昇格提案 | 同じ手戻りを二度させない |
 | 再発失敗のクラスタリング | 失敗シグネチャ（同じ criterion、同種エラー、同一ファイル）でまとめ、per-task の retry でなく charter / policy レベルで一度に直す動線へ | systemic な問題の発見 |
@@ -625,7 +636,8 @@ CLI では「このCLIでは助言のみを保証できません」を先に出�
 
 **構造を固定しているテスト**（設計判断の実体）:
 `test/no-git-writes.test.js`（§3.1）／ `test/feature-split.test.js`（§3.2）／
-`test/discover-engine.test.js`（§3.3）／ `test/needs-notify.test.js`・`test/needs-sla.test.js`（§7）／
+`test/discover-engine.test.js`（§3.3）／ `test/portal-home.test.js`（§3.5 のポータル登録簿と
+ホームの護り）／ `test/needs-notify.test.js`・`test/needs-sla.test.js`（§7）／
 `test/packaging-assets.test.js`（配布物の取りこぼし、§8）。
 
 本書は 2026-07-26 に、次の 3 本を統合して作った。旧ファイルは削除済み。

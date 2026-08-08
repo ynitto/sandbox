@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta http-equiv="Content-Security-Policy"
         content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:" />
-  <title>プロジェクト管理</title>
+  <title>エージェントポータル</title>
   <link rel="stylesheet" href="../../node_modules/diff2html/bundles/css/diff2html.min.css" />
   <link rel="stylesheet" href="styles.css" />
 </head>
@@ -14,7 +14,7 @@
     <!-- ======== サイドバー: コンテナ → プロジェクト ======== -->
     <aside id="sidebar">
       <div class="sidebar-header">
-        <h1>プロジェクト管理</h1>
+        <h1>エージェントポータル</h1>
         <div class="row sidebar-actions">
           <button id="btn-doctor" class="assistant-button" aria-label="相談する" title="いま表示している内容を相談する">
             <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
@@ -69,7 +69,8 @@
       </header>
 
       <nav id="tabs">
-        <button class="tab active" data-tab="overview" data-feature="agent-project">概要</button>
+        <button class="tab active" data-tab="home" data-feature="base" id="tab-btn-home">ホーム</button>
+        <button class="tab" data-tab="overview" data-feature="agent-project">概要</button>
         <button class="tab" data-tab="backlog" data-feature="agent-project">タスク</button>
         <button class="tab" data-tab="needs" data-feature="agent-project">要対応 <span id="needs-badge" class="badge hidden"></span></button>
         <button class="tab" data-tab="flow" data-feature="agent-project">実行</button>
@@ -87,7 +88,8 @@
       </nav>
 
       <section id="content">
-        <div id="tab-overview" class="tabpane active" data-feature="agent-project"></div>
+        <div id="tab-home" class="tabpane active" data-feature="base"></div>
+        <div id="tab-overview" class="tabpane" data-feature="agent-project"></div>
         <div id="tab-backlog" class="tabpane" data-feature="agent-project"></div>
         <div id="tab-needs" class="tabpane" data-feature="agent-project"></div>
         <div id="tab-flow" class="tabpane" data-feature="agent-project"></div>
@@ -749,6 +751,7 @@
        読み込み順が意味を持つ: core（state/$/共有定数・タブ制御・ポーリング）→ 各セクション →
        フィーチャータブ → bootstrap（init を最後に実行）。 -->
   <script src="renderer.js"></script>
+  <script src="sections/home.js"></script>
   <script src="sections/overview.js"></script>
   <script src="note-blocks.js"></script>
   <script src="sections/backlog.js"></script>

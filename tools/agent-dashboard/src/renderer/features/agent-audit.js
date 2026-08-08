@@ -35,6 +35,12 @@
       refresh: feature.refresh,
     });
   }
+  // ホーム（ポータル）へのサマリーカード。数字はここに出さない——利用状況の数字は
+  // 全体設定「利用状況」の 1 か所で出す（C7: 同じ話題の数字を 2 か所に置かない）。
+  // このカードは入口だけを担う。
+  if (typeof root.registerPortalCard === 'function') {
+    root.registerPortalCard('usage', { order: 50, html: feature.portalCardHtml });
+  }
 })(typeof globalThis !== 'undefined' ? globalThis : this, (root) => {
   const ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
   const escHtml = (value) => String(value == null ? '' : value)
@@ -599,10 +605,22 @@
     });
   }
 
+  // ホーム（ポータル）のカード。全体設定「利用状況」への入口だけを出す（数字は出さない）。
+  function portalCardHtml() {
+    return `<div class="portal-card-heading">
+        <span class="summary-kicker">使いすぎを防ぐ</span>
+        <h3>利用状況</h3>
+      </div>
+      <p class="muted">トークン利用量と実行品質を、全体設定の「利用状況」で確認できます。</p>
+      <div class="portal-card-actions">
+        <button type="button" class="primary-inline" data-portal-settings="usage">利用状況を確認</button>
+      </div>`;
+  }
+
   return {
     escHtml, fmtTokens, fmtSeconds, fmtUsd, pairsText,
     usageTableHtml, statsTableHtml, settingsHtml, collectStatusHtml, panelHtml,
     workloadTableHtml, agentTableHtml, gaugeHtml, ledgerFallbackHtml,
-    render, refresh, wire, reveal,
+    render, refresh, wire, reveal, portalCardHtml,
   };
 });

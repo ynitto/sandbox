@@ -822,7 +822,7 @@ function renderTree() {
   $('sidebar-footer').textContent = `稼働中 ${running} ／ 更新 ${new Date().toLocaleTimeString('ja-JP')}`;
 
   for (const el of tree.querySelectorAll('.project-item[data-dir]')) {
-    el.addEventListener('click', () => selectProject(el.dataset.dir));
+    el.addEventListener('click', () => selectProject(el.dataset.dir, { reveal: true }));
   }
 }
 
@@ -860,7 +860,11 @@ function engineEmptyMessage() {
   return 'このエンジンにはプロジェクトが登録されていません。実行する PC の agent-project.host.yaml にプロジェクトを追加してください。';
 }
 
-async function selectProject(dir) {
+// opts.reveal: 人がプロジェクトを選ぶ操作（サイドバー・ディープリンク）では、ホーム（ポータル）
+// を見ていたらそのプロジェクトの画面へ移る。起動時の前回選択の復元では移らない——
+// 最初の画面はホーム（横断ビュー）のまま、プロジェクトの文脈だけを裏で温めておく。
+async function selectProject(dir, opts) {
+  const reveal = !!(opts && opts.reveal);
   if (state.selectedDir !== dir) {
     state.flowRunId = null;
     state.flowRun = null;
@@ -872,6 +876,10 @@ async function selectProject(dir) {
   // 起動先候補はプロジェクトごとに違う（レジストリとノード宣言の交差）。選択のたびに引き直す。
   state.cliChatCwdChoices = [];
   renderTree();
+  if (reveal && activeTab() === 'home') {
+    const p = (state.discovery.projects || []).find((x) => x && x.dir === dir);
+    switchTab(p && p.isProject === false ? 'cowork' : 'overview');
+  }
   await Promise.all([reloadProject(), refreshCliChatCwdChoices()]);
 }
 
@@ -1034,6 +1042,29 @@ globalThis.registerFeatureTab = registerFeatureTab;
 function renderFeatureTab(name) {
   const h = featureTabs.get(String(name));
   if (h && typeof h.render === 'function') h.render();
+}
+
+// ポータルカードの登録簿。ホーム（ポータル）画面へ、各制御面が自分のサマリーカードを
+// 差し込むための口。registerFeatureTab / registerGlobalSettingsPanel と同じ形で、
+// コアを触らずに面を増やせる（開放閉鎖）。ホームはどの制御面にも属さない base の画面で、
+// どのカードを載せるかをコアが知らないことで「特定の制御面だけが一等席」を作らない。
+//
+//   id    … カードの識別子（容れ物の id になる）
+//   order … 並び順（小さいほど先頭。省略時 100）
+//   html()          … カードの HTML。'' を返すとそのカードは出さない（未利用の制御面を隠す）
+//   wire(container) … 描き直しのたびにイベントを結び直す（任意。定番の遷移は
+//                     data-portal-tab / data-portal-settings 属性でコア側が配線する）
+const portalCards = new Map();
+function registerPortalCard(id, hooks) {
+  portalCards.set(String(id), hooks || {});
+}
+globalThis.registerPortalCard = registerPortalCard;
+
+// 登録済みカードを表示順（order → id）で返す。
+function portalCardEntries() {
+  return [...portalCards.entries()]
+    .map(([id, hooks]) => ({ id, order: 100, ...hooks }))
+    .sort((a, b) => (a.order - b.order) || String(a.id).localeCompare(String(b.id)));
 }
 
 // 全体設定（タブ「全体設定」）のセクションへ、feature モジュールが自分の面を差し込む
@@ -1853,7 +1884,7 @@ function handleOpenTarget({ url }) {
       (name && state.discovery.projects.find((x) => x.name === name)) ||
       null;
     if (p) {
-      await selectProject(p.dir);
+      await selectProject(p.dir, { reveal: true });
       return;
     }
     toast(`プロジェクトが見つかりません: ${name || root || ''}`);

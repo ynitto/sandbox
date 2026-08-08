@@ -6,6 +6,11 @@
   if (typeof root.registerFeatureTab === 'function') {
     root.registerFeatureTab('participation', { render: feature.render, refresh: feature.refresh });
   }
+  // ホーム（ポータル）へのサマリーカード。募集が無ければ '' を返してカードごと出さない
+  // （参加タブの「候補が無ければ隠す」と同じ判断を 1 か所＝この feature が持つ）。
+  if (typeof root.registerPortalCard === 'function') {
+    root.registerPortalCard('participation', { order: 40, html: feature.portalCardHtml });
+  }
 })(typeof globalThis !== 'undefined' ? globalThis : this, (root) => {
   const statuses = {};
   let currentCandidates = [];
@@ -132,6 +137,21 @@
     }
   }
 
+  // ホーム（ポータル）のカード。募集が無いときは '' で不参加（カードを出さない）。
+  function portalCardHtml() {
+    const count = candidatesFromState().length;
+    if (!count) return '';
+    return `<div class="portal-card-heading">
+        <span class="summary-kicker">この端末で手伝う</span>
+        <h3>参加できる仕事</h3>
+      </div>
+      <p class="portal-card-count"><strong>${count}</strong> 件の募集があります</p>
+      <p class="muted">プロジェクト作業・ミッション・よその端末からの依頼に、この端末から参加できます。</p>
+      <div class="portal-card-actions">
+        <button type="button" class="primary-inline" data-portal-tab="participation">参加できる仕事を見る</button>
+      </div>`;
+  }
+
   function render() {
     if (!root.document) return;
     const pane = root.document.getElementById('tab-participation');
@@ -164,5 +184,6 @@
 
   return {
     participationHtml, joinCandidate, candidatesFromState, refresh, render, escHtml,
+    portalCardHtml,
   };
 });
