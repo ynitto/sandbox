@@ -1,0 +1,16 @@
+ファイル作成完了
+on-schema.org/draft-07/schema#",
+  "title": "node-budget-summary",
+  "description": "ノード単位の予算サマリー（互換性を保つために追加される）",
+  "type": "object",
+  "properties": {
+    "budget_summary": {
+      "type": "object",
+      "description": "追加対象の budget ブロック拡張フィールド群",
+      "additionalProperties": true,
+      "$comment": "reader が optional で壊れない契約（任意プロパティ許可）"
+    }
+  },
+  "required": [],
+  "optional": ["budget_summary"]
+}
