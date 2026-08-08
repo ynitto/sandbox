@@ -298,6 +298,8 @@ assert.match(renderer, /data-ui-key="orch-agents-/, '担当設定の開閉状態
   const toSeconds = new Function(`${grab('timeoutSeconds')}; return timeoutSeconds;`)();
   assert.strictEqual(toSeconds('5'), 300, '画面の分指定は契約の秒へ変換する');
   assert.strictEqual(toSeconds(''), null, '空欄は上書き削除＝下位設定の継承');
+  assert.ok(Number.isNaN(toSeconds('1.5')), '分指定は整数だけを受け付ける');
+  assert.ok(Number.isNaN(toSeconds('0')), '分指定は1以上だけを受け付ける');
 }
 assert.match(renderer, /class="orch-ctrl-timeout"/, 'agent-flow 共通 timeout の入力欄がある');
 assert.match(renderer, /class="orch-agent-timeout"/, 'agent-flow 用途別 timeout の入力欄がある');

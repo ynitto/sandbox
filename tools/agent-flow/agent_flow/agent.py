@@ -8,10 +8,11 @@ from agentcore import promptrender  # noqa: E402
 
 
 def _agent_timeout(purpose: str = "", plugin_timeout=None) -> float | None:
-    """エージェント CLI 1 呼び出しのタイムアウト秒。設定ファイル `agent_timeout` で調整、0/負で無効化。
-    設定が無ければ環境変数 AGENT_FLOW_TIMEOUT（旧名 AGENT_FLOW_KIRO_TIMEOUT も後方互換で受理）
-    → 既定 600 にフォールバックする。心拍が lease を延長し続けるため、ハングしたエージェント CLI は
-    このタイムアウトでしか止められない（無いと worker が無限ブロックし run 全体が停止する）。"""
+    """エージェント CLI 1 呼び出しのタイムアウト秒。
+
+    agent-control の用途別（work 系は worker も継承）→ flow 共通 → plugin →
+    agent_timeout / 環境変数 → 既定 600 の順で解決する。0/負は次の設定へ委ねる。
+    """
     if purpose:
         ctl = _control_workload()
         agents = ctl.get("agents") or {}

@@ -477,7 +477,9 @@ const ORCH_AGENT_KEYS = {
 
 function timeoutSeconds(value) {
   const raw = String(value == null ? '' : value).trim();
-  return raw === '' ? null : Number(raw) * 60;
+  if (raw === '') return null;
+  const minutes = Number(raw);
+  return Number.isInteger(minutes) && minutes >= 1 ? minutes * 60 : NaN;
 }
 
 // 1 ワークロードの用途 / ロール別上書きの小テーブル（既存キーの編集・削除＋新規追加行）。
