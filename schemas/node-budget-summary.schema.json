@@ -1,0 +1,18 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "NodeBudgetSummary",
+  "description": "Additive budget summary for nodes - optional compatibility layer",
+  "type": "object",
+  "properties": {
+    "budget_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "total_allocated_budget_usd": {"type": ["number"], "minimum": 0},
+        "spent_on_infrastructure_percent_of_total": {"type": ["number"], "minimum": 0, "maximum": 100}
+      },
+      "required": []
+    }
+  },
+  "$comment": "This schema is additive to existing data structures and does not enforce presence of properties"
+}
