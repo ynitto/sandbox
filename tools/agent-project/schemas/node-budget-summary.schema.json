@@ -1,16 +1,20 @@
-ファイル作成完了
-on-schema.org/draft-07/schema#",
-  "title": "node-budget-summary",
-  "description": "ノード単位の予算サマリー（互換性を保つために追加される）",
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Node Budget Summary",
+  "description": "ノードごとの予算サマーマップ（status/<node>.json budget block に埋め込む用）",
   "type": "object",
   "properties": {
-    "budget_summary": {
-      "type": "object",
-      "description": "追加対象の budget ブロック拡張フィールド群",
-      "additionalProperties": true,
-      "$comment": "reader が optional で壊れない契約（任意プロパティ許可）"
+    "node_id": {"type": "string", "description": "ノード識別子"},
+    "budget_period_start": {"type": "integer", "nullable": true, "description": "予算開始時刻（unix timestamp）"},
+    "costs": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "Cost Breakdown",
+      "type": ["object"],
+      "properties": {},
+      "additionalProperties": {"type": "number"}
     }
   },
-  "required": [],
-  "optional": ["budget_summary"]
+  "required": ["node_id"],
+  "additionalProperties": false,
+  "$comment": "reader は optional フィールドを許容する契約テストで互換性を担保"
 }
