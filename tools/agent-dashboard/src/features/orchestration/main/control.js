@@ -84,6 +84,16 @@ function normalizeOverride(patch, base) {
   if (patch.model !== undefined) {
     out.model = patch.model === null || patch.model === '' ? null : String(patch.model);
   }
+  if (patch.timeout_sec !== undefined) {
+    if (patch.timeout_sec === null || patch.timeout_sec === '') delete out.timeout_sec;
+    else {
+      const n = Number(patch.timeout_sec);
+      if (!Number.isFinite(n) || n < 1 || !Number.isInteger(n)) {
+        throw new Error('timeout_sec は 1 以上の整数で指定してください');
+      }
+      out.timeout_sec = n;
+    }
+  }
   return out;
 }
 
@@ -95,6 +105,16 @@ function mergeWorkloadControl(base, patch) {
   }
   if (patch.model !== undefined) {
     out.model = patch.model === null || patch.model === '' ? null : String(patch.model);
+  }
+  if (patch.timeout_sec !== undefined) {
+    if (patch.timeout_sec === null || patch.timeout_sec === '') delete out.timeout_sec;
+    else {
+      const n = Number(patch.timeout_sec);
+      if (!Number.isFinite(n) || n < 1 || !Number.isInteger(n)) {
+        throw new Error('timeout_sec は 1 以上の整数で指定してください');
+      }
+      out.timeout_sec = n;
+    }
   }
   if (patch.agents !== undefined) {
     if (!isPlainObject(patch.agents)) throw new Error('agents はオブジェクトで指定してください');

@@ -91,7 +91,7 @@
 | エンジン | 役割別の上書き口 | 既定 | 備考 |
 |---|---|---|---|
 | agent-project | `agents:` に purpose 10 種（plan / review / prioritize / route / adjudicate / verify / distill / assess / repo_map / doctor）で `{agent_cli, model}`（`prioritize.py:82-137`） | kiro | 全呼び出し write |
-| agent-flow | `agents:` に planner / evaluator / worker + 個別 kind（`agent.py:46-109`） | kiro | 全呼び出し write。verify は依存成果を本文 inline で受ける（`agent.py:851-895`） |
+| agent-flow | `agents:` に planner / evaluator / worker + 個別 kind（`agent.py:46-109`） | kiro | planner / evaluator は readonly 既定（§5.2 の改訂）、他は write。verify は依存成果を本文 inline で受ける（`agent.py:851-895`） |
 | agent-audit | `agents:` に extract / distill / review（`configfile.py:136-149`） | claude | yaml example に extract を ollama へ振る例が既にある |
 | agent-amigos | `roles.yaml` の各ロールに `agent_cli` / `model`（`runner.py:76-99`） | ノード既定 | 全呼び出し write |
 | agent-loop | ワークスペース共通の `agent_cli` + `agent_cli_options`（model / readonly / extra_args）。常に対話（tmux） | kiro | `agents/ollama.json` の `interactive`（`--tui`）と `slash` プロパティで接続済み |
@@ -244,8 +244,9 @@ Python 3 エンジンはどの役割でも使っていない（§1 (c)）。結�
 ### 5.2 設計
 
 エンジン設定の `agents[purpose]` に `readonly: true` を 1 キー足し、
-`headless_cmd(readonly=...)` へ配線するだけ。判断根拠はエンジン設定 1 か所（C7）、
-既定は現状のまま（write）——挙動を黙って変えない。
+`headless_cmd(readonly=...)` へ配線するだけ。判断根拠はエンジン設定 1 か所（C7）。
+既定は、**その役割が読まない系だと定義から決まっているものだけ readonly**、
+残りは write（改訂 2026-08-09。初版は一律 write だった——次項）。
 
 ```yaml
 # agent-project.yaml — 読まない系の purpose を readonly で宣言する例
@@ -267,6 +268,21 @@ ollama で受けるのは §6（read ツールセット）以降とする。
   権限は役割の性質で決まるのだから、役割側で宣言する。
 - **副産物**: この宣言はクラウド CLI にもそのまま効き、判断系呼び出しの権限が
   最小化される。節約の設計だが、安全側への修正を同梱している。
+
+**改訂（2026-08-09）— 既定を一律 write から役割ベースへ。** 初版は「挙動を黙って変えない」
+ことを優先して既定を write に置いたが、その前提は「CLI を選ぶのは設定ファイルを書く人」
+だった。agent-control（`workloads.<engine>.agent_cli`）が横断で CLI を差し替えられるように
+なった今、dashboard から ollama を選ぶだけで、設定ファイルを一行も書いていない環境の
+planner に `--tools bash` が生える。実測（agent-flow・2026-08-08）では、モデルが契約どおりの
+JSON を返しているのにツールループ側が「規約から外れています」と蹴り、30 ラウンド空回りして
+タイムアウト、stub のキーワード判定まで縮退した run が 4 本続いた。既定 write は挙動を
+守るどころか、役割の定義と矛盾した組み合わせを黙って作る。
+
+そこで agent-flow の planner / evaluator——**材料を全部プロンプトで受け取ると定義側で
+決まっている役割**——は宣言が無ければ readonly を既定にする（`agent.py` の
+`READONLY_ROLES`）。`readonly: false` と明示すれば従来どおり write で呼べる。この既定は
+「権限は役割の性質で決まる」という §5.2 の原則そのままであり、CLI 名で分岐しない点も
+変わらない。読む系（repo_map / doctor / review）と work / verify は本節のとおり write のまま。
 
 ---
 

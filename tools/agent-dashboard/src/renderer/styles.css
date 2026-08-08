@@ -3270,10 +3270,12 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
 .orch-ctrl-head > strong { align-self: center; min-width: 7em; }
 .orch-ctrl-head label { display: flex; flex-direction: column; font-size: 12px; color: var(--muted); gap: 2px; }
 .orch-ctrl-head input[type="text"] { min-width: 10em; }
+.orch-ctrl-head input[type="number"] { width: 9em; }
 .orch-agents { margin-top: 8px; }
 .orch-agents > summary { cursor: pointer; font-size: 12px; color: var(--muted); }
 .orch-agents-table { width: 100%; margin-top: 6px; }
 .orch-agents-table input[type="text"] { width: 100%; min-width: 7em; }
+.orch-agents-table input[type="number"] { width: 8em; }
 .orch-agents-table code { font-size: 12px; }
 .orch-agent-rm { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; white-space: nowrap; }
 .orch-agent-add input { opacity: 0.95; }

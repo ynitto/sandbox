@@ -86,6 +86,13 @@ class WaitingStateTests(unittest.TestCase):
         self.assertIn("waiting=1", text)
         self.assertIn(kf._STATE_GLYPH["waiting"], text)
 
+    def test_status_render_shows_run_phase_and_labels_graph_progress_as_work(self):
+        self.bus.set_phase("verifying", "orch")
+        _, text = kf._render_status(self.bus, "run1", 0)
+        self.assertIn("phase   : 検証中", text)
+        self.assertIn("work    :", text)
+        self.assertNotIn("progress:", text)
+
     def test_expired_wait_falls_back_to_pending(self):
         # wait_lease 失効＝監視主体が居ない → pending へ縮退（full worker が再アタッチで拾える）
         self.bus.write_wait("n1", self._rec(wait_lease_until=time.time() - 1))

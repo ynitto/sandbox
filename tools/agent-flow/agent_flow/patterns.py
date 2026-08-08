@@ -112,8 +112,26 @@ def plan_stub(request: str):
     return tasks
 
 
+def _request_head(request: str) -> str:
+    """パターン判定に使う要求本体（先頭の段落）。
+
+    agent-project 由来の要求は、本体のあとに charter・ブリーフ・対象リポジトリ一覧といった
+    定型セクションが続く。定型には「書込先候補（owns: …）」のように毎回同じ語が入るため、
+    全文をキーワード判定に掛けると要求の中身と無関係に同じパターンが選ばれ続ける
+    （実測: 15 件中 9 件が定型の「候補」だけで generate-and-filter に倒れていた）。"""
+    for block in request.split("\n\n"):
+        if block.strip():
+            return block
+    return request
+
+
 def _detect_pattern(request: str) -> str:
-    t = request.lower()
+    # 要求がパターン名を名指ししていれば尊重する（本体の外＝完了条件の但し書き等でも拾う）
+    named = request.lower()
+    for name in PATTERN_LIST:
+        if name in named:
+            return name
+    t = _request_head(request).lower()
     table = [
         ("classify-and-act", ["classif", "route", "routing", "ルーティング", "分類", "振り分け", "triage", "トリアージ"]),
         ("map-reduce", ["それぞれ", "各", "per item", "per-item", "分割して", "一覧", "列挙", "map-reduce", "map reduce", "件ごと", "ごとに"]),
@@ -329,7 +347,12 @@ def plan_strategy_agent(request: str, model: str | None, review="auto", granular
                     return _interpret(repaired)
                 except Exception:  # noqa: BLE001
                     pass
-        return plan_strategy_stub(request, review, granularity)
+        # LLM 経路が全滅した最後の砦。ここは要求のキーワードだけで決めるので、選ばれた
+        # パターンは「要求の分析結果」ではない。そう読めるよう reason にも残す。
+        log("planner", f"エージェント planner が計画を返しませんでした → stub へ縮退: {str(e)[:200]}")
+        strategy, tasks = plan_strategy_stub(request, review, granularity)
+        strategy["reason"] = f"[agent planner 失敗: {str(e)[:120]}] {strategy.get('reason', '')}".strip()
+        return strategy, tasks
 
 
 def _find_skill_script(skill: str, script: str):
@@ -378,6 +401,34 @@ def _find_flow_planner_script():
     return _find_skill_script(skill, "plan.py")
 
 
+def _skill_env() -> dict:
+    """計画スキル（独立プロセス）へ渡す環境。agentcore を import できる PYTHONPATH を足す。
+
+    スキル側に組み込み CLI の argv をハードコードさせないための経路（S9・C7）。開発木では
+    tools/agent-tools/agentcore、zipapp 配布ではアーカイブ自身が sys.path に載るため、
+    どちらでも `agentcli` の親ディレクトリを渡せば解決できる。"""
+    env = {**os.environ, "NO_COLOR": "1", "TERM": "dumb"}
+    root = os.path.dirname(os.path.dirname(os.path.abspath(_agentcli.__file__)))
+    prev = env.get("PYTHONPATH", "")
+    if root not in prev.split(os.pathsep):
+        env["PYTHONPATH"] = root + (os.pathsep + prev if prev else "")
+    return env
+
+
+def _planner_fallback(request: str, model: "str | None", review, granularity: "str | None",
+                      context: str, why: str):
+    """計画スキルを使えなかったときの縮退。**必ず記録を残す**。
+
+    以前はここが黙って落ちていたため、スキルが一度も起動していないのに「計画できた」ように
+    見えていた（agent_cli を差し替えた環境で 4 run 連続。stub のキーワード判定が同じパターンを
+    選び続けても気づけない）。ログと strategy.reason の両方へ理由を残す。"""
+    log("planner", f"flow-planner を使えませんでした → エージェント planner へ縮退: {why[:200]}")
+    strategy, tasks = plan_strategy_agent(request, model, review,
+                                          fallback_granularity(granularity), context)
+    strategy["reason"] = f"[flow-planner 不使用: {why[:120]}] {strategy.get('reason', '')}".strip()
+    return strategy, tasks
+
+
 def plan_strategy_flow_planner(request: str, model: str | None, review="auto", granularity="auto",
                                context: str = ""):
     """flow-planner スキルの3段パイプラインを呼び出す。
@@ -391,7 +442,8 @@ def plan_strategy_flow_planner(request: str, model: str | None, review="auto", g
     script = _find_flow_planner_script()
     if not script:
         # flow-planner スキル未インストール → エージェント planner にフォールバック
-        return plan_strategy_agent(request, model, review, fallback_granularity(granularity), context)
+        return _planner_fallback(request, model, review, granularity, context,
+                                 f"{_PLANNER_SKILL or 'flow-planner'} スキルが見つかりません")
     # 計画に使う CLI/モデルは planner の設定（agents: planner: {agent_cli, model}）に従わせる。
     # スキル側の既定は kiro-cli だが、それを黙って使うと agent_cli を claude/codex にしていても
     # 計画だけ kiro-cli で走り、kiro-cli が使えない環境では毎回失敗して stub へ落ちていた。
@@ -408,9 +460,16 @@ def plan_strategy_flow_planner(request: str, model: str | None, review="auto", g
     if context:
         cmd += ["--context", context]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
+        # スキルは独立プロセスだが、エージェント CLI の argv 知識だけは agentcore へ委譲させる
+        # （組み込み 4 種の白リストを持たせない＝定義ファイルを足した CLI がそのまま使える）。
+        # 3 フェーズぶん LLM を呼ぶので、待ち時間は 1 回分のタイムアウトの 3 倍を見込む
+        # （agent_timeout=0 で無効化されているなら、こちらも待ち続ける＝同じ意思に従う）。
+        one = _agent_timeout("planner")
+        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", timeout=max(300.0, one * 3) if one else None,
+                              env=_skill_env())
         if proc.returncode != 0:
-            raise RuntimeError(proc.stderr[:500])
+            raise RuntimeError((proc.stderr or proc.stdout or "")[:500])
         data = json.loads(proc.stdout)
         strategy = data.get("strategy", {})
         tasks = _coerce_tasks(data.get("tasks", []))
@@ -428,6 +487,6 @@ def plan_strategy_flow_planner(request: str, model: str | None, review="auto", g
             "granularity": resolved,
         }
         return final_strategy, tasks
-    except Exception:  # noqa: BLE001 — flow-planner 失敗時はエージェント planner にフォールバック
-        return plan_strategy_agent(request, model, review, fallback_granularity(granularity), context)
+    except Exception as e:  # noqa: BLE001 — flow-planner 失敗時はエージェント planner にフォールバック
+        return _planner_fallback(request, model, review, granularity, context, str(e))
 

@@ -418,10 +418,36 @@ class OrchestratorLeaseTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 kf.cmd_orchestrate(args)
         meta = json.loads((pathlib.Path(root, "runs", rid, "meta.json")).read_text())
+        self.assertEqual(meta.get("phase"), "planning", "計画開始前に phase を公開すること")
         self.assertIsInstance(meta.get("orch_lease_until"), (int, float),
                               "計画前に生存リースを張ること")
         self.assertGreater(meta["orch_lease_until"], time.time(),
                            "張ったリースは未来を指すこと")
+
+    def test_orchestrate_publishes_execution_to_finalization_phases_in_order(self):
+        root = tempfile.mkdtemp(prefix="kf-phases-")
+        self.addCleanup(shutil.rmtree, root, True)
+        rid = "run-phases"
+        bus = kf.Bus(root, rid)
+        bus.ensure_run("x")
+        bus.write_graph({"nodes": {"t1": {"id": "t1", "goal": "g", "deps": [], "kind": "work"}},
+                         "iteration": 0})
+        bus.write_task({"id": "t1", "goal": "g", "deps": [], "kind": "work"})
+        bus.write_result("t1", "worker", "done", "ok")
+        args = argparse.Namespace(
+            config=None, bus=root, git=None, git_branch="main", git_subdir=None,
+            lease=30.0, run_id=rid, request="x", planner="stub", executor=None, model=None,
+            poll=0.01, max_iterations=1, max_fanout=4, max_retries=1, review=None,
+            granularity="finest", exemplar_first=False, cleanup_clone=True, repos=None,
+            keep_clone=False, node_id="orchestrator", workspace=None, references=None,
+            inherit_from=None, orphan_grace=0.0)
+        kf.resolve_config(args)
+        with mock.patch.object(kf, "_continue", return_value=("done", [], "complete")), \
+             mock.patch.object(kf, "run_verification_plan", return_value={"verdict": "pass"}):
+            self.assertEqual(kf.cmd_orchestrate(args), 0)
+        phases = [e["phase"] for e in bus.recent_events(20) if e.get("kind") == "phase"]
+        self.assertEqual(phases, ["executing", "evaluating", "verifying", "finalizing"])
+        self.assertEqual(bus.run_meta(rid)["status"], "done")
 
 
 class DaemonPrimitiveTests(unittest.TestCase):

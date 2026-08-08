@@ -165,6 +165,18 @@ class Bus:
         meta["updated_at"] = now_iso()
         write_json_atomic(self.meta_path, meta)
 
+    def set_phase(self, phase: str, who: str) -> None:
+        """非終端 run の現在段階を更新し、遷移時刻と同じ内容の event を残す。"""
+        meta = read_json(self.meta_path) or {}
+        if meta.get("status") in TERMINAL or meta.get("phase") == phase:
+            return
+        stamp = now_iso()
+        meta["phase"] = phase
+        meta["phase_started_at"] = stamp
+        meta["updated_at"] = stamp
+        write_json_atomic(self.meta_path, meta)
+        self.event(who, "phase", phase=phase)
+
     def note_executor(self, executor: str) -> None:
         """この run を駆動する executor 名を meta に記録する（冪等）。
         viewer が「GitLab 連携の UI を出すか」を executor で切り替えるための表示用メタデータ

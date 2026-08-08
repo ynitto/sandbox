@@ -7,11 +7,33 @@ from __future__ import annotations
 from agentcore import promptrender  # noqa: E402
 
 
-def _agent_timeout() -> float | None:
+def _agent_timeout(purpose: str = "", plugin_timeout=None) -> float | None:
     """エージェント CLI 1 呼び出しのタイムアウト秒。設定ファイル `agent_timeout` で調整、0/負で無効化。
     設定が無ければ環境変数 AGENT_FLOW_TIMEOUT（旧名 AGENT_FLOW_KIRO_TIMEOUT も後方互換で受理）
     → 既定 600 にフォールバックする。心拍が lease を延長し続けるため、ハングしたエージェント CLI は
     このタイムアウトでしか止められない（無いと worker が無限ブロックし run 全体が停止する）。"""
+    if purpose:
+        ctl = _control_workload()
+        agents = ctl.get("agents") or {}
+        role = agents.get(purpose) or {}
+        raw_values = [role.get("timeout_sec")]
+        if purpose in VALID_KINDS and purpose != "worker":
+            raw_values.append((agents.get("worker") or {}).get("timeout_sec"))
+        raw_values.append(ctl.get("timeout_sec"))
+        for raw in raw_values:
+            try:
+                to = float(raw)
+                if to > 0:
+                    return to
+            except (TypeError, ValueError):
+                pass
+    if plugin_timeout is not None:
+        try:
+            to = float(plugin_timeout)
+            if to > 0:
+                return to
+        except (TypeError, ValueError):
+            pass
     to = _AGENT_TIMEOUT
     if to is None:
         raw = os.environ.get("AGENT_FLOW_TIMEOUT") or os.environ.get("AGENT_FLOW_KIRO_TIMEOUT") or "600"
@@ -44,6 +66,12 @@ _AGENT_CLI: str = str(CONFIG_DEFAULTS["agent_cli"])
 # reduce/split/map）。値は {agent_cli, model}。子プロセスへは --config 伝搬で同じ設定が届く。
 _AGENT_OVERRIDES: "dict[str, dict]" = {}
 AGENT_ROLES = ("planner", "evaluator", "worker")
+# 読み取り専用が**既定**の役割（適用拡大設計 §5「読まない系」）。planner / evaluator は材料を
+# 全部プロンプトで受け取り、テキストか JSON を返すだけなので道具が要らない。既定を write の
+# ままにすると、agent-control が agent_cli をツールループ型（agent-ollama の --tools bash 等）へ
+# 差し替えたときに、契約どおりの JSON 応答が「規約から外れています」と蹴られて planner が
+# 空回りする。設定 `agents: {planner: {readonly: false}}` と明示すれば従来どおり write で呼べる。
+READONLY_ROLES = frozenset({"planner", "evaluator"})
 # executor=agent の実行系プロンプトを供給するスキル名（設定 worker_skill）。
 # none/builtin/空 で無効＝常に組み込みプロンプト。
 _WORKER_SKILL: str = str(CONFIG_DEFAULTS["worker_skill"])
@@ -86,7 +114,8 @@ def _normalize_agent_overrides(raw) -> "dict[str, dict]":
 
 
 def _agent_readonly(purpose: str) -> bool:
-    """この役割を読み取り専用で呼ぶか（設定 `agents[purpose].readonly`・既定 False）。
+    """この役割を読み取り専用で呼ぶか（設定 `agents[purpose].readonly`・既定は
+    READONLY_ROLES に属する役割だけ True）。
 
     解決順は `_agent_for` と同じ（kind は agents["worker"] へフォールバック）。宣言して
     よいのは**読まない系**——planner / evaluator や判定系 kind のように、材料を全部
@@ -96,7 +125,10 @@ def _agent_readonly(purpose: str) -> bool:
     ov = _AGENT_OVERRIDES.get(purpose)
     if ov is None and purpose in VALID_KINDS:
         ov = _AGENT_OVERRIDES.get("worker")
-    return bool((ov or {}).get("readonly"))
+    ov = ov or {}
+    if "readonly" in ov:
+        return bool(ov["readonly"])
+    return purpose in READONLY_ROLES
 
 
 def _agent_for(purpose: str) -> "tuple[str, str | None]":
@@ -672,9 +704,10 @@ def _run_agent_once(prompt: str, model: str | None, purpose: str = "",
     # 発生源で色を抑止（NO_COLOR/TERM=dumb）。残った ANSI は strip_ansi で除去する二段構え
     # （agent-project と同じ扱い）。定義の env は最後に載せるので上書きできる。
     env = {**os.environ, "NO_COLOR": "1", "TERM": "dumb", **(plug.get("env") or {})}
+    timeout = _agent_timeout(purpose, plug.get("timeout"))
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", input=stdin_text,
-                              timeout=plug.get("timeout") or _agent_timeout(), env=env, cwd=cwd)
+                              timeout=timeout, env=env, cwd=cwd)
     except subprocess.TimeoutExpired:
         # 失敗として上位へ。ハングは一時的な公算が高いので transient タグを明示付与し、
         # レイヤ1（in-place 再試行）の対象にする（従来は日本語文言が英語の transient パターンに
@@ -683,7 +716,8 @@ def _run_agent_once(prompt: str, model: str | None, purpose: str = "",
         if out_file:
             with contextlib.suppress(OSError):
                 os.remove(out_file)
-        raise RuntimeError(f"[agent-error:transient] {cmd[0]} タイムアウト（{_agent_timeout():.0f}s 超過）")
+        label = f"{timeout:.0f}s" if timeout is not None else "上限なし"
+        raise RuntimeError(f"[agent-error:transient] {cmd[0]} タイムアウト（{label}）")
     finally:
         if spill:
             with contextlib.suppress(OSError):

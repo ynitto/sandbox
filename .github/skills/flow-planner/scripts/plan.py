@@ -242,15 +242,37 @@ import re
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
-# 呼び出すエージェント CLI（kiro / claude / copilot / codex）。--agent-cli で切り替える。
+# 呼び出すエージェント CLI。--agent-cli で切り替える（名前は agents/<name>.json の定義名）。
 # 既定は kiro（従来動作）。呼び出し側（agent-flow）は planner に設定された agent_cli を渡す。
 AGENT_CLI = "kiro"
+
+
+def _agentcli():
+    """agentcore.agentcli（定義ファイル駆動の argv 組み立て）。使えなければ None。
+
+    agent-flow は起動時に PYTHONPATH でこれを渡す。使えるときは組み込み 4 種を特別扱いせず、
+    `agents/<name>.json` を置いただけの CLI（agent-ollama 等）もそのまま呼べる。"""
+    try:
+        from agentcore import agentcli  # type: ignore
+        return agentcli
+    except ImportError:
+        return None
 
 
 def _agent_cmd(cli: str, model: str | None, prompt: str):
     """エージェント CLI 1 回分の (argv, stdin テキスト, 最終応答ファイル) を組み立てる。
     agent-flow / agent-project の _agent_cmd と同じ規約に揃える（ヘッドレス・応答本文のみ）。
-    最終応答ファイルは codex のみ（stdout がイベントログのため）。"""
+    最終応答ファイルは codex のみ（stdout がイベントログのため）。
+
+    agentcore が使えるならそちらへ委譲する。3 フェーズはいずれも材料を全部プロンプトで
+    受け取って JSON を返すだけの「読まない系」なので readonly で呼ぶ——道具を持たせると、
+    ツールループ型の CLI（agent-ollama の --tools bash 等）が契約どおりの JSON 応答を
+    「規約から外れています」と蹴って空回りする。"""
+    core = _agentcli()
+    if core is not None:
+        spec = core.load_cli(cli)
+        built = core.headless_cmd(spec, model, prompt, readonly=True)
+        return built["argv"], built["stdin"], built["output_file"]
     if cli == "claude":
         # Claude Code ヘッドレス。プロンプトは stdin 渡し（ARG_MAX に当たらない）。
         cmd = ["claude", "-p", "--output-format", "text", "--dangerously-skip-permissions"]
@@ -272,6 +294,12 @@ def _agent_cmd(cli: str, model: str | None, prompt: str):
         if model:
             cmd += ["--model", model]
         return cmd + ["-"], prompt, out_file
+    if cli != "kiro":
+        # agentcore なしで定義ファイル駆動の CLI は組み立てられない。黙って kiro-cli へ
+        # 倒すと「指定した CLI で計画したつもりが別物」になるので、失敗として上げる。
+        raise RuntimeError(
+            f"agent_cli={cli!r} の argv を組み立てられません（agentcore を import できず、"
+            "組み込みの kiro/claude/copilot/codex でもありません）")
     cmd = ["kiro-cli", "chat", "--no-interactive", "--trust-all-tools"]
     if model:
         cmd += ["--model", model]
@@ -914,9 +942,9 @@ def main():
     parser = argparse.ArgumentParser(description="flow-planner: 3段パイプラインでタスクグラフを生成")
     parser.add_argument("request", help="要求テキスト")
     parser.add_argument("--agent-cli", dest="agent_cli", default="kiro",
-                        choices=["kiro", "claude", "copilot", "codex"],
-                        help="計画に使うエージェント CLI（既定 kiro）。"
-                             "agent-flow から呼ばれるときは planner に設定された CLI が渡る")
+                        help="計画に使うエージェント CLI（既定 kiro）。agents/<name>.json の定義名を"
+                             "受け付ける（組み込み 4 種に限らない）。agent-flow から呼ばれるときは"
+                             " planner に設定された CLI が渡る")
     parser.add_argument("--model", default=None, help="エージェント CLI に渡すモデル")
     parser.add_argument("--review", default="auto",
                         help="検証gate: auto/true/false")

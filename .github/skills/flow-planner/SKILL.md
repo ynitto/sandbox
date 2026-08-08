@@ -302,7 +302,12 @@ reduce_width: 8         # 集約1つが受け持つ依存の上限（超過分�
 
 ## 注意事項
 
-- エージェント CLI（既定 kiro-cli）が必要（LLM呼び出しに使用）
+- エージェント CLI（既定 kiro-cli）が必要（LLM呼び出しに使用）。`--agent-cli` は
+  `agents/<name>.json` の定義名を受け付ける（組み込み 4 種に限らない）。argv の組み立ては
+  agentcore へ委譲するので、agent-flow から呼ばれるときは PYTHONPATH 経由で解決される
+- 3 フェーズはいずれも材料をプロンプトで受け取って JSON を返すだけなので readonly（道具なし）で
+  呼ぶ。道具付きだとツールループ型の CLI が契約どおりの JSON 応答を規約違反として蹴る
 - 3段パイプラインのため、現行 `agent` planner より LLM 呼び出し回数が多い（2-3回、ゲート再生成で+1）
 - フォールバック: いずれかの段で失敗した場合は現行 `plan_strategy_agent` に倒す
+  （呼び出し側がログと `strategy.reason` に理由を残す）
 - 非目標: 内側 verify 必須化、分解批評 Phase 3.5、失敗時自動細分化（将来フック）

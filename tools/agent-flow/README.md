@@ -4,7 +4,8 @@
 > [`docs/designs/agent-flow-design.md`](../../docs/designs/agent-flow-design.md)。
 > 改称方針: [`docs/designs/agent-tools-rename-design.md`](../../docs/designs/agent-tools-rename-design.md)。
 
-エージェント CLI（既定 `kiro-cli`。`claude` / `copilot` / `codex` にも切替可）で
+エージェント CLI（既定 `kiro-cli`。`claude` / `copilot` / `codex` / `ollama` 等、
+`agents/<name>.json` の定義がある CLI に切替可）で
 **Claude 風の Dynamic Workflow**（動的にタスクを分解 → ワーカーへ委譲 → 結果統合）を
 実現する基盤。通信は **ファイルのみ**で行い、バスを git に差し替えれば**複数 PC へ分散**できる設計。
 
@@ -306,9 +307,15 @@ orchestrator は要求を見て、以下の 7 パターン（最初の 6 つは
 
 - **パターン選択**: `--planner flow-planner` なら3段パイプライン（要求分析→戦略選定→グラフ生成）で
   高精度な分解を行う（`.github/skills/flow-planner/` スキル）。`--planner agent` ならエージェント CLI
-  （`agent_cli` の設定に従う）が1回の呼び出しで選ぶ。`--planner stub` は要求のキーワードで判定
-  （「分類/振り分け」→classify、「tournament/最良」→tournament、「候補/フィルタ」→filter、
-  「検証/レビュー」→adversarial、「繰り返し/通るまで」→loop、それ以外→fan-out）。
+  （`agent_cli` の設定に従う）が1回の呼び出しで選ぶ。`--planner stub` は要求本体（先頭の段落）の
+  キーワードで判定（「分類/振り分け」→classify、「tournament/最良」→tournament、
+  「候補/フィルタ」→filter、「検証/レビュー」→adversarial、「繰り返し/通るまで」→loop、
+  それ以外→fan-out）。パターン名の名指し（`loop-until-done` 等）はどこに書かれていても優先する。
+  判定を先頭の段落に限るのは、agent-project 由来の要求に付く定型（charter・対象リポジトリ一覧
+  など）が要求の中身と無関係に同じパターンを選ばせるため。
+- **縮退したら記録が残る**: flow-planner を使えなかった（スキル未配布・失敗）ときは agent planner へ、
+  それも失敗したら stub へ落ちる。落ちた事実と理由はログと `strategy.reason` の両方に残るので、
+  「計画できたように見えて実は stub だった」状態を後から見分けられる。
 - **並列数**: 要求中の `xN` / `並列N` を拾う。無ければ並列タスク数から既定（2〜6）。
 - **継続判断**: 静止（claim 可能・実行中タスクが無い）するたびに評価し、`classify` 結果でルーティング、
   `verify` が fail なら依存を作り直して再検証（`replaces` で後続の依存を付け替え）、失敗タスクは retry。
@@ -697,7 +704,7 @@ update_installer: install.sh    # サブディレクトリ内で実行するイ�
 | `--workers` | 2 | 起動するワーカー数（`run`） |
 | `--max-runs` | 8 | 1 ノードが同時に実行する run の上限（`participate`）。全ノードが park の run は数えない。0 以下で無制限 |
 | `--planner` / `--executor` | `flow-planner` / `agent` | planner は `flow-planner`（3段パイプライン、既定）/ `agent`（エージェント CLI に1回問い合わせ）/ `stub`（オフライン検証）。executor は評価役にも使う |
-| `--agent-cli` | `kiro` | LLM 実行に使うエージェント CLI（設定 `agent_cli`）。`kiro`=kiro-cli chat / `claude`=Claude Code ヘッドレス（`claude -p`・プロンプトは stdin 渡し）/ `copilot`=GitHub Copilot CLI（`copilot -p`・argv 渡しのため kiro と同じスピル退避が効く） / `codex`=OpenAI Codex CLI（`codex exec`・プロンプトは stdin 渡し・最終応答は `--output-last-message` 経由で取得）。planner / executor / verify 等の LLM 呼び出しすべてに効く。モデルは設定 `model` で指定 |
+| `--agent-cli` | `kiro` | LLM 実行に使うエージェント CLI（設定 `agent_cli`）。`kiro`=kiro-cli chat / `claude`=Claude Code ヘッドレス（`claude -p`・プロンプトは stdin 渡し）/ `copilot`=GitHub Copilot CLI（`copilot -p`・argv 渡しのため kiro と同じスピル退避が効く） / `codex`=OpenAI Codex CLI（`codex exec`・プロンプトは stdin 渡し・最終応答は `--output-last-message` 経由で取得）。組み込み 4 種を特別扱いせず定義ファイル（`agents/<name>.json`・契約 `schemas/agent-cli.schema.json`）で動くので、`ollama` のように定義を置いただけの CLI も同じ名前で指定できる（`--planner flow-planner` の 3 段パイプラインも同じ CLI で走る）。planner / executor / verify 等の LLM 呼び出しすべてに効く。モデルは設定 `model` で指定。**planner / evaluator は既定で読み取り専用**（道具なし）で呼ぶ——材料を全部プロンプトで受け取る役割であり、道具付きだとツールループ型の CLI が契約どおりの JSON 応答を規約違反として蹴るため。`agents: {planner: {readonly: false}}` で従来どおりにも戻せる |
 | `--max-iterations` | 3 | 再計画（evaluator-optimizer）の最大反復回数 |
 | `--max-fanout` | 50 | データ駆動 fan-out（split→map）の最大展開数 |
 | `--max-retries` | 3 | サーキットブレーカー：同一系統の作り直し（verify=fail 再生成・失敗 retry）の打ち切り回数。達成不可能な完了条件での無限再タスクを防ぐ |

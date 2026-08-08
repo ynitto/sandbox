@@ -475,11 +475,17 @@ const ORCH_AGENT_KEYS = {
   routine: [],
 };
 
+function timeoutSeconds(value) {
+  const raw = String(value == null ? '' : value).trim();
+  return raw === '' ? null : Number(raw) * 60;
+}
+
 // 1 ワークロードの用途 / ロール別上書きの小テーブル（既存キーの編集・削除＋新規追加行）。
 function orchAgentsEditorHtml(wl, wc) {
   const agents = wc.agents || {};
   const keys = Object.keys(agents);
   const known = ORCH_AGENT_KEYS[wl];
+  const withTimeout = wl === 'flow';
   // routine は用途別の概念が無い（1 セッションに 1 つの CLI を起こすだけ）ため編集 UI を
   // 出さない。上の「エージェント / モデル」は定常業務の起動にそのまま効く。
   if (known && known.length === 0 && wl === 'routine') {
@@ -496,6 +502,8 @@ function orchAgentsEditorHtml(wl, wc) {
       <td><code>${esc(key)}</code></td>
       <td><input type="text" class="orch-agent-cli" placeholder="（既定）" value="${esc(ov.agent_cli || '')}" /></td>
       <td><input type="text" class="orch-agent-model" placeholder="（既定）" value="${esc(ov.model || '')}" /></td>
+      ${withTimeout ? `<td><input type="number" min="1" step="1" class="orch-agent-timeout"
+        aria-label="${esc(key)}の1回の上限（分）" placeholder="共通値" value="${ov.timeout_sec ? Math.ceil(Number(ov.timeout_sec) / 60) : ''}" /></td>` : ''}
       <td><label class="orch-agent-rm"><input type="checkbox" class="orch-agent-remove" /> 削除</label></td>
     </tr>`;
   }).join('');
@@ -503,6 +511,7 @@ function orchAgentsEditorHtml(wl, wc) {
       <td><input type="text" class="orch-agent-new-key" list="${listId}" placeholder="${(known && known.length) ? '用途 / 担当名' : '担当名'}" /></td>
       <td><input type="text" class="orch-agent-new-cli" placeholder="エージェント" /></td>
       <td><input type="text" class="orch-agent-new-model" placeholder="モデル" /></td>
+      ${withTimeout ? '<td><input type="number" min="1" step="1" class="orch-agent-new-timeout" aria-label="追加する用途の1回の上限（分）" placeholder="共通値" /></td>' : ''}
       <td><small class="muted">保存で追加</small></td>
     </tr>`;
   const summaryLabel = keys.length ? `用途 / 担当ごとの変更（${keys.length}）` : '用途 / 担当ごとの変更を追加';
@@ -510,7 +519,7 @@ function orchAgentsEditorHtml(wl, wc) {
     <summary>${esc(summaryLabel)}</summary>
     ${datalist}
     <table class="amigos-table orch-agents-table">
-      <thead><tr><th>用途 / 担当 / 種別</th><th>エージェント</th><th>モデル</th><th></th></tr></thead>
+      <thead><tr><th>用途 / 担当 / 種別</th><th>エージェント</th><th>モデル</th>${withTimeout ? '<th>1回の上限（分）</th>' : ''}<th></th></tr></thead>
       <tbody>${rows}${addRow}</tbody>
     </table>
   </details>`;
@@ -523,14 +532,18 @@ function orchMatrixPanelHtml(overview) {
   const blocks = wls.map((wl) => {
     const wc = (control.workloads || {})[wl] || {};
     const deg = wc.degraded || {};
+    const timeout = wc.timeout_sec ? Math.ceil(Number(wc.timeout_sec) / 60) : '';
     return `<div class="orch-ctrl-wl" data-orch-ctrl-wl="${esc(wl)}">
       <div class="orch-ctrl-head">
         <strong>${esc(amigosWorkloadLabel(wl))}</strong>
         <label>エージェント<input type="text" class="orch-ctrl-cli" placeholder="各機能の設定を使用" value="${esc(wc.agent_cli || '')}" /></label>
         <label>モデル<input type="text" class="orch-ctrl-model" placeholder="各機能の設定を使用" value="${esc(wc.model || '')}" /></label>
         <label>節約時のモデル<input type="text" class="orch-ctrl-degraded-model" placeholder="変更しない" value="${esc(deg.model || '')}" /></label>
+        ${wl === 'flow' ? `<label>1回の上限（分）<input type="number" min="1" step="1" class="orch-ctrl-timeout"
+          placeholder="各プロジェクトの設定を使用" value="${timeout}" /></label>` : ''}
       </div>
       ${orchAgentsEditorHtml(wl, wc)}
+      ${wl === 'flow' ? '<p class="field-help">空欄は各プロジェクトの設定を使います。再試行が有効な場合、この上限が複数回適用されます。</p>' : ''}
     </div>`;
   }).join('');
   return `<section class="orch-panel">
@@ -1375,6 +1388,8 @@ function setupOrchestration(root) {
         model: model || null,
         degraded: degModel ? { model: degModel } : null,
       };
+      const timeout = block.querySelector('.orch-ctrl-timeout');
+      if (timeout) wc.timeout_sec = timeoutSeconds(timeout.value);
       // 用途 / ロール別の上書き（agents.<key>）を集める。削除チェックは null（＝キー削除）。
       const agents = {};
       for (const arow of block.querySelectorAll('.orch-agent-row')) {
@@ -1386,6 +1401,8 @@ function setupOrchestration(root) {
         const acli = arow.querySelector('.orch-agent-cli').value.trim();
         const amodel = arow.querySelector('.orch-agent-model').value.trim();
         agents[key] = { agent_cli: acli || null, model: amodel || null };
+        const atimeout = arow.querySelector('.orch-agent-timeout');
+        if (atimeout) agents[key].timeout_sec = timeoutSeconds(atimeout.value);
       }
       const addRow = block.querySelector('.orch-agent-add');
       if (addRow) {
@@ -1395,6 +1412,8 @@ function setupOrchestration(root) {
             agent_cli: addRow.querySelector('.orch-agent-new-cli').value.trim() || null,
             model: addRow.querySelector('.orch-agent-new-model').value.trim() || null,
           };
+          const ntimeout = addRow.querySelector('.orch-agent-new-timeout');
+          if (ntimeout) agents[nk].timeout_sec = timeoutSeconds(ntimeout.value);
         }
       }
       if (Object.keys(agents).length) wc.agents = agents;

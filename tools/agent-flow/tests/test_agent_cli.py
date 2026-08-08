@@ -173,6 +173,51 @@ class AgentTimeoutTests(unittest.TestCase):
         with mock.patch.object(kf, "_AGENT_TIMEOUT", 0.0):
             self.assertIsNone(kf._agent_timeout())   # 設定の 0/負も無効化として尊重
 
+    def test_control_flow_timeout_applies_to_the_next_agent_call(self):
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(kwargs.get("timeout"))
+            return types.SimpleNamespace(returncode=0, stdout="ok", stderr="")
+
+        control = {"workloads": {"flow": {"timeout_sec": 90}}}
+        with mock.patch.object(kf, "_load_control", return_value=control), \
+             mock.patch.object(kf.subprocess, "run", side_effect=fake_run):
+            kf.run_agent("verify", None, purpose="verify")
+        self.assertEqual(calls, [90.0])
+
+    def test_control_purpose_timeout_beats_the_flow_default(self):
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(kwargs.get("timeout"))
+            return types.SimpleNamespace(returncode=0, stdout="ok", stderr="")
+
+        control = {"workloads": {"flow": {
+            "timeout_sec": 90,
+            "agents": {"verify": {"timeout_sec": 30}},
+        }}}
+        with mock.patch.object(kf, "_load_control", return_value=control), \
+             mock.patch.object(kf.subprocess, "run", side_effect=fake_run):
+            kf.run_agent("verify", None, purpose="verify")
+        self.assertEqual(calls, [30.0])
+
+    def test_control_worker_timeout_is_the_default_for_node_kinds(self):
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(kwargs.get("timeout"))
+            return types.SimpleNamespace(returncode=0, stdout="ok", stderr="")
+
+        control = {"workloads": {"flow": {
+            "timeout_sec": 90,
+            "agents": {"worker": {"timeout_sec": 45}},
+        }}}
+        with mock.patch.object(kf, "_load_control", return_value=control), \
+             mock.patch.object(kf.subprocess, "run", side_effect=fake_run):
+            kf.run_agent("work", None, purpose="work")
+        self.assertEqual(calls, [45.0])
+
     def test_stub_sleep_max_config_beats_env(self):
         # stub_sleep_max も設定が環境変数より優先される（0 で即時）
         calls = []
@@ -491,7 +536,8 @@ class AgentOverrideTests(unittest.TestCase):
         self.assertIn("global-model", cmd2)
 
     def test_readonly_is_declared_per_role(self):
-        """権限は役割の性質で決まる。kind は worker へフォールバックし、既定は write。"""
+        """権限は役割の性質で決まる。kind は worker へフォールバックし、既定は
+        READONLY_ROLES（planner / evaluator）だけ readonly・他は write。"""
         kf._AGENT_OVERRIDES = kf._normalize_agent_overrides({
             "planner": {"agent_cli": "claude", "readonly": True},
             "worker": {"readonly": True},
@@ -500,7 +546,23 @@ class AgentOverrideTests(unittest.TestCase):
         self.assertTrue(kf._agent_readonly("planner"))
         self.assertTrue(kf._agent_readonly("judge"))     # kind → worker の宣言を継ぐ
         self.assertFalse(kf._agent_readonly("work"))
-        self.assertFalse(kf._agent_readonly("evaluator"))
+        # bool 以外は落ちて既定へ。evaluator は「読まない系」なので既定 readonly
+        self.assertTrue(kf._agent_readonly("evaluator"))
+
+    def test_readonly_defaults_to_the_role_nature(self):
+        """宣言が無いときの既定: planner / evaluator は readonly、実務系は write。
+
+        agent-control が agent_cli をツールループ型（agent-ollama の --tools bash 等）へ
+        差し替えても、契約どおりの JSON 応答が「規約から外れています」と蹴られないため。"""
+        kf._AGENT_OVERRIDES = {}
+        self.assertTrue(kf._agent_readonly("planner"))
+        self.assertTrue(kf._agent_readonly("evaluator"))
+        self.assertFalse(kf._agent_readonly("worker"))
+        self.assertFalse(kf._agent_readonly("work"))
+        self.assertFalse(kf._agent_readonly("verify"))
+        # 明示すれば既定を覆せる（従来どおり道具付きで計画させたい場合）
+        kf._AGENT_OVERRIDES = kf._normalize_agent_overrides({"planner": {"readonly": False}})
+        self.assertFalse(kf._agent_readonly("planner"))
 
     def test_readonly_role_drops_the_write_args(self):
         """受け入れ基準: readonly 宣言した役割の argv に write_args が乗らない。"""

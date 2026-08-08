@@ -23,10 +23,19 @@ const path = require('path');
 const CANCELLED = 'cancelled';
 const CANCELLED_SPELLINGS = new Set([CANCELLED, 'canceled']);
 const TERMINAL = new Set(['done', 'failed', ...CANCELLED_SPELLINGS]);
+const RUN_PHASES = new Set(['planning', 'executing', 'evaluating', 'verifying', 'finalizing']);
 
 // meta.status が「人が中止した」を表すか（新旧どちらの綴りでも真）。
 function isCancelled(status) {
   return CANCELLED_SPELLINGS.has(String(status || ''));
+}
+
+function runPhase(meta, status, finished, total) {
+  if (TERMINAL.has(status)) return null;
+  const phase = String((meta && meta.phase) || '');
+  if (RUN_PHASES.has(phase)) return phase;
+  if (total && finished >= total) return 'finalizing';
+  return !total || status === 'planning' ? 'planning' : 'executing';
 }
 
 // 生存リース未記録の run（heartbeat 前に owner が死んだ／古い agent-flow の run）を
@@ -397,6 +406,8 @@ function readRun(runDir) {
   return {
     runId,
     status,
+    phase: runPhase(meta, status, counts.done + counts.failed, total),
+    phaseStartedAt: meta.phase_started_at || null,
     taskId,
     retries: idParts.retries, // この試行のリトライ世代（req- 形式のときのみ）
     rev: idParts.rev, // 人の revise 世代（あれば）

@@ -9,7 +9,8 @@
       "description": "エージェント上書き。null / 省略 = 指定なし（下位の解決へ委ねる）",
       "properties": {
         "agent_cli": {"type": ["string", "null"], "default": null, "description": "組み込み名（kiro/claude/copilot/codex）またはドロップイン名（agents/<name>.json）"},
-        "model": {"type": ["string", "null"], "default": null}
+        "model": {"type": ["string", "null"], "default": null},
+        "timeout_sec": {"type": ["integer", "null"], "minimum": 1, "default": null, "description": "agent-flow のエージェント CLI 1 回あたりの上限秒。flow 以外は無視する"}
       },
       "additionalProperties": true
     },
@@ -19,6 +20,7 @@
       "properties": {
         "agent_cli": {"type": ["string", "null"], "default": null, "description": "ワークロード全体の既定 CLI 上書き"},
         "model": {"type": ["string", "null"], "default": null, "description": "ワークロード全体の既定モデル上書き"},
+        "timeout_sec": {"type": ["integer", "null"], "minimum": 1, "default": null, "description": "agent-flow のエージェント CLI 1 回あたりの共通上限秒。flow 以外は無視する"},
         "agents": {
           "type": "object",
           "description": "用途 / 役割 / ロール別の上書き（ワークロード既定より優先）",

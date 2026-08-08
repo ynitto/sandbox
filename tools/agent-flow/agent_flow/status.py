@@ -9,6 +9,13 @@ from __future__ import annotations
 # 待っているのかを画面から判別できない（park & poll の運用で実際に困った）。
 _STATE_GLYPH = {"done": "✓", "failed": "✗", "claimed": "▶", "waiting": "⏸",
                 "pending": "○", "unknown": "·"}
+_PHASE_LABELS = {
+    "planning": "計画中",
+    "executing": "作業を実行中",
+    "evaluating": "継続を判定中",
+    "verifying": "検証中",
+    "finalizing": "結果を確定中",
+}
 
 
 def _progress_bar(done: int, total: int, width: int = 24) -> str:
@@ -122,13 +129,18 @@ def _render_status(bus, run_id, events):
     L.append(f"╭─ agent-flow ── run {run_id} ── [{(status or '?').upper()}]  ⏱ {_elapsed(meta)}")
     if meta.get("request"):
         L.append(f"│  request : {meta['request'][:78]}")
+    if status not in TERMINAL:
+        phase = _PHASE_LABELS.get(meta.get("phase"))
+        if not phase:
+            phase = "完了処理中" if total and done >= total else "計画中" if not total else "実行中"
+        L.append(f"│  phase   : {phase}")
     if graph and graph.get("strategy"):
         s = graph["strategy"]
         pats = " + ".join(s.get("patterns", []) or [])
         L.append(f"│  strategy: {pats}   ‖parallel={s.get('parallelism','?')}"
                  f"   iter={graph.get('iteration', 0)}")
     if total:
-        L.append(f"│  progress: {_progress_bar(done, total)}")
+        L.append(f"│  work    : {_progress_bar(done, total)}")
         order = ("done", "claimed", "waiting", "pending", "failed", "unknown")
         agentline = "  ".join(f"{_STATE_GLYPH[k]}{k}={counts[k]}" for k in order if counts.get(k))
         L.append(f"│  agents  : {total}   {agentline}")
@@ -314,4 +326,3 @@ def cmd_result(args) -> int:
         if r.get("artifacts"):
             print(f"[artifacts] {', '.join(r['artifacts'])}")
     return 0
-

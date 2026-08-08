@@ -293,6 +293,16 @@ assert.match(renderer, /details\[key\] = d\.open/,
   '開いた状態だけでなく、利用者が閉じた状態も保存する');
 assert.match(renderer, /d\.open = ui\.details\[key\]/, '保存した開閉状態をそのまま復元する');
 assert.match(renderer, /data-ui-key="orch-agents-/, '担当設定の開閉状態に安定キーがある');
+{
+  // eslint-disable-next-line no-new-func
+  const toSeconds = new Function(`${grab('timeoutSeconds')}; return timeoutSeconds;`)();
+  assert.strictEqual(toSeconds('5'), 300, '画面の分指定は契約の秒へ変換する');
+  assert.strictEqual(toSeconds(''), null, '空欄は上書き削除＝下位設定の継承');
+}
+assert.match(renderer, /class="orch-ctrl-timeout"/, 'agent-flow 共通 timeout の入力欄がある');
+assert.match(renderer, /class="orch-agent-timeout"/, 'agent-flow 用途別 timeout の入力欄がある');
+assert.match(renderer, /1回の上限（分）/, '利用者向けの単位をラベルで明示する');
+assert.match(renderer, /再試行が有効な場合/, '1回の上限と総所要時間を混同させない');
 assert.match(renderer, /data-ui-key="orch-dropin-new"/, 'エージェント追加欄の開閉状態に安定キーがある');
 assert.match(renderer, /btn-orch-skill-add/);
 assert.match(renderer, /orch-skill-remove/);
