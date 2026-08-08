@@ -126,34 +126,41 @@ assert.strictEqual(coworkPathKey('C:\\Users\\Me\\proj'), 'c:/users/me/proj');
     '手動追加した作業だけのプロジェクトも定常業務を表示する');
 }
 
+// ミッションは端末（ノード）の話で、選択中プロジェクトでは絞らない。ミッションが自分の
+// 領域を持った以上、プロジェクトで絞ると「左メニューには出ているのに中身が常に空」になる。
 // eslint-disable-next-line no-new-func
-const amigosForProject = new Function(
+const amigosNodeView = new Function(
   'coworkPathKey',
-  `${grab('amigosForProject')}; return amigosForProject;`
+  `${grab('amigosNodeView')}; return amigosNodeView;`
 )(coworkPathKey);
 {
-  const scoped = amigosForProject({
+  const view = amigosNodeView({
     homes: [
       { dir: '/work/a', configFile: '/work/a/agent-amigos.yaml' },
       { dir: '/work/b', configFile: '/work/b/agent-amigos.yaml' },
-      { dir: '/work/b', configFile: null },
+      { dir: '/work/c', configFile: null },
     ],
     missions: [
       { id: 'a1', home: '/work/a' },
       { id: 'b1', home: '/work/b' },
+      { id: 'orphan', home: '/work/c' },
       { id: 'global', home: null },
     ],
-    errors: ['other project error'],
-  }, '/work/b');
-  assert.deepStrictEqual(scoped.homes.map((h) => h.dir), ['/work/b']);
-  assert.deepStrictEqual(scoped.missions.map((m) => m.id), ['b1']);
-  assert.deepStrictEqual(scoped.errors, [], '他プロジェクトの読込エラーも表示しない');
-  assert.strictEqual(amigosForProject({ homes: [], missions: [{ id: 'x' }] }, '/work/b').missions.length, 0);
+    errors: ['読込エラー'],
+  });
+  assert.deepStrictEqual(view.homes.map((h) => h.dir), ['/work/a', '/work/b'],
+    'この端末のホームはプロジェクト選択に関係なく全部出す');
+  assert.deepStrictEqual(view.missions.map((m) => m.id), ['a1', 'b1'],
+    '実体のあるホームのミッションだけを出す（home 不明・設定ファイル無しは除く）');
+  assert.deepStrictEqual(view.errors, ['読込エラー'], 'この端末の読込エラーは伏せない');
+  assert.strictEqual(amigosNodeView({ homes: [], missions: [{ id: 'x' }] }).missions.length, 0,
+    'ホームが無ければミッションも出さない');
   assert.strictEqual(
-    amigosForProject({ homes: [{ dir: '/work/b', configFile: null }], missions: [] }, '/work/b').homes.length,
+    amigosNodeView({ homes: [{ dir: '/work/b', configFile: null }], missions: [] }).homes.length,
     0,
     'フォルダ内に設定ファイルがない明示ホームは表示しない'
   );
+  assert.deepStrictEqual(amigosNodeView(null).missions, [], '未取得でも壊れない');
 }
 
 // 実行の記録は定常業務領域の 1 タブ。動かす画面と結果を追う画面が同じ領域に並ぶので、

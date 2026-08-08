@@ -620,7 +620,9 @@ function orchStatusPanelHtml(overview) {
 function orchInstructionsPanelHtml(overview) {
   const gi = overview.instructions || { enabled: true, text: '', skills: [], tools: {}, revision: 0, max_chars: 2000 };
   const preview = overview.instructionsPreview || '';
-  const inv = state.orchSkillsInventory || [];
+  // 取得結果が配列でない（IPC が壊れた・古い版）ときも画面を落とさない。ここで例外にすると
+  // 全体設定ページごと空になる——1 つの一覧のために設定画面を丸ごと失う割に合わない。
+  const inv = Array.isArray(state.orchSkillsInventory) ? state.orchSkillsInventory : [];
   const selected = new Map();
   for (const s of gi.skills || []) {
     if (typeof s === 'string') selected.set(s, '');
@@ -1532,7 +1534,9 @@ function setupOrchestration(root) {
   const skillAdd = root.querySelector('#btn-orch-skill-add');
   const skillList = root.querySelector('#orch-skill-selected');
   const skillDescription = root.querySelector('#orch-skill-candidate-description');
-  const skillInventory = new Map((state.orchSkillsInventory || []).map((s) => [String(s.name), s]));
+  const skillInventory = new Map(
+    (Array.isArray(state.orchSkillsInventory) ? state.orchSkillsInventory : []).map((s) => [String(s.name), s])
+  );
   const updateSkillAdd = () => {
     if (skillAdd) skillAdd.disabled = !skillInput || !skillInput.value.trim();
     if (skillDescription) {
