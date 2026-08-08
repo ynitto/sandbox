@@ -464,15 +464,34 @@ def node_commands_dir() -> Path:
 _DEFAULT_MAX_CONCURRENT = 4
 
 
+def _control_max_concurrent() -> "int | None":
+    """agent-control の同時実行数宣言（`workloads.flow.concurrency.max_runs`）。無ければ None。
+
+    常駐一本化（W1-9）で `agent-flow daemon` が消え、agent-project 経由で動く agent-flow の
+    本数を実際に律速するのは**このノードのワーカープール**になった。dashboard の「同時に
+    動かす数」はその daemon 向けの宣言だったので、agent-project が回している PC では画面の
+    値が効かない（host.yaml を直しに行くしかない）状態が残っていた。読む側をここへ足して
+    同じ宣言で効くようにする。0 は板・スキーマ双方の語彙どおり無制限。"""
+    raw = ((_load_control().get("workloads") or {}).get("flow") or {}).get("concurrency")
+    value = raw.get("max_runs") if isinstance(raw, dict) else None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+        return None     # 壊れた値は宣言なし（agent-flow 側の control_max_runs と同じ倒し方）
+    return int(value)
+
+
 def _effective_max_concurrent(host: "HostConfig") -> int:
     """このノードの実効同時実行上限（板の語彙: 0 = 無制限）。
 
-    | host.yaml | 実効値 |
+    | 宣言 | 実効値 |
     |---|---|
-    | 未宣言 | 4（既定） |
-    | `0` | 0（無制限・スキーマの語彙どおり） |
-    | `n > 0` | n |
+    | agent-control の `workloads.flow.concurrency.max_runs` | その値（control > 設定ファイル） |
+    | host.yaml 未宣言 | 4（既定） |
+    | host.yaml `0` | 0（無制限・スキーマの語彙どおり） |
+    | host.yaml `n > 0` | n |
     """
+    declared = _control_max_concurrent()
+    if declared is not None:
+        return declared
     return _DEFAULT_MAX_CONCURRENT if host.max_concurrent is None else int(host.max_concurrent)
 
 
@@ -1058,6 +1077,8 @@ def _build_resident(host: "HostConfig", *, start_children: bool = True):
         # check_health が「止まっている子」を死亡とみなして起こしてしまう。
         _availability_tick(host, sup, status)
         sup.check_health()
+        # 枠は毎巡回で引き直す（agent-control は pull 型で、再起動を挟まず変わる）。
+        pool.set_max_concurrent(_effective_max_concurrent(host))
         pool.drain()   # 専用 tick を新設せず、既存の短周期 tick に相乗りさせる（設計に無い tick を増やさない）
         status.tick_counts["supervise"] = status.tick_counts.get("supervise", 0) + 1
         write_status()

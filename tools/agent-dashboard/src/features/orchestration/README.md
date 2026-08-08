@@ -24,7 +24,7 @@
 |---|---|---|
 | エージェント → 機能ごとのエージェントとモデル | `workloads.<wl>.agent_cli` / `model` / `agents` / `degraded` | 各エンジン（`routine` は dashboard 自身＝定常業務の tmux 起動） |
 | 実行制御 → 実行の許可・停止 | `workloads.<wl>.lifecycle` | 各エンジン |
-| 実行制御 → 同時に動かす数（自動実行） | `workloads.flow.concurrency`（`max_runs` / `workers`） | agent-flow |
+| 実行制御 → 同時に動かす数（自動実行） | `workloads.flow.concurrency`（`max_runs` / `workers`） | agent-flow / agent-project 常駐体（`max_runs` を自分のワーカープール枠として読む） |
 
 `concurrency` は「この PC で同時にどれだけ走らせてよいか」の宣言。**その端末の資源の話**なのに、
 設定の置き場（各プロジェクトの `agent-flow.yaml`）はプロジェクトごとに散っていて、1 台の負荷を

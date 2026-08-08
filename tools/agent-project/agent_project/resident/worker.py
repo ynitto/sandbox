@@ -103,6 +103,17 @@ class NodeWorkerPool:
             self._start(item)
             return True
 
+    def set_max_concurrent(self, max_concurrent: "int | None") -> None:
+        """上限を差し替える（`__init__` と同じ語彙: 0 / None = 上限なし）。
+
+        管理面（agent-control）の宣言は pull 型で、常駐体を再起動せずに変わる。板へ宣言する
+        値と手元の枠は同じ関数から出す約束なので、板 tick が新しい値を publish したのに
+        プールだけ起動時の値で走り続ける状態を作らない。空きが増える向きの変更は次の
+        `drain()` が拾う。"""
+        n = None if max_concurrent is None else int(max_concurrent)
+        with self._lock:
+            self._max = None if (n is None or n <= 0) else n
+
     def drain(self) -> int:
         """空きスロット分だけキューから拾って起動する。`resident.scheduler` の tick から
         定期的に呼ぶ想定。起動した件数を返す。"""

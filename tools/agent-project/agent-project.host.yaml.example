@@ -117,6 +117,10 @@ amigos_config: null
 # ——実行中の手番は ~/.agents/amigos/turns/*.json に印が出て、常駐体がそれを読む。
 # 板側の数え方は別（板の上の自分名義の非終端 status/ 件数）——枠の真実は板にあるので
 # 二重管理しない。
+#
+# 管理面（agent-dashboard の「全体設定 → 実行制御 → 同時に動かす数」）が
+# `~/.agents/control/control.json` の `workloads.flow.concurrency.max_runs` を宣言していると、
+# そちらが優先される（control > 設定ファイル）。画面で空欄にすればこの値へ戻る。
 budget:
   max_concurrent: 4
 

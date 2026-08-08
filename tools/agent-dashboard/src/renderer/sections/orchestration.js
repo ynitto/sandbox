@@ -554,7 +554,7 @@ function orchConcurrencyPanelHtml(overview) {
           value="${workers}" placeholder="プロジェクト設定に従う" />
       </label>
     </div>
-    <p class="field-help">「同時に進める仕事の数」は 0 で上限なしです。承認待ちで止まっている仕事は数えません。上限を超えた依頼は捨てられず、空きができた時点で順に始まります。</p>
+    <p class="field-help">「同時に進める仕事の数」は 0 で上限なしです。承認待ちで止まっている仕事は数えません。上限を超えた依頼は捨てられず、空きができた時点で順に始まります。agent-project が自動で回している PC でも、この値がその端末の実行枠になります（host.yaml の宣言より優先）。</p>
     <div class="settings-save-actions">
       <button type="button" id="btn-orch-conc-save" class="primary-inline"${state.orchSaving ? ' disabled' : ''}>保存</button>
     </div>

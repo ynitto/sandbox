@@ -437,6 +437,18 @@ class ResidentCliTests(unittest.TestCase):
         external.clear()                       # 外部の仕事が終われば空く
         self.assertEqual(pool.drain(), 1)
 
+    def test_pool_max_concurrent_can_be_raised_without_restart(self):
+        # agent-control は pull 型（dashboard の宣言は再起動を挟まず変わる）。枠を広げた分は
+        # 次の drain が拾い、板へ宣言した値と手元の枠が食い違ったままにならない。
+        hold = threading.Event()
+        self.addCleanup(hold.set)
+        pool = km.NodeWorkerPool(1)
+        self.assertTrue(pool.submit(km.WorkItem(id="flow/a", run=hold.wait)))
+        self.assertFalse(pool.submit(km.WorkItem(id="flow/b", run=hold.wait)))
+        self.assertEqual(pool.status()["queued"], 1)
+        pool.set_max_concurrent(0)             # 0 = 無制限（板の語彙）
+        self.assertEqual(pool.drain(), 1)
+
     def test_pool_skips_work_already_running_elsewhere(self):
         # 同じ (mission, role) を別プロセスが既に走らせているなら投入しない。積むと
         # 外部の完了後に二重実行になる（次の tick で外部が終わっていれば改めて投入される）。
@@ -1312,6 +1324,34 @@ class ResidentBoardTickTests(unittest.TestCase):
         self._tick(self._host(budget={"max_concurrent": 0}))
         rec = json.loads((self.board / "nodes" / "pc-a.json").read_text(encoding="utf-8"))
         self.assertEqual(rec["max_concurrent"], 0, "0 は無制限としてそのまま宣言する")
+
+    def _control(self, ctl):
+        """agent-control の宣言（dashboard が書く control.json）をこのテスト用に置く。"""
+        prev = os.environ["AGENT_CONTROL_DIR"]
+        os.environ["AGENT_CONTROL_DIR"] = str(self.tmp)
+        self.addCleanup(os.environ.__setitem__, "AGENT_CONTROL_DIR", prev)
+        (self.tmp / "control.json").write_text(json.dumps(ctl), encoding="utf-8")
+        km._CONTROL_CACHE["mtime"] = None
+        self.addCleanup(km._CONTROL_CACHE.__setitem__, "mtime", None)
+
+    def test_control_declaration_overrides_host_yaml(self):
+        """dashboard の「同時に動かす数」が agent-project 経由の agent-flow にも効く。
+        常駐一本化で agent-flow daemon が消えた後、本数を律速しているのはこの枠。"""
+        self._control({"workloads": {"flow": {"concurrency": {"max_runs": 2}}}})
+        self.assertEqual(km._effective_max_concurrent(self._host()), 2)
+        self.assertEqual(
+            km._effective_max_concurrent(self._host(budget={"max_concurrent": 8})), 2)
+        # 板へ宣言する値も同じ関数から出る（「板には 8 と言って手元は 2」を作らない）
+        self._tick(self._host(budget={"max_concurrent": 8}))
+        rec = json.loads((self.board / "nodes" / "pc-a.json").read_text(encoding="utf-8"))
+        self.assertEqual(rec["max_concurrent"], 2)
+
+    def test_control_broken_value_falls_back_to_host_yaml(self):
+        """GUI の入力ミス（負数・数値でない）で枠が壊れるより、上書きが効かない方が安い。"""
+        self._control({"workloads": {"flow": {"concurrency": {"max_runs": -1}}}})
+        self.assertEqual(km._effective_max_concurrent(self._host(budget={"max_concurrent": 3})), 3)
+        self._control({"workloads": {"flow": {"concurrency": {"max_runs": "たくさん"}}}})
+        self.assertEqual(km._effective_max_concurrent(self._host()), 4)
 
     def test_heartbeat_only_updates_are_rate_limited(self):
         # 30 秒 tick のたびに心拍を書き換えると板に無意味なコミットが積む。
