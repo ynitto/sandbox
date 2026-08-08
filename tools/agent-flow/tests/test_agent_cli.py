@@ -203,6 +203,7 @@ class AgentCliTests(unittest.TestCase):
         def fake_run(cmd, **kw):
             calls["cmd"] = list(cmd)
             calls["input"] = kw.get("input")
+            calls["cwd"] = kw.get("cwd")
             return types.SimpleNamespace(returncode=0, stdout="ok", stderr="")
         return calls, fake_run
 
@@ -216,6 +217,12 @@ class AgentCliTests(unittest.TestCase):
         self.assertIn("--model", calls["cmd"])
         self.assertEqual(calls["cmd"][-1], "プロンプト")   # 従来どおり argv 渡し
         self.assertIsNone(calls["input"])
+
+    def test_run_agent_uses_requested_cwd(self):
+        calls, fake = self._capture_run()
+        with mock.patch.object(kf.subprocess, "run", side_effect=fake):
+            kf.run_agent("プロンプト", None, cwd="/tmp/agent-flow-workspace")
+        self.assertEqual(calls["cwd"], "/tmp/agent-flow-workspace")
 
     def test_claude_uses_headless_stdin(self):
         calls, fake = self._capture_run()

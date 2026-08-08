@@ -1,6 +1,6 @@
 # docs/designs 設計書 索引
 
-`docs/designs/` 配下の設計書 22 件をカテゴリ別に整理し、読む順序を示す索引。
+`docs/designs/` 配下の設計書 23 件をカテゴリ別に整理し、読む順序を示す索引。
 
 ## まず読むもの — コンセプトと主要 4 設計
 
@@ -16,7 +16,7 @@
 
 ---
 
-## カテゴリ別索引（全 21 件）
+## カテゴリ別索引（全 22 件）
 
 ### 1. コンセプトと主要 4 設計
 
@@ -40,6 +40,7 @@
 | [`agent-cli-plugin-design.md`](./agent-cli-plugin-design.md) | エージェント CLI の呼び出しを「CLI × モード（ヘッドレス/対話）× 権限（書き込み可/読み取り専用）」のデータ契約 `agents/<name>.json` で差し替え可能にし（組み込み 4 CLI も定義ファイル化・Python ローダは agentcore に 1 実装）、失敗を quota/auth/env/transient で決定的にトリアージする設計。agent-project / agent-flow / agent-amigos / agent-dashboard が共通で使う。 |
 | [`agent-audit-design.md`](./agent-audit-design.md) | agent-project / agent-flow / agent-amigos / agent-loop の実行証跡とエージェント CLI 自身のセッションログを読み取り専用で収集・正規化し、トークン使用量の実測集計と知見・スキル改善点の蒸留を行う独立 CLI の設計正典。集計・相関・レポートは決定的（LLM 不使用）、LLM は extract（map・弱モデル可）/ distill（reduce）の 2 段に限定して段別にエージェント・モデルを選択できる。エンジン無改造・CLI 単独利用でも成立し、洞察は task.schema.json 形で agent-project の汎用 intake へ渡す。 |
 | [`agent-ollama-tool-disclosure-design.md`](./agent-ollama-tool-disclosure-design.md) | ローカル推論のバックアップ実行系 agent-ollama で、ツールを既定で無効にしている理由（`readonly: enforced` の真実性と読み込み時間の固定費）を記録し、「ツール 0 個」と「無制限シェル 1 個」の間に中間の権限段を入れる提案設計。初期ツールセットをスキルと同じ前処理で注入し、走行中の昇格は ContextTracker と同じ継ぎ目に挿す ToolPolicy が決定的に行う（判断は LLM に委ねない）。先頭キャッシュを壊さないための「追記のみ」が全体の不変条件。未実装。 |
+| [`agent-ollama-expansion-design.md`](./agent-ollama-expansion-design.md) | クラウド CLI の予算を節約するため、agent-ollama を「バックアップ」から「恒常の節約先」へ広げる提案設計。適用を阻む障害を 4 つ（JSON 出力の揺れ・ツール無しでファイルが読めない・エンジンが全呼び出しを write モードで投げる・work の文脈予算と品質）に集約し、設定のみの段 0 から `--format`（JSON 文法強制）+ think 反転、役割の readonly 宣言、read ツールセット、パッチモードまでを独立採用可能な 5 段で並べる。横断方針が 2 本——品質は時間で買い done は機械検証だけに置く（R3）、文脈は黙った切り捨ても繰り返し圧縮もさせず尽きたら止めてタスクを割る（R4）。ローカル→クラウドの自動品質昇格とクライアント側自動コンパクションは非目標。未実装。 |
 | [`git-gitlab-circuit-breaker-pattern.md`](./git-gitlab-circuit-breaker-pattern.md) | git/GitLab へアクセスする任意ツール向けの汎用サーキットブレーカー＋監視パターン。 |
 | [`git-worktree-cache-pattern.md`](./git-worktree-cache-pattern.md) | 同一 remote を繰り返し clone するツール向けに共有 bare ミラー＋使い捨て worktree へ置換する汎用パターン。 |
 | [`gitlab-agent-sns-design.md`](./gitlab-agent-sns-design.md) | GitLab Issue＋Moltbook リポジトリでエージェント向け SNS を構築する moltbook-use の確定版設計。 |
@@ -59,4 +60,4 @@
 
 ## 前提・スコープ外の事項
 
-本 README は `docs/designs/` 配下の実ファイル一覧（25 件、2026-07-27 に実在確認済み。2026-08-03 に `agent-audit-design.md` を追加し 26 件）を基準に作成した。2026-08-06 にループ拡張の 8 件を `agent-loop-design.md` へ統合・削除し、同日に追加された `agent-loop-slash-property-design.md` とあわせて実ファイル 21 件。2026-08-07 に `agent-ollama-tool-disclosure-design.md` を追加し実ファイル 22 件（索引掲載 21 件。索引外の 1 件は [`agent-tools-concept.md`](./agent-tools-concept.md) の補助資料 `agent-tools-business-improvement-prompt.md`）。
+本 README は `docs/designs/` 配下の実ファイル一覧（25 件、2026-07-27 に実在確認済み。2026-08-03 に `agent-audit-design.md` を追加し 26 件）を基準に作成した。2026-08-06 にループ拡張の 8 件を `agent-loop-design.md` へ統合・削除し、同日に追加された `agent-loop-slash-property-design.md` とあわせて実ファイル 21 件。2026-08-07 に `agent-ollama-tool-disclosure-design.md` を、2026-08-08 に `agent-ollama-expansion-design.md` を追加し実ファイル 23 件（索引掲載 22 件。索引外の 1 件は [`agent-tools-concept.md`](./agent-tools-concept.md) の補助資料 `agent-tools-business-improvement-prompt.md`）。

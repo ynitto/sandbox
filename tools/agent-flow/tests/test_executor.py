@@ -907,6 +907,18 @@ class CallExecutorDispatchTests(unittest.TestCase):
         self.assertIn("タスク(work): ログイン追加", captured["prompt"])
         self.assertIn(self.INSTR, captured["prompt"])
 
+    def test_execute_agent_runs_in_workspace_root(self):
+        captured = {}
+
+        def fake_run_agent(prompt, model, purpose="", cwd=None):
+            captured["cwd"] = cwd
+            return "成果"
+
+        with mock.patch.object(kf, "run_agent", side_effect=fake_run_agent):
+            kf.execute_agent("work", "実装", {}, None,
+                             workspace={"clone": "/tmp/agent-flow-workspace"})
+        self.assertEqual(captured["cwd"], "/tmp/agent-flow-workspace")
+
     def test_deps_data_is_injected_as_compact_json_by_default(self):
         """案 K-1（docs/plans/2026-08-05-json-prompt-compression-study.md）: deps の構造化 data
         は既定でも indent 無し・区切り最小の compact JSON（内容は不変）。"""

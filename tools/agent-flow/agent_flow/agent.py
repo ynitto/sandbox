@@ -573,7 +573,7 @@ def _agent_failure(cli: str, rc: int, out: str, err: str) -> str:
     return f"{head}\n{tail[-500:]}" if tail else head
 
 
-def run_agent(prompt: str, model: str | None, purpose: str = "") -> str:
+def run_agent(prompt: str, model: str | None, purpose: str = "", cwd: "str | None" = None) -> str:
     """エージェント CLI を呼び出してテキスト応答を返す（このツールの全 LLM 呼び出しの単一チョーク
     ポイント: planner / evaluator / executor / verify / 裁定）。
 
@@ -609,7 +609,7 @@ def run_agent(prompt: str, model: str | None, purpose: str = "") -> str:
     for attempt in range(max(0, _TRANSIENT_RETRIES) + 1):
         try:
             t0 = time.monotonic()
-            text = _run_agent_once(prompt, model, purpose)
+            text = _run_agent_once(prompt, model, purpose, cwd)
             _node_budget_record(time.monotonic() - t0, ref=purpose or "worker",
                                 agent_cli=cli_used, model=model_used or "",
                                 tokens_in=getattr(text, "tokens_in", None),
@@ -630,7 +630,8 @@ def run_agent(prompt: str, model: str | None, purpose: str = "") -> str:
     raise last if last else RuntimeError("run_agent: unreachable")  # pragma: no cover
 
 
-def _run_agent_once(prompt: str, model: str | None, purpose: str = "") -> str:
+def _run_agent_once(prompt: str, model: str | None, purpose: str = "",
+                    cwd: "str | None" = None) -> str:
     """エージェント CLI（設定 agent_cli: kiro/claude/copilot/codex）を 1 回呼び出してテキスト応答を返す。
     purpose（planner / evaluator / ノード kind）を渡すと設定 agents: の役割毎上書きが効く
     （kind は agents["worker"] へフォールバック）。model は 上書き ＞ 呼び出し値。"""
@@ -656,7 +657,7 @@ def _run_agent_once(prompt: str, model: str | None, purpose: str = "") -> str:
     env = {**os.environ, "NO_COLOR": "1", "TERM": "dumb", **(plug.get("env") or {})}
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", input=stdin_text,
-                              timeout=plug.get("timeout") or _agent_timeout(), env=env)
+                              timeout=plug.get("timeout") or _agent_timeout(), env=env, cwd=cwd)
     except subprocess.TimeoutExpired:
         # 失敗として上位へ。ハングは一時的な公算が高いので transient タグを明示付与し、
         # レイヤ1（in-place 再試行）の対象にする（従来は日本語文言が英語の transient パターンに
@@ -903,7 +904,10 @@ def execute_agent(kind: str, goal: str, dep_results: dict, model: str | None,
     # （マーカー検出で）二重注入しない＝新旧どちらのスキルでも 1 回だけ効く（組み込み fallback でも同様）。
     prompt = _promptcompose.compose([context], [prompt])
     prompt = prepend_instructions(prompt, instructions)
-    text = run_agent(prompt, model, purpose=kind)   # agents: の kind 別上書き（無ければ worker）
+    if workspace and workspace.get("clone"):
+        text = run_agent(prompt, model, purpose=kind, cwd=str(workspace["clone"]))
+    else:
+        text = run_agent(prompt, model, purpose=kind)   # agents: の kind 別上書き（無ければ worker）
     # 構造化データを意図する kind のみ JSON を抽出（自由記述の本文から JSON 風断片を
     # data に誤昇格させない）。
     data = None
