@@ -1,21 +1,14 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "Node Budget Summary",
-  "description": "Additive schema for node budget summary embedded in status/<node>.json. Reader compatibility is guaranteed by optional unknown keys.",
-  "type": "object",
+  "description": "Additive budget schema for node status JSON. Optional field, backward compatible.",
+  "type": ["object", "null"],
   "properties": {
-    "budget_summary": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "cpu_utilization_percent": {"type": "number"},
-        "memory_usage_mb": {"type": "integer"},
-        "io_read_throughput_mbps": {"type": "number"},
-        "network_lat_ms_p99": {"type": "number"}
-      },
-      "required": []
+    "budget": {
+      "$comment": "Optional budget block - additive extension only",
+      "if": {},
+      "then": {}
     }
   },
-  "additionalProperties": true,
-  "$comment": "Compatibility: reader treats this block as optional; additional top-level keys are ignored"
+  "additionalProperties": false
 }
