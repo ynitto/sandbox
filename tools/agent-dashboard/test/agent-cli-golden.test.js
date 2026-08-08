@@ -52,9 +52,22 @@ const GOLDEN = {
   },
   ollama: {
     // --tools は write のときだけ生える（readonly は素の text→text のまま）。
-    write: ['agent-ollama', '--think', 'off', 'M', '--tools'],
-    readonly: ['agent-ollama', '--think', 'off', 'M'],
-    interactive: ['agent-ollama', '--tui', '--think', 'off', 'M'],
+    // 予算（--max-rounds / --command-timeout）は「品質を時間で買う」側へ倒した既定。
+    write: ['agent-ollama', '--think', 'on', 'M', '--tools', 'bash',
+            '--max-rounds', '30', '--command-timeout', '900'],
+    readonly: ['agent-ollama', '--think', 'on', 'M'],
+    interactive: ['agent-ollama', '--tui', '--think', 'on', 'M'],
+  },
+  'ollama-json': {
+    // JSON 契約の役割用（--format json で文法から強制する。道具は持たせない）。
+    write: ['agent-ollama', '--think', 'on', '--format', 'json', 'M'],
+    readonly: ['agent-ollama', '--think', 'on', '--format', 'json', 'M'],
+  },
+  'ollama-read': {
+    // 探索が要る readonly 役割用（write 経路に read セットを載せ、権限はゲートが絞る）。
+    write: ['agent-ollama', '--think', 'on', 'M', '--tools', 'read',
+            '--max-rounds', '30', '--command-timeout', '900'],
+    readonly: ['agent-ollama', '--think', 'on', 'M'],
   },
   opencode: {
     write: ['agent-opencode', '--auto', '--model', 'M'],
@@ -69,7 +82,9 @@ test('同梱定義から出る argv が Python ローダと一致する', () => 
     assert.deepStrictEqual(agentCli.headlessCmd(spec, 'M', 'P').argv, want.write, name);
     assert.deepStrictEqual(agentCli.headlessCmd(spec, 'M', 'P', { readonly: true }).argv,
                            want.readonly, name);
-    assert.deepStrictEqual(agentCli.interactiveCmd(spec, 'M'), want.interactive, name);
+    if (want.interactive) {
+      assert.deepStrictEqual(agentCli.interactiveCmd(spec, 'M'), want.interactive, name);
+    }
   }
 });
 

@@ -32,6 +32,14 @@ class SkillNotFound(Exception):
     """明示指定（`--skill`）されたスキルが見つからない。env 分類で人に直させる。"""
 
 
+class SkillToolsetMismatch(Exception):
+    """同梱スクリプト前提のスキルを、汎用シェルの無いツールセットで使おうとした。
+
+    黙って続けると「スキルは読まれたのに手順が実行されない」＝成功に見える失敗になる。
+    `SkillNotFound` と同じく env 分類で人に直させる（ツール開示設計 §6.1）。
+    """
+
+
 def skill_dirs() -> "list[Path]":
     """探索順。`install.py` の配布先をそのまま読むので、配布経路は既存のまま変わらない。
 
@@ -104,15 +112,18 @@ def split_leading_slashes(prompt: str) -> "tuple[list[tuple[str, str]], str]":
     return calls, "\n".join(lines[index:]).lstrip("\n")
 
 
-def _render(name: str, path: Path, args: str) -> str:
+def _render(name: str, path: Path, args: str) -> "tuple[str, bool]":
+    """スキル本文を組み立てて (本文, 同梱スクリプト前提か) を返す。"""
     body = strip_frontmatter(path.read_text(encoding="utf-8", errors="replace"))
     # {skill_dir} は SKILL.md 側が同梱スクリプトを指すための置換点。ツール実行モード
-    # （--tools）では、この実パスを使って scripts/ をそのまま叩ける。
+    # （--tools）では、この実パスを使って scripts/ をそのまま叩ける。裏を返せば
+    # **汎用シェルを持たないツールセットでは動かない**ので、置換点の有無を呼び出し側へ返す。
+    scripts = "{skill_dir}" in body
     body = body.replace("{skill_dir}", str(path.parent))
     head = f"# スキル: {name}"
     if args:
         head += f"（引数: {args}）"
-    return f"{head}\n\n{body}"
+    return f"{head}\n\n{body}", scripts
 
 
 def expand(prompt: str, explicit=(), *, enabled: bool = True, warn=None) -> "tuple[str, list[dict]]":
@@ -153,9 +164,10 @@ def expand(prompt: str, explicit=(), *, enabled: bool = True, warn=None) -> "tup
         if name in seen:
             continue
         seen.add(name)
-        block = _render(name, path, args)
+        block, scripts = _render(name, path, args)
         blocks.append(block)
-        loaded.append({"name": name, "path": str(path), "chars": len(block)})
+        loaded.append({"name": name, "path": str(path), "chars": len(block),
+                       "scripts": scripts})
 
     if not blocks:
         return prompt, []

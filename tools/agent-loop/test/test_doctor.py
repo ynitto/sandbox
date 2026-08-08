@@ -1,4 +1,5 @@
 import json
+import io
 import os
 import sys
 import tempfile
@@ -91,13 +92,16 @@ class DoctorTests(unittest.TestCase):
 
     def test_cmd_doctor_json_output(self):
         args = mock.Mock(json=True, fix=False)
+        output = io.StringIO()
         with mock.patch.object(al, "load_config", return_value=({}, Path("/tmp/x.yaml"), False)), \
              mock.patch.object(al, "run_doctor_checks", return_value=[
                  {"id": "test", "severity": "info", "evidence": "ok", "fixable": False},
              ]), \
-             mock.patch("sys.stdout") as stdout:
+             mock.patch("sys.stdout", output):
             al.cmd_doctor(args)
-        stdout.write.assert_called()
+        self.assertEqual(json.loads(output.getvalue()), {"findings": [
+            {"id": "test", "severity": "info", "evidence": "ok", "fixable": False},
+        ]})
 
     def test_cmd_doctor_exits_on_error(self):
         args = mock.Mock(json=False, fix=False)

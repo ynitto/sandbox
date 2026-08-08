@@ -82,6 +82,7 @@ chat モードのように、人が `/skill-name` と書いたテキストを送
 |---|---|
 | `ready_pattern` | 「入力を受け付けている」を検出する ERE（末尾行に適用）。省略時は組み込みの既定（素のプロンプト記号） |
 | `busy_pattern` | 「処理中」を正に検出する ERE（可視画面全体に適用・大文字小文字無視）。**入力欄を出したまま処理する TUI**（claude の `(esc to interrupt)` 等）では ready の消失が起きないため、これが判定の正になる |
+| `failure_pattern` | `agent-loop send --wait`が明示的失敗とみなすERE。省略時はpane/process終了以外を推測しない |
 | `idle_quiet_sec` | どちらのパターンでも判定できない CLI 向けの静穏判定。画面が N 秒変化しなければ待機とみなす（0 = 無効） |
 | `clear_command` | コンテキスト破棄コマンド（既定 `/clear`、codex は `/new`）。空文字は「クリア手段なし」の宣言 |
 

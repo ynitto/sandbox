@@ -60,8 +60,10 @@ cd tools/agent-tools/agentcore && python3 -m unittest discover -s tests
 示せること」を要件にしている。**
 
 ```bash
-echo '要件を3行で要約して' | agent-ollama --think off qwen3          # 単発（ツールなし）
-echo 'README の誤字を直して' | agent-ollama --think off qwen3 --tools # 実行ループ（bash 1 つ）
+echo '要件を3行で要約して' | agent-ollama qwen3                      # 単発（ツールなし）
+echo 'この JSON 契約で答えて' | agent-ollama --format json qwen3      # 文法から JSON を強制
+echo 'README の誤字を直して' | agent-ollama qwen3 --tools             # 実行ループ（bash 1 つ）
+echo 'この repo の構成を調べて' | agent-ollama qwen3 --tools read      # 読み取り専用の探索ループ
 agent-ollama --tui qwen3            # デバッグ用の対話ビュー（tmux から操作できる）
 agent-ollama --follow               # 走っている実行のログへ後からアタッチする
 agent-ollama --status               # いまの進捗を 1 行 JSON で返す（外部監視向け）
@@ -71,11 +73,34 @@ agent-ollama --context qwen3        # 文脈の上限だけを調べる（LLM �
 | モード | 契約上の位置 | 何ができるか |
 |---|---|---|
 | 既定 | `readonly: enforced` | text → text のみ。ファイルもコマンドも触れない |
-| `--tools` | `write_args` | bash 1 つを道具にした最小ループ |
+| `--tools`（= `--tools bash`） | `write_args` | bash 1 つを道具にした最小ループ。制限なし |
+| `--tools read` | `write_args` | 読み取り専用コマンドだけの探索ループ（下記） |
 | `--tui` | `interactive` | 進捗を見ながら手で叩く（agent-dashboard の対話診断・agent-loop から） |
 
 ツールとループが `--tools`（書き込みモード）でだけ生えるのが要点。読み取り専用モードには
 道具が 1 つも無いので、`readonly: enforced` の宣言が嘘にならない。
+
+### ツールセット — 「道具ゼロ」と「無制限のシェル」の間の段
+
+`--tools read` は探索はできるが何も壊せない段である。**強制はモデルの自己申告ではなく
+実行の手前のゲート**で行う（`ollama_loop.check_command`）:
+
+- 語彙は読み取り系コマンドと git の読み取り部分コマンドだけ。`sed -i` / `tee` / `python`
+  のように自前の書き込み手段を持つものは入れない
+- 引用の外のシェル記号（`|` `>` `$` `` ` `` `*` 等）は拒否する。実行も `bash -lc` を
+  介さず argv を直接渡すので、**メタ文字はそもそも解釈されない**（二段構え）
+- 拒否は実行せずに理由をモデルへ返し、続けて 3 回目で `tool_denied` として止める
+  （権限の探りだけでラウンド予算を焼き切らせない）
+- **同梱スクリプトを叩く前提のスキル**（本文に `{skill_dir}` を持つもの）は read セットで
+  動かないので、黙って続けず env 分類で落とす
+
+役割別の割り当ては定義ファイルで行う（エンジン改修は不要）:
+
+| 定義 | 使いどころ |
+|---|---|
+| `ollama` | 汎用。単発 text→text（readonly）/ bash ループ（write） |
+| `ollama-json` | JSON 契約の役割（planner / evaluator / plan など）。`--format json` で文法から強制 |
+| `ollama-read` | 探索が要る読み取り役割。write 経路に read セットを載せ、権限はゲートが絞る |
 
 ### 「遅い」と「死んだ」を区別する
 
@@ -130,8 +155,14 @@ R2/12 decode 経過 4m12s  out=210tk  ctx 4.2k/8.2k (51%)      ← TUI のステ
 
 - **`--think on|off`** は CLI オプション（API の `think` フィールドへ直結）。既定は
   `AGENT_OLLAMA_THINK` → モデル既定。プロンプトへ `/no_think` を混ぜる方式は採らない
-  （モデル依存で、成果物本文へ漏れる事故がある）。`agents/ollama.json` は `--think off` を
-  焼き込んであるので、エンジン側は何も知らなくてよい。
+  （モデル依存で、成果物本文へ漏れる事故がある）。`agents/ollama.json` は `--think on` を
+  焼き込んであるので、エンジン側は何も知らなくてよい。**思考は API の `thinking`
+  フィールドで本文と分離済み**なので、有効でも成果物は汚れない。decode 時間は伸びる
+  ——ここは「品質を時間で買う」側に倒した既定である（think 非対応モデルで困ったら
+  定義ファイルで `off` へ戻せる）。
+- **`--format json`** は**デコード時の文法制約**で、プロンプトを 1 トークンも増やさない。
+  JSON 契約の役割で「妥当な JSON でない出力」という故障モードが消える。全出力が JSON に
+  なるので、人が読む本文が成果の役割には使わない。
 - **スキルは明示したものだけを遅延で読む**。`--skill <名前>`（プログラム経路）と、
   プロンプト**先頭ブロックのスラッシュ行** `/<名前> [引数]`（人手経路）の 2 形態だけに
   反応する。カタログは LLM へ見せないので、**使わないときの追加コストは 0**。

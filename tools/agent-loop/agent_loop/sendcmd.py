@@ -380,7 +380,7 @@ def _resolve_send_entry_id(prompt_arg: str, prompt_text: str, target: str, cwd: 
     return target, prompt_text
 
 
-def _wait_for_send_completion(
+def _wait_for_pane_completion(
     pane_id: str,
     *,
     response_timeout: float,
@@ -418,14 +418,68 @@ def _wait_for_send_completion(
     return 2
 
 
+def _wait_for_send_completion(
+    request_id: str,
+    *,
+    response_timeout: float,
+    failure_pattern: str | None,
+    base_dir: Path | None = None,
+) -> int:
+    """自分のrequest状態だけを待つ。0=完了、1=失敗、2=timeout。"""
+    deadline = time.time() + max(response_timeout, 1.0)
+    fail_re = None
+    if failure_pattern:
+        try:
+            fail_re = re.compile(failure_pattern, re.IGNORECASE | re.MULTILINE)
+        except re.error:
+            pass
+
+    while time.time() < deadline:
+        response = read_send_response(request_id, base_dir)
+        if response is None:
+            time.sleep(0.2)
+            continue
+        status = str(response.get("status", ""))
+        pane_id = str(response.get("pane_id") or "")
+        if status == "failed":
+            remove_send_response(request_id, base_dir)
+            return 1
+        if status == "completed":
+            remove_send_response(request_id, base_dir)
+            return 0
+        if status == "processing" and pane_id:
+            if fail_re is not None and fail_re.search(_capture_pane(pane_id)):
+                remove_send_response(request_id, base_dir)
+                return 1
+            alive = _tmux_cmd("display-message", "-p", "-t", pane_id, "#{pane_id}")
+            if alive.returncode != 0:
+                remove_send_response(request_id, base_dir)
+                return 1
+        time.sleep(0.2)
+
+    remove_send_response(request_id, base_dir)
+    print(f"[agent-loop] ERROR: response_timeout ({int(response_timeout)}秒) を超過しました", file=sys.stderr)
+    return 2
+
+
 def cmd_send(args: argparse.Namespace, cwd: Path) -> None:
-    """プロンプトを永続 send-request キューへ投入する（daemon が配送）。"""
+    """daemon稼働時はqueue、非稼働時は従来どおり直接送信する。"""
     try:
         send_config, _, _ = load_config(cwd)
     except Exception:
         send_config = {}
-    # 待機判定用にプロファイルを初期化（--wait 時）
-    _init_cli_profile_from_config(send_config, project_dir=cwd, strict=False)
+    profile = _init_cli_profile_from_config(send_config, project_dir=cwd, strict=False)
+    if profile is not None and profile.argv:
+        cli_argv = list(profile.argv)
+        if shutil.which(cli_argv[0]) is None:
+            print(f"[agent-loop] ERROR: エージェント CLI '{cli_argv[0]}' が PATH に見つかりません。", file=sys.stderr)
+            sys.exit(1)
+    else:
+        kiro_bin = shutil.which("kiro-cli")
+        if kiro_bin is None:
+            print("[agent-loop] ERROR: kiro-cli が PATH に見つかりません。", file=sys.stderr)
+            sys.exit(1)
+        cli_argv = [kiro_bin, "chat", "--trust-all-tools"]
 
     prompt_arg = " ".join(args.prompt).strip()
     if not prompt_arg:
@@ -464,42 +518,31 @@ def cmd_send(args: argparse.Namespace, cwd: Path) -> None:
             sys.exit(1)
 
     prompt_text = _resolve_prompt_text(prompt_arg, cwd)
-    entry_id, prompt_text = _resolve_send_entry_id(prompt_arg, prompt_text, target, cwd)
+    daemon_pid = _find_running_daemon(cwd)
+
+    if str(target).startswith("%"):
+        if _tmux_cmd("display-message", "-p", "-t", str(target), "#{pane_id}").returncode != 0:
+            print(f"[agent-loop] ERROR: ペイン '{target}' が見つかりません。", file=sys.stderr)
+            sys.exit(1)
+        send_target = str(target)
+    elif _session_name_exists(str(target)):
+        send_target = _find_kiro_pane_in_session(str(target))
+        if send_target is None:
+            print(f"[agent-loop] ERROR: セッション '{target}' にエージェントCLIペインが見つかりません。", file=sys.stderr)
+            sys.exit(1)
+    else:
+        if not ensure_cli_session(str(target), work_dir, cli_argv):
+            sys.exit(1)
+        send_target = _resolve_target_pane(str(target))
+        if send_target is None:
+            print(f"[agent-loop] ERROR: エージェントCLIペインが見つかりません (session={target})。", file=sys.stderr)
+            sys.exit(1)
+
+    entry_id, prompt_text = _resolve_send_entry_id(prompt_arg, prompt_text, send_target, cwd)
     priority = str(getattr(args, "priority", None) or "normal")
     if priority not in ("high", "normal", "low"):
         print(f"[agent-loop] ERROR: --priority は high|normal|low です: {priority}", file=sys.stderr)
         sys.exit(1)
-
-    # CLI 側 debounce（同一 entry+prompt が直近 3 秒）
-    dedupe = _dedupe_key(entry_id, prompt_text)
-    if not hasattr(cmd_send, "_debouncer"):
-        cmd_send._debouncer = RequestDebouncer()  # type: ignore[attr-defined]
-    if cmd_send._debouncer.is_duplicate(dedupe):  # type: ignore[attr-defined]
-        print("[agent-loop] 同一内容の送信要求を debounce しました（受付済み扱い）", file=sys.stderr)
-        sys.exit(0)
-
-    req = write_send_request(
-        entry_id=entry_id,
-        prompt=prompt_text,
-        cwd=str(work_dir) if work_dir else None,
-        priority=priority,
-        meta={"target": target, "workspace": str(cwd.resolve())},
-    )
-    print(
-        f"[agent-loop] 送信要求を受け付けました (request_id={req['id']} entry_id={entry_id} priority={priority})",
-        file=sys.stderr,
-    )
-
-    if not getattr(args, "wait", False):
-        sys.exit(0)
-
-    # --wait: 対象ペインの busy→ready
-    pane_id = _resolve_target_pane(target) if not str(target).startswith("%") else str(target)
-    if pane_id is None and str(target).startswith("%"):
-        pane_id = str(target)
-    if pane_id is None:
-        # セッション名のまま待つ
-        pane_id = str(target)
 
     response_timeout = float(
         getattr(args, "response_timeout", None)
@@ -511,13 +554,60 @@ def cmd_send(args: argparse.Namespace, cwd: Path) -> None:
     if profile is not None:
         failure_pattern = getattr(profile, "failure_pattern", None)
 
-    # キュー受付直後はまだ ready のままなので、busy 遷移を待つ
-    code = _wait_for_send_completion(
-        pane_id,
+    if daemon_pid is None:
+        if _pane_is_busy(send_target) or not _pane_has_prompt(_capture_pane(send_target)):
+            print(f"[agent-loop] ERROR: ペイン {send_target} は現在処理中です。", file=sys.stderr)
+            sys.exit(1)
+        if not _try_acquire_slot_for_send(send_target):
+            print("[agent-loop] ERROR: 同時実行数が上限に達しています。", file=sys.stderr)
+            sys.exit(1)
+        if not send_prompt_to_session(send_target, prompt_text):
+            sys.exit(1)
+        if getattr(args, "wait", False):
+            sys.exit(_wait_for_pane_completion(
+                send_target,
+                response_timeout=response_timeout,
+                failure_pattern=failure_pattern if isinstance(failure_pattern, str) else None,
+            ))
+        return
+
+    wait = bool(getattr(args, "wait", False))
+    request_id = uuid.uuid4().hex
+    if wait:
+        try:
+            write_send_response(request_id, "queued")
+        except OSError as exc:
+            print(f"[agent-loop] ERROR: 完了待ち状態の作成に失敗しました: {exc}", file=sys.stderr)
+            sys.exit(1)
+    try:
+        req = write_send_request(
+            entry_id=entry_id,
+            prompt=prompt_text,
+            cwd=str(work_dir) if work_dir else None,
+            priority=priority,
+            request_id=request_id,
+            meta={
+                "target": send_target,
+                "workspace": str(cwd.resolve()),
+                "wait": wait,
+            },
+        )
+    except Exception as exc:
+        remove_send_response(request_id)
+        print(f"[agent-loop] ERROR: 送信要求の保存に失敗しました: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    print(
+        f"[agent-loop] 送信要求を受け付けました (request_id={req['id']} entry_id={entry_id} priority={priority})",
+        file=sys.stderr,
+    )
+    if not wait:
+        return
+    sys.exit(_wait_for_send_completion(
+        request_id,
         response_timeout=response_timeout,
         failure_pattern=failure_pattern if isinstance(failure_pattern, str) else None,
-    )
-    sys.exit(code)
+    ))
 
 
 def cmd_msg(args: argparse.Namespace) -> None:
@@ -594,5 +684,3 @@ def cmd_agents() -> None:
         processed_dir = inbox / ".processed"
         processed = len(list(processed_dir.glob("*.json"))) if processed_dir.exists() else 0
         print(f"  {agent_dir.name}  (inbox: {pending} pending, {processed} processed)")
-
-

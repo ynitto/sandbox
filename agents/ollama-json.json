@@ -1,20 +1,13 @@
 {
-  "name": "ollama",
-  "command": ["agent-ollama", "--think", "on", "{model}"],
+  "name": "ollama-json",
+  "command": ["agent-ollama", "--think", "on", "--format", "json", "{model}"],
   "prompt_via": "stdin",
   "default_model": "qwen3",
   "output": "stdout",
   "empty_output_is_error": true,
-  "write_args": ["--tools", "bash", "--max-rounds", "30", "--command-timeout", "900"],
+  "write_args": [],
   "readonly_args": [],
   "readonly": "enforced",
-  "interactive": {
-    "command": ["agent-ollama", "--tui", "--think", "on", "{model}"],
-    "ready_pattern": "^[[:space:]]*>[[:space:]]*$",
-    "busy_pattern": "経過 [0-9]",
-    "clear_command": "",
-    "prompt_inject": "send-keys"
-  },
   "errors": [
     { "match": "could not connect|connection refused|ollama に接続できません",
       "class": "env", "hint": "ollama サーバが起動していません（ollama serve を起動してください）" },
@@ -23,9 +16,6 @@
     { "match": "スキルが見つかりません",
       "class": "env",
       "hint": "スキルが配布されていません（python install.py --agent claude --all-skills 等で配布してください）" },
-    { "match": "スキルと --tools セットが噛み合いません",
-      "class": "env",
-      "hint": "同梱スクリプトを使うスキルは read セットでは動きません（--tools bash の定義で振るか、スキル指定を外してください）" },
     { "match": "context_exhausted|文脈が不足",
       "class": "env",
       "hint": "文脈上限に達しました。タスクを小さく割るか、AGENT_OLLAMA_OPTIONS の num_ctx を引き上げてください" },

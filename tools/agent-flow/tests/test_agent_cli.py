@@ -490,6 +490,34 @@ class AgentOverrideTests(unittest.TestCase):
         self.assertEqual(cmd2[0], "kiro-cli")                    # 未指定はグローバル
         self.assertIn("global-model", cmd2)
 
+    def test_readonly_is_declared_per_role(self):
+        """権限は役割の性質で決まる。kind は worker へフォールバックし、既定は write。"""
+        kf._AGENT_OVERRIDES = kf._normalize_agent_overrides({
+            "planner": {"agent_cli": "claude", "readonly": True},
+            "worker": {"readonly": True},
+            "work": {"readonly": False},            # kind の明示が worker より優先
+            "evaluator": {"readonly": "yes"}})      # bool 以外は落とす
+        self.assertTrue(kf._agent_readonly("planner"))
+        self.assertTrue(kf._agent_readonly("judge"))     # kind → worker の宣言を継ぐ
+        self.assertFalse(kf._agent_readonly("work"))
+        self.assertFalse(kf._agent_readonly("evaluator"))
+
+    def test_readonly_role_drops_the_write_args(self):
+        """受け入れ基準: readonly 宣言した役割の argv に write_args が乗らない。"""
+        kf._AGENT_CLI = "claude"
+        kf._AGENT_OVERRIDES = {"planner": {"readonly": True}}
+        calls = []
+
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+            return types.SimpleNamespace(returncode=0, stdout="ok", stderr="")
+
+        with mock.patch.object(kf.subprocess, "run", side_effect=fake_run):
+            kf.run_agent("プロンプト", None, purpose="planner")
+            kf.run_agent("プロンプト", None, purpose="work")
+        self.assertNotIn("--dangerously-skip-permissions", calls[0])
+        self.assertIn("--dangerously-skip-permissions", calls[1])
+
 
 class TestAgentPluginAndTriage(unittest.TestCase):
     """エージェント CLI プラグイン（agents/<name>.json）と失敗トリアージ。

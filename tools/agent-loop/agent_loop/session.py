@@ -553,15 +553,8 @@ class SessionManager:
         with self._lock:
             return pane_id in self._panes.values()
 
-    def _resolve_prompt_id_for_pane(self, pane_id: str) -> str | None:
-        with self._lock:
-            for prompt_id, managed in self._panes.items():
-                if managed == pane_id:
-                    return prompt_id
-        return None
-
     @staticmethod
-    def _get_pane_pid(pane_id: str) -> int | None:
+    def get_pane_pid(pane_id: str) -> int | None:
         """tmux からペインの shell PID を取得する。"""
         result = _tmux_cmd("display-message", "-p", "-t", pane_id, "#{pane_pid}")
         if result.returncode != 0:
@@ -628,7 +621,7 @@ class SessionManager:
             log.warning("kill_process_tree: 管理外ペイン %s をスキップします。", pane_id)
             return
 
-        root_pid = self._get_pane_pid(pane_id)
+        root_pid = self.get_pane_pid(pane_id)
         if root_pid is None:
             log.warning("kill_process_tree: PID 解決失敗 (pane=%s)。kill-pane のみ実行します。", pane_id)
         else:

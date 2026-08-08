@@ -87,6 +87,31 @@ class HookHardeningTests(unittest.TestCase):
             # 隔離中は再実行しない
             self.assertIsNone(s._call_hook_check(entry))
 
+    def test_timeout_does_not_stop_other_entries(self):
+        s = _base_scheduler()
+        s._pending = []
+        s._draining = False
+        s._debouncer = al.RequestDebouncer()
+        s._update_entry = mock.Mock()
+        s._next_run_at_for_entry = mock.Mock(return_value=999)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_hook(tmp, '''
+                import time
+                def check():
+                    time.sleep(1)
+                    return "late"
+            ''')
+            s._entries = [
+                {"id": "slow", "name": "slow", "prompt": "", "event_hook": str(path),
+                 "next_run_at": 0, "scheduled": True, "enabled": True},
+                {"id": "normal", "name": "normal", "prompt": "ok", "event_hook": None,
+                 "next_run_at": 0, "scheduled": True, "enabled": True},
+            ]
+            with mock.patch.object(al, "_HOOK_TIMEOUT_SEC", 0.01):
+                s._fire_due_schedules(1)
+
+        self.assertEqual([req["entry_id"] for req in s._pending], ["normal"])
+
     def test_ack_only_on_success(self):
         s = _base_scheduler()
         s._session_mgr = types.SimpleNamespace(
@@ -112,11 +137,13 @@ class HookHardeningTests(unittest.TestCase):
 
         req = al.make_dispatch_request(source="hook", entry_id="p1", prompt="x")
         s._dispatch_prompt = mock.Mock(return_value=False)
-        self.assertEqual(s._try_dispatch_request(req), "defer")
+        with mock.patch.object(al, "_capture_pane", return_value="> "):
+            self.assertEqual(s._try_dispatch_request(req), "defer")
         s._call_hook_ack.assert_not_called()
 
         s._dispatch_prompt = mock.Mock(return_value=True)
-        self.assertEqual(s._try_dispatch_request(req), "done")
+        with mock.patch.object(al, "_capture_pane", return_value="> "):
+            self.assertEqual(s._try_dispatch_request(req), "done")
         s._call_hook_ack.assert_called_once()
 
 

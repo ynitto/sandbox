@@ -18,6 +18,7 @@ class DispatchQueueTests(unittest.TestCase):
         s._pending = []
         s._debouncer = al.RequestDebouncer(window_seconds=3.0)
         s._draining = False
+        s._workspace = "/workspace/a"
         return s
 
     def test_priority_high_before_normal(self):
@@ -77,6 +78,33 @@ class DispatchQueueTests(unittest.TestCase):
             al.remove_send_request_file(loaded[0])
             self.assertEqual(list(root.glob("*.json")), [])
             self.assertEqual(len(s._pending), 1)
+
+    def test_send_request_claim_is_atomic(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            al.write_send_request(entry_id="e", prompt="hello", base_dir=root)
+            first = al.load_send_requests(base_dir=root)[0]
+            second = al.load_send_requests(base_dir=root)[0]
+
+            self.assertTrue(al.claim_send_request(first, "daemon-1"))
+            self.assertFalse(al.claim_send_request(second, "daemon-2"))
+
+    def test_other_workspace_request_is_not_consumed(self):
+        s = self._sched()
+        req = al.make_dispatch_request(
+            source="send",
+            entry_id="e",
+            prompt="hello",
+            meta={"workspace": "/workspace/b", "_path": "/tmp/request.json"},
+        )
+        with mock.patch.object(al, "load_send_requests", return_value=[req]), \
+             mock.patch.object(al, "claim_send_request") as claim, \
+             mock.patch.object(al, "remove_send_request_file") as remove:
+            s._drain_send_requests()
+
+        claim.assert_not_called()
+        remove.assert_not_called()
+        self.assertEqual(s._pending, [])
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@ import os
 import sys
 import types
 import unittest
+import collections
 from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -65,6 +66,21 @@ class TransactionalReloadTests(unittest.TestCase):
         s._reload_entries = None
         self.assertEqual(s._entries[0]["prompt"], "new")
         self.assertEqual(s._entries[0]["next_run_at"], 42.0)
+
+    def test_same_id_keeps_webhook_queue_when_name_changes(self):
+        s = self._sched([
+            {"name": "old", "prompt": "p", "interval_minutes": 10,
+             "id": "id-a", "enabled": True, "webhook": {}},
+        ])
+        s._external_queues["old"] = collections.deque(["event"])
+
+        self.assertTrue(s.set_entries([
+            {"name": "new", "prompt": "p", "interval_minutes": 10,
+             "id": "id-a", "enabled": True, "webhook": {}},
+        ]))
+
+        self.assertEqual(list(s._external_queues["new"]), ["event"])
+        self.assertNotIn("old", s._external_queues)
 
 
 if __name__ == "__main__":

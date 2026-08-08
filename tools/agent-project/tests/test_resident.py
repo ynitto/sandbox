@@ -42,6 +42,24 @@ class AgentOverrideTests(unittest.TestCase):
         self.assertEqual(km._agent_for("verify"), ("kiro", None))     # 未指定 → グローバル
         self.assertEqual(km._agent_for(""), ("kiro", None))
 
+    def test_readonly_is_declared_per_purpose(self):
+        """権限は役割の性質で決まる。既定は現状のまま write（黙って挙動を変えない）。"""
+        km._RUNTIME_CONFIG.agents = km._normalize_agent_overrides({
+            "adjudicate": {"agent_cli": "ollama", "readonly": True},
+            "plan": {"readonly": "yes"},            # bool 以外は落とす
+            "repo_map": {"agent_cli": "kiro"}})
+        self.assertTrue(km._agent_readonly("adjudicate"))
+        self.assertFalse(km._agent_readonly("plan"))
+        self.assertFalse(km._agent_readonly("repo_map"))
+        self.assertFalse(km._agent_readonly("verify"))   # 未指定 → 既定の write
+
+    def test_readonly_purpose_drops_the_write_args(self):
+        """受け入れ基準: readonly 宣言した purpose の argv に write_args が乗らない。"""
+        write = km._agent_cmd("claude", None, "P")[0]
+        readonly = km._agent_cmd("claude", None, "P", readonly=True)[0]
+        self.assertIn("--dangerously-skip-permissions", write)
+        self.assertNotIn("--dangerously-skip-permissions", readonly)
+
     def test_agent_cmd_builds_per_cli(self):
         cmd, stdin, out_file = km._agent_cmd("claude", "opus", "P")
         self.assertEqual(cmd[0], "claude")

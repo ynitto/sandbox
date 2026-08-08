@@ -83,9 +83,17 @@ executor: agent            # ワーカーバス: 組み込み agent（エージ�
 #     agent_cli: claude    #        worker（全ノード kind の既定）/ 個別 kind（work/generate/
 #     model: opus          #        classify/synthesize/verify/filter/judge/reduce/split/map。
 #   worker:                #        kind は worker より優先）。
-#     model: sonnet        #   値: {agent_cli, model}（どちらか片方でも可）。
+#     model: sonnet        #   値: {agent_cli, model, readonly}（どれか 1 つでも可）。
 #   verify:                #   未指定はグローバル agent_cli / model。子プロセス（orchestrator/
 #     model: haiku         #   worker）へは --config 伝搬で同じ設定が届く。
+#   classify:              #   readonly: true は「読み取り専用で呼ぶ」宣言（既定 false = 従来どおり
+#     agent_cli: ollama    #   書き込みモード）。テキスト系 kind（classify/filter/judge/reduce/
+#     model: qwen3         #   split/map/synthesize）と planner/evaluator のような**読まない役割**
+#     readonly: true       #   にだけ付ける。work / verify はワークスペースを触るので付けない。
+#   planner:               #   ローカル推論へ振る例（設計 docs/designs/
+#     agent_cli: ollama-json#  agent-ollama-expansion-design.md §3・§4）。JSON 契約の役割は
+#     model: qwen3         #   ollama-json（--format json で文法から強制）を使う。
+#     readonly: true       #   壁時計は伸びるので agent_timeout も併せて上げる（例 3600）。
 granularity: auto          # タスク分解の細かさ: auto(complexity導出・既定)/coarse/fine/finest(明示優先)。
                            # flow-planner は絶対レンジ＋スコープ契約。stub/agent は明示時のみ並列倍率。
                            # 要求に "x3"/"並列3" の明示があればそれを尊重（倍率を効かせない）。

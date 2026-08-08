@@ -48,6 +48,10 @@ class WebhookServer:
         self._httpd: http.server.ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
+    @property
+    def port(self) -> int:
+        return self._port
+
     def start(self) -> None:
         handler_cls = self._make_handler()
         try:
@@ -57,6 +61,7 @@ class WebhookServer:
                         self._host, self._port, exc)
             self._httpd = None
             return
+        self._port = int(self._httpd.server_address[1])
         self._httpd.daemon_threads = True
         self._thread = threading.Thread(
             target=self._httpd.serve_forever, name="webhook-server", daemon=True)
@@ -205,5 +210,4 @@ class WebhookServer:
                 self._reply(status, msg)
 
         return Handler
-
 

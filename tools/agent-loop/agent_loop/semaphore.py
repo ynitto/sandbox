@@ -196,7 +196,6 @@ def _pid_alive(pid: int) -> bool:
 
 def cleanup_stale_slots_on_startup(
     slot_timeout: int = _DEFAULT_SLOT_TIMEOUT,
-    daemon_started_at: float | None = None,
     *,
     cooldown_seconds: int = 0,
     slots_dir: Path | None = None,
@@ -258,13 +257,6 @@ def cleanup_stale_slots_on_startup(
     except OSError as exc:
         log.warning("stale slot クリーンアップ中にエラーが発生しました: %s", exc)
 
-    if daemon_started_at is not None:
-        marker = root / ".daemon_started_at"
-        try:
-            marker.write_text(json.dumps({"started_at": daemon_started_at}), encoding="utf-8")
-        except OSError:
-            pass
-
     return stats
 
 
@@ -299,7 +291,9 @@ class SlotMonitor:
         self,
         pane_id: str,
         on_complete: Any = None,
+        on_failure: Any = None,
         on_freeze: Any = None,
+        initial_content_hash: str | None = None,
     ) -> None:
         """ペインの処理完了監視を開始する。"""
         with self._lock:
@@ -307,15 +301,25 @@ class SlotMonitor:
                 "state": "waiting_start",
                 "acquired_at": time.time(),
                 "on_complete": on_complete,
+                "on_failure": on_failure,
                 "on_freeze": on_freeze,
                 "content_hash": None,
                 "hash_unchanged_since": None,
+                "initial_content_hash": initial_content_hash,
             }
 
     def untrack(self, pane_id: str) -> None:
         """監視を手動で終了する（agent hook 発火時など）。"""
         with self._lock:
             self._pending.pop(pane_id, None)
+
+    def is_tracking(self, pane_id: str) -> bool:
+        with self._lock:
+            return pane_id in self._pending
+
+    def fail(self, pane_id: str) -> None:
+        """監視対象を失敗として終了し、slotとrequest状態を解放する。"""
+        self._release(pane_id, notify_failure=True)
 
     def start(self) -> None:
         self._thread = threading.Thread(
@@ -352,7 +356,7 @@ class SlotMonitor:
             capture_output=True, text=True, check=False,
         )
         if result.returncode != 0:
-            self._release(pane_id, notify_complete=True)
+            self._release(pane_id, notify_failure=True)
             return
 
         # 待機/処理中の判定は CLI ごとに方法が違うため CliProfile が行う（ready/busy
@@ -366,10 +370,13 @@ class SlotMonitor:
                 with self._lock:
                     if pane_id in self._pending:
                         self._pending[pane_id]["state"] = "processing"
+            elif entry.get("initial_content_hash") and hashlib.sha256(
+                    content.encode("utf-8", errors="replace")).hexdigest() != entry["initial_content_hash"]:
+                self._release(pane_id, notify_complete=True)
             elif now - acquired_at > self._START_WAIT_TIMEOUT:
                 # エージェント CLI が処理を開始しないままタイムアウト
                 log.warning("SlotMonitor: ペイン %s が処理を開始しないためスロットを解放します。", pane_id)
-                self._release(pane_id, notify_complete=True)
+                self._release(pane_id, notify_failure=True)
 
         elif state == "processing":
             if is_idle:
@@ -417,6 +424,7 @@ class SlotMonitor:
         pane_id: str,
         *,
         notify_complete: bool = False,
+        notify_failure: bool = False,
         keep_for_completion: bool = False,
     ) -> None:
         with self._lock:
@@ -426,19 +434,23 @@ class SlotMonitor:
                 entry["slot_released"] = True
             if entry and keep_for_completion and callable(entry.get("on_complete")):
                 entry["acquired_at"] = float("inf")
-            elif not notify_complete:
+            elif not notify_complete and not notify_failure:
                 self._pending.pop(pane_id, None)
         _CLI_PROFILE.forget_pane(pane_id)
         if release_slot:
             self._semaphore.release(pane_id)
-        on_complete = entry.get("on_complete") if entry and notify_complete else None
-        if callable(on_complete):
+        callback = None
+        if entry and notify_complete:
+            callback = entry.get("on_complete")
+        elif entry and notify_failure:
+            callback = entry.get("on_failure")
+        if callable(callback):
             try:
-                on_complete()
+                callback()
             except Exception:
                 log.warning("SlotMonitor: 完了処理に失敗しました (pane=%s)。", pane_id, exc_info=True)
                 return
-        if notify_complete:
+        if notify_complete or notify_failure:
             with self._lock:
                 if self._pending.get(pane_id) is entry:
                     self._pending.pop(pane_id, None)

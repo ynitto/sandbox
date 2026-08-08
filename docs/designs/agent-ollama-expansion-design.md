@@ -9,7 +9,8 @@
 > [agent-tools-concept.md](./agent-tools-concept.md) /
 > [`tools/agent-tools/README.md`](../../tools/agent-tools/README.md)（agent-ollama の現行仕様）
 >
-> **状態: 提案（未実装）。** §2 は現状の記録、§3 以降が提案。
+> **状態: 段 0〜3 実装済み（2026-08-08）。段 4・5 は未着手**——§7 のとおり、
+> 先に段 0〜3 の節約実績と品質実測を台帳で見てから判断する。§2 は現状の記録。
 > ゲート: **柱1 / C1・C7** — クラウドクレジットの消費を持ち主の予算の内側に収め、
 > 枠が枯れても作業を止めない。ローカル実行系は「予算内で止まる」を満たす受け皿である。
 
@@ -199,9 +200,16 @@ Schema 渡し（`--format-schema`）は**要るまで作らない**——`json` 
 {
   "name": "ollama-json",
   "command": ["agent-ollama", "--think", "on", "--format", "json", "{model}"],
-  // ほかは ollama.json と同じ（readonly: enforced / write_args: ["--tools"] / errors）
+  "write_args": [],   // 道具は持たせない（下記）
+  // ほかは ollama.json と同じ（readonly: enforced / errors）
 }
 ```
+
+**実装時の修正 1 点**: この変種の `write_args` は空にした。当初案は ollama.json と同じ
+`["--tools"]` としていたが、`--format json` 下では全出力が JSON になるため、
+ツールループの規約（bash のコードブロックを出す）が成立しない——書き込みモードで
+呼ばれた瞬間に言い直しだけで終わる。JSON 契約の役割は定義上「読まない系」なので、
+道具を落としても失うものが無く、`readonly: enforced` の真実性はどちらのモードでも保たれる。
 
 エンジン側は `agents: {planner: {agent_cli: ollama-json, model: qwen3}}` と書くだけ。
 **エンジン改修ゼロ**で、`write_args` / `readonly_args` が argv 連結である契約の設計
@@ -282,6 +290,15 @@ ollama で受けるのは §6（read ツールセット）以降とする。
    自認するとおりここが最難所なので、**初版は write 経路の read セットのみ**とし、
    ゲートの拒否テストが揃ってから readonly_args への昇格を別途判断する。
    それまで読む系は「write モード + read セット」で振る（権限はゲートが絞る）。
+   実装は定義 `agents/ollama-read.json`（`write_args: ["--tools", "read", …]`・
+   `readonly_args: []`）で、readonly で呼べば従来どおり道具ゼロに戻る。
+
+**実装時に決めたゲートの判定方式**（あちらの §8 が実装時判断へ委ねた箇所）:
+語彙は許可制（読み取り系コマンド + git の読み取り部分コマンド）、**引用の外**の
+シェル記号は一律拒否、実行は `bash -lc` を介さず argv 直渡し——メタ文字がそもそも
+解釈されない形にして、判定と実行の二段でゲートを本物にする。引用の中を許すのは
+`find . -name '*.py'` を通すため（read セットで最も使う探索を一律で殺さない）。
+拒否は 3 回目で `tool_denied` として走行を止める（`_MAX_NUDGES` と同じ形の予算）。
 
 ---
 

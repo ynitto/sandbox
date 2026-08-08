@@ -194,6 +194,10 @@
           "type": "string",
           "description": "tmux capture-pane の可視画面全体から「処理中」を検出する ERE（大文字小文字無視）。入力欄を表示したまま処理する TUI（claude の '(esc to interrupt)' 等）では ready_pattern の消失が起きないため、待機/処理中の判定はこちらを正とする。マッチ中は ready_pattern がマッチしていても処理中と判定する。省略時は「ready_pattern 非マッチ = 処理中」の従来ヒューリスティクスのみ。"
         },
+        "failure_pattern": {
+          "type": "string",
+          "description": "send --wait が明示的失敗として扱うペイン出力のERE。未指定時はpane/process終了以外を推測しない。"
+        },
         "idle_quiet_sec": {
           "type": "number",
           "default": 0,

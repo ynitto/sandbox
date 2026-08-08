@@ -97,11 +97,26 @@ concurrency: 1             # 板へ並行 post する独立タスク数（1=逐�
 #     model: opus           #        adjudicate（人へ回す前の裁定）/ verify（verify 合成）/
 #   assess:                 #        distill（人コメントの蒸留）/ assess（投入時採点）/
 #     model: haiku          #        repo_map（リポジトリ理解の生成）/ doctor（稼働診断）
-#   verify:                 #   値: {agent_cli, model}（どちらか片方でも可）。
+#   verify:                 #   値: {agent_cli, model, readonly}（どれか 1 つでも可）。
 #     agent_cli: copilot    #   未指定の処理はグローバル agent_cli / model を使う。
                             #   例: 重い分解は opus・大量に走る採点は haiku、のような使い分け。
                             #   実行層（act 本体）の使い分けは agent-flow.yaml の agents:（planner/
                             #   evaluator/worker/kind 別）で行う。
+                            #   readonly: true は「読み取り専用で呼ぶ」宣言（既定 false = 従来どおり
+                            #   書き込みモード）。宣言してよいのは**読まない系**の処理——材料を全部
+                            #   プロンプトで受け取り、文章か JSON を返すだけのもの（adjudicate /
+                            #   assess / distill / prioritize / route / plan）。読む系（repo_map /
+                            #   doctor / review）に付けると、CLI の readonly 実装がツールを削るため
+                            #   探索そのものを失う。クラウド CLI では判断だけの呼び出しから
+                            #   --dangerously-skip-permissions 等が外れる（安全側の副産物）。
+#   adjudicate:             #   ローカル推論へ振る例（クラウド枠の節約。設計 docs/designs/
+#     agent_cli: ollama     #   agent-ollama-expansion-design.md §3・§5）。壁時計は伸びるので、
+#     model: qwen3          #   速度が要る処理はクラウドに残す。定義は 3 つある:
+#     readonly: true        #     ollama       … 単発 text→text（think 有効）
+#   plan:                   #     ollama-json  … + JSON 文法強制（plan など JSON 契約の処理）
+#     agent_cli: ollama-json#     ollama-read  … + 読み取り専用コマンドの実行ループ（探索が要る処理）
+#     model: qwen3
+#     readonly: true
 # granularity: coarse       # バックログ分解の粒度: coarse（ストーリー相当・INVEST。既定）/
                             #   fine（単機能・単モジュール）/ finest（1ファイル/1関数の最小単位）
 # flow_granularity: auto    # 内側（agent-flow の実行時タスクグラフ）へ渡す分解粒度。上の

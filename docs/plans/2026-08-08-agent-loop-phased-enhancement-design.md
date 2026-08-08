@@ -146,13 +146,13 @@ Phase 1では既存のentryごとの長寿命paneを維持する。`max_concurre
 | inbox | 既存JSON file | tmux送信成功後に`.processed/`へ移動 |
 | CLI send | `~/.agents/send-requests/` | Schedulerのdispatch queue受付時 |
 
-CLI sendは一時fileへ書いてから`os.replace`する。highはqueue先頭、normalとlowは末尾へ入れる。同じ`entry_id`と本文の要求が既定3秒以内に再受付された場合は成功扱いで破棄する。本文またはentryが異なる要求は送信する。
+CLI sendは一時fileへ書いてから`os.replace`する。daemonはrequestのcanonical workspaceを照合し、daemon固有の一時名へatomic claimできたrequestだけを受付する。highはqueue先頭、normalとlowは末尾へ入れる。同じ`entry_id`と本文の要求が既定3秒以内に再受付された場合は成功扱いで破棄する。本文またはentryが異なる要求は送信する。daemon不在時は既存互換としてstandalone sessionへ直接送信する。
 
 daemonが受付した後のprocess crashに対する永続再送はPhase 1の保証外とする。送信済みか不明な要求を自動再送して作業を重複させるより、既存のat-most-once方針を維持する。
 
 ### 7.2 `send --wait`
 
-既定の`send`はqueue受付後に終了する。`--wait`だけが対象paneのbusy遷移とready復帰を待つ。
+既定の`send`はqueue受付後に終了する。`--wait`は`send-responses/<request-id>.json`の状態を待ち、SlotMonitorが同じrequestの完了・失敗だけを更新する。
 
 | 結果 | exit code |
 |---|---:|
@@ -455,6 +455,7 @@ source checkout、system package、pip環境の更新は扱わない。
 ```text
 ~/.agents/
 ├── send-requests/
+├── send-responses/<request-id>.json
 ├── loop-commands/<pid>/
 ├── loop-control/<workspace-hash>.json
 ├── loop-adaptive/<entry-id>.json

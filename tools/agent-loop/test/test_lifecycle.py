@@ -23,6 +23,8 @@ class LifecycleTests(unittest.TestCase):
         s._lock = al.threading.Lock()
         s._external_queues = {}
         s._active_count = 0
+        s._health = {}
+        s._mem_ok_streak = 0
         return s
 
     def test_stop_highest(self):
@@ -95,6 +97,17 @@ class LifecycleTests(unittest.TestCase):
                  mock.patch.object(al, "_node_budget_state", return_value=None), \
                  mock.patch.object(al, "load_local_pause", return_value=False):
                 self.assertEqual(s._lifecycle_gate(1000.0), "drain_exit")
+
+    def test_memory_pause_requires_two_healthy_checks_to_resume(self):
+        s = self._sched("/tmp")
+        s._health = {"min_free_memory_mb": 100}
+        with mock.patch.object(al, "_get_free_memory_mb", side_effect=[50, 150, 150]):
+            s.check_memory_pressure()
+            self.assertTrue(s._mem_paused)
+            s.check_memory_pressure()
+            self.assertTrue(s._mem_paused)
+            s.check_memory_pressure()
+            self.assertFalse(s._mem_paused)
 
 
 if __name__ == "__main__":

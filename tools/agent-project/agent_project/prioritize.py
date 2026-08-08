@@ -95,7 +95,7 @@ def agent_cli_binary(cli: str) -> str:
 
 
 def _normalize_agent_overrides(raw) -> "dict[str, dict]":
-    """設定 agents:（処理毎の agent_cli/model 上書き）を正規化する。未知の処理キー・
+    """設定 agents:（処理毎の agent_cli/model/readonly 上書き）を正規化する。未知の処理キー・
     不正な値は黙って落とす（設定ミスでループを殺さない。有効キーは AGENT_PURPOSES）。"""
     out: "dict[str, dict]" = {}
     if not isinstance(raw, dict):
@@ -109,9 +109,28 @@ def _normalize_agent_overrides(raw) -> "dict[str, dict]":
             ov["agent_cli"] = str(v["agent_cli"]).strip().lower()
         if v.get("model"):
             ov["model"] = str(v["model"]).strip()
+        if isinstance(v.get("readonly"), bool):
+            ov["readonly"] = v["readonly"]
         if ov:
             out[key] = ov
     return out
+
+
+def _agent_readonly(purpose: str) -> bool:
+    """この処理を読み取り専用で呼ぶか（設定 `agents[purpose].readonly`・既定 False）。
+
+    既定は現状のまま write——挙動を黙って変えない。宣言してよいのは**読まない系**
+    （材料を全部プロンプトで受け取り、文章か JSON を返すだけ）の処理に限る。読む系
+    （repo_map / doctor / review）を readonly にすると、クラウド CLI の readonly 実装が
+    ツールを大きく削るため探索そのものを失う（適用拡大設計 §5）。
+
+    `_agent_for` に相乗りさせず別関数にしてあるのは、あちらの戻り値（cli, model）が
+    agent-control・node-budget の縮退まで畳んだ「実効エージェント」で、権限は
+    そこに混ざらない別の軸だから。混ぜると control 上書きが権限まで書き換えて見える。
+    """
+    cfg = _RUNTIME_CONFIG
+    ov = ((cfg.agents if cfg is not None else {}) or {}).get(purpose) or {}
+    return bool(ov.get("readonly"))
 
 
 def _agent_for(purpose: str) -> "tuple[str, str | None]":
@@ -157,8 +176,8 @@ _SPILL_INSTRUCTION = _agentcli.spill_instruction(
     "この処理の入力の全文", then="その内容を対象にしてください")
 
 
-def _agent_cmd(cli: str, model: "str | None",
-               prompt: str) -> "tuple[list[str], str | None, str | None]":
+def _agent_cmd(cli: str, model: "str | None", prompt: str,
+               readonly: bool = False) -> "tuple[list[str], str | None, str | None]":
     """エージェント CLI 1 回分の (argv, stdin テキスト, 最終応答ファイル) を組み立てる
     （実行はしない・決定的）。
 
@@ -167,7 +186,7 @@ def _agent_cmd(cli: str, model: "str | None",
     argv がハードコードされ、同じ知識が agent-flow・agent-amigos・dashboard にも重複していた。
     """
     spec = load_agent_plugin(cli)
-    built = _agentcli.headless_cmd(spec, model, prompt)
+    built = _agentcli.headless_cmd(spec, model, prompt, readonly=readonly)
     return built["argv"], built["stdin"], built["output_file"]
 
 
@@ -590,7 +609,8 @@ def _run_agent_cli(prompt: str, model: "str | None", purpose: str = "") -> str:
     # 組み立てが例外で落ちたときに finally が NameError を投げて本当の原因を隠す。
     out_file = None
     try:
-        cmd, stdin_text, out_file = _agent_cmd(cli, model_ov or model, prompt)
+        cmd, stdin_text, out_file = _agent_cmd(cli, model_ov or model, prompt,
+                                               readonly=_agent_readonly(purpose))
         # 発生源で色を抑止（NO_COLOR/TERM=dumb）。残った ANSI は strip_ansi で除去する二段構え。
         env = {**os.environ, "NO_COLOR": "1", "TERM": "dumb", **(plug.get("env") or {})}
         configured_timeout = (_RUNTIME_CONFIG.agent_timeout

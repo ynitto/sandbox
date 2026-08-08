@@ -18,15 +18,11 @@ class InboxWatcher:
         self,
         agent_name: str,
         session_mgr: "SessionManager",
-        semaphore: "GlobalSemaphore | None" = None,
-        slot_monitor: "SlotMonitor | None" = None,
+        scheduler: "PeriodicScheduler",
         poll_interval: int = 5,
-        scheduler: "PeriodicScheduler | None" = None,
     ) -> None:
         self._agent_name = agent_name
         self._session_mgr = session_mgr
-        self._semaphore = semaphore
-        self._slot_monitor = slot_monitor
         self._scheduler = scheduler
         self._poll_interval = poll_interval
         self._inbox_dir = _AGENTS_DIR / agent_name / "inbox"
@@ -59,7 +55,7 @@ class InboxWatcher:
         """受信ボックスの未処理メッセージを走査して enqueue する。"""
         msg_files = sorted(self._inbox_dir.glob("*.json"))
         for msg_file in msg_files:
-            if self._scheduler is not None and self._scheduler.has_pending_ack_path(str(msg_file)):
+            if self._scheduler.has_pending_ack_path(str(msg_file)):
                 continue
             try:
                 data = json.loads(msg_file.read_text(encoding="utf-8"))
@@ -99,40 +95,7 @@ class InboxWatcher:
                 "from": data.get("from"),
             },
         )
-        if self._scheduler is not None:
-            return self._scheduler.enqueue_request(req)
-        # scheduler 未設定時の後方互換（テスト用）
-        return self._try_dispatch(data)
-
-    def _try_dispatch(self, data: dict[str, Any]) -> bool:
-        """レガシー直接送信（scheduler なし / 回帰テスト用）。"""
-        prompt_id = f"inbox-{data.get('id', uuid.uuid4().hex[:8])}"
-        name = f"inbox:{data.get('from', '?')}"
-
-        if not self._session_mgr.ensure_session(prompt_id, name, owner="inbox"):
-            log.warning("[InboxWatcher] セッション未準備のため保留")
-            return False
-
-        pane_id: str | None = self._session_mgr.get_pane_id(prompt_id)
-
-        if self._semaphore is not None and pane_id:
-            if not self._semaphore.acquire(pane_id):
-                return False
-
-        prompt_text = self._build_prompt(data)
-        ok = self._session_mgr.send_prompt(prompt_id, prompt_text)
-        if ok:
-            if self._slot_monitor is not None and pane_id:
-                self._slot_monitor.track(
-                    pane_id,
-                    on_complete=lambda: self._session_mgr.remove_session(
-                        prompt_id, owner="inbox", pane_id=pane_id
-                    ),
-                )
-        else:
-            if self._semaphore is not None and pane_id:
-                self._semaphore.release(pane_id)
-        return ok
+        return self._scheduler.enqueue_request(req)
 
     def _build_prompt(self, data: dict[str, Any]) -> str:
         from_agent = data.get("from", "unknown")

@@ -3,6 +3,7 @@ from __future__ import annotations
 # 単体 import しない。agent_loop/__init__.py が共有名前空間へ順に exec 合成する。
 
 _SEND_REQUESTS_DIR = agent_home_subdir("", "send-requests")
+_SEND_RESPONSES_DIR = agent_home_subdir("", "send-responses")
 _LOOP_COMMANDS_DIR = agent_home_subdir("", "loop-commands")
 _LOOP_CONTROL_DIR = agent_home_subdir("", "loop-control")
 _LOOP_ADAPTIVE_DIR = agent_home_subdir("", "loop-adaptive")
@@ -117,6 +118,7 @@ def write_send_request(
     cwd: str | None = None,
     priority: str = "normal",
     meta: dict[str, Any] | None = None,
+    request_id: str | None = None,
     base_dir: Path | None = None,
 ) -> dict[str, Any]:
     """CLI send 用の永続リクエストを atomic rename で書き込む。"""
@@ -129,6 +131,7 @@ def write_send_request(
         cwd=cwd,
         priority=priority,
         meta=meta,
+        request_id=request_id,
     )
     name = f"{int(req['created_at'] * 1000):013d}_{req['id']}.json"
     final = root / name
@@ -151,18 +154,60 @@ def load_send_requests(base_dir: Path | None = None) -> list[dict[str, Any]]:
         if not isinstance(data, dict) or "prompt" not in data:
             _isolate_invalid(path)
             continue
+        raw_meta = data.get("meta")
+        if not isinstance(raw_meta, dict):
+            raw_meta = {}
+        data["meta"] = dict(raw_meta)
         data.setdefault("id", path.stem)
         data.setdefault("source", "send")
-        data.setdefault("entry_id", str(data.get("entry_id") or data.get("meta", {}).get("target") or ""))
+        data.setdefault("entry_id", str(data.get("entry_id") or raw_meta.get("target") or ""))
         data.setdefault("priority", "normal")
-        data.setdefault("created_at", path.stat().st_mtime)
+        if "created_at" not in data:
+            try:
+                data["created_at"] = path.stat().st_mtime
+            except OSError:
+                continue
         data.setdefault("dedupe_key", _dedupe_key(str(data["entry_id"]), str(data["prompt"])))
         data.setdefault("ack", None)
-        data.setdefault("meta", {})
-        data["meta"] = dict(data["meta"])
         data["meta"]["_path"] = str(path)
         out.append(data)
     return out
+
+
+def claim_send_request(req: dict[str, Any], claimant: str) -> bool:
+    """未処理requestをatomic renameでこのdaemonの所有にする。"""
+    meta = req.get("meta") or {}
+    raw_path = meta.get("_path")
+    if not raw_path:
+        return False
+    path = Path(str(raw_path))
+    token = hashlib.sha256(str(claimant).encode("utf-8")).hexdigest()[:8]
+    claimed = path.with_name(f".{path.name}.{token}.claimed")
+    try:
+        os.replace(path, claimed)
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        log.warning("send-request claim に失敗しました (%s): %s", path, exc)
+        return False
+    req["meta"] = dict(meta)
+    req["meta"]["_original_path"] = str(path)
+    req["meta"]["_path"] = str(claimed)
+    return True
+
+
+def release_send_request_claim(req: dict[str, Any]) -> None:
+    """受付できなかったclaimを元のqueueへ戻す。"""
+    meta = req.get("meta") or {}
+    claimed = meta.get("_path")
+    original = meta.get("_original_path")
+    if not claimed or not original:
+        return
+    try:
+        os.replace(str(claimed), str(original))
+        req["meta"]["_path"] = str(original)
+    except OSError as exc:
+        log.warning("send-request claim の復元に失敗しました (%s): %s", claimed, exc)
 
 
 def remove_send_request_file(req: dict[str, Any]) -> None:
@@ -173,6 +218,45 @@ def remove_send_request_file(req: dict[str, Any]) -> None:
         Path(path).unlink(missing_ok=True)
     except OSError as exc:
         log.warning("send-request 削除に失敗しました (%s): %s", path, exc)
+
+
+def send_response_path(request_id: str, base_dir: Path | None = None) -> Path:
+    root = Path(base_dir) if base_dir is not None else _SEND_RESPONSES_DIR
+    return root / f"{request_id}.json"
+
+
+def write_send_response(
+    request_id: str,
+    status: str,
+    *,
+    pane_id: str | None = None,
+    base_dir: Path | None = None,
+) -> Path:
+    """`send --wait`用のrequest単位状態をatomicに記録する。"""
+    path = send_response_path(request_id, base_dir)
+    _atomic_write_json(path, {
+        "request_id": request_id,
+        "status": status,
+        "pane_id": pane_id,
+        "updated_at": time.time(),
+    })
+    return path
+
+
+def read_send_response(request_id: str, base_dir: Path | None = None) -> dict[str, Any] | None:
+    path = send_response_path(request_id, base_dir)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def remove_send_response(request_id: str, base_dir: Path | None = None) -> None:
+    try:
+        send_response_path(request_id, base_dir).unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def workspace_control_path(workspace: str, base_dir: Path | None = None) -> Path:

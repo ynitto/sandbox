@@ -279,6 +279,14 @@ class PeriodicScheduler:
                 r for r in self._pending
                 if str(r.get("entry_id")) in keep_ids or r.get("source") in ("send", "inbox", "webhook")
             ]
+            for entry in normalized:
+                old = old_by_id.get(str(entry.get("id")))
+                if old is None:
+                    continue
+                old_key = _webhook_key(str(old.get("name", "")))
+                new_key = _webhook_key(str(entry.get("name", "")))
+                if old_key != new_key and old_key in self._external_queues:
+                    self._external_queues[new_key] = self._external_queues.pop(old_key)
             # 削除された entry の webhook キューを捨てる
             keep_keys = {_webhook_key(str(e.get("name", ""))) for e in normalized}
             self._external_queues = {
@@ -298,6 +306,57 @@ class PeriodicScheduler:
     def active_count(self) -> int:
         with self._lock:
             return self._active_count
+
+    def _begin_active(self, req: dict[str, Any]) -> None:
+        with self._lock:
+            request_id = str(req.get("id", ""))
+            if request_id in self._active_ids:
+                return
+            self._active_ids.add(request_id)
+            self._active_count += 1
+
+    def _end_active(self, req: dict[str, Any], status: str | None = None,
+                    pane_id: str | None = None) -> None:
+        with self._lock:
+            request_id = str(req.get("id", ""))
+            if request_id not in self._active_ids:
+                return
+            self._active_ids.discard(request_id)
+            self._active_count = max(0, self._active_count - 1)
+        if (status and (req.get("meta") or {}).get("wait")
+                and send_response_path(request_id).is_file()):
+            try:
+                write_send_response(request_id, status, pane_id=pane_id)
+            except OSError as exc:
+                log.warning("send response の更新に失敗しました (%s): %s", request_id, exc)
+
+    def _track_active(self, req: dict[str, Any], pane_id: str,
+                      on_complete: Any = None) -> None:
+        request_id = str(req.get("id", ""))
+        if ((req.get("meta") or {}).get("wait")
+                and send_response_path(request_id).is_file()):
+            try:
+                write_send_response(request_id, "processing", pane_id=pane_id)
+            except OSError as exc:
+                log.warning("send response の更新に失敗しました (%s): %s", request_id, exc)
+
+        def complete() -> None:
+            if callable(on_complete):
+                on_complete()
+            self._end_active(req, "completed", pane_id)
+
+        def fail() -> None:
+            self._end_active(req, "failed", pane_id)
+
+        if self._slot_monitor is not None:
+            self._slot_monitor.track(
+                pane_id,
+                on_complete=complete,
+                on_failure=fail,
+                initial_content_hash=(req.get("meta") or {}).pop("_pane_hash_before_send", None),
+            )
+        else:
+            complete()
 
     def run_state(self) -> str:
         return self._run_state
@@ -330,6 +389,13 @@ class PeriodicScheduler:
         req["dedupe_key"] = dedupe
         if self._debouncer.is_duplicate(dedupe):
             _log_dispatch("request_debounced", req)
+            request_id = str(req.get("id", ""))
+            if ((req.get("meta") or {}).get("wait")
+                    and send_response_path(request_id).is_file()):
+                try:
+                    write_send_response(request_id, "completed")
+                except OSError as exc:
+                    log.warning("send response の更新に失敗しました (%s): %s", request_id, exc)
             return True  # 成功扱いで破棄
 
         source = str(req.get("source", ""))
@@ -449,33 +515,6 @@ class PeriodicScheduler:
                     self._external_queues.setdefault(
                         key, collections.deque(maxlen=_WEBHOOK_QUEUE_MAX)
                     ).appendleft(prompt_text)
-
-    def _drain_external_one(self, entry: dict[str, Any]) -> bool:
-        """互換: entry の外部キューを 1 件処理する（テスト・旧経路）。
-
-        空なら False。session 未準備・スロット上限時はプロンプトを積み直す。
-        """
-        key = _webhook_key(str(entry.get("name", "")))
-        with self._lock:
-            q = self._external_queues.get(key)
-            if not q:
-                return False
-            prompt_text = q.popleft()
-
-        req = make_dispatch_request(
-            source="webhook",
-            entry_id=str(entry.get("id", "")),
-            prompt=prompt_text,
-            cwd=entry.get("cwd"),
-            meta={"entry_name": entry.get("name"), "_should_clear": False},
-        )
-        result = self._try_dispatch_request(req, entry_hint=entry)
-        if result == "defer":
-            with self._lock:
-                self._external_queues.setdefault(
-                    key, collections.deque(maxlen=_WEBHOOK_QUEUE_MAX)
-                ).appendleft(prompt_text)
-        return True
 
     # ---- hooks / preflight -------------------------------------------------
 
@@ -750,10 +789,6 @@ class PeriodicScheduler:
             return "defer"
         return "ok"
 
-    # 旧テスト互換エイリアス
-    def _acquire_slot(self, entry: dict[str, Any], pane_id: str) -> bool:
-        return self._try_acquire_slot(entry, pane_id) == "ok"
-
     # ---- dispatch ----------------------------------------------------------
 
     def _dispatch_prompt(self, entry: dict[str, Any], pane_id: str | None,
@@ -796,15 +831,15 @@ class PeriodicScheduler:
             if ok and prompt and self._input_recovery and pane_id:
                 ok = self._maybe_input_recovery(pane_id, prompt_id, prompt, req)
             if ok:
-                if self._slot_monitor is not None and pane_id:
+                if pane_id and req is not None:
                     on_complete = None
-                    meta = (req or {}).get("meta") or {}
+                    meta = req.get("meta") or {}
                     if meta.get("inbox_cleanup"):
                         pid = str(meta.get("prompt_id") or prompt_id)
                         on_complete = lambda: self._session_mgr.remove_session(
                             pid, owner="inbox", pane_id=pane_id
                         )
-                    self._slot_monitor.track(pane_id, on_complete=on_complete)
+                    self._track_active(req, pane_id, on_complete=on_complete)
                 _log_dispatch("dispatch_sent", req)
                 return True
             else:
@@ -834,10 +869,13 @@ class PeriodicScheduler:
         meta = (req or {}).setdefault("meta", {}) if req is not None else {}
         if meta.get("_input_recovered"):
             return True
-        time.sleep(_INPUT_RECOVERY_WAIT_SEC)
-        content = _capture_pane(pane_id)
-        if not _CLI_PROFILE.is_ready(content):
-            return True  # busy 遷移 or 不明 → 再送しない
+        checks = max(1, int(_INPUT_RECOVERY_WAIT_SEC / 0.1))
+        for index in range(checks):
+            content = _capture_pane(pane_id)
+            if not _CLI_PROFILE.is_ready(content):
+                return True  # busy 遷移 or 不明 → 再送しない
+            if index + 1 < checks:
+                time.sleep(_INPUT_RECOVERY_WAIT_SEC / checks)
         # busy を一度でも見たら再送しない（ready のままなのでここに来る時点では未観測）
         tail = SessionManager.capture_visible_input_tail(pane_id)
         single = " ".join(prompt.splitlines()).strip()
@@ -910,30 +948,36 @@ class PeriodicScheduler:
             with self._session_mgr._lock:
                 self._session_mgr._prompt_cwds[prompt_id] = str(cwd)
 
-        pane_id: str | None = None
+        pane_id = self._session_mgr.get_pane_id(prompt_id)
+        if pane_id is None:
+            log.warning("[%s] 対応ペインを解決できないため保留します。", name)
+            return "defer"
+        if self._slot_monitor is not None and self._slot_monitor.is_tracking(pane_id):
+            return "defer"
+        ready_content = _capture_pane(pane_id)
+        if not _CLI_PROFILE.is_ready(ready_content):
+            return "defer"
+        req.setdefault("meta", {})["_pane_hash_before_send"] = hashlib.sha256(
+            ready_content.encode("utf-8", errors="replace")
+        ).hexdigest()
+
         exclude = bool(entry.get("exclude_from_concurrency", False))
         if self._semaphore is not None and not exclude:
-            pane_id = self._session_mgr.get_pane_id(prompt_id)
-            if pane_id:
-                acq = self._try_acquire_slot(entry, pane_id)
-                if acq == "defer":
-                    return "defer"
+            acq = self._try_acquire_slot(entry, pane_id)
+            if acq == "defer":
+                return "defer"
 
         ack_path = str((req.get("ack") or {}).get("path") or "")
+        self._begin_active(req)
         with self._lock:
-            self._active_count += 1
-            self._active_ids.add(str(req.get("id")))
             if ack_path:
                 self._inflight_ack_paths.add(ack_path)
+        ok = False
         try:
             ok = self._dispatch_prompt(dispatch_entry, pane_id, req=req)
         finally:
-            with self._lock:
-                self._active_count = max(0, self._active_count - 1)
-                self._active_ids.discard(str(req.get("id")))
-                if ack_path and not ok:
-                    # defer 時は pending へ戻るので path 監視は pending 側へ
-                    self._inflight_ack_paths.discard(ack_path)
+            if not ok:
+                self._end_active(req)
 
         if ok:
             if source == "hook" and entry.get("event_hook"):
@@ -968,6 +1012,14 @@ class PeriodicScheduler:
         if pane_id is None:
             log.warning("adhoc send: ペインを解決できません target=%s", target)
             return "defer"
+        if self._slot_monitor is not None and self._slot_monitor.is_tracking(pane_id):
+            return "defer"
+        ready_content = _capture_pane(pane_id)
+        if not _CLI_PROFILE.is_ready(ready_content):
+            return "defer"
+        req.setdefault("meta", {})["_pane_hash_before_send"] = hashlib.sha256(
+            ready_content.encode("utf-8", errors="replace")
+        ).hexdigest()
 
         if self._semaphore is not None:
             elapsed = self._semaphore.slot_elapsed(pane_id)
@@ -978,13 +1030,14 @@ class PeriodicScheduler:
             if not self._semaphore.acquire(pane_id):
                 return "defer"
 
+        self._begin_active(req)
         ok = send_prompt_to_session(pane_id, prompt)
         if ok:
-            if self._slot_monitor is not None:
-                self._slot_monitor.track(pane_id)
+            self._track_active(req, pane_id)
             self._finalize_ack(req, success=True)
             _log_dispatch("dispatch_completed", req)
             return "done"
+        self._end_active(req)
         self._release_slot(pane_id)
         return "defer"
 
@@ -1099,8 +1152,9 @@ class PeriodicScheduler:
             self._pending.clear()
             # 未開始 send-requests を破棄
             for req in load_send_requests():
-                remove_send_request_file(req)
-                discarded += 1
+                if self._request_matches_workspace(req) and claim_send_request(req, str(os.getpid())):
+                    remove_send_request_file(req)
+                    discarded += 1
             self._external_queues.clear()
         log.info("event=drain_started discarded=%d", discarded)
 
@@ -1126,8 +1180,8 @@ class PeriodicScheduler:
             return False
         if prompt_id:
             if self._slot_monitor is not None and pane_id:
-                self._slot_monitor.untrack(pane_id)
-            if self._semaphore is not None and pane_id:
+                self._slot_monitor.fail(pane_id)
+            elif self._semaphore is not None and pane_id:
                 self._semaphore.release(pane_id)
             self._session_mgr.cleanup_managed_pane(prompt_id)
             log.info("event=cancel_done target=%s prompt_id=%s", target, prompt_id)
@@ -1136,14 +1190,26 @@ class PeriodicScheduler:
 
     def _drain_send_requests(self) -> None:
         for req in load_send_requests():
+            if not self._request_matches_workspace(req):
+                continue
             if self._draining:
-                remove_send_request_file(req)
+                continue
+            if not claim_send_request(req, str(os.getpid())):
                 continue
             # 受付時にディスクから削除（at-most-once）
             if self._accept_request(req):
                 remove_send_request_file(req)
             else:
+                release_send_request_claim(req)
                 break
+
+    def _request_matches_workspace(self, req: dict[str, Any]) -> bool:
+        requested = str((req.get("meta") or {}).get("workspace") or "").strip()
+        if not requested or not self._workspace:
+            return True
+        return str(Path(requested).expanduser().resolve()) == str(
+            Path(self._workspace).expanduser().resolve()
+        )
 
     def _fire_due_schedules(self, now: float) -> None:
         with self._lock:
@@ -1211,11 +1277,20 @@ class PeriodicScheduler:
                 if not self._pending:
                     return
                 req = self._pending.pop(0)
+                ack_path = str((req.get("ack") or {}).get("path") or "")
+                if ack_path:
+                    self._inflight_ack_paths.add(ack_path)
 
             result = self._try_dispatch_request(req)
             if result == "defer":
+                with self._lock:
+                    if ack_path:
+                        self._inflight_ack_paths.discard(ack_path)
                 self._requeue_front(req)
                 return  # 次 tick で再試行
+            if result == "discard" and ack_path:
+                with self._lock:
+                    self._inflight_ack_paths.discard(ack_path)
 
     def _write_loop_state_extras(self) -> None:
         extras = {
@@ -1333,16 +1408,9 @@ class PeriodicScheduler:
         with self._session_mgr._lock:
             items = list(self._session_mgr._panes.items())
         for prompt_id, pane_id in items:
-            pid = self._session_mgr.get_pane_pid(pane_id) if hasattr(self._session_mgr, "get_pane_pid") else None
+            pid = self._session_mgr.get_pane_pid(pane_id)
             if pid is None:
-                # best-effort: tmux pane pid
-                r = _tmux_cmd("display-message", "-p", "-t", pane_id, "#{pane_pid}")
-                if r.returncode != 0 or not r.stdout.strip():
-                    continue
-                try:
-                    pid = int(r.stdout.strip())
-                except ValueError:
-                    continue
+                continue
             rss = _get_process_rss_mb(pid)
             if rss is None:
                 continue

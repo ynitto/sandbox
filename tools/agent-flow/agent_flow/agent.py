@@ -62,8 +62,9 @@ def agent_cli_binary(cli: str) -> str:
 
 
 def _normalize_agent_overrides(raw) -> "dict[str, dict]":
-    """設定 agents:（役割毎の agent_cli/model 上書き）を正規化する。有効キーは AGENT_ROLES
-    と各ノード kind（VALID_KINDS）。不正な値は黙って落とす（設定ミスで run を殺さない）。"""
+    """設定 agents:（役割毎の agent_cli/model/readonly 上書き）を正規化する。有効キーは
+    AGENT_ROLES と各ノード kind（VALID_KINDS）。不正な値は黙って落とす（設定ミスで run を
+    殺さない）。"""
     out: "dict[str, dict]" = {}
     if not isinstance(raw, dict):
         return out
@@ -77,9 +78,25 @@ def _normalize_agent_overrides(raw) -> "dict[str, dict]":
             ov["agent_cli"] = str(v["agent_cli"]).strip().lower()
         if v.get("model"):
             ov["model"] = str(v["model"]).strip()
+        if isinstance(v.get("readonly"), bool):
+            ov["readonly"] = v["readonly"]
         if ov:
             out[key] = ov
     return out
+
+
+def _agent_readonly(purpose: str) -> bool:
+    """この役割を読み取り専用で呼ぶか（設定 `agents[purpose].readonly`・既定 False）。
+
+    解決順は `_agent_for` と同じ（kind は agents["worker"] へフォールバック）。宣言して
+    よいのは**読まない系**——planner / evaluator や判定系 kind のように、材料を全部
+    プロンプトで受け取ってテキストか JSON を返す役割に限る。work / verify のように
+    ワークスペースを触る役割へ付けると、道具ごと失って空振りする（適用拡大設計 §5）。
+    """
+    ov = _AGENT_OVERRIDES.get(purpose)
+    if ov is None and purpose in VALID_KINDS:
+        ov = _AGENT_OVERRIDES.get("worker")
+    return bool((ov or {}).get("readonly"))
 
 
 def _agent_for(purpose: str) -> "tuple[str, str | None]":
@@ -650,7 +667,7 @@ def _run_agent_once(prompt: str, model: str | None, purpose: str = "",
         instruction=_agentcli.spill_instruction(
             "このタスクの全文（依存タスクの成果物を含む）",
             then="その指示に従ってタスクを実行してください"))
-    built = _agentcli.headless_cmd(plug, model, prompt)
+    built = _agentcli.headless_cmd(plug, model, prompt, readonly=_agent_readonly(purpose))
     cmd, stdin_text, out_file = built["argv"], built["stdin"], built["output_file"]
     # 発生源で色を抑止（NO_COLOR/TERM=dumb）。残った ANSI は strip_ansi で除去する二段構え
     # （agent-project と同じ扱い）。定義の env は最後に載せるので上書きできる。

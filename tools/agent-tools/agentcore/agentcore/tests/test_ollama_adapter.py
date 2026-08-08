@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -96,6 +97,30 @@ class TestParseArgs(unittest.TestCase):
         self.assertIsNone(opts["think"])
         self.assertTrue(opts["skills_enabled"])
         self.assertEqual(opts["max_rounds"], ollama_loop.DEFAULT_MAX_ROUNDS)
+        self.assertEqual(opts["toolset"], ollama_loop.DEFAULT_TOOLSET)
+        self.assertIsNone(opts["format"])
+
+    def test_toolset_is_optional_and_defaults_to_bash(self):
+        """`--tools`（引数なし）は従来どおり bash。セット名は空白でも = でも取れる。"""
+        self.assertEqual(ollama_adapter.parse_args(["m", "--tools"])["toolset"], "bash")
+        self.assertEqual(ollama_adapter.parse_args(["m", "--tools", "read"])["toolset"], "read")
+        self.assertEqual(ollama_adapter.parse_args(["--tools=read", "m"])["toolset"], "read")
+
+    def test_toolset_does_not_swallow_the_positional_model(self):
+        opts = ollama_adapter.parse_args(["--tools", "qwen3"])
+        self.assertEqual(opts["model"], "qwen3")
+        self.assertEqual(opts["toolset"], "bash")
+
+    def test_unimplemented_toolset_is_an_explicit_error(self):
+        """未実装セットはモデル名として黙って飲み込まない（原因の分かる失敗にする）。"""
+        with self.assertRaises(ollama_adapter.ArgError):
+            ollama_adapter.parse_args(["m", "--tools", "edit"])
+
+    def test_format_accepts_json_and_text_only(self):
+        self.assertEqual(ollama_adapter.parse_args(["--format", "json", "m"])["format"], "json")
+        self.assertIsNone(ollama_adapter.parse_args(["--format", "text", "m"])["format"])
+        with self.assertRaises(ollama_adapter.ArgError):
+            ollama_adapter.parse_args(["--format", "yaml", "m"])
 
 
 class TestContextReporting(_NoServerMixin, unittest.TestCase):
@@ -289,8 +314,57 @@ class TestLoadProfileEnv(unittest.TestCase):
                 ollama_adapter.load_profile_env(profile)
 
 
+class TestSkillToolsetGuard(_NoServerMixin, unittest.TestCase):
+    """同梱スクリプト前提のスキル × 制限セットは黙って続けない（ツール開示設計 §6.1）。"""
+
+    def _run(self, toolset: str, body: str):
+        with mock.patch.object(ollama_adapter.ollama_skills, "expand",
+                               return_value=(body, [{"name": "tool", "path": "/x/SKILL.md",
+                                                     "chars": 10,
+                                                     "scripts": "{skill_dir}" in body}])), \
+                mock.patch.object(ollama_adapter.ollama_loop, "run_loop", return_value={
+                    "text": "ok", "tokens_in": 1, "tokens_out": 1,
+                    "rounds": 1, "status": "done"}):
+            return ollama_adapter.run_request(
+                "依頼", {**ollama_adapter.parse_args(["m", "--tools", toolset]),
+                        "no_log": True})
+
+    def test_read_toolset_with_script_bundled_skill_fails_loudly(self):
+        with self.assertRaises(ollama_adapter.ollama_skills.SkillToolsetMismatch):
+            self._run("read", "実行: {skill_dir}/scripts/go.py")
+
+    def test_bash_toolset_is_unaffected(self):
+        self.assertEqual(self._run("bash", "実行: {skill_dir}/scripts/go.py")["text"], "ok")
+
+    def test_prose_skill_passes_on_the_read_toolset(self):
+        self.assertEqual(self._run("read", "手順の説明だけ")["text"], "ok")
+
+
 class TestContractDefinition(unittest.TestCase):
-    """`agents/ollama.json` の宣言と実装の対応（契約が嘘をつかないこと）。"""
+    """`agents/ollama*.json` の宣言と実装の対応（契約が嘘をつかないこと）。
+
+    見るのは**このリポジトリの同梱定義**。実ホーム（`~/.agents/agents/`）には配布済みの
+    古い定義が残りうるので、そちらを引くと「インストールが古いだけ」でここが落ちる。
+    """
+
+    def setUp(self):
+        agentcli.clear_cache()
+        self._env = {k: os.environ.get(k) for k in
+                     ("KIRO_AGENTS_DIR", "AGENT_PROJECT_AGENTS_HOME", "HOME")}
+        self._tmp = tempfile.TemporaryDirectory()
+        os.environ["AGENT_PROJECT_AGENTS_HOME"] = str(Path(self._tmp.name) / "none")
+        os.environ["HOME"] = str(Path(self._tmp.name) / "none")
+        os.environ.pop("KIRO_AGENTS_DIR", None)
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        for k, v in self._env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        agentcli.clear_cache()
+        self._tmp.cleanup()
 
     def test_write_mode_gets_tools_and_readonly_does_not(self):
         spec = agentcli.load_cli("ollama")
@@ -300,12 +374,40 @@ class TestContractDefinition(unittest.TestCase):
         self.assertNotIn("--tools", readonly, "readonly はツールを持たない = enforced が真")
         self.assertEqual(spec["readonly"], "enforced")
 
-    def test_think_is_declared_off_in_the_definition(self):
+    def test_think_is_declared_on_in_the_definition(self):
+        """think は on（品質は時間で買う）。思考は thinking フィールドで本文と分離済み。"""
         spec = agentcli.load_cli("ollama")
         argv = agentcli.headless_cmd(spec, "M", "P")["argv"]
-        self.assertEqual(argv[argv.index("--think") + 1], "off")
+        self.assertEqual(argv[argv.index("--think") + 1], "on")
         opts = ollama_adapter.parse_args(argv[1:])
-        self.assertIs(opts["think"], False, "定義の argv がそのまま解釈できる")
+        self.assertIs(opts["think"], True, "定義の argv がそのまま解釈できる")
+        self.assertEqual(opts["toolset"], "bash")
+        self.assertEqual(opts["max_rounds"], 30)
+
+    def test_json_variant_forces_the_grammar_and_carries_no_tools(self):
+        spec = agentcli.load_cli("ollama-json")
+        argv = agentcli.headless_cmd(spec, "M", "P")["argv"]
+        opts = ollama_adapter.parse_args(argv[1:])
+        self.assertEqual(opts["format"], "json")
+        self.assertFalse(opts["tools"], "JSON しか出せない状態でツールループの規約は成立しない")
+        self.assertEqual(spec["readonly"], "enforced")
+
+    def test_read_variant_carries_the_read_toolset(self):
+        spec = agentcli.load_cli("ollama-read")
+        opts = ollama_adapter.parse_args(agentcli.headless_cmd(spec, "M", "P")["argv"][1:])
+        self.assertTrue(opts["tools"])
+        self.assertEqual(opts["toolset"], "read")
+        readonly = agentcli.headless_cmd(spec, "M", "P", readonly=True)["argv"]
+        self.assertNotIn("--tools", readonly, "readonly は道具ゼロのまま = enforced が真")
+
+    def test_context_exhausted_is_classified_as_env_not_transient(self):
+        """同じ壁に同じ時間を掛けて再試行させない（transient にしないのが要点）。"""
+        for name in ("ollama", "ollama-json", "ollama-read"):
+            spec = agentcli.load_cli(name)
+            triage = agentcli.classify_error(
+                spec, "@agent-note 途中で打ち切りました（context_exhausted）。")
+            self.assertIsNotNone(triage, name)
+            self.assertEqual(triage[0], "env", name)
 
     def test_interactive_launches_the_tui(self):
         spec = agentcli.load_cli("ollama")

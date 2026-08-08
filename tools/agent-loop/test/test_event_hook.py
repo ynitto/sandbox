@@ -73,6 +73,7 @@ def _run_once(scheduler):
          mock.patch.object(al, "load_local_pause", return_value=False), \
          mock.patch.object(al, "drain_loop_commands", return_value=[]), \
          mock.patch.object(al, "load_send_requests", return_value=[]), \
+         mock.patch.object(al, "_capture_pane", return_value="> "), \
          mock.patch.object(al.time, "time", return_value=100):
         scheduler._run_loop()
 
@@ -206,13 +207,16 @@ class EventHookDispatchTests(unittest.TestCase):
         scheduler._hook_cache_lock = al.threading.Lock()
         scheduler._run_preflight = mock.Mock(return_value=True)
 
-        self.assertTrue(scheduler._drain_external_one(entry))
-        self.assertEqual(list(scheduler._external_queues["issues"]), ["prompt"])
-        self.assertTrue(scheduler._drain_external_one(entry))
-        self.assertEqual(list(scheduler._external_queues["issues"]), ["prompt"])
-        self.assertTrue(scheduler._drain_external_one(entry))
+        with mock.patch.object(al, "_capture_pane", return_value="> "):
+            scheduler._drain_external_to_pending()
+            scheduler._process_pending()
+            self.assertEqual(len(scheduler._pending), 1)
+            scheduler._process_pending()
+            self.assertEqual(len(scheduler._pending), 1)
+            scheduler._process_pending()
         self.assertEqual(session.send_prompt.call_count, 2)
         self.assertEqual(list(scheduler._external_queues["issues"]), [])
+        self.assertEqual(scheduler._pending, [])
 
 
 if __name__ == "__main__":

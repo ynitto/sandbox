@@ -84,7 +84,8 @@ agent-loop msg --to AGENT [OPTIONS] [BODY]
 agent-loop agents
 ```
 
-- `send` は永続キュー（`~/.agents/send-requests/`）へ受付した時点で終了します（`--wait` だけ busy→ready を待つ）。
+- 同じworkspaceのdaemon稼働中は、`send`を永続キュー（`~/.agents/send-requests/`）へ受付します。daemon不在時は従来どおりstandalone sessionへ直接送信します。
+- `send --wait`はrequest ID単位の完了状態を待ち、別requestのbusy/ready遷移を完了扱いしません。
 - `pause` / `resume` は local pause（`resume` は agent-control / budget の pause を迂回しません）。
 - `cancel` は managed な entry / pane だけを停止・slot 解放します。
 - `drain` は新規受付を止め、実行中完了後に daemon を終了します。

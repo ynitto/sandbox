@@ -91,6 +91,10 @@ class BusyPatternTest(unittest.TestCase):
     def test_unknown_without_quiet_is_busy(self):
         self.assertFalse(self.p.is_idle("%1", "streaming output without markers"))
 
+    def test_failure_pattern_is_exposed(self):
+        profile = al.CliProfile("cli", _spec(failure_pattern="fatal error"))
+        self.assertEqual(profile.failure_pattern, "fatal error")
+
 
 class QuietDetectionTest(unittest.TestCase):
     """パターンで判定できない CLI は「画面が N 秒変化しない」ことを待機とみなす。"""

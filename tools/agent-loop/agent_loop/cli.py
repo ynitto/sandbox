@@ -351,10 +351,8 @@ def main() -> None:
             )
 
     # 起動時 stale slot クリーンアップ（常時）
-    started_at = time.time()
     cleanup_stale_slots_on_startup(
         slot_timeout_seconds,
-        daemon_started_at=started_at,
         cooldown_seconds=cooldown_seconds,
     )
 
@@ -383,7 +381,7 @@ def main() -> None:
     log.info("カレントディレクトリを起動対象に設定しました: %s", cwd)
 
     agent_name = str(config.get("agent_name", "")).strip()
-    monitor_semaphore = semaphore or (GlobalSemaphore(0) if agent_name else None)
+    monitor_semaphore = semaphore or GlobalSemaphore(0, slot_timeout_seconds, 0)
 
     slot_monitor_box: list[SlotMonitor | None] = [None]
 
@@ -396,23 +394,18 @@ def main() -> None:
                 continue
             log.warning("freeze を検知したためペインを再起動します: %s", pane_id)
             if mon is not None:
-                mon.untrack(pane_id)
-            if semaphore is not None:
-                semaphore.release(pane_id)
+                mon.fail(pane_id)
             try:
                 session_mgr.restart_pane(prompt_id)
             except RuntimeError as exc:
                 log.error("freeze 再起動失敗: %s", exc)
             return
 
-    slot_monitor: SlotMonitor | None = (
-        SlotMonitor(
-            monitor_semaphore,
-            slot_timeout_seconds,
-            freeze_timeout_seconds=freeze_timeout,
-            on_freeze=_on_freeze,
-        )
-        if monitor_semaphore is not None else None
+    slot_monitor = SlotMonitor(
+        monitor_semaphore,
+        slot_timeout_seconds,
+        freeze_timeout_seconds=freeze_timeout,
+        on_freeze=_on_freeze,
     )
     slot_monitor_box[0] = slot_monitor
     _slot_monitor_ref = slot_monitor
@@ -446,10 +439,8 @@ def main() -> None:
         inbox_watcher = InboxWatcher(
             agent_name=agent_name,
             session_mgr=session_mgr,
-            semaphore=semaphore,
-            slot_monitor=slot_monitor,
-            poll_interval=inbox_poll_seconds,
             scheduler=scheduler,
+            poll_interval=inbox_poll_seconds,
         )
         inbox_watcher.start()
         _inbox_watcher_ref = inbox_watcher
@@ -478,8 +469,7 @@ def main() -> None:
             log.warning("webhook.enabled ですが port が未指定/不正のため webhook を起動しません。")
 
     # スロット／inbox 完了監視スレッド起動
-    if slot_monitor is not None:
-        slot_monitor.start()
+    slot_monitor.start()
 
     # セッション監視スレッド起動
     monitor_thread = threading.Thread(

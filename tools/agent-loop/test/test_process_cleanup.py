@@ -39,7 +39,7 @@ class ProcessCleanupTests(unittest.TestCase):
             signals.append((pid, sig))
 
         with (
-            mock.patch.object(mgr, "_get_pane_pid", return_value=100),
+            mock.patch.object(mgr, "get_pane_pid", return_value=100),
             mock.patch.object(mgr, "_enumerate_descendant_pids", return_value=[200, 100]),
             mock.patch.object(mgr, "_signal_pids", side_effect=lambda pids, sig: [fake_signal(p, sig) for p in pids]),
             mock.patch.object(mgr, "_pid_is_alive", return_value=True),
@@ -56,7 +56,7 @@ class ProcessCleanupTests(unittest.TestCase):
     def test_kill_process_tree_pid_fail_only_kill_pane(self):
         mgr = self._make_manager()
         with (
-            mock.patch.object(mgr, "_get_pane_pid", return_value=None),
+            mock.patch.object(mgr, "get_pane_pid", return_value=None),
             mock.patch.object(mgr, "_signal_pids") as signal_mock,
             mock.patch.object(al, "_tmux_cmd") as tmux_mock,
         ):
@@ -67,7 +67,7 @@ class ProcessCleanupTests(unittest.TestCase):
     def test_kill_process_tree_skips_unmanaged_pane(self):
         mgr = self._make_manager()
         mgr._panes = {}
-        with mock.patch.object(mgr, "_get_pane_pid") as pid_mock:
+        with mock.patch.object(mgr, "get_pane_pid") as pid_mock:
             mgr.kill_process_tree("%99")
         pid_mock.assert_not_called()
 
@@ -85,6 +85,24 @@ class ProcessCleanupTests(unittest.TestCase):
         with mock.patch.object(al, "_capture_pane", return_value=content):
             tail = al.SessionManager.capture_visible_input_tail("%1", lines=2)
         self.assertEqual(tail, "line1\n  >")
+
+    def test_cancel_releases_monitor_slot_and_managed_pane(self):
+        session = self._make_manager()
+        monitor = mock.Mock()
+        semaphore = mock.Mock()
+        scheduler = al.PeriodicScheduler.__new__(al.PeriodicScheduler)
+        scheduler._entries = [{"id": "prompt-1", "name": "test"}]
+        scheduler._lock = al.threading.Lock()
+        scheduler._session_mgr = session
+        scheduler._slot_monitor = monitor
+        scheduler._semaphore = semaphore
+        session.cleanup_managed_pane = mock.Mock(return_value=True)
+
+        self.assertTrue(scheduler._cancel_target("prompt-1"))
+
+        monitor.fail.assert_called_once_with("%42")
+        semaphore.release.assert_not_called()
+        session.cleanup_managed_pane.assert_called_once_with("prompt-1")
 
 
 if __name__ == "__main__":

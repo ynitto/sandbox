@@ -216,6 +216,7 @@ FIFO で保留し、同じ entry の定期発火は最大 1 件へ coalesce す�
 ├── agent-loop.yaml            グローバル設定ファイル（load_config が参照）
 ├── agent-loop.log             ローテートログ（7世代保持）
 ├── send-requests/             CLI send の永続受付キュー
+├── send-responses/            send --wait のrequest単位完了状態
 ├── loop-commands/<pid>/       pause/cancel/drain/reload の file mailbox
 ├── loop-control/              workspace 単位の persistent local pause
 ├── loop-adaptive/             adaptive interval 状態
@@ -325,9 +326,10 @@ kiro-cli agent hook (stop)
 
 | 条件 | 挙動 |
 |---|---|
-| 通常 | `~/.agents/send-requests/` へ atomic 書き込み後に終了（受付完了） |
+| daemon稼働中 | workspace一致を確認し、requestをatomic claimしてからpendingへ受付 |
+| daemon不在 | 従来どおりstandalone sessionへ直接送信 |
 | 同一 entry+本文が 3 秒以内 | debounce で成功扱い破棄 |
-| `--wait` | busy→ready で 0、pane/process 終了または `failure_pattern` で 1、timeout で 2 |
+| `--wait` | request ID別の状態で完了なら0、pane/process終了または`failure_pattern`で1、timeoutで2 |
 
 ### `command_loop` の `send` コマンド（デーモン内インタラクティブ）
 
@@ -356,7 +358,7 @@ kiro-cli agent hook (stop)
 - フックは `handle(ctx) -> dict | None` を実装する。`ctx`（`name`/`method`/`headers`/`query`/`raw`/`payload`）から **provider 固有の判定（イベント種別・署名検証）を自分で行い**、対象外は `None` を返す。返す dict は `prompt` テンプレートの `{key}` に注入される。
 - `handle()` は `WebhookServer` の複数スレッドから同時に呼ばれ得る。モジュール状態を持たせずステートレスに保つこと（持つ場合は自前でロック）。
 - コアに provider 固有を足さないこと。認証は汎用共有シークレット照合のみで、HMAC 署名方式や `X-Gitlab-Event` 等のヘッダ解釈はフック側に閉じる。
-- 送信先は既存の名前付きセッション（`prompts` エントリ）。webhook 専用エントリはスケジュール不要（`next_run_at = math.inf`）で、`_drain_external_one()` 経由でのみ送信される。
+- 送信先は既存の名前付きセッション（`prompts` エントリ）。webhook専用エントリはスケジュール不要（`next_run_at = math.inf`）で、共通pending queue経由で送信される。
 
 ### 設定ファイルの読み込み先を変更する
 `load_config()` がグローバル設定（`~/.agents/`）、`_load_prompt_file_data()` がワークスペース設定（`<project>/.agents/`）を担当する。両者の役割を混在させないこと。

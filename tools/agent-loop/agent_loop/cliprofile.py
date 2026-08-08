@@ -104,6 +104,7 @@ class CliProfile:
         raw_clear = inter.get("clear_command", "/clear") if inter else "/clear"
         self.clear_command = "/clear" if raw_clear is None else str(raw_clear)
         self.skill_command_prefix = str((spec or {}).get("skill_command_prefix") or "/")
+        self.failure_pattern = str(inter.get("failure_pattern") or "") or None
         # 静穏判定用: pane_id → (直近内容のハッシュ, 最終変化時刻)
         self._quiet_state: dict[str, tuple[str, float]] = {}
 
@@ -160,7 +161,11 @@ class CliProfile:
         """行頭 `/` のスラッシュコマンドをこの CLI の起動記号へ差し替える（既定 `/` は素通し）。"""
         if self.skill_command_prefix == "/":
             return line
+        global _AGENTCLI_MOD
         mod = _AGENTCLI_MOD
+        if mod is None:
+            mod = _import_agentcli()
+            _AGENTCLI_MOD = mod
         if mod is not None:
             return mod.rewrite_skill_commands(line, self.skill_command_prefix)
         # ローダ不在でここに来るのは定義なし（legacy）だけのはずだが、安全側の素通し。

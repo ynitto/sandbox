@@ -227,6 +227,7 @@ def normalize(name: str, raw: dict, path) -> dict:
             # ready_pattern の消失が起きない）。busy_pattern は「処理中」の正のシグナル、
             # idle_quiet_sec はパターンで判定できない CLI 向けの静穏判定。
             "busy_pattern": str(inter_raw.get("busy_pattern") or ""),
+            "failure_pattern": str(inter_raw.get("failure_pattern") or ""),
             "idle_quiet_sec": float(inter_raw.get("idle_quiet_sec") or 0),
             # clear_command は「未指定 → 既定 /clear」と「空文字 → クリア手段なし」を区別する。
             "clear_command": (str(inter_raw["clear_command"])

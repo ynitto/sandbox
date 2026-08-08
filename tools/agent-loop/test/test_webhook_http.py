@@ -16,14 +16,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import agent_loop as al  # noqa: E402
 
 
-def _free_port() -> int:
-    import socket
-
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return int(s.getsockname()[1])
-
-
 class _FakeScheduler:
     def __init__(self, route=None):
         self.route = route
@@ -46,7 +38,7 @@ class _FakeScheduler:
 
 class WebhookHttpE2ETests(unittest.TestCase):
     def setUp(self):
-        self.port = _free_port()
+        self.port = 0
         self.prefix = "/hooks"
         self.scheduler = _FakeScheduler(
             {
@@ -67,6 +59,7 @@ class WebhookHttpE2ETests(unittest.TestCase):
             max_body_bytes=64,
         )
         self.server.start()
+        self.port = self.server.port
         self.addCleanup(self.server.stop)
         deadline = time.time() + 2
         while time.time() < deadline:

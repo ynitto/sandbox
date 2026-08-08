@@ -373,6 +373,100 @@ class TestRunLoop(unittest.TestCase):
         self.assertIn("/tmp/work", ollama_loop.system_prompt("/tmp/work"))
         self.assertIn("TASK_COMPLETE", ollama_loop.system_prompt("/tmp/work"))
 
+    def test_read_toolset_prompt_declares_the_limits(self):
+        text = ollama_loop.system_prompt("/tmp/work", "read")
+        self.assertIn("/tmp/work", text)
+        self.assertIn("TASK_COMPLETE", text)
+        self.assertIn("grep", text)
+        self.assertNotIn("bash", text.lower(), "汎用シェルがあるかのように書かない")
+
+
+class TestCommandGate(unittest.TestCase):
+    """read セットの実行ゲート（ツール開示設計 §4.2・適用拡大設計 §11 の受け入れ基準）。"""
+
+    def test_bash_toolset_allows_everything(self):
+        self.assertEqual(ollama_loop.check_command("rm -rf / | tee x", "bash"), "")
+
+    def test_read_commands_pass(self):
+        for command in ("ls -la src", "cat README.md", "grep -rn foo .",
+                        "git log --oneline -20", "find . -name '*.py'",
+                        "/usr/bin/head -5 a.txt"):
+            self.assertEqual(ollama_loop.check_command(command, "read"), "",
+                             f"許可されるべき: {command}")
+
+    def test_write_commands_are_rejected(self):
+        for command in ("rm -rf build", "sed -i s/a/b/ f.py", "python x.py",
+                        "tee out.txt", "awk '{print > \"f\"}' a", "bash -c ls"):
+            self.assertNotEqual(ollama_loop.check_command(command, "read"), "",
+                                f"拒否されるべき: {command}")
+
+    def test_metacharacters_are_rejected(self):
+        for command in ("cat a > b", "cat a | sh", "ls; rm x", "cat $(id)",
+                        "ls `whoami`", "cat a && rm b", "ls\nrm x", "ls ~"):
+            reason = ollama_loop.check_command(command, "read")
+            self.assertIn("使えません", reason, f"拒否されるべき: {command}")
+
+    def test_write_capable_git_subcommands_are_rejected(self):
+        self.assertNotEqual(ollama_loop.check_command("git push origin main", "read"), "")
+        self.assertNotEqual(ollama_loop.check_command("git commit -m x", "read"), "")
+
+    def test_find_write_predicates_are_rejected(self):
+        self.assertNotEqual(ollama_loop.check_command("find . -delete", "read"), "")
+        self.assertNotEqual(
+            ollama_loop.check_command("find . -name x -exec rm {} +", "read"), "")
+
+    def test_restricted_set_runs_without_a_shell(self):
+        """メタ文字はゲートで弾くが、実行の形そのものでもシェルを介さない（二段構え）。"""
+        result = ollama_loop.run_command("echo a b", cwd=os.getcwd(), timeout=30,
+                                         max_chars=100, toolset="read")
+        self.assertEqual(result["exit_code"], 0)
+        self.assertEqual(result["output"], "a b")
+
+
+class TestToolDenial(unittest.TestCase):
+    def _run(self, replies, **kwargs):
+        events = []
+        index = {"n": 0}
+
+        def fake_chat(model, messages, **_kw):
+            i = min(index["n"], len(replies) - 1)
+            index["n"] += 1
+            return {"text": replies[i], "tokens_in": 1, "tokens_out": 1}
+
+        with mock.patch.object(ollama_loop, "chat_once", fake_chat), \
+                mock.patch.object(ollama_loop, "run_command") as run:
+            result = ollama_loop.run_loop(
+                "m", "タスク", toolset="read", max_rounds=8,
+                emit=lambda kind, **f: events.append((kind, f)), **kwargs)
+        return result, events, run
+
+    def test_denied_command_is_not_executed_and_is_explained(self):
+        result, events, run = self._run(
+            ["```bash\nrm -rf build\n```", "調べ直しました\nTASK_COMPLETE"])
+        self.assertEqual(result["status"], "done")
+        self.assertEqual(run.call_count, 0, "拒否したコマンドは実行しない")
+        kinds = [k for k, _f in events]
+        self.assertIn("tool_denied", kinds)
+        self.assertNotIn("tool_exec", kinds,
+                         "実行していないコマンドを実行したようにログへ残さない")
+
+    def test_repeated_denials_stop_the_run(self):
+        """権限の探りだけでラウンドを焼き切らせない（拒否にも予算を切る）。"""
+        result, events, run = self._run(["```bash\nrm -rf build\n```"])
+        self.assertEqual(result["status"], "tool_denied")
+        self.assertEqual(run.call_count, 0)
+        self.assertEqual(len([k for k, _f in events if k == "tool_denied"]),
+                         ollama_loop._MAX_DENIALS + 1)
+
+
+class TestFormat(unittest.TestCase):
+    def test_format_is_sent_as_a_grammar_constraint(self):
+        body = ollama_loop._payload("m", think=True, options=None, fmt="json")
+        self.assertEqual(body["format"], "json")
+
+    def test_no_format_field_when_unset(self):
+        self.assertNotIn("format", ollama_loop._payload("m", think=None, options=None))
+
 
 if __name__ == "__main__":
     unittest.main()

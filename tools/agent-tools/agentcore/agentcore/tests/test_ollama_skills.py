@@ -124,8 +124,16 @@ class TestExpand(unittest.TestCase):
     def test_skill_dir_placeholder_is_replaced(self):
         with _SkillHome() as home:
             path = home.add("tool", "実行: {skill_dir}/scripts/go.py")
-            out, _loaded = ollama_skills.expand("依頼", ["tool"])
+            out, loaded = ollama_skills.expand("依頼", ["tool"])
         self.assertIn(f"実行: {path.parent}/scripts/go.py", out)
+        self.assertTrue(loaded[0]["scripts"],
+                        "同梱スクリプト前提であることを呼び出し側へ返す（ツールセットとの整合判定）")
+
+    def test_plain_skill_is_not_marked_as_script_bundled(self):
+        with _SkillHome() as home:
+            home.add("prose", "手順を説明するだけ")
+            _out, loaded = ollama_skills.expand("依頼", ["prose"])
+        self.assertFalse(loaded[0]["scripts"])
 
     def test_partially_resolvable_leading_block_is_left_alone(self):
         """1 つでも解決できない行があれば「ただの本文」と見て触らない。"""

@@ -28,6 +28,7 @@ import json
 import os
 import queue
 import re
+import shlex
 import socket
 import subprocess
 import threading
@@ -45,12 +46,63 @@ DEFAULT_MAX_ROUNDS = 12
 DEFAULT_COMMAND_TIMEOUT_SEC = 300.0
 DEFAULT_MAX_OUTPUT_CHARS = 4000
 _MAX_NUDGES = 2                        # 規約を外した応答へ言い直しを促す回数の上限
+# ゲート拒否の上限。無料にすると、モデルが全ラウンドを権限の探りだけで焼き切れる
+# （ツール開示設計 §4.3「昇格試行に予算を切る」。nudge と同じ形の上限にする）。
+_MAX_DENIALS = 2
 # これ以下しか文脈が残っていないなら、ツール結果を足しても意味を成さない。
 # ここで明示的に止める（サーバに黙って切り捨てさせるより、止まった理由が残る方がよい）。
 _MIN_TOOL_OUTPUT_CHARS = 200
 
 _FENCE_RE = re.compile(r"```(?:bash|sh|shell|console)?[ \t]*\r?\n(.*?)```", re.S)
 _DONE_MARKER = "TASK_COMPLETE"
+
+# --- ツールセット（`--tools <セット>`）---------------------------------------
+# 設計: docs/designs/agent-ollama-tool-disclosure-design.md §4.2 / 適用拡大設計 §6。
+# 「ツールが 1 つも無い」と「無制限のシェルが 1 つある」の間に段を作る。**強制は実行の
+# 手前のゲートで行う**——「作業ディレクトリの外を変更しない」の類はシステムプロンプトの
+# 一文でしかなく、強制力がゼロだった。読み込み時間は増やさない（語彙は規約数行で済む）。
+TOOLSETS = ("bash", "read")
+DEFAULT_TOOLSET = "bash"
+# `edit` セットは適用拡大設計 §7（段 4）。実装前に名前だけ受けて明示的に断る——
+# 黙ってモデル名として解釈されると、原因の分からない起動失敗になる。
+PLANNED_TOOLSETS = ("edit",)
+
+# read セットの語彙。**ファイルを変えられないコマンドだけ**を置く。sed（-i）・awk
+# （print > file）・tee・xargs・シェル類は自前の書き込み手段を持つので入れない。
+_READ_COMMANDS = {
+    "basename", "cat", "cut", "date", "diff", "dirname", "echo", "file", "find",
+    "grep", "head", "ls", "nl", "pwd", "readlink", "realpath", "rg", "sort",
+    "stat", "tail", "tree", "uniq", "wc", "which",
+}
+# git は副作用のある部分コマンドが多いので、読む部分コマンドだけを名指しで許す。
+_READ_GIT_SUBCOMMANDS = {"blame", "branch", "describe", "diff", "grep", "log",
+                         "ls-files", "ls-tree", "rev-parse", "shortlog", "show", "status"}
+# find は語彙に入れるが、自前で書き込み・実行ができる述語だけ個別に弾く。
+_FIND_WRITE_PREDICATES = {"-delete", "-exec", "-execdir", "-ok", "-okdir",
+                          "-fls", "-fprint", "-fprint0", "-fprintf"}
+# read セットではシェルを介さず argv を直接実行するので、メタ文字は「危険」と
+# 「黙って効かない」の両方の理由で弾く（`>` 1 文字で読み取り専用が崩れ、`*` は
+# 展開されないまま検索語として渡って結果が静かに間違う）。
+# **判定は引用の外だけ**。`find . -name '*.py'` の `*` は find 自身が解釈する正しい
+# 使い方で、シェルに渡らない以上ただの文字である——ここを一律で弾くと、read セットで
+# 一番よく使う探索が通らなくなる。
+_METACHARS = set("|&;<>()$`\\*?[]{}~\n\r")
+
+
+def _unquoted_metachars(text: str) -> "list[str]":
+    """引用符の外にあるメタ文字を拾う（引用符の中は文字として扱う）。"""
+    found: "set[str]" = set()
+    quote = ""
+    for ch in text:
+        if quote:
+            if ch == quote:
+                quote = ""
+            continue
+        if ch in "\"'":
+            quote = ch
+        elif ch in _METACHARS:
+            found.add(ch)
+    return sorted(found)
 
 
 class StallError(RuntimeError):
@@ -109,7 +161,8 @@ def resolve_think(explicit: "bool | None" = None) -> "bool | None":
     return None
 
 
-def _payload(model: str, *, think: "bool | None", options: "dict | None") -> dict:
+def _payload(model: str, *, think: "bool | None", options: "dict | None",
+             fmt: "str | None" = None) -> dict:
     body: dict = {"model": model, "stream": True}
     merged = load_options()
     if options:
@@ -118,6 +171,11 @@ def _payload(model: str, *, think: "bool | None", options: "dict | None") -> dic
         body["options"] = merged
     if think is not None:
         body["think"] = bool(think)
+    if fmt:
+        # `format` は**デコード時の文法制約**。プロンプトに 1 トークンも足さないので
+        # 読み込み時間の固定費が増えない（適用拡大設計 §4.1）。JSON 契約の役割で
+        # 「妥当な JSON でない出力」という故障モードを消すのが目的。
+        body["format"] = fmt
     keep_alive = os.environ.get("AGENT_OLLAMA_KEEP_ALIVE", "").strip()
     if keep_alive:
         body["keep_alive"] = keep_alive
@@ -345,27 +403,84 @@ def _chat_delta(chunk: dict) -> "tuple[str, str]":
 
 
 def run_plain(model: str, prompt: str, *, think: "bool | None" = None, emit=None,
-              options: "dict | None" = None, **limits) -> dict:
+              options: "dict | None" = None, fmt: "str | None" = None, **limits) -> dict:
     """単発 text → text（ツールなし）。案 A の主経路をストリーミングで回す版。
 
     ツールを持たないので `readonly: enforced` の宣言が嘘にならない——このモードは
     ファイルもコマンドも触れない。
     """
-    body = _payload(model, think=think, options=options)
+    body = _payload(model, think=think, options=options, fmt=fmt)
     body["prompt"] = prompt
     return stream_call("/api/generate", body, delta_of=_generate_delta, emit=emit, **limits)
 
 
 def chat_once(model: str, messages: "list[dict]", *, think: "bool | None" = None, emit=None,
-              options: "dict | None" = None, round_no: int = 0, **limits) -> dict:
-    body = _payload(model, think=think, options=options)
+              options: "dict | None" = None, round_no: int = 0,
+              fmt: "str | None" = None, **limits) -> dict:
+    body = _payload(model, think=think, options=options, fmt=fmt)
     body["messages"] = messages
     return stream_call("/api/chat", body, delta_of=_chat_delta, emit=emit,
                        round_no=round_no, **limits)
 
 
-def system_prompt(cwd: str) -> str:
+def check_command(command: str, toolset: str = DEFAULT_TOOLSET) -> str:
+    """実行前のゲート。許可なら空文字、拒否なら**モデルへ返す理由**を返す。
+
+    判定はコマンド名の語彙 + メタ文字の有無だけで行う（パーサは持たない）。ここを
+    甘く作ると read セットの保証が形だけになるので、**判定できない形は全部拒否**する
+    ——`bash` セット（現行の挙動）だけが素通しで、それ以外は明示的な許可制。
+    """
+    if (toolset or DEFAULT_TOOLSET) == "bash":
+        return ""
+    text = str(command or "").strip()
+    if not text:
+        return "コマンドが空です。"
+    bad = _unquoted_metachars(text)
+    if bad:
+        return (f"シェルの記号 {' '.join(bad)} は {toolset} セットでは使えません"
+                "（パイプ・リダイレクト・変数展開・ワイルドカードは効きません）。"
+                "コマンドは 1 つだけ、記号を文字として渡すときは引用符で囲んでください。")
+    try:
+        argv = shlex.split(text)
+    except ValueError as exc:
+        return f"コマンドを解釈できません（{exc}）。"
+    if not argv:
+        return "コマンドが空です。"
+    name = os.path.basename(argv[0])
+    if name == "git":
+        sub = next((a for a in argv[1:] if not a.startswith("-")), "")
+        if sub in _READ_GIT_SUBCOMMANDS:
+            return ""
+        return (f"git {sub} は {toolset} セットでは使えません。使えるのは: "
+                f"{' '.join(sorted(_READ_GIT_SUBCOMMANDS))}")
+    if name not in _READ_COMMANDS:
+        return (f"{name} は {toolset} セットでは使えません。使えるのは: "
+                f"{' '.join(sorted(_READ_COMMANDS))} と git の読み取り部分コマンド。")
+    if name == "find":
+        hit = [a for a in argv[1:] if a in _FIND_WRITE_PREDICATES]
+        if hit:
+            return f"find の {' '.join(hit)} は {toolset} セットでは使えません。"
+    return ""
+
+
+def system_prompt(cwd: str, toolset: str = DEFAULT_TOOLSET) -> str:
     """ツールループの規約。**短さが要件**（毎ラウンドの prefill に載る固定費）。"""
+    if (toolset or DEFAULT_TOOLSET) != "bash":
+        return (
+            "あなたはローカル調査エージェント。道具は**読み取り専用のコマンド**だけです。\n"
+            "\n"
+            "出力の規約（厳守）:\n"
+            "1. 調べるときはコードブロックを 1 つだけ出す。中身はコマンド 1 つ。\n"
+            "   実行結果は次のターンで渡されるので、結果を待たずに続きを書かない。\n"
+            f"2. 使えるのは {' '.join(sorted(_READ_COMMANDS))} と "
+            f"git の {' '.join(sorted(_READ_GIT_SUBCOMMANDS))}。\n"
+            "3. パイプ・リダイレクト・変数展開・ワイルドカード（`|` `>` `$` `*` 等）は"
+            "使えません（`-name '*.py'` のように引用符で囲めば文字として渡せます）。"
+            "ファイルの作成・変更・削除もできません。\n"
+            f"4. 完了したらコードブロックを出さず、成果を報告して最後の行に {_DONE_MARKER} と書く。\n"
+            "5. 人へ質問はできない。曖昧なら最も妥当な前提を選び、採用した前提を報告に明記する。\n"
+            f"6. 作業ディレクトリは {cwd}。\n"
+        )
     return (
         "あなたはローカル実行エージェント。道具はシェル（bash）1 つだけです。\n"
         "\n"
@@ -399,12 +514,27 @@ def _clip(text: str, limit: int) -> str:
     return f"{head}\n…（中略 {len(text) - limit} 文字）…\n{tail}"
 
 
-def run_command(command: str, *, cwd: str, timeout: float, max_chars: int) -> dict:
-    """bash でコマンドを 1 つ実行する（`--tools` = 書き込みモードでのみ呼ばれる）。"""
+def run_command(command: str, *, cwd: str, timeout: float, max_chars: int,
+                toolset: str = DEFAULT_TOOLSET) -> dict:
+    """コマンドを 1 つ実行する（`--tools` = 書き込みモードでのみ呼ばれる）。
+
+    `bash` セットは従来どおりログインシェル素通し。制限セットは **シェルを介さず
+    argv を直接実行する**——ゲート（`check_command`）を通った文字列であっても、
+    シェルに渡す限り境界はシェルの解釈次第になる。プロセス起動の形そのもので
+    「メタ文字は効かない」を担保する。
+    """
     started = time.monotonic()
+    if (toolset or DEFAULT_TOOLSET) == "bash":
+        argv = ["bash", "-lc", command]
+    else:
+        try:
+            argv = shlex.split(command)
+        except ValueError as exc:
+            return {"exit_code": 127, "output": f"（解釈できませんでした: {exc}）",
+                    "duration_sec": 0.0}
     try:
         proc = subprocess.run(
-            ["bash", "-lc", command], cwd=cwd, capture_output=True, text=True,
+            argv, cwd=cwd, capture_output=True, text=True,
             encoding="utf-8", errors="replace", timeout=timeout)
         out = (proc.stdout or "") + (("\n" + proc.stderr) if proc.stderr else "")
         code = proc.returncode
@@ -423,7 +553,8 @@ def run_loop(model: str, task: str, *, cwd: "str | None" = None, emit=None,
              think: "bool | None" = None, max_rounds: int = DEFAULT_MAX_ROUNDS,
              command_timeout: float = DEFAULT_COMMAND_TIMEOUT_SEC,
              max_output_chars: int = DEFAULT_MAX_OUTPUT_CHARS,
-             options: "dict | None" = None, tracker=None, **limits) -> dict:
+             options: "dict | None" = None, tracker=None,
+             toolset: str = DEFAULT_TOOLSET, fmt: "str | None" = None, **limits) -> dict:
     """bash 1 ツールの最小エージェントループ。
 
     1 ラウンド = 「モデルに聞く → コードブロックがあれば実行して結果を返す」。
@@ -435,16 +566,21 @@ def run_loop(model: str, task: str, *, cwd: "str | None" = None, emit=None,
     `llm_end` へ載せ、上限へ近づいたら警告し、**ツール出力を残り容量に合わせて詰め**、
     それでも入らなくなったら `context_exhausted` で明示的に止める。サーバに黙って
     切り捨てさせない（切り捨てられると、指示を失ったまま尤もらしい答えが返る）。
+
+    `toolset` が `bash` 以外なら、実行の手前で `check_command` のゲートを通す。拒否は
+    実行せずに理由だけを会話へ**追記**して次ラウンドへ回し（既出は書き換えない＝全再
+    prefill を起こさない）、`_MAX_DENIALS` 回で `tool_denied` として止める。
     """
     workdir = str(cwd or os.getcwd())
     messages = [
-        {"role": "system", "content": system_prompt(workdir)},
+        {"role": "system", "content": system_prompt(workdir, toolset)},
         {"role": "user", "content": task},
     ]
     if tracker is not None:
         tracker.add_text(messages[0]["content"] + task)
     tokens_in = tokens_out = 0
     nudges = 0
+    denials = 0
     last_text = ""
     status = "max_rounds"
     round_no = 0
@@ -453,7 +589,7 @@ def run_loop(model: str, task: str, *, cwd: "str | None" = None, emit=None,
         if emit is not None:
             emit("round_start", round=round_no, rounds_max=max_rounds)
         result = chat_once(model, messages, think=think, emit=emit, options=options,
-                           round_no=round_no, tracker=tracker, **limits)
+                           round_no=round_no, tracker=tracker, fmt=fmt, **limits)
         tokens_in += int(result.get("tokens_in") or 0)
         tokens_out += int(result.get("tokens_out") or 0)
         text = str(result.get("text") or "")
@@ -477,6 +613,27 @@ def run_loop(model: str, task: str, *, cwd: "str | None" = None, emit=None,
                 emit("round_end", round=round_no, reason="nudge")
             continue
 
+        # 権限のゲート。拒否は tool_exec を出す前に決める（実行していないコマンドが
+        # 実行されたようにログへ残らないこと）。理由は末尾追記でモデルへ返す。
+        denied = check_command(command, toolset)
+        if denied:
+            denials += 1
+            if emit is not None:
+                emit("tool_denied", round=round_no, toolset=toolset, denials=denials,
+                     command=_clip(command, 400), reason=denied)
+            if denials > _MAX_DENIALS:
+                status = "tool_denied"
+                break
+            feedback = (f"そのコマンドは実行していません: {denied}\n"
+                        "許された範囲で次の 1 手を出すか、この範囲では無理なら理由を報告して "
+                        f"最後の行に {_DONE_MARKER} と書いてください。")
+            messages.append({"role": "user", "content": feedback})
+            if tracker is not None:
+                tracker.add_text(text + feedback)
+            if emit is not None:
+                emit("round_end", round=round_no, reason="denied")
+            continue
+
         # 残り容量に合わせてツール出力の上限を絞る。足りなければ、切り捨てられるのを
         # 待たずにこちらで止める——サーバ側の切り捨ては黙って起きるので気づけない。
         # 判定は tool_exec を出す**前**に行う（出してから止めると、実行していない
@@ -496,7 +653,7 @@ def run_loop(model: str, task: str, *, cwd: "str | None" = None, emit=None,
         if emit is not None:
             emit("tool_exec", round=round_no, command=_clip(command, 400))
         outcome = run_command(command, cwd=workdir, timeout=command_timeout,
-                              max_chars=allowed)
+                              max_chars=allowed, toolset=toolset)
         if emit is not None:
             emit("tool_result", round=round_no, exit_code=outcome["exit_code"],
                  duration_sec=outcome["duration_sec"], output_chars=len(outcome["output"]))

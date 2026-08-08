@@ -42,7 +42,8 @@ USAGE = """使い方: agent-ollama [オプション] <model>
   プロンプトは stdin。本文は stdout、診断と `@agent-usage` は stderr へ出る。
 
   実行モード:
-    --tools               bash 1 つを道具にした実行ループ（書き込みモード）
+    --tools [セット]      道具を持つ実行ループ（書き込みモード）。セットは
+                          bash（既定・制限なし）| read（読み取り専用コマンドのみ）
     --tui                 デバッグ用の対話ビュー（行指向・tmux から操作できる。
                           矢印キー・履歴・Tab 補完が効く。一覧は TUI 内の /keys）
     --follow [LOG]        進捗ログを追尾表示する（省略時は最新のログ）
@@ -51,6 +52,8 @@ USAGE = """使い方: agent-ollama [オプション] <model>
 
   推論:
     --think on|off        思考モード（既定は AGENT_OLLAMA_THINK → モデル既定）
+    --format json|text    出力の文法を強制する（json = 妥当な JSON しか出せなくなる。
+                          プロンプトは 1 トークンも増えない。text = 強制しない）
     --skill NAME          スキルを明示指定（複数可）
     --no-skills           先頭スラッシュ行によるスキル展開をしない
 
@@ -80,8 +83,11 @@ USAGE = """使い方: agent-ollama [オプション] <model>
 _FLAGS = {"--tools", "--tui", "--no-skills", "--no-log", "--context", "-h", "--help"}
 _VALUED = {"--think", "--skill", "--stall-timeout", "--first-token-timeout",
            "--max-rounds", "--command-timeout", "--cwd", "--log", "--model",
-           "--context-limit", "--context-warn-pct"}
+           "--context-limit", "--context-warn-pct", "--format"}
 _OPTIONAL_VALUED = {"--follow", "--status"}
+# `--tools` の後ろに続いてよい語。未実装セット（edit）も**名前としては受ける**——
+# 受けないと positional なモデル名として解釈され、原因の分からない失敗になる。
+_TOOLSET_WORDS = set(ollama_loop.TOOLSETS) | set(ollama_loop.PLANNED_TOOLSETS)
 
 
 class ArgError(ValueError):
@@ -161,7 +167,8 @@ def parse_args(tokens: "list[str]") -> dict:
     よって「先に来たものがオプション」という前提を置けない。
     """
     opts: dict = {
-        "model": "", "tools": False, "tui": False, "help": False,
+        "model": "", "tools": False, "toolset": ollama_loop.DEFAULT_TOOLSET,
+        "tui": False, "help": False, "format": None,
         "think": None, "skills": [], "skills_enabled": True,
         "stall_timeout": None, "first_token_timeout": None,
         "max_rounds": ollama_loop.DEFAULT_MAX_ROUNDS,
@@ -177,8 +184,17 @@ def parse_args(tokens: "list[str]") -> dict:
         index += 1
         if token in ("-h", "--help"):
             opts["help"] = True
-        elif token == "--tools":
+        elif token == "--tools" or token.startswith("--tools="):
             opts["tools"] = True
+            name = token.split("=", 1)[1] if "=" in token else ""
+            if not name and index < len(tokens) and tokens[index] in _TOOLSET_WORDS:
+                name = tokens[index]
+                index += 1
+            if name and name not in ollama_loop.TOOLSETS:
+                raise ArgError(f"--tools のセットは {' / '.join(ollama_loop.TOOLSETS)} です"
+                               f"（{name} は未実装）")
+            if name:
+                opts["toolset"] = name
         elif token == "--tui":
             opts["tui"] = True
         elif token == "--no-skills":
@@ -203,6 +219,12 @@ def parse_args(tokens: "list[str]") -> dict:
                 index += 1
             if name == "--think":
                 opts["think"] = _as_bool(value, name)
+            elif name == "--format":
+                fmt = str(value).strip().lower()
+                if fmt not in ("json", "text"):
+                    raise ArgError(f"--format は json か text です: {value}")
+                # text は「強制しない」。API へフィールドを送らないことで表す。
+                opts["format"] = "json" if fmt == "json" else None
             elif name == "--skill":
                 opts["skills"].append(value)
             elif name == "--stall-timeout":
@@ -308,10 +330,22 @@ def run_request(prompt: str, opts: dict, *, model: str = "", tools: "bool | None
     model = model or opts["model"]
     use_tools = opts["tools"] if tools is None else tools
     think = opts["think"] if think is None else think
+    toolset = str(opts.get("toolset") or ollama_loop.DEFAULT_TOOLSET)
+    fmt = opts.get("format")
     warn = warn or (lambda message: print(message, file=sys.stderr))
 
     prompt, loaded = ollama_skills.expand(
         prompt, opts.get("skills") or (), enabled=opts.get("skills_enabled", True), warn=warn)
+    # スキルとツールセットは暗黙に結合している（ツール開示設計 §6.1）: 同梱スクリプトを
+    # 叩く前提のスキルは、汎用シェルを含まないセットでは動かない。黙って無視すると
+    # 「スキルは読まれたのに手順が実行されない」成功に見える失敗になるので、ここで落とす。
+    if use_tools and toolset != ollama_loop.DEFAULT_TOOLSET:
+        bundled = [item["name"] for item in loaded if item.get("scripts")]
+        if bundled:
+            raise ollama_skills.SkillToolsetMismatch(
+                f"スキルと --tools セットが噛み合いません: {', '.join(bundled)} は同梱の "
+                f"scripts/ を実行する前提ですが、{toolset} セットではシェルを使えません。"
+                "--tools bash で起動するか、そのスキルの指定を外してください。")
 
     log_path = None if opts.get("no_log") else (opts.get("log") or ollama_events.new_log_path(model))
     sink = renderer.event if renderer is not None else None
@@ -321,6 +355,7 @@ def run_request(prompt: str, opts: dict, *, model: str = "", tools: "bool | None
         events.emit("run_start", model=model, mode="tools" if use_tools else "plain",
                     log=str(log_path or ""), prompt_chars=len(prompt),
                     think=("既定" if think is None else bool(think)),
+                    toolset=(toolset if use_tools else ""), format=(fmt or ""),
                     context_limit=tracker.limit, context_limit_source=tracker.limit_source)
         for item in loaded:
             events.emit("skill_load", **item)
@@ -329,11 +364,11 @@ def run_request(prompt: str, opts: dict, *, model: str = "", tools: "bool | None
                 result = ollama_loop.run_loop(
                     model, prompt, cwd=opts.get("cwd"), emit=events.emit, think=think,
                     max_rounds=opts["max_rounds"], command_timeout=opts["command_timeout"],
-                    tracker=tracker, **_limits(opts))
+                    tracker=tracker, toolset=toolset, fmt=fmt, **_limits(opts))
             else:
                 result = ollama_loop.run_plain(
                     model, prompt, think=think, emit=events.emit, round_no=1,
-                    tracker=tracker, **_limits(opts))
+                    tracker=tracker, fmt=fmt, **_limits(opts))
                 result = dict(result, rounds=1, status="done")
                 if tracker.should_warn():
                     events.emit("context_warn", round=1, **tracker.snapshot())
@@ -404,7 +439,7 @@ def main(argv=None) -> int:
 
     try:
         result = run_request(sys.stdin.read(), opts)
-    except ollama_skills.SkillNotFound as exc:
+    except (ollama_skills.SkillNotFound, ollama_skills.SkillToolsetMismatch) as exc:
         print(str(exc), file=sys.stderr)
         return 1
     except ollama_loop.StallError as exc:
@@ -430,7 +465,7 @@ def main(argv=None) -> int:
               f"source={context.get('context_source', '')}", file=sys.stderr)
     # 途中で止めたときは黙って成果だけ返さない。成果は返す（R1 止めない）が、
     # **完走していない**ことは呼び出し側と人に見えるようにする。
-    if result.get("status") in ("context_exhausted", "max_rounds"):
+    if result.get("status") in ("context_exhausted", "max_rounds", "tool_denied"):
         print(f"@agent-note 途中で打ち切りました（{result['status']}）。"
               "成果は最後の応答までの分です。", file=sys.stderr)
     if result.get("log"):
