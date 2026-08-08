@@ -20,6 +20,7 @@ const {
 } = require('../../agent-project/main/project');
 const { parseFlatYaml } = require('../../agent-project/main/toolconfig');
 const { parseYaml, isPlainObject, scalarString } = require('../../../base/main/yaml');
+const { userHomeRoots } = require('../../../base/main/agent-home');
 
 // 走査を軽く保つためのスキップ（プロジェクト内部の既知/生成物ディレクトリ）。隠しフォルダは
 // 別途 name.startsWith('.') で降下対象から外す（マーカーの .kiro/.statemachine は「降りる」の
@@ -277,6 +278,8 @@ function coworkRoots(config) {
   return [
     ...require('../../agent-project/main/engine').projectRoots(config),
     ...declared.map((r) => String(r || '').trim()).filter(Boolean),
+    // ユーザーホームは常に対象（`~/.kiro/kiro-loop.yml` はどの登録簿にも載らない）。
+    ...userHomeRoots(),
   ];
 }
 
@@ -288,13 +291,23 @@ function discoverCoworkItems(config) {
 
   const items = [];
   const seenRoots = new Set();
+  // ホームは**そのフォルダ自身だけ**を見る（下へ潜らない）。ホームの下には Library や
+  // ドキュメントの木が広がっていて、登録フォルダと同じ深さで歩くと走査だけで数秒かかる。
+  // ホームに置く定常業務は `~/.kiro/kiro-loop.yml` ＝ホーム直下なので、これで足りる。
+  const homeKeys = new Set(userHomeRoots().map((d) => _pathKey(resolveRoot(d, config))));
   for (const r of roots) {
     if (!r) continue;
     const root = resolveRoot(r, config);
     const rk = _pathKey(root);
     if (seenRoots.has(rk)) continue;                 // 同一実体の root を二重走査しない
     seenRoots.add(rk);
-    for (const mk of scanForCoworkConfigs(root, scanDepth)) {
+    // root = 登録したフォルダ（cowork.roots または実行エンジンのプロジェクト）。
+    // folder = 設定ファイル（.kiro / .statemachine）が実際にあるフォルダで、走査の深さの
+    // ぶんだけ root の下にありうる。**この 2 つは役割が違う**——実行の cwd と画面での
+    // 所属は登録したフォルダ（root）、プロンプト本文とログの在り処は設定のあるフォルダ
+    // （repo）。同じものとして扱うと、サブフォルダに設定を置いた作業がどのフォルダの
+    // 一覧にも出てこなくなる。
+    for (const mk of scanForCoworkConfigs(root, homeKeys.has(rk) ? 0 : scanDepth)) {
       const folder = mk.folder;
       const fk = _pathKey(folder);
       const smInfos = mk.smNames.map((smName) => {
@@ -327,6 +340,7 @@ function discoverCoworkItems(config) {
             type: 'loop',
             name: e.name || `定期実行 ${idx + 1}`,
             repo: folder,
+            root,
             schedule,
             prompt: kiro.texts[idx] || '',
             enabled: e.enabled !== false,
@@ -346,6 +360,7 @@ function discoverCoworkItems(config) {
           type: 'state-machine',
           name: meta.name || smName,
           repo: folder,
+          root,
           workflow: smName,
           description: meta.description || '',
           schedule,

@@ -1,7 +1,7 @@
 # agent-loop 設計書
 
 > 最終更新: 2026-08-06（ループ拡張 4 設計・8 文書を本書へ統合。同日、エージェント CLI の差し替え〈機能 5〉を追加）
-> 実装: `tools/agent-loop/`（`agent_loop` パッケージ）。旧系統 `tools/kiro-loop/` は残置（付録 B）
+> 実装: `tools/agent-loop/`（`agent_loop` パッケージ）。旧系統 `tools/kiro-loop/` は退役予定（付録 B）
 > 関連: [agent-tools 改称方針](./agent-tools-rename-design.md) ／
 > [slash プロパティ設計](./agent-loop-slash-property-design.md) ／
 > 実装リファレンス `tools/agent-loop/DESIGN.md`（クラス構成・処理フローの詳細）
@@ -556,7 +556,7 @@ SlotMonitor の状態遷移は従来の「プロンプト消失 → processing �
 
 ### B. kiro-loop 系統との差分と移行
 
-`kiro-loop → agent-loop` は[クローン移行方針](./agent-tools-rename-design.md)に基づく改称系統で、クローン移行は実施済み、旧系統 `tools/kiro-loop/` は**削除せず残置**します（改称方針 §3 の維持リスト）。設計の正典は本書（agent-loop 名称）に一本化し、kiro-loop 側の読者は次の対応で読み替えます。
+`kiro-loop → agent-loop` は[クローン移行方針](./agent-tools-rename-design.md)に基づく改称系統で、クローン移行は実施済みです。2026-08-08 に旧系統 `tools/kiro-loop/` の残置方針は撤回され、**退役**が決まりました（改称方針 §6、手順は[資源効率計画](../plans/2026-08-08-agent-tools-resource-efficiency-plan.md) F13）。設計の正典は本書（agent-loop 名称）で、退役までの間、kiro-loop 側の読者は次の対応で読み替えます。
 
 | 項目 | agent-loop | kiro-loop |
 |---|---|---|
@@ -568,7 +568,7 @@ SlotMonitor の状態遷移は従来の「プロンプト消失 → processing �
 
 inbox を共有しているため、新旧系統のデーモンは相互にメッセージを送り合えます。逆に言えば、メッセージスキーマ（特に `reply_to` の意味）の変更は両系統に同時に効く相互運用上の変更点であり、片側だけの改変は過去に非互換バグを生みました（2026-08-02 監査 D2、解消済み）。
 
-新機能・設計更新は agent-loop 系統へ寄せます。kiro-loop 側にだけある資産（webhook の E2E テスト群）は、必要になった時点で agent-loop 側へ移植します。
+新機能・設計更新は agent-loop 系統へ寄せます。kiro-loop 側にだけある資産は `stub/kiro-cli-stub.py` とそれを使う `test/test_stub.py` の 2 点だけで（テスト総数は agent-loop 33 : kiro-loop 4）、退役時にここへ移します。`setup-token-reduction.py` は移植せず、汎用注入契約へ畳んで退役させます（計画 F9）。
 
 ### C. 統合した旧文書
 

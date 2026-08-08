@@ -18,15 +18,19 @@ async function refreshAmigos() {
   updateAmigosTabVisibility();
 }
 
-// agent-amigos の設定ホームとミッションを、現在選択しているプロジェクトだけに限定する。
+// この端末（ノード）のミッション一覧。
 // home が無いミッションは全体バス由来で所属を確定できないため表示しない。
-function amigosForProject(amigos, projectFolder) {
+//
+// ミッションは**端末の話**で、どのプロジェクトを選んでいるかとは関係がない——依頼先ホームは
+// agent-amigos の設定を置いたフォルダで、agent-project のプロジェクトとは別の単位である。
+// 以前は「選択中プロジェクトのフォルダ ＝ ホームのフォルダ」のときだけ出していた。それは
+// ミッションのタブがプロジェクトのタブ列に並んでいた頃の名残で、ミッションが自分の領域を
+// 持った今は、左メニューに出ているのに中身が常に空、という状態を作るだけだった。
+//
+// 採るのは**設定ファイルの実体があるホーム**だけ（宣言だけで実体の無いホームは出さない）。
+function amigosNodeView(amigos) {
   const source = amigos || {};
-  const key = coworkPathKey(projectFolder);
-  if (!key) return { ...source, homes: [], missions: [], deliveries: [], errors: [] };
-  const homes = (source.homes || []).filter(
-    (home) => !!home.configFile && coworkPathKey(home.dir) === key
-  );
+  const homes = (source.homes || []).filter((home) => !!home.configFile);
   const allowed = new Set(homes.map((home) => coworkPathKey(home.dir)));
   const missions = (source.missions || []).filter((mission) => allowed.has(coworkPathKey(mission.home)));
   const deliveries = (source.deliveries || []).filter((d) => allowed.has(coworkPathKey(d.home)));
@@ -45,15 +49,26 @@ function amigosForProject(amigos, projectFolder) {
       delivery: d,
       archived: true,     // ミッションの経過は残っていない（成果物だけ）
     }));
-  return { ...source, homes, missions, deliveries, orphanMissions, errors: [] };
+  return { ...source, homes, missions, deliveries, orphanMissions, errors: source.errors || [] };
 }
 
-// この端末にミッションか依頼先ホームがあるか。ミッション領域を左メニューに出すかの判定で、
-// **プロジェクト選択で絞らない**——ミッションは端末（ノード）の話で、どのプロジェクトを
-// 選んでいるかとは無関係だから。領域の中の表示は従来どおり選択中プロジェクトで絞る。
+// この端末にミッションか依頼先ホームがあるか。左メニューにミッション領域を出すかの判定。
+// **タブの出し分けと同じ式**を使う——領域は出ているのにタブが 1 つも無い（押しても
+// 何も起きない）状態を作らないため、availability と可視性の根拠を 1 つにする。
 function amigosNodeHasWork() {
-  const a = state.amigos;
-  return !!(a && ((a.missions && a.missions.length) || (a.homes && a.homes.length)));
+  const a = amigosNodeView(state.amigos);
+  return !!((a.missions && a.missions.length) || (a.homes && a.homes.length));
+}
+
+// 領域バッジ用: この端末のミッションで人の確認を待っている項目の総数。
+// 数え方はカード（amigosMissionAttention）と同じにする——同じ言葉で違う数を出さない。
+// 進行中のミッション数（在庫）は数えない。手を打つ必要が無いものはバッジに出さない。
+function amigosAttentionCount() {
+  const view = amigosNodeView(state.amigos);
+  return (view.missions || []).reduce((sum, m) => {
+    const paused = (m.roles || []).filter((r) => r.state === 'paused').length;
+    return sum + Number(m.attentionCount || 0) + paused;
+  }, 0);
 }
 
 // ミッションも依頼先ホームも無いときはタブを隠す（cowork と同じ流儀）。
@@ -61,11 +76,7 @@ function updateAmigosTabVisibility() {
   const btn = $('tab-btn-amigos');
   const pane = $('tab-amigos');
   if (!btn || !pane) return;
-  const a = amigosForProject(state.amigos, selectedProjectFolder());
-  const show = !!(
-    a &&
-    ((a.missions && a.missions.length) || (a.homes && a.homes.length))
-  );
+  const show = amigosNodeHasWork();
   btn.classList.toggle('hidden', !show);
   btn.hidden = !show;
   pane.classList.toggle('hidden', !show);
@@ -534,7 +545,7 @@ function setupAmigosReceived(root, mission) {
 }
 
 function openAmigosDetail(missionId) {
-  const scoped = amigosForProject(state.amigos, selectedProjectFolder());
+  const scoped = amigosNodeView(state.amigos);
   const mission = (scoped.missions || []).find((m) => m.id === missionId)
     || (scoped.orphanMissions || []).find((m) => m.id === missionId);
   if (!mission) return;
@@ -576,7 +587,7 @@ function applyAmigosPostMode() {
 function openAmigosRequestDialog() {
   const dlg = $('dlg-amigos-post');
   if (!dlg) return;
-  const homes = amigosForProject(state.amigos, selectedProjectFolder()).homes || [];
+  const homes = amigosNodeView(state.amigos).homes || [];
   const home = homes[0];
   $('amigos-post-home').value = home?.dir || '';
   $('amigos-post-home-label').textContent = home ? (coworkRepoLabel(home.dir) || '現在のチーム') : '未設定';
@@ -664,7 +675,7 @@ function renderAmigos() {
   const el = $('tab-amigos');
   if (!el) return;
   updateAmigosTabVisibility();
-  const a = amigosForProject(state.amigos, selectedProjectFolder());
+  const a = amigosNodeView(state.amigos);
   if (!a) return;
   if (a.error) {
     el.innerHTML = `<div class="empty"><strong>ミッションを読み込めませんでした</strong><span>${esc(a.error)}</span></div>`;

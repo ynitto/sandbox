@@ -12,7 +12,7 @@ const os = require('os');
 const path = require('path');
 const { readToolConfig } = require('./toolconfig');
 const { reposFileName } = require('./authoring');
-const { agentDirCandidates } = require('../../../base/main/agent-home');
+const { agentDirCandidates, userHomeRoots } = require('../../../base/main/agent-home');
 const { extractWindowsPath } = require('../../../base/main/wsl');
 
 // agent-project.py と同じ正規表現
@@ -1291,7 +1291,28 @@ function readStatus(dir) {
 // ノード別生存信号 status/<node>.json（本体 write_status のノード別書き出しと対）。
 // 複数 PC 分散運用で「どのノード（PC）が生きているか／実行中か」を一覧するための読み取り。
 // 各ノードが別ファイルなので、同期越しでも上書き合戦にならず全ノードの状態が並ぶ。
-function readNodeStatuses(dir) {
+// この PC の常駐体（engine/status.json）の名乗りと心拍。**心拍はこちらにしかない**。
+function _engineSelf(cfg) {
+  try {
+    const s = require('./engine').readStatus(cfg);
+    return { node: String(s.node || '').trim().toLowerCase(), running: !!s.running };
+  } catch {
+    return { node: '', running: false };   // 設定が読めない環境では突き合わせない
+  }
+}
+
+// ノード別の状況（status/<node>.json）。
+//
+// **このファイルは心拍ではない。** 常駐体は実パスが進んだときに書く（`--status-interval` を
+// 明示したときだけ定期更新も入る。既定は 0＝無効）。つまり待機中のエンジンでは何日でも
+// 更新されない。経過時間だけで生存を決めると、**動いている PC が「応答なし」の赤丸になる**
+// ——実際に起きた（6 日前に最後のタスクが終わった端末で、常駐体は毎秒心拍を書いていた）。
+//
+// この PC のノードは engine/status.json の心拍で判定する（生存の唯一の根拠がそこにある）。
+// 他の PC は状態リポジトリ越しにこのファイルしか見えないので従来どおり鮮度で見るが、
+// 意味は「最後に作業が進んだ時刻」であって「応答が無い」ではない——文言は画面側が分ける。
+function readNodeStatuses(dir, cfg) {
+  const self = _engineSelf(cfg);
   const sdir = path.join(dir, 'status');
   const out = [];
   for (const f of safeList(sdir)) {
@@ -1301,10 +1322,14 @@ function readNodeStatuses(dir) {
     const updatedMs = Date.parse(rec.updated_iso || '');
     const ageSec = isNaN(updatedMs) ? null : (Date.now() - updatedMs) / 1000;
     const freshSec = Number(rec.fresh_after_sec) || 120;
+    const node = String(rec.node || f.replace(/\.json$/, ''));
+    const isSelf = !!self.node && node.trim().toLowerCase() === self.node;
+    const fileFresh = ageSec !== null && ageSec >= 0 && ageSec <= freshSec;
     out.push({
-      node: String(rec.node || f.replace(/\.json$/, '')),
+      node,
       host: String(rec.host || ''),
-      running: ageSec !== null && ageSec >= 0 && ageSec <= freshSec,
+      running: isSelf ? self.running : fileFresh,
+      self: isSelf,
       ageSec: ageSec === null ? null : Math.round(ageSec),
       paused: !!rec.paused,
       level: rec.level,
@@ -1640,7 +1665,10 @@ function discover(cfg) {
   // が、セレクタには並べて定常業務タブを開けるようにする。**engine 由来が既に居る実体には
   // 足さない**——project エントリは backlog / charter / needs / 検収を持ち、routine エントリは
   // cowork タブしか持たないので、routine で上書きすると機能が消える。
-  for (const raw of (((cfg && cfg.cowork) || {}).roots || [])) {
+  // ユーザーホームは登録簿に無くても常に並べる（`~/.kiro/kiro-loop.yml` に置いた定期処理は
+  // どの登録簿にも載らないので、明示しないと画面から永久に見えない）。Windows では WSL 側の
+  // ホームも並ぶ——定常業務のエンジンはそちらで動く。
+  for (const raw of [...(((cfg && cfg.cowork) || {}).roots || []), ...userHomeRoots()]) {
     const declared = String(raw || '').trim();
     if (!declared) continue;
     const expanded = declared.replace(/^~(?=$|\/|\\)/, os.homedir());
@@ -1974,7 +2002,7 @@ function readProject(workspaceDir, cfg) {
     autonomy,
     projectCheck: projectCheckStatus(projectCfg),
     liveness: projectLiveness(dir, undefined, cfg),
-    nodes: readNodeStatuses(dir),   // 複数 PC 分散運用のノード別生存一覧（無ければ空）
+    nodes: readNodeStatuses(dir, cfg),   // 複数 PC 分散運用のノード別生存一覧（無ければ空）
     busDir: bus.busDir,
     hasBus: bus.hasBus,
     busSource: bus.source,

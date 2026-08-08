@@ -215,6 +215,24 @@ function findExecutable(name) {
   return '';
 }
 
+// この端末で「別ウィンドウ実行」が使えるか。
+//
+// **ここを win32 に絞っていたのが「定常業務を実行すると固まる」の正体**だった。非 Windows は
+// ウィンドウ経路を素通りして main プロセスの `spawnSync`（最大 60 秒）へ落ちる。その間
+// Electron main は IPC を 1 つも返せないので、画面はボタンが押されたまま無反応になり、
+// 実行の様子も見えない。ウィンドウ経路の中身（スクリプトを書いて端末で開く）は最初から
+// OS 非依存で、macOS は Terminal、Linux は見つかった端末エミュレータで同じものを開ける。
+function supportsRunWindow(platform = process.platform, which = findExecutable) {
+  if (platform === 'win32' || platform === 'darwin') return true;
+  if (platform !== 'linux') return false;
+  try {
+    terminalLaunchSpec(platform, '', which);
+    return true;
+  } catch {
+    return false;   // 端末エミュレータが 1 つも無い環境（CI 等）は従来の同期実行へ落とす
+  }
+}
+
 function terminalLaunchSpec(platform, scriptFile, which = findExecutable) {
   if (platform === 'darwin') {
     return { command: 'open', args: ['-a', 'Terminal', scriptFile], terminal: 'Terminal' };
@@ -558,7 +576,7 @@ function runChatWindow({ chatCommand, prompt, cwd, sessionCommands, sessionKey, 
   const res = launchWindowScript(script, {
     cwd,
     title,
-    message: message || '別ウィンドウ（WSL tmux / kiro-cli）で実行を開始しました',
+    message: message || '別ウィンドウ（ターミナル / tmux）でエージェントCLIを起動しました',
   });
   return res.ok ? { ...res, session } : res;
 }
@@ -584,16 +602,18 @@ function sendArgsFor(job) {
 // 落ちていた＝どう設定しても定常業務は既定の CLI で起動していた。
 function makeLoopProvider(cfg, config = null) {
   const appConfig = config || { cowork: cfg };
-  const provider = cfg.loopProvider || 'kiro-loop';
-  const command = cfg.loopCommand || provider;
+  // 実体はコマンド 1 つ。`loopProvider` は種類欄を廃止する前の設定（旧 config.json）を
+  // 読むためだけに残す。未設定は agent-loop。
+  const command = cfg.loopCommand || cfg.loopProvider || 'agent-loop';
+  const provider = command;
   return {
     provider,
     command,
-    replacementHint: cfg.nextLoopProvider || 'agent-loop',
     run(job) {
-      // Windows では既定で新しいウィンドウの WSL tmux 上で実行する（cowork.runWindow: false で
-      // 従来の非表示 spawnSync に戻せる）。
-      if (process.platform === 'win32' && cfg.runWindow !== false) {
+      // 既定は新しいウィンドウの tmux 上での実行（Windows は WSL、macOS は Terminal、
+      // Linux は見つかった端末）。`cowork.runWindow: false` で従来の非表示 spawnSync に戻せる
+      // ——ただしそちらは main プロセスを最大 60 秒止めるので、既定にはしない。
+      if (cfg.runWindow !== false && supportsRunWindow()) {
         // job.prompt があれば kiro-loop を介さず、tmux + kiro-cli（インタラクティブ）へ
         // プロンプトを直接送る。呼び出し側（cowork.runLoop / runStateMachine）が
         // kiro-loop.yml の本文やステートマシン実行文を解決して渡してくる。
@@ -629,5 +649,5 @@ module.exports = {
   runInWindow,
   chatWindowScript, chatSessionName, runChatWindow, launchWindowScript,
   sessionProcessLines, sessionChatLines,
-  splitCommand, quoteToken, expandHome, findExecutable, terminalLaunchSpec,
+  splitCommand, quoteToken, expandHome, findExecutable, terminalLaunchSpec, supportsRunWindow,
 };

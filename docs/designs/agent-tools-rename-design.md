@@ -50,7 +50,6 @@
 **維持するもの**（製品・共有インフラ）:
 
 - `kiro-cli`（エージェント CLI 実装の一種）
-- `kiro-loop`（`agent-loop` へクローン移行済み。旧系統は削除せず残置する）
 - `kiro-project` / `kiro-flow` / `kiro-projects-viewer` は移行完了後に削除済み
 - `$KIRO_AGENTS_DIR` / `$KIRO_STATE_HOME`（複数ツール共有）
 - `~/.kiro/agents`・`~/.kiro/skills`（共有定義の探索先として併用）
@@ -66,7 +65,9 @@
 
 旧設計書・旧計画は移行完了後に削除し、新設計書ヘッダには由来を履歴として残す。
 
-> 2026-08-06: ループ拡張の設計書 8 件（`kiro-loop-{event-hook,agent-messaging,gitlab-webhook,adaptive-interval}-design.md` とその agent-loop クローン 4 件）は [`agent-loop-design.md`](./agent-loop-design.md) へ統合し削除した。ツール実装の `tools/kiro-loop/` は §6 のとおり残置のまま。
+> 2026-08-06: ループ拡張の設計書 8 件（`kiro-loop-{event-hook,agent-messaging,gitlab-webhook,adaptive-interval}-design.md` とその agent-loop クローン 4 件）は [`agent-loop-design.md`](./agent-loop-design.md) へ統合し削除した。
+>
+> 2026-08-08: ツール実装 `tools/kiro-loop/` の残置方針を撤回し、退役（§6）へ切り替えた。以後 `agent-loop` を唯一の正系統としてメンテナンスする。手順は [`2026-08-08-agent-tools-resource-efficiency-plan.md`](../plans/2026-08-08-agent-tools-resource-efficiency-plan.md) の F13。
 
 ## 5. インストール
 
@@ -83,8 +84,19 @@ cd tools/agent-dashboard && npm start
 
 移行中は旧 `~/.local/bin/kiro-*` と新 `~/.local/bin/agent-*` を併存できるが、移行完了後は旧CLIを削除する。
 
-## 6. 非目標（この改称ではやらないこと）
+## 6. `kiro-loop` の退役（2026-08-08 方針転換）
 
-- `kiro-loop` の削除（`agent-loop` へのクローン移行は実施済み）
+クローン移行の当初方針は「旧系統は残置」だったが、これを撤回する。`tools/kiro-loop/`
+（4231 行の単一ファイル）と `tools/agent-loop/`（エントリ + パッケージ 23 モジュール）は
+同じ仕様の 2 実装で、C7 が禁じる状態そのものである。ループ系へ機能を足すたび 2 回実装するか、
+片方だけ育てて差を広げるかしかない。機能差は kiro-loop 側の 2 点のみで、agent-loop が
+上位互換である。
+
+退役の範囲・移行手順・語彙と GUI の寄せは
+[`2026-08-08-agent-tools-resource-efficiency-plan.md`](../plans/2026-08-08-agent-tools-resource-efficiency-plan.md)
+の F13 が正典。本書は「旧系統を残さない」という方針だけを固定する。
+
+## 7. 非目標（この改称ではやらないこと）
+
 - 稼働中プロジェクト状態（`.kiro-project`）の自動移行
 - `kiro-cli` の改称（エージェント CLI 製品名は維持）

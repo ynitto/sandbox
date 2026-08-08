@@ -90,15 +90,17 @@ assert.deepStrictEqual(
 // eslint-disable-next-line no-new-func
 const coworkPathKey = new Function(`${grab('coworkPathKey')}; return coworkPathKey;`)();
 // eslint-disable-next-line no-new-func
+const coworkItemFolder = new Function(`${grab('coworkItemFolder')}; return coworkItemFolder;`)();
+// eslint-disable-next-line no-new-func
 const coworkVisibleEntries = new Function(
-  'coworkPathKey',
+  'coworkPathKey', 'coworkItemFolder',
   `${grab('coworkVisibleEntries')}; return coworkVisibleEntries;`
-)(coworkPathKey);
+)(coworkPathKey, coworkItemFolder);
 // eslint-disable-next-line no-new-func
 const coworkHasProjectConfig = new Function(
-  'coworkPathKey',
+  'coworkPathKey', 'coworkItemFolder',
   `${grab('coworkHasProjectConfig')}; return coworkHasProjectConfig;`
-)(coworkPathKey);
+)(coworkPathKey, coworkItemFolder);
 
 assert.strictEqual(coworkPathKey('\\\\wsl.localhost\\Ubuntu\\home\\me\\proj\\'), '/home/me/proj');
 assert.strictEqual(coworkPathKey('/home/me/proj'), '/home/me/proj');
@@ -124,36 +126,49 @@ assert.strictEqual(coworkPathKey('C:\\Users\\Me\\proj'), 'c:/users/me/proj');
   assert.strictEqual(coworkHasProjectConfig({ discoveredRepos: ['/home/me/proj-a'] }, '/home/me/proj-b'), false);
   assert.strictEqual(coworkHasProjectConfig({ items: [{ repo: '/home/me/proj-b' }] }, '/home/me/proj-b'), true,
     '手動追加した作業だけのプロジェクトも定常業務を表示する');
+  // 所属は登録したフォルダ（root）。設定ファイルがサブフォルダにある作業も、登録した
+  // フォルダの一覧に出す（repo で括ると、どのフォルダを選んでも出てこない）。
+  const nested = [{ id: 'n', root: '/home/me/proj-b', repo: '/home/me/proj-b/packages/api' }];
+  assert.deepStrictEqual(coworkVisibleEntries(nested, '/home/me/proj-b').map((e) => e.item.id), ['n'],
+    'サブフォルダに設定がある作業は登録フォルダの一覧に出る');
+  assert.strictEqual(coworkHasProjectConfig({ items: nested }, '/home/me/proj-b'), true);
 }
 
+// ミッションは端末（ノード）の話で、選択中プロジェクトでは絞らない。ミッションが自分の
+// 領域を持った以上、プロジェクトで絞ると「左メニューには出ているのに中身が常に空」になる。
 // eslint-disable-next-line no-new-func
-const amigosForProject = new Function(
+const amigosNodeView = new Function(
   'coworkPathKey',
-  `${grab('amigosForProject')}; return amigosForProject;`
+  `${grab('amigosNodeView')}; return amigosNodeView;`
 )(coworkPathKey);
 {
-  const scoped = amigosForProject({
+  const view = amigosNodeView({
     homes: [
       { dir: '/work/a', configFile: '/work/a/agent-amigos.yaml' },
       { dir: '/work/b', configFile: '/work/b/agent-amigos.yaml' },
-      { dir: '/work/b', configFile: null },
+      { dir: '/work/c', configFile: null },
     ],
     missions: [
       { id: 'a1', home: '/work/a' },
       { id: 'b1', home: '/work/b' },
+      { id: 'orphan', home: '/work/c' },
       { id: 'global', home: null },
     ],
-    errors: ['other project error'],
-  }, '/work/b');
-  assert.deepStrictEqual(scoped.homes.map((h) => h.dir), ['/work/b']);
-  assert.deepStrictEqual(scoped.missions.map((m) => m.id), ['b1']);
-  assert.deepStrictEqual(scoped.errors, [], '他プロジェクトの読込エラーも表示しない');
-  assert.strictEqual(amigosForProject({ homes: [], missions: [{ id: 'x' }] }, '/work/b').missions.length, 0);
+    errors: ['読込エラー'],
+  });
+  assert.deepStrictEqual(view.homes.map((h) => h.dir), ['/work/a', '/work/b'],
+    'この端末のホームはプロジェクト選択に関係なく全部出す');
+  assert.deepStrictEqual(view.missions.map((m) => m.id), ['a1', 'b1'],
+    '実体のあるホームのミッションだけを出す（home 不明・設定ファイル無しは除く）');
+  assert.deepStrictEqual(view.errors, ['読込エラー'], 'この端末の読込エラーは伏せない');
+  assert.strictEqual(amigosNodeView({ homes: [], missions: [{ id: 'x' }] }).missions.length, 0,
+    'ホームが無ければミッションも出さない');
   assert.strictEqual(
-    amigosForProject({ homes: [{ dir: '/work/b', configFile: null }], missions: [] }, '/work/b').homes.length,
+    amigosNodeView({ homes: [{ dir: '/work/b', configFile: null }], missions: [] }).homes.length,
     0,
     'フォルダ内に設定ファイルがない明示ホームは表示しない'
   );
+  assert.deepStrictEqual(amigosNodeView(null).missions, [], '未取得でも壊れない');
 }
 
 // 実行の記録は定常業務領域の 1 タブ。動かす画面と結果を追う画面が同じ領域に並ぶので、
@@ -255,7 +270,10 @@ assert.match(css, /\.sidebar-actions button,[\s\S]*?min-width: 44px; height: 44p
   assert.ok(!out.includes('/secret/skills'), '内部の保存パスは表示しない');
   assert.ok(!out.includes('class="orch-skill-on"'), '大量のチェックボックス一覧を表示しない');
   assert.ok(out.includes('data-ui-key="orch-instr-preview"'), 'プレビューの開閉状態を復元できるキーがある');
-  assert.ok(out.includes('未反映（2/3）'), '実行サービスの未反映バッジが出る');
+  // 「実行サービスへの反映状況」表は外した。何を伝える枠なのかが画面から読めず、同じ話題は
+  // 実行制御の「設定の反映」列が持つ（同じ話題の表を 2 か所に置かない）。
+  assert.ok(!out.includes('未反映（2/3）'), '反映状況の表は残さない');
+  assert.ok(!out.includes('instructions_revision_applied'), '反映状況の根拠も読まない');
   assert.ok(out.includes('agent-instructions rev:3'), 'プレビューが描画結果を出す');
 }
 {
@@ -344,8 +362,15 @@ assert.match(renderer, /個別のrunを止める操作ではありません/);
   ]);
   assert.ok(html.includes('pc-a') && html.includes('pc-b'), '両ノードを出す');
   assert.ok(html.includes('稼働中'), '稼働中ノードを示す');
-  assert.ok(html.includes('応答なし'), '応答なし（heartbeat 途絶）ノードを示す');
-  assert.ok(html.includes('node-stale'), '応答なしは stale クラス');
+  // status/<node>.json は心拍ではなく「作業が進んだときの記録」。古いことを「応答なし」と
+  // 言い切らない（待機中の PC を故障のように見せない）。
+  assert.ok(!html.includes('応答なし'), '記録が古いだけのノードを応答なしと断定しない');
+  assert.ok(html.includes('しばらく更新がありません'), '古い記録はそのまま伝える');
+  assert.ok(html.includes('node-stale'), '更新の止まったノードは stale クラス');
+  // この PC は常駐体の心拍で判定する（記録が何日古くても、心拍があれば稼働中）。
+  const selfHtml = nodesSummaryHtml([{ node: 'mac', host: 'Mac', running: true, self: true, ageSec: 523721 }]);
+  assert.ok(selfHtml.includes('この PC・稼働中'), '自ノードは心拍で稼働中と出す');
+  assert.ok(!selfHtml.includes('しばらく更新がありません'), '自ノードに記録の古さを持ち込まない');
 }
 
 console.log('overview-ui: all tests passed');

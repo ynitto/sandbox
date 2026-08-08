@@ -116,8 +116,12 @@ async function init() {
   }
   api.onOpenTarget(handleOpenTarget);
 
+  // 左メニューに並ぶ領域は、それぞれの取得結果から出し分ける。**起動時に全部そろえる**
+  // ——1 つでも取り忘れると、その領域は最初の巡回まで（自動更新を切っていれば永久に）
+  // 左メニューから消えたままになる。
   await refreshDiscovery();
   await refreshCowork();
+  await refreshAmigos();
   await refreshOrchestration();
   // 前回の対象を裏で復元しておく（右ペインの中身が温まる）。**領域は復元しない**——
   // 起動の着地点はホーム（横断ビュー）で、そこから人がどこへ行くかを選ぶ。

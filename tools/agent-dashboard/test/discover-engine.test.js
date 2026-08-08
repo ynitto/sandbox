@@ -12,6 +12,12 @@ const path = require('path');
 const project = require('../src/main/project');
 const engine = require('../src/features/agent-project/main/engine');
 
+// 定常業務の走査ルートには**常にユーザーホーム**が入る（`~/.kiro/kiro-loop.yml` を拾うため）。
+// 一覧を数える検査では実機のホームを混ぜない——結果が実行環境の持ち物で変わってしまう。
+const HOME_STUB = fs.mkdtempSync(path.join(os.tmpdir(), 'home-stub-'));
+process.env.HOME = HOME_STUB;
+process.env.USERPROFILE = HOME_STUB;
+
 let passed = 0;
 async function test(name, fn) {
   await fn();
@@ -59,9 +65,12 @@ function writeStatus(home, status) {
         { name: 'beta', alive: true, quarantined: false, deaths: 0, root: beta },
       ],
     });
+    // ユーザーホームは登録簿に関係なく常に並ぶ（定常業務の置き場）。ここで見たいのは
+    // engine/status.json の children なので、その由来だけを取り出して比べる。
     const { projects } = project.discover(cfg);
-    assert.deepStrictEqual(projects.map((p) => p.dir).sort(), [alpha, beta].sort());
-    assert.ok(projects.every((p) => p.source === 'engine'));
+    const fromEngine = projects.filter((p) => p.source === 'engine');
+    assert.deepStrictEqual(fromEngine.map((p) => p.dir).sort(), [alpha, beta].sort());
+    assert.ok(fromEngine.every((p) => p.source === 'engine'));
     assert.strictEqual(projects.find((p) => p.dir === alpha).charterName, '見やすい名前');
     assert.strictEqual(projects.find((p) => p.dir === beta).charterName, '');
   });
@@ -75,7 +84,7 @@ function writeStatus(home, status) {
       children: [{ name: 'alpha', alive: true, root: workspace }],
     });
     const { projects } = project.discover(cfg);
-    assert.strictEqual(projects.length, 1);
+    assert.strictEqual(projects.filter((p) => p.source === 'engine').length, 1);
     assert.strictEqual(projects[0].name, 'alpha');    // .agent-project を表示名にしない
     assert.strictEqual(projects[0].dir, workspace);
     assert.strictEqual(projects[0].root, stateRoot);
@@ -86,7 +95,7 @@ function writeStatus(home, status) {
     const cfg = writeStatus(mkRoot(), {
       children: [{ name: 'no-root', alive: true }],
     });
-    assert.deepStrictEqual(project.discover(cfg).projects, []);
+    assert.deepStrictEqual(project.discover(cfg).projects.filter((p) => p.source === 'engine'), []);
   });
 
   await test('discover は切り離されたプロジェクトに quarantined を立てる', async () => {
@@ -96,7 +105,7 @@ function writeStatus(home, status) {
     const cfg = writeStatus(mkRoot(), {
       children: [{ name: 'held', alive: false, quarantined: true, deaths: 6, root: held }],
     });
-    const { projects } = project.discover(cfg);
+    const projects = project.discover(cfg).projects.filter((p) => p.source === 'engine');
     assert.strictEqual(projects[0].quarantined, true);
   });
 
@@ -109,7 +118,7 @@ function writeStatus(home, status) {
     const cfg = writeStatus(mkRoot(), {
       children: [{ name: 'night', alive: false, quarantined: false, paused: true, root: night }],
     });
-    const { projects } = project.discover(cfg);
+    const projects = project.discover(cfg).projects.filter((p) => p.source === 'engine');
     assert.strictEqual(projects[0].offHours, true);
     assert.strictEqual(projects[0].quarantined, false);
     const s = engine.summarize(engine.readStatus(cfg));
@@ -120,7 +129,7 @@ function writeStatus(home, status) {
   await test('状況ファイルが無ければプロジェクトは 0 件（案内表示へ倒す）', async () => {
     const cfg = { engine: { home: path.join(mkRoot(), '.agents') }, projects: {} };
     const res = project.discover(cfg);
-    assert.deepStrictEqual(res.projects, []);
+    assert.deepStrictEqual(res.projects.filter((p) => p.source === 'engine'), []);
     assert.strictEqual(res.engine.exists, false);
     assert.strictEqual(res.engine.running, null);
   });
@@ -146,7 +155,7 @@ function writeStatus(home, status) {
     const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
     Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
     try {
-      const dirs = project.discover(cfg).projects.map((p) => p.dir);
+      const dirs = project.discover(cfg).projects.filter((p) => p.source === 'engine').map((p) => p.dir);
       assert.deepStrictEqual(dirs, ['\\\\wsl.localhost\\Ubuntu\\home\\dev\\kiro-proj']);
     } finally {
       if (origPlatform) Object.defineProperty(process, 'platform', origPlatform);

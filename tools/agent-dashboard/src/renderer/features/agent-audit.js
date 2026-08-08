@@ -38,6 +38,13 @@
       reveal: feature.reveal,
       refresh: feature.refresh,
     });
+    // 収集の設定は「利用状況 → 設定」タブへ。見る画面と決める画面を分ける
+    // （他の領域と同じ形）。面の実装は 1 つのままで、容れ物だけを 2 つにする。
+    root.registerGlobalSettingsPanel('usage-settings', {
+      id: 'agent-audit-settings',
+      html: feature.settingsPanelHtml,
+      wire: feature.wire,
+    });
   }
   // ホーム（ポータル）へのサマリーカード。数字はここに出さない——利用状況の数字は
   // 利用状況領域の 1 か所で出す（C7: 同じ話題の数字を 2 か所に置かない）。
@@ -75,6 +82,7 @@
   let settingsMessage = null;
   let lastAutoAt = 0;
   let autoBusy = false;
+  let autoCollectTried = false;   // 初回の自動収集はセッション中 1 回だけ試す
 
   function fmtTokens(n) {
     const v = Number(n) || 0;
@@ -151,9 +159,14 @@
     return escHtml(parts.join(' + '));
   }
 
+  // 割合の元になるトークン量（実測＋推定）。並べ替えと棒の長さで同じ値を使う。
+  function rowTokens(row) {
+    return (Number((row || {}).measured_in) || 0) + (Number((row || {}).measured_out) || 0)
+      + (Number((row || {}).estimated_tokens) || 0);
+  }
+
   function shareCellHtml(row, total) {
-    const value = (Number(row.measured_in) || 0) + (Number(row.measured_out) || 0)
-      + (Number(row.estimated_tokens) || 0);
+    const value = rowTokens(row);
     const share = total > 0 && value > 0 ? (value / total) * 100 : 0;
     return `<div class="orch-share"><div class="orch-bar" title="全体の ${share.toFixed(1)}%">
       <span class="orch-bar-measured" style="width:${share.toFixed(1)}%"></span>
@@ -200,10 +213,12 @@
     const rows = (data && data.workloads) || [];
     const total = ((data && data.totals) || {}).total || 0;
     const byGroup = new Map(rows.map((row) => [String(row.group || ''), row]));
+    // 割合の大きい順（棒グラフは長い順に並んでいないと比べられない）。同率は名前順。
     const names = [...new Set([
       ...(budget.knownWorkloads || []),
       ...rows.map((row) => String(row.group || '')),
-    ])].filter(Boolean);
+    ])].filter(Boolean)
+      .sort((a, b) => rowTokens(byGroup.get(b)) - rowTokens(byGroup.get(a)) || a.localeCompare(b));
     const body = names.map((name) => {
       const row = byGroup.get(name) || {};
       const wl = (budget.workloads || {})[name] || {};
@@ -232,7 +247,8 @@
     const rows = (data && data.agents) || [];
     const total = ((data && data.totals) || {}).total || 0;
     const body = rows.slice()
-      .sort((a, b) => (Number(b.runs) || 0) - (Number(a.runs) || 0))
+      // 割合の大きい順（同じ棒グラフの並びを機能別と揃える）。同率は実行数の多い順。
+      .sort((a, b) => rowTokens(b) - rowTokens(a) || (Number(b.runs) || 0) - (Number(a.runs) || 0))
       .map((row) => `<tr>
         <td><code>${escHtml(row.group || '未記録')}</code></td>
         <td class="orch-bar-cell">${shareCellHtml(row, total)}</td>
@@ -430,8 +446,12 @@
         </div>
       </header>
       ${statsTableHtml(statsData)}
-    </section>
-    ${settingsHtml(settingsDraft || auditConfig())}`;
+    </section>`;
+  }
+
+  // 「設定」タブの中身（収集の設定）。閲覧側とは別の容れ物に入る。
+  function settingsPanelHtml() {
+    return settingsHtml(settingsDraft || auditConfig());
   }
 
   async function loadData() {
@@ -526,15 +546,19 @@
     render();
   }
 
-  // 面が実際に見えているか（全体設定タブが前面 かつ 「利用状況」の節が開いている）。
-  // 見えていないあいだは CLI を起こさない——タブを開いていない端末で毎周期
-  // agent-audit を起動することになる。
+  // 面が実際に見えているか。見えていないあいだは CLI を起こさない——タブを開いていない
+  // 端末で毎周期 agent-audit を起動することになる。
+  //
+  // 判定は**自分が入っているタブ**を見る。以前は `tab-orchestration`（全体設定）が前面か
+  // どうかを見ていて、面が利用状況領域へ移ったあとも条件だけが残っていた。結果、利用状況を
+  // 開いても「見えていない」と判定され、初回の集計が永久に走らない（人が「今すぐ収集」を
+  // 押すまで画面が空のまま）——起動直後に何も出ないのはこれが原因だった。
   function visible(container) {
-    if (!container || !root.document) return false;
-    const pane = container.closest ? container.closest('.global-settings-pane') : null;
-    if (pane && pane.hidden) return false;
-    const tab = root.document.getElementById('tab-orchestration');
-    return Boolean(tab && tab.classList.contains('active'));
+    if (!container || !root.document || !container.closest) return false;
+    const settingsPane = container.closest('.global-settings-pane');
+    if (settingsPane && settingsPane.hidden) return false;
+    const tabpane = container.closest('.tabpane');
+    return Boolean(tabpane && tabpane.classList.contains('active'));
   }
 
   function wire(pane) {
@@ -572,20 +596,39 @@
   }
 
   // 自分の容れ物だけを描き直す。全体設定ごと描き直すと、他の節で入力中の欄が飛ぶ。
+  // 容れ物は 2 つ（閲覧・設定）あり、どちらも描かれているとは限らない。
   function render() {
     if (!root.document) return;
-    const container = root.document.getElementById('global-settings-slot-agent-audit');
-    if (!container) return;
-    container.innerHTML = panelHtml();
-    wire(container);
-    reveal(container);
+    for (const [id, html] of [['agent-audit', panelHtml], ['agent-audit-settings', settingsPanelHtml]]) {
+      const container = root.document.getElementById(`global-settings-slot-${id}`);
+      if (!container) continue;
+      container.innerHTML = html();
+      wire(container);
+    }
+    const main = root.document.getElementById('global-settings-slot-agent-audit');
+    if (main) reveal(main);
   }
 
-  // 節が表示されたとき（描画直後・節の切り替え）に呼ばれる。初回の集計取得はここで起こす
+  // 節が表示されたとき（描画直後・タブの切り替え）に呼ばれる。初回の集計取得はここで起こす
   // ——利用状況を開いていない間は agent-audit を起動しない。
   function reveal(container) {
     if (!visible(container)) return;
-    if (!loadedOnce && !loading && !loadError) loadData();
+    if (!loadedOnce && !loading && !loadError) loadData().then(autoCollectIfEmpty);
+    else autoCollectIfEmpty();
+  }
+
+  // **一度も収集していない端末では、開いた時点で 1 回だけ自動で収集する。**
+  // 集計は収集済みの記録を読むだけなので、収集が 0 回の端末では画面が空になり、
+  // 人が「今すぐ収集」を押すまで何も出ない——初回に必要な操作を人にさせない。
+  // 試すのはセッション中 1 回だけ（agent-audit を入れていない端末で毎回起動しない）。
+  async function autoCollectIfEmpty() {
+    if (autoCollectTried || collectBusy || loading || loadError) return;
+    if (!root.api || !root.api.agentAuditCollect) return;
+    const totals = (summaryData && summaryData.totals) || null;
+    const collected = !!(summaryData && summaryData.lastCollect) || Number((totals || {}).runs || 0) > 0;
+    if (collected) return;
+    autoCollectTried = true;
+    await runCollect();
   }
 
   // 全体ポーリングから毎回呼ばれる。定期収集の間隔だけをここで確認し、
@@ -623,7 +666,7 @@
 
   return {
     escHtml, fmtTokens, fmtSeconds, fmtUsd, pairsText,
-    usageTableHtml, statsTableHtml, settingsHtml, collectStatusHtml, panelHtml,
+    usageTableHtml, statsTableHtml, settingsHtml, settingsPanelHtml, collectStatusHtml, panelHtml,
     workloadTableHtml, agentTableHtml, gaugeHtml, ledgerFallbackHtml,
     render, refresh, wire, reveal, portalCardHtml,
   };

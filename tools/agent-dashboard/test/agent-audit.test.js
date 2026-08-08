@@ -205,6 +205,29 @@ test('機能別テーブルは agent-audit の集計に予算の上限と状態�
   assert.match(html, /記録なし/);                 // 記録の無い機能も枠が見えるよう並べる
 });
 
+// 棒グラフは長い順に並んでいないと比べられない。実行数が多くてもトークンが少ない行は下へ。
+test('割合バーのある表は割合の大きい順に並ぶ（機能別・エージェント別とも）', () => {
+  const agents = withState({}, () => ui.agentTableHtml({
+    totals: { total: 10000 },
+    agents: [{ group: 'many-runs', runs: 50, seconds: 10, measured_in: 10, measured_out: 10,
+               estimated_tokens: 0, usd: 0 },
+             { group: 'big-tokens', runs: 1, seconds: 10, measured_in: 4000, measured_out: 4000,
+               estimated_tokens: 0, usd: 0 }],
+  }));
+  assert.ok(agents.indexOf('big-tokens') < agents.indexOf('many-runs'),
+    '実行数ではなく割合で並べる');
+
+  const workloads = withState({
+    orchestration: { budget: { knownWorkloads: ['routine', 'flow'], config: { period: 'month' }, workloads: {} } },
+  }, () => ui.workloadTableHtml({
+    totals: { total: 10000 },
+    workloads: [{ group: 'routine', runs: 9, measured_in: 100, measured_out: 0, estimated_tokens: 0 },
+                { group: 'flow', runs: 1, measured_in: 5000, measured_out: 1000, estimated_tokens: 0 }],
+  }));
+  assert.ok(workloads.indexOf('タスク実行') < workloads.indexOf('定常業務')
+    || workloads.indexOf('flow') < workloads.indexOf('routine'), '機能別も割合の大きい順');
+});
+
 test('ゲージは期間が予算の期間と一致するときだけ残量を出す', () => {
   const budget = (period) => ({
     orchestration: { budget: { tokenLimit: 10000, config: { period } } },
@@ -220,7 +243,7 @@ test('ゲージは期間が予算の期間と一致するときだけ残量を�
   assert.match(withState({}, () => ui.gaugeHtml(SUMMARY.totals, 'month')), /上限は設定されていません/);
 });
 
-test('エージェント別テーブルは実行数の多い順に並べ、概算費用を添える', () => {
+test('エージェント別テーブルは割合の大きい順に並べ、概算費用を添える', () => {
   const html = withState({}, () => ui.agentTableHtml({
     totals: { total: 3300 },
     agents: [{ group: 'ollama', runs: 1, seconds: 30, measured_in: 0, measured_out: 0,
@@ -228,7 +251,7 @@ test('エージェント別テーブルは実行数の多い順に並べ、概�
              { group: 'claude', runs: 5, seconds: 300, measured_in: 1000, measured_out: 500,
                estimated_tokens: 300, unmeasured_runs: 0, usd: 0.25 }],
   }));
-  assert.ok(html.indexOf('claude') < html.indexOf('ollama'), '実行数の多い順');
+  assert.ok(html.indexOf('claude') < html.indexOf('ollama'), '割合の大きい順');
   assert.match(html, /取得できず/);               // トークン不明でも時間と件数は数える
   assert.match(html, /\$0\.25/);
 });
@@ -294,12 +317,15 @@ test('refresh は間隔が設定されているときだけ定期収集を起動
   }
 });
 
-test('監査は利用状況領域の 1 タブで、feature スクリプトを bootstrap より先に読む', () => {
+test('監査は利用状況領域の「利用量」と「設定」に分かれ、feature スクリプトを bootstrap より先に読む', () => {
   const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'index.html'), 'utf8');
   // 画面の名前は利用者の言葉（利用状況）で、実装名（agent-audit）をタブに出さない。
   assert.doesNotMatch(html, /data-tab="agent-audit"/);
   assert.doesNotMatch(html, /id="tab-agent-audit"/);
-  assert.match(html, /data-tab="usage"[^>]*data-area="usage"[^>]*>利用状況</);
+  // 見る画面と決める画面を分ける（他の領域と同じ形）。タブは領域名を繰り返さない。
+  assert.match(html, /data-tab="usage"[^>]*data-area="usage"[^>]*>利用量</);
+  assert.match(html, /data-tab="usage-settings"[\s\S]{0,80}data-area="usage"/);
+  assert.match(html, /id="tab-usage-settings"/);
   const feature = html.indexOf('features/agent-audit.js');
   assert.ok(feature > 0);
   assert.ok(feature < html.indexOf('bootstrap.js'), 'bootstrap より先に読み込む');
@@ -317,6 +343,8 @@ test('監査は「利用状況」領域へ差し込まれる', () => {
   const usage = fs.readFileSync(
     path.join(__dirname, '..', 'src', 'renderer', 'sections', 'usage.js'), 'utf8');
   assert.match(usage, /function renderUsage[\s\S]*globalSettingsPanelsHtml\('usage'\)/);
+  assert.match(usage, /function renderUsageSettings[\s\S]*globalSettingsPanelsHtml\('usage-settings'\)/);
+  assert.match(src, /registerGlobalSettingsPanel\('usage-settings', \{/);
   const orch = fs.readFileSync(
     path.join(__dirname, '..', 'src', 'renderer', 'sections', 'orchestration.js'), 'utf8');
   assert.doesNotMatch(orch, /globalSettingsPanelsHtml\('usage'\)/,

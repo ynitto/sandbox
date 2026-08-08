@@ -4,13 +4,13 @@
 
 ## まず読むもの — コンセプトと主要 4 設計
 
-最初に 0 のコンセプト正典を読む。agent-* ファミリー全体が何のための道具か（チーム利用と人介在の最適化の二本柱）と、設計をぶれさせないための原則 C1〜C7、このリポジトリでの作業ゲートがここにある。続くエンジン（agent-project / agent-flow）、ドキュメント一貫性ゲート（codd-gate）、名称移行方針（agent-tools-rename）の4件が全体の骨格。基本の読む順序は 0 → 1 → 2 → 3（コンセプト → 制御層 → 実行層 → 品質ゲートの順に責務が積み上がる）。`kiro-*` と `agent-*` の併存に迷ったら、先に 4 を読むと名称の由来と移行状況が先にわかる。
+最初に 0 のコンセプト正典を読む。agent-* ファミリー全体が何のための道具か（チーム利用・人介在の最適化・資源効率の三本柱）と、設計をぶれさせないための原則 C1〜C10、このリポジトリでの作業ゲートがここにある。続くエンジン（agent-project / agent-flow）、ドキュメント一貫性ゲート（codd-gate）、名称移行方針（agent-tools-rename）の4件が全体の骨格。基本の読む順序は 0 → 1 → 2 → 3（コンセプト → 制御層 → 実行層 → 品質ゲートの順に責務が積み上がる）。`kiro-*` と `agent-*` の併存に迷ったら、先に 4 を読むと名称の由来と移行状況が先にわかる。
 
-0. [`agent-tools-concept.md`](./agent-tools-concept.md) — ファミリー全体の上位文書。個人単位のクレジットを前提に実作業をチームで分担する（柱1）、人の判断を最少回数・最高品質で使い品質責任を個人に負わせない（柱2）という二本柱と、原則 C1〜C7、モジュール別の設計方針、作業時の強制ゲート（§7）を定める。対象パスの変更はこのゲートを通す。
+0. [`agent-tools-concept.md`](./agent-tools-concept.md) — ファミリー全体の上位文書。個人単位のクレジットを前提に実作業をチームで分担する（柱1）、人の判断を最少回数・最高品質で使い品質責任を個人に負わせない（柱2）、有限なエージェント資源をローカル LLM 含む適所適材で使い切り作業を止めない（柱3）という三本柱と、原則 C1〜C10、モジュール別の設計方針、作業時の強制ゲート（§8）を定める。対象パスの変更はこのゲートを通す。
 1. [`agent-project-design.md`](./agent-project-design.md) — 単一プロジェクトのバックログを自律的に優先順位付け・実行・検証・収束させる制御層の設計正典。done を verify の終了コードだけで確定する不変条件、常駐体と子プロセスの分担、複数 PC を git の CAS で調停する方式を扱う（旧 multi-node daemon 設計を統合済み）。
 2. [`agent-flow-design.md`](./agent-flow-design.md) — git 共有バス上でタスクグラフを動的生成し複数ワーカーへ分散実行する Dynamic Workflow 基盤の設計書。自己回復リトライ（4 層）とリトライ時の世代交代（`inherit_from`）も統合済み。
 3. [`codd-gate-design.md`](./codd-gate-design.md) — ドキュメント・コード・テストの一貫性を「受け入れ前ゲート」と「負債棚卸し→タスク化」で維持する決定的ツールの設計正典。agent-project 本体は無改造のまま、`schemas/` の共通データ契約と agent-project 側の汎用フック契約（E1〜E3）の2点で連携する独立ツール。
-4. [`agent-tools-rename-design.md`](./agent-tools-rename-design.md) — 旧 `kiro-*` 系統を `agent-*` へクローン移行・改称する方針と新旧名称対応表。agent-project/agent-flow/agent-dashboard の移行は完了。`kiro-loop → agent-loop` もクローン移行済みで（旧 `tools/kiro-loop/` は方針どおり残置）、ループ系の設計書は [`agent-loop-design.md`](./agent-loop-design.md) に統合済み。
+4. [`agent-tools-rename-design.md`](./agent-tools-rename-design.md) — 旧 `kiro-*` 系統を `agent-*` へクローン移行・改称する方針と新旧名称対応表。agent-project/agent-flow/agent-dashboard の移行は完了。`kiro-loop → agent-loop` もクローン移行済みで、ループ系の設計書は [`agent-loop-design.md`](./agent-loop-design.md) に統合済み。2026-08-08 に旧 `tools/kiro-loop/` の残置方針を撤回し、退役へ切り替えた（手順は [資源効率計画](../plans/2026-08-08-agent-tools-resource-efficiency-plan.md) の F13）。
 
 > **補足**: agent-dashboard の画面ごとの詳細設計は `docs/plans/2026-07-1x-agent-dashboard-*-design.md` に日付つきで分散している。本ディレクトリには骨格の正典 [`agent-dashboard-design.md`](./agent-dashboard-design.md) を置く。
 

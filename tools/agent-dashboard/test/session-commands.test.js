@@ -339,14 +339,17 @@ test('設定カードは「共通設定」に共通指示と並べて置く', ()
     '共通指示カードの直下に並べる');
 });
 
-test('設定カードは保存・追加・プレビューの動線を持つ', () => {
+test('設定カードは保存・追加の動線を持つ（実行内容のプレビューは廃止）', () => {
   const src = rendererSrc.read();
-  for (const id of ['btn-orch-sess-save', 'btn-orch-sess-add', 'btn-orch-sess-preview',
-    'orch-sess-enabled', 'orch-sess-max-total', 'orch-sess-preview-engine']) {
+  for (const id of ['btn-orch-sess-save', 'btn-orch-sess-add',
+    'orch-sess-enabled', 'orch-sess-max-total']) {
     assert.ok(src.includes(id), `${id} が無い`);
   }
   assert.ok(src.includes('orchestrationSessionCommandsSave'));
-  assert.ok(src.includes('orchestrationSessionCommandsPreview'));
+  // 「実行される内容を確認」は、押すまで何も出ず、何を伝える枠なのかが読めなかったので外した。
+  // 設定した行そのものが同じ画面に見えており、確認のために別の枠を開く理由が無い。
+  assert.ok(!src.includes('btn-orch-sess-preview'), 'プレビューの動線は残さない');
+  assert.ok(!src.includes('orchestrationSessionCommandsPreview'), 'プレビューの取得経路も残さない');
   assert.ok(src.includes('使用するコマンド'), '利用者が設定内容を見出しだけで判断できる');
   assert.ok(src.includes('通常は設定しなくても使えます'), '設定が任意であることを明示する');
   assert.ok(src.includes('orch-sess-bundle'), 'コマンドごとにまとめ依頼を選ぶチェックボックスが無い');
@@ -361,9 +364,10 @@ test('未保存の入力はポーリング再描画から守る', () => {
   assert.ok(/!state\.orchInstructionsDirty && !state\.orchSessionDirty/.test(src));
 });
 
-test('画面は反映状況と注意書き（引用・中止・反映点）を出す', () => {
+test('画面は注意書き（引用・中止・反映点）を出す', () => {
   const src = rendererSrc.read();
-  assert.ok(src.includes('session_commands_revision_applied'));
+  // 実行サービスごとの「反映状況」表は外した（同じ話題は実行制御の「設定の反映」列が持つ）。
+  assert.ok(!src.includes('session_commands_revision_applied'), '反映状況の表は残さない');
   assert.ok(src.includes('で囲んでください'), 'シェル引用は利用者の責任だと明示する');
   assert.ok(src.includes('起動しなくなります'), 'fail の副作用を明示する');
   assert.ok(src.includes('次に始まるセッションから'), '反映点を明示する');

@@ -19,6 +19,12 @@ const nodeRepos = require('../src/features/agent-project/main/nodeRepos');
 const agent = require('../src/features/agent-project/main/agent');
 const { engineConfig } = require('./helpers/engine-status');
 
+// 定常業務の走査ルートには**常にユーザーホーム**が入る（`~/.kiro/kiro-loop.yml` を拾うため）。
+// テストでは実機のホームを覗かせない——結果が実行環境の持ち物で変わってしまう。
+const HOME_STUB = fs.mkdtempSync(path.join(os.tmpdir(), 'home-stub-'));
+process.env.HOME = HOME_STUB;
+process.env.USERPROFILE = HOME_STUB;
+
 let passed = 0;
 function test(name, fn) {
   try {
@@ -61,18 +67,19 @@ test('cowork.roots は走査ルートに合流する', () => {
   }
 });
 
-test('cowork.roots が空でも従来どおり engine のプロジェクトだけを走査する', () => {
+test('cowork.roots が空でも engine のプロジェクトとユーザーホームだけを走査する', () => {
   // W2-4（プロジェクト一覧の単一ソース化）を壊さないこと。
   // engine 側の宣言は実行エンジンの状況ファイルなので、テスト用の空ホームを指す設定で見る
   // （隔離しないと、この PC で実際に動いているエンジンの宣言が混ざり結果が環境依存になる）。
+  // ユーザーホームは登録簿に無くても常に入る（`~/.kiro/kiro-loop.yml` を拾うため）。
   const empty = engineConfig([]);
-  assert.deepStrictEqual(discover.coworkRoots({ ...empty, cowork: {} }), []);
-  assert.deepStrictEqual(discover.coworkRoots(empty), []);
+  assert.deepStrictEqual(discover.coworkRoots({ ...empty, cowork: {} }), [HOME_STUB]);
+  assert.deepStrictEqual(discover.coworkRoots(empty), [HOME_STUB]);
 });
 
 test('空文字・空白だけのエントリは無視する', () => {
   assert.deepStrictEqual(
-    discover.coworkRoots({ ...engineConfig([]), cowork: { roots: ['', '   '] } }), []);
+    discover.coworkRoots({ ...engineConfig([]), cowork: { roots: ['', '   '] } }), [HOME_STUB]);
 });
 
 // ---------------------------------------------------------------------------

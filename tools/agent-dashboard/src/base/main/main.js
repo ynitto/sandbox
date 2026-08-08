@@ -45,7 +45,7 @@ function createWindow() {
   const win = new BrowserWindow({
     width: 1600,
     height: 950,
-    title: 'Agent Dashboard',
+    title: 'ポータル',
     // dist:portable の exe アイコンと同じものを開発起動（electron .）時にも使う
     icon: path.join(APP_ROOT, 'assets', 'icon.ico'),
     webPreferences: {

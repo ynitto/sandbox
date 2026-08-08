@@ -209,7 +209,7 @@ function readLog(config, itemIdValue, file, maxBytes = 16000) {
 
 function processStatus(item, cfg) {
   const repo = item.repo || item.cwd || '';
-  const command = item.type === 'state-machine' ? (cfg.stateMachineCommand || 'statemachine-use') : (cfg.loopCommand || cfg.loopProvider || 'kiro-loop');
+  const command = item.type === 'state-machine' ? (cfg.stateMachineCommand || 'statemachine-use') : (cfg.loopCommand || cfg.loopProvider || 'agent-loop');
   if (process.platform === 'win32') {
     // kiro-loop は WSL 側で動く想定なので、リポジトリが Windows ドライブ上でも WSL を探査する。
     const needle = repo ? (toWslCwd(repo) || repo) : itemId(item, 0);
@@ -253,13 +253,15 @@ function normalizeItem(item, i, cfg, stateOpts, config) {
     type,
     name: String(item.name || item.id || (type === 'loop' ? `定期実行 ${i + 1}` : `定型業務 ${i + 1}`)),
     repo: item.repo || item.cwd || '',
+    // 手動登録では人が選んだフォルダがそのまま登録フォルダ（実行の cwd）になる。
+    root: item.root || item.repo || item.cwd || '',
     branch: item.branch || '',
     schedule: item.schedule || item.cron || '',
     workflow: item.workflow || item.file || '',
     prompt: item.prompt || '',
     instruction: item.instruction || '',
     description: item.description || '',
-    command: type === 'state-machine' ? (cfg.stateMachineCommand || 'statemachine-use') : (cfg.loopCommand || cfg.loopProvider || 'kiro-loop'),
+    command: type === 'state-machine' ? (cfg.stateMachineCommand || 'statemachine-use') : (cfg.loopCommand || cfg.loopProvider || 'agent-loop'),
     source: 'config',
     state: dynamicState({ ...item, id, type }, cfg, stateOpts, config),
   };
@@ -273,13 +275,14 @@ function normalizeDiscovered(d, cfg, stateOpts, config) {
     type,
     name: String(d.name || d.id),
     repo: d.repo || '',
+    root: d.root || d.repo || '',
     branch: '',
     schedule: d.schedule || '',
     workflow: d.workflow || '',
     prompt: d.prompt || '',
     instruction: '',
     description: d.description || '',
-    command: type === 'state-machine' ? (cfg.stateMachineCommand || 'statemachine-use') : (cfg.loopCommand || cfg.loopProvider || 'kiro-loop'),
+    command: type === 'state-machine' ? (cfg.stateMachineCommand || 'statemachine-use') : (cfg.loopCommand || cfg.loopProvider || 'agent-loop'),
     source: 'discovered',
     enabled: d.enabled !== false,
     _src: d._src,
@@ -337,12 +340,14 @@ function overview(config, opts = {}) {
   const items = dedupeItems([...configItems, ...discovered]);
   const discoveredByKey = new Map();
   for (const item of discovered) {
-    if (item.repo) discoveredByKey.set(_pathKey(item.repo), item.repo);
+    // 鍵は所属フォルダ（登録したフォルダ）。設定がサブフォルダにある作業でも、画面が
+    // 「このフォルダに定常業務がある」と判定できるようにする。
+    const folder = item.root || item.repo;
+    if (folder) discoveredByKey.set(_pathKey(folder), folder);
   }
   return {
     loopProvider: loop.provider,
     loopCommand: loop.command,
-    replacementHint: loop.replacementHint,
     stateMachineCommand: cfg.stateMachineCommand || 'statemachine-use',
     // renderer が「選択プロジェクトに設定ファイルがあるか」を判定する根拠。
     // items は手動設定との重複排除で source=config になる場合があるため、発見元を別に保持する。
@@ -503,6 +508,15 @@ function resolveLoopPromptText(repo, promptName, config) {
   return idx >= 0 ? String(texts[idx] || '') : '';
 }
 
+// 実行時の cwd は**登録したフォルダ**（`root`）。設定ファイルがサブフォルダにあっても、
+// エージェントは人が登録したフォルダで起きる——そこが人の言う「この作業のフォルダ」で、
+// 画面の所属（サイドバーで選ぶフォルダ）とも一致する。プロンプト本文とログの読み取りは
+// 設定のあるフォルダ（`repo`）のままで、こちらは変えない。
+function launchCwd(item, config) {
+  const dir = item.root || item.repo || item.cwd || '';
+  return viewerRepo(dir, config) || dir;
+}
+
 function runLoop(config, itemIdValue) {
   const cfg = config.cowork || {};
   const item = resolveItem(config, itemIdValue);
@@ -512,7 +526,7 @@ function runLoop(config, itemIdValue) {
   const runId = item.source === 'discovered'
     ? ((item._src && item._src.promptName) || item.name)
     : (item.name || item.id);
-  const cwd = viewerRepo(item.repo || item.cwd, config) || item.repo || item.cwd;
+  const cwd = launchCwd(item, config);
   // ウィンドウ実行用: kiro-loop.yml のプロンプト本文を解決して直接送る（kiro-loop 非経由）。
   // 本文を解決できなければ、エージェント自身に設定を読ませる指示文で代替する。
   // 明示 args の項目は従来の <loopCommand> 実行のまま（prompt を渡さない）。
@@ -535,7 +549,7 @@ function runStateMachine(config, itemIdValue, input) {
   const cfg = config.cowork || {};
   const item = resolveItem(config, itemIdValue);
   if (!item) throw new Error(`Cowork 定型業務が見つかりません: ${itemIdValue}`);
-  const cwd = viewerRepo(item.repo || item.cwd, config) || item.repo || item.cwd || process.cwd();
+  const cwd = launchCwd(item, config) || process.cwd();
   // statemachine-use は CLI ではなくスキル。エージェントセッションへ
   // 「statemachine-use スキルで xxx ステートマシンを実行して」を送って発動する。
   // kiro-loop.yml に対となる定期プロンプトがある統合項目はその本文を優先する。

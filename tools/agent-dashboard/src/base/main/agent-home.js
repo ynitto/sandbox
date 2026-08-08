@@ -41,10 +41,30 @@ function agentDirCandidates(base) {
   return [path.join(base, AGENT_HOME), path.join(base, AGENT_HOME_LEGACY)];
 }
 
+// 定常業務の走査に**必ず含めるユーザーホーム**。
+//
+// kiro-loop の設定はプロジェクトの下だけでなく `~/.kiro/kiro-loop.yml` にも置かれる
+// （その人の端末で回す定期処理）。ホームはどの登録簿（cowork.roots / host.yaml）にも
+// 載らないので、明示的に足さないと画面から永久に見えない。
+// Windows では WSL 側のホームも並べる——定常業務のエンジンは WSL で動くため、人が
+// 「ホーム」と呼ぶ実体はそちらにもある。
+function userHomeRoots() {
+  const out = [os.homedir()];
+  let wslHome = '';
+  try {
+    wslHome = require('./wsl').wslHomeDir();
+  } catch {
+    /* WSL が無い環境では Windows 側のホームだけ */
+  }
+  if (wslHome && !out.some((d) => d.toLowerCase() === wslHome.toLowerCase())) out.push(wslHome);
+  return out;
+}
+
 module.exports = {
   AGENT_HOME,
   AGENT_HOME_LEGACY,
   agentHomeDir,
   agentHomeSubdir,
   agentDirCandidates,
+  userHomeRoots,
 };

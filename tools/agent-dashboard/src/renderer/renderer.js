@@ -10,6 +10,9 @@ const state = {
   area: 'home',
   discovery: { projects: [], instances: [] },
   selectedDir: null, // 選択中プロジェクトのディレクトリ
+  // 領域ごとに最後に選んでいた対象（領域 id → dir）。選択そのものは selectedDir 1 つだけ
+  // なので、これが無いと領域を往復するたびに前の領域の対象が残るか、先頭へ戻される。
+  areaSelection: {},
   project: null, // readProject のスナップショット
   flowRuns: [],
   engine: null, // engine/status.json のスナップショット（稼働・共有の状況・切り離し）
@@ -45,7 +48,7 @@ const state = {
   coworkDraft: null,
   coworkEditIndex: -1,
   coworkSelections: {}, // project path → selected routine id
-  coworkSearches: { cowork: '' },
+  coworkSearches: { cowork: '', 'routine-runs': '' },
   coworkHistoryCache: RoutineUiCache.createBoundedAsyncCache({ max: 12, ttlMs: 60000 }),
   // 委譲公示板（agent-board）の観測。板は端末単位なのでプロジェクト選択と独立。
   boardStatus: null,   // engine/status.json の board ブロック（参加状況・手動入札の可否）
@@ -68,7 +71,6 @@ const state = {
   globalSettingsDirty: false,
   orchInstructionsDirty: false, // 共通指示・推奨スキルの未保存入力（ポーリング再描画から保護）
   orchSessionDirty: false,      // セッション開始コマンドの未保存入力（同上）
-  orchSessionPreview: null,     // { engine, entries } プレビューの取得結果
   // 要対応（needs）の前回カウント。増分を検知して OS 通知する（張り付き監視の解消）。
   // initialized=false の初回はベースライン取得のみで通知しない（起動時の殺到を避ける）。
   notify: { counts: {}, initialized: false },
@@ -828,7 +830,7 @@ function renderTree() {
   // 登録されており、人は host.yaml を見に行っても間違いを見つけられない（直しようのない表示）。
   // 実行側が宣言したパスを出せば、どこを直せばよいかが画面から分かる。
   const all = state.discovery.projects || [];
-  const projects = all.filter((p) => p.exists);
+  const projects = all.filter((p) => p.exists && isProjectAreaItem(p));
   const unreachable = all.filter((p) => !p.exists);
   if (!all.length) {
     tree.innerHTML =
@@ -885,6 +887,13 @@ function renderTree() {
   renderRoutineList();
 }
 
+// プロジェクト領域の一覧に並べるもの。定常業務専用フォルダ（cowork.roots だけで挙がり、
+// agent-project のマーカーを持たない）は並べない——選ぶとプロジェクトのタブが 1 つも
+// 出せず、押しても何も起きない行き止まりになる。そのフォルダは定常業務領域に出る。
+function isProjectAreaItem(p) {
+  return !!p && (p.kind !== 'routine' || !!p.isProject);
+}
+
 // 定常業務の対象フォルダ一覧（定常業務領域のサイドバー）。プロジェクト一覧と同じ形にする
 // ——「左で対象を選び、右でその中身を見る」という読み方を領域が変わっても揃えるため。
 // 並べるのは定常業務専用フォルダ（kind=routine）と、作業を登録してあるプロジェクトの両方。
@@ -900,13 +909,19 @@ function renderRoutineList() {
   }
   list.innerHTML = folders
     .map((p) => {
-      const count = coworkItemsForFolder(p.dir).length;
+      const items = coworkItemsForFolder(p.dir);
+      const stuck = coworkAttentionItems(items).length;
+      // 手を打つべきもの（止まっている作業）と在庫（登録した作業）を別のバッジにする。
+      // 領域バッジは前者だけを数えるので、どのフォルダの話かはこの行で分かる必要がある。
+      // 状態のドットは出さない。ここに出るのは**フォルダ**で、丸が指していたのは
+      // agent-project の常駐体の稼働——定常業務の実行側はこのアプリ自身なので、
+      // フォルダの隣に別の道具の稼働状態を置くと読み違える（プロジェクト一覧では継続）。
       return `<button type="button" class="project-item ${state.selectedDir === p.dir ? 'selected' : ''}"
         data-routine-dir="${esc(p.dir)}" aria-current="${state.selectedDir === p.dir ? 'true' : 'false'}"
         title="${esc(p.dir)}">
-        <span class="dot ${p.running ? 'running' : ''}"></span>
         <span class="name">${esc(p.label)}</span>
-        ${count ? `<span class="badge" title="登録した作業 ${count} 件">${count}</span>` : ''}
+        ${stuck ? `<span class="badge warn" title="止まっている作業 ${stuck} 件">${stuck}</span>` : ''}
+        ${items.length ? `<span class="badge" title="登録した作業 ${items.length} 件">${items.length}</span>` : ''}
       </button>`;
     })
     .join('');
@@ -916,6 +931,11 @@ function renderRoutineList() {
 }
 
 // 定常業務の対象になるフォルダ（発見済みで、この PC から届くものだけ）。
+//
+// **定常業務専用フォルダ（cowork.roots）と、プロジェクトとして登録したフォルダの両方**を
+// 並べる。走査（discoverCoworkItems）はもともと両方を回っているので、片方しか並べないと
+// 「一覧に無いフォルダの作業が画面に出てくる」ことになる。作業がまだ 0 件のフォルダも
+// 並べる——選べないと、そのフォルダに最初の 1 件を作れない。
 function routineFolders() {
   return (state.discovery.projects || [])
     .filter((p) => p && p.exists !== false)
@@ -925,14 +945,32 @@ function routineFolders() {
       running: !!p.running,
       kind: p.kind,
     }))
-    .filter((p) => p.dir && (p.kind === 'routine' || coworkItemsForFolder(p.dir).length));
+    .filter((p) => p.dir);
+}
+
+// その作業がどのフォルダの話か。**登録したフォルダ（root）が所属**で、設定ファイルの
+// 在り処（repo）ではない——設定をサブフォルダに置いた作業は、repo で括るとどのフォルダの
+// 一覧にも出てこない。手で登録した作業は root を持たないので repo ＞ cwd の順に落とす。
+function coworkItemFolder(item) {
+  return (item && (item.root || item.repo || item.cwd)) || '';
 }
 
 // そのフォルダに登録された作業。設定側の宣言と発見結果の両方を見る（cowork の一覧と同じ種）。
 function coworkItemsForFolder(folder) {
   const items = (state.cowork && Array.isArray(state.cowork.items)) ? state.cowork.items : [];
   if (!folder) return [];
-  return items.filter((item) => item && coworkPathKey(item.repo) === coworkPathKey(folder));
+  return items.filter((item) => item && coworkPathKey(coworkItemFolder(item)) === coworkPathKey(folder));
+}
+
+// 定常業務のうち**人が手を打つべきもの**。動いていないのに失敗で終わっている作業だけを
+// 数える。登録しただけ・まだ動かしていない（unknown）作業は放っておいても壊れないので、
+// 数に入れない——注目の合図が在庫の数で埋まると、合図として読めなくなる。
+const COWORK_ATTENTION_STATUS = new Set(['failed', 'error', 'blocked']);
+function coworkAttentionItems(items) {
+  return (items || []).filter((item) => {
+    const st = (item && item.state) || {};
+    return !st.running && COWORK_ATTENTION_STATUS.has(String(st.status || ''));
+  });
 }
 
 // 実行エンジンは宣言しているが、この PC からはフォルダに届かないプロジェクトの行。
@@ -980,6 +1018,8 @@ async function selectProject(dir) {
     resetFlowDrilldown();
   }
   state.selectedDir = dir;
+  // いまの領域で最後に見ていた対象として覚える（領域を往復しても同じものへ戻る）。
+  state.areaSelection[state.area] = dir;
   localStorage.setItem('kpv:selected', dir);
   // 起動先候補はプロジェクトごとに違う（レジストリとノード宣言の交差）。選択のたびに引き直す。
   state.cliChatCwdChoices = [];
@@ -1298,27 +1338,47 @@ async function openCliChat() {
   }
 }
 
+// 1 つの画面の描画が失敗しても、ほかの画面まで道連れにしない。
+// 領域ごとに独立した画面を並べるポータルで描画を 1 本の連鎖にすると、どこか 1 か所の
+// 例外で**それ以降の領域が全部空になる**（実際に起きた: 設定欄の取り違えで全体設定・
+// プロジェクト設定・参加が丸ごと出なくなった）。失敗はその画面に閉じ込め、原因は
+// 開発者コンソールへ残す。
+function renderPane(name, render) {
+  try {
+    render();
+  } catch (err) {
+    uiLog(`render failed: ${name}`, String((err && err.stack) || err));
+  }
+}
+
 function renderAllTabs() {
   const ui = captureUiState();
+  renderPane('cliChat', renderCliChatButton);
+  renderPane('overview', renderOverview);
+  renderPane('backlog', renderBacklog);
+  renderPane('needs', renderNeeds);
+  renderPane('flow', renderFlow);
+  renderPane('gitlab', renderGitLab);
+  renderPane('history', renderHistory);
+  renderPane('cowork', renderCowork);
+  renderPane('routine-runs', renderRoutineRuns);
+  renderPane('routine-settings', renderRoutineSettings);
+  renderPane('usage', renderUsage);
+  renderPane('usage-settings', renderUsageSettings);
+  renderPane('amigos', renderAmigos);
+  renderPane('project-settings', renderProjectSettings);
+  renderPane('orchestration', () => {
+    if ((!state.globalSettingsDirty && !state.orchInstructionsDirty && !state.orchSessionDirty)
+      || !$('tab-orchestration').childElementCount) renderOrchestration();
+  });
+  renderPane('kiro-loop', renderKiroLoopTerminal);
+  for (const [name] of featureTabs) renderPane(name, () => renderFeatureTab(name));
+  // ナビは**画面を描いたあと**に組む。どのタブを出せるかは各画面が描画のなかで決める
+  // （募集が無ければ参加タブを隠す等）ので、先に組むと 1 周遅れの状態が出る。
   renderAreaNav();
   renderAreaLists();
+  applyAreaTabs();
   renderAreaHeader();
-  renderCliChatButton();
-  renderOverview();
-  renderBacklog();
-  renderNeeds();
-  renderFlow();
-  renderGitLab();
-  renderHistory();
-  renderCowork();
-  renderRoutineRuns();
-  renderRoutineSettings();
-  renderUsage();
-  renderAmigos();
-  renderProjectSettings();
-  if ((!state.globalSettingsDirty && !state.orchInstructionsDirty && !state.orchSessionDirty) || !$('tab-orchestration').childElementCount) renderOrchestration();
-  renderKiroLoopTerminal();
-  for (const [name] of featureTabs) renderFeatureTab(name);
   restoreUiState(ui);
 }
 
@@ -1327,8 +1387,16 @@ function activeTab() {
   return el ? el.dataset.tab : 'home';
 }
 
-// 左メニューの件数バッジ。領域を開かずに「そこに何件あるか」が分かると、開く順番を
-// 決められる。数字を持たない領域はバッジを出さない（0 を並べても情報にならない）。
+// 左メニューのバッジ。**人が手を打つべきものの数だけを出す**。
+//
+// 以前は在庫の数（登録した作業の総数・進行中のミッション数）を出していた。それは
+// 「定常業務 [6]」と光っているのに開くと何も無い、という画面を作る——バッジは端末全体の
+// 数で、右ペインは選んでいるフォルダ 1 つ分だからである。数が合わないだけでなく、
+// 見るべきものが無いときも光り続けるので、合図として読めなくなる。
+//
+// 規律は 2 つ。**数えるのは放っておくと止まったままになるものだけ**（要対応・失敗・確認
+// 待ち。tone は warn）。**数えた対象を、その領域を開いたときに最初に映す**（pickAreaItem
+// が同じ材料から着地点を選ぶ）。在庫の件数はサイドバーの対象一覧とホームのカードが持つ。
 function areaBadge(id) {
   if (id === 'projects') {
     const model = portalHomeModel((state.discovery && state.discovery.projects) || []);
@@ -1336,12 +1404,12 @@ function areaBadge(id) {
     return { text: String(model.totals.needs), tone: 'warn', title: `要対応 ${model.totals.needs} 件` };
   }
   if (id === 'routines') {
-    const n = coworkItemCount();
-    return n ? { text: String(n), title: `登録した作業 ${n} 件` } : null;
+    const n = coworkAttentionItems((state.cowork && state.cowork.items) || []).length;
+    return n ? { text: String(n), tone: 'warn', title: `止まっている作業 ${n} 件` } : null;
   }
   if (id === 'missions') {
-    const n = ((state.amigos && state.amigos.missions) || []).length;
-    return n ? { text: String(n), title: `ミッション ${n} 件` } : null;
+    const n = amigosAttentionCount();
+    return n ? { text: String(n), tone: 'warn', title: `確認が必要な項目 ${n} 件` } : null;
   }
   const hooks = featureTabs.get(String(id));
   if (hooks && typeof hooks.badge === 'function') {
@@ -1455,7 +1523,60 @@ function selectedAreaItemName() {
   return p ? p.charterName || p.name || '' : '';
 }
 
-function switchArea(id) {
+// 領域の対象一覧に並ぶもの（左で選べるもの）と、そこで人が手を打つべき件数。
+// 領域バッジと同じ材料から出す——「6 と光っているのに開くと空」を作らないために、
+// 数える対象と、開いたときに映す対象を 1 つの式から取る。
+function areaItems(areaId) {
+  if (areaId === 'projects') {
+    return (state.discovery.projects || [])
+      .filter((p) => p && p.exists && isProjectAreaItem(p))
+      .map((p) => ({
+        dir: p.dir,
+        attention: Math.max(0, Number(p.needsCount) || 0),
+        works: Math.max(0, Number(p.backlogCount) || 0),
+      }));
+  }
+  if (areaId === 'routines') {
+    return routineFolders().map((f) => {
+      const items = coworkItemsForFolder(f.dir);
+      return { dir: f.dir, attention: coworkAttentionItems(items).length, works: items.length };
+    });
+  }
+  return [];
+}
+
+// 領域を開いたときに映す対象を、その領域の一覧の中から選び直す。
+//
+// 選択（selectedDir）はアプリ全体で 1 つしか無いので、領域をまたぐと前の領域で選んだ
+// ものが残る。**右ペインの中身もタブの出し分けも選択中の対象で決まる**ため、そのままだと
+// 「定常業務を開いたのに、前に見ていたプロジェクトの作業（＝空）が映る」「定常業務の
+// フォルダを選んだままプロジェクトを開くと、出せるタブが無くてホームへ弾かれる」が起きる。
+//
+// 戻ってきたときは前に見ていた対象を出し、初めて開く領域では手を打つべきものが
+// いちばん多い対象へ着地させる（バッジの数字と着地点を揃える）。
+async function alignAreaSelection(areaId) {
+  const items = areaItems(areaId);
+  if (!items.length) return;                       // 対象一覧を持たない領域・まだ何も無い領域
+  // その領域で前に見ていたものが最優先（人がその領域で選んだ結果なので、空でも尊重する）。
+  const remembered = items.find((it) => it.dir === state.areaSelection[areaId]);
+  // 記憶が無いときは、持ち込んだ選択が**その領域で中身を持つときだけ**引き継ぐ。
+  // 同じフォルダが両方の領域に並ぶので（プロジェクトのフォルダでも定常業務は回せる）、
+  // 素通しにすると、隣のフォルダに 6 件あるのに空の画面へ着地することになる。
+  const current = items.find((it) => it.dir === state.selectedDir);
+  const carried = current && (current.works > 0 || current.attention > 0) ? current : null;
+  const attention = items
+    .filter((it) => it.attention > 0)
+    .sort((a, b) => b.attention - a.attention)[0];
+  const populated = items.find((it) => it.works > 0);
+  const target = remembered || carried || attention || populated || items[0];
+  if (target.dir === state.selectedDir) {
+    state.areaSelection[areaId] = target.dir;
+    return;
+  }
+  await selectProject(target.dir);
+}
+
+async function switchArea(id) {
   const area = areaById(id);
   state.area = area.id;
   try {
@@ -1463,9 +1584,18 @@ function switchArea(id) {
   } catch {
     /* localStorage が使えなくても領域の切り替えは成立する */
   }
+  // 対象を先に合わせてからタブを出し分ける。順番が逆だと、前の領域の対象で「出せるタブが
+  // 無い」と判定してホームへ弾いてしまう。
+  await alignAreaSelection(area.id);
   renderAreaNav();
   renderAreaLists();
   const visible = applyAreaTabs();
+  // 出せるタブが 1 つも無い領域は、押しても何も起きない行き止まりになる。左メニューに
+  // 出ている以上は必ずどこかへ着地させる——ホームへ戻し、理由はコンソールへ残す。
+  if (!visible.length) {
+    uiLog('area has no visible tab', area.id);
+    if (area.id !== 'home') return switchArea('home');
+  }
   const current = document.querySelector('.tab.active');
   if (!current || !visible.includes(current)) {
     if (visible.length) return switchTab(visible[0].dataset.tab);
@@ -1479,39 +1609,50 @@ function initTabs() {
   }
 }
 
+// 設定の入力欄へ現在値を入れる。
+//
+// **欄が「まだ無い」ことは正常**。設定は効く範囲ごとに別の画面へ散っていて（全体設定 /
+// 定常業務領域の設定 / …）、この関数はどちらの画面からも呼ばれる。相手の画面がまだ
+// 描かれていなければその欄は DOM に無い。以前は素で代入していたため、定常業務の設定を
+// 先に描いた回で null への代入となり、**描画の連鎖ごと落ちて後続の画面が全部空になった**。
+// 欄の有無で分岐を増やさず、「あるものにだけ入れる」を 1 か所の代入口に閉じ込める。
 function populateSettingsFields() {
   const cfg = state.config;
-  $('cfg-refresh').value = cfg.projects ? cfg.projects.refreshSec : 5;
-  $('cfg-engine-distro').value = (cfg.engine && cfg.engine.distro) || '';
-  $('cfg-engine-home').value = (cfg.engine && cfg.engine.home) || '';
-  if ($('cfg-node-commands-dir')) {
-    $('cfg-node-commands-dir').value = (cfg.delegation && cfg.delegation.nodeCommandsDir) || '';
-  }
-  $('cfg-notify').checked = !(cfg.notifications && cfg.notifications.enabled === false);
-  $('cfg-needs-sla').value = cfg.projects && cfg.projects.needsSlaHours !== undefined ? cfg.projects.needsSlaHours : 24;
-  if ($('cfg-role')) $('cfg-role').value = cfg.role === 'viewer' ? 'viewer' : 'engineer';
-  $('cfg-flow-bus').value = (cfg.projects && cfg.projects.flowBus) || '';
-  $('cfg-flow-bus-by-project').value = Object.entries(
+  const setValue = (id, value) => {
+    const el = $(id);
+    if (el) el.value = value;
+  };
+  const setChecked = (id, value) => {
+    const el = $(id);
+    if (el) el.checked = value;
+  };
+  setValue('cfg-refresh', cfg.projects ? cfg.projects.refreshSec : 5);
+  setValue('cfg-engine-distro', (cfg.engine && cfg.engine.distro) || '');
+  setValue('cfg-engine-home', (cfg.engine && cfg.engine.home) || '');
+  setValue('cfg-node-commands-dir', (cfg.delegation && cfg.delegation.nodeCommandsDir) || '');
+  setChecked('cfg-notify', !(cfg.notifications && cfg.notifications.enabled === false));
+  setValue('cfg-needs-sla', cfg.projects && cfg.projects.needsSlaHours !== undefined ? cfg.projects.needsSlaHours : 24);
+  setValue('cfg-role', cfg.role === 'viewer' ? 'viewer' : 'engineer');
+  setValue('cfg-flow-bus', (cfg.projects && cfg.projects.flowBus) || '');
+  setValue('cfg-flow-bus-by-project', Object.entries(
     (cfg.projects && cfg.projects.flowBusByProject) || {}
   )
     .map(([name, bus]) => `${name} = ${bus}`)
-    .join('\n');
+    .join('\n'));
   // 空欄 = 未設定（プロジェクト設定 → 既定 kiro のフォールバック）。'kiro' で埋めると
   // 保存時に「明示 kiro」が固定され、プロジェクトの agent_cli が二度と効かなくなる。
-  $('cfg-agent-cli').value = (cfg.agent && cfg.agent.cli) || '';
-  $('cfg-agent-model').value = (cfg.agent && cfg.agent.model) || '';
-  $('cfg-agent-timeout').value = (cfg.agent && cfg.agent.timeoutSec) || 180;
-  $('cfg-gl-url').value = cfg.gitlab.baseUrl || '';
-  $('cfg-gl-token').value = cfg.gitlab.token || '';
-  $('cfg-rv-mode').value = cfg.reviewViewer.mode || 'protocol';
-  $('cfg-rv-exepath').value = cfg.reviewViewer.exePath || '';
-  $('cfg-rv-command').value = cfg.reviewViewer.command || '';
-  // 定常業務の欄は定常業務領域の設定タブにある。全体設定を描いただけの時点では
-  // まだ存在しないことがあるので、ある時だけ値を入れる（両方の画面から呼ばれる）。
+  setValue('cfg-agent-cli', (cfg.agent && cfg.agent.cli) || '');
+  setValue('cfg-agent-model', (cfg.agent && cfg.agent.model) || '');
+  setValue('cfg-agent-timeout', (cfg.agent && cfg.agent.timeoutSec) || 180);
+  setValue('cfg-gl-url', (cfg.gitlab && cfg.gitlab.baseUrl) || '');
+  setValue('cfg-gl-token', (cfg.gitlab && cfg.gitlab.token) || '');
+  setValue('cfg-rv-mode', (cfg.reviewViewer && cfg.reviewViewer.mode) || 'protocol');
+  setValue('cfg-rv-exepath', (cfg.reviewViewer && cfg.reviewViewer.exePath) || '');
+  setValue('cfg-rv-command', (cfg.reviewViewer && cfg.reviewViewer.command) || '');
   const cw = cfg.cowork || {};
-  if ($('cfg-cowork-loop-provider')) $('cfg-cowork-loop-provider').value = cw.loopProvider || 'kiro-loop';
-  if ($('cfg-cowork-loop-command')) $('cfg-cowork-loop-command').value = cw.loopCommand || 'kiro-loop';
-  if ($('cfg-cowork-sm-command')) $('cfg-cowork-sm-command').value = cw.stateMachineCommand || 'statemachine-use';
+  // 旧設定は種類（loopProvider）だけを持っていることがある。コマンド欄へ引き継ぐ。
+  setValue('cfg-cowork-loop-command', cw.loopCommand || cw.loopProvider || 'agent-loop');
+  setValue('cfg-cowork-sm-command', cw.stateMachineCommand || 'statemachine-use');
 }
 
 function openGlobalSettings(section = 'app') {
@@ -1545,15 +1686,19 @@ function projectCheckHtml(p) {
   const check = p && p.projectCheck;
   if (!check) return '';
   const configured = check.configured ?? Boolean(check.command && String(check.command).trim());
-  const setup = configured ? '' : `<div class="need-resolution">
-    <span class="label-chip">設定</span>
+  // 未設定のときの案内。**要対応カードの装飾（need-resolution）を借りない**——別の画面の
+  // 部品を持ち込むと、見出しの直後に色付きの帯が挟まって概要の流れが切れる。
+  const setup = configured ? '' : `<div class="project-check-setup">
     <p>state repo の共通チェックを <code>regression_cmd</code> に1度だけ設定します。</p>
     <pre class="mono">regression_cmd: './tools/check'</pre>
     ${check.configFile ? `<div class="summary-actions">
       <button class="summary-link secondary" data-project-check-open="${esc(check.configFile)}">自動検出した設定ファイルを開く</button>
     </div>` : ''}
   </div>`;
-  return `<section class="overview-version-section" aria-labelledby="project-check-title">
+  // コマンドは長い 1 行になりがち（`make -s smoke && npm test -- --run` 等）。素の
+  // <code> は行内要素なので、見出しの直後へ回り込んで折り返しも効かず、枠から溢れていた。
+  // 独立したブロックにして、溢れる分はその枠の中で横スクロールさせる。
+  return `<section class="overview-version-section project-check" aria-labelledby="project-check-title">
     <div class="overview-version-heading">
       <div>
         <h2 id="project-check-title">プロジェクト共通チェック</h2>
@@ -1561,7 +1706,7 @@ function projectCheckHtml(p) {
       </div>
       <div class="summary-actions"><span class="badge ${configured ? 'info' : 'warn'}">${configured ? '設定済み' : '未設定'}</span></div>
     </div>
-    ${check.command ? `<code>${esc(check.command)}</code>` : ''}
+    ${check.command ? `<pre class="mono project-check-command">${esc(check.command)}</pre>` : ''}
     ${setup}
   </section>`;
 }
@@ -1663,8 +1808,7 @@ async function saveGlobalSettingsSection(section) {
     }).filter(Boolean).reduce((acc, [name, bus]) => ((acc[name] = bus), acc), {});
   } else if (section === 'routine') {
     cfg.cowork = cfg.cowork || {};
-    cfg.cowork.loopProvider = $('cfg-cowork-loop-provider').value.trim() || 'kiro-loop';
-    cfg.cowork.loopCommand = $('cfg-cowork-loop-command').value.trim() || cfg.cowork.loopProvider;
+    cfg.cowork.loopCommand = $('cfg-cowork-loop-command').value.trim() || 'agent-loop';
     cfg.cowork.stateMachineCommand = $('cfg-cowork-sm-command').value.trim() || 'statemachine-use';
   } else if (section === 'integrations') {
     cfg.gitlab = cfg.gitlab || {};

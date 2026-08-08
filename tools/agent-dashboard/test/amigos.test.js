@@ -654,8 +654,8 @@ test('納品はミッションへ結び付き、bus から消えたものだけ�
     /ホームではありません/, '発見済みホーム以外は読まない');
 });
 
-test('画面スコープ: 選択中プロジェクトのホームの納品だけを出す', () => {
-  const ctx = rendererFns(['coworkPathKey', 'amigosForProject']);
+test('画面スコープ: この端末のホームの納品を、プロジェクト選択に関係なく出す', () => {
+  const ctx = rendererFns(['coworkPathKey', 'amigosNodeView']);
   const home = '/Users/x/team';
   const ov = {
     homes: [{ dir: home, configFile: `${home}/.agent/agent-amigos.json` }],
@@ -663,21 +663,22 @@ test('画面スコープ: 選択中プロジェクトのホームの納品だけ
     deliveries: [{ mission: 'am-x', home }],
     orphanDeliveries: [{ mission: 'am-old', home, title: '過去' }],
   };
-  const scoped = ctx.amigosForProject(ov, home);
-  assert.strictEqual(scoped.orphanMissions.length, 1, '整理済みもミッションの器で開ける');
-  assert.strictEqual(scoped.orphanMissions[0].archived, true);
-  assert.strictEqual(scoped.orphanMissions[0].delivery.mission, 'am-old');
-  assert.strictEqual(ctx.amigosForProject(ov, '/Users/x/other').orphanMissions.length, 0);
-  const inScope = ctx.amigosForProject(ov, home);
-  assert.strictEqual(inScope.deliveries.length, 1, 'ホーム選択時は納品が見える');
-  assert.strictEqual(ctx.amigosForProject(ov, `${home}/`).deliveries.length, 1,
-    '末尾スラッシュでも一致する');
-  assert.strictEqual(ctx.amigosForProject(ov, '/Users/x/other').deliveries.length, 0,
-    '別プロジェクト選択時は出さない');
-  const none = ctx.amigosForProject(ov, '');
-  assert.strictEqual(none.deliveries.length, 0,
-    '未選択時に納品だけ素通りさせない（missions と同じ扱い）');
-  assert.strictEqual(none.missions.length, 0);
+  const view = ctx.amigosNodeView(ov);
+  assert.strictEqual(view.orphanMissions.length, 1, '整理済みもミッションの器で開ける');
+  assert.strictEqual(view.orphanMissions[0].archived, true);
+  assert.strictEqual(view.orphanMissions[0].delivery.mission, 'am-old');
+  assert.strictEqual(view.deliveries.length, 1, '納品が見える');
+  assert.strictEqual(view.missions.length, 1);
+  // 実体のないホームの納品は素通りさせない（ミッションと同じ扱い）
+  const stray = ctx.amigosNodeView({
+    homes: [{ dir: home, configFile: null }],
+    missions: [{ id: 'am-x', home }],
+    deliveries: [{ mission: 'am-x', home }],
+    orphanDeliveries: [{ mission: 'am-old', home, title: '過去' }],
+  });
+  assert.strictEqual(stray.deliveries.length, 0);
+  assert.strictEqual(stray.missions.length, 0);
+  assert.strictEqual(stray.orphanMissions.length, 0);
 });
 
 test('修正依頼は window.prompt を使わない（Electron では動かない）', () => {
