@@ -1,0 +1,35 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "NodeBudgetSummary",
+  "description": "ノードごとの予算サマリー（additive な埋め込み仕様）",
+  "type": "object",
+  "properties": {
+    "node_id": {"type": "string"},
+    "period_start_date": {"type": "string", "format": "date"},
+    "period_end_date": {"type": "string", "format": "date"},
+    "budget_summary": {
+      "description": "予算サマリー（オプション）",
+      "additionalProperties": true,
+      "properties": {
+        "allocated_budget": {"type": ["number", "null"], "default": null},
+        "spent_amount": {"type": ["number", "null"], "default": null},
+        "remaining_balance": {"type": ["number", "null"], "default": null}
+      }
+    },
+    "resource_utilization_percentile": {
+      "description": "リソース利用率パーセンタイル（オプション）",
+      "$ref": "#/$defs/utilization_stats"
+    }
+  },
+  "$defs": {
+    "utilization_stats": {
+      "type": ["object", "null"],
+      "properties": {
+        "p25": {"type": "number"},
+        "p50": {"type": "number"},
+        "p75": {"type": "number"}
+      },
+      "required": []
+    }
+  }
+}
