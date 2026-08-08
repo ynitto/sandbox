@@ -400,7 +400,10 @@ class SlotMonitor:
                     self._check_freeze(pane_id, content, entry, now)
                 if now - acquired_at > self._slot_timeout:
                     log.warning("SlotMonitor: ペイン %s がタイムアウト。スロットを強制解放します。", pane_id)
-                    self._release(pane_id, keep_for_completion=True)
+                    if entry.get("hold_slot"):
+                        self._release(pane_id, notify_failure=True)
+                    else:
+                        self._release(pane_id, keep_for_completion=True)
 
     def _check_freeze(
         self,

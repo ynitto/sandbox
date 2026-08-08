@@ -107,6 +107,45 @@ class SandboxTests(unittest.TestCase):
             clean.assert_not_called()
             run.assert_not_called()
 
+    def test_natural_text_send_starts_managed_sandbox_session(self):
+        mgr = mock.Mock()
+        mgr._target_path = "/repo"
+        mgr.sync_entries = mock.Mock()
+        mgr.set_state_extras = mock.Mock()
+        mgr.ensure_session.return_value = True
+        mgr.get_pane_id.side_effect = lambda entry_id: "%1" if entry_id == "e1" else "%2"
+        mgr.get_generation.return_value = 1
+        mgr.get_effective_model.return_value = None
+        mgr.send_prompt.return_value = True
+        mgr.cleanup_managed_pane.return_value = True
+        sched = al.PeriodicScheduler(mgr, [{
+            "id": "e1", "name": "worker", "prompt": "p",
+            "interval_minutes": 10, "enabled": True,
+        }], workspace="/repo")
+        req = al.make_dispatch_request(
+            source="send", entry_id="%1", prompt="change", request_id="root",
+            cwd="/repo",
+            meta={
+                "target": "%1", "wait": False,
+                "execution": {
+                    "root_id": "root", "session_policy": "sandbox", "session_key": "%1",
+                },
+            },
+        )
+        with mock.patch.object(al, "resolve_git_toplevel", return_value=Path("/repo")), \
+             mock.patch.object(al, "create_sandbox", return_value={"id": "sid", "path": "/sandbox"}), \
+             mock.patch.object(al, "cleanup_sandbox"), \
+             mock.patch.object(al, "_capture_pane", return_value="> "), \
+             mock.patch.object(al, "_CLI_PROFILE") as profile:
+            profile.is_legacy = True
+            profile.argv = None
+            profile.name = "kiro"
+            profile.is_ready.return_value = True
+            profile.clear_command = ""
+            self.assertEqual(sched._try_dispatch_request(req), "done")
+        self.assertEqual(mgr.ensure_session.call_args.args[0], "send-root")
+        self.assertEqual(mgr.ensure_session.call_args.kwargs["cwd"], "/sandbox")
+
     def test_stale_dead_owner_clean(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -99,6 +99,35 @@ class RalphTests(unittest.TestCase):
             kwargs = monitor.track.call_args.kwargs
             self.assertTrue(kwargs.get("hold_slot"))
 
+    def test_natural_text_send_uses_managed_ralph_path(self):
+        sched, mgr = self._scheduler(2)
+        monitor = mock.Mock()
+        monitor.is_tracking.return_value = False
+        sched._slot_monitor = monitor
+        req = al.make_dispatch_request(
+            source="send", entry_id="%1", prompt="改善して", request_id="root-send",
+            meta={
+                "target": "%1",
+                "original_prompt": "改善して",
+                "execution": {
+                    "kind": "ralph", "root_id": "root-send", "step": 1,
+                    "max_steps": 2, "session_key": "%1",
+                },
+            },
+        )
+        with mock.patch.object(al, "_capture_pane", return_value="> "), \
+             mock.patch.object(al, "_CLI_PROFILE") as prof, \
+             mock.patch.object(al, "send_prompt_to_session") as adhoc_send:
+            prof.is_ready.return_value = True
+            prof.is_legacy = True
+            prof.argv = None
+            prof.name = "kiro"
+            prof.clear_command = ""
+            self.assertEqual(sched._try_dispatch_request(req), "done")
+        adhoc_send.assert_not_called()
+        self.assertIn("iteration 1/2", mgr.send_prompt.call_args.args[1])
+        self.assertEqual(req["entry_id"], "e1")
+
     def test_child_skips_preflight_and_reuses_lease(self):
         sched, mgr = self._scheduler(3)
         sched._upsert_execution("root1", slot_lease="%1", state="ITERATING", step=1, max_steps=3)
@@ -128,6 +157,39 @@ class RalphTests(unittest.TestCase):
             preflight.assert_not_called()
             acq.assert_not_called()
 
+    def test_three_iterations_reach_terminal_state(self):
+        sched, mgr = self._scheduler(3)
+        monitor = mock.Mock()
+        monitor.is_tracking.return_value = False
+        sched._slot_monitor = monitor
+        root = al.make_dispatch_request(
+            source="schedule", entry_id="e1", prompt="改善して", request_id="root3",
+            meta={
+                "original_prompt": "改善して",
+                "execution": {
+                    "kind": "ralph", "root_id": "root3", "step": 1,
+                    "max_steps": 3, "session_key": "e1",
+                },
+            },
+        )
+        with mock.patch.object(al, "_capture_pane", return_value="> "), \
+             mock.patch.object(al, "_CLI_PROFILE") as prof:
+            prof.is_ready.return_value = True
+            prof.is_legacy = True
+            prof.argv = None
+            prof.name = "kiro"
+            prof.clear_command = ""
+            self.assertEqual(sched._try_dispatch_request(root), "done")
+            for _ in range(2):
+                monitor.track.call_args.kwargs["on_complete"]()
+                child = sched._pending.pop(0)
+                monitor.reset_mock()
+                monitor.is_tracking.return_value = False
+                self.assertEqual(sched._try_dispatch_request(child), "done")
+            monitor.track.call_args.kwargs["on_complete"]()
+        self.assertEqual(mgr.send_prompt.call_count, 3)
+        self.assertNotIn("root3", sched._executions)
+
     def test_callback_exception_fails_execution(self):
         sched, mgr = self._scheduler(2)
         req = al.make_dispatch_request(
@@ -142,15 +204,12 @@ class RalphTests(unittest.TestCase):
             request_id="r",
         )
         sched._upsert_execution("r", slot_lease="%1", state="ITERATING")
+        monitor = mock.Mock()
+        sched._slot_monitor = monitor
         with mock.patch.object(sched, "_enqueue_ralph_child", side_effect=RuntimeError("boom")), \
              mock.patch.object(sched, "_release_slot") as rel:
-            # simulate complete path
-            try:
-                sched._on_execution_complete(req, "%1")
-            except Exception:
-                pass
-            # fail path via _track_active wrapper — call fail_execution directly
-            sched._fail_execution(req, "%1", reason="callback_error")
+            sched._track_active(req, "%1", hold_slot=True)
+            monitor.track.call_args.kwargs["on_complete"]()
             rel.assert_called()
             self.assertNotIn("r", sched._executions)
 

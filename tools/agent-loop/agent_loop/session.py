@@ -416,6 +416,7 @@ class SessionManager:
         prompt_id: str,
         prompt_name: str,
         owner: str = "scheduled",
+        cwd: str | None = None,
         launch_spec: dict[str, Any] | None = None,
     ) -> bool:
         """セッションが存在しない場合は起動する。成功時 True を返す。
@@ -424,11 +425,14 @@ class SessionManager:
         """
         with self._lock:
             existing = self._panes.get(prompt_id)
-            cwd = self._prompt_cwds.get(prompt_id)
+            existing_cwd = self._prompt_cwds.get(prompt_id)
             existing_owner = self._owners.get(prompt_id, "scheduled")
             existing_model = self._effective_model.get(prompt_id)
         if existing is not None:
             if existing_owner != owner:
+                return False
+            requested_cwd = str((launch_spec or {}).get("cwd") or cwd or "")
+            if requested_cwd and self._resolve_cwd(requested_cwd) != self._resolve_cwd(existing_cwd):
                 return False
             if launch_spec is not None:
                 want_model = launch_spec.get("effective_model")

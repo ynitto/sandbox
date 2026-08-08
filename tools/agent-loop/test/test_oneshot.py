@@ -68,6 +68,22 @@ class OneshotTests(unittest.TestCase):
         self.assertEqual(entry["overlap_pending"]["prompt"], "a")
         self.assertEqual(sched.queue_depth(), 0)
 
+    def test_dropped_overlap_completes_waiter_and_ack(self):
+        sched, _ = self._sched()
+        sched._update_entry("o1", oneshot_state="PROCESSING")
+        kept = al.make_dispatch_request(source="send", entry_id="o1", prompt="a")
+        dropped = al.make_dispatch_request(
+            source="send", entry_id="o1", prompt="b", meta={"wait": True}, request_id="drop",
+        )
+        with mock.patch.object(sched, "_finalize_ack") as ack, \
+             mock.patch.object(al, "write_send_response") as response, \
+             mock.patch.object(al, "send_response_path") as path:
+            path.return_value.is_file.return_value = True
+            self.assertTrue(sched._accept_request(kept))
+            self.assertTrue(sched._accept_request(dropped))
+        response.assert_called_once_with("drop", "completed")
+        ack.assert_called_once_with(dropped, success=True)
+
     def test_finish_oneshot_runs_overlap(self):
         sched, _ = self._sched()
         pending = al.make_dispatch_request(source="schedule", entry_id="o1", prompt="kept")

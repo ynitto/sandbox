@@ -113,8 +113,12 @@ def parse_git_remote(cwd: str | Path | None) -> tuple[str, str]:
         parsed = urllib.parse.urlparse(remote_url)
         hostname = parsed.hostname or ""
         host = f"[{hostname}]" if ":" in hostname else hostname
-        if parsed.port is not None:
-            host = f"{host}:{parsed.port}"
+        try:
+            port = parsed.port
+        except ValueError as exc:
+            raise GitLabError("unsupported git remote URL format", kind="error") from exc
+        if port is not None:
+            host = f"{host}:{port}"
         project = parsed.path.lstrip("/")
         if project.endswith(".git"):
             project = project[:-4]

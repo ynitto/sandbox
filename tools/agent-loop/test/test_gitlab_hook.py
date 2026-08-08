@@ -60,6 +60,15 @@ class GitLabClientTests(unittest.TestCase):
         self.assertEqual(host, "gitlab.example.com:8443")
         self.assertEqual(project, "group/project")
 
+    def test_parse_https_remote_rejects_invalid_port_as_gitlab_error(self):
+        with mock.patch.object(
+            gl.subprocess,
+            "check_output",
+            return_value=b"https://gitlab.example.com:bad/group/project.git",
+        ):
+            with self.assertRaises(gl.GitLabError):
+                gl.parse_git_remote("/tmp")
+
     def test_connection_resolution_order(self):
         with tempfile.TemporaryDirectory() as ws:
             ws_path = pathlib.Path(ws)

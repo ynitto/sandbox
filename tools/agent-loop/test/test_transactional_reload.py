@@ -82,6 +82,31 @@ class TransactionalReloadTests(unittest.TestCase):
         self.assertEqual(list(s._external_queues["new"]), ["event"])
         self.assertNotIn("old", s._external_queues)
 
+    def test_reload_applies_phase2_runtime_config_with_entries(self):
+        s = self._sched([
+            {"name": "a", "prompt": "p", "interval_minutes": 10, "id": "id-a", "enabled": True},
+        ])
+        self.assertTrue(s.request_reload(
+            [{"name": "a", "prompt": "new", "interval_minutes": 10, "id": "id-a", "enabled": True}],
+            external_panes=[{"name": "reviewer", "tmux_target": "rev:0.1"}],
+            environment_handoff={"prompt": True, "token_env_names": ["TOKEN"]},
+        ))
+        s._apply_pending_reload()
+        self.assertEqual(s._entries[0]["prompt"], "new")
+        self.assertIn("reviewer", s._external_panes)
+        self.assertTrue(s._environment_handoff["prompt"])
+
+    def test_invalid_external_pane_rejects_whole_reload(self):
+        s = self._sched([
+            {"name": "a", "prompt": "old", "interval_minutes": 10, "id": "id-a", "enabled": True},
+        ])
+        self.assertFalse(s.request_reload(
+            [{"name": "a", "prompt": "new", "interval_minutes": 10, "id": "id-a", "enabled": True}],
+            external_panes=[{"name": "broken"}],
+        ))
+        self.assertIsNone(s._reload_entries)
+        self.assertEqual(s._entries[0]["prompt"], "old")
+
 
 if __name__ == "__main__":
     unittest.main()

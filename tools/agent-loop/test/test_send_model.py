@@ -3,6 +3,7 @@
 import os
 import sys
 import threading
+import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest import mock
@@ -13,6 +14,21 @@ import agent_loop as al  # noqa: E402
 
 
 class SendModelTests(unittest.TestCase):
+    def test_existing_session_rejects_cwd_mismatch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old = Path(tmp) / "old"
+            new = Path(tmp) / "new"
+            old.mkdir()
+            new.mkdir()
+            mgr = al.SessionManager.__new__(al.SessionManager)
+            mgr._panes = {"e1": "%1"}
+            mgr._prompt_cwds = {"e1": str(old)}
+            mgr._owners = {"e1": "scheduled"}
+            mgr._effective_model = {"e1": None}
+            mgr._lock = threading.Lock()
+            mgr._target_path = str(old)
+            self.assertFalse(mgr.ensure_session("e1", "n", owner="scheduled", cwd=str(new)))
+
     def test_model_requires_daemon(self):
         args = SimpleNamespace(
             prompt=["hi"], session="%1", dir=None, priority="normal",

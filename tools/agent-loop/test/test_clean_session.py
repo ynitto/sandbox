@@ -109,6 +109,42 @@ class CleanSessionTests(unittest.TestCase):
             mgr.send_prompt.assert_not_called()
             mgr.cleanup_managed_pane.assert_called()
 
+    def test_cleanup_waits_for_each_command_transition(self):
+        mgr = mock.Mock()
+        mgr._target_path = "/tmp"
+        mgr._startup_timeout = 5
+        mgr.sync_entries = mock.Mock()
+        mgr.set_state_extras = mock.Mock()
+        mgr.is_pane_alive.return_value = True
+        mgr.cleanup_managed_pane.return_value = True
+        mgr.get_pane_id.return_value = None
+        sched = al.PeriodicScheduler(mgr, [{
+            "id": "e1", "name": "w", "prompt": "p",
+            "interval_minutes": 10, "enabled": True,
+        }], workspace="/tmp")
+        req = al.make_dispatch_request(
+            source="schedule", entry_id="e1", prompt="p",
+            meta={"execution": {"session_key": "e1", "root_id": "r"}}, request_id="r",
+        )
+        captures = iter([
+            "ready-0", "ready-0", "busy", "ready-1",
+            "ready-1", "busy", "ready-2",
+        ])
+        now = [0.0]
+        with mock.patch.object(al, "_CLI_PROFILE") as prof, \
+             mock.patch.object(al, "_capture_pane", side_effect=lambda _p: next(captures)), \
+             mock.patch.object(al.time, "time", side_effect=lambda: now[0]), \
+             mock.patch.object(al.time, "sleep", side_effect=lambda sec: now.__setitem__(0, now[0] + sec)), \
+             mock.patch.object(sched, "_release_slot"):
+            prof.save_command = "/save"
+            prof.clear_command = "/clear"
+            prof.exit_command = ""
+            prof.is_ready.side_effect = lambda content: content.startswith("ready")
+            sched._run_session_cleanup(req, "%1", session_key="e1", reason="clean_session")
+        self.assertEqual([c.args[1] for c in mgr.send_prompt.call_args_list], ["/save", "/clear"])
+        with self.assertRaises(StopIteration):
+            next(captures)
+
 
 if __name__ == "__main__":
     unittest.main()

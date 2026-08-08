@@ -249,7 +249,7 @@ class PeriodicScheduler:
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
         self._node_budget_warned_at = 0.0
-        self._hook_cache: dict[str, tuple[float, Any]] = {}
+        self._hook_cache: dict[tuple[str, str], tuple[float, Any]] = {}
         self._hook_cache_lock = threading.Lock()
         self._external_queues: dict[str, collections.deque[str]] = {}
         # dispatch gate
@@ -258,7 +258,9 @@ class PeriodicScheduler:
         self._draining = False
         self._run_state = "run"
         self._reload_entries: list[dict[str, Any]] | None = None
-        self._hook_quarantine: set[str] = set()
+        self._reload_external_panes: tuple[dict[str, dict[str, Any]], dict[str, Any]] | None = None
+        self._reload_environment_handoff: dict[str, Any] | None = None
+        self._hook_quarantine: set[tuple[str, str]] = set()
         self._active_count = 0
         self._active_ids: set[str] = set()
         self._inflight_ack_paths: set[str] = set()
@@ -302,27 +304,27 @@ class PeriodicScheduler:
     def set_external_panes(self, raw: Any) -> bool:
         """external_panes を validate して atomic 交換。不正時は旧 map を維持して False。"""
         try:
-            normalized = validate_external_panes(raw)
+            panes, profiles = self._prepare_external_panes(raw)
         except Exception as exc:
             log.error("external_panes 検証失敗のため現行を維持します: %s", exc)
             return False
+        with self._lock:
+            self._external_panes = panes
+            self._external_profiles = profiles
+        return True
+
+    def _prepare_external_panes(
+        self, raw: Any,
+    ) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
+        normalized = validate_external_panes(raw)
         profiles: dict[str, Any] = {}
         for item in normalized:
             cli_name = item.get("agent_cli")
             if cli_name:
-                try:
-                    profiles[item["name"]] = _resolve_cli_profile(
-                        {"agent_cli": cli_name}, project_dir=self._workspace or None
-                    )
-                except Exception as exc:
-                    log.error(
-                        "external_panes[%s] の agent_cli 検証失敗: %s", item["name"], exc
-                    )
-                    return False
-        with self._lock:
-            self._external_panes = {p["name"]: p for p in normalized}
-            self._external_profiles = profiles
-        return True
+                profiles[item["name"]] = _resolve_cli_profile(
+                    {"agent_cli": cli_name}, project_dir=self._workspace or None
+                )
+        return {p["name"]: p for p in normalized}, profiles
 
     def _release_slot(self, pane_id: str | None) -> None:
         if self._semaphore is not None and pane_id:
@@ -357,16 +359,50 @@ class PeriodicScheduler:
             return False
         return self._apply_normalized_entries(normalized)
 
-    def request_reload(self, entries: list[dict[str, Any]]) -> bool:
+    def request_reload(
+        self,
+        entries: list[dict[str, Any]],
+        *,
+        external_panes: Any = None,
+        environment_handoff: Any = None,
+    ) -> bool:
         """次 tick で一括交換する reload を要求する。検証失敗時は False。"""
         try:
             normalized = validate_entries(entries, allow_immediate_once=False)
+            prepared_external = (
+                self._prepare_external_panes(external_panes)
+                if external_panes is not None else None
+            )
+            prepared_handoff = (
+                normalize_environment_handoff({"environment_handoff": environment_handoff})
+                if environment_handoff is not None else None
+            )
         except Exception as exc:
             log.error("reload 検証に失敗したため現行設定を維持します: %s", exc)
             return False
         with self._lock:
             self._reload_entries = normalized
+            self._reload_external_panes = prepared_external
+            self._reload_environment_handoff = prepared_handoff
         log.info("event=config_reload_requested entries=%d", len(normalized))
+        return True
+
+    def _apply_pending_reload(self) -> bool:
+        with self._lock:
+            entries = getattr(self, "_reload_entries", None)
+            external = getattr(self, "_reload_external_panes", None)
+            handoff = getattr(self, "_reload_environment_handoff", None)
+            self._reload_entries = None
+            self._reload_external_panes = None
+            self._reload_environment_handoff = None
+        if entries is None:
+            return False
+        self._apply_normalized_entries(entries)
+        with self._lock:
+            if external is not None:
+                self._external_panes, self._external_profiles = external
+            if handoff is not None:
+                self._environment_handoff = handoff
         return True
 
     def _apply_normalized_entries(self, normalized: list[dict[str, Any]]) -> bool:
@@ -790,14 +826,20 @@ class PeriodicScheduler:
                     if not cmd:
                         continue
                     try:
+                        before = _capture_pane(pane_id)
                         self._session_mgr.send_prompt(session_key, cmd)
                         deadline = time.time() + float(
                             getattr(self._session_mgr, "_startup_timeout", 60) or 60
                         )
+                        saw_busy = False
                         while time.time() < deadline:
                             if not self._session_mgr.is_pane_alive(session_key):
                                 break
-                            if _CLI_PROFILE.is_ready(_capture_pane(pane_id)):
+                            content = _capture_pane(pane_id)
+                            ready = _CLI_PROFILE.is_ready(content)
+                            if not ready:
+                                saw_busy = True
+                            elif saw_busy or content != before:
                                 break
                             time.sleep(0.2)
                     except Exception:
@@ -905,6 +947,7 @@ class PeriodicScheduler:
         if entry and entry.get("oneshot") and source != "ralph":
             state = str(entry.get("oneshot_state") or "IDLE")
             if state in ("PROCESSING", "COMPLETING"):
+                dropped = False
                 with self._lock:
                     for e in self._entries:
                         if str(e.get("id")) != entry_id:
@@ -913,8 +956,15 @@ class PeriodicScheduler:
                             e["overlap_pending"] = req
                             _log_dispatch("oneshot_overlap_coalesced", req)
                         else:
+                            dropped = True
                             _log_dispatch("oneshot_overlap_coalesced", req, dropped=True)
                         break
+                if dropped:
+                    request_id = str(req.get("id", ""))
+                    if ((req.get("meta") or {}).get("wait")
+                            and send_response_path(request_id).is_file()):
+                        write_send_response(request_id, "completed")
+                    self._finalize_ack(req, success=True)
                 return True
 
         with self._lock:
@@ -1035,8 +1085,8 @@ class PeriodicScheduler:
 
     # ---- hooks / preflight -------------------------------------------------
 
-    def _load_hook_module(self, hook_path: Path) -> Any | None:
-        key = str(hook_path)
+    def _load_hook_module(self, hook_path: Path, entry_id: str = "") -> Any | None:
+        key = (str(hook_path), str(entry_id))
         try:
             mtime = hook_path.stat().st_mtime
         except OSError:
@@ -1049,7 +1099,10 @@ class PeriodicScheduler:
                 return cached[1]
 
             try:
-                spec = importlib.util.spec_from_file_location("kiro_loop_hook", hook_path)
+                module_name = "kiro_loop_hook_" + hashlib.sha256(
+                    f"{key[0]}\0{key[1]}".encode()
+                ).hexdigest()[:16]
+                spec = importlib.util.spec_from_file_location(module_name, hook_path)
                 if spec is None or spec.loader is None:
                     log.error("hook の spec 生成に失敗しました: %s", hook_path)
                     return None
@@ -1065,12 +1118,13 @@ class PeriodicScheduler:
         """event_hook の check() を呼び、正規化済み dict（prompt/cwd/vars）または None を返す。"""
         hook_path = Path(os.path.expanduser(entry["event_hook"])).resolve()
         name = str(entry.get("name", ""))
-        hook_key = str(hook_path)
+        entry_id = str(entry.get("id", ""))
+        hook_key = (str(hook_path), entry_id)
         if hook_key in self._hook_quarantine:
             log.warning("[%s] event_hook は timeout 隔離中のためスキップします: %s", name, hook_path)
             return None
 
-        module = self._load_hook_module(hook_path)
+        module = self._load_hook_module(hook_path, entry_id)
         if module is None:
             return None
 
@@ -1124,7 +1178,7 @@ class PeriodicScheduler:
             t.join(timeout=_HOOK_TIMEOUT_SEC)
             if not result_box["done"]:
                 self._hook_quarantine.add(hook_key)
-                _log_dispatch("hook_timeout", None, entry_id=entry.get("id"), hook=hook_key)
+                _log_dispatch("hook_timeout", None, entry_id=entry.get("id"), hook=str(hook_path))
                 log.error("[%s] check() が %.0f 秒でタイムアウト。隔離します: %s",
                           name, _HOOK_TIMEOUT_SEC, hook_path)
 
@@ -1180,7 +1234,7 @@ class PeriodicScheduler:
 
     def _call_hook_ack(self, entry: dict[str, Any]) -> None:
         hook_path = Path(os.path.expanduser(entry["event_hook"])).resolve()
-        module = self._load_hook_module(hook_path)
+        module = self._load_hook_module(hook_path, str(entry.get("id", "")))
         ack_fn = getattr(module, "ack", None) if module is not None else None
         if not callable(ack_fn):
             return
@@ -1446,8 +1500,43 @@ class PeriodicScheduler:
         entry = entry_hint or self._find_entry(str(req.get("entry_id", "")))
         source = str(req.get("source", ""))
 
+        synthetic = (req.get("meta") or {}).get("_synthetic_entry")
+        if entry is None and isinstance(synthetic, dict):
+            entry = dict(synthetic)
+
         if entry is None and source == "send":
-            return self._try_dispatch_adhoc(req)
+            try:
+                send_exec = self._ensure_req_execution(req, None)
+            except ValueError:
+                self._finalize_ack(req, success=False)
+                return "discard"
+            managed_phase2 = bool(
+                send_exec.get("kind") == "ralph"
+                or send_exec.get("session_policy") == "sandbox"
+                or send_exec.get("model")
+                or send_exec.get("force_ready")
+            )
+            if not managed_phase2:
+                return self._try_dispatch_adhoc(req)
+            target = str((req.get("meta") or {}).get("target") or req.get("entry_id") or "")
+            with self._lock:
+                candidates = [e.copy() for e in self._entries]
+            for candidate in candidates:
+                candidate_id = str(candidate.get("id") or "")
+                pane = self._session_mgr.get_pane_id(candidate_id)
+                if target in (candidate_id, str(candidate.get("name") or ""), str(pane or "")):
+                    entry = candidate
+                    break
+            if entry is None:
+                self._fail_execution(req, None, reason="target_not_managed")
+                return "discard"
+            if send_exec.get("session_policy") == "sandbox":
+                entry = dict(entry)
+                entry["id"] = f"send-{send_exec['root_id']}"
+                req.setdefault("meta", {})["_synthetic_entry"] = dict(entry)
+            req["entry_id"] = str(entry["id"])
+            raw_exec = req["meta"]["execution"]
+            raw_exec["session_key"] = str(entry["id"])
 
         if entry is None and source == "inbox":
             meta = req.get("meta") or {}
@@ -1591,22 +1680,15 @@ class PeriodicScheduler:
                     self._fail_execution(req, None, reason="model_mismatch")
                     return "discard"
 
-            ensure = getattr(self._session_mgr, "ensure_session")
-            try:
-                ensured = ensure(prompt_id, name, owner=owner, launch_spec=launch_spec)
-            except TypeError:
-                # Phase 1 stubs without launch_spec kwarg
-                ensured = ensure(prompt_id, name, owner=owner)
+            ensured = self._session_mgr.ensure_session(
+                prompt_id, name, owner=owner, cwd=str(cwd) or None, launch_spec=launch_spec,
+            )
             if not ensured:
                 if launch_spec is not None and callable(get_pane) and get_pane(prompt_id):
                     self._fail_execution(req, None, reason="model_mismatch")
                     return "discard"
                 log.warning("[%s] 対応セッションの準備に失敗したため保留します。", name)
                 return "defer"
-
-            if cwd and hasattr(self._session_mgr, "_prompt_cwds") and hasattr(self._session_mgr, "_lock"):
-                with self._session_mgr._lock:
-                    self._session_mgr._prompt_cwds[prompt_id] = str(cwd)
 
             pane_id = get_pane(prompt_id) if callable(get_pane) else None
             get_gen = getattr(self._session_mgr, "get_generation", None)
@@ -1876,7 +1958,11 @@ class PeriodicScheduler:
                 # payload に entries があればそれ、なければ呼び出し側が request_reload 済み
                 entries = payload.get("entries")
                 if isinstance(entries, list):
-                    self.request_reload(entries)
+                    self.request_reload(
+                        entries,
+                        external_panes=payload.get("external_panes"),
+                        environment_handoff=payload.get("environment_handoff"),
+                    )
             elif name == "cancel":
                 self._cancel_target(str(payload.get("target", "")))
 
@@ -2185,11 +2271,7 @@ class PeriodicScheduler:
             _write_status(lifecycle=lifecycle, budget=nb)
 
             # transactional reload（次 tick）
-            with self._lock:
-                pending_reload = self._reload_entries
-                self._reload_entries = None
-            if pending_reload is not None:
-                self._apply_normalized_entries(pending_reload)
+            self._apply_pending_reload()
 
             self._handle_loop_commands()
             gate = self._lifecycle_gate(now)

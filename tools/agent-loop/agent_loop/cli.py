@@ -63,7 +63,11 @@ def _cmd_lifecycle(args: argparse.Namespace, cwd: Path) -> None:
         except Exception as exc:
             print(f"[agent-loop] ERROR: 設定の読み込みに失敗しました: {exc}", file=sys.stderr)
             sys.exit(1)
-        write_loop_command(pid, "reload", {"entries": entries})
+        write_loop_command(pid, "reload", {
+            "entries": entries,
+            "external_panes": config.get("external_panes") or [],
+            "environment_handoff": normalize_environment_handoff(config),
+        })
         print("[agent-loop] reload を要求しました", file=sys.stderr)
         sys.exit(0)
 
