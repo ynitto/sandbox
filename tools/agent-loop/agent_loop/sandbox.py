@@ -85,7 +85,7 @@ def create_sandbox(
     if not root.is_dir():
         raise ValueError(f"repository root が存在しません: {root}")
     verified = resolve_git_toplevel(root)
-    if verified is None or verified != root:
+    if verified is None or verified.resolve() != root.resolve():
         raise ValueError(f"git repository ではありません: {root}")
 
     sid = sandbox_id or uuid.uuid4().hex

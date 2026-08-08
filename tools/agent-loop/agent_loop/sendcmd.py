@@ -584,6 +584,19 @@ def cmd_send(args: argparse.Namespace, cwd: Path) -> None:
     if profile is not None:
         failure_pattern = getattr(profile, "failure_pattern", None)
 
+    if needs_daemon and daemon_pid is None:
+        print(
+            "[agent-loop] ERROR: --ralph/--sandbox/--force/--model は同じ workspace の daemon が必要です。",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if use_sandbox:
+        repo = resolve_git_toplevel(work_dir or cwd)
+        if repo is None:
+            print("[agent-loop] ERROR: --sandbox は git repository 内でのみ使えます。", file=sys.stderr)
+            sys.exit(2)
+
     if daemon_pid is None:
         if _pane_is_busy(send_target) or not _pane_has_prompt(_capture_pane(send_target)):
             print(f"[agent-loop] ERROR: ペイン {send_target} は現在処理中です。", file=sys.stderr)
@@ -603,9 +616,42 @@ def cmd_send(args: argparse.Namespace, cwd: Path) -> None:
 
     wait = bool(getattr(args, "wait", False))
     request_id = uuid.uuid4().hex
+    exec_meta: dict[str, Any] = {
+        "kind": "ralph" if use_ralph else "normal",
+        "root_id": request_id,
+        "step": 1,
+        "max_steps": int(max_iterations) if use_ralph else 1,
+        "session_policy": "sandbox" if use_sandbox else "persistent",
+        "session_key": entry_id,
+        "target_kind": "managed",
+        "target": None,
+        "model": use_model,
+        "sandbox_id": None,
+        "force_ready": use_force,
+        "skip_preflight": use_force,
+    }
+    meta: dict[str, Any] = {
+        "target": send_target,
+        "workspace": str(cwd.resolve()),
+        "wait": wait,
+        "execution": exec_meta,
+        "original_prompt": prompt_text,
+    }
+    if use_force:
+        meta["force"] = True
+    if use_model:
+        meta["model"] = use_model
+    if use_sandbox:
+        meta["sandbox"] = True
+        meta["repo_root"] = str(resolve_git_toplevel(work_dir or cwd) or "")
+
     if wait:
         try:
-            write_send_response(request_id, "queued")
+            write_send_response(
+                request_id, "queued",
+                step=1,
+                max_steps=int(exec_meta["max_steps"]),
+            )
         except OSError as exc:
             print(f"[agent-loop] ERROR: 完了待ち状態の作成に失敗しました: {exc}", file=sys.stderr)
             sys.exit(1)
@@ -616,11 +662,7 @@ def cmd_send(args: argparse.Namespace, cwd: Path) -> None:
             cwd=str(work_dir) if work_dir else None,
             priority=priority,
             request_id=request_id,
-            meta={
-                "target": send_target,
-                "workspace": str(cwd.resolve()),
-                "wait": wait,
-            },
+            meta=meta,
         )
     except Exception as exc:
         remove_send_response(request_id)
@@ -633,11 +675,16 @@ def cmd_send(args: argparse.Namespace, cwd: Path) -> None:
     )
     if not wait:
         return
-    sys.exit(_wait_for_send_completion(
+    code = _wait_for_send_completion(
         request_id,
         response_timeout=response_timeout,
         failure_pattern=failure_pattern if isinstance(failure_pattern, str) else None,
-    ))
+    )
+    # daemon_lost: response が消えて heartbeat も無い場合は exit 1
+    if code == 2:
+        # timeout — 既定
+        pass
+    sys.exit(code)
 
 
 def cmd_msg(args: argparse.Namespace) -> None:

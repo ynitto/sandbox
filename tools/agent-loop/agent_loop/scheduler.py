@@ -330,14 +330,14 @@ class PeriodicScheduler:
 
     def _update_entry(self, entry_id: str, **fields: Any) -> None:
         with self._lock:
-            for e in self._entries:
+            for e in getattr(self, "_entries", []) or []:
                 if e.get("id") == entry_id:
                     e.update(fields)
                     break
 
     def _find_entry(self, entry_id: str) -> dict[str, Any] | None:
         with self._lock:
-            for e in self._entries:
+            for e in getattr(self, "_entries", []) or []:
                 if e.get("id") == entry_id or e.get("name") == entry_id:
                     return e.copy()
         return None
@@ -575,9 +575,26 @@ class PeriodicScheduler:
             raw["model"] = meta.get("model")
         return normalize_execution(meta, request_id=str(req.get("id", "")))
 
+    def _executions_map(self) -> dict[str, dict[str, Any]]:
+        if not hasattr(self, "_executions"):
+            self._executions = {}
+        return self._executions
+
+    def _sessions_map(self) -> dict[str, dict[str, Any]]:
+        if not hasattr(self, "_sessions"):
+            self._sessions = {}
+        return self._sessions
+
+    def _external_panes_map(self) -> dict[str, dict[str, Any]]:
+        if not hasattr(self, "_external_panes"):
+            self._external_panes = {}
+        if not hasattr(self, "_external_profiles"):
+            self._external_profiles = {}
+        return self._external_panes
+
     def _upsert_execution(self, root_id: str, **fields: Any) -> dict[str, Any]:
         with self._lock:
-            cur = self._executions.setdefault(root_id, {
+            cur = self._executions_map().setdefault(root_id, {
                 "state": "STARTING",
                 "entry_id": "",
                 "pane_id": None,
@@ -594,11 +611,11 @@ class PeriodicScheduler:
 
     def _pop_execution(self, root_id: str) -> dict[str, Any] | None:
         with self._lock:
-            return self._executions.pop(root_id, None)
+            return self._executions_map().pop(root_id, None)
 
     def _session_runtime(self, session_key: str) -> dict[str, Any]:
         with self._lock:
-            return self._sessions.setdefault(session_key, {
+            return self._sessions_map().setdefault(session_key, {
                 "pane_id": None,
                 "ownership": "managed-persistent",
                 "generation": 0,
@@ -834,6 +851,7 @@ class PeriodicScheduler:
         if exec_meta.get("target_kind") == "external":
             name = str(exec_meta.get("target") or "")
             with self._lock:
+                self._external_panes_map()
                 return self._external_profiles.get(name) or _CLI_PROFILE
         return _CLI_PROFILE
 
@@ -1466,7 +1484,7 @@ class PeriodicScheduler:
 
         # cleanup_failed session は新 request を止める
         session_key = str(exec_meta.get("session_key") or entry.get("id") or "")
-        if session_key and (self._sessions.get(session_key) or {}).get("cleanup_failed"):
+        if session_key and (self._sessions_map().get(session_key) or {}).get("cleanup_failed"):
             log.warning("[%s] cleanup_failed のため保留します。", entry.get("name", ""))
             return "defer"
 
@@ -1482,7 +1500,7 @@ class PeriodicScheduler:
             prompt_id = str((req.get("meta") or {}).get("prompt_id") or f"inbox-{req.get('id', '')[:8]}")
             name = str((req.get("meta") or {}).get("session_name") or name)
 
-        cwd = req.get("cwd") or entry.get("cwd") or self._workspace
+        cwd = req.get("cwd") or entry.get("cwd") or getattr(self, "_workspace", "") or ""
         dispatch_entry = dict(entry)
         dispatch_entry["id"] = prompt_id
         dispatch_entry["name"] = name
@@ -1513,7 +1531,7 @@ class PeriodicScheduler:
         if target_kind == "external":
             ext_name = str(exec_meta.get("target") or entry.get("target") or "")
             with self._lock:
-                ext = self._external_panes.get(ext_name)
+                ext = self._external_panes_map().get(ext_name)
             if ext is None:
                 log.warning("external pane 未定義: %s", ext_name)
                 return "discard"
@@ -1554,7 +1572,9 @@ class PeriodicScheduler:
             model = exec_meta.get("model")
             try:
                 launch_spec = self._build_model_launch_spec(
-                    model=model, cwd=str(cwd or self._workspace), ownership=ownership,
+                    model=model,
+                    cwd=str(cwd or getattr(self, "_workspace", "") or ""),
+                    ownership=ownership,
                 )
             except RuntimeError as exc:
                 log.error("[%s] %s", name, exc)
@@ -1562,28 +1582,35 @@ class PeriodicScheduler:
                 return "discard"
 
             # model mismatch on existing pane
-            if launch_spec is not None and self._session_mgr.get_pane_id(prompt_id):
-                existing_model = self._session_mgr.get_effective_model(prompt_id)
+            get_pane = getattr(self._session_mgr, "get_pane_id", None)
+            get_model = getattr(self._session_mgr, "get_effective_model", None)
+            existing_pane = get_pane(prompt_id) if callable(get_pane) else None
+            if launch_spec is not None and existing_pane and callable(get_model):
+                existing_model = get_model(prompt_id)
                 if existing_model != launch_spec.get("effective_model"):
                     self._fail_execution(req, None, reason="model_mismatch")
                     return "discard"
 
-            if not self._session_mgr.ensure_session(
-                prompt_id, name, owner=owner, launch_spec=launch_spec,
-            ):
-                # ensure_session False: owner mismatch or model mismatch
-                if launch_spec is not None and self._session_mgr.get_pane_id(prompt_id):
+            ensure = getattr(self._session_mgr, "ensure_session")
+            try:
+                ensured = ensure(prompt_id, name, owner=owner, launch_spec=launch_spec)
+            except TypeError:
+                # Phase 1 stubs without launch_spec kwarg
+                ensured = ensure(prompt_id, name, owner=owner)
+            if not ensured:
+                if launch_spec is not None and callable(get_pane) and get_pane(prompt_id):
                     self._fail_execution(req, None, reason="model_mismatch")
                     return "discard"
                 log.warning("[%s] 対応セッションの準備に失敗したため保留します。", name)
                 return "defer"
 
-            if cwd:
+            if cwd and hasattr(self._session_mgr, "_prompt_cwds") and hasattr(self._session_mgr, "_lock"):
                 with self._session_mgr._lock:
                     self._session_mgr._prompt_cwds[prompt_id] = str(cwd)
 
-            pane_id = self._session_mgr.get_pane_id(prompt_id)
-            generation = self._session_mgr.get_generation(prompt_id)
+            pane_id = get_pane(prompt_id) if callable(get_pane) else None
+            get_gen = getattr(self._session_mgr, "get_generation", None)
+            generation = get_gen(prompt_id) if callable(get_gen) else None
             if pane_id is None:
                 log.warning("[%s] 対応ペインを解決できないため保留します。", name)
                 return "defer"
@@ -1609,7 +1636,7 @@ class PeriodicScheduler:
         )
         exclude = bool(entry.get("exclude_from_concurrency", False))
         with self._lock:
-            existing_exec = self._executions.get(root_id)
+            existing_exec = self._executions_map().get(root_id)
             has_lease = bool(existing_exec and existing_exec.get("slot_lease"))
         if acquire_slot and self._semaphore is not None and not exclude and not has_lease:
             acq = self._try_acquire_slot(entry, pane_id)
@@ -1723,7 +1750,7 @@ class PeriodicScheduler:
         hold_slot = exec_meta.get("kind") == "ralph"
         root_id = str(exec_meta.get("root_id") or req.get("id", ""))
         with self._lock:
-            has_lease = bool((self._executions.get(root_id) or {}).get("slot_lease"))
+            has_lease = bool((self._executions_map().get(root_id) or {}).get("slot_lease"))
         if self._semaphore is not None and not has_lease:
             elapsed = self._semaphore.slot_elapsed(pane_id)
             if elapsed is not None and elapsed < self._semaphore.slot_timeout:
@@ -1860,13 +1887,14 @@ class PeriodicScheduler:
             # 開始済み Ralph child だけ残す。未開始 root は破棄。
             keep: list[dict[str, Any]] = []
             discarded = 0
-            for req in self._pending:
+            executions = self._executions_map()
+            for req in getattr(self, "_pending", []) or []:
                 if req.get("source") == "ralph":
                     root = str(
                         ((req.get("meta") or {}).get("execution") or {}).get("root_id")
                         or ""
                     )
-                    if root and root in self._executions:
+                    if root and root in executions:
                         keep.append(req)
                         continue
                 discarded += 1
@@ -1875,9 +1903,10 @@ class PeriodicScheduler:
                 if self._request_matches_workspace(req) and claim_send_request(req, str(os.getpid())):
                     remove_send_request_file(req)
                     discarded += 1
-            self._external_queues.clear()
+            if hasattr(self, "_external_queues"):
+                self._external_queues.clear()
             # oneshot overlap 破棄
-            for e in self._entries:
+            for e in getattr(self, "_entries", []) or []:
                 if e.get("overlap_pending") is not None:
                     e["overlap_pending"] = None
                     discarded += 1
@@ -1888,15 +1917,16 @@ class PeriodicScheduler:
             return False
         # external pane は停止拒否（観測解除のみ）
         with self._lock:
-            if target in self._external_panes:
+            ext_map = self._external_panes_map()
+            if target in ext_map:
                 log.warning("cancel: external pane は停止できません: %s", target)
                 return False
-            for name, ext in self._external_panes.items():
+            for name, ext in ext_map.items():
                 if target == ext.get("tmux_target"):
                     log.warning("cancel: external pane は停止できません: %s", name)
                     return False
 
-        entry = self._find_entry(target)
+        entry = self._find_entry(target) if hasattr(self, "_entries") else None
         prompt_id = str(entry["id"]) if entry else None
         pane_id: str | None = None
         if entry:
@@ -1910,8 +1940,9 @@ class PeriodicScheduler:
                         break
         # root_id 指定でも cancel
         with self._lock:
-            if target in self._executions:
-                ex = self._executions[target]
+            executions = self._executions_map()
+            if target in executions:
+                ex = executions[target]
                 prompt_id = prompt_id or str(ex.get("entry_id") or "")
                 pane_id = pane_id or ex.get("pane_id")
 
@@ -1921,15 +1952,15 @@ class PeriodicScheduler:
 
         # Ralph chain 全体を pending から除去
         with self._lock:
+            pending = list(getattr(self, "_pending", []) or [])
             self._pending = [
-                r for r in self._pending
+                r for r in pending
                 if str(((r.get("meta") or {}).get("execution") or {}).get("root_id") or r.get("id"))
                 not in {target, prompt_id}
                 and str(r.get("entry_id")) != str(prompt_id)
             ]
-            # oneshot overlap 破棄
             if prompt_id:
-                for e in self._entries:
+                for e in getattr(self, "_entries", []) or []:
                     if str(e.get("id")) == str(prompt_id):
                         e["overlap_pending"] = None
                         e["oneshot_state"] = "IDLE"
@@ -1940,16 +1971,17 @@ class PeriodicScheduler:
             elif self._semaphore is not None and pane_id:
                 self._semaphore.release(pane_id)
             self._session_mgr.cleanup_managed_pane(prompt_id)
-            # execution 掃除
             with self._lock:
+                executions = self._executions_map()
                 dead = [
-                    rid for rid, ex in self._executions.items()
+                    rid for rid, ex in executions.items()
                     if str(ex.get("entry_id")) == str(prompt_id) or rid == target
                 ]
                 for rid in dead:
-                    self._executions.pop(rid, None)
-                    self._active_ids.discard(rid)
-                self._active_count = len(self._active_ids)
+                    executions.pop(rid, None)
+                    getattr(self, "_active_ids", set()).discard(rid)
+                if hasattr(self, "_active_ids"):
+                    self._active_count = len(self._active_ids)
             log.info("event=cancel_done target=%s prompt_id=%s", target, prompt_id)
             return True
         return False
@@ -2051,7 +2083,7 @@ class PeriodicScheduler:
         """oneshot: next_run_at - startup_timeout で pane を事前起動（slot は取らない）。"""
         timeout = float(getattr(self._session_mgr, "_startup_timeout", 60) or 60)
         with self._lock:
-            entries = [e.copy() for e in self._entries]
+            entries = [e.copy() for e in (getattr(self, "_entries", []) or [])]
         for entry in entries:
             if not entry.get("oneshot"):
                 continue

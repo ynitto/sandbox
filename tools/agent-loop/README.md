@@ -77,7 +77,9 @@ agent-loop
 ```
 agent-loop [--log-level LEVEL] [--split-direction horizontal|vertical] [--no-auto-attach]
 agent-loop ls
-agent-loop send [-s SESSION] [-d DIR] [--wait] [--priority high|normal|low] PROMPT
+agent-loop send [-s SESSION] [-d DIR] [--wait] [--priority high|normal|low]
+                [--model MODEL] [--sandbox] [--force]
+                [--ralph --max-iterations N] PROMPT
 agent-loop pause | resume | cancel TARGET | drain | reload
 agent-loop doctor [--json] [--fix]
 agent-loop update
@@ -90,8 +92,12 @@ agent-loop --version
 - `agent-loop update` は zipapp インストールのみ対象です（source / pip / symlink は理由付きで非 0）。稼働 daemon がある場合は update lock により拒否されます。成功後も実行中 daemon は自動再起動しません。
 - 同じworkspaceのdaemon稼働中は、`send`を永続キュー（`~/.agents/send-requests/`）へ受付します。daemon不在時は従来どおりstandalone sessionへ直接送信します。
 - `send --wait`はrequest ID単位の完了状態を待ち、別requestのbusy/ready遷移を完了扱いしません。
+- `--ralph` / `--sandbox` / `--force` / `--model` は同じ workspace の daemon が必須です。
+- `--ralph --max-iterations N` は同一 pane で N 回送信し、最終回に要約指示を付けます（`--force` 併用不可）。
+- `--sandbox` は git worktree を `~/.agents/sandboxes/` に作り、clean なら完了後に削除します。
+- `--force` が迂回するのは visual ready と preflight だけです（lifecycle / slot / 追跡中 pane は迂回しません）。
 - `pause` / `resume` は local pause（`resume` は agent-control / budget の pause を迂回しません）。
-- `cancel` は managed な entry / pane だけを停止・slot 解放します。
+- `cancel` は managed な entry / pane だけを停止・slot 解放します（external pane は拒否）。
 - `drain` は新規受付を止め、実行中完了後に daemon を終了します。
 - `reload` は設定を検証してから次 tick で一括交換します（失敗時は旧設定を維持）。
 - `doctor` は YAML / slot / send-request 等を診断します。

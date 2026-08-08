@@ -3,7 +3,7 @@
 > 決定日: 2026-08-08  
 > 対象: `tools/agent-loop/`  
 > 前提: `docs/plans/2026-08-08-agent-loop-phased-enhancement-design.md`  
-> 状態: 詳細設計済み・未実装
+> 状態: 詳細設計済み・実装済み
 
 ## 1. 目的
 
