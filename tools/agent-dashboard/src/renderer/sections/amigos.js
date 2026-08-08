@@ -60,6 +60,17 @@ function amigosNodeHasWork() {
   return !!((a.missions && a.missions.length) || (a.homes && a.homes.length));
 }
 
+// 領域バッジ用: この端末のミッションで人の確認を待っている項目の総数。
+// 数え方はカード（amigosMissionAttention）と同じにする——同じ言葉で違う数を出さない。
+// 進行中のミッション数（在庫）は数えない。手を打つ必要が無いものはバッジに出さない。
+function amigosAttentionCount() {
+  const view = amigosNodeView(state.amigos);
+  return (view.missions || []).reduce((sum, m) => {
+    const paused = (m.roles || []).filter((r) => r.state === 'paused').length;
+    return sum + Number(m.attentionCount || 0) + paused;
+  }, 0);
+}
+
 // ミッションも依頼先ホームも無いときはタブを隠す（cowork と同じ流儀）。
 function updateAmigosTabVisibility() {
   const btn = $('tab-btn-amigos');

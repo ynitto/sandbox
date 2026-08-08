@@ -10,6 +10,9 @@ const state = {
   area: 'home',
   discovery: { projects: [], instances: [] },
   selectedDir: null, // 選択中プロジェクトのディレクトリ
+  // 領域ごとに最後に選んでいた対象（領域 id → dir）。選択そのものは selectedDir 1 つだけ
+  // なので、これが無いと領域を往復するたびに前の領域の対象が残るか、先頭へ戻される。
+  areaSelection: {},
   project: null, // readProject のスナップショット
   flowRuns: [],
   engine: null, // engine/status.json のスナップショット（稼働・共有の状況・切り離し）
@@ -828,7 +831,7 @@ function renderTree() {
   // 登録されており、人は host.yaml を見に行っても間違いを見つけられない（直しようのない表示）。
   // 実行側が宣言したパスを出せば、どこを直せばよいかが画面から分かる。
   const all = state.discovery.projects || [];
-  const projects = all.filter((p) => p.exists);
+  const projects = all.filter((p) => p.exists && isProjectAreaItem(p));
   const unreachable = all.filter((p) => !p.exists);
   if (!all.length) {
     tree.innerHTML =
@@ -885,6 +888,13 @@ function renderTree() {
   renderRoutineList();
 }
 
+// プロジェクト領域の一覧に並べるもの。定常業務専用フォルダ（cowork.roots だけで挙がり、
+// agent-project のマーカーを持たない）は並べない——選ぶとプロジェクトのタブが 1 つも
+// 出せず、押しても何も起きない行き止まりになる。そのフォルダは定常業務領域に出る。
+function isProjectAreaItem(p) {
+  return !!p && (p.kind !== 'routine' || !!p.isProject);
+}
+
 // 定常業務の対象フォルダ一覧（定常業務領域のサイドバー）。プロジェクト一覧と同じ形にする
 // ——「左で対象を選び、右でその中身を見る」という読み方を領域が変わっても揃えるため。
 // 並べるのは定常業務専用フォルダ（kind=routine）と、作業を登録してあるプロジェクトの両方。
@@ -900,13 +910,17 @@ function renderRoutineList() {
   }
   list.innerHTML = folders
     .map((p) => {
-      const count = coworkItemsForFolder(p.dir).length;
+      const items = coworkItemsForFolder(p.dir);
+      const stuck = coworkAttentionItems(items).length;
+      // 手を打つべきもの（止まっている作業）と在庫（登録した作業）を別のバッジにする。
+      // 領域バッジは前者だけを数えるので、どのフォルダの話かはこの行で分かる必要がある。
       return `<button type="button" class="project-item ${state.selectedDir === p.dir ? 'selected' : ''}"
         data-routine-dir="${esc(p.dir)}" aria-current="${state.selectedDir === p.dir ? 'true' : 'false'}"
         title="${esc(p.dir)}">
         <span class="dot ${p.running ? 'running' : ''}"></span>
         <span class="name">${esc(p.label)}</span>
-        ${count ? `<span class="badge" title="登録した作業 ${count} 件">${count}</span>` : ''}
+        ${stuck ? `<span class="badge warn" title="止まっている作業 ${stuck} 件">${stuck}</span>` : ''}
+        ${items.length ? `<span class="badge" title="登録した作業 ${items.length} 件">${items.length}</span>` : ''}
       </button>`;
     })
     .join('');
@@ -929,10 +943,23 @@ function routineFolders() {
 }
 
 // そのフォルダに登録された作業。設定側の宣言と発見結果の両方を見る（cowork の一覧と同じ種）。
+// 突き合わせは repo ＞ cwd の順（作業タブの coworkVisibleEntries と同じ式）。手で登録した
+// 作業は cwd しか持たないことがあり、repo だけで見ると一覧から消える。
 function coworkItemsForFolder(folder) {
   const items = (state.cowork && Array.isArray(state.cowork.items)) ? state.cowork.items : [];
   if (!folder) return [];
-  return items.filter((item) => item && coworkPathKey(item.repo) === coworkPathKey(folder));
+  return items.filter((item) => item && coworkPathKey(item.repo || item.cwd) === coworkPathKey(folder));
+}
+
+// 定常業務のうち**人が手を打つべきもの**。動いていないのに失敗で終わっている作業だけを
+// 数える。登録しただけ・まだ動かしていない（unknown）作業は放っておいても壊れないので、
+// 数に入れない——注目の合図が在庫の数で埋まると、合図として読めなくなる。
+const COWORK_ATTENTION_STATUS = new Set(['failed', 'error', 'blocked']);
+function coworkAttentionItems(items) {
+  return (items || []).filter((item) => {
+    const st = (item && item.state) || {};
+    return !st.running && COWORK_ATTENTION_STATUS.has(String(st.status || ''));
+  });
 }
 
 // 実行エンジンは宣言しているが、この PC からはフォルダに届かないプロジェクトの行。
@@ -980,6 +1007,8 @@ async function selectProject(dir) {
     resetFlowDrilldown();
   }
   state.selectedDir = dir;
+  // いまの領域で最後に見ていた対象として覚える（領域を往復しても同じものへ戻る）。
+  state.areaSelection[state.area] = dir;
   localStorage.setItem('kpv:selected', dir);
   // 起動先候補はプロジェクトごとに違う（レジストリとノード宣言の交差）。選択のたびに引き直す。
   state.cliChatCwdChoices = [];
@@ -1346,8 +1375,16 @@ function activeTab() {
   return el ? el.dataset.tab : 'home';
 }
 
-// 左メニューの件数バッジ。領域を開かずに「そこに何件あるか」が分かると、開く順番を
-// 決められる。数字を持たない領域はバッジを出さない（0 を並べても情報にならない）。
+// 左メニューのバッジ。**人が手を打つべきものの数だけを出す**。
+//
+// 以前は在庫の数（登録した作業の総数・進行中のミッション数）を出していた。それは
+// 「定常業務 [6]」と光っているのに開くと何も無い、という画面を作る——バッジは端末全体の
+// 数で、右ペインは選んでいるフォルダ 1 つ分だからである。数が合わないだけでなく、
+// 見るべきものが無いときも光り続けるので、合図として読めなくなる。
+//
+// 規律は 2 つ。**数えるのは放っておくと止まったままになるものだけ**（要対応・失敗・確認
+// 待ち。tone は warn）。**数えた対象を、その領域を開いたときに最初に映す**（pickAreaItem
+// が同じ材料から着地点を選ぶ）。在庫の件数はサイドバーの対象一覧とホームのカードが持つ。
 function areaBadge(id) {
   if (id === 'projects') {
     const model = portalHomeModel((state.discovery && state.discovery.projects) || []);
@@ -1355,12 +1392,12 @@ function areaBadge(id) {
     return { text: String(model.totals.needs), tone: 'warn', title: `要対応 ${model.totals.needs} 件` };
   }
   if (id === 'routines') {
-    const n = coworkItemCount();
-    return n ? { text: String(n), title: `登録した作業 ${n} 件` } : null;
+    const n = coworkAttentionItems((state.cowork && state.cowork.items) || []).length;
+    return n ? { text: String(n), tone: 'warn', title: `止まっている作業 ${n} 件` } : null;
   }
   if (id === 'missions') {
-    const n = ((state.amigos && state.amigos.missions) || []).length;
-    return n ? { text: String(n), title: `ミッション ${n} 件` } : null;
+    const n = amigosAttentionCount();
+    return n ? { text: String(n), tone: 'warn', title: `確認が必要な項目 ${n} 件` } : null;
   }
   const hooks = featureTabs.get(String(id));
   if (hooks && typeof hooks.badge === 'function') {
@@ -1474,7 +1511,48 @@ function selectedAreaItemName() {
   return p ? p.charterName || p.name || '' : '';
 }
 
-function switchArea(id) {
+// 領域の対象一覧に並ぶもの（左で選べるもの）と、そこで人が手を打つべき件数。
+// 領域バッジと同じ材料から出す——「6 と光っているのに開くと空」を作らないために、
+// 数える対象と、開いたときに映す対象を 1 つの式から取る。
+function areaItems(areaId) {
+  if (areaId === 'projects') {
+    return (state.discovery.projects || [])
+      .filter((p) => p && p.exists && isProjectAreaItem(p))
+      .map((p) => ({ dir: p.dir, attention: Math.max(0, Number(p.needsCount) || 0) }));
+  }
+  if (areaId === 'routines') {
+    return routineFolders().map((f) => ({
+      dir: f.dir,
+      attention: coworkAttentionItems(coworkItemsForFolder(f.dir)).length,
+    }));
+  }
+  return [];
+}
+
+// 領域を開いたときに映す対象を、その領域の一覧の中から選び直す。
+//
+// 選択（selectedDir）はアプリ全体で 1 つしか無いので、領域をまたぐと前の領域で選んだ
+// ものが残る。**右ペインの中身もタブの出し分けも選択中の対象で決まる**ため、そのままだと
+// 「定常業務を開いたのに、前に見ていたプロジェクトの作業（＝空）が映る」「定常業務の
+// フォルダを選んだままプロジェクトを開くと、出せるタブが無くてホームへ弾かれる」が起きる。
+//
+// 戻ってきたときは前に見ていた対象を出し、初めて開く領域では手を打つべきものが
+// いちばん多い対象へ着地させる（バッジの数字と着地点を揃える）。
+async function alignAreaSelection(areaId) {
+  const items = areaItems(areaId);
+  if (!items.length) return;                       // 対象一覧を持たない領域・まだ何も無い領域
+  if (items.some((it) => it.dir === state.selectedDir)) {
+    state.areaSelection[areaId] = state.selectedDir;
+    return;
+  }
+  const remembered = items.find((it) => it.dir === state.areaSelection[areaId]);
+  const attention = items
+    .filter((it) => it.attention > 0)
+    .sort((a, b) => b.attention - a.attention)[0];
+  await selectProject((remembered || attention || items[0]).dir);
+}
+
+async function switchArea(id) {
   const area = areaById(id);
   state.area = area.id;
   try {
@@ -1482,6 +1560,9 @@ function switchArea(id) {
   } catch {
     /* localStorage が使えなくても領域の切り替えは成立する */
   }
+  // 対象を先に合わせてからタブを出し分ける。順番が逆だと、前の領域の対象で「出せるタブが
+  // 無い」と判定してホームへ弾いてしまう。
+  await alignAreaSelection(area.id);
   renderAreaNav();
   renderAreaLists();
   const visible = applyAreaTabs();

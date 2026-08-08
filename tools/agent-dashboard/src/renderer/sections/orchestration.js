@@ -2080,9 +2080,9 @@ function bindCoworkDetailActions(root, folder) {
 // 持つ」の原則。agent-project の host.yaml に載せると、常駐体が管理しないものを常駐体の
 // 宣言ファイルに書くねじれになる）。
 //
-// **登録の入口は全体設定「定常業務」だけ**（btn-settings-cowork-add-root）。定常業務画面は
-// 選択中プロジェクトの作業を見る画面なので、別フォルダ（＝他プロジェクト）の登録ボタンを
-// 置かない。選択中フォルダ自身の「登録を解除」だけをバッジとして残す。
+// **登録の入口は定常業務領域の「設定」タブだけ**（btn-settings-cowork-add-root）。作業タブは
+// 選択中フォルダの作業を見る画面なので、別フォルダの登録ボタンを置かない。選択中フォルダ
+// 自身の「登録を解除」だけをバッジとして残す。
 function coworkRootBadgeHtml(folder) {
   const p = (state.discovery && state.discovery.projects) || [];
   const sel = p.find((x) => x && x.dir === folder);
@@ -2157,7 +2157,7 @@ function renderCowork() {
     ? coworkVisibleEntries(draft, folder) : [];
   const selected = coworkSelectedEntry(entries, folder);
   const selectedId = selected ? coworkEntryId(selected.item, selected.index) : '';
-  const scopeLabel = `このプロジェクトの作業 ${entries.length} 件`;
+  const scopeLabel = `このフォルダの作業 ${entries.length} 件`;
   el.innerHTML = `
     <div class="cowork-shell">
       <header class="cowork-header">
@@ -2181,7 +2181,7 @@ function renderCowork() {
         <section class="cowork-list-pane" aria-label="定常業務の一覧">${coworkRoutineSelectorHtml(entries, selectedId)}</section>
         <div id="cowork-selected-slot" class="cowork-detail-pane" data-ui-scroll-key>${coworkSelectedDetailHtml(selected, observed, busyId)}</div>
       </div>`
-      : '<div class="empty"><strong>このプロジェクトに登録された定常業務はありません</strong><span>「追加」から作業を作成できます。別のフォルダを扱うには、全体設定の「定常業務」で登録してください。</span></div>'}
+      : '<div class="empty"><strong>このフォルダに登録された定常業務はありません</strong><span>「追加」から作業を作成できます。別のフォルダを扱うには「設定」タブの「フォルダを登録」から追加してください。</span></div>'}
     </div>`;
   bindCoworkRoutineSelector(el);
   const addBtn = $('btn-cowork-add');
