@@ -5,10 +5,31 @@
   "type": ["object", "null"],
   "properties": {
     "budget": {
-      "$comment": "Optional budget block - additive extension only",
-      "if": {},
-      "then": {}
+      "$comment": "Optional budget block - additive extension only (reader must be optional to maintain compatibility)",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "total_allocated_budget_usd": {
+          "type": ["number", "null"],
+          "description": "Total allocated budget in USD"
+        },
+        "spent_on_infrastructure_percent_of_total": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Spent on infrastructure as percent of total (relative to allocated)"
+        },
+        "remaining_budget_usd": {
+          "type": ["number", "null"]
+        },
+        "last_updated_timestamp": {
+          "type": ["string", "null"],
+          "format": "date-time"
+        }
+      },
+      "required": []
     }
   },
-  "additionalProperties": false
+  "additionalProperties": false,
+  "$comment": "This schema is additive-only. Readers should treat 'budget' as optional to maintain backward compatibility with existing status/<node>.json structures."
 }
