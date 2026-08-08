@@ -50,7 +50,7 @@ assert.match(html, /data-tab="history"[^>]*>成果</);
 // 中の画面なので、領域名を繰り返さずに中身の名前を付ける（定常業務 → 作業／実行の記録／設定）。
 assert.match(html, /data-tab="cowork"[^>]*>作業</);
 assert.match(html, /data-tab="routine-runs"[^>]*>実行の記録</);
-assert.match(html, /data-tab="routine-settings"[^>]*>定常業務の設定</);
+assert.match(html, /data-tab="routine-settings"[^>]*>設定</);
 assert.match(html, /data-tab="amigos"[^>]*>ミッション</);
 assert.ok(html.includes('id="dlg-kiro-loop"'), '実行状況はダイアログとして表示します');
 assert.ok(!html.includes('id="tab-btn-kiro-loop"'), '実行状況をメインタブとして重複表示しません');
@@ -59,7 +59,9 @@ assert.ok(
   'ミッションタブは定常業務の左に置きます'
 );
 assert.ok(!html.includes('tab-scope-label'), '全体設定の左に補助ラベルを置きません');
-assert.match(html, /data-tab="project-settings"[^>]*>プロジェクト設定</);
+// タブは領域の中の画面なので、領域名を繰り返さない短い名前にする（設定）。
+// どの設定かは左メニュー（プロジェクト領域 or 全体設定）が示す。
+assert.match(html, /data-tab="project-settings"[^>]*>設定</);
 assert.match(html, /data-tab="orchestration"[^>]*>全体設定</);
 const projectHeader = html.slice(html.indexOf('<header id="project-header">'), html.indexOf('<nav id="tabs">'));
 assert.match(projectHeader, /id="btn-cli-chat"[^>]*disabled/);

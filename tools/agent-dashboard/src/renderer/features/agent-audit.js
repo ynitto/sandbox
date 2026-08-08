@@ -609,15 +609,15 @@
     });
   }
 
-  // ホーム（ポータル）のカード。全体設定「利用状況」への入口だけを出す（数字は出さない）。
+  // ホーム（ポータル）のカード。利用状況領域への入口だけを出す（数字は出さない）。
   function portalCardHtml() {
     return `<div class="portal-card-heading">
         <span class="summary-kicker">使いすぎを防ぐ</span>
         <h3>利用状況</h3>
       </div>
-      <p class="muted">トークン利用量と実行品質を、全体設定の「利用状況」で確認できます。</p>
+      <p class="portal-card-count">この端末で使ったトークンと、実行の品質</p>
       <div class="portal-card-actions">
-        <button type="button" class="primary-inline" data-portal-area="usage">利用状況を確認</button>
+        <button type="button" class="primary-inline" data-portal-area="usage">開く</button>
       </div>`;
   }
 

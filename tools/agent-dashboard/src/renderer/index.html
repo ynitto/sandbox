@@ -25,9 +25,7 @@
           <button id="btn-refresh" aria-label="表示を更新" title="表示を更新">
             <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20 6v5h-5"/><path d="M18.5 15a7 7 0 1 1-.9-7.8L20 10"/></svg>
           </button>
-          <button id="btn-settings" aria-label="アプリ設定" title="アプリ設定">
-            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1a1.7 1.7 0 0 0 1.9.3A1.7 1.7 0 0 0 10 3V2.8h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"/></svg>
-          </button>
+          <!-- 設定の入口は領域ナビ末尾の「全体設定」1 つ。同じ場所へ行く歯車を並べない。 -->
         </div>
       </div>
       <!-- 領域ナビ（第一ナビ）。右ペインはここで選んだ領域の中身になる。
@@ -104,7 +102,7 @@
         <button class="tab hidden" data-tab="amigos" data-area="missions" data-feature="amigos" id="tab-btn-amigos" hidden>ミッション</button>
         <button class="tab hidden" data-tab="cowork" data-area="routines" data-feature="cowork" id="tab-btn-cowork" hidden>作業</button>
         <button class="tab" data-tab="routine-runs" data-area="routines" data-feature="cowork" id="tab-btn-routine-runs">実行の記録</button>
-        <button class="tab" data-tab="routine-settings" data-area="routines" data-feature="cowork" id="tab-btn-routine-settings">定常業務の設定</button>
+        <button class="tab" data-tab="routine-settings" data-area="routines" data-feature="cowork" id="tab-btn-routine-settings">設定</button>
         <button class="tab hidden" data-tab="participation" data-area="participation" data-feature="participation"
           id="tab-btn-participation" hidden>参加できる仕事</button>
         <button class="tab" data-tab="participation-status" data-area="participation" data-feature="participation"
@@ -112,7 +110,7 @@
         <button class="tab" data-tab="usage" data-area="usage" data-feature="agent-audit" id="tab-btn-usage">利用状況</button>
         <span class="tab-utility-group">
           <button class="tab tab-project-settings hidden" data-tab="project-settings" data-area="projects" data-feature="agent-project"
-            id="tab-btn-project-settings" hidden>プロジェクト設定</button>
+            id="tab-btn-project-settings" hidden>設定</button>
           <button class="tab tab-global-settings" data-tab="orchestration" data-area="settings" data-feature="orchestration" id="tab-btn-orchestration"
             title="すべてのプロジェクトで使う設定">全体設定</button>
         </span>

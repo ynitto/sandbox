@@ -19,6 +19,7 @@
 // agent-instructions / 予算のような**横断して効くもの**だけを残す。
 
 // 実行の記録タブ。左に作業、右にその作業の記録（この画面からの実行 + ログ）。
+// 見出しは領域ヘッダーとタブが担うので、ペインは中身から始める。
 function renderRoutineRuns() {
   const pane = $('tab-routine-runs');
   if (!pane) return;
@@ -27,8 +28,7 @@ function renderRoutineRuns() {
   const selected = state.coworkHistory ? state.coworkHistory.id : '';
   if (!entries.length) {
     pane.innerHTML = `<section class="routine-page">
-      ${routinePageHeaderHtml('実行の記録', 'この端末から動かした記録と、リポジトリに残ったログを読みます。')}
-      <div class="empty compact">この作業フォルダにはまだ作業がありません。「作業」タブから追加してください。</div>
+      <div class="empty compact">まだ作業がありません。「作業」タブから追加すると、動かした記録をここで読めます。</div>
     </section>`;
     return;
   }
@@ -41,7 +41,6 @@ function renderRoutineRuns() {
     </button>`)
     .join('');
   pane.innerHTML = `<section class="routine-page">
-    ${routinePageHeaderHtml('実行の記録', 'この端末から動かした記録と、リポジトリに残ったログを読みます。')}
     <div class="cowork-split-view">
       <section class="cowork-list-pane" role="tablist" aria-label="記録を見る作業">${list}</section>
       <section class="cowork-detail-pane" id="routine-runs-body">${coworkHistoryBodyHtml(state.coworkHistory)}</section>
@@ -60,23 +59,13 @@ function coworkKindLabel(type) {
   return type === 'state-machine' ? '手順付き作業' : '繰り返し作業';
 }
 
-function routinePageHeaderHtml(title, desc) {
-  return `<header class="area-page-header">
-    <h2>${esc(title)}</h2>
-    <p class="muted">${esc(desc)}</p>
-  </header>`;
-}
-
 // 定常業務の設定タブ。全体設定にあった「定常業務」節をそのまま領域の中へ移した。
-// HTML の組み立ては元の関数（globalSettingsRoutineHtml）を使い回し、配線だけこちらが持つ。
+// HTML の組み立ては元の関数（globalSettingsRoutineHtml）を使い回し、配線だけこちらが持つ
+// （カード自身が見出しを持つので、ペイン側の見出しは足さない）。
 function renderRoutineSettings() {
   const pane = $('tab-routine-settings');
   if (!pane) return;
-  pane.innerHTML = `<section class="routine-page">
-    ${routinePageHeaderHtml('定常業務の設定',
-      'この端末で定常業務を動かすための設定です。ほかのワークロードには影響しません。')}
-    ${globalSettingsRoutineHtml()}
-  </section>`;
+  pane.innerHTML = `<section class="routine-page">${globalSettingsRoutineHtml()}</section>`;
   populateSettingsFields();
   setupRoutineSettings(pane);
 }

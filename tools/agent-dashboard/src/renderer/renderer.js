@@ -181,32 +181,24 @@ function statusLabel(status) {
 // 左に無いのに、右のタブ列へ定常業務・ミッション・参加が混ざっていた——左で選んだものと
 // 右に出るものが一致しない状態で、どの道具を操作しているのかが画面から読めなかった。
 //
-//   id       … 領域の識別子（タブの data-area・サイドバー節の data-area-list と対応）
-//   label    … 左メニューの表示名
-//   desc     … 右ペイン見出しの一行説明（プロジェクト領域だけは対象の名前を出すので持たない）
-//   list     … サイドバーに対象一覧を出す領域だけが持つ（値は data-area-list）
-//   footer   … 領域ナビの末尾へ固定する（設定）
+//   id        … 領域の識別子（タブの data-area・サイドバー節の data-area-list と対応）
+//   label     … 左メニューの表示名
+//   desc      … 右ペイン見出しの一行説明（プロジェクト領域だけは対象の名前を出すので持たない）
+//   list      … サイドバーに対象一覧を出す領域だけが持つ（値は data-area-list）
+//   footer    … 領域ナビの末尾へ固定する（設定）
+//   ownHeader … 画面（ペイン）が自分の見出しと操作ボタンを持つ領域。領域の見出しを
+//               重ねて出さない——同じタイトルが縦に 2 回並ぶのは読む人のノイズでしかない
 //
 // 領域を足す手順は「AREAS に 1 行足し、タブへ data-area を書く」の 2 手。どのタブが
 // どの領域に属するかは HTML（data-area）が正で、ここでは列挙と表示名だけを持つ。
 const AREAS = [
-  { id: 'home', label: 'ホーム', desc: '判断待ちと各ワークロードの状況を横断して見ます。' },
+  { id: 'home', label: 'ホーム', desc: '判断待ちと、全体のいまが分かります。' },
   { id: 'projects', label: 'プロジェクト', list: 'projects' },
-  {
-    id: 'routines',
-    label: '定常業務',
-    list: 'routines',
-    desc: '繰り返す作業を登録し、この端末で動かして記録を残します。',
-  },
-  { id: 'missions', label: 'ミッション', desc: 'チームへ依頼したミッションの進行と納品を見ます。' },
-  { id: 'participation', label: '参加', desc: 'この端末で引き受けられる仕事を見て、参加します。' },
-  { id: 'usage', label: '利用状況', desc: 'この端末のトークン利用量と実行品質を見ます。' },
-  {
-    id: 'settings',
-    label: '全体設定',
-    footer: true,
-    desc: 'この端末のすべてのワークロードに効く設定です。',
-  },
+  { id: 'routines', label: '定常業務', list: 'routines', desc: '繰り返す作業を、この端末で動かします。' },
+  { id: 'missions', label: 'ミッション', ownHeader: true },
+  { id: 'participation', label: '参加', ownHeader: true },
+  { id: 'usage', label: '利用状況', desc: 'この端末で使ったトークンと、実行の品質。' },
+  { id: 'settings', label: '全体設定', footer: true, ownHeader: true },
 ];
 
 function areaById(id) {
@@ -1428,19 +1420,28 @@ function applyAreaTabs() {
 }
 
 // 右ペインの見出しを領域に合わせる。プロジェクト領域だけは対象（プロジェクト）が主語なので
-// 従来のヘッダーを出し、それ以外の領域では領域の見出しを出す。
+// 従来のヘッダーを出し、それ以外の領域では領域の見出しを出す。画面が自分の見出しを持つ
+// 領域（ownHeader）ではどちらも出さない——1 画面に見出しは 1 つ。
 function renderAreaHeader() {
   const area = areaById(state.area);
   const isProjects = area.id === 'projects';
   const header = $('area-header');
   const main = document.querySelector('#project-header .project-header-main');
   const meta = $('project-meta');
-  for (const [el, show] of [[header, !isProjects], [main, isProjects], [meta, isProjects]]) {
+  const shell = $('project-header');
+  const showArea = !isProjects && !area.ownHeader;
+  for (const [el, show] of [[header, showArea], [main, isProjects], [meta, isProjects]]) {
     if (!el) continue;
     el.classList.toggle('hidden', !show);
     el.hidden = !show;
   }
-  if (isProjects || !header) return;
+  // 何も出すものが無い領域ではヘッダー帯ごと畳む（空の帯は余白ではなくただの隙間）
+  if (shell) {
+    const empty = !isProjects && !showArea;
+    shell.classList.toggle('hidden', empty);
+    shell.hidden = empty;
+  }
+  if (!showArea || !header) return;
   $('area-header-title').textContent = area.label;
   // 対象一覧を持つ領域では、選んでいるものの名前まで見出しに出す（左の選択と右の見出しを揃える）
   const selected = area.list ? selectedAreaItemName() : '';

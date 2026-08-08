@@ -26,7 +26,6 @@ async function init() {
   $('btn-doctor-close').addEventListener('click', () => $('dlg-doctor').close());
   $('btn-need-output-close').addEventListener('click', () => $('dlg-need-output').close());
   $('btn-delivery-review-close').addEventListener('click', () => $('dlg-delivery-review').close());
-  $('btn-settings').addEventListener('click', () => openGlobalSettings('app'));
   $('btn-technical-info-close').addEventListener('click', () => $('dlg-technical-info').close());
   $('btn-node-chat-close').addEventListener('click', () => $('dlg-node-chat').close());
   $('btn-cw-cancel').addEventListener('click', () => $('dlg-cowork-work').close());

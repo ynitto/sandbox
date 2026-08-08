@@ -250,9 +250,8 @@
         <h3>参加できる仕事</h3>
       </div>
       <p class="portal-card-count"><strong>${count}</strong> 件の募集があります</p>
-      <p class="muted">プロジェクト作業・ミッション・よその端末からの依頼に、この端末から参加できます。</p>
       <div class="portal-card-actions">
-        <button type="button" class="primary-inline" data-portal-area="participation">参加できる仕事を見る</button>
+        <button type="button" class="primary-inline" data-portal-area="participation">開く</button>
       </div>`;
   }
 

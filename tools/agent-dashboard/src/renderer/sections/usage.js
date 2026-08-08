@@ -21,11 +21,8 @@ function renderUsage() {
   const pane = $('tab-usage');
   if (!pane) return;
   const ov = state.orchestration || {};
+  // 見出しは領域ヘッダー（利用状況）が出す。ペインは面の中身から始める。
   pane.innerHTML = `<section class="usage-page">
-    <header class="area-page-header">
-      <h2>利用状況</h2>
-      <p class="muted">この端末で使ったトークンと実行の品質を、収集済みの実行証跡から集計します。</p>
-    </header>
     ${ov.error ? `<p class="muted">${esc(String(ov.error))}</p>` : ''}
     ${globalSettingsPanelsHtml('usage')}
   </section>`;

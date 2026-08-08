@@ -83,9 +83,8 @@ function registerCorePortalCards() {
           <h3>プロジェクト</h3>
         </div>
         <p class="portal-card-count">${facts}</p>
-        <p class="muted">目標（charter）からタスクへ分解し、検証と検収で完成させます。</p>
         <div class="portal-card-actions">
-          <button type="button" class="primary-inline" data-portal-area="projects">プロジェクトを開く</button>
+          <button type="button" class="primary-inline" data-portal-area="projects">開く</button>
         </div>`;
     },
   });
@@ -102,9 +101,8 @@ function registerCorePortalCards() {
         <p class="portal-card-count">${count
           ? `<strong>${count}</strong> 件の作業を登録済み`
           : '登録された作業はまだありません'}</p>
-        <p class="muted">定期実行と手順つき作業を登録し、実行と履歴をここから確認します。</p>
         <div class="portal-card-actions">
-          <button type="button" class="primary-inline" data-portal-area="routines">定常業務を開く</button>
+          <button type="button" class="primary-inline" data-portal-area="routines">開く</button>
         </div>`;
     },
   });
@@ -122,11 +120,10 @@ function registerCorePortalCards() {
           <h3>ミッション</h3>
         </div>
         <p class="portal-card-count">${missions.length
-          ? `<strong>${missions.length}</strong> 件のミッション`
+          ? `<strong>${missions.length}</strong> 件が進行中`
           : '進行中のミッションはありません'}</p>
-        <p class="muted">依頼したミッションの進行・担当・納品をここから確認します。</p>
         <div class="portal-card-actions">
-          <button type="button" class="primary-inline" data-portal-area="missions">ミッションを開く</button>
+          <button type="button" class="primary-inline" data-portal-area="missions">開く</button>
         </div>`;
     },
   });
@@ -179,14 +176,9 @@ function renderHome() {
     })
     .filter(Boolean)
     .join('');
-  pane.innerHTML = `<section class="portal-home" aria-labelledby="portal-home-title">
-    <header class="portal-home-header">
-      <div>
-        <span class="summary-kicker">ホーム</span>
-        <h2 id="portal-home-title">いまの全体像</h2>
-        <p>プロジェクト・定常業務・ミッション・参加できる仕事を横断して確認し、必要な画面へ移動します。</p>
-      </div>
-    </header>
+  // 見出しは領域ヘッダー（ホーム）が出す。画面の中でもう一度「ホーム」と言わない——
+  // この画面の最初の 1 行は挨拶ではなく「あなたの対応待ち」であるべき。
+  pane.innerHTML = `<section class="portal-home" aria-label="ホーム">
     ${portalNeedsQueueHtml(model)}
     <div class="portal-cards">${cards}</div>
   </section>`;
