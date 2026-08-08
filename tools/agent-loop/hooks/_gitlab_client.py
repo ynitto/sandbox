@@ -111,7 +111,10 @@ def parse_git_remote(cwd: str | Path | None) -> tuple[str, str]:
             return host, project
     elif "://" in remote_url:
         parsed = urllib.parse.urlparse(remote_url)
-        host = parsed.hostname or ""
+        hostname = parsed.hostname or ""
+        host = f"[{hostname}]" if ":" in hostname else hostname
+        if parsed.port is not None:
+            host = f"{host}:{parsed.port}"
         project = parsed.path.lstrip("/")
         if project.endswith(".git"):
             project = project[:-4]

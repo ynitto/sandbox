@@ -74,8 +74,11 @@ def _scan_snapshot(
     snapshot: dict[str, dict[str, int]] = {}
     count = 0
     for watch in watch_dirs:
-        base = (cwd / str(watch)).resolve()
-        if not base.is_dir() or base.is_symlink():
+        raw_base = cwd / str(watch)
+        if raw_base.is_symlink():
+            continue
+        base = raw_base.resolve()
+        if not base.is_dir():
             continue
         for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
             dirnames[:] = [d for d in dirnames if d != ".git"]

@@ -209,6 +209,7 @@ updated_at。`kiro-log-exporter` の `.kiro_export_state.json` と同じ規律�
 }
 // kiro.json: {"format": "kiro-sqlite", "paths": ["~/.kiro/store.db"], "usage": false}
 // codex.json: {"format": "jsonl-dir", "paths": ["~/.codex/sessions"], "usage": true}
+// ollama.json: {"format": "jsonl-dir", "paths": ["~/.agents/logs/ollama"], "usage": false}
 ```
 
 - **format は閉じた enum**（初期: `jsonl-dir` / `kiro-sqlite`。のち `opencode-sqlite` を追加
@@ -217,6 +218,14 @@ updated_at。`kiro-log-exporter` の `.kiro_export_state.json` と同じ規律�
   `agent_audit/readers/` に format ごと 1 実装。新 CLI が既存 format なら JSON 追記だけで
   収集できる。未知の format・`session_log` 未宣言の CLI は「未収集」と明示して黙って
   スキップしない（fail-close の报告、codd-gate の「未スキャン repo」と同型）。
+  `agent-audit sessions --cli <名前>` は 0 件のとき `cli.declared` / `cli.supported` を
+  返し、読み手（dashboard の「会話を見る」）が「条件に当たらなかった」のか「その CLI は
+  会話を残さない」のかを人へ言い分けられるようにする。
+- **agent-ollama は既存の進捗ログ（`~/.agents/logs/ollama/*.jsonl`）に会話本文を載せる**
+  形で jsonl-dir に相乗りする（`kind="message"` の行が行直下に `role` / `content` を持ち、
+  `ts` は epoch 秒、`cwd` は `run_start` 行）。専用 format を足さないのは、
+  リーダが行直下の role / content を既に会話として読むため——**宣言だけで収集できる**
+  という上の受入条件が、ローカル推論にもそのまま効く。
 - kiro の SQLite 読みは `kiro-log-exporter` の探索・パース手順（テーブル自動検出・
   WSL→Windows パス探索）を移植する。`kiro-log-exporter` 自体は IDE 含む単体エクスポータ
   として残し、agent-audit は CLI セッションの正規化・集計側を担う（重複コードは

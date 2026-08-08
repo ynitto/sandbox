@@ -88,6 +88,19 @@ class FileWatchHookTests(unittest.TestCase):
             self.assertNotIn("src/linked/linked.py", paths)
             self.assertTrue(all(".git" not in p for p in paths))
 
+    def test_symlink_watch_root_is_not_followed(self):
+        hook = _load_hook()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            outside = root / "outside"
+            (outside / "nested").mkdir(parents=True)
+            (outside / "nested" / "secret.py").write_text("x", encoding="utf-8")
+            (root / "src").symlink_to(outside, target_is_directory=True)
+            snapshot = hook._scan_snapshot(root, {
+                "watch_dirs": ["src"], "patterns": ["**/*.py"], "max_files": 10,
+            })
+            self.assertEqual(snapshot, {})
+
     def test_deleted_file_detected(self):
         hook = _load_hook()
         with tempfile.TemporaryDirectory() as tmp:

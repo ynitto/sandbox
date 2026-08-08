@@ -157,7 +157,11 @@ def cleanup_sandbox(
         log.info("event=sandbox_retained sandbox_id=%s reason=%s", sandbox_id, retain_reason)
         return retain_reason
 
-    if _is_protected_path(wt) or (repo_root and wt.resolve() == repo_root.resolve()):
+    expected_wt = sandbox_worktree_path(sandbox_id)
+    if (str(reg.get("id") or "") != sandbox_id
+            or wt.resolve() != expected_wt.resolve()
+            or _is_protected_path(wt)
+            or (repo_root and wt.resolve() == repo_root.resolve())):
         reg["status"] = "cleanup_failed"
         write_sandbox_registry(reg)
         log.warning("sandbox cleanup: 保護 path のため削除しません: %s", wt)

@@ -576,6 +576,18 @@ def run_loop(model: str, task: str, *, cwd: "str | None" = None, emit=None,
         {"role": "system", "content": system_prompt(workdir, toolset)},
         {"role": "user", "content": task},
     ]
+
+    # 会話の本文を進捗ログへ残す（`kind="message"`）。他の CLI（claude / codex）が
+    # ネイティブのセッション記録に本文を持つのと揃える——持たないと「あの工程で何を
+    # 指示して何が返ったか」を後から読める CLI と読めない CLI が混ざる。system は
+    # 会話ではなく指示の一部なので出さない（読み手は user / assistant だけを会話とする）。
+    def say(role: str, content: str) -> None:
+        messages.append({"role": role, "content": content})
+        if emit is not None:
+            emit("message", role=role, content=content)
+
+    if emit is not None:
+        emit("message", role="user", content=task)
     if tracker is not None:
         tracker.add_text(messages[0]["content"] + task)
     tokens_in = tokens_out = 0
@@ -594,7 +606,7 @@ def run_loop(model: str, task: str, *, cwd: "str | None" = None, emit=None,
         tokens_out += int(result.get("tokens_out") or 0)
         text = str(result.get("text") or "")
         last_text = text or last_text
-        messages.append({"role": "assistant", "content": text})
+        say("assistant", text)
         if tracker is not None and emit is not None and tracker.should_warn():
             emit("context_warn", round=round_no, **tracker.snapshot())
 
@@ -606,9 +618,8 @@ def run_loop(model: str, task: str, *, cwd: "str | None" = None, emit=None,
                     emit("round_end", round=round_no, reason=status)
                 break
             nudges += 1
-            messages.append({"role": "user", "content": (
-                "規約から外れています。次の 1 手を bash のコードブロック 1 つで示すか、"
-                f"完了なら成果を報告して最後の行に {_DONE_MARKER} と書いてください。")})
+            say("user", "規約から外れています。次の 1 手を bash のコードブロック 1 つで示すか、"
+                        f"完了なら成果を報告して最後の行に {_DONE_MARKER} と書いてください。")
             if emit is not None:
                 emit("round_end", round=round_no, reason="nudge")
             continue
@@ -627,7 +638,7 @@ def run_loop(model: str, task: str, *, cwd: "str | None" = None, emit=None,
             feedback = (f"そのコマンドは実行していません: {denied}\n"
                         "許された範囲で次の 1 手を出すか、この範囲では無理なら理由を報告して "
                         f"最後の行に {_DONE_MARKER} と書いてください。")
-            messages.append({"role": "user", "content": feedback})
+            say("user", feedback)
             if tracker is not None:
                 tracker.add_text(text + feedback)
             if emit is not None:
@@ -660,7 +671,7 @@ def run_loop(model: str, task: str, *, cwd: "str | None" = None, emit=None,
         feedback = (f"実行結果（終了コード {outcome['exit_code']}）:\n"
                     f"```\n{outcome['output']}\n```\n"
                     "続けてください（完了なら報告と TASK_COMPLETE）。")
-        messages.append({"role": "user", "content": feedback})
+        say("user", feedback)
         if tracker is not None:
             tracker.add_text(text + feedback)
         if emit is not None:

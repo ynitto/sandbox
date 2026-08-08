@@ -291,6 +291,28 @@ class TestRunLoop(unittest.TestCase):
         # ツール結果が次ラウンドの入力へ入っている
         self.assertIn("[ls の結果]", calls["messages"][1][-1]["content"])
 
+    def test_conversation_body_is_emitted_as_messages(self):
+        # 会話の本文を `message` イベントとして残す（他 CLI のネイティブ記録と揃える）。
+        # agent-audit の jsonl-dir リーダは行直下の role / content を会話として読むので、
+        # このイベント形がそのまま「あとで読める会話」になる。
+        events = []
+        _result, _calls = self._loop(
+            ["```bash\nls\n```", "できました\nTASK_COMPLETE"],
+            emit=lambda kind, **f: events.append((kind, f)))
+        said = [(f["role"], f["content"]) for k, f in events if k == "message"]
+        self.assertEqual(said[0], ("user", "タスク"), "最初の指示が会話の起点")
+        self.assertEqual(said[1][0], "assistant")
+        self.assertIn("[ls の結果]", said[2][1], "ツール結果も会話として残る")
+        self.assertEqual(said[3], ("assistant", "できました\nTASK_COMPLETE"))
+        # system プロンプトは会話ではない（読み手も user/assistant だけを会話とする）
+        self.assertNotIn("system", [role for role, _ in said])
+
+    def test_message_events_absent_without_emit(self):
+        # emit なしでも会話は成立する（記録は観測手段で、実行の条件ではない）
+        result, calls = self._loop(["できました\nTASK_COMPLETE"])
+        self.assertEqual(result["status"], "done")
+        self.assertEqual(calls["messages"][0][-1]["content"], "タスク")
+
     def test_off_contract_reply_is_nudged_then_accepted(self):
         result, calls = self._loop(["ただの雑談"] * 5)
         self.assertEqual(result["status"], "no_command")

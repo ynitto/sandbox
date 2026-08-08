@@ -15,6 +15,11 @@
     "clear_command": "",
     "prompt_inject": "send-keys"
   },
+  "session_log": {
+    "format": "jsonl-dir",
+    "paths": ["~/.agents/logs/ollama"],
+    "usage": false
+  },
   "errors": [
     { "match": "could not connect|connection refused|ollama に接続できません",
       "class": "env", "hint": "ollama サーバが起動していません（ollama serve を起動してください）" },

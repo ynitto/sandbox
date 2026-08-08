@@ -34,8 +34,18 @@ def cmd_sessions(args) -> int:
     only_cli = str(getattr(args, "cli", "") or "").strip().lower()
 
     defs = agent_defs_with_session_log()
+    # 「0 件」には二つの意味がある——記録はあるが条件に当たらなかったのと、その CLI は
+    # そもそも会話を残さないのと。読み手（dashboard）が人へ理由を言えるよう区別して返す
+    # （宣言の有無を読み手が agents/*.json を自前で読んで判定すると 2 実装になる）。
+    declared = None
     if only_cli:
-        defs = [(n, s) for n, s in defs if n == only_cli]
+        found = [(n, s) for n, s in defs if n == only_cli]
+        declared = {
+            "name": only_cli,
+            "declared": bool(found),
+            "supported": bool(found) and found[0][1]["session_log"].get("format") in readers.FORMATS,
+        }
+        defs = found
 
     out = []
     for name, spec in defs:
@@ -67,5 +77,8 @@ def cmd_sessions(args) -> int:
                     {"role": role, "text": _clip(text)} for role, text in sess["messages"]]
             out.append(rec)
     out.sort(key=lambda r: r["updated_at"] or 0.0, reverse=True)
-    print(json.dumps({"sessions": out[:limit]}, ensure_ascii=False))
+    payload = {"sessions": out[:limit]}
+    if declared is not None:
+        payload["cli"] = declared
+    print(json.dumps(payload, ensure_ascii=False))
     return 0

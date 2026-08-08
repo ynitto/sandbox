@@ -22,6 +22,12 @@ def resolve_executable_path() -> Path:
     return raw
 
 
+def _invoked_executable_path() -> Path:
+    """symlink を解決せず、実行時に指定された path を返す。"""
+    raw = Path(sys.argv[0]).expanduser()
+    return raw if raw.is_absolute() else Path.cwd() / raw
+
+
 def executable_hash(path: "Path | None" = None) -> str:
     target = path or resolve_executable_path()
     digest = hashlib.sha256(str(target).encode("utf-8")).hexdigest()
@@ -367,9 +373,10 @@ def cmd_update(args: argparse.Namespace) -> None:  # noqa: ARG001 — 将来の 
     if fcntl is None:
         _reject_update("fcntl が利用できない環境では update は無効です")
 
-    exe = resolve_executable_path()
-    if exe.is_symlink():
+    invoked = _invoked_executable_path()
+    if invoked.is_symlink():
         _reject_update("symlink 経由の実行では update できません")
+    exe = resolve_executable_path()
     if not is_zipapp_install(exe):
         if exe.is_file() and zipfile.is_zipfile(exe):
             _reject_update("zipapp に build-info.json がありません")
@@ -387,6 +394,7 @@ def cmd_update(args: argparse.Namespace) -> None:  # noqa: ARG001 — 将来の 
 
     lock_handle = None
     checkout_dir: Path | None = None
+    candidate_dir: Path | None = None
     candidate_path: Path | None = None
     try:
         lock_handle = acquire_update_lock(exe, exclusive=True)
@@ -412,7 +420,8 @@ def cmd_update(args: argparse.Namespace) -> None:  # noqa: ARG001 — 将来の 
                 "branch": branch,
                 "built_at": built_at,
             }
-            candidate_path = Path(tempfile.mktemp(prefix="agent-loop-candidate-", suffix=".pyz"))
+            candidate_dir = Path(tempfile.mkdtemp(prefix="agent-loop-candidate-"))
+            candidate_path = candidate_dir / "agent-loop.pyz"
             _build_zipapp_candidate(
                 checkout_dir,
                 candidate_path,
@@ -437,5 +446,7 @@ def cmd_update(args: argparse.Namespace) -> None:  # noqa: ARG001 — 将来の 
                     pass
             if checkout_dir is not None:
                 shutil.rmtree(checkout_dir, ignore_errors=True)
+            if candidate_dir is not None:
+                shutil.rmtree(candidate_dir, ignore_errors=True)
     finally:
         release_update_lock(lock_handle)

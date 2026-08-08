@@ -354,6 +354,9 @@ def run_request(prompt: str, opts: dict, *, model: str = "", tools: "bool | None
     with ollama_events.EventLog(log_path, sink=sink) as events:
         events.emit("run_start", model=model, mode="tools" if use_tools else "plain",
                     log=str(log_path or ""), prompt_chars=len(prompt),
+                    # 作業ディレクトリ。読み手（agent-audit sessions / dashboard の
+                    # 「会話を見る」）が、どの作業のセッションかを絞るのに使う。
+                    cwd=str(opts.get("cwd") or os.getcwd()),
                     think=("既定" if think is None else bool(think)),
                     toolset=(toolset if use_tools else ""), format=(fmt or ""),
                     context_limit=tracker.limit, context_limit_source=tracker.limit_source)
@@ -366,9 +369,12 @@ def run_request(prompt: str, opts: dict, *, model: str = "", tools: "bool | None
                     max_rounds=opts["max_rounds"], command_timeout=opts["command_timeout"],
                     tracker=tracker, toolset=toolset, fmt=fmt, **_limits(opts))
             else:
+                # 会話の本文を残す（tools 経路は run_loop が同じ `message` を出す）。
+                events.emit("message", role="user", content=prompt)
                 result = ollama_loop.run_plain(
                     model, prompt, think=think, emit=events.emit, round_no=1,
                     tracker=tracker, fmt=fmt, **_limits(opts))
+                events.emit("message", role="assistant", content=str(result.get("text") or ""))
                 result = dict(result, rounds=1, status="done")
                 if tracker.should_warn():
                     events.emit("context_warn", round=1, **tracker.snapshot())

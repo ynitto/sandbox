@@ -109,7 +109,11 @@ agent-ollama --context qwen3        # 文脈の上限だけを調べる（LLM �
 
 1. **進捗ログ（JSONL・追記のみ）**。`~/.agents/logs/ollama/` に、ラウンド遷移・
    トークン速度・ツール実行と、**沈黙中の heartbeat**（`phase=prefill` と待ち秒数）を書く。
-   これが「その時刻に生きていた」ことの事後証明になる。
+   これが「その時刻に生きていた」ことの事後証明になる。会話の本文も同じログへ
+   `kind="message"`（`role` / `content`）として残るので、`agents/ollama.json` の
+   `session_log` 宣言だけで agent-audit がセッションとして読める——「あの工程で何を
+   指示して何が返ったか」を後から読める CLI と読めない CLI を混ぜないため
+   （`agent-audit sessions --cli ollama`、agent-dashboard の工程詳細「会話を見る」）。
 2. **`--status` / `--follow`**。プログラムは前者（`state` / `alive` /
    `since_last_progress_sec` / `tokens_per_sec`）、人は後者で同じものを見る。
    `state=running` かつ `alive=true` なら、長い沈黙は「遅い」であって「固まった」ではない。

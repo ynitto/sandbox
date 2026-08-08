@@ -84,9 +84,25 @@ class HookHardeningTests(unittest.TestCase):
             entry = {"name": "n", "id": "1", "event_hook": str(path)}
             with mock.patch.object(al, "_HOOK_TIMEOUT_SEC", 0.05):
                 self.assertIsNone(s._call_hook_check(entry))
-            self.assertIn(str(path.resolve()), s._hook_quarantine)
+            self.assertIn((str(path.resolve()), "1"), s._hook_quarantine)
             # 隔離中は再実行しない
             self.assertIsNone(s._call_hook_check(entry))
+
+    def test_shared_hook_file_has_entry_local_runtime(self):
+        s = _base_scheduler()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_hook(tmp, '''
+                count = 0
+                def check(_cfg):
+                    global count
+                    count += 1
+                    return str(count)
+            ''')
+            a = {"name": "a", "id": "a", "event_hook": str(path)}
+            b = {"name": "b", "id": "b", "event_hook": str(path)}
+            self.assertEqual(s._call_hook_check(a), {"prompt": "1"})
+            self.assertEqual(s._call_hook_check(b), {"prompt": "1"})
+            self.assertEqual(s._call_hook_check(a), {"prompt": "2"})
 
     def test_timeout_does_not_stop_other_entries(self):
         s = _base_scheduler()

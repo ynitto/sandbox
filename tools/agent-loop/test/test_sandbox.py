@@ -13,6 +13,12 @@ import agent_loop as al  # noqa: E402
 
 
 class SandboxTests(unittest.TestCase):
+    def setUp(self):
+        self._sandbox_root = al._SANDBOX_ROOT
+
+    def tearDown(self):
+        al._SANDBOX_ROOT = self._sandbox_root
+
     def test_resolve_non_repo_returns_none(self):
         with tempfile.TemporaryDirectory() as tmp:
             self.assertIsNone(al.resolve_git_toplevel(tmp))
@@ -80,6 +86,26 @@ class SandboxTests(unittest.TestCase):
             })
             status = al.cleanup_sandbox(sid)
             self.assertEqual(status, "cleanup_failed")
+
+    def test_registry_cannot_redirect_cleanup_to_another_worktree(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            al._SANDBOX_ROOT = root / "sandboxes"
+            sid = "redirected"
+            victim = root / "other-worktree"
+            victim.mkdir()
+            al.write_sandbox_registry({
+                "version": 1, "id": sid, "repo_root": str(root),
+                "path": str(victim), "request_id": "r", "owner_pid": None,
+                "status": "active", "created_at": 1.0, "last_used_at": 1.0,
+            })
+            with mock.patch.object(al, "worktree_is_clean", return_value=True) as clean, \
+                 mock.patch.object(al.subprocess, "run") as run:
+                status = al.cleanup_sandbox(sid)
+            self.assertEqual(status, "cleanup_failed")
+            self.assertTrue(victim.is_dir())
+            clean.assert_not_called()
+            run.assert_not_called()
 
     def test_stale_dead_owner_clean(self):
         with tempfile.TemporaryDirectory() as tmp:

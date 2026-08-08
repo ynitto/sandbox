@@ -35,13 +35,16 @@ class SessionsCmdTests(AuditTestCase):
                              t0="2026-08-03T12:00:00Z", t1="2026-08-03T12:01:00Z")
         self.agents_dir = _agents_dir_with_fakecli(self.store_dir)
 
-    def _run(self, *argv):
+    def _payload(self, *argv):
         buf = io.StringIO()
         with mock.patch.dict(os.environ, {"KIRO_AGENTS_DIR": self.agents_dir}), \
              contextlib.redirect_stdout(buf):
             rc = cli_main(["--audit-dir", self.audit_dir, "sessions", *argv])
         self.assertEqual(rc, 0)
-        return json.loads(buf.getvalue())["sessions"]
+        return json.loads(buf.getvalue())
+
+    def _run(self, *argv):
+        return self._payload(*argv)["sessions"]
 
     def test_lists_sessions_for_cli_newest_first(self):
         got = self._run("--cli", "fakecli")
@@ -70,6 +73,16 @@ class SessionsCmdTests(AuditTestCase):
 
     def test_unknown_cli_returns_empty(self):
         self.assertEqual(self._run("--cli", "no-such-cli"), [])
+
+    def test_reports_whether_cli_declares_a_session_log(self):
+        # 0 件の理由を読み手が人へ言えるように、宣言の有無を区別して返す
+        self.assertEqual(self._payload("--cli", "fakecli")["cli"],
+                         {"name": "fakecli", "declared": True, "supported": True})
+        self.assertEqual(self._payload("--cli", "no-such-cli")["cli"],
+                         {"name": "no-such-cli", "declared": False, "supported": False})
+
+    def test_cli_block_absent_without_cli_filter(self):
+        self.assertNotIn("cli", self._payload())
 
 
 if __name__ == "__main__":

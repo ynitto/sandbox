@@ -42,6 +42,37 @@ class JsonlDirReaderTests(AuditTestCase):
         self.assertEqual(len(sessions), 1)
         self.assertEqual((sessions[0]["tokens_in"], sessions[0]["tokens_out"]), (5000, 700))
 
+    def test_ollama_style_progress_log_reads_message_events(self):
+        # agent-ollama の進捗ログ（`~/.agents/logs/ollama/*.jsonl`）は 1 行 1 イベントで、
+        # 会話の本文だけが行直下の role / content に載る（kind="message"）。ts は epoch 秒、
+        # cwd は run_start 行が持つ。会話ではない進捗イベントは本文として拾わない。
+        root = os.path.join(self.tmp, "ollama-logs")
+        path = os.path.join(root, "20260808T132930-72642-qwen3_9b.jsonl")
+        os.makedirs(root, exist_ok=True)
+        lines = [
+            {"ts": 1786163370.188, "kind": "run_start", "model": "qwen3:9b",
+             "mode": "tools", "cwd": "/tmp/ws-run-a", "prompt_chars": 2637},
+            {"ts": 1786163370.2, "kind": "message", "role": "user", "content": "直して"},
+            {"ts": 1786163380.0, "kind": "llm_heartbeat", "phase": "prefill", "round": 1},
+            {"ts": 1786163400.0, "kind": "message", "role": "assistant",
+             "content": "直しました\nTASK_COMPLETE"},
+            {"ts": 1786163401.0, "kind": "run_end", "status": "done", "rounds": 1},
+        ]
+        with open(path, "w", encoding="utf-8") as f:
+            for line in lines:
+                f.write(json.dumps(line, ensure_ascii=False) + "\n")
+        sessions = readers.read_sessions({"format": "jsonl-dir", "paths": [root]},
+                                         want_messages=True)
+        self.assertEqual(len(sessions), 1)
+        s = sessions[0]
+        self.assertEqual(s["native_id"], "20260808T132930-72642-qwen3_9b",
+                         "セッション id が無いログはファイル名を名前にする")
+        self.assertEqual(s["cwd"], "/tmp/ws-run-a")
+        self.assertEqual(s["turns"], 2, "進捗イベントは会話に数えない")
+        self.assertEqual(s["messages"],
+                         [("User", "直して"), ("Assistant", "直しました\nTASK_COMPLETE")])
+        self.assertEqual(s["created_at"], 1786163370.188, "ts（epoch 秒）を時刻として読む")
+
     def test_unknown_format_returns_empty(self):
         self.assertEqual(readers.read_sessions({"format": "nope", "paths": ["/tmp"]}), [])
 

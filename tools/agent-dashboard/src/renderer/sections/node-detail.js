@@ -213,10 +213,18 @@ async function openNodeChat(nodeId) {
   }
   const sessions = (res && res.sessions) || [];
   if (!sessions.length) {
-    body.innerHTML = `<div class="empty">この時間帯（${fmtTime(claims.length ? claims[0].ts : null) || '不明'} 〜）の
-      ${esc(info.cli)} の会話記録が見つかりません。${
-        node.pc ? `この工程は端末 ${esc(node.pc)} で実行されました。` : ''
-      }会話の記録は実行した端末にだけあります。</div>`;
+    // 0 件の理由は 3 通りあり、人が次に取る行動が違う。どれなのかを言い切る
+    // （「見つかりません」だけだと、待てば出るのか永久に出ないのかが分からない）。
+    const cli = (res && res.cli) || {};
+    const why = !cli.declared
+      ? `${esc(info.cli)} は会話の記録を残しません（この CLI には会話ログの置き場が宣言されていません）。`
+      : !cli.supported
+        ? `${esc(info.cli)} の会話ログは、この版では読めない形式で保存されています。`
+        : `この時間帯（${fmtTime(claims.length ? claims[0].ts : null) || '開始時刻不明'} 〜）の`
+          + `${esc(info.cli)} の会話記録がこの端末にありません。`
+          + (node.pc ? `この工程は端末 ${esc(node.pc)} で実行されました——` : '')
+          + '会話の記録は実行した端末にだけ残ります。';
+    body.innerHTML = `<div class="empty">${why}</div>`;
     return;
   }
   if (sessions.length === 1) {

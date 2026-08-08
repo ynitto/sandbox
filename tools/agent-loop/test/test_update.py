@@ -62,6 +62,19 @@ class ZipappDetectionTests(unittest.TestCase):
 
 
 class CmdUpdateTests(unittest.TestCase):
+    def test_symlink_invocation_is_rejected_before_resolution(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "agent-loop-real"
+            link = Path(tmp) / "agent-loop"
+            _write_zipapp(target, build_info={"commit": "old", "remote": "https://x/y.git"})
+            link.symlink_to(target)
+            with mock.patch.object(sys, "argv", [str(link)]), \
+                 mock.patch.object(al, "is_zipapp_install", return_value=False) as is_install:
+                with self.assertRaises(SystemExit) as cm:
+                    al.cmd_update(SimpleNamespace())
+            self.assertEqual(cm.exception.code, 1)
+            is_install.assert_not_called()
+
     def test_source_checkout_rejected(self):
         args = SimpleNamespace()
         with mock.patch.object(al, "resolve_executable_path", return_value=Path(__file__)), \
@@ -124,6 +137,34 @@ class CmdUpdateTests(unittest.TestCase):
             replace_mock.assert_not_called()
             after = hashlib.sha256(exe.read_bytes()).hexdigest()
             self.assertEqual(before, after)
+
+    def test_candidate_is_created_in_private_temp_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            exe = Path(tmp) / "agent-loop"
+            info = {"commit": "old", "remote": "https://example/repo.git", "branch": "main"}
+            _write_zipapp(exe, build_info=info)
+            captured = []
+
+            def capture_candidate(_checkout, candidate, **_kwargs):
+                captured.append(Path(candidate))
+                Path(candidate).write_bytes(b"candidate")
+
+            with mock.patch.object(al, "resolve_executable_path", return_value=exe), \
+                 mock.patch.object(al, "is_zipapp_install", return_value=True), \
+                 mock.patch.object(al, "read_build_info", return_value=info), \
+                 mock.patch.object(al, "acquire_update_lock", return_value=mock.Mock()), \
+                 mock.patch.object(al, "release_update_lock"), \
+                 mock.patch.object(al, "_remote_commit", return_value="new"), \
+                 mock.patch.object(al, "_sparse_checkout", return_value="new"), \
+                 mock.patch.object(al, "_build_zipapp_candidate", side_effect=capture_candidate), \
+                 mock.patch.object(al, "verify_update_candidate"), \
+                 mock.patch.object(al, "_replace_executable"), \
+                 mock.patch.object(sys, "exit", side_effect=SystemExit(0)):
+                with self.assertRaises(SystemExit):
+                    al.cmd_update(SimpleNamespace())
+            self.assertEqual(len(captured), 1)
+            self.assertEqual(captured[0].name, "agent-loop.pyz")
+            self.assertFalse(captured[0].parent.exists())
 
 
 if __name__ == "__main__":
