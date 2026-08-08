@@ -218,6 +218,71 @@ def inject_base_sync(nodes: dict, workspace: "dict | None") -> "dict | None":
     return task
 
 
+# `git diff --cached --check` の指摘のうち、機械的に直せるもの（他は触らない）。
+_WS_CHECK_RE = re.compile(
+    r"^(?P<path>[^\"].*?):(?P<line>\d+): "
+    r"(?P<msg>trailing whitespace|space before tab in indent|new blank line at EOF)\.$")
+
+
+def _strip_line_ws(line: str) -> str:
+    """行末の空白（CR を含む）を落とし、インデント内の「タブ直前のスペース」を畳む。
+
+    CR を残しても git は行末空白として弾き続けるので、直す行は LF へ寄せる
+    （コード・Markdown は LF に揃える運用の既定。CRLF が要るファイルは人が直す）。"""
+    body = line.rstrip(" \t\r")
+    indent = len(body) - len(body.lstrip(" \t"))
+    head, rest = body[:indent], body[indent:]
+    while " \t" in head:
+        head = head.replace(" \t", "\t")
+    return head + rest
+
+
+def _fix_staged_whitespace(clone: str) -> "list[str]":
+    """staged 差分の空白指摘を、git が指した行だけ直す。直したファイルのパスを返す。
+
+    行末空白・EOF の空行は成果の欠陥ではなく体裁の揺れで、エージェントに直させるより
+    その場で直す方が安い（小型モデルほど再発し、実装が commit 直前に丸ごと捨てられる）。
+    ファイル全体を整形しないのは、ノードが触っていない行を差分へ巻き込まないため
+    ＝ worker の変更範囲とレビュー範囲を一致させたままにする。直せない指摘（設定依存の
+    tab-in-indent 等）は残し、呼び出し側の再検査で従来どおり失敗させる。"""
+    report = _ws_git(clone, "diff", "--cached", "--check")
+    if report.returncode == 0:
+        return []
+    eol_lines: "dict[str, set[int]]" = {}   # 行単位で直す指摘（行末空白・space before tab）
+    eof_files: "set[str]" = set()           # 末尾の空行を落とすファイル
+    for raw in (report.stdout or "").splitlines():
+        m = _WS_CHECK_RE.match(raw)
+        if not m:
+            continue
+        if m["msg"] == "new blank line at EOF":
+            eof_files.add(m["path"])
+        else:
+            eol_lines.setdefault(m["path"], set()).add(int(m["line"]))
+    fixed: "list[str]" = []
+    for path in sorted(set(eol_lines) | eof_files):
+        full = os.path.join(clone, path)
+        try:
+            with open(full, encoding="utf-8", errors="surrogateescape", newline="") as fh:
+                before = fh.read()
+        except OSError:
+            continue                        # 消えた/読めないものは検査側の失敗に委ねる
+        parts = before.split("\n")
+        for no in eol_lines.get(path, ()):
+            if 1 <= no <= len(parts):
+                parts[no - 1] = _strip_line_ws(parts[no - 1])
+        if path in eof_files:
+            # 末尾が改行で終わる（parts[-1] == ""）ときだけ、その手前の空行を畳む。
+            while len(parts) >= 2 and parts[-1] == "" and parts[-2] in ("", "\r"):
+                parts.pop(-2)
+        after = "\n".join(parts)
+        if after == before:
+            continue
+        with open(full, "w", encoding="utf-8", errors="surrogateescape", newline="") as fh:
+            fh.write(after)
+        fixed.append(path)
+    return fixed
+
+
 def finalize_workspace(ws: "dict | None", run_id: str, node_id: str) -> "dict | None":
     """エージェント実行後、ワークスペースに変更があれば作業ブランチへ commit し push する
     （rebase リトライで分散ワーカーの push を統合）。変更が無ければ何もしない＝読み取り専用
@@ -234,6 +299,9 @@ def finalize_workspace(ws: "dict | None", run_id: str, node_id: str) -> "dict | 
     staged = [p for p in _ws_git(clone, "diff", "--cached", "--name-only",
                                  "--diff-filter=ACMR").stdout.splitlines() if p]
     if node_id != "base-sync":
+        autofixed = _fix_staged_whitespace(clone)
+        if autofixed:
+            _ws_git(clone, "add", "--", *autofixed)
         checked = _ws_git(clone, "diff", "--cached", "--check")
         if checked.returncode != 0:
             raise RuntimeError(f"差分品質チェックに失敗しました: "

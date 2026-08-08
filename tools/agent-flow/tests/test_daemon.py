@@ -600,14 +600,32 @@ class DaemonPrimitiveTests(unittest.TestCase):
         finally:
             kf.cleanup_workspace()
 
-    def test_finalize_normal_work_rejects_new_whitespace_errors(self):
+    def test_finalize_normal_work_autofixes_whitespace_errors(self):
+        # 行末空白だけで成果を捨てない（機械的に直して commit する）
         remote = self._make_remote(name="ws_whitespace")
         try:
             ws = kf.ensure_workspace_clone({"url": remote, "base": "main"}, "run-bad-ws")
             with open(os.path.join(ws["clone"], "bad.txt"), "w", encoding="utf-8") as fh:
                 fh.write("new trailing whitespace  \n")
+            delivery = kf.finalize_workspace(ws, "run-bad-ws", "t1")
+            self.assertIsNotNone(delivery)
+            pushed = subprocess.run(["git", "-C", remote, "show", "af/run-bad-ws:bad.txt"],
+                                    capture_output=True, text=True, check=True).stdout
+            self.assertEqual(pushed, "new trailing whitespace\n")
+        finally:
+            kf.cleanup_workspace()
+
+    def test_finalize_normal_work_rejects_unfixable_whitespace_errors(self):
+        # 直せない指摘（設定依存の tab-in-indent 等）は従来どおり失敗させる
+        remote = self._make_remote(name="ws_whitespace_hard")
+        try:
+            ws = kf.ensure_workspace_clone({"url": remote, "base": "main"}, "run-hard-ws")
+            subprocess.run(["git", "-C", ws["clone"], "config", "core.whitespace",
+                            "tab-in-indent"], check=True, capture_output=True)
+            with open(os.path.join(ws["clone"], "bad.py"), "w", encoding="utf-8") as fh:
+                fh.write("def f():\n\treturn 1\n")
             with self.assertRaisesRegex(RuntimeError, "差分品質"):
-                kf.finalize_workspace(ws, "run-bad-ws", "t1")
+                kf.finalize_workspace(ws, "run-hard-ws", "t1")
         finally:
             kf.cleanup_workspace()
 
