@@ -159,9 +159,14 @@
     return escHtml(parts.join(' + '));
   }
 
+  // 割合の元になるトークン量（実測＋推定）。並べ替えと棒の長さで同じ値を使う。
+  function rowTokens(row) {
+    return (Number((row || {}).measured_in) || 0) + (Number((row || {}).measured_out) || 0)
+      + (Number((row || {}).estimated_tokens) || 0);
+  }
+
   function shareCellHtml(row, total) {
-    const value = (Number(row.measured_in) || 0) + (Number(row.measured_out) || 0)
-      + (Number(row.estimated_tokens) || 0);
+    const value = rowTokens(row);
     const share = total > 0 && value > 0 ? (value / total) * 100 : 0;
     return `<div class="orch-share"><div class="orch-bar" title="全体の ${share.toFixed(1)}%">
       <span class="orch-bar-measured" style="width:${share.toFixed(1)}%"></span>
@@ -208,10 +213,12 @@
     const rows = (data && data.workloads) || [];
     const total = ((data && data.totals) || {}).total || 0;
     const byGroup = new Map(rows.map((row) => [String(row.group || ''), row]));
+    // 割合の大きい順（棒グラフは長い順に並んでいないと比べられない）。同率は名前順。
     const names = [...new Set([
       ...(budget.knownWorkloads || []),
       ...rows.map((row) => String(row.group || '')),
-    ])].filter(Boolean);
+    ])].filter(Boolean)
+      .sort((a, b) => rowTokens(byGroup.get(b)) - rowTokens(byGroup.get(a)) || a.localeCompare(b));
     const body = names.map((name) => {
       const row = byGroup.get(name) || {};
       const wl = (budget.workloads || {})[name] || {};
@@ -240,7 +247,8 @@
     const rows = (data && data.agents) || [];
     const total = ((data && data.totals) || {}).total || 0;
     const body = rows.slice()
-      .sort((a, b) => (Number(b.runs) || 0) - (Number(a.runs) || 0))
+      // 割合の大きい順（同じ棒グラフの並びを機能別と揃える）。同率は実行数の多い順。
+      .sort((a, b) => rowTokens(b) - rowTokens(a) || (Number(b.runs) || 0) - (Number(a.runs) || 0))
       .map((row) => `<tr>
         <td><code>${escHtml(row.group || '未記録')}</code></td>
         <td class="orch-bar-cell">${shareCellHtml(row, total)}</td>

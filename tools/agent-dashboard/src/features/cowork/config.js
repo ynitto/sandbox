@@ -3,9 +3,11 @@
 module.exports = {
   cowork: {
     refreshSec: 10,
-    loopProvider: 'kiro-loop',
-    loopCommand: 'kiro-loop',
-    nextLoopProvider: 'agent-loop',
+    // 定期実行の実体は 1 つ＝**コマンド**だけ。以前は `loopProvider`（種類）と
+    // `loopCommand`（コマンド）の 2 つを持っていたが、種類は「コマンド未指定のときの
+    // 既定値」以上の意味を持たず、画面でも同じ文字列を 2 度書かせていた。
+    // 旧設定（loopProvider だけ書いてある config.json）は読むときに拾う。
+    loopCommand: 'agent-loop',
     stateMachineCommand: 'statemachine-use',
     // 実行は新しいウィンドウ（Windows は WSL、macOS は Terminal、Linux は端末エミュレータ）の
     // tmux で開始し、進行を見られるようにする。false にすると main プロセスを止める同期実行。

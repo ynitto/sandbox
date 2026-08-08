@@ -362,8 +362,15 @@ assert.match(renderer, /個別のrunを止める操作ではありません/);
   ]);
   assert.ok(html.includes('pc-a') && html.includes('pc-b'), '両ノードを出す');
   assert.ok(html.includes('稼働中'), '稼働中ノードを示す');
-  assert.ok(html.includes('応答なし'), '応答なし（heartbeat 途絶）ノードを示す');
-  assert.ok(html.includes('node-stale'), '応答なしは stale クラス');
+  // status/<node>.json は心拍ではなく「作業が進んだときの記録」。古いことを「応答なし」と
+  // 言い切らない（待機中の PC を故障のように見せない）。
+  assert.ok(!html.includes('応答なし'), '記録が古いだけのノードを応答なしと断定しない');
+  assert.ok(html.includes('しばらく更新がありません'), '古い記録はそのまま伝える');
+  assert.ok(html.includes('node-stale'), '更新の止まったノードは stale クラス');
+  // この PC は常駐体の心拍で判定する（記録が何日古くても、心拍があれば稼働中）。
+  const selfHtml = nodesSummaryHtml([{ node: 'mac', host: 'Mac', running: true, self: true, ageSec: 523721 }]);
+  assert.ok(selfHtml.includes('この PC・稼働中'), '自ノードは心拍で稼働中と出す');
+  assert.ok(!selfHtml.includes('しばらく更新がありません'), '自ノードに記録の古さを持ち込まない');
 }
 
 console.log('overview-ui: all tests passed');

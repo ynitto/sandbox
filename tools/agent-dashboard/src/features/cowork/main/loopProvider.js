@@ -602,12 +602,13 @@ function sendArgsFor(job) {
 // 落ちていた＝どう設定しても定常業務は既定の CLI で起動していた。
 function makeLoopProvider(cfg, config = null) {
   const appConfig = config || { cowork: cfg };
-  const provider = cfg.loopProvider || 'kiro-loop';
-  const command = cfg.loopCommand || provider;
+  // 実体はコマンド 1 つ。`loopProvider` は種類欄を廃止する前の設定（旧 config.json）を
+  // 読むためだけに残す。未設定は agent-loop。
+  const command = cfg.loopCommand || cfg.loopProvider || 'agent-loop';
+  const provider = command;
   return {
     provider,
     command,
-    replacementHint: cfg.nextLoopProvider || 'agent-loop',
     run(job) {
       // 既定は新しいウィンドウの tmux 上での実行（Windows は WSL、macOS は Terminal、
       // Linux は見つかった端末）。`cowork.runWindow: false` で従来の非表示 spawnSync に戻せる

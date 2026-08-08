@@ -49,12 +49,19 @@ function nodesSummaryHtml(nodes) {
     .map((n) => {
       const alive = n.running ? 'ok' : 'stale';
       const dot = n.running ? '🟢' : '🔴';
-      const age =
-        n.ageSec == null
-          ? ''
-          : n.running
+      const ago = typeof humanizeAge === 'function'
+        ? humanizeAge((n.ageSec || 0) * 1000)
+        : `${Math.round(n.ageSec || 0)}秒前`;
+      // この PC は常駐体の心拍で見る。ほかの PC は状態リポジトリ越しの
+      // status/<node>.json しか見えず、それは**作業が進んだときに書かれる記録**なので、
+      // 古いことは「応答が無い」ではなく「しばらく作業が進んでいない」を意味する。
+      const age = n.self
+        ? (n.running ? 'この PC・稼働中' : 'この PC・実行エンジンが停止しています')
+        : n.running
           ? '稼働中'
-          : `応答なし（最終確認 ${typeof humanizeAge === 'function' ? humanizeAge(n.ageSec * 1000) : `${Math.round(n.ageSec)}秒前`}）`;
+          : n.ageSec == null
+            ? '更新の記録がありません'
+            : `しばらく更新がありません（最終 ${ago}）`;
       const host = n.host ? ` <span class="muted">@${esc(n.host)}</span>` : '';
       return `<li class="node-row node-${alive}">${dot} <b>${esc(n.node)}</b>${host} <span class="muted">${esc(age)}</span></li>`;
     })
@@ -62,7 +69,8 @@ function nodesSummaryHtml(nodes) {
   return `<section class="summary-card nodes-card" aria-label="実行する PC の一覧">
     <h2 class="summary-kicker">実行する PC</h2>
     <ul class="nodes-list">${rows}</ul>
-    <p class="muted">応答が無い PC に割り当てたタスクは、担当を付け替えるか要対応から再実行できます。</p>
+    <p class="muted">この PC は実行エンジンの心拍で判定します。ほかの PC は作業が進んだときの記録で見るため、
+      待機が続くと更新も止まります。長く止まっている PC のタスクは、担当を付け替えるか要対応から再実行できます。</p>
   </section>`;
 }
 

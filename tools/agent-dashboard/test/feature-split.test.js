@@ -85,8 +85,11 @@ test('kiro-loop は tmux 視聴・構造化状態・復旧送信 API を登録�
 test('cowork は定期実行と定型業務 API を登録する', () => {
   const cowork = loadFeatures().find((f) => f.id === 'cowork');
   assert.ok(cowork.configDefaults.cowork);
-  assert.strictEqual(cowork.configDefaults.cowork.loopProvider, 'kiro-loop');
-  assert.strictEqual(cowork.configDefaults.cowork.nextLoopProvider, 'agent-loop');
+  // 定期実行の設定は**コマンド 1 つ**。種類（loopProvider）は「コマンド未指定時の既定」
+  // 以上の意味を持たず、画面で同じ文字列を 2 度書かせていたので廃止した（旧設定は読む）。
+  assert.strictEqual(cowork.configDefaults.cowork.loopCommand, 'agent-loop');
+  assert.strictEqual(cowork.configDefaults.cowork.loopProvider, undefined);
+  assert.strictEqual(cowork.configDefaults.cowork.nextLoopProvider, undefined);
   const api = cowork.preloadApi();
   assert.strictEqual(typeof api.coworkOverview, 'function');
   assert.strictEqual(typeof api.coworkSaveWork, 'function');

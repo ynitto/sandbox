@@ -1080,8 +1080,13 @@ function boardParticipationHtml() {
 function globalSettingsCoworkRootsHtml() {
   const roots = ((state.config && state.config.cowork) || {}).roots || [];
   const declared = new Set(roots.map((r) => coworkPathKey(r)));
+  // ここで登録していないのに対象になっているフォルダ（プロジェクト・ユーザーホーム）も
+  // 並べる。一覧に無いフォルダの作業が定常業務画面に出てくると、出どころが読めない。
   const managed = (state.discovery.projects || [])
-    .filter((p) => p && p.kind !== 'routine' && p.dir && !declared.has(coworkPathKey(p.dir)));
+    .filter((p) => p && p.dir && !declared.has(coworkPathKey(p.dir)));
+  const managedNote = (p) => (p.kind === 'project'
+    ? 'プロジェクトとして登録されているため、ここでは解除できません'
+    : 'ユーザーホームは常に対象です（解除できません）');
   const rows = [
     ...roots.map((r) => `<li>
       <code class="mono">${esc(String(r))}</code>
@@ -1089,7 +1094,7 @@ function globalSettingsCoworkRootsHtml() {
     </li>`),
     ...managed.map((p) => `<li>
       <code class="mono">${esc(String(p.dir))}</code>
-      <span class="muted">プロジェクトとして登録されているため、ここでは解除できません</span>
+      <span class="muted">${esc(managedNote(p))}</span>
     </li>`),
   ].join('');
   return `<div class="field">
@@ -1112,13 +1117,16 @@ function globalSettingsRoutineHtml() {
     </header>
     ${globalSettingsCoworkRootsHtml()}
     <div class="row2">
-      <div class="field"><label for="cfg-cowork-loop-provider">定期実行の種類</label><input id="cfg-cowork-loop-provider" class="mono" placeholder="kiro-loop" /></div>
-      <div class="field"><label for="cfg-cowork-loop-command">定期実行コマンド</label><input id="cfg-cowork-loop-command" class="mono" placeholder="kiro-loop" /></div>
+      <div class="field"><label for="cfg-cowork-loop-command">定期実行コマンド</label>
+        <input id="cfg-cowork-loop-command" class="mono" placeholder="agent-loop" />
+        <small class="field-help">未入力なら agent-loop を使います。</small>
+      </div>
+      <div class="field"><label for="cfg-cowork-sm-command">定型処理コマンド</label>
+        <input id="cfg-cowork-sm-command" class="mono" placeholder="statemachine-use" />
+        <small class="field-help">未入力なら statemachine-use を使います。</small>
+      </div>
     </div>
-    <div class="row2">
-      <div class="field"><label for="cfg-cowork-sm-command">定型処理コマンド</label><input id="cfg-cowork-sm-command" class="mono" placeholder="statemachine-use" /></div>
-      <div class="field global-settings-open-field"><button type="button" id="btn-settings-cowork-open">定常業務を開く</button></div>
-    </div>
+    <div class="row"><button type="button" id="btn-settings-cowork-open">定常業務を開く</button></div>
     <div class="settings-save-actions"><button type="button" id="btn-save-routine-settings" class="primary-inline">保存</button></div>
   </div>`;
 }

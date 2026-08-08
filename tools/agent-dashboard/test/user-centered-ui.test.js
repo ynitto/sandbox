@@ -140,7 +140,7 @@ for (const id of ['dlg-settings', 'dlg-advanced-settings', 'btn-open-advanced-se
 
 const technicalInfo = html.slice(html.indexOf('<dialog id="dlg-technical-info"'), html.indexOf('<dialog id="dlg-need-output"'));
 for (const id of ['cfg-refresh', 'cfg-notify', 'cfg-flow-bus', 'cfg-engine-distro', 'cfg-engine-home',
-  'cfg-agent-cli', 'cfg-cowork-loop-provider', 'cfg-gl-url']) {
+  'cfg-agent-cli', 'cfg-cowork-loop-command', 'cfg-gl-url']) {
   assert.ok(renderer.includes(`id="${id}"`), `全体設定ページに ${id} が必要です`);
   assert.ok(!technicalInfo.includes(`id="${id}"`), `詳細情報に ${id} を出しません`);
 }

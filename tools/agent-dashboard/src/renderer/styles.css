@@ -3200,7 +3200,6 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
   .settings-save-actions button { min-height: 44px; }
 }
 .global-settings-short-field { max-width: 280px; }
-.global-settings-open-field { display: flex; align-items: flex-end; }
 .global-settings-agent-refresh[hidden] { display: none; }
 .agent-management-section { display: flex; flex-direction: column; gap: 12px; scroll-margin-top: 64px; }
 .agent-management-section + .agent-management-section {
@@ -3217,7 +3216,6 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
   .global-settings-card { padding: 14px; }
   .settings-save-actions { align-items: stretch; flex-direction: column-reverse; }
   .settings-save-actions > button, .settings-secondary-actions button,
-  .global-settings-open-field button { width: 100%; min-height: 44px; }
   .settings-secondary-actions { margin-right: 0; flex-direction: column; }
 }
 .orch-panel {

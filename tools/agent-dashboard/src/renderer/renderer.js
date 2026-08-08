@@ -913,10 +913,12 @@ function renderRoutineList() {
       const stuck = coworkAttentionItems(items).length;
       // 手を打つべきもの（止まっている作業）と在庫（登録した作業）を別のバッジにする。
       // 領域バッジは前者だけを数えるので、どのフォルダの話かはこの行で分かる必要がある。
+      // 状態のドットは出さない。ここに出るのは**フォルダ**で、丸が指していたのは
+      // agent-project の常駐体の稼働——定常業務の実行側はこのアプリ自身なので、
+      // フォルダの隣に別の道具の稼働状態を置くと読み違える（プロジェクト一覧では継続）。
       return `<button type="button" class="project-item ${state.selectedDir === p.dir ? 'selected' : ''}"
         data-routine-dir="${esc(p.dir)}" aria-current="${state.selectedDir === p.dir ? 'true' : 'false'}"
         title="${esc(p.dir)}">
-        <span class="dot ${p.running ? 'running' : ''}"></span>
         <span class="name">${esc(p.label)}</span>
         ${stuck ? `<span class="badge warn" title="止まっている作業 ${stuck} 件">${stuck}</span>` : ''}
         ${items.length ? `<span class="badge" title="登録した作業 ${items.length} 件">${items.length}</span>` : ''}
@@ -1648,8 +1650,8 @@ function populateSettingsFields() {
   setValue('cfg-rv-exepath', (cfg.reviewViewer && cfg.reviewViewer.exePath) || '');
   setValue('cfg-rv-command', (cfg.reviewViewer && cfg.reviewViewer.command) || '');
   const cw = cfg.cowork || {};
-  setValue('cfg-cowork-loop-provider', cw.loopProvider || 'kiro-loop');
-  setValue('cfg-cowork-loop-command', cw.loopCommand || 'kiro-loop');
+  // 旧設定は種類（loopProvider）だけを持っていることがある。コマンド欄へ引き継ぐ。
+  setValue('cfg-cowork-loop-command', cw.loopCommand || cw.loopProvider || 'agent-loop');
   setValue('cfg-cowork-sm-command', cw.stateMachineCommand || 'statemachine-use');
 }
 
@@ -1806,8 +1808,7 @@ async function saveGlobalSettingsSection(section) {
     }).filter(Boolean).reduce((acc, [name, bus]) => ((acc[name] = bus), acc), {});
   } else if (section === 'routine') {
     cfg.cowork = cfg.cowork || {};
-    cfg.cowork.loopProvider = $('cfg-cowork-loop-provider').value.trim() || 'kiro-loop';
-    cfg.cowork.loopCommand = $('cfg-cowork-loop-command').value.trim() || cfg.cowork.loopProvider;
+    cfg.cowork.loopCommand = $('cfg-cowork-loop-command').value.trim() || 'agent-loop';
     cfg.cowork.stateMachineCommand = $('cfg-cowork-sm-command').value.trim() || 'statemachine-use';
   } else if (section === 'integrations') {
     cfg.gitlab = cfg.gitlab || {};

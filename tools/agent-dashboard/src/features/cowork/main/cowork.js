@@ -209,7 +209,7 @@ function readLog(config, itemIdValue, file, maxBytes = 16000) {
 
 function processStatus(item, cfg) {
   const repo = item.repo || item.cwd || '';
-  const command = item.type === 'state-machine' ? (cfg.stateMachineCommand || 'statemachine-use') : (cfg.loopCommand || cfg.loopProvider || 'kiro-loop');
+  const command = item.type === 'state-machine' ? (cfg.stateMachineCommand || 'statemachine-use') : (cfg.loopCommand || cfg.loopProvider || 'agent-loop');
   if (process.platform === 'win32') {
     // kiro-loop は WSL 側で動く想定なので、リポジトリが Windows ドライブ上でも WSL を探査する。
     const needle = repo ? (toWslCwd(repo) || repo) : itemId(item, 0);
@@ -261,7 +261,7 @@ function normalizeItem(item, i, cfg, stateOpts, config) {
     prompt: item.prompt || '',
     instruction: item.instruction || '',
     description: item.description || '',
-    command: type === 'state-machine' ? (cfg.stateMachineCommand || 'statemachine-use') : (cfg.loopCommand || cfg.loopProvider || 'kiro-loop'),
+    command: type === 'state-machine' ? (cfg.stateMachineCommand || 'statemachine-use') : (cfg.loopCommand || cfg.loopProvider || 'agent-loop'),
     source: 'config',
     state: dynamicState({ ...item, id, type }, cfg, stateOpts, config),
   };
@@ -282,7 +282,7 @@ function normalizeDiscovered(d, cfg, stateOpts, config) {
     prompt: d.prompt || '',
     instruction: '',
     description: d.description || '',
-    command: type === 'state-machine' ? (cfg.stateMachineCommand || 'statemachine-use') : (cfg.loopCommand || cfg.loopProvider || 'kiro-loop'),
+    command: type === 'state-machine' ? (cfg.stateMachineCommand || 'statemachine-use') : (cfg.loopCommand || cfg.loopProvider || 'agent-loop'),
     source: 'discovered',
     enabled: d.enabled !== false,
     _src: d._src,
@@ -348,7 +348,6 @@ function overview(config, opts = {}) {
   return {
     loopProvider: loop.provider,
     loopCommand: loop.command,
-    replacementHint: loop.replacementHint,
     stateMachineCommand: cfg.stateMachineCommand || 'statemachine-use',
     // renderer が「選択プロジェクトに設定ファイルがあるか」を判定する根拠。
     // items は手動設定との重複排除で source=config になる場合があるため、発見元を別に保持する。

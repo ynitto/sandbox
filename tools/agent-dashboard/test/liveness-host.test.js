@@ -135,8 +135,23 @@ test('readNodeStatuses は status/<node>.json を新しさ付きで並べる', (
     const nodes = project.readNodeStatuses(tmp);
     assert.deepStrictEqual(nodes.map((n) => n.node), ['pc-a', 'pc-b']); // 名前順
     assert.strictEqual(nodes[0].running, true);   // 新しい → 稼働中
-    assert.strictEqual(nodes[1].running, false);  // 古い → 応答なし（heartbeat 途絶）
+    assert.strictEqual(nodes[1].running, false);  // 古い → 更新が止まっている
     assert.ok(nodes[1].ageSec > 1000);
+    assert.ok(!nodes[0].self && !nodes[1].self, 'この PC の常駐体と名前が一致しなければ自ノードにしない');
+
+    // **この PC のノードは常駐体の心拍で見る。** status/<node>.json は作業が進んだときに
+    // 書かれる記録で、待機中は何日でも古いまま——鮮度だけで見ると稼働中の PC が赤丸になる。
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'kpv-engine-home-'));
+    fs.mkdirSync(path.join(home, 'engine'), { recursive: true });
+    fs.writeFileSync(path.join(home, 'engine', 'status.json'), JSON.stringify({
+      node: 'pc-b', heartbeat: new Date().toISOString(), children: [],
+    }));
+    const withEngine = project.readNodeStatuses(tmp, { engine: { home, distro: '' } });
+    const selfNode = withEngine.find((n) => n.node === 'pc-b');
+    assert.strictEqual(selfNode.self, true, '常駐体の名乗りと一致するノードが自分');
+    assert.strictEqual(selfNode.running, true, '記録が古くても心拍があれば稼働中');
+    assert.strictEqual(withEngine.find((n) => n.node === 'pc-a').self, false);
+    fs.rmSync(home, { recursive: true, force: true });
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

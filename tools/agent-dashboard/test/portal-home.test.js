@@ -228,14 +228,14 @@ const portalHomeModel = new Function(`${grab('portalHomeModel')}; return portalH
   const fn = grab('populateSettingsFields');
   const present = new Map();
   // 定常業務の設定だけが描かれている状況（全体設定の cfg-* はまだ無い）
-  for (const id of ['cfg-cowork-loop-provider', 'cfg-cowork-loop-command', 'cfg-cowork-sm-command']) {
+  for (const id of ['cfg-cowork-loop-command', 'cfg-cowork-sm-command']) {
     present.set(id, { value: '', checked: false });
   }
   const doc = { getElementById: (id) => present.get(id) || null };
   const state = {
     config: {
       projects: { refreshSec: 5 }, notifications: {}, engine: {}, agent: {},
-      gitlab: {}, reviewViewer: {}, cowork: { loopProvider: 'agent-loop' }, delegation: {},
+      gitlab: {}, reviewViewer: {}, cowork: { loopCommand: 'agent-loop' }, delegation: {},
     },
   };
   // eslint-disable-next-line no-new-func
@@ -245,7 +245,7 @@ const portalHomeModel = new Function(`${grab('portalHomeModel')}; return portalH
     return populateSettingsFields;
   `)(doc, state);
   run(); // 例外が出ないこと自体が検証（出れば renderAllTabs ごと落ちる）
-  assert.strictEqual(present.get('cfg-cowork-loop-provider').value, 'agent-loop',
+  assert.strictEqual(present.get('cfg-cowork-loop-command').value, 'agent-loop',
     'その画面にある欄には値が入る');
   assert.ok(!fn.includes("$('cfg-refresh').value"), '欄の存在を前提にした素の代入を残さない');
   console.log('ok - 設定の欄は「あるものにだけ入れる」（画面が分かれても落ちない）');
