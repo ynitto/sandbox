@@ -169,6 +169,7 @@ def cmd_work(args) -> int:
         idle_polls = 0
         nid, node = candidate
         kind = node.get("kind", "work")
+        _set_method_context(args.run_id, nid)
         if not bus.try_claim(nid, who, args.lease):
             continue  # 競り負け
         log(who, f"claim 成功: {nid} [{kind}] — {node['goal'][:55]}")
@@ -333,12 +334,14 @@ def cmd_work(args) -> int:
         if delivery:  # ワークスペースへ push したブランチ/コミットを result に残す（消費側が追跡）
             rdata = {**(rdata if isinstance(rdata, dict) else {}), "delivery": delivery}
         output, context_allocation = extract_read_report(output, read_allocation)
+        method_app = _last_methods(kind) if args.executor == "agent" else {"methods": [], "trial": None}
         # 実行した PC を結果に残す（読み手が who の綴りを割って推測しないで済むように）
         bus.write_result(nid, who, rstatus, output, rdata, artifacts=artifacts,
                          node=this_pc(args), kind=kind,
                          agent_cli=agent_cli, model=agent_model,
                          context_allocation=context_allocation,
-                         dependency_context=dependency_context, escalation=node_agent)
+                         dependency_context=dependency_context, escalation=node_agent,
+                         methods=method_app.get("methods"), trial=method_app.get("trial"))
         if node_agent:
             _node_budget_record(0, ref=kind, agent_cli=agent_cli or "", model=agent_model or "",
                                 extra={"event": "model_escalation", "escalation": node_agent})

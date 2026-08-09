@@ -61,6 +61,13 @@
         "filter": [
           "**/*.json"
         ]
+      },
+      {
+        "from": "../../methods",
+        "to": "methods",
+        "filter": [
+          "**/*.json"
+        ]
       }
     ]
   },

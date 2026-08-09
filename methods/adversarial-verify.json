@@ -1,0 +1,1 @@
+{"id":"adversarial-verify","description":"反例を探してから検証判定する","enabled":false,"fragments":[{"role":"verify","text":"壊す側の立場で具体的な反例を最低2件探してから判定してください。"}],"when":{"tiers":["small","medium"]},"origin":"https://www.anthropic.com/engineering/building-effective-agents"}

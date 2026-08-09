@@ -1,0 +1,1 @@
+{"id":"council-review","description":"論理・批判・利用者の三観点で合議する","enabled":false,"fragments":[{"role":"planner","text":"判断タスクでは、論理・批判・利用者の三観点を独立 judge として計画し、最後に統合してください。"}],"when":{"purposes":["planner"]},"origin":"skill://council-system"}

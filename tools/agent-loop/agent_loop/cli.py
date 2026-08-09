@@ -259,6 +259,22 @@ def main() -> None:
     subparsers.add_parser("drain", help="新規受付を止め、実行中完了後に daemon を終了する")
     subparsers.add_parser("reload", help="設定の transactional reload を要求する")
 
+    methods_parser = subparsers.add_parser("methods", help="手法パックの一覧・有効化・無効化・追加")
+    methods_sub = methods_parser.add_subparsers(dest="methods_action", required=True)
+    methods_list = methods_sub.add_parser("list", help="カタログと現在値を表示する")
+    methods_list.add_argument("--json", action="store_true")
+    methods_enable = methods_sub.add_parser("enable", help="カタログを複製して有効化する")
+    methods_enable.add_argument("id")
+    methods_disable = methods_sub.add_parser("disable", help="手法を無効化する")
+    methods_disable.add_argument("id")
+    methods_add = methods_sub.add_parser("add", help="独自手法を追加する")
+    methods_add.add_argument("id")
+    methods_add.add_argument("--role", required=True,
+                             choices=["planner", "worker", "verify", "evaluator", "session"])
+    methods_add.add_argument("--text", required=True)
+    methods_add.add_argument("--description", default="")
+    methods_add.add_argument("--when-json", default="{}")
+
     subparsers.add_parser("update", help="zipapp インストールを git remote から更新する")
 
     args = parser.parse_args()
@@ -293,6 +309,37 @@ def main() -> None:
 
     if args.subcommand in ("pause", "resume", "cancel", "drain", "reload"):
         _cmd_lifecycle(args, cwd)
+        return
+
+    if args.subcommand == "methods":
+        try:
+            if args.methods_action == "list":
+                inventory = method_inventory()
+                if args.json:
+                    print(json.dumps(inventory, ensure_ascii=False, indent=2))
+                else:
+                    enabled = {str(m.get("id")) for m in inventory["methods"] if m.get("enabled") is True}
+                    print(f"手法カタログ（revision={inventory['revision']}）")
+                    for method in inventory["catalog"]:
+                        state = "ON" if str(method.get("id")) in enabled else "OFF"
+                        print(f"  [{state}] {method.get('id')}: {method.get('description', '')}")
+                return
+            if args.methods_action == "enable":
+                data = method_enable(args.id)
+            elif args.methods_action == "disable":
+                data = method_disable(args.id)
+            else:
+                try:
+                    when = json.loads(args.when_json)
+                except ValueError as exc:
+                    raise ValueError(f"--when-json が JSON ではありません: {exc}") from exc
+                if not isinstance(when, dict):
+                    raise ValueError("--when-json は JSON object で指定してください")
+                data = method_add(args.id, args.role, args.text, when, args.description)
+            print(f"tuning revision={data['revision']}")
+        except ValueError as exc:
+            print(f"[agent-loop] ERROR: {exc}", file=sys.stderr)
+            sys.exit(2)
         return
 
     if args.subcommand == "update":

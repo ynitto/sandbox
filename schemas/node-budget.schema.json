@@ -147,6 +147,18 @@
           "description": "quota 観測（`event: quota`）の細分。exhausted=累積枠の枯渇（期間が変わるまで戻らない）/ rate_limit=時限枠（reset_at 以降に戻る）。読み手（管理面）は period 窓の最新行だけを見て候補から外すので、**この行を消す書き手は要らない**（期間が変わればウィンドウから落ちる）"
         },
         "reset_at": {"type": "string", "description": "quota_kind=rate_limit の復帰予定（ISO8601 UTC）。CLI のメッセージから取れなかったときは省略し、読み手が ts + 既定 TTL で失効させる"},
+        "methods": {
+          "type": "array", "items": {"type": "string"}, "uniqueItems": true,
+          "description": "この実行のプロンプトへ実際に適用した手法 id（agent-tuning の methods）。空なら書かない"
+        },
+        "trial": {
+          "type": "object", "required": ["id", "variant"],
+          "properties": {"id": {"type": "string"}, "variant": {"type": "string"}},
+          "additionalProperties": false,
+          "description": "決定的に割り当てた 2 variant trial。**実際に適用できたときだけ書く**（宣言だけで名乗ると、何も注入していない実行が variant の証拠になる）"
+        },
+        "run_id": {"type": "string", "description": "agent-flow の run ID（trial の割付単位。空なら書かない）"},
+        "flow_node": {"type": "string", "description": "agent-flow のノード ID（空なら書かない）"},
         "node": {"type": "string", "description": "ノード ID"},
         "agent_cli": {"type": "string", "description": "v2: 実行したエージェント CLI 名（組み込み名またはドロップイン名）"},
         "model": {"type": "string", "description": "v2: 実行モデル名（指定があったときだけ）"},

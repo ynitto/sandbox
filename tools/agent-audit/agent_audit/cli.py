@@ -41,7 +41,14 @@ def _build_parser() -> argparse.ArgumentParser:
 
     rating = sub.add_parser("ratings", help="仕事種別×モデルの PASS 率と平均消費の格付け")
     rating.add_argument("--period", choices=["day", "month", "total"], default=None)
+    rating.add_argument("--methods", action="store_true", help="適用手法セットを集計軸に加える")
     rating.add_argument("--json", action="store_true")
+
+    trials = sub.add_parser("trials", help="手法 trial の variant 別 PASS 率・平均消費を比較")
+    trials.add_argument("--period", choices=["day", "month", "total"], default=None)
+    trials.add_argument("--min-outcomes", type=int, dest="trial_min_outcomes", default=None,
+                        help="判定に要る片側あたりの結果サンプル下限（既定 3）")
+    trials.add_argument("--json", action="store_true")
 
     cal = sub.add_parser("calibrate", help="rates 較正の提案（--write で budget config へ反映）")
     cal.add_argument("--write", action="store_true")
@@ -117,6 +124,9 @@ def main(argv=None) -> int:
     if args.command == "ratings":
         from .stats import cmd_ratings
         return cmd_ratings(args)
+    if args.command == "trials":
+        from .stats import cmd_trials
+        return cmd_trials(args)
     if args.command == "calibrate":
         from .usage import cmd_calibrate
         return cmd_calibrate(args)

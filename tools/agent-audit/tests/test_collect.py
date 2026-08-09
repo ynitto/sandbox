@@ -58,6 +58,16 @@ class LedgerCollectTests(AuditTestCase):
         measured = [r["measured"] for r in st.iter_records()]
         self.assertEqual(sorted(measured), [False, True])
 
+    def test_method_and_trial_evidence_are_preserved(self):
+        self.write_ledger("20260803", [ledger_row(
+            run_id="run-1", flow_node="n1", methods=["test-first"],
+            trial={"id": "t1", "variant": "candidate"})])
+        st = self.make_store()
+        collect.collect_budget_ledger(self.make_args(), st)
+        rec = next(st.iter_records())
+        self.assertEqual(rec["methods"], ["test-first"])
+        self.assertEqual(rec["trial"], {"id": "t1", "variant": "candidate"})
+
 
 class FlowBusCollectTests(AuditTestCase):
     def _make_run(self, bus, run_id, status, failure="", events=()):
@@ -145,6 +155,26 @@ class FlowBusCollectTests(AuditTestCase):
         collect.collect_flow_buses(self.make_args(flow_buses=[bus]), st)
         rec = next(r for r in st.iter_records() if r["ref"] == "r1")
         self.assertEqual(rec["decision_comparisons"], graph["strategy"]["decision_comparisons"])
+
+    def test_method_and_trial_evidence_are_collected(self):
+        bus = os.path.join(self.tmp, "bus")
+        self._make_run(bus, "r1", "done")
+        graph = {"strategy": {"methods": ["plan-first"],
+                              "trial": {"id": "t1", "variant": "baseline"}}}
+        with open(os.path.join(bus, "runs", "r1", "graph.json"), "w", encoding="utf-8") as f:
+            json.dump(graph, f)
+        results = os.path.join(bus, "runs", "r1", "results")
+        os.makedirs(results)
+        with open(os.path.join(results, "n1.json"), "w", encoding="utf-8") as f:
+            json.dump({"id": "n1", "kind": "work", "status": "done",
+                       "methods": ["test-first"],
+                       "trial": {"id": "t1", "variant": "baseline"}}, f)
+        st = self.make_store()
+        collect.collect_flow_buses(self.make_args(flow_buses=[bus]), st)
+        recs = {r["ref"]: r for r in st.iter_records()}
+        self.assertEqual(recs["r1"]["methods"], ["plan-first", "test-first"])
+        self.assertEqual(recs["r1/n1"]["methods"], ["test-first"])
+        self.assertEqual(recs["r1/n1"]["trial"], {"id": "t1", "variant": "baseline"})
 
     def test_collected_runs_are_not_rescanned(self):
         """収集済みの終端 run は results/ ごと読み飛ばす（run 数に比例して重くならない）。"""

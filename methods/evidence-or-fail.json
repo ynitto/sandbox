@@ -1,0 +1,1 @@
+{"id":"evidence-or-fail","description":"検証証拠がない項目をpassにしない","enabled":false,"fragments":[{"role":"verify","text":"実行コマンドと終了コードまたは同等の証拠がない項目は pass にしないでください。"}],"when":{"tiers":["small"]},"origin":"skill://backlog-verifier"}

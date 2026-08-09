@@ -1,0 +1,1 @@
+{"id":"output-contract-strict","description":"出力契約を再掲して一度だけ自己修復する","enabled":false,"fragments":[{"role":"worker","text":"要求された出力形式を最後に自己検証し、違反があれば一度だけ修復してから返してください。"}],"when":{"max_relative_cost":0},"origin":"local:agent-ollama-json-read-set"}

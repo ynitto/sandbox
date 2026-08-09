@@ -1196,10 +1196,46 @@ function globalSettingsInstructionsHtml(overview) {
   return `${orchInstructionsPanelHtml(overview)}${orchSessionCommandsPanelHtml(overview)}`;
 }
 
+function orchMethodsPanelHtml(overview) {
+  const tuning = overview.tuning || { revision: 0, methods: [] };
+  const active = new Map((tuning.methods || []).map((method) => [String(method.id), method]));
+  const catalog = overview.methodsCatalog || [];
+  const ids = new Set(catalog.map((method) => String(method.id)));
+  const row = (method) => {
+    const current = active.get(String(method.id));
+    const enabled = !!(current && current.enabled !== false);
+    const when = method.when && Object.keys(method.when).length ? JSON.stringify(method.when) : 'すべて';
+    return `<tr>
+      <td><strong>${esc(method.id)}</strong><br><span class="muted">${esc(method.description || '')}</span></td>
+      <td class="mono">${esc(when)}</td>
+      <td class="mono">${esc((current && current.source) || method.origin || '')}</td>
+      <td><button type="button" data-orch-method-id="${esc(method.id)}" data-orch-method-enabled="${enabled ? 'false' : 'true'}">${enabled ? 'OFF にする' : 'ON にする'}</button></td>
+    </tr>`;
+  };
+  const rows = catalog.map(row).join('') || '<tr><td colspan="4" class="muted">手法カタログがありません。</td></tr>';
+  const custom = (tuning.methods || []).filter((method) => !ids.has(String(method.id))).map(row).join('');
+  return `<section class="orch-panel">
+    <header class="row"><div><span class="summary-kicker">実行手法</span><h3>手法カタログ</h3>
+      <p class="muted">ON にした時点の内容を revision ${Number(tuning.revision || 0)} の設定へコピーします。カタログ更新は自動反映されません。</p></div></header>
+    <div class="table-scroll"><table class="amigos-table orch-table">
+      <thead><tr><th>手法</th><th>適用条件</th><th>反映元</th><th>状態</th></tr></thead><tbody>${rows}${custom}</tbody>
+    </table></div>
+    <details><summary>独自の手法を追加</summary>
+      <div class="row2">
+        <label>id<input id="orch-method-id" class="mono" placeholder="my-method" /></label>
+        <label>role<select id="orch-method-role"><option>session</option><option>planner</option><option>worker</option><option>verify</option><option>evaluator</option></select></label>
+      </div>
+      <label>指示<textarea id="orch-method-text" rows="3"></textarea></label>
+      <label>適用条件（JSON object）<input id="orch-method-when" class="mono" placeholder='{"tiers":["full"]}' /></label>
+      <div class="settings-save-actions"><button type="button" id="btn-orch-method-add" class="primary-inline">追加して ON にする</button></div>
+    </details>
+  </section>`;
+}
+
 function globalSettingsControlHtml(overview) {
   if (!overview) return '<div class="empty compact">実行制御を読み込んでいます。</div>';
   if (overview.error) return `<div class="empty compact"><strong>実行制御を読み込めませんでした</strong><span>${esc(overview.error)}</span></div>`;
-  return `${orchAllocationPanelHtml(overview.budget)}${orchConcurrencyPanelHtml(overview)}${orchProfilesPanelHtml(overview)}${orchStatusPanelHtml(overview)}`;
+  return `${orchAllocationPanelHtml(overview.budget)}${orchConcurrencyPanelHtml(overview)}${orchProfilesPanelHtml(overview)}${orchMethodsPanelHtml(overview)}${orchStatusPanelHtml(overview)}`;
 }
 
 function renderOrchestration() {
@@ -1332,6 +1368,31 @@ function setupOrchestration(root) {
     }
     return guard('エージェント情報の更新', async () => { await refreshOrchestration(); renderOrchestration(); });
   });
+
+  for (const btn of root.querySelectorAll('[data-orch-method-id]')) {
+    btn.addEventListener('click', () => guard('手法設定の保存', async () => {
+      await api.orchestrationMethodSet({ id: btn.dataset.orchMethodId,
+        enabled: btn.dataset.orchMethodEnabled === 'true' });
+      await refreshOrchestration();
+      renderOrchestration();
+    }));
+  }
+  const methodAdd = root.querySelector('#btn-orch-method-add');
+  if (methodAdd) methodAdd.addEventListener('click', () => guard('手法の追加', async () => {
+    const rawWhen = (root.querySelector('#orch-method-when').value || '').trim();
+    let when = {};
+    if (rawWhen) {
+      try { when = JSON.parse(rawWhen); } catch (err) { throw new Error(`適用条件を JSON として読めません: ${err.message}`, { cause: err }); }
+    }
+    await api.orchestrationMethodAdd({
+      id: root.querySelector('#orch-method-id').value.trim(),
+      role: root.querySelector('#orch-method-role').value,
+      text: root.querySelector('#orch-method-text').value,
+      when,
+    });
+    await refreshOrchestration();
+    renderOrchestration();
+  }));
 
   // 配分の保存
   const allocSave = root.querySelector('#btn-orch-alloc-save');

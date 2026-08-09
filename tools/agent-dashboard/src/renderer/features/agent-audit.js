@@ -180,11 +180,11 @@
     const budget = budgetState();
     const limit = Number((budget || {}).tokenLimit || 0);
     if (!budget || !(limit > 0)) {
-      return '<p class="muted">トークンの上限は設定されていません。利用量は記録され続けます。</p>';
+      return '<p class="muted">上限は未設定です。</p>';
     }
     const budgetPeriod = (budget.config || {}).period;
     if (budgetPeriod !== shown) {
-      return `<p class="muted">上限（${escHtml(fmtTokens(limit))} トークン）は「${escHtml(periodLabel(budgetPeriod))}」に対する設定です。残量を見るには期間を合わせてください。</p>`;
+      return `<p class="muted">上限は「${escHtml(periodLabel(budgetPeriod))}」用です。残量を見るには期間を合わせてください。</p>`;
     }
     const measuredPct = Math.min(100, (totals.measured / limit) * 100);
     const estimatedPct = Math.min(100 - measuredPct, (totals.estimated / limit) * 100);
@@ -268,18 +268,16 @@
   function ledgerFallbackHtml() {
     const budget = budgetState();
     if (!budget || typeof root.orchBudgetPanelHtml !== 'function') {
-      return `<p class="muted">実行証跡の集計も、実行記録の集計も取得できていません。
-        下の「収集の設定」で agent-audit の起動コマンドを確認してください。</p>`;
+      return '<p class="muted">利用状況を取得できません。設定で agent-audit の起動コマンドを確認してください。</p>';
     }
-    return `<p class="muted">実行証跡の集計を取得できないため、実行記録（台帳）だけの集計を表示しています。
-      エージェント CLI が報告した実測トークンはこの数字に含まれません。</p>
+    return `<p class="muted">詳細を取得できないため、実行記録だけを表示しています。</p>
       ${root.orchBudgetPanelHtml(budget)}`;
   }
 
   function usageTableHtml(data) {
     const rows = (data && data.rows) || [];
     if (!rows.length) {
-      return '<p class="muted">まだ記録がありません。「今すぐ収集」で実行証跡とセッションログを取り込んでください。</p>';
+      return '<p class="muted">記録がありません。「今すぐ収集」を押してください。</p>';
     }
     const body = rows.map((row) => `<tr>
       <td>${escHtml(row.group)}</td>
@@ -297,14 +295,13 @@
         <th>推定トークン</th><th>実行時間</th><th>実測なし</th><th>概算費用</th>
       </tr></thead>
       <tbody>${body}</tbody>
-    </table>
-    <p class="muted">実測はエージェント CLI が報告した値、推定は実行時間からの換算です。性質が違うため合算していません。</p>`;
+    </table>`;
   }
 
   function statsTableHtml(data) {
     const tools = (data && data.tools) || [];
     if (!tools.length) {
-      return '<p class="muted">実行品質の記録はまだありません。ツールの実行証跡が収集されると表示されます。</p>';
+      return '<p class="muted">実行品質の記録はありません。</p>';
     }
     const body = tools.map((tool) => `<tr>
       <td>${escHtml(tool.tool)}</td>
@@ -338,28 +335,25 @@
     const v = values || {};
     return `<section class="orch-panel audit-settings">
       <header class="row">
-        <div>
-          <span class="summary-kicker">実行証跡の収集</span>
-          <h3>収集の設定</h3>
-        </div>
+        <h3>収集の設定</h3>
       </header>
       <div class="field">
         <label for="audit-set-command">起動コマンド</label>
         <input id="audit-set-command" type="text" value="${escHtml(v.command || '')}"
           placeholder="空なら PATH の agent-audit を使います">
-        <p class="field-help">インストールせずに使うときはインタープリタごと指定します。例: python3 ~/repo/tools/agent-audit/agent-audit.py</p>
+        <p class="field-help">未インストール時だけ指定します。</p>
       </div>
       <div class="field">
         <label for="audit-set-distro">WSL ディストロ</label>
         <input id="audit-set-distro" type="text" value="${escHtml(v.distro || '')}"
           placeholder="空なら既定のディストロで実行します">
-        <p class="field-help">Windows でだけ使われます。agent-audit が入っているディストロ名を指定してください。</p>
+        <p class="field-help">Windows でのみ使います。</p>
       </div>
       <div class="field">
         <label for="audit-set-config">agent-audit の設定ファイル</label>
         <input id="audit-set-config" type="text" value="${escHtml(v.configPath || '')}"
           placeholder="例: ~/.agents/agent-audit.yaml">
-        <p class="field-help">読み取る源泉の一覧などは agent-audit の設定ファイルが正です。空なら agent-audit 自身の探索順で見つけます。</p>
+        <p class="field-help">空なら自動で探します。</p>
       </div>
       <div class="field">
         <label for="audit-set-dir">収集データの保存先</label>
@@ -369,7 +363,7 @@
       <div class="field">
         <label for="audit-set-interval">定期収集の間隔（分）</label>
         <input id="audit-set-interval" type="number" min="0" step="1" value="${escHtml(String(v.collectIntervalMin || 0))}">
-        <p class="field-help">0 で無効。設定すると、このアプリを開いている間、その間隔で増分収集を実行します。</p>
+        <p class="field-help">0 で無効。アプリを開いている間だけ収集します。</p>
       </div>
       ${settingsMessage ? `<p class="${settingsMessage.ok ? 'muted' : 'audit-error'}" role="status">${escHtml(settingsMessage.text)}</p>` : ''}
       <div class="settings-save-actions">
@@ -400,18 +394,14 @@
         <span class="orch-legend"><span class="orch-swatch orch-bar-estimated"></span>推定 ${escHtml(fmtTokens(totals.estimated))}</span>
         ${unmeasured > 0 ? `<span class="muted">トークンを取得できなかった実行 ${unmeasured}件</span>` : ''}
       </p>
-      <p class="muted">実測はエージェント CLI が報告した値、推定は実行時間からの換算です。性質が違うため合算していません。</p>
+      <p class="muted">実測は CLI の記録、推定は実行時間から計算した値です。</p>
       ${gaugeHtml(totals, currentPeriod())}
       ${workloadTableHtml(summaryData)}
       <h4 class="orch-usage-subheading">エージェント別</h4>
-      <p class="muted">エージェント（CLI）ごとの利用量です。トークンを取得できない実行も、時間と実行数には含まれます。</p>
       ${agentTableHtml(summaryData)}` : (loading ? '' : ledgerFallbackHtml());
     return `<section class="orch-panel audit-usage" aria-labelledby="audit-usage-title">
       <header class="row">
-        <div>
-          <span class="summary-kicker">実行証跡から集計</span>
-          <h3 id="audit-usage-title">利用量（${escHtml(periodLabel(currentPeriod()))}）</h3>
-        </div>
+        <h3 id="audit-usage-title">利用量（${escHtml(periodLabel(currentPeriod()))}）</h3>
         <div class="audit-actions">
           <label>期間 <select id="audit-period">${optionsHtml(PERIODS, currentPeriod())}</select></label>
           <button type="button" id="audit-collect" class="primary-inline"${collectBusy ? ' disabled' : ''}>${collectBusy ? '収集しています…' : '今すぐ収集'}</button>
@@ -419,7 +409,6 @@
           <button type="button" id="audit-doctor"${doctorBusy ? ' disabled' : ''}>設定を点検</button>
         </div>
       </header>
-      <p class="muted">この端末の実行記録（台帳）と、エージェント CLI のセッションログを突き合わせた実績です。上限は全体設定の「実行制御」で変更できます。ここから実行するのは収集と集計だけで、知見の蒸留は agent-audit 側の設定で動きます。</p>
       ${collectStatusHtml(collectInfo, collectBusy)}
       ${doctorInfo ? `<details class="audit-detail" open><summary>点検結果${doctorInfo.ok ? '' : '（問題があります）'}</summary><pre>${escHtml(doctorInfo.detail || doctorInfo.error || '')}</pre></details>` : ''}
       ${loadError ? `<p class="audit-error" role="alert">${escHtml(loadError)}</p>` : ''}
@@ -428,10 +417,7 @@
     </section>
     <section class="orch-panel audit-breakdown">
       <header class="row">
-        <div>
-          <span class="summary-kicker">実行証跡から集計</span>
-          <h3>内訳</h3>
-        </div>
+        <h3>内訳</h3>
         <div class="audit-controls">
           <label>集計 <select id="audit-by">${optionsHtml(GROUPS, by)}</select></label>
         </div>
@@ -439,12 +425,7 @@
       ${usageTableHtml(usageData)}
     </section>
     <section class="orch-panel audit-stats">
-      <header class="row">
-        <div>
-          <span class="summary-kicker">実行証跡から集計</span>
-          <h3>実行品質</h3>
-        </div>
-      </header>
+      <header class="row"><h3>実行品質</h3></header>
       ${statsTableHtml(statsData)}
     </section>`;
   }

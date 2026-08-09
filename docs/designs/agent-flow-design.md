@@ -164,6 +164,17 @@ orchestrator は最初にパターンと並列数を選んでタスクグラフ�
 
 worker は claim できるノードを 1 つ取り、kind に応じたプロンプトでエージェント CLI を呼び、結果を書きます。実行中は心拍が claim のリースを延ばし続けるので、長いタスクでも横取りされません。
 
+`$AGENT_TUNING_DIR/tuning.json` に `methods` / `trials` があれば、基礎スキルで組み立てた最終
+プロンプトへ role 別の追補指示を足します。資源段と agent CLI の相対コストを含む `when` は
+決定的に評価し、同じ task の `-rN` 再試行は 2 variant を交互に割り当てます。適用した手法と
+variant は graph strategy、node result、node-budget 台帳へ残し、効果判定は agent-audit に任せます。
+
+**variant を名乗るのは、その variant の手法を実際に注入できたときだけ**です。variant が挙げた
+id が `methods[]` へ複製されていない（カタログにあるだけ）、`when` が合わない、role が違う、
+のいずれかで 1 つも効かなかった実行は trial として記録しません。宣言だけで名乗ると、何も
+足していない実行がその variant の証拠として集計され、比較が「効かなかった」ではなく
+「測っていない」を測ることになります。
+
 verification plan を持つ run は、成果 revision が確定したあと専用 verifier を 1 セッション起動します。
 固定検証コマンドは書き換えずに実行します。自然文の criterion は、verifier がコマンド、差分、
 ファイル、ログを調べて `pass` / `fail` / `inconclusive` と証跡を返します。verifier は基準を

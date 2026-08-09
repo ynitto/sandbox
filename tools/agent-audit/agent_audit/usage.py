@@ -161,14 +161,17 @@ def calibration_rates(args, store: Store) -> "dict[str, float]":
         try:
             sec = float(led.get("seconds") or 0.0)
         except (TypeError, ValueError):
-            continue
-        if sec <= 0:
-            continue
+            sec = 0.0
         tin, tout = led.get("tokens_in"), led.get("tokens_out")
         sess = sess_by_id.get(links.get(led["id"], ""))
         if sess and sess.get("measured"):
             tin = sess.get("tokens_in") if sess.get("tokens_in") is not None else tin
             tout = sess.get("tokens_out") if sess.get("tokens_out") is not None else tout
+            started, ended = parse_iso(sess.get("started_at")), parse_iso(sess.get("ts"))
+            if started is not None and ended is not None and ended > started:
+                sec = ended - started
+        if sec <= 0:
+            continue
         total = int(tin or 0) + int(tout or 0)
         if total <= 0:
             continue

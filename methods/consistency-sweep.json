@@ -1,0 +1,1 @@
+{"id":"consistency-sweep","description":"変更の波及箇所を列挙して一貫して直す","enabled":false,"fragments":[{"role":"worker","text":"変更前に同じ契約・語彙・挙動の波及箇所を列挙し、必要な全箇所を一貫して修正してください。"}],"when":{"tiers":["small","medium"],"purposes":["work"]},"origin":"skill://codd-gate"}

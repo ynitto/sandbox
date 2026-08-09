@@ -748,6 +748,7 @@ def run_agent(prompt: str, model: str | None, purpose: str = "", cwd: "str | Non
             "上限を上げる（dashboard のオーケストレーションタブ / agent-amigos budget node）か"
             "期間の更新を待ってください")
     cli_used, model_used = _effective_agent(purpose, model, agent)
+    prompt = _apply_methods(prompt, purpose, cli_used, model_used)
     _write_status(effective_cli=cli_used, effective_model=model_used or "",
                   lifecycle=lifecycle, budget=nb)
     last: "RuntimeError | None" = None
@@ -760,7 +761,8 @@ def run_agent(prompt: str, model: str | None, purpose: str = "", cwd: "str | Non
             _node_budget_record(time.monotonic() - t0, ref=purpose or "worker",
                                 agent_cli=cli_used, model=model_used or "",
                                 tokens_in=getattr(text, "tokens_in", None),
-                                tokens_out=getattr(text, "tokens_out", None))
+                                tokens_out=getattr(text, "tokens_out", None),
+                                extra=_method_ledger_fields(purpose))
             return text
         except EmptyOutputError as e:
             # JSON 契約の役割にとって空応答は形式違反であって内容の失敗ではない。契約を

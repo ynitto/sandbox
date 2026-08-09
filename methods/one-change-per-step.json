@@ -1,0 +1,1 @@
+{"id":"one-change-per-step","description":"一度に一変更だけ行い毎回検証する","enabled":false,"fragments":[{"role":"worker","text":"一度に一つの変更だけ行い、その変更を検証してから次へ進んでください。"}],"when":{"tiers":["small"],"max_relative_cost":0},"origin":"local:weak-model-compound-instruction-observation"}

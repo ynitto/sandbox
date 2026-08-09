@@ -504,6 +504,7 @@ class SessionManager:
 
         if apply_tuning:
             prompt_text = self._maybe_prepend_tuning(prompt_id, prompt_text)
+            bind_method_application(pane_target, prompt_id)
         prompt_text = self._maybe_prepend_instructions(prompt_id, prompt_text)
 
         short = prompt_text[:80] + ("..." if len(prompt_text) > 80 else "")
@@ -577,6 +578,9 @@ class SessionManager:
                 data, profile_name, _CLI_PROFILE.name,
                 include_session_start=include_start,
             )
+            method_app = render_method_blocks(data, _CLI_PROFILE.name, assignment_key=prompt_id)
+            method_block = str(method_app.get("text") or "")
+            block = "\n\n".join(part for part in (block, method_block) if part)
             if not block:
                 return prompt_text
             with self._lock:

@@ -329,6 +329,10 @@ orchestrator は要求を見て、以下の 7 パターン（最初の 6 つは
   git 利用規約を織り込んだプロンプトを使う（flow-planner と同じ作戦・同じ検索順）。
   スキルは決定的なプロンプトビルダーで LLM は呼ばない。未インストール・失敗時は
   組み込みプロンプトへフォールバックする。設定 `worker_skill: none` で常に組み込みを使う。
+- **手法の追補**: `$AGENT_TUNING_DIR/tuning.json` の `methods` / `trials` を、planner と各実行役の
+  最終プロンプトへ追補する。`when` は engine / workload / CLI / model / role / purpose / 実行段 /
+  相対コストで決定的に評価し、基礎スキルの本文は変更しない。run / result / node-budget 台帳には
+  適用手法セットと trial variant を残す。
 - **構造化成果（structured results）**: 各ノードの結果はテキスト `output` に加え、任意の **`data`（JSON）**
   を持てる。依存先へは既定で要約・成果物参照・省略量だけの digest を渡し、完全な構造化データが
   必須のノードだけ `dependency_input: full` を宣言する。`reduce` kind は依存の `data`（リスト等）を

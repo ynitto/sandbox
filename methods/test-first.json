@@ -1,0 +1,1 @@
+{"id":"test-first","description":"失敗するテストを先に置いてから実装する","enabled":false,"fragments":[{"role":"worker","text":"コード変更では、失敗する最小テストを先に追加し、実装後に通してください。"}],"when":{"tiers":["small","medium"],"purposes":["work"]},"origin":"https://code.claude.com/docs/en/best-practices"}

@@ -1,0 +1,1 @@
+{"id":"persist-until-done","description":"未解決のまま完了を名乗らない","enabled":false,"fragments":[{"role":"worker","text":"解決しきるまで作業を続け、未解決事項がある場合は完了を名乗らず明示してください。"},{"role":"session","text":"解決しきるまで作業を続け、未解決事項がある場合は完了を名乗らず明示してください。"}],"when":{"tiers":["small"]},"origin":"https://developers.openai.com/cookbook/examples/gpt4-1_prompting_guide"}

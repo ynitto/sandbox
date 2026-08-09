@@ -1,6 +1,6 @@
 # docs/designs 設計書 索引
 
-`docs/designs/` 配下の設計書 22 件をカテゴリ別に整理し、読む順序を示す索引。
+`docs/designs/` 配下の設計書 21 件をカテゴリ別に整理し、読む順序を示す索引。
 
 ## まず読むもの — コンセプトと主要 4 設計
 
@@ -16,7 +16,7 @@
 
 ---
 
-## カテゴリ別索引（全 21 件）
+## カテゴリ別索引（全 20 件）
 
 ### 1. コンセプトと主要 4 設計
 
@@ -36,10 +36,9 @@
 |---|---|
 | [`agent-amigos-design.md`](./agent-amigos-design.md) | 役割ミッション表と design doc で公示したミッションに分散ノードがロールを claim して参加し、オーナーが指示した収束条件と予算（実質実行時間）の範囲で型付きメッセージをやり取りしながら 1 つの成果物をオーナーへ納品する協働基盤の設計正典。`tools/agent-amigos/` に実装済みで、残る欠落は同書 §9 に明記。中央は専用バスリポジトリ（ミッション別ブランチ、state_git の同期規律を流用）で、転送だけを担い調整はしない。1 ノードでも自己補充で完結し、定時シャットダウンには away プロトコルとターン原子性で耐える。チーム設計の自動化（team-builder）とオーケストレーションパターンの写像（旧 `agent-amigos-teambuilder-patterns.md`）も統合済み。 |
 | [`agent-dashboard-design.md`](./agent-dashboard-design.md) | 別ホストで動く agent-project / agent-flow / agent-amigos / 定常業務を 1 つの Windows GUI から見渡し、人の判断だけを公式契約で返す操作面の設計正典。dashboard は状態の書き手にならない（読むのはファイル、書くのは `commands/` 等の投函だけ）・制御面はソースツリー分離と列挙合成・プロジェクトの発見は実行側の `engine/status.json` 1 枚、の 3 点が骨格。旧 `agent-dashboard-{feature-split,kiro-loop-terminal,project-ux-improvements}` を統合済み。 |
-| [`agent-cli-plugin-design.md`](./agent-cli-plugin-design.md) | エージェント CLI の呼び出しを「CLI × モード（ヘッドレス/対話）× 権限（書き込み可/読み取り専用）」のデータ契約 `agents/<name>.json` で差し替え可能にし（組み込み 4 CLI も定義ファイル化・Python ローダは agentcore に 1 実装）、失敗を quota/auth/env/transient で決定的にトリアージする設計。agent-project / agent-flow / agent-amigos / agent-dashboard が共通で使う。 |
+| [`agent-cli-plugin-design.md`](./agent-cli-plugin-design.md) | エージェント CLI の呼び出しを「CLI × モード（ヘッドレス/対話）× 権限（書き込み可/読み取り専用）」のデータ契約 `agents/<name>.json` で差し替える設計正典。同梱 9 定義、相対コスト、JSON 変種、実測 usage、セッションログ、待機判定と、quota/auth/env/transient の決定的トリアージを扱う。Python ローダは agentcore の 1 実装を共有する。 |
 | [`agent-audit-design.md`](./agent-audit-design.md) | agent-project / agent-flow / agent-amigos / agent-loop の実行証跡とエージェント CLI 自身のセッションログを読み取り専用で収集・正規化し、トークン使用量の実測集計と知見・スキル改善点の蒸留を行う独立 CLI の設計正典。集計・相関・レポートは決定的（LLM 不使用）、LLM は extract（map・弱モデル可）/ distill（reduce）の 2 段に限定して段別にエージェント・モデルを選択できる。エンジン無改造・CLI 単独利用でも成立し、洞察は task.schema.json 形で agent-project の汎用 intake へ渡す。 |
-| [`agent-ollama-tool-disclosure-design.md`](./agent-ollama-tool-disclosure-design.md) | ローカル推論のバックアップ実行系 agent-ollama で、ツールを既定で無効にしている理由（`readonly: enforced` の真実性と読み込み時間の固定費）を記録し、「ツール 0 個」と「無制限シェル 1 個」の間に中間の権限段を入れる提案設計。初期ツールセットをスキルと同じ前処理で注入し、走行中の昇格は ContextTracker と同じ継ぎ目に挿す ToolPolicy が決定的に行う（判断は LLM に委ねない）。先頭キャッシュを壊さないための「追記のみ」が全体の不変条件。未実装。 |
-| [`agent-ollama-expansion-design.md`](./agent-ollama-expansion-design.md) | クラウド CLI の予算を節約するため、agent-ollama を「バックアップ」から「恒常の節約先」へ広げる提案設計。適用を阻む障害を 4 つ（JSON 出力の揺れ・ツール無しでファイルが読めない・エンジンが全呼び出しを write モードで投げる・work の文脈予算と品質）に集約し、設定のみの段 0 から `--format`（JSON 文法強制）+ think 反転、役割の readonly 宣言、read ツールセット、パッチモードまでを独立採用可能な 5 段で並べる。横断方針が 2 本——品質は時間で買い done は機械検証だけに置く（R3）、文脈は黙った切り捨ても繰り返し圧縮もさせず尽きたら止めてタスクを割る（R4）。ローカル→クラウドの自動品質昇格とクライアント側自動コンパクションは非目標。未実装。 |
+| [`agent-ollama-design.md`](./agent-ollama-design.md) | Ollama のローカル推論をバックアップ兼恒常的な節約先として agent-* ファミリーへ接続する設計正典。plain / bash / read / TUI、JSON 文法制約、think、明示スキル、進捗 JSONL、無進捗監視、文脈実測、未完了契約を扱う。適用段 0〜3 は実装済み、edit / patch と走行中の ToolPolicy は着手条件つきで未実装。 |
 | [`git-gitlab-circuit-breaker-pattern.md`](./git-gitlab-circuit-breaker-pattern.md) | git/GitLab へアクセスする任意ツール向けの汎用サーキットブレーカー＋監視パターン。 |
 | [`git-worktree-cache-pattern.md`](./git-worktree-cache-pattern.md) | 同一 remote を繰り返し clone するツール向けに共有 bare ミラー＋使い捨て worktree へ置換する汎用パターン。 |
 | [`gitlab-agent-sns-design.md`](./gitlab-agent-sns-design.md) | GitLab Issue＋Moltbook リポジトリでエージェント向け SNS を構築する moltbook-use の確定版設計。 |
@@ -47,6 +46,10 @@
 | [`plan-a-local-gitlab-design.md`](./plan-a-local-gitlab-design.md) | ローカル GitLab CE 作業インスタンス（案A）の設計・運用正典。 |
 
 ### 4. 歴史的・比較検討
+
+> agent-ollama の統合元 2 文書は日付つきの検討記録として
+> [`2026-08-07-agent-ollama-tool-disclosure-design.md`](../plans/2026-08-07-agent-ollama-tool-disclosure-design.md) と
+> [`2026-08-08-agent-ollama-expansion-design.md`](../plans/2026-08-08-agent-ollama-expansion-design.md) へ移動した。
 
 | ファイル | 要旨 |
 |---|---|
@@ -59,4 +62,4 @@
 
 ## 前提・スコープ外の事項
 
-本 README は `docs/designs/` 配下の実ファイル一覧（25 件、2026-07-27 に実在確認済み。2026-08-03 に `agent-audit-design.md` を追加し 26 件）を基準に作成した。2026-08-06 にループ拡張の 8 件を `agent-loop-design.md` へ統合・削除し、同日に追加された `agent-loop-slash-property-design.md` とあわせて実ファイル 21 件。2026-08-07 に `agent-ollama-tool-disclosure-design.md` を、2026-08-08 に `agent-ollama-expansion-design.md` を追加し実ファイル 23 件。2026-08-09 に `agent-loop-slash-property-design.md` を統合・削除して実ファイル 22 件（索引掲載 21 件。索引外の 1 件は [`agent-tools-concept.md`](./agent-tools-concept.md) の補助資料 `agent-tools-business-improvement-prompt.md`）。
+本 README は `docs/designs/` 配下の実ファイル一覧（25 件、2026-07-27 に実在確認済み。2026-08-03 に `agent-audit-design.md` を追加し 26 件）を基準に作成した。2026-08-06 にループ拡張の 8 件を `agent-loop-design.md` へ統合・削除し、同日に追加された `agent-loop-slash-property-design.md` とあわせて実ファイル 21 件。2026-08-07 に `agent-ollama-tool-disclosure-design.md` を、2026-08-08 に `agent-ollama-expansion-design.md` を追加し実ファイル 23 件。2026-08-09 に `agent-loop-slash-property-design.md` を統合・削除して実ファイル 22 件、`agent-ollama-design.md` を追加して実ファイル 23 件、統合元 2 文書を `docs/plans/` へ移して実ファイル 21 件（索引掲載 20 件。索引外の 1 件は [`agent-tools-concept.md`](./agent-tools-concept.md) の補助資料 `agent-tools-business-improvement-prompt.md`）。

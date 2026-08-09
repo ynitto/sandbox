@@ -1,0 +1,1 @@
+{"id":"path-grounding","description":"対象パスの実在を確認してから編集する","enabled":false,"fragments":[{"role":"worker","text":"編集前に対象パスの実在を確認してください。存在しない論理名を実パスとして作らず、不明なら報告してください。"}],"when":{"tiers":["small"],"purposes":["work","generate"]},"origin":"local:2026-08-09/qwen3.5-agent-flow-diagnostic"}

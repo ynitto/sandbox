@@ -6,6 +6,7 @@ const agents = require('./agents');
 const instructions = require('./instructions');
 const sessionCommands = require('./sessionCommands');
 const profiles = require('./profiles');
+const tuning = require('./tuning');
 
 function registerIpc(ctx) {
   const { handle, loadConfig } = ctx;
@@ -33,6 +34,10 @@ function registerIpc(ctx) {
       budgetDir: budget.resolveBudgetDir(cfg),
       controlDir,
       profiles: profiles.load(cfg),
+      tuning: tuning.load(cfg),
+      methodsCatalog: tuning.catalog(cfg),
+      tuningDir: tuning.resolveTuningDir(cfg),
+      methodsDir: tuning.resolveMethodsDir(cfg),
     };
   });
 
@@ -71,6 +76,8 @@ function registerIpc(ctx) {
   handle('orchestration:sessionCommandsSave', (payload) =>
     sessionCommands.saveSessionCommands(loadConfig(), payload || {})
   );
+  handle('orchestration:methodSet', (payload) => tuning.setMethod(loadConfig(), payload || {}));
+  handle('orchestration:methodAdd', (payload) => tuning.addMethod(loadConfig(), payload || {}));
 }
 
 module.exports = { registerIpc };

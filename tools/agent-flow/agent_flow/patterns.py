@@ -374,6 +374,11 @@ def plan_strategy_agent(request: str, model: str | None, review="auto", granular
             "review": _review_decision(review, patterns),
             "reason": str(data.get("reason", "")),
         }
+        method_app = _last_methods("planner")
+        if method_app.get("methods"):
+            strategy["methods"] = method_app["methods"]
+        if isinstance(method_app.get("trial"), dict):
+            strategy["trial"] = method_app["trial"]
         return _record_rule_agreement(strategy, request, granularity), tasks
 
     text = None

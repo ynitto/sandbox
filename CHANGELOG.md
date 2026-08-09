@@ -20,7 +20,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   agent-ollama の `--tools bash` が生え、モデルが契約どおり返した JSON を「規約から外れています」
   と蹴っていた。**planner / evaluator は宣言が無ければ readonly を既定**にする（`READONLY_ROLES`）。
   `agents: {planner: {readonly: false}}` で従来どおりにも戻せる。設計判断の改訂は
-  [`agent-ollama-expansion-design.md`](docs/designs/agent-ollama-expansion-design.md) §5.2 に記録した
+  [`2026-08-08-agent-ollama-expansion-design.md`](docs/plans/2026-08-08-agent-ollama-expansion-design.md) §5.2 に記録した
 - **stub のキーワード判定が定型文に当たっていた**。agent-project 由来の要求には charter の
   対象リポジトリ一覧が付き、その「書込先候補」の一語で `generate-and-filter` が選ばれていた
   （実測 15 件中 9 件）。判定は要求本体（先頭の段落）だけを見る。パターン名の名指しは

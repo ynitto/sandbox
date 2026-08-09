@@ -371,7 +371,8 @@ class Bus:
                      kind: "str | None" = None, agent_cli: "str | None" = None,
                      model: "str | None" = None, context_allocation: "dict | None" = None,
                      dependency_context: "dict | None" = None,
-                     escalation: "dict | None" = None) -> None:
+                     escalation: "dict | None" = None, methods: "list[str] | None" = None,
+                     trial: "dict | None" = None) -> None:
         """ノードの結果を確定する。
 
         `node` は**実行した PC**（node_id の正規形）。`who`（worker の名義）にも PC 名は
@@ -405,6 +406,10 @@ class Bus:
             rec["dependency_context"] = dependency_context
         if escalation is not None:
             rec["escalation"] = escalation
+        if methods:
+            rec["methods"] = list(methods)
+        if isinstance(trial, dict):
+            rec["trial"] = dict(trial)
         if artifacts:  # 生成した中間成果物（run_dir 相対パス）。後続が参照できる
             rec["artifacts"] = list(artifacts)
         write_json_atomic(self.result_path(node_id), rec)

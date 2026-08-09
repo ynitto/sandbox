@@ -1,8 +1,8 @@
 # agent-dashboard — 複数エージェントを束ねる操作面 設計書
 
-> 作成 2026-07-14 ／ 最終更新 2026-08-08（ポータル化 第 1 段: ホーム（横断ビュー）と
-> ポータルカード登録簿を反映。設計: [`docs/plans/2026-08-08-agent-dashboard-portal-design.md`](../plans/2026-08-08-agent-dashboard-portal-design.md)）
-> 実装: `tools/agent-dashboard/`（Electron。本番依存は `diff2html` / `yaml` の 2 つだけ。テスト 70 ファイル・`npm test`）
+> 作成 2026-07-14 ／ 最終更新 2026-08-09（ポータル化、検証の決着、定常業務の
+> 実行パラメータ、ヘッドレス資源制御を反映）
+> 実装: `tools/agent-dashboard/`（Electron。本番依存は `diff2html` / `yaml` の 2 つだけ。テスト 84 ファイル・`npm test`）
 > 読む契約: [`schemas/node-budget.schema.json`](../../schemas/node-budget.schema.json) /
 > [`schemas/agent-control.schema.json`](../../schemas/agent-control.schema.json) /
 > [`schemas/agent-cli.schema.json`](../../schemas/agent-cli.schema.json) /
@@ -119,7 +119,7 @@ GUI はその規律の外側から、人の気まぐれなタイミングで書�
 
 **トレードオフ**: feature は同一プロセス・同一権限で動く。信頼できないコードは載せられない。
 
-**確信度**: 高い。当初 2 つだった feature が 7 つに増えても、合成点は 1 ファイルのままだ。
+**確信度**: 高い。当初 2 つだった feature が 8 つに増えても、合成点は 1 ファイルのままだ。
 
 ### 3.3 プロジェクトの発見は実行側の状況ファイル 1 枚
 
@@ -269,7 +269,8 @@ tools/agent-dashboard/src/
 │   ├── amigos/         agent-amigos ミッションの読み取りビュー
 │   ├── orchestration/  ノード予算・エージェント制御・CLI ドロップインの横断管理
 │   ├── delegation/     エンジン間の委譲封筒（内部機能。独立画面は持たない）
-│   └── participation/  募集中の仕事へこの端末から参加する操作面
+│   ├── participation/  募集中の仕事へこの端末から参加する操作面
+│   └── agent-audit/    実測トークン利用量・実行品質・収集の操作面
 ├── main/               旧パス互換シム（既存テストの require を壊さないため）
 ├── preload.js          base API ＋ 各 feature の preloadApi を合成
 └── renderer/           画面（core → sections → features → bootstrap の順に読む）
@@ -336,6 +337,7 @@ amigos / delegation / orchestration は 15 秒）。純プル型なので、気�
 | `orchestration` | ノード予算・エージェント制御・CLI ドロップインの棚卸し | `~/.agents/` 配下の契約ファイル |
 | `delegation` | 独立画面なし（タスク・参加・全体設定へ溶かす・§5.2） | 委譲封筒をネイティブ形式へ変換して投函。**中止・落札・手動入札はノード宛て指示ドロップ経由**（公示は板の作業ディレクトリへ直接書く。§5.2） |
 | `participation` | 募集中の仕事とこの端末の参加操作（板の公示を含む） | 人が押したときだけ agent-flow ワーカーを 1 つ起動（唯一のプロセス起動経路）／板は指示の投函だけ |
+| `agent-audit` | 実測トークン利用量・実行品質・収集状態 | LLM を使わない `collect` / `usage` / `stats` / `doctor` への依頼だけ |
 
 CLI チャット（tmux でエージェント CLI を対話起動する窓）は起動先 cwd を選べる。候補は選択中
 プロジェクトのフォルダ（既定）と、プロジェクトの repos.json にあるリポジトリのうちこのノードの
@@ -349,6 +351,11 @@ cowork の tmux 実行も同じ定義を通る（`chatCommand` 設定は明示�
 のが agent-control の役目で、それが起動に効かないなら宣言する意味が無い。tmux セッション名は
 `<cli>:<cwd>` ——起動先を選べるようにした以上、同名で再 attach して別リポジトリの作業中
 セッションへ合流しないためだ。
+
+「今すぐ実行」は、解決済みの agent-loop prompt と statemachine-use のテンプレート参照から
+入力キーを決定的に抽出し、必要なときだけ HTML `<dialog>` で文字列を受け取る。main 側で定義を
+再読込して不足・未知キー・解析失敗・定義ルート外参照を拒否するため、LLM に不足入力の質問を
+任せず、新しい入力スキーマも増やさない（[設計](../plans/2026-08-09-agent-dashboard-routine-parameters-dialog-design.md)）。
 
 ### 5.1 agent-loop 連携 — 監視と復旧を tmux から引き上げる
 
@@ -495,11 +502,14 @@ viewer 固有の状態遷移や新しい command は増やさず、agent-project
 
 タスク詳細は、受入基準、判定、証拠の順に並べる予定です（詳細は§8）。実行コマンド、終了コード、
 plan digest、成果 revision は「検証の詳細」に畳む計画です。agent-flow の `kind: verify` は run 内の工程なので
-「工程内チェック」と表示し、task の完了検証と同じ名前を使いません。検証不能時に出す操作は、
-別環境での検証、基準の修正、固定コマンドの追加、成果の修正だけです。証跡なしで done にする
-ボタンは置きません。
+「工程内チェック」と表示し、task の完了検証と同じ名前を使いません。検証が決着しない場合は
+`settlement` の材料を 1 枚に揃え、`retry` / `amend` / `park` / `accept-unverified` の 4 択だけを出します。
+前 3 つは既存の revise / hold へ、最後は既存の force-complete へ写し、未検証で締めた成果は自動統合
+しません。判定を緩める新しい迂回路は作りません
+（[設計](../plans/2026-08-09-verification-settlement-design.md)）。
 
-検収カードの正はフォージの MR/PR で、差分レビューへの動線は MR リンクだけを出す。カードには
+検収カードの正はフォージの MR/PR とする。MR は自動作成せず、未作成のカードにだけ冪等な
+「MRを作る」操作を出し、作成後の差分レビューへの動線は MR リンクだけにする。カードには
 検証レポートの要約（基準と証跡の表。証跡が空の pass は警告として目立たせる）が載り、人検収の
 材料が差分、基準、証跡に揃う。worker の一時 worktree パス（`delivery.path`）を前提にした旧 diff
 経路は撤去した。dashboard が本体と別マシンなら、worker の作業ツリーは `/tmp` で
@@ -560,10 +570,11 @@ CLI では「このCLIでは助言のみを保証できません」を先に出�
 
 ## 8. 実装状況と既知の欠落
 
-**動いているもの**: §4 の 7 制御面すべて、§6 の人のアクション一式、§7 の通知・SLA・AI 補助・
+**動いているもの**: §4 の 8 制御面すべて、§6 の人のアクション一式、§7 の通知・SLA・AI 補助・
 投入時リンティング、agent-loop の構造化状態と復旧送信、この PC の役割切り替え
 （`engineer` / `viewer`）、ホーム（ポータル。横断要対応キュー第 1 段＝プロジェクト単位の
-件数とジャンプ）。テストは `npm test` で全緑。
+件数とジャンプ）、検証の決着カード、定常業務の実行パラメータ入力、ヘッドレス資源制御。
+回帰テストは `npm test` に集約する。
 
 **未実装の改善余地**（元の改善提案から、実装が無いものだけ残した）:
 
@@ -635,6 +646,8 @@ CLI では「このCLIでは助言のみを保証できません」を先に出�
   （実測のみに絞る案・USD を一次にする案・時間のままの案は却下）。配分はエンジンに分散協調
   させず、管理面が実効上限を再計算して書き、エンジン側の判定は従来の単純比較のまま。稼働中の
   CLI / モデル変更・縮退・停止は pull 型の agent-control 契約（`control.json`）に統一する。
+  quota は恒久枯渇と時限レート制限を分け、後者は復帰時刻まで候補から外す。同じ再計算・適用実装を
+  `npm run resources` からも呼べるため、dashboard を開いていなくても制御は効く。
 - **セッション開始コマンド**: 前準備コマンドは agent-instructions に相乗りさせず独立契約
   （`~/.agents/session/session.json`）にした。instructions は agent-flow の meta.json で
   他ノードへ伝播するので、相乗りすると任意シェルコマンドがリモートへ配られてしまう。
@@ -651,6 +664,8 @@ CLI では「このCLIでは助言のみを保証できません」を先に出�
 `test/no-git-writes.test.js`（§3.1）／ `test/feature-split.test.js`（§3.2）／
 `test/discover-engine.test.js`（§3.3）／ `test/portal-home.test.js`（§3.5 のポータル登録簿と
 ホームの護り）／ `test/needs-notify.test.js`・`test/needs-sla.test.js`（§7）／
+`test/cowork.test.js`・`test/routine-area-ui.test.js`（定常業務の実行パラメータ）／
+`test/settlement-ui.test.js`（検証の決着）／ `test/resource-control.test.js`（ヘッドレス資源制御）／
 `test/packaging-assets.test.js`（配布物の取りこぼし、§8）。
 
 本書は 2026-07-26 に、次の 3 本を統合して作った。旧ファイルは削除済み。

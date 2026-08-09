@@ -139,6 +139,20 @@ environment_handoff:
 ペイン起動時の PATH・環境変数を宣言できます。エントリの `tuning_profile` で切り替え、
 外向き成果物には `external-facing`（注入なし）を指定します。設定不在・破損・無効は no-op です。
 
+同じ契約の `methods` / `trials` は、role と資源条件（実行プロファイルの段・agent CLI の
+相対コストを含む）に合う追補指示を各プロンプトへ適用します。組み込みカタログは
+`$AGENT_METHODS_DIR`（既定 `~/.agents/methods/`）にあり、次の CLI で管理できます。
+
+```bash
+agent-loop methods list [--json]
+agent-loop methods enable test-first
+agent-loop methods disable test-first
+agent-loop methods add my-check --role session --text "完了前に証拠を確認する" --when-json '{"tiers":["full"]}'
+```
+
+`enable` はカタログを tuning.json へ複製して source hash を固定します。カタログの更新を
+稼働へ反映するには、明示的にもう一度 `enable` します。
+
 ## 設定ファイル形式 (YAML)
 
 ```yaml

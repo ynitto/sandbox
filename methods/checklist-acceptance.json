@@ -1,0 +1,1 @@
+{"id":"checklist-acceptance","description":"完了条件を一項目ずつ照合する","enabled":false,"fragments":[{"role":"evaluator","text":"完了条件をチェックリスト化して一項目ずつ照合し、差し戻しは該当条件と修正内容を具体化してください。"}],"when":{"tiers":["small"]},"origin":"skill://backlog-planner"}

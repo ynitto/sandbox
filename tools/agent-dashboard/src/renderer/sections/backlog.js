@@ -150,7 +150,10 @@ function switchTab(name) {
     .forEach((t) => t.classList.toggle('active', t.dataset.tab === name));
   document.querySelectorAll('.tabpane').forEach((pane) => pane.classList.remove('active'));
   const pane = $(`tab-${name}`);
-  if (pane) pane.classList.add('active');
+  if (pane) {
+    pane.classList.add('active');
+    revealGlobalSettingsPanels(pane, name);
+  }
   renderAreaHeader();
   if (name === 'needs') refreshGitLab(false); // 要対応タブに GitLab レビュー待ちを併載しているため
   if (featureTabs.has(name)) renderFeatureTab(name); // 登録済みフィーチャータブは遷移時に描画

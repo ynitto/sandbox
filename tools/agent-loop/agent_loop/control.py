@@ -167,7 +167,8 @@ def _node_budget_state() -> "dict | None":
 
 
 def _node_budget_record(seconds: float, ref: str = "", agent_cli: str = "routine",
-                        model: str = "", tokens_in=None, tokens_out=None, usd=None) -> None:
+                        model: str = "", tokens_in=None, tokens_out=None, usd=None,
+                        extra: "dict | None" = None, purpose: str = "") -> None:
     """台帳へ 1 記帳を追記する（O_APPEND — 複数プロセスの同時追記でも行は壊れない）。
     agent-loop は subprocess で LLM を呼ばないためトークンは実測できず、agent_cli 帰属のみ付す。"""
     if seconds <= 0 and not tokens_in and not tokens_out:
@@ -175,8 +176,12 @@ def _node_budget_record(seconds: float, ref: str = "", agent_cli: str = "routine
     d = os.path.join(_node_budget_dir(), "ledger")
     try:
         os.makedirs(d, exist_ok=True)
+        # `ref` は実行の在り処（tmux ペイン ID）、`purpose` は**仕事種別**。両方を同じ列で
+        # 兼ねると、読み手のフォールバック（purpose or ref）が使い捨てのペイン ID を仕事種別
+        # として拾い、格付けも trial 比較も 1 行ずつのバケットに割れる。
         rec = {"ts": _utc_iso(), "workload": _NODE_BUDGET_WORKLOAD,
-               "tool": _NODE_BUDGET_TOOL, "seconds": round(float(seconds), 3), "ref": ref}
+               "tool": _NODE_BUDGET_TOOL, "seconds": round(float(seconds), 3),
+               "ref": ref, "purpose": (purpose or _NODE_BUDGET_WORKLOAD)}
         if agent_cli:
             rec["agent_cli"] = str(agent_cli)
         if model:
@@ -187,6 +192,12 @@ def _node_budget_record(seconds: float, ref: str = "", agent_cli: str = "routine
             rec["tokens_out"] = float(tokens_out)
         if usd is not None:
             rec["usd"] = float(usd)
+        if isinstance(extra, dict):
+            if isinstance(extra.get("methods"), list):
+                rec["methods"] = [str(v) for v in extra["methods"] if str(v)]
+            if isinstance(extra.get("trial"), dict):
+                rec["trial"] = {"id": str(extra["trial"].get("id") or ""),
+                                "variant": str(extra["trial"].get("variant") or "")}
         line = json.dumps(rec, ensure_ascii=False) + "\n"
         fd = os.open(os.path.join(d, time.strftime("%Y%m%d", time.gmtime()) + ".jsonl"),
                      os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
@@ -232,6 +243,8 @@ def _write_status(lifecycle: str = "run", budget: "dict | None" = None,
             rec["session_commands_revision_applied"] = _SESSION_COMMANDS_REV_APPLIED
         if _TUNING_REV_APPLIED is not None:
             rec["tuning_revision_applied"] = _TUNING_REV_APPLIED
+        if _METHODS_APPLIED:
+            rec["methods_applied"] = list(_METHODS_APPLIED)
         if budget is not None:
             rec["budget"] = {"exceeded": bool(budget.get("exceeded")),
                              "soft": bool(budget.get("soft"))}

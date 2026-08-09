@@ -1,12 +1,12 @@
 # agent-ollama — ツールの開示と権限の昇格の設計
 
 > **統合済み**: 現行の責務・実装状態・未実装範囲は
-> [`agent-ollama-design.md`](./agent-ollama-design.md) へ統合した。本書はツール権限の詳細検討記録として残す。
+> [`agent-ollama-design.md`](../designs/agent-ollama-design.md) へ統合した。本書はツール権限の詳細検討記録として残す。
 
 > 作成 2026-08-07
 > 対象: `tools/agent-tools/agentcore/agentcore/{ollama_loop,ollama_adapter,ollama_skills}.py` /
 > `agents/ollama.json`
-> 関連: [2026-08-06 opencode×ollama CPU 推論の対策案](../plans/2026-08-06-opencode-ollama-cpu-inference-proposals.md) §0.1・§F-2
+> 関連: [2026-08-06 opencode×ollama CPU 推論の対策案](./2026-08-06-opencode-ollama-cpu-inference-proposals.md) §0.1・§F-2
 >
 > **状態: §7 の段 1・段 2 は実装済み（2026-08-08。適用拡大設計 §6 が優先順位を上げた）。
 > 段 3（ToolPolicy = 走行中の昇格）は未着手。** §2 は現行実装の記録、§3 以降が提案。

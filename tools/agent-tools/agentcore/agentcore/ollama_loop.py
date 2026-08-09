@@ -57,7 +57,7 @@ _FENCE_RE = re.compile(r"```(?:bash|sh|shell|console)?[ \t]*\r?\n(.*?)```", re.S
 _DONE_MARKER = "TASK_COMPLETE"
 
 # --- ツールセット（`--tools <セット>`）---------------------------------------
-# 設計: docs/designs/agent-ollama-tool-disclosure-design.md §4.2 / 適用拡大設計 §6。
+# 設計: docs/plans/2026-08-07-agent-ollama-tool-disclosure-design.md §4.2 / 適用拡大設計 §6。
 # 「ツールが 1 つも無い」と「無制限のシェルが 1 つある」の間に段を作る。**強制は実行の
 # 手前のゲートで行う**——「作業ディレクトリの外を変更しない」の類はシステムプロンプトの
 # 一文でしかなく、強制力がゼロだった。読み込み時間は増やさない（語彙は規約数行で済む）。

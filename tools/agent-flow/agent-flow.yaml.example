@@ -95,7 +95,7 @@ executor: agent            # ワーカーバス: 組み込み agent（エージ�
                            #   （classify/filter/judge/reduce/split/map/synthesize）には明示で付ける。
                            #   work / verify はワークスペースを触るので付けない。
 #   planner:               #   ローカル推論へ振る例（設計 docs/designs/
-#     agent_cli: ollama-json#  agent-ollama-expansion-design.md §3・§4）。JSON 契約の役割は
+#     agent_cli: ollama-json#  2026-08-08-agent-ollama-expansion-design.md §3・§4）。JSON 契約の役割は
 #     model: qwen3         #   ollama-json（--format json で文法から強制）を使う。
 #     readonly: true       #   壁時計は伸びるので agent_timeout も併せて上げる（例 3600）。
 granularity: auto          # タスク分解の細かさ: auto(complexity導出・既定)/coarse/fine/finest(明示優先)。

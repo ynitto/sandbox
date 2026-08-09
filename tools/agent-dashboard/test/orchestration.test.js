@@ -15,6 +15,7 @@ const { engineConfig } = require('./helpers/engine-status');
 const control = require('../src/features/orchestration/main/control');
 const agents = require('../src/features/orchestration/main/agents');
 const instructions = require('../src/features/orchestration/main/instructions');
+const tuning = require('../src/features/orchestration/main/tuning');
 
 let passed = 0;
 function test(name, fn) {
@@ -54,6 +55,10 @@ function controlCfg(dir) {
 
 function instrCfg(dir) {
   return { orchestration: { instructionsDir: dir } };
+}
+
+function tuningCfg(tuningDir, methodsDir) {
+  return { orchestration: { tuningDir, methodsDir } };
 }
 
 // --- ノード予算 v2: トークン集計（実測 + 推定） ------------------------------
@@ -639,9 +644,44 @@ metadata:
   assert.ok(!Object.hasOwn(inv[0], 'allowed-tools'));
 });
 
+test('手法: enable はカタログ snapshot を固定し revision を単調増加、disable/add も保存する', () => {
+  const tdir = tmpdir('orch-tuning-');
+  const mdir = tmpdir('orch-methods-');
+  const cfg = tuningCfg(tdir, mdir);
+  const method = { id: 'test-first', description: 'テストから始める', enabled: false,
+    fragments: [{ role: 'worker', text: '先にテストを書く' }], when: {}, origin: 'built-in' };
+  fs.writeFileSync(path.join(mdir, 'test-first.json'), JSON.stringify(method));
+  const enabled = tuning.setMethod(cfg, { id: 'test-first', enabled: true });
+  assert.strictEqual(enabled.revision, 1);
+  assert.strictEqual(enabled.methods[0].source, `methods/test-first@${tuning.sourceHash(method)}`);
+  fs.writeFileSync(path.join(mdir, 'test-first.json'), JSON.stringify({ ...method, description: '更新' }));
+  assert.strictEqual(tuning.load(cfg).methods[0].description, 'テストから始める', 'カタログ更新を自動反映しない');
+  assert.strictEqual(tuning.setMethod(cfg, { id: 'test-first', enabled: false }).revision, 2);
+  const custom = tuning.addMethod(cfg, { id: 'custom-check', role: 'verify', text: '二重確認する',
+    when: { tiers: ['full'] } });
+  assert.strictEqual(custom.revision, 3);
+  assert.strictEqual(custom.methods.find((item) => item.id === 'custom-check').source, 'custom/custom-check');
+});
+
+// 同梱カタログの source ダイジェストは Python（agent-loop）にも実装がある。
+// `source: methods/<id>@<hash>` はどちらが書いても同じでなければ「同じカタログ由来か」を
+// 突き合わせられないので、両側が同じ golden を読む。片方の正規化（キー順・区切り・数値
+// 表記）が変わればここが落ちる。
+test('手法: 同梱カタログの source ダイジェストが共有 golden と一致する', () => {
+  const root = path.resolve(__dirname, '../../..');
+  const golden = JSON.parse(fs.readFileSync(
+    path.join(root, 'schemas', 'methods-source-hash.golden.json'), 'utf8')).hashes;
+  const actual = {};
+  for (const name of fs.readdirSync(path.join(root, 'methods')).filter((n) => n.endsWith('.json'))) {
+    const method = JSON.parse(fs.readFileSync(path.join(root, 'methods', name), 'utf8'));
+    actual[method.id] = tuning.sourceHash(method);
+  }
+  assert.deepStrictEqual(actual, golden);
+});
+
 // --- IPC 配線（overview がまとめて返す） -------------------------------------
 
-test('IPC: orchestration:overview は budget/control/status/agents/instructions をまとめて返す', () => {
+test('IPC: orchestration:overview は budget/control/status/agents/instructions/tuning をまとめて返す', () => {
   const bdir = tmpdir('orch-ov-b-');
   const cdir = tmpdir('orch-ov-c-');
   const idir = tmpdir('orch-ov-i-');
@@ -663,10 +703,14 @@ test('IPC: orchestration:overview は budget/control/status/agents/instructions 
   assert.strictEqual(ov.budgetDir, bdir);
   assert.strictEqual(ov.controlDir, cdir);
   assert.strictEqual(ov.instructionsDir, idir);
+  assert.ok(Array.isArray(ov.methodsCatalog));
+  assert.strictEqual(ov.tuning.version, 1);
   // save 動線
   const saved = handlers['orchestration:instructionsSave']({ text: '更新' });
   assert.strictEqual(saved.revision, 2);
   assert.ok(Array.isArray(handlers['orchestration:skillsInventory']()));
+  assert.strictEqual(typeof handlers['orchestration:methodSet'], 'function');
+  assert.strictEqual(typeof handlers['orchestration:methodAdd'], 'function');
 });
 
 console.log(`\n${passed} orchestration tests passed`);

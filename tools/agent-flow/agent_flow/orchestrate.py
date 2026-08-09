@@ -256,6 +256,7 @@ def _with_run_heartbeat(heartbeat, lease_window: float, fn):
 
 def cmd_orchestrate(args) -> int:
     who = args.node_id
+    _set_method_context(args.run_id, "planner")
     # セッション開始コマンド（agent-session-commands）。orchestrator も 1 プロセス＝1 セッション
     # として扱い、bus に触る前に前準備を済ませる。on_error='fail' が失敗したら起こさない。
     if not run_session_commands(who, {

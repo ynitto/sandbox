@@ -149,6 +149,14 @@ def collect_budget_ledger(args, store: Store) -> int:
                     rec["quota_kind"] = row["quota_kind"]
                 if isinstance(row.get("escalation"), dict):
                     rec["escalation"] = row["escalation"]
+                for key in ("run_id", "flow_node"):
+                    if row.get(key):
+                        rec[key] = row[key]
+                if isinstance(row.get("methods"), list):
+                    rec["methods"] = [str(v) for v in row["methods"] if str(v)]
+                if isinstance(row.get("trial"), dict):
+                    rec["trial"] = {"id": str(row["trial"].get("id") or ""),
+                                    "variant": str(row["trial"].get("variant") or "")}
                 if store.append_record(rec):
                     added += 1
             store.set_cursor(key, f.tell())
@@ -266,8 +274,9 @@ def collect_flow_buses(args, store: Store) -> int:
             retries, verify = _flow_events_summary(run_dir)
             ts = parse_iso(meta.get("updated_at")) or os.path.getmtime(run_dir)
             graph = read_json(os.path.join(run_dir, "graph.json")) or {}
+            strategy = graph.get("strategy") or {}
             comparisons = []
-            for item in (graph.get("strategy") or {}).get("decision_comparisons") or []:
+            for item in strategy.get("decision_comparisons") or []:
                 if (isinstance(item, dict) and item.get("decision")
                         and isinstance(item.get("agree"), bool)):
                     comparisons.append({key: item.get(key) for key in
@@ -284,6 +293,8 @@ def collect_flow_buses(args, store: Store) -> int:
             }
             if comparisons:
                 rec["decision_comparisons"] = comparisons
+            run_methods = {str(v) for v in strategy.get("methods") or [] if str(v)}
+            run_trial = strategy.get("trial") if isinstance(strategy.get("trial"), dict) else None
             results_dir = os.path.join(run_dir, "results")
             for result_path in sorted(glob.glob(os.path.join(glob.escape(results_dir), "*.json"))):
                 result = read_json(result_path)
@@ -318,8 +329,19 @@ def collect_flow_buses(args, store: Store) -> int:
                     result_rec["dependency_saved_chars"] = int(dependency.get("saved_chars") or 0)
                 if isinstance(result.get("escalation"), dict):
                     result_rec["escalation"] = result["escalation"]
+                if isinstance(result.get("methods"), list):
+                    result_rec["methods"] = [str(v) for v in result["methods"] if str(v)]
+                    run_methods.update(result_rec["methods"])
+                if isinstance(result.get("trial"), dict):
+                    result_rec["trial"] = {"id": str(result["trial"].get("id") or ""),
+                                           "variant": str(result["trial"].get("variant") or "")}
+                    run_trial = run_trial or result_rec["trial"]
                 if store.append_record(result_rec):
                     added += 1
+            if run_methods:
+                rec["methods"] = sorted(run_methods)
+            if run_trial:
+                rec["trial"] = run_trial
             if store.append_record(rec):
                 added += 1
     return added

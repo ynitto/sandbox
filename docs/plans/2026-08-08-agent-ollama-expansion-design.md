@@ -1,15 +1,15 @@
 # agent-ollama 適用拡大の設計 — クラウド予算をローカル実行系で節約する
 
 > **統合済み**: 現行の責務・実装状態・未実装範囲は
-> [`agent-ollama-design.md`](./agent-ollama-design.md) へ統合した。本書は段階導入の詳細検討記録として残す。
+> [`agent-ollama-design.md`](../designs/agent-ollama-design.md) へ統合した。本書は段階導入の詳細検討記録として残す。
 
 > 作成 2026-08-08（同日改訂: 品質優先 R3・文脈健全性 R4 を要求に追加）
 > 対象: `tools/agent-project` / `agent-flow` / `agent-audit` / `agent-loop` / `agent-amigos` の
 > エージェント CLI 呼び出し面、`agentcore/ollama_*.py`、`agents/ollama.json`、
 > agent-dashboard の実行プロファイル
-> 関連: [agent-ollama-tool-disclosure-design.md](./agent-ollama-tool-disclosure-design.md) /
-> [agent-cli-plugin-design.md](./agent-cli-plugin-design.md) /
-> [agent-tools-concept.md](./agent-tools-concept.md) /
+> 関連: [2026-08-07-agent-ollama-tool-disclosure-design.md](./2026-08-07-agent-ollama-tool-disclosure-design.md) /
+> [agent-cli-plugin-design.md](../designs/agent-cli-plugin-design.md) /
+> [agent-tools-concept.md](../designs/agent-tools-concept.md) /
 > [`tools/agent-tools/README.md`](../../tools/agent-tools/README.md)（agent-ollama の現行仕様）
 >
 > **状態: 段 0〜3 実装済み（2026-08-08）。段 4・5 は未着手**——§7 のとおり、
@@ -183,7 +183,7 @@ work / verify をこの段でローカルへ振らないのはこの 2 つが理
 ollama の API は `format` フィールドを持ち、出力を JSON（または JSON Schema）に
 **デコード時の文法制約**で強制できる。プロンプトに 1 トークンも足さないので
 prefill の固定費が増えない——「読み込み時間は増やさない」という
-[tool-disclosure 設計](./agent-ollama-tool-disclosure-design.md)の方針とも整合する。
+[tool-disclosure 設計](./2026-08-07-agent-ollama-tool-disclosure-design.md)の方針とも整合する。
 
 agent-ollama に `--format json` を足し、API リクエストへ透過する。数十行。
 Schema 渡し（`--format-schema`）は**要るまで作らない**——`json` 強制だけで
@@ -228,7 +228,7 @@ Schema 渡し（`--format-schema`）は**要るまで作らない**——`json` 
 （`agentcore.agentcli.json_variant` の 1 実装。agent-flow は `JSON_CONTRACT_ROLES`、
 agent-project は `JSON_CONTRACT_PURPOSES` で「どの役割が JSON 契約か」を宣言する）。
 `write_args` / `readonly_args` が argv 連結である契約の設計
-（[agent-cli-plugin-design.md](./agent-cli-plugin-design.md)）にそのまま乗る。
+（[agent-cli-plugin-design.md](../designs/agent-cli-plugin-design.md)）にそのまま乗る。
 
 **改訂 2026-08-09（初版からの変更）**: 初版は「エンジン側は
 `agents: {planner: {agent_cli: ollama-json}}` と書くだけ・エンジン改修ゼロ」としていた。
@@ -319,7 +319,7 @@ JSON を返しているのにツールループ側が「規約から外れてい
 
 ## 6. 段 3 — read ツールセット（既存提案の実装を前倒しする理由）
 
-実体は [tool-disclosure 設計](./agent-ollama-tool-disclosure-design.md)の段 2
+実体は [tool-disclosure 設計](./2026-08-07-agent-ollama-tool-disclosure-design.md)の段 2
 （`--tools <セット>` + 実行ゲート）であり、設計判断はあちらが正典。本書からの
 追加はこの 3 点。
 

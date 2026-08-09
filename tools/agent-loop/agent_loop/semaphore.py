@@ -68,7 +68,8 @@ class GlobalSemaphore:
             data = json.loads(slot_file.read_text(encoding="utf-8"))
             elapsed = time.time() - float(data.get("acquired_at", 0))
             if 0 < elapsed <= self._slot_timeout:   # タイムアウト強制解放は実行時間として数えない
-                _node_budget_record(elapsed, ref=pane_id)
+                _node_budget_record(elapsed, ref=pane_id, purpose=routine_purpose(pane_id),
+                                    extra=method_evidence(pane_id))
         except (OSError, json.JSONDecodeError, ValueError, TypeError):
             pass
         try:

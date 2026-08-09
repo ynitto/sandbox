@@ -5,7 +5,8 @@
 
 > 最終更新: 2026-08-09 ／ 関連: [`agent-cli-plugin-design.md`](./agent-cli-plugin-design.md)
 > （CLI 定義の共通契約）, `tools/agent-tools/README.md`（利用手順）。
-> `agent-ollama-expansion-design.md` と `agent-ollama-tool-disclosure-design.md` の現行判断を統合した正典。
+> [`2026-08-08-agent-ollama-expansion-design.md`](../plans/2026-08-08-agent-ollama-expansion-design.md) と
+> [`2026-08-07-agent-ollama-tool-disclosure-design.md`](../plans/2026-08-07-agent-ollama-tool-disclosure-design.md) の現行判断を統合した正典。
 
 Ollama のローカル推論を、クラウド CLI の枠が乏しいときのバックアップだけでなく、品質が成立する
 役割を恒常的に引き受ける**コスト 0 の節約先**として agent-* ファミリーへ接続する。犠牲にするのは
@@ -157,5 +158,6 @@ agent-project はプロセス単位の `agent_escalation_max` で有界にする
 - 推論・観測は標準ライブラリで動き、ログや任意 UI の失敗を成果生成へ波及させない。
 - `done` をモデルの自己申告だけで確定しない。外側の verify と受入条件を省略しない。
 - クライアント側の自動コンパクション、無制限の自動クラウド昇格、ツールカタログの常時注入は作らない。
-- `agent-ollama-expansion-design.md` と `agent-ollama-tool-disclosure-design.md` は統合元の詳細検討記録
-  として残す。現行状態・責務境界・未実装範囲の判断は本書を優先する。
+- `docs/plans/2026-08-07-agent-ollama-tool-disclosure-design.md` と
+  `docs/plans/2026-08-08-agent-ollama-expansion-design.md` は統合元の詳細検討記録として残す。
+  現行状態・責務境界・未実装範囲の判断は本書を優先する。

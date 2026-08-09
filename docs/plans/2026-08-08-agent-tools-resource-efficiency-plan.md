@@ -676,8 +676,8 @@ S5・S21 は空きができ次第どこへ差し込んでもよい。
 |---|---|---|
 | [2026-08-04 エンジン効率 10 案](./2026-08-04-engine-token-efficiency-proposals.md) | 案 A=F7、案 C=F5、案 E=F8、案 G=F15 | 案 F / I / B-2 / J（層が増える。§6） |
 | [2026-08-03 kiro-loop 削減](./2026-08-03-kiro-loop-token-reduction-proposals.md) | §5 恒久対応=F9（特化パッチは移植せず F13 で退役） | — |
-| [agent-ollama 拡大設計](../designs/agent-ollama-expansion-design.md) | 段 4・5=F6（条件付き） | 自動品質昇格（非目標維持） |
-| [ツール開示設計](../designs/agent-ollama-tool-disclosure-design.md) | 段 3=F12（条件付き） | — |
+| [agent-ollama 拡大設計](./2026-08-08-agent-ollama-expansion-design.md) | 段 4・5=F6（条件付き） | 自動品質昇格（非目標維持） |
+| [ツール開示設計](./2026-08-07-agent-ollama-tool-disclosure-design.md) | 段 3=F12（条件付き） | — |
 | [orchestration token budget 設計](./2026-07-19-agent-dashboard-orchestration-token-budget-design.md) | 残課題の headless 化=F2、較正=F3 | — |
 | [agent-audit 設計](../designs/agent-audit-design.md) | 集計拡張=F4、蒸留流用=F10・F11、収集の一本化=F16 | — |
 | [改称（クローン方針）設計](../designs/agent-tools-rename-design.md) | 非目標「kiro-loop の削除」を撤回=F13（同設計 §3・§6 を改訂済み） | `kiro-cli` の改称（製品名は維持） |
@@ -722,3 +722,44 @@ sandbox 外で再実行して成功を確認した。
 
 回帰確認は agent-flow 794 件、agent-audit 101 件、agent-loop 259 件、agentcore 417 件、
 agent-project 1220 件、agent-amigos 189 件、agent-dashboard の全テストと eslint が成功した。
+
+## 9. Phase 3 実行記録（2026-08-09）
+
+Phase 3 は着手条件を再確認し、条件を満たす S17・S25〜S27 を実装した。S18〜S20 は
+実測ゲート未達のまま実装すると計画の停止条件を破るため保留した。
+
+| Step | 状態 | 実施内容・残件 |
+|---|---|---|
+| S17 | 実装済み・測定待ち | agent-tuning に決定的な 2 variant trial を追加し、`agent-audit trials` で PASS 率・平均 tokens・差分を `effective / ineffective / harmful / insufficient` に集計。実運用サンプルが残る |
+| S18 | 着手条件未達 | `agent-audit stats --period total --json` の判断サンプルが 0 件。閾値超えの対象が無いので決定化しない |
+| S19 | 着手条件未達 | kiro の `session_log` 源泉が agent-audit doctor で未検出。`tools/kiro-log-exporter/` は退役させない |
+| S20 | 着手条件未達 | ratings の outcome sample が 0 件で、権限不足・人手介入の ToolPolicy サンプルも無い。ローカル work と ToolPolicy は追加しない |
+| S25 | 実装済み | agent-tuning の methods / 資源条件を共通評価し、agent-flow / agent-loop へ追補注入。`methods/` に origin 付き 20 preset と golden test を追加 |
+| S26 | 実装済み | dashboard と `agent-loop methods list/enable/disable/add` を追加。ON 時の snapshot と `source: methods/<id>@<hash>`、revision 単調増加、カタログ非自動反映を固定 |
+| S27 | 実装済み・測定待ち | flow result / strategy と flow・loop の台帳に適用手法・trial を記録。`agent-audit ratings --methods` と trials 集計へ接続 |
+
+agent-loop の webhook 8 件は sandbox 内の local bind 制限で一度失敗し、agentcore の HTTP
+1 件とともに sandbox 外で再実行して成功した。
+
+### レビュー後の是正（2026-08-09）
+
+比較基盤（S17）が「効いたか」ではなく「測っていないこと」を測ってしまう欠陥が中心。
+どれも Phase 3 が出す数字そのものの信頼性に効く。
+
+| # | 直したこと |
+|---|---|
+| 1 | trial の判定に結果サンプル下限が無く、n=1 でも `harmful` / `effective` を断定していた。`trial_min_outcomes`（既定 3）を追加し、下限割れは `insufficient` |
+| 2 | variant が挙げた手法を 1 つも注入できていなくても trial を名乗り、空の実行が variant の証拠になっていた。実際に適用できたときだけ記録する（対照群の宣言 0 件は適用として数える） |
+| 3 | agent-loop の台帳行の `purpose` が tmux ペイン ID で、格付けも trial も 1 行ずつのバケットに割れていた。`ref` は実行の在り処、`purpose` は定期プロンプト名に分けた |
+| 4 | `agent-loop methods enable/add` が「適用の視点」を編集の土台にしていて、`enabled: false` の端末で injections / profiles / trials を消し revision を後退させていた。生の読みへ切り替え |
+| 5 | tuning.json の書き手が 4 つ（人・dashboard・`agent-audit tune --apply`・`agent-loop methods`）になったのに排他が無かった。3 実装すべてに revision の compare-and-swap を入れた |
+| 6 | `run_id` / `flow_node` / `methods` / `trial` が node-budget 契約に無いまま台帳へ入っていた。宣言し、空の値は書かないようにした |
+| 7 | 条件が重なる trial の 2 件目以降が黙って捨てられ、宣言した trial が一度も走らないことを検知できなかった。捨てた分をログに出す |
+| 8 | 同じ (trial, purpose, model) の variant 行が 2 件でないと比較を黙って落としていた。`ambiguous` として行を出す |
+| 9 | baseline / control が無いと variant 名の辞書順で基準が決まり、差分の符号が命名に左右されていた。`no-baseline` として数字を出さず、スキーマも baseline を要求 |
+| 10 | PASS 率が上がればトークンがいくら増えても `effective` だった。`mixed` を追加 |
+| 11 | `source` ダイジェストの Python / JS 2 実装に突き合わせが無かった。`schemas/methods-source-hash.golden.json` を両側のテストが読む |
+| 12 | `packaging-assets.test.js` の生 NUL バイト 3 個（git がバイナリ扱いし diff もレビューもできない）をエスケープへ |
+
+回帰確認は agent-flow 798 件、agent-audit 110 件、agent-loop 267 件、agentcore 432 件、
+agent-project 1219 件、agent-dashboard の全テストと eslint が成功した。

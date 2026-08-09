@@ -37,7 +37,8 @@ agent-audit tasks                    # 洞察 → 改善タスク（JSON を std
 agent-audit tune [--apply]           # 型付き調整候補 → 宣言へ昇格、悪化・期限で自動退役
 
 agent-audit calibrate [--write]      # rates 較正の提案（--write で budget config へ）
-agent-audit ratings --period month   # 仕事種別×モデルの PASS 率と平均消費
+agent-audit ratings --period month [--methods] # 仕事種別×モデル（任意で手法セット軸）の格付け
+agent-audit trials --period month    # 2 variant trial の PASS 率・平均消費・差分判定
 agent-audit gc [--dry-run]           # 保持期限での掃除（通常は collect が定期実行）
 agent-audit reclean [--agent-cli N]  # clean ルール改訂後に既存 transcript を再生成
 agent-audit sessions --cli N [--since T --until T --cwd-contains S] [--messages ID]
@@ -69,9 +70,9 @@ agents:
 
 | 源泉 | 場所（既定） | 取るもの |
 |---|---|---|
-| node-budget 台帳 | `~/.agents/budget/ledger/*.jsonl` | 消費の一次事実（秒・トークン） |
+| node-budget 台帳 | `~/.agents/budget/ledger/*.jsonl` | 消費の一次事実（秒・トークン）と適用手法・trial |
 | CLI セッション | `agents/<name>.json` の `session_log` 宣言 | 実測トークン・turn 数・transcript（`session_log.clean` でノイズ除去。§4.4） |
-| agent-flow バス | 設定 `flow_buses` / `project_roots` | run の結果・失敗クラス・verify・読込割付・依存digest削減量・モデル昇格・planner判断照合 |
+| agent-flow バス | 設定 `flow_buses` / `project_roots` | run の結果・失敗クラス・verify・読込割付・依存digest削減量・モデル昇格・planner判断照合・適用手法・trial |
 | agent-project | 設定 `project_roots` の `run-log.jsonl` | run 単位の実績・コスト |
 | agent-amigos バス | 設定 `amigos_buses` | ターン数・実行秒 |
 | agent-loop ログ | 設定 `loop_logs` | エラー行 |

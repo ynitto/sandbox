@@ -123,6 +123,30 @@ def _eligible(decision: dict, rating: "dict | None", args) -> "tuple[bool, str]"
     return True, ""
 
 
+def _revision_of(root) -> int:
+    try:
+        return int((root or {}).get("revision") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _write_declaration(path: str, root: dict, base_revision: int, updated_by: str) -> bool:
+    """宣言ファイルを書き戻す。`revision` を持つ契約は書く直前に照合する。
+
+    agent-tuning の書き手は人・dashboard・agent-loop・ここの 4 つで、全員が読んで直して
+    全体を置き換える。照合しないと後勝ちで前の変更が消え、revision は両者とも +1 するので
+    消えたことにも気づけない。`revision` を持たない契約（budget config 等）は従来どおり。
+    """
+    if base_revision is not None:
+        if _revision_of(read_json(path)) != base_revision:
+            return False
+        root["revision"] = base_revision + 1
+    root["updated_at"] = now_iso()
+    root["updated_by"] = updated_by
+    write_json_atomic(path, root)
+    return True
+
+
 def _promote(decision: dict, rating: "dict | None", args) -> "tuple[bool, str]":
     proposal = decision["proposal"]
     parts = _allowed_parts(decision["target"], proposal["path"], proposal["value"])
@@ -133,10 +157,10 @@ def _promote(decision: dict, rating: "dict | None", args) -> "tuple[bool, str]":
     if not isinstance(root, dict):
         return False, "target-missing-or-invalid"
     existed, previous = _get(root, parts)
+    base = _revision_of(root) if decision["target"] == "agent-tuning" else None
     _set(root, parts, proposal["value"])
-    root["updated_at"] = now_iso()
-    root["updated_by"] = "agent-audit"
-    write_json_atomic(path, root)
+    if not _write_declaration(path, root, base, "agent-audit"):
+        return False, "target-changed-concurrently"
     decision.update({
         "status": "promoted", "promoted_at": now_iso(),
         "baseline": dict(rating or {}),
@@ -177,9 +201,9 @@ def _retire(decision: dict, reason: str) -> None:
                 _set(root, parts, applied.get("previous"))
             else:
                 _delete(root, parts)
-            root["updated_at"] = now_iso()
-            root["updated_by"] = "agent-audit-retire"
-            write_json_atomic(path, root)
+            base = _revision_of(root) if decision.get("target") == "agent-tuning" else None
+            if not _write_declaration(path, root, base, "agent-audit-retire"):
+                reason += ":write-conflict"
         elif exists:
             reason += ":superseded"
     decision.update({"status": "retired", "retired_at": now_iso(), "retire_reason": reason})

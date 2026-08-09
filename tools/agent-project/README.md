@@ -64,7 +64,7 @@
     読む系（repo_map / doctor / review）に付けると CLI の readonly 実装がツールを削るため
     探索そのものを失う。クラウド CLI では判断だけの呼び出しから
     `--dangerously-skip-permissions` 等が外れる（設計:
-    [agent-ollama-expansion-design.md](../../docs/designs/agent-ollama-expansion-design.md) §5）
+    [2026-08-08-agent-ollama-expansion-design.md](../../docs/plans/2026-08-08-agent-ollama-expansion-design.md) §5）
 
 ```bash
 bash tools/agent-tools/install.sh                         # agent-project / agent-flow / agent-amigos を

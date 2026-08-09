@@ -1,6 +1,6 @@
 """agentcore.agentcli.json_variant の単体テスト（JSON 契約の役割へ振り替える CLI 定義の申告）。
 
-設計: docs/designs/agent-ollama-expansion-design.md §4.3
+設計: docs/plans/2026-08-08-agent-ollama-expansion-design.md §4.3
 コンセプト: 柱3 / C9 — 仕事に足る最小のモデルへ流す設定を、人の手作業に払わせない。
 
     python -m unittest discover -s tools/agent-tools/agentcore/tests

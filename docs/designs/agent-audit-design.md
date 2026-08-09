@@ -1,8 +1,10 @@
 # agent-audit — 設計書
 
-> 最終更新: 2026-08-04 ／ 関連: `tools/agent-tools/`（agentcore・共通インストーラ）,
-> `tools/kiro-log-exporter/`（収集の先例）, `schemas/node-budget.schema.json`,
-> `schemas/agent-cli.schema.json`, `docs/designs/agent-tools-concept.md`（上位文書）
+> 最終更新: 2026-08-09 ／ 関連: `tools/agent-tools/`（agentcore・共通インストーラ）,
+> `tools/kiro-log-exporter/`（収集の先例）, `schemas/audit-record.schema.json`,
+> `schemas/audit-insight.schema.json`, `schemas/node-budget.schema.json`,
+> `schemas/agent-cli.schema.json`, `schemas/agent-tuning.schema.json`,
+> `schemas/agent-profiles.schema.json`, `docs/designs/agent-tools-concept.md`（上位文書）
 >
 > 本書は agent-audit の**唯一の設計正典**。実装と差が出たら本書を更新する。
 >
@@ -62,15 +64,15 @@ agent-audit はこの 4 点を「読むだけの独立 CLI + 限定された LLM
   ┌─ 源泉 ──────────────────────────────┐   collect    ┌──────────────────────────────┐
   │ node-budget 台帳 ledger/*.jsonl     │ ──────────▶ │ records/<YYYYMMDD>.jsonl      │
   │ agent-flow バス runs/<id>/…         │  決定的      │   （正規化レコード・追記専用）  │
-  │ agent-project run-log.jsonl 他      │  増分        │ transcripts/…（任意・ローカル）│
+  │ agent-project run-log.jsonl         │  増分        │ transcripts/…（任意・ローカル）│
   │ agent-amigos missions/<mid>/…       │  冪等        │ state.json（収集カーソル）     │
-  │ agent-loop agent-loop.log / slots   │             └──────────────┬───────────────┘
+  │ agent-loop の宣言済みログ            │             └──────────────┬───────────────┘
   │ CLI ネイティブストア                 │                            │
   │  （agents/<name>.json session_log） │        ┌───────────────────┼───────────────────┐
   └─────────────────────────────────────┘        │ 決定的（LLM 不使用）│ LLM（段別にモデル選択）
                                                  ▼                   ▼
-                                      usage / stats / report   extract（map・弱モデル可）
-                                      calibrate（rates 提案）        │ observations/*.jsonl
+                                      usage / stats / ratings  extract（map・弱モデル可）
+                                      trials / report / calibrate    │ observations/*.jsonl
                                                  ▲                   ▼
                                                  │             cluster（決定的）
                                                  │                   ▼
@@ -78,12 +80,13 @@ agent-audit はこの 4 点を「読むだけの独立 CLI + 限定された LLM
                                                  │                   │ insights/<id>.json
                                                  └────────┬──────────┘
                                                           ▼
-                                            report（Markdown/JSON）・tasks（task.schema.json）
+                                            report・tasks（task.schema.json）・tune
                                             → agent-project の汎用 intake / 人が読む
 ```
 
-パイプラインは **collect → (usage|stats|report) と collect → extract → cluster → distill →
-(report|tasks)** の 2 系統。LLM を使うのは extract と distill（と任意の review）だけで、
+パイプラインは **collect → (usage|stats|ratings|trials|report|calibrate) と collect → extract →
+cluster → distill → (report|tasks|tune)** の 2 系統。LLM を使うのは extract と distill
+（と任意の review）だけで、
 それ以外の全段は決定的。各サブコマンドは codd-gate と同じく**単発・有界**（watch / daemon を
 持たない）。定期実行は agent-loop / cron / CI の側に置く。
 
@@ -116,6 +119,7 @@ agent-audit が他ツールの設定の第 2 の書き手になり、どちら�
   transcripts/<src>/<sid>.log    # 任意（--with-transcripts）。ノード外へ出さない
   observations/<YYYYMMDD>.jsonl  # extract の出力（追記専用）
   insights/<id>.json             # distill の出力（1 洞察 1 ファイル）
+  decisions/<id>.json            # tune の型付き調整候補・適用と退役の記録
   reports/<ts>-<kind>.md         # report の出力
 ```
 
@@ -184,7 +188,7 @@ audit ディレクトリは放置すると transcript を中心に際限なく�
 
 - **明示 gc**: `agent-audit gc [--dry-run]`。`gc_keep_days` の種別別日数
   （records / transcripts / observations / reports）を超えたファイルを削除する。
-  **insights と state.json は gc 対象外**——洞察は蒸留の成果そのもので小さく、消すと
+  **insights・decisions・state.json は gc 対象外**——洞察と調整判断は成果そのもので小さく、消すと
   同じクラスタを再蒸留してトークンを二重に払う（削除は人が明示的にファイルを消す）。
 - **自動 gc（定期クリーンアップ）**: `gc_auto: true`（既定）のとき、`collect` の末尾で
   前回 gc から `gc_interval_hours`（既定 24）以上経過していれば同じ掃除を 1 回走らせ、
@@ -201,7 +205,9 @@ audit ディレクトリは放置すると transcript を中心に際限なく�
 
 ### 4.1 源泉と収集器
 
-収集器は `sources:` 設定（省略時は全種を自動発見）で有効化する。すべて読み取り専用・
+`sources:` は有効にする収集器を絞る設定で、空なら全種を有効にする。場所を自動発見するのは
+budget-ledger と cli-native だけで、flow / project / amigos / loop は設定に明示された場所だけを
+読む。すべて読み取り専用・
 増分・冪等（`state.json` のカーソル: mtime / ファイル末尾オフセット / セッション
 updated_at。`kiro-log-exporter` の `.kiro_export_state.json` と同じ規律）。
 源泉の場所も **引数 / 設定 > 契約上の既定パス** で解決し、環境変数は見ない（読む相手の
@@ -211,10 +217,10 @@ updated_at。`kiro-log-exporter` の `.kiro_export_state.json` と同じ規律�
 | source | 読む場所 | 取るもの |
 |---|---|---|
 | `budget-ledger` | 設定 `budget_dir`（既定は契約の `~/.agents/budget/`）の `ledger/*.jsonl` | ledger 行 → `kind:ledger` レコード（消費の一次事実） |
-| `flow-bus` | 設定 `flow_buses:`（既定はプロジェクト root の `bus/`） | `runs/<id>/meta.json`・`graph.json`・`events/*.jsonl`・`results/*.json`・`final.json` → `kind:run`。error_class・retries・verify、読込割付、依存 digest の削減量、モデル昇格、planner の決定的ルール照合を抽出 |
-| `project-root` | 設定 `project_roots:` | `run-log.jsonl`・`run-log/<node>/*.json`・`archive/`（納品書の cost 行）・`needs/`・`decisions/` → `kind:run` |
-| `amigos-bus` | 設定 `amigos_buses:` ＋ `<home>/deliveries/` | `missions/<mid>/events/*.jsonl`（turn/cli_seconds）・`delivery.json` → `kind:run` |
-| `loop-log` | `~/.agents/agent-loop.log`・`~/.agents/slots/` | 送信・失敗行の粗い run 化（loop は計測点が薄い現実をそのまま記録） |
+| `flow-bus` | 設定 `flow_buses:` ＋ `project_roots:` 配下の `bus/` | 終端 run の `meta.json`・`graph.json`・`events/*.jsonl` → `kind:run`、`results/*.json` → `kind:result`。error_class・retries・verify、読込割付、依存 digest の削減量、モデル昇格、planner の決定的ルール照合を抽出 |
+| `project-root` | 設定 `project_roots:` | `run-log.jsonl` → `kind:run`。状態・秒・トークン・コスト・needs エスカレーション数を抽出 |
+| `amigos-bus` | 設定 `amigos_buses:` | 終端 mission の `events/*.jsonl` → `kind:run`。turn 数と `cli_seconds` を抽出 |
+| `loop-log` | 設定 `loop_logs:` のファイル | ERROR / WARNING 行の粗い run 化（loop は計測点が薄い現実をそのまま記録） |
 | `cli-native` | `agents/<name>.json` の `session_log` 宣言（§4.2） | CLI 自身のセッション → `kind:session`。**実測トークン・turn 数・transcript** |
 
 ### 4.2 CLI ネイティブストアの汎用化 — `session_log` 契約（additive）
@@ -228,7 +234,7 @@ updated_at。`kiro-log-exporter` の `.kiro_export_state.json` と同じ規律�
 // agents/claude.json への追記例
 "session_log": {
   "format": "jsonl-dir",                      // パーサ実装は agent-audit に 1 実装（C7）
-  "paths": ["~/.claude/projects"],            // グロブ可・先勝ち
+  "paths": ["~/.claude/projects"],            // グロブ可・列挙した場所をすべて読む
   "usage": true                               // 実測トークンを含むか
 }
 // kiro.json: {"format": "kiro-sqlite", "paths": ["~/.kiro/store.db"], "usage": false}
@@ -370,7 +376,7 @@ CLI がログの書き方を変えたときの追随は、原則 JSON 1 ファ�
 **scrub との関係**: クリーニング（ノイズ）と scrub（秘密）は別の関心で、クリーニングは
 セキュリティ層ではない。export 系出力が決定的スクラバを必ず通す規律（§7）は不変。
 
-## 5. 決定的集計（usage / stats / calibrate）
+## 5. 決定的集計（usage / stats / ratings / trials / calibrate / tune）
 
 ### 5.1 `agent-audit usage` — トークン・コスト集計
 
@@ -382,15 +388,14 @@ CLI がログの書き方を変えたときの追随は、原則 JSON 1 ファ�
 - 台帳の **観測行**（`event` を持つ消費 0 の行。node-budget 設計を参照）は `kind: event`
   として収集し、消費集計・格付けのどちらにも混ぜない。落とさないのは「枠に当たった」
   「モデルを昇格した」が何回起きたかを後から数えたいため。
-- 出力: 表（人向け）と `--json`。dashboard が読む場合もこの JSON を契約にする
-  （dashboard は現在 ledger の seconds しか集計していない——トークン表示はこの出力を
-  読む表示層の変更で足せる）。
+- 出力: 表（人向け）と `--json`。dashboard もこの JSON を契約として実測・推定トークンを
+  表示し、agent-audit が使えない端末だけ ledger 集計へ縮退する。
 
 ### 5.2 `agent-audit stats` — 実行品質の集計
 
-records の run 系から決定的に導く: 完了率、`[agent-error:<class>]` 別の失敗内訳、
-リトライ回数分布、verify pass/fail 率、needs エスカレーション数、heal 発動数、
-ツール別・期間別。すべて既存タグ・既存ファイルの再集計であり LLM 不使用。
+records の run 系から決定的に導く: status と `[agent-error:<class>]` 別の件数、リトライ合計、
+verify pass/fail、needs エスカレーション数、LLM 判断と決定的ルールの一致率を、ツール別・
+期間別に出す。すべて既存タグ・既存ファイルの再集計であり LLM 不使用。
 
 ### 5.2.1 `agent-audit ratings` — 品質×消費の格付け
 
@@ -405,6 +410,39 @@ planner とワーカーが別モデルでも同じ判定を貰い、モデル別
 
 **適用は自動にしない**（コンセプト C9）。出るのは順位づけした表だけで、宣言
 （`agent-profiles` / `agents[purpose]`）の変更は学習ループの昇格経路を通す。
+
+`--methods` を付けると、仕事種別とモデルに加えて実際に適用された手法 id セットを軸にする。
+手法なしと手法ありを混ぜないための集計軸であり、単独では因果を主張しない。
+
+### 5.2.2 `agent-audit trials` — 2 variant の比較
+
+agent-tuning の trial が台帳と flow result に残した `trial.id / variant` を結合し、variant 別の
+PASS 率と平均 tokens を並べる。判定は LLM 不使用・宣言への自動適用なし。
+
+| verdict | 条件 |
+|---|---|
+| `harmful` | baseline より PASS 率が下がった |
+| `effective` | PASS 率が上がってトークンが増えていない、または PASS 率同等でトークンが減った |
+| `mixed` | PASS 率は上がったがトークンも増えた（資源効率としての採否は人が決める） |
+| `ineffective` | PASS 率もトークンも変わらない |
+| `insufficient` | 片側の結果サンプルが `trial_min_outcomes`（既定 3）未満、または消費・結果が欠けている |
+| `no-baseline` | どちらの variant も `baseline` / `control` でない |
+| `ambiguous` | 同じ (trial, purpose, model) の variant 行が 2 件でない |
+
+**判定語を出さないケースも行として出す。** 黙って比較を落とすと、出力の空欄が「データが
+無い」なのか「捨てた」なのかを読み手が区別できない。
+
+サンプル下限を置くのは、**標本の少なさが差の大きさに化ける**ため。n=1 なら PASS 差は必ず
+±1.0 になり、`harmful` / `effective` が 1 回の当たり外れで決まる。昇格ゲート（§5.4 の
+`tune_min_outcomes`）と同じ規律を、人が読む比較表にも通す。
+
+基準を variant 名で決めるのは、集計時には trial の宣言（variants の並び）が手元に無いから。
+名前が無いと辞書順が基準になり、差分の符号が命名に左右されるので、そのときは数字を出さない。
+スキーマ側も `variants` に `baseline` / `control` を含むことを要求する。
+
+同時に評価する trial は 1 件だけ（効果の帰属が割れる）。条件が重なって選ばれなかった trial は
+**捨てたことをログに残す**——黙って落とすと、宣言した trial が一度も走らないことに書いた人が
+気づけない。
 
 ### 5.3 `agent-audit calibrate` — rates 較正の管理面実装
 
@@ -523,14 +561,17 @@ LLM 段には停止条件を重ねる（C7): 段別上限（`extract_max_calls` 
 ## 7. 出力と学習ループへの接続
 
 - `agent-audit report [--kind usage|quality|insights|all]` — Markdown（`reports/` へ保存 +
-  stdout）。usage・stats・洞察一覧を 1 枚に束ねる。人が読む面はこれだけ。
-- `agent-audit tasks [--json]` — `exported: false` の洞察のうち `suggested_action` が
+  stdout）。usage・stats・洞察一覧を 1 枚に束ねる。集計と洞察をまとめて読む面はこれだけ。
+- `agent-audit tasks [--mark-exported]` — `exported: false` の洞察のうち `suggested_action` が
   具体化しているものを **`schemas/task.schema.json` 形の改善タスク**として出力する
   （codd-gate `tasks` と同じ導線）。agent-project 側は既存の汎用 intake
   （`intake_cmd` / `enqueue --json`）で読める——**agent-audit から state repo へ直接
   書かない**（C7）。出力したタスクには洞察 id と証跡参照が残り、採用されて rules.md へ
   昇格したかは agent-project 側の学習ループが追跡する（C8 の分業: 蒸留までが agent-audit、
   強制・評価は agent-project）。
+- `agent-audit sessions` — CLI ネイティブストアをその場で検索し、dashboard の
+  「会話を見る」へ JSON を返すノード内の読み取り口。共有・export 経路ではなく、本文は
+  1 メッセージ 8000 字で切り、呼び出した端末の外へ転送しない。
 - **共有してよい層の境界（C1）**: ノード外へ出せるのは records の集計値・観測・洞察・
   タスクだけ。transcript 本文と `excerpt_ref` の実体はローカルに留める。export 系出力
   （report / tasks / --json）は決定的スクラバ（資格情報パターン・絶対パスのホーム相対化）
@@ -538,28 +579,30 @@ LLM 段には停止条件を重ねる（C7): 段別上限（`extract_max_calls` 
 
 ## 8. CLI
 
-すべて単発・有界。終了コードは 0=成功 / 1=検出あり（stats の閾値超過等、CI 向け）/
-2=源泉が読めない（フェイルクローズ）。
+すべて単発・有界。終了コードは 0=成功（ゲートによる見送りを含む）/ 1=LLM 段の停止・
+更新の取り込み失敗 / 2=源泉が読めない・使い方の誤り。
 
 | サブコマンド | LLM | 概要 |
 |---|---|---|
 | `collect [--source S]... [--since D] [--with-transcripts]` | 不使用 | 増分収集・正規化 |
 | `usage [--period P] [--by K] [--json]` | 不使用 | トークン・コスト集計（measured / estimated 別掲） |
-| `stats [--json]` | 不使用 | 実行品質集計 + LLM 判断ごとの決定的ルール一致率（計測のみ） |
-| `ratings [--period P] [--json]` | 不使用 | 仕事種別×モデルの格付け（成否率と平均消費。提案のみで自動適用しない） |
+| `stats [--period P] [--json]` | 不使用 | 実行品質集計 + LLM 判断ごとの決定的ルール一致率（計測のみ） |
+| `ratings [--period P] [--methods] [--json]` | 不使用 | 仕事種別×モデルの格付け。任意で適用手法セットを軸に追加 |
+| `trials [--period P] [--json]` | 不使用 | 2 variant trial の PASS 率・平均消費と差分判定 |
 | `calibrate [--write]` | 不使用 | rates 較正の提案（--write で budget config へ反映） |
 | `tune [--apply] [--period P] [--json]` | 不使用 | 洞察 → 型付き調整候補。--apply で許可パスだけ宣言へ昇格し、悪化すれば退役（§5.4） |
 | `extract [--limit N] [--force]` | map | レコード → 観測。間隔・蓄積ゲート（§6.4）を通ったときだけ LLM を呼ぶ |
 | `distill [--limit N] [--review] [--force]` | reduce | 観測クラスタ → 洞察。同上 |
 | `report [--kind K] [--out F]` | 不使用 | Markdown レポート |
-| `tasks [--json]` | 不使用 | 洞察 → 改善タスク（task.schema.json） |
+| `tasks [--mark-exported]` | 不使用 | 洞察 → 改善タスク（task.schema.json）。明示時だけ出力済み印を付ける |
 | `gc [--dry-run]` | 不使用 | 種別別保持日数での掃除（§3.3。`gc_auto` で collect へ相乗り） |
 | `reclean [--agent-cli N] [--dry-run]` | 不使用 | クリーニングルール改訂後の transcript 再生成（§4.4。records・処理済み管理は不変） |
+| `sessions [--cli N] [--since T] [--until T] [--cwd-contains S] [--limit N] [--messages ID]` | 不使用 | CLI ネイティブセッションの検索・本文取得（ノード内 JSON） |
 | `doctor` | 不使用 | 源泉の到達性・session_log 宣言の有無・未収集 CLI・clean ルールのスキップ（未知ルール名等）と未対応ログバージョンの一覧 |
-| `update [--check]` | 不使用 | 自己更新（§9） |
+| `update [--check] [--now]` | 不使用 | 自己更新（§9） |
 
-`run`（collect → extract → distill → report の一括）は**設けない**。段を跨ぐ一括は
-agent-loop の定期プロンプトや cron に `collect && extract && distill` を書けば足り、
+`run`（collect → extract → distill → report の一括）は**設けない**。定期駆動は agent-loop
+同梱の `audit-calibrate-hook.py` が collect → calibrate → extract → distill → tune を順に呼ぶ。
 本体に複合コマンドを持つと「どこまで進んで止まったか」の状態管理が増える。
 
 ## 9. パッケージング・設定・自己更新・テスト（家族の慣習に揃える）
@@ -664,6 +707,8 @@ update_check_interval: 21600
   蒸留済みの洞察・タスク・集計だけで、その転送は既存の state repo / 板の仕組みに委ねる）。
 
 ## 12. 段階導入
+
+M1〜M5 は実装済み（2026-08-09）。
 
 | 段 | 内容 | 出口条件 |
 |---|---|---|

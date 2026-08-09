@@ -19,6 +19,8 @@ module.exports = {
     controlDir: '',
     instructionsDir: '',
     sessionDir: '',
+    tuningDir: '',
+    methodsDir: '',
     refreshSec: 15,
   },
 };

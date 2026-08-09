@@ -74,6 +74,19 @@ class UsageTests(AuditTestCase):
         self.assertEqual(cli["measured_tokens_per_second"], 20.0)
         self.assertEqual(cli["delta_ratio"], 1.0)
 
+    def test_calibrate_uses_linked_session_duration_with_session_tokens(self):
+        st = self.make_store()
+        ended = _iso_now(-60)
+        st.append_record({"id": "aud-l1", "ts": ended, "kind": "ledger",
+                          "agent_cli": "claude", "model": "sonnet", "seconds": 0.001})
+        st.append_record({"id": "aud-s1", "ts": ended, "started_at": _iso_now(-960),
+                          "kind": "session", "agent_cli": "claude",
+                          "model": "claude-sonnet-4", "tokens_in": 9000,
+                          "tokens_out": 0, "measured": True})
+        rates = usage.calibration_rates(self.make_args(), st)
+        self.assertEqual(rates["claude"], 10.0)
+        self.assertEqual(rates["claude:sonnet"], 10.0)
+
     def test_ratings_golden_by_purpose_and_model(self):
         st = self.make_store()
         ts = _iso_now(-60)
@@ -122,6 +135,73 @@ class UsageTests(AuditTestCase):
         self.assertEqual(data["decisions"], [{
             "decision": "planner.pattern", "samples": 3, "matches": 2,
             "agreement_rate": 0.6667}])
+
+    def _seed_trial(self, st, arms):
+        ts = _iso_now(-60)
+        for variant, method, tokens, statuses in arms:
+            for i, status in enumerate(statuses):
+                evidence = {"trial": {"id": "trial-1", "variant": variant},
+                            "methods": [method]}
+                st.append_record({"id": f"l-{variant}-{method}-{i}", "ts": ts, "kind": "ledger",
+                                  "purpose": "work", "model": "m", "tokens_in": tokens,
+                                  "tokens_out": 0, **evidence})
+                st.append_record({"id": f"r-{variant}-{method}-{i}", "ts": ts, "kind": "result",
+                                  "purpose": "work", "model": "m", "status": status,
+                                  **evidence})
+        st.save_state()
+
+    def test_method_axis_and_trial_comparison(self):
+        st = self.make_store()
+        self._seed_trial(st, (
+            ("baseline", "plan-first", 100, ("done", "failed", "done", "failed")),
+            ("candidate", "test-first", 80, ("done", "done", "done", "done"))))
+        ratings = stats.aggregate_ratings(self.make_args(), st, "total", by_methods=True)
+        self.assertEqual({tuple(r["methods"]) for r in ratings},
+                         {("plan-first",), ("test-first",)})
+        data = stats.aggregate_trials(self.make_args(), st, "total")
+        self.assertEqual(data["comparisons"], [{
+            "trial": "trial-1", "purpose": "work", "model": "m",
+            "baseline": "baseline", "candidate": "candidate",
+            "min_outcome_runs": 4,
+            "pass_rate_delta": 0.5, "average_tokens_delta": -20.0,
+            "verdict": "effective"}])
+
+    def test_small_samples_do_not_produce_a_verdict(self):
+        """n=1 でも PASS 差は ±1.0 になる。**標本の少なさが差の大きさに化ける**ので、
+        下限を割る比較は判定語を出さない（S12 の昇格ゲートと同じ規律）。"""
+        st = self.make_store()
+        self._seed_trial(st, (("baseline", "plan-first", 100, ("failed",)),
+                              ("candidate", "test-first", 80, ("done",))))
+        row = stats.aggregate_trials(self.make_args(), st, "total")["comparisons"][0]
+        self.assertEqual(row["verdict"], "insufficient")
+        self.assertIsNone(row["pass_rate_delta"])
+        self.assertIn("下限", row["reason"])
+
+    def test_quality_gain_that_costs_tokens_is_not_called_effective(self):
+        st = self.make_store()
+        self._seed_trial(st, (("baseline", "plan-first", 100, ("done", "failed", "done", "failed")),
+                              ("candidate", "test-first", 400, ("done", "done", "done", "done"))))
+        row = stats.aggregate_trials(self.make_args(), st, "total")["comparisons"][0]
+        self.assertEqual(row["verdict"], "mixed", "品質は上がったがトークンは増えた")
+
+    def test_missing_baseline_variant_reports_instead_of_guessing(self):
+        """基準が名前で決まらないと差分の符号が辞書順に左右される。数字を出さない。"""
+        st = self.make_store()
+        self._seed_trial(st, (("armA", "plan-first", 100, ("done", "done", "done")),
+                              ("armB", "test-first", 80, ("done", "done", "done"))))
+        row = stats.aggregate_trials(self.make_args(), st, "total")["comparisons"][0]
+        self.assertEqual(row["verdict"], "no-baseline")
+
+    def test_split_variant_rows_are_reported_not_silently_dropped(self):
+        """同じ trial で手法セットが分岐すると 3 行以上になる。黙って消すと
+        「データが無い」と「捨てた」を読み手が区別できない。"""
+        st = self.make_store()
+        self._seed_trial(st, (("baseline", "plan-first", 100, ("done",)),
+                              ("candidate", "test-first", 80, ("done",)),
+                              ("candidate", "spec-first", 80, ("done",))))
+        row = stats.aggregate_trials(self.make_args(), st, "total")["comparisons"][0]
+        self.assertEqual(row["verdict"], "ambiguous")
+        self.assertIn("3 件", row["reason"])
 
 
 if __name__ == "__main__":

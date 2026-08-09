@@ -255,6 +255,16 @@ with zipfile.ZipFile(exe, 'a') as zf:
 "
 ok "インストールしました: ${INSTALL_PATH}（zipapp）"
 
+# 手法カタログは参照データとして共通ホームへ配る。tuning.json へは enable 時に複製されるため、
+# カタログ更新だけで稼働中の挙動は変わらない。
+METHODS_SRC="${SCRIPT_DIR}/../../methods"
+METHODS_DEST="${AGENT_METHODS_DIR:-${HOME}/.agents/methods}"
+if [[ -d "${METHODS_SRC}" ]]; then
+  mkdir -p "${METHODS_DEST}"
+  find "${METHODS_SRC}" -maxdepth 1 -name '*.json' -exec cp {} "${METHODS_DEST}/" \;
+  ok "手法カタログを配置しました: ${METHODS_DEST}"
+fi
+
 # 付属の agent-send も同じ prefix へ（単一ファイル）
 SEND_SRC="${SCRIPT_DIR}/agent-send.py"
 if [[ -f "$SEND_SRC" ]]; then

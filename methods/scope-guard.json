@@ -1,0 +1,1 @@
+{"id":"scope-guard","description":"宣言外のファイル変更を止めて報告する","enabled":false,"fragments":[{"role":"worker","text":"割付または宣言外のファイル変更が必要になったら、変更せず理由を報告してください。"}],"when":{"tiers":["small"]},"origin":"skill://flow-worker"}

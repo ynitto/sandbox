@@ -1,0 +1,34 @@
+{
+  "_comment": [
+    "同梱 methods/*.json の source ダイジェスト（sha256 先頭 12 桁）の golden。",
+    "ダイジェストは Python（agent-loop）と JS（agent-dashboard）に 2 実装ある。",
+    "tuning.json の `source: methods/<id>@<hash>` は、どちらが書いても同じでなければ",
+    "「同じカタログ由来か」を後から突き合わせられない。両側のテストがこの値を読む。",
+    "カタログを直したらここも更新する（更新漏れは両側のテストが落ちて気づく）。",
+    "置き場所が methods/ の外なのは、あのディレクトリを両実装が *.json でカタログとして",
+    "走査するため（id を持たないファイルを混ぜない）。"
+  ],
+  "algorithm": "sha256(canonical json: keys sorted recursively, separators ',' ':', non-ASCII literal)[:12]",
+  "hashes": {
+    "adversarial-verify": "b0a371728e45",
+    "checklist-acceptance": "cb9a553ba372",
+    "consistency-sweep": "841f3e5e2cde",
+    "council-review": "744f865b5d43",
+    "derive-twice": "30611c1112d4",
+    "evidence-or-fail": "9553ab93006e",
+    "failure-modes-first": "3b1189b9f9be",
+    "no-self-approval": "09b28cd1a98d",
+    "one-change-per-step": "5ef0b6c0dbfa",
+    "output-contract-strict": "32342163cbeb",
+    "parallel-review": "34b5446f62aa",
+    "path-grounding": "f809ee4ff558",
+    "persist-until-done": "a661100abbaf",
+    "plan-first": "3d75fbf02d17",
+    "plan-reflect-each-tool": "226d2a02bd72",
+    "restate-task": "4b7e68fa9eda",
+    "scope-guard": "d8f82f64407f",
+    "self-consistency": "4e81823365b2",
+    "spec-first": "b46b52e562c6",
+    "test-first": "07ffff0e5346"
+  }
+}

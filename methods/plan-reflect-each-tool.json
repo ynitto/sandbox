@@ -1,0 +1,1 @@
+{"id":"plan-reflect-each-tool","description":"ツール前に計画し結果後に短く振り返る","enabled":false,"fragments":[{"role":"worker","text":"各ツール呼び出しの前に目的を確認し、結果を受けて次の手を更新してください。"}],"when":{"tiers":["small","medium"]},"origin":"https://developers.openai.com/cookbook/examples/gpt4-1_prompting_guide"}

@@ -1,0 +1,48 @@
+import hashlib
+import json
+import pathlib
+import unittest
+
+
+class MethodCatalogTests(unittest.TestCase):
+    def test_golden_catalog_has_exactly_twenty_valid_presets(self):
+        root = pathlib.Path(__file__).resolve().parents[3]
+        paths = sorted((root / "methods").glob("*.json"))
+        expected = {
+            "restate-task", "path-grounding", "plan-first", "spec-first", "test-first",
+            "failure-modes-first", "scope-guard", "one-change-per-step", "consistency-sweep",
+            "output-contract-strict", "persist-until-done", "plan-reflect-each-tool",
+            "evidence-or-fail", "no-self-approval", "adversarial-verify",
+            "checklist-acceptance", "parallel-review", "council-review", "self-consistency",
+            "derive-twice",
+        }
+        methods = [json.loads(path.read_text(encoding="utf-8")) for path in paths]
+        self.assertEqual({method["id"] for method in methods}, expected)
+        self.assertEqual(len(paths), 20)
+        self.assertTrue(all(method.get("origin") and method.get("fragments")
+                            and method.get("enabled") is False for method in methods))
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+class MethodSourceHashGoldenTests(unittest.TestCase):
+    """同梱カタログの source ダイジェストを Python 側で固定する。
+
+    ダイジェストは JS（agent-dashboard）にも実装があり、`source: methods/<id>@<hash>` は
+    どちらが書いても同じでなければ「同じカタログ由来か」を突き合わせられない。両側が
+    同じ golden を読むことで、片方の正規化（キー順・区切り・数値表記）が変わったら落ちる。
+    """
+
+    def test_shipped_catalog_hashes_match_the_shared_golden(self):
+        root = pathlib.Path(__file__).resolve().parents[3]
+        golden = json.loads((root / "schemas" / "methods-source-hash.golden.json")
+                            .read_text(encoding="utf-8"))["hashes"]
+        actual = {}
+        for path in sorted((root / "methods").glob("*.json")):
+            method = json.loads(path.read_text(encoding="utf-8"))
+            actual[method["id"]] = hashlib.sha256(
+                json.dumps(method, ensure_ascii=False, sort_keys=True,
+                           separators=(",", ":")).encode()).hexdigest()[:12]
+        self.assertEqual(actual, golden)

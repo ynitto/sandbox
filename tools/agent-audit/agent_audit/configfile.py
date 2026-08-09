@@ -59,6 +59,9 @@ CONFIG_DEFAULTS = {
     "tune_evaluation_runs": 3,
     "tune_max_promotions_per_run": 1,
     "tune_max_total_promotions": 20,
+    # trial 比較の判定に要る片側あたりの結果サンプル下限。n=1 でも PASS 差は ±1.0 に
+    # なるので、下限を割る比較は判定語を出さない（昇格ゲートの tune_min_outcomes と対）。
+    "trial_min_outcomes": 3,
     "tuning_file": "",
     "profiles_file": "",
     # 相関

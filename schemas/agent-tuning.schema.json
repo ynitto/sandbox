@@ -9,9 +9,65 @@
       "properties": {
         "engines": {"type": "array", "items": {"type": "string"}},
         "workloads": {"type": "array", "items": {"type": "string"}},
-        "agent_cli": {"type": "array", "items": {"type": "string"}}
+        "agent_cli": {"type": "array", "items": {"type": "string"}},
+        "models": {"type": "array", "items": {"type": "string"}},
+        "roles": {
+          "type": "array",
+          "items": {"enum": ["planner", "worker", "verify", "evaluator", "session"]}
+        },
+        "purposes": {"type": "array", "items": {"type": "string"}},
+        "tiers": {"type": "array", "items": {"type": "string"}},
+        "min_relative_cost": {"type": "number", "minimum": 0},
+        "max_relative_cost": {"type": "number", "minimum": 0}
       },
       "additionalProperties": true
+    },
+    "methodFragment": {
+      "type": "object",
+      "required": ["role", "text"],
+      "properties": {
+        "role": {"enum": ["planner", "worker", "verify", "evaluator", "session"]},
+        "text": {"type": "string", "minLength": 1, "maxLength": 16000}
+      },
+      "additionalProperties": false
+    },
+    "method": {
+      "type": "object",
+      "required": ["id", "description", "fragments", "origin"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
+        "description": {"type": "string", "minLength": 1},
+        "enabled": {"type": "boolean", "default": false, "description": "適用には明示 true が必要（省略・null は無効）。手法プリセットは既定 OFF で、有効化は書き手の明示的な選択に限る。"},
+        "fragments": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/methodFragment"}},
+        "when": {"$ref": "#/$defs/when"},
+        "origin": {"type": "string", "minLength": 1},
+        "source": {"type": "string"}
+      },
+      "additionalProperties": true
+    },
+    "trial": {
+      "type": "object",
+      "required": ["id", "variants"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
+        "enabled": {"type": "boolean", "default": true, "description": "省略時は有効。明示 false のときだけ止まる（method の既定 OFF とは逆で、trial は書いた時点で走らせる意図の宣言）。"},
+        "assignment": {"const": "alternating", "default": "alternating"},
+        "variants": {
+          "type": "array", "minItems": 2, "maxItems": 2,
+          "description": "対照群と候補の 2 つ。**片方は必ず `baseline`（または `control`）と名付ける** — 基準が名前で決まらないと、集計側は variant 名の辞書順で基準を選ぶことになり、差分の符号が命名に左右される。基準の無い trial は集計で verdict=no-baseline として数字を出さない",
+          "contains": {"properties": {"id": {"enum": ["baseline", "control"]}}, "required": ["id"]},
+          "items": {
+            "type": "object", "required": ["id", "methods"],
+            "properties": {
+              "id": {"type": "string", "minLength": 1},
+              "methods": {"type": "array", "items": {"type": "string"}, "uniqueItems": true, "description": "この variant で追加で有効化する手法 id。**`methods[]` へ複製済み（enable 済み）の id だけが効く** — カタログにあるだけの id は注入されず、その実行は variant を代表しないので trial として記録されない"}
+            },
+            "additionalProperties": false
+          }
+        },
+        "when": {"$ref": "#/$defs/when"}
+      },
+      "additionalProperties": false
     },
     "injection": {
       "type": "object",
@@ -62,6 +118,8 @@
     "enabled": {"type": "boolean", "default": true},
     "injections": {"type": "array", "items": {"$ref": "#/$defs/injection"}},
     "env": {"type": "array", "items": {"$ref": "#/$defs/environment"}},
+    "methods": {"type": "array", "items": {"$ref": "#/$defs/method"}},
+    "trials": {"type": "array", "items": {"$ref": "#/$defs/trial"}},
     "profiles": {
       "type": "object",
       "required": ["default", "external-facing"],

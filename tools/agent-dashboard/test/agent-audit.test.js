@@ -132,12 +132,27 @@ test('利用量テーブルは実測と推定を別の列で示し合算しな�
   assert.match(html, /34k/);
   assert.match(html, /1\.5時間/);
   assert.match(html, /\$0\.05/);
-  assert.match(html, /合算していません/);
 });
 
 test('利用量テーブルは記録が無いとき収集への導線を示す', () => {
   assert.match(ui.usageTableHtml({ rows: [] }), /今すぐ収集/);
   assert.match(ui.usageTableHtml(null), /今すぐ収集/);
+});
+
+test('利用状況タブを開くと初回取得のため表示通知を送る', () => {
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'renderer', 'sections', 'backlog.js'), 'utf8');
+  const start = src.indexOf('function switchTab(name)');
+  const end = src.indexOf('\n}', start);
+  assert.match(src.slice(start, end), /revealGlobalSettingsPanels\(pane, name\)/);
+});
+
+test('利用状況は実装説明を出さず、必要な説明を一度だけ示す', () => {
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'renderer', 'features', 'agent-audit.js'), 'utf8');
+  assert.doesNotMatch(src, /この端末の実行記録（台帳）と、エージェント CLI のセッションログ/);
+  assert.doesNotMatch(src, /summary-kicker">実行証跡から集計/);
+  assert.equal((src.match(/実測は CLI の記録、推定は実行時間から計算した値です。/g) || []).length, 1);
 });
 
 test('summary は機能別とエージェント別を 1 回で取り、合計を畳む', async () => {
@@ -240,7 +255,7 @@ test('ゲージは期間が予算の期間と一致するときだけ残量を�
   assert.doesNotMatch(other, /使用/);
   assert.match(other, /期間を合わせて/);
   // 上限未設定でも集計は続く
-  assert.match(withState({}, () => ui.gaugeHtml(SUMMARY.totals, 'month')), /上限は設定されていません/);
+  assert.match(withState({}, () => ui.gaugeHtml(SUMMARY.totals, 'month')), /上限は未設定/);
 });
 
 test('エージェント別テーブルは割合の大きい順に並べ、概算費用を添える', () => {
@@ -265,10 +280,10 @@ test('agent-audit の集計が取れない端末では台帳集計へフォー�
       delete globalThis.orchBudgetPanelHtml;
     }
   });
-  assert.match(html, /実行記録（台帳）だけの集計/);
+  assert.match(html, /実行記録だけを表示/);
   assert.match(html, /id="ledger-panel"/);
   // 予算も読めなければ、数字を捏造せず設定の確認へ誘導する
-  assert.match(withState({}, () => ui.ledgerFallbackHtml()), /収集の設定/);
+  assert.match(withState({}, () => ui.ledgerFallbackHtml()), /設定で/);
 });
 
 test('実行品質テーブルは結果・リトライ・検証を利用者向けの言葉で示す', () => {

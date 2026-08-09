@@ -1,0 +1,1 @@
+{"id":"failure-modes-first","description":"失敗モードと回復手段を先に洗い出す","enabled":false,"fragments":[{"role":"planner","text":"可用性に関わる計画では、失敗モード・検知・回復手段を先に含めてください。"},{"role":"worker","text":"実装前に想定する失敗モードと回復手段を列挙してください。"}],"when":{"purposes":["work","planner"]},"origin":"skill://failure-driven-development"}
