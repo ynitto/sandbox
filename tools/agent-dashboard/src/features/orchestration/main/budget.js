@@ -2,7 +2,7 @@
 
 // ノード予算（node-budget v2 契約）の読み書き・集計・配分計算・レート較正。
 // 正典: schemas/node-budget.schema.json。実体は $AGENT_BUDGET_DIR
-// （既定 ~/.agent/budget/）の config.json + ledger/<YYYYMMDD>.jsonl（UTC・追記専用）。
+// （既定 ~/.agents/budget/）の config.json + ledger/<YYYYMMDD>.jsonl（UTC・追記専用）。
 //
 // v1（amigos/main/budget.js）を additive に拡張したもの。一次単位を実行時間（分）から
 // トークンへ広げ、配分（allocation/computed）の知能を管理面（dashboard）に置く。

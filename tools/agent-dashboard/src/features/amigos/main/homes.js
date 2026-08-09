@@ -16,7 +16,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { parseFlatYaml } = require('../../agent-project/main/toolconfig');
-const { AGENT_HOME, AGENT_HOME_LEGACY, agentHomeDir, agentHomeSubdir } = require('../../../base/main/agent-home');
+const { agentDirCandidates, agentHomeDir, agentHomeSubdir } = require('../../../base/main/agent-home');
 
 const CONFIG_NAMES = ['agent-amigos.yaml', 'agent-amigos.yml', 'agent-amigos.json'];
 
@@ -65,10 +65,11 @@ function readConfig(dir) {
     const found = readConfigFile(path.join(dir, name));
     if (found) return found;
   }
-  for (const name of CONFIG_NAMES) {
-    const found = readConfigFile(path.join(dir, AGENT_HOME, name))
-      || readConfigFile(path.join(dir, AGENT_HOME_LEGACY, name));
-    if (found) return found;
+  for (const candidate of agentDirCandidates(dir)) {
+    for (const name of CONFIG_NAMES) {
+      const found = readConfigFile(path.join(candidate, name));
+      if (found) return found;
+    }
   }
   return null;
 }
@@ -136,7 +137,7 @@ function discoverHomes(cfg) {
     let busDir;
     if (busSpec.startsWith('git+') || busSpec.startsWith('hub+')) {
       // GitBus / HubBus はローカルミラー（workdir）がバスの実体。agent-amigos と同じ導出:
-      // 設定 bus_workdir、無ければ ~/.agent/amigos/{bus|hub}/<sha1(url)[:8]>（gitbus.py / hubbus.py）。
+      // 設定 bus_workdir、無ければ ~/.agents/amigos/{bus|hub}/<sha1(url)[:8]>（gitbus.py / hubbus.py）。
       // これが無いとミッション → ホームの対応（引き受け・依頼の投函先解決）が git/hub バスで切れる。
       if (values.bus_workdir) {
         const p = expandHome(String(values.bus_workdir));

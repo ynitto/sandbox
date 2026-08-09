@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import unittest
+from unittest import mock
 
 from _shared import AuditTestCase, configfile
 
@@ -30,6 +31,21 @@ class ConfigTests(AuditTestCase):
             json.dump({"agent_cli": "kiro"}, f)
         found = configfile.find_config(None, cwd=self.tmp)
         self.assertEqual(found, cfg)
+
+    def test_global_config_uses_dot_agents_only(self):
+        home = os.path.join(self.tmp, "home")
+        old = os.path.join(home, ".agent")
+        new = os.path.join(home, ".agents")
+        os.makedirs(old)
+        with open(os.path.join(old, "agent-audit.json"), "w", encoding="utf-8") as f:
+            json.dump({"agent_cli": "old"}, f)
+        with mock.patch.dict(os.environ, {"HOME": home}):
+            self.assertIsNone(configfile.find_config(None, cwd=home))
+            os.makedirs(new)
+            expected = os.path.join(new, "agent-audit.json")
+            with open(expected, "w", encoding="utf-8") as f:
+                json.dump({"agent_cli": "new"}, f)
+            self.assertEqual(configfile.find_config(None, cwd=home), expected)
 
     def test_explicit_config_missing_is_hard_error(self):
         with self.assertRaises(SystemExit):

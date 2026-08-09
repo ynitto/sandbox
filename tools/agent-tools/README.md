@@ -148,12 +148,28 @@ R2/12 decode 経過 4m12s  out=210tk  ctx 4.2k/8.2k (51%)      ← TUI のステ
   補正する（減って見えたら積み上げに切り替え、`context_source` が `estimated` になる）
 - **`--context-warn-pct`**（既定 90）を超えたら 1 回だけ警告する（毎ラウンド出さない）
 - **ツール出力は残り容量に合わせて詰める**。残りが足りなければ `context_exhausted` で
-  止め、`@agent-note` で「途中で打ち切った」ことを呼び出し側にも見せる（成果は返す）
+  止める（成果は返す。打ち切りの申告は下記）
 - 使用量は `llm_end` イベント・`--status` の JSON・`@agent-context` 行の 3 か所に出る。
   TUI では `/ctx` でいつでも確認できる
 
 `@agent-usage`（その実行で使った累計トークン = 台帳向け）と `@agent-context`
 （いま文脈がどれだけ埋まっているか）は**意味が違う**ので行を分けてある。
+
+### 完走しなかったときの申告
+
+`done` 以外（`no_command` / `max_rounds` / `context_exhausted` / `tool_denied`）で
+終わったら、**成果本文の末尾へ機械可読な封筒**を足す（`--format json` のときだけ足さない）:
+
+```
+…最後の応答までの成果…
+
+{"ok": false, "issues": ["agent-ollama: 最大ラウンドに達して打ち切りました（status=max_rounds）"]}
+```
+
+同じことを `@agent-note` で stderr にも出すが、**判定に使うのは封筒のほう**。人向けの
+注記は呼び出し側が読まないので、これが無いと途中経過が rc=0 の完了として扱われる
+（規約から外れたまま打ち切る `no_command` が一番起きる）。封筒の形はエンジン側の
+worker 契約（agent-flow の `{"ok": …}` 判定）と同一。
 
 **圧縮して続行するループは持たない**（非目標）。圧縮 1 回は会話全体の再 prefill 1 回で、
 繰り返した時点で停滞が確定し、要約のたびに情報欠落だけが積み上がる。文脈が尽きたら
@@ -189,7 +205,8 @@ export OLLAMA_NUM_PARALLEL=1                       # 先頭キャッシュが効
 - **スキルは明示したものだけを遅延で読む**。`--skill <名前>`（プログラム経路）と、
   プロンプト**先頭ブロックのスラッシュ行** `/<名前> [引数]`（人手経路）の 2 形態だけに
   反応する。カタログは LLM へ見せないので、**使わないときの追加コストは 0**。
-  読む先は `install.py` の配布先（`~/.agents/skills` / `~/.claude/skills`）そのまま。
+  最初に `~/.agents/skills` を読み、次に `AGENT_OLLAMA_SKILLS_DIR` の追加先、
+  最後に `~/.claude/skills` を読む。
 - **rich は任意**。`install.sh --with-rich` で zipapp へ同梱すると TUI に色が付く。
   無くても素の ANSI で同じ情報を出す（既定はネットワーク不要のまま）。
 

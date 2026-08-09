@@ -1,6 +1,7 @@
 """environment handoff（Phase 2C-1）の contract テスト。"""
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -110,6 +111,12 @@ class SchedulerEnvPrependTests(unittest.TestCase):
 
 
 class LaunchEnvTests(unittest.TestCase):
+    def test_agent_home_does_not_fall_back_to_dot_agent(self):
+        with tempfile.TemporaryDirectory() as home:
+            (Path(home) / ".agent").mkdir()
+            with mock.patch.object(al.Path, "home", return_value=Path(home)):
+                self.assertEqual(al.agent_home_dir(), Path(home) / ".agents")
+
     def test_launch_env_sets_home_and_agent_home(self):
         mgr = al.SessionManager(
             target_path="/tmp",

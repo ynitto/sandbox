@@ -50,6 +50,13 @@ class _Isolated(unittest.TestCase):
 
 
 class TestLoad(_Isolated):
+    def test_common_home_does_not_fall_back_to_dot_agent(self):
+        os.environ.pop("AGENT_PROJECT_AGENTS_HOME")
+        home = self.tmp / "home"
+        (home / ".agent" / "agents").mkdir(parents=True)
+        os.environ["HOME"] = str(home)
+        self.assertEqual(agentcli._agents_home(), home / ".agents")
+
     def test_bundled_builtins_resolve(self):
         """組み込み 4 CLI が同梱定義から解決できる（コード側の分岐は無くなった）。"""
         for name in ("kiro", "claude", "copilot", "codex", "cursor", "ollama"):

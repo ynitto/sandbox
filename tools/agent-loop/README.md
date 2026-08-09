@@ -118,7 +118,7 @@ agent-loop --version
 - `doctor` は YAML / slot / send-request 等を診断します。
 
 `--no-auto-attach` はtmux外で専用セッションへ自動接続しない場合に使います。多重起動は
-`~/.agents/loop-state/`（旧 `~/.agent/` は移行時のみ）にある生存プロセスのcwdで判定します。
+`~/.agents/loop-state/` にある生存プロセスのcwdで判定します。
 
 ### environment handoff（opt-in）
 
@@ -213,8 +213,8 @@ prompts:
 - `prompt` を省いて `slash` だけのエントリも有効です（コマンドだけ定期送信）。
 - スラッシュコマンドを解する対話 CLI なら何にでも使えます（特定の CLI 専用ではありません）。
 
-詳細な仕様と移植手順は
-[`docs/designs/agent-loop-slash-property-design.md`](../../docs/designs/agent-loop-slash-property-design.md)。
+詳細な仕様は
+[`docs/designs/agent-loop-design.md` の機能 6](../../docs/designs/agent-loop-design.md#機能-6-slash-プロパティ--実装済み)。
 
 ### event_hook（フックによる送信制御）
 
@@ -261,7 +261,7 @@ tmux attach-session -t SESSION
 
 ## 設定ファイルの場所と優先順位
 
-- 共通設定: `~/.agents/agent-loop.yaml` / `.yml` / `.json`（移行前は `~/.agent/`）
+- 共通設定: `~/.agents/agent-loop.yaml` / `.yml` / `.json`
 - プロジェクト設定: `<cwd>/.agents/agent-loop.yaml` / `.yml` / `.json`（移行前は `.agent/`）
 - 共通設定が無い場合の互換入力: `<cwd>/.vscode/settings.json` の `agentExecutor.periodicPrompts`
 

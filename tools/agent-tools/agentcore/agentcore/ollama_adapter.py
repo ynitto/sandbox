@@ -94,6 +94,16 @@ class ArgError(ValueError):
     """引数の誤り（使い方を出して終わる）。"""
 
 
+# 完走しなかった status → 人と呼び出し側へ渡す理由。既定文を持つのは、ここに載っていない
+# status を「完走」に見せないため（status が増えたときに黙って done 扱いへ落とさない）。
+_INCOMPLETE_REASONS = {
+    "no_command": "規約どおりのコマンドも完了宣言も出せず打ち切りました（成果は途中経過です）",
+    "max_rounds": "最大ラウンドに達して打ち切りました",
+    "context_exhausted": "文脈が尽きて打ち切りました",
+    "tool_denied": "許可されないコマンドの繰り返しで打ち切りました",
+}
+
+
 # ---------------------------------------------------------------------------
 # 環境の補完（非ログインシェル対策）
 # ---------------------------------------------------------------------------
@@ -457,7 +467,21 @@ def main(argv=None) -> int:
     except KeyboardInterrupt:
         return 130
 
+    status = str(result.get("status") or "done")
+    incomplete = status != "done"
+    reason = _INCOMPLETE_REASONS.get(status, f"status={status} で打ち切りました")
     sys.stdout.write(str(result.get("text") or ""))
+    # 完走していないなら、成果本文の末尾に機械可読な未完了の封筒を足す。成果は返す
+    # （R1 止めない）が、呼び出し側が**本文を読まずに**未完了と判別できないと、途中経過が
+    # rc=0 の成果として done になる——実際 no_command の途中経過（未実行のコマンドを含む
+    # 報告）が完了として成果ブランチへ push された。封筒の形は engine 側の worker 契約
+    # （agent-flow work.py の `ok is False` 判定）と同じものを使う。
+    # `--format json` のときは足さない（本文全体が JSON 契約なので壊せない。JSON 契約の
+    # 役割の未完了は engine 側の形式修復リトライが拾う）。
+    if incomplete and not opts.get("format"):
+        sys.stdout.write("\n\n" + json.dumps(
+            {"ok": False, "issues": [f"agent-ollama: {reason}（status={status}）"]},
+            ensure_ascii=False) + "\n")
     sys.stdout.flush()
     print(f"@agent-usage tokens_in={int(result.get('tokens_in') or 0)} "
           f"tokens_out={int(result.get('tokens_out') or 0)}", file=sys.stderr)
@@ -469,11 +493,10 @@ def main(argv=None) -> int:
               f"limit={context.get('context_limit', 0)} "
               f"pct={context.get('context_pct', '')} "
               f"source={context.get('context_source', '')}", file=sys.stderr)
-    # 途中で止めたときは黙って成果だけ返さない。成果は返す（R1 止めない）が、
-    # **完走していない**ことは呼び出し側と人に見えるようにする。
-    if result.get("status") in ("context_exhausted", "max_rounds", "tool_denied"):
-        print(f"@agent-note 途中で打ち切りました（{result['status']}）。"
-              "成果は最後の応答までの分です。", file=sys.stderr)
+    # 人向けの注記。done 以外はすべて出す——`no_command`（規約から外れたまま打ち切り）が
+    # ここから漏れていたため、一番起きる未完了が「静かな成功」に見えていた。
+    if incomplete:
+        print(f"@agent-note {reason}（{status}）。成果は最後の応答までの分です。", file=sys.stderr)
     if result.get("log"):
         print(f"@agent-log {result['log']}", file=sys.stderr)
     return 0

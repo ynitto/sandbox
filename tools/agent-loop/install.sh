@@ -294,7 +294,8 @@ cat > "$CONCURRENCY_AGENT_FILE" << 'EOF'
   "resources": [
     "skill://~/.kiro/skills/**/SKILL.md",
     "skill://.kiro/skills/**/SKILL.md",
-    "skill://~/.agent/skills/**/SKILL.md",
+    "skill://~/.agents/skills/**/SKILL.md",
+    "skill://.agents/skills/**/SKILL.md",
     "skill://.agent/skills/**/SKILL.md"
   ],
   "tools": ["*"]

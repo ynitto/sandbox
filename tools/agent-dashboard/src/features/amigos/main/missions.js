@@ -7,7 +7,7 @@
 // バスの形は 2 種類を受ける:
 //   - ローカルバス:        <busDir>/missions/<mid>/mission.json
 //   - GitBus workdir:      <busDir>/mission__<mid>/mission.json（ブランチ別クローン）
-// busDirs 未設定時は ~/.agent/amigos/bus/*（GitBus 既定 workdir）を自動発見する。
+// busDirs 未設定時は ~/.agents/amigos/bus/*（GitBus 既定 workdir）を自動発見する。
 //
 // phase は表示用の近似導出（静穏化・座席の lease まではみない）。正確な状態は
 // agent-amigos status が正 — ここは「何がどこまで進んでいるか」の一覧が目的。

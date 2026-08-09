@@ -220,10 +220,11 @@ function scheduleOf(entry) {
 // ---------------------------------------------------------------------------
 // フォルダ走査
 // ---------------------------------------------------------------------------
-function detectMarkers(dir) {
+function detectMarkers(dir, includeLegacy = true) {
   let kiroFile = null;
   let kiroFormat = null;
   for (const [subdir, name, fmt] of LOOP_CONFIG_CANDIDATES) {
+    if (!includeLegacy && subdir === '.agent') continue;
     const f = subdir ? path.join(dir, subdir, name) : path.join(dir, name);
     try {
       if (fs.statSync(f).isFile()) { kiroFile = f; kiroFormat = fmt; break; }
@@ -244,22 +245,22 @@ function detectMarkers(dir) {
   return { folder: dir, kiroFile, kiroFormat, smNames: smNames.sort() };
 }
 
-// dashboard が管理項目を**書く**先。既存の設定ファイルがあればそれを使い、無ければ
-// agent-loop が読む場所（`<root>/.agents/agent-loop.yml`、旧 `.agent` しか無ければそちら）
-// を新規に作る。
+// dashboard が管理項目を**書く**先。既存のプロジェクト設定があればそれを使い、無ければ
+// `<root>/.agents/agent-loop.yml` を作る。ユーザーホームでは旧 `.agent` を読まない。
 function loopConfigFile(root) {
   let marker = null;
-  try { marker = detectMarkers(root); } catch { /* 走査できない = 新規扱い */ }
+  const home = userHomeRoots().some((dir) => _pathKey(dir) === _pathKey(root));
+  try { marker = detectMarkers(root, !home); } catch { /* 走査できない = 新規扱い */ }
   if (marker && marker.kiroFile) return { file: marker.kiroFile, format: marker.kiroFormat };
   return { file: path.join(agentHomeDir(root), 'agent-loop.yml'), format: 'yaml' };
 }
 
 // root 配下を maxDepth まで走査。マーカーを持つフォルダを見つけたらその配下は掘らない
 // （1 フォルダ = 1 ワークスペース）。
-function scanForCoworkConfigs(rootDir, maxDepth) {
+function scanForCoworkConfigs(rootDir, maxDepth, includeLegacy = true) {
   const found = [];
   const walk = (dir, depth) => {
-    const marker = detectMarkers(dir);
+    const marker = detectMarkers(dir, includeLegacy);
     if (marker) { found.push(marker); return; }
     if (depth >= maxDepth) return;
     for (const name of safeList(dir)) {
@@ -323,7 +324,8 @@ function discoverCoworkItems(config) {
     // 所属は登録したフォルダ（root）、プロンプト本文とログの在り処は設定のあるフォルダ
     // （repo）。同じものとして扱うと、サブフォルダに設定を置いた作業がどのフォルダの
     // 一覧にも出てこなくなる。
-    for (const mk of scanForCoworkConfigs(root, homeKeys.has(rk) ? 0 : scanDepth)) {
+    const home = homeKeys.has(rk);
+    for (const mk of scanForCoworkConfigs(root, home ? 0 : scanDepth, !home)) {
       const folder = mk.folder;
       const fk = _pathKey(folder);
       const smInfos = mk.smNames.map((smName) => {

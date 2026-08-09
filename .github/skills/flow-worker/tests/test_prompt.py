@@ -53,6 +53,16 @@ def test_verify_prompt_keeps_output_contract():
     assert "(minor)" in p
 
 
+def test_verify_prompt_forbids_pass_without_evidence():
+    """安いモデルが verify も担うと、存在確認だけで「要件を満たす」と作文する。
+    実行したコマンドと終了コードの引用を pass の前提にし、出せないなら fail へ倒す。"""
+    p = fw.build({"role": "worker", "kind": "verify", "goal": "検証する"})
+    assert "証跡" in p
+    assert "終了コード" in p
+    assert "pass にできない" in p
+    assert "証跡が出せないことは minor ではない" in p
+
+
 def test_split_prompt_keeps_array_contract():
     p = fw.build({"role": "worker", "kind": "split", "goal": "分割"})
     assert "JSON 配列のみ" in p

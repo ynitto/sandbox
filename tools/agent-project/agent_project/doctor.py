@@ -518,11 +518,9 @@ def _host_project_config_findings(entry: dict, root: "Path", host, name: str,
 
 
 def _amigos_node_id_paths() -> "list[Path]":
-    """agent-amigos が採番済みノード ID を置く場所（新ホーム優先。読みは両方）。
-    綴りの検査のためだけに読む——`agent_amigos.daemon._node_id_paths` と同じ 2 か所。"""
+    """agent-amigos が採番済みノード ID を置く場所。"""
     home = Path(os.path.expanduser("~"))
-    return [home / ".agents" / "amigos" / "node.json",
-            home / ".agent" / "amigos" / "node.json"]
+    return [home / ".agents" / "amigos" / "node.json"]
 
 
 def doctor_node_id_spelling_findings(host=None, env=None) -> "list[dict]":

@@ -104,6 +104,14 @@ test('agentLoopPromptTexts はインライン/ブロックスカラの prompt �
 });
 
 // --- 発見 ---
+test('ユーザーホームでは旧 ~/.agent の loop 設定を読まない', () => {
+  fs.mkdirSync(path.join(HOME_STUB, '.agent'), { recursive: true });
+  fs.writeFileSync(path.join(HOME_STUB, '.agent', 'agent-loop.yml'), SAMPLE_YAML);
+  assert.strictEqual(discover.scanForCoworkConfigs(HOME_STUB, 0, false).length, 0);
+  assert.deepStrictEqual(discover.loopConfigFile(HOME_STUB),
+    { file: path.join(HOME_STUB, '.agents', 'agent-loop.yml'), format: 'yaml' });
+});
+
 test('discoverCoworkItems は prompts を per-job の loop 項目にする', () => {
   const root = mkRoot();
   const proj = path.join(root, 'projA');

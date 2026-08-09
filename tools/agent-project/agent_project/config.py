@@ -17,7 +17,7 @@ TOOL_SUBDIR = "tools/agent-project tools/agent-tools"
 # 自動解決する（repositories.origin.url → install_dir）。設定ファイルの update_repo で明示も可。
 DEFAULT_UPDATE_REPO = ""
 # skill-registry.json を探すエージェントホーム（install.py の AGENT_DIRS に対応）。
-_AGENT_HOME_DIRS = (AGENT_HOME, AGENT_HOME_LEGACY, ".kiro", ".claude", ".copilot", ".codex")
+_AGENT_HOME_DIRS = (AGENT_HOME, ".kiro", ".claude", ".copilot", ".codex")
 
 # 自己更新の再起動先 cwd（main で起動時の cwd を捕捉。「動いていたカレントディレクトリ」へ戻す）。
 _START_CWD: "str | None" = None
@@ -100,6 +100,10 @@ class Config:
     model: "str | None" = None
     agent_cli: str = "kiro"        # LLM 実行に使うエージェント CLI: kiro / claude / copilot / codex
     agent_timeout: float = 300.0   # エージェント CLI 1 呼び出しのタイムアウト秒（0 以下で無効）
+    # 内容系の失敗を上位モデルで拾い直す回数の上限（プロセス単位・0 で昇格しない）。
+    # ここは全 LLM 呼び出しが通るチョークポイントなので、無制限に許すと壊れた入力で
+    # 倍額を延々と払い続ける（agents.<purpose>.fallbacks を宣言したときだけ効く）。
+    agent_escalation_max: int = 3
     # argv 渡しの CLI へ渡せる最大バイト数（超過分は一時ファイルへ退避して参照渡し）。
     # free 関数も実行時の Config を参照し、doctor / status と同じ値を使う。
     argv_limit: int = 100000

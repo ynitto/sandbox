@@ -10,6 +10,25 @@ from _shared import *  # noqa: E402,F401,F403 — 共有の前置き（環境隔
 from _shared import _Args, _commit_change, _make_skill_repo  # noqa: E402,F401 — `import *` は _ 始まりを持ってこない
 
 
+class ConfigHomeTests(unittest.TestCase):
+    def test_user_home_does_not_read_dot_agent_config(self):
+        home = tempfile.mkdtemp(prefix="flow-home-")
+        self.addCleanup(shutil.rmtree, home, ignore_errors=True)
+        old_cwd = os.getcwd()
+        os.makedirs(os.path.join(home, ".agent"))
+        pathlib.Path(home, ".agent", "agent-flow.json").write_text("{}", encoding="utf-8")
+        try:
+            os.chdir(home)
+            with mock.patch.dict(os.environ, {"HOME": home}):
+                self.assertIsNone(kf._find_config(None))
+                os.makedirs(os.path.join(home, ".agents"))
+                expected = os.path.join(home, ".agents", "agent-flow.json")
+                pathlib.Path(expected).write_text("{}", encoding="utf-8")
+                self.assertEqual(os.path.realpath(kf._find_config(None)), os.path.realpath(expected))
+        finally:
+            os.chdir(old_cwd)
+
+
 class ProtocolTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="kf-test-")
@@ -583,20 +602,15 @@ class SelfUpdateTests(unittest.TestCase):
             self.assertEqual(len(calls), 1)                    # 間隔内 → 再チェックしない
 
     def test_update_state_path_follows_shared_home(self):
-        # 回帰: ここだけ旧ホーム ~/.agent を直書きしており、新ホームしか無い環境で
-        # ~/.agent/ を新しく作って書いていた（control / budget / instructions と置き場が割れる）。
+        # 旧ホームが残っていても、更新状態は共通ホーム ~/.agents に置く。
         os.environ.pop("KIRO_STATE_HOME", None)
         home = os.path.join(self.tmp, "home")
         with mock.patch.dict(os.environ, {"HOME": home}, clear=False):
-            os.makedirs(os.path.join(home, ".agents"), exist_ok=True)
-            self.assertEqual(kf._update_state_path(),
-                             os.path.join(home, ".agents", "agent-flow.update.json"))
-            # 旧ホームに既存の記録があればそちらを読む（ベースラインを失わない）
             old = os.path.join(home, ".agent")
             os.makedirs(old, exist_ok=True)
             open(os.path.join(old, "agent-flow.update.json"), "w").close()
             self.assertEqual(kf._update_state_path(),
-                             os.path.join(old, "agent-flow.update.json"))
+                             os.path.join(home, ".agents", "agent-flow.update.json"))
         os.environ["KIRO_STATE_HOME"] = self.state
 
     def test_registry_auto_resolution(self):

@@ -19,7 +19,7 @@ def find_default_config(cwd: Path) -> Path | None:
 
 def load_config(cwd: Path) -> tuple[dict[str, Any], Path, bool]:
     """設定ファイルを読み込み (config, resolved_path, exists) を返す。
-    ~/.agent/ 配下の DEFAULT_CONFIG_NAMES を探す。
+    ~/.agents/ 配下の DEFAULT_CONFIG_NAMES を探す。
     ファイルが存在しない場合は空の config とデフォルトパスを返す（終了しない）。
     """
     agent_home = agent_home_dir()
@@ -189,27 +189,35 @@ def load_vscode_periodic_prompts(base_path: Path) -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
-# ワークスペース固有のプロンプト設定（.agent/agent-loop.yml）
+# ワークスペース固有のプロンプト設定（.agents/agent-loop.yml）
 # ---------------------------------------------------------------------------
 
 def _prompt_file(base_path: str) -> Path:
     """起動ディレクトリ単位の定期プロンプト設定ファイルパスを返す。"""
-    agent_dir = agent_home_dir(base_path)
-    for name in ("agent-loop.yaml", "agent-loop.yml"):
-        candidate = agent_dir / name
-        if candidate.is_file():
-            return candidate
-    return agent_dir / "agent-loop.yml"
+    base = Path(base_path).expanduser()
+    dirs = (AGENT_HOME,) if base.resolve() == Path.home().resolve() else (
+        AGENT_HOME, AGENT_HOME_LEGACY)
+    for dirname in dirs:
+        for name in ("agent-loop.yaml", "agent-loop.yml"):
+            candidate = base / dirname / name
+            if candidate.is_file():
+                return candidate
+    return base / AGENT_HOME / "agent-loop.yml"
 
 
 def _load_prompt_file_data(base_path: str) -> dict[str, Any]:
-    """起動ディレクトリ配下 .agent/ から設定ファイル（DEFAULT_CONFIG_NAMES）を探して読む。"""
-    agent_dir = agent_home_dir(base_path)
+    """起動ディレクトリ配下 .agents/（旧 .agent/）から設定ファイルを探して読む。"""
+    base = Path(base_path).expanduser()
+    dirs = (AGENT_HOME,) if base.resolve() == Path.home().resolve() else (
+        AGENT_HOME, AGENT_HOME_LEGACY)
     path: Path | None = None
-    for name in DEFAULT_CONFIG_NAMES:
-        candidate = agent_dir / name
-        if candidate.is_file():
-            path = candidate
+    for dirname in dirs:
+        for name in DEFAULT_CONFIG_NAMES:
+            candidate = base / dirname / name
+            if candidate.is_file():
+                path = candidate
+                break
+        if path is not None:
             break
 
     if path is None:
@@ -231,13 +239,13 @@ def _load_prompt_file_data(base_path: str) -> dict[str, Any]:
 
 
 def load_prompt_config(base_path: str) -> list[dict[str, Any]]:
-    """起動ディレクトリ配下 .agent/ から prompts を読む。"""
+    """起動ディレクトリ配下 .agents/（旧 .agent/）から prompts を読む。"""
     data = _load_prompt_file_data(base_path)
     prompts = data.get("prompts", [])
     if isinstance(prompts, list):
         return [p for p in prompts if isinstance(p, dict)]
     if data:
-        log.warning("%s/.agent/ の prompts が配列ではありません。", base_path)
+        log.warning("%s/.agents/ の prompts が配列ではありません。", base_path)
 
     return []
 

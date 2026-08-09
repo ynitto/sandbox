@@ -41,7 +41,6 @@ from pathlib import Path
 _AGENTS_DIR_ENV = "KIRO_AGENTS_DIR"
 _AGENTS_HOME_ENV = "AGENT_PROJECT_AGENTS_HOME"
 _AGENTS_HOME_DIR = ".agents"
-_AGENTS_HOME_LEGACY = ".agent"
 
 _USAGE_RE = re.compile(
     r"(?m)^@agent-usage\s+tokens_in=(\d+)\s+tokens_out=(\d+)\s*$")
@@ -80,22 +79,9 @@ class UsageText(str):
 
 
 def _agents_home() -> Path:
-    """共通ホーム。スキーマどおり **agents サブディレクトリ単位**で新旧を判定する。
-
-    `~/.agents/agents/` が無く旧 `~/.agent/agents/` が実在するときだけ後者を使う。
-    親ディレクトリ（`~/.agents`）だけの存在では旧へ倒さない——無関係な `.agents`
-    ディレクトリがレガシー定義を隠すのを防ぐ。
-    """
+    """エージェント共通ホーム（既定 `~/.agents`）。"""
     override = os.environ.get(_AGENTS_HOME_ENV)
-    if override:
-        return Path(override)
-    home = Path.home()
-    new, old = home / _AGENTS_HOME_DIR, home / _AGENTS_HOME_LEGACY
-    if (new / "agents").is_dir():
-        return new
-    if (old / "agents").is_dir():
-        return old
-    return new
+    return Path(override) if override else (Path.home() / _AGENTS_HOME_DIR)
 
 
 def plugin_dirs(project_dir=None) -> "list[Path]":

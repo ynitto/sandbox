@@ -94,8 +94,20 @@ agent-audit はこの 4 点を「読むだけの独立 CLI + 限定された LLM
 理由: 本ツールは cron・agent-loop の定期プロンプト・手動と実行環境が変わりやすく、環境変数
 依存があると「同じ設定ファイルなのに置き場所が違う」事故を作る（他ツールの `$AGENT_*_DIR`
 契約はその契約の所有者のもの——agent-audit は**源泉の読み取り位置も含めて**引数と設定
-ファイルだけで決める。§4.1）。**agent-audit がここ以外へ書くことはない**（例外は §5.3 の
-`calibrate --write` だけ。C7: 他ツールのバス・状態リポジトリ・台帳の書き手にならない）。
+ファイルだけで決める。§4.1）。
+
+**audit ディレクトリの外へ書くのは、明示フラグ付きの 2 経路だけ**（C7: 他ツールのバス・
+状態リポジトリ・台帳の書き手にならない、の限定的な例外）:
+
+| 経路 | 書き先 | 何を守るか |
+|---|---|---|
+| `calibrate --write`（§5.3） | budget `config.json` の `rates` | 契約が「較正は管理面が行い書き戻す」と定めたキーだけ |
+| `tune --apply`（§5.4） | `agent-tuning` の `profiles.<name>.injections|env`、`agent-profiles` の `tiers.<name>.candidates`、budget `config.json` の `rates.per_cli.<cli>` | 型付きの許可パスだけ。任意パス・任意コマンドは受け付けない |
+
+どちらもフラグ無しでは**提案を表示するだけ**で、既定の実行は読み取りに留まる。`tune --apply`
+が触るキーは、いずれも「実測から機械的に決められる宣言」に限っている——ここを広げると
+agent-audit が他ツールの設定の第 2 の書き手になり、どちらが正かが決まらなくなる。
+書いた事実は `updated_by`（`agent-audit` / `agent-audit-retire`）と decision の `applied` に残す。
 
 ```
 ~/.agents/audit/
@@ -116,13 +128,15 @@ agent-audit はこの 4 点を「読むだけの独立 CLI + 限定された LLM
 - `result` … flow の run 内の**ノード 1 つ**の結末。`status`（done / failed）が
   そのノードの品質で、`run_verify` は run 全体の統一 verify を参考として持つだけ
   （node id を持たない run スコープの判定なので、ノードの品質としては使わない）
-- `ledger` … node-budget 台帳の消費 1 行（quota 観測行は収集しない。§5.1）
+- `ledger` … node-budget 台帳の**消費** 1 行
+- `event` … 同じ台帳の**観測**行（`quota` / `model_escalation`。消費 0）。消費と分ける
+  のは、コストを測るために書いた行が実行回数を水増しして平均消費を動かさないため（§5.1）
 - `calibration` … `calibrate --write` が残す推定と実測の乖離（§5.3）
 
 
 ```jsonc
 {"id":"aud-…",                    // sha256(source, store, native_id) の短縮。冪等キー
- "ts":"2026-08-03T10:00:00Z","kind":"session|run|result|ledger|calibration",
+ "ts":"2026-08-03T10:00:00Z","kind":"session|run|result|ledger|event|calibration",
  "source":"claude-native|kiro-native|flow-bus|project-runlog|amigos-bus|loop-log|budget-ledger",
  "node":"pc-a","cwd":"~/repo",    // cwd はホーム相対へ正規化（絶対パスを残さない・C1）
  "tool":"agent-flow","workload":"flow","ref":"worker",         // ledger/run 系
@@ -365,8 +379,9 @@ CLI がログの書き方を変えたときの追随は、原則 JSON 1 ファ�
 - 軸: `--period day|month|total`（台帳と同じ UTC 区切り）×
   `--by workload|tool|agent_cli|model|purpose|ref|node`。`purpose`（仕事種別）は台帳の
   `purpose` 列を見て、無い旧行は `ref` で代用する。
-- 台帳の **quota 観測行**（`quota_kind` を持つ消費 0 の行。node-budget 設計を参照）は
-  収集の時点で落とす。消費ではないので、集計にも格付けにも混ぜない。
+- 台帳の **観測行**（`event` を持つ消費 0 の行。node-budget 設計を参照）は `kind: event`
+  として収集し、消費集計・格付けのどちらにも混ぜない。落とさないのは「枠に当たった」
+  「モデルを昇格した」が何回起きたかを後から数えたいため。
 - 出力: 表（人向け）と `--json`。dashboard が読む場合もこの JSON を契約にする
   （dashboard は現在 ledger の seconds しか集計していない——トークン表示はこの出力を
   読む表示層の変更で足せる）。
@@ -396,12 +411,35 @@ planner とワーカーが別モデルでも同じ判定を貰い、モデル別
 node-budget 契約は「rates の較正（実測行の中央値）は管理面が行い書き戻す」と定めている。
 agent-audit はこの管理面の CLI 実装になる: 実測レコードから `<agent_cli>:<model>` 別の
 tokens/秒 中央値を計算し、既定では**提案として表示するだけ**。`--write` を明示したときに
-限り `budget_dir` の `config.json` の `rates` を更新する（唯一の外部書き込み。
+限り `budget_dir` の `config.json` の `rates` を更新する（§3 の外部書き込み 2 経路の 1 つ。
 契約上の書き手が管理面と定義されているキーだけに触れ、`updated_by: "agent-audit"` を残す）。
 
 `--write` のときは、較正前の推定レート・実測レート・その乖離率を `kind: "calibration"` の
 レコードとして records へ残す。推定がどれだけ外れていたかを後から追えないと、「推定の粗さが
 そのまま判断の粗さになる」ことを示せない。
+
+### 5.4 `agent-audit tune` — 実測から宣言への還流（LLM 不使用）
+
+蒸留（§6）が出した洞察のうち `declaration` を持つものを、型付きの調整候補（decision）へ
+決定的に変換し、条件を満たしたものだけ宣言へ昇格させ、悪化したら退役させる。**この段に
+LLM は使わない**——判断材料は洞察・格付け（§5.2.1）・時刻だけで、すべて再現可能。
+
+- **候補**: `insights/<id>.json` の `declaration`（target / op=set / path / value）と
+  `expires_when`（最大寿命・品質下限・許容低下・評価回数）から `decisions/<id>.json` を作る。
+  根拠（洞察 id と観測 id）・適用範囲（scope）・失効条件を必ず持つ。
+- **昇格ゲート**: review が supported、再現回数が閾値以上、confidence が閾値以上、対象
+  scope の格付けサンプルが足りていて PASS 率が下限以上——**すべて**通ったものだけ。
+  加えて許可パス検査（下記）を通らない候補は昇格しない。
+- **停止条件（C7）**: 1 回の実行で昇格するのは `tune_max_promotions_per_run` 件まで、
+  生涯合計で `tune_max_total_promotions` 件まで。上限で止めたことは候補の `blocked_reason`
+  と `tune` の出力に残す（黙って止まると、壊れているのか止めているのかを区別できない）。
+- **退役**: 昇格後に寿命切れ・品質下限割れ・ベースラインからの低下超過のいずれかが起きたら、
+  `applied` に控えた元の値へ戻す（元が無ければキーごと削除）。書き換えられていたら
+  上書きせず `superseded` を理由に付ける。
+- **許可パス**: `agent-tuning` は `profiles.<name>.injections|env`（文字列配列）、
+  `agent-profiles` は `tiers.<name>.candidates`、`rates` は `rates.per_cli.<key>`（正の数）。
+  **`profiles.external-facing.injections` に空でない値を置く候補は常に拒否する**——外向き
+  成果物へ文体圧縮を漏らさない、という agent-tuning の不変条件を還流で破らないため。
 
 ## 6. LLM 蒸留パイプライン（extract → cluster → distill［→ review］）
 
@@ -510,6 +548,7 @@ LLM 段には停止条件を重ねる（C7): 段別上限（`extract_max_calls` 
 | `stats [--json]` | 不使用 | 実行品質集計 + LLM 判断ごとの決定的ルール一致率（計測のみ） |
 | `ratings [--period P] [--json]` | 不使用 | 仕事種別×モデルの格付け（成否率と平均消費。提案のみで自動適用しない） |
 | `calibrate [--write]` | 不使用 | rates 較正の提案（--write で budget config へ反映） |
+| `tune [--apply] [--period P] [--json]` | 不使用 | 洞察 → 型付き調整候補。--apply で許可パスだけ宣言へ昇格し、悪化すれば退役（§5.4） |
 | `extract [--limit N] [--force]` | map | レコード → 観測。間隔・蓄積ゲート（§6.4）を通ったときだけ LLM を呼ぶ |
 | `distill [--limit N] [--review] [--force]` | reduce | 観測クラスタ → 洞察。同上 |
 | `report [--kind K] [--out F]` | 不使用 | Markdown レポート |
@@ -593,8 +632,10 @@ update_check_interval: 21600
 ## 10. 不変条件
 
 1. **読み手に徹する。** 他ツールのバス・状態リポジトリ・台帳・CLI ストアへ書かない。
-   書くのは audit ディレクトリと、明示 `--write` 時の budget `rates`（契約上の管理面
-   キー）だけ。
+   書くのは audit ディレクトリと、**明示フラグを付けたときの型付き許可パスだけ**
+   （`calibrate --write` の budget `rates`、`tune --apply` の agent-tuning /
+   agent-profiles / rates。§3 の表）。既定の実行は常に読み取りに留まり、任意パス・
+   任意コマンドの書き込み口は持たない。
 2. **決定的にできる処理に LLM を使わない。** 収集・正規化・クリーニング・相関・集計・
    クラスタリング・レポート描画は stdlib のみで再現可能。LLM は extract / distill / review の 3 purpose に
    閉じる。

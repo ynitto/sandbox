@@ -36,7 +36,7 @@ TOOL_SUBDIR = "tools/agent-flow tools/agent-tools"
 # 自動解決する（repositories.origin.url → install_dir）。設定ファイルの update_repo で明示も可。
 DEFAULT_UPDATE_REPO = ""
 # skill-registry.json を探すエージェントホーム（install.py の AGENT_DIRS に対応）。
-_AGENT_HOME_DIRS = (AGENT_HOME, AGENT_HOME_LEGACY, ".kiro", ".claude", ".copilot", ".codex")
+_AGENT_HOME_DIRS = (AGENT_HOME, ".kiro", ".claude", ".copilot", ".codex")
 
 # 環境ごとに変わる値の組み込み既定。設定ファイルのキーもこの名前（snake_case）。
 CONFIG_DEFAULTS = {
@@ -261,7 +261,7 @@ def _find_config(explicit):
        2. カレントディレクトリ（=プロジェクトルート）直下の agent-flow.{yaml,yml,json}
        3. カレントディレクトリの .agents/agent-flow.{yaml,yml,json}
        4. カレントディレクトリの .agent/agent-flow.{yaml,yml,json}（旧ホーム）
-       5. ~/.agents/agent-flow.{yaml,yml,json}（新ホームが無ければ旧 ~/.agent/）
+       5. ~/.agents/agent-flow.{yaml,yml,json}
     ルート直下を最優先にするのは 1 root = 1 プロジェクト構成でこのファイルが
     プロジェクトのマニフェスト（発見マーカー）を兼ねるため（agent-project と同じ規則）。"""
     if explicit:
@@ -270,10 +270,12 @@ def _find_config(explicit):
             print(f"[agent-flow] 設定ファイルが見つかりません: {explicit}", file=sys.stderr)
             sys.exit(1)
         return p
-    for base in (os.getcwd(),
-                 os.path.join(os.getcwd(), AGENT_HOME),
-                 os.path.join(os.getcwd(), AGENT_HOME_LEGACY),
-                 agent_home_dir()):
+    cwd = os.getcwd()
+    bases = [cwd, os.path.join(cwd, AGENT_HOME)]
+    if os.path.realpath(cwd) != os.path.realpath(os.path.expanduser("~")):
+        bases.append(os.path.join(cwd, AGENT_HOME_LEGACY))
+    bases.append(agent_home_dir())
+    for base in bases:
         for name in DEFAULT_CONFIG_NAMES:
             cand = os.path.join(base, name)
             if os.path.isfile(cand):
@@ -298,4 +300,3 @@ def resolve_config(args):
         if getattr(args, key, None) is None:
             setattr(args, key, cfg.get(key, dflt))
     return args
-

@@ -35,28 +35,17 @@ from .util import log, now_iso, read_json, write_json_atomic
 
 
 def _node_id_paths() -> "list[str]":
-    """node.json の探索候補（新ホーム優先）。**読むときは両方を見る。**
-
-    共通ホームは `.agent` → `.agents` へ移行中で、他の状態は agent_home_subdir が
-    サブディレクトリ単位で新旧を判定している。しかし node.json だけは同じ扱いにできない:
-    採番済みのノード ID を保持しており、参照先が変わって既存ファイルを見失うと ID が
-    振り直される。ノード ID は claim / assign / メッセージ宛先に使われるので、
-    振り直しは同一性の断絶になる。そこで「読みは新旧の両方を順に見る」ことで、
-    どちらに置かれていても既存 ID を必ず拾う。新規採番だけ新ホームへ書く。
-    """
+    """node.json の探索先。"""
     home = os.path.expanduser("~")
-    return [os.path.join(home, ".agents", "amigos", "node.json"),
-            os.path.join(home, ".agent", "amigos", "node.json")]
+    return [os.path.join(home, ".agents", "amigos", "node.json")]
 
 
 def default_node_id() -> str:
-    """ノード ID: 環境変数 → node.json（新旧ホームの順に探索。無ければ採番）→ ホスト名。
+    """ノード ID: 環境変数 → `~/.agents` の node.json → ホスト名。
 
     新規採番は PC 名そのもの（実装計画 W1-10・設計 §3.1「名義は node_id = PC 名」）。
     以前は衝突回避のためホスト名+乱数接尾辞を採番していたが、板上の身元は PC 単位で
-    1 つであるべきなので接尾辞は付けない。既に採番済みの node.json（旧形式含む）は
-    そのまま読み続ける——同一性の断絶（claim/assign の宛先が変わる）を避けるため、
-    既存ノードの自動移行はしない（切替は明示的な node_id 指定 + 手順書に従う静止点）。
+    1 つであるべきなので接尾辞は付けない。
 
     正規化は `agentcore.nodeid` の共通実装に委ねる。エンジンごとに独自の綴り替えを持つと
     同じ PC が flow で `Mac`・amigos で `mac` になり、板に 2 ノードとして現れる。"""

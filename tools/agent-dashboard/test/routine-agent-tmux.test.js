@@ -136,8 +136,7 @@ test('listSessions は Windows ドライブ上の repo と /mnt の cwd を突�
   }
 });
 
-test('readLoopStates は agent-loop の現行・旧状態ディレクトリを読む', () => {
-  // agent-loop は状態を ~/.agents/loop-state/ に書く。旧 ~/.agent/ は後方互換で残す。
+test('readLoopStates は agent-loop の現行状態ディレクトリだけを読む', () => {
   const orig = exec.shInWsl;
   let seenScript = '';
   exec.shInWsl = (script) => {
@@ -147,7 +146,7 @@ test('readLoopStates は agent-loop の現行・旧状態ディレクトリを�
   try {
     tmux.readLoopStates();
     assert.ok(seenScript.includes('.agents/loop-state'), 'agent-loop の現行状態ディレクトリを読む');
-    assert.ok(seenScript.includes('.agent/loop-state'), 'agent-loop の旧状態ディレクトリへフォールバックする');
+    assert.ok(!seenScript.includes('.agent/loop-state'));
     assert.ok(!seenScript.includes('.kiro/loop-state'));
   } finally {
     exec.shInWsl = orig;
@@ -168,7 +167,7 @@ test('readLoopStates は壊れた状態ファイルをスキップする', () =>
   }
 });
 
-test('readSlotPanes は agent-loop の現行・旧スロットディレクトリを読む', () => {
+test('readSlotPanes は agent-loop の現行スロットディレクトリだけを読む', () => {
   const orig = exec.shInWsl;
   let seenScript = '';
   exec.shInWsl = (script) => {
@@ -178,7 +177,7 @@ test('readSlotPanes は agent-loop の現行・旧スロットディレクトリ
   try {
     tmux.readSlotPanes();
     assert.ok(seenScript.includes('.agents/slots'), 'agent-loop の現行スロットディレクトリを読む');
-    assert.ok(seenScript.includes('.agent/slots'), 'agent-loop の旧スロットディレクトリへフォールバックする');
+    assert.ok(!seenScript.includes('.agent/slots'));
     assert.ok(!seenScript.includes('.kiro/slots'));
   } finally {
     exec.shInWsl = orig;

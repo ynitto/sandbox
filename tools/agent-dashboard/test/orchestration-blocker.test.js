@@ -193,9 +193,7 @@ test('ref 未解決で差分を取れない票は「無い」と断定しない'
 
 console.log('orchestration-blocker: ok');
 
-// --- 共通ホームの解決（.agent → .agents 改名の後方互換） ---------------------------------
-// 判定はサブディレクトリ単位。ホーム単位で見ると `.agents/skills` だけ先に作られた環境で
-// 「新ホームは在る」と誤判断し、まだ移していない `.agent/control` を見失う。
+// --- 共通ホームの解決 ---------------------------------------------------------------------
 {
   const fsx = require('fs');
   const osx = require('os');
@@ -210,22 +208,10 @@ console.log('orchestration-blocker: ok');
     assert.strictEqual(ah.agentHomeSubdir('control'), pathx.join(home, '.agents', 'control'));
   });
 
-  test('旧ホームにだけ在る項目は旧ホームを使う（移行前に見失わない）', () => {
+  test('旧ホームにだけ在る項目も使わない', () => {
     fsx.mkdirSync(pathx.join(home, '.agent', 'control'), { recursive: true });
-    assert.strictEqual(ah.agentHomeSubdir('control'), pathx.join(home, '.agent', 'control'));
-  });
-
-  test('新ホームが部分的にできても、未移行の項目は旧ホームのまま', () => {
-    // skills だけ先に新ホームへ入った状態（実際にこうなっていた）
-    fsx.mkdirSync(pathx.join(home, '.agents', 'skills'), { recursive: true });
-    assert.strictEqual(ah.agentHomeSubdir('skills'), pathx.join(home, '.agents', 'skills'));
-    assert.strictEqual(ah.agentHomeSubdir('control'), pathx.join(home, '.agent', 'control'),
-      'ホーム単位で判定すると、ここで control を見失う');
-  });
-
-  test('移設後は新ホームを使う', () => {
-    fsx.mkdirSync(pathx.join(home, '.agents', 'control'), { recursive: true });
     assert.strictEqual(ah.agentHomeSubdir('control'), pathx.join(home, '.agents', 'control'));
+    assert.deepStrictEqual(ah.agentDirCandidates(home), [pathx.join(home, '.agents')]);
   });
 
   osx.homedir = realHome;

@@ -55,6 +55,19 @@ class TuningTests(unittest.TestCase):
         self.assertIn("compact rules", second)
         self.assertIn("start rules", after_clear)
 
+    def test_external_facing_drops_injections_even_if_the_file_declares_them(self):
+        """スキーマは空を要求するが、tuning.json は人も書くファイルで検証は走らない。
+
+        「外向き成果物へ文体圧縮を漏らさない」を約束だけに預けると 1 行で破れるので、
+        読み手側で潰す。env（PATH・API キーの類）は落とさない——注入だけが文体に効く。
+        """
+        data = _data()
+        data["profiles"]["external-facing"] = {"injections": ["compact"], "env": ["shim"]}
+        self.assertEqual(al.render_tuning_blocks(
+            data, "external-facing", "kiro", include_session_start=True), "")
+        self.assertEqual(
+            al.tuning_launch_env(data, "external-facing", "kiro", "/usr/bin")["FLAG"], "1")
+
     def test_missing_or_broken_contract_is_noop(self):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
             os.environ, {"AGENT_TUNING_DIR": tmp}

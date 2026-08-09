@@ -78,14 +78,14 @@ function allPanes(distro = '') {
   return out;
 }
 
-// agent-loop デーモンの状態ファイル（~/.agents/loop-state/*.json、旧 ~/.agent/ はフォールバックで読む）。
+// agent-loop デーモンの状態ファイル（~/.agents/loop-state/*.json）。
 // { pid, cwd, sessions: [{ name, id, pane, alive }] } の配列。
 // デーモンを tmux セッションの中で起動すると、ワーカーペインは「人のセッション」
 // （名前は任意）内に分割で作られ、セッション名（agent-loop-…）では見つけられない。
 // 状態ファイルの pane_id 直参照ならセッション名に依存せず視聴できる。
 function readLoopStates(distro = '') {
   const r = exec.shInWsl(
-    'agent_state="$HOME"/.agents/loop-state; [ -d "$agent_state" ] || agent_state="$HOME"/.agent/loop-state; for f in "$agent_state"/*.json; do [ -f "$f" ] || continue; printf "\\036"; cat "$f"; done 2>/dev/null || true',
+    'agent_state="$HOME"/.agents/loop-state; for f in "$agent_state"/*.json; do [ -f "$f" ] || continue; printf "\\036"; cat "$f"; done 2>/dev/null || true',
     8000,
     distro
   );
@@ -108,10 +108,10 @@ function repoMatchesCwd(want, cwd) {
   return cwd === want || cwd.startsWith(`${want}/`);
 }
 
-// 実行中スロットのペイン ID 集合（~/.agents/slots、旧 ~/.agent/ はフォールバックで読む）。
+// 実行中スロットのペイン ID 集合（~/.agents/slots）。
 function readSlotPanes(distro = '') {
   const r = exec.shInWsl(
-    'agent_slots="$HOME"/.agents/slots; [ -d "$agent_slots" ] || agent_slots="$HOME"/.agent/slots; ls "$agent_slots"/pane_*.json 2>/dev/null || true',
+    'agent_slots="$HOME"/.agents/slots; ls "$agent_slots"/pane_*.json 2>/dev/null || true',
     8000,
     distro
   );

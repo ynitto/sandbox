@@ -4,6 +4,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import agent_loop as al  # noqa: E402
@@ -27,6 +28,16 @@ class JsoncConfigTests(unittest.TestCase):
 
 
 class PromptConfigTests(unittest.TestCase):
+    def test_user_home_does_not_read_dot_agent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old = Path(tmp, ".agent", "agent-loop.json")
+            old.parent.mkdir()
+            old.write_text('{"prompts": [{"name": "old"}]}', encoding="utf-8")
+            with mock.patch.object(al.Path, "home", return_value=Path(tmp)):
+                self.assertEqual(al._load_prompt_file_data(tmp), {})
+                self.assertEqual(al._prompt_file(tmp),
+                                 Path(tmp, ".agents", "agent-loop.yml"))
+
     def test_save_updates_existing_yaml_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             config = Path(tmp, al.AGENT_HOME, "agent-loop.yaml")

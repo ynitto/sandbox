@@ -5,7 +5,7 @@
 実行環境が変わっても、同じ設定ファイルなら同じ場所を読み書きする。
 
 探索順: 1) --config 明示 2) <cwd>/agent-audit.* 3) <cwd>/.agents/ 4) <cwd>/.agent/
-5) ~/.agents/（旧 ~/.agent/ も後方互換で読む）。PyYAML 無し環境は JSON（同じキー）。
+5) ~/.agents/。PyYAML 無し環境は JSON（同じキー）。
 """
 from __future__ import annotations
 
@@ -16,7 +16,6 @@ import sys
 DEFAULT_CONFIG_NAMES = ["agent-audit.yaml", "agent-audit.yml", "agent-audit.json"]
 
 AGENT_HOME = ".agents"
-AGENT_HOME_LEGACY = ".agent"
 
 # 自己更新の sparse-checkout 対象。**先頭が本体・2 番目が共有物**——tools/agent-tools を
 # 含めないと installer が agentcore を同梱できず自己更新が必ず失敗する（cone mode の
@@ -79,11 +78,8 @@ CONFIG_DEFAULTS = {
 
 
 def agent_home_dir() -> str:
-    """エージェント共通ホーム（既定 ~/.agents）。旧 ~/.agent しか無ければそちら。"""
-    base = os.path.expanduser("~")
-    new = os.path.join(base, AGENT_HOME)
-    old = os.path.join(base, AGENT_HOME_LEGACY)
-    return old if (not os.path.isdir(new) and os.path.isdir(old)) else new
+    """エージェント共通ホーム `~/.agents`。"""
+    return os.path.join(os.path.expanduser("~"), AGENT_HOME)
 
 
 def _load_config_file(path: str) -> dict:
@@ -107,8 +103,11 @@ def find_config(explicit: "str | None" = None, cwd: "str | None" = None) -> "str
             raise SystemExit(f"[agent-audit] 設定ファイルが見つかりません: {explicit}")
         return p
     base = os.path.abspath(cwd or os.getcwd())
-    for search in (base, os.path.join(base, ".agents"), os.path.join(base, ".agent"),
-                   agent_home_dir()):
+    searches = [base, os.path.join(base, ".agents")]
+    if os.path.realpath(base) != os.path.realpath(os.path.expanduser("~")):
+        searches.append(os.path.join(base, ".agent"))
+    searches.append(agent_home_dir())
+    for search in searches:
         for name in DEFAULT_CONFIG_NAMES:
             cand = os.path.join(search, name)
             if os.path.isfile(cand):

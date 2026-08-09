@@ -91,6 +91,7 @@ CONFIG_DEFAULTS = {
     # agent-flow 側の設定（flow_config / agent-flow.yaml の agent_cli）で揃える。
     "agent_cli": "kiro",
     "agent_timeout": 300.0,   # エージェント CLI 1 呼び出しのタイムアウト秒（0 以下で無効）
+    "agent_escalation_max": 3,  # 内容系の失敗を上位モデルで拾い直す回数の上限（プロセス単位）
     # argv でプロンプトを渡す CLI（kiro / copilot）へ渡せる最大バイト数。超える分は一時ファイルへ
     # 退避し「そのファイルを読んで実行」の短い指示に置き換える（ARG_MAX 由来の E2BIG 回避）。
     # agent-flow の同名設定と語彙・既定を揃えてある。0 以下で組み込み既定へ戻る。
@@ -267,7 +268,7 @@ CONFIG_DEFAULTS = {
 SHARED_KEYS = frozenset({
     "agent_cli", "model", "act_timeout", "verify_timeout", "location", "concurrency",
     # ノードごとに CLI 性能・操作者名義・通知手段が異なる
-    "agent_timeout", "actor", "notify_cmd",
+    "agent_timeout", "agent_escalation_max", "actor", "notify_cmd",
     # argv 長の上限は OS とシェルの事情（ARG_MAX）。ノードごとに違ってよく、違っても
     # 実行の意味は変わらない（退避されるかどうかだけが変わる）
     "argv_limit",
@@ -443,8 +444,11 @@ def _warn_legacy_config_locations(root: Path) -> None:
 
     探索チェーンを畳んだので、旧レイアウトのままのプロジェクトは「設定を書いたのに
     何も効かない」状態になる。無言だと原因が追えないため、見つけた場所を名指しする。"""
+    bases = [root / AGENT_HOME, agent_home_dir()]
+    if root.expanduser().resolve() != Path.home().resolve():
+        bases.insert(1, root / AGENT_HOME_LEGACY)
     legacy = [Path(base) / name
-              for base in (root / AGENT_HOME, root / AGENT_HOME_LEGACY, agent_home_dir())
+              for base in bases
               for name in DEFAULT_CONFIG_NAMES]
     found = [str(p) for p in legacy if p.is_file()]
     if found:
@@ -777,6 +781,10 @@ def build_config(args) -> Config:
 
     agent_cli = str(getattr(args, "agent_cli", "kiro") or "kiro").lower()
     agent_timeout = float(getattr(args, "agent_timeout", 300.0) or 0.0)
+    try:
+        agent_escalation_max = max(0, int(getattr(args, "agent_escalation_max", 3)))
+    except (TypeError, ValueError):
+        agent_escalation_max = 3
     agent_overrides = _normalize_agent_overrides(getattr(args, "agents", None))
     try:
         argv_limit = int(getattr(args, "argv_limit", None) or 0)
@@ -834,7 +842,8 @@ def build_config(args) -> Config:
         board_workload=str(getattr(args, "board_workload", "flow") or "flow"),
         executor=args.executor,
         model=args.model,
-        agent_cli=agent_cli, agent_timeout=agent_timeout, argv_limit=argv_limit,
+        agent_cli=agent_cli, agent_timeout=agent_timeout,
+        agent_escalation_max=agent_escalation_max, argv_limit=argv_limit,
         granularity=str(getattr(args, "granularity", "coarse") or "coarse").lower(),
         flow_granularity=str(getattr(args, "flow_granularity", "auto") or "auto").lower(),
         max_iterations=args.max_iterations,

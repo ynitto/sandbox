@@ -5,7 +5,7 @@
 PyYAML 無し環境は JSON（同じキー・`agent-amigos.json`）で書ける。
 
 探索順: 1) --config 明示 2) `<cwd>/agent-amigos.*` 3) `<cwd>/.agents/agent-amigos.*`
-4) `~/.agents/agent-amigos.*`（旧 `.agent/` も後方互換で読む）。
+4) `<cwd>/.agent/agent-amigos.*` 5) `~/.agents/agent-amigos.*`。
 プロジェクトローカルの設定があるディレクトリが amigos ノードのホーム（＝既定のバス）に
 なり、agent-dashboard の自動発見マーカーも兼ねる。グローバル設定
 （`~/.agents/`）のときのホームは cwd。
@@ -24,34 +24,23 @@ DEFAULT_CONFIG_NAMES = [
 
 
 
-# エージェント共通ホーム。`.agent` から `.agents` へ改名した。旧ホームが残っている環境では、
-# 新ホームがまだ無い間だけ旧ホームを使う（両方へ書くと状態が分裂するため）。
 AGENT_HOME = ".agents"
 AGENT_HOME_LEGACY = ".agent"
 
 
 def _agent_home_dir(root: "str | None" = None) -> str:
-    """エージェント共通ホーム（既定 ~/.agents）。旧 ~/.agent しか無ければそちらを返す。"""
+    """エージェント共通ホーム `<root>/.agents`。"""
     base = os.path.expanduser(root) if root else os.path.expanduser("~")
-    new = os.path.join(base, AGENT_HOME)
-    old = os.path.join(base, AGENT_HOME_LEGACY)
-    return old if (not os.path.isdir(new) and os.path.isdir(old)) else new
+    return os.path.join(base, AGENT_HOME)
 
 
 
 def agent_home_subdir(env_var: str, *parts: str) -> str:
-    """共通ホーム配下の状態ディレクトリ（`$<env_var>` があればそれを最優先）。
-
-    **判定はサブディレクトリ単位で行う。** ホーム単位で見ると、`.agents/skills` だけ先に
-    作られた環境で「新ホームは在る」と判断され、まだ移していない `.agent/control` を
-    見失う。項目ごとに実在する方へ寄せれば、移行が部分的に進んでも状態は 1 か所に定まる。"""
+    """共通ホーム配下の状態ディレクトリ（`$<env_var>` があればそれを最優先）。"""
     override = os.environ.get(env_var)
     if override:
         return os.path.expanduser(override)
-    home = os.path.expanduser("~")
-    new = os.path.join(home, AGENT_HOME, *parts)
-    old = os.path.join(home, AGENT_HOME_LEGACY, *parts)
-    return old if (not os.path.exists(new) and os.path.exists(old)) else new
+    return os.path.join(os.path.expanduser("~"), AGENT_HOME, *parts)
 
 def _global_agent_dir() -> str:
     return str(_agent_home_dir())
@@ -97,15 +86,18 @@ def _load_config_file(path: str) -> dict:
 
 
 def find_config(explicit: "str | None" = None, cwd: "str | None" = None) -> "str | None":
-    """設定ファイルの探索: 1) --config 明示 2) ./ 3) ./.agent/ 4) ~/.agent/。無ければ None。"""
+    """設定ファイルの探索: 明示 → ./ → ./.agents/ → ./.agent/ → ~/.agents/。"""
     if explicit:
         p = os.path.expanduser(explicit)
         if not os.path.isfile(p):
             raise SystemExit(f"[agent-amigos] 設定ファイルが見つかりません: {explicit}")
         return p
     base = os.path.abspath(cwd or os.getcwd())
-    for search in (base, os.path.join(base, ".agents"), os.path.join(base, ".agent"),
-                   _global_agent_dir()):
+    searches = [base, os.path.join(base, ".agents")]
+    if os.path.realpath(base) != os.path.realpath(os.path.expanduser("~")):
+        searches.append(os.path.join(base, ".agent"))
+    searches.append(_global_agent_dir())
+    for search in searches:
         for name in DEFAULT_CONFIG_NAMES:
             cand = os.path.join(search, name)
             if os.path.isfile(cand):
@@ -115,8 +107,8 @@ def find_config(explicit: "str | None" = None, cwd: "str | None" = None) -> "str
 
 def _resolve_home(path: "str | None", cwd: "str | None") -> str:
     """設定パスからノードホームを決める。
-    - 無し / `~/.agent/agent-amigos.*` → cwd
-    - `<home>/.agent/agent-amigos.*` → `<home>`
+    - 無し / `~/.agents/agent-amigos.*` → cwd
+    - `<home>/.agents/agent-amigos.*` / `<home>/.agent/agent-amigos.*` → `<home>`
     - それ以外（ルート直下・`--config` 任意パス）→ 設定ファイルの親ディレクトリ
     """
     cwd_abs = os.path.abspath(cwd or os.getcwd())

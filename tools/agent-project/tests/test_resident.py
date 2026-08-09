@@ -188,6 +188,34 @@ class NodeBudgetTests(unittest.TestCase):
         self.assertEqual(rec["seconds"], 2.0)
         self.assertEqual(rec["purpose"], "adjudicate", "仕事種別は ref の言い換えではなく明示する")
 
+    def test_model_escalation_is_bounded_per_process(self):
+        """内容系の失敗を上位モデルで拾う回数はプロセス単位で有界（C7: 必ず止まる）。
+
+        ここは分解・優先順位・裁定・ルーティングの全 LLM 呼び出しが通る single choke point
+        なので、「失敗するたび 1 段上へ」を無制限に許すと壊れた入力で倍額を払い続ける。
+        """
+        km._ESCALATIONS_USED = 0
+        self.addCleanup(setattr, km, "_ESCALATIONS_USED", 0)
+        calls = []
+
+        def boom(prompt, model, purpose="", agent=None):
+            calls.append(agent)
+            raise RuntimeError("なにか内容の問題")   # 分類タグ無し = 内容系
+
+        cfg = types.SimpleNamespace(agents={"prioritize": {"fallbacks": [{"agent_cli": "claude"}]}},
+                                    agent_cli="ollama", agent_escalation_max=1)
+        with mock.patch.object(km, "_run_agent_cli_once", side_effect=boom), \
+             mock.patch.object(km, "_RUNTIME_CONFIG", cfg), \
+             mock.patch.object(km, "_agent_for", return_value=("ollama", None)):
+            with self.assertRaises(RuntimeError):
+                km._run_agent_cli("p", None, purpose="prioritize")
+            self.assertEqual(len(calls), 2, "1 回目は昇格して拾い直す")
+            calls.clear()
+            with self.assertRaises(RuntimeError) as ctx:
+                km._run_agent_cli("p", None, purpose="prioritize")
+        self.assertEqual(len(calls), 1, "上限に達したら昇格しない")
+        self.assertIn("上限", str(ctx.exception), "止まった理由を失敗文言に残す")
+
     def test_quota_failure_is_recorded_as_an_observation(self):
         """quota で落ちた CLI を台帳へ観測として残す（消費 0 行）。
 

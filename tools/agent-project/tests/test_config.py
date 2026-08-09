@@ -862,10 +862,7 @@ class AgentPromptSpillTests(unittest.TestCase):
 
 
 class TestAgentHome(unittest.TestCase):
-    """エージェント共通ホームの解決（`.agent` → `.agents` 改名の後方互換）。
-
-    判定はサブディレクトリ単位。ホーム単位で見ると `.agents/skills` だけ先に作られた環境で
-    「新ホームは在る」と誤判断し、まだ移していない `.agent/control` を見失う。"""
+    """エージェント共通ホームは `~/.agents` に固定する。"""
 
     def setUp(self):
         self.home = Path(tempfile.mkdtemp())
@@ -877,25 +874,17 @@ class TestAgentHome(unittest.TestCase):
     def test_defaults_to_new_home(self):
         self.assertEqual(km.agent_home_subdir("", "control"), self.home / ".agents" / "control")
 
-    def test_falls_back_to_legacy_when_only_legacy_exists(self):
+    def test_legacy_home_is_not_used(self):
         (self.home / ".agent" / "control").mkdir(parents=True)
-        self.assertEqual(km.agent_home_subdir("", "control"), self.home / ".agent" / "control")
-
-    def test_partial_migration_keeps_unmigrated_items_on_legacy(self):
-        # skills だけ先に新ホームへ入った状態（実際にこうなっていた）
-        (self.home / ".agent" / "control").mkdir(parents=True)
-        (self.home / ".agents" / "skills").mkdir(parents=True)
-        self.assertEqual(km.agent_home_subdir("", "skills"), self.home / ".agents" / "skills")
-        self.assertEqual(km.agent_home_subdir("", "control"), self.home / ".agent" / "control",
-                         "ホーム単位で判定すると、ここで control を見失う")
-
-    def test_uses_new_home_after_migration(self):
-        (self.home / ".agent" / "control").mkdir(parents=True)
-        (self.home / ".agents" / "control").mkdir(parents=True)
         self.assertEqual(km.agent_home_subdir("", "control"), self.home / ".agents" / "control")
 
+    def test_update_state_uses_new_home(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("KIRO_STATE_HOME", None)
+            self.assertEqual(km._update_state_path(),
+                             self.home / ".agents" / "agent-project.update.json")
+
     def test_env_override_wins(self):
-        (self.home / ".agent" / "control").mkdir(parents=True)
         with mock.patch.dict(os.environ, {"AGENT_CONTROL_DIR": "/tmp/explicit"}):
             self.assertEqual(km.agent_home_subdir("AGENT_CONTROL_DIR", "control"),
                              Path("/tmp/explicit"))

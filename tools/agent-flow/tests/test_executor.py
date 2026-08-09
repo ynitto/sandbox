@@ -896,7 +896,7 @@ class CallExecutorDispatchTests(unittest.TestCase):
     def test_execute_agent_puts_instruction_in_prompt_not_polluting_goal(self):
         captured = {}
 
-        def fake_run_agent(prompt, model, purpose=""):
+        def fake_run_agent(prompt, model, purpose="", **_kw):
             captured["prompt"] = prompt
             return "成果"
 
@@ -910,7 +910,7 @@ class CallExecutorDispatchTests(unittest.TestCase):
     def test_execute_agent_runs_in_workspace_root(self):
         captured = {}
 
-        def fake_run_agent(prompt, model, purpose="", cwd=None):
+        def fake_run_agent(prompt, model, purpose="", cwd=None, **_kw):
             captured["cwd"] = cwd
             return "成果"
 
@@ -924,7 +924,7 @@ class CallExecutorDispatchTests(unittest.TestCase):
         は既定でも indent 無し・区切り最小の compact JSON（内容は不変）。"""
         captured = {}
 
-        def fake_run_agent(prompt, model, purpose=""):
+        def fake_run_agent(prompt, model, purpose="", **_kw):
             captured["prompt"] = prompt
             return "成果"
 
@@ -940,7 +940,7 @@ class CallExecutorDispatchTests(unittest.TestCase):
         """案 K-2（オプトイン）: prompt_table=True のときだけ均質配列を表形式へ畳む。"""
         captured = {}
 
-        def fake_run_agent(prompt, model, purpose=""):
+        def fake_run_agent(prompt, model, purpose="", **_kw):
             captured["prompt"] = prompt
             return "成果"
 
@@ -992,7 +992,7 @@ class CallExecutorDispatchTests(unittest.TestCase):
         プロンプトに載る。全体を作り直させない指示も含む。"""
         captured = {}
 
-        def fake_run_agent(prompt, model, purpose=""):
+        def fake_run_agent(prompt, model, purpose="", **_kw):
             captured["prompt"] = prompt
             return "成果"
 
@@ -1016,7 +1016,7 @@ class CallExecutorDispatchTests(unittest.TestCase):
         """オプトイン既定（repair=None）ではプロンプトが従来と 1 バイトも変わらない。"""
         captured = {}
 
-        def fake_run_agent(prompt, model, purpose=""):
+        def fake_run_agent(prompt, model, purpose="", **_kw):
             captured["prompt"] = prompt
             return "成果"
 
@@ -1050,7 +1050,7 @@ class CallExecutorDispatchTests(unittest.TestCase):
         """案 H: [instructions][context][本体] の順で前置される。"""
         captured = {}
 
-        def fake_run_agent(prompt, model, purpose=""):
+        def fake_run_agent(prompt, model, purpose="", **_kw):
             captured["prompt"] = prompt
             return "成果"
 
@@ -1067,7 +1067,7 @@ class CallExecutorDispatchTests(unittest.TestCase):
         """オプトイン既定（context=""）ではプロンプトが従来と 1 バイトも変わらない。"""
         captured = {}
 
-        def fake_run_agent(prompt, model, purpose=""):
+        def fake_run_agent(prompt, model, purpose="", **_kw):
             captured["prompt"] = prompt
             return "成果"
 

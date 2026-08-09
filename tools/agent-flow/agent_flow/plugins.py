@@ -101,8 +101,8 @@ def _executor_search_dirs() -> "list[str]":
             dirs.append(os.path.join(root, "tools", "agent-flow", "executors"))
     except Exception:  # noqa: BLE001
         pass
-    # 3. ~/.agent/agent-flow/executors（旧インストーラの配置先・後方互換）
-    dirs.append(os.path.expanduser("~/.agent/agent-flow/executors"))
+    # 3. ユーザー共通の executor 配置先
+    dirs.append(os.path.expanduser("~/.agents/agent-flow/executors"))
     # 4. 設定 executor_dir（任意の追加ディレクトリ）
     extra = _EXECUTOR_DIR
     if extra:

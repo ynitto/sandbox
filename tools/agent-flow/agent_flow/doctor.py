@@ -238,7 +238,7 @@ def _dedupe_findings(findings: "list[dict]") -> "list[dict]":
 
 def find_skill(name: str, home: "str | None" = None) -> "str | None":
     """名前付きスキルのディレクトリを探す（無ければ None）。検索順: $KIRO_SKILLS_HOME →
-    cwd から上方向の .github/skills → ~/.agent/skills → ~/.kiro/skills → ~/.claude/skills → ~/.github/skills。"""
+    cwd から上方向の .github/skills → ~/.agents/skills → ~/.kiro/skills → ~/.claude/skills → ~/.github/skills。"""
     cands: list[str] = []
     env = home or os.environ.get("KIRO_SKILLS_HOME")
     if env:
@@ -250,7 +250,7 @@ def find_skill(name: str, home: "str | None" = None) -> "str | None":
         if parent == cur:
             break
         cur = parent
-    for base in ("~/.agent/skills", "~/.kiro/skills", "~/.claude/skills", "~/.github/skills"):
+    for base in ("~/.agents/skills", "~/.kiro/skills", "~/.claude/skills", "~/.github/skills"):
         cands.append(os.path.join(os.path.expanduser(base), name))
     for c in cands:
         if os.path.isdir(c):
@@ -371,4 +371,3 @@ def cmd_doctor(args, agent_run=None, skill_finder=find_skill) -> int:
     else:
         print("（--fix で env/config の修正と program のイシュー起票を実行します）")
     return code
-

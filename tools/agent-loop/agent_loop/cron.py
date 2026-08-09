@@ -116,7 +116,7 @@ class CronExpression:
 
 
 def configure_file_logging() -> Path:
-    """~/.agent/agent-loop.log へのファイルハンドラを追加する。"""
+    """~/.agents/agent-loop.log へのファイルハンドラを追加する。"""
     log_file = _AGENT_HOME / LOG_FILE_NAME
     log_file.parent.mkdir(parents=True, exist_ok=True)
 
@@ -142,5 +142,4 @@ def configure_file_logging() -> Path:
     )
     root_logger.addHandler(file_handler)
     return log_file
-
 

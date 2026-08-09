@@ -15,6 +15,9 @@ class _SkillHome:
         self._tmp = tempfile.TemporaryDirectory()
         self.root = Path(self._tmp.name)
         self._prev = os.environ.get("AGENT_OLLAMA_SKILLS_DIR")
+        self._prev_home = os.environ.get("HOME")
+        self.home = self.root / "home"
+        os.environ["HOME"] = str(self.home)
         os.environ["AGENT_OLLAMA_SKILLS_DIR"] = str(self.root)
         return self
 
@@ -30,6 +33,10 @@ class _SkillHome:
             os.environ.pop("AGENT_OLLAMA_SKILLS_DIR", None)
         else:
             os.environ["AGENT_OLLAMA_SKILLS_DIR"] = self._prev
+        if self._prev_home is None:
+            os.environ.pop("HOME", None)
+        else:
+            os.environ["HOME"] = self._prev_home
         self._tmp.cleanup()
 
 
@@ -66,6 +73,17 @@ class TestLeadingSlashes(unittest.TestCase):
 
 
 class TestExpand(unittest.TestCase):
+    def test_dot_agents_skills_wins_over_extra_dirs(self):
+        with _SkillHome() as home:
+            home.add("preferred", "追加ディレクトリ")
+            preferred = home.home / ".agents" / "skills" / "preferred" / "SKILL.md"
+            preferred.parent.mkdir(parents=True)
+            preferred.write_text("共通ホーム", encoding="utf-8")
+            out, loaded = ollama_skills.expand("依頼", ["preferred"])
+        self.assertIn("共通ホーム", out)
+        self.assertNotIn("追加ディレクトリ", out)
+        self.assertEqual(loaded[0]["path"], str(preferred))
+
     def test_no_skill_means_zero_overhead(self):
         """未使用時はプロンプトが 1 バイトも変わらない（prefill を太らせない）。"""
         with _SkillHome():

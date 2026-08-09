@@ -33,16 +33,11 @@ def self_path() -> str:
 def _update_state_path() -> str:
     """適用済み SHA を記録する state ファイル。`$KIRO_STATE_HOME` があればそれを権威にする。
 
-    共通ホームは `~/.agent` から `~/.agents` へ改名済みなので、既定は `agent_home_dir()` に
-    従う。ここだけ旧ホームを直書きしていたため、新ホームしか無い環境で `~/.agent/` を新しく
-    作って書き、他の状態（control / budget / instructions）と置き場が割れていた。
-    移行途中の環境では旧ファイルが残っている側を読む（既存のベースラインを失わない）。"""
+    既定は共通ホーム `~/.agents` に置く。"""
     base = os.environ.get("KIRO_STATE_HOME")
     if base:
         return os.path.join(os.path.expanduser(base), "agent-flow.update.json")
-    new = os.path.join(agent_home_dir(), "agent-flow.update.json")
-    old = os.path.join(os.path.expanduser("~"), AGENT_HOME_LEGACY, "agent-flow.update.json")
-    return old if (not os.path.exists(new) and os.path.exists(old)) else new
+    return os.path.join(agent_home_dir(), "agent-flow.update.json")
 
 
 def read_update_state() -> dict:
@@ -357,4 +352,3 @@ def cmd_update(args) -> int:
         return 0
     print("  更新の取り込みに失敗しました（ログを確認してください）。", file=sys.stderr)
     return 1
-

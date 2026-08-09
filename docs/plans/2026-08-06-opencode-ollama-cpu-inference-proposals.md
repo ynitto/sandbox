@@ -402,7 +402,7 @@ TUI の要件（ステータス 1〜2 行の更新 + 行スクロール）は素
 避ける）。agent-ollama 専用にはせず、スラッシュコマンドを解するどの対話 CLI にも
 効く共通口とする。**fork 先の kiro-loop 系プロジェクトへ単体で展開するため、
 仕様・送信順・移植ガイドは独立文書に切り出した**:
-[`docs/designs/agent-loop-slash-property-design.md`](../designs/agent-loop-slash-property-design.md)。
+[`docs/designs/agent-loop-design.md` の機能 6](../designs/agent-loop-design.md#機能-6-slash-プロパティ--実装済み)。
 
 #### F-2 補遺 3 — バックアップ運転の監視:「遅い」を異常にしない証拠
 

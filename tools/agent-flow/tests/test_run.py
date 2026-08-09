@@ -727,7 +727,7 @@ class TransientRetryTests(unittest.TestCase):
 
     def test_transient_error_retried_in_place(self):
         calls = []
-        def flaky(prompt, model, purpose="", cwd=None):
+        def flaky(prompt, model, purpose="", cwd=None, **_kw):
             calls.append(purpose)
             if len(calls) < 3:
                 raise RuntimeError("connection reset by peer")
@@ -739,7 +739,7 @@ class TransientRetryTests(unittest.TestCase):
 
     def test_non_transient_not_retried(self):
         calls = []
-        def denied(prompt, model, purpose="", cwd=None):
+        def denied(prompt, model, purpose="", cwd=None, **_kw):
             calls.append(1)
             raise RuntimeError("AccessDenied: please login")
         p1, p2, p3, p4 = self._patch(denied)
@@ -751,7 +751,7 @@ class TransientRetryTests(unittest.TestCase):
 
     def test_quota_not_retried_in_place(self):
         calls = []
-        def quota(prompt, model, purpose="", cwd=None):
+        def quota(prompt, model, purpose="", cwd=None, **_kw):
             calls.append(1)
             raise RuntimeError("usage limit reached")
         p1, p2, p3, p4 = self._patch(quota)
@@ -761,7 +761,7 @@ class TransientRetryTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)                  # quota は回復が長い → レイヤ4/人へ
 
     def test_transient_exhausted_raises_with_attempts(self):
-        def always(prompt, model, purpose="", cwd=None):
+        def always(prompt, model, purpose="", cwd=None, **_kw):
             raise RuntimeError("service unavailable")
         p1, p2, p3, p4 = self._patch(always, retries=2)
         with p1, p2, p3, p4:
@@ -772,7 +772,7 @@ class TransientRetryTests(unittest.TestCase):
 
     def test_retries_zero_disables_layer1(self):
         calls = []
-        def always(prompt, model, purpose="", cwd=None):
+        def always(prompt, model, purpose="", cwd=None, **_kw):
             calls.append(1)
             raise RuntimeError("connection refused")
         p1, p2, p3, p4 = self._patch(always, retries=0)

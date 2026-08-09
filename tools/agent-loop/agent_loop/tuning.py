@@ -32,12 +32,18 @@ def _tuning_context(agent_cli: str) -> dict[str, str]:
 
 
 def _tuning_profile(data: dict, name: str) -> dict:
+    """プロファイルを引く。`external-facing` は**契約に関わらず注入なし**へ丸める。
+
+    スキーマは `profiles.external-facing.injections` を空に縛るが、tuning.json は人も書く
+    ファイルで、読むときにスキーマ検証は走らない。「外向き成果物に文体圧縮を漏らさない」を
+    ドキュメントの約束だけに預けると、1 行書き足しただけで破れる。読み手側で潰す。"""
     profiles = data.get("profiles") if isinstance(data.get("profiles"), dict) else {}
     profile = profiles.get(name)
+    if name == "external-facing":
+        env = profile.get("env") if isinstance(profile, dict) and isinstance(profile.get("env"), list) else []
+        return {"injections": [], "env": env}
     if isinstance(profile, dict):
         return profile
-    if name == "external-facing":
-        return {"injections": [], "env": []}
     default = profiles.get("default")
     return default if isinstance(default, dict) else {"injections": [], "env": []}
 

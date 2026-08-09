@@ -277,16 +277,7 @@ installed() {
 # $KIRO_AGENTS_DIR とプロジェクトの agents/ に置いた定義が引き続き優先される。
 AGENTS_SRC_DIR="$(cd "${TOOLS_DIR}/.." && pwd)/agents"
 if [[ -d "${AGENTS_SRC_DIR}" ]]; then
-  # ~/.agents（新）と ~/.agent（旧）の使い分けは agentcore._agents_home と同じ規則:
-  # agents サブディレクトリ単位で判定し、新が無く旧だけあるときは旧を使う。
-  AGENTS_HOME="${AGENT_PROJECT_AGENTS_HOME:-}"
-  if [[ -z "${AGENTS_HOME}" ]]; then
-    if [[ ! -d "${HOME}/.agents/agents" && -d "${HOME}/.agent/agents" ]]; then
-      AGENTS_HOME="${HOME}/.agent"
-    else
-      AGENTS_HOME="${HOME}/.agents"
-    fi
-  fi
+  AGENTS_HOME="${AGENT_PROJECT_AGENTS_HOME:-${HOME}/.agents}"
   AGENTS_DEST_DIR="${AGENTS_HOME}/agents"
   mkdir -p "${AGENTS_DEST_DIR}"
   n=0

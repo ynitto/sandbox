@@ -212,10 +212,32 @@ class EmptyOutputRetryTests(unittest.TestCase):
         self.assertIn("再要求後", str(cm.exception))
 
     def test_free_text_role_still_fails_immediately(self):
-        # work は本文が成果物。空を言い直しても意味が無く、内容の失敗として上位へ返す。
+        # work は本文が成果物。空を言い直しても意味が無く、その場で上位へ返す。
         with self.assertRaises(RuntimeError):
             self._run("work", ["  \n"])
         self.assertEqual(len(self.calls), 1)
+
+    def test_unclassified_empty_response_is_carried_as_transient(self):
+        """分類の付かない空応答は「内容の失敗」ではなく transient として運ぶ。
+
+        内容の失敗として上げると、評価役がこれを実装の失敗と読んで計画を作り直す
+        （実際 agent-ollama の空応答から push 待機タスクが捏造された）。transient なら
+        run 単位で打ち切り、cooldown 後の auto-heal が done を温存して再開する。"""
+        with self.assertRaises(RuntimeError) as cm:
+            self._run("work", ["  \n"])
+        self.assertEqual(kf.classify_agent_failure(str(cm.exception))[0], "transient")
+
+    def test_known_classification_wins_over_transient(self):
+        # 認証切れの空応答（kiro-cli のバナーだけ）は env 側の分類を保つ——
+        # transient で上書きすると、直らない環境不良を再開ループで叩き続ける。
+        def fake_run(cmd, **kw):
+            self.calls.append(cmd)
+            return types.SimpleNamespace(returncode=0, stdout="  \n",
+                                         stderr="SendMessageError: AccessDeniedException")
+        with mock.patch.object(kf.subprocess, "run", side_effect=fake_run):
+            with self.assertRaises(RuntimeError) as cm:
+                kf.run_agent("p", None, purpose="work")
+        self.assertEqual(kf.classify_agent_failure(str(cm.exception))[0], "auth")
 
 
 class JsonVariantRoutingTests(unittest.TestCase):
@@ -589,7 +611,7 @@ class FlowWorkerSkillTests(unittest.TestCase):
         reply = kwargs.pop("_reply", "ok")
         seen = {}
 
-        def fake_run(prompt, model, purpose=""):
+        def fake_run(prompt, model, purpose="", **_kw):
             seen["prompt"] = prompt
             return reply
 
@@ -619,11 +641,60 @@ class FlowWorkerSkillTests(unittest.TestCase):
         self.assertEqual(text, reply)
         self.assertEqual(data, {"ok": False, "issues": ["未完了"]})
 
+    def test_generate_terminal_ok_false_is_structured_too(self):
+        # プロンプトは実行系の全 kind へ「未完了なら {"ok": false}」と指示している。
+        # work だけ読んでいた間、generate の自己申告した未完了が done で通っていた。
+        reply = '書けたところまで\n\n{"ok": false, "issues": ["テスト未実行"]}'
+        with mock.patch.object(kf, "run_agent", return_value=reply):
+            text, data = kf.execute_agent("generate", "g", {}, None)
+        self.assertEqual(text, reply)
+        self.assertEqual(data, {"ok": False, "issues": ["テスト未実行"]})
+
+    def test_agent_ollama_incomplete_output_is_read_as_not_ok(self):
+        """agent-ollama が打ち切りで出す封筒を、そのままの本文で未完了と判定できること。
+
+        文字列の形を両側で別々に決めると、片方の書式が変わった日に「途中経過が done」へ
+        黙って戻る。実物の stdout を作って読ませ、契約を 1 本に縛る（柱2 / C5）。"""
+        from agentcore import ollama_adapter
+        out = io.StringIO()
+        with mock.patch.object(ollama_adapter.ollama_loop, "run_loop", return_value={
+                "text": "調べ始めたところまでの報告", "tokens_in": 1, "tokens_out": 2,
+                "rounds": 1, "status": "no_command"}), \
+                mock.patch.object(ollama_adapter, "load_profile_env", return_value={}), \
+                mock.patch.object(ollama_adapter.ollama_context, "resolve_limit",
+                                  return_value=(8192, "server")), \
+                mock.patch.object(ollama_adapter.sys, "stdin", io.StringIO("やって")), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(ollama_adapter.main(["qwen3", "--tools", "--no-log"]), 0)
+        body = out.getvalue()
+        for kind in ("work", "generate"):
+            with mock.patch.object(kf, "run_agent", return_value=body):
+                _, data = kf.execute_agent(kind, "g", {}, None)
+            self.assertIs(data.get("ok"), False, kind)
+        # verify は fail クローズ側で受ける（打ち切った検証を pass にしない）。
+        with mock.patch.object(kf, "run_agent", return_value=body):
+            _, data = kf.execute_agent("verify", "g", {}, None)
+        self.assertIs(data.get("ok"), False)
+
+    def test_envelope_kinds_match_the_prompt_side_exec_kinds(self):
+        """封筒を指示する kind と読む kind を一致させる（片方だけ増えると黙って done になる）。"""
+        script = kf._find_skill_script("flow-worker", "prompt.py")
+        spec = importlib.util.spec_from_file_location("flow_worker_prompt_kinds", script)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        # EXEC_KINDS のうち JSON 抽出をしない kind = 封筒を読むべき kind。
+        want = {k for k in module.EXEC_KINDS if k not in kf.STRUCTURED_KINDS}
+        self.assertEqual(set(kf._ENVELOPE_KINDS), want)
+
     def test_execute_agent_verify_skill_prompt_keeps_contract(self):
         prompt = self._capture_prompt(kf.execute_agent, "verify", "検証する", {}, None)
         self.assertIn("再導出", prompt)
         self.assertIn("verify=pass", prompt)
         self.assertIn('{"ok": true|false, "issues": ["..."]}', prompt)
+        # 証跡規律: 実行したコマンドと終了コードを引用せずに pass させない
+        # （同じ安いモデルが verify も担うと、存在確認だけで「要件を満たす」と作文する）。
+        self.assertIn("証跡", prompt)
+        self.assertIn("終了コード", prompt)
 
     def test_execute_agent_falls_back_when_skill_disabled(self):
         with mock.patch.object(kf, "_WORKER_SKILL", "none"):
@@ -869,7 +940,7 @@ class FormatRepairTests(unittest.TestCase):
 
     def test_split_repair_prompt_carries_violation(self):
         prompts = []
-        def capture(prompt, model, purpose=""):
+        def capture(prompt, model, purpose="", **_kw):
             prompts.append(prompt)
             return "だめでした" if len(prompts) == 1 else '["x"]'
         with mock.patch.object(kf, "run_agent", side_effect=capture), \
@@ -887,7 +958,7 @@ class FormatRepairTests(unittest.TestCase):
 
     def test_format_retries_zero_disables_repair(self):
         calls = []
-        def count(prompt, model, purpose=""):
+        def count(prompt, model, purpose="", **_kw):
             calls.append(1)
             return "散文"
         with mock.patch.object(kf, "run_agent", side_effect=count), \
@@ -908,7 +979,7 @@ class FormatRepairTests(unittest.TestCase):
     def test_evaluator_transient_fails_run_with_tag(self):
         # 評価役の呼び出し自体が transient 失敗 → fallback（内容推定）でなくタグ付き failed 終端
         # ＝ auto-heal / 環境復旧が拾う。
-        def boom(prompt, model, purpose=""):
+        def boom(prompt, model, purpose="", **_kw):
             raise RuntimeError("[agent-error:transient] ETIMEDOUT（3 回試行後）")
         nodes = {"t1": {"goal": "g", "deps": [], "kind": "work"}}
         results = {"t1": {"status": "done", "output": "ok"}}   # 全 done でも failed に倒す
@@ -1099,7 +1170,7 @@ class GlobalInstructionsTests(unittest.TestCase):
         block = "<!-- agent-instructions rev:4 -->\n## 共通指示（agent-dashboard 管理・全ノード共通）\n回答は日本語。"
         captured = {}
 
-        def fake_run_agent(prompt, model, purpose=""):
+        def fake_run_agent(prompt, model, purpose="", **_kw):
             captured["prompt"] = prompt
             return "ok"
 
@@ -1116,7 +1187,7 @@ class GlobalInstructionsTests(unittest.TestCase):
         skill_prompt = block + "\n\nタスク本文"
         captured = {}
 
-        def fake_run_agent(prompt, model, purpose=""):
+        def fake_run_agent(prompt, model, purpose="", **_kw):
             captured["prompt"] = prompt
             return "ok"
 

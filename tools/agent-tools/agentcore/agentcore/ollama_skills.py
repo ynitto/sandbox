@@ -41,17 +41,16 @@ class SkillToolsetMismatch(Exception):
 
 
 def skill_dirs() -> "list[Path]":
-    """探索順。`install.py` の配布先をそのまま読むので、配布経路は既存のまま変わらない。
+    """探索順。最初に共通ホーム `~/.agents/skills` を読む。
 
-    `AGENT_OLLAMA_SKILLS_DIR` は `:` 区切りで複数指定できる（先に書いた方が勝つ）。
+    `AGENT_OLLAMA_SKILLS_DIR` は `:` 区切りで追加できる（先に書いた方が勝つ）。
     """
-    dirs: "list[Path]" = []
+    home = Path.home()
+    dirs: "list[Path]" = [home / ".agents" / "skills"]
     raw = os.environ.get("AGENT_OLLAMA_SKILLS_DIR", "").strip()
     for part in raw.split(os.pathsep):
         if part.strip():
             dirs.append(Path(part.strip()).expanduser())
-    home = Path.home()
-    dirs.append(home / ".agents" / "skills")
     dirs.append(home / ".claude" / "skills")
     return dirs
 

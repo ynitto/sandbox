@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """定期プロンプトの `slash` プロパティのテスト。
 
-設計: docs/designs/agent-loop-slash-property-design.md
+設計: docs/designs/agent-loop-design.md（機能 6）
 """
 import pathlib
 import sys

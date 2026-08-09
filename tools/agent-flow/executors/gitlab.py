@@ -187,7 +187,7 @@ def _is_gate_result(r: dict) -> bool:
 def _find_gitlab_idd_scripts_dir():
     """gitlab-idd スキルの scripts/ ディレクトリ（config_loader.py 同梱）を探す。
     connections.yaml を gl.py と同じ流儀で読むために使う。
-    検索順: .github/skills/ → git root/.github/skills/ → ~/.agent/skills/ → ~/.kiro/skills/ → skill_home。"""
+    検索順: .github/skills/ → git root/.github/skills/ → ~/.agents/skills/ → ~/.kiro/skills/ → skill_home。"""
     candidates = []
     cwd = os.getcwd()
     candidates.append(os.path.join(cwd, ".github", "skills", "gitlab-idd", "scripts"))
@@ -199,10 +199,10 @@ def _find_gitlab_idd_scripts_dir():
             candidates.append(os.path.join(root, ".github", "skills", "gitlab-idd", "scripts"))
     except Exception:  # noqa: BLE001
         pass
-    for skills_home in ("~/.agent/skills", "~/.kiro/skills"):
+    for skills_home in ("~/.agents/skills", "~/.kiro/skills"):
         candidates.append(os.path.join(os.path.expanduser(skills_home),
                                        "gitlab-idd", "scripts"))
-    for agent_dir in [os.path.expanduser("~/.agent"), os.path.expanduser("~/.kiro"),
+    for agent_dir in [os.path.expanduser("~/.agents"), os.path.expanduser("~/.kiro"),
                       os.path.expanduser("~/.copilot"),
                       os.path.expanduser("~/.claude"), os.path.expanduser("~/.codex")]:
         reg = os.path.join(agent_dir, "skill-registry.json")

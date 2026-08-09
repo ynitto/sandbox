@@ -85,6 +85,7 @@ concurrency: 1             # 板へ並行 post する独立タスク数（1=逐�
                             #   プラグイン定義で追加できる（契約: schemas/agent-cli.schema.json・
                             #   探索順: $KIRO_AGENTS_DIR → <root>/agents → ~/.agents/agents → ~/.kiro/agents）。
 # agent_timeout: 300        # エージェント CLI 1 呼び出しのタイムアウト秒（0 以下で無効）
+# agent_escalation_max: 3   # 内容系の失敗を agents.<purpose>.fallbacks の上位段で拾い直す上限（プロセス単位・0 で無効）
 # argv_limit: 100000        # argv 渡しの CLI（kiro / copilot）へ渡せるプロンプトの最大バイト数。
                             #   超える分は一時ファイルへ退避し「そのファイルを読んで実行」の短い
                             #   指示に置き換える（ARG_MAX 由来の起動失敗を避ける）。0 以下で既定へ

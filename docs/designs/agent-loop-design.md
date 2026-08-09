@@ -1,28 +1,29 @@
 # agent-loop 設計書
 
-> 最終更新: 2026-08-09（旧 `tools/kiro-loop/` の退役を反映）
+> 最終更新: 2026-08-09（`slash` 統合、Phase 1 / Phase 2・`agent-tuning` の実装を反映）
 > 実装: `tools/agent-loop/`（`agent_loop` パッケージ）。旧系統 `tools/kiro-loop/` は退役済み（付録 B）
 > 関連: [agent-tools 改称方針](./agent-tools-rename-design.md) ／
-> [slash プロパティ設計](./agent-loop-slash-property-design.md) ／
+> [段階的機能拡張](../plans/2026-08-08-agent-loop-phased-enhancement-design.md) ／
 > 実装リファレンス `tools/agent-loop/DESIGN.md`（クラス構成・処理フローの詳細）
 >
 > 旧 `kiro-loop-{event-hook,agent-messaging,gitlab-webhook,adaptive-interval}-design.md` と、
-> その agent-loop クローン 4 件（計 8 文書）は本書へ統合した。本文の名称は移行先の
+> その agent-loop クローン 4 件、および `agent-loop-slash-property-design.md`（計 9 文書）は本書へ統合した。本文の名称は移行先の
 > `agent-loop` に統一し、退役した `kiro-loop` 系統との差分は移行記録として付録 B に残す。
 
 ## TL;DR
 
-agent-loop は、tmux 上にエージェント CLI（kiro-cli / claude 等）のセッションを常駐させ、YAML で定義したプロンプトを定期送信するデーモンです。素の agent-loop は「N 分ごとに固定文面を送る」だけの装置ですが、本書はそれを実運用に耐えさせるための 4 つの拡張の設計正典です。
+agent-loop は、tmux 上にエージェント CLI（kiro-cli / claude 等）のセッションを常駐させ、YAML で定義したプロンプトを定期送信するデーモンです。本書は、固定送信を実運用に耐えさせる 6 つの機能と、すべての入力を同じ配送判定へ通す実行基盤の設計正典です。
 
 1. **イベントフック（pull 型）** — スケジュール発火のたびに Python フックの `check()` を呼び、「今送るべきか・何を送るか」をデータ駆動で決める。**実装済み**。
 2. **汎用 inbound Webhook（push 型）** — 外部システムからの HTTP POST を受け、フックの `handle(ctx)` でパースしてプロンプトに変換する。GitLab は一具体例で、コアは provider 非依存。**実装済み**。
 3. **エージェント間メッセージング** — エージェントごとのファイルベース inbox に他エージェントがメッセージを投函し、受信側デーモンがプロンプトとして処理する。**実装済み**。
-4. **動的インターバル（adaptive interval）** — 無風時はポーリング間隔を幾何級数的に伸ばし、イベント到来で即座に最短へ戻す。**未実装の提案**。
+4. **動的インターバル（adaptive interval）** — 無風時はポーリング間隔を幾何級数的に伸ばし、イベント到来で即座に最短へ戻す。**実装済み**。
 5. **エージェント CLI の差し替え** — 駆動する CLI（kiro-cli / claude / codex 等）を `agents/<name>.json` の共通契約で差し替える。待機状態の監視・判定方法が CLI ごとに違う点を契約側の宣言（`ready_pattern` / `busy_pattern` / `idle_quiet_sec`）で吸収する。**実装済み**。
+6. **`slash` プロパティ** — 本文の前に CLI コマンドを独立送信し、CLI ごとの行頭記号へ送信直前に変換する。**実装済み**。
 
-全体を貫く原則は 3 つです。第一に、拡張は既存ループへの**挿入だけ**で載せ、既存の送信・排他・死活監視の機構は変えません。第二に、送信元固有の知識（GitLab のヘッダ名や payload 構造）は**フックスクリプトに閉じ**、コアを汎用に保ちます。第三に、実際の tmux への送信は**既存スケジューラの背圧機構**（セッション準備・セマフォ）へ一本化し、HTTP スレッドや inbox 監視スレッドから直接送信しません。
+全体を貫く原則は 3 つです。第一に、公開 YAML・フック・inbox の契約を保ったまま、schedule / event hook / webhook / inbox / CLI send を **PeriodicScheduler の dispatch gate** へ一本化します。第二に、送信元固有の知識（GitLab のヘッダ名や payload 構造）は**フックスクリプトに閉じ**、コアを汎用に保ちます。第三に、実際の tmux への送信はスケジューラの背圧機構（lifecycle・preflight・セッション準備・セマフォ・ready 判定）だけを通し、HTTP スレッドや inbox 監視スレッドから直接送信しません。
 
-読むべき人は、agent-loop を運用する人、フックスクリプトを書く人、そして本設計を別フォークへ移植する人です。定期プロンプトの前にスラッシュコマンドを送る `slash` プロパティは、フォーク展開用に自己完結で書かれた[別文書](./agent-loop-slash-property-design.md)を参照してください。
+読むべき人は、agent-loop を運用する人、フックスクリプトを書く人、そして本設計を別フォークへ移植する人です。利用者向けの設定例は `tools/agent-loop/README.md`、内部クラスと処理フローは `tools/agent-loop/DESIGN.md` を参照してください。
 
 ## 背景と課題
 
@@ -37,7 +38,7 @@ agent-loop は、tmux 上にエージェント CLI（kiro-cli / claude 等）の
 
 ### 目標
 
-- スケジュール・フック・Webhook・inbox という複数の入力経路を、**1 つの送信経路**（スケジューラの dispatch）に合流させる
+- スケジュール・フック・Webhook・inbox・CLI send を、**1 つの送信経路**（スケジューラの dispatch）に合流させる
 - 既存 YAML・既存フックの**後方互換を壊さない**（未指定なら従来挙動）
 - GitLab / GitHub / 自作システムのどれが相手でも、コア実装を書き換えずにフックの差し替えで対応できる
 
@@ -47,50 +48,53 @@ agent-loop は、tmux 上にエージェント CLI（kiro-cli / claude 等）の
 - エージェント CLI 自体の改造。agent-loop はあくまで「テキストを tmux ペインへ送る」装置に徹します
 - LLM による適応判断。動的インターバルの知能はヒューリスティクス（統計・状態機械）に限定します
 
-## 全体像 — 4 つの入力経路
+## 全体像 — 5 つの入力経路と 1 つの dispatch gate
 
 ```
-                    ┌────────────────────────── agent-loop デーモン ──────────────────────────┐
-                    │                                                                          │
- 固定スケジュール ──▶ PeriodicScheduler ─┬─ event_hook あり → check() を呼ぶ（pull・①）        │
-                    │   (_run_loop)      │                                                     │
- 外部システム ──HTTP─▶ WebhookServer ────┼─ handle(ctx) → テンプレート注入 → 外部キュー投函（②）│
-                    │                    │                                                     │
- 他エージェント ─file─▶ InboxWatcher ────┴─ メッセージ整形 → dispatch（③）                     │
-                    │                                                                          │
-                    │        ▼ いずれも ensure_session + セマフォ + _dispatch_prompt に合流     │
-                    └───────────────────────────▼──────────────────────────────────────────────┘
-                                        tmux ペイン（エージェント CLI）
+                    ┌──────────────────────── agent-loop デーモン ────────────────────────┐
+ 固定スケジュール ──▶ schedule prompt                                                     │
+ event hook ─────────▶ schedule 発火 → check()（pull・①）                                 │
+ 外部システム ──HTTP─▶ WebhookServer ── handle(ctx) → 外部 deque（②）                     │
+ 他エージェント ─file─▶ InboxWatcher ── JSON file（③）                                   │
+ CLI send ──────file─▶ send-requests ── atomic claim                                      │
+                    │                   ▼                                                  │
+                    │       request ID 付き共通 dispatch queue                            │
+                    │                   ▼                                                  │
+                    │ lifecycle → preflight → session → slot → ready → _dispatch_prompt   │
+                    └───────────────────▼──────────────────────────────────────────────────┘
+                                    tmux ペイン（エージェント CLI）
 ```
 
 | | ①イベントフック | ②Webhook | ③メッセージング | ④動的インターバル |
 |--|--|--|--|--|
 | 起点 | agent-loop（スケジュール発火） | 外部システム（HTTP） | 他エージェント（CLI） | agent-loop（発火結果の観測） |
 | 方向 | pull | push | push（ファイル経由） | —（頻度制御） |
-| フック契約 | `check() -> str \| None` | `handle(ctx) -> dict \| None` | なし（JSON スキーマ） | `check()` の dict 戻り値拡張 |
-| 実行スレッド | scheduler | HTTP サーバ | InboxWatcher | scheduler |
-| 永続性 | フック自身の状態ファイル | インメモリ deque（at-most-once） | ファイル（`.processed/` 移動まで未処理扱い） | 状態ファイルに永続化（案） |
-| 状態 | 実装済み | 実装済み | 実装済み | 未実装の提案 |
+| フック契約 | `check(config?) -> str \| dict \| None` | `handle(ctx) -> dict \| None` | なし（JSON スキーマ） | scheduler は activity / idle を観測（error は未接続） |
+| 実行スレッド | timeout 付き hook thread | HTTP サーバ | InboxWatcher | scheduler |
+| 永続性 | フック自身の状態ファイル | インメモリ deque（at-most-once） | ファイル（`.processed/` 移動まで未処理扱い） | `~/.agents/loop-adaptive/` |
+| 状態 | 実装済み | 実装済み | 実装済み | 実装済み |
 
 ## 主要な設計判断
 
-### 1. 拡張は既存ループへの「挿入」だけで載せる
+### 1. 公開契約を保ち、内部配送を 1 つの dispatch gate に畳む
 
-**判断**: どの拡張も、`_run_loop` への処理ブロック挿入と新規クラス・新規メソッドの追加だけで実装し、既存メソッドの中身は変更しない。
+**判断**: schedule / event hook / webhook / inbox / CLI send を共通の dispatch request に正規化し、`PeriodicScheduler` を唯一の配送判定箇所にする。既存の YAML・フック・ファイル契約は維持する。
 
-**文脈**: この設計は複数フォークへ展開されてきたため、内部のメソッド名や行構成は一致しません。既存コードを書き換える設計は、フォークごとの差分に埋もれて移植できなくなります。
+**文脈**: 入力元ごとに busy・slot・lifecycle の判定が分かれていたため、要求消失と完了誤判定の原因になっていました。Phase 1 は公開面を変えず、内部だけを共通化しました。
 
-**トレードオフ**: 挿入点が増えると `_run_loop` が分岐の連なりになります。代わりに、各拡張が独立に有効化・無効化でき、フォークへの移植が「同じ挿入を自分の等価物に行う」作業に還元されます。Webhook 設計はこれを推し進め、host に求める能力を統合コントラクト（§機能 2）として抽象化しました。
+**選択肢と却下理由**: 呼び出し箇所ごとの個別強化は判定の重複を残し、汎用 workflow engine への全面改造は agent-loop の責務を越えるため却下。
 
-**確信度**: 高い。event_hook・webhook・messaging の 3 拡張がこの方式で実装済みです。
+**トレードオフ**: daemon が request をメモリキューへ受理した直後の crash には永続再送せず、既存の at-most-once 境界を維持します。
+
+**確信度**: 高い。Phase 1 / Phase 2 と入力経路別の回帰テストで固定しています。
 
 ### 2. pull と push を対称のフック契約にする
 
-**判断**: pull 型は `check() -> str | None`（完成プロンプトを返す）、push 型は `handle(ctx) -> dict | None`（パース結果の辞書を返す）とし、どちらも「None なら何もしない」「モジュールは `importlib` + mtime キャッシュでロード」という同じ規約に載せる。
+**判断**: pull 型は `check(config?) -> str | dict | None`（完成プロンプト、または `prompt` / `cwd` / `vars`）、push 型は `handle(ctx) -> dict | None`（パース結果の辞書）とし、どちらも「None なら何もしない」「モジュールは `importlib` + mtime キャッシュでロード」という同じ規約に載せる。
 
 **文脈**: pull ではフックが自分でデータを取りに行くため文面まで組み立てられますが、push では受信 payload の解釈（フックの仕事）と文言（設定の仕事)を分けたい、という非対称があります。
 
-**選択肢と却下理由**: push でも完成プロンプトを返させる案は、文言を変えるたびにフックスクリプトの編集が要り、パースと文言の責務が混ざるため却下。逆に pull を辞書返しに揃える案は、既存フックの後方互換を壊すため却下しました。
+**選択肢と却下理由**: push でも完成プロンプトを返させる案は、文言を変えるたびにフックスクリプトの編集が要り、パースと文言の責務が混ざるため却下。pull の dict は既存の文字列戻り値を残した後方互換の追加に限定しました。
 
 **トレードオフ**: 契約が 2 種類になりますが、`_load_hook_module`（mtime 監視・変更時のみ再ロード、複数スレッド対応のため `_hook_cache_lock` で保護）は共用できています。
 
@@ -118,13 +122,13 @@ agent-loop は、tmux 上にエージェント CLI（kiro-cli / claude 等）の
 
 **確信度**: 高い。
 
-### 5. 頻度の適応はヒューリスティクスだけで行い、観測のための追加リクエストを増やさない（提案）
+### 5. 頻度の適応はヒューリスティクスだけで行い、観測のための追加リクエストを増やさない
 
-**判断**: 動的インターバルの判断材料を「フックがどのみち取得したデータの副産物」（hit/miss/error、フックの状態ファイル、過去の発火履歴）に限定し、適応のために新たな API 呼び出しをしない。LLM も使わない。
+**判断**: 動的インターバルの判断材料を「通常の dispatch で得られる送信成功・スキップと過去の発火履歴」に限定し、適応のために新たな API 呼び出しをしない。LLM も使わない。
 
 **文脈**: 目的が「GitLab サーバ負荷の削減」なので、賢く決める処理自体が負荷を生んでは本末転倒です。
 
-**確信度**: 中。設計としては完結していますが未実装で、実運用の裏付けがありません（§機能 4）。
+**確信度**: 高い。明示 opt-in・状態永続化・cron 除外を実装し、単体テストで状態遷移を固定しています（§機能 4）。
 
 ---
 
@@ -135,22 +139,28 @@ agent-loop は、tmux 上にエージェント CLI（kiro-cli / claude 等）の
 ### フック契約
 
 ```python
-def check() -> str | None:
-    """スケジュール発火のたびに scheduler スレッドから呼ばれる。
+def check(config=None) -> str | dict | None:
+    """スケジュール発火のたびに timeout 付き worker thread から呼ばれる。
 
     Returns:
-        str  : エージェント CLI に送信するプロンプトテキスト（YAML の prompt を上書き）
-        None : このサイクルをスキップ（何も送らない）
+        str  : エージェント CLI に送信する完成プロンプト
+        dict : {"prompt": str, "cwd"?: str, "vars"?: dict}
+        None : このサイクルをスキップ
     """
+
+def ack() -> None:
+    """任意。tmux への送信成功後だけ呼ばれる。"""
 ```
 
-- 引数なし。フック内の module-level 変数で状態を保持できます（scheduler の単一スレッドから呼ばれるため競合なし）
+- 引数なしの既存 `check()` はそのまま有効。1 引数を受ける場合はエントリ名・ID・fallback・個別設定・cwd・workspace を渡します
+- dict の `cwd` は実在ディレクトリだけを受理し、`vars` は `prompt.format_map` へ渡します
 - `check` が存在しない・戻り値が不正・例外発生は、いずれも WARNING/ERROR ログの上スキップ（デーモンは止めない）
+- 30 秒で timeout したフックは完了まで隔離し、同じフックの thread を増殖させません
 - モジュールは mtime 監視付きでロードし、変更時のみ再ロード
 
 ### フォールバック送信
 
-「発火すべきイベントが無い場合に、フィルター条件に合致する対象をランダムに 1 件選んで送る」挙動を per-prompt の `event_hook_fallback: true` で有効化できます。本体はこのフラグを環境変数 `AGENT_LOOP_EVENT_HOOK_FALLBACK`（`1`/`0`）としてフックへ渡すだけで、フォールバックの実体は `check()` 内の自己判断です。`check()` のシグネチャは変わりません。
+「新規イベントが無ければ未完了イベントを cooldown 後に replay し、それも無ければ候補を 1 件選ぶ」挙動を per-prompt の `event_hook_fallback: true` で有効化できます。コアはフラグと設定を渡すだけで、優先順位と provider 固有の選択は同梱フックに閉じます。イベントの既読化は `check()` ではなく、送信成功後の `ack()` で確定します。
 
 ### 設定
 
@@ -171,13 +181,13 @@ prompts:
 
 `hooks/gitlab-issue-hook.py` / `hooks/gitlab-mr-hook.py` を同梱しています。状態ファイル（`~/.agents/hooks/gitlab-issue-state.json` 等）に `iid -> updated_at` を保存して新規・更新を検知し、ラベルに応じてプロンプト文面を切り替え、更新が無くフォールバック有効ならランダム送信します。
 
-### キューイングは未実装
+### 配送保持と ACK
 
-当初設計にあった「セマフォ上限到達時にプロンプトを `_queued_prompt` へ保持し、次サイクルでキュー優先処理する」機構は実装していません。スロット上限時は従来どおり次サイクルへ持ち越します。なお、フックがイベントを先に既読化してからスロット不足で破棄するとイベントが恒久消失するバグがあり、修正済みです（[2026-08-02 監査](../reviews/2026-08-02-agent-tools-family-bug-audit.md) L3）。
+schedule はエントリごとに最大 1 件を保留します。発火を queue へ受理した時点で `next_run_at` を進め、busy・slot 上限では同じ request を保留し、次の発火は 1 件へ coalesce します。event hook は tmux 送信成功後だけ `ack()` を呼ぶため、受付前の延期でイベントを既読化しません。daemon がメモリキューへ受理した後の crash まで永続再送する保証は持ちません。
 
 ### 注意点
 
-- `check()` は scheduler スレッドで実行されるため、長時間ブロックすると他エントリの発火が遅延します。ネットワーク呼び出しには短い timeout（同梱例では 15 秒）を設定すること
+- `check()` は 30 秒で scheduler の待機を打ち切りますが、Python thread 自体は強制終了できません。ネットワーク呼び出しにはそれより短い timeout を設定すること
 - `exec_module` はモジュールのトップレベルを実行します。副作用は `check()` 内に閉じること
 
 ---
@@ -240,7 +250,7 @@ POST /hooks/<name>
 
 キューはエントリ dict の中ではなく、**scheduler が `name` をキーに独立保有**する bounded deque（`_external_queues`、上限超過は古いものから破棄 + 警告）です。エントリ dict に持たせると、設定リロード（エントリ全置換）のたびに未処理 webhook が捨てられ、`_run_loop` の浅いコピーとも競合するためです。enqueue（HTTP スレッド）と drain（scheduler スレッド）は同一ロック下でのみ deque を操作します。
 
-実 dispatch は `_run_loop` 先頭の `_drain_external_one()`（1 サイクル 1 件）が行い、セッション未準備・スロット上限なら `appendleft` で積み直します。
+`_drain_external_to_pending()` は 1 tick あたりエントリごとに 1 件を共通 dispatch queue へ移し、以後は他の入力と同じ lifecycle・preflight・slot・ready 判定を通します。queue へ受理できなければ deque の先頭へ戻します。
 
 webhook 専用エントリはスケジュール（cron / interval）無しで定義でき、その場合 `next_run_at = math.inf` の sentinel でスケジュール発火パスから外れます。発火するのはキュードレイン経由のみです。event_hook との併用（webhook + interval）も可能です。
 
@@ -294,17 +304,12 @@ prompts:
 |---|------|---------------------|
 | C1 | 常駐ループの存在（処理を差し込める） | `PeriodicScheduler._run_loop` |
 | C2 | 名前付き送信先の解決 | エントリ `name`/`id` → `SessionManager` ペイン |
-| C3 | プロンプト送信 API（session 準備・排他制御込み） | `ensure_session` + `_acquire_slot` + `_dispatch_prompt` |
+| C3 | プロンプト送信 API（session 準備・排他制御込み） | `ensure_session` + `_try_acquire_slot` + `_dispatch_prompt` |
 | C4 | 設定の正規化フック（`webhook` フィールドを通せる） | `_set_entries` |
 | C5 | 起動/停止の配線 | `main()` / `_cleanup()` |
 | C6 | モジュール動的ロード（任意） | `_load_hook_module` |
 
-移植時の注意: ペインを遅延起動するフォークでは、初回 webhook が session 準備待ちで一度保留されます（ドレインが積み直すので消失はしません）。agent-loop は設定読み込み時にペインを先行起動するため、この問題がありません。
-
-### 既知の課題
-
-- エントリの disable / リネーム / 削除でキューが宙に浮く場合、drain 時に「対応エントリ不在なら破棄 + 警告」するのが設計意図ですが**未実装**です（`agent_loop/scheduler.py` のドレイン処理）。bounded deque なのでメモリは有界ですが、キーが事実上のリークとして残ります
-- agent-loop 系統の E2E テストは未整備です（kiro-loop 系統には実 HTTP・SessionManager スタブによる 22 ケース通過の記録あり。付録 B）
+移植時の注意: ペインを遅延起動するフォークでは、初回 webhook が session 準備待ちで保留されます。dispatch queue から消さず、準備完了後に同じ request を再試行してください。
 
 ---
 
@@ -360,7 +365,7 @@ inbox は `~/.kiro/agents/<agent_name>/inbox/` 配下のファイルで、処理
 
 ### InboxWatcher
 
-グローバル設定 `agent_name` を設定したデーモンだけが InboxWatcher スレッドを起こし、`inbox_poll_seconds`（既定 5 秒）ごとに inbox をポーリングします。各メッセージは「セッション準備 → セマフォ取得 → 送信」を試み、失敗ならファイルを保持したまま次のポーリングで再試行します。**`.processed/` へ移動するまで処理済みとみなさない**のが保留・再試行の要です。
+グローバル設定 `agent_name` を設定したデーモンだけが InboxWatcher スレッドを起こし、`inbox_poll_seconds`（既定 5 秒）ごとに inbox をポーリングします。各メッセージは request ID 付きで共通 dispatch gate へ投入し、lifecycle・preflight・セッション準備・セマフォ・ready 判定を通します。受付・送信に失敗した場合はファイルを保持し、**tmux 送信成功後に `.processed/` へ移動するまで処理済みとみなしません**。
 
 受信メッセージは次の形式でプロンプト化されます。
 
@@ -394,88 +399,39 @@ agent-loop agents
 
 ---
 
-## 機能 4: 動的インターバル（adaptive interval） — 未実装の提案
+## 機能 4: 動的インターバル（adaptive interval） — 実装済み
 
-> 本節は設計案です。`tools/agent-loop/` に `adaptive` 関連のコードは存在しません（退役した旧系統にも未実装でした）。
+固定インターバルの無風時の無駄叩きを減らすため、発火結果から次の発火時刻を決めます。暗黙には有効化せず、`adaptive.enabled: true` のエントリだけを対象にします。固定時刻に意味がある `cron` エントリには適用しません。
 
-固定インターバルは、活発時には反応が遅く（5 分固定なら最悪 5 分待ち）、無風時には無駄叩き（288 回/日）になります。この提案は、発火結果の観測から次の発火タイミングを動的に決めます。
+### 適応アルゴリズム
 
-### 二層構成
+| 結果 | インターバル更新 | 意図 |
+|---|---|---|
+| **activity** | `min_interval_seconds` へ即リセット、idle 回数を 0 | 活発時は最速へ戻す |
+| **idle** | `idle_threshold` 回の連続後に `× backoff_factor` | 無風時だけ間引く |
+| **error** | `min × backoff_factor` の短時間 retry。idle 回数は増やさない | 遷移関数は実装済み。scheduler との接続は未実装 |
 
-どちらか一方だけでも成立し、併用すると精度が上がります。
+更新値は `max_interval_seconds` で頭打ちにし、`jitter` で複数デーモンの同時ポーリングを分散します。状態は `~/.agents/loop-adaptive/<entry-id>.json` へ atomic write し、再起動をまたいで継続します。
 
-| 層 | 決定主体 | 使う情報 | フック改変 |
-|---|---|---|---|
-| **Layer 1: コア適応** | scheduler | `check()` の hit/miss（送信したか否か）だけ | 不要 |
-| **Layer 2: フック明示** | `check()` | 既に取得済みの GitLab データ（backlog 数・最終更新時刻・ラベル） | 戻り値を dict へ拡張 |
-
-### 適応アルゴリズム（Layer 1）
-
-「miss で乗算増加・hit で即リセット」を採用します。無風時は幾何級数的に伸ばしつつ、イベント到来時は 1 発で最小へ戻すことで取りこぼし（stall）を防ぎます。
-
-| 結果 | 判定 | インターバル更新 | 意図 |
-|---|---|---|---|
-| **hit** | プロンプトを実際に送信できた | `min_interval` へ即リセット | 活発 → 最速で追従 |
-| **miss** | 送るべきものが無かった | `× backoff_factor`（`max_interval` で頭打ち） | 無風 → 幾何級数的に間引き |
-| **error** | GitLab 不達・タイムアウト | 据え置き + `retry_interval` で短時間リトライ | 障害を無風と誤認して max へ飛ばさない |
-
-error を独立クラスにするのが要です。「更新なし」と「ネットワークエラー」を両方 miss に潰すと、GitLab が数分落ちただけでインターバルが max（例 120 分）まで膨らみ、復帰後の本物のイベントを 2 時間見逃します。
-
-次回発火時刻には `±jitter`（既定 ±10%）を掛け、複数デーモンの同時ポーリング（thundering herd）を分散します。適応状態はエントリ単位のファイル（`~/.agents/loop-adaptive/<entry-id>.json`）へ永続化し、再起動でインターバルが min へリセットされて無風の深夜に叩き直すのを防ぎます。
-
-### 設定案
+### 設定
 
 ```yaml
 prompts:
   - name: "GitLab Issue ワーカー (event_hook)"
     event_hook: ~/sandbox/tools/agent-loop/hooks/gitlab-issue-hook.py
-    interval_minutes: 5          # adaptive 有効時は初期値として使う
+    interval_minutes: 5
     adaptive:
       enabled: true
-      min_interval_minutes: 2    # hit 時に戻る下限（既定: interval_minutes）
-      max_interval_minutes: 120  # miss バックオフの上限
-      backoff_factor: 1.6
-      retry_interval_minutes: 1  # error 時の短時間リトライ
-      jitter: 0.1
+      min_interval_seconds: 60
+      max_interval_seconds: 1800
+      backoff_factor: 1.5
+      idle_threshold: 3
+      jitter: 0.2
 ```
 
-`adaptive` 未指定のエントリと `cron` エントリ（固定スケジュールが意味を持つ）は完全に従来挙動です。バリデーション（`min < max`、`backoff_factor > 1.0`、`min >= 1`）に落ちたエントリは WARNING の上、固定インターバルへフォールバックします。
+`adaptive` 未指定・`enabled: false`・`cron` のエントリは従来どおりです。schedule 受付時は idle として次回時刻を進め、同じエントリの保留は 1 件に coalesce します。送信成功時だけ activity として最短へ戻します。
 
-### フック戻り値の dict 拡張（Layer 2）
-
-`check()` の戻り値に、後方互換の dict 形式を追加します。
-
-```python
-def check() -> str | None | dict:
-    # 従来:  str → 送信（hit） / None → スキップ（miss）
-    # 追加:  {"prompt": str | None,
-    #         "status": "hit" | "miss" | "error",   # 省略時は prompt から推定
-    #         "next_interval_minutes": float | None} # 明示指定。コア適応より優先（min〜max にクランプ）
-```
-
-これで表現できるようになるのは次の 3 つです。
-
-- **障害の申告**: `{"prompt": None, "status": "error"}` — バックオフさせず短時間リトライ
-- **フォールバック送信の分離**: `{"prompt": <fallback>, "status": "miss"}` — 「プロンプトは送るがポーリング頻度は上げない」。これが無いとフォールバック有効エントリは毎サイクル hit 扱いになりバックオフが効きません
-- **データに基づく明示指定**: 既に取得済みの issues から「backlog 空なら 120 分」「critical ラベルありなら 3 分」等を追加リクエストなしで返せます
-
-### 詰まらせないための不変条件
-
-1. hit で即 min 復帰（バックオフ中でもイベント 1 発で最速へ）
-2. error はバックオフしない（短時間リトライ）
-3. `min >= 1 分`・`min < max`・`backoff > 1.0` をバリデーションで保証
-4. スロット busy 由来の延期（+30 秒）と適応バックオフを二重計上しない（適応は miss パスのみ）
-5. jitter で複数デーモンを分散
-6. cron エントリは不可侵
-7. 再起動時の復帰ガード（前回から時間が経ちすぎていれば 1 段だけ縮めて安全側へ）は任意
-
-### 期待効果
-
-`min=2, max=120, backoff=1.6` の event_hook エントリ 1 本を無風の週末に走らせた場合、1 日あたりのフックのリクエスト数は固定 5 分の **288 回**に対し**約 20〜30 回**（約 1/10）。イベント到来時は hit で即 2 分へ戻るため、平時の反応速度はむしろ向上します。
-
-### 段階導入
-
-(1) コア AIMD だけ有効化 → (2) 同梱フックを dict 戻り値へ更新 → (3) EWMA による max の動的クランプ等の高度化。既存フック（`str | None`）は無改変で動き、dict 戻り値はオプトインです。
+`next_adaptive_interval()` は error 遷移を持ちますが、現行の `check()` 戻り値には状態指定がなく、フックの例外・timeout・`None` はいずれも scheduler で idle として扱われます。障害と無風の分離、フックによる次回間隔の明示指定、LLM / EWMA による高度な頻度予測は未実装です。
 
 ---
 
@@ -518,15 +474,81 @@ SlotMonitor の状態遷移は従来の「プロンプト消失 → processing �
 
 ### 制約（v1）
 
-- **CLI はデーモン単位**（グローバル設定）。エントリごとの差し替えは、ペインごとのプロファイル分離が要るため将来課題。
+- **agent-loop が起動する managed pane の CLI はデーモン単位**（グローバル設定）。エントリごとの差し替えは将来課題。`external_panes[].agent_cli` は外部 pane の ready / busy 判定だけを選び、起動 CLI は変更しません。
 - **kiro 以外では slot-release stop hook を注入しません**（stop hook は kiro-cli の agents 機構）。スロット解放は SlotMonitor のペイン監視だけで行います。CLI 側の完了フックを契約へ載せるのは将来課題。
 - `startup_timeout` は従来どおり agent-loop の設定を正とし、定義の `ready_timeout_sec` は他の消費者（対話診断等）向けのままです。
 
 ---
 
-## slash プロパティ — 実装済み・別文書
+## 機能 6: `slash` プロパティ — 実装済み
 
-定期プロンプトの本文より前にスラッシュコマンド（`/name` 形式）を独立送信として前置する `slash` プロパティは、fork 先へ単体で展開できるよう自己完結で書かれた [`agent-loop-slash-property-design.md`](./agent-loop-slash-property-design.md) を正とします。送信順は `/clear`（fresh_context）→ `slash` 要素を宣言順 → 本文で、実装は `agent_loop/scheduler.py`、テストは `test/test_slash_property.py` にあります。
+定期プロンプトの本文より前に、対話 CLI のコマンドを独立送信します。コマンドを本文へ埋め込まず、YAML の構造として分離することで、本文を変えずにコマンドだけを差し替えられます。
+
+### 設定と正規化
+
+```yaml
+prompts:
+  - name: "定期点検"
+    slash: ["healthcheck", "report --lang ja"]
+    prompt: "結果を 3 行で"
+    interval_minutes: 240
+
+  - name: "コンテキスト整理だけ"
+    slash: compact
+    interval_minutes: 120
+```
+
+- 型は文字列または文字列配列。`prompt` を省いた `slash` 単独エントリも有効
+- 各要素は `<name> [args]`。名前は `^[a-z0-9][a-z0-9._-]*$`
+- 先頭の `/` は不要。付いていれば警告して剥がす
+- 不正要素はその要素だけを警告して捨て、エントリ全体は無効化しない
+- `prompt` / `slash` / `event_hook` のいずれも無いエントリだけを無効とする
+
+### 送信順と CLI 差異
+
+送信順は **fresh context の clear command → `slash` を宣言順に 1 件ずつ → `prompt` 本文**です。各コマンドは本文へ連結せず独立入力とし、失敗した時点で後続コマンドと本文の送信を止めます。clear 後は 2 秒、`slash` 間は 1 秒だけ空け、応答完了は待ちません。`event_hook` 併用時は、フックがプロンプトを返して実際に dispatch される場合だけ `slash` も送ります。
+
+内部では `/name` へ正規化し、送信直前に `CliProfile.skill_command_prefix` へ書き換えます。既定は `/`、codex は `$` です。clear command と `slash` 自体には `agent-tuning` の prompt 注入を適用しません。
+
+`slash` 未指定時の挙動は変わりません。CLI からエントリを追加する `prompt-add --slash` は設けず、YAML 編集を設定の正とします。
+
+---
+
+## 共通実行基盤: Phase 1 / Phase 2 — 実装済み
+
+2026-08-08 の[段階的機能拡張](../plans/2026-08-08-agent-loop-phased-enhancement-design.md)で、個別入力経路の公開契約を保ったまま内部配送と実行形態を拡張しました。Phase 2 の設定・状態遷移・失敗境界は[詳細設計](../plans/2026-08-08-agent-loop-phase2-detailed-design.md)を正とします。
+
+### Phase 1 — Core Reliability
+
+| 領域 | 確定した境界 |
+|---|---|
+| 配送 | 全入力を request ID 付きの共通 dispatch queue へ合流。priority / FIFO / schedule 1 件 coalesce / 短時間重複排除を適用 |
+| CLI send | daemon 稼働時は `~/.agents/send-requests/` へ atomic 投函。`--wait` は同じ request ID の busy→ready / failure / timeout だけを待つ |
+| hook / preflight | event hook は 30 秒 timeout と送信後 `ack()`、preflight は 15 秒 timeout・例外時 fail-open。`--force` だけが preflight を迂回可能 |
+| lifecycle / reload | `pause` / `resume` / `cancel` / `drain` と transactional reload。不正設定時は稼働中の設定・pane を維持 |
+| 回復 / 診断 | dead pane・stale slot は常時回復。input / freeze / RSS / memory 回復は安全境界または opt-in を守り、`doctor [--json] [--fix]` は非破壊の修復だけを行う |
+
+daemon が request をメモリキューへ受理した直後の crash は永続再送しません。重複実行を避けるため at-most-once を維持し、配送保証が必要な event hook と inbox はそれぞれ `ack()` とファイル移動で受理前の消失を防ぎます。
+
+### Phase 2 — Execution Extensions
+
+新しい workflow engine は作らず、通常 request を作る **dispatch adapter** と、pane の再利用・破棄を切り替える **session policy** として追加します。
+
+| 分類 | 実装済み機能 |
+|---|---|
+| 実行 | 有界反復の Ralph、warm-up と実行後破棄を行う oneshot、成功 N 回ごとの clean session |
+| ad-hoc send | `--model`、detached worktree の `--sandbox`、ready / preflight だけを限定迂回する `--force` |
+| 外部 pane | agent-loop が起動・再起動・cleanup・slot 管理をしない登録済み tmux pane への配送 |
+| hook | event replay / fallback、GitLab 接続先解決、追加・変更・削除を検知する file watch |
+| 配布 | secret 値を prompt に含めない environment handoff、zipapp 限定の検証付き `update` |
+
+Ralph の daemon 再起動後の途中再開、任意 workflow、dirty sandbox の自動削除、source / pip インストールの自己更新は非目標です。
+
+### `agent-tuning`（資源効率計画 S11）
+
+`$AGENT_TUNING_DIR`（既定 `~/.agents/tuning/`）の `tuning.json` を共通契約とし、エントリの `tuning_profile` で prompt 注入と pane 起動環境を選びます。注入は `session_start` / `every_prompt`、起動環境は PATH 前置と環境変数を宣言でき、engine / workload / agent CLI 条件で絞り込みます。設定不在・破損・`enabled: false` は定常送信を止めず no-op です。
+
+外向き成果物用の `external-facing` は、設定ファイルに注入 ID が誤記されても読み手側で必ず注入を空へ丸めます。PATH・環境変数は文体に影響しないため、同プロファイルで明示されたものを維持します。fresh context 後は次の業務 prompt だけ `session_start` 注入を再適用します。
 
 ---
 
@@ -534,12 +556,14 @@ SlotMonitor の状態遷移は従来の「プロンプト消失 → processing �
 
 | 機能 | agent-loop 系統 | 旧系統（退役時の記録） |
 |---|---|---|
-| イベントフック | 実装済み。`test/test_event_hook.py` | 実装済み |
-| Webhook | 実装済み。E2E 未整備 | 実装済み。E2E 22 ケース通過の記録（実 HTTP・SessionManager スタブ） |
+| イベントフック | 実装済み。`test/test_event_hook.py` / `test/test_hook_hardening.py` | 実装済み |
+| Webhook | 実装済み。`test/test_webhook_http.py`（実 HTTP E2E） | 実装済み。E2E 22 ケース通過の記録（実 HTTP・SessionManager スタブ） |
 | メッセージング | 実装済み。`test/test_inbox_dispatch.py` | 実装済み。`test/test_messaging.py` |
-| 動的インターバル | 未実装 | 未実装 |
-| slash | 実装済み。`test/test_slash_property.py` | 未実装（移植ガイドは別文書 §3） |
+| 動的インターバル | 実装済み。`test/test_adaptive_interval.py` | 未実装 |
+| slash | 実装済み。`test/test_slash_property.py` | 未実装 |
 | CLI 差し替え | 実装済み。`test/test_cli_profile.py`（+ agentcore 側 `test_agentcli.py`） | 未実装（kiro-cli 固定のまま） |
+| Phase 1 / Phase 2 | 実装済み。dispatch・lifecycle・実行形態ごとの専用テスト | 未実装 |
+| agent-tuning | 実装済み。`test/test_tuning.py` | 未実装 |
 
 ---
 
@@ -547,7 +571,7 @@ SlotMonitor の状態遷移は従来の「プロンプト消失 → processing �
 
 ### A. 実装後に更新すべきドキュメント
 
-新しい拡張（動的インターバル等）を実装する際は、本書の該当節の「未実装」表記に加えて次を更新します。
+新しい拡張を実装する際は、本書の該当節の状態表記に加えて次を更新します。
 
 - `tools/agent-loop/DESIGN.md` — クラス構成・`_run_loop` フロー・「新しいプロンプトオプションを追加する」節
 - `tools/agent-loop/agent-loop.yaml.example` — 設定サンプル
@@ -564,7 +588,7 @@ SlotMonitor の状態遷移は従来の「プロンプト消失 → processing �
 | 設定・状態ホーム | `~/.agents/`（`agent-loop.yaml`, `agent-loop.log`, `hooks/`） | `~/.kiro/`（`kiro-loop.yaml`, `kiro-loop.log`, `hooks/`） |
 | フォールバック環境変数 | `AGENT_LOOP_EVENT_HOOK_FALLBACK` | `KIRO_LOOP_EVENT_HOOK_FALLBACK` |
 | メッセージング inbox | `~/.kiro/agents/<name>/inbox/`（**共有**） | 同左（**共有**） |
-| 適応状態ファイル（案） | `~/.agents/loop-adaptive/` | `~/.kiro/loop-adaptive/` |
+| 適応状態ファイル | `~/.agents/loop-adaptive/` | 未実装 |
 
 inbox は旧系統と共有していました。メッセージスキーマ（特に `reply_to` の意味）の片側だけの改変は、過去に非互換バグを生みました（2026-08-02 監査 D2、解消済み）。
 
@@ -574,7 +598,7 @@ inbox は旧系統と共有していました。メッセージスキーマ（�
 
 ### C. 統合した旧文書
 
-以下の 8 文書（作成日はいずれも kiro-loop 版）を 2026-08-06 に本書へ統合し、削除した。
+ループ拡張の 8 文書を 2026-08-06 に、`slash` の 1 文書を 2026-08-09 に本書へ統合し、削除した。
 
 | 旧文書（kiro-loop 版 / agent-loop クローン版） | 作成日 | 本書の節 |
 |---|---|---|
@@ -582,5 +606,6 @@ inbox は旧系統と共有していました。メッセージスキーマ（�
 | `kiro-loop-agent-messaging-design.md` / `agent-loop-agent-messaging-design.md` | 2026-05-23 | 機能 3 |
 | `kiro-loop-gitlab-webhook-design.md` / `agent-loop-gitlab-webhook-design.md` | 2026-07-09 | 機能 2 |
 | `kiro-loop-adaptive-interval-design.md` / `agent-loop-adaptive-interval-design.md` | 2026-07-05 | 機能 4 |
+| `agent-loop-slash-property-design.md` | 2026-08-06 | 機能 6 |
 
 統合にあたり、実装検証で追記されていた確定事項（フック例外は 200 で握る・`secret_header` の既定値・パススルー挙動・`reply_to` の意味の統一 等）は agent-loop クローン版の記述を正として採り、コードの行番号参照（モジュール分割で陳腐化）と実装当時の変更量見積り表は落とした。

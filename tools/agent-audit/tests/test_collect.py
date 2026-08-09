@@ -20,16 +20,35 @@ class LedgerCollectTests(AuditTestCase):
         self.assertEqual(len(recs), 3)
         self.assertTrue(all(r["kind"] == "ledger" for r in recs))
 
-    def test_quota_observation_rows_are_not_usage(self):
-        """quota 観測行（消費 0）は台帳に同居するが、消費レコードには昇格させない。"""
+    def test_observation_rows_are_kept_but_not_as_consumption(self):
+        """観測行（消費 0）は落とさず `kind: event` で入れる。
+
+        `kind: ledger` に混ぜると、消費 0 の行が実行回数を水増しして平均消費を下げる
+        ——**コストを測るために書いた行がコストの数字を動かす**。落とさないのは、
+        昇格や枠当たりが何回起きたかを後から数えたいため。
+        """
         self.write_ledger("20260803", [
             ledger_row(),
-            ledger_row(ts="2026-08-03T11:00:00Z", seconds=0.0, ref="",
+            ledger_row(ts="2026-08-03T11:00:00Z", seconds=0.0, ref="", event="quota",
                        quota_kind="rate_limit", reset_at="2026-08-03T12:00:00Z"),
+            ledger_row(ts="2026-08-03T11:05:00Z", seconds=0.0, ref="", event="model_escalation",
+                       escalation={"agent_cli": "claude", "from_agent_cli": "ollama"}),
         ])
         st = self.make_store()
-        self.assertEqual(collect.collect_budget_ledger(self.make_args(), st), 1)
-        self.assertEqual([r["ts"] for r in st.iter_records()], ["2026-08-03T10:00:00Z"])
+        self.assertEqual(collect.collect_budget_ledger(self.make_args(), st), 3)
+        by_kind = {}
+        for rec in st.iter_records():
+            by_kind.setdefault(rec["kind"], []).append(rec)
+        self.assertEqual([r["ts"] for r in by_kind["ledger"]], ["2026-08-03T10:00:00Z"])
+        self.assertEqual({r["event"] for r in by_kind["event"]}, {"quota", "model_escalation"})
+
+    def test_legacy_quota_rows_without_event_are_dropped(self):
+        """`event` を付ける前の世代の quota 行は、消費に混ざらないよう従来どおり落とす。"""
+        self.write_ledger("20260803", [
+            ledger_row(ts="2026-08-03T11:00:00Z", seconds=0.0, ref="", quota_kind="exhausted"),
+        ])
+        st = self.make_store()
+        self.assertEqual(collect.collect_budget_ledger(self.make_args(), st), 0)
 
     def test_measured_flag_follows_tokens(self):
         self.write_ledger("20260803", [ledger_row(tokens_in=100, tokens_out=10),

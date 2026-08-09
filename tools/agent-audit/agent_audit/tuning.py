@@ -209,7 +209,15 @@ def run_tuning(args, store: Store, *, apply: bool, now: "float | None" = None) -
         total = int(store.state.get("tuning_promotions") or 0)
         promoted = 0
         for decision in sorted(decisions.values(), key=lambda d: d["id"]):
-            if decision.get("status") != "proposed" or promoted >= per_run or total >= total_limit:
+            if decision.get("status") != "proposed":
+                continue
+            # 上限で止めたことは候補側にも残す。生涯上限（tuning_promotions）は単調増加で
+            # リセット手段が無いので、黙って止まると「なぜ昇格しないのか」が誰にも見えない。
+            if total >= total_limit:
+                decision["blocked_reason"] = "promotion-budget-exhausted"
+                continue
+            if promoted >= per_run:
+                decision["blocked_reason"] = "promotion-quota-this-run"
                 continue
             rating = _rating(rows, decision.get("scope") or {})
             ok, reason = _eligible(decision, rating, args)
@@ -240,5 +248,14 @@ def cmd_tune(args) -> int:
     else:
         counts = {s: sum(d.get("status") == s for d in decisions)
                   for s in ("proposed", "promoted", "retired")}
-        print("tuning decisions: " + " ".join(f"{k}={v}" for k, v in counts.items()))
+        used = int(store.state.get("tuning_promotions") or 0)
+        limit = int(getattr(args, "tune_max_total_promotions", 20))
+        print("tuning decisions: " + " ".join(f"{k}={v}" for k, v in counts.items())
+              + f" / 昇格の生涯上限 {used}/{limit}")
+        blocked = {}
+        for d in decisions:
+            if d.get("status") == "proposed" and d.get("blocked_reason"):
+                blocked[d["blocked_reason"]] = blocked.get(d["blocked_reason"], 0) + 1
+        for reason, n in sorted(blocked.items()):
+            print(f"  保留 {reason}: {n}")
     return 0

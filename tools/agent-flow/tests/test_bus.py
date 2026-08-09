@@ -895,7 +895,7 @@ class ArtifactProtocolTests(unittest.TestCase):
             f.write("X" * 100)
         captured = {}
 
-        def fake(prompt, model, purpose=""):
+        def fake(prompt, model, purpose="", **_kw):
             captured["prompt"] = prompt
             return "ok"
 

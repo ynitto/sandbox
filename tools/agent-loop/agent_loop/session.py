@@ -233,7 +233,7 @@ class SessionManager:
                 if not name or name == "PATH":
                     continue
                 env[name] = str(value)
-        profile_name = getattr(self, "_tuning_profiles", {}).get(str(prompt_id or ""), "default")
+        profile_name = self._tuning_profile_of(prompt_id)
         env.update(tuning_launch_env(
             _load_tuning(), profile_name, _CLI_PROFILE.name, os.environ.get("PATH", "")
         ))
@@ -401,7 +401,7 @@ class SessionManager:
             self._launch_fingerprint.pop(prompt_id, None)
             # generation は残して古い monitor callback が誤解放しないよう照合可能にする
             self._instr_rev.pop(prompt_id, None)
-            getattr(self, "_tuning_rev", {}).pop(prompt_id, None)
+            self._tuning_applied().pop(prompt_id, None)
 
         if pane_target is not None and self._pane_exists(pane_target):
             log.info("kiro-cli ペインを終了します (pane=%s)。", pane_target)
@@ -544,10 +544,24 @@ class SessionManager:
         except Exception:  # noqa: BLE001 — 指示注入の失敗で送信を止めない
             return prompt_text
 
+    # tuning の per-pane 状態は `__init__` で用意するが、テストは `SessionManager.__new__` で
+    # 必要なフィールドだけ差した個体を作る（この repo の既存慣習・15 箇所）。素の getattr を
+    # 呼び出しごとに散らすと「使い捨ての dict に pop する」死んだコードが混ざるので、
+    # 用意する場所を 1 つに寄せて理由もここにだけ書く。
+    def _tuning_applied(self) -> "dict[str, tuple[int, str]]":
+        state = getattr(self, "_tuning_rev", None)
+        if state is None:
+            state = self._tuning_rev = {}
+        return state
+
+    def _tuning_profile_of(self, prompt_id: "str | None") -> str:
+        profiles = getattr(self, "_tuning_profiles", None) or {}
+        return profiles.get(str(prompt_id or ""), "default")
+
     def reset_tuning(self, prompt_id: str) -> None:
         """fresh context 後、次の業務 prompt で session_start 注入を再適用する。"""
         with self._lock:
-            getattr(self, "_tuning_rev", {}).pop(prompt_id, None)
+            self._tuning_applied().pop(prompt_id, None)
 
     def _maybe_prepend_tuning(self, prompt_id: str, prompt_text: str) -> str:
         global _TUNING_REV_APPLIED
@@ -556,10 +570,9 @@ class SessionManager:
             if not data:
                 return prompt_text
             rev = _tuning_revision(data)
-            profile_name = getattr(self, "_tuning_profiles", {}).get(prompt_id, "default")
+            profile_name = self._tuning_profile_of(prompt_id)
             with self._lock:
-                applied = getattr(self, "_tuning_rev", {})
-                include_start = applied.get(prompt_id) != (rev, profile_name)
+                include_start = self._tuning_applied().get(prompt_id) != (rev, profile_name)
             block = render_tuning_blocks(
                 data, profile_name, _CLI_PROFILE.name,
                 include_session_start=include_start,
@@ -567,9 +580,7 @@ class SessionManager:
             if not block:
                 return prompt_text
             with self._lock:
-                if not hasattr(self, "_tuning_rev"):
-                    self._tuning_rev = {}
-                self._tuning_rev[prompt_id] = (rev, profile_name)
+                self._tuning_applied()[prompt_id] = (rev, profile_name)
             _TUNING_REV_APPLIED = rev
             return f"{block}\n\n{prompt_text}" if prompt_text else block
         except Exception:  # noqa: BLE001 — tuning 破損で定常業務を止めない
@@ -827,7 +838,7 @@ class SessionManager:
                 self._effective_model.pop(prompt_id, None)
                 self._launch_fingerprint.pop(prompt_id, None)
                 self._instr_rev.pop(prompt_id, None)
-                getattr(self, "_tuning_rev", {}).pop(prompt_id, None)
+                self._tuning_applied().pop(prompt_id, None)
         self.write_state()
         return True
 

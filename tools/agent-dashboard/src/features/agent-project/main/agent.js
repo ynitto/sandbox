@@ -31,7 +31,7 @@ const { parseYaml } = require('../../../base/main/yaml');
 const agentCli = require('./agentCli');
 
 // プロジェクト設定（agent-project.yaml → 無ければ agent-flow.yaml）から agent_cli / model を拾う。
-// 探索順は本体の _find_config と同じ root 直下 → .agent/（readToolConfig が ~/.agent も見る）。
+// 探索順は本体の _find_config と同じ root 直下 → .agents/ → .agent/。
 function readProjectAgent(projectDir) {
   if (!projectDir) return {};
   const baseDirs = [projectDir, ...agentDirCandidates(projectDir)];

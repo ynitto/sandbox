@@ -6,7 +6,7 @@ from __future__ import annotations
 # ---------------------------------------------------------------------------
 
 # `slash` の名前規約（スキル・スラッシュコマンドの命名に合わせる）。
-# 設計: docs/designs/agent-loop-slash-property-design.md
+# 設計: docs/designs/agent-loop-design.md（機能 6）
 _SLASH_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 
 # slash 行を送ってから次を送るまでの待ち。対話 CLI 側がコマンドを処理する間を空ける

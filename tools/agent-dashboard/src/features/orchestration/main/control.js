@@ -2,7 +2,7 @@
 
 // エージェント制御（agent-control 契約）の読み書きと status/ 読取。
 // 正典: schemas/agent-control.schema.json。実体は $AGENT_CONTROL_DIR
-// （既定 ~/.agent/control/）の control.json（管理面が原子書換）と
+// （既定 ~/.agents/control/）の control.json（管理面が原子書換）と
 // status/<tool>-<pid>.json（各エンジンがハートビート書換、管理面が読む）。
 //
 // dashboard は control.json に「望ましい状態」を書き revision を単調増加させる。

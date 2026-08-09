@@ -325,14 +325,14 @@ _HISTORY_LIMIT = 1000
 def history_path() -> Path:
     """入力履歴の置き場（`AGENT_OLLAMA_HISTORY` で移せる）。
 
-    共通ホーム（`~/.agents`。旧 `~/.agent` の判定は agentcli と同じ規則）の下に置く。
+    共通ホーム `~/.agents` の下に置く。
     ログ（`~/.agents/logs/ollama`）とは分ける——履歴は実行の証跡ではなく人の入力で、
     ログの gc に巻き込んで消していいものではない。
     """
     raw = os.environ.get("AGENT_OLLAMA_HISTORY", "").strip()
     if raw:
         return Path(raw).expanduser()
-    from agentcore.agentcli import _agents_home  # 新旧ホーム判定の正典（複製しない）
+    from agentcore.agentcli import _agents_home  # 共通ホーム判定の正典（複製しない）
     return _agents_home() / "ollama" / "tui-history"
 
 

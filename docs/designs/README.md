@@ -1,6 +1,6 @@
 # docs/designs 設計書 索引
 
-`docs/designs/` 配下の設計書 23 件をカテゴリ別に整理し、読む順序を示す索引。
+`docs/designs/` 配下の設計書 22 件をカテゴリ別に整理し、読む順序を示す索引。
 
 ## まず読むもの — コンセプトと主要 4 設計
 
@@ -16,7 +16,7 @@
 
 ---
 
-## カテゴリ別索引（全 22 件）
+## カテゴリ別索引（全 21 件）
 
 ### 1. コンセプトと主要 4 設計
 
@@ -24,12 +24,11 @@
 
 ### 2. ループ拡張（agent-loop / kiro-loop）
 
-> かつて adaptive-interval・agent-messaging・event-hook・gitlab-webhook の 4 件は kiro-loop 系と agent-loop 系で同名の設計が並存していたが、2026-08-06 に 8 文書すべてを [`agent-loop-design.md`](./agent-loop-design.md) へ統合し削除した。名称は移行先の `agent-loop` に統一、kiro-loop 系統との差分は同書の付録 B にある。
+> かつて adaptive-interval・agent-messaging・event-hook・gitlab-webhook の 4 件は kiro-loop 系と agent-loop 系で同名の設計が並存していたが、2026-08-06 に 8 文書すべてを [`agent-loop-design.md`](./agent-loop-design.md) へ統合し削除した。2026-08-09 には `slash` プロパティ設計も同書の機能 6 へ統合した。名称は移行先の `agent-loop` に統一、kiro-loop 系統との差分は同書の付録 B にある。
 
 | ファイル | 要旨 |
 |---|---|
-| [`agent-loop-design.md`](./agent-loop-design.md) | agent-loop（旧 kiro-loop）のループ拡張 4 系統 — イベントフック（pull）・汎用 inbound Webhook（push）・エージェント間メッセージング・動的インターバル（未実装の提案）— を 1 冊にまとめた設計正典。旧 kiro-loop-\*/agent-loop-\* の同名 8 文書を統合済み。 |
-| [`agent-loop-slash-property-design.md`](./agent-loop-slash-property-design.md) | 定期プロンプトの本文より前にスラッシュコマンドを独立送信で前置する `slash` プロパティの設計。fork 先へ単体展開できるよう意図的に自己完結で書かれており、統合対象外として残置。 |
+| [`agent-loop-design.md`](./agent-loop-design.md) | agent-loop（旧 kiro-loop）の設計正典。イベントフック・Webhook・メッセージング・動的インターバル・CLI 差し替え・`slash` と、共通 dispatch gate 上の Phase 1 / Phase 2 実行基盤を扱う。旧ループ拡張 8 文書と `slash` 設計を統合済み。 |
 
 ### 3. 実装・運用設計（外部連携・インフラ・実行基盤）
 
@@ -60,4 +59,4 @@
 
 ## 前提・スコープ外の事項
 
-本 README は `docs/designs/` 配下の実ファイル一覧（25 件、2026-07-27 に実在確認済み。2026-08-03 に `agent-audit-design.md` を追加し 26 件）を基準に作成した。2026-08-06 にループ拡張の 8 件を `agent-loop-design.md` へ統合・削除し、同日に追加された `agent-loop-slash-property-design.md` とあわせて実ファイル 21 件。2026-08-07 に `agent-ollama-tool-disclosure-design.md` を、2026-08-08 に `agent-ollama-expansion-design.md` を追加し実ファイル 23 件（索引掲載 22 件。索引外の 1 件は [`agent-tools-concept.md`](./agent-tools-concept.md) の補助資料 `agent-tools-business-improvement-prompt.md`）。
+本 README は `docs/designs/` 配下の実ファイル一覧（25 件、2026-07-27 に実在確認済み。2026-08-03 に `agent-audit-design.md` を追加し 26 件）を基準に作成した。2026-08-06 にループ拡張の 8 件を `agent-loop-design.md` へ統合・削除し、同日に追加された `agent-loop-slash-property-design.md` とあわせて実ファイル 21 件。2026-08-07 に `agent-ollama-tool-disclosure-design.md` を、2026-08-08 に `agent-ollama-expansion-design.md` を追加し実ファイル 23 件。2026-08-09 に `agent-loop-slash-property-design.md` を統合・削除して実ファイル 22 件（索引掲載 21 件。索引外の 1 件は [`agent-tools-concept.md`](./agent-tools-concept.md) の補助資料 `agent-tools-business-improvement-prompt.md`）。

@@ -28,7 +28,7 @@ agent-flow の `executor: agent` は、各ノードの実行（worker/verify の
 | 役割 | 規律 | 一言で |
 |------|------|--------|
 | worker（work/generate/map） | **三つの約束** | 前提を書く・範囲を守る・検証してから渡す |
-| verify | **再導出検証** | 結論をなぞらず自分で導き直して突き合わせる |
+| verify | **再導出検証＋証跡** | 自分で導き直し、実行したコマンドと終了コードを引用して判定する（証跡が無い項目は pass にできない） |
 | evaluator | **受け入れ・具体化・打ち切り** | 完了条件と突き合わせ、差し戻しは具体的に、膨張させない |
 
 集約・選別系 kind（classify/synthesize/filter/judge/reduce/split）は

@@ -43,9 +43,8 @@
   `~/.agents/agents/` → `~/.kiro/agents/` → 同梱定義（リポジトリ直下 / パッケージ
   resources の `agents/`。最後の候補）。同名は先勝ちで、**組み込み名の予約は解除した**——
   上位に `claude.json` を置けば同梱定義を上書きできる。これが無いと受入条件
-  （JSON 1 ファイルで完結）が成り立たない。`~/.agents` が無く旧 `~/.agent`（単数形）が
-  実在する環境では、3 番目の候補はレガシーの `~/.agent/agents/` にフォールバックする
-  （移行未了のホームディレクトリを黙って無視しないため）。
+  （JSON 1 ファイルで完結）が成り立たない。ユーザー共通の定義は `~/.agents/agents/`
+  だけを読み、旧ホームへはフォールバックしない。
 - **ローダは言語ごとに 1 実装**: Python 側は `agentcore.agentcli`（load / headless_cmd /
   interactive_cmd / classify_error）に集約し、agent-project / agent-flow / agent-amigos が
   これを使う。当初の「各ツールが自前の小さなローダを持つ」方針は Python 側について取り下げた

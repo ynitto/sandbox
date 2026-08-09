@@ -247,6 +247,43 @@ class TestMainModes(_NoServerMixin, unittest.TestCase):
         spec = agentcli.load_cli("ollama")
         self.assertEqual(agentcli.classify_error(spec, err.getvalue())[0], "env")
 
+    def _loop_run(self, status, argv=("qwen3", "--tools", "--no-log")):
+        """ツールループを status 固定で 1 回回し、(stdout, stderr) を返す。"""
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(ollama_adapter.ollama_loop, "run_loop", return_value={
+                "text": "途中までの報告", "tokens_in": 1, "tokens_out": 2,
+                "rounds": 3, "status": status}), \
+                mock.patch.object(ollama_adapter.sys, "stdin", io.StringIO("やって")), \
+                redirect_stdout(out), redirect_stderr(err):
+            self.assertEqual(ollama_adapter.main(list(argv)), 0)
+        return out.getvalue(), err.getvalue()
+
+    def test_incomplete_run_appends_a_machine_readable_not_ok_envelope(self):
+        """done 以外は本文の末尾に {"ok": false} を足す（途中経過を done にさせない）。
+
+        呼び出し側（agent-flow の worker 契約）はこの封筒だけを見て未完了と判定する。
+        no_command を含めるのが要点——一番起きる未完了がここから漏れていた。"""
+        for status in ("no_command", "max_rounds", "context_exhausted", "tool_denied"):
+            body, err = self._loop_run(status)
+            self.assertTrue(body.startswith("途中までの報告"), status)
+            envelope = json.loads(body[body.rindex("{"):])
+            self.assertIs(envelope["ok"], False, status)
+            self.assertIn(status, envelope["issues"][0], status)
+            self.assertIn("@agent-note", err, status)
+            self.assertIn(status, err, status)
+
+    def test_completed_run_carries_no_envelope(self):
+        body, err = self._loop_run("done")
+        self.assertEqual(body, "途中までの報告")
+        self.assertNotIn("@agent-note", err)
+
+    def test_json_format_keeps_the_body_parsable_when_incomplete(self):
+        # 本文全体が JSON 契約なので封筒は足さない（足すと JSON として壊れる）。
+        body, err = self._loop_run("max_rounds",
+                                   argv=("qwen3", "--tools", "--format", "json", "--no-log"))
+        self.assertEqual(body, "途中までの報告")
+        self.assertIn("@agent-note", err, "人向けの注記は形式に関係なく出す")
+
     def test_status_mode_prints_json_without_calling_the_model(self):
         out = io.StringIO()
         with mock.patch.object(ollama_adapter.ollama_events, "read_status",

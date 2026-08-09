@@ -87,6 +87,10 @@ READONLY_ROLES = frozenset({"planner", "evaluator"})
 # STRUCTURED_KINDS（JSON を抽出しようと試みる kind）とは別物: あちらは「JSON なら拾う」、
 # こちらは「JSON 以外を返してはいけない」。
 JSON_CONTRACT_ROLES = frozenset({"planner", "evaluator", "split", "filter", "judge", "reduce"})
+# 本文の末尾に完了可否の封筒 `{"ok": ...}` を置くよう指示している kind（実行系のうち
+# JSON 抽出をしないもの）。プロンプトの指示とここが食い違うと、自己申告した未完了が
+# 黙って done になる——一致は tests/test_agent_cli.py が prompt 側の EXEC_KINDS と突き合わせる。
+_ENVELOPE_KINDS = frozenset({"work", "generate"})
 # JSON 契約の役割が空応答を返したときの言い直し（レイヤ2 相当）。ツールループ型の CLI が
 # 制御語（TASK_COMPLETE 等）だけを返す・思考だけで本文を出さない、が実際の空応答の中身。
 _EMPTY_OUTPUT_NUDGE = (
@@ -192,12 +196,12 @@ def _agent_for(purpose: str) -> "tuple[str, str | None]":
     return cli, model
 
 
-def retry_agent_for(purpose: str, prior: "dict | None" = None) -> "dict | None":
+def retry_agent_for(purpose: str) -> "dict | None":
     """役割の宣言済み ladder から、相対コストが高い次の 1 段だけを選ぶ。"""
     ov = _AGENT_OVERRIDES.get(purpose)
     if ov is None and purpose in VALID_KINDS:
         ov = _AGENT_OVERRIDES.get("worker")
-    current = str((prior or {}).get("agent_cli") or _agent_for(purpose)[0])
+    current = _agent_for(purpose)[0]
     target = _agentcli.costlier_fallback(current, (ov or {}).get("fallbacks"))
     if target:
         target["from_agent_cli"] = current
@@ -752,8 +756,7 @@ def run_agent(prompt: str, model: str | None, purpose: str = "", cwd: "str | Non
     while attempt <= max(0, _TRANSIENT_RETRIES):
         try:
             t0 = time.monotonic()
-            text = (_run_agent_once(prompt, model, purpose, cwd, agent) if agent is not None
-                    else _run_agent_once(prompt, model, purpose, cwd))
+            text = _run_agent_once(prompt, model, purpose, cwd, agent=agent)
             _node_budget_record(time.monotonic() - t0, ref=purpose or "worker",
                                 agent_cli=cli_used, model=model_used or "",
                                 tokens_in=getattr(text, "tokens_in", None),
@@ -771,6 +774,15 @@ def run_agent(prompt: str, model: str | None, purpose: str = "", cwd: "str | Non
                 continue
             if empty_fixes:
                 e = EmptyOutputError(f"{e}（形式を言い直して {empty_fixes} 回再要求後）")
+            # 空応答は**内容の失敗ではない**（ツールループ型の CLI が制御語だけを返す・
+            # 思考だけで本文を出さない）。分類の付いていない空応答を内容の失敗として上げると、
+            # 再計画がこれを「実装の失敗」と読んで計画そのものを壊す（実際 agent-ollama の
+            # 空応答から push 待機タスクが捏造された）。既知の分類（認証切れ等）が付いて
+            # いなければ transient として運び、run 単位の打ち切り → cooldown 後の auto-heal
+            # （done は温存）へ載せる。ここで再試行を足さないのは、空応答の再試行は同じ
+            # プロンプトの投げ直しで、遅いローカル LLM では壁時計だけを焼くため。
+            if classify_agent_failure(str(e)) is None:
+                e = EmptyOutputError(f"[agent-error:transient] {e}")
             e.attempts = attempt + 1  # type: ignore[attr-defined]
             raise e
         except RuntimeError as e:
@@ -897,8 +909,7 @@ def _repair_json_output(prompt: str, bad_text: str, purpose: str, why,
                   f"違反: {why}\n"
                   f"説明・前置き・コードフェンスを付けず、指示された {contract} だけを再出力してください。")
         try:
-            bad_text = (run_agent(repair, model, purpose=purpose, agent=agent) if agent else
-                        run_agent(repair, model, purpose=purpose))
+            bad_text = run_agent(repair, model, purpose=purpose, agent=agent)
             data = extract_json(bad_text)
         except Exception as e:  # noqa: BLE001 — 修復呼び出し自体の失敗も「まだ壊れている」扱い
             why = str(e)
@@ -1100,11 +1111,10 @@ def execute_agent(kind: str, goal: str, dep_results: dict, model: str | None,
     prompt = _promptcompose.compose([context], [prompt])
     prompt = prepend_instructions(prompt, instructions)
     if workspace and workspace.get("clone"):
-        text = (run_agent(prompt, model, purpose=kind, cwd=str(workspace["clone"]), agent=agent)
-                if agent else run_agent(prompt, model, purpose=kind, cwd=str(workspace["clone"])))
+        text = run_agent(prompt, model, purpose=kind, cwd=str(workspace["clone"]), agent=agent)
     else:
-        text = (run_agent(prompt, model, purpose=kind, agent=agent) if agent else
-                run_agent(prompt, model, purpose=kind))  # agents: の kind 別上書き（無ければ worker）
+        # agents: の kind 別上書き（無ければ worker）
+        text = run_agent(prompt, model, purpose=kind, agent=agent)
     # 構造化データを意図する kind のみ JSON を抽出（自由記述の本文から JSON 風断片を
     # data に誤昇格させない）。
     data = None
@@ -1123,8 +1133,12 @@ def execute_agent(kind: str, goal: str, dep_results: dict, model: str | None,
             repaired = _repair_json_output(prompt, text, kind, why, model, want_list=True, agent=agent)
             if isinstance(repaired, list):
                 data = repaired
-    elif kind == "work":
-        # work 本文は自由記述のまま保つが、末尾の完了可否 envelope だけは機械判定へ渡す。
+    elif kind in _ENVELOPE_KINDS:
+        # 本文は自由記述のまま保つが、末尾の完了可否 envelope だけは機械判定へ渡す。
+        # generate も対象にする: プロンプト側は実装系の全 kind（work / generate / map）へ
+        # 「未完了なら {"ok": false} を付けろ」と指示しており、work だけ読んでいたため
+        # generate ノードの自己申告した未完了が done として通っていた（map は
+        # STRUCTURED_KINDS の JSON 抽出で拾われる）。
         # 本文中の JSON 例を誤採用しないよう、契約どおり末尾にある {"ok": ...} に限定する。
         matches = list(re.finditer(r'\{\s*"ok"\s*:', text))
         if matches:

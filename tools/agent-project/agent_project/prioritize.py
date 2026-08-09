@@ -751,9 +751,12 @@ def _run_agent_cli(prompt: str, model: "str | None", purpose: str = "") -> str:
     except RuntimeError as first:
         if classify_agent_failure(str(first)) is not None:
             raise
-        if _ESCALATIONS_USED >= _escalation_budget():
-            log(f"モデル昇格の上限（{_escalation_budget()} 回）に達しているため昇格しません。")
-            raise
+        budget = _escalation_budget()
+        if _ESCALATIONS_USED >= budget:
+            # 上限で止まったことを失敗文言に残す（黙って止まると「なぜ昇格しないのか」が
+            # 誰にも見えない。このモジュールにログ経路は無いので例外へ添える）。
+            raise RuntimeError(
+                f"{first}（モデル昇格の上限 {budget} 回に達しているため昇格しません）") from first
         cfg = _RUNTIME_CONFIG
         ov = ((cfg.agents if cfg is not None else {}) or {}).get(purpose) or {}
         current = _agent_for(purpose)[0]

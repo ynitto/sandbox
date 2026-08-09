@@ -2,7 +2,7 @@
 # ファイル名: agent-loop.yaml
 #
 # 共通設定として使う場合は ~/.agents/agent-loop.yaml、プロジェクト固有の prompts として
-# 使う場合は <project>/.agents/agent-loop.yml へ置きます（旧 ~/.agent / .agent は移行互換）。
+# 使う場合は <project>/.agents/agent-loop.yml へ置きます（旧 .agent は読み取り互換）。
 
 
 # ---------------------------------------------------------------------------
@@ -147,7 +147,7 @@ prompts:
     enabled: true
 
   # ---- slash: 本文の前にスラッシュコマンドを送る ----
-  # 設計: docs/designs/agent-loop-slash-property-design.md
+  # 設計: docs/designs/agent-loop-design.md（機能 6）
   # 送信文の前に `/<name> [args]` を **1 行ずつ独立に**送る（連結しない。対話 CLI は
   # スラッシュコマンドを「1 入力 = 1 コマンド」で解釈するため）。
   # 送信順は fresh_context の /clear → slash（宣言順）→ prompt 本文。

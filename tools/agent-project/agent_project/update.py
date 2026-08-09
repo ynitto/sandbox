@@ -20,8 +20,8 @@ _UPDATE_LAST_CHECK = {"t": 0.0}
 
 
 def _update_state_path() -> Path:
-    base = os.environ.get("KIRO_STATE_HOME") or os.path.expanduser("~/.agent")
-    return Path(base) / "agent-project.update.json"
+    base = os.environ.get("KIRO_STATE_HOME")
+    return (Path(base).expanduser() if base else agent_home_dir()) / "agent-project.update.json"
 
 
 def read_update_state() -> dict:
@@ -349,4 +349,3 @@ def cmd_update(cfg: "Config", now: bool = False, check: bool = False) -> int:
         return 0
     print("  更新の取り込みに失敗しました（ログを確認してください）。", file=sys.stderr)
     return 1
-

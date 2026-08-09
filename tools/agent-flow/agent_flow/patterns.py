@@ -292,7 +292,13 @@ def plan_strategy_stub(request: str, review="auto", granularity="auto"):
 
 
 def _record_rule_agreement(strategy: dict, request: str, granularity: str) -> dict:
-    """LLM の判断を現行ルールと照合して記録する。実行に使う strategy は変更しない。"""
+    """LLM の判断を現行ルールと照合して記録する。実行に使う strategy は変更しない。
+
+    **ルール側の入力は要求と、人が指定した granularity だけ**にする。LLM の分析段が導出した
+    粒度を渡すと「決定的ルール」の入力に LLM の出力が混ざり、一致率が上振れする——S16 は
+    この数字を見て「LLM に聞くのをやめてよい判断」を選ぶので、上振れはそのまま誤った
+    置き換えになる。planner の系統によって基準が変わらないよう、どちらの呼び出し元からも
+    同じ granularity（呼び出し引数そのもの）を渡す。"""
     llm_pattern = (strategy.get("patterns") or [""])[0]
     llm_parallelism = int(strategy.get("parallelism") or 0)
     rule_pattern = _detect_pattern(request)
@@ -301,7 +307,8 @@ def _record_rule_agreement(strategy: dict, request: str, granularity: str) -> di
         {"decision": "planner.pattern", "llm": llm_pattern,
          "rule": rule_pattern, "agree": llm_pattern == rule_pattern},
         {"decision": "planner.parallelism", "llm": llm_parallelism,
-         "rule": rule_parallelism, "agree": llm_parallelism == rule_parallelism},
+         "rule": rule_parallelism, "agree": llm_parallelism == rule_parallelism,
+         "rule_input_granularity": str(granularity)},
     ]
     return strategy
 
@@ -394,7 +401,7 @@ def plan_strategy_agent(request: str, model: str | None, review="auto", granular
 
 def _find_skill_script(skill: str, script: str):
     """スキルの scripts/{script} を探す（flow-planner / flow-worker 共通）。
-    検索順: .github/skills/{skill}/ → git root/.github/skills/ → ~/.agent/skills/ → ~/.kiro/skills/ → {skill_home}/"""
+    検索順: .github/skills/{skill}/ → git root/.github/skills/ → ~/.agents/skills/ → ~/.kiro/skills/ → {skill_home}/"""
     candidates = []
     # ワークスペース内
     cwd = os.getcwd()
@@ -409,11 +416,11 @@ def _find_skill_script(skill: str, script: str):
             candidates.append(os.path.join(root, ".github", "skills", skill, "scripts", script))
     except Exception:  # noqa: BLE001
         pass
-    # ~/.agent/skills → ~/.kiro/skills（共有スキル配置）を確認
-    for skills_home in ("~/.agent/skills", "~/.kiro/skills"):
+    # ~/.agents/skills → ~/.kiro/skills（共有スキル配置）を確認
+    for skills_home in ("~/.agents/skills", "~/.kiro/skills"):
         candidates.append(os.path.join(os.path.expanduser(skills_home), skill, "scripts", script))
     # skill-registry.json から skill_home を読む
-    for agent_dir in [os.path.expanduser("~/.agent"), os.path.expanduser("~/.kiro"),
+    for agent_dir in [os.path.expanduser("~/.agents"), os.path.expanduser("~/.kiro"),
                       os.path.expanduser("~/.copilot"),
                       os.path.expanduser("~/.claude"), os.path.expanduser("~/.codex")]:
         reg = os.path.join(agent_dir, "skill-registry.json")
@@ -523,6 +530,7 @@ def plan_strategy_flow_planner(request: str, model: str | None, review="auto", g
             "reason": f"[flow-planner] {strategy.get('reason', '')}（粒度 {resolved}）",
             "granularity": resolved,
         }
-        return _record_rule_agreement(final_strategy, request, resolved), tasks
+        # ルール側の入力は `resolved`（LLM 由来）ではなく呼び出し引数の granularity。
+        return _record_rule_agreement(final_strategy, request, granularity), tasks
     except Exception as e:  # noqa: BLE001 — flow-planner 失敗時はエージェント planner にフォールバック
         return _planner_fallback(request, model, review, granularity, context, str(e))

@@ -5,19 +5,20 @@
     python -m unittest discover -s tools/agent-amigos/tests
 """
 import os as _os, sys as _sys
+from unittest import mock
 _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
 from _shared import *  # noqa: E402,F401,F403 — 共有の前置き（環境隔離・km ロード・共通ヘルパ）
 
 
 class ConfigFileTests(unittest.TestCase):
-    """`.agent/agent-amigos.yaml` 設定（agent-project と同じ CLI > config > 既定の流儀）。"""
+    """`.agents/agent-amigos.yaml` 設定（agent-project と同じ CLI > config > 既定の流儀）。"""
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="amigos-cfg-")
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
 
-    def _write(self, name, data):
-        path = os.path.join(self.tmp, ".agent", name)
+    def _write(self, name, data, dirname=".agents"):
+        path = os.path.join(self.tmp, dirname, name)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
             f.write(data if isinstance(data, str) else json.dumps(data))
@@ -44,7 +45,7 @@ class ConfigFileTests(unittest.TestCase):
         # CLI --bus は設定より優先
         self.assertEqual(resolve_bus_spec(s, "git+ssh://x/y.git"), "git+ssh://x/y.git")
         self.assertEqual(commands_dir(self.tmp),
-                         os.path.join(self.tmp, ".agent", "agent-amigos", "commands"))
+                         os.path.join(self.tmp, ".agents", "agent-amigos", "commands"))
 
     def test_yaml_config(self):
         try:
@@ -68,7 +69,7 @@ class ConfigFileTests(unittest.TestCase):
         self.assertEqual(s["_home"], os.path.abspath(self.tmp))
         self.assertEqual(s["node_id"], "explicit")
 
-    def test_root_level_config_preferred_over_dot_agent(self):
+    def test_root_level_config_preferred_over_dot_agents(self):
         from agent_amigos.configfile import load_settings
         root = os.path.join(self.tmp, "agent-amigos.json")
         with open(root, "w", encoding="utf-8") as f:
@@ -79,11 +80,18 @@ class ConfigFileTests(unittest.TestCase):
         self.assertEqual(s["_home"], os.path.abspath(self.tmp))
         self.assertEqual(s["node_id"], "root")
 
+    def test_project_local_dot_agent_remains_readable(self):
+        from agent_amigos.configfile import load_settings
+        path = self._write("agent-amigos.json", {"node_id": "legacy"}, dirname=".agent")
+        s = load_settings(cwd=self.tmp)
+        self.assertEqual(s["_config_path"], path)
+        self.assertEqual(s["node_id"], "legacy")
+
     def test_global_config_home_is_cwd(self):
         from agent_amigos.configfile import load_settings
         fake_home = tempfile.mkdtemp(prefix="amigos-home-")
         self.addCleanup(shutil.rmtree, fake_home, ignore_errors=True)
-        gdir = os.path.join(fake_home, ".agent")
+        gdir = os.path.join(fake_home, ".agents")
         os.makedirs(gdir)
         gpath = os.path.join(gdir, "agent-amigos.json")
         with open(gpath, "w", encoding="utf-8") as f:
@@ -101,6 +109,17 @@ class ConfigFileTests(unittest.TestCase):
             else:
                 os.environ["HOME"] = old
 
+    def test_old_global_home_is_ignored(self):
+        from agent_amigos.configfile import load_settings
+        fake_home = tempfile.mkdtemp(prefix="amigos-old-home-")
+        self.addCleanup(shutil.rmtree, fake_home, ignore_errors=True)
+        gdir = os.path.join(fake_home, ".agent")
+        os.makedirs(gdir)
+        with open(os.path.join(gdir, "agent-amigos.json"), "w", encoding="utf-8") as f:
+            json.dump({"node_id": "old"}, f)
+        with mock.patch.dict(os.environ, {"HOME": fake_home}):
+            self.assertIsNone(load_settings(cwd=fake_home)["_config_path"])
+
     def test_bare_invocation_shows_guidance_instead_of_starting_a_daemon(self):
         # 以前は裸起動が serve（常駐）に化けていた。常駐は agent-project serve の 1 本に
         # 集約したので（実装計画 W1-9）、黙って常駐すると二重に回って claim を奪い合う。
@@ -114,11 +133,7 @@ class ConfigFileTests(unittest.TestCase):
 
 
 class NodeIdHomeMigrationTests(unittest.TestCase):
-    """node.json は共通ホーム移行中も既存のノード ID を失わない。
-
-    ID は claim / assign / メッセージ宛先に使われるため、振り直しは同一性の断絶になる。
-    他の状態と違い「新旧の両方を読む」ことで、どちらに置かれていても拾えるようにしてある。
-    """
+    """node.json は `~/.agents` だけを使う。"""
 
     def setUp(self):
         from agent_amigos import daemon as _daemon
@@ -142,17 +157,11 @@ class NodeIdHomeMigrationTests(unittest.TestCase):
         self.addCleanup(os.environ.pop, "AGENT_AMIGOS_NODE", None)
         self.assertEqual(self.daemon.default_node_id(), "from-env")
 
-    def test_legacy_home_id_is_preserved(self):
+    def test_legacy_home_id_is_ignored(self):
         self._write_node(".agent", "legacy-node")
-        self.assertEqual(self.daemon.default_node_id(), "legacy-node")
+        self.assertNotEqual(self.daemon.default_node_id(), "legacy-node")
 
-    def test_legacy_id_survives_when_new_home_dir_exists_but_file_does_not(self):
-        """移行の途中（新ホームのディレクトリだけ先にできた端末）でも ID を振り直さない。"""
-        self._write_node(".agent", "legacy-node")
-        os.makedirs(os.path.join(self.home, ".agents", "amigos"), exist_ok=True)
-        self.assertEqual(self.daemon.default_node_id(), "legacy-node")
-
-    def test_new_home_takes_precedence(self):
+    def test_new_home_is_read(self):
         self._write_node(".agent", "legacy-node")
         self._write_node(".agents", "new-node")
         self.assertEqual(self.daemon.default_node_id(), "new-node")

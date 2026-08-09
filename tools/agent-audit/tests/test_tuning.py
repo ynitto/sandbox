@@ -67,6 +67,24 @@ class TuningLoopTests(AuditTestCase):
         self.assertEqual(unsafe["status"], "proposed")
         self.assertEqual(unsafe["blocked_reason"], "path-or-value-not-allowed")
 
+    def test_promotion_budget_exhaustion_is_visible(self):
+        """生涯上限で止まったことを候補に残す。
+
+        `tuning_promotions` は単調増加でリセット手段が無い。黙って止まると「なぜ昇格
+        しないのか」が誰にも見えず、壊れているのか止めているのかを区別できない。
+        """
+        st = self._seed()
+        target = os.path.join(self.tmp, "tuning.json")
+        with open(target, "w", encoding="utf-8") as f:
+            json.dump({"profiles": {"default": {"injections": []}}}, f)
+        st.state["tuning_promotions"] = 20
+        args = self.make_args(tuning_file=target, period="total", tune_min_outcomes=1,
+                              tune_max_total_promotions=20)
+        decisions = tuning.run_tuning(args, st, apply=True)
+        self.assertEqual(decisions[0]["status"], "proposed")
+        self.assertEqual(decisions[0]["blocked_reason"], "promotion-budget-exhausted")
+        self.assertEqual(util.read_json(target)["profiles"]["default"]["injections"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

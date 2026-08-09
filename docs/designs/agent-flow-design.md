@@ -1,7 +1,7 @@
 # agent-flow 設計書
 
-> 最終更新: 2026-08-01（再計画イベントの差分契約を反映）
-> 実装: `tools/agent-flow/`（本体 29 断片・約 8,800 行）、テスト `tools/agent-flow/tests/`（662 件）
+> 最終更新: 2026-08-09（run phase と用途別 timeout、検証条件、資源効率、空応答の扱いを反映）
+> 実装: `tools/agent-flow/`（本体 28 断片・約 10,000 行）、テスト `tools/agent-flow/tests/`（794 件）
 > 関連: [agent-project 設計書](./agent-project-design.md) ／ [git worktree キャッシュ](./git-worktree-cache-pattern.md)
 >
 > 旧 `agent-flow-self-healing-retry-design.md`（自己回復リトライ）と
@@ -145,6 +145,8 @@ Anthropic の *Building Effective Agents* は、経路が固定された Workflo
 
 `run` は orchestrator 1 本と worker を `workers` 個（既定 2）起こし、自分は待機ループに入ります。待機ループがやるのは、状態 git の同期、park の再確認、キャンセル指示の検知、そして run が終端に達したかの確認です。
 
+run の終端 `status` とグラフ上の進捗とは別に、現在段階を `meta.json` の `phase`（`planning` / `executing` / `evaluating` / `verifying` / `finalizing`）と `phase_started_at` で持ち、遷移を event にも残します。作業ノードが全件終わった後の検証や結果確定を「100%・実行中」に潰さないためです。古い run のように phase が無い場合や未知値は、status とグラフから汎用表示へ縮退します。
+
 orchestrator は最初にパターンと並列数を選んでタスクグラフを書き、あとは run が静止するのを待ちます。静止とは、実行中のノードも、park 中のノードも、いま claim できる pending もない状態です。静止したら評価役の LLM に「この結果で要求を満たすか」を尋ね、足りなければタスクを追加してもう一周します。反復は `max_iterations`（既定 3）で止まります。
 
 計画の履歴は最終形の `graph.json` から推測せず、イベントへ差分として残します。初期計画は
@@ -183,6 +185,8 @@ plan は `--verification-plan`（グローバル引数）または inbox 要求�
 転記をさせない設計です。両方指定されていれば CLI 引数が勝ちます（env 渡しは不安定として
 却下・2026-07-31）。
 
+自然文基準を判定するエージェントは、plan の `policy.agent`（`agent_cli` / `model` / `timeout_sec`）をタスク 1 件だけの明示指定として使い、ノード設定と agent-control より優先します。検証条件は plan digest の一部なので、条件を変えると古い receipt は再利用されません。実際に使った条件と所要時間は receipt の `verified_with` に残し、同じ条件で粘るか別条件へ移るかを上位が記録から決められるようにします。
+
 実行場所は workspace 宣言のある run なら該当 repo の clone、無い run（ローカル実行・成果は
 投入ノードの作業ツリーに直接出る）ならプロセスの cwd です。workspace 宣言があるのに clone を
 用意できなかった run は cwd に倒さず inconclusive にします（成果の無い場所で誤判定しない）。
@@ -213,7 +217,7 @@ orchestrator は 7 つのパターンをカタログとして持ちます。最�
 
 計画役は 3 系統あります。既定の `flow-planner` はスキル側の 3 段パイプライン（分析 → 戦略選定 → グラフ構築）を呼びます。スキル名は設定 `planner_skill`（既定 `flow-planner`）で差し替えられます。スキルが見つからなければ `agent`（エージェント CLI に 1 回問い合わせる）へ、それも解釈できなければ `stub`（キーワード判定と正規表現）へ落ちます。落ちる先があるので、スキル未導入のノードが混ざっても run は成立します。
 
-LLM planner が選んだ主パターンと並列数は、同じ入力に対する `stub` 系の決定的ルールと照合し、`strategy.decision_comparisons` に記録します。これは S16 の対象選定用計測であり、実行する戦略には介入しません。flow-bus 収集後に agent-audit が判断ごとの一致率を集計し、置換は後続段階で別途判断します。
+LLM planner が選んだ主パターンと並列数は、同じ入力に対する `stub` 系の決定的ルールと照合し、`strategy.decision_comparisons` に記録します。ルール側へ渡すのは要求文と**呼び出し時の granularity 引数**だけで、分析段が導出した粒度は渡しません——LLM の出力をルールの入力に混ぜると一致率が上振れし、「LLM に聞くのをやめてよい判断」の選定がその分だけ甘くなります。これは S16 の対象選定用計測であり、実行する戦略には介入しません。flow-bus 収集後に agent-audit が判断ごとの一致率を集計し、置換は後続段階で別途判断します。
 
 縮退は静かに起きてはいけません。落ちた事実と理由はログと `strategy.reason` の両方に残します。以前はここが黙っていたため、planner の CLI を差し替えた環境でスキルが一度も起動していないのに「計画できた」ように見え、stub のキーワード判定が同じパターンを選び続けた run が 4 本続きました。スキルはエージェント CLI の argv を自前で組まず agentcore の定義（`agents/<name>.json`）へ委譲します——組み込み 4 種の白リストを持つと、定義を足しただけの CLI（`ollama` 等）で計画役だけが起動に失敗します。そのキーワード判定も、要求本体（先頭の段落）だけを見ます。agent-project 由来の要求には charter・対象リポジトリ一覧といった定型が付き、そこに含まれる語（「書込先候補」など）が要求の中身と無関係に同じパターンを選ばせるためです。
 
@@ -236,7 +240,7 @@ executor はタスクを実際に実行するバックエンドです。組み�
 `base-sync` の競合解消も同じ所有境界に従います。worker が編集を終えた後、制御層が未解決 index、
 競合マーカー、target の祖先性を検査し、成功時だけ merge commit と push を行います。ここで見るのは
 競合マーカーであり、target から入った既存の末尾空白は競合として扱いません。通常 work node では
-従来どおり staged diff の空白エラーも拒否し、新しく持ち込む差分の品質を落としません。通常 work node も、
+従来どおり staged diff の空白エラーも拒否し、新しく持ち込む差分の品質を落としません。通常の work / generate node も、
 最終出力の構造化 envelope が `{"ok": false}` なら `done` にせず失敗として扱います。
 
 作業ツリーは、URL 単位のホスト共有 bare ミラーから detached worktree を生やして用意します。フルクローンを初回 1 回と増分 fetch に圧縮し、GitLab 側の pack 生成負荷を抑えるためです。手元に同じリポジトリのクローンがあればそこから worktree を切り、ネットワークすら使いません。どちらも失敗したら従来の direct clone に落ちます。「手元のクローン」の宣言は各 PC の `agent-project.host.yaml` の `repos[]`（URL とローカルパスの対）が正典です。共有レジストリ repos.json にホスト固有の絶対パスを書くと状態同期で全 PC へ配られてしまうため、そこには書けません（残っていれば警告して無視）。URL の同一性判定は `agentcore.repolocal` の 1 実装に揃えてあり、板経由で請け負った仕事も submit 前に自ノードの宣言をマージするので、同じ最適化が効きます。
@@ -258,15 +262,15 @@ agent-project が採用対象と照合できるようにします。
 
 層が分かれているのは、直し方が違うからです。接続が一瞬切れただけならその場でもう一度呼べば済み、グラフを触る必要はありません。LLM が JSON を書き損じたなら、契約違反を指摘して同じ役割で呼び直せばほぼ直ります。成果物が要求を満たさないなら、同じ入力の再実行では直らないので作り直しと付け替えが要ります。
 
-レイヤ 3 の最初の内容再試行では、`agents.<purpose>.fallbacks` に宣言された候補のうち、現在より `relative_cost` が厳密に大きい最初の 1 件へだけ昇格できます。再試行済みノードは同じ先を引き継ぎ、環境要因や形式修復には適用しません。昇格元・先と係数は result / budget ledger に残すため、最初から上位へ流した場合との実効単価を後から比較できます。
+レイヤ 3 の最初の内容再試行では、`agents.<purpose>.fallbacks` に宣言された候補のうち、現在より `relative_cost` が厳密に大きい最初の 1 件へだけ昇格できます。再試行済みノードは同じ先を引き継ぎ、環境要因や形式修復には適用しません。昇格元・先と係数は result と budget ledger に残すため、最初から上位へ流した場合との実効単価を後から比較できます。**ledger 側は消費ではなく観測行（`event: model_escalation`・秒もトークンも 0）として書き、集計はこれを消費にも実行回数にも数えません**——数えると、実効単価を測るために書いた行が実効単価を下げてしまいます。
 
-worker の入力も契約で絞ります。task の `read_allocation` は最初に読む path/range を指定し、worker の自己報告から的中率と割付外読込を result に残します。依存成果は既定で要約・成果物参照・省略量だけの digest とし、完全な構造化データが不可欠なノードだけ `dependency_input: full` を宣言します。省略量は `dependency_context.saved_chars` として台帳へ収集します。
+worker の入力も契約で絞ります。task の `read_allocation` は最初に読む path/range を指定し、worker の自己報告から的中率と割付外読込を result に残します。依存成果は要約・成果物参照・省略量だけの digest に畳みます。ただし**依存成果そのものが判断の対象である役割（verify / reduce / synthesize / judge / filter）は既定で全文**です——要約を渡すと判断の対象が消えるためで、とりわけ verify が 600 字の要約で pass/fail を決める形は品質ゲートとして成立しません。work / generate でも完全な構造化データが不可欠なノードは `dependency_input: full` を宣言できます。逆に、要約で足りると分かっている判断役は `dependency_input: digest` で既定を下ろせます（明示宣言は kind による既定より強い）。省略量は `dependency_context.saved_chars` として台帳へ収集します。
 
-レイヤ 2 が拾う契約違反には**空応答**も入ります。ローカルモデルやツールループ型の CLI は、本文の代わりに制御語だけを返して終わることがあります（`agent-ollama` が `TASK_COMPLETE` だけを出す、など）。これはパースの手前で落ちるので `_repair_json_output` には届かず、以前は 1 発で内容の失敗として扱われ、再計画の予算だけが焼けていました。JSON 契約の役割（`JSON_CONTRACT_ROLES`）に限り、`run_agent` が空応答を形式違反として拾い、契約を言い直して同じ予算枠で呼び直します。自由記述が成果の役割（`work` など）では言い直しても意味がないので、従来どおり内容の失敗として上へ返します。
+レイヤ 2 が拾う契約違反には**空応答**も入ります。ローカルモデルやツールループ型の CLI は、本文の代わりに制御語だけを返して終わることがあります（`agent-ollama` が `TASK_COMPLETE` だけを出す、など）。これはパースの手前で落ちるので `_repair_json_output` には届かず、以前は 1 発で内容の失敗として扱われ、再計画の予算だけが焼けていました。JSON 契約の役割（`JSON_CONTRACT_ROLES`）に限り、`run_agent` が空応答を形式違反として拾い、契約を言い直して同じ予算枠で呼び直します。それでも空のときと、自由記述が成果の役割（`work` など）の空応答は、既知の認証・quota 等の分類が無ければ transient として run 単位で打ち切り、done を温存する auto-heal へ渡します。同じプロンプトの即時再試行は、遅いローカル LLM の壁時計だけを焼くため行いません。
 
 不変条件は 2 つです。上の層で吸収した失敗は下の層の予算を消費しません。逆に、レイヤ 1 で回収し切れなかった transient はノード単位で粘らず、run 単位で打ち切ってレイヤ 4 へ渡します。環境がまだ不調なら他のノードも同じ理由で落ちるからです。
 
-環境要因（認証切れ、利用上限、CLI 不在、管理面による停止）はどの層でも再試行しません。1 ノードでもそのタグが立った時点で run を failed で終端し、人が環境を直してから再開します。利用上限だけは時間が直すので、`heal_quota` を立てれば長い cooldown（既定 1 時間）でレイヤ 4 が拾います。
+環境要因（認証切れ、利用上限、CLI 不在、管理面による停止）はどの層でも再試行しません。1 ノードでもそのタグが立った時点で run を failed で終端し、人が環境を直してから再開します。quota は node-budget 台帳へ観測として残し、時限の `rate_limit` は復帰時刻まで、累積枠の `exhausted` は次周期まで管理面の候補から外します。利用上限だけは時間が直すので、`heal_quota` を立てれば長い cooldown（既定 1 時間）でレイヤ 4 が拾います。
 
 auto-heal の簿記（`heal_count` / `heal_progress` / `heal_next_at` / `heal_exhausted`）は run の meta に閉じています。人の明示 retry はこれを白紙に戻し、auto-heal は戻さずに heal 横断で「進捗なしの連続回数」を数えます。前回の heal 以降に done ノードが増えていれば 1 から数え直すので、前進している run は何度でも回収され、進捗ゼロのまま失敗し続ける run だけが上限に達します。
 
@@ -327,7 +331,7 @@ auto-heal はこの世代交代を使いません。heal は同一 run の再開
 
 **park 中のノードを `status` に出るようにした。** 表示のグリフと集計順に `waiting` が無く、全ノードが承認待ちの run が「進捗 0/N・実行中ゼロ」としか見えていませんでした。止まっているのか待っているのかを画面から区別できないのは、park & poll を主要機能として売っている以上まずい欠落です。
 
-**更新状態ファイルの置き場を共通ホームに揃えた。** ここだけ旧ホーム `~/.agent` を直書きしており、新ホームしかない環境で `~/.agent/` を新しく作って書いていました。移行途中の環境では旧ファイルが残っている側を読みます。
+**更新状態ファイルの置き場を共通ホームに揃えた。** ここだけ旧ホーム `~/.agent` を直書きしており、新ホームしかない環境で `~/.agent/` を新しく作って書いていました。現在は `~/.agents/agent-flow.update.json` だけを読み書きします。
 
 **auto-heal の再起動が検証 gate 設定を引き継ぐようにした。** 初回起動は `--review` / `--no-review` を子へ渡すのに、heal で起こし直す側が渡していませんでした。
 
@@ -403,7 +407,7 @@ auto-heal はこの世代交代を使いません。heal は同一 run の再開
 | loop-until-done | `work` → `verify` を条件達成まで反復 | テスト通過や品質達成まで繰り返す |
 | map-reduce | `split` → 実行時に `map` × N を展開 → `reduce` | 件数を事前に固定せずデータ駆動で並列処理する |
 
-kind は `work` / `generate` / `classify` / `synthesize` / `verify` / `filter` / `judge` / `reduce` / `split` / `map` の 10 種です。planner が未知の kind を出したら `work` に丸めます。`kind: verify` は run 内の候補比較や反復を制御する工程で、agent-project の verification plan を判定する専用 verifier とは別です。前者が task の done を主張することはできません。構造化データ（`data`）を成果として期待するのは `split` / `map` / `reduce` / `filter` / `judge` / `verify` だけで、自由記述の kind では本文中の JSON 風断片を data に昇格させません。散文に紛れた `"issues": []` を空リストとして拾い、下流を汚した事故があったためです。
+kind は `work` / `generate` / `classify` / `synthesize` / `verify` / `filter` / `judge` / `reduce` / `split` / `map` の 10 種です。planner が未知の kind を出したら `work` に丸めます。`kind: verify` は run 内の候補比較や反復を制御する工程で、agent-project の verification plan を判定する専用 verifier とは別です。前者が task の done を主張することはできません。構造化データ（`data`）を成果として期待するのは `split` / `map` / `reduce` / `filter` / `judge` / `verify` だけで、自由記述の kind では本文中の JSON 風断片を data に昇格させません。ただし `work` / `generate` は末尾の `{"ok": ...}` だけを完了可否の envelope として読みます。散文に紛れた `"issues": []` を空リストとして拾い、下流を汚した事故があったためです。
 
 `map-reduce` はカタログ上ほかの 6 つと同格の選択可能パターンです。`split` 完了後に `map` と `reduce` を実行時生成する `_expand_splits` は、パターンではなく継続メカニズムで、classify のルーティングや verify の作り直しと同じ層にあります。
 
@@ -411,7 +415,7 @@ kind は `work` / `generate` / `classify` / `synthesize` / `verify` / `filter` /
 
 ### E. 決着済みの判断
 
-**ハングは lease ではなく task timeout で守る**（2026-06-14 採用）。lease と心拍はプロセスの生存を伝える信号で、タスクの進捗を伝える信号ではありません。心拍は別スレッドで鳴るので、メインスレッドが `subprocess.run` でブロックしていても lease は延び続け、孤児回収は永久に発動しません。lease に上限を設ける案は正当に長いタスクを誤って横取りし、ハングしたプロセスを kill もしません。採ったのは `run_agent` の subprocess タイムアウト（既定 600 秒、`agent_timeout` で調整、0 で無効）で、超過したタスクは transient タグ付きで失敗させ、レイヤ 1 の再試行に載せます。stdout のバイト流量で心拍をゲートする案（真の進捗連動）は筋が良いものの、タスクが元々 LLM 1 コールで有界な現状では複雑さに見合わないと判断しました。長尺タスクを扱いたくなった時点で再検討します。
+**ハングは lease ではなく task timeout で守る**（2026-06-14 採用）。lease と心拍はプロセスの生存を伝える信号で、タスクの進捗を伝える信号ではありません。心拍は別スレッドで鳴るので、メインスレッドが `subprocess.run` でブロックしていても lease は延び続け、孤児回収は永久に発動しません。lease に上限を設ける案は正当に長いタスクを誤って横取りし、ハングしたプロセスを kill もしません。採ったのは `run_agent` の subprocess タイムアウトです。解決順は、呼び出し 1 回の明示指定（verification plan の `policy.agent.timeout_sec`）→ agent-control の用途別値（kind は worker 値も継承）→ flow 共通値 → CLI 定義の timeout → `agent_timeout` → 環境変数・既定 600 秒。control は呼び出しごとに読み直し、すでに動いている subprocess の期限は変えません。`agent_timeout: 0` だけが無効化の口で、固定検証コマンド、GitLab 待機、lease、poll の timer はこの設定の対象外です。超過したタスクは transient タグ付きで失敗させ、レイヤ 1 の再試行に載せます。stdout のバイト流量で心拍をゲートする案（真の進捗連動）は筋が良いものの、タスクが元々 LLM 1 コールで有界な現状では複雑さに見合わないと判断しました。長尺タスクを扱いたくなった時点で再検討します。
 
 **run 内のステップは PC 間に分散させない**（2026-07-27 既定）。配る単位は run のままで、グラフの中のステップを他 PC が拾いに来る経路は持ちません。下地（ノード単位の claim と決定的タイブレーク）は実装済みで別クローンからの競合テストもありますが、それを駆動する主体を置かない、という判断です。理由は 4 つあります。実行はローカル・共有するのは状態の鏡だけ、という公理と正面から衝突すること。バスの claim には板の入札選別（契約バージョンの fail-close・`workloads`・枠の自己抑制）が一つも無いので、板を唯一の PC 間分配経路とする契約を迂回する第 2 の分配機構になること。公平なタスク分配がそもそも非目標であること。そして既定のエージェント CLI の月間上限は 1 台が踏んだ時点で run 全体を失敗終端させるので、同じアカウントを使う限り PC を増やしても実行総量が増えないことです。入れるなら形は 2 つで、ステップ（またはサブグラフ）を板の公示として出して入札選別を通す形なら契約は 1 本のまま保てます（agent-project の検証委譲がこの型の実例）。共有バスに版と枠の照合を足す「信頼フリート」モードは原則そのものの例外になるので、採るならコンセプト正典の改訂とセットです。契機は「1 台の `workers` × 枠では実際に足りない」実測——長い run が 1 台を占有して他 PC が遊ぶ状態の観測で、実行した PC を結果に書くようになったので、この実測自体は取れます。
 
@@ -419,7 +423,7 @@ kind は `work` / `generate` / `classify` / `synthesize` / `verify` / `filter` /
 
 ### F. テスト
 
-`tools/agent-flow/tests/` に 662 件（機能別に分割済み）。共有の前置きは `_shared.py` にあり、エージェント CLI なしで全件が通ります。
+`tools/agent-flow/tests/` に 794 件（機能別に分割済み）。共有の前置きは `_shared.py` にあり、エージェント CLI なしで全件が通ります。
 
 ```bash
 AGENT_FLOW_STUB_SLEEP_MAX=0 python3 -m pytest tools/agent-flow/tests -q
