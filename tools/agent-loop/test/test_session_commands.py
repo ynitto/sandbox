@@ -1,6 +1,6 @@
 """セッション開始コマンド（agent-session-commands 契約）のテスト。
 
-常駐系（tmux ペイン = セッション）の実装を対象にする。kiro-loop の同名実装は
+常駐系（tmux ペイン = セッション）の実装を対象にする。旧同名実装は
 このクローン元と同一ロジックなので、契約の振る舞いはここで担保する。
 
 実行: python3 -m pytest tools/agent-loop/test/ -q
@@ -176,7 +176,7 @@ class SessionCommandsTests(unittest.TestCase):
 
 
 class StatusHeartbeatTests(unittest.TestCase):
-    """agent-control の status ハートビート（kiro-loop から移植した可視化のみの層）。"""
+    """agent-control の status ハートビート（可視化のみの層）。"""
 
     def setUp(self):
         self.dir = tempfile.mkdtemp(prefix="al-ctl-")

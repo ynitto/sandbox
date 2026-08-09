@@ -37,6 +37,7 @@ argv = command + (write_args | readonly_args) + no_session_args? + spill.args?
 
 | フィールド | いつ付くか |
 |---|---|
+| `relative_cost` | 「より安い候補」を決める無次元値（ローカル=0、通常クラウド=1） |
 | `write_args` | 既定モード（act・plan・charter 生成など書き込みを伴う実行） |
 | `readonly_args` | 読み取り専用モード（Doctor・構造化 Assist・対話診断） |
 | `no_session_args` | 使い捨て実行（診断）。セッション永続化を切る |
@@ -67,8 +68,9 @@ chat モードのように、人が `/skill-name` と書いたテキストを送
 - `command` の `{model}` はモデル名に置換（未指定ならそのトークンごと省く。必須の CLI は
   `default_model` を書く）。`{output_file}` は `output: "file"` のとき最終応答を書かせる
   一時ファイルに置換（stdout がイベントログで汚れる CLI 向け）。
-- `errors` に CLI 固有の失敗パターンを書くと、**失敗トリアージ**（quota=時間をおけば回復 /
-  auth・env=人が環境を直す / transient=自動リトライ）に反映され、agent-project は
+- `errors` に CLI 固有の失敗パターンを書くと、**失敗トリアージ**に反映される。
+  quota は `quota_kind` で、当面戻らない `exhausted` と、メッセージから復帰時刻を
+ 53eれる `rate_limit` を区別する。auth・env=人が環境を直す、transient=自動リトライ。agent-project は
   リトライを無駄に焼かず・viewer は「誰が何を直せばよいか」を表示できる。
 - `interactive` が無い定義は対話起動（CLIチャット・定常業務の tmux 実行）を提供しない。
 

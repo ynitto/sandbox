@@ -189,6 +189,19 @@ prompts:
     cwd: /path/to/workspace
     enabled: false
 
+  # dashboard を開かずに node-budget の再配分と profile の降格/復帰を適用する。
+  # check() は LLM へ prompt を送らず、dashboard と同じ書き手を 1 回呼ぶ。
+  - name: "資源制御"
+    event_hook: ~/sandbox/tools/agent-loop/hooks/resource-control-hook.py
+    interval_minutes: 5
+    enabled: false
+
+  # 収集済みの実測を rates.per_cli へ定期較正し、旧推定との乖離も audit 台帳へ残す。
+  - name: "使用量較正"
+    event_hook: ~/sandbox/tools/agent-loop/hooks/audit-calibrate-hook.py
+    interval_minutes: 60
+    enabled: false
+
   # ---- webhook: GitLab の MR webhook を受けてこのセッションに送る ----
   # 上部の webhook: セクションを有効化した上で、GitLab のプロジェクト設定で
   #   URL      = http://<host>:<port>/hooks/mr-reviewer

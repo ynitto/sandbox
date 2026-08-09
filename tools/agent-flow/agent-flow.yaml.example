@@ -60,7 +60,7 @@ planner: flow-planner      # 計画役: flow-planner（3段パイプライン、
 executor: agent            # ワーカーバス: 組み込み agent（エージェント CLI に委譲。agent_cli で
                            #   kiro/claude/copilot/codex を切替）/ stub、または executor プラグイン名
                            #   （例 gitlab。opt-in。下の gitlab: ブロック参照）/ .py への明示パス。
-                           #   プラグインは executors/<name>.py（kiro-loop の hooks と同じ流儀）。
+                           #   プラグインは executors/<name>.py（agent-loop の hooks と同じ流儀）。
 # worker_skill: flow-worker # executor=agent の実行系プロンプト供給スキル（worker/verify/evaluator。
                            #   既定 flow-worker）。flow-planner と同じ検索順で自動発見し、無ければ
                            #   組み込みプロンプトにフォールバック。none/builtin で常に組み込みを使う

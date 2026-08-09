@@ -16,7 +16,7 @@ const { agentHomeSubdir } = require('../../../base/main/agent-home');
 
 const BUILTINS = ['kiro', 'claude', 'copilot', 'codex'];
 const ALLOWED_KEYS = [
-  'name', 'command', 'prompt_via', 'prompt_flag', 'model_flag', 'default_model',
+  'name', 'relative_cost', 'command', 'prompt_via', 'prompt_flag', 'model_flag', 'default_model',
   'output', 'env', 'timeout', 'empty_output_is_error', 'errors',
 ];
 const OUTPUT_ENUM = ['stdout', 'file'];
@@ -73,6 +73,10 @@ function validateSpec(spec) {
   } else if (!spec.command.every((c) => typeof c === 'string')) {
     errors.push('command の要素は文字列である必要があります');
   }
+  if (spec.relative_cost !== undefined
+      && (!Number.isFinite(Number(spec.relative_cost)) || Number(spec.relative_cost) < 0)) {
+    errors.push('relative_cost は 0 以上の数値で指定してください');
+  }
   if (spec.output !== undefined && !OUTPUT_ENUM.includes(spec.output)) {
     errors.push(`output が不正です: ${spec.output}（stdout / file）`);
   }
@@ -91,6 +95,9 @@ function validateSpec(spec) {
         if (typeof rule.match !== 'string' || !rule.match) errors.push(`errors[${i}].match が必要です`);
         if (!ERROR_CLASS_ENUM.includes(rule.class)) {
           errors.push(`errors[${i}].class が不正です: ${rule.class}（quota / auth / env / transient）`);
+        }
+        if (rule.quota_kind !== undefined && !['exhausted', 'rate_limit'].includes(rule.quota_kind)) {
+          errors.push(`errors[${i}].quota_kind が不正です: ${rule.quota_kind}`);
         }
       });
     }

@@ -84,6 +84,8 @@ class TestLoad(_Isolated):
             ({"command": ["x"], "env": "TOKEN=1"}, "env"),
             ({"command": ["x"], "env": []}, "env"),
             ({"command": ["x"], "errors": [{"match": "([", "class": "env"}]}, "正規表現"),
+            ({"command": ["x"], "errors": [{"match": "x", "class": "quota",
+                                                 "quota_kind": "unknown"}]}, "quota_kind"),
             ({"command": ["x"], "errors": ["env"]}, "errors"),
             ({"command": ["x"], "errors": {}}, "errors"),
             ({"command": ["x"], "readonly": "sometimes"}, "readonly"),
@@ -230,6 +232,13 @@ class TestInteractive(_Isolated):
 
 
 class TestReadonlyWarningAndErrors(_Isolated):
+    def test_relative_cost_is_normalized_and_validated(self):
+        self.write_def("proj/agents", "free", {"command": ["c"], "relative_cost": 0})
+        spec = agentcli.load_cli("free", project_dir=str(self.tmp / "proj"), use_cache=False)
+        self.assertEqual(spec["relative_cost"], 0.0)
+        with self.assertRaisesRegex(agentcli.AgentCliError, "relative_cost"):
+            agentcli.normalize("bad", {"command": ["c"], "relative_cost": -1}, "bad.json")
+
     def test_best_effort_warns_enforced_does_not(self):
         self.write_def("proj/agents", "be", {"command": ["c"], "readonly": "best-effort"})
         self.write_def("proj/agents", "en", {"command": ["c"], "readonly": "enforced"})
@@ -250,6 +259,24 @@ class TestReadonlyWarningAndErrors(_Isolated):
                          ("quota", "待て"))
         self.assertEqual(agentcli.classify_error(s, "you are not logged in")[0], "auth")
         self.assertIsNone(agentcli.classify_error(s, "something else"))
+
+    def test_quota_detail_and_reset_time(self):
+        cases = [
+            ("kiro", "Monthly request limit reached", "exhausted", None),
+            ("claude", "Rate limit: retry after 120 seconds", "rate_limit",
+             "1970-01-01T00:02:00Z"),
+            ("codex", "Too many requests; reset at 2026-08-09T03:00:00+09:00",
+             "rate_limit", "2026-08-08T18:00:00Z"),
+            ("cursor", "Usage limit reached", "exhausted", None),
+            ("opencode", "Rate limit, try again in 2 minutes", "rate_limit",
+             "1970-01-01T00:02:00Z"),
+        ]
+        for name, message, kind, reset_at in cases:
+            result = agentcli.classify_error(
+                agentcli.load_cli(name, use_cache=False), message, detailed=True, now=0)
+            self.assertEqual(result["class"], "quota", name)
+            self.assertEqual(result["quota_kind"], kind, name)
+            self.assertEqual(result["reset_at"], reset_at, name)
 
 
 class TestBundledGolden(_Isolated):

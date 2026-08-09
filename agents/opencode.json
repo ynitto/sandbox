@@ -1,5 +1,6 @@
 {
   "name": "opencode",
+  "relative_cost": 0,
   "command": ["agent-opencode"],
   "prompt_via": "stdin",
   "model_flag": "--model",
@@ -42,9 +43,10 @@
     { "match": "unauthorized|invalid api key|authentication failed",
       "class": "auth",
       "hint": "opencode のプロバイダ認証が切れています（opencode providers で入れ直してください）" },
-    { "match": "rate limit|quota exceeded|too many requests",
-      "class": "quota",
-      "hint": "利用上限です。時間をおいてください" },
+    { "match": "quota exceeded|usage limit", "class": "quota", "quota_kind": "exhausted",
+      "hint": "利用枠が枯渇しています" },
+    { "match": "rate limit|too many requests", "class": "quota", "quota_kind": "rate_limit",
+      "hint": "時限レート制限です" },
     { "match": "fetch failed|socket hang up|ECONNRESET|ETIMEDOUT",
       "class": "transient",
       "hint": "推論サーバとの通信が切れました（リトライで解けることが多い）" }

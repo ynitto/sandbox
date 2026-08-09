@@ -135,10 +135,10 @@ GUI はその規律の外側から、人の気まぐれなタイミングで書�
 発見・稼働・共有の健全性・子の隔離のすべての根拠になる。
 
 **適用範囲（S2 で明確化）**: この判断が縛るのは **agent-project が回すプロジェクト**だけ。
-kiro-loop 設定や `.statemachine/` を持つだけの**定常業務専用フォルダ**は、設定
+agent-loop 設定や `.statemachine/` を持つだけの**定常業務専用フォルダ**は、設定
 `cowork.roots` に列挙する（定常業務領域の「フォルダを登録」）。判断の根拠は「両側に登録簿を
 持たない」ことであって「dashboard が何も宣言しない」ことではない——定常業務のエンジン
-（kiro-loop / statemachine-use）は常駐体・状態リポジトリと無関係に動き、起動・tmux 管理・
+（agent-loop / statemachine-use）は常駐体・状態リポジトリと無関係に動き、起動・tmux 管理・
 履歴記録をすべて cowork feature が担うので、**実行側が dashboard 自身**であり登録簿は 1 つのまま。
 逆に host.yaml へ載せると、常駐体が管理しないものを常駐体の宣言ファイルに書くねじれになる。
 両者が同じパスを指した場合は project 側を正として畳む（routine エントリは定常業務タブしか
@@ -230,7 +230,7 @@ HTML の組み立ても変えず、受け側だけを移してある。
 ### 3.6 YAML は読みと書きでパーサを分ける
 
 **判断**: YAML の**読み**は `src/base/main/yaml.js`（`yaml` パッケージ）に一本化する。
-**書き戻し**（cowork の kiro-loop / workflow.yaml 編集）はパーサを通さず、物理行を直接
+**書き戻し**（cowork の agent-loop / workflow.yaml 編集）はパーサを通さず、物理行を直接
 差し替える外科的書換のままにする。
 
 **文脈**: 当初は「ランタイム依存を増やさない」方針から、機能ごとに小さな行指向パーサを
@@ -245,7 +245,7 @@ HTML の組み立ても変えず、受け側だけを移してある。
 再シリアライズは人が書いたコメント・順序・整形を壊す。書き戻しの関心は値ではなく
 **どの物理行に書くか**なので、値パーサでは代われない。
 
-**トレードオフ**: kiro-loop の `prompts[]` について値パーサと行アンカーの 2 系統が並ぶ。
+**トレードオフ**: agent-loop の `prompts[]` について値パーサと行アンカーの 2 系統が並ぶ。
 **両者は並びが一致していなければならない**（ずれると別のエントリへ書き戻す）ので、
 その一致自体をテストで固定する。壊れた YAML は復旧値を採らず「読めなかった」に倒す——
 半分だけ効いている設定を静かに作らないため。
@@ -314,7 +314,7 @@ IPC は全チャネルが `{ok, data|error}` に揃う（`base/main/handle.js` �
 | 実行（agent-flow） | `<bus>/runs/<run-id>/` の `graph.json` ＋ `results/` ＋ `claims/` ＋ `waits/` からノード状態を導出し、`events/*.jsonl` から計画変更の理由と差分を読む。ポーリングごとに `flow-archive/<run-id>.json` へ写し取り、bus から消えた run も追える |
 | 履歴 | `run-log.jsonl`・`decisions/<id>.md`・`DELIVERY.md`・`journal.md` |
 | ミッション | agent-amigos のバス（読み取り専用）とオーナーホームの納品棚 |
-| 定期実行 | WSL 上の agent-loop の `~/.agents/loop-state/*.json`（旧 `~/.agent/` はフォールバック、退役前の `~/.kiro/loop-state/*.json` は読取互換）および tmux。定常業務の設定は `.agents/agent-loop.{yaml,yml,json}`（旧 `.kiro/kiro-loop.*` は読取互換。新規の書き先にはしない） |
+| 定期実行 | WSL 上の agent-loop の `~/.agents/loop-state/*.json`（旧 `~/.agent/` はフォールバック）および tmux。定常業務の設定は `.agents/agent-loop.{yaml,yml,json}` |
 | ノード予算・エージェント制御 | `~/.agents/budget/`・`~/.agents/control/`（ツール横断のデータ契約） |
 | レビュー待ち | `repos.json` の GitLab リポジトリのオープンイシュー（API 設定時） |
 
@@ -561,7 +561,7 @@ CLI では「このCLIでは助言のみを保証できません」を先に出�
 ## 8. 実装状況と既知の欠落
 
 **動いているもの**: §4 の 7 制御面すべて、§6 の人のアクション一式、§7 の通知・SLA・AI 補助・
-投入時リンティング、kiro-loop の構造化状態と復旧送信、この PC の役割切り替え
+投入時リンティング、agent-loop の構造化状態と復旧送信、この PC の役割切り替え
 （`engineer` / `viewer`）、ホーム（ポータル。横断要対応キュー第 1 段＝プロジェクト単位の
 件数とジャンプ）。テストは `npm test` で全緑。
 
@@ -658,5 +658,5 @@ CLI では「このCLIでは助言のみを保証できません」を先に出�
 | 旧ファイル | 統合先 |
 |---|---|
 | `agent-dashboard-feature-split-design.md` | §3.2 / §4 / §4.1 |
-| `agent-dashboard-kiro-loop-terminal-design.md` | §5.1 |
+| `agent-dashboard-agent-loop-terminal-design.md` | §5.1 |
 | `agent-dashboard-project-ux-improvements.md` | §2 / §3.4 / §6 / §7 / §8 |

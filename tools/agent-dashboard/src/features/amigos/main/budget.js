@@ -4,7 +4,7 @@
 // 正典: schemas/node-budget.schema.json。実体は $AGENT_BUDGET_DIR
 // （既定 ~/.agent/budget/）の config.json + ledger/<YYYYMMDD>.jsonl（UTC・追記専用）。
 // dashboard は「config を書き、台帳を読む」だけ — 記帳・抑制は各ツール
-// （agent-amigos は実装済み。kiro-loop / agent-project / agent-flow は後続）が行う。
+// （agent-amigos は実装済み。agent-loop / agent-project / agent-flow は後続）が行う。
 // 依頼側・請負側どちらのノードでも同じ契約で管理できる。
 
 const fs = require('fs');

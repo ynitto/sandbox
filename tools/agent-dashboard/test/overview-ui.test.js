@@ -75,7 +75,7 @@ assert.deepStrictEqual(
     2
   ),
   { agentProject: false, cowork: true, defaultTab: 'cowork' },
-  'kiro-loopだけのworkspaceでは定常業務だけを表示する'
+  'agent-loopだけのworkspaceでは定常業務だけを表示する'
 );
 assert.deepStrictEqual(
   workspaceFeatureModel(

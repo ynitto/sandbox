@@ -1,5 +1,6 @@
 {
   "name": "kiro",
+  "relative_cost": 1,
   "command": [
     "kiro-cli",
     "chat",
@@ -47,6 +48,7 @@
     {
       "match": "Monthly request limit reached",
       "class": "quota",
+      "quota_kind": "exhausted",
       "hint": "Kiro CLI の月間リクエスト上限に達しています（上限のリセットを待つか別の CLI へ切り替えてください）"
     }
   ]

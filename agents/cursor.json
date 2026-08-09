@@ -1,5 +1,6 @@
 {
   "name": "cursor",
+  "relative_cost": 1,
   "command": ["cursor-agent", "-p", "--output-format", "text", "--force"],
   "prompt_via": "stdin",
   "model_flag": "--model",
@@ -15,7 +16,9 @@
   "errors": [
     { "match": "not logged in|please log ?in|unauthorized",
       "class": "auth", "hint": "cursor-agent にログインしていません（cursor-agent login）" },
-    { "match": "usage limit|rate limit",
-      "class": "quota", "hint": "Cursor の利用上限に達しています" }
+    { "match": "usage limit", "class": "quota", "quota_kind": "exhausted",
+      "hint": "Cursor の利用上限に達しています" },
+    { "match": "rate limit|too many requests", "class": "quota", "quota_kind": "rate_limit",
+      "hint": "Cursor の時限レート制限です" }
   ]
 }

@@ -2,7 +2,7 @@
 
 設計: docs/plans/2026-08-06-opencode-ollama-cpu-inference-proposals.md F-2 の実装形態。
 
-**全画面（alternate screen）にしない**のが最大の制約。agent-loop / kiro-loop は
+**全画面（alternate screen）にしない**のが最大の制約。agent-loop / agent-loop は
 tmux の `send-keys` で入力を送り `capture-pane` で画面を読むため、全画面へ切り替えると
 向こうからは何も見えなくなる。よってここでは、
 

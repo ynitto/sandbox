@@ -22,10 +22,8 @@ function sendPrompt({ repo, target, prompt } = {}) {
   const t = String(target || '').trim();
   const parts = [];
   if (cwd) parts.push(`cd ${exec.shellQuote(cwd)} || exit 1;`);
-  // agent-loop を先に探し、まだ導入していない端末では旧 kiro-loop へ落とす（両者の
-  // `send` は同じ契約）。この互換は kiro-loop 退役（計画 S4）と同じ PR で外す。
-  parts.push('bin=$(command -v agent-loop || command -v kiro-loop) || { echo "agent-loop が PATH に見つかりません" >&2; exit 127; };');
-  parts.push(`"$bin" send ${t ? `-s ${exec.shellQuote(t)} ` : ''}${exec.shellQuote(p)}`);
+  parts.push('command -v agent-loop >/dev/null || { echo "agent-loop が PATH に見つかりません" >&2; exit 127; };');
+  parts.push(`agent-loop send ${t ? `-s ${exec.shellQuote(t)} ` : ''}${exec.shellQuote(p)}`);
   const r = exec.shInWsl(parts.join(' '), 30000, distro);
   const sent = r.ok;
   const detail = `${r.stdout}\n${r.stderr}`.trim();
@@ -43,4 +41,3 @@ function sendPrompt({ repo, target, prompt } = {}) {
 }
 
 module.exports = { sendPrompt, isBusyMessage };
-

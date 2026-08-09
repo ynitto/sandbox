@@ -160,7 +160,7 @@
 ## ワーカーバス（executor）— プラグイン方式
 
 ワーカーがタスクを実際に実行するバックエンド。`--executor`（または設定 `executor`）で選ぶ。
-組み込みの `agent` / `stub` に加え、**kiro-loop の hooks と同じ流儀でプラグイン化**されている。
+組み込みの `agent` / `stub` に加え、**agent-loop の hooks と同じ流儀でプラグイン化**されている。
 
 | executor | 実行のしかた | 用途 |
 |----------|-------------|------|
@@ -177,7 +177,7 @@
 - **プラグイン名**（例 `gitlab`）— 検索ディレクトリの `executors/<name>.py` を解決
 - **`.py` への明示パス** — そのファイルをプラグインとしてロード
 
-プラグインは標準ライブラリのみで書ける単一ファイルで、次の関数を公開します（kiro-loop の
+プラグインは標準ライブラリのみで書ける単一ファイルで、次の関数を公開します（agent-loop の
 `event_hook` の `check()` に相当）。本体が `importlib` で動的ロードし（mtime キャッシュ付き）、
 ワーカーが各タスクで呼び出します。
 
@@ -192,7 +192,7 @@ def execute(kind, goal, dep_results, model=None, art_dir=None, dep_arts=None):
   `AGENT_FLOW_EXECUTOR_CONFIG` でプラグインへ渡します。プラグインは個別の環境変数で上書きも可能。
 - **インストール**：`install.sh` が同梱プラグインを **本体と同じフォルダ**（`<install-prefix>/executors/`、
   既定 `~/.local/bin/executors/`）へコピーするため、単一ファイル配布後も `--executor <name>` が検索順 #1
-  「スクリプト同階層の `executors/`」で名前解決できます（kiro-loop と同じ「本体隣」の補助アセット配置）。
+  「スクリプト同階層の `executors/`」で名前解決できます（agent-loop と同じ「本体隣」の補助アセット配置）。
 
 ### gitlab ワーカーバス（同梱プラグイン）
 
@@ -796,7 +796,7 @@ stub の擬似実行スリープは設定ファイルの `stub_sleep_max`（既�
 
 | ツール | 構造 | 決定タイミング |
 |--------|------|--------------|
-| `kiro-loop` | 定期プロンプト送信 | 静的 |
+| `agent-loop` | 定期プロンプト送信 | 静的 |
 | `multi-agent-shogun-kiro` | 将軍/家老/足軽の固定階層 | 静的 |
 | **`agent-flow`** | **タスクグラフ** | **実行時に LLM が生成** |
 

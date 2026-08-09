@@ -1,7 +1,7 @@
-# agent-loop / kiro-loop — 定期プロンプトの `slash` プロパティ設計
+# agent-loop — 定期プロンプトの `slash` プロパティ設計
 
 > 作成 2026-08-06
-> 対象: agent-loop（および fork 元/先の kiro-loop 系プロジェクト）
+> 対象: agent-loop（および fork 元/先の agent-loop 系プロジェクト）
 > 関連: [2026-08-06 opencode×ollama CPU 推論の対策案](../plans/2026-08-06-opencode-ollama-cpu-inference-proposals.md) §F-2 補遺 2
 >
 > **この文書は fork 先へ単体で展開できるよう自己完結で書く。** 親文書を読まなくても
@@ -83,7 +83,7 @@ prompts:
 ### 2.3 後方互換
 
 - `slash` 未指定のエントリの挙動は 1 ビットも変わらない。
-- 旧バージョンの agent-loop / kiro-loop は未知キーを無視して読む（エントリは
+- 旧バージョンの agent-loop は未知キーを無視して読む（エントリは
   素の dict 取り回し）ため、**新しい設定ファイルを旧実装に食わせても壊れない**
   （slash が送られないだけ）。厳格なスキーマ検証を足している fork は、
   許可キー一覧へ `slash` を足すこと。

@@ -11,7 +11,7 @@ from __future__ import annotations
 # ローカルの instructions.json を読まない）。ワーカーはこの描画済みブロックを実行エージェントの
 # プロンプト先頭へ前置する。planner / evaluator 等のメタ LLM 呼び出しへは注入しない。
 #
-# レンダラは dashboard（JS）・kiro-loop / agent-loop（Python）と同一出力になるよう決定的に保つ。
+# レンダラは dashboard（JS）・agent-loop / agent-loop（Python）と同一出力になるよう決定的に保つ。
 # stdlib のみ（json / os / re）。フェイルセーフ: 不在 / 破損 / enabled=false は空文字＝注入しない。
 
 AGENT_INSTRUCTIONS_MARKER = "<!-- agent-instructions"
@@ -50,7 +50,7 @@ def _clamp_max_chars(v) -> int:
 
 def render_instructions_block(data: "dict | None", max_chars: "int | None" = None) -> str:
     """契約（agent-instructions.schema.json）→ 決定的テキストブロック。
-    dashboard（JS renderBlock）・kiro-loop / agent-loop と同一出力。
+    dashboard（JS renderBlock）・agent-loop / agent-loop と同一出力。
     enabled=false / 中身なしのときは空文字（＝注入しない）。"""
     if not isinstance(data, dict) or data.get("enabled") is False:
         return ""

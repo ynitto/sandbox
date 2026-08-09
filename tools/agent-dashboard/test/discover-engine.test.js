@@ -12,7 +12,7 @@ const path = require('path');
 const project = require('../src/main/project');
 const engine = require('../src/features/agent-project/main/engine');
 
-// 定常業務の走査ルートには**常にユーザーホーム**が入る（`~/.kiro/kiro-loop.yml` を拾うため）。
+// 定常業務の走査ルートには**常にユーザーホーム**が入る（`~/.agents/agent-loop.yml` を拾うため）。
 // 一覧を数える検査では実機のホームを混ぜない——結果が実行環境の持ち物で変わってしまう。
 const HOME_STUB = fs.mkdtempSync(path.join(os.tmpdir(), 'home-stub-'));
 process.env.HOME = HOME_STUB;

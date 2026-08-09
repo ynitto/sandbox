@@ -18,6 +18,6 @@ UI（タブ・概要／バックログ／要対応／実行／履歴）は当面
 
 - **入ってよい**: agent-project / agent-flow のファイル契約・CLI・バス
 - **base に残す**: Electron 起動、git 同期、汎用 GitLab API、シェルオープン
-- **触らない**: `src/features/kiro-loop/`（別制御面）
+- **触らない**: `src/features/agent-loop/`（別制御面）
 
 上流の agent-dashboard を取り込むときは、主にこのディレクトリと `src/base/`・`src/renderer/` をマージする。

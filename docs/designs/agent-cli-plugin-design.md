@@ -107,7 +107,7 @@
     tmux 実行・対話診断が対象。**agent-loop も 2026-08-06 からこの契約に載った**——設定の
     `agent_cli` 指定時は `agent_loop/cliprofile.py` が agentcore.agentcli で定義を解決して
     ペインを起動する（未指定は従来の kiro-cli 固定経路のまま。設計:
-    [`agent-loop-design.md`](./agent-loop-design.md) 機能 5）。旧 `kiro-loop.py:_start_pane`
+    [`agent-loop-design.md`](./agent-loop-design.md) 機能 5）。旧 `agent-loop.py:_start_pane`
     だけが対象外として残る（kiro-cli 固定の残置系統）。
   - **待機判定（`busy_pattern` / `idle_quiet_sec` / `clear_command`）**: tmux で CLI を自動
     運転する側（agent-loop の送信可否・スロット解放）は「待機中か処理中か」をペイン画面から

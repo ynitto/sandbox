@@ -215,7 +215,7 @@ class NodeBudgetTests(AmigosTestCase):
         nodebudget.save_config(execution_minutes=0,
                                workload_minutes={"amigos": 1.0 / 60})
         # 他ワークロード（定常業務など）の消費は amigos 内訳に影響しない
-        nodebudget.record(100.0, workload="routine", tool="kiro-loop")
+        nodebudget.record(100.0, workload="routine", tool="agent-loop")
         mid = self.post()
         d = self.daemon()
         for _ in range(6):

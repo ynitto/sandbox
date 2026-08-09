@@ -50,13 +50,21 @@ class FlowBusCollectTests(AuditTestCase):
         self._make_run(bus, "r2", "running")
         self._make_run(bus, "r3", "done",
                        events=[{"kind": "verify", "verdict": "pass"}])
+        results = os.path.join(bus, "runs", "r3", "results")
+        os.makedirs(results)
+        with open(os.path.join(results, "n1.json"), "w", encoding="utf-8") as f:
+            json.dump({"id": "n1", "kind": "work", "status": "done",
+                       "agent_cli": "claude", "model": "sonnet"}, f)
         st = self.make_store()
         args = self.make_args(flow_buses=[bus])
-        self.assertEqual(collect.collect_flow_buses(args, st), 2)   # running は拾わない
+        self.assertEqual(collect.collect_flow_buses(args, st), 3)   # terminal run 2 + result 1
         recs = {r["ref"]: r for r in st.iter_records()}
         self.assertEqual(recs["r1"]["error_class"], "quota")
         self.assertEqual(recs["r1"]["retries"], 2)
         self.assertEqual(recs["r3"]["verify"], "pass")
+        result = recs["r3/n1"]
+        self.assertEqual((result["purpose"], result["model"], result["verify"]),
+                         ("work", "sonnet", "pass"))
 
     def test_missing_configured_source_fails_closed(self):
         args = self.make_args(flow_buses=[os.path.join(self.tmp, "no-such-bus")])

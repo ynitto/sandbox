@@ -330,7 +330,7 @@ lease が切れても **`resume_at` + grace（既定 2 時間）までロール�
   agent-dashboard の **Amigos タブ**（`tools/agent-dashboard/src/features/amigos/`）が
   この契約（config を書く・ledger を読む）でミッション一覧（読み取り専用）と
   ノード予算の表示・上限編集を提供する — 依頼側・請負側どちらのノードでも同じ画面。
-  記帳・抑制は amigos に加えて kiro-loop（routine）/ agent-project（project）/
+  記帳・抑制は amigos に加えて agent-loop（routine）/ agent-project（project）/
   agent-flow（flow）にも組み込み済み（詳細は `schemas/README.md` の node-budget 節）。
 
   ```bash

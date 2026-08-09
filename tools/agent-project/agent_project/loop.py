@@ -167,13 +167,12 @@ def _settle_verify_delegation(cfg: "Config", task: "Task", did: str, ok: bool, m
     if ok and rev:
         msg = (f"{msg}（板の run は終端しましたが receipt が返っていません。"
                "確かめた証跡が無いので採用できません）")
-    task.set("env_resume", "1")
     task.status = "blocked"
     why = ("[agent-error:env] 検証不能: このノードでは確かめられない基準があり、板へ検証を"
            f"回しましたが決着しませんでした（{did}: {msg[:200]}）。環境を直して approve すると、"
            "同じ run の続きから再開します。")
-    _block(cfg, task, why, reasons)
-    append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（検証委譲も決着せず）")
+    _env_block(cfg, task, "unverifiable", why, reasons, cycle,
+               log=f"cycle {cycle}: {task.id} → 人の判断（検証委譲も決着せず）")
     return 1
 
 

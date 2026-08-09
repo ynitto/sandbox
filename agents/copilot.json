@@ -1,5 +1,6 @@
 {
   "name": "copilot",
+  "relative_cost": 1,
   "command": ["copilot", "-s", "--allow-all-tools", "--no-color"],
   "prompt_via": "argv",
   "prompt_flag": "-p",
@@ -13,5 +14,11 @@
   "interactive": {
     "command": ["copilot"],
     "prompt_inject": "send-keys"
-  }
+  },
+  "errors": [
+    {"match": "usage limit|quota exceeded", "class": "quota", "quota_kind": "exhausted",
+     "hint": "Copilot の利用枠が枯渇しています"},
+    {"match": "rate limit|too many requests", "class": "quota", "quota_kind": "rate_limit",
+     "hint": "Copilot の時限レート制限です"}
+  ]
 }

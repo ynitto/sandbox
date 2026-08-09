@@ -532,7 +532,7 @@ $AGENT_BUDGET_DIR（既定 ~/.agents/budget/）
 v2 は一次単位をトークンへ拡張している。合計上限 `execution_minutes`（0 = 無制限、既定）は
 v1 互換のまま有効で、`tokens`（期間内トークン合計上限）と AND で効く。適用期間 `period`
 （day / month / total）、ワークロード別の内訳上限 `workloads`（分）も従来どおり。amigos は
-`workload: amigos`、`ref: <mission-id>/<role>` で記帳する。定常業務（kiro-loop）・
+`workload: amigos`、`ref: <mission-id>/<role>` で記帳する。定常業務（agent-loop）・
 agent-project・agent-flow も同じ台帳に記帳・抑制する。
 
 トークンは実測できた行（`tokens_in` / `tokens_out`）だけ台帳に書く。未報告行は読み出し側が

@@ -148,8 +148,7 @@ test('readLoopStates は agent-loop の現行・旧状態ディレクトリを�
     tmux.readLoopStates();
     assert.ok(seenScript.includes('.agents/loop-state'), 'agent-loop の現行状態ディレクトリを読む');
     assert.ok(seenScript.includes('.agent/loop-state'), 'agent-loop の旧状態ディレクトリへフォールバックする');
-    // 退役前の kiro-loop デーモンも視聴できる（読取互換。計画 S4 で外す）
-    assert.ok(seenScript.includes('.kiro/loop-state'), '移行前の kiro-loop デーモンも見える');
+    assert.ok(!seenScript.includes('.kiro/loop-state'));
   } finally {
     exec.shInWsl = orig;
   }
@@ -180,8 +179,7 @@ test('readSlotPanes は agent-loop の現行・旧スロットディレクトリ
     tmux.readSlotPanes();
     assert.ok(seenScript.includes('.agents/slots'), 'agent-loop の現行スロットディレクトリを読む');
     assert.ok(seenScript.includes('.agent/slots'), 'agent-loop の旧スロットディレクトリへフォールバックする');
-    // 見落とすと、移行前のデーモンが掴んでいる busy ペインを空きと誤表示する
-    assert.ok(seenScript.includes('.kiro/slots'), '移行前の kiro-loop スロットも数える');
+    assert.ok(!seenScript.includes('.kiro/slots'));
   } finally {
     exec.shInWsl = orig;
   }
@@ -225,7 +223,7 @@ test('feature preload が routineAgent API を出す', () => {
   assert.ok(loop.configDefaults.routines);
 });
 
-// 制御面を kiro-loop → routines へ改称したとき、設定キーも変わった。既定で補完されるのは
+// 制御面を routines へ改称したとき、設定キーも変わった。既定で補完されるのは
 // 「欠けているキー」だけなので、付け替えないと利用者の設定は黙って既定へ戻る。
 test('旧 kiroLoop 設定キーは routines へ引き継がれ、旧キーは残らない', () => {
   const { migrateLegacyKeys } = require('../src/base/main/config');

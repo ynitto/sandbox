@@ -1,14 +1,14 @@
 # agent-loop 設計書
 
-> 最終更新: 2026-08-06（ループ拡張 4 設計・8 文書を本書へ統合。同日、エージェント CLI の差し替え〈機能 5〉を追加）
-> 実装: `tools/agent-loop/`（`agent_loop` パッケージ）。旧系統 `tools/kiro-loop/` は退役予定（付録 B）
+> 最終更新: 2026-08-09（旧 `tools/kiro-loop/` の退役を反映）
+> 実装: `tools/agent-loop/`（`agent_loop` パッケージ）。旧系統 `tools/kiro-loop/` は退役済み（付録 B）
 > 関連: [agent-tools 改称方針](./agent-tools-rename-design.md) ／
 > [slash プロパティ設計](./agent-loop-slash-property-design.md) ／
 > 実装リファレンス `tools/agent-loop/DESIGN.md`（クラス構成・処理フローの詳細）
 >
 > 旧 `kiro-loop-{event-hook,agent-messaging,gitlab-webhook,adaptive-interval}-design.md` と、
 > その agent-loop クローン 4 件（計 8 文書）は本書へ統合した。本文の名称は移行先の
-> `agent-loop` に統一し、現行運用系である `kiro-loop` 系統との差分は付録 B にまとめる。
+> `agent-loop` に統一し、退役した `kiro-loop` 系統との差分は移行記録として付録 B に残す。
 
 ## TL;DR
 
@@ -22,7 +22,7 @@ agent-loop は、tmux 上にエージェント CLI（kiro-cli / claude 等）の
 
 全体を貫く原則は 3 つです。第一に、拡張は既存ループへの**挿入だけ**で載せ、既存の送信・排他・死活監視の機構は変えません。第二に、送信元固有の知識（GitLab のヘッダ名や payload 構造）は**フックスクリプトに閉じ**、コアを汎用に保ちます。第三に、実際の tmux への送信は**既存スケジューラの背圧機構**（セッション準備・セマフォ）へ一本化し、HTTP スレッドや inbox 監視スレッドから直接送信しません。
 
-読むべき人は、agent-loop / kiro-loop を運用する人、フックスクリプトを書く人、そして本設計を別フォークへ移植する人です。定期プロンプトの前にスラッシュコマンドを送る `slash` プロパティは、フォーク展開用に自己完結で書かれた[別文書](./agent-loop-slash-property-design.md)を参照してください。
+読むべき人は、agent-loop を運用する人、フックスクリプトを書く人、そして本設計を別フォークへ移植する人です。定期プロンプトの前にスラッシュコマンドを送る `slash` プロパティは、フォーク展開用に自己完結で書かれた[別文書](./agent-loop-slash-property-design.md)を参照してください。
 
 ## 背景と課題
 
@@ -78,7 +78,7 @@ agent-loop は、tmux 上にエージェント CLI（kiro-cli / claude 等）の
 
 **判断**: どの拡張も、`_run_loop` への処理ブロック挿入と新規クラス・新規メソッドの追加だけで実装し、既存メソッドの中身は変更しない。
 
-**文脈**: agent-loop は複数フォーク（kiro-loop 系・agent-loop 系、さらに外部フォーク）で並行に生きており、内部のメソッド名や行構成は一致しません。既存コードを書き換える設計は、フォークごとの差分に埋もれて移植できなくなります。
+**文脈**: この設計は複数フォークへ展開されてきたため、内部のメソッド名や行構成は一致しません。既存コードを書き換える設計は、フォークごとの差分に埋もれて移植できなくなります。
 
 **トレードオフ**: 挿入点が増えると `_run_loop` が分岐の連なりになります。代わりに、各拡張が独立に有効化・無効化でき、フォークへの移植が「同じ挿入を自分の等価物に行う」作業に還元されます。Webhook 設計はこれを推し進め、host に求める能力を統合コントラクト（§機能 2）として抽象化しました。
 
@@ -396,7 +396,7 @@ agent-loop agents
 
 ## 機能 4: 動的インターバル（adaptive interval） — 未実装の提案
 
-> 本節は設計案です。`tools/agent-loop/` にも `tools/kiro-loop/` にも `adaptive` 関連のコードは存在しません。
+> 本節は設計案です。`tools/agent-loop/` に `adaptive` 関連のコードは存在しません（退役した旧系統にも未実装でした）。
 
 固定インターバルは、活発時には反応が遅く（5 分固定なら最悪 5 分待ち）、無風時には無駄叩き（288 回/日）になります。この提案は、発火結果の観測から次の発火タイミングを動的に決めます。
 
@@ -532,7 +532,7 @@ SlotMonitor の状態遷移は従来の「プロンプト消失 → processing �
 
 ## 検証状況
 
-| 機能 | agent-loop 系統 | kiro-loop 系統 |
+| 機能 | agent-loop 系統 | 旧系統（退役時の記録） |
 |---|---|---|
 | イベントフック | 実装済み。`test/test_event_hook.py` | 実装済み |
 | Webhook | 実装済み。E2E 未整備 | 実装済み。E2E 22 ケース通過の記録（実 HTTP・SessionManager スタブ） |
@@ -556,7 +556,7 @@ SlotMonitor の状態遷移は従来の「プロンプト消失 → processing �
 
 ### B. kiro-loop 系統との差分と移行
 
-`kiro-loop → agent-loop` は[クローン移行方針](./agent-tools-rename-design.md)に基づく改称系統で、クローン移行は実施済みです。2026-08-08 に旧系統 `tools/kiro-loop/` の残置方針は撤回され、**退役**が決まりました（改称方針 §6、手順は[資源効率計画](../plans/2026-08-08-agent-tools-resource-efficiency-plan.md) F13）。設計の正典は本書（agent-loop 名称）で、退役までの間、kiro-loop 側の読者は次の対応で読み替えます。
+`kiro-loop → agent-loop` は[クローン移行方針](./agent-tools-rename-design.md)に基づく改称系統で、移行と旧実装の退役は完了済みです（改称方針 §6、手順は[資源効率計画](../plans/2026-08-08-agent-tools-resource-efficiency-plan.md) F13）。設計の正典は本書で、次表は旧設定を移行するときの対応記録です。
 
 | 項目 | agent-loop | kiro-loop |
 |---|---|---|
@@ -566,9 +566,9 @@ SlotMonitor の状態遷移は従来の「プロンプト消失 → processing �
 | メッセージング inbox | `~/.kiro/agents/<name>/inbox/`（**共有**） | 同左（**共有**） |
 | 適応状態ファイル（案） | `~/.agents/loop-adaptive/` | `~/.kiro/loop-adaptive/` |
 
-inbox を共有しているため、新旧系統のデーモンは相互にメッセージを送り合えます。逆に言えば、メッセージスキーマ（特に `reply_to` の意味）の変更は両系統に同時に効く相互運用上の変更点であり、片側だけの改変は過去に非互換バグを生みました（2026-08-02 監査 D2、解消済み）。
+inbox は旧系統と共有していました。メッセージスキーマ（特に `reply_to` の意味）の片側だけの改変は、過去に非互換バグを生みました（2026-08-02 監査 D2、解消済み）。
 
-新機能・設計更新は agent-loop 系統へ寄せます。kiro-loop 側にだけあった
+新機能・設計更新は agent-loop 系統だけで行います。旧系統にだけあった
 `stub/kiro-cli-stub.py` とその `test/test_stub.py` は Phase 0 / S2 で agent-loop へ退避済みです。
 `setup-token-reduction.py` は移植せず、汎用注入契約へ畳んで退役させます（計画 F9）。
 
