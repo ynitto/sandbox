@@ -69,6 +69,24 @@ class ContextSnapshotTests(unittest.TestCase):
         self.assertEqual(kf.run_context_text(bus), "")
 
 
+class ReadAllocationTests(unittest.TestCase):
+    def test_prompt_and_report_expose_outside_reads(self):
+        allocation = [{"path": "src/a.py", "range": "10-20", "reason": "変更点"}]
+        note = kf.render_read_allocation(allocation)
+        self.assertIn("src/a.py (10-20)", note)
+        text, report = kf.extract_read_report(
+            'done\n<!-- context-read-report {"used":["src/a.py","src/b.py"],"extra":[]} -->',
+            allocation)
+        self.assertEqual(text, "done")
+        self.assertEqual(report["outside_reads"], 1)
+        self.assertFalse(report["hit"])
+
+    def test_planner_allocation_survives_normalization(self):
+        node = kf._coerce_tasks([{"id": "t1", "read_allocation": [
+            {"path": "src/a.py", "reason": "entry"}]}])[0]
+        self.assertEqual(node["read_allocation"][0]["path"], "src/a.py")
+
+
 class ContinueAgentContextTests(unittest.TestCase):
     """evaluator（continue_agent）: context の前置とオプトイン不変。"""
 

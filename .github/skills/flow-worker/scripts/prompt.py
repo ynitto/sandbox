@@ -191,6 +191,8 @@ def build_worker_prompt(p: dict) -> str:
         parts.append(str(p["repo_instruction"]))
     if p.get("artifact_note"):      # 中間成果物のファイル受け渡しプロトコル（agent-flow が生成）
         parts.append(str(p["artifact_note"]))
+    if p.get("read_note"):
+        parts.append(str(p["read_note"]))
     if kind == "verify":
         parts.append(VERIFY_DISCIPLINE)
     elif kind in EXEC_KINDS:

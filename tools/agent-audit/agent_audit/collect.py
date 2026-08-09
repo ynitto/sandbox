@@ -117,14 +117,18 @@ def collect_budget_ledger(args, store: Store) -> int:
                     continue
                 if not isinstance(row, dict) or "ts" not in row:
                     continue
-                if row.get("quota_kind"):
-                    continue    # 消費ではなく quota 観測の行（node-budget 契約）。集計に混ぜない
+                if row.get("quota_kind") and not row.get("event"):
+                    continue    # 旧い quota 観測行（event を持たない世代）。集計に混ぜない
                 ts = parse_iso(row.get("ts")) or 0.0
+                # 観測行（`event` 付き）は消費ではないので `kind: event` で入れる。
+                # `kind: ledger` に混ぜると、消費 0 の行が実行回数を水増しして平均消費を
+                # 下げる——**コストを測るために書いた行がコストの数字を動かす**。
+                # 落とさず別種別にするのは、昇格が何回起きたかを後から数えたいため。
                 rec = {
                     "id": record_id("budget-ledger", path, f"{offset}+{lineno}"),
                     "_epoch": ts,
                     "ts": row.get("ts"),
-                    "kind": "ledger",
+                    "kind": "event" if row.get("event") else "ledger",
                     "source": "budget-ledger",
                     "node": row.get("node") or "",
                     "tool": row.get("tool") or "",
@@ -139,6 +143,12 @@ def collect_budget_ledger(args, store: Store) -> int:
                     "usd": row.get("usd"),
                     "measured": row.get("tokens_in") is not None or row.get("tokens_out") is not None,
                 }
+                if row.get("event"):
+                    rec["event"] = row["event"]
+                if row.get("quota_kind"):
+                    rec["quota_kind"] = row["quota_kind"]
+                if isinstance(row.get("escalation"), dict):
+                    rec["escalation"] = row["escalation"]
                 if store.append_record(rec):
                     added += 1
             store.set_cursor(key, f.tell())
@@ -255,6 +265,13 @@ def collect_flow_buses(args, store: Store) -> int:
             m = ERROR_TAG_RE.search(failure)
             retries, verify = _flow_events_summary(run_dir)
             ts = parse_iso(meta.get("updated_at")) or os.path.getmtime(run_dir)
+            graph = read_json(os.path.join(run_dir, "graph.json")) or {}
+            comparisons = []
+            for item in (graph.get("strategy") or {}).get("decision_comparisons") or []:
+                if (isinstance(item, dict) and item.get("decision")
+                        and isinstance(item.get("agree"), bool)):
+                    comparisons.append({key: item.get(key) for key in
+                                        ("decision", "llm", "rule", "agree")})
             rec = {
                 "id": rid, "_epoch": ts, "ts": _iso(ts),
                 "kind": "run", "source": "flow-bus",
@@ -265,6 +282,8 @@ def collect_flow_buses(args, store: Store) -> int:
                 "retries": retries,
                 "verify": verify,
             }
+            if comparisons:
+                rec["decision_comparisons"] = comparisons
             results_dir = os.path.join(run_dir, "results")
             for result_path in sorted(glob.glob(os.path.join(glob.escape(results_dir), "*.json"))):
                 result = read_json(result_path)
@@ -287,6 +306,18 @@ def collect_flow_buses(args, store: Store) -> int:
                     "status": result.get("status") or "",
                     "run_verify": verify,
                 }
+                allocation = result.get("context_allocation")
+                if isinstance(allocation, dict):
+                    result_rec["context_allocation"] = allocation
+                    if allocation.get("reported"):
+                        result_rec["allocation_hit"] = bool(allocation.get("hit"))
+                        result_rec["outside_reads"] = int(allocation.get("outside_reads") or 0)
+                dependency = result.get("dependency_context")
+                if isinstance(dependency, dict):
+                    result_rec["dependency_context"] = dependency
+                    result_rec["dependency_saved_chars"] = int(dependency.get("saved_chars") or 0)
+                if isinstance(result.get("escalation"), dict):
+                    result_rec["escalation"] = result["escalation"]
                 if store.append_record(result_rec):
                     added += 1
             if store.append_record(rec):

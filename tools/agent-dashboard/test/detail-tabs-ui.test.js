@@ -893,7 +893,7 @@ assert.match(
   const needActionsHtml = new Function(
     'esc', 'state', 'milestoneStatusFor', 'milestoneVersionName',
     'statusLabel', 'needCompleteHowHtml', 'needHasDeliverable', 'orchBlockedBannerHtml',
-    'isVerifyPendingNeed',
+    'isVerifyPendingNeed', 'settlementCardHtml',
     `${grab('needActionsHtml')}; return needActionsHtml;`
   )(
     (value) => String(value == null ? '' : value),
@@ -904,7 +904,8 @@ assert.match(
     () => '',
     needHasDeliverable,
     () => '',           // 実行制御は稼働中＝警告なし（停止時の文言は orchestration-blocker で検証）
-    isVerifyPendingNeed
+    isVerifyPendingNeed,
+    () => ''            // 決着カードは settlement-ui で検証する
   );
   const pendingHtml = needActionsHtml({
     id: 'T1', taskId: 'T1', kind: 'blocked', why: 'verify 未定義（工程は完了しています…）', file: '/p/needs/T1.md',

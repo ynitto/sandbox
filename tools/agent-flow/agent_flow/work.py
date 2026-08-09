@@ -177,9 +177,10 @@ def cmd_work(args) -> int:
         # （dashboard のノード詳細）に設定からの再解決（同じ規則の 2 実装）をさせない。
         # ponytail: claim 時の 1 回だけ解決。実行中に control が変わると数分ずれうる。
         agent_cli = agent_model = None
+        node_agent = node.get("agent") if isinstance(node.get("agent"), dict) else None
         if args.executor == "agent":
-            agent_cli, _model_ov = _agent_for(kind)
-            agent_model = _model_ov or (getattr(args, "model", None) or None)
+            agent_cli, _model_ov = _effective_agent(kind, getattr(args, "model", None), node_agent)
+            agent_model = _model_ov
         bus.event(who, "claimed", node=nid,
                   **({"agent_cli": agent_cli, "model": agent_model} if agent_cli else {}))
 
@@ -198,7 +199,8 @@ def cmd_work(args) -> int:
             continue
 
         # 依存の成果は構造化データ込みの完全な result dict で渡す
-        dep_results = _collect_dep_results(bus, node, kind)
+        dep_results, dependency_context = _collect_dep_results(bus, node, kind)
+        read_allocation = normalize_read_allocation(node.get("read_allocation"))
         # 差分修復リトライ（案 B-1・オプトイン）。node が retry ノード（replaces を持つ）
         # かつ設定で有効なときだけブリーフを組み立てる（既定 off は None＝プロンプト不変）。
         repair = repair_brief(bus, node, args)
@@ -246,7 +248,8 @@ def cmd_work(args) -> int:
                         references=references, request=run_request,
                         instructions=run_instructions,
                         prompt_table=bool(getattr(args, "prompt_table", False)),
-                        repair=repair, context=run_context)
+                        repair=repair, context=run_context, read_allocation=read_allocation,
+                        agent=node_agent)
                     if isinstance(agent_data, dict):
                         rdata.update(agent_data)
                 else:
@@ -259,7 +262,8 @@ def cmd_work(args) -> int:
                                               references=references, request=run_request,
                                               instructions=run_instructions,
                                               prompt_table=bool(getattr(args, "prompt_table", False)),
-                                              repair=repair, context=run_context)
+                                              repair=repair, context=run_context,
+                                              read_allocation=read_allocation, agent=node_agent)
             if kind != "verify" and isinstance(rdata, dict) and rdata.get("ok") is False:
                 if kind == "base-sync":
                     failure_class = _work_failure_class(kind, output, rdata)
@@ -328,10 +332,16 @@ def cmd_work(args) -> int:
         artifacts = [os.path.relpath(p, bus.run_dir) for p in bus.list_artifacts(nid)]
         if delivery:  # ワークスペースへ push したブランチ/コミットを result に残す（消費側が追跡）
             rdata = {**(rdata if isinstance(rdata, dict) else {}), "delivery": delivery}
+        output, context_allocation = extract_read_report(output, read_allocation)
         # 実行した PC を結果に残す（読み手が who の綴りを割って推測しないで済むように）
         bus.write_result(nid, who, rstatus, output, rdata, artifacts=artifacts,
                          node=this_pc(args), kind=kind,
-                         agent_cli=agent_cli, model=agent_model)
+                         agent_cli=agent_cli, model=agent_model,
+                         context_allocation=context_allocation,
+                         dependency_context=dependency_context, escalation=node_agent)
+        if node_agent:
+            _node_budget_record(0, ref=kind, agent_cli=agent_cli or "", model=agent_model or "",
+                                extra={"event": "model_escalation", "escalation": node_agent})
         bus.event(who, "result", node=nid, status=rstatus)
         bus.sync_push(f"result {nid} [{rstatus}] by {who}")
         log(who, f"完了: {nid} [{rstatus}]")

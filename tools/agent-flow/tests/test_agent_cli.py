@@ -38,9 +38,42 @@ class StructuredResultTests(unittest.TestCase):
         self.bus.write_result("t3", "w", "done", "out3")
         self.bus.write_result("gate", "w", "done", "verify=pass", data={"ok": True})
         node = {"deps": ["gate"], "kind": "synthesize"}
-        dep = kf._collect_dep_results(self.bus, node, "synthesize")
+        dep, _ctx = kf._collect_dep_results(self.bus, node, "synthesize")
         self.assertEqual(set(dep), {"gate", "t2", "t3"})  # 上流が透過された
-        self.assertEqual(dep["t2"]["output"], "out2")
+        self.assertEqual(dep["t2"]["output"], "out2", "集約役は全文を受ける")
+
+    def test_dependency_digest_reduces_input_and_full_is_explicit(self):
+        self.bus.write_result("a", "w", "done", "x" * 5000, data={"items": list(range(100))})
+        digest_node = {"deps": ["a"], "kind": "work"}
+        digest, ctx = kf._collect_dep_results(self.bus, digest_node, "work")
+        self.assertGreater(ctx["saved_chars"], 3000)
+        self.assertIn("omitted details", digest["a"]["output"])
+        full_node = {"deps": ["a"], "kind": "work", "dependency_input": "full"}
+        full, full_ctx = kf._collect_dep_results(self.bus, full_node, "work")
+        self.assertEqual(full["a"]["output"], "x" * 5000)
+        self.assertEqual(full_ctx["saved_chars"], 0)
+
+    def test_judging_kinds_receive_full_dependencies_by_default(self):
+        """依存成果そのものが判断対象の役割へ要約を渡さない。
+
+        verify が 600 字の要約で pass/fail を決めると、品質ゲートが成果物を見ていない
+        ことになる（C5・C10）。集約・裁定も依存の中身を突き合わせるのが仕事なので同じ。
+        """
+        self.bus.write_result("a", "w", "done", "y" * 5000)
+        for kind in ("verify", "reduce", "synthesize", "judge", "filter"):
+            dep, ctx = kf._collect_dep_results(self.bus, {"deps": ["a"], "kind": kind}, kind)
+            self.assertEqual(dep["a"]["output"], "y" * 5000, kind)
+            self.assertEqual(ctx["mode"], "full", kind)
+        # 明示宣言は既定より強い（要約でよいと分かっている verify は落とせる）
+        dep, ctx = kf._collect_dep_results(
+            self.bus, {"deps": ["a"], "kind": "verify", "dependency_input": "digest"}, "verify")
+        self.assertEqual(ctx["mode"], "digest")
+
+    def test_digest_reports_the_whole_body_as_omitted_when_summary_is_declared(self):
+        """依存が自前の summary を持つとき、本文は 1 文字も渡していない。"""
+        self.bus.write_result("a", "w", "done", "z" * 900, data={"summary": "短い要約"})
+        digest, _ctx = kf._collect_dep_results(self.bus, {"deps": ["a"], "kind": "work"}, "work")
+        self.assertEqual(digest["a"]["data"]["omitted"]["output_chars"], 900)
 
     def test_collect_dep_results_no_passthrough_for_work(self):
         # 非集約ノードは透過しない（gate をそのまま受ける）
@@ -50,7 +83,7 @@ class StructuredResultTests(unittest.TestCase):
         }})
         self.bus.write_result("a", "w", "done", "oa")
         self.bus.write_result("gate", "w", "done", "verify=pass", data={"ok": True})
-        dep = kf._collect_dep_results(self.bus, {"deps": ["gate"], "kind": "work"}, "work")
+        dep, _ctx = kf._collect_dep_results(self.bus, {"deps": ["gate"], "kind": "work"}, "work")
         self.assertEqual(set(dep), {"gate"})
 
     def test_executor_returns_text_and_data(self):
@@ -215,6 +248,62 @@ class JsonVariantRoutingTests(unittest.TestCase):
         kf._AGENT_OVERRIDES = kf._normalize_agent_overrides(
             {"split": {"agent_cli": "ollama", "model": "qwen3.5:9b"}})
         self.assertEqual(kf._agent_for("split"), ("ollama-json", "qwen3.5:9b"))
+
+
+class ExplicitAgentOverrideTests(unittest.TestCase):
+    """呼び出し 1 回だけの明示指定（検証計画の `policy.agent` 等）が最優先で効くこと。
+
+    ノード全体の設定（agent-control）に負けると、詰まったタスク 1 件のために全プロジェクトの
+    検証を高いモデルへ寄せることになる（柱2 / C4）。"""
+
+    def setUp(self):
+        self._cli, self._ov = kf._AGENT_CLI, kf._AGENT_OVERRIDES
+        kf._AGENT_CLI, kf._AGENT_OVERRIDES = "ollama", {}
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        kf._AGENT_CLI, kf._AGENT_OVERRIDES = self._cli, self._ov
+
+    def test_explicit_agent_beats_the_role_override(self):
+        kf._AGENT_OVERRIDES = kf._normalize_agent_overrides(
+            {"verify": {"agent_cli": "ollama", "model": "qwen3.5:9b"}})
+        self.assertEqual(kf._effective_agent("verify", None,
+                                             {"agent_cli": "codex", "model": "opus"}),
+                         ("codex", "opus"))
+
+    def test_partial_override_keeps_the_rest(self):
+        kf._AGENT_OVERRIDES = kf._normalize_agent_overrides({"verify": {"model": "qwen3"}})
+        self.assertEqual(kf._effective_agent("verify", None, {"agent_cli": "codex"}),
+                         ("codex", "qwen3"))
+        self.assertEqual(kf._effective_agent("verify", None, None), ("ollama", "qwen3"))
+
+    def test_explicit_timeout_is_used_for_the_call(self):
+        seen = {}
+
+        def fake_run(cmd, **kw):
+            seen["timeout"] = kw.get("timeout")
+            return types.SimpleNamespace(returncode=0, stdout="ok", stderr="")
+
+        with mock.patch.object(kf.subprocess, "run", side_effect=fake_run), \
+                mock.patch.object(kf, "_agent_timeout", return_value=600.0):
+            kf.run_agent("p", None, purpose="verify", agent={"timeout_sec": 1800})
+        self.assertEqual(seen["timeout"], 1800.0)
+
+    def test_broken_timeout_falls_back_to_the_setting(self):
+        seen = {}
+
+        def fake_run(cmd, **kw):
+            seen["timeout"] = kw.get("timeout")
+            return types.SimpleNamespace(returncode=0, stdout="ok", stderr="")
+
+        with mock.patch.object(kf.subprocess, "run", side_effect=fake_run), \
+                mock.patch.object(kf, "_agent_timeout", return_value=600.0):
+            kf.run_agent("p", None, purpose="verify", agent={"timeout_sec": "x"})
+        self.assertEqual(seen["timeout"], 600.0)
+
+    def test_no_override_leaves_resolution_untouched(self):
+        self.assertEqual(kf._effective_agent("verify", "m", None), ("ollama", "m"))
+        self.assertEqual(kf._effective_agent("verify", "m", {}), ("ollama", "m"))
 
 
 class AgentTimeoutTests(unittest.TestCase):

@@ -46,6 +46,8 @@ class SessionManager:
         # グローバル指示: ペインごとに「最後に注入した instructions.revision」を覚え、
         # revision が変わったときだけ次の送信に前置する（長寿命チャットの文脈を汚さない）。
         self._instr_rev: dict[str, int] = {}
+        self._tuning_profiles: dict[str, str] = {}
+        self._tuning_rev: dict[str, tuple[int, str]] = {}
         self._state_extras: dict[str, Any] = {}
         self._lock = threading.Lock()
         self._user_home = str(Path.home().resolve())
@@ -218,7 +220,7 @@ class SessionManager:
         if user_home is not None:
             self._user_home = str(Path(user_home).expanduser().resolve())
 
-    def _build_launch_env(self) -> dict[str, str]:
+    def _build_launch_env(self, prompt_id: str | None = None) -> dict[str, str]:
         env: dict[str, str] = {
             "HOME": self._user_home,
             "AGENT_HOME": str(agent_home_dir().resolve()),
@@ -231,6 +233,10 @@ class SessionManager:
                 if not name or name == "PATH":
                     continue
                 env[name] = str(value)
+        profile_name = getattr(self, "_tuning_profiles", {}).get(str(prompt_id or ""), "default")
+        env.update(tuning_launch_env(
+            _load_tuning(), profile_name, _CLI_PROFILE.name, os.environ.get("PATH", "")
+        ))
         return env
 
     def _format_launch_command(self, argv: list[str], launch_env: dict[str, str]) -> str:
@@ -283,7 +289,7 @@ class SessionManager:
             profile_name = str(spec.get("profile_name") or profile_name)
             effective_model = spec.get("effective_model")
             ownership = str(spec.get("ownership") or ownership)
-            launch_env = self._build_launch_env()
+            launch_env = self._build_launch_env(prompt_id)
             for k, v in dict(spec.get("env") or {}).items():
                 if k and k != "PATH":
                     launch_env[str(k)] = str(v)
@@ -308,7 +314,7 @@ class SessionManager:
                         cmd_args += ["--agent", CONCURRENCY_AGENT_NAME]
                 full_argv = [kiro_bin, *cmd_args]
             session_cwd = self._resolve_cwd(cwd)
-            launch_env = self._build_launch_env()
+            launch_env = self._build_launch_env(prompt_id)
 
         # セッション開始コマンド（agent-session-commands）の process モード。ペインを作る
         # **前**に走らせる。前準備が終わっていない環境でエージェントを動かさないため、
@@ -395,6 +401,7 @@ class SessionManager:
             self._launch_fingerprint.pop(prompt_id, None)
             # generation は残して古い monitor callback が誤解放しないよう照合可能にする
             self._instr_rev.pop(prompt_id, None)
+            getattr(self, "_tuning_rev", {}).pop(prompt_id, None)
 
         if pane_target is not None and self._pane_exists(pane_target):
             log.info("kiro-cli ペインを終了します (pane=%s)。", pane_target)
@@ -485,7 +492,7 @@ class SessionManager:
         self.write_state()
         return True
 
-    def send_prompt(self, prompt_id: str, prompt_text: str) -> bool:
+    def send_prompt(self, prompt_id: str, prompt_text: str, *, apply_tuning: bool = True) -> bool:
         """tmux ペインにプロンプトを送信する（応答待ちはしない）。"""
         with self._lock:
             pane_target = self._panes.get(prompt_id)
@@ -495,6 +502,8 @@ class SessionManager:
             log.warning("kiro-cli ペインが存在しません (prompt_id=%s)。", prompt_id)
             return False
 
+        if apply_tuning:
+            prompt_text = self._maybe_prepend_tuning(prompt_id, prompt_text)
         prompt_text = self._maybe_prepend_instructions(prompt_id, prompt_text)
 
         short = prompt_text[:80] + ("..." if len(prompt_text) > 80 else "")
@@ -533,6 +542,37 @@ class SessionManager:
                 log.info("グローバル指示 rev:%s をペイン %s へ注入します。", rev, prompt_id)
             return merged
         except Exception:  # noqa: BLE001 — 指示注入の失敗で送信を止めない
+            return prompt_text
+
+    def reset_tuning(self, prompt_id: str) -> None:
+        """fresh context 後、次の業務 prompt で session_start 注入を再適用する。"""
+        with self._lock:
+            getattr(self, "_tuning_rev", {}).pop(prompt_id, None)
+
+    def _maybe_prepend_tuning(self, prompt_id: str, prompt_text: str) -> str:
+        global _TUNING_REV_APPLIED
+        try:
+            data = _load_tuning()
+            if not data:
+                return prompt_text
+            rev = _tuning_revision(data)
+            profile_name = getattr(self, "_tuning_profiles", {}).get(prompt_id, "default")
+            with self._lock:
+                applied = getattr(self, "_tuning_rev", {})
+                include_start = applied.get(prompt_id) != (rev, profile_name)
+            block = render_tuning_blocks(
+                data, profile_name, _CLI_PROFILE.name,
+                include_session_start=include_start,
+            )
+            if not block:
+                return prompt_text
+            with self._lock:
+                if not hasattr(self, "_tuning_rev"):
+                    self._tuning_rev = {}
+                self._tuning_rev[prompt_id] = (rev, profile_name)
+            _TUNING_REV_APPLIED = rev
+            return f"{block}\n\n{prompt_text}" if prompt_text else block
+        except Exception:  # noqa: BLE001 — tuning 破損で定常業務を止めない
             return prompt_text
 
     def is_pane_alive(self, prompt_id: str) -> bool:
@@ -578,10 +618,12 @@ class SessionManager:
         """
         desired: dict[str, str] = {}
         desired_cwd: dict[str, str | None] = {}
+        desired_tuning: dict[str, str] = {}
         for entry in entries:
             prompt_id = str(entry.get("id", "")).strip()
             if not prompt_id:
                 continue
+            desired_tuning[prompt_id] = str(entry.get("tuning_profile") or "default")
             # Hooks may be headless and can skip forever; create a pane only after one emits a prompt.
             if entry.get("event_hook"):
                 continue
@@ -594,6 +636,7 @@ class SessionManager:
             desired_cwd[prompt_id] = str(entry.get("cwd", "")).strip() or None
 
         with self._lock:
+            self._tuning_profiles = desired_tuning
             all_current_ids = set(self._panes)
             current_ids = {
                 prompt_id for prompt_id in self._panes
@@ -784,6 +827,7 @@ class SessionManager:
                 self._effective_model.pop(prompt_id, None)
                 self._launch_fingerprint.pop(prompt_id, None)
                 self._instr_rev.pop(prompt_id, None)
+                getattr(self, "_tuning_rev", {}).pop(prompt_id, None)
         self.write_state()
         return True
 

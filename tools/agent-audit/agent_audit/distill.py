@@ -28,7 +28,16 @@ _PROMPT = """あなたはエージェント運用の知見をまとめる係で�
 {"statement": "<一般化した知見（日本語・1〜2 文）>",
  "kind": "rule-candidate|skill-improvement|config-fix|usage-optimization",
  "suggested_action": "<rules.md 候補文 / skill の修正案 / 設定変更案（具体的に）>",
- "confidence": "low|medium|high"}
+ "confidence": "low|medium|high",
+ "scope": {"purpose": "<仕事種別>", "model": "<対象モデル>"},
+ "expires_when": {"max_age_days": 30, "min_pass_rate": 0.8,
+                    "max_quality_drop": 0.05, "evaluation_runs": 3},
+ "declaration": null | {"target": "agent-tuning|agent-profiles|rates", "op": "set",
+   "path": "<許可された宣言パス>", "value": "<設定値>"}}
+
+declaration は実測から安全に設定へ還せる場合だけ付け、そうでなければ null にしてください。
+許可パスは agent-tuning=profiles.<name>.injections|env、
+agent-profiles=tiers.<name>.candidates、rates=rates.per_cli.<cli[:model]> だけです。
 
 観測:
 """
@@ -159,12 +168,16 @@ def _distill_one(args, cluster: dict) -> dict:
         "ts": now_iso(),
         "statement": data["statement"].strip(),
         "kind": data["kind"],
-        "scope": {},
+        "scope": data.get("scope") if isinstance(data.get("scope"), dict) else {},
         "observation_ids": obs_ids,
         "occurrences": len(obs_ids),
         "suggested_action": str(data.get("suggested_action") or "").strip(),
         "confidence": data.get("confidence") if data.get("confidence") in
                       ("low", "medium", "high") else "low",
+        "expires_when": (data.get("expires_when")
+                         if isinstance(data.get("expires_when"), dict) else {}),
+        "declaration": (_valid_declaration(data.get("declaration"))
+                        and data.get("declaration") or None),
         "review": None,
         "exported": False,
     }
@@ -174,6 +187,14 @@ def _valid_insight(data) -> bool:
     return (isinstance(data, dict)
             and isinstance(data.get("statement"), str) and data["statement"].strip()
             and data.get("kind") in INSIGHT_KINDS)
+
+
+def _valid_declaration(value) -> bool:
+    return (isinstance(value, dict)
+            and value.get("target") in ("agent-tuning", "agent-profiles", "rates")
+            and value.get("op") == "set"
+            and isinstance(value.get("path"), str) and value["path"].strip()
+            and "value" in value)
 
 
 def _review_one(args, ins: dict, cluster: dict) -> "dict | None":

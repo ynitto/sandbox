@@ -369,7 +369,9 @@ class Bus:
     def write_result(self, node_id: str, who: str, status: str, output: str,
                      data=None, artifacts=None, node: "str | None" = None,
                      kind: "str | None" = None, agent_cli: "str | None" = None,
-                     model: "str | None" = None) -> None:
+                     model: "str | None" = None, context_allocation: "dict | None" = None,
+                     dependency_context: "dict | None" = None,
+                     escalation: "dict | None" = None) -> None:
         """ノードの結果を確定する。
 
         `node` は**実行した PC**（node_id の正規形）。`who`（worker の名義）にも PC 名は
@@ -397,6 +399,12 @@ class Bus:
             rec["model"] = model
         if data is not None:  # 構造化成果（任意）。エージェント間を JSON で流す
             rec["data"] = data
+        if context_allocation is not None:
+            rec["context_allocation"] = context_allocation
+        if dependency_context is not None:
+            rec["dependency_context"] = dependency_context
+        if escalation is not None:
+            rec["escalation"] = escalation
         if artifacts:  # 生成した中間成果物（run_dir 相対パス）。後続が参照できる
             rec["artifacts"] = list(artifacts)
         write_json_atomic(self.result_path(node_id), rec)

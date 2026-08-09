@@ -193,9 +193,15 @@ def continue_stub(request: str, nodes: dict, results: dict, iteration: int,
                     rid = f"{dep}-r{iteration+1}"
                     if fresh(rid):
                         goal = nodes.get(dep, {}).get("goal", "").replace("FLAKY", "ok")
-                        new.append({"id": rid, "goal": f"[retry] {goal}", "deps": [],
-                                    "kind": nodes.get(dep, {}).get("kind", "work"),
-                                    "replaces": dep, "retries": tries + 1})
+                        prior = nodes.get(dep, {}).get("agent")
+                        agent = prior or (retry_agent_for(nodes.get(dep, {}).get("kind", "work"))
+                                          if tries == 0 else None)
+                        spec = {"id": rid, "goal": f"[retry] {goal}", "deps": [],
+                                "kind": nodes.get(dep, {}).get("kind", "work"),
+                                "replaces": dep, "retries": tries + 1}
+                        if agent:
+                            spec["agent"] = agent
+                        new.append(spec)
                 vid = f"{nid}-r{iteration+1}"
                 if fresh(vid):
                     new.append({"id": vid, "goal": "再検証",
@@ -209,9 +215,14 @@ def continue_stub(request: str, nodes: dict, results: dict, iteration: int,
                 rid = f"{nid}r"
                 if fresh(rid):
                     goal = node.get("goal", "").replace("FAIL", "ok")
-                    new.append({"id": rid, "goal": f"[retry] {goal}", "deps": [],
-                                "kind": node.get("kind", "work"),
-                                "replaces": nid, "retries": tries + 1})
+                    agent = node.get("agent") or (retry_agent_for(node.get("kind", "work"))
+                                                   if tries == 0 else None)
+                    spec = {"id": rid, "goal": f"[retry] {goal}", "deps": [],
+                            "kind": node.get("kind", "work"),
+                            "replaces": nid, "retries": tries + 1}
+                    if agent:
+                        spec["agent"] = agent
+                    new.append(spec)
     if new:
         return "replan", new, f"{len(new)} 件追加"
     if tripped:
@@ -410,6 +421,22 @@ def continue_agent(request: str, nodes: dict, results: dict, iteration: int,
     if not isinstance(data, dict):
         return _evaluator_fallback(results, "評価出力が想定形でない")
     new = _coerce_tasks(data.get("new_tasks"), existing=nodes)  # 既存 id と衝突しないよう正規化
+    retryable = {nid for nid, result in results.items() if result.get("status") == "failed"}
+    for nid, node in nodes.items():
+        result = results.get(nid, {})
+        if node.get("kind") == "verify" and "fail" in str(result.get("output", "")).lower():
+            retryable.update(node.get("deps") or [])
+    for task in new:
+        replaced = task.get("replaces")
+        if replaced not in retryable:
+            continue
+        prior = nodes.get(replaced, {})
+        depth = _retry_depth(replaced, prior)
+        task["retries"] = max(int(task.get("retries") or 0), depth + 1)
+        agent = prior.get("agent") or (retry_agent_for(prior.get("kind", task["kind"]))
+                                       if depth == 0 else None)
+        if agent:
+            task["agent"] = agent
     if data.get("decision") == "replan" and new:
         return "replan", new, str(data.get("reason", ""))
     return "done", [], str(data.get("reason", "done"))

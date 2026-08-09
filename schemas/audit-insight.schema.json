@@ -31,6 +31,28 @@
         "observation_ids": {"type": "array", "items": {"type": "string"}, "description": "根拠の観測 id（昇順）"},
         "occurrences": {"type": "integer", "description": "根拠の観測数（distill_min_occurrences 以上）"},
         "suggested_action": {"type": "string", "description": "rules.md 候補文 / skill の修正案 / 設定変更案"},
+        "expires_when": {
+          "type": "object",
+          "description": "調整候補の失効・退役条件",
+          "properties": {
+            "max_age_days": {"type": "number", "minimum": 0},
+            "min_pass_rate": {"type": "number", "minimum": 0, "maximum": 1},
+            "max_quality_drop": {"type": "number", "minimum": 0, "maximum": 1},
+            "evaluation_runs": {"type": "integer", "minimum": 1}
+          },
+          "additionalProperties": true
+        },
+        "declaration": {
+          "type": ["object", "null"],
+          "description": "決定的な昇格器へ渡す型付き変更候補。任意パス・任意コマンドは不可",
+          "properties": {
+            "target": {"enum": ["agent-tuning", "agent-profiles", "rates"]},
+            "op": {"const": "set"},
+            "path": {"type": "string"},
+            "value": {}
+          },
+          "additionalProperties": false
+        },
         "confidence": {"enum": ["low", "medium", "high"]},
         "review": {
           "type": ["object", "null"],

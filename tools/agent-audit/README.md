@@ -28,12 +28,13 @@ bash tools/agent-tools/install.sh --only agent-audit
 ```bash
 agent-audit collect                  # 源泉の増分収集（決定的）
 agent-audit usage --period month --by agent_cli
-agent-audit stats                    # 実行品質の集計
+agent-audit stats                    # 実行品質 + LLM判断と決定的ルールの一致率
 agent-audit report                   # Markdown レポート（usage + quality + insights）
 
 agent-audit extract                  # レコード → 観測（LLM map・弱モデル可）
 agent-audit distill                  # 観測クラスタ → 洞察（LLM reduce）
 agent-audit tasks                    # 洞察 → 改善タスク（JSON を stdout へ）
+agent-audit tune [--apply]           # 型付き調整候補 → 宣言へ昇格、悪化・期限で自動退役
 
 agent-audit calibrate [--write]      # rates 較正の提案（--write で budget config へ）
 agent-audit ratings --period month   # 仕事種別×モデルの PASS 率と平均消費
@@ -45,8 +46,8 @@ agent-audit sessions --cli N [--since T --until T --cwd-contains S] [--messages 
 agent-audit doctor                   # 源泉の到達性・clean 宣言の点検
 ```
 
-定期実行は agent-loop の定期プロンプトや cron に
-`agent-audit collect && agent-audit extract && agent-audit distill` を書く。
+定期実行は同梱 `audit-calibrate-hook.py` が collect → calibrate → extract → distill --review →
+tune --apply を順に実行する。
 extract / distill には間隔・蓄積ゲートがあるので、**高頻度で駆動しても LLM 消費は
 設定したリズムを超えない**（`--force` はゲートだけを飛ばす。上限と予算は飛ばせない）。
 
@@ -70,7 +71,7 @@ agents:
 |---|---|---|
 | node-budget 台帳 | `~/.agents/budget/ledger/*.jsonl` | 消費の一次事実（秒・トークン） |
 | CLI セッション | `agents/<name>.json` の `session_log` 宣言 | 実測トークン・turn 数・transcript（`session_log.clean` でノイズ除去。§4.4） |
-| agent-flow バス | 設定 `flow_buses` / `project_roots` | run の結果・失敗クラス・verify |
+| agent-flow バス | 設定 `flow_buses` / `project_roots` | run の結果・失敗クラス・verify・読込割付・依存digest削減量・モデル昇格・planner判断照合 |
 | agent-project | 設定 `project_roots` の `run-log.jsonl` | run 単位の実績・コスト |
 | agent-amigos バス | 設定 `amigos_buses` | ターン数・実行秒 |
 | agent-loop ログ | 設定 `loop_logs` | エラー行 |

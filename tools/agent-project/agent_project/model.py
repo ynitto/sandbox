@@ -158,7 +158,7 @@ MULTILINE_KEYS = ("task_acceptance_criteria", "verification_commands", "acceptan
 ENQUEUE_KNOWN_KEYS = {"id", "title", "verify", "priority", "source", "status",
                       "after", "review", "note", "accept", "verify_template", "repos",
                       "workspace", "refs", "paths", "routed_by", "node",
-                      "cohort_items", "cohort", "cohort_role",
+                      "cohort_items", "cohort", "cohort_role", "read_allocation",
                       *MULTILINE_KEYS, *TASK_GUIDE_KEYS}
 
 
@@ -246,6 +246,13 @@ def task_from_spec(cfg: "Config", spec: dict) -> Task:
         t.extra.append(("task_acceptance_criteria", line))
     for line in dict.fromkeys(vcmd_lines):
         t.extra.append(("verification_commands", line))
+    allocation = spec.get("read_allocation")
+    if isinstance(allocation, list):
+        rows = [{k: str(row[k]).strip() for k in ("path", "range", "reason")
+                 if str(row.get(k) or "").strip()}
+                for row in allocation if isinstance(row, dict) and str(row.get("path") or "").strip()]
+        if rows:
+            t.extra.append(("read_allocation", json.dumps(rows[:32], ensure_ascii=False)))
     for k in ("after", "review", "note", "verify_template", "repos",   # 既知の追加フィールド
               "workspace", "refs", "paths", "routed_by", "node",   # ルーティング: 書込先・参照repo・触るパス・解決経路・実行ノード
               *TASK_GUIDE_KEYS):                           # 誘導・レビュー記述（why/desc/scope/…）

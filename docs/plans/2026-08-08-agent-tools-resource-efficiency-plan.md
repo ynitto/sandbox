@@ -555,3 +555,21 @@ S5・S21 は空きができ次第どこへ差し込んでもよい。
 | [cowork feature README](../../tools/agent-dashboard/src/features/cowork/README.md) | 対話起動・共通指示前置・履歴の経路を M2 が再利用 | 新しい起動系（作らない） |
 | [session-commands 設計](./2026-07-20-agent-dashboard-session-commands-design.md) | 「到達範囲を端末の設定ファイルへ閉じ込める」を M2 の cwd 制限の根拠に | cwd の自由入力（§6） |
 | [agent-flow 設計](../designs/agent-flow-design.md) | 単発 run の自己完結性を M1 が使う（実行系は無改造） | アドホック専用の実行経路 |
+
+## 8. Phase 2 実行記録（2026-08-09）
+
+Phase 2 の実装とローカル配布は完了した。効果測定の出口は実運用サンプル待ちで、
+現時点では未達とする（`agent-audit stats --period total --json` の `decisions` は 0 件）。
+
+| Step | 状態 | 実施内容・残件 |
+|---|---|---|
+| S11 | 実装済み | `agent-tuning.schema.json` と agent-loop の適用境界を追加。外向きプロファイルへの文体圧縮漏れを防止 |
+| S12 | 実装済み | audit の蒸留結果を根拠・適用範囲・失効条件付き候補へ変換し、昇格・退役・回数・予算・停止条件を追加 |
+| S13 | 配布済み・測定待ち | task の読込割付を flow / project / audit へ伝播し、的中・割付外読込を記録。入力トークン減少と PASS 率非悪化の実測が残る |
+| S14 | 配布済み・測定待ち | 依存成果を既定で digest 化し、`dependency_input: full` を opt-in に変更。省略内容と削減文字数を記録。入力トークンと PASS 率の実測が残る |
+| S15 | 配布済み・測定待ち | S5 の相対コスト順で一段だけ昇格する bounded retry を flow / project に追加。実効単価の実測が残る |
+| S16 | 計測経路実装済み | LLM と決定的ルールの一致比較を非介入で収集・集計。置換は未実施。実運用サンプルの蓄積が残る |
+
+回帰確認は agent-flow 788 件、agent-audit 99 件、agent-loop 257 件、agentcore 256 件、
+agent-project 1216 件、agent-dashboard の全テストが成功した。agent-project の sandbox 内で
+失敗したロック 3 件と Unix socket 1 件は、同一スコープを sandbox 外で再実行して成功を確認した。

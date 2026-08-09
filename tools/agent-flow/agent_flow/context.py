@@ -12,6 +12,7 @@ from __future__ import annotations
 # 分解・再計画の質に直接効くため、request から外した分をここで補わないと情報が失われる。
 
 AGENT_CONTEXT_MARKER = "<!-- agent-project-context"
+CONTEXT_READ_REPORT = "<!-- context-read-report "
 
 
 def render_context_block(text: str) -> str:
@@ -44,3 +45,53 @@ def run_context_text(bus: "Bus") -> str:
     meta = read_json(bus.meta_path) or {}
     c = meta.get("context")
     return str(c.get("text", "")) if isinstance(c, dict) else ""
+
+
+def normalize_read_allocation(raw) -> "list[dict]":
+    """planner/task spec の読込割付を、worker に渡せる最小形へ丸める。"""
+    out = []
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, dict) or not str(item.get("path") or "").strip():
+            continue
+        row = {"path": str(item["path"]).strip(),
+               "reason": str(item.get("reason") or "").strip()}
+        if str(item.get("range") or "").strip():
+            row["range"] = str(item["range"]).strip()
+        out.append(row)
+    return out[:32]
+
+
+def render_read_allocation(raw) -> str:
+    rows = normalize_read_allocation(raw)
+    if not rows:
+        return ""
+    lines = []
+    for row in rows:
+        where = row["path"] + (f" ({row['range']})" if row.get("range") else "")
+        lines.append(f"- {where}: {row['reason'] or 'タスクに必要な文脈'}")
+    return ("【読込割付】まず以下から読み、割付外の探索は不足時だけ追加してください。\n"
+            + "\n".join(lines)
+            + "\n成果の末尾に実際に読んだ path を、割付内 used と割付外 extra に分けて "
+              f'{CONTEXT_READ_REPORT}{{"used":[],"extra":[]}} --> の形で報告してください。')
+
+
+def extract_read_report(text: str, raw) -> "tuple[str, dict | None]":
+    """末尾の自己申告を除去し、割付外読込の有無を機械可読化する。"""
+    rows = normalize_read_allocation(raw)
+    if not rows:
+        return text, None
+    assigned = {row["path"] for row in rows}
+    marker = re.search(r"\s*<!-- context-read-report (\{.*?\}) -->\s*$", str(text), re.S)
+    report = {"assigned": len(assigned), "reported": False}
+    if not marker:
+        return text, report
+    try:
+        data = json.loads(marker.group(1))
+    except (TypeError, ValueError):
+        return text, report
+    used = list(dict.fromkeys(str(x) for x in data.get("used", []) if str(x).strip()))
+    extra = list(dict.fromkeys([*(str(x) for x in data.get("extra", []) if str(x).strip()),
+                               *(x for x in used if x not in assigned)]))
+    report.update({"reported": True, "used": used, "extra": extra,
+                   "outside_reads": len(extra), "hit": not extra})
+    return str(text)[:marker.start()].rstrip(), report

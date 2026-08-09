@@ -23,9 +23,12 @@ class _StubSessionManager:
     def sync_entries(self, entries):
         self.entries = entries
 
-    def send_prompt(self, prompt_id, text):
+    def send_prompt(self, prompt_id, text, *, apply_tuning=True):
         self.sent.append(text)
         return not (self.fail_on and text == self.fail_on)
+
+    def reset_tuning(self, prompt_id):
+        pass
 
     def ensure_session(self, *_a, **_k):
         return True

@@ -331,6 +331,28 @@ def json_variant(name: str, project_dir=None) -> str:
     return variant
 
 
+def costlier_fallback(current: str, candidates, project_dir=None) -> "dict | None":
+    """宣言順の候補から、現在より相対コストが高い最初の 1 件だけを返す。"""
+    try:
+        base = load_cli(current, project_dir)
+    except AgentCliError:
+        return None
+    for raw in candidates if isinstance(candidates, list) else []:
+        if not isinstance(raw, dict) or not str(raw.get("agent_cli") or "").strip():
+            continue
+        cli = str(raw["agent_cli"]).strip().lower()
+        try:
+            spec = load_cli(cli, project_dir)
+        except AgentCliError:
+            continue
+        if spec["relative_cost"] <= base["relative_cost"]:
+            continue
+        return {"agent_cli": cli, "model": str(raw.get("model") or "").strip(),
+                "from_relative_cost": base["relative_cost"],
+                "to_relative_cost": spec["relative_cost"]}
+    return None
+
+
 def _mode_args(spec: dict, *, interactive: bool, readonly: bool, no_session: bool) -> "list[str]":
     src = spec["interactive"] if interactive and spec.get("interactive") else spec
     args = list(src["readonly_args"]) if readonly else list(src["write_args"])

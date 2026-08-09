@@ -50,6 +50,18 @@ CONFIG_DEFAULTS = {
     "distill_min_interval_hours": 24.0,
     "distill_min_new_observations": 5,
     "distill_max_calls": 10,
+    # tuning 還流（S12）
+    "tune_period": "month",
+    "tune_min_occurrences": 3,
+    "tune_min_outcomes": 3,
+    "tune_min_confidence": "high",
+    "tune_quality_floor": 0.8,
+    "tune_max_quality_drop": 0.05,
+    "tune_evaluation_runs": 3,
+    "tune_max_promotions_per_run": 1,
+    "tune_max_total_promotions": 20,
+    "tuning_file": "",
+    "profiles_file": "",
     # 相関
     "join_slack_sec": 120.0,
     # 保持・定期クリーンアップ（§3.3。0 = その種別を消さない）

@@ -124,6 +124,12 @@ def _node_entry(t):
     e = {"goal": t["goal"], "deps": t["deps"], "kind": t.get("kind", "work")}
     if t.get("retries"):  # サーキットブレーカー用の作り直し回数（>0 のときだけ保持）
         e["retries"] = int(t["retries"])
+    if t.get("read_allocation"):
+        e["read_allocation"] = t["read_allocation"]
+    if str(t.get("dependency_input") or "").strip().lower() in ("full", "digest"):
+        e["dependency_input"] = str(t["dependency_input"]).strip().lower()
+    if t.get("agent"):
+        e["agent"] = t["agent"]
     return e
 
 

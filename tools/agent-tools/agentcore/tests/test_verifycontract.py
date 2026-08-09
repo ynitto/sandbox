@@ -56,6 +56,35 @@ class PlanTests(unittest.TestCase):
         p = _plan(commands=["pytest -q", {"command": "pytest -q", "source": "policy"}])
         self.assertEqual(len(p["commands"]), 1)        # task 固有と regression の重複は 1 回だけ実行
 
+    def test_plan_agent_is_normalized_and_bound_into_the_digest(self):
+        """検証条件（何で確かめるか）は plan に載り、digest に入る。
+
+        digest に入るので、条件を変えた検証は別の plan になり、以前の条件で出た receipt は
+        検算で落ちる。違う条件で確かめたものを同じ判定として混ぜないための性質
+        （設計: docs/plans/2026-08-09-verification-settlement-design.md §4）。"""
+        p = _plan(policy={"agent": {"agent_cli": " CODEX ", "model": "opus",
+                                    "timeout_sec": "1800"}})
+        self.assertEqual(p["policy"]["agent"],
+                         {"agent_cli": "codex", "model": "opus", "timeout_sec": 1800.0})
+        self.assertEqual(vc.plan_agent(p), p["policy"]["agent"])
+        other = _plan(policy={"agent": {"agent_cli": "kiro"}})
+        self.assertNotEqual(p["digest"], other["digest"])
+        self.assertNotEqual(p["digest"], _plan()["digest"])
+
+    def test_plan_without_an_agent_leaves_the_choice_to_the_runner(self):
+        self.assertIsNone(vc.plan_agent(_plan()))
+        self.assertIsNone(vc.plan_agent(_plan(policy={"agent": {}})))
+        self.assertIsNone(vc.plan_agent(_plan(policy={"agent": {"agent_cli": "  "}})))
+
+    def test_broken_agent_spec_is_ignored_not_fatal(self):
+        # 打ち間違いの 1 文字でタスクを検証不能にしない（指定が効いたかは receipt で分かる）
+        self.assertIsNone(vc.normalize_plan_agent("codex"))
+        self.assertIsNone(vc.normalize_plan_agent(None))
+        self.assertEqual(vc.normalize_plan_agent({"agent_cli": "codex", "timeout_sec": "x"}),
+                         {"agent_cli": "codex"})
+        self.assertEqual(vc.normalize_plan_agent({"agent_cli": "codex", "timeout_sec": -5}),
+                         {"agent_cli": "codex"})
+
     def test_empty_plan_is_rejected(self):
         with self.assertRaises(ValueError):
             vc.build_plan("T-1", criteria=[], commands=[])
@@ -89,6 +118,36 @@ class PlanTests(unittest.TestCase):
         errs = vc.plan_errors(p)
         self.assertTrue(any("confirm" in e for e in errs))
         self.assertTrue(any("timeout_sec" in e for e in errs))
+
+
+class VerifiedWithTests(unittest.TestCase):
+    """receipt は「何で・どれだけ待って確かめたか」を返す。判定には使わない材料。"""
+
+    def test_verified_with_is_recorded_and_empty_fields_dropped(self):
+        p = _plan()
+        r = vc.build_receipt(p, result_rev="abc123", commands=_ok_commands(p),
+                             criteria=_pass_criteria(p),
+                             verified_with={"agent_cli": "codex", "model": "",
+                                            "timeout_sec": 1800, "elapsed_sec": 42.3,
+                                            "source": "plan"})
+        self.assertEqual(r["verified_with"], {"agent_cli": "codex", "timeout_sec": 1800,
+                                              "elapsed_sec": 42.3, "source": "plan"})
+
+    def test_verified_with_does_not_affect_acceptance(self):
+        # 受理は「何を出したか」で決まる（C6）。誰が・何で確かめたかは判定に混ぜない。
+        p = _plan()
+        base = dict(result_rev="abc123", commands=_ok_commands(p), criteria=_pass_criteria(p))
+        plain = vc.build_receipt(p, **base)
+        tagged = vc.build_receipt(p, **base, verified_with={"agent_cli": "codex"})
+        self.assertEqual(plain["verdict"], tagged["verdict"])
+        self.assertEqual(vc.receipt_errors(tagged, plan=p, expected_rev="abc123"),
+                         vc.receipt_errors(plain, plan=p, expected_rev="abc123"))
+
+    def test_absent_verified_with_leaves_no_key(self):
+        p = _plan()
+        r = vc.build_receipt(p, result_rev="abc123", commands=_ok_commands(p),
+                             criteria=_pass_criteria(p))
+        self.assertNotIn("verified_with", r)
 
 
 class ReceiptTests(unittest.TestCase):

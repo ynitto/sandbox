@@ -196,7 +196,7 @@ function quotaAgentsFrom(records) {
   const out = {};
   for (const rec of records) {
     const kind = String(rec.quota_kind || '');
-    if (kind !== 'exhausted' && kind !== 'rate_limit') continue;
+    if (kind !== 'exhausted' && kind !== 'rate_limit') continue;   // 他の観測種別（昇格など）は無関係
     const cli = String(rec.agent_cli || '');
     if (!cli) continue;
     const observedMs = Date.parse(rec.ts || '');
@@ -241,7 +241,9 @@ function usage(cfg) {
   const records = ledgerRecords(dir, config.period);
   const quotaAgents = quotaAgentsFrom(records);
   for (const rec of records) {
-    if (rec.quota_kind) continue;   // 観測行は消費ではない（秒もトークンも数えない）
+    // 観測行（quota・モデル昇格など）は消費ではない。秒・トークンだけでなく**実行回数にも
+    // 数えない**——コストを測るために書いた行が、コストの平均を動かしてしまう。
+    if (rec.event || rec.quota_kind) continue;
     const wl = String(rec.workload || 'other');
     const agent = String(rec.agent_cli || 'unknown');
     const agentTotal = agentTotals[agent] || (agentTotals[agent] = {

@@ -32,7 +32,7 @@ os.environ["USERPROFILE"] = os.environ["HOME"]
 os.chdir(tempfile.mkdtemp(prefix="agent-audit-tests-"))
 
 from agent_audit import configfile, collect, distill, extract, gccmd, llm, readers, \
-    scrub, stats, store, tasksout, usage, util  # noqa: E402
+    scrub, stats, store, tasksout, tuning, usage, util  # noqa: E402
 from agent_audit.cli import main as cli_main  # noqa: E402
 
 

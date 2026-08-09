@@ -103,6 +103,23 @@ class AgentOverrideTests(unittest.TestCase):
         self.assertEqual(calls[1][0], "kiro-cli")
         self.assertIn("global-model", calls[1])                   # 未指定はグローバル
 
+    def test_content_failure_retries_once_on_costlier_fallback(self):
+        km._RUNTIME_CONFIG.agents = km._normalize_agent_overrides({
+            "plan": {"agent_cli": "ollama", "fallbacks": [{"agent_cli": "claude"}]}})
+        calls = []
+
+        def once(prompt, model, purpose="", agent=None):
+            calls.append(agent)
+            if agent is None:
+                raise RuntimeError("content failed")
+            return "ok"
+
+        with mock.patch.object(km, "_run_agent_cli_once", side_effect=once), \
+                mock.patch.object(km, "_node_budget_record"):
+            self.assertEqual(km._run_agent_cli("x", None, purpose="plan"), "ok")
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[1]["agent_cli"], "claude")
+
     def test_resolve_config_reads_agents_map(self):
         # yaml（json 互換）から agents: が読まれ、build_config がモジュールへ確定する
         with tempfile.TemporaryDirectory() as d:

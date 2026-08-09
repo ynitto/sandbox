@@ -197,7 +197,7 @@ updated_at。`kiro-log-exporter` の `.kiro_export_state.json` と同じ規律�
 | source | 読む場所 | 取るもの |
 |---|---|---|
 | `budget-ledger` | 設定 `budget_dir`（既定は契約の `~/.agents/budget/`）の `ledger/*.jsonl` | ledger 行 → `kind:ledger` レコード（消費の一次事実） |
-| `flow-bus` | 設定 `flow_buses:`（既定はプロジェクト root の `bus/`） | `runs/<id>/meta.json`・`events/*.jsonl`・`results/*.json`・`final.json` → `kind:run`。error_class・retries・verify 判定を抽出 |
+| `flow-bus` | 設定 `flow_buses:`（既定はプロジェクト root の `bus/`） | `runs/<id>/meta.json`・`graph.json`・`events/*.jsonl`・`results/*.json`・`final.json` → `kind:run`。error_class・retries・verify、読込割付、依存 digest の削減量、モデル昇格、planner の決定的ルール照合を抽出 |
 | `project-root` | 設定 `project_roots:` | `run-log.jsonl`・`run-log/<node>/*.json`・`archive/`（納品書の cost 行）・`needs/`・`decisions/` → `kind:run` |
 | `amigos-bus` | 設定 `amigos_buses:` ＋ `<home>/deliveries/` | `missions/<mid>/events/*.jsonl`（turn/cli_seconds）・`delivery.json` → `kind:run` |
 | `loop-log` | `~/.agents/agent-loop.log`・`~/.agents/slots/` | 送信・失敗行の粗い run 化（loop は計測点が薄い現実をそのまま記録） |
@@ -507,7 +507,7 @@ LLM 段には停止条件を重ねる（C7): 段別上限（`extract_max_calls` 
 |---|---|---|
 | `collect [--source S]... [--since D] [--with-transcripts]` | 不使用 | 増分収集・正規化 |
 | `usage [--period P] [--by K] [--json]` | 不使用 | トークン・コスト集計（measured / estimated 別掲） |
-| `stats [--json]` | 不使用 | 実行品質集計 |
+| `stats [--json]` | 不使用 | 実行品質集計 + LLM 判断ごとの決定的ルール一致率（計測のみ） |
 | `ratings [--period P] [--json]` | 不使用 | 仕事種別×モデルの格付け（成否率と平均消費。提案のみで自動適用しない） |
 | `calibrate [--write]` | 不使用 | rates 較正の提案（--write で budget config へ反映） |
 | `extract [--limit N] [--force]` | map | レコード → 観測。間隔・蓄積ゲート（§6.4）を通ったときだけ LLM を呼ぶ |

@@ -88,6 +88,19 @@ function dropped(dir) {
     }
   });
 
+  await test('verify_agent を revise で送れる（検証条件だけ変えて回し直す口）', async () => {
+    const { root, dir } = mkProject();
+    try {
+      await actions.runAction({}, {
+        dir, action: 'revise', id: 'T1', reason: 'r',
+        fields: { verify_agent: 'agent_cli=codex timeout_sec=1800' },
+      });
+      assert.strictEqual(dropped(dir).rec.verify_agent, 'agent_cli=codex timeout_sec=1800');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   await test('acceptance 未指定なら送らない（＝触らない）', async () => {
     const { root, dir } = mkProject();
     try {

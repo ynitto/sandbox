@@ -259,8 +259,10 @@ const LIFECYCLE_ACTIONS = new Set(['pause', 'resume', 'stop']);
 // revise が受けるフィールド編集キー（agent-project の REVISE_FIELDS と同じ）。
 // 値は「置換」規約: '' / '-' / 'none' はフィールド削除、未指定（undefined/null）は触らない。
 // why 以降は誘導・レビュー記述（backlog.md.example 参照）。
-const REVISE_KEYS = ['title', 'priority', 'verify', 'accept', 'after', 'note', 'level', 'track',
-  'node', 'why', 'desc', 'scope', 'out_of_scope', 'constraints', 'hints', 'demo'];
+// verify_agent は「何で確かめるか」（例 `codex` / `agent_cli=codex timeout_sec=1800`）。
+// 検証が決着しないタスクで、成果を作り直さずに検証条件だけ変えて回し直すための口。
+const REVISE_KEYS = ['title', 'priority', 'verify', 'verify_agent', 'accept', 'after', 'note',
+  'level', 'track', 'node', 'why', 'desc', 'scope', 'out_of_scope', 'constraints', 'hints', 'demo'];
 
 // 複数行フィールド（agent-project の MULTILINE_KEYS）。配列で送り、**全行を置換**する。
 // 単値キーと同じ String() を通すと ['a','b'] が "a,b" の 1 行に潰れるので経路を分ける。
