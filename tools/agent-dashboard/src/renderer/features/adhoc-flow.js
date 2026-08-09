@@ -16,12 +16,27 @@
   }
 })(typeof globalThis !== 'undefined' ? globalThis : window, (root) => {
   const KINDS = ['work', 'generate', 'classify', 'synthesize', 'verify', 'filter', 'judge', 'reduce', 'split', 'map'];
+  const START = '__start__';
+  const END = '__end__';
+  const KIND_META = {
+    work: ['作業', '依頼に対して成果を作る'],
+    generate: ['生成', '異なる候補を作る'],
+    classify: ['分類', '入力を分類して進め方を決める'],
+    synthesize: ['統合', '複数の成果を一つにまとめる'],
+    verify: ['検証', '成果が条件を満たすか確かめる'],
+    filter: ['選別', '候補を基準で絞り込む'],
+    judge: ['判定', '候補を比較して選ぶ'],
+    reduce: ['集約', '分割結果を構造化してまとめる'],
+    split: ['分割', '入力を実行時に複数工程へ分ける'],
+    map: ['個別処理', '分割された各項目を処理する'],
+  };
   const st = {
     overview: null,
     selectedRun: '',
     runDetail: null,
     editor: null,
     selectedNode: '',
+    selectedEdge: null,
     connectFrom: '',
     busy: '',
     notice: '',
@@ -43,11 +58,145 @@
   }
 
   function emptyWorkflow() {
-    return { id: '', name: '', description: '', nodes: [] };
+    return { version: 2, id: '', name: '', description: '', entry: [], exit: [], methods: [], nodes: [] };
+  }
+
+  function methodNodeTemplate(method, index, tier) {
+    const fragment = (method && Array.isArray(method.fragments) ? method.fragments : [])
+      .find((item) => item && ['worker', 'verify', 'evaluator'].includes(String(item.role || ''))
+        && String(item.text || '').trim());
+    if (!fragment) return null;
+    const role = String(fragment.role);
+    const id = `${String(method.id || 'method').replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-|-$/g, '') || 'method'}-${index}`;
+    return {
+      id,
+      label: String(method.description || method.id || id),
+      goal: '{{request}}',
+      kind: role === 'verify' ? 'verify' : role === 'evaluator' ? 'judge' : 'work',
+      tier,
+      deps: [],
+      x: 80,
+      y: 80,
+      method: {
+        id: String(method.id || ''),
+        description: String(method.description || ''),
+        role,
+        text: String(fragment.text).trim(),
+        source: String(method.source || method.origin || ''),
+      },
+    };
+  }
+
+  function workflowFromPattern(pattern, tier) {
+    const raw = pattern && pattern.template && Array.isArray(pattern.template.nodes)
+      ? pattern.template.nodes : [];
+    const byId = new Map(raw.map((node) => [String(node.id), node]));
+    const depths = new Map();
+    const depthOf = (id) => {
+      if (depths.has(id)) return depths.get(id);
+      const node = byId.get(id);
+      const depth = node && Array.isArray(node.deps) && node.deps.length
+        ? 1 + Math.max(...node.deps.map(depthOf)) : 0;
+      depths.set(id, depth);
+      return depth;
+    };
+    const rows = new Map();
+    const nodes = raw.map((node) => {
+      const depth = depthOf(String(node.id));
+      const row = rows.get(depth) || 0;
+      rows.set(depth, row + 1);
+      return {
+        id: String(node.id),
+        label: String(node.label || (KIND_META[node.kind] || [])[0] || node.id),
+        goal: String(node.goal || '{{request}}'),
+        kind: String(node.kind || 'work'),
+        tier,
+        deps: Array.isArray(node.deps) ? node.deps.map(String) : [],
+        x: 300 + depth * 270,
+        y: 70 + row * 140,
+      };
+    });
+    const used = new Set(nodes.flatMap((node) => node.deps));
+    return {
+      ...emptyWorkflow(),
+      name: `${String(pattern.label || pattern.id || '標準パターン')} のコピー`,
+      description: String(pattern.description || ''),
+      entry: nodes.filter((node) => !node.deps.length).map((node) => node.id),
+      exit: nodes.filter((node) => !used.has(node.id)).map((node) => node.id),
+      nodes,
+    };
+  }
+
+  function connectionError(workflow, from, to) {
+    const nodes = Array.isArray(workflow && workflow.nodes) ? workflow.nodes : [];
+    const byId = new Map(nodes.map((node) => [node.id, node]));
+    if (from === END) return '終了からは接続できません';
+    if (to === START) return '開始へは接続できません';
+    if (from === START) {
+      if (!byId.has(to)) return '接続先が見つかりません';
+      if ((byId.get(to).deps || []).length) return '開始は依存のないノードだけへ接続できます';
+      return (workflow.entry || []).includes(to) ? '接続済みです' : '';
+    }
+    if (to === END) {
+      if (!byId.has(from)) return '接続元が見つかりません';
+      const hasNext = nodes.some((node) => (node.deps || []).includes(from));
+      if (hasNext) return '終了へは末端ノードだけを接続できます';
+      return (workflow.exit || []).includes(from) ? '接続済みです' : '';
+    }
+    const source = byId.get(from);
+    const target = byId.get(to);
+    if (!source || !target) return '接続するノードが見つかりません';
+    if (from === to) return 'ノード自身には接続できません';
+    if (source.kind === 'split') return 'split の後段は実行時に自動生成されます';
+    if ((target.deps || []).includes(from)) return '接続済みです';
+    const outgoing = new Map(nodes.map((node) => [node.id, []]));
+    nodes.forEach((node) => (node.deps || []).forEach((dep) => outgoing.get(dep)?.push(node.id)));
+    const stack = [to];
+    const seen = new Set();
+    while (stack.length) {
+      const id = stack.pop();
+      if (id === from) return '接続すると循環します';
+      if (seen.has(id)) continue;
+      seen.add(id);
+      stack.push(...(outgoing.get(id) || []));
+    }
+    return '';
+  }
+
+  function connectWorkflow(workflow, from, to) {
+    const error = connectionError(workflow, from, to);
+    if (error) throw new Error(error);
+    if (from === START) workflow.entry = [...new Set([...(workflow.entry || []), to])];
+    else if (to === END) workflow.exit = [...new Set([...(workflow.exit || []), from])];
+    else {
+      const target = workflow.nodes.find((node) => node.id === to);
+      target.deps = [...new Set([...(target.deps || []), from])];
+      workflow.entry = (workflow.entry || []).filter((id) => id !== to);
+      workflow.exit = (workflow.exit || []).filter((id) => id !== from);
+    }
+    return workflow;
+  }
+
+  function disconnectWorkflow(workflow, from, to) {
+    if (from === START) workflow.entry = (workflow.entry || []).filter((id) => id !== to);
+    else if (to === END) workflow.exit = (workflow.exit || []).filter((id) => id !== from);
+    else {
+      const target = (workflow.nodes || []).find((node) => node.id === to);
+      if (target) target.deps = (target.deps || []).filter((id) => id !== from);
+    }
+    return workflow;
   }
 
   function clone(value) {
     return JSON.parse(JSON.stringify(value));
+  }
+
+  function spaceForStart(workflow) {
+    const nodes = workflow.nodes || [];
+    if (!nodes.length) return workflow;
+    const shift = Math.max(0, 300 - Math.min(...nodes.map((node) => Number(node.x) || 0)));
+    if (shift) nodes.forEach((node) => { node.x = (Number(node.x) || 0) + shift; });
+    return workflow;
   }
 
   async function refresh() {
@@ -122,42 +271,129 @@
     </section>`;
   }
 
-  function edgesHtml(nodes) {
-    const byId = new Map(nodes.map((n) => [n.id, n]));
-    return nodes.flatMap((target) => (target.deps || []).map((sourceId) => {
-      const source = byId.get(sourceId);
-      if (!source) return '';
-      const x1 = Number(source.x) + 220;
-      const y1 = Number(source.y) + 48;
-      const x2 = Number(target.x);
-      const y2 = Number(target.y) + 48;
-      const bend = Math.max(40, Math.abs(x2 - x1) / 2);
-      return `<path d="M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}" />`;
-    })).join('');
+  function boundaryPositions(nodes) {
+    const maxX = nodes.length ? Math.max(...nodes.map((node) => Number(node.x) || 0)) : 260;
+    return { start: { x: 24, y: 72 }, end: { x: Math.max(580, maxX + 300), y: 72 } };
   }
 
-  function nodeHtml(node) {
+  function edgeMarkup(from, to, source, target) {
+    const x1 = Number(source.x) + 220;
+    const y1 = Number(source.y) + 48;
+    const x2 = Number(target.x);
+    const y2 = Number(target.y) + 48;
+    const bend = Math.max(40, Math.abs(x2 - x1) / 2);
+    const d = `M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}`;
+    const selected = st.selectedEdge && st.selectedEdge.from === from && st.selectedEdge.to === to;
+    return `<path class="wf-edge-hit" d="${d}" data-edge-from="${esc(from)}" data-edge-to="${esc(to)}"
+      role="button" tabindex="0" aria-label="接続を選択 ${esc(from)} から ${esc(to)}"></path>
+      <path class="wf-edge${selected ? ' selected' : ''}" d="${d}" marker-end="url(#wf-arrow)"></path>`;
+  }
+
+  function edgesHtml(workflow) {
+    const nodes = workflow.nodes || [];
+    const byId = new Map(nodes.map((node) => [node.id, node]));
+    const pos = boundaryPositions(nodes);
+    const start = { x: pos.start.x, y: pos.start.y };
+    const end = { x: pos.end.x, y: pos.end.y };
+    const edges = [];
+    for (const target of nodes) {
+      for (const sourceId of target.deps || []) {
+        const source = byId.get(sourceId);
+        if (source) edges.push(edgeMarkup(sourceId, target.id, source, target));
+      }
+    }
+    for (const targetId of workflow.entry || []) {
+      const target = byId.get(targetId);
+      if (target) edges.push(edgeMarkup(START, targetId, start, target));
+    }
+    for (const sourceId of workflow.exit || []) {
+      const source = byId.get(sourceId);
+      if (source) edges.push(edgeMarkup(sourceId, END, source, end));
+    }
+    return edges.join('');
+  }
+
+  function nodeIssue(workflow, node) {
+    const rootNode = !(node.deps || []).length;
+    const hasNext = (workflow.nodes || []).some((other) => (other.deps || []).includes(node.id));
+    const leafNode = !hasNext;
+    if (node.kind === 'split' && hasNext) return '分割は通常工程へ接続できません';
+    if (rootNode && !(workflow.entry || []).includes(node.id)) return '開始に未接続';
+    if (leafNode && !(workflow.exit || []).includes(node.id)) return '終了に未接続';
+    return '';
+  }
+
+  function portState(workflow, target) {
+    if (!st.connectFrom) return '';
+    return connectionError(workflow, st.connectFrom, target) ? ' invalid' : ' valid';
+  }
+
+  function nodeHtml(node, workflow) {
     const selected = st.selectedNode === node.id ? ' selected' : '';
-    return `<article class="wf-node${selected}" data-node-id="${esc(node.id)}" style="left:${Number(node.x)}px;top:${Number(node.y)}px">
-      <button type="button" class="wf-port in" data-connect-in="${esc(node.id)}" aria-label="${esc(node.id)}へ接続"></button>
-      <div class="wf-node-drag" data-drag-node="${esc(node.id)}"><span>${esc(node.kind)}</span><span class="wf-tier">${esc(node.tier)}</span></div>
-      <div class="wf-node-body"><strong>${esc(node.id)}</strong><p>${esc(node.goal)}</p></div>
-      <button type="button" class="wf-port out" data-connect-out="${esc(node.id)}" aria-label="${esc(node.id)}から接続"></button>
+    const issue = nodeIssue(workflow, node);
+    const kind = KIND_META[node.kind] || [node.kind, ''];
+    const method = node.method ? `<span class="wf-method">${esc(node.method.description || node.method.id)}</span>` : '';
+    const inputError = st.connectFrom ? connectionError(workflow, st.connectFrom, node.id) : '';
+    return `<article class="wf-node${selected}${issue ? ' invalid' : ''}" data-node-id="${esc(node.id)}"
+      style="left:${Number(node.x)}px;top:${Number(node.y)}px">
+      <button type="button" class="wf-port in${portState(workflow, node.id)}" data-connect-in="${esc(node.id)}"
+        title="${esc(inputError || 'ここへ接続')}" aria-label="${esc(node.label || node.id)}へ接続"></button>
+      <div class="wf-node-drag" data-drag-node="${esc(node.id)}"><span>${esc(kind[0])}</span><span class="wf-tier">${esc(node.tier)}</span></div>
+      <div class="wf-node-body"><strong>${esc(node.label || node.id)}</strong><p>${esc(node.goal)}</p>${method}
+        ${issue ? `<span class="wf-node-issue">${esc(issue)}</span>` : ''}</div>
+      <button type="button" class="wf-port out" draggable="true" data-connect-out="${esc(node.id)}"
+        aria-label="${esc(node.label || node.id)}から接続"></button>
+      ${node.kind === 'split' ? '' : `<button type="button" class="wf-add-next" data-add-after="${esc(node.id)}" aria-label="次のノードを追加">＋</button>`}
     </article>`;
   }
 
+  function boundaryNodesHtml(workflow) {
+    const pos = boundaryPositions(workflow.nodes || []);
+    const startSelected = st.selectedNode === START ? ' selected' : '';
+    const endSelected = st.selectedNode === END ? ' selected' : '';
+    const startIssue = !(workflow.entry || []).length;
+    const endIssue = !(workflow.exit || []).length;
+    const endError = st.connectFrom ? connectionError(workflow, st.connectFrom, END) : '';
+    return `<article class="wf-node wf-boundary start${startSelected}${startIssue ? ' invalid' : ''}" data-node-id="${START}"
+        style="left:${pos.start.x}px;top:${pos.start.y}px"><div class="wf-node-body"><strong>開始</strong><p>ここから実行</p>
+        ${startIssue ? '<span class="wf-node-issue">工程へ接続してください</span>' : ''}</div>
+        <button type="button" class="wf-port out" draggable="true" data-connect-out="${START}" aria-label="開始から接続"></button>
+        <button type="button" class="wf-add-next" data-add-after="${START}" aria-label="最初のノードを追加">＋</button></article>
+      <article class="wf-node wf-boundary end${endSelected}${endIssue ? ' invalid' : ''}" data-node-id="${END}"
+        style="left:${pos.end.x}px;top:${pos.end.y}px"><button type="button" class="wf-port in${portState(workflow, END)}"
+        data-connect-in="${END}" title="${esc(endError || '終了へ接続')}" aria-label="終了へ接続"></button>
+        <div class="wf-node-body"><strong>終了</strong><p>ここで完了</p>
+        ${endIssue ? '<span class="wf-node-issue">末端を接続してください</span>' : ''}</div></article>`;
+  }
+
   function inspectorHtml(ov, workflow) {
+    if (st.selectedNode === START) {
+      const globalMethods = (ov.methods || []).filter((method) => (method.fragments || [])
+        .some((fragment) => ['planner', 'session'].includes(fragment.role)));
+      return `<div class="wf-inspector"><strong>開始</strong><p class="muted">フロー全体に適用する手法</p>
+        ${globalMethods.length ? globalMethods.map((method) => `<label class="wf-method-check"><input type="checkbox"
+          data-flow-method="${esc(method.id)}" ${(workflow.methods || []).includes(method.id) ? 'checked' : ''}>
+          <span><strong>${esc(method.id)}</strong><small>${esc(method.description || '')}</small></span></label>`).join('')
+    : '<div class="empty">全体用の手法はありません</div>'}</div>`;
+    }
+    if (st.selectedNode === END) {
+      return '<div class="wf-inspector"><strong>終了</strong><p class="muted">ここへ到達するとフローが完了します。</p></div>';
+    }
     const node = workflow.nodes.find((n) => n.id === st.selectedNode);
     if (!node) return '<div class="empty">ノードを選択してください</div>';
     const tierOptions = (ov.tiers || []).map((t) =>
       `<option value="${esc(t.id)}" ${node.tier === t.id ? 'selected' : ''}>${esc(t.label)}</option>`).join('');
     const kindOptions = KINDS.map((kind) =>
-      `<option value="${kind}" ${node.kind === kind ? 'selected' : ''}>${kind}</option>`).join('');
+      `<option value="${kind}" ${node.kind === kind ? 'selected' : ''}>${esc(KIND_META[kind][0])}</option>`).join('');
     return `<div class="wf-inspector" data-inspector="${esc(node.id)}">
-      <label>名前<input id="wf-node-id" value="${esc(node.id)}"></label>
+      <label>表示名<input id="wf-node-label" value="${esc(node.label || node.id)}"></label>
+      <label>ID<input id="wf-node-id" value="${esc(node.id)}"></label>
       <label>種類<select id="wf-node-kind">${kindOptions}</select></label>
+      <p class="wf-kind-help">${esc((KIND_META[node.kind] || ['', ''])[1])}</p>
       <label>tier<select id="wf-node-tier">${tierOptions}</select></label>
-      <label>内容<textarea id="wf-node-goal" rows="5">${esc(node.goal)}</textarea></label>
+      <label>実行内容<textarea id="wf-node-goal" rows="6">${esc(node.goal)}</textarea></label>
+      ${node.method ? `<div class="wf-method-detail"><strong>${esc(node.method.description || node.method.id)}</strong>
+        <p>${esc(node.method.text)}</p></div>` : ''}
       <button type="button" id="wf-node-delete">ノードを削除</button>
     </div>`;
   }
@@ -165,23 +401,36 @@
   function editorHtml(ov) {
     const workflow = st.editor || emptyWorkflow();
     const list = ov.workflows || [];
-    const palette = KINDS.map((kind) =>
-      `<button type="button" draggable="true" data-palette="${kind}">${kind}</button>`).join('');
+    const patterns = ov.patterns || [];
+    const palette = KINDS.map((kind) => `<button type="button" class="wf-palette-card" draggable="true"
+      data-palette="${kind}"><strong>${esc(KIND_META[kind][0])}</strong><small>${esc(KIND_META[kind][1])}</small></button>`).join('');
+    const methods = (ov.methods || []).map((method, index) => ({
+      method, node: methodNodeTemplate(method, index + 1, ov.tiers?.[0]?.id || ''),
+    })).filter((item) => item.node).map(({ method, node }) => `<button type="button" class="wf-palette-card method"
+      draggable="true" data-method-palette="${esc(method.id)}"><strong>${esc(node.label)}</strong>
+      <small>${esc((KIND_META[node.kind] || ['', ''])[0])}として実行</small></button>`).join('');
     return `<section class="wf-page wf-settings" aria-label="ワークフロー設定">
       <div class="wf-title"><div><h2>カスタムフロー</h2><p>ノードを配置して接続します。</p></div>
         <button type="button" id="wf-new">新規作成</button></div>
       ${st.notice ? `<p class="qf-notice" role="status">${esc(st.notice)}</p>` : ''}
       <div class="wf-editor-layout">
-        <aside class="wf-list"><h3>フロー</h3>${list.length ? list.map((item) =>
-          `<button type="button" data-workflow-id="${esc(item.id)}" class="${workflow.id === item.id ? 'selected' : ''}">${esc(item.name)}</button>`).join('') : '<div class="empty">まだありません</div>'}</aside>
+        <aside class="wf-list"><section><h3>カスタム</h3>${list.length ? list.map((item) =>
+          `<button type="button" data-workflow-id="${esc(item.id)}" class="${workflow.id === item.id ? 'selected' : ''}">${esc(item.name)}</button>`).join('') : '<div class="empty">まだありません</div>'}</section>
+          <section><h3>標準の雛形</h3>${patterns.length ? patterns.map((item) =>
+            `<button type="button" class="wf-template" data-pattern-id="${esc(item.id)}" title="${esc(item.description || '')}">
+              <strong>${esc(item.label)}</strong><small>複製して編集</small></button>`).join('') : '<div class="empty">雛形はありません</div>'}</section></aside>
         <main class="wf-editor-main">
           <div class="wf-editor-head"><label>名前<input id="wf-name" value="${esc(workflow.name)}" placeholder="フロー名"></label>
             <label>説明<input id="wf-description" value="${esc(workflow.description)}" placeholder="任意"></label>
             <button type="button" class="primary" id="wf-save">保存</button>
             ${workflow.id ? '<button type="button" id="wf-delete">削除</button>' : ''}</div>
-          <div class="wf-palette" aria-label="ノード一覧">${palette}</div>
+          <div class="wf-palette" aria-label="ノード一覧"><div class="wf-palette-group"><span>基本</span>${palette}</div>
+            ${methods ? `<div class="wf-palette-group"><span>実行手法</span>${methods}</div>` : ''}</div>
+          ${st.connectFrom ? `<div class="wf-connect-status" role="status">接続元: ${esc(st.connectFrom === START ? '開始' : st.connectFrom)} · 接続先を選択（Escで解除）</div>` : ''}
           <div class="wf-canvas" id="wf-canvas" tabindex="0" aria-label="フローキャンバス">
-            <svg aria-hidden="true"><g>${edgesHtml(workflow.nodes)}</g></svg>${workflow.nodes.map(nodeHtml).join('')}
+            <svg aria-label="ノード間の接続"><defs><marker id="wf-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4"
+              orient="auto"><path d="M 0 0 L 8 4 L 0 8 z"></path></marker></defs><g>${edgesHtml(workflow)}</g></svg>
+            ${boundaryNodesHtml(workflow)}${workflow.nodes.map((node) => nodeHtml(node, workflow)).join('')}
           </div>
         </main>
         <aside class="wf-properties"><h3>ノード</h3>${inspectorHtml(ov, workflow)}</aside>
@@ -256,39 +505,91 @@
     const node = workflow.nodes.find((n) => n.id === st.selectedNode);
     if (node && $id('wf-node-id')) {
       const oldId = node.id;
+      node.label = $id('wf-node-label').value.trim() || node.id;
       node.id = $id('wf-node-id').value.trim();
       node.kind = $id('wf-node-kind').value;
       node.tier = $id('wf-node-tier').value;
       node.goal = $id('wf-node-goal').value.trim();
       if (node.id && oldId !== node.id) {
         workflow.nodes.forEach((n) => { n.deps = (n.deps || []).map((id) => id === oldId ? node.id : id); });
+        workflow.entry = (workflow.entry || []).map((id) => id === oldId ? node.id : id);
+        workflow.exit = (workflow.exit || []).map((id) => id === oldId ? node.id : id);
         st.selectedNode = node.id;
       }
     }
     return workflow;
   }
 
-  function addNode(kind, x, y, ov) {
+  function addNode(kind, x, y, ov, method) {
     const workflow = collectWorkflow();
     const used = new Set(workflow.nodes.map((n) => n.id));
-    let i = workflow.nodes.length + 1;
-    while (used.has(`n${i}`)) i += 1;
     const tier = ov.tiers && ov.tiers[0] ? ov.tiers[0].id : '';
-    workflow.nodes.push({ id: `n${i}`, goal: '{{request}}', kind, tier, deps: [], x, y });
-    st.selectedNode = `n${i}`;
+    let node;
+    if (method) node = methodNodeTemplate(method, workflow.nodes.length + 1, tier);
+    else {
+      let i = workflow.nodes.length + 1;
+      while (used.has(`n${i}`)) i += 1;
+      node = { id: `n${i}`, label: KIND_META[kind][0], goal: '{{request}}', kind, tier, deps: [], x, y };
+    }
+    if (!node) return;
+    const baseId = node.id;
+    let suffix = 2;
+    while (used.has(node.id)) node.id = `${baseId}-${suffix++}`;
+    node.x = x;
+    node.y = y;
+    workflow.nodes.push(node);
+    const from = st.connectFrom;
+    if (from) {
+      try { connectWorkflow(workflow, from, node.id); st.notice = ''; }
+      catch (err) { st.notice = String((err && err.message) || err); }
+    }
+    st.connectFrom = '';
+    st.selectedEdge = null;
+    st.selectedNode = node.id;
+    render();
+  }
+
+  function palettePosition(workflow) {
+    const source = workflow.nodes.find((node) => node.id === st.connectFrom);
+    return source ? { x: Number(source.x) + 280, y: Number(source.y) }
+      : st.connectFrom === START ? { x: 300, y: 72 }
+        : { x: 300 + ((workflow.nodes.length || 0) % 2) * 280,
+          y: 190 + Math.floor((workflow.nodes.length || 0) / 2) * 150 };
+  }
+
+  function applyConnection(from, to) {
+    const workflow = collectWorkflow();
+    try { connectWorkflow(workflow, from, to); st.notice = ''; }
+    catch (err) { st.notice = String((err && err.message) || err); }
+    st.connectFrom = '';
+    st.selectedEdge = null;
+    render();
+  }
+
+  function deleteSelectedEdge() {
+    if (!st.selectedEdge || !st.editor) return;
+    disconnectWorkflow(st.editor, st.selectedEdge.from, st.selectedEdge.to);
+    st.selectedEdge = null;
     render();
   }
 
   function wireSettings(pane, ov) {
     if (!pane) return;
     $id('wf-new')?.addEventListener('click', () => {
-      st.editor = emptyWorkflow(); st.selectedNode = ''; st.connectFrom = ''; render();
+      st.editor = emptyWorkflow(); st.selectedNode = ''; st.selectedEdge = null; st.connectFrom = ''; render();
     });
     pane.querySelectorAll('[data-workflow-id]').forEach((button) => button.addEventListener('click', () => {
       collectWorkflow();
       const found = (ov.workflows || []).find((item) => item.id === button.dataset.workflowId);
-      st.editor = found ? clone(found) : emptyWorkflow();
-      st.selectedNode = ''; st.connectFrom = ''; render();
+      st.editor = found ? spaceForStart(clone(found)) : emptyWorkflow();
+      st.selectedNode = ''; st.selectedEdge = null; st.connectFrom = ''; render();
+    }));
+    pane.querySelectorAll('[data-pattern-id]').forEach((button) => button.addEventListener('click', () => {
+      const found = (ov.patterns || []).find((item) => item.id === button.dataset.patternId);
+      if (!found) return;
+      st.editor = workflowFromPattern(found, ov.tiers?.[0]?.id || '');
+      st.selectedNode = START; st.selectedEdge = null; st.connectFrom = '';
+      st.notice = '雛形を複製しました'; render();
     }));
     $id('wf-save')?.addEventListener('click', async () => {
       try {
@@ -301,45 +602,110 @@
     $id('wf-delete')?.addEventListener('click', async () => {
       try {
         await api().adhocFlowDeleteWorkflow({ id: st.editor.id });
-        st.editor = emptyWorkflow(); st.selectedNode = ''; st.notice = '削除しました';
+        st.editor = emptyWorkflow(); st.selectedNode = ''; st.selectedEdge = null; st.notice = '削除しました';
       } catch (err) { st.notice = String((err && err.message) || err); }
       await refresh();
     });
     pane.querySelectorAll('[data-palette]').forEach((button) => {
-      button.addEventListener('click', () => addNode(button.dataset.palette, 60 + ((st.editor?.nodes.length || 0) % 3) * 250, 70, ov));
+      button.addEventListener('click', () => {
+        const pos = palettePosition(st.editor || emptyWorkflow());
+        addNode(button.dataset.palette, pos.x, pos.y, ov);
+      });
       button.addEventListener('dragstart', (event) => event.dataTransfer.setData('text/workflow-kind', button.dataset.palette));
     });
+    pane.querySelectorAll('[data-method-palette]').forEach((button) => {
+      const method = (ov.methods || []).find((item) => item.id === button.dataset.methodPalette);
+      button.addEventListener('click', () => {
+        const pos = palettePosition(st.editor || emptyWorkflow());
+        addNode('', pos.x, pos.y, ov, method);
+      });
+      button.addEventListener('dragstart', (event) => event.dataTransfer.setData('text/workflow-method', button.dataset.methodPalette));
+    });
     const canvas = $id('wf-canvas');
-    canvas?.addEventListener('dragover', (event) => event.preventDefault());
+    canvas?.addEventListener('dragover', (event) => {
+      if (event.dataTransfer.types.includes('text/workflow-kind') || event.dataTransfer.types.includes('text/workflow-method')) {
+        event.preventDefault();
+      }
+    });
     canvas?.addEventListener('drop', (event) => {
       event.preventDefault();
       const kind = event.dataTransfer.getData('text/workflow-kind');
-      if (!KINDS.includes(kind)) return;
+      const methodId = event.dataTransfer.getData('text/workflow-method');
+      const method = (ov.methods || []).find((item) => item.id === methodId);
+      if (!KINDS.includes(kind) && !method) return;
       const box = canvas.getBoundingClientRect();
-      addNode(kind, Math.max(20, event.clientX - box.left - 110), Math.max(20, event.clientY - box.top - 30), ov);
+      addNode(kind, Math.max(20, event.clientX - box.left - 110), Math.max(20, event.clientY - box.top - 30), ov, method);
     });
-    pane.querySelectorAll('[data-node-id]').forEach((node) => node.addEventListener('click', () => {
-      collectWorkflow(); st.selectedNode = node.dataset.nodeId; render();
+    pane.querySelectorAll('[data-node-id]').forEach((node) => node.addEventListener('click', (event) => {
+      if (event.target.closest('button')) return;
+      collectWorkflow(); st.selectedNode = node.dataset.nodeId; st.selectedEdge = null; render();
     }));
-    pane.querySelectorAll('[data-connect-out]').forEach((button) => button.addEventListener('click', (event) => {
-      event.stopPropagation(); st.connectFrom = button.dataset.connectOut; st.notice = '接続先を選択してください'; render();
+    pane.querySelectorAll('[data-connect-out]').forEach((button) => {
+      button.addEventListener('click', (event) => {
+        event.stopPropagation(); st.connectFrom = button.dataset.connectOut;
+        st.selectedEdge = null; st.notice = ''; render();
+      });
+      button.addEventListener('dragstart', (event) => {
+        event.stopPropagation(); st.connectFrom = button.dataset.connectOut;
+        event.dataTransfer.setData('text/workflow-source', st.connectFrom);
+        pane.querySelectorAll('[data-connect-in]').forEach((target) => {
+          target.classList.add(connectionError(st.editor, st.connectFrom, target.dataset.connectIn) ? 'invalid' : 'valid');
+        });
+      });
+      button.addEventListener('dragend', () => {
+        if (st.connectFrom === button.dataset.connectOut) { st.connectFrom = ''; render(); }
+      });
+    });
+    pane.querySelectorAll('[data-connect-in]').forEach((button) => {
+      button.addEventListener('click', (event) => {
+        event.stopPropagation();
+        if (st.connectFrom) applyConnection(st.connectFrom, button.dataset.connectIn);
+      });
+      button.addEventListener('dragover', (event) => {
+        const source = event.dataTransfer.getData('text/workflow-source') || st.connectFrom;
+        if (source && !connectionError(st.editor, source, button.dataset.connectIn)) event.preventDefault();
+        event.stopPropagation();
+      });
+      button.addEventListener('drop', (event) => {
+        event.preventDefault(); event.stopPropagation();
+        applyConnection(event.dataTransfer.getData('text/workflow-source') || st.connectFrom, button.dataset.connectIn);
+      });
+    });
+    pane.querySelectorAll('[data-add-after]').forEach((button) => button.addEventListener('click', (event) => {
+      event.stopPropagation(); st.connectFrom = button.dataset.addAfter; st.notice = '追加する工程を上から選択してください'; render();
     }));
-    pane.querySelectorAll('[data-connect-in]').forEach((button) => button.addEventListener('click', (event) => {
-      event.stopPropagation();
-      const target = st.editor.nodes.find((n) => n.id === button.dataset.connectIn);
-      if (target && st.connectFrom && st.connectFrom !== target.id && !target.deps.includes(st.connectFrom)) {
-        target.deps.push(st.connectFrom);
+    pane.querySelectorAll('[data-edge-from]').forEach((edge) => {
+      const select = (event) => {
+        event.stopPropagation(); st.selectedEdge = { from: edge.dataset.edgeFrom, to: edge.dataset.edgeTo };
+        st.selectedNode = ''; render();
+      };
+      edge.addEventListener('click', select);
+      edge.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') select(event);
+        else if (event.key === 'Delete' || event.key === 'Backspace') { event.preventDefault(); select(event); deleteSelectedEdge(); }
+      });
+    });
+    canvas?.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') { st.connectFrom = ''; st.notice = ''; render(); }
+      else if ((event.key === 'Delete' || event.key === 'Backspace') && st.selectedEdge) {
+        event.preventDefault(); deleteSelectedEdge();
       }
-      st.connectFrom = ''; st.notice = ''; render();
+    });
+    pane.querySelectorAll('[data-flow-method]').forEach((input) => input.addEventListener('change', () => {
+      const selected = new Set(st.editor.methods || []);
+      if (input.checked) selected.add(input.dataset.flowMethod); else selected.delete(input.dataset.flowMethod);
+      st.editor.methods = [...selected];
     }));
     $id('wf-node-delete')?.addEventListener('click', () => {
       const id = st.selectedNode;
       const workflow = collectWorkflow();
       workflow.nodes = workflow.nodes.filter((n) => n.id !== id);
       workflow.nodes.forEach((n) => { n.deps = n.deps.filter((dep) => dep !== id); });
-      st.selectedNode = ''; render();
+      workflow.entry = (workflow.entry || []).filter((nodeId) => nodeId !== id);
+      workflow.exit = (workflow.exit || []).filter((nodeId) => nodeId !== id);
+      st.selectedNode = ''; st.selectedEdge = null; render();
     });
-    ['wf-node-id', 'wf-node-kind', 'wf-node-tier', 'wf-node-goal'].forEach((id) =>
+    ['wf-node-label', 'wf-node-id', 'wf-node-kind', 'wf-node-tier', 'wf-node-goal'].forEach((id) =>
       $id(id)?.addEventListener('change', () => { collectWorkflow(); render(); }));
 
     pane.querySelectorAll('[data-drag-node]').forEach((handle) => handle.addEventListener('pointerdown', (event) => {
@@ -365,5 +731,16 @@
     else render();
   }
 
-  return { render: ensureLoaded, refresh, statusLabel, selectionFrom, _state: st };
+  return {
+    render: ensureLoaded,
+    refresh,
+    statusLabel,
+    selectionFrom,
+    methodNodeTemplate,
+    workflowFromPattern,
+    connectionError,
+    connectWorkflow,
+    disconnectWorkflow,
+    _state: st,
+  };
 });

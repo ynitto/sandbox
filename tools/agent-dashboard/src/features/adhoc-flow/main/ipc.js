@@ -24,6 +24,10 @@ function registerIpc(ctx) {
         id: m.id,
         description: String(m.description || ''),
         origin: String(m.origin || ''),
+        fragments: (Array.isArray(m.fragments) ? m.fragments : []).map((fragment) => ({
+          role: String((fragment && fragment.role) || ''),
+          text: String((fragment && fragment.text) || ''),
+        })),
         from: m._from || 'catalog',
       }));
     } catch {

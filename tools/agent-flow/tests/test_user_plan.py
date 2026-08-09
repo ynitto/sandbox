@@ -23,6 +23,8 @@ class PlanStrategyUserTests(unittest.TestCase):
         rows = json.loads(p.stdout)
         self.assertEqual({row["id"] for row in rows}, set(kf.PATTERNS))
         self.assertTrue(all(row["label"] and row["description"] for row in rows))
+        self.assertTrue(all(row["template"]["nodes"] for row in rows))
+        self.assertTrue(all(row["template"]["name"] == row["label"] for row in rows))
 
     def test_valid_plan_fixed_verbatim(self):
         plan = _plan([

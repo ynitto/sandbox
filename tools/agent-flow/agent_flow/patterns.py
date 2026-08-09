@@ -36,8 +36,15 @@ PATTERN_LIST = list(PATTERNS)
 
 def pattern_catalog() -> list:
     """Dashboard 等の選択 UI が読む標準パターンの正典。"""
-    return [{"id": pid, "label": PATTERN_LABELS[pid], "description": description}
-            for pid, description in PATTERNS.items()]
+    return [{
+        "id": pid,
+        "label": PATTERN_LABELS[pid],
+        "description": description,
+        "template": {
+            "name": PATTERN_LABELS[pid],
+            "nodes": _strategy_to_graph(pid, "{{request}}", 3, False),
+        },
+    } for pid, description in PATTERNS.items()]
 
 
 def cmd_patterns(args) -> int:

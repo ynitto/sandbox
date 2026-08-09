@@ -66,14 +66,25 @@ function normalizeWorkflow(raw) {
     if (!id || !goal || !tier) throw new Error('ノードには id・内容・tier が必要です');
     if (seen.has(id)) throw new Error(`ノード id が重複しています: ${id}`);
     seen.add(id);
+    const rawMethod = n.method && typeof n.method === 'object' ? n.method : null;
+    const method = rawMethod && String(rawMethod.id || '').trim() && String(rawMethod.text || '').trim()
+      ? {
+        id: String(rawMethod.id).trim(),
+        description: String(rawMethod.description || '').trim(),
+        role: String(rawMethod.role || 'worker').trim() || 'worker',
+        text: String(rawMethod.text).trim(),
+        source: String(rawMethod.source || '').trim(),
+      } : null;
     return {
       id,
+      label: String(n.label || id).trim() || id,
       goal,
       kind: String(n.kind || 'work').trim() || 'work',
       tier,
       deps: (Array.isArray(n.deps) ? n.deps : []).map((d) => String(d).trim()).filter(Boolean),
       x: Number.isFinite(Number(n.x)) ? Number(n.x) : 40,
       y: Number.isFinite(Number(n.y)) ? Number(n.y) : 40,
+      ...(method ? { method } : {}),
     };
   });
   if (!nodes.length) throw new Error('ノードを1つ以上追加してください');
@@ -82,6 +93,10 @@ function normalizeWorkflow(raw) {
     if (n.deps.includes(n.id)) throw new Error(`${n.id} を自分自身には接続できません`);
   }
   const byId = new Map(nodes.map((n) => [n.id, n]));
+  for (const n of nodes) {
+    const split = n.deps.find((d) => byId.get(d).kind === 'split');
+    if (split) throw new Error(`${split} は split のため通常ノードへ接続できません`);
+  }
   const visiting = new Set();
   const done = new Set();
   function visit(id) {
@@ -93,12 +108,28 @@ function normalizeWorkflow(raw) {
     done.add(id);
   }
   nodes.forEach((n) => visit(n.id));
+  const roots = nodes.filter((n) => !n.deps.length).map((n) => n.id);
+  const used = new Set(nodes.flatMap((n) => n.deps));
+  const leaves = nodes.filter((n) => !used.has(n.id)).map((n) => n.id);
+  const explicit = Number(raw.version) >= 2;
+  const endpoints = (value) => (Array.isArray(value)
+    ? value.map((id) => String(id).trim()).filter(Boolean) : []);
+  const entry = explicit ? endpoints(raw.entry) : roots;
+  const exit = explicit ? endpoints(raw.exit) : leaves;
+  const sameIds = (a, b) => a.length === new Set(a).size
+    && a.length === b.length && a.every((id) => b.includes(id));
+  if (!sameIds(entry, roots)) throw new Error('開始はすべてのルートノードへ接続してください');
+  if (!sameIds(exit, leaves)) throw new Error('すべての末端ノードを終了へ接続してください');
   const now = new Date().toISOString();
   return {
-    version: 1,
+    version: 2,
     id: workflowId(raw.id),
     name,
     description: String(raw.description || '').trim(),
+    entry,
+    exit,
+    methods: [...new Set((Array.isArray(raw.methods) ? raw.methods : [])
+      .map((id) => String(id).trim()).filter(Boolean))],
     nodes,
     createdAt: String(raw.createdAt || now),
     updatedAt: String(raw.updatedAt || now),
@@ -172,13 +203,13 @@ function planFromWorkflow(config, workflow) {
     }
     return {
       id: n.id,
-      goal: n.goal,
+      goal: n.method ? `${n.goal}\n\n実行手法「${n.method.description || n.method.id}」:\n${n.method.text}` : n.goal,
       kind: n.kind,
       deps: n.deps,
       agent: { agent_cli: candidate.agent_cli, ...(candidate.model ? { model: candidate.model } : {}) },
     };
   });
-  return { name: clean.name, nodes };
+  return { name: clean.name, nodes, methods: clean.methods };
 }
 
 function snapshotSelection(config, selection) {
@@ -383,7 +414,7 @@ function submit(config, { request, preset, cwd, selection } = {}) {
   if (plan) rec.plan = plan;
   writeJsonAtomic(path.join(busDir, 'inbox', `${runId}.json`), rec);
 
-  const methods = p ? methodsSnapshot(config, p.methods) : null;
+  const methods = methodsSnapshot(config, p ? p.methods : snapshot.methods);
   const tuningDir = methods && methods.length ? writeRunTuning(config, runId, methods) : null;
 
   const line = buildLaunchLine(config, {

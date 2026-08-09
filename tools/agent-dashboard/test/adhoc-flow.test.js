@@ -20,6 +20,7 @@ const exec = require('../src/features/routines/main/exec');
 const tuning = require('../src/features/orchestration/main/tuning');
 const profiles = require('../src/features/orchestration/main/profiles');
 const actions = require('../src/features/agent-project/main/actions');
+const workflowUi = require('../src/renderer/features/adhoc-flow');
 
 function tmpdir(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -39,6 +40,37 @@ test('カスタムフローをユーザー共通ファイルとして保存・�
   assert.deepStrictEqual(adhoc.loadWorkflow(cfg, saved.id), saved);
   assert.strictEqual(saved.nodes[1].tier, 'small');
   assert.strictEqual(saved.nodes[1].x, 320);
+  assert.strictEqual(saved.version, 2);
+  assert.deepStrictEqual(saved.entry, ['build']);
+  assert.deepStrictEqual(saved.exit, ['verify']);
+});
+
+test('version 2 は開始から終了までの実行経路だけを保存する', () => {
+  const valid = adhoc.normalizeWorkflow({
+    version: 2, name: '経路', entry: ['build'], exit: ['verify'],
+    nodes: [
+      { id: 'build', label: '実装', goal: '実装する', tier: 'large' },
+      { id: 'verify', label: '検証', goal: '検証する', kind: 'verify', tier: 'small', deps: ['build'] },
+    ],
+  });
+  assert.deepStrictEqual(valid.entry, ['build']);
+  assert.deepStrictEqual(valid.exit, ['verify']);
+  assert.strictEqual(valid.nodes[0].label, '実装');
+  assert.throws(() => adhoc.normalizeWorkflow({
+    version: 2, name: '開始なし', entry: [], exit: ['a'],
+    nodes: [{ id: 'a', goal: 'x', tier: 'large' }],
+  }), /開始/);
+  assert.throws(() => adhoc.normalizeWorkflow({
+    version: 2, name: '終了なし', entry: ['a'], exit: [],
+    nodes: [{ id: 'a', goal: 'x', tier: 'large' }],
+  }), /終了/);
+  assert.throws(() => adhoc.normalizeWorkflow({
+    version: 2, name: 'split後段', entry: ['split'], exit: ['next'],
+    nodes: [
+      { id: 'split', goal: '分割', kind: 'split', tier: 'large' },
+      { id: 'next', goal: '続行', tier: 'large', deps: ['split'] },
+    ],
+  }), /split/);
 });
 
 test('カスタムフローの保存境界は壊れたグラフを拒否し、削除は復元可能な場所へ移す', () => {
@@ -87,6 +119,99 @@ test('カスタムフローの tier を実行候補へ固定して plan を作�
   } finally {
     profiles.resolveTier = original;
   }
+});
+
+test('実行手法はノードへスナップショットされ、そのノードの指示だけへ反映される', () => {
+  const original = profiles.resolveTier;
+  profiles.resolveTier = () => ({ agent_cli: 'codex', model: 'gpt-5' });
+  try {
+    const workflow = adhoc.normalizeWorkflow({
+      version: 2, name: '手法つき', entry: ['build'], exit: ['build'], methods: ['plan-first'],
+      nodes: [{
+        id: 'build', label: 'テスト先行', goal: '{{request}}', tier: 'large',
+        method: {
+          id: 'test-first', description: '失敗するテストを先に置く', role: 'worker',
+          text: '失敗する最小テストを先に追加してください。', source: 'methods/test-first@abc',
+        },
+      }],
+    });
+    assert.deepStrictEqual(workflow.methods, ['plan-first']);
+    assert.strictEqual(workflow.nodes[0].method.id, 'test-first');
+    const plan = adhoc.planFromWorkflow({}, workflow);
+    assert.deepStrictEqual(plan.methods, ['plan-first']);
+    assert.match(plan.nodes[0].goal, /失敗する最小テスト/);
+    assert.strictEqual(plan.nodes[0].method, undefined, '実行エンジンへは通常の goal として渡す');
+  } finally {
+    profiles.resolveTier = original;
+  }
+});
+
+test('実行手法カタログから説明つきの具体ノードを作る', () => {
+  const node = workflowUi.methodNodeTemplate({
+    id: 'adversarial-verify', description: '反例を探してから検証判定する', origin: 'local:test',
+    fragments: [{ role: 'verify', text: '具体的な反例を探してください。' }],
+  }, 1, 'small');
+  assert.strictEqual(node.kind, 'verify');
+  assert.strictEqual(node.label, '反例を探してから検証判定する');
+  assert.strictEqual(node.method.id, 'adversarial-verify');
+  assert.strictEqual(node.method.text, '具体的な反例を探してください。');
+  assert.strictEqual(node.tier, 'small');
+  assert.strictEqual(workflowUi.methodNodeTemplate({
+    id: 'plan-first', fragments: [{ role: 'planner', text: '先に計画する' }],
+  }, 1, 'small'), null, 'planner 専用手法は実行ノードに見せかけない');
+});
+
+test('標準パターンを開始・終了つきの編集可能フローへ複製する', () => {
+  const workflow = workflowUi.workflowFromPattern({
+    id: 'adversarial-verification', label: '生成して検証', description: '生成後に検証する',
+    template: { nodes: [
+      { id: 'gen1', goal: '{{request}}', kind: 'generate', deps: [] },
+      { id: 'verify1', goal: '成果を批判的に検証', kind: 'verify', deps: ['gen1'] },
+    ] },
+  }, 'small');
+  assert.strictEqual(workflow.id, '');
+  assert.match(workflow.name, /生成して検証/);
+  assert.deepStrictEqual(workflow.entry, ['gen1']);
+  assert.deepStrictEqual(workflow.exit, ['verify1']);
+  assert.strictEqual(workflow.nodes[0].tier, 'small');
+  assert.ok(workflow.nodes[1].x > workflow.nodes[0].x, '依存方向へ自動配置する');
+});
+
+test('接続判定は方向・重複・循環・split を同じ規則で拒否する', () => {
+  const workflow = {
+    version: 2, entry: ['a'], exit: ['c'],
+    nodes: [
+      { id: 'a', kind: 'work', deps: [] },
+      { id: 'b', kind: 'work', deps: ['a'] },
+      { id: 'c', kind: 'work', deps: ['b'] },
+      { id: 'split', kind: 'split', deps: [] },
+    ],
+  };
+  assert.match(workflowUi.connectionError(workflow, 'a', 'a'), /自身/);
+  assert.match(workflowUi.connectionError(workflow, 'a', 'b'), /接続済み/);
+  assert.match(workflowUi.connectionError(workflow, 'c', 'a'), /循環/);
+  assert.match(workflowUi.connectionError(workflow, 'split', 'c'), /split/);
+  assert.match(workflowUi.connectionError(workflow, '__end__', 'a'), /終了/);
+  assert.strictEqual(workflowUi.connectionError(workflow, 'split', '__end__'), '');
+});
+
+test('開始・通常ノード・終了の接続と解除を同じ操作で更新する', () => {
+  const workflow = {
+    version: 2, entry: [], exit: [],
+    nodes: [
+      { id: 'a', kind: 'work', deps: [] },
+      { id: 'b', kind: 'verify', deps: [] },
+    ],
+  };
+  workflowUi.connectWorkflow(workflow, '__start__', 'a');
+  workflowUi.connectWorkflow(workflow, 'a', 'b');
+  workflowUi.connectWorkflow(workflow, 'b', '__end__');
+  assert.deepStrictEqual(workflow.entry, ['a']);
+  assert.deepStrictEqual(workflow.nodes[1].deps, ['a']);
+  assert.deepStrictEqual(workflow.exit, ['b']);
+  workflowUi.disconnectWorkflow(workflow, 'a', 'b');
+  assert.deepStrictEqual(workflow.nodes[1].deps, []);
+  assert.throws(() => workflowUi.connectWorkflow(workflow, 'b', 'b'), /自身/);
 });
 
 test('バックログ用フロースナップショットは自動・標準・カスタムを固定する', () => {
@@ -306,6 +431,30 @@ test('submit が submit_request 契約を投函し plan と手法を運ぶ', () 
     assert.throws(() => adhoc.submit(cfg, { request: '   ' }), /要求テキスト/);
   } finally {
     exec.shInWsl = orig;
+  }
+});
+
+test('カスタムフロー全体の手法を run 専用 tuning へ渡す', () => {
+  const { cfg } = methodsFixture();
+  cfg.adhocFlow.busDir = tmpdir('adhoc-custom-method-bus-');
+  cfg.adhocFlow.workflowDir = tmpdir('adhoc-custom-method-workflow-');
+  const originalExec = exec.shInWsl;
+  const originalTier = profiles.resolveTier;
+  exec.shInWsl = () => ({ status: 0, stdout: 'launched:1', stderr: '' });
+  profiles.resolveTier = () => ({ agent_cli: 'codex', model: 'gpt-5' });
+  try {
+    const workflow = adhoc.saveWorkflow(cfg, {
+      name: '全体手法つき', methods: ['adversarial-verify'],
+      nodes: [{ id: 'a', goal: '{{request}}', tier: 'small' }],
+    });
+    const result = adhoc.submit(cfg, {
+      request: '検証する', selection: { type: 'custom', id: workflow.id },
+    });
+    assert.deepStrictEqual(result.methods, ['adversarial-verify']);
+    assert.ok(fs.existsSync(path.join(result.tuningDir, 'tuning.json')));
+  } finally {
+    exec.shInWsl = originalExec;
+    profiles.resolveTier = originalTier;
   }
 });
 

@@ -115,8 +115,22 @@ def _clone_repo(url: str, base: str, dest: str) -> str:
 
 
 def _ws_git(clone: str, *args: str):
-    """clone 内で git を実行（capture, check しない）。"""
-    return subprocess.run(["git", "-C", clone, *args], capture_output=True, text=True, encoding="utf-8", errors="replace")
+    """clone 内で git を実行（capture, check しない）。
+
+    **資格情報を対話で聞かせない・無期限に待たせない。** worker には答えられる人が居ないので、
+    聞かれた git は永久に待つ——実際 `push origin HEAD:refs/heads/ap/...` が `/dev/tty` で
+    プロンプトを出したまま 5 時間動かず、心拍が claim を延長し続けるので他ノードへも回らず、
+    run 全体が静かに停止した。護りは agentcore の transport（GitBus が使っているもの）と
+    同じ 1 実装を使う——ネットワークを触るサブコマンドだけ上限を伸ばし、超えたら失敗として
+    返す（例外で貫通させず、returncode を見る既存の呼び出しをそのまま動かす）。"""
+    cmd = ["git", "-C", clone, *args]
+    limit = _transport.git_timeout_for(args)
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", timeout=limit,
+                              env=_transport.harden_git_env(dict(os.environ)))
+    except subprocess.TimeoutExpired:
+        return _transport.timed_out_result(cmd, limit)
 
 
 def _prepare_run_branch(clone: str, branch: str, base: str) -> None:
