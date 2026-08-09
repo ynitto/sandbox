@@ -114,6 +114,10 @@ test('sendPrompt は repo を cwd にして agent-loop send を呼ぶ', () => {
     assert.strictEqual(res.sent, true);
     assert.ok(script.includes("cd '/home/me/app'"));
     assert.ok(script.includes("send -s '%5' 'nightly'"));
+    // agent-loop を先に探し、まだ入れていない端末では旧 kiro-loop へ落ちる
+    // （退役 = 計画 S4 まで復旧送信を失わせない）。
+    assert.ok(script.includes('command -v agent-loop || command -v kiro-loop'),
+      'agent-loop 優先で kiro-loop へフォールバックする');
   } finally {
     exec.shInWsl = orig;
   }

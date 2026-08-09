@@ -22,6 +22,10 @@ _SESSION_COMMANDS_PLACEHOLDER_RE = re.compile(
     r"\{(cwd|workspace|engine|workload|agent_cli|model|run_id|node_id)\}"
 )
 _SESSION_COMMANDS_REV_APPLIED: "int | None" = None
+# 旧 engine 値の非推奨警告はプロセスにつき 1 回。`run_session_commands` は 1 セッション
+# あたり process / chat の 2 回呼ばれ、常駐体はセッションを何度も張り直すので、毎回出すと
+# 同じ 1 行がログを埋める。
+_SESSION_COMMANDS_LEGACY_WARNED = False
 
 
 def _session_commands_dir() -> str:
@@ -38,11 +42,13 @@ def _load_session_commands() -> "dict | None":
         return None
     if not isinstance(data, dict):
         return None
-    if any(
+    global _SESSION_COMMANDS_LEGACY_WARNED
+    if not _SESSION_COMMANDS_LEGACY_WARNED and any(
         _SESSION_COMMANDS_LEGACY_ENGINE in (item["when"].get("engines") or [])
         for item in (data.get("commands") or [])
         if isinstance(item, dict) and isinstance(item.get("when"), dict)
     ):
+        _SESSION_COMMANDS_LEGACY_WARNED = True
         log.warning("session.json の engine 'kiro-loop' は非推奨です。'agent-loop' として読みます。")
     return data
 

@@ -148,6 +148,8 @@ test('readLoopStates は agent-loop の現行・旧状態ディレクトリを�
     tmux.readLoopStates();
     assert.ok(seenScript.includes('.agents/loop-state'), 'agent-loop の現行状態ディレクトリを読む');
     assert.ok(seenScript.includes('.agent/loop-state'), 'agent-loop の旧状態ディレクトリへフォールバックする');
+    // 退役前の kiro-loop デーモンも視聴できる（読取互換。計画 S4 で外す）
+    assert.ok(seenScript.includes('.kiro/loop-state'), '移行前の kiro-loop デーモンも見える');
   } finally {
     exec.shInWsl = orig;
   }
@@ -178,6 +180,8 @@ test('readSlotPanes は agent-loop の現行・旧スロットディレクトリ
     tmux.readSlotPanes();
     assert.ok(seenScript.includes('.agents/slots'), 'agent-loop の現行スロットディレクトリを読む');
     assert.ok(seenScript.includes('.agent/slots'), 'agent-loop の旧スロットディレクトリへフォールバックする');
+    // 見落とすと、移行前のデーモンが掴んでいる busy ペインを空きと誤表示する
+    assert.ok(seenScript.includes('.kiro/slots'), '移行前の kiro-loop スロットも数える');
   } finally {
     exec.shInWsl = orig;
   }
@@ -219,6 +223,23 @@ test('feature preload が routineAgent API を出す', () => {
     ['routineAgent:capture', 'routineAgent:listSessions', 'routineAgent:send', 'routineAgent:state'].sort()
   );
   assert.ok(loop.configDefaults.routines);
+});
+
+// 制御面を kiro-loop → routines へ改称したとき、設定キーも変わった。既定で補完されるのは
+// 「欠けているキー」だけなので、付け替えないと利用者の設定は黙って既定へ戻る。
+test('旧 kiroLoop 設定キーは routines へ引き継がれ、旧キーは残らない', () => {
+  const { migrateLegacyKeys } = require('../src/base/main/config');
+  const migrated = migrateLegacyKeys({ role: 'engineer', kiroLoop: { captureSec: 9, sessionPrefix: 'x' } });
+  assert.deepStrictEqual(migrated.routines, { captureSec: 9, sessionPrefix: 'x' });
+  assert.ok(!('kiroLoop' in migrated), '旧キーは落とす（両方あるとどちらが効くか決まらない）');
+  assert.strictEqual(migrated.role, 'engineer', '他のキーは触らない');
+
+  // 新キーで設定済みなら、そちらが勝つ（付け替えで新しい設定を上書きしない）
+  assert.deepStrictEqual(
+    migrateLegacyKeys({ kiroLoop: { captureSec: 9 }, routines: { captureSec: 3 } }).routines,
+    { captureSec: 3 }
+  );
+  assert.deepStrictEqual(migrateLegacyKeys({ routines: { captureSec: 3 } }), { routines: { captureSec: 3 } });
 });
 
 console.log(`\n${passed} routine-agent-tmux tests passed`);

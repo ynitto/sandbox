@@ -1,8 +1,8 @@
 'use strict';
 
-// Cowork の自動発見。実行エンジンが担当するプロジェクト配下を走査し、kiro-loop の定期処理
-// （.kiro/kiro-loop.{yaml,yml,json} の prompts[]）とステートマシン（.statemachine/<name>/
-// workflow.yaml）を **ジョブ単位** で抽出して Cowork 項目にする。
+// Cowork の自動発見。実行エンジンが担当するプロジェクト配下を走査し、定常業務ループの
+// 定期処理（`prompts[]` を持つ設定ファイル。→ LOOP_CONFIG_CANDIDATES）とステートマシン
+// （.statemachine/<name>/workflow.yaml）を **ジョブ単位** で抽出して Cowork 項目にする。
 //
 // **パーサは 2 系統あり、役割で分けている**:
 //   ・値（name / schedule / enabled / prompt 本文）= base/main/yaml.js（YAML ライブラリ）
@@ -20,7 +20,7 @@ const {
 } = require('../../agent-project/main/project');
 const { parseFlatYaml } = require('../../agent-project/main/toolconfig');
 const { parseYaml, isPlainObject, scalarString } = require('../../../base/main/yaml');
-const { userHomeRoots } = require('../../../base/main/agent-home');
+const { userHomeRoots, agentHomeDir } = require('../../../base/main/agent-home');
 
 // 走査を軽く保つためのスキップ（プロジェクト内部の既知/生成物ディレクトリ）。隠しフォルダは
 // 別途 name.startsWith('.') で降下対象から外す（マーカーの .kiro/.statemachine は「降りる」の
@@ -31,10 +31,29 @@ const SCAN_SKIP = new Set([
   'claims', 'autonomy', 'charters', 'runs', 'vendor', 'target',
 ]);
 
-const KIRO_CONFIG_NAMES = [
-  ['kiro-loop.yaml', 'yaml'],
-  ['kiro-loop.yml', 'yaml'],
-  ['kiro-loop.json', 'json'],
+// 定常業務ループの設定ファイル候補 `[サブディレクトリ, ファイル名, 形式]`。上から順に
+// 探し、最初に見つかった 1 つをそのフォルダの設定として採る。
+//
+// agent-loop は起動ディレクトリ配下の共通ホーム（`.agents/`、旧 `.agent/` はそこにしか
+// 無いときのフォールバック）から `agent-loop.{yaml,yml,json}` を読む
+// （agent_loop/config.py の DEFAULT_CONFIG_NAMES と `_load_prompt_file_data`）。
+// **ここが agent-loop 側の正で、kiro-loop 系の名前は agent-loop が読まない。**
+// 旧 kiro-loop 系（`.kiro/kiro-loop.*` とフォルダ直下の `kiro-loop.*`）は既存の設定を
+// 画面から見失わせないための読取互換で、kiro-loop 退役（計画 S4）と同じ PR で落とす。
+const LOOP_CONFIG_CANDIDATES = [
+  ['.agents', 'agent-loop.yaml', 'yaml'],
+  ['.agents', 'agent-loop.yml', 'yaml'],
+  ['.agents', 'agent-loop.json', 'json'],
+  ['.agent', 'agent-loop.yaml', 'yaml'],
+  ['.agent', 'agent-loop.yml', 'yaml'],
+  ['.agent', 'agent-loop.json', 'json'],
+  // ここから下は S4 で削除する読取互換
+  ['.kiro', 'kiro-loop.yaml', 'yaml'],
+  ['.kiro', 'kiro-loop.yml', 'yaml'],
+  ['.kiro', 'kiro-loop.json', 'json'],
+  ['', 'kiro-loop.yaml', 'yaml'],
+  ['', 'kiro-loop.yml', 'yaml'],
+  ['', 'kiro-loop.json', 'json'],
 ];
 
 function readText(file) {
@@ -213,15 +232,11 @@ function scheduleOf(entry) {
 function detectMarkers(dir) {
   let kiroFile = null;
   let kiroFormat = null;
-  for (const [name, fmt] of KIRO_CONFIG_NAMES) {
-    // workspace固有の .kiro/ を優先しつつ、kiro-loop 本体の公式探索順にある
-    // カレントディレクトリ直下の kiro-loop.yaml/.yml/.json も受け入れる。
-    for (const f of [path.join(dir, '.kiro', name), path.join(dir, name)]) {
-      try {
-        if (fs.statSync(f).isFile()) { kiroFile = f; kiroFormat = fmt; break; }
-      } catch { /* not present */ }
-    }
-    if (kiroFile) break;
+  for (const [subdir, name, fmt] of LOOP_CONFIG_CANDIDATES) {
+    const f = subdir ? path.join(dir, subdir, name) : path.join(dir, name);
+    try {
+      if (fs.statSync(f).isFile()) { kiroFile = f; kiroFormat = fmt; break; }
+    } catch { /* not present */ }
   }
   const smRoot = path.join(dir, '.statemachine');
   const smNames = [];
@@ -236,6 +251,17 @@ function detectMarkers(dir) {
   }
   if (!kiroFile && !smNames.length) return null;
   return { folder: dir, kiroFile, kiroFormat, smNames: smNames.sort() };
+}
+
+// dashboard が管理項目を**書く**先。既存の設定ファイルがあればそれを使い、無ければ
+// agent-loop が読む場所（`<root>/.agents/agent-loop.yml`、旧 `.agent` しか無ければそちら）
+// を新規に作る。**読取候補と書き先を分けるのが要点**——旧 `.kiro/kiro-loop.yml` は読めるが、
+// 新規作成でそこへ書くと agent-loop が読まないファイルを増やすことになる。
+function loopConfigFile(root) {
+  let marker = null;
+  try { marker = detectMarkers(root); } catch { /* 走査できない = 新規扱い */ }
+  if (marker && marker.kiroFile) return { file: marker.kiroFile, format: marker.kiroFormat };
+  return { file: path.join(agentHomeDir(root), 'agent-loop.yml'), format: 'yaml' };
 }
 
 // root 配下を maxDepth まで走査。マーカーを持つフォルダを見つけたらその配下は掘らない
@@ -278,7 +304,7 @@ function coworkRoots(config) {
   return [
     ...require('../../agent-project/main/engine').projectRoots(config),
     ...declared.map((r) => String(r || '').trim()).filter(Boolean),
-    // ユーザーホームは常に対象（`~/.kiro/kiro-loop.yml` はどの登録簿にも載らない）。
+    // ユーザーホームは常に対象（`~/.agents/agent-loop.yml` はどの登録簿にも載らない）。
     ...userHomeRoots(),
   ];
 }
@@ -293,7 +319,7 @@ function discoverCoworkItems(config) {
   const seenRoots = new Set();
   // ホームは**そのフォルダ自身だけ**を見る（下へ潜らない）。ホームの下には Library や
   // ドキュメントの木が広がっていて、登録フォルダと同じ深さで歩くと走査だけで数秒かかる。
-  // ホームに置く定常業務は `~/.kiro/kiro-loop.yml` ＝ホーム直下なので、これで足りる。
+  // ホームに置く定常業務は `~/.agents/agent-loop.yml` ＝ホーム直下なので、これで足りる。
   const homeKeys = new Set(userHomeRoots().map((d) => _pathKey(resolveRoot(d, config))));
   for (const r of roots) {
     if (!r) continue;
@@ -314,7 +340,7 @@ function discoverCoworkItems(config) {
         const wf = path.join(folder, '.statemachine', smName, 'workflow.yaml');
         return { smName, wf, meta: parseFlatYaml(readText(wf) || '') };
       });
-      // ステートマシンを実行するだけの kiro-loop エントリは対のステートマシンへ統合する
+      // ステートマシンを実行するだけのループエントリは対のステートマシンへ統合する
       // （同じ作業が loop と state-machine の 2 項目に割れて見えないように）。
       const pairBySm = new Map();   // smName -> { entry, idx, format }
       const pairedIdx = new Set();
@@ -345,7 +371,7 @@ function discoverCoworkItems(config) {
             prompt: kiro.texts[idx] || '',
             enabled: e.enabled !== false,
             _src: {
-              kind: 'kiro-loop', file: mk.kiroFile, format: kiro.format,
+              kind: 'loop', file: mk.kiroFile, format: kiro.format,
               repo: folder, promptIndex: idx, promptName: e.name || '', scheduleKey,
             },
           });
@@ -388,6 +414,7 @@ module.exports = {
   discoverCoworkItems,
   scanForCoworkConfigs,
   detectMarkers,
+  loopConfigFile,
   parseKiroLoopPrompts,
   parseKiroLoopPromptsWithLines,
   kiroLoopPromptTexts,

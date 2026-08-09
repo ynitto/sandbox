@@ -941,6 +941,39 @@ class TestFailureTriage(unittest.TestCase):
             self.assertEqual(t.norm_status(), "ready")         # 内容の問題 → 従来どおり積み直し
             self.assertEqual(t.retries, 1)
 
+    def test_acceptance_criteria_failure_burns_retries_and_stops(self):
+        """受入基準を持つタスクの検証失敗は、リトライを消費して上限で打ち切られる。
+
+        統一 verify では `verify`（レガシー）は空が既定で、正は受入基準と固定コマンド。
+        判定をレガシーフィールドで行っていた頃は、基準を持つタスクの FAIL まで
+        「完了条件が無いので人が確認してください」に落ち、上限判定へ進まなかった——
+        何度失敗しても打ち切られず、毎回人へ送られ続けた（C7「必ず止まる」に反する）。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", status="doing", verify="")            # レガシー verify は空（新規の既定）
+            bl = d / "backlog" / "T1.md"
+            bl.write_text(bl.read_text(encoding="utf-8")
+                          + "- task_acceptance_criteria: E2E fixture がある\n", encoding="utf-8")
+            cfg = cfg_for(d)
+            task = km.load_tasks(cfg.backlog)[0]
+            km._settle_failure(cfg, task, "基準 C1 が fail", 1, "ev", {})
+            t = km.load_tasks(cfg.backlog)[0]
+            self.assertEqual(t.norm_status(), "ready")         # 内容の問題として積み直す
+            self.assertEqual(t.retries, 1)
+            self.assertFalse((d / "needs" / "T1.md").exists())  # まだ人へは送らない
+
+    def test_task_without_any_verification_material_still_asks_the_human(self):
+        # 検証材料が本当に無いタスクだけが「完了条件が無い」として人の確認へ回る。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", status="doing", verify="")
+            cfg = cfg_for(d)
+            task = km.load_tasks(cfg.backlog)[0]
+            km._settle_failure(cfg, task, "verify 未定義（自己申告では done にできない）", 1, "ev", {})
+            t = km.load_tasks(cfg.backlog)[0]
+            self.assertEqual(t.norm_status(), "blocked")
+            self.assertIn("verify 未定義", (d / "needs" / "T1.md").read_text(encoding="utf-8"))
+
     def test_act_failure_without_verify_retries_instead_of_requesting_artifact_review(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)

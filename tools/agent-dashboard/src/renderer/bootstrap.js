@@ -123,6 +123,7 @@ async function init() {
   await refreshCowork();
   await refreshAmigos();
   await refreshOrchestration();
+  await refreshFeatureTabs();
   // 前回の対象を裏で復元しておく（右ペインの中身が温まる）。**領域は復元しない**——
   // 起動の着地点はホーム（横断ビュー）で、そこから人がどこへ行くかを選ぶ。
   const last = localStorage.getItem('kpv:selected');

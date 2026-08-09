@@ -1183,6 +1183,17 @@ function registerFeatureTab(name, hooks) {
 }
 globalThis.registerFeatureTab = registerFeatureTab;
 
+async function refreshFeatureTabs() {
+  for (const [, hooks] of featureTabs) {
+    if (typeof hooks.refresh !== 'function') continue;
+    try {
+      await hooks.refresh();
+    } catch {
+      /* 取得失敗はモジュール側で表示。ほかのフィーチャーの更新は止めない */
+    }
+  }
+}
+
 // 登録済みフィーチャータブのうち name に対応するものを描画する（未登録なら何もしない）。
 function renderFeatureTab(name) {
   const h = featureTabs.get(String(name));
@@ -2197,19 +2208,13 @@ async function refreshAll() {
     await refreshCowork();
     await refreshAmigos();
     await refreshOrchestration();
+    await refreshFeatureTabs();
     if (state.selectedDir) await reloadProject();
     if (activeTab() === 'cowork') renderCowork();
     if (activeTab() === 'amigos') renderAmigos();
     if (activeTab() === 'orchestration' && !state.globalSettingsDirty && !state.orchInstructionsDirty && !state.orchSessionDirty) renderOrchestration();
-    // 登録済みフィーチャータブ: 非同期取得（refresh）してから表示中なら描画する。
-    for (const [name, h] of featureTabs) {
-      if (typeof h.refresh === 'function') {
-        try {
-          await h.refresh();
-        } catch {
-          /* 取得失敗はモジュール側で表示。ポーリングは止めない */
-        }
-      }
+    // 登録済みフィーチャータブ: 取得済みの状態から表示中の画面を描画する。
+    for (const [name] of featureTabs) {
       if (activeTab() === name) renderFeatureTab(name);
     }
     // 全体設定へ差し込まれた面も同じ周期で取得させる（面が自分で描き直す）。

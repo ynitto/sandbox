@@ -7,6 +7,14 @@ from __future__ import annotations
 from agentcore import promptrender  # noqa: E402
 
 
+class EmptyOutputError(RuntimeError):
+    """エージェント CLI が rc=0 のまま本文を返さなかった（空応答）。
+
+    RuntimeError の一種なので既存の呼び出し側の扱いは変わらない。型を分けるのは
+    「空だったのか、内容が失敗したのか」を**文言の正規表現ではなく型で**判別させるため
+    （書き手が文言を変えると読み手だけが静かに壊れる、を作らない）。"""
+
+
 def _agent_timeout(purpose: str = "", plugin_timeout=None) -> float | None:
     """エージェント CLI 1 呼び出しのタイムアウト秒。
 
@@ -73,6 +81,18 @@ AGENT_ROLES = ("planner", "evaluator", "worker")
 # 差し替えたときに、契約どおりの JSON 応答が「規約から外れています」と蹴られて planner が
 # 空回りする。設定 `agents: {planner: {readonly: false}}` と明示すれば従来どおり write で呼べる。
 READONLY_ROLES = frozenset({"planner", "evaluator"})
+# 出力が JSON だけと決まっている役割（適用拡大設計 §4.3）。CLI 定義が JSON 用の変種
+# （`json_variant`）を申告していれば、この役割に限って自動でそちらへ振り替える。
+# verify / map / work は成果物側にワークスペースの本文や自由記述を含むので入れない。
+# STRUCTURED_KINDS（JSON を抽出しようと試みる kind）とは別物: あちらは「JSON なら拾う」、
+# こちらは「JSON 以外を返してはいけない」。
+JSON_CONTRACT_ROLES = frozenset({"planner", "evaluator", "split", "filter", "judge", "reduce"})
+# JSON 契約の役割が空応答を返したときの言い直し（レイヤ2 相当）。ツールループ型の CLI が
+# 制御語（TASK_COMPLETE 等）だけを返す・思考だけで本文を出さない、が実際の空応答の中身。
+_EMPTY_OUTPUT_NUDGE = (
+    "[前回の出力は空でした]\n"
+    "本文が空のまま終了しました（制御語だけ・思考だけで本文を出していない可能性があります）。"
+    "説明・前置き・完了報告を書かず、要求された JSON だけを本文として出力してください。")
 # executor=agent の実行系プロンプトを供給するスキル名（設定 worker_skill）。
 # none/builtin/空 で無効＝常に組み込みプロンプト。
 _WORKER_SKILL: str = str(CONFIG_DEFAULTS["worker_skill"])
@@ -135,7 +155,11 @@ def _agent_readonly(purpose: str) -> bool:
 def _agent_for(purpose: str) -> "tuple[str, str | None]":
     """役割（purpose）の実効エージェント (agent_cli, model 上書き)。解決順:
     agent-control（管理面の横断上書き）＞ agents[purpose] ＞（purpose がノード kind なら）
-    agents["worker"] ＞ グローバル agent_cli。soft/縮退中は control の degraded を重ねる。"""
+    agents["worker"] ＞ グローバル agent_cli。soft/縮退中は control の degraded を重ねる。
+
+    解決した CLI が JSON 用の変種を申告していれば、JSON 契約の役割
+    （JSON_CONTRACT_ROLES）だけ最後にそちらへ振り替える。振り替えは同じエンジン・同じ
+    モデルの起動形の違いなので、どの層で CLI が決まっても同じ規則が効く。"""
     ov = _AGENT_OVERRIDES.get(purpose)
     if ov is None and purpose in VALID_KINDS:
         ov = _AGENT_OVERRIDES.get("worker")
@@ -156,6 +180,8 @@ def _agent_for(purpose: str) -> "tuple[str, str | None]":
             cli = d_cli.lower()
         if d_model:
             model = d_model
+    if purpose in JSON_CONTRACT_ROLES:
+        cli = _agentcli.json_variant(cli)
     return cli, model
 
 
@@ -656,7 +682,9 @@ def run_agent(prompt: str, model: str | None, purpose: str = "", cwd: "str | Non
     _write_status(effective_cli=cli_used, effective_model=model_used or "",
                   lifecycle=lifecycle, budget=nb)
     last: "RuntimeError | None" = None
-    for attempt in range(max(0, _TRANSIENT_RETRIES) + 1):
+    empty_fixes = 0
+    attempt = 0
+    while attempt <= max(0, _TRANSIENT_RETRIES):
         try:
             t0 = time.monotonic()
             text = _run_agent_once(prompt, model, purpose, cwd)
@@ -665,6 +693,20 @@ def run_agent(prompt: str, model: str | None, purpose: str = "", cwd: "str | Non
                                 tokens_in=getattr(text, "tokens_in", None),
                                 tokens_out=getattr(text, "tokens_out", None))
             return text
+        except EmptyOutputError as e:
+            # JSON 契約の役割にとって空応答は形式違反であって内容の失敗ではない。契約を
+            # 言い直して呼び直す（レイヤ2 と同じ考え方だが、パース前に落ちるぶんここで拾う）。
+            # 予算は transient とは別枠 _FORMAT_RETRIES で有界（C7: 必ず止まる）。
+            if purpose in JSON_CONTRACT_ROLES and empty_fixes < max(0, _FORMAT_RETRIES):
+                empty_fixes += 1
+                log("agent", f"空応答を形式違反として再要求 #{empty_fixes}/{_FORMAT_RETRIES}"
+                             f"（purpose={purpose}）")
+                prompt = f"{prompt}\n\n{_EMPTY_OUTPUT_NUDGE}"
+                continue
+            if empty_fixes:
+                e = EmptyOutputError(f"{e}（形式を言い直して {empty_fixes} 回再要求後）")
+            e.attempts = attempt + 1  # type: ignore[attr-defined]
+            raise e
         except RuntimeError as e:
             triage = classify_agent_failure(str(e))
             if triage is None or triage[0] != "transient" or attempt >= _TRANSIENT_RETRIES:
@@ -677,6 +719,7 @@ def run_agent(prompt: str, model: str | None, purpose: str = "", cwd: "str | Non
                          f"（{wait:.0f}s 待機・purpose={purpose or 'worker'}）: {str(e)[:120]}")
             backoff_sleep(wait)
             last = e
+            attempt += 1
     raise last if last else RuntimeError("run_agent: unreachable")  # pragma: no cover
 
 
@@ -737,8 +780,10 @@ def _run_agent_once(prompt: str, model: str | None, purpose: str = "",
             # rc=0 でも本文が空で返る CLI がある（kiro-cli は AWS 認証が切れるとバナーだけ出して
             # rc=0 で終わる）。空を成功として扱うと、worker は「空の成果物で done」、planner は
             # stub 戦略へ黙って落ちる＝LLM を呼べていないのに動いているように見える。失敗にする。
-            raise RuntimeError(_agent_failure(cmd[0], 0, proc.stdout, proc.stderr)
-                               .replace("失敗 (rc=0)", "が空の応答を返しました (rc=0)"))
+            # 専用の型で投げるのは、呼び出し側が**文言を読み直さずに**空応答だと判別できる
+            # ようにするため（JSON 契約の役割はここから形式の言い直しへ回す）。
+            raise EmptyOutputError(_agent_failure(cmd[0], 0, proc.stdout, proc.stderr)
+                                   .replace("失敗 (rc=0)", "が空の応答を返しました (rc=0)"))
         tokens_in, tokens_out = _agentcli.parse_usage(proc.stderr or "")
         return _agentcli.UsageText(text, tokens_in, tokens_out)
     finally:

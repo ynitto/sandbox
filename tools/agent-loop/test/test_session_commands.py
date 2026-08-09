@@ -27,6 +27,9 @@ class SessionCommandsTests(unittest.TestCase):
         self.addCleanup(os.environ.pop, "AGENT_SESSION_DIR", None)
         al._SESSION_COMMANDS_REV_APPLIED = None
         self.addCleanup(setattr, al, "_SESSION_COMMANDS_REV_APPLIED", None)
+        # 非推奨警告はプロセスにつき 1 回なので、テストごとに撃ち直せる状態へ戻す
+        al._SESSION_COMMANDS_LEGACY_WARNED = False
+        self.addCleanup(setattr, al, "_SESSION_COMMANDS_LEGACY_WARNED", False)
 
     def _write(self, obj):
         with open(os.path.join(self.home, "session.json"), "w", encoding="utf-8") as f:
@@ -59,6 +62,17 @@ class SessionCommandsTests(unittest.TestCase):
         self.assertIn("非推奨", "\n".join(logs.output))
         self.assertTrue(al.session_command_matches(
             data["commands"][0]["when"], {"engine": "agent-loop"}))
+
+    def test_legacy_engine_warning_is_emitted_once_per_process(self):
+        """常駐体はセッションを何度も張り直す。毎回警告すると同じ 1 行がログを埋める。"""
+        self._write({"commands": [
+            {"id": "legacy", "run": "true", "when": {"engines": ["kiro-loop"]}},
+        ]})
+        with self.assertLogs(level="WARNING") as logs:
+            al._load_session_commands()
+            al._load_session_commands()
+            al._load_session_commands()
+        self.assertEqual("\n".join(logs.output).count("非推奨"), 1)
 
     # -- 計画の決定性（dashboard の JS plan() と同一結果） --------------------
 

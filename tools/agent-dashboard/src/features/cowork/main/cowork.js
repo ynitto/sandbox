@@ -12,7 +12,7 @@ const { parseFlatYaml } = require('../../agent-project/main/toolconfig');
 const { parseYaml, isPlainObject, scalarString } = require('../../../base/main/yaml');
 const {
   discoverCoworkItems, parseKiroLoopPrompts, scheduleOf, detectMarkers, kiroLoopPromptTexts,
-  scanForCoworkConfigs, isDir, coworkRoots,
+  scanForCoworkConfigs, isDir, coworkRoots, loopConfigFile,
 } = require('./discover');
 const { applyKiroLoopEdits, applyStatemachineEdits, upsertManagedKiroPrompt } = require('./writeback');
 const globalInstructions = require('../../orchestration/main/instructions');
@@ -592,7 +592,8 @@ function planSessionCommands(config, cwd, { agentCli = 'kiro', skillCommandPrefi
   }
 }
 
-// repo の .kiro/kiro-loop.{yaml,yml,json} から定期プロンプト本文を名前で解決する。
+// repo の定常業務ループ設定（discover.js の LOOP_CONFIG_CANDIDATES）から定期プロンプト
+// 本文を名前で解決する。
 // 見つからなければ ''（呼び出し側が代替の指示文へフォールバックする）。
 function resolveLoopPromptText(repo, promptName, config) {
   const root = viewerRepo(repo, config) || String(repo || '');
@@ -640,12 +641,12 @@ function runLoop(config, itemIdValue, parameters) {
     ? ((item._src && item._src.promptName) || item.name)
     : (item.name || item.id);
   const cwd = launchCwd(item, config);
-  // ウィンドウ実行用: kiro-loop.yml のプロンプト本文を解決して直接送る（kiro-loop 非経由）。
+  // ウィンドウ実行用: 定常業務の設定からプロンプト本文を解決して直接送る（ループ CLI 非経由）。
   // 本文を解決できなければ、エージェント自身に設定を読ませる指示文で代替する。
   // 明示 args の項目は従来の <loopCommand> 実行のまま（prompt を渡さない）。
   const resolvedPrompt = applyParameters(
     loopPrompt(item, config)
-      || `.kiro/kiro-loop.yml（または kiro-loop.yaml / .json）の定期プロンプト「${runId}」の本文を読んで、その指示を実行して`,
+      || `.agents/agent-loop.yml（または agent-loop.yaml / .json）の定期プロンプト「${runId}」の本文を読んで、その指示を実行して`,
     values
   );
   const prompt = Array.isArray(item.args) ? undefined : withGlobalInstructions(config, resolvedPrompt);
@@ -671,7 +672,7 @@ function runStateMachine(config, itemIdValue, parameters) {
   const effectiveValues = { ...spec.defaults, ...values };
   // statemachine-use は CLI ではなくスキル。エージェントセッションへ
   // 「statemachine-use スキルで xxx ステートマシンを実行して」を送って発動する。
-  // kiro-loop.yml に対となる定期プロンプトがある統合項目はその本文を優先する。
+  // ループ設定に対となる定期プロンプトがある統合項目はその本文を優先する。
   let args;
   let prompt;
   const pairedName = item._src && item._src.loop && item._src.loop.promptName;
@@ -865,8 +866,8 @@ function applyKiroLoopJson(raw, items) {
 // 発見項目の編集を _src.file 単位に束ねて実体へ書き戻す。差分がある時だけ write。
 // 返り値 { touched: [{repo, relFiles:[...]}], errors:[...] }。
 function applyDiscoveredEdits(discovered, config) {
-  // 統合項目（ステートマシン＋対となる kiro-loop エントリ）は schedule/enabled の編集を
-  // kiro-loop 側の実体へ書き戻す合成項目に展開する。プロンプト名は変更しない
+  // 統合項目（ステートマシン＋対となるループエントリ）は schedule/enabled の編集を
+  // ループ設定側の実体へ書き戻す合成項目に展開する。プロンプト名は変更しない
   // （表示名の変更は workflow.yaml の name へ書き戻す）。
   const expanded = [];
   for (const it of discovered) {
@@ -878,7 +879,7 @@ function applyDiscoveredEdits(discovered, config) {
         schedule: it.schedule,
         enabled: it.enabled,
         _src: {
-          kind: 'kiro-loop', file: lp.file, format: lp.format, repo: it._src.repo,
+          kind: 'loop', file: lp.file, format: lp.format, repo: it._src.repo,
           promptIndex: lp.promptIndex, promptName: lp.promptName, scheduleKey: lp.scheduleKey,
         },
       });
@@ -898,7 +899,7 @@ function applyDiscoveredEdits(discovered, config) {
     try { raw = fs.readFileSync(file, 'utf8'); } catch { errors.push(`読み込み失敗: ${file}`); continue; }
     let newText = null;
 
-    if (first.kind === 'kiro-loop') {
+    if (first.kind === 'loop') {
       if (first.format === 'json') {
         const r = applyKiroLoopJson(raw, items);
         errors.push(...r.errors);
@@ -974,7 +975,15 @@ function applyManagedItems(items, config) {
   const errors = [];
   for (const { repo, items: repoItems } of byRepo.values()) {
     const root = viewerRepo(repo, config) || repo;
-    const file = path.join(root, '.kiro', 'kiro-loop.yml');
+    const { file, format } = loopConfigFile(root);
+    if (format === 'json') {
+      // upsert は YAML テキストの外科的書換で、JSON へ流し込むと壊す。既存の .json を
+      // 避けて .yml を作ると agent-loop の探索順（yaml → yml → json）で .json が
+      // 無視され、元のプロンプトが黙って消えたように見える。どちらも取らず断る。
+      errors.push(`定常業務の設定が JSON（${path.basename(file)}）のため画面から編集できません。`
+        + ' YAML へ移すか、ファイルを直接編集してください。');
+      continue;
+    }
     let raw;
     try { raw = fs.readFileSync(file, 'utf8'); } catch { raw = 'prompts:\n'; }
     let next = raw;
@@ -990,7 +999,7 @@ function applyManagedItems(items, config) {
       fs.writeFileSync(file, next, 'utf8');
       touched.push({ repo, relFiles: [relPosix(repo, file, config)] });
     } catch (err) {
-      errors.push(`kiro-loop.yml の書き込み失敗: ${err.message}`);
+      errors.push(`定常業務の設定ファイル（${path.basename(file)}）の書き込み失敗: ${err.message}`);
     }
   }
   return { touched, errors };

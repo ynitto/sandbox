@@ -10,15 +10,52 @@ const ui = require('../src/renderer/features/participation');
 test('参加カードは利用者向け情報と参加操作だけを表示する', () => {
   const html = ui.participationHtml([{
     key: 'flow:run-1', workload: 'flow', title: '検索画面の修正',
-    goal: '入力した名前で候補を探せるようにする', context: 'Alpha', available: 2,
+    goal: '**入力した名前**で候補を探せるようにする\n- 部分一致に対応する', context: 'Alpha', available: 2,
     actionLabel: '参加する',
-  }], {});
+  }], {}, () => '<div class="md"><p><strong>入力した名前</strong>で候補を探せるようにする</p><ul><li>部分一致に対応する</li></ul></div>');
 
   assert.match(html, /検索画面の修正/);
-  assert.match(html, /入力した名前で候補を探せるようにする/);
+  assert.match(html, /class="participation-description"/);
+  assert.match(html, /<strong>入力した名前<\/strong>/);
+  assert.match(html, /<li>部分一致に対応する<\/li>/);
   assert.match(html, /プロジェクト作業/);
   assert.match(html, />参加する</);
   assert.doesNotMatch(html, /busDir|executor|claim|owner-picks|workload/);
+});
+
+test('参加候補は選択中だけでなく発見済みの全プロジェクトから集める', async () => {
+  const projects = [
+    { dir: '/alpha', name: 'Alpha', exists: true, isProject: true },
+    { dir: '/beta', charterName: 'Beta', exists: true, isProject: true },
+    { dir: '/routine', name: 'Routine', exists: true, isProject: false },
+  ];
+  const api = {
+    readProject: async (dir) => ({ dir, workspace: dir, busDir: `${dir}/bus` }),
+    flowRuns: async () => ({ runs: [{ runId: 'same-run', status: 'running' }] }),
+  };
+  const model = {
+    flowCandidates: (runs, context) => runs.map((run) => ({
+      key: run.runId, context: context.projectName,
+    })),
+  };
+
+  const candidates = await ui.loadFlowCandidates(projects, api, model);
+
+  assert.deepEqual(candidates, [
+    { key: 'same-run@%2Falpha%2Fbus', context: 'Alpha' },
+    { key: 'same-run@%2Fbeta%2Fbus', context: 'Beta' },
+  ]);
+});
+
+test('参加候補は初回描画前に取得し、説明はカード内で短く表示する', () => {
+  const bootstrap = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'bootstrap.js'), 'utf8');
+  const css = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'styles.css'), 'utf8');
+
+  assert.ok(
+    bootstrap.indexOf('await refreshFeatureTabs()') < bootstrap.indexOf('await selectProject(target.dir)'),
+    '初回のプロジェクト描画より先にフィーチャー候補を取得する'
+  );
+  assert.match(css, /\.participation-description\s*\{[^}]*max-height:[^}]*overflow:\s*hidden/s);
 });
 
 test('joinCandidate はプロジェクト作業への参加をrun限定ワーカー起動へ渡す', async () => {

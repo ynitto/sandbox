@@ -42,6 +42,30 @@ def load_session_commands(directory: "str | None" = None) -> "dict | None":
     return data if isinstance(data, dict) else None
 
 
+_SESSION_COMMANDS_LEGACY_WARNED = False
+
+
+def _warn_legacy_session_engine(data: "dict | None", who: str = "flow") -> None:
+    """旧 engine 値 `kiro-loop` を含む session.json を読んだら警告する。
+
+    正規化（`agent-loop` として扱う）は when 判定の側で済んでいるので、ここは
+    「読めているが直してほしい」を人へ伝えるためだけの層。プロセスにつき 1 回で止める——
+    セッションのたびに出すと、直しようのある人にも直せない人にも等しくログを埋める。
+    """
+    global _SESSION_COMMANDS_LEGACY_WARNED
+    if _SESSION_COMMANDS_LEGACY_WARNED or not isinstance(data, dict):
+        return
+    commands = data.get("commands")
+    for item in commands if isinstance(commands, list) else []:
+        when = item.get("when") if isinstance(item, dict) else None
+        engines = when.get("engines") if isinstance(when, dict) else None
+        if isinstance(engines, list) and _SESSION_COMMANDS_LEGACY_ENGINE in engines:
+            _SESSION_COMMANDS_LEGACY_WARNED = True
+            log(who, f"session.json の engine '{_SESSION_COMMANDS_LEGACY_ENGINE}' は非推奨です。"
+                     " 'agent-loop' として読みます。")
+            return
+
+
 def session_commands_revision(data: "dict | None") -> int:
     try:
         return int((data or {}).get("revision") or 0)
@@ -219,6 +243,7 @@ def run_session_commands(who: str, ctx: "dict | None") -> bool:
         return True
     try:
         data = load_session_commands()
+        _warn_legacy_session_engine(data, who)
         entries = plan_session_commands(data, ctx)
     except Exception:  # noqa: BLE001 — 計画の失敗でワーカーを止めない
         return True

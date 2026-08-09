@@ -40,9 +40,7 @@
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
   gap: 14px;
 }
-/* 1 枚を低く保つ。カードは「何の仕事か」「どこの話か」「参加する」の 3 つだけを持ち、
-   依頼文の全文は載せない（見出しの title 属性で読める）。募集が数件あるとき、
-   スクロールせずに横並びで比べられることの方が、本文を全部見せるより効く。 */
+/* 説明は Markdown の形を保って先頭数行だけ見せ、カード同士を見比べられる高さにする。 */
 .participation-card {
   display: flex;
   min-width: 0;
@@ -83,6 +81,7 @@
   font-weight: 600;
 }
 .participation-goal,
+.participation-description,
 .participation-context,
 .participation-feedback {
   margin: 0;
@@ -91,6 +90,13 @@
   line-height: 1.6;
   overflow-wrap: anywhere;
 }
+.participation-description {
+  max-height: 5em;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.participation-description .md > :first-child { margin-top: 0; }
+.participation-description .md > :last-child { margin-bottom: 0; }
 .participation-context {
   color: var(--muted);
   font-size: 12px;

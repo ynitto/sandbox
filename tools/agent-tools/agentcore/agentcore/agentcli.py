@@ -192,6 +192,10 @@ def normalize(name: str, raw: dict, path) -> dict:
         "env": dict(env_raw),
         "timeout": raw.get("timeout"),
         "empty_output_is_error": bool(raw.get("empty_output_is_error", True)),
+        # JSON 契約の役割（planner / split 等）へ自動で振り替える変種の名前。空 = 変種なし。
+        # 「どの役割が JSON 契約か」はエンジンの語彙、「その CLI に JSON 用の変種があるか」は
+        # 定義側の申告——こう分けると、エンジンが CLI 名で分岐せずに済む（適用拡大設計 §4.3）。
+        "json_variant": str(raw.get("json_variant") or "").strip().lower(),
         "write_args": _strs(raw.get("write_args"), "write_args", path),
         "readonly_args": _strs(raw.get("readonly_args"), "readonly_args", path),
         "readonly": readonly,
@@ -281,6 +285,34 @@ def load_cli(name: str, project_dir=None, *, use_cache: bool = True) -> dict:
 
 def clear_cache() -> None:
     _CACHE.clear()
+
+
+def json_variant(name: str, project_dir=None) -> str:
+    """JSON 契約の役割に使う CLI 名（定義が変種を申告していなければ `name` のまま）。
+
+    JSON だけを返す契約の役割（agent-flow の planner/evaluator/split 等、agent-project の
+    plan/adjudicate 等）に、ツールループ前提の定義をそのまま使うと契約が成立しない——
+    出力が本文ではなく制御語だけになり、空応答として落ちる。定義側に「自分の JSON 用の
+    変種はこれ」と申告させ、エンジンは役割の性質だけで振り替える。
+
+    人が役割ごとに `agents:` を書き並べる運用にすると、節約のための設定を人の時間で払う
+    ことになる（コンセプト 柱3「チューニングの手間も人介在」）。振り替えは既定で効かせ、
+    外したい定義は `json_variant` を書かなければよい。
+
+    申告先が実在しない・自分自身を指す場合は `name` のまま（設定ミスで実行を殺さない）。
+    """
+    key = str(name or "").strip().lower()
+    try:
+        variant = str(load_cli(key, project_dir).get("json_variant") or "")
+    except AgentCliError:
+        return name
+    if not variant or variant == key:
+        return name
+    try:
+        load_cli(variant, project_dir)
+    except AgentCliError:
+        return name
+    return variant
 
 
 def _mode_args(spec: dict, *, interactive: bool, readonly: bool, no_session: bool) -> "list[str]":
