@@ -10,7 +10,6 @@
 
 const fs = require('fs');
 const path = require('path');
-const { app } = require('electron');
 const { loadFeatures } = require('../../features');
 
 const BASE_DEFAULT_CONFIG = {
@@ -81,6 +80,10 @@ function DEFAULT_CONFIG() {
 }
 
 function configPath() {
+  // electron はこの関数の**実行時**にだけ要る。モジュール読み込み時に require すると、
+  // 実行時依存だけを入れる CI（`npm install --omit=dev`。electron はバイナリ取得が重いので
+  // 入れない契約）で config.js を読む単体テストが MODULE_NOT_FOUND で落ちる。
+  const { app } = require('electron');
   return path.join(app.getPath('userData'), 'config.json');
 }
 

@@ -715,6 +715,24 @@ def _rejected_record(t: Task, reason: str) -> str:
             f"- 却下時刻: {_now_ts()}\n")
 
 
+def _retired_branch_record(retired: dict) -> str:
+    """却下で片付けた作業ブランチの行き先（`retire_task_branch` の結果）。
+
+    取り戻し方まで書く——却下記録を読む人が知りたいのは「消えた」ではなく「どこにあるか」。"""
+    if not retired or not retired.get("branch"):
+        return ""
+    sha = str(retired.get("sha") or "")
+    tag = str(retired.get("tag") or "")
+    lines = [f"\n## 却下時の成果ブランチ\n- ブランチ: {retired['branch']}"
+             + ("（削除済み）" if retired.get("deleted") else "（削除できず・残存）"),
+             f"- コミット: {sha}"]
+    if tag:
+        lines.append(f"- 退避タグ: {tag}（`git fetch origin tag {tag}` で取り戻せます）")
+    else:
+        lines.append("- 退避タグ: 作成できなかったため、ブランチは削除していません")
+    return "\n".join(lines) + "\n"
+
+
 def cmd_reject(cfg: Config, tid: str, reason: str) -> int:
     """タスクの却下: 廃止（rejected として archive へ退避）し、依存先を proposed に戻して再審査に
     かける。実行前（proposed）にも成果物レビュー段（review）にも使える。再計画は要求しない
@@ -749,12 +767,16 @@ def cmd_reject(cfg: Config, tid: str, reason: str) -> int:
                              evidence=_task_definition_block(d), kind="plan-review")
         else:
             persist_task(cfg, d)
-    close_task_mr(cfg, t, reason)   # タスク MR があればクローズ＋ブランチ削除（best-effort）
+    # 却下の後始末: MR があればクローズし、作業ブランチは退避タグへ逃がしてから削除する。
+    # 順序は「タグ → 削除 → MR クローズ」。MR のクローズを先にすると、remove_source_branch 付きの
+    # MR ではフォージ側が先にブランチを消し、退避タグを打つ前に成果が回収対象になる。
+    retired = retire_task_branch(cfg, t)
+    close_task_mr(cfg, t, reason)
     # 本体を rejected として archive へ退避（納品ではないので DELIVERY には載せない）。
     # run ブリーフはここで退役させ、蓄積を archive 記録へ転記する（done の archive_task と同じ
     # 理屈——brief/ に残すと同じ task-id を再利用したとき古い内容が新タスクへ注入される）。
     t.status = "rejected"
-    body = serialize_task(t) + _rejected_record(t, reason)
+    body = serialize_task(t) + _rejected_record(t, reason) + _retired_branch_record(retired)
     brief = retire_brief(cfg, t)
     if brief:
         body += f"\n## run ブリーフ（却下時点の蓄積。learn 射影済み）\n{brief}\n"

@@ -358,6 +358,161 @@ class TestTaskBranchAndDeliveryReview(unittest.TestCase):
             self.assertIn("merge_requests/7", saved.get("mr_url"))
             self.assertEqual(need.read_text(encoding="utf-8"), original)
 
+    # --- MR は人が作る（自動作成しない） ------------------------------------------------
+    def test_settle_review_does_not_create_mr(self):
+        """検収待ちへ落ちるだけでは MR を作らない（作成は人の明示操作だけ）。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, task_branch=True)
+            t = self._mr_task(cfg, d)
+            with mock.patch.object(km, "ensure_task_mr",
+                                   side_effect=AssertionError("MR を自動作成した")), \
+                 mock.patch.object(km, "delivery_entries", return_value=[]), \
+                 mock.patch.object(km, "work_branch_changes", return_value=("", [])):
+                km._settle_review(cfg, t, "act", None, "main", "", "PASS", [], False,
+                                  km.load_policy(cfg.policy), {}, 1)
+            self.assertEqual(km.load_tasks(cfg.backlog)[0].norm_status(), "review")
+
+    def test_finalize_delivery_does_not_create_mr(self):
+        """承認時にも MR は作らない。MR が無ければ Git でそのまま統合する。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, task_branch=True)
+            t = self._mr_task(cfg, d)
+
+            def run(cmd, **kwargs):
+                if "merge-base" in cmd and cmd[-2:] == ["origin/ap/T1", "origin/release"]:
+                    return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+            with mock.patch.object(km, "ensure_task_mr",
+                                   side_effect=AssertionError("MR を自動作成した")), \
+                 mock.patch.object(km, "_task_work_branch", return_value=("release", "ap/T1")), \
+                 mock.patch.object(km, "work_branch_changes",
+                                   return_value=("origin/ap/T1", ["src/a.py"])), \
+                 mock.patch.object(km.subprocess, "run", side_effect=run):
+                ok, msg = km.finalize_task_delivery(cfg, t)
+            self.assertTrue(ok, msg)
+
+    # --- 人が MR を画面で操作したときの整合 ---------------------------------------------
+    def test_finalize_delivery_accepts_branch_deleted_after_human_merge(self):
+        """人が MR をマージしてブランチが消えていても、成果が target に在れば完了できる。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, task_branch=True)
+            t = self._mr_task(cfg, d)
+            result_rev = "a" * 40
+            t.set("verification", json.dumps({"report": f"verifications/T1/{result_rev}.md"}))
+
+            def run(cmd, **kwargs):
+                if "merge-base" in cmd and cmd[-2:] == [result_rev, "origin/release"]:
+                    return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+            with mock.patch.object(km, "_task_work_branch", return_value=("release", "ap/T1")), \
+                 mock.patch.object(km, "work_branch_changes", return_value=("", [])), \
+                 mock.patch.object(km.subprocess, "run", side_effect=run):
+                ok, msg = km.finalize_task_delivery(cfg, t)
+            self.assertTrue(ok, msg)
+            self.assertIn("統合済み", msg)
+
+    def test_finalize_mr_refuses_closed_unmerged(self):
+        """人が MR を未マージでクローズしたら done にしない（成果が入っていないため）。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, task_branch=True)
+            t = self._review_task_with_mr(cfg, d)
+            with mock.patch.object(km, "_gl_token", return_value="tok"), \
+                 mock.patch.object(km, "_gl_api", return_value={"state": "closed"}), \
+                 mock.patch.object(km, "_integrated_externally", return_value=""):
+                ok, msg = km.finalize_task_mr(cfg, t)
+            self.assertFalse(ok)
+            self.assertIn("未マージ", msg)
+
+    def test_finalize_mr_accepts_closed_when_work_already_in_target(self):
+        """未マージクローズでも、成果が別経路で target に入っていれば完了できる。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, task_branch=True)
+            t = self._review_task_with_mr(cfg, d)
+            with mock.patch.object(km, "_gl_token", return_value="tok"), \
+                 mock.patch.object(km, "_gl_api", return_value={"state": "closed"}), \
+                 mock.patch.object(km, "_integrated_externally", return_value="統合済み"):
+                ok, msg = km.finalize_task_mr(cfg, t)
+            self.assertTrue(ok, msg)
+
+    # --- 却下時のブランチ退避（タグ → 削除） --------------------------------------------
+    def test_retire_task_branch_tags_before_delete(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, task_branch=True)
+            t = self._mr_task(cfg, d)
+            sha = "f" * 40
+            calls = []
+
+            def run(cmd, **kwargs):
+                calls.append(cmd)
+                if "rev-parse" in cmd:
+                    return subprocess.CompletedProcess(cmd, 0, stdout=f"{sha}\n", stderr="")
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+            with mock.patch.object(km, "_task_work_branch", return_value=("release", "ap/T1")), \
+                 mock.patch.object(km.subprocess, "run", side_effect=run):
+                got = km.retire_task_branch(cfg, t)
+            self.assertEqual(got["tag"], "rejected/T1")
+            self.assertEqual(got["sha"], sha)
+            self.assertTrue(got["deleted"])
+            pushes = [c for c in calls if "push" in c]
+            self.assertIn(f"{sha}:refs/tags/rejected/T1", pushes[0])
+            self.assertIn("--delete", pushes[1], "タグを push してから削除する")
+
+    def test_retire_task_branch_keeps_branch_when_tag_push_fails(self):
+        """退避タグを打てないなら消さない（消えたら取り返せない）。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, task_branch=True)
+            t = self._mr_task(cfg, d)
+
+            def run(cmd, **kwargs):
+                if "rev-parse" in cmd:
+                    return subprocess.CompletedProcess(cmd, 0, stdout=f"{'f' * 40}\n", stderr="")
+                if "push" in cmd and any("refs/tags/" in str(a) for a in cmd):
+                    return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="denied")
+                if "push" in cmd and "--delete" in cmd:
+                    raise AssertionError("タグ無しで削除した")
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+            with mock.patch.object(km, "_task_work_branch", return_value=("release", "ap/T1")), \
+                 mock.patch.object(km.subprocess, "run", side_effect=run):
+                got = km.retire_task_branch(cfg, t)
+            self.assertEqual(got["tag"], "")
+            self.assertFalse(got["deleted"])
+
+    def test_retire_task_branch_skips_shared_branch(self):
+        """共有ブランチ（ap/<id> 以外）と target は却下でも消さない。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, task_branch=True)
+            t = self._mr_task(cfg, d)
+            with mock.patch.object(km, "_task_work_branch", return_value=("main", "develop")), \
+                 mock.patch.object(km.subprocess, "run",
+                                   side_effect=AssertionError("共有ブランチに触った")):
+                self.assertEqual(km.retire_task_branch(cfg, t), {})
+
+    def test_reject_records_retired_branch(self):
+        """却下記録に退避先（タグ・コミット）を残す＝後から取り戻せる。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, task_branch=True)
+            self._mr_task(cfg, d)
+            with mock.patch.object(km, "retire_task_branch",
+                                   return_value={"branch": "ap/T1", "tag": "rejected/T1",
+                                                 "sha": "f" * 40, "deleted": True}):
+                self.assertEqual(km.cmd_reject(cfg, "T1", "方針を変えた"), 0)
+            note = (d / "archive" / "T1.md").read_text(encoding="utf-8")
+            self.assertIn("rejected/T1", note)
+            self.assertIn("f" * 40, note)
+
     def test_delivery_entries_compares_task_branch_with_target(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
@@ -697,7 +852,11 @@ class TestTaskBranchAndDeliveryReview(unittest.TestCase):
             self.assertEqual(rc, 0)                              # MR 無しは従来どおり done 確定のみ
             self.assertTrue((d / "archive" / "T1.md").exists())
 
-    def test_reject_closes_mr_and_deletes_branch(self):
+    def test_reject_closes_mr_and_retires_branch(self):
+        """却下: MR はクローズ、ブランチは退避タグ経由で削除する。
+
+        ブランチ削除を MR API（`DELETE /repository/branches/`）でやらないのが要点——タグを
+        push する前に消える経路を残すと、却下した成果が恒久に失われる。"""
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
             cfg = cfg_for(d)
@@ -709,14 +868,18 @@ class TestTaskBranchAndDeliveryReview(unittest.TestCase):
                 return {}
 
             with mock.patch.object(km, "_gl_token", return_value="tok"), \
-                 mock.patch.object(km, "_gl_api", side_effect=api):
+                 mock.patch.object(km, "_gl_api", side_effect=api), \
+                 mock.patch.object(km, "retire_task_branch",
+                                   return_value={"branch": "ap/T1", "tag": "rejected/T1",
+                                                 "sha": "f" * 40, "deleted": True}) as retire:
                 rc = km.cmd_reject(cfg, t.id, "作り直す")
             self.assertEqual(rc, 0)
             self.assertTrue(any(m == "PUT" and p.endswith("/merge_requests/7")
                                 and (dd or {}).get("state_event") == "close"
                                 for m, p, dd in calls))          # MR クローズ
-            self.assertTrue(any(m == "DELETE" and "/repository/branches/" in p
-                                for m, p, _ in calls))           # ソースブランチ削除
+            retire.assert_called_once()                          # ブランチは退避経路で片付ける
+            self.assertFalse(any(m == "DELETE" and "/repository/branches/" in p
+                                 for m, p, _ in calls), "MR API でブランチを消さない")
 
 
 class DeliveryEvidenceTests(unittest.TestCase):

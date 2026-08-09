@@ -382,6 +382,7 @@ function resolveItem(config, id) {
 // ---------------------------------------------------------------------------
 
 const TEMPLATE_PARAMETER_RE = /\{\{\s*([A-Za-z_][A-Za-z0-9_.-]*)\s*\}\}/g;
+const LOOP_PARAMETER_RE = /\{\{\s*([A-Za-z_][A-Za-z0-9_.-]*)\s*\}\}|(?<!\{)\{([A-Za-z_][A-Za-z0-9_.-]*)\}(?!\})/g;
 
 function templateParameterKeys(...texts) {
   const keys = [];
@@ -391,6 +392,21 @@ function templateParameterKeys(...texts) {
       if (!seen.has(match[1])) {
         seen.add(match[1]);
         keys.push(match[1]);
+      }
+    }
+  }
+  return keys;
+}
+
+function loopParameterKeys(...texts) {
+  const keys = [];
+  const seen = new Set();
+  for (const text of texts) {
+    for (const match of String(text || '').matchAll(LOOP_PARAMETER_RE)) {
+      const key = match[1] || match[2];
+      if (!seen.has(key)) {
+        seen.add(key);
+        keys.push(key);
       }
     }
   }
@@ -514,14 +530,14 @@ function loopPrompt(item, config) {
 function routineParameterSpec(config, item) {
   if (Array.isArray(item.args)) return { keys: [], defaults: {}, error: '' };
   if (item.type !== 'state-machine') {
-    return { keys: templateParameterKeys(loopPrompt(item, config)), defaults: {}, error: '' };
+    return { keys: loopParameterKeys(loopPrompt(item, config)), defaults: {}, error: '' };
   }
   const cwd = launchCwd(item, config) || process.cwd();
   const spec = stateMachineInputSpec(stateMachineFilePath(item, cwd, config));
   if (spec.error) return spec;
   const pairedName = item._src && item._src.loop && item._src.loop.promptName;
   const pairedBody = pairedName ? resolveLoopPromptText(item.repo || item.cwd, pairedName, config) : '';
-  for (const key of templateParameterKeys(pairedBody)) {
+  for (const key of loopParameterKeys(pairedBody)) {
     if (!Object.prototype.hasOwnProperty.call(spec.defaults, key) && !spec.keys.includes(key)) spec.keys.push(key);
   }
   return spec;
@@ -540,8 +556,10 @@ function validateParameters(spec, raw) {
 }
 
 function applyParameters(prompt, values) {
-  return String(prompt || '').replace(TEMPLATE_PARAMETER_RE, (whole, key) =>
-    Object.prototype.hasOwnProperty.call(values, key) ? values[key] : whole);
+  return String(prompt || '').replace(LOOP_PARAMETER_RE, (whole, doubleKey, singleKey) => {
+    const key = doubleKey || singleKey;
+    return Object.prototype.hasOwnProperty.call(values, key) ? values[key] : whole;
+  });
 }
 
 function stateMachineParameterBlock(values) {
