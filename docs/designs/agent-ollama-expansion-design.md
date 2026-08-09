@@ -1,5 +1,8 @@
 # agent-ollama 適用拡大の設計 — クラウド予算をローカル実行系で節約する
 
+> **統合済み**: 現行の責務・実装状態・未実装範囲は
+> [`agent-ollama-design.md`](./agent-ollama-design.md) へ統合した。本書は段階導入の詳細検討記録として残す。
+
 > 作成 2026-08-08（同日改訂: 品質優先 R3・文脈健全性 R4 を要求に追加）
 > 対象: `tools/agent-project` / `agent-flow` / `agent-audit` / `agent-loop` / `agent-amigos` の
 > エージェント CLI 呼び出し面、`agentcore/ollama_*.py`、`agents/ollama.json`、
