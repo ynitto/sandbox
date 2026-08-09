@@ -1,10 +1,11 @@
 # エージェント CLI プラグインと失敗トリアージ — 設計書
 
-> **対象系統**: `agent-project` / `agent-flow` / `agent-amigos` / `agent-dashboard`（CLI チャット・
-> Doctor・cowork の tmux 実行を含む。`kiro-*` 旧系統は残置。改称方針は
+> **対象系統**: `agent-project` / `agent-flow` / `agent-amigos` / `agent-loop` /
+> `agent-dashboard` / `agent-audit`（CLI チャット・Doctor・cowork の tmux 実行を含む。
+> `kiro-*` 旧系統は残置。改称方針は
 > [`agent-tools-rename-design.md`](agent-tools-rename-design.md)）。
 
-> 最終更新: 2026-07-26 ／ 関連: `schemas/agent-cli.schema.json`（契約の正典）,
+> 最終更新: 2026-08-09 ／ 関連: `schemas/agent-cli.schema.json`（契約の正典）,
 > `agents/`（同梱定義）, `tools/agent-tools/agentcore/agentcore/agentcli.py`（Python ローダの 1 実装）。
 > 対話モード拡張の判断記録は §2.1 に転記した。
 
@@ -44,7 +45,7 @@
   resources の `agents/`。最後の候補）。同名は先勝ちで、**組み込み名の予約は解除した**——
   上位に `claude.json` を置けば同梱定義を上書きできる。これが無いと受入条件
   （JSON 1 ファイルで完結）が成り立たない。ユーザー共通の定義は `~/.agents/agents/`
-  だけを読み、旧ホームへはフォールバックしない。
+  だけを読み、旧 `~/.agent` ホームへはフォールバックしない。
 - **ローダは言語ごとに 1 実装**: Python 側は `agentcore.agentcli`（load / headless_cmd /
   interactive_cmd / classify_error）に集約し、agent-project / agent-flow / agent-amigos が
   これを使う。当初の「各ツールが自前の小さなローダを持つ」方針は Python 側について取り下げた
@@ -56,7 +57,9 @@
   - **ヘッドレス片道**（従来）: argv（`{model}` / `{output_file}` プレースホルダ・末尾固定の
     `command_suffix`）・プロンプトの渡し方（stdin / argv）・モデルフラグと既定モデル・
     応答の取り出し（stdout / ファイル）・追加環境変数・タイムアウト・空応答の扱い・
-    **エラー分類規則（errors）**。
+    **エラー分類規則（errors）**。対応アダプターは本文を stdout、実測値を stderr の完全一致行
+    `@agent-usage tokens_in=<整数> tokens_out=<整数>` へ分ける。消費側は最後の一致行だけを読み、
+    無い・壊れている場合は従来どおり実行時間だけを記録する。
   - **JSON 契約用の変種の申告（`json_variant`）**: 出力が JSON だけと決まっている役割に、
     この定義の代わりに使う定義名。エンジンは役割の性質だけを見てここへ振り替える。
     知識を 2 つに割るのが要点で、**「JSON 用の起動形を持つか」は定義が申告し、「この役割は
@@ -64,9 +67,12 @@
     エンジンが CLI 名で分岐する（`ollama` のときだけ挙動を変える）必要がなくなる。
     ツールループ前提の定義を JSON 契約の役割にそのまま使うと、本文の代わりに制御語だけが
     返って空応答で落ちるため、その組み合わせを人の設定作業に頼らず塞ぐのが目的
-    （[agent-ollama-expansion-design.md](./agent-ollama-expansion-design.md) §4.3・
+    （[agent-ollama-design.md](./agent-ollama-design.md) §2・
     コンセプト 柱3）。指す先が存在しない・自分自身を指す申告は無視して元の定義で走る
     （設定ミスで実行を殺さない）。振り替えは 1 段だけで連鎖させない。
+  - **相対コスト（`relative_cost`）**: 同じ仕事 1 回の無次元値（ローカル=0、通常クラウド=1）。
+    通貨やモデル別価格は持たず、宣言済み `fallbacks` から現在より高コストの最初の 1 件だけを
+    内容失敗時の再試行候補にする。実行回数の上限は各エンジンが持ち、候補の選択だけを共通化する。
   - **権限の 2 モード**: 既定（書き込み可）にだけ付ける `write_args` と、助言のみにする
     `readonly_args` の対。`readonly: enforced | best-effort` で強制力を宣言する——このレイヤは
     argv を組み立てるだけで、フラグを無視する CLI への防御は持たない。保証できない CLI で
@@ -108,18 +114,25 @@
     ペインを起動する（未指定は従来の kiro-cli 固定経路のまま。設計:
     [`agent-loop-design.md`](./agent-loop-design.md) 機能 5）。旧 `agent-loop.py:_start_pane`
     だけが対象外として残る（kiro-cli 固定の残置系統）。
-  - **待機判定（`busy_pattern` / `idle_quiet_sec` / `clear_command`）**: tmux で CLI を自動
+  - **待機判定（`busy_pattern` / `failure_pattern` / `idle_quiet_sec` / `clear_command`）**:
+    tmux で CLI を自動
     運転する側（agent-loop の送信可否・スロット解放）は「待機中か処理中か」をペイン画面から
     判定するが、**その方法は CLI ごとに違う**。入力欄を出したまま処理する TUI（claude の
     `(esc to interrupt)` 等）では ready の消失が起きないため `busy_pattern`（処理中の正の
     検出）が判定の正になり、どちらのパターンも持てない CLI は `idle_quiet_sec`（画面が N 秒
-    変化しなければ待機）で判定する。`clear_command` はコンテキスト破棄コマンドの差
+    変化しなければ待機）で判定する。`failure_pattern` は `agent-loop send --wait` の明示的な
+    失敗だけを宣言し、未指定なら pane / process 終了以外を推測しない。`clear_command` は
+    コンテキスト破棄コマンドの差
     （kiro/claude=`/clear`、codex=`/new`、無い CLI は空文字宣言）を吸収する。
+  - **セッションログ（`session_log`）**: agent-audit が CLI 自身の transcript を収集するための
+    format / paths / usage / clean 規則。argv ローダの入力ではなく、ログの所在と読み方を定義側に
+    置く宣言である。
 - 未知の agent_cli で定義も無ければ**明示エラー**（黙るフォールバックは廃止）。
   例外は cowork の定常業務 tmux 実行（`cowork.js:coworkChatLaunch`）——定義解決に失敗しても
   `kiro-cli chat --trust-all-tools` へ落として定常業務を止めない。ただし黙ってはいない。
   フォールバック発動時は `console.warn` で理由（元エラーのメッセージ）を残す。
-- 同梱定義: `agents/{kiro,claude,copilot,codex,cursor,ollama}.json`。追加手順は
+- 同梱定義: `agents/{kiro,claude,copilot,codex,cursor,ollama,ollama-json,ollama-read,opencode}.json`。
+  追加手順は
   [`agents/README.md`](../../agents/README.md)。
 
 用途とフラグの対応は 1 枚に集約してある（ここがかつて実装ごとに食い違っていた）:
@@ -181,6 +194,9 @@
 | `env` | 実行環境（CLI 不在・モデル不正・argv 長超過） | 人（環境修復） | 同上 |
 | `transient` | 一時的（タイムアウト・接続断） | 誰も（自動で解ける） | 通常リトライ |
 | （タグ無し） | 内容の問題 | タスク単位の判断 | 従来どおり retry → 裁定 → 人 |
+
+`quota` は、当面戻らない `exhausted` と復帰時刻を持つ `rate_limit` に細分する。後者は本文から
+`reset_at` を決定的に抽出し、node-budget の観測行へ載せて復帰後の候補復帰に使う。
 
 **実行制御・環境要因（control/quota/auth/env）の扱い** — 3 層が同じタグを読む
 （表示上は「実行制御による停止」と「環境要因の失敗」を分けるが、打ち切り・needs 化の

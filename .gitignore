@@ -75,3 +75,6 @@ nosetests.xml
 .env
 .env.*
 *.local
+
+# skills
+.specs-work/*

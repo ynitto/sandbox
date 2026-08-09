@@ -317,8 +317,22 @@ flow-planner の SKILL.md に丸ごと固定で、モデルの強弱に応じて
   手法は、実行系を増やさず planner プロンプトへの hint 注入で**計画側に出させる**（fan-out の
   実行は既存の verify / judge ノード）。資源条件は実行プロファイルの現在段に連動させ、降格
   したら手法が厚くなり、復帰したら薄くなる——人は触らない（P8）。
-- 設定の口: dashboard に手法パックの一覧・編集・ON/OFF の面、CLI に list / enable / disable。
-  どちらも書くのは同じ tuning.json への投函だけで、新しい状態ファイルは作らない（C7）。
+- プリセットカタログ: よく効く手法を**既定 OFF のプリセット**としてリポジトリに同梱する
+  （置き場は `agents/` と同型のデータディレクトリ `methods/`。1 パック = 1 JSON で、形は
+  agent-tuning スキーマの `$defs/method` を共有し、golden テストで検証する）。初期収録は
+  下の表の 20 件で、出典は自前の実測・既存スキルに加えて**公式パターン集**（表の後段）から
+  取る。効かないプリセットは F4 の実測を根拠にカタログから退役させる（F10 と同じ
+  「昇格・退役」の経路）。なお OpenAI の reasoning best practices は「推論モデルには CoT
+  指示を足すな」と明記しており、**強い段では手法を外し弱い段だけ足す**という F17 の前提は
+  ベンダー公式のガイダンスとも一致する。
+- 設定の口: dashboard にカタログの一覧面（説明と既定の資源条件を表示）を置き、ユーザーは
+  **選択するだけ**で ON/OFF できる。加えて自由入力の作成フォーム（id・役割・断片・`when`）で
+  独自パックも作れる。CLI は list / enable / disable / add で同じ操作を提供する。どちらも
+  書くのは tuning.json への投函だけで、新しい状態ファイルは作らない（C7）。
+- カタログは**参照でなく複製**で適用する。選択時にパックのスナップショットを tuning.json へ
+  書き、`source: methods/<id>@<hash>` を残す（更新は再適用で取り込む。乖離は hash で検出）。
+  参照方式は捨てた——判断根拠が catalog と tuning の 2 か所になり（C7）、カタログの更新が
+  黙って稼働中の挙動へ入る。
 - 効果測定: run 証跡へ「有効だった手法セット」を記録し、F4 の格付けに手法軸を足す。
   「この手法はこのモデル × この仕事で効くか」が台帳から出れば、F10 の還流はパックの
   ON/OFF 自体を調整候補にできる（根拠・失効条件付き。悪化したら退役、も同じ経路）。
@@ -329,9 +343,71 @@ flow-planner の SKILL.md に丸ごと固定で、モデルの強弱に応じて
 - flow-worker / flow-planner は**基礎規律の正典として維持**する。手法パックはその上の増分で、
   基礎を分解して全部パック化することはしない。全員に常に効く規律まで条件付きにすると、
   既定の品質が下がる。
-- 判定: 規律の追加・変更が契約編集だけで効く（エンジンの変更なし）。段の降格で手法が自動で
-  厚くなり、復帰で薄くなる。手法セット × モデル × 仕事種別の PASS 率と消費が台帳から出る。
-- 規模: 中。スキーマ拡張・読み手 2 か所・dashboard 面。実行系と状態ファイルは増やさない。
+- 判定: 規律の追加・変更が契約編集だけで効く（エンジンの変更なし）。dashboard のカタログから
+  選択だけで ON になり、tuning.json の revision が進む。段の降格で手法が自動で厚くなり、
+  復帰で薄くなる。手法セット × モデル × 仕事種別の PASS 率と消費が台帳から出る。
+- 規模: 中。スキーマ拡張・カタログデータ・読み手 2 か所・dashboard 面。実行系と状態ファイルは
+  増やさない。
+
+初期収録プリセット（案）。既定の `when` は目安で、ユーザーは選択時に上書きできる。
+「小段」= 実行プロファイルの段が小、「ローカル」= 相対コスト係数 0。出典の実測 = 2026-08-09 の
+qwen3.5:9b × agent-flow 品質診断（偽 done・自己承認・パス捏造・タスク誤読が真因だった）。
+
+**実行前 — 着手規律（worker）**
+
+| id | 規律（一言） | 役割 | 既定の when | 出典・根拠 |
+|---|---|---|---|---|
+| `restate-task` | タスクを 3 行で復唱し、成果物の形式を宣言してから着手する | worker 全 kind | 小段 | 実測（タスク誤読） |
+| `path-grounding` | 触るパスを実在確認してから編集する。無ければ作らず質問へ | worker（work / generate） | 小段 | 実測（論理名を実パスと誤読し捏造） |
+| `plan-first` | 手順・触るファイル・完了条件を列挙してから実行する | worker | 小・中段 | plan モードの縮退分の再有効化 |
+| `spec-first` | 入出力契約・境界条件を先に書き、実装後に差分を自己照合する | worker | 小段 | contract-driven-development スキル |
+| `test-first` | 失敗するテストを先に書き、通してから終える | worker（work） | 小・中段 × コード系 | test-driven-development スキル |
+| `failure-modes-first` | 失敗モードと回復手段を列挙してから実装する | worker・planner | 可用性系の仕事種別 | failure-driven-development スキル |
+
+**実行中 — ガード（worker）**
+
+| id | 規律（一言） | 役割 | 既定の when | 出典・根拠 |
+|---|---|---|---|---|
+| `scope-guard` | 宣言外のファイルに触れたら停止して報告する | worker | 小段 | flow-worker「範囲を守る」の強化。F7 割付と連動 |
+| `one-change-per-step` | 1 応答 1 変更に制限し、各変更後に検証する | worker | 小段（特にローカル） | 弱いモデルの複合指示追従の弱さ |
+| `consistency-sweep` | 変更の波及箇所を先に列挙し、全箇所へ同じ修正を当てる | worker（work） | 小・中段 | codd-gate・整合性駆動 |
+| `output-contract-strict` | 出力スキーマを再掲し、自己検証と修復を 1 回だけ行う | 全 kind | ローカル | ollama-json read セットの実装知見 |
+| `persist-until-done` | 解決しきるまでターンを終えない。未解決のまま done を名乗らない | worker・session | 小段 | OpenAI GPT-4.1 guide の persistence。偽 done 対策と同型 |
+| `plan-reflect-each-tool` | 各ツール呼び出しの前に計画し、後に結果を振り返る | worker | 小・中段 | OpenAI GPT-4.1 guide の tool-calling / planning |
+
+**検証・受入（verify / evaluator）**
+
+| id | 規律（一言） | 役割 | 既定の when | 出典・根拠 |
+|---|---|---|---|---|
+| `evidence-or-fail` | コマンドと終了コードの引用がない項目は pass にしない | verify | 小段で必須化 | backlog-verifier。是正済み規律の宣言化 |
+| `no-self-approval` | 成果を作った呼び出しと同じ口の承認を禁止。非 done は ok:false を明示する | verify・evaluator・session | 小段 | 実測（自己承認 gate・偽 done） |
+| `adversarial-verify` | 壊す側に立ち、反例を N 個探してから判定する | verify | 小・中段 | 敵対的レビュー手法 |
+| `checklist-acceptance` | 完了条件を列挙し 1 項目ずつ照合。差し戻しは具体的に書く | evaluator | 小段 | backlog-planner / verifier の acceptance 方式 |
+
+**構造系 — planner への hint（fan-out は既存ノード）**
+
+| id | 規律（一言） | 役割 | 既定の when | 出典・根拠 |
+|---|---|---|---|---|
+| `parallel-review` | 成果ノードの後に観点別（正確性・安全・性能）の verify / judge fan-out を計画に入れる | planner | 中段以下 × 外向き成果物 | agent-reviewer スキル |
+| `council-review` | 論理・批判・利用者の 3 観点 judge で合議する | planner | 判断系の仕事種別 | council-system スキル |
+| `self-consistency` | 同一タスクを N 並列で生成し judge の多数決を取る | planner | ローカルのみ（並列がほぼ無料） | self-consistency 手法 |
+| `derive-twice` | 別の解法で 2 回導き、一致を確認する | planner・verify | ローカル × 計算・抽出系 | 再導出検証の一般化 |
+
+**公式パターン集との対応**（カタログの出典。文言・構成をここから採る）
+
+| 公式資料 | 収録パターン | 対応プリセット |
+|---|---|---|
+| Anthropic [Building Effective Agents](https://www.anthropic.com/engineering/building-effective-agents) | prompt chaining / routing / parallelization（sectioning・voting）/ orchestrator-workers / evaluator-optimizer | voting → `self-consistency`・`parallel-review`。evaluator-optimizer → `adversarial-verify`・`checklist-acceptance` の反復形。orchestrator-workers は agent-flow の実行系そのもの |
+| Anthropic [Claude Code Best Practices](https://code.claude.com/docs/en/best-practices) | Explore → Plan → Code → Commit、TDD、別インスタンスにレビューさせる multi-Claude | `plan-first`・`test-first`・`no-self-approval` |
+| Anthropic 公式スキル集（anthropics/skills） | 配布可能なスキル形式の実例 | カタログの形式の先例（1 パック 1 ファイル・宣言的・既定 OFF） |
+| OpenAI [A practical guide to building agents](https://cdn.openai.com/business-guides-and-resources/a-practical-guide-to-building-agents.pdf) | manager / handoffs、guardrails（関連性・安全・PII・出力検証・tool safeguards）、human-in-the-loop | guardrails → `scope-guard`・`output-contract-strict` と同型。HITL は agent-project の needs 経路が既に担う |
+| OpenAI [GPT-4.1 Prompting Guide](https://developers.openai.com/cookbook/examples/gpt4-1_prompting_guide) | agentic 3 注意書き（persistence / tool-calling / planning。社内 SWE-bench Verified +約20%） | `persist-until-done`・`plan-reflect-each-tool`。文言をほぼそのまま断片化できる |
+| OpenAI reasoning best practices | 推論モデルに CoT 指示を足すなと明記 | プリセットではなく **F17 の段連動そのものの裏付け**（強い段 = 外す） |
+
+Google（prompt engineering whitepaper・ADK の critic / loop agent）と Microsoft（AutoGen の
+reflection / group chat）にも同型のパターン集があるが、`council-review`・evaluator 系と重なる
+ので初期収録の出典は上の 2 社で足りる。カタログ各 JSON には `origin`（出典 URL）を持たせ、
+公式側の改訂に追随できるようにする。
 
 ---
 
@@ -526,8 +602,8 @@ S1〜S3 は「読めるが書かない」を守るため、旧系統の読取互
 | S18 | 一致率の高い判断を決定化（F15 段 2） | S16 の計測で閾値超えの判断が特定できたこと。決定化後も抜き取り照合で退行を検出する |
 | S19 | kiro-log-exporter を退役（F16） | agent-audit の collect が kiro 源泉で実運用に入っていること |
 | S20 | ローカル work（F6）・ToolPolicy（F12） | F6 = S10 の台帳で段 0〜3 の節約実績と品質が確認できたこと。F12 = read セット運用で権限不足による人手介入が台帳に一定数現れること |
-| S25 | 手法パックの契約と読み手（F17 前半）。`methods` 節・`when` の資源条件、agent-flow プロンプト組み立てへの追補注入と planner hint、agent-loop の適用拡張 | S11 済（agent-tuning がある）。`when` は S5 の係数と実行プロファイルの段を参照する。段を変える単体テストで注入が切り替わること |
-| S26 | 手法パックの設定口（F17 後半）。dashboard の一覧・編集・ON/OFF 面と CLI の list / enable / disable | S25。dashboard と CLI のどちらから書いても同じ契約の revision が単調に増え、稼働中の agent-loop / flow に次回呼び出しから効く |
+| S25 | 手法パックの契約・カタログ・読み手（F17 前半）。`methods` 節・`when` の資源条件、`methods/` プリセット 20 件（golden テスト・出典 `origin` 付き）、agent-flow プロンプト組み立てへの追補注入と planner hint、agent-loop の適用拡張 | S11 済（agent-tuning がある）。`when` は S5 の係数と実行プロファイルの段を参照する。段を変える単体テストで注入が切り替わること |
+| S26 | 手法パックの設定口（F17 後半）。dashboard のカタログ選択面（説明・既定 when 表示、選択だけで ON/OFF）と自由作成フォーム、CLI の list / enable / disable / add。適用は複製 + `source: methods/<id>@<hash>` | S25。dashboard と CLI のどちらから書いても同じ契約の revision が単調に増え、稼働中の agent-loop / flow に次回呼び出しから効く。カタログ更新は再適用しない限り稼働へ入らない |
 | S27 | 手法の効果を台帳へ（F17 測定）。run 証跡へ有効手法セットを記録、F4 集計に手法軸を追加 | S25。効いた / 効かない / 悪化の判定は S17 の比較基盤と合流する |
 
 ### 5.7 トラック M — 入口を足す（M1・M2・M3）
