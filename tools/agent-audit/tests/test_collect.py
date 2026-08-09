@@ -20,6 +20,17 @@ class LedgerCollectTests(AuditTestCase):
         self.assertEqual(len(recs), 3)
         self.assertTrue(all(r["kind"] == "ledger" for r in recs))
 
+    def test_quota_observation_rows_are_not_usage(self):
+        """quota 観測行（消費 0）は台帳に同居するが、消費レコードには昇格させない。"""
+        self.write_ledger("20260803", [
+            ledger_row(),
+            ledger_row(ts="2026-08-03T11:00:00Z", seconds=0.0, ref="",
+                       quota_kind="rate_limit", reset_at="2026-08-03T12:00:00Z"),
+        ])
+        st = self.make_store()
+        self.assertEqual(collect.collect_budget_ledger(self.make_args(), st), 1)
+        self.assertEqual([r["ts"] for r in st.iter_records()], ["2026-08-03T10:00:00Z"])
+
     def test_measured_flag_follows_tokens(self):
         self.write_ledger("20260803", [ledger_row(tokens_in=100, tokens_out=10),
                                        ledger_row(ts="2026-08-03T11:00:00Z")])
@@ -62,9 +73,48 @@ class FlowBusCollectTests(AuditTestCase):
         self.assertEqual(recs["r1"]["error_class"], "quota")
         self.assertEqual(recs["r1"]["retries"], 2)
         self.assertEqual(recs["r3"]["verify"], "pass")
+        # run の verdict は run スコープの名前で持ち、ノードの品質は status で見る
         result = recs["r3/n1"]
-        self.assertEqual((result["purpose"], result["model"], result["verify"]),
-                         ("work", "sonnet", "pass"))
+        self.assertEqual((result["purpose"], result["model"], result["status"], result["run_verify"]),
+                         ("work", "sonnet", "done", "pass"))
+        self.assertNotIn("verify", result, "run 単位の判定をノードの verify として配らない")
+
+    def test_node_outcomes_are_per_node_not_the_run_verdict(self):
+        """1 つの run に別モデルのノードが並ぶとき、品質はノードごとに分かれる。
+
+        run 全体の統一 verify を各ノードへ配ると、失敗したノードのモデルまで pass を
+        貰い、格付け（モデル別 PASS 率）が測れなくなる。
+        """
+        bus = os.path.join(self.tmp, "bus")
+        self._make_run(bus, "r1", "done", events=[{"kind": "verify", "verdict": "pass"}])
+        results = os.path.join(bus, "runs", "r1", "results")
+        os.makedirs(results)
+        for node, model, status in (("n1", "opus", "done"), ("n2", "qwen3", "failed")):
+            with open(os.path.join(results, f"{node}.json"), "w", encoding="utf-8") as f:
+                json.dump({"id": node, "kind": "work", "status": status, "model": model}, f)
+        st = self.make_store()
+        collect.collect_flow_buses(self.make_args(flow_buses=[bus]), st)
+        recs = {r["ref"]: r for r in st.iter_records()}
+        self.assertEqual(recs["r1/n1"]["status"], "done")
+        self.assertEqual(recs["r1/n2"]["status"], "failed")
+        self.assertEqual({recs["r1/n1"]["run_verify"], recs["r1/n2"]["run_verify"]}, {"pass"})
+
+    def test_collected_runs_are_not_rescanned(self):
+        """収集済みの終端 run は results/ ごと読み飛ばす（run 数に比例して重くならない）。"""
+        bus = os.path.join(self.tmp, "bus")
+        self._make_run(bus, "r1", "done")
+        results = os.path.join(bus, "runs", "r1", "results")
+        os.makedirs(results)
+        with open(os.path.join(results, "n1.json"), "w", encoding="utf-8") as f:
+            json.dump({"id": "n1", "kind": "work", "status": "done"}, f)
+        st = self.make_store()
+        args = self.make_args(flow_buses=[bus])
+        self.assertEqual(collect.collect_flow_buses(args, st), 2)
+        os.chmod(results, 0o000)       # 2 回目に触ったら glob が空になって差が出る
+        try:
+            self.assertEqual(collect.collect_flow_buses(args, st), 0)
+        finally:
+            os.chmod(results, 0o755)
 
     def test_missing_configured_source_fails_closed(self):
         args = self.make_args(flow_buses=[os.path.join(self.tmp, "no-such-bus")])

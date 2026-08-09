@@ -87,12 +87,15 @@ class UsageTests(AuditTestCase):
             {"id": "l3", "ts": ts, "kind": "ledger", "purpose": "work",
              "agent_cli": "ollama", "model": "m-b", "seconds": 1,
              "tokens_in": 50, "tokens_out": 0},
+            # 品質はノード自身の結末（status）で数える。run 全体の統一 verify
+            # （run_verify）は同じ run の全ノードに同じ値が付くので、モデル別の
+            # PASS 率の入力にすると planner とワーカーが同じ判定を貰ってしまう。
             {"id": "r1", "ts": ts, "kind": "result", "purpose": "work",
-             "model": "m-a", "verify": "pass"},
+             "model": "m-a", "status": "done", "run_verify": "fail"},
             {"id": "r2", "ts": ts, "kind": "result", "purpose": "work",
-             "model": "m-a", "verify": "fail"},
+             "model": "m-a", "status": "failed", "run_verify": "fail"},
             {"id": "r3", "ts": ts, "kind": "result", "purpose": "work",
-             "model": "m-b", "verify": "pass"},
+             "model": "m-b", "status": "done", "run_verify": "fail"},
         ]
         for rec in records:
             st.append_record(rec)
@@ -100,10 +103,10 @@ class UsageTests(AuditTestCase):
         rows = stats.aggregate_ratings(self.make_args(), st, "total")
         self.assertEqual(rows, [
             {"rank": 1, "purpose": "work", "model": "m-b", "usage_runs": 1,
-             "total_tokens": 50.0, "verify_runs": 1, "verify_pass": 1,
+             "total_tokens": 50.0, "outcome_runs": 1, "outcome_ok": 1,
              "average_tokens": 50.0, "pass_rate": 1.0},
             {"rank": 2, "purpose": "work", "model": "m-a", "usage_runs": 2,
-             "total_tokens": 400.0, "verify_runs": 2, "verify_pass": 1,
+             "total_tokens": 400.0, "outcome_runs": 2, "outcome_ok": 1,
              "average_tokens": 200.0, "pass_rate": 0.5},
         ])
 

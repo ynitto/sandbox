@@ -304,10 +304,21 @@ def agent_error_chain(blob: str) -> "list[str]":
     return chain
 
 
-def classify_agent_failure(blob: str) -> "tuple[str, str] | None":
+def _cli_error_patterns(cli: str) -> tuple:
+    """その CLI 自身の errors[] だけ（読めなければ空）。"""
+    if not cli:
+        return ()
+    try:
+        return tuple(_agentcli.load_cli(str(cli)).get("errors") or ())
+    except Exception:  # noqa: BLE001 — 定義が読めなくても分類は続ける
+        return ()
+
+
+def classify_agent_failure(blob: str, cli: str = "") -> "tuple[str, str] | None":
     """エラー本文を (class, hint) に分類する（該当なしは None＝内容の問題）。
-    発生元マーカー > [agent-error:] タグ（agent-flow 経由）> プラグイン定義（CLI 固有知識）
-    > 汎用パターン の順に見る。全分類が要るときは agent_error_chain を使う。"""
+    発生元マーカー > [agent-error:] タグ（agent-flow 経由）> 実行した CLI の定義 >
+    読み込み済みの他 CLI 定義 > 汎用パターン の順に見る。
+    全分類が要るときは agent_error_chain を使う。"""
     chain = agent_error_chain(blob)
     if not chain:
         return None
@@ -317,7 +328,11 @@ def classify_agent_failure(blob: str) -> "tuple[str, str] | None":
     # 同じクラスの規則があるとその文言が出る（codex の usage limit に kiro の月間上限の案内が
     # 付く、という取り違えが実際に起きた）。一致する規則が無いクラス（[agent-error:] タグや
     # 発生源マーカー由来）だけ、従来どおりクラス一致の汎用ヒントへ落とす。
-    rules = _plugin_error_patterns() + _AGENT_ERROR_PATTERNS
+    #
+    # **実行した CLI が分かるときは、その定義の規則を先に見る。** 一致した規則から採るだけでは
+    # まだ足りない——複数の CLI が「usage limit」のような同じ語を拾う規則を持つと、どれが先に
+    # 当たるかが「プラグインキャッシュに何が載っているか」＝実行順で決まってしまう。
+    rules = _cli_error_patterns(cli) + _plugin_error_patterns() + _AGENT_ERROR_PATTERNS
     hint = next((h for c, pat, h in rules if c == cls and pat.search(text)), "")
     if not hint:
         hint = next((h for c, _, h in _AGENT_ERROR_PATTERNS if c == cls), "")
@@ -332,7 +347,7 @@ def _agent_failure(cli: str, rc: int, out: str, err: str) -> str:
     全ノードが理由不明の failed になった。エラーは末尾に出るので末尾を拾い、分類（トリアージ）は
     機械可読タグとして先頭に載せる。"""
     blob = f"{out or ''}\n{err or ''}"
-    triage = classify_agent_failure(blob)
+    triage = classify_agent_failure(blob, cli)
     head = f"{cli} 失敗 (rc={rc})"
     if triage:
         cls, hint = triage
@@ -465,16 +480,20 @@ def _node_budget_state() -> "dict | None":
 
 
 def _node_budget_record(seconds: float, ref: str = "", agent_cli: str = "",
-                        model: str = "", tokens_in=None, tokens_out=None, usd=None) -> None:
+                        model: str = "", tokens_in=None, tokens_out=None, usd=None,
+                        extra: "dict | None" = None) -> None:
     """台帳へ 1 記帳を追記する（O_APPEND — 複数プロセスの同時追記でも行は壊れない）。
-    tokens_* は実測できたときだけ渡す（推定値は書かない）。agent_cli / model は帰属。"""
-    if seconds <= 0 and not tokens_in and not tokens_out:
+    tokens_* は実測できたときだけ渡す（推定値は書かない）。agent_cli / model は帰属。
+    extra は観測行（quota_kind / reset_at）用の追加フィールド。"""
+    if seconds <= 0 and not tokens_in and not tokens_out and not extra:
         return
     d = os.path.join(_node_budget_dir(), "ledger")
     try:
         os.makedirs(d, exist_ok=True)
         rec = {"ts": _utc_iso(), "workload": _NODE_BUDGET_WORKLOAD,
-               "tool": _NODE_BUDGET_TOOL, "seconds": round(float(seconds), 3), "ref": ref}
+               "tool": _NODE_BUDGET_TOOL, "seconds": round(float(seconds), 3),
+               "ref": ref, "purpose": ref}
+        rec.update(extra or {})
         if agent_cli:
             rec["agent_cli"] = str(agent_cli)
         if model:
@@ -494,6 +513,27 @@ def _node_budget_record(seconds: float, ref: str = "", agent_cli: str = "",
             os.close(fd)
     except OSError:
         pass    # 記帳失敗で実行を止めない（台帳は best-effort、上限は次の実行前チェックで効く）
+
+
+def _record_quota_observation(cli: str, blob: str) -> None:
+    """quota で落ちた CLI を台帳へ**観測**として残す（消費 0 行）。
+
+    細分した quota（恒久枯渇 / 時限レート制限と復帰時刻）を失敗メッセージの中で消さず、
+    管理面の段判定が読める場所へ置く。台帳はエンジンが既に書き、管理面が既に読むので、
+    これで書き手も経路も増えない（C7）。agent-flow の同名関数と同じ規約。"""
+    if not cli:
+        return
+    try:
+        spec = _agentcli.load_cli(cli)
+        detail = _agentcli.classify_error(spec, blob, detailed=True, now=time.time())
+    except Exception:  # noqa: BLE001 — 観測の失敗で実行を止めない
+        return
+    if not detail or not detail.get("quota_kind"):
+        return
+    extra = {"quota_kind": detail["quota_kind"]}
+    if detail.get("reset_at"):
+        extra["reset_at"] = detail["reset_at"]
+    _node_budget_record(0.0, ref="", agent_cli=cli, extra=extra)
 
 
 # --- agent-control（管理面→エンジンの宣言的オーケストレーション契約） ----------------------
@@ -641,7 +681,11 @@ def _run_agent_cli(prompt: str, model: "str | None", purpose: str = "") -> str:
                                         ((_cost_tokens or None) if _cost_tokens else None)),
                             usd=(_cost_usd or None) if _cost_usd else None)
         if proc.returncode != 0:
-            raise RuntimeError(_agent_failure(cmd[0], proc.returncode, proc.stdout, proc.stderr))
+            message = _agent_failure(cmd[0], proc.returncode, proc.stdout, proc.stderr)
+            triage = classify_agent_failure(f"{proc.stdout or ''}\n{proc.stderr or ''}")
+            if triage and triage[0] == "quota":
+                _record_quota_observation(cli, f"{proc.stdout or ''}\n{proc.stderr or ''}")
+            raise RuntimeError(message)
         text = strip_ansi(proc.stdout).strip()
         if out_file:   # codex 等: 最終応答ファイルが取れればそれを正とする（stdout はイベントログ）
             with contextlib.suppress(OSError):

@@ -195,7 +195,7 @@ test('予算 v2: rebalance は R を weight 比で配り min/max でクランプ
       version: 2,
       tokens: 1000000,
       period: 'total',
-      computed: { agents: { claude: { quota_kind: 'rate_limit', reset_at: '2030-01-01T00:00:00Z' } } },
+      computed: { note: '別の書き手が置いた未知キー' },
       allocation: {
         mode: 'auto',
         workloads: {
@@ -226,7 +226,7 @@ test('予算 v2: rebalance は R を weight 比で配り min/max でクランプ
   assert.strictEqual(c.amigos, undefined);
   assert.strictEqual(raw.computed.computed_by, 'dashboard');
   assert.ok(raw.computed.computed_at);
-  assert.strictEqual(raw.computed.agents.claude.quota_kind, 'rate_limit', 'quota 復帰予定を消さない');
+  assert.strictEqual(raw.computed.note, '別の書き手が置いた未知キー', 'computed の未知キーを消さない');
 });
 
 // --- ノード予算 v2: レート較正（中央値） -------------------------------------
@@ -252,6 +252,57 @@ test('予算 v2: calibrateRates は seconds と実測が両方ある行から中
   const raw = JSON.parse(fs.readFileSync(path.join(dir, 'config.json'), 'utf8'));
   assert.strictEqual(raw.rates.per_cli['claude:opus'], 180);
   assert.strictEqual(raw.version, 2);
+});
+
+// --- ノード予算 v2: quota 観測の導出 -----------------------------------------
+// 観測は台帳の行として届き、状態ファイルにはしない。書き手を増やさず、古い観測の掃除も
+// 要らない（period 窓から自然に落ちる）ことがこの設計の要点。
+
+test('予算 v2: quota 観測行は消費に数えず、CLI ごとの現在状態へ畳む', () => {
+  const dir = tmpdir('orch-quota-');
+  writeLedger(dir, utcDay(), [
+    { ts: '2020-01-01T00:00:00Z', workload: 'flow', seconds: 5, agent_cli: 'claude', tokens_in: 100, tokens_out: 0 },
+    { ts: '2020-01-01T00:01:00Z', workload: 'flow', seconds: 0, agent_cli: 'claude', quota_kind: 'rate_limit', reset_at: '2020-01-01T01:00:00Z' },
+    { ts: '2020-01-01T00:02:00Z', workload: 'flow', seconds: 0, agent_cli: 'codex', quota_kind: 'exhausted' },
+  ]);
+  const u = budget.usage(budgetCfg(dir));
+  assert.strictEqual(u.workloads.flow.totalTokens, 100, '観測行はトークンを増やさない');
+  assert.strictEqual(u.workloads.flow.seconds, 5, '観測行は秒を増やさない');
+  assert.strictEqual(u.workloads.flow.recordCount, 1, '観測行は実行回数に数えない');
+  assert.deepStrictEqual(u.config.computed.agents.claude,
+    { quota_kind: 'rate_limit', observed_at: '2020-01-01T00:01:00Z', reset_at: '2020-01-01T01:00:00Z' });
+  assert.strictEqual(u.config.computed.agents.codex.quota_kind, 'exhausted');
+});
+
+test('予算 v2: 同じ CLI の観測は最後の 1 件が現在の状態', () => {
+  const dir = tmpdir('orch-quota-latest-');
+  writeLedger(dir, utcDay(), [
+    { ts: '2020-01-01T00:00:00Z', workload: 'flow', seconds: 0, agent_cli: 'claude', quota_kind: 'exhausted' },
+    { ts: '2020-01-01T00:05:00Z', workload: 'flow', seconds: 0, agent_cli: 'claude', quota_kind: 'rate_limit', reset_at: '2020-01-01T01:00:00Z' },
+  ]);
+  const agentsState = budget.usage(budgetCfg(dir)).config.computed.agents;
+  assert.strictEqual(agentsState.claude.quota_kind, 'rate_limit');
+});
+
+test('予算 v2: 復帰時刻の無い rate_limit は観測時刻 + 既定 TTL で失効する', () => {
+  // CLI がメッセージに復帰時刻を載せないのは普通にある。塞ぎっぱなしにすると
+  // 「止めないための機能」が「二度と使えない」になる。
+  const derived = budget.quotaAgentsFrom([
+    { ts: '2020-01-01T00:00:00Z', agent_cli: 'claude', quota_kind: 'rate_limit' },
+  ]);
+  assert.strictEqual(
+    derived.claude.reset_at,
+    new Date(Date.parse('2020-01-01T00:00:00Z') + budget.QUOTA_RATE_LIMIT_TTL_SEC * 1000).toISOString()
+  );
+});
+
+test('予算 v2: 観測時刻すら読めない行は誰も塞がない', () => {
+  const derived = budget.quotaAgentsFrom([
+    { ts: 'not-a-date', agent_cli: 'claude', quota_kind: 'rate_limit' },
+    { agent_cli: '', quota_kind: 'exhausted' },
+  ]);
+  assert.ok(Date.parse(derived.claude.reset_at) <= 0, '過去の時刻 = すぐ復帰扱い');
+  assert.strictEqual(Object.keys(derived).length, 1, 'agent_cli の無い行は落とす');
 });
 
 test('予算 v2: rate 解決は cli:model → cli → default → 0 の順', () => {

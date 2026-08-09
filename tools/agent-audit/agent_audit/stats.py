@@ -68,7 +68,12 @@ def cmd_stats(args) -> int:
 
 
 def aggregate_ratings(args, store: Store, period: str) -> "list[dict]":
-    """仕事種別×モデルで、台帳の消費と flow verify の品質を結合する。"""
+    """仕事種別×モデルで、台帳の消費と flow の**ノード単位**の結末を結合する。
+
+    品質の入力は result レコードの `status`（done / failed）で、run 全体の統一 verify
+    （`run_verify`）ではない。統一 verify は run に 1 回・node id 無しで出るので、それを
+    ノードへ配ると planner とワーカーが別モデルでも同じ判定を貰い、モデル別の PASS 率が
+    測れない。ここが測れないと F4 の格付けは印象に戻る。"""
     ledger, sessions, _runs = load_period_records(store, period)
     links = correlate(ledger, sessions, slack_sec=float(getattr(args, "join_slack_sec", 120.0)))
     sess_by_id = {s["id"]: s for s in sessions}
@@ -79,7 +84,7 @@ def aggregate_ratings(args, store: Store, period: str) -> "list[dict]":
         key = (purpose or "(なし)", model or "(不明)")
         return groups.setdefault(key, {
             "purpose": key[0], "model": key[1], "usage_runs": 0, "total_tokens": 0.0,
-            "verify_runs": 0, "verify_pass": 0,
+            "outcome_runs": 0, "outcome_ok": 0,
         })
 
     for led in ledger:
@@ -109,22 +114,22 @@ def aggregate_ratings(args, store: Store, period: str) -> "list[dict]":
         ts = parse_iso(rec.get("ts"))
         if floor and (ts is None or ts < floor):
             continue
-        verdict = str(rec.get("verify") or "")
-        if verdict not in ("pass", "fail"):
+        outcome = str(rec.get("status") or "")
+        if outcome not in ("done", "failed"):
             continue
         b = bucket(str(rec.get("purpose") or ""),
                    str(rec.get("model") or rec.get("agent_cli") or ""))
-        b["verify_runs"] += 1
-        b["verify_pass"] += int(verdict == "pass")
+        b["outcome_runs"] += 1
+        b["outcome_ok"] += int(outcome == "done")
 
     rows = []
     for b in groups.values():
         usage_runs = b["usage_runs"]
-        verify_runs = b["verify_runs"]
+        outcome_runs = b["outcome_runs"]
         rows.append({
             **b,
             "average_tokens": round(b["total_tokens"] / usage_runs, 1) if usage_runs else None,
-            "pass_rate": round(b["verify_pass"] / verify_runs, 4) if verify_runs else None,
+            "pass_rate": round(b["outcome_ok"] / outcome_runs, 4) if outcome_runs else None,
         })
     out = []
     for purpose in sorted({r["purpose"] for r in rows}):
@@ -153,7 +158,7 @@ def cmd_ratings(args) -> int:
         pass_text = f"{r['pass_rate']:.1%}" if r["pass_rate"] is not None else "-"
         avg_text = f"{r['average_tokens']:.1f}" if r["average_tokens"] is not None else "-"
         print(f"{r['rank']:>2} {r['purpose']:<16} {r['model']:<24} {pass_text:>7} "
-              f"{avg_text:>12} {r['verify_runs']:>5}")
+              f"{avg_text:>12} {r['outcome_runs']:>5}")
     if not rows:
-        print("（消費または verify レコードがありません）")
+        print("（消費または結果レコードがありません）")
     return 0

@@ -105,6 +105,19 @@ class AgentFailureTests(unittest.TestCase):
         self.assertIn("利用上限", msg.split("\n")[0])   # 見出しで分かる
         self.assertIn("usage limit", msg)               # 原文も残る（末尾を拾う）
 
+    def test_hint_comes_from_the_cli_that_actually_ran(self):
+        """同じ語（usage limit）を拾う規則を複数の CLI が持つとき、走った CLI の文言を出す。
+
+        規則を全定義から混ぜて先頭一致で採ると、どれが当たるかは「プラグインキャッシュに
+        何が載っているか」＝実行順で決まる。同じ入力で違う案内が出ると、人は自分が使って
+        いない CLI の対処法を読まされる。
+        """
+        err = "ERROR: You've hit your usage limit."
+        for name in ("codex", "cursor", "copilot"):
+            kf.load_agent_plugin(name)      # キャッシュを汚してから引く
+        self.assertIn("Codex", kf._agent_failure("codex", 1, "", err).split("\n")[0])
+        self.assertIn("Cursor", kf._agent_failure("cursor", 1, "", err).split("\n")[0])
+
     def test_auth_failure_is_surfaced(self):
         msg = kf._agent_failure("kiro-cli", 0, "", "SendMessageError: AccessDeniedException")
         self.assertIn("認証", msg.split("\n")[0])

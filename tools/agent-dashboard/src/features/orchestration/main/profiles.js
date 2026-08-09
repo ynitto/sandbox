@@ -187,10 +187,15 @@ function pickTierFromSteps(steps, remaining) {
 function agentHasRoom(allocationAgents, usageAgents, computedAgents, cli, nowMs) {
   const quota = isPlainObject(computedAgents) ? computedAgents[cli] : null;
   if (isPlainObject(quota)) {
+    // exhausted は「期間が変わるまで戻らない枠」。観測は period 窓の台帳から導出されるので、
+    // 期間が変わればこのエントリ自体が消える（ここで失効時刻を持たなくてよい）。
     if (quota.quota_kind === 'exhausted') return false;
+    // rate_limit は復帰時刻まで塞ぐ。**時刻が読めないときは塞がない** — 塞ぎっぱなしにすると
+    // 「止めないための機能」が「二度と使えない」を作る。導出側（budget.quotaAgentsFrom）が
+    // 既定 TTL を埋めるので、ここへ来る時点で読めないのは判断材料が無い場合だけ。
     if (quota.quota_kind === 'rate_limit') {
       const resetMs = Date.parse(quota.reset_at || '');
-      if (!Number.isFinite(resetMs) || nowMs < resetMs) return false;
+      if (Number.isFinite(resetMs) && nowMs < resetMs) return false;
     }
   }
   const alloc = isPlainObject(allocationAgents) ? allocationAgents[cli] : null;

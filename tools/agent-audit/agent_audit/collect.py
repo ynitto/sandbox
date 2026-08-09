@@ -117,6 +117,8 @@ def collect_budget_ledger(args, store: Store) -> int:
                     continue
                 if not isinstance(row, dict) or "ts" not in row:
                     continue
+                if row.get("quota_kind"):
+                    continue    # 消費ではなく quota 観測の行（node-budget 契約）。集計に混ぜない
                 ts = parse_iso(row.get("ts")) or 0.0
                 rec = {
                     "id": record_id("budget-ledger", path, f"{offset}+{lineno}"),
@@ -244,6 +246,11 @@ def collect_flow_buses(args, store: Store) -> int:
             if status not in ("done", "failed", "cancelled", "canceled"):
                 continue          # 非終端 run は収集しない（終端後に一度だけ拾う）
             rid = record_id("flow-bus", bus, os.path.basename(run_dir))
+            # run レコードは results/ を拾い終えた**後**に書く。この id が「この run は
+            # 収集済み」の目印なので、先に書くと結果の取りこぼしが起きうるし、逆にこの
+            # skip を外すと終端 run の results/ を毎回 glob して読み直すことになる。
+            if store.has_record(rid):
+                continue
             failure = str(meta.get("failure_reason") or "")
             m = ERROR_TAG_RE.search(failure)
             retries, verify = _flow_events_summary(run_dir)
@@ -258,8 +265,6 @@ def collect_flow_buses(args, store: Store) -> int:
                 "retries": retries,
                 "verify": verify,
             }
-            if store.append_record(rec):
-                added += 1
             results_dir = os.path.join(run_dir, "results")
             for result_path in sorted(glob.glob(os.path.join(glob.escape(results_dir), "*.json"))):
                 result = read_json(result_path)
@@ -275,11 +280,17 @@ def collect_flow_buses(args, store: Store) -> int:
                     "purpose": result.get("kind") or "work",
                     "agent_cli": result.get("agent_cli") or "",
                     "model": result.get("model") or "",
+                    # 品質はこのノード自身の結末で見る。統一 verify は run に 1 回・node id
+                    # 無しで出る run 全体の判定なので、各ノードへ配ると別モデルのノードまで
+                    # 同じ pass/fail を貰い、モデル別の PASS 率が測れなくなる。run の判定は
+                    # 参考として run スコープであることが分かる名前で持つ。
                     "status": result.get("status") or "",
-                    "verify": verify,
+                    "run_verify": verify,
                 }
                 if store.append_record(result_rec):
                     added += 1
+            if store.append_record(rec):
+                added += 1
     return added
 
 

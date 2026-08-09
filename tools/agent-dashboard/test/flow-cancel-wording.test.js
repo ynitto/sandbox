@@ -65,6 +65,9 @@ const runActions = renderer.slice(
 
   await test('保留ボタンは hold を投函する（確認 → runAction → 再読込）', async () => {
     const calls = [];
+    // renderer は古典スクリプトなので、関数 1 本を切り出して依存を注入するにはこれしかない
+    // （他の renderer テストと同じ手口）。
+    // eslint-disable-next-line no-new-func
     const holdFlowRunTask = new Function(
       'state', 'confirmDialog', 'guard', 'api', 'uiLog', 'toast', 'reloadProject',
       `async ${grab('holdFlowRunTask')}; return holdFlowRunTask;`
@@ -89,6 +92,9 @@ const runActions = renderer.slice(
 
   await test('確認をキャンセルしたら何も投函しない', async () => {
     const calls = [];
+    // renderer は古典スクリプトなので、関数 1 本を切り出して依存を注入するにはこれしかない
+    // （他の renderer テストと同じ手口）。
+    // eslint-disable-next-line no-new-func
     const holdFlowRunTask = new Function(
       'state', 'confirmDialog', 'guard', 'api', 'uiLog', 'toast', 'reloadProject',
       `async ${grab('holdFlowRunTask')}; return holdFlowRunTask;`

@@ -109,11 +109,20 @@ agent-audit はこの 4 点を「読むだけの独立 CLI + 限定された LLM
 
 ### 3.1 正規化レコード（`schemas/audit-record.schema.json` を新設）
 
-1 行 = 1 観測単位。`kind` で 3 種を同じ封筒に入れる:
+1 行 = 1 観測単位。`kind` で種別を分け、同じ封筒に入れる:
+
+- `session` … CLI ネイティブのセッションログ 1 本
+- `run` … 実行 1 本（flow の run・project の run-log 行）
+- `result` … flow の run 内の**ノード 1 つ**の結末。`status`（done / failed）が
+  そのノードの品質で、`run_verify` は run 全体の統一 verify を参考として持つだけ
+  （node id を持たない run スコープの判定なので、ノードの品質としては使わない）
+- `ledger` … node-budget 台帳の消費 1 行（quota 観測行は収集しない。§5.1）
+- `calibration` … `calibrate --write` が残す推定と実測の乖離（§5.3）
+
 
 ```jsonc
 {"id":"aud-…",                    // sha256(source, store, native_id) の短縮。冪等キー
- "ts":"2026-08-03T10:00:00Z","kind":"session|run|ledger",
+ "ts":"2026-08-03T10:00:00Z","kind":"session|run|result|ledger|calibration",
  "source":"claude-native|kiro-native|flow-bus|project-runlog|amigos-bus|loop-log|budget-ledger",
  "node":"pc-a","cwd":"~/repo",    // cwd はホーム相対へ正規化（絶対パスを残さない・C1）
  "tool":"agent-flow","workload":"flow","ref":"worker",         // ledger/run 系
@@ -122,7 +131,8 @@ agent-audit はこの 4 点を「読むだけの独立 CLI + 限定された LLM
  "seconds":42.3,"tokens_in":12000,"tokens_out":800,"usd":0.05,
  "measured":true,                 // 実測（セッションログ由来）か推定か
  "status":"done|failed|…","error_class":"quota|auth|env|transient|…",
- "turns":14,"retries":2,"verify":"pass|fail",
+ "turns":14,"retries":2,"verify":"pass|fail",        // verify は run スコープ
+ "purpose":"work","run_verify":"pass|fail",          // result 系（ノード単位）
  "links":["aud-…"],              // 相関済みレコードへの参照（§5.3）
  "excerpt_ref":"transcripts/claude/<sid>.log"}                 // 本文は records に入れない
 ```
@@ -352,7 +362,11 @@ CLI がログの書き方を変えたときの追随は、原則 JSON 1 ファ�
 
 - 一次事実は台帳（ledger 行）。セッション実測（§4.3 で結合済み）があれば **measured** 列、
   無ければ rates 推定で **estimated** 列に計上し、**両者を混ぜた単一の数字を出さない**。
-- 軸: `--period day|month|total`（台帳と同じ UTC 区切り）× `--by workload|tool|agent_cli|model|ref|node`。
+- 軸: `--period day|month|total`（台帳と同じ UTC 区切り）×
+  `--by workload|tool|agent_cli|model|purpose|ref|node`。`purpose`（仕事種別）は台帳の
+  `purpose` 列を見て、無い旧行は `ref` で代用する。
+- 台帳の **quota 観測行**（`quota_kind` を持つ消費 0 の行。node-budget 設計を参照）は
+  収集の時点で落とす。消費ではないので、集計にも格付けにも混ぜない。
 - 出力: 表（人向け）と `--json`。dashboard が読む場合もこの JSON を契約にする
   （dashboard は現在 ledger の seconds しか集計していない——トークン表示はこの出力を
   読む表示層の変更で足せる）。
@@ -363,6 +377,20 @@ records の run 系から決定的に導く: 完了率、`[agent-error:<class>]`
 リトライ回数分布、verify pass/fail 率、needs エスカレーション数、heal 発動数、
 ツール別・期間別。すべて既存タグ・既存ファイルの再集計であり LLM 不使用。
 
+### 5.2.1 `agent-audit ratings` — 品質×消費の格付け
+
+段の上げ下げが予算残率だけで決まっていると、「この仕事にこのモデルで足りるか」が判断に
+入らない。ratings は **仕事種別（purpose）× モデル** で、台帳の平均消費と実行の成否率を
+1 枚に並べ、候補列の変更提案に実測の根拠を与える。
+
+品質の入力は **flow の result レコードの `status`（done / failed）**、つまりノード単位の
+結末である。run 全体の統一 verify（`run_verify` として run スコープの名前で持つ）は
+**使わない**——統一 verify は run に 1 回・node id 無しで出るので、それをノードへ配ると
+planner とワーカーが別モデルでも同じ判定を貰い、モデル別の率が測れなくなる。
+
+**適用は自動にしない**（コンセプト C9）。出るのは順位づけした表だけで、宣言
+（`agent-profiles` / `agents[purpose]`）の変更は学習ループの昇格経路を通す。
+
 ### 5.3 `agent-audit calibrate` — rates 較正の管理面実装
 
 node-budget 契約は「rates の較正（実測行の中央値）は管理面が行い書き戻す」と定めている。
@@ -370,6 +398,10 @@ agent-audit はこの管理面の CLI 実装になる: 実測レコードから 
 tokens/秒 中央値を計算し、既定では**提案として表示するだけ**。`--write` を明示したときに
 限り `budget_dir` の `config.json` の `rates` を更新する（唯一の外部書き込み。
 契約上の書き手が管理面と定義されているキーだけに触れ、`updated_by: "agent-audit"` を残す）。
+
+`--write` のときは、較正前の推定レート・実測レート・その乖離率を `kind: "calibration"` の
+レコードとして records へ残す。推定がどれだけ外れていたかを後から追えないと、「推定の粗さが
+そのまま判断の粗さになる」ことを示せない。
 
 ## 6. LLM 蒸留パイプライン（extract → cluster → distill［→ review］）
 
@@ -476,6 +508,7 @@ LLM 段には停止条件を重ねる（C7): 段別上限（`extract_max_calls` 
 | `collect [--source S]... [--since D] [--with-transcripts]` | 不使用 | 増分収集・正規化 |
 | `usage [--period P] [--by K] [--json]` | 不使用 | トークン・コスト集計（measured / estimated 別掲） |
 | `stats [--json]` | 不使用 | 実行品質集計 |
+| `ratings [--period P] [--json]` | 不使用 | 仕事種別×モデルの格付け（成否率と平均消費。提案のみで自動適用しない） |
 | `calibrate [--write]` | 不使用 | rates 較正の提案（--write で budget config へ反映） |
 | `extract [--limit N] [--force]` | map | レコード → 観測。間隔・蓄積ゲート（§6.4）を通ったときだけ LLM を呼ぶ |
 | `distill [--limit N] [--review] [--force]` | reduce | 観測クラスタ → 洞察。同上 |

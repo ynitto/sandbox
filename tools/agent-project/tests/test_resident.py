@@ -169,6 +169,22 @@ class NodeBudgetTests(unittest.TestCase):
         self.assertEqual(rec["workload"], "project")
         self.assertEqual(rec["tool"], "agent-project")
         self.assertEqual(rec["seconds"], 2.0)
+        self.assertEqual(rec["purpose"], "adjudicate", "仕事種別は ref の言い換えではなく明示する")
+
+    def test_quota_failure_is_recorded_as_an_observation(self):
+        """quota で落ちた CLI を台帳へ観測として残す（消費 0 行）。
+
+        これが無いと細分した quota は失敗メッセージの中で消え、管理面は「枠に当たった」ことを
+        知れない＝降格も自動復帰も起きない。agent-flow の同名テストと対。
+        """
+        km._record_quota_observation(
+            "claude", "you've hit your limit for the day")
+        led = os.path.join(self.dir, "ledger")
+        with open(os.path.join(led, os.listdir(led)[0]), encoding="utf-8") as f:
+            rec = json.loads(f.read().strip())
+        self.assertEqual((rec["agent_cli"], rec["quota_kind"], rec["seconds"]),
+                         ("claude", "exhausted", 0.0))
+        self.assertNotIn("reset_at", rec, "恒久枯渇に復帰予定は付けない")
 
 
 class NodeBudgetV2AndControlTests(unittest.TestCase):

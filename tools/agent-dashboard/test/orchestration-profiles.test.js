@@ -234,6 +234,45 @@ test('decide: 時限 quota は降格し、reset 後の復帰はヒステリシ�
   assert.strictEqual(recovered.flow.candidate.agent_cli, 'claude');
 });
 
+test('decide: exhausted の CLI は復帰時刻を持たなくても候補から外れる', () => {
+  const tiers = {
+    large: { order: 2, label: '大', candidates: [{ agent_cli: 'claude', model: 'opus' }] },
+    small: { order: 1, label: '小', candidates: [{ agent_cli: 'ollama', model: 'qwen3' }] },
+  };
+  const policy = makePolicy({ steps: [{ min_remaining_ratio: 0, tier: 'large' }], no_cap_tier: 'large' });
+  const usage = {
+    workloads: { flow: { tokenCap: 1000, totalTokens: 0 } },
+    agents: {},
+    config: {
+      allocation: { agents: {} },
+      computed: { agents: { claude: { quota_kind: 'exhausted', observed_at: '2020-01-01T00:00:00Z' } } },
+    },
+  };
+  const out = profilesMod.decide({ enabled: true, tiers, policy, state: {} }, usage, Date.parse('2030-01-01T00:00:00Z'));
+  assert.strictEqual(out.flow.candidate.agent_cli, 'ollama', '累積枯渇は時間が経っても戻さない');
+});
+
+// 復帰時刻が読めない rate_limit で塞ぎ続けると、「止めないための機能」が「二度と使えない」を
+// 作る。導出側（budget.quotaAgentsFrom）が既定 TTL を埋めるので、ここへ来る時点で読めないのは
+// 判断材料が無い場合だけ——そのときは塞がない。
+test('decide: 復帰時刻の読めない rate_limit は候補を塞がない', () => {
+  const tiers = {
+    large: { order: 2, label: '大', candidates: [{ agent_cli: 'claude', model: 'opus' }] },
+    small: { order: 1, label: '小', candidates: [{ agent_cli: 'ollama', model: 'qwen3' }] },
+  };
+  const policy = makePolicy({ steps: [{ min_remaining_ratio: 0, tier: 'large' }], no_cap_tier: 'large' });
+  const usage = {
+    workloads: { flow: { tokenCap: 1000, totalTokens: 0 } },
+    agents: {},
+    config: {
+      allocation: { agents: {} },
+      computed: { agents: { claude: { quota_kind: 'rate_limit' } } },
+    },
+  };
+  const out = profilesMod.decide({ enabled: true, tiers, policy, state: {} }, usage, Date.parse('2020-01-01T00:00:00Z'));
+  assert.strictEqual(out.flow.candidate.agent_cli, 'claude');
+});
+
 test('decide: 最下位まで降りても全滅ならそのワークロードは書かない', () => {
   const tiers = {
     large: { order: 2, label: '大', candidates: [{ agent_cli: 'claude', model: 'opus' }] },

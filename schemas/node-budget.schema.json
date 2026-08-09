@@ -88,20 +88,6 @@
                 "additionalProperties": true
               }
             },
-            "agents": {
-              "type": "object",
-              "description": "agent CLI ごとの quota 状態。rate_limit は reset_at 以降に自動復帰し、exhausted は次の更新まで候補から外す",
-              "additionalProperties": {
-                "type": "object",
-                "required": ["quota_kind"],
-                "properties": {
-                  "quota_kind": {"enum": ["exhausted", "rate_limit"]},
-                  "reset_at": {"type": "string", "description": "rate_limit の復帰予定（ISO8601 UTC）"},
-                  "observed_at": {"type": "string", "description": "quota 検出時刻（ISO8601 UTC）"}
-                },
-                "additionalProperties": true
-              }
-            },
             "computed_at": {"type": "string", "description": "ISO8601 UTC"},
             "computed_by": {"type": "string"}
           },
@@ -127,7 +113,7 @@
     },
     "ledger_record": {
       "type": "object",
-      "description": "ledger/<YYYYMMDD>.jsonl の 1 行 — 1 回の agent CLI 実行の記帳（各ツールが O_APPEND で追記。書き換え・削除はしない）。消費集計: tokens_in+tokens_out があればその値、無ければ seconds × rate で読み出し時に推定",
+      "description": "ledger/<YYYYMMDD>.jsonl の 1 行 — 1 回の agent CLI 実行の記帳（各ツールが O_APPEND で追記。書き換え・削除はしない）。消費集計: tokens_in+tokens_out があればその値、無ければ seconds × rate で読み出し時に推定。quota_kind を持つ行は消費ではなく**観測**（その CLI が枠に当たった事実）で、seconds=0・トークン無しで書く",
       "required": ["ts", "workload", "seconds"],
       "properties": {
         "ts": {"type": "string", "description": "ISO8601 UTC"},
@@ -139,6 +125,11 @@
         "seconds": {"type": "number", "minimum": 0, "description": "agent CLI の実実行秒"},
         "ref": {"type": "string", "description": "帰属（例 amigos: <mission-id>/<role>、project: <project>/<task-id>）"},
         "purpose": {"type": "string", "description": "仕事種別（例 planner / work / verify）。旧行は ref を代用"},
+        "quota_kind": {
+          "enum": ["exhausted", "rate_limit"],
+          "description": "この行が quota 観測であることを示す。exhausted=累積枠の枯渇（期間が変わるまで戻らない）/ rate_limit=時限枠（reset_at 以降に戻る）。読み手（管理面）は period 窓の最新行だけを見て候補から外すので、**この行を消す書き手は要らない**（期間が変わればウィンドウから落ちる）"
+        },
+        "reset_at": {"type": "string", "description": "quota_kind=rate_limit の復帰予定（ISO8601 UTC）。CLI のメッセージから取れなかったときは省略し、読み手が ts + 既定 TTL で失効させる"},
         "node": {"type": "string", "description": "ノード ID"},
         "agent_cli": {"type": "string", "description": "v2: 実行したエージェント CLI 名（組み込み名またはドロップイン名）"},
         "model": {"type": "string", "description": "v2: 実行モデル名（指定があったときだけ）"},
