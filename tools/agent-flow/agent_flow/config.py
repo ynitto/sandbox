@@ -2,7 +2,7 @@ from __future__ import annotations
 # config.py — 元 agent-flow.py の 84-303 行目（機械分割・内容無改変）。
 # 単体 import しない。agent_flow/__init__.py が共有名前空間へ順に exec 合成する。
 # --------------------------------------------------------------------------
-# 設定ファイル（kiro-loop と同じ流儀: YAML 任意 / JSON フォールバック）
+# 設定ファイル（agent-loop と同じ流儀: YAML 任意 / JSON フォールバック）
 # --------------------------------------------------------------------------
 try:
     import yaml  # type: ignore

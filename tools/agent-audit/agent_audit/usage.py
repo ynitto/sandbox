@@ -13,10 +13,10 @@ import statistics
 from .collect import correlate
 from .configfile import resolve_audit_dir, resolve_budget_dir
 from .scrub import scrub_obj
-from .store import Store
+from .store import Store, record_id
 from .util import log, now_iso, parse_iso, read_json, write_json_atomic
 
-GROUP_KEYS = ("workload", "tool", "agent_cli", "model", "ref", "node")
+GROUP_KEYS = ("workload", "tool", "agent_cli", "model", "purpose", "ref", "node")
 
 
 def _period_floor(period: str) -> float:
@@ -79,7 +79,8 @@ def aggregate_usage(args, store: Store, period: str, by: str) -> "list[dict]":
 
     linked_sessions = set(links.values())
     for led in ledger:
-        b = bucket(str(led.get(by) or ""))
+        group = (led.get("purpose") or led.get("ref")) if by == "purpose" else led.get(by)
+        b = bucket(str(group or ""))
         b["runs"] += 1
         try:
             b["seconds"] += float(led.get("seconds") or 0.0)
@@ -195,6 +196,23 @@ def cmd_calibrate(args) -> int:
         print("反映するには --write を付けてください"
               "（budget config.json の rates.per_cli を更新します）。")
         return 0
+    default_rate, prior_rates = _rates(args)
+    ts = now_iso()
+    for key, measured_rate in rates.items():
+        cli, _, model = key.partition(":")
+        prior_rate = _rate_for(cli, model, default_rate, prior_rates)
+        store.append_record({
+            "id": record_id("calibration", "rates", f"{ts}:{key}"),
+            "ts": ts,
+            "kind": "calibration",
+            "agent_cli": cli,
+            "model": model,
+            "estimated_tokens_per_second": prior_rate if prior_rate > 0 else None,
+            "measured_tokens_per_second": measured_rate,
+            "delta_ratio": (round((measured_rate - prior_rate) / prior_rate, 4)
+                            if prior_rate > 0 else None),
+        })
+    store.save_state()
     cfg_path = os.path.join(resolve_budget_dir(args), "config.json")
     cfg = read_json(cfg_path) or {}
     r = cfg.setdefault("rates", {})

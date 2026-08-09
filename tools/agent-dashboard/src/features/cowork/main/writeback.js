@@ -1,13 +1,13 @@
 'use strict';
 
-// 発見項目の編集を **実体ファイル** へ外科的に書き戻す。所有する kiro-loop のフィールドと
+// 発見項目の編集を **実体ファイル** へ外科的に書き戻す。所有する定常業務ループのフィールドと
 // statemachine の先頭 name/description だけを書き換え、コメント・順序・他エントリは触らない。
 //
 // **読みと違ってここは YAML ライブラリを通さない。** 読み（base/main/yaml.js）の関心は値だが、
 // ここの関心は「どの物理行に書くか」で、フル再シリアライズはコメントと整形を壊す。
-// 書き先の行は discover.parseKiroLoopPromptsWithLines が返すアンカーで決める。
+// 書き先の行は discover.parseAgentLoopPromptsWithLines が返すアンカーで決める。
 
-const { parseKiroLoopPromptsWithLines, scalarValue } = require('./discover');
+const { parseAgentLoopPromptsWithLines, scalarValue } = require('./discover');
 
 // 元の field 行から末尾インラインコメント（先頭空白込み。例 `   # 1 時間ごと`）を取り出す。
 // 値が引用符で始まる場合は閉じ引用符の後ろのコメントのみ拾う（値内の `#` を誤検出しない）。
@@ -56,11 +56,11 @@ function detectEol(rawText) {
 
 // edits: [{ promptIndex, promptName, name?, prompt?, schedule?, enabled?, scheduleKey }]
 // 返り値 { text, errors }。実際の差分が無くても text は等価（元コメント/構造を保持）。
-function applyKiroLoopEdits(rawText, edits) {
+function applyAgentLoopEdits(rawText, edits) {
   const eol = detectEol(rawText);
   const norm = String(rawText).replace(/\r\n/g, '\n');
   const lines = norm.split('\n');
-  const entries = parseKiroLoopPromptsWithLines(norm);
+  const entries = parseAgentLoopPromptsWithLines(norm);
   const repl = new Map();
   const inserts = new Map();
   const removed = new Set();
@@ -79,7 +79,7 @@ function applyKiroLoopEdits(rawText, edits) {
       // 発見後にファイルが並び替わっている等 → 名前で照合し直す
       entry = entries.find((e) => e.fields.name && scalarValue(e.fields.name.rawVal) === edit.promptName);
       if (!entry) {
-        errors.push(`kiro-loop: prompt が見つかりません（index=${edit.promptIndex} name=${edit.promptName || ''}）`);
+        errors.push(`定常業務: prompt が見つかりません（index=${edit.promptIndex} name=${edit.promptName || ''}）`);
         continue;
       }
     }
@@ -127,7 +127,7 @@ function applyKiroLoopEdits(rawText, edits) {
       } else if (edit.scheduleKey === 'interval_minutes') {
         const n = parseIntervalMinutes(edit.schedule);
         if (n != null) setField('interval_minutes', String(n));
-        else errors.push(`kiro-loop: interval_minutes に変換できないスケジュール「${edit.schedule}」`);
+        else errors.push(`定常業務: interval_minutes に変換できないスケジュール「${edit.schedule}」`);
       }
       // scheduleKey==='' の項目は schedule を書き戻さない（読んだ物理フィールドが無い）
     }
@@ -136,7 +136,7 @@ function applyKiroLoopEdits(rawText, edits) {
 }
 
 // dashboard で追加した項目は marker 付きの1ブロックとして所有し、安全に追加・更新・削除する。
-function upsertManagedKiroPrompt(rawText, item, prompt) {
+function upsertManagedAgentPrompt(rawText, item, prompt) {
   const eol = detectEol(rawText);
   const id = String(item.id || '').replace(/[^A-Za-z0-9_.-]+/g, '-');
   const marker = `  # agent-dashboard: ${id}`;
@@ -204,8 +204,8 @@ function applyStatemachineEdits(rawText, edits) {
 }
 
 module.exports = {
-  applyKiroLoopEdits,
-  upsertManagedKiroPrompt,
+  applyAgentLoopEdits,
+  upsertManagedAgentPrompt,
   applyStatemachineEdits,
   trailingComment,
   parseIntervalMinutes,

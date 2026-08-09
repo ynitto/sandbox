@@ -5,6 +5,7 @@ import importlib.util
 import pathlib
 import sys
 import tempfile
+import threading
 import types
 import unittest
 from unittest import mock
@@ -22,6 +23,12 @@ def _load(name, path):
 
 
 hook = _load("gitlab_issue_hook_test", HERE.parent / "hooks" / "gitlab-issue-hook.py")
+resource_hook = _load(
+    "resource_control_hook_test", HERE.parent / "hooks" / "resource-control-hook.py"
+)
+calibrate_hook = _load(
+    "audit_calibrate_hook_test", HERE.parent / "hooks" / "audit-calibrate-hook.py"
+)
 
 
 def _scheduler(entries):
@@ -106,6 +113,19 @@ class GitLabIssueHookTests(unittest.TestCase):
 
 
 class EventHookDispatchTests(unittest.TestCase):
+    def test_event_hook_does_not_prewarm_llm_pane(self):
+        mgr = al.SessionManager.__new__(al.SessionManager)
+        mgr._panes = {}
+        mgr._prompt_names = {}
+        mgr._tmux_names = {}
+        mgr._prompt_cwds = {}
+        mgr._owners = {}
+        mgr._lock = threading.Lock()
+        mgr._start_pane = mock.Mock()
+        mgr.write_state = mock.Mock()
+        mgr.sync_entries([{"id": "control", "name": "control", "event_hook": "control.py"}])
+        mgr._start_pane.assert_not_called()
+
     def test_successful_event_dispatch_preserves_fresh_context_and_acks(self):
         entry = {"id": "p1", "name": "issues", "prompt": "", "event_hook": "hook.py",
                  "next_run_at": 0, "enabled": True, "exclude_from_concurrency": False,
@@ -226,6 +246,38 @@ class EventHookDispatchTests(unittest.TestCase):
         self.assertEqual(session.send_prompt.call_count, 2)
         self.assertEqual(list(scheduler._external_queues["issues"]), [])
         self.assertEqual(scheduler._pending, [])
+
+
+class ResourceControlHookTests(unittest.TestCase):
+    def test_runs_headless_writer_without_dispatching_prompt(self):
+        completed = types.SimpleNamespace(returncode=0, stdout="{}\n", stderr="")
+        cfg = {"event_hook_config": {
+            "script": "/tmp/resource-control.js",
+            "control_dir": "/tmp/control",
+            "budget_dir": "/tmp/budget",
+        }}
+        with mock.patch.object(resource_hook.subprocess, "run", return_value=completed) as run:
+            self.assertIsNone(resource_hook.check(cfg))
+        self.assertEqual(
+            run.call_args.args[0],
+            ["node", str(pathlib.Path("/tmp/resource-control.js").resolve()),
+             "--control-dir", "/tmp/control",
+             "--budget-dir", "/tmp/budget"],
+        )
+
+    def test_collects_then_writes_calibration_without_prompt(self):
+        completed = types.SimpleNamespace(returncode=0, stdout="", stderr="")
+        cfg = {"event_hook_config": {
+            "agent_audit": "/tmp/agent-audit",
+            "audit_dir": "/tmp/audit",
+            "budget_dir": "/tmp/budget",
+        }}
+        with mock.patch.object(calibrate_hook.subprocess, "run", return_value=completed) as run:
+            self.assertIsNone(calibrate_hook.check(cfg))
+        base = ["/tmp/agent-audit", "--audit-dir", "/tmp/audit", "--budget-dir", "/tmp/budget"]
+        self.assertEqual([c.args[0] for c in run.call_args_list], [
+            base + ["collect"], base + ["calibrate", "--write"],
+        ])
 
 
 if __name__ == "__main__":

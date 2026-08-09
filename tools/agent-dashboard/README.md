@@ -57,7 +57,7 @@
 
 **ソース構成（制御面分離）**: Electron シェル等の共通部は `src/base/`、
 agent-project / agent-flow の制御は `src/features/agent-project/` に置き、
-kiro-loop 制御（`src/features/kiro-loop/`）・定常業務（`src/features/cowork/`）・
+agent-loop 制御（`src/features/agent-loop/`）・定常業務（`src/features/cowork/`）・
 agent-amigos ミッションとノード予算（`src/features/amigos/`）・
 agent-audit の呼び出しと閲覧（`src/features/agent-audit/`）を同じ形で差し込んでいる
 （動的プラグインではない。列挙合成のみ。詳細は
@@ -71,7 +71,7 @@ agent-audit の呼び出しと閲覧（`src/features/agent-audit/`）を同じ�
 1. `renderer.js`（**core**）— `state` / `$` / 共有定数・ユーティリティ・発見/プロジェクト選択・
    タブ制御・ポーリング・git pull と、フィーチャータブ登録簿（`registerFeatureTab`）を宣言。**最初**に読む。
 2. `sections/*.js` — 各タブの描画（home / overview / backlog / needs / flow / node-detail /
-   gitlab / history / amigos / orchestration / cowork / routines / usage / kiro-loop）。
+   gitlab / history / amigos / orchestration / cowork / routines / usage / agent-loop）。
    中身は関数宣言のみで load 時実行を持たないため、相互の順序は不問（home のタブ登録と
    コアカードの登録は bootstrap.js の `init()` が行う）。
 3. `features/*.js` — `registerFeatureTab` で自分のタブを差し込む独立モジュール。
@@ -121,7 +121,7 @@ agent-audit 側のゲート設定に任せる。画面は**「利用量」（見
 — 「全体設定 → エージェント → 共通設定」で編集）: エージェントのセッションが始まった直後に、
 上から順に 1 回だけ実行する前準備。`process` はホストのシェルで実行して完了を待ち（`git fetch`・
 `docker compose up` など）、`chat` はセッションへ最初のプロンプトとして送る。常駐系
-（kiro-loop / agent-loop / このアプリの定常業務ウィンドウ）は tmux ペイン 1 本、agent-flow は
+（agent-loop / agent-loop / このアプリの定常業務ウィンドウ）は tmux ペイン 1 本、agent-flow は
 ワーカープロセス 1 つが「セッション」にあたる。共通指示（agent-instructions）と違い**委譲先
 ノードへは伝播しない** — コマンドの到達範囲を、その端末に置いた設定ファイルへ閉じ込める。
 設定: [`docs/plans/2026-07-20-agent-dashboard-session-commands-design.md`](../../docs/plans/2026-07-20-agent-dashboard-session-commands-design.md)。
@@ -156,7 +156,7 @@ agent-flow が一度だけ実行し、agent-project が receipt を検算して�
 | タブ | データソース |
 |------|-------------|
 | ホーム | 発見結果（`engine/status.json` 由来の一覧と各プロジェクトの要対応件数）だけで組む横断ビュー。プロジェクト単位の「あなたの対応待ち」（件数降順・クリックで要対応タブへ）と、各ワークロードの入口カード。ホームのために新しいファイル読み込みは増やさない |
-| 実行の記録（定常業務） | この画面から起こした実行の履歴（`~/.agent-dashboard/cowork-history.jsonl`）と、リポジトリ側の実行ログ（`.kiro-loop/logs`・`.statemachine-use/logs` 等）。作業を選ぶとその記録を読む |
+| 実行の記録（定常業務） | この画面から起こした実行の履歴（`~/.agent-dashboard/cowork-history.jsonl`）と、リポジトリ側の実行ログ（`.agent-loop/logs`・`.statemachine-use/logs` 等）。作業を選ぶとその記録を読む |
 | 参加の状況 | 板の公示（`nodes/`・公示ファイル）とこの端末が投函した引き受け指示の受理状況。引き受けた仕事がどうなったかを、参加したのと同じ領域で追う。新しい取得経路は作らない（参加画面が既に読んでいるものだけで組む） |
 | 利用状況 | agent-audit が収集・集計したトークン利用量と実行品質（面の実装は `src/features/agent-audit/`） |
 | 概要 | `charter.md`（goal / deliverables / acceptance）・`project.json`（acceptance PASS 履歴）・`backlog/` 集計・`policy.md`・`claims/`・`run-log.jsonl`・`DELIVERY.md`・`status.json`（daemon の生存信号。`engine/status.json` で分からないときのフォールバック） |
@@ -275,17 +275,17 @@ CLI の `--root`（= host.yaml の `projects[].root`）と同じものを指す�
 一覧が空になり「プロジェクトが登録されていません」という**直しようのない案内**になる。
 その案内は本当に 1 件も宣言が無いときだけ出す。
 
-**定常業務だけのフォルダは別**（S2）。kiro-loop 設定や `.statemachine/` を持つだけで
+**定常業務だけのフォルダは別**（S2）。agent-loop 設定や `.statemachine/` を持つだけで
 agent-project の管理外というフォルダは、**定常業務領域から登録する**——サイドバー
 「作業フォルダ」の ＋、または「定常業務の設定」タブの「フォルダを登録」（どちらも同じ
-設定 `cowork.roots` に書く）。宣言をここに置くのは、定常業務のエンジン（kiro-loop /
+設定 `cowork.roots` に書く）。宣言をここに置くのは、定常業務のエンジン（agent-loop /
 statemachine-use）が agent-project の常駐体・状態リポジトリと無関係に動き、起動・tmux 管理・
 履歴記録をすべてこの dashboard が担っているため——「宣言は実行側が持つ」の原則どおり。
 登録したフォルダは一覧に **kind=routine** として並び、定常業務タブだけを出す。
 agent-project のプロジェクトと同じパスを登録した場合は project 側を正として畳む。
 
 **定常業務の対象フォルダは `cowork.roots` ＋ 実行エンジンのプロジェクト ＋ ユーザーホーム**
-（走査は最初から前の 2 つを回っている）。ホームを常に含めるのは `~/.kiro/kiro-loop.yml` が
+（走査は最初から前の 2 つを回っている）。ホームを常に含めるのは `~/.agents/agent-loop.yml` が
 どの登録簿にも載らないため（Windows では WSL 側のホームも。**ホームだけは下へ潜らない**）。だから定常業務領域のサイドバーにも設定タブの一覧にも両方を並べる
 ——片方しか出さないと「一覧に無いフォルダの作業が画面に出てくる」ことになる。プロジェクト
 側は登録簿が違う（`agent-project.host.yaml`）ので、設定タブでは解除できない旨を添えて出す。
@@ -392,7 +392,7 @@ agent-project の人間ループはこのアプリ内で完結できる。いず
 | 表示を更新 | サイドバー ⟳ | この PC 上の状態ファイルだけを読み直す。共有先との通信は行わない |
 | 共有先と同期／同期を修復 | ヘッダの同期状態の横（必要な場合だけ表示） | 取得・履歴合流・送信を一つの操作で行う。書き込み中でも一時 worktree でコミット済み履歴を隔離合流し、作業中ファイルには触れない。ローカル反映を待つ場合は赤い食い違いではなく黄色の反映待ちとして通知する。健康状態は作業ツリーを変更しない fetch で60秒ごとに再確認し、最終確認時刻または確認失敗を併記する |
 | 実行前レビュー（承認・差し戻し・却下） | 要対応カード（kind=plan-review） | 新規タスクは承認されるまで実行されない（本体の plan_review・既定 on）。**承認**=`approve` 指示ドロップ（実行を許可）／**差し戻し**=修正指示を記入して `[x]`（agent-project がタスク定義を修正して再提案）／**却下**=`reject` 指示ドロップ（廃止・avoid 記録・墓標・依存タスクは再審査へ。次の分解では意図の似たタスクを再提案させない）。却下の確認ダイアログに影響範囲（依存タスクの推移一覧）を表示 |
-| 成果物レビュー（承認・差し戻し・却下） | 要対応カード（kind=review）／タスク詳細 | 検証 PASS 後の検収（本体の delivery_review・既定 on）。成果は ap/<task-id> ブランチに集約され、GitLab 設定時は MR が自動作成される（needs に URL）。**MR があるあいだ差分レビューは MR が正**で、カードは「受入基準 × 証跡 + MR リンク」になる（S4・S5）。**承認**=`approve`（本体がクリーンなら MR を自動マージして done 確定）／**差し戻し**=記入必須 `[x]`（同一ブランチに次試行）／**却下**=`reject`（MR クローズ＋ブランチ削除＋廃止＋墓標）。フォージ側でマージ／未マージクローズ／changes-requested を付けても同じ決着になる（本体の `remote_review`） |
+| 成果物レビュー（承認・差し戻し・却下） | 要対応カード（kind=review）／タスク詳細 | 検証 PASS 後の検収（本体の delivery_review・既定 on）。成果は ap/<task-id> ブランチに集約される。**MR は自動では作られない**——欲しいときに「MRを作る」を押す（`mr-create` 指示ドロップ。何度押しても増えない）。**MR があるあいだ差分レビューは MR が正**で、カードは「受入基準 × 証跡 + MR リンク」になる（S4・S5）。**承認**=`approve`（MR があればクリーンな場合だけ自動マージ、無ければ ap/<task-id> を target へ自動統合して done 確定）／**差し戻し**=記入必須 `[x]`（同一ブランチに次試行）／**却下**=`reject`（MR クローズ＋ブランチを `rejected/<id>` タグへ退避してから削除＋廃止＋墓標）。人が GitLab の画面で先にマージしても承認は通る（成果が target に在るかで判定する）。フォージ側でマージ／未マージクローズ／changes-requested を付けても同じ決着になる（本体の `remote_review`） |
 | フィードバックして再開 | 要対応カード | `needs/<id>.md` の「## Decision Outcome」に記入 + `- [x]` 確定（`ingest_feedback` の正規ルート） |
 | そのまま再実行 | 要対応カード（blocked） | 空記入で `- [x]` 確定 |
 | 検証コマンドを変更して再実行 | 要対応詳細（blocked） | 関連タスクの現在の `verify` を表示し、変更後は既存の `revise`（`fields.verify`）で置換して新しい試行を開始する。タスク分解・依存関係・既存成果物は維持し、古い run は履歴に残す。送信前に旧／新コマンドと再実行範囲を確認する |

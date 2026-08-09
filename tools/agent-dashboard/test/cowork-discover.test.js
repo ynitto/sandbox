@@ -1,7 +1,7 @@
 'use strict';
 
-// Cowork 自動発見（.kiro/kiro-loop・.statemachine のジョブ抽出）と、保存時の実体ファイル
-// 外科的書き戻しのテスト。追加依存なしで `node test/cowork-discover.test.js` で走る。
+// Cowork 自動発見（定常業務ループの設定・.statemachine のジョブ抽出）と、保存時の実体
+// ファイル外科的書き戻しのテスト。追加依存なしで `node test/cowork-discover.test.js` で走る。
 
 const assert = require('assert');
 const fs = require('fs');
@@ -14,7 +14,7 @@ const { engineConfig } = require('./helpers/engine-status');
 const wb = require('../src/features/cowork/main/writeback');
 const cowork = require('../src/features/cowork/main/cowork');
 
-// 定常業務の走査ルートには**常にユーザーホーム**が入る（`~/.kiro/kiro-loop.yml` を拾うため）。
+// 定常業務の走査ルートには**常にユーザーホーム**が入る（`~/.agents/agent-loop.yml` を拾うため）。
 // テストでは実機のホームを覗かせない——結果が実行環境の持ち物で変わってしまう。
 const HOME_STUB = fs.mkdtempSync(path.join(os.tmpdir(), 'home-stub-'));
 process.env.HOME = HOME_STUB;
@@ -54,9 +54,9 @@ prompts:
     prompt: hi
 `;
 
-function writeKiro(dir, text, ext) {
-  fs.mkdirSync(path.join(dir, '.kiro'), { recursive: true });
-  fs.writeFileSync(path.join(dir, '.kiro', `kiro-loop.${ext || 'yml'}`), text);
+function writeAgentLoop(dir, text, ext) {
+  fs.mkdirSync(path.join(dir, '.agents'), { recursive: true });
+  fs.writeFileSync(path.join(dir, '.agents', `agent-loop.${ext || 'yml'}`), text);
 }
 
 function writeSm(dir, name, text) {
@@ -66,34 +66,36 @@ function writeSm(dir, name, text) {
 }
 
 // --- パーサ ---
-test('parseKiroLoopPrompts はブロックスカラ本文を field として拾わない', () => {
-  const e = discover.parseKiroLoopPrompts(SAMPLE_YAML);
+test('parseAgentLoopPrompts はブロックスカラ本文を field として拾わない', () => {
+  const e = discover.parseAgentLoopPrompts(SAMPLE_YAML);
   assert.strictEqual(e.length, 3);
   assert.deepStrictEqual(e[0], { name: 'MR コメント返答', interval_minutes: 60, enabled: true });
   assert.deepStrictEqual(e[1], { name: 'issue-worker', cron: '0 9 * * 1-5', enabled: false });
   assert.deepStrictEqual(e[2], { name: 'no-sched' });   // schedule/enabled 無し
 });
 
-test('parseKiroLoopPrompts はインラインコメントを除去し引用名を保つ', () => {
-  const e = discover.parseKiroLoopPrompts('prompts:\n  - name: "a # b"\n    interval_minutes: 5  # every 5\n');
+test('parseAgentLoopPrompts はインラインコメントを除去し引用名を保つ', () => {
+  const e = discover.parseAgentLoopPrompts('prompts:\n  - name: "a # b"\n    interval_minutes: 5  # every 5\n');
   assert.strictEqual(e[0].name, 'a # b');            // 引用内の # は残す
   assert.strictEqual(e[0].interval_minutes, 5);      // 末尾コメントは除去
 });
 
-test('parseKiroLoopPrompts は引用値の後ろのコメントを剥がす', () => {
-  const e = discover.parseKiroLoopPrompts('prompts:\n  - name: n\n    cron: "0 9 * * 1-5"      # 平日9:00\n');
+test('parseAgentLoopPrompts は引用値の後ろのコメントを剥がす', () => {
+  const e = discover.parseAgentLoopPrompts('prompts:\n  - name: n\n    cron: "0 9 * * 1-5"      # 平日9:00\n');
   assert.strictEqual(e[0].cron, '0 9 * * 1-5');      // 閉じ引用符の後ろのコメントは無視
 });
 
-test('parseKiroLoopPrompts は実サンプル kiro-loop.yaml.example を壊さず読む', () => {
-  const sample = fs.readFileSync(path.join(__dirname, '..', '..', 'kiro-loop', 'kiro-loop.yaml.example'), 'utf8');
-  const e = discover.parseKiroLoopPrompts(sample);
+// サンプルは agent-loop 側のものを読む。agent-loop の同名サンプルを読んでいると、
+// tools/agent-loop/ を消した瞬間（計画 S4）にこのテストが落ちる。
+test('parseAgentLoopPrompts は実サンプル agent-loop.yaml.example を壊さず読む', () => {
+  const sample = fs.readFileSync(path.join(__dirname, '..', '..', 'agent-loop', 'agent-loop.yaml.example'), 'utf8');
+  const e = discover.parseAgentLoopPrompts(sample);
   assert.ok(e.length >= 5);                          // 複数の prompts エントリ
   assert.ok(e.every((x) => x.name && !/#/.test(x.cron || '')));  // コメント混入なし
 });
 
-test('kiroLoopPromptTexts はインライン/ブロックスカラの prompt 本文を返す', () => {
-  const t = discover.kiroLoopPromptTexts(SAMPLE_YAML);
+test('agentLoopPromptTexts はインライン/ブロックスカラの prompt 本文を返す', () => {
+  const t = discover.agentLoopPromptTexts(SAMPLE_YAML);
   assert.strictEqual(t.length, 3);
   assert.ok(t[0].includes('python scripts/gl.py list-mrs'));
   assert.ok(t[0].includes('resolve: これは key: value に見えるが本文'));
@@ -105,7 +107,7 @@ test('kiroLoopPromptTexts はインライン/ブロックスカラの prompt 本
 test('discoverCoworkItems は prompts を per-job の loop 項目にする', () => {
   const root = mkRoot();
   const proj = path.join(root, 'projA');
-  writeKiro(proj, SAMPLE_YAML);
+  writeAgentLoop(proj, SAMPLE_YAML);
   const items = discover.discoverCoworkItems({ ...engineConfig([root]), cowork: {} });
   const loops = items.filter((i) => i.type === 'loop');
   assert.strictEqual(loops.length, 3);
@@ -117,16 +119,6 @@ test('discoverCoworkItems は prompts を per-job の loop 項目にする', () 
   assert.strictEqual(loops[2].schedule, '');
   assert.strictEqual(loops[2]._src.scheduleKey, '');
   assert.ok(loops.every((l) => l.source === 'discovered' && l._src.promptIndex >= 0));
-});
-
-test('discoverCoworkItems はkiro-loop公式のルート直下設定ファイルも発見する', () => {
-  const root = mkRoot();
-  fs.writeFileSync(path.join(root, 'kiro-loop.yaml'), SAMPLE_YAML, 'utf8');
-  const loops = discover.discoverCoworkItems({ ...engineConfig([root]), cowork: {} })
-    .filter((item) => item.type === 'loop');
-  assert.strictEqual(loops.length, 3);
-  assert.strictEqual(loops[0].repo, root);
-  assert.strictEqual(loops[0]._src.file, path.join(root, 'kiro-loop.yaml'));
 });
 
 test('discoverCoworkItems は .statemachine/<name>/workflow.yaml を per-folder で出す', () => {
@@ -159,7 +151,7 @@ const PAIRED_YAML = `prompts:
 test('「xxx ステートマシンを実行して」の対エントリはステートマシン項目へ統合される', () => {
   const root = mkRoot();
   const proj = path.join(root, 'projP');
-  writeKiro(proj, PAIRED_YAML);
+  writeAgentLoop(proj, PAIRED_YAML);
   writeSm(proj, 'release', 'name: "リリース"\ndescription: "デプロイ"\nstates:\n  s: {}\n');
   const items = discover.discoverCoworkItems({ ...engineConfig([root]), cowork: {} });
   // 対エントリは loop 項目として出さない（other のみ）
@@ -172,13 +164,13 @@ test('「xxx ステートマシンを実行して」の対エントリはステ�
   assert.strictEqual(sm.enabled, false);
   assert.strictEqual(sm._src.loop.promptName, 'release-runner');
   assert.strictEqual(sm._src.loop.scheduleKey, 'interval_minutes');
-  assert.strictEqual(sm._src.loop.file, path.join(proj, '.kiro', 'kiro-loop.yml'));
+  assert.strictEqual(sm._src.loop.file, path.join(proj, '.agents', 'agent-loop.yml'));
 });
 
 test('対エントリは workflow.yaml の表示名（name:）でも照合できる', () => {
   const root = mkRoot();
   const proj = path.join(root, 'projQ');
-  writeKiro(proj, 'prompts:\n  - name: run-release\n    prompt: リリース ステートマシンを実行して\n    cron: "0 9 * * *"\n');
+  writeAgentLoop(proj, 'prompts:\n  - name: run-release\n    prompt: リリース ステートマシンを実行して\n    cron: "0 9 * * *"\n');
   writeSm(proj, 'release', 'name: "リリース"\nstates:\n  s: {}\n');
   const items = discover.discoverCoworkItems({ ...engineConfig([root]), cowork: {} });
   assert.strictEqual(items.filter((i) => i.type === 'loop').length, 0);
@@ -190,7 +182,7 @@ test('対エントリは workflow.yaml の表示名（name:）でも照合でき
 test('ステートマシンに言及しない prompt は統合されない', () => {
   const root = mkRoot();
   const proj = path.join(root, 'projR');
-  writeKiro(proj, 'prompts:\n  - name: mention\n    prompt: release を確認して\n    interval_minutes: 5\n');
+  writeAgentLoop(proj, 'prompts:\n  - name: mention\n    prompt: release を確認して\n    interval_minutes: 5\n');
   writeSm(proj, 'release', 'states:\n  s: {}\n');
   const items = discover.discoverCoworkItems({ ...engineConfig([root]), cowork: {} });
   assert.strictEqual(items.filter((i) => i.type === 'loop').length, 1);
@@ -199,10 +191,10 @@ test('ステートマシンに言及しない prompt は統合されない', () 
   assert.strictEqual(sm.schedule, '');
 });
 
-test('統合ステートマシンの実行は対プロンプト名を kiro-loop send で送る', () => {
+test('統合ステートマシンの実行は対プロンプト名を agent-loop send で送る', () => {
   const root = mkRoot();
   const proj = path.join(root, 'projS');
-  writeKiro(proj, PAIRED_YAML);
+  writeAgentLoop(proj, PAIRED_YAML);
   writeSm(proj, 'release', 'name: "リリース"\nstates:\n  s: {}\n');
   const config = { ...engineConfig([root]), cowork: { loopCommand: 'echo', runWindow: false, items: [] } };
   const sm = cowork.overview(config).items.find((i) => i.type === 'state-machine');
@@ -214,7 +206,7 @@ test('統合ステートマシンの実行は対プロンプト名を kiro-loop 
 test('discoverCoworkItems は .json 形式も同じ項目にする', () => {
   const root = mkRoot();
   const proj = path.join(root, 'projJ');
-  writeKiro(proj, JSON.stringify({ prompts: [
+  writeAgentLoop(proj, JSON.stringify({ prompts: [
     { name: 'j1', interval_minutes: 30, enabled: true },
     { name: 'j2', cron: '* * * * *', enabled: false },
   ] }), 'json');
@@ -228,19 +220,19 @@ test('discoverCoworkItems は .json 形式も同じ項目にする', () => {
 test('scanForCoworkConfigs は深さ上限を守り workspace 配下へ潜らない・node_modules を飛ばす', () => {
   const root = mkRoot();
   const deep = path.join(root, 'a', 'b', 'proj');    // 深さ 3
-  writeKiro(deep, SAMPLE_YAML);
-  writeKiro(path.join(root, 'nm-holder', 'node_modules', 'x'), SAMPLE_YAML);
+  writeAgentLoop(deep, SAMPLE_YAML);
+  writeAgentLoop(path.join(root, 'nm-holder', 'node_modules', 'x'), SAMPLE_YAML);
   assert.strictEqual(discover.scanForCoworkConfigs(root, 2).length, 0);      // 既定 2 では届かない
   assert.strictEqual(discover.scanForCoworkConfigs(root, 3).length, 1);      // 3 で発見
   // workspace 内部に別マーカーがあっても 1 件のまま
-  writeKiro(path.join(deep, 'inner'), SAMPLE_YAML);
+  writeAgentLoop(path.join(deep, 'inner'), SAMPLE_YAML);
   assert.strictEqual(discover.scanForCoworkConfigs(root, 5).length, 1);
 });
 
 test('discover は id が安定し、手動登録と重複する発見項目は config 勝ちで排除される', () => {
   const root = mkRoot();
   const proj = path.join(root, 'projC');
-  writeKiro(proj, SAMPLE_YAML);
+  writeAgentLoop(proj, SAMPLE_YAML);
   const cfg = { ...engineConfig([root]), cowork: {} };
   const a = discover.discoverCoworkItems(cfg).map((x) => x.id);
   const b = discover.discoverCoworkItems(cfg).map((x) => x.id);
@@ -272,7 +264,7 @@ test('dashboard が作成した定型業務は workflow 識別名で発見項目
 
 test('overview は config + discovered をマージし source と state を付ける', () => {
   const root = mkRoot();
-  writeKiro(path.join(root, 'projD'), SAMPLE_YAML);
+  writeAgentLoop(path.join(root, 'projD'), SAMPLE_YAML);
   const ov = cowork.overview({ ...engineConfig([root]), cowork: { items: [] } });
   assert.strictEqual(ov.items.length, 3);
   assert.ok(ov.items.every((i) => i.source === 'discovered' && i.state));
@@ -285,8 +277,8 @@ test('overview は config + discovered をマージし source と state を付�
 });
 
 // --- 書き戻し（外科的） ---
-test('applyKiroLoopEdits: enabled トグルは当該 1 行のみ変更しコメント/ブロックを保つ', () => {
-  const r = wb.applyKiroLoopEdits(SAMPLE_YAML, [
+test('applyAgentLoopEdits: enabled トグルは当該 1 行のみ変更しコメント/ブロックを保つ', () => {
+  const r = wb.applyAgentLoopEdits(SAMPLE_YAML, [
     { promptIndex: 0, promptName: 'MR コメント返答', enabled: false, scheduleKey: 'interval_minutes' },
   ]);
   assert.deepStrictEqual(r.errors, []);
@@ -299,11 +291,11 @@ test('applyKiroLoopEdits: enabled トグルは当該 1 行のみ変更しコメ�
   assert.ok(r.text.includes('# 1 時間ごと'));                       // インラインコメント保全
 });
 
-test('applyKiroLoopEdits: entry#2 の編集は他エントリに波及せず再パースで新値', () => {
-  const r = wb.applyKiroLoopEdits(SAMPLE_YAML, [
+test('applyAgentLoopEdits: entry#2 の編集は他エントリに波及せず再パースで新値', () => {
+  const r = wb.applyAgentLoopEdits(SAMPLE_YAML, [
     { promptIndex: 1, promptName: 'issue-worker', name: 'renamed', scheduleKey: 'cron', schedule: '30 8 * * *' },
   ]);
-  const e = discover.parseKiroLoopPrompts(r.text);
+  const e = discover.parseAgentLoopPrompts(r.text);
   assert.strictEqual(e.length, 3);
   assert.strictEqual(e[0].name, 'MR コメント返答');   // #1 不変
   assert.strictEqual(e[1].name, 'renamed');
@@ -311,30 +303,30 @@ test('applyKiroLoopEdits: entry#2 の編集は他エントリに波及せず再�
   assert.strictEqual(e[2].name, 'no-sched');           // #3 不変
 });
 
-test('applyKiroLoopEdits: 欠落フィールドは dash 直後へ挿入される', () => {
-  const r = wb.applyKiroLoopEdits(SAMPLE_YAML, [
+test('applyAgentLoopEdits: 欠落フィールドは dash 直後へ挿入される', () => {
+  const r = wb.applyAgentLoopEdits(SAMPLE_YAML, [
     { promptIndex: 2, promptName: 'no-sched', enabled: false, scheduleKey: '' },
   ]);
-  const e = discover.parseKiroLoopPrompts(r.text);
+  const e = discover.parseAgentLoopPrompts(r.text);
   assert.strictEqual(e[2].enabled, false);             // 追加された
   assert.strictEqual(e[0].name, 'MR コメント返答');
 });
 
-test('applyKiroLoopEdits: CRLF を保つ / promptName 不一致は name 照合にフォールバック', () => {
+test('applyAgentLoopEdits: CRLF を保つ / promptName 不一致は name 照合にフォールバック', () => {
   const crlf = SAMPLE_YAML.replace(/\n/g, '\r\n');
-  const r = wb.applyKiroLoopEdits(crlf, [{ promptIndex: 0, promptName: 'MR コメント返答', enabled: false, scheduleKey: 'interval_minutes' }]);
+  const r = wb.applyAgentLoopEdits(crlf, [{ promptIndex: 0, promptName: 'MR コメント返答', enabled: false, scheduleKey: 'interval_minutes' }]);
   assert.ok(r.text.includes('\r\n'));
   // index がずれていても name で当てる
-  const r2 = wb.applyKiroLoopEdits(SAMPLE_YAML, [{ promptIndex: 9, promptName: 'issue-worker', enabled: true, scheduleKey: 'cron' }]);
+  const r2 = wb.applyAgentLoopEdits(SAMPLE_YAML, [{ promptIndex: 9, promptName: 'issue-worker', enabled: true, scheduleKey: 'cron' }]);
   assert.deepStrictEqual(r2.errors, []);
-  assert.strictEqual(discover.parseKiroLoopPrompts(r2.text)[1].enabled, true);
+  assert.strictEqual(discover.parseAgentLoopPrompts(r2.text)[1].enabled, true);
 });
 
-test('applyKiroLoopEdits は prompt 本文だけを書き換え、古いブロック本文を残さない', () => {
-  const r = wb.applyKiroLoopEdits(SAMPLE_YAML, [{
+test('applyAgentLoopEdits は prompt 本文だけを書き換え、古いブロック本文を残さない', () => {
+  const r = wb.applyAgentLoopEdits(SAMPLE_YAML, [{
     promptIndex: 1, promptName: 'issue-worker', prompt: '新しい手順\n次の行',
   }]);
-  const texts = discover.kiroLoopPromptTexts(r.text);
+  const texts = discover.agentLoopPromptTexts(r.text);
   assert.strictEqual(texts[1], '新しい手順\n次の行');
   assert.ok(!r.text.includes('      作業する'));
   assert.strictEqual(texts[2], 'hi');
@@ -360,7 +352,7 @@ function tmpGitRepo() {
 
 test('saveWork は発見項目の編集を実体へ書き戻し、当該ファイルだけ commit する', () => {
   const repo = tmpGitRepo();
-  writeKiro(repo, SAMPLE_YAML);
+  writeAgentLoop(repo, SAMPLE_YAML);
   spawnSync('git', ['add', '-A'], { cwd: repo, encoding: 'utf8' });
   spawnSync('git', ['commit', '-m', 'init'], { cwd: repo, encoding: 'utf8' });
 
@@ -375,18 +367,18 @@ test('saveWork は発見項目の編集を実体へ書き戻し、当該ファ�
   // 設定には発見項目を混ぜない
   assert.deepStrictEqual(savedCfg.cowork.items, []);
   // 実体ファイルが書き換わっている
-  const onDisk = discover.parseKiroLoopPrompts(fs.readFileSync(path.join(repo, '.kiro', 'kiro-loop.yml'), 'utf8'));
+  const onDisk = discover.parseAgentLoopPrompts(fs.readFileSync(path.join(repo, '.agents', 'agent-loop.yml'), 'utf8'));
   assert.strictEqual(onDisk[1].enabled, true);
   // commit された（相対 POSIX パスで staged）
   const g = res.git.find((x) => x.repo === repo);
   assert.strictEqual(g.result.commit.ok, true);
   const log = spawnSync('git', ['show', '--stat', '--name-only', 'HEAD'], { cwd: repo, encoding: 'utf8' }).stdout;
-  assert.ok(log.includes('.kiro/kiro-loop.yml'));
+  assert.ok(log.includes('.agents/agent-loop.yml'));
 });
 
-test('saveWork は統合ステートマシンの schedule/enabled を kiro-loop 側へ、name を workflow.yaml へ書き戻す', () => {
+test('saveWork は統合ステートマシンの schedule/enabled を agent-loop 側へ、name を workflow.yaml へ書き戻す', () => {
   const repo = tmpGitRepo();
-  writeKiro(repo, 'prompts:\n  - name: release-runner\n    prompt: release ステートマシンを実行して\n    interval_minutes: 30\n    enabled: false\n');
+  writeAgentLoop(repo, 'prompts:\n  - name: release-runner\n    prompt: release ステートマシンを実行して\n    interval_minutes: 30\n    enabled: false\n');
   writeSm(repo, 'release', 'name: "リリース"\nstates:\n  s: {}\n');
   spawnSync('git', ['add', '-A'], { cwd: repo, encoding: 'utf8' });
   spawnSync('git', ['commit', '-m', 'init'], { cwd: repo, encoding: 'utf8' });
@@ -400,7 +392,7 @@ test('saveWork は統合ステートマシンの schedule/enabled を kiro-loop 
   const res = cowork.saveWork(config, (c) => c, { items: ov.items, push: false });
   assert.deepStrictEqual(res.writeback.errors, []);
 
-  const kiro = discover.parseKiroLoopPrompts(fs.readFileSync(path.join(repo, '.kiro', 'kiro-loop.yml'), 'utf8'));
+  const kiro = discover.parseAgentLoopPrompts(fs.readFileSync(path.join(repo, '.agents', 'agent-loop.yml'), 'utf8'));
   assert.strictEqual(kiro[0].name, 'release-runner');   // 対プロンプト名は変更しない
   assert.strictEqual(kiro[0].interval_minutes, 60);
   assert.strictEqual(kiro[0].enabled, true);
@@ -410,17 +402,17 @@ test('saveWork は統合ステートマシンの schedule/enabled を kiro-loop 
 
 test('saveWork は編集が無ければ実体を触らず commit を skip する', () => {
   const repo = tmpGitRepo();
-  writeKiro(repo, SAMPLE_YAML);
+  writeAgentLoop(repo, SAMPLE_YAML);
   spawnSync('git', ['add', '-A'], { cwd: repo, encoding: 'utf8' });
   spawnSync('git', ['commit', '-m', 'init'], { cwd: repo, encoding: 'utf8' });
   const config = { ...engineConfig([repo]), cowork: { items: [] } };
   const ov = cowork.overview(config);
-  const before = fs.readFileSync(path.join(repo, '.kiro', 'kiro-loop.yml'), 'utf8');
+  const before = fs.readFileSync(path.join(repo, '.agents', 'agent-loop.yml'), 'utf8');
   const res = cowork.saveWork(config, (c) => c, { items: ov.items, push: false });
   // 編集ゼロ・手動項目ゼロ → どの repo にも触らない（余計な commit/push をしない）
   assert.deepStrictEqual(res.writeback.errors, []);
   assert.strictEqual(res.git.length, 0);
-  assert.strictEqual(fs.readFileSync(path.join(repo, '.kiro', 'kiro-loop.yml'), 'utf8'), before);
+  assert.strictEqual(fs.readFileSync(path.join(repo, '.agents', 'agent-loop.yml'), 'utf8'), before);
 });
 
 test('saveWork は手動項目のみ config へ保存（後方互換）', () => {
@@ -433,7 +425,9 @@ test('saveWork は手動項目のみ config へ保存（後方互換）', () => 
   assert.deepStrictEqual(res.writeback.errors, []);
 });
 
-test('dashboard 管理項目はプロンプトと予約済み定型業務を kiro-loop.yml に書く', () => {
+// 新規作成先は **agent-loop が読む場所**。`.agents/agent-loop.yml` へ書くと、画面では
+// 設定できたように見えて agent-loop はそのファイルを一度も読まない。
+test('dashboard 管理項目はプロンプトと予約済み定型業務を .agents/agent-loop.yml に書く', () => {
   const repo = mkRoot();
   const result = cowork.applyManagedItems([
     { id: 'daily', managed: true, type: 'loop', name: '日次確認', repo, prompt: '課題を確認して' },
@@ -441,13 +435,66 @@ test('dashboard 管理項目はプロンプトと予約済み定型業務を kir
     { id: 'manual', managed: true, type: 'state-machine', name: '手動だけ', repo, workflow: 'manual', schedule: '' },
   ]);
   assert.deepStrictEqual(result.errors, []);
-  const file = path.join(repo, '.kiro', 'kiro-loop.yml');
+  const file = path.join(repo, '.agents', 'agent-loop.yml');
   const raw = fs.readFileSync(file, 'utf8');
-  const entries = discover.parseKiroLoopPrompts(raw);
-  const texts = discover.kiroLoopPromptTexts(raw);
+  const entries = discover.parseAgentLoopPrompts(raw);
+  const texts = discover.agentLoopPromptTexts(raw);
   assert.deepStrictEqual(entries.map((entry) => entry.name).sort(), ['リリース', '日次確認'].sort());
   assert.ok(texts.includes('課題を確認して'));
   assert.ok(texts.some((text) => text.includes('statemachine-use スキルでreleaseステートマシンを実行して')));
+});
+
+// --- 設定ファイルの探索先（agent-loop が読む場所が正） ---
+test('発見は agent-loop の .agents/agent-loop.yml を読む', () => {
+  const repo = mkRoot();
+  writeAgentLoop(repo, SAMPLE_YAML);
+  const mk = discover.detectMarkers(repo);
+  assert.strictEqual(mk.kiroFile, path.join(repo, '.agents', 'agent-loop.yml'));
+  assert.strictEqual(mk.kiroFormat, 'yaml');
+});
+
+test('発見は旧 .agent/ ホームの agent-loop.yml も読む', () => {
+  const repo = mkRoot();
+  fs.mkdirSync(path.join(repo, '.agent'), { recursive: true });
+  fs.writeFileSync(path.join(repo, '.agent', 'agent-loop.yml'), SAMPLE_YAML);
+  assert.strictEqual(discover.detectMarkers(repo).kiroFile,
+    path.join(repo, '.agent', 'agent-loop.yml'));
+});
+
+test('loopConfigFile は既存設定を使い、無ければ agent-loop の場所を新規に選ぶ', () => {
+  const fresh = mkRoot();
+  assert.deepStrictEqual(discover.loopConfigFile(fresh),
+    { file: path.join(fresh, '.agents', 'agent-loop.yml'), format: 'yaml' });
+});
+
+test('管理項目の保存は既存の agent-loop.yml へ追記し、新しいファイルを作らない', () => {
+  const repo = mkRoot();
+  writeAgentLoop(repo, SAMPLE_YAML);
+  const result = cowork.applyManagedItems([
+    { id: 'daily', managed: true, type: 'loop', name: '日次確認', repo, prompt: '課題を確認して' },
+  ]);
+  assert.deepStrictEqual(result.errors, []);
+  assert.ok(!fs.existsSync(path.join(repo, '.kiro')), '旧パスへは書かない');
+  const raw = fs.readFileSync(path.join(repo, '.agents', 'agent-loop.yml'), 'utf8');
+  assert.ok(discover.agentLoopPromptTexts(raw).includes('課題を確認して'));
+  assert.ok(raw.includes('MR コメント返答'), '既存エントリを消さない');
+});
+
+// JSON 設定へ YAML の外科的書換を流し込むと壊れる。避けて .yml を作ると agent-loop の
+// 探索順（yaml → yml → json）で元の .json が無視され、プロンプトが消えたように見える。
+test('管理項目の保存は JSON 設定のフォルダを黙って壊さず断る', () => {
+  const repo = mkRoot();
+  fs.mkdirSync(path.join(repo, '.agents'), { recursive: true });
+  const file = path.join(repo, '.agents', 'agent-loop.json');
+  fs.writeFileSync(file, JSON.stringify({ prompts: [{ name: '既存', prompt: 'x' }] }, null, 2));
+  const before = fs.readFileSync(file, 'utf8');
+  const result = cowork.applyManagedItems([
+    { id: 'daily', managed: true, type: 'loop', name: '日次確認', repo, prompt: '課題を確認して' },
+  ]);
+  assert.strictEqual(result.errors.length, 1);
+  assert.ok(result.errors[0].includes('agent-loop.json'));
+  assert.strictEqual(fs.readFileSync(file, 'utf8'), before, '実体を触らない');
+  assert.ok(!fs.existsSync(path.join(repo, '.agents', 'agent-loop.yml')), '別ファイルも作らない');
 });
 
 // --- YAML のコメント（値パーサとアンカーパーサの整合） ---
@@ -470,8 +517,8 @@ const COMMENTED_LOOP = [
 ].join('\n');
 
 test('列 0 のコメント行で prompts リストを打ち切らない', () => {
-  // 打ち切ると 2 件目以降が発見から消える（.kiro/kiro-loop.yml があるのに画面に出ない）。
-  const values = discover.parseKiroLoopPrompts(COMMENTED_LOOP);
+  // 打ち切ると 2 件目以降が発見から消える（.agents/agent-loop.yml があるのに画面に出ない）。
+  const values = discover.parseAgentLoopPrompts(COMMENTED_LOOP);
   assert.strictEqual(values.length, 2);
   assert.deepStrictEqual(values[0], { name: 'one', interval_minutes: 60, enabled: true });
   assert.strictEqual(values[1].name, 'two # ハッシュ入り', '引用値の中の # は値の一部');
@@ -480,8 +527,8 @@ test('列 0 のコメント行で prompts リストを打ち切らない', () =>
 
 test('値パーサと書き戻しアンカーは prompts の並びが一致する', () => {
   // ずれると別のエントリへ書き戻す。writeback は promptIndex で両者を突き合わせる。
-  const values = discover.parseKiroLoopPrompts(COMMENTED_LOOP);
-  const anchors = discover.parseKiroLoopPromptsWithLines(COMMENTED_LOOP);
+  const values = discover.parseAgentLoopPrompts(COMMENTED_LOOP);
+  const anchors = discover.parseAgentLoopPromptsWithLines(COMMENTED_LOOP);
   assert.strictEqual(anchors.length, values.length);
   anchors.forEach((a, i) => {
     assert.strictEqual(discover.scalarValue(a.fields.name.rawVal), values[i].name);
@@ -489,28 +536,28 @@ test('値パーサと書き戻しアンカーは prompts の並びが一致す�
 });
 
 test('ブロックスカラの本文は相対インデントを保つ', () => {
-  const texts = discover.kiroLoopPromptTexts(COMMENTED_LOOP);
+  const texts = discover.agentLoopPromptTexts(COMMENTED_LOOP);
   assert.strictEqual(texts[0], '手順:\n  1. A する');
   assert.strictEqual(texts[1], 'B');
 });
 
 test('コメントだらけのファイルでも 2 件目を正しく書き戻す', () => {
-  const values = discover.parseKiroLoopPrompts(COMMENTED_LOOP);
+  const values = discover.parseAgentLoopPrompts(COMMENTED_LOOP);
   const idx = values.findIndex((v) => v.name === 'two # ハッシュ入り');
-  const { text, errors } = wb.applyKiroLoopEdits(COMMENTED_LOOP, [{
+  const { text, errors } = wb.applyAgentLoopEdits(COMMENTED_LOOP, [{
     promptIndex: idx, promptName: values[idx].name, enabled: false,
   }]);
   assert.deepStrictEqual(errors, []);
   assert.ok(text.includes('# ---- 一つ目 ----'), 'コメントを消さない');
   assert.ok(text.includes('# ==== 列 0 の区切りコメント ===='), '列 0 のコメントを消さない');
   assert.ok(text.includes('interval_minutes: 60   # 1 時間ごと'), '別エントリを触らない');
-  const after = discover.parseKiroLoopPrompts(text);
+  const after = discover.parseAgentLoopPrompts(text);
   assert.strictEqual(after[0].enabled, true, '1 件目は変わらない');
   assert.strictEqual(after[idx].enabled, false);
 });
 
 test('prompts の後の別トップレベルキーではリストを閉じる', () => {
-  const anchors = discover.parseKiroLoopPromptsWithLines(COMMENTED_LOOP);
+  const anchors = discover.parseAgentLoopPromptsWithLines(COMMENTED_LOOP);
   assert.strictEqual(anchors.length, 2, 'kiro_options 以降を巻き込まない');
 });
 

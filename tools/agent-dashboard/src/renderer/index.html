@@ -141,18 +141,18 @@
   </div>
 
   <!-- ======== 選択中の定常業務の実行状況 ======== -->
-  <dialog id="dlg-kiro-loop" class="kiro-loop-dialog" data-feature="kiro-loop" aria-labelledby="kiro-loop-dialog-title">
+  <dialog id="dlg-routine-agent" class="routine-agent-dialog" data-feature="routines" aria-labelledby="routine-agent-dialog-title">
     <header class="dialog-heading">
       <div>
         <span class="summary-kicker">選択中の定常業務</span>
-        <h2 id="kiro-loop-dialog-title">実行状況</h2>
+        <h2 id="routine-agent-dialog-title">実行状況</h2>
       </div>
       <div class="row">
-        <button id="btn-kiro-loop-refresh" type="button">最新の状態にする</button>
-        <button id="btn-kiro-loop-close" type="button">閉じる</button>
+        <button id="btn-routine-agent-refresh" type="button">最新の状態にする</button>
+        <button id="btn-routine-agent-close" type="button">閉じる</button>
       </div>
     </header>
-    <div id="kiro-loop-dialog-body"></div>
+    <div id="routine-agent-dialog-body"></div>
   </dialog>
 
 
@@ -191,6 +191,20 @@
       <div class="dialog-actions">
         <button id="btn-cw-cancel" value="cancel">キャンセル</button>
         <button id="btn-cw-ok" value="default">反映</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- ======== 定常業務の実行パラメータ ======== -->
+  <dialog id="dlg-cowork-parameters" aria-labelledby="cowork-parameters-title">
+    <form id="cowork-parameters-form">
+      <h2 id="cowork-parameters-title">実行に必要な入力</h2>
+      <p id="cowork-parameters-description" class="muted"></p>
+      <div id="cowork-parameter-fields"></div>
+      <p id="cowork-parameters-error" class="cowork-item-error" role="alert" hidden></p>
+      <div class="dialog-actions">
+        <button id="btn-cowork-parameters-cancel" type="button">キャンセル</button>
+        <button id="btn-cowork-parameters-run" type="submit" disabled>実行</button>
       </div>
     </form>
   </dialog>
@@ -800,7 +814,6 @@
   <script src="sections/cowork.js"></script>
   <script src="sections/routines.js"></script>
   <script src="sections/usage.js"></script>
-  <script src="sections/kiro-loop.js"></script>
   <script src="../features/participation/model.js"></script>
   <script src="features/participation.js"></script>
   <script src="features/agent-audit.js"></script>

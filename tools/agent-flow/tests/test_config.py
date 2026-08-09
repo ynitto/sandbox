@@ -731,6 +731,43 @@ class NodeBudgetTests(unittest.TestCase):
         self.assertEqual(rec["tool"], "agent-flow")
         self.assertEqual(rec["seconds"], 1.5)
         self.assertEqual(rec["ref"], "planner")
+        self.assertEqual(rec["purpose"], "planner", "仕事種別は ref の言い換えではなく明示する")
+
+    def _ledger_rows(self):
+        led = os.path.join(self.dir, "ledger")
+        rows = []
+        for name in sorted(os.listdir(led)):
+            with open(os.path.join(led, name), encoding="utf-8") as f:
+                rows += [json.loads(line) for line in f if line.strip()]
+        return rows
+
+    def test_quota_failure_is_recorded_as_an_observation(self):
+        """quota で落ちた CLI は台帳へ観測として残る。
+
+        ここが無いと、細分した quota（恒久枯渇 / 時限レート制限と復帰時刻）は失敗メッセージの
+        中で消え、管理面の段判定は「枠に当たった」ことを永久に知れない＝降格も自動復帰も
+        起きない。観測は消費 0 行なので、予算の集計は増えない。
+        """
+        message = ("[agent-error:quota] claude 失敗 (rc=1)\n"
+                   "rate limit exceeded, retry after 30 seconds")
+        with mock.patch.object(kf, "_run_agent_once", side_effect=RuntimeError(message)), \
+             mock.patch.object(kf, "_agent_for", return_value=("claude", None)):
+            with self.assertRaises(RuntimeError):
+                kf.run_agent("x", None, purpose="worker")
+        rows = self._ledger_rows()
+        self.assertEqual(len(rows), 1, "観測 1 行だけ（消費行は書かれていない）")
+        self.assertEqual(rows[0]["agent_cli"], "claude")
+        self.assertEqual(rows[0]["quota_kind"], "rate_limit")
+        self.assertEqual(rows[0]["seconds"], 0.0, "観測は消費に数えない")
+        self.assertTrue(rows[0]["reset_at"].endswith("Z"), "復帰時刻を取り出す")
+
+    def test_non_quota_failure_records_nothing(self):
+        message = "[agent-error:env] claude 失敗 (rc=127)\ncommand not found"
+        with mock.patch.object(kf, "_run_agent_once", side_effect=RuntimeError(message)), \
+             mock.patch.object(kf, "_agent_for", return_value=("claude", None)):
+            with self.assertRaises(RuntimeError):
+                kf.run_agent("x", None, purpose="worker")
+        self.assertFalse(os.path.isdir(os.path.join(self.dir, "ledger")))
 
     def test_run_agent_records_successful_execution(self):
         # CLI 実行を成功スタブ（実行時間あり）に差し替え、run_agent が台帳へ記帳することを確認する

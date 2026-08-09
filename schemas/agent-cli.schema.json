@@ -13,6 +13,12 @@
       "type": "string",
       "description": "表示名（省略時はファイル名）。agent_cli の値はファイル名 <name>.json で決まる。"
     },
+    "relative_cost": {
+      "type": "number",
+      "minimum": 0,
+      "default": 1,
+      "description": "同じ仕事を 1 回実行する相対コスト。通貨は持たず、ローカル=0、通常のクラウド=1を基準にする。降格・昇格はこの値を共通の『安いほう』判定に使う。値は**定義単位**でモデル単位ではない——プロバイダを切り替えられる CLI では、その定義でふだん使う経路の値を書く。"
+    },
     "command": {
       "type": "array",
       "items": {
@@ -80,6 +86,10 @@
       "type": "boolean",
       "default": true,
       "description": "rc=0 でも本文が空なら失敗として扱う（認証切れで空応答を返す CLI の静かな失敗を防ぐ）。"
+    },
+    "json_variant": {
+      "type": "string",
+      "description": "JSON だけを返す契約の役割（agent-flow の planner / evaluator / split / filter / judge / reduce、agent-project の plan / review / prioritize / route / adjudicate / assess）に、この CLI の代わりに使う定義名。エンジンは役割の性質だけを見てここへ振り替えるので、人が役割ごとに agents: を書き並べなくてよい。ツールループ前提の定義（--tools 付き）を JSON 契約の役割に使うと出力が制御語だけになり空応答で落ちるため、その組み合わせに対応する変種を定義側が申告する。指す先が存在しない・自分自身を指す場合は無視され元の定義が使われる。例: ollama → ollama-json。"
     },
     "command_suffix": {
       "type": "array",
@@ -241,6 +251,10 @@
               "transient"
             ],
             "description": "quota=利用上限（時間をおけば回復・リトライを焼かない） / auth=認証切れ（人が環境を直す） / env=実行環境の問題（CLI不在・モデル不正など。人が環境を直す） / transient=一時的（通常リトライで解ける）"
+          },
+          "quota_kind": {
+            "enum": ["exhausted", "rate_limit"],
+            "description": "class=quota の細分。exhausted=累積枠の恒久的な枯渇（次周期まで復帰時刻不明）、rate_limit=時限枠（メッセージ内の reset at / retry after から復帰時刻を抽出）"
           },
           "hint": {
             "type": "string",

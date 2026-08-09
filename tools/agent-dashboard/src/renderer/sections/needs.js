@@ -156,7 +156,11 @@ const COMMAND_ACTION_LABELS = {
   approve: '承認',
   hold: '保留',
   reject: '却下',
-  'retry-mr': 'MR再作成',
+  // 送るアクション名は旧名 `retry-mr` のまま（本体は zipapp のコピー配布で、画面より古い版が
+  // 動いていることがある。新しい名前 `mr-create` を送ると、そこだけ .err へ落ちて無反応になる）。
+  // 本体は両方を受けるので、名前を変えるのは本体側の更新が行き渡ってからでよい。
+  'retry-mr': 'MR作成',
+  'mr-create': 'MR作成',
   revise: '修正指示',
   pin: '優先度変更',
   defer: '優先度変更',
@@ -209,7 +213,7 @@ function needActionsHtml(n) {
   } else if (kind === 'review') {
     const hasMr = Boolean((n.mrUrls && n.mrUrls.length) || n.mrUrl);
     if (!hasMr) {
-      buttons.push(`<button class="primary-inline" data-act="retry-mr" data-id="${esc(n.id)}" title="検収到達時に失敗した MR 作成を再試行します">MR再作成</button>`);
+      buttons.push(`<button class="primary-inline" data-act="retry-mr" data-id="${esc(n.id)}" title="この成果のレビュー用に MR を作ります（何度押しても増えません）">MRを作る</button>`);
     }
     buttons.push(`<button class="primary-inline" data-act="approve" data-id="${esc(n.id)}" title="成果を承認してこのタスクを完了します">完了にする</button>`);
     buttons.push(`<button data-act="feedback" data-id="${esc(n.id)}" data-require="1" title="修正方針を記入してやり直させます">差し戻す</button>`);
@@ -2130,9 +2134,9 @@ async function handleNeedAction(btn) {
         toast('そのまま再実行するよう回答しました', true);
       }
     } else if (act === 'retry-mr') {
-      const res = await api.runAction({ dir: p.dir, action: 'retry-mr', id, reason: 'MR 作成を再試行' });
+      const res = await api.runAction({ dir: p.dir, action: 'retry-mr', id, reason: 'MR の作成を依頼' });
       uiLog('needAction retry-mr', id, res);
-      toast('MRの再作成を依頼しました（反映まで少し時間がかかることがあります）', true);
+      toast('MRの作成を依頼しました（反映まで少し時間がかかることがあります）', true);
     } else if (act === 'approve') {
       const reason = needApprovalReason(p, need, state.flowRuns, text);
       // 検収待ち（成果がある blocked / review）の承認は完了確定の意図を明示して送る。

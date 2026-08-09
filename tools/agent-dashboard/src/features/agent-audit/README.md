@@ -2,7 +2,7 @@
 
 [agent-audit](../../../../agent-audit/) CLI をダッシュボードから呼び、収集済みの
 実行証跡からトークン利用量と実行品質を表示する制御面。dashboard（Windows）から
-WSL 内の agent-audit を `wsl.exe -e bash -lc` 経由で呼ぶ（kiro-loop の exec と
+WSL 内の agent-audit を `wsl.exe -e bash -lc` 経由で呼ぶ（agent-loop の exec と
 同じ流儀。Linux ネイティブではローカルの bash）。
 
 ## 置き場所: 全体設定の「利用状況」（独立タブは持たない）

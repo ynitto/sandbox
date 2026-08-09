@@ -1,5 +1,6 @@
 {
   "name": "claude",
+  "relative_cost": 1,
   "command": ["claude", "-p", "--output-format", "text"],
   "prompt_via": "stdin",
   "model_flag": "--model",
@@ -32,5 +33,11 @@
     "ready_pattern": "^[[:space:]]*[>?❯›][[:space:]]*$|│[[:space:]]*[>❯›]|\\? for shortcuts",
     "busy_pattern": "esc to interrupt",
     "prompt_inject": "send-keys"
-  }
+  },
+  "errors": [
+    {"match": "usage limit reached|you(?:'|\u2019)ve hit your limit|quota exceeded",
+     "class": "quota", "quota_kind": "exhausted", "hint": "Claude の利用枠が枯渇しています"},
+    {"match": "rate limit|too many requests",
+     "class": "quota", "quota_kind": "rate_limit", "hint": "Claude の時限レート制限です"}
+  ]
 }

@@ -1,7 +1,7 @@
 # agent-loop
 
-> **由来**: `tools/kiro-loop/` を置換せずクローンし改称した系統。改称後に `agent_loop/` パッケージへ
-> モジュール分解（断片合成）。方針: [`docs/designs/agent-tools-rename-design.md`](../../docs/designs/agent-tools-rename-design.md)。
+> 2026-08-09 に定期駆動ループを agent-loop へ一本化。経緯と移行方針は
+> [`docs/designs/agent-tools-rename-design.md`](../../docs/designs/agent-tools-rename-design.md) を参照。
 
 
 kiro-cli を **tmux セッション**上で起動し、設定ファイルに定義したプロンプトを定期的に自動送信するツールです。
@@ -33,6 +33,21 @@ pip install pyyaml
 ```bash
 bash install.sh
 ```
+
+### 旧設定の移行
+
+旧ツールの設定は内容を変えず、ファイル名と置き場だけを変更する。移行先が既にある場合は上書きせず、内容を統合する。
+
+```bash
+mkdir -p ~/.agents
+cp ~/.kiro/kiro-loop.yaml ~/.agents/agent-loop.yaml
+
+# ワークスペースごとの設定も同様
+mkdir -p .agents
+cp .kiro/kiro-loop.yml .agents/agent-loop.yml
+```
+
+移行後は `agent-loop doctor` で設定を検査し、`agent-loop` を起動する。旧ファイルはロールバック用に残してよいが、agent-loop は読まない。
 
 ## 使い方
 
@@ -216,8 +231,10 @@ def check() -> str | None:
 |---|---|
 | `gitlab-issue-hook.py` | 新規/更新 Issue を検知して送信。更新が無くフォールバック有効ならランダムな Issue を送る。 |
 | `gitlab-mr-hook.py` | 新規/更新 MR を検知して送信。更新が無くフォールバック有効ならランダムな MR を送る。 |
+| `resource-control-hook.py` | LLM へは送信せず、dashboard 共通の headless 入口で予算再配分と profile 適用を行う。 |
+| `audit-calibrate-hook.py` | LLM へは送信せず、audit 収集後に `rates.per_cli` を実測中央値へ較正する。 |
 
-いずれも `gitlab-idd` スキルの `scripts/gl.py` を利用します。`GITLAB_TOKEN` を
+GitLab 用の前二つは `gitlab-idd` スキルの `scripts/gl.py` を利用します。`GITLAB_TOKEN` を
 設定し、必要に応じて環境変数（`AGENT_LOOP_GL_PY`, `AGENT_LOOP_GL_CWD`,
 `AGENT_LOOP_ISSUE_LABELS` など）でパスやフィルター条件を上書きしてください。
 

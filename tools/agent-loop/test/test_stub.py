@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""スタブが kiro-loop の判定契約を満たすかを検証する。
+"""スタブが agent-loop の判定契約を満たすかを検証する。
 
-kiro-loop は kiro-cli の画面を見て「送れる／処理中」を判断する（_PROMPT_RE）。
+agent-loop は kiro-cli の画面を見て「送れる／処理中」を判断する（_PROMPT_RE）。
 スタブがこの契約を破ると、定期送信が止まったりスロットが解放されなくなったりするが、
 tmux 越しの症状としてしか現れず原因が追いにくい。ここで直接押さえておく。
 
@@ -20,7 +20,7 @@ import time
 from pathlib import Path
 
 STUB = Path(__file__).resolve().parent.parent / "stub" / "kiro-cli-stub.py"
-# kiro-loop.py の _PROMPT_RE と同じ（待機中と判定される行）
+# agent-loop.py の _PROMPT_RE と同じ（待機中と判定される行）
 PROMPT_RE = re.compile(r"(^\s*[>?❯›]\s*$|!>)", re.MULTILINE)
 
 passed = 0
@@ -77,7 +77,7 @@ def main() -> int:
         after_prompt = processing.split("応答を作成しています", 1)[1]
         check("処理中はプロンプト行を出さない", not PROMPT_RE.search(after_prompt))
 
-        # 3. 応答後は再び待機中に戻る（kiro-loop がスロットを解放できる）
+        # 3. 応答後は再び待機中に戻る（agent-loop がスロットを解放できる）
         done = read_until(proc, "完了しました")
         check("応答を返す", "スタブの応答" in done)
         # 応答とプロンプトが同じ read に入ることがあるので、足りないときだけ読み足す
@@ -98,7 +98,7 @@ def main() -> int:
 def test_long_single_line() -> None:
     """1024 バイトを超える 1 行を端末経由で受け取れるか。
 
-    `kiro-loop send` は複数行プロンプトを 1 行に連結して送る。端末の行編集（正準モード）が
+    `agent-loop send` は複数行プロンプトを 1 行に連結して送る。端末の行編集（正準モード）が
     有効なままだと 1 行の上限（macOS は 1024 バイト）で入力が捨てられ、改行が届かず
     スタブが永久に固まる（= スロットを握ったままループ全体が止まる）。pty 越しでしか
     再現しないので、ここでは擬似端末を使う。
@@ -136,3 +136,4 @@ def test_long_single_line() -> None:
 
 if __name__ == "__main__":
     sys.exit(main())
+

@@ -211,17 +211,36 @@ Schema 渡し（`--format-schema`）は**要るまで作らない**——`json` 
 呼ばれた瞬間に言い直しだけで終わる。JSON 契約の役割は定義上「読まない系」なので、
 道具を落としても失うものが無く、`readonly: enforced` の真実性はどちらのモードでも保たれる。
 
-エンジン側は `agents: {planner: {agent_cli: ollama-json, model: qwen3}}` と書くだけ。
-**エンジン改修ゼロ**で、`write_args` / `readonly_args` が argv 連結である契約の設計
+割り当ては定義側の申告で自動化する。`ollama.json` に `"json_variant": "ollama-json"` を
+1 行足すと、エンジンは JSON 契約の役割に限って解決済みの CLI をそちらへ振り替える
+（`agentcore.agentcli.json_variant` の 1 実装。agent-flow は `JSON_CONTRACT_ROLES`、
+agent-project は `JSON_CONTRACT_PURPOSES` で「どの役割が JSON 契約か」を宣言する）。
+`write_args` / `readonly_args` が argv 連結である契約の設計
 （[agent-cli-plugin-design.md](./agent-cli-plugin-design.md)）にそのまま乗る。
+
+**改訂 2026-08-09（初版からの変更）**: 初版は「エンジン側は
+`agents: {planner: {agent_cli: ollama-json}}` と書くだけ・エンジン改修ゼロ」としていた。
+実運用では成立しなかった——agent-dashboard の全体設定は `workloads.flow.agent_cli` を
+ワークロード一括で置く導線が主で、そこで `ollama` を選ぶと役割別宣言（control の
+`agents.<role>`）を書かない限り split / planner まで素の定義で呼ばれる。control は
+`agents[purpose]` より優先なので、設定ファイル側に何を書いても勝てない。結果、
+JSON 契約の役割が制御語だけを返して空応答で落ち、再計画の予算だけが焼ける事故が出た。
+節約のための設定を人の設定作業で払わせるのはコンセプト 柱3「チューニングの手間も人介在」
+への違反でもあるので、**振り替えを既定の挙動へ格上げする**。人が明示した CLI を無視する
+わけではない: 振り替え先は同じエンジン・同じモデルの起動形違いで、外したければ定義から
+`json_variant` を落とす。
 
 - **却下: エンジン設定に汎用 `agent_args` を足す。** 3 エンジンへの改修になる割に、
   得るものは定義 1 枚と同じ。役割ごとの起動形の違いは「CLI 定義の変種」として
   データで表すのが契約の思想である。
+- **却下: エンジンが CLI 名を見て `ollama` のときだけ変種へ倒す。** §5.2 と同じ理由——
+  CLI 特別扱いはプラグイン契約の思想に反する。「JSON 用の変種を持つか」は定義が申告し、
+  「この役割は JSON 契約か」はエンジンが宣言する。両者とも自分が知っていることだけを言う。
 - **注意: `--format json` は本文の説明文を殺す**（全出力が JSON になる）。
   人が読む本文が成果の役割（synthesize 等）には使わない。JSON 契約の役割
   （planner / evaluator / filter / judge / reduce / split、agent-project の plan・
-  adjudicate 等）に限って変種を割り当てる。
+  adjudicate 等）に限って変種を割り当てる。`verify` は寛容パーサと証跡の本文を伴い、
+  `distill` は行形式、`repo_map` / `doctor` は散文なので対象外。
 
 この段で、§3 の制約 (2) が消え、planner / evaluator もローカル候補に入る
 （品質は §10 の観測で判断する）。

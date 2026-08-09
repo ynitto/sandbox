@@ -30,9 +30,11 @@ UI の応答性のため JS の自前ローダを持ち（Python を起こすと
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import tempfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 # 探索順（schemas/agent-cli.schema.json の規約）。環境変数はテストが実ホームを汚さないための seam。
@@ -151,13 +153,21 @@ def normalize(name: str, raw: dict, path) -> dict:
         if not isinstance(errors_raw, list):
             raise AgentCliError(f"エージェント定義 {path}: errors はオブジェクト配列です")
     errors = []
+    error_details = []
     for e in errors_raw:
         if not isinstance(e, dict):
             raise AgentCliError(f"エージェント定義 {path}: errors[] はオブジェクト配列です")
         try:
-            errors.append((str(e.get("class", "env")),
-                           re.compile(str(e.get("match", "")), re.I),
-                           str(e.get("hint", ""))))
+            cls = str(e.get("class", "env"))
+            pattern = re.compile(str(e.get("match", "")), re.I)
+            hint = str(e.get("hint", ""))
+            quota_kind = str(e.get("quota_kind") or ("exhausted" if cls == "quota" else ""))
+            if quota_kind not in ("", "exhausted", "rate_limit"):
+                raise AgentCliError(
+                    f"エージェント定義 {path}: errors.quota_kind が不正です: {quota_kind}")
+            errors.append((cls, pattern, hint))
+            error_details.append({"class": cls, "pattern": pattern, "hint": hint,
+                                  "quota_kind": quota_kind})
         except re.error as ex:
             raise AgentCliError(
                 f"エージェント定義 {path}: errors.match が正規表現として不正です: {ex}") from ex
@@ -176,8 +186,13 @@ def normalize(name: str, raw: dict, path) -> dict:
     readonly = str(raw.get("readonly", "best-effort"))
     if readonly not in ("enforced", "best-effort"):
         raise AgentCliError(f"エージェント定義 {path}: readonly は enforced か best-effort です")
+    relative_cost = raw.get("relative_cost", 1)
+    if (not isinstance(relative_cost, (int, float)) or isinstance(relative_cost, bool)
+            or not math.isfinite(relative_cost) or relative_cost < 0):
+        raise AgentCliError(f"エージェント定義 {path}: relative_cost は 0 以上の数値です")
     spec = {
         "name": str(raw.get("name") or name),
+        "relative_cost": float(relative_cost),
         "path": str(path),
         "command": command,
         "command_suffix": _strs(raw.get("command_suffix"), "command_suffix", path),
@@ -192,6 +207,10 @@ def normalize(name: str, raw: dict, path) -> dict:
         "env": dict(env_raw),
         "timeout": raw.get("timeout"),
         "empty_output_is_error": bool(raw.get("empty_output_is_error", True)),
+        # JSON 契約の役割（planner / split 等）へ自動で振り替える変種の名前。空 = 変種なし。
+        # 「どの役割が JSON 契約か」はエンジンの語彙、「その CLI に JSON 用の変種があるか」は
+        # 定義側の申告——こう分けると、エンジンが CLI 名で分岐せずに済む（適用拡大設計 §4.3）。
+        "json_variant": str(raw.get("json_variant") or "").strip().lower(),
         "write_args": _strs(raw.get("write_args"), "write_args", path),
         "readonly_args": _strs(raw.get("readonly_args"), "readonly_args", path),
         "readonly": readonly,
@@ -201,6 +220,7 @@ def normalize(name: str, raw: dict, path) -> dict:
             "instruction": str(spill_raw.get("instruction") or ""),
         },
         "errors": errors,
+        "error_details": error_details,
     }
     if inter_raw:
         icmd = _strs(inter_raw.get("command"), "interactive.command", path)
@@ -281,6 +301,34 @@ def load_cli(name: str, project_dir=None, *, use_cache: bool = True) -> dict:
 
 def clear_cache() -> None:
     _CACHE.clear()
+
+
+def json_variant(name: str, project_dir=None) -> str:
+    """JSON 契約の役割に使う CLI 名（定義が変種を申告していなければ `name` のまま）。
+
+    JSON だけを返す契約の役割（agent-flow の planner/evaluator/split 等、agent-project の
+    plan/adjudicate 等）に、ツールループ前提の定義をそのまま使うと契約が成立しない——
+    出力が本文ではなく制御語だけになり、空応答として落ちる。定義側に「自分の JSON 用の
+    変種はこれ」と申告させ、エンジンは役割の性質だけで振り替える。
+
+    人が役割ごとに `agents:` を書き並べる運用にすると、節約のための設定を人の時間で払う
+    ことになる（コンセプト 柱3「チューニングの手間も人介在」）。振り替えは既定で効かせ、
+    外したい定義は `json_variant` を書かなければよい。
+
+    申告先が実在しない・自分自身を指す場合は `name` のまま（設定ミスで実行を殺さない）。
+    """
+    key = str(name or "").strip().lower()
+    try:
+        variant = str(load_cli(key, project_dir).get("json_variant") or "")
+    except AgentCliError:
+        return name
+    if not variant or variant == key:
+        return name
+    try:
+        load_cli(variant, project_dir)
+    except AgentCliError:
+        return name
+    return variant
 
 
 def _mode_args(spec: dict, *, interactive: bool, readonly: bool, no_session: bool) -> "list[str]":
@@ -485,12 +533,58 @@ def clear_command(spec: dict) -> str:
     return str(inter.get("clear_command", "/clear"))
 
 
-def classify_error(spec: dict, blob: str) -> "tuple[str, str] | None":
-    """定義の errors[] で失敗本文を分類する（組み込みの汎用パターンより先に評価される想定）。"""
+_RESET_AT_RE = re.compile(
+    r"(?:reset(?:s)?(?:\s+at)?|available\s+at)\s*[:=]?\s*"
+    r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2}))",
+    re.I,
+)
+_RETRY_AFTER_RE = re.compile(
+    r"(?:retry(?:\s+after)?|try\s+again\s+in|reset(?:s)?\s+in|retry-after\s*:?)\s*"
+    r"(\d+(?:\.\d+)?)\s*(seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h)\b",
+    re.I,
+)
+
+
+def _quota_reset_at(text: str, now) -> "str | None":
+    absolute = _RESET_AT_RE.search(text)
+    if absolute:
+        try:
+            dt = datetime.fromisoformat(absolute.group(1).replace("Z", "+00:00"))
+            return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+        except ValueError:
+            pass
+    relative = _RETRY_AFTER_RE.search(text)
+    if not relative:
+        return None
+    amount = float(relative.group(1))
+    unit = relative.group(2).lower()[0]
+    seconds = amount * ({"s": 1, "m": 60, "h": 3600}[unit])
+    if isinstance(now, datetime):
+        base = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
+    else:
+        base = datetime.fromtimestamp(float(now), timezone.utc)
+    return (base.astimezone(timezone.utc) + timedelta(seconds=seconds)).isoformat().replace("+00:00", "Z")
+
+
+def classify_error(spec: dict, blob: str, *, detailed: bool = False, now=None):
+    """定義の errors[] で失敗本文を分類する。
+
+    既存呼出しは `(class, hint)` のまま。`detailed=True` で quota の細分と
+    復帰時刻を返す。相対時刻の抽出時は `now` を必須にし、現在時刻を隠れた入力にしない。"""
     text = str(blob or "")
-    for cls, pattern, hint in spec.get("errors", []):
-        if pattern.search(text):
-            return cls, hint
+    details = spec.get("error_details")
+    if details is None:
+        details = ({"class": cls, "pattern": pattern, "hint": hint, "quota_kind": ""}
+                   for cls, pattern, hint in spec.get("errors", []))
+    for rule in details:
+        if rule["pattern"].search(text):
+            if not detailed:
+                return rule["class"], rule["hint"]
+            quota_kind = rule.get("quota_kind") or None
+            reset_at = (_quota_reset_at(text, now) if quota_kind == "rate_limit" and now is not None
+                        else None)
+            return {"class": rule["class"], "hint": rule["hint"],
+                    "quota_kind": quota_kind, "reset_at": reset_at}
     return None
 
 

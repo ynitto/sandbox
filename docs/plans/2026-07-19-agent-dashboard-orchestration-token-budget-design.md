@@ -163,9 +163,24 @@ v1 のキーは意味を変えずすべて残す（互換性の規則どおり�
 {"ts": "…", "workload": "project", "tool": "agent-project", "seconds": 42.1,
  "ref": "project:app/task-12", "node": "…",
  "agent_cli": "claude", "model": "opus",        // v2: 実行したエージェントの帰属
+ "purpose": "adjudicate",                       // v2: 仕事種別（旧行は ref を代用）
  "tokens_in": 12000, "tokens_out": 3400,        // v2: 実測できたときだけ書く（推定値は書かない）
  "usd": 0.31}                                   // v2: 補助情報（任意）
+
+// quota 観測の行（消費ではない。seconds=0・トークン無し）
+{"ts": "…", "workload": "flow", "tool": "agent-flow", "seconds": 0, "ref": "",
+ "agent_cli": "claude", "quota_kind": "rate_limit", "reset_at": "2026-07-19T04:00:00Z"}
 ```
+
+**quota 観測は状態ファイルにしない。** エンジンが枠に当たったら、その事実（`quota_kind` と、
+メッセージから取れれば `reset_at`）を台帳へ 1 行追記する。管理面は読み出しのたびに
+「CLI ごとの現在の状態」を組み直す（`budget.quotaAgentsFrom`）。専用の状態ファイルを置くと
+書き手が 1 つ増え、さらに**古い観測を消す書き手**まで要る。台帳なら period 窓の外へ出た時点で
+自然に消えるので、`exhausted`（次の期間まで戻らない枠）はちょうど期間の切り替わりで失効する。
+
+`rate_limit` で `reset_at` が取れなかった行は、読み手が `ts + 既定 TTL`（1 時間）で失効させる。
+復帰時刻不明を「永久に使えない」に変換しないためで、**枠を止めないための機能が候補を殺す**のが
+いちばん避けたい壊れ方である。
 
 消費集計（読み出し側の共通規則）:
 
@@ -294,7 +309,8 @@ IPC（すべて `{ok,data,error}` 包み）:
 - `orchestration:overview` — 予算 usage v2（実測＋推定の内訳つき）・control 現在値・
   status/ 一覧（fresh 判定つき）・エージェントドロップイン棚卸しをまとめて返す
 - `orchestration:budgetSave` — 上限・期間・allocation（weight/min/max/on_exhausted/soft_ratio）
-- `orchestration:rebalance` — アロケータの手動実行（auto では refreshSec ごとに自動）
+- `orchestration:rebalance` — アロケータの手動実行（GUI からは人が押したときだけ。
+  定期駆動は agent-loop の定常業務が `npm run resources` を回す。§精度と限界を参照）
 - `orchestration:controlSave` — overrides / degraded / delegation の保存（revision +1）
 - `orchestration:lifecycle` — `{workload, action: run|pause|stop}` の近道
 - `orchestration:agentSave` / `orchestration:agentDelete` — ドロップイン定義の作成・編集・削除
@@ -325,13 +341,32 @@ dashboard は台帳のうち `seconds` と `tokens_in/out` が両方ある行か
 書き戻す。エンジンは較正の存在を知らず、config のレート表を読むだけ——推定の質は管理面の
 改善だけで上がる。
 
+### 実行プロファイルの段と quota フォールバック
+
+段（大 / 中 / 小）は予算残率・ヒステリシス・最小保持で決まり、決まった段の候補列を上から
+見て「枠が残っている最初の候補」を採る。全滅なら一段下へ降りる。
+
+**降りた場合、state に残す段は降りた先である。** 当初は「段は budget 由来の理由だけで動かす」
+として予算が決めた段を残していたが、それだと降格が state に映らず、枠が戻ったときに
+「どこから戻るのか」が state から読めなかった。降りた先を残せば、復帰は既存のヒステリシスと
+最小保持をそのまま通る——`min_hold_sec` を設定していれば、短いレート制限で落ちた直後の復帰は
+その秒数だけ待つ（振動を抑えるための意図的な鈍さで、枠が空いたことは次の評価で必ず拾う）。
+
+CLI が候補から外れる条件は 2 つある。`allocation.agents.<cli>.max_tokens` を超えた（従来）か、
+台帳の quota 観測（上記）が `exhausted`、または `rate_limit` で復帰時刻がまだ先か。
+
 ## 精度と限界
 
 - **推定はあくまで推定**: トークン未報告 CLI の消費はレート × 秒の近似。UI では実測分と
   推定分を分けて表示し、混同させない。
 - **上振れ有界**: ロックなし読み合計のため、同時実行分の上振れは v1 と同じく有界。
-- **アロケータの可用性**: auto の再配分は管理面が開いているときだけ進む。閉じていても
-  直近 computed ＋静的上限＋全体上限が効くため、安全側に倒れる。
+- **アロケータの可用性**: auto の再配分と実行プロファイルの評価は、当初は管理面（Electron）を
+  開いている間だけ進んだ。いまは同じモジュールをヘッドレスに 1 回叩く入口
+  （`tools/agent-dashboard/scripts/resource-control.js`、`npm run resources`）があり、これを
+  agent-loop の定常業務（`hooks/resource-control-hook.py`）から回すことで在席に依存しない。
+  **書き手は増えていない**——GUI もヘッドレスも同じ `budget.rebalance` / `profiles.apply` を
+  呼ぶだけで、GUI 側は人がボタンを押したときだけ走る（定期駆動は routine 側だけが持つ）。
+  どちらも動いていない端末では、従来どおり直近 computed ＋静的上限＋全体上限が効く。
 - **control の反映遅延**: pull 型のため反映はエンジンのサイクル / 次のチョークポイント到達時。
   status の revision 突き合わせで「未反映」を可視化して補う。
 

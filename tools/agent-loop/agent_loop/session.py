@@ -582,6 +582,9 @@ class SessionManager:
             prompt_id = str(entry.get("id", "")).strip()
             if not prompt_id:
                 continue
+            # Hooks may be headless and can skip forever; create a pane only after one emits a prompt.
+            if entry.get("event_hook"):
+                continue
             if entry.get("oneshot"):
                 continue
             if entry.get("target"):

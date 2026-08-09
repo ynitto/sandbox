@@ -1,6 +1,6 @@
 # agent-loop 設計資料
 
-> **由来**: `tools/kiro-loop/DESIGN.md` を置換せずクローンし改称。実装は `agent_loop/` パッケージ。
+> 定期駆動ループの現行設計。実装は `agent_loop/` パッケージ。
 
 > 最終更新: 2026-08-08  
 > 対象: `agent_loop/` パッケージ（断片合成）  

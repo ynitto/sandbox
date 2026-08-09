@@ -890,6 +890,99 @@ class TestFailureTriage(unittest.TestCase):
             self.assertIn("続き", body)                         # 直せば続きから、と言い切る
             self.assertEqual(t.get("env_resume"), "1")
 
+    def test_repeated_env_block_falls_back_to_hold(self):
+        """同じ環境要因が続いたら保留（policy.deny）へ落ち、自動の再開が止まること。
+
+        環境ブロックはリトライを消費しない契約なので、恒常的に壊れた環境では上限がどこにも
+        無く、人が approve するたび同じ工程を同じ時間だけ焼き直していた（C7「必ず止まる」）。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", status="doing")
+            cfg = cfg_for(d, env_resume_limit=2)
+            why = "[agent-error:auth] kiro-cli 失敗 (rc=0): 認証切れ"
+            for expected in (1, 2):
+                task = km.load_tasks(cfg.backlog)[0]
+                task.status = "doing"
+                km._settle_failure(cfg, task, why, expected, "", {})
+                t = km.load_tasks(cfg.backlog)[0]
+                self.assertEqual(t.get("env_block_count"), str(expected))
+                self.assertEqual(t.get("env_resume"), "1")      # 上限内は従来どおり再開できる
+                self.assertEqual(t.retries, 0)                  # リトライは焼かない
+            # 3 回目（上限 2 超え）で保留へ
+            task = km.load_tasks(cfg.backlog)[0]
+            task.status = "doing"
+            km._settle_failure(cfg, task, why, 3, "", {})
+            t = km.load_tasks(cfg.backlog)[0]
+            self.assertEqual(t.norm_status(), "blocked")
+            self.assertFalse(t.get("env_resume"))               # 同 run の再開約束は外す
+            self.assertEqual(t.retries, 0)
+            self.assertIn("deny: T1", (d / "policy.md").read_text(encoding="utf-8"))
+            body = (d / "needs" / "T1.md").read_text(encoding="utf-8")
+            self.assertIn("3 回続けて止まっています", body)
+            self.assertIn("承認すると保留が解けます", body)
+
+    def test_held_task_is_not_consumed_until_approved(self):
+        # 保留（deny）中は ready に戻しても triage が消化対象から外し、approve が解除する
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", status="doing")
+            cfg = cfg_for(d, env_resume_limit=1)
+            for cycle in (1, 2):
+                task = km.load_tasks(cfg.backlog)[0]
+                task.status = "doing"
+                km._settle_failure(cfg, task, "[agent-error:auth] 認証切れ", cycle, "", {})
+            tasks = km.load_tasks(cfg.backlog)
+            tasks[0].status = "ready"
+            km.triage(tasks, km.load_policy(cfg.policy))
+            self.assertEqual(tasks[0].norm_status(), "blocked")
+            km.cmd_approve(cfg, "T1", "verifier をクラウド CLI に切り替えた")
+            self.assertNotIn("deny: T1", (d / "policy.md").read_text(encoding="utf-8"))
+
+    def test_a_different_env_cause_restarts_the_count(self):
+        # 別の環境問題までまとめて 1 つの上限で締めない（直った側まで止まったままになる）
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", status="doing")
+            cfg = cfg_for(d, env_resume_limit=2)
+            for why in ("[agent-error:auth] 認証切れ", "[agent-error:auth] 認証切れ",
+                        "[agent-error:quota] 利用上限"):
+                task = km.load_tasks(cfg.backlog)[0]
+                task.status = "doing"
+                km._settle_failure(cfg, task, why, 1, "", {})
+            t = km.load_tasks(cfg.backlog)[0]
+            self.assertEqual(t.get("env_block_kind"), "quota")
+            self.assertEqual(t.get("env_block_count"), "1")
+            self.assertEqual(t.get("env_resume"), "1")
+            self.assertFalse((d / "policy.md").exists())
+
+    def test_env_resume_limit_zero_keeps_the_old_behaviour(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", status="doing")
+            cfg = cfg_for(d, env_resume_limit=0)
+            for cycle in range(5):
+                task = km.load_tasks(cfg.backlog)[0]
+                task.status = "doing"
+                km._settle_failure(cfg, task, "[agent-error:auth] 認証切れ", cycle, "", {})
+            t = km.load_tasks(cfg.backlog)[0]
+            self.assertEqual(t.get("env_resume"), "1")
+            self.assertFalse((d / "policy.md").exists())
+
+    def test_content_failure_clears_the_env_streak(self):
+        # 内容の失敗を挟んだら連続は途切れる（環境が直った証拠として数え直す）
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", status="doing")
+            cfg = cfg_for(d, env_resume_limit=2)
+            task = km.load_tasks(cfg.backlog)[0]
+            km._settle_failure(cfg, task, "[agent-error:auth] 認証切れ", 1, "", {})
+            task = km.load_tasks(cfg.backlog)[0]
+            task.status = "doing"
+            km._settle_failure(cfg, task, "verify NG: テストが落ちた", 2, "", {})
+            t = km.load_tasks(cfg.backlog)[0]
+            self.assertFalse(t.get("env_block_count"))
+            self.assertEqual(t.retries, 1)
+
     def test_env_resume_survives_memo_feedback(self):
         # 環境ブロック後に needs へ「直した」と書いて [x] しても同 run 再開（計画変更ではない）
         with tempfile.TemporaryDirectory() as d:
@@ -940,6 +1033,39 @@ class TestFailureTriage(unittest.TestCase):
             t = km.load_tasks(cfg.backlog)[0]
             self.assertEqual(t.norm_status(), "ready")         # 内容の問題 → 従来どおり積み直し
             self.assertEqual(t.retries, 1)
+
+    def test_acceptance_criteria_failure_burns_retries_and_stops(self):
+        """受入基準を持つタスクの検証失敗は、リトライを消費して上限で打ち切られる。
+
+        統一 verify では `verify`（レガシー）は空が既定で、正は受入基準と固定コマンド。
+        判定をレガシーフィールドで行っていた頃は、基準を持つタスクの FAIL まで
+        「完了条件が無いので人が確認してください」に落ち、上限判定へ進まなかった——
+        何度失敗しても打ち切られず、毎回人へ送られ続けた（C7「必ず止まる」に反する）。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", status="doing", verify="")            # レガシー verify は空（新規の既定）
+            bl = d / "backlog" / "T1.md"
+            bl.write_text(bl.read_text(encoding="utf-8")
+                          + "- task_acceptance_criteria: E2E fixture がある\n", encoding="utf-8")
+            cfg = cfg_for(d)
+            task = km.load_tasks(cfg.backlog)[0]
+            km._settle_failure(cfg, task, "基準 C1 が fail", 1, "ev", {})
+            t = km.load_tasks(cfg.backlog)[0]
+            self.assertEqual(t.norm_status(), "ready")         # 内容の問題として積み直す
+            self.assertEqual(t.retries, 1)
+            self.assertFalse((d / "needs" / "T1.md").exists())  # まだ人へは送らない
+
+    def test_task_without_any_verification_material_still_asks_the_human(self):
+        # 検証材料が本当に無いタスクだけが「完了条件が無い」として人の確認へ回る。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", status="doing", verify="")
+            cfg = cfg_for(d)
+            task = km.load_tasks(cfg.backlog)[0]
+            km._settle_failure(cfg, task, "verify 未定義（自己申告では done にできない）", 1, "ev", {})
+            t = km.load_tasks(cfg.backlog)[0]
+            self.assertEqual(t.norm_status(), "blocked")
+            self.assertIn("verify 未定義", (d / "needs" / "T1.md").read_text(encoding="utf-8"))
 
     def test_act_failure_without_verify_retries_instead_of_requesting_artifact_review(self):
         with tempfile.TemporaryDirectory() as d:

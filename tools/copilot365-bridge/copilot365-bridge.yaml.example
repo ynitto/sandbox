@@ -31,7 +31,7 @@ selectors:
 # メールボックス（outbox/inbox による中継）
 # ---------------------------------------------------------------------------
 # daemon が outbox を監視し、to=ms365 のパケットを ask して inbox に回答を返す。
-# このディレクトリを issue-mailbox / makaroshki-bridge / kiro-loop と共有すれば、
+# このディレクトリを issue-mailbox / makaroshki-bridge / agent-loop と共有すれば、
 # 既存のメッセージハブにそのまま接続できる。
 mailbox_dir: ~/.copilot365-bridge/mailbox
 poll_interval_s: 5

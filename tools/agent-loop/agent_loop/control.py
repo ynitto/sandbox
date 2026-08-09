@@ -12,9 +12,9 @@ from __future__ import annotations
 # 超えたら新規のプロンプト送信を控える。agent-loop は subprocess で LLM を呼ばない
 # （tmux のエージェント CLI に送信する）ため、実行秒はセマフォスロットの保持時間
 # （送信 → 完了検知）で近似して記帳する。セマフォ未設定（max_concurrent <= 0）のときは
-# 計測点が無く記帳されない（kiro-loop と同じ既知の制約）。
+# 計測点が無く記帳されない（agent-loop と同じ既知の制約）。
 #
-# 由来: tools/kiro-loop/kiro-loop.py の同名実装をクローン（agent-loop は後継クローン）。
+# 由来: tools/agent-loop/agent-loop.py の同名実装をクローン（agent-loop は後継クローン）。
 
 _NODE_BUDGET_WORKLOAD = "routine"
 _NODE_BUDGET_TOOL = "agent-loop"

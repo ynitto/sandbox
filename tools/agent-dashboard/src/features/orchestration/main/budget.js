@@ -183,6 +183,46 @@ function softRatioOf(config) {
   return Number.isFinite(n) && n > 0 && n <= 1 ? n : 0.9;
 }
 
+// reset_at を書けなかった rate_limit の既定 TTL（秒）。CLI がメッセージに復帰時刻を載せない
+// ことは普通にあるので、**復帰時刻不明を「永久に使えない」にしない**ための上限。
+const QUOTA_RATE_LIMIT_TTL_SEC = 3600;
+
+// 台帳の quota 観測行（quota_kind を持つ行）から、CLI ごとの「いま枠に当たっているか」を組む。
+//
+// **状態ファイルを別に持たない。** 観測はエンジンが台帳へ追記し、判定は読み手がこの関数で
+// 毎回組み直す。書き手を増やさず（C7）、古い観測の掃除も要らない——台帳の読み出しは period
+// 窓なので、`exhausted`（次の期間まで戻らない枠）はちょうど期間の切り替わりで消える。
+function quotaAgentsFrom(records) {
+  const out = {};
+  for (const rec of records) {
+    const kind = String(rec.quota_kind || '');
+    if (kind !== 'exhausted' && kind !== 'rate_limit') continue;
+    const cli = String(rec.agent_cli || '');
+    if (!cli) continue;
+    const observedMs = Date.parse(rec.ts || '');
+    const prev = out[cli];
+    // 同じ CLI の観測が複数あれば最後の 1 件が現在の状態（枯渇 → 復帰 → 再枯渇 を順に反映）。
+    if (prev && Number.isFinite(prev._observedMs)
+        && Number.isFinite(observedMs) && observedMs < prev._observedMs) continue;
+    out[cli] = {
+      quota_kind: kind,
+      observed_at: String(rec.ts || ''),
+      _observedMs: observedMs,
+      ...(rec.reset_at ? { reset_at: String(rec.reset_at) } : {}),
+    };
+  }
+  for (const entry of Object.values(out)) {
+    // 復帰時刻が読めない rate_limit は観測時刻 + 既定 TTL で失効させる。
+    if (entry.quota_kind === 'rate_limit' && !Number.isFinite(Date.parse(entry.reset_at || ''))) {
+      entry.reset_at = Number.isFinite(entry._observedMs)
+        ? new Date(entry._observedMs + QUOTA_RATE_LIMIT_TTL_SEC * 1000).toISOString()
+        : new Date(0).toISOString();  // 観測時刻も読めない = 判断材料が無いので塞がない
+    }
+    delete entry._observedMs;
+  }
+  return out;
+}
+
 // 消費状況: ワークロード別の秒・トークン（実測/推定の内訳）・実効上限・超過/縮退判定（0 = 無制限）。
 function usage(cfg) {
   const dir = resolveBudgetDir(cfg);
@@ -198,7 +238,10 @@ function usage(cfg) {
   let totalUnestimatedRecords = 0;
   let totalMeasured = 0;
   let totalEstimated = 0;
-  for (const rec of ledgerRecords(dir, config.period)) {
+  const records = ledgerRecords(dir, config.period);
+  const quotaAgents = quotaAgentsFrom(records);
+  for (const rec of records) {
+    if (rec.quota_kind) continue;   // 観測行は消費ではない（秒もトークンも数えない）
     const wl = String(rec.workload || 'other');
     const agent = String(rec.agent_cli || 'unknown');
     const agentTotal = agentTotals[agent] || (agentTotals[agent] = {
@@ -304,7 +347,9 @@ function usage(cfg) {
       workloads: config.workloads,
       tokens: config.tokens,
       allocation: config.allocation,
-      computed: config.computed,
+      // agents は台帳から毎回導出する（永続しない）。config.json 側に同名キーがあっても
+      // 導出が正——観測より古い宣言で CLI を塞ぎ続けないため。
+      computed: { ...config.computed, agents: quotaAgents },
       rates: config.rates,
     },
     knownWorkloads: KNOWN_WORKLOADS,
@@ -456,7 +501,12 @@ function rebalance(cfg) {
 
   const next = { ...config.raw };
   next.version = 2;
-  next.computed = { workloads: computedWl, computed_at: nowStamp(), computed_by: 'dashboard' };
+  next.computed = {
+    ...(isPlainObject(config.computed) ? config.computed : {}),
+    workloads: computedWl,
+    computed_at: nowStamp(),
+    computed_by: 'dashboard',
+  };
   next.updated_at = nowStamp();
   next.updated_by = 'dashboard';
   atomicWriteJson(path.join(dir, 'config.json'), next);
@@ -507,6 +557,8 @@ module.exports = {
   resolveBudgetDir,
   loadBudgetConfig,
   ledgerRecords,
+  quotaAgentsFrom,
+  QUOTA_RATE_LIMIT_TTL_SEC,
   rate,
   rowTokens,
   usage,

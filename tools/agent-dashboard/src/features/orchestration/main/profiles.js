@@ -184,7 +184,20 @@ function pickTierFromSteps(steps, remaining) {
   return null;
 }
 
-function agentHasRoom(allocationAgents, usageAgents, cli) {
+function agentHasRoom(allocationAgents, usageAgents, computedAgents, cli, nowMs) {
+  const quota = isPlainObject(computedAgents) ? computedAgents[cli] : null;
+  if (isPlainObject(quota)) {
+    // exhausted は「期間が変わるまで戻らない枠」。観測は period 窓の台帳から導出されるので、
+    // 期間が変わればこのエントリ自体が消える（ここで失効時刻を持たなくてよい）。
+    if (quota.quota_kind === 'exhausted') return false;
+    // rate_limit は復帰時刻まで塞ぐ。**時刻が読めないときは塞がない** — 塞ぎっぱなしにすると
+    // 「止めないための機能」が「二度と使えない」を作る。導出側（budget.quotaAgentsFrom）が
+    // 既定 TTL を埋めるので、ここへ来る時点で読めないのは判断材料が無い場合だけ。
+    if (quota.quota_kind === 'rate_limit') {
+      const resetMs = Date.parse(quota.reset_at || '');
+      if (Number.isFinite(resetMs) && nowMs < resetMs) return false;
+    }
+  }
   const alloc = isPlainObject(allocationAgents) ? allocationAgents[cli] : null;
   const maxTokens = alloc && Number.isFinite(Number(alloc.max_tokens)) ? Number(alloc.max_tokens) : 0;
   if (!(maxTokens > 0)) return true; // 未設定 = 常に残っている
@@ -194,7 +207,7 @@ function agentHasRoom(allocationAgents, usageAgents, cli) {
 
 // tier（budget が決めた段）の候補列から、枠が残っている最初の候補を探す。
 // 全滅なら一段下（次に order が低い段）へ降りて続ける。見つからなければ null。
-function pickCandidate(tiers, startTier, allocationAgents, usageAgents) {
+function pickCandidate(tiers, startTier, allocationAgents, usageAgents, computedAgents, nowMs) {
   const order = orderedTierNames(tiers);
   const startIdx = order.indexOf(startTier);
   if (startIdx < 0) return null;
@@ -202,7 +215,9 @@ function pickCandidate(tiers, startTier, allocationAgents, usageAgents) {
     const name = order[i];
     const spec = tiers[name];
     for (const cand of spec.candidates) {
-      if (!cand.agent_cli || agentHasRoom(allocationAgents, usageAgents, cand.agent_cli)) {
+      if (!cand.agent_cli || agentHasRoom(
+        allocationAgents, usageAgents, computedAgents, cand.agent_cli, nowMs
+      )) {
         return { fromTier: name, candidate: cand, fellBack: i > startIdx };
       }
     }
@@ -211,9 +226,11 @@ function pickCandidate(tiers, startTier, allocationAgents, usageAgents) {
 }
 
 // 1 ワークロード分の決定。tier は budget（予算残率・ヒステリシス・最小保持）だけで決め、
-// quota（CLI 枠）によるフォールバックは candidate の選択にのみ影響する——
-// 「段が変わった」の判定（= since を更新するか）を budget 由来の理由だけに保つため。
-function decideOne({ tiers, policy, usageWorkload, usageAgents, allocationAgents, prevState, nowMs }) {
+// quota（CLI 枠）で候補が下の段へフォールバックした場合は、その実際の段を state に残す。
+// reset 後の上位復帰は、この state を通じて既存のヒステリシスと最小保持が効く。
+function decideOne({
+  tiers, policy, usageWorkload, usageAgents, allocationAgents, computedAgents, prevState, nowMs,
+}) {
   const cap = usageWorkload ? Number(usageWorkload.tokenCap) || 0 : 0;
   const totalTokens = usageWorkload ? Number(usageWorkload.totalTokens) || 0 : 0;
 
@@ -260,7 +277,9 @@ function decideOne({ tiers, policy, usageWorkload, usageAgents, allocationAgents
     heldByMinHold = true;
   }
 
-  const picked = pickCandidate(tiers, finalTier, allocationAgents, usageAgents);
+  const picked = pickCandidate(
+    tiers, finalTier, allocationAgents, usageAgents, computedAgents, nowMs
+  );
   const remainingText = remaining === null ? 'unlimited' : remaining.toFixed(2);
   const parts = [`remaining=${remainingText}`, `tier=${finalTier}`];
   if (heldByMinHold) parts.push('min-hold');
@@ -269,8 +288,11 @@ function decideOne({ tiers, policy, usageWorkload, usageAgents, allocationAgents
   if (!picked) {
     return { tier: finalTier, candidate: null, reason: `${parts.join(' ')} 候補の枠がすべて枯渇` };
   }
-  if (picked.fellBack) parts.push(`quota-fallback→${picked.fromTier}`);
-  return { tier: finalTier, candidate: picked.candidate, reason: parts.join(' ') };
+  if (picked.fellBack) {
+    parts[1] = `tier=${picked.fromTier}`;
+    parts.push(`quota-fallback→${picked.fromTier}`);
+  }
+  return { tier: picked.fromTier, candidate: picked.candidate, reason: parts.join(' ') };
 }
 
 function sameCandidate(a, b) {
@@ -291,10 +313,14 @@ function decide(profiles, usage, nowMs) {
   const allocationAgents =
     (usage && usage.config && isPlainObject(usage.config.allocation) && usage.config.allocation.agents) || {};
   const usageAgents = (usage && usage.agents) || {};
+  const computedAgents =
+    (usage && usage.config && isPlainObject(usage.config.computed) && usage.config.computed.agents) || {};
   for (const wl of policy.apply_to || []) {
     const usageWorkload = usage && usage.workloads ? usage.workloads[wl] : null;
     const prevState = state[wl] || null;
-    const result = decideOne({ tiers, policy, usageWorkload, usageAgents, allocationAgents, prevState, nowMs });
+    const result = decideOne({
+      tiers, policy, usageWorkload, usageAgents, allocationAgents, computedAgents, prevState, nowMs,
+    });
     if (!result) continue;
     const tierChanged = !prevState || prevState.tier !== result.tier;
     out[wl] = {

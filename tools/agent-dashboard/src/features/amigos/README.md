@@ -71,7 +71,7 @@ agent-amigos（役割駆動マルチエージェント協働）の独立した�
   `ledger/<YYYYMMDD>.jsonl`。
 - dashboard は **config を書き、台帳を読むだけ**。記帳・抑制は各ツールが行う
   （agent-amigos は実装済み: 超過中はそのノードの amigo が paused。
-  kiro-loop / agent-project / agent-flow の記帳は後続）。
+  agent-loop / agent-project / agent-flow の記帳は後続）。
 - UI: 期間（day / month / total）内の消費をワークロード別
   （routine / project / flow / amigos）に表示し、合計上限・内訳上限を編集できる。
   **0 = 無制限**。依頼側・請負側どちらのノードでも同じ契約 = 同じ画面。

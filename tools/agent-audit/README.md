@@ -36,6 +36,7 @@ agent-audit distill                  # 観測クラスタ → 洞察（LLM reduc
 agent-audit tasks                    # 洞察 → 改善タスク（JSON を stdout へ）
 
 agent-audit calibrate [--write]      # rates 較正の提案（--write で budget config へ）
+agent-audit ratings --period month   # 仕事種別×モデルの PASS 率と平均消費
 agent-audit gc [--dry-run]           # 保持期限での掃除（通常は collect が定期実行）
 agent-audit reclean [--agent-cli N]  # clean ルール改訂後に既存 transcript を再生成
 agent-audit sessions --cli N [--since T --until T --cwd-contains S] [--messages ID]

@@ -75,7 +75,20 @@ function loadControl(dir) {
   };
 }
 
-// agent_override（{agent_cli, model}）の正規化。null / 省略はそのまま（下位解決へ委ねる）。
+function mergeTimeout(out, patch) {
+  if (patch.timeout_sec === undefined) return;
+  if (patch.timeout_sec === null || patch.timeout_sec === '') {
+    delete out.timeout_sec;
+    return;
+  }
+  const n = Number(patch.timeout_sec);
+  if (!Number.isFinite(n) || n < 1 || !Number.isInteger(n)) {
+    throw new Error('timeout_sec は 1 以上の整数で指定してください');
+  }
+  out.timeout_sec = n;
+}
+
+// agent_override（{agent_cli, model, timeout_sec}）の正規化。null / 省略はそのまま（下位解決へ委ねる）。
 function normalizeOverride(patch, base) {
   const out = isPlainObject(base) ? { ...base } : {};
   if (patch.agent_cli !== undefined) {
@@ -84,16 +97,7 @@ function normalizeOverride(patch, base) {
   if (patch.model !== undefined) {
     out.model = patch.model === null || patch.model === '' ? null : String(patch.model);
   }
-  if (patch.timeout_sec !== undefined) {
-    if (patch.timeout_sec === null || patch.timeout_sec === '') delete out.timeout_sec;
-    else {
-      const n = Number(patch.timeout_sec);
-      if (!Number.isFinite(n) || n < 1 || !Number.isInteger(n)) {
-        throw new Error('timeout_sec は 1 以上の整数で指定してください');
-      }
-      out.timeout_sec = n;
-    }
-  }
+  mergeTimeout(out, patch);
   return out;
 }
 
@@ -106,16 +110,7 @@ function mergeWorkloadControl(base, patch) {
   if (patch.model !== undefined) {
     out.model = patch.model === null || patch.model === '' ? null : String(patch.model);
   }
-  if (patch.timeout_sec !== undefined) {
-    if (patch.timeout_sec === null || patch.timeout_sec === '') delete out.timeout_sec;
-    else {
-      const n = Number(patch.timeout_sec);
-      if (!Number.isFinite(n) || n < 1 || !Number.isInteger(n)) {
-        throw new Error('timeout_sec は 1 以上の整数で指定してください');
-      }
-      out.timeout_sec = n;
-    }
-  }
+  mergeTimeout(out, patch);
   if (patch.agents !== undefined) {
     if (!isPlainObject(patch.agents)) throw new Error('agents はオブジェクトで指定してください');
     const agents = isPlainObject(out.agents) ? { ...out.agents } : {};

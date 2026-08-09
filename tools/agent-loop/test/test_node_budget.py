@@ -1,7 +1,7 @@
 """agent-loop のノード予算 v2（トークン一次・rates 推定）と agent-control（lifecycle・
 status）の単体テスト。tmux / エージェント CLI 不要・標準ライブラリのみ。
 
-kiro-loop の同名テストのクローン（agent-loop は kiro-loop の後継クローン）。
+agent-loop のノード予算テスト。
 
     python3 -m pytest tools/agent-loop/test/ -q
 """

@@ -4,7 +4,7 @@
 //
 // - base … Electron シェル・git・GitLab・共通 IPC（src/base/）
 // - agent-project … agent-project / agent-flow の可視化と操作（本リポジトリが維持）
-// - kiro-loop … kiro-loop tmux の視聴（Phase A: capture-pane）
+// - routines … agent-loop tmux の視聴（Phase A: capture-pane）
 // - cowork … 定期実行と定型業務の管理・監視
 // - amigos … agent-amigos ミッションの読み取りビューとノード予算（node-budget 契約）の管理
 // - orchestration … ノード予算 v2（トークン配分）・エージェント制御（agent-control）・
@@ -16,7 +16,7 @@
 //                  収集済みトークン利用量・実行品質の表示
 //
 // 新しい制御面を足す手順:
-//   1. src/features/<id>/ を agent-project や kiro-loop を雛形に作る
+//   1. src/features/<id>/ を agent-project や routines を雛形に作る
 //   2. この配列に require('./<id>') を追加する
 //   3. 必要なら renderer のタブ／サイドバーに UI を足す
 //
@@ -26,7 +26,7 @@
 function loadFeatures() {
   return [
     require('./agent-project'),
-    require('./kiro-loop'),
+    require('./routines'),
     require('./cowork'),
     require('./amigos'),
     require('./orchestration'),

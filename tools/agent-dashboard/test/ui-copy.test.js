@@ -33,7 +33,7 @@ assert.ok(!html.includes('<h1>プロジェクト管理</h1>'));
 assert.ok(html.includes('この作業を相談'));
 assert.ok(!html.includes('AIに相談'));
 assert.ok(!html.includes('担当の構成をJSONで指定します'));
-assert.ok(!html.includes('kiro-loop.yml に反映'));
+assert.ok(!html.includes('agent-loop.yml に反映'));
 assert.ok(!html.includes('ステートマシンを作成'));
 assert.ok(orchestration.includes('先に全体設定で作業を再開してください。'));
 assert.ok(!orchestration.includes('管理面で止まっています'));

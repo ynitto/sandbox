@@ -226,7 +226,7 @@ export OLLAMA_NUM_PARALLEL=1                       # 先頭キャッシュが効
 `~/.profile` の `export OLLAMA_HOST=...` はそのままでは届かない——設定はあるのに既定の
 127.0.0.1 へ向かって env 落ちする、を防ぐための救済で、環境に既にある変数が常に勝つ。
 
-TUI は**全画面（alternate screen）にしない**。agent-loop / kiro-loop は tmux の
+TUI は**全画面（alternate screen）にしない**。agent-loop / agent-loop は tmux の
 `send-keys` で入力を送り `capture-pane` で画面を読むので、全画面にすると向こうから
 何も見えなくなる。行指向のまま、ステータス 1 行だけを更新する。
 

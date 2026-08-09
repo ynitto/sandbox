@@ -17,7 +17,10 @@
 //   4. 対象を合わせるのはタブの出し分けより先（順番が逆だとホームへ弾かれる）。
 
 const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
 const src = require('./helpers/renderer-src').read();
+const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'index.html'), 'utf8');
 
 // 関数を 1 本だけ切り出す（async 宣言も落とさない）。
 function fn(name) {
@@ -221,6 +224,19 @@ async function main() {
     'タブの出し分けは対象を合わせたあと（前の領域の対象で行き止まり判定をしない）'
   );
   console.log('ok - 対象を合わせてからタブを出し分ける');
+}
+
+// --- 5) 入力が必要な業務は HTML ダイアログを経由する ----------------------------
+
+{
+  assert.ok(html.includes('<dialog id="dlg-cowork-parameters"'), 'OS ダイアログではなく HTML dialog を置く');
+  assert.ok(html.includes('id="cowork-parameter-fields"'), 'パラメータ入力欄の置き場を持つ');
+  assert.ok(src.includes('function openCoworkParametersDialog('), '実行前に入力ダイアログを開く');
+  assert.ok(src.includes('if (!keys.length) return run({});'), '入力不要なら従来どおり即時実行する');
+  assert.ok(src.includes('type="text" autocomplete="off" required'), '初版は必須の文字列入力だけにする');
+  assert.ok(src.includes('dlg.showModal()'), 'HTML dialog をモーダル表示する');
+  assert.ok(src.includes("dlg.addEventListener('cancel', onCancel)"), 'Escape では実行せず閉じる');
+  console.log('ok - 入力が必要な定常業務は HTML ダイアログを経由する');
 }
 
 console.log('\nroutine-area-ui: all tests passed');

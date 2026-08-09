@@ -2,18 +2,18 @@
 """
 kiro-cli-stub.py — kiro-cli の代わりに tmux ペインで動くダミーの対話エージェント。
 
-エージェント CLI（kiro-cli）を入れずに kiro-loop の実動作 — 定期送信・処理中判定・
+エージェント CLI（kiro-cli）を入れずに agent-loop の実動作 — 定期送信・処理中判定・
 スロット解放・状態ファイルの last_sent_at・agent-dashboard からの復旧送信 — を
 そのまま確認するためのもの。LLM は呼ばず、受け取った文章をそのまま読み上げて返す。
 
-kiro-loop が依存している kiro-cli の振る舞いだけを真似る:
-  1. 待機中は `>` だけの行を最終行に出す（kiro-loop はこれで「送信できる」と判断する）
-  2. 入力を受けたらプロンプト行を消す（kiro-loop はこれで「処理中」と判断する）
-  3. 一定時間ののち応答を出し、再び `>` を出す（kiro-loop はこれで「完了」と判断する）
+agent-loop が依存している kiro-cli の振る舞いだけを真似る:
+  1. 待機中は `>` だけの行を最終行に出す（agent-loop はこれで「送信できる」と判断する）
+  2. 入力を受けたらプロンプト行を消す（agent-loop はこれで「処理中」と判断する）
+  3. 一定時間ののち応答を出し、再び `>` を出す（agent-loop はこれで「完了」と判断する）
 
-使い方（通常は kiro-loop --stub が自動で起動する）:
-  ./stub/kiro-cli-stub.py chat            # 単体で対話してみる
-  KIRO_LOOP_STUB_DELAY=3 kiro-loop --stub # 応答までの秒数を変える（既定 5 秒）
+使い方（agent-loop の判定契約を検証する開発用）:
+  ./stub/kiro-cli-stub.py chat                         # 単体で対話する
+  AGENT_LOOP_STUB_DELAY=3 ./stub/kiro-cli-stub.py chat # 応答までの秒数を変える（既定 5 秒）
 
 kiro-cli 互換のため、chat などのサブコマンドと --trust-all-tools 等の未知の
 オプションはすべて読み飛ばす（--delay だけ解釈する）。
@@ -39,7 +39,7 @@ _COALESCE_SEC = 0.3
 
 
 def _delay_seconds(argv: list[str]) -> float:
-    """--delay または KIRO_LOOP_STUB_DELAY から応答までの秒数を決める。"""
+    """--delay または AGENT_LOOP_STUB_DELAY から応答までの秒数を決める。"""
     for i, arg in enumerate(argv):
         if arg == "--delay" and i + 1 < len(argv):
             raw = argv[i + 1]
@@ -48,7 +48,7 @@ def _delay_seconds(argv: list[str]) -> float:
             raw = arg.split("=", 1)[1]
             break
     else:
-        raw = os.environ.get("KIRO_LOOP_STUB_DELAY", "")
+        raw = os.environ.get("AGENT_LOOP_STUB_DELAY", "")
     try:
         value = float(raw)
     except (TypeError, ValueError):
@@ -66,7 +66,7 @@ def _no_line_editing():
 
     正準モードのままだと 1 行の長さに上限（macOS は 1024 バイト）があり、それを超える
     プロンプトは端末ドライバに捨てられて改行が届かず、読み取りが永久に止まる。
-    実際 `kiro-loop send` は複数行プロンプトを 1 行に連結して送るため、長いプロンプトで
+    実際 `agent-loop send` は複数行プロンプトを 1 行に連結して送るため、長いプロンプトで
     確実に踏む。kiro-cli のような TUI は自前で入力を扱うのでこの制限を受けない。
     """
     if not sys.stdin.isatty():
@@ -106,20 +106,20 @@ def _read_message() -> str | None:
     return "\n".join(line.strip() for line in text.split("\n")).strip()
 
 
-_LOOP_SCRIPT = Path(__file__).resolve().parent.parent / "kiro-loop.py"
+_LOOP_SCRIPT = Path(__file__).resolve().parent.parent / "agent-loop.py"
 
 
 def _release_slot() -> None:
     """実行枠（スロット）を解放する。
 
-    本番では kiro-cli の agent hook が `kiro-loop slot-release` を呼ぶ。スタブにはフックが
-    無いので自分で呼ぶ。これをしないと、外部からの送信（agent-dashboard や kiro-loop send）
+    本番では kiro-cli の agent hook が `agent-loop slot-release` を呼ぶ。スタブにはフックが
+    無いので自分で呼ぶ。これをしないと、外部からの送信（agent-dashboard や agent-loop send）
     で取られた枠が猶予時間（既定 2 時間）まで残り、そのペインが「応答中」のまま止まる。
     デーモン自身の定期送信は SlotMonitor が解放するので、そちらには影響しない。
     """
     if not os.environ.get("TMUX_PANE"):
         return
-    cli = shutil.which("kiro-loop") or shutil.which("agent-loop")
+    cli = shutil.which("agent-loop")
     if cli:
         argv = [cli, "slot-release"]
     elif _LOOP_SCRIPT.is_file():
@@ -148,7 +148,7 @@ def _respond(message: str, delay: float) -> None:
 
 def _loop(delay: float) -> None:
     while True:
-        # 最終行を `>` だけにする = kiro-loop から見た「待機中」
+        # 最終行を `>` だけにする = agent-loop から見た「待機中」
         print("\n>", end="", flush=True)
         try:
             message = _read_message()

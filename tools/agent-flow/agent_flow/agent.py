@@ -7,11 +7,20 @@ from __future__ import annotations
 from agentcore import promptrender  # noqa: E402
 
 
+class EmptyOutputError(RuntimeError):
+    """エージェント CLI が rc=0 のまま本文を返さなかった（空応答）。
+
+    RuntimeError の一種なので既存の呼び出し側の扱いは変わらない。型を分けるのは
+    「空だったのか、内容が失敗したのか」を**文言の正規表現ではなく型で**判別させるため
+    （書き手が文言を変えると読み手だけが静かに壊れる、を作らない）。"""
+
+
 def _agent_timeout(purpose: str = "", plugin_timeout=None) -> float | None:
-    """エージェント CLI 1 呼び出しのタイムアウト秒。設定ファイル `agent_timeout` で調整、0/負で無効化。
-    設定が無ければ環境変数 AGENT_FLOW_TIMEOUT（旧名 AGENT_FLOW_KIRO_TIMEOUT も後方互換で受理）
-    → 既定 600 にフォールバックする。心拍が lease を延長し続けるため、ハングしたエージェント CLI は
-    このタイムアウトでしか止められない（無いと worker が無限ブロックし run 全体が停止する）。"""
+    """エージェント CLI 1 呼び出しのタイムアウト秒。
+
+    agent-control の用途別（work 系は worker も継承）→ flow 共通 → plugin →
+    agent_timeout / 環境変数 → 既定 600 の順で解決する。0/負は次の設定へ委ねる。
+    """
     if purpose:
         ctl = _control_workload()
         agents = ctl.get("agents") or {}
@@ -72,6 +81,18 @@ AGENT_ROLES = ("planner", "evaluator", "worker")
 # 差し替えたときに、契約どおりの JSON 応答が「規約から外れています」と蹴られて planner が
 # 空回りする。設定 `agents: {planner: {readonly: false}}` と明示すれば従来どおり write で呼べる。
 READONLY_ROLES = frozenset({"planner", "evaluator"})
+# 出力が JSON だけと決まっている役割（適用拡大設計 §4.3）。CLI 定義が JSON 用の変種
+# （`json_variant`）を申告していれば、この役割に限って自動でそちらへ振り替える。
+# verify / map / work は成果物側にワークスペースの本文や自由記述を含むので入れない。
+# STRUCTURED_KINDS（JSON を抽出しようと試みる kind）とは別物: あちらは「JSON なら拾う」、
+# こちらは「JSON 以外を返してはいけない」。
+JSON_CONTRACT_ROLES = frozenset({"planner", "evaluator", "split", "filter", "judge", "reduce"})
+# JSON 契約の役割が空応答を返したときの言い直し（レイヤ2 相当）。ツールループ型の CLI が
+# 制御語（TASK_COMPLETE 等）だけを返す・思考だけで本文を出さない、が実際の空応答の中身。
+_EMPTY_OUTPUT_NUDGE = (
+    "[前回の出力は空でした]\n"
+    "本文が空のまま終了しました（制御語だけ・思考だけで本文を出していない可能性があります）。"
+    "説明・前置き・完了報告を書かず、要求された JSON だけを本文として出力してください。")
 # executor=agent の実行系プロンプトを供給するスキル名（設定 worker_skill）。
 # none/builtin/空 で無効＝常に組み込みプロンプト。
 _WORKER_SKILL: str = str(CONFIG_DEFAULTS["worker_skill"])
@@ -134,7 +155,11 @@ def _agent_readonly(purpose: str) -> bool:
 def _agent_for(purpose: str) -> "tuple[str, str | None]":
     """役割（purpose）の実効エージェント (agent_cli, model 上書き)。解決順:
     agent-control（管理面の横断上書き）＞ agents[purpose] ＞（purpose がノード kind なら）
-    agents["worker"] ＞ グローバル agent_cli。soft/縮退中は control の degraded を重ねる。"""
+    agents["worker"] ＞ グローバル agent_cli。soft/縮退中は control の degraded を重ねる。
+
+    解決した CLI が JSON 用の変種を申告していれば、JSON 契約の役割
+    （JSON_CONTRACT_ROLES）だけ最後にそちらへ振り替える。振り替えは同じエンジン・同じ
+    モデルの起動形の違いなので、どの層で CLI が決まっても同じ規則が効く。"""
     ov = _AGENT_OVERRIDES.get(purpose)
     if ov is None and purpose in VALID_KINDS:
         ov = _AGENT_OVERRIDES.get("worker")
@@ -155,6 +180,8 @@ def _agent_for(purpose: str) -> "tuple[str, str | None]":
             cli = d_cli.lower()
         if d_model:
             model = d_model
+    if purpose in JSON_CONTRACT_ROLES:
+        cli = _agentcli.json_variant(cli)
     return cli, model
 
 
@@ -243,7 +270,7 @@ def _plugin_error_patterns() -> tuple:
 
 
 # --- ノード予算 v2（node-budget 契約: schemas/node-budget.schema.json） --------------------
-# ノード（マシン）単位の共有台帳。定常業務（kiro-loop）・agent-project・agent-flow・
+# ノード（マシン）単位の共有台帳。定常業務（agent-loop）・agent-project・agent-flow・
 # agent-amigos が同じ台帳（$AGENT_BUDGET_DIR、既定 ~/.agents/budget/）に記帳し、合計が上限
 # （0 = 無制限）を超えたら新規の LLM 実行を控える。v2 で一次単位をトークンへ拡張（時間上限は
 # v1 互換で AND）。台帳には実測のみ（実測秒＋実測できたトークン）を書き、未報告行は rates で
@@ -362,16 +389,20 @@ def _node_budget_state() -> "dict | None":
 
 
 def _node_budget_record(seconds: float, ref: str = "", agent_cli: str = "",
-                        model: str = "", tokens_in=None, tokens_out=None, usd=None) -> None:
+                        model: str = "", tokens_in=None, tokens_out=None, usd=None,
+                        extra: "dict | None" = None) -> None:
     """台帳へ 1 記帳を追記する（O_APPEND — 複数プロセスの同時追記でも行は壊れない）。
-    tokens_* は実測できたときだけ渡す（推定値は書かない）。agent_cli / model は帰属。"""
-    if seconds <= 0 and not tokens_in and not tokens_out:
+    tokens_* は実測できたときだけ渡す（推定値は書かない）。agent_cli / model は帰属。
+    extra は観測行（quota_kind / reset_at）用の追加フィールド。"""
+    if seconds <= 0 and not tokens_in and not tokens_out and not extra:
         return
     d = os.path.join(_node_budget_dir(), "ledger")
     try:
         os.makedirs(d, exist_ok=True)
         rec = {"ts": now_iso(), "workload": _NODE_BUDGET_WORKLOAD,
-               "tool": _NODE_BUDGET_TOOL, "seconds": round(float(seconds), 3), "ref": ref}
+               "tool": _NODE_BUDGET_TOOL, "seconds": round(float(seconds), 3),
+               "ref": ref, "purpose": ref}
+        rec.update(extra or {})
         if agent_cli:
             rec["agent_cli"] = str(agent_cli)
         if model:
@@ -391,6 +422,28 @@ def _node_budget_record(seconds: float, ref: str = "", agent_cli: str = "",
             os.close(fd)
     except OSError:
         pass    # 記帳失敗で実行を止めない（台帳は best-effort、上限は次の実行前チェックで効く）
+
+
+def _record_quota_observation(cli: str, blob: str) -> None:
+    """quota で落ちた CLI を台帳へ**観測**として残す（消費 0 行）。
+
+    これが無いと、細分した quota（恒久枯渇 / 時限レート制限と復帰時刻）は失敗メッセージの
+    中で消えてしまい、管理面の段判定は「枠に当たった」ことを永久に知れない。観測を台帳へ
+    置くのは、**書き手を増やさない**ため——エンジンは既に台帳の書き手で、管理面は既に
+    台帳の読み手なので、経路が 1 本増えない（C7）。"""
+    if not cli:
+        return
+    try:
+        spec = _agentcli.load_cli(cli)
+        detail = _agentcli.classify_error(spec, blob, detailed=True, now=time.time())
+    except Exception:  # noqa: BLE001 — 観測の失敗で実行を止めない
+        return
+    if not detail or not detail.get("quota_kind"):
+        return
+    extra = {"quota_kind": detail["quota_kind"]}
+    if detail.get("reset_at"):
+        extra["reset_at"] = detail["reset_at"]
+    _node_budget_record(0.0, ref="", agent_cli=cli, extra=extra)
 
 
 # --- agent-control（管理面→エンジンの宣言的オーケストレーション契約） ----------------------
@@ -585,7 +638,17 @@ def agent_error_chain(blob: str) -> "list[str]":
     return chain
 
 
-def classify_agent_failure(blob: str) -> "tuple[str, str] | None":
+def _cli_error_patterns(cli: str) -> tuple:
+    """その CLI 自身の errors[] だけ（読めなければ空）。"""
+    if not cli:
+        return ()
+    try:
+        return tuple(_agentcli.load_cli(str(cli)).get("errors") or ())
+    except Exception:  # noqa: BLE001 — 定義が読めなくても分類は続ける
+        return ()
+
+
+def classify_agent_failure(blob: str, cli: str = "") -> "tuple[str, str] | None":
     """エラー本文を (class, hint) に分類する（該当なしは None＝内容の問題）。
     発生元マーカー > [agent-error:] タグ > プラグイン定義 > 汎用パターン の順に見る。
     全分類が要るときは agent_error_chain を使う（ここは先頭＝proximate cause だけ返す）。"""
@@ -598,7 +661,11 @@ def classify_agent_failure(blob: str) -> "tuple[str, str] | None":
     # 同じクラスの規則があるとその文言が出る（codex の usage limit に kiro の月間上限の案内が
     # 付く、という取り違えが実際に起きた）。一致する規則が無いクラス（[agent-error:] タグや
     # 発生源マーカー由来）だけ、従来どおりクラス一致の汎用ヒントへ落とす。
-    rules = _plugin_error_patterns() + _AGENT_ERROR_PATTERNS
+    #
+    # **実行した CLI が分かるときは、その定義の規則を先に見る。** 一致した規則から採るだけでは
+    # まだ足りない——複数の CLI が「usage limit」のような同じ語を拾う規則を持つと、どれが先に
+    # 当たるかが「プラグインキャッシュに何が載っているか」＝実行順で決まってしまう。
+    rules = _cli_error_patterns(cli) + _plugin_error_patterns() + _AGENT_ERROR_PATTERNS
     hint = next((h for c, pat, h in rules if c == cls and pat.search(text)), "")
     if not hint:
         hint = next((h for c, _, h in _AGENT_ERROR_PATTERNS if c == cls), "")
@@ -613,7 +680,7 @@ def _agent_failure(cli: str, rc: int, out: str, err: str) -> str:
     全ノードが理由不明の failed になった。エラーは末尾に出るので末尾を拾い、分類（トリアージ）は
     機械可読タグとして先頭に載せる。"""
     blob = f"{out or ''}\n{err or ''}"
-    triage = classify_agent_failure(blob)
+    triage = classify_agent_failure(blob, cli)
     head = f"{cli} 失敗 (rc={rc})"
     if triage:
         cls, hint = triage
@@ -655,7 +722,9 @@ def run_agent(prompt: str, model: str | None, purpose: str = "", cwd: "str | Non
     _write_status(effective_cli=cli_used, effective_model=model_used or "",
                   lifecycle=lifecycle, budget=nb)
     last: "RuntimeError | None" = None
-    for attempt in range(max(0, _TRANSIENT_RETRIES) + 1):
+    empty_fixes = 0
+    attempt = 0
+    while attempt <= max(0, _TRANSIENT_RETRIES):
         try:
             t0 = time.monotonic()
             text = _run_agent_once(prompt, model, purpose, cwd)
@@ -664,8 +733,24 @@ def run_agent(prompt: str, model: str | None, purpose: str = "", cwd: "str | Non
                                 tokens_in=getattr(text, "tokens_in", None),
                                 tokens_out=getattr(text, "tokens_out", None))
             return text
+        except EmptyOutputError as e:
+            # JSON 契約の役割にとって空応答は形式違反であって内容の失敗ではない。契約を
+            # 言い直して呼び直す（レイヤ2 と同じ考え方だが、パース前に落ちるぶんここで拾う）。
+            # 予算は transient とは別枠 _FORMAT_RETRIES で有界（C7: 必ず止まる）。
+            if purpose in JSON_CONTRACT_ROLES and empty_fixes < max(0, _FORMAT_RETRIES):
+                empty_fixes += 1
+                log("agent", f"空応答を形式違反として再要求 #{empty_fixes}/{_FORMAT_RETRIES}"
+                             f"（purpose={purpose}）")
+                prompt = f"{prompt}\n\n{_EMPTY_OUTPUT_NUDGE}"
+                continue
+            if empty_fixes:
+                e = EmptyOutputError(f"{e}（形式を言い直して {empty_fixes} 回再要求後）")
+            e.attempts = attempt + 1  # type: ignore[attr-defined]
+            raise e
         except RuntimeError as e:
             triage = classify_agent_failure(str(e))
+            if triage and triage[0] == "quota":
+                _record_quota_observation(cli_used, str(e))
             if triage is None or triage[0] != "transient" or attempt >= _TRANSIENT_RETRIES:
                 if attempt > 0:  # レイヤ1 を経たことを上位・人が読めるようにする
                     e = RuntimeError(f"{e}（{attempt + 1} 回試行後）")
@@ -676,6 +761,7 @@ def run_agent(prompt: str, model: str | None, purpose: str = "", cwd: "str | Non
                          f"（{wait:.0f}s 待機・purpose={purpose or 'worker'}）: {str(e)[:120]}")
             backoff_sleep(wait)
             last = e
+            attempt += 1
     raise last if last else RuntimeError("run_agent: unreachable")  # pragma: no cover
 
 
@@ -736,8 +822,10 @@ def _run_agent_once(prompt: str, model: str | None, purpose: str = "",
             # rc=0 でも本文が空で返る CLI がある（kiro-cli は AWS 認証が切れるとバナーだけ出して
             # rc=0 で終わる）。空を成功として扱うと、worker は「空の成果物で done」、planner は
             # stub 戦略へ黙って落ちる＝LLM を呼べていないのに動いているように見える。失敗にする。
-            raise RuntimeError(_agent_failure(cmd[0], 0, proc.stdout, proc.stderr)
-                               .replace("失敗 (rc=0)", "が空の応答を返しました (rc=0)"))
+            # 専用の型で投げるのは、呼び出し側が**文言を読み直さずに**空応答だと判別できる
+            # ようにするため（JSON 契約の役割はここから形式の言い直しへ回す）。
+            raise EmptyOutputError(_agent_failure(cmd[0], 0, proc.stdout, proc.stderr)
+                                   .replace("失敗 (rc=0)", "が空の応答を返しました (rc=0)"))
         tokens_in, tokens_out = _agentcli.parse_usage(proc.stderr or "")
         return _agentcli.UsageText(text, tokens_in, tokens_out)
     finally:

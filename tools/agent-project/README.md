@@ -254,19 +254,19 @@ LLM が 1 回で合成し、その exit 0 を done の唯一の根拠にして�
 
 ### 成果物レビューは MR/PR が正（remote_review）
 
-`task_branch`（既定 on）のタスクは review 到達時に `ap/<task-id>` → target の MR を自動作成する
-（GitLab のみ。トークンは環境変数 `GITLAB_TOKEN` / `GL_TOKEN`）。**検収の正は MR 一本**で、
-dashboard の検収カードは「受入基準 × 証跡 + MR リンク」になる。
+**MR は人が明示的に作る**（自動作成はしない）。`agent-project mr-create <task-id> --root <ROOT>`、
+または agent-dashboard の検収カードの「MRを作る」で冪等に作成できる（GitLab のみ。トークンは
+環境変数 `GITLAB_TOKEN` / `GL_TOKEN`。既存の open MR があれば再利用する）。旧名 `retry-mr` も
+同じ動作で受け付ける。MR を作れば検収の正は MR 一本になり、dashboard の検収カードは
+「受入基準 × 証跡 + MR リンク」になる。
 
-MR の作成タイミングは **verify が PASS してタスクを review（検収待ち）へ保存する直前**である。
-その瞬間に GitLab API エラーやトークン・push の不備があると review 自体は継続し、失敗理由を journal に残す。
-原因を解消した後は `agent-project retry-mr <task-id> --root <ROOT>`、または agent-dashboard の
-検収カードに表示される「MRを作成し直す」で冪等に再試行できる（既存の open MR があれば再利用する）。
+一方、**成果ブランチの統合は機械の仕事**で、検収承認（done 確定）の瞬間に自動で行う。MR が
+あればクリーンな場合だけ API でマージし、MR が無ければ作業ブランチを target へ
+fast-forward／競合なしマージで統合する。競合・未解決ディスカッション・API エラー時は done に
+せず review を維持するため、原因を解消して同じ「承認して完了にする」を再送すればよい。
 
-検収後の統合も同じく冪等である。`approve` は MR が未記録なら作成をもう一度試し、MR があれば
-クリーンな場合だけマージする。競合・未解決ディスカッション・API エラー時は done にせず review を維持するため、
-原因を解消して同じ「承認して完了にする」を再送すればよい。MR を作れない環境では、承認時に作業ブランチを
-target へ安全に統合できる場合だけ Git の fast-forward／競合なしマージへフォールバックする。
+人が GitLab の画面で先に MR をマージしていてもよい。承認時に作業ブランチが消えていても、
+検証済み revision が target の祖先であれば「統合済み」と判定して完了する。
 
 フォージ側の**決定的シグナル**が決着になる（`remote_review: settle`・既定）:
 
@@ -317,10 +317,14 @@ CLI からも付与・修正できる。
 
 - 各タスクの成果は **`ap/<task-id>`** ブランチに集約される（リトライも同一ブランチ。agent-flow の
   workspace `branch` として伝搬）。
-- verify PASS 後は**常に検収待ち（review）**になり、人の承認で done 確定する。review 到達時に
-  GitLab へ到達できる設定（`GITLAB_TOKEN`/`GL_TOKEN`）があれば **ap/<task-id> → target の MR を自動作成**し、
-  承認時に**クリーン（コンフリクト無し・未解決レビューコメント無し）なら自動マージ**（差分なしはクローズ・
-  未クリーンは差し戻しコメントを付けて review のまま）。却下（`reject`）は MR クローズ＋ブランチ削除。
+- verify PASS 後は**常に検収待ち（review）**になり、人の承認で done 確定する。MR は自動では
+  作らない——欲しいときに `mr-create`（dashboard の「MRを作る」）で人が作る。MR があれば承認時に
+  **クリーン（コンフリクト無し・未解決レビューコメント無し）なら自動マージ**（差分なしはクローズ・
+  未クリーンは差し戻しコメントを付けて review のまま）。MR が無ければ **`ap/<task-id>` → target を
+  Git で自動統合**する（統合できなければ done にせず review 維持）。
+- 却下（`reject`）は MR をクローズし、作業ブランチを **退避タグ `rejected/<task-id>` へ逃がしてから
+  削除**する。取り戻しは `git fetch origin tag rejected/<task-id>`。タグを push できなかったときは
+  ブランチを削除しない（消えたら取り返せないため）。
 - 従来の自動 done へは `--no-delivery-review`／設定 `delivery_review: false`、ブランチ集約の無効化は
   `--no-task-branch`。
 
@@ -1021,7 +1025,8 @@ Windows タスクスケジューラ方式との選択と手順は
   配ると壊れる。
 - **プロジェクト yaml 専有**（host.yaml の `defaults`/`overrides` に書くとエラー）:
   計画・ゲート系（`planner` / `flow_planner` / `granularity` / `plan_review` / `spec_track` …）、
-  予算・収束系（`max_cycles` / `max_retries` / `level` …）、検証・学習・タスク運用系。
+  予算・収束系（`max_cycles` / `max_retries` / `env_resume_limit` / `level` …）、
+  検証・学習・タスク運用系。
   ノードごとに食い違うと実行が非決定になる。
 - **両方に書ける**（優先順位: **CLI > `projects[].overrides` > `defaults` > プロジェクト yaml > 既定**）:
   `agent_cli` / `model` / `act_timeout` / `verify_timeout` / `location` / `concurrency` /
@@ -1190,7 +1195,8 @@ update_installer: install.sh          # サブディレクトリ内で実行す�
 | `triage` / `needs` / `rot` [`--fix`] | 優先順位付けのみ / 判断待ち表示 / rot 検出 |
 | `enqueue` [`--title --verify\|--acceptance\|--verify-template …`\|`--json`] | 取り込み口（整合パスを通る: 重複照合・charter 帰属・墓標） |
 | `approve <id>` / `hold <id>` / `reprioritize <id> --pin\|--defer` | 決定記録を残す人の操作 |
-| `reject <id> --reason` | 却下（廃止・依存先を再審査へ・**墓標を残す**。次の分解で意図の似た再提案を抑止） |
+| `reject <id> --reason` | 却下（廃止・依存先を再審査へ・**墓標を残す**。次の分解で意図の似た再提案を抑止）。作業ブランチは `rejected/<id>` タグへ退避してから削除 |
+| `mr-create <id>` | 検収待ちタスクの MR を作る（冪等・人の明示操作。旧名 `retry-mr`） |
 | `force-complete <id> --reason` | 強制完了（**どうにも進まないタスクを人の判断で done 確定**）。verify は実行せず、成果ブランチの自動統合もしない。委譲中の run は切り離す。納品書・受領書に `FORCED`（未検証）として残る |
 | `revive <タイトル>` [`--charter`/`--all`] | 墓標を解除（却下したタスクを再び提案されうる状態へ戻す）。墓標は `(指紋, charter)` 単位なので、`--charter <名前>` はその charter とタグ無しだけ、`--all` は全部を消す。未指定で対象が複数 charter に割れているときは、消さずに一覧を出す |
 | `replan` [`--charter --revive`] | charter からバックログを分解（**分解はこの明示要求でしか走らない**。`--revive` は今回だけ墓標を無視） |

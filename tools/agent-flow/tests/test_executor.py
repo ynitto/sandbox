@@ -1158,7 +1158,7 @@ class GitlabRepoInstructionTests(unittest.TestCase):
 
 
 class ExecutorResolutionTests(unittest.TestCase):
-    """executor のプラグイン解決（kiro-loop の event_hook 流のローダ）。"""
+    """executor のプラグイン解決（agent-loop の event_hook 流のローダ）。"""
 
     def _args(self, **kw):
         import types

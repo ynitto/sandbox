@@ -25,21 +25,21 @@ function grab(name) {
 }
 
 {
-  const state = { kiroLoopTerm: { id: 'removed', name: '前の業務', target: '%1' }, cowork: {} };
+  const state = { routineAgentTerm: { id: 'removed', name: '前の業務', target: '%1' }, cowork: {} };
   const body = { innerHTML: '前の情報' };
   let visible = true;
   // eslint-disable-next-line no-new-func
-  const renderKiroLoopTerminal = new Function(
+  const renderRoutineAgentTerminal = new Function(
     'state', '$', 'captureUiState', 'selectedProjectFolder', 'coworkHasProjectConfig',
-    'coworkVisibleEntries', 'coworkDraft', 'coworkEntryId', 'setKiroLoopDialogVisible',
-    'stopKiroLoopCapturePoll', 'kiroLoopCancelWait',
-    `${grab('renderKiroLoopTerminal')}; return renderKiroLoopTerminal;`
+    'coworkVisibleEntries', 'coworkDraft', 'coworkEntryId', 'setRoutineAgentDialogVisible',
+    'stopRoutineAgentCapturePoll', 'routineAgentCancelWait',
+    `${grab('renderRoutineAgentTerminal')}; return renderRoutineAgentTerminal;`
   )(
     state, () => body, () => ({}), () => '/project', () => true,
     () => [], () => [], () => '', (show) => { visible = show; }, () => {}, () => {}
   );
-  renderKiroLoopTerminal();
-  assert.strictEqual(state.kiroLoopTerm, null, '選択した定常業務が消えたら旧端末情報を破棄する');
+  renderRoutineAgentTerminal();
+  assert.strictEqual(state.routineAgentTerm, null, '選択した定常業務が消えたら旧端末情報を破棄する');
   assert.strictEqual(body.innerHTML, '', '消えた定常業務の詳細を表示し続けない');
   assert.strictEqual(visible, false, '対象の無い実行状況ダイアログを閉じる');
 }
@@ -52,8 +52,8 @@ assert.match(html, /data-tab="cowork"[^>]*>作業</);
 assert.match(html, /data-tab="routine-runs"[^>]*>実行の記録</);
 assert.match(html, /data-tab="routine-settings"[^>]*>設定</);
 assert.match(html, /data-tab="amigos"[^>]*>ミッション</);
-assert.ok(html.includes('id="dlg-kiro-loop"'), '実行状況はダイアログとして表示します');
-assert.ok(!html.includes('id="tab-btn-kiro-loop"'), '実行状況をメインタブとして重複表示しません');
+assert.ok(html.includes('id="dlg-routine-agent"'), '実行状況はダイアログとして表示します');
+assert.ok(!html.includes('id="tab-btn-routine-agent"'), '実行状況をメインタブとして重複表示しません');
 assert.ok(
   html.indexOf('data-tab="amigos"') < html.indexOf('data-tab="cowork"'),
   'ミッションタブは定常業務の左に置きます'
@@ -373,28 +373,28 @@ const coworkSelectedDetailSource = renderer.slice(
 assert.ok(!coworkSelectedDetailSource.includes('<details'), '選択中業務の情報は折りたたまず常に表示します');
 assert.ok(renderCoworkSource.includes('const ui = captureUiState();'), '定常業務の再描画前にUI状態を保存します');
 assert.ok(renderCoworkSource.includes('restoreUiState(ui);'), '定常業務の再描画後にUI状態を復元します');
-const renderKiroLoopSource = renderer.slice(
-  renderer.indexOf('function renderKiroLoopTerminal('),
-  renderer.indexOf('\n// ---------------------------------------------------------------------------\n// kiro-loop 構造化状態', renderer.indexOf('function renderKiroLoopTerminal('))
+const renderRoutineAgentSource = renderer.slice(
+  renderer.indexOf('function renderRoutineAgentTerminal('),
+  renderer.indexOf('\n// ---------------------------------------------------------------------------\n// routine-agent 構造化状態', renderer.indexOf('function renderRoutineAgentTerminal('))
 );
-assert.ok(!renderKiroLoopSource.includes('coworkRoutineSelectorHtml('), 'ダイアログでは選択済みの定常業務だけを表示します');
-assert.ok(!renderKiroLoopSource.includes('kiro-loop-target'), '表示中エージェントの選択UIを表示しません');
-assert.ok(!renderKiroLoopSource.includes('<details'), '実行状況は折りたたまず常に表示します');
-assert.ok(renderKiroLoopSource.includes('class="kiro-loop-agent-panel"'), '選択済み業務のエージェント画面を常時表示します');
-assert.ok(renderer.includes('function kiroLoopRoutineSession('), '選択した定常業務に対応するエージェントだけを特定します');
-const kiroLoopRoutineSessionSource = renderer.slice(
-  renderer.indexOf('function kiroLoopRoutineSession('),
-  renderer.indexOf('\nasync function openKiroLoopTerminal(', renderer.indexOf('function kiroLoopRoutineSession('))
+assert.ok(!renderRoutineAgentSource.includes('coworkRoutineSelectorHtml('), 'ダイアログでは選択済みの定常業務だけを表示します');
+assert.ok(!renderRoutineAgentSource.includes('routine-agent-target'), '表示中エージェントの選択UIを表示しません');
+assert.ok(!renderRoutineAgentSource.includes('<details'), '実行状況は折りたたまず常に表示します');
+assert.ok(renderRoutineAgentSource.includes('class="routine-agent-panel"'), '選択済み業務のエージェント画面を常時表示します');
+assert.ok(renderer.includes('function routineAgentRoutineSession('), '選択した定常業務に対応するエージェントだけを特定します');
+const routineAgentRoutineSessionSource = renderer.slice(
+  renderer.indexOf('function routineAgentRoutineSession('),
+  renderer.indexOf('\nasync function openRoutineAgentTerminal(', renderer.indexOf('function routineAgentRoutineSession('))
 );
 // eslint-disable-next-line no-new-func
-const kiroLoopRoutineSession = new Function(`${kiroLoopRoutineSessionSource}; return kiroLoopRoutineSession;`)();
+const routineAgentRoutineSession = new Function(`${routineAgentRoutineSessionSource}; return routineAgentRoutineSession;`)();
 assert.strictEqual(
-  kiroLoopRoutineSession([{ name: '日次レビュー', target: '%1' }, { name: '月次集計', target: '%2' }], '月次集計').target,
+  routineAgentRoutineSession([{ name: '日次レビュー', target: '%1' }, { name: '月次集計', target: '%2' }], '月次集計').target,
   '%2',
   '選択した定常業務と同名のエージェントを表示します'
 );
 assert.strictEqual(
-  kiroLoopRoutineSession([{ name: '日次レビュー' }, { name: '月次集計' }], '別の業務'),
+  routineAgentRoutineSession([{ name: '日次レビュー' }, { name: '月次集計' }], '別の業務'),
   null,
   '複数候補から無関係なエージェントを推測して表示しません'
 );
@@ -410,8 +410,8 @@ assert.match(css, /#tab-cowork\.active\s*\{[^}]*overflow:\s*hidden/s);
 assert.match(css, /\.cowork-split-view\s*\{[^}]*grid-template-rows:\s*240px\s+minmax\(0,\s*1fr\)/s);
 assert.match(css, /\.cowork-list-pane\s*\{[^}]*overflow:\s*hidden/s);
 assert.match(css, /\.cowork-detail-pane\s*\{[^}]*overflow-y:\s*auto/s);
-assert.match(css, /\.kiro-loop-dialog\[open\]\s*\{[^}]*height:/s);
-assert.match(css, /\.kiro-loop-agent-panel\s*\{[^}]*min-height:\s*0/s);
+assert.match(css, /\.routine-agent-dialog\[open\]\s*\{[^}]*height:/s);
+assert.match(css, /\.routine-agent-panel\s*\{[^}]*min-height:\s*0/s);
 assert.ok(renderer.includes('function setupDialogLayouts()'), '全ダイアログを共通の固定ヘッダ・フッタ構造に整えます');
 assert.match(css, /dialog\[open\]\s*\{[^}]*display:\s*flex/s);
 assert.match(css, /\.dialog-scroll-body\s*\{[^}]*overflow-y:\s*auto/s);

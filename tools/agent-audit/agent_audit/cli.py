@@ -31,13 +31,17 @@ def _build_parser() -> argparse.ArgumentParser:
 
     u = sub.add_parser("usage", help="トークン・コスト集計（measured / estimated 別掲）")
     u.add_argument("--period", choices=["day", "month", "total"], default=None)
-    u.add_argument("--by", choices=["workload", "tool", "agent_cli", "model", "ref", "node"],
+    u.add_argument("--by", choices=["workload", "tool", "agent_cli", "model", "purpose", "ref", "node"],
                    default=None)
     u.add_argument("--json", action="store_true")
 
     s = sub.add_parser("stats", help="実行品質集計（status・失敗クラス・verify）")
     s.add_argument("--period", choices=["day", "month", "total"], default=None)
     s.add_argument("--json", action="store_true")
+
+    rating = sub.add_parser("ratings", help="仕事種別×モデルの PASS 率と平均消費の格付け")
+    rating.add_argument("--period", choices=["day", "month", "total"], default=None)
+    rating.add_argument("--json", action="store_true")
 
     cal = sub.add_parser("calibrate", help="rates 較正の提案（--write で budget config へ反映）")
     cal.add_argument("--write", action="store_true")
@@ -105,6 +109,9 @@ def main(argv=None) -> int:
     if args.command == "stats":
         from .stats import cmd_stats
         return cmd_stats(args)
+    if args.command == "ratings":
+        from .stats import cmd_ratings
+        return cmd_ratings(args)
     if args.command == "calibrate":
         from .usage import cmd_calibrate
         return cmd_calibrate(args)

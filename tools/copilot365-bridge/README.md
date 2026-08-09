@@ -26,7 +26,7 @@ SharePoint は B から見えない）。実際に越境できるチャネルは
 
 ## 何をするか — MS365 Copilot のサブルーチン化
 
-既存ツール（`hermes-gitlab-gateway` / `kiro-loop` / `issue-mailbox` /
+既存ツール（`hermes-gitlab-gateway` / `agent-loop` / `issue-mailbox` /
 `makaroshki-bridge`）は世界B 内の自律ループを既に成立させている。本ツールはそこに
 
 ```
@@ -90,7 +90,7 @@ python copilot365_bridge.py ask "請求書 API の決定事項を教えて"   # 
 
 `mailbox_dir` の `outbox` / `inbox` をハブとして共有するだけ。
 
-- **kiro-loop / kiro-loop-messaging**: kiro が「MS365 に聞きたい」依頼を `outbox` に
+- **agent-loop / agent-loop-messaging**: kiro が「MS365 に聞きたい」依頼を `outbox` に
   パケットで投函 → `daemon` が回答を `inbox` に返す → kiro が回収。
 - **hermes-gitlab-gateway**: GitLab イシュー起点のワーカーが、組織文脈の不足を
   `ask` で補完。

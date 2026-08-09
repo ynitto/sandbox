@@ -39,7 +39,9 @@ module.exports = [
     },
   },
   {
-    files: ['src/**/main/**/*.js', 'src/**/preload.js', 'test/**/*.js', '*.js'],
+    // scripts/ は Electron を起こさずに main プロセス側のモジュールを叩く CLI 入口
+    // （`npm run resources`）。実行文脈は main と同じ Node なのでグローバルも揃える。
+    files: ['src/**/main/**/*.js', 'src/**/preload.js', 'test/**/*.js', 'scripts/**/*.js', '*.js'],
     languageOptions: { globals: { ...globals.node, ...globals.nodeBuiltin } },
   },
   {

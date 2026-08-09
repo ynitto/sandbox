@@ -357,10 +357,19 @@ class FlowPlannerAgentCliTests(unittest.TestCase):
 
     def test_any_declared_agent_cli_is_passed_through(self):
         """定義ファイルを置いただけの CLI もそのままスキルへ渡す（白リストを作らない）。"""
+        kf._AGENT_CLI = "cursor"
+        kf._AGENT_OVERRIDES = {}
+        cmd = self._capture_cmd()
+        self.assertEqual(cmd[cmd.index("--agent-cli") + 1], "cursor")
+
+    def test_planner_uses_the_declared_json_variant(self):
+        """planner は JSON 契約の役割なので、定義が申告する JSON 変種へ自動で振り替わる。
+        人が agents: を役割ごとに書き並べなくても、計画がツールループ型の起動形で
+        空回りしない（コンセプト 柱3 / C9）。"""
         kf._AGENT_CLI = "ollama"
         kf._AGENT_OVERRIDES = {}
         cmd = self._capture_cmd()
-        self.assertEqual(cmd[cmd.index("--agent-cli") + 1], "ollama")
+        self.assertEqual(cmd[cmd.index("--agent-cli") + 1], "ollama-json")
 
     def test_timeout_follows_the_agent_timeout_setting(self):
         """1 回分の 3 倍を待つ。無効化（agent_timeout=0）なら待ち続ける。"""

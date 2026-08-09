@@ -1,6 +1,6 @@
 'use strict';
 
-// 復旧送信: kiro-loop send を WSL で実行する。生の send-keys は使わず CLI に依頼する
+// 復旧送信: agent-loop send を WSL で実行する。生の send-keys は使わず CLI に依頼する
 // （busy 判定・スロット取得・プロンプト名解決を CLI 側に任せ、dashboard は書き手にならない）。
 
 const exec = require('./exec');
@@ -13,7 +13,7 @@ function isBusyMessage(text) {
 }
 
 // repo（ワークスペース）を cwd にして実行する — プロンプト名 → 定期プロンプト本文の
-// 解決は kiro-loop send が cwd の設定ファイルから行うため。
+// 解決は agent-loop send が cwd の設定ファイルから行うため。
 function sendPrompt({ repo, target, prompt } = {}) {
   const p = String(prompt || '').trim();
   if (!p) return { ok: false, sent: false, busy: false, error: 'プロンプトが空です' };
@@ -22,8 +22,8 @@ function sendPrompt({ repo, target, prompt } = {}) {
   const t = String(target || '').trim();
   const parts = [];
   if (cwd) parts.push(`cd ${exec.shellQuote(cwd)} || exit 1;`);
-  parts.push('bin=$(command -v kiro-loop || command -v agent-loop) || { echo "kiro-loop が PATH に見つかりません" >&2; exit 127; };');
-  parts.push(`"$bin" send ${t ? `-s ${exec.shellQuote(t)} ` : ''}${exec.shellQuote(p)}`);
+  parts.push('command -v agent-loop >/dev/null || { echo "agent-loop が PATH に見つかりません" >&2; exit 127; };');
+  parts.push(`agent-loop send ${t ? `-s ${exec.shellQuote(t)} ` : ''}${exec.shellQuote(p)}`);
   const r = exec.shInWsl(parts.join(' '), 30000, distro);
   const sent = r.ok;
   const detail = `${r.stdout}\n${r.stderr}`.trim();
@@ -36,7 +36,7 @@ function sendPrompt({ repo, target, prompt } = {}) {
     detail: detail.slice(0, 2000),
     error: sent ? '' : (busy
       ? 'ペインが処理中のため送信できませんでした'
-      : (r.stderr || r.error || 'kiro-loop send に失敗しました')),
+      : (r.stderr || r.error || 'agent-loop send に失敗しました')),
   };
 }
 

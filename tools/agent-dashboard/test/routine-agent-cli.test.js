@@ -172,7 +172,7 @@ test('定常業務の実行は全体設定で指定した CLI のウィンドウ
   const config = configWithControl({
     workloads: { routine: { agent_cli: 'ollama', model: 'qwen3:8b' } },
   });
-  config.cowork = { loopProvider: 'kiro-loop', loopCommand: 'kiro-loop' };
+  config.cowork = { loopProvider: 'agent-loop', loopCommand: 'agent-loop' };
   withWin32(() => {
     const res = loopProvider.makeLoopProvider(config.cowork, config)
       .run({ id: '毎朝レビュー', cwd: emptyRepo(), prompt: 'レビューしてください' });
@@ -187,8 +187,8 @@ test('定常業務の実行は全体設定で指定した CLI のウィンドウ
 
 test('定常業務一覧からの実行（runLoop）も全体設定どおりの CLI で起動する', () => {
   const repo = emptyRepo();
-  fs.mkdirSync(path.join(repo, '.kiro'), { recursive: true });
-  fs.writeFileSync(path.join(repo, '.kiro', 'kiro-loop.yml'), [
+  fs.mkdirSync(path.join(repo, '.agents'), { recursive: true });
+  fs.writeFileSync(path.join(repo, '.agents', 'agent-loop.yml'), [
     'prompts:',
     '  - name: "毎朝レビュー"',
     '    prompt: 直近の変更をレビューしてください',
@@ -199,8 +199,8 @@ test('定常業務一覧からの実行（runLoop）も全体設定どおりの 
     workloads: { routine: { agent_cli: 'ollama', model: 'qwen3:8b' } },
   });
   config.cowork = {
-    loopProvider: 'kiro-loop',
-    loopCommand: 'kiro-loop',
+    loopProvider: 'agent-loop',
+    loopCommand: 'agent-loop',
     items: [{ id: '毎朝レビュー', type: 'loop', name: '毎朝レビュー', repo }],
   };
   withWin32(() => {
@@ -218,7 +218,7 @@ test('呼び出し側が解決済みの起動条件を渡したら、実行側�
     chatCommand: ['agent-ollama', '--tui', 'qwen3'], cli: 'ollama', skillCommandPrefix: '/',
   };
   withWin32(() => {
-    const res = loopProvider.makeLoopProvider({ loopCommand: 'kiro-loop' })
+    const res = loopProvider.makeLoopProvider({ loopCommand: 'agent-loop' })
       .run({ id: 'X', cwd: emptyRepo(), prompt: 'やって', launch });
     const body = fs.readFileSync(res.scriptFile, 'utf8');
     assert.ok(body.includes("'agent-ollama' '--tui' 'qwen3'"), '渡された起動条件をそのまま使う');

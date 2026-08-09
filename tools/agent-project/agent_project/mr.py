@@ -255,8 +255,17 @@ def finalize_task_mr(cfg: "Config", task: "Task") -> "tuple[bool, str]":
     try:
         mr = _gl_api(scheme, host, token, "GET", f"/projects/{ep}/merge_requests/{iid}")
         state = str(mr.get("state") or "")
-        if state in ("merged", "closed"):
-            return True, f"MR は決着済み（{state}）"
+        if state == "merged":
+            return True, "MR はマージ済み（人が画面でマージした場合を含む）"
+        if state == "closed":
+            # 未マージのクローズを「決着済み」と読んで done にすると、統合されていない成果が
+            # 完了になる。人が MR を閉じたなら、それは却下か作り直しの意思表示。ただし別経路で
+            # 成果が target に入っていることもあるので、そこだけは確かめてから倒す。
+            integrated = _integrated_externally(cfg, task)
+            if integrated:
+                return True, integrated
+            return False, ("MR が未マージでクローズされています（成果は target へ統合されて"
+                           "いません）。却下するか、MR を作り直してから承認してください")
         problems = []
         discussions = _gl_api(scheme, host, token, "GET",
                               f"/projects/{ep}/merge_requests/{iid}/discussions",
@@ -289,16 +298,57 @@ def finalize_task_mr(cfg: "Config", task: "Task") -> "tuple[bool, str]":
         return False, f"MR の決着に失敗（解消/再試行してください）: {e}"
 
 
+def _integrated_externally(cfg: "Config", task: "Task") -> str:
+    """検証済み成果が既に target へ入っているか。入っていればその旨、入っていなければ空。
+
+    人が GitLab の画面で MR をマージした場合（作業ブランチは remove_source_branch で消える）と、
+    人が手で target へマージした場合の両方を、同じ 1 つの問いで拾う。**「MR が閉じたか」ではなく
+    「成果が target に在るか」を統合の根拠にする**——MR の state は人の操作次第で
+    merged にも closed にもなるが、done にしてよいかを決めるのは常に後者。"""
+    verified = _verified_result_rev(task)
+    if not verified:
+        return ""
+    work = _task_work_branch(cfg, task)
+    if work is None:
+        return ""
+    target = work[0]
+    repo = _source_repo(cfg, task)
+
+    def run(*args: str):
+        return subprocess.run(["git", "-C", str(repo), *args], capture_output=True,
+                              text=True, timeout=180)
+
+    if run("fetch", "-q", "origin", target).returncode != 0:
+        return ""
+    if run("merge-base", "--is-ancestor", verified, f"origin/{target}").returncode != 0:
+        return ""
+    return f"検証済み成果 {verified[:12]} は {target} へ統合済み（外部でマージ）"
+
+
+def _verified_result_rev(task: "Task") -> str:
+    """検証が通った成果の revision（`verification.report` のファイル名）。無ければ空。
+
+    「人が外部で（GitLab の画面から）マージした」ことを判定する唯一の手掛かり。作業ブランチが
+    既に消えていても、この rev が target の祖先なら成果は統合済みだと決定的に言える。
+    review_target_fresh と finalize_task_delivery が同じ導出を使う（判定の 2 実装を作らない）。"""
+    try:
+        report = str(json.loads(str(task.get("verification") or "{}")).get("report") or "")
+    except (TypeError, ValueError):
+        return ""
+    rev = os.path.basename(report).removesuffix(".md")
+    return rev if re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", rev) else ""
+
+
 def finalize_task_delivery(cfg: "Config", task: "Task") -> "tuple[bool, str]":
     """検収承認された作業ブランチを target へ統合する。
 
-    GitLab MR が使える場合はレビュー情報を保ったまま API でマージする。MR を作れない場合も
-    origin 上の target が作業ブランチの祖先であることを確認し、fast-forward push で統合する。
-    統合できなければ review を維持し、成果未反映のまま done にしない。
+    タスクに MR があれば（＝人が作っていれば）レビュー情報を保ったまま API でマージする。
+    MR が無ければ origin 上の target と作業ブランチの関係を見て、fast-forward か競合なし
+    マージで統合する。統合できなければ review を維持し、成果未反映のまま done にしない。
+
+    MR はここでは作らない（作成は人の明示操作だけ）。人が GitLab の画面で先にマージして
+    いた場合は、作業ブランチが消えていても検証済み rev の祖先性で「統合済み」と判定する。
     """
-    if _task_mr_coords(task) is None:
-        if ensure_task_mr(cfg, task):
-            persist_task(cfg, task)
     if _task_mr_coords(task) is not None:
         return finalize_task_mr(cfg, task)
 
@@ -307,13 +357,20 @@ def finalize_task_delivery(cfg: "Config", task: "Task") -> "tuple[bool, str]":
         return True, ""  # 書込 workspace を持たない読み取り専用・旧形式タスク
     target, branch = work
     repo = _source_repo(cfg, task)
-    ref, files = work_branch_changes(cfg, target, branch, repo=repo)
-    if not ref:
-        return False, f"作業ブランチ {branch} を解決できないため、{target} へマージできません"
 
     def run(*args: str):
         return subprocess.run(["git", "-C", str(repo), *args], capture_output=True,
                               text=True, timeout=180)
+
+    ref, files = work_branch_changes(cfg, target, branch, repo=repo)
+    if not ref:
+        # 作業ブランチが消えている。人が MR を画面からマージした（remove_source_branch）ときの
+        # 通常の姿なので、まず「もう入っているか」を確かめる。ここを見ないと、人がマージして
+        # くれた成果ほど「ブランチが無い」で承認できなくなる。
+        integrated = _integrated_externally(cfg, task)
+        if integrated:
+            return True, integrated
+        return False, f"作業ブランチ {branch} を解決できないため、{target} へマージできません"
 
     if run("check-ref-format", "--branch", target).returncode != 0 \
             or run("check-ref-format", "--branch", branch).returncode != 0:
@@ -389,16 +446,10 @@ def review_target_fresh(cfg: "Config", task: "Task") -> "tuple[bool, str]":
     if not current:
         return False, f"target {target} の revision を解決できないため承認できません"
     if current != verified:
-        try:
-            report = str(json.loads(str(task.get("verification") or "{}"))
-                         .get("report") or "")
-        except (TypeError, ValueError):
-            report = ""
-        result_rev = os.path.basename(report).removesuffix(".md")
-        if re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", result_rev) \
-                and run("merge-base", "--is-ancestor", result_rev,
-                        f"origin/{target}").returncode == 0:
-            return True, ""  # 検証済み成果を外部で統合済み
+        result_rev = _verified_result_rev(task)
+        if result_rev and run("merge-base", "--is-ancestor", result_rev,
+                              f"origin/{target}").returncode == 0:
+            return True, ""  # 検証済み成果を外部で統合済み（人が画面でマージした場合を含む）
         return False, (f"検証後に target {target} が更新されました"
                        f"（{verified[:12]} → {current[:12]}）。最新 target を統合して再検証してください")
     return True, ""
@@ -533,8 +584,11 @@ def poll_task_mrs(cfg: "Config", tasks: "list[Task]") -> "list[str]":
 
 
 def close_task_mr(cfg: "Config", task: "Task", reason: str) -> None:
-    """却下（reject）時: タスク MR をクローズしソースブランチを削除する（best-effort・
-    gitlab-review-viewer の却下と同じ規則）。GitLab 未設定なら何もしない。"""
+    """却下（reject）時: タスク MR をクローズする（best-effort）。GitLab 未設定なら何もしない。
+
+    ブランチの削除はここでは行わない（`retire_task_branch` の担当）。削除の直前に退避タグを
+    push する不変条件を 1 か所に閉じ込めるためで、ここでも消せるようにすると「タグ無しで
+    消える経路」が復活する。"""
     coords = _task_mr_coords(task)
     token = _gl_token()
     if coords is None or not token:
@@ -546,11 +600,54 @@ def close_task_mr(cfg: "Config", task: "Task", reason: str) -> None:
                 data={"body": f"agent-project: タスク {task.id} は却下されました（{reason}）。"})
         _gl_api(scheme, host, token, "PUT", f"/projects/{ep}/merge_requests/{iid}",
                 data={"state_event": "close"})
-        branch = task_branch_name(cfg, task)
-        _gl_api(scheme, host, token, "DELETE",
-                f"/projects/{ep}/repository/branches/{_gl_quote(branch)}")
     except RuntimeError as e:
         append_journal(cfg.journal, f"却下 MR の後始末に失敗（無視）: {task.id}: {e}")
+
+
+def retire_task_branch(cfg: "Config", task: "Task") -> dict:
+    """却下時に作業ブランチを退避タグへ逃がしてから origin から削除する（best-effort）。
+
+    戻り値は `{branch, tag, sha, deleted}`（何もしなかったときは空 dict）。却下記録に残して、
+    後から `git fetch origin tag <tag>` で成果を取り戻せるようにする。
+
+    **タグの push が成功したときだけ削除する。** タグ無しで削除すると、origin 上の commit は
+    どこからも参照されなくなり、フォージの回収で恒久に失われる——却下は「この方向は採らない」
+    という判断であって、作ったものを消してよいという判断ではない。
+
+    消すのは `task_branch_name`（ap/<task-id>）と完全一致するブランチだけ。タスクが共有ブランチ
+    （target や人が指定した既存ブランチ）を書込先にしている場合は触らない。"""
+    work = _task_work_branch(cfg, task)
+    if work is None:
+        return {}
+    target, branch = work
+    own = task_branch_name(cfg, task)
+    if branch != own or branch == target:
+        return {}                      # 共有ブランチ・target 自体は却下では消さない
+    repo = _source_repo(cfg, task)
+
+    def run(*args: str):
+        return subprocess.run(["git", "-C", str(repo), *args], capture_output=True,
+                              text=True, timeout=180)
+
+    if run("check-ref-format", "--branch", branch).returncode != 0:
+        return {}
+    run("fetch", "-q", "origin", branch)
+    sha = run("rev-parse", f"origin/{branch}").stdout.strip()
+    if not sha:
+        return {}                      # 既に消えている（人が MR 画面から消した等）
+    tag = f"rejected/{task.id}"
+    tagged = run("push", "-f", "origin", f"{sha}:refs/tags/{tag}")
+    if tagged.returncode != 0:
+        why = (tagged.stderr or tagged.stdout or "git push failed").strip()[:200]
+        append_journal(cfg.journal,
+                       f"却下ブランチの退避タグを push できないため削除を見送り: "
+                       f"{task.id} {branch} — {why}")
+        return {"branch": branch, "tag": "", "sha": sha, "deleted": False}
+    deleted = run("push", "origin", "--delete", branch).returncode == 0
+    append_journal(cfg.journal,
+                   f"却下ブランチ退避: {task.id} {branch}@{sha[:12]} → tag {tag}"
+                   + ("（ブランチ削除済み）" if deleted else "（ブランチ削除は失敗・タグは有効）"))
+    return {"branch": branch, "tag": tag, "sha": sha, "deleted": deleted}
 
 
 def risk_digest(cfg: "Config", task: "Task", changed: "set[str]", protect_hits: list,
@@ -660,9 +757,11 @@ def _settle_review(cfg, task, act_msg, git_base, branch, ev, vmsg, protect_hits,
             else "（assisted）" if assisted else "（承認ゲート）")
     reasons[task.id] = ("検収待ち（verify=PASS・保護パス変更。approve で done 確定）"
                         if protect_hits else "検収待ち（verify=PASS。approve で done 確定）")
-    # 成果物レビューの MR: タスクブランチ（ap/<id>）→ target の MR を用意し（冪等・GitLab 設定時のみ）、
-    # 承認（approve）時に Stage 2 と同じ規則（クリーンなら自動マージ）で決着させる
-    mr_url = ensure_task_mr(cfg, task) or str(task.get("mr_url") or "").strip()
+    # 成果物レビューの MR は**人が明示的に作るもの**なので、ここでは作らない（作成の口は
+    # `mr-create` / dashboard の「MRを作る」だけ）。既に人が作っていればその座標を票へ載せる。
+    # 自動作成をやめたのは、MR がレビューの器である以上「誰がいつ作るか」を人の意思に
+    # 揃えるため。統合そのもの（ap/<id> → target）は done 確定時に機械が自動で行う。
+    mr_url = str(task.get("mr_url") or "").strip()
     if mr_url:
         if "- MR:" not in (ev or ""):
             ev = (ev + "\n" if ev else "") + f"- MR: {mr_url}（承認時にクリーンなら自動マージ）"
@@ -683,6 +782,7 @@ def _settle_review(cfg, task, act_msg, git_base, branch, ev, vmsg, protect_hits,
 def _settle_done(cfg, task, act_msg, git_base, branch, ev, vmsg, dtok, dusd, cycle, autonomy_cache):
     """verify=PASS かつゲート対象外 → 無人 auto-done（受領書＋archive）。集計 delta を返す。"""
     task.status = "done"
+    task.drop("env_block_kind", "env_block_count")   # 通れた＝環境の連続失敗は途切れた
     record_learn_outcome(cfg, task, worked=True)                        # learn 適用で done＝成功（W10）
     autonomy_record(cfg, task, clean=True, cache=autonomy_cache)        # 無人 auto-done＝clean 実績
     ts = _now_ts()
@@ -733,6 +833,49 @@ def _failure_record(cfg, task, blob, vmsg, phase, verdict) -> dict:
     return rec
 
 
+def _env_block(cfg, task, kind: str, why: str, reasons, cycle: int, log: str,
+               evidence=None, failure=None) -> None:
+    """環境要因で人へ回す唯一の口。同じ理由が続いたら hold（policy.deny）へ落とす。
+
+    環境ブロックはタスクの内容の問題ではないのでリトライを消費しない。一過性ならその契約が
+    正しいが、**恒常的に壊れている環境では上限がどこにも無かった**——このノードの verifier が
+    いつも時間切れになるタスクは、人が approve するたび同じ工程を同じ時間だけ焼き直し、
+    retries も進まないので永久に同じ場所へ戻ってくる（C7「必ず止まる」に反する）。
+
+    そこで「同じ理由（kind）が連続した回数」を数え、`env_resume_limit` を超えたら
+    `policy.deny` へ入れて自動の再開を止める。deny は triage が消化対象から外すので、
+    needs の [x]（環境復帰のメモ）では再開できなくなり、**環境を直した人の approve だけ**が
+    解除できる（`cmd_approve` が deny を外す）。理由が変われば数え直す——別の環境問題まで
+    まとめて 1 つの上限で締めると、直った側まで止まったままになる。
+    """
+    kind = str(kind or "env")
+    prev = str(task.get("env_block_kind") or "")
+    count = (int(task.get("env_block_count") or 0) if prev == kind else 0) + 1
+    task.set("env_block_kind", kind)
+    task.set("env_block_count", str(count))
+    limit = int(getattr(cfg, "env_resume_limit", 0) or 0)
+    if limit > 0 and count > limit:
+        # 自動の再開を止める。env_resume は落とす——残すと run_id_for が同 run の再開を
+        # 約束し続け、hold を解いた人が「新しい計画で」やり直せない。
+        task.drop("env_resume")
+        append_policy(cfg.policy, "deny", task.id)
+        _block(cfg, task, f"{why}\n\n同じ環境要因で {count} 回続けて止まっています"
+                          f"（上限 {limit}）。自動の再開を止めました（保留）。環境を直してから "
+                          "承認すると保留が解けます。直せない場合は、このタスクを別のノードへ"
+                          "割り当てるか、検証の設定（使うエージェント CLI・タイムアウト）を"
+                          "見直してください。", reasons, evidence=evidence, failure=failure)
+        append_decision(cfg, task.id, "auto",
+                        context=f"{task.id}（{task.title}）が同じ環境要因で {count} 回停止",
+                        action="hold(env-repeat)", reason=why[:300],
+                        affects=f"{task.id} → blocked, policy.deny += {task.id}")
+        append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 保留（{kind} が {count} 回連続・"
+                                    f"上限 {limit}。approve するまで再開しない）")
+        return
+    task.set("env_resume", "1")
+    _block(cfg, task, why, reasons, evidence=evidence, failure=failure)
+    append_journal(cfg.journal, log)
+
+
 def _settle_failure(cfg, task, vmsg, cycle, ev, reasons, location="local",
                     phase=PHASE_VERIFY, verdict=VERIFY_FAILED):
     """verify=NG → 上限内なら積み直し / 学習で自動解決 / 上限超で人へエスカレーション。
@@ -757,19 +900,29 @@ def _settle_failure(cfg, task, vmsg, cycle, ev, reasons, location="local",
         # 混ざっていたことが消え、なぜその分類になったのかを後から追えない。
         others = [labels.get(c, c) for c in agent_error_chain(blob)[1:] if c in labels]
         also = f"（記録にはほかに {'・'.join(others)} の痕跡もあります）" if others else ""
-        # needs にメモを書いて [x] しても run_id_for が新 run を作らないよう、再開約束を残す。
-        task.set("env_resume", "1")
-        _block(cfg, task, f"[agent-error:{cls}] {category}（{label}）: {hint}{also} "
-                          "タスクの内容の問題ではないため、リトライ回数は消費していません。"
-                          f"{remedy} approve すると、同じ run の続き（失敗した工程だけ）"
-                          "から再開します。", reasons, evidence=ev, failure=failure)
-        append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（{category}: {label}。"
-                                    f"リトライ・裁定は消費しない）")
+        # needs にメモを書いて [x] しても run_id_for が新 run を作らないよう、再開約束を残す
+        # （反復したら _env_block が保留へ落とし、再開約束ごと外す）。
+        _env_block(cfg, task, cls,
+                   f"[agent-error:{cls}] {category}（{label}）: {hint}{also} "
+                   "タスクの内容の問題ではないため、リトライ回数は消費していません。"
+                   f"{remedy} approve すると、同じ run の続き（失敗した工程だけ）から再開します。",
+                   reasons, cycle,
+                   log=f"cycle {cycle}: {task.id} → 人の判断（{category}: {label}。"
+                       "リトライ・裁定は消費しない）",
+                   evidence=ev, failure=failure)
         return
     task.retries += 1
-    if not task.verify and verdict != VERIFY_NOT_RUN:
+    # ここから先は内容の失敗（環境要因は上で return 済み）。環境ブロックの連続は途切れた。
+    task.drop("env_block_kind", "env_block_count")
+    if not has_verify_plan(task) and verdict != VERIFY_NOT_RUN:
         # 失敗ではなく「完了条件が無いので人が確認して完了にする」状態。理由文もそう読める形にする
         # （「verify 未定義」だけだと viewer で失敗理由のように見える）。
+        #
+        # 判定は**統一 verify の語彙**（受入基準 / 固定コマンド / verify_template）で行う。
+        # レガシーの `task.verify` だけを見ていた頃は、正規形で書かれたタスク（＝新規は全部）が
+        # 基準を持っていても「完了条件が無い」に落ちていた: 基準 FAIL も receipt 不着も
+        # 「工程は完了しています」と表示され、しかも下の retries 上限へ進まないので、
+        # 何度失敗しても打ち切られず毎回人へ送られ続けた（C7「必ず止まる」に反する）。
         _escalate(cfg, task, "verify 未定義（工程は完了しています。完了条件が無いため自動では "
                              "done にできません。成果を確認し、問題なければ approve してください）",
                   reasons, cycle, evidence=ev)
@@ -1015,13 +1168,14 @@ def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle
         # 待つ（P4-b）。人へ送るのは、公示できない・誰も請けない場合だけ。
         if delegate_verification(cfg, task, verification, blocked_reasons, cycle):
             return {"archived": 0, "followups": []}
-        task.set("env_resume", "1")
-        _block(cfg, task, f"[agent-error:env] 検証不能: このノードでは確かめられない基準があります"
-                          f"（{blocked_reasons}）。タスクの内容の問題ではないため、リトライ回数は"
-                          "消費していません。環境を直してから approve すると、同じ run の続きから"
-                          "再開します。", reasons, evidence=ev)
-        append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（検証不能・"
-                                    "リトライは消費しない）")
+        _env_block(cfg, task, "unverifiable",
+                   f"[agent-error:env] 検証不能: このノードでは確かめられない基準があります"
+                   f"（{blocked_reasons}）。タスクの内容の問題ではないため、リトライ回数は"
+                   "消費していません。環境を直してから approve すると、同じ run の続きから"
+                   "再開します。",
+                   reasons, cycle,
+                   log=f"cycle {cycle}: {task.id} → 人の判断（検証不能・リトライは消費しない）",
+                   evidence=ev)
         return {"archived": 0, "followups": []}
 
     if flaky:

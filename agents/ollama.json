@@ -1,10 +1,12 @@
 {
   "name": "ollama",
+  "relative_cost": 0,
   "command": ["agent-ollama", "--think", "on", "{model}"],
   "prompt_via": "stdin",
   "default_model": "qwen3",
   "output": "stdout",
   "empty_output_is_error": true,
+  "json_variant": "ollama-json",
   "write_args": ["--tools", "bash", "--max-rounds", "30", "--command-timeout", "900"],
   "readonly_args": [],
   "readonly": "enforced",

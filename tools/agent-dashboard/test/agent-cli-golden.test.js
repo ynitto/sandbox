@@ -106,4 +106,29 @@ test('同梱定義がすべて読める（壊れた定義を同梱しない）',
   for (const n of names) agentCli.loadCli(n, null, { useCache: false });
 });
 
+// 「安いほう」の判断を 1 つの数へ集める以上、その数が**同梱定義すべてで宣言され**、
+// ローカル実行がクラウド実行より厳密に安い、が守られていないと降格・昇格が意味を失う。
+// 個別の値をスナップショットしても不変条件は守れないので、全定義を読んで関係を確かめる。
+const LOCAL_ENGINES = new Set(['ollama', 'ollama-json', 'ollama-read', 'opencode']);
+
+test('相対コストは全同梱定義で宣言され、ローカル < クラウドの関係を保つ', () => {
+  const dir = agentCli.bundledDir();
+  const names = fs.readdirSync(dir).filter((f) => f.endsWith('.json')).map((f) => path.parse(f).name);
+  const costs = new Map(names.map((n) => [n, agentCli.loadCli(n, null, { useCache: false }).relativeCost]));
+
+  for (const [name, cost] of costs) {
+    assert.ok(Number.isFinite(cost) && cost >= 0, `${name}: relative_cost が数値でない (${cost})`);
+    const raw = JSON.parse(fs.readFileSync(path.join(dir, `${name}.json`), 'utf8'));
+    assert.ok('relative_cost' in raw, `${name}: relative_cost を宣言していない（既定 1 に落ちる）`);
+  }
+
+  const local = [...costs].filter(([n]) => LOCAL_ENGINES.has(n));
+  const cloud = [...costs].filter(([n]) => !LOCAL_ENGINES.has(n));
+  assert.ok(local.length && cloud.length, '両方の分類に定義がある');
+  const maxLocal = Math.max(...local.map(([, c]) => c));
+  const minCloud = Math.min(...cloud.map(([, c]) => c));
+  assert.ok(maxLocal < minCloud,
+    `ローカルがクラウド以上に高い: local=${JSON.stringify(local)} cloud=${JSON.stringify(cloud)}`);
+});
+
 console.log(`\n${passed} tests passed (agent-cli-golden)`);

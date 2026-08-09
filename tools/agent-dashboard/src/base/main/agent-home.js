@@ -43,7 +43,7 @@ function agentDirCandidates(base) {
 
 // 定常業務の走査に**必ず含めるユーザーホーム**。
 //
-// kiro-loop の設定はプロジェクトの下だけでなく `~/.kiro/kiro-loop.yml` にも置かれる
+// agent-loop の設定はプロジェクトの下だけでなく `~/.agents/agent-loop.yml` にも置かれる
 // （その人の端末で回す定期処理）。ホームはどの登録簿（cowork.roots / host.yaml）にも
 // 載らないので、明示的に足さないと画面から永久に見えない。
 // Windows では WSL 側のホームも並べる——定常業務のエンジンは WSL で動くため、人が

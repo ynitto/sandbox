@@ -167,13 +167,12 @@ def _settle_verify_delegation(cfg: "Config", task: "Task", did: str, ok: bool, m
     if ok and rev:
         msg = (f"{msg}（板の run は終端しましたが receipt が返っていません。"
                "確かめた証跡が無いので採用できません）")
-    task.set("env_resume", "1")
     task.status = "blocked"
     why = ("[agent-error:env] 検証不能: このノードでは確かめられない基準があり、板へ検証を"
            f"回しましたが決着しませんでした（{did}: {msg[:200]}）。環境を直して approve すると、"
            "同じ run の続きから再開します。")
-    _block(cfg, task, why, reasons)
-    append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（検証委譲も決着せず）")
+    _env_block(cfg, task, "unverifiable", why, reasons, cycle,
+               log=f"cycle {cycle}: {task.id} → 人の判断（検証委譲も決着せず）")
     return 1
 
 
@@ -194,6 +193,40 @@ def _board_result_winner(cfg: "Config", did: str) -> str:
     except (OSError, RuntimeError, ValueError):
         return ""
     return str(res.get("winner") or "")
+
+
+def _settle_cancelled(cfg: "Config", task: "Task", cycle: int, reasons: dict) -> None:
+    """人が run を中止したときの確定。中止の繰り返しを**有限回で人へ返す**（C7）。
+
+    `retries` は「次の run-id を作るための世代番号」として上げる（同一 id の cancelled run は
+    agent-flow が再開できず永久 no-op になる）。ただしこれは**タスクの内容の失敗ではない**ので、
+    リトライ上限（`_settle_failure` の `retries > max_retries`）の判定材料には使えない——中止は
+    その失敗経路を一度も通らないため、上限はどこにも効かず、人が中止するたびにループが新しい
+    run を起こし続けた（＝止まらないループ）。
+
+    そこで中止した回数を `cancel_count` に別に数え、`max_retries` を超えたら人の判断へ回す
+    （`_env_block` が環境要因の反復を `env_resume_limit` で締めるのと同じ形）。approve で
+    人が介入すればカウンタは戻る（`cmd_approve`）ので、上限は「人が一度も触らずに中止だけを
+    繰り返せる回数」を縛る。"""
+    count = int(task.get("cancel_count") or 0) + 1
+    task.retries += 1
+    task.set("cancel_count", str(count))
+    if count > cfg.max_retries:
+        _escalate(cfg, task,
+                  f"人が run を {count} 回中止しました（上限 {cfg.max_retries}）。"
+                  "そのまま積み直しても同じ工程を起こすだけなので、内容・進め方を見直して"
+                  "から approve してください。リトライ回数は消費していません。",
+                  reasons, cycle)
+        if task.norm_status() == "blocked":
+            append_journal(cfg.journal,
+                           f"cycle {cycle}: {task.id} → 人の判断（中止の繰り返し {count} 回・"
+                           f"上限 {cfg.max_retries}）")
+        return
+    task.status = "ready"
+    persist_task(cfg, task)
+    append_journal(cfg.journal,
+                   f"cycle {cycle}: {task.id} run が cancelled → ready"
+                   f"（人が中止・retries={task.retries} で新 run・中止 {count}/{cfg.max_retries}）")
 
 
 def _reap_offloaded(cfg: "Config", tasks: "list[Task]", policy: "Policy",
@@ -285,16 +318,11 @@ def _reap_offloaded(cfg: "Config", tasks: "list[Task]", policy: "Policy",
         tokens += dtok
         cost += dusd
         # 人が dashboard 等から run を中止したとき: verify=true でも done にしない。
-        # retries を上げて次の run-id を変える（同一 id の cancelled run を再開しようとして固まるのを防ぐ）。
+        # 積み直し（retries を上げて新 run-id）と繰り返しの打ち切りは `_settle_cancelled` に一本化。
         # 語彙統一（W0-9）により board 経由・flow/daemon 経由とも "cancelled" で揃っている
         # （旧 "canceled"（米式）との二重判定は不要になった）。
         if not ok and msg.rstrip().endswith("cancelled"):
-            task.retries += 1
-            task.status = "ready"
-            persist_task(cfg, task)
-            append_journal(cfg.journal,
-                           f"cycle {cycle0 + settled + 1}: {task.id} offload run が cancelled → "
-                           f"ready（人が中止・retries={task.retries} で新 run）")
+            _settle_cancelled(cfg, task, cycle0 + settled + 1, reasons)
             release_claim(cfg, task)
             settled += 1
             continue
@@ -488,8 +516,7 @@ def run_loop(cfg: Config, act=act_via_agent_flow, ranker=None, sleeper=time.slee
                 append_journal(cfg.journal, f"cycle {cycle}: {task.id} cost tokens={dtok} usd={dusd:.4f}"
                                             f"（累計 tokens={tokens_used} usd={cost_used:.4f}）")
             # 人が run を中止したとき: verify=true でも done にしない（リトライ非消費で ready）。
-            # retries は上げる＝次の run-id を変える。上げないと cancelled な同一 id を作り直し、
-            # agent-flow は終端 run を再開できず永久 no-op になる。
+            # 積み直し（retries を上げて新 run-id）と繰り返しの打ち切りは `_settle_cancelled` に一本化。
             # act 中の revise（軌道修正）は失敗/cancelled より優先——結果を確定せず積み直す。
             # 語彙統一（W0-9）により board 経由の同一サイクル即時終端（_act_board）・flow/daemon
             # 経由とも "cancelled" で揃っている（旧 "canceled"（米式）との二重判定は不要）。
@@ -500,12 +527,7 @@ def run_loop(cfg: Config, act=act_via_agent_flow, ranker=None, sleeper=time.slee
                     release_claim(cfg, task)
                     continue
             if str(act_msg or "").rstrip().endswith("cancelled"):
-                task.retries += 1
-                task.status = "ready"
-                persist_task(cfg, task)
-                append_journal(cfg.journal,
-                               f"cycle {cycle}: {task.id} run が cancelled → ready"
-                               f"（人が中止・retries={task.retries} で新 run）")
+                _settle_cancelled(cfg, task, cycle, reasons)
                 release_claim(cfg, task)
                 continue
             # act 失敗（daemon failed 等）: verify=true の偽 done/review を防ぐ。失敗経路へ。

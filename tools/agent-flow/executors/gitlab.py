@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """gitlab — agent-flow の executor プラグイン（opt-in のワーカーバス）
 
-kiro-loop の event_hook と同じ流儀で、agent-flow 本体から importlib で動的にロードされ、
+agent-loop の event_hook と同じ流儀で、agent-flow 本体から importlib で動的にロードされ、
 `execute()` が呼び出される。タスクを **GitLab イシュー** にして委譲し、リモートの
 （別マシン/別人の）ワーカーが拾って実装する。agent-flow はイシューをポーリングし、
 レビュアーが `status:approved` を付けたら **クリーンな関連 MR（コンフリクト無し・未解決

@@ -1,5 +1,6 @@
 {
   "name": "codex",
+  "relative_cost": 1,
   "command": ["codex", "exec", "--skip-git-repo-check", "--color", "never",
               "--output-last-message", "{output_file}"],
   "command_suffix": ["-"],
@@ -30,5 +31,11 @@
     "busy_pattern": "esc to interrupt",
     "clear_command": "/new",
     "prompt_inject": "send-keys"
-  }
+  },
+  "errors": [
+    {"match": "usage limit|quota exceeded", "class": "quota", "quota_kind": "exhausted",
+     "hint": "Codex の利用上限に達しています"},
+    {"match": "rate limit|too many requests", "class": "quota", "quota_kind": "rate_limit",
+     "hint": "Codex の時限レート制限です"}
+  ]
 }

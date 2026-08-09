@@ -58,6 +58,16 @@
     `command_suffix`）・プロンプトの渡し方（stdin / argv）・モデルフラグと既定モデル・
     応答の取り出し（stdout / ファイル）・追加環境変数・タイムアウト・空応答の扱い・
     **エラー分類規則（errors）**。
+  - **JSON 契約用の変種の申告（`json_variant`）**: 出力が JSON だけと決まっている役割に、
+    この定義の代わりに使う定義名。エンジンは役割の性質だけを見てここへ振り替える。
+    知識を 2 つに割るのが要点で、**「JSON 用の起動形を持つか」は定義が申告し、「この役割は
+    JSON 契約か」はエンジンが宣言する**——どちらも自分が知っていることしか言わないので、
+    エンジンが CLI 名で分岐する（`ollama` のときだけ挙動を変える）必要がなくなる。
+    ツールループ前提の定義を JSON 契約の役割にそのまま使うと、本文の代わりに制御語だけが
+    返って空応答で落ちるため、その組み合わせを人の設定作業に頼らず塞ぐのが目的
+    （[agent-ollama-expansion-design.md](./agent-ollama-expansion-design.md) §4.3・
+    コンセプト 柱3）。指す先が存在しない・自分自身を指す申告は無視して元の定義で走る
+    （設定ミスで実行を殺さない）。振り替えは 1 段だけで連鎖させない。
   - **権限の 2 モード**: 既定（書き込み可）にだけ付ける `write_args` と、助言のみにする
     `readonly_args` の対。`readonly: enforced | best-effort` で強制力を宣言する——このレイヤは
     argv を組み立てるだけで、フラグを無視する CLI への防御は持たない。保証できない CLI で
@@ -97,7 +107,7 @@
     tmux 実行・対話診断が対象。**agent-loop も 2026-08-06 からこの契約に載った**——設定の
     `agent_cli` 指定時は `agent_loop/cliprofile.py` が agentcore.agentcli で定義を解決して
     ペインを起動する（未指定は従来の kiro-cli 固定経路のまま。設計:
-    [`agent-loop-design.md`](./agent-loop-design.md) 機能 5）。旧 `kiro-loop.py:_start_pane`
+    [`agent-loop-design.md`](./agent-loop-design.md) 機能 5）。旧 `agent-loop.py:_start_pane`
     だけが対象外として残る（kiro-cli 固定の残置系統）。
   - **待機判定（`busy_pattern` / `idle_quiet_sec` / `clear_command`）**: tmux で CLI を自動
     運転する側（agent-loop の送信可否・スロット解放）は「待機中か処理中か」をペイン画面から

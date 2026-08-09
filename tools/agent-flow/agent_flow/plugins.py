@@ -4,7 +4,7 @@ from __future__ import annotations
 # --------------------------------------------------------------------------
 # executor プラグイン — agent/stub は組み込み、それ以外はプラグインを動的ロードする
 #
-#   kiro-loop の event_hook と同じ流儀で、executor をプラグイン化する。`--executor`
+#   agent-loop の event_hook と同じ流儀で、executor をプラグイン化する。`--executor`
 #   （設定 executor）には次のいずれかを指定できる:
 #     - "agent" / "stub"  : 組み込み executor（agent はエージェント CLI に委譲。設定 agent_cli
 #       で kiro/claude/copilot を切替）
@@ -85,7 +85,7 @@ def _executor_search_dirs() -> "list[str]":
     """executor プラグイン（<name>.py）を探すディレクトリ群（優先順）。"""
     dirs = []
     # 1. スクリプトと同階層の executors/（リポジトリ実行時の同梱プラグイン／インストーラが
-    #    本体 bin と同じフォルダに配置した同梱プラグインを発見＝kiro-loop と同じ「本体隣」流儀）
+    #    本体 bin と同じフォルダに配置した同梱プラグインを発見＝agent-loop と同じ「本体隣」流儀）
     dirs.append(os.path.join(os.path.dirname(self_path()), "executors"))
     # 2. git リポジトリの tools/agent-flow/executors（cwd がサブディレクトリでも届く）
     try:

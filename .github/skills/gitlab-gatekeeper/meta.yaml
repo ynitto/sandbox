@@ -67,7 +67,7 @@ io_contract:
         実施した GitLab 操作を成否つきで要約する。
       required: false
 notes:
-  - スケジューリング（間隔・常駐）は呼び出し側（/loop・cron・kiro-loop 等）の責務。スキルは1回処理に徹する。
+  - スケジューリング（間隔・常駐）は呼び出し側（/loop・cron・agent-loop 等）の責務。スキルは1回処理に徹する。
   - GitLab 操作は gitlab-idd の scripts/gl.py を再利用する（GITLAB_TOKEN 必須）。
     却下では update-mr --state-event close（MR の未マージクローズ）と delete-branch（ソースブランチ削除）を使う。
   - レビュー観点は agent-reviewer の references/ を再利用する。

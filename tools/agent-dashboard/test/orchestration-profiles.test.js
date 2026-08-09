@@ -6,6 +6,7 @@
 // - apply(): 現状と一致する決定は control.json / profiles.json を書かない（revision を上げない）
 
 const assert = require('assert');
+const childProcess = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -195,6 +196,83 @@ test('decide: 段の候補が全滅なら一段下へ降りる', () => {
   assert.match(out.flow.reason, /quota-fallback/);
 });
 
+test('decide: 時限 quota は降格し、reset 後の復帰はヒステリシスを通る', () => {
+  const tiers = {
+    large: { order: 2, label: '大', candidates: [{ agent_cli: 'claude', model: 'opus' }] },
+    small: { order: 1, label: '小', candidates: [{ agent_cli: 'ollama', model: 'qwen3' }] },
+  };
+  const policy = makePolicy({
+    steps: [{ min_remaining_ratio: 0.5, tier: 'large' }, { min_remaining_ratio: 0, tier: 'small' }],
+    no_cap_tier: 'large', hysteresis: 0.05, min_hold_sec: 0,
+  });
+  const resetAt = '2020-01-01T01:00:00Z';
+  const usage = (totalTokens) => ({
+    workloads: { flow: { tokenCap: 1000, totalTokens } },
+    agents: {},
+    config: {
+      allocation: { agents: {} },
+      computed: { agents: { claude: { quota_kind: 'rate_limit', reset_at: resetAt } } },
+    },
+  });
+
+  const down = profilesMod.decide(
+    { enabled: true, tiers, policy, state: {} }, usage(440), Date.parse('2020-01-01T00:00:00Z')
+  );
+  assert.strictEqual(down.flow.tier, 'small');
+  assert.strictEqual(down.flow.candidate.agent_cli, 'ollama');
+
+  const state = { flow: { ...down.flow, since: '2020-01-01T00:00:00Z' } };
+  const held = profilesMod.decide(
+    { enabled: true, tiers, policy, state }, usage(480), Date.parse(resetAt)
+  );
+  assert.strictEqual(held.flow.tier, 'small', '復帰時刻でも残率 0.52 < 0.55 なら維持');
+
+  const recovered = profilesMod.decide(
+    { enabled: true, tiers, policy, state }, usage(440), Date.parse(resetAt)
+  );
+  assert.strictEqual(recovered.flow.tier, 'large');
+  assert.strictEqual(recovered.flow.candidate.agent_cli, 'claude');
+});
+
+test('decide: exhausted の CLI は復帰時刻を持たなくても候補から外れる', () => {
+  const tiers = {
+    large: { order: 2, label: '大', candidates: [{ agent_cli: 'claude', model: 'opus' }] },
+    small: { order: 1, label: '小', candidates: [{ agent_cli: 'ollama', model: 'qwen3' }] },
+  };
+  const policy = makePolicy({ steps: [{ min_remaining_ratio: 0, tier: 'large' }], no_cap_tier: 'large' });
+  const usage = {
+    workloads: { flow: { tokenCap: 1000, totalTokens: 0 } },
+    agents: {},
+    config: {
+      allocation: { agents: {} },
+      computed: { agents: { claude: { quota_kind: 'exhausted', observed_at: '2020-01-01T00:00:00Z' } } },
+    },
+  };
+  const out = profilesMod.decide({ enabled: true, tiers, policy, state: {} }, usage, Date.parse('2030-01-01T00:00:00Z'));
+  assert.strictEqual(out.flow.candidate.agent_cli, 'ollama', '累積枯渇は時間が経っても戻さない');
+});
+
+// 復帰時刻が読めない rate_limit で塞ぎ続けると、「止めないための機能」が「二度と使えない」を
+// 作る。導出側（budget.quotaAgentsFrom）が既定 TTL を埋めるので、ここへ来る時点で読めないのは
+// 判断材料が無い場合だけ——そのときは塞がない。
+test('decide: 復帰時刻の読めない rate_limit は候補を塞がない', () => {
+  const tiers = {
+    large: { order: 2, label: '大', candidates: [{ agent_cli: 'claude', model: 'opus' }] },
+    small: { order: 1, label: '小', candidates: [{ agent_cli: 'ollama', model: 'qwen3' }] },
+  };
+  const policy = makePolicy({ steps: [{ min_remaining_ratio: 0, tier: 'large' }], no_cap_tier: 'large' });
+  const usage = {
+    workloads: { flow: { tokenCap: 1000, totalTokens: 0 } },
+    agents: {},
+    config: {
+      allocation: { agents: {} },
+      computed: { agents: { claude: { quota_kind: 'rate_limit' } } },
+    },
+  };
+  const out = profilesMod.decide({ enabled: true, tiers, policy, state: {} }, usage, Date.parse('2020-01-01T00:00:00Z'));
+  assert.strictEqual(out.flow.candidate.agent_cli, 'claude');
+});
+
 test('decide: 最下位まで降りても全滅ならそのワークロードは書かない', () => {
   const tiers = {
     large: { order: 2, label: '大', candidates: [{ agent_cli: 'claude', model: 'opus' }] },
@@ -345,6 +423,43 @@ test('apply: 候補が枯渇して書けないワークロードは control.json
   assert.strictEqual(result.controlWritten, false);
   const ctrl = control.loadControl(controlDir);
   assert.deepStrictEqual(ctrl.workloads, {});
+});
+
+test('headless: Electron 無しで auto 再配分とローカル退避を適用する', () => {
+  const controlDir = tmpdir('orch-headless-control-');
+  const budgetDir = tmpdir('orch-headless-budget-');
+  seedBudget(budgetDir, 1000, 1, 100);
+  fs.writeFileSync(path.join(budgetDir, 'config.json'), JSON.stringify({
+    version: 2, tokens: 1000, period: 'day',
+    allocation: {
+      mode: 'auto', rebalance_interval_sec: 0,
+      workloads: { flow: { weight: 1, max_tokens: 1000 } },
+      agents: { claude: { max_tokens: 1 } },
+    },
+  }));
+  fs.writeFileSync(path.join(controlDir, 'profiles.json'), JSON.stringify({
+    version: 1, enabled: true,
+    tiers: {
+      large: { order: 2, candidates: [{ agent_cli: 'claude', model: 'opus' }] },
+      small: { order: 1, candidates: [{ agent_cli: 'ollama', model: 'qwen3' }] },
+    },
+    policy: {
+      apply_to: ['flow'], steps: [{ min_remaining_ratio: 0, tier: 'large' }],
+      no_cap_tier: 'large', hysteresis: 0, min_hold_sec: 0,
+    },
+    state: {},
+  }));
+
+  const script = path.join(__dirname, '..', 'scripts', 'resource-control.js');
+  const result = childProcess.spawnSync(
+    process.execPath,
+    [script, '--control-dir', controlDir, '--budget-dir', budgetDir],
+    { encoding: 'utf8' }
+  );
+  assert.strictEqual(result.status, 0, result.stderr);
+  assert.strictEqual(JSON.parse(result.stdout).rebalanced, true);
+  assert.strictEqual(control.loadControl(controlDir).workloads.flow.agent_cli, 'ollama');
+  assert.strictEqual(profilesMod.loadProfiles(controlDir).state.flow.tier, 'small');
 });
 
 console.log(`\n${passed} passed`);

@@ -5,8 +5,8 @@ from __future__ import annotations
 # 正典: schemas/agent-instructions.schema.json。実体は $AGENT_INSTRUCTIONS_DIR
 # （既定 ~/.agents/instructions/）の instructions.json（管理面＝agent-dashboard が原子書換）。
 # agent-loop は長寿命の kiro-cli ペインへ、revision 差分があるときだけ送信プロンプト先頭へ前置する。
-# レンダラは dashboard（JS）・agent-flow / kiro-loop（Python）と同一出力になるよう決定的に保つ。
-# 由来: tools/kiro-loop の同名実装をクローンし改称（agent-loop は kiro-loop の後継クローン）。
+# レンダラは dashboard（JS）・agent-flow / agent-loop（Python）と同一出力になるよう決定的に保つ。
+# 由来: tools/agent-loop の同名実装をクローンし改称（agent-loop は agent-loop の後継クローン）。
 
 AGENT_INSTRUCTIONS_MARKER = "<!-- agent-instructions"
 _AGENT_INSTRUCTIONS_HEADING = "## 共通指示（agent-dashboard 管理・全ノード共通）"
@@ -39,7 +39,7 @@ def _instructions_clamp_max(v) -> int:
 
 
 def render_instructions_block(data: "dict | None", max_chars: "int | None" = None) -> str:
-    """契約 → 決定的テキストブロック。dashboard / agent-flow / kiro-loop と同一出力。
+    """契約 → 決定的テキストブロック。dashboard / agent-flow / agent-loop と同一出力。
     enabled=false / 中身なしのときは空文字（＝注入しない）。"""
     if not isinstance(data, dict) or data.get("enabled") is False:
         return ""

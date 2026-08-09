@@ -112,9 +112,9 @@ function explainFailure(r, distro, scriptPath, run) {
 
 // WSL 既定ディストロのホームを、このビュアーから開ける Windows パスで返す（win32 以外は ''）。
 //
-// 定常業務のエンジン（kiro-loop / statemachine-use）は WSL 側で動くので、人が「ホーム」と
+// 定常業務のエンジン（agent-loop / statemachine-use）は WSL 側で動くので、人が「ホーム」と
 // 言うときの実体も WSL 側のホームである。Windows の %USERPROFILE% だけを見ると、
-// `~/.kiro/kiro-loop.yml` に置いた定期処理がどこからも見つからない。
+// `~/.agents/agent-loop.yml` に置いた定期処理がどこからも見つからない。
 //
 // 読み方は launchArgs と同じ extractWindowsPath（ログインシェルのバナーを飛ばして
 // パス行だけ拾う）。既定ランナーのときだけ 60 秒キャッシュする——プロジェクト発見は
