@@ -497,7 +497,7 @@ test('runLoop は必要な入力を検証し、置換済み本文を直接送る
   fs.writeFileSync(path.join(repo, '.agents', 'agent-loop.yml'), [
     'prompts:',
     '  - name: "毎朝レビュー"',
-    '    prompt: レビューしてください {{target}}',
+    '    prompt: レビューしてください {target}',
     '    interval_minutes: 60',
     '',
   ].join('\n'), 'utf8');
@@ -511,7 +511,7 @@ test('runLoop は必要な入力を検証し、置換済み本文を直接送る
     assert.strictEqual(r.launched, true);
     const body = fs.readFileSync(r.scriptFile, 'utf8');
     assert.ok(body.includes('レビューしてください main'), '入力をプログラム側で置換する');
-    assert.ok(!body.includes('{{target}}'), '未置換の入力をLLMへ渡さない');
+    assert.ok(!body.includes('{target}'), '未置換の入力をLLMへ渡さない');
   } finally {
     if (orig) Object.defineProperty(process, 'platform', orig);
   }
