@@ -207,6 +207,9 @@ def cmd_approve(cfg: Config, tid: str, reason: str, complete: bool = False) -> i
         if detached:
             t.retries += 1
     t.status = "ready"
+    # 中止の連なり（_settle_cancelled の上限）は人が触った時点で数え直す。残すと、承認した直後に
+    # 一度中止しただけで即また人の判断へ戻り、承認が実質効かなくなる。
+    t.drop("cancel_count")
     # hold が積んだ deny を解除する。これをしないと承認が一方通行で無効になる: status を ready に
     # 戻しても policy の deny が残り続け、次の triage が policy:deny を見て即 blocked へ引き戻す。
     # 承認したはずのタスクが永久に実行されない（実際そうなっていた）。

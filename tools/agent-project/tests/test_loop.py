@@ -338,6 +338,43 @@ class TestRunLoop(unittest.TestCase):
             self.assertEqual(calls, [("T1", "local")])
             self.assertEqual(res["counts"]["done"], 1)
 
+    def test_repeated_human_cancel_escalates_instead_of_looping(self):
+        """人の中止だけを繰り返しても有限回で人の判断へ回る（C7）。
+
+        中止は `_settle_failure`（retries > max_retries）の経路を通らないので、以前は上限が
+        どこにも効かず、中止するたびにループが新しい run を起こし続けた。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", verify="true")
+            calls = []
+
+            def cancel(task, _cfg, _loc):
+                calls.append(task.id)
+                return False, "daemon run req-x-T1-r0 cancelled"
+
+            res = km.run_loop(cfg_for(d, dry_run=False, learn=False, auto_adjudicate=False,
+                                      max_retries=2, max_cycles=10), act=cancel)
+            task = km.load_tasks(d / "backlog")[0]
+            self.assertEqual(len(calls), 3)              # 中止 2 回は積み直し、3 回目で打ち切り
+            self.assertEqual(task.norm_status(), "blocked")
+            self.assertEqual(res["counts"]["blocked"], 1)
+            self.assertTrue((d / "needs" / "T1.md").exists())
+            self.assertIn("中止", (d / "needs" / "T1.md").read_text(encoding="utf-8"))
+
+    def test_human_cancel_budget_resets_after_approve(self):
+        """approve で人が触ったら中止カウンタは数え直す（承認が実質無効にならない）。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", verify="true")
+            cfg = cfg_for(d, dry_run=False, learn=False, auto_adjudicate=False,
+                          max_retries=1, max_cycles=10)
+            km.run_loop(cfg, act=lambda *_: (False, "daemon run req-x cancelled"))
+            self.assertEqual(km.load_tasks(d / "backlog")[0].get("cancel_count"), "2")
+            self.assertEqual(km.cmd_approve(cfg, "T1", "見直したので再開"), 0)
+            task = km.load_tasks(d / "backlog")[0]
+            self.assertEqual(task.norm_status(), "ready")
+            self.assertIsNone(task.get("cancel_count"))
+
 
 class TestRunIdDeterminism(unittest.TestCase):
     """リブート跨ぎの再接続の前提: 同一試行は同じ run-id（決定的）、
