@@ -218,21 +218,6 @@ function taskIdOfRun(runId, meta) {
   return m ? m[1] : null;
 }
 
-// 「この run の続きから」を agent-project へ伝える。agent-project は task の last_run を見て
-// 再開先を決める（run_id_for）ので、人が viewer で選んだ run をそこへ書き込む。これをせずに
-// ready へ戻すだけだと、成功済みノードごと新しい run を作り直してしまう。
-function pinResumeRun(projectDir, taskId, runId) {
-  const file = path.join(projectDir, 'backlog', `${taskId}.md`);
-  const src = fs.readFileSync(file, 'utf8');
-  const line = `- last_run: ${runId}`;
-  const next = /^- last_run:.*$/m.test(src)
-    ? src.replace(/^- last_run:.*$/m, line)
-    : src.replace(/^(##[^\n]*\n)/, `$1${line}\n`);
-  if (next === src) throw new Error(`last_run を書けませんでした: ${file}`);
-  fs.writeFileSync(file, next, 'utf8');
-  return file;
-}
-
 // 1 つの run ディレクトリを読み、グラフ＋状態＋進捗のスナップショットにする
 function readRun(runDir) {
   const runId = path.basename(runDir);
@@ -1002,7 +987,6 @@ module.exports = {
   resubmitRun,
   readRunMeta,
   taskIdOfRun,
-  pinResumeRun,
   prepareRunDeletion,
   cancelRun,
   nodeTaskToken,
