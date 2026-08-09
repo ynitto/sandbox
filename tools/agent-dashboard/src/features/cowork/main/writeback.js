@@ -1,6 +1,6 @@
 'use strict';
 
-// 発見項目の編集を **実体ファイル** へ外科的に書き戻す。所有する kiro-loop のフィールドと
+// 発見項目の編集を **実体ファイル** へ外科的に書き戻す。所有する定常業務ループのフィールドと
 // statemachine の先頭 name/description だけを書き換え、コメント・順序・他エントリは触らない。
 //
 // **読みと違ってここは YAML ライブラリを通さない。** 読み（base/main/yaml.js）の関心は値だが、
@@ -79,7 +79,7 @@ function applyKiroLoopEdits(rawText, edits) {
       // 発見後にファイルが並び替わっている等 → 名前で照合し直す
       entry = entries.find((e) => e.fields.name && scalarValue(e.fields.name.rawVal) === edit.promptName);
       if (!entry) {
-        errors.push(`kiro-loop: prompt が見つかりません（index=${edit.promptIndex} name=${edit.promptName || ''}）`);
+        errors.push(`定常業務: prompt が見つかりません（index=${edit.promptIndex} name=${edit.promptName || ''}）`);
         continue;
       }
     }
@@ -127,7 +127,7 @@ function applyKiroLoopEdits(rawText, edits) {
       } else if (edit.scheduleKey === 'interval_minutes') {
         const n = parseIntervalMinutes(edit.schedule);
         if (n != null) setField('interval_minutes', String(n));
-        else errors.push(`kiro-loop: interval_minutes に変換できないスケジュール「${edit.schedule}」`);
+        else errors.push(`定常業務: interval_minutes に変換できないスケジュール「${edit.schedule}」`);
       }
       // scheduleKey==='' の項目は schedule を書き戻さない（読んだ物理フィールドが無い）
     }

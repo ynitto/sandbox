@@ -43,6 +43,18 @@ function tmpRepo() {
   return repo;
 }
 
+function writeMachine(repo, name, workflow, files = {}) {
+  const dir = path.join(repo, '.statemachine', name);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'workflow.yaml'), workflow, 'utf8');
+  for (const [relative, text] of Object.entries(files)) {
+    const file = path.join(dir, relative);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, text, 'utf8');
+  }
+  return path.join(dir, 'workflow.yaml');
+}
+
 test('itemsOf は cowork.items だけを正として扱い旧 loopJobs/stateMachines は読まない', () => {
   const items = cowork.itemsOf({
     items: [{ id: 'flat', type: 'loop', repo: '/repo-a' }],
@@ -131,7 +143,7 @@ test('loop 実行は kiro-loop の send サブコマンドでプロンプト名�
 
 test('loop 実行は送信先ペインを引けたら -s で明示する（複数ペインでも失敗しない）', () => {
   // kiro-loop の loop-state 参照をスタブ化して、名前 → ペインの解決だけを差し替える
-  const tmux = require('../src/features/kiro-loop/main/tmux');
+const tmux = require('../src/features/routines/main/tmux');
   const origFind = tmux.findPane;
   tmux.findPane = ({ name }) => (name === '毎朝レビュー' ? '%12' : '');
   try {
@@ -479,7 +491,7 @@ test('resolveLoopPromptText は .kiro/kiro-loop.yml のブロックスカラ本�
   assert.strictEqual(cowork.resolveLoopPromptText(repo, '存在しない'), '');
 });
 
-test('runLoop は win32 ウィンドウ実行で kiro-loop.yml の本文 + 入力補助を直接送る', () => {
+test('runLoop は必要な入力を検証し、置換済み本文を直接送る', () => {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'cowork-runwin-'));
   fs.mkdirSync(path.join(repo, '.kiro'), { recursive: true });
   fs.writeFileSync(path.join(repo, '.kiro', 'kiro-loop.yml'), [
@@ -493,73 +505,89 @@ test('runLoop は win32 ウィンドウ実行で kiro-loop.yml の本文 + 入�
   const orig = Object.getOwnPropertyDescriptor(process, 'platform');
   Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
   try {
-    const r = cowork.runLoop(config, 'daily');
+    assert.deepStrictEqual(cowork.overview(config).items[0].parameters, ['target']);
+    assert.throws(() => cowork.runLoop(config, 'daily'), /入力してください: target/);
+    const r = cowork.runLoop(config, 'daily', { target: 'main' });
     assert.strictEqual(r.launched, true);
     const body = fs.readFileSync(r.scriptFile, 'utf8');
-    assert.ok(body.includes('レビューしてください {{target}}'), 'yml のプロンプト本文を送る');
-    assert.ok(body.includes('プレースホルダー'), '入力補助（質問してから実行）を付け加える');
+    assert.ok(body.includes('レビューしてください main'), '入力をプログラム側で置換する');
+    assert.ok(!body.includes('{{target}}'), '未置換の入力をLLMへ渡さない');
   } finally {
     if (orig) Object.defineProperty(process, 'platform', orig);
   }
 });
 
-test('runStateMachine は win32 ウィンドウ実行で statemachine-use スキル発動文 + 入力補助を送る', () => {
+test('runStateMachine は入力値を構造化した実行指示へ組み込む', () => {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'cowork-smwin-'));
+  writeMachine(repo, 'release', [
+    'name: リリース',
+    'initial_state: start',
+    'context:',
+    '  version: ""',
+    'states:',
+    '  start:',
+    '    action: "{{input}} / {{context.version}}"',
+    '    terminal: true',
+    'transitions: []',
+    '',
+  ].join('\n'));
   const config = { cowork: {
     items: [{ id: 'sm1', type: 'state-machine', name: 'リリース', workflow: 'release', repo }],
   } };
   const orig = Object.getOwnPropertyDescriptor(process, 'platform');
   Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
   try {
-    const r = cowork.runStateMachine(config, 'sm1', '');
+    assert.deepStrictEqual(cowork.overview(config).items[0].parameters, ['input', 'context.version']);
+    assert.throws(() => cowork.runStateMachine(config, 'sm1', { input: 'app' }), /context.version/);
+    const r = cowork.runStateMachine(config, 'sm1', { input: 'app', 'context.version': 'v1.2' });
     assert.strictEqual(r.launched, true);
     const body = fs.readFileSync(r.scriptFile, 'utf8');
     assert.ok(body.includes('statemachine-use スキルでreleaseステートマシンを実行して'), 'スキル発動文を送る');
-    assert.ok(body.includes('入力'), '入力パラメータの補助を付け加える');
-    const withInput = cowork.runStateMachine(config, 'sm1', 'v1.2');
-    const body2 = fs.readFileSync(withInput.scriptFile, 'utf8');
-    assert.ok(body2.includes('入力: v1.2'), '指定された入力はプロンプトへ含める');
+    assert.ok(body.includes('- input: "app"') && body.includes('- context.version: "v1.2"'),
+      '入力値をキー付きで渡す');
+    assert.ok(!body.includes('先に必要な入力を箇条書きで私に質問'), '旧LLM入力促進文を送らない');
   } finally {
     if (orig) Object.defineProperty(process, 'platform', orig);
   }
 });
 
-test('stateMachineInputSpec は {{input}} 参照と空 context キー（要入力）を洗い出す', () => {
+test('stateMachineInputSpec は外部ファイルを含む実参照だけを入力にする', () => {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'cowork-sminput-'));
-  const dir = path.join(repo, '.statemachine', 'release');
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, 'workflow.yaml'), [
+  const wf = writeMachine(repo, 'release', [
     'name: リリース',
     'initial_state: start',
     'context:',
     '  version: ""',
-    '  ticket:',
     '  channel: "stable"',
+    '  unused: ""',
     'states:',
     '  start:',
-    '    action: |',
-    '      {{input}} をリリース（version={{context.version}}）',
+    '    action_file: actions/start.md',
+    '    output_key: result',
+    'transitions:',
+    '  - from: start',
+    '    to: done',
+    '    condition_file: conditions/start_to_done.md',
     '',
-  ].join('\n'), 'utf8');
-  const wf = cowork.stateMachineFilePath({ workflow: 'release' }, repo);
+  ].join('\n'), {
+    'actions/start.md': '{{input}} を {{version}} / {{context.channel}} へ反映。{{result}} は実行時出力',
+    'conditions/start_to_done.md': '{{context.ticket}} があれば完了',
+  });
   const spec = cowork.stateMachineInputSpec(wf);
-  assert.strictEqual(spec.usesInput, true, 'action の {{input}} 参照を拾う');
-  assert.deepStrictEqual(spec.requiredContext, ['version', 'ticket'], '空値の context キーだけを要入力にする');
-  assert.strictEqual(cowork.stateMachineInputSpec(path.join(repo, 'none.yaml')), null, '読めなければ null');
+  assert.deepStrictEqual(spec.keys, ['input', 'version', 'context.ticket']);
+  assert.deepStrictEqual(spec.defaults, { 'context.channel': 'stable' }, '既定値済みは入力不要');
+  assert.ok(!spec.keys.includes('context.unused'), '参照されない空 context は入力にしない');
+  assert.ok(!spec.keys.includes('result'), 'output_key は実行時に生成されるので入力にしない');
+  assert.match(cowork.stateMachineInputSpec(path.join(repo, 'none.yaml')).error, /読めません|ENOENT/);
 });
 
-test('stateMachineInputAssist は必要な入力を項目名つきで人へ質問させる', () => {
-  const spec = { usesInput: true, requiredContext: ['version', 'ticket'] };
-  const noInput = cowork.stateMachineInputAssist(spec, false);
-  assert.ok(noInput.includes('入力（{{input}}'), '{{input}} 未指定なら質問対象に含める');
-  assert.ok(noInput.includes('- context.version') && noInput.includes('- context.ticket'), '空 context キーを列挙する');
-  assert.ok(noInput.includes('質問') && noInput.includes('回答を得てから'), '人へ質問してから実行するよう促す');
-  const withInput = cowork.stateMachineInputAssist(spec, true);
-  assert.ok(!withInput.includes('{{input}}'), '入力が与えられていれば {{input}} は質問しない');
-  assert.ok(withInput.includes('- context.version'), 'context キーは入力有無に関わらず質問対象');
-  // 追加入力が要らない / 定義が読めないときは従来の汎用補助（プレースホルダー文言）へフォールバック
-  assert.ok(cowork.stateMachineInputAssist({ usesInput: false, requiredContext: [] }, true).includes('プレースホルダー'));
-  assert.ok(cowork.stateMachineInputAssist(null, false).includes('プレースホルダー'));
+test('入力値は不足・未知キーを拒否し、宣言済みキーだけを置換する', () => {
+  const spec = { keys: ['target'], defaults: {}, error: '' };
+  assert.throws(() => cowork.validateParameters(spec, {}), /target/);
+  assert.throws(() => cowork.validateParameters(spec, { target: 'main', extra: 'x' }), /extra/);
+  const values = cowork.validateParameters(spec, { target: ' main ' });
+  assert.deepStrictEqual(values, { target: 'main' });
+  assert.strictEqual(cowork.applyParameters('対象={{ target }}', values), '対象=main');
 });
 
 test('windowStartArgs は argv を返す（コマンドラインを自前で組み立てない）', () => {
@@ -650,22 +678,38 @@ test('windowScript は cd → send 実行 → 送信先ペインのセッショ�
 });
 
 test('state-machine 実行は statemachine-use スキルを発動するプロンプトを kiro-loop send で送る', () => {
-  const repo = os.tmpdir();
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'cowork-sm-send-'));
+  writeMachine(repo, 'release', [
+    'name: リリース',
+    'initial_state: done',
+    'states:',
+    '  done:',
+    '    terminal: true',
+    'transitions: []',
+    '',
+  ].join('\n'));
   const config = { cowork: {
     loopCommand: 'echo',
     runWindow: false,   // 引数の組み立てを見るテスト（窓を開く経路は別テスト）
     items: [{ id: 'sm1', type: 'state-machine', name: 'リリース', workflow: 'release', repo }],
   } };
-  const r = cowork.runStateMachine(config, 'sm1', '');
+  const r = cowork.runStateMachine(config, 'sm1');
   assert.ok(r.ok, `echo が成功する: ${r.error || r.stderr}`);
   assert.strictEqual(r.stdout, 'send release ステートマシンを実行して');
-  const withInput = cowork.runStateMachine(config, 'sm1', 'v1.2');
-  assert.strictEqual(withInput.stdout, 'send release ステートマシンを実行して。入力: v1.2');
 });
 
 test('runLoop / runStateMachine は実行履歴（historyFile）へ記録し readHistory で新しい順に読める', () => {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'cowork-hist-'));
   const historyFile = path.join(repo, 'history.jsonl');
+  writeMachine(repo, 'release', [
+    'name: リリース',
+    'initial_state: done',
+    'states:',
+    '  done:',
+    '    terminal: true',
+    'transitions: []',
+    '',
+  ].join('\n'));
   const config = { cowork: {
     loopCommand: 'echo',
     runWindow: false,
@@ -676,7 +720,7 @@ test('runLoop / runStateMachine は実行履歴（historyFile）へ記録し rea
     ],
   } };
   assert.ok(cowork.runLoop(config, 'daily').ok);
-  assert.ok(cowork.runStateMachine(config, 'sm1', '').ok);
+  assert.ok(cowork.runStateMachine(config, 'sm1').ok);
   assert.ok(cowork.runLoop(config, 'daily').ok);
 
   const loopLogs = cowork.itemLogs(config, 'daily');

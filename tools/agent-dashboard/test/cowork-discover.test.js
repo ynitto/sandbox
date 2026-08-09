@@ -1,7 +1,7 @@
 'use strict';
 
-// Cowork 自動発見（.kiro/kiro-loop・.statemachine のジョブ抽出）と、保存時の実体ファイル
-// 外科的書き戻しのテスト。追加依存なしで `node test/cowork-discover.test.js` で走る。
+// Cowork 自動発見（定常業務ループの設定・.statemachine のジョブ抽出）と、保存時の実体
+// ファイル外科的書き戻しのテスト。追加依存なしで `node test/cowork-discover.test.js` で走る。
 
 const assert = require('assert');
 const fs = require('fs');
@@ -59,6 +59,11 @@ function writeKiro(dir, text, ext) {
   fs.writeFileSync(path.join(dir, '.kiro', `kiro-loop.${ext || 'yml'}`), text);
 }
 
+function writeAgentLoop(dir, text, ext) {
+  fs.mkdirSync(path.join(dir, '.agents'), { recursive: true });
+  fs.writeFileSync(path.join(dir, '.agents', `agent-loop.${ext || 'yml'}`), text);
+}
+
 function writeSm(dir, name, text) {
   const d = path.join(dir, '.statemachine', name);
   fs.mkdirSync(d, { recursive: true });
@@ -85,8 +90,10 @@ test('parseKiroLoopPrompts は引用値の後ろのコメントを剥がす', ()
   assert.strictEqual(e[0].cron, '0 9 * * 1-5');      // 閉じ引用符の後ろのコメントは無視
 });
 
-test('parseKiroLoopPrompts は実サンプル kiro-loop.yaml.example を壊さず読む', () => {
-  const sample = fs.readFileSync(path.join(__dirname, '..', '..', 'kiro-loop', 'kiro-loop.yaml.example'), 'utf8');
+// サンプルは agent-loop 側のものを読む。kiro-loop の同名サンプルを読んでいると、
+// tools/kiro-loop/ を消した瞬間（計画 S4）にこのテストが落ちる。
+test('parseKiroLoopPrompts は実サンプル agent-loop.yaml.example を壊さず読む', () => {
+  const sample = fs.readFileSync(path.join(__dirname, '..', '..', 'agent-loop', 'agent-loop.yaml.example'), 'utf8');
   const e = discover.parseKiroLoopPrompts(sample);
   assert.ok(e.length >= 5);                          // 複数の prompts エントリ
   assert.ok(e.every((x) => x.name && !/#/.test(x.cron || '')));  // コメント混入なし
@@ -433,7 +440,9 @@ test('saveWork は手動項目のみ config へ保存（後方互換）', () => 
   assert.deepStrictEqual(res.writeback.errors, []);
 });
 
-test('dashboard 管理項目はプロンプトと予約済み定型業務を kiro-loop.yml に書く', () => {
+// 新規作成先は **agent-loop が読む場所**。`.kiro/kiro-loop.yml` へ書くと、画面では
+// 設定できたように見えて agent-loop はそのファイルを一度も読まない。
+test('dashboard 管理項目はプロンプトと予約済み定型業務を .agents/agent-loop.yml に書く', () => {
   const repo = mkRoot();
   const result = cowork.applyManagedItems([
     { id: 'daily', managed: true, type: 'loop', name: '日次確認', repo, prompt: '課題を確認して' },
@@ -441,13 +450,86 @@ test('dashboard 管理項目はプロンプトと予約済み定型業務を kir
     { id: 'manual', managed: true, type: 'state-machine', name: '手動だけ', repo, workflow: 'manual', schedule: '' },
   ]);
   assert.deepStrictEqual(result.errors, []);
-  const file = path.join(repo, '.kiro', 'kiro-loop.yml');
+  const file = path.join(repo, '.agents', 'agent-loop.yml');
   const raw = fs.readFileSync(file, 'utf8');
   const entries = discover.parseKiroLoopPrompts(raw);
   const texts = discover.kiroLoopPromptTexts(raw);
   assert.deepStrictEqual(entries.map((entry) => entry.name).sort(), ['リリース', '日次確認'].sort());
   assert.ok(texts.includes('課題を確認して'));
   assert.ok(texts.some((text) => text.includes('statemachine-use スキルでreleaseステートマシンを実行して')));
+});
+
+// --- 設定ファイルの探索先（agent-loop が読む場所が正） ---
+test('発見は agent-loop の .agents/agent-loop.yml を読む', () => {
+  const repo = mkRoot();
+  writeAgentLoop(repo, SAMPLE_YAML);
+  const mk = discover.detectMarkers(repo);
+  assert.strictEqual(mk.kiroFile, path.join(repo, '.agents', 'agent-loop.yml'));
+  assert.strictEqual(mk.kiroFormat, 'yaml');
+});
+
+test('発見は旧 .agent/ ホームの agent-loop.yml も読む', () => {
+  const repo = mkRoot();
+  fs.mkdirSync(path.join(repo, '.agent'), { recursive: true });
+  fs.writeFileSync(path.join(repo, '.agent', 'agent-loop.yml'), SAMPLE_YAML);
+  assert.strictEqual(discover.detectMarkers(repo).kiroFile,
+    path.join(repo, '.agent', 'agent-loop.yml'));
+});
+
+// 旧 kiro-loop 設定は「読めるが書き先にはしない」。退役（S4）までは画面から見失わせない。
+test('旧 .kiro/kiro-loop.yml も読むが agent-loop 側が優先される', () => {
+  const legacyOnly = mkRoot();
+  writeKiro(legacyOnly, SAMPLE_YAML);
+  assert.strictEqual(discover.detectMarkers(legacyOnly).kiroFile,
+    path.join(legacyOnly, '.kiro', 'kiro-loop.yml'));
+
+  const both = mkRoot();
+  writeKiro(both, SAMPLE_YAML);
+  writeAgentLoop(both, SAMPLE_YAML);
+  assert.strictEqual(discover.detectMarkers(both).kiroFile,
+    path.join(both, '.agents', 'agent-loop.yml'));
+});
+
+test('loopConfigFile は既存設定を使い、無ければ agent-loop の場所を新規に選ぶ', () => {
+  const fresh = mkRoot();
+  assert.deepStrictEqual(discover.loopConfigFile(fresh),
+    { file: path.join(fresh, '.agents', 'agent-loop.yml'), format: 'yaml' });
+
+  // 旧設定だけがある移行途中のフォルダは、既存ファイルへ書く（設定を 2 つに割らない）
+  const legacy = mkRoot();
+  writeKiro(legacy, SAMPLE_YAML);
+  assert.strictEqual(discover.loopConfigFile(legacy).file,
+    path.join(legacy, '.kiro', 'kiro-loop.yml'));
+});
+
+test('管理項目の保存は既存の agent-loop.yml へ追記し、新しいファイルを作らない', () => {
+  const repo = mkRoot();
+  writeAgentLoop(repo, SAMPLE_YAML);
+  const result = cowork.applyManagedItems([
+    { id: 'daily', managed: true, type: 'loop', name: '日次確認', repo, prompt: '課題を確認して' },
+  ]);
+  assert.deepStrictEqual(result.errors, []);
+  assert.ok(!fs.existsSync(path.join(repo, '.kiro')), '旧パスへは書かない');
+  const raw = fs.readFileSync(path.join(repo, '.agents', 'agent-loop.yml'), 'utf8');
+  assert.ok(discover.kiroLoopPromptTexts(raw).includes('課題を確認して'));
+  assert.ok(raw.includes('MR コメント返答'), '既存エントリを消さない');
+});
+
+// JSON 設定へ YAML の外科的書換を流し込むと壊れる。避けて .yml を作ると agent-loop の
+// 探索順（yaml → yml → json）で元の .json が無視され、プロンプトが消えたように見える。
+test('管理項目の保存は JSON 設定のフォルダを黙って壊さず断る', () => {
+  const repo = mkRoot();
+  fs.mkdirSync(path.join(repo, '.agents'), { recursive: true });
+  const file = path.join(repo, '.agents', 'agent-loop.json');
+  fs.writeFileSync(file, JSON.stringify({ prompts: [{ name: '既存', prompt: 'x' }] }, null, 2));
+  const before = fs.readFileSync(file, 'utf8');
+  const result = cowork.applyManagedItems([
+    { id: 'daily', managed: true, type: 'loop', name: '日次確認', repo, prompt: '課題を確認して' },
+  ]);
+  assert.strictEqual(result.errors.length, 1);
+  assert.ok(result.errors[0].includes('agent-loop.json'));
+  assert.strictEqual(fs.readFileSync(file, 'utf8'), before, '実体を触らない');
+  assert.ok(!fs.existsSync(path.join(repo, '.agents', 'agent-loop.yml')), '別ファイルも作らない');
 });
 
 // --- YAML のコメント（値パーサとアンカーパーサの整合） ---

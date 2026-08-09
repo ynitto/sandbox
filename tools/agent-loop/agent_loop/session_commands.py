@@ -8,7 +8,7 @@ from __future__ import annotations
 # process モードはペイン生成の前にホストで走らせ、chat モードは生成後の最初の送信として送る。
 #
 # 計画（プレースホルダ展開・when 判定・合計秒の有界化）は dashboard（JS の plan()）・
-# agent-flow / kiro-loop（Python）と同一結果になるよう決定的に保つ。
+# agent-flow（Python）と同一結果になるよう決定的に保つ。
 # 共通指示（agent-instructions）と違い、これは委譲先ノードへ伝播しない — 副作用のある
 # コマンドの到達範囲を、この端末に置いた設定ファイルの範囲へ閉じ込める。
 
@@ -16,11 +16,16 @@ _SESSION_COMMANDS_DEFAULT_TIMEOUT = 60
 _SESSION_COMMANDS_DEFAULT_MAX_TOTAL = 120
 _SESSION_COMMANDS_HARD_MAX_TOTAL = 600
 # chat モードを送れるのは常駐系（セッションが長寿命なエンジン）だけ。
-_SESSION_COMMANDS_CHAT_ENGINES = ("kiro-loop", "agent-loop", "dashboard")
+_SESSION_COMMANDS_CHAT_ENGINES = ("agent-loop", "dashboard")
+_SESSION_COMMANDS_LEGACY_ENGINE = "kiro-loop"
 _SESSION_COMMANDS_PLACEHOLDER_RE = re.compile(
     r"\{(cwd|workspace|engine|workload|agent_cli|model|run_id|node_id)\}"
 )
 _SESSION_COMMANDS_REV_APPLIED: "int | None" = None
+# 旧 engine 値の非推奨警告はプロセスにつき 1 回。`run_session_commands` は 1 セッション
+# あたり process / chat の 2 回呼ばれ、常駐体はセッションを何度も張り直すので、毎回出すと
+# 同じ 1 行がログを埋める。
+_SESSION_COMMANDS_LEGACY_WARNED = False
 
 
 def _session_commands_dir() -> str:
@@ -35,7 +40,17 @@ def _load_session_commands() -> "dict | None":
             data = json.load(f)
     except (OSError, ValueError):
         return None
-    return data if isinstance(data, dict) else None
+    if not isinstance(data, dict):
+        return None
+    global _SESSION_COMMANDS_LEGACY_WARNED
+    if not _SESSION_COMMANDS_LEGACY_WARNED and any(
+        _SESSION_COMMANDS_LEGACY_ENGINE in (item["when"].get("engines") or [])
+        for item in (data.get("commands") or [])
+        if isinstance(item, dict) and isinstance(item.get("when"), dict)
+    ):
+        _SESSION_COMMANDS_LEGACY_WARNED = True
+        log.warning("session.json の engine 'kiro-loop' は非推奨です。'agent-loop' として読みます。")
+    return data
 
 
 def _session_commands_revision(data: "dict | None") -> int:
@@ -86,9 +101,13 @@ def session_command_matches(when: "dict | None", ctx: "dict | None") -> bool:
         if not isinstance(values, list):
             continue
         allowed = [str(v).strip() for v in values if str(v).strip()]
+        if key == "engines":
+            allowed = ["agent-loop" if v == _SESSION_COMMANDS_LEGACY_ENGINE else v for v in allowed]
         if not allowed:
             continue
         actual = str(c.get(ctx_key) or "").strip()
+        if key == "engines" and actual == _SESSION_COMMANDS_LEGACY_ENGINE:
+            actual = "agent-loop"
         if not actual:
             continue
         if actual not in allowed:
@@ -116,6 +135,8 @@ def plan_session_commands(data: "dict | None", ctx: "dict | None") -> list:
         return out
     c = ctx if isinstance(ctx, dict) else {}
     engine = str(c.get("engine") or "").strip()
+    if engine == _SESSION_COMMANDS_LEGACY_ENGINE:
+        engine = "agent-loop"
     budget = _session_commands_clamp_total(data.get("max_total_timeout"))
     spent = 0
     bundled = []

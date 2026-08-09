@@ -243,6 +243,22 @@ class RunSlotTests(unittest.TestCase):
         self.assertEqual(len(adopted), 3)
         self.assertEqual(failed, [])
 
+    def test_adopt_backfills_explicit_phase_for_legacy_run(self):
+        self._make_orphan("run1")
+        view = self.bus.run_view("run1")
+        self._graph(view, {"a": []})
+        self.assertNotIn("phase", self.bus.run_meta("run1"))
+
+        adopted, failed, _ = self._adopt(slots=1)
+
+        self.assertEqual(list(adopted), ["run1"])
+        self.assertEqual(failed, [])
+        meta = self.bus.run_meta("run1")
+        self.assertEqual(meta["phase"], "executing")
+        self.assertTrue(meta["phase_started_at"])
+        phases = [e["phase"] for e in view.recent_events(20) if e.get("kind") == "phase"]
+        self.assertEqual(phases, ["executing"])
+
 
 class SpawnArgvTests(unittest.TestCase):
     """daemon がオンデマンド起動する子（orchestrator/worker）の argv が、実際の CLI パーサで

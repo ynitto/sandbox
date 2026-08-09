@@ -475,11 +475,19 @@ const ORCH_AGENT_KEYS = {
   routine: [],
 };
 
+function timeoutSeconds(value) {
+  const raw = String(value == null ? '' : value).trim();
+  if (raw === '') return null;
+  const minutes = Number(raw);
+  return Number.isInteger(minutes) && minutes >= 1 ? minutes * 60 : NaN;
+}
+
 // 1 ワークロードの用途 / ロール別上書きの小テーブル（既存キーの編集・削除＋新規追加行）。
 function orchAgentsEditorHtml(wl, wc) {
   const agents = wc.agents || {};
   const keys = Object.keys(agents);
   const known = ORCH_AGENT_KEYS[wl];
+  const withTimeout = wl === 'flow';
   // routine は用途別の概念が無い（1 セッションに 1 つの CLI を起こすだけ）ため編集 UI を
   // 出さない。上の「エージェント / モデル」は定常業務の起動にそのまま効く。
   if (known && known.length === 0 && wl === 'routine') {
@@ -496,6 +504,8 @@ function orchAgentsEditorHtml(wl, wc) {
       <td><code>${esc(key)}</code></td>
       <td><input type="text" class="orch-agent-cli" placeholder="（既定）" value="${esc(ov.agent_cli || '')}" /></td>
       <td><input type="text" class="orch-agent-model" placeholder="（既定）" value="${esc(ov.model || '')}" /></td>
+      ${withTimeout ? `<td><input type="number" min="1" step="1" class="orch-agent-timeout"
+        aria-label="${esc(key)}の1回の上限（分）" placeholder="共通値" value="${ov.timeout_sec ? Math.ceil(Number(ov.timeout_sec) / 60) : ''}" /></td>` : ''}
       <td><label class="orch-agent-rm"><input type="checkbox" class="orch-agent-remove" /> 削除</label></td>
     </tr>`;
   }).join('');
@@ -503,6 +513,7 @@ function orchAgentsEditorHtml(wl, wc) {
       <td><input type="text" class="orch-agent-new-key" list="${listId}" placeholder="${(known && known.length) ? '用途 / 担当名' : '担当名'}" /></td>
       <td><input type="text" class="orch-agent-new-cli" placeholder="エージェント" /></td>
       <td><input type="text" class="orch-agent-new-model" placeholder="モデル" /></td>
+      ${withTimeout ? '<td><input type="number" min="1" step="1" class="orch-agent-new-timeout" aria-label="追加する用途の1回の上限（分）" placeholder="共通値" /></td>' : ''}
       <td><small class="muted">保存で追加</small></td>
     </tr>`;
   const summaryLabel = keys.length ? `用途 / 担当ごとの変更（${keys.length}）` : '用途 / 担当ごとの変更を追加';
@@ -510,7 +521,7 @@ function orchAgentsEditorHtml(wl, wc) {
     <summary>${esc(summaryLabel)}</summary>
     ${datalist}
     <table class="amigos-table orch-agents-table">
-      <thead><tr><th>用途 / 担当 / 種別</th><th>エージェント</th><th>モデル</th><th></th></tr></thead>
+      <thead><tr><th>用途 / 担当 / 種別</th><th>エージェント</th><th>モデル</th>${withTimeout ? '<th>1回の上限（分）</th>' : ''}<th></th></tr></thead>
       <tbody>${rows}${addRow}</tbody>
     </table>
   </details>`;
@@ -523,14 +534,18 @@ function orchMatrixPanelHtml(overview) {
   const blocks = wls.map((wl) => {
     const wc = (control.workloads || {})[wl] || {};
     const deg = wc.degraded || {};
+    const timeout = wc.timeout_sec ? Math.ceil(Number(wc.timeout_sec) / 60) : '';
     return `<div class="orch-ctrl-wl" data-orch-ctrl-wl="${esc(wl)}">
       <div class="orch-ctrl-head">
         <strong>${esc(amigosWorkloadLabel(wl))}</strong>
         <label>エージェント<input type="text" class="orch-ctrl-cli" placeholder="各機能の設定を使用" value="${esc(wc.agent_cli || '')}" /></label>
         <label>モデル<input type="text" class="orch-ctrl-model" placeholder="各機能の設定を使用" value="${esc(wc.model || '')}" /></label>
         <label>節約時のモデル<input type="text" class="orch-ctrl-degraded-model" placeholder="変更しない" value="${esc(deg.model || '')}" /></label>
+        ${wl === 'flow' ? `<label>1回の上限（分）<input type="number" min="1" step="1" class="orch-ctrl-timeout"
+          placeholder="各プロジェクトの設定を使用" value="${timeout}" /></label>` : ''}
       </div>
       ${orchAgentsEditorHtml(wl, wc)}
+      ${wl === 'flow' ? '<p class="field-help">空欄は各プロジェクトの設定を使います。再試行が有効な場合、この上限が複数回適用されます。</p>' : ''}
     </div>`;
   }).join('');
   return `<section class="orch-panel">
@@ -794,7 +809,7 @@ function orchSessionRowHtml(cmd, index) {
       <summary>使う条件をしぼる（空欄ならすべてに適用）</summary>
       <div class="orch-sess-when-grid">
         <label class="orch-sess-field"><span>実行サービス</span>
-          <input type="text" class="orch-sess-when-engines mono" placeholder="kiro-loop, agent-flow" value="${esc(list(when.engines))}" />
+          <input type="text" class="orch-sess-when-engines mono" placeholder="agent-loop, agent-flow" value="${esc(list(when.engines))}" />
         </label>
         <label class="orch-sess-field"><span>ワークロード</span>
           <input type="text" class="orch-sess-when-workloads mono" placeholder="routine, flow" value="${esc(list(when.workloads))}" />
@@ -810,6 +825,7 @@ function orchSessionRowHtml(cmd, index) {
 function orchSessionCommandsPanelHtml(overview) {
   const sc = overview.sessionCommands || { enabled: true, commands: [], revision: 0, max_total_timeout: 120 };
   const commands = Array.isArray(sc.commands) ? sc.commands : [];
+  const warnings = Array.isArray(sc.warnings) ? sc.warnings : [];
   const rows = commands.map((c, i) => orchSessionRowHtml(c, i)).join('')
     || '<p class="muted orch-sess-empty">登録されたコマンドはありません。</p>';
   return `<section class="orch-panel orch-sess-panel">
@@ -822,6 +838,7 @@ function orchSessionCommandsPanelHtml(overview) {
       </div>
       <div>${sc.enabled ? orchBadge('ok', `有効・設定版 ${esc(String(sc.revision || 0))}`) : orchBadge('soft', '無効')}</div>
     </header>
+    ${warnings.map((warning) => `<p class="notice warn" role="status">${esc(warning)}</p>`).join('')}
     <label class="orch-sess-enabled"><input type="checkbox" id="orch-sess-enabled" ${sc.enabled ? 'checked' : ''} /> 登録したコマンドを使用する</label>
     <div class="orch-sess-list" id="orch-sess-list">${rows}</div>
     <div class="row orch-sess-controls">
@@ -1100,7 +1117,7 @@ function globalSettingsCoworkRootsHtml() {
   return `<div class="field">
     <label>定常業務のフォルダ</label>
     <p class="field-help">定常業務を探すフォルダの一覧です。実行エンジンが担当していないフォルダ
-      （kiro-loop の設定や .statemachine/ を持つだけのフォルダ）はここで登録します。実行エンジンが
+      （agent-loop の設定や .statemachine/ を持つだけのフォルダ）はここで登録します。実行エンジンが
       担当しているプロジェクトは登録不要で、自動でこの一覧に並びます。</p>
     ${rows ? `<ul class="settings-root-list">${rows}</ul>`
       : '<p class="muted">対象のフォルダはありません。</p>'}
@@ -1375,6 +1392,8 @@ function setupOrchestration(root) {
         model: model || null,
         degraded: degModel ? { model: degModel } : null,
       };
+      const timeout = block.querySelector('.orch-ctrl-timeout');
+      if (timeout) wc.timeout_sec = timeoutSeconds(timeout.value);
       // 用途 / ロール別の上書き（agents.<key>）を集める。削除チェックは null（＝キー削除）。
       const agents = {};
       for (const arow of block.querySelectorAll('.orch-agent-row')) {
@@ -1386,6 +1405,8 @@ function setupOrchestration(root) {
         const acli = arow.querySelector('.orch-agent-cli').value.trim();
         const amodel = arow.querySelector('.orch-agent-model').value.trim();
         agents[key] = { agent_cli: acli || null, model: amodel || null };
+        const atimeout = arow.querySelector('.orch-agent-timeout');
+        if (atimeout) agents[key].timeout_sec = timeoutSeconds(atimeout.value);
       }
       const addRow = block.querySelector('.orch-agent-add');
       if (addRow) {
@@ -1395,6 +1416,8 @@ function setupOrchestration(root) {
             agent_cli: addRow.querySelector('.orch-agent-new-cli').value.trim() || null,
             model: addRow.querySelector('.orch-agent-new-model').value.trim() || null,
           };
+          const ntimeout = addRow.querySelector('.orch-agent-new-timeout');
+          if (ntimeout) agents[nk].timeout_sec = timeoutSeconds(ntimeout.value);
         }
       }
       if (Object.keys(agents).length) wc.agents = agents;
@@ -1795,7 +1818,7 @@ function selectCoworkRoutine(id, { openStatus = false } = {}) {
   state.coworkSelections[coworkPathKey(folder)] = coworkEntryId(entry.item, entry.index);
   if (activeTab() === 'cowork') updateCoworkSelectedDetail(entry, folder);
   if (openStatus) {
-    openKiroLoopTerminal({
+    openRoutineAgentTerminal({
       id: coworkEntryId(entry.item, entry.index),
       repo: entry.item.repo || entry.item.cwd || '',
       name: entry.item.name || coworkEntryId(entry.item, entry.index),
@@ -1912,6 +1935,7 @@ function coworkSelectedDetailHtml(entry, observed, busyId) {
   const discovered = item.source === 'discovered';
   const pairedLoop = !!(item._src && item._src.loop);
   const disabledWork = item.enabled === false;
+  const parameterError = String(item.parameterError || '');
   const running = !!st.running || busyId === id;
   const status = running ? 'running' : (st.status || 'unknown');
   const run = state.coworkRun && String(state.coworkRun.id) === id ? state.coworkRun : null;
@@ -1931,7 +1955,8 @@ function coworkSelectedDetailHtml(entry, observed, busyId) {
         <div class="row"><span class="status-chip ${coworkStatusClass(status)}">${esc(statusLabel(status))}</span>
           <span class="label-chip">${esc(workTypeLabel(item.type))}</span>${disabledWork ? '<span class="label-chip">無効</span>' : ''}</div>
       </div>
-      <button class="cowork-primary-run" data-cowork-run="${esc(id)}" data-cowork-type="${esc(item.type || 'loop')}" data-cowork-name="${esc(item.name || id)}" ${busyId || disabledWork ? 'disabled' : ''}>${busyId === id ? '実行中…' : '今すぐ実行'}</button>
+      <button class="cowork-primary-run" data-cowork-run="${esc(id)}" data-cowork-type="${esc(item.type || 'loop')}" data-cowork-name="${esc(item.name || id)}"
+        ${busyId || disabledWork || parameterError ? 'disabled' : ''}${parameterError ? ` title="${esc(parameterError)}"` : ''}>${busyId === id ? '実行中…' : '今すぐ実行'}</button>
     </div>
     <div class="cowork-status-grid">
       <div><span>現在</span><strong>${esc(statusLabel(status))}</strong></div>
@@ -1943,6 +1968,7 @@ function coworkSelectedDetailHtml(entry, observed, busyId) {
       <div><span class="summary-kicker">最新結果</span><p>${esc(lastResult)}</p></div>
       <button data-cowork-history="${esc(id)}" data-cowork-name="${esc(item.name || id)}" ${api.coworkItemLogs ? '' : 'disabled'}>履歴とログ</button>
     </section>
+    ${parameterError ? `<p class="cowork-item-error" role="alert">入力パラメータを確認できません: ${esc(parameterError)}</p>` : ''}
     ${run && run.phase === 'error' ? `<p class="cowork-item-error" role="alert">${esc(run.message || '実行できませんでした。')}</p>` : ''}
     <section class="cowork-more-details" aria-label="設定とその他の操作">
       <h3>設定とその他の操作</h3>
@@ -1953,7 +1979,7 @@ function coworkSelectedDetailHtml(entry, observed, busyId) {
         <div><dt>リポジトリ</dt><dd title="${esc(item.repo || '')}">${esc(item.repo || '未設定')}</dd></div>
       </dl>
       <div class="cowork-secondary-actions">
-        ${(item.type !== 'state-machine' || pairedLoop) && item.repo && api.kiroLoopListSessions
+        ${(item.type !== 'state-machine' || pairedLoop) && item.repo && api.routineAgentListSessions
           ? `<button data-cowork-term-repo="${esc(item.repo)}" data-cowork-term-name="${esc(item.name || id)}" data-cowork-term-id="${esc(id)}">実行状況を見る</button>`
           : ''}
         <button data-cowork-edit="${index}" ${busyId ? 'disabled' : ''}>編集</button>
@@ -1982,6 +2008,114 @@ function updateCoworkSelectedDetail(entry, folder) {
   bindCoworkDetailActions(slot, folder);
 }
 
+function coworkRunError(res) {
+  return String((res && (res.stderr || res.stdout || res.error)) || '').trim()
+    || (res && res.logFile ? `実行ログ: ${res.logFile}` : (res && res.ok ? '' : 'エラー詳細なし'));
+}
+
+async function executeCoworkRoutine({ id, type, name, routine, parameters }) {
+  state.coworkRun = { id, name, phase: 'running', message: '', detail: '', at: Date.now() };
+  renderCowork();
+  let res;
+  try {
+    res = type === 'state-machine'
+      ? await api.coworkRunStateMachine(id, parameters)
+      : await api.coworkRunLoop(id, parameters);
+  } catch (err) {
+    res = { ok: false, error: err.message || String(err) };
+  }
+  // 別ウィンドウ起動は stdout/stderr を持たない。ウィンドウが一瞬で閉じたときに
+  // 「どこまで進んだか」を読めるよう、最新結果に実行ログの場所を残す。
+  const detail = coworkRunError(res);
+  const message = detail ? detail.slice(0, 240) : (res && res.ok ? '' : 'エラー詳細なし');
+  state.coworkRun = {
+    id,
+    name,
+    phase: res && res.ok ? 'ok' : 'error',
+    launched: !!(res && res.launched),
+    message,
+    detail: detail.slice(0, 1200),
+    at: Date.now(),
+  };
+  state.coworkHistoryCache.delete(id);
+  if (routine) state.routineAgentStateCache.delete(coworkPathKey(routine.repo || routine.cwd));
+  toast(
+    res && res.ok
+      ? (res.launched
+        ? `「${name}」を別ウィンドウ（ターミナル / tmux）で開始しました`
+        : `「${name}」を実行しました`)
+      : `「${name}」を実行できませんでした: ${message}`,
+    !!(res && res.ok)
+  );
+  await refreshCowork({ probe: true });
+  renderCowork();
+  return res;
+}
+
+function openCoworkParametersDialog(routine, run) {
+  const keys = Array.isArray(routine && routine.parameters) ? routine.parameters : [];
+  if (!keys.length) return run({});
+  const dlg = $('dlg-cowork-parameters');
+  const form = $('cowork-parameters-form');
+  const fields = $('cowork-parameter-fields');
+  const error = $('cowork-parameters-error');
+  const submit = $('btn-cowork-parameters-run');
+  const cancel = $('btn-cowork-parameters-cancel');
+  $('cowork-parameters-description').textContent = `「${routine.name || routine.id}」を実行する前に入力してください。`;
+  fields.innerHTML = keys.map((key, index) => `<div class="field">
+    <label for="cowork-parameter-${index}">${esc(key)}</label>
+    <input id="cowork-parameter-${index}" data-cowork-parameter="${esc(key)}" type="text" autocomplete="off" required>
+  </div>`).join('');
+  const inputs = [...fields.querySelectorAll('[data-cowork-parameter]')];
+  let running = false;
+  const validate = () => {
+    submit.disabled = running || inputs.some((input) => !input.value.trim());
+    error.hidden = true;
+    error.textContent = '';
+  };
+  const close = () => {
+    dlg.removeEventListener('cancel', onCancel);
+    form.onsubmit = null;
+    cancel.onclick = null;
+    if (dlg.open) dlg.close();
+  };
+  const onCancel = (event) => {
+    event.preventDefault();
+    if (!running) close();
+  };
+  inputs.forEach((input) => input.addEventListener('input', validate));
+  cancel.onclick = close;
+  dlg.addEventListener('cancel', onCancel);
+  form.onsubmit = async (event) => {
+    event.preventDefault();
+    if (submit.disabled) return;
+    running = true;
+    submit.textContent = '実行中…';
+    cancel.disabled = true;
+    validate();
+    const parameters = Object.fromEntries(inputs.map((input) => [input.dataset.coworkParameter, input.value.trim()]));
+    let res;
+    try {
+      res = await run(parameters);
+    } catch (err) {
+      res = { ok: false, error: err.message || String(err) };
+    }
+    if (res && res.ok) return close();
+    running = false;
+    submit.textContent = '実行';
+    cancel.disabled = false;
+    submit.disabled = inputs.some((input) => !input.value.trim());
+    error.textContent = coworkRunError(res);
+    error.hidden = false;
+  };
+  submit.textContent = '実行';
+  cancel.disabled = false;
+  validate();
+  dlg.showModal();
+  if (inputs[0]) inputs[0].focus();
+  return undefined;
+}
+
 function bindCoworkDetailActions(root, folder) {
   root.querySelectorAll('[data-cowork-history]').forEach((btn) => btn.addEventListener('click', () =>
     openCoworkHistory(btn.dataset.coworkHistory, btn.dataset.coworkName || '')));
@@ -2003,45 +2137,11 @@ function bindCoworkDetailActions(root, folder) {
     const type = btn.dataset.coworkType;
     const name = btn.dataset.coworkName || id;
     const routine = coworkDraft().find((item, index) => coworkEntryId(item, index) === id);
-    state.coworkRun = { id, name, phase: 'running', message: '', detail: '', at: Date.now() };
-    renderCowork();
-    let res;
-    try {
-      res = type === 'state-machine'
-        ? await api.coworkRunStateMachine(id, '')
-        : await api.coworkRunLoop(id);
-    } catch (err) {
-      res = { ok: false, error: err.message || String(err) };
-    }
-    // 別ウィンドウ起動は stdout/stderr を持たない。ウィンドウが一瞬で閉じたときに
-    // 「どこまで進んだか」を読めるよう、最新結果に実行ログの場所を残す。
-    const detail = String((res && (res.stderr || res.stdout || res.error)) || '').trim()
-      || (res && res.logFile ? `実行ログ: ${res.logFile}` : '');
-    const message = detail ? detail.slice(0, 240) : (res && res.ok ? '' : 'エラー詳細なし');
-    state.coworkRun = {
-      id,
-      name,
-      phase: res && res.ok ? 'ok' : 'error',
-      launched: !!(res && res.launched),
-      message,
-      detail: detail.slice(0, 1200),
-      at: Date.now(),
-    };
-    state.coworkHistoryCache.delete(id);
-    if (routine) state.kiroLoopStateCache.delete(coworkPathKey(routine.repo || routine.cwd));
-    toast(
-      res && res.ok
-        ? (res.launched
-          ? `「${name}」を別ウィンドウ（ターミナル / tmux）で開始しました`
-          : `「${name}」を実行しました`)
-        : `「${name}」を実行できませんでした: ${message}`,
-      !!(res && res.ok)
-    );
-    await refreshCowork({ probe: true });
-    renderCowork();
+    await openCoworkParametersDialog(routine, (parameters) =>
+      executeCoworkRoutine({ id, type, name, routine, parameters }));
   }));
   root.querySelectorAll('[data-cowork-term-repo]').forEach((btn) => btn.addEventListener('click', () => {
-    openKiroLoopTerminal({
+    openRoutineAgentTerminal({
       id: btn.dataset.coworkTermId || '',
       repo: btn.dataset.coworkTermRepo,
       name: btn.dataset.coworkTermName || '',
@@ -2049,7 +2149,7 @@ function bindCoworkDetailActions(root, folder) {
   }));
 }
 
-// 定常業務フォルダの登録。agent-project 管理外のフォルダ（kiro-loop 設定や
+// 定常業務フォルダの登録。agent-project 管理外のフォルダ（agent-loop 設定や
 // .statemachine/ を持つだけ）をこの画面で扱えるようにする。宣言は dashboard 設定
 // `cowork.roots` が持つ——定常業務の実行側はこの dashboard 自身だから（「宣言は実行側が
 // 持つ」の原則。agent-project の host.yaml に載せると、常駐体が管理しないものを常駐体の
@@ -2081,7 +2181,7 @@ async function addCoworkRoot() {
     .join('、');
   const body = summary
     ? `見つかった定常業務: ${summary}`
-    : '定常業務の設定（kiro-loop / .statemachine）はまだありません。'
+    : '定常業務の設定（agent-loop / .statemachine）はまだありません。'
       + '\n登録後、このフォルダを選んで「追加」から作成できます。';
   if (!confirm(`${picked.folder}\n\n${body}\n\nこのフォルダを登録しますか？`)) return;
   const res = await guard('フォルダを登録できません', () => api.coworkSetRoot(picked.folder, false));

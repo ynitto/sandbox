@@ -430,7 +430,19 @@ kiro-loop を「使わせない」→「移す」→「消す」の順に分け�
 | S1 | 契約の語彙を agent-loop へ寄せる。旧値は読めるが書かない非推奨にする | `schemas/agent-control.schema.json`・`agent-session-commands.schema.json`・`node-budget.schema.json`・`agent-instructions.schema.json`、`agent_flow/session_commands.py` の `_SESSION_COMMANDS_CHAT_ENGINES` | 旧値 `kiro-loop` を含む既存の設定ファイルが警告つきで読める。新規書き込みは `agent-loop` のみ |
 | S2 | kiro-loop 固有資産を agent-loop へ移す | `tools/kiro-loop/stub/kiro-cli-stub.py` と `test/test_stub.py` → `tools/agent-loop/` 配下 | agent-loop のテストが 34 本になり全通過。`setup-token-reduction.py` は**移さない**（S11 で契約へ畳む） |
 | S3 | dashboard の面を定常業務へ寄せる | `src/features/kiro-loop/` → 名称変更、`src/renderer/sections/kiro-loop.js` を `routines.js` の系へ統合、`test/kiro-loop-{tmux,send}.test.js` を改名 | `npm test` 全通過。GUI の定常業務ページから agent-loop の端末操作が従来どおりできる |
-| S4 | 実装を削除する | `tools/kiro-loop/` 削除、`install.py`・各 README・docs の参照掃除、移行手順の追記 | `grep -rn kiro-loop`（docs の履歴記述と S1 の非推奨語彙を除く）がゼロ。移行手順に沿って旧設定から agent-loop が起動する |
+| S4 | 実装を削除する | `tools/kiro-loop/` 削除、`install.py`・各 README・docs の参照掃除、移行手順の追記。**S1〜S3 が残した読取互換もここで落とす**（下記） | `grep -rn kiro-loop`（docs の履歴記述と S1 の非推奨語彙を除く）がゼロ。移行手順に沿って旧設定から agent-loop が起動する |
+
+S1〜S3 は「読めるが書かない」を守るため、旧系統の読取互換をあえて残している。**S4 は削除
+だけの PR なので、この一覧がそのまま作業リストになる。**先に落とすと、まだ移行していない
+利用者の稼働中デーモンや設定が移行前に画面から消える。
+
+| 残した読取互換 | 場所 |
+|---|---|
+| 旧 engine 値 `kiro-loop` の正規化と非推奨警告 | `sessionCommands.js` の `canonicalEngine`、`agent_flow` / `agent_loop` の `session_commands.py` |
+| 旧デーモンの状態・スロット（`~/.kiro/loop-state`・`~/.kiro/slots`） | `features/routines/main/tmux.js` |
+| 復旧送信の `kiro-loop` バイナリへのフォールバック | `features/routines/main/send.js` |
+| 旧ループ設定（`.kiro/kiro-loop.*` とフォルダ直下の `kiro-loop.*`）の発見 | `features/cowork/main/discover.js` の `LOOP_CONFIG_CANDIDATES` |
+| 旧 dashboard 設定キー `kiroLoop` → `routines` の付け替え | `base/main/config.js` の `LEGACY_CONFIG_KEYS` |
 
 > **S4 は破壊的操作。** ディレクトリ削除の前に、稼働中の kiro-loop デーモンがいないこと、
 > 移行手順が S1〜S3 の状態で通ることを確認し、**人の承認を取ってから実行する**。

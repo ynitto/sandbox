@@ -355,6 +355,70 @@ class FlowPlannerAgentCliTests(unittest.TestCase):
         cmd = self._capture_cmd(model="opus")
         self.assertEqual(cmd[cmd.index("--model") + 1], "sonnet")
 
+    def test_any_declared_agent_cli_is_passed_through(self):
+        """定義ファイルを置いただけの CLI もそのままスキルへ渡す（白リストを作らない）。"""
+        kf._AGENT_CLI = "cursor"
+        kf._AGENT_OVERRIDES = {}
+        cmd = self._capture_cmd()
+        self.assertEqual(cmd[cmd.index("--agent-cli") + 1], "cursor")
+
+    def test_planner_uses_the_declared_json_variant(self):
+        """planner は JSON 契約の役割なので、定義が申告する JSON 変種へ自動で振り替わる。
+        人が agents: を役割ごとに書き並べなくても、計画がツールループ型の起動形で
+        空回りしない（コンセプト 柱3 / C9）。"""
+        kf._AGENT_CLI = "ollama"
+        kf._AGENT_OVERRIDES = {}
+        cmd = self._capture_cmd()
+        self.assertEqual(cmd[cmd.index("--agent-cli") + 1], "ollama-json")
+
+    def test_timeout_follows_the_agent_timeout_setting(self):
+        """1 回分の 3 倍を待つ。無効化（agent_timeout=0）なら待ち続ける。"""
+        seen = {}
+
+        def fake_run(cmd, **kw):
+            seen["timeout"] = kw.get("timeout")
+            return types.SimpleNamespace(
+                returncode=0, stderr="",
+                stdout=json.dumps({"strategy": {"patterns": ["fan-out-and-synthesize"]},
+                                   "tasks": [{"id": "t1", "goal": "g", "deps": [], "kind": "work"}]}))
+
+        with mock.patch.object(kf, "_find_flow_planner_script", return_value="/tmp/plan.py"), \
+                mock.patch.object(kf.subprocess, "run", side_effect=fake_run):
+            with mock.patch.object(kf, "_agent_timeout", return_value=600.0):
+                kf.plan_strategy_flow_planner("req", None)
+                self.assertEqual(seen["timeout"], 1800.0)
+            with mock.patch.object(kf, "_agent_timeout", return_value=None):
+                kf.plan_strategy_flow_planner("req", None)
+                self.assertIsNone(seen["timeout"])
+
+    def test_skill_env_exposes_agentcore(self):
+        """スキル（独立プロセス）が agentcore を import できる PYTHONPATH を渡す。"""
+        env = kf._skill_env()
+        root = os.path.dirname(os.path.dirname(os.path.abspath(kf._agentcli.__file__)))
+        self.assertIn(root, env["PYTHONPATH"].split(os.pathsep))
+
+    def test_flow_planner_failure_is_recorded_not_swallowed(self):
+        """スキルが失敗したら、縮退した事実を strategy.reason に残す。
+
+        以前は黙って stub まで落ち、「計画できた」ように見えていた。"""
+        def boom(cmd, **kw):
+            return types.SimpleNamespace(returncode=2, stdout="",
+                                         stderr="invalid choice: 'ollama'")
+
+        with mock.patch.object(kf, "_find_flow_planner_script", return_value="/tmp/plan.py"), \
+                mock.patch.object(kf.subprocess, "run", side_effect=boom), \
+                mock.patch.object(kf, "run_agent", side_effect=RuntimeError("LLM 不通")):
+            strategy, tasks = kf.plan_strategy_flow_planner("候補を出す", None)
+        self.assertIn("flow-planner 不使用", strategy["reason"])
+        self.assertIn("agent planner 失敗", strategy["reason"])   # stub まで落ちたことも残る
+        self.assertTrue(tasks)
+
+    def test_missing_skill_is_recorded(self):
+        with mock.patch.object(kf, "_find_flow_planner_script", return_value=None), \
+                mock.patch.object(kf, "run_agent", side_effect=RuntimeError("LLM 不通")):
+            strategy, _ = kf.plan_strategy_flow_planner("何かする", None)
+        self.assertIn("スキルが見つかりません", strategy["reason"])
+
 
 class GraphHealthTests(unittest.TestCase):
     def test_unknown_deps_dropped(self):
@@ -436,6 +500,24 @@ class PatternStrategyTests(unittest.TestCase):
         }
         for req, want in cases.items():
             self.assertEqual(kf._detect_pattern(req), want, req)
+
+    def test_boilerplate_sections_do_not_decide_the_pattern(self):
+        """agent-project の定型（対象リポジトリ一覧の「書込先候補」等）でパターンが決まらない。
+
+        実測: この定型のせいで 15 件中 9 件が要求の中身と無関係に generate-and-filter へ倒れた。
+        判定に使うのは要求本体（先頭の段落）だけ。"""
+        request = (
+            "設計書と README を実装に追随させる\n\n"
+            "対象リポジトリ:\n"
+            "- agent-flow = https://example.invalid/x（書込先候補（owns: tools/agent-flow/**））\n"
+            "- agent-board = https://example.invalid/y（書込先候補（owns: tools/agent-board/**））\n")
+        self.assertEqual(kf._detect_pattern(request), "fan-out-and-synthesize")
+
+    def test_named_pattern_in_the_tail_is_respected(self):
+        """本体の外でもパターン名の名指しは尊重する（完了条件の但し書き等）。"""
+        request = ("codd-gate の連携コードを整理する\n\n"
+                   "このタスクは完了条件を満たすまで反復すること（loop-until-done）。\n")
+        self.assertEqual(kf._detect_pattern(request), "loop-until-done")
 
     def test_parallelism_extraction(self):
         self.assertEqual(kf._parallelism("候補を x4 出す", 2), 4)

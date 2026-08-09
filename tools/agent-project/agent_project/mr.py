@@ -767,9 +767,15 @@ def _settle_failure(cfg, task, vmsg, cycle, ev, reasons, location="local",
                                     f"リトライ・裁定は消費しない）")
         return
     task.retries += 1
-    if not task.verify and verdict != VERIFY_NOT_RUN:
+    if not has_verify_plan(task) and verdict != VERIFY_NOT_RUN:
         # 失敗ではなく「完了条件が無いので人が確認して完了にする」状態。理由文もそう読める形にする
         # （「verify 未定義」だけだと viewer で失敗理由のように見える）。
+        #
+        # 判定は**統一 verify の語彙**（受入基準 / 固定コマンド / verify_template）で行う。
+        # レガシーの `task.verify` だけを見ていた頃は、正規形で書かれたタスク（＝新規は全部）が
+        # 基準を持っていても「完了条件が無い」に落ちていた: 基準 FAIL も receipt 不着も
+        # 「工程は完了しています」と表示され、しかも下の retries 上限へ進まないので、
+        # 何度失敗しても打ち切られず毎回人へ送られ続けた（C7「必ず止まる」に反する）。
         _escalate(cfg, task, "verify 未定義（工程は完了しています。完了条件が無いため自動では "
                              "done にできません。成果を確認し、問題なければ approve してください）",
                   reasons, cycle, evidence=ev)

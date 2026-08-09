@@ -2,9 +2,9 @@
 
 const assert = require('assert');
 
-const tmux = require('../src/features/kiro-loop/main/tmux');
-const send = require('../src/features/kiro-loop/main/send');
-const exec = require('../src/features/kiro-loop/main/exec');
+const tmux = require('../src/features/routines/main/tmux');
+const send = require('../src/features/routines/main/send');
+const exec = require('../src/features/routines/main/exec');
 
 let passed = 0;
 function test(name, fn) {
@@ -47,7 +47,7 @@ test('stateSummary は last_sent_at / alive / busy を突き合わせて返す',
     // %9 はペイン消滅（tmux に存在しない）
     ['list-panes -a', okOut('%5\tkiro\t/home/me/app\tkiro\t1\n%6\tkiro\t/home/me/app\tkiro\t0\n')],
     // %6 だけスロット保持中（busy）
-    ['slots/pane_', okOut('/home/me/.kiro/slots/pane_6.json\n')],
+    ['ls "$agent_slots"', okOut('/home/me/.agents/slots/pane_6.json\n')],
   ]);
   try {
     const res = tmux.stateSummary({ repo: '/home/me/app' });
@@ -101,12 +101,12 @@ test('findPane は予定の名前から生きているペインを引く', () =>
   }
 });
 
-test('sendPrompt は repo を cwd にして kiro-loop send を呼ぶ', () => {
+test('sendPrompt は repo を cwd にして agent-loop send を呼ぶ', () => {
   const orig = exec.shInWsl;
   let script = '';
   exec.shInWsl = (s) => {
     script = s;
-    return okOut('[kiro-loop] 完了しました');
+    return okOut('[agent-loop] 完了しました');
   };
   try {
     const res = send.sendPrompt({ repo: '\\\\wsl.localhost\\Ubuntu\\home\\me\\app', target: '%5', prompt: 'nightly' });
@@ -114,6 +114,10 @@ test('sendPrompt は repo を cwd にして kiro-loop send を呼ぶ', () => {
     assert.strictEqual(res.sent, true);
     assert.ok(script.includes("cd '/home/me/app'"));
     assert.ok(script.includes("send -s '%5' 'nightly'"));
+    // agent-loop を先に探し、まだ入れていない端末では旧 kiro-loop へ落ちる
+    // （退役 = 計画 S4 まで復旧送信を失わせない）。
+    assert.ok(script.includes('command -v agent-loop || command -v kiro-loop'),
+      'agent-loop 優先で kiro-loop へフォールバックする');
   } finally {
     exec.shInWsl = orig;
   }
@@ -123,7 +127,7 @@ test('sendPrompt は busy 拒否を busy=true として返す（送信待機へ�
   const orig = exec.shInWsl;
   exec.shInWsl = () => ({
     ok: false, status: 1, stdout: '',
-    stderr: '[kiro-loop] ERROR: ペイン %5 は現在処理中です。完了後に再送してください。',
+    stderr: '[agent-loop] ERROR: ペイン %5 は現在処理中です。完了後に再送してください。',
     error: '',
   });
   try {

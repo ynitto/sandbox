@@ -130,6 +130,80 @@ class AgentFailureTests(unittest.TestCase):
         self.assertIn("認証", str(cm.exception))
 
 
+class EmptyOutputRetryTests(unittest.TestCase):
+    """JSON 契約の役割の空応答は「内容の失敗」でなく形式違反として、有界に言い直す。
+
+    ツールループ型の CLI（agent-ollama --tools 等）を split / planner に振ると、本文の
+    代わりに制御語だけを返して空応答で落ちる。1 発 fail にすると再計画の予算だけが焼け、
+    同じ所で毎回転ぶ（柱3 / C10）。回数は format_retries で有界（C7）。"""
+
+    def setUp(self):
+        self.calls = []
+
+    def _proc(self, stdout):
+        return types.SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+    def _run(self, purpose, outputs):
+        def fake_run(cmd, **kw):
+            # プロンプトの渡し方（stdin / argv）は CLI 定義次第なので両方から拾う。
+            self.calls.append((kw.get("input") or "") + " ".join(str(c) for c in cmd))
+            return self._proc(outputs[len(self.calls) - 1])
+        with mock.patch.object(kf.subprocess, "run", side_effect=fake_run):
+            return kf.run_agent("元のプロンプト", None, purpose=purpose)
+
+    def test_json_contract_role_retries_once_with_the_contract_restated(self):
+        text = self._run("split", ["  \n", '[{"id": "t1"}]'])
+        self.assertEqual(str(text), '[{"id": "t1"}]')
+        self.assertEqual(len(self.calls), 2)
+        self.assertNotIn("前回の出力は空でした", self.calls[0])
+        self.assertIn("前回の出力は空でした", self.calls[1])   # 2 回目だけ契約を言い直す
+
+    def test_retry_budget_is_bounded_and_the_failure_says_so(self):
+        with mock.patch.object(kf, "_FORMAT_RETRIES", 1):
+            with self.assertRaises(RuntimeError) as cm:
+                self._run("split", ["", "  \n"])
+        self.assertEqual(len(self.calls), 2)                  # 1 + format_retries で止まる
+        self.assertIn("再要求後", str(cm.exception))
+
+    def test_free_text_role_still_fails_immediately(self):
+        # work は本文が成果物。空を言い直しても意味が無く、内容の失敗として上位へ返す。
+        with self.assertRaises(RuntimeError):
+            self._run("work", ["  \n"])
+        self.assertEqual(len(self.calls), 1)
+
+
+class JsonVariantRoutingTests(unittest.TestCase):
+    """JSON 契約の役割は、CLI 定義が申告する JSON 変種へ自動で振り替わる（柱3 / C9）。
+
+    人が役割ごとに `agents:` を書き並べる運用にすると、節約のための設定を人の時間で払う。"""
+
+    def setUp(self):
+        self._cli, self._ov = kf._AGENT_CLI, kf._AGENT_OVERRIDES
+        kf._AGENT_CLI, kf._AGENT_OVERRIDES = "ollama", {}
+
+    def tearDown(self):
+        kf._AGENT_CLI, kf._AGENT_OVERRIDES = self._cli, self._ov
+
+    def test_json_contract_roles_swap_to_the_variant(self):
+        for purpose in ("planner", "evaluator", "split", "filter", "judge", "reduce"):
+            self.assertEqual(kf._agent_for(purpose)[0], "ollama-json", purpose)
+
+    def test_free_text_roles_keep_the_declared_cli(self):
+        # work / verify / map はワークスペースの本文や自由記述を返すので振り替えない。
+        for purpose in ("work", "verify", "map", "synthesize", ""):
+            self.assertEqual(kf._agent_for(purpose)[0], "ollama", purpose)
+
+    def test_cli_without_a_declared_variant_is_untouched(self):
+        kf._AGENT_CLI = "codex"
+        self.assertEqual(kf._agent_for("split")[0], "codex")
+
+    def test_model_override_survives_the_swap(self):
+        # 変種は同じエンジンの起動形違い。モデル指定は振り替えても持ち越す。
+        kf._AGENT_OVERRIDES = kf._normalize_agent_overrides(
+            {"split": {"agent_cli": "ollama", "model": "qwen3.5:9b"}})
+        self.assertEqual(kf._agent_for("split"), ("ollama-json", "qwen3.5:9b"))
+
+
 class AgentTimeoutTests(unittest.TestCase):
     """エージェント CLI のハングがタイムアウトで失敗化され、run が無限停止しないこと。"""
 
@@ -172,6 +246,51 @@ class AgentTimeoutTests(unittest.TestCase):
             self.assertEqual(kf._agent_timeout(), 300.0)
         with mock.patch.object(kf, "_AGENT_TIMEOUT", 0.0):
             self.assertIsNone(kf._agent_timeout())   # 設定の 0/負も無効化として尊重
+
+    def test_control_flow_timeout_applies_to_the_next_agent_call(self):
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(kwargs.get("timeout"))
+            return types.SimpleNamespace(returncode=0, stdout="ok", stderr="")
+
+        control = {"workloads": {"flow": {"timeout_sec": 90}}}
+        with mock.patch.object(kf, "_load_control", return_value=control), \
+             mock.patch.object(kf.subprocess, "run", side_effect=fake_run):
+            kf.run_agent("verify", None, purpose="verify")
+        self.assertEqual(calls, [90.0])
+
+    def test_control_purpose_timeout_beats_the_flow_default(self):
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(kwargs.get("timeout"))
+            return types.SimpleNamespace(returncode=0, stdout="ok", stderr="")
+
+        control = {"workloads": {"flow": {
+            "timeout_sec": 90,
+            "agents": {"verify": {"timeout_sec": 30}},
+        }}}
+        with mock.patch.object(kf, "_load_control", return_value=control), \
+             mock.patch.object(kf.subprocess, "run", side_effect=fake_run):
+            kf.run_agent("verify", None, purpose="verify")
+        self.assertEqual(calls, [30.0])
+
+    def test_control_worker_timeout_is_the_default_for_node_kinds(self):
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(kwargs.get("timeout"))
+            return types.SimpleNamespace(returncode=0, stdout="ok", stderr="")
+
+        control = {"workloads": {"flow": {
+            "timeout_sec": 90,
+            "agents": {"worker": {"timeout_sec": 45}},
+        }}}
+        with mock.patch.object(kf, "_load_control", return_value=control), \
+             mock.patch.object(kf.subprocess, "run", side_effect=fake_run):
+            kf.run_agent("work", None, purpose="work")
+        self.assertEqual(calls, [45.0])
 
     def test_stub_sleep_max_config_beats_env(self):
         # stub_sleep_max も設定が環境変数より優先される（0 で即時）
@@ -491,7 +610,8 @@ class AgentOverrideTests(unittest.TestCase):
         self.assertIn("global-model", cmd2)
 
     def test_readonly_is_declared_per_role(self):
-        """権限は役割の性質で決まる。kind は worker へフォールバックし、既定は write。"""
+        """権限は役割の性質で決まる。kind は worker へフォールバックし、既定は
+        READONLY_ROLES（planner / evaluator）だけ readonly・他は write。"""
         kf._AGENT_OVERRIDES = kf._normalize_agent_overrides({
             "planner": {"agent_cli": "claude", "readonly": True},
             "worker": {"readonly": True},
@@ -500,7 +620,23 @@ class AgentOverrideTests(unittest.TestCase):
         self.assertTrue(kf._agent_readonly("planner"))
         self.assertTrue(kf._agent_readonly("judge"))     # kind → worker の宣言を継ぐ
         self.assertFalse(kf._agent_readonly("work"))
-        self.assertFalse(kf._agent_readonly("evaluator"))
+        # bool 以外は落ちて既定へ。evaluator は「読まない系」なので既定 readonly
+        self.assertTrue(kf._agent_readonly("evaluator"))
+
+    def test_readonly_defaults_to_the_role_nature(self):
+        """宣言が無いときの既定: planner / evaluator は readonly、実務系は write。
+
+        agent-control が agent_cli をツールループ型（agent-ollama の --tools bash 等）へ
+        差し替えても、契約どおりの JSON 応答が「規約から外れています」と蹴られないため。"""
+        kf._AGENT_OVERRIDES = {}
+        self.assertTrue(kf._agent_readonly("planner"))
+        self.assertTrue(kf._agent_readonly("evaluator"))
+        self.assertFalse(kf._agent_readonly("worker"))
+        self.assertFalse(kf._agent_readonly("work"))
+        self.assertFalse(kf._agent_readonly("verify"))
+        # 明示すれば既定を覆せる（従来どおり道具付きで計画させたい場合）
+        kf._AGENT_OVERRIDES = kf._normalize_agent_overrides({"planner": {"readonly": False}})
+        self.assertFalse(kf._agent_readonly("planner"))
 
     def test_readonly_role_drops_the_write_args(self):
         """受け入れ基準: readonly 宣言した役割の argv に write_args が乗らない。"""

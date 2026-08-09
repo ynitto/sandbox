@@ -33,7 +33,7 @@ function winDriveToWsl(p) {
 }
 
 // repo（WSL UNC / POSIX / Windows ドライブ）を WSL 側の Linux パスへ寄せる。
-// Windows ドライブ上のリポジトリでも kiro-loop のペイン cwd（/mnt/c/...）と照合できる。
+// Windows ドライブ上のリポジトリでも agent-loop のペイン cwd（/mnt/c/...）と照合できる。
 function toWslCwd(p) {
   if (isWslPath(p)) return wslPath(p);
   return winDriveToWsl(p) || String(p || '');
@@ -66,7 +66,7 @@ function resultOf(res) {
 // Windows では常に WSL へ。Linux ネイティブではそのまま tmux を叩く。
 // ログインシェルは bash を使う（sh=dash だと利用者の ~/.bashrc / profile にある bash 構文
 // `[[ … ]]` が `sh: N: [[: not found` になり、そこで止まると venv 有効化も走らず、
-// kiro-loop（`#!/usr/bin/env python`）の python も解決できず「python: No such file or directory」になる）。
+// agent-loop（`#!/usr/bin/env python`）の python も解決できず「python: No such file or directory」になる）。
 function shInWsl(script, timeoutMs = 8000, distro = '') {
   const wrapped = `export LANG=C.UTF-8 LC_ALL=C.UTF-8; ${script}`;
   if (process.platform === 'win32') {

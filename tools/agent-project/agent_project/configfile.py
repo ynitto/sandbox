@@ -963,10 +963,11 @@ def _add_common(sp):
     sp.add_argument("--workdir", default=None,
                     help="act / verify の作業ディレクトリ（root 相対、既定 . = root）")
     sp.add_argument("--bus", default=None, help="agent-flow バス（root 相対、既定 <root>/bus）")
-    sp.add_argument("--agent-cli", dest="agent_cli", default=None, choices=["kiro", "claude", "copilot", "codex"],
-                    help="LLM 実行に使うエージェント CLI（設定 agent_cli と同義）。kiro=kiro-cli chat（既定）/ "
-                         "claude=Claude Code ヘッドレス（claude -p）/ copilot=GitHub Copilot CLI（copilot -p）/ "
-                         "codex=OpenAI Codex CLI（codex exec）")
+    sp.add_argument("--agent-cli", dest="agent_cli", default=None,
+                    help="LLM 実行に使うエージェント CLI（設定 agent_cli と同義）。agents/<name>.json の "
+                         "定義名を受け付ける（kiro=kiro-cli chat（既定）/ claude=Claude Code ヘッドレス / "
+                         "copilot=GitHub Copilot CLI / codex=OpenAI Codex CLI / cursor / ollama など）。"
+                         "実行時に定義が見つからなければその場でエラーになる")
     sp.add_argument("--granularity", default=None, choices=["coarse", "fine", "finest"],
                     help="バックログ分解の粒度（設定 granularity と同義）。coarse=ストーリー相当（既定）/ "
                          "fine=単機能 / finest=1ファイル/1関数の最小単位")

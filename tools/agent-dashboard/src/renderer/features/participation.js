@@ -26,13 +26,13 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, (root) => {
   const statuses = {};
   let currentCandidates = [];
+  let allProjectFlowCandidates = null;
   const ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
   const escHtml = (value) => String(value == null ? '' : value)
     .replace(/[&<>"']/g, (char) => ESC[char]);
 
-  // カードは **1 行の見出し ＋ 1 行の手がかり ＋ ボタン**。以前は依頼文（goal）を丸ごと
-  // 載せていたので 1 枚が縦に伸び、募集が数件あるだけでスクロールしないと比べられなかった。
-  // 長い本文は title 属性（ホバー）へ回し、選ぶのに要る情報だけを表に出す。
+  // カードは見出し＋短い説明＋参加先＋ボタン。説明の全文は描画するがカード内で高さを
+  // 抑えるため、Markdown の構造を保ったまま先頭数行だけを見比べられる。
   function candidateMeta(candidate) {
     if (candidate.workload === 'flow') {
       const n = Number(candidate.available || 0);
@@ -41,7 +41,7 @@
     return candidate.context || '';
   }
 
-  function participationHtml(candidates, statuses) {
+  function participationHtml(candidates, statuses, formatProse = root.proseHtml) {
     if (!(candidates || []).length) {
       return '<div class="participation-empty"><strong>現在参加できる仕事はありません</strong><p>新しい募集が見つかると、ここに表示されます。</p></div>';
     }
@@ -51,6 +51,12 @@
         ? 'ミッション'
         : candidate.workload === 'board' ? 'よその端末からの依頼' : 'プロジェクト作業';
       const meta = candidateMeta(candidate);
+      const goal = String(candidate.goal || '').trim();
+      const description = goal
+        ? (typeof formatProse === 'function'
+            ? formatProse(goal)
+            : `<div class="md"><p>${escHtml(goal)}</p></div>`)
+        : '';
       // 引き受けられない端末では**理由を添えて押させない**。押せるのに何も起きない
       // 状態を作らないのが、この画面に板を載せる条件だった。
       const joined = status.joined || candidate.joined;
@@ -68,8 +74,9 @@
       return `<article class="participation-card">
         <div class="participation-card-heading">
           <span class="participation-type">${type}</span>
-          <h3 title="${escHtml(candidate.goal || candidate.title)}">${escHtml(candidate.title)}</h3>
+          <h3>${escHtml(candidate.title)}</h3>
         </div>
+        ${description ? `<div class="participation-description">${description}</div>` : ''}
         ${meta ? `<p class="participation-context">${escHtml(meta)}</p>` : ''}
         <div class="participation-card-action">
           <button type="button" class="primary-inline participation-join"
@@ -106,7 +113,32 @@
     };
   }
 
-  function refresh() {}
+  async function loadFlowCandidates(projects, api, model) {
+    const results = await Promise.allSettled((projects || [])
+      .filter((project) => project && project.exists !== false && project.isProject)
+      .map(async (summary) => {
+        const project = await api.readProject(summary.dir);
+        if (!project || !project.busDir) return [];
+        const flow = await api.flowRuns(project.dir, project.busDir);
+        const scope = encodeURIComponent(project.busDir);
+        return model.flowCandidates((flow && flow.runs) || [], {
+          busDir: project.busDir,
+          projectDir: project.workspace || project.dir || summary.dir,
+          projectName: summary.charterName || summary.name || project.name || '',
+        }).map((candidate) => ({ ...candidate, key: `${candidate.key}@${scope}` }));
+      }));
+    const candidates = results.flatMap((result) => result.status === 'fulfilled' ? result.value : []);
+    return [...new Map(candidates.map((candidate) => [candidate.key, candidate])).values()];
+  }
+
+  async function refresh() {
+    const appState = typeof state !== 'undefined' ? state : (root.state || {});
+    const model = root.ParticipationModel;
+    if (!model || !root.api || !root.api.readProject || !root.api.flowRuns) return;
+    allProjectFlowCandidates = await loadFlowCandidates(
+      (appState.discovery && appState.discovery.projects) || [], root.api, model
+    );
+  }
 
   function candidatesFromState() {
     const appState = typeof state !== 'undefined' ? state : (root.state || {});
@@ -116,13 +148,14 @@
     const projectNameNode = root.document && root.document.getElementById('project-name');
     const projectName = project.name || project.charterName
       || (projectNameNode && projectNameNode.textContent) || '';
-    const flow = project.busDir
+    const selectedProjectFlow = project.busDir
       ? model.flowCandidates(appState.flowRuns || [], {
           busDir: project.busDir,
           projectDir: project.workspace || project.dir || appState.selectedDir || '',
           projectName,
         })
       : [];
+    const flow = allProjectFlowCandidates === null ? selectedProjectFlow : allProjectFlowCandidates;
     const board = model.boardCandidates(appState.boardViews || [], {
       board: appState.boardStatus || null,
       commands: appState.boardCommands || {},
@@ -296,7 +329,7 @@
   }
 
   return {
-    participationHtml, joinCandidate, candidatesFromState, refresh, render, escHtml,
+    participationHtml, joinCandidate, loadFlowCandidates, candidatesFromState, refresh, render, escHtml,
     portalCardHtml, joinedRecords, statusHtml, renderStatus, deliveryLabel,
   };
 });

@@ -89,7 +89,7 @@ function registerCorePortalCards() {
     },
   });
 
-  // 定常業務（cowork / kiro-loop / agent-loop）。
+  // 定常業務（cowork / agent-loop / agent-loop）。
   registerPortalCard('routines', {
     order: 20,
     html: () => {

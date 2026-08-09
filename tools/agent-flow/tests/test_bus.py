@@ -10,6 +10,28 @@ from _shared import *  # noqa: E402,F401,F403 — 共有の前置き（環境隔
 from _shared import _git_config_get, _zero_loose_objects  # noqa: E402,F401 — `import *` は _ 始まりを持ってこない
 
 
+class RunPhaseTests(unittest.TestCase):
+    def test_phase_transition_records_started_at_and_event_without_resurrecting_terminal_run(self):
+        root = tempfile.mkdtemp(prefix="kf-phase-")
+        self.addCleanup(shutil.rmtree, root, True)
+        bus = kf.Bus(root, "run1")
+        bus.ensure_run("req")
+
+        bus.set_phase("planning", "orch")
+        first = kf.read_json(bus.meta_path)
+        self.assertEqual(first["phase"], "planning")
+        self.assertTrue(first["phase_started_at"])
+        self.assertEqual(bus.recent_events(10)[-1]["phase"], "planning")
+
+        bus.set_phase("planning", "orch")
+        self.assertEqual(kf.read_json(bus.meta_path)["phase_started_at"], first["phase_started_at"])
+        self.assertEqual(len(bus.recent_events(10)), 1)
+
+        bus.set_status("done")
+        bus.set_phase("executing", "orch")
+        self.assertEqual(kf.read_json(bus.meta_path)["phase"], "planning")
+
+
 class LocalWorktreeTests(unittest.TestCase):
     """手元に同じリポジトリのクローンがあれば、そこから worktree を切ること。
 

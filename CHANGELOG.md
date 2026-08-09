@@ -7,6 +7,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-flow: ローカル CLI を planner に選ぶと、分解がキーワード判定まで黙って落ちていたのを直した
+
+`agent_cli` に `ollama` を選んだ run で、要求の中身と無関係に同じパターン（`generate-and-filter`）
+ばかりが選ばれていた。3 段の連鎖だった。
+
+- **flow-planner が起動していなかった**。スキルの `--agent-cli` が組み込み 4 種の白リストで、
+  `ollama` を弾いていた。argv の組み立てを agentcore（`agents/<name>.json`）へ委譲し、白リストを
+  廃止。定義を置いただけの CLI もそのまま計画役に使える。agent-project の `--agent-cli` にも
+  同じ白リストがあったので併せて撤廃した（README は以前から ollama を挙げていた）
+- **単発 planner がツールループに食われていた**。planner を書き込みモードで呼ぶため、
+  agent-ollama の `--tools bash` が生え、モデルが契約どおり返した JSON を「規約から外れています」
+  と蹴っていた。**planner / evaluator は宣言が無ければ readonly を既定**にする（`READONLY_ROLES`）。
+  `agents: {planner: {readonly: false}}` で従来どおりにも戻せる。設計判断の改訂は
+  [`agent-ollama-expansion-design.md`](docs/designs/agent-ollama-expansion-design.md) §5.2 に記録した
+- **stub のキーワード判定が定型文に当たっていた**。agent-project 由来の要求には charter の
+  対象リポジトリ一覧が付き、その「書込先候補」の一語で `generate-and-filter` が選ばれていた
+  （実測 15 件中 9 件）。判定は要求本体（先頭の段落）だけを見る。パターン名の名指しは
+  どこに書かれていても優先する
+- **縮退が静かだった**。flow-planner → agent planner → stub と落ちた事実と理由を、ログと
+  `strategy.reason` の両方に残す。「計画できたように見えて実は stub」を後から見分けられる
+
 ### agent-dashboard: 全体設定・参加・プロジェクト設定・ミッションが開いても空だったのを直した
 
 領域ナビの導入後、左メニューからこれらを開いても**何も表示されない**状態になっていた。

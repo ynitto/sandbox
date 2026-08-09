@@ -19,6 +19,16 @@ const FLOW_STATE_LABEL = {
 
 const TERMINAL_NODE_STATES = new Set(['done', 'failed']);
 
+function runPhaseLabel(phase) {
+  return ({
+    planning: '計画中',
+    executing: '作業中',
+    evaluating: '継続判定中',
+    verifying: '検証中',
+    finalizing: '結果確定中',
+  })[phase] || '実行中';
+}
+
 // run の終端 status（flow.js の TERMINAL と同一）。フロータブのフィルタ判定に使う。
 // 'canceled' は語彙統一前に書かれた meta.json の旧綴り — 読み取りだけ受け入れる。
 const CANCELLED_RUN_STATES = new Set(['cancelled', 'canceled']);
@@ -223,8 +233,9 @@ function runAdvice(run, group) {
           '承認を待っています。要対応タブで確認してください。',
       };
     }
-    return { kind: 'watch', cls: 'ok', chip: '▶ 実行中',
-      text: '作業中です。このままお待ちください。' };
+    const phase = runPhaseLabel(run.phase);
+    return { kind: 'watch', cls: 'ok', chip: `▶ ${phase}`,
+      text: `${phase}です。このままお待ちください。` };
   }
   // ここから「止まっている」（failed / cancelled / 非終端なのに応答なし）
   if (found) {
@@ -371,7 +382,7 @@ function renderFlow() {
         <div class="run-item-head"><span>${runTaskOutcomeCompactHtml(outcome)}${archivedBadge}${adviceBit}</span><span class="muted">${fmtAgo(r.updatedAt || r.createdAt)}</span></div>
         <div class="req">${prosePreview(r.request, 110) || '<span class="muted">内容なし</span>'}</div>
         <div class="progress"><div style="width:${pct}%"></div></div>
-        <div class="muted">工程完了 ${r.counts.done}/${r.total}・失敗 ${r.counts.failed}・実行中 ${r.counts.claimed}${taskLink}</div>
+        <div class="muted">${TERMINAL_RUN_STATES.has(String(r.status)) ? '' : `${runPhaseLabel(r.phase)}・`}作業ステップ ${r.counts.done + r.counts.failed}/${r.total}・失敗 ${r.counts.failed}・実行中 ${r.counts.claimed}${taskLink}</div>
         ${finalVerificationFailureHtml(finalVerificationFailure, true)}
         ${adviceLine}
         ${retryStrip}
@@ -559,6 +570,7 @@ function renderFlowDetail() {
   const outcome = runTaskOutcome(state.project, run);
   const finalVerificationFailure = runFinalVerificationFailure(state.project, run);
   const pct = Math.round(run.progress * 100);
+  const activePhase = TERMINAL_RUN_STATES.has(String(run.status)) ? '' : `${runPhaseLabel(run.phase)}・`;
   const legend = Object.entries(FLOW_STATE_LABEL)
     .map(
       ([st, label]) =>
@@ -698,7 +710,7 @@ const viewTabs = [
     ${run.failureReason ? `<div class="flow-failure">失敗理由: ${esc(String(run.failureReason).replace(/\[agent-error:[a-z]+\]\s*/g, ''))}</div>` : ''}
     <div class="flow-progress-block">
       <div class="progress"><div style="width:${pct}%"></div></div>
-      <strong>${run.counts.done + run.counts.failed}/${run.total}（${pct}%）</strong>
+      <strong>${activePhase}作業ステップ ${run.counts.done + run.counts.failed}/${run.total}（${pct}%）</strong>
     </div>
     <div class="flow-counts">
       <div><strong>${run.counts.done || 0}</strong><span>工程完了</span></div>

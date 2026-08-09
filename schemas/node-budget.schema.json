@@ -119,7 +119,7 @@
         "ts": {"type": "string", "description": "ISO8601 UTC"},
         "workload": {
           "type": "string",
-          "description": "routine（定常業務: kiro-loop / agent-loop）| project（agent-project）| flow（agent-flow）| amigos（agent-amigos）。追加は additive"
+          "description": "routine（定常業務: agent-loop）| project（agent-project）| flow（agent-flow）| amigos（agent-amigos）。旧 kiro-loop の台帳行も workload=routine のまま読める。追加は additive"
         },
         "tool": {"type": "string", "description": "記帳したツール名"},
         "seconds": {"type": "number", "minimum": 0, "description": "agent CLI の実実行秒"},

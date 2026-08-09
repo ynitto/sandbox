@@ -5,9 +5,11 @@ const cowork = require('./cowork');
 function registerIpc(ctx) {
   const { handle, loadConfig, saveConfig } = ctx;
   handle('cowork:overview', (opts) => cowork.overview(loadConfig(), opts || {}));
-  handle('cowork:runLoop', ({ itemId, jobId }) => cowork.runLoop(loadConfig(), itemId || jobId));
-  handle('cowork:runStateMachine', ({ itemId, machineId, input }) =>
-    cowork.runStateMachine(loadConfig(), itemId || machineId, input)
+  handle('cowork:runLoop', ({ itemId, jobId, parameters }) =>
+    cowork.runLoop(loadConfig(), itemId || jobId, parameters)
+  );
+  handle('cowork:runStateMachine', ({ itemId, machineId, parameters }) =>
+    cowork.runStateMachine(loadConfig(), itemId || machineId, parameters)
   );
   handle('cowork:generateStateMachine', (payload) => cowork.generateStateMachine(loadConfig(), payload || {}));
   handle('cowork:saveWork', (payload) => cowork.saveWork(loadConfig(), saveConfig, payload || {}));

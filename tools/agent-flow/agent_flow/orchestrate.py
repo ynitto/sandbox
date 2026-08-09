@@ -318,6 +318,10 @@ def cmd_orchestrate(args) -> int:
         bus.touch_run(args.run_id, lease_window)
         bus.sync_push(f"heartbeat run {args.run_id}")
 
+    def phase(name: str) -> None:
+        bus.set_phase(name, who)
+        bus.sync_push(f"phase {name} run {args.run_id}")
+
     heartbeat(force=True)      # 計画（LLM）は数十秒かかる。その前に張る。
     graph = bus.read_graph()
 
@@ -330,6 +334,7 @@ def cmd_orchestrate(args) -> int:
             bus.sync_push(f"resume run {args.run_id}")
     else:
         # 要求から 7 パターンの組み合わせと並列数を選び、初期グラフを形作る
+        phase("planning")
         strategy, tasks = _with_run_heartbeat(
             heartbeat, lease_window, lambda: _plan_strategy(args, bus))
         graph = {"strategy": strategy,
@@ -350,6 +355,8 @@ def cmd_orchestrate(args) -> int:
                  f"（{strategy.get('reason','')}）")
         log(who, f"初期タスク: {[(t['id'], t.get('kind','work')) for t in tasks]}")
         iteration = 0
+
+    phase("executing")
 
     # evaluator-optimizer ループ: 静止（claim 可能・実行中タスクが無い）→ パターン継続判断
     consumed_fb: set = set()   # in-flight 反映済みの人フィードバック発生源（同一 settlement を二度反映しない）
@@ -374,6 +381,7 @@ def cmd_orchestrate(args) -> int:
         nodes = graph["nodes"]
         results = {nid: (bus.read_result(nid) or {}) for nid in nodes}
 
+        phase("evaluating")
         if iteration >= args.max_iterations:
             decision, new_tasks, reason = "done", [], f"max-iterations({args.max_iterations}) 到達"
         else:
@@ -403,6 +411,7 @@ def cmd_orchestrate(args) -> int:
                       added=changes["added"], changes=changes)
             bus.sync_push(f"replan #{iteration} run {args.run_id}: +{[t['id'] for t in new_tasks]}")
             log(who, f"再計画 #{iteration}: 追加タスク {[(t['id'], t.get('kind','work')) for t in new_tasks]}")
+            phase("executing")
             continue
 
         # 統一 verify: 評価が done に達し、成果 revision が確定したここで一度だけ検証する。
@@ -410,6 +419,7 @@ def cmd_orchestrate(args) -> int:
         # 安い層で直す）。inconclusive は修正回数を消費せず receipt のまま上位へ返す。
         # 環境要因の打ち切り（decision=failed）では検証しない——成果が確定していない。
         if decision != "failed":
+            phase("verifying")
             try:
                 receipt = run_verification_plan(
                     bus, args, who, heartbeat=heartbeat, lease_window=lease_window)
@@ -428,10 +438,12 @@ def cmd_orchestrate(args) -> int:
                 bus.event(who, "verify-fix", iteration=iteration, added=[fix["id"]])
                 bus.sync_push(f"verify-fix #{iteration} run {args.run_id}: +{fix['id']}")
                 log(who, f"統一 verify が fail → 修正ループ #{iteration}: {fix['id']}")
+                phase("executing")
                 continue
         break
 
     # 全ノード結果を集約 → final.json 書き出し → 終端（done / 環境要因なら failed）・push
+    phase("finalizing")
     _finalize_run(bus, args, iteration,
                   failure=(reason if decision == "failed" else None))
     return 0

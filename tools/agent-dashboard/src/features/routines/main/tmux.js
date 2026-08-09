@@ -78,15 +78,18 @@ function allPanes(distro = '') {
   return out;
 }
 
-// kiro-loop デーモンの状態ファイル（~/.kiro/loop-state/*.json。agent-loop は
-// ~/.agents/loop-state/*.json、旧 ~/.agent/ はフォールバックで読む）。
+// agent-loop デーモンの状態ファイル（~/.agents/loop-state/*.json、旧 ~/.agent/ はフォールバックで読む）。
 // { pid, cwd, sessions: [{ name, id, pane, alive }] } の配列。
 // デーモンを tmux セッションの中で起動すると、ワーカーペインは「人のセッション」
-// （名前は任意）内に分割で作られ、セッション名（kiro-loop-…）では見つけられない。
+// （名前は任意）内に分割で作られ、セッション名（agent-loop-…）では見つけられない。
 // 状態ファイルの pane_id 直参照ならセッション名に依存せず視聴できる。
+//
+// `~/.kiro/loop-state` は退役前の kiro-loop デーモンの置き場。**読むだけ**の互換で、
+// これを先に外すと移行前の稼働中デーモンが画面から消える。kiro-loop 退役（計画 S4）と
+// 同じ PR で落とす。
 function readLoopStates(distro = '') {
   const r = exec.shInWsl(
-    'agent_state="$HOME"/.agents/loop-state; [ -d "$agent_state" ] || agent_state="$HOME"/.agent/loop-state; for f in "$HOME"/.kiro/loop-state/*.json "$agent_state"/*.json; do [ -f "$f" ] || continue; printf "\\036"; cat "$f"; done 2>/dev/null || true',
+    'agent_state="$HOME"/.agents/loop-state; [ -d "$agent_state" ] || agent_state="$HOME"/.agent/loop-state; for f in "$agent_state"/*.json "$HOME"/.kiro/loop-state/*.json; do [ -f "$f" ] || continue; printf "\\036"; cat "$f"; done 2>/dev/null || true',
     8000,
     distro
   );
@@ -109,11 +112,12 @@ function repoMatchesCwd(want, cwd) {
   return cwd === want || cwd.startsWith(`${want}/`);
 }
 
-// 実行中スロットのペイン ID 集合（~/.kiro/slots/pane_<id>.json。agent-loop は
-// ~/.agents/slots、旧 ~/.agent/ はフォールバックで読む）。
+// 実行中スロットのペイン ID 集合（~/.agents/slots、旧 ~/.agent/ はフォールバックで読む）。
+// `~/.kiro/slots` は kiro-loop 退役（計画 S4）まで残す読取互換 — 先に外すと移行前の
+// デーモンが掴んでいるスロットを見落とし、busy のペインを空きと誤表示する。
 function readSlotPanes(distro = '') {
   const r = exec.shInWsl(
-    'agent_slots="$HOME"/.agents/slots; [ -d "$agent_slots" ] || agent_slots="$HOME"/.agent/slots; ls "$HOME"/.kiro/slots/pane_*.json "$agent_slots"/pane_*.json 2>/dev/null || true',
+    'agent_slots="$HOME"/.agents/slots; [ -d "$agent_slots" ] || agent_slots="$HOME"/.agent/slots; ls "$agent_slots"/pane_*.json "$HOME"/.kiro/slots/pane_*.json 2>/dev/null || true',
     8000,
     distro
   );
@@ -125,7 +129,7 @@ function readSlotPanes(distro = '') {
   return out;
 }
 
-// 定期プロンプト名 → 送信先ペイン。`kiro-loop send` は送信先を省略すると、ペインが
+// 定期プロンプト名 → 送信先ペイン。`agent-loop send` は送信先を省略すると、ペインが
 // 複数動いているとき「複数のペインが動作中です」で失敗する。名前が分かるときは
 // loop-state から引いて -s で明示する。見つからなければ '' を返す（従来どおり CLI に任せる）。
 function findPane({ repo, name } = {}) {
@@ -199,7 +203,7 @@ function listSessions({ repo, prefix } = {}) {
   const seenTargets = new Set();
   const seenSessions = new Set();
 
-  // 1) kiro-loop 状態ファイル由来のペイン（tmux 内で起動されたデーモンでも見つかる）
+  // 1) agent-loop 状態ファイル由来のペイン（tmux 内で起動されたデーモンでも見つかる）
   const states = readLoopStates(distro);
   const panes = states.length ? allPanes(distro) : new Map();
   for (const st of states) {
@@ -223,7 +227,7 @@ function listSessions({ repo, prefix } = {}) {
     }
   }
 
-  // 2) セッション名（接頭辞）由来 — スタンドアロン起動（kiro / kiro-loop-<digest>-…）向け
+  // 2) セッション名（接頭辞）由来 — スタンドアロン起動（kiro / agent-loop-<digest>-…）向け
   const listed = listTmuxSessions(prefix, distro);
   if (!listed.ok && !listed.sessions.length && !items.length) {
     return { ok: false, items: [], error: listed.error };

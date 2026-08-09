@@ -86,10 +86,12 @@ executor: agent            # ワーカーバス: 組み込み agent（エージ�
 #     model: sonnet        #   値: {agent_cli, model, readonly}（どれか 1 つでも可）。
 #   verify:                #   未指定はグローバル agent_cli / model。子プロセス（orchestrator/
 #     model: haiku         #   worker）へは --config 伝搬で同じ設定が届く。
-#   classify:              #   readonly: true は「読み取り専用で呼ぶ」宣言（既定 false = 従来どおり
-#     agent_cli: ollama    #   書き込みモード）。テキスト系 kind（classify/filter/judge/reduce/
-#     model: qwen3         #   split/map/synthesize）と planner/evaluator のような**読まない役割**
-#     readonly: true       #   にだけ付ける。work / verify はワークスペースを触るので付けない。
+#   classify:              #   readonly: true は「読み取り専用で呼ぶ」宣言。**planner /
+#     agent_cli: ollama    #   evaluator は宣言しなくても既定で readonly**（材料を全部プロンプトで
+#     model: qwen3         #   受け取る読まない役割。道具付きで呼ぶとツールループ型の CLI が
+#     readonly: true       #   JSON 応答を規約違反として蹴る）。他は既定 false。テキスト系 kind
+                           #   （classify/filter/judge/reduce/split/map/synthesize）には明示で付ける。
+                           #   work / verify はワークスペースを触るので付けない。
 #   planner:               #   ローカル推論へ振る例（設計 docs/designs/
 #     agent_cli: ollama-json#  agent-ollama-expansion-design.md §3・§4）。JSON 契約の役割は
 #     model: qwen3         #   ollama-json（--format json で文法から強制）を使う。

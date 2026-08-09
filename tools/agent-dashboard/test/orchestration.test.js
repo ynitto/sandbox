@@ -305,6 +305,41 @@ test('制御: agents.<key> は null 指定でキー削除できる（UI の「�
   assert.strictEqual(c.revision, 2);
 });
 
+test('制御: flow の共通 timeout は正数秒を保存し、空指定で継承へ戻す', () => {
+  const dir = tmpdir('orch-ctrl-');
+  const c1 = control.saveControl(controlCfg(dir), {
+    workloads: { flow: { timeout_sec: 900 } },
+  });
+  assert.strictEqual(c1.workloads.flow.timeout_sec, 900);
+  const c2 = control.saveControl(controlCfg(dir), {
+    workloads: { flow: { timeout_sec: null } },
+  });
+  assert.strictEqual(c2.workloads.flow.timeout_sec, undefined);
+  for (const bad of [0, -1, 1.5, 'x']) {
+    assert.throws(() => control.saveControl(controlCfg(dir), {
+      workloads: { flow: { timeout_sec: bad } },
+    }));
+  }
+});
+
+test('制御: flow の用途別 timeout は他の上書きを保ったまま更新・削除できる', () => {
+  const dir = tmpdir('orch-ctrl-');
+  control.saveControl(controlCfg(dir), {
+    workloads: { flow: { agents: { verify: { model: 'qwen3', timeout_sec: 300 } } } },
+  });
+  const c1 = control.saveControl(controlCfg(dir), {
+    workloads: { flow: { agents: { verify: { timeout_sec: 600 } } } },
+  });
+  assert.deepStrictEqual(c1.workloads.flow.agents.verify, { model: 'qwen3', timeout_sec: 600 });
+  const c2 = control.saveControl(controlCfg(dir), {
+    workloads: { flow: { agents: { verify: { timeout_sec: null } } } },
+  });
+  assert.deepStrictEqual(c2.workloads.flow.agents.verify, { model: 'qwen3' });
+  assert.throws(() => control.saveControl(controlCfg(dir), {
+    workloads: { flow: { agents: { verify: { timeout_sec: 0 } } } },
+  }));
+});
+
 test('制御: concurrency は flow の同時実行数を宣言し、空指定でキーを消す', () => {
   const dir = tmpdir('orch-ctrl-');
   const c1 = control.saveControl(controlCfg(dir), {

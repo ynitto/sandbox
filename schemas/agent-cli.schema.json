@@ -81,6 +81,10 @@
       "default": true,
       "description": "rc=0 でも本文が空なら失敗として扱う（認証切れで空応答を返す CLI の静かな失敗を防ぐ）。"
     },
+    "json_variant": {
+      "type": "string",
+      "description": "JSON だけを返す契約の役割（agent-flow の planner / evaluator / split / filter / judge / reduce、agent-project の plan / review / prioritize / route / adjudicate / assess）に、この CLI の代わりに使う定義名。エンジンは役割の性質だけを見てここへ振り替えるので、人が役割ごとに agents: を書き並べなくてよい。ツールループ前提の定義（--tools 付き）を JSON 契約の役割に使うと出力が制御語だけになり空応答で落ちるため、その組み合わせに対応する変種を定義側が申告する。指す先が存在しない・自分自身を指す場合は無視され元の定義が使われる。例: ollama → ollama-json。"
+    },
     "command_suffix": {
       "type": "array",
       "items": {

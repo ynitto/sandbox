@@ -9,9 +9,10 @@ const {
 } = require('./loopProvider');
 const { _pathKey, _isPosixAbs, toViewerPath, viewerDistro } = require('../../agent-project/main/project');
 const { parseFlatYaml } = require('../../agent-project/main/toolconfig');
+const { parseYaml, isPlainObject, scalarString } = require('../../../base/main/yaml');
 const {
   discoverCoworkItems, parseKiroLoopPrompts, scheduleOf, detectMarkers, kiroLoopPromptTexts,
-  scanForCoworkConfigs, isDir, coworkRoots,
+  scanForCoworkConfigs, isDir, coworkRoots, loopConfigFile,
 } = require('./discover');
 const { applyKiroLoopEdits, applyStatemachineEdits, upsertManagedKiroPrompt } = require('./writeback');
 const globalInstructions = require('../../orchestration/main/instructions');
@@ -335,8 +336,12 @@ function overview(config, opts = {}) {
   const stateOpts = { probeProcess: opts.probeProcess === true };
   const discoverOpts = { forceDiscover: opts.forceDiscover === true, ...stateOpts };
   const loop = makeLoopProvider(cfg, config);
-  const configItems = itemsOf(cfg).map((item, i) => normalizeItem(item, i, cfg, stateOpts, config));
-  const discovered = discoverNormalized(config, cfg, discoverOpts);
+  const addParameters = (item) => {
+    const spec = routineParameterSpec(config, item);
+    return { ...item, parameters: spec.keys, parameterError: spec.error };
+  };
+  const configItems = itemsOf(cfg).map((item, i) => addParameters(normalizeItem(item, i, cfg, stateOpts, config)));
+  const discovered = discoverNormalized(config, cfg, discoverOpts).map(addParameters);
   const items = dedupeItems([...configItems, ...discovered]);
   const discoveredByKey = new Map();
   for (const item of discovered) {
@@ -376,23 +381,23 @@ function resolveItem(config, id) {
 // 実行プロンプトの解決（ウィンドウ実行 = kiro-loop を介さず tmux + kiro-cli へ直接送る用）
 // ---------------------------------------------------------------------------
 
-// {{…}} プレースホルダーやステートマシンの入力パラメータなど、ユーザー入力が必須の
-// 項目が残っているケースの補助。勝手に仮の値で進めず、まず人へ質問させる。
-const INPUT_ASSIST =
-  '（補足）このプロンプトに {{…}} のようなプレースホルダーや、ステートマシンの入力'
-  + 'パラメータなど、実行に必要な入力がまだ埋まっていない場合は、勝手に仮の値で進めず、'
-  + '先に必要な入力を箇条書きで私に質問し、回答を得てから実行してください。'
-  + 'すべて埋まっている場合はそのまま実行してください。';
+const TEMPLATE_PARAMETER_RE = /\{\{\s*([A-Za-z_][A-Za-z0-9_.-]*)\s*\}\}/g;
 
-function withInputAssist(prompt) {
-  const p = String(prompt || '').trim();
-  return p ? `${p}\n\n${INPUT_ASSIST}` : p;
+function templateParameterKeys(...texts) {
+  const keys = [];
+  const seen = new Set();
+  for (const text of texts) {
+    for (const match of String(text || '').matchAll(TEMPLATE_PARAMETER_RE)) {
+      if (!seen.has(match[1])) {
+        seen.add(match[1]);
+        keys.push(match[1]);
+      }
+    }
+  }
+  return keys;
 }
 
-// ステートマシン定義（.statemachine/<name>/workflow.yaml）を読み、実行に必要な入力を洗い出す。
-//   usesInput      … action/condition が {{input}} を参照している（実行対象そのものの入力が要る）
-//   requiredContext… context の初期値が空（"" / '' / 空欄）のキー = 実行時に埋める前提のパラメータ
-// 読めない・定義が無いときは null（呼び出し側は従来の汎用補助へフォールバック）。
+// ステートマシン定義（.statemachine/<name>/workflow.yaml）の参照先を解決する。
 function stateMachineFilePath(item, cwd, config) {
   const src = item && item._src;
   if (src && src.kind === 'statemachine' && src.file) return viewerRepo(src.file, config) || src.file;
@@ -402,42 +407,148 @@ function stateMachineFilePath(item, cwd, config) {
   return root ? path.join(root, '.statemachine', machine, 'workflow.yaml') : '';
 }
 
-function stateMachineInputSpec(wfPath) {
-  if (!wfPath) return null;
-  let text;
-  try { text = fs.readFileSync(wfPath, 'utf8'); } catch { return null; }
-  const usesInput = /\{\{\s*input\s*\}\}/.test(text);
-  const requiredContext = [];
-  const lines = text.replace(/\r\n/g, '\n').split('\n');
-  const ctxIdx = lines.findIndex((l) => /^context\s*:\s*(#.*)?$/.test(l));
-  if (ctxIdx >= 0) {
-    for (let i = ctxIdx + 1; i < lines.length; i += 1) {
-      const line = lines[i];
-      if (/^\s*(#.*)?$/.test(line)) continue;                 // 空行・コメントは飛ばす
-      if (/^\S/.test(line)) break;                            // インデントが戻ったら context ブロック終了
-      const m = line.match(/^\s+([A-Za-z0-9_.-]+)\s*:\s*(.*?)\s*(#.*)?$/);
-      if (!m) continue;
-      const val = (m[2] || '').trim();
-      if (val === '' || val === '""' || val === "''") requiredContext.push(m[1]);
-    }
+function workflowReference(baseDir, value, fallback = '') {
+  let ref = scalarString(value) || fallback;
+  if (ref.startsWith('file:')) ref = ref.slice(5).trim();
+  if (!ref) return '';
+  const file = path.resolve(baseDir, ref);
+  const relative = path.relative(baseDir, file);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new Error(`定義フォルダ外の参照は使えません: ${ref}`);
   }
-  return { usesInput, requiredContext };
+  return file;
 }
 
-// 必要な入力があれば「人へ質問してから実行」を具体的な項目名つきで促す補助文を返す。
-// 定義を読めない/追加入力が要らないときは従来の汎用補助（INPUT_ASSIST）。
-function stateMachineInputAssist(spec, hasInput) {
-  if (!spec) return INPUT_ASSIST;
-  const needs = [];
-  if (spec.usesInput && !hasInput) needs.push('入力（{{input}}: 実行対象そのもの）');
-  for (const key of spec.requiredContext) needs.push(`context.${key}`);
-  if (!needs.length) return INPUT_ASSIST;
-  return (
-    '（重要）このステートマシンの実行には、次の入力パラメータが必要です:\n'
-    + needs.map((n) => `- ${n}`).join('\n') + '\n'
-    + '勝手に仮の値で進めず、まず上記のうち値が不明なものを箇条書きで私（人間）に質問し、'
-    + '回答を得てから実行してください。すでに値が与えられているものは質問不要です。'
-  );
+function readWorkflowReference(baseDir, value, fallback = '', optional = false) {
+  const file = workflowReference(baseDir, value, fallback);
+  if (!file) return '';
+  try { return fs.readFileSync(file, 'utf8'); } catch {
+    if (optional) return '';
+    throw new Error(`参照ファイルを読めません: ${path.relative(baseDir, file)}`);
+  }
+}
+
+function contextValue(context, key) {
+  if (Object.prototype.hasOwnProperty.call(context, key)) return context[key];
+  let value = context;
+  for (const part of String(key || '').split('.')) {
+    if (!isPlainObject(value) || !Object.prototype.hasOwnProperty.call(value, part)) return undefined;
+    value = value[part];
+  }
+  return value;
+}
+
+// statemachine-use の正式なテンプレート面だけを読む。action_file / condition_file と
+// 自動探索ファイルもエンジンと同じ優先順で解決し、実行中に生成される変数は入力にしない。
+function stateMachineInputSpec(wfPath) {
+  if (!wfPath) return { keys: [], defaults: {}, error: 'workflow.yaml の場所を特定できません' };
+  try {
+    const text = fs.readFileSync(wfPath, 'utf8');
+    const workflow = parseYaml(text);
+    if (!isPlainObject(workflow)) return { keys: [], defaults: {}, error: 'workflow.yaml を解析できません' };
+    const baseDir = path.dirname(wfPath);
+    const templates = [];
+    const outputKeys = new Set();
+    const ruleKeys = [];
+    const states = isPlainObject(workflow.states) ? workflow.states : {};
+    for (const [stateId, state] of Object.entries(states)) {
+      if (!isPlainObject(state)) continue;
+      const actionFile = scalarString(state.action_file);
+      const action = scalarString(state.action);
+      if (actionFile) templates.push(readWorkflowReference(baseDir, actionFile));
+      else if (action && action.trim().startsWith('file:')) templates.push(readWorkflowReference(baseDir, action));
+      else if (action) templates.push(action);
+      else templates.push(readWorkflowReference(baseDir, '', `actions/${stateId}.md`, true));
+      templates.push(scalarString(state.on_enter) || '', scalarString(state.on_exit) || '');
+      const outputKey = scalarString(state.output_key);
+      if (outputKey) outputKeys.add(outputKey);
+    }
+    for (const transition of Array.isArray(workflow.transitions) ? workflow.transitions : []) {
+      if (!isPlainObject(transition)) continue;
+      const conditionFile = scalarString(transition.condition_file);
+      const condition = scalarString(transition.condition);
+      if (conditionFile) templates.push(readWorkflowReference(baseDir, conditionFile));
+      else if (condition && condition.trim().startsWith('file:')) templates.push(readWorkflowReference(baseDir, condition));
+      else if (condition) templates.push(condition);
+      else {
+        const from = scalarString(transition.from) || '';
+        const to = scalarString(transition.to) || '';
+        const auto = from && to ? `conditions/${from === '*' ? 'wildcard' : from}_to_${to}.md` : '';
+        templates.push(readWorkflowReference(baseDir, '', auto, true));
+      }
+      for (const rule of String(scalarString(transition.condition_rule) || '').split(';')) {
+        const key = rule.split(':')[1];
+        if (key) ruleKeys.push(key.trim());
+      }
+    }
+
+    const refs = [...templateParameterKeys(...templates), ...ruleKeys];
+    const context = isPlainObject(workflow.context) ? workflow.context : {};
+    const keys = [];
+    const defaults = {};
+    const runtime = new Set(['last_output', 'current_state', 'step_count']);
+    for (const ref of [...new Set(refs)]) {
+      if (ref === 'input') {
+        keys.push(ref);
+        continue;
+      }
+      if (runtime.has(ref) || ref.startsWith('history.') || outputKeys.has(ref)) continue;
+      const contextKey = ref.startsWith('context.') ? ref.slice('context.'.length) : ref;
+      const value = contextValue(context, contextKey);
+      if (value === undefined || value === null || String(value).trim() === '') keys.push(ref);
+      else defaults[ref] = String(value);
+    }
+    return { keys: [...new Set(keys)], defaults, error: '' };
+  } catch (err) {
+    return { keys: [], defaults: {}, error: err.message || String(err) };
+  }
+}
+
+function loopPrompt(item, config) {
+  const name = item.source === 'discovered'
+    ? ((item._src && item._src.promptName) || item.name)
+    : (item.name || item.id);
+  return String(item.prompt || resolveLoopPromptText(item.repo || item.cwd, name, config) || '');
+}
+
+function routineParameterSpec(config, item) {
+  if (Array.isArray(item.args)) return { keys: [], defaults: {}, error: '' };
+  if (item.type !== 'state-machine') {
+    return { keys: templateParameterKeys(loopPrompt(item, config)), defaults: {}, error: '' };
+  }
+  const cwd = launchCwd(item, config) || process.cwd();
+  const spec = stateMachineInputSpec(stateMachineFilePath(item, cwd, config));
+  if (spec.error) return spec;
+  const pairedName = item._src && item._src.loop && item._src.loop.promptName;
+  const pairedBody = pairedName ? resolveLoopPromptText(item.repo || item.cwd, pairedName, config) : '';
+  for (const key of templateParameterKeys(pairedBody)) {
+    if (!Object.prototype.hasOwnProperty.call(spec.defaults, key) && !spec.keys.includes(key)) spec.keys.push(key);
+  }
+  return spec;
+}
+
+function validateParameters(spec, raw) {
+  if (spec.error) throw new Error(`入力パラメータを確認できません: ${spec.error}`);
+  const values = raw == null ? {} : raw;
+  if (!isPlainObject(values)) throw new Error('入力パラメータの形式が不正です');
+  const unknown = Object.keys(values).filter((key) => !spec.keys.includes(key));
+  if (unknown.length) throw new Error(`未定義の入力パラメータです: ${unknown.join(', ')}`);
+  const missing = spec.keys.filter((key) => !Object.prototype.hasOwnProperty.call(values, key)
+    || String(values[key]).trim() === '');
+  if (missing.length) throw new Error(`入力してください: ${missing.join(', ')}`);
+  return Object.fromEntries(spec.keys.map((key) => [key, String(values[key]).trim()]));
+}
+
+function applyParameters(prompt, values) {
+  return String(prompt || '').replace(TEMPLATE_PARAMETER_RE, (whole, key) =>
+    Object.prototype.hasOwnProperty.call(values, key) ? values[key] : whole);
+}
+
+function stateMachineParameterBlock(values) {
+  const entries = Object.entries(values);
+  if (!entries.length) return '';
+  return '\n\n以下の実行パラメータをそのまま使用してください。追加質問や仮値補完は不要です。\n'
+    + entries.map(([key, value]) => `- ${key}: ${JSON.stringify(value)}`).join('\n');
 }
 
 // グローバル指示（agent-instructions 契約）を起動プロンプト先頭へ前置する。
@@ -481,7 +592,8 @@ function planSessionCommands(config, cwd, { agentCli = 'kiro', skillCommandPrefi
   }
 }
 
-// repo の .kiro/kiro-loop.{yaml,yml,json} から定期プロンプト本文を名前で解決する。
+// repo の定常業務ループ設定（discover.js の LOOP_CONFIG_CANDIDATES）から定期プロンプト
+// 本文を名前で解決する。
 // 見つからなければ ''（呼び出し側が代替の指示文へフォールバックする）。
 function resolveLoopPromptText(repo, promptName, config) {
   const root = viewerRepo(repo, config) || String(repo || '');
@@ -517,66 +629,68 @@ function launchCwd(item, config) {
   return viewerRepo(dir, config) || dir;
 }
 
-function runLoop(config, itemIdValue) {
+function runLoop(config, itemIdValue, parameters) {
   const cfg = config.cowork || {};
   const item = resolveItem(config, itemIdValue);
   if (!item) throw new Error(`Cowork 作業が見つかりません: ${itemIdValue}`);
+  const spec = routineParameterSpec(config, item);
+  const values = validateParameters(spec, parameters);
   // 実行対象は kiro-loop の prompt 名（合成 id ではない）。`send` が cwd の
   // .kiro/kiro-loop.* から名前解決するため、手動項目も表示名を優先する。
   const runId = item.source === 'discovered'
     ? ((item._src && item._src.promptName) || item.name)
     : (item.name || item.id);
   const cwd = launchCwd(item, config);
-  // ウィンドウ実行用: kiro-loop.yml のプロンプト本文を解決して直接送る（kiro-loop 非経由）。
+  // ウィンドウ実行用: 定常業務の設定からプロンプト本文を解決して直接送る（ループ CLI 非経由）。
   // 本文を解決できなければ、エージェント自身に設定を読ませる指示文で代替する。
   // 明示 args の項目は従来の <loopCommand> 実行のまま（prompt を渡さない）。
-  const prompt = Array.isArray(item.args)
-    ? undefined
-    : withGlobalInstructions(config, withInputAssist(
-      resolveLoopPromptText(item.repo || item.cwd, runId, config)
-        || `.kiro/kiro-loop.yml（または kiro-loop.yaml / .json）の定期プロンプト「${runId}」の本文を読んで、その指示を実行して`
-    ));
+  const resolvedPrompt = applyParameters(
+    loopPrompt(item, config)
+      || `.agents/agent-loop.yml（または agent-loop.yaml / .json）の定期プロンプト「${runId}」の本文を読んで、その指示を実行して`,
+    values
+  );
+  const prompt = Array.isArray(item.args) ? undefined : withGlobalInstructions(config, resolvedPrompt);
   const plan = routineLaunchPlan(config, cwd);
   const res = makeLoopProvider(cfg, config).run({
     ...item, cwd, id: runId, prompt,
+    ...(Object.keys(values).length ? { args: ['send', prompt] } : {}),
     launch: plan.launch, sessionCommands: plan.sessionCommands,
   });
   recordRun(cfg, { ...item, type: 'loop' }, res);
   return res;
 }
 
-function runStateMachine(config, itemIdValue, input) {
+function runStateMachine(config, itemIdValue, parameters) {
   const cfg = config.cowork || {};
   const item = resolveItem(config, itemIdValue);
   if (!item) throw new Error(`Cowork 定型業務が見つかりません: ${itemIdValue}`);
   const cwd = launchCwd(item, config) || process.cwd();
+  const spec = routineParameterSpec(config, item);
+  // 旧 preload の文字列 input を読む互換。新しい画面は常に key/value オブジェクトを渡す。
+  const raw = typeof parameters === 'string' ? (parameters ? { input: parameters } : {}) : parameters;
+  const values = validateParameters(spec, raw);
+  const effectiveValues = { ...spec.defaults, ...values };
   // statemachine-use は CLI ではなくスキル。エージェントセッションへ
   // 「statemachine-use スキルで xxx ステートマシンを実行して」を送って発動する。
-  // kiro-loop.yml に対となる定期プロンプトがある統合項目はその本文を優先する。
+  // ループ設定に対となる定期プロンプトがある統合項目はその本文を優先する。
   let args;
   let prompt;
   const pairedName = item._src && item._src.loop && item._src.loop.promptName;
   if (Array.isArray(item.args)) {
     args = [...item.args];
-    if (input) args.push(String(input));
     // 明示 args はレガシー実行（prompt を渡さない）
   } else {
     const smName = item.workflow || item.file || item.name;
     const pairedBody = pairedName ? resolveLoopPromptText(item.repo || item.cwd, pairedName, config) : '';
-    const smPrompt = (pairedBody && !input)
-      ? pairedBody
-      : `statemachine-use スキルで${smName}ステートマシンを実行して${input ? `。入力: ${String(input)}` : ''}`;
-    // ステートマシン定義から必要な入力（{{input}} と 空の context キー）を洗い出し、
-    // 埋まっていなければ「人へ質問してから実行」を項目名つきで促す（勝手に仮値で進めない）。
-    const spec = stateMachineInputSpec(stateMachineFilePath(item, cwd, config));
-    const assist = stateMachineInputAssist(spec, Boolean(input));
-    const smPromptTrim = smPrompt.trim();
-    const withAssist = smPromptTrim ? `${smPromptTrim}\n\n${assist}` : smPromptTrim;
-    prompt = withGlobalInstructions(config, withAssist);
+    const smPrompt = applyParameters(
+      pairedBody || `statemachine-use スキルで${smName}ステートマシンを実行して`,
+      effectiveValues
+    ) + stateMachineParameterBlock(values);
+    prompt = withGlobalInstructions(config, smPrompt);
     // 非ウィンドウ実行（非 win32 / runWindow:false）用の従来 send 引数も併せて用意する
-    const legacy = (pairedName && !input)
-      ? pairedName
-      : `${smName} ステートマシンを実行して${input ? `。入力: ${String(input)}` : ''}`;
+    const legacy = !Object.keys(values).length
+      ? (pairedName || `${smName} ステートマシンを実行して`)
+      : smPrompt;
     args = ['send', legacy];
   }
   const plan = routineLaunchPlan(config, cwd);
@@ -752,8 +866,8 @@ function applyKiroLoopJson(raw, items) {
 // 発見項目の編集を _src.file 単位に束ねて実体へ書き戻す。差分がある時だけ write。
 // 返り値 { touched: [{repo, relFiles:[...]}], errors:[...] }。
 function applyDiscoveredEdits(discovered, config) {
-  // 統合項目（ステートマシン＋対となる kiro-loop エントリ）は schedule/enabled の編集を
-  // kiro-loop 側の実体へ書き戻す合成項目に展開する。プロンプト名は変更しない
+  // 統合項目（ステートマシン＋対となるループエントリ）は schedule/enabled の編集を
+  // ループ設定側の実体へ書き戻す合成項目に展開する。プロンプト名は変更しない
   // （表示名の変更は workflow.yaml の name へ書き戻す）。
   const expanded = [];
   for (const it of discovered) {
@@ -765,7 +879,7 @@ function applyDiscoveredEdits(discovered, config) {
         schedule: it.schedule,
         enabled: it.enabled,
         _src: {
-          kind: 'kiro-loop', file: lp.file, format: lp.format, repo: it._src.repo,
+          kind: 'loop', file: lp.file, format: lp.format, repo: it._src.repo,
           promptIndex: lp.promptIndex, promptName: lp.promptName, scheduleKey: lp.scheduleKey,
         },
       });
@@ -785,7 +899,7 @@ function applyDiscoveredEdits(discovered, config) {
     try { raw = fs.readFileSync(file, 'utf8'); } catch { errors.push(`読み込み失敗: ${file}`); continue; }
     let newText = null;
 
-    if (first.kind === 'kiro-loop') {
+    if (first.kind === 'loop') {
       if (first.format === 'json') {
         const r = applyKiroLoopJson(raw, items);
         errors.push(...r.errors);
@@ -861,7 +975,15 @@ function applyManagedItems(items, config) {
   const errors = [];
   for (const { repo, items: repoItems } of byRepo.values()) {
     const root = viewerRepo(repo, config) || repo;
-    const file = path.join(root, '.kiro', 'kiro-loop.yml');
+    const { file, format } = loopConfigFile(root);
+    if (format === 'json') {
+      // upsert は YAML テキストの外科的書換で、JSON へ流し込むと壊す。既存の .json を
+      // 避けて .yml を作ると agent-loop の探索順（yaml → yml → json）で .json が
+      // 無視され、元のプロンプトが黙って消えたように見える。どちらも取らず断る。
+      errors.push(`定常業務の設定が JSON（${path.basename(file)}）のため画面から編集できません。`
+        + ' YAML へ移すか、ファイルを直接編集してください。');
+      continue;
+    }
     let raw;
     try { raw = fs.readFileSync(file, 'utf8'); } catch { raw = 'prompts:\n'; }
     let next = raw;
@@ -877,7 +999,7 @@ function applyManagedItems(items, config) {
       fs.writeFileSync(file, next, 'utf8');
       touched.push({ repo, relFiles: [relPosix(repo, file, config)] });
     } catch (err) {
-      errors.push(`kiro-loop.yml の書き込み失敗: ${err.message}`);
+      errors.push(`定常業務の設定ファイル（${path.basename(file)}）の書き込み失敗: ${err.message}`);
     }
   }
   return { touched, errors };
@@ -980,9 +1102,10 @@ module.exports = {
   resolveItem, findItem, dedupeItems, applyDiscoveredEdits, gitCommitFiles,
   invalidateDiscoverCache, decodeCliOutput, viewerRepo,
   itemLogs, readLog, appendHistory, readHistory, historyFile,
-  resolveLoopPromptText, withInputAssist, withGlobalInstructions, planSessionCommands,
+  resolveLoopPromptText, withGlobalInstructions, planSessionCommands,
   coworkChatLaunch, routineLaunchPlan, ROUTINE_WORKLOAD, LEGACY_CHAT_COMMAND,
   applyManagedItems, stateMachineCreationPrompt,
   inspectCoworkRoot, setCoworkRoot,
-  stateMachineInputSpec, stateMachineInputAssist, stateMachineFilePath,
+  templateParameterKeys, stateMachineInputSpec, stateMachineFilePath,
+  routineParameterSpec, validateParameters, applyParameters, stateMachineParameterBlock,
 };

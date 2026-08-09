@@ -27,6 +27,9 @@ class SessionCommandsTests(unittest.TestCase):
         self.addCleanup(os.environ.pop, "AGENT_SESSION_DIR", None)
         al._SESSION_COMMANDS_REV_APPLIED = None
         self.addCleanup(setattr, al, "_SESSION_COMMANDS_REV_APPLIED", None)
+        # 非推奨警告はプロセスにつき 1 回なので、テストごとに撃ち直せる状態へ戻す
+        al._SESSION_COMMANDS_LEGACY_WARNED = False
+        self.addCleanup(setattr, al, "_SESSION_COMMANDS_LEGACY_WARNED", False)
 
     def _write(self, obj):
         with open(os.path.join(self.home, "session.json"), "w", encoding="utf-8") as f:
@@ -50,6 +53,27 @@ class SessionCommandsTests(unittest.TestCase):
         """コマンドが無い / 読めないときは「開始してよい」を返す（ペイン起動を止めない）。"""
         self.assertTrue(al.run_session_commands({"engine": "agent-loop"}))
 
+    def test_legacy_engine_is_read_with_warning_and_matches_agent_loop(self):
+        self._write({"commands": [
+            {"id": "legacy", "run": "true", "when": {"engines": ["kiro-loop"]}},
+        ]})
+        with self.assertLogs(level="WARNING") as logs:
+            data = al._load_session_commands()
+        self.assertIn("非推奨", "\n".join(logs.output))
+        self.assertTrue(al.session_command_matches(
+            data["commands"][0]["when"], {"engine": "agent-loop"}))
+
+    def test_legacy_engine_warning_is_emitted_once_per_process(self):
+        """常駐体はセッションを何度も張り直す。毎回警告すると同じ 1 行がログを埋める。"""
+        self._write({"commands": [
+            {"id": "legacy", "run": "true", "when": {"engines": ["kiro-loop"]}},
+        ]})
+        with self.assertLogs(level="WARNING") as logs:
+            al._load_session_commands()
+            al._load_session_commands()
+            al._load_session_commands()
+        self.assertEqual("\n".join(logs.output).count("非推奨"), 1)
+
     # -- 計画の決定性（dashboard の JS plan() と同一結果） --------------------
 
     def test_placeholders_expand_without_quoting(self):
@@ -64,6 +88,8 @@ class SessionCommandsTests(unittest.TestCase):
         self.assertFalse(al.session_command_matches(when, {"engine": "agent-flow", "workload": "routine"}))
         self.assertTrue(al.session_command_matches(None, {"engine": "agent-flow"}))
         self.assertTrue(al.session_command_matches(when, {}))
+        self.assertTrue(al.session_command_matches(
+            {"engines": ["kiro-loop"]}, {"engine": "agent-loop"}))
 
     def test_chat_is_allowed_on_resident_engine(self):
         data = {"commands": [{"id": "c", "mode": "chat", "run": "docs を読んで"}]}

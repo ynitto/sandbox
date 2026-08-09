@@ -51,6 +51,7 @@ function makeAdvisor(project) {
     grab('taskOfRun'),
     grab('humanWaitingAdvice'),
     grab('agentErrorAdvice'),
+    grab('runPhaseLabel'),
     grab('runAdvice'),
     'return runAdvice;',
   ].join('\n');
@@ -70,6 +71,7 @@ function makeNodePresenter(project) {
     grab('taskOfRun'),
     grab('humanWaitingAdvice'),
     grab('agentErrorAdvice'),
+    grab('runPhaseLabel'),
     grab('runAdvice'),
     grab('flowRetryUi'),
     grab('nodeFateLine'),
@@ -106,6 +108,14 @@ test('実行中（lease 生存）→ 見守るだけ', () => {
   const advise = makeAdvisor(project());
   const r = baseRun();
   assert.strictEqual(advise(r, group(r)).kind, 'watch');
+});
+
+test('実行中の助言は run phase を具体的に示す', () => {
+  const advise = makeAdvisor(project());
+  const r = baseRun({ phase: 'verifying' });
+  const a = advise(r, group(r));
+  assert.strictEqual(a.chip, '▶ 検証中');
+  assert.match(a.text, /検証中/);
 });
 
 test('応答なし + タスク ready + 本体稼働中 → 自動でやり直される（操作不要）', () => {

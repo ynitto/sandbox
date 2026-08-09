@@ -2,8 +2,8 @@
 
 const assert = require('assert');
 
-const tmux = require('../src/features/kiro-loop/main/tmux');
-const exec = require('../src/features/kiro-loop/main/exec');
+const tmux = require('../src/features/routines/main/tmux');
+const exec = require('../src/features/routines/main/exec');
 
 let passed = 0;
 function test(name, fn) {
@@ -28,7 +28,7 @@ function okOut(stdout) {
   return { ok: true, stdout, stderr: '', error: '', status: 0 };
 }
 
-test('pathDigest は sha1 先頭 8 桁（kiro-loop.py と同じ）', () => {
+test('pathDigest は sha1 先頭 8 桁（agent-loop.py と同じ）', () => {
   const crypto = require('crypto');
   const expected = crypto.createHash('sha1').update('/home/me/proj').digest('hex').slice(0, 8);
   assert.strictEqual(tmux.pathDigest('/home/me/proj'), expected);
@@ -51,12 +51,12 @@ test('listSessions は repo digest または cwd で絞る（セッション名�
   const orig = exec.shInWsl;
   exec.shInWsl = stubShInWsl([
     ['loop-state', okOut('')],                                    // 状態ファイル無し
-    ['list-sessions', okOut(`kiro-loop-app-${digest}-abcd\nkiro-loop-other-ffffffff-zzzz\n`)],
-    [`list-panes -t 'kiro-loop-app-${digest}-abcd'`, okOut('%1\t/home/me/app\tkiro\t1\n')],
-    ["list-panes -t 'kiro-loop-other-ffffffff-zzzz'", okOut('%2\t/home/me/other\tkiro\t1\n')],
+    ['list-sessions', okOut(`agent-loop-app-${digest}-abcd\nagent-loop-other-ffffffff-zzzz\n`)],
+    [`list-panes -t 'agent-loop-app-${digest}-abcd'`, okOut('%1\t/home/me/app\tkiro\t1\n')],
+    ["list-panes -t 'agent-loop-other-ffffffff-zzzz'", okOut('%2\t/home/me/other\tkiro\t1\n')],
   ]);
   try {
-    const res = tmux.listSessions({ repo, prefix: 'kiro-loop-' });
+    const res = tmux.listSessions({ repo, prefix: 'agent-loop-' });
     assert.strictEqual(res.ok, true);
     assert.strictEqual(res.items.length, 1);
     assert.ok(res.items[0].session.includes(digest));
@@ -85,9 +85,9 @@ test('listSessions は send の既定セッション（kiro）も既定接頭辞
 });
 
 test('listSessions は tmux セッション内で起動されたデーモンのペインを状態ファイルから見つける', () => {
-  // kiro-loop を人の tmux セッション（名前 main）の中で起動すると、ワーカーペインは
-  // main セッション内に作られ `tmux ls` の名前（kiro-loop-…）では発見できない。
-  // ~/.kiro/loop-state/<pid>.json の pane_id 直参照で見つけることを検証する。
+  // agent-loop を人の tmux セッション（名前 main）の中で起動すると、ワーカーペインは
+  // main セッション内に作られ `tmux ls` の名前（agent-loop-…）では発見できない。
+  // ~/.agents/loop-state/<pid>.json の pane_id 直参照で見つけることを検証する。
   const state = JSON.stringify({
     pid: 1234,
     cwd: '/home/me/app',
@@ -146,9 +146,10 @@ test('readLoopStates は agent-loop の現行・旧状態ディレクトリを�
   };
   try {
     tmux.readLoopStates();
-    assert.ok(seenScript.includes('.kiro/loop-state'), 'kiro-loop の状態ディレクトリを読む');
     assert.ok(seenScript.includes('.agents/loop-state'), 'agent-loop の現行状態ディレクトリを読む');
     assert.ok(seenScript.includes('.agent/loop-state'), 'agent-loop の旧状態ディレクトリへフォールバックする');
+    // 退役前の kiro-loop デーモンも視聴できる（読取互換。計画 S4 で外す）
+    assert.ok(seenScript.includes('.kiro/loop-state'), '移行前の kiro-loop デーモンも見える');
   } finally {
     exec.shInWsl = orig;
   }
@@ -179,6 +180,8 @@ test('readSlotPanes は agent-loop の現行・旧スロットディレクトリ
     tmux.readSlotPanes();
     assert.ok(seenScript.includes('.agents/slots'), 'agent-loop の現行スロットディレクトリを読む');
     assert.ok(seenScript.includes('.agent/slots'), 'agent-loop の旧スロットディレクトリへフォールバックする');
+    // 見落とすと、移行前のデーモンが掴んでいる busy ペインを空きと誤表示する
+    assert.ok(seenScript.includes('.kiro/slots'), '移行前の kiro-loop スロットも数える');
   } finally {
     exec.shInWsl = orig;
   }
@@ -189,7 +192,7 @@ test('tmux -F の区切りは本物のタブ文字（リテラル \\t を書か�
   // タブへ変換せず、出力を split(TAB) できずペイン解析が全滅する（実際に起きた）。
   const fs = require('fs');
   const path = require('path');
-  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'features', 'kiro-loop', 'main', 'tmux.js'), 'utf8');
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'features', 'routines', 'main', 'tmux.js'), 'utf8');
   const literalBackslashT = '\\t';  // バックスラッシュ + t の 2 文字
   assert.ok(!src.includes(`#{pane_id}${literalBackslashT}`), '-F の区切りにリテラル \\t を使わない');
   assert.ok(!src.includes(`${literalBackslashT}#{session_name}`), '-F の区切りにリテラル \\t を使わない');
@@ -201,25 +204,42 @@ test('capture は target 必須', () => {
   assert.match(res.error, /target/);
 });
 
-test('feature preload が kiroLoop API を出す', () => {
+test('feature preload が routineAgent API を出す', () => {
   const { loadFeatures } = require('../src/features');
-  const loop = loadFeatures().find((f) => f.id === 'kiro-loop');
+  const loop = loadFeatures().find((f) => f.id === 'routines');
   const api = loop.preloadApi();
-  assert.strictEqual(typeof api.kiroLoopListSessions, 'function');
-  assert.strictEqual(typeof api.kiroLoopCapture, 'function');
-  assert.strictEqual(typeof api.kiroLoopState, 'function');
-  assert.strictEqual(typeof api.kiroLoopSend, 'function');
+  assert.strictEqual(typeof api.routineAgentListSessions, 'function');
+  assert.strictEqual(typeof api.routineAgentCapture, 'function');
+  assert.strictEqual(typeof api.routineAgentState, 'function');
+  assert.strictEqual(typeof api.routineAgentSend, 'function');
   const registered = [];
   loop.registerIpc({
     handle: (channel) => registered.push(channel),
-    loadConfig: () => ({ kiroLoop: { sessionPrefix: 'kiro-loop-' } }),
+    loadConfig: () => ({ routines: { sessionPrefix: 'agent-loop-' } }),
     saveConfig: () => ({}),
   });
   assert.deepStrictEqual(
     registered.sort(),
-    ['kiroLoop:capture', 'kiroLoop:listSessions', 'kiroLoop:send', 'kiroLoop:state'].sort()
+    ['routineAgent:capture', 'routineAgent:listSessions', 'routineAgent:send', 'routineAgent:state'].sort()
   );
-  assert.ok(loop.configDefaults.kiroLoop);
+  assert.ok(loop.configDefaults.routines);
 });
 
-console.log(`\n${passed} kiro-loop-tmux tests passed`);
+// 制御面を kiro-loop → routines へ改称したとき、設定キーも変わった。既定で補完されるのは
+// 「欠けているキー」だけなので、付け替えないと利用者の設定は黙って既定へ戻る。
+test('旧 kiroLoop 設定キーは routines へ引き継がれ、旧キーは残らない', () => {
+  const { migrateLegacyKeys } = require('../src/base/main/config');
+  const migrated = migrateLegacyKeys({ role: 'engineer', kiroLoop: { captureSec: 9, sessionPrefix: 'x' } });
+  assert.deepStrictEqual(migrated.routines, { captureSec: 9, sessionPrefix: 'x' });
+  assert.ok(!('kiroLoop' in migrated), '旧キーは落とす（両方あるとどちらが効くか決まらない）');
+  assert.strictEqual(migrated.role, 'engineer', '他のキーは触らない');
+
+  // 新キーで設定済みなら、そちらが勝つ（付け替えで新しい設定を上書きしない）
+  assert.deepStrictEqual(
+    migrateLegacyKeys({ kiroLoop: { captureSec: 9 }, routines: { captureSec: 3 } }).routines,
+    { captureSec: 3 }
+  );
+  assert.deepStrictEqual(migrateLegacyKeys({ routines: { captureSec: 3 } }), { routines: { captureSec: 3 } });
+});
+
+console.log(`\n${passed} routine-agent-tmux tests passed`);

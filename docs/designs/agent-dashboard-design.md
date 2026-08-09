@@ -264,7 +264,7 @@ tools/agent-dashboard/src/
 ├── features/
 │   ├── index.js        載せる制御面の列挙（唯一の合成点）
 │   ├── agent-project/  agent-project ＋ agent-flow（charter/backlog/needs/run/操作/オーサリング）
-│   ├── kiro-loop/      定期実行ループの端末ビューと復旧送信（WSL の tmux 越し）
+│   ├── routines/       定期実行ループの端末ビューと復旧送信（WSL の tmux 越し）
 │   ├── cowork/         定期実行と定型業務の一覧・実行入口
 │   ├── amigos/         agent-amigos ミッションの読み取りビュー
 │   ├── orchestration/  ノード予算・エージェント制御・CLI ドロップインの横断管理
@@ -314,7 +314,7 @@ IPC は全チャネルが `{ok, data|error}` に揃う（`base/main/handle.js` �
 | 実行（agent-flow） | `<bus>/runs/<run-id>/` の `graph.json` ＋ `results/` ＋ `claims/` ＋ `waits/` からノード状態を導出し、`events/*.jsonl` から計画変更の理由と差分を読む。ポーリングごとに `flow-archive/<run-id>.json` へ写し取り、bus から消えた run も追える |
 | 履歴 | `run-log.jsonl`・`decisions/<id>.md`・`DELIVERY.md`・`journal.md` |
 | ミッション | agent-amigos のバス（読み取り専用）とオーナーホームの納品棚 |
-| 定期実行 | WSL 上の `~/.kiro/loop-state/*.json` と agent-loop の `~/.agents/loop-state/*.json`（旧 `~/.agent/` はフォールバック）および tmux |
+| 定期実行 | WSL 上の agent-loop の `~/.agents/loop-state/*.json`（旧 `~/.agent/` はフォールバック、退役前の `~/.kiro/loop-state/*.json` は読取互換）および tmux。定常業務の設定は `.agents/agent-loop.{yaml,yml,json}`（旧 `.kiro/kiro-loop.*` は読取互換。新規の書き先にはしない） |
 | ノード予算・エージェント制御 | `~/.agents/budget/`・`~/.agents/control/`（ツール横断のデータ契約） |
 | レビュー待ち | `repos.json` の GitLab リポジトリのオープンイシュー（API 設定時） |
 
@@ -331,7 +331,7 @@ amigos / delegation / orchestration は 15 秒）。純プル型なので、気�
 |---|---|---|
 | `agent-project` | charter / 達成状況 / バックログ / 要対応 / 実行グラフ / レビュー待ち / 履歴 | `needs/` 記入・`inbox/` 投入・`commands/` ドロップ・上位入力ファイル（charter / policy / repos）の編集 |
 | `cowork` | 定期実行ジョブと定型業務の一覧・設定同期・実行 | 人の成果物リポジトリ（プロジェクト状態には触れない）＋ 自分の設定（`cowork.items` / `cowork.roots`） |
-| `kiro-loop` | 稼働中ループの構造化状態・会話画面・復旧送信 | 何も書かない（`kiro-loop send` への依頼だけ） |
+| `routines` | 稼働中ループの構造化状態・会話画面・復旧送信 | 何も書かない（`agent-loop send` への依頼だけ） |
 | `amigos` | ミッションの進行・担当・やりとり・納品棚 | ホームの `commands/` ドロップのみ（バスへは書かない） |
 | `orchestration` | ノード予算・エージェント制御・CLI ドロップインの棚卸し | `~/.agents/` 配下の契約ファイル |
 | `delegation` | 独立画面なし（タスク・参加・全体設定へ溶かす・§5.2） | 委譲封筒をネイティブ形式へ変換して投函。**中止・落札・手動入札はノード宛て指示ドロップ経由**（公示は板の作業ディレクトリへ直接書く。§5.2） |
@@ -350,31 +350,31 @@ cowork の tmux 実行も同じ定義を通る（`chatCommand` 設定は明示�
 `<cli>:<cwd>` ——起動先を選べるようにした以上、同名で再 attach して別リポジトリの作業中
 セッションへ合流しないためだ。
 
-### 5.1 kiro-loop 連携 — 監視と復旧を tmux から引き上げる
+### 5.1 agent-loop 連携 — 監視と復旧を tmux から引き上げる
 
-定期実行ループ（kiro-loop / agent-loop）は tmux の上で動き、監視は `tmux attach`、復旧は
-`kiro-loop send` という CLI 前提の運用だった。外部接点（状態ファイル・`ls` / `send`・ログ）は
+定期実行ループ（agent-loop）は tmux の上で動き、監視は `tmux attach`、復旧は
+`agent-loop send` という CLI 前提の運用だった。外部接点（状態ファイル・`ls` / `send`・ログ）は
 あるが、すべて pull 型で人の負荷が高い。ここを dashboard へ移し、**人が tmux を知らなくても
 運用できる状態**を作る。
 
-前提として、dashboard は Windows で動き、kiro-loop / tmux / エージェント CLI は WSL にいる。
+前提として、dashboard は Windows で動き、agent-loop / tmux / エージェント CLI は WSL にいる。
 触る経路は常に `wsl.exe -e …` を通る。
 
 構成は 2 レイヤ。**構造化状態**（最終実行時刻・alive / busy・会話履歴・復旧送信）は
-`loop-state/<pid>.json` の読み取りと `kiro-loop send` への依頼で作り、**生画面**
+`loop-state/<pid>.json` の読み取りと `agent-loop send` への依頼で作り、**生画面**
 （動いている tmux ペインそのもの）は `capture-pane` のポーリングで見せる。普段は構造化状態で
 足り、深掘りしたいときだけ生画面へ降りる。概要から詳細へ、という画面全体の思想と揃えた。
 
-不変条件は §3.1 と同じで、**dashboard は kiro-loop の状態の書き手にならない**。読むのは
+不変条件は §3.1 と同じで、**dashboard は agent-loop の状態の書き手にならない**。読むのは
 ファイルと `capture-pane`、操作は `send` への依頼に限る。`send` はプロンプト名の解決・busy 判定・
 スロット取得を内蔵しているので、生の `send-keys` を避けて CLI に依頼すれば GUI 操作が
 同時実行制御を壊さない。busy 時に CLI が即時拒否するのは人が待って再実行する設計なので、
-UI 側で「処理中につき送信待機」に変換する（kiro-loop 本体は変えない）。
+UI 側で「処理中につき送信待機」に変換する（agent-loop 本体は変えない）。
 
 文言の方針として、画面に tmux / セッション / capture-pane といった内部語を出さない。
 定期プロンプト名は設定ファイル由来だと分かるよう「予定の名前」と呼ぶ。
 
-IPC は 4 本（`kiroLoop:listSessions` / `capture` / `state` / `send`）。
+IPC は 4 本（`routineAgent:listSessions` / `capture` / `state` / `send`）。
 インタラクティブな attach（`node-pty` ＋ `xterm.js`）は未実装で、当面やらない（§8）。
 
 ### 5.2 委譲公示板 — 独立タブを作らず、人の問いごとに置く

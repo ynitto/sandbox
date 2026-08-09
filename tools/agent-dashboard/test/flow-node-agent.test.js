@@ -70,6 +70,22 @@ test('readRun は結果の agent_cli / model を工程へ写す（無ければ n
   assert.strictEqual(run.nodes.t2.agentModel, null);
 });
 
+test('readRun は明示 phase を公開し、旧runの全工程完了は finalizing へ縮退する', () => {
+  const explicitDir = makeRun('run-phase-explicit', ['t1']);
+  writeJson(path.join(explicitDir, 'meta.json'), {
+    request: 'r', status: 'running', phase: 'verifying',
+    phase_started_at: '2026-01-01T00:02:00Z', created_at: '2026-01-01T00:00:00Z',
+  });
+  const explicit = flow.readRun(explicitDir);
+  assert.strictEqual(explicit.phase, 'verifying');
+  assert.strictEqual(explicit.phaseStartedAt, '2026-01-01T00:02:00Z');
+
+  const legacyDir = makeRun('run-phase-legacy', ['t1']);
+  writeJson(path.join(legacyDir, 'results', 't1.json'),
+    { id: 't1', who: 'w1', status: 'done', output: 'ok' });
+  assert.strictEqual(flow.readRun(legacyDir).phase, 'finalizing');
+});
+
 test('readNodeEvents は claimed イベントの agent_cli / model を残す', () => {
   const runDir = makeRun('run-b', ['t1']);
   fs.mkdirSync(path.join(runDir, 'events'), { recursive: true });
