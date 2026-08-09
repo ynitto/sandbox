@@ -129,6 +129,13 @@ def _normalize_agent_overrides(raw) -> "dict[str, dict]":
             ov["model"] = str(v["model"]).strip()
         if isinstance(v.get("readonly"), bool):
             ov["readonly"] = v["readonly"]
+        if isinstance(v.get("fallbacks"), list):
+            fallbacks = [{"agent_cli": str(x["agent_cli"]).strip().lower(),
+                          **({"model": str(x["model"]).strip()} if x.get("model") else {})}
+                         for x in v["fallbacks"]
+                         if isinstance(x, dict) and str(x.get("agent_cli") or "").strip()]
+            if fallbacks:
+                ov["fallbacks"] = fallbacks
         if ov:
             out[key] = ov
     return out
@@ -183,6 +190,18 @@ def _agent_for(purpose: str) -> "tuple[str, str | None]":
     if purpose in JSON_CONTRACT_ROLES:
         cli = _agentcli.json_variant(cli)
     return cli, model
+
+
+def retry_agent_for(purpose: str, prior: "dict | None" = None) -> "dict | None":
+    """役割の宣言済み ladder から、相対コストが高い次の 1 段だけを選ぶ。"""
+    ov = _AGENT_OVERRIDES.get(purpose)
+    if ov is None and purpose in VALID_KINDS:
+        ov = _AGENT_OVERRIDES.get("worker")
+    current = str((prior or {}).get("agent_cli") or _agent_for(purpose)[0])
+    target = _agentcli.costlier_fallback(current, (ov or {}).get("fallbacks"))
+    if target:
+        target["from_agent_cli"] = current
+    return target
 
 
 def _configure_thresholds(args) -> None:
@@ -440,7 +459,7 @@ def _record_quota_observation(cli: str, blob: str) -> None:
         return
     if not detail or not detail.get("quota_kind"):
         return
-    extra = {"quota_kind": detail["quota_kind"]}
+    extra = {"event": "quota", "quota_kind": detail["quota_kind"]}
     if detail.get("reset_at"):
         extra["reset_at"] = detail["reset_at"]
     _node_budget_record(0.0, ref="", agent_cli=cli, extra=extra)
@@ -689,9 +708,15 @@ def _agent_failure(cli: str, rc: int, out: str, err: str) -> str:
     return f"{head}\n{tail[-500:]}" if tail else head
 
 
-def run_agent(prompt: str, model: str | None, purpose: str = "", cwd: "str | None" = None) -> str:
+def run_agent(prompt: str, model: str | None, purpose: str = "", cwd: "str | None" = None,
+              agent: "dict | None" = None) -> str:
     """エージェント CLI を呼び出してテキスト応答を返す（このツールの全 LLM 呼び出しの単一チョーク
     ポイント: planner / evaluator / executor / verify / 裁定）。
+
+    `agent`（`{agent_cli, model, timeout_sec}`）はこの呼び出し 1 回だけの明示指定で、設定・
+    agent-control・縮退より**強い**。検証計画がタスク単位で「これで確かめてくれ」と言うための
+    口で、ノード全体の設定に負けては用を成さない（設計:
+    docs/plans/2026-08-09-verification-settlement-design.md §4）。
 
     レイヤ1（自己回復リトライ）: 失敗が transient 分類（接続断・5xx・overloaded・timeout）なら、
     ここで指数バックオフ再試行して上位層（グラフ再計画の retries 予算）へ持ち上げない。
@@ -718,7 +743,7 @@ def run_agent(prompt: str, model: str | None, purpose: str = "", cwd: "str | Non
             f"{nb['spent_tokens']:.0f}tok/{nb['token_limit']:.0f}tok・period={nb['period']}）。"
             "上限を上げる（dashboard のオーケストレーションタブ / agent-amigos budget node）か"
             "期間の更新を待ってください")
-    cli_used, model_used = _agent_for(purpose)
+    cli_used, model_used = _effective_agent(purpose, model, agent)
     _write_status(effective_cli=cli_used, effective_model=model_used or "",
                   lifecycle=lifecycle, budget=nb)
     last: "RuntimeError | None" = None
@@ -727,7 +752,8 @@ def run_agent(prompt: str, model: str | None, purpose: str = "", cwd: "str | Non
     while attempt <= max(0, _TRANSIENT_RETRIES):
         try:
             t0 = time.monotonic()
-            text = _run_agent_once(prompt, model, purpose, cwd)
+            text = (_run_agent_once(prompt, model, purpose, cwd, agent) if agent is not None
+                    else _run_agent_once(prompt, model, purpose, cwd))
             _node_budget_record(time.monotonic() - t0, ref=purpose or "worker",
                                 agent_cli=cli_used, model=model_used or "",
                                 tokens_in=getattr(text, "tokens_in", None),
@@ -765,13 +791,28 @@ def run_agent(prompt: str, model: str | None, purpose: str = "", cwd: "str | Non
     raise last if last else RuntimeError("run_agent: unreachable")  # pragma: no cover
 
 
-def _run_agent_once(prompt: str, model: str | None, purpose: str = "",
-                    cwd: "str | None" = None) -> str:
-    """エージェント CLI（設定 agent_cli: kiro/claude/copilot/codex）を 1 回呼び出してテキスト応答を返す。
-    purpose（planner / evaluator / ノード kind）を渡すと設定 agents: の役割毎上書きが効く
-    （kind は agents["worker"] へフォールバック）。model は 上書き ＞ 呼び出し値。"""
+def _effective_agent(purpose: str, model: "str | None",
+                     agent: "dict | None" = None) -> "tuple[str, str | None]":
+    """この呼び出しで実際に使う (agent_cli, model)。呼び出し 1 回の明示指定が最優先。
+
+    解決の実装を 1 か所に置く——run_agent（台帳と status に何を記録するか）と
+    _run_agent_once（実際に何を起動するか）が別々に解くと、記録と実行がずれる。"""
     cli, model_ov = _agent_for(purpose)
     model = model_ov or model
+    if agent:
+        cli = str(agent.get("agent_cli") or cli).strip().lower()
+        if agent.get("model"):
+            model = str(agent["model"]).strip()
+    return cli, model
+
+
+def _run_agent_once(prompt: str, model: str | None, purpose: str = "",
+                    cwd: "str | None" = None, agent: "dict | None" = None) -> str:
+    """エージェント CLI（設定 agent_cli: kiro/claude/copilot/codex）を 1 回呼び出してテキスト応答を返す。
+    purpose（planner / evaluator / ノード kind）を渡すと設定 agents: の役割毎上書きが効く
+    （kind は agents["worker"] へフォールバック）。model は 上書き ＞ 呼び出し値。
+    `agent` はこの呼び出しだけの明示指定で、設定・control・縮退のどれよりも強い。"""
+    cli, model = _effective_agent(purpose, model, agent)
     plug = load_agent_plugin(cli)
     # プロンプトが argv 渡しで長すぎるときは一時ファイルへ退避し、「そのファイルを読んで実行」の
     # 短い指示に置き換える（成果物の受け渡しを参照渡しにする）。argv 長制限は OS の事情なので
@@ -791,6 +832,13 @@ def _run_agent_once(prompt: str, model: str | None, purpose: str = "",
     # （agent-project と同じ扱い）。定義の env は最後に載せるので上書きできる。
     env = {**os.environ, "NO_COLOR": "1", "TERM": "dumb", **(plug.get("env") or {})}
     timeout = _agent_timeout(purpose, plug.get("timeout"))
+    if agent and agent.get("timeout_sec"):
+        try:
+            explicit = float(agent["timeout_sec"])
+        except (TypeError, ValueError):
+            explicit = 0.0
+        if explicit > 0:
+            timeout = explicit
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", input=stdin_text,
                               timeout=timeout, env=env, cwd=cwd)
@@ -835,7 +883,8 @@ def _run_agent_once(prompt: str, model: str | None, purpose: str = "",
 
 
 def _repair_json_output(prompt: str, bad_text: str, purpose: str, why,
-                        model: "str | None" = None, want_list: bool = False):
+                        model: "str | None" = None, want_list: bool = False,
+                        agent: "dict | None" = None):
     """レイヤ2（形式修復リトライ）: LLM 応答が出力契約（JSON）を満たさないとき、
     「前回の出力はこう契約違反だった」と指摘して同じ役割で呼び直す（format_retries 回・有界）。
     Claude Dynamic Workflows の structured output 検証リトライの移植。寛容パーサ
@@ -848,7 +897,8 @@ def _repair_json_output(prompt: str, bad_text: str, purpose: str, why,
                   f"違反: {why}\n"
                   f"説明・前置き・コードフェンスを付けず、指示された {contract} だけを再出力してください。")
         try:
-            bad_text = run_agent(repair, model, purpose=purpose)
+            bad_text = (run_agent(repair, model, purpose=purpose, agent=agent) if agent else
+                        run_agent(repair, model, purpose=purpose))
             data = extract_json(bad_text)
         except Exception as e:  # noqa: BLE001 — 修復呼び出し自体の失敗も「まだ壊れている」扱い
             why = str(e)
@@ -974,7 +1024,9 @@ def execute_agent(kind: str, goal: str, dep_results: dict, model: str | None,
                  repo_instruction: str = "", workspace: "dict | None" = None,
                  references: "list[dict] | None" = None, request: str = "",
                  instructions: str = "", prompt_table: bool = False,
-                 repair: "dict | None" = None, context: str = ""):
+                 repair: "dict | None" = None, context: str = "",
+                 read_allocation: "list[dict] | None" = None,
+                 agent: "dict | None" = None):
     role = {
         "classify": "分類役。入力を適切なカテゴリへ分類し『class=<ラベル>』形式で出力。",
         "synthesize": "統合役。依存タスクの成果を統合して 1 つの成果物にまとめる。",
@@ -1001,6 +1053,7 @@ def execute_agent(kind: str, goal: str, dep_results: dict, model: str | None,
         deps = {d: r for d, r in dep_results.items() if not _is_gate_result(r)}
     art_note = artifact_instruction(art_dir, dep_arts)
     repair_note = repair_instruction(repair)   # 案 B-1・オプトイン（repair=None なら空文字）
+    read_note = render_read_allocation(read_allocation)
     # flow-worker スキルがあれば実行規律入りプロンプトを使う（無ければ従来の組み込み）。
     # 出力契約（verify の JSON・split の配列等）はスキル側でも同一に保たれている。
     prompt = _flow_worker_prompt({
@@ -1012,6 +1065,7 @@ def execute_agent(kind: str, goal: str, dep_results: dict, model: str | None,
         "instructions": instructions,
         # 差分修復リトライのブリーフ（未対応スキルは未知キーとして無視するだけ＝壊れない）。
         "repair_note": repair_note,
+        "read_note": read_note,
     })
     if not prompt:
         prompt = f"あなたは分散 Dynamic Workflow の{role}\nタスク({kind}): {goal}\n"
@@ -1021,6 +1075,8 @@ def execute_agent(kind: str, goal: str, dep_results: dict, model: str | None,
             prompt += art_note + "\n"
         if repair_note:  # 前回の試行・差し戻し理由（全作り直しではなく指摘箇所の修復を促す）
             prompt += repair_note + "\n"
+        if read_note:
+            prompt += read_note + "\n"
         if deps:
             lines = []
             for d, r in deps.items():
@@ -1044,9 +1100,11 @@ def execute_agent(kind: str, goal: str, dep_results: dict, model: str | None,
     prompt = _promptcompose.compose([context], [prompt])
     prompt = prepend_instructions(prompt, instructions)
     if workspace and workspace.get("clone"):
-        text = run_agent(prompt, model, purpose=kind, cwd=str(workspace["clone"]))
+        text = (run_agent(prompt, model, purpose=kind, cwd=str(workspace["clone"]), agent=agent)
+                if agent else run_agent(prompt, model, purpose=kind, cwd=str(workspace["clone"])))
     else:
-        text = run_agent(prompt, model, purpose=kind)   # agents: の kind 別上書き（無ければ worker）
+        text = (run_agent(prompt, model, purpose=kind, agent=agent) if agent else
+                run_agent(prompt, model, purpose=kind))  # agents: の kind 別上書き（無ければ worker）
     # 構造化データを意図する kind のみ JSON を抽出（自由記述の本文から JSON 風断片を
     # data に誤昇格させない）。
     data = None
@@ -1062,7 +1120,7 @@ def execute_agent(kind: str, goal: str, dep_results: dict, model: str | None,
         # 空振りする＝出力契約が固い。レイヤ2 の修復リトライで救う（verify/reduce は
         # _normalize_verify / _reconcile_count の寛容パーサがあるため修復不要）。
         if kind == "split" and not isinstance(data, list):
-            repaired = _repair_json_output(prompt, text, kind, why, model, want_list=True)
+            repaired = _repair_json_output(prompt, text, kind, why, model, want_list=True, agent=agent)
             if isinstance(repaired, list):
                 data = repaired
     elif kind == "work":

@@ -834,7 +834,7 @@ def _failure_record(cfg, task, blob, vmsg, phase, verdict) -> dict:
 
 
 def _env_block(cfg, task, kind: str, why: str, reasons, cycle: int, log: str,
-               evidence=None, failure=None) -> None:
+               evidence=None, failure=None, verification=None) -> None:
     """環境要因で人へ回す唯一の口。同じ理由が続いたら hold（policy.deny）へ落とす。
 
     環境ブロックはタスクの内容の問題ではないのでリトライを消費しない。一過性ならその契約が
@@ -847,6 +847,10 @@ def _env_block(cfg, task, kind: str, why: str, reasons, cycle: int, log: str,
     needs の [x]（環境復帰のメモ）では再開できなくなり、**環境を直した人の approve だけ**が
     解除できる（`cmd_approve` が deny を外す）。理由が変われば数え直す——別の環境問題まで
     まとめて 1 つの上限で締めると、直った側まで止まったままになる。
+
+    検証が決着しなかった環境ブロック（`unverifiable`）には決着カードを添える。保留へ落ちた
+    ときこそ人は「で、どうすれば終わるのか」を知りたいのに、以前は保留の事実しか書いて
+    いなかった（設計 §7: 保留は 4 択のうち park が自動で選ばれた状態で、人は残りへ乗り換えられる）。
     """
     kind = str(kind or "env")
     prev = str(task.get("env_block_kind") or "")
@@ -854,7 +858,10 @@ def _env_block(cfg, task, kind: str, why: str, reasons, cycle: int, log: str,
     task.set("env_block_kind", kind)
     task.set("env_block_count", str(count))
     limit = int(getattr(cfg, "env_resume_limit", 0) or 0)
-    if limit > 0 and count > limit:
+    held = limit > 0 and count > limit
+    card = (settlement_record(task, verification, situation=kind, held=held)
+            if kind == "unverifiable" else None)
+    if held:
         # 自動の再開を止める。env_resume は落とす——残すと run_id_for が同 run の再開を
         # 約束し続け、hold を解いた人が「新しい計画で」やり直せない。
         task.drop("env_resume")
@@ -863,7 +870,8 @@ def _env_block(cfg, task, kind: str, why: str, reasons, cycle: int, log: str,
                           f"（上限 {limit}）。自動の再開を止めました（保留）。環境を直してから "
                           "承認すると保留が解けます。直せない場合は、このタスクを別のノードへ"
                           "割り当てるか、検証の設定（使うエージェント CLI・タイムアウト）を"
-                          "見直してください。", reasons, evidence=evidence, failure=failure)
+                          "見直してください。", reasons, evidence=evidence, failure=failure,
+               settlement=card)
         append_decision(cfg, task.id, "auto",
                         context=f"{task.id}（{task.title}）が同じ環境要因で {count} 回停止",
                         action="hold(env-repeat)", reason=why[:300],
@@ -872,7 +880,7 @@ def _env_block(cfg, task, kind: str, why: str, reasons, cycle: int, log: str,
                                     f"上限 {limit}。approve するまで再開しない）")
         return
     task.set("env_resume", "1")
-    _block(cfg, task, why, reasons, evidence=evidence, failure=failure)
+    _block(cfg, task, why, reasons, evidence=evidence, failure=failure, settlement=card)
     append_journal(cfg.journal, log)
 
 
@@ -1175,7 +1183,7 @@ def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle
                    "再開します。",
                    reasons, cycle,
                    log=f"cycle {cycle}: {task.id} → 人の判断（検証不能・リトライは消費しない）",
-                   evidence=ev)
+                   evidence=ev, verification=verification)
         return {"archived": 0, "followups": []}
 
     if flaky:

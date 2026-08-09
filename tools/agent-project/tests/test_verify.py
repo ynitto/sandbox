@@ -635,6 +635,45 @@ class TestVerifyAssist(unittest.TestCase):
             self.assertEqual([t.id for t in created], ["T2"])
 
 
+class TestVerifyAgentField(unittest.TestCase):
+    """`- verify_agent:` — 「何で確かめるか」をタスク単位で人が指定する口。
+
+    検証が決着しないタスク 1 件のために、ノード全体の検証を高いモデルへ寄せずに済ませる
+    ための最短経路（設計: docs/plans/2026-08-09-verification-settlement-design.md §4）。"""
+
+    def _task(self, spec):
+        return km.Task(id="T1", title="x",
+                       extra=[("task_acceptance_criteria", "何かが動く"), ("verify_agent", spec)])
+
+    def test_bare_cli_name(self):
+        self.assertEqual(km.task_verify_agent(self._task("codex")), {"agent_cli": "codex"})
+
+    def test_key_value_form(self):
+        self.assertEqual(
+            km.task_verify_agent(self._task("agent_cli=codex model=opus timeout_sec=1800")),
+            {"agent_cli": "codex", "model": "opus", "timeout_sec": 1800.0})
+
+    def test_unset_or_unreadable_falls_back_to_the_node_setting(self):
+        self.assertIsNone(km.task_verify_agent(km.Task(id="T1", title="x")))
+        self.assertIsNone(km.task_verify_agent(self._task("   ")))
+        self.assertIsNone(km.task_verify_agent(self._task("model=")))
+        # revise の削除トークンが md に残っていても CLI 名として読まない
+        self.assertIsNone(km.task_verify_agent(self._task("-")))
+        self.assertIsNone(km.task_verify_agent(self._task("none")))
+
+    def test_plan_carries_the_agent_and_the_digest_changes(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d))
+            plain = km.build_task_verification_plan(
+                cfg, km.Task(id="T1", title="x",
+                             extra=[("task_acceptance_criteria", "何かが動く")]))
+            tagged = km.build_task_verification_plan(cfg, self._task("codex"))
+            self.assertEqual(tagged["policy"]["agent"], {"agent_cli": "codex"})
+            self.assertNotIn("agent", plain["policy"])
+            # 条件を変えた検証は別 plan＝以前の条件で出た receipt は検算で落ちる
+            self.assertNotEqual(plain["digest"], tagged["digest"])
+
+
 class TestVerifyFailingStep(unittest.TestCase):
     """run_verify の失敗工程の特定: `A && B && C` の途中で沈黙する工程（grep -q 等）が落ちると
     出力は成功した前段のものしか残らず、「exit=1 なのにテストは全部通っている」という読めない

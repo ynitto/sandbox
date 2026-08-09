@@ -1723,6 +1723,23 @@ table.list tr.clickable:hover { background: var(--bg2); }
 .need-buttons { align-items: center; gap: 6px; flex-wrap: wrap; }
 .need-buttons .spacer { flex: 1; }
 
+/* 決着カード — 検証が決着しない票に、材料と 4 つの出口を 1 か所へ揃える */
+.settlement-card {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--warn, var(--border));
+  border-radius: 7px;
+  background: var(--bg3);
+}
+.settlement-card h4 { margin: 0 0 6px; font-size: 13px; }
+.settlement-card .settlement-facts,
+.settlement-card .settlement-criteria { margin: 4px 0 8px; padding-left: 18px; }
+.settlement-card .settlement-criteria { font-size: 12px; }
+.settlement-agent { align-items: center; gap: 6px; margin: 8px 0; flex-wrap: wrap; }
+.settlement-agent label { white-space: nowrap; }
+.settlement-agent .settlement-agent-input { flex: 1; min-width: 220px; }
+.settlement-buttons { gap: 6px; flex-wrap: wrap; margin-bottom: 6px; }
+
 .need-verify-revision {
   margin-top: 12px;
   padding: 10px 12px;

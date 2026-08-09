@@ -118,6 +118,13 @@ def _normalize_agent_overrides(raw) -> "dict[str, dict]":
             ov["model"] = str(v["model"]).strip()
         if isinstance(v.get("readonly"), bool):
             ov["readonly"] = v["readonly"]
+        if isinstance(v.get("fallbacks"), list):
+            fallbacks = [{"agent_cli": str(x["agent_cli"]).strip().lower(),
+                          **({"model": str(x["model"]).strip()} if x.get("model") else {})}
+                         for x in v["fallbacks"]
+                         if isinstance(x, dict) and str(x.get("agent_cli") or "").strip()]
+            if fallbacks:
+                ov["fallbacks"] = fallbacks
         if ov:
             out[key] = ov
     return out
@@ -530,7 +537,7 @@ def _record_quota_observation(cli: str, blob: str) -> None:
         return
     if not detail or not detail.get("quota_kind"):
         return
-    extra = {"quota_kind": detail["quota_kind"]}
+    extra = {"event": "quota", "quota_kind": detail["quota_kind"]}
     if detail.get("reset_at"):
         extra["reset_at"] = detail["reset_at"]
     _node_budget_record(0.0, ref="", agent_cli=cli, extra=extra)
@@ -620,7 +627,8 @@ def _write_status(effective_cli: str = "", effective_model: str = "", lifecycle:
         pass
 
 
-def _run_agent_cli(prompt: str, model: "str | None", purpose: str = "") -> str:
+def _run_agent_cli_once(prompt: str, model: "str | None", purpose: str = "",
+                        agent: "dict | None" = None) -> str:
     """エージェント CLI（設定 agent_cli: kiro/claude/copilot/codex）を 1 回呼び出してテキスト応答を返す。
     このツールの LLM 呼び出し（分解・優先順位・裁定・ルーティング等）はすべてここを通る。
     purpose（AGENT_PURPOSES のいずれか）を渡すと、設定 agents: の処理毎上書き
@@ -647,7 +655,12 @@ def _run_agent_cli(prompt: str, model: "str | None", purpose: str = "") -> str:
             "上限を上げる（dashboard のオーケストレーションタブ / agent-amigos budget node）か"
             "期間の更新を待ってください")
     cli, model_ov = _agent_for(purpose)
-    _write_status(effective_cli=cli, effective_model=(model_ov or model or ""),
+    if agent:
+        cli = str(agent.get("agent_cli") or cli).strip().lower()
+        effective_model = str(agent.get("model") or "").strip() or None
+    else:
+        effective_model = model_ov or model
+    _write_status(effective_cli=cli, effective_model=(effective_model or ""),
                   lifecycle=lifecycle, budget=nb)
     plug = load_agent_plugin(cli)               # 定義ファイルが正典（_agent_cmd も同じキャッシュ）
     # argv 渡しで長すぎるプロンプトは一時ファイルへ退避し、参照渡しの短い指示に置き換える
@@ -661,7 +674,7 @@ def _run_agent_cli(prompt: str, model: "str | None", purpose: str = "") -> str:
     # 組み立てが例外で落ちたときに finally が NameError を投げて本当の原因を隠す。
     out_file = None
     try:
-        cmd, stdin_text, out_file = _agent_cmd(cli, model_ov or model, prompt,
+        cmd, stdin_text, out_file = _agent_cmd(cli, effective_model, prompt,
                                                readonly=_agent_readonly(purpose))
         # 発生源で色を抑止（NO_COLOR/TERM=dumb）。残った ANSI は strip_ansi で除去する二段構え。
         env = {**os.environ, "NO_COLOR": "1", "TERM": "dumb", **(plug.get("env") or {})}
@@ -675,7 +688,7 @@ def _run_agent_cli(prompt: str, model: "str | None", purpose: str = "") -> str:
         _tokens_in, _tokens_out = _agentcli.parse_usage(proc.stderr or "")
         _cost_tokens, _cost_usd = parse_cost(proc.stdout or "")
         _node_budget_record(time.monotonic() - t0, ref=purpose or "agent",
-                            agent_cli=cli, model=(model_ov or model or ""),
+                            agent_cli=cli, model=(effective_model or ""),
                             tokens_in=_tokens_in,
                             tokens_out=(_tokens_out if _tokens_out is not None else
                                         ((_cost_tokens or None) if _cost_tokens else None)),
@@ -709,6 +722,50 @@ def _run_agent_cli(prompt: str, model: "str | None", purpose: str = "") -> str:
         if spill:
             with contextlib.suppress(OSError):
                 os.remove(spill)
+
+
+_ESCALATIONS_USED = 0
+
+
+def _escalation_budget() -> int:
+    """このプロセスで許す昇格の総回数（0 = 昇格しない）。"""
+    cfg = _RUNTIME_CONFIG
+    try:
+        return max(0, int(getattr(cfg, "agent_escalation_max", 3) if cfg is not None else 3))
+    except (TypeError, ValueError):
+        return 3
+
+
+def _run_agent_cli(prompt: str, model: "str | None", purpose: str = "") -> str:
+    """通常 1 回。内容系の実行失敗だけ、宣言済みの高コスト段で 1 回拾う。
+
+    **回数はプロセス単位で有界にする**（`agent_escalation_max`・既定 3）。ここは分解・
+    優先順位・裁定・ルーティングの全 LLM 呼び出しが通る単一チョークポイントなので、
+    「失敗するたび 1 段上へ」を無制限に許すと、壊れた入力や不調なモデルで倍額を延々と
+    払い続ける。予算が枯れるまで止まらない形は C7 の「必ず止まる」を満たさない。
+    agent-flow 側は retry 深さ 0 のときだけ昇格するので構造的に有界で、そちらとは
+    止め方が違うだけで方針は同じ。"""
+    global _ESCALATIONS_USED
+    try:
+        return _run_agent_cli_once(prompt, model, purpose)
+    except RuntimeError as first:
+        if classify_agent_failure(str(first)) is not None:
+            raise
+        if _ESCALATIONS_USED >= _escalation_budget():
+            log(f"モデル昇格の上限（{_escalation_budget()} 回）に達しているため昇格しません。")
+            raise
+        cfg = _RUNTIME_CONFIG
+        ov = ((cfg.agents if cfg is not None else {}) or {}).get(purpose) or {}
+        current = _agent_for(purpose)[0]
+        target = _agentcli.costlier_fallback(current, ov.get("fallbacks"))
+        if not target:
+            raise
+        target["from_agent_cli"] = current
+        _ESCALATIONS_USED += 1
+        _node_budget_record(0, ref=purpose or "agent", agent_cli=target["agent_cli"],
+                            model=target.get("model") or "",
+                            extra={"event": "model_escalation", "escalation": target})
+        return _run_agent_cli_once(prompt, None, purpose, agent=target)
 
 
 def rank_agent(ready: "list[Task]", model: "str | None", agent_run=None) -> "list[Task] | None":

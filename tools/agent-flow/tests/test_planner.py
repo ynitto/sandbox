@@ -212,6 +212,41 @@ class CoerceTasksTests(unittest.TestCase):
         out = kf._coerce_tasks([{"id": "a", "deps": [1, "b"]}])
         self.assertEqual(out[0]["deps"], ["1", "b"])
 
+    def test_replacement_metadata_preserved(self):
+        out = kf._coerce_tasks([{"id": "a", "replaces": "old", "retries": "2"}])
+        self.assertEqual(out[0]["replaces"], "old")
+        self.assertEqual(out[0]["retries"], 2)
+
+
+class RetryLadderTests(unittest.TestCase):
+    def test_first_content_retry_moves_to_declared_costlier_agent(self):
+        old = kf._AGENT_OVERRIDES
+        self.addCleanup(setattr, kf, "_AGENT_OVERRIDES", old)
+        kf._AGENT_OVERRIDES = kf._normalize_agent_overrides({
+            "worker": {"agent_cli": "ollama", "fallbacks": [{"agent_cli": "claude"}]}})
+        nodes = {"t1": {"id": "t1", "goal": "g", "deps": [], "kind": "work"}}
+        decision, new, _ = kf.continue_stub("req", nodes, {"t1": {"status": "failed"}}, 0)
+        self.assertEqual(decision, "replan")
+        self.assertEqual(new[0]["agent"]["agent_cli"], "claude")
+        self.assertGreater(new[0]["agent"]["to_relative_cost"],
+                           new[0]["agent"]["from_relative_cost"])
+
+    def test_evaluator_replacement_uses_same_retry_ladder(self):
+        old = kf._AGENT_OVERRIDES
+        self.addCleanup(setattr, kf, "_AGENT_OVERRIDES", old)
+        kf._AGENT_OVERRIDES = kf._normalize_agent_overrides({
+            "worker": {"agent_cli": "ollama", "fallbacks": [{"agent_cli": "claude"}]}})
+        nodes = {"t1": {"id": "t1", "goal": "g", "deps": [], "kind": "work"}}
+        results = {"t1": {"status": "failed", "output": "bad"}}
+        answer = ('{"decision":"replan","new_tasks":['
+                  '{"id":"t1r","goal":"fix","deps":[],"kind":"work","replaces":"t1"}]}')
+        with mock.patch.object(kf, "run_agent", return_value=answer):
+            decision, new, _ = kf.continue_agent("req", nodes, results, 0)
+        self.assertEqual(decision, "replan")
+        self.assertEqual(new[0]["replaces"], "t1")
+        self.assertEqual(new[0]["retries"], 1)
+        self.assertEqual(new[0]["agent"]["agent_cli"], "claude")
+
 
 class PlannerRobustnessTests(unittest.TestCase):
     """planner（kiro）がオブジェクトでなくベア配列を返しても落ちないこと。"""
@@ -299,6 +334,19 @@ class PlannerRobustnessTests(unittest.TestCase):
                 return_value='[{"id":"t1","goal":"分解","deps":[],"kind":"split"}]'):
             strat, tasks = kf.plan_strategy_agent("req", None)
         self.assertEqual([t["id"] for t in tasks], ["t1"])
+        self.assertEqual([d["decision"] for d in strat["decision_comparisons"]],
+                         ["planner.pattern", "planner.parallelism"])
+
+    def test_rule_agreement_is_measurement_only(self):
+        answer = json.dumps({
+            "patterns": ["tournament"], "parallelism": 4, "reason": "llm choice",
+            "tasks": [{"id": "t1", "goal": "g", "deps": [], "kind": "work"}],
+        })
+        with mock.patch.object(kf, "run_agent", return_value=answer):
+            strategy, _ = kf.plan_strategy_agent("単純な作業", None)
+        self.assertEqual(strategy["patterns"], ["tournament"])
+        self.assertEqual(strategy["parallelism"], 4)
+        self.assertTrue(all(not d["agree"] for d in strategy["decision_comparisons"]))
 
 
 class FlowPlannerAgentCliTests(unittest.TestCase):

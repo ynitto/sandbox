@@ -191,6 +191,20 @@ def task_guide_block(task: Task) -> str:
     return "\n".join(parts)
 
 
+def task_read_allocation_block(task: Task) -> str:
+    try:
+        rows = json.loads(str(task.get("read_allocation") or ""))
+    except (TypeError, ValueError):
+        return ""
+    lines = []
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict) or not str(row.get("path") or "").strip():
+            continue
+        where = str(row["path"]).strip() + (f" ({row['range']})" if row.get("range") else "")
+        lines.append(f"- {where}: {row.get('reason') or 'タスクに必要な文脈'}")
+    return "読込割付（内側プランナーは各サブタスクへ必要分だけ引き継ぐこと）:\n" + "\n".join(lines) if lines else ""
+
+
 def project_context_block(cfg: "Config", task: "Task | None" = None) -> str:
     """安定プレフィックス化（案 H・オプトイン）: charter / rules.md / リポジトリ理解を
     request 本体から外して渡すためのブロック。build_request が今日埋め込んでいるのと
@@ -224,6 +238,9 @@ def build_request(task: Task, cfg: "Config | None" = None, *,
     guide = task_guide_block(task)
     if guide:
         base += guide + "\n\n"
+    allocation = task_read_allocation_block(task)
+    if allocation:
+        base += allocation + "\n\n"
     # 実行規律（完了条件を満たすまでやり切る）を伝える定型文。**内側プランナーのパターン語彙を
     # 使わないこと**——かつて「反復し…（loop-until-done）」と書いていたため、全タスクの要求文が
     # パターン名とキーワード（反復）を含み、flow-planner の戦略選定とフォールバックのキーワード

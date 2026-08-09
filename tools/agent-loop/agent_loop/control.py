@@ -230,6 +230,8 @@ def _write_status(lifecycle: str = "run", budget: "dict | None" = None,
         # セッション開始コマンド: 直近のペイン起動で適用した revision（未適用は省略）。
         if _SESSION_COMMANDS_REV_APPLIED is not None:
             rec["session_commands_revision_applied"] = _SESSION_COMMANDS_REV_APPLIED
+        if _TUNING_REV_APPLIED is not None:
+            rec["tuning_revision_applied"] = _TUNING_REV_APPLIED
         if budget is not None:
             rec["budget"] = {"exceeded": bool(budget.get("exceeded")),
                              "soft": bool(budget.get("soft"))}

@@ -983,6 +983,62 @@ class TestFailureTriage(unittest.TestCase):
             self.assertFalse(t.get("env_block_count"))
             self.assertEqual(t.retries, 1)
 
+    def test_unverifiable_block_carries_a_settlement_card(self):
+        """検証が決着しない票には、材料と 4 つの出口を載せる（C4: 1 回で決めさせる）。
+
+        以前はこの票に「検証不能」としか書いておらず、人が押せるのは承認（＝同じ条件で
+        もう一度）だけに見えた。出口が見えないと、同じ工程を何度も焼き直す往復になる。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", status="doing", verify="")
+            cfg = cfg_for(d, env_resume_limit=0)
+            task = km.load_tasks(cfg.backlog)[0]
+            verification = {"criteria": [
+                {"id": 1, "text": "E2E fixture がある", "verdict": "unverifiable",
+                 "note": "検証エージェントが時間切れ"},
+                {"id": 2, "text": "型が通る", "verdict": "pass", "note": ""}],
+                "verified_with": {"agent_cli": "ollama", "model": "qwen3.5:9b",
+                                  "timeout_sec": 1800, "elapsed_sec": 5400, "source": "node"}}
+            km._env_block(cfg, task, "unverifiable", "[agent-error:env] 検証不能: …",
+                          {}, 1, log="log", verification=verification)
+            body = (d / "needs" / "T1.md").read_text(encoding="utf-8")
+            card = json.loads(re.search(r"^settlement: (.+)$", body, re.M).group(1))
+            self.assertEqual(card["options"],
+                             ["retry", "amend", "park", "accept-unverified"])
+            self.assertEqual([c["text"] for c in card["blocked"]], ["E2E fixture がある"])
+            self.assertEqual(card["verified_with"]["agent_cli"], "ollama")
+            # 本文（md を直接読む人・CLI 運用者向け）にも 4 つの道が具体的なコマンドで出る
+            self.assertIn("検証が決着していません", body)
+            self.assertIn("--verify-agent", body)
+            self.assertIn("force-complete", body)
+            self.assertIn("判定を緩めて通す設定はありません", body)
+
+    def test_held_card_drops_park_and_says_so(self):
+        # 保留に落ちた票では park は済んでいる。押しても何も変わらない選択肢は出さない。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", status="doing", verify="")
+            cfg = cfg_for(d, env_resume_limit=1)
+            for cycle in (1, 2):
+                task = km.load_tasks(cfg.backlog)[0]
+                task.status = "doing"
+                km._env_block(cfg, task, "unverifiable", "検証不能", {}, cycle, log="log")
+            body = (d / "needs" / "T1.md").read_text(encoding="utf-8")
+            card = json.loads(re.search(r"^settlement: (.+)$", body, re.M).group(1))
+            self.assertNotIn("park", card["options"])
+            self.assertTrue(card["held"])
+            self.assertEqual(card["attempts"], 2)
+
+    def test_non_verification_blocks_get_no_card(self):
+        # 認証切れ等は「検証が決着しない」状況ではない。無関係な票に 4 択を出さない。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", status="doing")
+            cfg = cfg_for(d, env_resume_limit=0)
+            task = km.load_tasks(cfg.backlog)[0]
+            km._settle_failure(cfg, task, "[agent-error:auth] 認証切れ", 1, "", {})
+            self.assertNotIn("settlement:", (d / "needs" / "T1.md").read_text(encoding="utf-8"))
+
     def test_env_resume_survives_memo_feedback(self):
         # 環境ブロック後に needs へ「直した」と書いて [x] しても同 run 再開（計画変更ではない）
         with tempfile.TemporaryDirectory() as d:

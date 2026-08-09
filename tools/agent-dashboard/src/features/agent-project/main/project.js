@@ -402,6 +402,41 @@ function _extractMrUrls(...sources) {
   return out;
 }
 
+// 決着カード（検証が決着しない票）。出口は 4 つ（retry / amend / park / accept-unverified）に
+// 固定されていて、どれを出すかは agent-project が決める——ここは運ぶだけ。判断を 2 か所で
+// するとズレる（設計: docs/plans/2026-08-09-verification-settlement-design.md §3）。
+// 壊れていれば null（＝カードを出さない。従来どおりの票として表示される）。
+function _parseSettlement(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return null;
+  let data;
+  try {
+    data = JSON.parse(s);
+  } catch {
+    return null;
+  }
+  if (!data || typeof data !== 'object' || !Array.isArray(data.options)) return null;
+  const str = (v) => String(v == null ? '' : v);
+  const w = data.verified_with && typeof data.verified_with === 'object' ? data.verified_with : null;
+  return {
+    situation: str(data.situation),
+    options: data.options.map(str).filter(Boolean),
+    current: str(data.current),
+    attempts: Number.isFinite(data.attempts) ? data.attempts : 0,
+    held: data.held === true,
+    blocked: (Array.isArray(data.blocked) ? data.blocked : [])
+      .filter((c) => c && typeof c === 'object')
+      .map((c) => ({ id: str(c.id), text: str(c.text), note: str(c.note) })),
+    verifiedWith: w ? {
+      agentCli: str(w.agent_cli),
+      model: str(w.model),
+      timeoutSec: Number(w.timeout_sec) || 0,
+      elapsedSec: Number(w.elapsed_sec) || 0,
+      source: str(w.source),
+    } : null,
+  };
+}
+
 // 検証レポートの要約（S5）。人が検収で読むのは「コマンド」ではなく **基準と証跡**。
 // 壊れていれば null（＝要約を出さない）。表示できないことより、誤った要約を出す方が悪い。
 function _parseVerification(raw) {
@@ -743,6 +778,7 @@ function parseNeeds(text, id) {
   let body = s;
   let deliveryRaw = '';
   let verificationRaw = '';
+  let settlementRaw = '';
   const fmFields = {};          // frontmatter の生キー（失敗の構造化フィールドを読むのに使う）
   if (fm) {
     body = s.slice(fm[0].length);
@@ -760,6 +796,7 @@ function parseNeeds(text, id) {
       else if (key === 'mr-url') need.mrUrl = val;
       else if (key === 'delivery') deliveryRaw = val;
       else if (key === 'verification') verificationRaw = val;
+      else if (key === 'settlement') settlementRaw = val;
     }
   }
   const title = body.match(/^#\s+(.+)$/m);
@@ -832,6 +869,7 @@ function parseNeeds(text, id) {
   // 検収サブ画面: frontmatter delivery を優先し、無ければ判断材料から復元する
   need.delivery = _normalizeDelivery(_parseDeliveryJson(deliveryRaw));
   need.verification = _parseVerification(verificationRaw);
+  need.settlement = _parseSettlement(settlementRaw);
   if (!need.delivery.length) need.delivery = _normalizeDelivery(_deliveryFromDetail(need.detail));
   need.mrUrls = _extractMrUrls(need.mrUrl, need.delivery.map((e) => e.mr_url).join(' '), need.detail);
   if (!need.mrUrl && need.mrUrls.length) need.mrUrl = need.mrUrls[0];

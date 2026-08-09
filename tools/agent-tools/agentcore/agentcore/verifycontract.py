@@ -76,6 +76,47 @@ def plan_digest(plan: dict) -> str:
     return _DIGEST_PREFIX + hashlib.sha256(canonical_json(body).encode("utf-8")).hexdigest()
 
 
+def normalize_plan_agent(raw) -> "dict | None":
+    """`policy.agent`（自然文基準の判定に使うエージェントの明示指定）を正規化する。
+
+    plan は「何を確かめるか」だけでなく「何で確かめるか」も持つ。持たせないと、検証が
+    決着しないタスクに対して人が降ろせる条件がノード全体の設定しか無くなり、1 件のために
+    全プロジェクトの検証を高いモデルへ寄せることになる（設計:
+    docs/plans/2026-08-09-verification-settlement-design.md §4）。
+
+    `policy` は digest の計算対象なので、条件を変えた検証は**別の plan** になり、
+    以前の条件で出た receipt は検算で落ちる。違う条件で確かめたものを同じ判定として
+    混ぜないための性質で、意図した挙動である。
+
+    空・型違い・値なしは None（指定なし＝runner 側の設定に従う）。壊れた指定で検証を
+    落とさない——ここで例外にすると、人が打ち間違えた 1 文字でタスクが検証不能になる。
+    """
+    if not isinstance(raw, dict):
+        return None
+    out: dict = {}
+    cli = str(raw.get("agent_cli") or "").strip().lower()
+    if cli:
+        out["agent_cli"] = cli
+    model = str(raw.get("model") or "").strip()
+    if model:
+        out["model"] = model
+    if raw.get("timeout_sec") is not None:
+        try:
+            timeout = float(raw["timeout_sec"])
+        except (TypeError, ValueError):
+            timeout = 0.0
+        if timeout > 0:
+            out["timeout_sec"] = timeout
+    return out or None
+
+
+def plan_agent(plan) -> "dict | None":
+    """plan が指定する検証エージェント（無ければ None）。読み取りの 1 実装。"""
+    if not isinstance(plan, dict):
+        return None
+    return normalize_plan_agent((plan.get("policy") or {}).get("agent"))
+
+
 def build_plan(task_id: str, *, criteria=None, commands=None, workspace: str = "",
                policy: "dict | None" = None, integration: "dict | None" = None) -> dict:
     """verification_plan を正規化して digest 付きで返す。基準もコマンドも無ければ ValueError
@@ -104,6 +145,9 @@ def build_plan(task_id: str, *, criteria=None, commands=None, workspace: str = "
             if timeout_sec <= 0:
                 raise ValueError("policy.timeout_sec は正の数が必要です")
             pol["timeout_sec"] = timeout_sec
+        agent = normalize_plan_agent(policy.get("agent"))
+        if agent:
+            pol["agent"] = agent
     if pol:
         plan["policy"] = pol
     plan["digest"] = plan_digest(plan)
@@ -324,7 +368,8 @@ def receipt_overall(receipt: dict) -> str:
 
 def build_receipt(plan: dict, *, result_rev: str, commands=None, criteria=None,
                   started_at: str = "", finished_at: str = "",
-                  verified_by: str = "", integration: "dict | None" = None) -> dict:
+                  verified_by: str = "", integration: "dict | None" = None,
+                  verified_with: "dict | None" = None) -> dict:
     """runner が返す receipt を組み立てる。verdict は receipt_overall で導出する
     （返す側と採用側が同じ規則で判定する——自称と検算がずれない）。"""
     receipt = {
@@ -345,6 +390,12 @@ def build_receipt(plan: dict, *, result_rev: str, commands=None, criteria=None,
         receipt["finished_at"] = str(finished_at)
     if verified_by:
         receipt["verified_by"] = str(verified_by)
+    if verified_with:
+        # 「何で・どれだけ待って確かめたか」。次の一手（同じ条件で再試行か、条件を変えるか、
+        # 未検証で締めるか）を人が推測ではなく記録から選ぶための材料で、採否の判定には
+        # 使わない——受理は「何を出したか」で決まる（C6）。
+        receipt["verified_with"] = {k: v for k, v in dict(verified_with).items()
+                                    if v not in (None, "")}
     return receipt
 
 

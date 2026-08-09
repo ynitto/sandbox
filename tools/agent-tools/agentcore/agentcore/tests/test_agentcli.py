@@ -239,6 +239,16 @@ class TestReadonlyWarningAndErrors(_Isolated):
         with self.assertRaisesRegex(agentcli.AgentCliError, "relative_cost"):
             agentcli.normalize("bad", {"command": ["c"], "relative_cost": -1}, "bad.json")
 
+    def test_costlier_fallback_skips_equal_cost_and_takes_one_step(self):
+        self.write_def("proj/agents", "free", {"command": ["c"], "relative_cost": 0})
+        self.write_def("proj/agents", "peer", {"command": ["c"], "relative_cost": 0})
+        self.write_def("proj/agents", "paid", {"command": ["c"], "relative_cost": 2})
+        got = agentcli.costlier_fallback("free", [
+            {"agent_cli": "peer"}, {"agent_cli": "paid", "model": "large"}],
+            str(self.tmp / "proj"))
+        self.assertEqual((got["agent_cli"], got["model"], got["to_relative_cost"]),
+                         ("paid", "large", 2.0))
+
     def test_best_effort_warns_enforced_does_not(self):
         self.write_def("proj/agents", "be", {"command": ["c"], "readonly": "best-effort"})
         self.write_def("proj/agents", "en", {"command": ["c"], "readonly": "enforced"})

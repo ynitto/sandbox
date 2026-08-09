@@ -113,7 +113,7 @@
     },
     "ledger_record": {
       "type": "object",
-      "description": "ledger/<YYYYMMDD>.jsonl の 1 行 — 1 回の agent CLI 実行の記帳（各ツールが O_APPEND で追記。書き換え・削除はしない）。消費集計: tokens_in+tokens_out があればその値、無ければ seconds × rate で読み出し時に推定。quota_kind を持つ行は消費ではなく**観測**（その CLI が枠に当たった事実）で、seconds=0・トークン無しで書く",
+      "description": "ledger/<YYYYMMDD>.jsonl の 1 行 — 1 回の agent CLI 実行の記帳（各ツールが O_APPEND で追記。書き換え・削除はしない）。消費集計: tokens_in+tokens_out があればその値、無ければ seconds × rate で読み出し時に推定。`event` を持つ行は消費ではなく**観測**（枠に当たった / モデルを昇格した、という事実）で、seconds=0・トークン無しで書き、消費にも実行回数にも数えない",
       "required": ["ts", "workload", "seconds"],
       "properties": {
         "ts": {"type": "string", "description": "ISO8601 UTC"},
@@ -125,9 +125,26 @@
         "seconds": {"type": "number", "minimum": 0, "description": "agent CLI の実実行秒"},
         "ref": {"type": "string", "description": "帰属（例 amigos: <mission-id>/<role>、project: <project>/<task-id>）"},
         "purpose": {"type": "string", "description": "仕事種別（例 planner / work / verify）。旧行は ref を代用"},
+        "event": {
+          "type": "string",
+          "description": "この行が**消費ではなく観測**であることを示す（`quota` / `model_escalation` など）。観測行は seconds=0・トークン無しで書き、読み手は消費・実行回数のどちらにも数えない。数えると、コストを測るための行がコストの平均を動かす",
+          "examples": ["quota", "model_escalation"]
+        },
+        "escalation": {
+          "type": "object",
+          "description": "event=model_escalation の内訳（昇格元 / 先と相対コスト）",
+          "properties": {
+            "agent_cli": {"type": "string"},
+            "model": {"type": "string"},
+            "from_agent_cli": {"type": "string"},
+            "from_relative_cost": {"type": "number"},
+            "to_relative_cost": {"type": "number"}
+          },
+          "additionalProperties": true
+        },
         "quota_kind": {
           "enum": ["exhausted", "rate_limit"],
-          "description": "この行が quota 観測であることを示す。exhausted=累積枠の枯渇（期間が変わるまで戻らない）/ rate_limit=時限枠（reset_at 以降に戻る）。読み手（管理面）は period 窓の最新行だけを見て候補から外すので、**この行を消す書き手は要らない**（期間が変わればウィンドウから落ちる）"
+          "description": "quota 観測（`event: quota`）の細分。exhausted=累積枠の枯渇（期間が変わるまで戻らない）/ rate_limit=時限枠（reset_at 以降に戻る）。読み手（管理面）は period 窓の最新行だけを見て候補から外すので、**この行を消す書き手は要らない**（期間が変わればウィンドウから落ちる）"
         },
         "reset_at": {"type": "string", "description": "quota_kind=rate_limit の復帰予定（ISO8601 UTC）。CLI のメッセージから取れなかったときは省略し、読み手が ts + 既定 TTL で失効させる"},
         "node": {"type": "string", "description": "ノード ID"},

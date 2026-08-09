@@ -55,6 +55,22 @@ def _coerce_tasks(raw, existing=()):
             "deps": [str(d) for d in (t.get("deps") or [])],
             "kind": kind,
         }
+        reads = normalize_read_allocation(t.get("read_allocation"))
+        if reads:
+            node["read_allocation"] = reads
+        # full も digest も明示宣言として運ぶ。既定は kind で決まるので、`digest` は
+        # 「判断役だが要約で足りる」を宣言する側の意思表示になる（既定より強い）。
+        if str(t.get("dependency_input") or "").strip().lower() in ("full", "digest"):
+            node["dependency_input"] = str(t["dependency_input"]).strip().lower()
+        replaces = str(t.get("replaces") or "").strip()
+        if replaces:
+            node["replaces"] = replaces
+        try:
+            retries = int(t.get("retries") or 0)
+        except (TypeError, ValueError):
+            retries = 0
+        if retries > 0:
+            node["retries"] = retries
         out.append(node)
     return out
 
@@ -275,6 +291,21 @@ def plan_strategy_stub(request: str, review="auto", granularity="auto"):
     return strategy, tasks
 
 
+def _record_rule_agreement(strategy: dict, request: str, granularity: str) -> dict:
+    """LLM の判断を現行ルールと照合して記録する。実行に使う strategy は変更しない。"""
+    llm_pattern = (strategy.get("patterns") or [""])[0]
+    llm_parallelism = int(strategy.get("parallelism") or 0)
+    rule_pattern = _detect_pattern(request)
+    rule_parallelism = maybe_scale_parallelism(request, _parallelism(request, 2), granularity)
+    strategy["decision_comparisons"] = [
+        {"decision": "planner.pattern", "llm": llm_pattern,
+         "rule": rule_pattern, "agree": llm_pattern == rule_pattern},
+        {"decision": "planner.parallelism", "llm": llm_parallelism,
+         "rule": rule_parallelism, "agree": llm_parallelism == rule_parallelism},
+    ]
+    return strategy
+
+
 def plan_strategy_agent(request: str, model: str | None, review="auto", granularity="auto",
                         context: str = ""):
     """kiro-cli にパターン選択・並列数・初期グラフを決めさせる。
@@ -312,7 +343,13 @@ def plan_strategy_agent(request: str, model: str | None, review="auto", granular
         "依存は既存タスク id のみ、循環は作らないこと。\n"
         + "出力は JSON オブジェクトのみ:\n"
         '{"patterns": ["..."], "parallelism": N, "reason": "...", '
-        '"tasks": [{"id": "t1", "goal": "...", "deps": [], "kind": "work"}]}\n\n'
+        '"tasks": [{"id": "t1", "goal": "...", "deps": [], "kind": "work", '
+        '"read_allocation": [{"path": "src/x.py", "range": "10-40", "reason": "変更点"}], '
+        '"dependency_input": "digest"}]}\n'
+        "work/generate ノードには、最初に読むべき path・任意の range・reason を read_allocation に割り付けてください。\n\n"
+        "依存成果は work/generate では要約と成果物参照だけの digest です"
+        "（verify/reduce/synthesize/judge/filter は判断対象そのものなので既定で全文）。"
+        "work/generate でも完全な構造化データが不可欠なノードだけ dependency_input=full を宣言してください。\n\n"
         f"要求: {request}"
     )
     prompt = _promptcompose.compose([context], [prompt])
@@ -330,7 +367,7 @@ def plan_strategy_agent(request: str, model: str | None, review="auto", granular
             "review": _review_decision(review, patterns),
             "reason": str(data.get("reason", "")),
         }
-        return strategy, tasks
+        return _record_rule_agreement(strategy, request, granularity), tasks
 
     text = None
     try:
@@ -486,7 +523,6 @@ def plan_strategy_flow_planner(request: str, model: str | None, review="auto", g
             "reason": f"[flow-planner] {strategy.get('reason', '')}（粒度 {resolved}）",
             "granularity": resolved,
         }
-        return final_strategy, tasks
+        return _record_rule_agreement(final_strategy, request, resolved), tasks
     except Exception as e:  # noqa: BLE001 — flow-planner 失敗時はエージェント planner にフォールバック
         return _planner_fallback(request, model, review, granularity, context, str(e))
-

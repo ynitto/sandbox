@@ -165,7 +165,8 @@ def append_runlog(path: "Path | None", record: dict) -> None:
         pass
 
 
-def _block(cfg, task, reason, reasons, evidence: str = "", failure: "dict | None" = None):
+def _block(cfg, task, reason, reasons, evidence: str = "", failure: "dict | None" = None,
+           settlement: "dict | None" = None):
     # offloaded のまま blocked にすると、走っている flow が放置され reap も拾えない。
     if task.norm_status() == "offloaded" or task.get("flow_run"):
         detached = detach_flow_run(cfg, task, reason[:120] or "hold/block により委譲から切り離し")
@@ -184,7 +185,8 @@ def _block(cfg, task, reason, reasons, evidence: str = "", failure: "dict | None
         delivery = delivery_entries(cfg, task)
     except Exception:  # noqa: BLE001 — delivery 取得失敗で本来の blocked 遷移を壊さない
         delivery = None
-    write_needs_file(cfg, task, reason, evidence=evidence, delivery=delivery, failure=failure)
+    write_needs_file(cfg, task, reason, evidence=evidence, delivery=delivery, failure=failure,
+                     settlement=settlement)
     release_claim(cfg, task)              # blocked は doing でなくなる＝実行権（claim）を解放（人手 hold 含む）
 
 

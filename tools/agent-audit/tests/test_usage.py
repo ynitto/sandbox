@@ -110,6 +110,19 @@ class UsageTests(AuditTestCase):
              "average_tokens": 200.0, "pass_rate": 0.5},
         ])
 
+    def test_stats_reports_agreement_rate_per_decision(self):
+        st = self.make_store()
+        ts = _iso_now(-60)
+        for i, agree in enumerate((True, False, True), 1):
+            st.append_record({
+                "id": f"run-{i}", "ts": ts, "kind": "run", "tool": "agent-flow",
+                "status": "done", "decision_comparisons": [
+                    {"decision": "planner.pattern", "agree": agree}]})
+        data = stats.aggregate_stats(st, "total")
+        self.assertEqual(data["decisions"], [{
+            "decision": "planner.pattern", "samples": 3, "matches": 2,
+            "agreement_rate": 0.6667}])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -91,8 +91,30 @@ def _vp_inconclusive_criteria(plan: dict, note: str) -> "list[dict]":
              "note": note[:300]} for c in plan.get("criteria") or []]
 
 
+def _vp_verified_with(args, plan: dict, elapsed: "float | None" = None) -> dict:
+    """この検証を「何で・どれだけ待って」行ったかの記録（receipt.verified_with）。
+
+    判定には使わない。人が次の一手を選ぶ材料で、これが無いと「クラウドでやり直せば通るのか」
+    を推測で決めることになる（設計: docs/plans/2026-08-09-verification-settlement-design.md §6）。"""
+    explicit = _verifycontract.plan_agent(plan)
+    cli, model = _effective_agent("verify", getattr(args, "model", None) or None, explicit)
+    rec = {"agent_cli": cli, "model": model or "",
+           "source": "plan" if explicit else "node"}
+    timeout = (explicit or {}).get("timeout_sec") or _agent_timeout("verify")
+    if timeout:
+        rec["timeout_sec"] = float(timeout)
+    if elapsed is not None:
+        rec["elapsed_sec"] = round(float(elapsed), 1)
+    return rec
+
+
 def _vp_judge_criteria(args, plan: dict, cwd: "str | None", rev: str) -> "list[dict]":
     """criterion を verifier セッション 1 回で判定する（フェイルクローズ正規化込み）。
+
+    使うエージェントは plan の `policy.agent`（タスク単位の明示指定）＞ ノードの設定。
+    plan 側を強くしてあるのは、検証が決着しないタスク 1 件のためにノード全体の検証を
+    高いモデルへ寄せずに済ませるため（設計:
+    docs/plans/2026-08-09-verification-settlement-design.md §4）。
 
     呼び出し失敗（CLI 不在・上限・タイムアウト）は環境要因なので全基準 inconclusive
     ——「検証できなかった」を fail（＝修正リトライを焼く）と混同しない。"""
@@ -103,7 +125,8 @@ def _vp_judge_criteria(args, plan: dict, cwd: "str | None", rev: str) -> "list[d
     meta_request = str(getattr(args, "request", "") or "")
     prompt = _vp_verifier_prompt(plan, cwd, rev, meta_request)
     try:
-        text = run_agent(prompt, getattr(args, "model", None) or None, purpose="verify")
+        text = run_agent(prompt, getattr(args, "model", None) or None, purpose="verify",
+                         agent=_verifycontract.plan_agent(plan))
     except Exception as e:  # noqa: BLE001 — CLI 不在・上限・タイムアウトは環境要因
         return _vp_inconclusive_criteria(plan, f"検証エージェントを実行できませんでした: {str(e)[:200]}")
     try:
@@ -215,7 +238,10 @@ def run_verification_plan(bus: "Bus", args, who: str, *, heartbeat=None,
         confirm = 1
     commands = [while_alive(lambda c=c: _vp_run_command(
         c["command"], vcwd, timeout, env, confirm)) for c in plan.get("commands") or []]
+    judged_at = time.monotonic()
     criteria = while_alive(lambda: _vp_judge_criteria(args, plan, vcwd, rev))
+    verified_with = (_vp_verified_with(args, plan, time.monotonic() - judged_at)
+                     if plan.get("criteria") else None)
     integration = _verifycontract.run_plan_integration(plan, vcwd, rev)
     if in_clone:
         # clone の成果は push 済みコミットなので verifier の残骸を破棄してよい。cwd（投入
@@ -224,7 +250,8 @@ def run_verification_plan(bus: "Bus", args, who: str, *, heartbeat=None,
     receipt = _verifycontract.build_receipt(
         plan, result_rev=rev, commands=commands, criteria=criteria,
         started_at=started, finished_at=now_iso(),
-        verified_by=str(getattr(args, "node_id", "") or ""), integration=integration)
+        verified_by=str(getattr(args, "node_id", "") or ""), integration=integration,
+        verified_with=verified_with)
     bus.write_receipt(args.run_id, receipt)
     bus.event(who, "verify", verdict=receipt["verdict"], rev=rev[:12],
               digest=str(plan.get("digest") or "")[:19])

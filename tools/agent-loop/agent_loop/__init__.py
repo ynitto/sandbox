@@ -20,6 +20,7 @@ _FRAGMENTS = (
     "config",
     "instructions",
     "session_commands",
+    "tuning",
     "control",
     "tmux_util",
     "session",

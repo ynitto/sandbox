@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agent-tuning.schema.json",
+  "title": "エージェント調整 — 汎用プロンプト注入・起動環境契約",
+  "description": "$AGENT_TUNING_DIR（既定 ~/.agents/tuning/）の tuning.json。agent-loop が pull し、ツール固有名を知らずにプロンプト注入とペイン環境を適用する。委譲先へは伝播しない。不在・破損・enabled=false は no-op。external-facing profile は外向き成果物へ文体圧縮を漏らさない明示的 opt-out。",
+  "$defs": {
+    "when": {
+      "type": "object",
+      "properties": {
+        "engines": {"type": "array", "items": {"type": "string"}},
+        "workloads": {"type": "array", "items": {"type": "string"}},
+        "agent_cli": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": true
+    },
+    "injection": {
+      "type": "object",
+      "required": ["id", "trigger", "source"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "trigger": {"enum": ["session_start", "every_prompt"]},
+        "source": {
+          "type": "object",
+          "required": ["type"],
+          "properties": {
+            "type": {"enum": ["file", "inline"]},
+            "path": {"type": "string"},
+            "text": {"type": "string"},
+            "max_chars": {"type": "integer", "minimum": 1, "maximum": 16000, "default": 4000}
+          },
+          "additionalProperties": false
+        },
+        "when": {"$ref": "#/$defs/when"}
+      },
+      "additionalProperties": true
+    },
+    "environment": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "path_prepend": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "vars": {"type": "object", "additionalProperties": {"type": "string"}},
+        "when": {"$ref": "#/$defs/when"}
+      },
+      "additionalProperties": true
+    },
+    "profile": {
+      "type": "object",
+      "properties": {
+        "injections": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "env": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
+      },
+      "additionalProperties": false
+    }
+  },
+  "type": "object",
+  "required": ["version", "revision", "profiles"],
+  "properties": {
+    "version": {"type": "integer", "const": 1},
+    "revision": {"type": "integer", "minimum": 0},
+    "enabled": {"type": "boolean", "default": true},
+    "injections": {"type": "array", "items": {"$ref": "#/$defs/injection"}},
+    "env": {"type": "array", "items": {"$ref": "#/$defs/environment"}},
+    "profiles": {
+      "type": "object",
+      "required": ["default", "external-facing"],
+      "properties": {
+        "default": {"$ref": "#/$defs/profile"},
+        "external-facing": {
+          "allOf": [
+            {"$ref": "#/$defs/profile"},
+            {"type": "object", "properties": {"injections": {"type": "array", "maxItems": 0}}}
+          ]
+        }
+      },
+      "additionalProperties": {"$ref": "#/$defs/profile"}
+    },
+    "updated_at": {"type": "string"},
+    "updated_by": {"type": "string"}
+  },
+  "additionalProperties": true
+}

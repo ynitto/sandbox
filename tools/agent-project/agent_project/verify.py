@@ -553,6 +553,33 @@ def task_verification_commands(task: "Task") -> "list[dict]":
     return out
 
 
+def task_verify_agent(task: "Task") -> "dict | None":
+    """`- verify_agent:` の指定（自然文基準を判定するエージェント）。無ければ None。
+
+    書式は既存の key=value 行（`- assess: c=3 r=3 a=2` と同じ流儀）:
+
+        - verify_agent: agent_cli=codex model=opus timeout_sec=1800
+        - verify_agent: codex          # `=` が無ければ CLI 名だけの指定と読む
+
+    人が詰まったカードから 1 行書いて `revise` するのが想定経路なので、素の CLI 名を
+    受けるほうを優先する。読めない指定は None に倒す——打ち間違いでタスクを検証不能に
+    しない（指定が効いたかは receipt の `verified_with` で確かめられる）。
+    """
+    raw = str(task.get("verify_agent") or "").strip()
+    # `-` / `none` は revise の削除トークン。revise 経由なら行ごと落ちるが、md を手で編集した
+    # 場合に残りうる。CLI 名として読むと「`-` という定義が無い」で検証が落ちるので未指定に倒す。
+    if not raw or raw.lower() in ("-", "none"):
+        return None
+    if "=" not in raw:
+        return _verifycontract.normalize_plan_agent({"agent_cli": raw.split()[0]})
+    fields: dict = {}
+    for token in raw.split():
+        key, sep, val = token.partition("=")
+        if sep and key.strip() in ("agent_cli", "model", "timeout_sec"):
+            fields[key.strip()] = val.strip()
+    return _verifycontract.normalize_plan_agent(fields)
+
+
 def build_task_verification_plan(cfg: "Config", task: "Task") -> "dict | None":
     """タスクの検証材料から verification_plan（digest 付き）を確定する。材料が無ければ None。
 
@@ -573,7 +600,10 @@ def build_task_verification_plan(cfg: "Config", task: "Task") -> "dict | None":
     return _verifycontract.build_plan(
         task.id, criteria=criteria, commands=commands,
         workspace=str(ws.get("url") or ""),
-        policy={"timeout_sec": cfg.verify_timeout, "confirm": cfg.verify_confirm},
+        policy={"timeout_sec": cfg.verify_timeout, "confirm": cfg.verify_confirm,
+                # タスク単位の検証条件。digest に入るので、条件を変えると別 plan になり
+                # 以前の条件で出た receipt は検算で落ちる（違う条件の判定を混ぜない）。
+                "agent": task_verify_agent(task)},
         integration=integration)
 
 
@@ -644,10 +674,14 @@ def receipt_to_verification(receipt: dict) -> dict:
                                   and e.get("path")][:20]},
                     "note": str(c.get("note") or "")[:500]})
     counts = {v: sum(1 for c in out if c["verdict"] == v) for v in VERDICTS}
-    return {"criteria": out, "pass": counts["pass"], "fail": counts["fail"],
-            "unverifiable": counts["unverifiable"],
-            "ok": bool(out) and counts["fail"] == 0 and counts["unverifiable"] == 0,
-            "receipt": True, "integration": receipt.get("integration")}
+    rec = {"criteria": out, "pass": counts["pass"], "fail": counts["fail"],
+           "unverifiable": counts["unverifiable"],
+           "ok": bool(out) and counts["fail"] == 0 and counts["unverifiable"] == 0,
+           "receipt": True, "integration": receipt.get("integration")}
+    # 「何で・どれだけ待って確かめたか」を下流（決着カード）まで運ぶ。判定には使わない。
+    if isinstance(receipt.get("verified_with"), dict):
+        rec["verified_with"] = receipt["verified_with"]
+    return rec
 
 
 # 固定コマンド実行の 1 実装（agent-flow runner と共有）。モジュール名を経由させるのは

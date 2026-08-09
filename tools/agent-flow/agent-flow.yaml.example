@@ -89,6 +89,8 @@ executor: agent            # ワーカーバス: 組み込み agent（エージ�
 #   classify:              #   readonly: true は「読み取り専用で呼ぶ」宣言。**planner /
 #     agent_cli: ollama    #   evaluator は宣言しなくても既定で readonly**（材料を全部プロンプトで
 #     model: qwen3         #   受け取る読まない役割。道具付きで呼ぶとツールループ型の CLI が
+#     fallbacks:           #   内容失敗時の1段昇格。relative_cost が現在以下の候補は無視する。
+#       - {agent_cli: claude, model: sonnet}
 #     readonly: true       #   JSON 応答を規約違反として蹴る）。他は既定 false。テキスト系 kind
                            #   （classify/filter/judge/reduce/split/map/synthesize）には明示で付ける。
                            #   work / verify はワークスペースを触るので付けない。

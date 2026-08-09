@@ -38,7 +38,8 @@ def _executor_accepts(execute, name: str) -> bool:
 def call_executor(execute, kind: str, goal: str, dep_results: dict, model: "str | None",
                   art_dir, dep_arts, repo_instruction: str = "", workspace: "dict | None" = None,
                   references: "list[dict] | None" = None, request: str = "", instructions: str = "",
-                  prompt_table: bool = False, repair: "dict | None" = None, context: str = ""):
+                  prompt_table: bool = False, repair: "dict | None" = None, context: str = "",
+                  read_allocation: "list[dict] | None" = None, agent: "dict | None" = None):
     """executor を呼ぶ単一の入口。
     - `repo_instruction`（ワークスペース＋参照の作業指示テキスト）は、受け取れる executor には**別引数**で
       渡して goal を汚さない（gitlab のイシュータイトル/目的が指示で埋まらないようにする）。
@@ -72,6 +73,10 @@ def call_executor(execute, kind: str, goal: str, dep_results: dict, model: "str 
         kwargs["repair"] = repair
     if context and _executor_accepts(execute, "context"):
         kwargs["context"] = context
+    if read_allocation and _executor_accepts(execute, "read_allocation"):
+        kwargs["read_allocation"] = read_allocation
+    if agent and _executor_accepts(execute, "agent"):
+        kwargs["agent"] = agent
     if kwargs or not repo_instruction:
         return execute(kind, goal, dep_results, model, art_dir, dep_arts, **kwargs)
     g = (repo_instruction + "\n\n" + goal) if repo_instruction else goal
@@ -195,4 +200,3 @@ def make_executor(args):
         os.environ["AGENT_FLOW_EXECUTOR_CONFIG"] = cfgjson
     log("executor", f"プラグイン '{spec}' をロードしました: {path}")
     return fn
-

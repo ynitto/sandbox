@@ -43,6 +43,11 @@
       "type": "string",
       "description": "プランナーが付けた原題（人が title を直しても重複照合の指紋として残る。人は書かない）"
     },
+    "verify_agent": {
+      "type": "string",
+      "description": "自然文の受入基準を**何で判定するか**の指定。省略時はノードの設定（agent-control / yaml）に従う。書式は CLI 名 1 つ（`codex`）か key=value（`agent_cli=codex model=opus timeout_sec=1800`）。検証が決着しないタスク（判定エージェントが時間切れになる・そのモデルでは基準を確かめ切れない）に対して、ノード全体の検証を高いモデルへ寄せずに 1 件だけ条件を変えるための口で、詰まったタスクから人が抜ける最短経路（設計: docs/plans/2026-08-09-verification-settlement-design.md）。この値は verification_plan の policy.agent に載り digest に入るので、変更すると別の plan になり、以前の条件で出た receipt は検算で落ちる（＝成果を作り直さずに検証だけやり直す）。実際に何で確かめたかは receipt の verified_with に残る。",
+      "examples": ["codex", "agent_cli=codex model=opus timeout_sec=1800"]
+    },
     "verify_template": {
       "type": "string",
       "description": "決定的テンプレートで verify を生成（file-contains :: path :: 文字列 等。エージェント不要）"
@@ -124,6 +129,20 @@
       "type": ["array", "string"],
       "items": { "type": "string" },
       "description": "触る予定パスのヒント（repos の owns: との突き合わせ＝ルーティング推定の根拠）"
+    },
+    "read_allocation": {
+      "type": "array",
+      "description": "最初に読む文脈の割付。ワーカーはこの範囲から読み、足りない場合だけ割付外を追加して結果へ報告する",
+      "items": {
+        "type": "object",
+        "required": ["path", "reason"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1 },
+          "range": { "type": "string", "description": "行・節・シンボルなどの任意範囲" },
+          "reason": { "type": "string", "minLength": 1 }
+        },
+        "additionalProperties": false
+      }
     },
     "routed_by": { "type": "string", "description": "ルーティングの解決経路（system が書き戻す監査情報）" },
     "cohort_items": {

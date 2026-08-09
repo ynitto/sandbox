@@ -99,6 +99,34 @@ class FlowBusCollectTests(AuditTestCase):
         self.assertEqual(recs["r1/n2"]["status"], "failed")
         self.assertEqual({recs["r1/n1"]["run_verify"], recs["r1/n2"]["run_verify"]}, {"pass"})
 
+    def test_context_allocation_hit_is_collected(self):
+        bus = os.path.join(self.tmp, "bus")
+        self._make_run(bus, "r1", "done")
+        results = os.path.join(bus, "runs", "r1", "results")
+        os.makedirs(results)
+        with open(os.path.join(results, "n1.json"), "w", encoding="utf-8") as f:
+            json.dump({"id": "n1", "kind": "work", "status": "done",
+                       "context_allocation": {"reported": True, "hit": False,
+                                              "outside_reads": 2}}, f)
+        st = self.make_store()
+        collect.collect_flow_buses(self.make_args(flow_buses=[bus]), st)
+        rec = next(r for r in st.iter_records() if r["ref"] == "r1/n1")
+        self.assertFalse(rec["allocation_hit"])
+        self.assertEqual(rec["outside_reads"], 2)
+
+    def test_planner_rule_comparisons_are_collected(self):
+        bus = os.path.join(self.tmp, "bus")
+        self._make_run(bus, "r1", "done")
+        graph = {"strategy": {"decision_comparisons": [
+            {"decision": "planner.pattern", "llm": "tournament",
+             "rule": "fan-out-and-synthesize", "agree": False}]}}
+        with open(os.path.join(bus, "runs", "r1", "graph.json"), "w", encoding="utf-8") as f:
+            json.dump(graph, f)
+        st = self.make_store()
+        collect.collect_flow_buses(self.make_args(flow_buses=[bus]), st)
+        rec = next(r for r in st.iter_records() if r["ref"] == "r1")
+        self.assertEqual(rec["decision_comparisons"], graph["strategy"]["decision_comparisons"])
+
     def test_collected_runs_are_not_rescanned(self):
         """収集済みの終端 run は results/ ごと読み飛ばす（run 数に比例して重くならない）。"""
         bus = os.path.join(self.tmp, "bus")

@@ -14,6 +14,7 @@ from .util import parse_iso
 def aggregate_stats(store: Store, period: str) -> dict:
     _ledger, _session, runs = load_period_records(store, period)
     by_tool: "dict[str, dict]" = {}
+    by_decision: "dict[str, dict]" = {}
     for rec in runs:
         tool = rec.get("tool") or "(不明)"
         b = by_tool.setdefault(tool, {
@@ -38,7 +39,18 @@ def aggregate_stats(store: Store, period: str) -> dict:
             b["escalations"] += int(rec.get("escalations") or 0)
         except (TypeError, ValueError):
             pass
-    return {"period": period, "tools": sorted(by_tool.values(), key=lambda b: b["tool"])}
+        for item in rec.get("decision_comparisons") or []:
+            if not isinstance(item, dict) or not item.get("decision"):
+                continue
+            name = str(item["decision"])
+            d = by_decision.setdefault(name, {"decision": name, "samples": 0, "matches": 0})
+            d["samples"] += 1
+            d["matches"] += int(item.get("agree") is True)
+    decisions = []
+    for d in sorted(by_decision.values(), key=lambda d: d["decision"]):
+        decisions.append({**d, "agreement_rate": round(d["matches"] / d["samples"], 4)})
+    return {"period": period, "tools": sorted(by_tool.values(), key=lambda b: b["tool"]),
+            "decisions": decisions}
 
 
 def cmd_stats(args) -> int:
@@ -64,6 +76,11 @@ def cmd_stats(args) -> int:
             print(f"  verify: pass={b['verify_pass']} fail={b['verify_fail']}")
         if b["escalations"]:
             print(f"  needs エスカレーション: {b['escalations']}")
+    if data["decisions"]:
+        print("\nLLM判断と決定的ルールの一致率（計測のみ）")
+        for d in data["decisions"]:
+            print(f"  {d['decision']}: {d['agreement_rate']:.1%} "
+                  f"({d['matches']}/{d['samples']})")
     return 0
 
 

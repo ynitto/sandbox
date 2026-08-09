@@ -41,10 +41,96 @@ def _failure_frontmatter(failure: "dict | None") -> str:
     return out
 
 
+# 「検証が決着しない」から人が抜ける道。**この 4 つで固定し、増やさない**
+# （設計: docs/plans/2026-08-09-verification-settlement-design.md §3）。
+# 失敗の種類（時間切れ・空応答・証跡不足・委譲の不決着）もエージェントの種類も、ここには
+# 出てこない——それらは *材料* であって *出口* ではない。新しい失敗が出ても増えるのは材料
+# だけで出口は 4 つのまま、というのがパッチを積ませないための構造的な担保。
+#
+# 4 つとも既存の操作へ写す。新しい迂回路は作らない:
+#   retry             … revise の verify_agent（何で確かめるかを変えて再検証）
+#   amend             … revise の acceptance（要求そのものを下げる。記録に残る）
+#   park              … hold（止めて他を進める）
+#   accept-unverified … force-complete（未検証と明示して締める。統合しない）
+SETTLEMENT_OPTIONS = ("retry", "amend", "park", "accept-unverified")
+
+
+def settlement_record(task: "Task", verification: "dict | None" = None,
+                      situation: str = "unverifiable", held: bool = False) -> dict:
+    """「検証が決着しない」票に載せる決着カードの材料（機械可読）。
+
+    人が 1 回で決められるよう、判断に要るものをここで揃える（C4）: どの基準が決着せず
+    なぜか、何で・どれだけ待って確かめたか、同じ理由が何回続いたか。解釈は生データを
+    持っているこちら側で一度だけ行い、viewer はそれを運ぶだけにする——両側が散文を
+    読み直す形にすると、書き手の文言が変わったとき読み手だけが静かに壊れる。
+    """
+    blocked = [{"id": str(c.get("id") or ""), "text": str(c.get("text") or "")[:200],
+                "note": str(c.get("note") or "")[:300]}
+               for c in ((verification or {}).get("criteria") or [])
+               if c.get("verdict") in ("unverifiable", "inconclusive")][:12]
+    rec: dict = {"situation": str(situation), "blocked": blocked,
+                 "current": str(task.get("verify_agent") or ""),
+                 "attempts": int(task.get("env_block_count") or 0),
+                 # 保留中は park が済んでいる。押しても何も変わらない選択肢は出さない。
+                 "options": [o for o in SETTLEMENT_OPTIONS if not (held and o == "park")]}
+    if held:
+        rec["held"] = True
+    with_ = (verification or {}).get("verified_with")
+    if isinstance(with_, dict) and with_:
+        rec["verified_with"] = with_
+    return rec
+
+
+def _settlement_block(rec: "dict | None") -> str:
+    """決着カードの本文（md を直接読む人・CLI 運用者向け。viewer はボタンで同じことをする）。"""
+    if not rec:
+        return ""
+    lines = ["", "## 検証が決着していません — 決着のさせ方"]
+    with_ = rec.get("verified_with") or {}
+    if with_:
+        took = f"・実測 {with_['elapsed_sec']:.0f} 秒" if with_.get("elapsed_sec") else ""
+        limit = f"・上限 {with_['timeout_sec']:.0f} 秒" if with_.get("timeout_sec") else ""
+        src = "タスクの指定" if with_.get("source") == "plan" else "ノードの設定"
+        lines.append(f"- 何で確かめたか: {with_.get('agent_cli', '?')}"
+                     f"{'/' + with_['model'] if with_.get('model') else ''}"
+                     f"{limit}{took}（{src}）")
+    if rec.get("attempts"):
+        lines.append(f"- 同じ理由で続いた回数: {rec['attempts']}")
+    if rec.get("held"):
+        lines.append("- いまは保留中です（承認するまで自動では再開しません）")
+    if rec.get("blocked"):
+        lines.append("- 決着しなかった基準:")
+        lines += [f"    - {c['id']}「{c['text']}」— {c['note']}" for c in rec["blocked"]]
+    lines.append("")
+    lines.append("次のどれかを選んでください（成果物を作り直すのは最後の手段ではなく、"
+                 "**やっても同じ所で詰まります**）:")
+    tid = "<task-id>"
+    guide = {
+        "retry": ("条件を変えて再検証する（成果は作り直さない）",
+                  f"agent-project revise {tid} --verify-agent codex --reason ..."),
+        "amend": ("受入基準を書き直して再検証する（要求そのものを下げる。記録に残ります）",
+                  f"agent-project revise {tid} --acceptance ... --reason ..."),
+        "park": ("止めて他のタスクを進める（環境を直したら承認で戻す）",
+                 f"agent-project hold {tid} --reason ..."),
+        "accept-unverified": ("未検証と明示して締める（成果ブランチは統合しません）",
+                              f"agent-project force-complete {tid} --reason ..."),
+    }
+    for opt in rec.get("options") or []:
+        if opt in guide:
+            what, how = guide[opt]
+            lines.append(f"1. **{what}**\n   `{how}`")
+    lines.append("")
+    lines.append("検証を通さずに done にする道は、上の『未検証と明示して締める』しかありません。"
+                 "判定を緩めて通す設定はありません——それは品質を落とす方法ではなく、"
+                 "落ちた事実を記録から消す方法だからです。")
+    return "\n".join(lines) + "\n"
+
+
 def _madr_frontmatter(rec_id: str, kind: str, risk: str = "",
                       mr_url: str = "", delivery: "list | None" = None,
                       failure: "dict | None" = None,
-                      verification: "dict | None" = None) -> str:
+                      verification: "dict | None" = None,
+                      settlement: "dict | None" = None) -> str:
     """needs/<id>.md の MADR（Markdown Any Decision Records）互換 frontmatter。
     status は常に proposed で生成し、人の確定（[x]）＝決定。ファイル自体は取り込み時に
     消費され、恒久の決定記録は decisions/<id>.md（DR）に残る。
@@ -67,6 +153,10 @@ def _madr_frontmatter(rec_id: str, kind: str, risk: str = "",
                                 "report": verification.get("report", ""),
                                 "pass": verification.get("pass", 0)},
                                ensure_ascii=False, separators=(",", ":")) + "\n")
+    if settlement:
+        # 決着カードの材料（viewer が 4 択と材料を描くのに読む）。判定には使わない。
+        extra += ("settlement: "
+                  + json.dumps(settlement, ensure_ascii=False, separators=(",", ":")) + "\n")
     extra += _failure_frontmatter(failure)
     return (
         "---\n"
@@ -85,7 +175,8 @@ def write_needs_file(cfg: "Config", task: Task, reason: str, review: bool = Fals
                      risk: "tuple[str, str] | None" = None,
                      mr_url: str = "", delivery: "list | None" = None,
                      failure: "dict | None" = None,
-                     verification: "dict | None" = None) -> None:
+                     verification: "dict | None" = None,
+                     settlement: "dict | None" = None) -> None:
     cfg.needs.mkdir(parents=True, exist_ok=True)
     if kind == "plan-review":   # 実行前レビュー（proposed。承認されるまで実行しない）
         state = "proposed（実行前レビュー待ち・未実行）"
@@ -125,14 +216,17 @@ def write_needs_file(cfg: "Config", task: Task, reason: str, review: bool = Fals
     # 検収サブ画面向け: MR URL とリポジトリ単位の構造化ペイロード（無ければ空）。
     fm_mr = str(mr_url or (task.get("mr_url") if review else "") or "").strip()
     fm_delivery = delivery if delivery is not None else None
+    # 決着カード（検証が決着しない票だけ）。人が 1 回で決められるよう材料と 4 択をここに揃える。
+    settlement_block = _settlement_block(settlement)
     body = (
-        f"{_madr_frontmatter(task.id, kind, risk=risk[0] if risk else '', mr_url=fm_mr if review else '', delivery=fm_delivery, failure=failure, verification=verification)}"
+        f"{_madr_frontmatter(task.id, kind, risk=risk[0] if risk else '', mr_url=fm_mr if review else '', delivery=fm_delivery, failure=failure, verification=verification, settlement=settlement)}"
         f"# 要対応: {task.id} — {task.title}\n\n"
         f"## Context and Problem Statement\n\n"
         f"- なぜ: {reason}\n"
         f"- 状態: {state}\n"
         f"{evidence_block}"
-        f"{risk_block}\n"
+        f"{risk_block}"
+        f"{settlement_block}\n"
         f"{DECISION_MARKER}\n\n"
         f"<!-- 人の決定の記入欄（MADR の Decision Outcome）。方針・指示をここに書く。 -->\n"
         f"- [ ] 確定（このボックスを [x] にして保存すると取り込みます）\n\n"

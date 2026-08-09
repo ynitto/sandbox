@@ -44,6 +44,7 @@ class Store:
         self.transcripts_dir = os.path.join(self.root, "transcripts")
         self.observations_dir = os.path.join(self.root, "observations")
         self.insights_dir = os.path.join(self.root, "insights")
+        self.decisions_dir = os.path.join(self.root, "decisions")
         self.reports_dir = os.path.join(self.root, "reports")
         self.state_path = os.path.join(self.root, "state.json")
         self._state = None
@@ -130,5 +131,19 @@ class Store:
             return
         for name in names:
             data = read_json(os.path.join(self.insights_dir, name))
+            if isinstance(data, dict):
+                yield data
+
+    # -- tuning decisions ----------------------------------------------------
+    def write_decision(self, decision: dict) -> None:
+        write_json_atomic(os.path.join(self.decisions_dir, f"{decision['id']}.json"), decision)
+
+    def iter_decisions(self):
+        try:
+            names = sorted(n for n in os.listdir(self.decisions_dir) if n.endswith(".json"))
+        except OSError:
+            return
+        for name in names:
+            data = read_json(os.path.join(self.decisions_dir, name))
             if isinstance(data, dict):
                 yield data

@@ -317,6 +317,9 @@ orchestrator は要求を見て、以下の 7 パターン（最初の 6 つは
   それも失敗したら stub へ落ちる。落ちた事実と理由はログと `strategy.reason` の両方に残るので、
   「計画できたように見えて実は stub だった」状態を後から見分けられる。
 - **並列数**: 要求中の `xN` / `並列N` を拾う。無ければ並列タスク数から既定（2〜6）。
+- **判断の一致率計測**: LLM planner が選んだ主パターン・並列数を、従来の決定的ルールと
+  `strategy.decision_comparisons` で照合する。記録するだけで計画は置き換えず、収集後は
+  `agent-audit stats` で判断ごとの一致率を確認できる。
 - **継続判断**: 静止（claim 可能・実行中タスクが無い）するたびに評価し、`classify` 結果でルーティング、
   `verify` が fail なら依存を作り直して再検証（`replaces` で後続の依存を付け替え）、失敗タスクは retry。
 - **実行系プロンプト（worker/verify/evaluator）**: `executor: agent` のとき、`flow-worker` スキル
@@ -327,8 +330,15 @@ orchestrator は要求を見て、以下の 7 パターン（最初の 6 つは
   スキルは決定的なプロンプトビルダーで LLM は呼ばない。未インストール・失敗時は
   組み込みプロンプトへフォールバックする。設定 `worker_skill: none` で常に組み込みを使う。
 - **構造化成果（structured results）**: 各ノードの結果はテキスト `output` に加え、任意の **`data`（JSON）**
-  を持てる。依存先へはテキスト＋構造化データの両方を渡す。`reduce` kind は依存の `data`（リスト等）を
+  を持てる。依存先へは既定で要約・成果物参照・省略量だけの digest を渡し、完全な構造化データが
+  必須のノードだけ `dependency_input: full` を宣言する。`reduce` kind は依存の `data`（リスト等）を
   畳み込んで集約する集約ノード。agent executor は出力を寛容パースして `data` に格納する。
+- **読込割付**: planner は work/generate ノードの `read_allocation` に、最初に読む path・任意の
+  range・理由を割り付ける。worker は割付を先に読み、終了時の読込報告から的中・割付外読込数を
+  result と audit 台帳へ残す。
+- **失敗時の一段昇格**: `agents.<purpose>.fallbacks` に候補を宣言すると、内容失敗の最初の再試行だけ
+  `agents/*.json` の `relative_cost` が厳密に大きい先へ昇格する。quota・認証・制御・一時障害は対象外で、
+  以後の再試行は同じ先を使うため ladder は有界。
 - **データ駆動の動的 fan-out（map-reduce）**: `split` ノードが実行時にリスト（`data`）を返すと、継続段階で
   **要素数ぶんの `map` タスクを動的展開**し（件数を事前に固定しない）、`reduce` で集約する。展開数は
   `--max-fanout`（既定 50）で上限クランプ。初期グラフは `split` のみで、`reduce` は展開時に生成するため

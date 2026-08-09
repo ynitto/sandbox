@@ -259,11 +259,28 @@ def _is_gate_result(r: dict) -> bool:
     return bool(re.search(r"\bverify\s*=\s*(?:pass|fail)\b", str(r.get("output") or ""), re.I))
 
 
-def _collect_dep_results(bus, node: dict, kind: str) -> dict:
-    """ノードの依存成果を集める。集約系（reduce/synthesize/filter/judge）では、
-    planner が work→gate→synth と直列にして集約役の依存が gate だけになっても入力が
-    空にならないよう、gate が検証した上流の成果も透過して渡す（gate 判定自体は
-    execute 側で集約対象から除外される）。"""
+# 依存成果を**要約せずに渡す**役割。判断の対象が依存成果そのものなので、要約を渡すと
+# 判断の対象が消える。verify がここに入るのが要点で、成果物ではなく 600 字の要約を見て
+# pass/fail を決める verify は、品質ゲートとして機能していない（C5・C10）。
+# 集約系（reduce / synthesize）と裁定系（judge / filter）も、依存の中身を突き合わせるのが
+# 仕事なので同じ扱いにする。要約でよいのは「前段の結果を踏まえて次を作る」役割だけ。
+_FULL_DEPENDENCY_KINDS = frozenset({"verify", "reduce", "synthesize", "judge", "filter"})
+
+
+def _dependency_input_mode(node: dict, kind: str) -> str:
+    """このノードが依存成果を full で受けるか digest で受けるか。明示宣言が最優先。"""
+    declared = str(node.get("dependency_input") or "").strip().lower()
+    if declared in ("full", "digest"):
+        return declared
+    return "full" if kind in _FULL_DEPENDENCY_KINDS else "digest"
+
+
+def _collect_dep_results(bus, node: dict, kind: str) -> "tuple[dict, dict]":
+    """ノードの依存成果と、その受け渡しの記録 `(results, dependency_context)` を返す。
+
+    集約系（reduce/synthesize/filter/judge）では、planner が work→gate→synth と直列にして
+    集約役の依存が gate だけになっても入力が空にならないよう、gate が検証した上流の成果も
+    透過して渡す（gate 判定自体は execute 側で集約対象から除外される）。"""
     dep_results = {d: (bus.read_result(d) or {}) for d in node.get("deps", [])}
     if kind in ("reduce", "synthesize", "filter", "judge"):
         gnodes = (bus.read_graph() or {}).get("nodes", {})
@@ -271,7 +288,33 @@ def _collect_dep_results(bus, node: dict, kind: str) -> dict:
             if _is_gate_result(dep_results[d]):
                 for up in gnodes.get(d, {}).get("deps", []):
                     dep_results.setdefault(up, bus.read_result(up) or {})
-    return dep_results
+    before = len(json.dumps(dep_results, ensure_ascii=False, default=str))
+    if _dependency_input_mode(node, kind) == "full":
+        return dep_results, {"mode": "full", "before_chars": before,
+                             "after_chars": before, "saved_chars": 0}
+    digests = {}
+    for dep_id, result in dep_results.items():
+        output = str(result.get("output") or "")
+        data = result.get("data")
+        declared = str(data.get("summary") or "") if isinstance(data, dict) else ""
+        summary = declared or output[:600]
+        # 省いた本文の量は「本文をどれだけ切ったか」であって、要約との文字数差ではない。
+        # 依存側が summary を自前で持っていた場合、本文は 1 文字も渡していない。
+        digest_data = {
+            "summary": summary,
+            "artifacts": list(result.get("artifacts") or []),
+            "omitted": {"output_chars": len(output) if declared else max(0, len(output) - len(summary)),
+                        "structured_data": data is not None},
+        }
+        if _is_gate_result(result):
+            digest_data.update({k: data[k] for k in ("ok", "issues")
+                                if isinstance(data, dict) and k in data})
+        digests[dep_id] = {"status": result.get("status"), "kind": result.get("kind"),
+                           "output": "[dependency digest; omitted details] " + summary,
+                           "data": digest_data}
+    after = len(json.dumps(digests, ensure_ascii=False, default=str))
+    return digests, {"mode": "digest", "before_chars": before,
+                     "after_chars": after, "saved_chars": max(0, before - after)}
 
 
 def _normalize_verify(text: str, data):

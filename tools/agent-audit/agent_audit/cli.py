@@ -65,6 +65,11 @@ def _build_parser() -> argparse.ArgumentParser:
     t.add_argument("--mark-exported", action="store_true", dest="mark_exported",
                    help="出力した洞察を exported=true にする")
 
+    tune = sub.add_parser("tune", help="洞察から型付き調整候補を生成し、条件を満たせば昇格・退役")
+    tune.add_argument("--apply", action="store_true", help="再現・品質・予算ゲートを通った候補を宣言へ反映")
+    tune.add_argument("--period", choices=["day", "month", "total"], default=None)
+    tune.add_argument("--json", action="store_true")
+
     g = sub.add_parser("gc", help="種別別保持日数での掃除（insights は対象外）")
     g.add_argument("--dry-run", action="store_true", dest="dry_run")
 
@@ -127,6 +132,9 @@ def main(argv=None) -> int:
     if args.command == "tasks":
         from .tasksout import cmd_tasks
         return cmd_tasks(args)
+    if args.command == "tune":
+        from .tuning import cmd_tune
+        return cmd_tune(args)
     if args.command == "gc":
         from .gccmd import cmd_gc
         return cmd_gc(args)

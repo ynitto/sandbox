@@ -39,6 +39,19 @@ distill_min_interval_hours: 24
 distill_min_new_observations: 5
 distill_max_calls: 10
 
+# ---- tuning 還流（decisions/ → 宣言。決定的・有界） -------------------------
+tune_period: month
+tune_min_occurrences: 3       # 同じ洞察がこの回数以上再現してから昇格
+tune_min_outcomes: 3          # 品質の最低サンプル数
+tune_min_confidence: high
+tune_quality_floor: 0.8
+tune_max_quality_drop: 0.05   # 昇格後にこれを超えて悪化したら元値へ戻す
+tune_evaluation_runs: 3
+tune_max_promotions_per_run: 1
+tune_max_total_promotions: 20
+# tuning_file: ~/.agents/tuning/tuning.json
+# profiles_file: ~/.agents/control/profiles.json
+
 # ---- 相関（台帳 × セッションの結合。設計 §4.3） -------------------------------
 join_slack_sec: 120
 

@@ -40,7 +40,17 @@
       "description": "実行ポリシー（既定は runner 側の設定）",
       "properties": {
         "confirm": {"type": "integer", "description": "固定コマンドの確認実行回数（flaky 検知）", "minimum": 1},
-        "timeout_sec": {"type": "number", "description": "固定コマンド 1 件あたりのタイムアウト秒", "exclusiveMinimum": 0}
+        "timeout_sec": {"type": "number", "description": "固定コマンド 1 件あたりのタイムアウト秒", "exclusiveMinimum": 0},
+        "agent": {
+          "type": "object",
+          "description": "自然文基準の判定に使うエージェントの明示指定。plan は「何を確かめるか」だけでなく「何で確かめるか」も持つ。省略時は runner 側の設定（agent-control / yaml）に従い、指定があればそれより強い——検証が決着しないタスク 1 件のために、ノード全体の検証を高いモデルへ寄せずに済ませるための口（設計: docs/plans/2026-08-09-verification-settlement-design.md）。policy は digest の計算対象なので、ここを変えた検証は別の plan になり、以前の条件で出た receipt は検算で落ちる（違う条件の判定を混ぜない）。",
+          "additionalProperties": false,
+          "properties": {
+            "agent_cli": {"type": "string", "description": "agents/<name>.json の定義名（例 codex）"},
+            "model": {"type": "string", "description": "その CLI に渡すモデル名（省略可）"},
+            "timeout_sec": {"type": "number", "description": "検証エージェント 1 呼び出しのタイムアウト秒。固定コマンドの timeout_sec とは別（あちらはコマンド 1 件あたり）", "exclusiveMinimum": 0}
+          }
+        }
       },
       "additionalProperties": false
     },

@@ -118,6 +118,78 @@ function needKindLabel(kind) {
   return NEED_KIND_LABELS[String(kind || 'blocked')] || String(kind);
 }
 
+// 決着カード（検証が決着しない票）。出口は 4 つ固定で、どれを出すかは agent-project が決める
+// （設計: docs/plans/2026-08-09-verification-settlement-design.md）。ここが足すのは、その 4 つを
+// 押せる場所に置くことと、判断に要る材料を 1 か所に揃えること（C4）だけ。
+// 4 つとも既存の操作へ写す。新しい迂回路は作らない。
+const SETTLEMENT_ACTIONS = {
+  retry: {
+    label: '条件を変えて再検証',
+    title: '成果物は作り直さず、受入基準を判定するエージェント（CLI・モデル・待ち時間）だけを変えて検証をやり直します',
+  },
+  amend: {
+    label: '受入基準を書き直す',
+    title: '要求そのものを下げます。書き直した基準はタスクに残るので、何を諦めたか後から読めます',
+  },
+  park: {
+    label: '止めて他を進める',
+    title: 'このタスクを保留にして、他のタスクを進めます。環境を直したら承認で戻せます',
+  },
+  'accept-unverified': {
+    label: '未検証で締める',
+    title: '検証せずに完了にします。履歴に未検証として残り、成果ブランチは自動統合されません',
+  },
+};
+
+function settlementCardHtml(n) {
+  const s = n.settlement;
+  if (!s || !s.options.length) return '';
+  const w = s.verifiedWith;
+  const facts = [];
+  if (w && w.agentCli) {
+    const model = w.model ? `/${esc(w.model)}` : '';
+    const took = w.elapsedSec ? `・実測 ${Math.round(w.elapsedSec)} 秒` : '';
+    const limit = w.timeoutSec ? `・上限 ${Math.round(w.timeoutSec)} 秒` : '';
+    const src = w.source === 'plan' ? 'このタスクの指定' : 'このPCの設定';
+    facts.push(`<li>何で確かめたか: <code>${esc(w.agentCli)}${model}</code>${limit}${took}（${src}）</li>`);
+  }
+  if (s.current) facts.push(`<li>いま指定されている検証条件: <code>${esc(s.current)}</code></li>`);
+  if (s.attempts > 1) facts.push(`<li>同じ理由で続いた回数: ${s.attempts}</li>`);
+  if (s.held) facts.push('<li>いまは保留中です（承認するまで自動では再開しません）</li>');
+  const blocked = s.blocked.length
+    ? `<ul class="settlement-criteria">${s.blocked
+      .map((c) => `<li><b>${esc(c.id)}</b> ${esc(c.text)}${c.note ? ` — <span class="muted">${esc(c.note)}</span>` : ''}</li>`)
+      .join('')}</ul>`
+    : '';
+  const buttons = s.options
+    .filter((o) => SETTLEMENT_ACTIONS[o])
+    .map((o) => {
+      const a = SETTLEMENT_ACTIONS[o];
+      const danger = o === 'accept-unverified' ? ' danger' : '';
+      return `<button class="chip${danger}" data-settle="${esc(o)}" data-id="${esc(n.id)}" title="${esc(a.title)}">${esc(a.label)}</button>`;
+    })
+    .join('');
+  // 「条件を変えて再検証」だけは何に変えるかの入力が要る。他の 3 つは入力不要なので、
+  // 出す条件も retry がカードに載っているときだけにする。
+  const agentInput = s.options.includes('retry')
+    ? `<div class="row settlement-agent">
+        <label for="settlement-agent-${esc(n.id)}">何で検証するか</label>
+        <input id="settlement-agent-${esc(n.id)}" class="settlement-agent-input" type="text"
+          value="${esc(s.current)}" placeholder="codex（または agent_cli=codex model=opus timeout_sec=1800）"
+          title="受入基準を判定するエージェント。このPCの設定より優先されます" />
+      </div>`
+    : '';
+  return `<div class="settlement-card">
+    <h4>検証が決着していません</h4>
+    ${facts.length ? `<ul class="settlement-facts">${facts.join('')}</ul>` : ''}
+    ${blocked ? `<div class="muted">決着しなかった基準:</div>${blocked}` : ''}
+    ${agentInput}
+    <div class="row settlement-buttons">${buttons}</div>
+    <small class="muted">成果物を作り直しても同じ所で詰まります。検証を通さずに完了にする道は
+      「未検証で締める」だけです（判定を緩めて通す設定はありません）。</small>
+  </div>`;
+}
+
 // needs の種類ごとに出すアクション。
 //   plan-review … 実行前レビュー: 承認して実行を許可 / 差し戻し（修正指示の記入必須）/ 却下
 //   blocked   … 指示して再開 / そのまま再実行 / 保留
@@ -269,7 +341,7 @@ function needActionsHtml(n) {
         : '修正方針・指示（空のまま再実行もできます）';
   // 実行制御で止まっているなら、操作を出す前にそう言う。押せなくはしない——止めたのも
   // 人なので、承認だけ先に送っておく判断はあり得る。「送っても動かない」を隠さないことが要点。
-  return `${orchBlockedBannerHtml()}${needCompleteHowHtml(n)}<div class="need-actions" data-need="${esc(n.id)}">
+  return `${orchBlockedBannerHtml()}${needCompleteHowHtml(n)}${settlementCardHtml(n)}<div class="need-actions" data-need="${esc(n.id)}">
     <textarea rows="2" class="need-input" placeholder="${esc(ph)}"></textarea>
     <div class="row need-buttons">${buttons.join('')}
       <span class="spacer"></span>
@@ -1870,6 +1942,9 @@ function bindNeedDetail(root) {
   for (const btn of root.querySelectorAll('button[data-act]')) {
     btn.addEventListener('click', () => handleNeedAction(btn));
   }
+  for (const btn of root.querySelectorAll('button[data-settle]')) {
+    btn.addEventListener('click', () => handleSettlement(btn));
+  }
   for (const btn of root.querySelectorAll('button[data-open-version]')) {
     btn.addEventListener('click', () => openCharterForm(`charters/${btn.dataset.openVersion}.md`));
   }
@@ -2079,6 +2154,83 @@ function renderNeeds(options) {
   if (input && state.needsDrafts[state.needsSelectedId]) input.value = state.needsDrafts[state.needsSelectedId];
   bindNeedDetail(el);
   if (state.needsFilter === 'gitlab') renderGitLab();
+}
+
+// 決着カードの 4 択。**新しい指示は 1 つも増やさない**——4 つとも既存の操作（revise / hold /
+// force-complete）へ写す。ここが足すのは「押せる場所」だけで、迂回路ではない
+// （設計: docs/plans/2026-08-09-verification-settlement-design.md §3）。
+async function handleSettlement(btn) {
+  const p = state.project;
+  const id = btn.dataset.id;
+  const need = p.needs.find((n) => n.id === id);
+  if (!need) return false;
+  const task = taskForNeed(p, need);
+  if (!task) return toast('このカードに対応するタスクが見つかりません');
+  const card = btn.closest('.settlement-card');
+  // 理由・指示は既存の入力欄（needActionsHtml の textarea）から取る。カードのために
+  // 2 つ目の入力欄を作ると、人はどちらに書けばよいか分からなくなる。
+  const detail = btn.closest('.need-detail-card') || document;
+  const box = detail.querySelector('.need-actions .need-input');
+  const text = box ? box.value.trim() : '';
+  const opt = btn.dataset.settle;
+
+  if (opt === 'retry') {
+    const field = card ? card.querySelector('.settlement-agent-input') : null;
+    const next = field ? field.value.trim() : '';
+    if (!next) return toast('何で検証するかを入力してください（例: codex）');
+    const yes = await confirmDialog(
+      `タスク ${task.id} の検証条件を変更して、検証だけやり直します。\n\n`
+      + `変更後: ${next}\n\n`
+      + '成果物は作り直しません（作り直しても同じ所で詰まるため）。'
+    );
+    if (!yes) return false;
+    return guard('再検証の指示', async () => {
+      const res = await api.runAction({
+        dir: p.dir, action: 'revise', id: task.id,
+        fields: { verify_agent: next },
+        reason: text || '検証が決着しないため、検証条件を変えて再検証',
+      });
+      markNeedSent(need);
+      markReviseSent(task);
+      uiLog('settlement retry', task.id, res);
+      toast('検証条件を変更しました（成果は作り直さず検証だけやり直します）', true);
+      await reloadProject();
+      return true;
+    });
+  }
+  if (opt === 'amend') {
+    // 受入基準の書き換えは既存のタスク編集画面で行う。複数行の置換契約をここに二重実装しない。
+    showTaskDialog(task.id, 'backlog');
+    return true;
+  }
+  if (opt === 'park') {
+    return guard('保留', async () => {
+      const res = await api.runAction({
+        dir: p.dir, action: 'hold', id: task.id,
+        reason: text || '検証が決着しないため保留（環境を直してから承認で戻す）',
+      });
+      markNeedSent(need);
+      uiLog('settlement park', task.id, res);
+      toast('保留にしました（承認するまで再開しません）', true);
+      await reloadProject();
+      return true;
+    });
+  }
+  if (opt === 'accept-unverified') {
+    if (!text) return toast('未検証で締めるには理由の記入が必要です（決定記録に残ります）');
+    const yes = await confirmDialog(forceCompleteConfirmMessage(p, task));
+    if (!yes) return false;
+    return guard('未検証で締める', async () => {
+      const res = await api.runAction({
+        dir: p.dir, action: 'force-complete', id: task.id, reason: text });
+      markNeedSent(need);
+      uiLog('settlement accept-unverified', task.id, res);
+      toast('未検証として完了にしました（検証は行われていません）', true);
+      await reloadProject();
+      return true;
+    });
+  }
+  return false;
 }
 
 async function handleNeedAction(btn) {

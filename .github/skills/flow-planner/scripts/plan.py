@@ -212,6 +212,8 @@ map-reduce は split を1つだけ（map は実行時展開）。classify-and-ac
 5. review=true の場合、統合（synthesize/reduce）の前に verify gate を1つ挟む
 6. 依存は既存タスク id のみ、循環は作らない
 7. id は短く（t1, t2, ... / classify, filter, synth, gate 等）
+8. work/generate ノードには最初に読むべき範囲を read_allocation=[{{"path":"...","range":"任意","reason":"..."}}] で割り付ける
+9. 依存成果は既定 digest（要約・成果物参照のみ）。完全な構造化データが不可欠なノードだけ dependency_input="full" を宣言する
 
 ## サブタスク（Phase 1 で特定済み・骨格）
 
@@ -222,7 +224,7 @@ map-reduce は split を1つだけ（map は実行時展開）。classify-and-ac
 JSON 配列のみ:
 ```json
 [
-  {{"id": "t1", "goal": "[scope] path\\n[out_of_scope] ...\\n具体的な目標", "deps": [], "kind": "work"}},
+  {{"id": "t1", "goal": "[scope] path\\n[out_of_scope] ...\\n具体的な目標", "deps": [], "kind": "work", "read_allocation": [{{"path": "src/x.py", "range": "10-40", "reason": "変更箇所"}}], "dependency_input": "digest"}},
   ...
 ]
 ```
@@ -867,12 +869,22 @@ def normalize_tasks(tasks: list) -> list[dict]:
         kind = str(t.get("kind", "work"))
         if kind not in valid_kinds:
             kind = "work"
-        normalized.append({
+        node = {
             "id": tid,
             "goal": str(t.get("goal", "")),
             "deps": [str(d) for d in (t.get("deps") or [])],
             "kind": kind,
-        })
+        }
+        reads = []
+        for r in t.get("read_allocation") if isinstance(t.get("read_allocation"), list) else []:
+            if isinstance(r, dict) and str(r.get("path") or "").strip():
+                reads.append({k: str(r[k]).strip() for k in ("path", "range", "reason")
+                              if str(r.get(k) or "").strip()})
+        if reads:
+            node["read_allocation"] = reads[:32]
+        if t.get("dependency_input") == "full":
+            node["dependency_input"] = "full"
+        normalized.append(node)
     if not normalized:
         raise ValueError("No valid tasks generated")
     return normalized

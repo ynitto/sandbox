@@ -138,6 +138,7 @@ def validate_entries(
             adaptive["enabled"] = True
 
         preflight = str(entry.get("preflight", "")).strip() or None
+        tuning_profile = str(entry.get("tuning_profile") or "default").strip() or "default"
 
         # Phase 2A fields（型・組合せ不正は fail-closed で ValueError）
         mode = str(entry.get("mode") or "normal").strip() or "normal"
@@ -215,6 +216,7 @@ def validate_entries(
             "webhook": webhook,
             "adaptive": adaptive,
             "preflight": preflight,
+            "tuning_profile": tuning_profile,
             "scheduled": scheduled,
             "mode": mode,
             "max_iterations": max_iterations if mode == "ralph" else None,
@@ -1398,10 +1400,11 @@ class PeriodicScheduler:
                                 name, _CLI_PROFILE.name)
                 else:
                     log.info("[%s] fresh_context: コンテキストをクリアします。", name)
-                    if not self._session_mgr.send_prompt(prompt_id, clear_cmd):
+                    if not self._session_mgr.send_prompt(prompt_id, clear_cmd, apply_tuning=False):
                         log.warning("[%s] %s の送信に失敗しました。スキップします。", name, clear_cmd)
                         self._release_slot(pane_id)
                         return False
+                    self._session_mgr.reset_tuning(prompt_id)
                     time.sleep(2)
                 if fresh_context_interval is not None:
                     new_next_clear_at = time.time() + (int(fresh_context_interval) * 60)
@@ -1410,7 +1413,7 @@ class PeriodicScheduler:
             for raw_line in (entry.get("slash") or []):
                 line = _CLI_PROFILE.rewrite_slash(raw_line)
                 log.info("[%s] slash を送信します: %s", name, line)
-                if not self._session_mgr.send_prompt(prompt_id, line):
+                if not self._session_mgr.send_prompt(prompt_id, line, apply_tuning=False):
                     log.warning("[%s] slash（%s）の送信に失敗しました。スキップします。", name, line)
                     self._release_slot(pane_id)
                     return False

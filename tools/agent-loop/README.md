@@ -133,6 +133,12 @@ environment_handoff:
 - `prompt: true` のとき、root プロンプト先頭へ `[ENV]...[/ENV]` を付けます（Ralph child には付けません）。
 - `token_env_names` は `[A-Z_][A-Z0-9_]*` のみ受理し、値は `SET|UNSET` だけを渡します。
 
+### agent-tuning（汎用注入）
+
+`$AGENT_TUNING_DIR`（既定 `~/.agents/tuning/`）の `tuning.json` で、プロンプト注入と
+ペイン起動時の PATH・環境変数を宣言できます。エントリの `tuning_profile` で切り替え、
+外向き成果物には `external-facing`（注入なし）を指定します。設定不在・破損・無効は no-op です。
+
 ## 設定ファイル形式 (YAML)
 
 ```yaml
@@ -161,11 +167,13 @@ startup_timeout: 60      # kiro-cli 起動待ち
 prompts:
   - name: "コードレビュー"
     prompt: "直近の変更のコードレビューをしてください。"
+    tuning_profile: default
     interval_minutes: 30
     enabled: true
 
   - name: "テスト実行"
     prompt: "テストを実行して結果を教えてください。"
+    tuning_profile: external-facing  # 外向き成果物では文体注入を外す
     interval_minutes: 60
     enabled: true
 

@@ -75,7 +75,19 @@
     },
     "started_at": {"type": "string", "description": "ISO8601 UTC"},
     "finished_at": {"type": "string", "description": "ISO8601 UTC"},
-    "verified_by": {"type": "string", "description": "検証したノードの node_id（外部委譲の受理判断には使わない——受理は「何を出したか」で決まる）"}
+    "verified_by": {"type": "string", "description": "検証したノードの node_id（外部委譲の受理判断には使わない——受理は「何を出したか」で決まる）"},
+    "verified_with": {
+      "type": "object",
+      "description": "何で・どれだけ待って確かめたか。人が次の一手（同じ条件で再試行 / 条件を変えて再検証 / 未検証で締める）を推測でなく記録から選ぶための材料。verified_by と同じく**採否の判定には使わない**——受理は「何を出したか」で決まる。自然文基準を判定していない receipt（固定コマンドだけの local runner 等）には無い。",
+      "additionalProperties": false,
+      "properties": {
+        "agent_cli": {"type": "string", "description": "実際に使った定義名"},
+        "model": {"type": "string", "description": "実際に渡したモデル名"},
+        "timeout_sec": {"type": "number", "description": "1 呼び出しに与えた上限秒", "exclusiveMinimum": 0},
+        "elapsed_sec": {"type": "number", "description": "実際にかかった秒数（見積りの根拠になる）", "minimum": 0},
+        "source": {"type": "string", "description": "その条件がどこから来たか: plan（タスク単位の明示指定）/ node（ノードの設定）"}
+      }
+    }
   },
   "additionalProperties": false
 }

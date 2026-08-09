@@ -129,6 +129,15 @@ class TestEnqueue(unittest.TestCase):
             self.assertEqual(ex["after"], "T1,T2")
             self.assertEqual((ex["review"], ex["note"], ex["custom"]), ("human", "メモ", "保持"))
 
+    def test_read_allocation_reaches_request(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(Path(d))
+            task = km.task_from_spec(cfg, {"title": "A", "read_allocation": [
+                {"path": "src/a.py", "range": "10-20", "reason": "変更点"}]})
+            request = km.build_request(task)
+        self.assertIn("読込割付", request)
+        self.assertIn("src/a.py (10-20): 変更点", request)
+
     def test_enqueue_task_persists_unique_ids(self):
         with tempfile.TemporaryDirectory() as d:
             cfg = self._cfg(Path(d))

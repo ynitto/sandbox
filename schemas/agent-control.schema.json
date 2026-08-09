@@ -85,6 +85,7 @@
         "node": {"type": "string", "description": "ノード ID"},
         "pid": {"type": "integer"},
         "revision_applied": {"type": "integer", "description": "適用済みの control.revision（control 未読なら省略）"},
+        "tuning_revision_applied": {"type": "integer", "description": "直近に適用した agent-tuning revision"},
         "effective": {"$ref": "#/$defs/agent_override", "description": "いま有効な既定エージェント / モデル（解決結果）"},
         "lifecycle": {"enum": ["run", "pause", "stop"], "description": "実際の状態（stopping 中は stop）"},
         "budget": {

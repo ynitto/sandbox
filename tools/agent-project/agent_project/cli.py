@@ -204,6 +204,11 @@ def main(argv=None) -> int:
                     help="優先度を置換（整数・大ほど高）")
     rv.add_argument("--verify", dest="rv_verify", default=None,
                     help="verify コマンドを置換（'' / none で削除）")
+    rv.add_argument("--verify-agent", dest="rv_verify_agent", default=None,
+                    help="受入基準を**何で判定するか**を置換（CLI 名 1 つか key=value。例: "
+                         "codex / agent_cli=codex model=opus timeout_sec=1800。'' / none で削除）。"
+                         "これだけを直すと成果は作り直さず検証だけやり直す——検証が決着しない"
+                         "タスクを、ノード全体の設定を変えずに 1 件だけ別条件で回し直す口")
     rv.add_argument("--accept", dest="rv_accept", default=None,
                     help="自然言語の完了条件を置換（'' / none で削除）")
     rv.add_argument("--acceptance", dest="rv_acceptance", action="append", default=None,

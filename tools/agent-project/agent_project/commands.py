@@ -575,7 +575,7 @@ def cmd_replan(cfg: Config, reason: str, charter_name: str = "", revive: bool = 
 #   現在の試行の結果は確定させず（done にせず）修正内容で積み直す＝早い軌道修正。
 # ---------------------------------------------------------------------------
 REVISE_FIELDS = tuple(dict.fromkeys(("title", "priority", "verify", "accept", "after",
-                                    "note", "level", "track", "node",
+                                    "note", "level", "track", "node", "verify_agent",
                                     *MULTILINE_KEYS, *TASK_GUIDE_KEYS)))
 _CLEAR_VALUES = ("", "-", "none")      # フィールド削除の明示値（revise の置換規約）
 
@@ -662,6 +662,14 @@ def _apply_revise_fields(t: Task, tasks: "list[Task]", fields: dict) -> "list[st
                 continue
             if key == "level" and val not in LEVELS:
                 raise ValueError(f"level は {'/'.join(LEVELS)} のいずれかです: {val!r}")
+            if key == "verify_agent":
+                # 読めない指定は plan へ載らず黙って無視される（parse 側は fail-open）。
+                # 人が打った瞬間に返すほうが、詰まったタスクを 1 手で抜けるという目的に合う。
+                probe = Task(id=t.id, title=t.title, extra=[("verify_agent", val)])
+                if not task_verify_agent(probe):
+                    raise ValueError(
+                        "verify_agent は CLI 名か key=value で指定してください"
+                        f"（例: codex / agent_cli=codex model=opus timeout_sec=1800）: {val!r}")
             if val != t.get(key, ""):
                 t.set(key, val)
                 changes.append(f"{key}: {val}")
@@ -761,7 +769,12 @@ def cmd_revise(cfg: Config, tid: str, fields: dict, feedback: str, reason: str) 
     doing = status == "doing" and _claim_fresh(cfg, tid)
     # 前回の再利用予約が残っている状態で別の revise が来た場合は、古い予約を必ず破棄する。
     t.drop("reuse_done_run")
-    verify_only = (not fb and len(changes) == 1 and changes[0].startswith("verify:"))
+    # 検証条件だけの修正（verify コマンド、または verify_agent＝何で確かめるか）は
+    # 成果生成をやり直す必要がない。完了済み run を流用して verify だけ回し直す。
+    # 詰まった検証から人が抜ける最短経路がこれで、成果を作り直すと元の詰まりごと再現する。
+    verify_only = (not fb and len(changes) == 1
+                   and (changes[0].startswith("verify:")
+                        or changes[0].startswith("verify_agent:")))
     reuse_done_run = (_completed_last_run(cfg, t)
                       if (verify_only and status in ("blocked", "review")
                           and not t.get("flow_run")) else "")

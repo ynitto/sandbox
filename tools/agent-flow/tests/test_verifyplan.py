@@ -234,6 +234,70 @@ class RunnerTests(unittest.TestCase):
         self.assertFalse(pathlib.Path(clone, "new-file.txt").exists())
 
 
+class PlanAgentTests(unittest.TestCase):
+    """検証エージェントは plan の指定（タスク単位）＞ ノードの設定。
+
+    ノード全体の設定に負けると、詰まったタスク 1 件のために全プロジェクトの検証を高い
+    モデルへ寄せることになる（設計:
+    docs/plans/2026-08-09-verification-settlement-design.md §4）。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="kf-vp-agent-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.bus = kf.Bus(os.path.join(self.tmp, "bus"), "run-vp-a")
+        self.args = argparse.Namespace(run_id="run-vp-a", node_id="orch", model="qwen3.5:9b",
+                                       request="req")
+        self._cli, self._ov = kf._AGENT_CLI, kf._AGENT_OVERRIDES
+        kf._AGENT_CLI, kf._AGENT_OVERRIDES = "ollama", {}
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        kf._AGENT_CLI, kf._AGENT_OVERRIDES = self._cli, self._ov
+
+    def _run(self, plan):
+        _origin, work, _rev = _mkrepo(self.tmp)
+        cwd = os.getcwd()
+        os.chdir(work)
+        self.addCleanup(os.chdir, cwd)
+        self.bus.ensure_run("req", None, [], plan)
+        seen = {}
+
+        def fake_run_agent(prompt, model, purpose="", cwd=None, agent=None):
+            seen["purpose"], seen["model"], seen["agent"] = purpose, model, agent
+            seen["effective"] = kf._effective_agent(purpose, model, agent)
+            return json.dumps({"criteria": [{"id": "C1", "verdict": "pass",
+                                             "evidence": [{"kind": "file", "path": "hello.txt"}]}]})
+
+        with mock.patch.object(kf, "run_agent", side_effect=fake_run_agent):
+            return kf.run_verification_plan(self.bus, self.args, "orch"), seen
+
+    def test_plan_agent_wins_over_the_node_setting(self):
+        plan = _plan(criteria=["hello.txt がある"],
+                     policy={"agent": {"agent_cli": "codex", "model": "opus",
+                                       "timeout_sec": 1800}})
+        receipt, seen = self._run(plan)
+        self.assertEqual(seen["agent"], {"agent_cli": "codex", "model": "opus",
+                                         "timeout_sec": 1800.0})
+        self.assertEqual(seen["effective"], ("codex", "opus"))
+        self.assertEqual(receipt["verified_with"]["agent_cli"], "codex")
+        self.assertEqual(receipt["verified_with"]["model"], "opus")
+        self.assertEqual(receipt["verified_with"]["timeout_sec"], 1800.0)
+        self.assertEqual(receipt["verified_with"]["source"], "plan")
+        self.assertIn("elapsed_sec", receipt["verified_with"])   # 見積りの根拠
+
+    def test_without_a_plan_agent_the_node_setting_is_recorded(self):
+        receipt, seen = self._run(_plan(criteria=["hello.txt がある"]))
+        self.assertIsNone(seen["agent"])
+        self.assertEqual(receipt["verified_with"]["source"], "node")
+        self.assertEqual(receipt["verified_with"]["agent_cli"], "ollama")
+        self.assertEqual(receipt["verified_with"]["model"], "qwen3.5:9b")
+
+    def test_command_only_plan_records_nothing(self):
+        # 自然文基準を判定していない receipt に「何で確かめたか」は無い（嘘を書かない）
+        receipt, _ = self._run(_plan(commands=["true"]))
+        self.assertNotIn("verified_with", receipt)
+
+
 class FixTaskTests(unittest.TestCase):
     def test_fix_task_names_failures_and_forbids_weakening(self):
         receipt = {"commands": [{"command": "pytest -q", "exit_code": 1, "output_tail": "1 failed"}],
