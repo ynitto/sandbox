@@ -1,513 +1,363 @@
 'use strict';
 
-// クイック実行（adhoc-flow / S21・S22）— 「クイック実行」領域の面。
-//
-// プロジェクト（charter・バックログ・受入基準）を立てずに、agent-flow の単発 run を
-// その場で投入・監視する。フロービルダーで保存したプリセット（ユーザー定義フロー）は
-// 投入契約（submit_request の plan）へ変換され、F17 の手法（methods カタログ + 独自手法）を
-// run 専用スナップショットとして添えられる。
-//
-// **アドホックの成果は done を名乗らない（C5）。** 受入基準も verify も無いので、終端した
-// run は「終了（未検収）」と表示し、正式な仕事にしたいときだけ「タスクへ昇格」で
-// agent-project の inbox 投函契約（通常の検証つき経路）へ載せ替える（S22）。
-//
-// ビルダーのテンプレートは編集の**種**にすぎない。パターンの正典は agent-flow の
-// patterns.py（7 パターン）で、ここに形を写しても実行意味は plan（ノード列）だけが運ぶ。
 (function expose(root, factory) {
   const feature = factory(root);
   if (typeof module !== 'undefined' && module.exports) module.exports = feature;
   if (typeof root.registerFeatureTab === 'function') {
-    root.registerFeatureTab('quick-flow', {
+    root.registerFeatureTab('workflow-run', {
       render: feature.render,
       refresh: feature.refresh,
       available: () => true,
     });
+    root.registerFeatureTab('workflow-settings', {
+      render: feature.render,
+      available: () => true,
+    });
   }
 })(typeof globalThis !== 'undefined' ? globalThis : window, (root) => {
-  const KINDS = ['work', 'generate', 'classify', 'synthesize', 'verify',
-    'filter', 'judge', 'reduce', 'split', 'map'];
-
-  // ビルダーの種（テンプレート）。実行時の正典は agent-flow patterns.py の 7 パターン。
-  const TEMPLATES = {
-    'fan-out-and-synthesize': {
-      label: '並列分担 → 統合',
-      nodes: [
-        { id: 't1', goal: '{{request}}（観点1）', kind: 'work', deps: [] },
-        { id: 't2', goal: '{{request}}（観点2）', kind: 'work', deps: [] },
-        { id: 't3', goal: '{{request}}（観点3）', kind: 'work', deps: [] },
-        { id: 'synth', goal: '統合: {{request}}', kind: 'synthesize', deps: ['t1', 't2', 't3'] },
-      ],
-    },
-    'adversarial-verification': {
-      label: '生成 → 敵対的検証',
-      nodes: [
-        { id: 'gen1', goal: '{{request}}', kind: 'generate', deps: [] },
-        { id: 'verify1', goal: '成果を批判的に検証', kind: 'verify', deps: ['gen1'] },
-      ],
-    },
-    'generate-and-filter': {
-      label: '候補を量産 → 絞り込み',
-      nodes: [
-        { id: 'g1', goal: '候補1: {{request}}', kind: 'generate', deps: [] },
-        { id: 'g2', goal: '候補2: {{request}}', kind: 'generate', deps: [] },
-        { id: 'g3', goal: '候補3: {{request}}', kind: 'generate', deps: [] },
-        { id: 'filter', goal: '候補を基準でフィルタ', kind: 'filter', deps: ['g1', 'g2', 'g3'] },
-      ],
-    },
-    tournament: {
-      label: '複数案 → 最良を選ぶ',
-      nodes: [
-        { id: 'c1', goal: '案1: {{request}}', kind: 'generate', deps: [] },
-        { id: 'c2', goal: '案2: {{request}}', kind: 'generate', deps: [] },
-        { id: 'c3', goal: '案3: {{request}}', kind: 'generate', deps: [] },
-        { id: 'judge', goal: '比較して最良案を選ぶ', kind: 'judge', deps: ['c1', 'c2', 'c3'] },
-      ],
-    },
-    'loop-until-done': {
-      label: '完了条件まで反復（評価役つき）',
-      evaluate: true,
-      nodes: [
-        { id: 'work1', goal: '{{request}}', kind: 'work', deps: [] },
-        { id: 'check1', goal: '完了条件を確認', kind: 'verify', deps: ['work1'] },
-      ],
-    },
-    'map-reduce': {
-      label: 'データ駆動 fan-out（split→map→reduce）',
-      nodes: [{ id: 'split1', goal: '分解: {{request}}', kind: 'split', deps: [] }],
-    },
-    'classify-and-act': {
-      label: '分類 → 振り分け（評価役つき）',
-      evaluate: true,
-      nodes: [{ id: 'classify', goal: '分類: {{request}}', kind: 'classify', deps: [] }],
-    },
-  };
-
+  const KINDS = ['work', 'generate', 'classify', 'synthesize', 'verify', 'filter', 'judge', 'reduce', 'split', 'map'];
   const st = {
-    overview: null,     // adhocFlow:overview の最新値
-    selectedRun: '',    // 選択中の run-id
-    runDetail: null,    // adhocFlow:run の最新値
-    builderOpen: false,
-    preset: null,       // ビルダー編集中のプリセット（保存前の作業コピー）
-    promoteOpen: false,
+    overview: null,
+    selectedRun: '',
+    runDetail: null,
+    editor: null,
+    selectedNode: '',
+    connectFrom: '',
     busy: '',
     notice: '',
   };
-
   const esc = (s) => root.esc(String(s == null ? '' : s));
-  const $id = (i) => document.getElementById(i);
+  const $id = (id) => document.getElementById(id);
   const api = () => root.api;
 
-  function statusLabel(s) {
-    // done を「完了」と言わない——アドホックは verify を通っていない（C5）
-    const map = {
-      done: '終了（未検収）', failed: '失敗', cancelled: '中止',
-      running: '実行中', planning: '計画中',
-    };
-    return map[String(s)] || String(s || '—');
+  function active() {
+    return ['workflow-run', 'workflow-settings'].some((id) => {
+      const pane = $id(`tab-${id}`);
+      return pane && pane.classList.contains('active');
+    });
   }
 
-  function emptyPreset() {
-    return {
-      id: '', name: '', description: '', evaluate: false,
-      nodes: [], methods: [], agentCli: '', model: '', planner: '',
-    };
+  function statusLabel(status) {
+    return ({ done: '終了', failed: '失敗', cancelled: '中止', running: '実行中', planning: '計画中' })[status]
+      || String(status || '—');
+  }
+
+  function emptyWorkflow() {
+    return { id: '', name: '', description: '', nodes: [] };
+  }
+
+  function clone(value) {
+    return JSON.parse(JSON.stringify(value));
   }
 
   async function refresh() {
-    const pane = $id('tab-quick-flow');
-    if (!pane || !pane.classList.contains('active')) return;
+    if (!active()) return;
     try {
       st.overview = await api().adhocFlowOverview({ limit: 30 });
       if (st.selectedRun) {
-        try {
-          st.runDetail = await api().adhocFlowRun({ runId: st.selectedRun });
-        } catch {
-          st.runDetail = null;
-        }
+        try { st.runDetail = await api().adhocFlowRun({ runId: st.selectedRun }); }
+        catch { st.runDetail = null; }
       }
-      render();
     } catch (err) {
       st.notice = `読み込みに失敗しました: ${String((err && err.message) || err)}`;
-      render();
     }
+    render();
   }
 
-  // --- ビルダー ---------------------------------------------------------------
-
-  function nodeRowHtml(n, i, agents) {
-    const agentOpts = ['', ...agents].map((a) =>
-      `<option value="${esc(a)}" ${a === (n.agentCli || '') ? 'selected' : ''}>${a ? esc(a) : '（既定）'}</option>`).join('');
-    const kindOpts = KINDS.map((k) =>
-      `<option value="${k}" ${k === n.kind ? 'selected' : ''}>${k}</option>`).join('');
-    return `<tr data-node-index="${i}">
-      <td><input type="text" data-nf="id" value="${esc(n.id)}" size="8" aria-label="ノード id"></td>
-      <td><select data-nf="kind" aria-label="種別">${kindOpts}</select></td>
-      <td><input type="text" data-nf="goal" value="${esc(n.goal)}" aria-label="ゴール"
-        placeholder="{{request}} で要求テキストを差し込み"></td>
-      <td><input type="text" data-nf="deps" value="${esc((n.deps || []).join(', '))}" size="10"
-        aria-label="依存（カンマ区切り）" placeholder="依存 id"></td>
-      <td><select data-nf="agentCli" aria-label="エージェント CLI">${agentOpts}</select></td>
-      <td><input type="text" data-nf="model" value="${esc(n.model || '')}" size="10"
-        aria-label="モデル" placeholder="（既定）"></td>
-      <td><button type="button" data-node-del="${i}" aria-label="ノードを削除">✕</button></td>
-    </tr>`;
+  function flowOptions(ov) {
+    const patterns = (ov.patterns || []).map((p) =>
+      `<option value="pattern:${esc(p.id)}">${esc(p.label)}</option>`).join('');
+    const custom = (ov.workflows || []).map((p) =>
+      `<option value="custom:${esc(p.id)}">${esc(p.name)}</option>`).join('');
+    return `<option value="auto">自動</option>`
+      + (patterns ? `<optgroup label="標準">${patterns}</optgroup>` : '')
+      + (custom ? `<optgroup label="カスタム">${custom}</optgroup>` : '');
   }
 
-  function builderPreviewHtml(p) {
-    if (!p.nodes.length) {
-      return '<div class="empty">ノードがありません。テンプレートを選ぶか「ノードを追加」してください。'
-        + 'ノード無しで保存すると、実行時の計画は planner（自動）に任されます。</div>';
-    }
-    // 実行状態を持たない擬似 run で既存のグラフ描画を再利用する（描き手を増やさない）
-    try {
-      const nodes = Object.fromEntries(p.nodes.map((n) => [n.id, {
-        id: n.id, goal: n.goal, deps: (n.deps || []).filter((d) => p.nodes.some((x) => x.id === d)),
-        kind: n.kind || 'work', state: '',
-      }]));
-      return root.renderGraphSvg({ nodes, planRevisions: [] });
-    } catch {
-      return `<ul>${p.nodes.map((n) =>
-        `<li><code>${esc(n.id)}</code> [${esc(n.kind)}] ${esc(n.goal)}${(n.deps || []).length ? ` ← ${esc(n.deps.join(', '))}` : ''}</li>`).join('')}</ul>`;
-    }
+  function selectionFrom(value) {
+    const [type, ...rest] = String(value || 'auto').split(':');
+    return type === 'auto' ? { type: 'auto' } : { type, id: rest.join(':') };
   }
-
-  function builderHtml(ov) {
-    const p = st.preset || emptyPreset();
-    const agents = ov.agents || [];
-    const presetOpts = (ov.presets || []).map((x) =>
-      `<option value="${esc(x.id)}" ${st.preset && st.preset.id === x.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('');
-    const tmplOpts = Object.entries(TEMPLATES).map(([k, t]) =>
-      `<option value="${k}">${esc(t.label)}（${k}）</option>`).join('');
-    const methodRows = (ov.methods || []).map((m) => `
-      <label class="qf-method" title="${esc(m.origin)}">
-        <input type="checkbox" data-method-id="${esc(m.id)}" ${p.methods.includes(m.id) ? 'checked' : ''}>
-        <code>${esc(m.id)}</code> <span class="muted">${esc(m.description)}${m.from === 'tuning' ? '（独自）' : ''}</span>
-      </label>`).join('');
-    const agentOpts = ['', ...agents].map((a) =>
-      `<option value="${esc(a)}" ${a === p.agentCli ? 'selected' : ''}>${a ? esc(a) : '（既定）'}</option>`).join('');
-    return `<details id="qf-builder" ${st.builderOpen ? 'open' : ''}>
-      <summary>フロービルダー — テンプレート + 手法 + エージェント/モデルでフローを組む</summary>
-      <div class="qf-builder-body">
-        <div class="qf-row">
-          <label>保存済み: <select id="qf-preset-load"><option value="">（新規）</option>${presetOpts}</select></label>
-          <label>テンプレートを流し込む: <select id="qf-template"><option value="">選択…</option>${tmplOpts}</select></label>
-        </div>
-        <div class="qf-row">
-          <label>名前 <input type="text" id="qf-name" value="${esc(p.name)}" placeholder="例: 二段検証つき調査"></label>
-          <label>説明 <input type="text" id="qf-desc" value="${esc(p.description)}" size="30"></label>
-        </div>
-        <table class="qf-nodes"><thead><tr>
-          <th>id</th><th>種別</th><th>ゴール</th><th>依存</th><th>エージェント</th><th>モデル</th><th></th>
-        </tr></thead><tbody id="qf-nodes">${p.nodes.map((n, i) => nodeRowHtml(n, i, agents)).join('')}</tbody></table>
-        <div class="qf-row">
-          <button type="button" id="qf-node-add">ノードを追加</button>
-          <label><input type="checkbox" id="qf-evaluate" ${p.evaluate ? 'checked' : ''}>
-            評価役の再計画を許可（loop-until-done 等の反復・ルーティングに必要）</label>
-        </div>
-        <div id="qf-preview" class="qf-preview">${builderPreviewHtml(p)}</div>
-        <h4>手法（F17）</h4>
-        <p class="muted">選んだ手法はこの run 専用の複製（source 付きスナップショット）として効きます。
-          選択があるとこの run では端末全体の tuning は読まれません。適用条件（when）は各手法の
-          宣言どおり——役割・種別（purpose）単位で効き、ノード個別には効きません。</p>
-        <div class="qf-methods">${methodRows || '<span class="muted">手法カタログが見つかりません</span>'}</div>
-        <div class="qf-row">
-          <label>フロー全体のエージェント <select id="qf-agent">${agentOpts}</select></label>
-          <label>モデル <input type="text" id="qf-model" value="${esc(p.model)}" size="14" placeholder="（既定）"></label>
-          <label>planner <select id="qf-planner">${['', 'flow-planner', 'agent', 'stub'].map((x) =>
-            `<option value="${x}" ${x === p.planner ? 'selected' : ''}>${x || '（既定）'}</option>`).join('')}</select>
-            <span class="muted">（ノード無しプリセットの自動計画に効く）</span></label>
-        </div>
-        <div class="qf-row">
-          <button type="button" id="qf-preset-save">プリセットを保存</button>
-          ${st.preset && st.preset.id ? '<button type="button" id="qf-preset-delete">このプリセットを削除</button>' : ''}
-        </div>
-      </div>
-    </details>`;
-  }
-
-  // --- run 一覧・詳細 ---------------------------------------------------------
 
   function runsHtml(ov) {
-    const runs = ov.runs || [];
-    if (!runs.length) return '<div class="empty">まだ実行がありません</div>';
-    return `<table class="qf-runs"><thead><tr>
-      <th>run</th><th>状態</th><th>フェーズ</th><th>更新</th>
-    </tr></thead><tbody>${runs.map((r) => `
-      <tr class="${st.selectedRun === r.runId ? 'selected' : ''}" data-run-id="${esc(r.runId)}">
-        <td><code>${esc(r.runId)}</code></td>
-        <td>${esc(statusLabel(r.status))}</td>
-        <td>${esc(r.phase || '—')}</td>
-        <td class="muted">${esc(r.updatedAt || r.createdAt || '')}</td>
-      </tr>`).join('')}</tbody></table>`;
+    const rows = ov.runs || [];
+    if (!rows.length) return '<div class="empty">実行履歴はありません</div>';
+    return `<div class="wf-run-list">${rows.map((r) => `<button type="button" class="wf-run-row ${st.selectedRun === r.runId ? 'selected' : ''}"
+      data-run-id="${esc(r.runId)}"><span><code>${esc(r.runId)}</code></span>
+      <span>${esc(statusLabel(r.status))}</span><span class="muted">${esc(r.updatedAt || r.createdAt || '')}</span></button>`).join('')}</div>`;
   }
 
-  function promoteFormHtml(ov, detail) {
-    const projects = ov.projects || [];
-    if (!projects.length) {
-      return '<p class="muted">昇格先にできるプロジェクトがありません（実行エンジンが担当している'
-        + 'プロジェクトだけが宛先になります）。</p>';
-    }
-    const run = detail.run || {};
-    const req = String(run.request || '').split('\n')[0].slice(0, 60);
-    return `<div class="qf-promote">
-      <label>昇格先 <select id="qf-promote-project">${projects.map((p) =>
-        `<option value="${esc(p.dir)}">${esc(p.name)}</option>`).join('')}</select></label>
-      <label>タイトル <input type="text" id="qf-promote-title" value="${esc(req)}"></label>
-      <label>受入基準（1 行 1 項目・空なら下書きで入る）
-        <textarea id="qf-promote-acceptance" rows="3" placeholder="例: ○○のテストが通る"></textarea></label>
-      <button type="button" id="qf-promote-go">この成果を根拠にタスクを起票する</button>
-      <p class="muted">昇格したタスクは通常の受入基準と verify を通ります。アドホックの成果自体は
-        未検収のままです。</p>
-    </div>`;
-  }
-
-  function runDetailHtml(ov, detail) {
-    if (!detail || !detail.run) return '<div class="empty">run を選択してください</div>';
+  function runDetailHtml(detail) {
+    if (!detail || !detail.run) return '';
     const run = detail.run;
-    const status = String(run.status || '');
-    const plan = detail.inbox && detail.inbox.plan ? detail.inbox.plan : null;
+    const inbox = detail.inbox || {};
     let graph = '';
-    try {
-      graph = root.renderTaskFlow ? root.renderTaskFlow(run) : '';
-    } catch {
-      // グラフ描画の失敗は詳細表示全体の失敗にしない（結果テキストは出す）
-    }
-    const results = Object.values(run.nodes || {})
-      .filter((n) => n.output || n.data)
-      .map((n) => `<details><summary><code>${esc(n.id)}</code> [${esc(n.kind || 'work')}]
-          ${esc(statusLabel(n.state))}</summary>
-        <pre class="qf-output">${esc(String(n.output || JSON.stringify(n.data || '', null, 2)).slice(0, 4000))}</pre>
-      </details>`).join('');
-    return `<div class="qf-detail">
-      <div class="qf-row">
-        <strong><code>${esc(run.runId || st.selectedRun)}</code></strong>
-        <span>${esc(statusLabel(status))}</span>
-        ${plan ? `<span class="muted">ユーザー定義フロー「${esc(plan.name || '')}」</span>` : '<span class="muted">自動計画</span>'}
-      </div>
+    try { graph = root.renderTaskFlow ? root.renderTaskFlow(run) : ''; } catch { /* 結果表示は続ける */ }
+    const outputs = Object.values(run.nodes || {}).filter((n) => n.output || n.data).map((n) =>
+      `<details><summary>${esc(n.id)} · ${esc(statusLabel(n.state))}</summary><pre class="qf-output">${esc(String(n.output || JSON.stringify(n.data || '', null, 2)).slice(0, 4000))}</pre></details>`).join('');
+    const flowName = inbox.plan ? inbox.plan.name : inbox.pattern || '自動';
+    return `<section class="wf-result">
+      <div class="wf-section-head"><div><strong>${esc(statusLabel(run.status))}</strong>
+        <span class="muted">${esc(flowName)} · af/${esc(run.runId || st.selectedRun)}</span></div>
+        <div class="qf-row"><button type="button" id="wf-resubmit">再実行</button>
+          <button type="button" id="wf-cancel">中止</button><button type="button" id="wf-delete-run">削除</button></div></div>
       ${run.failureReason ? `<p class="qf-failure">${esc(run.failureReason)}</p>` : ''}
-      ${run.final && run.final.summary ? `<details open><summary>結果サマリ（参考成果・未検収）</summary>
-        <pre class="qf-output">${esc(String(run.final.summary).slice(0, 3000))}</pre></details>` : ''}
-      <div class="qf-row">
-        <button type="button" id="qf-run-cancel">キャンセル</button>
-        <button type="button" id="qf-run-resubmit">同条件で再実行</button>
-        <button type="button" id="qf-run-delete">記録を削除</button>
-        <button type="button" id="qf-run-promote">${st.promoteOpen ? '昇格フォームを閉じる' : 'タスクへ昇格…'}</button>
+      ${run.final && run.final.summary ? `<pre class="qf-output">${esc(String(run.final.summary).slice(0, 3000))}</pre>` : ''}
+      <div class="qf-graph">${graph}</div>${outputs}</section>`;
+  }
+
+  function runHtml(ov) {
+    const history = (ov.cwdHistory || []).map((cwd) => `<option value="${esc(cwd)}"></option>`).join('');
+    return `<section class="wf-page" aria-label="ワークフロー実行">
+      <div class="wf-title"><div><h2>ワークフロー</h2><p>Gitリポジトリでフローを実行します。</p></div></div>
+      ${st.notice ? `<p class="qf-notice" role="status">${esc(st.notice)}</p>` : ''}
+      <div class="wf-run-card">
+        <label>フォルダ<input id="wf-cwd" type="text" list="wf-cwd-history" placeholder="/path/to/repository" autocomplete="off"></label>
+        <datalist id="wf-cwd-history">${history}</datalist>
+        <label>フロー<select id="wf-flow">${flowOptions(ov)}</select></label>
+        <label class="wf-request">依頼<textarea id="wf-request" rows="4" placeholder="実行する内容"></textarea></label>
+        <button type="button" class="primary" id="wf-submit" ${st.busy ? 'disabled' : ''}>${esc(st.busy || '実行')}</button>
       </div>
-      ${st.promoteOpen ? promoteFormHtml(ov, detail) : ''}
-      <div id="qf-graph" class="qf-graph">${graph}</div>
-      ${results ? `<h4>ノードの出力（参考成果・未検収）</h4>${results}` : ''}
+      <div class="wf-section-head"><h3>実行履歴</h3></div>${runsHtml(ov)}${runDetailHtml(st.runDetail)}
+    </section>`;
+  }
+
+  function edgesHtml(nodes) {
+    const byId = new Map(nodes.map((n) => [n.id, n]));
+    return nodes.flatMap((target) => (target.deps || []).map((sourceId) => {
+      const source = byId.get(sourceId);
+      if (!source) return '';
+      const x1 = Number(source.x) + 220;
+      const y1 = Number(source.y) + 48;
+      const x2 = Number(target.x);
+      const y2 = Number(target.y) + 48;
+      const bend = Math.max(40, Math.abs(x2 - x1) / 2);
+      return `<path d="M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}" />`;
+    })).join('');
+  }
+
+  function nodeHtml(node) {
+    const selected = st.selectedNode === node.id ? ' selected' : '';
+    return `<article class="wf-node${selected}" data-node-id="${esc(node.id)}" style="left:${Number(node.x)}px;top:${Number(node.y)}px">
+      <button type="button" class="wf-port in" data-connect-in="${esc(node.id)}" aria-label="${esc(node.id)}へ接続"></button>
+      <div class="wf-node-drag" data-drag-node="${esc(node.id)}"><span>${esc(node.kind)}</span><span class="wf-tier">${esc(node.tier)}</span></div>
+      <div class="wf-node-body"><strong>${esc(node.id)}</strong><p>${esc(node.goal)}</p></div>
+      <button type="button" class="wf-port out" data-connect-out="${esc(node.id)}" aria-label="${esc(node.id)}から接続"></button>
+    </article>`;
+  }
+
+  function inspectorHtml(ov, workflow) {
+    const node = workflow.nodes.find((n) => n.id === st.selectedNode);
+    if (!node) return '<div class="empty">ノードを選択してください</div>';
+    const tierOptions = (ov.tiers || []).map((t) =>
+      `<option value="${esc(t.id)}" ${node.tier === t.id ? 'selected' : ''}>${esc(t.label)}</option>`).join('');
+    const kindOptions = KINDS.map((kind) =>
+      `<option value="${kind}" ${node.kind === kind ? 'selected' : ''}>${kind}</option>`).join('');
+    return `<div class="wf-inspector" data-inspector="${esc(node.id)}">
+      <label>名前<input id="wf-node-id" value="${esc(node.id)}"></label>
+      <label>種類<select id="wf-node-kind">${kindOptions}</select></label>
+      <label>tier<select id="wf-node-tier">${tierOptions}</select></label>
+      <label>内容<textarea id="wf-node-goal" rows="5">${esc(node.goal)}</textarea></label>
+      <button type="button" id="wf-node-delete">ノードを削除</button>
     </div>`;
   }
 
-  // --- 描画とイベント ---------------------------------------------------------
+  function editorHtml(ov) {
+    const workflow = st.editor || emptyWorkflow();
+    const list = ov.workflows || [];
+    const palette = KINDS.map((kind) =>
+      `<button type="button" draggable="true" data-palette="${kind}">${kind}</button>`).join('');
+    return `<section class="wf-page wf-settings" aria-label="ワークフロー設定">
+      <div class="wf-title"><div><h2>カスタムフロー</h2><p>ノードを配置して接続します。</p></div>
+        <button type="button" id="wf-new">新規作成</button></div>
+      ${st.notice ? `<p class="qf-notice" role="status">${esc(st.notice)}</p>` : ''}
+      <div class="wf-editor-layout">
+        <aside class="wf-list"><h3>フロー</h3>${list.length ? list.map((item) =>
+          `<button type="button" data-workflow-id="${esc(item.id)}" class="${workflow.id === item.id ? 'selected' : ''}">${esc(item.name)}</button>`).join('') : '<div class="empty">まだありません</div>'}</aside>
+        <main class="wf-editor-main">
+          <div class="wf-editor-head"><label>名前<input id="wf-name" value="${esc(workflow.name)}" placeholder="フロー名"></label>
+            <label>説明<input id="wf-description" value="${esc(workflow.description)}" placeholder="任意"></label>
+            <button type="button" class="primary" id="wf-save">保存</button>
+            ${workflow.id ? '<button type="button" id="wf-delete">削除</button>' : ''}</div>
+          <div class="wf-palette" aria-label="ノード一覧">${palette}</div>
+          <div class="wf-canvas" id="wf-canvas" tabindex="0" aria-label="フローキャンバス">
+            <svg aria-hidden="true"><g>${edgesHtml(workflow.nodes)}</g></svg>${workflow.nodes.map(nodeHtml).join('')}
+          </div>
+        </main>
+        <aside class="wf-properties"><h3>ノード</h3>${inspectorHtml(ov, workflow)}</aside>
+      </div>
+    </section>`;
+  }
 
   function render() {
-    const pane = $id('tab-quick-flow');
+    const ov = st.overview || { runs: [], workflows: [], patterns: [], tiers: [], cwdHistory: [] };
+    const runPane = $id('tab-workflow-run');
+    const settingsPane = $id('tab-workflow-settings');
+    if (runPane) runPane.innerHTML = runHtml(ov);
+    if (settingsPane) settingsPane.innerHTML = editorHtml(ov);
+    wireRun(runPane);
+    wireSettings(settingsPane, ov);
+  }
+
+  function wireRun(pane) {
     if (!pane) return;
-    const ov = st.overview || { runs: [], presets: [], methods: [], agents: [], projects: [] };
-    const presetOpts = (ov.presets || []).map((p) =>
-      `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');
-    pane.innerHTML = `<section class="qf" aria-label="クイック実行">
-      <p class="muted">プロジェクトを立てずに agent-flow を単発実行します。成果は<strong>未検収</strong>のまま
-        バス（<code>${esc(ov.busDir || '')}</code>）に残り、バックログの状態には一切書きません。
-        正式な仕事にするときは run 詳細から「タスクへ昇格」します。</p>
-      ${st.notice ? `<p class="qf-notice">${esc(st.notice)}</p>` : ''}
-      <div class="qf-submit">
-        <textarea id="qf-request" rows="3" placeholder="要求（例: このリポジトリの X の仕組みを調べて 3 案比較する）"></textarea>
-        <div class="qf-row">
-          <label>フロー: <select id="qf-run-preset">
-            <option value="">自動計画（planner に任せる）</option>${presetOpts}
-          </select></label>
-          <button type="button" id="qf-submit" ${st.busy ? 'disabled' : ''}>${st.busy || '実行'}</button>
-        </div>
-      </div>
-      ${builderHtml(ov)}
-      <h4>実行一覧</h4>
-      <div id="qf-runs">${runsHtml(ov)}</div>
-      <div id="qf-run-detail">${runDetailHtml(ov, st.runDetail)}</div>
-    </section>`;
-    wire(pane, ov);
-  }
-
-  function collectBuilderInputs() {
-    // ビルダー入力 → 作業コピー（st.preset）へ吸い上げる（再描画で入力が消えないように）
-    const p = st.preset || (st.preset = emptyPreset());
-    p.name = ($id('qf-name') || {}).value || p.name;
-    p.description = ($id('qf-desc') || {}).value || '';
-    p.evaluate = !!($id('qf-evaluate') || {}).checked;
-    p.agentCli = ($id('qf-agent') || {}).value || '';
-    p.model = ($id('qf-model') || {}).value || '';
-    p.planner = ($id('qf-planner') || {}).value || '';
-    const rows = document.querySelectorAll('#qf-nodes tr[data-node-index]');
-    const nodes = [];
-    for (const row of rows) {
-      const f = (name) => {
-        const el = row.querySelector(`[data-nf="${name}"]`);
-        return el ? el.value : '';
-      };
-      nodes.push({
-        id: f('id').trim(),
-        kind: f('kind').trim() || 'work',
-        goal: f('goal').trim(),
-        deps: f('deps').split(',').map((s) => s.trim()).filter(Boolean),
-        agentCli: f('agentCli').trim(),
-        model: f('model').trim(),
-      });
-    }
-    p.nodes = nodes;
-    p.methods = [...document.querySelectorAll('#qf-builder [data-method-id]')]
-      .filter((el) => el.checked).map((el) => el.dataset.methodId);
-    return p;
-  }
-
-  function wire(pane, ov) {
-    const on = (id, ev, fn) => {
-      const el = $id(id);
-      if (el) el.addEventListener(ev, fn);
-    };
-    on('qf-submit', 'click', async () => {
-      const request = ($id('qf-request') || {}).value || '';
-      const presetId = ($id('qf-run-preset') || {}).value || '';
-      const preset = (ov.presets || []).find((p) => p.id === presetId) || null;
-      st.busy = '投入中…';
+    $id('wf-submit')?.addEventListener('click', async () => {
+      st.busy = '実行中…';
       st.notice = '';
+      const payload = {
+        cwd: $id('wf-cwd')?.value || '',
+        request: $id('wf-request')?.value || '',
+        selection: selectionFrom($id('wf-flow')?.value || 'auto'),
+      };
       render();
       try {
-        const res = await api().adhocFlowSubmit({ request, preset });
-        st.selectedRun = res.runId;
-        st.notice = `投入しました: ${res.runId}`;
+        const result = await api().adhocFlowSubmit(payload);
+        st.selectedRun = result.runId;
+        st.notice = `実行を開始しました · ${result.branch}`;
       } catch (err) {
-        st.notice = `投入に失敗しました: ${String((err && err.message) || err)}`;
+        st.notice = String((err && err.message) || err);
       }
       st.busy = '';
       await refresh();
     });
-    on('qf-builder', 'toggle', () => {
-      st.builderOpen = $id('qf-builder').open;
-    });
-    on('qf-preset-load', 'change', () => {
-      const id = $id('qf-preset-load').value;
-      const found = (ov.presets || []).find((p) => p.id === id);
-      st.preset = found ? JSON.parse(JSON.stringify(found)) : emptyPreset();
-      st.builderOpen = true;
+    pane.querySelectorAll('[data-run-id]').forEach((row) => row.addEventListener('click', async () => {
+      st.selectedRun = row.dataset.runId;
+      try { st.runDetail = await api().adhocFlowRun({ runId: st.selectedRun }); }
+      catch (err) { st.notice = String((err && err.message) || err); }
       render();
-    });
-    on('qf-template', 'change', () => {
-      const t = TEMPLATES[$id('qf-template').value];
-      if (!t) return;
-      const p = collectBuilderInputs();
-      p.nodes = JSON.parse(JSON.stringify(t.nodes));
-      if (t.evaluate) p.evaluate = true;
-      st.builderOpen = true;
-      render();
-    });
-    on('qf-node-add', 'click', () => {
-      const p = collectBuilderInputs();
-      p.nodes.push({ id: `n${p.nodes.length + 1}`, goal: '', kind: 'work', deps: [], agentCli: '', model: '' });
-      st.builderOpen = true;
-      render();
-    });
-    for (const btn of pane.querySelectorAll('[data-node-del]')) {
-      btn.addEventListener('click', () => {
-        const p = collectBuilderInputs();
-        p.nodes.splice(Number(btn.dataset.nodeDel), 1);
-        st.builderOpen = true;
-        render();
-      });
-    }
-    on('qf-preset-save', 'click', async () => {
-      const p = collectBuilderInputs();
+    }));
+    $id('wf-resubmit')?.addEventListener('click', async () => {
       try {
-        const res = await api().adhocFlowSavePreset({ preset: p });
-        st.preset = JSON.parse(JSON.stringify(res.saved));
-        st.notice = `プリセット「${res.saved.name}」を保存しました`;
-      } catch (err) {
-        st.notice = `保存に失敗しました: ${String((err && err.message) || err)}`;
-      }
+        const result = await api().adhocFlowResubmit({ runId: st.selectedRun });
+        st.selectedRun = result.runId;
+        st.notice = `再実行しました · af/${result.runId}`;
+      } catch (err) { st.notice = String((err && err.message) || err); }
       await refresh();
     });
-    on('qf-preset-delete', 'click', async () => {
-      if (!st.preset || !st.preset.id) return;
-      try {
-        await api().adhocFlowDeletePreset({ id: st.preset.id });
-        st.preset = emptyPreset();
-      } catch (err) {
-        st.notice = `削除に失敗しました: ${String((err && err.message) || err)}`;
-      }
+    $id('wf-cancel')?.addEventListener('click', async () => {
+      try { await api().adhocFlowCancel({ runId: st.selectedRun }); }
+      catch (err) { st.notice = String((err && err.message) || err); }
       await refresh();
     });
-    for (const row of pane.querySelectorAll('#qf-runs tr[data-run-id]')) {
-      row.addEventListener('click', async () => {
-        st.selectedRun = row.dataset.runId;
-        st.promoteOpen = false;
-        try {
-          st.runDetail = await api().adhocFlowRun({ runId: st.selectedRun });
-        } catch (err) {
-          st.runDetail = null;
-          st.notice = String((err && err.message) || err);
-        }
-        render();
-      });
-    }
-    on('qf-run-cancel', 'click', async () => {
-      try {
-        await api().adhocFlowCancel({ runId: st.selectedRun });
-        st.notice = 'キャンセルを要求しました';
-      } catch (err) {
-        st.notice = String((err && err.message) || err);
-      }
-      await refresh();
-    });
-    on('qf-run-resubmit', 'click', async () => {
-      try {
-        const res = await api().adhocFlowResubmit({ runId: st.selectedRun });
-        st.selectedRun = res.runId;
-        st.notice = `再投入しました: ${res.runId}`;
-      } catch (err) {
-        st.notice = String((err && err.message) || err);
-      }
-      await refresh();
-    });
-    on('qf-run-delete', 'click', async () => {
+    $id('wf-delete-run')?.addEventListener('click', async () => {
       try {
         await api().adhocFlowDeleteRun({ runId: st.selectedRun });
         st.selectedRun = '';
         st.runDetail = null;
-      } catch (err) {
-        st.notice = String((err && err.message) || err);
-      }
+      } catch (err) { st.notice = String((err && err.message) || err); }
       await refresh();
     });
-    on('qf-run-promote', 'click', () => {
-      st.promoteOpen = !st.promoteOpen;
-      render();
-    });
-    on('qf-promote-go', 'click', async () => {
-      const detail = st.runDetail || {};
-      const run = detail.run || {};
-      const summary = String((run.final && run.final.summary) || '').slice(0, 1500);
-      const acceptance = (($id('qf-promote-acceptance') || {}).value || '')
-        .split('\n').map((s) => s.trim()).filter(Boolean);
-      const spec = {
-        title: ($id('qf-promote-title') || {}).value || '',
-        why: 'アドホック実行（クイック実行）の成果を正式な仕事として引き取る',
-        desc: `元 run: ${st.selectedRun}\n要求: ${String(run.request || '').slice(0, 500)}`,
-        hints: `アドホック run の参考成果（未検収）: ${st.selectedRun}`
-          + (summary ? ` ⏎ 結果サマリ: ${summary}` : ''),
-      };
-      if (acceptance.length) spec.task_acceptance_criteria = acceptance;
-      try {
-        await api().adhocFlowPromote({
-          projectDir: ($id('qf-promote-project') || {}).value || '',
-          spec,
-        });
-        st.notice = 'タスクとして起票しました（プロジェクトの通常の受入・verify を通ります）';
-        st.promoteOpen = false;
-      } catch (err) {
-        st.notice = `昇格に失敗しました: ${String((err && err.message) || err)}`;
+  }
+
+  function collectWorkflow() {
+    const workflow = st.editor || (st.editor = emptyWorkflow());
+    workflow.name = $id('wf-name')?.value || workflow.name;
+    workflow.description = $id('wf-description')?.value || '';
+    const node = workflow.nodes.find((n) => n.id === st.selectedNode);
+    if (node && $id('wf-node-id')) {
+      const oldId = node.id;
+      node.id = $id('wf-node-id').value.trim();
+      node.kind = $id('wf-node-kind').value;
+      node.tier = $id('wf-node-tier').value;
+      node.goal = $id('wf-node-goal').value.trim();
+      if (node.id && oldId !== node.id) {
+        workflow.nodes.forEach((n) => { n.deps = (n.deps || []).map((id) => id === oldId ? node.id : id); });
+        st.selectedNode = node.id;
       }
-      render();
+    }
+    return workflow;
+  }
+
+  function addNode(kind, x, y, ov) {
+    const workflow = collectWorkflow();
+    const used = new Set(workflow.nodes.map((n) => n.id));
+    let i = workflow.nodes.length + 1;
+    while (used.has(`n${i}`)) i += 1;
+    const tier = ov.tiers && ov.tiers[0] ? ov.tiers[0].id : '';
+    workflow.nodes.push({ id: `n${i}`, goal: '{{request}}', kind, tier, deps: [], x, y });
+    st.selectedNode = `n${i}`;
+    render();
+  }
+
+  function wireSettings(pane, ov) {
+    if (!pane) return;
+    $id('wf-new')?.addEventListener('click', () => {
+      st.editor = emptyWorkflow(); st.selectedNode = ''; st.connectFrom = ''; render();
     });
+    pane.querySelectorAll('[data-workflow-id]').forEach((button) => button.addEventListener('click', () => {
+      collectWorkflow();
+      const found = (ov.workflows || []).find((item) => item.id === button.dataset.workflowId);
+      st.editor = found ? clone(found) : emptyWorkflow();
+      st.selectedNode = ''; st.connectFrom = ''; render();
+    }));
+    $id('wf-save')?.addEventListener('click', async () => {
+      try {
+        const result = await api().adhocFlowSaveWorkflow({ workflow: collectWorkflow() });
+        st.editor = clone(result.saved);
+        st.notice = '保存しました';
+      } catch (err) { st.notice = String((err && err.message) || err); }
+      await refresh();
+    });
+    $id('wf-delete')?.addEventListener('click', async () => {
+      try {
+        await api().adhocFlowDeleteWorkflow({ id: st.editor.id });
+        st.editor = emptyWorkflow(); st.selectedNode = ''; st.notice = '削除しました';
+      } catch (err) { st.notice = String((err && err.message) || err); }
+      await refresh();
+    });
+    pane.querySelectorAll('[data-palette]').forEach((button) => {
+      button.addEventListener('click', () => addNode(button.dataset.palette, 60 + ((st.editor?.nodes.length || 0) % 3) * 250, 70, ov));
+      button.addEventListener('dragstart', (event) => event.dataTransfer.setData('text/workflow-kind', button.dataset.palette));
+    });
+    const canvas = $id('wf-canvas');
+    canvas?.addEventListener('dragover', (event) => event.preventDefault());
+    canvas?.addEventListener('drop', (event) => {
+      event.preventDefault();
+      const kind = event.dataTransfer.getData('text/workflow-kind');
+      if (!KINDS.includes(kind)) return;
+      const box = canvas.getBoundingClientRect();
+      addNode(kind, Math.max(20, event.clientX - box.left - 110), Math.max(20, event.clientY - box.top - 30), ov);
+    });
+    pane.querySelectorAll('[data-node-id]').forEach((node) => node.addEventListener('click', () => {
+      collectWorkflow(); st.selectedNode = node.dataset.nodeId; render();
+    }));
+    pane.querySelectorAll('[data-connect-out]').forEach((button) => button.addEventListener('click', (event) => {
+      event.stopPropagation(); st.connectFrom = button.dataset.connectOut; st.notice = '接続先を選択してください'; render();
+    }));
+    pane.querySelectorAll('[data-connect-in]').forEach((button) => button.addEventListener('click', (event) => {
+      event.stopPropagation();
+      const target = st.editor.nodes.find((n) => n.id === button.dataset.connectIn);
+      if (target && st.connectFrom && st.connectFrom !== target.id && !target.deps.includes(st.connectFrom)) {
+        target.deps.push(st.connectFrom);
+      }
+      st.connectFrom = ''; st.notice = ''; render();
+    }));
+    $id('wf-node-delete')?.addEventListener('click', () => {
+      const id = st.selectedNode;
+      const workflow = collectWorkflow();
+      workflow.nodes = workflow.nodes.filter((n) => n.id !== id);
+      workflow.nodes.forEach((n) => { n.deps = n.deps.filter((dep) => dep !== id); });
+      st.selectedNode = ''; render();
+    });
+    ['wf-node-id', 'wf-node-kind', 'wf-node-tier', 'wf-node-goal'].forEach((id) =>
+      $id(id)?.addEventListener('change', () => { collectWorkflow(); render(); }));
+
+    pane.querySelectorAll('[data-drag-node]').forEach((handle) => handle.addEventListener('pointerdown', (event) => {
+      event.stopPropagation();
+      const node = st.editor.nodes.find((n) => n.id === handle.dataset.dragNode);
+      if (!node) return;
+      const start = { x: event.clientX, y: event.clientY, left: Number(node.x), top: Number(node.y) };
+      handle.setPointerCapture(event.pointerId);
+      const move = (e) => {
+        node.x = Math.max(0, start.left + e.clientX - start.x);
+        node.y = Math.max(0, start.top + e.clientY - start.y);
+        const card = pane.querySelector(`[data-node-id="${CSS.escape(node.id)}"]`);
+        if (card) { card.style.left = `${node.x}px`; card.style.top = `${node.y}px`; }
+      };
+      const up = () => { handle.removeEventListener('pointermove', move); render(); };
+      handle.addEventListener('pointermove', move);
+      handle.addEventListener('pointerup', up, { once: true });
+    }));
   }
 
   async function ensureLoaded() {
@@ -515,11 +365,5 @@
     else render();
   }
 
-  return {
-    render: ensureLoaded,
-    refresh,
-    statusLabel,
-    TEMPLATES,
-    _state: st,
-  };
+  return { render: ensureLoaded, refresh, statusLabel, selectionFrom, _state: st };
 });

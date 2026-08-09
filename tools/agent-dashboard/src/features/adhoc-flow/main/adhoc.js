@@ -1,20 +1,18 @@
 'use strict';
 
-// アドホック flow 実行（計画 S21 / M1・柱2×柱3 / C3・C7）。
-//
-// プロジェクト（charter・バックログ・受入基準）を立てずに、agent-flow の単発 run を
-// その場で投入・監視する。書くのは公式契約だけ:
+// ワークフロー実行。既存の agent-flow 投入・監視契約を使い、次だけを担当する:
 //   - 投入 … <bus>/inbox/<run-id>.json（submit_request 契約。plan フィールドで
 //     ユーザー定義フロー＝ビルダーの成果物を運ぶ）
+//   - 書込先 … 選択した Git cwd を workspace として固定（成果は af/<run-id> branch）
+//   - 保存 … ~/.agents/workflows/<id>.json（ユーザー共通カスタムフロー）
 //   - 手法 … run 専用の AGENT_TUNING_DIR に agent-tuning 契約のスナップショットを複製
 //     （S26 の「参照でなく複製」と同じ。source: methods/<id>@<hash> で乖離検出可能）
 // 実行系は agent-flow run そのもの（新しい実行系・状態ファイルは作らない）。
 // run の読み取りは agent-project feature の flow.js（バスパーサ）をそのまま再利用する
 // （C7: バスの読み手を 2 実装にしない）。
 //
-// アドホック run は done を名乗らない（C5）: 受入基準も verify も無いので、UI は
-// 「終了（未検収）」として扱い、バックログの状態ファイルには一切書かない。
-// 正式な仕事にする口は promote（S22: 既存の inbox 投函契約で agent-project へ昇格）。
+// バックログの状態は直接触らない。バックログ側のフロー選択は commands/ の flow
+// スナップショットを agent-project が task sidecar へ永続化する。
 
 const fs = require('fs');
 const path = require('path');
@@ -22,6 +20,7 @@ const { agentHomeSubdir } = require('../../../base/main/agent-home');
 const exec = require('../../routines/main/exec');
 const flow = require('../../agent-project/main/flow');
 const tuning = require('../../orchestration/main/tuning');
+const profiles = require('../../orchestration/main/profiles');
 
 const SUBMITTER = 'agent-dashboard-adhoc';
 
@@ -35,9 +34,183 @@ function resolveBusDir(config) {
 }
 
 function writeJsonAtomic(file, data) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.tmp.${process.pid}`;
   fs.writeFileSync(tmp, `${JSON.stringify(data, null, 2)}\n`);
   fs.renameSync(tmp, file);
+}
+
+// --- ユーザー共通ワークフロー -------------------------------------------------
+
+function resolveWorkflowDir(config) {
+  return String(cfgOf(config).workflowDir || '').trim() || agentHomeSubdir('workflows');
+}
+
+function workflowId(raw) {
+  const id = String(raw || '').trim();
+  if (id && !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$/.test(id)) {
+    throw new Error('フロー id が不正です');
+  }
+  return id || `workflow-${Date.now()}`;
+}
+
+function normalizeWorkflow(raw) {
+  if (!raw || typeof raw !== 'object') throw new Error('フローが不正です');
+  const name = String(raw.name || '').trim();
+  if (!name) throw new Error('フロー名は必須です');
+  const seen = new Set();
+  const nodes = (Array.isArray(raw.nodes) ? raw.nodes : []).map((n) => {
+    const id = String((n && n.id) || '').trim();
+    const goal = String((n && n.goal) || '').trim();
+    const tier = String((n && n.tier) || '').trim();
+    if (!id || !goal || !tier) throw new Error('ノードには id・内容・tier が必要です');
+    if (seen.has(id)) throw new Error(`ノード id が重複しています: ${id}`);
+    seen.add(id);
+    return {
+      id,
+      goal,
+      kind: String(n.kind || 'work').trim() || 'work',
+      tier,
+      deps: (Array.isArray(n.deps) ? n.deps : []).map((d) => String(d).trim()).filter(Boolean),
+      x: Number.isFinite(Number(n.x)) ? Number(n.x) : 40,
+      y: Number.isFinite(Number(n.y)) ? Number(n.y) : 40,
+    };
+  });
+  if (!nodes.length) throw new Error('ノードを1つ以上追加してください');
+  for (const n of nodes) {
+    if (n.deps.some((d) => !seen.has(d))) throw new Error(`${n.id} の接続先が見つかりません`);
+    if (n.deps.includes(n.id)) throw new Error(`${n.id} を自分自身には接続できません`);
+  }
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const visiting = new Set();
+  const done = new Set();
+  function visit(id) {
+    if (visiting.has(id)) throw new Error('フローに循環があります');
+    if (done.has(id)) return;
+    visiting.add(id);
+    byId.get(id).deps.forEach(visit);
+    visiting.delete(id);
+    done.add(id);
+  }
+  nodes.forEach((n) => visit(n.id));
+  const now = new Date().toISOString();
+  return {
+    version: 1,
+    id: workflowId(raw.id),
+    name,
+    description: String(raw.description || '').trim(),
+    nodes,
+    createdAt: String(raw.createdAt || now),
+    updatedAt: String(raw.updatedAt || now),
+  };
+}
+
+function workflowFile(config, id) {
+  return path.join(resolveWorkflowDir(config), `${workflowId(id)}.json`);
+}
+
+function saveWorkflow(config, raw) {
+  if (!raw || typeof raw !== 'object') throw new Error('フローが不正です');
+  const current = raw && raw.id ? loadWorkflow(config, raw.id) : null;
+  const clean = normalizeWorkflow({ ...raw, createdAt: (current && current.createdAt) || raw.createdAt });
+  clean.updatedAt = new Date().toISOString();
+  writeJsonAtomic(workflowFile(config, clean.id), clean);
+  return clean;
+}
+
+function loadWorkflow(config, id) {
+  try {
+    return normalizeWorkflow(JSON.parse(fs.readFileSync(workflowFile(config, id), 'utf8')));
+  } catch (err) {
+    if (err && err.code === 'ENOENT') return null;
+    throw err;
+  }
+}
+
+function listWorkflows(config) {
+  const dir = resolveWorkflowDir(config);
+  if (!fs.existsSync(dir)) return [];
+  return fs.readdirSync(dir, { withFileTypes: true })
+    .filter((e) => e.isFile() && e.name.endsWith('.json'))
+    .map((e) => {
+      try { return normalizeWorkflow(JSON.parse(fs.readFileSync(path.join(dir, e.name), 'utf8'))); }
+      catch { return null; }
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function deleteWorkflow(config, id) {
+  const file = workflowFile(config, id);
+  if (!fs.existsSync(file)) return false;
+  const trash = path.join(resolveWorkflowDir(config), '.trash');
+  fs.mkdirSync(trash, { recursive: true });
+  fs.renameSync(file, path.join(trash, `${workflowId(id)}-${Date.now()}.json`));
+  return true;
+}
+
+function patternCatalog(config) {
+  const cmd = String(cfgOf(config).agentFlowCommand || '').trim() || 'agent-flow';
+  const result = exec.shInWsl(`${cmd} patterns --json`, 10000, cfgOf(config).distro || '');
+  if (result.status !== 0) return [];
+  try {
+    const rows = JSON.parse(result.stdout);
+    return Array.isArray(rows) ? rows.filter((r) => r && r.id && r.label) : [];
+  } catch {
+    return [];
+  }
+}
+
+function planFromWorkflow(config, workflow) {
+  const clean = normalizeWorkflow(workflow);
+  const candidates = new Map();
+  const nodes = clean.nodes.map((n) => {
+    if (!candidates.has(n.tier)) candidates.set(n.tier, profiles.resolveTier(config, n.tier));
+    const candidate = candidates.get(n.tier);
+    if (!candidate || !candidate.agent_cli) {
+      throw new Error(`tier「${n.tier}」で実行できるエージェントがありません`);
+    }
+    return {
+      id: n.id,
+      goal: n.goal,
+      kind: n.kind,
+      deps: n.deps,
+      agent: { agent_cli: candidate.agent_cli, ...(candidate.model ? { model: candidate.model } : {}) },
+    };
+  });
+  return { name: clean.name, nodes };
+}
+
+function snapshotSelection(config, selection) {
+  const selected = selection && typeof selection === 'object' ? selection : { type: 'auto' };
+  const type = String(selected.type || 'auto');
+  if (type === 'auto') return { version: 1, type: 'auto' };
+  if (type === 'pattern') {
+    const pattern = String(selected.id || selected.pattern || '').trim();
+    if (!pattern) throw new Error('標準フローを選択してください');
+    return { version: 1, type: 'pattern', pattern };
+  }
+  if (type === 'custom') {
+    const workflow = loadWorkflow(config, selected.id);
+    if (!workflow) throw new Error('カスタムフローが見つかりません');
+    return { version: 1, type: 'custom', id: workflow.id, ...planFromWorkflow(config, workflow) };
+  }
+  throw new Error('フロー選択が不正です');
+}
+
+function gitWorkspace(config, cwd) {
+  const entered = String(cwd || '').trim();
+  if (!entered) throw new Error('Gitリポジトリを選択してください');
+  const linuxPath = exec.toWslCwd(entered);
+  const q = exec.shellQuote;
+  const line = `root=$(git -C ${q(linuxPath)} rev-parse --show-toplevel 2>/dev/null) || exit 2; `
+    + 'base=$(git -C "$root" symbolic-ref --short -q HEAD 2>/dev/null '
+    + '|| git -C "$root" rev-parse HEAD 2>/dev/null) || exit 3; '
+    + 'printf \'%s\\n%s\\n\' "$root" "$base"';
+  const result = exec.shInWsl(line, 10000, cfgOf(config).distro || '');
+  const [root, base] = String(result.stdout || '').split(/\r?\n/).filter(Boolean);
+  if (result.status !== 0 || !root || !base) throw new Error('Git管理されたフォルダを選択してください');
+  return { url: root, base, path: '', desc: 'workflow' };
 }
 
 // --- プリセット（保存済みフロー定義） ---------------------------------------
@@ -185,26 +358,28 @@ function buildLaunchLine(config, { runId, busDir, tuningDir, agentCli, model, pl
     + `${env}nohup ${cmd} ${flags} >> "$LOGDIR/${runId}.log" 2>&1 & echo launched:$!`;
 }
 
-function submit(config, { request, preset } = {}) {
+function submit(config, { request, preset, cwd, selection } = {}) {
   const req = String(request || '').trim();
   if (!req) throw new Error('要求テキストは必須です');
   const p = preset ? normalizePreset(preset) : null;
+  const selected = selection && typeof selection === 'object' ? selection : { type: 'auto' };
+  const snapshot = snapshotSelection(config, selected);
   const runId = newRunId();
   const busDir = resolveBusDir(config);
   fs.mkdirSync(path.join(busDir, 'inbox'), { recursive: true });
 
-  // submit_request 契約（agent_flow/bus.py と同じ形）。workspace は常に null＝読み取り専用 run。
-  // アドホックに書込先を持たせない——成果はバスの results/artifacts に出て、正式化は
-  // promote（S22）でタスクとして通常の検証つき経路へ載せ替える。
+  const workspace = cwd ? gitWorkspace(config, cwd) : null;
   const rec = {
     id: runId,
     request: req,
     submitter: SUBMITTER,
-    workspace: null,
+    workspace,
     references: [],
     submitted_at: new Date().toISOString(),
   };
-  const plan = p ? planFromPreset(p) : null;
+  let plan = p ? planFromPreset(p) : null;
+  if (snapshot.type === 'custom') plan = { name: snapshot.name, nodes: snapshot.nodes };
+  if (snapshot.type === 'pattern') rec.pattern = snapshot.pattern;
   if (plan) rec.plan = plan;
   writeJsonAtomic(path.join(busDir, 'inbox', `${runId}.json`), rec);
 
@@ -223,7 +398,14 @@ function submit(config, { request, preset } = {}) {
   if (r.status !== 0 || /agent-flow-not-found/.test(String(r.stderr || ''))) {
     throw new Error(`agent-flow の起動に失敗しました: ${String(r.stderr || r.stdout || '').trim().slice(0, 400)}`);
   }
-  return { runId, busDir, tuningDir, plan: !!plan, methods: methods ? methods.map((m) => m.id) : [] };
+  return {
+    runId,
+    busDir,
+    tuningDir,
+    plan: !!plan,
+    branch: workspace ? `af/${runId}` : '',
+    methods: methods ? methods.map((m) => m.id) : [],
+  };
 }
 
 // 再投入: 旧 run の inbox 記録（自分が書いた契約）を新しい id で写す。plan も引き継ぐ。
@@ -284,6 +466,16 @@ function listProjects(config) {
 module.exports = {
   SUBMITTER,
   resolveBusDir,
+  resolveWorkflowDir,
+  normalizeWorkflow,
+  saveWorkflow,
+  loadWorkflow,
+  listWorkflows,
+  deleteWorkflow,
+  patternCatalog,
+  planFromWorkflow,
+  snapshotSelection,
+  gitWorkspace,
   normalizePreset,
   planFromPreset,
   availableMethods,

@@ -19,10 +19,35 @@ PATTERNS = {
     "map-reduce": "split ノードが入力をリスト化し、実行時に要素数ぶんの map を動的に展開して "
                   "reduce で集約する（データ駆動の fan-out。件数を事前に固定しない）。",
 }
+PATTERN_LABELS = {
+    "classify-and-act": "分類して実行",
+    "fan-out-and-synthesize": "並列実行して統合",
+    "adversarial-verification": "生成して検証",
+    "generate-and-filter": "候補を生成して選別",
+    "tournament": "複数案から選択",
+    "loop-until-done": "完了まで反復",
+    "map-reduce": "分割して集約",
+}
 # ノード種別: work=通常実行 / generate=候補生成 / classify=分類 / synthesize=統合 /
 #            verify=検証 / filter=絞り込み / judge=最良選択 / reduce=構造化データの集約 /
 #            split=リスト化（データ駆動 fan-out の起点）/ map=要素ごとの処理
 PATTERN_LIST = list(PATTERNS)
+
+
+def pattern_catalog() -> list:
+    """Dashboard 等の選択 UI が読む標準パターンの正典。"""
+    return [{"id": pid, "label": PATTERN_LABELS[pid], "description": description}
+            for pid, description in PATTERNS.items()]
+
+
+def cmd_patterns(args) -> int:
+    rows = pattern_catalog()
+    if getattr(args, "json", False):
+        print(json.dumps(rows, ensure_ascii=False))
+    else:
+        for row in rows:
+            print(f"{row['id']}\t{row['label']}\t{row['description']}")
+    return 0
 
 # 有効なノード kind。planner（エージェント）が未知 kind を出したら work に丸める。
 VALID_KINDS = {"work", "generate", "classify", "synthesize", "verify",
@@ -288,6 +313,22 @@ def plan_strategy_stub(request: str, review="auto", granularity="auto"):
     strategy = {"patterns": patterns, "parallelism": par, "review": review,
                 "reason": f"stub heuristic → {pattern}（粒度 {granularity}）"
                           + ("（統合前レビュー有）" if review else "")}
+    return strategy, tasks
+
+
+def plan_strategy_pattern(pattern: str, request: str, review="auto", granularity="auto"):
+    """人が選んだ標準パターンを、既存の正準グラフ生成へそのまま通す。"""
+    if pattern not in PATTERNS:
+        raise UserPlanError(f"標準パターンが不正です: {pattern}")
+    base = plan_stub(request)
+    par = maybe_scale_parallelism(
+        request, _parallelism(request, len([t for t in base if not t["deps"]])), granularity)
+    include_review = _review_decision(review, [pattern])
+    tasks = _strategy_to_graph(pattern, request, par, include_review)
+    patterns = [pattern] + (["adversarial-verification"]
+                            if include_review and pattern != "adversarial-verification" else [])
+    strategy = {"patterns": patterns, "parallelism": par, "review": include_review,
+                "reason": f"ユーザー選択 → {pattern}（粒度 {granularity}）"}
     return strategy, tasks
 
 

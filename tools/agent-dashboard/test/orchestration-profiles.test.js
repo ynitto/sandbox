@@ -63,6 +63,16 @@ function makeUsage(cap, totalTokens, agentsUsage) {
   };
 }
 
+test('tier 明示選択は同じ tier 内だけで候補を解決し、下位へ降格しない', () => {
+  const usage = makeUsage(1000, 0);
+  usage.config.computed = { agents: { claude: { quota_kind: 'exhausted' } } };
+  assert.strictEqual(profilesMod.candidateForTier(makeTiers(), 'large', usage, 1000000), null);
+  assert.deepStrictEqual(
+    profilesMod.candidateForTier(makeTiers(), 'small', usage, 1000000),
+    { agent_cli: 'ollama', model: 'qwen3' }
+  );
+});
+
 // --- decide(): 純関数の性質 --------------------------------------------------
 
 test('decide: 同じ入力なら同じ出力（決定的）', () => {

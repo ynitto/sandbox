@@ -18,10 +18,137 @@ function test(name, fn) {
 const adhoc = require('../src/features/adhoc-flow/main/adhoc');
 const exec = require('../src/features/routines/main/exec');
 const tuning = require('../src/features/orchestration/main/tuning');
+const profiles = require('../src/features/orchestration/main/profiles');
+const actions = require('../src/features/agent-project/main/actions');
 
 function tmpdir(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 }
+
+test('カスタムフローをユーザー共通ファイルとして保存・読込できる', () => {
+  const cfg = { adhocFlow: { workflowDir: tmpdir('workflow-files-') } };
+  const saved = adhoc.saveWorkflow(cfg, {
+    name: '実装と検証',
+    nodes: [
+      { id: 'build', goal: '実装: {{request}}', tier: 'large', x: 40, y: 60 },
+      { id: 'verify', goal: '検証', kind: 'verify', tier: 'small', deps: ['build'], x: 320, y: 60 },
+    ],
+  });
+  assert.ok(saved.id.startsWith('workflow-'));
+  assert.strictEqual(adhoc.listWorkflows(cfg).length, 1);
+  assert.deepStrictEqual(adhoc.loadWorkflow(cfg, saved.id), saved);
+  assert.strictEqual(saved.nodes[1].tier, 'small');
+  assert.strictEqual(saved.nodes[1].x, 320);
+});
+
+test('カスタムフローの保存境界は壊れたグラフを拒否し、削除は復元可能な場所へ移す', () => {
+  const cfg = { adhocFlow: { workflowDir: tmpdir('workflow-validation-') } };
+  assert.throws(() => adhoc.normalizeWorkflow(null), /不正/);
+  assert.throws(() => adhoc.normalizeWorkflow({ name: '' }), /フロー名/);
+  assert.throws(() => adhoc.normalizeWorkflow({ name: 'x', nodes: [] }), /1つ以上/);
+  assert.throws(() => adhoc.normalizeWorkflow({ name: 'x', nodes: [
+    { id: 'a', goal: 'g', tier: 'large' }, { id: 'a', goal: 'g', tier: 'large' },
+  ] }), /重複/);
+  assert.throws(() => adhoc.normalizeWorkflow({ name: 'x', nodes: [
+    { id: 'a', goal: 'g', tier: 'large', deps: ['missing'] },
+  ] }), /接続先/);
+  assert.throws(() => adhoc.normalizeWorkflow({ name: 'x', nodes: [
+    { id: 'a', goal: 'g', tier: 'large', deps: ['a'] },
+  ] }), /自分自身/);
+  assert.throws(() => adhoc.normalizeWorkflow({ name: 'x', nodes: [
+    { id: 'a', goal: 'g', tier: 'large', deps: ['b'] },
+    { id: 'b', goal: 'g', tier: 'large', deps: ['a'] },
+  ] }), /循環/);
+  const saved = adhoc.saveWorkflow(cfg, { name: 'x', nodes: [{ id: 'a', goal: 'g', tier: 'large' }] });
+  const updated = adhoc.saveWorkflow(cfg, { ...saved, name: 'y' });
+  assert.strictEqual(updated.createdAt, saved.createdAt);
+  assert.strictEqual(adhoc.deleteWorkflow(cfg, saved.id), true);
+  assert.strictEqual(adhoc.deleteWorkflow(cfg, saved.id), false);
+  assert.strictEqual(adhoc.loadWorkflow(cfg, saved.id), null);
+  assert.ok(fs.existsSync(path.join(cfg.adhocFlow.workflowDir, '.trash')));
+});
+
+test('カスタムフローの tier を実行候補へ固定して plan を作る', () => {
+  const original = profiles.resolveTier;
+  profiles.resolveTier = (_cfg, tier) => (
+    tier === 'large' ? { agent_cli: 'codex', model: 'gpt-5' } : { agent_cli: 'ollama', model: 'qwen3' }
+  );
+  try {
+    const workflow = adhoc.normalizeWorkflow({
+      name: '実装と検証',
+      nodes: [
+        { id: 'build', goal: '実装', tier: 'large' },
+        { id: 'verify', goal: '検証', tier: 'small', deps: ['build'] },
+      ],
+    });
+    const plan = adhoc.planFromWorkflow({}, workflow);
+    assert.deepStrictEqual(plan.nodes[0].agent, { agent_cli: 'codex', model: 'gpt-5' });
+    assert.deepStrictEqual(plan.nodes[1].agent, { agent_cli: 'ollama', model: 'qwen3' });
+  } finally {
+    profiles.resolveTier = original;
+  }
+});
+
+test('バックログ用フロースナップショットは自動・標準・カスタムを固定する', () => {
+  const cfg = { adhocFlow: { workflowDir: tmpdir('workflow-snapshot-') } };
+  const workflow = adhoc.saveWorkflow(cfg, {
+    name: '固定', nodes: [{ id: 'a', goal: '実装', tier: 'large' }],
+  });
+  const original = profiles.resolveTier;
+  profiles.resolveTier = () => ({ agent_cli: 'codex', model: 'gpt-5' });
+  try {
+    assert.deepStrictEqual(adhoc.snapshotSelection(cfg, null), { version: 1, type: 'auto' });
+    assert.deepStrictEqual(adhoc.snapshotSelection(cfg, { type: 'pattern', id: 'map-reduce' }),
+      { version: 1, type: 'pattern', pattern: 'map-reduce' });
+    const custom = adhoc.snapshotSelection(cfg, { type: 'custom', id: workflow.id });
+    assert.strictEqual(custom.type, 'custom');
+    assert.deepStrictEqual(custom.nodes[0].agent, { agent_cli: 'codex', model: 'gpt-5' });
+    assert.throws(() => adhoc.snapshotSelection(cfg, { type: 'custom', id: 'missing' }), /見つかりません/);
+    assert.throws(() => adhoc.snapshotSelection(cfg, { type: 'bad' }), /不正/);
+  } finally {
+    profiles.resolveTier = original;
+  }
+});
+
+test('Git cwd は Windows パスを WSL に変換して workspace 契約へする', () => {
+  const original = exec.shInWsl;
+  let command = '';
+  exec.shInWsl = (line) => {
+    command = line;
+    return { status: 0, stdout: '/mnt/c/dev/repo\nmain', stderr: '' };
+  };
+  try {
+    assert.deepStrictEqual(adhoc.gitWorkspace({}, 'C:\\dev\\repo'), {
+      url: '/mnt/c/dev/repo', base: 'main', path: '', desc: 'workflow',
+    });
+    assert.ok(command.includes("'/mnt/c/dev/repo'"));
+  } finally {
+    exec.shInWsl = original;
+  }
+});
+
+test('標準フローカタログは agent-flow の JSON だけを受理する', () => {
+  const original = exec.shInWsl;
+  try {
+    exec.shInWsl = () => ({ status: 0, stdout: '[{"id":"map-reduce","label":"分割"}]' });
+    assert.strictEqual(adhoc.patternCatalog({}).length, 1);
+    exec.shInWsl = () => ({ status: 0, stdout: 'broken' });
+    assert.deepStrictEqual(adhoc.patternCatalog({}), []);
+    exec.shInWsl = () => ({ status: 1, stdout: '' });
+    assert.deepStrictEqual(adhoc.patternCatalog({}), []);
+  } finally {
+    exec.shInWsl = original;
+  }
+});
+
+test('バックログの承認コマンドにフロースナップショットを載せる', () => {
+  const projectDir = tmpdir('workflow-command-');
+  const flow = { version: 1, type: 'pattern', pattern: 'map-reduce' };
+  const result = actions.dropCommand(projectDir, {
+    action: 'approve', id: 'T1', reason: '実行', flow,
+  });
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(result.file, 'utf8')).flow, flow);
+});
 
 // --- プリセットの整形 ---------------------------------------------------------
 
@@ -194,6 +321,27 @@ test('submit はプリセット無しでも投入できる（planner に任せ�
     assert.strictEqual(res.tuningDir, null);
   } finally {
     exec.shInWsl = orig;
+  }
+});
+
+test('submit が Git cwd と標準フローを inbox に固定する', () => {
+  const cfg = { adhocFlow: { busDir: tmpdir('workflow-bus-') } };
+  const original = exec.shInWsl;
+  exec.shInWsl = (line) => (line.includes('rev-parse --show-toplevel')
+    ? { status: 0, stdout: '/repo\nmain', stderr: '' }
+    : { status: 0, stdout: 'launched:1', stderr: '' });
+  try {
+    const result = adhoc.submit(cfg, {
+      request: '実装する', cwd: '/repo', selection: { type: 'pattern', id: 'map-reduce' },
+    });
+    const rec = JSON.parse(fs.readFileSync(
+      path.join(cfg.adhocFlow.busDir, 'inbox', `${result.runId}.json`), 'utf8'));
+    assert.deepStrictEqual(rec.workspace, { url: '/repo', base: 'main', path: '', desc: 'workflow' });
+    assert.strictEqual(rec.pattern, 'map-reduce');
+    assert.strictEqual(rec.plan, undefined);
+    assert.strictEqual(result.branch, `af/${result.runId}`);
+  } finally {
+    exec.shInWsl = original;
   }
 });
 

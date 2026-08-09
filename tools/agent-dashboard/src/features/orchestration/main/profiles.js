@@ -225,6 +225,28 @@ function pickCandidate(tiers, startTier, allocationAgents, usageAgents, computed
   return null;
 }
 
+// ワークフローのノードは tier を明示しているため、同じ tier 内だけで候補を選ぶ。
+// 自動プロファイルのような下位 tier への降格は、実行品質を変えるので行わない。
+function candidateForTier(tiers, tier, usage, nowMs) {
+  const spec = tiers && tiers[tier];
+  if (!spec) return null;
+  const allocationAgents =
+    (usage && usage.config && isPlainObject(usage.config.allocation) && usage.config.allocation.agents) || {};
+  const usageAgents = (usage && usage.agents) || {};
+  const computedAgents =
+    (usage && usage.config && isPlainObject(usage.config.computed) && usage.config.computed.agents) || {};
+  for (const candidate of spec.candidates || []) {
+    if (!candidate.agent_cli || agentHasRoom(
+      allocationAgents, usageAgents, computedAgents, candidate.agent_cli, nowMs
+    )) return { ...candidate };
+  }
+  return null;
+}
+
+function resolveTier(cfg, tier) {
+  return candidateForTier(load(cfg).tiers, tier, budget.usage(cfg), Date.now());
+}
+
 // 1 ワークロード分の決定。tier は budget（予算残率・ヒステリシス・最小保持）だけで決め、
 // quota（CLI 枠）で候補が下の段へフォールバックした場合は、その実際の段を state に残す。
 // reset 後の上位復帰は、この state を通じて既存のヒステリシスと最小保持が効く。
@@ -408,6 +430,8 @@ module.exports = {
   load,
   save,
   decide,
+  candidateForTier,
+  resolveTier,
   evaluate,
   apply,
 };

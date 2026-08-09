@@ -14,8 +14,11 @@ module.exports = {
     // 手法スナップショット（run 専用 AGENT_TUNING_DIR）の置き場。
     // 空なら ~/.agents/flow/tuning/<run-id>/
     tuningRoot: '',
-    // 保存済みフロー定義（ビルダーの成果物）。実行時に投入契約（submit_request の plan）へ
-    // 変換されるだけの宣言データで、独自の状態ファイルは作らない（config.json に同居）。
+    // 空なら ~/.agents/workflows。workflowDir はテスト・ポータブル環境用の上書き。
+    workflowDir: '',
+    // 実行に成功した cwd の履歴（新しい順、最大20件）。入力表記はそのまま保持する。
+    cwdHistory: [],
+    // 旧版互換。初回表示時に ~/.agents/workflows/*.json へ移行する。
     presets: [],
   },
 };

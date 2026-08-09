@@ -15,6 +15,15 @@ def _plan(nodes, **extra):
 
 
 class PlanStrategyUserTests(unittest.TestCase):
+    def test_patterns_cli_lists_canonical_catalog(self):
+        p = subprocess.run(
+            [sys.executable, str(SCRIPT), "patterns", "--json"],
+            capture_output=True, text=True, timeout=20)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        rows = json.loads(p.stdout)
+        self.assertEqual({row["id"] for row in rows}, set(kf.PATTERNS))
+        self.assertTrue(all(row["label"] and row["description"] for row in rows))
+
     def test_valid_plan_fixed_verbatim(self):
         plan = _plan([
             {"id": "a", "goal": "調査: {{request}}", "kind": "work"},
@@ -90,6 +99,12 @@ class UserPlanBusTests(unittest.TestCase):
         bus.submit_request("req-1", "r", "tester", plan=plan)
         rec = bus.read_inbox("req-1")
         self.assertEqual(rec["plan"], plan)
+
+    def test_submit_request_carries_pattern(self):
+        bus = kf.Bus(self.root, "req-pattern")
+        os.makedirs(bus.inbox_dir, exist_ok=True)
+        bus.submit_request("req-pattern", "r", "tester", pattern="map-reduce")
+        self.assertEqual(bus.read_inbox("req-pattern")["pattern"], "map-reduce")
 
     def test_submit_request_ignores_empty_plan(self):
         bus = kf.Bus(self.root, "req-2")
@@ -192,6 +207,19 @@ class UserPlanEndToEndTests(unittest.TestCase):
         for nid, r in final["results"].items():
             self.assertEqual(r["status"], "done", f"{nid}: {r}")
 
+    def test_explicit_pattern_run_uses_selected_pattern(self):
+        bus = self._bus()
+        p = subprocess.run(
+            [sys.executable, str(SCRIPT), "--bus", bus, "run", "対象を実装する",
+             "--pattern", "adversarial-verification", "--workers", "2",
+             "--planner", "stub", "--executor", "stub", "--poll", "0.2"],
+            capture_output=True, text=True, timeout=90)
+        self.assertEqual(p.returncode, 0, p.stderr[-800:])
+        _, graph, final, _meta = self._graph(bus)
+        self.assertEqual(graph["strategy"]["patterns"], ["adversarial-verification"])
+        self.assertEqual(set(graph["nodes"]), {"gen1", "verify1"})
+        self.assertTrue(all(r["status"] == "done" for r in final["results"].values()))
+
     def test_inbox_plan_reaches_orchestrator_without_argv(self):
         bus = self._bus()
         req_id = "req-userplan-1"
@@ -209,6 +237,22 @@ class UserPlanEndToEndTests(unittest.TestCase):
         self.assertEqual(set(graph["nodes"]), {"solo"})
         self.assertEqual(graph["nodes"]["solo"]["goal"], "単独: inbox 経由")
         self.assertEqual(final["results"]["solo"]["status"], "done")
+
+    def test_inbox_pattern_reaches_orchestrator(self):
+        bus = self._bus()
+        req_id = "req-pattern-1"
+        b = kf.Bus(bus, req_id)
+        os.makedirs(b.inbox_dir, exist_ok=True)
+        b.submit_request(req_id, "inbox 経由", "tester", pattern="adversarial-verification")
+        p = subprocess.run(
+            [sys.executable, str(SCRIPT), "--bus", bus, "--run-id", req_id, "run",
+             "--from-inbox", "--workers", "2", "--planner", "stub",
+             "--executor", "stub", "--poll", "0.2"],
+            capture_output=True, text=True, timeout=90)
+        self.assertEqual(p.returncode, 0, p.stderr[-800:])
+        _, graph, final, _meta = self._graph(bus)
+        self.assertEqual(graph["strategy"]["patterns"], ["adversarial-verification"])
+        self.assertTrue(all(r["status"] == "done" for r in final["results"].values()))
 
     def test_invalid_plan_fails_run_without_fallback(self):
         bus = self._bus()

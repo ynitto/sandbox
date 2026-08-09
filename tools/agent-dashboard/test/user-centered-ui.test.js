@@ -189,7 +189,7 @@ const amigosVisibilitySource = renderer.slice(
 assert.ok(!amigosVisibilitySource.includes('budget.hasData'), '予算データだけでミッションタブを表示しません');
 assert.ok(!renderer.includes('function renderAdvancedBudgetSettings('), '詳細設定用の旧予算管理処理を残しません');
 assert.ok(!renderer.includes('id="btn-amigos-budget-save"'), '旧予算管理の保存操作を残しません');
-for (const label of ['利用状況', 'エージェント', '共通指示', '段と実行手法', '実行制御']) {
+for (const label of ['利用状況', 'エージェント', '共通指示', 'ワークフロー', '実行制御']) {
   assert.ok(renderer.includes(`label: '${label}'`), `全体設定に「${label}」タブが必要です`);
 }
 // 利用状況の受け側は全体設定ではなく利用状況領域（sections/usage.js）。
@@ -228,8 +228,13 @@ assert.ok(agentSettingsSource.includes('orchMatrixPanelHtml(') && agentSettingsS
 assert.ok(instructionSettingsSource.includes('orchInstructionsPanelHtml(')
   && instructionSettingsSource.includes('orchSessionCommandsPanelHtml('), '共通指示タブに指示と開始コマンドを表示します');
 assert.ok(methodSettingsSource.includes('orchTiersPanelHtml(') && methodSettingsSource.includes('orchMethodsPanelHtml('),
-  '段と実行手法タブに段設定と手法マーケットを表示します');
-assert.ok(renderer.includes('if (!label && candidates.length === 0) return;'), '空の段は保存しません');
+  'ワークフロータブに段設定と手法マーケットを表示します');
+assert.ok(renderer.includes("const ORCH_TIER_LABELS = { small: 'small', medium: 'medium', large: 'large' };"),
+  'small・medium・large の3段を常設します');
+assert.ok(!grab('orchOrderedTiers').includes('Object.entries'), '既存設定にある固定外の段は表示しません');
+assert.ok(!renderer.includes('id="btn-orch-tier-add"') && !renderer.includes('class="orch-tier-remove"'),
+  '固定された段の追加・削除操作を表示しません');
+assert.ok(renderer.includes('placeholder="small, medium, large"'), '手法の段指定も画面上の名称へ揃えます');
 assert.ok(controlSettingsSource.includes('orchAllocationPanelHtml(') && controlSettingsSource.includes('orchStatusPanelHtml('),
   '実行制御タブに上限と稼働制御を表示します');
 assert.ok(controlSettingsSource.includes('orchConcurrencyPanelHtml('),

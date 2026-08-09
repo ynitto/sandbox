@@ -847,6 +847,8 @@ function showTaskDialog(id, scope) {
           <div class="task-complete-banner">${esc(hint.completeHow)}</div>
           <label for="task-reason">操作の理由</label>
           <textarea rows="2" id="task-reason" class="need-input" placeholder="操作の理由（決定記録に残ります）"></textarea>
+          <label for="task-flow">次の実行フロー</label>
+          <select id="task-flow"><option value="auto">自動</option></select>
           <div class="row need-buttons">
             ${canApprove ? `<button class="primary-inline" data-taskact="approve">承認</button>` : ''}
             ${t.status === 'doing' ? '' : `<button class="danger" data-taskact="reject" data-confirm-reject="1" title="タスクを廃止します。依存するタスクは計画の再確認に戻り、似た内容のタスクは次の分解でも提案されなくなります">却下</button>`}
@@ -980,7 +982,8 @@ function showTaskDialog(id, scope) {
         if (!yes) return;
       }
       const ok = await guard('操作', async () => {
-        const res = await api.runAction({ dir: p.dir, action: btn.dataset.taskact, id: t.id, reason });
+        const flow = btn.dataset.taskact === 'approve' ? await snapshotTaskFlow($('task-flow')) : undefined;
+        const res = await api.runAction({ dir: p.dir, action: btn.dataset.taskact, id: t.id, reason, flow });
         uiLog('taskAction', btn.dataset.taskact, t.id, res);
         toast(`${TASK_ACT_DONE[btn.dataset.taskact] || '操作しました'}（反映まで少し時間がかかることがあります）`, true);
         return true;
@@ -1058,12 +1061,10 @@ function showTaskDialog(id, scope) {
         fields.risks = risksNow.length ? risksNow : [''];
       }
       const feedback = $('rv-feedback').value.trim();
-      if (!Object.keys(fields).length && !feedback) {
-        return toast('変更する項目かフィードバックを入力してください');
-      }
       const reason = $('task-reason') ? $('task-reason').value.trim() : '';
       const ok = await guard('修正の指示', async () => {
-        const res = await api.runAction({ dir: p.dir, action: 'revise', id: t.id, reason, fields, feedback });
+        const flow = await snapshotTaskFlow($('task-flow'));
+        const res = await api.runAction({ dir: p.dir, action: 'revise', id: t.id, reason, fields, feedback, flow });
         markReviseSent(t);
         uiLog('revise', t.id, res);
         toast(`${t.id} の修正指示を送信しました（次の実行で反映されます）`, true);
@@ -1187,6 +1188,7 @@ function showTaskDialog(id, scope) {
   const dialog = $('dlg-task');
   dialog._inputSnapshot = taskDialogInputSnapshot(dialog);
   dialog.showModal();
+  fillTaskFlowSelect($('task-flow')).catch((err) => toast(String((err && err.message) || err)));
 }
 
 // charter からのバックログ分解を要求する（分解はこの明示操作でしか走らない）。本体が次パスで

@@ -172,6 +172,28 @@ def _context_file_for(task: Task, cfg: "Config") -> "str | None":
     return path
 
 
+def _task_flow_cmd_args(task: Task, cfg: "Config") -> "list[str]":
+    """タスクの実行前レビューで固定したフローを agent-flow へ渡す。欠落は自動。"""
+    sidecar = cfg.backlog / f"{task.id}.flow.json"
+    if not sidecar.exists():
+        return []
+    try:
+        selected = json.loads(sidecar.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError(f"フロー設定を読めません: {sidecar}: {exc}") from exc
+    kind = str(selected.get("type") or "auto") if isinstance(selected, dict) else ""
+    if kind == "auto":
+        return []
+    if kind == "pattern":
+        pattern = str(selected.get("pattern") or "").strip()
+        if not pattern:
+            raise ValueError(f"標準フローが未指定です: {sidecar}")
+        return ["--pattern", pattern]
+    if kind == "custom" and isinstance(selected.get("nodes"), list) and selected["nodes"]:
+        return ["--plan-file", str(sidecar)]
+    raise ValueError(f"フロー設定が不正です: {sidecar}")
+
+
 def build_agent_flow_cmd(task: Task, cfg: "Config", use_git: bool = False,
                         run_id: str = "", inherit_from: str = "") -> "list[str]":
     """agent-flow run（都度起動）のコマンド。planner/executor を制御できる（submit では不可）。
@@ -205,7 +227,7 @@ def build_agent_flow_cmd(task: Task, cfg: "Config", use_git: bool = False,
         base += ["--context-file", ctx_file]
     cmd = (base + _workspace_cmd_args(cfg, task)
            + _reference_cmd_args(cfg, task) + [
-        "run", build_request(task, cfg), "--planner", cfg.flow_planner,
+        "run", build_request(task, cfg), *_task_flow_cmd_args(task, cfg), "--planner", cfg.flow_planner,
         "--executor", executor, "--max-iterations", str(cfg.max_iterations)])
     if inherit_from:
         cmd += ["--inherit-from", inherit_from]

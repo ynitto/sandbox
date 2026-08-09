@@ -10,6 +10,47 @@ from _shared import *  # noqa: E402,F401,F403 — 共有の前置き（環境隔
 from _shared import _drained, _submit_feedback  # noqa: E402,F401 — `import *` は _ 始まりを持ってこない
 
 
+class TestTaskFlowSelection(unittest.TestCase):
+    def test_rejects_task_id_outside_backlog(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            cfg = cfg_for(root)
+            with self.assertRaises(ValueError):
+                km._persist_task_flow_selection(
+                    cfg, "../outside", {"type": "pattern", "pattern": "map-reduce"})
+
+    def test_build_agent_flow_cmd_uses_task_flow_sidecar(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            mkb(root, "T1")
+            cfg = cfg_for(root)
+            task = km.load_tasks(cfg.backlog)[0]
+            sidecar = cfg.backlog / "T1.flow.json"
+            sidecar.write_text(json.dumps({"version": 1, "type": "pattern", "pattern": "map-reduce"}),
+                               encoding="utf-8")
+            cmd = km.build_agent_flow_cmd(task, cfg)
+            self.assertEqual(cmd[cmd.index("--pattern") + 1], "map-reduce")
+            sidecar.write_text(json.dumps({
+                "version": 1, "type": "custom", "name": "固定フロー",
+                "nodes": [{"id": "a", "goal": "実装", "agent": {"agent_cli": "codex"}}],
+            }), encoding="utf-8")
+            cmd = km.build_agent_flow_cmd(task, cfg)
+            self.assertEqual(Path(cmd[cmd.index("--plan-file") + 1]), sidecar)
+
+    def test_approve_command_persists_selected_flow(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            mkb(root, "T1", status="proposed")
+            cfg = cfg_for(root)
+            km.ensure_dirs(cfg)
+            selected = {"version": 1, "type": "pattern", "pattern": "adversarial-verification"}
+            (root / "commands" / "flow-approve.json").write_text(json.dumps({
+                "command": "approve", "id": "T1", "reason": "実行", "flow": selected,
+            }), encoding="utf-8")
+            self.assertEqual(km.ingest_commands(cfg), ["approve:T1"])
+            self.assertEqual(json.loads((cfg.backlog / "T1.flow.json").read_text(encoding="utf-8")), selected)
+
+
 class TestFeedback(unittest.TestCase):
     def test_requires_checkbox(self):
         with tempfile.TemporaryDirectory() as d:

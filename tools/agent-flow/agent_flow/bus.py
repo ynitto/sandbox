@@ -974,7 +974,8 @@ class Bus:
                        inherit_from: "str | None" = None,
                        delegation: "dict | None" = None,
                        verification_plan: "dict | None" = None,
-                       plan: "dict | None" = None) -> None:
+                       plan: "dict | None" = None,
+                       pattern: "str | None" = None) -> None:
         rec = {
             "id": req_id,
             "request": request,
@@ -997,6 +998,8 @@ class Bus:
             # 検証だけでこのグラフを実行する（plan_strategy_user）。inbox 要求が唯一の権威で、
             # orchestrate 自身が inbox を読むため argv 転記は不要。
             rec["plan"] = plan
+        if isinstance(pattern, str) and pattern.strip():
+            rec["pattern"] = pattern.strip()
         write_json_atomic(os.path.join(self.inbox_dir, f"{req_id}.json"), rec)
 
     def list_inbox(self):

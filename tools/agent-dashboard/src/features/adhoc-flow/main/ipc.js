@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const adhoc = require('./adhoc');
+const profiles = require('../../orchestration/main/profiles');
 
 function registerIpc(ctx) {
   const { handle, loadConfig, saveConfig } = ctx;
@@ -38,10 +39,32 @@ function registerIpc(ctx) {
     } catch {
       // CLI カタログが読めなくても投入はできる（選択肢が既定だけになるだけ）
     }
+    const profile = profiles.load(cfg);
+    const tierNames = Object.entries(profile.tiers || {})
+      .sort((a, b) => b[1].order - a[1].order)
+      .map(([id, value]) => ({ id, label: value.label || id }));
+    // 旧プリセットは初回表示時にユーザー共通ファイルへ移す。元設定は互換用に残す。
+    const fallbackTier = tierNames[0] && tierNames[0].id;
+    for (const preset of (cfg.adhocFlow && cfg.adhocFlow.presets) || []) {
+      if (!fallbackTier) continue;
+      try {
+        if (adhoc.loadWorkflow(cfg, preset.id)) continue;
+        adhoc.saveWorkflow(cfg, {
+          ...preset,
+          nodes: (preset.nodes || []).map((n) => ({ ...n, tier: n.tier || fallbackTier })),
+        });
+      } catch {
+        // 壊れた旧プリセットは一覧を壊さず、従来設定に残す。
+      }
+    }
     return {
       busDir,
       runs,
       presets: (cfg.adhocFlow && cfg.adhocFlow.presets) || [],
+      workflows: adhoc.listWorkflows(cfg),
+      patterns: adhoc.patternCatalog(cfg),
+      tiers: tierNames,
+      cwdHistory: (cfg.adhocFlow && cfg.adhocFlow.cwdHistory) || [],
       methods,
       agents,
       projects: adhoc.listProjects(cfg),
@@ -61,7 +84,17 @@ function registerIpc(ctx) {
     };
   });
 
-  handle('adhocFlow:submit', (payload) => adhoc.submit(loadConfig(), payload || {}));
+  handle('adhocFlow:submit', (payload) => {
+    const cfg = loadConfig();
+    const result = adhoc.submit(cfg, payload || {});
+    const cwd = String((payload && payload.cwd) || '').trim();
+    if (cwd) {
+      const old = (cfg.adhocFlow && cfg.adhocFlow.cwdHistory) || [];
+      const cwdHistory = [cwd, ...old.filter((p) => p !== cwd)].slice(0, 20);
+      saveConfig({ ...cfg, adhocFlow: { ...cfg.adhocFlow, cwdHistory } });
+    }
+    return result;
+  });
 
   handle('adhocFlow:resubmit', ({ runId } = {}) => adhoc.resubmit(loadConfig(), String(runId || '')));
 
@@ -93,6 +126,18 @@ function registerIpc(ctx) {
     saveConfig({ ...cfg, adhocFlow: { ...cfg.adhocFlow, presets: list } });
     return { presets: list };
   });
+
+  handle('adhocFlow:saveWorkflow', ({ workflow } = {}) => ({
+    saved: adhoc.saveWorkflow(loadConfig(), workflow),
+  }));
+
+  handle('adhocFlow:deleteWorkflow', ({ id } = {}) => ({
+    deleted: adhoc.deleteWorkflow(loadConfig(), String(id || '')),
+  }));
+
+  handle('adhocFlow:snapshotSelection', ({ selection } = {}) => ({
+    flow: adhoc.snapshotSelection(loadConfig(), selection),
+  }));
 
   handle('adhocFlow:promote', (payload) => adhoc.promote(loadConfig(), payload || {}));
 }

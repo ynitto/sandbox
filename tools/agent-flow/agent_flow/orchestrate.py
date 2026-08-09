@@ -373,9 +373,17 @@ def cmd_orchestrate(args) -> int:
         phase("planning")
         try:
             user_plan = _read_user_plan(bus, args)
+            pattern = str(getattr(args, "pattern", "") or "").strip()
+            if user_plan is not None and pattern:
+                raise UserPlanError("--pattern とユーザー定義 plan は同時に指定できません")
             if user_plan is not None:
                 strategy, tasks = plan_strategy_user(user_plan, args.request)
                 log(who, f"ユーザー定義フローを採用: {strategy['reason']}")
+            elif pattern:
+                strategy, tasks = plan_strategy_pattern(
+                    pattern, args.request, getattr(args, "review", "auto"),
+                    getattr(args, "granularity", "auto"))
+                log(who, f"標準パターンを採用: {strategy['reason']}")
             else:
                 strategy, tasks = _with_run_heartbeat(
                     heartbeat, lease_window, lambda: _plan_strategy(args, bus))

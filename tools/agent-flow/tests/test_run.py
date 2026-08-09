@@ -292,12 +292,13 @@ class SpawnArgvTests(unittest.TestCase):
 
     def test_spawn_orchestrator_argv_parses(self):
         args = self._args()
-        req = {"request": "do the thing"}
+        req = {"request": "do the thing", "pattern": "map-reduce"}
         cmd = self._capture(kf._spawn_orchestrator, self._base(), args, "run-42", req)
         parsed = self._parse_child(cmd)
         self.assertEqual(parsed.cmd, "orchestrate")
         self.assertEqual(parsed.run_id, "run-42")
         self.assertEqual(parsed.request, "do the thing")
+        self.assertEqual(parsed.pattern, "map-reduce")
 
     def test_spawn_orchestrator_with_inherit_from_argv_parses(self):
         # 回帰: --inherit-from は orchestrate サブコマンドの引数。以前は "orchestrate" より前に

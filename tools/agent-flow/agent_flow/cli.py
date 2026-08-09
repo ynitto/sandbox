@@ -98,6 +98,8 @@ def build_parser() -> argparse.ArgumentParser:
                      help="ワークフローへの要求（再開時は省略可）")
     run.add_argument("--workers", type=int, default=None)
     run.add_argument("--planner", choices=["agent", "stub", "flow-planner"], default=None)
+    run.add_argument("--pattern", choices=PATTERN_LIST, default=None,
+                     help="標準ワークフローパターンを明示選択（省略時は自動）")
     run.add_argument("--executor", default=None,
                      help="ワーカーバス: 組み込み agent / stub、または executor プラグイン名"
                           "（例 gitlab）/ .py パス（opt-in。gitlab はタスクを GitLab イシューに"
@@ -128,9 +130,14 @@ def build_parser() -> argparse.ArgumentParser:
                           "（goal 中の {{request}} は要求テキストへ置換）")
     run.set_defaults(func=cmd_run)
 
+    pats = sub.add_parser("patterns", help="標準ワークフローパターンを一覧表示")
+    pats.add_argument("--json", action="store_true", help="JSON 配列で表示")
+    pats.set_defaults(func=cmd_patterns)
+
     orch = sub.add_parser("orchestrate", help="計画役")
     orch.add_argument("--request", required=True)
     orch.add_argument("--planner", choices=["agent", "stub", "flow-planner"], default=None)
+    orch.add_argument("--pattern", choices=PATTERN_LIST, default=None)
     orch.add_argument("--executor", default=None,
                       help="ワーカーバス（agent/stub/プラグイン名/.py パス）。"
                            "評価役（evaluator）は stub 以外ならローカルのエージェント CLI で判断")
@@ -278,4 +285,3 @@ def main() -> int:
         if getattr(args, "cleanup_clone", True):
             cleanup_active_clones()
         cleanup_workspace()   # ワークスペースの clone は常に消す（作業後クリーンは必須）
-

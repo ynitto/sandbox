@@ -291,7 +291,7 @@ function revisePayload({ fields, feedback }) {
 // commands/<name>.json のドロップ（agent-project の ingest_commands が拾う）。
 // 書きかけを watch に読ませないよう .tmp に書いてから rename する。
 // replan / pause / resume / stop / heal はプロジェクト単位（id 不要）なので id を載せない。
-function dropCommand(projectDir, { action, id, reason, fields, feedback, run, charter, title, complete }) {
+function dropCommand(projectDir, { action, id, reason, fields, feedback, run, charter, title, complete, flow }) {
   const dir = path.join(projectDir, 'commands');
   fs.mkdirSync(dir, { recursive: true });
   const projectScoped =
@@ -312,6 +312,9 @@ function dropCommand(projectDir, { action, id, reason, fields, feedback, run, ch
     ...(action === 'revive' && title ? { title: String(title) } : {}),
     // 承認 = 完了か積み直しかは呼び出し側が明示する（本体は文面から推定しない）
     ...(action === 'approve' && complete ? { complete: true } : {}),
+    ...((action === 'approve' || action === 'revise') && flow && typeof flow === 'object'
+      ? { flow: JSON.parse(JSON.stringify(flow)) }
+      : {}),
   };
   const slug = projectScoped ? 'project' : slugify(id);
   const file = path.join(dir, `viewer-${action}-${slug}-${Date.now()}.json`);
@@ -337,19 +340,19 @@ function dropCommand(projectDir, { action, id, reason, fields, feedback, run, ch
 // 停滞を生んでいた。稼働中の本体（同一 PC の WSL・別ホスト問わず）が git 同期越しに ingest し、
 // 受理レシート（commands/processed/）でカードに「受理済み」を返す。停止中は取り込み待ちのまま
 // 残り、送信済み表示で「エンジン待ち」が見える（サイレントに失敗しない）。
-async function runAction(cfg, { dir, action, id, reason, fields, feedback, run, complete }) {
+async function runAction(cfg, { dir, action, id, reason, fields, feedback, run, complete, flow }) {
   if (!COMMAND_ACTIONS.has(action)) throw new Error(`不明なアクション: ${action}`);
   if (REASON_REQUIRED_ACTIONS.has(action) && !String(reason || '').trim()) {
     throw new Error('強制完了には理由の記入が必要です（決定記録に残ります）');
   }
   const why = String(reason || '').trim() || 'agent-dashboard から操作';
-  if (action === 'revise' && Object.keys(revisePayload({ fields, feedback })).length === 0) {
+  if (action === 'revise' && Object.keys(revisePayload({ fields, feedback })).length === 0 && !flow) {
     throw new Error('revise には変更フィールドかフィードバックの指定が必要です');
   }
   if (action === 'resume-run' && !String(run || '').trim()) {
     throw new Error('resume-run には再開する run-id の指定が必要です');
   }
-  const { file } = dropCommand(dir, { action, id, reason: why, fields, feedback, run, complete });
+  const { file } = dropCommand(dir, { action, id, reason: why, fields, feedback, run, complete, flow });
   return {
     output: `${action} ${id}: 指示ファイルを投入しました（稼働中の agent-project が取り込み、受理後にカードへ反映されます）`,
     file,
@@ -531,6 +534,7 @@ async function requestDeleteTask(cfg, { dir, id }, trash) {
   const via = trash ? await trash(file) : (fs.rmSync(file, { force: true }), 'delete');
   const needsFile = path.join(dir, 'needs', `${tid}.md`);
   if (fs.existsSync(needsFile)) fs.rmSync(needsFile, { force: true });
+  fs.rmSync(path.join(dir, 'backlog', `${tid}.flow.json`), { force: true });
   // viewer 管理のサイドカー（レビューコメント）も一緒に片付ける。持ち主はこのアプリなので、
   // 実行エンジン側の孤児掃除には任せない。エンジン管理の付随状態（検証記録・実行権ロック・
   // 後続タスクの先行指定）はエンジンが毎パスの整合点で切り離し・掃除する。

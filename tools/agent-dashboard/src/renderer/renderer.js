@@ -39,6 +39,7 @@ const state = {
   doctorNeedId: null, // 診断・批評後の追加質問でも同じ要対応を参照する
   doctorFeedbackDraft: '', // 差し戻し文面案（回答欄へ流し込み用）
   assistBusy: false, // 構造化 Assist（フォローアップ / 依存優先度）の実行中
+  workflowChoices: null, // 実行前レビュー／再実行で共用するフロー一覧
   enqueueAdjustments: [], // AI が出した既存タスク調整案（人確認後に revise）
   flowFilter: 'active', // フロータブの run フィルタ（active＝非終端のみ／done＝完了・アーカイブ／all）
   gitlab: { enabled: false, byUrl: {}, repoIssues: [], loading: false, flowOnly: true },
@@ -89,6 +90,29 @@ function esc(s) {
     .replaceAll('<', '&lt;')
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;');
+}
+
+function taskFlowSelection(value) {
+  const [type, ...rest] = String(value || 'auto').split(':');
+  return type === 'auto' ? { type: 'auto' } : { type, id: rest.join(':') };
+}
+
+async function fillTaskFlowSelect(select) {
+  if (!select) return;
+  if (!state.workflowChoices) state.workflowChoices = await api.adhocFlowOverview({ limit: 0 });
+  const ov = state.workflowChoices || {};
+  const patterns = (ov.patterns || []).map((p) =>
+    `<option value="pattern:${esc(p.id)}">${esc(p.label)}</option>`).join('');
+  const custom = (ov.workflows || []).map((flow) =>
+    `<option value="custom:${esc(flow.id)}">${esc(flow.name)}</option>`).join('');
+  select.innerHTML = '<option value="auto">自動</option>'
+    + (patterns ? `<optgroup label="標準">${patterns}</optgroup>` : '')
+    + (custom ? `<optgroup label="カスタム">${custom}</optgroup>` : '');
+}
+
+async function snapshotTaskFlow(select) {
+  const result = await api.adhocFlowSnapshotSelection({ selection: taskFlowSelection(select && select.value) });
+  return result.flow;
 }
 
 // ダイアログの本文だけをスクロール領域にまとめる。既存のフォーム構造と
@@ -202,8 +226,7 @@ const AREAS = [
   { id: 'routines', label: '定常業務', list: 'routines', desc: '繰り返す作業を、この端末で動かします。' },
   { id: 'missions', label: 'ミッション', ownHeader: true },
   { id: 'participation', label: '参加', ownHeader: true },
-  { id: 'quick-flow', label: 'クイック実行', ownHeader: true,
-    desc: 'プロジェクトを立てずに、その場でフローを実行します。成果は未検収の参考成果です。' },
+  { id: 'workflows', label: 'ワークフロー', ownHeader: true },
   { id: 'usage', label: '利用状況', desc: 'この端末で使ったトークンと、実行の品質。' },
   { id: 'settings', label: '全体設定', footer: true, ownHeader: true },
 ];

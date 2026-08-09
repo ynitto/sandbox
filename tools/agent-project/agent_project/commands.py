@@ -731,7 +731,8 @@ def _print_impact_note(tasks: "list[Task]", tid: str) -> None:
               + ", ".join(f"{t.id}[{t.norm_status()}]" for t in downs))
 
 
-def cmd_revise(cfg: Config, tid: str, fields: dict, feedback: str, reason: str) -> int:
+def cmd_revise(cfg: Config, tid: str, fields: dict, feedback: str, reason: str,
+               flow_changed: bool = False) -> int:
     """バックログのタスクを人が即時修正する（内容・依存・優先度＋feedback 注入。決定記録）。
 
       ready/inbox/draft  : 即時にファイルへ反映（次の選択・実行から効く）
@@ -756,6 +757,8 @@ def cmd_revise(cfg: Config, tid: str, fields: dict, feedback: str, reason: str) 
         changes.append("feedback 注入")
         # 差し戻し（revise）の意図を run ブリーフへ蓄積（追記のみ）。次 run 以降の全分散ノードへ伝播する。
         append_brief_item(cfg, t, fb, source="revise")
+    if flow_changed:
+        changes.append("flow: 更新")
     if not changes:
         print("エラー: 変更がありません（フィールドか --feedback を指定してください）", file=sys.stderr)
         return 2
@@ -911,6 +914,34 @@ def _read_command(f: Path) -> "tuple[dict | None, str]":
     return _cmddrop.read_command(f)
 
 
+def _persist_task_flow_selection(cfg: "Config", tid: str, raw: object) -> None:
+    """Dashboard で選んだフローをタスク単位に固定する。auto は sidecar 不在へ戻す。"""
+    if not tid or Path(tid).name != tid or "\\" in tid:
+        raise ValueError("タスク ID が不正です")
+    if not isinstance(raw, dict):
+        raise ValueError("flow はオブジェクトで指定してください")
+    kind = str(raw.get("type") or "auto").strip()
+    sidecar = cfg.backlog / f"{tid}.flow.json"
+    if kind == "auto":
+        sidecar.unlink(missing_ok=True)
+        return
+    if kind == "pattern":
+        pattern = str(raw.get("pattern") or "").strip()
+        if not pattern:
+            raise ValueError("標準フローが未指定です")
+        selected = {"version": 1, "type": "pattern", "pattern": pattern}
+    elif kind == "custom":
+        nodes = raw.get("nodes")
+        if not isinstance(nodes, list) or not nodes:
+            raise ValueError("カスタムフローにノードがありません")
+        selected = {**raw, "version": 1, "type": "custom"}
+    else:
+        raise ValueError(f"未知のフロー種別です: {kind}")
+    tmp = sidecar.with_name(f"{sidecar.name}.tmp-{os.getpid()}")
+    tmp.write_text(json.dumps(selected, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(sidecar)
+
+
 def ingest_commands(cfg: "Config") -> "list[str]":
     """commands/*.json（{"command": "approve|hold|pin|defer|revise|force-complete|replan|
     pause|resume|stop", "id": ..., "reason": ...}）を読み、CLI と同一のロジック
@@ -1061,6 +1092,12 @@ def ingest_commands(cfg: "Config") -> "list[str]":
         if action not in COMMAND_ACTIONS or not tid:
             _reject_command(cfg, f, f"未知の指示: command={action!r} id={tid!r}")
             continue
+        if "flow" in rec and action in ("approve", "revise"):
+            try:
+                _persist_task_flow_selection(cfg, tid, rec["flow"])
+            except (OSError, ValueError) as exc:
+                _reject_command(cfg, f, f"フロー設定が不正です: {exc}")
+                continue
         # cmd_* は失敗理由を stderr に書く。それを拾って退避先と journal へ運ぶ——
         # 「approve が失敗 (exit 1)」だけでは何を直せば通るのか分からず、画面には
         # 成功トーストしか出ないため、失敗が誰にも見えないまま同じ操作が繰り返される。
@@ -1083,7 +1120,8 @@ def ingest_commands(cfg: "Config") -> "list[str]":
                     rc = cmd_hold(cfg, tid, reason)
                 elif action == "revise":
                     fields = {k: rec[k] for k in REVISE_FIELDS if k in rec}
-                    rc = cmd_revise(cfg, tid, fields, str(rec.get("feedback", "") or ""), reason)
+                    rc = cmd_revise(cfg, tid, fields, str(rec.get("feedback", "") or ""), reason,
+                                    flow_changed="flow" in rec)
                 else:
                     rc = cmd_reprioritize(cfg, tid, action, reason)
         finally:

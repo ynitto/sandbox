@@ -52,9 +52,10 @@ function dropped(dir) {
 }
 
 (async () => {
-  await test('削除は物理削除（backlog / needs / レビューコメントを掃除し、指示は投函しない）', async () => {
+  await test('削除は物理削除（backlog / needs / フロー / レビューコメントを掃除し、指示は投函しない）', async () => {
     const dir = mkProject();
     writeTask(dir, 'T1');
+    fs.writeFileSync(path.join(dir, 'backlog', 'T1.flow.json'), '{}', 'utf8');
     fs.writeFileSync(path.join(dir, 'needs', 'T1.md'), '# 要対応\n', 'utf8');
     fs.mkdirSync(path.join(dir, 'reviews', 'T1'), { recursive: true });
     fs.writeFileSync(path.join(dir, 'reviews', 'T1', 'c1.json'), '{}', 'utf8');
@@ -63,6 +64,8 @@ function dropped(dir) {
     assert.ok(!fs.existsSync(path.join(dir, 'backlog', 'T1.md')), 'タスクファイルは消える');
     assert.ok(!fs.existsSync(path.join(dir, 'needs', 'T1.md')),
       '要対応カードも一緒に消える（孤児票は [x] でも消せない袋小路になるため）');
+    assert.ok(!fs.existsSync(path.join(dir, 'backlog', 'T1.flow.json')),
+      '選択フローも一緒に消える');
     assert.ok(!fs.existsSync(path.join(dir, 'reviews', 'T1')),
       'viewer 管理のレビューコメントも一緒に消える（持ち主はこのアプリ）');
     assert.ok(!fs.existsSync(path.join(dir, 'commands')), '本体への指示は投函しない');

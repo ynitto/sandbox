@@ -266,6 +266,7 @@ def _spawn_orchestrator(base: list, args, req_id: str, req: dict):
         *(["--inherit-from", inh] if inh else []),
         *(["--delegation", json.dumps(deleg, ensure_ascii=False)]
           if isinstance(deleg, dict) and deleg.get("id") else []),
+        *(["--pattern", req["pattern"]] if req.get("pattern") else []),
         "--planner", args.planner, "--executor", args.executor,
         "--max-iterations", str(args.max_iterations),
         "--max-fanout", str(args.max_fanout),
@@ -307,6 +308,9 @@ def _apply_inbox_request(bus: Bus, args) -> None:
     vp = rec.get("verification_plan")
     if isinstance(vp, dict) and not getattr(args, "verification_plan", None):
         args.verification_plan = json.dumps(vp, ensure_ascii=False)
+    pattern = rec.get("pattern")
+    if pattern and not getattr(args, "pattern", None):
+        args.pattern = pattern
 
 
 def cmd_run(args) -> int:
@@ -378,6 +382,7 @@ def cmd_run(args) -> int:
           else ["--no-review"] if args.review is False else []),
         "--model_opt", args.model or "",
         "--poll", str(args.poll), "--node-id", "orchestrator",
+        *(["--pattern", args.pattern] if getattr(args, "pattern", None) else []),
         # ユーザー定義フロー（--plan-file 明示指定）を orchestrator へ伝搬する。
         # inbox 経由（--from-inbox）の plan は orchestrator 自身が inbox を読むので転記不要。
         *(["--plan-file", args.plan_file] if getattr(args, "plan_file", None) else []),

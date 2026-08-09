@@ -343,6 +343,7 @@ function needActionsHtml(n) {
   // 人なので、承認だけ先に送っておく判断はあり得る。「送っても動かない」を隠さないことが要点。
   return `${orchBlockedBannerHtml()}${needCompleteHowHtml(n)}${settlementCardHtml(n)}<div class="need-actions" data-need="${esc(n.id)}">
     <textarea rows="2" class="need-input" placeholder="${esc(ph)}"></textarea>
+    <label>実行フロー <select class="need-flow"><option value="auto">自動</option></select></label>
     <div class="row need-buttons">${buttons.join('')}
       <span class="spacer"></span>
       <button data-open="${esc(n.file)}" title="エディタで直接編集">ファイルを開く</button>
@@ -2152,6 +2153,8 @@ function renderNeeds(options) {
   }
   const input = el.querySelector('.need-actions .need-input');
   if (input && state.needsDrafts[state.needsSelectedId]) input.value = state.needsDrafts[state.needsSelectedId];
+  fillTaskFlowSelect(el.querySelector('.need-actions .need-flow'))
+    .catch((err) => toast(String((err && err.message) || err)));
   bindNeedDetail(el);
   if (state.needsFilter === 'gitlab') renderGitLab();
 }
@@ -2241,6 +2244,7 @@ async function handleNeedAction(btn) {
   if (!need) return;
   const box = btn.closest('.need-actions');
   const text = box ? box.querySelector('.need-input').value.trim() : '';
+  const flowSelect = box ? box.querySelector('.need-flow') : null;
   if (btn.dataset.require && !text) {
     return toast('差し戻しには修正方針の記入が必要です');
   }
@@ -2255,32 +2259,30 @@ async function handleNeedAction(btn) {
       await api.submitFeedback(need.file, text, feedbackStub);
       toast(text ? '回答を送信しました（次の実行で反映されます）' : '回答を確定しました', true);
     } else if (act === 'rerun') {
-      // 「そのまま再実行」は resume-run（本体が last_run の固定と ready への積み直しを
-      // 原子的に行う正規の口）を使う。実行画面の再実行ボタンは以前からこの口だが、
-      // 要対応カードだけが needs ファイルへ空フィードバックを書く旧経路のままだった——
-      // コマンドも journal も残らないので、失敗しても画面には何も出ず、同じ状態に
-      // 戻ったようにしか見えない。再開できる run が無い票だけ従来の口へ落とす。
+      // フローを選び直せる再実行は新しいグラフにするため revise へ送る。
+      // タスクを特定できない合成票だけ従来の feedback 経路へ落とす。
       const plan = needRerunPlan(p, need);
+      const flow = await snapshotTaskFlow(flowSelect);
       if (plan.via === 'revise') {
         const feedback = '最新 target ブランチを統合し、競合を解消してから全検証をやり直してください。';
         const res = await api.runAction({
           dir: p.dir, action: 'revise', id: plan.id,
-          reason: 'target 統合失敗のため新しい試行を作成', feedback,
+          reason: 'target 統合失敗のため新しい試行を作成', feedback, flow,
         });
         markNeedSent(need);
         uiLog('needAction integration rerun', id, res);
         toast('最新 target から新しい試行を開始するよう依頼しました', true);
-      } else if (plan.via === 'resume-run') {
+      } else if (plan.id) {
         const res = await api.runAction({
           dir: p.dir,
-          action: 'resume-run',
+          action: 'revise',
           id: plan.id,
-          run: plan.run,
-          reason: '要対応画面から再実行（失敗した工程だけやり直し）',
+          reason: '要対応画面からフローを選択して再実行',
+          flow,
         });
         markNeedSent(need);
         uiLog('needAction rerun', id, res);
-        toast('再実行を送信しました（失敗した工程だけやり直します）', true);
+        toast('選択したフローで再実行を送信しました', true);
       } else {
         await api.submitFeedback(need.file, '', feedbackStub);
         toast('そのまま再実行するよう回答しました', true);
@@ -2296,7 +2298,8 @@ async function handleNeedAction(btn) {
       // 再実行してまた要対応に戻る往復になっていた）。
       const complete = String(need.kind || 'blocked') === 'review'
         || needHasDeliverable(p, need, state.flowRuns);
-      const res = await api.runAction({ dir: p.dir, action: 'approve', id, reason, complete });
+      const flow = complete ? undefined : await snapshotTaskFlow(flowSelect);
+      const res = await api.runAction({ dir: p.dir, action: 'approve', id, reason, complete, flow });
       // 指示は commands/CLI 経由で needs ファイル自体は変わらない。取り込みまで
       // カードが未対応のまま残らないよう送信済みマーカーを付ける
       markNeedSent(need);
