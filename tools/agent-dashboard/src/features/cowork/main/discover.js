@@ -6,7 +6,7 @@
 //
 // **パーサは 2 系統あり、役割で分けている**:
 //   ・値（name / schedule / enabled / prompt 本文）= base/main/yaml.js（YAML ライブラリ）
-//   ・書き戻しのアンカー（各フィールドの物理行・インデント）= parseKiroLoopPromptsWithLines
+//   ・書き戻しのアンカー（各フィールドの物理行・インデント）= parseAgentLoopPromptsWithLines
 // 値の解釈（引用・ブロックスカラ・フロー記法）はライブラリに任せ、行指向パーサは「どの行に
 // 書くか」だけを答える。**両者は prompts[] の並びが一致していなければならない**——ずれると
 // 別のエントリへ書き戻す。行指向側がコメント行でリストを閉じないのはそのため。
@@ -37,9 +37,7 @@ const SCAN_SKIP = new Set([
 // agent-loop は起動ディレクトリ配下の共通ホーム（`.agents/`、旧 `.agent/` はそこにしか
 // 無いときのフォールバック）から `agent-loop.{yaml,yml,json}` を読む
 // （agent_loop/config.py の DEFAULT_CONFIG_NAMES と `_load_prompt_file_data`）。
-// **ここが agent-loop 側の正で、kiro-loop 系の名前は agent-loop が読まない。**
-// 旧 kiro-loop 系（`.kiro/kiro-loop.*` とフォルダ直下の `kiro-loop.*`）は既存の設定を
-// 画面から見失わせないための読取互換で、kiro-loop 退役（計画 S4）と同じ PR で落とす。
+// **ここが agent-loop 側の正**。退役済みの設定は移行手順でこの名前へコピーする。
 const LOOP_CONFIG_CANDIDATES = [
   ['.agents', 'agent-loop.yaml', 'yaml'],
   ['.agents', 'agent-loop.yml', 'yaml'],
@@ -47,13 +45,6 @@ const LOOP_CONFIG_CANDIDATES = [
   ['.agent', 'agent-loop.yaml', 'yaml'],
   ['.agent', 'agent-loop.yml', 'yaml'],
   ['.agent', 'agent-loop.json', 'json'],
-  // ここから下は S4 で削除する読取互換
-  ['.kiro', 'kiro-loop.yaml', 'yaml'],
-  ['.kiro', 'kiro-loop.yml', 'yaml'],
-  ['.kiro', 'kiro-loop.json', 'json'],
-  ['', 'kiro-loop.yaml', 'yaml'],
-  ['', 'kiro-loop.yml', 'yaml'],
-  ['', 'kiro-loop.json', 'json'],
 ];
 
 function readText(file) {
@@ -93,7 +84,7 @@ function scalarValue(rawVal) {
 }
 
 // ---------------------------------------------------------------------------
-// kiro-loop prompts パーサ（行指向）
+// agent-loop prompts パーサ（行指向）
 // ---------------------------------------------------------------------------
 const FIELD_KEYS = new Set(['name', 'interval_minutes', 'cron', 'enabled', 'prompt']);
 
@@ -101,7 +92,7 @@ const FIELD_KEYS = new Set(['name', 'interval_minutes', 'cron', 'enabled', 'prom
 //   entry = { index, dashLine, fieldIndent, fields: { <key>: { line, rawVal } } }
 // fields は FIELD_KEYS のうち実在するものだけを持つ。ブロックスカラ本文・ネストマップ・
 // コメントは fieldIndent 列に一致しないため field として拾わない。
-function parseKiroLoopPromptsWithLines(text) {
+function parseAgentLoopPromptsWithLines(text) {
   const lines = String(text == null ? '' : text).split('\n');
   let start = -1;
   for (let i = 0; i < lines.length; i += 1) {
@@ -154,17 +145,17 @@ function parseKiroLoopPromptsWithLines(text) {
 }
 
 // prompts: の各エントリ（マップ）を YAML パーサで読む。**値の読みはこちらが正**——
-// 行指向パーサ（parseKiroLoopPromptsWithLines）は書き戻しのアンカー専用で、
+// 行指向パーサ（parseAgentLoopPromptsWithLines）は書き戻しのアンカー専用で、
 // 引用・ブロックスカラ・フロー記法の解釈までは持たない。
-function kiroLoopEntries(text) {
+function agentLoopEntries(text) {
   const doc = parseYaml(text);
   if (!isPlainObject(doc) || !Array.isArray(doc.prompts)) return [];
   return doc.prompts.filter(isPlainObject);
 }
 
 // エントリごとの prompt 本文。ブロックスカラの相対インデントは保つ（前後の空白だけ落とす）。
-function kiroLoopPromptTexts(text) {
-  return kiroLoopEntries(text).map((e) => {
+function agentLoopPromptTexts(text) {
+  return agentLoopEntries(text).map((e) => {
     const v = e.prompt;
     if (v == null) return '';
     return (typeof v === 'string' ? v : (scalarString(v) || '')).trim();
@@ -172,8 +163,8 @@ function kiroLoopPromptTexts(text) {
 }
 
 // 書き戻し不要な読み取り用: {name, interval_minutes, cron, enabled} の素の値。
-function parseKiroLoopPrompts(text) {
-  return kiroLoopEntries(text).map((e) => {
+function parseAgentLoopPrompts(text) {
+  return agentLoopEntries(text).map((e) => {
     const out = {};
     const name = scalarString(e.name);
     if (name !== null) out.name = name;
@@ -187,7 +178,7 @@ function parseKiroLoopPrompts(text) {
 }
 
 // .json / .yaml いずれかから prompts エントリ（素の値）・prompt 本文・format を返す。
-function readKiroPrompts(file, format) {
+function readAgentPrompts(file, format) {
   const text = readText(file);
   if (text === null) return { format, entries: [], texts: [] };
   if (format === 'json') {
@@ -200,10 +191,10 @@ function readKiroPrompts(file, format) {
       return { format, entries: [], texts: [] };
     }
   }
-  return { format, entries: parseKiroLoopPrompts(text), texts: kiroLoopPromptTexts(text) };
+  return { format, entries: parseAgentLoopPrompts(text), texts: agentLoopPromptTexts(text) };
 }
 
-// kiro-loop の prompt 本文がステートマシン実行の対エントリ（「xxx ステートマシンを実行して」等）
+// agent-loop の prompt 本文がステートマシン実行の対エントリ（「xxx ステートマシンを実行して」等）
 // かどうかを判定する。フォルダ名（.statemachine/<name>）か表示名（workflow.yaml の name）が
 // 本文に現れ、かつ「ステートマシン」への言及があれば対とみなす。
 function pairedStateMachineOf(promptText, smInfos) {
@@ -255,8 +246,7 @@ function detectMarkers(dir) {
 
 // dashboard が管理項目を**書く**先。既存の設定ファイルがあればそれを使い、無ければ
 // agent-loop が読む場所（`<root>/.agents/agent-loop.yml`、旧 `.agent` しか無ければそちら）
-// を新規に作る。**読取候補と書き先を分けるのが要点**——旧 `.kiro/kiro-loop.yml` は読めるが、
-// 新規作成でそこへ書くと agent-loop が読まないファイルを増やすことになる。
+// を新規に作る。
 function loopConfigFile(root) {
   let marker = null;
   try { marker = detectMarkers(root); } catch { /* 走査できない = 新規扱い */ }
@@ -346,7 +336,7 @@ function discoverCoworkItems(config) {
       const pairedIdx = new Set();
       let kiro = { format: mk.kiroFormat, entries: [], texts: [] };
       if (mk.kiroFile) {
-        kiro = readKiroPrompts(mk.kiroFile, mk.kiroFormat);
+        kiro = readAgentPrompts(mk.kiroFile, mk.kiroFormat);
         if (smInfos.length) {
           kiro.entries.forEach((e, idx) => {
             const sm = pairedStateMachineOf(kiro.texts[idx], smInfos);
@@ -415,9 +405,9 @@ module.exports = {
   scanForCoworkConfigs,
   detectMarkers,
   loopConfigFile,
-  parseKiroLoopPrompts,
-  parseKiroLoopPromptsWithLines,
-  kiroLoopPromptTexts,
+  parseAgentLoopPrompts,
+  parseAgentLoopPromptsWithLines,
+  agentLoopPromptTexts,
   pairedStateMachineOf,
   resolveRoot,
   scalarValue,

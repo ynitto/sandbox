@@ -106,4 +106,12 @@ test('同梱定義がすべて読める（壊れた定義を同梱しない）',
   for (const n of names) agentCli.loadCli(n, null, { useCache: false });
 });
 
+test('相対コストは現行の候補順（クラウド → ローカル）と矛盾しない', () => {
+  const candidates = ['claude', 'claude', 'ollama'];
+  const costs = candidates.map((name) => agentCli.loadCli(name).relativeCost);
+  assert.deepStrictEqual(costs, [1, 1, 0]);
+  assert.ok(costs.every((cost, i) => i === 0 || costs[i - 1] >= cost));
+  assert.strictEqual(agentCli.loadCli('opencode').relativeCost, 0);
+});
+
 console.log(`\n${passed} tests passed (agent-cli-golden)`);

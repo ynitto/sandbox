@@ -476,19 +476,29 @@ async function _resubmitFlowRun() {
   }
 }
 
-// run をキャンセルする（人の明示アクション＝唯一の hard-stop）。承認待ちで park 中でも暴走中でも止まる。
+// run を打ち切る（人の明示アクション＝run スコープの唯一の hard-stop）。承認待ちで park 中でも
+// 暴走中でも止まる。
+//
+// バックログのタスクに紐づく run では、打ち切りのあと本体がタスクを積み直して新しい実行を
+// 始める（flow:cancel の detach→ready 契約）。確認文でそれを先に言う——「すべて止めます」と
+// 書いて実行中へ戻れば、人は止まらないボタンを何度も押すことになる。
 async function cancelFlowRun() {
   const run = state.flowRun && state.flowRun.run;
   if (!run) return;
+  const owned = taskOfRun(run);
+  const requeues = !!(owned && owned.scope === 'backlog');
   const parked = Object.values(run.nodes || {}).filter((n) => n.parked).length;
   const note = parked
     ? `\nレビュー待ちの工程が ${parked} 件あります。監視は止めますが、作成済みの GitLab イシューは残ります（人がクローズできます）。`
     : '\n作成済みの GitLab イシューがあれば残ります。';
-  const yes = await confirmDialog(
-    `この実行（${run.runId}）を中止します。\n以後の作業・レビュー待ちの監視・自動再開をすべて止めます。${note}\nよろしいですか？`
-  );
+  const head = requeues
+    ? `この実行（${run.runId}）を打ち切ってやり直します。\n` +
+      `タスク ${owned.task.id} は積み直され、本体が新しい実行を始めます。\n` +
+      '作業そのものを止めたいときは「保留にする」を使ってください。'
+    : `この実行（${run.runId}）を中止します。\n以後の作業・レビュー待ちの監視・自動再開をすべて止めます。`;
+  const yes = await confirmDialog(`${head}${note}\nよろしいですか？`);
   if (!yes) return;
-  const ok = await guard('実行の中止', async () => {
+  const ok = await guard(requeues ? '打ち切ってやり直す' : '実行の中止', async () => {
     const res = await api.flowCancel(
       state.project.dir,
       state.project.busDir,
@@ -497,10 +507,43 @@ async function cancelFlowRun() {
     );
     uiLog('cancel', run.runId, res);
     if (res && res.alreadyTerminal) {
-      toast(`この実行は既に終了していました（${statusLabel(res.status)}）。中止は不要です。`, true);
+      toast(`この実行は既に終了していました（${statusLabel(res.status)}）。操作は不要です。`, true);
     } else {
-      toast(`実行を中止しました${res && res.cleared ? `（レビュー待ち ${res.cleared} 件の監視を停止）` : ''}`, true);
+      const cleared = res && res.cleared ? `（レビュー待ち ${res.cleared} 件の監視を停止）` : '';
+      toast(
+        requeues
+          ? `実行を打ち切り、タスク ${owned.task.id} を積み直しました${cleared}`
+          : `実行を中止しました${cleared}`,
+        true
+      );
     }
+    return true;
+  });
+  if (ok) {
+    await reloadProject();
+  }
+}
+
+// タスクを保留にする（run ではなく作業のスコープ）。本体の hold は走っている run を切り離して
+// blocked にし、要対応の票を書く。実行中のタスクには票が無いため、この画面が「止めて人が決める」
+// への唯一の入口になる。
+async function holdFlowRunTask(taskId) {
+  const tid = String(taskId || '').trim();
+  if (!tid || !state.project) return;
+  const yes = await confirmDialog(
+    `タスク ${tid} を保留にします。\n実行中の作業を切り離して停止し、「要対応」タブに送ります。\n` +
+      'やり直しは起きません。再開・完了はそこで決められます。\nよろしいですか？'
+  );
+  if (!yes) return;
+  const ok = await guard('保留', async () => {
+    const res = await api.runAction({
+      dir: state.project.dir,
+      action: 'hold',
+      id: tid,
+      reason: 'フロー画面から保留（実行を止めて人が決める）',
+    });
+    uiLog('hold', tid, res);
+    toast(`タスク ${tid} の保留を依頼しました（反映後「要対応」タブに出ます）`, true);
     return true;
   });
   if (ok) {
@@ -928,6 +971,8 @@ function bindFlowDetail(root) {
   }
   const cn = root.querySelector('#flow-cancel');
   if (cn) cn.addEventListener('click', () => cancelFlowRun());
+  const hd = root.querySelector('#flow-hold');
+  if (hd) hd.addEventListener('click', () => holdFlowRunTask(hd.dataset.holdTask));
   const fd = root.querySelector('#flow-delete');
   if (fd) fd.addEventListener('click', () => deleteFlowRun());
   const rc = root.querySelector('#flow-reconcile');

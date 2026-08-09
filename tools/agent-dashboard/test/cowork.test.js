@@ -10,7 +10,7 @@ const cowork = require('../src/features/cowork/main/cowork');
 const cowork_loopProvider = require('../src/features/cowork/main/loopProvider');
 const wslMain = require('../src/base/main/wsl');
 
-// 定常業務の走査ルートには**常にユーザーホーム**が入る（`~/.kiro/kiro-loop.yml` を拾うため）。
+// 定常業務の走査ルートには**常にユーザーホーム**が入る（`~/.agents/agent-loop.yml` を拾うため）。
 // テストでは実機のホームを覗かせない——結果が実行環境の持ち物で変わってしまう。
 const HOME_STUB = fs.mkdtempSync(path.join(os.tmpdir(), 'home-stub-'));
 process.env.HOME = HOME_STUB;
@@ -67,9 +67,9 @@ test('itemsOf は cowork.items だけを正として扱い旧 loopJobs/stateMach
 test('overview は複数リポジトリの作業をフラットに並べる', () => {
   const repoA = fs.mkdtempSync(path.join(os.tmpdir(), 'cowork-a-'));
   const repoB = fs.mkdtempSync(path.join(os.tmpdir(), 'cowork-b-'));
-  fs.mkdirSync(path.join(repoA, '.kiro-loop', 'logs'), { recursive: true });
+  fs.mkdirSync(path.join(repoA, '.agent-loop', 'logs'), { recursive: true });
   fs.mkdirSync(path.join(repoB, '.statemachine-use', 'logs'), { recursive: true });
-  fs.writeFileSync(path.join(repoA, '.kiro-loop', 'logs', 'run.log'), 'finished successfully\n');
+  fs.writeFileSync(path.join(repoA, '.agent-loop', 'logs', 'run.log'), 'finished successfully\n');
   fs.writeFileSync(path.join(repoB, '.statemachine-use', 'logs', 'flow.log'), 'idle\n');
   const ov = cowork.overview({ cowork: { items: [
     { id: 'daily', type: 'loop', repo: repoA },
@@ -81,8 +81,8 @@ test('overview は複数リポジトリの作業をフラットに並べる', ()
 
 test('overview は statusFile を作らず既存ログとプロセス由来の state を返す', () => {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'cowork-'));
-  fs.mkdirSync(path.join(repo, '.kiro-loop', 'logs'), { recursive: true });
-  fs.writeFileSync(path.join(repo, '.kiro-loop', 'logs', 'run.log'), 'finished successfully\n');
+  fs.mkdirSync(path.join(repo, '.agent-loop', 'logs'), { recursive: true });
+  fs.writeFileSync(path.join(repo, '.agent-loop', 'logs', 'run.log'), 'finished successfully\n');
   const ov = cowork.overview({ cowork: { items: [{ id: 'daily', type: 'loop', repo }] } });
   assert.strictEqual(ov.items.length, 1);
   assert.strictEqual(ov.items[0].state.status, 'done');
@@ -134,7 +134,7 @@ test('別ウィンドウ実行は Windows 専用ではない（固まる同期�
   assert.ok(!/process\.platform === 'win32'/.test(run), 'OS 名で分岐しない');
 });
 
-test('loop 実行は kiro-loop の send サブコマンドでプロンプト名を送る（run は存在しない）', () => {
+test('loop 実行は agent-loop の send サブコマンドでプロンプト名を送る（run は存在しない）', () => {
   // command を echo に差し替えて、組み立てられた引数だけを検証する
   const r = makeLoopProvider({ loopCommand: 'echo', runWindow: false }).run({ id: '毎朝レビュー', cwd: os.tmpdir() });
   assert.ok(r.ok, `echo が成功する: ${r.error || r.stderr}`);
@@ -142,7 +142,7 @@ test('loop 実行は kiro-loop の send サブコマンドでプロンプト名�
 });
 
 test('loop 実行は送信先ペインを引けたら -s で明示する（複数ペインでも失敗しない）', () => {
-  // kiro-loop の loop-state 参照をスタブ化して、名前 → ペインの解決だけを差し替える
+  // agent-loop の loop-state 参照をスタブ化して、名前 → ペインの解決だけを差し替える
 const tmux = require('../src/features/routines/main/tmux');
   const origFind = tmux.findPane;
   tmux.findPane = ({ name }) => (name === '毎朝レビュー' ? '%12' : '');
@@ -181,11 +181,11 @@ test('win32 では Windows ドライブ上のリポジトリでも wsl.exe 経�
   const orig = Object.getOwnPropertyDescriptor(process, 'platform');
   Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
   try {
-    const r = providerSh('kiro-loop', ['send', 'x'], { cwd: 'C:\\proj\\app' });
+    const r = providerSh('agent-loop', ['send', 'x'], { cwd: 'C:\\proj\\app' });
     // Linux 上のテストでは wsl.exe が無く ENOENT になるが、その ENOENT が
-    // kiro-loop ではなく wsl.exe を指していること＝WSL 経由であることを検証する。
+    // agent-loop ではなく wsl.exe を指していること＝WSL 経由であることを検証する。
     assert.ok(/wsl\.exe/.test(r.error), `wsl.exe を起動する: ${r.error}`);
-    assert.ok(!/spawnSync kiro-loop/.test(r.error), 'kiro-loop を Windows 側で直接 spawn しない');
+    assert.ok(!/spawnSync agent-loop/.test(r.error), 'agent-loop を Windows 側で直接 spawn しない');
   } finally {
     if (orig) Object.defineProperty(process, 'platform', orig);
   }
@@ -195,7 +195,7 @@ test('win32 の loop 実行は既定で別ウィンドウ（WSL tmux）起動に
   const orig = Object.getOwnPropertyDescriptor(process, 'platform');
   Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
   try {
-    const launched = makeLoopProvider({ loopCommand: 'kiro-loop' }).run({ id: '毎朝レビュー', cwd: 'C:\\proj\\app' });
+    const launched = makeLoopProvider({ loopCommand: 'agent-loop' }).run({ id: '毎朝レビュー', cwd: 'C:\\proj\\app' });
     assert.strictEqual(launched.ok, true);
     assert.strictEqual(launched.launched, true, '新しいウィンドウでの起動として返る');
     assert.match(launched.message, /別ウィンドウ/);
@@ -208,10 +208,10 @@ test('win32 の loop 実行は既定で別ウィンドウ（WSL tmux）起動に
     assert.ok(!fs.existsSync(launched.scriptFile.replace(/\.sh$/, '.cmd')),
       '起動子ファイルは介さない（増やした組み立てが増やした失敗点だった）');
     assert.ok(
-      fs.readFileSync(launched.scriptFile, 'utf8').includes("'kiro-loop' 'send' '毎朝レビュー'"),
+      fs.readFileSync(launched.scriptFile, 'utf8').includes("'agent-loop' 'send' '毎朝レビュー'"),
       'スクリプト本文に send コマンドが入る'
     );
-    const legacy = makeLoopProvider({ loopCommand: 'kiro-loop', runWindow: false })
+    const legacy = makeLoopProvider({ loopCommand: 'agent-loop', runWindow: false })
       .run({ id: 'X', cwd: 'C:\\proj\\app' });
     assert.ok(/wsl\.exe/.test(legacy.error), `runWindow:false は従来の同期 wsl.exe 実行: ${legacy.error}`);
   } finally {
@@ -451,11 +451,11 @@ test('定常業務も ⚙ 設定のディストロで POSIX パスを解決す�
   }
 });
 
-test('win32 で job.prompt があれば kiro-loop を介さず tmux + kiro-cli へ直接送るウィンドウを開く', () => {
+test('win32 で job.prompt があれば agent-loop を介さず tmux + kiro-cli へ直接送るウィンドウを開く', () => {
   const orig = Object.getOwnPropertyDescriptor(process, 'platform');
   Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
   try {
-    const r = makeLoopProvider({ loopCommand: 'kiro-loop' })
+    const r = makeLoopProvider({ loopCommand: 'agent-loop' })
       .run({ id: '毎朝レビュー', cwd: 'C:\\proj\\app', prompt: 'レビューしてください' });
     assert.strictEqual(r.ok, true);
     assert.strictEqual(r.launched, true);
@@ -463,16 +463,16 @@ test('win32 で job.prompt があれば kiro-loop を介さず tmux + kiro-cli �
     const body = fs.readFileSync(r.scriptFile, 'utf8');
     assert.ok(body.includes('kiro-cli') && body.includes('--trust-all-tools'), '既定の chatCommand で起動する');
     assert.ok(body.includes('レビューしてください'), '解決済みプロンプト本文を送る');
-    assert.ok(!/kiro-loop(?!\.yml)/.test(body.replace(/kiro-dash-[0-9a-f]+/g, '')), 'kiro-loop は実行しない');
+    assert.ok(!/agent-loop(?!\.yml)/.test(body.replace(/kiro-dash-[0-9a-f]+/g, '')), 'agent-loop は実行しない');
   } finally {
     if (orig) Object.defineProperty(process, 'platform', orig);
   }
 });
 
-test('resolveLoopPromptText は .kiro/kiro-loop.yml のブロックスカラ本文を名前で解決する', () => {
+test('resolveLoopPromptText は .agents/agent-loop.yml のブロックスカラ本文を名前で解決する', () => {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'cowork-prompt-'));
-  fs.mkdirSync(path.join(repo, '.kiro'), { recursive: true });
-  fs.writeFileSync(path.join(repo, '.kiro', 'kiro-loop.yml'), [
+  fs.mkdirSync(path.join(repo, '.agents'), { recursive: true });
+  fs.writeFileSync(path.join(repo, '.agents', 'agent-loop.yml'), [
     'prompts:',
     '  - name: "毎朝レビュー"',
     '    prompt: |',
@@ -493,8 +493,8 @@ test('resolveLoopPromptText は .kiro/kiro-loop.yml のブロックスカラ本�
 
 test('runLoop は必要な入力を検証し、置換済み本文を直接送る', () => {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'cowork-runwin-'));
-  fs.mkdirSync(path.join(repo, '.kiro'), { recursive: true });
-  fs.writeFileSync(path.join(repo, '.kiro', 'kiro-loop.yml'), [
+  fs.mkdirSync(path.join(repo, '.agents'), { recursive: true });
+  fs.writeFileSync(path.join(repo, '.agents', 'agent-loop.yml'), [
     'prompts:',
     '  - name: "毎朝レビュー"',
     '    prompt: レビューしてください {{target}}',
@@ -669,15 +669,15 @@ test('実行スクリプトは足跡（.log）を残す — stdout/stderr は奪
 });
 
 test('windowScript は cd → send 実行 → 送信先ペインのセッションへ tmux attach を組み立てる', () => {
-  const script = cowork_loopProvider.windowScript('kiro-loop', ['send', '毎朝レビュー'], '/mnt/c/proj/app');
+  const script = cowork_loopProvider.windowScript('agent-loop', ['send', '毎朝レビュー'], '/mnt/c/proj/app');
   assert.ok(script.includes("cd '/mnt/c/proj/app'"), 'プロジェクトルートへ cd する');
-  assert.ok(script.includes("'kiro-loop' 'send' '毎朝レビュー'"), 'send をそのまま実行する');
+  assert.ok(script.includes("'agent-loop' 'send' '毎朝レビュー'"), 'send をそのまま実行する');
   assert.ok(script.includes('tee'), '出力を表示しつつ送信先ペインの特定に使う');
   assert.ok(script.includes('tmux attach'), '送信後はセッションへアタッチして進行を見せる');
   assert.ok(script.includes('read _'), '特定できないときはウィンドウを残して原因を読めるようにする');
 });
 
-test('state-machine 実行は statemachine-use スキルを発動するプロンプトを kiro-loop send で送る', () => {
+test('state-machine 実行は statemachine-use スキルを発動するプロンプトを agent-loop send で送る', () => {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'cowork-sm-send-'));
   writeMachine(repo, 'release', [
     'name: リリース',
@@ -735,8 +735,8 @@ test('runLoop / runStateMachine は実行履歴（historyFile）へ記録し rea
 
 test('itemLogs はリポジトリのログ候補を返し readLog は末尾を読む（候補外パスは拒否）', () => {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'cowork-logs-'));
-  fs.mkdirSync(path.join(repo, '.kiro-loop', 'logs'), { recursive: true });
-  const logFile = path.join(repo, '.kiro-loop', 'logs', 'run.log');
+  fs.mkdirSync(path.join(repo, '.agent-loop', 'logs'), { recursive: true });
+  const logFile = path.join(repo, '.agent-loop', 'logs', 'run.log');
   fs.writeFileSync(logFile, `${'x'.repeat(3000)}TAIL-MARKER\n`);
   const secret = path.join(repo, 'secret.txt');
   fs.writeFileSync(secret, 'top secret');
@@ -768,8 +768,8 @@ test('実行履歴は上限を超えると新しい方だけ残して切り詰�
 
 test('overview の既定はプロセス探査せず probed=false', () => {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'cowork-light-'));
-  fs.mkdirSync(path.join(repo, '.kiro-loop', 'logs'), { recursive: true });
-  fs.writeFileSync(path.join(repo, '.kiro-loop', 'logs', 'run.log'), 'finished successfully\n');
+  fs.mkdirSync(path.join(repo, '.agent-loop', 'logs'), { recursive: true });
+  fs.writeFileSync(path.join(repo, '.agent-loop', 'logs', 'run.log'), 'finished successfully\n');
   const ov = cowork.overview({ cowork: { items: [{ id: 'daily', type: 'loop', repo }] } });
   assert.strictEqual(ov.items[0].state.probed, false);
   assert.strictEqual(ov.items[0].state.running, false);

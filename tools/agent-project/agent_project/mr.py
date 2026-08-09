@@ -683,6 +683,7 @@ def _settle_review(cfg, task, act_msg, git_base, branch, ev, vmsg, protect_hits,
 def _settle_done(cfg, task, act_msg, git_base, branch, ev, vmsg, dtok, dusd, cycle, autonomy_cache):
     """verify=PASS かつゲート対象外 → 無人 auto-done（受領書＋archive）。集計 delta を返す。"""
     task.status = "done"
+    task.drop("env_block_kind", "env_block_count")   # 通れた＝環境の連続失敗は途切れた
     record_learn_outcome(cfg, task, worked=True)                        # learn 適用で done＝成功（W10）
     autonomy_record(cfg, task, clean=True, cache=autonomy_cache)        # 無人 auto-done＝clean 実績
     ts = _now_ts()
@@ -733,6 +734,49 @@ def _failure_record(cfg, task, blob, vmsg, phase, verdict) -> dict:
     return rec
 
 
+def _env_block(cfg, task, kind: str, why: str, reasons, cycle: int, log: str,
+               evidence=None, failure=None) -> None:
+    """環境要因で人へ回す唯一の口。同じ理由が続いたら hold（policy.deny）へ落とす。
+
+    環境ブロックはタスクの内容の問題ではないのでリトライを消費しない。一過性ならその契約が
+    正しいが、**恒常的に壊れている環境では上限がどこにも無かった**——このノードの verifier が
+    いつも時間切れになるタスクは、人が approve するたび同じ工程を同じ時間だけ焼き直し、
+    retries も進まないので永久に同じ場所へ戻ってくる（C7「必ず止まる」に反する）。
+
+    そこで「同じ理由（kind）が連続した回数」を数え、`env_resume_limit` を超えたら
+    `policy.deny` へ入れて自動の再開を止める。deny は triage が消化対象から外すので、
+    needs の [x]（環境復帰のメモ）では再開できなくなり、**環境を直した人の approve だけ**が
+    解除できる（`cmd_approve` が deny を外す）。理由が変われば数え直す——別の環境問題まで
+    まとめて 1 つの上限で締めると、直った側まで止まったままになる。
+    """
+    kind = str(kind or "env")
+    prev = str(task.get("env_block_kind") or "")
+    count = (int(task.get("env_block_count") or 0) if prev == kind else 0) + 1
+    task.set("env_block_kind", kind)
+    task.set("env_block_count", str(count))
+    limit = int(getattr(cfg, "env_resume_limit", 0) or 0)
+    if limit > 0 and count > limit:
+        # 自動の再開を止める。env_resume は落とす——残すと run_id_for が同 run の再開を
+        # 約束し続け、hold を解いた人が「新しい計画で」やり直せない。
+        task.drop("env_resume")
+        append_policy(cfg.policy, "deny", task.id)
+        _block(cfg, task, f"{why}\n\n同じ環境要因で {count} 回続けて止まっています"
+                          f"（上限 {limit}）。自動の再開を止めました（保留）。環境を直してから "
+                          "承認すると保留が解けます。直せない場合は、このタスクを別のノードへ"
+                          "割り当てるか、検証の設定（使うエージェント CLI・タイムアウト）を"
+                          "見直してください。", reasons, evidence=evidence, failure=failure)
+        append_decision(cfg, task.id, "auto",
+                        context=f"{task.id}（{task.title}）が同じ環境要因で {count} 回停止",
+                        action="hold(env-repeat)", reason=why[:300],
+                        affects=f"{task.id} → blocked, policy.deny += {task.id}")
+        append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 保留（{kind} が {count} 回連続・"
+                                    f"上限 {limit}。approve するまで再開しない）")
+        return
+    task.set("env_resume", "1")
+    _block(cfg, task, why, reasons, evidence=evidence, failure=failure)
+    append_journal(cfg.journal, log)
+
+
 def _settle_failure(cfg, task, vmsg, cycle, ev, reasons, location="local",
                     phase=PHASE_VERIFY, verdict=VERIFY_FAILED):
     """verify=NG → 上限内なら積み直し / 学習で自動解決 / 上限超で人へエスカレーション。
@@ -757,16 +801,20 @@ def _settle_failure(cfg, task, vmsg, cycle, ev, reasons, location="local",
         # 混ざっていたことが消え、なぜその分類になったのかを後から追えない。
         others = [labels.get(c, c) for c in agent_error_chain(blob)[1:] if c in labels]
         also = f"（記録にはほかに {'・'.join(others)} の痕跡もあります）" if others else ""
-        # needs にメモを書いて [x] しても run_id_for が新 run を作らないよう、再開約束を残す。
-        task.set("env_resume", "1")
-        _block(cfg, task, f"[agent-error:{cls}] {category}（{label}）: {hint}{also} "
-                          "タスクの内容の問題ではないため、リトライ回数は消費していません。"
-                          f"{remedy} approve すると、同じ run の続き（失敗した工程だけ）"
-                          "から再開します。", reasons, evidence=ev, failure=failure)
-        append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（{category}: {label}。"
-                                    f"リトライ・裁定は消費しない）")
+        # needs にメモを書いて [x] しても run_id_for が新 run を作らないよう、再開約束を残す
+        # （反復したら _env_block が保留へ落とし、再開約束ごと外す）。
+        _env_block(cfg, task, cls,
+                   f"[agent-error:{cls}] {category}（{label}）: {hint}{also} "
+                   "タスクの内容の問題ではないため、リトライ回数は消費していません。"
+                   f"{remedy} approve すると、同じ run の続き（失敗した工程だけ）から再開します。",
+                   reasons, cycle,
+                   log=f"cycle {cycle}: {task.id} → 人の判断（{category}: {label}。"
+                       "リトライ・裁定は消費しない）",
+                   evidence=ev, failure=failure)
         return
     task.retries += 1
+    # ここから先は内容の失敗（環境要因は上で return 済み）。環境ブロックの連続は途切れた。
+    task.drop("env_block_kind", "env_block_count")
     if not has_verify_plan(task) and verdict != VERIFY_NOT_RUN:
         # 失敗ではなく「完了条件が無いので人が確認して完了にする」状態。理由文もそう読める形にする
         # （「verify 未定義」だけだと viewer で失敗理由のように見える）。
@@ -1021,13 +1069,14 @@ def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle
         # 待つ（P4-b）。人へ送るのは、公示できない・誰も請けない場合だけ。
         if delegate_verification(cfg, task, verification, blocked_reasons, cycle):
             return {"archived": 0, "followups": []}
-        task.set("env_resume", "1")
-        _block(cfg, task, f"[agent-error:env] 検証不能: このノードでは確かめられない基準があります"
-                          f"（{blocked_reasons}）。タスクの内容の問題ではないため、リトライ回数は"
-                          "消費していません。環境を直してから approve すると、同じ run の続きから"
-                          "再開します。", reasons, evidence=ev)
-        append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（検証不能・"
-                                    "リトライは消費しない）")
+        _env_block(cfg, task, "unverifiable",
+                   f"[agent-error:env] 検証不能: このノードでは確かめられない基準があります"
+                   f"（{blocked_reasons}）。タスクの内容の問題ではないため、リトライ回数は"
+                   "消費していません。環境を直してから approve すると、同じ run の続きから"
+                   "再開します。",
+                   reasons, cycle,
+                   log=f"cycle {cycle}: {task.id} → 人の判断（検証不能・リトライは消費しない）",
+                   evidence=ev)
         return {"archived": 0, "followups": []}
 
     if flaky:

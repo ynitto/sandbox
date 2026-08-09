@@ -88,6 +88,20 @@
                 "additionalProperties": true
               }
             },
+            "agents": {
+              "type": "object",
+              "description": "agent CLI ごとの quota 状態。rate_limit は reset_at 以降に自動復帰し、exhausted は次の更新まで候補から外す",
+              "additionalProperties": {
+                "type": "object",
+                "required": ["quota_kind"],
+                "properties": {
+                  "quota_kind": {"enum": ["exhausted", "rate_limit"]},
+                  "reset_at": {"type": "string", "description": "rate_limit の復帰予定（ISO8601 UTC）"},
+                  "observed_at": {"type": "string", "description": "quota 検出時刻（ISO8601 UTC）"}
+                },
+                "additionalProperties": true
+              }
+            },
             "computed_at": {"type": "string", "description": "ISO8601 UTC"},
             "computed_by": {"type": "string"}
           },
@@ -124,6 +138,7 @@
         "tool": {"type": "string", "description": "記帳したツール名"},
         "seconds": {"type": "number", "minimum": 0, "description": "agent CLI の実実行秒"},
         "ref": {"type": "string", "description": "帰属（例 amigos: <mission-id>/<role>、project: <project>/<task-id>）"},
+        "purpose": {"type": "string", "description": "仕事種別（例 planner / work / verify）。旧行は ref を代用"},
         "node": {"type": "string", "description": "ノード ID"},
         "agent_cli": {"type": "string", "description": "v2: 実行したエージェント CLI 名（組み込み名またはドロップイン名）"},
         "model": {"type": "string", "description": "v2: 実行モデル名（指定があったときだけ）"},

@@ -19,7 +19,7 @@ const nodeRepos = require('../src/features/agent-project/main/nodeRepos');
 const agent = require('../src/features/agent-project/main/agent');
 const { engineConfig } = require('./helpers/engine-status');
 
-// 定常業務の走査ルートには**常にユーザーホーム**が入る（`~/.kiro/kiro-loop.yml` を拾うため）。
+// 定常業務の走査ルートには**常にユーザーホーム**が入る（`~/.agents/agent-loop.yml` を拾うため）。
 // テストでは実機のホームを覗かせない——結果が実行環境の持ち物で変わってしまう。
 const HOME_STUB = fs.mkdtempSync(path.join(os.tmpdir(), 'home-stub-'));
 process.env.HOME = HOME_STUB;
@@ -39,8 +39,8 @@ function test(name, fn) {
 
 function mkRoutineFolder(base, name) {
   const dir = path.join(base, name);
-  fs.mkdirSync(path.join(dir, '.kiro'), { recursive: true });
-  fs.writeFileSync(path.join(dir, '.kiro', 'kiro-loop.yaml'),
+  fs.mkdirSync(path.join(dir, '.agents'), { recursive: true });
+  fs.writeFileSync(path.join(dir, '.agents', 'agent-loop.yaml'),
     'prompts:\n  - name: nightly\n    prompt: やる\n', 'utf8');
   return dir;
 }
@@ -71,7 +71,7 @@ test('cowork.roots が空でも engine のプロジェクトとユーザーホ�
   // W2-4（プロジェクト一覧の単一ソース化）を壊さないこと。
   // engine 側の宣言は実行エンジンの状況ファイルなので、テスト用の空ホームを指す設定で見る
   // （隔離しないと、この PC で実際に動いているエンジンの宣言が混ざり結果が環境依存になる）。
-  // ユーザーホームは登録簿に無くても常に入る（`~/.kiro/kiro-loop.yml` を拾うため）。
+  // ユーザーホームは登録簿に無くても常に入る（`~/.agents/agent-loop.yml` を拾うため）。
   const empty = engineConfig([]);
   assert.deepStrictEqual(discover.coworkRoots({ ...empty, cowork: {} }), [HOME_STUB]);
   assert.deepStrictEqual(discover.coworkRoots(empty), [HOME_STUB]);
@@ -129,7 +129,7 @@ test('inspectCoworkRoot はマーカーを検出し、登録済みかを返す',
     const fresh = cowork.inspectCoworkRoot({ cowork: { roots: [] } }, folder);
     assert.strictEqual(fresh.registered, false);
     assert.strictEqual(fresh.markers.length, 1);
-    assert.strictEqual(fresh.markers[0].loop, 'kiro-loop.yaml');
+    assert.strictEqual(fresh.markers[0].loop, 'agent-loop.yaml');
     const already = cowork.inspectCoworkRoot({ cowork: { roots: [folder] } }, folder);
     assert.strictEqual(already.registered, true);
   } finally {

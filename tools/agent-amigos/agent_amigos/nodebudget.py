@@ -29,7 +29,7 @@ WORKLOAD = "amigos"
 
 def budget_dir() -> str:
     """共有台帳の場所。共通ホームはサブディレクトリ単位で新旧を判定する
-    （agent-project / agent-flow / kiro-loop / agent-dashboard と同じ解決）。
+    （agent-project / agent-flow / agent-loop / agent-dashboard と同じ解決）。
     旧 ~/.agent/budget 決め打ちだと、.agents へ移行済みの端末で agent-amigos だけ
     別の台帳へ記帳し、ツール横断の合計という契約の前提が崩れる。"""
     return os.path.abspath(agent_home_subdir("AGENT_BUDGET_DIR", "budget"))

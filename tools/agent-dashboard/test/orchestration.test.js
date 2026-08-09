@@ -195,6 +195,7 @@ test('予算 v2: rebalance は R を weight 比で配り min/max でクランプ
       version: 2,
       tokens: 1000000,
       period: 'total',
+      computed: { agents: { claude: { quota_kind: 'rate_limit', reset_at: '2030-01-01T00:00:00Z' } } },
       allocation: {
         mode: 'auto',
         workloads: {
@@ -225,6 +226,7 @@ test('予算 v2: rebalance は R を weight 比で配り min/max でクランプ
   assert.strictEqual(c.amigos, undefined);
   assert.strictEqual(raw.computed.computed_by, 'dashboard');
   assert.ok(raw.computed.computed_at);
+  assert.strictEqual(raw.computed.agents.claude.quota_kind, 'rate_limit', 'quota 復帰予定を消さない');
 });
 
 // --- ノード予算 v2: レート較正（中央値） -------------------------------------

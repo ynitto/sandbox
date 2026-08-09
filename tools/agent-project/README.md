@@ -1021,7 +1021,8 @@ Windows タスクスケジューラ方式との選択と手順は
   配ると壊れる。
 - **プロジェクト yaml 専有**（host.yaml の `defaults`/`overrides` に書くとエラー）:
   計画・ゲート系（`planner` / `flow_planner` / `granularity` / `plan_review` / `spec_track` …）、
-  予算・収束系（`max_cycles` / `max_retries` / `level` …）、検証・学習・タスク運用系。
+  予算・収束系（`max_cycles` / `max_retries` / `env_resume_limit` / `level` …）、
+  検証・学習・タスク運用系。
   ノードごとに食い違うと実行が非決定になる。
 - **両方に書ける**（優先順位: **CLI > `projects[].overrides` > `defaults` > プロジェクト yaml > 既定**）:
   `agent_cli` / `model` / `act_timeout` / `verify_timeout` / `location` / `concurrency` /

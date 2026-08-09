@@ -128,6 +128,7 @@ def collect_budget_ledger(args, store: Store) -> int:
                     "tool": row.get("tool") or "",
                     "workload": row.get("workload") or "",
                     "ref": row.get("ref") or "",
+                    "purpose": row.get("purpose") or row.get("ref") or "",
                     "agent_cli": row.get("agent_cli") or "",
                     "model": row.get("model") or "",
                     "seconds": row.get("seconds"),
@@ -243,8 +244,6 @@ def collect_flow_buses(args, store: Store) -> int:
             if status not in ("done", "failed", "cancelled", "canceled"):
                 continue          # 非終端 run は収集しない（終端後に一度だけ拾う）
             rid = record_id("flow-bus", bus, os.path.basename(run_dir))
-            if store.has_record(rid):
-                continue
             failure = str(meta.get("failure_reason") or "")
             m = ERROR_TAG_RE.search(failure)
             retries, verify = _flow_events_summary(run_dir)
@@ -261,6 +260,26 @@ def collect_flow_buses(args, store: Store) -> int:
             }
             if store.append_record(rec):
                 added += 1
+            results_dir = os.path.join(run_dir, "results")
+            for result_path in sorted(glob.glob(os.path.join(glob.escape(results_dir), "*.json"))):
+                result = read_json(result_path)
+                if not isinstance(result, dict):
+                    continue
+                node_id = str(result.get("id") or os.path.splitext(os.path.basename(result_path))[0])
+                result_rec = {
+                    "id": record_id("flow-result", bus, f"{os.path.basename(run_dir)}:{node_id}"),
+                    "_epoch": ts, "ts": _iso(ts),
+                    "kind": "result", "source": "flow-bus",
+                    "tool": "agent-flow", "workload": "flow",
+                    "ref": f"{os.path.basename(run_dir)}/{node_id}",
+                    "purpose": result.get("kind") or "work",
+                    "agent_cli": result.get("agent_cli") or "",
+                    "model": result.get("model") or "",
+                    "status": result.get("status") or "",
+                    "verify": verify,
+                }
+                if store.append_record(result_rec):
+                    added += 1
     return added
 
 

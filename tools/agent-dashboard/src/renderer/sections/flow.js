@@ -653,12 +653,30 @@ function renderFlowDetail() {
           : 'この実行のデータをゴミ箱へ移動します'
       }">🗑 削除</button>`
     : '';
-  // run のキャンセル（人の明示アクション＝唯一の hard-stop）。まだ終端していない run に出す。
-  // 承認待ちで park 中の run も暴走中の run も止められる。起票済みイシューは残す（追跡だけやめる）。
+  // run の打ち切り（人の明示アクション＝run スコープの唯一の hard-stop）。まだ終端していない
+  // run に出す。承認待ちで park 中の run も暴走中の run も止められる。起票済みイシューは残す。
+  //
+  // **文言は run スコープで閉じない。** バックログのタスクに紐づく run では、ipc.js の
+  // flow:cancel が run を終端化したあとタスクを detach→ready で積み直し、本体が次の巡回で
+  // 新しい run を起こす（loop.py の cancelled → retries+1・ready と同じ契約）。つまり
+  // ここで起きるのは停止ではなく**やり直し**であり、「中止」と書くと押した人は止まったと
+  // 思い、実行中へ戻るたびに何度も押すことになる。作業自体を止めるのは保留（hold）。
   const cancelable = !archived && !TERMINAL_RUN_STATES.has(String(run.status || ''));
+  const owned = cancelable ? taskOfRun(run) : null;
+  const requeues = !!(owned && owned.scope === 'backlog');
   const parkedCount = Object.values(run.nodes || {}).filter((n) => n.parked).length;
   const cancelBtn = cancelable
-    ? `<button class="chip danger" id="flow-cancel" title="この実行を中止します（レビュー待ちの監視や自動再開も止まります。作成済みの GitLab イシューは残ります）">■ 中止${parkedCount ? `（レビュー待ち ${parkedCount}）` : ''}</button>`
+    ? `<button class="chip danger" id="flow-cancel" title="${
+        requeues
+          ? `この実行を打ち切り、タスク ${esc(owned.task.id)} を積み直します。本体が新しい実行を始めます（作業を止めるなら「保留にする」）。作成済みの GitLab イシューは残ります`
+          : 'この実行を中止します（レビュー待ちの監視や自動再開も止まります。作成済みの GitLab イシューは残ります）'
+      }">${requeues ? '↺ 打ち切ってやり直す' : '■ 中止'}${parkedCount ? `（レビュー待ち ${parkedCount}）` : ''}</button>`
+    : '';
+  // 作業そのものを止める口（run ではなくタスクのスコープ）。本体の hold は走っている run を
+  // 切り離して blocked にし、要対応の票を書く——「止めてから人が決める」導線はここだけ。
+  // 実行中のタスクには要対応の票が無く、この画面からは保留へ到達できなかった（配線漏れ）。
+  const holdBtn = requeues
+    ? `<button class="chip" id="flow-hold" data-hold-task="${esc(owned.task.id)}" title="この実行を止めて、タスク ${esc(owned.task.id)} を保留（要対応）にします。やり直しは起きません">⏸ 保留にする</button>`
     : '';
   // gitlab executor 連動: 非終端ノードがあれば「GitLab と突き合わせ」で関連イシューの今の状態
   // （クローズ済み＝完了/失敗を先読み反映／オープン＝レビュー中を表示）を取り込める。run を開いた
@@ -719,7 +737,7 @@ const viewTabs = [
       <div><strong>${(run.counts.pending || 0) + (run.counts.waiting || 0)}</strong><span>これから</span></div>
     </div>
     ${runByPcHtml(run)}
-    <div class="flow-primary-actions">${runArtifactsButtonHtml(run)} ${resubmit} ${reconcileBtn} ${cancelBtn} ${deleteBtn}</div>
+    <div class="flow-primary-actions">${runArtifactsButtonHtml(run)} ${resubmit} ${reconcileBtn} ${holdBtn} ${cancelBtn} ${deleteBtn}</div>
     ${relationshipStrip({ run })}
     ${req.body ? `<details class="flow-request-details">
       <summary>依頼内容を表示</summary>

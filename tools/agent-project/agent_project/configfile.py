@@ -113,6 +113,8 @@ CONFIG_DEFAULTS = {
     "max_tokens": 0,
     "max_cost": 0.0,
     "max_retries": 2,
+    # 同じ環境要因で連続して止まったとき、人に再開させ続けずに hold へ落とすまでの回数（0 で無効）
+    "env_resume_limit": 2,
     "max_iterations": 3,
     "verify_timeout": 600.0,   # テストスイート全体を回す verify は数分かかる（120 秒だと完了しても時間切れ NG）
     "verify_confirm": 1,
@@ -839,7 +841,9 @@ def build_config(args) -> Config:
         max_cycles=args.max_cycles, max_seconds=args.max_seconds,
         max_tokens=getattr(args, "max_tokens", 0) or 0,
         max_cost=getattr(args, "max_cost", 0.0) or 0.0,
-        max_retries=args.max_retries, pace=args.pace, verify_timeout=args.verify_timeout,
+        max_retries=args.max_retries,
+        env_resume_limit=int(getattr(args, "env_resume_limit", 2) or 0),
+        pace=args.pace, verify_timeout=args.verify_timeout,
         verify_confirm=max(1, int(getattr(args, "verify_confirm", 1) or 1)),
         verify_cwd=getattr(args, "verify_cwd", None),
         act_timeout=args.act_timeout,
@@ -1039,6 +1043,10 @@ def _add_common(sp):
     sp.add_argument("--max-cost", type=float, default=None,
                     help="予算: 金額(USD)上限（0=無制限。act 出力の @cost usd= を計上）")
     sp.add_argument("--max-retries", type=int, default=None)
+    sp.add_argument("--env-resume-limit", type=int, default=None,
+                    help="同じ環境要因（検証不能・認証切れ等）で連続して止まったとき、"
+                         "この回数を超えたら hold（policy.deny）へ落として自動の再開を止める"
+                         "（既定 2・0 で無効）。環境を直した人が approve すると解除される")
     sp.add_argument("--pace", type=float, default=None, help="1サイクルの下限間隔（秒）。レーン減速")
     sp.add_argument("--verify-timeout", type=float, default=None)
     sp.add_argument("--verify-confirm", type=int, default=None,

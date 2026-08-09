@@ -83,13 +83,9 @@ function allPanes(distro = '') {
 // デーモンを tmux セッションの中で起動すると、ワーカーペインは「人のセッション」
 // （名前は任意）内に分割で作られ、セッション名（agent-loop-…）では見つけられない。
 // 状態ファイルの pane_id 直参照ならセッション名に依存せず視聴できる。
-//
-// `~/.kiro/loop-state` は退役前の kiro-loop デーモンの置き場。**読むだけ**の互換で、
-// これを先に外すと移行前の稼働中デーモンが画面から消える。kiro-loop 退役（計画 S4）と
-// 同じ PR で落とす。
 function readLoopStates(distro = '') {
   const r = exec.shInWsl(
-    'agent_state="$HOME"/.agents/loop-state; [ -d "$agent_state" ] || agent_state="$HOME"/.agent/loop-state; for f in "$agent_state"/*.json "$HOME"/.kiro/loop-state/*.json; do [ -f "$f" ] || continue; printf "\\036"; cat "$f"; done 2>/dev/null || true',
+    'agent_state="$HOME"/.agents/loop-state; [ -d "$agent_state" ] || agent_state="$HOME"/.agent/loop-state; for f in "$agent_state"/*.json; do [ -f "$f" ] || continue; printf "\\036"; cat "$f"; done 2>/dev/null || true',
     8000,
     distro
   );
@@ -113,11 +109,9 @@ function repoMatchesCwd(want, cwd) {
 }
 
 // 実行中スロットのペイン ID 集合（~/.agents/slots、旧 ~/.agent/ はフォールバックで読む）。
-// `~/.kiro/slots` は kiro-loop 退役（計画 S4）まで残す読取互換 — 先に外すと移行前の
-// デーモンが掴んでいるスロットを見落とし、busy のペインを空きと誤表示する。
 function readSlotPanes(distro = '') {
   const r = exec.shInWsl(
-    'agent_slots="$HOME"/.agents/slots; [ -d "$agent_slots" ] || agent_slots="$HOME"/.agent/slots; ls "$agent_slots"/pane_*.json "$HOME"/.kiro/slots/pane_*.json 2>/dev/null || true',
+    'agent_slots="$HOME"/.agents/slots; [ -d "$agent_slots" ] || agent_slots="$HOME"/.agent/slots; ls "$agent_slots"/pane_*.json 2>/dev/null || true',
     8000,
     distro
   );

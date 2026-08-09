@@ -342,7 +342,7 @@ def _agent_failure(cli: str, rc: int, out: str, err: str) -> str:
 
 
 # --- ノード予算 v2（node-budget 契約: schemas/node-budget.schema.json） --------------------
-# ノード（マシン）単位の共有台帳。定常業務（kiro-loop）・agent-project・agent-flow・
+# ノード（マシン）単位の共有台帳。定常業務（agent-loop）・agent-project・agent-flow・
 # agent-amigos が同じ台帳（$AGENT_BUDGET_DIR、既定 ~/.agents/budget/）に記帳し、合計が上限
 # （0 = 無制限）を超えたら新規の LLM 実行を控える。v2 で一次単位をトークンへ拡張（時間上限は
 # v1 互換で AND）。台帳には実測のみ（実測秒＋実測できたトークン）を書き、未報告行は rates で

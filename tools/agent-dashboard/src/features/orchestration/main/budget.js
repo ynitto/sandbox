@@ -456,7 +456,12 @@ function rebalance(cfg) {
 
   const next = { ...config.raw };
   next.version = 2;
-  next.computed = { workloads: computedWl, computed_at: nowStamp(), computed_by: 'dashboard' };
+  next.computed = {
+    ...(isPlainObject(config.computed) ? config.computed : {}),
+    workloads: computedWl,
+    computed_at: nowStamp(),
+    computed_by: 'dashboard',
+  };
   next.updated_at = nowStamp();
   next.updated_by = 'dashboard';
   atomicWriteJson(path.join(dir, 'config.json'), next);

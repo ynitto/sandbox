@@ -11,10 +11,10 @@ const { _pathKey, _isPosixAbs, toViewerPath, viewerDistro } = require('../../age
 const { parseFlatYaml } = require('../../agent-project/main/toolconfig');
 const { parseYaml, isPlainObject, scalarString } = require('../../../base/main/yaml');
 const {
-  discoverCoworkItems, parseKiroLoopPrompts, scheduleOf, detectMarkers, kiroLoopPromptTexts,
+  discoverCoworkItems, parseAgentLoopPrompts, scheduleOf, detectMarkers, agentLoopPromptTexts,
   scanForCoworkConfigs, isDir, coworkRoots, loopConfigFile,
 } = require('./discover');
-const { applyKiroLoopEdits, applyStatemachineEdits, upsertManagedKiroPrompt } = require('./writeback');
+const { applyAgentLoopEdits, applyStatemachineEdits, upsertManagedAgentPrompt } = require('./writeback');
 const globalInstructions = require('../../orchestration/main/instructions');
 const sessionCommands = require('../../orchestration/main/sessionCommands');
 
@@ -86,7 +86,7 @@ function listLogCandidates(repo, type, config) {
   const root = viewerRepo(repo, config);
   if (!root) return [];
   const names = type === 'loop'
-    ? ['.kiro-loop/logs', '.agent-loop/logs', 'logs']
+    ? ['.agent-loop/logs', 'logs']
     : ['.statemachine-use/logs', 'logs'];
   const out = [];
   for (const n of names) {
@@ -212,7 +212,7 @@ function processStatus(item, cfg) {
   const repo = item.repo || item.cwd || '';
   const command = item.type === 'state-machine' ? (cfg.stateMachineCommand || 'statemachine-use') : (cfg.loopCommand || cfg.loopProvider || 'agent-loop');
   if (process.platform === 'win32') {
-    // kiro-loop は WSL 側で動く想定なので、リポジトリが Windows ドライブ上でも WSL を探査する。
+    // agent-loop は WSL 側で動く想定なので、リポジトリが Windows ドライブ上でも WSL を探査する。
     const needle = repo ? (toWslCwd(repo) || repo) : itemId(item, 0);
     const distro = wslDistro(repo);
     const script = `export LANG=C.UTF-8 LC_ALL=C.UTF-8; pgrep -af ${shellQuote(command)} | grep -F -- ${shellQuote(needle)} | grep -v grep | head -1`;
@@ -378,7 +378,7 @@ function resolveItem(config, id) {
 }
 
 // ---------------------------------------------------------------------------
-// 実行プロンプトの解決（ウィンドウ実行 = kiro-loop を介さず tmux + kiro-cli へ直接送る用）
+// 実行プロンプトの解決（ウィンドウ実行 = agent-loop を介さず tmux + kiro-cli へ直接送る用）
 // ---------------------------------------------------------------------------
 
 const TEMPLATE_PARAMETER_RE = /\{\{\s*([A-Za-z_][A-Za-z0-9_.-]*)\s*\}\}/g;
@@ -613,8 +613,8 @@ function resolveLoopPromptText(repo, promptName, config) {
     } catch { return ''; }
   }
   const norm = text.replace(/\r\n/g, '\n');
-  const entries = parseKiroLoopPrompts(norm);
-  const texts = kiroLoopPromptTexts(norm);
+  const entries = parseAgentLoopPrompts(norm);
+  const texts = agentLoopPromptTexts(norm);
   // 発見項目の既定名（prompt-<n>）でも引けるようにインデックス名も突き合わせる
   const idx = entries.findIndex((e, i) => (e.name || `prompt-${i + 1}`) === name);
   return idx >= 0 ? String(texts[idx] || '') : '';
@@ -635,8 +635,8 @@ function runLoop(config, itemIdValue, parameters) {
   if (!item) throw new Error(`Cowork 作業が見つかりません: ${itemIdValue}`);
   const spec = routineParameterSpec(config, item);
   const values = validateParameters(spec, parameters);
-  // 実行対象は kiro-loop の prompt 名（合成 id ではない）。`send` が cwd の
-  // .kiro/kiro-loop.* から名前解決するため、手動項目も表示名を優先する。
+  // 実行対象は agent-loop の prompt 名（合成 id ではない）。`send` が cwd の
+  // .agents/agent-loop.* から名前解決するため、手動項目も表示名を優先する。
   const runId = item.source === 'discovered'
     ? ((item._src && item._src.promptName) || item.name)
     : (item.name || item.id);
@@ -838,10 +838,10 @@ function relPosix(repo, file, config) {
   return path.relative(root, file).split(path.sep).join('/');
 }
 
-// JSON 形式の kiro-loop 設定へ発見項目の編集を反映（parse → mutate → stringify）。
+// JSON 形式の agent-loop 設定へ発見項目の編集を反映（parse → mutate → stringify）。
 function applyKiroLoopJson(raw, items) {
   let obj;
-  try { obj = JSON.parse(raw); } catch { return { text: raw, changed: false, errors: ['kiro-loop.json の解析に失敗'] }; }
+  try { obj = JSON.parse(raw); } catch { return { text: raw, changed: false, errors: ['agent-loop.json の解析に失敗'] }; }
   const prompts = Array.isArray(obj && obj.prompts) ? obj.prompts : [];
   let changed = false;
   for (const it of items) {
@@ -905,8 +905,8 @@ function applyDiscoveredEdits(discovered, config) {
         errors.push(...r.errors);
         if (r.changed) newText = r.text;
       } else {
-        const current = parseKiroLoopPrompts(raw.replace(/\r\n/g, '\n'));
-        const currentTexts = kiroLoopPromptTexts(raw.replace(/\r\n/g, '\n'));
+        const current = parseAgentLoopPrompts(raw.replace(/\r\n/g, '\n'));
+        const currentTexts = agentLoopPromptTexts(raw.replace(/\r\n/g, '\n'));
         const edits = [];
         for (const it of items) {
           const cur = current[it._src.promptIndex] || {};
@@ -925,7 +925,7 @@ function applyDiscoveredEdits(discovered, config) {
           if (changed) edits.push(edit);
         }
         if (edits.length) {
-          const r = applyKiroLoopEdits(raw, edits);
+          const r = applyAgentLoopEdits(raw, edits);
           errors.push(...r.errors);
           newText = r.text;
         }
@@ -991,7 +991,7 @@ function applyManagedItems(items, config) {
       const prompt = item.type === 'state-machine'
         ? (item.schedule ? `statemachine-use スキルで${item.workflow || item.id}ステートマシンを実行して` : null)
         : String(item.prompt || '').trim();
-      next = upsertManagedKiroPrompt(next, item, prompt).text;
+      next = upsertManagedAgentPrompt(next, item, prompt).text;
     }
     if (next === raw) continue;
     try {
@@ -1089,7 +1089,7 @@ function saveWork(config, saveConfig, { items, branch, createBranch, push } = {}
 
   const git = [...repoMap.values()].map(({ repo, relFiles }) => {
     const files = [...relFiles];
-    const commit = gitCommitFiles(repo, files, 'chore(cowork): update kiro-loop/statemachine config', config);
+    const commit = gitCommitFiles(repo, files, 'chore(cowork): update agent-loop/statemachine config', config);
     const save = gitSave(repo, { branch, createBranch, push }, config);
     return { repo, result: { ...save, commit } };
   });

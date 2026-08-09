@@ -8,7 +8,7 @@ hermes cron の `--no-agent --script` から定期実行されることを想定
   - 新着なし → 何も出力せず終了（hermes cron は空出力をサイレント配信扱い）
   - 新着あり → route へ POST し、結果を 1 行ずつ stdout に出力
 
-検知ロジックは tools/kiro-loop/hooks/gitlab-issue-hook.py と同じ
+検知ロジックは tools/agent-loop/hooks/gitlab-issue-hook.py と同じ
 「iid -> updated_at の状態ファイル比較」方式。GitLab API 呼び出しは
 gitlab-idd スキル同梱の scripts/gl.py に委譲する（依存: stdlib のみ）。
 
