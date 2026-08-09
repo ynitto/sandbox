@@ -60,7 +60,9 @@
 }
 /* 「ここに何が出るか」— 条件は畳んでおき、知りたい人だけが開く。 */
 .participation-criteria { margin: 10px 0 14px; color: var(--muted); font-size: 13px; }
-.participation-criteria summary { min-height: 34px; display: flex; align-items: center; cursor: pointer; }
+.participation-criteria summary { min-height: 34px; display: flex; align-items: center; gap: 6px; cursor: pointer; color: var(--accent); font-weight: 600; }
+.participation-criteria summary::before { content: '▸'; }
+.participation-criteria[open] summary::before { content: '▾'; }
 .participation-criteria ul { margin: 4px 0 0; padding-left: 18px; display: grid; gap: 4px; }
 .participation-card-heading {
   display: grid;
@@ -91,10 +93,13 @@
   overflow-wrap: anywhere;
 }
 .participation-description {
-  max-height: 5em;
+  max-height: 6em;
   overflow: hidden;
   overflow-wrap: anywhere;
+  white-space: normal;
+  line-height: 1.5;
 }
+.participation-description .md { line-height: inherit; overflow-wrap: anywhere; }
 .participation-description .md > :first-child { margin-top: 0; }
 .participation-description .md > :last-child { margin-bottom: 0; }
 .participation-context {
@@ -940,6 +945,22 @@ button:disabled { opacity: 0.4; cursor: default; }
 .cowork-selected-heading { min-width: 0; }
 .cowork-selected-heading h2 { margin: 4px 0 9px; overflow-wrap: anywhere; }
 .cowork-primary-run { min-width: 130px; min-height: 44px; flex: none; }
+.cowork-prompt-preview { margin-top: 16px; }
+.cowork-prompt-preview h3 { margin: 0 0 6px; color: var(--muted); font-size: 13px; }
+.cowork-prompt-preview pre {
+  max-height: 180px;
+  margin: 0;
+  padding: 10px 12px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg3);
+  color: var(--fg);
+  font-family: inherit;
+  line-height: 1.5;
+}
 #dlg-cowork-parameters { width: min(520px, calc(100vw - 24px)); }
 #cowork-parameter-fields { display: grid; gap: 12px; margin: 16px 0; }
 #cowork-parameter-fields .field { margin: 0; }
@@ -1320,10 +1341,9 @@ table.list tr.clickable:hover { background: var(--bg2); }
 .task-list-priority { color: var(--fg); font-variant-numeric: tabular-nums; }
 .task-list-next {
   min-width: 0;
-  overflow: hidden;
   color: var(--muted);
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 .task-list-chevron {
   width: 20px;

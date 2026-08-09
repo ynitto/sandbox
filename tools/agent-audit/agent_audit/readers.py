@@ -129,6 +129,7 @@ def _parse_jsonl_session(path: str, *, want_messages: bool,
     first_ts = last_ts = None
     cwd = model = sid = None
     sum_in = sum_out = 0
+    usage_by_message: "dict[str, tuple[int, int]]" = {}
     last_total = None
     turns = 0
     messages: "list[tuple[str, str]]" = []
@@ -158,8 +159,18 @@ def _parse_jsonl_session(path: str, *, want_messages: bool,
                 break
         if usage is not None:
             i, o = _usage_of(usage)
-            sum_in += i
-            sum_out += o
+            # Claude は 1 API 応答の thinking / text を別行にし、同じ message.id と
+            # usage を各行へ再掲する。API 呼び出しを表す id がある行は最後の 1 件だけ数える。
+            usage_id = None
+            for container in (msg, payload, obj):
+                if container and isinstance(container.get("id"), str):
+                    usage_id = container["id"]
+                    break
+            if usage_id:
+                usage_by_message[usage_id] = (i, o)
+            else:
+                sum_in += i
+                sum_out += o
         total = _find_total_usage(obj)
         if total is not None:
             last_total = total
@@ -174,6 +185,9 @@ def _parse_jsonl_session(path: str, *, want_messages: bool,
                     messages.append((role, text))
     if first_ts is None and turns == 0:
         return None
+    if last_total is None:
+        sum_in += sum(i for i, _ in usage_by_message.values())
+        sum_out += sum(o for _, o in usage_by_message.values())
     tokens_in, tokens_out = (last_total if last_total is not None else (sum_in, sum_out))
     try:
         mtime = os.path.getmtime(path)

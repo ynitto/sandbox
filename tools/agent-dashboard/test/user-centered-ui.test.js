@@ -173,10 +173,8 @@ for (const id of ['btn-save-app-settings', 'btn-save-agent-settings', 'btn-save-
   'btn-save-routine-settings', 'btn-save-integrations-settings']) {
   assert.ok(renderer.includes(`id="${id}"`), `${id} で分類単位に保存します`);
 }
-assert.ok(renderer.includes('まず「使用するエージェント」を選んでください'),
-  'エージェント設定で最初に入力する項目を明示します');
-assert.ok(renderer.includes('必要な場合だけ変更します'),
-  'エージェントの追加設定が任意であることを明示します');
+assert.ok(renderer.includes('使用するエージェントを選び、必要ならモデルと待ち時間を変更します。'),
+  'エージェント設定を括弧のない短文で説明します');
 assert.ok(renderer.includes('class="settings-save-actions"'), 'カードの保存位置を共通化します');
 assert.ok(css.includes('.settings-save-actions'), '保存フッターを同じ配置で描画します');
 const renderAmigosSource = renderer.slice(
@@ -371,6 +369,8 @@ const coworkSelectedDetailSource = renderer.slice(
   renderer.indexOf('\nfunction updateCoworkSelectedDetail(', renderer.indexOf('function coworkSelectedDetailHtml('))
 );
 assert.ok(!coworkSelectedDetailSource.includes('<details'), '選択中業務の情報は折りたたまず常に表示します');
+assert.ok(coworkSelectedDetailSource.includes('class="cowork-prompt-preview"'), '選択した作業のプロンプトを下ペインに表示します');
+assert.ok(coworkSelectedDetailSource.includes("item.prompt || item.instruction"), '定期実行と定型処理の入力内容を同じ欄で確認できます');
 assert.ok(renderCoworkSource.includes('const ui = captureUiState();'), '定常業務の再描画前にUI状態を保存します');
 assert.ok(renderCoworkSource.includes('restoreUiState(ui);'), '定常業務の再描画後にUI状態を復元します');
 const renderRoutineAgentSource = renderer.slice(
@@ -438,7 +438,7 @@ assert.ok(!html.includes('>（案'), '案番号などの設計用語をラベル
 assert.ok(!renderer.includes('この PC の役割（案'), '設定ラベルに設計案番号を出しません');
 assert.ok(!renderer.includes('engineer（本体も動かす'), '役割選択肢に内部ロール名を前面に出しません');
 assert.ok(!renderer.includes('viewer（閲覧・レビュー専用）'), '役割選択肢に内部ロール名を前面に出しません');
-assert.ok(renderer.includes('>実行も行う（すべての機能）</option>'), '実行ロールは平易な日本語で示します');
+assert.ok(renderer.includes('>実行も行う</option>'), '実行ロールは括弧なしの平易な日本語で示します');
 assert.ok(renderer.includes('>閲覧・レビュー専用</option>'), '閲覧ロールは平易な日本語で示します');
 assert.ok(!renderer.includes('登録された clone がありません'), '診断結果に clone などの開発用語を出しません');
 assert.ok(!renderer.includes('（役割: viewer）'), '診断結果に内部ロール名を括弧付きで出しません');

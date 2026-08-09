@@ -20,6 +20,7 @@ ERROR_TAG_RE = re.compile(r"\[agent-error:([a-z]+)\]")
 
 KNOWN_SOURCES = ("budget-ledger", "cli-native", "flow-bus", "project-root",
                  "amigos-bus", "loop-log")
+SESSION_PARSER_REVISION = 2
 
 
 class SourceError(RuntimeError):
@@ -143,6 +144,8 @@ def collect_budget_ledger(args, store: Store) -> int:
                     "usd": row.get("usd"),
                     "measured": row.get("tokens_in") is not None or row.get("tokens_out") is not None,
                 }
+                if row.get("usage_kind"):
+                    rec["usage_kind"] = row["usage_kind"]
                 if row.get("event"):
                     rec["event"] = row["event"]
                 if row.get("quota_kind"):
@@ -196,7 +199,9 @@ def collect_cli_native(args, store: Store, *, with_transcripts: bool, since: flo
         for sess in readers.read_sessions(slog, want_messages=with_transcripts):
             if since and (sess["updated_at"] or 0) < since:
                 continue
-            key = f"cli-native::{name}::{sess['store']}::{sess['native_id']}"
+            # parser revision をカーソルへ含め、usage の読み方を直したときは既存セッションも
+            # 1 度だけ読み直す。records は追記専用なので、既存 id には補正行を重ねる。
+            key = f"cli-native-v{SESSION_PARSER_REVISION}::{name}::{sess['store']}::{sess['native_id']}"
             prev = float(store.cursor(key) or 0.0)
             if sess["updated_at"] and sess["updated_at"] <= prev:
                 continue
@@ -217,11 +222,20 @@ def collect_cli_native(args, store: Store, *, with_transcripts: bool, since: flo
                 "tokens_in": sess["tokens_in"],
                 "tokens_out": sess["tokens_out"],
                 "measured": bool(sess["usage_measured"]),
+                "parser_revision": SESSION_PARSER_REVISION,
             }
             if with_transcripts and sess["messages"]:
                 rec["excerpt_ref"] = _write_transcript(store, name, sess)
             if store.append_record(rec):
                 added += 1
+            else:
+                correction = dict(rec)
+                correction["id"] = record_id(
+                    f"cli-native-usage-v{SESSION_PARSER_REVISION}:{name}", sess["store"],
+                    f"{sess['native_id']}:{sess['updated_at']}")
+                correction["kind"] = "session-usage"
+                if store.append_record(correction):
+                    added += 1
     return added
 
 
@@ -498,18 +512,46 @@ def collect_loop_logs(args, store: Store) -> int:
 
 # -- 相関（読み出し時・決定的。設計 §4.3） -----------------------------------
 
+def correlation_candidates(led: dict, session_recs: "list[dict]", slack_sec: float = 120.0,
+                           used: "set[str] | None" = None) -> "list[dict]":
+    ts = parse_iso(led.get("ts"))
+    if ts is None:
+        return []
+    try:
+        seconds = float(led.get("seconds") or 0.0)
+    except (TypeError, ValueError):
+        seconds = 0.0
+    lo, hi = ts - seconds - slack_sec, ts + slack_sec
+    candidates = []
+    for sess in session_recs:
+        if used is not None and sess["id"] in used:
+            continue
+        if (led.get("agent_cli") or "") != (sess.get("agent_cli") or ""):
+            continue
+        lm, sm = led.get("model") or "", sess.get("model") or ""
+        if lm and sm and lm not in sm and sm not in lm:
+            continue
+        s0 = parse_iso(sess.get("started_at")) or parse_iso(sess.get("ts"))
+        s1 = parse_iso(sess.get("ts"))
+        if s0 is None or s1 is None or s1 < lo or s0 > hi:
+            continue
+        candidates.append(sess)
+    return candidates
+
+
 def correlate(ledger_recs: "list[dict]", session_recs: "list[dict]",
               slack_sec: float = 120.0) -> "dict[str, str]":
     """ledger レコード id → session レコード id の一意対応を返す。
 
     条件: agent_cli 一致・（両方にあれば）model 一致・セッションの時間範囲が
-    実行区間 [ts - seconds - slack, ts + slack] と重なる。候補が複数 / ゼロなら
-    結合しない（偽の実測を作らない）。records は追記専用なので相関は書き戻さず、
-    読み出しのたびに同じ入力から同じ結果を導く。"""
+    実行区間 [ts - seconds - slack, ts + slack] と重なる。複数候補でも終了時刻と
+    実行時間から一意に決まる短時間呼び出しだけ結び、それ以外は結合しない。
+    records は追記専用なので相関は書き戻さず、読み出しのたびに同じ結果を導く。"""
     links: "dict[str, str]" = {}
     used: "set[str]" = set()
     sessions = sorted(session_recs, key=lambda r: r.get("id") or "")
-    for led in sorted(ledger_recs, key=lambda r: r.get("id") or ""):
+    for led in sorted(ledger_recs, key=lambda r: (parse_iso(r.get("ts")) or 0.0,
+                                                   r.get("id") or "")):
         ts = parse_iso(led.get("ts"))
         if ts is None:
             continue
@@ -517,24 +559,21 @@ def correlate(ledger_recs: "list[dict]", session_recs: "list[dict]",
             seconds = float(led.get("seconds") or 0.0)
         except (TypeError, ValueError):
             seconds = 0.0
-        lo, hi = ts - seconds - slack_sec, ts + slack_sec
-        candidates = []
-        for sess in sessions:
-            if sess["id"] in used:
-                continue
-            if (led.get("agent_cli") or "") != (sess.get("agent_cli") or ""):
-                continue
-            lm, sm = led.get("model") or "", sess.get("model") or ""
-            if lm and sm and lm not in sm and sm not in lm:
-                continue
-            s0 = parse_iso(sess.get("started_at")) or parse_iso(sess.get("ts"))
-            s1 = parse_iso(sess.get("ts"))
-            if s0 is None or s1 is None:
-                continue
-            if s1 < lo or s0 > hi:
-                continue
-            candidates.append(sess)
-        if len(candidates) == 1:
-            links[led["id"]] = candidates[0]["id"]
-            used.add(candidates[0]["id"])
+        candidates = correlation_candidates(led, sessions, slack_sec, used)
+        chosen = candidates[0] if len(candidates) == 1 else None
+        if len(candidates) > 1:
+            scored = []
+            for sess in candidates:
+                s0 = parse_iso(sess.get("started_at")) or parse_iso(sess.get("ts")) or ts
+                s1 = parse_iso(sess.get("ts")) or ts
+                scored.append((abs(s1 - ts), abs((s1 - s0) - seconds), sess))
+            scored.sort(key=lambda item: (item[0], item[1], item[2]["id"]))
+            best = scored[0]
+            # 密集した短時間呼び出しは広い overlap 窓では必ず複数候補になる。
+            # 終了時刻が 2 秒以内で、次点と時刻・長さの組が異なる場合だけ一意とみなす。
+            if best[0] <= 2.0 and (len(scored) == 1 or best[:2] != scored[1][:2]):
+                chosen = best[2]
+        if chosen is not None:
+            links[led["id"]] = chosen["id"]
+            used.add(chosen["id"])
     return links

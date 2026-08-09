@@ -379,6 +379,30 @@ test('apply: 決定を control.json と profiles.json の state へ書く', () =
   assert.strictEqual(ctrl.revision, 1);
   const profilesAfter = profilesMod.loadProfiles(controlDir);
   assert.strictEqual(profilesAfter.state.flow.tier, 'large');
+  // 段の名前も control へ運ぶ。エンジン（手法パックの when.tiers）が読むのはここだけで、
+  // profiles.json は読まない契約なので、これが無いと段が engine 側から見えない。
+  assert.strictEqual(ctrl.workloads.flow.tier, 'large');
+});
+
+test('apply: 候補が同じで段だけ変わったときも control の tier を書き替える', () => {
+  const controlDir = tmpdir('orch-apply-tier-only-');
+  const budgetDir = tmpdir('orch-apply-tier-only-budget-');
+  const cfg = cfgFor(controlDir, budgetDir);
+  seedBudget(budgetDir, 1000, 1, 100); // remaining = 0.9 → large
+  // large と small が同じ候補を指す＝候補は変わらないが段は変わる構成。
+  fs.writeFileSync(path.join(controlDir, 'profiles.json'), JSON.stringify({
+    version: 1, enabled: true,
+    tiers: { large: { order: 2, candidates: [{ agent_cli: 'ollama', model: 'qwen3' }] },
+             small: { order: 1, candidates: [{ agent_cli: 'ollama', model: 'qwen3' }] } },
+    policy: { apply_to: ['flow'], steps: [{ min_remaining_ratio: 0.5, tier: 'large' }, { min_remaining_ratio: 0, tier: 'small' }],
+              no_cap_tier: 'large', hysteresis: 0, min_hold_sec: 0 },
+    state: {},
+  }));
+  control.saveControl(cfg, { workloads: { flow: { agent_cli: 'ollama', model: 'qwen3', tier: 'small' } } });
+  const result = profilesMod.apply(cfg);
+  assert.strictEqual(result.controlWritten, true, '段が変わったら書く');
+  assert.strictEqual(control.loadControl(controlDir).workloads.flow.tier, 'large');
+  assert.strictEqual(control.loadControl(controlDir).workloads.flow.agent_cli, 'ollama', '候補は保たれる');
 });
 
 test('apply: 決定が現状と同じなら control.json を書かない（revision が増えない）', () => {

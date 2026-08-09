@@ -21,13 +21,21 @@ def load(path: str) -> "dict | None":
 
 
 def current_tier(control_dir: str, workload: str) -> str:
+    """このワークロードがいま走っている段。読むのは **agent-control だけ**。
+
+    段を決めるのは dashboard（agent-profiles）で、その結果は control.json の
+    `workloads.<名前>.tier` へ投函される。以前はここが profiles.json の `state` を
+    直接読んでいたが、agent-profiles は「エンジンから読まれない」ことを不変条件に
+    している契約なので、読み口を 1 つ（agent-control）へ寄せた——段の名前が
+    dashboard の宣言と手法パックの `when.tiers` で別物になる余地も同時に消える。
+    """
     try:
-        with open(os.path.join(control_dir, "profiles.json"), encoding="utf-8") as f:
-            profiles = json.load(f)
+        with open(os.path.join(control_dir, "control.json"), encoding="utf-8") as f:
+            control = json.load(f)
     except (OSError, ValueError):
         return ""
-    state = profiles.get("state") if isinstance(profiles, dict) else None
-    rec = state.get(workload) if isinstance(state, dict) else None
+    workloads = control.get("workloads") if isinstance(control, dict) else None
+    rec = workloads.get(workload) if isinstance(workloads, dict) else None
     return str(rec.get("tier") or "") if isinstance(rec, dict) else ""
 
 

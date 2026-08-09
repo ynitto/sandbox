@@ -359,12 +359,22 @@ function apply(cfg) {
   let stateDirty = false;
 
   for (const [wl, decision] of Object.entries(decisions)) {
+    const curWl = curControl.workloads[wl] || {};
+    // 候補まで決まったときだけ control を触る（候補が全滅した段は「決められなかった」
+    // ので、段だけ書き替えると実際に走る CLI と段の申告がずれる）。
     if (decision.candidate) {
-      const curWl = curControl.workloads[wl] || {};
+      const patch = {};
       const curCandidate = { agent_cli: curWl.agent_cli || undefined, model: curWl.model || undefined };
       if (!sameCandidate(curCandidate, decision.candidate)) {
-        controlPatch[wl] = { agent_cli: decision.candidate.agent_cli || null, model: decision.candidate.model || null };
+        patch.agent_cli = decision.candidate.agent_cli || null;
+        patch.model = decision.candidate.model || null;
       }
+      // 段そのものも control へ運ぶ。エンジン（手法パックの `when.tiers`）が読むのは
+      // agent-control だけで、この契約（profiles.json）は読まれない——不変条件を保つ。
+      if (String(curWl.tier || '') !== String(decision.tier || '')) {
+        patch.tier = decision.tier || null;
+      }
+      if (Object.keys(patch).length > 0) controlPatch[wl] = patch;
     }
     const prev = profiles.state[wl];
     if (

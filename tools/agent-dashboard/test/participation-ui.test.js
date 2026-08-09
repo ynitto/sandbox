@@ -50,12 +50,19 @@ test('参加候補は選択中だけでなく発見済みの全プロジェク�
 test('参加候補は初回描画前に取得し、説明はカード内で短く表示する', () => {
   const bootstrap = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'bootstrap.js'), 'utf8');
   const css = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'styles.css'), 'utf8');
+  const feature = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'features', 'participation.js'), 'utf8');
 
   assert.ok(
     bootstrap.indexOf('await refreshFeatureTabs()') < bootstrap.indexOf('await selectProject(target.dir)'),
     '初回のプロジェクト描画より先にフィーチャー候補を取得する'
   );
-  assert.match(css, /\.participation-description\s*\{[^}]*max-height:[^}]*overflow:\s*hidden/s);
+  const descriptionRule = css.match(/\.participation-description\s*\{[^}]*\}/s)[0];
+  assert.match(descriptionRule, /max-height:\s*6em/);
+  assert.match(descriptionRule, /white-space:\s*normal/);
+  assert.doesNotMatch(descriptionRule, /-webkit-line-clamp|display:\s*-webkit-box/,
+    '構造化した説明全体に line-clamp を掛けて本文を消さない');
+  assert.match(feature, /<summary>表示条件を見る<\/summary>/);
+  assert.doesNotMatch(feature, /実行中の run も出ます/);
 });
 
 test('joinCandidate はプロジェクト作業への参加をrun限定ワーカー起動へ渡す', async () => {

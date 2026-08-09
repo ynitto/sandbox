@@ -210,7 +210,8 @@ const compactOutcome = runTaskOutcomeCompactHtml({
   taskArchived: false, taskId: 'T1', note: '実行は完了しましたが、タスクはまだ完了していません。',
 });
 assert.match(compactOutcome, />実行完了</);
-assert.match(compactOutcome, />タスク: 検収待ち</);
+assert.doesNotMatch(compactOutcome, /タスク:/, '実行カードではタスク状態を詳細側へ送る');
+assert.strictEqual((compactOutcome.match(/status-chip/g) || []).length, 1, '実行カードの状態バッジは1つに絞る');
 
 const finalVerifyFailure = runFinalVerificationFailure(
   {

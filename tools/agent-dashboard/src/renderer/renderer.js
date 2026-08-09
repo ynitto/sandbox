@@ -383,15 +383,7 @@ function runTaskOutcomeHtml(outcome) {
 }
 
 function runTaskOutcomeCompactHtml(outcome) {
-  const taskClass = outcome.taskArchived
-    ? 'st-done'
-    : outcome.taskStatus
-      ? `st-${outcome.taskStatus}`
-      : '';
-  return `<span class="flow-outcome-compact">
-    <span class="status-chip st-${esc(outcome.runStatus || '')}">${esc(outcome.runLabel)}</span>
-    <span class="status-chip ${esc(taskClass)}">タスク: ${esc(outcome.taskLabel)}</span>
-  </span>`;
+  return `<span class="status-chip st-${esc(outcome.runStatus || '')}">${esc(outcome.runLabel)}</span>`;
 }
 
 // agent-flow の全工程は成功した一方、その後に agent-project が実行するタスクの
@@ -1093,7 +1085,7 @@ function renderHeader() {
   if (eng) {
     const cls = eng.level === 'error' ? 'sync-error' : eng.level === 'warn' ? 'sync-warn' : 'sync-ok';
     const checkedLabel = eng.exists && eng.ageSec !== null && eng.ageSec !== undefined
-      ? `最終確認: ${eng.ageSec} 秒前`
+      ? `最終確認: 約${fmtAgoSec(eng.ageSec)}`
       : '';
     // 停止中は投函しても誰も読まない。押せるのは「動いてはいるが揃っていない」ときだけ。
     const action = eng.running && eng.level !== 'ok'

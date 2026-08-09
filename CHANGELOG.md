@@ -7,6 +7,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### 手法パックの「段」と dashboard の「段」を 1 つに揃えた
+
+同じ段を指しているつもりの語彙が 2 系統に割れていて、**段を宣言しても手法が一度も効かない**
+状態だった（柱3 / C7・C9）。原因は 3 つ重なっていた。
+
+- **キーがラベルから作られていた**。画面は「キーは利用者が決めることではない」という方針で
+  呼び名からキーを導いていたが、日本語ラベル（既定のプレースホルダも「たっぷり使う」）は
+  英数字が残らず `tier-1` になる。手法カタログ（`methods/*.json`）は `small` / `medium` と
+  書く前提なので、この組み合わせでは `when.tiers` が永久に一致しない。キーは**並び順**から
+  振るようにした（下から `small` → `medium` → `large`、4 段目以降は `tier-4`…）。段の意味は
+  並び順そのものなので、ラベルは表示専用のまま自由に付けられる。下から数えるのは、行を
+  足しても「いちばん下＝いちばん弱い段」を動かさないため
+- **段がエンジンへ届く経路が契約の外だった**。`current_tier()` が `profiles.json` の `state` を
+  直接読んでいたが、agent-profiles は「エンジンから読まれない」ことを不変条件にしている契約
+  である。dashboard が段を決めたら `control.json` の `workloads[].tier` へも投函し、エンジンは
+  agent-control だけを読む形にした（読み口が 1 つになり、語彙が別物になる余地も消える）。
+  候補が全滅して決められなかったワークロードには従来どおり触れない
+- **文書と入力例が語彙から外れていた**。`{"tiers":["full"]}` という例（agent-loop README・
+  dashboard の独自手法フォーム）を `small` に直し、段が 1 つも宣言されていないノードでは
+  `tiers` 条件が当たらないこと、そこでも効かせたいなら `max_relative_cost` / `agent_cli` で
+  絞ることを README とスキーマ（agent-tuning の `when.tiers`）に書いた
+
 ### agent-flow: ローカル CLI を planner に選ぶと、分解がキーワード判定まで黙って落ちていたのを直した
 
 `agent_cli` に `ollama` を選んだ run で、要求の中身と無関係に同じパターン（`generate-and-filter`）

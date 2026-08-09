@@ -738,6 +738,9 @@ function reviseAreaHtml(t) {
         (k) => k === 'risks'
           ? `<div class="field"><label for="rv-risks">${esc(GUIDE_LABELS[k])}</label>
               <textarea id="rv-risks" rows="3" placeholder="1 行 1 リスク。該当しない場合は「なし」">${esc(t.extra[k] || '')}</textarea></div>`
+          : k === 'desc'
+            ? `<div class="field"><label for="rv-desc">${esc(GUIDE_LABELS[k])}</label>
+                <textarea id="rv-desc" rows="3">${esc(t.extra[k] || '')}</textarea></div>`
           : `<div class="field"><label for="rv-${k}">${esc(GUIDE_LABELS[k])}</label><input id="rv-${k}" value="${esc(t.extra[k] || '')}" /></div>`
       ).join('')}
     </details>

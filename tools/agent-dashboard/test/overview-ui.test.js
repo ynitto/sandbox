@@ -29,6 +29,11 @@ const overviewSummary = new Function(`${grab('overviewSummary')}; return overvie
 const appDoctorSummary = new Function(`${grab('appDoctorSummary')}; return appDoctorSummary;`)();
 // eslint-disable-next-line no-new-func
 const workspaceFeatureModel = new Function(`${grab('workspaceFeatureModel')}; return workspaceFeatureModel;`)();
+// eslint-disable-next-line no-new-func
+const fmtAgoSec = new Function(`${grab('fmtAgoSec')}; return fmtAgoSec;`)();
+
+assert.strictEqual(fmtAgoSec(18033), '5時間前');
+assert.strictEqual(fmtAgoSec(125), '2分前');
 
 const project = {
   liveness: { running: true, paused: false },
@@ -205,7 +210,8 @@ assert.match(html, /id="project-meta"[^>]+aria-live="polite"/);
 // この画面から git を叩く経路（pull / commitPush / heal）はソースごと消えている。
 assert.match(renderer, /id="btn-sync-now"/);
 assert.match(renderer, /今すぐ同期/);
-assert.match(renderer, /最終確認:/);
+assert.match(renderer, /最終確認: 約\$\{fmtAgoSec\(eng\.ageSec\)\}/);
+assert.doesNotMatch(renderer, /最終確認: \$\{eng\.ageSec\} 秒前/);
 assert.match(renderer, /api\.engineStatus\(\)/);
 assert.match(renderer, /api\.requestHeal\(dir\)/);
 for (const gone of ['api.gitHealth', 'api.gitHeal', 'api.gitPull', 'api.gitCommitPush',
@@ -379,6 +385,7 @@ assert.match(renderer, /個別のrunを止める操作ではありません/);
   assert.ok(!html.includes('応答なし'), '記録が古いだけのノードを応答なしと断定しない');
   assert.ok(html.includes('しばらく更新がありません'), '古い記録はそのまま伝える');
   assert.ok(html.includes('node-stale'), '更新の止まったノードは stale クラス');
+  assert.ok(html.includes('この PC は稼働状況、ほかの PC は最終更新を表示します。'), 'PC一覧の説明を一文に絞る');
   // この PC は常駐体の心拍で判定する（記録が何日古くても、心拍があれば稼働中）。
   const selfHtml = nodesSummaryHtml([{ node: 'mac', host: 'Mac', running: true, self: true, ageSec: 523721 }]);
   assert.ok(selfHtml.includes('この PC・稼働中'), '自ノードは心拍で稼働中と出す');

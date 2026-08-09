@@ -10,7 +10,7 @@ import json
 import os
 import statistics
 
-from .collect import correlate
+from .collect import correlate, correlation_candidates
 from .configfile import resolve_audit_dir, resolve_budget_dir
 from .scrub import scrub_obj
 from .store import Store, record_id
@@ -31,7 +31,8 @@ def _period_floor(period: str) -> float:
 def load_period_records(store: Store, period: str) -> "tuple[list[dict], list[dict], list[dict]]":
     """(ledger, session, run) レコードを期間で絞って読む。"""
     floor = _period_floor(period)
-    ledger, session, run = [], [], []
+    ledger, run = [], []
+    sessions: "dict[tuple[str, str], tuple[tuple[int, float, int], dict]]" = {}
     for rec in store.iter_records(since_epoch=floor):
         ts = parse_iso(rec.get("ts"))
         if floor and (ts is None or ts < floor):
@@ -39,11 +40,35 @@ def load_period_records(store: Store, period: str) -> "tuple[list[dict], list[di
         kind = rec.get("kind")
         if kind == "ledger":
             ledger.append(rec)
-        elif kind == "session":
-            session.append(rec)
+        elif kind in ("session", "session-usage"):
+            key = (str(rec.get("agent_cli") or ""), str(rec.get("session_id") or rec.get("id") or ""))
+            try:
+                revision = int(rec.get("parser_revision") or 0)
+            except (TypeError, ValueError):
+                revision = 0
+            rank = (revision, parse_iso(rec.get("ts")) or 0.0,
+                    1 if kind == "session-usage" else 0)
+            if key not in sessions or rank > sessions[key][0]:
+                normalized = dict(rec)
+                normalized["kind"] = "session"
+                sessions[key] = (rank, normalized)
         elif kind == "run":
             run.append(rec)
-    return ledger, session, run
+    return ledger, [item[1] for item in sessions.values()], run
+
+
+def _is_llm_ledger(led: dict) -> bool:
+    kind = led.get("usage_kind")
+    if kind:
+        return kind == "llm"
+    if led.get("tool") == "agent-audit":
+        return (led.get("purpose") or led.get("ref")) in ("extract", "distill", "review")
+    return True
+
+
+def _operation_key(led: dict) -> tuple[str, str, str, str]:
+    return (str(led.get("tool") or ""), str(led.get("purpose") or led.get("ref") or ""),
+            str(led.get("agent_cli") or ""), str(led.get("model") or ""))
 
 
 def _rates(args) -> "tuple[float, dict]":
@@ -69,6 +94,17 @@ def aggregate_usage(args, store: Store, period: str, by: str) -> "list[dict]":
     sess_by_id = {s["id"]: s for s in session}
     default_rate, per_cli = _rates(args)
 
+    operation_samples: "dict[tuple[str, str, str, str], list[int]]" = {}
+    for led in ledger:
+        if led.get("tool") != "agent-audit":
+            continue
+        sess = sess_by_id.get(links.get(led["id"], ""))
+        if not sess or not sess.get("measured"):
+            continue
+        total = int(sess.get("tokens_in") or 0) + int(sess.get("tokens_out") or 0)
+        if total > 0:
+            operation_samples.setdefault(_operation_key(led), []).append(total)
+
     groups: "dict[str, dict]" = {}
 
     def bucket(key: str) -> dict:
@@ -79,7 +115,13 @@ def aggregate_usage(args, store: Store, period: str, by: str) -> "list[dict]":
 
     linked_sessions = set(links.values())
     for led in ledger:
-        group = (led.get("purpose") or led.get("ref")) if by == "purpose" else led.get(by)
+        sess = sess_by_id.get(links.get(led["id"], ""))
+        if by == "purpose":
+            group = led.get("purpose") or led.get("ref")
+        elif by in ("agent_cli", "model"):
+            group = led.get(by) or (sess or {}).get(by)
+        else:
+            group = led.get(by)
         b = bucket(str(group or ""))
         b["runs"] += 1
         try:
@@ -90,7 +132,6 @@ def aggregate_usage(args, store: Store, period: str, by: str) -> "list[dict]":
             b["usd"] += float(led.get("usd") or 0.0)
         except (TypeError, ValueError):
             pass
-        sess = sess_by_id.get(links.get(led["id"], ""))
         tin, tout = led.get("tokens_in"), led.get("tokens_out")
         if sess and sess.get("measured"):
             tin = sess.get("tokens_in") if sess.get("tokens_in") is not None else tin
@@ -99,6 +140,19 @@ def aggregate_usage(args, store: Store, period: str, by: str) -> "list[dict]":
             b["measured_in"] += int(tin or 0)
             b["measured_out"] += int(tout or 0)
         else:
+            b["unmeasured_runs"] += 1
+            if not _is_llm_ledger(led):
+                continue
+            # 相関が曖昧でも近傍に実測セッションがあるなら、未帰属の実測行として後段で
+            # 数える。ここでも秒レートを足すと同じ呼び出しを実測＋推定で二重計上する。
+            if any(s.get("measured") for s in correlation_candidates(
+                    led, session, float(getattr(args, "join_slack_sec", 120.0)))):
+                continue
+            if led.get("tool") == "agent-audit":
+                samples = operation_samples.get(_operation_key(led), [])
+                if len(samples) >= 3:
+                    b["estimated_tokens"] += int(statistics.median(samples))
+                continue
             rate = _rate_for(led.get("agent_cli") or "", led.get("model") or "",
                              default_rate, per_cli)
             try:
@@ -107,8 +161,6 @@ def aggregate_usage(args, store: Store, period: str, by: str) -> "list[dict]":
                 sec = 0.0
             if rate > 0 and sec > 0:
                 b["estimated_tokens"] += int(sec * rate)
-            else:
-                b["unmeasured_runs"] += 1
     for sess in session:
         if sess["id"] in linked_sessions:
             continue
@@ -158,6 +210,8 @@ def calibration_rates(args, store: Store) -> "dict[str, float]":
     sess_by_id = {s["id"]: s for s in session}
     samples: "dict[str, list[float]]" = {}
     for led in ledger:
+        if led.get("tool") == "agent-audit":
+            continue      # 短い段別呼び出しは aggregate_usage の operation 中央値で扱う
         try:
             sec = float(led.get("seconds") or 0.0)
         except (TypeError, ValueError):

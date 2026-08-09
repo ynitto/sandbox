@@ -21,6 +21,10 @@
         "agent_cli": {"type": ["string", "null"], "default": null, "description": "ワークロード全体の既定 CLI 上書き"},
         "model": {"type": ["string", "null"], "default": null, "description": "ワークロード全体の既定モデル上書き"},
         "timeout_sec": {"type": ["integer", "null"], "minimum": 1, "default": null, "description": "agent-flow のエージェント CLI 1 回あたりの共通上限秒。flow 以外は無視する"},
+        "tier": {
+          "type": ["string", "null"], "default": null,
+          "description": "いまこのワークロードが走っている段（実行プロファイルの格）。決めるのは agent-profiles（dashboard）で、ここへ投函された値が**エンジンから見える唯一の段**——手法パック（agent-tuning の methods[].when.tiers）はこの値と突き合わせる。語彙は agent-profiles.schema.json の tiers が正典（下から small / medium / large）。null / 省略 = 段の宣言なし（tiers 条件の手法は当たらない）"
+        },
         "agents": {
           "type": "object",
           "description": "用途 / 役割 / ロール別の上書き（ワークロード既定より優先）",

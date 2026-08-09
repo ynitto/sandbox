@@ -367,7 +367,7 @@ test('設定カードは保存・追加の動線を持つ（実行内容のプ�
   assert.ok(!src.includes('btn-orch-sess-preview'), 'プレビューの動線は残さない');
   assert.ok(!src.includes('orchestrationSessionCommandsPreview'), 'プレビューの取得経路も残さない');
   assert.ok(src.includes('使用するコマンド'), '利用者が設定内容を見出しだけで判断できる');
-  assert.ok(src.includes('通常は設定しなくても使えます'), '設定が任意であることを明示する');
+  assert.ok(src.includes('通常は不要で、開始前に毎回必要なコマンドだけを追加します。'), '設定が任意であることを短く明示する');
   assert.ok(src.includes('orch-sess-bundle'), 'コマンドごとにまとめ依頼を選ぶチェックボックスが無い');
   assert.ok(src.includes('まとめて依頼'), 'まとめ依頼の表示文言が無い');
   assert.ok(src.includes('placeholder="agent-loop, agent-flow"'), '新規入力の例に旧 engine 名を出さない');
@@ -385,9 +385,9 @@ test('画面は注意書き（引用・中止・反映点）を出す', () => {
   const src = rendererSrc.read();
   // 実行サービスごとの「反映状況」表は外した（同じ話題は実行制御の「設定の反映」列が持つ）。
   assert.ok(!src.includes('session_commands_revision_applied'), '反映状況の表は残さない');
-  assert.ok(src.includes('で囲んでください'), 'シェル引用は利用者の責任だと明示する');
-  assert.ok(src.includes('起動しなくなります'), 'fail の副作用を明示する');
-  assert.ok(src.includes('次に始まるセッションから'), '反映点を明示する');
+  assert.ok(src.includes('空白を含むパスは'), 'シェル引用は利用者の責任だと明示する');
+  assert.ok(src.includes('失敗時にエージェントを起動しません'), 'fail の副作用を明示する');
+  assert.ok(src.includes('変更は次のセッションから反映します'), '反映点を明示する');
 });
 
 // ---------------------------------------------------------------------------

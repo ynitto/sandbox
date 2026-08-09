@@ -315,12 +315,11 @@
         </div>
       </header>
       <details class="participation-criteria" data-ui-key="participation-criteria">
-        <summary>ここに何が出るか</summary>
+        <summary>表示条件を見る</summary>
         <ul>
-          <li><strong>プロジェクト作業</strong>: 選択中のプロジェクトの実行のうち、まだ誰も取っていない工程が残っているもの。
-            実行中の run も出ます——動いていること自体は「この端末が手伝える工程がある」ことと矛盾しません。</li>
-          <li><strong>ミッション</strong>: 担当端末が決まっていない役割。</li>
-          <li><strong>よその端末からの依頼</strong>: 委譲公示板で募集中の依頼。</li>
+          <li><strong>プロジェクト作業</strong>: 未担当の工程</li>
+          <li><strong>ミッション</strong>: 担当端末が未定の役割</li>
+          <li><strong>よその端末からの依頼</strong>: 募集中の依頼</li>
         </ul>
       </details>
       ${participationHtml(currentCandidates, statuses)}

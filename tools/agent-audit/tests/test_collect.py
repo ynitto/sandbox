@@ -237,6 +237,15 @@ class CorrelateTests(AuditTestCase):
               "started_at": "2026-08-03T09:59:40Z", "agent_cli": "claude", "model": ""}
         self.assertEqual(collect.correlate([led], [s1, s2]), {})   # 偽の実測を作らない
 
+    def test_dense_sessions_link_by_unique_nearest_end(self):
+        led = {"id": "aud-l1", "ts": "2026-08-03T10:01:00Z", "seconds": 10.0,
+               "agent_cli": "claude", "model": ""}
+        exact = {"id": "aud-s1", "ts": "2026-08-03T10:00:59Z",
+                 "started_at": "2026-08-03T10:00:50Z", "agent_cli": "claude", "model": ""}
+        nearby = {"id": "aud-s2", "ts": "2026-08-03T10:01:20Z",
+                  "started_at": "2026-08-03T10:01:10Z", "agent_cli": "claude", "model": ""}
+        self.assertEqual(collect.correlate([led], [exact, nearby]), {"aud-l1": "aud-s1"})
+
     def test_cli_mismatch_links_nothing(self):
         led = {"id": "aud-l1", "ts": "2026-08-03T10:01:00Z", "seconds": 60.0,
                "agent_cli": "codex", "model": ""}
@@ -269,6 +278,33 @@ class CliNativeCollectTests(AuditTestCase):
         self.assertTrue(rec["measured"])
         transcript = os.path.join(st.root, rec["excerpt_ref"])
         self.assertTrue(os.path.isfile(transcript))
+
+    def test_existing_session_gets_usage_correction(self):
+        agents_dir = os.path.join(self.tmp, "agents-correction")
+        os.makedirs(agents_dir, exist_ok=True)
+        sess_root = os.path.join(self.tmp, "claude-correction")
+        session_path = claude_session_jsonl(os.path.join(sess_root, "p", "sess-old.jsonl"),
+                                             sid="sess-old", tokens=(100, 10))
+        with open(os.path.join(agents_dir, "claude.json"), "w", encoding="utf-8") as f:
+            json.dump({"name": "claude", "command": ["claude"],
+                       "session_log": {"format": "jsonl-dir", "paths": [sess_root],
+                                       "usage": True}}, f)
+        st = self.make_store()
+        legacy_id = collect.record_id("cli-native:claude", session_path, "sess-old")
+        st.append_record({"id": legacy_id, "ts": "2026-08-03T10:00:30Z",
+                          "kind": "session", "agent_cli": "claude",
+                          "session_id": "sess-old", "tokens_in": 200,
+                          "tokens_out": 20, "measured": True})
+        st.save_state()
+        os.environ["KIRO_AGENTS_DIR"] = agents_dir
+        try:
+            self.assertEqual(collect.collect_cli_native(self.make_args(), st,
+                                                        with_transcripts=False), 1)
+        finally:
+            os.environ["KIRO_AGENTS_DIR"] = os.path.join(self.tmp, "no-agents")
+        correction = next(r for r in st.iter_records() if r.get("kind") == "session-usage")
+        self.assertEqual(correction["parser_revision"], collect.SESSION_PARSER_REVISION)
+        self.assertEqual((correction["tokens_in"], correction["tokens_out"]), (100, 10))
 
 
 if __name__ == "__main__":

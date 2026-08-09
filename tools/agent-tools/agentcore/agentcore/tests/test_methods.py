@@ -84,8 +84,36 @@ class MethodSelectionTests(unittest.TestCase):
             self.assertIsNone(methods.load(str(Path(tmp) / "absent.json")))
 
 
-if __name__ == "__main__":
-    unittest.main()
+class CurrentTierTests(unittest.TestCase):
+    """段は agent-control から読む（agent-profiles はエンジンから読まない契約）。
+
+    `when.tiers` が見る値と dashboard が決めた段が別物にならないよう、読み口は 1 つに寄せる。
+    """
+
+    def _control(self, tmp: str, payload: dict) -> None:
+        Path(tmp, "control.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    def test_tier_comes_from_the_control_contract(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._control(tmp, {"version": 1, "workloads": {
+                "flow": {"agent_cli": "ollama", "model": "qwen3.5:9b", "tier": "small"},
+                "project": {"agent_cli": "codex"}}})
+            self.assertEqual(methods.current_tier(tmp, "flow"), "small")
+            self.assertEqual(methods.current_tier(tmp, "project"), "", "段の宣言が無ければ空")
+            self.assertEqual(methods.current_tier(tmp, "amigos"), "", "未知のワークロードも空")
+
+    def test_profiles_json_is_not_consulted(self):
+        # profiles.json だけがあっても段は見えない（読んでいたら契約違反に戻っている）。
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "profiles.json").write_text(
+                json.dumps({"version": 1, "state": {"flow": {"tier": "small"}}}), encoding="utf-8")
+            self.assertEqual(methods.current_tier(tmp, "flow"), "")
+
+    def test_missing_or_broken_control_is_a_noop(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(methods.current_tier(tmp, "flow"), "")
+            Path(tmp, "control.json").write_text("{ not json", encoding="utf-8")
+            self.assertEqual(methods.current_tier(tmp, "flow"), "")
 
 
 class TrialEvidenceTests(unittest.TestCase):
@@ -128,3 +156,9 @@ class TrialEvidenceTests(unittest.TestCase):
             {"id": "baseline", "methods": []}, {"id": "candidate", "methods": []}]})
         app = methods.select(pack, _ctx("work", "ollama"), "k")
         self.assertEqual(app["ignored_trials"], ["trial-2"])
+
+
+# `unittest.main()` はファイル末尾に置く——クラス定義より前にあると、直接実行
+# （`python test_methods.py`）でそれ以降のクラスが未定義のまま起動して黙ってスキップされる。
+if __name__ == "__main__":
+    unittest.main()

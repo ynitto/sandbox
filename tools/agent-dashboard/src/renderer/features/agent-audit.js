@@ -238,7 +238,7 @@
       </tr>`;
     }).join('');
     return `<div class="table-scroll"><table class="list audit-table">
-      <thead><tr><th>機能</th><th>全体に占める割合</th><th>トークン</th><th>実行時間</th><th>実行数</th><th>状態</th></tr></thead>
+      <thead><tr><th>機能</th><th>全体に占める割合</th><th>トークン</th><th>実行時間</th><th>LLM呼び出し</th><th>状態</th></tr></thead>
       <tbody>${body || '<tr><td colspan="6" class="muted">この期間の記録はありません。</td></tr>'}</tbody>
     </table></div>`;
   }
@@ -258,7 +258,7 @@
         <td class="num mono">${escHtml(fmtUsd(row.usd))}</td>
       </tr>`).join('');
     return `<div class="table-scroll"><table class="list audit-table">
-      <thead><tr><th>エージェント</th><th>全体に占める割合</th><th>トークン</th><th>実行時間</th><th>実行数</th><th>概算費用</th></tr></thead>
+      <thead><tr><th>エージェント</th><th>全体に占める割合</th><th>トークン</th><th>実行時間</th><th>LLM呼び出し</th><th>概算費用</th></tr></thead>
       <tbody>${body || '<tr><td colspan="6" class="muted">エージェント別の記録はありません。</td></tr>'}</tbody>
     </table></div>`;
   }
@@ -291,7 +291,7 @@
     </tr>`).join('');
     return `<table class="list audit-table">
       <thead><tr>
-        <th>グループ</th><th>実行数</th><th>実測トークン 入力</th><th>実測トークン 出力</th>
+        <th>グループ</th><th>LLM呼び出し</th><th>実測トークン 入力</th><th>実測トークン 出力</th>
         <th>推定トークン</th><th>実行時間</th><th>実測なし</th><th>概算費用</th>
       </tr></thead>
       <tbody>${body}</tbody>
@@ -386,15 +386,15 @@
       <div class="orch-usage-summary">
         <div><span>合計</span><strong>${escHtml(totals.total > 0 ? `${fmtTokens(totals.total)} トークン` : (unmeasured > 0 ? '取得できず' : '0 トークン'))}</strong></div>
         <div><span>実行時間</span><strong>${escHtml(fmtSeconds(totals.seconds))}</strong></div>
-        <div><span>実行数</span><strong>${Number(totals.runs || 0)}件</strong></div>
+        <div><span>LLM呼び出し</span><strong>${Number(totals.runs || 0)}件</strong></div>
         <div><span>概算費用</span><strong>${escHtml(fmtUsd(totals.usd))}</strong></div>
       </div>
       <p class="orch-usage-breakdown">
         <span class="orch-legend"><span class="orch-swatch orch-bar-measured"></span>実測 ${escHtml(fmtTokens(totals.measured))}（入力 ${escHtml(fmtTokens(totals.measuredIn))} / 出力 ${escHtml(fmtTokens(totals.measuredOut))}）</span>
         <span class="orch-legend"><span class="orch-swatch orch-bar-estimated"></span>推定 ${escHtml(fmtTokens(totals.estimated))}</span>
-        ${unmeasured > 0 ? `<span class="muted">トークンを取得できなかった実行 ${unmeasured}件</span>` : ''}
+        ${unmeasured > 0 ? `<span class="muted">実測できなかったLLM呼び出し ${unmeasured}件</span>` : ''}
       </p>
-      <p class="muted">実測は CLI の記録、推定は実行時間から計算した値です。</p>
+      <p class="muted">実測は CLI の記録です。推定は同じ処理の実測値か実行時間を使います。</p>
       ${gaugeHtml(totals, currentPeriod())}
       ${workloadTableHtml(summaryData)}
       <h4 class="orch-usage-subheading">エージェント別</h4>

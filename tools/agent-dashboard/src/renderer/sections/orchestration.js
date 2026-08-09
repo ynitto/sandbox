@@ -233,7 +233,7 @@ function orchAllocationPanelHtml(budget) {
       <div>
         <span class="summary-kicker">利用上限</span>
         <h3>機能ごとの利用量を設定</h3>
-        <p class="muted">全体の上限を各機能へ配分します。配分比と最低保証、上限を指定できます。</p>
+        <p class="muted">機能ごとに利用上限を配分します。</p>
       </div>
     </header>
     <div class="row orch-alloc-controls">
@@ -307,15 +307,19 @@ function orchParseProfileCandidates(text) {
     .filter((c) => c.agent_cli || c.model);
 }
 
-// 段の内部キー。人には見せない識別子なので、呼び名から機械的に作る（重複は連番で避ける）。
-// 既存の段は画面が持っているキーをそのまま使い、ここは新しい段のときだけ通る
-// ——キーを作り直すと「いま選ばれている段」の記録（state）が前回と結び付かなくなる。
-function orchProfileTierKey(label, index, used) {
-  const base = String(label || '').trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
-  let key = base || `tier-${index + 1}`;
-  let n = 2;
-  while (used.has(key)) key = `${base || 'tier'}-${n++}`;
-  return key;
+// 段の内部キーは**位置から決める**（下から small → medium → large、それ以上は tier-4…）。
+//
+// 呼び名から作ると、日本語のラベル（既定のプレースホルダも「たっぷり使う」）は英数字が
+// 残らず `tier-1` になる。手法パック（agent-tuning の `when.tiers`）は `small` / `medium`
+// と書く前提なので、その組み合わせでは「段を宣言したのに手法が一度も効かない」が静かに
+// 起きていた。段の意味は並び順（上が上位）そのものなので、キーも並び順から導いて
+// 語彙を 1 つに揃える。ラベルは表示専用のまま自由に付けられる。
+//
+// 下から数えるのは、行を足したときに「いちばん下＝いちばん弱い段」が動かないようにするため。
+const ORCH_TIER_KEYS_FROM_BOTTOM = ['small', 'medium', 'large'];
+
+function orchProfileTierKey(indexFromBottom) {
+  return ORCH_TIER_KEYS_FROM_BOTTOM[indexFromBottom] || `tier-${indexFromBottom + 1}`;
 }
 
 // 5. エージェントの自動切り替え（agent-profiles 契約）
@@ -413,7 +417,7 @@ function orchProfilesPanelHtml(overview) {
       <div>
         <span class="summary-kicker">予算に合わせて自動で切り替える</span>
         <h3>エージェントの自動切り替え</h3>
-        <p class="muted">予算が減るにつれて、上の段から下の段へ切り替えます。同じ状況なら常に同じ結果になります。</p>
+        <p class="muted">残り予算に応じて使用するエージェントを切り替えます。</p>
       </div>
     </header>
     <label class="orch-profile-toggle">
@@ -492,7 +496,7 @@ function orchAgentsEditorHtml(wl, wc) {
   // 出さない。上の「エージェント / モデル」は定常業務の起動にそのまま効く。
   if (known && known.length === 0 && wl === 'routine') {
     return '<div class="orch-agents-none"><small class="muted">定常業務では、上のエージェントとモデルが'
-      + 'そのまま起動に使われます（用途ごとの変更はできません）。</small></div>';
+      + 'そのまま起動に使われます。用途ごとの変更はできません。</small></div>';
   }
   const listId = `orch-keys-${esc(wl)}`;
   const datalist = (known && known.length)
@@ -502,8 +506,8 @@ function orchAgentsEditorHtml(wl, wc) {
     const ov = agents[key] || {};
     return `<tr class="orch-agent-row" data-orch-key="${esc(key)}">
       <td><code>${esc(key)}</code></td>
-      <td><input type="text" class="orch-agent-cli" placeholder="（既定）" value="${esc(ov.agent_cli || '')}" /></td>
-      <td><input type="text" class="orch-agent-model" placeholder="（既定）" value="${esc(ov.model || '')}" /></td>
+      <td><input type="text" class="orch-agent-cli" placeholder="既定" value="${esc(ov.agent_cli || '')}" /></td>
+      <td><input type="text" class="orch-agent-model" placeholder="既定" value="${esc(ov.model || '')}" /></td>
       ${withTimeout ? `<td><input type="number" min="1" step="1" class="orch-agent-timeout"
         aria-label="${esc(key)}の1回の上限（分）" placeholder="共通値" value="${ov.timeout_sec ? Math.ceil(Number(ov.timeout_sec) / 60) : ''}" /></td>` : ''}
       <td><label class="orch-agent-rm"><input type="checkbox" class="orch-agent-remove" /> 削除</label></td>
@@ -516,7 +520,7 @@ function orchAgentsEditorHtml(wl, wc) {
       ${withTimeout ? '<td><input type="number" min="1" step="1" class="orch-agent-new-timeout" aria-label="追加する用途の1回の上限（分）" placeholder="共通値" /></td>' : ''}
       <td><small class="muted">保存で追加</small></td>
     </tr>`;
-  const summaryLabel = keys.length ? `用途 / 担当ごとの変更（${keys.length}）` : '用途 / 担当ごとの変更を追加';
+  const summaryLabel = keys.length ? `用途 / 担当ごとの変更 ${keys.length}件` : '用途 / 担当ごとの変更を追加';
   return `<details class="orch-agents" data-ui-key="orch-agents-${esc(wl)}"${keys.length ? ' open' : ''}>
     <summary>${esc(summaryLabel)}</summary>
     ${datalist}
@@ -553,7 +557,7 @@ function orchMatrixPanelHtml(overview) {
       <div>
         <span class="summary-kicker">担当設定</span>
         <h3>機能ごとのエージェントとモデル</h3>
-        <p class="muted">空欄の項目は各機能の設定を使います。必要な場合だけ、用途や担当ごとに変更できます。</p>
+        <p class="muted">機能ごとに指定し、空欄は既定の設定を使います。</p>
       </div>
       <div>${orchBadge('muted', `設定版 ${Number(control.revision || 0)}`)}</div>
     </header>
@@ -582,7 +586,7 @@ function orchConcurrencyPanelHtml(overview) {
       <div>
         <span class="summary-kicker">実行のキャパシティ</span>
         <h3>同時に動かす数（自動実行）</h3>
-        <p class="muted">この端末で自動実行（agent-flow）を何本まで同時に動かすかを決めます。空欄なら各プロジェクトの設定に従います。PC が重いときは小さくしてください。</p>
+        <p class="muted">この端末で同時に進める仕事と担当の数を設定します。</p>
       </div>
       <div>${note}</div>
     </header>
@@ -596,7 +600,7 @@ function orchConcurrencyPanelHtml(overview) {
           value="${workers}" placeholder="プロジェクト設定に従う" />
       </label>
     </div>
-    <p class="field-help">「同時に進める仕事の数」は 0 で上限なしです。承認待ちで止まっている仕事は数えません。上限を超えた依頼は捨てられず、空きができた時点で順に始まります。agent-project が自動で回している PC でも、この値がその端末の実行枠になります（host.yaml の宣言より優先）。</p>
+    <p class="field-help">0 は上限なしです。承認待ちは数えず、超えた依頼は空き次第始まります。</p>
     <div class="settings-save-actions">
       <button type="button" id="btn-orch-conc-save" class="primary-inline"${state.orchSaving ? ' disabled' : ''}>保存</button>
     </div>
@@ -648,7 +652,7 @@ function orchStatusPanelHtml(overview) {
       <div>
         <span class="summary-kicker">稼働状況</span>
         <h3>実行の許可・停止</h3>
-        <p class="muted">機能の種類ごとに1行表示します。「端末全体で停止」は個別のrunやPIDではなく、この端末にある同種のエージェント呼び出しをすべて拒否します。</p>
+        <p class="muted">機能ごとに実行を許可・停止します。停止中は同種の呼び出しを拒否します。</p>
       </div>
     </header>
     <table class="amigos-table orch-table">
@@ -685,8 +689,7 @@ function orchInstructionsPanelHtml(overview) {
       <div>
         <span class="summary-kicker">共通指示</span>
         <h3>すべてのエージェントへの共通指示</h3>
-        <p class="muted">この端末で実行するエージェントへ、共通の指示・推奨スキル・利用できるツールを設定します。
-          個別のタスクやプロジェクトに指示がある場合は、そちらが優先されます。</p>
+        <p class="muted">全エージェントに共通する指示・スキル・ツールを設定し、個別の指示を優先します。</p>
       </div>
       <div>${gi.enabled ? orchBadge('ok', `有効・設定版 ${esc(String(gi.revision || 0))}`) : orchBadge('soft', '無効')}</div>
     </header>
@@ -833,8 +836,7 @@ function orchSessionCommandsPanelHtml(overview) {
       <div>
         <span class="summary-kicker">使用するコマンド</span>
         <h3>エージェントを始める前のコマンド</h3>
-        <p class="muted">通常は設定しなくても使えます。リポジトリの取得や開発環境の起動など、
-          毎回必要な下準備がある場合だけ追加してください。上から順に 1 回実行します。</p>
+        <p class="muted">通常は不要で、開始前に毎回必要なコマンドだけを追加します。</p>
       </div>
       <div>${sc.enabled ? orchBadge('ok', `有効・設定版 ${esc(String(sc.revision || 0))}`) : orchBadge('soft', '無効')}</div>
     </header>
@@ -848,10 +850,9 @@ function orchSessionCommandsPanelHtml(overview) {
       </label>
     </div>
     <ul class="orch-sess-notes muted">
-      <li>コマンドはそのままシェルへ渡します。空白を含む場所を指す <code>{cwd}</code> などは <code>"</code> で囲んでください。</li>
-      <li>「失敗したとき: 開始を中止する」を選ぶと、そのコマンドが失敗したときエージェントが起動しなくなります。</li>
-      <li>「エージェントに送る」は、行ごとに従来の 1 コマンド 1 ペースト式と、チェックした行を 1 つにまとめる依頼式を選べます。</li>
-      <li>設定を変えても、すでに動いているセッションには反映されません。次に始まるセッションから有効になります。</li>
+      <li>上から順に実行し、変更は次のセッションから反映します。</li>
+      <li>空白を含むパスは <code>"</code> で囲みます。</li>
+      <li>「開始を中止する」は失敗時にエージェントを起動しません。</li>
     </ul>
     <div class="settings-save-actions">
       <button type="button" id="btn-orch-sess-save" class="primary-inline">保存</button>
@@ -924,7 +925,7 @@ function orchInventoryPanelHtml(overview) {
       <div>
         <span class="summary-kicker">利用可能なエージェント</span>
         <h3>エージェント一覧</h3>
-        <p class="muted">最初から利用できるエージェントと、この端末に追加したエージェントを確認・編集できます。</p>
+        <p class="muted">利用できるエージェントを確認・編集します。</p>
       </div>
     </header>
     <p>標準: ${builtins}</p>
@@ -973,7 +974,7 @@ function globalSettingsAppHtml() {
       <h2>表示と通知</h2>
       <p class="muted">画面更新と通知の動作を設定します。</p>
     </header>
-    <p class="field-help">プロジェクトの一覧は実行エンジンから自動で受け取ります（この画面での登録は不要です）。</p>
+    <p class="field-help">プロジェクト一覧は実行エンジンから自動で受け取ります。</p>
     <div class="row2">
       <div class="field"><label for="cfg-refresh">表示の更新間隔（秒）</label><input id="cfg-refresh" type="number" min="0" step="1" /></div>
       <div class="field"><label for="cfg-needs-sla">長時間未対応として知らせるまで（時間）</label><input id="cfg-needs-sla" type="number" min="1" step="1" /></div>
@@ -982,7 +983,7 @@ function globalSettingsAppHtml() {
     <div class="field">
       <label for="cfg-role">この PC の役割</label>
       <select id="cfg-role">
-        <option value="engineer">実行も行う（すべての機能）</option>
+        <option value="engineer">実行も行う</option>
         <option value="viewer">閲覧・レビュー専用</option>
       </select>
       <p class="field-help">閲覧専用では、監視・コメント・承認だけを行います。実行用の環境設定は不要です。</p>
@@ -1002,7 +1003,7 @@ function globalSettingsAssistantHtml() {
     <header class="row"><div>
       <span class="summary-kicker">画面内AI</span>
       <h3>AIアシスタント</h3>
-      <p class="muted">まず「使用するエージェント」を選んでください。モデルと待ち時間は、必要な場合だけ変更します。</p>
+      <p class="muted">使用するエージェントを選び、必要ならモデルと待ち時間を変更します。</p>
     </div></header>
     <div class="row2">
       <div class="field">
@@ -1026,17 +1027,17 @@ function globalSettingsSyncHtml() {
     <header class="global-settings-card-heading">
       <span class="summary-kicker">同期と実行</span>
       <h2>変更の共有と実行場所</h2>
-      <p class="muted">複数の環境で状態を共有する場合の動作を設定します。</p>
+      <p class="muted">実行場所と端末間の共有先を設定します。</p>
     </header>
     <h3>実行エンジンの場所</h3>
-    <p class="field-help">プロジェクトの一覧・稼働状況・共有の進み具合は、ここから受け取ります。変更の取り込みと送信は実行エンジンが自動で行うため、この画面から共有先へ書き込むことはありません。</p>
+    <p class="field-help">プロジェクト一覧と稼働状況を受け取る場所です。</p>
     <div class="row2">
       <div class="field"><label for="cfg-engine-distro">Linux 環境（WSL）の名前</label><input id="cfg-engine-distro" class="mono" placeholder="空欄なら既定の環境" /></div>
       <div class="field"><label for="cfg-engine-home">状況の保存先</label><input id="cfg-engine-home" class="mono" placeholder="空欄なら自動で探します" /></div>
     </div>
     <div class="field"><label for="cfg-node-commands-dir">この端末への指示の受け渡し先</label>
       <input id="cfg-node-commands-dir" class="mono" placeholder="空欄なら実行エンジンと同じ場所" /></div>
-    <p class="field-help">画面のボタン（引き受ける・取りやめる・引き渡し先を決める）は、この場所へ依頼を置いて実行エンジンに取り込んでもらいます。</p>
+    <p class="field-help">画面からの操作依頼を実行エンジンへ渡す場所です。</p>
     <h3>実行データの共有先</h3>
     <div class="field"><label for="cfg-flow-bus">共通の共有先</label><input id="cfg-flow-bus" class="mono" placeholder="空欄なら自動で探します" /></div>
     <div class="field"><label for="cfg-flow-bus-by-project">プロジェクトごとの共有先（1行に1つ）</label>
@@ -1053,8 +1054,7 @@ function boardParticipationHtml() {
   const board = state.boardStatus;
   if (!board || !board.configured) {
     return `<h3>ほかの端末との仕事のやり取り</h3>
-      <p class="field-help">この端末は仕事のやり取り（委譲公示板）に参加していません。
-      参加するには、実行エンジンの設定でやり取り先を宣言してください。</p>`;
+      <p class="field-help">この端末は参加していません。参加先は実行エンジンで設定します。</p>`;
   }
   const nodes = state.boardNodes || [];
   const rows = nodes.length
@@ -1074,10 +1074,9 @@ function boardParticipationHtml() {
   const err = board.lastError
     ? `<p class="need-error">やり取り先に接続できていません: ${esc(board.lastError)}</p>` : '';
   return `<h3>ほかの端末との仕事のやり取り</h3>
-    <p class="field-help">この端末の名前は <span class="mono">${esc(board.selfName || '')}</span>、
-    やり取り先は <span class="mono">${esc(board.location || '')}</span> です。${esc(intake)}。
-    募集中の依頼は ${board.openDelegations} 件、この端末が引き受けを申し出ているのは
-    ${(board.myBids || []).length} 件です。</p>
+    <p class="field-help">端末名: <span class="mono">${esc(board.selfName || '')}</span> ／
+    参加先: <span class="mono">${esc(board.location || '')}</span> ／ 募集中 ${board.openDelegations} 件 ／
+    申込中 ${(board.myBids || []).length} 件。${esc(intake)}。</p>
     ${err}
     <div class="table-scroll"><table class="board-nodes">
       <thead><tr><th>端末</th><th>状態</th><th>引き受けられるもの</th>
@@ -1116,9 +1115,7 @@ function globalSettingsCoworkRootsHtml() {
   ].join('');
   return `<div class="field">
     <label>定常業務のフォルダ</label>
-    <p class="field-help">定常業務を探すフォルダの一覧です。実行エンジンが担当していないフォルダ
-      （agent-loop の設定や .statemachine/ を持つだけのフォルダ）はここで登録します。実行エンジンが
-      担当しているプロジェクトは登録不要で、自動でこの一覧に並びます。</p>
+    <p class="field-help">プロジェクト以外で定常業務を探すフォルダを登録します。</p>
     ${rows ? `<ul class="settings-root-list">${rows}</ul>`
       : '<p class="muted">対象のフォルダはありません。</p>'}
     <div class="row"><button type="button" id="btn-settings-cowork-add-root">フォルダを登録</button></div>
@@ -1216,7 +1213,7 @@ function orchMethodsPanelHtml(overview) {
   const custom = (tuning.methods || []).filter((method) => !ids.has(String(method.id))).map(row).join('');
   return `<section class="orch-panel">
     <header class="row"><div><span class="summary-kicker">実行手法</span><h3>手法カタログ</h3>
-      <p class="muted">ON にした時点の内容を revision ${Number(tuning.revision || 0)} の設定へコピーします。カタログ更新は自動反映されません。</p></div></header>
+      <p class="muted">ON にした手法を現在の設定へ保存します。</p></div></header>
     <div class="table-scroll"><table class="amigos-table orch-table">
       <thead><tr><th>手法</th><th>適用条件</th><th>反映元</th><th>状態</th></tr></thead><tbody>${rows}${custom}</tbody>
     </table></div>
@@ -1226,7 +1223,7 @@ function orchMethodsPanelHtml(overview) {
         <label>role<select id="orch-method-role"><option>session</option><option>planner</option><option>worker</option><option>verify</option><option>evaluator</option></select></label>
       </div>
       <label>指示<textarea id="orch-method-text" rows="3"></textarea></label>
-      <label>適用条件（JSON object）<input id="orch-method-when" class="mono" placeholder='{"tiers":["full"]}' /></label>
+      <label>適用条件（JSON object）<input id="orch-method-when" class="mono" placeholder='{"tiers":["small"]}' /></label>
       <div class="settings-save-actions"><button type="button" id="btn-orch-method-add" class="primary-inline">追加して ON にする</button></div>
     </details>
   </section>`;
@@ -1548,16 +1545,20 @@ function setupOrchestration(root) {
 
   const profileSave = root.querySelector('#btn-orch-profile-save');
   if (profileSave) profileSave.addEventListener('click', () => guard('自動切り替えの保存', async () => {
-    const rows = [...root.querySelectorAll('.orch-profile-tier')];
+    const rows = [...root.querySelectorAll('.orch-profile-tier')].filter((row) => {
+      const label = row.querySelector('.orch-tier-label').value.trim();
+      return label || orchParseProfileCandidates(row.querySelector('.orch-tier-candidates').value).length;
+    });                                                          // 空行は保存しない
     const tiers = {};
     const steps = [];
-    const used = new Set();
+    const keyByOldKey = new Map();
     rows.forEach((row, i) => {
       const label = row.querySelector('.orch-tier-label').value.trim();
       const candidates = orchParseProfileCandidates(row.querySelector('.orch-tier-candidates').value);
-      if (!label && !candidates.length) return;                  // 空行は保存しない
-      const key = row.dataset.orchTierKey || orchProfileTierKey(label, i, used);
-      used.add(key);
+      // キーは並び順から決める（下から small / medium / large）。行を足す・入れ替えると
+      // キーも付け替わるが、段の意味は位置そのものなのでそれが正しい。
+      const key = orchProfileTierKey(rows.length - 1 - i);
+      if (row.dataset.orchTierKey) keyByOldKey.set(row.dataset.orchTierKey, key);
       tiers[key] = { order: rows.length - i, label, candidates };  // 上の行ほど上位
       const pct = row.querySelector('.orch-tier-ratio').value.trim();
       if (pct !== '') {
@@ -1567,7 +1568,9 @@ function setupOrchestration(root) {
     });
     const applyTo = [...root.querySelectorAll('.orch-profile-apply-to-cb')]
       .filter((cb) => cb.checked).map((cb) => cb.value);
-    const noCap = (root.querySelector('#orch-profile-no-cap-tier') || {}).value || '';
+    // 選択済みの段は付け替え後のキーへ読み替える（キーが動いても選択を失わない）。
+    const noCapRaw = (root.querySelector('#orch-profile-no-cap-tier') || {}).value || '';
+    const noCap = keyByOldKey.get(noCapRaw) || noCapRaw;
     const hysteresisPct = Number((root.querySelector('#orch-profile-hysteresis') || {}).value);
     const minHoldMin = Number((root.querySelector('#orch-profile-min-hold') || {}).value);
     state.orchSaving = true;
@@ -2001,6 +2004,7 @@ function coworkSelectedDetailHtml(entry, observed, busyId) {
   const status = running ? 'running' : (st.status || 'unknown');
   const run = state.coworkRun && String(state.coworkRun.id) === id ? state.coworkRun : null;
   const typeDetail = workTypeLabel(item.type);
+  const prompt = String(item.prompt || item.instruction || '').trim();
   const lastResult = running
     ? '実行中です'
     : run && run.phase === 'error'
@@ -2019,6 +2023,10 @@ function coworkSelectedDetailHtml(entry, observed, busyId) {
       <button class="cowork-primary-run" data-cowork-run="${esc(id)}" data-cowork-type="${esc(item.type || 'loop')}" data-cowork-name="${esc(item.name || id)}"
         ${busyId || disabledWork || parameterError ? 'disabled' : ''}${parameterError ? ` title="${esc(parameterError)}"` : ''}>${busyId === id ? '実行中…' : '今すぐ実行'}</button>
     </div>
+    <section class="cowork-prompt-preview">
+      <h3>プロンプト</h3>
+      <pre>${esc(prompt || '未設定')}</pre>
+    </section>
     <div class="cowork-status-grid">
       <div><span>現在</span><strong>${esc(statusLabel(status))}</strong></div>
       <div><span>最終結果</span><strong title="${esc(lastResult)}">${esc(lastResult)}</strong></div>

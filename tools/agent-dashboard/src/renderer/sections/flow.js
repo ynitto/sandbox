@@ -351,41 +351,20 @@ function renderFlow() {
     .map((g) => {
       const r = g.latest;
       const pct = Math.round(r.progress * 100);
-      // 「応答なし」だけでは放置してよいのか押すべきなのか分からない。
-      // 一覧では advice（次に起きること）を状態チップの代わりに言い切る。
-      // 見守り系（実行中/完了/記録）は statusChip が既に言っているので重ねない。
+      // 一覧は状態・題名・進捗だけを基本にし、人の対応が必要なときだけ理由を 1 行足す。
+      // 工程数・タスク状態・試行履歴は選択後の詳細で確認できるため重ねない。
       const advice = runAdvice(r, g);
-      const adviceBit = ['watch', 'none'].includes(advice.kind) ? '' : ` ${adviceChip(advice)}`;
       const adviceLine = ['human', 'manual', 'restart'].includes(advice.kind)
         ? `<div class="advice-line advice-${advice.cls}">${esc(advice.text)}</div>`
         : '';
-      const taskLink = r.taskId
-        ? ` <button class="badge task-link" data-goto-task="${esc(r.taskId)}" title="元のタスクを開く">タスク ${esc(r.taskId)}</button>`
-        : '';
-      const retryStrip =
-        g.attempts.length > 1
-          ? `<div class="run-retries" title="この作業のやり直し履歴">試行 ${g.attempts.length}: ${g.attempts
-              .slice()
-              .reverse()
-              .map((a) => runPill(a, a.runId === state.flowRunId))
-              .join('')}</div>`
-          : r.inheritedFrom
-            ? `<div class="muted" title="引き継ぎ元の実行">↩ 引き継ぎ元 <span class="mono">${esc(r.inheritedFrom)}</span></div>`
-            : '';
-      const archivedBadge = r.archived
-        ? ' <span class="badge" title="完了後に保存された記録です">記録</span>'
-        : '';
       const outcome = runTaskOutcome(p, r);
-      const finalVerificationFailure = runFinalVerificationFailure(p, r);
       return `<div class="run-item ${state.flowRunId === r.runId ? 'selected' : ''}" data-run="${esc(r.runId)}"
         role="button" tabindex="0" aria-pressed="${state.flowRunId === r.runId}">
-        <div class="run-item-head"><span>${runTaskOutcomeCompactHtml(outcome)}${archivedBadge}${adviceBit}</span><span class="muted">${fmtAgo(r.updatedAt || r.createdAt)}</span></div>
+        <div class="run-item-head"><span>${runTaskOutcomeCompactHtml(outcome)}</span><span class="muted">${fmtAgo(r.updatedAt || r.createdAt)}</span></div>
         <div class="req">${prosePreview(r.request, 110) || '<span class="muted">内容なし</span>'}</div>
         <div class="progress"><div style="width:${pct}%"></div></div>
-        <div class="muted">${TERMINAL_RUN_STATES.has(String(r.status)) ? '' : `${runPhaseLabel(r.phase)}・`}作業ステップ ${r.counts.done + r.counts.failed}/${r.total}・失敗 ${r.counts.failed}・実行中 ${r.counts.claimed}${taskLink}</div>
-        ${finalVerificationFailureHtml(finalVerificationFailure, true)}
+        <div class="muted">進捗 ${pct}%</div>
         ${adviceLine}
-        ${retryStrip}
       </div>`;
     })
     .join('');

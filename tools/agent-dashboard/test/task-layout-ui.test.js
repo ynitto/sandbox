@@ -86,6 +86,7 @@ const taskListItemHtml = new Function(
 {
   assert.match(css, /\.task-list-item\s*\{[^}]*grid-template-columns:\s*112px\s+minmax\(180px,\s*1\.25fr\)\s+88px\s+minmax\(220px,\s*1fr\)\s+24px/s);
   assert.match(css, /\.task-list-title\s*\{[^}]*-webkit-line-clamp:\s*2/s);
+  assert.match(css, /\.task-list-next\s*\{[^}]*overflow-wrap:\s*anywhere[^}]*white-space:\s*normal/s);
   assert.match(css, /@media \(max-width:\s*768px\)[\s\S]*\.task-list-item\s*\{[^}]*grid-template-columns:\s*1fr\s+auto/s);
   assert.match(css, /@media \(max-width:\s*768px\)[\s\S]*\.task-list-header\s*\{[^}]*display:\s*none/s);
 }

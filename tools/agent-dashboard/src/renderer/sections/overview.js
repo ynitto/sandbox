@@ -69,8 +69,7 @@ function nodesSummaryHtml(nodes) {
   return `<section class="summary-card nodes-card" aria-label="実行する PC の一覧">
     <h2 class="summary-kicker">実行する PC</h2>
     <ul class="nodes-list">${rows}</ul>
-    <p class="muted">この PC は実行エンジンの心拍で判定します。ほかの PC は作業が進んだときの記録で見るため、
-      待機が続くと更新も止まります。長く止まっている PC のタスクは、担当を付け替えるか要対応から再実行できます。</p>
+    <p class="muted">この PC は稼働状況、ほかの PC は最終更新を表示します。</p>
   </section>`;
 }
 

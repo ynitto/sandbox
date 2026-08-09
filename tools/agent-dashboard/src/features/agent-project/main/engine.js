@@ -189,14 +189,13 @@ function summarize(status) {
   if (!status || !status.exists) {
     return {
       level: 'error',
-      summary: '実行エンジンが動いていません（起動コマンド: agent-project serve）',
+      summary: '実行エンジンが動いていません。',
     };
   }
   if (!status.running) {
-    const ago = status.ageSec === null ? '' : `（最終確認 ${status.ageSec} 秒前）`;
     return {
       level: 'error',
-      summary: `実行エンジンの応答が止まっています${ago}。起動コマンド: agent-project serve`,
+      summary: '実行エンジンの応答が止まっています。',
     };
   }
   if (status.contractVersion !== EXPECTED_CONTRACT_VERSION) {

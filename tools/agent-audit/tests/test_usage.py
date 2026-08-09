@@ -57,6 +57,67 @@ class UsageTests(AuditTestCase):
         rows = usage.aggregate_usage(self.make_args(), st, "month", "workload")
         self.assertEqual(rows[0]["unmeasured_runs"], 1)
 
+    def test_ambiguous_native_sessions_are_not_counted_again_as_estimate(self):
+        st = self._seed(rates={"per_cli": {"claude:sonnet": 100.0}})
+        led = next(r for r in st.iter_records() if r["kind"] == "ledger")
+        for i, offset in enumerate((-90, -80), 1):
+            st.append_record({"id": f"aud-s{i}", "ts": _iso_now(offset),
+                              "started_at": _iso_now(offset - 60), "kind": "session",
+                              "agent_cli": "claude", "model": "claude-sonnet-4",
+                              "tokens_in": 1000, "tokens_out": 100, "measured": True})
+        rows = usage.aggregate_usage(self.make_args(), st, "month", "workload")
+        flow = next(r for r in rows if r["group"] == "flow")
+        self.assertEqual(flow["estimated_tokens"], 0)
+        self.assertEqual(flow["unmeasured_runs"], 1)
+        self.assertEqual(sum(r["measured_in"] + r["measured_out"] for r in rows), 2200)
+
+    def test_non_llm_agent_audit_row_is_never_estimated(self):
+        st = self.make_store()
+        ts = _iso_now(-60)
+        st.append_record({"id": "audit-collect", "ts": ts, "kind": "ledger",
+                          "workload": "audit", "tool": "agent-audit", "ref": "collect",
+                          "agent_cli": "claude", "seconds": 60})
+        os.makedirs(self.budget_dir, exist_ok=True)
+        with open(os.path.join(self.budget_dir, "config.json"), "w", encoding="utf-8") as f:
+            json.dump({"rates": {"per_cli": {"claude": 100.0}}}, f)
+        row = usage.aggregate_usage(self.make_args(), st, "month", "tool")[0]
+        self.assertEqual(row["estimated_tokens"], 0)
+        self.assertEqual(row["unmeasured_runs"], 1)
+
+    def test_agent_audit_llm_uses_stage_samples_not_generic_cli_rate(self):
+        st = self.make_store()
+        for i, offset in enumerate((-3600, -3000, -2400, -1800), 1):
+            ended = _iso_now(offset)
+            st.append_record({"id": f"audit-l{i}", "ts": ended, "kind": "ledger",
+                              "workload": "audit", "tool": "agent-audit", "ref": "extract",
+                              "usage_kind": "llm", "agent_cli": "claude", "seconds": 10})
+            if i <= 3:
+                st.append_record({"id": f"audit-s{i}", "ts": ended,
+                                  "started_at": _iso_now(offset - 10), "kind": "session",
+                                  "agent_cli": "claude", "model": "opus",
+                                  "session_id": f"native-{i}", "tokens_in": 100,
+                                  "tokens_out": 10, "measured": True})
+        os.makedirs(self.budget_dir, exist_ok=True)
+        with open(os.path.join(self.budget_dir, "config.json"), "w", encoding="utf-8") as f:
+            json.dump({"rates": {"per_cli": {"claude": 1000.0}}}, f)
+        row = usage.aggregate_usage(self.make_args(), st, "month", "tool")[0]
+        self.assertEqual((row["measured_in"], row["measured_out"]), (300, 30))
+        self.assertEqual(row["estimated_tokens"], 110)
+        self.assertEqual(row["unmeasured_runs"], 1)
+
+    def test_session_usage_revision_replaces_old_session_measurement(self):
+        st = self.make_store()
+        ts = _iso_now(-60)
+        common = {"ts": ts, "started_at": _iso_now(-120), "agent_cli": "claude",
+                  "model": "opus", "session_id": "native-1", "measured": True}
+        st.append_record({"id": "old", "kind": "session", "tokens_in": 200,
+                          "tokens_out": 20, **common})
+        st.append_record({"id": "fixed", "kind": "session-usage", "parser_revision": 2,
+                          "tokens_in": 100, "tokens_out": 10, **common})
+        _ledger, sessions, _runs = usage.load_period_records(st, "month")
+        self.assertEqual(len(sessions), 1)
+        self.assertEqual((sessions[0]["tokens_in"], sessions[0]["tokens_out"]), (100, 10))
+
     def test_calibrate_median_and_write(self):
         st = self._seed(with_session=True, rates={"per_cli": {"claude": 10.0}})
         args = self.make_args()

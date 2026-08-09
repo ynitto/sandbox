@@ -142,7 +142,10 @@ function writeStatus(home, status) {
     const status = engine.readStatus(cfg);
     assert.strictEqual(status.exists, true);
     assert.strictEqual(status.running, false);
-    assert.strictEqual(engine.summarize(status).level, 'error');
+    const summary = engine.summarize(status);
+    assert.strictEqual(summary.level, 'error');
+    assert.strictEqual(summary.summary, '実行エンジンの応答が止まっています。');
+    assert.doesNotMatch(summary.summary, /秒前|起動コマンド/, '時間と対処を画面側で重ねない');
   });
 
   await test('discover は実行側の POSIX パスを win32 で UNC へ寄せる（幽霊 C:\\home\\... にしない）', async () => {

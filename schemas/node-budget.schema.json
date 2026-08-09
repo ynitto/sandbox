@@ -122,6 +122,7 @@
           "description": "routine（定常業務: agent-loop）| project（agent-project）| flow（agent-flow）| amigos（agent-amigos）。旧 kiro-loop の台帳行も workload=routine のまま読める。追加は additive"
         },
         "tool": {"type": "string", "description": "記帳したツール名"},
+        "usage_kind": {"enum": ["llm"], "description": "この行が agent CLI / LLM 呼び出しの消費であることを示す。非LLM処理はトークン台帳へ書かない"},
         "seconds": {"type": "number", "minimum": 0, "description": "agent CLI の実実行秒"},
         "ref": {"type": "string", "description": "帰属（例 amigos: <mission-id>/<role>、project: <project>/<task-id>）"},
         "purpose": {"type": "string", "description": "仕事種別（例 planner / work / verify）。旧行は ref を代用"},

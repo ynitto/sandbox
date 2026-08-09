@@ -132,6 +132,7 @@ test('利用量テーブルは実測と推定を別の列で示し合算しな�
   assert.match(html, /34k/);
   assert.match(html, /1\.5時間/);
   assert.match(html, /\$0\.05/);
+  assert.match(html, /LLM呼び出し/);
 });
 
 test('利用量テーブルは記録が無いとき収集への導線を示す', () => {
@@ -152,7 +153,7 @@ test('利用状況は実装説明を出さず、必要な説明を一度だけ�
     path.join(__dirname, '..', 'src', 'renderer', 'features', 'agent-audit.js'), 'utf8');
   assert.doesNotMatch(src, /この端末の実行記録（台帳）と、エージェント CLI のセッションログ/);
   assert.doesNotMatch(src, /summary-kicker">実行証跡から集計/);
-  assert.equal((src.match(/実測は CLI の記録、推定は実行時間から計算した値です。/g) || []).length, 1);
+  assert.equal((src.match(/実測は CLI の記録です。推定は同じ処理の実測値か実行時間を使います。/g) || []).length, 1);
 });
 
 test('summary は機能別とエージェント別を 1 回で取り、合計を畳む', async () => {

@@ -147,8 +147,13 @@ environment_handoff:
 agent-loop methods list [--json]
 agent-loop methods enable test-first
 agent-loop methods disable test-first
-agent-loop methods add my-check --role session --text "完了前に証拠を確認する" --when-json '{"tiers":["full"]}'
+agent-loop methods add my-check --role session --text "完了前に証拠を確認する" --when-json '{"tiers":["small"]}'
 ```
+
+`when.tiers` に書く段の名前は、dashboard の「エージェントの自動切り替え」が並び順から振る
+`small`（いちばん下＝いちばん弱い段）/ `medium` / `large`（4 段目以降は `tier-4`…）です。
+段が 1 つも宣言されていないノードでは段が決まらないので、`tiers` 条件の手法は当たりません
+（そのノードでも効かせたいなら `max_relative_cost: 0`（ローカル）や `agent_cli` で絞ります）。
 
 `enable` はカタログを tuning.json へ複製して source hash を固定します。カタログの更新を
 稼働へ反映するには、明示的にもう一度 `enable` します。

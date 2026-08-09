@@ -84,7 +84,7 @@ function coworkHistoryBodyHtml(m) {
               <pre id="cowork-log-view" class="mono full-output" tabindex="0">${esc(m.text || '')}</pre>
             </div>
           </div>`
-        : '<p class="muted">ログファイルが見つかりません（.agent-loop/logs・.statemachine-use/logs 等）。</p>'}
+        : '<p class="muted">ログファイルが見つかりません。</p>'}
     </section>`;
 }
 

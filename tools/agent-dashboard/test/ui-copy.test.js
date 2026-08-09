@@ -9,6 +9,7 @@ const html = fs.readFileSync(path.join(rendererRoot, 'index.html'), 'utf8');
 const orchestration = fs.readFileSync(path.join(rendererRoot, 'sections', 'orchestration.js'), 'utf8');
 const overview = fs.readFileSync(path.join(rendererRoot, 'sections', 'overview.js'), 'utf8');
 const flow = fs.readFileSync(path.join(rendererRoot, 'sections', 'flow.js'), 'utf8');
+const cowork = fs.readFileSync(path.join(rendererRoot, 'sections', 'cowork.js'), 'utf8');
 const nodeDetail = fs.readFileSync(path.join(rendererRoot, 'sections', 'node-detail.js'), 'utf8');
 const backlog = fs.readFileSync(path.join(rendererRoot, 'sections', 'backlog.js'), 'utf8');
 
@@ -48,6 +49,20 @@ for (const leaked of ['（S3）', '（既定非表示）', '（憲章には直�
 assert.ok(!html.includes('AI 補完'));
 assert.ok(!flow.includes('エージェント CLI の実行環境'));
 assert.ok(flow.includes('承認を待っています。要対応タブで確認してください。'));
+const flowList = flow.slice(flow.indexOf('const runList = shownGroups'), flow.indexOf('// run 一覧と RUN 表示ペイン'));
+assert.ok(flowList.includes('進捗 ${pct}%'), '実行カードには進捗率を表示します');
+for (const extra of ['作業ステップ', 'finalVerificationFailureHtml', 'run-retries', 'data-goto-task']) {
+  assert.ok(!flowList.includes(extra), `実行カードの詳細情報を一覧へ重ねません: ${extra}`);
+}
+assert.ok(cowork.includes('ログファイルが見つかりません。</p>'));
+assert.ok(!cowork.includes('ログファイルが見つかりません（'));
+
+for (const copy of [
+  'プロジェクト以外で定常業務を探すフォルダを登録します。',
+  '全エージェントに共通する指示・スキル・ツールを設定し、個別の指示を優先します。',
+  'この端末で同時に進める仕事と担当の数を設定します。',
+  '実行場所と端末間の共有先を設定します。',
+]) assert.ok(orchestration.includes(copy), `設定説明を短文化します: ${copy}`);
 
 // 工程途中のチェックと、成果全体の受け入れを同じ表示名にしない。
 assert.ok(nodeDetail.includes("verify: '工程内チェック'"));
@@ -71,6 +86,8 @@ for (const id of ['rv-feedback', 'rv-title', 'rv-acceptance', 'rv-priority', 'rv
   'rv-track', 'rv-node', 'rv-note', 'rv-verify']) {
   assert.ok(reviseMarkup.includes(`for="${id}"`), `${id} に関連付けたラベルが必要です`);
 }
+assert.match(reviseMarkup, /<textarea id="rv-desc" rows="3">/, '作業内容の詳細は折り返せる複数行入力にします');
+assert.ok(!reviseMarkup.includes('<input id="rv-desc"'), '作業内容の詳細を一行入力へ戻しません');
 assert.ok(backlog.includes('<summary>詳細情報</summary>'));
 assert.ok(backlog.includes('function requestTaskDialogClose('));
 assert.ok(backlog.includes('taskDialogInputSnapshot('));

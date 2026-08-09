@@ -16,7 +16,10 @@
           "items": {"enum": ["planner", "worker", "verify", "evaluator", "session"]}
         },
         "purposes": {"type": "array", "items": {"type": "string"}},
-        "tiers": {"type": "array", "items": {"type": "string"}},
+        "tiers": {
+          "type": "array", "items": {"type": "string"},
+          "description": "実行プロファイルの段。値は agent-control の workloads[].tier と突き合わせる（語彙の正典は agent-profiles.schema.json の tiers = 下から small / medium / large）。段が宣言されていないノードでは決まらないので、そこでも効かせたい手法は tiers ではなく max_relative_cost / agent_cli で絞る"
+        },
         "min_relative_cost": {"type": "number", "minimum": 0},
         "max_relative_cost": {"type": "number", "minimum": 0}
       },

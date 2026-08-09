@@ -44,10 +44,11 @@ agent-flow で共有する（設計: docs/plans/2026-08-05-phase1-token-efficien
 足して解決する（`tools/<engine>/<package>/__init__.py` から見て `../../agent-tools/agentcore`）。
 zipapp では同梱物が先に解決されるので、その追加パスは存在しなくても無害に素通りする。
 
-テストは `agentcore/tests/`:
+テストルートは **2 つある**（`agentcore/tests/` と パッケージ内の `agentcore/agentcore/tests/`）。
+片方だけ discover すると残りが黙ってスキップされるので、両方を回す（CI も両方を明示している）:
 
 ```bash
-cd tools/agent-tools/agentcore && python3 -m unittest discover -s tests
+cd tools/agent-tools/agentcore && python3 -m unittest discover -s tests && python3 -m unittest discover -s agentcore/tests
 ```
 
 ## agent-ollama — クラウド CLI が使えないときのバックアップ実行系

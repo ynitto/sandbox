@@ -111,6 +111,13 @@ function mergeWorkloadControl(base, patch) {
     out.model = patch.model === null || patch.model === '' ? null : String(patch.model);
   }
   mergeTimeout(out, patch);
+  // 段（agent-profiles の決定結果）。エンジンは agent-profiles を読まない契約なので、
+  // 段の名前もここを通して運ぶ——手法パックの `when.tiers` が見る値はこの 1 か所。
+  // null / 空は削除＝「段の宣言なし」へ戻す。
+  if (patch.tier !== undefined) {
+    if (patch.tier === null || patch.tier === '') delete out.tier;
+    else out.tier = String(patch.tier);
+  }
   if (patch.agents !== undefined) {
     if (!isPlainObject(patch.agents)) throw new Error('agents はオブジェクトで指定してください');
     const agents = isPlainObject(out.agents) ? { ...out.agents } : {};

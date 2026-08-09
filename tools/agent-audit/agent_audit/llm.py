@@ -119,6 +119,7 @@ def record_ledger(args, seconds: float, *, ref: str, agent_cli: str, model: str,
     path = os.path.join(bdir, "ledger", f"{day}.jsonl")
     os.makedirs(os.path.dirname(path), exist_ok=True)
     row = {"ts": now_iso(), "workload": WORKLOAD, "tool": "agent-audit",
+           "usage_kind": "llm",
            "seconds": round(seconds, 3), "ref": ref, "agent_cli": agent_cli}
     if model:
         row["model"] = model

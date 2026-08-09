@@ -23,6 +23,31 @@ class JsonlDirReaderTests(AuditTestCase):
         self.assertEqual(s["turns"], 2)
         self.assertEqual(s["messages"][0], ("User", "直して"))
 
+    def test_same_message_usage_is_counted_once(self):
+        """Claude は thinking/text を同じ message.id で分け、usage を各行へ再掲する。"""
+        root = os.path.join(self.tmp, "projects-usage")
+        path = os.path.join(root, "p", "sess-usage.jsonl")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        usage = {"input_tokens": 2, "cache_creation_input_tokens": 30,
+                 "cache_read_input_tokens": 10, "output_tokens": 5}
+        lines = [
+            {"type": "assistant", "timestamp": "2026-08-09T05:34:46Z",
+             "sessionId": "sess-usage",
+             "message": {"id": "msg-1", "role": "assistant",
+                         "content": [{"type": "thinking", "thinking": ""}],
+                         "usage": usage}},
+            {"type": "assistant", "timestamp": "2026-08-09T05:34:47Z",
+             "sessionId": "sess-usage",
+             "message": {"id": "msg-1", "role": "assistant",
+                         "content": [{"type": "text", "text": "完了"}],
+                         "usage": usage}},
+        ]
+        with open(path, "w", encoding="utf-8") as f:
+            for line in lines:
+                f.write(json.dumps(line, ensure_ascii=False) + "\n")
+        session = readers.read_sessions({"format": "jsonl-dir", "paths": [root]})[0]
+        self.assertEqual((session["tokens_in"], session["tokens_out"]), (42, 5))
+
     def test_codex_style_total_usage_wins(self):
         root = os.path.join(self.tmp, "sessions")
         path = os.path.join(root, "2026", "08", "03", "rollout-x.jsonl")
