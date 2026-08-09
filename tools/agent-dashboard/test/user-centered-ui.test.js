@@ -189,7 +189,7 @@ const amigosVisibilitySource = renderer.slice(
 assert.ok(!amigosVisibilitySource.includes('budget.hasData'), '予算データだけでミッションタブを表示しません');
 assert.ok(!renderer.includes('function renderAdvancedBudgetSettings('), '詳細設定用の旧予算管理処理を残しません');
 assert.ok(!renderer.includes('id="btn-amigos-budget-save"'), '旧予算管理の保存操作を残しません');
-for (const label of ['利用状況', 'エージェント', '共通指示', '実行制御']) {
+for (const label of ['利用状況', 'エージェント', '共通指示', '段と実行手法', '実行制御']) {
   assert.ok(renderer.includes(`label: '${label}'`), `全体設定に「${label}」タブが必要です`);
 }
 // 利用状況の受け側は全体設定ではなく利用状況領域（sections/usage.js）。
@@ -203,6 +203,10 @@ const agentSettingsSource = renderer.slice(
 );
 const instructionSettingsSource = renderer.slice(
   renderer.indexOf('function globalSettingsInstructionsHtml('),
+  renderer.indexOf('\nfunction orchMethodRoles(')
+);
+const methodSettingsSource = renderer.slice(
+  renderer.indexOf('function globalSettingsMethodsHtml('),
   renderer.indexOf('\nfunction globalSettingsControlHtml(')
 );
 const controlSettingsSource = renderer.slice(
@@ -223,10 +227,20 @@ assert.ok(agentSettingsSource.includes('orchMatrixPanelHtml(') && agentSettingsS
   'エージェントタブに担当設定と一覧を表示します');
 assert.ok(instructionSettingsSource.includes('orchInstructionsPanelHtml(')
   && instructionSettingsSource.includes('orchSessionCommandsPanelHtml('), '共通指示タブに指示と開始コマンドを表示します');
+assert.ok(methodSettingsSource.includes('orchTiersPanelHtml(') && methodSettingsSource.includes('orchMethodsPanelHtml('),
+  '段と実行手法タブに段設定と手法マーケットを表示します');
+assert.ok(renderer.includes('if (!label && candidates.length === 0) return;'), '空の段は保存しません');
 assert.ok(controlSettingsSource.includes('orchAllocationPanelHtml(') && controlSettingsSource.includes('orchStatusPanelHtml('),
   '実行制御タブに上限と稼働制御を表示します');
 assert.ok(controlSettingsSource.includes('orchConcurrencyPanelHtml('),
   '実行制御タブで自動実行の同時実行数を設定します');
+assert.ok(controlSettingsSource.includes('orchProfilePolicyPanelHtml('),
+  '実行制御タブに段の自動切り替え条件を表示します');
+assert.ok(!controlSettingsSource.includes('orchTiersPanelHtml(') && !controlSettingsSource.includes('orchMethodsPanelHtml('),
+  '実行制御タブには段の候補設定と手法マーケットを重ねません');
+for (const copy of ['手法を検索', 'カスタム手法を追加', 'AIで補完']) {
+  assert.ok(renderer.includes(copy), `実行手法マーケットに「${copy}」が必要です`);
+}
 assert.ok(renderer.includes('推定できない記録'), '推定不能を0トークンと区別します');
 assert.ok(renderer.includes('実測トークンが記録されず、推定レートもない実行'),
   '推定不可の理由を利用状況の近くで説明します');

@@ -67,7 +67,10 @@ const state = {
   coworkHistory: null,   // 履歴ダイアログのモデル { id, name, logs, history, file, text }
   timer: null,
   busy: false,
-  globalSettingsSection: 'app', // app / agents / sync / routine / integrations
+  globalSettingsSection: 'app', // app / agents / instructions / methods / control / sync / integrations
+  orchMethodSearch: '',
+  orchMethodRole: '',
+  orchMethodState: '',
   globalSettingsDirty: false,
   orchInstructionsDirty: false, // 共通指示・推奨スキルの未保存入力（ポーリング再描画から保護）
   orchSessionDirty: false,      // セッション開始コマンドの未保存入力（同上）

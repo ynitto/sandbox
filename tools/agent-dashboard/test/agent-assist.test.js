@@ -40,6 +40,19 @@ test('buildCommand: kiro は kiro-cli chat にプロンプトを argv 渡し（�
   assert.strictEqual(c.stdin, null);
 });
 
+test('実行手法のAI補完は許可フィールドだけを正規化する', () => {
+  assert.deepStrictEqual(agent.normalizeMethodDraft({
+    id: ' Failure First! ', description: '失敗条件から考える', role: 'worker', text: '先に失敗条件を列挙する。',
+    when: { tiers: ['small', 'small'], purposes: ['work'], unknown: ['x'] }, extra: 'drop',
+  }), {
+    id: 'failure-first', description: '失敗条件から考える', role: 'worker', text: '先に失敗条件を列挙する。',
+    when: { tiers: ['small'], purposes: ['work'] },
+  });
+  assert.match(agent.methodDraftPrompt('失敗から考える', {}), /JSONオブジェクトのみ/);
+  assert.match(ipcSource, /agent:methodDraft/);
+  assert.match(preloadSource, /agentMethodDraft/);
+});
+
 test('buildCommand: claude はヘッドレス + stdin 渡し、モデルは --model', () => {
   const c = agent.buildCommand('claude', 'sonnet', 'PROMPT');
   assert.strictEqual(c.command, 'claude');

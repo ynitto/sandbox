@@ -29,6 +29,24 @@ function runPhaseLabel(phase) {
   })[phase] || '実行中';
 }
 
+// run 全体は未完了なら一律 running になるため、一覧では実際のノード状態を優先する。
+function flowRunCardStatus(run, outcome) {
+  if (TERMINAL_RUN_STATES.has(String(run.status || ''))) {
+    return { label: outcome.runLabel, status: outcome.runStatus };
+  }
+  const counts = run.counts || {};
+  if (Number(counts.parked) > 0) return { label: '承認待ち', status: 'review' };
+  if (Number(counts.claimed) > 0) return { label: '実行中', status: 'running' };
+  if (Number(counts.pending) > 0) return { label: '実行待ち', status: 'ready' };
+  if (Number(counts.waiting) > 0) return { label: '依存待ち', status: 'idle' };
+  return { label: runPhaseLabel(run.phase), status: 'running' };
+}
+
+function flowRunCardStatusHtml(run, outcome) {
+  const status = flowRunCardStatus(run, outcome);
+  return `<span class="status-chip st-${esc(status.status)}">${esc(status.label)}</span>`;
+}
+
 // run の終端 status（flow.js の TERMINAL と同一）。フロータブのフィルタ判定に使う。
 // 'canceled' は語彙統一前に書かれた meta.json の旧綴り — 読み取りだけ受け入れる。
 const CANCELLED_RUN_STATES = new Set(['cancelled', 'canceled']);
@@ -360,7 +378,7 @@ function renderFlow() {
       const outcome = runTaskOutcome(p, r);
       return `<div class="run-item ${state.flowRunId === r.runId ? 'selected' : ''}" data-run="${esc(r.runId)}"
         role="button" tabindex="0" aria-pressed="${state.flowRunId === r.runId}">
-        <div class="run-item-head"><span>${runTaskOutcomeCompactHtml(outcome)}</span><span class="muted">${fmtAgo(r.updatedAt || r.createdAt)}</span></div>
+        <div class="run-item-head"><span>${flowRunCardStatusHtml(r, outcome)}</span><span class="muted">${fmtAgo(r.updatedAt || r.createdAt)}</span></div>
         <div class="req">${prosePreview(r.request, 110) || '<span class="muted">内容なし</span>'}</div>
         <div class="progress"><div style="width:${pct}%"></div></div>
         <div class="muted">進捗 ${pct}%</div>

@@ -81,6 +81,17 @@ function makeNodePresenter(project) {
   return new Function('state', code)({ project });
 }
 
+function makeRunCardStatus() {
+  const code = [
+    'const TERMINAL_RUN_STATES = new Set(["done", "failed", "cancelled", "canceled"]);',
+    grab('runPhaseLabel'),
+    grab('flowRunCardStatus'),
+    'return flowRunCardStatus;',
+  ].join('\n');
+  // eslint-disable-next-line no-new-func
+  return new Function(code)();
+}
+
 // --- テストデータ --------------------------------------------------------------
 const RID = 'req-abcd1234-T-9-r1';
 const baseRun = (over = {}) => ({
@@ -101,6 +112,21 @@ const project = ({ taskStatus = 'ready', lastRun = RID, running = true, paused =
   backlog: taskStatus === null ? [] : [
     { id: 'T-9', status: taskStatus, extra: lastRun ? { last_run: lastRun } : {} },
   ],
+});
+
+test('実行カードは実行中・実行待ち・依存待ち・承認待ちを区別する', () => {
+  const status = makeRunCardStatus();
+  const outcome = { runLabel: '実行完了', runStatus: 'done' };
+  assert.deepStrictEqual(status({ status: 'running', counts: { claimed: 1, pending: 2 } }, outcome),
+    { label: '実行中', status: 'running' });
+  assert.deepStrictEqual(status({ status: 'running', counts: { pending: 2 } }, outcome),
+    { label: '実行待ち', status: 'ready' });
+  assert.deepStrictEqual(status({ status: 'running', counts: { waiting: 2 } }, outcome),
+    { label: '依存待ち', status: 'idle' });
+  assert.deepStrictEqual(status({ status: 'running', counts: { parked: 1, claimed: 1 } }, outcome),
+    { label: '承認待ち', status: 'review' });
+  assert.deepStrictEqual(status({ status: 'done', counts: {} }, outcome),
+    { label: '実行完了', status: 'done' });
 });
 
 // --- 仕様 -----------------------------------------------------------------------

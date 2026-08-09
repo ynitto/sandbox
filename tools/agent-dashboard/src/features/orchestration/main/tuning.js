@@ -96,11 +96,18 @@ function setMethod(cfg, payload) {
   const methods = Array.isArray(data.methods) ? data.methods : [];
   if (payload.enabled !== false) {
     const item = catalog(cfg).find((method) => String(method.id) === id);
-    if (!item) throw new Error(`カタログに無い手法です: ${id}`);
-    const snapshot = JSON.parse(JSON.stringify(item));
-    snapshot.enabled = true;
-    snapshot.source = `methods/${id}@${sourceHash(item)}`;
-    data.methods = methods.filter((method) => String(method && method.id) !== id).concat(snapshot);
+    if (item) {
+      const snapshot = JSON.parse(JSON.stringify(item));
+      snapshot.enabled = true;
+      snapshot.source = `methods/${id}@${sourceHash(item)}`;
+      data.methods = methods.filter((method) => String(method && method.id) !== id).concat(snapshot);
+    } else {
+      const custom = methods.find((method) => method && String(method.id) === id
+        && String(method.source || '').startsWith('custom/'));
+      if (!custom) throw new Error(`カタログに無い手法です: ${id}`);
+      data.methods = methods.map((method) => String(method && method.id) === id
+        ? { ...method, enabled: true } : method);
+    }
   } else {
     let found = false;
     data.methods = methods.map((method) => {
@@ -115,19 +122,24 @@ function setMethod(cfg, payload) {
 
 function addMethod(cfg, payload) {
   const id = String((payload && payload.id) || '').trim();
+  const description = String((payload && payload.description) || '').trim();
   const role = String((payload && payload.role) || 'session');
   const text = String((payload && payload.text) || '').trim();
   if (!/^[a-z0-9][a-z0-9-]*$/.test(id)) throw new Error('id は英小文字・数字・ハイフンで指定してください');
+  if (!description) throw new Error('description は空にできません');
   if (!['planner', 'worker', 'verify', 'evaluator', 'session'].includes(role)) throw new Error(`未対応の role です: ${role}`);
   if (!text) throw new Error('text は空にできません');
   const when = payload.when === undefined ? {} : payload.when;
   if (!when || typeof when !== 'object' || Array.isArray(when)) throw new Error('when は JSON object で指定してください');
-  const method = { id, description: String(payload.description || text.slice(0, 80)), enabled: true,
-    fragments: [{ role, text }], when, origin: 'user', source: `custom/${id}` };
   const data = load(cfg);
+  if (catalog(cfg).some((item) => String(item.id) === id)
+      || (Array.isArray(data.methods) ? data.methods : []).some((item) => String(item && item.id) === id)) {
+    throw new Error(`同じ id の手法が既にあります: ${id}`);
+  }
+  const method = { id, description, enabled: true,
+    fragments: [{ role, text }], when, origin: 'user', source: `custom/${id}` };
   const base = revisionOf(data);
-  data.methods = (Array.isArray(data.methods) ? data.methods : [])
-    .filter((item) => String(item && item.id) !== id).concat(method);
+  data.methods = (Array.isArray(data.methods) ? data.methods : []).concat(method);
   return write(cfg, data, 'agent-dashboard methods add', base);
 }
 

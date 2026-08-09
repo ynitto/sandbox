@@ -657,10 +657,18 @@ test('手法: enable はカタログ snapshot を固定し revision を単調増
   fs.writeFileSync(path.join(mdir, 'test-first.json'), JSON.stringify({ ...method, description: '更新' }));
   assert.strictEqual(tuning.load(cfg).methods[0].description, 'テストから始める', 'カタログ更新を自動反映しない');
   assert.strictEqual(tuning.setMethod(cfg, { id: 'test-first', enabled: false }).revision, 2);
-  const custom = tuning.addMethod(cfg, { id: 'custom-check', role: 'verify', text: '二重確認する',
+  const custom = tuning.addMethod(cfg, { id: 'custom-check', description: '二重確認する', role: 'verify', text: '二重確認する',
     when: { tiers: ['full'] } });
   assert.strictEqual(custom.revision, 3);
   assert.strictEqual(custom.methods.find((item) => item.id === 'custom-check').source, 'custom/custom-check');
+  assert.strictEqual(tuning.setMethod(cfg, { id: 'custom-check', enabled: false }).revision, 4);
+  const reenabled = tuning.setMethod(cfg, { id: 'custom-check', enabled: true });
+  assert.strictEqual(reenabled.revision, 5);
+  assert.strictEqual(reenabled.methods.find((item) => item.id === 'custom-check').enabled, true,
+    'カスタム手法もOFFからONへ戻せる');
+  assert.throws(() => tuning.addMethod(cfg, {
+    id: 'custom-check', description: '重複', role: 'worker', text: '重複',
+  }), /既にあります/);
 });
 
 // 同梱カタログの source ダイジェストは Python（agent-loop）にも実装がある。

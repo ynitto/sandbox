@@ -40,10 +40,11 @@
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
   gap: 14px;
 }
-/* 説明は Markdown の形を保って先頭数行だけ見せ、カード同士を見比べられる高さにする。 */
+/* カードは揃え、長い説明はカード内で読めるようにする。 */
 .participation-card {
   display: flex;
   min-width: 0;
+  height: 300px;
   flex-direction: column;
   gap: 8px;
   padding: 14px 16px;
@@ -93,12 +94,17 @@
   overflow-wrap: anywhere;
 }
 .participation-description {
-  max-height: 6em;
-  overflow: hidden;
+  flex: 1 1 auto;
+  min-height: 4.5em;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
   overflow-wrap: anywhere;
   white-space: normal;
   line-height: 1.5;
 }
+.participation-description:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .participation-description .md { line-height: inherit; overflow-wrap: anywhere; }
 .participation-description .md > :first-child { margin-top: 0; }
 .participation-description .md > :last-child { margin-bottom: 0; }
@@ -3335,8 +3341,8 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
 .orch-profile-tiers { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
 .orch-profile-tier {
   display: grid;
-  grid-template-columns: 34px minmax(120px, 0.8fr) minmax(200px, 2fr) minmax(150px, 1fr) auto;
-  align-items: end;
+  grid-template-columns: 34px minmax(140px, 0.7fr) minmax(280px, 2fr) auto;
+  align-items: start;
   gap: 10px;
   padding: 10px 12px;
   border: 1px solid var(--border);
@@ -3356,21 +3362,36 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
 }
 .orch-profile-tier-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; font-size: 12px; color: var(--muted); }
 .orch-profile-tier-field input { width: 100%; }
-/* 列の見出しは先頭の段だけ。2 段目以降で繰り返すと、同じ言葉が縦に並ぶだけで読む量が増える
-   （読み上げには残す）。 */
-.orch-profile-tier:not(:first-child) .orch-profile-tier-field > span:first-child {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip-path: inset(50%);
-  white-space: nowrap;
+.orch-tier-candidates { display: flex; min-width: 0; flex-direction: column; gap: 6px; color: var(--muted); font-size: 12px; }
+.orch-tier-candidate-list { display: grid; gap: 6px; }
+.orch-tier-candidate {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) minmax(120px, 1fr) auto;
+  align-items: end;
+  gap: 8px;
 }
+.orch-tier-candidate label { display: flex; min-width: 0; flex-direction: column; gap: 3px; }
+.orch-tier-candidate input { width: 100%; }
+.orch-tier-candidate-add { align-self: flex-start; }
 .orch-profile-ratio-input { display: flex; align-items: center; gap: 6px; color: var(--fg); }
 .orch-profile-ratio-input input { width: 84px; }
 .orch-profile-tier .orch-tier-remove { min-height: 36px; }
 .orch-profile-empty { padding: 12px; border: 1px dashed var(--border); border-radius: 8px; }
 .orch-profile-controls { align-items: center; gap: 12px; margin-top: 10px; }
+.orch-profile-conditions { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 8px; }
+.orch-profile-condition {
+  display: grid;
+  grid-template-columns: 34px minmax(180px, 1fr) minmax(220px, 1fr);
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+}
+.orch-profile-condition > div { display: flex; min-width: 0; flex-direction: column; gap: 3px; }
+.orch-profile-condition > div small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.orch-profile-condition > label { display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: 12px; }
 .orch-profile-advanced { margin-top: 12px; }
 .orch-profile-advanced summary { min-height: 36px; display: flex; align-items: center; cursor: pointer; color: var(--muted); }
 .orch-profile-advanced-grid { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 8px; }
@@ -3379,10 +3400,67 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
 @media (max-width: 900px) {
   .orch-profile-tier { grid-template-columns: 1fr; align-items: stretch; }
   .orch-profile-tier-rank { justify-self: start; }
+  .orch-profile-condition { grid-template-columns: 34px minmax(0, 1fr); }
+  .orch-profile-condition > label { grid-column: 1 / -1; }
 }
 .orch-profile-apply-to { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
 .orch-profile-preview { margin-top: 10px; padding: 10px 12px; border: 1px dashed var(--border); border-radius: 8px; }
 .orch-profile-preview > strong { display: block; margin-bottom: 6px; font-size: 12px; color: var(--muted); }
+
+/* 実行手法マーケット */
+.orch-method-market > header { align-items: center; }
+.orch-method-search {
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) minmax(120px, auto) minmax(110px, auto) auto;
+  align-items: end;
+  gap: 10px;
+  margin: 14px 0;
+}
+.orch-method-search label { display: flex; min-width: 0; flex-direction: column; gap: 4px; color: var(--muted); font-size: 12px; }
+.orch-method-search input, .orch-method-search select { width: 100%; min-height: 40px; }
+.orch-method-search > span { padding-bottom: 10px; white-space: nowrap; }
+.orch-method-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.orch-method-card {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg);
+}
+.orch-method-card[hidden] { display: none; }
+.orch-method-card > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.orch-method-card > header div { min-width: 0; }
+.orch-method-card > header strong { overflow-wrap: anywhere; }
+.orch-method-card > header p { margin: 4px 0 0; line-height: 1.5; }
+.orch-method-card > header button[aria-pressed="true"] { color: var(--green); border-color: var(--green); }
+.orch-method-roles, .orch-method-conditions { display: flex; flex-wrap: wrap; gap: 5px; }
+.orch-method-roles span, .orch-method-condition {
+  padding: 2px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg3);
+  color: var(--muted);
+  font-size: 11px;
+}
+.orch-method-card > small { margin-top: auto; overflow-wrap: anywhere; }
+.orch-method-dialog { width: min(720px, calc(100vw - 24px)); max-height: calc(100vh - 24px); }
+.orch-method-dialog label { display: flex; min-width: 0; flex-direction: column; gap: 4px; }
+.orch-method-dialog input, .orch-method-dialog select, .orch-method-dialog textarea { width: 100%; }
+.orch-method-ai-box { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg3); }
+.orch-method-ai-box .row { align-items: center; }
+.orch-method-when { margin-top: 12px; }
+.orch-method-when summary { min-height: 38px; display: flex; align-items: center; cursor: pointer; color: var(--accent); }
+.orch-method-form-status { min-height: 1.5em; margin: 10px 0 0; }
+.orch-method-form-status.is-error { color: var(--red); }
+@media (max-width: 760px) {
+  .orch-method-search { grid-template-columns: minmax(0, 1fr); align-items: stretch; }
+  .orch-method-search > span { padding: 0; }
+  .orch-method-grid { grid-template-columns: minmax(0, 1fr); }
+  .orch-tier-candidate { grid-template-columns: minmax(0, 1fr); }
+}
 
 /* 状態バッジ: 色だけに頼らず状態語を併記する */
 .orch-badge {

@@ -16,6 +16,8 @@ test('参加カードは利用者向け情報と参加操作だけを表示す�
 
   assert.match(html, /検索画面の修正/);
   assert.match(html, /class="participation-description"/);
+  assert.match(html, /tabindex="0" role="region"/);
+  assert.match(html, /aria-label="検索画面の修正の作業内容の詳細"/);
   assert.match(html, /<strong>入力した名前<\/strong>/);
   assert.match(html, /<li>部分一致に対応する<\/li>/);
   assert.match(html, /プロジェクト作業/);
@@ -47,7 +49,7 @@ test('参加候補は選択中だけでなく発見済みの全プロジェク�
   ]);
 });
 
-test('参加候補は初回描画前に取得し、説明はカード内で短く表示する', () => {
+test('参加候補は初回描画前に取得し、説明全文は固定高カード内でスクロールできる', () => {
   const bootstrap = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'bootstrap.js'), 'utf8');
   const css = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'styles.css'), 'utf8');
   const feature = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'features', 'participation.js'), 'utf8');
@@ -57,10 +59,13 @@ test('参加候補は初回描画前に取得し、説明はカード内で短�
     '初回のプロジェクト描画より先にフィーチャー候補を取得する'
   );
   const descriptionRule = css.match(/\.participation-description\s*\{[^}]*\}/s)[0];
-  assert.match(descriptionRule, /max-height:\s*6em/);
+  const cardRule = css.match(/\.participation-card\s*\{[^}]*\}/s)[0];
+  assert.match(cardRule, /height:\s*300px/);
+  assert.match(descriptionRule, /min-height:\s*4\.5em/, '説明を最低3行表示する');
+  assert.match(descriptionRule, /overflow-y:\s*auto/, '長い説明はカード内で縦スクロールする');
   assert.match(descriptionRule, /white-space:\s*normal/);
-  assert.doesNotMatch(descriptionRule, /-webkit-line-clamp|display:\s*-webkit-box/,
-    '構造化した説明全体に line-clamp を掛けて本文を消さない');
+  assert.doesNotMatch(descriptionRule, /max-height|-webkit-line-clamp|display:\s*-webkit-box/,
+    '説明を見切れさせない');
   assert.match(feature, /<summary>表示条件を見る<\/summary>/);
   assert.doesNotMatch(feature, /実行中の run も出ます/);
 });

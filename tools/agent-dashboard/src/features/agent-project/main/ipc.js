@@ -510,6 +510,11 @@ function registerIpc(ctx) {
     agent.completeCharter(loadConfig(), { dir, mode, spec, content })
   );
 
+  // 実行手法のカスタム追加フォームを補完する。提案だけを返し、保存は renderer の確定操作に任せる。
+  handle('agent:methodDraft', ({ dir, brief, current }) =>
+    agent.completeMethodDraft(loadConfig(), { dir: dir || null, brief, current: current || {} })
+  );
+
   // 現在画面のスナップショットを読み取り専用CLIへ渡し、助言本文だけを返す。
   handle('agent:doctor', ({ dir, context, userPrompt, mode }) => {
     if (!context || typeof context !== 'object') throw new Error('画面の状態が指定されていません');

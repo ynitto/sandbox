@@ -570,6 +570,60 @@ function charterRefinePrompt(content) {
   );
 }
 
+const METHOD_DRAFT_ROLES = new Set(['planner', 'worker', 'verify', 'evaluator', 'session']);
+const METHOD_DRAFT_WHEN_KEYS = ['tiers', 'purposes', 'workloads', 'agent_cli', 'models'];
+
+function normalizeMethodDraft(value) {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const rawId = String(source.id || '').trim().toLowerCase();
+  const id = rawId.replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
+  const role = METHOD_DRAFT_ROLES.has(String(source.role || '')) ? String(source.role) : '';
+  const when = {};
+  const rawWhen = source.when && typeof source.when === 'object' && !Array.isArray(source.when)
+    ? source.when : {};
+  for (const key of METHOD_DRAFT_WHEN_KEYS) {
+    const values = Array.isArray(rawWhen[key]) ? rawWhen[key] : [];
+    const clean = values.map((item) => String(item || '').trim()).filter(Boolean);
+    if (clean.length) when[key] = [...new Set(clean)];
+  }
+  return {
+    id,
+    description: String(source.description || '').trim(),
+    role,
+    text: String(source.text || '').trim(),
+    when,
+  };
+}
+
+function methodDraftPrompt(brief, current) {
+  return (
+    'あなたはエージェント実行手法の設定を補助します。\n' +
+    '利用者の要望から、再利用できる短い手法を1件だけ提案してください。\n' +
+    '出力は次の形のJSONオブジェクトのみ（説明文・コードフェンスなし）:\n' +
+    '{"id":"英小文字・数字・ハイフン","description":"一文の説明",' +
+    '"role":"session|planner|worker|verify|evaluator","text":"エージェントへ渡す具体的な指示",' +
+    '"when":{"tiers":[],"purposes":[],"workloads":[],"agent_cli":[],"models":[]}}\n\n' +
+    '規則:\n' +
+    '- 不要な適用条件は空配列にする。実在が分からない固有名は発明しない。\n' +
+    '- textは単独で読んでも実行できる命令文にする。\n' +
+    '- 既存入力がある項目は尊重する。\n\n' +
+    `要望:\n${String(brief || '').trim()}\n\n既存入力:\n${JSON.stringify(current || {}, null, 2)}`
+  );
+}
+
+async function completeMethodDraft(cfg, { dir, brief, current }) {
+  if (!String(brief || '').trim()) throw new Error('作りたい手法を入力してください');
+  const resolved = resolveAgent(cfg, dir);
+  const raw = await runAgent(resolved, methodDraftPrompt(brief, current), dir);
+  const obj = extractJson(raw);
+  if (!obj) throw new Error(`エージェントの応答からJSONを取り出せませんでした: ${raw.slice(0, 120)}…`);
+  const method = normalizeMethodDraft(obj);
+  if (!method.id || !method.description || !method.role || !method.text) {
+    throw new Error('エージェントの応答に必要な項目がありません');
+  }
+  return { method, cli: resolved.cli, model: resolved.model, source: resolved.source };
+}
+
 // Doctor / 構造化 Assist のモード定義。いずれも読み取り専用・テキスト応答のみ。
 const DOCTOR_MODES = {
   consultation: {
@@ -1219,6 +1273,8 @@ module.exports = {
   extractMarkdownSection,
   charterDraftPrompt,
   charterRefinePrompt,
+  methodDraftPrompt,
+  normalizeMethodDraft,
   doctorPrompt,
   doctorBriefPrompt,
   doctorChatCwd,
@@ -1236,6 +1292,7 @@ module.exports = {
   planBacklogAdjustments,
   normalizeDraftFields,
   completeCharter,
+  completeMethodDraft,
   completeDoctor,
   completeTaskAssist,
 };

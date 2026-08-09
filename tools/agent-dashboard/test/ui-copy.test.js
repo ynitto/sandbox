@@ -51,6 +51,8 @@ assert.ok(!flow.includes('エージェント CLI の実行環境'));
 assert.ok(flow.includes('承認を待っています。要対応タブで確認してください。'));
 const flowList = flow.slice(flow.indexOf('const runList = shownGroups'), flow.indexOf('// run 一覧と RUN 表示ペイン'));
 assert.ok(flowList.includes('進捗 ${pct}%'), '実行カードには進捗率を表示します');
+assert.ok(flowList.includes('flowRunCardStatusHtml(r, outcome)'), '実行カードはノード状態から表示を決めます');
+assert.ok(!flowList.includes('runTaskOutcomeCompactHtml(outcome)'), 'run全体のrunningだけを状態表示に使いません');
 for (const extra of ['作業ステップ', 'finalVerificationFailureHtml', 'run-retries', 'data-goto-task']) {
   assert.ok(!flowList.includes(extra), `実行カードの詳細情報を一覧へ重ねません: ${extra}`);
 }

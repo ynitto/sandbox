@@ -76,7 +76,8 @@
           <span class="participation-type">${type}</span>
           <h3>${escHtml(candidate.title)}</h3>
         </div>
-        ${description ? `<div class="participation-description">${description}</div>` : ''}
+        ${description ? `<div class="participation-description" tabindex="0" role="region"
+          aria-label="${escHtml(candidate.title)}の作業内容の詳細">${description}</div>` : ''}
         ${meta ? `<p class="participation-context">${escHtml(meta)}</p>` : ''}
         <div class="participation-card-action">
           <button type="button" class="primary-inline participation-join"
