@@ -291,6 +291,120 @@ def plan_strategy_stub(request: str, review="auto", granularity="auto"):
     return strategy, tasks
 
 
+class UserPlanError(ValueError):
+    """ユーザー定義フロー（plan）の検証エラー。planner へフォールバックさせない
+    （黙って別の計画へ差し替えるとユーザーの意図が失われる）。呼び出し側は run を
+    failure_reason 付きで失敗終端する。"""
+
+
+# ユーザー定義フローのノード数上限。planner 経路の max_fanout（既定 50）と同じ量級の
+# 暴走止めで、ビルダー UI が誤って巨大グラフを投げても実行前に弾く。
+_USER_PLAN_MAX_NODES = 64
+
+
+def plan_strategy_user(plan: dict, request: str):
+    """ユーザー定義フロー（inbox 要求の `plan` / `--plan-file`）を検証して (strategy, tasks) に固定する。
+
+    planner（LLM / stub / flow-planner）を通らない第 3 の計画経路。ビルダー（dashboard）や人が
+    書いたグラフをそのまま実行するため、検証は planner 出力の防御（`_coerce_tasks` の丸め）とは
+    逆に**厳格に失敗させる**——丸めて実行すると「意図と違う形で走った」ことに気付けない。
+
+    per-node の `agent`（{agent_cli, model}）はここでだけ受ける。LLM planner の出力からは
+    従来どおり剥がす（モデル選定はルーティング・実測格付けの仕事で、planner に選ばせない）。
+    goal 中の `{{request}}` は要求テキストへ置換する（プリセットの使い回し口。置換は
+    エンジン側のこの 1 か所だけで行い、投入側は複製実装しない）。"""
+    if not isinstance(plan, dict):
+        raise UserPlanError("plan はオブジェクトである必要があります")
+    raw_nodes = plan.get("nodes")
+    if not isinstance(raw_nodes, list) or not raw_nodes:
+        raise UserPlanError("plan.nodes（1 件以上のノード配列）が必要です")
+    if len(raw_nodes) > _USER_PLAN_MAX_NODES:
+        raise UserPlanError(f"ノード数が上限を超えています（{len(raw_nodes)} > {_USER_PLAN_MAX_NODES}）")
+    tasks, seen = [], set()
+    for i, t in enumerate(raw_nodes):
+        if not isinstance(t, dict):
+            raise UserPlanError(f"nodes[{i}] がオブジェクトではありません")
+        tid = str(t.get("id") or "").strip()
+        if not tid:
+            raise UserPlanError(f"nodes[{i}] に id がありません")
+        if tid in seen:
+            raise UserPlanError(f"ノード id が重複しています: {tid}")
+        seen.add(tid)
+        goal = str(t.get("goal") or "").replace("{{request}}", request).strip()
+        if not goal:
+            raise UserPlanError(f"ノード {tid} の goal が空です")
+        kind = str(t.get("kind") or "work")
+        if kind not in VALID_KINDS:
+            raise UserPlanError(f"ノード {tid} の kind が不正です: {kind}"
+                                f"（有効: {', '.join(sorted(VALID_KINDS))}）")
+        node = {"id": tid, "goal": goal,
+                "deps": [str(d) for d in (t.get("deps") or [])], "kind": kind}
+        agent = t.get("agent")
+        if agent is not None:
+            if not (isinstance(agent, dict) and str(agent.get("agent_cli") or "").strip()):
+                raise UserPlanError(f"ノード {tid} の agent が不正です（agent_cli が必要）")
+            spec = {"agent_cli": str(agent["agent_cli"]).strip()}
+            if str(agent.get("model") or "").strip():
+                spec["model"] = str(agent["model"]).strip()
+            node["agent"] = spec
+        reads = normalize_read_allocation(t.get("read_allocation"))
+        if reads:
+            node["read_allocation"] = reads
+        if str(t.get("dependency_input") or "").strip().lower() in ("full", "digest"):
+            node["dependency_input"] = str(t["dependency_input"]).strip().lower()
+        try:
+            retries = int(t.get("retries") or 0)
+        except (TypeError, ValueError):
+            raise UserPlanError(f"ノード {tid} の retries が数値ではありません")
+        if retries > 0:
+            node["retries"] = retries
+        tasks.append(node)
+    ids = {t["id"] for t in tasks}
+    splits = {t["id"] for t in tasks if t["kind"] == "split"}
+    for t in tasks:
+        for d in t["deps"]:
+            if d not in ids:
+                raise UserPlanError(f"ノード {t['id']} の依存が未知です: {d}")
+            if d == t["id"]:
+                raise UserPlanError(f"ノード {t['id']} が自分自身に依存しています")
+            if d in splits:
+                # split の後段（map→reduce）は実行時に動的生成される。静的な後段を許すと
+                # fan-out と二重化するため _collapse_split_successors が黙って除去する——
+                # ユーザー定義フローでは黙った除去でなく投入時に弾く。
+                raise UserPlanError(
+                    f"ノード {t['id']} が split ノード {d} に依存しています"
+                    "（split の後段は実行時に自動生成されるため、静的な依存は張れません）")
+    # 循環検査（Kahn 法）。_sanitize_graph は黙って断ち切るが、ここでは失敗させる。
+    pending = {t["id"]: set(t["deps"]) for t in tasks}
+    ready = [i for i, d in pending.items() if not d]
+    done = set()
+    while ready:
+        x = ready.pop()
+        done.add(x)
+        for i, d in pending.items():
+            if x in d:
+                d.discard(x)
+                if not d and i not in done and i not in ready:
+                    ready.append(i)
+    cyc = sorted(ids - done)
+    if cyc:
+        raise UserPlanError(f"依存が循環しています: {', '.join(cyc)}")
+    name = str(plan.get("name") or "").strip()
+    roots = sum(1 for t in tasks if not t["deps"])
+    strategy = {
+        "patterns": ["user-defined"], "parallelism": max(1, roots), "review": False,
+        "user_plan": True,
+        "reason": f"ユーザー定義フロー{f'「{name}」' if name else ''}（{len(tasks)} ノード）",
+    }
+    if name:
+        strategy["plan_name"] = name
+    # evaluate: true で評価役（evaluator-optimizer）の継続判断を有効化する。既定は無効——
+    # ユーザー定義フローは形が意図そのものなので、再計画でノードを足して形を変えない。
+    if plan.get("evaluate") is True:
+        strategy["user_plan_evaluate"] = True
+    return strategy, tasks
+
+
 def _record_rule_agreement(strategy: dict, request: str, granularity: str) -> dict:
     """LLM の判断を現行ルールと照合して記録する。実行に使う strategy は変更しない。
 

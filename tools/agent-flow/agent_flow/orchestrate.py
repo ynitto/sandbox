@@ -93,6 +93,16 @@ def _continue(args, bus, request, nodes, results, iteration, strategy=None):
     env_fail = _env_failure_reason(results)
     if env_fail:
         return "failed", [], env_fail
+    # ユーザー定義フロー: 形が意図そのものなので、既定では評価役の再計画でノードを足さない。
+    # 失敗ノードは正直に failed で返す（resume が失敗ノードを pending へ戻すので、
+    # 再実行の口は従来どおり残る）。plan.evaluate: true で従来の継続判断に載る。
+    strat = strategy or {}
+    if strat.get("user_plan") and not strat.get("user_plan_evaluate"):
+        failed = sorted(n for n, r in results.items() if r.get("status") == "failed")
+        if failed:
+            return "failed", [], ("ユーザー定義フローで失敗ノードあり: " + ", ".join(failed)
+                                  + "（既定では再計画しない。plan.evaluate: true で評価役が有効）")
+        return "done", [], "ユーザー定義フロー（評価役の再計画は既定で無効）"
     mf = int(getattr(args, "max_fanout", 50) or 50)
     # 計画時に確定した review 判断を再利用（resume・継続でも一貫させる）。
     # CLI で明示指定（True/False）があればそれを優先。
@@ -118,6 +128,22 @@ def _continue(args, bus, request, nodes, results, iteration, strategy=None):
     # ここで補わないと反復のたびに分解質の材料が失われる）。
     ctx = run_context_text(bus)
     return continue_agent(request, nodes, results, iteration, mf, review, ef, mr, rw, context=ctx)
+
+
+def _read_user_plan(bus, args):
+    """ユーザー定義フロー（plan）を読む。`--plan-file`（明示）> inbox 要求の `plan` の順。
+    inbox 要求が唯一の権威という `_apply_inbox_request` と同じ理屈で、participate 経由でも
+    argv 転記なしに届くよう、ここで inbox を読む。無ければ None（従来の planner 経路）。"""
+    path = getattr(args, "plan_file", None)
+    if path:
+        try:
+            with open(path, encoding="utf-8") as f:
+                return json.load(f)
+        except (OSError, ValueError) as e:
+            raise UserPlanError(f"--plan-file を読めません: {e}")
+    rec = bus.read_inbox(str(getattr(args, "run_id", "") or "").strip()) or {}
+    plan = rec.get("plan")
+    return plan if isinstance(plan, dict) else None
 
 
 def _node_entry(t):
@@ -340,10 +366,24 @@ def cmd_orchestrate(args) -> int:
             bus.set_status("running")
             bus.sync_push(f"resume run {args.run_id}")
     else:
-        # 要求から 7 パターンの組み合わせと並列数を選び、初期グラフを形作る
+        # 要求から 7 パターンの組み合わせと並列数を選び、初期グラフを形作る。
+        # ユーザー定義フロー（plan）があれば planner を通さず検証だけで固定する。
+        # 検証エラーは planner へフォールバックしない——黙って別の計画に差し替えると
+        # ユーザーの意図が失われるため、failure_reason 付きで失敗終端して人に返す。
         phase("planning")
-        strategy, tasks = _with_run_heartbeat(
-            heartbeat, lease_window, lambda: _plan_strategy(args, bus))
+        try:
+            user_plan = _read_user_plan(bus, args)
+            if user_plan is not None:
+                strategy, tasks = plan_strategy_user(user_plan, args.request)
+                log(who, f"ユーザー定義フローを採用: {strategy['reason']}")
+            else:
+                strategy, tasks = _with_run_heartbeat(
+                    heartbeat, lease_window, lambda: _plan_strategy(args, bus))
+        except UserPlanError as e:
+            log(who, f"ユーザー定義フローの検証に失敗: {e}")
+            _finalize_run(bus, args, 0,
+                          failure=f"[user-plan] ユーザー定義フローが不正です: {e}")
+            return 1
         graph = {"strategy": strategy,
                  "nodes": {t["id"]: _node_entry(t) for t in tasks},
                  "iteration": 0}

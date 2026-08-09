@@ -28,6 +28,19 @@ function registerIpc(ctx) {
     target: args.target || '',
     prompt: args.prompt || '',
   }));
+
+  // メッセージキュー投函（M3）。busy は失敗ではなく待機——投函は常に受理され、
+  // 受信側の agent-loop が手すきになった順に処理する。
+  handle('routineAgent:queueMessage', (args = {}) => send.queueMessage({
+    repo: args.repo || '',
+    agent: args.agent || '',
+    subject: args.subject || '',
+    body: args.body || '',
+  }));
+  handle('routineAgent:queue', (args = {}) => send.listQueue({
+    repo: args.repo || '',
+    agent: args.agent || '',
+  }));
 }
 
 module.exports = { registerIpc };

@@ -763,3 +763,26 @@ agent-loop の webhook 8 件は sandbox 内の local bind 制限で一度失敗�
 
 回帰確認は agent-flow 798 件、agent-audit 110 件、agent-loop 267 件、agentcore 432 件、
 agent-project 1219 件、agent-dashboard の全テストと eslint が成功した。
+
+## 10. トラック M 実行記録（2026-08-09）
+
+S21〜S24 を実装した。効く柱・原則: M1=柱2×柱3 / C3・C7、M2=柱2 / C1・C7、M3=柱2 / C7。
+共通の縛り（書き手を増やさない・アドホックは done を名乗らない）は全ステップで維持した。
+
+| Step | 状態 | 実施内容 |
+|---|---|---|
+| S21 | 実装済み | dashboard に新領域「クイック実行」（feature `adhoc-flow`）。投入は submit_request 契約の投函 + `agent-flow run --from-inbox` の切り離し起動（nohup。run は自己完結——C6）。既定バスは `~/.agents/flow/bus` でプロジェクトのバスと分離。run の読取は agent-project feature のバスパーサを再利用（読み手 1 実装）。UI は done を出さず「終了（未検収）」 |
+| S21 拡張 | 実装済み | **フロービルダー**。投入契約に `plan`（ユーザー定義フロー）を追加し、agent-flow の orchestrate が planner を通さず検証（`plan_strategy_user`）だけでグラフを固定する第 3 の計画経路を新設。検証は厳格（不正 plan はフォールバックせず `[user-plan]` で失敗終端）。per-node `agent`（agent_cli/model）はこの経路でだけ受け、LLM planner からは従来どおり剥がす。`{{request}}` 置換で入力を変えた使い回しが可能。F17 手法は選択分だけを run 専用 `AGENT_TUNING_DIR` へ**複製**（S26 と同じ source hash 方式）。プリセットは viewer の config.json に保存（新状態ファイルなし）。評価役の再計画は既定無効・`evaluate: true` でオプトイン。§6 の「workflow DSL エンジンの新設はしない」は維持——足したのは契約のフィールドと検証だけで、実行系・ノード種別・fan-out 機構は無改造 |
+| S22 | 実装済み | run 詳細の「タスクへ昇格」。既存の inbox 投函契約（`enqueueToInbox`）で agent-project へ起票し、宛先は実行エンジンが担当するプロジェクトのみ（C1）。昇格したタスクは通常の受入基準と verify を通る |
+| S23 | 実装済み | cowork の起動経路を項目非依存化（`cowork:runAdhoc`）。登録フォルダ + 自由文で対話起動し、共通指示の前置・agent-control による CLI/モデル解決・cowork-history.jsonl への履歴・tmux attach は既存経路をそのまま再利用。cwd は登録済みフォルダ限定（C1）。専用セッション名前空間で定常業務のセッションと混ざらない |
+| S24 | 実装済み | dashboard から agent-loop の inbox へメッセージをキュー投函（`agent-loop msg` への CLI 依頼。send-keys・ファイル直書きなし）。待ち行列（pending / processed）を表示し、待機は失敗ではなく「待機中」として出す |
+
+契約の変更は submit_request / run meta 読みの 1 点（`plan` フィールド追加・読めない旧版には
+単に無視される後方互換）。テスト: agent-flow 814 件（ユーザー定義フロー 16 件を含む）、
+agent-dashboard 全テスト + eslint、新規 `test_user_plan.py` /
+`adhoc-flow.test.js` / `cowork-adhoc.test.js` / `routine-agent-queue.test.js`。
+設計書は agent-flow-design.md（計画経路・inbox 契約）・agent-flow README・
+adhoc-flow / cowork / routines の feature README を同時更新した。
+
+残: 実運用での効果測定（アドホック経由の投入トークンがプロジェクト経由より軽いことの台帳確認）は
+サンプル待ち。トラック M は入口の追加であり §5.1 の測定ゲート（S13/S14 型の数値出口）は課さない。

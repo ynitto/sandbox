@@ -6,6 +6,7 @@ module.exports = {
   coworkRunStateMachine: (invoke) => (itemId, parameters) =>
     invoke('cowork:runStateMachine', { itemId, parameters }),
   coworkGenerateStateMachine: (invoke) => (payload) => invoke('cowork:generateStateMachine', payload),
+  coworkRunAdhoc: (invoke) => (root, prompt) => invoke('cowork:runAdhoc', { root, prompt }),
   coworkSaveWork: (invoke) => (payload) => invoke('cowork:saveWork', payload),
   coworkInspectRoot: (invoke) => (dir) => invoke('cowork:inspectRoot', { dir }),
   coworkPickRoot: (invoke) => () => invoke('cowork:pickRoot', {}),

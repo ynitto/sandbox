@@ -18,8 +18,85 @@
 // 「端末のすべてのワークロードに効く」全体設定ではないため。全体設定には agent-control /
 // agent-instructions / 予算のような**横断して効くもの**だけを残す。
 
-// 実行の記録タブ。左に作業、右にその作業の記録（この画面からの実行 + ログ）。
-// 見出しは領域ヘッダーとタブが担うので、ペインは中身から始める。
+// ---------------------------------------------------------------------------
+// アドホック起動（M2）: 登録済みフォルダ + 自由な指示でエージェントCLIを起動する。
+// 起動経路（CLI/モデル解決・共通指示の前置・履歴）は定常業務の実行と同じで、
+// 項目（作業）を登録しなくても使える。起動先は登録済みフォルダからの選択のみ。
+// ---------------------------------------------------------------------------
+
+function routineAdhocDraft() {
+  if (!state.routineAdhocDraft) state.routineAdhocDraft = { root: '', prompt: '', message: '', ok: true };
+  return state.routineAdhocDraft;
+}
+
+function routineAdhocPanelHtml() {
+  const roots = (state.cowork && state.cowork.roots) || [];
+  const draft = routineAdhocDraft();
+  const options = roots.map((r) =>
+    `<option value="${esc(r)}"${r === draft.root ? ' selected' : ''}>${esc(r)}</option>`).join('');
+  return `<section class="global-settings-card routine-adhoc" aria-labelledby="routine-adhoc-title">
+    <div><span class="summary-kicker">その場の依頼</span><h3 id="routine-adhoc-title">アドホック起動</h3></div>
+    <p class="muted">登録済みフォルダを選んで、自由な指示でエージェントCLIを起動します。いつもの定常業務と同じ設定（CLI・モデル・共通指示）で動き、実行はこの画面の記録に残ります。</p>
+    ${roots.length ? `
+      <div class="field">
+        <select id="routine-adhoc-root" aria-label="起動するフォルダ">${options}</select>
+      </div>
+      <div class="field">
+        <textarea id="routine-adhoc-prompt" rows="3" placeholder="エージェントへの指示（自由文）">${esc(draft.prompt)}</textarea>
+      </div>
+      <div class="row">
+        <button id="btn-routine-adhoc-run" class="primary">起動</button>
+        <span id="routine-adhoc-meta" class="muted${draft.ok ? '' : ' sync-error'}">${esc(draft.message || '')}</span>
+      </div>`
+    : '<p class="muted">起動先にできる登録済みフォルダがありません。「設定」タブでフォルダを登録してください。</p>'}
+  </section>`;
+}
+
+function bindRoutineAdhocPanel(root) {
+  const draft = routineAdhocDraft();
+  const rootSel = root.querySelector('#routine-adhoc-root');
+  const promptEl = root.querySelector('#routine-adhoc-prompt');
+  if (rootSel) rootSel.addEventListener('change', () => { draft.root = rootSel.value; });
+  if (promptEl) promptEl.addEventListener('input', () => { draft.prompt = promptEl.value; });
+  const run = root.querySelector('#btn-routine-adhoc-run');
+  if (run) run.addEventListener('click', () => runRoutineAdhoc());
+}
+
+async function runRoutineAdhoc() {
+  if (!api.coworkRunAdhoc) {
+    toast('このビルドではアドホック起動に対応していません');
+    return;
+  }
+  const draft = routineAdhocDraft();
+  const rootSel = $('routine-adhoc-root');
+  const promptEl = $('routine-adhoc-prompt');
+  const rootDir = rootSel ? rootSel.value : '';
+  const prompt = promptEl ? promptEl.value.trim() : '';
+  if (!prompt) {
+    toast('エージェントへの指示を入力してください');
+    if (promptEl) promptEl.focus();
+    return;
+  }
+  const btn = $('btn-routine-adhoc-run');
+  if (btn) btn.disabled = true;
+  const res = await api.coworkRunAdhoc(rootDir, prompt)
+    .catch((err) => ({ ok: false, error: err.message || String(err) }));
+  if (btn) btn.disabled = false;
+  draft.root = rootDir;
+  if (res && res.ok) {
+    draft.prompt = '';
+    draft.ok = true;
+    draft.message = `${res.message || '起動しました'}（${new Date().toLocaleTimeString('ja-JP')}）`;
+    toast('エージェントCLIを起動しました', true);
+  } else {
+    draft.ok = false;
+    draft.message = `起動できませんでした: ${(res && (res.error || res.message)) || '原因不明'}`;
+  }
+  renderRoutineRuns();
+}
+
+// 実行の記録タブ。上にアドホック起動、下は左に作業、右にその作業の記録
+// （この画面からの実行 + ログ）。見出しは領域ヘッダーとタブが担うので、ペインは中身から始める。
 function renderRoutineRuns() {
   const pane = $('tab-routine-runs');
   if (!pane) return;
@@ -28,8 +105,10 @@ function renderRoutineRuns() {
   const selected = state.coworkHistory ? state.coworkHistory.id : '';
   if (!entries.length) {
     pane.innerHTML = `<section class="routine-page">
+      ${routineAdhocPanelHtml()}
       <div class="empty compact">まだ作業がありません。「作業」タブから追加すると、動かした記録をここで読めます。</div>
     </section>`;
+    bindRoutineAdhocPanel(pane);
     return;
   }
   // 選択 UI は作業タブと同じ部品を使う。以前はここだけ独自の行を並べていて、作業タブの
@@ -43,6 +122,7 @@ function renderRoutineRuns() {
     'routine-runs'
   );
   pane.innerHTML = `<section class="routine-page">
+    ${routineAdhocPanelHtml()}
     <div class="cowork-split-view">
       <section class="cowork-list-pane">${picker}</section>
       <section class="cowork-detail-pane" id="routine-runs-body">${coworkHistoryBodyHtml(state.coworkHistory)}</section>
@@ -53,6 +133,7 @@ function renderRoutineRuns() {
     loadCoworkHistory(id, item ? item.name : '');
   });
   bindCoworkHistoryBody(pane);
+  bindRoutineAdhocPanel(pane);
 }
 
 // 定常業務の設定タブ。全体設定にあった「定常業務」節をそのまま領域の中へ移した。
@@ -311,6 +392,20 @@ function renderRoutineAgentTerminal() {
         </div>
         <pre id="routine-agent-capture" class="routine-agent-capture mono" data-ui-scroll-key aria-live="polite">${esc(stripAnsi(term.text || (term.error && !term.target ? '' : '…')))}</pre>
       </section>
+      <section class="routine-agent-panel" aria-labelledby="routine-agent-queue-title">
+        <div class="routine-agent-term-toolbar">
+          <div><span class="summary-kicker">あとで処理する依頼</span><h3 id="routine-agent-queue-title">依頼を積む</h3></div>
+          <span id="routine-agent-queue-meta" class="muted">待ち行列を読み込んでいます…</span>
+        </div>
+        <p class="muted">エージェントが応答中でも投函できます。積んだ依頼は手が空いた順に処理されます（待機は失敗ではありません）。</p>
+        <div class="routine-agent-send">
+          <select id="routine-agent-queue-agent" aria-label="宛先エージェント"></select>
+          <input id="routine-agent-queue-subject" type="text" aria-label="件名" placeholder="件名（任意）">
+          <input id="routine-agent-queue-body" type="text" aria-label="依頼の本文" placeholder="依頼の本文">
+          <button id="btn-routine-agent-queue-post">投函</button>
+        </div>
+        <div id="routine-agent-queue-list"></div>
+      </section>
     </div>`;
   restoreUiState(ui);
   const sendBtn = $('btn-routine-agent-send');
@@ -330,7 +425,10 @@ function renderRoutineAgentTerminal() {
       updateRoutineAgentSendMeta();
     });
   }
+  const queuePost = $('btn-routine-agent-queue-post');
+  if (queuePost) queuePost.addEventListener('click', () => routineAgentQueuePost());
   updateRoutineAgentSendMeta();
+  refreshRoutineAgentQueue();
 }
 
 // ---------------------------------------------------------------------------
@@ -465,6 +563,96 @@ async function routineAgentSendPrompt(promptText, attempt = 1) {
     term.send = { text, phase: 'error', message: `送れませんでした: ${(res && (res.error || res.detail)) || '原因不明'}` };
   }
   updateRoutineAgentSendMeta();
+}
+
+// ---------------------------------------------------------------------------
+// メッセージキュー投函（M3）: agent-loop の受信ボックスへ依頼を積み、待ち行列を見せる。
+// 復旧送信（routineAgentSendPrompt）と違い、応答中でも投函は受理される——busy は
+// 失敗ではなく待機で、受信側が手すきになった順に処理する。
+// ---------------------------------------------------------------------------
+
+function routineAgentQueueListHtml(agents) {
+  if (!agents) return '<p class="muted">待ち行列を読み込んでいます…</p>';
+  if (!agents.length) {
+    return '<p class="muted">投函先のエージェントがまだありません（このフォルダで agent-loop が一度も動いていないと空になります）。</p>';
+  }
+  const rows = [];
+  for (const a of agents) {
+    for (const m of a.pending) {
+      rows.push(`<tr>
+        <td>${esc(a.name)}</td>
+        <td>${esc(m.from || '')}</td>
+        <td title="${esc(m.body || '')}">${esc(m.subject || '（件名なし）')}</td>
+        <td class="mono">${esc(fmtTime(m.createdAt))}</td>
+        <td><span class="status-chip st-ready">待機中</span></td>
+      </tr>`);
+    }
+  }
+  const processed = agents.map((a) => `${a.name}: ${a.processed} 件`).join(' ／ ');
+  return `${rows.length
+    ? `<table class="list"><tr><th>宛先</th><th>差出人</th><th>件名</th><th>投函時刻</th><th>状態</th></tr>${rows.join('')}</table>`
+    : '<p class="muted">待機中の依頼はありません。</p>'}
+  <p class="muted">処理済み — ${esc(processed)}</p>`;
+}
+
+async function refreshRoutineAgentQueue() {
+  const term = state.routineAgentTerm;
+  if (!term || !api.routineAgentQueue) return;
+  const res = await api.routineAgentQueue({ repo: term.repo }).catch(() => null);
+  if (state.routineAgentTerm !== term) return;
+  const agents = res && res.ok ? res.agents : null;
+  state.routineAgentQueue = agents;
+  const meta = $('routine-agent-queue-meta');
+  if (meta) meta.textContent = agents ? '' : ((res && res.error) || '待ち行列を取得できませんでした');
+  const sel = $('routine-agent-queue-agent');
+  if (sel) {
+    const cur = sel.value;
+    sel.innerHTML = (agents || [])
+      .map((a) => `<option value="${esc(a.name)}">${esc(a.name)}（待機 ${a.pending.length} 件）</option>`)
+      .join('');
+    if (cur && [...sel.options].some((o) => o.value === cur)) sel.value = cur;
+  }
+  const list = $('routine-agent-queue-list');
+  if (list) list.innerHTML = routineAgentQueueListHtml(agents);
+}
+
+async function routineAgentQueuePost() {
+  const term = state.routineAgentTerm;
+  if (!term) return;
+  if (!api.routineAgentQueueMessage) {
+    toast('このビルドでは依頼の投函に対応していません');
+    return;
+  }
+  const sel = $('routine-agent-queue-agent');
+  const subjectEl = $('routine-agent-queue-subject');
+  const bodyEl = $('routine-agent-queue-body');
+  const agent = sel ? sel.value : '';
+  const body = bodyEl ? bodyEl.value.trim() : '';
+  if (!agent) {
+    toast('宛先エージェントを選択してください');
+    return;
+  }
+  if (!body) {
+    toast('依頼の本文を入力してください');
+    if (bodyEl) bodyEl.focus();
+    return;
+  }
+  const btn = $('btn-routine-agent-queue-post');
+  if (btn) btn.disabled = true;
+  const res = await api.routineAgentQueueMessage({
+    repo: term.repo, agent, subject: subjectEl ? subjectEl.value.trim() : '', body,
+  }).catch((err) => ({ ok: false, error: err.message || String(err) }));
+  if (btn) btn.disabled = false;
+  const meta = $('routine-agent-queue-meta');
+  if (res && res.ok) {
+    if (bodyEl) bodyEl.value = '';
+    if (subjectEl) subjectEl.value = '';
+    if (meta) meta.textContent = `投函しました（${new Date().toLocaleTimeString('ja-JP')}）。手が空いた順に処理されます。`;
+    toast('依頼を投函しました', true);
+    refreshRoutineAgentQueue();
+  } else if (meta) {
+    meta.textContent = `投函できませんでした: ${(res && (res.error || res.detail)) || '原因不明'}`;
+  }
 }
 
 async function openCoworkFromSettings() {

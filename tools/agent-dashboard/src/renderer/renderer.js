@@ -199,6 +199,8 @@ const AREAS = [
   { id: 'routines', label: '定常業務', list: 'routines', desc: '繰り返す作業を、この端末で動かします。' },
   { id: 'missions', label: 'ミッション', ownHeader: true },
   { id: 'participation', label: '参加', ownHeader: true },
+  { id: 'quick-flow', label: 'クイック実行', ownHeader: true,
+    desc: 'プロジェクトを立てずに、その場でフローを実行します。成果は未検収の参考成果です。' },
   { id: 'usage', label: '利用状況', desc: 'この端末で使ったトークンと、実行の品質。' },
   { id: 'settings', label: '全体設定', footer: true, ownHeader: true },
 ];

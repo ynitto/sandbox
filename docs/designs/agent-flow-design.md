@@ -149,6 +149,8 @@ run の終端 `status` とグラフ上の進捗とは別に、現在段階を `m
 
 orchestrator は最初にパターンと並列数を選んでタスクグラフを書き、あとは run が静止するのを待ちます。静止とは、実行中のノードも、park 中のノードも、いま claim できる pending もない状態です。静止したら評価役の LLM に「この結果で要求を満たすか」を尋ね、足りなければタスクを追加してもう一周します。反復は `max_iterations`（既定 3）で止まります。
 
+計画には planner（LLM / stub / flow-planner）を通らない第 3 の経路があります——**ユーザー定義フロー**です。inbox 要求の `plan` フィールド（または `--plan-file`）にノード列（`{name?, evaluate?, nodes:[{id, goal, deps, kind, agent?, ...}]}`）が載っていれば、orchestrator は planner を呼ばず、検証（`plan_strategy_user`）だけでそのグラフを固定します。検証は planner 出力の防御（未知 kind の丸め・循環の切断）とは逆に**厳格に失敗させます**——丸めて実行すると「意図と違う形で走った」ことに気付けないからです。不正な plan は planner へフォールバックせず、`[user-plan]` タグ付きの failure_reason で失敗終端します。per-node の `agent`（`{agent_cli, model}`）はこの経路でだけ受けます（LLM planner の出力からは従来どおり剥がします——モデル選定はルーティングと実測格付けの仕事です）。goal 中の `{{request}}` は要求テキストへ置換され、保存済みフローを入力だけ変えて使い回す口になります。既定では評価役の再計画も無効です（形が意図そのもの。失敗ノードは正直に failed で返し、resume が失敗ノードを pending へ戻します）。`evaluate: true` で従来の継続判断に載ります。主な投入元は agent-dashboard のクイック実行（フロービルダー）です。
+
 計画の履歴は最終形の `graph.json` から推測せず、イベントへ差分として残します。初期計画は
 `planned.tasks`、以後の `replan` と実行中の人の指摘を反映する `inflight_amend` は、理由と
 `changes`（`added` / `replaced` / `updated` / `removed`）を記録します。`graph.json` の `deps` は
@@ -354,7 +356,7 @@ auto-heal はこの世代交代を使いません。heal は同一 run の再開
 
 ```
 <bus>/
-  inbox/<run-id>.json               要求（request / workspace / references / inherit_from / delegation / verification_plan）
+  inbox/<run-id>.json               要求（request / workspace / references / inherit_from / delegation / verification_plan / plan）
   inbox/claims/<run-id>/<who>.json  受理の claim
   inbox/cancels/<run-id>.json       キャンセルマーカー
   runs/<run-id>/

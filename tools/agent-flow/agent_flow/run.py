@@ -378,6 +378,9 @@ def cmd_run(args) -> int:
           else ["--no-review"] if args.review is False else []),
         "--model_opt", args.model or "",
         "--poll", str(args.poll), "--node-id", "orchestrator",
+        # ユーザー定義フロー（--plan-file 明示指定）を orchestrator へ伝搬する。
+        # inbox 経由（--from-inbox）の plan は orchestrator 自身が inbox を読むので転記不要。
+        *(["--plan-file", args.plan_file] if getattr(args, "plan_file", None) else []),
     ])
     procs.append(("orchestrator", orch))
 

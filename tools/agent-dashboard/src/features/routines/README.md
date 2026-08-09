@@ -32,6 +32,16 @@ repo が Windows ドライブ上（`C:\...`）でも `/mnt/c/...` へ寄せて c
 | `api.routineAgentCapture({ target, lines? })` | `routineAgent:capture` |
 | `api.routineAgentState({ repo? })` | `routineAgent:state`（loop-state の last_sent_at ＋ slot の busy） |
 | `api.routineAgentSend({ repo, target, prompt })` | `routineAgent:send`（`agent-loop send` 経由。busy 拒否は `busy: true`） |
+| `api.routineAgentQueueMessage({ repo?, agent, subject?, body })` | `routineAgent:queueMessage`（`agent-loop msg --to <agent> --from agent-dashboard` 経由の受信ボックス投函） |
+| `api.routineAgentQueue({ repo?, agent? })` | `routineAgent:queue`（`~/.kiro/agents/<name>/inbox` の待機中一覧 + `.processed` 件数。読み取り専用） |
+
+## メッセージキュー投函
+
+復旧送信（`send`）は相手が busy だと拒否されるが、**投函（`msg`）は常に受理される**——
+受信側の InboxWatcher が手すきになった順に処理する。busy は失敗ではなく待機で、
+UI（実行状況ダイアログの「依頼を積む」）も待機中／処理済みとして表示する。
+投函は CLI 依頼のみ（生の send-keys もキューへのファイル直書きもしない）。
+待ち行列の表示は inbox の読み取りだけで、ファイルの移動・削除は受信側に任せる。
 
 ## UI
 

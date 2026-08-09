@@ -3627,3 +3627,31 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
   border-left-color: var(--red);
   background: rgba(248, 81, 73, 0.1);
 }
+
+/* クイック実行（adhoc-flow）: 投入フォーム・フロービルダー・run 一覧/詳細 */
+.qf { max-width: 1120px; display: grid; gap: 14px; }
+.qf-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.qf-submit textarea { width: 100%; box-sizing: border-box; margin-bottom: 8px; }
+.qf-notice { padding: 6px 10px; border-left: 3px solid var(--blue, #58a6ff);
+  background: rgba(88, 166, 255, 0.08); border-radius: 0 6px 6px 0; }
+.qf-failure { padding: 6px 10px; border-left: 3px solid var(--red);
+  background: rgba(248, 81, 73, 0.1); border-radius: 0 6px 6px 0; white-space: pre-wrap; }
+#qf-builder { border: 1px solid var(--border, #30363d); border-radius: 8px; padding: 8px 12px; }
+.qf-builder-body { display: grid; gap: 10px; margin-top: 8px; }
+.qf-nodes { width: 100%; border-collapse: collapse; }
+.qf-nodes th, .qf-nodes td { padding: 4px 6px; text-align: left; }
+.qf-nodes input[data-nf="goal"] { width: 100%; box-sizing: border-box; min-width: 200px; }
+.qf-preview { overflow-x: auto; border: 1px dashed var(--border, #30363d);
+  border-radius: 8px; padding: 8px; }
+.qf-methods { display: grid; gap: 4px; max-height: 220px; overflow-y: auto; }
+.qf-method { display: flex; gap: 6px; align-items: baseline; }
+.qf-runs { width: 100%; border-collapse: collapse; }
+.qf-runs tbody tr { cursor: pointer; }
+.qf-runs tbody tr.selected { background: rgba(88, 166, 255, 0.08); }
+.qf-runs th, .qf-runs td { padding: 4px 8px; text-align: left; }
+.qf-detail { border-top: 1px solid var(--border, #30363d); padding-top: 10px; display: grid; gap: 10px; }
+.qf-graph { overflow-x: auto; }
+.qf-output { white-space: pre-wrap; max-height: 320px; overflow-y: auto; }
+.qf-promote { display: grid; gap: 8px; border: 1px solid var(--border, #30363d);
+  border-radius: 8px; padding: 10px; }
+.qf-promote textarea, .qf-promote input[type="text"] { width: 100%; box-sizing: border-box; }

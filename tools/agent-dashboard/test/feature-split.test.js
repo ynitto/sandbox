@@ -21,7 +21,7 @@ test('features に各制御面が並ぶ', () => {
   const ids = features.map((f) => f.id);
   assert.deepStrictEqual(ids,
     ['agent-project', 'routines', 'cowork', 'amigos', 'orchestration', 'delegation', 'participation',
-     'agent-audit']);
+     'agent-audit', 'adhoc-flow']);
 });
 
 test('各 feature が registerIpc / preloadApi / configDefaults を持つ', () => {
@@ -71,7 +71,8 @@ test('routines は tmux 視聴・構造化状態・復旧送信 API を登録す
   });
   assert.deepStrictEqual(
     registered.sort(),
-    ['routineAgent:capture', 'routineAgent:listSessions', 'routineAgent:send', 'routineAgent:state'].sort()
+    ['routineAgent:capture', 'routineAgent:listSessions', 'routineAgent:queue',
+     'routineAgent:queueMessage', 'routineAgent:send', 'routineAgent:state'].sort()
   );
   const api = loop.preloadApi();
   assert.strictEqual(typeof api.routineAgentListSessions, 'function');

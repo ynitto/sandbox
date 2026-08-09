@@ -108,6 +108,7 @@
         <button class="tab" data-tab="participation-status" data-area="participation" data-feature="participation"
           id="tab-btn-participation-status">参加の状況</button>
         <!-- 領域名（利用状況）はタブで繰り返さない。中身の名前だけを出す。 -->
+        <button class="tab" data-tab="quick-flow" data-area="quick-flow" data-feature="adhoc-flow" id="tab-btn-quick-flow">クイック実行</button>
         <button class="tab" data-tab="usage" data-area="usage" data-feature="agent-audit" id="tab-btn-usage">利用量</button>
         <button class="tab" data-tab="usage-settings" data-area="usage" data-feature="agent-audit"
           id="tab-btn-usage-settings">設定</button>
@@ -132,6 +133,7 @@
         <div id="tab-amigos" class="tabpane" data-feature="amigos"></div>
         <div id="tab-participation" class="tabpane hidden" data-feature="participation" hidden></div>
         <div id="tab-participation-status" class="tabpane" data-feature="participation"></div>
+        <div id="tab-quick-flow" class="tabpane" data-feature="adhoc-flow"></div>
         <div id="tab-usage" class="tabpane" data-feature="agent-audit"></div>
         <div id="tab-usage-settings" class="tabpane" data-feature="agent-audit"></div>
         <div id="tab-project-settings" class="tabpane" data-feature="agent-project"></div>
@@ -817,6 +819,7 @@
   <script src="../features/participation/model.js"></script>
   <script src="features/participation.js"></script>
   <script src="features/agent-audit.js"></script>
+  <script src="features/adhoc-flow.js"></script>
   <script src="bootstrap.js"></script>
 </body>
 </html>

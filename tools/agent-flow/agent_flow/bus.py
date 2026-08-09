@@ -973,7 +973,8 @@ class Bus:
                        references: "list[dict] | None" = None,
                        inherit_from: "str | None" = None,
                        delegation: "dict | None" = None,
-                       verification_plan: "dict | None" = None) -> None:
+                       verification_plan: "dict | None" = None,
+                       plan: "dict | None" = None) -> None:
         rec = {
             "id": req_id,
             "request": request,
@@ -991,6 +992,11 @@ class Bus:
             # 統一 verify の検証計画（依頼側が digest 付きで確定済み）。_spawn_orchestrator が
             # `--verification-plan` として orchestrate へ渡し、専用 runner が receipt を返す。
             rec["verification_plan"] = verification_plan
+        if isinstance(plan, dict) and plan.get("nodes"):
+            # ユーザー定義フロー（ビルダー・人手投入）。orchestrate が planner を通さず
+            # 検証だけでこのグラフを実行する（plan_strategy_user）。inbox 要求が唯一の権威で、
+            # orchestrate 自身が inbox を読むため argv 転記は不要。
+            rec["plan"] = plan
         write_json_atomic(os.path.join(self.inbox_dir, f"{req_id}.json"), rec)
 
     def list_inbox(self):

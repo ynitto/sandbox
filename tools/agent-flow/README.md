@@ -359,6 +359,37 @@ orchestrator は要求を見て、以下の 7 パターン（最初の 6 つは
 - **グラフ健全性検査**: 計画・再計画のたびに**未知の依存 ID を除去・循環依存を断ち切る**（planner 誤出力の防御）。
 - 選んだ戦略は `graph.json` / `final.json` に記録され、`status` でも表示される。
 
+### ユーザー定義フロー（plan）— planner を通らない第 3 の計画経路
+
+inbox 要求の `plan` フィールド、または `run --plan-file <file>` でノード列を渡すと、
+orchestrator は planner（LLM / stub / flow-planner）を呼ばず、検証だけでそのグラフを固定する。
+agent-dashboard のクイック実行（フロービルダー）が主な投入元で、保存したフローを入力
+（要求テキスト）だけ変えて使い回せる。
+
+```jsonc
+{
+  "name": "二段検証つき調査",     // 任意（strategy.plan_name に記録）
+  "evaluate": false,              // true で評価役の継続判断（再計画）を有効化。既定は無効
+  "nodes": [
+    {"id": "a", "goal": "調査: {{request}}", "kind": "work"},
+    {"id": "v", "goal": "検証", "deps": ["a"], "kind": "verify",
+     "agent": {"agent_cli": "ollama", "model": "qwen3.5:9b"}}   // per-node の明示指定（人だけが書ける）
+  ]
+}
+```
+
+- 検証は planner 出力の防御（未知 kind の丸め・循環の切断）と逆に**厳格に失敗させる**。
+  不正な plan は planner へフォールバックせず `[user-plan]` タグ付き failure_reason で失敗終端する
+  （黙って別の計画に差し替えるとユーザーの意図が失われるため）。
+- `goal` 中の `{{request}}` は要求テキストへ置換される（プリセット使い回しの口。置換はこの 1 か所）。
+- per-node `agent` はこの経路でだけ受ける。LLM planner の出力からは従来どおり剥がす
+  （モデル選定はルーティング・実測格付けの仕事）。
+- `split` ノードへの静的依存は投入時に弾く（map/reduce は実行時に動的生成されるため）。
+- 既定では評価役の再計画は無効（形が意図そのもの）。失敗ノードは failed で正直に返し、
+  resume（再実行）が失敗ノードを pending へ戻す。`evaluate: true` で従来の継続判断に載る。
+- 手法（F17）を run 単位で強制したいときは `AGENT_TUNING_DIR` に run 専用の tuning.json を
+  渡す（dashboard のクイック実行はこの口で選択手法のスナップショットを添える）。
+
 ## 動的ワークフロー（evaluator-optimizer ループ）
 
 ```
@@ -391,7 +422,9 @@ retry、`FLAKY` を含むゴールは検証で issue 扱い → 作り直しが�
 claim は lease 超過で自動的に無効化され、別ノードが再 claim できる。
 
 ```
-<bus>/inbox/<req-id>.json          # 投入された要求（agent-project / 板 / 人が書く）
+<bus>/inbox/<req-id>.json          # 投入された要求（agent-project / 板 / 人 / dashboard が書く。
+                                   #   request / workspace / references / inherit_from /
+                                   #   delegation / verification_plan / plan）
 <bus>/inbox/claims/<req-id>/<who>.json  # 要求の取得マーカー（どのノードが担当か）
 <bus>/runs/<run-id>/
   meta.json            # 要求・status（planning/running/done）
@@ -696,7 +729,7 @@ update_installer: install.sh    # サブディレクトリ内で実行するイ�
 | コマンド | 役割 |
 |---------|------|
 | `participate` | 受理と回収を 1 巡（cancel 受理・park 再確認・孤児回収・板巡回・inbox 受理）。実行すべき run-id を返すだけで run は起こさない。`--running` に自分が走らせている run-id を渡す |
-| `run [要求]` | 単発実行。**既存 --run-id なら再開、無ければ新規**（状態で自動判断）。`--from-inbox` で要求文/書込先/引き継ぎ元を inbox から読む |
+| `run [要求]` | 単発実行。**既存 --run-id なら再開、無ければ新規**（状態で自動判断）。`--from-inbox` で要求文/書込先/引き継ぎ元/ユーザー定義フローを inbox から読む。`--plan-file` でユーザー定義フロー（plan JSON）を直接渡す |
 | `cancel <run-id>` | run を `cancelled` に終端化（park 中でも暴走中でも効く）。`--close-issues` で起票済みイシューも後始末 |
 | `cleanup` | バス外の一時ファイル（ロック残骸・`*.tmp.<pid>`・孤立クローン・共有ミラー）を単発で掃除。`--json` で機械可読 |
 | `status` | ダッシュボード表示（進捗バー/エージェント状態/アクティビティ）。`--follow` ライブ / `--list` 一覧 |

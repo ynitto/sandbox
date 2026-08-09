@@ -209,6 +209,8 @@ test('feature preload が routineAgent API を出す', () => {
   assert.strictEqual(typeof api.routineAgentCapture, 'function');
   assert.strictEqual(typeof api.routineAgentState, 'function');
   assert.strictEqual(typeof api.routineAgentSend, 'function');
+  assert.strictEqual(typeof api.routineAgentQueueMessage, 'function');
+  assert.strictEqual(typeof api.routineAgentQueue, 'function');
   const registered = [];
   loop.registerIpc({
     handle: (channel) => registered.push(channel),
@@ -217,7 +219,8 @@ test('feature preload が routineAgent API を出す', () => {
   });
   assert.deepStrictEqual(
     registered.sort(),
-    ['routineAgent:capture', 'routineAgent:listSessions', 'routineAgent:send', 'routineAgent:state'].sort()
+    ['routineAgent:capture', 'routineAgent:listSessions', 'routineAgent:queue',
+      'routineAgent:queueMessage', 'routineAgent:send', 'routineAgent:state'].sort()
   );
   assert.ok(loop.configDefaults.routines);
 });

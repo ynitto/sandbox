@@ -357,6 +357,8 @@ function overview(config, opts = {}) {
     // renderer が「選択プロジェクトに設定ファイルがあるか」を判定する根拠。
     // items は手動設定との重複排除で source=config になる場合があるため、発見元を別に保持する。
     discoveredRepos: [...discoveredByKey.values()],
+    // アドホック起動の起動先候補（登録済みフォルダ。runAdhoc の検証と同じ集合）。
+    roots: adhocRoots(config),
     items,
   };
 }
@@ -750,6 +752,65 @@ function generateStateMachine(config, payload = {}) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// アドホック起動（M2）: 登録フォルダ + 自由文で対話 CLI を起動する。
+// 項目（items）に依存しない generateStateMachine と同じ形で、新しい起動系は作らない
+// ——CLI/モデル解決（routineLaunchPlan）・共通指示の前置・履歴の追記を既存経路のまま通す。
+// ---------------------------------------------------------------------------
+
+// 登録済みフォルダ（走査ルートと同じ集合）を解決済みパスで返す。renderer の選択肢と
+// runAdhoc の cwd 検証が同じ集合を見る——cwd は登録済みフォルダからの選択のみ（C1）。
+function adhocRoots(config) {
+  const seen = new Set();
+  const out = [];
+  for (const r of coworkRoots(config)) {
+    const folder = _resolveRoot(r, config);
+    if (!folder) continue;
+    const k = _pathKey(folder);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(folder);
+  }
+  return out;
+}
+
+function runAdhoc(config, payload = {}) {
+  const cfg = config.cowork || {};
+  const rawRoot = String(payload.root || '').trim();
+  const freeText = String(payload.prompt || '').trim();
+  if (!rawRoot) throw new Error('フォルダを選択してください');
+  if (!freeText) throw new Error('エージェントへの指示を入力してください');
+  const folder = _resolveRoot(rawRoot, config);
+  const registered = adhocRoots(config).find((r) => _pathKey(r) === _pathKey(folder));
+  if (!registered) throw new Error(`登録されていないフォルダは起動先にできません: ${rawRoot}`);
+  const prompt = withGlobalInstructions(config, freeText);
+  const plan = routineLaunchPlan(config, registered);
+  const res = runChatWindow({
+    ...plan.launch,
+    prompt,
+    cwd: registered,
+    sessionCommands: plan.sessionCommands,
+    // 定常業務のセッション（kiro-dash-…）へ合流させない。進行中の会話に自由文を
+    // 混ぜないよう、アドホック専用の名前空間で開く。
+    sessionKey: 'adhoc',
+    title: 'アドホック起動',
+    message: '外部ターミナルでエージェントCLIを起動しました',
+  });
+  // 履歴は項目に紐づかないので、名前はプロンプトの 1 行目で代える。
+  const name = freeText.split(/\r?\n/)[0].slice(0, 60);
+  appendHistory(cfg, {
+    at: new Date().toISOString(),
+    key: jobKey({ type: 'adhoc', repo: registered, name }),
+    id: '',
+    name,
+    type: 'adhoc',
+    repo: registered,
+    ok: !!(res && res.ok),
+    message: String((res && (res.error || res.message)) || '').trim().slice(0, 300),
+  });
+  return res;
+}
+
 // 定常業務（agent-control 契約のワークロード名）。全体設定 → 実行制御の
 // 「機能ごとのエージェントとモデル」で routine に書いた宣言が、この画面の起動に効く。
 const ROUTINE_WORKLOAD = 'routine';
@@ -1116,7 +1177,8 @@ function saveWork(config, saveConfig, { items, branch, createBranch, push } = {}
 }
 
 module.exports = {
-  overview, runLoop, runStateMachine, generateStateMachine, saveWork, itemsOf, wslPath, dynamicState,
+  overview, runLoop, runStateMachine, generateStateMachine, runAdhoc, adhocRoots,
+  saveWork, itemsOf, wslPath, dynamicState,
   resolveItem, findItem, dedupeItems, applyDiscoveredEdits, gitCommitFiles,
   invalidateDiscoverCache, decodeCliOutput, viewerRepo,
   itemLogs, readLog, appendHistory, readHistory, historyFile,

@@ -121,6 +121,11 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--from-inbox", dest="from_inbox", action="store_true",
                      help="要求文・書込先ワークスペース・参照リポジトリ・引き継ぎ元を "
                           "inbox/<run-id>.json から読む（participate が受理した要求を実行するとき）")
+    run.add_argument("--plan-file", dest="plan_file", default=None,
+                     help="ユーザー定義フロー（plan JSON: {name?, evaluate?, nodes:[{id,goal,deps,"
+                          "kind,agent?,...}]}）を読むファイル。指定すると planner を通さず検証だけで"
+                          "このグラフを実行する。inbox 要求の plan フィールドと同じ契約"
+                          "（goal 中の {{request}} は要求テキストへ置換）")
     run.set_defaults(func=cmd_run)
 
     orch = sub.add_parser("orchestrate", help="計画役")
@@ -141,6 +146,8 @@ def build_parser() -> argparse.ArgumentParser:
                       help="リトライ: 先行 run-id から確定済みノードを引き継ぎ先行 run を掃除する")
     orch.add_argument("--delegation", default=None,
                       help="委譲公示板（agent-board）由来の来歴 JSON（{id, board}）を run meta へ記録する")
+    orch.add_argument("--plan-file", dest="plan_file", default=None,
+                      help="ユーザー定義フロー（plan JSON）のファイル。inbox 要求の plan と同じ契約")
     orch.set_defaults(func=cmd_orchestrate)
 
     work = sub.add_parser("work", help="ワーカー役")
