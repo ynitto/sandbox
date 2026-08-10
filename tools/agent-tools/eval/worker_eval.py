@@ -36,6 +36,7 @@ WORK = Path(os.environ.get("WORKER_EVAL_DIR",
                            str(Path(tempfile.gettempdir()) / "agent-worker-eval")))
 MODEL = "qwen3.5:9b"        # --model で上書き
 CLI = "agent-ollama"        # --cli で上書き（agent-ollama | aider）
+NUM_PREDICT = 0             # --num-predict で上書き（0 = 上限なし。aider 経路のみ）
 OLLAMA_API_BASE = os.environ.get("OLLAMA_API_BASE", "http://127.0.0.1:11434")
 WALL_LIMIT = 600.0          # agent-flow の agent_timeout 既定
 # 本番の argv は agents/ollama.json の write_args。**書き写さずに読む**——初版は
@@ -295,21 +296,21 @@ def _load_aider_spec():
     return agentcli, agentcli.load_cli("aider")
 
 
-def aider_settings(model: str) -> Path:
-    """aider へ渡すモデル設定。**num_ctx を明示するために要る。**
+def aider_settings(model: str, num_ctx: int = 32768, num_predict: int = 0) -> Path:
+    """aider へ渡すモデル設定（文脈と 1 ターンの生成上限）。
 
-    aider は ollama の文脈長を既定 8k として扱い、超えた分を黙って捨てる。ここを書かないと
-    「モデルが途中で読み落とした」に見える打ち切りを測ることになる（ollama 側は 32k で
-    載っている）。リポジトリマップも切る——このリポジトリは巨大で、マップだけで文脈が尽きる。
+    aider の直し直しは 3 回で止まる（`max_reflections`・CLI フラグは無い）ので、壁時計を
+    焼くのは回数ではなく **1 ターンの生成の長さ**である——実測で最後のターンが受信 3.7k
+    トークン、26.5 tok/s で約 140 秒。`num_predict` はそこへ効く上限で、**失敗を安く切る**
+    ためのレバー。合否そのものは変わらない（途中で切られた編集は適用されず fail になる）。
     """
     path = WORK / "aider.model.settings.yml"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        f"- name: ollama_chat/{model}\n"
-        "  edit_format: diff\n"
-        "  use_repo_map: false\n"
-        "  extra_params:\n"
-        "    num_ctx: 32768\n", encoding="utf-8")
+    lines = [f"- name: ollama_chat/{model}", "  edit_format: diff",
+             "  use_repo_map: false", "  extra_params:", f"    num_ctx: {num_ctx}"]
+    if num_predict > 0:
+        lines.append(f"    num_predict: {num_predict}")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
 
 
@@ -326,6 +327,8 @@ def aider_argv(task: dict) -> "list[str]":
                                   read_files=task.get("read") or ())
     argv = built["argv"]
     extra = []
+    if NUM_PREDICT > 0:
+        extra += ["--model-settings-file", str(aider_settings(MODEL, num_predict=NUM_PREDICT))]
     if task.get("map_tokens"):
         # 定義の `--map-tokens 0` を**消してから**置き換える。同じフラグを 2 回並べて
         # 後勝ちに賭けると、定義側が並び順を変えた日に静かに 0 へ戻る。
@@ -411,7 +414,7 @@ def run_one(tid: str, i: int) -> dict:
     for line in err.splitlines():
         if line.startswith("@agent-log"):
             log = line.split(None, 1)[-1]
-    rec = dict(task=tid, iter=i, cli=CLI, model=MODEL, ok=ok, mode=mode,
+    rec = dict(task=tid, iter=i, cli=CLI, model=MODEL, num_predict=NUM_PREDICT, ok=ok, mode=mode,
                wall=round(wall, 1), note=note, log=log, out_chars=len(out))
     print(f"  {tid}#{i}: {'PASS' if ok else 'FAIL':4s} {mode:24s} "
           f"{wall:6.1f}s  {note[:70]}", flush=True)
@@ -419,7 +422,7 @@ def run_one(tid: str, i: int) -> dict:
 
 
 def main() -> None:
-    global WALL_LIMIT, MODEL, CLI
+    global WALL_LIMIT, MODEL, CLI, NUM_PREDICT
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default=MODEL,
                     help="測るモデル。別モデルの判定はここだけ変えればよい")
@@ -429,10 +432,14 @@ def main() -> None:
                     help="1 run の壁時計上限（既定は agent_timeout の 600 秒）")
     ap.add_argument("--cli", default=CLI, choices=("agent-ollama", "aider"),
                     help="worker として回すエージェント層。道具の作法はそれぞれのものを使う")
+    ap.add_argument("--num-predict", type=int, default=NUM_PREDICT,
+                    help="1 ターンの生成上限（aider 経路のみ・0 で無効）。"
+                         "収束しない課題の壁時計を切るレバー")
     args = ap.parse_args()
     WALL_LIMIT = args.wall
     MODEL = args.model
     CLI = args.cli
+    NUM_PREDICT = args.num_predict
 
     WORK.mkdir(parents=True, exist_ok=True)
     ledger = WORK / "ledger.jsonl"

@@ -2658,14 +2658,14 @@ def main() -> None:
     elif agent_type == "aider":
         print("\n6. aider をセットアップ...")
         setup_aider(force=args.force_external)
-        # スキルは索引で渡す（全文を積むと本題の材料が入らない）。指示ファイルは
-        # copy_agent_instructions が置いた common.instructions.md を同じ read: に載せる。
-        reads = [write_aider_skill_index(paths, installed)]
+        # 常時読ませるのは**索引だけ**。指示ファイル（common.instructions.md だけで
+        # 14.9 KB）まで載せると実測で 6.0k トークンになり、aider が ollama を載せる
+        # CONTEXT 9640 の 6 割を本題より先に使う。狭いほうを既定にして、要る人が足す。
+        register_aider_reads(paths, [write_aider_skill_index(paths, installed)])
         instructions_dir = os.path.join(paths["agent_home"], "instructions")
         if os.path.isdir(instructions_dir):
-            reads += [os.path.join(instructions_dir, name)
-                      for name in sorted(os.listdir(instructions_dir)) if name.endswith(".md")]
-        register_aider_reads(paths, reads)
+            print(f"   指示ファイルは {instructions_dir} に置きました（read: には載せません）")
+            print("     常時読ませたいときは ~/.aider.conf.yml の read: へ足してください")
         # Kiro と GitHub Copilot はセッション停止フックの仕組みを持たないため
         # common.instructions.md の指示でセッション終了時の記憶保存を行う
 

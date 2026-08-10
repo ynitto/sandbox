@@ -377,8 +377,12 @@ def run_one(cid: str, i: int) -> dict:
         # split は本番（agent.py）が「器を剥がす → それでも配列でなければレイヤ2 の形式修復を
         # 1 回」の順で受ける。ここを省くと、**本番なら救えている失敗**をモデルの不合格として
         # 数えてしまう。剥がし方は写さず本番の関数をそのまま呼ぶ（写すとずれる）。
-        if case.get("kind") == "split":
-            data = agent_flow.unwrap_list(data)
+        # 剥がす関数がこの作業ツリーの agent-flow に無いこともある（エンジン側の修正が
+        # 別ブランチにあるとき）。無ければ剥がさず測る——ここで落ちると split 以外の
+        # 測定まで道連れになる（実際に全 30 run が起動前に死んだ）。
+        unwrap_list = getattr(agent_flow, "unwrap_list", None)
+        if case.get("kind") == "split" and unwrap_list is not None:
+            data = unwrap_list(data)
         if case.get("kind") == "split" and not isinstance(data, list):
             repair = (f"{prompt}\n\n[前回の出力は契約違反でした]\n"
                       f"前回の出力（先頭 400 文字）: {out[:400]}\n"
