@@ -43,6 +43,22 @@
       "default": null,
       "description": "prompt_via=argv のときのフラグ名（例 \"-p\"）。null なら素の末尾引数。"
     },
+    "file_flag": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null,
+      "description": "編集対象ファイルを argv で受け取る CLI のフラグ名（例 \"--file\"）。宣言した CLI にだけ、呼び出し側が渡したパスがフラグ + パスの繰り返しで載る。aider のように「チャットに入っているファイルしか編集しない」CLI 向け——宣言しない CLI では、パスはプロンプト本文だけで伝わる（従来どおり）。"
+    },
+    "read_flag": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null,
+      "description": "読み取り専用ファイルのフラグ名（例 \"--read\"）。file_flag と同じ扱いで、仕様の正など書き換えてほしくない材料を渡すのに使う。"
+    },
     "model_flag": {
       "type": [
         "string",
@@ -258,10 +274,7 @@
             "description": "quota=利用上限（時間をおけば回復・リトライを焼かない） / auth=認証切れ（人が環境を直す） / env=実行環境の問題（CLI不在・モデル不正など。人が環境を直す） / transient=一時的（通常リトライで解ける）"
           },
           "quota_kind": {
-            "enum": [
-              "exhausted",
-              "rate_limit"
-            ],
+            "enum": ["exhausted", "rate_limit"],
             "description": "class=quota の細分。exhausted=累積枠の恒久的な枯渇（次周期まで復帰時刻不明）、rate_limit=時限枠（メッセージ内の reset at / retry after から復帰時刻を抽出）"
           },
           "hint": {
@@ -274,25 +287,16 @@
     "session_log": {
       "type": "object",
       "description": "この CLI 自身のセッションログ（ネイティブストア）の所在と形式の宣言（additive・任意）。読むのは agent-audit だけで、argv 組み立てのローダは無視する——既存ツールへの影響なし。宣言が無い CLI のセッションは「未収集」として明示される（黙ってスキップしない）。CLI がストアの場所・形式を変えたときの修正もこの JSON 1 ファイルで完結する（受入条件をログの所在にも適用。設計: docs/designs/agent-audit-design.md §4.2）",
-      "required": [
-        "format",
-        "paths"
-      ],
+      "required": ["format", "paths"],
       "additionalProperties": false,
       "properties": {
         "format": {
-          "enum": [
-            "jsonl-dir",
-            "kiro-sqlite",
-            "opencode-sqlite"
-          ],
+          "enum": ["jsonl-dir", "kiro-sqlite", "opencode-sqlite"],
           "description": "パーサの選択（実装は agent-audit に format ごと 1 つ）。jsonl-dir=1 セッション 1 *.jsonl のディレクトリ（claude / codex 系） / kiro-sqlite=kiro-cli の SQLite ストア（1 行に会話配列が丸ごと入る形） / opencode-sqlite=opencode の SQLite ストア（session / message / part の 3 表に正規化された形。本文は part 行の JSON、役割は親の message 行、実測トークンは session 行の列）"
         },
         "paths": {
           "type": "array",
-          "items": {
-            "type": "string"
-          },
+          "items": {"type": "string"},
           "description": "ストアの場所（~ 展開・グロブ可・先勝ち）"
         },
         "usage": {
@@ -312,19 +316,14 @@
             "rules": {
               "type": "array",
               "description": "既定ルールセット（versions のどのエントリにも当たらないときに使う）",
-              "items": {
-                "$ref": "#/$defs/cleanRule"
-              }
+              "items": {"$ref": "#/$defs/cleanRule"}
             },
             "versions": {
               "type": "array",
               "description": "バージョン別ルールセット。先勝ちで評価し、当たったエントリの rules が既定を丸ごと置き換える（部分マージはしない）",
               "items": {
                 "type": "object",
-                "required": [
-                  "when",
-                  "rules"
-                ],
+                "required": ["when", "rules"],
                 "additionalProperties": false,
                 "properties": {
                   "when": {
@@ -333,9 +332,7 @@
                   },
                   "rules": {
                     "type": "array",
-                    "items": {
-                      "$ref": "#/$defs/cleanRule"
-                    }
+                    "items": {"$ref": "#/$defs/cleanRule"}
                   }
                 }
               }
@@ -349,61 +346,21 @@
     "cleanRule": {
       "type": "object",
       "description": "clean ルール 1 件。rule が閉じた enum（実装は agent_audit/cleaning.py）で、それ以外のキーは rule の種類ごとに意味を持つ（例: drop-line は field/equals/in、strip-tag は tags）",
-      "required": [
-        "rule"
-      ],
+      "required": ["rule"],
       "additionalProperties": false,
       "properties": {
         "rule": {
-          "enum": [
-            "drop-line",
-            "drop-message",
-            "strip-tag",
-            "strip-regex",
-            "truncate-message"
-          ],
+          "enum": ["drop-line", "drop-message", "strip-tag", "strip-regex", "truncate-message"],
           "description": "drop-line=行（生ログエントリ）を丸ごと落とす / drop-message=本文（正規形メッセージ）を丸ごと落とす / strip-tag=<tag>…</tag> ブロックを除去 / strip-regex=正規表現に一致する部分を除去（enum で表せない新ノイズへの応急対応） / truncate-message=本文を先頭優先で切り詰める"
         },
-        "field": {
-          "type": "string",
-          "description": "drop-line: 判定するフィールド名（dotted 可）"
-        },
-        "equals": {
-          "description": "drop-line: field の値がこれと等しければ落とす"
-        },
-        "in": {
-          "type": "array",
-          "description": "drop-line: field の値がこの配列に含まれれば落とす"
-        },
-        "prefixes": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "description": "drop-message: 本文がこのいずれかで始まれば落とす"
-        },
-        "contains": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "description": "drop-message: 本文がこのいずれかを含めば落とす"
-        },
-        "tags": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "description": "strip-tag: 除去するタグ名（閉じタグが無ければ消さない）"
-        },
-        "pattern": {
-          "type": "string",
-          "description": "strip-regex: 除去する正規表現。コンパイルできなければこのルールだけスキップ"
-        },
-        "max_chars": {
-          "type": "integer",
-          "description": "truncate-message: この文字数を超えたら先頭優先で切り詰める"
-        }
+        "field": {"type": "string", "description": "drop-line: 判定するフィールド名（dotted 可）"},
+        "equals": {"description": "drop-line: field の値がこれと等しければ落とす"},
+        "in": {"type": "array", "description": "drop-line: field の値がこの配列に含まれれば落とす"},
+        "prefixes": {"type": "array", "items": {"type": "string"}, "description": "drop-message: 本文がこのいずれかで始まれば落とす"},
+        "contains": {"type": "array", "items": {"type": "string"}, "description": "drop-message: 本文がこのいずれかを含めば落とす"},
+        "tags": {"type": "array", "items": {"type": "string"}, "description": "strip-tag: 除去するタグ名（閉じタグが無ければ消さない）"},
+        "pattern": {"type": "string", "description": "strip-regex: 除去する正規表現。コンパイルできなければこのルールだけスキップ"},
+        "max_chars": {"type": "integer", "description": "truncate-message: この文字数を超えたら先頭優先で切り詰める"}
       }
     }
   }

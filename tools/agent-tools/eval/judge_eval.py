@@ -67,8 +67,9 @@ def cli_name_for(kind: str) -> str:
     split は配列を返す契約なので、本番は `list_variant`（`--format array`）へ振り替える。
     ollama の JSON モードはトップレベルをオブジェクトに固定するため、`--format json` の
     ままでは配列契約を満たしようがない（実測では要素をキーへ散らした器で返る）。
-    list 契約の振り替えは agent-flow 側の未着地分なので、無い木では JSON 変種へ倒す
-    （split 以外の測定を道連れにしないため。split はこの木では測れない）。
+    振り替えを持たない木（エンジン側の修正が別ブランチにある等）では JSON 変種へ倒す。
+    ここで例外にすると split 以外の測定まで道連れになる——**測れないものを測れないと
+    記録して、残りは測る**。
     """
     if kind in getattr(agent_flow, "LIST_CONTRACT_ROLES", frozenset()):
         return agent_flow._agentcli.list_variant("ollama")
@@ -377,9 +378,8 @@ def run_one(cid: str, i: int) -> dict:
         # split は本番（agent.py）が「器を剥がす → それでも配列でなければレイヤ2 の形式修復を
         # 1 回」の順で受ける。ここを省くと、**本番なら救えている失敗**をモデルの不合格として
         # 数えてしまう。剥がし方は写さず本番の関数をそのまま呼ぶ（写すとずれる）。
-        # 剥がす関数がこの作業ツリーの agent-flow に無いこともある（エンジン側の修正が
-        # 別ブランチにあるとき）。無ければ剥がさず測る——ここで落ちると split 以外の
-        # 測定まで道連れになる（実際に全 30 run が起動前に死んだ）。
+        # 剥がす関数を持たない木では剥がさずに測る。ここで AttributeError にすると
+        # split 以外の測定まで道連れになる（実際に全 30 run が起動前に死んだ）。
         unwrap_list = getattr(agent_flow, "unwrap_list", None)
         if case.get("kind") == "split" and unwrap_list is not None:
             data = unwrap_list(data)
