@@ -39,7 +39,8 @@ class TestOllamaAdapter(_NoServerMixin, unittest.TestCase):
         with mock.patch.object(ollama_adapter.urllib.request, "urlopen", return_value=response) as call:
             result = ollama_adapter.generate("qwen3", "hello")
         sent = json.loads(call.call_args.args[0].data)
-        self.assertEqual(sent, {"model": "qwen3", "prompt": "hello", "stream": False})
+        self.assertEqual(sent, {"model": "qwen3", "prompt": "hello", "stream": False,
+                                "options": {"num_predict": ollama_loop.DEFAULT_NUM_PREDICT}})
         self.assertEqual((result["prompt_eval_count"], result["eval_count"]), (12, 34))
 
     def test_main_separates_model_text_and_usage(self):

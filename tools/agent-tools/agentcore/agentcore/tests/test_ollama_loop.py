@@ -256,13 +256,29 @@ class TestResolveThink(unittest.TestCase):
 
 
 class TestLoadOptions(unittest.TestCase):
+    CAP = ollama_loop.DEFAULT_NUM_PREDICT
+
     def test_json_is_merged(self):
         with mock.patch.dict(os.environ, {"AGENT_OLLAMA_OPTIONS": '{"num_ctx": 8192}'}):
-            self.assertEqual(ollama_loop.load_options(), {"num_ctx": 8192})
+            self.assertEqual(ollama_loop.load_options(),
+                             {"num_ctx": 8192, "num_predict": self.CAP})
 
     def test_broken_json_is_ignored(self):
         with mock.patch.dict(os.environ, {"AGENT_OLLAMA_OPTIONS": "{壊れ"}):
-            self.assertEqual(ollama_loop.load_options(), {})
+            self.assertEqual(ollama_loop.load_options(), {"num_predict": self.CAP})
+
+    def test_runaway_generation_is_capped_by_default(self):
+        """未指定でも 1 ラウンドの生成に天井を置く。
+
+        停止トークンを出さなくなったモデルは 10 tok/s で書き続け、ラウンド 1 本で
+        呼び出し側の予算（agent_timeout）を食い切る。停滞検知は無進捗しか見ないので
+        この暴走には反応しない——天井だけが止められる。"""
+        with mock.patch.dict(os.environ, {"AGENT_OLLAMA_OPTIONS": ""}):
+            self.assertEqual(ollama_loop.load_options()["num_predict"], self.CAP)
+
+    def test_explicit_num_predict_wins(self):
+        with mock.patch.dict(os.environ, {"AGENT_OLLAMA_OPTIONS": '{"num_predict": 128}'}):
+            self.assertEqual(ollama_loop.load_options()["num_predict"], 128)
 
 
 class TestCommandExtraction(unittest.TestCase):

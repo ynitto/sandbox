@@ -1,0 +1,21 @@
+{"task": "T1", "iter": 1, "ok": false, "mode": "timeout", "wall": 600.0, "note": "eval/humansize.py が無い", "log": "", "out_chars": 0}
+{"task": "T1", "iter": 2, "ok": false, "mode": "timeout", "wall": 600.0, "note": "eval/humansize.py が無い", "log": "", "out_chars": 0}
+{"task": "T1", "iter": 3, "ok": false, "mode": "timeout", "wall": 600.0, "note": "import/実行が失敗: [\"IndentationError: expected an indented block after 'if' statement on line 62\"]", "log": "", "out_chars": 0}
+{"task": "T2", "iter": 1, "ok": false, "mode": "cli_error", "wall": 598.1, "note": "テストが落ちたまま: ['2 failed, 1 passed in 0.01s']", "log": "", "out_chars": 0}
+{"task": "T2", "iter": 2, "ok": true, "mode": "returned", "wall": 250.5, "note": "テスト無改変で 3 件 pass", "log": "/Users/nitto/.agents/logs/ollama/20260810T112305-78528-qwen3.5_9b.jsonl", "out_chars": 588}
+{"task": "T2", "iter": 3, "ok": false, "mode": "timeout", "wall": 600.0, "note": "テストが落ちたまま: ['1 failed, 2 passed in 0.01s']", "log": "", "out_chars": 0}
+{"task": "T3", "iter": 1, "ok": false, "mode": "self_reported_incomplete", "wall": 471.7, "note": "C1 fail: schemas/node-budget-summary.schema.json が無い", "log": "/Users/nitto/.agents/logs/ollama/20260810T113716-86573-qwen3.5_9b.jsonl", "out_chars": 785}
+{"task": "T3", "iter": 2, "ok": false, "mode": "returned", "wall": 363.5, "note": "C1 fail: properties を持たない（JSON Schema になっていない）", "log": "/Users/nitto/.agents/logs/ollama/20260810T114509-90931-qwen3.5_9b.jsonl", "out_chars": 1335}
+{"task": "T3", "iter": 3, "ok": false, "mode": "returned", "wall": 165.0, "note": "C3 fail: 契約テストが追加されていない", "log": "/Users/nitto/.agents/logs/ollama/20260810T115113-94202-qwen3.5_9b.jsonl", "out_chars": 755}
+{"task": "T1min", "iter": 1, "ok": false, "mode": "timeout", "wall": 600.0, "note": "eval/humansize.py が無い", "log": "", "out_chars": 0}
+{"task": "T1min", "iter": 2, "ok": false, "mode": "timeout", "wall": 600.0, "note": "eval/humansize.py が無い", "log": "", "out_chars": 0}
+{"task": "T1min", "iter": 3, "ok": true, "mode": "returned", "wall": 344.8, "note": "仕様 6 ケース pass（テスト契約は課していない）", "log": "/Users/nitto/.agents/logs/ollama/20260810T122457-9303-qwen3.5_9b.jsonl", "out_chars": 798}
+{"task": "T1", "iter": 1, "ok": false, "mode": "timeout", "wall": 1800.0, "note": "import/実行が失敗: ['IndexError: list index out of range']", "log": "", "out_chars": 0}
+{"task": "T1", "iter": 2, "ok": false, "mode": "cli_error", "wall": 1799.9, "note": "eval/humansize.py が無い", "log": "", "out_chars": 0}
+{"task": "T1", "iter": 3, "ok": false, "mode": "cli_error", "wall": 1800.0, "note": "eval/humansize.py が無い", "log": "", "out_chars": 0}
+{"task": "T1min", "iter": 1, "ok": false, "mode": "self_reported_incomplete", "wall": 450.3, "note": "eval/humansize.py が無い", "log": "/Users/nitto/.agents/logs/ollama/20260810T140201-34479-qwen3.5_9b.jsonl", "out_chars": 796}
+{"task": "T1min", "iter": 2, "ok": false, "mode": "timeout", "wall": 645.6, "note": "import/実行が失敗: ['SyntaxError: invalid syntax']", "log": "", "out_chars": 0}
+{"task": "T1min", "iter": 3, "ok": false, "mode": "timeout", "wall": 600.0, "note": "eval/humansize.py が無い", "log": "", "out_chars": 0}
+{"task": "T1", "iter": 1, "ok": false, "mode": "timeout", "wall": 600.0, "note": "eval/humansize.py が無い", "log": "", "out_chars": 0}
+{"task": "T1", "iter": 2, "ok": false, "mode": "timeout", "wall": 600.0, "note": "eval/humansize.py が無い", "log": "", "out_chars": 0}
+{"task": "T1", "iter": 3, "ok": false, "mode": "timeout", "wall": 600.0, "note": "振る舞いが仕様と違う: BAD [(1024, None, '1.0 KiB'), (1536, None, '1.5 KiB'), (1048576, None, '1.0 MiB'), (1073741824, None, '1.0 GiB')]", "log": "", "out_chars": 0}

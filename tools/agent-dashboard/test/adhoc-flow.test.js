@@ -121,7 +121,29 @@ test('カスタムフローの tier を実行候補へ固定して plan を作�
   }
 });
 
-test('実行手法はノードへスナップショットされ、そのノードの指示だけへ反映される', () => {
+test('ノードの継続動作を保存し、agent-flow の継続評価を有効にする', () => {
+  const original = profiles.resolveTier;
+  profiles.resolveTier = () => ({ agent_cli: 'codex', model: 'gpt-5' });
+  try {
+    const workflow = adhoc.normalizeWorkflow({
+      name: '完了まで反復',
+      nodes: [
+        { id: 'work', goal: '作業', kind: 'work', tier: 'medium' },
+        { id: 'verify', goal: '完了条件を確認', kind: 'verify', tier: 'medium',
+          deps: ['work'], continuation: 'retry' },
+      ],
+    });
+    assert.strictEqual(workflow.nodes[1].continuation, 'retry');
+    assert.strictEqual(adhoc.planFromWorkflow({}, workflow).evaluate, true);
+    assert.strictEqual(adhoc.planFromWorkflow({}, {
+      ...workflow, nodes: workflow.nodes.map((node) => ({ ...node, continuation: undefined })),
+    }).evaluate, undefined, '通常の固定フローには隠れた評価を追加しない');
+  } finally {
+    profiles.resolveTier = original;
+  }
+});
+
+test('旧全体ルールは捨て、工程の実行手法だけを指示へ反映する', () => {
   const original = profiles.resolveTier;
   profiles.resolveTier = () => ({ agent_cli: 'codex', model: 'gpt-5' });
   try {
@@ -135,10 +157,10 @@ test('実行手法はノードへスナップショットされ、そのノー�
         },
       }],
     });
-    assert.deepStrictEqual(workflow.methods, ['plan-first']);
+    assert.strictEqual(workflow.methods, undefined);
     assert.strictEqual(workflow.nodes[0].method.id, 'test-first');
     const plan = adhoc.planFromWorkflow({}, workflow);
-    assert.deepStrictEqual(plan.methods, ['plan-first']);
+    assert.strictEqual(plan.methods, undefined);
     assert.match(plan.nodes[0].goal, /失敗する最小テスト/);
     assert.strictEqual(plan.nodes[0].method, undefined, '実行エンジンへは通常の goal として渡す');
   } finally {
@@ -146,19 +168,110 @@ test('実行手法はノードへスナップショットされ、そのノー�
   }
 });
 
-test('実行手法カタログから説明つきの具体ノードを作る', () => {
-  const node = workflowUi.methodNodeTemplate({
+test('工程向け実行手法を、役割の合う工程だけのオプションにする', () => {
+  const methods = [{
     id: 'adversarial-verify', description: '反例を探してから検証判定する', origin: 'local:test',
     fragments: [{ role: 'verify', text: '具体的な反例を探してください。' }],
-  }, 1, 'small');
-  assert.strictEqual(node.kind, 'verify');
-  assert.strictEqual(node.label, '反例を探してから検証判定する');
-  assert.strictEqual(node.method.id, 'adversarial-verify');
-  assert.strictEqual(node.method.text, '具体的な反例を探してください。');
-  assert.strictEqual(node.tier, 'small');
-  assert.strictEqual(workflowUi.methodNodeTemplate({
-    id: 'plan-first', fragments: [{ role: 'planner', text: '先に計画する' }],
-  }, 1, 'small'), null, 'planner 専用手法は実行ノードに見せかけない');
+    when: { tiers: ['small'], purposes: ['verify'] },
+  }, {
+    id: 'test-first', description: 'テストを先に置く',
+    fragments: [{ role: 'worker', text: '失敗するテストを先に追加してください。' }],
+  }, {
+    id: 'failure-modes-first', description: '失敗を先に考える',
+    fragments: [{ role: 'planner', text: '計画する' }, { role: 'worker', text: '失敗を列挙する' }],
+  }, {
+    id: 'persist-until-done', description: '未解決のまま完了を名乗らない',
+    fragments: [{ role: 'worker', text: '解決まで続ける' }, { role: 'session', text: '未解決なら明示する' }],
+  }, {
+    id: 'plan-options', description: '計画を具体化する',
+    fragments: [{ role: 'planner', text: '手順を計画する' }],
+  }, {
+    id: 'checklist-acceptance', description: '完了条件を照合する',
+    fragments: [{ role: 'evaluator', text: '完了条件を確認する' }],
+  }];
+  const choices = workflowUi.nodeMethodChoices(methods, { kind: 'verify', tier: 'small' });
+  assert.deepStrictEqual(choices.map((choice) => choice.id), ['adversarial-verify']);
+  assert.strictEqual(choices[0].role, 'verify');
+  assert.strictEqual(choices[0].text, '具体的な反例を探してください。');
+  assert.strictEqual(choices[0].source, 'local:test');
+  assert.deepStrictEqual(workflowUi.nodeMethodChoices(methods, { kind: 'verify', tier: 'large' }), []);
+  assert.deepStrictEqual(workflowUi.nodeMethodChoices(methods, { kind: 'work', tier: 'small' })
+    .map((choice) => choice.id), ['test-first', 'failure-modes-first', 'persist-until-done']);
+  assert.deepStrictEqual(workflowUi.nodeMethodChoices(methods, { kind: 'classify', tier: 'small' })
+    .map((choice) => choice.id), ['failure-modes-first', 'plan-options']);
+  assert.deepStrictEqual(workflowUi.nodeMethodChoices(methods, { kind: 'judge', tier: 'small' })
+    .map((choice) => choice.id), ['checklist-acceptance']);
+});
+
+test('複数ロールの実行手法を、接続済みの工程セットへ変換する', () => {
+  const pattern = workflowUi.methodWorkflowPattern({
+    id: 'plan-build-verify', description: '計画して作業し検証する', origin: 'local:test',
+    fragments: [
+      { role: 'worker', text: '作業する' },
+      { role: 'verify', text: '別の観点で検証する' },
+      { role: 'evaluator', text: '完了を判定する' },
+    ],
+  });
+  assert.strictEqual(pattern.type, 'method');
+  assert.deepStrictEqual(pattern.template.nodes.map((node) => node.kind), ['work', 'verify', 'judge']);
+  assert.deepStrictEqual(pattern.template.nodes.map((node) => node.deps), [[], ['plan-build-verify-1'], ['plan-build-verify-2']]);
+  assert.deepStrictEqual(pattern.template.nodes.map((node) => node.method.role), ['worker', 'verify', 'evaluator']);
+  assert.strictEqual(workflowUi.methodWorkflowPattern({
+    id: 'test-first', fragments: [{ role: 'worker', text: 'テストする' }],
+  }), null, '単一ロールは工程オプションのままにする');
+  assert.strictEqual(workflowUi.methodWorkflowPattern({
+    id: 'persist-until-done',
+    fragments: [{ role: 'worker', text: '続ける' }, { role: 'session', text: '未解決を明示する' }],
+  }), null, 'session 指示は新しい工程を作らず作業工程のオプションにする');
+  assert.strictEqual(workflowUi.methodWorkflowPattern({
+    id: 'no-self-approval',
+    fragments: [{ role: 'verify', text: '検証する' }, { role: 'evaluator', text: '判定する' }],
+  }), null, '分離済みセッションの自己承認回避は工程セットに重ねない');
+});
+
+test('別解で再導出する手法は汎用的な複数案の並列・統合パターンとして見せる', () => {
+  const pattern = workflowUi.methodWorkflowPattern({
+    id: 'derive-twice', description: '別解で再導出して一致を確認する',
+    fragments: [
+      { role: 'planner', text: '2つの解法を計画する' },
+      { role: 'verify', text: '別解で再導出する' },
+    ],
+  });
+  assert.strictEqual(pattern.label, '複数案を並行して統合');
+  assert.deepStrictEqual(pattern.template.nodes.map((node) => node.label), ['方針', '案A', '案B', '比較・統合']);
+  assert.deepStrictEqual(pattern.template.nodes.map((node) => node.goal), [
+    '異なる観点から複数の進め方を決める。',
+    '1つ目の進め方に沿って成果案を作る。',
+    '別の進め方に沿って独立した成果案を作る。',
+    '複数の成果案を比較し、長所を取り入れて1つにまとめる。',
+  ]);
+  assert.deepStrictEqual(pattern.template.nodes.map((node) => node.deps), [
+    [], ['derive-twice-plan'], ['derive-twice-plan'], ['derive-twice-original', 'derive-twice-alternative'],
+  ]);
+  assert.deepStrictEqual(pattern.template.nodes.map((node) => node.kind), ['classify', 'work', 'work', 'synthesize']);
+});
+
+test('分類して実行と同型の失敗モード手法は別カードにせず工程オプションへ統合する', () => {
+  const method = {
+    id: 'failure-modes-first', description: '失敗モードと回復手段を先に洗い出す',
+    fragments: [
+      { role: 'planner', text: '失敗を計画する' },
+      { role: 'worker', text: '回復手段を実装する' },
+    ],
+  };
+  assert.strictEqual(workflowUi.methodWorkflowPattern(method), null);
+  const previousEsc = global.esc;
+  global.esc = (value) => String(value);
+  try {
+    const html = workflowUi.workflowLibraryHtml({ workflows: [], methods: [method], patterns: [{
+      id: 'classify-and-act', label: '分類して実行', description: '分類後に実行する',
+      template: { nodes: [{ id: 'classify', kind: 'classify', deps: [] }] },
+    }] });
+    assert.match(html, /data-pattern-id="classify-and-act"/);
+    assert.doesNotMatch(html, /data-method-pattern-id="failure-modes-first"/);
+  } finally {
+    global.esc = previousEsc;
+  }
 });
 
 test('標準パターンを開始・終了つきの編集可能フローへ複製する', () => {
@@ -174,7 +287,64 @@ test('標準パターンを開始・終了つきの編集可能フローへ複�
   assert.deepStrictEqual(workflow.entry, ['gen1']);
   assert.deepStrictEqual(workflow.exit, ['verify1']);
   assert.strictEqual(workflow.nodes[0].tier, 'small');
+  assert.deepStrictEqual(workflow.nodes.map((node) => node.label), ['生成', '検証'],
+    'ロールとは別にワークフロー上のノード名を保持する');
+  assert.strictEqual(workflow.nodes[0].goal, workflowUi.defaultGoal('generate'),
+    '置換記号だけの目的は、工程の役割が分かる既定文へ補う');
+  assert.strictEqual(workflow.nodes[1].goal, '成果を批判的に検証',
+    '雛形に具体的な目的があれば変更しない');
   assert.ok(workflow.nodes[1].x > workflow.nodes[0].x, '依存方向へ自動配置する');
+});
+
+test('動的な標準パターンは継続動作を対象ノードへ保持する', () => {
+  const copied = (id, kind) => workflowUi.workflowFromPattern({
+    id, label: id, template: { nodes: [{ id: 'node', goal: '{{request}}', kind, deps: [] }] },
+  }, 'small').nodes[0];
+  assert.strictEqual(copied('classify-and-act', 'classify').continuation, 'route');
+  assert.strictEqual(copied('adversarial-verification', 'verify').continuation, 'retry');
+  assert.strictEqual(copied('loop-until-done', 'verify').continuation, 'retry');
+  assert.strictEqual(copied('fan-out-and-synthesize', 'verify').continuation, undefined);
+});
+
+test('全工程の既定目的は依頼本文を複製せず、自然文で役割を説明する', () => {
+  for (const kind of ['work', 'generate', 'classify', 'synthesize', 'verify', 'filter', 'judge', 'reduce', 'split', 'map']) {
+    assert.ok(workflowUi.defaultGoal(kind).length > '{{request}}'.length, `${kind} の目的が必要です`);
+    assert.doesNotMatch(workflowUi.defaultGoal(kind), /\{\{request\}\}/);
+  }
+  assert.match(workflowUi.defaultGoal('work'), /この工程で担当する作業/);
+  assert.match(workflowUi.defaultGoal('verify'), /前の工程の成果/);
+  assert.doesNotMatch(workflowUi.workflowFromPattern({
+    id: 'candidate', label: '候補', template: { nodes: [
+      { id: 'candidate', goal: '候補1: {{request}}', kind: 'generate', deps: [] },
+    ] },
+  }, 'small').nodes[0].goal, /\{\{request\}\}/);
+});
+
+test('工程セットから作った工程にも実行手法を保持する', () => {
+  const pattern = workflowUi.methodWorkflowPattern({
+    id: 'plan-and-build', description: '計画して実装する',
+    fragments: [{ role: 'planner', text: '計画する' }, { role: 'worker', text: '実装する' }],
+  });
+  const workflow = workflowUi.workflowFromPattern(pattern, 'medium');
+  assert.strictEqual(workflow.nodes[0].method.role, 'planner');
+  assert.strictEqual(workflow.nodes[1].method.text, '実装する');
+});
+
+test('複数工程の雛形を既存ノードの後へ接続済みで追加する', () => {
+  const workflow = {
+    version: 2, entry: ['before'], exit: ['before'], methods: [],
+    nodes: [{ id: 'before', kind: 'work', tier: 'small', deps: [], x: 40, y: 70 }],
+  };
+  const added = workflowUi.insertPattern(workflow, {
+    id: 'review-set', label: '生成して検証', template: { nodes: [
+      { id: 'draft', goal: '生成', kind: 'generate', deps: [] },
+      { id: 'check', goal: '検証', kind: 'verify', deps: ['draft'] },
+    ] },
+  }, 'small', 'before', { x: 320, y: 70 });
+  assert.deepStrictEqual(added.map((node) => node.id), ['draft', 'check']);
+  assert.deepStrictEqual(workflow.nodes.find((node) => node.id === 'draft').deps, ['before']);
+  assert.deepStrictEqual(workflow.nodes.find((node) => node.id === 'check').deps, ['draft']);
+  assert.deepStrictEqual(workflow.exit, [], '追加した末端を明示的に終了へつなぐまで未完了にする');
 });
 
 test('雛形カードは分岐を含む接続例を左から表す', () => {
@@ -188,6 +358,116 @@ test('雛形カードは分岐を含む接続例を左から表す', () => {
   ]);
 });
 
+test('カードの表示名は agent-flow の全ノード種別と1対1に対応する', () => {
+  const kinds = ['work', 'generate', 'classify', 'synthesize', 'verify',
+    'filter', 'judge', 'reduce', 'split', 'map'];
+  const workflow = { nodes: kinds.map((kind, index) => ({ id: kind, kind, x: index })) };
+  assert.deepStrictEqual(workflowUi.workflowColumns(workflow), [
+    ['開始'], ['作業'], ['生成'], ['分類'], ['統合'], ['検証'],
+    ['選別'], ['判定'], ['集約'], ['分割'], ['個別処理'], ['終了'],
+  ]);
+});
+
+test('詳細グラフのロール名は agent-flow の実行ロールを日本語表示する', () => {
+  const kinds = ['work', 'generate', 'classify', 'synthesize', 'verify',
+    'filter', 'judge', 'reduce', 'split', 'map'];
+  assert.deepStrictEqual(kinds.map((kind) => workflowUi.nodePresentation({ kind }).role), [
+    '作業', '作業', '計画', '作業', '検証', '作業', '判定', '作業', '作業', '作業',
+  ]);
+});
+
+test('雛形カードのノードはノード種別名だけを表示する', () => {
+  const previousEsc = global.esc;
+  global.esc = (value) => String(value);
+  try {
+    const html = workflowUi.workflowLibraryHtml({ workflows: [], methods: [], patterns: [{
+      id: 'classify-and-act', label: '分類して実行', description: '分類後に実行する',
+      template: { nodes: [{ id: 'classify', kind: 'classify', deps: [] }] },
+    }] });
+    assert.match(html, /<i><b>分類<\/b><\/i>/);
+    assert.match(html, /<i class="runtime"[^>]*><b>作業<\/b><\/i>/);
+    assert.doesNotMatch(html, /<small>分類<\/small>|<small>専門作業<\/small>/);
+  } finally {
+    global.esc = previousEsc;
+  }
+});
+
+test('雛形カードはノード種別名以外を重複表示しない', () => {
+  const previousEsc = global.esc;
+  global.esc = (value) => String(value);
+  try {
+    const html = workflowUi.workflowLibraryHtml({ workflows: [], methods: [], patterns: [{
+      id: 'static', label: '作業して検証', description: '標準工程',
+      template: { nodes: [
+        { id: 'work', kind: 'work', deps: [] },
+        { id: 'generate', kind: 'generate', deps: ['work'] },
+        { id: 'verify', kind: 'verify', deps: ['generate'] },
+      ] },
+    }] });
+    assert.doesNotMatch(html, /<b>作業<\/b><small>作業<\/small>/);
+    assert.doesNotMatch(html, /<b>検証<\/b><small>検証<\/small>/);
+    assert.doesNotMatch(html, /<b>作業<\/b><small>生成<\/small>/,
+      'ロールと異なる工程名もカード内では省く');
+  } finally {
+    global.esc = previousEsc;
+  }
+});
+
+test('雛形カードは実行時に増える工程と接続を破線表示する', () => {
+  const previousEsc = global.esc;
+  global.esc = (value) => String(value);
+  try {
+    const html = workflowUi.workflowLibraryHtml({ workflows: [], methods: [], patterns: [{
+      id: 'map-reduce', label: '分割して集約', description: '動的に展開する',
+      template: { nodes: [{ id: 'split', kind: 'split', deps: [] }] },
+    }, {
+      id: 'loop-until-done', label: '完了まで反復', description: '完了まで繰り返す',
+      template: { nodes: [
+        { id: 'work', kind: 'work', deps: [] },
+        { id: 'verify', kind: 'verify', deps: ['work'] },
+      ] },
+    }] });
+    assert.match(html, /<i><b>分割<\/b><\/i>/);
+    assert.match(html, /<i class="runtime"[^>]*><b>個別処理<\/b><\/i>/);
+    assert.match(html, /<i class="runtime"[^>]*><b>集約<\/b><\/i>/);
+    assert.match(html, /wf-mini-edge runtime/);
+    assert.match(html, /wf-loop-back runtime/);
+  } finally {
+    global.esc = previousEsc;
+  }
+});
+
+test('雛形カードと編集開始時は同じノード構成を使う', () => {
+  const pattern = { id: 'fan-out-and-synthesize', template: { nodes: [
+    { id: 'a', kind: 'work', deps: [] }, { id: 'b', kind: 'work', deps: [] },
+    { id: 'c', kind: 'work', deps: [] }, { id: 'd', kind: 'work', deps: [] },
+    { id: 'join', kind: 'synthesize', deps: ['a', 'b', 'c', 'd'] },
+  ] } };
+  const workflow = workflowUi.workflowFromPattern(pattern, 'small');
+  assert.strictEqual(workflow.nodes.filter((node) => node.kind === 'work').length, 3,
+    'カードに表示する三並列と編集開始時の実ノード数を揃える');
+  assert.deepStrictEqual(workflowUi.patternColumns(pattern),
+    workflowUi.workflowColumns(workflowUi.visualWorkflow(workflow)));
+  assert.deepStrictEqual(workflowUi.patternColumns(pattern),
+    [['開始'], ['作業', '作業', '作業'], ['統合'], ['終了']]);
+});
+
+test('実行時に増える工程もカードと編集画面の両方へ同じ読み取り専用ノードで示す', () => {
+  const mapPattern = { id: 'map-reduce', template: { nodes: [{ id: 'split', kind: 'split', deps: [] }] } };
+  const mapVisual = workflowUi.visualWorkflow(workflowUi.workflowFromPattern(mapPattern, 'small'));
+  assert.deepStrictEqual(workflowUi.patternColumns(mapPattern),
+    [['開始'], ['分割'], ['個別処理', '個別処理', '個別処理'], ['集約'], ['終了']]);
+  assert.strictEqual(mapVisual.nodes.filter((node) => node.runtime).length, 4);
+  assert.deepStrictEqual(workflowUi.patternColumns(mapPattern), workflowUi.workflowColumns(mapVisual));
+
+  const routePattern = {
+    id: 'classify-and-act', template: { nodes: [{ id: 'classify', kind: 'classify', deps: [] }] },
+  };
+  const routeVisual = workflowUi.visualWorkflow(workflowUi.workflowFromPattern(routePattern, 'small'));
+  assert.deepStrictEqual(workflowUi.patternColumns(routePattern), [['開始'], ['分類'], ['作業'], ['終了']]);
+  assert.strictEqual(routeVisual.nodes.find((node) => node.runtime).label, '専門作業');
+});
+
 test('初期画面は保存済み・一から作る・雛形を同じカード導線にまとめる', () => {
   const previousEsc = global.esc;
   global.esc = (value) => String(value);
@@ -198,10 +478,20 @@ test('初期画面は保存済み・一から作る・雛形を同じカード�
         id: 'verify', label: '検証つき', description: '作業後に検証する',
         template: { nodes: [{ id: 'work', kind: 'work', deps: [] }] },
       }],
+      methods: [{
+        id: 'plan-build', description: '計画して実装する',
+        fragments: [{ role: 'planner', text: '計画する' }, { role: 'worker', text: '実装する' }],
+      }, {
+        id: 'no-self-approval', description: '作成者と同じ呼び出しによる自己承認を避ける',
+        fragments: [{ role: 'verify', text: '検証する' }, { role: 'evaluator', text: '判定する' }],
+      }],
     });
     assert.match(html, /data-workflow-id="saved"/);
     assert.match(html, /id="wf-new"/);
     assert.match(html, /data-pattern-id="verify"/);
+    assert.match(html, /data-method-pattern-id="plan-build"/);
+    assert.match(html, /実行手法/);
+    assert.doesNotMatch(html, /data-method-pattern-id="no-self-approval"/);
     assert.doesNotMatch(html, /この雛形から作る|wf-list/);
   } finally {
     global.esc = previousEsc;
@@ -226,7 +516,7 @@ test('分岐先の追加は既存ノードと重ならない位置を選ぶ', ()
   assert.deepStrictEqual(workflowUi.nextNodePosition(workflow, 'draft'), { x: 580, y: 210 });
 });
 
-test('フロー全体の手法は対象と適用条件を読める形にする', () => {
+test('実行手法は対象と適用条件を読める形にする', () => {
   const view = workflowUi.methodPresentation({
     fragments: [{ role: 'planner', text: '最初に計画する' }, { role: 'worker', text: '小さく実装する' }],
     when: { tiers: ['large'], purposes: ['coding'] },
@@ -235,99 +525,55 @@ test('フロー全体の手法は対象と適用条件を読める形にする',
   assert.strictEqual(view.condition, 'tier: large · 対象: coding');
 });
 
-test('全体ルールは実行時の role と purpose が一致するノードだけへ対応づける', () => {
-  const methods = [{
-    id: 'quality', description: '品質ルール',
-    fragments: [
-      { role: 'planner', text: '先に計画する' },
-      { role: 'worker', text: '小さく作る' },
-      { role: 'verify', text: '反例を探す' },
-    ],
-  }, {
-    id: 'verify-only', description: '検証専用',
-    fragments: [{ role: 'verify', text: '証跡を確認する' }],
-    when: { purposes: ['verify'], tiers: ['large'] },
-  }];
-  assert.deepStrictEqual(
-    workflowUi.nodeMethodApplications(methods, ['quality', 'verify-only'], { kind: 'work' })
-      .map((item) => item.id),
-    ['quality']
-  );
-  const verify = workflowUi.nodeMethodApplications(
-    methods, ['quality', 'verify-only'], { kind: 'verify' }
-  );
-  assert.deepStrictEqual(verify.map((item) => item.id), ['quality', 'verify-only']);
-  assert.strictEqual(verify[1].conditional, true, 'tier は実行時に決まるため条件つきと示す');
-});
-
-test('ユーザー定義フローの前後に非編集のシステム工程を明示する', () => {
+test('完了まで反復の雛形は説明を添えず検証ノードから作業ノードへ矢印をつなぐ', () => {
   const previousEsc = global.esc;
   global.esc = (value) => String(value);
   try {
-    const html = workflowUi.workflowExecutionGuideHtml({
-      nodes: [{ kind: 'work' }, { kind: 'verify' }],
+    const html = workflowUi.workflowLibraryHtml({
+      workflows: [], methods: [], patterns: [{
+        id: 'loop-until-done', label: '完了まで反復', description: '完了まで繰り返す',
+        template: { nodes: [
+          { id: 'work', kind: 'work', deps: [] },
+          { id: 'verify', kind: 'verify', deps: ['work'] },
+        ] },
+      }],
     });
-    assert.match(html, /計画確認/);
-    assert.match(html, /計画エージェントは使用しません/);
-    assert.match(html, /検証ノード 1件/);
-    assert.match(html, /完了判定/);
-    assert.match(html, /評価エージェントによる再計画は行いません/);
-    assert.doesNotMatch(html, /data-node-id|wf-port/);
+    assert.match(html, /wf-loop-back/);
+    assert.match(html, /wf-loop-back runtime" style="grid-column:3 \/ 6;grid-row:2"/);
+    assert.match(html, /<path d="M80 0v18H20V0"><\/path><path d="m16 4 4-4 4 4"><\/path>/);
+    assert.doesNotMatch(html, /wf-loop-direction|<small>未完了なら作業へ戻る<\/small>/);
   } finally {
     global.esc = previousEsc;
   }
 });
 
-test('対象ノードに全体ルールと実行時条件をバッジ表示する', () => {
+test('生成して検証の雛形も注釈なしの戻り線だけで反復を示す', () => {
   const previousEsc = global.esc;
   global.esc = (value) => String(value);
   try {
-    const html = workflowUi.nodeRuleBadgesHtml([{
-      id: 'quality', description: '品質ルール', when: { tiers: ['large'] },
-      fragments: [{ role: 'worker', text: '小さく作る' }, { role: 'planner', text: '計画する' }],
-    }], ['quality'], { kind: 'work' });
-    assert.match(html, /品質ルール/);
-    assert.match(html, /実行時条件/);
-    assert.doesNotMatch(html, /計画する/);
+    const html = workflowUi.workflowLibraryHtml({
+      workflows: [], methods: [], patterns: [{
+        id: 'adversarial-verification', label: '生成して検証', description: '生成後に検証する',
+        template: { nodes: [
+          { id: 'work', kind: 'generate', deps: [] },
+          { id: 'verify', kind: 'verify', deps: ['work'] },
+        ] },
+      }],
+    });
+    assert.match(html, /wf-loop-back runtime/);
+    assert.doesNotMatch(html, /<small>問題があれば生成へ戻る<\/small>/);
   } finally {
     global.esc = previousEsc;
   }
 });
 
-test('ノード編集欄で適用される指示と条件を確認できる', () => {
-  const previousEsc = global.esc;
-  global.esc = (value) => String(value);
-  try {
-    const html = workflowUi.nodeRuleDetailsHtml([{
-      id: 'quality', description: '品質ルール', when: { tiers: ['large'] },
-      fragments: [{ role: 'worker', text: '小さく作って確認する' }],
-    }], ['quality'], { kind: 'work' });
-    assert.match(html, /この工程に適用されるルール/);
-    assert.match(html, /品質ルール/);
-    assert.match(html, /小さく作って確認する/);
-    assert.match(html, /tier: large/);
-  } finally {
-    global.esc = previousEsc;
-  }
-});
 
-test('全体ルールを開始ノードの外で選び、適用先の有無を確認できる', () => {
-  const previousEsc = global.esc;
-  global.esc = (value) => String(value);
-  try {
-    const html = workflowUi.workflowRulesHtml([{
-      id: 'worker-rule', description: '作業ルール',
-      fragments: [{ role: 'worker', text: '小さく作る' }],
-    }, {
-      id: 'planner-rule', description: '計画ルール',
-      fragments: [{ role: 'planner', text: '先に計画する' }],
-    }], { methods: ['worker-rule', 'planner-rule'], nodes: [{ id: 'build', kind: 'work' }] });
-    assert.match(html, /data-flow-method="worker-rule"/);
-    assert.match(html, /1工程に適用/);
-    assert.match(html, /このフローでは適用されません/);
-  } finally {
-    global.esc = previousEsc;
-  }
+test('接続線の経路はノード座標の変更に追従する', () => {
+  const source = { x: 40, y: 70 };
+  const target = { x: 320, y: 70 };
+  const before = workflowUi.edgePath(source, target);
+  source.x = 180;
+  assert.notStrictEqual(workflowUi.edgePath(source, target), before);
 });
 
 test('接続判定は方向・重複・循環・split を同じ規則で拒否する', () => {
@@ -415,7 +661,8 @@ test('表示済みの設定画面は全体更新から再描画しない', () =>
 test('バックログ用フロースナップショットは自動・標準・カスタムを固定する', () => {
   const cfg = { adhocFlow: { workflowDir: tmpdir('workflow-snapshot-') } };
   const workflow = adhoc.saveWorkflow(cfg, {
-    name: '固定', nodes: [{ id: 'a', goal: '実装', tier: 'large' }],
+    name: '分類して実行',
+    nodes: [{ id: 'a', goal: '分類', kind: 'classify', tier: 'large', continuation: 'route' }],
   });
   const original = profiles.resolveTier;
   profiles.resolveTier = () => ({ agent_cli: 'codex', model: 'gpt-5' });
@@ -425,6 +672,7 @@ test('バックログ用フロースナップショットは自動・標準・�
       { version: 1, type: 'pattern', pattern: 'map-reduce' });
     const custom = adhoc.snapshotSelection(cfg, { type: 'custom', id: workflow.id });
     assert.strictEqual(custom.type, 'custom');
+    assert.strictEqual(custom.evaluate, true);
     assert.deepStrictEqual(custom.nodes[0].agent, { agent_cli: 'codex', model: 'gpt-5' });
     assert.throws(() => adhoc.snapshotSelection(cfg, { type: 'custom', id: 'missing' }), /見つかりません/);
     assert.throws(() => adhoc.snapshotSelection(cfg, { type: 'bad' }), /不正/);
@@ -632,7 +880,7 @@ test('submit が submit_request 契約を投函し plan と手法を運ぶ', () 
   }
 });
 
-test('カスタムフロー全体の手法を run 専用 tuning へ渡す', () => {
+test('カスタムフローは旧全体ルールを保存・実行しない', () => {
   const { cfg } = methodsFixture();
   cfg.adhocFlow.busDir = tmpdir('adhoc-custom-method-bus-');
   cfg.adhocFlow.workflowDir = tmpdir('adhoc-custom-method-workflow-');
@@ -643,13 +891,20 @@ test('カスタムフロー全体の手法を run 専用 tuning へ渡す', () =
   try {
     const workflow = adhoc.saveWorkflow(cfg, {
       name: '全体手法つき', methods: ['adversarial-verify'],
-      nodes: [{ id: 'a', goal: '{{request}}', tier: 'small' }],
+      nodes: [
+        { id: 'a', goal: '{{request}}', tier: 'small' },
+        { id: 'v', goal: '完了条件を確認', kind: 'verify', tier: 'small', deps: ['a'], continuation: 'retry' },
+      ],
     });
+    assert.strictEqual(workflow.methods, undefined);
     const result = adhoc.submit(cfg, {
       request: '検証する', selection: { type: 'custom', id: workflow.id },
     });
-    assert.deepStrictEqual(result.methods, ['adversarial-verify']);
-    assert.ok(fs.existsSync(path.join(result.tuningDir, 'tuning.json')));
+    const rec = JSON.parse(fs.readFileSync(
+      path.join(cfg.adhocFlow.busDir, 'inbox', `${result.runId}.json`), 'utf8'));
+    assert.strictEqual(rec.plan.evaluate, true, '継続動作を agent-flow の評価契約へ渡す');
+    assert.deepStrictEqual(result.methods, []);
+    assert.strictEqual(result.tuningDir, null);
   } finally {
     exec.shInWsl = originalExec;
     profiles.resolveTier = originalTier;

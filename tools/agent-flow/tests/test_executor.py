@@ -907,6 +907,20 @@ class CallExecutorDispatchTests(unittest.TestCase):
         self.assertIn("タスク(work): ログイン追加", captured["prompt"])
         self.assertIn(self.INSTR, captured["prompt"])
 
+    def test_builtin_prompt_combines_natural_goal_with_original_request(self):
+        captured = {}
+
+        def fake_run_agent(prompt, model, purpose="", **_kw):
+            captured["prompt"] = prompt
+            return "成果"
+
+        with mock.patch.object(kf, "_flow_worker_prompt", return_value=None), \
+             mock.patch.object(kf, "run_agent", side_effect=fake_run_agent):
+            kf.execute_agent("work", "この工程で担当する作業を完了する。", {}, None,
+                             request="認証機能を実装する")
+        self.assertIn("タスク(work): この工程で担当する作業を完了する。", captured["prompt"])
+        self.assertIn("元の依頼:\n認証機能を実装する", captured["prompt"])
+
     def test_execute_agent_runs_in_workspace_root(self):
         captured = {}
 

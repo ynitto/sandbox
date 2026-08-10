@@ -128,20 +128,33 @@ def _env_float(name: str, default: float) -> float:
     return value if value >= 0 else default
 
 
+# 1 ラウンドあたりの生成上限。停止トークンを出さなくなったモデルを、予算を食い切る前に
+# 止めるための天井であって、正常な生成を切る値ではない（実測 2026-08-10: 成功したラウンドの
+# 最大が 2289 トークン、暴走は 5042〜19771）。ここが無いと 1 ラウンドで 30 分が溶ける——
+# 停滞検知は「無進捗」を見るので、書き続ける暴走には反応しない。
+# ponytail: 固定値の天井。ラウンドではなく残り予算から決めたくなったら、呼び出し側が
+# AGENT_OLLAMA_OPTIONS で上書きできる（この既定は未指定のときだけ効く）。
+DEFAULT_NUM_PREDICT = 4096
+
+
 def load_options() -> dict:
     """`AGENT_OLLAMA_OPTIONS`（JSON）を `options` へ合流させる（案 E）。
 
     サーバ全体の環境変数を触らずに `num_ctx` などをリクエスト単位で決められる。
     壊れた JSON は黙って無視する（推論を止める理由にはしない）。
+    `num_predict` は未指定なら暴走止めの既定を入れる（明示指定はそのまま尊重する）。
     """
     raw = os.environ.get("AGENT_OLLAMA_OPTIONS", "").strip()
-    if not raw:
-        return {}
-    try:
-        data = json.loads(raw)
-    except ValueError:
-        return {}
-    return data if isinstance(data, dict) else {}
+    data: dict = {}
+    if raw:
+        try:
+            parsed = json.loads(raw)
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, dict):
+            data = parsed
+    data.setdefault("num_predict", DEFAULT_NUM_PREDICT)
+    return data
 
 
 def resolve_think(explicit: "bool | None" = None) -> "bool | None":
@@ -391,11 +404,14 @@ def stream_call(endpoint: str, body: dict, *, delta_of, emit=None, round_no: int
     # 文脈使用量は「この応答の実測」から導けるので、usage と同じ 1 か所（llm_end）へ載せる
     # ——別イベントに分けると、見る側が 2 つを突き合わせないと現在地が分からなくなる。
     context = tracker.observe(tokens_in, measured_out) if tracker is not None else {}
+    # `done_reason="length"` は上限で**切られた**印。これを載せないと、途中で切れた成果物が
+    # 「そこで書き終えたモデル」と区別できず、暴走の診断ができない（実測 2026-08-10）。
+    done_reason = str(final.get("done_reason") or "")
     if emit is not None:
         emit("llm_end", round=round_no, phase="done", tokens_in=tokens_in,
              tokens_out=measured_out, duration_sec=round(duration, 2),
              tokens_per_sec=round(measured_out / max(duration, 1e-6), 2),
-             thinking_chars=thinking_chars, **context)
+             thinking_chars=thinking_chars, done_reason=done_reason, **context)
     return {
         "text": "".join(text_parts),
         "tokens_in": tokens_in,
