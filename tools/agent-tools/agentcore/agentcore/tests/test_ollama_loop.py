@@ -359,7 +359,10 @@ class TestRunLoop(unittest.TestCase):
         self.assertEqual(result["text"], "ただの雑談")
 
     def test_max_rounds_is_respected(self):
-        result, _calls = self._loop(["```bash\nls\n```"], max_rounds=3)
+        # 毎ラウンド違う手を出させる（同じ手を同じ結果で繰り返すと `no_progress` の
+        # 検知が先に立ち、ここで見たいラウンド予算の上限に届かない）。
+        result, _calls = self._loop(
+            ["```bash\nls\n```", "```bash\npwd\n```", "```bash\nid\n```"], max_rounds=3)
         self.assertEqual(result["status"], "max_rounds")
         self.assertEqual(result["rounds"], 3)
 
@@ -517,6 +520,79 @@ class TestToolDenial(unittest.TestCase):
         self.assertEqual(run.call_count, 0)
         self.assertEqual(len([k for k, _f in events if k == "tool_denied"]),
                          ollama_loop._MAX_DENIALS + 1)
+
+
+class TestNoProgress(unittest.TestCase):
+    """ラウンド粒度の空回りを止める（decode stall は「トークンが出ない」しか見ない）。
+
+    トークンは出続けているのに同じ手を同じ結果で繰り返す形は、これまでどの層も
+    検知せず、ラウンド予算 × コマンド上限を丸ごと焼けた。
+    """
+
+    def _run(self, replies, outputs, **kwargs):
+        events = []
+        index = {"n": 0}
+        seen = {"n": 0}
+
+        def fake_chat(model, messages, **_kw):
+            i = min(index["n"], len(replies) - 1)
+            index["n"] += 1
+            return {"text": replies[i], "tokens_in": 1, "tokens_out": 1}
+
+        def fake_command(command, **_kw):
+            i = min(seen["n"], len(outputs) - 1)
+            seen["n"] += 1
+            return dict(outputs[i], duration_sec=0.1)
+
+        with mock.patch.object(ollama_loop, "chat_once", fake_chat), \
+                mock.patch.object(ollama_loop, "run_command", fake_command):
+            result = ollama_loop.run_loop(
+                "m", "タスク", max_rounds=20,
+                emit=lambda kind, **f: events.append((kind, f)), **kwargs)
+        return result, events
+
+    def test_identical_command_and_result_stops_the_run(self):
+        result, events = self._run(
+            ["```bash\nmake\n```"], [{"exit_code": 1, "output": "同じエラー"}])
+        self.assertEqual(result["status"], "no_progress")
+        self.assertEqual(result["rounds"], ollama_loop._MAX_REPEATS,
+                         "3 回目で止める（20 ラウンド回しきらない）")
+        stops = [f for k, f in events if k == "no_progress"]
+        self.assertEqual(len(stops), 1)
+        self.assertEqual(stops[0]["repeats"], ollama_loop._MAX_REPEATS)
+        self.assertEqual(stops[0]["exit_code"], 1)
+
+    def test_same_command_with_changing_output_is_progress(self):
+        """同じコマンドでも結果が動いていれば空回りではない（ビルドの進行など）。"""
+        result, events = self._run(
+            ["```bash\nmake\n```", "```bash\nmake\n```", "```bash\nmake\n```",
+             "終わりました\nTASK_COMPLETE"],
+            [{"exit_code": 1, "output": "残り 3"}, {"exit_code": 1, "output": "残り 2"},
+             {"exit_code": 1, "output": "残り 1"}])
+        self.assertEqual(result["status"], "done")
+        self.assertEqual([k for k, _f in events].count("no_progress"), 0)
+
+    def test_exit_code_change_alone_counts_as_progress(self):
+        result, _events = self._run(
+            ["```bash\nmake\n```", "```bash\nmake\n```", "```bash\nmake\n```",
+             "直りました\nTASK_COMPLETE"],
+            [{"exit_code": 1, "output": "同じ"}, {"exit_code": 1, "output": "同じ"},
+             {"exit_code": 0, "output": "同じ"}])
+        self.assertEqual(result["status"], "done",
+                         "終了コードが変われば状況は動いている")
+
+    def test_alternating_commands_do_not_trip_the_guard(self):
+        """連続でなければ数えない（別の手を挟んでいる限り探索は続けさせる）。"""
+        result, _events = self._run(
+            ["```bash\nls\n```", "```bash\npwd\n```", "```bash\nls\n```",
+             "```bash\npwd\n```", "分かりました\nTASK_COMPLETE"],
+            [{"exit_code": 0, "output": "固定"}])
+        self.assertEqual(result["status"], "done")
+
+    def test_repeat_guard_is_reported_to_the_caller(self):
+        """封筒の宛先。`done` 以外なので未完了として呼び出し側へ届く必要がある。"""
+        from agentcore import ollama_adapter
+        self.assertIn("no_progress", ollama_adapter._INCOMPLETE_REASONS)
 
 
 class TestFormat(unittest.TestCase):

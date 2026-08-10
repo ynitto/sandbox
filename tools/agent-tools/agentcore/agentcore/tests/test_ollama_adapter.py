@@ -428,7 +428,7 @@ class TestContractDefinition(unittest.TestCase):
         opts = ollama_adapter.parse_args(write[1:])
         self.assertIs(opts["think"], False, "定義の argv がそのまま解釈できる")
         self.assertEqual(opts["toolset"], "bash")
-        self.assertEqual(opts["max_rounds"], 30)
+        self.assertEqual(opts["max_rounds"], 12, "write の予算は絞ってある（read は 30）")
         self.assertIs(ollama_adapter.parse_args(readonly[1:])["think"], False)
         self.assertEqual(agentcli.interactive_cmd(spec, "M")[
             agentcli.interactive_cmd(spec, "M").index("--think") + 1], "on")
