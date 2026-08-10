@@ -15,7 +15,10 @@
           "type": "array",
           "items": {"enum": ["planner", "worker", "verify", "evaluator", "session"]}
         },
-        "purposes": {"type": "array", "items": {"type": "string"}},
+        "purposes": {
+          "type": "array", "items": {"type": "string"},
+          "description": "この手法を効かせる用途（agent-flow ならノード kind、agent-loop なら session）。role より細かい絞り込みで、宣言が無ければ全用途に効く。出力へ何かを書かせる fragment（復唱・列挙・宣言）は、出力全体が 1 個の JSON に縛られる用途（planner / evaluator / split / filter / judge / reduce / extract）へ入れると本文ではなくキーとして混入するので、散文を返す用途だけをここで挙げる"
+        },
         "tiers": {
           "type": "array", "items": {"type": "string"},
           "description": "実行プロファイルの段。値は agent-control の workloads[].tier と突き合わせる（語彙の正典は agent-profiles.schema.json の tiers = 下から small / medium / large）。段が宣言されていないノードでは決まらないので、そこでも効かせたい手法は tiers ではなく max_relative_cost / agent_cli で絞る"

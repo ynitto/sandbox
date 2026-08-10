@@ -1,1 +1,1 @@
-{"id":"restate-task","description":"タスクと成果物形式を復唱してから着手する","enabled":false,"fragments":[{"role":"worker","text":"着手前にタスクを3行以内で復唱し、作る成果物の形式を明示してください。"}],"when":{"tiers":["small"]},"origin":"local:2026-08-09/qwen3.5-agent-flow-diagnostic"}
+{"id":"restate-task","description":"タスクと成果物形式を復唱してから着手する","enabled":false,"fragments":[{"role":"worker","text":"着手前にタスクを3行以内で復唱し、作る成果物の形式を明示してください。"}],"when":{"tiers":["small"],"purposes":["work","generate","synthesize"]},"origin":"local:2026-08-09/qwen3.5-agent-flow-diagnostic"}

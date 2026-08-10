@@ -222,6 +222,51 @@ S1 (split): 3/3   S2 (split): 1/3   合計 4/6   空・形式違反 0/6
 台帳は `ledger-2026-08-11-judge-qwen35-9b.jsonl`（実行時の出力先は `/tmp/agent-judge-eval/`。
 `JUDGE_EVAL_DIR` で移せる）。
 
+## 2026-08-11 の実測 — 手法パックで判定の質は上がるか
+
+`--methods` でカタログ（`methods/*.json`）の手法を有効化して同じ 8 ケースを引く。適用条件の
+判定は本番の `agentcore.methods.select` をそのまま呼ぶので、`when` に合わない役割へは注入
+されない。本番 context のうちここに無いのは段（tier）だけで、`--tier`（既定 `small`）で名乗る。
+
+```bash
+python3 tools/agent-tools/eval/judge_eval.py --repeat 3 --cases F1,F2,J1,J2,R1,R2,E1,E2 \
+  --methods restate-task,output-contract-strict,checklist-acceptance
+```
+
+**合計は動かない。動いたのは出力の壊れ方である。**
+
+| 条件 | 合計 | filter | judge | reduce | evaluator | 復唱キーの混入 |
+|---|---:|---:|---:|---:|---:|---:|
+| 手法なし | 15/24 | 1/6 | 3/6 | 5/6 | 6/6 | 0/24 |
+| 手法あり（`restate-task` を含む） | 16/24 | 1/6 | 4/6 | 5/6 | 6/6 | **3/24** |
+| 手法あり（`restate-task` を除外後） | 16/24 | 2/6 | 2/6 | 6/6 | 6/6 | 0/24 |
+
+`restate-task`（「着手前にタスクを3行以内で復唱し、作る成果物の形式を明示してください」）は
+`when` が段だけの宣言で、`role_for` が split / filter / judge / reduce / extract を worker へ
+落とすため、これらへも入っていた。これらは `agents/ollama-json.json` で起動され**出力全体が
+1 個の JSON に縛られる**ので、復唱は本文ではなくキーになる:
+
+```
+{"task_restatement": "...", "output_format_contract": "...", "kept": ["c1","c3"]}
+{"task_restated": "...", "output_form_justification": "..."}
+```
+
+**合計の差は読まないこと。** 同じ 8 ケースの手法なし基準線は測るたびに 14 / 15 / 17（いずれも
+24 中）で、1 点差はこの幅の中に沈む。判断材料になるのは混入の 3/24 → 0/24 のほうで、合計は
+「悪化していない」以上を言わない。
+
+**カタログ側を直した。** 出力へ何かを書かせる手法（`restate-task` / `plan-first` /
+`spec-first`）の `when.purposes` を散文の kind（work / generate / synthesize）に限った。
+機械が成果を解釈する kind を外すのは、混入のほかにもう 1 つ理由がある——`extract_json` は
+`[`…`]` を `{`…`}` より先に試すので、前置きが付くとオブジェクトの成果が入れ子の配列へ化ける
+（`{"items":[1,2],"count":2}` は前置き付きで `[1,2]` になり count が消える）。この探索順自体は
+手法とは独立した既存の弱点で、ここでは触っていない。
+
+台帳は `ledger-2026-08-11-judge-methods-qwen35-9b.jsonl`（混入が出ている修正前の 24 行。
+`answer` 列に上記のキーが残っている）。以後の測定では、どの行にどの手法が効いたかが
+`methods` 列に入る——宣言した手法が `when` で落ちて 1 つも効いていない実行を、効いた前提で
+数えないため。同じ理由で、実行前のヘッダにも役割ごとの適用結果を出す。
+
 ## 2026-08-11 の実測 — 埋め込みは現行の検索を上回るか（bge-m3）
 
 [品質再点検 §6 案 d](../../../docs/plans/2026-08-10-agent-ollama-quality-and-role-refit-proposals.md)

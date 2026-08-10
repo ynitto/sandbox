@@ -1,1 +1,1 @@
-{"id":"plan-first","description":"手順・対象ファイル・完了条件を先に列挙する","enabled":false,"fragments":[{"role":"worker","text":"実行前に、手順・触るファイル・完了条件を短く列挙してください。"}],"when":{"tiers":["small","medium"]},"origin":"https://code.claude.com/docs/en/best-practices"}
+{"id":"plan-first","description":"手順・対象ファイル・完了条件を先に列挙する","enabled":false,"fragments":[{"role":"worker","text":"実行前に、手順・触るファイル・完了条件を短く列挙してください。"}],"when":{"tiers":["small","medium"],"purposes":["work","generate","synthesize"]},"origin":"https://code.claude.com/docs/en/best-practices"}
