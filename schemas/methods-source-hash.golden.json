@@ -23,12 +23,12 @@
     "parallel-review": "34b5446f62aa",
     "path-grounding": "f809ee4ff558",
     "persist-until-done": "a661100abbaf",
-    "plan-first": "3d75fbf02d17",
+    "plan-first": "20eab525b157",
     "plan-reflect-each-tool": "226d2a02bd72",
-    "restate-task": "4b7e68fa9eda",
+    "restate-task": "3dea7d7db136",
     "scope-guard": "d8f82f64407f",
     "self-consistency": "4e81823365b2",
-    "spec-first": "b46b52e562c6",
+    "spec-first": "85a6736bbedb",
     "test-first": "07ffff0e5346"
   }
 }

@@ -355,12 +355,14 @@ qwen3.5:9b × agent-flow 品質診断（偽 done・自己承認・パス捏造�
 
 **実行前 — 着手規律（worker）**
 
+「散文 kind」= work / generate / synthesize。出力へ何かを書かせる規律は、成果を機械が解釈する kind（`JSON_CONTRACT_ROLES` と `STRUCTURED_KINDS`＝ split / map / filter / judge / reduce / extract / retrieve）へ入れると壊す——本文ではなくキーとして混入し、前置きが付けば `extract_json` がオブジェクトを入れ子の配列へ取り違える。`when.purposes` で除いてある（2026-08-11 実測。`tools/agent-tools/eval/README.md`）。
+
 | id | 規律（一言） | 役割 | 既定の when | 出典・根拠 |
 |---|---|---|---|---|
-| `restate-task` | タスクを 3 行で復唱し、成果物の形式を宣言してから着手する | worker 全 kind | 小段 | 実測（タスク誤読） |
+| `restate-task` | タスクを 3 行で復唱し、成果物の形式を宣言してから着手する | worker（散文 kind） | 小段 | 実測（タスク誤読） |
 | `path-grounding` | 触るパスを実在確認してから編集する。無ければ作らず質問へ | worker（work / generate） | 小段 | 実測（論理名を実パスと誤読し捏造） |
-| `plan-first` | 手順・触るファイル・完了条件を列挙してから実行する | worker | 小・中段 | plan モードの縮退分の再有効化 |
-| `spec-first` | 入出力契約・境界条件を先に書き、実装後に差分を自己照合する | worker | 小段 | contract-driven-development スキル |
+| `plan-first` | 手順・触るファイル・完了条件を列挙してから実行する | worker（散文 kind） | 小・中段 | plan モードの縮退分の再有効化 |
+| `spec-first` | 入出力契約・境界条件を先に書き、実装後に差分を自己照合する | worker（散文 kind） | 小段 | contract-driven-development スキル |
 | `test-first` | 失敗するテストを先に書き、通してから終える | worker（work） | 小・中段 × コード系 | test-driven-development スキル |
 | `failure-modes-first` | 失敗モードと回復手段を列挙してから実装する | worker・planner | 可用性系の仕事種別 | failure-driven-development スキル |
 

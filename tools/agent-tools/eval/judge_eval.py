@@ -13,6 +13,7 @@ worker_eval.py の型をそのまま継ぐ——決定的チェッカーだけ�
   - 応答の解釈: agent_flow.util.extract_json（本番が受け取るのと同じ形）
 
 使い方: python3 judge_eval.py [--model qwen3.5:9b] [--repeat 3] [--cases S1,F1]
+        [--methods restate-task,plan-first] [--tier small]
 """
 from __future__ import annotations
 
@@ -33,6 +34,8 @@ sys.path.insert(0, str(REPO / "tools/agent-flow"))
 import agent_flow  # noqa: E402
 
 extract_json = agent_flow.extract_json
+# 手法パックの適用判定も本番の実装で行う（agent-flow / agent-loop と同じ 1 実装）。
+from agentcore import methods as _methodlib  # noqa: E402
 
 PROMPT_BUILDER = Path(os.environ.get(
     "FLOW_WORKER_PROMPT",
@@ -58,23 +61,61 @@ def load_cmd(name: str = "ollama-json") -> "tuple[list[str], str]":
     return list(_FALLBACK_CMD), "fallback（定義を読めませんでした）"
 
 
-def cmd_for(kind: str) -> "tuple[list[str], str]":
-    """役割 → 本番が起動する argv。振り替え規則は写さず本番の解決器を呼ぶ。
+def cli_name_for(kind: str) -> str:
+    """役割 → 本番が起動する CLI 定義名。振り替え規則は写さず本番の解決器を呼ぶ。
 
     split は配列を返す契約なので、本番は `list_variant`（`--format array`）へ振り替える。
     ollama の JSON モードはトップレベルをオブジェクトに固定するため、`--format json` の
     ままでは配列契約を満たしようがない（実測では要素をキーへ散らした器で返る）。
+    list 契約の振り替えは agent-flow 側の未着地分なので、無い木では JSON 変種へ倒す
+    （split 以外の測定を道連れにしないため。split はこの木では測れない）。
     """
-    name = (agent_flow._agentcli.list_variant("ollama")
-            if kind in agent_flow.LIST_CONTRACT_ROLES
-            else agent_flow._agentcli.json_variant("ollama"))
-    return load_cmd(name)
+    if kind in getattr(agent_flow, "LIST_CONTRACT_ROLES", frozenset()):
+        return agent_flow._agentcli.list_variant("ollama")
+    return agent_flow._agentcli.json_variant("ollama")
+
+
+def cmd_for(kind: str) -> "tuple[list[str], str]":
+    return load_cmd(cli_name_for(kind))
 
 
 CMD, CMD_SOURCE = load_cmd()
 # `--drop-format` で外す引数。engine 側の制約とモデルの能力を切り分けるための診断用スイッチで、
 # 基準線の測定には使わない。
 DROP_ARGS: "set[str]" = set()
+# `--methods` で有効化した手法パック（tuning.json と同じ形）と、`--tier` で名乗る実行段。
+METHODS: "dict | None" = None
+TIER = "small"
+
+
+def load_methods(ids: str) -> "dict | None":
+    """カタログ（methods/*.json）を tuning.json と同じ形へ組む（enabled を立てるだけ）。"""
+    picked = []
+    for mid in [m.strip() for m in ids.split(",") if m.strip()]:
+        path = REPO / "methods" / f"{mid}.json"
+        if not path.exists():
+            raise SystemExit(f"手法パックが見つかりません: {path}")
+        picked.append({**json.loads(path.read_text(encoding="utf-8")), "enabled": True})
+    return {"methods": picked} if picked else None
+
+
+def method_text(kind: str) -> "tuple[str, list[str]]":
+    """この役割へ本番が注入する追補と、実際に効いた手法 id。
+
+    適用判定は写さず `agentcore.methods.select` をそのまま呼ぶ——`when` の解釈が
+    ここと本番でずれると、「効かない条件」を効いた前提で測ることになる。本番の
+    context のうちこの測定に無いのは tier だけ（段は agent-control が run へ投函する
+    もので、単発の呼び出しには存在しない）。`--tier` で明示的に名乗る。
+    """
+    if METHODS is None:
+        return "", []
+    cli = cli_name_for(kind)
+    app = _methodlib.select(METHODS, {
+        "engine": "agent-flow", "workload": "flow", "purpose": kind,
+        "role": _methodlib.role_for(kind), "agent_cli": cli, "model": MODEL,
+        "tier": TIER, "relative_cost": _methodlib.relative_cost(cli),
+    }, "")
+    return app["text"], app["methods"]
 
 # ------------------------------------------------------------------ チェッカー
 # すべて (ok, note) を返す。data は本番と同じ extract_json の結果（None = 抽出不能）。
@@ -304,8 +345,13 @@ def call(prompt: str, cmd: "list[str] | None" = None) -> "tuple[int, str, str, f
 
 def run_one(cid: str, i: int) -> dict:
     case = CASES[cid]
+    kind = case.get("kind") or "evaluator"
     prompt = build_prompt(case)
-    cmd, _src = cmd_for(case.get("kind") or "evaluator")
+    # 本番（agent-flow の _apply_methods）と同じ位置——プロンプトの末尾へ空行 1 つで後置。
+    extra, applied = method_text(kind)
+    if extra:
+        prompt = f"{prompt}\n\n{extra}"
+    cmd, _src = cmd_for(kind)
     rc, out, err, wall = call(prompt, cmd)
     repaired = False
 
@@ -355,10 +401,12 @@ def run_one(cid: str, i: int) -> dict:
     for line in err.splitlines():
         if line.startswith("@agent-log"):
             log = line.split(None, 1)[-1]
-    rec = dict(case=cid, kind=case.get("kind") or "evaluator", iter=i, ok=ok, mode=mode,
+    rec = dict(case=cid, kind=kind, iter=i, ok=ok, mode=mode,
                repaired=repaired, wall=round(wall, 1), note=note, prompt_chars=len(prompt),
                out_chars=len(out), answer=json.dumps(data, ensure_ascii=False,
                                                      default=str)[:200], log=log)
+    if applied:  # 何が効いた行かは台帳から読めないと、後で比較できない（空なら書かない）
+        rec["methods"] = applied
     print(f"  {cid}#{i}: {'PASS' if ok else 'FAIL':4s} {mode:11s} {wall:6.1f}s  {note[:66]}",
           flush=True)
     return rec
@@ -424,7 +472,7 @@ def selfcheck() -> int:
 
 
 def main() -> None:
-    global WALL_LIMIT, MODEL
+    global WALL_LIMIT, MODEL, METHODS, TIER
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default=MODEL)
     ap.add_argument("--repeat", type=int, default=3)
@@ -434,12 +482,19 @@ def main() -> None:
                     help="LLM を呼ばずにチェッカーとプロンプトだけ確かめる")
     ap.add_argument("--drop-format", action="store_true",
                     help="診断用: argv から --format json / array を外す（基準線には使わない）")
+    ap.add_argument("--methods", default="",
+                    help="カタログ（methods/*.json）の id をカンマ区切りで有効化する。"
+                         "適用条件は本番の agentcore.methods.select が判定するので、"
+                         "`when` に合わない役割へは注入されない")
+    ap.add_argument("--tier", default=TIER,
+                    help="この測定が名乗る実行段（手法の when.tiers と突き合わせる）")
     args = ap.parse_args()
     if args.drop_format:
         DROP_ARGS.update({"--format", "json", "array"})
     if args.selfcheck:
         raise SystemExit(selfcheck())
     MODEL, WALL_LIMIT = args.model, args.wall
+    METHODS, TIER = load_methods(args.methods), args.tier
     cids = [c.strip() for c in args.cases.split(",") if c.strip() in CASES]
 
     LEDGER_DIR.mkdir(parents=True, exist_ok=True)
@@ -448,6 +503,10 @@ def main() -> None:
     for kind in dict.fromkeys(CASES[c].get("kind") or "evaluator" for c in cids):
         cmd, src = cmd_for(kind)
         line = f"{kind}: {' '.join(a for a in cmd if a not in DROP_ARGS)} （出所: {src}）"
+        # 宣言した手法が when で落ちて 1 つも効いていない、を黙って測らない。
+        applied = method_text(kind)[1]
+        if METHODS is not None:
+            line += f" 手法: {','.join(applied) if applied else 'なし（when 不一致）'}"
         if line not in seen:
             seen.append(line)
     print(f"model={MODEL}{'・--drop-format 適用' if DROP_ARGS else ''}\n  " + "\n  ".join(seen)

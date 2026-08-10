@@ -1,1 +1,1 @@
-{"id":"spec-first","description":"契約と境界条件を先に定めて実装後に照合する","enabled":false,"fragments":[{"role":"worker","text":"先に入出力契約と境界条件を明示し、実装後に差分を自己照合してください。"}],"when":{"tiers":["small"]},"origin":"skill://contract-driven-development"}
+{"id":"spec-first","description":"契約と境界条件を先に定めて実装後に照合する","enabled":false,"fragments":[{"role":"worker","text":"先に入出力契約と境界条件を明示し、実装後に差分を自己照合してください。"}],"when":{"tiers":["small"],"purposes":["work","generate","synthesize"]},"origin":"skill://contract-driven-development"}
