@@ -70,6 +70,11 @@
     （[agent-ollama-design.md](./agent-ollama-design.md) §2・
     コンセプト 柱3）。指す先が存在しない・自分自身を指す申告は無視して元の定義で走る
     （設定ミスで実行を殺さない）。振り替えは 1 段だけで連鎖させない。
+  - **配列契約用の変種の申告（`list_variant`）**: 出力がトップレベルの JSON **配列**でなければ
+    下流が動かない役割（agent-flow の split）に使う定義名。同じ解決規則で、書かなければ
+    `json_variant` へ落ちる。JSON モードがトップレベルをオブジェクトに固定するエンジン
+    （ollama の `format: "json"`）では JSON 用の起動形で配列契約を満たしようがないため、
+    スキーマを渡せる起動形をここで分けて申告する。配列をそのまま返せる CLI は何も書かない。
   - **相対コスト（`relative_cost`）**: 同じ仕事 1 回の無次元値（ローカル=0、通常クラウド=1）。
     通貨やモデル別価格は持たず、宣言済み `fallbacks` から現在より高コストの最初の 1 件だけを
     内容失敗時の再試行候補にする。実行回数の上限は各エンジンが持ち、候補の選択だけを共通化する。
@@ -131,7 +136,7 @@
   例外は cowork の定常業務 tmux 実行（`cowork.js:coworkChatLaunch`）——定義解決に失敗しても
   `kiro-cli chat --trust-all-tools` へ落として定常業務を止めない。ただし黙ってはいない。
   フォールバック発動時は `console.warn` で理由（元エラーのメッセージ）を残す。
-- 同梱定義: `agents/{kiro,claude,copilot,codex,cursor,ollama,ollama-json,ollama-read,opencode}.json`。
+- 同梱定義: `agents/{kiro,claude,copilot,codex,cursor,ollama,ollama-json,ollama-list,ollama-read,opencode}.json`。
   追加手順は
   [`agents/README.md`](../../agents/README.md)。
 

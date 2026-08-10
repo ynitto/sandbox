@@ -57,6 +57,18 @@ class JsonVariantTests(unittest.TestCase):
         _write_cli(self.dir, "toy", json_variant="toy")
         self.assertEqual(self._resolve("toy"), "toy")
 
+    def test_list_variant_prefers_its_own_declaration(self):
+        _write_cli(self.dir, "toy", json_variant="toy-json", list_variant="toy-list")
+        _write_cli(self.dir, "toy-json")
+        _write_cli(self.dir, "toy-list")
+        self.assertEqual(agentcli.list_variant("toy", project_dir=self.root), "toy-list")
+
+    def test_list_variant_falls_back_to_the_json_variant(self):
+        # 配列をそのまま返せる CLI は list_variant を書かなくてよい（JSON 変種へ落ちる）。
+        _write_cli(self.dir, "toy", json_variant="toy-json")
+        _write_cli(self.dir, "toy-json")
+        self.assertEqual(agentcli.list_variant("toy", project_dir=self.root), "toy-json")
+
     def test_unknown_cli_is_returned_as_is(self):
         self.assertEqual(self._resolve("nope"), "nope")
 
@@ -81,6 +93,15 @@ class ShippedDefinitionTests(unittest.TestCase):
         spec = json.loads((repo / "agents" / "ollama.json").read_text(encoding="utf-8"))
         self.assertEqual(spec.get("json_variant"), "ollama-json")
         self.assertTrue((repo / "agents" / "ollama-json.json").exists())
+
+    def test_ollama_declares_the_list_variant(self):
+        # 配列契約（split）は JSON モードでは満たせない。配列用の起動形を申告していること。
+        repo = Path(__file__).resolve().parents[4]
+        for name in ("ollama", "ollama-json"):
+            spec = json.loads((repo / "agents" / f"{name}.json").read_text(encoding="utf-8"))
+            self.assertEqual(spec.get("list_variant"), "ollama-list", name)
+        cmd = json.loads((repo / "agents" / "ollama-list.json").read_text(encoding="utf-8"))["command"]
+        self.assertEqual(cmd[cmd.index("--format") + 1], "array")
 
 
 if __name__ == "__main__":

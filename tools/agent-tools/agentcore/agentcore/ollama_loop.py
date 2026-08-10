@@ -182,6 +182,22 @@ def resolve_think(explicit: "bool | None" = None) -> "bool | None":
     return None
 
 
+# `--format array` が送る structured outputs のスキーマ。
+# ollama の JSON モード（`format: "json"`）は**トップレベルを必ずオブジェクトにする**ので、
+# 配列を求める契約（agent-flow の split）はプロンプトで何を書いても満たせない——実測では
+# `{"1-250": ...}` のように要素をキーへ散らした器で返り、受け側が何を答えとみなすかを
+# 決められない。スキーマを渡す口（structured outputs）ならトップレベル配列を表現できる。
+# 要素を string に固定するのは、split の要素が下流で map ゴールへ文字列として埋め込まれる
+# ため（`_expand_splits`）。入れ子の構造が要るようになったらここを役割別に分ける。
+_ARRAY_SCHEMA = {"type": "array", "items": {"type": "string"}}
+
+
+def format_value(fmt: "str | None"):
+    """`--format` の値 → API の `format` フィールド。文字列のまま持ち回り、
+    API へ渡す直前のここだけで器へ変換する（ログ・再生の腕ラベルは文字列のまま扱える）。"""
+    return _ARRAY_SCHEMA if fmt == "array" else fmt
+
+
 def _payload(model: str, *, think: "bool | None", options: "dict | None",
              fmt: "str | None" = None) -> dict:
     body: dict = {"model": model, "stream": True}
@@ -206,7 +222,7 @@ def _payload(model: str, *, think: "bool | None", options: "dict | None",
         # `format` は**デコード時の文法制約**。プロンプトに 1 トークンも足さないので
         # 読み込み時間の固定費が増えない（適用拡大設計 §4.1）。JSON 契約の役割で
         # 「妥当な JSON でない出力」という故障モードを消すのが目的。
-        body["format"] = fmt
+        body["format"] = format_value(fmt)
     keep_alive = os.environ.get("AGENT_OLLAMA_KEEP_ALIVE", "").strip()
     if keep_alive:
         body["keep_alive"] = keep_alive

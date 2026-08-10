@@ -45,7 +45,7 @@ class MethodSelectionTests(unittest.TestCase):
     def test_other_cli_model_and_purpose_get_nothing(self):
         pack = _pack()
         for purpose, cli in (("work", "claude"),      # クラウド CLI には足さない
-                             ("split", "ollama-json"),  # JSON 契約の役割へ散文を混ぜない
+                             ("split", "ollama-list"),  # JSON 契約の役割へ散文を混ぜない
                              ("verify", "ollama"),      # when.purposes の外
                              ("planner", "ollama")):
             app = methods.select(pack, _ctx(purpose, cli), "req-x-r0")

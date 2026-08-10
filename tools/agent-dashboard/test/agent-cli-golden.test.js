@@ -69,6 +69,12 @@ const GOLDEN = {
     write: ['agent-ollama', '--think', 'off', '--format', 'json', 'M'],
     readonly: ['agent-ollama', '--think', 'off', '--format', 'json', 'M'],
   },
+  'ollama-list': {
+    // 配列契約の役割（split）用。--format json はトップレベルをオブジェクトに固定して
+    // 配列を表せないので、スキーマを渡す --format array で受ける。
+    write: ['agent-ollama', '--think', 'off', '--format', 'array', 'M'],
+    readonly: ['agent-ollama', '--think', 'off', '--format', 'array', 'M'],
+  },
   'ollama-read': {
     // 探索が要る readonly 役割用（write 経路に read セットを載せ、権限はゲートが絞る）。
     write: ['agent-ollama', '--think', 'off', 'M', '--tools', 'read',
@@ -115,7 +121,7 @@ test('同梱定義がすべて読める（壊れた定義を同梱しない）',
 // 「安いほう」の判断を 1 つの数へ集める以上、その数が**同梱定義すべてで宣言され**、
 // ローカル実行がクラウド実行より厳密に安い、が守られていないと降格・昇格が意味を失う。
 // 個別の値をスナップショットしても不変条件は守れないので、全定義を読んで関係を確かめる。
-const LOCAL_ENGINES = new Set(['ollama', 'ollama-json', 'ollama-read', 'opencode']);
+const LOCAL_ENGINES = new Set(['ollama', 'ollama-json', 'ollama-list', 'ollama-read', 'opencode']);
 
 test('相対コストは全同梱定義で宣言され、ローカル < クラウドの関係を保つ', () => {
   const dir = agentCli.bundledDir();

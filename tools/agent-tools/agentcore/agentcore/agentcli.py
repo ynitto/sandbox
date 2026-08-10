@@ -197,6 +197,7 @@ def normalize(name: str, raw: dict, path) -> dict:
         # 「どの役割が JSON 契約か」はエンジンの語彙、「その CLI に JSON 用の変種があるか」は
         # 定義側の申告——こう分けると、エンジンが CLI 名で分岐せずに済む（適用拡大設計 §4.3）。
         "json_variant": str(raw.get("json_variant") or "").strip().lower(),
+        "list_variant": str(raw.get("list_variant") or "").strip().lower(),
         "write_args": _strs(raw.get("write_args"), "write_args", path),
         "readonly_args": _strs(raw.get("readonly_args"), "readonly_args", path),
         "readonly": readonly,
@@ -303,9 +304,28 @@ def json_variant(name: str, project_dir=None) -> str:
 
     申告先が実在しない・自分自身を指す場合は `name` のまま（設定ミスで実行を殺さない）。
     """
+    return _variant(name, "json_variant", project_dir)
+
+
+def list_variant(name: str, project_dir=None) -> str:
+    """JSON **配列**を返す契約の役割（agent-flow の split）に使う CLI 名。
+
+    JSON モードを持つエンジンの一部（ollama）はトップレベルをオブジェクトに固定するため、
+    `json_variant` の起動形では配列契約を満たしようがない（要素をキーへ散らした器で返り、
+    形式修復リトライも必ず空振りする＝1 呼び出し分を捨てる）。スキーマを渡せる起動形を
+    定義側が `list_variant` として申告し、エンジンは役割の性質だけで振り替える。
+
+    申告が無ければ `json_variant` へ落とす——配列契約は JSON 契約の一種なので、
+    区別の要らないエンジン（配列をそのまま返せる CLI）は何も書かなくてよい。
+    """
+    variant = _variant(name, "list_variant", project_dir)
+    return variant if variant != name else json_variant(name, project_dir)
+
+
+def _variant(name: str, field: str, project_dir=None) -> str:
     key = str(name or "").strip().lower()
     try:
-        variant = str(load_cli(key, project_dir).get("json_variant") or "")
+        variant = str(load_cli(key, project_dir).get(field) or "")
     except AgentCliError:
         return name
     if not variant or variant == key:

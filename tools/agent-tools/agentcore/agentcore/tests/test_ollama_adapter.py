@@ -442,6 +442,16 @@ class TestContractDefinition(unittest.TestCase):
         self.assertFalse(opts["tools"], "JSON しか出せない状態でツールループの規約は成立しない")
         self.assertEqual(spec["readonly"], "enforced")
 
+    def test_list_variant_asks_for_a_top_level_array(self):
+        # `--format json` はトップレベルをオブジェクトに固定するので、配列契約（split）は
+        # スキーマを渡す起動形で受ける。
+        spec = agentcli.load_cli("ollama-list")
+        opts = ollama_adapter.parse_args(agentcli.headless_cmd(spec, "M", "P")["argv"][1:])
+        self.assertEqual(opts["format"], "array")
+        self.assertFalse(opts["tools"])
+        self.assertEqual(ollama_loop.format_value("array"),
+                         {"type": "array", "items": {"type": "string"}})
+
     def test_read_variant_carries_the_read_toolset(self):
         spec = agentcli.load_cli("ollama-read")
         opts = ollama_adapter.parse_args(agentcli.headless_cmd(spec, "M", "P")["argv"][1:])
@@ -452,7 +462,7 @@ class TestContractDefinition(unittest.TestCase):
 
     def test_context_exhausted_is_classified_as_env_not_transient(self):
         """同じ壁に同じ時間を掛けて再試行させない（transient にしないのが要点）。"""
-        for name in ("ollama", "ollama-json", "ollama-read"):
+        for name in ("ollama", "ollama-json", "ollama-list", "ollama-read"):
             spec = agentcli.load_cli(name)
             triage = agentcli.classify_error(
                 spec, "@agent-note 途中で打ち切りました（context_exhausted）。")

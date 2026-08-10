@@ -209,6 +209,10 @@ structured outputs のスキーマ `{"type":"array","items":{"type":"string"}}` 
 S1 (split): 3/3   S2 (split): 1/3   合計 4/6   空・形式違反 0/6
 ```
 
+gemma4:e4b でも同じ 4/6・中央値 2 秒。**再測の前に `bash tools/agent-tools/install.sh` を
+回すこと**——`agent-ollama` は zipapp なので、`--format array` を足しても再ビルドするまで
+古い実行ファイルが使われ、6 run 全部が `cli_error` になる（実行前のチェックの 1 番目）。
+
 読み方は 3 点。
 
 - **判定の中身は無傷ではない。** 空応答は 0 だが、JSON の破損が 3/30（全角の閉じ引用符・

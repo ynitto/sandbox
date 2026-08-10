@@ -104,6 +104,7 @@ chat モードのように、人が `/skill-name` と書いたテキストを送
 | `cursor.json` | `cursor-agent` | best-effort（`--mode ask`） |
 | `ollama.json` | `agent-ollama <model>` | enforced（readonly はツールを持たない） |
 | `ollama-json.json` | 同上 + `--format json` | enforced（道具なし。JSON 契約の役割用） |
+| `ollama-list.json` | 同上 + `--format array` | enforced（道具なし。配列契約＝split 用） |
 | `ollama-read.json` | 同上 + `--tools read` | enforced（write でも読み取り専用コマンドだけ） |
 | `opencode.json` | `opencode run`（`agent-opencode` 経由） | best-effort（`--agent plan` は edit を拒むが bash は拒まない） |
 

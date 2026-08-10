@@ -91,6 +91,11 @@
       "type": "string",
       "description": "JSON だけを返す契約の役割（agent-flow の planner / evaluator / split / filter / judge / reduce、agent-project の plan / review / prioritize / route / adjudicate / assess）に、この CLI の代わりに使う定義名。エンジンは役割の性質だけを見てここへ振り替えるので、人が役割ごとに agents: を書き並べなくてよい。ツールループ前提の定義（--tools 付き）を JSON 契約の役割に使うと出力が制御語だけになり空応答で落ちるため、その組み合わせに対応する変種を定義側が申告する。指す先が存在しない・自分自身を指す場合は無視され元の定義が使われる。例: ollama → ollama-json。"
     },
+    "list_variant": {
+      "type": "string",
+      "description": "JSON **配列**を返す契約の役割（agent-flow の split）に、この CLI の代わりに使う定義名。JSON モードでトップレベルがオブジェクトに固定されるエンジン（ollama の format:json）は、json_variant の起動形では配列契約を満たしようがないため、スキーマを渡せる起動形をここで申告する。書かなければ json_variant へ落ちるので、配列をそのまま返せる CLI は書かなくてよい。指す先が存在しない・自分自身を指す場合は無視される。例: ollama → ollama-list。",
+      "$comment": "json_variant と同じ解決規則（agentcore.agentcli._variant）で引かれる。"
+    },
     "command_suffix": {
       "type": "array",
       "items": {

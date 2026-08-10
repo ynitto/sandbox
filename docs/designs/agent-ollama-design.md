@@ -27,19 +27,30 @@ Ollama のローカル推論を、クラウド CLI の枠が乏しいときの�
 
 ## 2. CLI 定義と実行面
 
-一般の `write_args` / `readonly_args` / `json_variant` / `interactive` / `errors` / `session_log` 契約は
+一般の `write_args` / `readonly_args` / `json_variant` / `list_variant` / `interactive` / `errors` /
+`session_log` 契約は
 [`agent-cli-plugin-design.md`](./agent-cli-plugin-design.md) を正典とし、本書では Ollama への割当だけを定める。
 
 | 定義 | JSON 契約 | write モード | readonly モード | 対話 |
 |---|---|---|---|---|
-| `ollama` | `ollama-json` へ振替 | `--tools bash --max-rounds 12 --command-timeout 900` | 道具なし | `--tui`、道具なしで開始 |
-| `ollama-json` | 自身 | `--format json`、道具なし | 同左 | なし |
+| `ollama` | `ollama-json` へ振替（配列契約は `ollama-list`） | `--tools bash --max-rounds 12 --command-timeout 900` | 道具なし | `--tui`、道具なしで開始 |
+| `ollama-json` | 自身（配列契約は `ollama-list`） | `--format json`、道具なし | 同左 | なし |
+| `ollama-list` | 自身 | `--format array`、道具なし | 同左 | なし |
 | `ollama-read` | なし | `--tools read --max-rounds 30 --command-timeout 900` | 道具なし | なし |
 
-3 定義は `relative_cost: 0`、`readonly: enforced`、既定モデル `qwen3` を宣言する。think は
+`--format json`（ollama の JSON モード）は**トップレベルを必ずオブジェクトにする**。よって
+配列を返す契約（agent-flow の split）はプロンプトで何を書いても満たせず、実測 2026-08-11 では
+`{"1-250": ...}` のように要素をキーへ散らした器で返り、形式修復リトライも必ず空振りした
+（S1/S2 各 0/3）。`ollama-list` は structured outputs のスキーマ
+`{"type":"array","items":{"type":"string"}}` を渡してトップレベル配列を表現する。要素を string に
+固定するのは、split の要素が下流で map ゴールへ文字列として埋め込まれるため。
+
+4 定義は `relative_cost: 0`、`readonly: enforced`、既定モデル `qwen3` を宣言する。think は
 `ollama` だけ**役割で分ける**（readonly = `on`、write = `off`）。ツールループは 1 ノードで最大
 30 ラウンド回るので、道具を持つ側で 1 ラウンドごとに長考されると終わらない（実測 2026-08-10:
-思考 7700 トークン・12 分の末に構文エラーのコード）。`ollama-json` / `ollama-read` は `on` のまま。
+思考 7700 トークン・12 分の末に構文エラーのコード）。`ollama-read` は `on` のまま。
+`ollama-json` / `ollama-list` は `--format` と think を併用できない（文法制約が thinking の
+1 トークン目から効き、答えを丸ごと思考へ吐いて本文が空になる）ため `off` を明示する。
 `ollama` の readonly にツールを付けないため、CLI 契約上の強制力に嘘が入らない。`ollama-read` は
 write として呼ばれる役割に読取ツールだけを与える別定義で、汎用 `ollama` を安全側へ書き換えない。
 

@@ -2,6 +2,7 @@
   "name": "ollama-json",
   "relative_cost": 0,
   "command": ["agent-ollama", "--think", "off", "--format", "json", "{model}"],
+  "list_variant": "ollama-list",
   "prompt_via": "stdin",
   "default_model": "qwen3",
   "output": "stdout",
