@@ -53,21 +53,25 @@ const GOLDEN = {
   ollama: {
     // --tools は write のときだけ生える（readonly は素の text→text のまま）。
     // 予算（--max-rounds / --command-timeout）は「品質を時間で買う」側へ倒した既定。
-    write: ['agent-ollama', '--think', 'on', 'M', '--tools', 'bash',
+    // think はヘッドレスの全役割で off（実測 2026-08-10・ログ 236 本）。write は 1 ラウンドの
+    // 思考だけで 7700 トークン・12 分（p90 942 秒 > agent_timeout 600 秒）、readonly は
+    // 中央値 1000 秒、--format 併用は文法が thinking から掛かって本文が空（39/39 件）。
+    // 人が待てる TUI だけ on。
+    write: ['agent-ollama', 'M', '--think', 'off', '--tools', 'bash',
             '--max-rounds', '30', '--command-timeout', '900'],
-    readonly: ['agent-ollama', '--think', 'on', 'M'],
+    readonly: ['agent-ollama', 'M', '--think', 'off'],
     interactive: ['agent-ollama', '--tui', '--think', 'on', 'M'],
   },
   'ollama-json': {
     // JSON 契約の役割用（--format json で文法から強制する。道具は持たせない）。
-    write: ['agent-ollama', '--think', 'on', '--format', 'json', 'M'],
-    readonly: ['agent-ollama', '--think', 'on', '--format', 'json', 'M'],
+    write: ['agent-ollama', '--think', 'off', '--format', 'json', 'M'],
+    readonly: ['agent-ollama', '--think', 'off', '--format', 'json', 'M'],
   },
   'ollama-read': {
     // 探索が要る readonly 役割用（write 経路に read セットを載せ、権限はゲートが絞る）。
-    write: ['agent-ollama', '--think', 'on', 'M', '--tools', 'read',
+    write: ['agent-ollama', '--think', 'off', 'M', '--tools', 'read',
             '--max-rounds', '30', '--command-timeout', '900'],
-    readonly: ['agent-ollama', '--think', 'on', 'M'],
+    readonly: ['agent-ollama', '--think', 'off', 'M'],
   },
   opencode: {
     write: ['agent-opencode', '--auto', '--model', 'M'],

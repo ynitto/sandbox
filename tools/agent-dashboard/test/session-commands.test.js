@@ -378,7 +378,8 @@ test('設定カードは保存・追加の動線を持つ（実行内容のプ�
 test('未保存の入力はポーリング再描画から守る', () => {
   const src = rendererSrc.read();
   assert.ok(src.includes('state.orchSessionDirty'));
-  assert.ok(/!state\.orchInstructionsDirty && !state\.orchSessionDirty/.test(src));
+  assert.ok(/state\.orchInstructionsDirty \|\| state\.orchSessionDirty/.test(src));
+  assert.ok(src.includes("activeTab() === 'orchestration' && !orchestrationDraftActive()"));
 });
 
 test('画面は注意書き（引用・中止・反映点）を出す', () => {

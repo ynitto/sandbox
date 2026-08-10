@@ -1,7 +1,7 @@
 {
   "name": "ollama-json",
   "relative_cost": 0,
-  "command": ["agent-ollama", "--think", "on", "--format", "json", "{model}"],
+  "command": ["agent-ollama", "--think", "off", "--format", "json", "{model}"],
   "prompt_via": "stdin",
   "default_model": "qwen3",
   "output": "stdout",

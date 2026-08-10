@@ -28,6 +28,7 @@ function registerIpc(ctx) {
           role: String((fragment && fragment.role) || ''),
           text: String((fragment && fragment.text) || ''),
         })),
+        when: m.when && typeof m.when === 'object' ? m.when : {},
         from: m._from || 'catalog',
       }));
     } catch {

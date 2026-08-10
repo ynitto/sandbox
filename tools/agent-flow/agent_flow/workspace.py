@@ -11,6 +11,10 @@ from __future__ import annotations
 # --------------------------------------------------------------------------
 _workspace_clone: "dict[tuple, str]" = {}   # (url,path,base) -> clone パス（""=clone 失敗）
 _workspace_root: "str | None" = None
+# push 拒否のうち「リモートが進んでいた」＝ fetch + rebase で解ける理由のマーカー。
+# これ以外（認証・権限・保護ブランチ・ネットワーク）は rebase しても解けないので即座に上げる。
+_PUSH_STALE_MARKERS = ("non-fast-forward", "fetch first", "stale info",
+                       "Updates were rejected")
 
 
 def _repo_name(url: str) -> str:
@@ -349,9 +353,24 @@ def finalize_workspace(ws: "dict | None", run_id: str, node_id: str) -> "dict | 
             head = _ws_git(clone, "rev-parse", "HEAD").stdout.strip()
             return {"url": ws.get("url"), "branch": branch, "commit": head,
                     "target": ws.get("target") or ws.get("base") or "", "path": ws.get("path") or ""}
-        # reject → リモートの branch を FETCH_HEAD に取り込み（共有 cache の ref は書き換えない）、
+        # 失敗の理由を見分ける。rebase で解けるのは「リモートが進んでいた」だけで、認証切れ・
+        # 権限不足・保護ブランチ・ネットワーク断は何度 rebase しても解けない。見分けずに
+        # rebase へ倒すと、押せなかった本当の理由（例: could not read Username）が捨てられ、
+        # ログには「rebase が競合しました: invalid upstream 'FETCH_HEAD'」だけが残る
+        # ——リモートに無いブランチを fetch して FETCH_HEAD が書かれないためで、実際に
+        # 認証切れの調査を丸ごと誤らせた。英語判定でよいのは harden_git_env が LC_ALL=C を
+        # 固定しているため。
+        push_detail = (last_push.stderr or last_push.stdout or "")
+        if not any(m in push_detail for m in _PUSH_STALE_MARKERS):
+            raise RuntimeError(
+                f"workspace push が {branch} へ反映できませんでした: {push_detail.strip()[:300]}")
+        # リモートの branch を FETCH_HEAD に取り込み（共有 cache の ref は書き換えない）、
         # detached のまま rebase して再 push。分散ワーカーの push を統合する。
-        _ws_git(clone, "fetch", "--quiet", "origin", branch)
+        fetched = _ws_git(clone, "fetch", "--quiet", "origin", branch)
+        if fetched.returncode != 0:
+            raise RuntimeError(
+                f"workspace push が {branch} へ反映できませんでした（統合のための fetch も失敗）: "
+                f"{push_detail.strip()[:200]} / {(fetched.stderr or fetched.stdout).strip()[:150]}")
         rb = _ws_git(clone, "rebase", "FETCH_HEAD")
         if rb.returncode != 0:
             # コンフリクトした rebase を放置したまま push を繰り返しても解消しない上、

@@ -8,6 +8,7 @@ const root = path.join(__dirname, '..', 'src', 'renderer');
 const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
 const renderer = require('./helpers/renderer-src').read();
 const css = fs.readFileSync(path.join(root, 'styles.css'), 'utf8');
+const workflowFeature = fs.readFileSync(path.join(root, 'features', 'adhoc-flow.js'), 'utf8');
 
 function grab(name) {
   const at = renderer.indexOf(`function ${name}(`);
@@ -45,6 +46,17 @@ function grab(name) {
 }
 
 assert.match(html, /<meta name="viewport" content="width=device-width, initial-scale=1"/);
+assert.ok(workflowFeature.includes('id="wf-new"'), '一から作るカードが必要です');
+assert.ok(!workflowFeature.includes('id="wf-use-template"') && !workflowFeature.includes('function libraryHtml('),
+  '雛形選択後の複製操作と左ペインを残しません');
+assert.match(css, /\.wf-template-grid\s*\{[^}]*align-items:\s*start/s,
+  'カードを行の高さまで引き伸ばしません');
+assert.match(css, /\.wf-template-card\s*\{[^}]*min-height:\s*0[^}]*cursor:\s*pointer/s,
+  'カードの固定高さを外し、クリック可能と示します');
+assert.match(css, /\.wf-template-card > small\s*\{[^}]*-webkit-line-clamp:\s*3/s,
+  '雛形説明を3行まで表示します');
+assert.match(css, /\.wf-editor-layout\s*\{[^}]*display:\s*block/s,
+  '編集画面は左ペインを除いた1カラムにします');
 assert.match(html, /data-tab="history"[^>]*>成果</);
 // 道具の名前（定常業務・ミッション…）は**左メニューの領域名**が持つ。右のタブはその領域の
 // 中の画面なので、領域名を繰り返さずに中身の名前を付ける（定常業務 → 作業／実行の記録／設定）。
@@ -235,6 +247,22 @@ assert.ok(!grab('orchOrderedTiers').includes('Object.entries'), '既存設定に
 assert.ok(!renderer.includes('id="btn-orch-tier-add"') && !renderer.includes('class="orch-tier-remove"'),
   '固定された段の追加・削除操作を表示しません');
 assert.ok(renderer.includes('placeholder="small, medium, large"'), '手法の段指定も画面上の名称へ揃えます');
+const workflowDraftState = {};
+const workflowDialog = { open: false };
+// eslint-disable-next-line no-new-func
+const orchestrationDraftActive = new Function(
+  'state', '$', `${grab('orchestrationDraftActive')}; return orchestrationDraftActive;`
+)(workflowDraftState, (id) => (id === 'dlg-orch-method-add' ? workflowDialog : null));
+assert.strictEqual(orchestrationDraftActive(), false, '未編集なら自動更新できます');
+workflowDraftState.orchWorkflowDirty = true;
+assert.strictEqual(orchestrationDraftActive(), true, '段の入力中は自動更新から保護します');
+workflowDraftState.orchWorkflowDirty = false;
+workflowDialog.open = true;
+assert.strictEqual(orchestrationDraftActive(), true, 'カスタム手法ダイアログを開いている間も保護します');
+assert.ok(grab('renderAllTabs').includes('!orchestrationDraftActive()')
+  && grab('refreshAll').includes('!orchestrationDraftActive()'), '全体再描画と定期更新の両方で入力を保護します');
+assert.ok(grab('setupOrchestration').includes("tierList.addEventListener('input', markWorkflowDirty)"),
+  '段の入力開始を未保存状態として記録します');
 assert.ok(controlSettingsSource.includes('orchAllocationPanelHtml(') && controlSettingsSource.includes('orchStatusPanelHtml('),
   '実行制御タブに上限と稼働制御を表示します');
 assert.ok(controlSettingsSource.includes('orchConcurrencyPanelHtml('),

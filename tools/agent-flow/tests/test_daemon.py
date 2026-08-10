@@ -614,6 +614,66 @@ class DaemonPrimitiveTests(unittest.TestCase):
         finally:
             kf.cleanup_workspace()
 
+    def test_finalize_workspace_surfaces_the_push_failure_not_a_fake_rebase(self):
+        """rebase で解けない push 失敗（認証切れ等）は、押せなかった理由そのものを上げる。
+
+        以前は理由を見ずに fetch + rebase へ倒していた。リモートに無いブランチの fetch は
+        FETCH_HEAD を書かないので `rebase FETCH_HEAD` が `invalid upstream` で落ち、ログには
+        「rebase が競合しました」だけが残る——本当の原因（could not read Username）が消え、
+        認証切れの調査を丸ごと誤らせた（実際に踏んだ）。"""
+        remote = self._make_remote(name="ws_authfail")
+        real_run = kf.subprocess.run
+
+        def fail_push(cmd, **kw):
+            if isinstance(cmd, list) and "push" in cmd:
+                return subprocess.CompletedProcess(
+                    cmd, 128, "",
+                    "fatal: could not read Username for 'https://github.com': "
+                    "terminal prompts disabled")
+            return real_run(cmd, **kw)
+
+        try:
+            ws = kf.ensure_workspace_clone({"url": remote, "base": "main"}, "run-auth")
+            with open(os.path.join(ws["clone"], "new.txt"), "w") as fh:
+                fh.write("change")
+            with mock.patch.object(kf.subprocess, "run", side_effect=fail_push), \
+                 mock.patch.object(kf, "backoff_sleep", side_effect=lambda s: None):
+                with self.assertRaises(RuntimeError) as cm:
+                    kf.finalize_workspace(ws, "run-auth", "t1")
+            message = str(cm.exception)
+            self.assertIn("could not read Username", message)
+            self.assertNotIn("rebase", message)
+        finally:
+            kf.cleanup_workspace()
+
+    def test_finalize_workspace_still_rebases_when_the_remote_moved(self):
+        """リモートが進んでいた（non-fast-forward）ときは従来どおり rebase して統合する。"""
+        remote = self._make_remote(name="ws_nonff")
+        try:
+            # 別ワーカーが同じ作業ブランチへ先に push した状況を作る。
+            first = kf.ensure_workspace_clone({"url": remote, "base": "main"}, "run-nonff")
+            with open(os.path.join(first["clone"], "other.txt"), "w") as fh:
+                fh.write("theirs")
+            self.assertIsNotNone(kf.finalize_workspace(first, "run-nonff", "t0"))
+        finally:
+            kf.cleanup_workspace()
+        try:
+            second = kf.ensure_workspace_clone({"url": remote, "base": "main"}, "run-nonff")
+            # 先の push を知らない起点から作業する（fetch 前の HEAD へ戻す）。
+            subprocess.run(["git", "-C", second["clone"], "reset", "--hard", "origin/main"],
+                           capture_output=True)
+            with open(os.path.join(second["clone"], "mine.txt"), "w") as fh:
+                fh.write("mine")
+            with mock.patch.object(kf, "backoff_sleep", side_effect=lambda s: None):
+                delivery = kf.finalize_workspace(second, "run-nonff", "t1")
+            self.assertIsNotNone(delivery)
+            files = subprocess.run(["git", "-C", remote, "ls-tree", "-r", "--name-only",
+                                    "af/run-nonff"], capture_output=True, text=True).stdout
+            self.assertIn("mine.txt", files)
+            self.assertIn("other.txt", files, "先行 push を巻き戻さず統合する")
+        finally:
+            kf.cleanup_workspace()
+
     def test_finalize_workspace_noop_when_no_changes(self):
         # 調査タスク等（変更ゼロ）はブランチを push しない＝読み取り専用グラフでは何もしない
         remote = self._make_remote(name="ws_noop")

@@ -1,7 +1,7 @@
 {
   "name": "ollama-read",
   "relative_cost": 0,
-  "command": ["agent-ollama", "--think", "on", "{model}"],
+  "command": ["agent-ollama", "--think", "off", "{model}"],
   "prompt_via": "stdin",
   "default_model": "qwen3",
   "output": "stdout",

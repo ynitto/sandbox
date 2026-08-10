@@ -137,6 +137,26 @@ class TestStreamCall(unittest.TestCase):
         self.assertEqual(end["context_limit"], 100)
         self.assertEqual(end["context_pct"], 14.0)
 
+    def test_progress_reports_thinking_so_long_thought_is_not_read_as_a_hang(self):
+        """think 有効時、本文が始まる前の進捗に thinking の量を載せる。
+
+        載せないと `tokens_out=0 / tokens_per_sec=0.0` が延々と並び、**長考と停止が
+        見分けられない**——実際に 6500 トークン思考中の実行をハングと誤読した。
+        停滞の判定自体は last_progress（thinking も進捗に数える）が持つので変えない。"""
+        events = []
+        chunks = [{"thinking": "考", "done": False} for _ in range(3)]
+        chunks.append({"response": "", "done": True, "done_reason": "stop",
+                       "prompt_eval_count": 11, "eval_count": 0})
+        with _patch_urlopen(_FakeResponse(chunks)):
+            ollama_loop.run_plain("qwen3", "hello", think=True, heartbeat=0.05,
+                                  emit=lambda kind, **f: events.append((kind, f)))
+        progress = [f for k, f in events if k == "llm_progress"]
+        self.assertTrue(progress, "思考だけでも進捗イベントは出る")
+        self.assertEqual(progress[-1]["tokens_out"], 0, "本文はまだ 0")
+        self.assertGreater(progress[-1]["thinking_chars"], 0, "思考量が見える")
+        end = [f for k, f in events if k == "llm_end"][0]
+        self.assertEqual(end["thinking_chars"], 3)
+
     def test_think_and_options_are_sent_only_when_declared(self):
         captured = {}
 
@@ -152,6 +172,24 @@ class TestStreamCall(unittest.TestCase):
             ollama_loop.run_plain("qwen3", "hello", think=False, heartbeat=0.05)
         self.assertIs(captured["think"], False)
         self.assertTrue(captured["stream"])
+
+    def test_format_forces_think_off(self):
+        """`format` 指定時は think off を**明示**する。
+
+        併用すると文法制約が thinking から効き、答えが thinking に入って本文が空になる。
+        未宣言はモデル既定（思考モデルでは on）に落ちるので、送らないだけでは足りない。
+        """
+        captured = {}
+
+        def capture(req, timeout=None):
+            captured.update(json.loads(req.data))
+            return _FakeResponse(_gen_lines("あ"))
+
+        for think in (True, None):
+            with mock.patch.object(ollama_loop.urllib.request, "urlopen", capture):
+                ollama_loop.run_plain("qwen3", "hello", think=think, fmt="json", heartbeat=0.05)
+            self.assertIs(captured["think"], False, f"think={think} でも off を明示する")
+            self.assertEqual(captured["format"], "json")
 
 
 class TestStallReturnsPromptly(unittest.TestCase):

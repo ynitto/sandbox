@@ -1425,7 +1425,7 @@ async function runSetupDiagnostics(root) {
 function setupOrchestration(root) {
   const refreshBtn = root.querySelector('#btn-orch-refresh');
   if (refreshBtn) refreshBtn.addEventListener('click', () => {
-    if (state.globalSettingsDirty || state.orchInstructionsDirty || state.orchSessionDirty) {
+    if (orchestrationDraftActive()) {
       return toast('入力中の設定を保存してから最新の状態にしてください');
     }
     return guard('エージェント情報の更新', async () => { await refreshOrchestration(); renderOrchestration(); });
@@ -1677,20 +1677,27 @@ function setupOrchestration(root) {
 
   // 固定 3 段の候補設定。保存時も既存の内部キーを保ち、policy の参照を壊さない。
   const tierList = root.querySelector('#orch-profile-tiers');
-  if (tierList) tierList.addEventListener('click', (event) => {
-    const add = event.target.closest('.orch-tier-candidate-add');
-    if (add) {
-      add.closest('.orch-tier-candidates').querySelector('.orch-tier-candidate-list')
-        .insertAdjacentHTML('beforeend', orchTierCandidateRowHtml());
-      return;
-    }
-    const removeCandidate = event.target.closest('.orch-tier-candidate-remove');
-    if (removeCandidate) {
-      const list = removeCandidate.closest('.orch-tier-candidate-list');
-      removeCandidate.closest('.orch-tier-candidate').remove();
-      if (!list.querySelector('.orch-tier-candidate')) list.innerHTML = orchTierCandidateRowHtml();
-    }
-  });
+  const markWorkflowDirty = () => { state.orchWorkflowDirty = true; };
+  if (tierList) {
+    tierList.addEventListener('input', markWorkflowDirty);
+    tierList.addEventListener('change', markWorkflowDirty);
+    tierList.addEventListener('click', (event) => {
+      const add = event.target.closest('.orch-tier-candidate-add');
+      if (add) {
+        markWorkflowDirty();
+        add.closest('.orch-tier-candidates').querySelector('.orch-tier-candidate-list')
+          .insertAdjacentHTML('beforeend', orchTierCandidateRowHtml());
+        return;
+      }
+      const removeCandidate = event.target.closest('.orch-tier-candidate-remove');
+      if (removeCandidate) {
+        markWorkflowDirty();
+        const list = removeCandidate.closest('.orch-tier-candidate-list');
+        removeCandidate.closest('.orch-tier-candidate').remove();
+        if (!list.querySelector('.orch-tier-candidate')) list.innerHTML = orchTierCandidateRowHtml();
+      }
+    });
+  }
 
   const tiersSave = root.querySelector('#btn-orch-tiers-save');
   if (tiersSave) tiersSave.addEventListener('click', () => guard('段の設定の保存', async () => {
@@ -1713,6 +1720,7 @@ function setupOrchestration(root) {
     state.orchSaving = true;
     try {
       await api.orchestrationProfilesSave({ tiers, policy });
+      state.orchWorkflowDirty = false;
       toast('段の設定を保存しました', true);
     } finally { state.orchSaving = false; }
     await refreshOrchestration();

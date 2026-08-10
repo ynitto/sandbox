@@ -75,6 +75,7 @@ const state = {
   globalSettingsDirty: false,
   orchInstructionsDirty: false, // 共通指示・推奨スキルの未保存入力（ポーリング再描画から保護）
   orchSessionDirty: false,      // セッション開始コマンドの未保存入力（同上）
+  orchWorkflowDirty: false,     // 段の候補設定の未保存入力（同上）
   // 要対応（needs）の前回カウント。増分を検知して OS 通知する（張り付き監視の解消）。
   // initialized=false の初回はベースライン取得のみで通知しない（起動時の殺到を避ける）。
   notify: { counts: {}, initialized: false },
@@ -1194,6 +1195,12 @@ function restoreUiState(ui) {
   }
 }
 
+function orchestrationDraftActive() {
+  const methodDialog = $('dlg-orch-method-add');
+  return Boolean(state.globalSettingsDirty || state.orchInstructionsDirty || state.orchSessionDirty
+    || state.orchWorkflowDirty || (methodDialog && methodDialog.open));
+}
+
 // フィーチャータブの登録簿。外部の feature モジュール（src/renderer/features/*.js）が
 // registerFeatureTab(name, { render, refresh }) で自分のタブを差し込む。renderer.js の
 // コアを触らずタブを増やせる（開放閉鎖）。render はタブ描画、refresh は非同期データ取得。
@@ -1399,8 +1406,7 @@ function renderAllTabs() {
   renderPane('amigos', renderAmigos);
   renderPane('project-settings', renderProjectSettings);
   renderPane('orchestration', () => {
-    if ((!state.globalSettingsDirty && !state.orchInstructionsDirty && !state.orchSessionDirty)
-      || !$('tab-orchestration').childElementCount) renderOrchestration();
+    if (!orchestrationDraftActive() || !$('tab-orchestration').childElementCount) renderOrchestration();
   });
   for (const [name] of featureTabs) renderPane(name, () => renderFeatureTab(name));
   // ナビは**画面を描いたあと**に組む。どのタブを出せるかは各画面が描画のなかで決める
@@ -1690,6 +1696,7 @@ function openGlobalSettings(section = 'app') {
   state.globalSettingsDirty = false;
   state.orchInstructionsDirty = false;
   state.orchSessionDirty = false;
+  state.orchWorkflowDirty = false;
   switchTab('orchestration');
   renderOrchestration();
 }
@@ -2232,7 +2239,7 @@ async function refreshAll() {
     if (state.selectedDir) await reloadProject();
     if (activeTab() === 'cowork') renderCowork();
     if (activeTab() === 'amigos') renderAmigos();
-    if (activeTab() === 'orchestration' && !state.globalSettingsDirty && !state.orchInstructionsDirty && !state.orchSessionDirty) renderOrchestration();
+    if (activeTab() === 'orchestration' && !orchestrationDraftActive()) renderOrchestration();
     // 登録済みフィーチャータブ: 取得済みの状態から表示中の画面を描画する。
     for (const [name] of featureTabs) {
       if (activeTab() === name) renderFeatureTab(name);

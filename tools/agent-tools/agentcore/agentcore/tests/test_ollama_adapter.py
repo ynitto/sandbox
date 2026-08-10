@@ -411,15 +411,27 @@ class TestContractDefinition(unittest.TestCase):
         self.assertNotIn("--tools", readonly, "readonly はツールを持たない = enforced が真")
         self.assertEqual(spec["readonly"], "enforced")
 
-    def test_think_is_declared_on_in_the_definition(self):
-        """think は on（品質は時間で買う）。思考は thinking フィールドで本文と分離済み。"""
+    def test_think_is_off_for_every_headless_role(self):
+        """think はヘッドレスの全役割で off。人が待てる TUI にだけ残す。
+
+        思考自体は thinking フィールドで本文と分離済みなので成果物は汚れない——問題は
+        費用対効果で、実測（2026-08-10・ログ 236 本）では on の 3 経路が全滅した。
+        write は 1 ラウンドが思考だけで 7700 トークン・12 分（p90 942 秒に対し
+        `agent_timeout` は 600 秒）、readonly は中央値 1000 秒、`--format` 併用は
+        文法が thinking から掛かって本文が空（39/39 件）。思考が品質に変換される証拠が
+        1 件も取れていないので、on へ戻すならオフライン再生で先に示すこと。"""
         spec = agentcli.load_cli("ollama")
-        argv = agentcli.headless_cmd(spec, "M", "P")["argv"]
-        self.assertEqual(argv[argv.index("--think") + 1], "on")
-        opts = ollama_adapter.parse_args(argv[1:])
-        self.assertIs(opts["think"], True, "定義の argv がそのまま解釈できる")
+        write = agentcli.headless_cmd(spec, "M", "P")["argv"]
+        readonly = agentcli.headless_cmd(spec, "M", "P", readonly=True)["argv"]
+        self.assertEqual(write[write.index("--think") + 1], "off")
+        self.assertEqual(readonly[readonly.index("--think") + 1], "off")
+        opts = ollama_adapter.parse_args(write[1:])
+        self.assertIs(opts["think"], False, "定義の argv がそのまま解釈できる")
         self.assertEqual(opts["toolset"], "bash")
         self.assertEqual(opts["max_rounds"], 30)
+        self.assertIs(ollama_adapter.parse_args(readonly[1:])["think"], False)
+        self.assertEqual(agentcli.interactive_cmd(spec, "M")[
+            agentcli.interactive_cmd(spec, "M").index("--think") + 1], "on")
 
     def test_json_variant_forces_the_grammar_and_carries_no_tools(self):
         spec = agentcli.load_cli("ollama-json")

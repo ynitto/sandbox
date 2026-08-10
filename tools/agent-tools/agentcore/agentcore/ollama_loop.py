@@ -169,6 +169,16 @@ def _payload(model: str, *, think: "bool | None", options: "dict | None",
         merged.update(options)
     if merged:
         body["options"] = merged
+    if fmt:
+        # `format` と think は**併用できない**。文法制約は thinking チャネルの 1 トークン目から
+        # 効くため、モデルは答えの JSON を丸ごと thinking に吐き、本文は空のまま `done` で終える
+        # （qwen3.5:9b 実測 39/39 件が空応答 → `empty_output_is_error` が transient を上げ、
+        # 呼び出し側は heal ループに落ちる）。思考も JSON に縛られる以上、有効にしても推論は
+        # 1 文字も増えない。だから **off を明示する**——未宣言（None）はモデル既定に委ねる
+        # ことになり、思考モデルでは既定が on なので同じ空応答を踏む。
+        # 代償: think 非対応モデルへ `think` を送ると 400 になる。空応答の沈黙より、
+        # メッセージの出るエラーのほうがましなので受ける。
+        think = False
     if think is not None:
         body["think"] = bool(think)
     if fmt:
@@ -362,8 +372,13 @@ def stream_call(endpoint: str, body: dict, *, delta_of, emit=None, round_no: int
                 if emit is not None and (now - last_emit) >= PROGRESS_INTERVAL_SEC:
                     last_emit = now
                     elapsed = max(now - started, 1e-6)
+                    # thinking も進捗として出す。think 有効時は本文が始まるまで tokens_out が
+                    # 0 のままなので、これを載せないと「out=0 / tps=0.0」が延々と並び、
+                    # **長考が停止と見分けられない**（実際 6500 トークン思考中の実行を
+                    # ハングと誤読した）。停滞判定はここではなく last_progress が持つ。
                     emit("llm_progress", round=round_no, phase=phase, tokens_out=tokens_out,
                          tokens_per_sec=round(tokens_out / elapsed, 2),
+                         thinking_chars=thinking_chars,
                          since_last_token_sec=0.0)
             if chunk.get("done"):
                 final = chunk

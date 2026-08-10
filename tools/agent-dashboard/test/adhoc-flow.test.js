@@ -177,6 +177,159 @@ test('標準パターンを開始・終了つきの編集可能フローへ複�
   assert.ok(workflow.nodes[1].x > workflow.nodes[0].x, '依存方向へ自動配置する');
 });
 
+test('雛形カードは分岐を含む接続例を左から表す', () => {
+  const columns = workflowUi.patternColumns({ template: { nodes: [
+    { id: 'draft-a', kind: 'generate', deps: [] },
+    { id: 'draft-b', kind: 'generate', deps: [] },
+    { id: 'pick', kind: 'judge', deps: ['draft-a', 'draft-b'] },
+  ] } });
+  assert.deepStrictEqual(columns, [
+    ['開始'], ['生成', '生成'], ['判定'], ['終了'],
+  ]);
+});
+
+test('初期画面は保存済み・一から作る・雛形を同じカード導線にまとめる', () => {
+  const previousEsc = global.esc;
+  global.esc = (value) => String(value);
+  try {
+    const html = workflowUi.workflowLibraryHtml({
+      workflows: [{ id: 'saved', name: '保存済みフロー', description: '続きから編集する' }],
+      patterns: [{
+        id: 'verify', label: '検証つき', description: '作業後に検証する',
+        template: { nodes: [{ id: 'work', kind: 'work', deps: [] }] },
+      }],
+    });
+    assert.match(html, /data-workflow-id="saved"/);
+    assert.match(html, /id="wf-new"/);
+    assert.match(html, /data-pattern-id="verify"/);
+    assert.doesNotMatch(html, /この雛形から作る|wf-list/);
+  } finally {
+    global.esc = previousEsc;
+  }
+});
+
+test('次の工程は接続元の役割に合う候補を三つまで返す', () => {
+  const workflow = { nodes: [
+    { id: 'draft', kind: 'generate' },
+    { id: 'check', kind: 'verify' },
+  ] };
+  assert.deepStrictEqual(workflowUi.recommendedKinds(workflow, '__start__'), ['work', 'generate', 'classify']);
+  assert.deepStrictEqual(workflowUi.recommendedKinds(workflow, 'draft'), ['filter', 'judge', 'synthesize']);
+  assert.deepStrictEqual(workflowUi.recommendedKinds(workflow, 'check'), ['work', 'verify']);
+});
+
+test('分岐先の追加は既存ノードと重ならない位置を選ぶ', () => {
+  const workflow = { nodes: [
+    { id: 'draft', x: 300, y: 70 },
+    { id: 'check', x: 570, y: 70 },
+  ] };
+  assert.deepStrictEqual(workflowUi.nextNodePosition(workflow, 'draft'), { x: 580, y: 210 });
+});
+
+test('フロー全体の手法は対象と適用条件を読める形にする', () => {
+  const view = workflowUi.methodPresentation({
+    fragments: [{ role: 'planner', text: '最初に計画する' }, { role: 'worker', text: '小さく実装する' }],
+    when: { tiers: ['large'], purposes: ['coding'] },
+  });
+  assert.deepStrictEqual(view.roles, ['計画', '作業']);
+  assert.strictEqual(view.condition, 'tier: large · 対象: coding');
+});
+
+test('全体ルールは実行時の role と purpose が一致するノードだけへ対応づける', () => {
+  const methods = [{
+    id: 'quality', description: '品質ルール',
+    fragments: [
+      { role: 'planner', text: '先に計画する' },
+      { role: 'worker', text: '小さく作る' },
+      { role: 'verify', text: '反例を探す' },
+    ],
+  }, {
+    id: 'verify-only', description: '検証専用',
+    fragments: [{ role: 'verify', text: '証跡を確認する' }],
+    when: { purposes: ['verify'], tiers: ['large'] },
+  }];
+  assert.deepStrictEqual(
+    workflowUi.nodeMethodApplications(methods, ['quality', 'verify-only'], { kind: 'work' })
+      .map((item) => item.id),
+    ['quality']
+  );
+  const verify = workflowUi.nodeMethodApplications(
+    methods, ['quality', 'verify-only'], { kind: 'verify' }
+  );
+  assert.deepStrictEqual(verify.map((item) => item.id), ['quality', 'verify-only']);
+  assert.strictEqual(verify[1].conditional, true, 'tier は実行時に決まるため条件つきと示す');
+});
+
+test('ユーザー定義フローの前後に非編集のシステム工程を明示する', () => {
+  const previousEsc = global.esc;
+  global.esc = (value) => String(value);
+  try {
+    const html = workflowUi.workflowExecutionGuideHtml({
+      nodes: [{ kind: 'work' }, { kind: 'verify' }],
+    });
+    assert.match(html, /計画確認/);
+    assert.match(html, /計画エージェントは使用しません/);
+    assert.match(html, /検証ノード 1件/);
+    assert.match(html, /完了判定/);
+    assert.match(html, /評価エージェントによる再計画は行いません/);
+    assert.doesNotMatch(html, /data-node-id|wf-port/);
+  } finally {
+    global.esc = previousEsc;
+  }
+});
+
+test('対象ノードに全体ルールと実行時条件をバッジ表示する', () => {
+  const previousEsc = global.esc;
+  global.esc = (value) => String(value);
+  try {
+    const html = workflowUi.nodeRuleBadgesHtml([{
+      id: 'quality', description: '品質ルール', when: { tiers: ['large'] },
+      fragments: [{ role: 'worker', text: '小さく作る' }, { role: 'planner', text: '計画する' }],
+    }], ['quality'], { kind: 'work' });
+    assert.match(html, /品質ルール/);
+    assert.match(html, /実行時条件/);
+    assert.doesNotMatch(html, /計画する/);
+  } finally {
+    global.esc = previousEsc;
+  }
+});
+
+test('ノード編集欄で適用される指示と条件を確認できる', () => {
+  const previousEsc = global.esc;
+  global.esc = (value) => String(value);
+  try {
+    const html = workflowUi.nodeRuleDetailsHtml([{
+      id: 'quality', description: '品質ルール', when: { tiers: ['large'] },
+      fragments: [{ role: 'worker', text: '小さく作って確認する' }],
+    }], ['quality'], { kind: 'work' });
+    assert.match(html, /この工程に適用されるルール/);
+    assert.match(html, /品質ルール/);
+    assert.match(html, /小さく作って確認する/);
+    assert.match(html, /tier: large/);
+  } finally {
+    global.esc = previousEsc;
+  }
+});
+
+test('全体ルールを開始ノードの外で選び、適用先の有無を確認できる', () => {
+  const previousEsc = global.esc;
+  global.esc = (value) => String(value);
+  try {
+    const html = workflowUi.workflowRulesHtml([{
+      id: 'worker-rule', description: '作業ルール',
+      fragments: [{ role: 'worker', text: '小さく作る' }],
+    }, {
+      id: 'planner-rule', description: '計画ルール',
+      fragments: [{ role: 'planner', text: '先に計画する' }],
+    }], { methods: ['worker-rule', 'planner-rule'], nodes: [{ id: 'build', kind: 'work' }] });
+    assert.match(html, /data-flow-method="worker-rule"/);
+    assert.match(html, /1工程に適用/);
+    assert.match(html, /このフローでは適用されません/);
+  } finally {
+    global.esc = previousEsc;
+  }
+});
+
 test('接続判定は方向・重複・循環・split を同じ規則で拒否する', () => {
   const workflow = {
     version: 2, entry: ['a'], exit: ['c'],
@@ -212,6 +365,51 @@ test('開始・通常ノード・終了の接続と解除を同じ操作で更�
   workflowUi.disconnectWorkflow(workflow, 'a', 'b');
   assert.deepStrictEqual(workflow.nodes[1].deps, []);
   assert.throws(() => workflowUi.connectWorkflow(workflow, 'b', 'b'), /自身/);
+});
+
+test('設定画面では定期更新しない', () => {
+  const previousDocument = global.document;
+  const previousApi = global.api;
+  let calls = 0;
+  global.document = {
+    getElementById: (id) => ({
+      classList: { contains: (name) => id === 'tab-workflow-settings' && name === 'active' },
+    }),
+  };
+  global.api = { adhocFlowOverview: () => { calls += 1; return new Promise(() => {}); } };
+  workflowUi.refresh();
+  assert.strictEqual(calls, 0);
+  global.document = previousDocument;
+  global.api = previousApi;
+});
+
+test('表示済みの設定画面は全体更新から再描画しない', () => {
+  const previousDocument = global.document;
+  const previousEsc = global.esc;
+  const previousOverview = workflowUi._state.overview;
+  const previousEditor = workflowUi._state.editor;
+  let writes = 0;
+  const pane = {
+    firstElementChild: {},
+    classList: { contains: (name) => name === 'active' },
+    querySelectorAll: () => [],
+    querySelector: () => null,
+    get innerHTML() { return '<section>編集中</section>'; },
+    set innerHTML(_value) { writes += 1; },
+  };
+  global.esc = (value) => String(value);
+  global.document = { getElementById: (id) => (id === 'tab-workflow-settings' ? pane : null) };
+  workflowUi._state.overview = { workflows: [], patterns: [] };
+  workflowUi._state.editor = null;
+  try {
+    workflowUi.render();
+    assert.strictEqual(writes, 0);
+  } finally {
+    workflowUi._state.overview = previousOverview;
+    workflowUi._state.editor = previousEditor;
+    global.document = previousDocument;
+    global.esc = previousEsc;
+  }
 });
 
 test('バックログ用フロースナップショットは自動・標準・カスタムを固定する', () => {

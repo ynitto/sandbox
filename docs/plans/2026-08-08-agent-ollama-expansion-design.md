@@ -201,9 +201,36 @@ Schema 渡し（`--format-schema`）は**要るまで作らない**——`json` 
 - 変種 `ollama-json` は **`--think on` + `--format json`** で定義する。
 - 既定の `agents/ollama.json` も `--think off` → `--think on` へ反転する。
   データ変更のみで、think 非対応モデルで問題が出たら定義で戻せる。
-- **実装時の確認 1 点**: think 有効時に `format` が本文側にだけ効くこと
-  （思考まで JSON に縛られると推論品質を落とす）。実機で 1 ケース確かめてから
-  変種を配る。
+
+**2026-08-10 改訂 — write だけ off へ戻した（実測による）。** 反転は「1 回の呼び出しに
+思考時間を足す」前提だったが、ツールループは 1 ノードで最大 30 ラウンド回る。実測では
+worker の 1 ラウンドが思考だけで 7700 トークン・12 分を消費し、そのあと書き出したのは
+`if` の本体が空の構文エラーのコードだった——思考が品質に変換されていない。そこで think を
+**役割で分ける**: `readonly_args`（planner / evaluator = 1 回で終わる判断役）は `on`、
+`write_args`（道具を持って手を動かす側）は `off`。R3「品質は時間で買う」は撤回しないが、
+買えているかを実測で確かめる対象に含める（§10.2 の観測へ think 軸を足す）。
+**2026-08-10 再改訂 — readonly も off へ戻した。反転そのものが失効した。** 上の確認 1 点
+（「think 有効時に `format` が本文側にだけ効くこと」）を実機で踏み、**効かないことが判った**。
+文法制約は thinking チャネルの 1 トークン目から掛かる。qwen3.5:9b は答えの JSON を丸ごと
+thinking に吐き、本文は空のまま `done` で終わる——`empty_output_is_error` が transient を上げ、
+agent-flow の評価役が heal ループへ落ちる。ログ 236 本の内訳:
+
+| 役割 / 設定 | n | 結果 |
+|---|---|---|
+| plain・think on・format json | 39 | **本文が空 39/39**（思考も JSON に縛られ推論は増えない） |
+| plain・think on・format なし | 5 | 完走するが**中央値 1000 秒**（`agent_timeout` 既定 600 秒を超過） |
+| plain・think off | 6 | 中央値 9.3 秒 |
+| tools・think on | 149 | 中央値 497 秒・p90 942 秒・600 秒超 21 件 |
+| tools・think off | 37 | 中央値 245 秒・600 秒超 0 件 |
+
+think を活かす経路が読む側の役割に無い（format と併用すれば推論ゼロ、外せばタイムアウト）。
+よって `readonly_args` も `off`、変種 `ollama-json` も `--think off + --format json` とする。
+併用は `_payload` で `format` 優先に潰し、定義ファイルで復活できないようにした
+（`test_format_wins_over_think`）。TUI だけは人が待てるので `on` のまま。
+
+R3「品質は時間で買う」は**まだ検証されていない**。ここまで測れたのは所要時間と完走率だけで、
+think が品質を上げるかは 1 件も測れていない（完走しない実行の品質は測れない）。検証は
+§10.2 の口ではなく、記録済みプロンプトの**オフライン再生**で行う（§10.3）。
 
 ### 4.3 エンジンへの載せ方 — 定義ファイルの別名 1 枚
 
@@ -211,7 +238,7 @@ Schema 渡し（`--format-schema`）は**要るまで作らない**——`json` 
 // agents/ollama-json.json — JSON 契約の役割専用の変種
 {
   "name": "ollama-json",
-  "command": ["agent-ollama", "--think", "on", "--format", "json", "{model}"],
+  "command": ["agent-ollama", "--think", "off", "--format", "json", "{model}"],
   "write_args": [],   // 道具は持たせない（下記）
   // ほかは ollama.json と同じ（readonly: enforced / errors）
 }
