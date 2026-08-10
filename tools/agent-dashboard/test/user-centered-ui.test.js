@@ -51,10 +51,40 @@ assert.ok(!workflowFeature.includes('id="wf-use-template"') && !workflowFeature.
   '雛形選択後の複製操作と左ペインを残しません');
 assert.match(css, /\.wf-template-grid\s*\{[^}]*align-items:\s*start/s,
   'カードを行の高さまで引き伸ばしません');
-assert.match(css, /\.wf-template-card\s*\{[^}]*min-height:\s*0[^}]*cursor:\s*pointer/s,
-  'カードの固定高さを外し、クリック可能と示します');
-assert.match(css, /\.wf-template-card > small\s*\{[^}]*-webkit-line-clamp:\s*3/s,
-  '雛形説明を3行まで表示します');
+assert.match(css, /\.wf-template-card\s*\{[^}]*height:\s*220px[^}]*cursor:\s*pointer/s,
+  '雛形カードは短い高さに統一し、クリック可能と示します');
+assert.match(css, /\.wf-template-card > small\s*\{[^}]*-webkit-line-clamp:\s*2/s,
+  '短い雛形カードでも説明を2行まで表示します');
+assert.match(css, /\.wf-workspace\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/s,
+  'ノードグラフをワークスペースの全幅へ広げます');
+assert.ok(!css.includes('.wf-workspace.has-inspector'), '工程設定用の予約カラムを残しません');
+assert.match(css, /\.wf-properties\s*\{[^}]*position:\s*absolute/s,
+  '工程設定はグラフの幅を削らないフローティングパネルにします');
+assert.ok(workflowFeature.includes('data-drag-inspector'), '工程の設定パネルをドラッグ移動できます');
+assert.ok(workflowFeature.includes('data-pattern-palette'), '複数工程は接続済みの工程セットとして追加できます');
+assert.ok(!workflowFeature.includes('data-method-palette'), '実行手法を工程ノードに見せかけません');
+assert.ok(workflowFeature.includes('data-method-pattern-id'), '複数ロール手法を雛形から選べます');
+assert.ok(!workflowFeature.includes('wf-flow-rules'), '廃止した全体ルールを表示しません');
+assert.ok(!workflowFeature.includes('wf-execution-guide'), '実体のない計画確認・工程数・完了判定の帯を表示しません');
+assert.ok(workflowFeature.includes('この工程の目的'), 'ノードにはシステムプロンプトではなく工程の目的を書かせます');
+assert.ok(workflowFeature.includes('この工程で達成したいことを自然文で書きます'),
+  '目的欄には利用者が書く内容を自然文で説明します');
+assert.ok(!workflowFeature.includes('{{request}} は実行時に依頼全文へ置き換わります'),
+  '目的欄へテンプレート記号の入力を求めません');
+assert.ok(workflowFeature.includes('agent-flow が自動で追加'),
+  '役割・依頼・依存成果・出力形式を自分で書かなくてよいことを示します');
+assert.ok(workflowFeature.includes('未完了なら修正工程を追加して再検証'),
+  '反復は検証ノードの設定として見せます');
+assert.ok(workflowFeature.includes('分類後に専門工程を追加'),
+  '動的なルーティングは分類ノードの設定として見せます');
+assert.ok(workflowFeature.includes('wf-continuation'),
+  '動的な継続動作は設定パネルを閉じてもノード上で判別できます');
+assert.ok(workflowFeature.includes('wf-runtime-node'),
+  '実行時に増える工程も編集グラフへ読み取り専用で表示します');
+assert.ok(workflowFeature.includes('${esc(role)}ロール'),
+  '編集ノードはロールとノード名を混同せず別々に表示します');
+assert.ok(workflowFeature.includes('updateEdgePaths(workflow, pane)'), 'ドラッグ中も接続線を再計算します');
+assert.ok(workflowFeature.includes('wf-icon-button'), 'アイコン操作は共通の見た目と押下領域に揃えます');
 assert.match(css, /\.wf-editor-layout\s*\{[^}]*display:\s*block/s,
   '編集画面は左ペインを除いた1カラムにします');
 assert.match(html, /data-tab="history"[^>]*>成果</);

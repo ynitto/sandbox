@@ -1082,6 +1082,8 @@ def execute_agent(kind: str, goal: str, dep_results: dict, model: str | None,
     })
     if not prompt:
         prompt = f"あなたは分散 Dynamic Workflow の{role}\nタスク({kind}): {goal}\n"
+        if request:
+            prompt += f"元の依頼:\n{request}\n"
         if repo_instruction:  # 成果物リポジトリの clone 指示（ローカル実行のエージェントへ伝える）
             prompt += repo_instruction + "\n"
         if art_note:  # 中間成果物のファイル参照プロトコル（出力先・依存成果物のパス）

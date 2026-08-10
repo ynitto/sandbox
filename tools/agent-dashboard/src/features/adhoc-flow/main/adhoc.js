@@ -63,6 +63,7 @@ function normalizeWorkflow(raw) {
     const id = String((n && n.id) || '').trim();
     const goal = String((n && n.goal) || '').trim();
     const tier = String((n && n.tier) || '').trim();
+    const kind = String((n && n.kind) || 'work').trim() || 'work';
     if (!id || !goal || !tier) throw new Error('ノードには id・内容・tier が必要です');
     if (seen.has(id)) throw new Error(`ノード id が重複しています: ${id}`);
     seen.add(id);
@@ -79,12 +80,15 @@ function normalizeWorkflow(raw) {
       id,
       label: String(n.label || id).trim() || id,
       goal,
-      kind: String(n.kind || 'work').trim() || 'work',
+      kind,
       tier,
       deps: (Array.isArray(n.deps) ? n.deps : []).map((d) => String(d).trim()).filter(Boolean),
       x: Number.isFinite(Number(n.x)) ? Number(n.x) : 40,
       y: Number.isFinite(Number(n.y)) ? Number(n.y) : 40,
       ...(method ? { method } : {}),
+      ...((kind === 'classify' && n.continuation === 'route')
+        || (kind === 'verify' && n.continuation === 'retry')
+        ? { continuation: n.continuation } : {}),
     };
   });
   if (!nodes.length) throw new Error('ノードを1つ以上追加してください');
@@ -128,8 +132,6 @@ function normalizeWorkflow(raw) {
     description: String(raw.description || '').trim(),
     entry,
     exit,
-    methods: [...new Set((Array.isArray(raw.methods) ? raw.methods : [])
-      .map((id) => String(id).trim()).filter(Boolean))],
     nodes,
     createdAt: String(raw.createdAt || now),
     updatedAt: String(raw.updatedAt || now),
@@ -209,7 +211,11 @@ function planFromWorkflow(config, workflow) {
       agent: { agent_cli: candidate.agent_cli, ...(candidate.model ? { model: candidate.model } : {}) },
     };
   });
-  return { name: clean.name, nodes, methods: clean.methods };
+  return {
+    name: clean.name,
+    nodes,
+    ...(clean.nodes.some((node) => node.continuation) ? { evaluate: true } : {}),
+  };
 }
 
 function snapshotSelection(config, selection) {
@@ -409,7 +415,9 @@ function submit(config, { request, preset, cwd, selection } = {}) {
     submitted_at: new Date().toISOString(),
   };
   let plan = p ? planFromPreset(p) : null;
-  if (snapshot.type === 'custom') plan = { name: snapshot.name, nodes: snapshot.nodes };
+  if (snapshot.type === 'custom') {
+    plan = { name: snapshot.name, nodes: snapshot.nodes, ...(snapshot.evaluate ? { evaluate: true } : {}) };
+  }
   if (snapshot.type === 'pattern') rec.pattern = snapshot.pattern;
   if (plan) rec.plan = plan;
   writeJsonAtomic(path.join(busDir, 'inbox', `${runId}.json`), rec);
