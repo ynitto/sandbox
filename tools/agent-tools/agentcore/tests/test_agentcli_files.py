@@ -4,9 +4,13 @@ aider は「チャットに入っているファイルしか編集しない」�
 1 発起動では着手すらしない。宣言した CLI にだけ載り、他の CLI の argv は 1 トークンも
 変わらないこと——ここが崩れると、既存の全 CLI の起動形が静かに変わる。
 """
+import sys
 import unittest
+from pathlib import Path
 
-from agentcore import agentcli
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from agentcore import agentcli  # noqa: E402
 
 
 class FileArgsTests(unittest.TestCase):
