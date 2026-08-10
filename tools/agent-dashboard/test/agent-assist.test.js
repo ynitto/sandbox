@@ -135,7 +135,8 @@ test('buildCommand: codex・cursor・ollamaでもcharter補完を実行できる
   const ollama = agent.buildCommand('ollama', 'qwen3', 'PROMPT');
   assert.strictEqual(ollama.command, 'agent-ollama', 'headless は usage 計測ラッパー経由');
   // 読み取り専用なので --tools は付かない（ツールは write のときだけ生える）。
-  assert.deepStrictEqual(ollama.args, ['--think', 'on', 'qwen3']);
+  // think はヘッドレスでは off（TUI だけ on。agents/ollama.json の readonly_args）。
+  assert.deepStrictEqual(ollama.args, ['qwen3', '--think', 'off']);
   assert.strictEqual(ollama.stdin, 'PROMPT');
 });
 

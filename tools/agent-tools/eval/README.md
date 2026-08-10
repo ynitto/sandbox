@@ -31,12 +31,16 @@ agent-project → agent-flow → bus → ollama を通して観察すると、1 
 
 | 項目 | 正典 |
 |---|---|
-| argv | `agents/ollama.json` の `write_args`（`WRITE_ARGS` に写してある） |
+| argv | `agents/ollama.json` の `write_args`（起動時に**読む**。写さない） |
 | プロンプト | flow-worker スキルの `scripts/prompt.py`（agent-flow が実際に呼ぶビルダー） |
 | 上限 | agent-flow の `agent_timeout` 既定 600 秒。超過は fail |
 
 worktree はリポジトリの外（`$TMPDIR/agent-worker-eval`、`WORKER_EVAL_DIR` で変更可）に作る。
 中に作ると評価の残骸が作業ツリーへ漏れる。
+
+argv は初版で `WRITE_ARGS` へ literal を写していたが、**定義側が予算を 30 → 12 へ絞った
+当日にずれた**。写しは人の注意力に頼る不変条件で、ずれても静かに測定が別物になるだけ
+なので、いまは起動時に `agents/ollama.json` を読む（読めた出所を起動行に必ず表示する）。
 
 ## 判定役を使わない理由
 
@@ -82,6 +86,14 @@ qwen3.5:9b の品質劣化の真因は偽 done だった。自分の仕事を自
 
 様式は timeout 12 / returned 4 / cli_error 3 / 自己申告未完了 2。decode は 11〜12 tok/s で、
 600 秒の予算は約 7000 トークンに相当する。台帳は `ledger-2026-08-10-qwen35-9b.jsonl`。
+
+失敗の中身を見ると、**21 本中 9 本は成果物のファイルが 1 つも無い**（`eval/humansize.py が無い`）。
+書いたが誤っていたのは構文 3・振る舞い 1 で、「間違ったコードを書いた」より
+「**書き終える前に予算が尽きた**」が主である。7000 トークンという decode 予算は、
+読んで・考えて・ファイルを書いて・テストを回す往復には足りない。
+
+**この台帳は `--max-rounds 30` 時点の測定である**（現行の定義は 12）。予算 3 倍でも
+0/3 だったので結論は動かないが、再測するときは条件が違うことを踏まえること。
 
 副産物としてエンジンの穴が 2 つ出た。どちらもモデルを替えても残るので先に直してある——
 `format` と `think` の併用（本文が空になる）と、1 ラウンドの生成に上限が無いこと

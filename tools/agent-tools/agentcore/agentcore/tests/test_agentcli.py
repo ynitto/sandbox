@@ -335,14 +335,16 @@ class TestBundledGolden(_Isolated):
         "ollama": {
             # --tools は write のときだけ生える（ループとツールを書き込みモードに閉じる）。
             # readonly は素の text→text なので `readonly: enforced` の宣言が嘘にならない。
-            # 予算（--max-rounds / --command-timeout）は「品質を時間で買う」側へ倒した既定。
+            # 予算は write だけ 12 ラウンドへ絞ってある（read セットの ollama-read は 30
+            # のまま）。実測の空回り run に「もう少し回れば畳めた」形跡が無く、30 まで
+            # 回せること自体がターンの食いつぶしだった。読取は 1 ラウンドが安いので別。
             # think はヘッドレスの全役割で off。実測（2026-08-10・ログ 236 本）で on の
             # 経路が 3 つとも壊れていた: write は 1 ラウンドが思考だけで 7700 トークン・
             # 12 分（p90 942 秒 > agent_timeout 600 秒）、readonly は中央値 1000 秒、
             # --format 併用は本文が空になる（文法が thinking から掛かる。39/39 件）。
             # 人が待てる TUI だけ on を残す。
             "write": ["agent-ollama", "M", "--think", "off", "--tools", "bash",
-                      "--max-rounds", "30", "--command-timeout", "900"],
+                      "--max-rounds", "12", "--command-timeout", "900"],
             "readonly": ["agent-ollama", "M", "--think", "off"],
             "interactive": ["agent-ollama", "--tui", "--think", "on", "M"],
         },

@@ -36,9 +36,31 @@ WORK = Path(os.environ.get("WORKER_EVAL_DIR",
                            str(Path(tempfile.gettempdir()) / "agent-worker-eval")))
 MODEL = "qwen3.5:9b"        # --model で上書き
 WALL_LIMIT = 600.0          # agent-flow の agent_timeout 既定
-# agents/ollama.json の write_args と同一。ここを変えたら本番を測っていない。
-WRITE_ARGS = ["--think", "off", "--tools", "bash",
-              "--max-rounds", "30", "--command-timeout", "900"]
+# 本番の argv は agents/ollama.json の write_args。**書き写さずに読む**——初版は
+# ここへ literal を写していたが、定義側が予算を 30 → 12 へ絞った当日にずれた。
+# 「ここを変えたら本番を測っていない」を人の注意力で守らせない（ずれても静かに
+# 測定が別物になるだけで、誰も気づけない形の失敗だった）。
+_FALLBACK_WRITE_ARGS = ["--think", "off", "--tools", "bash",
+                        "--max-rounds", "12", "--command-timeout", "900"]
+
+
+def load_write_args() -> "tuple[list[str], str]":
+    """`agents/ollama.json` の `write_args` と、その出所を返す。
+
+    定義が読めないときに黙って止めないのは、ハーネスが測定の道具だから——ただし
+    どちらを使ったかは起動時に必ず表示する（測定条件を隠さない）。
+    """
+    try:
+        spec = json.loads((REPO / "agents/ollama.json").read_text(encoding="utf-8"))
+        args = spec.get("write_args")
+        if isinstance(args, list) and args:
+            return [str(a) for a in args], "agents/ollama.json"
+    except (OSError, ValueError):
+        pass
+    return list(_FALLBACK_WRITE_ARGS), "fallback（定義を読めませんでした）"
+
+
+WRITE_ARGS, WRITE_ARGS_SOURCE = load_write_args()
 
 REPO_INSTRUCTION = (
     "作業ディレクトリはこのタスク専用の worktree。テストの実行には "
@@ -317,8 +339,8 @@ def main() -> None:
     WORK.mkdir(parents=True, exist_ok=True)
     ledger = WORK / "ledger.jsonl"
     tids = [t.strip() for t in args.tasks.split(",") if t.strip()]
-    print(f"model={MODEL} argv={' '.join(WRITE_ARGS)} wall_limit={WALL_LIMIT:.0f}s "
-          f"tasks={tids} repeat={args.repeat}\n")
+    print(f"model={MODEL} argv={' '.join(WRITE_ARGS)} （出所: {WRITE_ARGS_SOURCE}）\n"
+          f"wall_limit={WALL_LIMIT:.0f}s tasks={tids} repeat={args.repeat}\n")
 
     rows = []
     for tid in tids:

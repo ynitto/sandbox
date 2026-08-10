@@ -24,6 +24,7 @@ CPU 推論では prefill だけで数分〜10 分かかるので、この区別�
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import queue
@@ -52,6 +53,13 @@ _MAX_DENIALS = 2
 # これ以下しか文脈が残っていないなら、ツール結果を足しても意味を成さない。
 # ここで明示的に止める（サーバに黙って切り捨てさせるより、止まった理由が残る方がよい）。
 _MIN_TOOL_OUTPUT_CHARS = 200
+# 同じコマンドが同じ結果（終了コード + 出力）で連続したら空回りとみなす回数。
+# decode stall は「トークンが出ない」しか見ないので、**トークンは出続けているのに
+# 仕事が進んでいない**形——同じ手を同じ結果で繰り返す——は素通りしていた。R2 が
+# 「失敗検知の主役は無進捗」と言う以上、ラウンド粒度の無進捗もここで見る。
+# 完全一致だけを見る（類似度判定は作らない）: 出力まで 1 バイト違わないなら、
+# テスト再実行のような「繰り返す意味のある仕事」とは区別が付く。
+_MAX_REPEATS = 3
 
 _FENCE_RE = re.compile(r"```(?:bash|sh|shell|console)?[ \t]*\r?\n(.*?)```", re.S)
 _DONE_MARKER = "TASK_COMPLETE"
@@ -580,6 +588,16 @@ def run_command(command: str, *, cwd: str, timeout: float, max_chars: int,
     }
 
 
+def _round_signature(command: str, outcome: dict) -> str:
+    """「このラウンドで何が起きたか」の同一性。空回りの判定はこの一致だけで行う。
+
+    出力そのものではなくダイジェストを持つのは、長いツール出力をラウンドごとに
+    抱え続けないため（比較に必要なのは一致・不一致だけで、中身は要らない）。
+    """
+    digest = hashlib.sha1(str(outcome.get("output") or "").encode("utf-8", "replace"))
+    return f"{command}\x00{outcome.get('exit_code')}\x00{digest.hexdigest()}"
+
+
 def run_loop(model: str, task: str, *, cwd: "str | None" = None, emit=None,
              think: "bool | None" = None, max_rounds: int = DEFAULT_MAX_ROUNDS,
              command_timeout: float = DEFAULT_COMMAND_TIMEOUT_SEC,
@@ -601,6 +619,9 @@ def run_loop(model: str, task: str, *, cwd: "str | None" = None, emit=None,
     `toolset` が `bash` 以外なら、実行の手前で `check_command` のゲートを通す。拒否は
     実行せずに理由だけを会話へ**追記**して次ラウンドへ回し（既出は書き換えない＝全再
     prefill を起こさない）、`_MAX_DENIALS` 回で `tool_denied` として止める。
+
+    同じコマンドが同じ結果で `_MAX_REPEATS` 回続いたら `no_progress` で止める。
+    ラウンド予算とコマンド上限の積（既定でも数時間）を空回りで焼き切らせない。
     """
     workdir = str(cwd or os.getcwd())
     messages = [
@@ -627,6 +648,8 @@ def run_loop(model: str, task: str, *, cwd: "str | None" = None, emit=None,
     last_text = ""
     status = "max_rounds"
     round_no = 0
+    last_signature = ""
+    repeats = 0
 
     for round_no in range(1, max_rounds + 1):
         if emit is not None:
@@ -699,6 +722,20 @@ def run_loop(model: str, task: str, *, cwd: "str | None" = None, emit=None,
         if emit is not None:
             emit("tool_result", round=round_no, exit_code=outcome["exit_code"],
                  duration_sec=outcome["duration_sec"], output_chars=len(outcome["output"]))
+
+        # ラウンド粒度の無進捗。**結果まで**同じでなければ空回りとは呼ばない
+        # （同じコマンドでも出力が変われば状況は動いている）。判定は tool_result の
+        # 後に置く: 実行は済んでいるので、ログ上の事実と食い違わない。
+        signature = _round_signature(command, outcome)
+        repeats = repeats + 1 if signature == last_signature else 1
+        last_signature = signature
+        if repeats >= _MAX_REPEATS:
+            if emit is not None:
+                emit("no_progress", round=round_no, repeats=repeats,
+                     command=_clip(command, 400), exit_code=outcome["exit_code"])
+            status = "no_progress"
+            break
+
         feedback = (f"実行結果（終了コード {outcome['exit_code']}）:\n"
                     f"```\n{outcome['output']}\n```\n"
                     "続けてください（完了なら報告と TASK_COMPLETE）。")

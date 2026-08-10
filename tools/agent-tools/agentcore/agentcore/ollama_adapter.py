@@ -22,6 +22,7 @@ agent-tools シリーズの作業を止めないためのバックアップ実�
 | `agent-ollama --tui <model>` | デバッグ用の対話ビュー | `interactive` |
 | `agent-ollama --follow [LOG]` | 実行中のログを追尾表示 | 観測（LLM を呼ばない） |
 | `agent-ollama --status [LOG]` | いまの進捗を 1 行 JSON で返す | 観測（LLM を呼ばない） |
+| `agent-ollama --replay [PATH]` | 記録済みプロンプトを再生して品質を測る | 測定（道具は持たない） |
 
 標準ライブラリのみ（pip 依存なし。rich があれば TUI の色付けにだけ使う）。
 """
@@ -34,6 +35,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 from agentcore import ollama_context, ollama_events, ollama_loop, ollama_skills
 
@@ -49,6 +51,16 @@ USAGE = """使い方: agent-ollama [オプション] <model>
     --follow [LOG]        進捗ログを追尾表示する（省略時は最新のログ）
     --status [LOG]        いまの進捗を 1 行 JSON で返す（省略時は最新のログ）
     --context <model>     文脈の上限だけを調べて出す（LLM は呼ばない）
+    --replay [PATH]       記録済みプロンプトを再生して品質を測る（省略時はログ置き場）
+
+  再生（--replay。品質をライブ実行を焼かずに測る口）:
+    --arm SPEC            当てる設定。複数指定でき、同じ入力へ順に当たる。
+                          例: --arm model=qwen3,think=off,format=json
+                          キー: model / think / format / label / repeat
+                          （repeat は同じ設定を何回引くか＝自己一貫性の測定）
+    --replay-limit N      再生する件数の上限（新しい実行から順に採る）
+    --replay-out PATH     記録（JSONL）の書き出し先。既定はログ置き場
+                          ※再生は常に道具なしで行う（記録されたコマンドは再実行しない）
 
   推論:
     --think on|off        思考モード（既定は AGENT_OLLAMA_THINK → モデル既定）
@@ -83,8 +95,9 @@ USAGE = """使い方: agent-ollama [オプション] <model>
 _FLAGS = {"--tools", "--tui", "--no-skills", "--no-log", "--context", "-h", "--help"}
 _VALUED = {"--think", "--skill", "--stall-timeout", "--first-token-timeout",
            "--max-rounds", "--command-timeout", "--cwd", "--log", "--model",
-           "--context-limit", "--context-warn-pct", "--format"}
-_OPTIONAL_VALUED = {"--follow", "--status"}
+           "--context-limit", "--context-warn-pct", "--format",
+           "--arm", "--replay-limit", "--replay-out"}
+_OPTIONAL_VALUED = {"--follow", "--status", "--replay"}
 # `--tools` の後ろに続いてよい語。未実装セット（edit）も**名前としては受ける**——
 # 受けないと positional なモデル名として解釈され、原因の分からない失敗になる。
 _TOOLSET_WORDS = set(ollama_loop.TOOLSETS) | set(ollama_loop.PLANNED_TOOLSETS)
@@ -101,6 +114,7 @@ _INCOMPLETE_REASONS = {
     "max_rounds": "最大ラウンドに達して打ち切りました",
     "context_exhausted": "文脈が尽きて打ち切りました",
     "tool_denied": "許可されないコマンドの繰り返しで打ち切りました",
+    "no_progress": "同じコマンドを同じ結果で繰り返しており、進んでいないので打ち切りました",
 }
 
 
@@ -187,6 +201,8 @@ def parse_args(tokens: "list[str]") -> dict:
         "follow": False, "status": False, "log_target": None,
         "context_limit": 0, "context_warn_pct": ollama_context.DEFAULT_WARN_PCT,
         "context_query": False,
+        "replay": False, "replay_target": None, "arms": [],
+        "replay_limit": 0, "replay_out": None,
     }
     index = 0
     while index < len(tokens):
@@ -214,9 +230,13 @@ def parse_args(tokens: "list[str]") -> dict:
         elif token == "--context":
             opts["context_query"] = True
         elif token in _OPTIONAL_VALUED:
-            opts["follow" if token == "--follow" else "status"] = True
+            name = token.lstrip("-")
+            opts[name] = True
+            # 追尾・状態はログ 1 本を指すが、再生はディレクトリも指せるので鍵を分ける
+            # （同じ `log_target` に混ぜると「最新のログ 1 本」の意味と衝突する）。
+            target_key = "replay_target" if token == "--replay" else "log_target"
             if index < len(tokens) and not tokens[index].startswith("-"):
-                opts["log_target"] = tokens[index]
+                opts[target_key] = tokens[index]
                 index += 1
         elif token in _VALUED or "=" in token and token.split("=", 1)[0] in _VALUED:
             if "=" in token and token.split("=", 1)[0] in _VALUED:
@@ -255,6 +275,12 @@ def parse_args(tokens: "list[str]") -> dict:
                 opts["context_warn_pct"] = _as_float(value, name)
             elif name == "--model":
                 opts["model"] = value
+            elif name == "--arm":
+                opts["arms"].append(value)
+            elif name == "--replay-limit":
+                opts["replay_limit"] = max(0, int(_as_float(value, name)))
+            elif name == "--replay-out":
+                opts["replay_out"] = value
         elif token.startswith("-") and token != "-":
             raise ArgError(f"知らないオプションです: {token}")
         elif not opts["model"]:
@@ -402,6 +428,77 @@ def run_request(prompt: str, opts: dict, *, model: str = "", tools: "bool | None
     return dict(result, log=str(log_path or ""), context=tracker.snapshot())
 
 
+def run_replay(opts: dict, *, generate=None, out=None, err=None) -> int:
+    """`--replay` — 記録済みプロンプトを再生し、集計を 1 行 JSON で返す。
+
+    stdout は集計だけにする（`--status` と同じで、機械が読むのは 1 行）。1 件ごとの
+    記録は JSONL のファイルへ落とし、場所を `@agent-log` で知らせる——再生は件数 ×
+    腕の数だけ行が出るので、本文へ混ぜると読み手が集計を拾えない。
+    """
+    out = out or sys.stdout
+    err = err or sys.stderr
+    from agentcore import ollama_replay
+
+    try:
+        arms = [ollama_replay.parse_arm(spec) for spec in (opts.get("arms") or [])]
+    except ollama_replay.ArmError as exc:
+        print(str(exc), file=err)
+        return 2
+    if not arms:
+        # 腕の指定が無ければ、いまの起動オプションを 1 本の腕とみなす（既定の再現）。
+        arms = [ollama_replay.parse_arm("")]
+        arms[0].update({"model": opts.get("model") or "", "think": opts.get("think"),
+                        "format": opts.get("format")})
+        arms[0]["label"] = ollama_replay.label_of(arms[0])
+
+    cases = ollama_replay.collect_cases(opts.get("replay_target"),
+                                        limit=int(opts.get("replay_limit") or 0))
+    if not cases:
+        print("再生できる記録がありません（run_start と user メッセージを持つ JSONL が要ります）",
+              file=err)
+        return 1
+
+    record_path = opts.get("replay_out") or ollama_replay.new_record_path()
+    total = len(cases) * sum(int(arm.get("repeat") or 1) for arm in arms)
+    print(f"@agent-note 再生 {len(cases)} 件 × 腕 {len(arms)} = {total} 回。"
+          "道具は使いません（記録されたコマンドは再実行しません）。", file=err)
+
+    done = 0
+
+    def emit_record(record: dict) -> None:
+        nonlocal done
+        done += 1
+        handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+        handle.flush()
+        # 失敗を先に見る。接続できなかった呼び出しは「空応答」ではない。
+        mark = "失敗" if not record.get("ok") else ("空" if record.get("empty") else "ok")
+        print(f"@agent-note [{done}/{total}] {record.get('arm')} {mark} "
+              f"{record.get('duration_sec')}s", file=err)
+
+    try:
+        path = Path(str(record_path)).expanduser()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handle = path.open("a", encoding="utf-8")
+    except OSError as exc:
+        print(f"再生記録を書けません: {exc}", file=err)
+        return 1
+    try:
+        records = ollama_replay.replay(cases, arms, generate=generate, on_record=emit_record)
+    finally:
+        handle.close()
+
+    summary = ollama_replay.summarize(records)
+    print(json.dumps(summary, ensure_ascii=False), file=out)
+    print(f"@agent-log {path}", file=err)
+    # 1 件も返ってこなかったのは測定結果ではなく環境の問題（サーバ・モデル）。集計は
+    # 出したうえで rc で伝える——全滅を rc=0 で返すと、空の結果が測定として流通する。
+    if records and summary.get("failed") == len(records):
+        print("@agent-note 全ての再生が失敗しました（ollama サーバとモデルを確認してください）",
+              file=err)
+        return 1
+    return 0
+
+
 def _tui_runner(opts: dict):
     def runner(prompt: str, *, model: str, tools: bool, think, renderer):
         result = run_request(prompt, opts, model=model, tools=tools, think=think,
@@ -432,6 +529,13 @@ def main(argv=None) -> int:
     if opts["follow"]:
         from agentcore import ollama_tui
         return ollama_tui.follow(opts.get("log_target"))
+
+    # 再生。モデルは腕か記録側から来るので、positional のモデル指定は要らない。
+    if opts["replay"]:
+        try:
+            return run_replay(opts)
+        except KeyboardInterrupt:
+            return 130
 
     if not opts["model"]:
         print(f"モデルを指定してください。\n\n{USAGE}", file=sys.stderr)

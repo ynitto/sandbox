@@ -32,7 +32,7 @@ Ollama のローカル推論を、クラウド CLI の枠が乏しいときの�
 
 | 定義 | JSON 契約 | write モード | readonly モード | 対話 |
 |---|---|---|---|---|
-| `ollama` | `ollama-json` へ振替 | `--tools bash --max-rounds 30 --command-timeout 900` | 道具なし | `--tui`、道具なしで開始 |
+| `ollama` | `ollama-json` へ振替 | `--tools bash --max-rounds 12 --command-timeout 900` | 道具なし | `--tui`、道具なしで開始 |
 | `ollama-json` | 自身 | `--format json`、道具なし | 同左 | なし |
 | `ollama-read` | なし | `--tools read --max-rounds 30 --command-timeout 900` | 道具なし | なし |
 
@@ -51,6 +51,7 @@ CLI の実行面は次の 4 つに絞る。
 | bash loop | `--tools bash` | OS ユーザー権限での汎用 work |
 | read loop | `--tools read` | 決定的ゲート付きの調査・読取 |
 | human / observe | `--tui` / `--status` / `--follow` / `--context` | 対話、進捗追尾、状態・文脈上限の取得 |
+| measure | `--replay` | 記録済みプロンプトの再生。**道具を持たない**（§5 末尾） |
 
 ## 3. 実行核
 
@@ -100,6 +101,15 @@ env 失敗、未知の slash 行は通常文かもしれないため警告して
 | connect | 120 秒 | 応答ヘッダを得られない接続・モデルロード |
 | prefill / first token | 0（無制限） | CPU で長時間でも正常。必要な呼び出しだけ明示上限を付ける |
 | decode stall | 180 秒 | 最後の生成進捗からの無進捗。transient として自己中断 |
+| ラウンドの空回り | 3 回 | 同じ `(コマンド, 終了コード, 出力)` の連続。`no_progress` で停止（env） |
+
+decode stall が見るのは「トークンが出るか」だけで、**トークンは出続けているのに仕事が
+進まない**形は素通りしていた——R2 が失敗検知の主役に無進捗を据える以上、ラウンド粒度の
+無進捗も同じ原則で見る。判定は完全一致に限る（類似度判定は作らない）: 出力まで 1 バイトも
+違わないなら、テスト再実行のような繰り返す意味のある仕事とは区別が付く。同一入力の再試行では
+解けないので分類は `env`（`context_exhausted` を transient にしないのと同じ理由）。
+write のラウンド予算を 30 → 12 へ絞るのも同じ判断で、実測の空回り run に「もう少し回れば
+畳めた」形跡が無い以上、30 まで回せること自体が食いつぶしだった（read セットは 30 のまま）。
 
 待ちと受信は別スレッドに分け、打ち切り時はブロック中の reader を socket shutdown で解除する。
 5 秒ごとの heartbeat は「プロセスが生きている」証拠であり、生成進捗とは数えない。
@@ -109,6 +119,18 @@ env 失敗、未知の slash 行は通常文かもしれないため警告して
 last_progress_at, tokens_per_sec, context_*}` を組み立て、`--follow` と TUI は同じイベントを表示する。
 3 定義の `session_log` は `~/.agents/logs/ollama` の JSONL ディレクトリを agent-audit へ宣言する。
 
+このログは観測だけでなく**測定の入力**でもある。`--replay` は記録済みの JSONL から最初の
+user メッセージ（= その実行へ渡されたプロンプト）を取り出し、モデル・think・format を
+変えた腕へ同じ入力を当てて、腕ごとの空応答率・失敗率・所要時間と、腕をまたいだ一致率を
+出す。設定を変えたときの品質差をライブ実行を焼かずに見るための唯一の口であり、R3
+「品質は時間で買う」が買えているかの検証もここで行う（買えている証拠はまだ無い）。
+
+**再生は道具を持たない。** 道具ありの実行ログも入力源にできるが、記録されたコマンドは
+再実行しない——再生は測定であって副作用の再現ではなく、測るたびにワークスペースが
+変わってはならない。この不変条件は腕の指定でも緩めない（腕にツールの口を作らない）。
+正解ラベルとの一致率は出さない: ラベルは人が付けるもので、この口が引き受けるのは
+「同じ入力に対する出力」を再現可能な形で並べるところまで。
+
 文脈上限は `--context-limit` → request options の `num_ctx` → Ollama `/api/ps` → `/api/show` の順で
 解決する。取得不能なら上限 0 として使用量だけを表示し、知らない上限を根拠に警告・打ち切りは
 しない。上限が分かる場合は既定 90% で 1 回だけ警告し、reserve を残してツール結果を詰める。
@@ -116,7 +138,8 @@ last_progress_at, tokens_per_sec, context_*}` を組み立て、`--follow` と T
 
 ## 6. 完了・出力・エラー契約
 
-ループの終了状態は `done` / `no_command` / `max_rounds` / `context_exhausted` / `tool_denied`。
+ループの終了状態は `done` / `no_command` / `max_rounds` / `no_progress` /
+`context_exhausted` / `tool_denied`。
 `TASK_COMPLETE` を確認した `done` 以外は未完了であり、最後の本文を捨てずに stdout へ返した上で、
 通常本文の末尾へ `{"ok": false, "issues": [...]}` を足す。`--format json` は本文全体の契約を
 壊せないため封筒を足さず、外側の形式修復・検証へ委ねる。未完了も rc=0 なので、呼び出し側は本文の
