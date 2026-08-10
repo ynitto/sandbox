@@ -187,6 +187,11 @@ def normalize(name: str, raw: dict, path) -> dict:
         "skill_command_prefix": str(raw.get("skill_command_prefix") or "/"),
         "prompt_via": prompt_via,
         "prompt_flag": raw.get("prompt_flag"),
+        # 編集対象・読み取り専用のファイルを argv で受け取る CLI（aider）の口。宣言しない
+        # CLI では呼び出し側がパスを渡しても無視される——プロンプト本文で伝える従来の
+        # 作法のままで、定義を書き換えない限り argv は 1 トークンも変わらない。
+        "file_flag": raw.get("file_flag"),
+        "read_flag": raw.get("read_flag"),
         "model_flag": raw.get("model_flag"),
         "default_model": raw.get("default_model"),
         "output": output,
@@ -439,7 +444,9 @@ def spill_prompt(prompt: str, limit: "int | None" = None, *, prompt_via: str,
 
 def headless_cmd(spec: dict, model: "str | None", prompt: str, *,
                  readonly: bool = False, no_session: bool = False,
-                 spill_path: "str | None" = None) -> dict:
+                 spill_path: "str | None" = None,
+                 files: "list[str] | tuple | None" = None,
+                 read_files: "list[str] | tuple | None" = None) -> dict:
     """ヘッドレス 1 回分を組み立てる（実行はしない・決定的）。
 
     戻り値: {argv, stdin, output_file, env, empty_output_is_error, timeout, readonly_warning}
@@ -466,6 +473,14 @@ def headless_cmd(spec: dict, model: "str | None", prompt: str, *,
     if m and spec["model_flag"] and not any("{model}" in t for t in spec["command"]):
         argv += [str(spec["model_flag"]), m]
     argv += _expand(spec["command_suffix"], m, holder)
+    # ファイルの受け渡し。**宣言した CLI にだけ載る**——aider は「チャットに入っている
+    # ファイルしか編集しない」ので、渡さないと本文で「追加してくれ」と要求して終わる
+    # （1 発起動では答える人がいない＝着手すらしない）。実測でこの取りこぼしを
+    # モデルの不合格として数えかけた（2026-08-11）。
+    for flag, paths in ((spec.get("read_flag"), read_files), (spec.get("file_flag"), files)):
+        for path in (paths or ()):
+            if flag:
+                argv += [str(flag), str(path)]
 
     text = str(prompt if prompt is not None else "")
     if use_spill:
