@@ -89,10 +89,15 @@ TIER = "small"
 
 
 def load_methods(ids: str) -> "dict | None":
-    """カタログ（methods/*.json）を tuning.json と同じ形へ組む（enabled を立てるだけ）。"""
+    """カタログ（methods/*.json）を tuning.json と同じ形へ組む（enabled を立てるだけ）。
+
+    id のかわりにファイルパスも受ける。カタログは golden で件数もハッシュも固定されて
+    いる（`test_methods_catalog.py`）ので、**採否を決める前の候補はカタログの外で測る**
+    ——測るために同梱カタログへ足すと、効かないと分かった手法が goldens ごと残る。
+    """
     picked = []
     for mid in [m.strip() for m in ids.split(",") if m.strip()]:
-        path = REPO / "methods" / f"{mid}.json"
+        path = Path(mid) if mid.endswith(".json") else REPO / "methods" / f"{mid}.json"
         if not path.exists():
             raise SystemExit(f"手法パックが見つかりません: {path}")
         picked.append({**json.loads(path.read_text(encoding="utf-8")), "enabled": True})
@@ -485,7 +490,8 @@ def main() -> None:
     ap.add_argument("--methods", default="",
                     help="カタログ（methods/*.json）の id をカンマ区切りで有効化する。"
                          "適用条件は本番の agentcore.methods.select が判定するので、"
-                         "`when` に合わない役割へは注入されない")
+                         "`when` に合わない役割へは注入されない。"
+                         "候補プリセットは .json のパスでも指定できる（カタログに入れずに測る）")
     ap.add_argument("--tier", default=TIER,
                     help="この測定が名乗る実行段（手法の when.tiers と突き合わせる）")
     args = ap.parse_args()
