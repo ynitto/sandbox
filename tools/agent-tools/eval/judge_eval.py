@@ -10,7 +10,7 @@ worker_eval.py の型をそのまま継ぐ——決定的チェッカーだけ�
   - argv: agents/ollama-json.json の command（起動時に**読む**。写さない）
   - プロンプト: flow-worker スキルの prompt.py（agent-flow が実際に呼ぶビルダー）
   - 上限: agent-flow の agent_timeout 既定 600 秒
-  - 応答の解釈: agent_flow.util.extract_json（本番が受け取るのと同じ形）
+  - 応答の解釈・起動形の解決・手法の適用: engine.py 経由で本番の実装を呼ぶ
 
 使い方: python3 judge_eval.py [--model qwen3.5:9b] [--repeat 3] [--cases S1,F1]
         [--methods restate-task,plan-first] [--tier small]
@@ -28,14 +28,12 @@ import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[3]
-sys.path.insert(0, str(REPO / "tools/agent-flow"))
-# 応答の解釈は本番と同じ抽出器で行う（写すとずれる）。util.py は単体 import しない
-# 約束なので、合成済みのパッケージから取る。
-import agent_flow  # noqa: E402
+# エンジンへ触るのは engine.py だけ。本番の実装を呼びつつ、未着地のシンボルで
+# 全 run が死なないようにする窓口（実際に 2 度死んだ）。
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import engine  # noqa: E402
 
-extract_json = agent_flow.extract_json
-# 手法パックの適用判定も本番の実装で行う（agent-flow / agent-loop と同じ 1 実装）。
-from agentcore import methods as _methodlib  # noqa: E402
+extract_json = engine.extract_json
 
 PROMPT_BUILDER = Path(os.environ.get(
     "FLOW_WORKER_PROMPT",
@@ -47,33 +45,13 @@ _FALLBACK_CMD = ["agent-ollama", "--think", "off", "--format", "json", "{model}"
 
 
 def load_cmd(name: str = "ollama-json") -> "tuple[list[str], str]":
-    """役割の変種が本番で起動される argv（`agents/<name>.json` の command）。
-
-    定義の探索は本番のローダ（`agentcore.agentcli.load_cli`）に任せる——自前で
-    パスを組むと、探索順（環境変数 → cwd/agents → 同梱）が本番とずれた測定になる。
-    """
-    try:
-        cmd = agent_flow._agentcli.load_cli(name).get("command")
-        if isinstance(cmd, list) and cmd:
-            return [str(a) for a in cmd], f"agents/{name}.json"
-    except Exception:  # noqa: BLE001 — 定義が引けないなら既知の既定で測る（測定を止めない）
-        pass
-    return list(_FALLBACK_CMD), "fallback（定義を読めませんでした）"
+    """役割の変種が本番で起動される argv（`agents/<name>.json` の command）。"""
+    return engine.load_cmd(name, _FALLBACK_CMD)
 
 
 def cli_name_for(kind: str) -> str:
-    """役割 → 本番が起動する CLI 定義名。振り替え規則は写さず本番の解決器を呼ぶ。
-
-    split は配列を返す契約なので、本番は `list_variant`（`--format array`）へ振り替える。
-    ollama の JSON モードはトップレベルをオブジェクトに固定するため、`--format json` の
-    ままでは配列契約を満たしようがない（実測では要素をキーへ散らした器で返る）。
-    振り替えを持たない木（エンジン側の修正が別ブランチにある等）では JSON 変種へ倒す。
-    ここで例外にすると split 以外の測定まで道連れになる——**測れないものを測れないと
-    記録して、残りは測る**。
-    """
-    if kind in getattr(agent_flow, "LIST_CONTRACT_ROLES", frozenset()):
-        return agent_flow._agentcli.list_variant("ollama")
-    return agent_flow._agentcli.json_variant("ollama")
+    """役割 → 本番が起動する CLI 定義名（split は配列契約なので `list_variant` へ）。"""
+    return engine.cli_name_for(kind)
 
 
 def cmd_for(kind: str) -> "tuple[list[str], str]":
@@ -116,11 +94,11 @@ def method_text(kind: str) -> "tuple[str, list[str]]":
     if METHODS is None:
         return "", []
     cli = cli_name_for(kind)
-    app = _methodlib.select(METHODS, {
+    app = engine.method_apply(METHODS, {
         "engine": "agent-flow", "workload": "flow", "purpose": kind,
-        "role": _methodlib.role_for(kind), "agent_cli": cli, "model": MODEL,
-        "tier": TIER, "relative_cost": _methodlib.relative_cost(cli),
-    }, "")
+        "role": engine.method_role(kind), "agent_cli": cli, "model": MODEL,
+        "tier": TIER, "relative_cost": engine.method_cost(cli),
+    })
     return app["text"], app["methods"]
 
 # ------------------------------------------------------------------ チェッカー
@@ -318,7 +296,7 @@ CASES = {
 def build_prompt(case: dict) -> str:
     if case.get("role") == "evaluator":
         # パターン目録と結果要約の作り方まで本番（continuation.py）に合わせる。
-        catalog = "\n".join(f"- {k}: {v}" for k, v in agent_flow.PATTERNS.items())
+        catalog = "\n".join(f"- {k}: {v}" for k, v in engine.patterns().items())
         summary = "\n".join(f"- {nid} ({kind}) [{status}]: {out[:160]}"
                             for nid, kind, status, out in case["results"])
         payload = {"role": "evaluator", "request": REQUEST, "max_retries": 3,
@@ -378,11 +356,8 @@ def run_one(cid: str, i: int) -> dict:
         # split は本番（agent.py）が「器を剥がす → それでも配列でなければレイヤ2 の形式修復を
         # 1 回」の順で受ける。ここを省くと、**本番なら救えている失敗**をモデルの不合格として
         # 数えてしまう。剥がし方は写さず本番の関数をそのまま呼ぶ（写すとずれる）。
-        # 剥がす関数を持たない木では剥がさずに測る。ここで AttributeError にすると
-        # split 以外の測定まで道連れになる（実際に全 30 run が起動前に死んだ）。
-        unwrap_list = getattr(agent_flow, "unwrap_list", None)
-        if case.get("kind") == "split" and unwrap_list is not None:
-            data = unwrap_list(data)
+        if case.get("kind") == "split":
+            data = engine.unwrap_list(data)
         if case.get("kind") == "split" and not isinstance(data, list):
             repair = (f"{prompt}\n\n[前回の出力は契約違反でした]\n"
                       f"前回の出力（先頭 400 文字）: {out[:400]}\n"
@@ -416,6 +391,8 @@ def run_one(cid: str, i: int) -> dict:
                                                      default=str)[:200], log=log)
     if applied:  # 何が効いた行かは台帳から読めないと、後で比較できない（空なら書かない）
         rec["methods"] = applied
+    if engine.missing():  # 欠けた木で取った行を、揃った木の行として読まないため
+        rec["engine_missing"] = engine.missing()
     print(f"  {cid}#{i}: {'PASS' if ok else 'FAIL':4s} {mode:11s} {wall:6.1f}s  {note[:66]}",
           flush=True)
     return rec
@@ -519,6 +496,8 @@ def main() -> None:
             line += f" 手法: {','.join(applied) if applied else 'なし（when 不一致）'}"
         if line not in seen:
             seen.append(line)
+    for gap in engine.missing():
+        print(f"   ⚠ この木にはエンジン機能が無い: {gap}（その分は測れていない）")
     print(f"model={MODEL}{'・--drop-format 適用' if DROP_ARGS else ''}\n  " + "\n  ".join(seen)
           + f"\nwall_limit={WALL_LIMIT:.0f}s cases={cids} repeat={args.repeat}\n")
 

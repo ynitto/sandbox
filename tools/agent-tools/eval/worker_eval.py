@@ -27,6 +27,8 @@ import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import engine  # noqa: E402
 VENV_PY = REPO / ".venv/bin/python"
 PROMPT_BUILDER = Path(os.environ.get(
     "FLOW_WORKER_PROMPT",
@@ -285,17 +287,6 @@ def build_prompt(task: dict) -> str:
     return r.stdout.strip()
 
 
-def _load_aider_spec():
-    """aider の起動形は `agents/aider.json` を**読む**（写さない）。
-
-    argv を写すと定義側の変更に静かに置いていかれる——agent-ollama 経路で実際に起きた。
-    ファイルの受け渡し（--file / --read）も定義の `file_flag` / `read_flag` に従う。
-    """
-    sys.path.insert(0, str(REPO / "tools/agent-tools/agentcore"))
-    from agentcore import agentcli
-    return agentcli, agentcli.load_cli("aider")
-
-
 def aider_settings(model: str, num_ctx: int = 32768, num_predict: int = 0) -> Path:
     """aider へ渡すモデル設定（文脈と 1 ターンの生成上限）。
 
@@ -321,10 +312,11 @@ def aider_argv(task: dict) -> "list[str]":
     違う）と、探索が要る課題の `--map-tokens`（定義は 0 で固定し、必要な課題だけ上書く）。
     ここを外すと aider を編集器としてしか測らないことになる。
     """
-    agentcli, spec = _load_aider_spec()
-    built = agentcli.headless_cmd(spec, MODEL, task["goal"],
-                                  files=task.get("files") or (),
-                                  read_files=task.get("read") or ())
+    # 起動形は `agents/aider.json` を**読む**（写さない）。ファイルの受け渡しも定義の
+    # `file_flag` / `read_flag` に従う。エンジンへの参照は engine.py に閉じてある。
+    built = engine.headless_cmd("aider", MODEL, task["goal"],
+                                files=task.get("files") or (),
+                                read_files=task.get("read") or ())
     argv = built["argv"]
     extra = []
     if NUM_PREDICT > 0:
