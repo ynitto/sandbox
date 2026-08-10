@@ -23,6 +23,8 @@ const tuning = require('../../orchestration/main/tuning');
 const profiles = require('../../orchestration/main/profiles');
 
 const SUBMITTER = 'agent-dashboard-adhoc';
+const NODE_KINDS = ['work', 'generate', 'classify', 'synthesize', 'verify', 'filter', 'judge',
+  'reduce', 'split', 'map', 'human', 'extract', 'retrieve'];
 
 function cfgOf(config) {
   return (config && config.adhocFlow) || {};
@@ -54,6 +56,33 @@ function workflowId(raw) {
   return id || `workflow-${Date.now()}`;
 }
 
+function normalizeInteraction(raw) {
+  const value = raw && typeof raw === 'object' ? raw : {};
+  const mode = String(value.mode || 'approval').trim();
+  const prompt = String(value.prompt || '').trim();
+  if (!['approval', 'choice', 'input'].includes(mode) || !prompt) {
+    throw new Error('human ノードには有効な mode と確認内容が必要です');
+  }
+  const timeout = Number(value.timeout_seconds == null ? 604800 : value.timeout_seconds);
+  if (!Number.isInteger(timeout) || timeout <= 0) throw new Error('human の期限は正数で指定してください');
+  const audience = (Array.isArray(value.audience) ? value.audience : ['reviewer'])
+    .map(String).map((item) => item.trim()).filter(Boolean);
+  if (!audience.length) throw new Error('human の対象グループを指定してください');
+  const interaction = { mode, prompt, audience, timeout_seconds: timeout };
+  if (mode === 'choice') {
+    const options = (Array.isArray(value.options) ? value.options : [])
+      .map(String).map((item) => item.trim()).filter(Boolean);
+    if (options.length < 2 || new Set(options).size !== options.length) {
+      throw new Error('選択式には重複しない選択肢が2件以上必要です');
+    }
+    const defaultOption = String(value.default_option || '').trim();
+    if (defaultOption && !options.includes(defaultOption)) throw new Error('既定値は選択肢から選んでください');
+    interaction.options = options;
+    if (defaultOption) interaction.default_option = defaultOption;
+  }
+  return interaction;
+}
+
 function normalizeWorkflow(raw) {
   if (!raw || typeof raw !== 'object') throw new Error('フローが不正です');
   const name = String(raw.name || '').trim();
@@ -64,7 +93,8 @@ function normalizeWorkflow(raw) {
     const goal = String((n && n.goal) || '').trim();
     const tier = String((n && n.tier) || '').trim();
     const kind = String((n && n.kind) || 'work').trim() || 'work';
-    if (!id || !goal || !tier) throw new Error('ノードには id・内容・tier が必要です');
+    if (!NODE_KINDS.includes(kind)) throw new Error(`ノード種別が不正です: ${kind}`);
+    if (!id || !goal || (kind !== 'human' && !tier)) throw new Error('ノードには id・内容・tier が必要です');
     if (seen.has(id)) throw new Error(`ノード id が重複しています: ${id}`);
     seen.add(id);
     const rawMethod = n.method && typeof n.method === 'object' ? n.method : null;
@@ -81,11 +111,11 @@ function normalizeWorkflow(raw) {
       label: String(n.label || id).trim() || id,
       goal,
       kind,
-      tier,
+      ...(kind === 'human' ? { interaction: normalizeInteraction(n.interaction) } : { tier }),
       deps: (Array.isArray(n.deps) ? n.deps : []).map((d) => String(d).trim()).filter(Boolean),
       x: Number.isFinite(Number(n.x)) ? Number(n.x) : 40,
       y: Number.isFinite(Number(n.y)) ? Number(n.y) : 40,
-      ...(method ? { method } : {}),
+      ...(method && kind !== 'human' ? { method } : {}),
       ...((kind === 'classify' && n.continuation === 'route')
         || (kind === 'verify' && n.continuation === 'retry')
         ? { continuation: n.continuation } : {}),
@@ -198,6 +228,9 @@ function planFromWorkflow(config, workflow) {
   const clean = normalizeWorkflow(workflow);
   const candidates = new Map();
   const nodes = clean.nodes.map((n) => {
+    if (n.kind === 'human') {
+      return { id: n.id, goal: n.goal, kind: n.kind, deps: n.deps, interaction: n.interaction };
+    }
     if (!candidates.has(n.tier)) candidates.set(n.tier, profiles.resolveTier(config, n.tier));
     const candidate = candidates.get(n.tier);
     if (!candidate || !candidate.agent_cli) {
@@ -504,6 +537,7 @@ function listProjects(config) {
 
 module.exports = {
   SUBMITTER,
+  NODE_KINDS,
   resolveBusDir,
   resolveWorkflowDir,
   normalizeWorkflow,

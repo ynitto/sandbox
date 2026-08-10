@@ -76,6 +76,20 @@ function safeList(dir) {
   }
 }
 
+function readOpenInteractions(runDir) {
+  const root = path.join(runDir, 'interactions');
+  return safeList(root).flatMap((interactionId) => {
+    const dir = path.join(root, interactionId);
+    const request = readJson(path.join(dir, 'request.json'));
+    if (!request || readJson(path.join(dir, 'resolution.json'))) return [];
+    return [{
+      ...request,
+      expired: Number.isFinite(Date.parse(request.expires_at)) && Date.parse(request.expires_at) <= Date.now(),
+      responded: safeList(path.join(dir, 'responses')).some((name) => name.endsWith('.json')),
+    }];
+  });
+}
+
 // claims/<id>/ から勝者を決める。agent-flow と同じ決定的タイブレーク:
 // lease 内の claim のうち (ts, who) が最小の 1 件。
 function claimWinner(claimDir, now) {
@@ -228,6 +242,8 @@ function readRun(runDir) {
   const now = Date.now() / 1000;
   const runStatus = String(meta.status || 'unknown');
   const runTerminal = TERMINAL.has(runStatus);
+  const interactions = readOpenInteractions(runDir);
+  const interactionByNode = new Map(interactions.map((item) => [String(item.node_id), item]));
 
   const nodes = {};
   // output のテキストから拾ったイシュー URL の候補（nodeId → url）。executor の証跡が
@@ -328,6 +344,7 @@ function readRun(runDir) {
         (data && typeof data === 'object' && data.decision === 'rejected') ||
           (output && output.includes('[gitlab-reject]'))
       ),
+      interaction: interactionByNode.get(id) || null,
       taskToken: nodeTaskToken(runId, id),
     };
   }
@@ -417,6 +434,7 @@ function readRun(runDir) {
     strategy: graph.strategy || null,
     iteration: Number(graph.iteration || 0),
     planRevisions: readPlanRevisions(runDir, Object.keys(nodes)),
+    interactions,
     nodes,
     counts,
     total,
@@ -613,6 +631,54 @@ function writeJsonAtomic(file, obj) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(`${file}.tmp`, JSON.stringify(obj, null, 2), 'utf8');
   fs.renameSync(`${file}.tmp`, file);
+}
+
+function writeInteractionResponse(busDir, runId, interactionId, raw) {
+  const rid = String(runId || '');
+  const iid = String(interactionId || '');
+  if (!rid || rid !== path.basename(rid) || !/^ix-[a-f0-9]{16}$/.test(iid)) {
+    throw new Error('interaction の識別子が不正です');
+  }
+  const dir = path.join(busDir, 'runs', rid, 'interactions', iid);
+  const request = readJson(path.join(dir, 'request.json'));
+  if (!request) throw new Error('確認依頼が見つかりません');
+  if (readJson(path.join(dir, 'resolution.json'))) throw new Error('この確認は回答済みです');
+  if (Number.isFinite(Date.parse(request.expires_at)) && Date.parse(request.expires_at) <= Date.now()) {
+    throw new Error('この確認は期限切れです');
+  }
+  const value = raw && typeof raw === 'object' ? raw : {};
+  const comment = String(value.comment || '').trim();
+  let answer;
+  if (request.mode === 'approval') {
+    const decision = String(value.decision || '');
+    if (!['approved', 'rejected'].includes(decision)) throw new Error('承認または却下を選んでください');
+    answer = { decision, comment };
+  } else if (request.mode === 'choice') {
+    const option = String(value.option || '');
+    if (!(request.options || []).map(String).includes(option)) throw new Error('選択肢から回答してください');
+    answer = { option, comment };
+  } else if (request.mode === 'input') {
+    const text = String(value.text || '').trim();
+    if (!text) throw new Error('回答を入力してください');
+    answer = { text };
+  } else throw new Error('確認方法が不正です');
+  const response = {
+    version: 1,
+    interaction_id: iid,
+    response_id: `response-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`,
+    actor: 'dashboard-user',
+    answer,
+    submitted_at: new Date().toISOString(),
+  };
+  const body = `${JSON.stringify(response, null, 2)}\n`;
+  if (Buffer.byteLength(body, 'utf8') > 64 * 1024) throw new Error('回答が長すぎます');
+  const responsesDir = path.join(dir, 'responses');
+  fs.mkdirSync(responsesDir, { recursive: true });
+  const file = path.join(responsesDir, `${response.response_id}.json`);
+  const tmp = `${file}.tmp-${process.pid}`;
+  fs.writeFileSync(tmp, body, { flag: 'wx' });
+  try { fs.linkSync(tmp, file); } finally { fs.unlinkSync(tmp); }
+  return response;
 }
 
 // run を cancelled に終端化する（人の明示指示による恒久停止）。agent-flow の cmd_cancel と同じ 3 手を
@@ -967,6 +1033,7 @@ function listRuns(busDir, limit = 30) {
 
 module.exports = {
   readRun,
+  writeInteractionResponse,
   isCancelled,
   parseRunId,
   readRunEvents,

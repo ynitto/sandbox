@@ -72,7 +72,8 @@ _STUB_SLEEP_MAX: "float | None" = None
 _AGENT_CLI: str = str(CONFIG_DEFAULTS["agent_cli"])
 # 役割（purpose）毎の上書き（設定 agents: の正規化済みマップ）。キーは planner / evaluator /
 # worker（全 kind の既定）/ 個別 kind（work/generate/classify/synthesize/verify/filter/judge/
-# reduce/split/map）。値は {agent_cli, model}。子プロセスへは --config 伝搬で同じ設定が届く。
+# reduce/split/map/extract/retrieve。human はエージェントを呼ばない）。値は
+# {agent_cli, model}。子プロセスへは --config 伝搬で同じ設定が届く。
 _AGENT_OVERRIDES: "dict[str, dict]" = {}
 AGENT_ROLES = ("planner", "evaluator", "worker")
 # 読み取り専用が**既定**の役割（適用拡大設計 §5「読まない系」）。planner / evaluator は材料を
@@ -86,7 +87,7 @@ READONLY_ROLES = frozenset({"planner", "evaluator"})
 # verify / map / work は成果物側にワークスペースの本文や自由記述を含むので入れない。
 # STRUCTURED_KINDS（JSON を抽出しようと試みる kind）とは別物: あちらは「JSON なら拾う」、
 # こちらは「JSON 以外を返してはいけない」。
-JSON_CONTRACT_ROLES = frozenset({"planner", "evaluator", "split", "filter", "judge", "reduce"})
+JSON_CONTRACT_ROLES = frozenset({"planner", "evaluator", "split", "filter", "judge", "reduce", "extract"})
 # 本文の末尾に完了可否の封筒 `{"ok": ...}` を置くよう指示している kind（実行系のうち
 # JSON 抽出をしないもの）。プロンプトの指示とここが食い違うと、自己申告した未完了が
 # 黙って done になる——一致は tests/test_agent_cli.py が prompt 側の EXEC_KINDS と突き合わせる。
@@ -191,7 +192,11 @@ def _agent_for(purpose: str) -> "tuple[str, str | None]":
             cli = d_cli.lower()
         if d_model:
             model = d_model
-    if purpose in JSON_CONTRACT_ROLES:
+    # retrieve は根拠を実際に読める必要がある。ollama-json へ寄せると read tool を失うため、
+    # Ollama 系だけ既存の読み取り専用定義を使い、末尾 JSON は下流の validator で担保する。
+    if purpose == "retrieve" and cli in ("ollama", "ollama-json"):
+        cli = "ollama-read"
+    elif purpose in JSON_CONTRACT_ROLES:
         cli = _agentcli.json_variant(cli)
     return cli, model
 
@@ -1053,6 +1058,14 @@ def execute_agent(kind: str, goal: str, dep_results: dict, model: str | None,
         "map": "map役。ゴールに示された本来のタスクを、与えられた1要素だけに適用して結果を返す。"
                " 勝手に別の処理（合計・件数など）に変えないこと。"
                " リスト状の成果は JSON 配列で出力し、後段の集約に渡せるようにする。",
+        "extract": "抽出役。入力から指定項目を抜き出し、JSON "
+                   '{"records":[{"fields":{},"evidence":[{"source_id":"...",'
+                   '"locator":"...","excerpt":"..."}]}],"warnings":[]} のみを出力。'
+                   "各 record に根拠を最低1件含め、該当なしは空の records とする。",
+        "retrieve": "取得役。読み取り可能な道具で根拠を確認し、JSON "
+                    '{"sources":[{"id":"...","uri":"...","title":"...",'
+                    '"locator":"...","excerpt":"...","digest":"..."}],"warnings":[]} '
+                    "のみを出力。推測で source を作らず、該当なしは空の sources とする。",
         "verify": "検証役。依存の成果を鵜呑みにせず独立に検算する。"
                   "可能なら結果を自分で再導出して突き合わせ、最低限"
                   "(1)件数・合計の整合 (2)抜け漏れ・重複 (3)各要素の妥当性の抜き取り検査"
@@ -1107,6 +1120,10 @@ def execute_agent(kind: str, goal: str, dep_results: dict, model: str | None,
                 lines.append(line)
             prompt += "\n依存タスクの成果:\n" + "\n".join(lines) + "\n"
         prompt += "\n成果物を簡潔に直接出力してください。"
+    # インストール済み flow-worker が新しい kind をまだ知らなくても、エンジン側の契約を優先する。
+    marker = '"records"' if kind == "extract" else ('"sources"' if kind == "retrieve" else "")
+    if marker and marker not in prompt:
+        prompt += f"\n\n【出力契約】{role}"
     # プロジェクト文脈（案 H・オプトイン）を先に前置してから、グローバル指示をさらにその前へ
     # 前置する（最終順序: [instructions][context][goal/deps ...]）。context は毎回このプロンプト
     # 文字列を新規に組み立ててから 1 回だけ付けるので二重注入の心配は無い（instructions と違い
@@ -1137,6 +1154,16 @@ def execute_agent(kind: str, goal: str, dep_results: dict, model: str | None,
             repaired = _repair_json_output(prompt, text, kind, why, model, want_list=True, agent=agent)
             if isinstance(repaired, list):
                 data = repaired
+        elif kind in ("extract", "retrieve"):
+            try:
+                data = _nodecontract.validate_node_data(kind, data)
+            except _nodecontract.NodeDataError as first_error:
+                repaired = _repair_json_output(prompt, text, kind, str(first_error), model, agent=agent)
+                try:
+                    data = _nodecontract.validate_node_data(kind, repaired)
+                except _nodecontract.NodeDataError as repair_error:
+                    raise _nodecontract.NodeDataError(
+                        f"{kind} の結果契約を修復できませんでした: {repair_error}") from repair_error
     elif kind in _ENVELOPE_KINDS:
         # 本文は自由記述のまま保つが、末尾の完了可否 envelope だけは機械判定へ渡す。
         # generate も対象にする: プロンプト側は実装系の全 kind（work / generate / map）へ

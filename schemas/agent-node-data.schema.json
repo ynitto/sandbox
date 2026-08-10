@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agent-node-data.schema.json",
+  "title": "agent-flow node result data",
+  "type": "object",
+  "required": ["kind", "data"],
+  "properties": {
+    "kind": {
+      "enum": [
+        "work", "generate", "classify", "synthesize", "verify",
+        "filter", "judge", "reduce", "split", "map",
+        "human", "extract", "retrieve"
+      ]
+    },
+    "data": {}
+  },
+  "additionalProperties": false,
+  "allOf": [
+    {"if": {"properties": {"kind": {"const": "human"}}}, "then": {"properties": {"data": {"$ref": "#/$defs/human"}}}},
+    {"if": {"properties": {"kind": {"const": "extract"}}}, "then": {"properties": {"data": {"$ref": "#/$defs/extract"}}}},
+    {"if": {"properties": {"kind": {"const": "retrieve"}}}, "then": {"properties": {"data": {"$ref": "#/$defs/retrieve"}}}}
+  ],
+  "$defs": {
+    "human": {
+      "type": "object",
+      "required": ["interaction_id", "outcome", "actor", "answer"],
+      "properties": {
+        "interaction_id": {"type": "string", "pattern": "^ix-[0-9a-f]{16}$"},
+        "outcome": {"enum": ["approved", "rejected", "selected", "submitted", "defaulted", "expired"]},
+        "actor": {"type": "string"},
+        "answer": {"type": "object"}
+      },
+      "additionalProperties": true
+    },
+    "evidence": {
+      "type": "object",
+      "required": ["source_id", "locator", "excerpt"],
+      "properties": {
+        "source_id": {"type": "string", "minLength": 1},
+        "locator": {"type": "string", "minLength": 1},
+        "excerpt": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "extract": {
+      "type": "object",
+      "required": ["records", "warnings"],
+      "properties": {
+        "records": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["fields", "evidence"],
+            "properties": {
+              "fields": {"type": "object"},
+              "evidence": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/evidence"}}
+            },
+            "additionalProperties": false
+          }
+        },
+        "warnings": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": false
+    },
+    "retrieve": {
+      "type": "object",
+      "required": ["sources", "warnings"],
+      "properties": {
+        "sources": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "uri", "title", "locator", "excerpt", "digest"],
+            "properties": {
+              "id": {"type": "string", "minLength": 1},
+              "uri": {"type": "string", "minLength": 1},
+              "title": {"type": "string", "minLength": 1},
+              "locator": {"type": "string", "minLength": 1},
+              "excerpt": {"type": "string", "minLength": 1},
+              "digest": {"type": "string", "minLength": 1}
+            },
+            "additionalProperties": false
+          }
+        },
+        "warnings": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": false
+    }
+  }
+}

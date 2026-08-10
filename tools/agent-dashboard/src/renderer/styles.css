@@ -3888,6 +3888,14 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
 .wf-inspector { display: grid; gap: 12px; }
 .wf-kind-help, .wf-method-detail p { margin: 4px 0 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
 .wf-goal-help, .wf-runtime-context p { color: var(--muted); font-size: 10px; line-height: 1.45; }
+.wf-human-options { display: grid; gap: 10px; padding-top: 11px; border-top: 1px solid var(--border); }
+.wf-human-options > small { color: var(--muted); font-size: 10px; line-height: 1.45; }
+.wf-interaction-card { display: grid; gap: 10px; margin: 12px 0; padding: 14px; border: 1px solid var(--warn); border-radius: 8px; background: var(--bg2); }
+.wf-interaction-card > div:first-child { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.wf-interaction-card p, .wf-interaction-card small { margin: 0; overflow-wrap: anywhere; }
+.wf-interaction-card small { color: var(--muted); }
+.flow-interaction-needs { margin-bottom: 16px; padding: 14px; border-bottom: 1px solid var(--border); }
+.flow-interaction-needs h2 { margin: 0 0 10px; font-size: 16px; }
 .wf-runtime-context summary { cursor: pointer; color: var(--muted); font-size: 11px; }
 .wf-runtime-context p { margin: 6px 0 0; }
 .wf-continuation-option { min-width: 0; display: grid !important; grid-template-columns: auto minmax(0, 1fr) !important;

@@ -64,6 +64,30 @@ class TestPromotion(unittest.TestCase):
 
 
 class TestDecisionRecords(unittest.TestCase):
+    def test_human_interaction_resolution_is_projected_once_without_bypassing_task_approval(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            interaction = cfg.bus / "runs" / "run1" / "interactions" / "ix-1234567890abcdef"
+            interaction.mkdir(parents=True)
+            (interaction / "request.json").write_text(json.dumps({
+                "interaction_id": "ix-1234567890abcdef", "mode": "approval",
+            }), encoding="utf-8")
+            resolution = {
+                "interaction_id": "ix-1234567890abcdef", "outcome": "approved",
+                "actor": "dashboard-user", "answer": {"decision": "approved"},
+                "resolved_at": "2026-08-10T00:00:00Z",
+            }
+            (interaction / "resolution.json").write_text(json.dumps(resolution), encoding="utf-8")
+
+            self.assertEqual(km.project_interaction_decisions(cfg, "T1", "run1"), 1)
+            self.assertEqual(km.project_interaction_decisions(cfg, "T1", "run1"), 0)
+            text = (cfg.decisions / "T1.md").read_text(encoding="utf-8")
+            self.assertIn("interaction:ix-1234567890abcdef", text)
+            self.assertIn("action  : human-interaction-approved", text)
+            self.assertIsNone(km.last_human_decision(cfg, "T1"),
+                              "工程内の承認はタスク全体の検収承認ではない")
+
     def test_approve_hold_reprioritize_per_task(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)

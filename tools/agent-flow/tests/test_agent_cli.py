@@ -93,6 +93,23 @@ class StructuredResultTests(unittest.TestCase):
         text, data = kf.execute_stub("work", "ふつうの仕事", {}, None)
         self.assertIsNone(data)
 
+    def test_extract_and_retrieve_repair_invalid_contracts(self):
+        valid = {
+            "extract": {"records": [{"fields": {"name": "A"}, "evidence": [{
+                "source_id": "s1", "locator": "L1", "excerpt": "A"}]}], "warnings": []},
+            "retrieve": {"sources": [{"id": "s1", "uri": "file:///tmp/a", "title": "A",
+                "locator": "L1", "excerpt": "A", "digest": "sha256:x"}], "warnings": []},
+        }
+        for kind, expected in valid.items():
+            with self.subTest(kind=kind), mock.patch.object(
+                    kf, "run_agent", side_effect=["{}", json.dumps(expected)]) as run:
+                _text, data = kf.execute_agent(kind, "根拠付きで処理", {}, None)
+            self.assertEqual(data, expected)
+            self.assertEqual(run.call_count, 2)
+            self.assertEqual(run.call_args_list[0].kwargs["purpose"], kind)
+            self.assertIn('"records"' if kind == "extract" else '"sources"',
+                          run.call_args_list[0].args[0])
+
     def test_reduce_aggregates_dependency_data(self):
         deps = {
             "a": {"output": "oa", "data": ["x", "y"]},

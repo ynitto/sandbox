@@ -18,6 +18,8 @@ module.exports = {
   // dir（プロジェクトフォルダ）は run アーカイブの置き場（<dir>/flow-archive/）に使う
   flowRuns: (invoke) => (dir, busDir, limit) => invoke('flow:runs', { dir, busDir, limit }),
   flowRun: (invoke) => (dir, busDir, runId) => invoke('flow:run', { dir, busDir, runId }),
+  flowInteractionResponse: (invoke) => (busDir, runId, interactionId, answer) =>
+    invoke('flow:interactionResponse', { busDir, runId, interactionId, answer }),
   // dir（プロジェクトルート）も渡す: agent-project 配下の run は「タスクの積み直し」で再実行する
   flowResubmit: (invoke) => (dir, busDir, runId) => invoke('flow:resubmit', { dir, busDir, runId }),
   flowDeleteRun: (invoke) => (dir, busDir, runId) => invoke('flow:deleteRun', { dir, busDir, runId }),

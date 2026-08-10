@@ -60,6 +60,17 @@ class PlanStrategyUserTests(unittest.TestCase):
             _plan([{"id": "a", "goal": "g", "agent": {"agent_cli": "codex"}}]), "r")
         self.assertEqual(tasks[0]["agent"], {"agent_cli": "codex"})
 
+    def test_human_plan_preserves_interaction_without_agent(self):
+        _, tasks = kf.plan_strategy_user(_plan([{
+            "id": "review", "goal": "人の確認を待つ", "kind": "human",
+            "interaction": {"mode": "approval", "prompt": "次へ進めますか", "audience": ["reviewer"]},
+        }]), "r")
+        self.assertEqual(tasks[0]["interaction"], {
+            "mode": "approval", "prompt": "次へ進めますか", "audience": ["reviewer"],
+            "timeout_seconds": 604800,
+        })
+        self.assertNotIn("agent", tasks[0])
+
     def test_rejects_invalid_plans(self):
         # 丸めず失敗させる（planner の _coerce_tasks と逆の方針）ことを網羅的に固定する
         cases = {

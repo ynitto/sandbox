@@ -1,5 +1,7 @@
 'use strict';
 
+// coherence: code=tools/agent-dashboard/src/features/adhoc-flow/main/adhoc.js, doc=docs/plans/2026-08-10-agent-tools-human-extract-retrieve-implementation-plan.md
+
 // adhoc-flow（S21/S22: プロジェクト非依存の flow 投入・フロービルダー・昇格）の単体テスト。
 // Electron は起動しない。追加依存なしで `node test/adhoc-flow.test.js` で走る。
 
@@ -7,6 +9,7 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+require('./flow-interaction.test');
 
 let passed = 0;
 function test(name, fn) {
@@ -121,6 +124,44 @@ test('カスタムフローの tier を実行候補へ固定して plan を作�
   }
 });
 
+test('human は agent を持たず対話契約を保ち、extract と retrieve は通常の worker として plan 化する', () => {
+  const original = profiles.resolveTier;
+  profiles.resolveTier = () => ({ agent_cli: 'ollama', model: 'qwen3' });
+  try {
+    const workflow = adhoc.normalizeWorkflow({
+      name: '人の確認と根拠取得',
+      nodes: [
+        { id: 'ask', goal: '公開可否を確認する', kind: 'human', deps: [], interaction: {
+          mode: 'choice', prompt: '公開しますか', audience: ['reviewer'],
+          options: ['公開', '保留'], default_option: '保留', timeout_seconds: 3600,
+        } },
+        { id: 'get', goal: '資料を取得する', kind: 'retrieve', tier: 'medium', deps: ['ask'] },
+        { id: 'pick', goal: '項目を抽出する', kind: 'extract', tier: 'medium', deps: ['get'] },
+      ],
+    });
+    assert.strictEqual(workflow.nodes[0].tier, undefined);
+    assert.strictEqual(workflow.nodes[0].interaction.default_option, '保留');
+    const plan = adhoc.planFromWorkflow({}, workflow);
+    assert.strictEqual(plan.nodes[0].agent, undefined);
+    assert.strictEqual(plan.nodes[0].interaction.prompt, '公開しますか');
+    assert.strictEqual(plan.nodes[1].agent.agent_cli, 'ollama');
+    assert.strictEqual(plan.nodes[2].kind, 'extract');
+    assert.strictEqual(profiles.resolveTier === original, false);
+  } finally {
+    profiles.resolveTier = original;
+  }
+});
+
+test('編集可能な種別は engine と一致し、system role を worker kind に偽装しない', () => {
+  const schema = JSON.parse(fs.readFileSync(path.join(__dirname, '../../../schemas/agent-node-data.schema.json'), 'utf8'));
+  assert.deepStrictEqual(workflowUi.KINDS, schema.properties.kind.enum);
+  assert.deepStrictEqual(adhoc.NODE_KINDS, schema.properties.kind.enum);
+  assert.strictEqual(workflowUi.roleLabelForKind('classify'), '作業');
+  assert.strictEqual(workflowUi.roleLabelForKind('judge'), '作業');
+  assert.strictEqual(workflowUi.roleLabelForKind('human'), '人間');
+  assert.strictEqual(workflowUi.roleLabelForKind('verify'), '検証');
+});
+
 test('ノードの継続動作を保存し、agent-flow の継続評価を有効にする', () => {
   const original = profiles.resolveTier;
   profiles.resolveTier = () => ({ agent_cli: 'codex', model: 'gpt-5' });
@@ -198,9 +239,9 @@ test('工程向け実行手法を、役割の合う工程だけのオプショ�
   assert.deepStrictEqual(workflowUi.nodeMethodChoices(methods, { kind: 'work', tier: 'small' })
     .map((choice) => choice.id), ['test-first', 'failure-modes-first', 'persist-until-done']);
   assert.deepStrictEqual(workflowUi.nodeMethodChoices(methods, { kind: 'classify', tier: 'small' })
-    .map((choice) => choice.id), ['failure-modes-first', 'plan-options']);
+    .map((choice) => choice.id), ['test-first', 'failure-modes-first', 'persist-until-done']);
   assert.deepStrictEqual(workflowUi.nodeMethodChoices(methods, { kind: 'judge', tier: 'small' })
-    .map((choice) => choice.id), ['checklist-acceptance']);
+    .map((choice) => choice.id), ['test-first', 'failure-modes-first', 'persist-until-done']);
 });
 
 test('複数ロールの実行手法を、接続済みの工程セットへ変換する', () => {
@@ -213,9 +254,9 @@ test('複数ロールの実行手法を、接続済みの工程セットへ変�
     ],
   });
   assert.strictEqual(pattern.type, 'method');
-  assert.deepStrictEqual(pattern.template.nodes.map((node) => node.kind), ['work', 'verify', 'judge']);
-  assert.deepStrictEqual(pattern.template.nodes.map((node) => node.deps), [[], ['plan-build-verify-1'], ['plan-build-verify-2']]);
-  assert.deepStrictEqual(pattern.template.nodes.map((node) => node.method.role), ['worker', 'verify', 'evaluator']);
+  assert.deepStrictEqual(pattern.template.nodes.map((node) => node.kind), ['work', 'verify']);
+  assert.deepStrictEqual(pattern.template.nodes.map((node) => node.deps), [[], ['plan-build-verify-1']]);
+  assert.deepStrictEqual(pattern.template.nodes.map((node) => node.method.role), ['worker', 'verify']);
   assert.strictEqual(workflowUi.methodWorkflowPattern({
     id: 'test-first', fragments: [{ role: 'worker', text: 'テストする' }],
   }), null, '単一ロールは工程オプションのままにする');
@@ -229,7 +270,7 @@ test('複数ロールの実行手法を、接続済みの工程セットへ変�
   }), null, '分離済みセッションの自己承認回避は工程セットに重ねない');
 });
 
-test('別解で再導出する手法は汎用的な複数案の並列・統合パターンとして見せる', () => {
+test('system role だけで構成された手法を編集ノードへ偽装しない', () => {
   const pattern = workflowUi.methodWorkflowPattern({
     id: 'derive-twice', description: '別解で再導出して一致を確認する',
     fragments: [
@@ -237,18 +278,7 @@ test('別解で再導出する手法は汎用的な複数案の並列・統合�
       { role: 'verify', text: '別解で再導出する' },
     ],
   });
-  assert.strictEqual(pattern.label, '複数案を並行して統合');
-  assert.deepStrictEqual(pattern.template.nodes.map((node) => node.label), ['方針', '案A', '案B', '比較・統合']);
-  assert.deepStrictEqual(pattern.template.nodes.map((node) => node.goal), [
-    '異なる観点から複数の進め方を決める。',
-    '1つ目の進め方に沿って成果案を作る。',
-    '別の進め方に沿って独立した成果案を作る。',
-    '複数の成果案を比較し、長所を取り入れて1つにまとめる。',
-  ]);
-  assert.deepStrictEqual(pattern.template.nodes.map((node) => node.deps), [
-    [], ['derive-twice-plan'], ['derive-twice-plan'], ['derive-twice-original', 'derive-twice-alternative'],
-  ]);
-  assert.deepStrictEqual(pattern.template.nodes.map((node) => node.kind), ['classify', 'work', 'work', 'synthesize']);
+  assert.strictEqual(pattern, null, '複数案は既存の並列統合パターンで表し、planner を分類ノードにしない');
 });
 
 test('分類して実行と同型の失敗モード手法は別カードにせず工程オプションへ統合する', () => {
@@ -320,14 +350,12 @@ test('全工程の既定目的は依頼本文を複製せず、自然文で役�
   }, 'small').nodes[0].goal, /\{\{request\}\}/);
 });
 
-test('工程セットから作った工程にも実行手法を保持する', () => {
+test('system role を含む手法は工程セットへ変換しない', () => {
   const pattern = workflowUi.methodWorkflowPattern({
     id: 'plan-and-build', description: '計画して実装する',
     fragments: [{ role: 'planner', text: '計画する' }, { role: 'worker', text: '実装する' }],
   });
-  const workflow = workflowUi.workflowFromPattern(pattern, 'medium');
-  assert.strictEqual(workflow.nodes[0].method.role, 'planner');
-  assert.strictEqual(workflow.nodes[1].method.text, '実装する');
+  assert.strictEqual(pattern, null);
 });
 
 test('複数工程の雛形を既存ノードの後へ接続済みで追加する', () => {
@@ -360,19 +388,20 @@ test('雛形カードは分岐を含む接続例を左から表す', () => {
 
 test('カードの表示名は agent-flow の全ノード種別と1対1に対応する', () => {
   const kinds = ['work', 'generate', 'classify', 'synthesize', 'verify',
-    'filter', 'judge', 'reduce', 'split', 'map'];
+    'filter', 'judge', 'reduce', 'split', 'map', 'human', 'extract', 'retrieve'];
   const workflow = { nodes: kinds.map((kind, index) => ({ id: kind, kind, x: index })) };
   assert.deepStrictEqual(workflowUi.workflowColumns(workflow), [
     ['開始'], ['作業'], ['生成'], ['分類'], ['統合'], ['検証'],
-    ['選別'], ['判定'], ['集約'], ['分割'], ['個別処理'], ['終了'],
+    ['選別'], ['判定'], ['集約'], ['分割'], ['個別処理'], ['人の確認'], ['抽出'], ['取得'], ['終了'],
   ]);
 });
 
-test('詳細グラフのロール名は agent-flow の実行ロールを日本語表示する', () => {
+test('詳細グラフは編集種別を worker・verify・human の実行ロールへ対応付ける', () => {
   const kinds = ['work', 'generate', 'classify', 'synthesize', 'verify',
-    'filter', 'judge', 'reduce', 'split', 'map'];
+    'filter', 'judge', 'reduce', 'split', 'map', 'human', 'extract', 'retrieve'];
   assert.deepStrictEqual(kinds.map((kind) => workflowUi.nodePresentation({ kind }).role), [
-    '作業', '作業', '計画', '作業', '検証', '作業', '判定', '作業', '作業', '作業',
+    '作業', '作業', '作業', '作業', '検証', '作業', '作業', '作業', '作業', '作業',
+    '人間', '作業', '作業',
   ]);
 });
 
@@ -479,8 +508,8 @@ test('初期画面は保存済み・一から作る・雛形を同じカード�
         template: { nodes: [{ id: 'work', kind: 'work', deps: [] }] },
       }],
       methods: [{
-        id: 'plan-build', description: '計画して実装する',
-        fragments: [{ role: 'planner', text: '計画する' }, { role: 'worker', text: '実装する' }],
+        id: 'build-review', description: '作業して検証する',
+        fragments: [{ role: 'worker', text: '実装する' }, { role: 'verify', text: '検証する' }],
       }, {
         id: 'no-self-approval', description: '作成者と同じ呼び出しによる自己承認を避ける',
         fragments: [{ role: 'verify', text: '検証する' }, { role: 'evaluator', text: '判定する' }],
@@ -489,7 +518,7 @@ test('初期画面は保存済み・一から作る・雛形を同じカード�
     assert.match(html, /data-workflow-id="saved"/);
     assert.match(html, /id="wf-new"/);
     assert.match(html, /data-pattern-id="verify"/);
-    assert.match(html, /data-method-pattern-id="plan-build"/);
+    assert.match(html, /data-method-pattern-id="build-review"/);
     assert.match(html, /実行手法/);
     assert.doesNotMatch(html, /data-method-pattern-id="no-self-approval"/);
     assert.doesNotMatch(html, /この雛形から作る|wf-list/);
@@ -498,12 +527,12 @@ test('初期画面は保存済み・一から作る・雛形を同じカード�
   }
 });
 
-test('次の工程は接続元の役割に合う候補を三つまで返す', () => {
+test('次の工程は接続元に合う候補を返す', () => {
   const workflow = { nodes: [
     { id: 'draft', kind: 'generate' },
     { id: 'check', kind: 'verify' },
   ] };
-  assert.deepStrictEqual(workflowUi.recommendedKinds(workflow, '__start__'), ['work', 'generate', 'classify']);
+  assert.deepStrictEqual(workflowUi.recommendedKinds(workflow, '__start__'), ['work', 'retrieve', 'extract', 'human']);
   assert.deepStrictEqual(workflowUi.recommendedKinds(workflow, 'draft'), ['filter', 'judge', 'synthesize']);
   assert.deepStrictEqual(workflowUi.recommendedKinds(workflow, 'check'), ['work', 'verify']);
 });

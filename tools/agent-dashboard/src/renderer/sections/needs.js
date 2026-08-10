@@ -2036,6 +2036,33 @@ function restoreNeedsScroll(root, snapshot, options) {
   }
 }
 
+function flowInteractionsHtml() {
+  const interactions = (state.flowRuns || []).flatMap((run) => (run.interactions || [])
+    .map((item) => ({ ...item, runId: run.runId })));
+  if (!interactions.length) return '';
+  return `<section class="flow-interaction-needs"><h2>ワークフローからの確認</h2>${interactions.map((item) => {
+    const disabled = item.expired || item.responded;
+    const stateLabel = item.expired ? '期限切れ' : item.responded ? '回答送信済み' : '未対応';
+    const comment = item.mode === 'input' ? ''
+      : '<label>コメント（任意）<textarea rows="2" data-flow-interaction-comment></textarea></label>';
+    let action;
+    if (item.mode === 'approval') {
+      action = `<div class="row"><button type="button" class="primary-inline" data-flow-interaction-submit="approved" ${disabled ? 'disabled' : ''}>承認</button>
+        <button type="button" data-flow-interaction-submit="rejected" ${disabled ? 'disabled' : ''}>却下</button></div>`;
+    } else if (item.mode === 'choice') {
+      action = `<label>回答<select data-flow-interaction-option ${disabled ? 'disabled' : ''}>${(item.options || []).map((option) =>
+        `<option value="${esc(option)}">${esc(option)}</option>`).join('')}</select></label>
+        <button type="button" class="primary-inline" data-flow-interaction-submit="choice" ${disabled ? 'disabled' : ''}>回答する</button>`;
+    } else {
+      action = `<label>回答<textarea rows="3" data-flow-interaction-text ${disabled ? 'disabled' : ''}></textarea></label>
+        <button type="button" class="primary-inline" data-flow-interaction-submit="input" ${disabled ? 'disabled' : ''}>回答する</button>`;
+    }
+    return `<article class="wf-interaction-card" data-flow-interaction="${esc(item.interaction_id)}" data-flow-run="${esc(item.runId)}">
+      <div><strong>${esc(item.prompt)}</strong><span class="status-chip st-review">${stateLabel}</span></div>
+      <small>対象: ${esc((item.audience || []).join(', '))} · 期限: ${esc(item.expires_at || '')}</small>${comment}${action}</article>`;
+  }).join('')}</section>`;
+}
+
 function renderNeeds(options) {
   const renderOptions = options || {};
   const p = state.project;
@@ -2083,6 +2110,7 @@ function renderNeeds(options) {
     // 要約だけの署名では、同じ長さの本文・成果物・受理状態の更新を見逃して古い表示が残る。
     // needs は小さな判断待ち集合なので、表示に使うモデル全体を署名に含める。
     p.needs,
+    (state.flowRuns || []).map((run) => run.interactions || []),
     model.items.map((n) => (ages[n.id] ? `${ages[n.id].level}|${ages[n.id].label}` : '')),
   ]);
   if (el.dataset.sig === sig && el.childElementCount) return;
@@ -2123,7 +2151,7 @@ function renderNeeds(options) {
         <main class="detail-panel">${renderNeedDetail(p, model.selected)}</main>
       </div>`;
 
-  el.innerHTML = `<div class="queue-summary" aria-label="要対応の状態">${filterButtons}
+  el.innerHTML = `${flowInteractionsHtml()}<div class="queue-summary" aria-label="要対応の状態">${filterButtons}
     ${planBatch.length > 1
       ? `<button type="button" class="primary-inline" data-approve-plan-batch>計画 ${planBatch.length} 件をまとめて承認</button>`
       : ''}</div>${gitlab}`;
@@ -2142,6 +2170,22 @@ function renderNeeds(options) {
   const batchApprove = el.querySelector('[data-approve-plan-batch]');
   if (batchApprove) {
     batchApprove.addEventListener('click', () => approvePlanReviewBatch(planBatch, batchApprove));
+  }
+  for (const button of el.querySelectorAll('[data-flow-interaction-submit]')) {
+    button.addEventListener('click', async () => {
+      const card = button.closest('[data-flow-interaction]');
+      if (!card) return;
+      const kind = button.dataset.flowInteractionSubmit;
+      const answer = kind === 'input'
+        ? { text: card.querySelector('[data-flow-interaction-text]')?.value || '' }
+        : kind === 'choice'
+          ? { option: card.querySelector('[data-flow-interaction-option]')?.value || '',
+            comment: card.querySelector('[data-flow-interaction-comment]')?.value || '' }
+          : { decision: kind, comment: card.querySelector('[data-flow-interaction-comment]')?.value || '' };
+      const ok = await guard('ワークフローへの回答', () => api.flowInteractionResponse(
+        p.busDir, card.dataset.flowRun, card.dataset.flowInteraction, answer));
+      if (ok) { toast('回答を送信しました', true); await reloadProject(); }
+    });
   }
   for (const btn of el.querySelectorAll('[data-need-select]')) {
     btn.addEventListener('click', () => {

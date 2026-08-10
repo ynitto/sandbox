@@ -160,6 +160,8 @@ function registerIpc(ctx) {
       nodeEvents: flow.readNodeEvents(runDir), // ノード別タイムライン（開始・所要の根拠）
     };
   });
+  handle('flow:interactionResponse', ({ busDir, runId, interactionId, answer }) =>
+    flow.writeInteractionResponse(busDir, runId, interactionId, answer));
 
   // 失敗した run の「やり直し」。
   //

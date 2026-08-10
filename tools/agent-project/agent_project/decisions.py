@@ -59,6 +59,49 @@ def append_decision(cfg: "Config", tid: str, actor: str, context: str,
     return dr
 
 
+def project_interaction_decisions(cfg: "Config", tid: str, run_id: str,
+                                  bus: "Path | None" = None) -> int:
+    """確定済み human 工程を追記型 DR へ一度だけ写す。タスク全体の承認とは区別する。"""
+    root = (bus or cfg.bus) / "runs" / str(run_id) / "interactions"
+    try:
+        dirs = sorted(p for p in root.iterdir() if p.is_dir())
+    except OSError:
+        return 0
+    try:
+        recorded = decision_path(cfg, tid).read_text(encoding="utf-8")
+    except OSError:
+        recorded = ""
+    projected = 0
+    for directory in dirs:
+        try:
+            request = json.loads((directory / "request.json").read_text(encoding="utf-8"))
+            resolution = json.loads((directory / "resolution.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        if not isinstance(request, dict) or not isinstance(resolution, dict):
+            continue
+        iid = str(resolution.get("interaction_id") or request.get("interaction_id") or directory.name)
+        digest = hashlib.sha256(json.dumps(
+            resolution, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")).hexdigest()
+        marker = f"interaction:{iid} digest:{digest}"
+        if marker in recorded:
+            continue
+        outcome = str(resolution.get("outcome") or "unknown")
+        answer = json.dumps(resolution.get("answer") or {}, ensure_ascii=False,
+                            sort_keys=True, separators=(",", ":"))
+        append_decision(
+            cfg, tid, str(resolution.get("actor") or "workflow-human"),
+            context=f"run {run_id} の human 工程（mode={request.get('mode', '')}）",
+            action=f"human-interaction-{outcome}",
+            reason=f"{marker} answer={answer}",
+            affects=f"{tid} → unchanged（工程入力のみ。機械検証は引き続き必須）",
+        )
+        recorded += marker
+        projected += 1
+    return projected
+
+
 # DR ヘッダの actor がこれらなら機械の記録（人の判断ではない）。人の判断だけを
 # 「もう答えが出ている」の根拠にするため、ここで明示的に区別する。
 _MACHINE_ACTORS = {"auto", "system", "gitlab", "forge"}
@@ -89,6 +132,8 @@ def last_human_decision(cfg: "Config", tid: str) -> "dict | None":
             continue
         dr = DR_HEADER_RE.match(head)
         act = re.search(r"^-\s*action\s*:\s*(?P<action>.+?)\s*$", block, flags=re.M)
+        if act and act.group("action").strip().startswith("human-interaction-"):
+            continue
         to = _DR_AFFECTS_RE.search(block)
         found = {"dr": f"DR-{int(dr.group(1)):04d}" if dr else "",
                  "actor": m.group("actor").strip(),

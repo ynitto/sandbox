@@ -15,7 +15,8 @@
     });
   }
 })(typeof globalThis !== 'undefined' ? globalThis : window, (root) => {
-  const KINDS = ['work', 'generate', 'classify', 'synthesize', 'verify', 'filter', 'judge', 'reduce', 'split', 'map'];
+  const KINDS = ['work', 'generate', 'classify', 'synthesize', 'verify', 'filter', 'judge', 'reduce', 'split', 'map',
+    'human', 'extract', 'retrieve'];
   const START = '__start__';
   const END = '__end__';
   const KIND_META = {
@@ -29,6 +30,9 @@
     reduce: ['集約', '分割結果を構造化してまとめる'],
     split: ['分割', '入力を実行時に複数工程へ分ける'],
     map: ['個別処理', '分割された各項目を処理する'],
+    human: ['人の確認', '人の判断や入力を待って再開する'],
+    extract: ['抽出', '入力から根拠付きの項目を取り出す'],
+    retrieve: ['取得', '資料を読み、根拠付きの情報源を返す'],
   };
   const DEFAULT_GOALS = {
     work: '依頼を満たすため、この工程で担当する作業を完了する。',
@@ -41,9 +45,12 @@
     reduce: '前の工程の構造化データを集約する。',
     split: '依頼を独立して処理できる単位に分割する。',
     map: '分割された各項目に、依頼された処理を適用する。',
+    human: '人の判断や入力を受け取り、後続工程へ渡す。',
+    extract: '入力から必要な項目を根拠とともに抽出する。',
+    retrieve: '指定された範囲を調べ、参照できる根拠とともに情報を取得する。',
   };
-  const ROLE_META = { planner: '計画', worker: '作業', verify: '検証', evaluator: '判定', session: 'セッション' };
-  const ROLE_KIND = { planner: 'classify', worker: 'work', verify: 'verify', evaluator: 'judge', session: 'work' };
+  const ROLE_META = { worker: '作業', verify: '検証', human: '人間', planner: '計画', evaluator: '判定', session: 'セッション' };
+  const ROLE_KIND = { worker: 'work', verify: 'verify' };
   const ICONS = {
     close: '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"></path></svg>',
     plus: '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"></path></svg>',
@@ -87,7 +94,7 @@
   }
 
   function roleForKind(kind) {
-    return ({ classify: 'planner', verify: 'verify', judge: 'evaluator' })[String(kind || 'work')] || 'worker';
+    return ({ human: 'human', verify: 'verify' })[String(kind || 'work')] || 'worker';
   }
 
   function roleLabelForKind(kind) {
@@ -138,7 +145,7 @@
     const methodId = String((method && method.id) || '').trim();
     if (!methodId || ['no-self-approval', 'failure-modes-first'].includes(methodId)) return null;
     const fragments = (method && Array.isArray(method.fragments) ? method.fragments : [])
-      .filter((fragment) => fragment && fragment.role !== 'session'
+      .filter((fragment) => fragment && ['worker', 'verify'].includes(String(fragment.role || ''))
         && String(fragment.role || '').trim() && String(fragment.text || '').trim());
     if (new Set(fragments.map((fragment) => String(fragment.role))).size < 2) return null;
     const base = methodId.replace(/[^a-zA-Z0-9_-]+/g, '-') || 'method';
@@ -150,23 +157,6 @@
       text: String(fragment.text).trim(),
       source: String(method.source || method.origin || ''),
     });
-    const planner = fragments.find((fragment) => fragment.role === 'planner');
-    const verify = fragments.find((fragment) => fragment.role === 'verify');
-    if (methodId === 'derive-twice' && planner && verify) {
-      return {
-        id: `method:${methodId}`, methodId, type: 'method',
-        label: patternLabel,
-        description: '異なる方針で成果案を並列に作り、比較して一つにまとめます。',
-        template: { nodes: [
-          { id: `${base}-plan`, label: '方針', goal: '異なる観点から複数の進め方を決める。', kind: 'classify', deps: [], method: methodFor(planner) },
-          { id: `${base}-original`, label: '案A', goal: '1つ目の進め方に沿って成果案を作る。', kind: 'work', deps: [`${base}-plan`] },
-          { id: `${base}-alternative`, label: '案B', goal: '別の進め方に沿って独立した成果案を作る。', kind: 'work',
-            deps: [`${base}-plan`], method: methodFor(verify) },
-          { id: `${base}-merge`, label: '比較・統合', goal: '複数の成果案を比較し、長所を取り入れて1つにまとめる。',
-            kind: 'synthesize', deps: [`${base}-original`, `${base}-alternative`] },
-        ] },
-      };
-    }
     const nodes = fragments.map((fragment, index) => {
       const id = `${base}-${index + 1}`;
       const role = String(fragment.role);
@@ -292,7 +282,7 @@
   }
 
   function recommendedKinds(workflow, from) {
-    if (from === START) return ['work', 'generate', 'classify'];
+    if (from === START) return ['work', 'retrieve', 'extract', 'human'];
     const kind = (workflow.nodes || []).find((node) => node.id === from)?.kind;
     if (kind === 'generate') return ['filter', 'judge', 'synthesize'];
     if (kind === 'verify') return ['work', 'verify'];
@@ -448,6 +438,31 @@
       <span>${esc(statusLabel(r.status))}</span><span class="muted">${esc(r.updatedAt || r.createdAt || '')}</span></button>`).join('')}</div>`;
   }
 
+  function interactionCardsHtml(interactions) {
+    return (interactions || []).map((item) => {
+      const disabled = item.expired || item.responded;
+      const state = item.expired ? '期限切れ' : item.responded ? '回答送信済み' : '回答待ち';
+      const comment = item.mode === 'input' ? ''
+        : '<label>コメント（任意）<textarea data-interaction-comment rows="2"></textarea></label>';
+      let control;
+      if (item.mode === 'approval') {
+        control = `<div class="qf-row"><button type="button" class="primary" data-interaction-submit="approved" ${disabled ? 'disabled' : ''}>承認</button>
+          <button type="button" data-interaction-submit="rejected" ${disabled ? 'disabled' : ''}>却下</button></div>`;
+      } else if (item.mode === 'choice') {
+        control = `<label>回答<select data-interaction-option ${disabled ? 'disabled' : ''}>${(item.options || []).map((option) =>
+    `<option value="${esc(option)}">${esc(option)}</option>`).join('')}</select></label>
+          <button type="button" class="primary" data-interaction-submit="choice" ${disabled ? 'disabled' : ''}>回答する</button>`;
+      } else {
+        control = `<label>回答<textarea data-interaction-text rows="3" ${disabled ? 'disabled' : ''}></textarea></label>
+          <button type="button" class="primary" data-interaction-submit="input" ${disabled ? 'disabled' : ''}>回答する</button>`;
+      }
+      return `<article class="wf-interaction-card" data-interaction-id="${esc(item.interaction_id)}">
+        <div><strong>人の確認</strong><span class="status-chip st-review">${state}</span></div>
+        <p>${esc(item.prompt)}</p><small>対象: ${esc((item.audience || []).join(', '))} · 期限: ${esc(item.expires_at || '')}</small>
+        ${comment}${control}</article>`;
+    }).join('');
+  }
+
   function runDetailHtml(detail) {
     if (!detail || !detail.run) return '';
     const run = detail.run;
@@ -463,6 +478,7 @@
         <div class="qf-row"><button type="button" id="wf-resubmit">再実行</button>
           <button type="button" id="wf-cancel">中止</button><button type="button" id="wf-delete-run">削除</button></div></div>
       ${run.failureReason ? `<p class="qf-failure">${esc(run.failureReason)}</p>` : ''}
+      ${interactionCardsHtml(run.interactions)}
       ${run.final && run.final.summary ? `<pre class="qf-output">${esc(String(run.final.summary).slice(0, 3000))}</pre>` : ''}
       <div class="qf-graph">${graph}</div>${outputs}</section>`;
   }
@@ -676,6 +692,22 @@
       `<option value="${esc(t.id)}" ${node.tier === t.id ? 'selected' : ''}>${esc(t.label)}</option>`).join('');
     const kindOptions = KINDS.map((kind) =>
       `<option value="${kind}" ${node.kind === kind ? 'selected' : ''}>${esc(KIND_META[kind][0])}</option>`).join('');
+    const interaction = node.interaction || { mode: 'approval', prompt: node.goal, audience: ['reviewer'], timeout_seconds: 604800 };
+    const interactionHtml = node.kind === 'human' ? `<section class="wf-human-options">
+      <label>確認方法<select id="wf-human-mode">
+        ${[['approval', '承認・却下'], ['choice', '選択'], ['input', '入力']].map(([value, label]) =>
+    `<option value="${value}" ${interaction.mode === value ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
+      <label>確認内容<textarea id="wf-human-prompt" rows="4">${esc(interaction.prompt || '')}</textarea></label>
+      ${interaction.mode === 'choice' ? `<label>選択肢<textarea id="wf-human-options" rows="3"
+        placeholder="1行に1つ">${esc((interaction.options || []).join('\n'))}</textarea></label>
+        <label>期限時の既定値<select id="wf-human-default"><option value="">自動選択しない</option>
+          ${(interaction.options || []).map((option) => `<option value="${esc(option)}"
+            ${interaction.default_option === option ? 'selected' : ''}>${esc(option)}</option>`).join('')}</select></label>` : ''}
+      <label>対象グループ<input id="wf-human-audience" value="${esc((interaction.audience || ['reviewer']).join(', '))}"></label>
+      <label>期限（秒）<input id="wf-human-timeout" type="number" min="1" step="1"
+        value="${esc(interaction.timeout_seconds || 604800)}"></label>
+      <small>回答は同期されます。期限切れは、選択式で既定値を指定した場合だけ自動で続行します。</small>
+    </section>` : '';
     const continuation = node.kind === 'classify'
       ? ['route', '分類後に専門工程を追加', '分類結果に応じた作業工程を agent-flow が追加します。']
       : node.kind === 'verify'
@@ -686,15 +718,16 @@
       <label>表示名<input id="wf-node-label" value="${esc(node.label || node.id)}"></label>
       <label>ID<input id="wf-node-id" value="${esc(node.id)}"></label>
       <label>種類<select id="wf-node-kind">${kindOptions}</select></label>
-      <label>tier<select id="wf-node-tier">${tierOptions}</select></label>
+      ${node.kind === 'human' ? '' : `<label>tier<select id="wf-node-tier">${tierOptions}</select></label>`}
       <label>この工程の目的<textarea id="wf-node-goal" rows="6">${esc(node.goal)}</textarea>
         <small class="wf-goal-help">この工程で達成したいことを自然文で書きます。依頼全文・前工程の成果・出力形式は agent-flow が実行時に補います。</small></label>
+      ${interactionHtml}
       <details class="wf-runtime-context"><summary>agent-flow が自動で追加</summary>
         <p>${esc((KIND_META[node.kind] || [node.kind])[0])}としての役割、依頼全文、前工程の成果、作業規律、出力形式。</p></details>
       ${continuation ? `<label class="wf-continuation-option"><input type="checkbox" id="wf-node-continuation"
         value="${continuation[0]}" ${node.continuation === continuation[0] ? 'checked' : ''}><span><strong>${continuation[1]}</strong>
         <small>${continuation[2]}</small></span></label>` : ''}
-      ${nodeMethodOptionsHtml(ov.methods, node)}
+      ${node.kind === 'human' ? '' : nodeMethodOptionsHtml(ov.methods, node)}
       <button type="button" id="wf-node-delete">ノードを削除</button>
     </div>`;
   }
@@ -867,6 +900,24 @@
       catch (err) { st.notice = String((err && err.message) || err); }
       renderRun();
     }));
+    pane.querySelectorAll('[data-interaction-submit]').forEach((button) => button.addEventListener('click', async () => {
+      const card = button.closest('[data-interaction-id]');
+      if (!card || !st.selectedRun) return;
+      const kind = button.dataset.interactionSubmit;
+      const answer = kind === 'input'
+        ? { text: card.querySelector('[data-interaction-text]')?.value || '' }
+        : kind === 'choice'
+          ? { option: card.querySelector('[data-interaction-option]')?.value || '',
+            comment: card.querySelector('[data-interaction-comment]')?.value || '' }
+          : { decision: kind, comment: card.querySelector('[data-interaction-comment]')?.value || '' };
+      try {
+        await api().adhocFlowInteractionResponse({
+          runId: st.selectedRun, interactionId: card.dataset.interactionId, answer,
+        });
+        st.notice = '回答を送信しました';
+      } catch (err) { st.notice = String((err && err.message) || err); }
+      await loadOverview(); renderRun();
+    }));
     $id('wf-resubmit')?.addEventListener('click', async () => {
       try {
         const result = await api().adhocFlowResubmit({ runId: st.selectedRun });
@@ -900,7 +951,27 @@
       node.label = $id('wf-node-label').value.trim() || node.id;
       node.id = $id('wf-node-id').value.trim();
       node.kind = $id('wf-node-kind').value;
-      node.tier = $id('wf-node-tier').value;
+      if (node.kind === 'human') {
+        delete node.tier;
+        delete node.method;
+        const previous = node.interaction || {};
+        const mode = $id('wf-human-mode')?.value || previous.mode || 'approval';
+        const options = ($id('wf-human-options')?.value || '').split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+        node.interaction = {
+          mode,
+          prompt: $id('wf-human-prompt')?.value.trim() || previous.prompt || node.goal,
+          audience: ($id('wf-human-audience')?.value || 'reviewer').split(',').map((item) => item.trim()).filter(Boolean),
+          timeout_seconds: Math.max(1, Number($id('wf-human-timeout')?.value || previous.timeout_seconds || 604800)),
+          ...(mode === 'choice' ? {
+            options: options.length >= 2 ? options : (previous.options || ['はい', 'いいえ']),
+            ...(($id('wf-human-default')?.value || previous.default_option)
+              ? { default_option: $id('wf-human-default')?.value || previous.default_option } : {}),
+          } : {}),
+        };
+      } else {
+        node.tier = $id('wf-node-tier')?.value || node.tier || st.overview?.tiers?.[0]?.id || '';
+        delete node.interaction;
+      }
       node.goal = $id('wf-node-goal').value.trim();
       const continuation = $id('wf-node-continuation');
       const selected = continuation && continuation.checked ? continuation.value : '';
@@ -923,7 +994,9 @@
     const tier = ov.tiers && ov.tiers[0] ? ov.tiers[0].id : '';
     let i = workflow.nodes.length + 1;
     while (used.has(`n${i}`)) i += 1;
-    const node = { id: `n${i}`, label: KIND_META[kind][0], goal: defaultGoal(kind), kind, tier, deps: [], x, y };
+    const node = { id: `n${i}`, label: KIND_META[kind][0], goal: defaultGoal(kind), kind,
+      ...(kind === 'human' ? { interaction: { mode: 'approval', prompt: 'この内容で進めてよいですか？',
+        audience: ['reviewer'], timeout_seconds: 604800 } } : { tier }), deps: [], x, y };
     const baseId = node.id;
     let suffix = 2;
     while (used.has(node.id)) node.id = `${baseId}-${suffix++}`;
@@ -1191,7 +1264,8 @@
       workflow.exit = (workflow.exit || []).filter((nodeId) => nodeId !== id);
       st.selectedNode = ''; st.selectedEdge = null; st.dirty = true; renderSettings();
     });
-    ['wf-node-label', 'wf-node-id', 'wf-node-kind', 'wf-node-tier', 'wf-node-goal', 'wf-node-continuation'].forEach((id) =>
+    ['wf-node-label', 'wf-node-id', 'wf-node-kind', 'wf-node-tier', 'wf-node-goal', 'wf-node-continuation',
+      'wf-human-mode', 'wf-human-prompt', 'wf-human-options', 'wf-human-default', 'wf-human-audience', 'wf-human-timeout'].forEach((id) =>
       $id(id)?.addEventListener('change', () => { collectWorkflow(); st.dirty = true; renderSettings(); }));
     ['wf-name', 'wf-description'].forEach((id) => $id(id)?.addEventListener('input', () => {
       collectWorkflow(); st.dirty = true;
@@ -1225,11 +1299,13 @@
   }
 
   return {
+    KINDS,
     render: ensureLoaded,
     refresh,
     statusLabel,
     selectionFrom,
     defaultGoal,
+    roleLabelForKind,
     nodePresentation,
     nodeMethodChoices,
     methodWorkflowPattern,

@@ -56,14 +56,14 @@ def cmd_patterns(args) -> int:
             print(f"{row['id']}\t{row['label']}\t{row['description']}")
     return 0
 
-# 有効なノード kind。planner（エージェント）が未知 kind を出したら work に丸める。
-VALID_KINDS = {"work", "generate", "classify", "synthesize", "verify",
-               "filter", "judge", "reduce", "split", "map"}
+# 公開 kind は agentcore が唯一の実装。human はユーザー定義フロー専用で planner には出さない。
+VALID_KINDS = _nodecontract.VALID_KINDS
+PLANNER_KINDS = _nodecontract.PLANNER_KINDS
 
 # 構造化データ（data）を成果として意図する kind。これら以外（work/generate/
 # classify/synthesize）の自由記述出力では、散文中に紛れた JSON 風断片を data に
 # 昇格させない（例: 本文の "issues": [] を空リスト data と誤抽出して下流を汚す事故を防ぐ）。
-STRUCTURED_KINDS = {"split", "map", "reduce", "filter", "judge", "verify"}
+STRUCTURED_KINDS = _nodecontract.STRUCTURED_KINDS
 
 
 def _coerce_tasks(raw, existing=()):
@@ -79,7 +79,7 @@ def _coerce_tasks(raw, existing=()):
             continue
         seen.add(tid)
         kind = str(t.get("kind", "work"))
-        if kind not in VALID_KINDS:
+        if kind not in PLANNER_KINDS:
             kind = "work"
         node = {
             "id": tid,
@@ -388,6 +388,13 @@ def plan_strategy_user(plan: dict, request: str):
         node = {"id": tid, "goal": goal,
                 "deps": [str(d) for d in (t.get("deps") or [])], "kind": kind}
         agent = t.get("agent")
+        if kind == "human":
+            if agent is not None:
+                raise UserPlanError(f"ノード {tid} の human には agent を指定できません")
+            try:
+                node["interaction"] = _interaction.normalize_spec(t.get("interaction"))
+            except _interaction.InteractionError as e:
+                raise UserPlanError(f"ノード {tid} の interaction が不正です: {e}") from None
         if agent is not None:
             if not (isinstance(agent, dict) and str(agent.get("agent_cli") or "").strip()):
                 raise UserPlanError(f"ノード {tid} の agent が不正です（agent_cli が必要）")

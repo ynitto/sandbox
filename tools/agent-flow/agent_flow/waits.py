@@ -126,6 +126,26 @@ def park_node(bus: Bus, nid: str, who: str, rec: dict) -> None:
     bus.sync_push(f"park {nid} by {who} ({rec.get('reason','wait')})")
 
 
+def park_human_interaction(bus: Bus, nid: str, node: dict, who: str,
+                           watch_interval: float) -> dict:
+    """Create the immutable request, then park and release the claimed human node."""
+    spec = _interaction.normalize_spec(node.get("interaction"))
+    request = _interaction.build_request(bus.run_id, nid, spec)
+    if not bus.write_interaction_request(request):
+        request = bus.read_interaction_request(request["interaction_id"])
+        if not isinstance(request, dict):
+            raise _interaction.InteractionError("既存 interaction request を読めません")
+    rec = build_wait_record(nid, who, "human", {
+        "executor": "human",
+        "reason": "human-interaction",
+        "poll_interval": watch_interval,
+        "timeout": spec["timeout_seconds"],
+    }, watch_interval)
+    rec["interaction_id"] = request["interaction_id"]
+    park_node(bus, nid, who, rec)
+    return request
+
+
 def _finish_wait(v: Bus, rec: dict, status: str, text: str, data) -> None:
     """park の決着を終端 result として書き、wait 記録を消す（service_waits から）。"""
     nid = rec["id"]
@@ -193,6 +213,38 @@ def _service_throttled(v: Bus, rec: dict, cap: int, wait_lease: float, daemon_id
     v.write_wait(nid, rec)
 
 
+def _service_human_wait(v: Bus, rec: dict, wait_lease: float, daemon_id: str) -> None:
+    nid = rec["id"]
+    interaction_id = str(rec.get("interaction_id") or "")
+    request = v.read_interaction_request(interaction_id)
+    if not isinstance(request, dict):
+        _finish_wait(v, rec, "failed", "human interaction request が見つかりません",
+                     {"outcome": "expired", "error": "missing-request"})
+        return
+    resolution = v.read_interaction_resolution(interaction_id)
+    if not isinstance(resolution, dict):
+        resolution = _interaction.resolve(
+            request, v.list_interaction_responses(interaction_id),
+            now=datetime.now(timezone.utc))
+        if resolution is None:
+            rec["wait_lease_until"] = time.time() + wait_lease
+            v.write_wait(nid, rec)
+            return
+        if not v.write_interaction_resolution(resolution):
+            resolution = v.read_interaction_resolution(interaction_id)
+    if not isinstance(resolution, dict):
+        return
+    try:
+        resolution = _nodecontract.validate_node_data("human", resolution)
+    except _nodecontract.NodeDataError as e:
+        _finish_wait(v, rec, "failed", f"human interaction resolution が不正です: {e}", None)
+        return
+    outcome = str(resolution.get("outcome") or "")
+    status = "failed" if outcome in ("rejected", "expired") else "done"
+    _finish_wait(v, rec, status, f"human interaction: {outcome}", resolution)
+    log(daemon_id, f"human interaction 決着: {nid} → {status} ({outcome})")
+
+
 def service_waits(bus: Bus, args, only_runs: "list | None" = None,
                   daemon_id: str = "service_waits") -> int:
     """監視主体（daemon/run）が park 済みノードをバッチ再確認する単一ポーラ。処理した run 数を返す。
@@ -205,11 +257,8 @@ def service_waits(bus: Bus, args, only_runs: "list | None" = None,
     重複ポーリングするのを防ぐ。run 自体は request-claim で各 PC に分散するため監視も自然に分散する。
     オーナーが消えても孤児 reclaim が run（＝監視）を別 PC へ移すのでクラッシュ耐性はそのまま。
     None（担当未指定）のときは全 active run を見る（単一 PC / 後方互換）。"""
-    if not _defer_enabled(args):
-        return 0                       # 従来モード（deferral 無効）＝park は無いので監視も不要
-    poll = executor_hook(args, "poll")
-    if poll is None:
-        return 0
+    defer_enabled = _defer_enabled(args)
+    poll = executor_hook(args, "poll") if defer_enabled else None
     cfg = _executor_cfg(args)
     # poll() は自プロセス内で走るので、executor 設定（起票先/接続ラベル等）を環境変数で届ける
     # （daemon/run は make_executor を経由しないため、ここで明示的に渡す）。
@@ -226,12 +275,19 @@ def service_waits(bus: Bus, args, only_runs: "list | None" = None,
         waits = v.list_waits()
         if not waits:
             continue
-        serviced += 1
+        serviced_run = False
         for rec in waits:
             nid = rec.get("id")
             if not nid or v.has_result(nid):
                 v.clear_wait(nid)                    # 別経路で決着済み → 記録を掃除
                 continue
+            if rec.get("kind") == "human":
+                serviced_run = True
+                _service_human_wait(v, rec, wait_lease, daemon_id)
+                continue
+            if not defer_enabled or poll is None:
+                continue
+            serviced_run = True
             if rec.get("throttled"):
                 _service_throttled(v, rec, cap, wait_lease, daemon_id)
                 continue
@@ -245,6 +301,8 @@ def service_waits(bus: Bus, args, only_runs: "list | None" = None,
                 v.write_wait(nid, rec)
                 continue
             _service_one_wait(v, rec, poll, watch_interval, wait_lease, daemon_id)
+        if serviced_run:
+            serviced += 1
     return serviced
 
 

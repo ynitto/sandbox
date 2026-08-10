@@ -633,6 +633,14 @@ def _act_run(task: Task, cfg: "Config", use_git: bool = False) -> "tuple[bool, s
         meta = json.loads((_flow_run_bus(cfg, use_git) / "runs" / rid / "meta.json")
                           .read_text(encoding="utf-8"))
         terminal_status = str(meta.get("status") or "")
+        if terminal_status in _FLOW_TERMINAL:
+            try:
+                projected = project_interaction_decisions(
+                    cfg, task.id, rid, bus=_flow_run_bus(cfg, use_git))
+                if projected:
+                    append_journal(cfg.journal, f"human interaction: {task.id} に {projected} 件の決定を記録")
+            except (OSError, ValueError) as e:
+                append_journal(cfg.journal, f"human interaction の決定記録を見送り: {e}")
         if terminal_status == "cancelled":
             return (False, f"daemon run {rid} cancelled")
         if terminal_status == "done":

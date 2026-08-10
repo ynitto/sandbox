@@ -385,6 +385,10 @@ agent-dashboard のクイック実行（フロービルダー）が主な投入�
 - per-node `agent` はこの経路でだけ受ける。LLM planner の出力からは従来どおり剥がす
   （モデル選定はルーティング・実測格付けの仕事）。
 - `split` ノードへの静的依存は投入時に弾く（map/reduce は実行時に動的生成されるため）。
+- ユーザー定義フローでは `human`（承認・選択・入力）、`extract`（根拠付き項目抽出）、
+  `retrieve`（読み取り可能な道具による根拠取得）も使える。`human` はエージェントを呼ばず
+  `waits/` で保留し、dashboard 等が append-only response を書くと再開する。自動 planner は
+  人待ちを勝手に増やさないため `human` を生成しない。
 - 既定では評価役の再計画は無効（形が意図そのもの）。失敗ノードは failed で正直に返し、
   resume（再実行）が失敗ノードを pending へ戻す。`evaluate: true` で従来の継続判断に載る。
 - 手法（F17）を run 単位で強制したいときは `AGENT_TUNING_DIR` に run 専用の tuning.json を

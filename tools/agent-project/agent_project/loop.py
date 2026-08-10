@@ -289,6 +289,13 @@ def _reap_offloaded(cfg: "Config", tasks: "list[Task]", policy: "Policy",
         if task.norm_status() != "offloaded":
             release_claim(cfg, task)
             continue
+        try:
+            projected = project_interaction_decisions(cfg, task.id, run_id)
+            if projected:
+                append_journal(cfg.journal,
+                               f"human interaction: {task.id} に {projected} 件の決定を記録")
+        except (OSError, ValueError) as e:
+            append_journal(cfg.journal, f"human interaction の決定記録を見送り: {e}")
         if loc == VERIFY_DELEGATION_LOC:
             # 検証委譲（P4-b）の回収。返ってきたのは**検証の判定**であって成果ではない。
             settled += _settle_verify_delegation(cfg, task, run_id, ok, msg,

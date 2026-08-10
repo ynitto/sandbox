@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agent-interaction.schema.json",
+  "title": "Human interaction request, response and resolution",
+  "description": "agent-flow と管理面が共有する人間介在契約。request と resolution は実行エンジン、response は回答者が追記する。",
+  "oneOf": [
+    {"$ref": "#/$defs/request"},
+    {"$ref": "#/$defs/response"},
+    {"$ref": "#/$defs/resolution"}
+  ],
+  "$defs": {
+    "interactionId": {"type": "string", "pattern": "^ix-[0-9a-f]{16}$"},
+    "request": {
+      "type": "object",
+      "required": ["version", "interaction_id", "run_id", "node_id", "mode", "prompt", "audience", "options", "default_option", "created_at", "expires_at"],
+      "properties": {
+        "version": {"const": 1},
+        "interaction_id": {"$ref": "#/$defs/interactionId"},
+        "run_id": {"type": "string", "minLength": 1},
+        "node_id": {"type": "string", "minLength": 1},
+        "mode": {"enum": ["approval", "choice", "input"]},
+        "prompt": {"type": "string", "minLength": 1},
+        "audience": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
+        "options": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
+        "default_option": {"type": ["string", "null"]},
+        "created_at": {"type": "string", "format": "date-time"},
+        "expires_at": {"type": "string", "format": "date-time"}
+      },
+      "additionalProperties": false
+    },
+    "response": {
+      "type": "object",
+      "required": ["version", "interaction_id", "response_id", "actor", "answer", "submitted_at"],
+      "properties": {
+        "version": {"const": 1},
+        "interaction_id": {"$ref": "#/$defs/interactionId"},
+        "response_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$"},
+        "actor": {"type": "string", "minLength": 1},
+        "answer": {"type": "object"},
+        "submitted_at": {"type": "string", "format": "date-time"}
+      },
+      "additionalProperties": false
+    },
+    "resolution": {
+      "type": "object",
+      "required": ["version", "interaction_id", "outcome", "response_id", "actor", "answer", "resolved_at"],
+      "properties": {
+        "version": {"const": 1},
+        "interaction_id": {"$ref": "#/$defs/interactionId"},
+        "outcome": {"enum": ["approved", "rejected", "selected", "submitted", "defaulted", "expired"]},
+        "response_id": {"type": ["string", "null"]},
+        "actor": {"type": "string", "minLength": 1},
+        "answer": {"type": "object"},
+        "resolved_at": {"type": "string", "format": "date-time"}
+      },
+      "additionalProperties": false
+    }
+  }
+}

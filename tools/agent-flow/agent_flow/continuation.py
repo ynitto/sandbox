@@ -163,6 +163,7 @@ def continue_stub(request: str, nodes: dict, results: dict, iteration: int,
     new = _expand_splits(nodes, results, max_fanout, review, request, exemplar_first, reduce_width)
     have = set(nodes)
     tripped = []  # サーキットブレーカーが作動した系統（理由表示用）
+    human_failed = []
 
     def fresh(tid):
         return tid not in have and tid not in [t["id"] for t in new]
@@ -173,6 +174,9 @@ def continue_stub(request: str, nodes: dict, results: dict, iteration: int,
             continue
         kind = node.get("kind", "work")
         tries = int(node.get("retries", 0))  # この系統で既に作り直した回数
+        if kind == "human" and r.get("status") == "failed":
+            human_failed.append(nid)
+            continue
         # 1) classify → 専門タスクへルーティング（追加のみ）
         if kind == "classify" and r.get("status") == "done":
             actid = f"{nid}-act"
@@ -225,6 +229,8 @@ def continue_stub(request: str, nodes: dict, results: dict, iteration: int,
                     new.append(spec)
     if new:
         return "replan", new, f"{len(new)} 件追加"
+    if human_failed:
+        return "failed", [], f"human interaction が未承認です: {','.join(human_failed)}"
     if tripped:
         return "done", [], (f"サーキットブレーカー作動: {','.join(tripped)} は "
                             f"{max_retries} 回の作り直しでも未達のため打ち切り")

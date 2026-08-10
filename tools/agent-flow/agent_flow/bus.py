@@ -11,6 +11,7 @@ from agentcore import protocol  # noqa: E402
 class Bus:
     def __init__(self, root: str, run_id: str):
         self.root = root
+        self.run_id = run_id
         self.runs_root = os.path.join(root, "runs")
         self.inbox_dir = os.path.join(root, "inbox")
         self.inbox_claims_dir = os.path.join(root, "inbox", "claims")
@@ -25,6 +26,7 @@ class Bus:
         # 解放してここに書き残す。監視主体（daemon/run）の service_waits がバッチで再確認する。
         # runs/ 配下＝git バスで同期され、daemon 消失を跨いで生存する（孤児 reclaim と同じ耐性）。
         self.waits_dir = os.path.join(self.run_dir, "waits")
+        self.interactions_dir = os.path.join(self.run_dir, "interactions")
         self.results_dir = os.path.join(self.run_dir, "results")
         self.artifacts_dir = os.path.join(self.run_dir, "artifacts")
         self.events_dir = os.path.join(self.run_dir, "events")
@@ -46,7 +48,7 @@ class Bus:
 
     # --- セットアップ ---
     def ensure_dirs(self) -> None:
-        for d in (self.tasks_dir, self.claims_dir, self.waits_dir,
+        for d in (self.tasks_dir, self.claims_dir, self.waits_dir, self.interactions_dir,
                   self.results_dir, self.events_dir):
             os.makedirs(d, exist_ok=True)
 
@@ -282,6 +284,62 @@ class Bus:
         心拍（Heartbeat）を停止してから呼ぶこと——停止前に消すと直後の心拍が claim を書き戻す。"""
         protocol.release_claim(self._claim_dir(node_id), who)
         self.sync_push(f"release {node_id} by {who}")
+
+    # --- human interaction（request=engine / response=human / resolution=engine） ---
+    def interaction_dir(self, interaction_id: str) -> str:
+        return os.path.join(self.interactions_dir, interaction_id)
+
+    def interaction_request_path(self, interaction_id: str) -> str:
+        return os.path.join(self.interaction_dir(interaction_id), "request.json")
+
+    def read_interaction_request(self, interaction_id: str):
+        return read_json(self.interaction_request_path(interaction_id))
+
+    def write_interaction_request(self, request: dict) -> bool:
+        path = self.interaction_request_path(request["interaction_id"])
+        if os.path.exists(path):
+            return False
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        write_json_atomic(path, request)
+        return True
+
+    def interaction_responses_dir(self, interaction_id: str) -> str:
+        return os.path.join(self.interaction_dir(interaction_id), "responses")
+
+    def write_interaction_response(self, response: dict) -> bool:
+        directory = self.interaction_responses_dir(response["interaction_id"])
+        path = os.path.join(directory, f"{response['response_id']}.json")
+        if os.path.exists(path):
+            return False
+        os.makedirs(directory, exist_ok=True)
+        write_json_atomic(path, response)
+        return True
+
+    def list_interaction_responses(self, interaction_id: str) -> "list[dict]":
+        directory = self.interaction_responses_dir(interaction_id)
+        if not os.path.isdir(directory):
+            return []
+        out = []
+        for name in sorted(os.listdir(directory)):
+            if name.endswith(".json"):
+                value = read_json(os.path.join(directory, name))
+                if isinstance(value, dict):
+                    out.append(value)
+        return out
+
+    def interaction_resolution_path(self, interaction_id: str) -> str:
+        return os.path.join(self.interaction_dir(interaction_id), "resolution.json")
+
+    def read_interaction_resolution(self, interaction_id: str):
+        return read_json(self.interaction_resolution_path(interaction_id))
+
+    def write_interaction_resolution(self, resolution: dict) -> bool:
+        path = self.interaction_resolution_path(resolution["interaction_id"])
+        if os.path.exists(path):
+            return False
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        write_json_atomic(path, resolution)
+        return True
 
     # --- park（保留待ち）プロトコル ---
     #

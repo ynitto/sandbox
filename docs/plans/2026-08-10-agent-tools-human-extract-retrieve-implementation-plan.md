@@ -3,6 +3,18 @@
 > 前提設計: [2026-08-10-agent-tools-human-extract-retrieve-design.md](./2026-08-10-agent-tools-human-extract-retrieve-design.md)  
 > 方針: 新しい状態管理・外部依存・条件付き DAG は追加せず、既存の agentcore、file bus、park & poll、dashboard feature 境界を使う。
 
+## 実装結果（2026-08-10）
+
+完了。`human` は既存 file bus と wait resolver で停止・回答・再開し、dashboard は append-only response だけを書く。`extract` / `retrieve` は共通 validator で根拠付き data を検証し、不正時は既存修復経路を一度だけ使う。managed project への決定投影は実行結果と分離し、人の承認で機械検証を短絡しない。
+
+- 共通契約: interaction / node data schema と agentcore validator を追加
+- engine: 3 kind、human park & resolve、構造化出力検証を追加
+- dashboard: 3 kind の編集、要対応への表示・回答を追加
+- project: immutable resolution の decisions への冪等投影を追加
+- 確認: agentcore 173件、agent-flow 185件、agent-project の decision / loop / board、dashboard 全テストと lint が成功
+
+既存の関数で足りたため `agentcore.__init__`、`repair.py`、新しい CLI variant は変更していない。個人指名、ACL、専用 daemon、条件付き edge は設計どおり追加していない。
+
 ## 完了条件
 
 - standalone agent-flow のユーザー定義フローで `human` を実行・回答・再開できる。
@@ -146,9 +158,7 @@ node test/flow-park-cancel.test.js
 ### 変更ファイル
 
 - 更新 `tools/agent-flow/agent_flow/agent.py`
-- 必要最小限の更新 `tools/agent-flow/agent_flow/repair.py`
 - 更新 `tools/agent-flow/tests/test_agent_cli.py`
-- 更新 `tools/agent-flow/tests/test_repair.py`
 
 ### 実装
 
@@ -175,10 +185,12 @@ node test/flow-park-cancel.test.js
 ### 変更ファイル
 
 - 更新 `tools/agent-dashboard/src/features/adhoc-flow/main/adhoc.js`
+- 更新 `tools/agent-dashboard/src/features/adhoc-flow/main/ipc.js`
+- 更新 `tools/agent-dashboard/src/features/adhoc-flow/preload.js`
 - 更新 `tools/agent-dashboard/src/renderer/features/adhoc-flow.js`
 - 更新 `tools/agent-dashboard/src/renderer/styles.css`
 - 更新 `tools/agent-dashboard/test/adhoc-flow.test.js`
-- 新規または更新 `tools/agent-dashboard/test/agent-node-kinds-golden.test.js`
+- 更新 `tools/agent-dashboard/test/adhoc-flow.test.js`（kind の golden test を同居）
 - 更新 `tools/agent-dashboard/package.json`（新規テストを test script に追加する場合だけ）
 
 ### 実装
@@ -211,8 +223,8 @@ node test/flow-park-cancel.test.js
 
 - 更新 `tools/agent-dashboard/src/features/agent-project/main/flow.js`
 - 更新 `tools/agent-dashboard/src/features/agent-project/main/ipc.js`
+- 更新 `tools/agent-dashboard/src/features/agent-project/preload.js`
 - 更新 `tools/agent-dashboard/src/renderer/sections/needs.js`
-- 必要に応じて更新 `tools/agent-dashboard/src/preload.js`
 - 更新 `tools/agent-dashboard/test/hitl-review.test.js`
 - 新規 `tools/agent-dashboard/test/flow-interaction.test.js`
 

@@ -81,7 +81,7 @@ executor: agent            # ワーカーバス: 組み込み agent（エージ�
 # agents:                  # 役割毎のエージェント上書き（yaml 専用）。
 #   planner:               #   キー: planner（戦略選定・分解）/ evaluator（継続判断・再計画）/
 #     agent_cli: claude    #        worker（全ノード kind の既定）/ 個別 kind（work/generate/
-#     model: opus          #        classify/synthesize/verify/filter/judge/reduce/split/map。
+#     model: opus          #        classify/synthesize/verify/filter/judge/reduce/split/map/extract/retrieve。
 #   worker:                #        kind は worker より優先）。
 #     model: sonnet        #   値: {agent_cli, model, readonly}（どれか 1 つでも可）。
 #   verify:                #   未指定はグローバル agent_cli / model。子プロセス（orchestrator/

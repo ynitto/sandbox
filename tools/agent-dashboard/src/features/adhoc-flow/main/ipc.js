@@ -88,6 +88,11 @@ function registerIpc(ctx) {
       inbox: adhoc.readInbox(busDir, String(runId)),
     };
   });
+  handle('adhocFlow:interactionResponse', ({ runId, interactionId, answer } = {}) => {
+    const cfg = loadConfig();
+    return flow.writeInteractionResponse(adhoc.resolveBusDir(cfg), String(runId || ''),
+      String(interactionId || ''), answer);
+  });
 
   handle('adhocFlow:submit', (payload) => {
     const cfg = loadConfig();

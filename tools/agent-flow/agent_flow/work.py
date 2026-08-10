@@ -179,6 +179,20 @@ def cmd_work(args) -> int:
         # ponytail: claim 時の 1 回だけ解決。実行中に control が変わると数分ずれうる。
         agent_cli = agent_model = None
         node_agent = node.get("agent") if isinstance(node.get("agent"), dict) else None
+        if kind == "human":
+            bus.event(who, "claimed", node=nid)
+            try:
+                request = park_human_interaction(bus, nid, node, who, watch_interval)
+            except Exception as e:  # noqa: BLE001 — 壊れた user-plan も claim を残さず失敗終端する
+                bus.write_result(nid, who, "failed", f"human interaction エラー: {e}",
+                                 {"error_class": "content"}, kind="human")
+                bus.release_claim(nid, who)
+                bus.event(who, "result", node=nid, status="failed")
+                bus.sync_push(f"result {nid} [failed] by {who}")
+            else:
+                log(who, f"human wait: {nid}（{request['interaction_id']}）— claim 解放")
+            time.sleep(random.uniform(0, 0.3))
+            continue
         if args.executor == "agent":
             agent_cli, _model_ov = _effective_agent(kind, getattr(args, "model", None), node_agent)
             agent_model = _model_ov

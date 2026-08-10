@@ -3,6 +3,7 @@
 module.exports = {
   adhocFlowOverview: (invoke) => (payload) => invoke('adhocFlow:overview', payload || {}),
   adhocFlowRun: (invoke) => (payload) => invoke('adhocFlow:run', payload || {}),
+  adhocFlowInteractionResponse: (invoke) => (payload) => invoke('adhocFlow:interactionResponse', payload || {}),
   adhocFlowSubmit: (invoke) => (payload) => invoke('adhocFlow:submit', payload || {}),
   adhocFlowResubmit: (invoke) => (payload) => invoke('adhocFlow:resubmit', payload || {}),
   adhocFlowCancel: (invoke) => (payload) => invoke('adhocFlow:cancel', payload || {}),

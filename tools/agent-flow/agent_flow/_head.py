@@ -47,6 +47,8 @@ from agentcore.nodeid import normalize_node_id, default_node_id  # noqa: E402
 # board の `_norm_repo_url` は同じ判定の別実装で、agent-project 側とも吸収規則が食い違っていた。
 from agentcore import repolocal as _repolocal  # noqa: E402
 from agentcore import verifycontract as _verifycontract  # noqa: E402
+from agentcore import interaction as _interaction  # noqa: E402
+from agentcore import nodecontract as _nodecontract  # noqa: E402
 # エージェント CLI 定義（agents/<name>.json）の読み込みと argv 組み立て（S9）。組み込み
 # （kiro/claude/copilot/codex）を含む全 CLI がこの定義で動く。以前は同じ argv 知識が
 # agent-project / agent-flow / agent-amigos / dashboard に重複していた（repolocal と同型）。

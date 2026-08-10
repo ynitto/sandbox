@@ -1,4 +1,4 @@
-# schemas/ — ツール横断の共通スキーマ（repos / task / node-budget / agent-control / agent-instructions / agent-session-commands / agent-tuning / agent-node-command / mission / amigos-command / delivery / delegation / board / verification-plan / verification-receipt / audit-record / audit-insight）
+# schemas/ — ツール横断の共通スキーマ
 
 agent-project・agent-flow・codd-gate・agent-amigos が**データ契約だけで**結合するための独立スキーマ。
 ツール同士は互いの実装を知らず、ここで定義する形式だけを読む/書く（結合は常に一方向×データ）。
@@ -7,6 +7,8 @@ agent-project・agent-flow・codd-gate・agent-amigos が**データ契約だけ
 |----------|-----------|--------------------|
 | [`repos.schema.json`](repos.schema.json) | リポジトリレジストリ（identity = **(url, path, base)**＝パス＋ブランチで一意） | 共有（本ディレクトリが正典） |
 | [`task.schema.json`](task.schema.json) | 制御層タスク（バックログ 1 件）の JSON 表現 | agent-project（Markdown 形の正典は `tools/agent-project/backlog.md.example`） |
+| [`agent-interaction.schema.json`](agent-interaction.schema.json) | agent-flow の human 工程における request / append-only response / immutable resolution | 共有（検証と決着は `tools/agent-tools/agentcore/agentcore/interaction.py`） |
+| [`agent-node-data.schema.json`](agent-node-data.schema.json) | 公開ノード kind と human / extract / retrieve の根拠付き結果 | 共有（検証は `tools/agent-tools/agentcore/agentcore/nodecontract.py`） |
 | [`verification-plan.schema.json`](verification-plan.schema.json) | 統一 verify の検証計画 — 受入基準（自然文 criterion・出現順 C1, C2, … 採番）＋任意の固定検証コマンドを canonical JSON の SHA-256 digest 付きで直列化。agent-project が確定し、agent-flow の専用 runner が成果 revision 上で一度だけ実行する | 共有（本ディレクトリが正典。設計は `docs/plans/2026-07-30-unified-task-verify-design.md`。digest・採番の 1 実装は `agentcore/verifycontract.py`） |
 | [`verification-receipt.schema.json`](verification-receipt.schema.json) | 統一 verify の receipt — plan digest・result revision・command 終了コード・criterion ごとの verdict（pass / fail / inconclusive）と証拠。agent-project が検算し、一致した PASS だけを done 候補に採用（fail-close）。他ノードへの検証委譲（external.json）も同じ schema | 共有（本ディレクトリが正典。全体判定の再導出と検算は `agentcore/verifycontract.py` の `receipt_overall` / `receipt_errors`） |
 | [`node-budget.schema.json`](node-budget.schema.json) | ノード単位の予算 v2 — トークン一次（実行時間上限は v1 互換で AND）＋配分宣言（`$AGENT_BUDGET_DIR`＝既定 `~/.agents/budget/` の config.json ＋ ledger/<YYYYMMDD>.jsonl） | 共有（本ディレクトリが正典。初出は agent-amigos 設計書 §6.2、v2 は `docs/plans/2026-07-19-agent-dashboard-orchestration-token-budget-design.md`） |

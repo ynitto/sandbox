@@ -81,7 +81,8 @@ CONFIG_DEFAULTS = {
     # planner・executor・verify 等、このツールが行う LLM 呼び出しすべてに効く。
     "agent_cli": "kiro",
     # 役割毎のエージェント上書き（yaml 専用）。キーは planner / evaluator / worker（全 kind の
-    # 既定）/ 個別 kind（work/generate/classify/synthesize/verify/filter/judge/reduce/split/map）、
+    # 既定）/ 個別 kind（work/generate/classify/synthesize/verify/filter/judge/reduce/split/map/
+    # extract/retrieve。human はエージェントを呼ばない）、
     # 値は {agent_cli, model}。未指定はグローバル agent_cli / model。
     "agents": {},
     "planner": "flow-planner",
