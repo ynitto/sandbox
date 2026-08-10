@@ -49,6 +49,24 @@ def extract_json(text: str):
     raise ValueError("planner 出力から JSON を抽出できませんでした")
 
 
+def unwrap_list(data):
+    """配列を求める契約で、配列 1 本を包んだオブジェクトを配列として受ける。
+
+    ollama の JSON モード（`--format json`）は**トップレベルを必ずオブジェクトにする**ため、
+    プロンプトで「配列だけを返せ」と書いても `{"data": [...]}` で返る（engine 側の仕様で
+    モデルの能力ではない）。受け側が厳密なままだと split は原理的に契約を満たせず、形式修復
+    リトライも必ず空振りして 1 回分の呼び出しを捨てる（C9・C10 — ローカルモデルを実用域に
+    残し、無駄な再呼び出しを焼かない）。JSON モードを持つ他 CLI にも同じ形で効く。
+
+    剥がすのは**配列値がちょうど 1 つ**のときだけ——2 つ以上あるとどれが答えか決まらず、
+    黙って別のリストを採ると分解対象を取り違える。それ以外は素通しする。"""
+    if isinstance(data, dict):
+        lists = [v for v in data.values() if isinstance(v, list)]
+        if len(lists) == 1:
+            return lists[0]
+    return data
+
+
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 

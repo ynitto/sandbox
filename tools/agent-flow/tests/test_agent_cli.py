@@ -270,8 +270,13 @@ class JsonVariantRoutingTests(unittest.TestCase):
         kf._AGENT_CLI, kf._AGENT_OVERRIDES = self._cli, self._ov
 
     def test_json_contract_roles_swap_to_the_variant(self):
-        for purpose in ("planner", "evaluator", "split", "filter", "judge", "reduce"):
+        for purpose in ("planner", "evaluator", "filter", "judge", "reduce"):
             self.assertEqual(kf._agent_for(purpose)[0], "ollama-json", purpose)
+
+    def test_list_contract_role_swaps_to_the_array_variant(self):
+        # split はトップレベル配列でないと fan-out が展開されない。ollama の JSON モードは
+        # 配列を表現できないので、配列用の起動形（--format array）へ振り替える。
+        self.assertEqual(kf._agent_for("split")[0], "ollama-list")
 
     def test_free_text_roles_keep_the_declared_cli(self):
         # work / verify / map はワークスペースの本文や自由記述を返すので振り替えない。
@@ -286,7 +291,7 @@ class JsonVariantRoutingTests(unittest.TestCase):
         # 変種は同じエンジンの起動形違い。モデル指定は振り替えても持ち越す。
         kf._AGENT_OVERRIDES = kf._normalize_agent_overrides(
             {"split": {"agent_cli": "ollama", "model": "qwen3.5:9b"}})
-        self.assertEqual(kf._agent_for("split"), ("ollama-json", "qwen3.5:9b"))
+        self.assertEqual(kf._agent_for("split"), ("ollama-list", "qwen3.5:9b"))
 
 
 class ExplicitAgentOverrideTests(unittest.TestCase):
@@ -972,6 +977,27 @@ class FormatRepairTests(unittest.TestCase):
                 mock.patch.object(kf, "_FORMAT_RETRIES", 1):
             text, data = kf.execute_agent("split", "分割", {}, None)
         self.assertIsNone(data)                          # 従来のフォールバック（評価役が判断）
+
+    def test_split_accepts_json_mode_wrapper_without_repair(self):
+        """ollama の JSON モードは配列を必ずオブジェクトで包む。器を剥がして受け、
+        原理的に空振りする修復リトライを焼かない（C9・C10）。"""
+        calls = []
+        def once(prompt, model, purpose="", **_kw):
+            calls.append(1)
+            return '{"data": ["a", "b"]}'
+        with mock.patch.object(kf, "run_agent", side_effect=once), \
+                mock.patch.object(kf, "_FORMAT_RETRIES", 1):
+            text, data = kf.execute_agent("split", "分割", {}, None)
+        self.assertEqual(data, ["a", "b"])
+        self.assertEqual(len(calls), 1)                  # 修復リトライを呼ばない
+
+    def test_split_wrapper_with_two_lists_is_not_unwrapped(self):
+        """配列が 2 本ある器はどれが答えか決まらない。剥がさず修復へ回す。"""
+        outs = ['{"items": ["a"], "rejected": ["b"]}', '["a"]']
+        with mock.patch.object(kf, "run_agent", side_effect=outs), \
+                mock.patch.object(kf, "_FORMAT_RETRIES", 1):
+            text, data = kf.execute_agent("split", "分割", {}, None)
+        self.assertEqual(data, ["a"])                    # 修復側の配列が採用される
 
     def test_format_retries_zero_disables_repair(self):
         calls = []

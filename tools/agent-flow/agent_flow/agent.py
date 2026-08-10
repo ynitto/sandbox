@@ -88,6 +88,11 @@ READONLY_ROLES = frozenset({"planner", "evaluator"})
 # STRUCTURED_KINDS（JSON を抽出しようと試みる kind）とは別物: あちらは「JSON なら拾う」、
 # こちらは「JSON 以外を返してはいけない」。
 JSON_CONTRACT_ROLES = frozenset({"planner", "evaluator", "split", "filter", "judge", "reduce", "extract"})
+# うち、トップレベルが JSON **配列**でなければ下流が動かない役割。split の data が配列で
+# ないと `_expand_splits` が展開されず run が空振りする。ollama の JSON モードは
+# トップレベルをオブジェクトに固定するので、この役割だけ配列用の起動形（`list_variant`）
+# へ振り替える（申告が無い CLI は json_variant のまま）。
+LIST_CONTRACT_ROLES = frozenset({"split"})
 # 本文の末尾に完了可否の封筒 `{"ok": ...}` を置くよう指示している kind（実行系のうち
 # JSON 抽出をしないもの）。プロンプトの指示とここが食い違うと、自己申告した未完了が
 # 黙って done になる——一致は tests/test_agent_cli.py が prompt 側の EXEC_KINDS と突き合わせる。
@@ -170,7 +175,8 @@ def _agent_for(purpose: str) -> "tuple[str, str | None]":
     agents["worker"] ＞ グローバル agent_cli。soft/縮退中は control の degraded を重ねる。
 
     解決した CLI が JSON 用の変種を申告していれば、JSON 契約の役割
-    （JSON_CONTRACT_ROLES）だけ最後にそちらへ振り替える。振り替えは同じエンジン・同じ
+    （JSON_CONTRACT_ROLES）だけ最後にそちらへ振り替える。配列契約の役割
+    （LIST_CONTRACT_ROLES）はさらに配列用の変種を優先する。振り替えは同じエンジン・同じ
     モデルの起動形の違いなので、どの層で CLI が決まっても同じ規則が効く。"""
     ov = _AGENT_OVERRIDES.get(purpose)
     if ov is None and purpose in VALID_KINDS:
@@ -196,6 +202,8 @@ def _agent_for(purpose: str) -> "tuple[str, str | None]":
     # Ollama 系だけ既存の読み取り専用定義を使い、末尾 JSON は下流の validator で担保する。
     if purpose == "retrieve" and cli in ("ollama", "ollama-json"):
         cli = "ollama-read"
+    elif purpose in LIST_CONTRACT_ROLES:
+        cli = _agentcli.list_variant(cli)
     elif purpose in JSON_CONTRACT_ROLES:
         cli = _agentcli.json_variant(cli)
     return cli, model
@@ -921,6 +929,8 @@ def _repair_json_output(prompt: str, bad_text: str, purpose: str, why,
         except Exception as e:  # noqa: BLE001 — 修復呼び出し自体の失敗も「まだ壊れている」扱い
             why = str(e)
             continue
+        if want_list:
+            data = unwrap_list(data)   # 配列 1 本を包んだオブジェクト（JSON モードの器）は剥がす
         if want_list and not isinstance(data, list):
             why = f"JSON としては解釈できたが配列でない（{type(data).__name__}）"
             continue
@@ -1150,6 +1160,8 @@ def execute_agent(kind: str, goal: str, dep_results: dict, model: str | None,
         # split は data が JSON 配列でないと fan-out（_expand_splits）が展開されず run が
         # 空振りする＝出力契約が固い。レイヤ2 の修復リトライで救う（verify/reduce は
         # _normalize_verify / _reconcile_count の寛容パーサがあるため修復不要）。
+        if kind == "split":
+            data = unwrap_list(data)   # `{"data":[...]}` 等の器を剥がしてから契約を見る
         if kind == "split" and not isinstance(data, list):
             repaired = _repair_json_output(prompt, text, kind, why, model, want_list=True, agent=agent)
             if isinstance(repaired, list):

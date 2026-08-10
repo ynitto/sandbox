@@ -156,7 +156,7 @@ _ARM_KEYS = {"model", "think", "format", "label", "repeat"}
 def parse_arm(spec: str) -> dict:
     """`model=qwen3,think=off,format=json,repeat=3` を腕へ。
 
-    `think` は on/off だけ（既定に任せたいなら書かない）。`format` は json/text。
+    `think` は on/off だけ（既定に任せたいなら書かない）。`format` は json/array/text。
     `repeat` は同じ設定を何回引くか（自己一貫性の測定に使う）。
     """
     arm: dict = {"model": "", "think": None, "format": None, "label": "", "repeat": 1}
@@ -176,10 +176,10 @@ def parse_arm(spec: str) -> dict:
             arm["think"] = lowered == "on"
         elif key == "format":
             lowered = value.lower()
-            if lowered not in ("json", "text"):
-                raise ArmError(f"format は json か text です: {value}")
+            if lowered not in ("json", "array", "text"):
+                raise ArmError(f"format は json か array か text です: {value}")
             # text は「強制しない」（API へフィールドを送らない）。アダプタ側と同じ意味。
-            arm["format"] = "json" if lowered == "json" else None
+            arm["format"] = lowered if lowered in ("json", "array") else None
         elif key == "repeat":
             try:
                 arm["repeat"] = max(1, int(value))

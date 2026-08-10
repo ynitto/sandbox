@@ -64,7 +64,10 @@ USAGE = """使い方: agent-ollama [オプション] <model>
 
   推論:
     --think on|off        思考モード（既定は AGENT_OLLAMA_THINK → モデル既定）
-    --format json|text    出力の文法を強制する（json = 妥当な JSON しか出せなくなる。
+    --format json|array|text
+                          出力の文法を強制する（json = 妥当な JSON しか出せなくなる。
+                          ただしトップレベルは必ずオブジェクトになる。array = 文字列の
+                          JSON 配列だけを出せるようにする（split のような配列契約用）。
                           プロンプトは 1 トークンも増えない。text = 強制しない）
     --skill NAME          スキルを明示指定（複数可）
     --no-skills           先頭スラッシュ行によるスキル展開をしない
@@ -251,10 +254,10 @@ def parse_args(tokens: "list[str]") -> dict:
                 opts["think"] = _as_bool(value, name)
             elif name == "--format":
                 fmt = str(value).strip().lower()
-                if fmt not in ("json", "text"):
-                    raise ArgError(f"--format は json か text です: {value}")
+                if fmt not in ("json", "array", "text"):
+                    raise ArgError(f"--format は json か array か text です: {value}")
                 # text は「強制しない」。API へフィールドを送らないことで表す。
-                opts["format"] = "json" if fmt == "json" else None
+                opts["format"] = fmt if fmt in ("json", "array") else None
             elif name == "--skill":
                 opts["skills"].append(value)
             elif name == "--stall-timeout":
