@@ -267,6 +267,46 @@ python3 tools/agent-tools/eval/judge_eval.py --repeat 3 --cases F1,F2,J1,J2,R1,R
 `methods` 列に入る——宣言した手法が `when` で落ちて 1 つも効いていない実行を、効いた前提で
 数えないため。同じ理由で、実行前のヘッダにも役割ごとの適用結果を出す。
 
+### 狙い撃ちの規律も効かない — filter / judge はプロンプトでは直らない
+
+基準の取り違え（訊かれていない基準を持ち込む）を名指しで潰す候補プリセットを作り、
+同じハーネスで測った。カタログには入れていない——`methods/` は golden で件数もハッシュも
+固定されているので、**採否を決める前の候補はカタログの外で測る**（`--methods` は
+`.json` のパスも受ける）。
+
+```bash
+python3 tools/agent-tools/eval/judge_eval.py --repeat 3 --cases F1,F2,J1,J2,R1,R2 \
+  --methods tools/agent-tools/eval/method-candidate-criteria-fidelity.json,output-contract-strict
+```
+
+`criteria-fidelity`（`when.purposes` を filter / judge / reduce / split / classify に限った）で
+filter 3/6・judge 3/6・reduce 6/6。**狙った 2 つが動かない。** F2（依存の有無だけを訊く）は
+3 本とも、J2（行数だけを訊く）は 2/3 で、いまだに前段の「テストが通る」を持ち込む。
+reduce だけ上がったが、上の注意書きどおり**この幅の差は読まない**。
+
+**多数決も効かない。** 台帳の 3 回分を突き合わせると、F2 は `[c1,c3]` `[c3,c6]` `[c3]` で
+多数決を取ると `c3`、J2 は `c3,c3,c4` で `c3`——どちらも不正解へ収束する。
+**割れ方が正解の周りに散っていない**ので、引き直しでは埋まらない。ここは合計点ではなく
+答えの中身を見ているので、上の再現幅とは別に読んでよい。
+
+独立なレバーを 4 本引いて（素・既存プリセット・狙い撃ちの候補・多数決）どれも
+filter / judge を動かさなかった。worker のときと同じ判断をする——**基準の取り違えは
+プロンプトでは直らない。** 打ち手は 2 つに絞られる。
+
+- 基準を機械が判定できる形に組み替える（決定的な前処理で候補を削り、モデルには残りだけを
+  訊く）。誤りが存在チェックで無害化される「候補生成 + 決定的検算」と同じ筋。
+- 判定そのものをクラウドへ戻す。
+
+evaluator（6/6）と reduce、および基準が 1 つで材料に明示されている filter（F1 は 3/3）は
+この結論の対象外——**そこは使える。**
+
+台帳は `ledger-2026-08-11-judge-methods-arms.jsonl`（`arm` 列で腕を分ける）。候補プリセットは
+`method-candidate-criteria-fidelity.json` に残してある（効かなかったのでカタログには入れない）。
+
+**測定の衛生を 1 つ。** この 2 本は別セッションのハーネスと ollama を共有した時間帯があり、
+壁時計は信用できない（正解率は run ごとに独立なので有効）。実行前のチェックの 2 番目は
+他プロセスだけでなく**他セッションのハーネス**にも当てはまる。
+
 ## 2026-08-11 の実測 — 埋め込みは現行の検索を上回るか（bge-m3）
 
 [品質再点検 §6 案 d](../../../docs/plans/2026-08-10-agent-ollama-quality-and-role-refit-proposals.md)

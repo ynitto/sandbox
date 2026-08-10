@@ -2548,6 +2548,7 @@ button.danger:hover { border-color: var(--red); background: rgba(248, 81, 73, 0.
   text-align: center;
   padding: 32px 0;
 }
+.empty[hidden] { display: none; }
 .empty strong { color: var(--fg); font-size: 15px; }
 .empty.compact { padding: 18px 10px; }
 

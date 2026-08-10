@@ -1,0 +1,1 @@
+{"id":"criteria-fidelity","description":"訊かれた基準だけで判定し、書かれていない基準を持ち込まない","enabled":false,"fragments":[{"role":"worker","text":"判定に使ってよい基準は、このタスクに書かれたものだけです。前段で使った基準・一般的な良し悪し・書かれていない前提を持ち込まないでください。基準が1つなら1つだけで判定します。"}],"when":{"purposes":["filter","judge","reduce","split","classify"]},"origin":"local:2026-08-11/judge-eval-criteria-drift"}
