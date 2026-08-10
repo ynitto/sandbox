@@ -304,6 +304,8 @@ assert.ok(!controlSettingsSource.includes('orchTiersPanelHtml(') && !controlSett
 for (const copy of ['手法を検索', 'カスタム手法を追加', 'AIで補完']) {
   assert.ok(renderer.includes(copy), `実行手法マーケットに「${copy}」が必要です`);
 }
+assert.match(css, /\.empty\[hidden\]\s*\{[^}]*display:\s*none/s,
+  '候補がある間は一致なしメッセージを非表示にします');
 assert.ok(renderer.includes('推定できない記録'), '推定不能を0トークンと区別します');
 assert.ok(renderer.includes('実測トークンが記録されず、推定レートもない実行'),
   '推定不可の理由を利用状況の近くで説明します');
