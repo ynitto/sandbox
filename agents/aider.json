@@ -10,7 +10,7 @@
   "prompt_flag": "--message",
   "file_flag": "--file",
   "read_flag": "--read",
-  "default_model": "qwen3.5:9b",
+  "default_model": "gemma4:e4b",
   "timeout": 600,
   "output": "stdout",
   "empty_output_is_error": true,
