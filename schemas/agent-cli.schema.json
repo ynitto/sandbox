@@ -43,6 +43,22 @@
       "default": null,
       "description": "prompt_via=argv のときのフラグ名（例 \"-p\"）。null なら素の末尾引数。"
     },
+    "file_flag": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null,
+      "description": "編集対象ファイルを argv で受け取る CLI のフラグ名（例 \"--file\"）。宣言した CLI にだけ、呼び出し側が渡したパスがフラグ + パスの繰り返しで載る。aider のように「チャットに入っているファイルしか編集しない」CLI 向け——宣言しない CLI では、パスはプロンプト本文だけで伝わる（従来どおり）。"
+    },
+    "read_flag": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null,
+      "description": "読み取り専用ファイルのフラグ名（例 \"--read\"）。file_flag と同じ扱いで、仕様の正など書き換えてほしくない材料を渡すのに使う。"
+    },
     "model_flag": {
       "type": [
         "string",

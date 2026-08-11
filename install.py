@@ -10,6 +10,7 @@ git clone 後に実行してコアスキルをユーザー領域にセットア�
     python agent-skills/install.py --agent codex               # Codex 用
     python agent-skills/install.py --agent kiro                # Kiro 用
     python agent-skills/install.py --agent opencode            # opencode 用
+    python agent-skills/install.py --agent aider               # aider 用（本体も導入）
     python agent-skills/install.py --all-skills                # 全スキルをインストール
     python agent-skills/install.py --agent claude --all-skills # Claude Code + 全スキル
 
@@ -23,7 +24,8 @@ git clone 後に実行してコアスキルをユーザー領域にセットア�
        - 可能なものは --agent で指定したエージェントのみに連携
        - 非対応の OS・エージェントはスキップ
        - --force-external でチェックを無視して再実行
-    6. セットアップ完了メッセージを表示
+    6. --agent aider のときは aider 本体を導入し、スキル索引を ~/.aider.conf.yml へ登録
+    7. セットアップ完了メッセージを表示
 
 冪等: 既にインストール済みの場合はスキルを上書き更新、レジストリは既存設定を保持する。
       外部ツールは導入済み・最新ならスキップする（--force-external で強制）。
@@ -50,6 +52,9 @@ AGENT_DIRS: dict[str, str] = {
     "claude": ".claude",
     "codex": ".codex",
     "kiro": ".kiro",
+    # aider はスキルの仕組みを持たない。~/.aider/ を置き場にして、索引と指示ファイルを
+    # ~/.aider.conf.yml の read: へ登録することで「常に読ませる材料」として届ける。
+    "aider": ".aider",
     # opencode だけホーム直下ではなく XDG 配下（~/.config/opencode）。opencode 自身が
     # そこを設定・スキルの置き場としており、~/.opencode/ は見ない。
     "opencode": os.path.join(".config", "opencode"),
@@ -499,6 +504,7 @@ def parse_args() -> argparse.Namespace:
   codex    Codex           → ~/.codex/
   kiro     Kiro            → ~/.kiro/
   opencode opencode        → ~/.config/opencode/
+  aider    aider            → ~/.aider/（本体も導入する）
 """,
     )
     parser.add_argument(
@@ -2411,6 +2417,172 @@ def setup_headroom(agent_type: str, force: bool = False) -> bool:
     return _wire_headroom_mcp(agent_type, paths, headroom_bin, force=force)
 
 
+# ---------------------------------------------------------------------------
+# aider
+#
+# aider はスキルの仕組みを持たず、常に読ませたい材料は「読み取り専用ファイル」
+# （`--read` / 設定の `read:`）で渡す。ここでは 2 つを届ける——スキルの**索引**
+# （1 スキル 1 行）と、共通の指示ファイル。全文を読ませないのは、実測で aider が
+# ollama を `CONTEXT 9640` で載せるため（材料を積むほど本題が入らない）。
+# ---------------------------------------------------------------------------
+
+
+def _aider_conf_path(paths: dict[str, str]) -> str:
+    """ユーザー全体の設定（aider は home / git ルート / cwd の順に読む）。"""
+    return os.path.join(paths["user_home"], ".aider.conf.yml")
+
+
+def _skill_description(skill_dir: str) -> str:
+    """SKILL.md の description（1 行に畳む）。無ければ空文字。"""
+    skill_md = os.path.join(skill_dir, "SKILL.md")
+    try:
+        with open(skill_md, encoding="utf-8") as f:
+            content = f.read(4000)
+    except OSError:
+        return ""
+    m = re.search(r"^description:\s*(.+)$", content, re.MULTILINE)
+    if not m:
+        return ""
+    text = " ".join(m.group(1).strip().strip("\"'").split())
+    return text[:120] + ("…" if len(text) > 120 else "")
+
+
+def write_aider_skill_index(paths: dict[str, str], installed: list[dict]) -> str:
+    """スキルの索引を書き、そのパスを返す。
+
+    **全文ではなく索引**を渡す。aider は渡した読み取り専用ファイルを毎回文脈へ載せるので、
+    スキル本体を積むと本題の材料が入らなくなる。索引から必要な 1 本を `/read` で足すのは
+    人（またはモデルの要求）が判断する。
+    """
+    index_path = os.path.join(paths["skill_home"], "INDEX.md")
+    lines = [
+        "# 利用できるスキルの索引",
+        "",
+        "各スキルの手順は下の `path` にある `SKILL.md` に書いてある。**必要になったものだけ**",
+        "`/read <path>/SKILL.md` でチャットへ足すこと（全部を読み込むと本題の材料が入らない）。",
+        "",
+    ]
+    for skill in installed:
+        path = os.path.join(paths["skill_home"], skill["name"])
+        desc = _skill_description(path)
+        lines.append(f"- `{skill['name']}` — {desc or '(説明なし)'}  \n  path: `{path}`")
+    lines.append("")
+    with open(index_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+    print(f"   {index_path} ({len(installed)} 件)")
+    return index_path
+
+
+def register_aider_reads(paths: dict[str, str], files: list[str]) -> bool:
+    """`~/.aider.conf.yml` の `read:` へ登録する（既存の設定は残す）。
+
+    既存ファイルにコメントがある場合は**書き換えない**——安全に往復できないので、
+    追記すべき行を表示して人へ渡す。本体設定を潰す方が害が大きい（opencode と同じ判断）。
+    """
+    files = [f for f in files if f]
+    if not files:
+        return False
+    # 常時読ませる材料の大きさを必ず見せる。ローカルモデルは文脈が狭く（実測: aider 既定で
+    # ollama は CONTEXT 9640 で載る）、ここが太ると本題の材料が入らない——黙って劣化させない。
+    total = sum(os.path.getsize(f) for f in files if os.path.isfile(f))
+    print(f"   常時読ませる材料: {len(files)} 件 / {total / 1024:.1f} KB")
+    if total > 8 * 1024:
+        print("   ⚠ 大きめです。狭い文脈のモデルでは本題が入りきりません")
+        print("     減らすなら ~/.aider.conf.yml の read: から外してください")
+    conf_path = _aider_conf_path(paths)
+    existing_text = ""
+    if os.path.isfile(conf_path):
+        try:
+            with open(conf_path, encoding="utf-8") as f:
+                existing_text = f.read()
+        except OSError as e:
+            print(f"   ⚠ {conf_path} を読めません: {e}")
+            return False
+
+    def _manual() -> bool:
+        missing = [path for path in files if path not in existing_text]
+        if not missing:
+            # 既に全部載っている。安全に往復できないから書き換えないだけで、
+            # 足りているのに毎回催促すると、本当に足りない回を読み飛ばされる。
+            print(f"   ✓ 登録済みです → スキップ ({conf_path})")
+            return True
+        print(f"   ⚠ {conf_path} は自動更新しません。次を read: へ足してください:")
+        for path in missing:
+            print(f"     - {path}")
+        return False
+
+    try:
+        import yaml  # noqa: PLC0415 — 無い環境では手動案内へ落とす
+    except ImportError:
+        if existing_text:
+            return _manual()
+        with open(conf_path, "w", encoding="utf-8") as f:
+            f.write("read:\n" + "".join(f"  - {path}\n" for path in files))
+        print(f"   {conf_path} を作成しました")
+        return True
+
+    if "#" in existing_text:
+        return _manual()
+    try:
+        data = yaml.safe_load(existing_text) if existing_text.strip() else {}
+    except yaml.YAMLError as e:
+        print(f"   ⚠ {conf_path} を解釈できません（{e}）")
+        return _manual()
+    if data is None:
+        data = {}
+    if not isinstance(data, dict):
+        return _manual()
+
+    current = data.get("read")
+    if isinstance(current, str):
+        current = [current]
+    elif not isinstance(current, list):
+        current = []
+    merged = list(current) + [path for path in files if path not in current]
+    if merged == current:
+        print(f"   ✓ 登録済みです → スキップ ({conf_path})")
+        return True
+    data["read"] = merged
+    with open(conf_path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
+    print(f"   {conf_path} の read: に {len(merged) - len(current)} 件を登録しました")
+    return True
+
+
+def setup_aider(force: bool = False) -> bool:
+    """aider 本体を導入・更新する（uv があれば uv tool、無ければ pip --user）。
+
+    導入済みなら既定でスキップする——他の外部ツールと同じで、更新は `--force-external`
+    で明示的に頼まれたときだけ行う（勝手に上げると測定条件が変わる）。
+    """
+    current = shutil.which("aider")
+    if current and not force:
+        rc, out, _ = _run_text([current, "--version"], timeout=60)
+        print(f"   ✓ 導入済みです → スキップ ({out.strip() or current})")
+        return True
+
+    if shutil.which("uv"):
+        cmd = ["uv", "tool", "install", "--force", "aider-chat@latest"]
+    else:
+        cmd = [sys.executable, "-m", "pip", "install", "--user", "-U", "aider-chat"]
+    action = "更新" if current else "インストール"
+    print(f"   aider を{action}します（{' '.join(cmd[:3])} …）...")
+    rc, _, err = _run_text(cmd, timeout=900)
+    if rc != 0:
+        print(f"   ✗ aider の{action}に失敗しました (code {rc})")
+        if err:
+            print(f"     {err.strip()[-300:]}")
+        return False
+    path = shutil.which("aider")
+    if not path:
+        print("   ⚠ インストールは成功しましたが PATH に aider がありません")
+        print("     uv なら ~/.local/bin、pip --user なら user base の bin を PATH へ追加してください")
+        return False
+    rc, out, _ = _run_text([path, "--version"], timeout=60)
+    print(f"   ✓ aider を{action}しました ({out.strip() or path})")
+    return True
+
+
 def main() -> None:
     args = parse_args()
     agent_type = args.agent
@@ -2483,6 +2655,17 @@ def main() -> None:
         print("\n6. Claude Code hooks を設定...")
         if setup_claude_hooks(paths):
             print("   Stop hook (ltm-use build_index) を登録しました")
+    elif agent_type == "aider":
+        print("\n6. aider をセットアップ...")
+        setup_aider(force=args.force_external)
+        # 常時読ませるのは**索引だけ**。指示ファイル（common.instructions.md だけで
+        # 14.9 KB）まで載せると実測で 6.0k トークンになり、aider が ollama を載せる
+        # CONTEXT 9640 の 6 割を本題より先に使う。狭いほうを既定にして、要る人が足す。
+        register_aider_reads(paths, [write_aider_skill_index(paths, installed)])
+        instructions_dir = os.path.join(paths["agent_home"], "instructions")
+        if os.path.isdir(instructions_dir):
+            print(f"   指示ファイルは {instructions_dir} に置きました（read: には載せません）")
+            print("     常時読ませたいときは ~/.aider.conf.yml の read: へ足してください")
         # Kiro と GitHub Copilot はセッション停止フックの仕組みを持たないため
         # common.instructions.md の指示でセッション終了時の記憶保存を行う
 

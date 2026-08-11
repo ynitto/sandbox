@@ -27,6 +27,8 @@ import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import engine  # noqa: E402
 VENV_PY = REPO / ".venv/bin/python"
 PROMPT_BUILDER = Path(os.environ.get(
     "FLOW_WORKER_PROMPT",
@@ -35,6 +37,9 @@ PROMPT_BUILDER = Path(os.environ.get(
 WORK = Path(os.environ.get("WORKER_EVAL_DIR",
                            str(Path(tempfile.gettempdir()) / "agent-worker-eval")))
 MODEL = "qwen3.5:9b"        # --model で上書き
+CLI = "agent-ollama"        # --cli で上書き（agent-ollama | aider）
+NUM_PREDICT = 0             # --num-predict で上書き（0 = 上限なし。aider 経路のみ）
+OLLAMA_API_BASE = os.environ.get("OLLAMA_API_BASE", "http://127.0.0.1:11434")
 WALL_LIMIT = 600.0          # agent-flow の agent_timeout 既定
 # 本番の argv は agents/ollama.json の write_args。**書き写さずに読む**——初版は
 # ここへ literal を写していたが、定義側が予算を 30 → 12 へ絞った当日にずれた。
@@ -215,6 +220,8 @@ def _is_new(wt: Path, p: Path) -> bool:
 TASKS = {
     "T1": dict(
         seed=seed_t1, check=check_t1,
+        files=("eval/humansize.py", "eval/test_humansize.py"),
+        test_cmd=f"{VENV_PY} -m pytest -q eval",
         request="agentcore の周辺ユーティリティを整える",
         goal=("eval/humansize.py に関数 human_bytes(n: int) -> str を実装する。"
               "1024 未満は '512 B' のようにバイト表記、以降は KiB / MiB / GiB へ丸め、"
@@ -224,6 +231,7 @@ TASKS = {
     ),
     "T1min": dict(
         seed=seed_t1, check=check_t1min,
+        files=("eval/humansize.py",),
         request="agentcore の周辺ユーティリティを整える",
         goal=("eval/humansize.py というファイルを 1 つだけ作り、その中に関数 "
               "human_bytes(n: int) -> str を実装する。仕様は次のとおり: "
@@ -236,6 +244,11 @@ TASKS = {
     ),
     "T2": dict(
         seed=seed_t2, check=check_t2,
+        # テストは仕様の正なので読み取り専用で渡す（書き換えはチェッカーがズルとして落とす）。
+        files=("eval/billing.py",), read=("eval/test_billing.py",),
+        # aider 経路でだけ使う（--test-cmd + --auto-test）。agent-ollama 経路は
+        # プロンプトでテスト実行を指示しており、道具の作法がそれぞれ違う。
+        test_cmd=f"{VENV_PY} -m pytest -q eval/test_billing.py",
         request="課金計算の不具合を直す",
         goal=("eval/test_billing.py が失敗している。eval/billing.py の実装を直して "
               "3 件すべて通るようにする。**テストファイルは変更しないこと**"
@@ -243,6 +256,9 @@ TASKS = {
     ),
     "T3": dict(
         seed=seed_t3, check=check_t3,
+        # 実タスクなので置き場所の探索が要る。ここだけリポジトリマップに予算を与える。
+        files=("schemas/node-budget-summary.schema.json",), map_tokens=1024,
+        test_cmd=f"{VENV_PY} -m pytest -q tools/agent-project",
         request=("node-budget-summary スキーマを追加し status/<node>.json へ埋め込む。"
                  "Phase1 の前提である射影 schema を先に固定し、互換性テストで安全に出すため。"),
         goal=("schemas/node-budget-summary.schema.json を追加し、status/<node>.json の "
@@ -271,6 +287,72 @@ def build_prompt(task: dict) -> str:
     return r.stdout.strip()
 
 
+def aider_settings(model: str, num_ctx: int = 32768, num_predict: int = 0) -> Path:
+    """aider へ渡すモデル設定（文脈と 1 ターンの生成上限）。
+
+    aider の直し直しは 3 回で止まる（`max_reflections`・CLI フラグは無い）ので、壁時計を
+    焼くのは回数ではなく **1 ターンの生成の長さ**である——実測で最後のターンが受信 3.7k
+    トークン、26.5 tok/s で約 140 秒。`num_predict` はそこへ効く上限で、**失敗を安く切る**
+    ためのレバー。合否そのものは変わらない（途中で切られた編集は適用されず fail になる）。
+    """
+    path = WORK / "aider.model.settings.yml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [f"- name: ollama_chat/{model}", "  edit_format: diff",
+             "  use_repo_map: false", "  extra_params:", f"    num_ctx: {num_ctx}"]
+    if num_predict > 0:
+        lines.append(f"    num_predict: {num_predict}")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def aider_argv(task: dict) -> "list[str]":
+    """aider を worker として 1 回だけ回す argv（`agents/aider.json` を読んで組む）。
+
+    定義に無いのは 2 つだけ——テストのある課題の `--test-cmd` + `--auto-test`（課題ごとに
+    違う）と、探索が要る課題の `--map-tokens`（定義は 0 で固定し、必要な課題だけ上書く）。
+    ここを外すと aider を編集器としてしか測らないことになる。
+    """
+    # 起動形は `agents/aider.json` を**読む**（写さない）。ファイルの受け渡しも定義の
+    # `file_flag` / `read_flag` に従う。エンジンへの参照は engine.py に閉じてある。
+    built = engine.headless_cmd("aider", MODEL, task["goal"],
+                                files=task.get("files") or (),
+                                read_files=task.get("read") or ())
+    argv = built["argv"]
+    extra = []
+    if NUM_PREDICT > 0:
+        extra += ["--model-settings-file", str(aider_settings(MODEL, num_predict=NUM_PREDICT))]
+    if task.get("map_tokens"):
+        # 定義の `--map-tokens 0` を**消してから**置き換える。同じフラグを 2 回並べて
+        # 後勝ちに賭けると、定義側が並び順を変えた日に静かに 0 へ戻る。
+        drop = argv.index("--map-tokens")
+        argv = argv[:drop] + argv[drop + 2:]
+        extra += ["--map-tokens", str(task["map_tokens"])]
+    if task.get("test_cmd"):
+        extra += ["--test-cmd", task["test_cmd"], "--auto-test"]
+    # 追補は --message より前に置く（プロンプトは argv の末尾で受ける契約）。
+    return argv[:-2] + extra + argv[-2:]
+
+
+def _aider_argv_legacy(task: dict) -> "list[str]":
+    """写しで組んでいた版（定義ファイル導入前）。比較用に残す。"""
+    argv = ["aider", "--model", f"ollama_chat/{MODEL}",
+            "--model-settings-file", str(aider_settings(MODEL)),
+            # リポジトリマップは既定で切る（1,777 ファイルのマップだけで文脈が尽きる）。
+            # 探索が要る課題だけ課題側で予算を与える。
+            "--map-tokens", str(task.get("map_tokens", 0)),
+            "--no-auto-commits", "--yes-always",
+            "--no-check-update", "--analytics-disable", "--no-stream", "--no-pretty",
+            "--no-gitignore"]
+    # aider は「チャットに入っているファイル」しか編集しない。渡さないと本文で
+    # 「ファイルを追加してくれ」と要求して終わる——`--message` は一発なので、
+    # 答える人がいない＝課題に着手すらしない（実測で T2 が 3/3 これだった）。
+    for path in task.get("read") or ():
+        argv += ["--read", path]
+    if task.get("test_cmd"):
+        argv += ["--test-cmd", task["test_cmd"], "--auto-test"]
+    return argv + list(task.get("files") or ()) + ["--message", task["goal"]]
+
+
 def classify(rc: int, wall: float, out: str, err: str) -> str:
     """失敗様式のラベル。台帳を後から数えられるようにする。"""
     if wall >= WALL_LIMIT:
@@ -293,14 +375,22 @@ def run_one(tid: str, i: int) -> dict:
         subprocess.run(["git", "worktree", "remove", "--force", str(wt)],
                        cwd=REPO, capture_output=True)
         shutil.rmtree(wt, ignore_errors=True)
+    # 登録だけ残った worktree を掃除してから足す。WORK ごと消して測り直すのは普通の
+    # 手順なので、その次の run が「already registered」で死ぬのを毎回踏む。
+    subprocess.run(["git", "worktree", "prune"], cwd=REPO, capture_output=True)
     subprocess.run(["git", "worktree", "add", "--detach", str(wt), "HEAD"],
                    cwd=REPO, capture_output=True, text=True, check=True)
     task["seed"](wt)
-    prompt = build_prompt(task)
+    # aider は自前のシステムプロンプトと編集ループを持つので、flow-worker の
+    # プロンプト（報告契約・worktree 規約）は渡さない——渡すと道具の作法と二重になる。
+    # 課題文（goal）とチェッカーは両経路で同一なので、比較は成立する。
+    prompt = "" if CLI == "aider" else build_prompt(task)
 
     started = time.time()
     try:
-        p = subprocess.run(["agent-ollama", MODEL, *WRITE_ARGS], input=prompt, cwd=wt,
+        argv = aider_argv(task) if CLI == "aider" else ["agent-ollama", MODEL, *WRITE_ARGS]
+        p = subprocess.run(argv, input=prompt, cwd=wt,
+                           env={**os.environ, "OLLAMA_API_BASE": OLLAMA_API_BASE},
                            capture_output=True, text=True, timeout=WALL_LIMIT)
         rc, out, err = p.returncode, p.stdout, p.stderr
     except subprocess.TimeoutExpired:
@@ -316,15 +406,15 @@ def run_one(tid: str, i: int) -> dict:
     for line in err.splitlines():
         if line.startswith("@agent-log"):
             log = line.split(None, 1)[-1]
-    rec = dict(task=tid, iter=i, ok=ok, mode=mode, wall=round(wall, 1),
-               note=note, log=log, out_chars=len(out))
+    rec = dict(task=tid, iter=i, cli=CLI, model=MODEL, num_predict=NUM_PREDICT, ok=ok, mode=mode,
+               wall=round(wall, 1), note=note, log=log, out_chars=len(out))
     print(f"  {tid}#{i}: {'PASS' if ok else 'FAIL':4s} {mode:24s} "
           f"{wall:6.1f}s  {note[:70]}", flush=True)
     return rec
 
 
 def main() -> None:
-    global WALL_LIMIT, MODEL
+    global WALL_LIMIT, MODEL, CLI, NUM_PREDICT
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default=MODEL,
                     help="測るモデル。別モデルの判定はここだけ変えればよい")
@@ -332,15 +422,29 @@ def main() -> None:
     ap.add_argument("--tasks", default="T1,T2,T3")
     ap.add_argument("--wall", type=float, default=WALL_LIMIT,
                     help="1 run の壁時計上限（既定は agent_timeout の 600 秒）")
+    ap.add_argument("--cli", default=CLI, choices=("agent-ollama", "aider"),
+                    help="worker として回すエージェント層。道具の作法はそれぞれのものを使う")
+    ap.add_argument("--num-predict", type=int, default=NUM_PREDICT,
+                    help="1 ターンの生成上限（aider 経路のみ・0 で無効）。"
+                         "収束しない課題の壁時計を切るレバー")
     args = ap.parse_args()
     WALL_LIMIT = args.wall
     MODEL = args.model
+    CLI = args.cli
+    NUM_PREDICT = args.num_predict
 
     WORK.mkdir(parents=True, exist_ok=True)
     ledger = WORK / "ledger.jsonl"
     tids = [t.strip() for t in args.tasks.split(",") if t.strip()]
-    print(f"model={MODEL} argv={' '.join(WRITE_ARGS)} （出所: {WRITE_ARGS_SOURCE}）\n"
-          f"wall_limit={WALL_LIMIT:.0f}s tasks={tids} repeat={args.repeat}\n")
+    if CLI == "aider":
+        # aider には本番の定義が無い（agents/aider.json は未作成）。写しではなく
+        # 「まだ正典が無い」ので、起動行に組み立てた argv をそのまま出して測定条件を残す。
+        sample = " ".join(aider_argv(TASKS[tids[0]])[:-2])
+        print(f"model={MODEL} cli=aider argv={sample} …（出所: 定義ファイル未作成）")
+    else:
+        print(f"model={MODEL} cli={CLI} argv={' '.join(WRITE_ARGS)} "
+              f"（出所: {WRITE_ARGS_SOURCE}）")
+    print(f"wall_limit={WALL_LIMIT:.0f}s tasks={tids} repeat={args.repeat}\n")
 
     rows = []
     for tid in tids:

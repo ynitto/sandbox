@@ -356,11 +356,18 @@ verdict の種類:
 | Kiro | `~/.kiro` | `$env:USERPROFILE\.kiro` |
 | OpenAI Codex | `~/.codex` | `$env:USERPROFILE\.codex` |
 | opencode | `~/.config/opencode` | `$env:USERPROFILE\.config\opencode` |
+| aider | `~/.aider` | `$env:USERPROFILE\.aider` |
 
 opencode だけホーム直下ではなく `~/.config/opencode`（opencode 自身の設定・スキルの置き場）。
 MCP と指示ファイルは独立した設定ファイルではなく `opencode.json` の中（`mcp` / `instructions`）へ
 マージされる。導入と推論エンジン（別 PC の ollama）の設定は
 [`tools/opencode/README.md`](tools/opencode/README.md) を参照。
+
+aider はスキルの仕組みを持たない。`install.py --agent aider` は本体を導入したうえで、
+スキルを `~/.aider/skills/` へ置き、**索引（1 スキル 1 行）と指示ファイルだけ**を
+`~/.aider.conf.yml` の `read:` へ登録する。スキル本体を常時読ませないのは、ローカルモデルの
+文脈が狭いため——実測で aider は ollama を `CONTEXT 9640` で載せ、常設材料だけで 6.0k
+トークンを使う。必要な 1 本は会話中に `/read <path>/SKILL.md` で足す。
 
 ### ディレクトリ構成
 
