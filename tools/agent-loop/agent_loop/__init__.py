@@ -38,6 +38,7 @@ _FRAGMENTS = (
     "doctor",
     "interactive",
     "sendcmd",
+    "statemachine",
     "update",
     "cli",
 )

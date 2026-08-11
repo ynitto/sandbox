@@ -7,6 +7,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### 定型業務の Aider 実行を tmux で見える agent-loop ハーネスへ移した
+
+Aider（ollama バックエンド）でのステートマシン実行は dashboard の main プロセス内で
+非表示に走っていて、実行の様子を人が見られず、他の CLI の定常業務（tmux ウィンドウで
+CLI が動く様子ごと見せる）と体験が割れていた。実行器そのものを agent-loop 側へ移した。
+
+- **agent-loop に `statemachine` サブコマンドを追加**。statemachine-use のワークフローを
+  aider 等の headless CLI で完走させるハーネス（限定ツールループ: `read_files` /
+  `write_files` / `run` / `final`、パス・実行ファイル検証、argv 実行、JSONL ログ）を
+  dashboard の in-process 実行器から移植した。CLI とモデルは `--agent-cli` / `--model`
+  で実行ごとに指定でき（`agents/<name>.json` 契約で解決）、`--param KEY=VALUE` /
+  `--input` でワークフローの実行パラメータを渡す。状態遷移は従来どおり
+  statemachine-use の `next_state.py` が正典
+- **dashboard の定型業務（Aider）は tmux ウィンドウでこのハーネスを起動**する。
+  実行ごとに一意な tmux セッション（`agent-sm-…`）を作ってアタッチし、状態遷移と
+  aider の呼び出しが画面に流れる。ウィンドウを閉じても実行は tmux 側で続く。
+  ウィンドウを開けない環境では非同期実行へ落ち、ハーネスの `RESULT` 行を従来の
+  実行履歴契約として記録する
+- dashboard の in-process 実行器（`stateMachineRunner.js`）は削除した。実行境界が
+  agent-loop（WSL 側）になったことで、win32 でも aider / ollama が実際に居る側で
+  ステートマシンが走る
+
 ### 手法パックの「段」と dashboard の「段」を 1 つに揃えた
 
 同じ段を指しているつもりの語彙が 2 系統に割れていて、**段を宣言しても手法が一度も効かない**

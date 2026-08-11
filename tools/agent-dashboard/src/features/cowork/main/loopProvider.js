@@ -581,6 +581,104 @@ function runChatWindow({ chatCommand, prompt, cwd, sessionCommands, sessionKey, 
   return res.ok ? { ...res, session } : res;
 }
 
+// 一回限りのコマンド（agent-loop statemachine 等）を tmux セッションの中で実行して見せる
+// スクリプト。チャット経路（chatWindowScript）と違い ready 判定や send-keys は無く、
+// コマンド自身が完走して終わる。ウィンドウを閉じても tmux セッション側の実行は続く。
+function commandWindowScript({ command, args, cwd, session }) {
+  const run = [...splitCommand(command).map(quoteToken), ...(args || []).map(shellQuote)].join(' ');
+  const shown = shellQuote([...splitCommand(command), ...(args || [])].join(' '));
+  const cd = cwd ? `cd ${shellQuote(cwd)} || { __t "cd 失敗: ${cwd}"; echo "[agent-dashboard] cd 失敗: ${cwd}"; read _; exit 1; }; __t "cd ok: ${cwd}"; ` : '';
+  const cwdArg = cwd ? `-c ${shellQuote(cwd)} ` : '';
+  return (
+    `export LANG=C.UTF-8 LC_ALL=C.UTF-8; ${cd}` +
+    `__ses=${shellQuote(session)}; ` +
+    `echo "[agent-dashboard] tmux セッション $__ses で実行を開始します（Ctrl+b d で離脱）"; ` +
+    `tmux new-session -d -s "$__ses" ${cwdArg}${run} || { __t "tmux セッション作成に失敗"; echo "[agent-dashboard] tmux セッション作成に失敗しました"; read _; exit 1; }; ` +
+    `__t "tmux セッション作成 ok"; ` +
+    // 生存チェック（chatWindowScript と同じ理由）: `tmux new-session -d` はコマンドが
+    // 存在しなくても exit 0 を返す。消えていたら同じコマンドを窓の中で直接実行して
+    // 原因を人に見せる。
+    `sleep 1; ` +
+    `if ! tmux has-session -t "$__ses" 2>/dev/null; then ` +
+    `__t "セッションが起動直後に消えた"; ` +
+    `echo; echo "[agent-dashboard] tmux セッションが起動直後に終了しました（コマンドを起動できていません）"; ` +
+    `echo "[agent-dashboard] 同じコマンドをこの窓で直接実行して原因を表示します:"; ` +
+    `echo "  $(printf %s ${shown})"; echo; ` +
+    `${run}; __rc=$?; __t "コマンド直接実行 exit=$__rc"; ` +
+    `echo; echo "[agent-dashboard] コマンドが exit $__rc で終了しました"; ` +
+    `echo "[agent-dashboard] Enter でこのウィンドウを閉じます"; read _; __t "=== 終了(起動失敗) ==="; exit 1; ` +
+    `fi; __t "セッション生存 ok"; ` +
+    `__t "attach 開始"; tmux attach -t "$__ses"; __t "attach 終了 status=$?"; ` +
+    `echo; echo "[agent-dashboard] Enter でこのウィンドウを閉じます"; __t "Enter 待ち"; read _; __t "=== 終了 ==="`
+  );
+}
+
+// 一回限りのコマンドを新しいウィンドウの tmux セッションで実行する。セッション名は
+// 実行ごとに一意（前回の実行ウィンドウが残っていても合流・誤送信しない）。
+function runCommandWindow({ command, args, cwd, sessionKey, title, message }) {
+  const linuxCwd = toWslCwd(cwd);
+  const base = chatSessionName(linuxCwd || cwd, sessionKey, 'agent-sm');
+  const session = `${base}-${Date.now().toString(36)}`;
+  const script = commandWindowScript({ command, args, cwd: linuxCwd, session });
+  const res = launchWindowScript(script, {
+    cwd,
+    title,
+    message: message || '別ウィンドウ（ターミナル / tmux）で実行を開始しました',
+  });
+  return res.ok ? { ...res, session } : res;
+}
+
+// 一回限りのコマンドを非表示・非同期で実行し、結果を Promise で返す（ウィンドウ非対応
+// 環境用のフォールバック。同期 spawnSync は main プロセスを実行時間ぶん止めるので使わない）。
+// 出力末尾の `RESULT {json}` 行（agent-loop statemachine の結果契約）があれば解析して返す。
+function runCommandCapture(command, args, options = {}) {
+  const tokens = splitCommand(command);
+  return new Promise((resolve) => {
+    const out = [];
+    const err = [];
+    let timedOut = false;
+    let child;
+    try {
+      child = spawn(expandHome(tokens[0] || command), [...tokens.slice(1), ...(args || []).map(String)], {
+        cwd: options.cwd || process.cwd(),
+        shell: false,
+        windowsHide: true,
+      });
+    } catch (e) {
+      resolve({ ok: false, status: -1, stdout: '', stderr: '', error: e.message });
+      return;
+    }
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try { child.kill(); } catch { /* 終了済みなら無視 */ }
+    }, Math.max(1000, options.timeoutMs || 1800000));
+    child.stdout.on('data', (chunk) => { out.push(chunk); });
+    child.stderr.on('data', (chunk) => { err.push(chunk); });
+    child.on('error', (e) => {
+      clearTimeout(timer);
+      resolve({ ok: false, status: -1, stdout: '', stderr: '', error: e.message });
+    });
+    child.on('close', (status) => {
+      clearTimeout(timer);
+      const stdout = decodeCliOutput(Buffer.concat(out));
+      const stderr = decodeCliOutput(Buffer.concat(err));
+      if (timedOut) {
+        resolve({ ok: false, status, stdout: stdout.trim(), stderr: stderr.trim(), error: '実行がタイムアウトしました' });
+        return;
+      }
+      const line = stdout.split(/\r?\n/).reverse().find((l) => l.startsWith('RESULT '));
+      if (line) {
+        try {
+          const parsed = JSON.parse(line.slice('RESULT '.length));
+          resolve({ status, stderr: stderr.trim(), ...parsed, ok: parsed.ok === true });
+          return;
+        } catch { /* RESULT 行が壊れていれば exit code で判定へ */ }
+      }
+      resolve({ ok: status === 0, status, stdout: stdout.trim(), stderr: stderr.trim(), error: '' });
+    });
+  });
+}
+
 // `send <プロンプト名>` の引数を組む。ペインが複数動いていると送信先を省略した send は
 // 「複数のペインが動作中です」で失敗するため、名前からペインを引けたら -s で明示する。
 function sendArgsFor(job) {
@@ -648,6 +746,7 @@ module.exports = {
   writeWindowScript,
   runInWindow,
   chatWindowScript, chatSessionName, runChatWindow, launchWindowScript,
+  commandWindowScript, runCommandWindow, runCommandCapture,
   sessionProcessLines, sessionChatLines,
   splitCommand, quoteToken, expandHome, findExecutable, terminalLaunchSpec, supportsRunWindow,
 };
