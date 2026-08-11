@@ -2,7 +2,7 @@
   "name": "aider",
   "headless_autonomy": "single-shot",
   "relative_cost": 0,
-  "command": ["aider", "--model", "ollama_chat/{model}",
+  "command": ["agent-aider", "--model", "ollama_chat/{model}",
               "--no-git", "--no-auto-commits", "--yes-always", "--no-check-update",
               "--no-show-model-warnings",
               "--analytics-disable", "--no-stream", "--no-pretty", "--no-gitignore",

@@ -267,6 +267,11 @@ chmod +x "${INSTALL_PREFIX}/agent-ollama"
 rm -rf "${OLLAMA_BUILD}"
 ok "インストールしました: ${INSTALL_PREFIX}/agent-ollama（Ollama usage 対応${RICH_NOTE}）"
 
+# Aider がローカル analytics JSONL へ出す実測値を、同じ usage 契約へ変換する。
+cp "${AGENTCORE_PKG}/aider_adapter.py" "${INSTALL_PREFIX}/agent-aider"
+chmod +x "${INSTALL_PREFIX}/agent-aider"
+ok "インストールしました: ${INSTALL_PREFIX}/agent-aider（Aider usage 対応）"
+
 # ---------------------------------------------------------------------------
 # 3. エンジン固有の付帯物
 # ---------------------------------------------------------------------------
