@@ -52,9 +52,12 @@ AGENT_DIRS: dict[str, str] = {
     "claude": ".claude",
     "codex": ".codex",
     "kiro": ".kiro",
-    # aider はスキルの仕組みを持たない。~/.aider/ を置き場にして、索引と指示ファイルを
-    # ~/.aider.conf.yml の read: へ登録することで「常に読ませる材料」として届ける。
-    "aider": ".aider",
+    # aider はスキルの仕組みを持たない。置き場は ~/.agents/——agent-project / agent-flow /
+    # agent-audit がレジストリとスキルを探すときの第一候補（各ツールの AGENT_HOME）であり、
+    # 自前のスキルホームを持たないエージェントの共用ホームとして既に想定されている。
+    # aider 自身の ~/.aider/（analytics.json・caches/）とは分ける——衝突させない。
+    # 索引と指示ファイルを ~/.aider.conf.yml の read: へ登録して「常に読ませる材料」にする。
+    "aider": ".agents",
     # opencode だけホーム直下ではなく XDG 配下（~/.config/opencode）。opencode 自身が
     # そこを設定・スキルの置き場としており、~/.opencode/ は見ない。
     "opencode": os.path.join(".config", "opencode"),
@@ -504,7 +507,7 @@ def parse_args() -> argparse.Namespace:
   codex    Codex           → ~/.codex/
   kiro     Kiro            → ~/.kiro/
   opencode opencode        → ~/.config/opencode/
-  aider    aider            → ~/.aider/（本体も導入する）
+  aider    aider           → ~/.agents/（本体も導入する）
 """,
     )
     parser.add_argument(
@@ -2427,49 +2430,99 @@ def setup_headroom(agent_type: str, force: bool = False) -> bool:
 # ---------------------------------------------------------------------------
 
 
+# 常時読ませる索引の上限。read: のファイルは毎回文脈へ載るので、ここが本題を圧迫する。
+# 8 KB は register_aider_reads が警告を出す閾値と同じ（2 実装にしない）。
+AIDER_INDEX_BUDGET = 8 * 1024
+# 索引 1 行あたりの要約の長さ（文字）。先頭 1 文の 90%tile が 81 文字なので、60 でほぼ収まる。
+AIDER_SUMMARY_CHARS = 60
+# 要約を付ける tier。それ以外（experimental・未設定など）は名前だけ並べる——名前さえ分かれば
+# `/read` で本体を足せるし、名前 1 件は約 17 バイトで済む（要約付きは約 130 バイト）。
+AIDER_DETAILED_TIERS = ("core", "stable")
+
+
 def _aider_conf_path(paths: dict[str, str]) -> str:
     """ユーザー全体の設定（aider は home / git ルート / cwd の順に読む）。"""
     return os.path.join(paths["user_home"], ".aider.conf.yml")
 
 
-def _skill_description(skill_dir: str) -> str:
-    """SKILL.md の description（1 行に畳む）。無ければ空文字。"""
+def _skill_meta(skill_dir: str) -> tuple[str, str]:
+    """インストール済みの SKILL.md から (tier, 要約) を読む。読めなければ ("", "")。
+
+    要約は description の**先頭 1 文**まで。description は「要約。『トリガー1』『トリガー2』…」
+    の形で書かれていて、後半のトリガー列は索引には要らない（実測: 全文は中央 178 文字、
+    先頭 1 文なら 43 文字）。
+    """
     skill_md = os.path.join(skill_dir, "SKILL.md")
     try:
         with open(skill_md, encoding="utf-8") as f:
             content = f.read(4000)
     except OSError:
-        return ""
+        return ("", "")
+    tier = ""
+    fm = re.match(r"^---\s*\n(.*?)\n---", content, re.DOTALL)
+    if fm:
+        m = re.search(r"^\s+tier:\s*(\S+)\s*$", fm.group(1), re.MULTILINE)
+        if m:
+            tier = m.group(1)
     m = re.search(r"^description:\s*(.+)$", content, re.MULTILINE)
     if not m:
-        return ""
+        return (tier, "")
     text = " ".join(m.group(1).strip().strip("\"'").split())
-    return text[:120] + ("…" if len(text) > 120 else "")
+    summary = text.split("。")[0]
+    return (tier, summary[:AIDER_SUMMARY_CHARS] + ("…" if len(summary) > AIDER_SUMMARY_CHARS else ""))
+
+
+def render_aider_skill_index(base: str, entries: list[tuple[str, str, str]]) -> str:
+    """索引の本文を組み立てる（`entries` は (名前, tier, 要約) の並び）。
+
+    **全文ではなく索引**を渡す。aider は渡した読み取り専用ファイルを毎回文脈へ載せるので、
+    スキル本体を積むと本題の材料が入らなくなる。さらに索引そのものも件数に比例して太る——
+    88 スキルを 1 件 1 要約（120 文字）＋パス行で並べたら 34 KB あった。そこで 3 段構え:
+
+    1. パス行を書かない。全て `<skill_home>/<名前>` で導出できる冗長な情報だった（5.2 KB）。
+    2. `AIDER_DETAILED_TIERS` だけ要約付き。残りは名前だけ（1 件 130 バイト → 17 バイト）。
+    3. それでも `AIDER_INDEX_BUDGET` を超えるなら、要約付きの末尾から名前だけへ落とす。
+
+    件数が増えても上限で頭打ちになる。名前が載っている限り `/read` で本体を足せる。
+    """
+    detailed = [(n, s) for n, t, s in entries if t in AIDER_DETAILED_TIERS and s]
+    names = [n for n, t, s in entries if not (t in AIDER_DETAILED_TIERS and s)]
+
+    def _render() -> str:
+        lines = [
+            "# 利用できるスキルの索引",
+            "",
+            f"スキル本体は `{base}/<名前>/SKILL.md`。**必要になったものだけ** `/read` でチャットへ",
+            "足すこと（全部を読み込むと本題の材料が入らない）。",
+        ]
+        if detailed:
+            lines += ["", "## よく使うもの", ""]
+            lines += [f"- `{n}` — {s}" for n, s in detailed]
+        if names:
+            lines += ["", "## その他（名前のみ。用途は SKILL.md を読むこと）", "",
+                      ", ".join(f"`{n}`" for n in sorted(names))]
+        return "\n".join(lines) + "\n"
+
+    body = _render()
+    # ponytail: 1 件ずつ落として都度組み直す O(n²)。n は数百までで一瞬なので、
+    # 事前にバイト数を積算する版へ替えるのは実際に遅くなってからでいい。
+    while len(body.encode("utf-8")) > AIDER_INDEX_BUDGET and detailed:
+        names.append(detailed.pop()[0])
+        body = _render()
+    return body
 
 
 def write_aider_skill_index(paths: dict[str, str], installed: list[dict]) -> str:
-    """スキルの索引を書き、そのパスを返す。
-
-    **全文ではなく索引**を渡す。aider は渡した読み取り専用ファイルを毎回文脈へ載せるので、
-    スキル本体を積むと本題の材料が入らなくなる。索引から必要な 1 本を `/read` で足すのは
-    人（またはモデルの要求）が判断する。
-    """
+    """スキルの索引を書き、そのパスを返す。組み立ては render_aider_skill_index を参照。"""
     index_path = os.path.join(paths["skill_home"], "INDEX.md")
-    lines = [
-        "# 利用できるスキルの索引",
-        "",
-        "各スキルの手順は下の `path` にある `SKILL.md` に書いてある。**必要になったものだけ**",
-        "`/read <path>/SKILL.md` でチャットへ足すこと（全部を読み込むと本題の材料が入らない）。",
-        "",
-    ]
-    for skill in installed:
-        path = os.path.join(paths["skill_home"], skill["name"])
-        desc = _skill_description(path)
-        lines.append(f"- `{skill['name']}` — {desc or '(説明なし)'}  \n  path: `{path}`")
-    lines.append("")
+    base = paths["skill_home"]
+    entries = [(s["name"], *_skill_meta(os.path.join(base, s["name"]))) for s in installed]
+    body = render_aider_skill_index(base, entries)
     with open(index_path, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines))
-    print(f"   {index_path} ({len(installed)} 件)")
+        f.write(body)
+    detailed = sum(1 for line in body.splitlines() if line.startswith("- `"))
+    print(f"   {index_path} ({len(installed)} 件中 {detailed} 件に要約 / "
+          f"{len(body.encode('utf-8')) / 1024:.1f} KB)")
     return index_path
 
 

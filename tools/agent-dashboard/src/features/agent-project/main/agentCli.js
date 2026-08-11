@@ -101,6 +101,8 @@ function normalize(spec, name, file) {
     skillCommandPrefix: spec.skill_command_prefix != null ? String(spec.skill_command_prefix) : '/',
     promptVia: spec.prompt_via === 'argv' ? 'argv' : 'stdin',
     promptFlag: spec.prompt_flag != null ? String(spec.prompt_flag) : null,
+    fileFlag: spec.file_flag != null ? String(spec.file_flag) : null,
+    readFlag: spec.read_flag != null ? String(spec.read_flag) : null,
     modelFlag: spec.model_flag != null ? String(spec.model_flag) : null,
     defaultModel: spec.default_model != null ? String(spec.default_model) : null,
     output,
@@ -222,7 +224,9 @@ function expand(tokens, model, holder) {
 // spillPath を渡すと、渡された prompt の末尾へ spill.instruction（{file} 置換済み）を足し、
 // そのモードの権限フラグを spill.args で **置き換える**（kiro の --trust-tools= と
 // --trust-tools=fs_read が並んで後勝ちに賭けるのを避ける）。
-function headlessCmd(spec, model, prompt, { readonly = false, noSession = false, spillPath = '' } = {}) {
+function headlessCmd(spec, model, prompt, {
+  readonly = false, noSession = false, spillPath = '', files = [], readFiles = [],
+} = {}) {
   const m = String(model || spec.defaultModel || '');
   const holder = {};
   let argv = expand(spec.command, m, holder);
@@ -235,6 +239,12 @@ function headlessCmd(spec, model, prompt, { readonly = false, noSession = false,
   argv = argv.concat(expand(mode, m, holder));
   if (m && spec.modelFlag && !spec.command.some((t) => t.includes('{model}'))) {
     argv.push(spec.modelFlag, m);
+  }
+  if (spec.fileFlag) {
+    for (const file of files) argv.push(spec.fileFlag, String(file));
+  }
+  if (spec.readFlag) {
+    for (const file of readFiles) argv.push(spec.readFlag, String(file));
   }
   argv = argv.concat(expand(spec.commandSuffix, m, holder));
 

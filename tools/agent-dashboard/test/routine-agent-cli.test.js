@@ -42,6 +42,16 @@ function configWithControl(control, extra = {}) {
   return { ...extra, orchestration: { ...(extra.orchestration || {}), controlDir: dir } };
 }
 
+function writeProfiles(config, profiles) {
+  const dir = config.orchestration.controlDir;
+  fs.writeFileSync(path.join(dir, 'profiles.json'), `${JSON.stringify({
+    version: 1,
+    enabled: true,
+    policy: { apply_to: ['routine'], steps: [] },
+    ...profiles,
+  }, null, 2)}\n`);
+}
+
 // 空の作業フォルダ。プロジェクト設定（agent-project.yaml）を拾わせないために使う。
 function emptyRepo() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'routine-repo-'));
@@ -166,6 +176,32 @@ test('セッション開始コマンドの when.agent_cli は解決済みの CLI
   const live = plan.sessionCommands.filter((e) => !e.skip).map((e) => e.id);
   assert.deepStrictEqual(live, ['for-ollama'],
     '起動する CLI 向けの開始コマンドだけを差し込む（kiro 固定にしない）');
+});
+
+test('今すぐ実行の段は候補を同じ段内で解決し、設定へ保存しない', () => {
+  const config = configWithControl({
+    workloads: { routine: { agent_cli: 'ollama', model: 'old-model' } },
+  });
+  writeProfiles(config, {
+    tiers: {
+      medium: { order: 20, label: '中', candidates: [{ agent_cli: 'ollama', model: 'qwen3:8b' }] },
+      small: { order: 10, label: '小', candidates: [{ agent_cli: 'aider', model: 'gemma4:e4b' }] },
+    },
+    state: { routine: { tier: 'small', candidate: { agent_cli: 'aider', model: 'gemma4:e4b' } } },
+  });
+  const before = fs.readFileSync(path.join(config.orchestration.controlDir, 'profiles.json'), 'utf8');
+  const ov = cowork.overview(config);
+  assert.deepStrictEqual(ov.routineTiers.map((t) => [t.id, t.agent_cli, t.model]), [
+    ['medium', 'ollama', 'qwen3:8b'],
+    ['small', 'aider', 'gemma4:e4b'],
+  ]);
+  assert.strictEqual(ov.currentRoutineTier, 'small');
+  const selected = cowork.resolveRoutineAgent(config, emptyRepo(), 'small');
+  assert.strictEqual(selected.cli, 'aider');
+  assert.strictEqual(selected.model, 'gemma4:e4b');
+  assert.strictEqual(fs.readFileSync(path.join(config.orchestration.controlDir, 'profiles.json'), 'utf8'), before,
+    '一回限りの選択は profiles.json を変更しない');
+  assert.throws(() => cowork.resolveRoutineAgent(config, emptyRepo(), 'missing'), /段.*missing/);
 });
 
 test('定常業務の実行は全体設定で指定した CLI のウィンドウを開く（設定を落とさない）', () => {

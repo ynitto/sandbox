@@ -2249,14 +2249,14 @@ function coworkRunError(res) {
     || (res && res.logFile ? `実行ログ: ${res.logFile}` : (res && res.ok ? '' : 'エラー詳細なし'));
 }
 
-async function executeCoworkRoutine({ id, type, name, routine, parameters }) {
+async function executeCoworkRoutine({ id, type, name, routine, parameters, tier }) {
   state.coworkRun = { id, name, phase: 'running', message: '', detail: '', at: Date.now() };
   renderCowork();
   let res;
   try {
     res = type === 'state-machine'
-      ? await api.coworkRunStateMachine(id, parameters)
-      : await api.coworkRunLoop(id, parameters);
+      ? await api.coworkRunStateMachine(id, parameters, tier)
+      : await api.coworkRunLoop(id, parameters, tier);
   } catch (err) {
     res = { ok: false, error: err.message || String(err) };
   }
@@ -2290,14 +2290,20 @@ async function executeCoworkRoutine({ id, type, name, routine, parameters }) {
 
 function openCoworkParametersDialog(routine, run) {
   const keys = Array.isArray(routine && routine.parameters) ? routine.parameters : [];
-  if (!keys.length) return run({});
+  const tiers = Array.isArray(state.cowork && state.cowork.routineTiers) ? state.cowork.routineTiers : [];
   const dlg = $('dlg-cowork-parameters');
   const form = $('cowork-parameters-form');
   const fields = $('cowork-parameter-fields');
+  const tierSelect = $('cowork-routine-tier');
   const error = $('cowork-parameters-error');
   const submit = $('btn-cowork-parameters-run');
   const cancel = $('btn-cowork-parameters-cancel');
-  $('cowork-parameters-description').textContent = `「${routine.name || routine.id}」を実行する前に入力してください。`;
+  $('cowork-parameters-description').textContent = `「${routine.name || routine.id}」の実行条件を選んでください。`;
+  tierSelect.innerHTML = tiers.length
+    ? tiers.map((tier) => `<option value="${esc(tier.id)}">${esc(tier.label || tier.id)} — ${esc(tier.agent_cli || '既定')} / ${esc(tier.model || '既定')}</option>`).join('')
+    : '<option value="">現在の全体設定</option>';
+  const currentTier = String((state.cowork && state.cowork.currentRoutineTier) || '');
+  if (tiers.some((tier) => tier.id === currentTier)) tierSelect.value = currentTier;
   fields.innerHTML = keys.map((key, index) => `<div class="field">
     <label for="cowork-parameter-${index}">${esc(key)}</label>
     <input id="cowork-parameter-${index}" data-cowork-parameter="${esc(key)}" type="text" autocomplete="off" required>
@@ -2330,9 +2336,10 @@ function openCoworkParametersDialog(routine, run) {
     cancel.disabled = true;
     validate();
     const parameters = Object.fromEntries(inputs.map((input) => [input.dataset.coworkParameter, input.value.trim()]));
+    const tier = tierSelect.value;
     let res;
     try {
-      res = await run(parameters);
+      res = await run(parameters, tier);
     } catch (err) {
       res = { ok: false, error: err.message || String(err) };
     }
@@ -2348,7 +2355,7 @@ function openCoworkParametersDialog(routine, run) {
   cancel.disabled = false;
   validate();
   dlg.showModal();
-  if (inputs[0]) inputs[0].focus();
+  tierSelect.focus();
   return undefined;
 }
 
@@ -2373,8 +2380,8 @@ function bindCoworkDetailActions(root, folder) {
     const type = btn.dataset.coworkType;
     const name = btn.dataset.coworkName || id;
     const routine = coworkDraft().find((item, index) => coworkEntryId(item, index) === id);
-    await openCoworkParametersDialog(routine, (parameters) =>
-      executeCoworkRoutine({ id, type, name, routine, parameters }));
+    await openCoworkParametersDialog(routine, (parameters, tier) =>
+      executeCoworkRoutine({ id, type, name, routine, parameters, tier }));
   }));
   root.querySelectorAll('[data-cowork-term-repo]').forEach((btn) => btn.addEventListener('click', () => {
     openRoutineAgentTerminal({

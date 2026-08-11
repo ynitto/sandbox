@@ -17,6 +17,9 @@ const {
 const { applyAgentLoopEdits, applyStatemachineEdits, upsertManagedAgentPrompt } = require('./writeback');
 const globalInstructions = require('../../orchestration/main/instructions');
 const sessionCommands = require('../../orchestration/main/sessionCommands');
+const profiles = require('../../orchestration/main/profiles');
+const agentCli = require('../../agent-project/main/agentCli');
+const stateMachineRunner = require('./stateMachineRunner');
 
 // 設定に書かれたフォルダ表記を、このビュアーで開けるパスへ揃える（discover と同じ規則）。
 // WSL の Linux 絶対パスは Windows ビュアーでは UNC へ翻訳する（そうしないと C:\home\… に化ける）。
@@ -359,8 +362,27 @@ function overview(config, opts = {}) {
     discoveredRepos: [...discoveredByKey.values()],
     // アドホック起動の起動先候補（登録済みフォルダ。runAdhoc の検証と同じ集合）。
     roots: adhocRoots(config),
+    ...routineTierOverview(config),
     items,
   };
+}
+
+function routineTierOverview(config) {
+  try {
+    const profile = profiles.load(config);
+    const routineTiers = Object.entries(profile.tiers || {})
+      .sort((a, b) => b[1].order - a[1].order)
+      .flatMap(([id, tier]) => {
+        const candidate = profiles.resolveTier(config, id);
+        return candidate ? [{ id, label: tier.label || id, ...candidate }] : [];
+      });
+    const remembered = profile.state && profile.state.routine && profile.state.routine.tier;
+    const currentRoutineTier = routineTiers.some((tier) => tier.id === remembered)
+      ? remembered : ((routineTiers[0] && routineTiers[0].id) || '');
+    return { routineTiers, currentRoutineTier };
+  } catch {
+    return { routineTiers: [], currentRoutineTier: '' };
+  }
 }
 
 function findItem(cfg, id) {
@@ -649,7 +671,7 @@ function launchCwd(item, config) {
   return viewerRepo(dir, config) || dir;
 }
 
-function runLoop(config, itemIdValue, parameters) {
+function runLoop(config, itemIdValue, parameters, tier = '') {
   const cfg = config.cowork || {};
   const item = resolveItem(config, itemIdValue);
   if (!item) throw new Error(`Cowork 作業が見つかりません: ${itemIdValue}`);
@@ -670,7 +692,7 @@ function runLoop(config, itemIdValue, parameters) {
     values
   );
   const prompt = Array.isArray(item.args) ? undefined : withGlobalInstructions(config, resolvedPrompt);
-  const plan = routineLaunchPlan(config, cwd);
+  const plan = routineLaunchPlan(config, cwd, tier);
   const res = makeLoopProvider(cfg, config).run({
     ...item, cwd, id: runId, prompt,
     ...(Object.keys(values).length ? { args: ['send', prompt] } : {}),
@@ -680,7 +702,7 @@ function runLoop(config, itemIdValue, parameters) {
   return res;
 }
 
-function runStateMachine(config, itemIdValue, parameters) {
+function runStateMachine(config, itemIdValue, parameters, tier = '') {
   const cfg = config.cowork || {};
   const item = resolveItem(config, itemIdValue);
   if (!item) throw new Error(`Cowork 定型業務が見つかりません: ${itemIdValue}`);
@@ -713,7 +735,26 @@ function runStateMachine(config, itemIdValue, parameters) {
       : smPrompt;
     args = ['send', legacy];
   }
-  const plan = routineLaunchPlan(config, cwd);
+  const selected = resolveRoutineAgent(config, cwd, tier);
+  if (!selected.spec.interactive) {
+    if (selected.cli !== 'aider') {
+      throw new Error(`${selected.cli} は定常業務の対話実行を提供していません`);
+    }
+    if (Array.isArray(item.args)) throw new Error('明示 args の定型業務は Aider headless 実行に対応していません');
+    const workflowPath = stateMachineFilePath(item, item.repo || item.cwd || cwd, config);
+    if (!workflowPath) throw new Error('workflow.yaml の場所を特定できません');
+    return stateMachineRunner.runSkill({
+      skillId: 'statemachine-use', cwd, workflowPath, parameters: effectiveValues, agent: selected,
+    }).then((res) => {
+      recordRun(cfg, { ...item, type: 'state-machine' }, res);
+      return res;
+    }).catch((err) => {
+      const res = { ok: false, error: err.message || String(err) };
+      recordRun(cfg, { ...item, type: 'state-machine' }, res);
+      return res;
+    });
+  }
+  const plan = routineLaunchPlan(config, cwd, tier, selected);
   const res = makeLoopProvider(cfg, config).run({
     ...item, cwd, args, prompt, timeoutMs: item.timeoutMs || 60000,
     launch: plan.launch, sessionCommands: plan.sessionCommands,
@@ -831,16 +872,39 @@ const LEGACY_CHAT_COMMAND = 'kiro-cli chat --trust-all-tools';
 // `cowork.chatCommand` は明示上書き（空なら解決結果）。
 // 解決できないとき（定義が見つからない等）は従来の文字列へ落として、定常業務を止めない。
 // ただし黙っては落とさず、フォールバックした事実を警告ログに残す。
-function coworkChatLaunch(config, repo) {
+function resolveRoutineAgent(config, repo, tier = '') {
+  const agent = require('../../agent-project/main/agent');
+  const base = agent.resolveAgent(config, repo, { workload: ROUTINE_WORKLOAD });
+  const selectedTier = String(tier || '').trim();
+  if (!selectedTier) return base;
+  const profile = profiles.load(config);
+  if (!Object.prototype.hasOwnProperty.call(profile.tiers || {}, selectedTier)) {
+    throw new Error(`段「${selectedTier}」は定義されていません`);
+  }
+  const candidate = profiles.resolveTier(config, selectedTier);
+  if (!candidate) throw new Error(`段「${selectedTier}」には現在実行できる候補がありません`);
+  const cli = candidate.agent_cli || base.cli;
+  return {
+    ...base,
+    cli,
+    model: candidate.model || base.model,
+    spec: agentCli.loadCli(cli, repo),
+    source: `tier:${selectedTier}`,
+    tier: selectedTier,
+  };
+}
+
+function coworkChatLaunch(config, repo, tier = '', selected = null) {
   const explicit = String(((config || {}).cowork || {}).chatCommand || '').trim();
-  if (explicit && explicit !== LEGACY_CHAT_COMMAND) {
+  if (!tier && !selected && explicit && explicit !== LEGACY_CHAT_COMMAND) {
     // 明示上書きでは CLI 名が分からない。開始コマンドの when.agent_cli 判定は
     // 従来どおり kiro とみなす（この経路は人が自分でコマンドを決めた場合だけ）。
     return { chatCommand: explicit, cli: 'kiro', model: '', skillCommandPrefix: '/' };
   }
   try {
     const { interactiveLaunchSpec } = require('../../agent-project/main/agent');
-    const launch = interactiveLaunchSpec(config, repo, { workload: ROUTINE_WORKLOAD });
+    const resolved = selected || resolveRoutineAgent(config, repo, tier);
+    const launch = interactiveLaunchSpec(config, repo, { workload: ROUTINE_WORKLOAD, resolved });
     return {
       chatCommand: launch.chatCommand,
       readyPattern: launch.readyPattern,
@@ -851,6 +915,7 @@ function coworkChatLaunch(config, repo) {
       skillCommandPrefix: launch.skillCommandPrefix,
     };
   } catch (e) {
+    if (tier || selected) throw e;
     console.warn(`[cowork] agent_cli 定義の解決に失敗したため既定の '${LEGACY_CHAT_COMMAND}' へフォールバックしました: ${(e && e.message) || e}`);
     return { chatCommand: LEGACY_CHAT_COMMAND, cli: 'kiro', model: '', skillCommandPrefix: '/' };
   }
@@ -859,8 +924,8 @@ function coworkChatLaunch(config, repo) {
 // 定常業務ウィンドウ 1 回分の起動条件（対話 CLI の一式 + その CLI 向けの開始コマンド計画）。
 // 起動する CLI が決まらないと開始コマンドの when.agent_cli 判定もスキル起動記号も決まらない
 // ので、2 つを 1 か所で組む。
-function routineLaunchPlan(config, cwd) {
-  const launch = coworkChatLaunch(config, cwd);
+function routineLaunchPlan(config, cwd, tier = '', selected = null) {
+  const launch = coworkChatLaunch(config, cwd, tier, selected);
   return {
     launch,
     sessionCommands: planSessionCommands(config, cwd, {
@@ -1183,7 +1248,8 @@ module.exports = {
   invalidateDiscoverCache, decodeCliOutput, viewerRepo,
   itemLogs, readLog, appendHistory, readHistory, historyFile,
   resolveLoopPromptText, withGlobalInstructions, planSessionCommands,
-  coworkChatLaunch, routineLaunchPlan, ROUTINE_WORKLOAD, LEGACY_CHAT_COMMAND,
+  coworkChatLaunch, routineLaunchPlan, resolveRoutineAgent, routineTierOverview,
+  ROUTINE_WORKLOAD, LEGACY_CHAT_COMMAND,
   applyManagedItems, stateMachineCreationPrompt,
   inspectCoworkRoot, setCoworkRoot,
   templateParameterKeys, stateMachineInputSpec, stateMachineFilePath,

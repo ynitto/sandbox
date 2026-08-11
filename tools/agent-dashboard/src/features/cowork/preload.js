@@ -2,9 +2,10 @@
 
 module.exports = {
   coworkOverview: (invoke) => (opts) => invoke('cowork:overview', opts || {}),
-  coworkRunLoop: (invoke) => (itemId, parameters) => invoke('cowork:runLoop', { itemId, parameters }),
-  coworkRunStateMachine: (invoke) => (itemId, parameters) =>
-    invoke('cowork:runStateMachine', { itemId, parameters }),
+  coworkRunLoop: (invoke) => (itemId, parameters, tier) =>
+    invoke('cowork:runLoop', { itemId, parameters, ...(tier == null ? {} : { tier }) }),
+  coworkRunStateMachine: (invoke) => (itemId, parameters, tier) =>
+    invoke('cowork:runStateMachine', { itemId, parameters, ...(tier == null ? {} : { tier }) }),
   coworkGenerateStateMachine: (invoke) => (payload) => invoke('cowork:generateStateMachine', payload),
   coworkRunAdhoc: (invoke) => (root, prompt) => invoke('cowork:runAdhoc', { root, prompt }),
   coworkSaveWork: (invoke) => (payload) => invoke('cowork:saveWork', payload),

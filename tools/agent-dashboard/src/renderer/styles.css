@@ -970,7 +970,7 @@ button:disabled { opacity: 0.4; cursor: default; }
 #dlg-cowork-parameters { width: min(520px, calc(100vw - 24px)); }
 #cowork-parameter-fields { display: grid; gap: 12px; margin: 16px 0; }
 #cowork-parameter-fields .field { margin: 0; }
-#cowork-parameter-fields input { width: 100%; box-sizing: border-box; }
+#cowork-parameter-fields input, #cowork-routine-tier { width: 100%; box-sizing: border-box; }
 .cowork-status-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));

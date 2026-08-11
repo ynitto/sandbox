@@ -226,17 +226,20 @@ async function main() {
   console.log('ok - 対象を合わせてからタブを出し分ける');
 }
 
-// --- 5) 入力が必要な業務は HTML ダイアログを経由する ----------------------------
+// --- 5) 今すぐ実行は段と入力を同じ HTML ダイアログで確定する -------------------
 
 {
   assert.ok(html.includes('<dialog id="dlg-cowork-parameters"'), 'OS ダイアログではなく HTML dialog を置く');
+  assert.ok(html.includes('id="cowork-routine-tier"'), '一回限りの段を選ぶ欄を持つ');
   assert.ok(html.includes('id="cowork-parameter-fields"'), 'パラメータ入力欄の置き場を持つ');
   assert.ok(src.includes('function openCoworkParametersDialog('), '実行前に入力ダイアログを開く');
-  assert.ok(src.includes('if (!keys.length) return run({});'), '入力不要なら従来どおり即時実行する');
+  assert.ok(!src.includes('if (!keys.length) return run({});'), '入力不要でも段を選ぶためダイアログを開く');
+  assert.ok(src.includes('run(parameters, tier)'), '段とパラメータを一回の実行へだけ渡す');
+  assert.ok(src.includes('api.coworkRunStateMachine(id, parameters, tier)'), 'state-machine IPCへ段を渡す');
   assert.ok(src.includes('type="text" autocomplete="off" required'), '初版は必須の文字列入力だけにする');
   assert.ok(src.includes('dlg.showModal()'), 'HTML dialog をモーダル表示する');
   assert.ok(src.includes("dlg.addEventListener('cancel', onCancel)"), 'Escape では実行せず閉じる');
-  console.log('ok - 入力が必要な定常業務は HTML ダイアログを経由する');
+  console.log('ok - 今すぐ実行は段と入力を HTML ダイアログで確定する');
 }
 
 console.log('\nroutine-area-ui: all tests passed');

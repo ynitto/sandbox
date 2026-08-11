@@ -22,7 +22,7 @@ import tempfile
 from .configfile import TOOL_SUBDIR, agent_home_dir
 from .util import log, now_iso, read_json, write_json_atomic
 
-_AGENT_HOME_DIRS = (".kiro", ".claude", ".copilot", ".codex")
+_AGENT_HOME_DIRS = (".agents", ".kiro", ".claude", ".copilot", ".codex")
 
 
 def _update_state_path() -> str:

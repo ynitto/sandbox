@@ -272,8 +272,9 @@ def has_verify_plan(task: "Task") -> bool:
 def find_skill_script(skill: str, script: str) -> "str | None":
     """スキルの scripts/<script> を探す（agent-flow の `_find_skill_script` と同じ解決順）。
 
-    プロジェクト → git root → ~/.agents/skills → ~/.kiro/skills → skill-registry.json の
-    skill_home。**上位にプロジェクト独自のスキルを置けば全面的に差し替えられる**。
+    プロジェクト → git root → ~/.agents/skills → ~/.kiro/skills → 各エージェントホームの
+    skill-registry.json の skill_home（`_AGENT_HOME_DIRS`）。
+    **上位にプロジェクト独自のスキルを置けば全面的に差し替えられる**。
     """
     cands = [Path.cwd() / ".github" / "skills" / skill / "scripts" / script]
     try:
@@ -286,8 +287,8 @@ def find_skill_script(skill: str, script: str) -> "str | None":
         pass
     for home in ("~/.agents/skills", "~/.kiro/skills"):
         cands.append(Path(home).expanduser() / skill / "scripts" / script)
-    for agent_dir in (Path.home() / ".agents", Path.home() / ".kiro"):
-        reg = agent_dir / "skill-registry.json"
+    for d in _AGENT_HOME_DIRS:
+        reg = Path.home() / d / "skill-registry.json"
         try:
             home = json.loads(reg.read_text(encoding="utf-8")).get("skill_home", "")
         except (OSError, ValueError):

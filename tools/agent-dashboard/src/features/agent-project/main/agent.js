@@ -248,8 +248,8 @@ function projectRepoUrls(projectDir) {
 // 書き、`spillInstruction` の {file} を置換した 1 行を prompt として渡す（tmux へ送るのは
 // どちらの方式でも「1 行のテキスト」なので、送信スクリプト側に分岐は要らない）。
 function interactiveLaunchSpec(cfg, projectDir,
-                               { readonly = false, noSession = false, workload = '' } = {}) {
-  const resolved = resolveAgent(cfg, projectDir, { workload });
+                               { readonly = false, noSession = false, workload = '', resolved: selected = null } = {}) {
+  const resolved = selected || resolveAgent(cfg, projectDir, { workload });
   return {
     cli: resolved.cli,
     model: resolved.model,

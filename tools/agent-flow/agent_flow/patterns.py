@@ -575,7 +575,8 @@ def plan_strategy_agent(request: str, model: str | None, review="auto", granular
 
 def _find_skill_script(skill: str, script: str):
     """スキルの scripts/{script} を探す（flow-planner / flow-worker 共通）。
-    検索順: .github/skills/{skill}/ → git root/.github/skills/ → ~/.agents/skills/ → ~/.kiro/skills/ → {skill_home}/"""
+    検索順: .github/skills/{skill}/ → git root/.github/skills/ → ~/.agents/skills/ → ~/.kiro/skills/
+    → 各エージェントホームの skill-registry.json の {skill_home}（`_AGENT_HOME_DIRS`）"""
     candidates = []
     # ワークスペース内
     cwd = os.getcwd()
@@ -594,10 +595,8 @@ def _find_skill_script(skill: str, script: str):
     for skills_home in ("~/.agents/skills", "~/.kiro/skills"):
         candidates.append(os.path.join(os.path.expanduser(skills_home), skill, "scripts", script))
     # skill-registry.json から skill_home を読む
-    for agent_dir in [os.path.expanduser("~/.agents"), os.path.expanduser("~/.kiro"),
-                      os.path.expanduser("~/.copilot"),
-                      os.path.expanduser("~/.claude"), os.path.expanduser("~/.codex")]:
-        reg = os.path.join(agent_dir, "skill-registry.json")
+    for d in _AGENT_HOME_DIRS:
+        reg = os.path.join(os.path.expanduser("~"), d, "skill-registry.json")
         if os.path.isfile(reg):
             try:
                 with open(reg, encoding="utf-8") as f:

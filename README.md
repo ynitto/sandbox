@@ -356,7 +356,7 @@ verdict の種類:
 | Kiro | `~/.kiro` | `$env:USERPROFILE\.kiro` |
 | OpenAI Codex | `~/.codex` | `$env:USERPROFILE\.codex` |
 | opencode | `~/.config/opencode` | `$env:USERPROFILE\.config\opencode` |
-| aider | `~/.aider` | `$env:USERPROFILE\.aider` |
+| aider | `~/.agents` | `$env:USERPROFILE\.agents` |
 
 opencode だけホーム直下ではなく `~/.config/opencode`（opencode 自身の設定・スキルの置き場）。
 MCP と指示ファイルは独立した設定ファイルではなく `opencode.json` の中（`mcp` / `instructions`）へ
@@ -364,10 +364,23 @@ MCP と指示ファイルは独立した設定ファイルではなく `opencode
 [`tools/opencode/README.md`](tools/opencode/README.md) を参照。
 
 aider はスキルの仕組みを持たない。`install.py --agent aider` は本体を導入したうえで、
-スキルを `~/.aider/skills/` へ置き、**索引（1 スキル 1 行）と指示ファイルだけ**を
-`~/.aider.conf.yml` の `read:` へ登録する。スキル本体を常時読ませないのは、ローカルモデルの
-文脈が狭いため——実測で aider は ollama を `CONTEXT 9640` で載せ、常設材料だけで 6.0k
-トークンを使う。必要な 1 本は会話中に `/read <path>/SKILL.md` で足す。
+スキルを `~/.agents/skills/` へ置き、**索引だけ**を `~/.aider.conf.yml` の `read:` へ登録する。
+置き場が `~/.aider/` でなく `~/.agents/` なのは 2 つの理由から——`~/.aider/` は aider 自身が
+`analytics.json` や `caches/` に使うディレクトリであること、そして `~/.agents/` は
+agent-project / agent-flow / agent-audit がレジストリとスキルを探すときの第一候補として
+既に想定されていること（各ツールの `AGENT_HOME`）。
+
+スキル本体を常時読ませないのは、ローカルモデルの文脈が狭いため——実測で aider は ollama を
+`CONTEXT 9640` で載せる。指示ファイルまで積むと常設材料だけで 6.0k トークンを使うので
+`read:` には載せない（`~/.agents/instructions/` に置くだけ）。必要な 1 本は会話中に
+`/read ~/.agents/skills/<名前>/SKILL.md` で足す。
+
+索引自体もスキル数に比例して太る（88 スキルを 1 件 1 要約＋パス行で並べたら 34 KB あった）ため、
+`write_aider_skill_index` は 3 段で抑える。パス行は書かない（全て `<skill_home>/<名前>` で
+導出できる）。要約を付けるのは `tier: core` / `tier: stable` だけで、それ以外は名前だけ並べる
+（1 件 130 バイト → 17 バイト）。それでも 8 KB（`AIDER_INDEX_BUDGET`）を超えるなら要約付きの
+末尾から名前だけへ落とす。**名前は 1 件も消さない**——名前さえ載っていれば `/read` で本体を
+足せるので、上限に当たっても発見性は失われない。同 88 スキルで 5.4 KB に収まる。
 
 ### ディレクトリ構成
 

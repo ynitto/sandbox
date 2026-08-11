@@ -100,6 +100,18 @@ test('同梱定義から出る argv が Python ローダと一致する', () => 
   }
 });
 
+test('aider は参照ファイルと編集ファイルを宣言どおり argv へ割り付ける', () => {
+  const spec = agentCli.loadCli('aider');
+  const built = agentCli.headlessCmd(spec, 'gemma4:e4b', 'P', {
+    readFiles: ['reference.md'],
+    files: ['delivery.md'],
+  });
+  assert.deepStrictEqual(built.argv.slice(-6), [
+    '--file', 'delivery.md', '--read', 'reference.md', '--message', 'P',
+  ]);
+  assert.strictEqual(built.timeoutMs, 600000, 'ローカル推論はCLI定義の長いtimeoutを使う');
+});
+
 test('codex は {output_file} を伏せれば一致する（実行毎にパスが変わる）', () => {
   const spec = agentCli.loadCli('codex');
   const r = agentCli.headlessCmd(spec, 'M', 'P');
