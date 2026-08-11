@@ -1,7 +1,7 @@
 # agent-dashboard — 複数エージェントを束ねる操作面 設計書
 
-> 作成 2026-07-14 ／ 最終更新 2026-08-09（ポータル化、検証の決着、定常業務の
-> 実行パラメータ、ヘッドレス資源制御を反映）
+> 作成 2026-07-14 ／ 最終更新 2026-08-11（ポータル化、検証の決着、定常業務の
+> 実行パラメータ、ヘッドレス資源制御、定型業務の headless CLI 実行を反映）
 > 実装: `tools/agent-dashboard/`（Electron。本番依存は `diff2html` / `yaml` の 2 つだけ。テスト 84 ファイル・`npm test`）
 > 読む契約: [`schemas/node-budget.schema.json`](../../schemas/node-budget.schema.json) /
 > [`schemas/agent-control.schema.json`](../../schemas/agent-control.schema.json) /
@@ -356,6 +356,22 @@ cowork の tmux 実行も同じ定義を通る（`chatCommand` 設定は明示�
 入力キーを決定的に抽出し、必要なときだけ HTML `<dialog>` で文字列を受け取る。main 側で定義を
 再読込して不足・未知キー・解析失敗・定義ルート外参照を拒否するため、LLM に不足入力の質問を
 任せず、新しい入力スキーマも増やさない（[設計](../plans/2026-08-09-agent-dashboard-routine-parameters-dialog-design.md)）。
+入力キーが 1 つも無くても、その回の**段**を選ぶためにダイアログは必ず開く。
+
+対話実行を持たない CLI（aider）の定型業務は、dashboard 内に実行器を持たず **agent-loop の
+`statemachine` サブコマンド**（[設計](./agent-loop-design.md)の機能 7）へ渡す。段で解決した
+`agent_cli` / `model` を `--agent-cli` / `--model` としてその回だけに効かせ、ハーネスが出す
+`RESULT` 行を実行結果の契約として読む。実行境界を WSL 側へ置くのは §5.1 と同じ理由で、
+aider / ollama が実際に居るのがそちらだからだ。したがって起動は常に `wsl.exe` を通し、
+ワークフローの位置は**実行 cwd からの相対 POSIX パス**で渡す（ビュアーの絶対パスは WSL 側で
+解決できない。作業フォルダの外を指す組み合わせは起動前に断る）。
+
+この実行も tmux で見せるが、**一回限りの実行なので CLI チャットの流儀はそのまま使えない**。
+チャット経路は「セッションが起動直後に消えていたら同じ CLI を窓で直接実行して原因を見せる」が、
+ステートマシンで再実行するとファイル編集ごと二重に走る。代わりに、起動できない唯一の実質的な
+原因（実行ファイルが PATH に無い）をセッション作成前に確かめる。また実行が終わったあとに人が
+アタッチすると、そのときのリサイズで tmux はペインの内容を捨てる（`remain-on-exit` で残しても
+同じ）ため、出力は `pipe-pane` でファイルへ写し、アタッチから戻ったあとに窓へ出す。
 
 ### 5.1 agent-loop 連携 — 監視と復旧を tmux から引き上げる
 
@@ -577,7 +593,8 @@ CLI では「このCLIでは助言のみを保証できません」を先に出�
 **動いているもの**: §4 の 8 制御面すべて、§6 の人のアクション一式、§7 の通知・SLA・AI 補助・
 投入時リンティング、agent-loop の構造化状態と復旧送信、この PC の役割切り替え
 （`engineer` / `viewer`）、ホーム（ポータル。横断要対応キュー第 1 段＝プロジェクト単位の
-件数とジャンプ）、検証の決着カード、定常業務の実行パラメータ入力、ヘッドレス資源制御。
+件数とジャンプ）、検証の決着カード、定常業務の実行パラメータ入力と段の選択、対話を持たない
+CLI の定型業務実行（agent-loop のステートマシンハーネス経由）、ヘッドレス資源制御。
 回帰テストは `npm test` に集約する。
 
 **未実装の改善余地**（元の改善提案から、実装が無いものだけ残した）:
@@ -668,7 +685,8 @@ CLI では「このCLIでは助言のみを保証できません」を先に出�
 `test/no-git-writes.test.js`（§3.1）／ `test/feature-split.test.js`（§3.2）／
 `test/discover-engine.test.js`（§3.3）／ `test/portal-home.test.js`（§3.5 のポータル登録簿と
 ホームの護り）／ `test/needs-notify.test.js`・`test/needs-sla.test.js`（§7）／
-`test/cowork.test.js`・`test/routine-area-ui.test.js`（定常業務の実行パラメータ）／
+`test/cowork.test.js`・`test/routine-area-ui.test.js`（定常業務の実行パラメータと段の選択）／
+`test/state-machine-window.test.js`（定型業務の Windows → WSL 起動と tmux の扱い）／
 `test/settlement-ui.test.js`（検証の決着）／ `test/resource-control.test.js`（ヘッドレス資源制御）／
 `test/packaging-assets.test.js`（配布物の取りこぼし、§8）。
 

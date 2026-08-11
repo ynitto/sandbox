@@ -1,6 +1,6 @@
 # agent-loop 設計書
 
-> 最終更新: 2026-08-09（`slash` 統合、Phase 1 / Phase 2・`agent-tuning` の実装を反映）
+> 最終更新: 2026-08-11（`slash` 統合、Phase 1 / Phase 2・`agent-tuning`、ステートマシンハーネスの実装を反映）
 > 実装: `tools/agent-loop/`（`agent_loop` パッケージ）。旧系統 `tools/kiro-loop/` は退役済み（付録 B）
 > 関連: [agent-tools 改称方針](./agent-tools-rename-design.md) ／
 > [段階的機能拡張](../plans/2026-08-08-agent-loop-phased-enhancement-design.md) ／
@@ -12,7 +12,7 @@
 
 ## TL;DR
 
-agent-loop は、YAML で定義したプロンプトを定期実行するデーモンです。既定では tmux 上にエージェント CLI（kiro-cli / claude 等）のセッションを常駐させて送信し、対話ペインを持たない CLI や使い捨て実行では実行のたびに subprocess を起こします。本書は、固定送信を実運用に耐えさせる 6 つの機能と、すべての入力を同じ配送判定へ通す実行基盤の設計正典です。
+agent-loop は、YAML で定義したプロンプトを定期実行するデーモンです。既定では tmux 上にエージェント CLI（kiro-cli / claude 等）のセッションを常駐させて送信し、対話ペインを持たない CLI や使い捨て実行では実行のたびに subprocess を起こします。本書は、固定送信を実運用に耐えさせる 7 つの機能と、すべての入力を同じ配送判定へ通す実行基盤の設計正典です。
 
 1. **イベントフック（pull 型）** — スケジュール発火のたびに Python フックの `check()` を呼び、「今送るべきか・何を送るか」をデータ駆動で決める。**実装済み**。
 2. **汎用 inbound Webhook（push 型）** — 外部システムからの HTTP POST を受け、フックの `handle(ctx)` でパースしてプロンプトに変換する。GitLab は一具体例で、コアは provider 非依存。**実装済み**。
@@ -20,6 +20,7 @@ agent-loop は、YAML で定義したプロンプトを定期実行するデー�
 4. **動的インターバル（adaptive interval）** — 無風時はポーリング間隔を幾何級数的に伸ばし、イベント到来で即座に最短へ戻す。**実装済み**。
 5. **エージェント CLI の差し替え** — 駆動する CLI（kiro-cli / claude / codex / aider 等）を `agents/<name>.json` の共通契約で、全体設定と定期プロンプトごとに差し替える。待機状態の判定方法が CLI ごとに違う点は契約側の宣言（`ready_pattern` / `busy_pattern` / `idle_quiet_sec`）で吸収し、対話ペインを持たない CLI は headless 経路で動かす。ツールループを内蔵しない CLI（`headless_autonomy: single-shot`）へは限定ツール契約でツール実行を供給し、done は受入条件（`acceptance`）で機械検証する。**実装済み**（判定層と tmux 可視化を除く）。
 6. **`slash` プロパティ** — 本文の前に CLI コマンドを独立送信し、CLI ごとの行頭記号へ送信直前に変換する。**実装済み**。
+7. **ステートマシンハーネス** — 対話セッションを持たない headless CLI（aider 等）に足りないツール実行だけを狭い契約で補い、`statemachine-use` の定型業務を完走させる。状態遷移はスキル側のスクリプトが正典。**実装済み**。
 
 全体を貫く原則は 3 つです。第一に、公開 YAML・フック・inbox の契約を保ったまま、schedule / event hook / webhook / inbox / CLI send を **PeriodicScheduler の dispatch gate** へ一本化します。第二に、送信元固有の知識（GitLab のヘッダ名や payload 構造）は**フックスクリプトに閉じ**、コアを汎用に保ちます。第三に、実際の tmux への送信はスケジューラの背圧機構（lifecycle・preflight・セッション準備・セマフォ・ready 判定）だけを通し、HTTP スレッドや inbox 監視スレッドから直接送信しません。
 
@@ -478,7 +479,7 @@ headless では ensure_session / ready 判定 / SlotMonitor を通りません�
 
 ### 層3 の限定ツール契約と受入条件
 
-ツールループを持たない CLI へは `read_files` / `write_files` / `run` / `final` の 4 つだけを許す契約でツール実行を供給します。実装は statemachine 実行ハーネスと**共用**で、パス正規化・シェル禁止・実行ファイルの所在限定・JSON パーサ・コンテキスト節約・小型モデル向けのプロンプト規律（作業していないのに完了を主張させない等）を 1 実装に保ちます。
+ツールループを持たない CLI へは `read_files` / `write_files` / `run` / `final` の 4 つだけを許す契約でツール実行を供給します。実装はステートマシンハーネス（機能 7）と**共用**で、パス正規化・シェル禁止・実行ファイルの所在限定・JSON パーサ・コンテキスト節約・小型モデル向けのプロンプト規律（作業していないのに完了を主張させない等）を 1 実装に保ちます。違いはゴールの与え方だけで、機能 7 は state のアクション 1 つ、ここは定期プロンプト 1 件を渡します。
 
 ツールループを供給しても、**受入条件が無ければ done を機械検証できません**。定期プロンプトは各 state が出力契約を持つステートマシンと違い、ゴールだけあって受入条件がないためです。そこで定期プロンプトに `acceptance`（自然文チェックリスト）を持たせます。語彙は統一 verify の `task_acceptance_criteria` に揃え、新しい書式を作りません。
 
@@ -575,6 +576,32 @@ prompts:
 
 ---
 
+## 機能 7: ステートマシンハーネス（headless CLI での定型業務実行） — 実装済み
+
+`statemachine-use` は「対話 CLI がスキルを読み、コマンドを実行し、状態を進める」ことを前提にしたスキルです。aider のような**対話セッションもツール実行ループも持たない headless CLI** にそのまま実行文を送っても、スキルの読み込みもコマンド実行も起きず完遂しません。そこで、状態遷移はスキル側の正典に委ねたまま、**headless CLI に足りないツール実行だけを狭い契約で補う**サブコマンドを持ちます。
+
+```bash
+agent-loop statemachine --workflow .statemachine/<name>/workflow.yaml \
+    [--agent-cli aider] [--model MODEL] [--param KEY=VALUE ...] [--input TEXT]
+```
+
+終了時に `RESULT {json}`（`ok` / `stdout` / `finalState` / `logFile` / `files`）を 1 行出力します。これが呼び出し側（dashboard の定型業務。tmux セッションでこれを起動して実行の様子ごと見せる）との結果契約です（[設計](../plans/2026-08-11-agent-dashboard-routine-aider-tmux-harness-design.md)）。
+
+### 設計判断
+
+- **状態遷移を LLM に選ばせない**。ワークフロー検証（`run_machine.py --dry-run`）・初期状態・遷移確定（`next_state.py`）は `statemachine-use` のスクリプトを正典として呼び、ハーネスは現在のアクション 1 つの実行だけを受け持ちます。LLM へ渡すのは現在のアクションと条件の真偽判定だけで、次の状態も後続のアクションも見せません。
+- **CLI とモデルの解決は agentcore.agentcli へ委譲**します（機能 5 と同じ不変条件。ローダは言語ごとに 1 実装）。`--model` は実行ごとの指定で、省略時は定義の `default_model` です。段（実行プロファイル）を持つ呼び出し側が、その回に使うモデルだけを渡せます。
+- **ツール契約は 4 種に限定**します。`read_files` / `write_files` / `run` / `final` だけを受理し、cwd は作業フォルダへ固定、相対パスは正規化して `..` とシンボリックリンクによる逸脱を拒否、実行ファイルは PATH 上かロード済みスキル配下に限り、シェル文字列は受け付けません。timeout とツール往復回数に固定上限を置き、実行した argv・cwd・終了コード・所要時間を JSONL の監査ログへ残します。**この契約の実装は機能 5 の定期プロンプトと共用**です（ゴールに依存しない部分を切り出した共用モジュール）。同じ護りを 2 実装に分けると、片方だけ穴が塞がった状態が静かに生まれます。ここに残るのはステートマシン固有の遷移・出力契約・テンプレート展開だけです。
+- **ローカルモデル向けに文脈を絞る**。ワークフロー全体ではなく現在のアクションと必要なスキルだけを渡し、大きい入力はプロンプト本文へ展開せず CLI の読み取りフラグ（aider の `--read`）で渡し、コマンド出力は末尾の要約とログパスだけを次の往復へ載せます。
+
+### 制約（v1）
+
+- **受理するのは `statemachine-use` の 1 経路だけ**です。2 つ目のスキルを載せるまで汎用のプラグイン登録基盤は作らず、同じ入力・結果契約へハンドラを足せる関数境界だけを保ちます。
+- **OS レベルの副作用隔離は持ちません**。外部コマンドが作業フォルダ外へ副作用を起こさないことは argv・cwd・実行ファイル・パスの検証と監査ログを境界とし、強制隔離が要るようになった時点で OS sandbox を足します。
+- ハーネスはツール不足を補うものであり、小型モデルの文脈理解や長文生成能力そのものは保証しません。
+
+---
+
 ## 共通実行基盤: Phase 1 / Phase 2 — 実装済み
 
 2026-08-08 の[段階的機能拡張](../plans/2026-08-08-agent-loop-phased-enhancement-design.md)で、個別入力経路の公開契約を保ったまま内部配送と実行形態を拡張しました。Phase 2 の設定・状態遷移・失敗境界は[詳細設計](../plans/2026-08-08-agent-loop-phase2-detailed-design.md)を正とします。
@@ -623,6 +650,7 @@ Ralph の daemon 再起動後の途中再開、任意 workflow、dirty sandbox �
 | 動的インターバル | 実装済み。`test/test_adaptive_interval.py` | 未実装 |
 | slash | 実装済み。`test/test_slash_property.py` | 未実装 |
 | CLI 差し替え | 実装済み。`test/test_cli_profile.py`（+ agentcore 側 `test_agentcli.py`） | 未実装（kiro-cli 固定のまま） |
+| ステートマシンハーネス | 実装済み。`test/test_statemachine.py`（パス逸脱・ツール契約・スタブ CLI での完走） | 未実装 |
 | Phase 1 / Phase 2 | 実装済み。dispatch・lifecycle・実行形態ごとの専用テスト | 未実装 |
 | agent-tuning | 実装済み。`test/test_tuning.py` | 未実装 |
 
