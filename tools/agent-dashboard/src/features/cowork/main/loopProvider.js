@@ -95,33 +95,42 @@ function resultOf(res) {
   };
 }
 
-function sh(command, args, options = {}) {
-  const argv = (args || []).map(String);
+// ループ系 CLI 1 回分の起動仕様（同期 sh / 非同期 runCommandCapture の共通部分）。
+//
+// **win32 は必ず wsl.exe 経由**。agent-loop（と statemachine-use を発動するプロンプト送信、
+// statemachine ハーネス）は WSL 側にしか無い想定で、Windows から直接 spawn すると ENOENT に
+// なる。cwd も Windows パス（UNC / ドライブ）のままでは子プロセスへ渡せないので、
+// WSL 側の `cd` としてスクリプトへ畳み込む。
+// LANG を明示しないと WSL 側のロケールで日本語 stderr が化けることがある。
+function cliSpawnSpec(command, args, cwd) {
   const tokens = splitCommand(command);
+  const argv = (args || []).map(String);
   if (process.platform === 'win32') {
-    // agent-loop / agent-loop（と statemachine-use を発動するプロンプト送信）は WSL 側にしか
-    // 無い想定。リポジトリが Windows ドライブ上でも wsl.exe 経由でプロジェクトルートから
-    // 実行する（Windows で直接 spawn すると ENOENT になる）。
-    const cwd = toWslCwd(options.cwd);
-    const distro = wslDistro(options.cwd);
-    // LANG を明示しないと WSL 側のロケールで日本語 stderr が化けることがある。
-    const cd = cwd ? `cd ${shellQuote(cwd)} && ` : '';
+    const linuxCwd = toWslCwd(cwd);
+    const distro = wslDistro(cwd);
+    const cd = linuxCwd ? `cd ${shellQuote(linuxCwd)} && ` : '';
     const script = `export LANG=C.UTF-8 LC_ALL=C.UTF-8; ${cd}${tokens.map(quoteToken).join(' ')} ${argv.map(shellQuote).join(' ')}`;
-    const wslArgs = distro ? ['-d', distro, '-e', 'sh', '-lc', script] : ['-e', 'sh', '-lc', script];
-    const res = spawnSync('wsl.exe', wslArgs, {
-      encoding: 'buffer',
-      timeout: options.timeoutMs || 30000,
-      windowsHide: true,
-    });
-    return resultOf(res);
+    return {
+      command: 'wsl.exe',
+      args: distro ? ['-d', distro, '-e', 'sh', '-lc', script] : ['-e', 'sh', '-lc', script],
+      // cwd は渡さない（Windows 側に存在しないパスを渡すと spawn 自体が失敗する）。
+      options: { windowsHide: true },
+    };
   }
   // shell:true は cmd.exe 経由で日本語引数・出力を壊す（agent-project/actions.js と同方針）。
-  const res = spawnSync(expandHome(tokens[0] || command), [...tokens.slice(1), ...argv], {
-    cwd: options.cwd || process.cwd(),
+  return {
+    command: expandHome(tokens[0] || command),
+    args: [...tokens.slice(1), ...argv],
+    options: { cwd: cwd || process.cwd(), shell: false, windowsHide: true },
+  };
+}
+
+function sh(command, args, options = {}) {
+  const spec = cliSpawnSpec(command, args, options.cwd);
+  const res = spawnSync(spec.command, spec.args, {
+    ...spec.options,
     encoding: 'buffer',
-    shell: false,
     timeout: options.timeoutMs || 30000,
-    windowsHide: true,
   });
   return resultOf(res);
 }
@@ -581,43 +590,71 @@ function runChatWindow({ chatCommand, prompt, cwd, sessionCommands, sessionKey, 
   return res.ok ? { ...res, session } : res;
 }
 
-// 一回限りのコマンド（agent-loop statemachine 等）を tmux セッションの中で実行して見せる
-// スクリプト。チャット経路（chatWindowScript）と違い ready 判定や send-keys は無く、
-// コマンド自身が完走して終わる。ウィンドウを閉じても tmux セッション側の実行は続く。
+// 一回限りのコマンド（agent-loop statemachine 等）を実行するセッションの名前空間。
+// 実行ごとに一意な名前を使い、チャット（`agent-chat-`）や診断（`agent-doctor-`）の
+// 常駐セッションへ合流させない。
+const COMMAND_SESSION_PREFIX = 'agent-sm';
+
+// 一回限りのコマンドを tmux セッションの中で実行して見せるスクリプト。
+// チャット経路（chatWindowScript）と違い ready 判定も send-keys も無く、コマンド自身が
+// 完走して終わる。ウィンドウを閉じても tmux 側の実行は続く。
+//
+// チャット経路と**意図的に違える点**（どちらも実機の tmux で確かめた上での判断）:
+//
+//   1. **失敗しても同じコマンドを窓で再実行しない**。chatWindowScript は「セッションが
+//      起動直後に消えていたら同じ CLI を窓で直接実行して原因を見せる」が、あれは何度
+//      起動してもよい対話 CLI だから成り立つ。ステートマシンは 1 回の実行でファイルを
+//      書き換えるので、再実行すると同じ工程を二重に走らせてしまう。代わりに、
+//      起動できない唯一の実質的な原因（PATH に無い）を **事前に** 確かめる
+//      （agent-loop 側の cmd_send が which で確かめているのと同じ）。
+//   2. **実行の記録はペインではなくファイルに採る**。tmux の pane は、実行が終わった
+//      あとに人がアタッチすると、そのときのリサイズで内容が消える（remain-on-exit で
+//      pane を残しても同じ。実機で確認済み）。短時間で終わる実行ほど「見に行ったら
+//      何も無い」になるので、`pipe-pane` で出力をファイルへ写し、アタッチから戻った
+//      あとに窓へ出す。runInWindow が tee で出力を拾っているのと同じ考え方。
+//      pipe-pane は placeholder のうちに繋いでおき、`respawn-pane` で本命へ差し替える
+//      ——本命をいきなり起動すると、繋ぐ前に出た行を取りこぼす。
 function commandWindowScript({ command, args, cwd, session }) {
-  const run = [...splitCommand(command).map(quoteToken), ...(args || []).map(shellQuote)].join(' ');
-  const shown = shellQuote([...splitCommand(command), ...(args || [])].join(' '));
+  const tokens = splitCommand(command);
+  const run = [...tokens.map(quoteToken), ...(args || []).map(shellQuote)].join(' ');
+  const bin = quoteToken(tokens[0] || command);
   const cd = cwd ? `cd ${shellQuote(cwd)} || { __t "cd 失敗: ${cwd}"; echo "[agent-dashboard] cd 失敗: ${cwd}"; read _; exit 1; }; __t "cd ok: ${cwd}"; ` : '';
   const cwdArg = cwd ? `-c ${shellQuote(cwd)} ` : '';
+  const fail = (trace, message) => `{ __t ${shellQuote(trace)}; echo ${shellQuote(`[agent-dashboard] ${message}`)}; read _; exit 1; }`;
   return (
     `export LANG=C.UTF-8 LC_ALL=C.UTF-8; ${cd}` +
     `__ses=${shellQuote(session)}; ` +
-    `echo "[agent-dashboard] tmux セッション $__ses で実行を開始します（Ctrl+b d で離脱）"; ` +
-    `tmux new-session -d -s "$__ses" ${cwdArg}${run} || { __t "tmux セッション作成に失敗"; echo "[agent-dashboard] tmux セッション作成に失敗しました"; read _; exit 1; }; ` +
-    `__t "tmux セッション作成 ok"; ` +
-    // 生存チェック（chatWindowScript と同じ理由）: `tmux new-session -d` はコマンドが
-    // 存在しなくても exit 0 を返す。消えていたら同じコマンドを窓の中で直接実行して
-    // 原因を人に見せる。
-    `sleep 1; ` +
-    `if ! tmux has-session -t "$__ses" 2>/dev/null; then ` +
-    `__t "セッションが起動直後に消えた"; ` +
-    `echo; echo "[agent-dashboard] tmux セッションが起動直後に終了しました（コマンドを起動できていません）"; ` +
-    `echo "[agent-dashboard] 同じコマンドをこの窓で直接実行して原因を表示します:"; ` +
-    `echo "  $(printf %s ${shown})"; echo; ` +
-    `${run}; __rc=$?; __t "コマンド直接実行 exit=$__rc"; ` +
-    `echo; echo "[agent-dashboard] コマンドが exit $__rc で終了しました"; ` +
-    `echo "[agent-dashboard] Enter でこのウィンドウを閉じます"; read _; __t "=== 終了(起動失敗) ==="; exit 1; ` +
-    `fi; __t "セッション生存 ok"; ` +
-    `__t "attach 開始"; tmux attach -t "$__ses"; __t "attach 終了 status=$?"; ` +
+    // 実行ファイルの事前確認。tmux は exec に失敗しても何も残さず pane ごと消えるので、
+    // ここで断らないと「一瞬で終わって理由が分からない」だけになる。
+    `command -v ${bin} >/dev/null 2>&1 || `
+    + fail('実行ファイルが PATH に無い', `${tokens[0] || command} が PATH に見つかりません（WSL 側にインストールされているか確認してください）`) + '; ' +
+    `__out=$(mktemp 2>/dev/null || echo /tmp/agent-dashboard-sm.$$); ` +
+    `echo "[agent-dashboard] tmux セッション $__ses で実行します（Ctrl+b d で離脱しても実行は続きます）"; ` +
+    `tmux new-session -d -s "$__ses" ${cwdArg}sleep 300 || `
+    + fail('tmux セッション作成に失敗', 'tmux セッションを作成できませんでした') + '; ' +
+    `tmux pipe-pane -o -t "$__ses" "cat >> '$__out'"; ` +
+    `tmux respawn-pane -k -t "$__ses" ${cwdArg}${run} || `
+    + `{ tmux kill-session -t "$__ses" 2>/dev/null; `
+    + `__t "respawn-pane に失敗"; echo "[agent-dashboard] tmux ペインでコマンドを起動できませんでした"; read _; exit 1; }; ` +
+    `__t "実行開始 $__ses"; ` +
+    // 終了済みなら attach は失敗する（セッションはもう無い）。それは異常ではないので、
+    // 下で記録を出す。
+    `sleep 1; __t "attach 開始"; tmux attach -t "$__ses" 2>/dev/null; __t "attach 終了 status=$?"; ` +
+    `if tmux has-session -t "$__ses" 2>/dev/null; then ` +
+    `echo; echo "[agent-dashboard] 実行は継続中です。再接続: tmux attach -t $__ses"; __t "実行継続"; ` +
+    `else echo; echo "[agent-dashboard] 実行が終了しました。出力（末尾）:"; `
+    + `tail -n 30 "$__out" 2>/dev/null; rm -f "$__out"; __t "実行終了"; fi; ` +
     `echo; echo "[agent-dashboard] Enter でこのウィンドウを閉じます"; __t "Enter 待ち"; read _; __t "=== 終了 ==="`
   );
 }
 
 // 一回限りのコマンドを新しいウィンドウの tmux セッションで実行する。セッション名は
 // 実行ごとに一意（前回の実行ウィンドウが残っていても合流・誤送信しない）。
+// cwd は **WSL 側の Linux パスへ翻訳してから** tmux と cd に渡す（Windows パスのまま
+// 渡すと `-c` も `cd` も刺さらず、コマンドが別の場所で走る）。
 function runCommandWindow({ command, args, cwd, sessionKey, title, message }) {
   const linuxCwd = toWslCwd(cwd);
-  const base = chatSessionName(linuxCwd || cwd, sessionKey, 'agent-sm');
+  const base = chatSessionName(linuxCwd || cwd, sessionKey, COMMAND_SESSION_PREFIX);
   const session = `${base}-${Date.now().toString(36)}`;
   const script = commandWindowScript({ command, args, cwd: linuxCwd, session });
   const res = launchWindowScript(script, {
@@ -632,18 +669,16 @@ function runCommandWindow({ command, args, cwd, sessionKey, title, message }) {
 // 環境用のフォールバック。同期 spawnSync は main プロセスを実行時間ぶん止めるので使わない）。
 // 出力末尾の `RESULT {json}` 行（agent-loop statemachine の結果契約）があれば解析して返す。
 function runCommandCapture(command, args, options = {}) {
-  const tokens = splitCommand(command);
+  // 起動仕様は同期の sh() と同じ（win32 は wsl.exe 経由）。ここを直接 spawn にすると、
+  // Windows のダッシュボードから WSL 側の agent-loop を呼べない。
+  const spec = cliSpawnSpec(command, args, options.cwd);
   return new Promise((resolve) => {
     const out = [];
     const err = [];
     let timedOut = false;
     let child;
     try {
-      child = spawn(expandHome(tokens[0] || command), [...tokens.slice(1), ...(args || []).map(String)], {
-        cwd: options.cwd || process.cwd(),
-        shell: false,
-        windowsHide: true,
-      });
+      child = spawn(spec.command, spec.args, spec.options);
     } catch (e) {
       resolve({ ok: false, status: -1, stdout: '', stderr: '', error: e.message });
       return;
@@ -746,7 +781,8 @@ module.exports = {
   writeWindowScript,
   runInWindow,
   chatWindowScript, chatSessionName, runChatWindow, launchWindowScript,
-  commandWindowScript, runCommandWindow, runCommandCapture,
+  commandWindowScript, runCommandWindow, runCommandCapture, cliSpawnSpec,
+  COMMAND_SESSION_PREFIX,
   sessionProcessLines, sessionChatLines,
   splitCommand, quoteToken, expandHome, findExecutable, terminalLaunchSpec, supportsRunWindow,
 };

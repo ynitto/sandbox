@@ -48,8 +48,7 @@ dashboard プロセスのままで、win32 の PATH 問題も agent-loop から�
 
 ```
 agent-loop statemachine --workflow .statemachine/<name>/workflow.yaml \
-    [--agent-cli aider] [--model MODEL] [--param KEY=VALUE ...] [--input TEXT] \
-    [--dir DIR] [--hold]
+    [--agent-cli aider] [--model MODEL] [--param KEY=VALUE ...] [--input TEXT] [--dir DIR]
 ```
 
 - `agent_loop/statemachine.py` に in-process 実行器の限定ツールループを移植する。
@@ -61,21 +60,56 @@ agent-loop statemachine --workflow .statemachine/<name>/workflow.yaml \
   statemachine-use スキルを解決して使う（cwd → リポジトリ → `~/.agents/skills` →
   `~/.codex/skills`）。
 - 終了時に `RESULT {json}` を 1 行出力する（ok / stdout / finalState / logFile / files）。
-  `--hold` は結果を残したままウィンドウを保持する（Enter で閉じる。tmux ウィンドウ実行用）。
+  dashboard はこの行を実行結果の契約として読む。
 
 ### dashboard の実行経路
 
 `runStateMachine` の非対話（Aider）分岐は in-process 実行をやめ、次のとおり起動する。
 
 - ウィンドウ実行（既定）: `runCommandWindow` で実行ごとに一意な tmux セッション
-  （`agent-sm-<cli>-<digest>-<ts>`）を作り、`<loopCommand> statemachine … --hold` を
-  起動してアタッチする。生存チェック・実行ログ（tracePreamble）は chat ウィンドウと
-  同じ流儀。ウィンドウを閉じても実行は tmux 側で続く。
+  （`agent-sm-<cli>-<digest>-<ts>`）を作り、`<loopCommand> statemachine …` を起動して
+  アタッチする。ウィンドウを閉じても実行は tmux 側で続く。
 - 非ウィンドウ環境: `runCommandCapture` で非同期に完走させ、`RESULT` 行を解析して
   従来の実行履歴契約のまま記録する（main プロセスは止めない）。
-- ワークフローは cwd 相対 POSIX パスで渡す（win32 の dashboard から WSL 側の
-  agent-loop を呼んでも同じ場所を指す）。段解決した `{agent_cli, model}` は
-  `--agent-cli` / `--model` で今回の実行にだけ明示する。
+- 段解決した `{agent_cli, model}` は `--agent-cli` / `--model` で今回の実行にだけ明示する。
+
+### Windows → WSL の境界（この設計の要）
+
+実行主体が WSL 側へ移るため、**ビュアー（Windows）のパスと WSL のパスを取り違えると
+すべて壊れる**。既存の `sh()` / `chatWindowScript` と同じ規則へ揃える。
+
+- 起動は必ず `wsl.exe` 経由にする。同期・非同期の起動仕様を `cliSpawnSpec` に一本化し、
+  win32 では `wsl.exe [-d <distro>] -e sh -lc 'cd <linuxCwd> && …'` を組む。
+  Windows 側で直接 `spawn` すると agent-loop は ENOENT になり、Windows に存在しない
+  パスを `spawn` の `cwd` へ渡すと起動自体が失敗する。
+- tmux の `-c` と `cd` には `toWslCwd()` で翻訳した Linux パスだけを渡す。
+- `--workflow` は **実行 cwd からの相対 POSIX パス**で渡す。ビュアーの絶対パスは
+  WSL 側で解決できず、相対にすればディストロ表記にも依存しない。作業フォルダの外を
+  指す組み合わせ（登録フォルダと定義フォルダが別ボリューム。win32 の `path.relative`
+  は道筋が無いと絶対パスを返す）は dashboard 側で起動前に断る。
+
+### tmux セッションの扱い（チャット経路との違い）
+
+一回限りの実行なので、常駐セッション向けの流儀をそのまま使えない。以下は実機の tmux で
+挙動を確かめた上での判断。
+
+- **失敗しても同じコマンドを窓で再実行しない**。`chatWindowScript` は「セッションが
+  起動直後に消えていたら同じ CLI を窓で直接実行して原因を見せる」が、それは何度
+  起動してもよい対話 CLI だから成り立つ。ステートマシンを再実行するとファイル編集ごと
+  二重に走る。代わりに、起動できない唯一の実質的な原因（PATH に無い）を
+  `command -v` で**事前に**確かめる（agent-loop の `cmd_send` が `which` で確かめて
+  いるのと同じ）。tmux は exec に失敗しても何も残さずペインごと消えるため、
+  事前に断らないと「一瞬で終わって理由が分からない」だけになる。
+- **実行の記録はペインではなくファイルに採る**。当初 `remain-on-exit` でペインを
+  残す方式にしたが、実行が終わったあとに人がアタッチすると**そのときのリサイズで
+  ペインの内容が消える**（80x24 → 80x23 で確認）。短時間で終わる実行ほど「見に行ったら
+  何も無い」になる。`pipe-pane` で出力をファイルへ写し、アタッチから戻ったあとに窓へ
+  末尾を出す（`runInWindow` が `tee` で出力を拾っているのと同じ考え方）。
+  pipe-pane は placeholder（`sleep`）のうちに繋ぎ、`respawn-pane` で本命へ差し替える
+  ——本命をいきなり起動すると、繋ぐ前に出た行を取りこぼす。
+- アタッチから戻ったとき、セッションが残っていれば実行中なので再接続方法
+  （`tmux attach -t …`）を表示し、消えていれば終了なので記録の末尾を出して片付ける。
+  セッションはコマンドの終了とともに自然に消えるので、溜まり続けることはない。
 
 ### 変えないこと
 
@@ -102,9 +136,10 @@ agent-loop statemachine --workflow .statemachine/<name>/workflow.yaml \
 ## エラー処理
 
 - CLI 定義・モデル・ワークフローを解決できない: `RESULT {ok:false, error}` と非 0 終了。
-  ウィンドウには原因がそのまま残る（`--hold`）。
-- tmux セッションが起動直後に消えた: 同じコマンドをウィンドウ内で直接実行して
-  CLI 自身のエラーを見せる（chat ウィンドウと同じ流儀）。
+  窓には `pipe-pane` で拾った出力の末尾が出る。
+- ワークフローが作業フォルダの外を指す: 起動せず、dashboard 側で理由を返す。
+- agent-loop が WSL 側に無い: セッションを作る前に `command -v` で断り、窓に理由を残す。
+  **再実行はしない**（二重実行を作らない）。
 - ツール要求の検証違反・パス逸脱・シェル要求: 実行せず拒否理由を Aider と JSONL ログへ返す。
 - 非ウィンドウ実行のタイムアウト: プロセスを止め、タイムアウトを実行履歴に記録する。
 
@@ -115,8 +150,13 @@ agent-loop statemachine --workflow .statemachine/<name>/workflow.yaml \
   オブジェクト）、スタブ aider による「成功申告 → 書込補正 → 検証 → 終端遷移」の完走、
   `--param` / `--input` の解釈。
 - dashboard（JS）: ハーネス起動引数（相対ワークフロー・`--model`・`--param`）、
-  ウィンドウスクリプト（tmux new-session・生存チェック・アタッチ・`--hold`）、
+  作業フォルダ外の定義を起動前に断ること、**win32 で `wsl.exe` を経由し WSL パスへ
+  翻訳すること**（非ウィンドウ実行・ウィンドウ実行の両方）、ウィンドウスクリプトが
+  同じコマンドを二度書かないこと、PATH 事前確認、pipe-pane を本命起動前に繋ぐこと、
   非ウィンドウ実行の `RESULT` 行解析と exit code フォールバック。
+- 生成した tmux スクリプトを実物の tmux で走らせ、(1) 実行が終わってから見に行っても
+  窓に出力が出る、(2) 実行中に離脱してもセッションが残り再接続方法が出る、
+  (3) PATH に無いコマンドは起動前に断る、(4) セッションが残らない、を確認する。
 - 既存の定常業務・agent-loop 全テストの回帰なし。
 
 ## Decision Record

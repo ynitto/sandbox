@@ -773,8 +773,6 @@ def cmd_statemachine(args: argparse.Namespace, cwd: Path) -> None:
     if not work_dir.is_dir():
         print(f"[agent-loop] ERROR: ディレクトリが存在しません: {work_dir}", file=sys.stderr)
         sys.exit(1)
-    hold = bool(getattr(args, "hold", False))
-    code = 0
     try:
         params = _sm_parse_params(getattr(args, "param", None) or [],
                                   getattr(args, "input", None))
@@ -785,16 +783,8 @@ def cmd_statemachine(args: argparse.Namespace, cwd: Path) -> None:
         result = run_statemachine(workflow_path=args.workflow, cwd=str(work_dir),
                                   parameters=params, agent=agent)
         print("RESULT " + json.dumps(result, ensure_ascii=False))
-        code = 0 if result.get("ok") else 1
+        sys.exit(0 if result.get("ok") else 1)
     except StateMachineHarnessError as exc:
         print("RESULT " + json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
         print(f"[agent-loop] ERROR: {exc}", file=sys.stderr)
-        code = 1
-    if hold:
-        # tmux ウィンドウ実行用: 結果を残したままウィンドウを保持する（Enter で閉じる）。
-        print("[agent-loop] Enter でこのウィンドウを閉じます", flush=True)
-        try:
-            input()
-        except EOFError:
-            pass
-    sys.exit(code)
+        sys.exit(1)

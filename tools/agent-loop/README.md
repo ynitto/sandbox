@@ -96,7 +96,7 @@ agent-loop send [-s SESSION] [-d DIR] [--wait] [--priority high|normal|low]
                 [--model MODEL] [--sandbox] [--force]
                 [--ralph --max-iterations N] PROMPT
 agent-loop statemachine --workflow PATH [--agent-cli NAME] [--model MODEL]
-                        [--param KEY=VALUE ...] [--input TEXT] [-d DIR] [--hold]
+                        [--param KEY=VALUE ...] [--input TEXT] [-d DIR]
 agent-loop pause | resume | cancel TARGET | drain | reload
 agent-loop doctor [--json] [--fix]
 agent-loop update
@@ -117,8 +117,9 @@ agent-loop --version
   ハーネスです（限定ツールループ: `read_files` / `write_files` / `run` / `final`。パス・
   実行ファイル検証と JSONL ログつき）。CLI とモデルは `agents/<name>.json` 契約で解決し、
   `--model` 省略時は定義の `default_model` を使います。状態遷移は statemachine-use の
-  `next_state.py` が確定します。終了時に `RESULT {json}` を 1 行出力し、`--hold` は
-  結果を残したままウィンドウを保持します（dashboard の tmux ウィンドウ実行用）。
+  `next_state.py` が確定します。終了時に `RESULT {json}` を 1 行出力します
+  （dashboard はこの行を実行結果の契約として読みます）。`--workflow` は作業ディレクトリ
+  内のパスに限ります（dashboard からは cwd 相対で渡されます）。
 - `pause` / `resume` は local pause（`resume` は agent-control / budget の pause を迂回しません）。
 - `cancel` は managed な entry / pane だけを停止・slot 解放します（external pane は拒否）。
 - `drain` は新規受付を止め、実行中完了後に daemon を終了します。

@@ -245,10 +245,6 @@ def main() -> None:
         "--dir", "-d", default=None, metavar="DIR",
         help="作業ディレクトリ（省略時: カレントディレクトリ）",
     )
-    sm_parser.add_argument(
-        "--hold", action="store_true",
-        help="終了後に Enter 入力までウィンドウを保持する（tmux ウィンドウ実行用）",
-    )
 
     msg_parser = subparsers.add_parser(
         "msg",

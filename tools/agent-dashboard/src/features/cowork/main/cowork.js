@@ -593,11 +593,26 @@ function stateMachineParameterBlock(values) {
     + entries.map(([key, value]) => `- ${key}: ${JSON.stringify(value)}`).join('\n');
 }
 
-// agent-loop statemachine ハーネス（限定ツールループ）の起動引数。ワークフローは実行 cwd
-// からの相対 POSIX パスで渡す（win32 の dashboard から WSL 側の agent-loop を呼んでも
-// 同じ場所を指すように）。モデルは段解決の結果を --model で今回の実行にだけ明示する。
+// ハーネスへ渡すワークフローの位置。**実行 cwd からの相対 POSIX パス**にする——
+// ハーネスは WSL 側で動くので、ビュアー（Windows）のパスをそのまま渡すと解決できない。
+// 相対にしておけば、cwd さえ WSL 側へ翻訳できていればディストロ表記に依存しない。
+//
+// 作業フォルダの外を指してしまう組み合わせ（登録フォルダと定義フォルダが別ボリューム
+// にある等。win32 の path.relative は道筋が無いと絶対パスを返す）はここで断る。
+// そのまま渡すと WSL 側で意味を成さないパスになり、ハーネスの「作業フォルダ外」
+// エラーだけが返って原因が分からない。
+function harnessWorkflowArg(cwd, workflowPath, config) {
+  const rel = relPosix(cwd, workflowPath, config);
+  if (!rel || rel === '..' || rel.startsWith('../') || /^(?:[A-Za-z]:|\/)/.test(rel)) {
+    throw new Error(`ステートマシン定義が作業フォルダの外にあります: ${workflowPath}`);
+  }
+  return rel;
+}
+
+// agent-loop statemachine ハーネス（限定ツールループ）の起動引数。
+// モデルは段解決の結果を --model で今回の実行にだけ明示する。
 function stateMachineHarnessArgs(cwd, workflowPath, selected, values, config) {
-  const args = ['statemachine', '--workflow', relPosix(cwd, workflowPath, config),
+  const args = ['statemachine', '--workflow', harnessWorkflowArg(cwd, workflowPath, config),
     '--agent-cli', selected.cli];
   if (selected.model) args.push('--model', String(selected.model));
   for (const [key, value] of Object.entries(values || {})) {
@@ -764,7 +779,7 @@ function runStateMachine(config, itemIdValue, parameters, tier = '') {
     if (cfg.runWindow !== false && supportsRunWindow()) {
       const res = runCommandWindow({
         command,
-        args: [...smArgs, '--hold'],
+        args: smArgs,
         cwd,
         sessionKey: selected.cli,
         title: '定型業務を実行',
@@ -1280,5 +1295,5 @@ module.exports = {
   inspectCoworkRoot, setCoworkRoot,
   templateParameterKeys, stateMachineInputSpec, stateMachineFilePath,
   routineParameterSpec, validateParameters, applyParameters, stateMachineParameterBlock,
-  stateMachineHarnessArgs,
+  stateMachineHarnessArgs, harnessWorkflowArg,
 };
