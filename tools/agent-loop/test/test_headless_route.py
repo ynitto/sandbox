@@ -2,6 +2,7 @@
 
 設計: docs/plans/2026-08-11-agent-loop-headless-agent-cli-design.md
 """
+import io
 import json
 import os
 import sys
@@ -153,6 +154,13 @@ class AcceptanceGateTest(unittest.TestCase):
         self.assertEqual(al.acceptance_evidence_errors([], cwd=self.dir, touched=set(),
                                                        stamps_before={}), [])
 
+    def test_criteria_without_a_quoted_path_are_not_verified(self):
+        # 「書いてある」と「機械で照合できる」は別。グロブや文章だけの条件は判定層待ちで、
+        # ここを検証済みにすると何も照合していない実行が done の根拠になる。
+        self.assertFalse(al._tl_verified(["要約ファイルが *.md 形式で作成されていること"], self.dir))
+        self.assertFalse(al._tl_verified([], self.dir))
+        self.assertTrue(al._tl_verified(["`out/report.md` が更新されている"], self.dir))
+
 
 class GoalToolLoopTest(unittest.TestCase):
     """ツールループ非内蔵の CLI へツール実行を供給する run_goal。"""
@@ -182,6 +190,34 @@ class GoalToolLoopTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertTrue(result["verified"])
 
+    def test_machine_gate_pass_ends_the_loop_without_final(self):
+        # 小型モデルは書き終えても final を出さず、同じ write_files を繰り返して
+        # ラウンド上限まで走る（実測: 1 回で書けた仕事に 8 ラウンド）。
+        # done の根拠は元から機械検証だけなので、その PASS を停止条件にする。
+        calls = []
+
+        def fake(agent, prompt, *, cwd, readonly, read_files, files, log_file):
+            calls.append(readonly)
+            if not readonly:
+                for f in files:
+                    Path(f).write_text("generated\n", encoding="utf-8")
+                return "wrote"
+            return '{"type":"write_files","paths":["out.md"]}'
+        al._tl_run_agent = fake
+
+        result = al.run_goal(goal="out.md を書く", cwd=self.dir, agent={}, log_file=self.log,
+                             acceptance=["`out.md` が更新されている"])
+        self.assertTrue(result["ok"])
+        self.assertEqual(len(calls), 2, "1 ラウンド（要求 + 書き込み）で止まる")
+
+    def test_without_checkable_criteria_the_loop_still_waits_for_final(self):
+        # 照合できる条件が無ければ止める根拠も無いので、従来どおり final を待つ。
+        self._script(['{"type":"write_files","paths":["out.md"]}', "wrote",
+                      '{"type":"final","output":"done"}'])
+        result = al.run_goal(goal="out.md を書く", cwd=self.dir, agent={}, log_file=self.log,
+                             acceptance=[])
+        self.assertEqual(result["output"], "done")
+
     def test_final_without_any_work_is_rejected(self):
         self._script(['{"type":"final","output":"done"}'])
         result = al.run_goal(goal="out2.md を作る", cwd=self.dir, agent={}, log_file=self.log,
@@ -195,6 +231,24 @@ class GoalToolLoopTest(unittest.TestCase):
                              acceptance=[])
         self.assertTrue(result["ok"])
         self.assertFalse(result["verified"])    # done の根拠にしない
+
+    def test_each_round_and_every_rejection_is_visible(self):
+        # ローカルモデルは 1 周に数十秒かかる。却下が黙って次の周へ行くと、外からは
+        # 「止まっている」ようにしか見えず、人は打ち切りも修正もできない。
+        self._script(['{"type":"read_files","paths":["missing.txt"]}',
+                      '{"type":"final","output":"done"}'])
+        out = io.StringIO()
+        with mock.patch("sys.stdout", out):
+            al.run_goal(goal="何かする", cwd=self.dir, agent={}, log_file=self.log,
+                        acceptance=[], tag="run")
+        printed = out.getvalue()
+        self.assertIn("ラウンド 1/", printed)
+        self.assertIn("ラウンド 2/", printed)
+        self.assertIn("却下: 読み取り対象がありません: missing.txt", printed)
+        events = [json.loads(line) for line in
+                  Path(self.log).read_text(encoding="utf-8").splitlines()]
+        self.assertTrue(any(e.get("event") == "rejected" for e in events),
+                        "却下は実行ログにも残す（後から why を追える）")
 
     def test_shell_requests_are_refused_and_reported_back(self):
         self._script(['{"type":"run","command":"bash","args":["-c","rm -rf /"]}',
@@ -258,6 +312,98 @@ class HeadlessDispatchTest(unittest.TestCase):
                 break
         self.assertEqual(Path(self.dir, "out.md").read_text(encoding="utf-8").strip(), "summary")
         self.assertEqual(sched._active_count, 0)    # スロットと active が戻る
+
+
+class RunSubcommandTest(unittest.TestCase):
+    """`agent-loop run`: デーモン無しの単発実行。層の分岐はデーモンと同じ 1 実装を通る。"""
+
+    def setUp(self):
+        self.dir = os.path.realpath(tempfile.mkdtemp())
+        _write_cli(self.dir, "plain", {
+            "command": ["plain", "--message"], "prompt_via": "argv",
+            "prompt_flag": "--message", "file_flag": "--file", "read_flag": "--read",
+            "headless_autonomy": "single-shot",
+        })
+        os.environ["AGENT_LOOP_RUN_DIR"] = tempfile.mkdtemp()
+        self.real_run_agent = al._tl_run_agent
+        self.addCleanup(setattr, al, "_tl_run_agent", self.real_run_agent)
+
+    def _args(self, prompt, **kw):
+        return al.argparse.Namespace(prompt=[prompt], agent_cli="plain", model=None,
+                                     acceptance=kw.get("acceptance", []), dir=self.dir)
+
+    def _run(self, args):
+        """cmd_run を走らせ、(exit code, RESULT の JSON) を返す。"""
+        out = io.StringIO()
+        with mock.patch("sys.stdout", out), self.assertRaises(SystemExit) as exit_info:
+            al.cmd_run(args, Path(self.dir))
+        line = [x for x in out.getvalue().splitlines() if x.startswith("RESULT ")][-1]
+        return exit_info.exception.code, json.loads(line[len("RESULT "):])
+
+    def test_single_shot_cli_gets_the_tool_loop_and_reports_result(self):
+        steps = iter(['{"type":"write_files","paths":["out.md"]}', "wrote",
+                      '{"type":"final","output":"done"}'])
+
+        def fake(agent, prompt, *, cwd, readonly, read_files, files, log_file):
+            out = next(steps)
+            if not readonly and files:
+                for f in files:
+                    Path(f).write_text("summary\n", encoding="utf-8")
+            return out
+        al._tl_run_agent = fake
+
+        code, result = self._run(self._args("`out.md` に要約を書く",
+                                            acceptance=["`out.md` が更新されている"]))
+        self.assertEqual(code, 0)
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["verified"])       # 受入条件があるので機械層が検証した
+        self.assertEqual(Path(self.dir, "out.md").read_text(encoding="utf-8").strip(), "summary")
+
+    def test_without_acceptance_the_run_is_recorded_as_unverified(self):
+        al._tl_run_agent = lambda *a, **kw: '{"type":"final","output":"done"}'
+        code, result = self._run(self._args("何かする"))
+        self.assertEqual(code, 0)
+        self.assertFalse(result["verified"])      # done の根拠にしない
+
+    def test_acceptance_without_a_quoted_path_is_also_unverified(self):
+        al._tl_run_agent = lambda *a, **kw: '{"type":"final","output":"done"}'
+        code, result = self._run(self._args(
+            "何かする", acceptance=["要約ファイルが *.md 形式で作成されていること"]))
+        self.assertEqual(code, 0)
+        self.assertFalse(result["verified"],
+                         "条件が書いてあっても照合できなければ「検証なし」")
+
+    def test_empty_prompt_is_rejected(self):
+        with mock.patch("sys.stderr", io.StringIO()), self.assertRaises(SystemExit) as exit_info:
+            al.cmd_run(self._args("   "), Path(self.dir))
+        self.assertEqual(exit_info.exception.code, 2)
+
+    def test_prompt_can_be_a_file_in_the_working_directory(self):
+        Path(self.dir, "task.md").write_text("ファイルに書いた指示", encoding="utf-8")
+        seen = {}
+
+        def fake(agent, prompt, *, cwd, readonly, read_files, files, log_file):
+            seen["prompt"] = prompt
+            return '{"type":"final","output":"done"}'
+        al._tl_run_agent = fake
+        self._run(self._args("task.md"))
+        self.assertIn("ファイルに書いた指示", seen["prompt"])
+
+    def test_tool_loop_cli_is_invoked_once_without_the_harness(self):
+        _write_cli(self.dir, "loopy", {"command": ["loopy", "--message"],
+                                       "prompt_via": "argv", "prompt_flag": "--message",
+                                       "headless_autonomy": "tool-loop"})
+        calls = []
+
+        def fake_exec(command, args, **kw):
+            calls.append(command)
+            return {"status": 0, "error": "", "stdout": "done", "stderr": ""}
+        with mock.patch.object(al, "_tl_exec_argv", fake_exec):
+            args = self._args("何かする")
+            args.agent_cli = "loopy"
+            code, result = self._run(args)
+        self.assertEqual(code, 0)
+        self.assertEqual(calls, ["loopy"])        # ツールループを挟まず 1 回だけ呼ぶ
 
 
 class HeadlessStartupCheckTest(unittest.TestCase):

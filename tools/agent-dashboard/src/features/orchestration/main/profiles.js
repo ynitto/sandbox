@@ -121,6 +121,14 @@ function normalizeExecutionPolicy(raw) {
   };
 }
 
+function missingPolicyTiers(tiers, policy) {
+  const names = new Set([
+    policy.no_cap_tier,
+    ...(policy.steps || []).map((step) => step.tier),
+  ].filter(Boolean));
+  return [...names].filter((name) => !tiers[name] || !tiers[name].candidates.length);
+}
+
 function defaultProfiles() {
   return { version: 1, enabled: true, tiers: {}, policy: normalizePolicy({}), state: {}, executionPolicy: null };
 }
@@ -175,6 +183,10 @@ function save(cfg, patch) {
     const executionPolicy = normalizeExecutionPolicy(p.executionPolicy);
     if (!executionPolicy) throw new Error('executionPolicy.mode が不正です');
     next.execution_policy = executionPolicy;
+  }
+  const missing = missingPolicyTiers(next.tiers, next.policy);
+  if (missing.length) {
+    throw new Error(`方針で使う実行レベルに候補がありません: ${missing.join(', ')}`);
   }
   next.updated_at = nowStamp();
   next.updated_by = 'dashboard';
@@ -373,20 +385,20 @@ function decide(profiles, usage, nowMs) {
 // --- 適用（副作用はここに閉じる） -------------------------------------------
 
 // 書かずに決定だけ見せる（画面の dry-run ボタン用）。
-function evaluate(cfg) {
+function evaluate(cfg, { force = false } = {}) {
   const dir = resolveProfilesDir(cfg);
   const profiles = loadProfiles(dir);
   const usage = budget.usage(cfg);
-  const decisions = decide(profiles, usage, Date.now());
+  const decisions = decide(force ? { ...profiles, state: {} } : profiles, usage, Date.now());
   return { profiles, usage, decisions };
 }
 
 // 決定を control.json（選択結果）と profiles.json（state=記録）へ書く。
 // 現状と一致する決定は書かない（saveControl は必ず revision++ するため、無変化の書き込みは
 // revision_applied 突き合わせを無意味にする）。
-function apply(cfg) {
+function apply(cfg, options) {
   const dir = resolveProfilesDir(cfg);
-  const { profiles, decisions } = evaluate(cfg);
+  const { profiles, decisions } = evaluate(cfg, options);
   const controlDir = control.resolveControlDir(cfg);
   const curControl = control.loadControl(controlDir);
 

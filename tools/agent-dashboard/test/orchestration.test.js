@@ -654,16 +654,22 @@ test('手法: enable はカタログ snapshot を固定し revision を単調増
   const enabled = tuning.setMethod(cfg, { id: 'test-first', enabled: true });
   assert.strictEqual(enabled.revision, 1);
   assert.strictEqual(enabled.methods[0].source, `methods/test-first@${tuning.sourceHash(method)}`);
-  fs.writeFileSync(path.join(mdir, 'test-first.json'), JSON.stringify({ ...method, description: '更新' }));
+  const updatedMethod = { ...method, description: '更新' };
+  fs.writeFileSync(path.join(mdir, 'test-first.json'), JSON.stringify(updatedMethod));
   assert.strictEqual(tuning.load(cfg).methods[0].description, 'テストから始める', 'カタログ更新を自動反映しない');
-  assert.strictEqual(tuning.setMethod(cfg, { id: 'test-first', enabled: false }).revision, 2);
+  const refreshed = tuning.setMethod(cfg, { id: 'test-first', enabled: true });
+  assert.strictEqual(refreshed.revision, 2);
+  assert.strictEqual(refreshed.methods[0].description, '更新');
+  assert.strictEqual(refreshed.methods[0].source,
+    `methods/test-first@${tuning.sourceHash(updatedMethod)}`);
+  assert.strictEqual(tuning.setMethod(cfg, { id: 'test-first', enabled: false }).revision, 3);
   const custom = tuning.addMethod(cfg, { id: 'custom-check', description: '二重確認する', role: 'verify', text: '二重確認する',
     when: { tiers: ['full'] } });
-  assert.strictEqual(custom.revision, 3);
+  assert.strictEqual(custom.revision, 4);
   assert.strictEqual(custom.methods.find((item) => item.id === 'custom-check').source, 'custom/custom-check');
-  assert.strictEqual(tuning.setMethod(cfg, { id: 'custom-check', enabled: false }).revision, 4);
+  assert.strictEqual(tuning.setMethod(cfg, { id: 'custom-check', enabled: false }).revision, 5);
   const reenabled = tuning.setMethod(cfg, { id: 'custom-check', enabled: true });
-  assert.strictEqual(reenabled.revision, 5);
+  assert.strictEqual(reenabled.revision, 6);
   assert.strictEqual(reenabled.methods.find((item) => item.id === 'custom-check').enabled, true,
     'カスタム手法もOFFからONへ戻せる');
   assert.throws(() => tuning.addMethod(cfg, {
@@ -712,6 +718,10 @@ test('IPC: orchestration:overview は budget/control/status/agents/instructions/
   assert.strictEqual(ov.controlDir, cdir);
   assert.strictEqual(ov.instructionsDir, idir);
   assert.ok(Array.isArray(ov.methodsCatalog));
+  for (const method of ov.methodsCatalog) {
+    const { catalog_source: source, ...catalogMethod } = method;
+    assert.strictEqual(source, `methods/${method.id}@${tuning.sourceHash(catalogMethod)}`);
+  }
   assert.strictEqual(ov.tuning.version, 1);
   // save 動線
   const saved = handlers['orchestration:instructionsSave']({ text: '更新' });

@@ -95,6 +95,7 @@ agent-loop ls
 agent-loop send [-s SESSION] [-d DIR] [--wait] [--priority high|normal|low]
                 [--model MODEL] [--sandbox] [--force]
                 [--ralph --max-iterations N] PROMPT
+agent-loop run [--agent-cli NAME] [--model MODEL] [--acceptance TEXT ...] [-d DIR] PROMPT
 agent-loop statemachine --workflow PATH [--agent-cli NAME] [--model MODEL]
                         [--param KEY=VALUE ...] [--input TEXT] [-d DIR]
 agent-loop pause | resume | cancel TARGET | drain | reload
@@ -113,6 +114,12 @@ agent-loop --version
 - `--ralph --max-iterations N` は同一 pane で N 回送信し、最終回に要約指示を付けます（`--force` 併用不可）。
 - `--sandbox` は git worktree を `~/.agents/sandboxes/` に作り、clean なら完了後に削除します。
 - `--force` が迂回するのは visual ready と preflight だけです（lifecycle / slot / 追跡中 pane は迂回しません）。
+- `run` はプロンプト 1 件をその場で 1 回実行します（daemon 不要）。`send` が「常駐セッションへ
+  送る」のに対し、こちらは「今ここで実行して結果を返す」口です。ツールループ非内蔵の CLI
+  （`headless_autonomy: single-shot`）には限定ツール契約でツール実行を供給し、`--acceptance`
+  が無ければ結果は「検証なし」になります。終了時に `RESULT {json}` を 1 行出力します。
+  tmux で様子を見せたいときは、このコマンドを tmux ウィンドウの中で起動してください
+  （対話 CLI かどうかとは無関係——tmux は送る手段・見る手段）。
 - `statemachine` は statemachine-use のワークフローを aider 等の **headless CLI** で完走させる
   ハーネスです（限定ツールループ: `read_files` / `write_files` / `run` / `final`。パス・
   実行ファイル検証と JSONL ログつき）。CLI とモデルは `agents/<name>.json` 契約で解決し、

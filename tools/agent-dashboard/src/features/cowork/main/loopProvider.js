@@ -766,9 +766,10 @@ function makeLoopProvider(cfg, config = null) {
         // 明示 args（レガシー）の項目は従来どおり <loopCommand> をウィンドウで実行する
         return runInWindow(command, sendArgsFor(job), { cwd: job.cwd || job.repo });
       }
-      // agent-loop / agent-loop に `run` サブコマンドは無い。単発実行は
-      // `send <プロンプト名>` — cwd（ワークスペース）の .kiro/agent-loop.* から
-      // 定期プロンプト名を解決してセッションへ送信する（送信のみで応答は待たない）。
+      // ここは対話セッションへの投函経路なので `send <プロンプト名>` を使う — cwd
+      // （ワークスペース）の .kiro/agent-loop.* から定期プロンプト名を解決してセッションへ
+      // 送信する（送信のみで応答は待たない）。対話ペインを持たない CLI は呼び出し側
+      // （cowork.runLoop）が `agent-loop run`（単発実行）へ振り分けるので、ここには来ない。
       return sh(command, sendArgsFor(job), { cwd: job.cwd || job.repo, timeoutMs: job.timeoutMs || 60000 });
     },
   };

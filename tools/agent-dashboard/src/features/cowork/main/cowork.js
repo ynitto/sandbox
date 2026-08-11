@@ -690,6 +690,35 @@ function resolveLoopPromptText(repo, promptName, config) {
   return idx >= 0 ? String(texts[idx] || '') : '';
 }
 
+// 同じ設定から受入条件（acceptance）を名前で解決する。ツールループ非内蔵の CLI
+// （`headless_autonomy: single-shot`）では、これが無いと done を機械検証できない
+// （agent-loop 設計「層3 のツールループと受入条件」）。読めなければ空配列。
+// 読みは本物の YAML パーサを通す（writeback.js の行指向パーサは書き戻し専用）。
+function resolveLoopAcceptance(repo, promptName, config) {
+  const root = viewerRepo(repo, config) || String(repo || '');
+  const name = String(promptName || '').trim();
+  if (!root || !name) return [];
+  let marker;
+  try { marker = detectMarkers(root); } catch { return []; }
+  if (!marker || !marker.kiroFile) return [];
+  let text;
+  try { text = fs.readFileSync(marker.kiroFile, 'utf8'); } catch { return []; }
+  let data;
+  if (marker.kiroFormat === 'json') {
+    try { data = JSON.parse(text); } catch { return []; }
+  } else {
+    data = parseYaml(text);
+  }
+  const prompts = Array.isArray(data && data.prompts) ? data.prompts : [];
+  const hit = prompts.find((p, i) => p && typeof p === 'object'
+    && (String(p.name || '') === name || `prompt-${i + 1}` === name));
+  // 1 件だけのときスカラーで書ける（agent-loop の validate_entries と同じ受け方）。
+  // ここを配列限定にしていると、書いてあるのに「受入条件が無い」と言われる。
+  const raw = hit ? hit.acceptance : null;
+  const list = Array.isArray(raw) ? raw : (raw == null || raw === '' ? [] : [raw]);
+  return list.map((v) => String(v == null ? '' : v).trim()).filter(Boolean);
+}
+
 // 実行時の cwd は**登録したフォルダ**（`root`）。設定ファイルがサブフォルダにあっても、
 // エージェントは人が登録したフォルダで起きる——そこが人の言う「この作業のフォルダ」で、
 // 画面の所属（サイドバーで選ぶフォルダ）とも一致する。プロンプト本文とログの読み取りは
@@ -720,7 +749,23 @@ function runLoop(config, itemIdValue, parameters, tier = '') {
     values
   );
   const prompt = Array.isArray(item.args) ? undefined : withGlobalInstructions(config, resolvedPrompt);
-  const plan = routineLaunchPlan(config, cwd, tier);
+  const selected = resolveRoutineAgent(config, cwd, tier);
+  if (prompt && !selected.spec.interactive) {
+    // 対話ペインを持たない CLI（aider・素の ollama）。**tmux とは無関係**——tmux は
+    // コマンドを送り結果を見せる手段なので、ここも定型業務と同じウィンドウ経路で見せる。
+    // 変わるのは中で走らせるものだけで、対話 CLI の代わりに agent-loop の単発実行
+    // （`run`。ツールループ非内蔵の CLI には限定ツール契約でツール実行を供給する）を起こす。
+    return runHeadlessRoutine(config, {
+      cwd,
+      prompt,
+      acceptance: resolveLoopAcceptance(item.repo || item.cwd, runId, config),
+      selected,
+      title: '定常業務を実行',
+      timeoutMs: item.timeoutMs,
+      record: (res) => recordRun(cfg, { ...item, id: runId, type: 'loop' }, res),
+    });
+  }
+  const plan = routineLaunchPlan(config, cwd, tier, selected);
   const res = makeLoopProvider(cfg, config).run({
     ...item, cwd, id: runId, prompt,
     ...(Object.keys(values).length ? { args: ['send', prompt] } : {}),
@@ -728,6 +773,36 @@ function runLoop(config, itemIdValue, parameters, tier = '') {
   });
   recordRun(cfg, { ...item, type: 'loop' }, res);
   return res;
+}
+
+// 単発 headless 実行（`agent-loop run`）を tmux ウィンドウで起こす。定型業務の
+// ステートマシンハーネス起動と同じ形——起動器を 2 つ持たない（C7）。ウィンドウを開けない
+// 環境（CI 等）は結果契約（RESULT 行）を待つ非同期実行へ落とす。
+// 履歴の書き方は呼び出し側で違う（定常業務は項目に紐づき、アドホックは紐づかない）ので、
+// 記録は `record` で受け取る——同期・非同期のどちらでも 1 回だけ呼ばれる。
+function runHeadlessRoutine(config, { cwd, prompt, acceptance, selected, title, timeoutMs, record }) {
+  const cfg = config.cowork || {};
+  const args = ['run', prompt, '--agent-cli', selected.cli];
+  if (selected.model) args.push('--model', String(selected.model));
+  for (const criterion of acceptance || []) args.push('--acceptance', String(criterion));
+  const command = cfg.loopCommand || cfg.loopProvider || 'agent-loop';
+  if (cfg.runWindow !== false && supportsRunWindow()) {
+    const res = runCommandWindow({
+      command,
+      args,
+      cwd,
+      sessionKey: `${selected.cli}:${cwd}`,
+      title,
+      message: `別ウィンドウ（tmux）で ${selected.cli} の単発実行を開始しました`,
+    });
+    record(res);
+    return res;
+  }
+  return runCommandCapture(command, args, { cwd, timeoutMs: timeoutMs || 1800000 })
+    .then((res) => {
+      record(res);
+      return res;
+    });
 }
 
 function runStateMachine(config, itemIdValue, parameters, tier = '') {
@@ -765,15 +840,13 @@ function runStateMachine(config, itemIdValue, parameters, tier = '') {
   }
   const selected = resolveRoutineAgent(config, cwd, tier);
   if (!selected.spec.interactive) {
-    if (selected.cli !== 'aider') {
-      throw new Error(`${selected.cli} は定常業務の対話実行を提供していません`);
-    }
-    if (Array.isArray(item.args)) throw new Error('明示 args の定型業務は Aider headless 実行に対応していません');
+    if (Array.isArray(item.args)) throw new Error('明示 args の定型業務は headless 実行に対応していません');
     const workflowPath = stateMachineFilePath(item, item.repo || item.cwd || cwd, config);
     if (!workflowPath) throw new Error('workflow.yaml の場所を特定できません');
-    // Aider は対話セッションを持たないため、agent-loop の statemachine ハーネス
-    // （限定ツールループ）へ実行契約を渡し、tmux セッションの中で aider が動く様子ごと
-    // 見せる。段解決したモデルは --model で今回の実行にだけ明示する。
+    // 対話セッションを持たない CLI（aider・素の ollama）は、agent-loop の statemachine
+    // ハーネス（限定ツールループ）へ実行契約を渡す。**tmux ウィンドウで見せるのは変わらない**
+    // ——tmux はコマンドを送り結果を見せる手段で、対話 CLI 専用の仕組みではない。
+    // 段解決したモデルは --model で今回の実行にだけ明示する。
     const smArgs = stateMachineHarnessArgs(cwd, workflowPath, selected, effectiveValues, config);
     const command = cfg.loopCommand || cfg.loopProvider || 'agent-loop';
     if (cfg.runWindow !== false && supportsRunWindow()) {
@@ -866,7 +939,27 @@ function runAdhoc(config, payload = {}) {
   const registered = adhocRoots(config).find((r) => _pathKey(r) === _pathKey(folder));
   if (!registered) throw new Error(`登録されていないフォルダは起動先にできません: ${rawRoot}`);
   const prompt = withGlobalInstructions(config, freeText);
-  const plan = routineLaunchPlan(config, registered);
+  const selected = resolveRoutineAgent(config, registered);
+  // 履歴は項目に紐づかないので、名前はプロンプトの 1 行目で代える。
+  const name = freeText.split(/\r?\n/)[0].slice(0, 60);
+  const record = (res) => appendHistory(cfg, {
+    at: new Date().toISOString(),
+    key: jobKey({ type: 'adhoc', repo: registered, name }),
+    id: '',
+    name,
+    type: 'adhoc',
+    repo: registered,
+    ok: !!(res && res.ok),
+    message: String((res && (res.error || res.message)) || '').trim().slice(0, 300),
+  });
+  // 対話ペインを持たない CLI（段の降格で aider へ落ちた場合など）も同じウィンドウで見せる。
+  // 起動するものが対話セッションか単発実行かの違いだけで、経路は分けない。
+  if (!selected.spec.interactive) {
+    return runHeadlessRoutine(config, {
+      cwd: registered, prompt, acceptance: [], selected, title: 'アドホック起動', record,
+    });
+  }
+  const plan = routineLaunchPlan(config, registered, '', selected);
   const res = runChatWindow({
     ...plan.launch,
     prompt,
@@ -878,18 +971,7 @@ function runAdhoc(config, payload = {}) {
     title: 'アドホック起動',
     message: '外部ターミナルでエージェントCLIを起動しました',
   });
-  // 履歴は項目に紐づかないので、名前はプロンプトの 1 行目で代える。
-  const name = freeText.split(/\r?\n/)[0].slice(0, 60);
-  appendHistory(cfg, {
-    at: new Date().toISOString(),
-    key: jobKey({ type: 'adhoc', repo: registered, name }),
-    id: '',
-    name,
-    type: 'adhoc',
-    repo: registered,
-    ok: !!(res && res.ok),
-    message: String((res && (res.error || res.message)) || '').trim().slice(0, 300),
-  });
+  record(res);
   return res;
 }
 
@@ -1293,7 +1375,7 @@ module.exports = {
   ROUTINE_WORKLOAD, LEGACY_CHAT_COMMAND,
   applyManagedItems, stateMachineCreationPrompt,
   inspectCoworkRoot, setCoworkRoot,
-  templateParameterKeys, stateMachineInputSpec, stateMachineFilePath,
+  templateParameterKeys, stateMachineInputSpec, stateMachineFilePath, resolveLoopAcceptance,
   routineParameterSpec, validateParameters, applyParameters, stateMachineParameterBlock,
   stateMachineHarnessArgs, harnessWorkflowArg,
 };

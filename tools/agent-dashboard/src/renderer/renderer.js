@@ -76,6 +76,7 @@ const state = {
   orchInstructionsDirty: false, // 共通指示・推奨スキルの未保存入力（ポーリング再描画から保護）
   orchSessionDirty: false,      // セッション開始コマンドの未保存入力（同上）
   orchWorkflowDirty: false,     // 段の候補設定の未保存入力（同上）
+  orchPolicyDirty: false,       // 実行方針の未保存入力（同上）
   // 要対応（needs）の前回カウント。増分を検知して OS 通知する（張り付き監視の解消）。
   // initialized=false の初回はベースライン取得のみで通知しない（起動時の殺到を避ける）。
   notify: { counts: {}, initialized: false },
@@ -1198,7 +1199,7 @@ function restoreUiState(ui) {
 function orchestrationDraftActive() {
   const methodDialog = $('dlg-orch-method-add');
   return Boolean(state.globalSettingsDirty || state.orchInstructionsDirty || state.orchSessionDirty
-    || state.orchWorkflowDirty || (methodDialog && methodDialog.open));
+    || state.orchWorkflowDirty || state.orchPolicyDirty || (methodDialog && methodDialog.open));
 }
 
 // フィーチャータブの登録簿。外部の feature モジュール（src/renderer/features/*.js）が
@@ -1677,8 +1678,6 @@ function populateSettingsFields() {
     .join('\n'));
   // 空欄 = 未設定（プロジェクト設定 → 既定 kiro のフォールバック）。'kiro' で埋めると
   // 保存時に「明示 kiro」が固定され、プロジェクトの agent_cli が二度と効かなくなる。
-  setValue('cfg-agent-cli', (cfg.agent && cfg.agent.cli) || '');
-  setValue('cfg-agent-model', (cfg.agent && cfg.agent.model) || '');
   setValue('cfg-agent-timeout', (cfg.agent && cfg.agent.timeoutSec) || 180);
   setValue('cfg-gl-url', (cfg.gitlab && cfg.gitlab.baseUrl) || '');
   setValue('cfg-gl-token', (cfg.gitlab && cfg.gitlab.token) || '');
@@ -1697,6 +1696,7 @@ function openGlobalSettings(section = 'app') {
   state.orchInstructionsDirty = false;
   state.orchSessionDirty = false;
   state.orchWorkflowDirty = false;
+  state.orchPolicyDirty = false;
   switchTab('orchestration');
   renderOrchestration();
 }
@@ -1823,8 +1823,6 @@ async function saveGlobalSettingsSection(section) {
     if ($('cfg-role')) cfg.role = $('cfg-role').value === 'viewer' ? 'viewer' : 'engineer';
   } else if (section === 'agents') {
     cfg.agent = cfg.agent || {};
-    cfg.agent.cli = $('cfg-agent-cli').value.trim();
-    cfg.agent.model = $('cfg-agent-model').value.trim();
     cfg.agent.timeoutSec = Math.max(30, parseInt($('cfg-agent-timeout').value, 10) || 180);
   } else if (section === 'sync') {
     cfg.projects = cfg.projects || {};

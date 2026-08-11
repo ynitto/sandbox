@@ -16,6 +16,10 @@
 # 各エンジンの install.sh は本スクリプトへ委譲する薄いシムとして残してある
 # （既存の手順書・setup.sh・自己更新の呼び出しパスを壊さないため）。
 #
+# agent-loop はエンジン 4 本には含めないが、**同じ agentcore を同梱する zipapp**なので
+# 一緒に入れ直す（委譲は §3。ここから漏れていた間、agent-loop だけが古い agentcore と
+# 古い実装のまま残り、新しい定義契約を解釈できずに fail fast していた）。
+#
 # 前提: 標準ライブラリのみ（pip 依存なし）。python3.11+ が要る（CI が回すのと同じ下限）。
 #   - git       … 複数 PC 分散（状態共有・git バス）で必要。単機なら任意。
 #   - PyYAML    … YAML 設定を使う場合のみ。JSON 設定なら不要。
@@ -307,6 +311,21 @@ if installed agent-flow; then
       cp "$f" "${INSTALL_PREFIX}/executors/"; n=$((n + 1))
     done
     [[ "$n" -gt 0 ]] && ok "executor プラグインを ${n} 件配置しました: ${INSTALL_PREFIX}/executors"
+  fi
+fi
+
+# agent-loop も agentcore を同梱する zipapp なので、ここから一緒に入れ直す。付帯物
+# （tmux 前提・hooks・concurrency 定義）が多く手順も独立しているため、ビルドは複製せず
+# 本人の install.sh へ委譲する。**失敗しても中断しない**——tmux が無い PC では
+# agent-loop 側が die するが、それでエンジン 4 本のインストールまで巻き添えにしない。
+# stdin を切るのは、向こうが pyyaml の導入を対話で聞く箇所を持つため（既定 Y で進む）。
+AGENT_LOOP_INSTALLER="${TOOLS_DIR}/agent-loop/install.sh"
+if [[ -f "${AGENT_LOOP_INSTALLER}" ]]; then
+  if bash "${AGENT_LOOP_INSTALLER}" --prefix "${INSTALL_PREFIX}" </dev/null >/dev/null 2>&1; then
+    ok "agent-loop も同梱インストールしました（agentcore を揃えるため常に入れ直します）"
+  else
+    warn "agent-loop のインストールに失敗しました（tmux の有無を確認してください）:
+    bash ${AGENT_LOOP_INSTALLER}"
   fi
 fi
 

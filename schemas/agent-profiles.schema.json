@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "agent-profiles.schema.json",
   "title": "実行プロファイル自動選択 — エージェント/モデルの実行レベル別使い分け（データ契約）",
-  "description": "agent-dashboard が「大・中・小」等の実行プロファイル（agent_cli + model の候補列）を宣言し、ワークロードの予算残率と agent CLI ごとの枠（node-budget の allocation.agents）から決定的に段と候補を選び、選択結果を agent-control 契約（control.json の workloads[].agent_cli / model、および決まった段の名前 workloads[].tier）へ投函する。**不変条件: この契約はエンジンから読まれない**——各エンジンは agent-control を読むだけで、agent-profiles の存在を知らない（柱1 / C2・C7: 選択ロジックは dashboard の 1 実装に閉じ、エンジン側の解決経路を増やさない）。置き場所: $AGENT_CONTROL_DIR（既定 ~/.agents/control/）の profiles.json。設計: docs/plans/2026-08-05-phase1-token-efficiency-detailed-design.md §1",
+  "description": "agent-dashboard が basic / small / medium / large の実行レベル（agent_cli + model の候補列）を宣言し、ワークロードの予算残率と agent CLI ごとの枠（node-budget の allocation.agents）から決定的にtierと候補を選び、選択結果を agent-control 契約（control.json の workloads[].agent_cli / model / tier）へ投函する。**不変条件: この契約はエンジンから読まれない**——各エンジンは agent-control を読むだけで、agent-profiles の存在を知らない（柱1 / C2・C7: 選択ロジックは dashboard の 1 実装に閉じ、エンジン側の解決経路を増やさない）。置き場所: $AGENT_CONTROL_DIR（既定 ~/.agents/control/）の profiles.json。設計: docs/plans/2026-08-05-phase1-token-efficiency-detailed-design.md §1",
   "type": "object",
   "properties": {
     "version": {"const": 1},
@@ -25,7 +25,7 @@
         "type": "object",
         "required": ["order", "candidates"],
         "properties": {
-          "order": {"type": "integer", "description": "段の順序（大きいほど上位）。しきい値評価と昇格判定に使う"},
+          "order": {"type": "integer", "description": "tierの順序（大きいほど上位）。しきい値評価と昇格判定に使う"},
           "label": {"type": "string", "description": "画面表示用のラベル"},
           "candidates": {
             "type": "array",
@@ -63,9 +63,9 @@
             "additionalProperties": false
           }
         },
-        "no_cap_tier": {"type": "string", "description": "ワークロードのトークン上限が未設定（無制限）のとき採る段"},
+        "no_cap_tier": {"type": "string", "description": "ワークロードのトークン上限が未設定（無制限）のとき採るtier"},
         "hysteresis": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.05, "description": "上位の段へ戻るときだけ要求する残率の上乗せ（下降には課さない）"},
-        "min_hold_sec": {"type": "number", "minimum": 0, "default": 900, "description": "段を変えてからこの秒数は再評価で動かさない"},
+        "min_hold_sec": {"type": "number", "minimum": 0, "default": 900, "description": "tierを変えてからこの秒数は再評価で動かさない"},
         "interval_sec": {"type": "number", "minimum": 0, "default": 300, "description": "自動評価の間隔。0 = 手動評価のみ（dry-run / 適用ボタン）"}
       },
       "additionalProperties": true

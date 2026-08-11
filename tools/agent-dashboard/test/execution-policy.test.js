@@ -75,14 +75,33 @@ test('カスタムは4項目と機能別上書きを内部契約へ変換する'
   assert.strictEqual(built.budget.allocation.workloads.flow.on_exhausted, 'stop');
 });
 
-test('単純作業はカスタムで明示した場合だけ使う', () => {
-  const built = executionPolicy.build('custom', { normalTier: 'basic' });
-  assert.strictEqual(built.profiles.policy.no_cap_tier, 'basic');
-  assert.deepStrictEqual(built.profiles.policy.steps, [
-    { min_remaining_ratio: 0, tier: 'basic' },
-  ]);
+test('単純作業はworkload全体の方針では選ばず、工程ごとの固定指定に限定する', () => {
+  assert.throws(() => executionPolicy.build('custom', { normalTier: 'basic' }), /工程ごとに指定/);
   assert.notStrictEqual(executionPolicy.build('saving').profiles.policy.no_cap_tier, 'basic',
     '節約だからといって能力の足りない候補へ自動降格しない');
+});
+
+test('方針が参照する実行レベルに候補がなければ何も保存しない', () => {
+  const budgetDir = fs.mkdtempSync(path.join(os.tmpdir(), 'exec-policy-missing-budget-'));
+  const controlDir = fs.mkdtempSync(path.join(os.tmpdir(), 'exec-policy-missing-control-'));
+  const cfg = { orchestration: { budgetDir, controlDir } };
+  profiles.save(cfg, { tiers: {
+    small: { order: 1, candidates: [{ agent_cli: 'ollama', model: 'qwen' }] },
+  } });
+  const result = executionPolicy.save(cfg, { mode: 'auto' });
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.budgetSaved, false);
+  assert.strictEqual(result.profilesSaved, false);
+  assert.match(result.errors[0].message, /medium/);
+});
+
+test('適用中の実行レベルから最後の候補を削除できない', () => {
+  const controlDir = fs.mkdtempSync(path.join(os.tmpdir(), 'exec-policy-empty-tier-'));
+  const cfg = { orchestration: { controlDir } };
+  assert.throws(() => profiles.save(cfg, {
+    tiers: { small: { order: 1, candidates: [] } },
+    policy: { no_cap_tier: 'small', steps: [{ min_remaining_ratio: 0, tier: 'small' }] },
+  }), /候補がありません/);
 });
 
 test('単一保存はbudgetとprofilesを更新してcontrolへ反映する', () => {
@@ -103,6 +122,24 @@ test('単一保存はbudgetとprofilesを更新してcontrolへ反映する', ()
   const control = JSON.parse(fs.readFileSync(path.join(controlDir, 'control.json'), 'utf8'));
   assert.strictEqual(control.workloads.flow.tier, 'large');
   assert.strictEqual(control.workloads.audit.tier, 'large');
+});
+
+test('手動で方針を切り替えたときは最小保持時間を待たず反映する', () => {
+  const budgetDir = fs.mkdtempSync(path.join(os.tmpdir(), 'exec-policy-switch-budget-'));
+  const controlDir = fs.mkdtempSync(path.join(os.tmpdir(), 'exec-policy-switch-control-'));
+  const cfg = { orchestration: { budgetDir, controlDir } };
+  profiles.save(cfg, { tiers: {
+    small: { order: 1, candidates: [{ agent_cli: 'ollama', model: 'qwen' }] },
+    medium: { order: 2, candidates: [{ agent_cli: 'claude', model: 'sonnet' }] },
+    large: { order: 3, candidates: [{ agent_cli: 'claude', model: 'opus' }] },
+  } });
+  assert.strictEqual(executionPolicy.save(cfg, { mode: 'auto' }).ok, true);
+  assert.strictEqual(profiles.load(cfg).state.flow.tier, 'medium');
+
+  assert.strictEqual(executionPolicy.save(cfg, { mode: 'saving' }).ok, true);
+  assert.strictEqual(profiles.load(cfg).state.flow.tier, 'small');
+  const control = JSON.parse(fs.readFileSync(path.join(controlDir, 'control.json'), 'utf8'));
+  assert.strictEqual(control.workloads.flow.tier, 'small');
 });
 
 console.log(`\n${passed} tests passed (execution-policy)`);

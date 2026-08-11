@@ -113,12 +113,12 @@ test('カスタムフローの tier を実行候補へ固定して plan を作�
       name: '実装と検証',
       nodes: [
         { id: 'build', goal: '実装', tier: 'large' },
-        { id: 'verify', goal: '検証', tier: 'small', deps: ['build'] },
+        { id: 'verify', goal: '検証', tier: 'basic', deps: ['build'] },
       ],
     });
     const plan = adhoc.planFromWorkflow({}, workflow);
     assert.strictEqual(plan.nodes[0].tier, 'large');
-    assert.strictEqual(plan.nodes[1].tier, 'small');
+    assert.strictEqual(plan.nodes[1].tier, 'basic');
     assert.deepStrictEqual(plan.nodes[0].agent, { agent_cli: 'codex', model: 'gpt-5' });
     assert.deepStrictEqual(plan.nodes[1].agent, { agent_cli: 'ollama', model: 'qwen3' });
   } finally {

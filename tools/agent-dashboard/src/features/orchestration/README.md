@@ -12,18 +12,18 @@
 | 契約 | 置き場 | この画面の役割 |
 |---|---|---|
 | [node-budget](../../../../../schemas/node-budget.schema.json) | `$AGENT_BUDGET_DIR`（既定 `~/.agents/budget/`） | 実行時間・トークンの上限設定と消費内訳の表示、ワークロード別の配分計算・レート較正 |
-| [agent-control](../../../../../schemas/agent-control.schema.json) | `$AGENT_CONTROL_DIR`（既定 `~/.agents/control/`） | 望ましい状態（lifecycle・エージェント/モデル上書き・縮退指定）の read/write と、各エンジンが書く `status/` の読み取り |
+| [agent-control](../../../../../schemas/agent-control.schema.json) | `$AGENT_CONTROL_DIR`（既定 `~/.agents/control/`） | 自動選択されたエージェント/モデルと各エンジンの`status/`を読み、lifecycle・同時実行数を保存する。用途別agent/model上書きは互換読取のみで通常UIから編集しない |
 | [agent-cli](../../../../../schemas/agent-cli.schema.json) | `agents/<name>.json` | ドロップイン定義の棚卸し・検証・編集 |
 | [agent-instructions](../../../../../schemas/agent-instructions.schema.json) | プロジェクト配下 | 共通指示の編集（委譲先ノードへ伝播する） |
 | [agent-session-commands](../../../../../schemas/agent-session-commands.schema.json) | その端末の設定ファイル | セッション開始時の前準備コマンド（**伝播しない**） |
 | [agent-profiles](../../../../../schemas/agent-profiles.schema.json) | `$AGENT_CONTROL_DIR`（既定 `~/.agents/control/`） | 実行レベル（単純作業/軽量/標準/高性能）の宣言と、ワークロードの予算残率・agent CLI ごとの枠からの決定的なtier/候補の選択。**エンジンはこの契約を読まない**——選択結果は agent-control（上の行）へ投函するだけ |
-| [agent-tuning](../../../../../schemas/agent-tuning.schema.json) | `$AGENT_TUNING_DIR`（既定 `~/.agents/tuning/`）と `$AGENT_METHODS_DIR`（既定 `~/.agents/methods/`） | 手法カタログの説明・既定 when を表示し、ON/OFF または独自手法を保存。ON は snapshot + source hash なのでカタログ更新を自動反映しない |
+| [agent-tuning](../../../../../schemas/agent-tuning.schema.json) | `$AGENT_TUNING_DIR`（既定 `~/.agents/tuning/`）と `$AGENT_METHODS_DIR`（既定 `~/.agents/methods/`） | 作業ルールの説明・適用条件を表示し、自動適用または独自ルールを保存。有効化時はsnapshot + source hashで固定し、更新がある場合だけ明示的な更新操作を出す |
 
 ## 全体設定から宣言できるもの（この面が control.json へ書く）
 
 | 画面 | 契約のキー | 読む側 |
 |---|---|---|
-| エージェント → 機能ごとのエージェントとモデル | `workloads.<wl>.agent_cli` / `model` / `agents` / `degraded` | 各エンジン（`routine` は dashboard 自身＝定常業務の tmux 起動） |
+| 実行制御 → 実行方針 | agent-profilesから`workloads.<wl>.tier` / `agent_cli` / `model`へ投函 | 各エンジン（`routine` は dashboard 自身＝定常業務の tmux 起動） |
 | 実行制御 → 実行の許可・停止 | `workloads.<wl>.lifecycle` | 各エンジン |
 | 実行制御 → 同時に動かす数（自動実行） | `workloads.flow.concurrency`（`max_runs` / `workers`） | agent-flow / agent-project 常駐体（`max_runs` を自分のワーカープール枠として読む） |
 
@@ -42,7 +42,7 @@ lifecycle を `pause` / `stop` にしてもプロセスは殺さない — 各�
 
 ## 実行プロファイル自動選択（`profiles.js`）
 
-利用量削減の Phase 1 案 D。「大・中・小」等の段（`agent_cli` + `model` の候補列）を宣言すると、
+利用量削減の Phase 1 案 D。実行レベルごとの候補（`agent_cli` + `model`）を宣言すると、
 ワークロードの予算残率（node-budget）と agent CLI（＝アカウント）ごとの枠（node-budget の
 `allocation.agents`）から**純関数 `decide()`** が段と候補を決定的に選び、選択結果だけを
 agent-control（control.json）へ投函する。段は budget の残率だけで決め（ヒステリシス＋最小保持で

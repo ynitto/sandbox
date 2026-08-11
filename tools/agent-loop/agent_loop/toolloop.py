@@ -485,6 +485,17 @@ def acceptance_evidence_errors(acceptance: "list[str]", *, cwd: str, touched: "s
     return errors
 
 
+def _tl_verified(acceptance: "list[str]", cwd: str) -> bool:
+    """この実行で機械層が実際に何かを照合したか。
+
+    受入条件が**書いてあること**と、それが**機械で照合できること**は別。バッククォートの
+    プロジェクト内パスを 1 つも含まない基準（「*.md が作成されていること」等）は、判定層が
+    入るまで誰も判定しない。ここを「条件があるか」で立てると、何も照合していない実行が
+    「検証済み」として残り、C5 が言う偽 done そのものになる。
+    """
+    return bool(acceptance_paths(list(acceptance or []), cwd))
+
+
 def acceptance_stamps(acceptance: "list[str]", cwd: str) -> dict:
     """実行前のファイル指紋。実行後の照合で「変わっていない」を検出するために取る。"""
     return {f: _tl_file_stamp(f) for f in acceptance_paths(acceptance, cwd)}
@@ -553,7 +564,17 @@ def run_goal(*, goal: str, cwd: str, agent: dict, log_file: str,
     history: list[str] = []
     output = ""
 
+    # 却下はループを 1 周させるだけで、以前は画面にもログにも何も出さなかった。ローカル
+    # モデルは 1 周に数十秒かかるので、外からは「止まっている」ようにしか見えない
+    # ——実際は同じ場所を回っていることが多く、そこが見えないと人は打ち切りも修正もできない。
+    def reject(error: str) -> None:
+        _tl_progress(f"却下: {error}", tag)
+        _tl_append_log(log_file, {"event": "rejected", "error": error})
+        history.append("TOOL_RESULT " + json.dumps(
+            {"rejected": True, "error": error}, ensure_ascii=False))
+
     for _round in range(rounds):
+        _tl_progress(f"ラウンド {_round + 1}/{rounds}: エージェントに問い合わせ中…", tag)
         raw = _tl_run_agent(agent, _tl_goal_prompt(
             goal=goal, cwd=root, skills=skills, reads=sorted(reads),
             acceptance=criteria, history=history,
@@ -561,8 +582,7 @@ def run_goal(*, goal: str, cwd: str, agent: dict, log_file: str,
         try:
             request = _tl_validate_tool_request(_tl_parse_tool_request(raw), root, skills)
         except ToolLoopError as exc:
-            history.append("TOOL_RESULT " + json.dumps(
-                {"rejected": True, "error": str(exc)}, ensure_ascii=False))
+            reject(str(exc))
             continue
 
         if request["type"] == "final":
@@ -572,9 +592,8 @@ def run_goal(*, goal: str, cwd: str, agent: dict, log_file: str,
         if request["type"] == "read_files":
             missing = [f for f in request["paths"] if not os.path.exists(f)]
             if missing:
-                history.append("TOOL_RESULT " + json.dumps(
-                    {"rejected": True, "error": "読み取り対象がありません: "
-                     + ", ".join(os.path.relpath(f, root) for f in missing)}, ensure_ascii=False))
+                reject("読み取り対象がありません: "
+                       + ", ".join(os.path.relpath(f, root) for f in missing))
                 continue
             reads.update(request["paths"])
             _tl_progress("read_files: "
@@ -603,16 +622,23 @@ def run_goal(*, goal: str, cwd: str, agent: dict, log_file: str,
             missing = [f for f in request["paths"] if not os.path.exists(f)]
             changed = any(_tl_file_stamp(f) != before[f] for f in request["paths"])
             if missing or not changed:
-                error = ("書き込み対象がありません: "
-                         + ", ".join(os.path.relpath(f, root) for f in missing)
-                         if missing else "write_files が対象ファイルを変更しませんでした")
-                history.append("TOOL_RESULT " + json.dumps(
-                    {"rejected": True, "error": error}, ensure_ascii=False))
+                reject(("書き込み対象がありません: "
+                        + ", ".join(os.path.relpath(f, root) for f in missing)) if missing
+                       else "write_files が対象ファイルを変更しませんでした")
                 continue
             touched.update(request["paths"])
             output = written
             history.append("TOOL_RESULT " + json.dumps(
                 {"type": request["type"], "paths": request["paths"]}, ensure_ascii=False))
+            # 機械層が pass した時点で完了とし、`final` の申告を待たない。小型モデルは
+            # 書き終えても final を出さず、同じ write_files を繰り返してラウンド上限まで
+            # 走り続ける（実測: 1 回で書けた仕事に 8 ラウンド）。done の根拠は元から
+            # 機械検証だけ（C5）なので、その PASS を停止条件にしても緩まない。
+            # 照合できる受入条件が無いときは従来どおり final を待つ——止める根拠が無い。
+            if _tl_verified(criteria, root) and not acceptance_evidence_errors(
+                    criteria, cwd=root, touched=touched, stamps_before=stamps_before):
+                _tl_progress("受入条件を満たしました（final を待たずに完了）", tag)
+                break
             continue
 
         _tl_progress(f"run: {request['command']} {' '.join(request['args'])}", tag)
@@ -638,7 +664,118 @@ def run_goal(*, goal: str, cwd: str, agent: dict, log_file: str,
     evidence_errors = acceptance_evidence_errors(
         criteria, cwd=root, touched=touched, stamps_before=stamps_before)
     ok = bool(output) and not evidence_errors
-    _tl_append_log(log_file, {"event": "goal_done", "ok": ok, "verified": bool(criteria),
+    verified = _tl_verified(criteria, root)
+    _tl_append_log(log_file, {"event": "goal_done", "ok": ok, "verified": verified,
                               "files": sorted(touched), "evidenceErrors": evidence_errors})
     return {"ok": ok, "output": output, "files": sorted(touched),
-            "evidenceErrors": evidence_errors, "verified": bool(criteria), "logFile": log_file}
+            "evidenceErrors": evidence_errors, "verified": verified, "logFile": log_file}
+
+
+def run_cli_loop(*, goal: str, cwd: str, agent: dict, log_file: str,
+                 acceptance: "list[str] | None" = None) -> dict:
+    """層2（tool-loop）: CLI 内部のループに任せて headless を 1 回呼ぶ。
+
+    触ったファイルを外から観測できないので、証跡は受入条件が名指ししたファイルの
+    指紋変化で見る（「この実行で変わったか」は観測できる）。
+    """
+    mod = agent["agentcli"]
+    criteria = list(acceptance or [])
+    stamps_before = acceptance_stamps(criteria, cwd)
+    built = mod.headless_cmd(agent["spec"], agent["model"], goal,
+                             readonly=False, no_session=True)
+    argv = built["argv"]
+    timeout_sec = float(built.get("timeout") or 0) or _TL_DEFAULT_AIDER_TIMEOUT_SEC
+    result = _tl_exec_argv(argv[0], argv[1:], cwd=cwd, timeout_sec=timeout_sec,
+                           env=built.get("env") or {}, stdin=built.get("stdin"),
+                           output_file=built.get("output_file"), log_file=log_file)
+    if result["status"] != 0 or result["error"]:
+        detail = "\n".join(x for x in (result["error"], result["stderr"],
+                                       result["stdout"]) if x)
+        classified = mod.classify_error(agent["spec"], detail)
+        raise ToolLoopError((classified[1] if classified else "")
+                            or detail or f"{argv[0]} が失敗しました")
+    output = str(result["stdout"] or "").strip()
+    if not output and agent["spec"].get("empty_output_is_error", True):
+        raise ToolLoopError("エージェントが空の応答を返しました")
+    touched = {f for f in acceptance_paths(criteria, cwd)
+               if _tl_file_stamp(f) != stamps_before.get(f, "")}
+    errors = acceptance_evidence_errors(criteria, cwd=cwd, touched=touched,
+                                        stamps_before=stamps_before)
+    verified = _tl_verified(criteria, cwd)
+    _tl_append_log(log_file, {"event": "goal_done", "ok": not errors,
+                              "verified": verified,
+                              "files": sorted(touched), "evidenceErrors": errors})
+    return {"ok": not errors, "output": output, "files": sorted(touched),
+            "evidenceErrors": errors, "verified": verified, "logFile": log_file}
+
+
+def run_prompt(*, goal: str, cwd: str, agent: dict, log_file: str,
+               acceptance: "list[str] | None" = None, tag: str = "toolloop") -> dict:
+    """ゴール 1 件を、CLI の層（`headless_autonomy`）に応じた経路で 1 回実行する。
+
+    層の判定と分岐をここ 1 か所に置く（C7）。デーモンの headless 枝も `run` サブコマンドも
+    同じ関数を通るので、「デーモン経由なら証跡ゲートが効くが単発だと効かない」のような
+    経路差が生まれない。**tmux を使うかどうかはこの関数の関知しないこと**——tmux は
+    コマンドを送り結果を見せる手段であって、実行契約の一部ではない。
+    """
+    if str(agent["spec"].get("headless_autonomy") or "single-shot") == "tool-loop":
+        return run_cli_loop(goal=goal, cwd=cwd, agent=agent, log_file=log_file,
+                            acceptance=acceptance)
+    return run_goal(goal=goal, cwd=cwd, agent=agent, log_file=log_file,
+                    acceptance=acceptance, tag=tag)
+
+
+def _tl_run_log_file(tag: str = "run") -> str:
+    directory = agent_home_subdir("AGENT_LOOP_RUN_DIR", "runs") / "headless"
+    directory.mkdir(parents=True, exist_ok=True)
+    return str(directory / f"{int(time.time() * 1000)}-{tag}.jsonl")
+
+
+def cmd_run(args: argparse.Namespace, cwd: Path) -> None:
+    """run サブコマンド: プロンプト 1 件をその場で 1 回実行する（デーモン不要）。
+
+    `send` が「常駐セッションへ送る」のに対し、こちらは「今ここで 1 回実行して結果を返す」。
+    **対話ペインの有無で呼び分けるものではない**——tmux はこのコマンドを走らせて様子を
+    見せる側の手段であって、実行契約とは独立している。`statemachine` と同じく終了時に
+    `RESULT {json}` を 1 行出し、それが呼び出し側（dashboard の定常業務）との結果契約になる。
+    """
+    work_dir = Path(getattr(args, "dir", None) or cwd).expanduser().resolve()
+    if not work_dir.is_dir():
+        print(f"[agent-loop] ERROR: ディレクトリが存在しません: {work_dir}", file=sys.stderr)
+        sys.exit(1)
+    goal = " ".join(getattr(args, "prompt", None) or []).strip()
+    # send と同じ流儀: 実在するファイルパスを渡したらその中身を本文にする。
+    candidate = (work_dir / goal) if goal and not os.path.isabs(goal) else Path(goal or ".")
+    if goal and candidate.is_file():
+        goal = candidate.read_text(encoding="utf-8").strip()
+    if not goal:
+        print("[agent-loop] ERROR: プロンプトが空です。", file=sys.stderr)
+        sys.exit(2)
+    acceptance = [str(a).strip() for a in (getattr(args, "acceptance", None) or []) if str(a).strip()]
+    log_file = _tl_run_log_file()
+    try:
+        agent = _tl_resolve_agent(getattr(args, "agent_cli", None) or "aider",
+                                  getattr(args, "model", None) or "", str(work_dir))
+        _tl_progress(f"agent: {agent['cli']}"
+                     + (f" / model: {agent['model']}" if agent["model"] else " (default model)")
+                     + f" / log: {log_file}", "run")
+        if not _tl_verified(acceptance, str(work_dir)):
+            # 「条件が無い」と「条件はあるが機械で照合できない」を区別して伝える。
+            # 後者は書いた本人が検証されているつもりでいる分、黙って通す害が大きい。
+            _tl_progress(
+                (f"受入条件（--acceptance）がありません。{agent['cli']} は自分でツールを回さない"
+                 "ため、done を検証できません。"
+                 if not acceptance else
+                 "受入条件にバッククォートで囲んだファイルパスがありません"
+                 "（例: `reports/digest.md` が更新されている）。"
+                 "機械が照合できるのはこの表記だけで、グロブや文章だけの条件は判定されません。")
+                + "実行はしますが結果は「検証なし」として記録します。", "run")
+        result = run_prompt(goal=goal, cwd=str(work_dir), agent=agent, log_file=log_file,
+                            acceptance=acceptance, tag="run")
+        print("RESULT " + json.dumps(result, ensure_ascii=False))
+        sys.exit(0 if result.get("ok") else 1)
+    except ToolLoopError as exc:
+        print("RESULT " + json.dumps({"ok": False, "error": str(exc), "logFile": log_file},
+                                     ensure_ascii=False))
+        print(f"[agent-loop] ERROR: {exc}", file=sys.stderr)
+        sys.exit(1)

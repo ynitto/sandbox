@@ -4,7 +4,8 @@ const budget = require('./budget');
 const profiles = require('./profiles');
 
 const WORKLOADS = budget.KNOWN_WORKLOADS;
-const TIERS = ['basic', 'small', 'medium', 'large'];
+// workload 全体へ適用する方針は、複雑さが分かっている工程専用の basic を選ばない。
+const POLICY_TIERS = ['small', 'medium', 'large'];
 const SWITCH_RATIOS = { early: 0.3, standard: 0.2, late: 0.1 };
 const PRIORITY_WEIGHTS = { low: 0.5, standard: 1, high: 2 };
 const ON_EXHAUSTED = ['degrade', 'pause', 'stop'];
@@ -25,14 +26,16 @@ function nonNegative(value, label) {
 }
 
 function customPreset(input) {
-  const normalTier = TIERS.includes(input.normalTier) ? input.normalTier : 'medium';
+  const normalTier = input.normalTier || 'medium';
+  if (!POLICY_TIERS.includes(normalTier)) {
+    throw new Error('通常時の実行レベルは軽量・標準・高性能から選んでください。単純作業は工程ごとに指定します');
+  }
   const tokenLimit = nonNegative(input.tokenLimit, '全体利用上限');
   const switchTiming = Object.hasOwn(SWITCH_RATIOS, input.switchTiming) ? input.switchTiming : 'standard';
   const threshold = SWITCH_RATIOS[switchTiming];
   const onExhausted = ON_EXHAUSTED.includes(input.onExhausted) ? input.onExhausted : 'degrade';
   let steps;
-  if (normalTier === 'basic') steps = [{ min_remaining_ratio: 0, tier: 'basic' }];
-  else if (normalTier === 'small') steps = [{ min_remaining_ratio: 0, tier: 'small' }];
+  if (normalTier === 'small') steps = [{ min_remaining_ratio: 0, tier: 'small' }];
   else if (normalTier === 'medium') {
     steps = [{ min_remaining_ratio: threshold, tier: 'medium' }, { min_remaining_ratio: 0, tier: 'small' }];
   } else {
@@ -56,7 +59,7 @@ function customPreset(input) {
   return {
     noCapTier: normalTier,
     steps,
-    softRatio: ['basic', 'small'].includes(normalTier) ? 0 : 1 - threshold,
+    softRatio: normalTier === 'small' ? 0 : 1 - threshold,
     tokenLimit,
     workloads,
     custom: { normalTier, tokenLimit,
@@ -127,6 +130,19 @@ function save(cfg, payload = {}) {
     result.errors.push({ target: 'policy', message: error.message || String(error) });
     return result;
   }
+  const tiers = profiles.load(cfg).tiers || {};
+  const requiredTiers = [...new Set([
+    built.profiles.policy.no_cap_tier,
+    ...built.profiles.policy.steps.map((step) => step.tier),
+  ].filter(Boolean))];
+  const missingTiers = requiredTiers.filter((tier) => !tiers[tier] || !tiers[tier].candidates.length);
+  if (missingTiers.length) {
+    result.errors.push({
+      target: 'profiles',
+      message: `候補が未設定の実行レベルがあります: ${missingTiers.join(', ')}`,
+    });
+    return result;
+  }
   try {
     budget.save(cfg, built.budget);
     result.budgetSaved = true;
@@ -144,7 +160,7 @@ function save(cfg, payload = {}) {
   }
   if (result.budgetSaved && result.profilesSaved) {
     try {
-      result.apply = profiles.apply(cfg);
+      result.apply = profiles.apply(cfg, { force: true });
       result.applied = true;
     } catch (error) {
       result.errors.push({ target: 'control', message: error.message || String(error) });

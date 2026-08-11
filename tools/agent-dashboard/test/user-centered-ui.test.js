@@ -182,7 +182,7 @@ for (const id of ['dlg-settings', 'dlg-advanced-settings', 'btn-open-advanced-se
 
 const technicalInfo = html.slice(html.indexOf('<dialog id="dlg-technical-info"'), html.indexOf('<dialog id="dlg-need-output"'));
 for (const id of ['cfg-refresh', 'cfg-notify', 'cfg-flow-bus', 'cfg-engine-distro', 'cfg-engine-home',
-  'cfg-agent-cli', 'cfg-cowork-loop-command', 'cfg-gl-url']) {
+  'cfg-agent-timeout', 'cfg-cowork-loop-command', 'cfg-gl-url']) {
   assert.ok(renderer.includes(`id="${id}"`), `全体設定ページに ${id} が必要です`);
   assert.ok(!technicalInfo.includes(`id="${id}"`), `詳細情報に ${id} を出しません`);
 }
@@ -215,8 +215,9 @@ for (const id of ['btn-save-app-settings', 'btn-save-agent-settings', 'btn-save-
   'btn-save-routine-settings', 'btn-save-integrations-settings']) {
   assert.ok(renderer.includes(`id="${id}"`), `${id} で分類単位に保存します`);
 }
-assert.ok(renderer.includes('使用するエージェントを選び、必要ならモデルと待ち時間を変更します。'),
-  'エージェント設定を括弧のない短文で説明します');
+assert.ok(renderer.includes('エージェントとモデルは実行方針から自動設定されます。')
+  && !renderer.includes('id="cfg-agent-cli"') && !renderer.includes('id="cfg-agent-model"'),
+  'エージェントタブでは自動設定対象のagent/modelを重ねて設定しません');
 assert.ok(renderer.includes('class="settings-save-actions"'), 'カードの保存位置を共通化します');
 assert.ok(css.includes('.settings-save-actions'), '保存フッターを同じ配置で描画します');
 const renderAmigosSource = renderer.slice(
@@ -265,14 +266,16 @@ const auditFeatureSource = fs.readFileSync(
   path.join(root, 'features', 'agent-audit.js'), 'utf8');
 assert.ok(auditFeatureSource.includes('orchBudgetPanelHtml('),
   '監査の面は集計が取れないとき台帳集計へフォールバックします');
-assert.ok(agentSettingsSource.includes('orchMatrixPanelHtml(') && agentSettingsSource.includes('orchInventoryPanelHtml('),
-  'エージェントタブに担当設定と一覧を表示します');
+assert.ok(!agentSettingsSource.includes('orchMatrixPanelHtml(') && agentSettingsSource.includes('orchInventoryPanelHtml('),
+  'エージェントタブは自動設定対象外の待ち時間とエージェント定義だけを表示します');
 assert.ok(instructionSettingsSource.includes('orchInstructionsPanelHtml(')
   && instructionSettingsSource.includes('orchSessionCommandsPanelHtml('), '共通指示タブに指示と開始コマンドを表示します');
 assert.ok(methodSettingsSource.includes('orchTiersPanelHtml(') && methodSettingsSource.includes('orchMethodsPanelHtml('),
   'ワークフロータブに実行レベル設定と手法マーケットを表示します');
 assert.ok(renderer.includes("const ORCH_TIER_LABELS = { basic: '単純作業', small: '軽量', medium: '標準', large: '高性能' };"),
   '内部tierを利用者向けの実行レベル名で表示します');
+assert.ok(renderer.includes("const ORCH_POLICY_TIER_KEYS = ['small', 'medium', 'large'];"),
+  '単純作業は機能全体の実行方針では選ばせません');
 // eslint-disable-next-line no-new-func
 const orchTierValue = new Function('ORCH_TIER_KEYS', 'ORCH_TIER_LABELS',
   `${grab('orchTierValue')}; return orchTierValue;`)(
@@ -315,6 +318,9 @@ assert.ok(!grab('orchMethodConditionsHtml').includes('相対コスト'),
 assert.ok(grab('orchMethodCardHtml').includes('const effective = enabled ? current : method')
   && grab('orchMethodCardHtml').includes('orchMethodConditionsHtml(effective)'),
   '自動適用中のカードはカタログ最新版ではなく実際に保存された条件を表示します');
+assert.ok(grab('orchMethodCardHtml').includes('source !== method.catalog_source')
+  && grab('orchMethodCardHtml').includes('最新版に更新'),
+  '保存済みの作業ルールとカタログ条件が違う場合だけ更新操作を表示します');
 const workflowDraftState = {};
 const workflowDialog = { open: false };
 // eslint-disable-next-line no-new-func
@@ -325,12 +331,18 @@ assert.strictEqual(orchestrationDraftActive(), false, '未編集なら自動更�
 workflowDraftState.orchWorkflowDirty = true;
 assert.strictEqual(orchestrationDraftActive(), true, '実行レベルの入力中は自動更新から保護します');
 workflowDraftState.orchWorkflowDirty = false;
+workflowDraftState.orchPolicyDirty = true;
+assert.strictEqual(orchestrationDraftActive(), true, '実行方針の入力中は自動更新から保護します');
+workflowDraftState.orchPolicyDirty = false;
 workflowDialog.open = true;
 assert.strictEqual(orchestrationDraftActive(), true, 'カスタム作業ルールのダイアログを開いている間も保護します');
 assert.ok(grab('renderAllTabs').includes('!orchestrationDraftActive()')
   && grab('refreshAll').includes('!orchestrationDraftActive()'), '全体再描画と定期更新の両方で入力を保護します');
 assert.ok(grab('setupOrchestration').includes("tierList.addEventListener('input', markWorkflowDirty)"),
   '実行レベルの入力開始を未保存状態として記録します');
+assert.ok(grab('setupOrchestration').includes("policyPanel.addEventListener('input', markPolicyDirty)")
+  && grab('setupOrchestration').includes('state.orchPolicyDirty = false'),
+  '実行方針の入力を自動更新から保護し、保存後に保護を解除します');
 assert.ok(controlSettingsSource.includes('orchExecutionPolicyPanelHtml(') && controlSettingsSource.includes('orchStatusPanelHtml('),
   '実行制御タブに統一した実行方針と稼働制御を表示します');
 assert.ok(controlSettingsSource.includes('orchConcurrencyPanelHtml('),
@@ -357,7 +369,7 @@ assert.ok(renderer.includes('使用するエージェントや実行レベルは
   '作業ルールが変えるものと、ワークフローへ分けるものを説明します');
 assert.ok(renderer.includes('<summary>個別の作業ルールを設定</summary>'),
   '個別ルールは詳細設定として段階的に開示します');
-assert.ok(renderer.includes("${enabled ? '自動適用中' : '未使用'}")
+assert.ok(renderer.includes("stale ? '更新あり' : enabled ? '自動適用中' : '未使用'")
   && renderer.includes("${enabled ? '適用しない' : '自動適用する'}"),
   '作業ルールの状態とボタンの操作をON/OFFではなく明示します');
 assert.match(css, /\.empty\[hidden\]\s*\{[^}]*display:\s*none/s,

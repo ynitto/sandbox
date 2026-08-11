@@ -1059,14 +1059,8 @@ class PeriodicScheduler:
             log.info("[%s] headless 実行: cli=%s model=%s autonomy=%s log=%s",
                      name, profile.name, profile.model or "(定義の既定)",
                      profile.autonomy, log_file)
-            if profile.needs_tool_loop:
-                result = self._run_headless_tool_loop(
-                    goal=prompt, cwd=work_dir, agent=agent, log_file=log_file,
-                    acceptance=acceptance)
-            else:
-                result = self._run_headless_once(
-                    prompt=prompt, cwd=work_dir, agent=agent, log_file=log_file,
-                    acceptance=acceptance)
+            result = run_prompt(goal=prompt, cwd=work_dir, agent=agent, log_file=log_file,
+                                acceptance=acceptance, tag="agent-loop")
         except ToolLoopError as exc:
             log.error("[%s] headless 実行に失敗しました: %s", name, exc)
             self._fail_execution(req, slot_key, reason="headless_failed")
@@ -1090,47 +1084,6 @@ class PeriodicScheduler:
         self._end_active(req, "completed", None)
         self._pop_execution(root_id)
         _log_dispatch("execution_terminal", req, state="DONE")
-
-    def _run_headless_tool_loop(self, *, goal: str, cwd: str, agent: dict, log_file: str,
-                                acceptance: "list[str]") -> dict:
-        """層3（single-shot）: 限定ツール契約でツール実行を供給しながら完遂させる。"""
-        return run_goal(goal=goal, cwd=cwd, agent=agent, log_file=log_file,
-                        acceptance=acceptance, tag="agent-loop")
-
-    def _run_headless_once(self, *, prompt: str, cwd: str, agent: dict, log_file: str,
-                           acceptance: "list[str]") -> dict:
-        """層2（tool-loop）: CLI 内部のループに任せて headless を 1 回呼ぶ。
-
-        触ったファイルを外から観測できないので、証跡は受入条件が名指ししたファイルの
-        指紋変化で見る（「この実行で変わったか」は観測できる）。
-        """
-        mod = agent["agentcli"]
-        stamps_before = acceptance_stamps(acceptance, cwd)
-        built = mod.headless_cmd(agent["spec"], agent["model"], prompt,
-                                 readonly=False, no_session=True)
-        argv = built["argv"]
-        timeout_sec = float(built.get("timeout") or 0) or _TL_DEFAULT_AIDER_TIMEOUT_SEC
-        result = _tl_exec_argv(argv[0], argv[1:], cwd=cwd, timeout_sec=timeout_sec,
-                               env=built.get("env") or {}, stdin=built.get("stdin"),
-                               output_file=built.get("output_file"), log_file=log_file)
-        if result["status"] != 0 or result["error"]:
-            detail = "\n".join(x for x in (result["error"], result["stderr"],
-                                           result["stdout"]) if x)
-            classified = mod.classify_error(agent["spec"], detail)
-            raise ToolLoopError((classified[1] if classified else "")
-                                or detail or f"{argv[0]} が失敗しました")
-        output = str(result["stdout"] or "").strip()
-        if not output and agent["spec"].get("empty_output_is_error", True):
-            raise ToolLoopError("エージェントが空の応答を返しました")
-        touched = {f for f in acceptance_paths(acceptance, cwd)
-                   if _tl_file_stamp(f) != stamps_before.get(f, "")}
-        errors = acceptance_evidence_errors(acceptance, cwd=cwd, touched=touched,
-                                            stamps_before=stamps_before)
-        _tl_append_log(log_file, {"event": "goal_done", "ok": not errors,
-                                  "verified": bool(acceptance),
-                                  "files": sorted(touched), "evidenceErrors": errors})
-        return {"ok": not errors, "output": output, "files": sorted(touched),
-                "evidenceErrors": errors, "verified": bool(acceptance), "logFile": log_file}
 
     def entries_snapshot(self) -> "list[dict[str, Any]]":
         """現在の entry の写し（起動時点検など、読み取り専用の用途向け）。"""

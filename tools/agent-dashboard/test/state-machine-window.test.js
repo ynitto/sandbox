@@ -1,8 +1,9 @@
 'use strict';
 
-// 定型業務の Aider 実行が「Windows のダッシュボード → WSL の agent-loop statemachine」
-// へ正しく渡ることの検証。旧 in-process 実行器（stateMachineRunner.js）のテストを
-// 置き換える。実行境界が WSL 側へ移ったので、見るのは主に次の 3 点。
+// 対話ペインを持たない CLI の実行が「Windows のダッシュボード → WSL の agent-loop
+// （定型業務は `statemachine`・定期プロンプトは `run`）」へ正しく渡ることの検証。
+// 旧 in-process 実行器（stateMachineRunner.js）のテストを置き換える。
+// 実行境界が WSL 側へ移ったので、見るのは主に次の 3 点。
 //   1. ハーネスの起動引数（cwd 相対の workflow・モデル・パラメータ）
 //   2. win32 で wsl.exe を必ず経由すること（Windows 側で直接 spawn しない）
 //   3. tmux セッションの作り方（一回限りの実行を二重に走らせない・結果を残す）
@@ -168,6 +169,64 @@ async function main() {
     const missing = await runCommandCapture(path.join(repo, 'no-such-command'), [], { cwd: repo });
     assert.strictEqual(missing.ok, false, '起動失敗はエラーとして返す');
     assert.ok(missing.error, missing.error);
+  });
+
+  await test('定期プロンプトも対話ペインの有無で経路を分けず、headless CLI は agent-loop run へ渡す', async () => {
+    // tmux は「コマンドを送る手段・結果を見る手段」で、対話 CLI 専用の仕組みではない。
+    // 対話節を持たない CLI（aider）が選ばれても実行を断らず、同じウィンドウ経路で
+    // `agent-loop run`（単発実行）を起こす。受入条件は設定から解決して渡す
+    // ——ツールループ非内蔵の CLI では、これが無いと done を機械検証できない。
+    const loopRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'dashboard-headless-loop-'));
+    fs.mkdirSync(path.join(loopRepo, '.agents'));
+    fs.writeFileSync(path.join(loopRepo, '.agents', 'agent-loop.yaml'), [
+      'prompts:',
+      '  - name: ログ要約',
+      '    prompt: ログを要約して `reports/digest.md` に書いて',
+      '    interval_minutes: 600',
+      '    acceptance:',
+      '      - "`reports/digest.md` が更新されている"',
+      '      - 件数が書かれている',
+      '',
+    ].join('\n'));
+    const controlDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dashboard-headless-ctl-'));
+    fs.writeFileSync(path.join(controlDir, 'control.json'), `${JSON.stringify({
+      version: 1, revision: 1,
+      workloads: { routine: { agent_cli: 'aider', model: 'ollama/gemma4:e4b' } },
+    })}\n`);
+    const config = {
+      orchestration: { controlDir },
+      cowork: {
+        loopCommand: 'echo',
+        runWindow: false,   // 引数の組み立てを見る（窓を開く経路は上のテスト）
+        items: [{ id: 'daily', type: 'loop', name: 'ログ要約', repo: loopRepo }],
+      },
+    };
+    assert.deepStrictEqual(
+      cowork.resolveLoopAcceptance(loopRepo, 'ログ要約', config),
+      ['`reports/digest.md` が更新されている', '件数が書かれている']
+    );
+    // 1 件だけならスカラーでも書ける（agent-loop の validate_entries と同じ受け方）。
+    // ここを配列限定にしていると、書いてあるのに「受入条件が無い」と言われる。
+    const scalarRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'dashboard-headless-scalar-'));
+    fs.mkdirSync(path.join(scalarRepo, '.agents'));
+    fs.writeFileSync(path.join(scalarRepo, '.agents', 'agent-loop.yaml'), [
+      'prompts:',
+      '  - name: ログ要約',
+      '    prompt: ログを要約して',
+      '    acceptance: 要約ファイルが作成されていること',
+      '    interval_minutes: 600',
+      '',
+    ].join('\n'));
+    assert.deepStrictEqual(cowork.resolveLoopAcceptance(scalarRepo, 'ログ要約', config),
+                           ['要約ファイルが作成されていること']);
+    const res = await cowork.runLoop(config, 'daily');
+    assert.strictEqual(res.ok, true, res.error || res.stderr);
+    const argv = res.stdout.split(' ');
+    assert.strictEqual(argv[0], 'run', '単発実行サブコマンドへ渡す（send ではない）');
+    assert.ok(res.stdout.includes('--agent-cli aider'), '段で解決した CLI を明示する');
+    assert.ok(res.stdout.includes('--model ollama/gemma4:e4b'), 'モデルもその回だけ明示する');
+    assert.strictEqual((res.stdout.match(/--acceptance/g) || []).length, 2,
+      '受入条件は設定から解決して 1 件ずつ渡す');
   });
 
   console.log(`\n${passed} tests passed`);

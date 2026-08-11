@@ -22,6 +22,7 @@ function registerIpc(ctx) {
     const instructionsDir = instructions.resolveInstructionsDir(cfg);
     const gi = instructions.loadInstructions(instructionsDir);
     const sessionDir = sessionCommands.resolveSessionDir(cfg);
+    const methodsCatalog = tuning.catalog(cfg);
     return {
       sessionCommands: sessionCommands.loadSessionCommands(sessionDir),
       sessionDir,
@@ -36,7 +37,10 @@ function registerIpc(ctx) {
       controlDir,
       profiles: profiles.load(cfg),
       tuning: tuning.load(cfg),
-      methodsCatalog: tuning.catalog(cfg),
+      methodsCatalog: methodsCatalog.map((method) => ({
+        ...method,
+        catalog_source: `methods/${method.id}@${tuning.sourceHash(method)}`,
+      })),
       tuningDir: tuning.resolveTuningDir(cfg),
       methodsDir: tuning.resolveMethodsDir(cfg),
     };

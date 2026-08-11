@@ -82,7 +82,7 @@ class MethodIntegrationTests(unittest.TestCase):
                               if kf._methodlib.role_for(p) == "worker")
         self.assertTrue(machine_read)
         for purpose in machine_read:
-            for tier in ("small", "medium", "large"):
+            for tier in ("basic", "small", "medium", "large"):
                 self.assertEqual(self._applied(purpose, tier), [],
                                  f"{purpose}（tier={tier}）へ散文を書かせる手法が入っている")
 

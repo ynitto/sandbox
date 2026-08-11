@@ -211,6 +211,7 @@ function orchBudgetPanelHtml(budget) {
 const ORCH_POLICY_WORKLOADS = ['routine', 'project', 'flow', 'amigos', 'audit', 'dashboard'];
 const ORCH_TIER_LABELS = { basic: '単純作業', small: '軽量', medium: '標準', large: '高性能' };
 const ORCH_TIER_KEYS = Object.keys(ORCH_TIER_LABELS);
+const ORCH_POLICY_TIER_KEYS = ['small', 'medium', 'large'];
 function orchTierLabel(value, fallback = '') {
   return ORCH_TIER_LABELS[String(value || '')] || fallback || String(value || '');
 }
@@ -238,8 +239,13 @@ function orchExecutionPolicyPanelHtml(overview) {
   const custom = (saved && saved.custom) || {};
   const alloc = (budget.config && budget.config.allocation) || {};
   const allocWorkloads = alloc.workloads || {};
-  const normalTier = ORCH_TIER_KEYS.includes(custom.normalTier)
-    ? custom.normalTier : (profiles.policy || {}).no_cap_tier || 'medium';
+  const savedNormalTier = custom.normalTier || (profiles.policy || {}).no_cap_tier || 'medium';
+  const normalTier = ORCH_POLICY_TIER_KEYS.includes(savedNormalTier) ? savedNormalTier : 'medium';
+  const configuredTiers = profiles.tiers || {};
+  const missingPolicyTiers = ORCH_POLICY_TIER_KEYS.filter((tier) => {
+    const configured = configuredTiers[tier];
+    return !configured || !Array.isArray(configured.candidates) || !configured.candidates.length;
+  });
   const switchTiming = ['early', 'standard', 'late'].includes(custom.switchTiming)
     ? custom.switchTiming : 'standard';
   const onExhausted = ['degrade', 'pause', 'stop'].includes(custom.onExhausted)
@@ -300,7 +306,7 @@ function orchExecutionPolicyPanelHtml(overview) {
     <div class="orch-policy-custom" id="orch-policy-custom"${mode === 'custom' ? '' : ' hidden'}>
       <div class="orch-policy-custom-grid">
         <label>通常時の実行レベル<select id="orch-policy-normal-tier">
-          ${ORCH_TIER_KEYS.map((tier) => `<option value="${tier}"${normalTier === tier ? ' selected' : ''}>${esc(orchTierLabel(tier))}</option>`).join('')}
+          ${ORCH_POLICY_TIER_KEYS.map((tier) => `<option value="${tier}"${normalTier === tier ? ' selected' : ''}${missingPolicyTiers.includes(tier) ? ' disabled' : ''}>${esc(orchTierLabel(tier))}${missingPolicyTiers.includes(tier) ? '（候補未設定）' : ''}</option>`).join('')}
         </select></label>
         <label>全体利用上限（トークン）<input type="number" id="orch-policy-token-limit" class="mono" min="0" step="10000"
           value="${Number(custom.tokenLimit !== undefined ? custom.tokenLimit : budget.tokenLimit || 0)}" />
@@ -313,13 +319,14 @@ function orchExecutionPolicyPanelHtml(overview) {
           ${['degrade', 'pause', 'stop'].map((v) => `<option value="${v}"${onExhausted === v ? ' selected' : ''}>${esc(orchOnExhaustedLabel(v))}</option>`).join('')}
         </select></label>
       </div>
+      <p class="field-help">「単純作業」は仕事内容が明示されたワークフローの工程で指定します。機能全体には適用しません。</p>
       <details class="orch-policy-overrides" data-ui-key="orch-policy-overrides"><summary>機能ごとに上書き</summary>
         <div class="table-scroll"><table class="amigos-table orch-table"><thead><tr><th>機能</th><th>優先度</th><th>個別上限</th><th>上限到達時</th></tr></thead>
           <tbody>${overrideRows}</tbody></table></div>
       </details>
     </div>
     <div class="orch-policy-preview"><strong>現在の適用結果</strong>
-      <p class="muted">ノード・タスクで固定された指定は、この方針では変更しません。</p>
+      <p class="muted">ここで選ばれた組み合わせが各機能の基準になります。工程や用途に固定指定がある場合は、そちらを優先します。</p>
       <div class="table-scroll"><table class="amigos-table orch-table"><thead><tr><th>機能</th><th>実行レベル</th><th>エージェント / モデル</th></tr></thead>
         <tbody>${decisionRows}</tbody></table></div>
     </div>
@@ -371,108 +378,6 @@ function orchTiersPanelHtml(overview) {
     <ol class="orch-profile-tiers" id="orch-profile-tiers">${tierRows}</ol>
     <div class="settings-save-actions">
       <button type="button" id="btn-orch-tiers-save" class="primary-inline"${state.orchSaving ? ' disabled' : ''}>保存</button>
-    </div>
-  </section>`;
-}
-
-// ワークロード別の「用途 / ロール / ノード種別」候補（agents.<key> 上書きのキー補完）。
-// project: AGENT_PURPOSES / flow: 役割＋ノード kind / amigos: ロール id は動的（自由入力）/
-// routine: 定常業務は 1 セッションに 1 つの対話 CLI を起こすだけで用途の区別が無いため、
-//   機能単位（agent_cli / model）だけを持つ（その宣言は定常業務の起動に効く）。
-const ORCH_AGENT_KEYS = {
-  project: ['plan', 'review', 'prioritize', 'route', 'adjudicate', 'verify',
-    'distill', 'assess', 'repo_map', 'doctor'],
-  flow: ['planner', 'evaluator', 'worker', 'work', 'generate', 'classify',
-    'synthesize', 'verify', 'filter', 'judge', 'reduce', 'split', 'map'],
-  amigos: [],
-  routine: [],
-};
-
-function timeoutSeconds(value) {
-  const raw = String(value == null ? '' : value).trim();
-  if (raw === '') return null;
-  const minutes = Number(raw);
-  return Number.isInteger(minutes) && minutes >= 1 ? minutes * 60 : NaN;
-}
-
-// 1 ワークロードの用途 / ロール別上書きの小テーブル（既存キーの編集・削除＋新規追加行）。
-function orchAgentsEditorHtml(wl, wc) {
-  const agents = wc.agents || {};
-  const keys = Object.keys(agents);
-  const known = ORCH_AGENT_KEYS[wl];
-  const withTimeout = wl === 'flow';
-  // routine は用途別の概念が無い（1 セッションに 1 つの CLI を起こすだけ）ため編集 UI を
-  // 出さない。上の「エージェント / モデル」は定常業務の起動にそのまま効く。
-  if (known && known.length === 0 && wl === 'routine') {
-    return '<div class="orch-agents-none"><small class="muted">定常業務では、上のエージェントとモデルが'
-      + 'そのまま起動に使われます。用途ごとの変更はできません。</small></div>';
-  }
-  const listId = `orch-keys-${esc(wl)}`;
-  const datalist = (known && known.length)
-    ? `<datalist id="${listId}">${known.map((k) => `<option value="${esc(k)}"></option>`).join('')}</datalist>`
-    : '';
-  const rows = keys.map((key) => {
-    const ov = agents[key] || {};
-    return `<tr class="orch-agent-row" data-orch-key="${esc(key)}">
-      <td><code>${esc(key)}</code></td>
-      <td><input type="text" class="orch-agent-cli" placeholder="既定" value="${esc(ov.agent_cli || '')}" /></td>
-      <td><input type="text" class="orch-agent-model" placeholder="既定" value="${esc(ov.model || '')}" /></td>
-      ${withTimeout ? `<td><input type="number" min="1" step="1" class="orch-agent-timeout"
-        aria-label="${esc(key)}の1回の上限（分）" placeholder="共通値" value="${ov.timeout_sec ? Math.ceil(Number(ov.timeout_sec) / 60) : ''}" /></td>` : ''}
-      <td><label class="orch-agent-rm"><input type="checkbox" class="orch-agent-remove" /> 削除</label></td>
-    </tr>`;
-  }).join('');
-  const addRow = `<tr class="orch-agent-add">
-      <td><input type="text" class="orch-agent-new-key" list="${listId}" placeholder="${(known && known.length) ? '用途 / 担当名' : '担当名'}" /></td>
-      <td><input type="text" class="orch-agent-new-cli" placeholder="エージェント" /></td>
-      <td><input type="text" class="orch-agent-new-model" placeholder="モデル" /></td>
-      ${withTimeout ? '<td><input type="number" min="1" step="1" class="orch-agent-new-timeout" aria-label="追加する用途の1回の上限（分）" placeholder="共通値" /></td>' : ''}
-      <td><small class="muted">保存で追加</small></td>
-    </tr>`;
-  const summaryLabel = keys.length ? `用途 / 担当ごとの変更 ${keys.length}件` : '用途 / 担当ごとの変更を追加';
-  return `<details class="orch-agents" data-ui-key="orch-agents-${esc(wl)}"${keys.length ? ' open' : ''}>
-    <summary>${esc(summaryLabel)}</summary>
-    ${datalist}
-    <table class="amigos-table orch-agents-table">
-      <thead><tr><th>用途 / 担当 / 種別</th><th>エージェント</th><th>モデル</th>${withTimeout ? '<th>1回の上限（分）</th>' : ''}<th></th></tr></thead>
-      <tbody>${rows}${addRow}</tbody>
-    </table>
-  </details>`;
-}
-
-// 3. 機能ごとのエージェント設定
-function orchMatrixPanelHtml(overview) {
-  const control = overview.control || { workloads: {} };
-  const wls = (overview.budget && overview.budget.knownWorkloads) || ['routine', 'project', 'flow', 'amigos'];
-  const blocks = wls.map((wl) => {
-    const wc = (control.workloads || {})[wl] || {};
-    const deg = wc.degraded || {};
-    const timeout = wc.timeout_sec ? Math.ceil(Number(wc.timeout_sec) / 60) : '';
-    return `<div class="orch-ctrl-wl" data-orch-ctrl-wl="${esc(wl)}">
-      <div class="orch-ctrl-head">
-        <strong>${esc(amigosWorkloadLabel(wl))}</strong>
-        <label>エージェント<input type="text" class="orch-ctrl-cli" placeholder="各機能の設定を使用" value="${esc(wc.agent_cli || '')}" /></label>
-        <label>モデル<input type="text" class="orch-ctrl-model" placeholder="各機能の設定を使用" value="${esc(wc.model || '')}" /></label>
-        <label>節約時のモデル<input type="text" class="orch-ctrl-degraded-model" placeholder="変更しない" value="${esc(deg.model || '')}" /></label>
-        ${wl === 'flow' ? `<label>1回の上限（分）<input type="number" min="1" step="1" class="orch-ctrl-timeout"
-          placeholder="各プロジェクトの設定を使用" value="${timeout}" /></label>` : ''}
-      </div>
-      ${orchAgentsEditorHtml(wl, wc)}
-      ${wl === 'flow' ? '<p class="field-help">空欄は各プロジェクトの設定を使います。再試行が有効な場合、この上限が複数回適用されます。</p>' : ''}
-    </div>`;
-  }).join('');
-  return `<section class="orch-panel">
-    <header class="row">
-      <div>
-        <span class="summary-kicker">担当設定</span>
-        <h3>機能ごとのエージェントとモデル</h3>
-        <p class="muted">機能ごとに指定し、空欄は既定の設定を使います。</p>
-      </div>
-      <div>${orchBadge('muted', `設定版 ${Number(control.revision || 0)}`)}</div>
-    </header>
-    <div class="orch-ctrl-blocks">${blocks}</div>
-    <div class="settings-save-actions">
-      <button type="button" id="btn-orch-control-save" class="primary-inline"${state.orchSaving ? ' disabled' : ''}>保存</button>
     </div>
   </section>`;
 }
@@ -917,21 +822,9 @@ function globalSettingsAssistantHtml() {
   return `<section class="orch-panel">
     <header class="row"><div>
       <span class="summary-kicker">画面内AI</span>
-      <h3>AIアシスタント</h3>
-      <p class="muted">使用するエージェントを選び、必要ならモデルと待ち時間を変更します。</p>
+      <h3>AIアシスタントの待ち時間</h3>
+      <p class="muted">エージェントとモデルは実行方針から自動設定されます。ここでは自動設定の対象外である待ち時間だけを変更します。</p>
     </div></header>
-    <div class="row2">
-      <div class="field">
-        <label for="cfg-agent-cli">使用するエージェント</label>
-        <input id="cfg-agent-cli" class="mono" list="cfg-agent-cli-options" placeholder="プロジェクト設定に従う" />
-        <datalist id="cfg-agent-cli-options">
-          <option value="kiro">kiro</option><option value="claude">Claude Code</option>
-          <option value="copilot">GitHub Copilot CLI</option><option value="codex">Codex CLI</option>
-          <option value="cursor">Cursor Agent</option><option value="ollama">ローカルモデル</option>
-        </datalist>
-      </div>
-      <div class="field"><label for="cfg-agent-model">モデル</label><input id="cfg-agent-model" class="mono" placeholder="エージェントの既定を使用" /></div>
-    </div>
     <div class="field global-settings-short-field"><label for="cfg-agent-timeout">応答を待つ時間（秒）</label><input id="cfg-agent-timeout" type="number" min="30" step="10" /></div>
     <div class="settings-save-actions"><button type="button" id="btn-save-agent-settings" class="primary-inline">保存</button></div>
   </section>`;
@@ -1088,7 +981,6 @@ function globalSettingsAgentsHtml(overview) {
   if (!overview) return `${globalSettingsAssistantHtml()}<div class="empty compact">エージェント情報を読み込んでいます。</div>`;
   if (overview.error) return `${globalSettingsAssistantHtml()}<div class="empty compact"><strong>エージェント情報を読み込めませんでした</strong><span>${esc(overview.error)}</span></div>`;
   return `${globalSettingsAssistantHtml()}
-    ${orchMatrixPanelHtml(overview)}
     ${orchInventoryPanelHtml(overview)}`;
 }
 
@@ -1179,6 +1071,7 @@ function orchMethodCardHtml(method, current) {
   const effective = enabled ? current : method;
   const roles = orchMethodRoles(effective);
   const source = (current && current.source) || method.source || method.origin || '';
+  const stale = enabled && method.catalog_source && source !== method.catalog_source;
   const instruction = (effective.fragments || []).map((fragment) => String(fragment.text || '').trim())
     .filter(Boolean).join(' ');
   const search = [effective.id, effective.description, source, roles.join(' '), JSON.stringify(effective.when || {})]
@@ -1187,7 +1080,9 @@ function orchMethodCardHtml(method, current) {
     data-orch-method-role="${esc(roles.join(' '))}" data-orch-method-state="${enabled ? 'enabled' : 'disabled'}">
     <header>
       <div><strong>${esc(effective.description || effective.id)}</strong></div>
-      <div class="orch-method-actions"><span class="orch-method-status${enabled ? ' is-enabled' : ''}">${enabled ? '自動適用中' : '未使用'}</span>
+      <div class="orch-method-actions"><span class="orch-method-status${stale ? ' is-stale' : enabled ? ' is-enabled' : ''}">${stale ? '更新あり' : enabled ? '自動適用中' : '未使用'}</span>
+        ${stale ? `<button type="button" class="orch-method-toggle" data-orch-method-id="${esc(effective.id)}"
+          data-orch-method-enabled="true" aria-label="${esc(effective.description || effective.id)}を最新版へ更新">最新版に更新</button>` : ''}
         <button type="button" class="orch-method-toggle" data-orch-method-id="${esc(effective.id)}"
           data-orch-method-enabled="${enabled ? 'false' : 'true'}" aria-pressed="${enabled}"
           aria-label="${esc(effective.description || effective.id)}を${enabled ? '適用しない' : '自動適用する'}">${enabled ? '適用しない' : '自動適用する'}</button></div>
@@ -1552,6 +1447,12 @@ function setupOrchestration(root) {
   });
 
   // 実行方針の単一保存。budget / profiles / control の部分失敗は IPC の結果をそのまま表示する。
+  const policyPanel = root.querySelector('.orch-execution-policy');
+  const markPolicyDirty = () => { state.orchPolicyDirty = true; };
+  if (policyPanel) {
+    policyPanel.addEventListener('input', markPolicyDirty);
+    policyPanel.addEventListener('change', markPolicyDirty);
+  }
   const policyModes = [...root.querySelectorAll('input[name="orch-policy-mode"]')];
   const updatePolicyMode = () => {
     const selected = policyModes.find((input) => input.checked);
@@ -1590,60 +1491,7 @@ function setupOrchestration(root) {
       state.orchPolicyResult = await api.orchestrationExecutionPolicySave({ mode, custom });
       toast(state.orchPolicyResult.ok ? '実行方針を保存して反映しました' : '一部の設定を反映できませんでした',
         state.orchPolicyResult.ok);
-    } finally { state.orchSaving = false; }
-    await refreshOrchestration();
-    renderOrchestration();
-  }));
-
-  // 割当（control）の保存
-  const controlSave = root.querySelector('#btn-orch-control-save');
-  if (controlSave) controlSave.addEventListener('click', () => guard('割当の保存', async () => {
-    const workloads = {};
-    for (const block of root.querySelectorAll('[data-orch-ctrl-wl]')) {
-      const wl = block.getAttribute('data-orch-ctrl-wl');
-      const cli = block.querySelector('.orch-ctrl-cli').value.trim();
-      const model = block.querySelector('.orch-ctrl-model').value.trim();
-      const degModel = block.querySelector('.orch-ctrl-degraded-model').value.trim();
-      const wc = {
-        agent_cli: cli || null,
-        model: model || null,
-        degraded: degModel ? { model: degModel } : null,
-      };
-      const timeout = block.querySelector('.orch-ctrl-timeout');
-      if (timeout) wc.timeout_sec = timeoutSeconds(timeout.value);
-      // 用途 / ロール別の上書き（agents.<key>）を集める。削除チェックは null（＝キー削除）。
-      const agents = {};
-      for (const arow of block.querySelectorAll('.orch-agent-row')) {
-        const key = arow.getAttribute('data-orch-key');
-        if (arow.querySelector('.orch-agent-remove').checked) {
-          agents[key] = null;
-          continue;
-        }
-        const acli = arow.querySelector('.orch-agent-cli').value.trim();
-        const amodel = arow.querySelector('.orch-agent-model').value.trim();
-        agents[key] = { agent_cli: acli || null, model: amodel || null };
-        const atimeout = arow.querySelector('.orch-agent-timeout');
-        if (atimeout) agents[key].timeout_sec = timeoutSeconds(atimeout.value);
-      }
-      const addRow = block.querySelector('.orch-agent-add');
-      if (addRow) {
-        const nk = addRow.querySelector('.orch-agent-new-key').value.trim();
-        if (nk) {
-          agents[nk] = {
-            agent_cli: addRow.querySelector('.orch-agent-new-cli').value.trim() || null,
-            model: addRow.querySelector('.orch-agent-new-model').value.trim() || null,
-          };
-          const ntimeout = addRow.querySelector('.orch-agent-new-timeout');
-          if (ntimeout) agents[nk].timeout_sec = timeoutSeconds(ntimeout.value);
-        }
-      }
-      if (Object.keys(agents).length) wc.agents = agents;
-      workloads[wl] = wc;
-    }
-    state.orchSaving = true;
-    try {
-      await api.orchestrationControlSave({ workloads });
-      toast('割当を保存しました', true);
+      state.orchPolicyDirty = false;
     } finally { state.orchSaving = false; }
     await refreshOrchestration();
     renderOrchestration();

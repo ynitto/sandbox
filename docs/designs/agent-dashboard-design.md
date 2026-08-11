@@ -358,6 +358,12 @@ cowork の tmux 実行も同じ定義を通る（`chatCommand` 設定は明示�
 任せず、新しい入力スキーマも増やさない（[設計](../plans/2026-08-09-agent-dashboard-routine-parameters-dialog-design.md)）。
 入力キーが 1 つも無くても、その回の**段**を選ぶためにダイアログは必ず開く。
 
+**tmux ウィンドウで見せることと、CLI が対話できることは独立している。** tmux はコマンドを
+送る手段であり結果を見る手段なので、対話ペインを持たない CLI（aider・素の ollama）でも
+経路は分けず、同じウィンドウの中で走らせるものだけを差し替える——定期プロンプトとアドホック
+起動は agent-loop の `run`（単発実行）、定型業務は `statemachine`。段の降格でこれらの CLI が
+選ばれても実行を断らない。
+
 対話実行を持たない CLI（aider）の定型業務は、dashboard 内に実行器を持たず **agent-loop の
 `statemachine` サブコマンド**（[設計](./agent-loop-design.md)の機能 7）へ渡す。段で解決した
 `agent_cli` / `model` を `--agent-cli` / `--model` としてその回だけに効かせ、ハーネスが出す

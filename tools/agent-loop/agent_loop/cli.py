@@ -209,6 +209,42 @@ def main() -> None:
         help="Ralph の work iteration 数（1..100）",
     )
 
+    run_parser = subparsers.add_parser(
+        "run",
+        help="プロンプト 1 件をその場で 1 回実行する（デーモン不要）",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="プロンプト 1 件を headless で 1 回実行する。"
+                    "ツールループ非内蔵の CLI には限定ツール契約でツール実行を供給する",
+        epilog="""
+使い方:
+  agent-loop run "reports/digest.md に今日の要約を書いて" --acceptance "`reports/digest.md` がある"
+  agent-loop run task.md --agent-cli aider --model gemma4:e4b
+
+  tmux で様子を見せたいときは、このコマンドを tmux ウィンドウの中で起動する
+  （対話 CLI かどうかとは無関係。tmux は送る手段・見る手段）。
+""",
+    )
+    run_parser.add_argument(
+        "prompt", nargs="+", metavar="PROMPT",
+        help="実行するプロンプト（自然文、または作業ディレクトリ配下のファイルパス）",
+    )
+    run_parser.add_argument(
+        "--agent-cli", default="aider", metavar="NAME",
+        help="agents/<name>.json の CLI 名（既定: aider）",
+    )
+    run_parser.add_argument(
+        "--model", default=None, metavar="MODEL",
+        help="実行モデル（省略時は CLI 定義の default_model）",
+    )
+    run_parser.add_argument(
+        "--acceptance", action="append", default=[], metavar="TEXT",
+        help="受入条件（自然文）。繰り返し指定可。省略すると done を機械検証できない",
+    )
+    run_parser.add_argument(
+        "--dir", "-d", default=None, metavar="DIR",
+        help="作業ディレクトリ（省略時: カレントディレクトリ）",
+    )
+
     sm_parser = subparsers.add_parser(
         "statemachine",
         help="ステートマシンを aider 等の headless CLI で完走させる",
@@ -332,6 +368,10 @@ def main() -> None:
 
     if args.subcommand == "send":
         cmd_send(args, cwd)
+        return
+
+    if args.subcommand == "run":
+        cmd_run(args, cwd)
         return
 
     if args.subcommand == "statemachine":
