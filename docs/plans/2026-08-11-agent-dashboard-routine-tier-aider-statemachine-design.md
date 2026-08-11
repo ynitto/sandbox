@@ -1,5 +1,10 @@
 # Agent Dashboard: 定常業務の段選択と Aider ステートマシン実行設計
 
+> **更新（2026-08-11）**: 本設計の「Aider 用ステートマシン実行器」（dashboard in-process）は
+> [tmux 化と agent-loop ハーネス設計](2026-08-11-agent-dashboard-routine-aider-tmux-harness-design.md)
+> で agent-loop 側の `statemachine` サブコマンドへ移行した。段選択・限定ツール契約・
+> statemachine-use 正典の判断は引き続き有効。
+
 ## 背景
 
 定常業務の「今すぐ実行」は、全体設定で現在選ばれているエージェント CLI とモデルを使って

@@ -233,7 +233,15 @@ async function main() {
   assert.ok(html.includes('id="cowork-routine-tier"'), '一回限りの段を選ぶ欄を持つ');
   assert.ok(html.includes('id="cowork-parameter-fields"'), 'パラメータ入力欄の置き場を持つ');
   assert.ok(src.includes('function openCoworkParametersDialog('), '実行前に入力ダイアログを開く');
-  assert.ok(!src.includes('if (!keys.length) return run({});'), '入力不要でも段を選ぶためダイアログを開く');
+  // 入力パラメータを持たない定型業務でも、段を選ぶためにダイアログは必ず出す。
+  // ここを早期 return で飛ばすと、workflow から {{input}} を外した瞬間に段の選択ごと
+  // 消える（＝全体設定の段でしか実行できなくなる）。
+  const dialogSrc = fn('openCoworkParametersDialog');
+  assert.ok(!/\bkeys\.length\b[^\n]*\breturn\b/.test(dialogSrc),
+    '入力が 0 件でも早期 return せず、段を選ぶためダイアログを開く');
+  assert.ok(/submit\.disabled = running \|\| inputs\.some\(/.test(dialogSrc),
+    '実行可否は入力欄の中身で決める（欄が 0 件ならそのまま実行できる）');
+  assert.ok(dialogSrc.includes('tierSelect.focus()'), '段の選択へ最初にフォーカスする');
   assert.ok(src.includes('run(parameters, tier)'), '段とパラメータを一回の実行へだけ渡す');
   assert.ok(src.includes('api.coworkRunStateMachine(id, parameters, tier)'), 'state-machine IPCへ段を渡す');
   assert.ok(src.includes('type="text" autocomplete="off" required'), '初版は必須の文字列入力だけにする');

@@ -208,6 +208,44 @@ def main() -> None:
         help="Ralph の work iteration 数（1..100）",
     )
 
+    sm_parser = subparsers.add_parser(
+        "statemachine",
+        help="ステートマシンを aider 等の headless CLI で完走させる",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="statemachine-use のワークフローを headless エージェント CLI で実行する"
+                    "（限定ツールループつきハーネス）",
+        epilog="""
+使い方:
+  agent-loop statemachine --workflow .statemachine/digest/workflow.yaml
+  agent-loop statemachine --workflow .statemachine/digest/workflow.yaml \\
+      --agent-cli aider --model gemma4:e4b --param topic=llm --input "今日の要約"
+""",
+    )
+    sm_parser.add_argument(
+        "--workflow", required=True, metavar="PATH",
+        help="workflow.yaml のパス（作業ディレクトリからの相対または配下の絶対パス）",
+    )
+    sm_parser.add_argument(
+        "--agent-cli", default="aider", metavar="NAME",
+        help="agents/<name>.json の headless CLI 名（既定: aider）",
+    )
+    sm_parser.add_argument(
+        "--model", default=None, metavar="MODEL",
+        help="実行モデル（省略時は CLI 定義の default_model）",
+    )
+    sm_parser.add_argument(
+        "--param", action="append", default=[], metavar="KEY=VALUE",
+        help="ワークフローの実行パラメータ。繰り返し指定可",
+    )
+    sm_parser.add_argument(
+        "--input", default=None, metavar="TEXT",
+        help="ワークフローの input パラメータ",
+    )
+    sm_parser.add_argument(
+        "--dir", "-d", default=None, metavar="DIR",
+        help="作業ディレクトリ（省略時: カレントディレクトリ）",
+    )
+
     msg_parser = subparsers.add_parser(
         "msg",
         help="エージェントの受信ボックスにメッセージを投函する",
@@ -293,6 +331,10 @@ def main() -> None:
 
     if args.subcommand == "send":
         cmd_send(args, cwd)
+        return
+
+    if args.subcommand == "statemachine":
+        cmd_statemachine(args, cwd)
         return
 
     if args.subcommand == "msg":

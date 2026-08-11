@@ -6,6 +6,7 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 const {
   makeLoopProvider, runChatWindow, isWslPath, wslPath, wslDistro, toWslCwd, shellQuote, decodeCliOutput,
+  runCommandWindow, runCommandCapture, supportsRunWindow,
 } = require('./loopProvider');
 const { _pathKey, _isPosixAbs, toViewerPath, viewerDistro } = require('../../agent-project/main/project');
 const { parseFlatYaml } = require('../../agent-project/main/toolconfig');
@@ -19,7 +20,6 @@ const globalInstructions = require('../../orchestration/main/instructions');
 const sessionCommands = require('../../orchestration/main/sessionCommands');
 const profiles = require('../../orchestration/main/profiles');
 const agentCli = require('../../agent-project/main/agentCli');
-const stateMachineRunner = require('./stateMachineRunner');
 
 // 設定に書かれたフォルダ表記を、このビュアーで開けるパスへ揃える（discover と同じ規則）。
 // WSL の Linux 絶対パスは Windows ビュアーでは UNC へ翻訳する（そうしないと C:\home\… に化ける）。
@@ -593,6 +593,34 @@ function stateMachineParameterBlock(values) {
     + entries.map(([key, value]) => `- ${key}: ${JSON.stringify(value)}`).join('\n');
 }
 
+// ハーネスへ渡すワークフローの位置。**実行 cwd からの相対 POSIX パス**にする——
+// ハーネスは WSL 側で動くので、ビュアー（Windows）のパスをそのまま渡すと解決できない。
+// 相対にしておけば、cwd さえ WSL 側へ翻訳できていればディストロ表記に依存しない。
+//
+// 作業フォルダの外を指してしまう組み合わせ（登録フォルダと定義フォルダが別ボリューム
+// にある等。win32 の path.relative は道筋が無いと絶対パスを返す）はここで断る。
+// そのまま渡すと WSL 側で意味を成さないパスになり、ハーネスの「作業フォルダ外」
+// エラーだけが返って原因が分からない。
+function harnessWorkflowArg(cwd, workflowPath, config) {
+  const rel = relPosix(cwd, workflowPath, config);
+  if (!rel || rel === '..' || rel.startsWith('../') || /^(?:[A-Za-z]:|\/)/.test(rel)) {
+    throw new Error(`ステートマシン定義が作業フォルダの外にあります: ${workflowPath}`);
+  }
+  return rel;
+}
+
+// agent-loop statemachine ハーネス（限定ツールループ）の起動引数。
+// モデルは段解決の結果を --model で今回の実行にだけ明示する。
+function stateMachineHarnessArgs(cwd, workflowPath, selected, values, config) {
+  const args = ['statemachine', '--workflow', harnessWorkflowArg(cwd, workflowPath, config),
+    '--agent-cli', selected.cli];
+  if (selected.model) args.push('--model', String(selected.model));
+  for (const [key, value] of Object.entries(values || {})) {
+    args.push('--param', `${key}=${value}`);
+  }
+  return args;
+}
+
 // グローバル指示（agent-instructions 契約）を起動プロンプト先頭へ前置する。
 // dashboard は指示の書き手であると同時に、自分が起動する CLI に対する読み手でもある
 // （cowork の定常業務 / 定型業務ウィンドウ）。二重注入・空・破損はすべて no-op。
@@ -743,16 +771,29 @@ function runStateMachine(config, itemIdValue, parameters, tier = '') {
     if (Array.isArray(item.args)) throw new Error('明示 args の定型業務は Aider headless 実行に対応していません');
     const workflowPath = stateMachineFilePath(item, item.repo || item.cwd || cwd, config);
     if (!workflowPath) throw new Error('workflow.yaml の場所を特定できません');
-    return stateMachineRunner.runSkill({
-      skillId: 'statemachine-use', cwd, workflowPath, parameters: effectiveValues, agent: selected,
-    }).then((res) => {
+    // Aider は対話セッションを持たないため、agent-loop の statemachine ハーネス
+    // （限定ツールループ）へ実行契約を渡し、tmux セッションの中で aider が動く様子ごと
+    // 見せる。段解決したモデルは --model で今回の実行にだけ明示する。
+    const smArgs = stateMachineHarnessArgs(cwd, workflowPath, selected, effectiveValues, config);
+    const command = cfg.loopCommand || cfg.loopProvider || 'agent-loop';
+    if (cfg.runWindow !== false && supportsRunWindow()) {
+      const res = runCommandWindow({
+        command,
+        args: smArgs,
+        cwd,
+        sessionKey: selected.cli,
+        title: '定型業務を実行',
+        message: '別ウィンドウ（tmux）で Aider ステートマシン実行を開始しました',
+      });
       recordRun(cfg, { ...item, type: 'state-machine' }, res);
       return res;
-    }).catch((err) => {
-      const res = { ok: false, error: err.message || String(err) };
-      recordRun(cfg, { ...item, type: 'state-machine' }, res);
-      return res;
-    });
+    }
+    // ウィンドウを開けない環境（CI 等）: 非同期に完走させ、結果契約（RESULT 行）を返す。
+    return runCommandCapture(command, smArgs, { cwd, timeoutMs: item.timeoutMs || 1800000 })
+      .then((res) => {
+        recordRun(cfg, { ...item, type: 'state-machine' }, res);
+        return res;
+      });
   }
   const plan = routineLaunchPlan(config, cwd, tier, selected);
   const res = makeLoopProvider(cfg, config).run({
@@ -1254,4 +1295,5 @@ module.exports = {
   inspectCoworkRoot, setCoworkRoot,
   templateParameterKeys, stateMachineInputSpec, stateMachineFilePath,
   routineParameterSpec, validateParameters, applyParameters, stateMachineParameterBlock,
+  stateMachineHarnessArgs, harnessWorkflowArg,
 };
