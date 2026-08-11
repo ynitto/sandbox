@@ -117,8 +117,26 @@ test('カスタムフローの tier を実行候補へ固定して plan を作�
       ],
     });
     const plan = adhoc.planFromWorkflow({}, workflow);
+    assert.strictEqual(plan.nodes[0].tier, 'large');
+    assert.strictEqual(plan.nodes[1].tier, 'small');
     assert.deepStrictEqual(plan.nodes[0].agent, { agent_cli: 'codex', model: 'gpt-5' });
     assert.deepStrictEqual(plan.nodes[1].agent, { agent_cli: 'ollama', model: 'qwen3' });
+  } finally {
+    profiles.resolveTier = original;
+  }
+});
+
+test('カスタムフローの自動 tier は agent-control の実行方針を継承する', () => {
+  const original = profiles.resolveTier;
+  profiles.resolveTier = () => { throw new Error('auto は固定候補を解決しない'); };
+  try {
+    const workflow = adhoc.normalizeWorkflow({
+      name: '自動選択', nodes: [{ id: 'work', goal: '実装', tier: '自動' }],
+    });
+    const plan = adhoc.planFromWorkflow({}, workflow);
+    assert.strictEqual(workflow.nodes[0].tier, 'auto');
+    assert.strictEqual(plan.nodes[0].tier, undefined);
+    assert.strictEqual(plan.nodes[0].agent, undefined);
   } finally {
     profiles.resolveTier = original;
   }
@@ -519,7 +537,7 @@ test('初期画面は保存済み・一から作る・雛形を同じカード�
     assert.match(html, /id="wf-new"/);
     assert.match(html, /data-pattern-id="verify"/);
     assert.match(html, /data-method-pattern-id="build-review"/);
-    assert.match(html, /実行手法/);
+    assert.match(html, /作業ルール/);
     assert.doesNotMatch(html, /data-method-pattern-id="no-self-approval"/);
     assert.doesNotMatch(html, /この雛形から作る|wf-list/);
   } finally {
@@ -545,13 +563,16 @@ test('分岐先の追加は既存ノードと重ならない位置を選ぶ', ()
   assert.deepStrictEqual(workflowUi.nextNodePosition(workflow, 'draft'), { x: 580, y: 210 });
 });
 
-test('実行手法は対象と適用条件を読める形にする', () => {
+test('作業ルールは工程と処理をまとめ、料金区分を数値で見せない', () => {
   const view = workflowUi.methodPresentation({
     fragments: [{ role: 'planner', text: '最初に計画する' }, { role: 'worker', text: '小さく実装する' }],
-    when: { tiers: ['large'], purposes: ['coding'] },
+    when: { tiers: ['large'], purposes: ['work'], max_relative_cost: 0 },
   });
   assert.deepStrictEqual(view.roles, ['計画', '作業']);
-  assert.strictEqual(view.condition, 'tier: large · 対象: coding');
+  assert.deepStrictEqual(view.target, ['作業']);
+  assert.strictEqual(view.condition, '高性能向け・ローカル実行向け');
+  assert.deepStrictEqual(['basic', 'small', 'medium', 'large', 'auto'].map(workflowUi.tierLabel),
+    ['単純作業', '軽量', '標準', '高性能', '自動']);
 });
 
 test('完了まで反復の雛形は説明を添えず検証ノードから作業ノードへ矢印をつなぐ', () => {

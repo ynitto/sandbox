@@ -577,16 +577,37 @@ def control_workers(fallback: int) -> int:
     return int(_control_concurrency().get("workers", fallback))
 
 
+def _selection_meta(purpose: str = "", agent: "dict | None" = None) -> dict:
+    wl = _control_workload()
+    tier = str((agent or {}).get("tier") or wl.get("tier") or "")
+    purpose_control = (wl.get("agents") or {}).get(purpose) if purpose else None
+    if agent and agent.get("tier"):
+        source = "pinned-tier"
+    elif agent:
+        source = "pinned-agent"
+    elif purpose_control:
+        source = "control-purpose"
+    else:
+        source = wl.get("selection_source") or (
+            "control-workload" if wl.get("agent_cli") or wl.get("model") else "tool-config")
+    return {"tier": tier or None, "selection_source": source,
+            "selection_reason": wl.get("selection_reason") or "", "pinned": bool(agent)}
+
+
 def _write_status(effective_cli: str = "", effective_model: str = "", lifecycle: str = "run",
-                  budget: "dict | None" = None, fresh_after_sec: int = 120) -> None:
+                  budget: "dict | None" = None, fresh_after_sec: int = 120,
+                  purpose: str = "", pinned: bool = False, tier: str = "") -> None:
     """status/<tool>-<pid>.json へ適用状況ハートビートを原子書換する（best-effort）。"""
     ctl = _load_control()
     d = os.path.join(_control_dir(), "status")
     try:
         os.makedirs(d, exist_ok=True)
+        meta = _selection_meta(
+            purpose, ({"tier": tier} if tier else {"agent_cli": "pinned"}) if pinned else None)
         rec = {"tool": _NODE_BUDGET_TOOL, "workload": _NODE_BUDGET_WORKLOAD,
                "pid": os.getpid(), "lifecycle": lifecycle,
-               "effective": {"agent_cli": effective_cli or None, "model": effective_model or None},
+               "effective": {"agent_cli": effective_cli or None, "model": effective_model or None,
+                             **meta},
                "fresh_after_sec": fresh_after_sec, "ts": now_iso()}
         if ctl.get("revision") is not None:
             rec["revision_applied"] = ctl.get("revision")
@@ -761,9 +782,11 @@ def run_agent(prompt: str, model: str | None, purpose: str = "", cwd: "str | Non
             "上限を上げる（dashboard のオーケストレーションタブ / agent-amigos budget node）か"
             "期間の更新を待ってください")
     cli_used, model_used = _effective_agent(purpose, model, agent)
-    prompt = _apply_methods(prompt, purpose, cli_used, model_used)
+    prompt = _apply_methods(prompt, purpose, cli_used, model_used,
+                            str((agent or {}).get("tier") or ""))
     _write_status(effective_cli=cli_used, effective_model=model_used or "",
-                  lifecycle=lifecycle, budget=nb)
+                  lifecycle=lifecycle, budget=nb, purpose=purpose,
+                  pinned=bool(agent), tier=str((agent or {}).get("tier") or ""))
     last: "RuntimeError | None" = None
     empty_fixes = 0
     attempt = 0

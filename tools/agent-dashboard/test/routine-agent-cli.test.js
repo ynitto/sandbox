@@ -262,13 +262,42 @@ test('呼び出し側が解決済みの起動条件を渡したら、実行側�
 });
 
 test('resolveAgent は workload を渡さない呼び出しでは control.json を読まない', () => {
-  // charter 補完・Doctor 等は機能別宣言の対象外。routine の宣言で挙動が変わってはいけない。
+  // workload を明示しない低レベル呼び出しは従来どおりツール設定へ委ねる。
   const config = configWithControl(
     { workloads: { routine: { agent_cli: 'ollama' } } },
     { agent: { cli: 'claude' } }
   );
   assert.strictEqual(agent.resolveAgent(config, emptyRepo()).cli, 'claude');
   assert.strictEqual(agent.resolveAgent(config, emptyRepo(), { workload: 'routine' }).cli, 'ollama');
+});
+
+test('Dashboard内AIはdashboard workloadとpurpose別controlを優先する', () => {
+  const config = configWithControl(
+    { workloads: { dashboard: {
+      agent_cli: 'claude', model: 'sonnet', agents: { draft: { model: 'haiku' } },
+    } } },
+    { agent: { cli: 'codex', model: 'gpt-5' } }
+  );
+  const resolved = agent.resolveAgent(config, emptyRepo(), { workload: 'dashboard', purpose: 'draft' });
+  assert.strictEqual(resolved.cli, 'claude');
+  assert.strictEqual(resolved.model, 'haiku');
+});
+
+test('Dashboard内AIはdashboard workloadの上限到達時に実行しない', () => {
+  const budgetDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dashboard-budget-'));
+  fs.mkdirSync(path.join(budgetDir, 'ledger'));
+  fs.writeFileSync(path.join(budgetDir, 'config.json'), `${JSON.stringify({
+    version: 2,
+    period: 'total',
+    allocation: { workloads: { dashboard: { max_tokens: 10, on_exhausted: 'pause' } } },
+  })}\n`);
+  fs.writeFileSync(path.join(budgetDir, 'ledger', 'usage.jsonl'),
+    `${JSON.stringify({ workload: 'dashboard', tokens_in: 11, tokens_out: 0 })}\n`);
+  const config = configWithControl({ workloads: { dashboard: {} } },
+    { orchestration: { budgetDir } });
+  const execution = agent.dashboardExecutionState(config);
+  assert.strictEqual(execution.exhausted, true);
+  assert.strictEqual(execution.blocked, true);
 });
 
 test('readControlAgent は control.json が無くても空を返す（起動を止めない）', () => {

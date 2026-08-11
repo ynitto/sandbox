@@ -1,5 +1,6 @@
 {
   "name": "ollama-json",
+  "headless_autonomy": "single-shot",
   "relative_cost": 0,
   "command": ["agent-ollama", "--think", "off", "--format", "json", "{model}"],
   "list_variant": "ollama-list",

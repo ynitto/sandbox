@@ -517,6 +517,15 @@ function registerIpc(ctx) {
     agent.completeMethodDraft(loadConfig(), { dir: dir || null, brief, current: current || {} })
   );
 
+  // 定期プロンプトの本文と受入条件の下書きを作る。段（tier）を選んで上位のエージェントに
+  // 書かせられる。**下書きだけ**を返し、agent-loop.yaml への確定は人の承認操作に任せる。
+  handle('agent:routineAcceptanceDraft', ({ dir, name, prompt, extra, tier }) =>
+    agent.completeRoutineAcceptance(loadConfig(), {
+      dir: dir || null, name: name || '', prompt: prompt || '',
+      extra: extra || '', tier: tier || '',
+    })
+  );
+
   // 現在画面のスナップショットを読み取り専用CLIへ渡し、助言本文だけを返す。
   handle('agent:doctor', ({ dir, context, userPrompt, mode }) => {
     if (!context || typeof context !== 'object') throw new Error('画面の状態が指定されていません');

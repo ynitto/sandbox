@@ -23,13 +23,38 @@ from pathlib import Path
 from xml.etree import ElementTree as ET
 
 REGISTRY_PATH = Path(__file__).parent.parent.parent.parent / "skill-registry.json"
+# スキル同梱の初期フィード。レジストリがスキル内（scripts/skill-registry.json）にあった頃は
+# インストールした時点で必ずフィードが入っていた。レジストリを agent home 直下へ移した際に
+# その出どころが消え、新しい agent home ではフィード 0 件で `fetch_feeds.py` が落ちていた。
+DEFAULT_FEEDS_PATH = Path(__file__).parent / "default_feeds.json"
 
 _ATOM_NS = "{http://www.w3.org/2005/Atom}"
 
 
+def _default_feeds() -> list[dict]:
+    return json.loads(DEFAULT_FEEDS_PATH.read_text(encoding="utf-8"))["feeds"]
+
+
 def load_registry(tags: list[str] | None, lang: str | None) -> list[dict]:
+    # 初回は同梱の既定フィードでレジストリを埋めてから使う（旧挙動と同じ「インストール直後から
+    # 使える」状態に戻す）。**実行時のフォールバックにはしない**——feed_stats・candidate_feeds・
+    # evolve_feeds はどれもレジストリの feeds を土台にするので、真実の在り処は 1 つに保つ。
+    # 他のスクリプト（discover.py / evolve_feeds.py / scorer.py）と同じく setdefault で読む。
+    if not REGISTRY_PATH.is_file():
+        return _filter_feeds(_default_feeds(), tags, lang)   # 未インストール実行: 書き込まない
     data = json.loads(REGISTRY_PATH.read_text(encoding="utf-8"))
-    feeds = data["skill_configs"]["tech-harvester"]["feeds"]
+    config = data.setdefault("skill_configs", {}).setdefault("tech-harvester", {})
+    feeds = config.get("feeds")
+    if not feeds:
+        feeds = config["feeds"] = _default_feeds()
+        REGISTRY_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+                                 encoding="utf-8")
+        print(f"[fetch_feeds] 既定フィード {len(feeds)} 件を {REGISTRY_PATH} へ登録しました。",
+              file=sys.stderr)
+    return _filter_feeds(feeds, tags, lang)
+
+
+def _filter_feeds(feeds: list[dict], tags: list[str] | None, lang: str | None) -> list[dict]:
     if lang:
         feeds = [f for f in feeds if f.get("lang") == lang]
     if tags:

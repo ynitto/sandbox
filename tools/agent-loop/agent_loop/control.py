@@ -19,6 +19,11 @@ from __future__ import annotations
 _NODE_BUDGET_WORKLOAD = "routine"
 _NODE_BUDGET_TOOL = "agent-loop"
 _CONTROL_CACHE = {"mtime": None, "data": {}}
+_EFFECTIVE_AGENT_MODEL: "str | None" = None
+# 実際に解決へ使った control.json の revision（status の revision_applied）。
+# ファイルの最新値ではない——最新値を applied として報告すると、まだ適用していない
+# 設定が dashboard で「反映済み」に見える。
+_REVISION_APPLIED: "int | None" = None
 
 
 def _utc_iso() -> str:
@@ -54,6 +59,44 @@ def _control_workload() -> dict:
 def _control_lifecycle() -> str:
     """このワークロードの望ましい lifecycle（run|pause|stop）。既定 run。"""
     return str(_control_workload().get("lifecycle") or "run")
+
+
+def _control_override() -> "tuple[str | None, str | None]":
+    """routine の agent/model。workload 指定を defaults より優先する。"""
+    ctl = _load_control()
+    wl = _control_workload()
+    defaults = ctl.get("defaults") or {}
+    cli = wl.get("agent_cli") or defaults.get("agent_cli")
+    model = wl.get("model") or defaults.get("model")
+    return (str(cli) if cli else None, str(model) if model else None)
+
+
+def _apply_control_agent(config: dict) -> dict:
+    """起動時に desired agent/model をツール設定へ重ねる。
+
+    稼働中の差し替えは**セッション境界**で効く（headless 経路は実行ごとが境界なので次の
+    実行から、対話経路は clean_session の建て直し・oneshot・デーモン再起動で）。
+    ここで適用した revision を控えておき、status の revision_applied として報告する——
+    「いま読んだ revision」を applied と偽らないため。
+    """
+    global _REVISION_APPLIED
+    out = dict(config or {})
+    _REVISION_APPLIED = _load_control().get("revision")
+    cli, model = _control_override()
+    budget = _node_budget_state()
+    if budget and (budget.get("soft") or
+                   (budget.get("exceeded") and budget.get("on_exhausted") == "degrade")):
+        degraded = _control_workload().get("degraded") or {}
+        cli = degraded.get("agent_cli") or cli
+        model = degraded.get("model") or model
+    if cli:
+        out["agent_cli"] = str(cli)
+    if model:
+        key = "agent_cli_options" if out.get("agent_cli") else "kiro_options"
+        options = dict(out.get(key) or {})
+        options["model"] = str(model)
+        out[key] = options
+    return out
 
 
 # --- ノード予算（node-budget 契約 v2: トークン一次・時間は v1 互換で AND） ---------------
@@ -222,19 +265,45 @@ def _write_stopped_reason(reason: str) -> None:
 
 
 def _write_status(lifecycle: str = "run", budget: "dict | None" = None,
-                  fresh_after_sec: int = 120) -> None:
+                  fresh_after_sec: int = 120, effective_cli: str = "",
+                  effective_model: str = "") -> None:
     """status/<tool>-<pid>.json へ適用状況ハートビートを原子書換する（best-effort）。
     書けなくても定常業務は止めない。"""
     ctl = _load_control()
     d = os.path.join(_control_dir(), "status")
     try:
         os.makedirs(d, exist_ok=True)
+        actual_cli = effective_cli or getattr(_CLI_PROFILE, "name", "kiro") or "kiro"
+        actual_model = effective_model or _EFFECTIVE_AGENT_MODEL
+        desired_cli, desired_model = _control_override()
+        wl = _control_workload()
+        # restart_required = 「差し替えがセッション境界待ち」。headless 経路は実行ごとが
+        # 境界なので立たない。対話経路で無限キープの entry だけが立つ——その事実を
+        # dashboard の「設定の反映」列で人に見せる（長らく誰も読んでいなかった）。
+        pending_drift = False
+        scheduler = globals().get("_scheduler_ref")
+        if scheduler is not None:
+            try:
+                pending_drift = bool(scheduler.has_pending_launch_drift())
+            except Exception:
+                pending_drift = False
+        restart_required = bool(
+            pending_drift
+            or (desired_cli and desired_cli != actual_cli)
+            or (desired_model and desired_model != actual_model))
         rec = {"tool": _NODE_BUDGET_TOOL, "workload": _NODE_BUDGET_WORKLOAD,
                "pid": os.getpid(), "lifecycle": lifecycle,
-               "effective": {"agent_cli": _NODE_BUDGET_TOOL, "model": None},
+               "effective": {"agent_cli": actual_cli, "model": actual_model,
+                             "tier": wl.get("tier"),
+                             "selection_source": wl.get("selection_source") or
+                             ("control-workload" if desired_cli or desired_model else "tool-config"),
+                             "selection_reason": wl.get("selection_reason") or "",
+                             "pinned": bool(wl.get("pinned", False)),
+                             "restart_required": restart_required},
                "fresh_after_sec": fresh_after_sec, "ts": _utc_iso()}
-        if ctl.get("revision") is not None:
-            rec["revision_applied"] = ctl.get("revision")
+        applied = _REVISION_APPLIED if _REVISION_APPLIED is not None else ctl.get("revision")
+        if applied is not None:
+            rec["revision_applied"] = applied
         # グローバル指示: 直近で paste 注入したブロックの revision（未注入は省略）。
         if _INSTRUCTIONS_REV_APPLIED is not None:
             rec["instructions_revision_applied"] = _INSTRUCTIONS_REV_APPLIED

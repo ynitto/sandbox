@@ -29,6 +29,30 @@ class MethodIntegrationTests(unittest.TestCase):
             self.assertIn("write the test first", prompt)
             self.assertEqual(kf._method_ledger_fields("work")["methods"], ["test-first"])
 
+    def test_node_tier_overrides_control_tier_for_methods(self):
+        data = self._tuning()
+        with mock.patch.object(kf._methodlib, "load", return_value=data), \
+             mock.patch.object(kf._methodlib, "current_tier", return_value="large"), \
+             mock.patch.object(kf._methodlib, "relative_cost", return_value=0.5):
+            kf._set_method_context("task-r1", "n1")
+            prompt = kf._apply_methods("prompt", "work", "kiro", "m", tier="economy")
+            self.assertIn("write the test first", prompt)
+
+    def test_fixed_node_tier_is_reported_as_pinned_tier(self):
+        control_dir = tempfile.mkdtemp(prefix="kf-control-status-")
+        self.addCleanup(shutil.rmtree, control_dir, True)
+        pathlib.Path(control_dir, "control.json").write_text(json.dumps({
+            "revision": 2, "workloads": {"flow": {"tier": "small"}},
+        }), encoding="utf-8")
+        with mock.patch.dict(os.environ, {"AGENT_CONTROL_DIR": control_dir}):
+            kf._CONTROL_CACHE.update({"mtime": None, "data": {}})
+            kf._write_status("codex", "gpt-5", purpose="work", pinned=True, tier="large")
+            status = json.loads(next(pathlib.Path(control_dir, "status").glob("agent-flow-*.json"))
+                                .read_text(encoding="utf-8"))
+        self.assertEqual(status["effective"]["tier"], "large")
+        self.assertEqual(status["effective"]["selection_source"], "pinned-tier")
+        self.assertTrue(status["effective"]["pinned"])
+
     # 出力そのものへ何かを書かせる手法（復唱・手順の列挙・入出力契約の宣言）。成果を機械が
     # 解釈する kind へ後置すると 2 通りに壊れる——(1) 出力全体が 1 個の JSON に縛られる役割
     # では本文ではなくキーとして混入する（2026-08-11 実測: filter が

@@ -223,7 +223,8 @@ test('orchestration はノード予算 v2 / 制御 / ドロップイン API を�
   });
   assert.deepStrictEqual(registered.sort(),
     ['orchestration:agentDelete', 'orchestration:agentSave', 'orchestration:budgetSave',
-     'orchestration:calibrate', 'orchestration:controlSave', 'orchestration:instructionsSave',
+     'orchestration:calibrate', 'orchestration:controlSave', 'orchestration:executionPolicySave',
+     'orchestration:instructionsSave',
      'orchestration:lifecycle', 'orchestration:methodAdd', 'orchestration:methodSet',
      'orchestration:overview', 'orchestration:profilesApply',
      'orchestration:profilesEvaluate', 'orchestration:profilesSave', 'orchestration:rebalance',
@@ -239,6 +240,7 @@ test('orchestration はノード予算 v2 / 制御 / ドロップイン API を�
   assert.deepStrictEqual(calls, [['orchestration:overview', {}]]);
   for (const name of ['orchestrationBudgetSave', 'orchestrationRebalance', 'orchestrationCalibrate',
     'orchestrationControlSave', 'orchestrationLifecycle', 'orchestrationAgentSave', 'orchestrationAgentDelete',
+    'orchestrationExecutionPolicySave',
     'orchestrationProfilesSave', 'orchestrationProfilesEvaluate', 'orchestrationProfilesApply',
     'orchestrationMethodSet', 'orchestrationMethodAdd']) {
     assert.strictEqual(typeof api[name], 'function', name);

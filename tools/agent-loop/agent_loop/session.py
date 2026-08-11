@@ -294,6 +294,13 @@ class SessionManager:
                 if k and k != "PATH":
                     launch_env[str(k)] = str(v)
         else:
+            # headless プロファイル（interactive 節を持たない定義）は対話 argv を持たない。
+            # ここへ来るのは headless 枝の分岐漏れなので、黙って kiro-cli へ落とさず断る
+            # （フォールバックすると「指定した CLI と違うものが起動している」に気づけない）。
+            if not _CLI_PROFILE.is_legacy and _CLI_PROFILE.is_headless:
+                raise RuntimeError(
+                    f"agent_cli '{_CLI_PROFILE.name}' は対話ペインを持ちません"
+                    "（headless 実行の経路で起動してください）。")
             # agent_cli 指定時は定義から組み立てた argv、未指定は従来の kiro-cli。
             if not _CLI_PROFILE.is_legacy and _CLI_PROFILE.argv:
                 full_argv = list(_CLI_PROFILE.argv)
@@ -455,6 +462,16 @@ class SessionManager:
     def get_effective_model(self, prompt_id: str) -> str | None:
         with self._lock:
             return self._effective_model.get(prompt_id)
+
+    def get_launch_fingerprint(self, prompt_id: str) -> str:
+        """このペインを起こしたときの起動指紋（CLI 名 + argv + cwd）。無ければ ''。
+
+        差し替え判定はモデル単独比較（get_effective_model）ではなくこちらで行う——
+        CLI の切り替えも argv の変更も拾えるため。指紋はペイン起動のたびに記録している
+        （長らく保存だけされて比較されていなかった）。
+        """
+        with self._lock:
+            return str(self._launch_fingerprint.get(prompt_id) or "")
 
     def get_ownership(self, prompt_id: str) -> str | None:
         with self._lock:

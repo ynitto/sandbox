@@ -60,6 +60,17 @@
     **エラー分類規則（errors）**。対応アダプターは本文を stdout、実測値を stderr の完全一致行
     `@agent-usage tokens_in=<整数> tokens_out=<整数>` へ分ける。消費側は最後の一致行だけを読み、
     無い・壊れている場合は従来どおり実行時間だけを記録する。
+  - **headless の自律性（`headless_autonomy`）**: `command`（ヘッドレス）で 1 回起動したとき、
+    その CLI が**自分でツールを回して仕事を完遂できるか**の申告。`tool-loop` は内部に探索・
+    編集・コマンド実行のループを持つ（`claude -p` / `codex exec` / `kiro-cli chat
+    --no-interactive` / `agent-ollama --tools bash`）ので、プロンプトを渡して 1 回呼べば終わる。
+    `single-shot` は持たない——aider は渡されたファイルを編集するだけ、素の推論変種
+    （`ollama-json` / `ollama-list`）はツールを持たないので、呼び出し側がツールループを
+    供給しないと**着手すらしない**。未宣言は安全側の `single-shot`。
+    分ける理由は、`interactive` の有無と自律性が**別の軸**だから。対話 CLI を tmux で
+    自動運転する側が薄くて済んでいたのは、ツールループを CLI が内蔵していたからで、
+    「対話できない = 使えない」ではない。この 1 ビットがあると、消費側は
+    「1 回呼ぶ」か「ツールループを供給する」かを CLI 名で分岐せずに決められる。
   - **JSON 契約用の変種の申告（`json_variant`）**: 出力が JSON だけと決まっている役割に、
     この定義の代わりに使う定義名。エンジンは役割の性質だけを見てここへ振り替える。
     知識を 2 つに割るのが要点で、**「JSON 用の起動形を持つか」は定義が申告し、「この役割は
@@ -136,7 +147,7 @@
   例外は cowork の定常業務 tmux 実行（`cowork.js:coworkChatLaunch`）——定義解決に失敗しても
   `kiro-cli chat --trust-all-tools` へ落として定常業務を止めない。ただし黙ってはいない。
   フォールバック発動時は `console.warn` で理由（元エラーのメッセージ）を残す。
-- 同梱定義: `agents/{kiro,claude,copilot,codex,cursor,ollama,ollama-json,ollama-list,ollama-read,opencode}.json`。
+- 同梱定義: `agents/{kiro,claude,copilot,codex,cursor,aider,ollama,ollama-json,ollama-list,ollama-read,opencode}.json`。
   追加手順は
   [`agents/README.md`](../../agents/README.md)。
 
@@ -145,8 +156,10 @@
 | 呼び出し元 | モード | readonly | no_session |
 |---|---|---|---|
 | act / plan / verify / worker / amigo の手番 | headless | ✗ | ✗ |
-| dashboard の charter 補完・Doctor・構造化 Assist | headless | ✓ | ✓ |
+| dashboard の charter 補完・Doctor・構造化 Assist・受入条件補完 | headless | ✓ | ✓ |
 | dashboard の CLI チャット・cowork の tmux 実行 | interactive | ✗ | ✗ |
+| agent-loop の定期プロンプト（`session: keep`・既定） | interactive | ✗ | ✗ |
+| agent-loop の定期プロンプト（`session: per-run` / `interactive` 無しの定義） | headless | ✗ | ✓ |
 | 対話診断（失敗診断の既定） | interactive | ✓ | ✓ |
 
 ### 2.1 対話モード拡張の判断記録
@@ -181,6 +194,16 @@
   成立しない——ready は処理中もマッチし続ける。否定を 1 本の正規表現に押し込むより、
   「処理中の正の検出」を独立に宣言させて優先順位（busy ＞ ready ＞ 静穏 ＞ 既定 busy）を
   コード側で固定するほうが、定義の読み書きも判定の説明もまっすぐになる。
+- **`headless_autonomy` は定義に申告させ、他フィールドから推測しない**（2026-08-11）。
+  `interactive` の有無・`file_flag` の有無・`write_args` にツール系フラグがあるか、どれも
+  相関はあるが根拠にはならない。推測で決めると、定義を足した人が意図と違う経路へ振り分けられ、
+  しかもそれが実行時の「着手しない」という分かりにくい症状で出る。**未宣言は安全側の
+  `single-shot`**——ツールループを余計に供給しても仕事は進むが、必要な供給を落とすと
+  何も起きないまま静かに空振りする。
+- **`interactive` の有無を「使えるかどうか」の判定に使わない**（2026-08-11）。かつて
+  agent-loop は `interactive` 節の無い定義を起動時 fail fast にしていたが、対話セッションは
+  **会話を人に見せるための可視化**であって実行の必須要件ではない。判定に使うべきなのは
+  「対話 argv を組めるか」（= 経路の選択）であって、「この CLI が使えるか」ではない。
 - **agent-loop は第二のローダを書かず agentcore を同梱する**。「ローダは言語ごとに 1 実装」
   （§4）を守るため、agent-loop の `install.sh` が zipapp へ agentcore を同梱し、リポジトリ
   直接実行は相対探索で import する。agentcore を解決できない環境では `agent_cli` 指定だけが

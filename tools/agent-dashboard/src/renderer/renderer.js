@@ -224,10 +224,10 @@ function statusLabel(status) {
 const AREAS = [
   { id: 'home', label: 'ホーム', desc: '判断待ちと、全体のいまが分かります。' },
   { id: 'projects', label: 'プロジェクト', list: 'projects' },
+  { id: 'workflows', label: 'ワークフロー', ownHeader: true },
   { id: 'routines', label: '定常業務', list: 'routines', desc: '繰り返す作業を、この端末で動かします。' },
   { id: 'missions', label: 'ミッション', ownHeader: true },
   { id: 'participation', label: '参加', ownHeader: true },
-  { id: 'workflows', label: 'ワークフロー', ownHeader: true },
   { id: 'usage', label: '利用状況', desc: 'この端末で使ったトークンと、実行の品質。' },
   { id: 'settings', label: '全体設定', footer: true, ownHeader: true },
 ];

@@ -16,7 +16,7 @@
 | [agent-cli](../../../../../schemas/agent-cli.schema.json) | `agents/<name>.json` | ドロップイン定義の棚卸し・検証・編集 |
 | [agent-instructions](../../../../../schemas/agent-instructions.schema.json) | プロジェクト配下 | 共通指示の編集（委譲先ノードへ伝播する） |
 | [agent-session-commands](../../../../../schemas/agent-session-commands.schema.json) | その端末の設定ファイル | セッション開始時の前準備コマンド（**伝播しない**） |
-| [agent-profiles](../../../../../schemas/agent-profiles.schema.json) | `$AGENT_CONTROL_DIR`（既定 `~/.agents/control/`） | 実行プロファイル（大/中/小）の宣言と、ワークロードの予算残率・agent CLI ごとの枠からの決定的な段/候補の選択。**エンジンはこの契約を読まない**——選択結果は agent-control（上の行）へ投函するだけ |
+| [agent-profiles](../../../../../schemas/agent-profiles.schema.json) | `$AGENT_CONTROL_DIR`（既定 `~/.agents/control/`） | 実行レベル（単純作業/軽量/標準/高性能）の宣言と、ワークロードの予算残率・agent CLI ごとの枠からの決定的なtier/候補の選択。**エンジンはこの契約を読まない**——選択結果は agent-control（上の行）へ投函するだけ |
 | [agent-tuning](../../../../../schemas/agent-tuning.schema.json) | `$AGENT_TUNING_DIR`（既定 `~/.agents/tuning/`）と `$AGENT_METHODS_DIR`（既定 `~/.agents/methods/`） | 手法カタログの説明・既定 when を表示し、ON/OFF または独自手法を保存。ON は snapshot + source hash なのでカタログ更新を自動反映しない |
 
 ## 全体設定から宣言できるもの（この面が control.json へ書く）

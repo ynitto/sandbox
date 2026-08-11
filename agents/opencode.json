@@ -1,5 +1,6 @@
 {
   "name": "opencode",
+  "headless_autonomy": "tool-loop",
   "relative_cost": 0,
   "command": ["agent-opencode"],
   "prompt_via": "stdin",

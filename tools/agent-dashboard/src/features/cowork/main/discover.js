@@ -86,7 +86,8 @@ function scalarValue(rawVal) {
 // ---------------------------------------------------------------------------
 // agent-loop prompts パーサ（行指向）
 // ---------------------------------------------------------------------------
-const FIELD_KEYS = new Set(['name', 'interval_minutes', 'cron', 'enabled', 'prompt']);
+const FIELD_KEYS = new Set(['name', 'interval_minutes', 'cron', 'enabled', 'prompt',
+                            'acceptance']);
 
 // prompts: リストのエントリを、各フィールドの行番号付きで返す。
 //   entry = { index, dashLine, fieldIndent, fields: { <key>: { line, rawVal } } }

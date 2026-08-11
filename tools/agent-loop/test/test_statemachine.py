@@ -10,6 +10,7 @@ import os
 import pathlib
 import sys
 import tempfile
+import types
 import unittest
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -190,6 +191,26 @@ class ParamParsingTest(unittest.TestCase):
     def test_param_requires_key_value(self):
         with self.assertRaisesRegex(al.StateMachineHarnessError, "KEY=VALUE"):
             al._sm_parse_params(["broken"], None)
+
+
+class SkillPythonTest(unittest.TestCase):
+    """スキルのスクリプト（3.10+）を動かせるインタプリタを選ぶ。"""
+
+    def setUp(self):
+        os.environ.pop("PYTHON", None)
+        al._SM_SKILL_PYTHON = ""
+        self.addCleanup(setattr, al, "_SM_SKILL_PYTHON", "")
+
+    def test_uses_own_interpreter_when_new_enough(self):
+        self.assertEqual(al._sm_python_command(), sys.executable)
+
+    def test_falls_back_when_own_interpreter_is_too_old(self):
+        # macOS の /usr/bin/python3（3.9）で zipapp が動いている状況を模す。
+        real = al.sys
+        al.sys = types.SimpleNamespace(
+            version_info=(3, 9, 6), executable="/usr/bin/python3", version="3.9.6 (fake)")
+        self.addCleanup(setattr, al, "sys", real)
+        self.assertTrue(al._sm_python_ok(al._sm_python_command()))
 
 
 if __name__ == "__main__":

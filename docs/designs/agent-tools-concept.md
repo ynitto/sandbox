@@ -354,7 +354,7 @@ agent-project が読む操作契約を投函するだけである。逆方向に
 | agent-amigos | 柱 1 × 柱 2 | 往復の要る仕事のチーム化。中央は転送だけ（C2）、予算はエージェント実質実行時間の二層（C1）、役割分担は人が先に決める | [agent-amigos-design.md](./agent-amigos-design.md) |
 | agent-board | 柱 1 の中核 | 分担の市場。「誰のクレジットで実行するか」を宣言と入札で決める。実行プロセスを持たず契約だけ（C2）、配る宣言は他ノードに意味のあるものだけ（C1） | [tools/agent-board/README.md](../../tools/agent-board/README.md) |
 | agent-dashboard | 柱 2 の中核 | 人介在の操作面。読むのはファイル・書くのは契約の投函だけ（C7）、AI は下書きまで（C4）、人の 1 回の介入の質を上げる。完全自動運転は目標にしない | [agent-dashboard-design.md](./agent-dashboard-design.md) |
-| agent-loop | 柱 2 の土台 | 人がプロンプトを投げ続けなくても回る定期駆動。介入回数の削減はここから始まる（C3） | [tools/agent-loop/DESIGN.md](../../tools/agent-loop/DESIGN.md) |
+| agent-loop | 柱 2 の土台 × 柱 3 | 人がプロンプトを投げ続けなくても回る定期駆動。介入回数の削減はここから始まる（C3）。定期プロンプトごとにエージェントとモデルを選べ、ツールループを内蔵しない小型構成へも受入条件つきで流せる（C9）。done の根拠は受入条件の機械検証で、検証できない実行は「検証なし」として記録する（C5） | [tools/agent-loop/DESIGN.md](../../tools/agent-loop/DESIGN.md) |
 | agent-audit | 柱 3 の測定土台 × 学習ループ | 実測の正本。収集・集計は決定的で、読み手に徹し書き手を増やさない（C7）。モデル格付け・トークン削減・prompt 調整の根拠（C9）と、知見蒸留の入力（C8）を供給する | [agent-audit-design.md](./agent-audit-design.md) |
 | agentcore（agent-tools） | 両柱の土台 | 契約の 1 実装（C7）。transport / protocol / vocab / claim を 3 エンジンで共有し、「同じ仕様・別実装」のずれを潰す | [tools/agent-tools/README.md](../../tools/agent-tools/README.md) |
 | codd-gate | 柱 2 × 学習ループ | 文書・コード・テストの一貫性を機械ゲートで守り、人のレビューから機械で拾える部分を引き取る。決定的に表せるプロジェクトルールの強制先になる（C5・C8） | [codd-gate-design.md](./codd-gate-design.md) |

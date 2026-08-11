@@ -186,6 +186,34 @@ def validate_entries(
         if event_hook_config is not None and not isinstance(event_hook_config, dict):
             raise ValueError(f"entry {name!r}: event_hook_config は dict です")
 
+        # 実行するエージェントとモデル（任意）。省略した entry は entry 共通設定
+        # （agent-loop.yaml トップレベルの agent_cli / agent_cli_options.model）を使う。
+        # 片方だけの指定も許す（CLI だけ変えてモデルは共通、など）。
+        entry_agent_cli = str(entry.get("agent_cli") or "").strip() or None
+        entry_model = str(entry.get("model") or "").strip() or None
+
+        # セッションの持ち方。keep=対話ペインを保つ（従来動作・既定） /
+        # per-run=実行ごとに使い捨て（headless）。未指定を keep にするのは、既存の
+        # 設定ファイルが無改変で従来と同じ挙動になることを優先するため。
+        session = entry.get("session")
+        session = str(session).strip().lower() if session is not None else "keep"
+        if session not in ("keep", "per-run"):
+            raise ValueError(f"entry {name!r}: session は keep か per-run です: {session!r}")
+
+        # 受入条件（自然文チェックリスト）。語彙は task.schema.json の
+        # task_acceptance_criteria に揃える。文字列 1 本は 1 項目として扱う。
+        acceptance_raw = entry.get("acceptance")
+        if acceptance_raw is None:
+            acceptance: list[str] = []
+        elif isinstance(acceptance_raw, str):
+            acceptance = [acceptance_raw.strip()] if acceptance_raw.strip() else []
+        elif isinstance(acceptance_raw, list):
+            if not all(isinstance(a, str) for a in acceptance_raw):
+                raise ValueError(f"entry {name!r}: acceptance は文字列配列です")
+            acceptance = [a.strip() for a in acceptance_raw if a.strip()]
+        else:
+            raise ValueError(f"entry {name!r}: acceptance は文字列配列です")
+
         if mode == "ralph" and oneshot:
             raise ValueError(f"entry {name!r}: mode=ralph と oneshot は併用できません")
         if oneshot and clean_session is not None:
@@ -223,6 +251,10 @@ def validate_entries(
             "oneshot": oneshot,
             "clean_session": clean_session,
             "target": target,
+            "agent_cli": entry_agent_cli,
+            "model": entry_model,
+            "session": session,
+            "acceptance": acceptance,
             # oneshot runtime（process-local）
             "overlap_pending": None,
             "oneshot_state": "IDLE",
@@ -241,11 +273,17 @@ class PeriodicScheduler:
         semaphore: GlobalSemaphore | None = None,
         slot_monitor: "SlotMonitor | None" = None,
         workspace: str | None = None,
+        tool_config: "dict[str, Any] | None" = None,
     ):
         self._session_mgr = session_mgr
         self._semaphore = semaphore
         self._slot_monitor = slot_monitor
         self._workspace = workspace or getattr(session_mgr, "_target_path", "") or ""
+        # entry 共通設定（agent-loop.yaml トップレベル）。entry が agent_cli / model を
+        # 省略したときのフォールバック元。control.json の宣言は起動時に重ねてある。
+        self._tool_config: dict[str, Any] = dict(tool_config or {})
+        # prompt_id → セッション境界待ちの起動指紋（差し替えの保留。警告の重複も抑える）
+        self._launch_drift: dict[str, str] = {}
         self._entries: list[dict[str, Any]] = []
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
@@ -670,22 +708,29 @@ class PeriodicScheduler:
         model: str | None,
         cwd: str,
         ownership: str = "managed-persistent",
+        profile: Any = None,
     ) -> dict[str, Any] | None:
-        """model 指定時に agentcore で argv を組み立てる。不要なら None。"""
-        if model is None and (_CLI_PROFILE.is_legacy or not _CLI_PROFILE.argv):
+        """model 指定時に agentcore で argv を組み立てる。不要なら None。
+
+        profile を渡すと**その entry のプロファイル**で組む（entry ごとの agent_cli /
+        model）。渡さなければプロセス全体のプロファイル。セッションを建て直すときに
+        ここへ来るので、境界を跨いだ差し替えはこの引数で効く。
+        """
+        _CLI_PROFILE_ = profile if profile is not None else _CLI_PROFILE
+        if model is None and (_CLI_PROFILE_.is_legacy or not _CLI_PROFILE_.argv):
             return None
         argv: list[str]
-        profile_name = _CLI_PROFILE.name
-        if model is not None and not _CLI_PROFILE.is_legacy and _AGENTCLI_MOD is not None:
+        profile_name = _CLI_PROFILE_.name
+        if model is not None and not _CLI_PROFILE_.is_legacy and _AGENTCLI_MOD is not None:
             try:
-                spec = _CLI_PROFILE.spec or _AGENTCLI_MOD.load_cli(
+                spec = _CLI_PROFILE_.spec or _AGENTCLI_MOD.load_cli(
                     profile_name, project_dir=self._workspace or None
                 )
                 argv = list(_AGENTCLI_MOD.interactive_cmd(spec, str(model)))
             except Exception as exc:
                 raise RuntimeError(f"model argv 組み立て失敗: {exc}") from exc
-        elif _CLI_PROFILE.argv:
-            argv = list(_CLI_PROFILE.argv)
+        elif _CLI_PROFILE_.argv:
+            argv = list(_CLI_PROFILE_.argv)
         else:
             return None
         return make_launch_spec(
@@ -695,6 +740,42 @@ class PeriodicScheduler:
             effective_model=model,
             ownership=ownership,
         )
+
+    def _note_launch_drift(self, prompt_id: str, name: str,
+                           launch_spec: "dict[str, Any]") -> bool:
+        """既存ペインの起動内容と、いま解決した起動内容の食い違いを記録する。
+
+        判定は **launch fingerprint**（CLI 名 + argv + cwd）。モデル単独比較では
+        CLI の切り替えを拾えない。食い違っていても実行は捨てず、差し替えが
+        セッション境界待ちであることを警告（セッションごとに 1 回）と status の
+        restart_required で伝える。
+        """
+        get_fp = getattr(self._session_mgr, "get_launch_fingerprint", None)
+        if not callable(get_fp):
+            return False
+        current = str(get_fp(prompt_id) or "")
+        if not current:
+            return False
+        wanted = launch_fingerprint(
+            str(launch_spec.get("profile_name") or ""),
+            list(launch_spec.get("argv") or []),
+            str(launch_spec.get("cwd") or ""),
+        )
+        if current == wanted:
+            self._launch_drift.pop(prompt_id, None)
+            return False
+        if self._launch_drift.get(prompt_id) != wanted:
+            self._launch_drift[prompt_id] = wanted
+            log.warning(
+                "[%s] エージェント/モデルの変更はセッション境界で適用されます。"
+                "現在のセッションが終わるまで従来の設定で実行します"
+                "（clean_session の建て直し、または agent-loop の再起動で切り替わります）。",
+                name)
+        return True
+
+    def has_pending_launch_drift(self) -> bool:
+        """差し替えがセッション境界待ちの entry があるか（status の restart_required）。"""
+        return bool(getattr(self, "_launch_drift", None))
 
     def _enqueue_ralph_child(self, req: dict[str, Any], pane_id: str) -> None:
         exec_meta = self._execution_meta(req)
@@ -898,6 +979,163 @@ class PeriodicScheduler:
                 self._external_panes_map()
                 return self._external_profiles.get(name) or _CLI_PROFILE
         return _CLI_PROFILE
+
+    def _entry_route(self, entry: "dict[str, Any] | None") -> "tuple[Any, str]":
+        """entry 1 件のプロファイルと実行経路（'interactive' | 'per-run'）。
+
+        **セッション境界で解決する。** headless（per-run）は毎回がセッション境界なので
+        dispatch のたびにここへ来る＝control.json や entry の変更が次の実行から効く。
+        対話経路は既存ペインがある限りそのペインの CLI で動き続け、境界（clean_session /
+        oneshot / デーモン再起動）で入れ替わる。
+        解決に失敗したら黙って別 CLI で走らせず、プロセス全体のプロファイルへ倒す。
+        """
+        fallback = (_CLI_PROFILE,
+                    "per-run" if getattr(_CLI_PROFILE, "is_headless", False) is True
+                    else "interactive")
+        try:
+            profile, route = resolve_entry_profile(
+                dict(getattr(self, "_tool_config", None) or {}),
+                entry, project_dir=getattr(self, "_workspace", "") or None)
+        except CliProfileError as exc:
+            log.warning("[%s] entry のエージェント解決に失敗したため全体設定で実行します: %s",
+                        (entry or {}).get("name", ""), exc)
+            return fallback
+        if profile is None:
+            # agent_cli 未指定＝従来の kiro 組み込み経路。プロセス全体のプロファイルを使う。
+            # `is True` で受けるのは、モックや差し替えで真偽以外が入っても headless を
+            # 名乗らせないため（対話経路を黙って捨てる方が事故が大きい）。
+            return fallback
+        return profile, route
+
+    # ---- headless 実行（対話ペインを持たない経路）---------------------------
+    #
+    # ensure_session / ready 判定 / SlotMonitor を通らない——判定する相手のペインが無い。
+    # 完了検知は subprocess の exit code。スロットは合成キー（headless:<root_id>）で取り、
+    # 解放時にノード予算へ記帳される（保持時間＝実行時間そのものなので、対話経路の
+    # 「送信→完了検知」による近似より正確になる）。
+
+    def _headless_log_file(self, root_id: str) -> str:
+        directory = agent_home_subdir("AGENT_LOOP_RUN_DIR", "runs") / "headless"
+        directory.mkdir(parents=True, exist_ok=True)
+        return str(directory / f"{int(time.time() * 1000)}-{root_id[:8]}.jsonl")
+
+    def _dispatch_headless(self, req: dict[str, Any], *, entry: dict[str, Any],
+                           dispatch_entry: dict[str, Any], exec_meta: dict[str, Any],
+                           profile: Any, cwd: str, root_id: str) -> str:
+        slot_key = f"headless:{root_id}"
+        exclude = bool(entry.get("exclude_from_concurrency"))
+        if self._semaphore is not None and not exclude:
+            if self._try_acquire_slot(entry, slot_key) == "defer":
+                return "defer"
+            self._upsert_execution(root_id, slot_lease=slot_key,
+                                   entry_id=str(entry.get("id")), session_policy="per-run",
+                                   max_steps=1)
+        else:
+            self._upsert_execution(root_id, slot_lease=None,
+                                   entry_id=str(entry.get("id")), session_policy="per-run",
+                                   max_steps=1)
+        req.setdefault("meta", {})["_hold_slot"] = False
+        req["meta"]["_dispatch_profile"] = profile
+        req["meta"]["execution"] = exec_meta
+        self._begin_active(req)
+        thread = threading.Thread(
+            target=self._run_headless,
+            args=(req, dict(entry), dict(dispatch_entry), profile, str(cwd or ""), root_id,
+                  slot_key if (self._semaphore is not None and not exclude) else None),
+            name=f"headless-{root_id[:8]}", daemon=True)
+        thread.start()
+        return "done"
+
+    def _run_headless(self, req: dict[str, Any], entry: dict[str, Any],
+                      dispatch_entry: dict[str, Any], profile: Any, cwd: str,
+                      root_id: str, slot_key: "str | None") -> None:
+        name = str(entry.get("name", ""))
+        prompt = str(dispatch_entry.get("prompt", ""))
+        acceptance = list(entry.get("acceptance") or [])
+        work_dir = cwd or self._workspace or os.getcwd()
+        log_file = self._headless_log_file(root_id)
+        try:
+            agent = _tl_resolve_agent(profile.name, profile.model or "", work_dir)
+            log.info("[%s] headless 実行: cli=%s model=%s autonomy=%s log=%s",
+                     name, profile.name, profile.model or "(定義の既定)",
+                     profile.autonomy, log_file)
+            if profile.needs_tool_loop:
+                result = self._run_headless_tool_loop(
+                    goal=prompt, cwd=work_dir, agent=agent, log_file=log_file,
+                    acceptance=acceptance)
+            else:
+                result = self._run_headless_once(
+                    prompt=prompt, cwd=work_dir, agent=agent, log_file=log_file,
+                    acceptance=acceptance)
+        except ToolLoopError as exc:
+            log.error("[%s] headless 実行に失敗しました: %s", name, exc)
+            self._fail_execution(req, slot_key, reason="headless_failed")
+            return
+        except Exception:
+            log.exception("[%s] headless 実行が例外で終了しました", name)
+            self._fail_execution(req, slot_key, reason="headless_crashed")
+            return
+
+        if not result.get("verified"):
+            # 受入条件が無い＝機械層が何も検証していない。実行は通すが done の根拠にしない
+            # （C5）。層3 では起動時に既に警告済みなので、ここは記録だけ。
+            log.info("[%s] 受入条件が無いため「検証なし」として記録します。", name)
+        if not result.get("ok"):
+            for reason in result.get("evidenceErrors") or []:
+                log.warning("[%s] 受入条件を満たしていません: %s", name, reason)
+            self._fail_execution(req, slot_key, reason="acceptance_failed")
+            return
+        self._release_slot(slot_key)
+        self._upsert_execution(root_id, state="DONE", pane_id=None, step=1)
+        self._end_active(req, "completed", None)
+        self._pop_execution(root_id)
+        _log_dispatch("execution_terminal", req, state="DONE")
+
+    def _run_headless_tool_loop(self, *, goal: str, cwd: str, agent: dict, log_file: str,
+                                acceptance: "list[str]") -> dict:
+        """層3（single-shot）: 限定ツール契約でツール実行を供給しながら完遂させる。"""
+        return run_goal(goal=goal, cwd=cwd, agent=agent, log_file=log_file,
+                        acceptance=acceptance, tag="agent-loop")
+
+    def _run_headless_once(self, *, prompt: str, cwd: str, agent: dict, log_file: str,
+                           acceptance: "list[str]") -> dict:
+        """層2（tool-loop）: CLI 内部のループに任せて headless を 1 回呼ぶ。
+
+        触ったファイルを外から観測できないので、証跡は受入条件が名指ししたファイルの
+        指紋変化で見る（「この実行で変わったか」は観測できる）。
+        """
+        mod = agent["agentcli"]
+        stamps_before = acceptance_stamps(acceptance, cwd)
+        built = mod.headless_cmd(agent["spec"], agent["model"], prompt,
+                                 readonly=False, no_session=True)
+        argv = built["argv"]
+        timeout_sec = float(built.get("timeout") or 0) or _TL_DEFAULT_AIDER_TIMEOUT_SEC
+        result = _tl_exec_argv(argv[0], argv[1:], cwd=cwd, timeout_sec=timeout_sec,
+                               env=built.get("env") or {}, stdin=built.get("stdin"),
+                               output_file=built.get("output_file"), log_file=log_file)
+        if result["status"] != 0 or result["error"]:
+            detail = "\n".join(x for x in (result["error"], result["stderr"],
+                                           result["stdout"]) if x)
+            classified = mod.classify_error(agent["spec"], detail)
+            raise ToolLoopError((classified[1] if classified else "")
+                                or detail or f"{argv[0]} が失敗しました")
+        output = str(result["stdout"] or "").strip()
+        if not output and agent["spec"].get("empty_output_is_error", True):
+            raise ToolLoopError("エージェントが空の応答を返しました")
+        touched = {f for f in acceptance_paths(acceptance, cwd)
+                   if _tl_file_stamp(f) != stamps_before.get(f, "")}
+        errors = acceptance_evidence_errors(acceptance, cwd=cwd, touched=touched,
+                                            stamps_before=stamps_before)
+        _tl_append_log(log_file, {"event": "goal_done", "ok": not errors,
+                                  "verified": bool(acceptance),
+                                  "files": sorted(touched), "evidenceErrors": errors})
+        return {"ok": not errors, "output": output, "files": sorted(touched),
+                "evidenceErrors": errors, "verified": bool(acceptance), "logFile": log_file}
+
+    def entries_snapshot(self) -> "list[dict[str, Any]]":
+        """現在の entry の写し（起動時点検など、読み取り専用の用途向け）。"""
+        with self._lock:
+            return [e.copy() for e in (self._entries or [])]
 
     def run_state(self) -> str:
         return self._run_state
@@ -1619,6 +1857,17 @@ class PeriodicScheduler:
         generation: int | None = None
         acquire_slot = True
 
+        # ---- 経路の解決（entry ごとの agent_cli / model）----
+        # external は tmux ペインへ送るのが役目なので対象外。ralph 多段も headless では
+        # 扱えない（起動時に明示エラーで断っている）。
+        entry_profile: Any = None
+        if target_kind != "external":
+            entry_profile, route = self._entry_route(entry)
+            if route == "per-run" and exec_meta.get("kind") != "ralph":
+                return self._dispatch_headless(
+                    req, entry=entry, dispatch_entry=dispatch_entry, exec_meta=exec_meta,
+                    profile=entry_profile, cwd=cwd, root_id=root_id)
+
         # ---- external pane ----
         if target_kind == "external":
             ext_name = str(exec_meta.get("target") or entry.get("target") or "")
@@ -1667,29 +1916,32 @@ class PeriodicScheduler:
                     model=model,
                     cwd=str(cwd or getattr(self, "_workspace", "") or ""),
                     ownership=ownership,
+                    profile=entry_profile if target_kind != "external" else None,
                 )
             except RuntimeError as exc:
                 log.error("[%s] %s", name, exc)
                 self._fail_execution(req, None, reason="model_argv_failed")
                 return "discard"
 
-            # model mismatch on existing pane
+            # 既存ペインと要求内容の食い違い。
+            #
+            # かつてはここで実行を捨てていた（reason="model_mismatch"）。だが対話ペインは
+            # 無限キープでは境界が来ないので、稼働中に entry のモデルを変えると以後の実行が
+            # すべて捨てられ、その entry が動かなくなる（ライブロック）。
+            # **捨てない。** 差し替えはセッション境界（clean_session の建て直し / oneshot /
+            # デーモン再起動）で適用し、境界が来るまでは既存セッションのまま実行して、
+            # 保留中であることを警告と status の restart_required で伝える。
             get_pane = getattr(self._session_mgr, "get_pane_id", None)
-            get_model = getattr(self._session_mgr, "get_effective_model", None)
             existing_pane = get_pane(prompt_id) if callable(get_pane) else None
-            if launch_spec is not None and existing_pane and callable(get_model):
-                existing_model = get_model(prompt_id)
-                if existing_model != launch_spec.get("effective_model"):
-                    self._fail_execution(req, None, reason="model_mismatch")
-                    return "discard"
+            if launch_spec is not None and existing_pane:
+                self._note_launch_drift(prompt_id, name, launch_spec)
 
             ensured = self._session_mgr.ensure_session(
                 prompt_id, name, owner=owner, cwd=str(cwd) or None, launch_spec=launch_spec,
             )
             if not ensured:
-                if launch_spec is not None and callable(get_pane) and get_pane(prompt_id):
-                    self._fail_execution(req, None, reason="model_mismatch")
-                    return "discard"
+                # 準備できないだけなので保留する（次の drain で再試行）。ここで捨てると
+                # 一時的な失敗が entry の停止に化ける。
                 log.warning("[%s] 対応セッションの準備に失敗したため保留します。", name)
                 return "defer"
 

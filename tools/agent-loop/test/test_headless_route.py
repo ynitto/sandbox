@@ -1,0 +1,296 @@
+"""headless 経路（対話ペインを持たない CLI での定期プロンプト実行）の回帰。
+
+設計: docs/plans/2026-08-11-agent-loop-headless-agent-cli-design.md
+"""
+import json
+import os
+import sys
+import tempfile
+import threading
+import time
+import unittest
+from pathlib import Path
+from unittest import mock
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import agent_loop as al  # noqa: E402
+
+
+def _write_cli(directory, name, spec):
+    agents = Path(directory) / "agents"
+    agents.mkdir(parents=True, exist_ok=True)
+    (agents / f"{name}.json").write_text(json.dumps(spec), encoding="utf-8")
+
+
+class EntryRouteTest(unittest.TestCase):
+    """entry ごとの agent_cli / model と実行経路の解決。"""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        _write_cli(self.dir, "loopy", {
+            "command": ["loopy", "run"], "headless_autonomy": "tool-loop",
+            "interactive": {"command": ["loopy", "chat"]},
+        })
+        _write_cli(self.dir, "plain", {
+            "command": ["plain", "run"], "headless_autonomy": "single-shot",
+        })
+        # control.json を空にして「管理面が宣言していない」状態を作る
+        self.ctl = tempfile.mkdtemp()
+        os.environ["AGENT_CONTROL_DIR"] = self.ctl
+        al._CONTROL_CACHE["mtime"] = None
+        al._CONTROL_CACHE["data"] = {}
+        if hasattr(al, "_CACHE"):
+            al._CACHE.clear()
+
+    def _resolve(self, config, entry):
+        return al.resolve_entry_profile(config, entry, project_dir=self.dir)
+
+    def test_entry_fields_are_optional_and_fall_back_to_common(self):
+        profile, route = self._resolve({"agent_cli": "loopy"}, {"name": "n"})
+        self.assertEqual(profile.name, "loopy")
+        self.assertEqual(route, "interactive")
+
+    def test_entry_agent_cli_overrides_common(self):
+        profile, route = self._resolve({"agent_cli": "loopy"},
+                                       {"name": "n", "agent_cli": "plain"})
+        self.assertEqual(profile.name, "plain")
+        self.assertEqual(route, "per-run")          # 対話ペインを持たない → 強制 per-run
+
+    def test_entry_model_only_keeps_common_cli(self):
+        profile, _ = self._resolve({"agent_cli": "loopy"}, {"name": "n", "model": "m9"})
+        self.assertEqual(profile.name, "loopy")
+        self.assertEqual(profile.model, "m9")
+
+    def test_session_per_run_uses_headless_route_for_interactive_cli(self):
+        _, route = self._resolve({"agent_cli": "loopy"}, {"name": "n", "session": "per-run"})
+        self.assertEqual(route, "per-run")
+
+    def test_control_declaration_wins_over_entry(self):
+        Path(self.ctl, "control.json").write_text(json.dumps({
+            "version": 1, "revision": 3,
+            "workloads": {"routine": {"agent_cli": "loopy"}},
+        }), encoding="utf-8")
+        al._CONTROL_CACHE["mtime"] = None
+        # _apply_control_agent は「適用した revision」をプロセス全体へ控える（status の
+        # revision_applied）。デーモンは 1 プロセス 1 起動なので実運用では正しいが、
+        # テストでは他のテストへ漏れるので戻す。
+        self.addCleanup(setattr, al, "_REVISION_APPLIED", al._REVISION_APPLIED)
+        config = al._apply_control_agent({"agent_cli": "plain"})
+        profile, _ = self._resolve(config, {"name": "n", "agent_cli": "plain"})
+        self.assertEqual(profile.name, "loopy")     # 管理面の宣言を entry で上書きしない
+
+
+class EntryValidationTest(unittest.TestCase):
+    """prompts entry の新フィールドの検証。"""
+
+    def _one(self, **extra):
+        return al.validate_entries([{
+            "name": "n", "prompt": "p", "interval_minutes": 10, "enabled": True, **extra,
+        }])[0]
+
+    def test_defaults_keep_existing_behaviour(self):
+        entry = self._one()
+        self.assertIsNone(entry["agent_cli"])
+        self.assertIsNone(entry["model"])
+        self.assertEqual(entry["session"], "keep")   # 既存設定は無改変で従来どおり
+        self.assertEqual(entry["acceptance"], [])
+
+    def test_acceptance_accepts_list_and_scalar(self):
+        self.assertEqual(self._one(acceptance=["a", " b "])["acceptance"], ["a", "b"])
+        self.assertEqual(self._one(acceptance="only")["acceptance"], ["only"])
+
+    def test_acceptance_rejects_wrong_shape(self):
+        with self.assertRaises(ValueError):
+            self._one(acceptance=[1, 2])
+
+    def test_session_rejects_unknown_value(self):
+        with self.assertRaises(ValueError):
+            self._one(session="forever")
+
+
+class AcceptanceGateTest(unittest.TestCase):
+    """受入条件を入力にした機械層の証跡ゲート（LLM を介さない）。"""
+
+    def setUp(self):
+        self.dir = os.path.realpath(tempfile.mkdtemp())
+        self.acc = ["`out/report.md` が今回の実行で更新されている", "件数付きで並んでいる"]
+        self.target = os.path.join(self.dir, "out", "report.md")
+
+    def _errors(self, touched, before):
+        return al.acceptance_evidence_errors(self.acc, cwd=self.dir, touched=touched,
+                                             stamps_before=before)
+
+    def test_only_backquoted_project_paths_are_extracted(self):
+        found = al.acceptance_paths(self.acc, self.dir)
+        self.assertEqual(found, [self.target])      # 散文の語をパスと誤認しない
+
+    def test_paths_outside_the_workspace_are_ignored(self):
+        self.assertEqual(al.acceptance_paths(["`../../etc/passwd` を読む"], self.dir), [])
+
+    def test_missing_file_fails(self):
+        before = al.acceptance_stamps(self.acc, self.dir)
+        self.assertTrue(self._errors(set(), before))
+
+    def test_self_reported_but_untouched_file_fails(self):
+        before = al.acceptance_stamps(self.acc, self.dir)
+        os.makedirs(os.path.dirname(self.target))
+        Path(self.target).write_text("x", encoding="utf-8")
+        self.assertTrue(self._errors(set(), before))   # 偽 done を止める
+
+    def test_unchanged_file_fails(self):
+        os.makedirs(os.path.dirname(self.target))
+        Path(self.target).write_text("x", encoding="utf-8")
+        before = al.acceptance_stamps(self.acc, self.dir)
+        self.assertTrue(self._errors({self.target}, before))
+
+    def test_touched_and_changed_passes(self):
+        before = al.acceptance_stamps(self.acc, self.dir)
+        os.makedirs(os.path.dirname(self.target))
+        Path(self.target).write_text("x", encoding="utf-8")
+        self.assertEqual(self._errors({self.target}, before), [])
+
+    def test_no_acceptance_means_nothing_is_verified(self):
+        self.assertEqual(al.acceptance_evidence_errors([], cwd=self.dir, touched=set(),
+                                                       stamps_before={}), [])
+
+
+class GoalToolLoopTest(unittest.TestCase):
+    """ツールループ非内蔵の CLI へツール実行を供給する run_goal。"""
+
+    def setUp(self):
+        self.dir = os.path.realpath(tempfile.mkdtemp())
+        self.log = os.path.join(self.dir, "log.jsonl")
+        self.real_run_agent = al._tl_run_agent
+        self.addCleanup(setattr, al, "_tl_run_agent", self.real_run_agent)
+
+    def _script(self, steps):
+        it = iter(steps)
+
+        def fake(agent, prompt, *, cwd, readonly, read_files, files, log_file):
+            out = next(it)
+            if not readonly and files:      # write モード: 実ファイルを書く CLI の代役
+                for f in files:
+                    Path(f).write_text("generated\n", encoding="utf-8")
+            return out
+        al._tl_run_agent = fake
+
+    def test_write_files_then_final_passes_the_gate(self):
+        self._script(['{"type":"write_files","paths":["out.md"]}', "wrote",
+                      '{"type":"final","output":"done"}'])
+        result = al.run_goal(goal="out.md を書く", cwd=self.dir, agent={}, log_file=self.log,
+                             acceptance=["`out.md` が更新されている"])
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["verified"])
+
+    def test_final_without_any_work_is_rejected(self):
+        self._script(['{"type":"final","output":"done"}'])
+        result = al.run_goal(goal="out2.md を作る", cwd=self.dir, agent={}, log_file=self.log,
+                             acceptance=["`out2.md` を作る"])
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["evidenceErrors"])
+
+    def test_without_acceptance_the_machine_layer_verifies_nothing(self):
+        self._script(['{"type":"final","output":"done"}'])
+        result = al.run_goal(goal="なにかする", cwd=self.dir, agent={}, log_file=self.log,
+                             acceptance=[])
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["verified"])    # done の根拠にしない
+
+    def test_shell_requests_are_refused_and_reported_back(self):
+        self._script(['{"type":"run","command":"bash","args":["-c","rm -rf /"]}',
+                      '{"type":"final","output":"done"}'])
+        result = al.run_goal(goal="何かする", cwd=self.dir, agent={}, log_file=self.log,
+                             acceptance=[])
+        events = [json.loads(line) for line in
+                  Path(self.log).read_text(encoding="utf-8").splitlines()]
+        self.assertTrue(result["ok"])            # 却下を伝えたうえでループは続く
+        self.assertFalse(any(e.get("event") == "start" for e in events))  # 実行はしない
+
+
+class HeadlessDispatchTest(unittest.TestCase):
+    """dispatch から headless 実行までの通し。"""
+
+    def setUp(self):
+        self.dir = os.path.realpath(tempfile.mkdtemp())
+        _write_cli(self.dir, "plain", {
+            "command": ["plain", "--message"], "prompt_via": "argv",
+            "prompt_flag": "--message", "file_flag": "--file", "read_flag": "--read",
+            "headless_autonomy": "single-shot",
+        })
+        os.environ["AGENT_CONTROL_DIR"] = tempfile.mkdtemp()
+        al._CONTROL_CACHE["mtime"] = None
+        al._CONTROL_CACHE["data"] = {}
+        self.real_run_agent = al._tl_run_agent
+        self.addCleanup(setattr, al, "_tl_run_agent", self.real_run_agent)
+
+    def _scheduler(self, entry):
+        mgr = al.SessionManager.__new__(al.SessionManager)
+        mgr._panes = {}
+        mgr._owners = {}
+        mgr._lock = threading.Lock()
+        mgr._target_path = self.dir
+        mgr.sync_entries = mock.Mock()
+        mgr.set_state_extras = mock.Mock()
+        return al.PeriodicScheduler(mgr, [entry], workspace=self.dir, tool_config={})
+
+    def test_single_shot_cli_runs_through_the_tool_loop(self):
+        steps = iter(['{"type":"write_files","paths":["out.md"]}', "wrote",
+                      '{"type":"final","output":"done"}'])
+
+        def fake(agent, prompt, *, cwd, readonly, read_files, files, log_file):
+            out = next(steps)
+            if not readonly and files:
+                for f in files:
+                    Path(f).write_text("summary\n", encoding="utf-8")
+            return out
+        al._tl_run_agent = fake
+
+        entry = {"id": "e1", "name": "要約", "prompt": "`out.md` に要約を書く",
+                 "interval_minutes": 10, "enabled": True, "agent_cli": "plain",
+                 "acceptance": ["`out.md` が更新されている"]}
+        sched = self._scheduler(entry)
+        req = al.make_dispatch_request(source="schedule", entry_id="e1",
+                                       prompt=entry["prompt"], cwd=self.dir)
+        self.assertEqual(sched._try_dispatch_request(req), "done")
+        for _ in range(100):
+            time.sleep(0.02)
+            if sched._active_count == 0 and os.path.exists(os.path.join(self.dir, "out.md")):
+                break
+        self.assertEqual(Path(self.dir, "out.md").read_text(encoding="utf-8").strip(), "summary")
+        self.assertEqual(sched._active_count, 0)    # スロットと active が戻る
+
+
+class HeadlessStartupCheckTest(unittest.TestCase):
+    """起動時点検: 層3 × 受入条件なしは警告のみ、headless 非対応機能は致命。"""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        _write_cli(self.dir, "plain", {"command": ["plain"],
+                                       "headless_autonomy": "single-shot"})
+        _write_cli(self.dir, "loopy", {"command": ["loopy"],
+                                       "headless_autonomy": "tool-loop"})
+        os.environ["AGENT_CONTROL_DIR"] = tempfile.mkdtemp()
+        al._CONTROL_CACHE["mtime"] = None
+        al._CONTROL_CACHE["data"] = {}
+
+    def _check(self, entry):
+        return al.check_headless_entries({"agent_cli": "plain"}, [entry], project_dir=self.dir)
+
+    def test_missing_acceptance_only_warns(self):
+        with self.assertLogs(al.log, level="WARNING") as logs:
+            self.assertEqual(self._check({"name": "n", "prompt": "p"}), [])
+        self.assertTrue(any("受入条件" in m for m in logs.output))
+
+    def test_tool_loop_cli_without_acceptance_is_silent(self):
+        problems = al.check_headless_entries(
+            {"agent_cli": "loopy"}, [{"name": "n", "prompt": "p", "session": "per-run"}],
+            project_dir=self.dir)
+        self.assertEqual(problems, [])
+
+    def test_ralph_and_external_target_are_fatal(self):
+        self.assertTrue(self._check({"name": "n", "prompt": "p", "mode": "ralph"}))
+        self.assertTrue(self._check({"name": "n", "prompt": "p", "target": "other"}))
+
+
+if __name__ == "__main__":
+    unittest.main()

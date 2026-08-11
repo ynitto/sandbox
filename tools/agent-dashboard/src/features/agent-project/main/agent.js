@@ -51,7 +51,7 @@ function readProjectAgent(projectDir) {
 // 全体設定 → 実行制御（agent-control 契約 / control.json）の機能別エージェント宣言を読む。
 // workloads.<機能> が優先、空欄は defaults（全機能共通）へ委ね、それも空なら {}。
 // 読めない・壊れているは {}（管理面の宣言が無い状態＝下位の解決へ委ねる）。
-function readControlAgent(cfg, workload) {
+function readControlAgent(cfg, workload, purpose = '') {
   const wl = String(workload || '').trim();
   if (!wl) return {};
   let control;
@@ -63,10 +63,12 @@ function readControlAgent(cfg, workload) {
   }
   const defaults = (control && control.defaults) || {};
   const wlc = ((control && control.workloads) || {})[wl] || {};
+  const purposeControl = ((wlc.agents || {})[String(purpose || '').trim()]) || {};
   // null / 空文字は「この機能では指定しない」＝ defaults → 下位の解決へ委ねる印。
   const pick = (key) => {
-    const raw = wlc[key] === null || wlc[key] === undefined || wlc[key] === ''
-      ? defaults[key] : wlc[key];
+    const raw = purposeControl[key] !== null && purposeControl[key] !== undefined && purposeControl[key] !== ''
+      ? purposeControl[key]
+      : wlc[key] === null || wlc[key] === undefined || wlc[key] === '' ? defaults[key] : wlc[key];
     return raw === null || raw === undefined ? '' : String(raw).trim();
   };
   return { workload: wl, cli: pick('agent_cli').toLowerCase(), model: pick('model') };
@@ -80,10 +82,10 @@ function readControlAgent(cfg, workload) {
 // 組み込み（AGENT_CLIS）以外の名前は agents/<name>.json プラグイン
 // （schemas/agent-cli.schema.json）として解決を試みる。見つからない名前は既定へ倒す
 // （黙って別 CLI で走らせない — source で由来を返し、表示側が判断できる）。
-function resolveAgent(cfg, projectDir, { workload = '' } = {}) {
+function resolveAgent(cfg, projectDir, { workload = '', purpose = '' } = {}) {
   const ac = (cfg && cfg.agent) || {};
   const timeoutMs = Math.max(30, Number(ac.timeoutSec) || 180) * 1000;
-  const ctl = readControlAgent(cfg, workload);
+  const ctl = readControlAgent(cfg, workload, purpose);
   const candidates = [];
   if (ctl.cli) {
     candidates.push({ cli: ctl.cli, model: ctl.model, source: 'control', projectFile: null });
@@ -119,6 +121,87 @@ function resolveAgent(cfg, projectDir, { workload = '' } = {}) {
   return applyControlModel({ cli: 'kiro', model: String(ac.model || '').trim(), timeoutMs,
                              source: 'default', projectFile: null, workload: ctl.workload || '',
                              spec: agentCli.loadCli('kiro', projectDir) });
+}
+
+function dashboardExecutionState(cfg) {
+  const budget = require('../../orchestration/main/budget');
+  const control = require('../../orchestration/main/control');
+  const usage = budget.usage(cfg);
+  const workload = (usage.workloads || {}).dashboard || {};
+  const allocation = (((usage.config || {}).allocation || {}).workloads || {}).dashboard || {};
+  const ctl = control.loadControl(control.resolveControlDir(cfg));
+  const desired = (ctl.workloads || {}).dashboard || {};
+  const lifecycle = String(desired.lifecycle || 'run');
+  const exhausted = Boolean(usage.tokenExceededTotal || usage.timeExceededTotal || workload.exceeded);
+  return {
+    budget, control, usage, workload, allocation, ctl, desired, lifecycle, exhausted,
+    blocked: lifecycle === 'pause' || lifecycle === 'stop'
+      || (exhausted && allocation.on_exhausted !== 'degrade'),
+  };
+}
+
+function writeDashboardStatus(cfg, resolved, purpose, execution) {
+  try {
+    const dir = path.join(execution.control.resolveControlDir(cfg), 'status');
+    fs.mkdirSync(dir, { recursive: true });
+    const target = path.join(dir, `agent-dashboard-${process.pid}.json`);
+    const tmp = `${target}.tmp.${process.pid}`;
+    const purposeControl = ((execution.desired.agents || {})[purpose]) || {};
+    fs.writeFileSync(tmp, `${JSON.stringify({
+      tool: 'agent-dashboard', workload: 'dashboard', pid: process.pid,
+      revision_applied: execution.ctl.revision,
+      lifecycle: execution.lifecycle,
+      effective: {
+        agent_cli: resolved.cli || null, model: resolved.model || null,
+        tier: execution.desired.tier || null,
+        selection_source: purposeControl.agent_cli || purposeControl.model
+          ? 'control-purpose' : execution.desired.selection_source || resolved.source || 'tool-config',
+        selection_reason: execution.desired.selection_reason || '', pinned: false,
+      },
+      budget: { exceeded: execution.exhausted, soft: Boolean(execution.workload.soft) },
+      fresh_after_sec: 120, ts: new Date().toISOString(),
+    }, null, 2)}\n`);
+    fs.renameSync(tmp, target);
+  } catch {
+    // status は観測用。AI 呼び出し自体を止めない。
+  }
+}
+
+function recordDashboardUsage(cfg, resolved, purpose, seconds, execution) {
+  if (!(seconds > 0)) return;
+  try {
+    const budget = require('../../orchestration/main/budget');
+    const dir = path.join(budget.resolveBudgetDir(cfg), 'ledger');
+    fs.mkdirSync(dir, { recursive: true });
+    const day = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    fs.appendFileSync(path.join(dir, `${day}.jsonl`), `${JSON.stringify({
+      ts: new Date().toISOString(), workload: 'dashboard', tool: 'agent-dashboard',
+      seconds: Math.round(seconds * 1000) / 1000, purpose,
+      agent_cli: resolved.cli, ...(resolved.model ? { model: resolved.model } : {}),
+      tier: execution.desired.tier || null,
+      selection_source: execution.desired.selection_source || resolved.source || 'tool-config',
+      selection_reason: execution.desired.selection_reason || '', pinned: false,
+    })}\n`);
+  } catch {
+    // 台帳は best-effort。結果を失敗へ変えない。
+  }
+}
+
+async function runDashboardAgent(cfg, resolved, purpose, operation) {
+  const execution = dashboardExecutionState(cfg);
+  writeDashboardStatus(cfg, resolved, purpose, execution);
+  if (execution.blocked) {
+    const reason = execution.lifecycle !== 'run'
+      ? `実行制御が ${execution.lifecycle} を指示しています`
+      : '利用上限に達しています';
+    throw new Error(`[agent-error:${execution.lifecycle !== 'run' ? 'control' : 'quota'}] ${reason}`);
+  }
+  const started = Date.now();
+  try {
+    return await operation();
+  } finally {
+    recordDashboardUsage(cfg, resolved, purpose, (Date.now() - started) / 1000, execution);
+  }
 }
 
 // エージェント CLI のコマンドラインを組み立てる（定義ファイルが正典）。
@@ -597,24 +680,27 @@ function normalizeMethodDraft(value) {
 
 function methodDraftPrompt(brief, current) {
   return (
-    'あなたはエージェント実行手法の設定を補助します。\n' +
-    '利用者の要望から、再利用できる短い手法を1件だけ提案してください。\n' +
+    'あなたはエージェントへ渡す追加の作業ルール作成を補助します。\n' +
+    '利用者の要望から、1回の担当が守れる短いルールを1件だけ提案してください。\n' +
     '出力は次の形のJSONオブジェクトのみ（説明文・コードフェンスなし）:\n' +
     '{"id":"英小文字・数字・ハイフン","description":"一文の説明",' +
     '"role":"session|planner|worker|verify|evaluator","text":"エージェントへ渡す具体的な指示",' +
     '"when":{"tiers":[],"purposes":[],"workloads":[],"agent_cli":[],"models":[]}}\n\n' +
     '規則:\n' +
     '- 不要な適用条件は空配列にする。実在が分からない固有名は発明しない。\n' +
-    '- textは単独で読んでも実行できる命令文にする。\n' +
+    '- textは単独で読んでも実行できる、一つの行動に絞った命令文にする。\n' +
+    '- 分岐、並列、複数担当、合議、複数案の統合は追加ルールへ詰め込まない。これらはワークフローで扱う。\n' +
     '- 既存入力がある項目は尊重する。\n\n' +
     `要望:\n${String(brief || '').trim()}\n\n既存入力:\n${JSON.stringify(current || {}, null, 2)}`
   );
 }
 
 async function completeMethodDraft(cfg, { dir, brief, current }) {
-  if (!String(brief || '').trim()) throw new Error('作りたい手法を入力してください');
-  const resolved = resolveAgent(cfg, dir);
-  const raw = await runAgent(resolved, methodDraftPrompt(brief, current), dir);
+  if (!String(brief || '').trim()) throw new Error('作りたいルールを入力してください');
+  const resolved = resolveAgent(cfg, dir, { workload: 'dashboard', purpose: 'method-draft' });
+  const raw = await runDashboardAgent(cfg, resolved, 'method-draft', () =>
+    runAgent(resolved, methodDraftPrompt(brief, current), dir)
+  );
   const obj = extractJson(raw);
   if (!obj) throw new Error(`エージェントの応答からJSONを取り出せませんでした: ${raw.slice(0, 120)}…`);
   const method = normalizeMethodDraft(obj);
@@ -624,6 +710,72 @@ async function completeMethodDraft(cfg, { dir, brief, current }) {
   return { method, cli: resolved.cli, model: resolved.model, source: resolved.source };
 }
 
+// 定期プロンプトの受入条件補完
+// ---------------------------------------------------------------------------
+//
+// ツールループ非内蔵の CLI（agents/<name>.json の headless_autonomy: single-shot）は、
+// 受入条件が無いと done を機械検証できない。人が自然文の基準をゼロから書くのは負担が
+// 大きいので、上位段のエージェントに下書きを作らせる。
+//
+// **charter 補完と同型**。読み取り専用で助言だけを取り、agent-loop.yaml への書き込みは
+// 人が承認してからビュアー側が行う（C4）。承認を飛ばすと、AI が書いた基準を AI が満たす
+// 閉ループになる。
+//
+// 受入条件を立てると仕事の仕様が締まるので、元の自由文プロンプトと食い違う。だから
+// プロンプト本文の書き直しも同時に出させて、人が対で承認できるようにする。
+
+function routineAcceptancePrompt(name, prompt, extra = '') {
+  return (
+    'あなたは定期実行タスクの受入基準を書くプランナーです。\n' +
+    '定期プロンプトの本文と、その完了を機械的に確かめられる受入基準を作ってください。\n\n' +
+    '規則:\n' +
+    '- 出力はJSONオブジェクト1個だけ（前置き・説明・コードフェンスなし）。\n' +
+    '- 形式: {"prompt": "書き直した本文", "acceptance": ["基準1", "基準2", "基準3"]}\n' +
+    '- acceptanceは自然文で3〜7項目。1要素1基準。\n' +
+    '- **成果物のファイルパスは必ずバッククォートで囲む**（例: `reports/digest.md`）。' +
+    'この表記だけが機械照合の対象になる。\n' +
+    '- パスは作業フォルダからの相対パスにする。実在しない固有名は発明しない。\n' +
+    '- 「動作すること」のような検証できない基準を書かない。何がどこにどう残るかを書く。\n' +
+    '- promptは元の意図を保ったまま、受入基準を満たせる具体的な指示に締める。\n\n' +
+    `定期プロンプト名: ${String(name || '').trim() || '(無題)'}\n` +
+    `現在の本文:\n${String(prompt || '').trim() || '(空)'}\n` +
+    (String(extra || '').trim() ? `\n補足の要望:\n${String(extra).trim()}\n` : '')
+  );
+}
+
+function normalizeAcceptanceDraft(obj) {
+  const raw = Array.isArray(obj && obj.acceptance) ? obj.acceptance : [];
+  return {
+    prompt: String((obj && obj.prompt) || '').trim(),
+    acceptance: raw.map((a) => String(a || '').trim()).filter(Boolean),
+  };
+}
+
+// tier を指定すると段の候補（agent_cli / model）で実行する。省略時は dashboard の既定解決。
+async function completeRoutineAcceptance(cfg, { dir, name, prompt, extra = '', tier = '' }) {
+  if (!String(prompt || '').trim()) throw new Error('定期プロンプトの本文がありません');
+  let resolved = resolveAgent(cfg, dir, { workload: 'dashboard', purpose: 'acceptance-draft' });
+  const selectedTier = String(tier || '').trim();
+  if (selectedTier) {
+    const profiles = require('../../orchestration/main/profiles');
+    const candidate = profiles.resolveTier(cfg, selectedTier);
+    if (!candidate) throw new Error(`段「${selectedTier}」には現在実行できる候補がありません`);
+    const cli = candidate.agent_cli || resolved.cli;
+    resolved = { ...resolved, cli, model: candidate.model || resolved.model,
+                 spec: agentCli.loadCli(cli, dir), source: `tier:${selectedTier}` };
+  }
+  const raw = await runDashboardAgent(cfg, resolved, 'acceptance-draft', () =>
+    runAgent(resolved, routineAcceptancePrompt(name, prompt, extra), dir)
+  );
+  const obj = extractJson(raw);
+  if (!obj) throw new Error(`エージェントの応答からJSONを取り出せませんでした: ${raw.slice(0, 120)}…`);
+  const draft = normalizeAcceptanceDraft(obj);
+  if (!draft.acceptance.length) throw new Error('エージェントの応答に受入条件がありません');
+  if (!draft.prompt) draft.prompt = String(prompt).trim();
+  return { ...draft, cli: resolved.cli, model: resolved.model, source: resolved.source };
+}
+
+// ---------------------------------------------------------------------------
 // Doctor / 構造化 Assist のモード定義。いずれも読み取り専用・テキスト応答のみ。
 const DOCTOR_MODES = {
   consultation: {
@@ -850,7 +1002,7 @@ function extractMarkdownSection(text, heading) {
 }
 
 async function completeDoctor(cfg, { dir, context, userPrompt, mode }) {
-  const resolved = resolveAgent(cfg, dir);
+  const resolved = resolveAgent(cfg, dir, { workload: 'dashboard', purpose: 'doctor' });
   const prompt = doctorPrompt(context, userPrompt, { mode });
   let spill = null;
   if (resolved.spec.spill.instruction) {
@@ -861,10 +1013,10 @@ async function completeDoctor(cfg, { dir, context, userPrompt, mode }) {
   }
   let raw;
   try {
-    raw = await runCommand(
+    raw = await runDashboardAgent(cfg, resolved, 'doctor', () => runCommand(
       buildDoctorCommand(resolved.spec, resolved.model, prompt, dir),
       resolved.spec.timeoutMs || resolved.timeoutMs
-    );
+    ));
   } finally {
     if (spill) spill.cleanup();
   }
@@ -1170,7 +1322,7 @@ async function completeTaskAssist(cfg, { dir, mode, context, userPrompt }) {
   if (!context || typeof context !== 'object') {
     throw new Error('補助コンテキストが指定されていません');
   }
-  const resolved = resolveAgent(cfg, dir);
+  const resolved = resolveAgent(cfg, dir, { workload: 'dashboard', purpose: mode });
   const promptText = taskAssistPrompt(m, context, userPrompt);
   // 構造化 Assist も読み取り専用 CLI で起動し、inbox / backlog へ直接書かない。
   // kiro は Doctor と同じ理由（positional プロンプト併用時に stdin を読まない）で
@@ -1188,10 +1340,10 @@ async function completeTaskAssist(cfg, { dir, mode, context, userPrompt }) {
   };
   let raw;
   try {
-    raw = await runCommand(
+    raw = await runDashboardAgent(cfg, resolved, m, () => runCommand(
       buildDoctorCommand(resolved.spec, resolved.model, prompt, dir),
       resolved.spec.timeoutMs || resolved.timeoutMs
-    );
+    ));
   } finally {
     if (spill) spill.cleanup();
   }
@@ -1236,16 +1388,20 @@ function normalizeDraftFields(obj) {
 //   draft  … フォームの書きかけ（spec）→ 各セクションの JSON（fields）
 //   refine … charter.md 全文（content）→ 完成版の全文（content）
 async function completeCharter(cfg, { dir, mode, spec, content }) {
-  const agent = resolveAgent(cfg, dir);
+  const agent = resolveAgent(cfg, dir, { workload: 'dashboard', purpose: mode === 'refine' ? 'refine' : 'draft' });
   if (mode === 'refine') {
-    const raw = await runAgent(agent, charterRefinePrompt(content), dir);
+    const raw = await runDashboardAgent(cfg, agent, 'refine', () =>
+      runAgent(agent, charterRefinePrompt(content), dir)
+    );
     const text = stripFence(raw);
     if (!/^#\s*Charter\s*:|\n##\s*goal/i.test(text)) {
       throw new Error(`エージェントの応答が charter.md の形式ではありません: ${text.slice(0, 120)}…`);
     }
     return { mode, content: `${text.replace(/\n+$/, '')}\n`, cli: agent.cli, model: agent.model, source: agent.source };
   }
-  const raw = await runAgent(agent, charterDraftPrompt(spec), dir);
+  const raw = await runDashboardAgent(cfg, agent, 'draft', () =>
+    runAgent(agent, charterDraftPrompt(spec), dir)
+  );
   const obj = extractJson(raw);
   if (!obj) throw new Error(`エージェントの応答から JSON を取り出せませんでした: ${raw.slice(0, 120)}…`);
   return { mode: 'draft', fields: normalizeDraftFields(obj), cli: agent.cli, model: agent.model, source: agent.source };
@@ -1256,6 +1412,8 @@ module.exports = {
   DOCTOR_MODES,
   STRUCTURED_ASSIST_MODES,
   resolveAgent,
+  dashboardExecutionState,
+  runDashboardAgent,
   readProjectAgent,
   readControlAgent,
   buildCommand,
@@ -1293,6 +1451,9 @@ module.exports = {
   normalizeDraftFields,
   completeCharter,
   completeMethodDraft,
+  completeRoutineAcceptance,
+  routineAcceptancePrompt,
+  normalizeAcceptanceDraft,
   completeDoctor,
   completeTaskAssist,
 };

@@ -118,6 +118,15 @@ function mergeWorkloadControl(base, patch) {
     if (patch.tier === null || patch.tier === '') delete out.tier;
     else out.tier = String(patch.tier);
   }
+  if (patch.selection_source !== undefined) {
+    if (patch.selection_source === null || patch.selection_source === '') delete out.selection_source;
+    else out.selection_source = String(patch.selection_source);
+  }
+  if (patch.selection_reason !== undefined) {
+    if (patch.selection_reason === null || patch.selection_reason === '') delete out.selection_reason;
+    else out.selection_reason = String(patch.selection_reason);
+  }
+  if (patch.pinned !== undefined) out.pinned = Boolean(patch.pinned);
   if (patch.agents !== undefined) {
     if (!isPlainObject(patch.agents)) throw new Error('agents はオブジェクトで指定してください');
     const agents = isPlainObject(out.agents) ? { ...out.agents } : {};

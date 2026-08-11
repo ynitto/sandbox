@@ -51,6 +51,7 @@
   };
   const ROLE_META = { worker: '作業', verify: '検証', human: '人間', planner: '計画', evaluator: '判定', session: 'セッション' };
   const ROLE_KIND = { worker: 'work', verify: 'verify' };
+  const TIER_LABELS = { basic: '単純作業', small: '軽量', medium: '標準', large: '高性能', auto: '自動', '自動': '自動' };
   const ICONS = {
     close: '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"></path></svg>',
     plus: '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"></path></svg>',
@@ -74,6 +75,7 @@
   const esc = (s) => root.esc(String(s == null ? '' : s));
   const $id = (id) => document.getElementById(id);
   const api = () => root.api;
+  const tierLabel = (value, fallback = '') => TIER_LABELS[String(value || '')] || fallback || String(value || '');
 
   function runActive() {
     const pane = $id('tab-workflow-run');
@@ -304,19 +306,22 @@
   function methodPresentation(method) {
     const roles = methodRoles(method).map((role) => ROLE_META[role] || role);
     const when = method.when || {};
+    const purposes = Array.isArray(when.purposes) ? when.purposes
+      .map((purpose) => (KIND_META[String(purpose)] || [ROLE_META[String(purpose)] || purpose])[0]) : [];
+    const target = [...new Set((purposes.length ? purposes : roles).filter(Boolean))];
     const conditions = [];
-    if (Array.isArray(when.tiers) && when.tiers.length) conditions.push(`tier: ${when.tiers.join(', ')}`);
-    if (Array.isArray(when.purposes) && when.purposes.length) conditions.push(`対象: ${when.purposes.join(', ')}`);
-    if (when.max_relative_cost != null) conditions.push(`相対コスト ≤ ${when.max_relative_cost}`);
-    return { roles, condition: conditions.join(' · ') };
+    if (Array.isArray(when.tiers) && when.tiers.length) conditions.push(`${when.tiers.map(tierLabel).join('・')}向け`);
+    if (Number(when.max_relative_cost) === 0) conditions.push('ローカル実行向け');
+    else if (Number(when.min_relative_cost) > 0) conditions.push('クラウド実行向け');
+    return { roles, target, condition: conditions.join('・') };
   }
 
   function nodeMethodOptionsHtml(methods, node) {
     const choices = nodeMethodChoices(methods, node);
     const current = String((node.method && node.method.id) || '');
     const role = roleForKind(node.kind);
-    return `<section class="wf-node-method-options"><div><strong>実行オプション</strong>
-      <small>${esc(ROLE_META[role] || role)}ロールの進め方を、この工程だけ変更します。</small></div>
+    return `<section class="wf-node-method-options"><div><strong>この工程の追加ルール</strong>
+      <small>この工程への依頼文だけに短い指示を追加します。エージェントや実行レベルは変わりません。</small></div>
       <div><label class="wf-method-option"><input type="radio" name="wf-node-method" data-node-method=""
         ${current ? '' : 'checked'}><span><strong>標準</strong><small>追加の指示なし</small></span></label>
       ${choices.map((choice) => `<label class="wf-method-option"><input type="radio" name="wf-node-method"
@@ -630,14 +635,14 @@
     const continuation = ({ route: '分類後に専門工程を追加', retry: '未完了なら再作業・再検証' })[node.continuation] || '';
     const inputError = st.connectFrom ? connectionError(workflow, st.connectFrom, node.id) : '';
     if (readonly) return `<article class="wf-node" style="left:${Number(node.x)}px;top:${Number(node.y)}px">
-      <div class="wf-node-drag"><span>${esc(role)}ロール</span><span class="wf-tier">${esc(node.tier)}</span></div>
+      <div class="wf-node-drag"><span>${esc(role)}ロール</span><span class="wf-tier">${esc(tierLabel(node.tier))}</span></div>
       <div class="wf-node-body"><strong>${esc(name)}</strong><p>${esc(node.goal)}</p>${method}
         ${continuation ? `<span class="wf-continuation">${esc(continuation)}</span>` : ''}</div></article>`;
     return `<article class="wf-node${selected}${issue ? ' invalid' : ''}" data-node-id="${esc(node.id)}"
       style="left:${Number(node.x)}px;top:${Number(node.y)}px">
       <button type="button" class="wf-port in${portState(workflow, node.id)}" data-connect-in="${esc(node.id)}"
         title="${esc(inputError || 'ここへ接続')}" aria-label="${esc(name)}へ接続"></button>
-      <div class="wf-node-drag" data-drag-node="${esc(node.id)}"><span>${esc(role)}ロール</span><span class="wf-tier">${esc(node.tier)}</span></div>
+      <div class="wf-node-drag" data-drag-node="${esc(node.id)}"><span>${esc(role)}ロール</span><span class="wf-tier">${esc(tierLabel(node.tier))}</span></div>
       <div class="wf-node-body"><strong>${esc(name)}</strong><p>${esc(node.goal)}</p>${method}
         ${continuation ? `<span class="wf-continuation">${esc(continuation)}</span>` : ''}
         ${issue ? `<span class="wf-node-issue">${esc(issue)}</span>` : ''}</div>
@@ -689,7 +694,9 @@
     const node = workflow.nodes.find((n) => n.id === st.selectedNode);
     if (!node) return '<div class="empty">ノードを選択してください</div>';
     const tierOptions = (ov.tiers || []).map((t) =>
-      `<option value="${esc(t.id)}" ${node.tier === t.id ? 'selected' : ''}>${esc(t.label)}</option>`).join('');
+      `<option value="${esc(t.id)}" ${node.tier === t.id ? 'selected' : ''}>${esc(
+        t.id === 'auto' ? t.label : tierLabel(t.id, t.label)
+      )}</option>`).join('');
     const kindOptions = KINDS.map((kind) =>
       `<option value="${kind}" ${node.kind === kind ? 'selected' : ''}>${esc(KIND_META[kind][0])}</option>`).join('');
     const interaction = node.interaction || { mode: 'approval', prompt: node.goal, audience: ['reviewer'], timeout_seconds: 604800 };
@@ -718,7 +725,7 @@
       <label>表示名<input id="wf-node-label" value="${esc(node.label || node.id)}"></label>
       <label>ID<input id="wf-node-id" value="${esc(node.id)}"></label>
       <label>種類<select id="wf-node-kind">${kindOptions}</select></label>
-      ${node.kind === 'human' ? '' : `<label>tier<select id="wf-node-tier">${tierOptions}</select></label>`}
+      ${node.kind === 'human' ? '' : `<label>実行レベル<select id="wf-node-tier">${tierOptions}</select></label>`}
       <label>この工程の目的<textarea id="wf-node-goal" rows="6">${esc(node.goal)}</textarea>
         <small class="wf-goal-help">この工程で達成したいことを自然文で書きます。依頼全文・前工程の成果・出力形式は agent-flow が実行時に補います。</small></label>
       ${interactionHtml}
@@ -755,7 +762,7 @@
   function templateCardHtml(pattern) {
     const data = pattern.type === 'method'
       ? `data-method-pattern-id="${esc(pattern.methodId)}"` : `data-pattern-id="${esc(pattern.id)}"`;
-    const kind = pattern.type === 'method' ? '<em class="wf-template-kind">実行手法</em>' : '';
+    const kind = pattern.type === 'method' ? '<em class="wf-template-kind">作業ルール</em>' : '';
     return `<button type="button" class="wf-template-card" ${data}>
       <strong>${esc(pattern.label || pattern.id)}${kind}</strong><small>${esc(pattern.description || '')}</small>
       ${miniFlowHtml(pattern)}<b>編集を始める →</b></button>`;
@@ -807,7 +814,7 @@
       <details><summary>すべての工程</summary><div class="wf-all-kinds">${KINDS.map(card).join('')}</div></details>
       ${patterns.length ? `<details><summary>工程セットを追加</summary><div class="wf-pattern-choices">${patterns.map((pattern) =>
     `<button type="button" class="wf-pattern-card" draggable="true" data-pattern-palette="${esc(pattern.id)}">
-        <span><strong>${esc(pattern.label || pattern.id)}</strong><b>${pattern.type === 'method' ? '実行手法' : '複数工程'}</b></span>
+        <span><strong>${esc(pattern.label || pattern.id)}</strong><b>${pattern.type === 'method' ? '作業ルール' : '複数工程'}</b></span>
         <small>${esc(pattern.description || '')}</small>${miniFlowHtml(pattern)}</button>`).join('')}</div></details>` : ''}
     </section>`;
   }
@@ -1086,7 +1093,7 @@
       const found = methodWorkflowPatterns(ov.methods).find((item) => item.methodId === button.dataset.methodPatternId);
       if (!found || !canLeave()) return;
       st.editor = workflowFromPattern(found, ov.tiers?.[0]?.id || '');
-      st.selectedNode = START; st.dirty = true; st.notice = '実行手法を工程へ展開しました'; renderSettings();
+      st.selectedNode = START; st.dirty = true; st.notice = '作業ルールを工程へ展開しました'; renderSettings();
     }));
     $id('wf-fit')?.addEventListener('click', () => {
       const workflow = collectWorkflow();
@@ -1317,6 +1324,7 @@
     recommendedKinds,
     nextNodePosition,
     methodPresentation,
+    tierLabel,
     edgePath,
     workflowLibraryHtml,
     connectionError,

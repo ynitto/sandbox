@@ -584,4 +584,65 @@ test('resolveRoot は win32 で WSL の POSIX パスを UNC へ寄せる', () =>
   }
 });
 
+// --- 受入条件（acceptance）の書き戻し ---
+//
+// headless 経路の done を機械検証するための自然文チェックリスト。ブロック配列で
+// 書き、コメント・順序・他フィールドは触らない（この書き戻し層の不変条件）。
+
+const ACCEPTANCE_SRC = [
+  'prompts:',
+  '  - name: ログ要約',
+  '    prompt: |',
+  '      ログを要約して',
+  '    interval_minutes: 600   # 10時間ごと',
+  '    enabled: true',
+  '',
+].join('\n');
+
+test('acceptance を新規追加してもコメントと他フィールドを壊さない', () => {
+  const r = wb.applyAgentLoopEdits(ACCEPTANCE_SRC, [{
+    promptIndex: 0, promptName: 'ログ要約',
+    acceptance: ['`reports/digest.md` が更新されている', 'エラーが件数付きで並んでいる'],
+  }]);
+  assert.deepStrictEqual(r.errors, []);
+  assert.ok(r.text.includes('    acceptance:'));
+  assert.ok(r.text.includes('      - "`reports/digest.md` が更新されている"'));
+  assert.ok(r.text.includes('interval_minutes: 600   # 10時間ごと'));  // インラインコメント保持
+  assert.ok(r.text.includes('      ログを要約して'));                   // 本文も触らない
+});
+
+test('acceptance の差し替えは既存ブロックを重複させない', () => {
+  const once = wb.applyAgentLoopEdits(ACCEPTANCE_SRC, [{
+    promptIndex: 0, promptName: 'ログ要約', acceptance: ['`a.md` を作る', '`b.md` を作る'],
+  }]).text;
+  const twice = wb.applyAgentLoopEdits(once, [{
+    promptIndex: 0, promptName: 'ログ要約', acceptance: ['`c.md` を作る'],
+  }]).text;
+  assert.strictEqual((twice.match(/^\s*acceptance:/gm) || []).length, 1);
+  assert.ok(twice.includes('`c.md`'));
+  assert.ok(!twice.includes('`a.md`'));
+});
+
+test('acceptance を空配列にすると行ごと消える（条件なしへ戻せる）', () => {
+  const once = wb.applyAgentLoopEdits(ACCEPTANCE_SRC, [{
+    promptIndex: 0, promptName: 'ログ要約', acceptance: ['`a.md` を作る'],
+  }]).text;
+  const cleared = wb.applyAgentLoopEdits(once, [{
+    promptIndex: 0, promptName: 'ログ要約', acceptance: [],
+  }]).text;
+  assert.ok(!cleared.includes('acceptance'));
+  assert.ok(cleared.includes('enabled: true'));
+});
+
+test('acceptance を渡さない編集は既存の受入条件を触らない', () => {
+  const once = wb.applyAgentLoopEdits(ACCEPTANCE_SRC, [{
+    promptIndex: 0, promptName: 'ログ要約', acceptance: ['`a.md` を作る'],
+  }]).text;
+  const renamed = wb.applyAgentLoopEdits(once, [{
+    promptIndex: 0, promptName: 'ログ要約', name: '要約',
+  }]).text;
+  assert.ok(renamed.includes('`a.md`'));
+  assert.ok(renamed.includes('name: "要約"'));
+});
+
 console.log(`\n${passed} tests passed`);

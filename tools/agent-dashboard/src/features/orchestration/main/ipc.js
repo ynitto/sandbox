@@ -7,6 +7,7 @@ const instructions = require('./instructions');
 const sessionCommands = require('./sessionCommands');
 const profiles = require('./profiles');
 const tuning = require('./tuning');
+const executionPolicy = require('./execution-policy');
 
 function registerIpc(ctx) {
   const { handle, loadConfig } = ctx;
@@ -49,6 +50,9 @@ function registerIpc(ctx) {
   handle('orchestration:profilesSave', (payload) => profiles.save(loadConfig(), payload || {}));
   handle('orchestration:profilesEvaluate', () => profiles.evaluate(loadConfig()));
   handle('orchestration:profilesApply', () => profiles.apply(loadConfig()));
+  handle('orchestration:executionPolicySave', (payload) =>
+    executionPolicy.save(loadConfig(), payload || {})
+  );
 
   // 予算: 上限・期間・allocation（weight/min/max/on_exhausted/soft_ratio）
   handle('orchestration:budgetSave', (payload) => budget.save(loadConfig(), payload || {}));

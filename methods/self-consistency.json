@@ -1,1 +1,1 @@
-{"id":"self-consistency","description":"同一タスクを複数生成して多数決する","enabled":false,"fragments":[{"role":"planner","text":"ローカル実行では同一タスクを3並列で生成し、judge の多数決で統合する計画を優先してください。"}],"when":{"max_relative_cost":0},"origin":"https://www.anthropic.com/engineering/building-effective-agents"}
+{"id":"self-consistency","description":"同一タスクを複数生成して多数決する","enabled":false,"fragments":[{"role":"planner","text":"ローカル実行では同一タスクを3並列で生成し、judge の多数決で統合する計画を優先してください。"}],"when":{"tiers":["medium","large"],"max_relative_cost":0},"origin":"https://www.anthropic.com/engineering/building-effective-agents"}

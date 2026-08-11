@@ -19,11 +19,11 @@ def _method_tuning_file() -> str:
     return os.path.join(agent_home_subdir("AGENT_TUNING_DIR", "tuning"), "tuning.json")
 
 
-def _method_context(purpose: str, agent_cli: str, model: "str | None") -> dict:
+def _method_context(purpose: str, agent_cli: str, model: "str | None", tier: str = "") -> dict:
     return {
         "engine": "agent-flow", "workload": "flow", "purpose": str(purpose or ""),
         "role": _methodlib.role_for(purpose), "agent_cli": agent_cli, "model": str(model or ""),
-        "tier": _methodlib.current_tier(_control_dir(), "flow"),
+        "tier": str(tier or "") or _methodlib.current_tier(_control_dir(), "flow"),
         "relative_cost": _methodlib.relative_cost(agent_cli, os.getcwd()),
     }
 
@@ -31,9 +31,10 @@ def _method_context(purpose: str, agent_cli: str, model: "str | None") -> dict:
 _WARNED_IGNORED_TRIALS: set = set()
 
 
-def _apply_methods(prompt: str, purpose: str, agent_cli: str, model: "str | None") -> str:
+def _apply_methods(prompt: str, purpose: str, agent_cli: str, model: "str | None",
+                   tier: str = "") -> str:
     app = _methodlib.select(_methodlib.load(_method_tuning_file()),
-                            _method_context(purpose, agent_cli, model), _METHOD_ASSIGNMENT_KEY)
+                            _method_context(purpose, agent_cli, model, tier), _METHOD_ASSIGNMENT_KEY)
     _LAST_METHOD_APPLICATION[str(purpose or "")] = app
     for ignored in app.get("ignored_trials") or []:
         # 同時に走らせられるのは 1 trial だけ。捨てた分を黙っていると、宣言した trial が

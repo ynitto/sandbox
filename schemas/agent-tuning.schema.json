@@ -21,10 +21,12 @@
         },
         "tiers": {
           "type": "array", "items": {"type": "string"},
-          "description": "実行プロファイルの段。値は agent-control の workloads[].tier と突き合わせる（語彙の正典は agent-profiles.schema.json の tiers = 下から small / medium / large）。段が宣言されていないノードでは決まらないので、そこでも効かせたい手法は tiers ではなく max_relative_cost / agent_cli で絞る"
+          "description": "実行レベル。値はagent-controlのworkloads[].tierと突き合わせる（標準語彙は下からbasic / small / medium / large）。basicは短い一手順だけを任せる候補向け。tierが宣言されていないノードでも効かせる場合はmax_relative_cost / agent_cliで絞る"
         },
-        "min_relative_cost": {"type": "number", "minimum": 0},
-        "max_relative_cost": {"type": "number", "minimum": 0}
+        "min_relative_cost": {"type": "number", "minimum": 0,
+          "description": "agent-cli定義の料金区分による下限。能力やtierの下限ではない（通常クラウド=1以上）"},
+        "max_relative_cost": {"type": "number", "minimum": 0,
+          "description": "agent-cli定義の料金区分による上限。0はローカル実行を表すが、低能力やsmall tierを意味しない"}
       },
       "additionalProperties": true
     },

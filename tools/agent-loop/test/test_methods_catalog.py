@@ -22,6 +22,24 @@ class MethodCatalogTests(unittest.TestCase):
         self.assertTrue(all(method.get("origin") and method.get("fragments")
                             and method.get("enabled") is False for method in methods))
 
+    def test_multi_step_planning_presets_do_not_target_lightweight_runs(self):
+        root = pathlib.Path(__file__).resolve().parents[3]
+        ids = {"council-review", "derive-twice", "parallel-review", "self-consistency"}
+        methods = {
+            method["id"]: method
+            for method in (json.loads((root / "methods" / f"{mid}.json").read_text(encoding="utf-8"))
+                           for mid in ids)
+        }
+        for method in methods.values():
+            self.assertEqual(method["when"]["tiers"], ["medium", "large"], method["id"])
+
+    def test_basic_tier_only_gets_short_single_action_presets(self):
+        root = pathlib.Path(__file__).resolve().parents[3]
+        ids = {"one-change-per-step", "path-grounding", "restate-task", "scope-guard"}
+        for method_id in ids:
+            method = json.loads((root / "methods" / f"{method_id}.json").read_text(encoding="utf-8"))
+            self.assertEqual(method["when"]["tiers"], ["basic", "small"], method_id)
+
 
 if __name__ == "__main__":
     unittest.main()

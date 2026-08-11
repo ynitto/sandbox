@@ -76,6 +76,7 @@ def _cmd_lifecycle(args: argparse.Namespace, cwd: Path) -> None:
 
 
 def main() -> None:
+    global _EFFECTIVE_AGENT_MODEL
     parser = argparse.ArgumentParser(
         description="kiro-cli を定期プロンプトで自動操作するスクリプト",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -406,6 +407,7 @@ def main() -> None:
     log.info("ファイルログを開始しました: %s", log_file)
 
     config, config_path, has_local_config = load_config(cwd)
+    config = _apply_control_agent(config)
 
     ws_config = _load_prompt_file_data(str(cwd))
 
@@ -419,6 +421,14 @@ def main() -> None:
         if isinstance(ws_kiro_opts, dict) and ws_kiro_opts:
             kiro_opts = ws_kiro_opts
             log.info(".agent/agent-loop.yml の kiro_options を使用します。")
+
+    control_cli, control_model = _control_override()
+    if control_model and not config.get("agent_cli"):
+        kiro_opts = {**kiro_opts, "model": control_model}
+    _EFFECTIVE_AGENT_MODEL = str(
+        ((config.get("agent_cli_options") or {}).get("model") if config.get("agent_cli")
+         else kiro_opts.get("model")) or ""
+    ) or None
 
     kiro_args: list[str] = []
     if kiro_opts.get("trust_all_tools", True):
@@ -441,7 +451,10 @@ def main() -> None:
         log.error("agent_cli の解決に失敗しました: %s", exc)
         sys.exit(1)
     if cli_profile is not None:
-        log.info("エージェント CLI: %s (argv=%s)", cli_profile.name, cli_profile.argv)
+        if cli_profile.is_headless:
+            log.info("エージェント CLI: %s (headless / %s)", cli_profile.name, cli_profile.autonomy)
+        else:
+            log.info("エージェント CLI: %s (対話 / argv=%s)", cli_profile.name, cli_profile.argv)
         if kiro_opts:
             log.info("agent_cli 指定時は kiro_options を使いません（agent_cli_options を使ってください）。")
 
@@ -555,7 +568,7 @@ def main() -> None:
 
     scheduler = PeriodicScheduler(
         session_mgr, entries, semaphore=semaphore, slot_monitor=slot_monitor,
-        workspace=str(cwd.resolve()),
+        workspace=str(cwd.resolve()), tool_config=config,
     )
     scheduler.configure_runtime(
         workspace=str(cwd.resolve()),
@@ -569,6 +582,15 @@ def main() -> None:
     ws_prompts = load_prompt_config(str(cwd))
     if ws_prompts:
         scheduler.set_entries(ws_prompts)
+
+    # headless 経路になる entry の点検。層3 × 受入条件なしは警告して起動を続け、
+    # headless で扱えない機能（ralph 多段 / external target）だけを起動時に断る。
+    headless_problems = check_headless_entries(
+        config, scheduler.entries_snapshot(), project_dir=cwd)
+    if headless_problems:
+        for problem in headless_problems:
+            log.error("%s", problem)
+        sys.exit(1)
 
     # シグナルハンドラ登録
     # SIGHUP: ターミナルを閉じたとき / SIGTERM: kill / SIGINT: Ctrl+C

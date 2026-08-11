@@ -128,4 +128,17 @@ test('Electron を読み込まずに動く（常駐運用の前提）', () => {
     'electron が require されている');
 });
 
+test('実行するとResource Controllerの鮮度statusを残す', () => {
+  const budgetDir = tmpdir('rc-status-budget-');
+  const controlDir = tmpdir('rc-status-control-');
+  writeBudgetConfig(budgetDir, { version: 2, allocation: { mode: 'auto' } });
+  resourceControl.run(cfgFor(budgetDir, controlDir), Date.parse('2020-01-01T00:00:00Z'));
+  const status = JSON.parse(fs.readFileSync(
+    path.join(controlDir, 'status', 'agent-resource-controller.json'), 'utf8'
+  ));
+  assert.strictEqual(status.tool, 'agent-resource-controller');
+  assert.strictEqual(status.fresh_after_sec, 300);
+  assert.strictEqual(status.ts, '2020-01-01T00:00:00.000Z');
+});
+
 console.log(`\n${passed} tests passed (resource-control)`);

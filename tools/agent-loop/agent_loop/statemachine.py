@@ -12,308 +12,35 @@ from __future__ import annotations
 # CLI とモデルの解決は agentcore.agentcli（agents/<name>.json 契約）へ委譲する。
 # モデルは `agent-loop statemachine --model` で実行ごとに指定できる（省略時は
 # 定義の default_model）。
-
-_SM_MAX_TOOL_ROUNDS = 8
-_SM_MAX_TOOL_TIMEOUT_SEC = 300
-_SM_MAX_AUTO_READ_BYTES = 32768
-_SM_HARNESS_TIMEOUT_SEC = 30
-_SM_DEFAULT_AIDER_TIMEOUT_SEC = 180
-# ponytail: 初版は statemachine-use 1 経路だけなので固定上限（dashboard 実装と同値）。
-_SM_SHELLS = {"sh", "bash", "zsh", "fish", "cmd", "cmd.exe",
-              "powershell", "powershell.exe", "pwsh"}
-
-
-class StateMachineHarnessError(RuntimeError):
-    """ハーネスの実行失敗（検証違反・契約不成立・環境不足）。"""
-
-
-def _sm_inside(root: str, file: str) -> bool:
-    rel = os.path.relpath(file, root)
-    return rel == "." or not (rel == ".." or rel.startswith(".." + os.sep) or os.path.isabs(rel))
-
-
-def _sm_project_path(cwd: str, value) -> str:
-    """作業フォルダ内へ正規化した絶対パス。`..`・シンボリックリンクの逸脱は拒否。"""
-    root = os.path.realpath(str(cwd))
-    raw = str(value or "").strip()
-    if not raw or "\0" in raw:
-        raise StateMachineHarnessError("空または不正なファイルパスです")
-    requested = os.path.abspath(os.path.join(str(cwd), raw))
-    parent = requested
-    while not os.path.exists(parent):
-        nxt = os.path.dirname(parent)
-        if nxt == parent:
-            break
-        parent = nxt
-    real_parent = os.path.realpath(parent)
-    target = os.path.abspath(os.path.join(real_parent, os.path.relpath(requested, parent)))
-    if not _sm_inside(root, target):
-        raise StateMachineHarnessError(f"作業フォルダ外のパスは使えません: {raw}")
-    return target
-
-
-def _sm_source_root() -> str:
-    """リポジトリ実行時のスキル探索ルート（.github/skills を持つ親）。zipapp では ''。"""
-    try:
-        here = Path(__file__).resolve()
-    except (NameError, OSError):
-        return ""
-    d = here if here.is_dir() else here.parent
-    for _ in range(10):
-        if (d / ".github" / "skills").is_dir():
-            return str(d)
-        if d.parent == d:
-            break
-        d = d.parent
-    return ""
-
-
-def _sm_resolve_skill(name: str, cwd: str) -> "dict | None":
-    roots = [
-        os.path.join(cwd, ".github", "skills", name),
-        os.path.join(_sm_source_root(), ".github", "skills", name) if _sm_source_root() else "",
-        os.path.join(os.path.expanduser("~"), ".agents", "skills", name),
-        os.path.join(os.path.expanduser("~"), ".codex", "skills", name),
-    ]
-    for root in roots:
-        if root and os.path.isfile(os.path.join(root, "SKILL.md")):
-            return {"name": name, "root": root, "skill_file": os.path.join(root, "SKILL.md")}
-    return None
-
-
-def _sm_action_skill_names(text: str) -> "list[str]":
-    out: list[str] = []
-    for m in re.finditer(r"`([A-Za-z0-9_.-]+)`\s*スキル", str(text or "")):
-        if m.group(1) not in out:
-            out.append(m.group(1))
-    return out
-
-
-def _sm_action_project_files(text: str, cwd: str) -> "list[str]":
-    files: list[str] = []
-    for m in re.finditer(r"`([^`\n]+)`", str(text or "")):
-        raw = m.group(1).strip()
-        if not raw or raw.startswith("-") or re.match(r"^[a-z][a-z0-9+.-]*://", raw, re.I):
-            continue
-        try:
-            file = _sm_project_path(cwd, raw)
-        except StateMachineHarnessError:
-            continue   # コマンド例や作業フォルダ外の参照は割り当てない
-        if os.path.isfile(file) and file not in files:
-            files.append(file)
-    return files
-
-
-def _sm_skill_scripts(skill: dict) -> "list[str]":
-    directory = os.path.join(skill["root"], "scripts")
-    try:
-        return [os.path.join(directory, n) for n in sorted(os.listdir(directory))
-                if re.search(r"\.(?:py|js|sh)$", n, re.I)]
-    except OSError:
-        return []
-
-
-def _sm_executable_on_path(command: str) -> str:
-    return shutil.which(str(command)) or ""
-
-
-def _sm_validate_command(command, cwd: str, skill_dirs: "list[str]") -> str:
-    raw = str(command or "").strip()
-    if not raw or re.search(r"[\s\0]", raw):
-        raise StateMachineHarnessError("run.command は単一の実行ファイル名が必要です")
-    if os.path.basename(raw).lower() in _SM_SHELLS:
-        raise StateMachineHarnessError(f"シェルの実行は許可されていません: {raw}")
-    if not os.path.isabs(raw) and "/" not in raw and "\\" not in raw:
-        if not _sm_executable_on_path(raw):
-            raise StateMachineHarnessError(f"PATH 上に実行ファイルがありません: {raw}")
-        return raw
-    for root in [cwd, *skill_dirs]:
-        try:
-            resolved = _sm_project_path(root, raw)
-        except StateMachineHarnessError:
-            continue
-        if os.path.exists(resolved):
-            return resolved
-    raise StateMachineHarnessError(f"実行ファイルは作業フォルダまたはロード済みスキル内に限定されます: {raw}")
-
-
-def _sm_validate_arg_paths(args: "list[str]", cwd: str, skill_dirs: "list[str]") -> None:
-    for arg in args:
-        if "\0" in arg:
-            raise StateMachineHarnessError("run.args に NUL は使えません")
-        if re.match(r"^[a-z][a-z0-9+.-]*://", arg, re.I) or arg.startswith("-"):
-            continue
-        if os.path.isabs(arg) or ".." in re.split(r"[\\/]", arg):
-            candidate = arg if os.path.isabs(arg) else os.path.abspath(os.path.join(cwd, arg))
-            allowed = False
-            for root in [cwd, *skill_dirs]:
-                try:
-                    _sm_project_path(root, candidate)
-                    allowed = True
-                    break
-                except StateMachineHarnessError:
-                    continue
-            if not allowed:
-                raise StateMachineHarnessError(f"作業フォルダ外の引数パスは使えません: {arg}")
-
-
-def _sm_validate_tool_request(raw, cwd: str, skills: "list[dict]") -> dict:
-    if not isinstance(raw, dict):
-        raise StateMachineHarnessError("Aider のツール要求が JSON オブジェクトではありません")
-    kind = str(raw.get("type") or "")
-    skill_dirs = [s["root"] for s in skills if s.get("root")]
-    if kind in ("read_files", "write_files"):
-        paths = raw.get("paths")
-        if (not isinstance(paths, list) or not paths
-                or any(not isinstance(p, str) for p in paths)):
-            raise StateMachineHarnessError(f"{kind}.paths は1件以上の文字列配列が必要です")
-        return {"type": kind, "paths": [_sm_project_path(cwd, p) for p in paths]}
-    if kind == "run":
-        args = raw.get("args")
-        if not isinstance(args, list) or any(not isinstance(a, str) for a in args):
-            raise StateMachineHarnessError("run.args は文字列配列が必要です")
-        args = [str(a) for a in args]
-        _sm_validate_arg_paths(args, cwd, skill_dirs)
-        command = _sm_validate_command(raw.get("command"), cwd, skill_dirs)
-        if re.search(r"\.py$", command, re.I):
-            args = [command, *args]
-            command = _sm_python_command()
-        try:
-            timeout_sec = int(float(raw.get("timeout_sec") or 0)) or 60
-        except (TypeError, ValueError):
-            timeout_sec = 60
-        return {"type": kind, "command": command, "args": args,
-                "timeout_sec": max(1, min(timeout_sec, _SM_MAX_TOOL_TIMEOUT_SEC))}
-    if kind == "final":
-        return {"type": kind, "output": str(raw.get("output") or "").strip()}
-    raise StateMachineHarnessError(f"許可されていないツール要求です: {kind or '(空)'}")
-
-
-def _sm_parse_json_object(text) -> "dict | None":
-    """本文中の JSON オブジェクトを括弧の釣り合いで走査し、最後の 1 個を返す。"""
-    value = str(text or "")
-    found: list[dict] = []
-    start = -1
-    depth = 0
-    quoted = False
-    escaped = False
-    for i, char in enumerate(value):
-        if start < 0:
-            if char == "{":
-                start = i
-                depth = 1
-            continue
-        if quoted:
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == '"':
-                quoted = False
-            continue
-        if char == '"':
-            quoted = True
-        elif char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-            if depth == 0:
-                try:
-                    parsed = json.loads(value[start:i + 1])
-                    if isinstance(parsed, dict):
-                        found.append(parsed)
-                except ValueError:
-                    pass   # Aider の説明中にある JSON 風テキストは無視
-                start = -1
-    return found[-1] if found else None
-
-
-def _sm_parse_tool_request(text) -> dict:
-    request = _sm_parse_json_object(text)
-    if not request or not request.get("type"):
-        raise StateMachineHarnessError(
-            f"Aider のツール要求を JSON として読めません: {str(text)[:160]}")
-    return request
-
-
-def _sm_append_log(log_file: str, event: dict) -> None:
-    with open(log_file, "a", encoding="utf-8") as f:
-        f.write(json.dumps({"at": _dt.datetime.now(_dt.timezone.utc).isoformat(), **event},
-                           ensure_ascii=False) + "\n")
-
-
-def _sm_progress(message: str) -> None:
-    """tmux ウィンドウ（人が見る画面）への進行表示。ログとは別に短く出す。"""
-    print(f"[statemachine] {message}", flush=True)
-
-
-def _sm_exec_argv(command: str, args: "list[str]", *, cwd: str, timeout_sec: float,
-                  env: "dict | None" = None, stdin: "str | None" = None,
-                  output_file: "str | None" = None, log_file: str) -> dict:
-    started = time.time()
-    argv = [command, *args]
-    _sm_append_log(log_file, {"event": "start", "argv": argv, "cwd": cwd,
-                              "timeoutMs": int(timeout_sec * 1000)})
-    merged_env = {**os.environ, "NO_COLOR": "1", "TERM": "dumb", "COLUMNS": "1000",
-                  **(env or {})}
-    result = {"status": None, "stdout": "", "stderr": "", "error": ""}
-    try:
-        proc = subprocess.run(
-            argv, cwd=cwd, input=stdin, env=merged_env,
-            capture_output=True, text=True, errors="replace",
-            timeout=max(1.0, float(timeout_sec)))
-        result["status"] = proc.returncode
-        result["stdout"] = proc.stdout or ""
-        result["stderr"] = proc.stderr or ""
-    except subprocess.TimeoutExpired as exc:
-        result["stdout"] = (exc.stdout.decode("utf-8", "replace")
-                            if isinstance(exc.stdout, bytes) else (exc.stdout or ""))
-        result["stderr"] = (exc.stderr.decode("utf-8", "replace")
-                            if isinstance(exc.stderr, bytes) else (exc.stderr or ""))
-        result["error"] = f"{command} がタイムアウトしました"
-    except OSError as exc:
-        result["error"] = str(exc)
-    if output_file:
-        try:
-            with open(output_file, "r", encoding="utf-8", errors="replace") as f:
-                result["stdout"] = f.read() or result["stdout"]
-        except OSError:
-            pass   # stdout fallback
-        try:
-            os.unlink(output_file)
-        except OSError:
-            pass
-    _sm_append_log(log_file, {
-        "event": "finish", "argv": argv, "cwd": cwd,
-        "durationMs": int((time.time() - started) * 1000),
-        "status": result["status"], "error": result["error"],
-        "stdout": result["stdout"], "stderr": result["stderr"],
-    })
-    return result
-
-
-def _sm_run_agent(agent: dict, prompt: str, *, cwd: str, readonly: bool,
-                  read_files: "list[str]", files: "list[str]", log_file: str) -> str:
-    """エージェント CLI（aider 等）を headless で 1 回呼び、応答本文を返す。"""
-    mod = agent["agentcli"]
-    built = mod.headless_cmd(agent["spec"], agent["model"], prompt,
-                             readonly=readonly, no_session=True,
-                             read_files=read_files, files=files)
-    argv = built["argv"]
-    timeout_sec = float(built.get("timeout") or 0) or _SM_DEFAULT_AIDER_TIMEOUT_SEC
-    result = _sm_exec_argv(argv[0], argv[1:], cwd=cwd, timeout_sec=timeout_sec,
-                           env=built.get("env") or {}, stdin=built.get("stdin"),
-                           output_file=built.get("output_file"), log_file=log_file)
-    if result["status"] != 0 or result["error"]:
-        detail = "\n".join(x for x in (result["error"], result["stderr"], result["stdout"]) if x)
-        classified = mod.classify_error(agent["spec"], detail)
-        hint = classified[1] if classified else ""
-        raise StateMachineHarnessError(hint or detail or f"{argv[0]} が失敗しました")
-    output = str(result["stdout"] or "").strip()
-    if not output:
-        raise StateMachineHarnessError("Aider が空の応答を返しました")
-    return output
-
+#
+# 限定ツール契約そのもの（パス検証・コマンド検証・JSON パース・証跡・agent 呼び出し）は
+# ゴールに依存しないので toolloop.py へ切り出した。ここに残るのはステートマシン固有の
+# 遷移・出力契約・テンプレート展開だけ。以下の別名は移設前の呼び名を保つためのもので、
+# 実体は 1 つ（C7）。
+StateMachineHarnessError = ToolLoopError
+_SM_MAX_TOOL_ROUNDS = _TL_MAX_TOOL_ROUNDS
+_SM_MAX_TOOL_TIMEOUT_SEC = _TL_MAX_TOOL_TIMEOUT_SEC
+_SM_MAX_AUTO_READ_BYTES = _TL_MAX_AUTO_READ_BYTES
+_SM_HARNESS_TIMEOUT_SEC = _TL_HARNESS_TIMEOUT_SEC
+_SM_FAILURE_RE = _TL_FAILURE_RE
+_sm_inside = _tl_inside
+_sm_project_path = _tl_project_path
+_sm_resolve_skill = _tl_resolve_skill
+_sm_action_skill_names = _tl_action_skill_names
+_sm_action_project_files = _tl_action_project_files
+_sm_skill_scripts = _tl_skill_scripts
+_sm_validate_tool_request = _tl_validate_tool_request
+_sm_parse_json_object = _tl_parse_json_object
+_sm_parse_tool_request = _tl_parse_tool_request
+_sm_append_log = _tl_append_log
+_sm_progress = _tl_progress
+_sm_exec_argv = _tl_exec_argv
+_sm_run_agent = _tl_run_agent
+_sm_final_evidence_error = _tl_final_evidence_error
+_sm_file_stamp = _tl_file_stamp
+_sm_python_ok = _tl_python_ok
+_sm_python_command = _tl_python_command
+_sm_resolve_agent = _tl_resolve_agent
 
 def _sm_scalar(value) -> str:
     if value is None or isinstance(value, (dict, list)):
@@ -406,37 +133,6 @@ def _sm_validated_output(output, rule) -> str:
             at = i
             break
     return "" if at < 0 else "\n".join(lines[at:at + 4])
-
-
-_SM_FAILURE_RE = re.compile(r"^(?:[A-Z][A-Z0-9_]*_)?(?:FAILED|ERROR)\b", re.I)
-
-
-def _sm_final_evidence_error(output, cwd: str, evidence: set, executed: set) -> str:
-    text = str(output or "").strip()
-    if _SM_FAILURE_RE.match(text):
-        return ""
-    m = re.search(r"^path:\s*(.+?)\s*$", text, re.I | re.M)
-    if not m:
-        return ""
-    try:
-        file = _sm_project_path(cwd, m.group(1))
-    except StateMachineHarnessError as exc:
-        return str(exc)
-    if not os.path.isfile(file):
-        return f"成功出力のファイルがありません: {m.group(1)}"
-    if file not in evidence:
-        return f"このステートで確認・生成していないファイルです: {m.group(1)}"
-    if file not in executed:
-        return f"この実行で生成・検証していないファイルです: {m.group(1)}"
-    return ""
-
-
-def _sm_file_stamp(file: str) -> str:
-    try:
-        stat = os.stat(file)
-        return f"{stat.st_size}:{stat.st_mtime_ns}"
-    except OSError:
-        return ""
 
 
 def _sm_terminal_status(state_id, output) -> dict:
@@ -599,12 +295,6 @@ def _sm_execute_action(*, workflow_path: str, state_id: str, state: dict, contex
     raise StateMachineHarnessError(f"ステート {state_id} が Output Contract を満たしませんでした")
 
 
-def _sm_python_command() -> str:
-    if os.environ.get("PYTHON"):
-        return os.environ["PYTHON"]
-    return sys.executable or ("python" if _sm_executable_on_path("python") else "python3")
-
-
 def _sm_harness_script(script: str, args: "list[str]", *, cwd: str, log_file: str) -> str:
     result = _sm_exec_argv(_sm_python_command(), [script, *args], cwd=cwd,
                            timeout_sec=_SM_HARNESS_TIMEOUT_SEC, log_file=log_file)
@@ -658,22 +348,6 @@ def _sm_load_workflow_dict(workflow_file: str) -> dict:
     if not isinstance(workflow, dict) or not isinstance(workflow.get("states"), dict):
         raise StateMachineHarnessError("workflow.yaml を解析できません")
     return workflow
-
-
-def _sm_resolve_agent(cli_name: str, model: str, cwd: str) -> dict:
-    """agents/<name>.json 契約から headless 実行エージェントを解決する。"""
-    mod = _import_agentcli()
-    if mod is None:
-        raise StateMachineHarnessError(
-            "agentcore（agents/<name>.json 定義ローダ）を解決できません。"
-            "install.sh の再実行を検討してください。")
-    name = str(cli_name or "aider").strip() or "aider"
-    try:
-        spec = mod.load_cli(name, project_dir=cwd)
-    except mod.AgentCliError as exc:
-        raise StateMachineHarnessError(str(exc)) from exc
-    return {"cli": name, "spec": spec,
-            "model": str(model or "").strip() or None, "agentcli": mod}
 
 
 def run_statemachine(*, workflow_path: str, cwd: str, parameters: "dict | None" = None,

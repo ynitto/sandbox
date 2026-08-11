@@ -38,6 +38,7 @@ _FRAGMENTS = (
     "doctor",
     "interactive",
     "sendcmd",
+    "toolloop",
     "statemachine",
     "update",
     "cli",

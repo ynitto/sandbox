@@ -207,86 +207,132 @@ function orchBudgetPanelHtml(budget) {
   </section>`;
 }
 
-// 2. 利用上限と配分
-function orchAllocationPanelHtml(budget) {
-  if (!budget) return '';
+// 2. 実行方針。予算配分とtierの切り替えを1回の保存へ束ねる。
+const ORCH_POLICY_WORKLOADS = ['routine', 'project', 'flow', 'amigos', 'audit', 'dashboard'];
+const ORCH_TIER_LABELS = { basic: '単純作業', small: '軽量', medium: '標準', large: '高性能' };
+const ORCH_TIER_KEYS = Object.keys(ORCH_TIER_LABELS);
+function orchTierLabel(value, fallback = '') {
+  return ORCH_TIER_LABELS[String(value || '')] || fallback || String(value || '');
+}
+function orchTierValue(value) {
+  const text = String(value || '').trim();
+  return ORCH_TIER_KEYS.find((key) => key === text || ORCH_TIER_LABELS[key] === text) || text;
+}
+const ORCH_POLICY_SUMMARIES = {
+  auto: '通常は標準。利用上限がある場合は、残り20%未満で軽量に切り替えます。',
+  saving: '常に軽量を使い、利用量を抑えます。',
+  quality: '通常は高性能。残り20%未満で標準、5%未満で軽量に切り替えます。',
+  custom: '通常時の実行レベル、上限、切り替え時期、上限到達時の動作を指定します。',
+};
+
+function orchPriorityFromWeight(value) {
+  const weight = Number(value);
+  return weight >= 1.5 ? 'high' : weight > 0 && weight < 0.75 ? 'low' : 'standard';
+}
+
+function orchExecutionPolicyPanelHtml(overview) {
+  const budget = overview.budget || {};
+  const profiles = overview.profiles || {};
+  const saved = profiles.executionPolicy;
+  const mode = saved && saved.mode ? saved.mode : (profiles.exists ? 'custom' : 'auto');
+  const custom = (saved && saved.custom) || {};
   const alloc = (budget.config && budget.config.allocation) || {};
-  const allocWl = (alloc.workloads && typeof alloc.workloads === 'object') ? alloc.workloads : {};
-  const mode = alloc.mode === 'auto' ? 'auto' : 'static';
-  const soft = Number(alloc.soft_ratio);
-  const softVal = Number.isFinite(soft) ? soft : 0.9;
-  const rows = (budget.knownWorkloads || []).map((wl) => {
-    const a = allocWl[wl] || {};
-    const onEx = ['pause', 'stop', 'degrade'].includes(a.on_exhausted) ? a.on_exhausted : 'pause';
-    return `<tr data-orch-alloc-wl="${esc(wl)}">
-      <td>${esc(amigosWorkloadLabel(wl))}</td>
-      <td><input type="number" min="0" step="1" class="mono orch-alloc-weight" value="${Number(a.weight !== undefined ? a.weight : 1)}" /></td>
-      <td><input type="number" min="0" step="1000" class="mono orch-alloc-min" value="${Number(a.min_tokens || 0)}" title="0 = 下限なし" /></td>
-      <td><input type="number" min="0" step="1000" class="mono orch-alloc-max" value="${Number(a.max_tokens || 0)}" title="0 = 上限なし" /></td>
-      <td><select class="orch-alloc-onex">
-        ${['pause', 'stop', 'degrade'].map((v) => `<option value="${v}"${v === onEx ? ' selected' : ''}>${esc(orchOnExhaustedLabel(v))}</option>`).join('')}
+  const allocWorkloads = alloc.workloads || {};
+  const normalTier = ORCH_TIER_KEYS.includes(custom.normalTier)
+    ? custom.normalTier : (profiles.policy || {}).no_cap_tier || 'medium';
+  const switchTiming = ['early', 'standard', 'late'].includes(custom.switchTiming)
+    ? custom.switchTiming : 'standard';
+  const onExhausted = ['degrade', 'pause', 'stop'].includes(custom.onExhausted)
+    ? custom.onExhausted : 'degrade';
+  const modeCards = [
+    ['auto', 'おまかせ（推奨）', '品質と利用量のバランスを自動調整'],
+    ['saving', '節約', '常に軽量を使用'],
+    ['quality', '品質優先', '余裕がある間は高性能を使用'],
+    ['custom', 'カスタム', '必要な項目だけ自分で指定'],
+  ].map(([value, label, description]) => `<label class="orch-policy-card">
+      <input type="radio" name="orch-policy-mode" value="${value}"${mode === value ? ' checked' : ''} />
+      <span><strong>${label}</strong><small>${description}</small></span>
+    </label>`).join('');
+  const overrides = custom.overrides || {};
+  const overrideRows = ORCH_POLICY_WORKLOADS.map((workload) => {
+    const current = overrides[workload] || {};
+    const allocation = allocWorkloads[workload] || {};
+    const priority = current.priority || orchPriorityFromWeight(allocation.weight);
+    const maxTokens = current.maxTokens !== undefined ? current.maxTokens : allocation.max_tokens || 0;
+    const exhausted = current.onExhausted || allocation.on_exhausted || onExhausted;
+    return `<tr data-orch-policy-workload="${workload}">
+      <td>${esc(amigosWorkloadLabel(workload))}</td>
+      <td><select class="orch-policy-priority" aria-label="${esc(amigosWorkloadLabel(workload))}の優先度">
+        ${[['low', '低'], ['standard', '標準'], ['high', '高']].map(([v, label]) =>
+    `<option value="${v}"${priority === v ? ' selected' : ''}>${label}</option>`).join('')}
+      </select></td>
+      <td><input type="number" class="orch-policy-max mono" min="0" step="1000" value="${Number(maxTokens || 0)}"
+        aria-label="${esc(amigosWorkloadLabel(workload))}の個別上限" /></td>
+      <td><select class="orch-policy-on-exhausted" aria-label="${esc(amigosWorkloadLabel(workload))}の上限到達時">
+        ${['degrade', 'pause', 'stop'].map((v) => `<option value="${v}"${exhausted === v ? ' selected' : ''}>${esc(orchOnExhaustedLabel(v))}</option>`).join('')}
       </select></td>
     </tr>`;
   }).join('');
-  return `<section class="orch-panel">
-    <header class="row">
-      <div>
-        <span class="summary-kicker">利用上限</span>
-        <h3>機能ごとの利用量を設定</h3>
-        <p class="muted">機能ごとに利用上限を配分します。</p>
+  const decisionRows = ORCH_POLICY_WORKLOADS.map((workload) => {
+    const decision = (profiles.state || {})[workload];
+    return `<tr><td>${esc(amigosWorkloadLabel(workload))}</td><td>${decision ? esc(orchTierLabel(decision.tier)) : '—'}</td>
+      <td class="mono">${decision ? esc(orchProfileCandidateText(decision.candidate)) : '—'}</td></tr>`;
+  }).join('');
+  const controllerStatus = (overview.status || []).find((record) => record.tool === 'agent-resource-controller');
+  const controllerTs = Date.parse((controllerStatus && controllerStatus.ts) || '');
+  const controllerFresh = controllerStatus && Number.isFinite(controllerTs)
+    && Date.now() - controllerTs <= Number(controllerStatus.fresh_after_sec || 300) * 2000;
+  const controllerHtml = controllerFresh
+    ? ''
+    : '<div class="orch-policy-result orch-policy-error" role="status"><strong>自動制御が停止しています</strong>'
+      + '<span>最後に反映した方針で実行を続けます。DashboardまたはResource Controllerを起動してください。</span></div>';
+  const saveResult = state.orchPolicyResult;
+  const resultHtml = saveResult && !saveResult.ok
+    ? `<div class="orch-policy-result orch-policy-error" role="alert"><strong>一部未反映です</strong>
+        <span>${esc((saveResult.errors || []).map((error) => `${error.target}: ${error.message}`).join(' / '))}</span></div>`
+    : saveResult && saveResult.ok
+      ? '<div class="orch-policy-result" role="status">方針を保存し、実行制御へ反映しました。</div>' : '';
+  return `<section class="orch-panel orch-execution-policy">
+    <header><span class="summary-kicker">利用量と品質の設定</span><h3>実行方針</h3>
+      <p class="muted">方針を1つ選ぶと、各機能で使う実行レベルと切り替え条件をまとめて設定します。</p></header>
+    <fieldset class="orch-policy-modes"><legend>実行方針を選択</legend>${modeCards}</fieldset>
+    <p class="orch-policy-summary" id="orch-policy-summary" aria-live="polite">${esc(ORCH_POLICY_SUMMARIES[mode])}</p>
+    <div class="orch-policy-custom" id="orch-policy-custom"${mode === 'custom' ? '' : ' hidden'}>
+      <div class="orch-policy-custom-grid">
+        <label>通常時の実行レベル<select id="orch-policy-normal-tier">
+          ${ORCH_TIER_KEYS.map((tier) => `<option value="${tier}"${normalTier === tier ? ' selected' : ''}>${esc(orchTierLabel(tier))}</option>`).join('')}
+        </select></label>
+        <label>全体利用上限（トークン）<input type="number" id="orch-policy-token-limit" class="mono" min="0" step="10000"
+          value="${Number(custom.tokenLimit !== undefined ? custom.tokenLimit : budget.tokenLimit || 0)}" />
+          <small class="muted">0は無制限</small></label>
+        <label>切り替えるタイミング<select id="orch-policy-switch-timing">
+          ${[['early', '早め'], ['standard', '標準'], ['late', 'ぎりぎり']].map(([v, label]) =>
+    `<option value="${v}"${switchTiming === v ? ' selected' : ''}>${label}</option>`).join('')}
+        </select></label>
+        <label>上限到達時<select id="orch-policy-on-exhausted">
+          ${['degrade', 'pause', 'stop'].map((v) => `<option value="${v}"${onExhausted === v ? ' selected' : ''}>${esc(orchOnExhaustedLabel(v))}</option>`).join('')}
+        </select></label>
       </div>
-    </header>
-    <div class="row orch-alloc-controls">
-      <label>全体の上限（トークン）
-        <input type="number" min="0" step="10000" id="orch-token-limit" class="mono" value="${Number(budget.tokenLimit || 0)}" title="0 = 無制限" />
-      </label>
-      <label>節約モードを始める割合
-        <input type="number" min="0" max="1" step="0.05" id="orch-soft-ratio" class="mono" value="${softVal}" />
-      </label>
-      <label>配分方法
-        <select id="orch-alloc-mode">
-          <option value="static"${mode === 'static' ? ' selected' : ''}>手動</option>
-          <option value="auto"${mode === 'auto' ? ' selected' : ''}>自動</option>
-        </select>
-      </label>
+      <details class="orch-policy-overrides" data-ui-key="orch-policy-overrides"><summary>機能ごとに上書き</summary>
+        <div class="table-scroll"><table class="amigos-table orch-table"><thead><tr><th>機能</th><th>優先度</th><th>個別上限</th><th>上限到達時</th></tr></thead>
+          <tbody>${overrideRows}</tbody></table></div>
+      </details>
     </div>
-    <table class="amigos-table orch-table">
-      <thead><tr><th>機能</th><th>配分比</th><th>最低保証</th><th>上限</th><th>上限到達時</th></tr></thead>
-      <tbody>${rows}</tbody>
-    </table>
-    <div class="settings-save-actions">
-      <div class="settings-secondary-actions">
-        <button type="button" id="btn-orch-rebalance">配分を更新</button>
-        <button type="button" id="btn-orch-calibrate">推定値を調整</button>
-      </div>
-      <button type="button" id="btn-orch-alloc-save" class="primary-inline"${state.orchSaving ? ' disabled' : ''}>保存</button>
+    <div class="orch-policy-preview"><strong>現在の適用結果</strong>
+      <p class="muted">ノード・タスクで固定された指定は、この方針では変更しません。</p>
+      <div class="table-scroll"><table class="amigos-table orch-table"><thead><tr><th>機能</th><th>実行レベル</th><th>エージェント / モデル</th></tr></thead>
+        <tbody>${decisionRows}</tbody></table></div>
     </div>
+    ${controllerHtml}${resultHtml}
+    <div class="settings-save-actions"><button type="button" id="btn-orch-policy-save" class="primary-inline"${state.orchSaving ? ' disabled' : ''}>
+      ${saveResult && !saveResult.ok ? '再適用' : 'この方針を保存して反映'}</button></div>
   </section>`;
-}
-
-// 実行プロファイル自動選択（agent-profiles 契約）。対象は「用途ごとにエージェント/モデルを
-// 選べる」project / flow に絞る（routine は選ばない・amigos は役割単位の宣言が別にある）。
-const ORCH_PROFILE_WORKLOADS = ['project', 'flow'];
-const ORCH_TIER_LABELS = { small: 'small', medium: 'medium', large: 'large' };
-const ORCH_TIER_KEYS = Object.keys(ORCH_TIER_LABELS);
-
-function orchProfileTierLabel(tiers, key) {
-  if (ORCH_TIER_LABELS[key]) return ORCH_TIER_LABELS[key];
-  const t = (tiers || {})[key];
-  if (t && t.label) return t.label;
-  return key || '（未選択）';
 }
 
 function orchProfileCandidateText(cand) {
   if (!cand) return '—';
   const text = [cand.agent_cli, cand.model].filter(Boolean).join(':');
   return text || '—';
-}
-
-function orchOrderedTiers(profiles) {
-  const tiers = (profiles && profiles.tiers) || {};
-  return ORCH_TIER_KEYS.map((key) => [key, tiers[key]]).filter(([, tier]) => tier)
-    .sort((a, b) => (Number(b[1].order) || 0) - (Number(a[1].order) || 0));
 }
 
 function orchTierCandidateRowHtml(candidate = {}) {
@@ -303,7 +349,7 @@ function orchTierEditorRowHtml(key, tier = {}) {
   const candidates = (tier.candidates || []).map(orchTierCandidateRowHtml).join('')
     || orchTierCandidateRowHtml();
   return `<li class="orch-profile-tier" data-orch-tier-key="${esc(key)}">
-    <div class="orch-profile-tier-name"><span>段</span><strong class="mono">${esc(ORCH_TIER_LABELS[key])}</strong></div>
+    <div class="orch-profile-tier-name"><span>実行レベル</span><strong>${esc(orchTierLabel(key))}</strong></div>
     <div class="orch-tier-candidates">
       <span>使う候補（上から優先）</span>
       <div class="orch-tier-candidate-list">${candidates}</div>
@@ -319,129 +365,13 @@ function orchTiersPanelHtml(overview) {
   return `<section class="orch-panel orch-profile-panel">
     <header class="row"><div>
       <span class="summary-kicker">エージェントとモデルの組み合わせ</span>
-      <h3>段の設定</h3>
-      <p class="muted">small・medium・largeごとに使用する候補を優先順で設定します。</p>
+      <h3>実行レベルの構成</h3>
+      <p class="muted">同じレベルの候補は、同程度の仕事を任せられる前提で扱います。短い一手順だけを任せる小型モデルは「単純作業」、Haikuなど軽量でも複数手順を扱えるモデルは「軽量」へ分けます。</p>
     </div></header>
     <ol class="orch-profile-tiers" id="orch-profile-tiers">${tierRows}</ol>
     <div class="settings-save-actions">
       <button type="button" id="btn-orch-tiers-save" class="primary-inline"${state.orchSaving ? ' disabled' : ''}>保存</button>
     </div>
-  </section>`;
-}
-
-function orchProfileConditionRowHtml(key, tier, ratio, index) {
-  const pct = ratio === '' || ratio === undefined || ratio === null
-    ? '' : String(Math.round(Number(ratio) * 100));
-  const candidates = (tier.candidates || []).map(orchProfileCandidateText).filter((text) => text !== '—').join(' → ');
-  return `<li class="orch-profile-condition" data-orch-tier-key="${esc(key)}">
-    <span class="orch-profile-tier-no">${index + 1}</span>
-    <div><strong>${esc(orchProfileTierLabel(null, key))}</strong><small class="mono muted">${esc(candidates || '候補未設定')}</small></div>
-    <label><span>予算の残りがこの割合以上のとき</span><span class="orch-profile-ratio-input">
-      <input type="number" class="mono orch-tier-ratio" min="0" max="100" step="5" value="${esc(pct)}" /> %
-    </span></label>
-  </li>`;
-}
-
-// agent-profiles の policy だけを編集する。段の候補は「ワークフロー」タブが持つ。
-function orchProfilePolicyPanelHtml(overview) {
-  const profiles = overview.profiles || { enabled: true, tiers: {}, policy: {}, state: {} };
-  const tiers = profiles.tiers || {};
-  const policy = profiles.policy || {};
-  const stateMap = profiles.state || {};
-  const ratioByTier = new Map((policy.steps || []).map((s) => [String(s.tier || ''), Number(s.min_remaining_ratio || 0)]));
-  const rows = orchOrderedTiers(profiles);
-  const conditionRows = rows.map(([key, tier], index) =>
-    orchProfileConditionRowHtml(key, tier, ratioByTier.has(key) ? ratioByTier.get(key) : '', index)
-  ).join('') || '<li class="orch-profile-empty muted">先に「ワークフロー」で段を設定してください。</li>';
-
-  const applyToRows = ORCH_PROFILE_WORKLOADS.map((wl) => `<label class="orch-profile-apply-to">
-      <input type="checkbox" class="orch-profile-apply-to-cb" value="${esc(wl)}" ${(policy.apply_to || []).includes(wl) ? 'checked' : ''} />
-      ${esc(amigosWorkloadLabel(wl))}
-    </label>`).join('');
-
-  const noCapOptions = ['<option value="">（選ばない）</option>']
-    .concat(rows.map(([key, tier]) => `<option value="${esc(key)}"${policy.no_cap_tier === key ? ' selected' : ''}>${esc(tier.label || key)}</option>`))
-    .join('');
-
-  const decisionRows = ORCH_PROFILE_WORKLOADS.map((wl) => {
-    const rec = stateMap[wl];
-    if (!rec) {
-      return `<tr><td>${esc(amigosWorkloadLabel(wl))}</td><td colspan="3" class="muted">まだ評価していません</td></tr>`;
-    }
-    return `<tr>
-      <td>${esc(amigosWorkloadLabel(wl))}</td>
-      <td>${esc(orchProfileTierLabel(tiers, rec.tier))}</td>
-      <td class="mono">${esc(orchProfileCandidateText(rec.candidate))}</td>
-      <td><small class="muted">${esc(rec.reason || '')}</small></td>
-    </tr>`;
-  }).join('');
-
-  const preview = state.orchProfilesPreview;
-  const previewRows = preview
-    ? Object.entries(preview.decisions || {}).map(([wl, d]) => `<tr>
-        <td>${esc(amigosWorkloadLabel(wl))}</td>
-        <td>${esc(orchProfileTierLabel((preview.profiles || {}).tiers, d.tier))}</td>
-        <td class="mono">${esc(orchProfileCandidateText(d.candidate))}</td>
-        <td><small class="muted">${esc(d.reason || '')}</small></td>
-      </tr>`).join('')
-    : '';
-  const previewHtml = preview
-    ? `<div class="orch-profile-preview">
-        <strong>いまの予算で試算した結果（まだ反映していません）</strong>
-        <table class="amigos-table orch-table">
-          <thead><tr><th>機能</th><th>段</th><th>使うエージェント</th><th>理由</th></tr></thead>
-          <tbody>${previewRows || '<tr><td colspan="4" class="muted">決められませんでした（段と割合、対象の機能を確認してください）</td></tr>'}</tbody>
-        </table>
-      </div>`
-    : '';
-
-  return `<section class="orch-panel orch-profile-panel">
-    <header class="row">
-      <div>
-        <span class="summary-kicker">段の自動切り替え</span>
-        <h3>切り替え条件</h3>
-        <p class="muted">残り予算に応じて、使用する段を切り替えます。</p>
-      </div>
-    </header>
-    <label class="orch-profile-toggle">
-      <input type="checkbox" id="orch-profile-enabled" ${profiles.enabled !== false ? 'checked' : ''} />
-      <span>予算に合わせて自動で切り替える</span>
-    </label>
-    <div class="orch-profile-apply-to-row">
-      <strong>切り替える対象</strong>
-      ${applyToRows}
-    </div>
-    <ol class="orch-profile-conditions" id="orch-profile-conditions">${conditionRows}</ol>
-    <details class="orch-profile-advanced" data-ui-key="orch-profile-advanced">
-      <summary>細かい調整</summary>
-      <div class="orch-profile-advanced-grid">
-        <label>予算の上限が無いときに使う段
-          <select id="orch-profile-no-cap-tier">${noCapOptions}</select>
-        </label>
-        <label>上の段へ戻すときの余裕（%）
-          <input type="number" min="0" max="100" step="1" id="orch-profile-hysteresis" class="mono"
-            value="${Math.round(Number(policy.hysteresis !== undefined ? policy.hysteresis : 0.05) * 100)}" />
-          <small class="muted">戻した直後にまた下がる往復を防ぎます。</small>
-        </label>
-        <label>段を変えたら維持する時間（分）
-          <input type="number" min="0" step="5" id="orch-profile-min-hold" class="mono"
-            value="${Math.round(Number(policy.min_hold_sec !== undefined ? policy.min_hold_sec : 900) / 60)}" />
-        </label>
-      </div>
-    </details>
-    <div class="settings-save-actions">
-      <div class="settings-secondary-actions">
-        <button type="button" id="btn-orch-profile-evaluate">いまの予算で試算</button>
-        <button type="button" id="btn-orch-profile-apply">いますぐ反映</button>
-      </div>
-      <button type="button" id="btn-orch-profile-policy-save" class="primary-inline"${state.orchSaving ? ' disabled' : ''}>保存</button>
-    </div>
-    ${previewHtml}
-    <h4>いま選ばれている段</h4>
-    <table class="amigos-table orch-table">
-      <thead><tr><th>機能</th><th>段</th><th>使うエージェント</th><th>理由</th></tr></thead>
-      <tbody>${decisionRows}</tbody>
-    </table>
   </section>`;
 }
 
@@ -604,10 +534,15 @@ function orchStatusPanelHtml(overview) {
     const desired = ((control.workloads || {})[wl] || {}).lifecycle || 'run';
     const applied = active.map((s) => Number(s.revision_applied)).filter(Number.isFinite);
     const oldestApplied = applied.length ? Math.min(...applied) : null;
+    // エージェント/モデルの差し替えがセッション境界待ちのサービス。設定は読めていても
+    // まだ効いていないので、revision だけを見て「反映済み」と言い切らない。
+    const pendingSwitch = active.some((s) => (s.effective || {}).restart_required);
     const revBadge = oldestApplied === null
       ? orchBadge('muted', '稼働中のサービスなし')
       : (oldestApplied >= desiredRev
-        ? orchBadge('ok', `反映済み（設定版 ${oldestApplied}）`)
+        ? (pendingSwitch
+          ? orchBadge('soft', `切り替え待ち（設定版 ${oldestApplied}）`)
+          : orchBadge('ok', `反映済み（設定版 ${oldestApplied}）`))
         : orchBadge('soft', `未反映（${oldestApplied}/${desiredRev}）`));
     const exceeded = active.some((s) => (s.budget || {}).exceeded);
     const soft = active.some((s) => (s.budget || {}).soft);
@@ -1177,74 +1112,124 @@ function orchMethodRoles(method) {
   return [...new Set((method.fragments || []).map((fragment) => String(fragment.role || '')).filter(Boolean))];
 }
 
-function orchMethodConditionsHtml(method) {
+const ORCH_METHOD_ROLE_LABELS = {
+  planner: '計画', worker: '作業', verify: '検証', evaluator: '評価', session: '定常実行',
+};
+const ORCH_METHOD_PURPOSE_LABELS = {
+  planner: '計画', work: '実装・作業', generate: '生成', synthesize: '統合', verify: '検証',
+  evaluator: '評価', classify: '分類', filter: '選別', judge: '判定', reduce: '集約', split: '分割',
+  map: '個別処理', extract: '抽出', retrieve: '取得', session: '定常実行',
+};
+const ORCH_METHOD_ENGINE_LABELS = { 'agent-flow': 'ワークフロー', 'agent-loop': '定常業務' };
+
+function orchMethodTargetLabels(method) {
+  const purposes = Array.isArray((method.when || {}).purposes) ? method.when.purposes : [];
+  const values = purposes.length ? purposes.map((purpose) => ORCH_METHOD_PURPOSE_LABELS[purpose] || purpose)
+    : orchMethodRoles(method).map((role) => ORCH_METHOD_ROLE_LABELS[role] || role);
+  return [...new Set(values.filter(Boolean))];
+}
+
+function orchMethodConstraintLabels(method) {
   const when = method.when || {};
-  const labels = {
-    tiers: '段', purposes: '用途', workloads: '機能', agent_cli: 'エージェント', models: 'モデル',
-    engines: 'エンジン', roles: 'ロール',
-  };
-  const chips = Object.entries(labels).flatMap(([key, label]) => {
-    const values = Array.isArray(when[key]) ? when[key] : [];
-    return values.map((value) => `<span class="orch-method-condition">${esc(label)}: ${esc(key === 'tiers' ? (ORCH_TIER_LABELS[value] || value) : value)}</span>`);
-  });
-  if (Number.isFinite(Number(when.min_relative_cost))) {
-    chips.push(`<span class="orch-method-condition">相対コスト: ${esc(when.min_relative_cost)}以上</span>`);
-  }
-  if (Number.isFinite(Number(when.max_relative_cost))) {
-    chips.push(`<span class="orch-method-condition">相対コスト: ${esc(when.max_relative_cost)}以下</span>`);
-  }
-  return chips.join('') || '<span class="muted">すべてに適用</span>';
+  const labels = [];
+  const tiers = Array.isArray(when.tiers) ? when.tiers.map((tier) => orchTierLabel(tier)).filter(Boolean) : [];
+  if (tiers.length) labels.push(`${tiers.join('・')}向け`);
+  const workloads = Array.isArray(when.workloads)
+    ? when.workloads.map((workload) => amigosWorkloadLabel(workload)).filter(Boolean) : [];
+  if (workloads.length) labels.push(workloads.join('・'));
+  const engines = Array.isArray(when.engines)
+    ? when.engines.map((engine) => ORCH_METHOD_ENGINE_LABELS[engine] || engine).filter(Boolean) : [];
+  if (engines.length) labels.push(engines.join('・'));
+  const agents = Array.isArray(when.agent_cli) ? when.agent_cli.filter(Boolean) : [];
+  if (agents.length) labels.push(`${agents.join('・')}を使う場合`);
+  const models = Array.isArray(when.models) ? when.models.filter(Boolean) : [];
+  if (models.length) labels.push(`${models.join('・')}を使う場合`);
+  const minCost = Number(when.min_relative_cost);
+  const maxCost = Number(when.max_relative_cost);
+  if (Number.isFinite(maxCost) && maxCost === 0) labels.push('ローカル実行向け');
+  else if (Number.isFinite(minCost) && minCost > 0) labels.push('クラウド実行向け');
+  else if (Number.isFinite(minCost) || Number.isFinite(maxCost)) labels.push('実行環境の条件あり');
+  return labels;
+}
+
+function orchMethodConditionsHtml(method) {
+  const targets = orchMethodTargetLabels(method);
+  const constraints = orchMethodConstraintLabels(method);
+  return `<div><span>適用先</span><strong>${esc(targets.join('・') || 'すべての工程')}</strong></div>
+    <div><span>条件</span><strong>${esc(constraints.join('・') || '追加条件なし')}</strong></div>`;
+}
+
+function orchMethodTechnicalHtml(method, source) {
+  const roles = orchMethodRoles(method).map((role) => ORCH_METHOD_ROLE_LABELS[role] || role);
+  const purposes = Array.isArray((method.when || {}).purposes)
+    ? method.when.purposes.map((purpose) => ORCH_METHOD_PURPOSE_LABELS[purpose] || purpose) : [];
+  return `<details class="orch-method-technical">
+    <summary>内部設定</summary>
+    <dl>
+      <div><dt>工程（大分類）</dt><dd>${esc(roles.join('・') || '定常実行')}</dd></div>
+      <div><dt>処理（工程内の詳細）</dt><dd>${esc(purposes.join('・') || '指定なし')}</dd></div>
+      <div><dt>ID</dt><dd class="mono">${esc(method.id)}</dd></div>
+      <div><dt>反映元</dt><dd class="mono">${esc(source || '不明')}</dd></div>
+    </dl>
+  </details>`;
 }
 
 function orchMethodCardHtml(method, current) {
   const enabled = !!(current && current.enabled !== false);
-  const roles = orchMethodRoles(method);
+  const effective = enabled ? current : method;
+  const roles = orchMethodRoles(effective);
   const source = (current && current.source) || method.source || method.origin || '';
-  const search = [method.id, method.description, source, roles.join(' '), JSON.stringify(method.when || {})]
+  const instruction = (effective.fragments || []).map((fragment) => String(fragment.text || '').trim())
+    .filter(Boolean).join(' ');
+  const search = [effective.id, effective.description, source, roles.join(' '), JSON.stringify(effective.when || {})]
     .join(' ').toLowerCase();
   return `<article class="orch-method-card" data-orch-method-search="${esc(search)}"
     data-orch-method-role="${esc(roles.join(' '))}" data-orch-method-state="${enabled ? 'enabled' : 'disabled'}">
     <header>
-      <div><strong>${esc(method.id)}</strong><p>${esc(method.description || '')}</p></div>
-      <button type="button" data-orch-method-id="${esc(method.id)}"
-        data-orch-method-enabled="${enabled ? 'false' : 'true'}" aria-pressed="${enabled}">${enabled ? 'ON' : 'OFF'}</button>
+      <div><strong>${esc(effective.description || effective.id)}</strong></div>
+      <div class="orch-method-actions"><span class="orch-method-status${enabled ? ' is-enabled' : ''}">${enabled ? '自動適用中' : '未使用'}</span>
+        <button type="button" class="orch-method-toggle" data-orch-method-id="${esc(effective.id)}"
+          data-orch-method-enabled="${enabled ? 'false' : 'true'}" aria-pressed="${enabled}"
+          aria-label="${esc(effective.description || effective.id)}を${enabled ? '適用しない' : '自動適用する'}">${enabled ? '適用しない' : '自動適用する'}</button></div>
     </header>
-    <div class="orch-method-roles">${roles.map((role) => `<span>${esc(role)}</span>`).join('') || '<span>session</span>'}</div>
-    <div class="orch-method-conditions">${orchMethodConditionsHtml(method)}</div>
-    <small class="mono muted">${esc(source || '反映元不明')}</small>
+    <p class="orch-method-effect">${esc(instruction || effective.description || '')}</p>
+    <div class="orch-method-conditions">${orchMethodConditionsHtml(effective)}</div>
+    ${orchMethodTechnicalHtml(effective, source)}
   </article>`;
 }
 
 function orchMethodDialogHtml() {
   return `<dialog id="dlg-orch-method-add" class="orch-method-dialog">
     <form method="dialog" class="dialog-shell">
-      <h2 class="dialog-heading dialog-heading-simple">カスタム手法を追加</h2>
+      <h2 class="dialog-heading dialog-heading-simple">カスタム作業ルールを追加</h2>
       <div class="dialog-scroll-body">
         <div class="orch-method-ai-box">
-          <label for="orch-method-brief">作りたい手法</label>
+          <label for="orch-method-brief">作りたいルール</label>
           <textarea id="orch-method-brief" rows="3" placeholder="例: 実装前に失敗条件を洗い出し、検証担当にも同じ観点を渡す"></textarea>
           <div class="row"><button type="button" id="btn-orch-method-ai">AIで補完</button>
             <span id="orch-method-ai-status" class="muted" aria-live="polite"></span></div>
         </div>
         <div class="row2">
           <label for="orch-method-id">ID<input id="orch-method-id" class="mono" placeholder="failure-first" /></label>
-          <label for="orch-method-role">ロール<select id="orch-method-role">
-            <option value="">選択してください</option><option>session</option><option>planner</option>
-            <option>worker</option><option>verify</option><option>evaluator</option>
+          <label for="orch-method-role">適用する工程<select id="orch-method-role">
+            <option value="">選択してください</option><option value="session">定常実行</option>
+            <option value="planner">計画</option><option value="worker">作業</option>
+            <option value="verify">検証</option><option value="evaluator">評価</option>
           </select></label>
         </div>
-        <label for="orch-method-description">説明<input id="orch-method-description" placeholder="何を変える手法かを短く記述" /></label>
+        <label for="orch-method-description">説明<input id="orch-method-description" placeholder="何を変えるルールかを短く記述" /></label>
         <label for="orch-method-text">エージェントへ渡す指示<textarea id="orch-method-text" rows="5"></textarea></label>
         <details class="orch-method-when" data-ui-key="orch-method-when">
-          <summary>適用条件</summary>
+          <summary>詳細な適用条件（上級者向け）</summary>
+          <p class="muted">「適用する工程」は計画・作業・検証などの大分類です。処理の種類は、その中でも実装や生成だけに絞る場合に指定します。通常は空欄で構いません。</p>
           <div class="row2">
-            <label for="orch-method-tiers">段<input id="orch-method-tiers" class="mono" placeholder="small, medium, large" /></label>
-            <label for="orch-method-purposes">用途<input id="orch-method-purposes" class="mono" placeholder="work, verify" /></label>
-            <label for="orch-method-workloads">機能<input id="orch-method-workloads" class="mono" placeholder="project, flow" /></label>
+            <label for="orch-method-tiers">実行レベル<input id="orch-method-tiers" placeholder="軽量, 標準, 高性能" /></label>
+            <label for="orch-method-purposes">処理の種類<input id="orch-method-purposes" class="mono" placeholder="work, generate" /></label>
+            <label for="orch-method-workloads">対象機能<input id="orch-method-workloads" class="mono" placeholder="project, flow" /></label>
             <label for="orch-method-agent-cli">エージェント<input id="orch-method-agent-cli" class="mono" placeholder="claude, codex" /></label>
             <label for="orch-method-models">モデル<input id="orch-method-models" class="mono" placeholder="opus, gpt-5" /></label>
           </div>
-          <small class="muted">複数指定はカンマで区切ります。空欄の条件は制限しません。</small>
+          <small class="muted">複数指定はカンマで区切ります。軽量な実行では短い1手順だけを推奨します。分岐・並列・合議はワークフローとして構成してください。</small>
         </details>
         <p id="orch-method-form-status" class="orch-method-form-status" aria-live="polite"></p>
       </div>
@@ -1263,26 +1248,35 @@ function orchMethodsPanelHtml(overview) {
   const ids = new Set(catalog.map((method) => String(method.id)));
   const methods = catalog.concat((tuning.methods || []).filter((method) => !ids.has(String(method.id))));
   const cards = methods.map((method) => orchMethodCardHtml(method, active.get(String(method.id)))).join('');
+  const enabledCount = [...active.values()].filter((method) => method && method.enabled !== false).length;
   return `<section class="orch-panel orch-method-market">
-    <header class="row"><div><span class="summary-kicker">実行手法</span><h3>手法を探す</h3>
-      <p class="muted">目的に合う手法を検索して有効にします。</p></div>
-      <button type="button" id="btn-orch-method-dialog" class="primary-inline">カスタム手法を追加</button>
+    <header><span class="summary-kicker">作業ルール</span><h3>短い追加指示を自動で適用</h3>
+      <p class="muted">条件に合うエージェントへの依頼文に指示を追加します。使用するエージェントや実行レベルは変更しません。</p>
     </header>
-    <div class="orch-method-search">
-      <label for="orch-method-search">手法を検索<input type="search" id="orch-method-search"
-        value="${esc(state.orchMethodSearch || '')}" placeholder="名前、説明、反映元で検索" autocomplete="off" /></label>
-      <label for="orch-method-role-filter">ロール<select id="orch-method-role-filter">
-        <option value="">すべて</option>${['session', 'planner', 'worker', 'verify', 'evaluator'].map((role) =>
-    `<option value="${role}"${state.orchMethodRole === role ? ' selected' : ''}>${role}</option>`).join('')}
-      </select></label>
-      <label for="orch-method-state-filter">状態<select id="orch-method-state-filter">
-        <option value="">すべて</option><option value="enabled"${state.orchMethodState === 'enabled' ? ' selected' : ''}>ON</option>
-        <option value="disabled"${state.orchMethodState === 'disabled' ? ' selected' : ''}>OFF</option>
-      </select></label>
-      <span id="orch-method-result-count" class="muted" aria-live="polite">${methods.length}件</span>
+    <div class="orch-method-guidance" role="note">
+      <strong>自動適用中: ${enabledCount}件</strong>
+      <p>ローカル／クラウドは料金の区分、軽量／標準／高性能は能力と実行品質の区分です。複数工程・並列・合議が必要な進め方はワークフローで構成します。</p>
     </div>
-    <div class="orch-method-grid" id="orch-method-grid">${cards}</div>
-    <p id="orch-method-empty" class="empty compact" hidden>一致する手法がありません。検索語や絞り込みを変更してください。</p>
+    <details class="orch-method-library" data-ui-key="orch-method-library">
+      <summary>個別の作業ルールを設定</summary>
+      <div class="row orch-method-library-heading"><p class="muted">工程と処理の種類は画面側でまとめて「適用先」として表示します。</p>
+        <button type="button" id="btn-orch-method-dialog" class="primary-inline">カスタム作業ルールを追加</button></div>
+      <div class="orch-method-search">
+        <label for="orch-method-search">作業ルールを検索<input type="search" id="orch-method-search"
+          value="${esc(state.orchMethodSearch || '')}" placeholder="名前や説明で検索" autocomplete="off" /></label>
+        <label for="orch-method-role-filter">適用する工程<select id="orch-method-role-filter">
+          <option value="">すべて</option>${Object.entries(ORCH_METHOD_ROLE_LABELS).map(([role, label]) =>
+    `<option value="${role}"${state.orchMethodRole === role ? ' selected' : ''}>${label}</option>`).join('')}
+        </select></label>
+        <label for="orch-method-state-filter">状態<select id="orch-method-state-filter">
+          <option value="">すべて</option><option value="enabled"${state.orchMethodState === 'enabled' ? ' selected' : ''}>自動適用中</option>
+          <option value="disabled"${state.orchMethodState === 'disabled' ? ' selected' : ''}>適用しない</option>
+        </select></label>
+        <span id="orch-method-result-count" class="muted" aria-live="polite">${methods.length}件</span>
+      </div>
+      <div class="orch-method-grid" id="orch-method-grid">${cards}</div>
+      <p id="orch-method-empty" class="empty compact" hidden>一致する作業ルールがありません。検索語や絞り込みを変更してください。</p>
+    </details>
     ${orchMethodDialogHtml()}
   </section>`;
 }
@@ -1296,7 +1290,7 @@ function globalSettingsMethodsHtml(overview) {
 function globalSettingsControlHtml(overview) {
   if (!overview) return '<div class="empty compact">実行制御を読み込んでいます。</div>';
   if (overview.error) return `<div class="empty compact"><strong>実行制御を読み込めませんでした</strong><span>${esc(overview.error)}</span></div>`;
-  return `${orchAllocationPanelHtml(overview.budget)}${orchConcurrencyPanelHtml(overview)}${orchProfilePolicyPanelHtml(overview)}${orchStatusPanelHtml(overview)}`;
+  return `${orchExecutionPolicyPanelHtml(overview)}${orchConcurrencyPanelHtml(overview)}${orchStatusPanelHtml(overview)}`;
 }
 
 function renderOrchestration() {
@@ -1460,7 +1454,7 @@ function setupOrchestration(root) {
   filterMethods();
 
   for (const btn of root.querySelectorAll('[data-orch-method-id]')) {
-    btn.addEventListener('click', () => guard('手法設定の保存', async () => {
+    btn.addEventListener('click', () => guard('作業ルール設定の保存', async () => {
       await api.orchestrationMethodSet({ id: btn.dataset.orchMethodId,
         enabled: btn.dataset.orchMethodEnabled === 'true' });
       await refreshOrchestration();
@@ -1478,7 +1472,7 @@ function setupOrchestration(root) {
       tiers: '#orch-method-tiers', purposes: '#orch-method-purposes', workloads: '#orch-method-workloads',
       agent_cli: '#orch-method-agent-cli', models: '#orch-method-models',
     })) {
-      const values = csv(id);
+      const values = csv(id).map((value) => (key === 'tiers' ? orchTierValue(value) : value));
       if (values.length) when[key] = values;
     }
     return {
@@ -1499,7 +1493,7 @@ function setupOrchestration(root) {
   const methodAdd = root.querySelector('#btn-orch-method-add');
   if (methodAdd) methodAdd.addEventListener('click', async () => {
     const payload = readMethodForm();
-    const missing = [!payload.id && 'ID', !payload.description && '説明', !payload.role && 'ロール',
+    const missing = [!payload.id && 'ID', !payload.description && '説明', !payload.role && '適用する工程',
       !payload.text && '指示'].filter(Boolean);
     if (missing.length) return setMethodFormStatus(`${missing.join('・')}を入力してください。`, true);
     methodAdd.disabled = true;
@@ -1507,7 +1501,7 @@ function setupOrchestration(root) {
     try {
       await api.orchestrationMethodAdd(payload);
       if (methodDialog) methodDialog.close();
-      toast('カスタム手法を追加しました', true);
+      toast('カスタム作業ルールを追加しました', true);
       await refreshOrchestration();
       renderOrchestration();
     } catch (err) {
@@ -1522,7 +1516,7 @@ function setupOrchestration(root) {
     const brief = String((root.querySelector('#orch-method-brief') || {}).value || '').trim();
     const status = root.querySelector('#orch-method-ai-status');
     if (!brief) {
-      if (status) status.textContent = '作りたい手法を入力してください。';
+      if (status) status.textContent = '作りたいルールを入力してください。';
       return;
     }
     methodAi.disabled = true;
@@ -1543,7 +1537,7 @@ function setupOrchestration(root) {
         agent_cli: '#orch-method-agent-cli', models: '#orch-method-models',
       })) {
         const values = ((method.when || {})[key] || [])
-          .map((value) => (key === 'tiers' ? (ORCH_TIER_LABELS[value] || value) : value));
+          .map((value) => (key === 'tiers' ? orchTierLabel(value) : value));
         fill(id, values.join(', '));
       }
       if (status) status.textContent = `補完しました${result.cli ? `（${result.cli}${result.model ? ` / ${result.model}` : ''}）` : ''}`;
@@ -1557,47 +1551,46 @@ function setupOrchestration(root) {
     }
   });
 
-  // 配分の保存
-  const allocSave = root.querySelector('#btn-orch-alloc-save');
-  if (allocSave) allocSave.addEventListener('click', () => guard('配分の保存', async () => {
-    const workloads = {};
-    for (const tr of root.querySelectorAll('[data-orch-alloc-wl]')) {
-      const wl = tr.getAttribute('data-orch-alloc-wl');
-      workloads[wl] = {
-        weight: Number(tr.querySelector('.orch-alloc-weight').value || 0),
-        min_tokens: Number(tr.querySelector('.orch-alloc-min').value || 0),
-        max_tokens: Number(tr.querySelector('.orch-alloc-max').value || 0),
-        on_exhausted: tr.querySelector('.orch-alloc-onex').value,
+  // 実行方針の単一保存。budget / profiles / control の部分失敗は IPC の結果をそのまま表示する。
+  const policyModes = [...root.querySelectorAll('input[name="orch-policy-mode"]')];
+  const updatePolicyMode = () => {
+    const selected = policyModes.find((input) => input.checked);
+    const mode = selected ? selected.value : 'auto';
+    const previousMode = (((state.orchestration || {}).profiles || {}).executionPolicy || {}).mode;
+    if (previousMode === 'custom' && mode !== 'custom'
+      && !window.confirm('カスタム設定を選んだプリセットへ置き換えます。続けますか？')) return;
+    const custom = root.querySelector('#orch-policy-custom');
+    const summary = root.querySelector('#orch-policy-summary');
+    if (custom) custom.hidden = mode !== 'custom';
+    if (summary) summary.textContent = ORCH_POLICY_SUMMARIES[mode] || '';
+  };
+  for (const input of policyModes) input.addEventListener('change', updatePolicyMode);
+
+  const policySave = root.querySelector('#btn-orch-policy-save');
+  if (policySave) policySave.addEventListener('click', () => guard('実行方針の保存と反映', async () => {
+    const selected = policyModes.find((input) => input.checked);
+    const mode = selected ? selected.value : 'auto';
+    const overrides = {};
+    for (const row of root.querySelectorAll('[data-orch-policy-workload]')) {
+      overrides[row.dataset.orchPolicyWorkload] = {
+        priority: row.querySelector('.orch-policy-priority').value,
+        maxTokens: Number(row.querySelector('.orch-policy-max').value || 0),
+        onExhausted: row.querySelector('.orch-policy-on-exhausted').value,
       };
     }
+    const custom = {
+      normalTier: (root.querySelector('#orch-policy-normal-tier') || {}).value || 'medium',
+      tokenLimit: Number((root.querySelector('#orch-policy-token-limit') || {}).value || 0),
+      switchTiming: (root.querySelector('#orch-policy-switch-timing') || {}).value || 'standard',
+      onExhausted: (root.querySelector('#orch-policy-on-exhausted') || {}).value || 'degrade',
+      overrides,
+    };
     state.orchSaving = true;
     try {
-      await api.orchestrationBudgetSave({
-        tokens: Number((root.querySelector('#orch-token-limit') || {}).value || 0),
-        allocation: {
-          mode: (root.querySelector('#orch-alloc-mode') || {}).value || 'static',
-          soft_ratio: Number((root.querySelector('#orch-soft-ratio') || {}).value || 0.9),
-          workloads,
-        },
-      });
-      toast('配分を保存しました', true);
+      state.orchPolicyResult = await api.orchestrationExecutionPolicySave({ mode, custom });
+      toast(state.orchPolicyResult.ok ? '実行方針を保存して反映しました' : '一部の設定を反映できませんでした',
+        state.orchPolicyResult.ok);
     } finally { state.orchSaving = false; }
-    await refreshOrchestration();
-    renderOrchestration();
-  }));
-
-  const rebalanceBtn = root.querySelector('#btn-orch-rebalance');
-  if (rebalanceBtn) rebalanceBtn.addEventListener('click', () => guard('再配分', async () => {
-    await api.orchestrationRebalance();
-    toast('再配分しました', true);
-    await refreshOrchestration();
-    renderOrchestration();
-  }));
-
-  const calibrateBtn = root.querySelector('#btn-orch-calibrate');
-  if (calibrateBtn) calibrateBtn.addEventListener('click', () => guard('レート較正', async () => {
-    await api.orchestrationCalibrate();
-    toast('レートを較正しました', true);
     await refreshOrchestration();
     renderOrchestration();
   }));
@@ -1675,7 +1668,7 @@ function setupOrchestration(root) {
     renderOrchestration();
   }));
 
-  // 固定 3 段の候補設定。保存時も既存の内部キーを保ち、policy の参照を壊さない。
+  // 固定4レベルの候補設定。保存時も既存のtierキーを保ち、policyの参照を壊さない。
   const tierList = root.querySelector('#orch-profile-tiers');
   const markWorkflowDirty = () => { state.orchWorkflowDirty = true; };
   if (tierList) {
@@ -1700,7 +1693,7 @@ function setupOrchestration(root) {
   }
 
   const tiersSave = root.querySelector('#btn-orch-tiers-save');
-  if (tiersSave) tiersSave.addEventListener('click', () => guard('段の設定の保存', async () => {
+  if (tiersSave) tiersSave.addEventListener('click', () => guard('実行レベルの構成の保存', async () => {
     const rows = [...root.querySelectorAll('.orch-profile-tier')];
     const tiers = {};
     rows.forEach((row, i) => {
@@ -1721,56 +1714,8 @@ function setupOrchestration(root) {
     try {
       await api.orchestrationProfilesSave({ tiers, policy });
       state.orchWorkflowDirty = false;
-      toast('段の設定を保存しました', true);
+      toast('実行レベルの構成を保存しました', true);
     } finally { state.orchSaving = false; }
-    await refreshOrchestration();
-    renderOrchestration();
-  }));
-
-  const profileSave = root.querySelector('#btn-orch-profile-policy-save');
-  if (profileSave) profileSave.addEventListener('click', () => guard('自動切り替え条件の保存', async () => {
-    const steps = [...root.querySelectorAll('.orch-profile-condition')].flatMap((row) => {
-      const pct = row.querySelector('.orch-tier-ratio').value.trim();
-      return pct === '' ? [] : [{
-        min_remaining_ratio: Math.min(100, Math.max(0, Number(pct) || 0)) / 100,
-        tier: row.dataset.orchTierKey,
-      }];
-    });
-    const applyTo = [...root.querySelectorAll('.orch-profile-apply-to-cb')]
-      .filter((cb) => cb.checked).map((cb) => cb.value);
-    const noCap = (root.querySelector('#orch-profile-no-cap-tier') || {}).value || '';
-    const hysteresisPct = Number((root.querySelector('#orch-profile-hysteresis') || {}).value);
-    const minHoldMin = Number((root.querySelector('#orch-profile-min-hold') || {}).value);
-    state.orchSaving = true;
-    try {
-      await api.orchestrationProfilesSave({
-        enabled: (root.querySelector('#orch-profile-enabled') || {}).checked !== false,
-        policy: {
-          apply_to: applyTo,
-          steps,
-          no_cap_tier: noCap,
-          hysteresis: Number.isFinite(hysteresisPct) ? Math.min(100, Math.max(0, hysteresisPct)) / 100 : 0.05,
-          min_hold_sec: Number.isFinite(minHoldMin) ? Math.max(0, Math.round(minHoldMin * 60)) : 900,
-        },
-      });
-      toast('自動切り替え条件を保存しました', true);
-    } finally { state.orchSaving = false; }
-    state.orchProfilesPreview = null;
-    await refreshOrchestration();
-    renderOrchestration();
-  }));
-
-  const profileEvaluate = root.querySelector('#btn-orch-profile-evaluate');
-  if (profileEvaluate) profileEvaluate.addEventListener('click', () => guard('自動切り替えの試算', async () => {
-    state.orchProfilesPreview = await api.orchestrationProfilesEvaluate();
-    renderOrchestration();
-  }));
-
-  const profileApply = root.querySelector('#btn-orch-profile-apply');
-  if (profileApply) profileApply.addEventListener('click', () => guard('自動切り替えの反映', async () => {
-    const result = await api.orchestrationProfilesApply();
-    toast(result && (result.controlWritten || result.stateWritten) ? '自動切り替えを反映しました' : '変更はありませんでした', true);
-    state.orchProfilesPreview = null;
     await refreshOrchestration();
     renderOrchestration();
   }));
@@ -2300,7 +2245,7 @@ function openCoworkParametersDialog(routine, run) {
   const cancel = $('btn-cowork-parameters-cancel');
   $('cowork-parameters-description').textContent = `「${routine.name || routine.id}」の実行条件を選んでください。`;
   tierSelect.innerHTML = tiers.length
-    ? tiers.map((tier) => `<option value="${esc(tier.id)}">${esc(tier.label || tier.id)} — ${esc(tier.agent_cli || '既定')} / ${esc(tier.model || '既定')}</option>`).join('')
+    ? tiers.map((tier) => `<option value="${esc(tier.id)}">${esc(orchTierLabel(tier.id, tier.label))} — ${esc(tier.agent_cli || '既定')} / ${esc(tier.model || '既定')}</option>`).join('')
     : '<option value="">現在の全体設定</option>';
   const currentTier = String((state.cowork && state.cowork.currentRoutineTier) || '');
   if (tiers.some((tier) => tier.id === currentTier)) tierSelect.value = currentTier;

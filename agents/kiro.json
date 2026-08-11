@@ -1,5 +1,6 @@
 {
   "name": "kiro",
+  "headless_autonomy": "tool-loop",
   "relative_cost": 1,
   "command": [
     "kiro-cli",

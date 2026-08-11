@@ -430,7 +430,9 @@ class Bus:
                      model: "str | None" = None, context_allocation: "dict | None" = None,
                      dependency_context: "dict | None" = None,
                      escalation: "dict | None" = None, methods: "list[str] | None" = None,
-                     trial: "dict | None" = None) -> None:
+                     trial: "dict | None" = None, tier: "str | None" = None,
+                     selection_source: "str | None" = None, pinned: bool = False,
+                     selection_reason: "str | None" = None) -> None:
         """ノードの結果を確定する。
 
         `node` は**実行した PC**（node_id の正規形）。`who`（worker の名義）にも PC 名は
@@ -456,6 +458,14 @@ class Bus:
             rec["agent_cli"] = agent_cli
         if model:
             rec["model"] = model
+        if tier:
+            rec["tier"] = tier
+        if selection_source:
+            rec["selection_source"] = selection_source
+        if pinned:
+            rec["pinned"] = True
+        if selection_reason:
+            rec["selection_reason"] = selection_reason
         if data is not None:  # 構造化成果（任意）。エージェント間を JSON で流す
             rec["data"] = data
         if context_allocation is not None:

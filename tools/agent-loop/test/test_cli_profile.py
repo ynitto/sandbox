@@ -200,10 +200,37 @@ class ResolveProfileTest(unittest.TestCase):
         with self.assertRaises(al.CliProfileError):
             al._resolve_cli_profile({"agent_cli": "no-such-cli-xyz"})
 
-    def test_definition_without_interactive_fails(self):
+    def test_definition_without_interactive_becomes_headless(self):
+        """interactive 節が無い定義は headless プロファイルとして通る（起動時に落とさない）。
+
+        対話セッションは会話を人に見せるための可視化であって実行の必須要件ではない。
+        未宣言の autonomy は安全側の single-shot（呼び出し側がツールループを供給する）。
+        """
         self._write("headlessonly", {"command": ["h", "run"]})
+        profile = al._resolve_cli_profile({"agent_cli": "headlessonly"})
+        self.assertTrue(profile.is_headless)
+        self.assertIsNone(profile.argv)
+        self.assertEqual(profile.autonomy, "single-shot")
+        self.assertTrue(profile.needs_tool_loop)
+
+    def test_headless_definition_can_declare_tool_loop(self):
+        self._write("loopcli", {"command": ["l", "run"], "headless_autonomy": "tool-loop"})
+        profile = al._resolve_cli_profile({"agent_cli": "loopcli"})
+        self.assertTrue(profile.is_headless)
+        self.assertFalse(profile.needs_tool_loop)
+
+    def test_interactive_definition_stays_interactive(self):
+        self._write("chatcli", {"command": ["c", "run"],
+                                "interactive": {"command": ["c", "chat"]}})
+        profile = al._resolve_cli_profile({"agent_cli": "chatcli"})
+        self.assertFalse(profile.is_headless)
+        self.assertEqual(profile.mode, "interactive")
+        self.assertEqual(profile.argv, ["c", "chat"])
+
+    def test_broken_definition_still_fails_fast(self):
+        self._write("brokencli", {"command": []})
         with self.assertRaises(al.CliProfileError):
-            al._resolve_cli_profile({"agent_cli": "headlessonly"})
+            al._resolve_cli_profile({"agent_cli": "brokencli"})
 
     def test_soft_init_falls_back_to_legacy_with_warning(self):
         before = al._CLI_PROFILE

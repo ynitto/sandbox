@@ -112,8 +112,36 @@ function applyAgentLoopEdits(rawText, edits) {
       }
     };
 
+    // 受入条件（自然文チェックリスト）。ブロック配列で書き、既存があれば丸ごと差し替える。
+    // 空配列を渡すと行ごと消す（「条件なし」に戻せる）。
+    const setAcceptance = (values) => {
+      const items = (Array.isArray(values) ? values : [])
+        .map((v) => String(v || '').trim()).filter(Boolean);
+      const f = entry.fields.acceptance;
+      if (f) {
+        // 既存のブロック配列の続き行（より深いインデント）を落としてから書き直す
+        for (let i = f.line + 1; i < lines.length; i += 1) {
+          if (lines[i].trim() && lines[i].match(/^\s*/)[0].length <= entry.fieldIndent) break;
+          removed.add(i);
+        }
+        if (!items.length) {
+          removed.add(f.line);
+          return;
+        }
+        const body = items.map((v) => `${pad}  - ${yamlDq(v)}`).join(eol);
+        repl.set(f.line, `${pad}acceptance:${trailingComment(lines[f.line])}${eol}${body}`);
+        return;
+      }
+      if (!items.length) return;
+      addInsert(entry.dashLine + 1,
+                [`${pad}acceptance:`, ...items.map((v) => `${pad}  - ${yamlDq(v)}`)].join(eol));
+    };
+
     if (Object.prototype.hasOwnProperty.call(edit, 'name') && edit.name !== undefined) {
       setField('name', yamlDq(edit.name));
+    }
+    if (Object.prototype.hasOwnProperty.call(edit, 'acceptance') && edit.acceptance !== undefined) {
+      setAcceptance(edit.acceptance);
     }
     if (Object.prototype.hasOwnProperty.call(edit, 'enabled') && edit.enabled !== undefined) {
       setField('enabled', edit.enabled ? 'true' : 'false');

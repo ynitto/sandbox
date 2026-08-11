@@ -9,6 +9,23 @@ from _shared import AuditTestCase, extract, distill, llm, util
 
 
 class BudgetGateTests(AuditTestCase):
+    def test_control_uses_shared_dir_and_purpose_precedence(self):
+        control_dir = os.path.join(self.tmp, "control")
+        os.makedirs(control_dir, exist_ok=True)
+        old = os.environ.get("AGENT_CONTROL_DIR")
+        os.environ["AGENT_CONTROL_DIR"] = control_dir
+        self.addCleanup(lambda: os.environ.__setitem__("AGENT_CONTROL_DIR", old)
+                        if old is not None else os.environ.pop("AGENT_CONTROL_DIR", None))
+        with open(os.path.join(control_dir, "control.json"), "w", encoding="utf-8") as f:
+            json.dump({
+                "defaults": {"agent_cli": "codex", "model": "default"},
+                "workloads": {"audit": {
+                    "agent_cli": "claude", "model": "sonnet",
+                    "agents": {"extract": {"model": "haiku"}},
+                }},
+            }, f)
+        self.assertEqual(llm.control_overrides(self.make_args(), "extract"), ("claude", "haiku"))
+
     def test_no_limit_no_block(self):
         self.assertIsNone(llm.budget_exceeded(self.make_args()))
 
@@ -21,6 +38,47 @@ class BudgetGateTests(AuditTestCase):
         reason = llm.budget_exceeded(self.make_args())
         self.assertIsNotNone(reason)
         self.assertIn("[agent-error:quota]", reason)
+
+    def test_audit_workload_limit_blocks_without_exhausting_global_limit(self):
+        with open(os.path.join(self.budget_dir, "config.json"), "w", encoding="utf-8") as f:
+            json.dump({
+                "tokens": 1000, "period": "total",
+                "allocation": {"workloads": {"audit": {"max_tokens": 100}}},
+            }, f)
+        day = time.strftime("%Y%m%d", time.gmtime())
+        self.write_ledger(day, [{"ts": util.now_iso(), "workload": "audit",
+                                 "seconds": 1.0, "tokens_in": 80, "tokens_out": 30}])
+        self.assertIn("[agent-error:quota]", llm.budget_exceeded(self.make_args()) or "")
+
+    def test_degrade_state_and_status_use_audit_contract(self):
+        control_dir = os.path.join(self.tmp, "control")
+        os.makedirs(control_dir, exist_ok=True)
+        old = os.environ.get("AGENT_CONTROL_DIR")
+        os.environ["AGENT_CONTROL_DIR"] = control_dir
+        self.addCleanup(lambda: os.environ.__setitem__("AGENT_CONTROL_DIR", old)
+                        if old is not None else os.environ.pop("AGENT_CONTROL_DIR", None))
+        with open(os.path.join(control_dir, "control.json"), "w", encoding="utf-8") as f:
+            json.dump({"revision": 7, "workloads": {"audit": {
+                "tier": "medium", "selection_source": "control-workload",
+                "degraded": {"agent_cli": "ollama", "model": "small"},
+            }}}, f)
+        with open(os.path.join(self.budget_dir, "config.json"), "w", encoding="utf-8") as f:
+            json.dump({"period": "total", "allocation": {"workloads": {
+                "audit": {"max_tokens": 100, "on_exhausted": "degrade"},
+            }}}, f)
+        day = time.strftime("%Y%m%d", time.gmtime())
+        self.write_ledger(day, [{"ts": util.now_iso(), "workload": "audit",
+                                 "seconds": 1.0, "tokens_in": 80, "tokens_out": 30}])
+        state = llm.budget_state(self.make_args())
+        self.assertTrue(state["exceeded"])
+        self.assertEqual(state["on_exhausted"], "degrade")
+        self.assertEqual(llm.control_degraded(self.make_args()), ("ollama", "small"))
+        llm.write_status(self.make_args(), "extract", "ollama", "small", budget=state)
+        with open(os.path.join(control_dir, "status", f"agent-audit-{os.getpid()}.json"),
+                  encoding="utf-8") as f:
+            status = json.load(f)
+        self.assertEqual(status["effective"]["tier"], "medium")
+        self.assertTrue(status["budget"]["exceeded"])
 
     def test_minutes_limit_blocks(self):
         with open(os.path.join(self.budget_dir, "config.json"), "w", encoding="utf-8") as f:

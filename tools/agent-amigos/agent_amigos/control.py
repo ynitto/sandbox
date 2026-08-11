@@ -77,15 +77,24 @@ def degraded() -> "tuple[str | None, str | None]":
 
 
 def write_status(effective_cli: str = "", effective_model: str = "", life: str = "run",
-                 budget: "dict | None" = None, fresh_after_sec: int = 120) -> None:
+                 budget: "dict | None" = None, fresh_after_sec: int = 120,
+                 role_id: str = "", pinned: bool = False) -> None:
     """status/<tool>-<pid>.json へ適用状況ハートビートを原子書換する（best-effort）。"""
     ctl = load_control()
     d = os.path.join(control_dir(), "status")
     try:
         os.makedirs(d, exist_ok=True)
+        wl = _workload()
+        role_control = (wl.get("agents") or {}).get(role_id) if role_id else None
+        source = ("pinned-agent" if pinned else "control-purpose" if role_control else
+                  wl.get("selection_source") or
+                  ("control-workload" if wl.get("agent_cli") or wl.get("model") else "tool-config"))
         rec = {"tool": "agent-amigos", "workload": WORKLOAD, "pid": os.getpid(),
                "lifecycle": life,
-               "effective": {"agent_cli": effective_cli or None, "model": effective_model or None},
+               "effective": {"agent_cli": effective_cli or None, "model": effective_model or None,
+                             "tier": wl.get("tier"), "selection_source": source,
+                             "selection_reason": wl.get("selection_reason") or "",
+                             "pinned": pinned},
                "fresh_after_sec": fresh_after_sec, "ts": now_iso()}
         if ctl.get("revision") is not None:
             rec["revision_applied"] = ctl.get("revision")

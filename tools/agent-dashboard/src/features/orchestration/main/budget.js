@@ -18,7 +18,7 @@ const os = require('os');
 const path = require('path');
 const { agentHomeSubdir } = require('../../../base/main/agent-home');
 
-const KNOWN_WORKLOADS = ['routine', 'project', 'flow', 'amigos'];
+const KNOWN_WORKLOADS = ['routine', 'project', 'flow', 'amigos', 'audit', 'dashboard'];
 const ON_EXHAUSTED = ['pause', 'stop', 'degrade'];
 const ALLOC_MODES = ['static', 'auto'];
 

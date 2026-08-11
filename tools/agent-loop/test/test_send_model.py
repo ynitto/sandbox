@@ -46,11 +46,19 @@ class SendModelTests(unittest.TestCase):
                 al.cmd_send(args, Path("/tmp"))
             self.assertEqual(cm.exception.code, 1)
 
-    def test_model_mismatch_fails(self):
+    def test_launch_drift_defers_switch_without_discarding_the_run(self):
+        """既存ペインと要求内容が食い違っても実行を捨てない。
+
+        かつては reason="model_mismatch" で捨てていた。対話ペインは無限キープでは境界が
+        来ないので、稼働中にモデルを変えると以後の実行がすべて捨てられ、その entry が
+        動かなくなる（ライブロック）。差し替えはセッション境界で適用し、それまでは
+        既存セッションのまま実行して restart_required で保留を伝える。
+        """
         mgr = al.SessionManager.__new__(al.SessionManager)
         mgr._panes = {"e1": "%1"}
         mgr._owners = {"e1": "scheduled"}
         mgr._effective_model = {"e1": "old"}
+        mgr._launch_fingerprint = {"e1": al.launch_fingerprint("cli", ["cli", "old"], "/tmp")}
         mgr._generation = {"e1": 1}
         mgr._lock = threading.Lock()
         mgr._target_path = "/tmp"
@@ -59,18 +67,21 @@ class SendModelTests(unittest.TestCase):
         mgr.get_pane_id = mock.Mock(return_value="%1")
         mgr.get_effective_model = mock.Mock(return_value="old")
         mgr.get_generation = mock.Mock(return_value=1)
-        mgr.ensure_session = mock.Mock(return_value=False)
+        mgr.ensure_session = mock.Mock(return_value=True)
         sched = al.PeriodicScheduler(mgr, [{
             "id": "e1", "name": "n", "prompt": "p", "interval_minutes": 10, "enabled": True,
         }], workspace="/tmp")
         with mock.patch.object(sched, "_build_model_launch_spec", return_value={
-            "argv": ["cli"], "cwd": "/tmp", "profile_name": "cli",
+            "argv": ["cli", "new"], "cwd": "/tmp", "profile_name": "cli",
             "effective_model": "new", "ownership": "managed-persistent", "env": {},
         }), mock.patch.object(al, "_capture_pane", return_value=">"), \
              mock.patch.object(al, "_CLI_PROFILE") as prof, \
+             mock.patch.object(sched, "_dispatch_prompt", return_value=True), \
+             mock.patch.object(sched, "_track_active"), \
              mock.patch.object(sched, "_fail_execution") as fail:
             prof.is_ready.return_value = True
             prof.is_legacy = False
+            prof.is_headless = False
             prof.argv = ["cli"]
             prof.name = "cli"
             req = al.make_dispatch_request(
@@ -78,9 +89,22 @@ class SendModelTests(unittest.TestCase):
                 meta={"execution": {"model": "new", "session_key": "e1"}},
             )
             result = sched._try_dispatch_request(req)
-            self.assertEqual(result, "discard")
-            fail.assert_called()
-            self.assertEqual(fail.call_args.kwargs.get("reason"), "model_mismatch")
+            self.assertEqual(result, "done")       # 捨てない
+            fail.assert_not_called()
+            self.assertTrue(sched.has_pending_launch_drift())   # 境界待ちとして立つ
+
+    def test_matching_launch_leaves_no_pending_drift(self):
+        mgr = al.SessionManager.__new__(al.SessionManager)
+        mgr._launch_fingerprint = {"e1": al.launch_fingerprint("cli", ["cli", "new"], "/tmp")}
+        mgr._lock = threading.Lock()
+        sched = al.PeriodicScheduler.__new__(al.PeriodicScheduler)
+        sched._session_mgr = mgr
+        sched._launch_drift = {}
+        drifted = sched._note_launch_drift("e1", "n", {
+            "argv": ["cli", "new"], "cwd": "/tmp", "profile_name": "cli",
+        })
+        self.assertFalse(drifted)
+        self.assertFalse(sched.has_pending_launch_drift())
 
 
 if __name__ == "__main__":

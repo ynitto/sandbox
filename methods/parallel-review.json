@@ -1,1 +1,1 @@
-{"id":"parallel-review","description":"観点別の独立レビューを計画へ追加する","enabled":false,"fragments":[{"role":"planner","text":"外向き成果物では、成果ノード後に正確性・安全性・性能の独立した verify または judge を並列配置してください。"}],"when":{"tiers":["small","medium"]},"origin":"skill://agent-reviewer"}
+{"id":"parallel-review","description":"観点別の独立レビューを計画へ追加する","enabled":false,"fragments":[{"role":"planner","text":"外向き成果物では、成果ノード後に正確性・安全性・性能の独立した verify または judge を並列配置してください。"}],"when":{"tiers":["medium","large"]},"origin":"skill://agent-reviewer"}

@@ -80,6 +80,13 @@ function normalize(spec, name, file) {
   if (!Number.isFinite(relativeCost) || relativeCost < 0) {
     throw new AgentCliError(`エージェント定義 ${file}: relative_cost は 0 以上の数値です`);
   }
+  // headless で 1 回起動したとき自分でツールを回して完遂できるか。interactive の有無や
+  // file_flag からは推測しない（定義の申告が正典）。未宣言は安全側の single-shot。
+  const headlessAutonomy = spec.headless_autonomy == null
+    ? 'single-shot' : String(spec.headless_autonomy);
+  if (headlessAutonomy !== 'tool-loop' && headlessAutonomy !== 'single-shot') {
+    throw new AgentCliError(`エージェント定義 ${file}: headless_autonomy は tool-loop か single-shot です`);
+  }
   const errors = [];
   for (const e of Array.isArray(spec.errors) ? spec.errors : []) {
     try {
@@ -113,6 +120,7 @@ function normalize(spec, name, file) {
     readonlyArgs: strs(spec.readonly_args, 'readonly_args', file),
     readonly,
     noSessionArgs: strs(spec.no_session_args, 'no_session_args', file),
+    headlessAutonomy,
     spill: { args: strs(sp.args, 'spill.args', file), instruction: String(sp.instruction || '') },
     errors,
     interactive: null,

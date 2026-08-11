@@ -1,15 +1,25 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "agent-profiles.schema.json",
-  "title": "実行プロファイル自動選択 — 大中小エージェント/モデルの決定的使い分け（データ契約）",
+  "title": "実行プロファイル自動選択 — エージェント/モデルの実行レベル別使い分け（データ契約）",
   "description": "agent-dashboard が「大・中・小」等の実行プロファイル（agent_cli + model の候補列）を宣言し、ワークロードの予算残率と agent CLI ごとの枠（node-budget の allocation.agents）から決定的に段と候補を選び、選択結果を agent-control 契約（control.json の workloads[].agent_cli / model、および決まった段の名前 workloads[].tier）へ投函する。**不変条件: この契約はエンジンから読まれない**——各エンジンは agent-control を読むだけで、agent-profiles の存在を知らない（柱1 / C2・C7: 選択ロジックは dashboard の 1 実装に閉じ、エンジン側の解決経路を増やさない）。置き場所: $AGENT_CONTROL_DIR（既定 ~/.agents/control/）の profiles.json。設計: docs/plans/2026-08-05-phase1-token-efficiency-detailed-design.md §1",
   "type": "object",
   "properties": {
     "version": {"const": 1},
     "enabled": {"type": "boolean", "default": true, "description": "false で自動選択を完全停止（既存の agent-control 手動設定はそのまま残る）"},
+    "execution_policy": {
+      "type": "object",
+      "description": "Dashboardの統一実行方針。プリセットの内部値はpolicy/allocationへ展開済みで保存する",
+      "required": ["mode"],
+      "properties": {
+        "mode": {"enum": ["auto", "saving", "quality", "custom"]},
+        "custom": {"type": "object", "additionalProperties": true}
+      },
+      "additionalProperties": true
+    },
     "tiers": {
       "type": "object",
-      "description": "段の宣言。キーは **並び順から決まる語彙**（下から small / medium / large、4 段目以降は tier-4…）で、dashboard が保存時に振る（人は打たない。表示名は label で自由に付ける）。手法パック（agent-tuning の methods[].when.tiers）が書く段の名前もこの語彙で、両者の語彙は 1 つ。自由な名前を許していた頃は、日本語ラベルから作られた tier-1 と、手法側が前提にする small が噛み合わず「段を宣言したのに手法が一度も効かない」が静かに起きた",
+      "description": "実行レベルの宣言。Dashboardの標準語彙は下から basic / small / medium / large（UI: 単純作業 / 軽量 / 標準 / 高性能）。同じレベルの候補は同程度の複雑さを扱える前提であり、料金が同じでも小型ローカルモデルとHaiku等を同じレベルへ置く必要はない。手法パック（agent-tuning の methods[].when.tiers）もこの語彙を使う",
       "propertyNames": {"pattern": "^[a-z0-9][a-z0-9_-]*$"},
       "additionalProperties": {
         "type": "object",

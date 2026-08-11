@@ -772,4 +772,41 @@ test('ヘッドレスの失敗診断（文面生成）は現行のまま残る',
   assert.ok(p.stdin && p.stdin.includes('画面スナップショット'));
 });
 
+// --- 定期プロンプトの受入条件補完（headless 経路の done を機械検証できるようにする） ---
+//
+// charter 補完と同型。読み取り専用で下書きだけを取り、agent-loop.yaml への確定は人の
+// 承認操作に任せる（AI が書いた基準を AI が満たす閉ループを作らない）。
+
+test('受入条件の補完プロンプトは成果物パスをバッククォートで書かせる', () => {
+  const p = agent.routineAcceptancePrompt('ログ要約', 'ログを要約して');
+  // 機械照合できるのはバッククォート表記だけなので、そこを外すとゲートが効かない
+  assert.ok(p.includes('バッククォート'));
+  assert.ok(p.includes('相対パス'));
+  assert.ok(p.includes('3〜7項目'));
+  assert.ok(p.includes('ログを要約して'));
+});
+
+test('受入条件の補完プロンプトは検証できない基準を禁じる', () => {
+  const p = agent.routineAcceptancePrompt('n', 'p');
+  assert.ok(p.includes('検証できない基準を書かない'));
+  assert.ok(p.includes('本文'));   // プロンプト本文の書き直しも対で出させる
+});
+
+test('受入条件の応答は本文と基準の対に正規化される', () => {
+  const d = agent.normalizeAcceptanceDraft({
+    prompt: ' 締めた本文 ', acceptance: [' `a.md` を作る ', '', '件数を出す'],
+  });
+  assert.deepStrictEqual(d, { prompt: '締めた本文', acceptance: ['`a.md` を作る', '件数を出す'] });
+});
+
+test('受入条件の応答が壊れていても空配列へ落ちる（握り潰さず呼び出し側が弾ける）', () => {
+  assert.deepStrictEqual(agent.normalizeAcceptanceDraft({}).acceptance, []);
+  assert.deepStrictEqual(agent.normalizeAcceptanceDraft(null).acceptance, []);
+});
+
+test('受入条件補完の IPC は下書きだけを返す（保存は renderer の確定操作）', () => {
+  assert.ok(ipcSource.includes("handle('agent:routineAcceptanceDraft'"));
+  assert.ok(ipcSource.includes('completeRoutineAcceptance'));
+});
+
 console.log(`\n${passed} tests passed (agent-assist)`);

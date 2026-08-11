@@ -12,13 +12,13 @@
 
 ## TL;DR
 
-agent-loop は、tmux 上にエージェント CLI（kiro-cli / claude 等）のセッションを常駐させ、YAML で定義したプロンプトを定期送信するデーモンです。本書は、固定送信を実運用に耐えさせる 6 つの機能と、すべての入力を同じ配送判定へ通す実行基盤の設計正典です。
+agent-loop は、YAML で定義したプロンプトを定期実行するデーモンです。既定では tmux 上にエージェント CLI（kiro-cli / claude 等）のセッションを常駐させて送信し、対話ペインを持たない CLI や使い捨て実行では実行のたびに subprocess を起こします。本書は、固定送信を実運用に耐えさせる 6 つの機能と、すべての入力を同じ配送判定へ通す実行基盤の設計正典です。
 
 1. **イベントフック（pull 型）** — スケジュール発火のたびに Python フックの `check()` を呼び、「今送るべきか・何を送るか」をデータ駆動で決める。**実装済み**。
 2. **汎用 inbound Webhook（push 型）** — 外部システムからの HTTP POST を受け、フックの `handle(ctx)` でパースしてプロンプトに変換する。GitLab は一具体例で、コアは provider 非依存。**実装済み**。
 3. **エージェント間メッセージング** — エージェントごとのファイルベース inbox に他エージェントがメッセージを投函し、受信側デーモンがプロンプトとして処理する。**実装済み**。
 4. **動的インターバル（adaptive interval）** — 無風時はポーリング間隔を幾何級数的に伸ばし、イベント到来で即座に最短へ戻す。**実装済み**。
-5. **エージェント CLI の差し替え** — 駆動する CLI（kiro-cli / claude / codex 等）を `agents/<name>.json` の共通契約で差し替える。待機状態の監視・判定方法が CLI ごとに違う点を契約側の宣言（`ready_pattern` / `busy_pattern` / `idle_quiet_sec`）で吸収する。**実装済み**。
+5. **エージェント CLI の差し替え** — 駆動する CLI（kiro-cli / claude / codex / aider 等）を `agents/<name>.json` の共通契約で、全体設定と定期プロンプトごとに差し替える。待機状態の判定方法が CLI ごとに違う点は契約側の宣言（`ready_pattern` / `busy_pattern` / `idle_quiet_sec`）で吸収し、対話ペインを持たない CLI は headless 経路で動かす。ツールループを内蔵しない CLI（`headless_autonomy: single-shot`）へは限定ツール契約でツール実行を供給し、done は受入条件（`acceptance`）で機械検証する。**実装済み**（判定層と tmux 可視化を除く）。
 6. **`slash` プロパティ** — 本文の前に CLI コマンドを独立送信し、CLI ごとの行頭記号へ送信直前に変換する。**実装済み**。
 
 全体を貫く原則は 3 つです。第一に、公開 YAML・フック・inbox の契約を保ったまま、schedule / event hook / webhook / inbox / CLI send を **PeriodicScheduler の dispatch gate** へ一本化します。第二に、送信元固有の知識（GitLab のヘッダ名や payload 構造）は**フックスクリプトに閉じ**、コアを汎用に保ちます。第三に、実際の tmux への送信はスケジューラの背圧機構（lifecycle・preflight・セッション準備・セマフォ・ready 判定）だけを通し、HTTP スレッドや inbox 監視スレッドから直接送信しません。
@@ -437,7 +437,7 @@ prompts:
 
 ## 機能 5: エージェント CLI の差し替え — 実装済み
 
-agent-loop が tmux ペインで駆動するエージェント CLI を、kiro-cli 固定からファミリー共通の [`agents/<name>.json` 契約](./agent-cli-plugin-design.md)による差し替え式にします。設定はグローバルの 2 キーです。
+agent-loop が駆動するエージェント CLI を、kiro-cli 固定からファミリー共通の [`agents/<name>.json` 契約](./agent-cli-plugin-design.md)による差し替え式にします。設定は全体の 2 キーと、定期プロンプトごとの任意指定です。
 
 ```yaml
 agent_cli: claude            # 省略時は従来どおり kiro-cli（kiro_options）
@@ -445,13 +445,71 @@ agent_cli_options:
   model: claude-sonnet-5     # 定義の {model} / model_flag に渡す（省略可）
   readonly: false            # 読み取り専用フラグで起動（既定 false）
   extra_args: []             # argv 末尾への追加フラグ
+
+prompts:
+  - name: 設計レビュー
+    agent_cli: codex         # 任意。省略すると上の全体設定
+    model: gpt-5.6-terra     # 任意。片方だけの指定も可
+    session: keep            # keep（既定・対話ペインを保つ）| per-run（実行ごとに使い捨て）
 ```
+
+解決順は **control.json の `workloads.routine`（予算枯渇時の `degraded` 差し替えを含む）> entry > 全体設定 > 既定**。entry を管理面より上に置かないのは、上書きできると「予算が枯れても degrade が効かない entry」ができるためです。
 
 ### 設計判断
 
 - **定義の解決と argv 組み立ては agentcore.agentcli へ委譲**します。「ローダは言語ごとに 1 実装」の不変条件（agent-cli-plugin 設計 §4）を守るため、agent-loop に第二のローダを書きません。zipapp インストールでは `install.sh` が agentcore を同梱し、リポジトリ直接実行では相対探索で解決します。agentcore が見つからない環境でも従来の kiro-cli 固定経路は動きます（`agent_cli` 指定だけが使えない）。
 - **未知・壊れた定義は fail fast**。デーモン起動時に明示エラーで停止し、黙って kiro へ倒しません（同設計の明示エラー原則）。`send` などの補助コマンドだけは cowork の定常業務と同じ「黙らないフォールバック」（WARNING + 従来判定で続行）です。
 - **`agent_cli` 未指定の挙動は 1 ビットも変わりません**。定義ファイルが 1 つも配布されていない環境でも従来どおり動きます（後方互換）。
+
+### 2 つの実行経路 — 分岐点はツールループを誰が持つか
+
+対話ペインで駆動する経路（`interactive`）に加えて、**実行のたびに subprocess を起こす headless 経路**を持ちます。tmux の対話セッションは会話を人に見せるための可視化であって、実行の必須要件ではありません。
+
+分岐点は `interactive` の有無**ではなく**、定義の `headless_autonomy` が申告する「ツールループを CLI が内蔵するか」です。対話経路で agent-loop が薄くて済んでいたのは、探索・編集・コマンド実行が CLI の中で回っていたからで、ループを持たない CLI へ同じ扱いをすると着手すらしません（aider は「チャットに入っているファイルしか編集しない」）。
+
+| 層 | 定義の申告 | 例 | agent-loop の扱い |
+|---|---|---|---|
+| 層2 | `tool-loop` | claude / codex / copilot / cursor / kiro / opencode / ollama | ヘッドレス argv を 1 回実行して exit code で完了検知 |
+| 層3 | `single-shot` | aider / ollama-json / ollama-list | 限定ツール契約でツール実行を供給しながら完遂させる |
+
+経路の既定は**従来どおり対話キープ**で、headless は `session: per-run` の opt-in です（既存の設定ファイルが無改変で従来と同じ挙動になることを優先）。ただし `interactive` 節を持たない定義は保てないので、`keep` 指定でも per-run へ倒して警告します。
+
+headless では ensure_session / ready 判定 / SlotMonitor を通りません（判定する相手のペインが無い）。スロットは合成キー（`headless:<root_id>`）で取り、解放時にノード予算へ記帳されます——保持時間が実行時間そのものなので、対話経路の「送信 → 完了検知」による近似より正確です。semaphore・cooldown・lifecycle は従来と同じ契約で効きます。ralph 多段と external target は headless で扱えないため、その組み合わせは起動時に明示エラーで断ります。
+
+### 層3 の限定ツール契約と受入条件
+
+ツールループを持たない CLI へは `read_files` / `write_files` / `run` / `final` の 4 つだけを許す契約でツール実行を供給します。実装は statemachine 実行ハーネスと**共用**で、パス正規化・シェル禁止・実行ファイルの所在限定・JSON パーサ・コンテキスト節約・小型モデル向けのプロンプト規律（作業していないのに完了を主張させない等）を 1 実装に保ちます。
+
+ツールループを供給しても、**受入条件が無ければ done を機械検証できません**。定期プロンプトは各 state が出力契約を持つステートマシンと違い、ゴールだけあって受入条件がないためです。そこで定期プロンプトに `acceptance`（自然文チェックリスト）を持たせます。語彙は統一 verify の `task_acceptance_criteria` に揃え、新しい書式を作りません。
+
+```yaml
+prompts:
+  - name: ログ要約
+    prompt: agent-audit で取得したログから重要な情報を抽出し、要約してください。
+    acceptance:
+      - "`reports/audit-digest.md` が今回の実行で更新されている"
+      - 直近 24 時間のエラーが発生元ごとに件数付きで列挙されている
+```
+
+決定的シェルコマンドを人に書かせる方式は採りません（環境差で大半が失敗し、「たまたま通る劣化した検証」を人が見抜けないため）。人は自然文だけを書きます。
+
+証跡ゲートは受入条件を入力に取ります。基準文のバッククォート内にあるプロジェクト内パスを抽出し、**実在・この実行で触れたか・実際に変わったか**を LLM を介さず照合します（フェイルクローズ）。ここに LLM を挟むと自己承認の穴が戻ります。副産物として、基準文が名指ししたファイルはツールループの初期割付にも使われ、「ファイルを渡さないと着手しない」問題が受入条件を書くことで解けます。
+
+`acceptance` の無い層3 の entry は**警告して実行し、結果を「検証なし」として記録**します（done の根拠にしない）。起動は止めません——移行のためです。層2 では警告しません（従来どおり自由文で動くため、新方式に従わないこと自体は問題ではない）。段の降格で層2 から層3 へ落ちた entry も同じ扱いです。
+
+### CLI / モデルの差し替えはセッション境界で効く
+
+差し替えの適用点は**セッション境界**です。境界は既存のものを使い、新設しません。
+
+| セッション設定 | 境界 | 差し替えが効くタイミング |
+|---|---|---|
+| `oneshot` / `session: per-run`（headless） | 毎回 | 次の実行 |
+| `clean_session: N` | N 回成功ごと | 次の建て直し |
+| 無限キープ（`persistent`・`clean_session` 無し） | デーモン再起動のみ | 再起動後 |
+
+無限キープで実行中に切り替わらないことは受け入れます。会話文脈を保つと選んだ以上、途中で実行主体が入れ替わる方が害が大きいためです。agent-loop は終了時に全ペインを畳む（`SessionManager.stop()` を `atexit` とシグナルハンドラから呼ぶ）ので、再起動が確実な境界になります。
+
+既存ペインと要求内容が食い違っても**実行は捨てません**。判定は `launch_fingerprint`（CLI 名 + argv + cwd）で行い、モデル単独比較では拾えない CLI の切り替えも検出します。食い違いは警告（セッションごとに 1 回）と status の `restart_required` で「境界待ち」として伝え、dashboard の「設定の反映」列に出します。`revision_applied` は**実際に解決へ使った** revision を報告します（ファイルの最新値を applied と報告すると、まだ適用していない設定が「反映済み」に見えます）。
 
 ### 待機状態の監視・判定 — CLI ごとに方法が違う
 
@@ -472,11 +530,14 @@ SlotMonitor の状態遷移は従来の「プロンプト消失 → processing �
 - **コンテキスト破棄**: fresh_context が送るコマンドは `interactive.clear_command`（既定 `/clear`、codex は `/new`）。空文字は「クリア手段なし」の宣言で、警告の上クリアだけスキップします。
 - **スラッシュコマンドの行頭記号**: `slash` プロパティとセッション開始コマンド（chat モード）の行頭 `/` は、送信直前に定義の `skill_command_prefix` へ差し替えます（codex は `$name`。既定 `/` の CLI は素通し）。
 
-### 制約（v1）
+### 制約
 
-- **agent-loop が起動する managed pane の CLI はデーモン単位**（グローバル設定）。エントリごとの差し替えは将来課題。`external_panes[].agent_cli` は外部 pane の ready / busy 判定だけを選び、起動 CLI は変更しません。
-- **kiro 以外では slot-release stop hook を注入しません**（stop hook は kiro-cli の agents 機構）。スロット解放は SlotMonitor のペイン監視だけで行います。CLI 側の完了フックを契約へ載せるのは将来課題。
+- **kiro 以外では slot-release stop hook を注入しません**（stop hook は kiro-cli の agents 機構）。スロット解放は SlotMonitor のペイン監視だけで行います。headless 経路では subprocess の exit code が完了検知なので、この制約は掛かりません。
 - `startup_timeout` は従来どおり agent-loop の設定を正とし、定義の `ready_timeout_sec` は他の消費者（対話診断等）向けのままです。
+- `external_panes[].agent_cli` は外部 pane の ready / busy 判定だけを選び、起動 CLI は変更しません。
+- **headless 経路では対話前提の機能を黙って劣化させません**。fresh_context のコンテキスト破棄と `slash` は WARNING の上でスキップし、ralph 多段と external target は起動時に明示エラーで断ります。
+- **証跡ゲートは機械層だけが動いています**。宣言されたファイルの実在・touched・変化は決定的に照合しますが、パスを含まない自然文の基準を検証エージェントが証跡付きで判定する層は未実装です。そのため受入条件を書いても、機械が確かめているのは「成果物が出来て変わったか」までです。
+- 実行ログは JSONL（`~/.agents/runs/headless/`）へ出ますが、それを追う tmux ウィンドウの自動起動は未実装で、様子を見るにはログを人が開く必要があります。
 
 ---
 

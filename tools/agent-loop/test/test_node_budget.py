@@ -148,6 +148,16 @@ class ControlLifecycleTests(unittest.TestCase):
         self._control({"workloads": {"flow": {"lifecycle": "stop"}}})
         self.assertEqual(al._control_lifecycle(), "run")
 
+    def test_routine_agent_and_model_override_tool_config(self):
+        self._control({"workloads": {"routine": {
+            "agent_cli": "claude", "model": "sonnet", "tier": "medium",
+        }}})
+        resolved = al._apply_control_agent({
+            "agent_cli": "kiro", "agent_cli_options": {"model": "auto"},
+        })
+        self.assertEqual(resolved["agent_cli"], "claude")
+        self.assertEqual(resolved["agent_cli_options"]["model"], "sonnet")
+
     def test_broken_control_falls_back_to_run(self):
         with open(os.path.join(self.dir, "control.json"), "w", encoding="utf-8") as f:
             f.write("{ 壊れた JSON")
@@ -162,6 +172,21 @@ class ControlLifecycleTests(unittest.TestCase):
             rec = json.load(f)
         self.assertEqual(rec["lifecycle"], "pause")
         self.assertEqual(rec["budget"], {"exceeded": True, "soft": False})
+
+    def test_status_reports_desired_effective_and_restart_requirement(self):
+        self._control({"workloads": {"routine": {
+            "agent_cli": "claude", "model": "sonnet", "tier": "medium",
+            "selection_source": "control-workload", "selection_reason": "preset=auto",
+        }}})
+        al._write_status(effective_cli="kiro", effective_model="auto")
+        status_dir = os.path.join(self.dir, "status")
+        files = [n for n in os.listdir(status_dir) if n.endswith(".json")]
+        with open(os.path.join(status_dir, files[0]), encoding="utf-8") as f:
+            rec = json.load(f)
+        self.assertEqual(rec["effective"]["agent_cli"], "kiro")
+        self.assertEqual(rec["effective"]["tier"], "medium")
+        self.assertEqual(rec["effective"]["selection_source"], "control-workload")
+        self.assertTrue(rec["effective"]["restart_required"])
 
     def test_stopped_reason_is_recorded(self):
         al._write_stopped_reason("node-budget")

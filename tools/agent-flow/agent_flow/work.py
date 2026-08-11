@@ -178,7 +178,10 @@ def cmd_work(args) -> int:
         # （dashboard のノード詳細）に設定からの再解決（同じ規則の 2 実装）をさせない。
         # ponytail: claim 時の 1 回だけ解決。実行中に control が変わると数分ずれうる。
         agent_cli = agent_model = None
-        node_agent = node.get("agent") if isinstance(node.get("agent"), dict) else None
+        node_agent = dict(node.get("agent")) if isinstance(node.get("agent"), dict) else None
+        if node.get("tier"):
+            node_agent = node_agent or {}
+            node_agent["tier"] = str(node["tier"])
         if kind == "human":
             bus.event(who, "claimed", node=nid)
             try:
@@ -196,8 +199,9 @@ def cmd_work(args) -> int:
         if args.executor == "agent":
             agent_cli, _model_ov = _effective_agent(kind, getattr(args, "model", None), node_agent)
             agent_model = _model_ov
+        selection = _selection_meta(kind, node_agent)
         bus.event(who, "claimed", node=nid,
-                  **({"agent_cli": agent_cli, "model": agent_model} if agent_cli else {}))
+                  **({"agent_cli": agent_cli, "model": agent_model, **selection} if agent_cli else {}))
 
         # throttle（バックプレッシャ）: 同時未決着イシューが上限に達していたら、起票せず
         # throttled park して claim を解放する。エラーにはしない＝人のレビュー速度に発行を
@@ -355,7 +359,7 @@ def cmd_work(args) -> int:
                          agent_cli=agent_cli, model=agent_model,
                          context_allocation=context_allocation,
                          dependency_context=dependency_context, escalation=node_agent,
-                         methods=method_app.get("methods"), trial=method_app.get("trial"))
+                         methods=method_app.get("methods"), trial=method_app.get("trial"), **selection)
         if node_agent:
             _node_budget_record(0, ref=kind, agent_cli=agent_cli or "", model=agent_model or "",
                                 extra={"event": "model_escalation", "escalation": node_agent})

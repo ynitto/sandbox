@@ -270,13 +270,51 @@ assert.ok(agentSettingsSource.includes('orchMatrixPanelHtml(') && agentSettingsS
 assert.ok(instructionSettingsSource.includes('orchInstructionsPanelHtml(')
   && instructionSettingsSource.includes('orchSessionCommandsPanelHtml('), '共通指示タブに指示と開始コマンドを表示します');
 assert.ok(methodSettingsSource.includes('orchTiersPanelHtml(') && methodSettingsSource.includes('orchMethodsPanelHtml('),
-  'ワークフロータブに段設定と手法マーケットを表示します');
-assert.ok(renderer.includes("const ORCH_TIER_LABELS = { small: 'small', medium: 'medium', large: 'large' };"),
-  'small・medium・large の3段を常設します');
-assert.ok(!grab('orchOrderedTiers').includes('Object.entries'), '既存設定にある固定外の段は表示しません');
+  'ワークフロータブに実行レベル設定と手法マーケットを表示します');
+assert.ok(renderer.includes("const ORCH_TIER_LABELS = { basic: '単純作業', small: '軽量', medium: '標準', large: '高性能' };"),
+  '内部tierを利用者向けの実行レベル名で表示します');
+// eslint-disable-next-line no-new-func
+const orchTierValue = new Function('ORCH_TIER_KEYS', 'ORCH_TIER_LABELS',
+  `${grab('orchTierValue')}; return orchTierValue;`)(
+  ['basic', 'small', 'medium', 'large'],
+  { basic: '単純作業', small: '軽量', medium: '標準', large: '高性能' });
+assert.deepStrictEqual(['単純作業', '軽量', '標準', '高性能'].map(orchTierValue),
+  ['basic', 'small', 'medium', 'large'],
+  '日本語の入力値は保存前に内部tierへ戻します');
 assert.ok(!renderer.includes('id="btn-orch-tier-add"') && !renderer.includes('class="orch-tier-remove"'),
-  '固定された段の追加・削除操作を表示しません');
-assert.ok(renderer.includes('placeholder="small, medium, large"'), '手法の段指定も画面上の名称へ揃えます');
+  '固定された実行レベルの追加・削除操作を表示しません');
+assert.ok(renderer.includes('<h3>実行レベルの構成</h3>')
+  && renderer.includes('<th>実行レベル</th>'), '見出しと表を実行レベルへ統一します');
+assert.ok(renderer.includes('短い一手順だけを任せる小型モデルは「単純作業」')
+  && renderer.includes('Haikuなど軽量でも複数手順を扱えるモデルは「軽量」'),
+  '同じ料金帯でも能力差のあるモデルを別レベルへ分ける基準を示します');
+assert.ok(html.includes('<label for="cowork-routine-tier">今回の実行レベル</label>'),
+  '単発実行でも同じ用語を使います');
+// eslint-disable-next-line no-new-func
+const orchMethodTargetLabels = new Function(
+  'ORCH_METHOD_PURPOSE_LABELS', 'ORCH_METHOD_ROLE_LABELS', 'orchMethodRoles',
+  `${grab('orchMethodTargetLabels')}; return orchMethodTargetLabels;`
+)(
+  { work: '実装・作業', verify: '検証' }, { worker: '作業', verify: '検証' },
+  (method) => (method.fragments || []).map((fragment) => fragment.role)
+);
+assert.deepStrictEqual(orchMethodTargetLabels({
+  fragments: [{ role: 'worker' }], when: { purposes: ['work'] },
+}), ['実装・作業'], '工程と処理種別を利用者向けの適用先へまとめます');
+// eslint-disable-next-line no-new-func
+const orchMethodConstraintLabels = new Function(
+  'orchTierLabel', 'amigosWorkloadLabel', 'ORCH_METHOD_ENGINE_LABELS',
+  `${grab('orchMethodConstraintLabels')}; return orchMethodConstraintLabels;`
+)((value) => ({ basic: '単純作業', small: '軽量', medium: '標準', large: '高性能' })[value] || value,
+  (value) => value, { 'agent-flow': 'ワークフロー' });
+assert.deepStrictEqual(orchMethodConstraintLabels({
+  when: { tiers: ['small'], max_relative_cost: 0 },
+}), ['軽量向け', 'ローカル実行向け'], '相対コストの数値はローカル実行という意味へ置き換えます');
+assert.ok(!grab('orchMethodConditionsHtml').includes('相対コスト'),
+  '利用者向けの適用条件に内部の相対コスト値を表示しません');
+assert.ok(grab('orchMethodCardHtml').includes('const effective = enabled ? current : method')
+  && grab('orchMethodCardHtml').includes('orchMethodConditionsHtml(effective)'),
+  '自動適用中のカードはカタログ最新版ではなく実際に保存された条件を表示します');
 const workflowDraftState = {};
 const workflowDialog = { open: false };
 // eslint-disable-next-line no-new-func
@@ -285,25 +323,43 @@ const orchestrationDraftActive = new Function(
 )(workflowDraftState, (id) => (id === 'dlg-orch-method-add' ? workflowDialog : null));
 assert.strictEqual(orchestrationDraftActive(), false, '未編集なら自動更新できます');
 workflowDraftState.orchWorkflowDirty = true;
-assert.strictEqual(orchestrationDraftActive(), true, '段の入力中は自動更新から保護します');
+assert.strictEqual(orchestrationDraftActive(), true, '実行レベルの入力中は自動更新から保護します');
 workflowDraftState.orchWorkflowDirty = false;
 workflowDialog.open = true;
-assert.strictEqual(orchestrationDraftActive(), true, 'カスタム手法ダイアログを開いている間も保護します');
+assert.strictEqual(orchestrationDraftActive(), true, 'カスタム作業ルールのダイアログを開いている間も保護します');
 assert.ok(grab('renderAllTabs').includes('!orchestrationDraftActive()')
   && grab('refreshAll').includes('!orchestrationDraftActive()'), '全体再描画と定期更新の両方で入力を保護します');
 assert.ok(grab('setupOrchestration').includes("tierList.addEventListener('input', markWorkflowDirty)"),
-  '段の入力開始を未保存状態として記録します');
-assert.ok(controlSettingsSource.includes('orchAllocationPanelHtml(') && controlSettingsSource.includes('orchStatusPanelHtml('),
-  '実行制御タブに上限と稼働制御を表示します');
+  '実行レベルの入力開始を未保存状態として記録します');
+assert.ok(controlSettingsSource.includes('orchExecutionPolicyPanelHtml(') && controlSettingsSource.includes('orchStatusPanelHtml('),
+  '実行制御タブに統一した実行方針と稼働制御を表示します');
 assert.ok(controlSettingsSource.includes('orchConcurrencyPanelHtml('),
   '実行制御タブで自動実行の同時実行数を設定します');
-assert.ok(controlSettingsSource.includes('orchProfilePolicyPanelHtml('),
-  '実行制御タブに段の自動切り替え条件を表示します');
-assert.ok(!controlSettingsSource.includes('orchTiersPanelHtml(') && !controlSettingsSource.includes('orchMethodsPanelHtml('),
-  '実行制御タブには段の候補設定と手法マーケットを重ねません');
-for (const copy of ['手法を検索', 'カスタム手法を追加', 'AIで補完']) {
-  assert.ok(renderer.includes(copy), `実行手法マーケットに「${copy}」が必要です`);
+assert.ok(!controlSettingsSource.includes('orchAllocationPanelHtml(')
+  && !controlSettingsSource.includes('orchProfilePolicyPanelHtml('),
+  '利用量と切り替え条件を別々の設定として表示しません');
+assert.ok(!renderer.includes('function orchProfilePolicyPanelHtml(')
+  && !renderer.includes('btn-orch-profile-policy-save')
+  && !renderer.includes('btn-orch-alloc-save'),
+  '旧配分・切り替え条件UIを残しません');
+for (const copy of ['おまかせ（推奨）', '節約', '品質優先', 'カスタム', 'この方針を保存して反映']) {
+  assert.ok(renderer.includes(copy), `統一実行方針に「${copy}」が必要です`);
 }
+assert.match(css, /\.amigos-mode-option:has\(input:checked\),\s*\.orch-policy-card:has\(input:checked\)/,
+  '実行方針は既存の選択カードと同じ選択表現を使います');
+assert.ok(!controlSettingsSource.includes('orchTiersPanelHtml(') && !controlSettingsSource.includes('orchMethodsPanelHtml('),
+  '実行制御タブには実行レベルの候補設定と手法マーケットを重ねません');
+for (const copy of ['作業ルールを検索', 'カスタム作業ルールを追加', 'AIで補完']) {
+  assert.ok(renderer.includes(copy), `作業ルール設定に「${copy}」が必要です`);
+}
+assert.ok(renderer.includes('使用するエージェントや実行レベルは変更しません')
+  && renderer.includes('複数工程・並列・合議が必要な進め方はワークフローで構成します'),
+  '作業ルールが変えるものと、ワークフローへ分けるものを説明します');
+assert.ok(renderer.includes('<summary>個別の作業ルールを設定</summary>'),
+  '個別ルールは詳細設定として段階的に開示します');
+assert.ok(renderer.includes("${enabled ? '自動適用中' : '未使用'}")
+  && renderer.includes("${enabled ? '適用しない' : '自動適用する'}"),
+  '作業ルールの状態とボタンの操作をON/OFFではなく明示します');
 assert.match(css, /\.empty\[hidden\]\s*\{[^}]*display:\s*none/s,
   '候補がある間は一致なしメッセージを非表示にします');
 assert.ok(renderer.includes('推定できない記録'), '推定不能を0トークンと区別します');
@@ -347,8 +403,8 @@ assert.match(missionRequestDialog, /<strong id="amigos-post-home-label"/,
   '固定された対象チーム名を表示する');
 assert.match(css, /\.amigos-request-dialog\[open\]\s*\{[^}]*height:/s,
   'モード切替でダイアログ外形を変えない');
-assert.match(css, /\.amigos-mode input\s*\{[^}]*position:\s*absolute;[^}]*opacity:\s*0/s,
-  'ラジオ入力はカードへ視覚的に統合する');
+assert.match(css, /\.amigos-mode input,\s*\.orch-policy-card input\s*\{[^}]*position:\s*absolute;[^}]*opacity:\s*0/s,
+  'ラジオ入力は共通の選択カードへ視覚的に統合する');
 assert.ok(!missionRequestDialog.includes('team-builder スキル'), '利用者向け説明に内部スキル名を出さない');
 assert.ok(!missionRequestDialog.includes('commands/'), '依頼画面に内部ディレクトリを出しません');
 assert.ok(!missionRequestDialog.includes('schemas/mission.schema.json'), '依頼画面にスキーマ名を出しません');

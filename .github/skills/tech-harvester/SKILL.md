@@ -227,6 +227,10 @@ python .github/skills/tech-harvester/scripts/scorer.py show
 }
 ```
 
+`feeds` が未設定のエージェントホームでは、初回の `fetch_feeds.py` が同梱の
+`scripts/default_feeds.json`（19 フィード）を書き込んでから取得する。以降はレジストリ側が正で、
+既定フィードを読み直すことはない。
+
 `feed_stats`・`keyword_trends`・`candidate_feeds` はローカルで育っていく。
 リポジトリへのプッシュは行わず、バックアップが必要な場合はユーザーが任意で行う。
 

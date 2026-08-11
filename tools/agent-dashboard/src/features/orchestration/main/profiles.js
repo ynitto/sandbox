@@ -4,7 +4,7 @@
 // 正典: schemas/agent-profiles.schema.json。実体は $AGENT_CONTROL_DIR（既定 ~/.agents/control/）の
 // profiles.json。**不変条件: この契約はエンジンから読まれない**——dashboard がワークロードの
 // 予算残率（node-budget）と agent CLI ごとの枠（node-budget の allocation.agents）から段
-// （大/中/小）と候補（agent_cli+model）を決定的に選び、選択結果だけを agent-control（control.json）
+// （単純作業/軽量/標準/高性能）と候補（agent_cli+model）を決定的に選び、選択結果だけを agent-control（control.json）
 // へ投函する。エンジン側の解決経路は増やさない（柱1 / C2・C7）。
 //
 // decide() は純関数（時刻・budget usage・profiles 設定だけを引数に取る。ファイル I/O も
@@ -113,8 +113,16 @@ function normalizeState(raw) {
   return out;
 }
 
+function normalizeExecutionPolicy(raw) {
+  if (!isPlainObject(raw) || !['auto', 'saving', 'quality', 'custom'].includes(raw.mode)) return null;
+  return {
+    mode: raw.mode,
+    custom: isPlainObject(raw.custom) ? raw.custom : {},
+  };
+}
+
 function defaultProfiles() {
-  return { version: 1, enabled: true, tiers: {}, policy: normalizePolicy({}), state: {} };
+  return { version: 1, enabled: true, tiers: {}, policy: normalizePolicy({}), state: {}, executionPolicy: null };
 }
 
 function loadProfiles(dir) {
@@ -129,6 +137,7 @@ function loadProfiles(dir) {
     tiers: normalizeTiers(raw.tiers),
     policy: normalizePolicy(raw.policy),
     state: normalizeState(raw.state),
+    executionPolicy: normalizeExecutionPolicy(raw.execution_policy),
     exists: true,
     raw,
   };
@@ -162,6 +171,11 @@ function save(cfg, patch) {
     next.policy = cur.policy;
   }
   next.state = cur.state;
+  if (p.executionPolicy !== undefined) {
+    const executionPolicy = normalizeExecutionPolicy(p.executionPolicy);
+    if (!executionPolicy) throw new Error('executionPolicy.mode が不正です');
+    next.execution_policy = executionPolicy;
+  }
   next.updated_at = nowStamp();
   next.updated_by = 'dashboard';
   atomicWriteJson(path.join(dir, PROFILES_FILE), next);
@@ -396,6 +410,9 @@ function apply(cfg) {
       if (String(curWl.tier || '') !== String(decision.tier || '')) {
         patch.tier = decision.tier || null;
       }
+      if (curWl.selection_source !== 'control-workload') patch.selection_source = 'control-workload';
+      if (curWl.selection_reason !== decision.reason) patch.selection_reason = decision.reason;
+      if (curWl.pinned !== false) patch.pinned = false;
       if (Object.keys(patch).length > 0) controlPatch[wl] = patch;
     }
     const prev = profiles.state[wl];

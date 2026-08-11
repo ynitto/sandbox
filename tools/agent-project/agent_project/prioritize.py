@@ -603,15 +603,24 @@ def _control_degraded() -> "tuple[str | None, str | None]":
 
 
 def _write_status(effective_cli: str = "", effective_model: str = "", lifecycle: str = "run",
-                  budget: "dict | None" = None, fresh_after_sec: int = 120) -> None:
+                  budget: "dict | None" = None, fresh_after_sec: int = 120,
+                  purpose: str = "", pinned: bool = False) -> None:
     """status/<tool>-<pid>.json へ適用状況ハートビートを原子書換する（best-effort）。"""
     ctl = _load_control()
     d = os.path.join(_control_dir(), "status")
     try:
         os.makedirs(d, exist_ok=True)
+        wl = _control_workload()
+        purpose_control = (wl.get("agents") or {}).get(purpose) if purpose else None
+        source = ("pinned-agent" if pinned else "control-purpose" if purpose_control else
+                  wl.get("selection_source") or
+                  ("control-workload" if wl.get("agent_cli") or wl.get("model") else "tool-config"))
         rec = {"tool": _NODE_BUDGET_TOOL, "workload": _NODE_BUDGET_WORKLOAD,
                "pid": os.getpid(), "lifecycle": lifecycle,
-               "effective": {"agent_cli": effective_cli or None, "model": effective_model or None},
+               "effective": {"agent_cli": effective_cli or None, "model": effective_model or None,
+                             "tier": wl.get("tier"), "selection_source": source,
+                             "selection_reason": wl.get("selection_reason") or "",
+                             "pinned": pinned},
                "fresh_after_sec": fresh_after_sec, "ts": _utc_iso()}
         if ctl.get("revision") is not None:
             rec["revision_applied"] = ctl.get("revision")
@@ -661,7 +670,7 @@ def _run_agent_cli_once(prompt: str, model: "str | None", purpose: str = "",
     else:
         effective_model = model_ov or model
     _write_status(effective_cli=cli, effective_model=(effective_model or ""),
-                  lifecycle=lifecycle, budget=nb)
+                  lifecycle=lifecycle, budget=nb, purpose=purpose)
     plug = load_agent_plugin(cli)               # 定義ファイルが正典（_agent_cmd も同じキャッシュ）
     # argv 渡しで長すぎるプロンプトは一時ファイルへ退避し、参照渡しの短い指示に置き換える
     # （agent-flow / agent-amigos と同じ土台 = agentcore.agentcli.spill_prompt）。S5/S6 で

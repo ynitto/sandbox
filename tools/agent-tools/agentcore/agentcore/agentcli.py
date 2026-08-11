@@ -172,6 +172,13 @@ def normalize(name: str, raw: dict, path) -> dict:
     readonly = str(raw.get("readonly", "best-effort"))
     if readonly not in ("enforced", "best-effort"):
         raise AgentCliError(f"エージェント定義 {path}: readonly は enforced か best-effort です")
+    # headless で 1 回起動したとき、この CLI が自分でツールを回して仕事を完遂できるか。
+    # **interactive の有無や file_flag から推測しない**——定義の申告が正典。未宣言は安全側の
+    # single-shot（呼び出し側がツールループを供給する）。
+    headless_autonomy = str(raw.get("headless_autonomy") or "single-shot")
+    if headless_autonomy not in ("tool-loop", "single-shot"):
+        raise AgentCliError(
+            f"エージェント定義 {path}: headless_autonomy は tool-loop か single-shot です")
     relative_cost = raw.get("relative_cost", 1)
     if (not isinstance(relative_cost, (int, float)) or isinstance(relative_cost, bool)
             or not math.isfinite(relative_cost) or relative_cost < 0):
@@ -207,6 +214,7 @@ def normalize(name: str, raw: dict, path) -> dict:
         "readonly_args": _strs(raw.get("readonly_args"), "readonly_args", path),
         "readonly": readonly,
         "no_session_args": _strs(raw.get("no_session_args"), "no_session_args", path),
+        "headless_autonomy": headless_autonomy,
         "spill": {
             "args": _strs(spill_raw.get("args"), "spill.args", path),
             "instruction": str(spill_raw.get("instruction") or ""),

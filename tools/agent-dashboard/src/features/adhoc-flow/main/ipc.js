@@ -68,7 +68,7 @@ function registerIpc(ctx) {
       presets: (cfg.adhocFlow && cfg.adhocFlow.presets) || [],
       workflows: adhoc.listWorkflows(cfg),
       patterns: adhoc.patternCatalog(cfg),
-      tiers: tierNames,
+      tiers: [{ id: 'auto', label: '自動（実行方針を継承）' }, ...tierNames],
       cwdHistory: (cfg.adhocFlow && cfg.adhocFlow.cwdHistory) || [],
       methods,
       agents,

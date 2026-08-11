@@ -149,6 +149,14 @@
       "default": "best-effort",
       "description": "readonly_args の強制力。enforced=CLI が読み取り専用を保証する（claude の --permission-mode plan、codex の --sandbox read-only 等） / best-effort=CLI 依存で保証しない。best-effort の CLI で読み取り専用を要求した呼び出しには警告が返り、画面は「助言のみを保証できません」と出す。このレイヤは argv を組み立てるだけで、フラグを無視する CLI への防御は持たない（S9 未決 7 の決着）。"
     },
+    "headless_autonomy": {
+      "enum": [
+        "tool-loop",
+        "single-shot"
+      ],
+      "default": "single-shot",
+      "description": "headless（command）で 1 回起動したとき、この CLI が自分でツールを回して仕事を完遂できるか。tool-loop=CLI 内部で探索・編集・コマンド実行のループを持つ（claude -p / codex exec / kiro-cli chat --no-interactive 等）ので、プロンプトを渡して 1 回呼べば終わる。single-shot=ループを持たない（aider は渡されたファイルを編集するだけ、素の ollama は純粋な推論）ので、呼び出し側がツールループを供給しないと着手すらしない。**推測しない**——interactive の有無や file_flag の有無から導出せず、定義が申告する。未宣言は安全側の single-shot（ツールループを供給する）。"
+    },
     "no_session_args": {
       "type": "array",
       "items": {

@@ -110,7 +110,10 @@ function amigosPhaseLabel(phase) {
 
 function amigosWorkloadLabel(wl) {
   return (
-    { routine: '定常業務', project: 'プロジェクト', flow: 'フロー', amigos: 'ミッション' }[wl] || wl
+    {
+      routine: '定常業務', project: 'プロジェクト', flow: 'ワークフロー',
+      amigos: 'ミッション', audit: '監査', dashboard: '画面内AI',
+    }[wl] || wl
   );
 }
 

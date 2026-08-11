@@ -1,5 +1,10 @@
 # Agent Dashboard 段・実行手法設定 UI 設計
 
+> **履歴資料**: この初期案の「段」「実行手法」「ON/OFF」と、検索一覧を常時表示する設計は
+> 2026-08-11に見直した。現在の正典は
+> [Agent Dashboard 統一実行方針 UI・agent-tools 共通制御設計](./2026-08-11-agent-dashboard-unified-execution-policy-design.md)
+> の「UI用語」「作業ルールと実行方針の分離」とする。内部契約の `tier` / `methods` は維持する。
+
 ## 背景
 
 全体設定の「実行制御」には、予算・同時実行数・稼働制御に加えて、段の定義、

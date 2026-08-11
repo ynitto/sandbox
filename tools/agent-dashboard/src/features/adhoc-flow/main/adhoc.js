@@ -91,7 +91,8 @@ function normalizeWorkflow(raw) {
   const nodes = (Array.isArray(raw.nodes) ? raw.nodes : []).map((n) => {
     const id = String((n && n.id) || '').trim();
     const goal = String((n && n.goal) || '').trim();
-    const tier = String((n && n.tier) || '').trim();
+    const rawTier = String((n && n.tier) || '').trim();
+    const tier = rawTier === '自動' ? 'auto' : rawTier;
     const kind = String((n && n.kind) || 'work').trim() || 'work';
     if (!NODE_KINDS.includes(kind)) throw new Error(`ノード種別が不正です: ${kind}`);
     if (!id || !goal || (kind !== 'human' && !tier)) throw new Error('ノードには id・内容・tier が必要です');
@@ -231,6 +232,14 @@ function planFromWorkflow(config, workflow) {
     if (n.kind === 'human') {
       return { id: n.id, goal: n.goal, kind: n.kind, deps: n.deps, interaction: n.interaction };
     }
+    if (n.tier === 'auto') {
+      return {
+        id: n.id,
+        goal: n.method ? `${n.goal}\n\n実行手法「${n.method.description || n.method.id}」:\n${n.method.text}` : n.goal,
+        kind: n.kind,
+        deps: n.deps,
+      };
+    }
     if (!candidates.has(n.tier)) candidates.set(n.tier, profiles.resolveTier(config, n.tier));
     const candidate = candidates.get(n.tier);
     if (!candidate || !candidate.agent_cli) {
@@ -241,6 +250,7 @@ function planFromWorkflow(config, workflow) {
       goal: n.method ? `${n.goal}\n\n実行手法「${n.method.description || n.method.id}」:\n${n.method.text}` : n.goal,
       kind: n.kind,
       deps: n.deps,
+      tier: n.tier,
       agent: { agent_cli: candidate.agent_cli, ...(candidate.model ? { model: candidate.model } : {}) },
     };
   });

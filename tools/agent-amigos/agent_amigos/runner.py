@@ -214,6 +214,8 @@ class AmigoRunner:
 
         try:
             cli, model = self._resolve_cli(role, nb)
+            control.write_status(effective_cli=cli, effective_model=model or "", life=life,
+                                 budget=nb, role_id=self.role_id)
             if cli == "stub":
                 actions, cli_seconds = self._stub_actions(mission, roles, role, st, fresh,
                                                           rnd, wrap_up), _stub_cost()
@@ -504,7 +506,10 @@ class AmigoRunner:
         peer_pos = ({p: self._read_round(p, r - 1) for p in readable}
                     if r >= 1 else {})
         try:
-            cli, model = self._resolve_cli(role, nodebudget.state())
+            nb = nodebudget.state()
+            cli, model = self._resolve_cli(role, nb)
+            control.write_status(effective_cli=cli, effective_model=model or "",
+                                 budget=nb, role_id=self.role_id)
             if cli == "stub":
                 content, secs, usage = self._stub_debate(role, r), _stub_cost(), ""
             else:

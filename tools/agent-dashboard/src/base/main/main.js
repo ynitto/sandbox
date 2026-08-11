@@ -3,6 +3,8 @@
 const { app, BrowserWindow } = require('electron');
 const path = require('path');
 const { registerIpcHandlers } = require('./ipc');
+const { loadConfig } = require('./config');
+const resourceControl = require('../../../scripts/resource-control');
 
 // 環境変数のプロキシ設定を Chromium に引き継ぐ（gitlab-review-viewer と同じ）。
 // GitLab API 呼び出し（net.fetch）がこの設定を経由する。
@@ -115,6 +117,7 @@ if (!gotLock) {
 
   app.whenReady().then(() => {
     registerIpcHandlers();
+    resourceControl.start(loadConfig);
     createWindow();
     const url = deepLinkFromArgv(process.argv);
     if (url) {

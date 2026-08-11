@@ -1,5 +1,6 @@
 {
   "name": "cursor",
+  "headless_autonomy": "tool-loop",
   "relative_cost": 1,
   "command": ["cursor-agent", "-p", "--output-format", "text", "--force"],
   "prompt_via": "stdin",

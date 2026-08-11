@@ -26,29 +26,50 @@ class LlmError(RuntimeError):
     pass
 
 
-# -- agent-control（宣言的な一時停止・CLI/モデル上書き。既定位置のみ・env は見ない） --
+# -- agent-control（宣言的な一時停止・CLI/モデル上書き） ----------------------
 
 def _control(args) -> dict:
-    path = os.path.join(agent_home_dir(), "control", "control.json")
+    control_dir = os.environ.get("AGENT_CONTROL_DIR") or os.path.join(agent_home_dir(), "control")
+    path = os.path.join(os.path.abspath(os.path.expanduser(control_dir)), "control.json")
     return read_json(path) or {}
 
 
-def control_overrides(args) -> "tuple[str | None, str | None]":
+def _control_workload(args) -> dict:
+    return dict((_control(args).get("workloads") or {}).get(WORKLOAD) or {})
+
+
+def control_overrides(args, purpose: str = "") -> "tuple[str | None, str | None]":
     ctl = _control(args)
-    lifecycle = str(ctl.get("lifecycle") or "run")
-    workloads = ctl.get("workloads") or {}
-    wctl = workloads.get(WORKLOAD) if isinstance(workloads, dict) else None
-    if isinstance(wctl, dict) and wctl.get("lifecycle"):
-        lifecycle = str(wctl["lifecycle"])
+    wctl = _control_workload(args)
+    lifecycle = str(wctl.get("lifecycle") or "run")
     if lifecycle in ("pause", "stop"):
         raise LlmBlocked(f"[agent-error:control] agent-control が {lifecycle} を指示しています"
                          "（dashboard で実行を許可してください）")
-    cli = ctl.get("agent_cli") if isinstance(ctl.get("agent_cli"), str) else None
-    model = ctl.get("model") if isinstance(ctl.get("model"), str) else None
-    if isinstance(wctl, dict):
-        cli = wctl.get("agent_cli") or cli
-        model = wctl.get("model") or model
-    return (cli or None), (model or None)
+    purpose_override = (wctl.get("agents") or {}).get(purpose) if purpose else None
+    layers = [purpose_override or {}, wctl, ctl.get("defaults") or {}]
+    cli = model = None
+    for layer in layers:
+        if cli is None and layer.get("agent_cli"):
+            cli = str(layer["agent_cli"])
+        if model is None and layer.get("model"):
+            model = str(layer["model"])
+    return cli, model
+
+
+def control_degraded(args) -> "tuple[str | None, str | None]":
+    degraded = _control_workload(args).get("degraded") or {}
+    return (str(degraded["agent_cli"]) if degraded.get("agent_cli") else None,
+            str(degraded["model"]) if degraded.get("model") else None)
+
+
+def _selection_meta(args, purpose: str) -> dict:
+    wctl = _control_workload(args)
+    purpose_control = (wctl.get("agents") or {}).get(purpose) or {}
+    source = ("control-purpose" if purpose_control.get("agent_cli") or purpose_control.get("model")
+              else wctl.get("selection_source")
+              or ("control-workload" if wctl.get("agent_cli") or wctl.get("model") else "tool-config"))
+    return {"tier": wctl.get("tier"), "selection_source": source,
+            "selection_reason": wctl.get("selection_reason") or "", "pinned": False}
 
 
 # -- node-budget（読み取り = 抑制判定・書き込み = 自分の消費の記帳のみ） --------
@@ -62,24 +83,37 @@ def _period_days(period: str) -> "list[str]":
     return []          # total: 全ファイル
 
 
-def budget_exceeded(args) -> "str | None":
-    """超過していれば理由文字列。ロックなしの読み合計（node-budget 契約と同じ規律）。"""
+def budget_state(args) -> dict:
+    """audit の予算状態。ロックなしの読み合計（node-budget 契約と同じ規律）。"""
     bdir = resolve_budget_dir(args)
     cfg = read_json(os.path.join(bdir, "config.json")) or {}
     limit_min = float(cfg.get("execution_minutes") or 0.0)
     limit_tokens = float(cfg.get("tokens") or 0.0)
-    if limit_min <= 0 and limit_tokens <= 0:
-        return None
+    workload_limit_min = float((cfg.get("workloads") or {}).get(WORKLOAD) or 0.0)
+    allocation = cfg.get("allocation") or {}
+    workload_allocation = (allocation.get("workloads") or {}).get(WORKLOAD) or {}
+    computed = ((cfg.get("computed") or {}).get("workloads") or {}).get(WORKLOAD) or {}
+    workload_limit_tokens = float(computed.get("tokens") or 0.0) \
+        or float(workload_allocation.get("max_tokens") or 0.0)
+    on_exhausted = str(workload_allocation.get("on_exhausted") or "pause")
+    try:
+        soft_ratio = float(allocation.get("soft_ratio") or 0.9)
+    except (TypeError, ValueError):
+        soft_ratio = 0.9
+    empty = {"exceeded": False, "soft": False, "on_exhausted": on_exhausted, "reason": None}
+    if (limit_min <= 0 and limit_tokens <= 0
+            and workload_limit_min <= 0 and workload_limit_tokens <= 0):
+        return empty
     period = str(cfg.get("period") or "day")
     days = _period_days(period)
     ledger_dir = os.path.join(bdir, "ledger")
     try:
         names = sorted(n for n in os.listdir(ledger_dir) if n.endswith(".jsonl"))
     except OSError:
-        return None
+        return empty
     if days:
         names = [n for n in names if n[:-6] in days]
-    seconds = tokens = 0.0
+    seconds = tokens = workload_seconds = workload_tokens = 0.0
     rates = cfg.get("rates") or {}
     default_rate = float(rates.get("default_tokens_per_second") or 0.0)
     per_cli = rates.get("per_cli") or {}
@@ -92,7 +126,7 @@ def budget_exceeded(args) -> "str | None":
             seconds += sec
             tin, tout = row.get("tokens_in"), row.get("tokens_out")
             if tin is not None or tout is not None:
-                tokens += float(tin or 0) + float(tout or 0)
+                row_tokens = float(tin or 0) + float(tout or 0)
             else:
                 cli = str(row.get("agent_cli") or "")
                 model = str(row.get("model") or "")
@@ -101,14 +135,64 @@ def budget_exceeded(args) -> "str | None":
                     if key and isinstance(per_cli.get(key), (int, float)):
                         rate = float(per_cli[key])
                         break
-                tokens += sec * (rate or default_rate)
+                row_tokens = sec * (rate or default_rate)
+            tokens += row_tokens
+            if row.get("workload") == WORKLOAD:
+                workload_seconds += sec
+                workload_tokens += row_tokens
+    reason = None
     if limit_min > 0 and seconds / 60.0 >= limit_min:
-        return f"[agent-error:quota] [node-budget] 実行時間の上限に達しています" \
-               f"（{seconds / 60.0:.0f}/{limit_min:.0f} 分・period={period}）"
-    if limit_tokens > 0 and tokens >= limit_tokens:
-        return f"[agent-error:quota] [node-budget] トークン上限に達しています" \
-               f"（{tokens:.0f}/{limit_tokens:.0f}・period={period}）"
-    return None
+        reason = f"[agent-error:quota] [node-budget] 実行時間の上限に達しています" \
+                 f"（{seconds / 60.0:.0f}/{limit_min:.0f} 分・period={period}）"
+    elif limit_tokens > 0 and tokens >= limit_tokens:
+        reason = f"[agent-error:quota] [node-budget] トークン上限に達しています" \
+                 f"（{tokens:.0f}/{limit_tokens:.0f}・period={period}）"
+    elif workload_limit_min > 0 and workload_seconds / 60.0 >= workload_limit_min:
+        reason = f"[agent-error:quota] [node-budget] 監査の実行時間上限に達しています" \
+                 f"（{workload_seconds / 60.0:.0f}/{workload_limit_min:.0f} 分・period={period}）"
+    elif workload_limit_tokens > 0 and workload_tokens >= workload_limit_tokens:
+        reason = f"[agent-error:quota] [node-budget] 監査のトークン上限に達しています" \
+                 f"（{workload_tokens:.0f}/{workload_limit_tokens:.0f}・period={period}）"
+    token_cap = workload_limit_tokens or limit_tokens
+    token_spent = workload_tokens if workload_limit_tokens else tokens
+    minute_cap = workload_limit_min or limit_min
+    minute_spent = workload_seconds / 60.0 if workload_limit_min else seconds / 60.0
+    soft = not reason and ((token_cap > 0 and token_spent >= soft_ratio * token_cap)
+                           or (minute_cap > 0 and minute_spent >= soft_ratio * minute_cap))
+    return {"exceeded": bool(reason), "soft": soft, "on_exhausted": on_exhausted,
+            "reason": reason}
+
+
+def budget_exceeded(args) -> "str | None":
+    """超過していれば理由文字列。既存呼び出し向けの互換口。"""
+    return budget_state(args)["reason"]
+
+
+def write_status(args, purpose: str, agent_cli: str = "", model: str = "",
+                 lifecycle: str = "run", budget: "dict | None" = None) -> None:
+    """agent-control の実効値を status へ原子書換する（best-effort）。"""
+    ctl = _control(args)
+    control_dir = os.environ.get("AGENT_CONTROL_DIR") or os.path.join(agent_home_dir(), "control")
+    target = os.path.join(os.path.abspath(os.path.expanduser(control_dir)), "status",
+                          f"agent-audit-{os.getpid()}.json")
+    tmp = target + f".tmp.{os.getpid()}"
+    try:
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        rec = {"tool": "agent-audit", "workload": WORKLOAD, "pid": os.getpid(),
+               "lifecycle": lifecycle,
+               "effective": {"agent_cli": agent_cli or None, "model": model or None,
+                             **_selection_meta(args, purpose)},
+               "fresh_after_sec": 120, "ts": now_iso()}
+        if ctl.get("revision") is not None:
+            rec["revision_applied"] = ctl["revision"]
+        if budget is not None:
+            rec["budget"] = {"exceeded": bool(budget.get("exceeded")),
+                             "soft": bool(budget.get("soft"))}
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(rec, f, ensure_ascii=False)
+        os.replace(tmp, target)
+    except OSError:
+        pass
 
 
 def record_ledger(args, seconds: float, *, ref: str, agent_cli: str, model: str,
@@ -120,7 +204,8 @@ def record_ledger(args, seconds: float, *, ref: str, agent_cli: str, model: str,
     os.makedirs(os.path.dirname(path), exist_ok=True)
     row = {"ts": now_iso(), "workload": WORKLOAD, "tool": "agent-audit",
            "usage_kind": "llm",
-           "seconds": round(seconds, 3), "ref": ref, "agent_cli": agent_cli}
+           "seconds": round(seconds, 3), "ref": ref, "agent_cli": agent_cli,
+           **_selection_meta(args, ref)}
     if model:
         row["model"] = model
     if tokens_in is not None:
@@ -141,13 +226,23 @@ def run_llm(args, purpose: str, prompt: str) -> str:
     """purpose（extract / distill / review）の CLI・モデルで 1 回実行して本文を返す。
     優先順位: agent-control > agents[purpose] > グローバル設定（設計 §6.1）。"""
     from agentcore import agentcli as _agentcli
-    reason = budget_exceeded(args)
-    if reason:
-        raise LlmBlocked(reason)
-    ctl_cli, ctl_model = control_overrides(args)
+    try:
+        ctl_cli, ctl_model = control_overrides(args, purpose)
+    except LlmBlocked:
+        write_status(args, purpose, lifecycle=str(_control_workload(args).get("lifecycle") or "run"))
+        raise
+    budget = budget_state(args)
+    if budget["exceeded"] and budget["on_exhausted"] != "degrade":
+        write_status(args, purpose, budget=budget)
+        raise LlmBlocked(budget["reason"])
     cli, model = agent_for(args, purpose)
     cli = ctl_cli or cli
     model = ctl_model or model
+    if budget["soft"] or (budget["exceeded"] and budget["on_exhausted"] == "degrade"):
+        degraded_cli, degraded_model = control_degraded(args)
+        cli = degraded_cli or cli
+        model = degraded_model or model
+    write_status(args, purpose, cli, model or "", budget=budget)
     plug = _agentcli.load_cli(cli)
     spill, prompt = _agentcli.spill_prompt(
         prompt, int(getattr(args, "argv_limit", 100000) or 100000),

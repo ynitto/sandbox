@@ -82,6 +82,15 @@ class CliProfile:
       busy_pattern マッチ → 処理中 ＞ ready_pattern マッチ → 待機 ＞
       idle_quiet_sec 静穏 → 待機 ＞ それ以外 → 処理中。
     legacy プロファイル（agent_cli 未指定）は従来の _PROMPT_RE 判定と同一。
+
+    mode は「この CLI をどう起こすか」。interactive 節を持つ定義は 'interactive'
+    （tmux ペインに常駐させて send-keys で送る従来経路）、持たない定義は 'headless'
+    （実行のたびに subprocess を起こす）。headless では待機判定も clear/save/exit も
+    使わない——判定する相手のペインが無い。
+
+    autonomy は「headless で 1 回起動したとき自分でツールを回して完遂できるか」
+    （定義の headless_autonomy）。'tool-loop' は 1 回呼べば終わる。'single-shot' は
+    呼び出し側がツールループを供給しないと着手しない（aider・素の ollama）。
     """
 
     _READY_TAIL_LINES = 3  # 末尾何行（空行除く）へ ready_pattern を当てるか（従来と同じ）
@@ -92,6 +101,11 @@ class CliProfile:
         self.spec = spec
         self.argv = list(argv) if argv else None
         self._clock = clock or time.monotonic
+        # legacy（定義なし）は従来の kiro 対話経路。定義ありは interactive 節の有無で決まる。
+        self.mode = "interactive" if (spec is None or spec.get("interactive")) else "headless"
+        self.autonomy = str((spec or {}).get("headless_autonomy") or "tool-loop")
+        # 解決済みモデル（headless 実行の argv 組み立てと launch fingerprint で使う）
+        self.model: "str | None" = None
         inter = (spec or {}).get("interactive") or {}
         self._ready_re = _compile_ere(inter.get("ready_pattern", ""),
                                       label=f"{name}.ready_pattern") or _PROMPT_RE
@@ -121,6 +135,16 @@ class CliProfile:
     @property
     def is_legacy(self) -> bool:
         return self.spec is None
+
+    @property
+    def is_headless(self) -> bool:
+        """対話ペインを持たない（実行のたびに subprocess を起こす）プロファイルか。"""
+        return self.mode == "headless"
+
+    @property
+    def needs_tool_loop(self) -> bool:
+        """呼び出し側がツールループを供給しないと着手しない CLI か。"""
+        return self.autonomy == "single-shot"
 
     # -- 判定 ---------------------------------------------------------------
 
@@ -210,15 +234,110 @@ def _resolve_cli_profile(config: "dict[str, Any]", project_dir: "str | Path | No
         opts = {}
     try:
         spec = _AGENTCLI_MOD.load_cli(name, project_dir=project_dir)
+    except _AGENTCLI_MOD.AgentCliError as exc:
+        raise CliProfileError(str(exc)) from exc
+    # interactive 節を持たない定義（aider 等）は対話 argv を組めない。かつては
+    # ここで fail fast していたが、対話セッションは**会話を人に見せるための可視化**で
+    # あって実行の必須要件ではない——headless プロファイルとして通し、実行のたびに
+    # subprocess を起こす経路（scheduler の headless 枝）へ回す。
+    model = str(opts.get("model") or "") or None
+    if not spec.get("interactive"):
+        profile = CliProfile(name=name, spec=spec, argv=None)
+        profile.model = model
+        return profile
+    try:
         argv = _AGENTCLI_MOD.interactive_cmd(
-            spec,
-            str(opts.get("model") or "") or None,
-            readonly=bool(opts.get("readonly", False)),
+            spec, model, readonly=bool(opts.get("readonly", False)),
         )
     except _AGENTCLI_MOD.AgentCliError as exc:
         raise CliProfileError(str(exc)) from exc
     argv += [str(a) for a in (opts.get("extra_args") or [])]
-    return CliProfile(name=name, spec=spec, argv=argv)
+    profile = CliProfile(name=name, spec=spec, argv=argv)
+    profile.model = model
+    return profile
+
+
+def resolve_entry_profile(config: "dict[str, Any]", entry: "dict[str, Any] | None",
+                          project_dir=None) -> "tuple[CliProfile | None, str]":
+    """entry 1 件ぶんのプロファイルと実行経路を解決する。
+
+    CLI / モデルの解決順（設計書「entry ごとのエージェントとモデル」）:
+      1. control.json の workloads.routine（degraded 差し替えを含む）——config へ
+         `_apply_control_agent` 済みの値として渡ってくる
+      2. entry の agent_cli / model
+      3. entry 共通設定（agent-loop.yaml トップレベル）
+      4. 既定
+
+    返す経路は 'interactive' か 'per-run'。entry が `session: keep`（既定）でも、
+    対話ペインを持たない CLI では 'per-run' へ倒す——対話できない CLI に
+    「セッションを保つ」と書いてあっても保てない。倒したことは呼び出し側が警告する。
+    """
+    e = entry or {}
+    merged = dict(config or {})
+    # control.json が明示していれば config の agent_cli が既に上書きされている。
+    # 管理面の宣言を entry で上書きしない（予算枯渇時の degrade を素通しさせない）。
+    if not _control_declared_agent() and e.get("agent_cli"):
+        merged["agent_cli"] = str(e["agent_cli"])
+        merged.pop("agent_cli_options", None)   # CLI が変われば共通のモデルは引き継がない
+    if not _control_declared_model() and e.get("model"):
+        key = "agent_cli_options" if merged.get("agent_cli") else "kiro_options"
+        merged[key] = {**dict(merged.get(key) or {}), "model": str(e["model"])}
+    profile = _resolve_cli_profile(merged, project_dir=project_dir)
+    if profile is not None and profile.is_headless:
+        return profile, "per-run"
+    if str(e.get("session") or "keep") == "per-run":
+        return profile, "per-run"
+    return profile, "interactive"
+
+
+def check_headless_entries(config: "dict[str, Any]", entries: "list[dict[str, Any]]",
+                           project_dir=None) -> "list[str]":
+    """headless 経路になる entry を起動時に点検し、致命的な問題の一覧を返す。
+
+    致命（返り値に載る＝呼び出し側が起動を止める）:
+      - headless で扱えない機能を使っている（ralph 多段 / external target）
+
+    警告（ログのみ・起動は続ける）:
+      - ツールループ非内蔵の CLI（層3）なのに受入条件が無い。この CLI は自分で
+        ツールを回さないので、受入条件が無いと done を機械検証できない。移行のため
+        起動は止めず、実行結果は「検証なし」として記録する。
+      - 対話ペインを持たない CLI に `session: keep` が書いてある（保てないので per-run）。
+    """
+    fatal: list[str] = []
+    for entry in entries or []:
+        name = str(entry.get("name") or entry.get("id") or "")
+        try:
+            profile, route = resolve_entry_profile(config, entry, project_dir=project_dir)
+        except CliProfileError as exc:
+            fatal.append(f"定期プロンプト「{name}」のエージェントを解決できません: {exc}")
+            continue
+        if profile is None or route != "per-run":
+            continue
+        if str(entry.get("mode") or "normal") == "ralph":
+            fatal.append(f"定期プロンプト「{name}」: mode=ralph は headless 実行に対応していません"
+                         f"（agent_cli: {profile.name}）。")
+        if entry.get("target"):
+            fatal.append(f"定期プロンプト「{name}」: external target は headless 実行に"
+                         f"対応していません（agent_cli: {profile.name}）。")
+        if profile.is_headless and str(entry.get("session") or "keep") == "keep":
+            log.warning("定期プロンプト「%s」: %s は対話ペインを持たないため、"
+                        "session: keep を per-run として扱います。", name, profile.name)
+        if profile.needs_tool_loop and not (entry.get("acceptance") or []):
+            log.warning(
+                "定期プロンプト「%s」: %s は自分でツールを回さないため、受入条件（acceptance）が"
+                "無いと done を検証できません。実行はしますが結果は「検証なし」として記録します"
+                "（agent-dashboard の補完で受入条件を作れます）。", name, profile.name)
+    return fatal
+
+
+def _control_declared_agent() -> bool:
+    cli, _ = _control_override()
+    return bool(cli)
+
+
+def _control_declared_model() -> bool:
+    _, model = _control_override()
+    return bool(model)
 
 
 # 現在有効なプロファイル。既定は legacy（従来の kiro-cli 組み込み判定と同一挙動）。

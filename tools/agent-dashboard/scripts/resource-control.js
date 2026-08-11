@@ -2,8 +2,30 @@
 'use strict';
 
 // Electron を起動せずに、dashboard と同じ資源制御モジュールを 1 回実行する。
+const fs = require('fs');
+const path = require('path');
 const budget = require('../src/features/orchestration/main/budget');
+const control = require('../src/features/orchestration/main/control');
 const profiles = require('../src/features/orchestration/main/profiles');
+
+const DEFAULT_INTERVAL_MS = 300000;
+
+function writeStatus(cfg, nowMs) {
+  try {
+    const dir = path.join(control.resolveControlDir(cfg), 'status');
+    fs.mkdirSync(dir, { recursive: true });
+    const target = path.join(dir, 'agent-resource-controller.json');
+    const tmp = `${target}.tmp.${process.pid}`;
+    fs.writeFileSync(tmp, `${JSON.stringify({
+      tool: 'agent-resource-controller', workload: 'dashboard',
+      fresh_after_sec: DEFAULT_INTERVAL_MS / 1000,
+      ts: new Date(nowMs).toISOString(),
+    }, null, 2)}\n`);
+    fs.renameSync(tmp, target);
+  } catch {
+    // status 失敗で制御判断まで止めない。
+  }
+}
 
 function run(cfg = {}, nowMs = Date.now()) {
   const dir = budget.resolveBudgetDir(cfg);
@@ -14,7 +36,20 @@ function run(cfg = {}, nowMs = Date.now()) {
   const rebalanceDue = allocation.mode === 'auto'
     && (!Number.isFinite(lastMs) || intervalMs === 0 || nowMs - lastMs >= intervalMs);
   if (rebalanceDue) budget.rebalance(cfg);
-  return { rebalanced: rebalanceDue, ...profiles.apply(cfg) };
+  const result = { rebalanced: rebalanceDue, ...profiles.apply(cfg) };
+  writeStatus(cfg, nowMs);
+  return result;
+}
+
+function start(loadConfig, intervalMs = DEFAULT_INTERVAL_MS) {
+  const tick = () => {
+    try { run(loadConfig()); }
+    catch (err) { process.stderr.write(`agent-resource-control: ${err.message}\n`); }
+  };
+  tick();
+  const timer = setInterval(tick, intervalMs);
+  if (typeof timer.unref === 'function') timer.unref();
+  return timer;
 }
 
 function parseArgs(argv) {
@@ -36,4 +71,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { run, parseArgs };
+module.exports = { run, start, parseArgs, DEFAULT_INTERVAL_MS };

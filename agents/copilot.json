@@ -1,5 +1,6 @@
 {
   "name": "copilot",
+  "headless_autonomy": "tool-loop",
   "relative_cost": 1,
   "command": ["copilot", "-s", "--allow-all-tools", "--no-color"],
   "prompt_via": "argv",
