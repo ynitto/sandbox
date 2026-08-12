@@ -282,7 +282,7 @@ prompts:
 - スラッシュコマンドを解する対話 CLI なら何にでも使えます（特定の CLI 専用ではありません）。
 
 詳細な仕様は
-[`docs/designs/agent-loop-design.md` の機能 6](../../docs/designs/agent-loop-design.md#機能-6-slash-プロパティ--実装済み)。
+[`docs/designs/agent-loop-design.md` の機能 6](../../docs/designs/agent-loop-design.md#機能-6-slash-プロパティ)。
 
 ### hooks（フックによる送信制御）
 

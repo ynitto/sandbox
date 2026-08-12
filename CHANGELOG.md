@@ -7,6 +7,43 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### docs(specs): agent-loop の仕様書を新設した
+
+設計書から設定マニュアルを外した結果、「どのキーが書けて、既定値は何で、何が拒否されるか」
+を一望できる場所が無くなった。README は使い方の手引き、DESIGN.md は実装の内部構造なので、
+どちらとも役割が違う。`docs/specs/agent-loop-spec.md` を新設し、仕様の一覧をここに置く。
+
+- **できること**（送信のきっかけ 5 経路、実行のかたち 8 種、操作コマンド）、**設定**
+  （ファイルの優先順位、グローバル 30 キー、エントリ 30 キーの型・既定・意味）、
+  **契約**（event hook / webhook / inbox メッセージ / 限定ツール / RESULT 行）、
+  **規約**（`slash` 名、webhook ルート名、tmux セッション名、環境変数名、パス）、
+  **制約**（上限とタイムアウトの一覧、配送保証、失敗時の挙動、未実装）の 5 部構成
+- 値は実装から取った。エントリの採用条件と起動を止める組合せは `validate_entries`、
+  既定値は `cli.py` / `dispatch.py`、上限は `toolloop.py` / `_head.py` / `semaphore.py`、
+  受入条件の照合規則は `toolloop.acceptance_paths` が根拠
+- `docs/specs/` は本書が最初の文書。設計書のヘッダから相互リンクした
+
+### docs(designs): `agent-loop-design.md` を設計書の形へ戻した
+
+709 行のうち約 6 割が README / DESIGN.md と重複する設定マニュアルになっていて、
+「何をどう決めたか」を読み取るのに全文を通読する必要があった。slop-police スキルの
+設計書ルール（結論先出し・却下案つきの判断・強弱・省略）に沿って再編した（柱2 / C4）。
+
+- **主要な設計判断を 5 つに再編**。旧 5 件のうち pull/push のフック契約と provider 非依存を
+  1 件へ統合し、代わりに機能 5・7 の本文へ埋もれていた 2 件（実行経路をツールループの所在で
+  分ける／完了を自然文の受入条件から機械照合する）を判断として立てた。確信度は判断ごとに
+  書き分け、証跡ゲートの機械層だけが動いている点は「中くらい」と明記した
+- **機能 1〜7 の節から設定マニュアルを外した**。YAML の書き方は
+  `tools/agent-loop/README.md`、クラス構成と処理フローは `tools/agent-loop/DESIGN.md` へ
+  委ね、本書には設計上の境界（既読化は `ack()` 後、webhook のフック例外は 200、
+  外部キューは scheduler が保有、待機判定は CLI ごとに違う 等）だけを残した。
+  README に記述の無い webhook / adaptive / acceptance の設定だけは最小形で残す
+- **実装状況とテスト一覧を付録へ移した**。見出しの「— 実装済み」表記をやめ、未接続・未実装
+  （adaptive の error 遷移、自然文基準の証跡判定層、headless ログの tmux 自動起動）は
+  付録 A の 1 段落に集約した
+- 709 行 → 496 行。機能番号は据え置き、`slash` 節の見出し変更に伴う anchor リンクは
+  `tools/agent-loop/README.md` と opencode/ollama 提案書の 2 か所を追随させた
+
 ### 定型業務の Aider 実行を tmux で見える agent-loop ハーネスへ移した
 
 Aider（ollama バックエンド）でのステートマシン実行は dashboard の main プロセス内で
