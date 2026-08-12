@@ -882,6 +882,23 @@
 
   function wireRun(pane) {
     if (!pane) return;
+    $id('wf-cwd')?.addEventListener('change', async () => {
+      const cwd = $id('wf-cwd')?.value || '';
+      const request = $id('wf-request')?.value || '';
+      const selection = $id('wf-flow')?.value || 'auto';
+      try {
+        st.overview = await api().adhocFlowOverview({ limit: 30, cwd });
+        renderRun();
+        if ($id('wf-cwd')) $id('wf-cwd').value = cwd;
+        if ($id('wf-request')) $id('wf-request').value = request;
+        if ($id('wf-flow') && [...$id('wf-flow').options].some((option) => option.value === selection)) {
+          $id('wf-flow').value = selection;
+        }
+      } catch (err) {
+        st.notice = String((err && err.message) || err);
+        renderRun();
+      }
+    });
     $id('wf-submit')?.addEventListener('click', async () => {
       st.busy = '実行中…';
       st.notice = '';
@@ -1118,7 +1135,9 @@
     });
     $id('wf-delete')?.addEventListener('click', async () => {
       try {
-        await api().adhocFlowDeleteWorkflow({ id: st.editor.id });
+        await api().adhocFlowDeleteWorkflow({
+          id: st.editor.id, scope: st.editor._scope, cwd: st.editor._repository,
+        });
         ov.workflows = (ov.workflows || []).filter((item) => item.id !== st.editor.id);
         st.editor = null; st.dirty = false; resetSelection(); st.notice = '削除しました';
       } catch (err) { st.notice = String((err && err.message) || err); }

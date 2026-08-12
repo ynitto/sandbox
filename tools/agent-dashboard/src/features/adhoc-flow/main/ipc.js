@@ -9,7 +9,7 @@ function registerIpc(ctx) {
   const { handle, loadConfig, saveConfig } = ctx;
   const flow = adhoc.flow;
 
-  handle('adhocFlow:overview', ({ limit } = {}) => {
+  handle('adhocFlow:overview', ({ limit, cwd } = {}) => {
     const cfg = loadConfig();
     const busDir = adhoc.resolveBusDir(cfg);
     let runs = [];
@@ -66,7 +66,7 @@ function registerIpc(ctx) {
       busDir,
       runs,
       presets: (cfg.adhocFlow && cfg.adhocFlow.presets) || [],
-      workflows: adhoc.listWorkflows(cfg),
+      workflows: adhoc.listWorkflows(cfg, { cwd }),
       patterns: adhoc.patternCatalog(cfg),
       tiers: [{ id: 'auto', label: '自動（実行方針を継承）' }, ...tierNames],
       cwdHistory: (cfg.adhocFlow && cfg.adhocFlow.cwdHistory) || [],
@@ -137,16 +137,16 @@ function registerIpc(ctx) {
     return { presets: list };
   });
 
-  handle('adhocFlow:saveWorkflow', ({ workflow } = {}) => ({
-    saved: adhoc.saveWorkflow(loadConfig(), workflow),
+  handle('adhocFlow:saveWorkflow', ({ workflow, cwd, scope } = {}) => ({
+    saved: adhoc.saveWorkflow(loadConfig(), workflow, { cwd, scope }),
   }));
 
-  handle('adhocFlow:deleteWorkflow', ({ id } = {}) => ({
-    deleted: adhoc.deleteWorkflow(loadConfig(), String(id || '')),
+  handle('adhocFlow:deleteWorkflow', ({ id, cwd, scope } = {}) => ({
+    deleted: adhoc.deleteWorkflow(loadConfig(), String(id || ''), { cwd, scope }),
   }));
 
-  handle('adhocFlow:snapshotSelection', ({ selection } = {}) => ({
-    flow: adhoc.snapshotSelection(loadConfig(), selection),
+  handle('adhocFlow:snapshotSelection', ({ selection, cwd } = {}) => ({
+    flow: adhoc.snapshotSelection(loadConfig(), selection, { cwd }),
   }));
 
   handle('adhocFlow:promote', (payload) => adhoc.promote(loadConfig(), payload || {}));

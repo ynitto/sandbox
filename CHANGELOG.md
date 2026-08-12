@@ -7,6 +7,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### feat(agent-dashboard): カスタムフローをリポジトリで共有できるようにした
+
+- 従来のユーザー共通 `~/.agents/workflows/*.json` に加え、実行対象リポジトリの
+  `.agent-flow/workflows/*.json` を自動探索する。同じ id はリポジトリ版を優先し、
+  statemachine 定義と同じように定義ファイルを commit して任意の clone で共有できる。
+- リポジトリ共有フローは読み込み後も保存・削除先のスコープを保持する。実行画面では
+  フォルダを確定した時点でカタログを読み直し、選択した共有フローを run の plan へ固定する。
+
 ### feat(agent-flow): 計画承認ゲートと tier:basic のお膳立てを追加した
 
 予算逼迫の緊急時、agent-profiles の縮退が `tier: basic` を宣言すると、普段は任せない
