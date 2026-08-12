@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "surfaces": {
+    "agent-flow": {
+      "planner": "missing",
+      "evaluator": "direct",
+      "work": "direct",
+      "generate": "indirect",
+      "classify": "missing",
+      "synthesize": "missing",
+      "verify": "missing",
+      "filter": "direct",
+      "judge": "direct",
+      "reduce": "direct",
+      "split": "direct",
+      "map": "missing",
+      "extract": "missing",
+      "retrieve": "missing",
+      "human": "deterministic"
+    },
+    "agent-project": {
+      "verify": "missing",
+      "route": "missing",
+      "plan": "missing",
+      "doctor": "missing",
+      "repo_map": "missing",
+      "review": "missing",
+      "distill": "missing",
+      "prioritize": "missing",
+      "adjudicate": "missing",
+      "assess": "missing"
+    },
+    "agent-dashboard": {
+      "method-draft": "missing",
+      "acceptance-draft": "missing",
+      "doctor/consultation": "missing",
+      "doctor/failure-diagnosis": "missing",
+      "doctor/plan-critique": "missing",
+      "doctor/delivery-rationale": "missing",
+      "followup-suggest": "missing",
+      "enqueue-assist": "missing",
+      "task-guide": "missing",
+      "source-task-candidates": "missing",
+      "charter/draft": "missing",
+      "charter/refine": "missing"
+    },
+    "agent-amigos": {
+      "team-builder": "missing",
+      "conductor": "missing",
+      "acceptance": "missing",
+      "debate": "missing",
+      "role-actions": "missing"
+    }
+  }
+}

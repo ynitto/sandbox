@@ -1,4 +1,58 @@
-# worker 受入率ハーネス — ローカルモデルを 1 時間で判定する
+# agent-tools 評価ハーネス
+
+Ollama のモデルを交換するときに、**モデルの実力**と**エージェント・ハーネスの影響**を
+混同せず比較するための測定群。処理単位ごとに直接実行でき、まとめて同条件で回すこともできる。
+
+| 単位 | スクリプト | 測るもの | 主な指標 |
+|---|---|---|---|
+| worker | `worker_eval.py` | ファイル編集・修正・複数成果物 | 決定的チェッカーの受入率、壁時計、失敗様式 |
+| judge | `judge_eval.py` | split/filter/judge/reduce/evaluator | 正解一致率、自己一貫性、形式違反 |
+| retrieval | `retrieval_eval.py` | 記憶検索（生成モデルとは独立） | hit@k、MRR、検索時間 |
+| observation | `log_stats.py` | 既存の agent-ollama ログ | prompt/output 寸法、TTFT、decode 速度 |
+| coverage | `coverage_eval.py` | flow/project/dashboard/amigos の呼び出し面 | direct/indirect/missing の棚卸し |
+
+### 網羅性（重要）
+
+**現時点では網羅していない。** `judge_eval.py` が直接測る agent-flow の処理は
+`split / filter / judge / reduce / evaluator`、`worker_eval.py` が直接測るのは `work` である。
+`generate` は work と同じ実装系契約を間接的に通すだけで、専用セルではない。planner を含む
+残りの flow 役割、および agent-project / agent-dashboard / agent-amigos 独自の LLM 呼び出しは
+まだ能力測定が無い。この状態を「suite に名前が無いから存在しない」ように見せないため、
+`coverage.json` に全呼び出し面と `direct / indirect / missing / deterministic` を明記した。
+
+```bash
+python3 tools/agent-tools/eval/coverage_eval.py
+```
+
+agent-flow の一覧は正典 `agentcore.nodecontract.VALID_KINDS` と実行時に突き合わせる。kind が増えて
+manifest の更新を忘れると coverage 測定とテストが失敗する。`human` は LLM を呼ばないので
+`deterministic` とする。project/dashboard/amigos は flow を単に呼ぶだけではなく、それぞれ
+独自プロンプト・出力契約・CLI 解決を持つため、flow の点数で代用しない。現状の `missing` は
+今後、各表面の正典プロンプトビルダーを直接呼ぶ決定的ケースを追加してから `direct` に変える。
+
+## モデル交換時の標準測定
+
+`run_suite.py` は各単位をサブプロセスとして直列実行する。Ollama の取り合いを避け、同じ
+`model / repeat / wall / cli` を manifest に固定する。最初は dry-run で条件を確認する。
+
+```bash
+python3 tools/agent-tools/eval/run_suite.py --model qwen3.5:9b --dry-run
+python3 tools/agent-tools/eval/run_suite.py --model qwen3.5:9b --cli agent-ollama
+python3 tools/agent-tools/eval/run_suite.py --model qwen3.5:9b --cli aider --label aider
+```
+
+結果は `results/<UTC時刻>-<model>-<label>/` の下へ保存する。run 直下の `manifest.json` が
+比較条件、単位ごとの `command.txt` が再現コマンド、`console.log` が生ログ、`ledger.jsonl`
+または `metrics.json` が機械可読な結果である。通常の run は Git 管理外で、採用判断の根拠に
+残すスナップショットだけを `results/archive/` へ移す。過去の台帳も同所へ整理した。
+
+生成モデルだけを比べる基準線は `--cli agent-ollama` のまま `--model` だけ変える。
+ハーネスを調整する実験ではモデルを固定し、`--cli`、`--wall`、個別スクリプトの
+`--methods` / `--num-predict` を **1 度に 1 つだけ**変える。worker の aider 経路は比較用に
+残すが、モデル交換の必須条件ではない。retrieval の埋め込みモデルは生成モデルと別軸なので、
+`--embedding-model` で明示する。
+
+## worker 受入率ハーネス — ローカルモデルを 1 時間で判定する
 
 `agent-ollama` に載せたモデルを **worker として使えるか**だけを測る。合否は決定的な
 チェッカーが出し、判定役（LLM）は 1 度も呼ばない。
