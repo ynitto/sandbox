@@ -17,19 +17,49 @@ TEST_DIRS = {
     "agent-project": ROOT / "tools/agent-project/tests",
     "agent-flow": ROOT / "tools/agent-flow/tests",
     "agent-amigos": ROOT / "tools/agent-amigos/tests",
+    "agent-loop": ROOT / "tools/agent-loop/test",
+    "agent-audit": ROOT / "tools/agent-audit/tests",
+    "agent-ollama": ROOT / "tools/agent-tools/agentcore/agentcore/tests",
+    "agent-aider": ROOT / "tools/agent-tools/agentcore/agentcore/tests",
 }
 
 
 def load_scenarios() -> list[dict]:
-    return json.loads((HERE / "scenarios.json").read_text(encoding="utf-8"))["scenarios"]
+    scenarios = json.loads((HERE / "scenarios.json").read_text(encoding="utf-8"))["scenarios"]
+    ids = [item.get("id") for item in scenarios]
+    if len(ids) != len(set(ids)):
+        raise ValueError("scenario ids must be unique")
+    for item in scenarios:
+        missing = {"id", "engine", "test", "covers"} - item.keys()
+        if missing or item.get("engine") not in TEST_DIRS or not item.get("covers"):
+            raise ValueError(f"invalid scenario: {item!r} (missing={sorted(missing)})")
+    return scenarios
 
 
 def run_mock(scenario: dict, timeout: float) -> dict:
     started = time.monotonic()
-    proc = subprocess.run(
-        [sys.executable, "-m", "unittest", "-v", scenario["test"]],
-        cwd=TEST_DIRS[scenario["engine"]], capture_output=True, text=True,
-        timeout=timeout, env={**os.environ, "AGENT_FLOW_STUB_SLEEP_MAX": "0"})
+    try:
+        with tempfile.TemporaryDirectory(prefix="agent-e2e-bin-") as bindir:
+            # agent-loop validates tmux at import time. Its selected scenarios mock the
+            # session boundary, so provide a no-op executable instead of requiring tmux.
+            tmux = Path(bindir) / "tmux"
+            tmux.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            tmux.chmod(0o755)
+            pythonpath = str(ROOT / "tools/agent-tools/agentcore")
+            if os.environ.get("PYTHONPATH"):
+                pythonpath += os.pathsep + os.environ["PYTHONPATH"]
+            env = {**os.environ, "AGENT_FLOW_STUB_SLEEP_MAX": "0",
+                   "AGENT_LOOP_STUB_DELAY": "0", "PYTHONPATH": pythonpath,
+                   "PATH": bindir + os.pathsep + os.environ.get("PATH", "")}
+            proc = subprocess.run(
+                [sys.executable, "-m", "unittest", "-v", scenario["test"]],
+                cwd=TEST_DIRS[scenario["engine"]], capture_output=True, text=True,
+                timeout=timeout, env=env)
+    except subprocess.TimeoutExpired as exc:
+        return {"id": scenario["id"], "engine": scenario["engine"], "status": "timeout",
+                "seconds": round(time.monotonic() - started, 3), "exit_code": None,
+                "covers": scenario["covers"], "stdout": exc.stdout or "",
+                "stderr": exc.stderr or ""}
     return {"id": scenario["id"], "engine": scenario["engine"],
             "status": "passed" if proc.returncode == 0 else "failed",
             "seconds": round(time.monotonic() - started, 3), "exit_code": proc.returncode,
