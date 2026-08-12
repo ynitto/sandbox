@@ -230,6 +230,11 @@ def normalize(name: str, raw: dict, path) -> dict:
         if inject not in ("send-keys", "file"):
             raise AgentCliError(
                 f"エージェント定義 {path}: interactive.prompt_inject は send-keys か file です")
+        turn_completion = str(inter_raw.get("turn_completion") or "")
+        if turn_completion not in ("", "kiro", "claude", "codex", "copilot", "opencode"):
+            raise AgentCliError(
+                f"エージェント定義 {path}: interactive.turn_completion が未知です: "
+                f"{turn_completion!r}")
         spec["interactive"] = {
             "command": icmd,
             # 対話の既定モードで付けるフラグ。トップレベルの write_args はヘッドレス専用の
@@ -257,6 +262,7 @@ def normalize(name: str, raw: dict, path) -> dict:
             "save_command": str(inter_raw.get("save_command") or ""),
             "exit_command": str(inter_raw.get("exit_command") or ""),
             "prompt_inject": inject,
+            "turn_completion": turn_completion,
         }
     else:
         spec["interactive"] = None

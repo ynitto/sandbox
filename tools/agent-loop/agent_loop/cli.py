@@ -130,6 +130,14 @@ def main() -> None:
         help=argparse.SUPPRESS,  # agent hook 専用コマンドのためヘルプ非表示
     )
 
+    hook_parser = subparsers.add_parser("hook-event", help=argparse.SUPPRESS)
+    hook_parser.add_argument("--adapter", required=True,
+                             choices=["kiro", "claude", "codex", "copilot", "opencode"])
+    hook_parser.add_argument("--status", required=True,
+                             choices=["complete", "failure", "failure-hint"])
+    hook_parser.add_argument("--native-event", default="")
+    hook_parser.add_argument("payload", nargs="*")
+
     send_parser = subparsers.add_parser(
         "send",
         help="tmux セッションの kiro-cli にプロンプトを送信する",
@@ -364,6 +372,17 @@ def main() -> None:
 
     if args.subcommand == "slot-release":
         cmd_slot_release()
+        return
+
+    if args.subcommand == "hook-event":
+        if args.adapter == "codex":
+            handle_codex_notify(args.payload[-1] if args.payload else "")
+        elif args.adapter == "copilot" and args.status == "failure-hint":
+            handle_copilot_error(sys.stdin.read(1_048_577))
+        else:
+            record_turn_hook_event(
+                adapter=args.adapter, status=args.status, native_event=args.native_event,
+            )
         return
 
     if args.subcommand == "send":

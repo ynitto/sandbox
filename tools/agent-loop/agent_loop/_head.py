@@ -77,14 +77,14 @@ if shutil.which("tmux") is None:
 try:
     import yaml  # type: ignore
 
-    def _load_config_file(path: Path) -> dict[str, Any]:
+    def _read_config_file(path: Path) -> dict[str, Any]:
         with path.open(encoding="utf-8") as f:
             return yaml.safe_load(f) or {}
 
 except ImportError:
     yaml = None  # type: ignore
 
-    def _load_config_file(path: Path) -> dict[str, Any]:  # type: ignore[misc]
+    def _read_config_file(path: Path) -> dict[str, Any]:  # type: ignore[misc]
         """PyYAML がない場合は JSON のみ受け付ける。"""
         if path.suffix.lower() in (".yaml", ".yml"):
             print(
@@ -95,6 +95,10 @@ except ImportError:
             sys.exit(1)
         with path.open(encoding="utf-8") as f:
             return json.load(f)
+
+
+def _load_config_file(path: Path) -> dict[str, Any]:
+    return _resolve_config_mappings(_read_config_file(path))
 
 
 # ---------------------------------------------------------------------------
@@ -162,4 +166,3 @@ def _find_running_daemon(cwd: Path) -> int | None:
         if data.get("cwd") == cwd_str:
             return int(data["pid"])
     return None
-

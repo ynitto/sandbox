@@ -89,6 +89,7 @@ chat モードのように、人が `/skill-name` と書いたテキストを送
 | `failure_pattern` | `agent-loop send --wait`が明示的失敗とみなすERE。省略時はpane/process終了以外を推測しない |
 | `idle_quiet_sec` | どちらのパターンでも判定できない CLI 向けの静穏判定。画面が N 秒変化しなければ待機とみなす（0 = 無効） |
 | `clear_command` | コンテキスト破棄コマンド（既定 `/clear`、codex は `/new`）。空文字は「クリア手段なし」の宣言 |
+| `turn_completion` | agent-loop が管理する対話paneだけにCLI固有のsession-local完了hookを注入する。既知値は `kiro` / `claude` / `codex` / `copilot` / `opencode`。未指定時は画面監視のみ |
 
 判定の優先順位: `busy_pattern` マッチ → 処理中 ＞ `ready_pattern` マッチ → 待機 ＞
 `idle_quiet_sec` 静穏 → 待機 ＞ それ以外 → 処理中。

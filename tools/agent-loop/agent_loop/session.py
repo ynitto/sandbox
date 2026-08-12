@@ -43,6 +43,8 @@ class SessionManager:
         self._generation: dict[str, int] = {}
         self._effective_model: dict[str, str | None] = {}
         self._launch_fingerprint: dict[str, str] = {}
+        self._turn_hook_context: dict[str, dict[str, Any]] = {}
+        self._turn_hook_cleanup: dict[str, Path] = {}
         # グローバル指示: ペインごとに「最後に注入した instructions.revision」を覚え、
         # revision が変わったときだけ次の送信に前置する（長寿命チャットの文脈を汚さない）。
         self._instr_rev: dict[str, int] = {}
@@ -275,6 +277,12 @@ class SessionManager:
         profile_name = _CLI_PROFILE.name
         effective_model: str | None = None
         ownership = "managed-persistent"
+        turn_adapter = str(
+            (spec.get("turn_completion") if spec is not None else _CLI_PROFILE.turn_completion)
+            or ""
+        )
+        turn_token = uuid.uuid4().hex + uuid.uuid4().hex
+        turn_cleanup: Path | None = None
 
         if spec is not None:
             full_argv = list(spec.get("argv") or [])
@@ -323,10 +331,31 @@ class SessionManager:
             session_cwd = self._resolve_cwd(cwd)
             launch_env = self._build_launch_env(prompt_id)
 
+        fingerprint_argv = list(full_argv)
+        if turn_adapter:
+            try:
+                full_argv, launch_env, turn_cleanup = prepare_turn_hook_launch(
+                    adapter=turn_adapter,
+                    argv=full_argv,
+                    env=launch_env,
+                    instance_id=self._instance_id,
+                    hook_token=turn_token,
+                    user_home=Path(self._user_home),
+                    cwd=Path(session_cwd),
+                )
+            except (OSError, TypeError, ValueError) as exc:
+                log.warning(
+                    "%s turn-completion hook を準備できません。画面監視へ戻ります: %s",
+                    turn_adapter, exc,
+                )
+                turn_adapter = ""
+
         # セッション開始コマンド（agent-session-commands）の process モード。ペインを作る
         # **前**に走らせる。前準備が終わっていない環境でエージェントを動かさないため、
         # on_error='fail' が失敗したらここで諦める（ペインを作らない）。
         if not run_session_commands(self._session_command_context(session_cwd), modes=("process",)):
+            if turn_cleanup is not None:
+                shutil.rmtree(turn_cleanup, ignore_errors=True)
             log.error("プロンプト '%s' はセッション開始コマンドの失敗により起動しません。", prompt_name)
             return False
 
@@ -335,11 +364,15 @@ class SessionManager:
         try:
             pane_target = self._create_worker_pane(cmd, session_cwd)
         except RuntimeError as exc:
+            if turn_cleanup is not None:
+                shutil.rmtree(turn_cleanup, ignore_errors=True)
             log.error("プロンプト '%s' のペイン起動に失敗しました: %s", prompt_name, exc)
             return False
 
         attach_session_name = self.get_attach_session_name()
-        fp = launch_fingerprint(profile_name, full_argv, session_cwd)
+        # token・private agent名を含むsession-local hook argvは毎回変わるため、
+        # 差し替え判定には定義から解決した元argvを使う。
+        fp = launch_fingerprint(profile_name, fingerprint_argv, session_cwd)
 
         with self._lock:
             self._panes[prompt_id] = pane_target
@@ -351,6 +384,15 @@ class SessionManager:
             self._generation[prompt_id] = int(self._generation.get(prompt_id, 0)) + 1
             self._effective_model[prompt_id] = effective_model
             self._launch_fingerprint[prompt_id] = fp
+            if turn_adapter:
+                self._turn_hook_context[pane_target] = {
+                    "instance_id": self._instance_id,
+                    "agent_cli": turn_adapter,
+                    "hook_token": turn_token,
+                    "generation": self._generation[prompt_id],
+                }
+                if turn_cleanup is not None:
+                    self._turn_hook_cleanup[pane_target] = turn_cleanup
             if prompt_id not in self._restart_locks:
                 self._restart_locks[prompt_id] = threading.Lock()
 
@@ -410,6 +452,9 @@ class SessionManager:
             self._instr_rev.pop(prompt_id, None)
             self._tuning_applied().pop(prompt_id, None)
 
+        if pane_target is not None:
+            self._cleanup_turn_hook_pane(pane_target)
+
         if pane_target is not None and self._pane_exists(pane_target):
             log.info("kiro-cli ペインを終了します (pane=%s)。", pane_target)
             _tmux_cmd("send-keys", "-t", pane_target, "C-c", capture=False)
@@ -420,6 +465,15 @@ class SessionManager:
                 _tmux_cmd("select-layout", "-t", window_target, self._layout_name(), capture=False)
             except RuntimeError:
                 _tmux_cmd("kill-pane", "-t", pane_target, capture=False)
+
+    def _cleanup_turn_hook_pane(self, pane_id: str) -> None:
+        with self._lock:
+            context = getattr(self, "_turn_hook_context", {}).pop(pane_id, None)
+            cleanup = getattr(self, "_turn_hook_cleanup", {}).pop(pane_id, None)
+        if context:
+            clear_turn_hook_pane(context["instance_id"], pane_id)
+        if cleanup is not None:
+            shutil.rmtree(cleanup, ignore_errors=True)
 
     # ------------------------------------------------------------------
     # 公開インタフェース
@@ -458,6 +512,11 @@ class SessionManager:
     def get_generation(self, prompt_id: str) -> int:
         with self._lock:
             return int(self._generation.get(prompt_id, 0))
+
+    def get_turn_hook_context(self, pane_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            context = getattr(self, "_turn_hook_context", {}).get(pane_id)
+            return dict(context) if context else None
 
     def get_effective_model(self, prompt_id: str) -> str | None:
         with self._lock:
@@ -657,7 +716,7 @@ class SessionManager:
                 continue
             desired_tuning[prompt_id] = str(entry.get("tuning_profile") or "default")
             # Hooks may be headless and can skip forever; create a pane only after one emits a prompt.
-            if entry.get("event_hook"):
+            if entry.get("hooks"):
                 continue
             if entry.get("oneshot"):
                 continue
@@ -847,6 +906,7 @@ class SessionManager:
             pane_id = self._panes.get(prompt_id)
         if pane_id is None:
             return False
+        self._cleanup_turn_hook_pane(pane_id)
         self.kill_process_tree(pane_id, grace_seconds=grace_seconds)
         with self._lock:
             if self._panes.get(prompt_id) == pane_id:

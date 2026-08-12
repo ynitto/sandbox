@@ -20,6 +20,7 @@ if _agentcore_dir not in _sys.path:
 _FRAGMENTS = (
     "_head",
     "cliprofile",
+    "turnhooks",
     "semaphore",
     "dispatch",
     "execution",

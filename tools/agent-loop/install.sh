@@ -142,21 +142,7 @@ if [[ -z "$PIP_CMD" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 5. kiro-cli チェック
-# ---------------------------------------------------------------------------
-info "kiro-cli を確認しています..."
-
-if ! command -v kiro-cli &>/dev/null; then
-  warn "kiro-cli が見つかりません。既定のエージェント CLI として使う場合はインストールしてください。
-  参考: https://kiro.dev/docs/installation
-  （設定の agent_cli で別のエージェント CLI（claude / codex 等）を使う場合は不要です）"
-else
-  KIRO_VER="$(kiro-cli --version 2>&1 | head -1 || echo '(バージョン取得失敗)')"
-  ok "kiro-cli が見つかりました: $(command -v kiro-cli) ($KIRO_VER)"
-fi
-
-# ---------------------------------------------------------------------------
-# 6. Python 依存ライブラリのインストール（PyYAML は任意）
+# 5. Python 依存ライブラリのインストール（PyYAML は任意）
 # ---------------------------------------------------------------------------
 info "Python 依存ライブラリを確認・インストールしています..."
 
@@ -181,7 +167,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 7. スクリプトのインストール（zipapp: agent_loop パッケージ）
+# 6. スクリプトのインストール（zipapp: agent_loop パッケージ）
 # ---------------------------------------------------------------------------
 info "agent_loop パッケージを zipapp にまとめてインストールしています..."
 
@@ -199,7 +185,7 @@ mkdir -p "${BUILD_DIR}/agent_loop"
   done )
 
 # agent_cli 差し替え（agents/<name>.json 契約）用に agentcore（定義ローダ）を同梱する。
-# 無くても従来の kiro-cli 固定経路は動くため任意（その場合 agent_cli 指定は使えない）。
+# 無くても既定 CLI の組み込み経路は動くため任意（その場合 agent_cli 指定は使えない）。
 AGENTCORE_SRC="${SCRIPT_DIR}/../agent-tools/agentcore/agentcore"
 if [[ -d "$AGENTCORE_SRC" ]]; then
   ( cd "$AGENTCORE_SRC" && find . -name '*.py' -not -path './tests/*' -print0 | while IFS= read -r -d '' f; do
@@ -255,6 +241,24 @@ with zipfile.ZipFile(exe, 'a') as zf:
 "
 ok "インストールしました: ${INSTALL_PATH}（zipapp）"
 
+HOOKS_SRC="${SCRIPT_DIR}/hooks"
+HOOKS_DEST="${INSTALL_PREFIX}/hooks"
+if [[ -d "${HOOKS_SRC}" ]]; then
+  mkdir -p "${HOOKS_DEST}"
+  find "${HOOKS_SRC}" -maxdepth 1 -name '*.py' -exec cp {} "${HOOKS_DEST}/" \;
+  ok "同梱 hooks を配置しました: ${HOOKS_DEST}"
+fi
+
+AGENT_HOOKS_SRC="${SCRIPT_DIR}/agent-hooks"
+AGENT_HOOKS_DEST="${INSTALL_PREFIX}/agent-hooks"
+if [[ -d "${AGENT_HOOKS_SRC}" ]]; then
+  mkdir -p "${AGENT_HOOKS_DEST}"
+  cp -R "${AGENT_HOOKS_SRC}/." "${AGENT_HOOKS_DEST}/"
+  find "${AGENT_HOOKS_DEST}" -type d -exec chmod 755 {} \;
+  find "${AGENT_HOOKS_DEST}" -type f -exec chmod 644 {} \;
+  ok "CLI turn-completion hook assets を配置しました: ${AGENT_HOOKS_DEST}"
+fi
+
 # 手法カタログは参照データとして共通ホームへ配る。tuning.json へは enable 時に複製されるため、
 # カタログ更新だけで稼働中の挙動は変わらない。
 METHODS_SRC="${SCRIPT_DIR}/../../methods"
@@ -280,41 +284,7 @@ if [[ -f "$SEND_SRC" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 8. 同時実行数制御用ファイルのインストール
-# ---------------------------------------------------------------------------
-info "同時実行数制御用ファイルをインストールしています..."
-
-# kiro-cli が探索するエージェントホームへ配置（共有 ~/.kiro/agents）
-KIRO_AGENTS_DIR="${KIRO_AGENTS_DIR:-$HOME/.kiro/agents}"
-mkdir -p "$KIRO_AGENTS_DIR"
-
-CONCURRENCY_AGENT_FILE="$KIRO_AGENTS_DIR/agent-loop-concurrency.json"
-cat > "$CONCURRENCY_AGENT_FILE" << 'EOF'
-{
-  "name": "agent-loop-concurrency",
-  "description": "agent-loop 並列実行制御用エージェント（自動生成 — 手動で編集しないでください）",
-  "hooks": {
-    "stop": [
-      {
-        "type": "command",
-        "command": "agent-loop slot-release"
-      }
-    ]
-  },
-  "resources": [
-    "skill://~/.kiro/skills/**/SKILL.md",
-    "skill://.kiro/skills/**/SKILL.md",
-    "skill://~/.agents/skills/**/SKILL.md",
-    "skill://.agents/skills/**/SKILL.md",
-    "skill://.agent/skills/**/SKILL.md"
-  ],
-  "tools": ["*"]
-}
-EOF
-ok "エージェント設定を作成しました: $CONCURRENCY_AGENT_FILE"
-
-# ---------------------------------------------------------------------------
-# 9. PATH チェック
+# 7. PATH チェック
 # ---------------------------------------------------------------------------
 info "PATH を確認しています..."
 

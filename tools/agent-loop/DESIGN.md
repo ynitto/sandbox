@@ -15,7 +15,7 @@ agent-loop は **tmux + kiro-cli** を組み合わせ、設定ファイルで定
 
 主な役割:
 - エージェント CLI プロセスを tmux ペインとして起動・死活監視・再起動
-- schedule / event_hook / webhook / inbox / CLI send を `PeriodicScheduler` の唯一の dispatch gate 経由で配送
+- schedule / hooks / webhook / inbox / CLI send を `PeriodicScheduler` の唯一の dispatch gate 経由で配送
 - 複数デーモン間で同時実行数を制御（ファイルベースセマフォ）と pending FIFO（上限時は破棄せず保留）
 - `ls` / `send`（`--ralph` / `--sandbox` / `--force` / `--model`）/ `pause` / `resume` / `cancel` / `drain` / `reload` / `doctor` / `update` による外部操作
 - Phase 2A: Ralph、oneshot、clean_session、external pane、sandbox（`execution.py` / `sandbox.py`）
@@ -46,7 +46,7 @@ agent-loop (引数なし)
     ├─ 設定ロード (load_config + _load_prompt_file_data)
     │
     ├─ SessionManager 生成
-    ├─ SlotMonitor 生成（max_concurrent > 0 の場合のみ）
+    ├─ SlotMonitor 生成（完了監視用。max_concurrent=0でも動作）
     ├─ PeriodicScheduler 生成 → start()
     ├─ SlotMonitor.start()
     ├─ session-monitor スレッド起動
@@ -86,7 +86,7 @@ agent-loop (引数なし)
 
 ### 3.2 `SlotMonitor`
 
-**役割**: kiro-cli agent hook が発火しなかった場合のフォールバック。ペイン出力を監視してスロットを自動解放する。
+**役割**: managed interactive CLIのnative turn eventをmailboxから先に取得し、無い場合はペイン出力を監視して完了を検知する。
 
 **状態遷移**:
 ```
@@ -102,8 +102,8 @@ processing
 - `_START_WAIT_TIMEOUT = 60.0` 秒 — kiro-cli が処理を開始しないままこの時間を超えたらスロット解放
 
 **インターフェース**:
-- `track(pane_id)` — 送信直後に呼び出してペインを監視対象に登録
-- `untrack(pane_id)` — agent hook 発火時など、手動で監視を解除
+- `track(pane_id, turn_hook=...)` — 送信直後にactive correlationを作り、監視対象に登録
+- `untrack(pane_id)` — cancel/restart時にmailboxも削除して監視を解除
 
 ---
 
@@ -147,21 +147,21 @@ cwd が変わらない限り同じセッション名が生成される。
 - `interval_minutes` が空/0 のエントリは除外。ただし `webhook` ブロックを持つエントリは
   スケジュール無し（push 駆動）を許容し、`next_run_at = math.inf`（sentinel）にして
   自動発火パスから外す
-- `prompt` が空のエントリは除外。ただし `event_hook` を指定している場合は許容（フックが送信内容を決めるため）
+- `prompt` が空のエントリは除外。ただし `hooks` を指定している場合は許容（フックが送信内容を決めるため）
 - `run_immediately_on_startup: true` なら起動後 30 秒で初回送信、それ以外は `interval_minutes` 後
 - UUID が未設定なら自動生成
-- `event_hook`（フックスクリプトのパス）・`event_hook_fallback`（bool）を正規化エントリに保持
+- `hooks`（フックスクリプトの文字列または配列）・`event_hook_fallback`（bool）を正規化エントリに保持
 - `webhook`（`{hook, secret, secret_header}` に正規化、無ければ None）を正規化エントリに保持
 
-**event_hook**:
-- スケジュール発火のたびにフックの `check()` / `check(hook_config)` を呼ぶ（`importlib`、`mtime` キャッシュ）
+**hooks**:
+- スケジュール発火のたびに各フックの `check()` / `check(hook_config)` を呼ぶ（`importlib`、`mtime` キャッシュ）
 - 戻り値: `None`（スキップ） / `str`（prompt） / `dict{prompt, cwd?, vars?}`（`vars` は webhook と同じ `str.format_map`）
 - 30 秒 timeout で隔離し、完了または reload まで同じ hook を再実行しない
 - 配送成功（tmux 送信成功）後だけ `ack()` を呼ぶ
 - `event_hook_fallback` / `AGENT_LOOP_PROMPT_NAME` の環境変数受け渡しは従来どおり
 - 同梱例: `hooks/gitlab-issue-hook.py` / `hooks/gitlab-mr-hook.py`
 
-**inbound webhook**（`event_hook` のプッシュ版・provider 非依存）:
+**inbound webhook**（`hooks` のプッシュ版・provider 非依存）:
 - agent-loop 稼働中だけ `WebhookServer`（標準ライブラリ `http.server.ThreadingHTTPServer`）を
   常駐させ、`POST <path_prefix>/<name>` を受ける。グローバル `webhook:` 設定（`enabled`/`host`/
   `port`/`path_prefix`/`secret`/`secret_header`/`max_body_bytes`）で制御し、`enabled` かつ
@@ -177,7 +177,7 @@ cwd が変わらない限り同じセッション名が生成される。
   （`_external_queues`、上限 `_WEBHOOK_QUEUE_MAX`）へ積んで即 `202` を返す
 - 実 dispatch は `_run_loop` が外部 deque を内部 pending へ移し、lifecycle / preflight / slot /
   ready 判定を通して送信する。未準備/上限時は pending に戻す（再起動でメモリキューは消える＝at-most-once）
-- hook のロードは event_hook と共通の `_load_hook_module`（`_hook_cache_lock` で保護）
+- hook のロードは hooks と共通の `_load_hook_module`（`_hook_cache_lock` で保護）
 - 同梱例: `hooks/gitlab-mr-webhook.py` / `hooks/generic-webhook.py`
 - 詳細: `docs/designs/agent-loop-design.md` および Phase 1 設計書
 
@@ -275,7 +275,8 @@ FIFO で保留し、同じ entry の定期発火は最大 1 件へ coalesce す�
 4. `max_concurrent > 0` のデーモン管理下ペインにはスロットを取得してから送信
 
 ### `slot-release`
-kiro-cli agent hook（`stop` イベント）から呼び出されるコマンド。`$TMUX_PANE` のスロットを解放する。
+旧Kiro agentとの互換alias。有効なmanaged active recordがある場合だけKiro complete eventへ変換する。
+semaphoreは直接解放しない。
 
 ---
 
@@ -300,16 +301,16 @@ PeriodicScheduler._run_loop()
     └─ SlotMonitor / session-monitor が完了・freeze・health を監視
 
 SlotMonitor._run_loop() [別スレッド]
-    ├─ ペイン: waiting_start → processing → semaphore.release()  [ready 復帰]
+    ├─ native event mailbox → complete/failure callback → semaphore.release()
+    ├─ fallback: waiting_start → processing → semaphore.release()  [ready 復帰]
     ├─ freeze_timeout（opt-in）: busy 中 hash 不変 → on_freeze
     └─ タイムアウト時: 強制 semaphore.release()
 
-kiro-cli agent hook (stop)
-    └─ agent-loop slot-release → GlobalSemaphore.release($TMUX_PANE)
-                                  └─ SlotMonitor.untrack(pane_id) ← hookが勝った場合
+managed CLI native hook
+    └─ agent-loop hook-event → instance-local mailbox → SlotMonitor._release()
 ```
 
-`slot-release` hook が正常に発火した場合は SlotMonitor の解放より先になるため、SlotMonitor は `_pending` にペインが登録されたまま次のポーリングで何もしない（既にスロットファイルが消えているため）。
+mailboxと画面判定が競合しても、`_release()`がpending recordを取得できた最初の経路だけcallbackする。
 
 ---
 
@@ -341,7 +342,7 @@ kiro-cli agent hook (stop)
 
 ### `slot-release`（agent hook）
 
-セマフォ解放のみを行うコマンドであり、同時実行上限の影響を受けない。
+managed Kiro complete eventへの互換変換だけを行い、SlotMonitorの既存経路へ合流する。
 
 ---
 
@@ -353,7 +354,7 @@ kiro-cli agent hook (stop)
 ### 新しいプロンプトオプションを追加する
 `PeriodicScheduler._set_entries()` の `normalized` 辞書にフィールドを追加し、`_run_loop()` で参照する。`agent-loop.yaml.example` にもドキュメントを追記すること。
 
-### event_hook を追加・変更する
+### hooks を追加・変更する
 - フックは `check() -> str | None` を実装する。`check()` は scheduler スレッド内で同期実行されるため、ネットワーク呼び出しには短い timeout を設定しブロックを避けること。
 - フックのロードは `_load_hook_module()`（`mtime` キャッシュ付き）、呼び出しは `_call_hook_check()`。`importlib.util.exec_module` はトップレベルコードを実行するため、副作用は `check()` 内に閉じること。
 - フォールバック有無は YAML の `event_hook_fallback` で制御し、環境変数 `AGENT_LOOP_EVENT_HOOK_FALLBACK`（`1`/`0`）でフックへ渡す。新しいフックでもこの規約に従う。

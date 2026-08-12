@@ -1,0 +1,5 @@
+{
+  "name": "agent-loop-turn-completion",
+  "description": "Report managed Copilot CLI turn completion to agent-loop",
+  "version": "1.0.0"
+}

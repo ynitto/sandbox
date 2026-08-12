@@ -347,17 +347,10 @@ def _try_acquire_slot_for_send(pane_id: str) -> bool:
 
 
 def cmd_slot_release() -> None:
-    """$TMUX_PANE に対応するセマフォスロットを解放する（kiro-cli agent hook から呼び出される）。"""
-    pane_env = os.environ.get("TMUX_PANE", "")
-    if not pane_env:
-        sys.exit(0)
-    cooldown_seconds = 0
-    try:
-        config, _, _ = load_config(Path.cwd())
-        cooldown_seconds = int(config.get("cooldown_seconds", 0))
-    except Exception:
-        pass
-    GlobalSemaphore(0, cooldown_seconds=cooldown_seconds).release(pane_env)
+    """旧Kiro hookをmanaged turn eventへ変換する互換alias。"""
+    record_turn_hook_event(
+        adapter="kiro", status="complete", native_event="slot-release",
+    )
     sys.exit(0)
 
 

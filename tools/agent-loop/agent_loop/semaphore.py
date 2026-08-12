@@ -297,12 +297,20 @@ class SlotMonitor:
         initial_content_hash: str | None = None,
         hold_slot: bool = False,
         profile: Any = None,
+        turn_hook: dict[str, Any] | None = None,
     ) -> None:
         """ペインの処理完了監視を開始する。
 
         hold_slot=True のとき完了時に semaphore を解放しない（Ralph / cleanup lease）。
         profile 未指定時は daemon 既定 CliProfile を is_idle に使う。
         """
+        hook = dict(turn_hook or {}) or None
+        if hook is not None:
+            try:
+                write_turn_hook_active(pane_id=pane_id, **hook)
+            except (OSError, TypeError, ValueError) as exc:
+                log.warning("turn-completion hook を開始できません。画面監視へ戻ります: %s", exc)
+                hook = None
         with self._lock:
             self._pending[pane_id] = {
                 "state": "waiting_start",
@@ -315,12 +323,14 @@ class SlotMonitor:
                 "initial_content_hash": initial_content_hash,
                 "hold_slot": bool(hold_slot),
                 "profile": profile,
+                "turn_hook": hook,
             }
 
     def untrack(self, pane_id: str) -> None:
         """監視を手動で終了する（agent hook 発火時など）。"""
         with self._lock:
-            self._pending.pop(pane_id, None)
+            entry = self._pending.pop(pane_id, None)
+        self._clear_turn_hook(pane_id, entry)
 
     def is_tracking(self, pane_id: str) -> bool:
         with self._lock:
@@ -359,6 +369,23 @@ class SlotMonitor:
             state = entry["state"]
             acquired_at = entry["acquired_at"]
 
+        hook = entry.get("turn_hook")
+        failure_pending = False
+        if hook:
+            event = claim_turn_hook_event(
+                hook["instance_id"], pane_id, hook["dispatch_id"], hook["generation"],
+            )
+            if event is not None:
+                self._release(
+                    pane_id,
+                    notify_complete=event.get("status") == "complete",
+                    notify_failure=event.get("status") == "failure",
+                )
+                return
+            failure_pending = turn_hook_failure_pending(
+                hook["instance_id"], pane_id, hook["dispatch_id"], hook["generation"],
+            )
+
         # ペインが存在しない場合は即座に解放
         result = subprocess.run(
             [shutil.which("tmux") or "tmux", "display-message", "-p", "-t", pane_id, "#{pane_id}"],
@@ -386,7 +413,11 @@ class SlotMonitor:
                         self._pending[pane_id]["state"] = "processing"
             elif entry.get("initial_content_hash") and hashlib.sha256(
                     content.encode("utf-8", errors="replace")).hexdigest() != entry["initial_content_hash"]:
-                self._release(pane_id, notify_complete=True)
+                self._release(
+                    pane_id,
+                    notify_complete=not failure_pending,
+                    notify_failure=failure_pending,
+                )
             elif now - acquired_at > self._START_WAIT_TIMEOUT:
                 # エージェント CLI が処理を開始しないままタイムアウト
                 log.warning("SlotMonitor: ペイン %s が処理を開始しないためスロットを解放します。", pane_id)
@@ -395,7 +426,11 @@ class SlotMonitor:
         elif state == "processing":
             if is_idle:
                 log.info("SlotMonitor: ペイン %s の処理完了を検知。スロットを解放します。", pane_id)
-                self._release(pane_id, notify_complete=True)
+                self._release(
+                    pane_id,
+                    notify_complete=not failure_pending,
+                    notify_failure=failure_pending,
+                )
             else:
                 if self._freeze_timeout > 0:
                     self._check_freeze(pane_id, content, entry, now)
@@ -459,6 +494,8 @@ class SlotMonitor:
             elif not notify_complete and not notify_failure:
                 self._pending.pop(pane_id, None)
         forget_profile = profile if profile is not None else _CLI_PROFILE
+        if entry and not keep_for_completion:
+            self._clear_turn_hook(pane_id, entry)
         forget_profile.forget_pane(pane_id)
         if release_slot:
             self._semaphore.release(pane_id)
@@ -477,3 +514,9 @@ class SlotMonitor:
             with self._lock:
                 if self._pending.get(pane_id) is entry:
                     self._pending.pop(pane_id, None)
+
+    @staticmethod
+    def _clear_turn_hook(pane_id: str, entry: dict[str, Any] | None) -> None:
+        hook = (entry or {}).get("turn_hook")
+        if hook:
+            clear_turn_hook(hook["instance_id"], pane_id, hook["dispatch_id"])

@@ -125,6 +125,13 @@ class AcceptanceGateTest(unittest.TestCase):
         found = al.acceptance_paths(self.acc, self.dir)
         self.assertEqual(found, [self.target])      # 散文の語をパスと誤認しない
 
+    def test_backquoted_command_names_are_not_paths(self):
+        # 受入条件の地の文にはコマンド名も同じ記法で出る。パスとして拾うと永久に
+        # 満たせない条件になり、成果物を書き終えた実行まで fail する。
+        self.assertEqual(al.acceptance_paths(
+            ["`agent-audit` の出力に無い件数を書いていない",
+             "`agent-audit usage --period day` を実行した"], self.dir), [])
+
     def test_paths_outside_the_workspace_are_ignored(self):
         self.assertEqual(al.acceptance_paths(["`../../etc/passwd` を読む"], self.dir), [])
 
@@ -249,6 +256,94 @@ class GoalToolLoopTest(unittest.TestCase):
                   Path(self.log).read_text(encoding="utf-8").splitlines()]
         self.assertTrue(any(e.get("event") == "rejected" for e in events),
                         "却下は実行ログにも残す（後から why を追える）")
+
+    def test_first_round_does_not_claim_a_command_already_ran(self):
+        # 無条件に「実行済みだから走らせるな」と書いていた頃、モデルは実行していない
+        # コマンドを「実行した」と書いた。成功した run が履歴に入るまでは言わない。
+        prompts = []
+
+        def fake(agent, prompt, *, cwd, readonly, read_files, files, log_file):
+            prompts.append(prompt)
+            if len(prompts) == 1:
+                return '{"type":"run","command":"echo","args":["hi"],"timeout_sec":10}'
+            return '{"type":"final","output":"done"}'
+        al._tl_run_agent = fake
+
+        al.run_goal(goal="echo する", cwd=self.dir, agent={}, log_file=self.log, acceptance=[])
+        self.assertNotIn("already completed", prompts[0])
+        self.assertIn("already completed", prompts[1])
+
+    def test_write_call_receives_the_tool_results(self):
+        # コマンドの出力を渡さないまま書かせると、モデルは中身を創作する
+        # （実測: 集計に 3 グループ出ているのに「データなし」と書いた）。
+        prompts = []
+
+        def fake(agent, prompt, *, cwd, readonly, read_files, files, log_file):
+            prompts.append(prompt)
+            for f in files:
+                Path(f).write_text("generated\n", encoding="utf-8")
+            if files:
+                return "wrote"
+            if len(prompts) == 1:
+                return '{"type":"run","command":"echo","args":["FACT-42"],"timeout_sec":10}'
+            return '{"type":"write_files","paths":["out.md"]}'
+        al._tl_run_agent = fake
+
+        al.run_goal(goal="out.md に書く", cwd=self.dir, agent={}, log_file=self.log,
+                    acceptance=["`out.md` が更新されている"])
+        self.assertIn("FACT-42", prompts[-1])
+
+    def test_control_rounds_use_the_json_variant(self):
+        # 制御応答は編集能力の要らない周。定義が json_variant を申告していれば、その周
+        # だけ JSON 用の起動形へ振り替える（編集は元の CLI のまま）。
+        _write_cli(self.dir, "editor", {
+            "command": ["editor"], "prompt_via": "argv", "prompt_flag": "--message",
+            "file_flag": "--file", "read_flag": "--read", "json_variant": "jsonner",
+            "headless_autonomy": "single-shot",
+        })
+        _write_cli(self.dir, "jsonner", {
+            "command": ["jsonner"], "prompt_via": "stdin",
+            "headless_autonomy": "single-shot",
+        })
+        seen = []
+
+        def fake(agent, prompt, *, cwd, readonly, read_files, files, log_file):
+            seen.append(agent["cli"])
+            for f in files:
+                Path(f).write_text("generated\n", encoding="utf-8")
+            return "wrote" if files else '{"type":"write_files","paths":["out.md"]}'
+        al._tl_run_agent = fake
+
+        agent = al._tl_resolve_agent("editor", "", self.dir)
+        al.run_goal(goal="out.md を書く", cwd=self.dir, agent=agent, log_file=self.log,
+                    acceptance=["`out.md` が更新されている"])
+        self.assertEqual(seen, ["jsonner", "editor"])
+
+    def test_control_agent_falls_back_when_the_variant_is_missing(self):
+        _write_cli(self.dir, "editor2", {
+            "command": ["editor2"], "prompt_via": "argv", "prompt_flag": "--message",
+            "json_variant": "nonexistent", "headless_autonomy": "single-shot",
+        })
+        agent = al._tl_resolve_agent("editor2", "", self.dir)
+        self.assertIs(al._tl_control_agent(agent, self.dir), agent)
+
+    def test_off_contract_reply_writes_the_declared_deliverable(self):
+        # 小型モデルは材料が揃うと JSON をやめて本文を書き始める。宣言済みの成果物が
+        # 未着手なら、そのラウンドを捨てずに write へ回す。
+        self._script(["ここに要約を書きました（JSON ではない）", "wrote"])
+        result = al.run_goal(goal="out.md に書く", cwd=self.dir, agent={}, log_file=self.log,
+                             acceptance=["`out.md` が更新されている"])
+        self.assertTrue(result["ok"])
+        events = [json.loads(line) for line in
+                  Path(self.log).read_text(encoding="utf-8").splitlines()]
+        self.assertTrue(any(e.get("event") == "fallback_write" for e in events))
+
+    def test_off_contract_reply_without_a_deliverable_is_still_rejected(self):
+        self._script(["JSON ではない", '{"type":"final","output":"done"}'])
+        al.run_goal(goal="何かする", cwd=self.dir, agent={}, log_file=self.log, acceptance=[])
+        events = [json.loads(line) for line in
+                  Path(self.log).read_text(encoding="utf-8").splitlines()]
+        self.assertTrue(any(e.get("event") == "rejected" for e in events))
 
     def test_shell_requests_are_refused_and_reported_back(self):
         self._script(['{"type":"run","command":"bash","args":["-c","rm -rf /"]}',

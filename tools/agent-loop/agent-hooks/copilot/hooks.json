@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "hooks": {
+    "agentStop": [
+      {
+        "type": "command",
+        "bash": "\"$AGENT_LOOP_EXECUTABLE\" hook-event --adapter copilot --status complete --native-event agentStop",
+        "timeoutSec": 5
+      }
+    ],
+    "errorOccurred": [
+      {
+        "type": "command",
+        "bash": "\"$AGENT_LOOP_EXECUTABLE\" hook-event --adapter copilot --status failure-hint --native-event errorOccurred",
+        "timeoutSec": 5
+      }
+    ]
+  }
+}

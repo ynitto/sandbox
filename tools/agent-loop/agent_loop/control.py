@@ -9,10 +9,11 @@ from __future__ import annotations
 # あわせてノード予算（node-budget 契約: schemas/node-budget.schema.json）も読む。
 # 定常業務（agent-loop）・agent-project・agent-flow・agent-amigos が同じ台帳
 # （$AGENT_BUDGET_DIR、既定 ~/.agents/budget/）に記帳し、合計が上限（0 = 無制限）を
-# 超えたら新規のプロンプト送信を控える。agent-loop は subprocess で LLM を呼ばない
-# （tmux のエージェント CLI に送信する）ため、実行秒はセマフォスロットの保持時間
+# 超えたら新規のプロンプト送信を控える。tmux 経路は subprocess で LLM を呼ばない
+# （対話中のエージェント CLI に送信する）ため、実行秒はセマフォスロットの保持時間
 # （送信 → 完了検知）で近似して記帳する。セマフォ未設定（max_concurrent <= 0）のときは
-# 計測点が無く記帳されない（agent-loop と同じ既知の制約）。
+# 計測点が無く記帳されない（agent-loop と同じ既知の制約）。headless 経路（toolloop）は
+# 自分で CLI を起動するので、CLI が出す実測トークンだけを別行で足す（_tl_record_usage）。
 #
 # 由来: tools/agent-loop/agent-loop.py の同名実装をクローン（agent-loop は後継クローン）。
 
@@ -213,7 +214,8 @@ def _node_budget_record(seconds: float, ref: str = "", agent_cli: str = "routine
                         model: str = "", tokens_in=None, tokens_out=None, usd=None,
                         extra: "dict | None" = None, purpose: str = "") -> None:
     """台帳へ 1 記帳を追記する（O_APPEND — 複数プロセスの同時追記でも行は壊れない）。
-    agent-loop は subprocess で LLM を呼ばないためトークンは実測できず、agent_cli 帰属のみ付す。"""
+    tmux 経路は時間だけ（トークンは実測できず agent_cli 帰属のみ）、headless 経路は
+    CLI が `@agent-usage` を出すならトークンだけを別行で足す。"""
     if seconds <= 0 and not tokens_in and not tokens_out:
         return
     d = os.path.join(_node_budget_dir(), "ledger")

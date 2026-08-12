@@ -1,0 +1,12 @@
+{
+  "name": "agent-loop",
+  "description": "Kiro profile used only inside agent-loop managed panes",
+  "includeMcpJson": true,
+  "hooks": {
+    "stop": [
+      {
+        "command": "\"$AGENT_LOOP_EXECUTABLE\" hook-event --adapter kiro --status complete --native-event stop"
+      }
+    ]
+  }
+}

@@ -76,7 +76,7 @@ class TestEntryNormalization(unittest.TestCase):
         self.assertEqual(sched._entries[0]["slash"], ["/a", "/b"])
 
     def test_slash_only_entry_is_valid(self):
-        """prompt 無し・event_hook 無しでも slash があれば有効（コマンドだけ定期送信）。"""
+        """prompt 無し・hooks 無しでも slash があれば有効（コマンドだけ定期送信）。"""
         sched, _ = _scheduler([{"name": "x", "slash": "compact", "interval_minutes": 5}])
         self.assertEqual(len(sched._entries), 1)
         self.assertEqual(sched._entries[0]["slash"], ["/compact"])

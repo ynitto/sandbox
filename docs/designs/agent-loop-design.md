@@ -170,13 +170,14 @@ prompts:
   - name: "GitLab Issue ワーカー"
     prompt: |
       （省略可。check() が str を返した場合はそちらを優先）
-    event_hook: ~/sandbox/tools/agent-loop/hooks/gitlab-issue-hook.py
+    hooks: gitlab-issue-hook
     event_hook_fallback: false
     interval_minutes: 5
     enabled: true
 ```
 
-`event_hook` は省略可で、省略時は従来どおり YAML の `prompt` をそのまま送信します。
+`hooks` は文字列または配列で指定でき、省略時は従来どおりYAMLの `prompt` をそのまま送信します。
+ファイル名だけならinstall prefixの `hooks/` を探索します。個別設定は `hook_config` で渡します。
 
 ### 同梱フック
 
@@ -253,7 +254,7 @@ POST /hooks/<name>
 
 `_drain_external_to_pending()` は 1 tick あたりエントリごとに 1 件を共通 dispatch queue へ移し、以後は他の入力と同じ lifecycle・preflight・slot・ready 判定を通します。queue へ受理できなければ deque の先頭へ戻します。
 
-webhook 専用エントリはスケジュール（cron / interval）無しで定義でき、その場合 `next_run_at = math.inf` の sentinel でスケジュール発火パスから外れます。発火するのはキュードレイン経由のみです。event_hook との併用（webhook + interval）も可能です。
+webhook 専用エントリはスケジュール（cron / interval）無しで定義でき、その場合 `next_run_at = math.inf` の sentinel でスケジュール発火パスから外れます。発火するのはキュードレイン経由のみです。hooks との併用（webhook + interval）も可能です。
 
 ### 設定
 
@@ -295,7 +296,7 @@ prompts:
 
 `main()` で `webhook.enabled` かつ `port > 0` のとき起動し、bind 失敗（`address in use` 等）は WARNING で本体継続します。停止は `_cleanup` / `_signal_handler` から `stop()`（`shutdown()` + `server_close()`）を配線済みです。
 
-キューはインメモリのみで、再起動・クラッシュで未処理 webhook は失われます。送信元は `202` を受けた時点で再送しないため実質 **at-most-once** です。取りこぼせないイベントは event_hook（ポーリング）併用で冪等に取りに行く運用を推奨します。
+キューはインメモリのみで、再起動・クラッシュで未処理 webhook は失われます。送信元は `202` を受けた時点で再送しないため実質 **at-most-once** です。取りこぼせないイベントは hooks（ポーリング）併用で冪等に取りに行く運用を推奨します。
 
 ### 移植コントラクト（フォーク向け）
 
@@ -418,8 +419,8 @@ agent-loop agents
 
 ```yaml
 prompts:
-  - name: "GitLab Issue ワーカー (event_hook)"
-    event_hook: ~/sandbox/tools/agent-loop/hooks/gitlab-issue-hook.py
+  - name: "GitLab Issue ワーカー (hooks)"
+    hooks: gitlab-issue-hook
     interval_minutes: 5
     adaptive:
       enabled: true
@@ -540,9 +541,19 @@ SlotMonitor の状態遷移は従来の「プロンプト消失 → processing �
 - **コンテキスト破棄**: fresh_context が送るコマンドは `interactive.clear_command`（既定 `/clear`、codex は `/new`）。空文字は「クリア手段なし」の宣言で、警告の上クリアだけスキップします。
 - **スラッシュコマンドの行頭記号**: `slash` プロパティとセッション開始コマンド（chat モード）の行頭 `/` は、送信直前に定義の `skill_command_prefix` へ差し替えます（codex は `$name`。既定 `/` の CLI は素通し）。
 
-### 制約
+### managed interactive CLIのターン完了hook
 
-- **kiro 以外では slot-release stop hook を注入しません**（stop hook は kiro-cli の agents 機構）。スロット解放は SlotMonitor のペイン監視だけで行います。headless 経路では subprocess の exit code が完了検知なので、この制約は掛かりません。
+`interactive.turn_completion`を宣言したKiro classic / Claude / Codex / Copilot / OpenCodeは、
+agent-loopが起動したpaneに限ってsession-local lifecycle hookを加算します。hookはsemaphoreを直接
+解放せず、token付きfile mailboxへ通知し、SlotMonitorが画面判定より先にclaimして既存の
+complete/failure callbackへ渡します。欠落・拒否時は画面監視へfallbackします。
+
+Kiroはprivate `KIRO_HOME`へ設定・resourcesをwhitelist snapshotし、Claude/Copilotは
+`--plugin-dir`、Codexはone-off `notify` multiplexer、OpenCodeはpluginだけの
+`OPENCODE_CONFIG_DIR`を使います。global/project設定は変更せず、他CLIのagent-loop外実行には
+影響しません。headless、external pane、Cursor、Kiro v3は対象外です。
+
+### 制約
 - `startup_timeout` は従来どおり agent-loop の設定を正とし、定義の `ready_timeout_sec` は他の消費者（対話診断等）向けのままです。
 - `external_panes[].agent_cli` は外部 pane の ready / busy 判定だけを選び、起動 CLI は変更しません。
 - **headless 経路では対話前提の機能を黙って劣化させません**。fresh_context のコンテキスト破棄と `slash` は WARNING の上でスキップし、ralph 多段と external target は起動時に明示エラーで断ります。
@@ -573,11 +584,11 @@ prompts:
 - 各要素は `<name> [args]`。名前は `^[a-z0-9][a-z0-9._-]*$`
 - 先頭の `/` は不要。付いていれば警告して剥がす
 - 不正要素はその要素だけを警告して捨て、エントリ全体は無効化しない
-- `prompt` / `slash` / `event_hook` のいずれも無いエントリだけを無効とする
+- `prompt` / `slash` / `hooks` のいずれも無いエントリだけを無効とする
 
 ### 送信順と CLI 差異
 
-送信順は **fresh context の clear command → `slash` を宣言順に 1 件ずつ → `prompt` 本文**です。各コマンドは本文へ連結せず独立入力とし、失敗した時点で後続コマンドと本文の送信を止めます。clear 後は 2 秒、`slash` 間は 1 秒だけ空け、応答完了は待ちません。`event_hook` 併用時は、フックがプロンプトを返して実際に dispatch される場合だけ `slash` も送ります。
+送信順は **fresh context の clear command → `slash` を宣言順に 1 件ずつ → `prompt` 本文**です。各コマンドは本文へ連結せず独立入力とし、失敗した時点で後続コマンドと本文の送信を止めます。clear 後は 2 秒、`slash` 間は 1 秒だけ空け、応答完了は待ちません。`hooks` 併用時は、フックがプロンプトを返して実際に dispatch される場合だけ `slash` も送ります。
 
 内部では `/name` へ正規化し、送信直前に `CliProfile.skill_command_prefix` へ書き換えます。既定は `/`、codex は `$` です。clear command と `slash` 自体には `agent-tuning` の prompt 注入を適用しません。
 

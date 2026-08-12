@@ -221,11 +221,15 @@ class ResolveProfileTest(unittest.TestCase):
 
     def test_interactive_definition_stays_interactive(self):
         self._write("chatcli", {"command": ["c", "run"],
-                                "interactive": {"command": ["c", "chat"]}})
+                                "interactive": {
+                                    "command": ["c", "chat"],
+                                    "turn_completion": "claude",
+                                }})
         profile = al._resolve_cli_profile({"agent_cli": "chatcli"})
         self.assertFalse(profile.is_headless)
         self.assertEqual(profile.mode, "interactive")
         self.assertEqual(profile.argv, ["c", "chat"])
+        self.assertEqual(profile.turn_completion, "claude")
 
     def test_broken_definition_still_fails_fast(self):
         self._write("brokencli", {"command": []})

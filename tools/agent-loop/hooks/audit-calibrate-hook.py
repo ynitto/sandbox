@@ -8,7 +8,7 @@ from typing import Any
 
 
 def check(hook_config: dict[str, Any] | None = None) -> None:
-    nested = (hook_config or {}).get("event_hook_config") or {}
+    nested = (hook_config or {}).get("hook_config") or {}
     base = [str(nested.get("agent_audit") or "agent-audit")]
     if nested.get("audit_dir"):
         base += ["--audit-dir", os.path.expanduser(str(nested["audit_dir"]))]

@@ -213,5 +213,64 @@ class SkillPythonTest(unittest.TestCase):
         self.assertTrue(al._sm_python_ok(al._sm_python_command()))
 
 
+class UsageLedgerTest(unittest.TestCase):
+    """headless で呼んだ CLI の実測トークン（`@agent-usage`）をノード予算の台帳へ記帳する。
+
+    ここが抜けると、aider / ollama のように実測を出す CLI を回しても台帳は空のままで、
+    モデルの格付け（C9）を推定でしか語れなくなる。
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory(prefix="agent-loop-usage-")
+        self.repo = os.path.realpath(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        self._budget = tempfile.TemporaryDirectory(prefix="agent-loop-budget-")
+        self.addCleanup(self._budget.cleanup)
+        os.environ["AGENT_BUDGET_DIR"] = self._budget.name
+        self.addCleanup(os.environ.pop, "AGENT_BUDGET_DIR", None)
+        self.log_file = os.path.join(self.repo, "run.jsonl")
+
+    def _agent(self, stderr_text):
+        fake = pathlib.Path(self.repo, "fake-cli.py")
+        fake.write_text("import sys\nprint('OK')\nsys.stderr.write({!r})\n".format(stderr_text),
+                        encoding="utf-8")
+        spec = agentcli.normalize("fake-usage", {
+            "name": "fake-usage",
+            "command": [sys.executable, str(fake)],
+            "prompt_via": "argv",
+            "prompt_flag": "--message",
+            "timeout": 10,
+        }, pathlib.Path(self.repo, "fake-usage.json"))
+        return {"cli": "fake-usage", "spec": spec, "model": "m", "agentcli": agentcli}
+
+    def _run(self, stderr_text):
+        return al._tl_run_agent(self._agent(stderr_text), "やって", cwd=self.repo,
+                                readonly=False, read_files=[], files=[], log_file=self.log_file)
+
+    def _ledger_rows(self):
+        led = pathlib.Path(self._budget.name, "ledger")
+        return [json.loads(line) for path in sorted(led.glob("*.jsonl"))
+                for line in path.read_text(encoding="utf-8").splitlines() if line.strip()
+                ] if led.is_dir() else []
+
+    def test_measured_usage_is_recorded_with_cli_attribution(self):
+        self.assertEqual(self._run("@agent-usage tokens_in=12 tokens_out=34\n"), "OK")
+        rows = self._ledger_rows()
+        self.assertEqual(len(rows), 1, rows)
+        self.assertEqual((rows[0]["tokens_in"], rows[0]["tokens_out"]), (12.0, 34.0))
+        self.assertEqual((rows[0]["agent_cli"], rows[0]["model"]), ("fake-usage", "m"))
+        self.assertEqual(rows[0]["seconds"], 0,
+                         "実行時間はスロット側で記帳済み——ここで足すと二重計上になる")
+        events = [json.loads(line) for line
+                  in pathlib.Path(self.log_file).read_text(encoding="utf-8").splitlines()]
+        self.assertIn({"cli": "fake-usage", "tokensIn": 12, "tokensOut": 34},
+                      [{k: e[k] for k in ("cli", "tokensIn", "tokensOut")}
+                       for e in events if e.get("event") == "usage"])
+
+    def test_silent_cli_is_not_filled_with_an_estimate(self):
+        self.assertEqual(self._run("aider warning\n"), "OK")
+        self.assertEqual(self._ledger_rows(), [])
+
+
 if __name__ == "__main__":
     unittest.main()
