@@ -11,7 +11,7 @@ module.exports = {
     configPath: '',
     // 収集データの保存先 --audit-dir（WSL 内のパス）。空なら ~/.agents/audit
     auditDir: '',
-    // 定期収集の間隔（分）。0 で無効
-    collectIntervalMin: 0,
+    // quota連動判断の鮮度を保つ定期収集。0 で明示的に無効化できる。
+    collectIntervalMin: 5,
   },
 };

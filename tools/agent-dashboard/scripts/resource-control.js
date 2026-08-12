@@ -36,7 +36,7 @@ function run(cfg = {}, nowMs = Date.now()) {
   const rebalanceDue = allocation.mode === 'auto'
     && (!Number.isFinite(lastMs) || intervalMs === 0 || nowMs - lastMs >= intervalMs);
   if (rebalanceDue) budget.rebalance(cfg);
-  const result = { rebalanced: rebalanceDue, ...profiles.apply(cfg) };
+  const result = { rebalanced: rebalanceDue, ...profiles.apply(cfg, { nowMs }) };
   writeStatus(cfg, nowMs);
   return result;
 }

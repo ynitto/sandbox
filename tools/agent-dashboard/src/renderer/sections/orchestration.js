@@ -231,6 +231,15 @@ function orchPriorityFromWeight(value) {
   return weight >= 1.5 ? 'high' : weight > 0 && weight < 0.75 ? 'low' : 'standard';
 }
 
+function orchPolicyDecisionRowHtml(workload, decision) {
+  if (!decision) return `<tr><td>${esc(amigosWorkloadLabel(workload))}</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>`;
+  const targetTier = decision.target_tier || decision.tier;
+  return `<tr><td>${esc(amigosWorkloadLabel(workload))}</td>
+    <td>${esc(orchTierLabel(targetTier))}</td><td>${esc(orchTierLabel(decision.tier))}</td>
+    <td class="mono">${esc(orchProfileCandidateText(decision.candidate))}</td>
+    <td>${esc(decision.reason || '—')}</td></tr>`;
+}
+
 function orchExecutionPolicyPanelHtml(overview) {
   const budget = overview.budget || {};
   const profiles = overview.profiles || {};
@@ -279,11 +288,8 @@ function orchExecutionPolicyPanelHtml(overview) {
       </select></td>
     </tr>`;
   }).join('');
-  const decisionRows = ORCH_POLICY_WORKLOADS.map((workload) => {
-    const decision = (profiles.state || {})[workload];
-    return `<tr><td>${esc(amigosWorkloadLabel(workload))}</td><td>${decision ? esc(orchTierLabel(decision.tier)) : '—'}</td>
-      <td class="mono">${decision ? esc(orchProfileCandidateText(decision.candidate)) : '—'}</td></tr>`;
-  }).join('');
+  const decisionRows = ORCH_POLICY_WORKLOADS.map((workload) =>
+    orchPolicyDecisionRowHtml(workload, (profiles.state || {})[workload])).join('');
   const controllerStatus = (overview.status || []).find((record) => record.tool === 'agent-resource-controller');
   const controllerTs = Date.parse((controllerStatus && controllerStatus.ts) || '');
   const controllerFresh = controllerStatus && Number.isFinite(controllerTs)
@@ -327,7 +333,7 @@ function orchExecutionPolicyPanelHtml(overview) {
     </div>
     <div class="orch-policy-preview"><strong>現在の適用結果</strong>
       <p class="muted">ここで選ばれた組み合わせが各機能の基準になります。工程や用途に固定指定がある場合は、そちらを優先します。</p>
-      <div class="table-scroll"><table class="amigos-table orch-table"><thead><tr><th>機能</th><th>実行レベル</th><th>エージェント / モデル</th></tr></thead>
+      <div class="table-scroll"><table class="amigos-table orch-table"><thead><tr><th>機能</th><th>方針上のレベル</th><th>現在のレベル</th><th>エージェント / モデル</th><th>判断理由</th></tr></thead>
         <tbody>${decisionRows}</tbody></table></div>
     </div>
     ${controllerHtml}${resultHtml}

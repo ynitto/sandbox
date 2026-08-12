@@ -310,7 +310,7 @@ def check() -> str | None:
 |---|---|
 | `gitlab-issue-hook.py` | 新規/更新 Issue を検知して送信。更新が無くフォールバック有効ならランダムな Issue を送る。 |
 | `gitlab-mr-hook.py` | 新規/更新 MR を検知して送信。更新が無くフォールバック有効ならランダムな MR を送る。 |
-| `resource-control-hook.py` | LLM へは送信せず、dashboard 共通の headless 入口で予算再配分と profile 適用を行う。 |
+| `resource-control-hook.py` | LLM へは送信せず、agent-auditでCLI quotaを収集してから、dashboard共通のheadless入口で予算再配分とprofile適用を行う。収集失敗時も既存の予算制御は継続する。 |
 | `audit-calibrate-hook.py` | LLM へは送信せず、audit 収集後に `rates.per_cli` を実測中央値へ較正する。 |
 
 GitLab 用の前二つは `gitlab-idd` スキルの `scripts/gl.py` を利用します。`GITLAB_TOKEN` を

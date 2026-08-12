@@ -427,8 +427,12 @@ test('設定フォームは保存先・設定ファイル・間隔・コマン�
 
 test('refresh は間隔が設定されているときだけ定期収集を起動する', async () => {
   let calls = 0;
+  let applies = 0;
   globalThis.state = { config: { agentAudit: { collectIntervalMin: 0 } } };
-  globalThis.api = { agentAuditCollect: async () => { calls += 1; return { ok: true }; } };
+  globalThis.api = {
+    agentAuditCollect: async () => { calls += 1; return { ok: true }; },
+    orchestrationProfilesApply: async () => { applies += 1; return { decisions: {} }; },
+  };
   try {
     ui.refresh();
     assert.equal(calls, 0);
@@ -438,6 +442,8 @@ test('refresh は間隔が設定されているときだけ定期収集を起動
     ui.refresh();
     assert.equal(calls, 1, '間隔内の再ポーリングでは起動しない');
     await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(applies, 1, '収集成功後にクォータ選択を再評価する');
   } finally {
     delete globalThis.state;
     delete globalThis.api;

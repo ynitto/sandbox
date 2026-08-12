@@ -298,7 +298,7 @@ test('participation はrun限定ワーカーの参加 API を登録する', () =
 test('agent-audit は LLM 不使用段（収集・集計・点検）の API だけを登録する', () => {
   const auditFeature = loadFeatures().find((f) => f.id === 'agent-audit');
   assert.ok(auditFeature.configDefaults.agentAudit);
-  assert.strictEqual(auditFeature.configDefaults.agentAudit.collectIntervalMin, 0);
+  assert.strictEqual(auditFeature.configDefaults.agentAudit.collectIntervalMin, 5);
   const registered = [];
   auditFeature.registerIpc({
     handle: (channel) => registered.push(channel),

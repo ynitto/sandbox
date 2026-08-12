@@ -301,18 +301,20 @@ def _append_quota_snapshot(args, store: Store, *, agent_cli: str, source: str,
     }
     signature = json.dumps(snapshot, sort_keys=True, separators=(",", ":"))
     cursor = f"cli-quota::{agent_cli}"
-    if store.cursor(cursor) == signature:
-        return 0
     ts = now_iso()
-    event = {"ts": ts, "kind": "event", "source": source,
-             "event": "quota_snapshot", **snapshot}
-    event["id"] = record_id("cli-quota", agent_cli, signature)
-    added = int(store.append_record({"_epoch": parse_iso(ts) or 0.0, **event}))
+    duplicate = store.cursor(cursor) == signature
+    added = 0
+    if not duplicate:
+        event = {"ts": ts, "kind": "event", "source": source,
+                 "event": "quota_snapshot", **snapshot}
+        event["id"] = record_id("cli-quota", agent_cli, signature)
+        added = int(store.append_record({"_epoch": parse_iso(ts) or 0.0, **event}))
     append_jsonl(os.path.join(resolve_budget_dir(args), "ledger",
                               f"{utc_day(parse_iso(ts) or 0.0)}.jsonl"),
                  {"ts": ts, "workload": "audit", "tool": "agent-audit", "seconds": 0,
                   "ref": "quota", "purpose": "quota", "event": "quota_snapshot", **snapshot})
-    store.set_cursor(cursor, signature)
+    if not duplicate:
+        store.set_cursor(cursor, signature)
     return added
 
 

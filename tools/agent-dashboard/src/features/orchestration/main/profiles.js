@@ -3,7 +3,7 @@
 // 実行プロファイル自動選択（agent-profiles 契約）。
 // 正典: schemas/agent-profiles.schema.json。実体は $AGENT_CONTROL_DIR（既定 ~/.agents/control/）の
 // profiles.json。**不変条件: この契約はエンジンから読まれない**——dashboard がワークロードの
-// 予算残率（node-budget）と agent CLI ごとの枠（node-budget の allocation.agents）から段
+// 予算残率と、agent-auditがnode-budget台帳へ書いたCLI quotaから段
 // （単純作業/軽量/標準/高性能）と候補（agent_cli+model）を決定的に選び、選択結果だけを agent-control（control.json）
 // へ投函する。エンジン側の解決経路は増やさない（柱1 / C2・C7）。
 //
@@ -18,6 +18,10 @@ const budget = require('./budget');
 const control = require('./control');
 
 const PROFILES_FILE = 'profiles.json';
+const METERED_CLIS = new Set(['claude', 'codex', 'copilot', 'kiro']);
+const QUOTA_ORANGE_PERCENT = 70;
+const QUOTA_RED_PERCENT = 90;
+const QUOTA_MIN_STALE_SEC = 900;
 
 function isPlainObject(v) {
   return v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -103,12 +107,15 @@ function normalizeState(raw) {
   if (!isPlainObject(raw)) return out;
   for (const [wl, rec] of Object.entries(raw)) {
     if (!isPlainObject(rec)) continue;
-    out[wl] = {
+    const normalized = {
       tier: typeof rec.tier === 'string' ? rec.tier : '',
       candidate: normalizeCandidate(rec.candidate),
       since: typeof rec.since === 'string' ? rec.since : '',
       reason: typeof rec.reason === 'string' ? rec.reason : '',
     };
+    if (typeof rec.target_tier === 'string') normalized.target_tier = rec.target_tier;
+    if (typeof rec.target_since === 'string') normalized.target_since = rec.target_since;
+    out[wl] = normalized;
   }
   return out;
 }
@@ -231,23 +238,70 @@ function agentHasRoom(allocationAgents, usageAgents, computedAgents, cli, nowMs)
   return used < maxTokens;
 }
 
-// tier（budget が決めた段）の候補列から、枠が残っている最初の候補を探す。
-// 全滅なら一段下（次に order が低い段）へ降りて続ける。見つからなければ null。
-function pickCandidate(tiers, startTier, allocationAgents, usageAgents, computedAgents, nowMs) {
+function quotaBand(computedAgents, cli, nowMs, intervalSec) {
+  const quota = isPlainObject(computedAgents) ? computedAgents[cli] : null;
+  if (!cli) return { name: 'green', rank: 0, usedPercent: null };
+  if (!isPlainObject(quota)) {
+    return METERED_CLIS.has(cli)
+      ? { name: 'unknown', rank: 2, usedPercent: null }
+      : { name: 'green', rank: 0, usedPercent: null };
+  }
+  const observedMs = Date.parse(quota.observed_at || '');
+  const resetMs = Date.parse(quota.reset_at || '');
+  const staleMs = Math.max(QUOTA_MIN_STALE_SEC, Math.max(0, Number(intervalSec) || 0) * 3) * 1000;
+  if (!Number.isFinite(observedMs) || nowMs - observedMs > staleMs
+      || (Number.isFinite(resetMs) && observedMs < resetMs && resetMs <= nowMs)) {
+    return { name: 'unknown', rank: 2, usedPercent: null };
+  }
+  const used = Number(quota.quota_used_percent);
+  if (!Number.isFinite(used)) return { name: 'unknown', rank: 2, usedPercent: null };
+  if (used >= 100) return { name: 'blocked', rank: Infinity, usedPercent: used };
+  if (used >= QUOTA_RED_PERCENT) return { name: 'red', rank: 3, usedPercent: used };
+  if (used >= QUOTA_ORANGE_PERCENT) return { name: 'orange', rank: 1, usedPercent: used };
+  return { name: 'green', rank: 0, usedPercent: used };
+}
+
+function bestCandidate(spec, allocationAgents, usageAgents, computedAgents, nowMs, intervalSec, current) {
+  const ranked = [];
+  for (let index = 0; index < (spec.candidates || []).length; index += 1) {
+    const candidate = spec.candidates[index];
+    if (candidate.agent_cli && !agentHasRoom(
+      allocationAgents, usageAgents, computedAgents, candidate.agent_cli, nowMs
+    )) continue;
+    const band = quotaBand(computedAgents, candidate.agent_cli, nowMs, intervalSec);
+    if (band.name === 'blocked') continue;
+    ranked.push({ candidate, band, index, current: sameCandidate(candidate, current) ? 0 : 1 });
+  }
+  ranked.sort((a, b) => a.band.rank - b.band.rank || a.current - b.current || a.index - b.index);
+  return ranked[0] || null;
+}
+
+// tier内は quota帯→現在候補→宣言順で選ぶ。全候補が赤なら、緑/オレンジへ改善する
+// 下位tierだけへ降格する。hard block時は下位の非block候補を使い、全滅ならnull。
+function pickCandidate(
+  tiers, startTier, allocationAgents, usageAgents, computedAgents, nowMs, intervalSec, current
+) {
   const order = orderedTierNames(tiers);
   const startIdx = order.indexOf(startTier);
   if (startIdx < 0) return null;
-  for (let i = startIdx; i < order.length; i += 1) {
+  const first = bestCandidate(
+    tiers[startTier], allocationAgents, usageAgents, computedAgents, nowMs, intervalSec, current
+  );
+  if (first && first.band.name !== 'red') {
+    return { fromTier: startTier, candidate: first.candidate, band: first.band, fellBack: false };
+  }
+  for (let i = first ? startIdx + 1 : startIdx; i < order.length; i += 1) {
     const name = order[i];
     const spec = tiers[name];
-    for (const cand of spec.candidates) {
-      if (!cand.agent_cli || agentHasRoom(
-        allocationAgents, usageAgents, computedAgents, cand.agent_cli, nowMs
-      )) {
-        return { fromTier: name, candidate: cand, fellBack: i > startIdx };
-      }
-    }
+    const picked = bestCandidate(
+      spec, allocationAgents, usageAgents, computedAgents, nowMs, intervalSec, current
+    );
+    if (!picked) continue;
+    // 赤からtierを下げるのは、下位候補が緑/オレンジでquotaが実際に改善するときだけ。
+    if (first && first.band.name === 'red' && i > startIdx && picked.band.rank > 1) continue;
+    return { fromTier: name, candidate: picked.candidate, band: picked.band, fellBack: i > startIdx };
   }
+  if (first) return { fromTier: startTier, candidate: first.candidate, band: first.band, fellBack: false };
   return null;
 }
 
@@ -261,21 +315,16 @@ function candidateForTier(tiers, tier, usage, nowMs) {
   const usageAgents = (usage && usage.agents) || {};
   const computedAgents =
     (usage && usage.config && isPlainObject(usage.config.computed) && usage.config.computed.agents) || {};
-  for (const candidate of spec.candidates || []) {
-    if (!candidate.agent_cli || agentHasRoom(
-      allocationAgents, usageAgents, computedAgents, candidate.agent_cli, nowMs
-    )) return { ...candidate };
-  }
-  return null;
+  const picked = bestCandidate(spec, allocationAgents, usageAgents, computedAgents, nowMs, 300, null);
+  return picked ? { ...picked.candidate } : null;
 }
 
 function resolveTier(cfg, tier) {
   return candidateForTier(load(cfg).tiers, tier, budget.usage(cfg), Date.now());
 }
 
-// 1 ワークロード分の決定。tier は budget（予算残率・ヒステリシス・最小保持）だけで決め、
-// quota（CLI 枠）で候補が下の段へフォールバックした場合は、その実際の段を state に残す。
-// reset 後の上位復帰は、この state を通じて既存のヒステリシスと最小保持が効く。
+// 1ワークロード分の決定。予算が決めるtargetTierと、quota反映後の実効tierを分離する。
+// quota復帰は80%未満・最小保持経過後にtargetTierへ一段ずつ戻す。
 function decideOne({
   tiers, policy, usageWorkload, usageAgents, allocationAgents, computedAgents, prevState, nowMs,
 }) {
@@ -300,7 +349,8 @@ function decideOne({
   }
   if (!tier0 || !tiers[tier0]) return null; // 決められない（宣言不足）
 
-  const prevTier = prevState && prevState.tier && tiers[prevState.tier] ? prevState.tier : null;
+  const previousTarget = prevState && (prevState.target_tier || prevState.tier);
+  const prevTier = previousTarget && tiers[previousTarget] ? previousTarget : null;
   const prevOrder = prevTier ? tiers[prevTier].order : null;
   const tier0Order = tiers[tier0].order;
 
@@ -314,7 +364,8 @@ function decideOne({
   // 最小保持: 前回の段からこの秒数は動かさない（上昇・下降とも）。
   let finalTier = afterHysteresis;
   let heldByMinHold = false;
-  const prevSinceMs = prevState && prevState.since ? Date.parse(prevState.since) : NaN;
+  const previousTargetSince = prevState && (prevState.target_since || prevState.since);
+  const prevSinceMs = previousTargetSince ? Date.parse(previousTargetSince) : NaN;
   if (
     prevTier &&
     afterHysteresis !== prevTier &&
@@ -325,22 +376,61 @@ function decideOne({
     heldByMinHold = true;
   }
 
+  // quotaで下位tierへ退避している間の復帰は、予算targetの昇格とは別に扱う。
+  // 90%で降格した候補が80%未満へ戻り、実効tierの保持時間を過ぎたときだけ一段戻す。
+  let selectionTier = finalTier;
+  let quotaRecoveryHeld = false;
+  const prevEffective = prevState && prevState.tier && tiers[prevState.tier] ? prevState.tier : null;
+  if (prevEffective && previousTarget === finalTier
+      && tiers[prevEffective].order < tiers[finalTier].order) {
+    const nextTier = Object.entries(tiers)
+      .filter(([, spec]) => spec.order > tiers[prevEffective].order && spec.order <= tiers[finalTier].order)
+      .sort((a, b) => a[1].order - b[1].order)[0];
+    const effectiveSinceMs = Date.parse((prevState && prevState.since) || '');
+    const holdElapsed = !Number.isFinite(effectiveSinceMs)
+      || nowMs - effectiveSinceMs >= policy.min_hold_sec * 1000;
+    const recovery = nextTier && bestCandidate(
+      nextTier[1], allocationAgents, usageAgents, computedAgents, nowMs, policy.interval_sec, null
+    );
+    const recoveryReady = recovery && recovery.band.name !== 'unknown'
+      && recovery.band.name !== 'red'
+      && (recovery.band.usedPercent === null || recovery.band.usedPercent < 80);
+    if (holdElapsed && recoveryReady) selectionTier = nextTier[0];
+    else {
+      selectionTier = prevEffective;
+      quotaRecoveryHeld = true;
+    }
+  }
+
   const picked = pickCandidate(
-    tiers, finalTier, allocationAgents, usageAgents, computedAgents, nowMs
+    tiers, selectionTier, allocationAgents, usageAgents, computedAgents, nowMs,
+    policy.interval_sec, prevState && prevState.candidate
   );
   const remainingText = remaining === null ? 'unlimited' : remaining.toFixed(2);
   const parts = [`remaining=${remainingText}`, `tier=${finalTier}`];
   if (heldByMinHold) parts.push('min-hold');
   else if (afterHysteresis !== tier0) parts.push('hysteresis-hold');
+  if (quotaRecoveryHeld) parts.push('quota-recovery-hold');
 
   if (!picked) {
-    return { tier: finalTier, candidate: null, reason: `${parts.join(' ')} 候補の枠がすべて枯渇` };
+    return {
+      targetTier: finalTier, tier: finalTier, candidate: null,
+      reason: `${parts.join(' ')} 候補の枠がすべて枯渇`,
+    };
   }
   if (picked.fellBack) {
     parts[1] = `tier=${picked.fromTier}`;
     parts.push(`quota-fallback→${picked.fromTier}`);
   }
-  return { tier: picked.fromTier, candidate: picked.candidate, reason: parts.join(' ') };
+  if (picked.candidate.agent_cli && picked.band
+      && (METERED_CLIS.has(picked.candidate.agent_cli)
+        || isPlainObject(computedAgents[picked.candidate.agent_cli]))) {
+    const percent = picked.band.usedPercent === null ? '' : `:${picked.band.usedPercent}%`;
+    parts.push(`quota=${picked.candidate.agent_cli}:${picked.band.name}${percent}`);
+  }
+  return {
+    targetTier: finalTier, tier: picked.fromTier, candidate: picked.candidate, reason: parts.join(' '),
+  };
 }
 
 function sameCandidate(a, b) {
@@ -370,8 +460,13 @@ function decide(profiles, usage, nowMs) {
       tiers, policy, usageWorkload, usageAgents, allocationAgents, computedAgents, prevState, nowMs,
     });
     if (!result) continue;
+    const prevTargetTier = prevState && (prevState.target_tier || prevState.tier);
+    const targetChanged = !prevState || prevTargetTier !== result.targetTier;
     const tierChanged = !prevState || prevState.tier !== result.tier;
     out[wl] = {
+      targetTier: result.targetTier,
+      targetSince: targetChanged || !prevState || !prevState.target_since
+        ? new Date(nowMs).toISOString() : prevState.target_since,
       tier: result.tier,
       candidate: result.candidate,
       reason: result.reason,
@@ -385,11 +480,11 @@ function decide(profiles, usage, nowMs) {
 // --- 適用（副作用はここに閉じる） -------------------------------------------
 
 // 書かずに決定だけ見せる（画面の dry-run ボタン用）。
-function evaluate(cfg, { force = false } = {}) {
+function evaluate(cfg, { force = false, nowMs = Date.now() } = {}) {
   const dir = resolveProfilesDir(cfg);
   const profiles = loadProfiles(dir);
   const usage = budget.usage(cfg);
-  const decisions = decide(force ? { ...profiles, state: {} } : profiles, usage, Date.now());
+  const decisions = decide(force ? { ...profiles, state: {} } : profiles, usage, nowMs);
   return { profiles, usage, decisions };
 }
 
@@ -408,10 +503,24 @@ function apply(cfg, options) {
 
   for (const [wl, decision] of Object.entries(decisions)) {
     const curWl = curControl.workloads[wl] || {};
-    // 候補まで決まったときだけ control を触る（候補が全滅した段は「決められなかった」
-    // ので、段だけ書き替えると実際に走る CLI と段の申告がずれる）。
+    if (!decision.candidate) {
+      const lifecycleOwnedByQuota = !curWl.lifecycle || curWl.lifecycle === 'run'
+        || curWl.lifecycle_source === 'quota';
+      if (lifecycleOwnedByQuota && (curWl.lifecycle !== 'pause' || curWl.lifecycle_source !== 'quota'
+          || curWl.selection_reason !== decision.reason)) {
+        controlPatch[wl] = {
+          lifecycle: 'pause', lifecycle_source: 'quota', selection_reason: decision.reason,
+        };
+      }
+    }
+    // 候補まで決まったときだけtier/CLIを触る。全滅時は古い候補を残すが、quota所有の
+    // lifecycle=pauseで実行を止める（復帰時に人のpause/stopと区別して自動解除する）。
     if (decision.candidate) {
       const patch = {};
+      if (curWl.lifecycle === 'pause' && curWl.lifecycle_source === 'quota') {
+        patch.lifecycle = 'run';
+        patch.lifecycle_source = null;
+      }
       const curCandidate = { agent_cli: curWl.agent_cli || undefined, model: curWl.model || undefined };
       if (!sameCandidate(curCandidate, decision.candidate)) {
         patch.agent_cli = decision.candidate.agent_cli || null;
@@ -430,11 +539,16 @@ function apply(cfg, options) {
     const prev = profiles.state[wl];
     if (
       !prev ||
+      prev.target_tier !== decision.targetTier ||
+      prev.target_since !== decision.targetSince ||
       prev.tier !== decision.tier ||
       prev.reason !== decision.reason ||
       !sameCandidate(prev.candidate, decision.candidate)
     ) {
-      nextState[wl] = { tier: decision.tier, candidate: decision.candidate, since: decision.since, reason: decision.reason };
+      nextState[wl] = {
+        target_tier: decision.targetTier, target_since: decision.targetSince,
+        tier: decision.tier, candidate: decision.candidate, since: decision.since, reason: decision.reason,
+      };
       stateDirty = true;
     }
   }

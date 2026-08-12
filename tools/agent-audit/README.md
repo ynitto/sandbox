@@ -50,6 +50,8 @@ agent-audit doctor                   # 源泉の到達性・clean 宣言の点�
 `usage --by agent_cli` は利用量に加え、node-budget で宣言した CLI 別トークン上限と、
 quota 観測から得た使用率・復帰時刻も表示する。Claude は `/usage`、Codex は
 app-server、Copilot は `/usage`、Kiro は ACP の組み込み usage から取得する（LLM 不使用）。
+同じ値が続く場合もnode-budget台帳には収集成功ごとにsnapshotを追記し、Resource Controllerが
+観測の鮮度を判断できるようにする。監査ストア側の同一snapshotは従来どおり重複排除する。
 
 定期実行は同梱 `audit-calibrate-hook.py` が collect → calibrate → extract → distill --review →
 tune --apply を順に実行する。

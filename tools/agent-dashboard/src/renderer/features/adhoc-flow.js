@@ -6,6 +6,7 @@
   if (typeof root.registerFeatureTab === 'function') {
     root.registerFeatureTab('workflows', {
       refresh: feature.refresh,
+      refreshNeeds: feature.refreshNeeds,
       available: () => true,
       badge: feature.badge,
     });
@@ -433,14 +434,13 @@
     return workflow;
   }
 
-  async function loadOverview() {
+  async function loadOverview({ includeRun = true } = {}) {
     try {
       st.overview = await api().adhocFlowOverview({ limit: 30 });
-      if (st.selectedRun) {
+      if (includeRun && st.selectedRun) {
         try { st.runDetail = await api().adhocFlowRun({ runId: st.selectedRun }); }
         catch { st.runDetail = null; }
       }
-      renderSidebar();
     } catch (err) {
       st.notice = `読み込みに失敗しました: ${String((err && err.message) || err)}`;
     }
@@ -454,6 +454,13 @@
     if (editing) return;
     await loadOverview();
     render();
+  }
+
+  async function refreshNeeds() {
+    await loadOverview({ includeRun: false });
+    renderWorkflowNeedsBadge();
+    const pane = $id('tab-workflow-needs');
+    if (pane && pane.classList.contains('active')) renderNeeds();
   }
 
   function flowOptions(ov) {
@@ -492,6 +499,10 @@
       renderSidebar();
       renderRun();
     }));
+    renderWorkflowNeedsBadge();
+  }
+
+  function renderWorkflowNeedsBadge() {
     const badgeNode = $id('workflow-needs-badge');
     if (badgeNode) {
       const pending = workflowNeeds(st.overview || {}).filter((item) => !item.resolution && !item.expired && !item.responded).length;
@@ -1542,6 +1553,7 @@
     KINDS,
     render: ensureLoaded,
     refresh,
+    refreshNeeds,
     badge,
     statusLabel,
     selectionFrom,

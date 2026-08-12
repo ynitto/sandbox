@@ -123,6 +123,29 @@ test('枠を枯らすと Electron 無しで段が降り、control へ書かれ�
   assert.strictEqual(control.workloads.flow.agent_cli, 'ollama');
 });
 
+test('ヘッドレス判断は run に渡した時刻で quota の鮮度を評価する', () => {
+  const budgetDir = tmpdir('rc-quota-clock-budget-');
+  const controlDir = tmpdir('rc-quota-clock-control-');
+  writeBudgetConfig(budgetDir, { version: 2, period: 'total', allocation: { mode: 'manual' } });
+  fs.mkdirSync(path.join(budgetDir, 'ledger'), { recursive: true });
+  fs.writeFileSync(path.join(budgetDir, 'ledger', '20200101.jsonl'), [
+    { ts: '2020-01-01T00:04:00Z', event: 'quota_snapshot', agent_cli: 'claude', quota_used_percent: 79 },
+    { ts: '2020-01-01T00:04:00Z', event: 'quota_snapshot', agent_cli: 'codex', quota_used_percent: 39 },
+  ].map((row) => JSON.stringify(row)).join('\n') + '\n');
+  fs.mkdirSync(controlDir, { recursive: true });
+  fs.writeFileSync(path.join(controlDir, 'profiles.json'), JSON.stringify({
+    version: 1, enabled: true,
+    tiers: { medium: { order: 2, candidates: [
+      { agent_cli: 'claude', model: 'sonnet' }, { agent_cli: 'codex', model: 'gpt-5' },
+    ] } },
+    policy: { apply_to: ['flow'], steps: [{ min_remaining_ratio: 0, tier: 'medium' }],
+              no_cap_tier: 'medium', hysteresis: 0, min_hold_sec: 0, interval_sec: 300 }, state: {},
+  }));
+  resourceControl.run(cfgFor(budgetDir, controlDir), Date.parse('2020-01-01T00:05:00Z'));
+  const control = JSON.parse(fs.readFileSync(path.join(controlDir, 'control.json'), 'utf8'));
+  assert.strictEqual(control.workloads.flow.agent_cli, 'codex');
+});
+
 test('Electron を読み込まずに動く（常駐運用の前提）', () => {
   assert.ok(!Object.keys(require.cache).some((f) => /[/\\]node_modules[/\\]electron[/\\]/.test(f)),
     'electron が require されている');

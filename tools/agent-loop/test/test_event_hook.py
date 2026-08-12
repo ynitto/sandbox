@@ -298,18 +298,28 @@ class ResourceControlHookTests(unittest.TestCase):
     def test_runs_headless_writer_without_dispatching_prompt(self):
         completed = types.SimpleNamespace(returncode=0, stdout="{}\n", stderr="")
         cfg = {"hook_config": {
+            "agent_audit": "/tmp/agent-audit",
             "script": "/tmp/resource-control.js",
             "control_dir": "/tmp/control",
             "budget_dir": "/tmp/budget",
         }}
         with mock.patch.object(resource_hook.subprocess, "run", return_value=completed) as run:
             self.assertIsNone(resource_hook.check(cfg))
-        self.assertEqual(
-            run.call_args.args[0],
+        self.assertEqual([call.args[0] for call in run.call_args_list], [
+            ["/tmp/agent-audit", "--budget-dir", "/tmp/budget",
+             "collect", "--source", "cli-quota"],
             ["node", str(pathlib.Path("/tmp/resource-control.js").resolve()),
-             "--control-dir", "/tmp/control",
-             "--budget-dir", "/tmp/budget"],
-        )
+             "--control-dir", "/tmp/control", "--budget-dir", "/tmp/budget"],
+        ])
+
+    def test_quota_collect_failure_does_not_stop_existing_resource_control(self):
+        failed = types.SimpleNamespace(returncode=127, stdout="", stderr="agent-audit not found")
+        completed = types.SimpleNamespace(returncode=0, stdout="{}\n", stderr="")
+        cfg = {"hook_config": {"script": "/tmp/resource-control.js"}}
+        with mock.patch.object(resource_hook.subprocess, "run",
+                               side_effect=[failed, completed]) as run:
+            self.assertIsNone(resource_hook.check(cfg))
+        self.assertEqual(run.call_count, 2)
 
     def test_collects_then_writes_calibration_without_prompt(self):
         completed = types.SimpleNamespace(returncode=0, stdout="", stderr="")

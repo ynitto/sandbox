@@ -588,6 +588,7 @@
       const result = await root.api.agentAuditCollect({});
       collectInfo = result;
       if (result && result.ok) {
+        if (root.api.orchestrationProfilesApply) await root.api.orchestrationProfilesApply();
         loadedOnce = false;
         collectBusy = false;
         await loadData();
@@ -783,7 +784,11 @@
     autoBusy = true;
     root.api.agentAuditCollect({}).then((result) => {
       collectInfo = result;
-      if (result && result.ok) loadedOnce = false;
+      if (result && result.ok) {
+        loadedOnce = false;
+        if (root.api.orchestrationProfilesApply) return root.api.orchestrationProfilesApply();
+      }
+      return null;
     }).catch((error) => {
       collectInfo = { ok: false, error: error && error.message ? error.message : String(error) };
     }).then(() => {

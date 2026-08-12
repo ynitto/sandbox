@@ -1088,6 +1088,31 @@ async function reloadProject() {
   if (state.flowRun && state.flowRun.run) maybeAutoReconcile(state.flowRun.run);
 }
 
+async function reloadProjectNeeds() {
+  if (!state.selectedDir) return;
+  const project = await guard('プロジェクト要対応読込', () => api.readProject(state.selectedDir));
+  if (!project) return;
+  project.needs = stabilizeMilestoneNeeds(state.project, project);
+  const fr = (await guard('フロー要対応読込', () => api.flowRuns(project.dir, project.busDir))) || {};
+  state.project = project;
+  state.flowRuns = fr.runs || [];
+  renderNeedsBadge();
+  if (activeTab() === 'needs') renderNeeds();
+}
+
+function renderNeedsBadge() {
+  const needsBadge = $('needs-badge');
+  if (!needsBadge) return;
+  const p = state.project;
+  const projectPending = p ? p.needs.filter((n) => needBucket(n, isNeedSent) === 'open').length : 0;
+  const workflowPending = (state.flowRuns || []).reduce((count, run) => count
+    + (run.interactions || []).filter((item) => !item.resolution && !item.expired && !item.responded).length, 0);
+  const pending = projectPending + workflowPending;
+  needsBadge.textContent = pending;
+  needsBadge.classList.toggle('hidden', !pending);
+  needsBadge.classList.toggle('warn', pending > 0);
+}
+
 function renderHeader() {
   const p = state.project;
   if (!p) return;
@@ -1129,14 +1154,7 @@ function renderHeader() {
   $('project-meta').innerHTML = metaBits.join(' ｜ ');
   const syncButton = $('btn-sync-now');
   if (syncButton) syncButton.addEventListener('click', requestHealNow);
-  const needsBadge = $('needs-badge');
-  const projectPending = p.needs.filter((n) => needBucket(n, isNeedSent) === 'open').length;
-  const workflowPending = (state.flowRuns || []).reduce((count, run) => count
-    + (run.interactions || []).filter((item) => !item.resolution && !item.expired && !item.responded).length, 0);
-  const undecided = projectPending + workflowPending;
-  needsBadge.textContent = undecided;
-  needsBadge.classList.toggle('hidden', !undecided);
-  needsBadge.classList.toggle('warn', undecided > 0);
+  renderNeedsBadge();
 }
 
 // ---------------------------------------------------------------------------
@@ -2260,6 +2278,24 @@ async function refreshAll() {
   }
 }
 
+async function refreshNeedsOnly() {
+  if (state.busy) return;
+  state.busy = true;
+  try {
+    await reloadProjectNeeds();
+    for (const [, hooks] of featureTabs) {
+      if (typeof hooks.refreshNeeds !== 'function') continue;
+      try {
+        await hooks.refreshNeeds();
+      } catch {
+        /* 要対応の取得失敗は各 feature に閉じ、次回の定期更新を続ける */
+      }
+    }
+  } finally {
+    state.busy = false;
+  }
+}
+
 function setupPolling() {
   clearInterval(state.timer);
   const sec = state.config && state.config.projects ? Number(state.config.projects.refreshSec) : 5;
@@ -2292,7 +2328,7 @@ function setupPolling() {
       if (ae && (ae.tagName === 'TEXTAREA' || ae.tagName === 'INPUT')) return;
       const typed = [...document.querySelectorAll('#content .need-input')].some((t) => t.value.trim());
       if (typed) return;
-      refreshAll();
+      refreshNeedsOnly();
     }, sec * 1000);
   }
 }

@@ -32,8 +32,10 @@ agent-audit が集計した「実測のトークン利用量」である。台�
 - エージェント別の利用量の右に、CLI quota の使用率・`reset_at` と100%基準の棒をまとめる。
   70%未満は緑、70%からオレンジ、90%から赤にし、色だけに頼らず使用率と復旧日時も棒の上へ出す。
   `allocation.agents.<cli>.max_tokens` は手動上限として続けて表示し、tier ごとのモデル候補は詳細へ置く。
-  同じquotaを Resource Controller の候補選択も読むため、制限中の CLI は外れ、復帰後は既存の
-  ヒステリシスを通って戻る。復旧日時の完全表記と取得元は tooltip に置く
+  同じquotaを Resource Controller の候補選択も読む。70%から同tierの緑候補を優先し、90%からは
+  下位tierに緑/オレンジ候補がある場合だけ降格する。80%未満へ回復し最小保持時間を過ぎると、
+  予算方針が決めたtierへ一段ずつ戻る。全候補が制限中ならquota所有のpauseにし、復旧時だけ解除する。
+  復旧日時の完全表記と取得元は tooltip に置く
 - ゲージは**期間が予算の期間と一致するときだけ**残量を出す。上限はその期間の消費に掛かるので、
   別期間の集計へ重ねると嘘の残量になる
 - agent-audit が使えない・まだ収集していない端末では、台帳だけの集計（`orchBudgetPanelHtml`）へ
@@ -60,7 +62,7 @@ agent-audit 側の間隔・蓄積ゲート設定が正で、GUI から不用意�
 - `configPath` … `--config` で渡す agent-audit 設定ファイル（WSL 内パス）。
   源泉の一覧など agent-audit 自体の設定はこのファイルが正
 - `auditDir` … `--audit-dir` で渡す収集データの保存先（WSL 内パス）。空なら `~/.agents/audit`
-- `collectIntervalMin` … 定期収集の間隔（分）。0 で無効。アプリを開いている間だけ、
+- `collectIntervalMin` … 定期収集の間隔（分、既定5分）。0 で無効。アプリを開いている間だけ、
   全体ポーリングの周期で経過を確認して `collect` を起動する
 
 グローバル引数（`--config` / `--audit-dir`）はサブコマンドの**前**に置く

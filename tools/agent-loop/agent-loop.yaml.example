@@ -199,8 +199,8 @@ prompts:
     cwd: /path/to/workspace
     enabled: false
 
-  # dashboard を開かずに node-budget の再配分と profile の降格/復帰を適用する。
-  # check() は LLM へ prompt を送らず、dashboard と同じ書き手を 1 回呼ぶ。
+  # dashboard を開かずに CLI quota を収集し、node-budget の再配分と
+  # profile の候補切替・降格/復帰を適用する。どちらも LLM は使わない。
   - name: "資源制御"
     hooks: resource-control-hook
     interval_minutes: 5

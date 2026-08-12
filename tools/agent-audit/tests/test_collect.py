@@ -20,13 +20,14 @@ class CliQuotaCollectTests(AuditTestCase):
         st = self.make_store()
         args = self.make_args()
         self.assertEqual(collect.collect_codex_quota(args, st, query=lambda: response), 1)
-        self.assertEqual(collect.collect_codex_quota(args, st, query=lambda: response), 0, "同じsnapshotは冪等")
+        self.assertEqual(collect.collect_codex_quota(args, st, query=lambda: response), 0,
+                         "監査ストアの同じsnapshotは冪等")
         event = next(r for r in st.iter_records() if r.get("event") == "quota_snapshot")
         self.assertEqual(event["quota_used_percent"], 33)
         self.assertEqual(event["reset_at"], "2026-08-18T00:09:04Z")
         ledger = list(__import__("agent_audit.util", fromlist=["iter_jsonl"]).iter_jsonl(
             os.path.join(self.budget_dir, "ledger", event["ts"][:10].replace("-", "") + ".jsonl")))
-        self.assertEqual(len(ledger), 1)
+        self.assertEqual(len(ledger), 2, "台帳は収集成功ごとに鮮度の心拍を残す")
         self.assertEqual(ledger[0]["quota_source"], "codex-app-server")
         self.assertNotIn("quota_kind", ledger[0], "33%は制限中ではない")
 

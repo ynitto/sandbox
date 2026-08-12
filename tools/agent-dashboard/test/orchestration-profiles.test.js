@@ -190,6 +190,156 @@ test('decide: 候補の CLI 枠が枯れていれば次点を採る', () => {
   assert.strictEqual(out.flow.candidate.agent_cli, 'copilot', '同じ段の次の候補へ');
 });
 
+test('decide: オレンジの候補より同じ tier の緑候補を選ぶ', () => {
+  const tiers = {
+    medium: { order: 2, label: '中', candidates: [
+      { agent_cli: 'claude', model: 'sonnet' },
+      { agent_cli: 'codex', model: 'gpt-5' },
+    ] },
+  };
+  const policy = makePolicy({
+    steps: [{ min_remaining_ratio: 0, tier: 'medium' }], no_cap_tier: 'medium', min_hold_sec: 0,
+  });
+  const now = Date.parse('2026-08-12T12:00:00Z');
+  const usage = {
+    workloads: { flow: { tokenCap: 1000, totalTokens: 100 } },
+    agents: {},
+    config: { allocation: { agents: {} }, computed: { agents: {
+      claude: { quota_used_percent: 70, observed_at: '2026-08-12T11:59:00Z' },
+      codex: { quota_used_percent: 39, observed_at: '2026-08-12T11:59:00Z' },
+    } } },
+  };
+  const state = { flow: {
+    tier: 'medium', candidate: { agent_cli: 'claude', model: 'sonnet' },
+    since: '2026-08-12T10:00:00Z', reason: '',
+  } };
+  const out = profilesMod.decide({ enabled: true, tiers, policy, state }, usage, now);
+  assert.strictEqual(out.flow.tier, 'medium');
+  assert.strictEqual(out.flow.candidate.agent_cli, 'codex');
+  assert.match(out.flow.reason, /quota=codex:green:39%/);
+});
+
+test('decide: tier が全て赤なら健全な候補がある下位 tier へ降格する', () => {
+  const tiers = {
+    large: { order: 3, label: '大', candidates: [{ agent_cli: 'claude', model: 'opus' }] },
+    medium: { order: 2, label: '中', candidates: [{ agent_cli: 'codex', model: 'gpt-5' }] },
+  };
+  const policy = makePolicy({
+    steps: [{ min_remaining_ratio: 0, tier: 'large' }], no_cap_tier: 'large', min_hold_sec: 0,
+  });
+  const now = Date.parse('2026-08-12T12:00:00Z');
+  const usage = {
+    workloads: { flow: { tokenCap: 1000, totalTokens: 100 } }, agents: {},
+    config: { allocation: { agents: {} }, computed: { agents: {
+      claude: { quota_used_percent: 90, observed_at: '2026-08-12T11:59:00Z' },
+      codex: { quota_used_percent: 50, observed_at: '2026-08-12T11:59:00Z' },
+    } } },
+  };
+  const out = profilesMod.decide({ enabled: true, tiers, policy, state: {} }, usage, now);
+  assert.strictEqual(out.flow.tier, 'medium');
+  assert.strictEqual(out.flow.candidate.agent_cli, 'codex');
+  assert.match(out.flow.reason, /quota-fallback/);
+});
+
+test('decide: quota 降格後も予算方針の targetTier を保持する', () => {
+  const tiers = {
+    large: { order: 3, label: '大', candidates: [{ agent_cli: 'claude', model: 'opus' }] },
+    medium: { order: 2, label: '中', candidates: [{ agent_cli: 'codex', model: 'gpt-5' }] },
+  };
+  const policy = makePolicy({
+    steps: [{ min_remaining_ratio: 0, tier: 'large' }], no_cap_tier: 'large', min_hold_sec: 0,
+  });
+  const now = Date.parse('2026-08-12T12:00:00Z');
+  const usage = {
+    workloads: { flow: { tokenCap: 1000, totalTokens: 100 } }, agents: {},
+    config: { allocation: { agents: {} }, computed: { agents: {
+      claude: { quota_used_percent: 90, observed_at: '2026-08-12T11:59:00Z' },
+      codex: { quota_used_percent: 50, observed_at: '2026-08-12T11:59:00Z' },
+    } } },
+  };
+  const out = profilesMod.decide({ enabled: true, tiers, policy, state: {} }, usage, now);
+  assert.strictEqual(out.flow.targetTier, 'large');
+  assert.strictEqual(out.flow.tier, 'medium');
+});
+
+test('decide: quota 降格中の予算ヒステリシスは targetTier を基準にする', () => {
+  const tiers = {
+    large: { order: 3, label: '大', candidates: [{ agent_cli: 'claude', model: 'opus' }] },
+    medium: { order: 2, label: '中', candidates: [{ agent_cli: 'codex', model: 'gpt-5' }] },
+  };
+  const policy = makePolicy({
+    steps: [{ min_remaining_ratio: 0.5, tier: 'large' }, { min_remaining_ratio: 0, tier: 'medium' }],
+    no_cap_tier: 'large', hysteresis: 0.05, min_hold_sec: 0,
+  });
+  const state = { flow: {
+    target_tier: 'large', target_since: '2026-08-12T09:00:00Z',
+    tier: 'medium', candidate: { agent_cli: 'codex', model: 'gpt-5' },
+    since: '2026-08-12T10:00:00Z', reason: '',
+  } };
+  const usage = makeUsage(1000, 480); // remaining=0.52。既にtarget=largeなので0.55は不要。
+  const out = profilesMod.decide(
+    { enabled: true, tiers, policy, state }, usage, Date.parse('2026-08-12T12:00:00Z')
+  );
+  assert.strictEqual(out.flow.targetTier, 'large');
+});
+
+test('decide: quota 降格からの復帰は使用率が80%未満になるまで待つ', () => {
+  const tiers = {
+    large: { order: 3, label: '大', candidates: [{ agent_cli: 'claude', model: 'opus' }] },
+    medium: { order: 2, label: '中', candidates: [{ agent_cli: 'codex', model: 'gpt-5' }] },
+  };
+  const policy = makePolicy({
+    steps: [{ min_remaining_ratio: 0, tier: 'large' }], no_cap_tier: 'large', min_hold_sec: 900,
+  });
+  const state = { flow: {
+    target_tier: 'large', target_since: '2026-08-12T09:00:00Z',
+    tier: 'medium', candidate: { agent_cli: 'codex', model: 'gpt-5' },
+    since: '2026-08-12T10:00:00Z', reason: '',
+  } };
+  const usage = {
+    workloads: { flow: { tokenCap: 1000, totalTokens: 100 } }, agents: {},
+    config: { allocation: { agents: {} }, computed: { agents: {
+      claude: { quota_used_percent: 80, observed_at: '2026-08-12T11:59:00Z' },
+      codex: { quota_used_percent: 50, observed_at: '2026-08-12T11:59:00Z' },
+    } } },
+  };
+  const out = profilesMod.decide(
+    { enabled: true, tiers, policy, state }, usage, Date.parse('2026-08-12T12:00:00Z')
+  );
+  assert.strictEqual(out.flow.targetTier, 'large');
+  assert.strictEqual(out.flow.tier, 'medium');
+  assert.strictEqual(out.flow.candidate.agent_cli, 'codex');
+  usage.config.computed.agents.claude.quota_used_percent = 79;
+  const recovered = profilesMod.decide(
+    { enabled: true, tiers, policy, state }, usage, Date.parse('2026-08-12T12:00:00Z')
+  );
+  assert.strictEqual(recovered.flow.tier, 'large');
+  assert.strictEqual(recovered.flow.candidate.agent_cli, 'claude');
+});
+
+test('decide: stale な赤観測だけを理由に tier を降格しない', () => {
+  const tiers = {
+    large: { order: 3, label: '大', candidates: [{ agent_cli: 'claude', model: 'opus' }] },
+    medium: { order: 2, label: '中', candidates: [{ agent_cli: 'codex', model: 'gpt-5' }] },
+  };
+  const policy = makePolicy({
+    steps: [{ min_remaining_ratio: 0, tier: 'large' }], no_cap_tier: 'large', min_hold_sec: 0,
+  });
+  const usage = {
+    workloads: { flow: { tokenCap: 1000, totalTokens: 100 } }, agents: {},
+    config: { allocation: { agents: {} }, computed: { agents: {
+      claude: { quota_used_percent: 95, observed_at: '2026-08-12T10:00:00Z' },
+      codex: { quota_used_percent: 10, observed_at: '2026-08-12T11:59:00Z' },
+    } } },
+  };
+  const out = profilesMod.decide(
+    { enabled: true, tiers, policy, state: {} }, usage, Date.parse('2026-08-12T12:00:00Z')
+  );
+  assert.strictEqual(out.flow.tier, 'large');
+  assert.strictEqual(out.flow.candidate.agent_cli, 'claude');
+  assert.match(out.flow.reason, /quota=claude:unknown/);
+});
+
 test('decide: 段の候補が全滅なら一段下へ降りる', () => {
   const tiers = {
     large: { order: 2, label: '大', candidates: [{ agent_cli: 'claude', model: 'opus' }] },
@@ -388,6 +538,7 @@ test('apply: 決定を control.json と profiles.json の state へ書く', () =
   assert.strictEqual(ctrl.workloads.flow.model, 'opus');
   assert.strictEqual(ctrl.revision, 1);
   const profilesAfter = profilesMod.loadProfiles(controlDir);
+  assert.strictEqual(profilesAfter.state.flow.target_tier, 'large');
   assert.strictEqual(profilesAfter.state.flow.tier, 'large');
   // 段の名前も control へ運ぶ。エンジン（手法パックの when.tiers）が読むのはここだけで、
   // profiles.json は読まない契約なので、これが無いと段が engine 側から見えない。
@@ -438,7 +589,7 @@ test('apply: 決定が現状と同じなら control.json を書かない（revis
   assert.strictEqual(control.loadControl(controlDir).revision, revisionAfterFirst, 'revision は増えない');
 });
 
-test('apply: 候補が枯渇して書けないワークロードは control.json に触れない', () => {
+test('apply: 全候補が枯渇したワークロードを quota 所有の pause にする', () => {
   const controlDir = tmpdir('orch-apply-exhausted-');
   const budgetDir = tmpdir('orch-apply-exhausted-budget-');
   const cfg = cfgFor(controlDir, budgetDir);
@@ -454,9 +605,56 @@ test('apply: 候補が枯渇して書けないワークロードは control.json
     allocation: { workloads: { flow: { max_tokens: 1000 } }, agents: { claude: { max_tokens: 1 } } },
   }));
   const result = profilesMod.apply(cfg);
-  assert.strictEqual(result.controlWritten, false);
+  assert.strictEqual(result.controlWritten, true);
   const ctrl = control.loadControl(controlDir);
-  assert.deepStrictEqual(ctrl.workloads, {});
+  assert.strictEqual(ctrl.workloads.flow.lifecycle, 'pause');
+  assert.strictEqual(ctrl.workloads.flow.lifecycle_source, 'quota');
+});
+
+test('apply: quota が復旧したら quota 所有の pause だけを解除する', () => {
+  const controlDir = tmpdir('orch-apply-quota-resume-');
+  const budgetDir = tmpdir('orch-apply-quota-resume-budget-');
+  const cfg = cfgFor(controlDir, budgetDir);
+  seedBudget(budgetDir, 1000, 1, 100);
+  fs.writeFileSync(path.join(controlDir, 'profiles.json'), JSON.stringify({
+    version: 1, enabled: true,
+    tiers: { large: { order: 1, candidates: [{ agent_cli: 'claude', model: 'opus' }] } },
+    policy: { apply_to: ['flow'], steps: [{ min_remaining_ratio: 0, tier: 'large' }],
+              no_cap_tier: 'large', hysteresis: 0, min_hold_sec: 0 }, state: {},
+  }));
+  control.saveControl(cfg, { workloads: { flow: {
+    lifecycle: 'pause', lifecycle_source: 'quota', selection_reason: 'quota blocked',
+  } } });
+  profilesMod.apply(cfg);
+  const ctrl = control.loadControl(controlDir);
+  assert.strictEqual(ctrl.workloads.flow.lifecycle, 'run');
+  assert.strictEqual(ctrl.workloads.flow.lifecycle_source, undefined);
+});
+
+test('apply: 全候補枯渇でも人が設定した stop を上書きしない', () => {
+  const controlDir = tmpdir('orch-apply-human-stop-');
+  const budgetDir = tmpdir('orch-apply-human-stop-budget-');
+  const cfg = cfgFor(controlDir, budgetDir);
+  fs.writeFileSync(path.join(controlDir, 'profiles.json'), JSON.stringify({
+    version: 1, enabled: true,
+    tiers: { large: { order: 1, candidates: [{ agent_cli: 'claude', model: 'opus' }] } },
+    policy: { apply_to: ['flow'], steps: [{ min_remaining_ratio: 0, tier: 'large' }],
+              no_cap_tier: 'large', hysteresis: 0, min_hold_sec: 0 }, state: {},
+  }));
+  fs.writeFileSync(path.join(budgetDir, 'config.json'), JSON.stringify({
+    version: 2, period: 'day', allocation: { agents: { claude: { max_tokens: 1 } } },
+  }));
+  fs.mkdirSync(path.join(budgetDir, 'ledger'), { recursive: true });
+  const day = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  fs.writeFileSync(path.join(budgetDir, 'ledger', `${day}.jsonl`), `${JSON.stringify({
+    ts: new Date().toISOString(), workload: 'flow', agent_cli: 'claude',
+    tokens_in: 1, tokens_out: 0, seconds: 1,
+  })}\n`);
+  control.saveControl(cfg, { workloads: { flow: { lifecycle: 'stop' } } });
+  profilesMod.apply(cfg);
+  const ctrl = control.loadControl(controlDir);
+  assert.strictEqual(ctrl.workloads.flow.lifecycle, 'stop');
+  assert.strictEqual(ctrl.workloads.flow.lifecycle_source, undefined);
 });
 
 test('headless: Electron 無しで auto 再配分とローカル退避を適用する', () => {

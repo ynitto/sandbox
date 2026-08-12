@@ -153,6 +153,10 @@ function mergeWorkloadControl(base, patch) {
     }
     out.lifecycle = patch.lifecycle;
   }
+  if (patch.lifecycle_source !== undefined) {
+    if (patch.lifecycle_source === null || patch.lifecycle_source === '') delete out.lifecycle_source;
+    else out.lifecycle_source = String(patch.lifecycle_source);
+  }
   // 同時実行数（agent-control の concurrency）。「この PC で同時にどれだけ走らせてよいか」は
   // ノードの資源の話なのに、設定ファイル（agent-flow.yaml の max_runs / workers）は各
   // プロジェクトのルートへ散っていた。管理面から 1 か所で宣言できるようにする。
