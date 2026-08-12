@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const adhoc = require('./adhoc');
 const profiles = require('../../orchestration/main/profiles');
+const flowTiers = require('../../orchestration/main/flow-tiers');
 
 function registerIpc(ctx) {
   const { handle, loadConfig, saveConfig } = ctx;
@@ -69,6 +70,8 @@ function registerIpc(ctx) {
       workflows: adhoc.listWorkflows(cfg),
       patterns: adhoc.patternCatalog(cfg),
       tiers: [{ id: 'auto', label: '自動（実行方針を継承）' }, ...tierNames],
+      // 機能（ノード kind）・役割ごとの実行可能レベルと、オプションが宣言する下限
+      kindTiers: flowTiers.catalog(),
       cwdHistory: (cfg.adhocFlow && cfg.adhocFlow.cwdHistory) || [],
       methods,
       agents,

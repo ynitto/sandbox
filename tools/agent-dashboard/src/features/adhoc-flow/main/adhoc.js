@@ -21,6 +21,8 @@ const exec = require('../../routines/main/exec');
 const flow = require('../../agent-project/main/flow');
 const tuning = require('../../orchestration/main/tuning');
 const profiles = require('../../orchestration/main/profiles');
+const control = require('../../orchestration/main/control');
+const flowTiers = require('../../orchestration/main/flow-tiers');
 
 const SUBMITTER = 'agent-dashboard-adhoc';
 const NODE_KINDS = ['work', 'generate', 'classify', 'synthesize', 'verify', 'filter', 'judge',
@@ -225,33 +227,87 @@ function patternCatalog(config) {
   }
 }
 
+// 実行方針の現在地（plan 生成の入力）。profiles / control が無い・壊れている端末でも
+// plan 生成自体は止めない（既定値で決める）。
+function flowStrategy(config) {
+  let profile;
+  try {
+    profile = profiles.load(config);
+  } catch {
+    profile = null;
+  }
+  let controlTier;
+  try {
+    const ctl = control.loadControl(control.resolveControlDir(config));
+    controlTier = String(((ctl.workloads || {}).flow || {}).tier || '');
+  } catch {
+    controlTier = '';
+  }
+  const executionPolicy = (profile && profile.executionPolicy) || {};
+  const policy = (profile && profile.policy) || {};
+  return {
+    mode: executionPolicy.mode || 'auto',
+    custom: executionPolicy.custom || {},
+    policyTiers: [...new Set([
+      policy.no_cap_tier,
+      ...(Array.isArray(policy.steps) ? policy.steps.map((step) => step.tier) : []),
+    ].filter(Boolean))],
+    controlTier,
+  };
+}
+
+function tierNames(tiers) {
+  return tiers.map((tier) => flowTiers.TIER_LABELS[tier] || tier).join('・');
+}
+
 function planFromWorkflow(config, workflow) {
   const clean = normalizeWorkflow(workflow);
   const candidates = new Map();
+  const strategy = flowStrategy(config);
+  const resolveCandidate = (tier) => {
+    if (!candidates.has(tier)) candidates.set(tier, profiles.resolveTier(config, tier));
+    return candidates.get(tier);
+  };
   const nodes = clean.nodes.map((n) => {
     if (n.kind === 'human') {
       return { id: n.id, goal: n.goal, kind: n.kind, deps: n.deps, interaction: n.interaction };
     }
-    if (n.tier === 'auto') {
-      return {
-        id: n.id,
-        goal: n.method ? `${n.goal}\n\n実行手法「${n.method.description || n.method.id}」:\n${n.method.text}` : n.goal,
-        kind: n.kind,
-        deps: n.deps,
-      };
+    const goal = n.method
+      ? `${n.goal}\n\n実行手法「${n.method.description || n.method.id}」:\n${n.method.text}`
+      : n.goal;
+    const allowed = flowTiers.allowedTiers(n.kind, n);
+    let tier = n.tier;
+    let pinReason = '';
+    if (tier === 'auto') {
+      // 複数の実行レベルで実行可能な振る舞いは、実行方針（戦略）に応じて決める。
+      // 方針が選びうる段がすべて実行可能なら plan へ tier を書かず実行時の追従に任せ、
+      // 不適格な段へ落ちうる場合だけ、今の段を実行可能範囲へ丸めて固定する。
+      const decision = flowTiers.decideAutoTier({
+        kind: n.kind, node: n, mode: strategy.mode, custom: strategy.custom,
+        policyTiers: strategy.policyTiers, controlTier: strategy.controlTier,
+      });
+      if (decision.inherit) {
+        return { id: n.id, goal, kind: n.kind, deps: n.deps };
+      }
+      tier = decision.tier;
+      pinReason = decision.reason || '';
+    } else if (flowTiers.isKnownTier(tier) && !allowed.includes(tier)) {
+      // 固定 tier の適格性。オプション（route / retry）で下限が上がる場合も同じ口で弾く。
+      throw new Error(`ノード「${n.id}」（${n.kind}）は実行レベル「${
+        flowTiers.TIER_LABELS[tier] || tier}」に任せられません（選べる実行レベル: ${tierNames(allowed)}）`);
     }
-    if (!candidates.has(n.tier)) candidates.set(n.tier, profiles.resolveTier(config, n.tier));
-    const candidate = candidates.get(n.tier);
+    const candidate = resolveCandidate(tier);
     if (!candidate || !candidate.agent_cli) {
-      throw new Error(`tier「${n.tier}」で実行できるエージェントがありません`);
+      throw new Error(`tier「${tier}」で実行できるエージェントがありません`);
     }
     return {
       id: n.id,
-      goal: n.method ? `${n.goal}\n\n実行手法「${n.method.description || n.method.id}」:\n${n.method.text}` : n.goal,
+      goal,
       kind: n.kind,
       deps: n.deps,
-      tier: n.tier,
+      tier,
       agent: { agent_cli: candidate.agent_cli, ...(candidate.model ? { model: candidate.model } : {}) },
+      ...(pinReason ? { selection_reason: pinReason } : {}),
     };
   });
   return {

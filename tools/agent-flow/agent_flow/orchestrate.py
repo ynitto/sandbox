@@ -156,6 +156,8 @@ def _node_entry(t):
         e["dependency_input"] = str(t["dependency_input"]).strip().lower()
     if t.get("agent"):
         e["agent"] = t["agent"]
+    if t.get("tier"):  # 固定実行レベル（pinned-tier の記録と手法判定が読む）
+        e["tier"] = str(t["tier"])
     return e
 
 
