@@ -7,6 +7,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### docs(specs): agent-loop の仕様書を新設した
+
+設計書から設定マニュアルを外した結果、「どのキーが書けて、既定値は何で、何が拒否されるか」
+を一望できる場所が無くなった。README は使い方の手引き、DESIGN.md は実装の内部構造なので、
+どちらとも役割が違う。`docs/specs/agent-loop-spec.md` を新設し、仕様の一覧をここに置く。
+
+- **できること**（送信のきっかけ 5 経路、実行のかたち 8 種、操作コマンド）、**設定**
+  （ファイルの優先順位、グローバル 30 キー、エントリ 30 キーの型・既定・意味）、
+  **契約**（event hook / webhook / inbox メッセージ / 限定ツール / RESULT 行）、
+  **規約**（`slash` 名、webhook ルート名、tmux セッション名、環境変数名、パス）、
+  **制約**（上限とタイムアウトの一覧、配送保証、失敗時の挙動、未実装）の 5 部構成
+- 値は実装から取った。エントリの採用条件と起動を止める組合せは `validate_entries`、
+  既定値は `cli.py` / `dispatch.py`、上限は `toolloop.py` / `_head.py` / `semaphore.py`、
+  受入条件の照合規則は `toolloop.acceptance_paths` が根拠
+- `docs/specs/` は本書が最初の文書。設計書のヘッダから相互リンクした
+
 ### docs(designs): `agent-loop-design.md` を設計書の形へ戻した
 
 709 行のうち約 6 割が README / DESIGN.md と重複する設定マニュアルになっていて、

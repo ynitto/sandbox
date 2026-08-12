@@ -2,6 +2,7 @@
 
 > 最終更新: 2026-08-12（設計書として再編。判断を核に据え、設定の書き方と実装内部は下記 2 文書へ寄せた）
 > 実装: `tools/agent-loop/`（`agent_loop` パッケージ）。旧系統 `tools/kiro-loop/` は退役済み（付録 C）
+> 設定キー・契約・制約の一覧は[仕様書](../specs/agent-loop-spec.md)、
 > 設定の書き方は `tools/agent-loop/README.md`、クラス構成と処理フローは `tools/agent-loop/DESIGN.md`
 > 関連: [agent-tools 改称方針](./agent-tools-rename-design.md) ／
 > [段階的機能拡張](../plans/2026-08-08-agent-loop-phased-enhancement-design.md) ／
