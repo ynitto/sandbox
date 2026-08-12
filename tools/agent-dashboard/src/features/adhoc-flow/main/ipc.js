@@ -137,8 +137,8 @@ function registerIpc(ctx) {
     return { presets: list };
   });
 
-  handle('adhocFlow:saveWorkflow', ({ workflow, cwd, scope } = {}) => ({
-    saved: adhoc.saveWorkflow(loadConfig(), workflow, { cwd, scope }),
+  handle('adhocFlow:saveWorkflow', ({ workflow } = {}) => ({
+    saved: adhoc.saveWorkflow(loadConfig(), workflow),
   }));
 
   handle('adhocFlow:deleteWorkflow', ({ id, cwd, scope } = {}) => ({

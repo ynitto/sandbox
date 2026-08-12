@@ -48,7 +48,7 @@ test('カスタムフローをユーザー共通ファイルとして保存・�
   assert.deepStrictEqual(saved.exit, ['verify']);
 });
 
-test('カスタムフローを Git リポジトリ内へ保存し、サブディレクトリから共有版を優先して読める', () => {
+test('Git リポジトリ内のカスタムフローは共有版を優先して読むが dashboard から変更しない', () => {
   const repo = tmpdir('workflow-repository-');
   fs.mkdirSync(path.join(repo, '.git'));
   const subdir = path.join(repo, 'src', 'nested');
@@ -56,18 +56,22 @@ test('カスタムフローを Git リポジトリ内へ保存し、サブディ
   const cfg = { adhocFlow: { workflowDir: tmpdir('workflow-user-') } };
   const base = { id: 'shared-flow', name: 'ユーザー版', nodes: [{ id: 'work', goal: 'user', tier: 'auto' }] };
   adhoc.saveWorkflow(cfg, base);
-  const shared = adhoc.saveWorkflow(cfg, { ...base, name: '共有版', nodes: [{ id: 'work', goal: 'repo', tier: 'auto' }] }, {
-    scope: 'repository', cwd: subdir,
-  });
-  assert.strictEqual(shared._scope, 'repository');
-  assert.strictEqual(shared._repository, repo);
-  assert.ok(fs.existsSync(path.join(repo, '.agent-flow', 'workflows', 'shared-flow.json')));
+  const sharedDir = path.join(repo, '.agent-flow', 'workflows');
+  fs.mkdirSync(sharedDir, { recursive: true });
+  fs.writeFileSync(path.join(sharedDir, 'shared-flow.json'), `${JSON.stringify({
+    ...base, version: 2, name: '共有版', entry: ['work'], exit: ['work'],
+    nodes: [{ id: 'work', goal: 'repo', tier: 'auto' }],
+  })}\n`);
   const listed = adhoc.listWorkflows(cfg, { cwd: subdir });
   assert.strictEqual(listed.filter((item) => item.id === 'shared-flow').length, 1);
-  assert.strictEqual(listed.find((item) => item.id === 'shared-flow').name, '共有版');
+  const shared = listed.find((item) => item.id === 'shared-flow');
+  assert.strictEqual(shared.name, '共有版');
+  assert.strictEqual(shared._scope, 'repository');
+  assert.strictEqual(shared._repository, repo);
   assert.strictEqual(adhoc.snapshotSelection(cfg, { type: 'custom', id: 'shared-flow' }, { cwd: subdir }).nodes[0].goal, 'repo');
-  assert.strictEqual(adhoc.deleteWorkflow(cfg, 'shared-flow', { scope: 'repository', cwd: subdir }), true);
-  assert.ok(fs.existsSync(path.join(repo, '.agent-flow', 'workflows', '.trash')));
+  assert.throws(() => adhoc.saveWorkflow(cfg, { ...shared, name: '変更' }), /読み取り専用/);
+  assert.throws(() => adhoc.deleteWorkflow(cfg, 'shared-flow', { scope: 'repository', cwd: subdir }), /読み取り専用/);
+  assert.strictEqual(JSON.parse(fs.readFileSync(path.join(sharedDir, 'shared-flow.json'), 'utf8')).name, '共有版');
 });
 
 test('version 2 は開始から終了までの実行経路だけを保存する', () => {

@@ -4,8 +4,8 @@
 //   - 投入 … <bus>/inbox/<run-id>.json（submit_request 契約。plan フィールドで
 //     ユーザー定義フロー＝ビルダーの成果物を運ぶ）
 //   - 書込先 … 選択した Git cwd を workspace として固定（成果は af/<run-id> branch）
-//   - 保存 … ~/.agents/workflows/<id>.json（ユーザー共通）または
-//     <repo>/.agent-flow/workflows/<id>.json（リポジトリ共有）
+//   - 保存 … ~/.agents/workflows/<id>.json（ユーザー共通）。リポジトリ内の
+//     <repo>/.agent-flow/workflows/<id>.json は読むだけで、通常の Git 運用が配布する
 //   - 手法 … run 専用の AGENT_TUNING_DIR に agent-tuning 契約のスナップショットを複製
 //     （S26 の「参照でなく複製」と同じ。source: methods/<id>@<hash> で乖離検出可能）
 // 実行系は agent-flow run そのもの（新しい実行系・状態ファイルは作らない）。
@@ -198,22 +198,20 @@ function normalizeWorkflow(raw) {
   };
 }
 
-function workflowFile(config, id, options = {}) {
-  const scope = String(options.scope || 'user');
-  const dir = scope === 'repository' ? repositoryWorkflowDir(options.cwd) : resolveWorkflowDir(config);
-  if (!dir) throw new Error('リポジトリ共有フローには Git リポジトリ内のフォルダが必要です');
-  return path.join(dir, `${workflowId(id)}.json`);
+function workflowFile(config, id) {
+  return path.join(resolveWorkflowDir(config), `${workflowId(id)}.json`);
 }
 
-function saveWorkflow(config, raw, options = {}) {
+function saveWorkflow(config, raw) {
   if (!raw || typeof raw !== 'object') throw new Error('フローが不正です');
-  const scope = String(options.scope || raw._scope || 'user');
-  const cwd = String(options.cwd || raw._repository || '');
-  const current = raw && raw.id ? loadWorkflow(config, raw.id, { scope, cwd }) : null;
+  if (raw._scope === 'repository') {
+    throw new Error('リポジトリ共有フローは読み取り専用です。通常の Git 作業で変更してください');
+  }
+  const current = raw && raw.id ? loadWorkflow(config, raw.id, { scope: 'user' }) : null;
   const clean = normalizeWorkflow({ ...raw, createdAt: (current && current.createdAt) || raw.createdAt });
   clean.updatedAt = new Date().toISOString();
-  writeJsonAtomic(workflowFile(config, clean.id, { scope, cwd }), clean);
-  return { ...clean, _scope: scope, ...(scope === 'repository' ? { _repository: repositoryRoot(cwd) } : {}) };
+  writeJsonAtomic(workflowFile(config, clean.id), clean);
+  return { ...clean, _scope: 'user' };
 }
 
 function loadWorkflow(config, id, options = {}) {
@@ -251,7 +249,10 @@ function listWorkflows(config, options = {}) {
 }
 
 function deleteWorkflow(config, id, options = {}) {
-  const file = workflowFile(config, id, options);
+  if (options.scope === 'repository') {
+    throw new Error('リポジトリ共有フローは読み取り専用です。通常の Git 作業で削除してください');
+  }
+  const file = workflowFile(config, id);
   if (!fs.existsSync(file)) return false;
   const trash = path.join(path.dirname(file), '.trash');
   fs.mkdirSync(trash, { recursive: true });
