@@ -1,6 +1,7 @@
 # agent-loop 仕様書
 
-> 最終更新: 2026-08-12 ／ 対象: `tools/agent-loop/`（`agent_loop` パッケージ）
+> 最終更新: 2026-08-12（`hooks` の複数指定、`mapping`、ターン完了 hook を反映）
+> 対象: `tools/agent-loop/`（`agent_loop` パッケージ）
 >
 > 本書は「**何ができて、何を設定でき、どんな規約と制約があるか**」を書きます。
 > なぜそう決めたかは[設計書](../designs/agent-loop-design.md)、クラス構成と処理フローは
@@ -21,7 +22,7 @@ agent-loop は、YAML に書いたプロンプトを tmux 上のエージェン�
 | 経路 | 何が送信を起こすか | 要る設定 | 送信までの遅れ |
 |---|---|---|---|
 | スケジュール | `interval_minutes` または `cron` の到来 | エントリに `prompt` か `slash` | 最短 1 秒（tick） |
-| イベントフック | スケジュール発火時に `check()` が文面を返したとき | `event_hook` | 同上（`check()` は 30 秒まで） |
+| イベントフック | スケジュール発火時に `check()` が文面を返したとき | `hooks` | 同上（`check()` は 30 秒まで） |
 | Webhook | 外部システムの `POST /hooks/<name>` | グローバル `webhook.enabled` とエントリ名の一致 | 202 を返した後、1 tick 以内にドレイン |
 | メッセージング | 他エージェントが inbox へ JSON を投函 | グローバル `agent_name` | `inbox_poll_seconds`（既定 5 秒）＋ 1 tick |
 | CLI send | `agent-loop send` の実行 | daemon 稼働（不在時は直接送信へ) | 1 tick（`--wait` で完了待ちも可） |
@@ -61,6 +62,18 @@ agent-loop は、YAML に書いたプロンプトを tmux 上のエージェン�
 | `update` | zipapp インストールを更新する | 停止中のみ |
 
 `send` は「常駐セッションへ送る」、`run` は「今ここで実行して結果を返す」、`msg` は「相手の inbox へ置いて非同期に処理させる」です。宛先も完了の分かり方も違うので、用途で選んでください。
+
+### 1.4 完了の見分け方
+
+送った処理が終わったかの判定は、実行のかたちで変わります。
+
+| 実行 | 完了検知 |
+|---|---|
+| 対話 pane（`interactive.turn_completion` を宣言した CLI） | CLI 自身のターン完了イベント。取れなければ画面監視へ自動で戻る（§3.6） |
+| 対話 pane（宣言なし） | 画面監視（`busy_pattern` / `ready_pattern` / `idle_quiet_sec`） |
+| headless（`session: per-run`、`run`、`statemachine`） | subprocess の終了コード |
+
+どの経路でも、完了時にスロットを解放して次の dispatch を通すのはスケジューラ側の 1 か所です。
 
 ---
 
@@ -111,7 +124,10 @@ agent-loop は、YAML に書いたプロンプトを tmux 上のエージェン�
 | `external_panes[].name` | str | 必須 | エントリの `target` から引く名前。重複は不可 |
 | `external_panes[].tmux_target` | str | 必須 | `session:window.pane` 形式の宛先 |
 | `external_panes[].agent_cli` | str | なし | その pane の ready / busy 判定にだけ使う。起動 CLI は変えない |
+| `mapping` | dict[str, dict] | なし | 設定内の文字列から `{{lookup <ラベル> <キー>}}` で引ける値の辞書 |
 | `prompts` | list | `[]` | 定期プロンプトのエントリ（次節） |
+
+`mapping` は読み込み時に展開します。`mapping` 自身を除く全キーの文字列（ネストした dict と list の中も含む）が対象で、置き場所は `prompt` でも `cwd` でも構いません。存在しないラベルやキーを参照すると設定エラーになり、その設定は読み込めません。
 
 `agent-tuning`（`$AGENT_TUNING_DIR` の `tuning.json`）と手法パックは agent-loop の設定ファイルの外にあります。エントリ側は `tuning_profile` で選ぶだけです。
 
@@ -122,7 +138,7 @@ agent-loop は、YAML に書いたプロンプトを tmux 上のエージェン�
 | `name` | str | 本文の先頭 40 文字 | 表示名。webhook のルート名にもなる |
 | `id` | str | 自動採番（UUID） | 明示すると reload をまたいで同一視される |
 | `enabled` | bool | true | false のエントリは読み込み時に落とす |
-| `prompt` | str | — | 送る本文。`event_hook` か `slash` があれば省略可 |
+| `prompt` | str | — | 送る本文。`hooks` か `slash` があれば省略可 |
 | `slash` | str \| list[str] | なし | 本文の前に独立送信する CLI コマンド |
 | `interval_minutes` | int | — | 送信間隔。1 未満は無効（`webhook` 付きなら push 専用として許容） |
 | `cron` | str | なし | 5 フィールドの cron 式。指定すると `interval_minutes` より優先 |
@@ -131,9 +147,9 @@ agent-loop は、YAML に書いたプロンプトを tmux 上のエージェン�
 | `fresh_context` | bool | false | 送信前にコンテキスト破棄コマンドを送る |
 | `fresh_context_interval_minutes` | int | なし | 破棄を間引く間隔。1 未満は未指定と同じ |
 | `exclude_from_concurrency` | bool | false | `max_concurrent` の対象から外す |
-| `event_hook` | path | なし | `check()` を呼ぶフックスクリプト |
+| `hooks` | str \| list[str] | なし | `check()` を呼ぶフックスクリプト。パスでも名前でもよい。文字列配列以外は起動エラー |
 | `event_hook_fallback` | bool | false | 更新が無いときの代替送信をフックへ許可する |
-| `event_hook_config` | dict | なし | `check(config)` へ渡す個別設定。dict 以外は起動エラー |
+| `hook_config` | dict | なし | `check(config)` へ渡す個別設定。dict 以外は起動エラー |
 | `webhook.hook` | path | なし | `handle(ctx)` を呼ぶフック。省略すると受信 JSON をそのまま注入（パススルー） |
 | `webhook.secret` / `webhook.secret_header` | str | グローバル値 | ルートごとの上書き |
 | `adaptive.enabled` | bool | false | 動的インターバルを使う。`cron` エントリには効かない |
@@ -163,7 +179,7 @@ CLI とモデルの解決順は、control.json の `workloads.routine`（予算�
 読み込み時に次を満たさないエントリは、そのエントリだけが落ちます。
 
 - `enabled: false` ではない
-- `prompt` / `event_hook` / `slash` のうち少なくとも 1 つがある
+- `prompt` / `hooks` / `slash` のうち少なくとも 1 つがある
 - `cron` が妥当（不正な式は WARNING を出してスキップ）、または `interval_minutes >= 1`
 - `interval_minutes` が無い場合は `webhook` ブロックがある（push 駆動専用として残り、自動発火はしない）
 
@@ -175,7 +191,7 @@ CLI とモデルの解決順は、control.json の `workloads.routine`（予算�
 | `oneshot` と `clean_session` | pane の寿命の決め方が二重になる |
 | `target` と `oneshot` / `clean_session` | 外部 pane の生死は agent-loop が持たない |
 | `mode: ralph` で `max_iterations` 未指定、または 1〜100 の外 | 反復の上限が決まらない |
-| `mode` / `session` / `oneshot` / `clean_session` / `acceptance` / `event_hook_config` の型違反 | 静かに既定へ倒すと意図しない挙動になる |
+| `mode` / `session` / `oneshot` / `clean_session` / `acceptance` / `hooks` / `hook_config` の型違反 | 静かに既定へ倒すと意図しない挙動になる |
 
 headless（`session: per-run`）では、Ralph 多段と external target を組み合わせた時点で起動を明示エラーで断ります。
 
@@ -193,9 +209,22 @@ def ack() -> None:
     """任意。tmux への送信が成功したときだけ呼ばれる"""
 ```
 
-引数なしの `check()` も有効です。1 引数を受ける場合は、エントリ名・ID・fallback 可否・`event_hook_config`・cwd・workspace が渡ります。dict の `cwd` は実在するディレクトリだけを受理し、`vars` は `prompt.format_map` へ渡ります。フックには環境変数 `AGENT_LOOP_EVENT_HOOK_FALLBACK`（`1` / `0`）と `AGENT_LOOP_PROMPT_NAME` が渡ります。
+引数なしの `check()` も有効です。1 引数を受ける場合は、エントリ名・ID・fallback 可否・`hook_config`・cwd・workspace が渡ります。dict の `cwd` は実在するディレクトリだけを受理し、`vars` は `prompt.format_map` へ渡ります。フックには環境変数 `AGENT_LOOP_EVENT_HOOK_FALLBACK`（`1` / `0`）と `AGENT_LOOP_PROMPT_NAME` が渡ります。
 
 イベントを既読にするのは `ack()` です。`check()` が返した時点ではまだ確定しません。
+
+**スクリプトの指定**: `hooks` にはパスも名前も書けます。ディレクトリ区切りを含まない名前（`gitlab-issue-hook`）なら、実行ファイルと同じ prefix の `hooks/`、次に agent-loop 本体と同じ階層の `hooks/` を探し、拡張子 `.py` を補います。区切りを含む指定と絶対パスは、そのまま解決します。読めなければ WARNING を出してスキップします（デーモンは止まりません）。
+
+**複数指定**: 配列で書くと、発火のたびに全部の `check()` を呼びます。プロンプトを返したフックの数だけ dispatch request ができ、`ack()` はそれぞれのフックへ返ります。1 件も返さなければそのエントリは idle 扱いです。重複排除はフック単位なので、別のフックが同じ本文を返しても消し合いません。
+
+```yaml
+prompts:
+  - name: "GitLab ワーカー"
+    hooks: [gitlab-issue-hook, gitlab-mr-hook]   # 文字列 1 本でも可
+    hook_config: { labels: ["status:open"] }
+    event_hook_fallback: false
+    interval_minutes: 5
+```
 
 ### 3.2 Webhook フック（push）
 
@@ -248,7 +277,11 @@ HTTP の応答は次のとおりです。
 | `run` | `command`, `args`, `timeout_sec` | シェル文字列は不可。実行ファイルは PATH 上かロード済みスキル配下。`sh` / `bash` / `powershell` などのシェル自体も不可 |
 | `final` | 結果 | 完了の宣言 |
 
-受入条件（`acceptance` / `run --acceptance`）は自然文で書きます。機械が照合するのは、**バッククォートで囲まれたプロジェクト内のパス**だけです。抽出されたパスは、実在するか・この実行で触れたか・実際に変わったかの 3 つを全部満たしたときだけ通ります（1 つでも欠ければ fail）。URL とハイフン始まりの表記、作業フォルダ外の参照は照合対象から外れます。
+ツールへ渡す制御応答（次の一手を書いた JSON）は、定義が `json_variant` を申告していればその起動形へ振り替えます。編集そのものは元の CLI のままです。
+
+受入条件（`acceptance` / `run --acceptance`）は自然文で書きます。機械が照合するのは、**バッククォートで囲まれた、パスの形をしたプロジェクト内の表記**だけです。パスの形とは、区切りの `/` か `\` を含むか、末尾が拡張子（`.md` など 1〜10 文字）であること。空白を含む断片はコマンド行とみなして外します。だから `` `agent-audit` `` のようなコマンド名は照合対象になりません（拾ってしまうと、永久に満たせない条件になります）。
+
+抽出されたパスは、実在するか・この実行で触れたか・実際に変わったかの 3 つを全部満たしたときだけ通ります。1 つでも欠ければ fail です。URL とハイフン始まりの表記、作業フォルダ外の参照も外します。
 
 ```yaml
 acceptance:
@@ -256,11 +289,41 @@ acceptance:
   - 直近 24 時間のエラーが発生元ごとに件数付きで列挙されている   # 誰も判定しない（判定層は未実装）
 ```
 
-バッククォートのパスを 1 つも含まない受入条件しか無いエントリは、「検証なし」として記録されます。条件が書いてあることと、機械で照合できることは別です。
+パスの形をした表記を 1 つも含まない受入条件しか無いエントリは、「検証なし」として記録されます。条件が書いてあることと、機械で照合できることは別です。
 
 ### 3.5 結果契約（`run` / `statemachine`）
 
 どちらも終了時に `RESULT {json}` を 1 行出力します。呼び出し側（dashboard など）はこの行を読みます。`statemachine` が返すのは `ok` / `stdout` / `finalState` / `logFile` / `files` です。
+
+### 3.6 ターン完了 hook（内部契約）
+
+エージェント CLI 定義が `interactive.turn_completion` を宣言すると、**agent-loop が起動した pane に限って** CLI 自身のターン完了イベントを完了検知に使います。YAML には出てきません。設定するのは `agents/<name>.json` の側だけです。宣言できる値と注入方法は次のとおりです。
+
+| 値 | 注入方法 | 正常終了 | 失敗の扱い |
+|---|---|---|---|
+| `kiro` | private な `KIRO_HOME` へ設定と資源をホワイトリスト複製し、`--agent` を差し替え | `stop` | pane の死亡と timeout |
+| `claude` | `--plugin-dir` で hook だけの plugin を追加 | `Stop` | `StopFailure` |
+| `codex` | 一度きりの `--config notify=…`（既存 notify は多重化） | `agent-turn-complete` | pane の死亡と timeout |
+| `copilot` | `--plugin-dir` | `agentStop` | `errorOccurred(recoverable=false)` を hint として記録 |
+| `opencode` | plugin だけを置いた `OPENCODE_CONFIG_DIR` | `session.idle` | `session.error` を hint として記録 |
+
+hook は `agent-loop hook-event` を呼び、`~/.agents/loop-hooks/<instance-id>/` の mailbox（`active/<pane-id>.json` と `events/<dispatch-id>.json`、ディレクトリ `0700` / ファイル `0600`）へ書きます。SlotMonitor が画面判定より先にこれを claim し、既存の完了・失敗コールバックへ渡します。hook 自身はセマフォを解放しません。
+
+`hook-event` が状態を書き換えるのは、次を**すべて**満たしたときだけです。満たさない通知は黙って無視し、終了コード 0 を返します（CLI 側の停止処理を邪魔しないため）。
+
+1. `AGENT_LOOP_INSTANCE_ID` に対応する runtime がある
+2. `$TMUX_PANE` に対応する active レコードがある
+3. `AGENT_LOOP_HOOK_TOKEN` が active レコードと一致する
+4. adapter が active レコードの `agent_cli` と一致する
+5. instance ID・pane ID・dispatch ID・generation が有効
+
+次のいずれかでは画面監視へ戻ります。起動を止めることはありません。
+
+- 定義が `interactive.turn_completion` を宣言していない、または未知の値（定義の読み込み自体はエラー）
+- hook 資産が見つからない、runtime の準備に失敗した
+- Kiro v3 や、安全に複製できない agent 形式
+
+`doctor` は adapter の資産と runtime ディレクトリを点検します。利用者の global / project 設定、手動で起動した CLI、外部 pane には触りません。
 
 ---
 
@@ -307,7 +370,7 @@ acceptance:
 
 保証は **at-most-once** です。daemon が要求をメモリキューへ受理した後にクラッシュしても、再送はしません。webhook のキューはインメモリなので、再起動で未処理分は消えます。送信元は 202 を受けた時点で再送しません。
 
-取りこぼせないイベントは、event hook のポーリングを併用して冪等に取りに行ってください。event hook は送信成功後の `ack()`、inbox は `.processed/` への移動が確定点なので、受理前に落ちても失われません。
+取りこぼせないイベントは、`hooks` のポーリングを併用して冪等に取りに行ってください。イベントフックは送信成功後の `ack()`、inbox は `.processed/` への移動が確定点なので、受理前に落ちても失われません。
 
 ### 5.3 失敗したときにどうなるか
 
@@ -338,7 +401,7 @@ headless 経路では次が変わります。黙って劣化させず、警告�
 
 そのほかの制約と未実装は次のとおりです。
 
-- kiro-cli 以外では slot-release の stop hook を注入しない。スロット解放は SlotMonitor のペイン監視だけで行う
+- ターン完了 hook を注入するのは agent-loop が起動した対話 pane だけ。headless、external pane、手動起動の CLI、Cursor、Kiro v3 は対象外で、画面監視か終了コードで判定する
 - CLI とモデルの差し替えはセッション境界でだけ効く。無限キープのペインはデーモンを再起動するまで替わらない（`status` の `restart_required` で境界待ちが分かる）
 - 動的インターバルの error 遷移は関数だけがあり、scheduler へ接続していない。フックの例外・timeout・`None` はすべて idle として扱う
 - 受入条件のうち、パスを含まない自然文を証跡付きで判定する層は未実装
@@ -359,6 +422,7 @@ headless 経路では次が変わります。黙って劣化させず、警告�
 | `~/.agents/loop-commands/<pid>/` | `pause` / `cancel` / `drain` / `reload` の受け口 |
 | `~/.agents/loop-control/` | workspace 単位の永続 local pause |
 | `~/.agents/loop-adaptive/<entry-id>.json` | 動的インターバルの状態 |
+| `~/.agents/loop-hooks/<instance-id>/` | ターン完了 hook の mailbox（`active/` と `events/`。`0700` / `0600`） |
 | `~/.agents/send-requests/` | CLI send の受付キュー |
 | `~/.agents/send-responses/` | `send --wait` が読む request 単位の完了状態 |
 | `~/.agents/runs/headless/` | headless 実行の JSONL ログ |
@@ -366,3 +430,5 @@ headless 経路では次が変わります。黙って劣化させず、警告�
 | `~/.kiro/slots/` | 同時実行スロットとクールダウン（`.lock` は fcntl のミューテックス） |
 | `~/.kiro/agents/<name>/inbox/` | エージェント間メッセージ（`.processed/` は処理済み） |
 | `<project>/.agents/agent-loop.yml` | プロジェクトの定期プロンプト |
+| `<install prefix>/hooks/` | `hooks` から名前で引ける同梱スクリプト（`install.sh` が配置） |
+| `<install prefix>/agent-hooks/` | ターン完了 hook の CLI 別資産（同上） |
