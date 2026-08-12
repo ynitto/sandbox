@@ -159,15 +159,18 @@ def _sm_planner_prompt(*, action: str, cwd: str, skills: "list[dict]",
         + (f"{retry}\n" if retry else "")
         + f"Current action:\n---\n{action}\n---\n"
         + (f"Previous tool results:\n{chr(10).join(history)}\n" if history else "")
-        + "A run TOOL_RESULT with status 0 already completed; do not run that command again. "
-          "Request read_files only if inspection is still required.\n"
-          "For run.args, put every CLI token in its own JSON string. Never combine a flag and "
+        + ("A run TOOL_RESULT with status 0 already completed; do not run that command again. "
+           "Request read_files only if inspection is still required.\n"
+           if _tl_history_has_run(history) else
+           "If the action names a command, run it and use its TOOL_RESULT as the only source "
+           "of facts. Never report results you have not seen in a TOOL_RESULT.\n")
+        + ("For run.args, put every CLI token in its own JSON string. Never combine a flag and "
           "value or add flags not requested by the action.\n"
-          "Return exactly one JSON object and no markdown. Allowed forms:\n"
-          '{"type":"read_files","paths":["relative/path"]}\n'
-          '{"type":"write_files","paths":["relative/path"]}\n'
-          '{"type":"run","command":"executable","args":["arg"],"timeout_sec":60}\n'
-          '{"type":"final","output":"the exact action Output Contract"}')
+          "Return exactly one JSON object and no markdown. Required fields by type:\n"
+          "- read_files: type, paths (existing concrete paths from Current action only)\n"
+          "- write_files: type, paths (concrete output paths from Current action only)\n"
+          "- run: type, command, args, timeout_sec\n"
+          "- final: type, output (the exact action Output Contract)"))
 
 
 def _sm_max_attempts(state: dict) -> int:
@@ -227,12 +230,16 @@ def _sm_execute_action(*, workflow_path: str, state_id: str, state: dict, contex
                         return request["output"]
                     break
             if request["type"] == "read_files":
-                for file in request["paths"]:
-                    if not os.path.exists(file):
-                        raise StateMachineHarnessError(
-                            f"読み取り対象がありません: {os.path.relpath(file, cwd)}")
-                    reads.add(file)
-                    evidence.add(file)
+                existing = [file for file in request["paths"] if os.path.exists(file)]
+                reads.update(existing)
+                evidence.update(existing)
+                missing = [file for file in request["paths"] if file not in existing]
+                if missing:
+                    history.append("TOOL_RESULT " + json.dumps(
+                        {"rejected": True, "error": "読み取り対象がありません: "
+                         + ", ".join(os.path.relpath(file, cwd) for file in missing)},
+                        ensure_ascii=False))
+                    continue
                 _sm_progress(f"read_files: {', '.join(os.path.relpath(f, cwd) for f in request['paths'])}")
                 history.append("TOOL_RESULT " + json.dumps(
                     {"type": request["type"], "paths": request["paths"]}, ensure_ascii=False))

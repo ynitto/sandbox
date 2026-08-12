@@ -102,6 +102,20 @@ class ParseAndStatusTest(unittest.TestCase):
             al._sm_validated_output("aider warning\nOK\n\npath: out.txt", "startswith:OK"),
             "OK\npath: out.txt")
 
+    def test_planner_prompt_has_no_copyable_path_placeholder(self):
+        prompt = al._sm_planner_prompt(
+            action="input.json を読む", cwd="/repo", skills=[], reads=[], history=[], retry="")
+        self.assertNotIn("relative/path", prompt)
+
+    def test_planner_prompt_only_claims_run_after_success(self):
+        initial = al._sm_planner_prompt(
+            action="tool.py を実行", cwd="/repo", skills=[], reads=[], history=[], retry="")
+        completed = al._sm_planner_prompt(
+            action="tool.py を実行", cwd="/repo", skills=[], reads=[],
+            history=['TOOL_RESULT {"type":"run","status":0}'], retry="")
+        self.assertNotIn("already completed", initial)
+        self.assertIn("already completed", completed)
+
 
 class RunStatemachineTest(unittest.TestCase):
     """スタブ aider で「final の成功申告 → 書込補正 → 検証 → 終端遷移」を完走させる。"""
@@ -181,6 +195,45 @@ class RunStatemachineTest(unittest.TestCase):
             any(isinstance(e.get("argv"), list)
                 and "--read" in e["argv"] and input_file in e["argv"] for e in events),
             "アクションが参照する既存ファイルを Aider に割り当てる")
+
+    def test_read_request_handles_existing_and_mixed_missing_paths(self):
+        input_file = os.path.realpath(os.path.join(self.repo, "input.txt"))
+        cases = {
+            "existing": ["input.txt"],
+            "mixed-missing": ["relative/path", "input.txt"],
+        }
+        for name, paths in cases.items():
+            with self.subTest(name=name):
+                fake = pathlib.Path(self.repo, f"fake-{name}-read.py")
+                fake.write_text("\n".join([
+                    "import json, sys",
+                    f"target = {input_file!r}",
+                    "if target in sys.argv:",
+                    "    print(json.dumps({'type': 'final', 'output': 'OK'}))",
+                    "else:",
+                    f"    print(json.dumps({{'type': 'read_files', 'paths': {paths!r}}}))",
+                    "",
+                ]), encoding="utf-8")
+                spec = agentcli.normalize(name, {
+                    "name": name,
+                    "command": [sys.executable, str(fake)],
+                    "prompt_via": "argv",
+                    "prompt_flag": "--message",
+                    "read_flag": "--read",
+                    "readonly": "enforced",
+                    "timeout": 10,
+                }, pathlib.Path(self.repo, f"fake-{name}-read.json"))
+
+                result = al.run_statemachine(
+                    workflow_path=os.path.join(
+                        self.repo, ".statemachine", "one-step", "workflow.yaml"),
+                    cwd=self.repo,
+                    parameters={},
+                    agent={"cli": name, "spec": spec, "model": "fake",
+                           "agentcli": agentcli},
+                )
+
+                self.assertTrue(result["ok"], result.get("error"))
 
 
 class ParamParsingTest(unittest.TestCase):
