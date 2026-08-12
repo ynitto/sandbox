@@ -196,6 +196,8 @@ def _node_entry(t):
         e["dependency_input"] = str(t["dependency_input"]).strip().lower()
     if t.get("agent"):
         e["agent"] = t["agent"]
+    if t.get("tier"):  # 固定実行レベル（pinned-tier の記録と手法判定が読む）
+        e["tier"] = str(t["tier"])
     # human ノードの interaction はグラフにも保持する。worker は claim 時に graph の node を
     # 読んで park するため、ここで落とすと human ノードが「interaction 不正」で失敗終端する。
     if isinstance(t.get("interaction"), dict):

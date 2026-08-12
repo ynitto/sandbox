@@ -7,6 +7,32 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-flow の機能・役割ごとに実行可能な実行レベルを宣言し、自動 tier を実行方針で決めるようにした
+
+ワークフロービルダーはどのノード機能にもどの実行レベル（単純作業/軽量/標準/高性能）でも
+固定でき、「work を単純作業へ」「judge を軽量で」のような不整合を止められなかった。
+機能・役割 × 実行可能レベルのカタログを管理面の 1 実装
+（`agent-dashboard/src/features/orchestration/main/flow-tiers.js`）として宣言し、
+plan 生成時に適用するようにした。設計:
+`docs/plans/2026-08-12-agent-flow-tier-eligibility-strategy-design.md`
+
+- **実行可能レベルの見直し**: basic（単純作業）へ任せるのは一手順で完結する
+  classify / filter / extract / map のみ。成果物を作る work / generate、検証 verify、
+  読解 retrieve、集約 reduce は軽量以上。横断判断の synthesize / judge とフローの形を
+  決める split、役割 planner / evaluator は標準以上
+- **オプションとして拡張する振る舞いは下限を引き上げる**: classify の route
+  （分類結果がフローの形を決める）は軽量以上、verify の retry（判定がリトライ予算と
+  再作業を駆動する）は標準以上。エディタは選択肢を絞り、不適格になった固定レベルは
+  「自動」へ戻して通知する
+- **複数レベルで実行可能な振る舞い（自動 tier）は実行方針の戦略で決める**: 方針が選びうる
+  段がすべて適格なら従来どおり実行時の方針を継承し、不適格な段を選びうる機能
+  （例: 節約 × judge）だけ今の段を適格範囲へ丸めて plan へ固定する（丸めの方向は
+  節約=下へ・それ以外=上へ。固定後は固定 tier ノードと同じく降格しない）
+- **plan の tier 保持ギャップを解消**（統一実行方針設計・移行項目3）: agent-flow の
+  `plan_strategy_user` / `_node_entry` が plan の `tier` を保持し、固定 tier が
+  `pinned-tier` として status・台帳・手法判定（`when.tiers` のノード tier 優先）へ届く。
+  継続動作（retry / replan）の作り直しノードも置き換え元の固定 tier を引き継ぐ
+
 ### feat(agent-flow): 計画承認ゲートと tier:basic のお膳立てを追加した
 
 予算逼迫の緊急時、agent-profiles の縮退が `tier: basic` を宣言すると、普段は任せない

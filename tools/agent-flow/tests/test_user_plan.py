@@ -60,6 +60,31 @@ class PlanStrategyUserTests(unittest.TestCase):
             _plan([{"id": "a", "goal": "g", "agent": {"agent_cli": "codex"}}]), "r")
         self.assertEqual(tasks[0]["agent"], {"agent_cli": "codex"})
 
+    def test_tier_kept_on_nodes_and_graph_entries(self):
+        # 固定実行レベル（tier）は plan から剥がさない——pinned-tier の記録と
+        # 手法判定（when.tiers のノード tier 優先）が読む。graph のノード entry へも運ぶ。
+        _, tasks = kf.plan_strategy_user(_plan([
+            {"id": "a", "goal": "g", "tier": "large",
+             "agent": {"agent_cli": "codex", "model": "gpt-5"}},
+            {"id": "b", "goal": "h", "tier": "basic", "kind": "extract", "deps": ["a"]},
+            {"id": "c", "goal": "i", "deps": ["a"]},
+        ]), "r")
+        by_id = {t["id"]: t for t in tasks}
+        self.assertEqual(by_id["a"]["tier"], "large")
+        self.assertEqual(by_id["b"]["tier"], "basic")
+        self.assertNotIn("tier", by_id["c"])  # auto（継承）は tier を持たない
+        entry = kf._node_entry(by_id["a"])
+        self.assertEqual(entry["tier"], "large")
+        self.assertNotIn("tier", kf._node_entry(by_id["c"]))
+
+    def test_human_rejects_tier(self):
+        with self.assertRaises(kf.UserPlanError):
+            kf.plan_strategy_user(_plan([{
+                "id": "review", "goal": "確認", "kind": "human", "tier": "small",
+                "interaction": {"mode": "approval", "prompt": "進めますか",
+                                "audience": ["reviewer"]},
+            }]), "r")
+
     def test_human_plan_preserves_interaction_without_agent(self):
         _, tasks = kf.plan_strategy_user(_plan([{
             "id": "review", "goal": "人の確認を待つ", "kind": "human",

@@ -467,6 +467,14 @@ def plan_strategy_user(plan: dict, request: str):
             if str(agent.get("model") or "").strip():
                 spec["model"] = str(agent["model"]).strip()
             node["agent"] = spec
+        # 固定 tier（実行レベル）。候補の解決は管理面（dashboard）の仕事で、エンジンは
+        # 「この段として実行された」事実の記録（pinned-tier）と手法判定（when.tiers の
+        # ノード tier 優先）にだけ使う。human は tier を持たない（agent と同じ扱い）。
+        tier = str(t.get("tier") or "").strip()
+        if tier:
+            if kind == "human":
+                raise UserPlanError(f"ノード {tid} の human には tier を指定できません")
+            node["tier"] = tier
         reads = normalize_read_allocation(t.get("read_allocation"))
         if reads:
             node["read_allocation"] = reads

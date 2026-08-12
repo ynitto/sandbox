@@ -231,6 +231,28 @@ class RetryLadderTests(unittest.TestCase):
         self.assertGreater(new[0]["agent"]["to_relative_cost"],
                            new[0]["agent"]["from_relative_cost"])
 
+    def test_retry_nodes_inherit_pinned_tier(self):
+        # 固定実行レベル（tier）は作り直しでも維持する——固定は迂回されない契約。
+        nodes = {
+            "gen": {"id": "gen", "goal": "g", "deps": [], "kind": "generate",
+                    "tier": "medium", "agent": {"agent_cli": "codex"}},
+            "chk": {"id": "chk", "goal": "検証", "deps": ["gen"], "kind": "verify",
+                    "tier": "medium"},
+        }
+        results = {"gen": {"status": "done", "output": "ok"},
+                   "chk": {"status": "done", "output": "fail", "data": {"ok": False}}}
+        decision, new, _ = kf.continue_stub("req", nodes, results, 0)
+        self.assertEqual(decision, "replan")
+        by_id = {t["id"]: t for t in new}
+        self.assertEqual(by_id["gen-r1"]["tier"], "medium")
+        self.assertEqual(by_id["chk-r1"]["tier"], "medium")
+
+    def test_failed_retry_inherits_pinned_tier(self):
+        nodes = {"t1": {"id": "t1", "goal": "g", "deps": [], "kind": "work",
+                        "tier": "large", "agent": {"agent_cli": "codex"}}}
+        _, new, _ = kf.continue_stub("req", nodes, {"t1": {"status": "failed"}}, 0)
+        self.assertEqual(new[0]["tier"], "large")
+
     def test_evaluator_replacement_uses_same_retry_ladder(self):
         old = kf._AGENT_OVERRIDES
         self.addCleanup(setattr, kf, "_AGENT_OVERRIDES", old)

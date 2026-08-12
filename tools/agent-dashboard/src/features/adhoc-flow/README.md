@@ -14,6 +14,11 @@
 - カスタムフローは1フロー1JSONファイル。
 - ノードは `kind`、依存、位置、tier を持つ。
 - 実行時に tier の利用可能な候補を `{agent_cli, model}` へ固定し、下位tierへは降格しない。
+- 機能（kind）・オプション（continuation）ごとの実行可能レベルは orchestration の
+  `flow-tiers.js` カタログが宣言する。範囲外の固定 tier は plan 生成で弾き、auto tier は
+  実行方針が不適格な段を選びうる機能だけ今の段を適格範囲へ丸めて固定する（それ以外は
+  従来どおり実行時の方針を継承する）。設計:
+  `docs/plans/2026-08-12-agent-flow-tier-eligibility-strategy-design.md`。
 - 旧 `adhocFlow.presets` は初回表示時にファイルへ移行する。
 
 ## バックログ連携

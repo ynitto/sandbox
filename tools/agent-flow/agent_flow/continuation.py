@@ -205,12 +205,18 @@ def continue_stub(request: str, nodes: dict, results: dict, iteration: int,
                                 "replaces": dep, "retries": tries + 1}
                         if agent:
                             spec["agent"] = agent
+                        # 固定実行レベルは作り直しでも維持する（固定は迂回されない契約）
+                        if nodes.get(dep, {}).get("tier"):
+                            spec["tier"] = str(nodes[dep]["tier"])
                         new.append(spec)
                 vid = f"{nid}-r{iteration+1}"
                 if fresh(vid):
-                    new.append({"id": vid, "goal": "再検証",
-                                "deps": [f"{dep}-r{iteration+1}" for dep in node.get("deps", [])],
-                                "kind": "verify", "replaces": nid, "retries": tries + 1})
+                    revspec = {"id": vid, "goal": "再検証",
+                               "deps": [f"{dep}-r{iteration+1}" for dep in node.get("deps", [])],
+                               "kind": "verify", "replaces": nid, "retries": tries + 1}
+                    if node.get("tier"):
+                        revspec["tier"] = str(node["tier"])
+                    new.append(revspec)
         # 3) 失敗タスクの retry（失敗ノードを置き換え、依存元を付け替える）
         elif r.get("status") == "failed":
             if tries >= max_retries:
@@ -226,6 +232,8 @@ def continue_stub(request: str, nodes: dict, results: dict, iteration: int,
                             "replaces": nid, "retries": tries + 1}
                     if agent:
                         spec["agent"] = agent
+                    if node.get("tier"):  # 固定実行レベルは作り直しでも維持する
+                        spec["tier"] = str(node["tier"])
                     new.append(spec)
     if new:
         return "replan", new, f"{len(new)} 件追加"
@@ -456,6 +464,8 @@ def continue_agent(request: str, nodes: dict, results: dict, iteration: int,
                                        if depth == 0 else None)
         if agent:
             task["agent"] = agent
+        if prior.get("tier") and not task.get("tier"):  # 固定実行レベルは作り直しでも維持する
+            task["tier"] = str(prior["tier"])
     if data.get("decision") == "replan" and new:
         return "replan", new, str(data.get("reason", ""))
     return "done", [], str(data.get("reason", "done"))
