@@ -150,6 +150,8 @@ def collect_budget_ledger(args, store: Store) -> int:
                     rec["event"] = row["event"]
                 if row.get("quota_kind"):
                     rec["quota_kind"] = row["quota_kind"]
+                if row.get("reset_at"):
+                    rec["reset_at"] = row["reset_at"]
                 if isinstance(row.get("escalation"), dict):
                     rec["escalation"] = row["escalation"]
                 for key in ("run_id", "flow_node"):

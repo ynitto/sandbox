@@ -41,6 +41,8 @@ class LedgerCollectTests(AuditTestCase):
             by_kind.setdefault(rec["kind"], []).append(rec)
         self.assertEqual([r["ts"] for r in by_kind["ledger"]], ["2026-08-03T10:00:00Z"])
         self.assertEqual({r["event"] for r in by_kind["event"]}, {"quota", "model_escalation"})
+        quota = next(r for r in by_kind["event"] if r["event"] == "quota")
+        self.assertEqual(quota["reset_at"], "2026-08-03T12:00:00Z")
 
     def test_legacy_quota_rows_without_event_are_dropped(self):
         """`event` を付ける前の世代の quota 行は、消費に混ざらないよう従来どおり落とす。"""

@@ -605,6 +605,36 @@ class UsageLedgerTest(unittest.TestCase):
         self.assertEqual(self._run("aider warning\n"), "OK")
         self.assertEqual(self._ledger_rows(), [])
 
+    def test_quota_failure_is_recorded_for_collection(self):
+        fake = pathlib.Path(self.repo, "fake-quota.py")
+        fake.write_text(
+            "import sys\nsys.stderr.write('too many requests; retry after 5 minutes\\n')\n"
+            "raise SystemExit(1)\n", encoding="utf-8")
+        spec = agentcli.normalize("fake-quota", {
+            "name": "fake-quota",
+            "command": [sys.executable, str(fake)],
+            "prompt_via": "argv",
+            "prompt_flag": "--message",
+            "timeout": 10,
+            "errors": [{
+                "match": "too many requests", "class": "quota",
+                "quota_kind": "rate_limit", "hint": "一時制限です",
+            }],
+        }, pathlib.Path(self.repo, "fake-quota.json"))
+        agent = {"cli": "fake-quota", "spec": spec, "model": "m", "agentcli": agentcli}
+
+        with self.assertRaisesRegex(al.ToolLoopError, "一時制限です"):
+            al._tl_run_agent(agent, "やって", cwd=self.repo, readonly=False,
+                             read_files=[], files=[], log_file=self.log_file)
+
+        rows = self._ledger_rows()
+        self.assertEqual(len(rows), 1, rows)
+        self.assertEqual(rows[0]["event"], "quota")
+        self.assertEqual(rows[0]["quota_kind"], "rate_limit")
+        self.assertEqual(rows[0]["agent_cli"], "fake-quota")
+        self.assertGreater(__import__("datetime").datetime.fromisoformat(
+            rows[0]["reset_at"].replace("Z", "+00:00")).timestamp(), __import__("time").time())
+
 
 if __name__ == "__main__":
     unittest.main()

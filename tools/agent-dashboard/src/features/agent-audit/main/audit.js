@@ -166,6 +166,7 @@ async function summary(cfg, period, runShell = defaultRunShell) {
     period: p,
     workloads: rows,
     agents: (byAgent && byAgent.rows) || [],
+    agentLimits: (byAgent && byAgent.agent_limits) || [],
     totals,
     lastCollect,
   };

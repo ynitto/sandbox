@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import unittest
+from datetime import datetime, timezone
 
 from _shared import AuditTestCase, collect, ledger_row, stats, usage, util
 
@@ -117,6 +118,29 @@ class UsageTests(AuditTestCase):
         _ledger, sessions, _runs = usage.load_period_records(st, "month")
         self.assertEqual(len(sessions), 1)
         self.assertEqual((sessions[0]["tokens_in"], sessions[0]["tokens_out"]), (100, 10))
+
+    def test_agent_limits_combine_declared_cap_and_quota_deadline(self):
+        now = datetime(2026, 8, 12, 0, 0, tzinfo=timezone.utc)
+        ts = "2026-08-12T00:00:00Z"
+        self.write_ledger("20260812", [{"ts": ts, "workload": "flow", "seconds": 0,
+                                         "event": "quota", "agent_cli": "claude",
+                                         "quota_kind": "rate_limit",
+                                         "reset_at": "2026-08-12T01:00:00Z"}])
+        os.makedirs(self.budget_dir, exist_ok=True)
+        with open(os.path.join(self.budget_dir, "config.json"), "w", encoding="utf-8") as f:
+            json.dump({"period": "month", "allocation": {"agents": {
+                "claude": {"max_tokens": 5000}, "codex": {"max_tokens": 2000}}}}, f)
+        rows = [{"group": "claude", "measured_in": 3000, "measured_out": 500,
+                 "estimated_tokens": 0}]
+        limits = {item["agent_cli"]: item for item in usage.aggregate_agent_limits(
+            self.make_args(), self.make_store(), rows, rows_period="month", now=now)}
+        self.assertEqual(limits["claude"]["max_tokens"], 5000)
+        self.assertEqual(limits["claude"]["remaining_tokens"], 1500)
+        self.assertEqual(limits["claude"]["reset_at"], "2026-08-12T01:00:00Z")
+        self.assertTrue(limits["claude"]["blocked"])
+        self.assertEqual(limits["codex"]["reset_at"], "2026-09-01T00:00:00Z")
+        self.assertEqual(limits["codex"]["reset_source"], "period")
+        self.assertFalse(limits["codex"]["blocked"])
 
     def test_calibrate_median_and_write(self):
         st = self._seed(with_session=True, rates={"per_cli": {"claude": 10.0}})

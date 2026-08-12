@@ -216,7 +216,7 @@ def _node_budget_record(seconds: float, ref: str = "", agent_cli: str = "routine
     """台帳へ 1 記帳を追記する（O_APPEND — 複数プロセスの同時追記でも行は壊れない）。
     tmux 経路は時間だけ（トークンは実測できず agent_cli 帰属のみ）、headless 経路は
     CLI が `@agent-usage` を出すならトークンだけを別行で足す。"""
-    if seconds <= 0 and not tokens_in and not tokens_out:
+    if seconds <= 0 and not tokens_in and not tokens_out and not extra:
         return
     d = os.path.join(_node_budget_dir(), "ledger")
     try:
@@ -238,6 +238,9 @@ def _node_budget_record(seconds: float, ref: str = "", agent_cli: str = "routine
         if usd is not None:
             rec["usd"] = float(usd)
         if isinstance(extra, dict):
+            for key in ("event", "quota_kind", "reset_at"):
+                if extra.get(key):
+                    rec[key] = str(extra[key])
             if isinstance(extra.get("methods"), list):
                 rec["methods"] = [str(v) for v in extra["methods"] if str(v)]
             if isinstance(extra.get("trial"), dict):

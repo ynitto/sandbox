@@ -47,6 +47,9 @@ agent-audit sessions --cli N [--since T --until T --cwd-contains S] [--messages 
 agent-audit doctor                   # 源泉の到達性・clean 宣言の点検
 ```
 
+`usage --by agent_cli` は利用量に加え、node-budget で宣言した CLI 別トークン上限と、
+quota 観測から得た更新・復帰時刻も表示する。プラン固有の公称上限は推測せず、未設定は未設定のまま出す。
+
 定期実行は同梱 `audit-calibrate-hook.py` が collect → calibrate → extract → distill --review →
 tune --apply を順に実行する。
 extract / distill には間隔・蓄積ゲートがあるので、**高頻度で駆動しても LLM 消費は

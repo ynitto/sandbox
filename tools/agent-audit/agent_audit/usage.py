@@ -6,6 +6,7 @@ measured（実測: セッションログ由来 or 台帳の実測行）と estim
 from __future__ import annotations
 
 import datetime as _dt
+import glob
 import json
 import os
 import statistics
@@ -14,18 +15,104 @@ from .collect import correlate, correlation_candidates
 from .configfile import resolve_audit_dir, resolve_budget_dir
 from .scrub import scrub_obj
 from .store import Store, record_id
-from .util import log, now_iso, parse_iso, read_json, write_json_atomic
+from .util import iter_jsonl, log, now_iso, parse_iso, read_json, write_json_atomic
 
 GROUP_KEYS = ("workload", "tool", "agent_cli", "model", "purpose", "ref", "node")
+QUOTA_RATE_LIMIT_TTL_SEC = 3600
 
 
-def _period_floor(period: str) -> float:
-    now = _dt.datetime.now(_dt.timezone.utc)
+def _period_floor(period: str, now: "_dt.datetime | None" = None) -> float:
+    now = now or _dt.datetime.now(_dt.timezone.utc)
     if period == "day":
         return now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
     if period == "month":
         return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).timestamp()
     return 0.0
+
+
+def _next_period_reset(period: str, now: _dt.datetime) -> str:
+    """node-budget の UTC 期間が次に切り替わる時刻。total は期限なし。"""
+    if period == "day":
+        reset = now.replace(hour=0, minute=0, second=0, microsecond=0) \
+            + _dt.timedelta(days=1)
+    elif period == "month":
+        reset = (now.replace(day=28, hour=0, minute=0, second=0, microsecond=0)
+                 + _dt.timedelta(days=4)).replace(day=1)
+    else:
+        return ""
+    return reset.isoformat().replace("+00:00", "Z")
+
+
+def aggregate_agent_limits(args, store: Store, rows: "list[dict]", *, rows_period: str = "",
+                           now: "_dt.datetime | None" = None) -> "list[dict]":
+    """CLI 別の宣言上限と、最新の quota 観測・復帰予定を同じ行へ畳む。"""
+    now = now or _dt.datetime.now(_dt.timezone.utc)
+    now_epoch = now.timestamp()
+    cfg = read_json(os.path.join(resolve_budget_dir(args), "config.json")) or {}
+    period = cfg.get("period") if cfg.get("period") in ("day", "month", "total") else "day"
+    agents = ((cfg.get("allocation") or {}).get("agents") or {})
+    agents = agents if isinstance(agents, dict) else {}
+    latest: "dict[str, tuple[float, dict]]" = {}
+    floor = _period_floor(period, now)
+    records = list(store.iter_records(since_epoch=floor))
+    ledger_dir = os.path.join(resolve_budget_dir(args), "ledger")
+    for path in sorted(glob.glob(os.path.join(glob.escape(ledger_dir), "*.jsonl"))):
+        records.extend(iter_jsonl(path))
+    for rec in records:
+        if rec.get("event") != "quota":
+            continue
+        cli = str(rec.get("agent_cli") or "")
+        ts = parse_iso(rec.get("ts"))
+        if not cli or ts is None or (floor and ts < floor):
+            continue
+        if cli not in latest or ts >= latest[cli][0]:
+            latest[cli] = (ts, rec)
+
+    if rows_period and rows_period != period:
+        rows = aggregate_usage(args, store, period, "agent_cli")
+    used = {str(row.get("group") or ""): int(
+        (row.get("measured_in") or 0) + (row.get("measured_out") or 0)
+        + (row.get("estimated_tokens") or 0)) for row in rows}
+    out = []
+    for cli in sorted(set(agents) | set(latest)):
+        spec = agents.get(cli) if isinstance(agents.get(cli), dict) else {}
+        try:
+            max_tokens = max(0, int(spec.get("max_tokens") or 0))
+        except (TypeError, ValueError):
+            max_tokens = 0
+        event = latest.get(cli, (None, {}))[1]
+        kind = str(event.get("quota_kind") or "")
+        reset_at = str(event.get("reset_at") or "")
+        reset_estimated = False
+        reset_source = "observed" if reset_at else ""
+        reset_epoch = parse_iso(reset_at)
+        if kind == "rate_limit" and reset_epoch is None:
+            observed = parse_iso(event.get("ts"))
+            if observed is not None:
+                reset_epoch = observed + QUOTA_RATE_LIMIT_TTL_SEC
+                reset_at = _dt.datetime.fromtimestamp(
+                    reset_epoch, _dt.timezone.utc).isoformat().replace("+00:00", "Z")
+                reset_estimated = True
+                reset_source = "estimated"
+        if reset_epoch is not None and reset_epoch <= now_epoch:
+            kind = ""
+            reset_at = ""
+            reset_source = ""
+        if not reset_at and (max_tokens > 0 or kind == "exhausted"):
+            reset_at = _next_period_reset(period, now)
+            reset_source = "period" if reset_at else ""
+        used_tokens = used.get(cli, 0)
+        blocked = bool(kind) or (max_tokens > 0 and used_tokens >= max_tokens)
+        out.append({
+            "agent_cli": cli, "period": period, "max_tokens": max_tokens,
+            "used_tokens": used_tokens,
+            "remaining_tokens": max(0, max_tokens - used_tokens) if max_tokens else None,
+            "quota_kind": kind or None, "observed_at": event.get("ts") or None,
+            "reset_at": reset_at or None, "reset_estimated": reset_estimated,
+            "reset_source": reset_source or None,
+            "blocked": blocked,
+        })
+    return out
 
 
 def load_period_records(store: Store, period: str) -> "tuple[list[dict], list[dict], list[dict]]":
@@ -182,8 +269,13 @@ def cmd_usage(args) -> int:
         print(f"[agent-audit] usage: --by は {', '.join(GROUP_KEYS)} から選んでください")
         return 2
     rows = aggregate_usage(args, store, period, by)
+    limits = aggregate_agent_limits(
+        args, store, rows, rows_period=period) if by == "agent_cli" else []
     if getattr(args, "json", False):
-        print(json.dumps(scrub_obj({"period": period, "by": by, "rows": rows}),
+        payload = {"period": period, "by": by, "rows": rows}
+        if by == "agent_cli":
+            payload["agent_limits"] = limits
+        print(json.dumps(scrub_obj(payload),
                          ensure_ascii=False, indent=1))
         return 0
     print(f"トークン・コスト集計（period={period} / by={by}）")
@@ -197,6 +289,13 @@ def cmd_usage(args) -> int:
               f"{r['usd']:>8.2f}")
     if not rows:
         print("（レコードがありません。まず agent-audit collect を実行してください）")
+    if limits:
+        print("\nCLI 利用枠（node-budget 宣言 + quota 観測）")
+        for item in limits:
+            cap = str(item["max_tokens"]) if item["max_tokens"] else "未設定"
+            reset = item["reset_at"] or "期限なし"
+            state = item["quota_kind"] or ("上限到達" if item["blocked"] else "利用可")
+            print(f"  {item['agent_cli']}: 上限 {cap} / {state} / 更新・復帰 {reset}")
     return 0
 
 

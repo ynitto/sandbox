@@ -332,6 +332,22 @@ def _tl_record_usage(agent: dict, result: dict, log_file: str) -> None:
                         tokens_in=tokens_in, tokens_out=tokens_out)
 
 
+def _tl_failure_hint(agent: dict, detail: str) -> str:
+    """失敗分類を利用者向け文言とquota観測の両方へ一度だけ使う。"""
+    classified = agent["agentcli"].classify_error(
+        agent["spec"], detail, detailed=True, now=time.time())
+    if not classified:
+        return ""
+    quota_kind = classified.get("quota_kind")
+    if quota_kind:
+        extra = {"event": "quota", "quota_kind": quota_kind}
+        if classified.get("reset_at"):
+            extra["reset_at"] = classified["reset_at"]
+        _node_budget_record(0, agent_cli=str(agent["cli"] or ""),
+                            model=str(agent["model"] or ""), extra=extra)
+    return str(classified.get("hint") or "")
+
+
 def _tl_run_agent(agent: dict, prompt: str, *, cwd: str, readonly: bool,
                   read_files: "list[str]", files: "list[str]", log_file: str) -> str:
     """エージェント CLI（aider 等）を headless で 1 回呼び、応答本文を返す。"""
@@ -347,8 +363,7 @@ def _tl_run_agent(agent: dict, prompt: str, *, cwd: str, readonly: bool,
     _tl_record_usage(agent, result, log_file)
     if result["status"] != 0 or result["error"]:
         detail = "\n".join(x for x in (result["error"], result["stderr"], result["stdout"]) if x)
-        classified = mod.classify_error(agent["spec"], detail)
-        hint = classified[1] if classified else ""
+        hint = _tl_failure_hint(agent, detail)
         raise ToolLoopError(hint or detail or f"{argv[0]} が失敗しました")
     output = str(result["stdout"] or "").strip()
     if not output:
@@ -788,8 +803,7 @@ def run_cli_loop(*, goal: str, cwd: str, agent: dict, log_file: str,
     if result["status"] != 0 or result["error"]:
         detail = "\n".join(x for x in (result["error"], result["stderr"],
                                        result["stdout"]) if x)
-        classified = mod.classify_error(agent["spec"], detail)
-        raise ToolLoopError((classified[1] if classified else "")
+        raise ToolLoopError(_tl_failure_hint(agent, detail)
                             or detail or f"{argv[0]} が失敗しました")
     output = str(result["stdout"] or "").strip()
     if not output and agent["spec"].get("empty_output_is_error", True):

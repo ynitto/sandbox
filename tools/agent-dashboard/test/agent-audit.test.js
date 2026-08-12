@@ -131,7 +131,7 @@ test('利用量テーブルは実測と推定を別の列で示し合算しな�
   assert.match(html, /1\.20M/);
   assert.match(html, /34k/);
   assert.match(html, /1\.5時間/);
-  assert.match(html, /\$0\.05/);
+  assert.doesNotMatch(html, /概算費用|\$0\.05/);
   assert.match(html, /LLM呼び出し/);
 });
 
@@ -167,13 +167,17 @@ test('summary は機能別とエージェント別を 1 回で取り、合計を
            estimated_tokens: 0, unmeasured_runs: 0, usd: 0 }]
       : [{ group: 'claude', runs: 3, seconds: 180, measured_in: 1200, measured_out: 600,
            estimated_tokens: 300, unmeasured_runs: 1, usd: 0.25 }];
-    return okResult(JSON.stringify({ period: 'day', rows }));
+    return okResult(JSON.stringify({
+      period: 'day', rows,
+      ...(script.includes("'agent_cli'") ? { agent_limits: [{ agent_cli: 'claude', max_tokens: 5000 }] } : {}),
+    }));
   });
   assert.match(scripts[0], /'--period' 'day' '--by' 'workload'/);
   assert.match(scripts[1], /'--period' 'day' '--by' 'agent_cli'/);
   assert.equal(data.period, 'day');
   assert.equal(data.workloads.length, 2);
   assert.equal(data.agents.length, 1);
+  assert.equal(data.agentLimits[0].max_tokens, 5000);
   // 実測と推定は別々に畳み、合算値は total にだけ持つ（列の意味づけは agent-audit の契約）
   assert.equal(data.totals.measured, 1800);
   assert.equal(data.totals.estimated, 300);
@@ -259,7 +263,7 @@ test('ゲージは期間が予算の期間と一致するときだけ残量を�
   assert.match(withState({}, () => ui.gaugeHtml(SUMMARY.totals, 'month')), /上限は未設定/);
 });
 
-test('エージェント別テーブルは割合の大きい順に並べ、概算費用を添える', () => {
+test('エージェント別テーブルは割合の大きい順に並べ、費用と空の状態を出さない', () => {
   const html = withState({}, () => ui.agentTableHtml({
     totals: { total: 3300 },
     agents: [{ group: 'ollama', runs: 1, seconds: 30, measured_in: 0, measured_out: 0,
@@ -269,7 +273,42 @@ test('エージェント別テーブルは割合の大きい順に並べ、概�
   }));
   assert.ok(html.indexOf('claude') < html.indexOf('ollama'), '割合の大きい順');
   assert.match(html, /取得できず/);               // トークン不明でも時間と件数は数える
-  assert.match(html, /\$0\.25/);
+  assert.doesNotMatch(html, /概算費用|\$0\.25|上限未設定|<th>状態<\/th>/);
+});
+
+test('エージェント別テーブルは上限・期限と tier ごとのモデル候補を示す', () => {
+  const html = withState({
+    orchestration: {
+      budget: {
+        config: {
+          period: 'month', allocation: { agents: { claude: { max_tokens: 5000 } } },
+          computed: { agents: { claude: { quota_kind: 'rate_limit', reset_at: '2099-08-12T01:00:00Z' } } },
+        },
+      },
+      profiles: { tiers: {
+        large: { order: 3, label: '高性能', candidates: [{ agent_cli: 'claude', model: 'opus' }] },
+        medium: { order: 2, label: '標準', candidates: [{ agent_cli: 'claude', model: 'sonnet' }] },
+      } },
+    },
+  }, () => ui.agentTableHtml({
+    period: 'month', totals: { total: 3300 },
+    agentLimits: [{ agent_cli: 'claude', max_tokens: 5000, reset_at: '2099-08-12T01:00:00Z' }],
+    agents: [{ group: 'claude', runs: 2, measured_in: 3000, measured_out: 300,
+               estimated_tokens: 0 }],
+  }));
+  assert.match(html, /設定上限/);
+  assert.match(html, />5k</);
+  assert.match(html, /title="[^"]*2099-08-12T01:00:00Z[^"]*"/);
+  assert.doesNotMatch(html, />2099-08-12T01:00:00Z</);
+  assert.match(html, /一時制限中/);
+  assert.match(html, /高性能: opus \/ 標準: sonnet/);
+  assert.match(html, /実行制御のエージェント別トークン上限/);
+});
+
+test('利用状況の合計から概算費用を除く', () => {
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'renderer', 'features', 'agent-audit.js'), 'utf8');
+  assert.doesNotMatch(src, /概算費用/);
 });
 
 test('agent-audit の集計が取れない端末では台帳集計へフォールバックし、その旨を言う', () => {

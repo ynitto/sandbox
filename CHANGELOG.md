@@ -7,6 +7,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-audit / agent-dashboard: CLI 別の上限・期限を利用状況と tier 切替へ揃えた
+
+- `agent-audit usage --by agent_cli` が node-budget の CLI 別設定上限と quota 観測の復帰時刻を返す。
+  収集時に落としていた `reset_at` も保持し、時刻不明の rate limit は既存規約どおり 1 時間で失効する
+- 利用状況のエージェント別表へ設定上限、期限・復帰予定、状態、tier ごとのモデル候補を表示する。
+  公称枠は推測せず、未設定は「上限未設定」とする
+- Resource Controller の tier / 候補選択は同じ node-budget の上限・quota 状態を使うため、
+  制限中は次候補または下位 tier へ退避し、復帰時刻後はヒステリシスを通って戻る
+
 ### feat(agent-dashboard): カスタムフローをリポジトリで共有できるようにした
 
 - 従来のユーザー共通 `~/.agents/workflows/*.json` に加え、実行対象リポジトリの

@@ -98,15 +98,20 @@
     return `${Math.round(v)}秒`;
   }
 
-  function fmtUsd(n) {
-    const v = Number(n) || 0;
-    return v > 0 ? `$${v.toFixed(2)}` : '—';
-  }
-
   function fmtWhen(iso) {
     if (!iso) return '';
     const t = new Date(iso);
     return Number.isNaN(t.getTime()) ? String(iso) : t.toLocaleString();
+  }
+
+  function fmtShortWhen(iso) {
+    const t = new Date(iso);
+    if (!iso || Number.isNaN(t.getTime())) return String(iso || '');
+    const now = new Date();
+    const time = `${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}`;
+    if (t.toDateString() === now.toDateString()) return time;
+    if (t.getFullYear() === now.getFullYear()) return `${t.getMonth() + 1}/${t.getDate()} ${time}`;
+    return `${t.getFullYear()}/${t.getMonth() + 1}/${t.getDate()}`;
   }
 
   function pairsText(obj, labels) {
@@ -246,20 +251,63 @@
   function agentTableHtml(data) {
     const rows = (data && data.agents) || [];
     const total = ((data && data.totals) || {}).total || 0;
-    const body = rows.slice()
+    const budget = budgetState() || {};
+    const allocation = (((budget.config || {}).allocation || {}).agents) || {};
+    const observed = (((budget.config || {}).computed || {}).agents) || {};
+    const auditLimits = new Map(((data && data.agentLimits) || [])
+      .map((limit) => [String(limit.agent_cli || ''), limit]));
+    const profiles = (((root.state || {}).orchestration || {}).profiles || {});
+    const tiers = profiles.tiers || {};
+    const tierNames = (cli) => Object.entries(tiers)
+      .sort((a, b) => Number((b[1] || {}).order || 0) - Number((a[1] || {}).order || 0))
+      .map(([name, tier]) => {
+        const models = ((tier || {}).candidates || [])
+          .filter((candidate) => candidate.agent_cli === cli)
+          .map((candidate) => candidate.model || '既定');
+        return models.length ? `${(tier.label || name)}: ${[...new Set(models)].join('・')}` : '';
+      }).filter(Boolean).join(' / ');
+    const names = [...new Set([
+      ...rows.map((row) => String(row.group || '')),
+      ...Object.keys(allocation), ...Object.keys(observed),
+      ...Object.values(tiers).flatMap((tier) => ((tier || {}).candidates || [])
+        .map((candidate) => String(candidate.agent_cli || ''))),
+    ])].filter(Boolean);
+    const byName = new Map(rows.map((row) => [String(row.group || ''), row]));
+    const body = names.map((name) => byName.get(name) || { group: name })
       // 割合の大きい順（同じ棒グラフの並びを機能別と揃える）。同率は実行数の多い順。
       .sort((a, b) => rowTokens(b) - rowTokens(a) || (Number(b.runs) || 0) - (Number(a.runs) || 0))
-      .map((row) => `<tr>
-        <td><code>${escHtml(row.group || '未記録')}</code></td>
+      .map((row) => {
+        const cli = String(row.group || '');
+        const declared = allocation[cli] || {};
+        const quota = observed[cli] || {};
+        const audited = auditLimits.get(cli) || {};
+        const cap = Number(audited.max_tokens !== undefined
+          ? audited.max_tokens : declared.max_tokens || 0);
+        const quotaKind = String(quota.quota_kind || audited.quota_kind || '');
+        const resetAt = String(quota.reset_at || audited.reset_at || '');
+        const resetFuture = resetAt && Number.isFinite(Date.parse(resetAt)) && Date.parse(resetAt) > Date.now();
+        const quotaBlocked = quotaKind === 'exhausted' || (quotaKind === 'rate_limit' && resetFuture);
+        const capReached = cap > 0 && data && data.period === ((budget.config || {}).period)
+          && rowTokens(row) >= cap;
+        const state = quotaBlocked
+          ? badgeHtml('over', quotaKind === 'rate_limit' ? '一時制限中' : '枠を使い切りました')
+          : capReached ? badgeHtml('over', '設定上限に到達') : '';
+        const strategy = tierNames(cli);
+        const resetNote = audited.reset_source === 'period' ? '（設定期間）'
+          : audited.reset_estimated ? '（推定）' : '';
+        return `<tr>
+        <td><code>${escHtml(cli || '未記録')}</code>${state ? ` ${state}` : ''}${strategy ? `<br><span class="muted">${escHtml(strategy)}</span>` : ''}</td>
         <td class="orch-bar-cell">${shareCellHtml(row, total)}</td>
         <td class="num mono">${tokenCellHtml(row)}</td>
+        <td class="num mono">${cap > 0 ? escHtml(fmtTokens(cap)) : '—'}</td>
+        <td${resetAt ? ` title="${escHtml(`復帰予定: ${fmtWhen(resetAt)} ${resetAt}${resetNote}`)}"` : ''}>${resetAt ? escHtml(fmtShortWhen(resetAt)) : '—'}</td>
         <td class="num mono">${escHtml(fmtSeconds(row.seconds))}</td>
         <td class="num mono">${Number(row.runs || 0)}件</td>
-        <td class="num mono">${escHtml(fmtUsd(row.usd))}</td>
-      </tr>`).join('');
+      </tr>`;
+      }).join('');
     return `<div class="table-scroll"><table class="list audit-table">
-      <thead><tr><th>エージェント</th><th>全体に占める割合</th><th>トークン</th><th>実行時間</th><th>LLM呼び出し</th><th>概算費用</th></tr></thead>
-      <tbody>${body || '<tr><td colspan="6" class="muted">エージェント別の記録はありません。</td></tr>'}</tbody>
+      <thead><tr><th>エージェント / 切替候補</th><th>全体に占める割合</th><th>トークン</th><th><span title="実行制御のエージェント別トークン上限（node-budget設定）">設定上限</span></th><th><span title="quota制限の復帰予定。完全な日時と算出方法は各セルに表示します">復帰</span></th><th>実行時間</th><th>LLM呼び出し</th></tr></thead>
+      <tbody>${body || '<tr><td colspan="7" class="muted">エージェント別の記録はありません。</td></tr>'}</tbody>
     </table></div>`;
   }
 
@@ -287,12 +335,11 @@
       <td class="num">${escHtml(fmtTokens(row.estimated_tokens))}</td>
       <td class="num">${escHtml(fmtSeconds(row.seconds))}</td>
       <td class="num">${escHtml(String(row.unmeasured_runs || 0))}</td>
-      <td class="num">${escHtml(fmtUsd(row.usd))}</td>
     </tr>`).join('');
     return `<table class="list audit-table">
       <thead><tr>
         <th>グループ</th><th>LLM呼び出し</th><th>実測トークン 入力</th><th>実測トークン 出力</th>
-        <th>推定トークン</th><th>実行時間</th><th>実測なし</th><th>概算費用</th>
+        <th>推定トークン</th><th>実行時間</th><th>実測なし</th>
       </tr></thead>
       <tbody>${body}</tbody>
     </table>`;
@@ -387,7 +434,6 @@
         <div><span>合計</span><strong>${escHtml(totals.total > 0 ? `${fmtTokens(totals.total)} トークン` : (unmeasured > 0 ? '取得できず' : '0 トークン'))}</strong></div>
         <div><span>実行時間</span><strong>${escHtml(fmtSeconds(totals.seconds))}</strong></div>
         <div><span>LLM呼び出し</span><strong>${Number(totals.runs || 0)}件</strong></div>
-        <div><span>概算費用</span><strong>${escHtml(fmtUsd(totals.usd))}</strong></div>
       </div>
       <p class="orch-usage-breakdown">
         <span class="orch-legend"><span class="orch-swatch orch-bar-measured"></span>実測 ${escHtml(fmtTokens(totals.measured))}（入力 ${escHtml(fmtTokens(totals.measuredIn))} / 出力 ${escHtml(fmtTokens(totals.measuredOut))}）</span>
@@ -646,7 +692,7 @@
   }
 
   return {
-    escHtml, fmtTokens, fmtSeconds, fmtUsd, pairsText,
+    escHtml, fmtTokens, fmtSeconds, fmtShortWhen, pairsText,
     usageTableHtml, statsTableHtml, settingsHtml, settingsPanelHtml, collectStatusHtml, panelHtml,
     workloadTableHtml, agentTableHtml, gaugeHtml, ledgerFallbackHtml,
     render, refresh, wire, reveal, portalCardHtml,
