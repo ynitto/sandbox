@@ -1,4 +1,38 @@
-# worker 受入率ハーネス — ローカルモデルを 1 時間で判定する
+# agent-tools 評価ハーネス
+
+Ollama のモデルを交換するときに、**モデルの実力**と**エージェント・ハーネスの影響**を
+混同せず比較するための測定群。処理単位ごとに直接実行でき、まとめて同条件で回すこともできる。
+
+| 単位 | スクリプト | 測るもの | 主な指標 |
+|---|---|---|---|
+| worker | `worker_eval.py` | ファイル編集・修正・複数成果物 | 決定的チェッカーの受入率、壁時計、失敗様式 |
+| judge | `judge_eval.py` | split/filter/judge/reduce/evaluator | 正解一致率、自己一貫性、形式違反 |
+| retrieval | `retrieval_eval.py` | 記憶検索（生成モデルとは独立） | hit@k、MRR、検索時間 |
+| observation | `log_stats.py` | 既存の agent-ollama ログ | prompt/output 寸法、TTFT、decode 速度 |
+
+## モデル交換時の標準測定
+
+`run_suite.py` は各単位をサブプロセスとして直列実行する。Ollama の取り合いを避け、同じ
+`model / repeat / wall / cli` を manifest に固定する。最初は dry-run で条件を確認する。
+
+```bash
+python3 tools/agent-tools/eval/run_suite.py --model qwen3.5:9b --dry-run
+python3 tools/agent-tools/eval/run_suite.py --model qwen3.5:9b --cli agent-ollama
+python3 tools/agent-tools/eval/run_suite.py --model qwen3.5:9b --cli aider --label aider
+```
+
+結果は `results/<UTC時刻>-<model>-<label>/` の下へ保存する。run 直下の `manifest.json` が
+比較条件、単位ごとの `command.txt` が再現コマンド、`console.log` が生ログ、`ledger.jsonl`
+または `metrics.json` が機械可読な結果である。通常の run は Git 管理外で、採用判断の根拠に
+残すスナップショットだけを `results/archive/` へ移す。過去の台帳も同所へ整理した。
+
+生成モデルだけを比べる基準線は `--cli agent-ollama` のまま `--model` だけ変える。
+ハーネスを調整する実験ではモデルを固定し、`--cli`、`--wall`、個別スクリプトの
+`--methods` / `--num-predict` を **1 度に 1 つだけ**変える。worker の aider 経路は比較用に
+残すが、モデル交換の必須条件ではない。retrieval の埋め込みモデルは生成モデルと別軸なので、
+`--embedding-model` で明示する。
+
+## worker 受入率ハーネス — ローカルモデルを 1 時間で判定する
 
 `agent-ollama` に載せたモデルを **worker として使えるか**だけを測る。合否は決定的な
 チェッカーが出し、判定役（LLM）は 1 度も呼ばない。
