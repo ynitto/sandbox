@@ -14,4 +14,5 @@ module.exports = {
   adhocFlowDeleteWorkflow: (invoke) => (payload) => invoke('adhocFlow:deleteWorkflow', payload || {}),
   adhocFlowSnapshotSelection: (invoke) => (payload) => invoke('adhocFlow:snapshotSelection', payload || {}),
   adhocFlowPromote: (invoke) => (payload) => invoke('adhocFlow:promote', payload || {}),
+  adhocFlowSaveSettings: (invoke) => (payload) => invoke('adhocFlow:saveSettings', payload || {}),
 };

@@ -64,8 +64,8 @@ function grab(name) {
 }
 
 // eslint-disable-next-line no-new-func
-const needsViewModel = new Function(
-  `${grab('needBucket')}; ${grab('needsViewModel')}; return needsViewModel;`
+const { needBucket, needsViewModel } = new Function(
+  `${grab('needBucket')}; ${grab('needsViewModel')}; return { needBucket, needsViewModel };`
 )();
 
 // eslint-disable-next-line no-new-func
@@ -649,12 +649,14 @@ const needs = [
   { id: 'open-new', date: '2026-07-15' },
 ];
 const sent = (need) => Boolean(need.sent);
-const openModel = needsViewModel(needs, 'open', 'missing', sent);
+const openModel = needsViewModel(needs, 'missing', sent);
 assert.deepStrictEqual(openModel.counts, { open: 2, sent: 1, done: 1 });
-assert.deepStrictEqual(openModel.items.map((need) => need.id), ['open-new', 'open-old']);
-assert.strictEqual(openModel.selectedId, 'open-new', '選択対象が無い場合は最新の項目を開く');
-assert.strictEqual(needsViewModel(needs, 'sent', 'sent', sent).selectedId, 'sent');
-assert.strictEqual(needsViewModel(needs, 'gitlab', null, sent).selected, null);
+assert.deepStrictEqual(openModel.items.map((need) => need.id), ['open-old', 'open-new', 'sent', 'done']);
+assert.strictEqual(openModel.selectedId, 'open-old', '未対応のうち最も古い項目を先に開く');
+assert.strictEqual(needsViewModel(needs, 'sent', sent).selectedId, 'sent');
+assert.strictEqual(needBucket({ workflowInteraction: { responded: true } }, sent), 'sent');
+assert.strictEqual(needBucket({ workflowInteraction: { resolution: { status: 'answered' } } }, sent), 'done');
+assert.strictEqual(needBucket({ workflowInteraction: { expired: true } }, sent), 'done');
 
 const milestone = { id: 'demo-v1', kind: 'milestone', summary: '判断待ち' };
 const review = { id: 'T1', kind: 'review' };
@@ -732,9 +734,15 @@ assert.strictEqual(flowGroupBucket({ advice: { kind: 'restart' }, latest: { stat
 assert.strictEqual(flowGroupBucket({ advice: { kind: 'none' }, latest: { status: 'done' } }), 'done');
 assert.strictEqual(flowGroupBucket({ advice: { kind: 'auto' }, latest: { status: 'running' } }), 'active');
 
-for (const label of ['未対応', '送信済み', '回答済み', 'GitLab', '実行中', '要確認', '完了']) {
+for (const label of ['未対応', '送信済み', '回答済み', '実行中', '要確認', '完了']) {
   assert.ok(renderer.includes(label), `絞り込みに「${label}」が必要です`);
 }
+assert.ok(!renderer.includes('data-needs-filter'), '要対応は状態タブに分けず、同じ一覧でバッジ表示する');
+assert.ok(html.includes('data-area-list="workflows"'), '左ペインにワークフロー実行一覧が必要');
+for (const tab of ['workflow-run', 'workflow-needs', 'workflow-edit', 'workflow-settings']) {
+  assert.ok(html.includes(`data-tab="${tab}"`), `ワークフローの ${tab} タブが必要`);
+}
+assert.ok(!html.match(/data-tab="workflow-run"[^>]*>[\s\S]{0,40}実行履歴/), '実行タブに履歴一覧を置かない');
 for (const label of ['概要', '工程', '履歴']) {
   assert.ok(renderer.includes(`'${label}'`), `実行詳細に「${label}」ビューが必要です`);
 }
@@ -1058,8 +1066,8 @@ assert.match(renderer, /作業内容と完了条件/);
   assert.ok(renderer.includes('data-approve-plan-batch'), '計画レビューの一括承認入口を出す');
   assert.match(
     grab('renderNeeds'),
-    /state\.needsFilter === 'open'\s*\? planReviewBatchCandidates\(model\.items, isNeedSent\)/,
-    '一括承認は未対応画面に表示中の計画だけを対象にする'
+    /planReviewBatchCandidates\([\s\S]*needBucket\(item, isNeedSent\) === 'open'/,
+    '一括承認は同じ一覧の未対応計画だけを対象にする'
   );
   // eslint-disable-next-line no-new-func
   const confirmMessage = new Function(

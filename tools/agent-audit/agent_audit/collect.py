@@ -1,6 +1,7 @@
-"""collect — 源泉の増分収集と正規化（決定的・LLM 不使用。設計 §4）。
+"""collect — 源泉の増分収集と正規化（LLM 不使用。設計 §4）。
 
-すべて読み取り専用・増分・冪等。カーソルと収集済み管理は store.state.json。
+源泉は読み取り専用・増分・冪等。CLI quota snapshot だけは候補切替へ共有するため
+node-budget の追記専用台帳へ観測行として写す。カーソルと収集済み管理は store.state.json。
 源泉の場所は 引数 / 設定 > 契約上の既定パス で解決し、環境変数は見ない。
 明示設定された源泉が読めないときは fail-close（exit 2）——黙って部分集計を
 全体と偽らない（不変条件 3）。
@@ -10,15 +11,19 @@ from __future__ import annotations
 import glob
 import json
 import os
+import queue
 import re
+import shutil
+import subprocess
+import threading
 
 from .configfile import resolve_budget_dir
 from .store import Store, home_relative, record_id
-from .util import elog, iter_jsonl, log, now_iso, parse_iso, read_json
+from .util import append_jsonl, elog, epoch_to_iso, iter_jsonl, log, now_iso, parse_iso, read_json, utc_day
 
 ERROR_TAG_RE = re.compile(r"\[agent-error:([a-z]+)\]")
 
-KNOWN_SOURCES = ("budget-ledger", "cli-native", "flow-bus", "project-root",
+KNOWN_SOURCES = ("budget-ledger", "cli-native", "cli-quota", "flow-bus", "project-root",
                  "amigos-bus", "loop-log")
 SESSION_PARSER_REVISION = 2
 
@@ -50,6 +55,8 @@ def cmd_collect(args) -> int:
             added += collect_cli_native(args, store,
                                         with_transcripts=bool(getattr(args, "with_transcripts", False)),
                                         since=since)
+        if on("cli-quota"):
+            added += collect_cli_quota(args, store)
         if on("flow-bus"):
             added += collect_flow_buses(args, store)
         if on("project-root"):
@@ -152,6 +159,9 @@ def collect_budget_ledger(args, store: Store) -> int:
                     rec["quota_kind"] = row["quota_kind"]
                 if row.get("reset_at"):
                     rec["reset_at"] = row["reset_at"]
+                for key in ("quota_used_percent", "quota_source", "quota_window_minutes"):
+                    if row.get(key) is not None:
+                        rec[key] = row[key]
                 if isinstance(row.get("escalation"), dict):
                     rec["escalation"] = row["escalation"]
                 for key in ("run_id", "flow_node"):
@@ -257,6 +267,415 @@ def _write_transcript(store: Store, cli_name: str, sess: dict) -> str:
 def _iso(sec) -> str:
     from .util import epoch_to_iso
     return epoch_to_iso(float(sec)) if sec else ""
+
+
+# -- CLI quota ---------------------------------------------------------------
+
+def collect_cli_quota(args, store: Store) -> int:
+    """各CLIが自分で表示する契約枠を、モデル実行なしで収集する。"""
+    added = 0
+    for executable, collector in (("claude", collect_claude_quota),
+                                  ("codex", collect_codex_quota),
+                                  ("copilot", collect_copilot_quota),
+                                  ("kiro-cli", collect_kiro_quota)):
+        if shutil.which(executable):
+            added += collector(args, store)
+    return added
+
+
+def _append_quota_snapshot(args, store: Store, *, agent_cli: str, source: str,
+                           used_percent, reset_at: str = "", window_minutes=None,
+                           reached: bool = False) -> int:
+    try:
+        used = max(0.0, min(100.0, float(used_percent)))
+    except (TypeError, ValueError):
+        return 0
+    used = int(used) if used.is_integer() else round(used, 1)
+    snapshot = {
+        "agent_cli": agent_cli,
+        "quota_used_percent": used,
+        "quota_source": source,
+        "reset_at": reset_at,
+        **({"quota_window_minutes": window_minutes} if window_minutes is not None else {}),
+        **({"quota_kind": "rate_limit"} if reached or used >= 100 else {}),
+    }
+    signature = json.dumps(snapshot, sort_keys=True, separators=(",", ":"))
+    cursor = f"cli-quota::{agent_cli}"
+    if store.cursor(cursor) == signature:
+        return 0
+    ts = now_iso()
+    event = {"ts": ts, "kind": "event", "source": source,
+             "event": "quota_snapshot", **snapshot}
+    event["id"] = record_id("cli-quota", agent_cli, signature)
+    added = int(store.append_record({"_epoch": parse_iso(ts) or 0.0, **event}))
+    append_jsonl(os.path.join(resolve_budget_dir(args), "ledger",
+                              f"{utc_day(parse_iso(ts) or 0.0)}.jsonl"),
+                 {"ts": ts, "workload": "audit", "tool": "agent-audit", "seconds": 0,
+                  "ref": "quota", "purpose": "quota", "event": "quota_snapshot", **snapshot})
+    store.set_cursor(cursor, signature)
+    return added
+
+
+_ANSI_RE = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+
+
+def _claude_reset_epoch(value: str, now=None) -> "int | None":
+    import datetime as dt
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+    zone_match = re.search(r"\(([^)]+)\)\s*$", value)
+    try:
+        zone = ZoneInfo(zone_match.group(1)) if zone_match else dt.timezone.utc
+    except ZoneInfoNotFoundError:
+        zone = dt.timezone.utc
+    current = now.astimezone(zone) if now else dt.datetime.now(zone)
+    value = re.sub(r"\s*\([^)]+\)\s*$", "", value).strip()
+    dated = re.fullmatch(r"([A-Z][a-z]{2})\s+(\d{1,2})\s+at\s+(\d{1,2})(?::(\d{2}))?(am|pm)", value)
+    timed = re.fullmatch(r"(\d{1,2})(?::(\d{2}))?(am|pm)", value)
+    try:
+        if dated:
+            month = dt.datetime.strptime(dated.group(1), "%b").month
+            hour = int(dated.group(3)) % 12 + (12 if dated.group(5) == "pm" else 0)
+            reset = dt.datetime(current.year, month, int(dated.group(2)), hour,
+                                int(dated.group(4) or 0), tzinfo=zone)
+            if reset <= current:
+                reset = reset.replace(year=current.year + 1)
+        elif timed:
+            hour = int(timed.group(1)) % 12 + (12 if timed.group(3) == "pm" else 0)
+            reset = current.replace(hour=hour, minute=int(timed.group(2) or 0),
+                                    second=0, microsecond=0)
+            if reset <= current:
+                reset += dt.timedelta(days=1)
+        else:
+            return None
+    except ValueError:
+        return None
+    return int(reset.timestamp())
+
+
+def _parse_claude_usage(output: str, now=None) -> dict:
+    lines = [line.strip() for line in _ANSI_RE.sub("", output).replace("\r", "\n").splitlines()
+             if line.strip()]
+    windows = {}
+    for index, label in enumerate(lines):
+        if label != "Current session" and not label.startswith("Current week"):
+            continue
+        following = lines[index + 1:index + 7]
+        percent = next((re.search(r"(\d+(?:\.\d+)?)%\s+used", line)
+                        for line in following if "%" in line and "used" in line), None)
+        reset = next((line.partition("Resets ")[2] for line in following
+                      if line.startswith("Resets ")), "")
+        if percent:
+            windows[label] = {"used_percentage": float(percent.group(1)),
+                              "resets_at": _claude_reset_epoch(reset, now) if reset else None}
+    return windows
+
+
+def _claude_rate_limits() -> "dict | None":
+    """Claude の組み込み /usage を画面読取モードで読む。"""
+    import fcntl
+    import pty
+    import select
+    import struct
+    import termios
+    import time
+
+    master, slave = pty.openpty()
+    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 35, 120, 0, 0))
+    env = dict(os.environ, TERM="xterm-256color")
+    proc = subprocess.Popen(
+        ["claude", "--setting-sources", "", "--ax-screen-reader", "--no-chrome",
+         "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}'],
+        stdin=slave, stdout=slave, stderr=slave, cwd=os.getcwd(), env=env, close_fds=True)
+    os.close(slave)
+    output = bytearray()
+    ready_at = sent_at = None
+    try:
+        deadline = time.monotonic() + 25
+        while time.monotonic() < deadline:
+            ready, _, _ = select.select([master], [], [], 0.25)
+            if ready:
+                try:
+                    output.extend(os.read(master, 65536))
+                except OSError:
+                    break
+            decoded = output.decode("utf-8", errors="replace")
+            if ready_at is None and "manual mode on" in decoded:
+                ready_at = time.monotonic() + 0.5
+            if ready_at and sent_at is None and time.monotonic() >= ready_at:
+                os.write(master, b"/usage\r")
+                sent_at = time.monotonic()
+            if sent_at and time.monotonic() >= sent_at + 2:
+                limits = _parse_claude_usage(decoded)
+                if limits:
+                    return limits
+        return None
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        os.close(master)
+
+
+def collect_claude_quota(args, store: Store, *, query=None) -> int:
+    if query is None:
+        query = _claude_rate_limits
+    try:
+        limits = query()
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        log("collect", f"claude quota: 取得できませんでした（{exc}）")
+        return 0
+    windows = [(name, value) for name, value in (limits or {}).items()
+               if isinstance(value, dict) and value.get("used_percentage") is not None]
+    shared = [(name, value) for name, value in windows if name in
+              ("five_hour", "seven_day", "Current session", "Current week (all models)")]
+    windows = shared or windows
+    if not windows:
+        log("collect", "claude quota: /usage から枠を取得できませんでした")
+        return 0
+    name, window = max(windows, key=lambda item: float(item[1]["used_percentage"]))
+    try:
+        reset_at = epoch_to_iso(float(window["resets_at"])) if window.get("resets_at") else ""
+    except (TypeError, ValueError, OverflowError):
+        reset_at = ""
+    return _append_quota_snapshot(
+        args, store, agent_cli="claude", source="claude-usage",
+        used_percent=window["used_percentage"], reset_at=reset_at,
+        window_minutes=300 if name == "Current session" else 10080)
+
+
+def _parse_copilot_usage(output: str) -> "dict | None":
+    text = _ANSI_RE.sub("", output).replace("\r", "\n")
+    match = re.search(r"Plan.*?(\d+(?:\.\d+)?)%\s+used", text, re.DOTALL)
+    if not match:
+        return None
+    reset = re.search(r"(?:Resets?|Renews?)\s+(\d{4}-\d{2}-\d{2}[^\n]*)", text,
+                      re.IGNORECASE)
+    return {"quota_used_percent": float(match.group(1)),
+            "reset_at": reset.group(1).strip() if reset else ""}
+
+
+def _copilot_usage() -> "dict | None":
+    """Copilot の組み込み /usage を画面読取モードで読む。"""
+    import fcntl
+    import pty
+    import select
+    import struct
+    import tempfile
+    import termios
+    import time
+
+    with tempfile.TemporaryDirectory(prefix="agent-audit-copilot-") as temp_dir:
+        master, slave = pty.openpty()
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 120, 0, 0))
+        env = dict(os.environ, TERM="xterm-256color")
+        proc = subprocess.Popen(
+            ["copilot", "--screen-reader", "--no-color", "--no-custom-instructions",
+             "--disable-builtin-mcps", "--no-remote", "--no-auto-update",
+             "--log-dir", temp_dir],
+            stdin=slave, stdout=slave, stderr=slave, cwd=os.getcwd(), env=env, close_fds=True)
+        os.close(slave)
+        output = bytearray()
+        ready_at = sent_at = None
+        try:
+            deadline = time.monotonic() + 25
+            while time.monotonic() < deadline:
+                ready, _, _ = select.select([master], [], [], 0.25)
+                if ready:
+                    try:
+                        output.extend(os.read(master, 65536))
+                    except OSError:
+                        break
+                decoded = output.decode("utf-8", errors="replace")
+                if ready_at is None and "Session:" in decoded:
+                    ready_at = time.monotonic() + 1
+                if ready_at and sent_at is None and time.monotonic() >= ready_at:
+                    os.write(master, b"/usage\r")
+                    sent_at = time.monotonic()
+                if sent_at:
+                    result = _parse_copilot_usage(decoded)
+                    if result:
+                        return result
+            return None
+        finally:
+            try:
+                os.write(master, b"/exit\r")
+                proc.wait(timeout=1)
+            except (OSError, subprocess.TimeoutExpired):
+                proc.terminate()
+                try:
+                    proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+            os.close(master)
+
+
+def collect_copilot_quota(args, store: Store, *, query=None) -> int:
+    if query is None:
+        query = _copilot_usage
+    try:
+        usage = query()
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        log("collect", f"copilot quota: 取得できませんでした（{exc}）")
+        return 0
+    if not isinstance(usage, dict) or usage.get("quota_used_percent") is None:
+        log("collect", "copilot quota: /usage から枠を取得できませんでした")
+        return 0
+    return _append_quota_snapshot(
+        args, store, agent_cli="copilot", source="copilot-usage",
+        used_percent=usage["quota_used_percent"], reset_at=str(usage.get("reset_at") or ""))
+
+
+def _kiro_usage() -> "dict | None":
+    """Kiro ACP の構造化 usage コマンドを実行する。"""
+    import tempfile
+
+    proc = subprocess.Popen(
+        ["kiro-cli", "acp"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL, text=True, bufsize=1, cwd=tempfile.gettempdir())
+    messages: "queue.Queue[dict]" = queue.Queue()
+
+    def read_messages() -> None:
+        for line in proc.stdout or ():
+            try:
+                messages.put(json.loads(line))
+            except ValueError:
+                pass
+
+    threading.Thread(target=read_messages, daemon=True).start()
+
+    def request(request_id: int, method: str, params: dict) -> "dict | None":
+        if proc.stdin is None:
+            return None
+        proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": request_id,
+                                     "method": method, "params": params}) + "\n")
+        proc.stdin.flush()
+        while True:
+            try:
+                reply = messages.get(timeout=20)
+            except queue.Empty:
+                return None
+            if reply.get("id") == request_id:
+                return reply.get("result") if isinstance(reply.get("result"), dict) else None
+
+    session_id = ""
+    try:
+        if request(1, "initialize", {
+                "protocolVersion": 1, "clientCapabilities": {},
+                "clientInfo": {"name": "agent-audit", "version": "1"}}) is None:
+            return None
+        session = request(2, "session/new", {"cwd": tempfile.gettempdir(), "mcpServers": []})
+        session_id = str((session or {}).get("sessionId") or "")
+        if not session_id:
+            return None
+        result = request(3, "_kiro.dev/commands/execute", {
+            "sessionId": session_id, "command": {"command": "usage", "args": {}}})
+        data = (result or {}).get("data")
+        return data if isinstance(data, dict) else None
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        if session_id:
+            subprocess.run(["kiro-cli", "chat", "--delete-session", session_id],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10,
+                           check=False)
+
+
+def collect_kiro_quota(args, store: Store, *, query=None) -> int:
+    if query is None:
+        query = _kiro_usage
+    try:
+        usage = query()
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        log("collect", f"kiro quota: 取得できませんでした（{exc}）")
+        return 0
+    breakdowns = usage.get("usageBreakdowns") if isinstance(usage, dict) else None
+    credit = next((row for row in breakdowns or []
+                   if isinstance(row, dict) and row.get("resourceType") == "CREDIT"), None)
+    if not credit or credit.get("percentage") is None:
+        log("collect", "kiro quota: ACP usage から枠を取得できませんでした")
+        return 0
+    reset_date = str(usage.get("billingCycleReset") or "")
+    reset_at = f"{reset_date}T00:00:00" if re.fullmatch(r"\d{4}-\d{2}-\d{2}", reset_date) else ""
+    return _append_quota_snapshot(
+        args, store, agent_cli="kiro", source="kiro-acp-usage",
+        used_percent=credit["percentage"], reset_at=reset_at)
+
+def _codex_rate_limits() -> "dict | None":
+    """app-server は initialize 応答後に次の要求を送る必要があるため逐次RPCする。"""
+    proc = subprocess.Popen(
+        ["codex", "app-server", "--listen", "stdio://"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        text=True, bufsize=1)
+    lines: "queue.Queue[str]" = queue.Queue()
+    threading.Thread(target=lambda: [lines.put(line) for line in proc.stdout or ()],
+                     daemon=True).start()
+
+    def request(message: dict) -> "dict | None":
+        if proc.stdin is None:
+            return None
+        proc.stdin.write(json.dumps(message) + "\n")
+        proc.stdin.flush()
+        while True:
+            try:
+                reply = json.loads(lines.get(timeout=15))
+            except queue.Empty:
+                return None
+            except ValueError:
+                continue
+            if reply.get("id") == message["id"]:
+                return reply.get("result") if isinstance(reply.get("result"), dict) else None
+
+    try:
+        initialized = request({"id": 1, "method": "initialize", "params": {
+            "clientInfo": {"name": "agent-audit", "version": "1"},
+            "capabilities": {"experimentalApi": True}}})
+        if initialized is None:
+            return None
+        return request({"id": 2, "method": "account/rateLimits/read", "params": None})
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+
+def collect_codex_quota(args, store: Store, *, query=None) -> int:
+    """Codex の公式 app-server API から現在の枠を読む。モデル実行は行わない。"""
+    if query is None:
+        if shutil.which("codex") is None:
+            return 0
+        query = _codex_rate_limits
+    try:
+        payload = query()
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        log("collect", f"codex quota: 取得できませんでした（{exc}）")
+        return 0
+    limits = (payload or {}).get("rateLimits")
+    primary = limits.get("primary") if isinstance(limits, dict) else None
+    if not isinstance(primary, dict):
+        log("collect", "codex quota: app-server から枠を取得できませんでした")
+        return 0
+    try:
+        used_percent = max(0, min(100, int(primary.get("usedPercent"))))
+    except (TypeError, ValueError):
+        return 0
+    reset_epoch = primary.get("resetsAt")
+    try:
+        reset_at = epoch_to_iso(float(reset_epoch)) if reset_epoch is not None else ""
+    except (TypeError, ValueError, OverflowError):
+        reset_at = ""
+    return _append_quota_snapshot(
+        args, store, agent_cli="codex", source="codex-app-server",
+        used_percent=used_percent, reset_at=reset_at,
+        window_minutes=primary.get("windowDurationMins"),
+        reached=bool(limits.get("rateLimitReachedType")))
 
 
 # -- flow-bus ----------------------------------------------------------------

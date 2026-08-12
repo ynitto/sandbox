@@ -477,6 +477,22 @@ class ArgvLimitTests(unittest.TestCase):
         kf._ARGV_LIMIT = 0  # 0/不正は組み込み既定へフォールバック
         self.assertEqual(kf._agent_argv_limit(), kf.CONFIG_DEFAULTS["argv_limit"])
 
+    def test_inbox_execution_overrides_are_forwarded_to_children(self):
+        root = tempfile.mkdtemp(prefix="kf-run-overrides-")
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        bus = kf.Bus(root, "run-1")
+        overrides = {"version": 1, "roles": {"planner": {"agent_cli": "codex"}}}
+        kf.write_json_atomic(os.path.join(bus.inbox_dir, "run-1.json"), {
+            "id": "run-1", "request": "request", "execution_overrides": overrides,
+        })
+        args = argparse.Namespace(run_id="run-1", request="", workspace=None, references=None,
+                                  inherit_from=None, verification_plan=None, pattern=None,
+                                  execution_overrides=None, lease=30, git=None,
+                                  cleanup_clone=True, cleanup_per_node=False, agent_cli=None)
+        kf._apply_inbox_request(bus, args)
+        self.assertEqual(json.loads(args.execution_overrides), overrides)
+        self.assertIn("--execution-overrides", kf._child_base(args, root))
+
     def test_argv_limit_resolved_from_config_file(self):
         # 設定ファイルの argv_limit が resolve_config 経由で args に載る（env 非依存）
         import argparse

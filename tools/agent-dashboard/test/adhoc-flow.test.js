@@ -1107,6 +1107,42 @@ test('submit はプリセット無しでも投入できる（planner に任せ�
   }
 });
 
+test('実行時指定は tier を候補へ解決して inbox に固定し、再実行にも引き継ぐ', () => {
+  const cfg = { adhocFlow: { busDir: tmpdir('adhoc-run-overrides-') } };
+  const originalExec = exec.shInWsl;
+  const originalTier = profiles.resolveTier;
+  exec.shInWsl = () => ({ status: 0, stdout: 'launched:1', stderr: '' });
+  profiles.resolveTier = (_cfg, tier) => ({ agent_cli: 'codex', model: `model-${tier}` });
+  try {
+    const first = adhoc.submit(cfg, {
+      request: '実装する',
+      executionOverrides: {
+        version: 1,
+        roles: { worker: { tier: 'medium' } },
+        kinds: { verify: { agent_cli: 'claude', model: 'opus' } },
+      },
+    });
+    const firstInbox = adhoc.readInbox(cfg.adhocFlow.busDir, first.runId);
+    assert.deepStrictEqual(firstInbox.execution_overrides.roles.worker, {
+      tier: 'medium', agent_cli: 'codex', model: 'model-medium', source: 'run-role', pinned: true,
+    });
+    assert.deepStrictEqual(firstInbox.execution_overrides.kinds.verify, {
+      agent_cli: 'claude', model: 'opus', source: 'run-kind', pinned: true,
+    });
+    const second = adhoc.resubmit(cfg, first.runId);
+    assert.deepStrictEqual(
+      adhoc.readInbox(cfg.adhocFlow.busDir, second.runId).execution_overrides,
+      firstInbox.execution_overrides,
+    );
+    assert.throws(() => adhoc.normalizeExecutionOverrides(cfg, {
+      version: 1, kinds: { work: { tier: 'basic' } },
+    }), /任せられません/);
+  } finally {
+    exec.shInWsl = originalExec;
+    profiles.resolveTier = originalTier;
+  }
+});
+
 test('submit が Git cwd と標準フローを inbox に固定する', () => {
   const cfg = { adhocFlow: { busDir: tmpdir('workflow-bus-') } };
   const original = exec.shInWsl;
@@ -1159,6 +1195,39 @@ test('resubmit が inbox 記録（plan 込み）と手法スナップショッ�
     assert.throws(() => adhoc.resubmit(cfg, 'no-such-run'), /inbox 記録/);
   } finally {
     exec.shInWsl = orig;
+  }
+});
+
+test('保持期限の掃除は終端済み・未対応なしの古い run だけを削除する', () => {
+  const busDir = tmpdir('adhoc-retention-');
+  const tuningRoot = tmpdir('adhoc-retention-tuning-');
+  const cfg = { adhocFlow: { busDir, tuningRoot, retentionDays: 7 } };
+  const now = Date.parse('2026-08-12T00:00:00Z');
+  const makeRun = (id, status, updated, interaction) => {
+    const runDir = path.join(busDir, 'runs', id);
+    fs.mkdirSync(path.join(runDir, 'interactions'), { recursive: true });
+    fs.writeFileSync(path.join(runDir, 'meta.json'), JSON.stringify({ status, updated_at: updated }));
+    if (interaction) {
+      const dir = path.join(runDir, 'interactions', 'ix-1');
+      fs.mkdirSync(path.join(dir, 'responses'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'request.json'), JSON.stringify(interaction));
+    }
+    fs.mkdirSync(path.join(busDir, 'inbox'), { recursive: true });
+    fs.writeFileSync(path.join(busDir, 'inbox', `${id}.json`), '{}');
+    fs.mkdirSync(path.join(tuningRoot, id), { recursive: true });
+  };
+  makeRun('old-done', 'done', '2026-08-01T00:00:00Z');
+  makeRun('old-running', 'running', '2026-08-01T00:00:00Z');
+  makeRun('old-waiting', 'done', '2026-08-01T00:00:00Z', {
+    interaction_id: 'ix-1', expires_at: '2026-09-01T00:00:00Z',
+  });
+  makeRun('recent-done', 'done', '2026-08-10T00:00:00Z');
+  assert.deepStrictEqual(adhoc.sweepExpiredRuns(cfg, now), ['old-done']);
+  assert.ok(!fs.existsSync(path.join(busDir, 'runs', 'old-done')));
+  assert.ok(!fs.existsSync(path.join(busDir, 'inbox', 'old-done.json')));
+  assert.ok(!fs.existsSync(path.join(tuningRoot, 'old-done')));
+  for (const id of ['old-running', 'old-waiting', 'recent-done']) {
+    assert.ok(fs.existsSync(path.join(busDir, 'runs', id)), `${id} は保持する`);
   }
 });
 

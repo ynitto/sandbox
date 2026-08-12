@@ -264,7 +264,7 @@ class RunStatemachineTest(unittest.TestCase):
             "target = pathlib.Path(argv[argv.index('--file') + 1])",
             "if not target.read_text(encoding='utf-8'):",
             "    target.write_text('done\\n', encoding='utf-8')",
-            "print('OK\\npath: out.txt')",
+            "print('Applied edit to out.txt')",
             "",
         ]), encoding="utf-8")
         agents = pathlib.Path(self.repo, "agents")
@@ -307,6 +307,9 @@ class RunStatemachineTest(unittest.TestCase):
         argv = [event.get("argv", []) for event in events if event.get("event") == "finish"]
         self.assertTrue(any(str(control) in call for call in argv), "制御はollama-json変種を通る")
         self.assertTrue(any(str(editor) in call for call in argv), "書き込みはaiderを通る")
+        self.assertTrue(any(event.get("event") == "write_completed"
+                            and event.get("contractSource") == "machine"
+                            for event in events), "Aiderの契約文に依存せず完了する")
 
     def test_write_request_replaces_preexisting_output(self):
         output = pathlib.Path(self.repo, "out.txt")
@@ -374,6 +377,29 @@ class RunStatemachineTest(unittest.TestCase):
         self.assertEqual(output.read_text(encoding="utf-8"), "stale\n")
         self.assertEqual(list(pathlib.Path(self.repo).glob("*.agent-loop-*.bak")), [])
 
+    def test_contract_without_file_change_is_rejected(self):
+        output = pathlib.Path(self.repo, "out.txt")
+        output.write_text("stale\n", encoding="utf-8")
+        responses = [
+            '{"type":"final","output":"OK\\npath: out.txt"}',
+            "OK\npath: out.txt",
+        ]
+
+        with mock.patch.object(al, "_SM_MAX_TOOL_ROUNDS", 1), \
+                mock.patch.object(al, "_sm_run_agent", side_effect=responses):
+            with self.assertRaisesRegex(al.StateMachineHarnessError, "Output Contract"):
+                al._sm_execute_action(
+                    workflow_path=os.path.join(
+                        self.repo, ".statemachine", "one-step", "workflow.yaml"),
+                    state_id="make",
+                    state={"action_file": "actions/make.md",
+                           "output_validator": "startswith:OK"},
+                    context={}, cwd=self.repo, agent={},
+                    log_file=os.path.join(self.repo, "run.jsonl"), touched=set())
+
+        self.assertEqual(output.read_text(encoding="utf-8"), "stale\n")
+        self.assertEqual(list(pathlib.Path(self.repo).glob("*.agent-loop-*.bak")), [])
+
     def test_invalid_write_output_restores_preexisting_output(self):
         output = pathlib.Path(self.repo, "out.txt")
         output.write_text("stale\n", encoding="utf-8")
@@ -394,12 +420,100 @@ class RunStatemachineTest(unittest.TestCase):
                     workflow_path=os.path.join(
                         self.repo, ".statemachine", "one-step", "workflow.yaml"),
                     state_id="make",
-                    state={"action_file": "actions/make.md", "output_validator": "startswith:OK"},
+                    state={"action_file": "actions/make.md",
+                           "output_validator": "startswith:BUG,FEATURE"},
                     context={}, cwd=self.repo, agent={},
                     log_file=os.path.join(self.repo, "run.jsonl"), touched=set())
 
         self.assertEqual(output.read_text(encoding="utf-8"), "stale\n")
         self.assertEqual(list(pathlib.Path(self.repo).glob("*.agent-loop-*.bak")), [])
+
+    def test_changed_file_gets_machine_contract_when_editor_omits_it(self):
+        output = pathlib.Path(self.repo, "out.txt")
+        output.write_text("stale\n", encoding="utf-8")
+        prompts = []
+        responses = [
+            '{"type":"final","output":"OK\\npath: out.txt"}',
+            "Applied edit to out.txt",
+        ]
+
+        def fake_agent(_agent, prompt, *, readonly=False, files=None, **_kwargs):
+            prompts.append(prompt)
+            response = responses.pop(0)
+            if not readonly:
+                pathlib.Path(files[0]).write_text("fresh\n", encoding="utf-8")
+            return response
+
+        with mock.patch.object(al, "_sm_run_agent", side_effect=fake_agent):
+            result = al._sm_execute_action(
+                workflow_path=os.path.join(
+                    self.repo, ".statemachine", "one-step", "workflow.yaml"),
+                state_id="make",
+                state={"action_file": "actions/make.md", "output_validator": "startswith:OK"},
+                context={}, cwd=self.repo, agent={},
+                log_file=os.path.join(self.repo, "run.jsonl"), touched=set())
+
+        self.assertEqual(result, "OK\npath: out.txt")
+        self.assertEqual(output.read_text(encoding="utf-8"), "fresh\n")
+        self.assertEqual(len(prompts), 2, "書込後にLLMへ契約生成を再依頼しない")
+        events = [json.loads(line) for line in pathlib.Path(
+            self.repo, "run.jsonl").read_text(encoding="utf-8").splitlines()]
+        self.assertTrue(any(event.get("event") == "write_completed"
+                            and event.get("contractSource") == "machine"
+                            for event in events))
+        self.assertEqual(list(pathlib.Path(self.repo).glob("*.agent-loop-*.bak")), [])
+
+    def test_machine_contract_refuses_ambiguous_success_routes(self):
+        workflow = pathlib.Path(self.repo, ".statemachine", "ambiguous.yaml")
+        workflow.write_text("\n".join([
+            "states:",
+            "  make:",
+            "    output_key: result",
+            "  bug:",
+            "    terminal: true",
+            "  feature:",
+            "    terminal: true",
+            "transitions:",
+            "  - from: make",
+            "    to: bug",
+            '    condition_rule: "startswith:result:BUG"',
+            "  - from: make",
+            "    to: feature",
+            '    condition_rule: "startswith:result:FEATURE"',
+            "",
+        ]), encoding="utf-8")
+
+        result = al._sm_write_success_output(
+            workflow_path=str(workflow), state_id="make",
+            state={"output_key": "result"}, validator="startswith:BUG,FEATURE",
+            files={os.path.join(self.repo, "out.txt")}, cwd=self.repo)
+
+        self.assertEqual(result, "")
+
+    def test_machine_contract_selects_digest_success_not_failure_route(self):
+        workflow = pathlib.Path(self.repo, ".statemachine", "digest.yaml")
+        workflow.write_text("\n".join([
+            "states:",
+            "  write_digest: {}",
+            "  verify_digest: {}",
+            "  failed:",
+            "    terminal: true",
+            "transitions:",
+            "  - from: write_digest",
+            "    to: verify_digest",
+            '    condition_rule: "startswith:last_output:DIGEST_OK"',
+            "  - from: write_digest",
+            "    to: failed",
+            '    condition_rule: "startswith:last_output:DIGEST_FAILED"',
+            "",
+        ]), encoding="utf-8")
+
+        result = al._sm_write_success_output(
+            workflow_path=str(workflow), state_id="write_digest", state={},
+            validator="startswith:DIGEST_OK,DIGEST_FAILED",
+            files={os.path.join(self.repo, "deliveries", "tech-digest.md")}, cwd=self.repo)
+
+        self.assertEqual(result, "DIGEST_OK\npath: deliveries/tech-digest.md")
 
     def test_read_request_returns_small_file_content_to_control_agent(self):
         input_file = pathlib.Path(self.repo, "input.txt")

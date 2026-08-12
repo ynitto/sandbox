@@ -155,7 +155,6 @@ function switchTab(name) {
     revealGlobalSettingsPanels(pane, name);
   }
   renderAreaHeader();
-  if (name === 'needs') refreshGitLab(false); // 要対応タブに GitLab レビュー待ちを併載しているため
   if (featureTabs.has(name)) renderFeatureTab(name); // 登録済みフィーチャータブは遷移時に描画
 }
 

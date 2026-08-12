@@ -11,7 +11,14 @@ function registerIpc(ctx) {
   const flow = adhoc.flow;
 
   handle('adhocFlow:overview', ({ limit, cwd } = {}) => {
-    const cfg = loadConfig();
+    let cfg = loadConfig();
+    const lastSweep = Date.parse(String((cfg.adhocFlow && cfg.adhocFlow.lastRetentionSweepAt) || ''));
+    if (!Number.isFinite(lastSweep) || Date.now() - lastSweep >= 86400000) {
+      adhoc.sweepExpiredRuns(cfg);
+      const lastRetentionSweepAt = new Date().toISOString();
+      cfg = { ...cfg, adhocFlow: { ...cfg.adhocFlow, lastRetentionSweepAt } };
+      saveConfig(cfg);
+    }
     const busDir = adhoc.resolveBusDir(cfg);
     let runs = [];
     try {
@@ -77,6 +84,7 @@ function registerIpc(ctx) {
       methods,
       agents,
       projects: adhoc.listProjects(cfg),
+      retentionDays: Math.max(1, Number(cfg.adhocFlow && cfg.adhocFlow.retentionDays) || 30),
     };
   });
 
@@ -154,6 +162,16 @@ function registerIpc(ctx) {
   }));
 
   handle('adhocFlow:promote', (payload) => adhoc.promote(loadConfig(), payload || {}));
+
+  handle('adhocFlow:saveSettings', ({ retentionDays } = {}) => {
+    const days = Number(retentionDays);
+    if (!Number.isInteger(days) || days < 1 || days > 3650) {
+      throw new Error('保持日数は1〜3650日の整数で指定してください');
+    }
+    const cfg = loadConfig();
+    saveConfig({ ...cfg, adhocFlow: { ...cfg.adhocFlow, retentionDays: days } });
+    return { retentionDays: days };
+  });
 }
 
 module.exports = { registerIpc };

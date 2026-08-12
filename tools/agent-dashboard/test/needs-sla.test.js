@@ -43,7 +43,7 @@ const humanizeAge = new Function(`${grab('humanizeAge')}; return humanizeAge;`)(
 const needAgeInfo = new Function(
   `${grab('humanizeAge')}; ${grab('needAgeInfo')}; return needAgeInfo;`
 )();
-// needsViewModel は needBucket に依存する。テスト用に「open のみ」を返す簡易版を注入する。
+// needsViewModel は needBucket に依存する。テスト用に全件 open を返す簡易版を注入する。
 // eslint-disable-next-line no-new-func
 const needsViewModel = new Function(
   'needBucket',
@@ -89,7 +89,7 @@ const now = 1_000_000_000_000; // 固定の「現在」（テスト決定性）
     { id: 'oldest', mtime: now - 30 * HOUR, date: '2026-07-14' },
     { id: 'mid', mtime: now - 10 * HOUR, date: '2026-07-15' },
   ];
-  const vm = needsViewModel(needs, 'open', null, () => 'open');
+  const vm = needsViewModel(needs, null, () => 'open');
   assert.deepStrictEqual(vm.items.map((n) => n.id), ['oldest', 'mid', 'newer'], '停滞の長い順');
   assert.strictEqual(vm.selected.id, 'oldest', '既定選択は最も停滞したカード');
   console.log('ok - 未対応は待ち時間の長い順に並び、既定選択が最優先になる');

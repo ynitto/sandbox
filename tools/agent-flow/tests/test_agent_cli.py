@@ -758,9 +758,28 @@ class AgentOverrideTests(unittest.TestCase):
 
     def setUp(self):
         self._cli, self._ov = kf._AGENT_CLI, dict(kf._AGENT_OVERRIDES)
+        self._run_ov = dict(kf._EXECUTION_OVERRIDES)
 
     def tearDown(self):
         kf._AGENT_CLI, kf._AGENT_OVERRIDES = self._cli, self._ov
+        kf._EXECUTION_OVERRIDES = self._run_ov
+
+    def test_run_override_beats_saved_node_and_kind_beats_role(self):
+        kf._AGENT_CLI = "kiro"
+        kf._EXECUTION_OVERRIDES = kf._normalize_execution_overrides({
+            "version": 1,
+            "roles": {"worker": {"agent_cli": "claude", "model": "sonnet", "tier": "medium"}},
+            "kinds": {"verify": {"agent_cli": "codex", "model": "gpt-5", "tier": "large"}},
+        })
+        self.assertEqual(
+            kf._effective_agent("verify", None, {"agent_cli": "ollama", "model": "qwen"}),
+            ("codex", "gpt-5"),
+        )
+        self.assertEqual(kf._effective_agent("work", None, None), ("claude", "sonnet"))
+        self.assertEqual(kf._selection_meta("verify", {"agent_cli": "ollama"}), {
+            "tier": "large", "selection_source": "run-kind", "selection_reason": "",
+            "pinned": True,
+        })
 
     def test_normalize_accepts_roles_and_kinds_only(self):
         raw = {"planner": {"agent_cli": "Claude", "model": "opus"},

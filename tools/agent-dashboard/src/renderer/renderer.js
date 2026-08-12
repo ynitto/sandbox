@@ -29,7 +29,6 @@ const state = {
   flowReconcile: {},
   backlogFilter: 'active',
   backlogOwner: '', // 監視担当フィルタ（'' = 全員 / '__none__' = 未担当 / それ以外 = 担当者名）
-  needsFilter: 'open', // open / sent / done / gitlab
   needsSelectedId: null,
   needsMobileDetail: false,
   needsDrafts: {}, // フィルターや選択を切り替えても回答の下書きを保持する
@@ -225,7 +224,7 @@ function statusLabel(status) {
 const AREAS = [
   { id: 'home', label: 'ホーム', desc: '判断待ちと、全体のいまが分かります。' },
   { id: 'projects', label: 'プロジェクト', list: 'projects' },
-  { id: 'workflows', label: 'ワークフロー', ownHeader: true },
+  { id: 'workflows', label: 'ワークフロー', list: 'workflows', ownHeader: true },
   { id: 'routines', label: '定常業務', list: 'routines', desc: '繰り返す作業を、この端末で動かします。' },
   { id: 'missions', label: 'ミッション', ownHeader: true },
   { id: 'participation', label: '参加', ownHeader: true },
@@ -1131,7 +1130,10 @@ function renderHeader() {
   const syncButton = $('btn-sync-now');
   if (syncButton) syncButton.addEventListener('click', requestHealNow);
   const needsBadge = $('needs-badge');
-  const undecided = p.needs.filter((n) => !n.decided).length;
+  const projectPending = p.needs.filter((n) => needBucket(n, isNeedSent) === 'open').length;
+  const workflowPending = (state.flowRuns || []).reduce((count, run) => count
+    + (run.interactions || []).filter((item) => !item.resolution && !item.expired && !item.responded).length, 0);
+  const undecided = projectPending + workflowPending;
   needsBadge.textContent = undecided;
   needsBadge.classList.toggle('hidden', !undecided);
   needsBadge.classList.toggle('warn', undecided > 0);

@@ -4,11 +4,17 @@
   const feature = factory(root);
   if (typeof module !== 'undefined' && module.exports) module.exports = feature;
   if (typeof root.registerFeatureTab === 'function') {
-    root.registerFeatureTab('workflow-run', {
-      render: feature.render,
+    root.registerFeatureTab('workflows', {
       refresh: feature.refresh,
       available: () => true,
+      badge: feature.badge,
     });
+    root.registerFeatureTab('workflow-run', {
+      render: feature.render,
+      available: () => true,
+    });
+    root.registerFeatureTab('workflow-needs', { render: feature.render, available: () => true });
+    root.registerFeatureTab('workflow-edit', { render: feature.render, available: () => true });
     root.registerFeatureTab('workflow-settings', {
       render: feature.render,
       available: () => true,
@@ -71,6 +77,8 @@
     dirty: false,
     busy: '',
     notice: '',
+    runView: 'overview',
+    selectedNeed: '',
   };
   const esc = (s) => root.esc(String(s == null ? '' : s));
   const $id = (id) => document.getElementById(id);
@@ -432,15 +440,20 @@
         try { st.runDetail = await api().adhocFlowRun({ runId: st.selectedRun }); }
         catch { st.runDetail = null; }
       }
+      renderSidebar();
     } catch (err) {
       st.notice = `読み込みに失敗しました: ${String((err && err.message) || err)}`;
     }
   }
 
   async function refresh() {
-    if (!runActive()) return;
+    const editing = ['tab-workflow-edit', 'tab-workflow-settings'].some((id) => {
+      const pane = $id(id);
+      return pane && pane.classList.contains('active');
+    });
+    if (editing) return;
     await loadOverview();
-    renderRun();
+    render();
   }
 
   function flowOptions(ov) {
@@ -458,18 +471,40 @@
     return type === 'auto' ? { type: 'auto' } : { type, id: rest.join(':') };
   }
 
-  function runsHtml(ov) {
+  function sidebarRunsHtml(ov) {
     const rows = ov.runs || [];
     if (!rows.length) return '<div class="empty">実行履歴はありません</div>';
-    return `<div class="wf-run-list">${rows.map((r) => `<button type="button" class="wf-run-row ${st.selectedRun === r.runId ? 'selected' : ''}"
-      data-run-id="${esc(r.runId)}"><span><code>${esc(r.runId)}</code></span>
-      <span>${esc(statusLabel(r.status))}</span><span class="muted">${esc(r.updatedAt || r.createdAt || '')}</span></button>`).join('')}</div>`;
+    return `<div class="wf-sidebar-runs">${rows.map((r) => `<button type="button" class="nav-item wf-sidebar-run ${st.selectedRun === r.runId ? 'selected' : ''}"
+      data-workflow-run-id="${esc(r.runId)}"><span>${esc(String(r.request || r.runId).slice(0, 42))}</span>
+      <small>${esc(statusLabel(r.status))} · ${esc(r.updatedAt || r.createdAt || '')}</small></button>`).join('')}</div>`;
+  }
+
+  function renderSidebar() {
+    const target = $id('workflow-run-list');
+    if (!target) return;
+    target.innerHTML = sidebarRunsHtml(st.overview || {});
+    target.querySelectorAll('[data-workflow-run-id]').forEach((button) => button.addEventListener('click', async () => {
+      st.selectedRun = button.dataset.workflowRunId;
+      st.runView = 'overview';
+      try { st.runDetail = await api().adhocFlowRun({ runId: st.selectedRun }); }
+      catch (err) { st.notice = String((err && err.message) || err); }
+      $id('tab-btn-workflow-run')?.click();
+      renderSidebar();
+      renderRun();
+    }));
+    const badgeNode = $id('workflow-needs-badge');
+    if (badgeNode) {
+      const pending = workflowNeeds(st.overview || {}).filter((item) => !item.resolution && !item.expired && !item.responded).length;
+      badgeNode.textContent = String(pending);
+      badgeNode.classList.toggle('hidden', !pending);
+      badgeNode.classList.toggle('warn', pending > 0);
+    }
   }
 
   function interactionCardsHtml(interactions) {
     return (interactions || []).map((item) => {
-      const disabled = item.expired || item.responded;
-      const state = item.expired ? '期限切れ' : item.responded ? '回答送信済み' : '回答待ち';
+      const disabled = item.resolution || item.expired || item.responded;
+      const state = item.resolution ? '回答済み' : item.expired ? '期限切れ' : item.responded ? '回答送信済み' : '回答待ち';
       const comment = item.mode === 'input' ? ''
         : '<label>コメント（任意）<textarea data-interaction-comment rows="2"></textarea></label>';
       let control;
@@ -484,7 +519,7 @@
         control = `<label>回答<textarea data-interaction-text rows="3" ${disabled ? 'disabled' : ''}></textarea></label>
           <button type="button" class="primary" data-interaction-submit="input" ${disabled ? 'disabled' : ''}>回答する</button>`;
       }
-      return `<article class="wf-interaction-card" data-interaction-id="${esc(item.interaction_id)}">
+      return `<article class="wf-interaction-card" data-interaction-id="${esc(item.interaction_id)}" data-run-id="${esc(item.runId || st.selectedRun)}">
         <div><strong>人の確認</strong><span class="status-chip st-review">${state}</span></div>
         <p>${esc(item.prompt)}</p><small>対象: ${esc((item.audience || []).join(', '))} · 期限: ${esc(item.expires_at || '')}</small>
         ${comment}${control}</article>`;
@@ -500,15 +535,52 @@
     const outputs = Object.values(run.nodes || {}).filter((n) => n.output || n.data).map((n) =>
       `<details><summary>${esc(n.id)} · ${esc(statusLabel(n.state))}</summary><pre class="qf-output">${esc(String(n.output || JSON.stringify(n.data || '', null, 2)).slice(0, 4000))}</pre></details>`).join('');
     const flowName = inbox.plan ? inbox.plan.name : inbox.pattern || '自動';
+    const overrides = inbox.execution_overrides || {};
+    const overrideRows = [...Object.entries(overrides.roles || {}).map(([key, value]) => ['役割', key, value]),
+      ...Object.entries(overrides.kinds || {}).map(([key, value]) => ['機能', key, value])];
+    const overrideHtml = overrideRows.length ? `<dl class="wf-override-summary">${overrideRows.map(([group, key, value]) =>
+      `<div><dt>${esc(group)} ${esc(key)}</dt><dd>${esc(tierLabel(value.tier, '自動'))} · ${esc(value.agent_cli || '自動')}${value.model ? ` / ${esc(value.model)}` : ''}</dd></div>`).join('')}</dl>`
+      : '<p class="muted">エージェント選択は自動です。</p>';
+    const events = (detail.events || []).map((event) => `<li><time>${esc(event.ts || '')}</time>
+      <strong>${esc(event.kind || event.event || '更新')}</strong>${event.node ? ` · ${esc(event.node)}` : ''}${event.status ? ` · ${esc(event.status)}` : ''}</li>`).join('');
+    const view = st.runView === 'process'
+      ? `<div class="qf-graph">${graph}</div>${outputs || '<p class="muted">工程出力はまだありません。</p>'}`
+      : st.runView === 'history'
+        ? `<ol class="wf-event-list">${events || '<li class="muted">履歴はまだありません。</li>'}</ol>`
+        : `${run.failureReason ? `<p class="qf-failure">${esc(run.failureReason)}</p>` : ''}
+          ${run.final && run.final.summary ? `<pre class="qf-output">${esc(String(run.final.summary).slice(0, 3000))}</pre>` : ''}
+          <h3>実行時のエージェント指定</h3>${overrideHtml}`;
     return `<section class="wf-result">
       <div class="wf-section-head"><div><strong>${esc(statusLabel(run.status))}</strong>
         <span class="muted">${esc(flowName)} · af/${esc(run.runId || st.selectedRun)}</span></div>
         <div class="qf-row"><button type="button" id="wf-resubmit">再実行</button>
           <button type="button" id="wf-cancel">中止</button><button type="button" id="wf-delete-run">削除</button></div></div>
-      ${run.failureReason ? `<p class="qf-failure">${esc(run.failureReason)}</p>` : ''}
-      ${interactionCardsHtml(run.interactions)}
-      ${run.final && run.final.summary ? `<pre class="qf-output">${esc(String(run.final.summary).slice(0, 3000))}</pre>` : ''}
-      <div class="qf-graph">${graph}</div>${outputs}</section>`;
+      <nav class="flow-view-tabs" aria-label="実行詳細">
+        ${[['overview', '概要'], ['process', '工程'], ['history', '履歴']].map(([key, label]) =>
+          `<button type="button" data-run-view="${key}" class="${st.runView === key ? 'active' : ''}" aria-pressed="${st.runView === key}">${label}</button>`).join('')}
+      </nav>${view}</section>`;
+  }
+
+  function overrideRowsHtml(ov, group, labels) {
+    const catalog = (ov.kindTiers && ov.kindTiers[group]) || {};
+    const agents = ov.agents || [];
+    return Object.keys(labels).map((key) => {
+      const allowed = catalog[key] && catalog[key].tiers ? catalog[key].tiers : (ov.tiers || []).map((tier) => tier.id).filter((id) => id !== 'auto');
+      return `<div class="wf-override-row" data-override-group="${group}" data-override-key="${esc(key)}">
+        <strong>${esc(labels[key])}</strong>
+        <label>実行レベル<select data-override-tier><option value="">自動</option>${allowed.map((id) => `<option value="${esc(id)}">${esc(tierLabel(id))}</option>`).join('')}</select></label>
+        <label>エージェント<select data-override-agent><option value="">自動</option>${agents.map((name) => `<option value="${esc(name)}">${esc(name)}</option>`).join('')}</select></label>
+        <label>モデル<input type="text" data-override-model placeholder="自動"></label></div>`;
+    }).join('');
+  }
+
+  function overridesHtml(ov) {
+    const kindLabels = Object.fromEntries(KINDS.filter((kind) => kind !== 'human').map((kind) => [kind, kindLabelForKind(kind)]));
+    const roleLabels = { planner: '計画', evaluator: '継続判定', worker: '作業全般', verify: '検証全般' };
+    return `<details class="wf-run-overrides"><summary>今回だけ実行レベル・エージェントを指定</summary>
+      <p class="muted">未指定は agent-control / agent-flow の自動決定です。機能指定は役割指定より優先します。</p>
+      <h3>役割ごと</h3>${overrideRowsHtml(ov, 'roles', roleLabels)}
+      <h3>機能ごと</h3>${overrideRowsHtml(ov, 'kinds', kindLabels)}</details>`;
   }
 
   function runHtml(ov) {
@@ -521,9 +593,10 @@
         <datalist id="wf-cwd-history">${history}</datalist>
         <label>フロー<select id="wf-flow">${flowOptions(ov)}</select></label>
         <label class="wf-request">依頼<textarea id="wf-request" rows="4" placeholder="実行する内容"></textarea></label>
+        ${overridesHtml(ov)}
         <button type="button" class="primary" id="wf-submit" ${st.busy ? 'disabled' : ''}>${esc(st.busy || '実行')}</button>
       </div>
-      <div class="wf-section-head"><h3>実行履歴</h3></div>${runsHtml(ov)}${runDetailHtml(st.runDetail)}
+      ${runDetailHtml(st.runDetail)}
     </section>`;
   }
 
@@ -897,8 +970,50 @@
     wireRun(pane);
   }
 
-  function renderSettings() {
-    const pane = $id('tab-workflow-settings');
+  function workflowNeeds(ov) {
+    const rows = (ov.runs || []).flatMap((run) => (run.interactions || []).map((item) => ({
+      ...item, runId: run.runId,
+    })));
+    const bucket = (item) => item.resolution || item.expired ? 'done' : item.responded ? 'sent' : 'open';
+    const time = (item) => Date.parse(item.created_at || '') || 0;
+    const rank = { open: 0, sent: 1, done: 2 };
+    return rows.sort((a, b) => rank[bucket(a)] - rank[bucket(b)] || (bucket(a) === 'done' ? time(b) - time(a) : time(a) - time(b)));
+  }
+
+  function needsHtml(ov) {
+    const items = workflowNeeds(ov);
+    const bucket = (item) => item.resolution || item.expired ? 'done' : item.responded ? 'sent' : 'open';
+    const counts = { open: 0, sent: 0, done: 0 };
+    items.forEach((item) => { counts[bucket(item)] += 1; });
+    const selected = items.find((item) => `${item.runId}:${item.interaction_id}` === st.selectedNeed) || items[0] || null;
+    if (selected) st.selectedNeed = `${selected.runId}:${selected.interaction_id}`;
+    const list = items.map((item) => {
+      const key = `${item.runId}:${item.interaction_id}`;
+      const state = bucket(item);
+      const label = item.resolution ? '回答済み' : item.expired ? '期限切れ' : item.responded ? '送信済み' : '未対応';
+      return `<button type="button" class="wf-need-row ${st.selectedNeed === key ? 'selected' : ''}" data-workflow-need="${esc(key)}">
+        <span class="status-chip ${state === 'open' ? 'st-blocked' : state === 'sent' ? 'st-review' : 'st-done'}">${label}</span>
+        <strong>${esc(item.prompt || '人の確認')}</strong><small>${esc(item.runId)}</small></button>`;
+    }).join('');
+    return `<section class="wf-page"><div class="wf-title"><div><h2>要対応</h2><p>ワークフローが待っている人の判断を確認・回答します。</p></div></div>
+      <div class="queue-summary"><span class="status-chip st-blocked">未対応 ${counts.open}</span><span class="status-chip st-review">送信済み ${counts.sent}</span><span class="status-chip st-done">回答済み ${counts.done}</span></div>
+      <div class="master-detail needs-layout"><aside class="master-list">${list || '<div class="empty">要対応はありません</div>'}</aside>
+        <main class="detail-panel">${selected ? interactionCardsHtml([selected]) : '<div class="empty">要対応はありません</div>'}</main></div></section>`;
+  }
+
+  function renderNeeds() {
+    const pane = $id('tab-workflow-needs');
+    if (!pane) return;
+    pane.innerHTML = needsHtml(st.overview || {});
+    pane.querySelectorAll('[data-workflow-need]').forEach((button) => button.addEventListener('click', () => {
+      st.selectedNeed = button.dataset.workflowNeed;
+      renderNeeds();
+    }));
+    wireInteractionResponses(pane, async () => { await loadOverview(); renderNeeds(); });
+  }
+
+  function renderEdit() {
+    const pane = $id('tab-workflow-edit');
     if (!pane) return;
     const oldCanvas = $id('wf-canvas');
     const scroll = oldCanvas ? [oldCanvas.scrollLeft, oldCanvas.scrollTop] : [0, 0];
@@ -907,11 +1022,74 @@
     const canvas = $id('wf-canvas');
     if (canvas) { canvas.scrollLeft = scroll[0]; canvas.scrollTop = scroll[1]; }
   }
+  const renderSettings = renderEdit;
+
+  function settingsHtml(ov) {
+    return `<section class="wf-page"><div class="wf-title"><div><h2>設定</h2><p>ワークフロー実行履歴の保持期間を設定します。</p></div></div>
+      ${st.notice ? `<p class="qf-notice" role="status">${esc(st.notice)}</p>` : ''}
+      <div class="wf-settings-card"><label>実行履歴の保持日数<input id="wf-retention-days" type="number" min="1" max="3650" step="1" value="${esc(ov.retentionDays || 30)}"></label>
+        <p class="muted">期限を過ぎた終端済みの実行を削除します。未対応の人による確認がある実行は保持します。</p>
+        <button type="button" class="primary" id="wf-save-settings">保存</button></div></section>`;
+  }
+
+  function renderConfig() {
+    const pane = $id('tab-workflow-settings');
+    if (!pane) return;
+    pane.innerHTML = settingsHtml(st.overview || {});
+    $id('wf-save-settings')?.addEventListener('click', async () => {
+      try {
+        const result = await api().adhocFlowSaveSettings({ retentionDays: Number($id('wf-retention-days')?.value) });
+        st.overview.retentionDays = result.retentionDays;
+        st.notice = '設定を保存しました';
+      } catch (err) { st.notice = String((err && err.message) || err); }
+      renderConfig();
+    });
+  }
 
   function render() {
     if (runActive()) renderRun();
-    const pane = $id('tab-workflow-settings');
-    if (pane && pane.classList.contains('active')) renderSettings();
+    const needs = $id('tab-workflow-needs');
+    if (needs && needs.classList.contains('active')) renderNeeds();
+    const edit = $id('tab-workflow-edit');
+    if (edit && edit.classList.contains('active')) renderEdit();
+    const settings = $id('tab-workflow-settings');
+    if (settings && settings.classList.contains('active')) renderConfig();
+    renderSidebar();
+  }
+
+  function executionOverridesFromForm(pane) {
+    const out = { version: 1, roles: {}, kinds: {} };
+    pane.querySelectorAll('[data-override-group]').forEach((row) => {
+      const value = {
+        tier: row.querySelector('[data-override-tier]')?.value || '',
+        agent_cli: row.querySelector('[data-override-agent]')?.value || '',
+        model: row.querySelector('[data-override-model]')?.value || '',
+      };
+      if (value.tier || value.agent_cli || value.model) out[row.dataset.overrideGroup][row.dataset.overrideKey] = value;
+    });
+    return Object.keys(out.roles).length || Object.keys(out.kinds).length ? out : null;
+  }
+
+  function wireInteractionResponses(pane, after) {
+    pane.querySelectorAll('[data-interaction-submit]').forEach((button) => button.addEventListener('click', async () => {
+      const card = button.closest('[data-interaction-id]');
+      const runId = card && (card.dataset.runId || st.selectedRun);
+      if (!card || !runId) return;
+      const kind = button.dataset.interactionSubmit;
+      const answer = kind === 'input'
+        ? { text: card.querySelector('[data-interaction-text]')?.value || '' }
+        : kind === 'choice'
+          ? { option: card.querySelector('[data-interaction-option]')?.value || '',
+            comment: card.querySelector('[data-interaction-comment]')?.value || '' }
+          : { decision: kind, comment: card.querySelector('[data-interaction-comment]')?.value || '' };
+      try {
+        await api().adhocFlowInteractionResponse({
+          runId, interactionId: card.dataset.interactionId, answer,
+        });
+        st.notice = '回答を送信しました';
+      } catch (err) { st.notice = String((err && err.message) || err); }
+      await after();
+    }));
   }
 
   function wireRun(pane) {
@@ -940,6 +1118,7 @@
         cwd: $id('wf-cwd')?.value || '',
         request: $id('wf-request')?.value || '',
         selection: selectionFrom($id('wf-flow')?.value || 'auto'),
+        executionOverrides: executionOverridesFromForm(pane),
       };
       renderRun();
       try {
@@ -958,23 +1137,10 @@
       catch (err) { st.notice = String((err && err.message) || err); }
       renderRun();
     }));
-    pane.querySelectorAll('[data-interaction-submit]').forEach((button) => button.addEventListener('click', async () => {
-      const card = button.closest('[data-interaction-id]');
-      if (!card || !st.selectedRun) return;
-      const kind = button.dataset.interactionSubmit;
-      const answer = kind === 'input'
-        ? { text: card.querySelector('[data-interaction-text]')?.value || '' }
-        : kind === 'choice'
-          ? { option: card.querySelector('[data-interaction-option]')?.value || '',
-            comment: card.querySelector('[data-interaction-comment]')?.value || '' }
-          : { decision: kind, comment: card.querySelector('[data-interaction-comment]')?.value || '' };
-      try {
-        await api().adhocFlowInteractionResponse({
-          runId: st.selectedRun, interactionId: card.dataset.interactionId, answer,
-        });
-        st.notice = '回答を送信しました';
-      } catch (err) { st.notice = String((err && err.message) || err); }
-      await loadOverview(); renderRun();
+    wireInteractionResponses(pane, async () => { await loadOverview(); renderRun(); });
+    pane.querySelectorAll('[data-run-view]').forEach((button) => button.addEventListener('click', () => {
+      st.runView = button.dataset.runView;
+      renderRun();
     }));
     $id('wf-resubmit')?.addEventListener('click', async () => {
       try {
@@ -1360,16 +1526,23 @@
   }
 
   async function ensureLoaded() {
-    const settingsPane = $id('tab-workflow-settings');
-    if (settingsPane && settingsPane.classList.contains('active') && settingsPane.firstElementChild) return;
+    const stablePane = [$id('tab-workflow-edit'), $id('tab-workflow-settings')]
+      .find((pane) => pane && pane.classList.contains('active'));
+    if (stablePane && stablePane.firstElementChild) return;
     if (!st.overview) await loadOverview();
     render();
+  }
+
+  function badge() {
+    const count = workflowNeeds(st.overview || {}).filter((item) => !item.resolution && !item.expired && !item.responded).length;
+    return count ? { text: String(count), tone: 'warn', title: `要対応 ${count} 件` } : null;
   }
 
   return {
     KINDS,
     render: ensureLoaded,
     refresh,
+    badge,
     statusLabel,
     selectionFrom,
     defaultGoal,

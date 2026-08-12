@@ -26,6 +26,9 @@ def _child_base(args, bus_abs: str) -> list:
     ac = getattr(args, "agent_cli", None)
     if ac:
         base += ["--agent-cli", str(ac)]  # LLM 実行 CLI（kiro/claude）を子へ引き継ぐ
+    execution_overrides = getattr(args, "execution_overrides", None)
+    if execution_overrides:
+        base += ["--execution-overrides", str(execution_overrides)]
     return base
 
 
@@ -256,7 +259,9 @@ def _spawn_orchestrator(base: list, args, req_id: str, req: dict):
         ws_args += ["--verification-plan", json.dumps(vp, ensure_ascii=False)]
     inh = req.get("inherit_from")             # リトライ: 先行 run の引き継ぎ元を orchestrate へ
     deleg = req.get("delegation")             # 委譲公示板（agent-board）由来の来歴を meta へ引き回す
-    return subprocess.Popen(base + ws_args + [
+    execution_args = (["--execution-overrides", json.dumps(req["execution_overrides"], ensure_ascii=False)]
+                      if isinstance(req.get("execution_overrides"), dict) else [])
+    return subprocess.Popen(base + ws_args + execution_args + [
         "--granularity", str(getattr(args, "granularity", "auto") or "auto"),
         *(["--exemplar-first"] if getattr(args, "exemplar_first", False) else []),
         *((["--plan-gate"]
@@ -315,6 +320,9 @@ def _apply_inbox_request(bus: Bus, args) -> None:
     pattern = rec.get("pattern")
     if pattern and not getattr(args, "pattern", None):
         args.pattern = pattern
+    execution_overrides = rec.get("execution_overrides")
+    if isinstance(execution_overrides, dict) and not getattr(args, "execution_overrides", None):
+        args.execution_overrides = json.dumps(execution_overrides, ensure_ascii=False)
 
 
 def cmd_run(args) -> int:

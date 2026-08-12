@@ -19,6 +19,9 @@ module.exports = {
     workflowDir: '',
     // 実行に成功した cwd の履歴（新しい順、最大20件）。入力表記はそのまま保持する。
     cwdHistory: [],
+    // 終端済みで未対応の確認が無い run の保持日数。
+    retentionDays: 30,
+    lastRetentionSweepAt: '',
     // 旧版互換。初回表示時に ~/.agents/workflows/*.json へ移行する。
     presets: [],
   },

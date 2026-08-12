@@ -941,7 +941,6 @@ function bindFlowDetail(root) {
           (n) => n.id === tid || n.taskId === tid
         );
         state.needsSelectedId = match ? match.id : tid;
-        state.needsFilter = 'open';
         state.needsMobileDetail = true;
       }
       switchTab('needs');

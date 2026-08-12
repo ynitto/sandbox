@@ -168,6 +168,7 @@ test('予算 v2: save は allocation を検証して version:2 で原子書換�
       mode: 'auto',
       soft_ratio: 0.8,
       workloads: { routine: { weight: 1, min_tokens: 100000, on_exhausted: 'stop' } },
+      agents: { claude: { max_tokens: '500000' } },
     },
   });
   const raw = JSON.parse(fs.readFileSync(path.join(dir, 'config.json'), 'utf8'));
@@ -176,6 +177,7 @@ test('予算 v2: save は allocation を検証して version:2 で原子書換�
   assert.strictEqual(raw.allocation.mode, 'auto');
   assert.strictEqual(raw.allocation.soft_ratio, 0.8);
   assert.strictEqual(raw.allocation.workloads.routine.on_exhausted, 'stop');
+  assert.strictEqual(raw.allocation.agents.claude.max_tokens, 500000);
   assert.strictEqual(raw.updated_by, 'dashboard');
   // 検証: 負値・不正 enum は弾く
   assert.throws(() => budget.save(budgetCfg(dir), { tokens: -1 }));
@@ -183,11 +185,15 @@ test('予算 v2: save は allocation を検証して version:2 で原子書換�
   assert.throws(() =>
     budget.save(budgetCfg(dir), { allocation: { workloads: { routine: { on_exhausted: 'kill' } } } })
   );
+  assert.throws(() =>
+    budget.save(budgetCfg(dir), { allocation: { agents: { claude: { max_tokens: -1 } } } })
+  );
   // 部分更新: 前回の allocation が保持される
   budget.save(budgetCfg(dir), { period: 'month' });
   const raw2 = JSON.parse(fs.readFileSync(path.join(dir, 'config.json'), 'utf8'));
   assert.strictEqual(raw2.period, 'month');
   assert.strictEqual(raw2.allocation.workloads.routine.min_tokens, 100000);
+  assert.strictEqual(raw2.allocation.agents.claude.max_tokens, 500000);
 });
 
 // --- ノード予算 v2: 配分（rebalance のクランプ） ------------------------------
@@ -287,6 +293,18 @@ test('予算 v2: 同じ CLI の観測は最後の 1 件が現在の状態', () =
   ]);
   const agentsState = budget.usage(budgetCfg(dir)).config.computed.agents;
   assert.strictEqual(agentsState.claude.quota_kind, 'rate_limit');
+});
+
+test('予算 v2: CLI quota snapshot は使用率を保持し、回復snapshotで制限を解除する', () => {
+  const derived = budget.quotaAgentsFrom([
+    { ts: '2026-08-12T00:00:00Z', event: 'quota_snapshot', agent_cli: 'codex',
+      quota_kind: 'rate_limit', quota_used_percent: 100, reset_at: '2026-08-17T00:00:00Z' },
+    { ts: '2026-08-12T00:05:00Z', event: 'quota_snapshot', agent_cli: 'codex',
+      quota_used_percent: 33, quota_source: 'codex-app-server', reset_at: '2026-08-17T00:00:00Z' },
+  ]);
+  assert.strictEqual(derived.codex.quota_kind, undefined);
+  assert.strictEqual(derived.codex.quota_used_percent, 33);
+  assert.strictEqual(derived.codex.quota_source, 'codex-app-server');
 });
 
 test('予算 v2: 復帰時刻の無い rate_limit は観測時刻 + 既定 TTL で失効する', () => {

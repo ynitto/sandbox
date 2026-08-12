@@ -75,7 +75,9 @@ _AGENT_CLI: str = str(CONFIG_DEFAULTS["agent_cli"])
 # reduce/split/map/extract/retrieve。human はエージェントを呼ばない）。値は
 # {agent_cli, model}。子プロセスへは --config 伝搬で同じ設定が届く。
 _AGENT_OVERRIDES: "dict[str, dict]" = {}
+_EXECUTION_OVERRIDES: "dict[str, dict]" = {}
 AGENT_ROLES = ("planner", "evaluator", "worker")
+EXECUTION_ROLES = frozenset((*AGENT_ROLES, "verify", "human", "session"))
 # 読み取り専用が**既定**の役割（適用拡大設計 §5「読まない系」）。planner / evaluator は材料を
 # 全部プロンプトで受け取り、テキストか JSON を返すだけなので道具が要らない。既定を write の
 # ままにすると、agent-control が agent_cli をツールループ型（agent-ollama の --tools bash 等）へ
@@ -151,6 +153,45 @@ def _normalize_agent_overrides(raw) -> "dict[str, dict]":
     return out
 
 
+def _normalize_execution_overrides(raw) -> dict:
+    """inbox の実行時指定を正規化する。未知キーは加算的互換のため無視する。"""
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return {}
+    if not isinstance(raw, dict) or raw.get("version") != 1:
+        return {}
+    out = {"version": 1, "roles": {}, "kinds": {}}
+    for group, valid in (("roles", EXECUTION_ROLES), ("kinds", set(VALID_KINDS) - {"human"})):
+        values = raw.get(group)
+        if not isinstance(values, dict):
+            continue
+        for key, value in values.items():
+            name = str(key).strip().lower()
+            if name not in valid or not isinstance(value, dict):
+                continue
+            item = {}
+            for field in ("tier", "agent_cli", "model"):
+                if value.get(field):
+                    item[field] = str(value[field]).strip()
+            if item:
+                item["pinned"] = True
+                out[group][name] = item
+    return out if out["roles"] or out["kinds"] else {}
+
+
+def _execution_override(purpose: str) -> dict:
+    kinds = _EXECUTION_OVERRIDES.get("kinds") or {}
+    roles = _EXECUTION_OVERRIDES.get("roles") or {}
+    if purpose in kinds:
+        return {**kinds[purpose], "source": "run-kind"}
+    role = purpose if purpose in EXECUTION_ROLES else "worker" if purpose in VALID_KINDS else ""
+    if role and role in roles:
+        return {**roles[role], "source": "run-role"}
+    return {}
+
+
 def _agent_readonly(purpose: str) -> bool:
     """この役割を読み取り専用で呼ぶか（設定 `agents[purpose].readonly`・既定は
     READONLY_ROLES に属する役割だけ True）。
@@ -198,6 +239,13 @@ def _agent_for(purpose: str) -> "tuple[str, str | None]":
             cli = d_cli.lower()
         if d_model:
             model = d_model
+    # run 単位の固定は、保存済みノード・control・縮退候補より優先する。hard budget と lifecycle
+    # はエージェント解決の外側で止めるため、この固定で安全弁を迂回することはない。
+    run_ov = _execution_override(purpose)
+    if run_ov.get("agent_cli"):
+        cli = str(run_ov["agent_cli"]).lower()
+    if run_ov.get("model"):
+        model = str(run_ov["model"])
     # retrieve は根拠を実際に読める必要がある。ollama-json へ寄せると read tool を失うため、
     # Ollama 系だけ既存の読み取り専用定義を使い、末尾 JSON は下流の validator で担保する。
     if purpose == "retrieve" and cli in ("ollama", "ollama-json"):
@@ -225,6 +273,7 @@ def _configure_thresholds(args) -> None:
     """設定ファイル/CLI（resolve_config 済み）の閾値をモジュール変数へ確定させる。
     run_agent / executor 解決は args を受け取らないため、プロセス起動時に一度だけ値を固定する。"""
     global _ARGV_LIMIT, _EXECUTOR_DIR, _AGENT_TIMEOUT, _STUB_SLEEP_MAX, _AGENT_CLI, _AGENT_OVERRIDES
+    global _EXECUTION_OVERRIDES
     global _WORKER_SKILL, _PLANNER_SKILL, _TRANSIENT_RETRIES, _TRANSIENT_BACKOFF, _FORMAT_RETRIES
     for name, attr, cast in (("_TRANSIENT_RETRIES", "transient_retries", int),
                              ("_TRANSIENT_BACKOFF", "transient_backoff", float),
@@ -239,6 +288,7 @@ def _configure_thresholds(args) -> None:
     if ac:
         _AGENT_CLI = str(ac).lower()
     _AGENT_OVERRIDES = _normalize_agent_overrides(getattr(args, "agents", None))
+    _EXECUTION_OVERRIDES = _normalize_execution_overrides(getattr(args, "execution_overrides", None))
     wsk = getattr(args, "worker_skill", None)
     if wsk is not None:
         _WORKER_SKILL = str(wsk).strip()
@@ -579,9 +629,12 @@ def control_workers(fallback: int) -> int:
 
 def _selection_meta(purpose: str = "", agent: "dict | None" = None) -> dict:
     wl = _control_workload()
-    tier = str((agent or {}).get("tier") or wl.get("tier") or "")
+    run_ov = _execution_override(purpose)
+    tier = str(run_ov.get("tier") or (agent or {}).get("tier") or wl.get("tier") or "")
     purpose_control = (wl.get("agents") or {}).get(purpose) if purpose else None
-    if agent and agent.get("tier"):
+    if run_ov:
+        source = run_ov["source"]
+    elif agent and agent.get("tier"):
         source = "pinned-tier"
     elif agent:
         source = "pinned-agent"
@@ -591,7 +644,7 @@ def _selection_meta(purpose: str = "", agent: "dict | None" = None) -> dict:
         source = wl.get("selection_source") or (
             "control-workload" if wl.get("agent_cli") or wl.get("model") else "tool-config")
     return {"tier": tier or None, "selection_source": source,
-            "selection_reason": wl.get("selection_reason") or "", "pinned": bool(agent)}
+            "selection_reason": wl.get("selection_reason") or "", "pinned": bool(run_ov or agent)}
 
 
 def _write_status(effective_cli: str = "", effective_model: str = "", lifecycle: str = "run",
@@ -849,9 +902,11 @@ def _effective_agent(purpose: str, model: "str | None",
     _run_agent_once（実際に何を起動するか）が別々に解くと、記録と実行がずれる。"""
     cli, model_ov = _agent_for(purpose)
     model = model_ov or model
+    run_ov = _execution_override(purpose)
     if agent:
-        cli = str(agent.get("agent_cli") or cli).strip().lower()
-        if agent.get("model"):
+        if not run_ov.get("agent_cli"):
+            cli = str(agent.get("agent_cli") or cli).strip().lower()
+        if not run_ov.get("model") and agent.get("model"):
             model = str(agent["model"]).strip()
     return cli, model
 

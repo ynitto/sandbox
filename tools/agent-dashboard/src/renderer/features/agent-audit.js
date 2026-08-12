@@ -80,6 +80,9 @@
   let doctorInfo = null;
   let settingsDraft = null;
   let settingsMessage = null;
+  let agentLimitDraft = null;
+  let agentLimitMessage = null;
+  let agentLimitSaving = false;
   let lastAutoAt = 0;
   let autoBusy = false;
   let autoCollectTried = false;   // 初回の自動収集はセッション中 1 回だけ試す
@@ -211,6 +214,24 @@
     return `<span class="orch-badge orch-badge-${escHtml(kind)}">${escHtml(text)}</span>`;
   }
 
+  function agentNames(data) {
+    const budget = budgetState() || {};
+    const allocation = (((budget.config || {}).allocation || {}).agents) || {};
+    const observed = (((budget.config || {}).computed || {}).agents) || {};
+    const tiers = ((((root.state || {}).orchestration || {}).profiles || {}).tiers) || {};
+    const inventory = (((root.state || {}).orchestration || {}).agents) || {};
+    return [...new Set([
+      ...((data && data.agents) || []).map((row) => String(row.group || '')),
+      ...((data && data.agentLimits) || []).map((limit) => String(limit.agent_cli || '')),
+      ...Object.keys(allocation),
+      ...Object.keys(observed),
+      ...(inventory.builtins || []).map(String),
+      ...(inventory.dropins || []).map((entry) => String((entry || {}).name || '')),
+      ...Object.values(tiers).flatMap((tier) => ((tier || {}).candidates || [])
+        .map((candidate) => String(candidate.agent_cli || ''))),
+    ])].filter(Boolean);
+  }
+
   // 機能（ワークロード）別。行は agent-audit の集計、上限と状態はノード予算の設定から。
   // 記録が 1 件も無い機能も、予算に枠があるなら 0 として並べる（枠の存在が見えなくならない）。
   function workloadTableHtml(data) {
@@ -266,13 +287,8 @@
           .map((candidate) => candidate.model || '既定');
         return models.length ? `${(tier.label || name)}: ${[...new Set(models)].join('・')}` : '';
       }).filter(Boolean).join(' / ');
-    const names = [...new Set([
-      ...rows.map((row) => String(row.group || '')),
-      ...Object.keys(allocation), ...Object.keys(observed),
-      ...Object.values(tiers).flatMap((tier) => ((tier || {}).candidates || [])
-        .map((candidate) => String(candidate.agent_cli || ''))),
-    ])].filter(Boolean);
     const byName = new Map(rows.map((row) => [String(row.group || ''), row]));
+    const names = agentNames(data);
     const body = names.map((name) => byName.get(name) || { group: name })
       // 割合の大きい順（同じ棒グラフの並びを機能別と揃える）。同率は実行数の多い順。
       .sort((a, b) => rowTokens(b) - rowTokens(a) || (Number(b.runs) || 0) - (Number(a.runs) || 0))
@@ -281,34 +297,88 @@
         const declared = allocation[cli] || {};
         const quota = observed[cli] || {};
         const audited = auditLimits.get(cli) || {};
-        const cap = Number(audited.max_tokens !== undefined
-          ? audited.max_tokens : declared.max_tokens || 0);
-        const quotaKind = String(quota.quota_kind || audited.quota_kind || '');
-        const resetAt = String(quota.reset_at || audited.reset_at || '');
+        const quotaView = audited.observed_at ? audited : quota;
+        const cap = Number(declared.max_tokens !== undefined
+          ? declared.max_tokens : audited.max_tokens || 0);
+        const quotaKind = String(quotaView.quota_kind || '');
+        const quotaSource = String(quotaView.quota_source || '');
+        const rawQuotaPercent = quotaView.quota_used_percent;
+        const quotaPercent = rawQuotaPercent === null || rawQuotaPercent === undefined
+          ? null : Number(rawQuotaPercent);
+        const quotaSupported = ['claude', 'codex', 'copilot', 'kiro'].includes(cli)
+          || Boolean(audited.quota_supported || quotaSource);
+        const resetAt = String(quotaView.reset_at || '');
         const resetFuture = resetAt && Number.isFinite(Date.parse(resetAt)) && Date.parse(resetAt) > Date.now();
         const quotaBlocked = quotaKind === 'exhausted' || (quotaKind === 'rate_limit' && resetFuture);
         const capReached = cap > 0 && data && data.period === ((budget.config || {}).period)
           && rowTokens(row) >= cap;
-        const state = quotaBlocked
-          ? badgeHtml('over', quotaKind === 'rate_limit' ? '一時制限中' : '枠を使い切りました')
-          : capReached ? badgeHtml('over', '設定上限に到達') : '';
-        const strategy = tierNames(cli);
+        const quotaState = quotaBlocked
+          ? badgeHtml('over', quotaKind === 'rate_limit' ? '一時制限中' : '枠を使い切りました') : '';
+        const manualState = capReached ? badgeHtml('over', '到達')
+          : cap > 0 ? badgeHtml('ok', '上限内') : '';
         const resetNote = audited.reset_source === 'period' ? '（設定期間）'
           : audited.reset_estimated ? '（推定）' : '';
+        const quotaValue = Number.isFinite(quotaPercent)
+          ? Math.max(0, Math.min(100, quotaPercent)) : quotaBlocked ? 100 : null;
+        const quotaLabel = quotaValue === null ? ''
+          : Number.isInteger(quotaValue) ? String(quotaValue) : quotaValue.toFixed(1);
+        const quotaTone = quotaValue >= 90 ? 'danger' : quotaValue >= 70 ? 'warn' : 'safe';
+        const recovery = resetAt ? `復旧日時 ${fmtShortWhen(resetAt)}${resetNote}`
+          : `復旧日時 ${quotaBlocked ? '日時不明' : '—'}`;
+        const quotaTitle = [
+          quotaSource === 'codex-app-server' ? 'Codex CLIから取得' : quotaSource ? 'CLIから取得' : '',
+          resetAt ? `復旧日時: ${fmtWhen(resetAt)} ${resetAt}${resetNote}` : '',
+        ].filter(Boolean).join(' / ');
+        const quotaHtml = quotaValue === null
+          ? `<div class="orch-quota"><div class="orch-quota-meta"><span class="muted">${quotaSupported ? '取得できず' : 'CLI取得非対応'}</span><span class="muted">${recovery}</span></div></div>`
+          : `<div class="orch-quota" title="${escHtml(quotaTitle)}">
+              <div class="orch-quota-meta"><span class="mono">${quotaLabel}% 使用</span><span>${escHtml(recovery)}</span>${quotaState}</div>
+              <div class="orch-bar orch-quota-bar" role="progressbar" aria-label="${escHtml(`${cli} クォータ ${quotaLabel}% 使用、${recovery}`)}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${quotaLabel}">
+                <span class="orch-quota-fill orch-quota-${quotaTone}" style="width:${quotaLabel}%"></span>
+              </div>
+            </div>`;
         return `<tr>
-        <td><code>${escHtml(cli || '未記録')}</code>${state ? ` ${state}` : ''}${strategy ? `<br><span class="muted">${escHtml(strategy)}</span>` : ''}</td>
-        <td class="orch-bar-cell">${shareCellHtml(row, total)}</td>
-        <td class="num mono">${tokenCellHtml(row)}</td>
-        <td class="num mono">${cap > 0 ? escHtml(fmtTokens(cap)) : '—'}</td>
-        <td${resetAt ? ` title="${escHtml(`復帰予定: ${fmtWhen(resetAt)} ${resetAt}${resetNote}`)}"` : ''}>${resetAt ? escHtml(fmtShortWhen(resetAt)) : '—'}</td>
-        <td class="num mono">${escHtml(fmtSeconds(row.seconds))}</td>
-        <td class="num mono">${Number(row.runs || 0)}件</td>
+        <td><code>${escHtml(cli || '未記録')}</code></td>
+        <td><span class="mono">${tokenCellHtml(row)}</span>${shareCellHtml(row, total)}</td>
+        <td class="audit-quota-cell">${quotaHtml}</td>
+        <td class="num mono">${cap > 0 ? escHtml(fmtTokens(cap)) : '<span class="muted">未設定</span>'}${manualState ? `<br>${manualState}` : ''}</td>
       </tr>`;
       }).join('');
+    const strategies = names.map((cli) => {
+      const strategy = tierNames(cli);
+      return strategy ? `<li><code>${escHtml(cli)}</code>: ${escHtml(strategy)}</li>` : '';
+    }).filter(Boolean).join('');
     return `<div class="table-scroll"><table class="list audit-table">
-      <thead><tr><th>エージェント / 切替候補</th><th>全体に占める割合</th><th>トークン</th><th><span title="実行制御のエージェント別トークン上限（node-budget設定）">設定上限</span></th><th><span title="quota制限の復帰予定。完全な日時と算出方法は各セルに表示します">復帰</span></th><th>実行時間</th><th>LLM呼び出し</th></tr></thead>
-      <tbody>${body || '<tr><td colspan="7" class="muted">エージェント別の記録はありません。</td></tr>'}</tbody>
-    </table></div>`;
+      <thead><tr><th>エージェント</th><th>利用量</th><th>クォータ</th><th>手動上限</th></tr></thead>
+      <tbody>${body || '<tr><td colspan="4" class="muted">エージェント別の記録はありません。</td></tr>'}</tbody>
+    </table></div>
+    ${strategies ? `<details class="audit-detail"><summary>tier別の切替戦略</summary><ul>${strategies}</ul></details>` : ''}`;
+  }
+
+  function agentLimitSettingsHtml(data) {
+    const budget = budgetState() || {};
+    const allocation = (((budget.config || {}).allocation || {}).agents) || {};
+    const names = agentNames(data).sort((a, b) => a.localeCompare(b));
+    const selectedPeriod = (agentLimitDraft && agentLimitDraft.period)
+      || (budget.config || {}).period || 'day';
+    const values = (agentLimitDraft && agentLimitDraft.agents) || {};
+    const rows = names.map((name) => {
+      const configured = values[name] !== undefined ? values[name] : Number((allocation[name] || {}).max_tokens || 0);
+      return `<tr><td><label for="audit-agent-limit-${escHtml(name)}"><code>${escHtml(name)}</code></label></td>
+        <td><input id="audit-agent-limit-${escHtml(name)}" class="audit-agent-limit" type="number" min="0" step="1000"
+          data-agent-cli="${escHtml(name)}" value="${escHtml(String(configured))}"></td></tr>`;
+    }).join('');
+    const options = PERIODS.map(([value, label]) =>
+      `<option value="${value}"${value === selectedPeriod ? ' selected' : ''}>${label}</option>`).join('');
+    return `<details class="audit-detail audit-agent-limit-settings"${agentLimitSaving || agentLimitMessage ? ' open' : ''}>
+      <summary>エージェント別上限を設定</summary>
+      <p class="muted">実行制御に使う手動上限です。CLIから取得するquotaとは別で、0は無制限です。</p>
+      <label>対象期間 <select id="audit-agent-limit-period">${options}</select></label>
+      ${rows ? `<div class="table-scroll"><table class="list audit-table"><thead><tr><th>エージェント</th><th>トークン上限</th></tr></thead><tbody>${rows}</tbody></table></div>`
+        : '<p class="muted">設定できるエージェントがまだありません。</p>'}
+      ${agentLimitMessage ? `<p class="${agentLimitMessage.ok ? 'muted' : 'audit-error'}" role="status">${escHtml(agentLimitMessage.text)}</p>` : ''}
+      <button type="button" id="audit-agent-limits-save" class="primary-inline"${agentLimitSaving || !rows ? ' disabled' : ''}>${agentLimitSaving ? '保存しています…' : '上限を保存'}</button>
+    </details>`;
   }
 
   // agent-audit の集計が取れないときの代替。台帳（ノード予算）だけの集計を、
@@ -325,7 +395,7 @@
   function usageTableHtml(data) {
     const rows = (data && data.rows) || [];
     if (!rows.length) {
-      return '<p class="muted">記録がありません。「今すぐ収集」を押してください。</p>';
+      return '<p class="muted">記録がありません。「利用状況を収集」を押してください。</p>';
     }
     const body = rows.map((row) => `<tr>
       <td>${escHtml(row.group)}</td>
@@ -450,11 +520,12 @@
         <h3 id="audit-usage-title">利用量（${escHtml(periodLabel(currentPeriod()))}）</h3>
         <div class="audit-actions">
           <label>期間 <select id="audit-period">${optionsHtml(PERIODS, currentPeriod())}</select></label>
-          <button type="button" id="audit-collect" class="primary-inline"${collectBusy ? ' disabled' : ''}>${collectBusy ? '収集しています…' : '今すぐ収集'}</button>
+          <button type="button" id="audit-collect" class="primary-inline"${collectBusy ? ' disabled' : ''}>${collectBusy ? '収集しています…' : '利用状況を収集'}</button>
           <button type="button" id="audit-reload"${loading ? ' disabled' : ''}>表示を更新</button>
           <button type="button" id="audit-doctor"${doctorBusy ? ' disabled' : ''}>設定を点検</button>
         </div>
       </header>
+      <p class="muted">「利用状況を収集」は実行記録とquotaを更新します。Claude・Codex・Copilot・Kiroは各CLIの組み込みusage/statusから取得します。</p>
       ${collectStatusHtml(collectInfo, collectBusy)}
       ${doctorInfo ? `<details class="audit-detail" open><summary>点検結果${doctorInfo.ok ? '' : '（問題があります）'}</summary><pre>${escHtml(doctorInfo.detail || doctorInfo.error || '')}</pre></details>` : ''}
       ${loadError ? `<p class="audit-error" role="alert">${escHtml(loadError)}</p>` : ''}
@@ -476,9 +547,9 @@
     </section>`;
   }
 
-  // 「設定」タブの中身（収集の設定）。閲覧側とは別の容れ物に入る。
+  // 「設定」タブの中身。手動上限と収集の設定を、閲覧側とは別の容れ物に入れる。
   function settingsPanelHtml() {
-    return settingsHtml(settingsDraft || auditConfig());
+    return `${agentLimitSettingsHtml(summaryData)}${settingsHtml(settingsDraft || auditConfig())}`;
   }
 
   async function loadData() {
@@ -573,6 +644,41 @@
     render();
   }
 
+  function readAgentLimitsForm(pane) {
+    const periodInput = pane.querySelector('#audit-agent-limit-period');
+    const agents = {};
+    for (const input of pane.querySelectorAll('.audit-agent-limit')) {
+      agents[input.dataset.agentCli] = input.value.trim();
+    }
+    return { period: periodInput ? periodInput.value : 'day', agents };
+  }
+
+  async function saveAgentLimits(pane) {
+    if (!root.api || !root.api.orchestrationBudgetSave || agentLimitSaving) return;
+    agentLimitDraft = readAgentLimitsForm(pane);
+    const agents = Object.fromEntries(Object.entries(agentLimitDraft.agents)
+      .map(([name, value]) => [name, { max_tokens: value === '' ? 0 : value }]));
+    agentLimitSaving = true;
+    agentLimitMessage = null;
+    render();
+    try {
+      const saved = await root.api.orchestrationBudgetSave({
+        period: agentLimitDraft.period,
+        allocation: { agents },
+      });
+      const appState = root.state || (root.state = {});
+      appState.orchestration = { ...(appState.orchestration || {}), budget: saved };
+      agentLimitDraft = null;
+      agentLimitMessage = { ok: true, text: 'エージェント別上限を保存しました' };
+      loadedOnce = false;
+    } catch (error) {
+      agentLimitMessage = { ok: false, text: error && error.message ? error.message : String(error) };
+    }
+    agentLimitSaving = false;
+    render();
+    if (!agentLimitMessage || agentLimitMessage.ok) await loadData();
+  }
+
   // 面が実際に見えているか。見えていないあいだは CLI を起こさない——タブを開いていない
   // 端末で毎周期 agent-audit を起動することになる。
   //
@@ -605,10 +711,17 @@
       loadData();
     });
     on('audit-save', 'click', () => saveSettings(pane));
+    on('audit-agent-limits-save', 'click', () => saveAgentLimits(pane));
     for (const input of pane.querySelectorAll('.audit-settings input')) {
       input.addEventListener('input', () => {
         settingsDraft = readSettingsForm(pane);
         settingsMessage = null;
+      });
+    }
+    for (const input of pane.querySelectorAll('.audit-agent-limit-settings input, .audit-agent-limit-settings select')) {
+      input.addEventListener('input', () => {
+        agentLimitDraft = readAgentLimitsForm(pane);
+        agentLimitMessage = null;
       });
     }
   }
@@ -694,6 +807,7 @@
   return {
     escHtml, fmtTokens, fmtSeconds, fmtShortWhen, pairsText,
     usageTableHtml, statsTableHtml, settingsHtml, settingsPanelHtml, collectStatusHtml, panelHtml,
+    agentLimitSettingsHtml,
     workloadTableHtml, agentTableHtml, gaugeHtml, ledgerFallbackHtml,
     render, refresh, wire, reveal, portalCardHtml,
   };

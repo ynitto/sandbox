@@ -142,6 +142,26 @@ class UsageTests(AuditTestCase):
         self.assertEqual(limits["codex"]["reset_source"], "period")
         self.assertFalse(limits["codex"]["blocked"])
 
+    def test_agent_limits_show_cli_snapshot_and_supported_clis(self):
+        now = datetime(2026, 8, 12, 0, 0, tzinfo=timezone.utc)
+        self.write_ledger("20260812", [
+            {"ts": "2026-08-12T00:00:00Z", "event": "quota_snapshot", "agent_cli": "codex",
+             "quota_used_percent": 33, "quota_source": "codex-app-server",
+             "reset_at": "2026-08-17T13:29:04Z"},
+        ])
+        rows = [
+            {"group": "codex", "measured_in": 1, "measured_out": 0, "estimated_tokens": 0},
+            {"group": "claude", "measured_in": 1, "measured_out": 0, "estimated_tokens": 0},
+            {"group": "ollama", "measured_in": 1, "measured_out": 0, "estimated_tokens": 0},
+        ]
+        limits = {item["agent_cli"]: item for item in usage.aggregate_agent_limits(
+            self.make_args(), self.make_store(), rows, rows_period="day", now=now)}
+        self.assertEqual(limits["codex"]["quota_used_percent"], 33)
+        self.assertEqual(limits["codex"]["quota_source"], "codex-app-server")
+        self.assertTrue(limits["codex"]["quota_supported"])
+        self.assertTrue(limits["claude"]["quota_supported"])
+        self.assertFalse(limits["ollama"]["quota_supported"])
+
     def test_calibrate_median_and_write(self):
         st = self._seed(with_session=True, rates={"per_cli": {"claude": 10.0}})
         args = self.make_args()

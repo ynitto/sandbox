@@ -21,9 +21,9 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="node-budget の場所（既定 ~/.agents/budget）")
     sub = p.add_subparsers(dest="command")
 
-    c = sub.add_parser("collect", help="源泉の増分収集・正規化（決定的）")
+    c = sub.add_parser("collect", help="源泉と対応CLI quotaの増分収集・正規化（LLM不使用）")
     c.add_argument("--source", action="append",
-                   help="収集する源泉を絞る（budget-ledger / cli-native / flow-bus / "
+                   help="収集する源泉を絞る（budget-ledger / cli-native / cli-quota / flow-bus / "
                         "project-root / amigos-bus / loop-log。複数可）")
     c.add_argument("--since", help="この時刻（ISO8601）以降のセッションだけ収集")
     c.add_argument("--with-transcripts", action="store_true", dest="with_transcripts",

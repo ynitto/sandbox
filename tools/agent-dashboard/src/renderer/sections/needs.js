@@ -1346,6 +1346,11 @@ function specFilesHtml(p, n) {
 }
 
 function needBucket(n, sentFn) {
+  const interaction = n && n.workflowInteraction;
+  if (interaction) {
+    if (interaction.resolution || interaction.expired) return 'done';
+    return interaction.responded ? 'sent' : 'open';
+  }
   if (n.decided || (n.commandReceipt && !n.commandFailure)) return 'done';
   // 送信後に本体側で取り込みが失敗した指示（commands/*.err → n.commandFailure）は
   // 「送信済み」に隠さない。失敗の事実と理由を見せて、次の操作をできるようにする。
@@ -1382,20 +1387,17 @@ function needAgeInfo(need, nowMs, slaHours) {
   return { ms, label: humanizeAge(ms), level };
 }
 
-function needsViewModel(needs, filter, selectedId, sentFn) {
-  const sorted = [...(needs || [])].sort(
-    (a, b) =>
-      String(b.date || '').localeCompare(String(a.date || '')) ||
-      String(a.id).localeCompare(String(b.id))
-  );
+function needsViewModel(needs, selectedId, sentFn) {
   const counts = { open: 0, sent: 0, done: 0 };
-  for (const n of sorted) counts[needBucket(n, sentFn)] += 1;
-  let items = filter === 'gitlab' ? [] : sorted.filter((n) => needBucket(n, sentFn) === filter);
-  // 未対応（open）は「待ち時間の長い順」＝停滞している判断待ちを上に出す（省力トリアージ）。
-  // 既定の選択（items[0]）も最も停滞したカードになり、最優先の判断へ自然に誘導する。
-  if (filter === 'open') {
-    items = [...items].sort((a, b) => (Number(a.mtime) || 0) - (Number(b.mtime) || 0));
-  }
+  for (const n of needs || []) counts[needBucket(n, sentFn)] += 1;
+  const time = (n) => Number(n.mtime) || Date.parse(n.date || '') || 0;
+  const rank = { open: 0, sent: 1, done: 2 };
+  const items = [...(needs || [])].sort((a, b) => {
+    const ab = needBucket(a, sentFn);
+    const bb = needBucket(b, sentFn);
+    return rank[ab] - rank[bb] || (ab === 'done' ? time(b) - time(a) : time(a) - time(b))
+      || String(a.id).localeCompare(String(b.id));
+  });
   const selected = items.find((n) => n.id === selectedId) || items[0] || null;
   return { counts, items, selected, selectedId: selected ? selected.id : null };
 }
@@ -1523,12 +1525,20 @@ function needDecisionViewModel(need) {
 function needListItemViewModel(need, bucket, age) {
   const stateText = { open: '未対応', sent: '送信済み', done: '回答済み' }[bucket] || String(bucket || '未対応');
   const risk = String((need && need.risk) || '');
-  const decision = needDecisionViewModel(need);
+  const interaction = need && need.workflowInteraction;
+  const decision = interaction ? {
+    reason: interaction.resolution ? `回答済み: ${interaction.resolution.outcome || '完了'}`
+      : interaction.expired ? '回答期限を過ぎています'
+        : interaction.responded ? '回答を送信し、ワークフローの反映を待っています'
+          : 'ワークフローが人の判断を待っています',
+    nextStep: bucket === 'open' ? '回答するとワークフローが再開します。'
+      : bucket === 'sent' ? '回答の反映を待っています。' : '人による操作は完了しています。',
+  } : needDecisionViewModel(need);
   return {
     id: String((need && need.id) || ''),
     state: String(bucket || 'open'),
     stateText,
-    kindText: needKindLabel(need && need.kind),
+    kindText: interaction ? 'ワークフロー確認' : needKindLabel(need && need.kind),
     title: needDisplayTitle(need || {}),
     decision: decision.reason,
     nextAction: decision.nextStep,
@@ -1539,6 +1549,51 @@ function needListItemViewModel(need, bucket, age) {
     ageText: String((age && age.label) || '—'),
     ageLevel: String((age && age.level) || ''),
   };
+}
+
+function workflowInteractionNeeds() {
+  return (state.flowRuns || []).flatMap((run) => (run.interactions || []).map((item) => ({
+    id: `workflow:${run.runId}:${item.interaction_id}`,
+    title: item.prompt || 'ワークフローからの確認',
+    kind: 'workflow-interaction',
+    date: item.created_at || run.updatedAt || run.createdAt || '',
+    mtime: Date.parse(item.created_at || '') || 0,
+    runId: run.runId,
+    workflowInteraction: item,
+  })));
+}
+
+function workflowInteractionControl(item, disabled) {
+  if (item.mode === 'approval') {
+    return `<div class="row"><button type="button" class="primary-inline" data-flow-interaction-submit="approved" ${disabled ? 'disabled' : ''}>承認</button>
+      <button type="button" data-flow-interaction-submit="rejected" ${disabled ? 'disabled' : ''}>却下</button></div>`;
+  }
+  if (item.mode === 'choice') {
+    return `<label>回答<select data-flow-interaction-option ${disabled ? 'disabled' : ''}>${(item.options || []).map((option) =>
+      `<option value="${esc(option)}">${esc(option)}</option>`).join('')}</select></label>
+      <button type="button" class="primary-inline" data-flow-interaction-submit="choice" ${disabled ? 'disabled' : ''}>回答する</button>`;
+  }
+  return `<label>回答<textarea rows="3" data-flow-interaction-text ${disabled ? 'disabled' : ''}></textarea></label>
+    <button type="button" class="primary-inline" data-flow-interaction-submit="input" ${disabled ? 'disabled' : ''}>回答する</button>`;
+}
+
+function renderWorkflowInteractionDetail(n) {
+  const item = n.workflowInteraction;
+  const bucket = needBucket(n, isNeedSent);
+  const stateLabel = item.resolution ? '回答済み' : item.expired ? '期限切れ'
+    : item.responded ? '送信済み' : '未対応';
+  const disabled = bucket !== 'open';
+  const comment = item.mode === 'input' ? ''
+    : '<label>コメント（任意）<textarea rows="2" data-flow-interaction-comment></textarea></label>';
+  return `<article class="need-detail-card kind-workflow-interaction" data-flow-interaction="${esc(item.interaction_id)}" data-flow-run="${esc(n.runId)}">
+    <button class="mobile-master-back" data-needs-back>一覧へ戻る</button>
+    <header class="need-detail-head"><div><div class="need-detail-badges"><span class="badge">ワークフロー確認</span>
+      <span class="status-chip ${bucket === 'open' ? 'st-blocked' : bucket === 'sent' ? 'st-review' : 'st-done'}">${stateLabel}</span></div>
+      <h2>${esc(item.prompt || 'ワークフローからの確認')}</h2></div><span class="muted">${esc(item.created_at || '')}</span></header>
+    <section class="need-facts"><h3>状況</h3><p>run <code>${esc(n.runId)}</code> の工程 <code>${esc(item.node_id || '')}</code> が回答を待っています。</p>
+      <p class="muted">対象: ${esc((item.audience || []).join(', '))} · 期限: ${esc(item.expires_at || '')}</p></section>
+    ${disabled ? '' : `<section class="need-response need-response-primary"><h3>回答</h3>${comment}${workflowInteractionControl(item, false)}</section>`}
+  </article>`;
 }
 
 function needListItemHtml(item, selected, slaHours) {
@@ -1867,6 +1922,7 @@ function needNextStepHtml(n, decision, settled) {
 
 function renderNeedDetail(p, n) {
   if (!n) return '<div class="empty need-detail-empty">この状態の項目はありません</div>';
+  if (n.workflowInteraction) return renderWorkflowInteractionDetail(n);
   // 取り込み失敗（commandFailure）があるカードは送信済み扱いにしない＝操作を出し直す
   const settled = n.decided || (!n.commandFailure && (n.commandReceipt || isNeedSent(n)));
   const chip = n.decided || (n.commandReceipt && !n.commandFailure)
@@ -2036,33 +2092,6 @@ function restoreNeedsScroll(root, snapshot, options) {
   }
 }
 
-function flowInteractionsHtml() {
-  const interactions = (state.flowRuns || []).flatMap((run) => (run.interactions || [])
-    .map((item) => ({ ...item, runId: run.runId })));
-  if (!interactions.length) return '';
-  return `<section class="flow-interaction-needs"><h2>ワークフローからの確認</h2>${interactions.map((item) => {
-    const disabled = item.expired || item.responded;
-    const stateLabel = item.expired ? '期限切れ' : item.responded ? '回答送信済み' : '未対応';
-    const comment = item.mode === 'input' ? ''
-      : '<label>コメント（任意）<textarea rows="2" data-flow-interaction-comment></textarea></label>';
-    let action;
-    if (item.mode === 'approval') {
-      action = `<div class="row"><button type="button" class="primary-inline" data-flow-interaction-submit="approved" ${disabled ? 'disabled' : ''}>承認</button>
-        <button type="button" data-flow-interaction-submit="rejected" ${disabled ? 'disabled' : ''}>却下</button></div>`;
-    } else if (item.mode === 'choice') {
-      action = `<label>回答<select data-flow-interaction-option ${disabled ? 'disabled' : ''}>${(item.options || []).map((option) =>
-        `<option value="${esc(option)}">${esc(option)}</option>`).join('')}</select></label>
-        <button type="button" class="primary-inline" data-flow-interaction-submit="choice" ${disabled ? 'disabled' : ''}>回答する</button>`;
-    } else {
-      action = `<label>回答<textarea rows="3" data-flow-interaction-text ${disabled ? 'disabled' : ''}></textarea></label>
-        <button type="button" class="primary-inline" data-flow-interaction-submit="input" ${disabled ? 'disabled' : ''}>回答する</button>`;
-    }
-    return `<article class="wf-interaction-card" data-flow-interaction="${esc(item.interaction_id)}" data-flow-run="${esc(item.runId)}">
-      <div><strong>${esc(item.prompt)}</strong><span class="status-chip st-review">${stateLabel}</span></div>
-      <small>対象: ${esc((item.audience || []).join(', '))} · 期限: ${esc(item.expires_at || '')}</small>${comment}${action}</article>`;
-  }).join('')}</section>`;
-}
-
 function renderNeeds(options) {
   const renderOptions = options || {};
   const p = state.project;
@@ -2080,32 +2109,24 @@ function renderNeeds(options) {
     if (input) state.needsDrafts[box.dataset.need] = input.value;
   }
 
-  const model = needsViewModel(p.needs, state.needsFilter, state.needsSelectedId, isNeedSent);
-  const planBatch = state.needsFilter === 'open'
-    ? planReviewBatchCandidates(model.items, isNeedSent)
-    : [];
+  const combinedNeeds = [...p.needs, ...workflowInteractionNeeds()];
+  const model = needsViewModel(combinedNeeds, state.needsSelectedId, isNeedSent);
+  const planBatch = planReviewBatchCandidates(
+    model.items.filter((item) => needBucket(item, isNeedSent) === 'open'), isNeedSent);
   state.needsSelectedId = model.selectedId;
-  const gitlabCount = (state.gitlab.repoIssues || []).length;
-  const filters = [
-    ['open', '未対応', model.counts.open],
-    ['sent', '送信済み', model.counts.sent],
-    ['done', '回答済み', model.counts.done],
-    ['gitlab', 'GitLab', gitlabCount],
-  ];
   // 未対応カードに待ち時間・SLA バッジを出す（停滞の可視化）。id → {label, level} を一度だけ計算し
   // 一覧と署名（sig）で共有する。sig にラベルを含めることで、時間経過でラベルが変わったときにだけ
   // 再描画する（毎分の無駄な再描画を避ける）。
   const now = Date.now();
   const slaHours = (state.config && state.config.projects && Number(state.config.projects.needsSlaHours)) || 24;
   const ages = {};
-  if (state.needsFilter === 'open') {
-    for (const n of model.items) ages[n.id] = needAgeInfo(n, now, slaHours);
+  for (const n of model.items) {
+    if (needBucket(n, isNeedSent) === 'open') ages[n.id] = needAgeInfo(n, now, slaHours);
   }
   const sig = JSON.stringify([
-    state.needsFilter,
     state.needsSelectedId,
     state.needsMobileDetail,
-    filters.map((x) => x[2]),
+    model.counts,
     p.projectCheck || null,
     // 要約だけの署名では、同じ長さの本文・成果物・受理状態の更新を見逃して古い表示が残る。
     // needs は小さな判断待ち集合なので、表示に使うモデル全体を署名に含める。
@@ -2116,13 +2137,6 @@ function renderNeeds(options) {
   if (el.dataset.sig === sig && el.childElementCount) return;
   el.dataset.sig = sig;
 
-  const filterButtons = filters
-    .map(([key, label, count]) =>
-      `<button class="queue-filter ${state.needsFilter === key ? 'active' : ''}"
-        data-needs-filter="${key}" aria-pressed="${state.needsFilter === key}">
-        <span>${label}</span><strong>${count}</strong>
-      </button>`)
-    .join('');
   const list = model.items
     .map((n) => {
       const selected = n.id === state.needsSelectedId;
@@ -2135,9 +2149,7 @@ function renderNeeds(options) {
     })
     .join('');
 
-  const gitlab = state.needsFilter === 'gitlab'
-    ? '<div class="queue-single"><div id="needs-gitlab"></div></div>'
-    : `<div class="master-detail needs-layout ${state.needsMobileDetail ? 'show-detail' : ''}">
+  const content = `<div class="master-detail needs-layout ${state.needsMobileDetail ? 'show-detail' : ''}">
         <aside class="master-list" aria-label="要対応一覧">
           ${list
             ? `<div class="need-list-grid" role="list">
@@ -2151,22 +2163,14 @@ function renderNeeds(options) {
         <main class="detail-panel">${renderNeedDetail(p, model.selected)}</main>
       </div>`;
 
-  el.innerHTML = `${flowInteractionsHtml()}<div class="queue-summary" aria-label="要対応の状態">${filterButtons}
+  el.innerHTML = `<div class="queue-summary" aria-label="要対応の状態">
+    <span class="status-chip st-blocked">未対応 ${model.counts.open}</span>
+    <span class="status-chip st-review">送信済み ${model.counts.sent}</span>
+    <span class="status-chip st-done">回答済み ${model.counts.done}</span>
     ${planBatch.length > 1
       ? `<button type="button" class="primary-inline" data-approve-plan-batch>計画 ${planBatch.length} 件をまとめて承認</button>`
-      : ''}</div>${gitlab}`;
+      : ''}</div>${content}`;
   restoreNeedsScroll(el, scrollSnapshot, renderOptions);
-
-  for (const btn of el.querySelectorAll('[data-needs-filter]')) {
-    btn.addEventListener('click', () => {
-      state.needsFilter = btn.dataset.needsFilter;
-      state.needsSelectedId = null;
-      state.needsMobileDetail = false;
-      el.dataset.sig = '';
-      renderNeeds({ resetAll: true });
-      if (state.needsFilter === 'gitlab') renderGitLab();
-    });
-  }
   const batchApprove = el.querySelector('[data-approve-plan-batch]');
   if (batchApprove) {
     batchApprove.addEventListener('click', () => approvePlanReviewBatch(planBatch, batchApprove));
@@ -2200,7 +2204,6 @@ function renderNeeds(options) {
   fillTaskFlowSelect(el.querySelector('.need-actions .need-flow'))
     .catch((err) => toast(String((err && err.message) || err)));
   bindNeedDetail(el);
-  if (state.needsFilter === 'gitlab') renderGitLab();
 }
 
 // 決着カードの 4 択。**新しい指示は 1 つも増やさない**——4 つとも既存の操作（revise / hold /

@@ -188,6 +188,32 @@ def _sm_max_attempts(state: dict) -> int:
     return max(1, retries + 1)
 
 
+def _sm_write_success_output(*, workflow_path: str, state_id: str, state: dict,
+                             validator, files: set, cwd: str) -> str:
+    """一意な成功遷移がある単一ファイル書込の結果を機械的に作る。"""
+    rule = str(validator or "")
+    if not rule.startswith("startswith:") or len(files) != 1:
+        return ""
+    prefixes = [value.strip() for value in rule[len("startswith:"):].split(",")]
+    keys = {"last_output"}
+    if _sm_scalar(state.get("output_key")):
+        keys.add(_sm_scalar(state.get("output_key")))
+    successful = set()
+    workflow = _sm_load_workflow_dict(workflow_path)
+    for transition in workflow.get("transitions", []):
+        if not isinstance(transition, dict) or transition.get("from") != state_id:
+            continue
+        if not _sm_terminal_status(transition.get("to"), "")["ok"]:
+            continue
+        clauses = {part.strip() for part in str(transition.get("condition_rule") or "").split(";")}
+        successful.update(prefix for prefix in prefixes
+                          if any(f"startswith:{key}:{prefix}" in clauses for key in keys))
+    if len(successful) != 1:
+        return ""  # 分類など複数の正常遷移はモデルの判断を捏造しない。
+    file = next(iter(files))
+    return f"{successful.pop()}\npath: {os.path.relpath(file, cwd)}"
+
+
 def _sm_execute_action(*, workflow_path: str, state_id: str, state: dict, context: dict,
                        cwd: str, agent: dict, log_file: str, touched: set) -> str:
     action = _sm_workflow_action(workflow_path, state_id, state)
@@ -354,7 +380,27 @@ def _sm_execute_action(*, workflow_path: str, state_id: str, state: dict, contex
                             pass
                     evidence.update(candidates)
                     touched.update(candidates)
+                    _sm_append_log(log_file, {
+                        "event": "write_completed", "state": state_id,
+                        "paths": sorted(candidates), "contractSource": "editor",
+                    })
                     return contract
+                machine_contract = _sm_write_success_output(
+                    workflow_path=workflow_path, state_id=state_id, state=state,
+                    validator=validator, files=candidates, cwd=cwd)
+                if machine_contract:
+                    for backup in backups.values():
+                        try:
+                            os.unlink(backup)
+                        except OSError:
+                            pass
+                    evidence.update(candidates)
+                    touched.update(candidates)
+                    _sm_append_log(log_file, {
+                        "event": "write_completed", "state": state_id,
+                        "paths": sorted(candidates), "contractSource": "machine",
+                    })
+                    return machine_contract
                 for file, backup in backups.items():
                     os.replace(backup, file)
                 break

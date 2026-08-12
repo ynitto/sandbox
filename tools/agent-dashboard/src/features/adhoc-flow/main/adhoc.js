@@ -22,12 +22,14 @@ const exec = require('../../routines/main/exec');
 const flow = require('../../agent-project/main/flow');
 const tuning = require('../../orchestration/main/tuning');
 const profiles = require('../../orchestration/main/profiles');
+const agents = require('../../orchestration/main/agents');
 const control = require('../../orchestration/main/control');
 const flowTiers = require('../../orchestration/main/flow-tiers');
 
 const SUBMITTER = 'agent-dashboard-adhoc';
 const NODE_KINDS = ['work', 'generate', 'classify', 'synthesize', 'verify', 'filter', 'judge',
   'reduce', 'split', 'map', 'human', 'extract', 'retrieve'];
+const EXECUTION_ROLES = ['planner', 'evaluator', 'worker', 'verify'];
 
 function cfgOf(config) {
   return (config && config.adhocFlow) || {};
@@ -312,6 +314,52 @@ function tierNames(tiers) {
   return tiers.map((tier) => flowTiers.TIER_LABELS[tier] || tier).join('・');
 }
 
+function normalizeExecutionOverrides(config, raw) {
+  if (!raw || typeof raw !== 'object' || Number(raw.version) !== 1) return null;
+  const inventory = agents.list(config);
+  const available = new Set([
+    ...inventory.builtins,
+    ...inventory.dropins.filter((item) => !item.shadowed && !(item.errors || []).length)
+      .map((item) => item.name),
+  ]);
+  const catalog = flowTiers.catalog();
+  const out = { version: 1, roles: {}, kinds: {} };
+  const add = (group, key, value, allowed) => {
+    if (!value || typeof value !== 'object') return;
+    const tier = String(value.tier || '').trim();
+    if (tier && tier !== 'auto' && flowTiers.isKnownTier(tier) && !allowed.includes(tier)) {
+      throw new Error(`${group === 'kinds' ? '機能' : '役割'}「${key}」は実行レベル「${
+        flowTiers.TIER_LABELS[tier] || tier}」に任せられません`);
+    }
+    const candidate = tier && tier !== 'auto' ? profiles.resolveTier(config, tier) : null;
+    if (tier && tier !== 'auto' && (!candidate || !candidate.agent_cli)) {
+      throw new Error(`tier「${tier}」で実行できるエージェントがありません`);
+    }
+    const explicitAgent = String(value.agent_cli || '').trim();
+    const agentCli = explicitAgent || String((candidate && candidate.agent_cli) || '').trim();
+    if (agentCli && !available.has(agentCli)) throw new Error(`エージェント「${agentCli}」は利用できません`);
+    const model = String(value.model || (!explicitAgent || explicitAgent === (candidate && candidate.agent_cli)
+      ? (candidate && candidate.model) : '') || '').trim();
+    if (!tier && !agentCli && !model) return;
+    out[group][key] = {
+      ...(tier && tier !== 'auto' ? { tier } : {}),
+      ...(agentCli ? { agent_cli: agentCli } : {}),
+      ...(model ? { model } : {}),
+      source: group === 'kinds' ? 'run-kind' : 'run-role',
+      pinned: true,
+    };
+  };
+  for (const role of EXECUTION_ROLES) {
+    const spec = catalog.roles[role] || { tiers: flowTiers.TIER_ORDER };
+    add('roles', role, raw.roles && raw.roles[role], spec.tiers);
+  }
+  for (const kind of NODE_KINDS.filter((item) => item !== 'human')) {
+    const spec = catalog.kinds[kind] || { tiers: flowTiers.TIER_ORDER };
+    add('kinds', kind, raw.kinds && raw.kinds[kind], spec.tiers);
+  }
+  return Object.keys(out.roles).length || Object.keys(out.kinds).length ? out : null;
+}
+
 function planFromWorkflow(config, workflow) {
   const clean = normalizeWorkflow(workflow);
   const candidates = new Map();
@@ -559,7 +607,7 @@ function buildLaunchLine(config, { runId, busDir, tuningDir, agentCli, model, pl
     + `${env}nohup ${cmd} ${flags} >> "$LOGDIR/${runId}.log" 2>&1 & echo launched:$!`;
 }
 
-function submit(config, { request, preset, cwd, selection } = {}) {
+function submit(config, { request, preset, cwd, selection, executionOverrides } = {}) {
   const req = String(request || '').trim();
   if (!req) throw new Error('要求テキストは必須です');
   const p = preset ? normalizePreset(preset) : null;
@@ -584,6 +632,8 @@ function submit(config, { request, preset, cwd, selection } = {}) {
   }
   if (snapshot.type === 'pattern') rec.pattern = snapshot.pattern;
   if (plan) rec.plan = plan;
+  const execution = normalizeExecutionOverrides(config, executionOverrides);
+  if (execution) rec.execution_overrides = execution;
   writeJsonAtomic(path.join(busDir, 'inbox', `${runId}.json`), rec);
 
   const methods = methodsSnapshot(config, p ? p.methods : snapshot.methods);
@@ -643,6 +693,32 @@ function readInbox(busDir, runId) {
   }
 }
 
+function sweepExpiredRuns(config, nowMs = Date.now()) {
+  const days = Math.max(1, Number(cfgOf(config).retentionDays) || 30);
+  const cutoff = nowMs - days * 86400000;
+  const busDir = resolveBusDir(config);
+  const runsDir = path.join(busDir, 'runs');
+  const removed = [];
+  for (const runId of fs.existsSync(runsDir) ? fs.readdirSync(runsDir) : []) {
+    if (path.basename(runId) !== runId) continue;
+    const runDir = path.join(runsDir, runId);
+    const meta = (() => {
+      try { return JSON.parse(fs.readFileSync(path.join(runDir, 'meta.json'), 'utf8')); }
+      catch { return null; }
+    })();
+    if (!meta || !['done', 'failed', 'cancelled', 'canceled'].includes(String(meta.status))) continue;
+    const updated = Date.parse(meta.updated_at || meta.created_at || '');
+    if (!Number.isFinite(updated) || updated >= cutoff) continue;
+    const current = flow.readRun(runDir);
+    if ((current.interactions || []).some((item) => !item.resolution && !item.expired)) continue;
+    fs.rmSync(runDir, { recursive: true });
+    fs.rmSync(path.join(busDir, 'inbox', `${runId}.json`), { force: true });
+    fs.rmSync(runTuningDir(config, runId), { recursive: true, force: true });
+    removed.push(runId);
+  }
+  return removed.sort();
+}
+
 // --- 昇格（S22 / M1 後半） ----------------------------------------------------
 // run の成果を agent-project の正式なタスクへ載せ替える。書くのは既存の inbox 投函契約
 // （actions.enqueueToInbox）だけで、昇格したタスクは通常の受入基準と verify を通る。
@@ -680,6 +756,7 @@ module.exports = {
   listWorkflows,
   deleteWorkflow,
   patternCatalog,
+  normalizeExecutionOverrides,
   planFromWorkflow,
   snapshotSelection,
   gitWorkspace,
@@ -693,6 +770,7 @@ module.exports = {
   submit,
   resubmit,
   readInbox,
+  sweepExpiredRuns,
   promote,
   listProjects,
   // 読み取りはバスパーサ（agent-project/main/flow.js）をそのまま使う

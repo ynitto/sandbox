@@ -26,7 +26,7 @@ CONFIG_DEFAULTS = {
     # 置き場（引数 > 設定 > 既定。環境変数は見ない）
     "audit_dir": None,               # 既定 ~/.agents/audit（resolve_audit_dir）
     "budget_dir": None,              # 既定 ~/.agents/budget（node-budget 契約の既定位置）
-    # 源泉（空 = budget-ledger / cli-native の自動発見のみ。他は宣言時だけ読む）
+    # 源泉（空 = budget-ledger / cli-native / 対応CLI quota。他は宣言時だけ読む）
     "sources": [],
     "flow_buses": [],
     "project_roots": [],

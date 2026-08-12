@@ -76,14 +76,16 @@ function safeList(dir) {
   }
 }
 
-function readOpenInteractions(runDir) {
+function readInteractions(runDir) {
   const root = path.join(runDir, 'interactions');
   return safeList(root).flatMap((interactionId) => {
     const dir = path.join(root, interactionId);
     const request = readJson(path.join(dir, 'request.json'));
-    if (!request || readJson(path.join(dir, 'resolution.json'))) return [];
+    if (!request) return [];
+    const resolution = readJson(path.join(dir, 'resolution.json'));
     return [{
       ...request,
+      resolution,
       expired: Number.isFinite(Date.parse(request.expires_at)) && Date.parse(request.expires_at) <= Date.now(),
       responded: safeList(path.join(dir, 'responses')).some((name) => name.endsWith('.json')),
     }];
@@ -242,7 +244,7 @@ function readRun(runDir) {
   const now = Date.now() / 1000;
   const runStatus = String(meta.status || 'unknown');
   const runTerminal = TERMINAL.has(runStatus);
-  const interactions = readOpenInteractions(runDir);
+  const interactions = readInteractions(runDir);
   const interactionByNode = new Map(interactions.map((item) => [String(item.node_id), item]));
 
   const nodes = {};

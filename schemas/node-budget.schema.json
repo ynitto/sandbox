@@ -148,6 +148,9 @@
           "description": "quota 観測（`event: quota`）の細分。exhausted=累積枠の枯渇（期間が変わるまで戻らない）/ rate_limit=時限枠（reset_at 以降に戻る）。読み手（管理面）は period 窓の最新行だけを見て候補から外すので、**この行を消す書き手は要らない**（期間が変わればウィンドウから落ちる）"
         },
         "reset_at": {"type": "string", "description": "quota_kind=rate_limit の復帰予定（ISO8601 UTC）。CLI のメッセージから取れなかったときは省略し、読み手が ts + 既定 TTL で失効させる"},
+        "quota_used_percent": {"type": "number", "minimum": 0, "maximum": 100, "description": "event=quota_snapshot でCLIが報告した枠の使用率"},
+        "quota_source": {"type": "string", "description": "quota snapshot の取得元（例: claude-usage / codex-app-server / copilot-usage / kiro-acp-usage）"},
+        "quota_window_minutes": {"type": "number", "minimum": 0, "description": "CLIが報告したquota窓の長さ（分）"},
         "methods": {
           "type": "array", "items": {"type": "string"}, "uniqueItems": true,
           "description": "この実行のプロンプトへ実際に適用した手法 id（agent-tuning の methods）。空なら書かない"

@@ -136,8 +136,8 @@ test('利用量テーブルは実測と推定を別の列で示し合算しな�
 });
 
 test('利用量テーブルは記録が無いとき収集への導線を示す', () => {
-  assert.match(ui.usageTableHtml({ rows: [] }), /今すぐ収集/);
-  assert.match(ui.usageTableHtml(null), /今すぐ収集/);
+  assert.match(ui.usageTableHtml({ rows: [] }), /利用状況を収集/);
+  assert.match(ui.usageTableHtml(null), /利用状況を収集/);
 });
 
 test('利用状況タブを開くと初回取得のため表示通知を送る', () => {
@@ -273,10 +273,11 @@ test('エージェント別テーブルは割合の大きい順に並べ、費�
   }));
   assert.ok(html.indexOf('claude') < html.indexOf('ollama'), '割合の大きい順');
   assert.match(html, /取得できず/);               // トークン不明でも時間と件数は数える
+  assert.match(html, /CLI取得非対応/);
   assert.doesNotMatch(html, /概算費用|\$0\.25|上限未設定|<th>状態<\/th>/);
 });
 
-test('エージェント別テーブルは上限・期限と tier ごとのモデル候補を示す', () => {
+test('エージェント別テーブルは利用量の右にクォータを置き、tier切替戦略を詳細に分ける', () => {
   const html = withState({
     orchestration: {
       budget: {
@@ -292,17 +293,88 @@ test('エージェント別テーブルは上限・期限と tier ごとのモ�
     },
   }, () => ui.agentTableHtml({
     period: 'month', totals: { total: 3300 },
-    agentLimits: [{ agent_cli: 'claude', max_tokens: 5000, reset_at: '2099-08-12T01:00:00Z' }],
+    agentLimits: [{ agent_cli: 'claude', max_tokens: 5000, quota_supported: false,
+      reset_at: '2099-08-12T01:00:00Z' }],
     agents: [{ group: 'claude', runs: 2, measured_in: 3000, measured_out: 300,
                estimated_tokens: 0 }],
   }));
-  assert.match(html, /設定上限/);
+  assert.match(html, /手動上限/);
   assert.match(html, />5k</);
   assert.match(html, /title="[^"]*2099-08-12T01:00:00Z[^"]*"/);
   assert.doesNotMatch(html, />2099-08-12T01:00:00Z</);
   assert.match(html, /一時制限中/);
+  assert.match(html, /<th>利用量<\/th><th>クォータ<\/th><th>手動上限<\/th>/);
+  assert.doesNotMatch(html, /<th>復帰予定<\/th>/);
+  assert.match(html, /<summary>tier別の切替戦略<\/summary>/);
   assert.match(html, /高性能: opus \/ 標準: sonnet/);
-  assert.match(html, /実行制御のエージェント別トークン上限/);
+  assert.doesNotMatch(html, /<th>実行時間<\/th>|<th>LLM呼び出し<\/th>/);
+});
+
+test('エージェント別上限は期間とCLIごとに設定できる', () => {
+  const html = withState({
+    orchestration: {
+      budget: { config: { period: 'day', allocation: { agents: { claude: { max_tokens: 5000 } } } } },
+      profiles: { tiers: { large: { candidates: [{ agent_cli: 'claude', model: 'opus' }] } } },
+    },
+  }, () => ui.agentLimitSettingsHtml(SUMMARY));
+  assert.match(html, /エージェント別上限を設定/);
+  assert.match(html, /id="audit-agent-limit-period"/);
+  assert.match(html, /data-agent-cli="claude"/);
+  assert.match(html, /value="5000"/);
+  assert.match(html, /CLIから取得するquotaとは別/);
+  assert.match(html, /id="audit-agent-limits-save"/);
+});
+
+test('エージェント別上限は設定タブへ置き、利用量パネルには置かない', () => {
+  const settings = withState({ orchestration: { agents: { builtins: ['codex'], dropins: [] } } },
+    () => ui.settingsPanelHtml());
+  const usagePanel = withState({}, () => ui.panelHtml());
+  assert.match(settings, /エージェント別上限を設定/);
+  assert.doesNotMatch(usagePanel, /エージェント別上限を設定/);
+});
+
+test('CLI取得したクォータは使用率と復旧日時を棒の上に表示する', () => {
+  const html = withState({}, () => ui.agentTableHtml({
+    period: 'day', totals: { total: 100 },
+    agents: [{ group: 'codex', measured_in: 100, measured_out: 0, estimated_tokens: 0 }],
+    agentLimits: [{ agent_cli: 'codex', quota_supported: true, quota_used_percent: 33,
+      quota_source: 'codex-app-server', observed_at: '2099-08-11T01:00:00Z',
+      reset_at: '2099-08-12T01:00:00Z' }],
+  }));
+  assert.match(html, /33% 使用/);
+  assert.match(html, /復旧日時 2099\/8\/12/);
+  assert.match(html, /role="progressbar"/);
+  assert.match(html, /aria-valuenow="33"/);
+  assert.match(html, /style="width:33%"/);
+  assert.match(html, /orch-quota-safe/);
+  assert.match(html, /Codex CLIから取得/);
+  assert.doesNotMatch(html, /quota未観測/);
+});
+
+test('クォータ棒は利用率70%からオレンジ、90%から赤になる', () => {
+  const html = withState({}, () => ui.agentTableHtml({
+    period: 'day', totals: { total: 3 },
+    agents: [
+      { group: 'claude', measured_in: 1 },
+      { group: 'copilot', measured_in: 1 },
+      { group: 'kiro', measured_in: 1 },
+    ],
+    agentLimits: [
+      { agent_cli: 'claude', quota_supported: true, quota_used_percent: 69, observed_at: '2099-01-01' },
+      { agent_cli: 'copilot', quota_supported: true, quota_used_percent: 70, observed_at: '2099-01-01' },
+      { agent_cli: 'kiro', quota_supported: true, quota_used_percent: 90, observed_at: '2099-01-01' },
+    ],
+  }));
+  assert.match(html, /orch-quota-safe[^>]*style="width:69%"/);
+  assert.match(html, /orch-quota-warn[^>]*style="width:70%"/);
+  assert.match(html, /orch-quota-danger[^>]*style="width:90%"/);
+});
+
+test('収集ボタンは対応CLIからquotaを収集することを明記する', () => {
+  const html = withState({}, () => ui.panelHtml());
+  assert.match(html, />利用状況を収集<\/button>/);
+  assert.match(html, /Claude・Codex・Copilot・Kiro/);
+  assert.match(html, /組み込みusage\/statusから取得/);
 });
 
 test('利用状況の合計から概算費用を除く', () => {

@@ -59,7 +59,7 @@ def aggregate_agent_limits(args, store: Store, rows: "list[dict]", *, rows_perio
     for path in sorted(glob.glob(os.path.join(glob.escape(ledger_dir), "*.jsonl"))):
         records.extend(iter_jsonl(path))
     for rec in records:
-        if rec.get("event") != "quota":
+        if rec.get("event") not in ("quota", "quota_snapshot"):
             continue
         cli = str(rec.get("agent_cli") or "")
         ts = parse_iso(rec.get("ts"))
@@ -74,7 +74,7 @@ def aggregate_agent_limits(args, store: Store, rows: "list[dict]", *, rows_perio
         (row.get("measured_in") or 0) + (row.get("measured_out") or 0)
         + (row.get("estimated_tokens") or 0)) for row in rows}
     out = []
-    for cli in sorted(set(agents) | set(latest)):
+    for cli in sorted(set(agents) | set(latest) | set(used)):
         spec = agents.get(cli) if isinstance(agents.get(cli), dict) else {}
         try:
             max_tokens = max(0, int(spec.get("max_tokens") or 0))
@@ -82,6 +82,12 @@ def aggregate_agent_limits(args, store: Store, rows: "list[dict]", *, rows_perio
             max_tokens = 0
         event = latest.get(cli, (None, {}))[1]
         kind = str(event.get("quota_kind") or "")
+        try:
+            quota_used_percent = max(0, min(100, int(event.get("quota_used_percent")))) \
+                if event.get("quota_used_percent") is not None else None
+        except (TypeError, ValueError):
+            quota_used_percent = None
+        quota_source = str(event.get("quota_source") or "")
         reset_at = str(event.get("reset_at") or "")
         reset_estimated = False
         reset_source = "observed" if reset_at else ""
@@ -108,6 +114,9 @@ def aggregate_agent_limits(args, store: Store, rows: "list[dict]", *, rows_perio
             "used_tokens": used_tokens,
             "remaining_tokens": max(0, max_tokens - used_tokens) if max_tokens else None,
             "quota_kind": kind or None, "observed_at": event.get("ts") or None,
+            "quota_used_percent": quota_used_percent,
+            "quota_source": quota_source or None,
+            "quota_supported": cli in ("claude", "codex", "copilot", "kiro") or bool(quota_source),
             "reset_at": reset_at or None, "reset_estimated": reset_estimated,
             "reset_source": reset_source or None,
             "blocked": blocked,

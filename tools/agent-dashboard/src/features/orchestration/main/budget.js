@@ -196,7 +196,8 @@ function quotaAgentsFrom(records) {
   const out = {};
   for (const rec of records) {
     const kind = String(rec.quota_kind || '');
-    if (kind !== 'exhausted' && kind !== 'rate_limit') continue;   // 他の観測種別（昇格など）は無関係
+    const snapshot = rec.event === 'quota_snapshot';
+    if (!snapshot && kind !== 'exhausted' && kind !== 'rate_limit') continue;
     const cli = String(rec.agent_cli || '');
     if (!cli) continue;
     const observedMs = Date.parse(rec.ts || '');
@@ -205,10 +206,13 @@ function quotaAgentsFrom(records) {
     if (prev && Number.isFinite(prev._observedMs)
         && Number.isFinite(observedMs) && observedMs < prev._observedMs) continue;
     out[cli] = {
-      quota_kind: kind,
       observed_at: String(rec.ts || ''),
       _observedMs: observedMs,
+      ...(kind === 'exhausted' || kind === 'rate_limit' ? { quota_kind: kind } : {}),
       ...(rec.reset_at ? { reset_at: String(rec.reset_at) } : {}),
+      ...(rec.quota_used_percent !== undefined
+        ? { quota_used_percent: Math.max(0, Math.min(100, Number(rec.quota_used_percent) || 0)) } : {}),
+      ...(rec.quota_source ? { quota_source: String(rec.quota_source) } : {}),
     };
   }
   for (const entry of Object.values(out)) {
@@ -418,6 +422,20 @@ function normalizeAllocationPatch(base, patch) {
       baseWl[w] = cur;
     }
     out.workloads = baseWl;
+  }
+  if (patch.agents !== undefined) {
+    if (!isPlainObject(patch.agents)) throw new Error('allocation.agents はオブジェクトで指定してください');
+    const baseAgents = isPlainObject(out.agents) ? { ...out.agents } : {};
+    for (const [agent, spec] of Object.entries(patch.agents)) {
+      if (!agent) throw new Error('allocation.agents の名前は空にできません');
+      if (!isPlainObject(spec)) throw new Error(`allocation.agents.${agent} はオブジェクトで指定してください`);
+      const cur = isPlainObject(baseAgents[agent]) ? { ...baseAgents[agent] } : {};
+      if (spec.max_tokens !== undefined) {
+        cur.max_tokens = validateNonNeg(spec.max_tokens, `エージェント上限（${agent}）`);
+      }
+      baseAgents[agent] = cur;
+    }
+    out.agents = baseAgents;
   }
   return out;
 }

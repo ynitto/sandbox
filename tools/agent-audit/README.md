@@ -1,7 +1,7 @@
 # agent-audit — 実行証跡・セッションログの収集と知見蒸留
 
-agent-project / agent-flow / agent-amigos / agent-loop の実行証跡と、エージェント CLI
-自身のセッションログを**読み取り専用**で収集・正規化し、
+agent-project / agent-flow / agent-amigos / agent-loop の実行証跡、エージェント CLI
+自身のセッションログ、対応CLIのquotaを収集・正規化し、
 
 - **トークン使用量の集計**（実測と推定を別掲）
 - **実行品質の集計**（失敗クラス・リトライ・verify）
@@ -26,7 +26,7 @@ bash tools/agent-tools/install.sh --only agent-audit
 ## 使い方
 
 ```bash
-agent-audit collect                  # 源泉の増分収集（決定的）
+agent-audit collect                  # 源泉 + 対応CLI quotaの増分収集（LLM不使用）
 agent-audit usage --period month --by agent_cli
 agent-audit stats                    # 実行品質 + LLM判断と決定的ルールの一致率
 agent-audit report                   # Markdown レポート（usage + quality + insights）
@@ -48,7 +48,8 @@ agent-audit doctor                   # 源泉の到達性・clean 宣言の点�
 ```
 
 `usage --by agent_cli` は利用量に加え、node-budget で宣言した CLI 別トークン上限と、
-quota 観測から得た更新・復帰時刻も表示する。プラン固有の公称上限は推測せず、未設定は未設定のまま出す。
+quota 観測から得た使用率・復帰時刻も表示する。Claude は `/usage`、Codex は
+app-server、Copilot は `/usage`、Kiro は ACP の組み込み usage から取得する（LLM 不使用）。
 
 定期実行は同梱 `audit-calibrate-hook.py` が collect → calibrate → extract → distill --review →
 tune --apply を順に実行する。
@@ -75,12 +76,14 @@ agents:
 |---|---|---|
 | node-budget 台帳 | `~/.agents/budget/ledger/*.jsonl` | 消費の一次事実（秒・トークン）と適用手法・trial |
 | CLI セッション | `agents/<name>.json` の `session_log` 宣言 | 実測トークン・turn 数・transcript（`session_log.clean` でノイズ除去。§4.4） |
+| CLI quota | Claude `/usage` / Codex app-server / Copilot `/usage` / Kiro ACP | 使用率・復帰時刻。到達状態はnode-budget台帳へ観測として共有 |
 | agent-flow バス | 設定 `flow_buses` / `project_roots` | run の結果・失敗クラス・verify・読込割付・依存digest削減量・モデル昇格・planner判断照合・適用手法・trial |
 | agent-project | 設定 `project_roots` の `run-log.jsonl` | run 単位の実績・コスト |
 | agent-amigos バス | 設定 `amigos_buses` | ターン数・実行秒 |
 | agent-loop ログ | 設定 `loop_logs` | エラー行 |
 
-書くのは audit ディレクトリ（既定 `~/.agents/audit/`）だけ。transcript 本文は
+書くのは audit ディレクトリ（既定 `~/.agents/audit/`）と、quota観測を共有する
+node-budgetの追記専用台帳だけ。transcript 本文は
 ローカルに留まり、report / tasks の出力は資格情報の伏せ字化とパスのホーム相対化を
 必ず通る。
 

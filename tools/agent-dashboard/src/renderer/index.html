@@ -42,6 +42,11 @@
           </div>
           <div id="project-list"></div>
         </section>
+        <section class="nav-group" data-feature="adhoc-flow" data-area-list="workflows"
+          aria-labelledby="workflow-runs-group-title">
+          <div class="nav-group-header"><h2 id="workflow-runs-group-title">実行したワークフロー</h2></div>
+          <div id="workflow-run-list"></div>
+        </section>
         <!-- 定常業務の対象フォルダ。プロジェクトと同じ「選ぶと右ペインがその対象になる」列。 -->
         <section class="nav-group" data-feature="cowork" data-area-list="routines"
           aria-labelledby="routines-group-title">
@@ -109,6 +114,8 @@
           id="tab-btn-participation-status">参加の状況</button>
         <!-- 領域名（利用状況）はタブで繰り返さない。中身の名前だけを出す。 -->
         <button class="tab" data-tab="workflow-run" data-area="workflows" data-feature="adhoc-flow" id="tab-btn-workflow-run">実行</button>
+        <button class="tab" data-tab="workflow-needs" data-area="workflows" data-feature="adhoc-flow" id="tab-btn-workflow-needs">要対応 <span id="workflow-needs-badge" class="badge hidden"></span></button>
+        <button class="tab" data-tab="workflow-edit" data-area="workflows" data-feature="adhoc-flow" id="tab-btn-workflow-edit">編集</button>
         <button class="tab" data-tab="workflow-settings" data-area="workflows" data-feature="adhoc-flow" id="tab-btn-workflow-settings">設定</button>
         <button class="tab" data-tab="usage" data-area="usage" data-feature="agent-audit" id="tab-btn-usage">利用量</button>
         <button class="tab" data-tab="usage-settings" data-area="usage" data-feature="agent-audit"
@@ -135,6 +142,8 @@
         <div id="tab-participation" class="tabpane hidden" data-feature="participation" hidden></div>
         <div id="tab-participation-status" class="tabpane" data-feature="participation"></div>
         <div id="tab-workflow-run" class="tabpane" data-feature="adhoc-flow"></div>
+        <div id="tab-workflow-needs" class="tabpane" data-feature="adhoc-flow"></div>
+        <div id="tab-workflow-edit" class="tabpane" data-feature="adhoc-flow"></div>
         <div id="tab-workflow-settings" class="tabpane" data-feature="adhoc-flow"></div>
         <div id="tab-usage" class="tabpane" data-feature="agent-audit"></div>
         <div id="tab-usage-settings" class="tabpane" data-feature="agent-audit"></div>

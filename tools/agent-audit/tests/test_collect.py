@@ -3,8 +3,70 @@ from __future__ import annotations
 import json
 import os
 import unittest
+from datetime import datetime, timezone
 
 from _shared import AuditTestCase, claude_session_jsonl, collect, ledger_row
+
+
+class CliQuotaCollectTests(AuditTestCase):
+    def test_codex_app_server_snapshot_is_collected_and_written_to_budget_ledger(self):
+        response = {"rateLimits": {
+            "limitId": "codex",
+            "primary": {"usedPercent": 33, "windowDurationMins": 10080,
+                        "resetsAt": 1787011744},
+            "rateLimitReachedType": None,
+        }}
+
+        st = self.make_store()
+        args = self.make_args()
+        self.assertEqual(collect.collect_codex_quota(args, st, query=lambda: response), 1)
+        self.assertEqual(collect.collect_codex_quota(args, st, query=lambda: response), 0, "同じsnapshotは冪等")
+        event = next(r for r in st.iter_records() if r.get("event") == "quota_snapshot")
+        self.assertEqual(event["quota_used_percent"], 33)
+        self.assertEqual(event["reset_at"], "2026-08-18T00:09:04Z")
+        ledger = list(__import__("agent_audit.util", fromlist=["iter_jsonl"]).iter_jsonl(
+            os.path.join(self.budget_dir, "ledger", event["ts"][:10].replace("-", "") + ".jsonl")))
+        self.assertEqual(len(ledger), 1)
+        self.assertEqual(ledger[0]["quota_source"], "codex-app-server")
+        self.assertNotIn("quota_kind", ledger[0], "33%は制限中ではない")
+
+    def test_codex_reached_snapshot_becomes_temporary_quota_observation(self):
+        result = {"rateLimits": {"primary": {"usedPercent": 100, "resetsAt": 1787011744},
+                                  "rateLimitReachedType": "rate_limit_reached"}}
+        st = self.make_store()
+        collect.collect_codex_quota(self.make_args(), st, query=lambda: result)
+        event = next(r for r in st.iter_records())
+        self.assertEqual(event["quota_kind"], "rate_limit")
+
+    def test_claude_copilot_and_kiro_cli_quota_are_normalized(self):
+        st = self.make_store()
+        args = self.make_args()
+        self.assertEqual(collect.collect_claude_quota(args, st, query=lambda: {
+            "five_hour": {"used_percentage": 12, "resets_at": 1786541400},
+            "seven_day": {"used_percentage": 79, "resets_at": 1786658400},
+            "Current week (Fable)": {"used_percentage": 80, "resets_at": 1786658400},
+        }), 1)
+        self.assertEqual(collect.collect_copilot_quota(
+            args, st, query=lambda: {"quota_used_percent": 8}), 1)
+        self.assertEqual(collect.collect_kiro_quota(args, st, query=lambda: {
+            "billingCycleReset": "2026-09-01",
+            "usageBreakdowns": [{"resourceType": "CREDIT", "percentage": 47}],
+        }), 1)
+        events = {r["agent_cli"]: r for r in st.iter_records()}
+        self.assertEqual((events["claude"]["quota_used_percent"],
+                          events["claude"]["reset_at"],
+                          events["claude"]["quota_source"]),
+                         (79, "2026-08-13T22:00:00Z", "claude-usage"))
+        self.assertEqual(events["copilot"]["quota_used_percent"], 8)
+        self.assertEqual(events["kiro"]["quota_used_percent"], 47)
+        self.assertTrue(events["kiro"]["reset_at"].startswith("2026-09-01T00:00:00"))
+        self.assertEqual(collect._parse_copilot_usage("Plan  18 / 200 AIC  8% used"),
+                         {"quota_used_percent": 8.0, "reset_at": ""})
+        parsed = collect._parse_claude_usage(
+            "Current week (all models)\n79% 79% used\nResets Aug 14 at 7am (Asia/Tokyo)",
+            datetime(2026, 8, 12, 12, tzinfo=timezone.utc))
+        self.assertEqual(parsed["Current week (all models)"],
+                         {"used_percentage": 79.0, "resets_at": 1786658400})
 
 
 class LedgerCollectTests(AuditTestCase):
