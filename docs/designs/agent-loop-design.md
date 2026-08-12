@@ -1,12 +1,13 @@
 # agent-loop 設計書
 
-> 最終更新: 2026-08-12（設計書として再編。判断を核に据え、設定の書き方と実装内部は下記 2 文書へ寄せた）
+> 最終更新: 2026-08-12（複数フック（`hooks`）とターン完了 hook を反映。判断を核に据え、設定の書き方と実装内部は下記 2 文書へ寄せる方針は同じ）
 > 実装: `tools/agent-loop/`（`agent_loop` パッケージ）。旧系統 `tools/kiro-loop/` は退役済み（付録 C）
 > 設定キー・契約・制約の一覧は[仕様書](../specs/agent-loop-spec.md)、
 > 設定の書き方は `tools/agent-loop/README.md`、クラス構成と処理フローは `tools/agent-loop/DESIGN.md`
 > 関連: [agent-tools 改称方針](./agent-tools-rename-design.md) ／
 > [段階的機能拡張](../plans/2026-08-08-agent-loop-phased-enhancement-design.md) ／
-> [Phase 2 詳細設計](../plans/2026-08-08-agent-loop-phase2-detailed-design.md)
+> [Phase 2 詳細設計](../plans/2026-08-08-agent-loop-phase2-detailed-design.md) ／
+> [ターン完了 hook 設計](../plans/2026-08-12-agent-loop-turn-completion-hooks-design.md)
 >
 > 本書は agent-loop の設計正典です。旧 kiro-loop 系 4 文書とその agent-loop クローン 4 件、
 > `agent-loop-slash-property-design.md` の計 9 文書を統合しています（付録 D）。
@@ -157,7 +158,7 @@ agent-loop は、YAML に書いたプロンプトを定期送信するデーモ�
 
 ## 機能 1: イベントフック（pull 型）
 
-この節はフック作者向けの契約です。スケジュール（`interval_minutes` / `cron`）が発火したタイミングで `check()` を呼び、発火してよいかの最終判断をスクリプトへ委ねます。スケジュール自体は廃止しません。
+この節はフック作者向けの契約です。スケジュール（`interval_minutes` / `cron`）が発火したタイミングで、エントリの `hooks` に並べたスクリプトの `check()` を呼び、発火してよいかの最終判断をスクリプトへ委ねます。スケジュール自体は廃止しません。
 
 ```python
 def check(config=None) -> str | dict | None:
@@ -179,21 +180,13 @@ def ack() -> None:
 
 注意点が 2 つあります。`check()` は 30 秒で scheduler 側の待機を打ち切りますが、Python thread 自体は強制終了できないので、ネットワーク呼び出しにはそれより短い timeout を設定してください。`exec_module` はモジュールのトップレベルを実行するため、副作用は `check()` の中に閉じてください。
 
-### 設定
+### 1 エントリに複数のフックを並べる
 
-```yaml
-prompts:
-  - name: "GitLab Issue ワーカー"
-    prompt: |
-      （省略可。check() が str を返した場合はそちらを優先）
-    hooks: gitlab-issue-hook
-    event_hook_fallback: false
-    interval_minutes: 5
-    enabled: true
-```
+`hooks` は文字列でも配列でも書けます。配列にしたときは、発火のたびに全部の `check()` を呼び、**プロンプトを返したフックの数だけ dispatch request を作ります**。1 件も返さなければ、そのエントリは今回 idle として次回時刻だけを進めます。重複排除のキーはフック単位なので、隣のフックが同じ本文を返しても互いを消しません。
 
-`hooks` は文字列または配列で指定でき、省略時は従来どおりYAMLの `prompt` をそのまま送信します。
-ファイル名だけならinstall prefixの `hooks/` を探索します。個別設定は `hook_config` で渡します。
+まとめて 1 本のプロンプトにしない理由は、フックごとに `ack()` の相手が違うからです。連結してしまうと、片方のイベントだけ処理できたときに、もう片方まで既読になります。
+
+パスの代わりに `gitlab-issue-hook` のような名前だけを書くと、実行ファイルと同じ prefix の `hooks/` を探します（`.py` は省略可）。書き方の詳細は[仕様書](../specs/agent-loop-spec.md)にあります。
 
 ---
 
@@ -256,13 +249,9 @@ prompts:
 
 ### セキュリティと耐久性
 
-bind の既定は `127.0.0.1` です。SaaS からの受信にはトンネルかリバースプロキシが要り、公開と TLS 終端は前段に任せる割り切りにしています。共有シークレットの比較は `hmac.compare_digest`、HMAC 署名方式はフックが `ctx.raw` から再計算して検証します。ボディサイズ上限（既定 1MB）で簡易な DoS 緩和を行い、ヘルスチェックは `GET /hooks/_health` です。起動は `main()` で `webhook.enabled` かつ `port > 0` のときだけ行い、bind 失敗は WARNING で本体を継続します。
+bind の既定は `127.0.0.1` です。SaaS からの受信にはトンネルかリバースプロキシが要り、公開と TLS 終端は前段に任せる割り切りにしています。共有シークレットの比較は `hmac.compare_digest`、HMAC 署名方式はフックが `ctx.raw` から再計算して検証します。ボディサイズ上限（既定 1MB）で簡易な DoS 緩和を行い、ヘルスチェックは `GET /hooks/_health` です。起動は `main()` で `webhook.enabled` かつ `port > 0` のときだけ行い、bind 失敗は WARNING で本体を継続します。停止は `_cleanup` と `_signal_handler` から `stop()`（`shutdown()` + `server_close()`）を呼びます。
 
-### ライフサイクルと耐久性
-
-停止は `_cleanup` / `_signal_handler` から `stop()`（`shutdown()` + `server_close()`）を呼びます。
-
-キューはインメモリのみで、再起動・クラッシュで未処理 webhook は失われます。送信元は `202` を受けた時点で再送しないため実質 **at-most-once** です。取りこぼせないイベントは hooks（ポーリング）併用で冪等に取りに行く運用を推奨します。
+キューはインメモリだけなので、再起動やクラッシュで未処理 webhook は失われます。送信元は 202 を受けた時点で再送しないため、実質 at-most-once です。取りこぼせないイベントは `hooks` のポーリング併用で冪等に取りに行ってください。
 
 ### 移植コントラクト（フォーク向け）
 
@@ -405,24 +394,24 @@ agent-loop は、送信してよいかと処理が終わったかをペイン画
 
 送信テキストの作法も定義に従います。fresh_context が送るコマンドは `interactive.clear_command`（既定 `/clear`、codex は `/new`）で、空文字はクリア手段なしの宣言として警告のうえクリアだけスキップします。`slash` とセッション開始コマンドの行頭 `/` は、送信直前に定義の `skill_command_prefix` へ差し替えます（codex は `$name`、既定 `/` の CLI は素通し）。
 
-### managed interactive CLIのターン完了hook
+### 完了は画面推定より CLI 自身の通知を先に見る
 
-`interactive.turn_completion`を宣言したKiro classic / Claude / Codex / Copilot / OpenCodeは、
-agent-loopが起動したpaneに限ってsession-local lifecycle hookを加算します。hookはsemaphoreを直接
-解放せず、token付きfile mailboxへ通知し、SlotMonitorが画面判定より先にclaimして既存の
-complete/failure callbackへ渡します。欠落・拒否時は画面監視へfallbackします。
+画面から busy と ready を読む方法は、表示文言や TUI 構造が変わると誤判定します。そこで、対応を申告した CLI では**その CLI 自身が出すターン完了イベントを先に見て**、取れないときだけ従来の画面監視へ戻します。詳細は[ターン完了 hook 設計](../plans/2026-08-12-agent-loop-turn-completion-hooks-design.md)が正典です。
 
-Kiroはprivate `KIRO_HOME`へ設定・resourcesをwhitelist snapshotし、Claude/Copilotは
-`--plugin-dir`、Codexはone-off `notify` multiplexer、OpenCodeはpluginだけの
-`OPENCODE_CONFIG_DIR`を使います。global/project設定は変更せず、他CLIのagent-loop外実行には
-影響しません。headless、external pane、Cursor、Kiro v3は対象外です。
+新しい通信路は作りません。CLI の hook は `agent-loop hook-event` を呼んでインスタンス単位のファイル mailbox へ書くだけで、SlotMonitor が画面判定より先にそれを claim し、既存の完了・失敗コールバックへ合流させます。hook 自身はセマフォを解放しません。ネイティブ通知と画面監視が競合しても、追跡レコードを先に取った側だけがコールバックを 1 回実行します。
+
+注入するのは **agent-loop が起動した pane だけ**です。宣言は定義の `interactive.turn_completion`（`kiro` / `claude` / `codex` / `copilot` / `opencode`）で、方法は CLI ごとに違います。Kiro classic は private な `KIRO_HOME` へ設定と資源をホワイトリスト複製、Claude と Copilot は `--plugin-dir` の追加、Codex は既存 `notify` を多重化する一度きりの設定、OpenCode は plugin だけを置いた `OPENCODE_CONFIG_DIR` です。利用者の global / project 設定も、agent-loop の外で起動した CLI も触りません。
+
+`interactive.turn_completion` を持たない定義、資産の欠落、Kiro v3 のような複製できない形は、いずれも画面監視へ戻ります。ここを明示エラーにしないのは、完了検知が落ちても定期駆動そのものは従来の方法で回るからです。
 
 ### 制約
-- `startup_timeout` は従来どおり agent-loop の設定を正とし、定義の `ready_timeout_sec` は他の消費者（対話診断等）向けのままです。
-- `external_panes[].agent_cli` は外部 pane の ready / busy 判定だけを選び、起動 CLI は変更しません。
-- **headless 経路では対話前提の機能を黙って劣化させません**。fresh_context のコンテキスト破棄と `slash` は WARNING の上でスキップし、ralph 多段と external target は起動時に明示エラーで断ります。
-- **証跡ゲートは機械層だけが動いています**。宣言されたファイルの実在・touched・変化は決定的に照合しますが、パスを含まない自然文の基準を検証エージェントが証跡付きで判定する層は未実装です。そのため受入条件を書いても、機械が確かめているのは「成果物が出来て変わったか」までです。
-- 実行ログは JSONL（`~/.agents/runs/headless/`）へ出ますが、それを追う tmux ウィンドウの自動起動は未実装で、様子を見るにはログを人が開く必要があります。
+
+- `startup_timeout` は従来どおり agent-loop の設定を正とし、定義の `ready_timeout_sec` は他の消費者（対話診断など）向けのままです
+- `external_panes[].agent_cli` は外部 pane の ready / busy 判定だけを選び、起動 CLI は変更しません
+- ターン完了 hook は headless、external pane、手動で起動した CLI、Cursor、Kiro v3 には注入しません。headless は subprocess の exit code が完了検知なので、そもそも要りません
+- headless 経路では対話前提の機能を黙って劣化させません。fresh_context のコンテキスト破棄と `slash` は WARNING のうえスキップし、ralph 多段と external target は起動時に明示エラーで断ります
+- 証跡ゲートは機械層だけが動いています。宣言されたファイルの実在と touched と変化は決定的に照合しますが、パスを含まない自然文の基準を検証エージェントが証跡付きで判定する層は未実装です
+- 実行ログは JSONL（`~/.agents/runs/headless/`）へ出ますが、それを追う tmux ウィンドウの自動起動は未実装で、様子を見るにはログを人が開く必要があります
 
 ---
 
@@ -434,7 +423,7 @@ Kiroはprivate `KIRO_HOME`へ設定・resourcesをwhitelist snapshotし、Claude
 
 送信順は、fresh context の clear command、`slash` を宣言順に 1 件ずつ、`prompt` 本文、の順です。各コマンドは本文へ連結せず独立入力とし、失敗した時点で後続コマンドと本文の送信を止めます。clear 後は 2 秒、`slash` 間は 1 秒だけ空け、応答完了は待ちません。`hooks` 併用時は、フックがプロンプトを返して実際に dispatch される場合だけ `slash` も送ります。内部では `/name` へ正規化し、送信直前に `CliProfile.skill_command_prefix` へ書き換えます。clear command と `slash` 自体には `agent-tuning` の prompt 注入を適用しません。
 
-`slash` 未指定時の挙動は変わりません。CLI からエントリを追加する `prompt-add --slash` は設けず、YAML 編集を設定の正とします。
+CLI からエントリを追加する `prompt-add --slash` は設けず、YAML 編集を設定の正としました。
 
 ---
 
@@ -482,6 +471,7 @@ Phase 2 では新しい workflow engine を作らず、通常 request を作る 
 | メッセージング | `test/test_inbox_dispatch.py` |
 | 動的インターバル | `test/test_adaptive_interval.py`（error 遷移は関数のみ。scheduler と未接続） |
 | CLI 差し替え | `test/test_cli_profile.py`（+ agentcore 側 `test_agentcli.py`） |
+| ターン完了 hook | `test/test_turn_hooks.py` / `test_turn_hook_launch.py` / `test_kiro_turn_hook.py` / `test_codex_turn_hook.py` |
 | `slash` | `test/test_slash_property.py` |
 | ステートマシンハーネス | `test/test_statemachine.py`（パス逸脱・ツール契約・スタブ CLI での完走） |
 | Phase 1 / Phase 2 | dispatch・lifecycle・実行形態ごとの専用テスト |

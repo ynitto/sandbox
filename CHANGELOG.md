@@ -7,6 +7,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### docs: 複数フックとターン完了 hook を設計書・仕様書へ取り込んだ
+
+`hooks` 改称とターン完了 hook の実装が入ったあと、設計書には実装メモがそのまま残り、
+仕様書は `event_hook` 時代のキーを載せたままだった。両方を現行の実装に揃えた。
+
+- **設計書**: ターン完了 hook を「完了は画面推定より CLI 自身の通知を先に見る」節として
+  機能 5 へ入れ、正典（[ターン完了 hook 設計](docs/plans/2026-08-12-agent-loop-turn-completion-hooks-design.md)）
+  へリンクした。機能 1 には複数フックの節を足し、**プロンプトを返したフックの数だけ
+  dispatch を作る**（まとめて 1 本にすると `ack()` の相手が混ざる）ことを明記。
+  再び入っていた設定 YAML と重複見出しは仕様書・README 側へ寄せ直した
+- **仕様書**: `event_hook` → `hooks`（文字列/配列・名前解決・複数指定の意味論）、
+  `event_hook_config` → `hook_config`、新しいグローバルキー `mapping`（`{{lookup}}`）、
+  受入条件のパス判定（区切りか拡張子を持つ表記だけ。コマンド名は対象外）、
+  `json_variant` による制御応答の振り替えを反映
+- **仕様書に §1.4「完了の見分け方」と §3.6「ターン完了 hook（内部契約）」を追加**。
+  CLI 別の注入方法と native event、mailbox のファイル配置と権限、`hook-event` が
+  状態を書き換える 5 条件、画面監視へ戻る条件、対象外（headless / external pane /
+  手動起動 / Cursor / Kiro v3）を表と箇条書きで固定した
+- 付録に `~/.agents/loop-hooks/` と install prefix の `hooks/` `agent-hooks/` を追加
+
 ### docs(specs): agent-loop の仕様書を新設した
 
 設計書から設定マニュアルを外した結果、「どのキーが書けて、既定値は何で、何が拒否されるか」
