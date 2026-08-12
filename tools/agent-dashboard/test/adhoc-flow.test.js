@@ -74,6 +74,31 @@ test('Git リポジトリ内のカスタムフローは共有版を優先して�
   assert.strictEqual(JSON.parse(fs.readFileSync(path.join(sharedDir, 'shared-flow.json'), 'utf8')).name, '共有版');
 });
 
+test('ノードの追加ルールも Git リポジトリから読み、選択時に本文と source hash を複製する', () => {
+  const repo = tmpdir('method-repository-');
+  fs.mkdirSync(path.join(repo, '.git'));
+  fs.mkdirSync(path.join(repo, 'src'));
+  const methodsDir = path.join(repo, '.agent-flow', 'methods');
+  fs.mkdirSync(methodsDir, { recursive: true });
+  const method = {
+    id: 'repo-test-first', description: 'リポジトリのテスト規律', enabled: true,
+    fragments: [{ role: 'worker', text: 'このリポジトリでは失敗するテストを先に追加する。' }],
+    when: { engines: ['agent-flow'], purposes: ['work'] },
+  };
+  fs.writeFileSync(path.join(methodsDir, 'repo-test-first.json'), `${JSON.stringify(method)}\n`);
+  const cfg = { orchestration: { methodsDir: tmpdir('method-user-') } };
+  const found = adhoc.availableMethods(cfg, { cwd: path.join(repo, 'src') })
+    .find((item) => item.id === method.id);
+  assert.ok(found);
+  assert.strictEqual(found._from, 'repository');
+  assert.strictEqual(found.fragments[0].text, method.fragments[0].text);
+  assert.strictEqual(found.source,
+    `repository:.agent-flow/methods/repo-test-first.json@${tuning.sourceHash(method)}`);
+  const choice = workflowUi.nodeMethodChoices([found], { kind: 'work', tier: 'auto' })[0];
+  assert.strictEqual(choice.text, method.fragments[0].text);
+  assert.strictEqual(choice.source, found.source);
+});
+
 test('version 2 は開始から終了までの実行経路だけを保存する', () => {
   const valid = adhoc.normalizeWorkflow({
     version: 2, name: '経路', entry: ['build'], exit: ['verify'],

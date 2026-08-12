@@ -95,7 +95,10 @@ test('ワークフロー画面は成果物リポジトリの共有フローを�
   assert.ok(src.includes("options.scope === 'repository'"), '共有フローの削除拒否が必要');
   assert.ok(!/writeJsonAtomic\([^\n]*repositoryWorkflowDir/.test(src),
     'リポジトリ共有ディレクトリへ直接書いてはならない');
+  assert.ok(!/writeJsonAtomic\([^\n]*repositoryMethodsDir/.test(src),
+    'リポジトリ共有の手法ディレクトリへ直接書いてはならない');
   assert.strictEqual(typeof adhoc.repositoryWorkflowDir, 'function');
+  assert.strictEqual(typeof adhoc.repositoryMethodsDir, 'function');
 });
 
 test('git の書き込み API を IPC・preload に載せない', () => {

@@ -20,10 +20,11 @@ function registerIpc(ctx) {
     }
     let methods = [];
     try {
-      methods = adhoc.availableMethods(cfg).map((m) => ({
+      methods = adhoc.availableMethods(cfg, { cwd }).map((m) => ({
         id: m.id,
         description: String(m.description || ''),
         origin: String(m.origin || ''),
+        source: String(m.source || ''),
         fragments: (Array.isArray(m.fragments) ? m.fragments : []).map((fragment) => ({
           role: String((fragment && fragment.role) || ''),
           text: String((fragment && fragment.text) || ''),

@@ -69,6 +69,11 @@ function repositoryWorkflowDir(cwd) {
   return root ? path.join(root, '.agent-flow', 'workflows') : '';
 }
 
+function repositoryMethodsDir(cwd) {
+  const root = repositoryRoot(cwd);
+  return root ? path.join(root, '.agent-flow', 'methods') : '';
+}
+
 function workflowDirs(config, cwd = '') {
   const repository = repositoryWorkflowDir(cwd);
   return [
@@ -403,7 +408,7 @@ function planFromPreset(preset) {
 // **読まれない**（置換であって合成ではない）——どの手法が効いたかを run 単位で決定的に
 // するための意図した挙動で、UI にもそう表示する。
 
-function availableMethods(config) {
+function availableMethods(config, options = {}) {
   const seen = new Map();
   for (const m of tuning.catalog(config)) {
     seen.set(String(m.id), { ...m, _from: 'catalog' });
@@ -411,6 +416,19 @@ function availableMethods(config) {
   const state = tuning.load(config);
   for (const m of Array.isArray(state.methods) ? state.methods : []) {
     if (m && m.id) seen.set(String(m.id), { ...m, _from: 'tuning' });
+  }
+  const repoDir = repositoryMethodsDir(options.cwd);
+  if (repoDir && fs.existsSync(repoDir)) {
+    for (const entry of fs.readdirSync(repoDir, { withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+      try {
+        const method = JSON.parse(fs.readFileSync(path.join(repoDir, entry.name), 'utf8'));
+        if (!method || typeof method !== 'object' || !method.id) continue;
+        const body = JSON.parse(JSON.stringify(method));
+        body.source = `repository:.agent-flow/methods/${entry.name}@${tuning.sourceHash(method)}`;
+        seen.set(String(method.id), { ...body, _from: 'repository' });
+      } catch { /* 壊れた1ファイルで手法一覧全体を壊さない */ }
+    }
   }
   return [...seen.values()];
 }
@@ -599,6 +617,7 @@ module.exports = {
   resolveWorkflowDir,
   repositoryRoot,
   repositoryWorkflowDir,
+  repositoryMethodsDir,
   normalizeWorkflow,
   saveWorkflow,
   loadWorkflow,
