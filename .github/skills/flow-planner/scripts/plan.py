@@ -7,10 +7,12 @@ agent-flow の --planner flow-planner で呼び出される。
 Usage:
     python3 plan.py "<要求>" [--model <model>] [--review auto|true|false]
                     [--granularity auto|coarse|fine|finest] [--probe-root <dir>]
-                    [--context <text>]
+                    [--context <text>] [--tier <tier>]
     → JSON を stdout に出力: {"strategy": {...}, "tasks": [...]}
     granularity: auto=complexity から導出（既定）/ coarse|fine|finest=明示指定が優先。
     context: プロジェクト文脈（案 H・オプトイン）。agent-flow から渡され Phase 1/3 へ前置される。
+    tier: 実行ティア（agent-control の workloads.flow.tier）。basic なら auto 粒度を finest へ
+          倒し、Phase 3 へ basic 向けの分解指示を足し、review=auto を有効へ倒す。
 """
 from __future__ import annotations
 
@@ -189,7 +191,7 @@ BUILD_PROMPT = """\
 テンプレート: {composite_template}
 検証gate: {review}
 
-{enumeration_note}
+{enumeration_note}{tier_note}
 ## 粒度（厳守）
 
 目標粒度: {granularity_target}
@@ -637,8 +639,9 @@ def enumeration_note(analysis: dict, phase: str) -> str:
 
 
 def phase2_select(request: str, analysis: dict, catalog: dict,
-                  model: str | None, review="auto") -> dict:
-    """Phase 2: 戦略選定。"""
+                  model: str | None, review="auto", tier: str = "") -> dict:
+    """Phase 2: 戦略選定。tier=basic では review=auto を有効へ倒す
+    （basic の成果を無検証で集約・終端しない）。"""
     patterns = catalog.get("patterns", {})
     composites = catalog.get("composites", {})
 
@@ -704,10 +707,14 @@ def phase2_select(request: str, analysis: dict, catalog: dict,
 
     # review の確定
     if review == "auto":
-        # 集約パターンがあれば auto で有効化
-        pats = strategy.get("patterns", [])
-        has_aggregation = any(p in ("fan-out-and-synthesize", "map-reduce") for p in pats)
-        strategy["review"] = has_aggregation
+        if str(tier or "") == BASIC_TIER:
+            # basic ティアでは常時有効（明示 true/false は従来どおり尊重）
+            strategy["review"] = True
+        else:
+            # 集約パターンがあれば auto で有効化
+            pats = strategy.get("patterns", [])
+            has_aggregation = any(p in ("fan-out-and-synthesize", "map-reduce") for p in pats)
+            strategy["review"] = has_aggregation
     elif isinstance(review, bool):
         strategy["review"] = review
 
@@ -737,12 +744,36 @@ _SCOPE_PATH_RE = re.compile(
 _NORM_RE = re.compile(r"\s+")
 
 
-def resolve_granularity(level: str | None, complexity: str | None) -> str:
-    """明示 coarse/fine/finest を優先。auto/未指定は complexity から導出。"""
+def resolve_granularity(level: str | None, complexity: str | None, tier: str = "") -> str:
+    """明示 coarse/fine/finest を優先。auto/未指定は complexity から導出。
+    tier=basic では auto を finest へ倒す——ノードの大きさは要求の複雑さではなく
+    ワーカーの能力が律速になる（明示指定は人の意思なので覆さない）。"""
     lv = (level or "auto").lower()
     if lv in WORK_NODE_RANGES:
         return lv
+    if str(tier or "") == BASIC_TIER:
+        return "finest"
     return COMPLEXITY_TO_GRANULARITY.get((complexity or "moderate").lower(), "fine")
+
+
+# 実行ティア（agent-control の workloads.<wl>.tier。標準語彙は下から basic/small/medium/large）。
+# basic は「短い一手順だけを任せる」候補向け——予算逼迫の緊急時に普段は任せない役割へ
+# 投入されるため、計画側が basic でも渡せる形（1 ノード = 1 短手順・具体的 goal）へ寄せる。
+BASIC_TIER = "basic"
+TIER_BUILD_NOTES = {
+    BASIC_TIER: (
+        "\n## 実行ティア（厳守）\n\n"
+        "この計画は basic ティア（最小能力のワーカー）で実行される。\n"
+        "- 各成果ノード（work/generate/map）には 1 つの短い手順だけを任せる。\n"
+        "- goal には対象パス・期待する成果・確認方法まで具体的に書き、ワーカーの推測・判断に任せない。\n"
+        "- 判断・統合が要る工程は verify/synthesize 等の別ノードへ分ける。\n"
+    ),
+}
+
+
+def tier_build_note(tier: str | None) -> str:
+    """Phase 3 のプロンプトへ差し込む実行ティアの指示（該当なしは空＝従来どおり）。"""
+    return TIER_BUILD_NOTES.get(str(tier or ""), "")
 
 
 def work_node_range(target: str) -> tuple[int, int]:
@@ -798,8 +829,10 @@ def gate_tasks(tasks: list[dict], target: str, require_split: bool = False) -> l
 
 
 def phase3_build(request: str, analysis: dict, strategy: dict,
-                 model: str | None, granularity_target: str, context: str = "") -> list[dict]:
-    """Phase 3: グラフ生成。ゲート不合格なら指示を強めて最大1回再生成。"""
+                 model: str | None, granularity_target: str, context: str = "",
+                 tier: str = "") -> list[dict]:
+    """Phase 3: グラフ生成。ゲート不合格なら指示を強めて最大1回再生成。
+    tier=basic では basic ワーカー向けの分解指示（tier_build_note）を差し込む。"""
     subtasks = "\n".join(
         f"- {s}" for s in analysis.get("subtasks", [])
     )
@@ -819,6 +852,7 @@ def phase3_build(request: str, analysis: dict, strategy: dict,
             composite_template=strategy.get("composite_template"),
             review=strategy.get("review", False),
             enumeration_note=enumeration_note(analysis, "build"),
+            tier_note=tier_build_note(tier),
             granularity_target=granularity_target,
             work_lo=lo,
             work_hi=hi,
@@ -910,7 +944,7 @@ def resolve_enumeration(analysis: dict, probe_root: str = ".") -> dict:
 
 def plan(request: str, model: str | None = None, review="auto",
          granularity: str = "auto", probe_root: str = ".",
-         context: str = "") -> tuple[dict, list[dict]]:
+         context: str = "", tier: str = "") -> tuple[dict, list[dict]]:
     """3段パイプラインを実行し (strategy, tasks) を返す。
 
     `context`（案 H・オプトイン）: agent-flow が run の meta へ固定したプロジェクト文脈
@@ -923,12 +957,12 @@ def plan(request: str, model: str | None = None, review="auto",
         raise FileNotFoundError("patterns-catalog.yaml not found")
 
     analysis = phase1_analyze(request, model, context)
-    target = resolve_granularity(granularity, analysis.get("complexity"))
+    target = resolve_granularity(granularity, analysis.get("complexity"), tier)
     analysis["granularity_target"] = target
     decision = resolve_enumeration(analysis, probe_root)
 
-    strategy = phase2_select(request, analysis, catalog, model, review)
-    tasks = phase3_build(request, analysis, strategy, model, target, context)
+    strategy = phase2_select(request, analysis, catalog, model, review, tier)
+    tasks = phase3_build(request, analysis, strategy, model, target, context, tier)
     normalized = normalize_tasks(tasks)
 
     final_strategy = {
@@ -942,6 +976,8 @@ def plan(request: str, model: str | None = None, review="auto",
         # 列挙駆動の発動根拠（force/boost/off）。誤爆に気づくための観測点なので必ず載せる。
         "enumeration": decision,
     }
+    if tier:
+        final_strategy["tier"] = str(tier)
 
     return final_strategy, normalized
 
@@ -970,6 +1006,10 @@ def main():
                         help="プロジェクト文脈（案 H・オプトイン）。agent-flow が run の meta から"
                              "渡す charter/rules.md/リポジトリ理解のスナップショット。"
                              "Phase 1 / Phase 3 のプロンプト先頭へ前置する")
+    parser.add_argument("--tier", default="",
+                        help="実行ティア（agent-control の workloads.flow.tier。agent-flow が渡す）。"
+                             "basic なら auto 粒度を finest へ倒し、Phase 3 へ basic 向けの分解指示を"
+                             "足し、review=auto を有効へ倒す。空なら従来どおり")
     args = parser.parse_args()
 
     global AGENT_CLI
@@ -983,7 +1023,7 @@ def main():
 
     try:
         strategy, tasks = plan(args.request, args.model, review, args.granularity,
-                               args.probe_root, args.context)
+                               args.probe_root, args.context, args.tier)
         result = {"strategy": strategy, "tasks": tasks}
         print(json.dumps(result, ensure_ascii=False, indent=2))
     except Exception as e:

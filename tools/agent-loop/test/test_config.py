@@ -28,6 +28,26 @@ class JsoncConfigTests(unittest.TestCase):
 
 
 class PromptConfigTests(unittest.TestCase):
+    def test_mapping_lookup_expands_prompt_and_cwd(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp, al.AGENT_HOME, "agent-loop.json")
+            config.parent.mkdir()
+            config.write_text('''{
+              "mapping": {
+                "workspace": {"root": "/tmp/project"},
+                "messages": {"review": "Review the changes"}
+              },
+              "prompts": [{
+                "prompt": "{{lookup messages review}}",
+                "cwd": "{{lookup workspace root}}"
+              }]
+            }''', encoding="utf-8")
+
+            self.assertEqual(al.load_prompt_config(tmp), [{
+                "prompt": "Review the changes",
+                "cwd": "/tmp/project",
+            }])
+
     def test_user_home_does_not_read_dot_agent(self):
         with tempfile.TemporaryDirectory() as tmp:
             old = Path(tmp, ".agent", "agent-loop.json")

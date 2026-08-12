@@ -1,0 +1,5 @@
+{
+  "name": "agent-loop-turn-completion",
+  "description": "Report managed Claude Code turn completion to agent-loop",
+  "version": "1.0.0"
+}

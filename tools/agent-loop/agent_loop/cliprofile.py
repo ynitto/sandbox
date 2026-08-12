@@ -129,6 +129,9 @@ class CliProfile:
         self.exit_command = "" if raw_exit is None else str(raw_exit)
         self.skill_command_prefix = str((spec or {}).get("skill_command_prefix") or "/")
         self.failure_pattern = str(inter.get("failure_pattern") or "") or None
+        self.turn_completion = (
+            "kiro" if spec is None else str(inter.get("turn_completion") or "")
+        )
         # 静穏判定用: pane_id → (直近内容のハッシュ, 最終変化時刻)
         self._quiet_state: dict[str, tuple[str, float]] = {}
 

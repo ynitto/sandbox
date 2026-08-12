@@ -9,7 +9,7 @@ from typing import Any
 
 
 def check(hook_config: dict[str, Any] | None = None) -> None:
-    nested = (hook_config or {}).get("event_hook_config") or {}
+    nested = (hook_config or {}).get("hook_config") or {}
     default_script = Path(__file__).resolve().parents[2] / "agent-dashboard" / "scripts" / "resource-control.js"
     script = Path(os.path.expanduser(str(nested.get("script") or default_script))).resolve()
     command = [str(nested.get("node") or "node"), str(script)]

@@ -33,6 +33,91 @@ plan 生成時に適用するようにした。設計:
   `pinned-tier` として status・台帳・手法判定（`when.tiers` のノード tier 優先）へ届く。
   継続動作（retry / replan）の作り直しノードも置き換え元の固定 tier を引き継ぐ
 
+### feat(agent-flow): 計画承認ゲートと tier:basic のお膳立てを追加した
+
+予算逼迫の緊急時、agent-profiles の縮退が `tier: basic` を宣言すると、普段は任せない
+役割・作業へ最小能力ワーカーを投入せざるを得なくなる。その下地として、どちらも
+オプトインの 2 機能を planner まわりに足した。
+
+- **計画承認ゲート（`plan_gate` / `--plan-gate`・既定 off）**: planner の計画の実行前に
+  `human` 承認ノード（`plan-gate`）を挿し、root を全てゲート依存へ付け替える。承認
+  （approved）まで base-sync 含め何も実行しない。差し戻し（rejected＋コメント）は
+  orchestrator が決定的に検知し、指摘を要求へ付けて planner を呼び直し、未確定ノードを
+  新計画で置き換えて次のゲートを挿し直す（`max_retries` で有界・旧ゲートはグラフから
+  外し結果は監査として残す）。期限切れは `[plan-gate]` タグ付き failed 終端
+  （フェイルクローズ）。決着は既存の human interaction 機構（park → service_waits →
+  `interactions/`）をそのまま使い、ユーザー定義フローには挿さない。
+  期限は `plan_gate_timeout`（秒。0 = interaction 既定の 7 日）
+- **tier:basic のお膳立て**: agent-control の `workloads.flow.tier` が `basic` のとき、
+  (1) `granularity: auto` を finest へ解決（明示指定は覆さない）、(2) planner プロンプトへ
+  「1 ノード = 1 短手順・goal に対象/成果/確認方法を明記」の分解指示を注入
+  （flow-planner スキルは新設の `--tier` で受ける。フラグを知らない旧版スキルには渡さず
+  縮退させない）、(3) `review: auto` を常時有効へ（basic の成果を無検証で集約しない）、
+  (4) 評価役の再タスク生成にも同じ basic 指示を後置。採った tier は `strategy.tier` に残る
+- **修正**: orchestrate の `_node_entry` が `interaction` を落としていたため、ユーザー定義
+  フローの `human` ノードが orchestrate 経由の graph では interaction 不正で失敗終端して
+  いた（worker は claim 時に graph の node を読む）。graph にも保持するようにした
+- human interaction の差し戻しコメント（`outcome=rejected` の `answer.comment`）を
+  `human_feedback_from_results` が「人の指摘」として評価役へ運ぶようにした
+  （承認コメントは拾わない——承認済み run へ不要な replan を誘発しない）
+
+### docs: 複数フックとターン完了 hook を設計書・仕様書へ取り込んだ
+
+`hooks` 改称とターン完了 hook の実装が入ったあと、設計書には実装メモがそのまま残り、
+仕様書は `event_hook` 時代のキーを載せたままだった。両方を現行の実装に揃えた。
+
+- **設計書**: ターン完了 hook を「完了は画面推定より CLI 自身の通知を先に見る」節として
+  機能 5 へ入れ、正典（[ターン完了 hook 設計](docs/plans/2026-08-12-agent-loop-turn-completion-hooks-design.md)）
+  へリンクした。機能 1 には複数フックの節を足し、**プロンプトを返したフックの数だけ
+  dispatch を作る**（まとめて 1 本にすると `ack()` の相手が混ざる）ことを明記。
+  再び入っていた設定 YAML と重複見出しは仕様書・README 側へ寄せ直した
+- **仕様書**: `event_hook` → `hooks`（文字列/配列・名前解決・複数指定の意味論）、
+  `event_hook_config` → `hook_config`、新しいグローバルキー `mapping`（`{{lookup}}`）、
+  受入条件のパス判定（区切りか拡張子を持つ表記だけ。コマンド名は対象外）、
+  `json_variant` による制御応答の振り替えを反映
+- **仕様書に §1.4「完了の見分け方」と §3.6「ターン完了 hook（内部契約）」を追加**。
+  CLI 別の注入方法と native event、mailbox のファイル配置と権限、`hook-event` が
+  状態を書き換える 5 条件、画面監視へ戻る条件、対象外（headless / external pane /
+  手動起動 / Cursor / Kiro v3）を表と箇条書きで固定した
+- 付録に `~/.agents/loop-hooks/` と install prefix の `hooks/` `agent-hooks/` を追加
+
+### docs(specs): agent-loop の仕様書を新設した
+
+設計書から設定マニュアルを外した結果、「どのキーが書けて、既定値は何で、何が拒否されるか」
+を一望できる場所が無くなった。README は使い方の手引き、DESIGN.md は実装の内部構造なので、
+どちらとも役割が違う。`docs/specs/agent-loop-spec.md` を新設し、仕様の一覧をここに置く。
+
+- **できること**（送信のきっかけ 5 経路、実行のかたち 8 種、操作コマンド）、**設定**
+  （ファイルの優先順位、グローバル 30 キー、エントリ 30 キーの型・既定・意味）、
+  **契約**（event hook / webhook / inbox メッセージ / 限定ツール / RESULT 行）、
+  **規約**（`slash` 名、webhook ルート名、tmux セッション名、環境変数名、パス）、
+  **制約**（上限とタイムアウトの一覧、配送保証、失敗時の挙動、未実装）の 5 部構成
+- 値は実装から取った。エントリの採用条件と起動を止める組合せは `validate_entries`、
+  既定値は `cli.py` / `dispatch.py`、上限は `toolloop.py` / `_head.py` / `semaphore.py`、
+  受入条件の照合規則は `toolloop.acceptance_paths` が根拠
+- `docs/specs/` は本書が最初の文書。設計書のヘッダから相互リンクした
+
+### docs(designs): `agent-loop-design.md` を設計書の形へ戻した
+
+709 行のうち約 6 割が README / DESIGN.md と重複する設定マニュアルになっていて、
+「何をどう決めたか」を読み取るのに全文を通読する必要があった。slop-police スキルの
+設計書ルール（結論先出し・却下案つきの判断・強弱・省略）に沿って再編した（柱2 / C4）。
+
+- **主要な設計判断を 5 つに再編**。旧 5 件のうち pull/push のフック契約と provider 非依存を
+  1 件へ統合し、代わりに機能 5・7 の本文へ埋もれていた 2 件（実行経路をツールループの所在で
+  分ける／完了を自然文の受入条件から機械照合する）を判断として立てた。確信度は判断ごとに
+  書き分け、証跡ゲートの機械層だけが動いている点は「中くらい」と明記した
+- **機能 1〜7 の節から設定マニュアルを外した**。YAML の書き方は
+  `tools/agent-loop/README.md`、クラス構成と処理フローは `tools/agent-loop/DESIGN.md` へ
+  委ね、本書には設計上の境界（既読化は `ack()` 後、webhook のフック例外は 200、
+  外部キューは scheduler が保有、待機判定は CLI ごとに違う 等）だけを残した。
+  README に記述の無い webhook / adaptive / acceptance の設定だけは最小形で残す
+- **実装状況とテスト一覧を付録へ移した**。見出しの「— 実装済み」表記をやめ、未接続・未実装
+  （adaptive の error 遷移、自然文基準の証跡判定層、headless ログの tmux 自動起動）は
+  付録 A の 1 段落に集約した
+- 709 行 → 496 行。機能番号は据え置き、`slash` 節の見出し変更に伴う anchor リンクは
+  `tools/agent-loop/README.md` と opencode/ollama 提案書の 2 か所を追随させた
+
 ### 定型業務の Aider 実行を tmux で見える agent-loop ハーネスへ移した
 
 Aider（ollama バックエンド）でのステートマシン実行は dashboard の main プロセス内で

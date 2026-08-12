@@ -17,6 +17,31 @@ _PREFLIGHT_TIMEOUT_SEC = 15.0
 _INPUT_RECOVERY_WAIT_SEC = 0.4
 
 
+def _resolve_hook_path(value: str) -> Path:
+    path = Path(os.path.expanduser(value))
+    if path.is_file() or path.is_absolute() or path.parent != Path("."):
+        return path.resolve()
+
+    filename = path.name if path.suffix else f"{path.name}.py"
+    for directory in (
+        Path(sys.argv[0]).resolve().parent / "hooks",
+        Path(__file__).resolve().parent.parent / "hooks",
+    ):
+        candidate = directory / filename
+        if candidate.is_file():
+            return candidate.resolve()
+    return path.resolve()
+
+
+def _normalize_hooks(value: Any, ctx: str = "") -> list[str]:
+    if value is None:
+        return []
+    items = [value] if isinstance(value, str) else value
+    if not isinstance(items, (list, tuple)) or not all(isinstance(item, str) for item in items):
+        raise ValueError(f"entry {ctx!r}: hooks は文字列か文字列配列です")
+    return [item.strip() for item in items if item.strip()]
+
+
 def _normalize_slash(value: Any, ctx: str = "") -> list[str]:
     """`slash` を送信行（`/<name> [args]`）のリストへ正規化する。
 
@@ -74,14 +99,14 @@ def validate_entries(
             continue
 
         prompt = str(entry.get("prompt", "")).strip()
-        event_hook = str(entry.get("event_hook", "")).strip() or None
+        hooks = _normalize_hooks(entry.get("hooks"), str(entry.get("name", "")))
         event_hook_fallback = bool(entry.get("event_hook_fallback", False))
         webhook = PeriodicScheduler._normalize_webhook(entry.get("webhook"))
         slash = _normalize_slash(entry.get("slash"), str(entry.get("name", "")))
-        if not prompt and not event_hook and not slash:
+        if not prompt and not hooks and not slash:
             continue
 
-        name = str(entry.get("name", prompt[:40] or (event_hook or "")[:40]
+        name = str(entry.get("name", prompt[:40] or (hooks[0] if hooks else "")[:40]
                               or (slash[0] if slash else "")))
 
         cron_str = str(entry.get("cron", "")).strip()
@@ -182,9 +207,9 @@ def validate_entries(
                 raise ValueError(f"entry {name!r}: clean_session は正整数です: {clean_session}")
 
         target = str(entry.get("target", "")).strip() or None
-        event_hook_config = entry.get("event_hook_config")
-        if event_hook_config is not None and not isinstance(event_hook_config, dict):
-            raise ValueError(f"entry {name!r}: event_hook_config は dict です")
+        hook_config = entry.get("hook_config")
+        if hook_config is not None and not isinstance(hook_config, dict):
+            raise ValueError(f"entry {name!r}: hook_config は dict です")
 
         # 実行するエージェントとモデル（任意）。省略した entry は entry 共通設定
         # （agent-loop.yaml トップレベルの agent_cli / agent_cli_options.model）を使う。
@@ -238,9 +263,9 @@ def validate_entries(
             "next_clear_at": ts if fresh_context else None,
             "cwd": entry_cwd,
             "exclude_from_concurrency": bool(entry.get("exclude_from_concurrency", False)),
-            "event_hook": event_hook,
+            "hooks": hooks,
             "event_hook_fallback": event_hook_fallback,
-            "event_hook_config": dict(event_hook_config) if isinstance(event_hook_config, dict) else None,
+            "hook_config": dict(hook_config) if isinstance(hook_config, dict) else None,
             "webhook": webhook,
             "adaptive": adaptive,
             "preflight": preflight,
@@ -592,6 +617,18 @@ class PeriodicScheduler:
             self._fail_execution(req, pane_id, reason="pane_or_timeout")
 
         if self._slot_monitor is not None:
+            turn_hook = None
+            get_hook = getattr(self._session_mgr, "get_turn_hook_context", None)
+            context = get_hook(pane_id) if callable(get_hook) else None
+            hook_generation = expected_gen or int((context or {}).get("generation") or 0)
+            if context and hook_generation > 0:
+                turn_hook = {
+                    "instance_id": context["instance_id"],
+                    "dispatch_id": str(req.get("id") or root_id),
+                    "generation": hook_generation,
+                    "agent_cli": context["agent_cli"],
+                    "hook_token": context["hook_token"],
+                }
             self._slot_monitor.track(
                 pane_id,
                 on_complete=complete,
@@ -599,6 +636,7 @@ class PeriodicScheduler:
                 initial_content_hash=(req.get("meta") or {}).pop("_pane_hash_before_send", None),
                 hold_slot=hold_slot,
                 profile=profile,
+                turn_hook=turn_hook,
             )
         else:
             complete()
@@ -739,6 +777,7 @@ class PeriodicScheduler:
             profile_name=profile_name,
             effective_model=model,
             ownership=ownership,
+            turn_completion=str(getattr(_CLI_PROFILE_, "turn_completion", "") or ""),
         )
 
     def _note_launch_drift(self, prompt_id: str, name: str,
@@ -1307,14 +1346,14 @@ class PeriodicScheduler:
                 log.error("hook のロードに失敗しました (%s): %s", hook_path, exc, exc_info=True)
                 return None
 
-    def _call_hook_check(self, entry: dict[str, Any]) -> dict[str, Any] | None:
-        """event_hook の check() を呼び、正規化済み dict（prompt/cwd/vars）または None を返す。"""
-        hook_path = Path(os.path.expanduser(entry["event_hook"])).resolve()
+    def _call_hook_check(self, entry: dict[str, Any], hook: str) -> dict[str, Any] | None:
+        """hook の check() を呼び、正規化済み dict（prompt/cwd/vars）または None を返す。"""
+        hook_path = _resolve_hook_path(hook)
         name = str(entry.get("name", ""))
         entry_id = str(entry.get("id", ""))
         hook_key = (str(hook_path), entry_id)
         if hook_key in self._hook_quarantine:
-            log.warning("[%s] event_hook は timeout 隔離中のためスキップします: %s", name, hook_path)
+            log.warning("[%s] hook は timeout 隔離中のためスキップします: %s", name, hook_path)
             return None
 
         module = self._load_hook_module(hook_path, entry_id)
@@ -1323,14 +1362,14 @@ class PeriodicScheduler:
 
         check_fn = getattr(module, "check", None)
         if not callable(check_fn):
-            log.warning("[%s] event_hook に check() 関数が定義されていません: %s", name, hook_path)
+            log.warning("[%s] hook に check() 関数が定義されていません: %s", name, hook_path)
             return None
 
         hook_config = {
             "name": name,
             "entry_id": entry.get("id"),
             "event_hook_fallback": bool(entry.get("event_hook_fallback")),
-            "event_hook_config": entry.get("event_hook_config") or {},
+            "hook_config": entry.get("hook_config") or {},
             "cwd": entry.get("cwd"),
             "workspace": getattr(self, "_workspace", "") or "",
         }
@@ -1378,7 +1417,7 @@ class PeriodicScheduler:
                 def _clear_quarantine() -> None:
                     t.join()
                     self._hook_quarantine.discard(hook_key)
-                    log.info("[%s] event_hook の隔離を解除しました: %s", name, hook_path)
+                    log.info("[%s] hook の隔離を解除しました: %s", name, hook_path)
 
                 threading.Thread(target=_clear_quarantine, daemon=True).start()
                 return None
@@ -1425,8 +1464,8 @@ class PeriodicScheduler:
         log.warning("[%s] check() の戻り値が不正です: %r", name, result)
         return None
 
-    def _call_hook_ack(self, entry: dict[str, Any]) -> None:
-        hook_path = Path(os.path.expanduser(entry["event_hook"])).resolve()
+    def _call_hook_ack(self, entry: dict[str, Any], hook: str) -> None:
+        hook_path = _resolve_hook_path(hook)
         module = self._load_hook_module(hook_path, str(entry.get("id", "")))
         ack_fn = getattr(module, "ack", None) if module is not None else None
         if not callable(ack_fn):
@@ -1985,8 +2024,9 @@ class PeriodicScheduler:
                     self._end_active(req)
 
         if ok:
-            if source == "hook" and entry.get("event_hook") and not is_ralph_child:
-                self._call_hook_ack(entry)
+            hook = str((req.get("meta") or {}).get("_hook") or "")
+            if source == "hook" and hook and not is_ralph_child:
+                self._call_hook_ack(entry, hook)
             self._finalize_ack(req, success=True)
             with self._lock:
                 if ack_path:
@@ -2328,21 +2368,18 @@ class PeriodicScheduler:
                 else:
                     should_clear = True
 
-            prompt_text = str(entry.get("prompt", ""))
-            cwd = entry.get("cwd")
-            source = "schedule"
-
-            if entry.get("event_hook"):
-                hook_result = self._call_hook_check(entry)
-                if hook_result is None:
-                    # idle / スキップ — adaptive は idle
-                    outcome = "idle"
-                    self._update_entry(prompt_id, next_run_at=self._next_run_at_for_entry(entry, outcome=outcome))
-                    continue
-                prompt_text = str(hook_result["prompt"])
-                if hook_result.get("cwd"):
-                    cwd = hook_result["cwd"]
-                source = "hook"
+            hooks = entry.get("hooks") or []
+            hook_results = [
+                (hook, result)
+                for hook in hooks
+                if (result := self._call_hook_check(entry, hook)) is not None
+            ]
+            if hooks and not hook_results:
+                self._update_entry(
+                    prompt_id,
+                    next_run_at=self._next_run_at_for_entry(entry, outcome="idle"),
+                )
+                continue
 
             meta: dict[str, Any] = {
                 "entry_name": name,
@@ -2361,15 +2398,27 @@ class PeriodicScheduler:
                 meta.setdefault("execution", {})["target"] = entry.get("target")
                 meta.setdefault("execution", {})["session_policy"] = "external"
 
-            req = make_dispatch_request(
-                source=source,
-                entry_id=prompt_id,
-                prompt=prompt_text,
-                cwd=cwd,
-                priority="normal",
-                meta=meta,
-            )
-            self._accept_request(req)
+            dispatches = hook_results or [(None, {
+                "prompt": str(entry.get("prompt", "")),
+                "cwd": entry.get("cwd"),
+            })]
+            for hook, result in dispatches:
+                request_meta = dict(meta)
+                if "execution" in request_meta:
+                    request_meta["execution"] = dict(request_meta["execution"])
+                if hook is not None:
+                    request_meta["_hook"] = hook
+                req = make_dispatch_request(
+                    source="hook" if hook is not None else "schedule",
+                    entry_id=prompt_id,
+                    prompt=str(result["prompt"]),
+                    cwd=result.get("cwd") or entry.get("cwd"),
+                    priority="normal",
+                    meta=request_meta,
+                )
+                if hook is not None:
+                    req["dedupe_key"] = _dedupe_key(f"{prompt_id}:{hook}", req["prompt"])
+                self._accept_request(req)
             # スケジュール時刻は受付時に進める（保留中でも二重発火しない）。coalesce で 1 件維持。
             self._update_entry(prompt_id, next_run_at=self._next_run_at_for_entry(entry, outcome="idle"))
 

@@ -254,6 +254,16 @@
           ],
           "default": "send-keys",
           "description": "初回プロンプトの注入方法。send-keys=1 行へ畳んで tmux send-keys で送る / file=一時ファイルへ書き spill.instruction の {file} を置換した 1 行だけを送る（長大プロンプト向け）。トップレベルの prompt_via（stdin|argv）はヘッドレスの話で、こちらとは層が違う。"
+        },
+        "turn_completion": {
+          "enum": [
+            "kiro",
+            "claude",
+            "codex",
+            "copilot",
+            "opencode"
+          ],
+          "description": "agent-loop が起動した対話プロセスへだけ注入するターン完了 hook adapter。省略時は画面監視だけを使う。"
         }
       }
     },

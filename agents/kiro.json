@@ -35,6 +35,7 @@
       "kiro-cli",
       "chat"
     ],
+    "turn_completion": "kiro",
     "write_args": [
       "--trust-all-tools"
     ],

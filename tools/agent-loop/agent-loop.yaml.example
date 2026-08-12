@@ -4,6 +4,12 @@
 # 共通設定として使う場合は ~/.agents/agent-loop.yaml、プロジェクト固有の prompts として
 # 使う場合は <project>/.agents/agent-loop.yml へ置きます（旧 .agent は読み取り互換）。
 
+# 設定内の prompt / cwd などから `{{lookup <ラベル> <キー>}}` で参照できる。
+# mapping:
+#   workspace:
+#     main: /path/to/workspace
+#   message:
+#     review: 直近の変更をレビューしてください
 
 # ---------------------------------------------------------------------------
 # エージェント間メッセージング設定
@@ -169,11 +175,12 @@ prompts:
     interval_minutes: 120
     enabled: false
 
-  # ---- event_hook: 送信タイミングと内容を Python スクリプトで制御する ----
-  # event_hook を指定すると、スケジュール発火のたびにフックの check() が呼ばれる:
+  # ---- hooks: 送信タイミングと内容を Python スクリプトで制御する ----
+  # hooks は文字列または配列。スケジュール発火のたびに各フックの check() が呼ばれる:
   #   - str を返す  → そのテキストを prompt として送信（YAML の prompt を上書き）
   #   - None を返す → 今回は送信せずスキップ
-  # event_hook を使う場合 prompt は省略可（フックが内容を決める）。
+  # hooks を使う場合 prompt は省略可（フックが内容を決める）。名前だけを指定すると
+  # install.sh が配置した hooks/ を探索する（拡張子 .py は省略可）。
   #
   # event_hook_fallback: true にすると、フックに環境変数
   #   AGENT_LOOP_EVENT_HOOK_FALLBACK=1 が渡される。フック側はこれを見て
@@ -185,8 +192,8 @@ prompts:
   #                                 フォールバックでランダムな Issue を送る。
   #   hooks/gitlab-mr-hook.py    … 新規/更新 MR を検知。更新が無ければ
   #                                 フォールバックでランダムな MR を送る。
-  - name: "GitLab Issue ワーカー (event_hook)"
-    event_hook: ~/sandbox/tools/agent-loop/hooks/gitlab-issue-hook.py
+  - name: "GitLab Issue ワーカー (hooks)"
+    hooks: gitlab-issue-hook
     event_hook_fallback: true   # 更新が無くてもランダムに 1 件送る
     interval_minutes: 5
     cwd: /path/to/workspace
@@ -195,13 +202,13 @@ prompts:
   # dashboard を開かずに node-budget の再配分と profile の降格/復帰を適用する。
   # check() は LLM へ prompt を送らず、dashboard と同じ書き手を 1 回呼ぶ。
   - name: "資源制御"
-    event_hook: ~/sandbox/tools/agent-loop/hooks/resource-control-hook.py
+    hooks: resource-control-hook
     interval_minutes: 5
     enabled: false
 
   # 収集済みの実測を rates.per_cli へ定期較正し、旧推定との乖離も audit 台帳へ残す。
   - name: "使用量較正"
-    event_hook: ~/sandbox/tools/agent-loop/hooks/audit-calibrate-hook.py
+    hooks: audit-calibrate-hook
     interval_minutes: 60
     enabled: false
 

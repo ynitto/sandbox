@@ -59,7 +59,7 @@ def normalize_state(raw: Any) -> dict[str, Any]:
 def fallback_config(hook_config: dict[str, Any] | None) -> dict[str, Any]:
     cfg = {}
     if isinstance(hook_config, dict):
-        nested = hook_config.get("event_hook_config")
+        nested = hook_config.get("hook_config")
         if isinstance(nested, dict):
             cfg.update(nested)
         for key in (

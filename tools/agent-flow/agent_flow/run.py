@@ -259,6 +259,10 @@ def _spawn_orchestrator(base: list, args, req_id: str, req: dict):
     return subprocess.Popen(base + ws_args + [
         "--granularity", str(getattr(args, "granularity", "auto") or "auto"),
         *(["--exemplar-first"] if getattr(args, "exemplar_first", False) else []),
+        *((["--plan-gate"]
+           + (["--plan-gate-timeout", str(float(getattr(args, "plan_gate_timeout", 0) or 0))]
+              if float(getattr(args, "plan_gate_timeout", 0) or 0) > 0 else []))
+          if getattr(args, "plan_gate", False) else []),
         "--run-id", req_id, "orchestrate", "--request", req["request"],
         # --inherit-from は orchestrate サブコマンドの引数（グローバルではない）。
         # サブコマンド名より前に置くと親 parser に拾われ usage エラーで即死するため、
@@ -367,6 +371,11 @@ def cmd_run(args) -> int:
     base += ["--granularity", str(getattr(args, "granularity", "auto") or "auto")]  # 分解粒度
     if getattr(args, "exemplar_first", False):
         base += ["--exemplar-first"]   # 見本先行分解を orchestrator へ伝搬
+    if getattr(args, "plan_gate", False):
+        base += ["--plan-gate"]        # 計画承認ゲートを orchestrator へ伝搬
+        _pg_to = float(getattr(args, "plan_gate_timeout", 0) or 0)
+        if _pg_to > 0:
+            base += ["--plan-gate-timeout", str(_pg_to)]
     mode = _mode_string(args, bus_root)
 
     procs = []

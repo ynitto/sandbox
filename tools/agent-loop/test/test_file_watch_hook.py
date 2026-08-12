@@ -33,7 +33,7 @@ class FileWatchHookTests(unittest.TestCase):
             cfg = {
                 "entry_id": "fw-1",
                 "cwd": str(root),
-                "event_hook_config": {
+                "hook_config": {
                     "watch_dirs": ["src"],
                     "patterns": ["**/*.py"],
                     "ignore_patterns": ["**/__pycache__/**"],
@@ -77,7 +77,7 @@ class FileWatchHookTests(unittest.TestCase):
             cfg = {
                 "entry_id": "fw-2",
                 "cwd": str(root),
-                "event_hook_config": {"watch_dirs": ["src"], "patterns": ["**/*.py"]},
+                "hook_config": {"watch_dirs": ["src"], "patterns": ["**/*.py"]},
             }
             with mock.patch.object(hook, "hook_state_dir", return_value=state_root):
                 baseline = hook.check(cfg)
@@ -110,7 +110,7 @@ class FileWatchHookTests(unittest.TestCase):
             target = src / "gone.py"
             target.write_text("x", encoding="utf-8")
             state_root = root / "state"
-            cfg = {"entry_id": "fw-del", "cwd": str(root), "event_hook_config": {"watch_dirs": ["src"]}}
+            cfg = {"entry_id": "fw-del", "cwd": str(root), "hook_config": {"watch_dirs": ["src"]}}
             with mock.patch.object(hook, "hook_state_dir", return_value=state_root):
                 hook.check(cfg)
                 target.unlink()
@@ -129,7 +129,7 @@ class FileWatchHookTests(unittest.TestCase):
             cfg = {
                 "entry_id": "fw-3",
                 "cwd": str(root),
-                "event_hook_config": {
+                "hook_config": {
                     "watch_dirs": ["src"],
                     "patterns": ["**/*.py"],
                     "max_files": 2,

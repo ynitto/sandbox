@@ -233,6 +233,8 @@ def main() -> int:
                     help="RRF で埋め込み側に掛ける重み（1.0 = 対等）")
     ap.add_argument("--cache", default="/tmp/agent-retrieval-eval-index.json",
                     help="埋め込み索引のキャッシュ先")
+    ap.add_argument("--output", type=pathlib.Path,
+                    help="全 arm の機械可読な指標を JSON でも保存する")
     args = ap.parse_args()
 
     docs = load_corpus(distractors=not args.no_distractors)
@@ -259,6 +261,8 @@ def main() -> int:
             arms.append((f"RRF 併用（TF-IDF 1 : {args.model} {args.rrf_weight:g}）",
                          hybrid_ranker([arms[0][1], emb], weights=(1.0, args.rrf_weight))))
 
+    report = {"model": args.model, "k": args.k, "chars": args.chars,
+              "documents": len(docs), "memories": memories, "styles": {}}
     for style in ("lexical", "paraphrase"):
         print(f"\n########## 訊き方: {style}"
               + ("（記憶の用語をそのまま使う）" if style == "lexical"
@@ -273,6 +277,7 @@ def main() -> int:
             for query, top, pos in r["misses"]:
                 print(f"  miss: 「{query[:34]}」 → 1 位 {top}"
                       + (f"（正解は {pos} 位）" if pos else "（正解は圏外）"))
+        report["styles"][style] = {label: metrics for label, metrics in results}
         if len(results) > 1:
             base = results[0][1]
             print("\n  --- 基準線との差")
@@ -280,6 +285,11 @@ def main() -> int:
                 print(f"  {label}: hit@{args.k} "
                       f"{r[f'hit@{args.k}'] - base[f'hit@{args.k}']:+.0%} / "
                       f"MRR {r['MRR'] - base['MRR']:+.3f}")
+    if args.output:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n",
+                               encoding="utf-8")
+        print(f"\n結果: {args.output}")
     return 0
 
 

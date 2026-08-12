@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Directory snapshot hook for agent-loop event_hook (mtime/size diff)."""
+"""Directory snapshot hook for agent-loop hooks (mtime/size diff)."""
 from __future__ import annotations
 
 import fnmatch
@@ -35,7 +35,7 @@ def _state_path(entry_id: str) -> Path:
 def _hook_cfg(hook_config: dict[str, Any] | None) -> dict[str, Any]:
     cfg: dict[str, Any] = {}
     if isinstance(hook_config, dict):
-        nested = hook_config.get("event_hook_config")
+        nested = hook_config.get("hook_config")
         if isinstance(nested, dict):
             cfg.update(nested)
     return cfg

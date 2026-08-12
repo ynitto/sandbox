@@ -37,8 +37,8 @@ class HookHardeningTests(unittest.TestCase):
                 def check():
                     return "hello"
             ''')
-            entry = {"name": "n", "id": "1", "event_hook": str(path)}
-            result = s._call_hook_check(entry)
+            entry = {"name": "n", "id": "1", "hooks": [str(path)]}
+            result = s._call_hook_check(entry, str(path))
         self.assertEqual(result, {"prompt": "hello"})
 
     def test_one_arg_check_dict(self):
@@ -48,8 +48,8 @@ class HookHardeningTests(unittest.TestCase):
                 def check(cfg):
                     return {"prompt": "Issue {n}", "vars": {"n": cfg["name"]}}
             ''')
-            entry = {"name": "n", "id": "1", "event_hook": str(path)}
-            result = s._call_hook_check(entry)
+            entry = {"name": "n", "id": "1", "hooks": [str(path)]}
+            result = s._call_hook_check(entry, str(path))
         self.assertEqual(result["prompt"], "Issue n")
 
     def test_none_skips(self):
@@ -59,8 +59,8 @@ class HookHardeningTests(unittest.TestCase):
                 def check():
                     return None
             ''')
-            entry = {"name": "n", "id": "1", "event_hook": str(path)}
-            self.assertIsNone(s._call_hook_check(entry))
+            entry = {"name": "n", "id": "1", "hooks": [str(path)]}
+            self.assertIsNone(s._call_hook_check(entry, str(path)))
 
     def test_cwd_reject_missing(self):
         s = _base_scheduler()
@@ -69,8 +69,8 @@ class HookHardeningTests(unittest.TestCase):
                 def check():
                     return {"prompt": "x", "cwd": "/no/such/dir/agent-loop-test"}
             ''')
-            entry = {"name": "n", "id": "1", "event_hook": str(path)}
-            self.assertIsNone(s._call_hook_check(entry))
+            entry = {"name": "n", "id": "1", "hooks": [str(path)]}
+            self.assertIsNone(s._call_hook_check(entry, str(path)))
 
     def test_timeout_quarantine(self):
         s = _base_scheduler()
@@ -81,12 +81,12 @@ class HookHardeningTests(unittest.TestCase):
                     time.sleep(60)
                     return "late"
             ''')
-            entry = {"name": "n", "id": "1", "event_hook": str(path)}
+            entry = {"name": "n", "id": "1", "hooks": [str(path)]}
             with mock.patch.object(al, "_HOOK_TIMEOUT_SEC", 0.05):
-                self.assertIsNone(s._call_hook_check(entry))
+                self.assertIsNone(s._call_hook_check(entry, str(path)))
             self.assertIn((str(path.resolve()), "1"), s._hook_quarantine)
             # 隔離中は再実行しない
-            self.assertIsNone(s._call_hook_check(entry))
+            self.assertIsNone(s._call_hook_check(entry, str(path)))
 
     def test_shared_hook_file_has_entry_local_runtime(self):
         s = _base_scheduler()
@@ -98,11 +98,11 @@ class HookHardeningTests(unittest.TestCase):
                     count += 1
                     return str(count)
             ''')
-            a = {"name": "a", "id": "a", "event_hook": str(path)}
-            b = {"name": "b", "id": "b", "event_hook": str(path)}
-            self.assertEqual(s._call_hook_check(a), {"prompt": "1"})
-            self.assertEqual(s._call_hook_check(b), {"prompt": "1"})
-            self.assertEqual(s._call_hook_check(a), {"prompt": "2"})
+            a = {"name": "a", "id": "a", "hooks": [str(path)]}
+            b = {"name": "b", "id": "b", "hooks": [str(path)]}
+            self.assertEqual(s._call_hook_check(a, str(path)), {"prompt": "1"})
+            self.assertEqual(s._call_hook_check(b, str(path)), {"prompt": "1"})
+            self.assertEqual(s._call_hook_check(a, str(path)), {"prompt": "2"})
 
     def test_timeout_does_not_stop_other_entries(self):
         s = _base_scheduler()
@@ -119,9 +119,9 @@ class HookHardeningTests(unittest.TestCase):
                     return "late"
             ''')
             s._entries = [
-                {"id": "slow", "name": "slow", "prompt": "", "event_hook": str(path),
+                {"id": "slow", "name": "slow", "prompt": "", "hooks": [str(path)],
                  "next_run_at": 0, "scheduled": True, "enabled": True},
-                {"id": "normal", "name": "normal", "prompt": "ok", "event_hook": None,
+                {"id": "normal", "name": "normal", "prompt": "ok", "hooks": [],
                  "next_run_at": 0, "scheduled": True, "enabled": True},
             ]
             s._workspace = ""
@@ -148,12 +148,14 @@ class HookHardeningTests(unittest.TestCase):
         s._preflight_cache = {}
         s._run_preflight = mock.Mock(return_value=True)
         s._call_hook_ack = mock.Mock()
-        entry = {"id": "p1", "name": "n", "event_hook": "h.py",
+        entry = {"id": "p1", "name": "n", "hooks": ["h.py"],
                  "exclude_from_concurrency": False, "slash": []}
         s._entries = [entry]
         s._find_entry = mock.Mock(return_value=entry)
 
-        req = al.make_dispatch_request(source="hook", entry_id="p1", prompt="x")
+        req = al.make_dispatch_request(
+            source="hook", entry_id="p1", prompt="x", meta={"_hook": "h.py"}
+        )
         s._dispatch_prompt = mock.Mock(return_value=False)
         with mock.patch.object(al, "_capture_pane", return_value="> "):
             self.assertEqual(s._try_dispatch_request(req), "defer")

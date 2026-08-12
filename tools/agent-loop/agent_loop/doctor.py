@@ -11,6 +11,13 @@ _REQUIRED_DIRS = (
     "loop-adaptive",
 )
 
+_TURN_HOOK_ASSETS = {
+    "kiro": ("kiro/agent-loop.json",),
+    "claude": ("claude/.claude-plugin/plugin.json", "claude/hooks/hooks.json"),
+    "copilot": ("copilot/plugin.json", "copilot/hooks.json"),
+    "opencode": ("opencode/plugins/agent-loop.js",),
+}
+
 
 def _finding(
     fid: str,
@@ -173,6 +180,43 @@ def _check_directories(agent_home: Path, *, fix: bool) -> list[dict[str, Any]]:
                 f"ディレクトリ OK: {path}",
             ))
     return findings
+
+
+def _check_turn_hook_assets(adapter: str, assets_dir: Path) -> list[dict[str, Any]]:
+    required = _TURN_HOOK_ASSETS.get(str(adapter), ())
+    if not required:
+        return [_finding(
+            "turn_hook.assets_not_required", "info",
+            f"{adapter}: external asset は不要です",
+        )]
+    missing = [name for name in required if not (Path(assets_dir) / name).is_file()]
+    if missing:
+        return [_finding(
+            "turn_hook.assets_missing", "warning",
+            f"{adapter}: {', '.join(missing)}（画面監視へfallbackします）",
+        )]
+    return [_finding(
+        "turn_hook.assets_ok", "info", f"{adapter}: {Path(assets_dir)}",
+    )]
+
+
+def _check_turn_hook_runtime(runtime_dir: Path) -> list[dict[str, Any]]:
+    if not runtime_dir.is_dir():
+        return []
+    unsafe = []
+    for path in [*runtime_dir.iterdir(), *runtime_dir.glob("*/active/*.json"),
+                 *runtime_dir.glob("*/events/*.json")]:
+        try:
+            if path.stat().st_mode & 0o077:
+                unsafe.append(str(path))
+        except OSError:
+            pass
+    if unsafe:
+        return [_finding(
+            "turn_hook.runtime_permissions", "warning",
+            f"group/other権限があります: {', '.join(unsafe[:5])}",
+        )]
+    return [_finding("turn_hook.runtime_ok", "info", f"runtime権限 OK: {runtime_dir}")]
 
 
 def _check_daemon_state(state_dir: Path) -> list[dict[str, Any]]:
@@ -360,6 +404,16 @@ def run_doctor_checks(
     findings.extend(_check_directories(home, fix=fix))
     findings.extend(_check_config_load(work_cwd, home))
     findings.extend(_check_commands(config))
+    adapter = "kiro"
+    agent_cli = str(config.get("agent_cli") or "").strip()
+    if agent_cli:
+        try:
+            adapter = str(_resolve_cli_profile(config, project_dir=work_cwd).turn_completion or "")
+        except CliProfileError:
+            adapter = ""
+    if adapter:
+        findings.extend(_check_turn_hook_assets(adapter, _turn_hook_assets_dir()))
+    findings.extend(_check_turn_hook_runtime(home / "loop-hooks"))
     findings.extend(_check_daemon_state(loop_state))
     findings.extend(_check_slots(slots, slot_timeout, fix=fix))
     findings.extend(_check_send_requests(send_root, fix=fix))

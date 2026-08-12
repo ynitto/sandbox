@@ -194,7 +194,9 @@ def _sm_execute_action(*, workflow_path: str, state_id: str, state: dict, contex
         for _round in range(_SM_MAX_TOOL_ROUNDS):
             retry = (f"Retry {attempt}/{max_attempts - 1}: the previous output violated "
                      "the Output Contract." if attempt else "")
-            raw = _sm_run_agent(agent, _sm_planner_prompt(
+            # 制御応答（次の一手の JSON）は編集能力の要らない周。定義が申告していれば
+            # JSON 用の変種へ振り替える（run_goal と同じ口を使う——C7）。
+            raw = _sm_run_agent(_tl_control_agent(agent, cwd), _sm_planner_prompt(
                 action=rendered, cwd=cwd, skills=skills, reads=sorted(reads),
                 history=history, retry=retry,
             ), cwd=cwd, readonly=True, read_files=sorted(reads), files=[], log_file=log_file)
@@ -323,7 +325,7 @@ def _sm_next_state(*, scripts: dict, workflow_path: str, state_id: str, output: 
     evals: dict = {}
     if pending:
         raw = _sm_run_agent(
-            agent,
+            _tl_control_agent(agent, cwd),
             "Evaluate only these state-machine conditions against the completed action "
             "output. Return one JSON object mapping each index to true or false.\n"
             f"Output:\n{output}\nConditions:\n{json.dumps(pending, ensure_ascii=False)}",

@@ -41,6 +41,10 @@ ENV/
 # Logs and local databases
 *.log
 *.sqlite3
+tools/agent-tools/eval/results/*
+!tools/agent-tools/eval/results/README.md
+!tools/agent-tools/eval/results/archive/
+!tools/agent-tools/eval/results/archive/**
 
 # Unit test / coverage reports
 .coverage

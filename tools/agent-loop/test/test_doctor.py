@@ -114,6 +114,11 @@ class DoctorTests(unittest.TestCase):
                 al.cmd_doctor(args)
         exit_mock.assert_called_once_with(1)
 
+    def test_turn_hook_asset_missing_is_reported(self):
+        findings = al._check_turn_hook_assets("claude", self.root / "missing")
+        self.assertEqual(findings[0]["id"], "turn_hook.assets_missing")
+        self.assertEqual(findings[0]["severity"], "warning")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

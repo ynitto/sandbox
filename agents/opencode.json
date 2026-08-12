@@ -12,6 +12,7 @@
   "readonly": "best-effort",
   "interactive": {
     "command": ["opencode"],
+    "turn_completion": "opencode",
     "prompt_inject": "send-keys"
   },
   "session_log": {

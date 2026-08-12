@@ -14,6 +14,7 @@
   "no_session_args": [],
   "interactive": {
     "command": ["copilot"],
+    "turn_completion": "copilot",
     "prompt_inject": "send-keys"
   },
   "errors": [

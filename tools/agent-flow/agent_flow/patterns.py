@@ -263,6 +263,66 @@ def fallback_granularity(level: "str | None") -> str:
     return lv if lv in GRANULARITY_SCOPE_DIRECTIVES and lv != "auto" else _AUTO_FALLBACK_GRANULARITY
 
 
+# --------------------------------------------------------------------------
+# 実行 tier のお膳立て（tier: basic）— 予算逼迫の緊急時、普段は任せない役割・作業へ
+# basic（最小能力）ワーカーを投入せざるを得なくなる。そのとき planner/evaluator が
+# 「basic でも渡せる形」に計画・評価を寄せる。tier は agent-control（dashboard の宣言）
+# の workloads.flow.tier を読むだけで、モデル選定自体はルーティング側の仕事のまま。
+# --------------------------------------------------------------------------
+BASIC_TIER = "basic"
+
+TIER_PLANNER_DIRECTIVES = {
+    BASIC_TIER: (
+        "実行ティア: basic（最小能力のワーカーが実行する）。各成果ノードは 1 つの短い手順"
+        "だけを任せられる粒度にし、goal には対象パス・期待する成果・確認方法まで具体的に"
+        "書くこと（ワーカーの推測・判断に任せない）。判断や統合が要る工程は verify/"
+        "synthesize 等の別ノードへ分け、1 ノードに複数手順を積まないこと。"
+    ),
+}
+
+TIER_EVALUATOR_DIRECTIVES = {
+    BASIC_TIER: (
+        "実行ティア: basic（最小能力のワーカーが実行する）。new_tasks を足すときは"
+        " 1 ノード = 1 つの短い手順に分解し、goal に対象・期待する成果・確認方法を明記する"
+        "こと。能力不足に見える失敗は、大きな作り直し 1 つではなく、より小さく明確な手順への"
+        "分割で対処すること。"
+    ),
+}
+
+
+def flow_tier() -> str:
+    """flow ワークロードがいま走っている実行 tier（agent-control 宣言。未宣言は空文字）。"""
+    return _methodlib.current_tier(_control_dir(), "flow")
+
+
+def tier_planning_granularity(level: "str | None", tier: str) -> str:
+    """basic tier では auto（complexity 導出）を finest へ倒す。
+
+    basic に「complexity から導けば moderate=fine でよい」は成り立たない——ノードの大きさは
+    要求の複雑さではなくワーカーの能力が律速になる。明示指定（coarse/fine/finest）は
+    人の意思なので tier では覆さない。"""
+    lv = (level or "auto").lower()
+    if lv == "auto" and str(tier or "") == BASIC_TIER:
+        return "finest"
+    return lv
+
+
+def tier_planner_directive(tier: "str | None") -> str:
+    return TIER_PLANNER_DIRECTIVES.get(str(tier or ""), "")
+
+
+def tier_evaluator_directive(tier: "str | None") -> str:
+    return TIER_EVALUATOR_DIRECTIVES.get(str(tier or ""), "")
+
+
+def tier_review_decision(review_setting, patterns, tier: "str | None") -> bool:
+    """review 三値解決の tier 対応版。basic では auto を常時有効へ倒す
+    （basic の成果を無検証で集約・終端しない）。明示 True/False は従来どおり尊重する。"""
+    if not isinstance(review_setting, bool) and str(tier or "") == BASIC_TIER:
+        return True
+    return _review_decision(review_setting, patterns)
+
+
 def _strategy_to_graph(pattern: str, request: str, par: int, review: bool = False):
     """選んだパターンを初期タスクグラフ（kind 付き）へ落とし込む。"""
     short = _first_line(request)   # 見出しは先頭の非空行（構造化要求でも目的が 1 行で読める）
@@ -306,36 +366,41 @@ def _strategy_to_graph(pattern: str, request: str, par: int, review: bool = Fals
                     "deps": gen_ids, "kind": "synthesize"}]
 
 
-def plan_strategy_stub(request: str, review="auto", granularity="auto"):
+def plan_strategy_stub(request: str, review="auto", granularity="auto", tier=""):
     """要求からパターンと並列数を選び、初期グラフを作る（LLM 無し版）。
-    review は 'auto'（既定）/True/False の三値。auto は集約パターンで自動有効。
+    review は 'auto'（既定）/True/False の三値。auto は集約パターンで自動有効
+    （tier=basic では常時有効へ倒す）。
     granularity で並列ノード数をスケールする（auto/coarse=×1, fine=×2, finest=×3）。"""
     pattern = _detect_pattern(request)
     base = plan_stub(request)
     par = maybe_scale_parallelism(request, _parallelism(request, len([t for t in base if not t["deps"]])),
                                   granularity)
-    review = _review_decision(review, [pattern])
+    review = tier_review_decision(review, [pattern], tier)
     tasks = _strategy_to_graph(pattern, request, par, review)
     patterns = [pattern] + (["adversarial-verification"] if review and pattern != "adversarial-verification" else [])
     strategy = {"patterns": patterns, "parallelism": par, "review": review,
                 "reason": f"stub heuristic → {pattern}（粒度 {granularity}）"
                           + ("（統合前レビュー有）" if review else "")}
+    if tier:
+        strategy["tier"] = str(tier)
     return strategy, tasks
 
 
-def plan_strategy_pattern(pattern: str, request: str, review="auto", granularity="auto"):
+def plan_strategy_pattern(pattern: str, request: str, review="auto", granularity="auto", tier=""):
     """人が選んだ標準パターンを、既存の正準グラフ生成へそのまま通す。"""
     if pattern not in PATTERNS:
         raise UserPlanError(f"標準パターンが不正です: {pattern}")
     base = plan_stub(request)
     par = maybe_scale_parallelism(
         request, _parallelism(request, len([t for t in base if not t["deps"]])), granularity)
-    include_review = _review_decision(review, [pattern])
+    include_review = tier_review_decision(review, [pattern], tier)
     tasks = _strategy_to_graph(pattern, request, par, include_review)
     patterns = [pattern] + (["adversarial-verification"]
                             if include_review and pattern != "adversarial-verification" else [])
     strategy = {"patterns": patterns, "parallelism": par, "review": include_review,
                 "reason": f"ユーザー選択 → {pattern}（粒度 {granularity}）"}
+    if tier:
+        strategy["tier"] = str(tier)
     return strategy, tasks
 
 
@@ -491,10 +556,12 @@ def _record_rule_agreement(strategy: dict, request: str, granularity: str) -> di
 
 
 def plan_strategy_agent(request: str, model: str | None, review="auto", granularity="auto",
-                        context: str = ""):
+                        context: str = "", tier=""):
     """kiro-cli にパターン選択・並列数・初期グラフを決めさせる。
-    review は 'auto'（既定）/True/False の三値。auto は集約パターンで自動有効。
+    review は 'auto'（既定）/True/False の三値。auto は集約パターンで自動有効
+    （tier=basic では常時有効へ倒す）。
     granularity で分解の細かさを指示し、返ってきた並列数も粒度倍率でスケールする。
+    tier=basic では basic ワーカー向けの分解指示（1 ノード = 1 短手順・具体的な goal）を足す。
     ワークスペース（唯一の書込先）は run 単位なので、ノードへの repo 割当はしない。
 
     `context`（案 H・オプトイン）: agent-flow が run の meta へ固定したプロジェクト文脈
@@ -509,11 +576,13 @@ def plan_strategy_agent(request: str, model: str | None, review="auto", granular
     review_note = ("統合（synthesize/reduce）を伴うパターンでは、集約の前に verify ノードを 1 つ挟み、"
                    "事前チェック・敵対的レビューを行ってください。" if review is not False else "")
     gran_note = granularity_directive(granularity)
+    tier_note = tier_planner_directive(tier)
     prompt = (
         "あなたは分散 Dynamic Workflow の計画役です。以下のワークフローパターンを知っています:\n"
         f"{catalog}\n\n"
         "patterns に書けるのは上記 7 つのパターン名だけです。派生語・同義語は使わず、"
         "近いものは必ず上記の正規名へ読み替えてください（例: 'panel of verifiers'→adversarial-verification）。\n"
+        + (tier_note + "\n" if tier_note else "")
         + (gran_note + "\n" if gran_note else "")
         + f"要求に最も適したパターンと並列数を選び、{compose}{review_note}"
         "それを反映した初期タスクグラフを作ってください。各タスクには kind を付けます"
@@ -548,9 +617,11 @@ def plan_strategy_agent(request: str, model: str | None, review="auto", granular
         strategy = {
             "patterns": patterns,
             "parallelism": maybe_scale_parallelism(request, int(data.get("parallelism", 2) or 2), granularity),
-            "review": _review_decision(review, patterns),
+            "review": tier_review_decision(review, patterns, tier),
             "reason": str(data.get("reason", "")),
         }
+        if tier:
+            strategy["tier"] = str(tier)
         method_app = _last_methods("planner")
         if method_app.get("methods"):
             strategy["methods"] = method_app["methods"]
@@ -576,7 +647,7 @@ def plan_strategy_agent(request: str, model: str | None, review="auto", granular
         # LLM 経路が全滅した最後の砦。ここは要求のキーワードだけで決めるので、選ばれた
         # パターンは「要求の分析結果」ではない。そう読めるよう reason にも残す。
         log("planner", f"エージェント planner が計画を返しませんでした → stub へ縮退: {str(e)[:200]}")
-        strategy, tasks = plan_strategy_stub(request, review, granularity)
+        strategy, tasks = plan_strategy_stub(request, review, granularity, tier)
         strategy["reason"] = f"[agent planner 失敗: {str(e)[:120]}] {strategy.get('reason', '')}".strip()
         return strategy, tasks
 
@@ -641,7 +712,7 @@ def _skill_env() -> dict:
 
 
 def _planner_fallback(request: str, model: "str | None", review, granularity: "str | None",
-                      context: str, why: str):
+                      context: str, why: str, tier=""):
     """計画スキルを使えなかったときの縮退。**必ず記録を残す**。
 
     以前はここが黙って落ちていたため、スキルが一度も起動していないのに「計画できた」ように
@@ -649,17 +720,29 @@ def _planner_fallback(request: str, model: "str | None", review, granularity: "s
     選び続けても気づけない）。ログと strategy.reason の両方へ理由を残す。"""
     log("planner", f"flow-planner を使えませんでした → エージェント planner へ縮退: {why[:200]}")
     strategy, tasks = plan_strategy_agent(request, model, review,
-                                          fallback_granularity(granularity), context)
+                                          fallback_granularity(granularity), context, tier)
     strategy["reason"] = f"[flow-planner 不使用: {why[:120]}] {strategy.get('reason', '')}".strip()
     return strategy, tasks
 
 
+def _skill_flag_supported(script: str, flag: str) -> bool:
+    """インストール済みスキルの版ずれ防御。スキルが知らない引数を渡すと argparse が rc=2 で
+    落ち、計画全体がエージェント planner へ縮退してしまう。スクリプト本文に該当フラグが
+    現れるときだけ渡す（決定的・追加コストはファイル読み 1 回）。"""
+    try:
+        with open(script, encoding="utf-8") as f:
+            return flag in f.read()
+    except OSError:
+        return False
+
+
 def plan_strategy_flow_planner(request: str, model: str | None, review="auto", granularity="auto",
-                               context: str = ""):
+                               context: str = "", tier=""):
     """flow-planner スキルの3段パイプラインを呼び出す。
     スキルが見つからない / 失敗した場合は plan_strategy_agent にフォールバック。
     granularity はスキルへ `--granularity` で渡す（auto=complexity 導出 / 明示は優先）。
     タスク数・スコープ契約はスキル側が決めるため、ここでの並列数倍率は掛けない。
+    tier はスキルが `--tier` を知っている版のときだけ渡す（basic の分解指示・review 強制）。
 
     `context`（案 H・オプトイン）はスキルへ `--context` で渡す（スキルの Phase 1/3 が
     プロンプト先頭へ前置する。独立プロセスのため agentcore は import させず、
@@ -668,13 +751,16 @@ def plan_strategy_flow_planner(request: str, model: str | None, review="auto", g
     if not script:
         # flow-planner スキル未インストール → エージェント planner にフォールバック
         return _planner_fallback(request, model, review, granularity, context,
-                                 f"{_PLANNER_SKILL or 'flow-planner'} スキルが見つかりません")
+                                 f"{_PLANNER_SKILL or 'flow-planner'} スキルが見つかりません",
+                                 tier)
     # 計画に使う CLI/モデルは planner の設定（agents: planner: {agent_cli, model}）に従わせる。
     # スキル側の既定は kiro-cli だが、それを黙って使うと agent_cli を claude/codex にしていても
     # 計画だけ kiro-cli で走り、kiro-cli が使えない環境では毎回失敗して stub へ落ちていた。
     cli, model_ov = _agent_for("planner")
     cmd = [sys.executable, script, request, "--granularity", str(granularity or "auto"),
            "--agent-cli", cli]
+    if tier and _skill_flag_supported(script, "--tier"):
+        cmd += ["--tier", str(tier)]
     model = model_ov or model
     if model:
         cmd += ["--model", model]
@@ -706,12 +792,149 @@ def plan_strategy_flow_planner(request: str, model: str | None, review="auto", g
         final_strategy = {
             "patterns": patterns,
             "parallelism": int(strategy.get("parallelism", 2) or 2),
-            "review": _review_decision(review, patterns) if not isinstance(strategy.get("review"), bool)
+            "review": tier_review_decision(review, patterns, tier)
+                      if not isinstance(strategy.get("review"), bool)
                       else strategy["review"],
             "reason": f"[flow-planner] {strategy.get('reason', '')}（粒度 {resolved}）",
             "granularity": resolved,
         }
+        if tier:
+            final_strategy["tier"] = str(strategy.get("tier") or tier)
         # ルール側の入力は `resolved`（LLM 由来）ではなく呼び出し引数の granularity。
         return _record_rule_agreement(final_strategy, request, granularity), tasks
     except Exception as e:  # noqa: BLE001 — flow-planner 失敗時はエージェント planner にフォールバック
-        return _planner_fallback(request, model, review, granularity, context, str(e))
+        return _planner_fallback(request, model, review, granularity, context, str(e), tier)
+
+
+# --------------------------------------------------------------------------
+# 計画承認ゲート（plan gate）— 人間の承認・差し戻し（オプトイン・既定 off）
+# --------------------------------------------------------------------------
+# planner が作った初期グラフの実行前に human 承認ノードを 1 つ挟む。root タスクを全て
+# ゲート依存に付け替えるため、承認（approved）までワーカーは何も実行しない。
+# 差し戻し（rejected＋コメント）は orchestrator が決定的に検知し、指摘を planner へ渡して
+# 再計画する（max_retries で有界）。期限切れ・未承認は failed 終端（フェイルクローズ）。
+# 「自動 planner は human を生成しない」という不変条件はそのまま——ゲートは LLM 出力では
+# なく、人がオプトインしたときに agent-flow が決定的に挿入する。
+PLAN_GATE_PREFIX = "plan-gate"
+_PLAN_GATE_ID_RE = re.compile(r"^plan-gate(?:-(\d+))?$")
+# interaction request 全体の上限は 64KB（agentcore.interaction）。要約は余裕を持って抑える。
+_PLAN_GATE_PROMPT_LIMIT = 16000
+PLAN_GATE_FEEDBACK_MARK = "[計画への差し戻し指摘（必ず反映すること）]"
+
+
+def plan_gate_id(attempt: int) -> str:
+    """試行 1 は従来 id 系と衝突しない素の plan-gate、以降は -N を付ける。
+    `-r<数字>` を含めないこと（`_retry_depth` が作り直し回数と誤読する）。"""
+    return PLAN_GATE_PREFIX if attempt <= 1 else f"{PLAN_GATE_PREFIX}-{attempt}"
+
+
+def plan_gate_attempt(nid: str) -> "int | None":
+    """plan gate ノード id なら試行番号を、それ以外は None を返す。"""
+    m = _PLAN_GATE_ID_RE.match(str(nid or ""))
+    return int(m.group(1) or 1) if m else None
+
+
+def render_plan_gate_prompt(request: str, strategy: dict, tasks: list) -> str:
+    """人が承認/差し戻しを判断するための計画要約。ゲート自身（human ノード）は載せない。"""
+    strat = strategy or {}
+    head = [
+        f"要求: {_first_line(request, 200)}",
+        f"patterns: {', '.join(strat.get('patterns') or [])} / 並列 {strat.get('parallelism', '?')}"
+        + (f" / 粒度 {strat['granularity']}" if strat.get("granularity") else "")
+        + (f" / tier {strat['tier']}" if strat.get("tier") else ""),
+    ]
+    reason = str(strat.get("reason") or "").strip()
+    if reason:
+        head.append(f"選定理由: {reason[:300]}")
+    rows = [f"- {t['id']} [{t.get('kind', 'work')}]"
+            + (f" deps={','.join(t['deps'])}" if t.get("deps") else "")
+            + f": {' '.join(str(t.get('goal', '')).split())[:160]}"
+            for t in tasks if t.get("kind") != "human"]
+    body = "\n".join(head) + "\n\nタスクグラフ:\n" + "\n".join(rows) + (
+        "\n\n承認（approved）で実行を開始します。差し戻し（rejected）はコメントの指摘を"
+        "反映して再計画します（粒度・分け方への指摘もコメントで伝えられます）。")
+    if len(body) > _PLAN_GATE_PROMPT_LIMIT:
+        body = body[:_PLAN_GATE_PROMPT_LIMIT] + "…（省略）"
+    return body
+
+
+def plan_gate_task(request: str, strategy: dict, tasks: list,
+                   attempt: int = 1, timeout: float = 0.0) -> dict:
+    """計画承認ゲートの human ノードを組み立てる（interaction は正規化済みで運ぶ）。"""
+    spec = {"mode": "approval",
+            "prompt": render_plan_gate_prompt(request, strategy, tasks),
+            "audience": ["reviewer"]}
+    if timeout and float(timeout) > 0:
+        spec["timeout_seconds"] = int(float(timeout))
+    return {"id": plan_gate_id(attempt), "kind": "human", "deps": [],
+            "goal": "計画の承認待ち（承認で実行開始・差し戻しで再計画）",
+            "interaction": _interaction.normalize_spec(spec)}
+
+
+def apply_plan_gate(nodes: dict, tasks: list, gate: dict) -> None:
+    """graph nodes と task 列の両方へゲートを差し込み、root（deps 空）をゲート依存へ付け替える。
+    base-sync 注入の**後**に呼ぶこと——base-sync も承認前に走らせない（ワークスペースへの
+    書き込みを人の承認前に始めない）。"""
+    gid = gate["id"]
+    for t in tasks:
+        if t.get("id") != gid and not t.get("deps"):
+            t["deps"] = [gid]
+    for nid, node in nodes.items():
+        if nid != gid and not node.get("deps"):
+            node["deps"] = [gid]
+    nodes[gid] = _node_entry(gate)
+    tasks.append(gate)
+
+
+def plan_gate_state(nodes: dict, results: dict) -> "dict | None":
+    """グラフ中の（最新の）plan gate の決着状態。ゲートが無ければ None。
+
+    返り値: {"state": "waiting"|"approved"|"rejected"|"unapproved",
+             "id", "attempt", "comment"}。rejected は人の差し戻し（comment に指摘）、
+    unapproved は期限切れ・interaction エラー等の「承認に至らない失敗」。"""
+    gates = [(plan_gate_attempt(nid), nid) for nid in nodes
+             if nodes[nid].get("kind") == "human" and plan_gate_attempt(nid) is not None]
+    if not gates:
+        return None
+    attempt, gid = max(gates)
+    r = results.get(gid) or {}
+    status = r.get("status")
+    out = {"id": gid, "attempt": attempt, "comment": ""}
+    if status == "done":
+        return {**out, "state": "approved"}
+    if status != "failed":
+        return {**out, "state": "waiting"}
+    data = r.get("data") if isinstance(r.get("data"), dict) else {}
+    answer = data.get("answer") if isinstance(data.get("answer"), dict) else {}
+    out["comment"] = str(answer.get("comment") or "").strip()
+    if str(data.get("outcome") or "") == "rejected":
+        return {**out, "state": "rejected"}
+    return {**out, "state": "unapproved"}
+
+
+def plan_gate_feedback_request(request: str, comment: str) -> str:
+    """差し戻しコメントを planner へ渡す要求文。元要求へ**毎回作り直しで**付ける
+    （前回の注釈へ積み増さない＝最新の指摘だけが権威）。"""
+    body = str(comment or "").strip() or "（コメント無し。分解の粒度と分け方を見直して再計画すること）"
+    return f"{request}\n\n{PLAN_GATE_FEEDBACK_MARK}\n{body}"
+
+
+def dedupe_task_ids(tasks: list, taken: "set[str]") -> list:
+    """再計画の新タスク id が「結果を確定して残るノード」と衝突したらサフィックスで避け、
+    deps も同じ改名で付け替える（結果ファイルは node id がキーなので、衝突すると旧結果を
+    新タスクの成果と誤読する）。"""
+    renamed: dict = {}
+    used = set(taken)
+    for t in tasks:
+        tid = str(t["id"])
+        if tid in used:
+            n = 2
+            while f"{tid}-g{n}" in used:
+                n += 1
+            renamed[tid] = f"{tid}-g{n}"
+            t["id"] = renamed[tid]
+        used.add(t["id"])
+    if renamed:
+        for t in tasks:
+            t["deps"] = [renamed.get(d, d) for d in (t.get("deps") or [])]
+    return tasks

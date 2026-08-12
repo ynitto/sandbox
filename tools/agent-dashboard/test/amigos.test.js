@@ -250,7 +250,8 @@ test('クロス検証: agent-amigos stub の実バスを dashboard リーダー�
   );
   const entry = path.join(__dirname, '..', '..', 'agent-amigos', 'agent-amigos.py');
   const env = { ...process.env, AGENT_AMIGOS_NODE: 'owner-node', AGENT_AMIGOS_STUB_COST: '0.01',
-                AGENT_BUDGET_DIR: path.join(work, 'nb') };
+                AGENT_BUDGET_DIR: path.join(work, 'nb'),
+                AGENT_CONTROL_DIR: path.join(work, 'control') };
   let r = spawnSync('python3', [entry, 'post', '--bus', bus, '--design',
     path.join(work, 'design.md'), '--roles', path.join(work, 'roles.json'),
     // --drive: 公示後そのまま終端まで回す単発（旧 --serve の常駐は廃止。常駐は
@@ -397,7 +398,8 @@ test('クロス検証: dashboard の投函 → Python 常駐デーモンが取�
   // 1 本に集約したので、このツールを常駐させる経路はもう無い（実装計画 W1-9）。
   const entry = path.join(__dirname, '..', '..', 'agent-amigos', 'agent-amigos.py');
   const env = { ...process.env, AGENT_AMIGOS_STUB_COST: '0.01',
-                AGENT_BUDGET_DIR: path.join(root, 'nb') };
+                AGENT_BUDGET_DIR: path.join(root, 'nb'),
+                AGENT_CONTROL_DIR: path.join(root, 'control') };
   const r = spawnSync('python3',
     [entry, 'drive', '--agent-cli', 'stub', '--cycles', '10', '--interval', '0'],
     { encoding: 'utf8', env, cwd: home });
@@ -553,7 +555,8 @@ test('クロス検証: accept 投函 → デーモンが納品棚へ搬出し da
   const cfg = { ...engineConfig([root]), amigos: {} };
   const entry = path.join(__dirname, '..', '..', 'agent-amigos', 'agent-amigos.py');
   const env = { ...process.env, AGENT_AMIGOS_STUB_COST: '0.01',
-                AGENT_BUDGET_DIR: path.join(root, 'nb') };
+                AGENT_BUDGET_DIR: path.join(root, 'nb'),
+                AGENT_CONTROL_DIR: path.join(root, 'control') };
   // 旧 serve（常駐）は廃止。単発駆動 drive が commands/ 取り込みも担う（実装計画 W1-9）。
   const serve = (cycles) => {
     const r = spawnSync('python3',

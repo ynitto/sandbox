@@ -5,8 +5,9 @@
   "command": ["agent-aider", "--model", "ollama_chat/{model}",
               "--no-git", "--no-auto-commits", "--yes-always", "--no-check-update",
               "--no-show-model-warnings",
-              "--analytics-disable", "--no-stream", "--no-pretty", "--no-gitignore",
+              "--no-analytics", "--no-stream", "--no-pretty", "--no-gitignore",
               "--map-tokens", "0"],
+  "json_variant": "ollama-json",
   "prompt_via": "argv",
   "prompt_flag": "--message",
   "file_flag": "--file",
@@ -18,11 +19,6 @@
   "write_args": [],
   "readonly_args": ["--dry-run"],
   "readonly": "enforced",
-  "session_log": {
-    "format": "markdown",
-    "paths": [".aider.chat.history.md"],
-    "usage": false
-  },
   "errors": [
     { "match": "could not connect|connection refused|APIConnectionError",
       "class": "env", "hint": "ollama サーバが起動していません（ollama serve を起動してください）" },

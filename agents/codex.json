@@ -27,6 +27,7 @@
   },
   "interactive": {
     "command": ["codex"],
+    "turn_completion": "codex",
     "readonly_args": ["--sandbox", "read-only"],
     "no_session_args": ["--ephemeral"],
     "busy_pattern": "esc to interrupt",

@@ -34,9 +34,13 @@ pip install pyyaml
 bash install.sh
 ```
 
+YAMLから呼ぶ同梱スクリプトは実行ファイルと同じprefixの `hooks/`、CLI lifecycle用assetは
+`agent-hooks/` へ配置されます。installerは各CLIを起動せず、global/project設定も変更しません。
+
 ### 旧設定の移行
 
-旧ツールの設定は内容を変えず、ファイル名と置き場だけを変更する。移行先が既にある場合は上書きせず、内容を統合する。
+旧ツールの設定はファイル名と置き場を変更し、`event_hook` は `hooks`、
+`event_hook_config` は `hook_config` へ改名する。移行先が既にある場合は上書きせず、内容を統合する。
 
 ```bash
 mkdir -p ~/.agents
@@ -118,6 +122,11 @@ agent-loop --version
   送る」のに対し、こちらは「今ここで実行して結果を返す」口です。ツールループ非内蔵の CLI
   （`headless_autonomy: single-shot`）には限定ツール契約でツール実行を供給し、`--acceptance`
   が無ければ結果は「検証なし」になります。終了時に `RESULT {json}` を 1 行出力します。
+  機械が照合するのは受入条件のバッククォート内にある**パスの形をした表記**だけです
+  （区切り `/` か拡張子を持つもの。`agent-audit` のようなコマンド名は照合対象外）。
+  ツール契約の制御応答（次の一手の JSON）は、定義が `json_variant` を申告していれば
+  その起動形へ振り替えます（編集は元の CLI のまま）。編集用 CLI に制御を兼ねさせると、
+  材料が揃った時点でモデルが本文を書き始め、その周が捨てられます。
   tmux で様子を見せたいときは、このコマンドを tmux ウィンドウの中で起動してください
   （対話 CLI かどうかとは無関係——tmux は送る手段・見る手段）。
 - `statemachine` は statemachine-use のワークフローを aider 等の **headless CLI** で完走させる
@@ -148,6 +157,22 @@ environment_handoff:
 - ペイン起動時に `HOME` と `AGENT_HOME`（および agent 定義の `env`）を tmux 起動環境へ明示します。
 - `prompt: true` のとき、root プロンプト先頭へ `[ENV]...[/ENV]` を付けます（Ralph child には付けません）。
 - `token_env_names` は `[A-Z_][A-Z0-9_]*` のみ受理し、値は `SET|UNSET` だけを渡します。
+
+### 対話CLIのターン完了検知
+
+`agents/<name>.json` が `interactive.turn_completion` を宣言する Kiro classic / Claude Code /
+Codex / Copilot / OpenCode では、agent-loopが起動したmanaged paneにだけCLI固有hookを注入します。
+native eventはinstance・pane・dispatch generation・random tokenを検証してからSlotMonitorへ渡し、
+画面監視と同じcallback経路で一度だけ完了させます。asset欠落やCLIの仕様差では従来の画面監視へ
+自動fallbackします。headless、external pane、手動起動したCLI、Cursor、Kiro v3には注入しません。
+
+- Kiro classic: private `KIRO_HOME` へagents/prompts/skills/steeringとMCP設定だけをsnapshotし、
+  選択中custom agentを複製してstop hookを追加します。sessions/logs/cache/authはコピーしません。
+- Claude/Copilot: `--plugin-dir`を加算し、user/projectのinstructions・skills・MCP・plugin探索を維持します。
+- Codex: `CODEX_HOME`を変えずone-off `notify`を多重化し、既存notifyも後段で実行します。
+- OpenCode: pluginだけのprivate `OPENCODE_CONFIG_DIR`を加算し、既存config mergeを維持します。
+
+これはagent-loop内部の完了検知で、YAMLの `hooks`（外部イベント取得スクリプト）とは別機能です。
 
 ### agent-tuning（汎用注入）
 
@@ -198,10 +223,18 @@ kiro_options:
 # タイムアウト（秒）
 startup_timeout: 60      # kiro-cli 起動待ち
 
+# 設定内の文字列から参照できる値
+mapping:
+  workspace:
+    main: /path/to/workspace
+  message:
+    review: 直近の変更をレビューしてください
+
 # 定期プロンプト（省略可）
 prompts:
   - name: "コードレビュー"
-    prompt: "直近の変更のコードレビューをしてください。"
+    prompt: "{{lookup message review}}"
+    cwd: "{{lookup workspace main}}"
     tuning_profile: default
     interval_minutes: 30
     enabled: true
@@ -219,9 +252,9 @@ prompts:
     interval_minutes: 60
     enabled: true
 
-  # event_hook: 送信タイミング・内容を Python スクリプトで制御する
+  # hooks: 送信タイミング・内容を Python スクリプトで制御する
   - name: "GitLab Issue ワーカー"
-    event_hook: ~/sandbox/tools/agent-loop/hooks/gitlab-issue-hook.py
+    hooks: gitlab-issue-hook
     event_hook_fallback: true   # 更新が無くてもランダムに 1 件送る
     interval_minutes: 5
     enabled: true
@@ -249,19 +282,22 @@ prompts:
 - スラッシュコマンドを解する対話 CLI なら何にでも使えます（特定の CLI 専用ではありません）。
 
 詳細な仕様は
-[`docs/designs/agent-loop-design.md` の機能 6](../../docs/designs/agent-loop-design.md#機能-6-slash-プロパティ--実装済み)。
+[`docs/designs/agent-loop-design.md` の機能 6](../../docs/designs/agent-loop-design.md#機能-6-slash-プロパティ)。
 
-### event_hook（フックによる送信制御）
+### hooks（フックによる送信制御）
 
-`event_hook` にフックスクリプトのパスを指定すると、スケジュール発火のたびに
-フックの `check()` が呼ばれます。
+`hooks` にフックスクリプトを文字列または配列で指定すると、スケジュール発火のたびに
+各フックの `check()` が呼ばれ、返された prompt がそれぞれ配送されます。パスの代わりに
+`gitlab-issue-hook` のような名前を指定すると、インストール済みの `hooks/` を探索します。
 
 ```python
 def check() -> str | None:
     ...  # str を返す→その内容を送信 / None を返す→今回はスキップ
 ```
 
-- `event_hook` を使う場合 `prompt` は省略できます（フックが内容を決めるため）。
+- `hooks` を使う場合 `prompt` は省略できます（フックが内容を決めるため）。
+- フック固有設定は `hook_config` に辞書で指定し、`check(config)` の
+  `config["hook_config"]` へ渡されます。
 - `event_hook_fallback: true`（既定 `false`）にすると、フックに環境変数
   `AGENT_LOOP_EVENT_HOOK_FALLBACK=1` が渡されます。フック側はこれを見て
   「**発火すべき更新が無くても、フィルター条件に合致する対象をランダムに 1 件
@@ -280,6 +316,11 @@ def check() -> str | None:
 GitLab 用の前二つは `gitlab-idd` スキルの `scripts/gl.py` を利用します。`GITLAB_TOKEN` を
 設定し、必要に応じて環境変数（`AGENT_LOOP_GL_PY`, `AGENT_LOOP_GL_CWD`,
 `AGENT_LOOP_ISSUE_LABELS` など）でパスやフィルター条件を上書きしてください。
+
+### mapping（設定値の参照）
+
+トップレベルの `mapping` にラベルごとの辞書を置くと、設定内の文字列で
+`{{lookup <ラベル> <キー>}}` として参照できます。存在しないラベルまたはキーは設定エラーです。
 
 ## tmux セッションの命名規則
 

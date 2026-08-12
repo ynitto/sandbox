@@ -114,6 +114,7 @@ def make_launch_spec(
     profile_name: str,
     effective_model: str | None = None,
     ownership: str = "managed-persistent",
+    turn_completion: str = "",
 ) -> dict[str, Any]:
     """pane 起動用 launch_spec（起動時に copy する dict）。"""
     if ownership not in _OWNERSHIPS:
@@ -125,6 +126,7 @@ def make_launch_spec(
         "profile_name": str(profile_name),
         "effective_model": None if effective_model is None else str(effective_model),
         "ownership": ownership,
+        "turn_completion": str(turn_completion or ""),
     }
 
 

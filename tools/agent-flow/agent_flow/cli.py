@@ -65,6 +65,14 @@ def build_parser() -> argparse.ArgumentParser:
                    default=None,
                    help="map-reduce の fan-out を見本先行にする（設定 exemplar_first と同義）。"
                         "先頭1件を検証ゲートに通してから残りを展開し、同様手順を1件で固めてから流す")
+    p.add_argument("--plan-gate", dest="plan_gate", action="store_const", const=True, default=None,
+                   help="計画承認ゲート（設定 plan_gate と同義・既定 off）。planner の計画の実行前に"
+                        " human 承認ノードを挟み、承認で実行開始・差し戻し（コメント付き rejected）で"
+                        "指摘を反映して再計画する（max_retries で有界）。期限切れは failed 終端")
+    p.add_argument("--no-plan-gate", dest="plan_gate", action="store_const", const=False,
+                   help="計画承認ゲートを無効化する（設定 plan_gate: true の上書き）")
+    p.add_argument("--plan-gate-timeout", dest="plan_gate_timeout", type=float, default=None,
+                   help="plan-gate の応答期限秒（設定 plan_gate_timeout と同義。0 = interaction 既定の 7 日）")
     p.add_argument("--lease", type=float, default=None,
                    help="claim のリース秒数（超過すると他ノードが再 claim 可能。既定 1800）")
     p.add_argument("--argv-limit", dest="argv_limit", type=int, default=None,

@@ -186,9 +186,9 @@ agent-design → msg → agent-implement → msg → agent-review
 
 各エージェントは受信したメッセージを処理して次のエージェントに転送する。
 
-### パターン 3: イベントドリブン（event_hook との組み合わせ）
+### パターン 3: イベントドリブン（hooks との組み合わせ）
 
-event_hook で外部イベントを検知し、別エージェントにメッセージを投函する：
+hooks で外部イベントを検知し、別エージェントにメッセージを投函する：
 
 ```python
 # ~/.kiro/hooks/gitlab-hook.py

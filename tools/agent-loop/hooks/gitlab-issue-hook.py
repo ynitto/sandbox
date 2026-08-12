@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""GitLab issue polling hook with event fallback (agent-loop event_hook)."""
+"""GitLab issue polling hook with event fallback (agent-loop hooks)."""
 from __future__ import annotations
 
 import json

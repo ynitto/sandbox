@@ -1,0 +1,27 @@
+{
+  "description": "agent-loop managed turn completion",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$AGENT_LOOP_EXECUTABLE\" hook-event --adapter claude --status complete --native-event Stop",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$AGENT_LOOP_EXECUTABLE\" hook-event --adapter claude --status failure --native-event StopFailure",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

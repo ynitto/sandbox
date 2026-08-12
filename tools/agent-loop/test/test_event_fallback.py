@@ -27,7 +27,7 @@ class EventFallbackTests(unittest.TestCase):
         result, pending, updated = select_event(
             candidates,
             empty_state(),
-            {"event_hook_config": {"replay_events": True, "fallback_prompt": "fb"}},
+            {"hook_config": {"replay_events": True, "fallback_prompt": "fb"}},
             now=100.0,
             format_new=lambda c: f"new:{c.key}",
         )
@@ -40,7 +40,7 @@ class EventFallbackTests(unittest.TestCase):
         state = baseline_state([_c("p:issue:1", "t1")], now=50.0)
         candidates = [_c("p:issue:1", "t2"), _c("p:issue:2", "t0")]
         cfg = {
-            "event_hook_config": {
+            "hook_config": {
                 "replay_events": True,
                 "replay_cooldown_minutes": 60,
                 "fallback_after_minutes": 1,
@@ -61,7 +61,7 @@ class EventFallbackTests(unittest.TestCase):
     def test_replay_respects_cooldown(self):
         state = baseline_state([_c("p:issue:1", "t1")], now=0.0)
         state["replayed_at"] = {"p:issue:1": 100.0}
-        cfg = {"event_hook_config": {"replay_events": True, "replay_cooldown_minutes": 60}}
+        cfg = {"hook_config": {"replay_events": True, "replay_cooldown_minutes": 60}}
         result, pending, _ = select_event(
             [_c("p:issue:1", "t1")],
             state,
@@ -86,7 +86,7 @@ class EventFallbackTests(unittest.TestCase):
     def test_fallback_after_idle(self):
         state = baseline_state([_c("p:issue:1", "t1")], now=0.0)
         cfg = {
-            "event_hook_config": {
+            "hook_config": {
                 "replay_events": False,
                 "fallback_after_minutes": 30,
                 "fallback_prompt": "idle prompt",

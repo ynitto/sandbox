@@ -6,6 +6,42 @@ from __future__ import annotations
 # ---------------------------------------------------------------------------
 
 DEFAULT_CONFIG_NAMES = ["agent-loop.yaml", "agent-loop.yml", "agent-loop.json"]
+_LOOKUP_RE = re.compile(r"\{\{\s*lookup\s+([^\s{}]+)\s+([^\s{}]+)\s*\}\}")
+
+
+def _resolve_config_mappings(config: dict[str, Any]) -> dict[str, Any]:
+    raw = config.get("mapping")
+    if raw is None:
+        return config
+    if not isinstance(raw, dict):
+        raise ValueError("mapping は dict です")
+
+    mappings: dict[str, dict[str, Any]] = {}
+    for label, values in raw.items():
+        if not isinstance(values, dict):
+            raise ValueError(f"mapping {label!r} は dict です")
+        mappings[str(label)] = {str(key): value for key, value in values.items()}
+
+    def resolve(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {key: resolve(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [resolve(item) for item in value]
+        if not isinstance(value, str):
+            return value
+
+        def replace(match: re.Match[str]) -> str:
+            label, key = match.groups()
+            if label not in mappings or key not in mappings[label]:
+                raise ValueError(f"mapping lookup が見つかりません: {label} {key}")
+            return str(mappings[label][key])
+
+        return _LOOKUP_RE.sub(replace, value)
+
+    return {
+        key: value if key == "mapping" else resolve(value)
+        for key, value in config.items()
+    }
 
 
 def find_default_config(cwd: Path) -> Path | None:

@@ -55,13 +55,19 @@ agent-flow run "<要求>" --planner flow-planner
 # 全段パイプライン（agent-flow が内部で呼ぶ）
 python3 .github/skills/flow-planner/scripts/plan.py "<要求>" \
   [--model <model>] [--review auto|true|false] [--granularity auto|coarse|fine|finest] \
-  [--context <text>]
+  [--context <text>] [--tier <tier>]
 ```
 
 `--context`（案 H・オプトイン）: agent-flow が渡すプロジェクト文脈（charter/rules.md/
 リポジトリ理解のスナップショット）。agent-project の `stable_prefix` 設定が有効なとき、
 これらは要求本文から外されるため、分解の質を落とさないよう Phase 1（分析）・Phase 3
 （グラフ生成）のプロンプト先頭へこの内容を前置する。未指定なら従来どおり要求本文だけを見る。
+
+`--tier`（オプトイン）: 実行ティア（agent-control の `workloads.flow.tier`。agent-flow が
+渡す）。`basic` のときは (1) `granularity: auto` を finest へ倒す（明示指定は優先）、
+(2) Phase 3 へ「1 ノード = 1 短手順・goal に対象/成果/確認方法を明記」の分解指示を足す、
+(3) `review: auto` を常時有効へ倒す（basic の成果を無検証で集約しない）。予算逼迫の緊急時に
+普段は任せない役割へ basic ワーカーを投入するときの、計画側のお膳立て。空なら従来どおり。
 
 ## 3段階パイプライン
 

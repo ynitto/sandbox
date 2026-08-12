@@ -113,7 +113,51 @@ class GitLabIssueHookTests(unittest.TestCase):
 
 
 class EventHookDispatchTests(unittest.TestCase):
-    def test_event_hook_does_not_prewarm_llm_pane(self):
+    def test_hooks_accepts_one_or_many_scripts(self):
+        single = al.validate_entries([{"hooks": "one.py", "interval_minutes": 1}])[0]
+        multiple = al.validate_entries([
+            {"hooks": ["one.py", "two.py"], "interval_minutes": 1}
+        ])[0]
+
+        self.assertEqual(single["hooks"], ["one.py"])
+        self.assertEqual(multiple["hooks"], ["one.py", "two.py"])
+
+    def test_hook_config_is_preserved(self):
+        entry = al.validate_entries([{
+            "hooks": "one.py",
+            "hook_config": {"labels": ["ready"]},
+            "interval_minutes": 1,
+        }])[0]
+
+        self.assertEqual(entry["hook_config"], {"labels": ["ready"]})
+
+    def test_bundled_hook_is_resolved_by_name(self):
+        with mock.patch.object(sys, "argv", [str(HERE.parent / "agent-loop.py")]):
+            resolved = al._resolve_hook_path("gitlab-issue-hook")
+
+        self.assertEqual(resolved, HERE.parent / "hooks" / "gitlab-issue-hook.py")
+
+    def test_multiple_hooks_each_dispatch_their_prompt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            one = pathlib.Path(tmp, "one.py")
+            two = pathlib.Path(tmp, "two.py")
+            one.write_text('def check():\n    return "one"\n', encoding="utf-8")
+            two.write_text('def check():\n    return "two"\n', encoding="utf-8")
+            entry = {
+                "id": "p1", "name": "many", "prompt": "", "hooks": [str(one), str(two)],
+                "next_run_at": 0, "enabled": True, "fresh_context": False,
+                "interval_minutes": 1, "scheduled": True,
+            }
+            scheduler = _scheduler([entry])
+            scheduler._update_entry = mock.Mock()
+            scheduler._next_run_at_for_entry = mock.Mock(return_value=60)
+
+            scheduler._fire_due_schedules(1)
+
+        self.assertEqual([req["prompt"] for req in scheduler._pending], ["one", "two"])
+        self.assertTrue(all(req["source"] == "hook" for req in scheduler._pending))
+
+    def test_hooks_do_not_prewarm_llm_pane(self):
         mgr = al.SessionManager.__new__(al.SessionManager)
         mgr._panes = {}
         mgr._prompt_names = {}
@@ -123,11 +167,11 @@ class EventHookDispatchTests(unittest.TestCase):
         mgr._lock = threading.Lock()
         mgr._start_pane = mock.Mock()
         mgr.write_state = mock.Mock()
-        mgr.sync_entries([{"id": "control", "name": "control", "event_hook": "control.py"}])
+        mgr.sync_entries([{"id": "control", "name": "control", "hooks": ["control.py"]}])
         mgr._start_pane.assert_not_called()
 
     def test_successful_event_dispatch_preserves_fresh_context_and_acks(self):
-        entry = {"id": "p1", "name": "issues", "prompt": "", "event_hook": "hook.py",
+        entry = {"id": "p1", "name": "issues", "prompt": "", "hooks": ["hook.py"],
                  "next_run_at": 0, "enabled": True, "exclude_from_concurrency": False,
                  "fresh_context": True, "fresh_context_interval_minutes": None,
                  "interval_minutes": 1, "scheduled": True}
@@ -140,10 +184,10 @@ class EventHookDispatchTests(unittest.TestCase):
         dispatched = scheduler._dispatch_prompt.call_args.args[0]
         self.assertEqual(dispatched["prompt"], "prompt")
         self.assertTrue(dispatched["_should_clear"])
-        scheduler._call_hook_ack.assert_called_once()
+        scheduler._call_hook_ack.assert_called_once_with(entry, "hook.py")
 
     def test_failed_event_dispatch_does_not_ack(self):
-        entry = {"id": "p1", "name": "issues", "prompt": "", "event_hook": "hook.py",
+        entry = {"id": "p1", "name": "issues", "prompt": "", "hooks": ["hook.py"],
                  "next_run_at": 0, "enabled": True, "exclude_from_concurrency": False,
                  "fresh_context": False, "interval_minutes": 1, "scheduled": True}
         scheduler = _scheduler([entry])
@@ -155,7 +199,7 @@ class EventHookDispatchTests(unittest.TestCase):
         scheduler._call_hook_ack.assert_not_called()
 
     def test_slot_rejection_does_not_ack(self):
-        entry = {"id": "p1", "name": "issues", "prompt": "", "event_hook": "hook.py",
+        entry = {"id": "p1", "name": "issues", "prompt": "", "hooks": ["hook.py"],
                  "next_run_at": 0, "enabled": True, "exclude_from_concurrency": False,
                  "fresh_context": False, "interval_minutes": 1, "scheduled": True}
         scheduler = _scheduler([entry])
@@ -173,15 +217,17 @@ class EventHookDispatchTests(unittest.TestCase):
 
     def test_same_name_entries_keep_their_own_event_prompt(self):
         entries = [
-            {"id": "p1", "name": "issues", "prompt": "", "event_hook": "one.py",
+            {"id": "p1", "name": "issues", "prompt": "", "hooks": ["one.py"],
              "next_run_at": 0, "enabled": True, "exclude_from_concurrency": False,
              "fresh_context": False, "interval_minutes": 1, "scheduled": True},
-            {"id": "p2", "name": "issues", "prompt": "", "event_hook": "two.py",
+            {"id": "p2", "name": "issues", "prompt": "", "hooks": ["two.py"],
              "next_run_at": 0, "enabled": True, "exclude_from_concurrency": False,
              "fresh_context": False, "interval_minutes": 1, "scheduled": True},
         ]
         scheduler = _scheduler(entries)
-        scheduler._call_hook_check = mock.Mock(side_effect=lambda entry: {"prompt": entry["id"] + "-prompt"})
+        scheduler._call_hook_check = mock.Mock(
+            side_effect=lambda entry, _hook: {"prompt": entry["id"] + "-prompt"}
+        )
         scheduler._call_hook_ack = mock.Mock()
         scheduler._dispatch_prompt = mock.Mock(return_value=True)
         scheduler._run_preflight = mock.Mock(return_value=True)
@@ -190,10 +236,10 @@ class EventHookDispatchTests(unittest.TestCase):
                 for call in scheduler._dispatch_prompt.call_args_list]
         self.assertEqual(sent, [("p1", "p1-prompt"), ("p2", "p2-prompt")])
 
-    def test_event_hook_without_ack_remains_supported(self):
+    def test_hook_without_ack_remains_supported(self):
         scheduler = al.PeriodicScheduler.__new__(al.PeriodicScheduler)
         scheduler._load_hook_module = mock.Mock(return_value=types.SimpleNamespace(check=lambda: "x"))
-        scheduler._call_hook_ack({"event_hook": "hook.py", "name": "legacy"})
+        scheduler._call_hook_ack({"name": "legacy"}, "hook.py")
 
     def test_slot_or_send_failure_keeps_prompt_for_next_drain(self):
         entry = {"id": "p1", "name": "issues", "exclude_from_concurrency": False}
@@ -251,7 +297,7 @@ class EventHookDispatchTests(unittest.TestCase):
 class ResourceControlHookTests(unittest.TestCase):
     def test_runs_headless_writer_without_dispatching_prompt(self):
         completed = types.SimpleNamespace(returncode=0, stdout="{}\n", stderr="")
-        cfg = {"event_hook_config": {
+        cfg = {"hook_config": {
             "script": "/tmp/resource-control.js",
             "control_dir": "/tmp/control",
             "budget_dir": "/tmp/budget",
@@ -267,7 +313,7 @@ class ResourceControlHookTests(unittest.TestCase):
 
     def test_collects_then_writes_calibration_without_prompt(self):
         completed = types.SimpleNamespace(returncode=0, stdout="", stderr="")
-        cfg = {"event_hook_config": {
+        cfg = {"hook_config": {
             "agent_audit": "/tmp/agent-audit",
             "audit_dir": "/tmp/audit",
             "budget_dir": "/tmp/budget",

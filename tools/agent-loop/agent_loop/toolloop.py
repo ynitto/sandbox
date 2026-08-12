@@ -311,6 +311,27 @@ def _tl_exec_argv(command: str, args: "list[str]", *, cwd: str, timeout_sec: flo
     return result
 
 
+def _tl_record_usage(agent: dict, result: dict, log_file: str) -> None:
+    """CLI が stderr に出した実測 usage（`@agent-usage`）をログと台帳へ渡す。
+
+    headless 経路は自分で subprocess を回すので、tmux 経路と違って**実測が取れる**
+    （agent-aider / agent-ollama / agent-opencode が出す）。出さない CLI は素通り——
+    推定で埋めない。失敗した実行も記帳する（rc が非 0 でもトークンは焼けている）。
+
+    記帳するのはトークンだけで、秒は入れない。実行時間はセマフォのスロット保持で既に
+    1 行入っており、ここで足すと同じ実行を二重に数える。
+    # ponytail: rates（時間からのトークン推定）を設定している運用では、スロット行の
+    # 推定とこの実測が二重に載る。実測が出る CLI はその rate を外すのが正しい直し方。
+    """
+    tokens_in, tokens_out = agent["agentcli"].parse_usage(result.get("stderr") or "")
+    if tokens_in is None and tokens_out is None:
+        return
+    _tl_append_log(log_file, {"event": "usage", "cli": agent["cli"], "model": agent["model"],
+                              "tokensIn": tokens_in, "tokensOut": tokens_out})
+    _node_budget_record(0, agent_cli=str(agent["cli"] or ""), model=str(agent["model"] or ""),
+                        tokens_in=tokens_in, tokens_out=tokens_out)
+
+
 def _tl_run_agent(agent: dict, prompt: str, *, cwd: str, readonly: bool,
                   read_files: "list[str]", files: "list[str]", log_file: str) -> str:
     """エージェント CLI（aider 等）を headless で 1 回呼び、応答本文を返す。"""
@@ -323,6 +344,7 @@ def _tl_run_agent(agent: dict, prompt: str, *, cwd: str, readonly: bool,
     result = _tl_exec_argv(argv[0], argv[1:], cwd=cwd, timeout_sec=timeout_sec,
                            env=built.get("env") or {}, stdin=built.get("stdin"),
                            output_file=built.get("output_file"), log_file=log_file)
+    _tl_record_usage(agent, result, log_file)
     if result["status"] != 0 or result["error"]:
         detail = "\n".join(x for x in (result["error"], result["stderr"], result["stdout"]) if x)
         classified = mod.classify_error(agent["spec"], detail)
@@ -420,6 +442,32 @@ def _tl_resolve_agent(cli_name: str, model: str, cwd: str) -> dict:
             "model": str(model or "").strip() or None, "agentcli": mod}
 
 
+def _tl_control_agent(agent: dict, cwd: str) -> dict:
+    """制御応答（ツール要求 JSON）を出させるエージェント。
+
+    ツール契約の 1 周は「次に何をするか」を JSON で言わせるだけで、編集能力は要らない。
+    それを編集用の CLI（aider）にやらせると、材料が揃った瞬間にモデルは JSON をやめて
+    成果物の本文を書き始める——しかも制御の周は readonly（`--dry-run`）なので、その本文は
+    捨てられる。1 周 50〜90 秒を捨てることになる（実測）。
+
+    定義が `json_variant` を申告していれば、制御の周だけそちらへ振り替える。JSON モードの
+    起動形は本文を返しようがないので、この失敗自体が起きない。申告が無い CLI・解決に失敗
+    した場合は元のエージェントのまま（設定ミスで実行を殺さない——agentcli の方針と同じ）。
+    役割の性質で振り替える口は agentcore が持っており、agent-flow / agent-project は既に
+    使っている。ここは同じ口を使うだけで、新しい設定面を人に書かせない（C7・柱3）。
+    """
+    mod = agent.get("agentcli")
+    name = str(agent.get("cli") or "")
+    if mod is None or not name:
+        return agent
+    try:
+        variant = mod.json_variant(name, cwd)
+        return agent if variant == name else _tl_resolve_agent(
+            variant, agent.get("model") or "", cwd)
+    except (ToolLoopError, AttributeError):
+        return agent
+
+
 # ---------------------------------------------------------------------------
 # 受入条件（acceptance）を入力にした証跡ゲート
 # ---------------------------------------------------------------------------
@@ -433,6 +481,18 @@ def _tl_resolve_agent(cli_name: str, model: str, cwd: str) -> dict:
 # 介さず** 照合する。パスを含まない基準は機械では判定できないので、判定層（検証エージェント）
 # へ回す。二層の構造は backlog-verifier（verification_commands = 決定的 /
 # task_acceptance_criteria = 自然文判定）と同じ（C7）。
+
+
+def _tl_path_like(raw: str) -> bool:
+    """バッククォート内の表記が「ファイルパス」か。
+
+    受入条件の地の文にはコマンド名も同じ記法で出る（例: 「`agent-audit` の出力に無い…」）。
+    それをパスとして拾うと、実在しない成果物として**永久に満たせない**条件になり、
+    実際の成果物を書き終えた実行まで fail する。区別は形だけで足りる——区切り（/）か
+    拡張子を持つものだけをパスとみなす。空白を含む断片はコマンド行なので除く。
+    """
+    return bool(raw) and not re.search(r"\s", raw) and (
+        "/" in raw or "\\" in raw or bool(re.search(r"\.[A-Za-z0-9_]{1,10}$", raw)))
 
 
 def acceptance_paths(acceptance: "list[str]", cwd: str) -> "list[str]":
@@ -450,7 +510,8 @@ def acceptance_paths(acceptance: "list[str]", cwd: str) -> "list[str]":
     for text in acceptance or []:
         for m in re.finditer(r"`([^`\n]+)`", str(text or "")):
             raw = m.group(1).strip()
-            if not raw or raw.startswith("-") or re.match(r"^[a-z][a-z0-9+.-]*://", raw, re.I):
+            if (not _tl_path_like(raw) or raw.startswith("-")
+                    or re.match(r"^[a-z][a-z0-9+.-]*://", raw, re.I)):
                 continue
             try:
                 file = _tl_project_path(root, raw)
@@ -506,6 +567,15 @@ def acceptance_stamps(acceptance: "list[str]", cwd: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
+def _tl_history_has_run(history: "list[str]") -> bool:
+    """履歴に「成功した run」があるか。"""
+    for entry in history or []:
+        request = _tl_parse_json_object(entry)
+        if request and request.get("type") == "run" and request.get("status") == 0:
+            return True
+    return False
+
+
 def _tl_goal_prompt(*, goal: str, cwd: str, skills: "list[dict]", reads: "list[str]",
                     acceptance: "list[str]", history: "list[str]") -> str:
     """1 ゴール分の限定ツール要求プロンプト。
@@ -529,15 +599,21 @@ def _tl_goal_prompt(*, goal: str, cwd: str, skills: "list[dict]", reads: "list[s
         f"Task:\n---\n{goal}\n---\n"
         f"Acceptance criteria (all must hold when you finish):\n{criteria}\n"
         + (f"Previous tool results:\n{chr(10).join(history)}\n" if history else "")
-        + "A run TOOL_RESULT with status 0 already completed; do not run that command again. "
-          "Request read_files only if inspection is still required.\n"
-          "For run.args, put every CLI token in its own JSON string. Never combine a flag and "
-          "value or add flags not requested by the task.\n"
-          "Return exactly one JSON object and no markdown. Allowed forms:\n"
-          '{"type":"read_files","paths":["relative/path"]}\n'
-          '{"type":"write_files","paths":["relative/path"]}\n'
-          '{"type":"run","command":"executable","args":["arg"],"timeout_sec":60}\n'
-          '{"type":"final","output":"a short report of what you did"}')
+        # 「もう実行済み」は履歴に成功した run があるときだけ言う。無条件に出していた頃は
+        # 1 周目から「実行済みだから走らせるな」と教えており、モデルは実行していない
+        # コマンドを「実行した」と書いた（実測: 未実行のまま「executed successfully」）。
+        + ("A run TOOL_RESULT with status 0 already completed; do not run that command again. "
+           "Request read_files only if inspection is still required.\n"
+           if _tl_history_has_run(history) else
+           "If the task names a command, run it and use its TOOL_RESULT as the only source of "
+           "facts. Never write results you have not seen in a TOOL_RESULT.\n")
+        + ("For run.args, put every CLI token in its own JSON string. Never combine a flag and "
+           "value or add flags not requested by the task.\n"
+           "Return exactly one JSON object and no markdown. Allowed forms:\n"
+           '{"type":"read_files","paths":["relative/path"]}\n'
+           '{"type":"write_files","paths":["relative/path"]}\n'
+           '{"type":"run","command":"executable","args":["arg"],"timeout_sec":60}\n'
+           '{"type":"final","output":"a short report of what you did"}'))
 
 
 def run_goal(*, goal: str, cwd: str, agent: dict, log_file: str,
@@ -563,6 +639,9 @@ def run_goal(*, goal: str, cwd: str, agent: dict, log_file: str,
     touched: set = set()
     history: list[str] = []
     output = ""
+    control = _tl_control_agent(agent, root)
+    if control is not agent:
+        _tl_progress(f"制御応答: {control['cli']}（編集: {agent['cli']}）", tag)
 
     # 却下はループを 1 周させるだけで、以前は画面にもログにも何も出さなかった。ローカル
     # モデルは 1 周に数十秒かかるので、外からは「止まっている」ようにしか見えない
@@ -575,15 +654,26 @@ def run_goal(*, goal: str, cwd: str, agent: dict, log_file: str,
 
     for _round in range(rounds):
         _tl_progress(f"ラウンド {_round + 1}/{rounds}: エージェントに問い合わせ中…", tag)
-        raw = _tl_run_agent(agent, _tl_goal_prompt(
+        raw = _tl_run_agent(control, _tl_goal_prompt(
             goal=goal, cwd=root, skills=skills, reads=sorted(reads),
             acceptance=criteria, history=history,
         ), cwd=root, readonly=True, read_files=sorted(reads), files=[], log_file=log_file)
         try:
             request = _tl_validate_tool_request(_tl_parse_tool_request(raw), root, skills)
         except ToolLoopError as exc:
-            reject(str(exc))
-            continue
+            # 契約外の応答でも、受入条件が成果物を名指ししていて未着手なら、そこへの
+            # write_files として続ける。小型モデルは材料が揃った瞬間に JSON をやめて
+            # 本文を書き始める（実測: run の直後から 5 ラウンド連続で契約外）。ラウンドは
+            # 1 周 90 秒前後で、捨てるほど余裕は無い。書けたかどうかは従来どおり機械層が
+            # 見るので、ここを通しても done の根拠は緩まない（C5）。
+            targets = [f for f in acceptance_paths(criteria, root) if f not in touched]
+            if not targets:
+                reject(str(exc))
+                continue
+            _tl_progress(f"契約外の応答（{exc}）。宣言済みの成果物へ書き込みます", tag)
+            _tl_append_log(log_file, {"event": "fallback_write", "error": str(exc),
+                                      "paths": targets})
+            request = {"type": "write_files", "paths": targets}
 
         if request["type"] == "final":
             output = request["output"]
@@ -610,12 +700,18 @@ def run_goal(*, goal: str, cwd: str, agent: dict, log_file: str,
                     os.makedirs(parent, exist_ok=True)
             _tl_progress("write_files: "
                          + ", ".join(os.path.relpath(f, root) for f in request["paths"]), tag)
+            # 書き込みの呼び出しにも tool 結果を渡す。渡していなかった頃、コマンドを
+            # 実行した直後の write_files がその出力を見ないまま書き、モデルは中身を
+            # 創作した（実測: 集計に 3 グループ出ているのに「データなし」と書いた）。
             written = _tl_run_agent(
                 agent,
                 "Execute the task now and edit the editable files. Do not merely describe or "
-                "return the existing content. After editing, report briefly what you changed."
+                "return the existing content. Use the tool results below as the only source of "
+                "facts: do not invent names, counts or numbers that are not in them. "
+                "After editing, report briefly what you changed."
                 f"\n\nTask:\n{goal}\n\nAcceptance criteria:\n"
-                + "\n".join(f"- {a}" for a in criteria),
+                + "\n".join(f"- {a}" for a in criteria)
+                + (f"\n\nTool results:\n{chr(10).join(history)}" if history else ""),
                 cwd=root, readonly=False,
                 read_files=[f for f in sorted(reads) if f not in request["paths"]],
                 files=request["paths"], log_file=log_file)
@@ -688,6 +784,7 @@ def run_cli_loop(*, goal: str, cwd: str, agent: dict, log_file: str,
     result = _tl_exec_argv(argv[0], argv[1:], cwd=cwd, timeout_sec=timeout_sec,
                            env=built.get("env") or {}, stdin=built.get("stdin"),
                            output_file=built.get("output_file"), log_file=log_file)
+    _tl_record_usage(agent, result, log_file)
     if result["status"] != 0 or result["error"]:
         detail = "\n".join(x for x in (result["error"], result["stderr"],
                                        result["stdout"]) if x)

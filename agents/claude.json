@@ -29,6 +29,7 @@
   },
   "interactive": {
     "command": ["claude"],
+    "turn_completion": "claude",
     "readonly_args": ["--permission-mode", "plan"],
     "no_session_args": ["--no-session-persistence"],
     "ready_pattern": "^[[:space:]]*[>?❯›][[:space:]]*$|│[[:space:]]*[>❯›]|\\? for shortcuts",
