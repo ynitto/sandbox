@@ -58,4 +58,14 @@ agent-control（control.json）へ投函する。段は budget の残率だけ�
   スケジューラは未実装）。今日の手段は手動の評価/適用ボタン。
 
 設計: [`docs/plans/2026-08-05-phase1-token-efficiency-detailed-design.md`](../../../../../docs/plans/2026-08-05-phase1-token-efficiency-detailed-design.md) §1。
+
+## 機能・役割別の実行可能レベル（`flow-tiers.js`）
+
+agent-flow のノード機能（work / classify / judge …）・役割（planner / evaluator …）ごとに、
+どの実行レベル（単純作業/軽量/標準/高性能）へ任せてよいかを宣言するカタログ。オプションとして
+拡張する振る舞い（classify の route、verify の retry）による下限の引き上げもここで宣言する。
+適用はワークフロー画面の plan 生成時（固定 tier の検証と auto tier の戦略決定）で、
+**エンジンはこのカタログを読まない**（profiles と同じ分業）。
+
+設計: [`docs/plans/2026-08-12-agent-flow-tier-eligibility-strategy-design.md`](../../../../../docs/plans/2026-08-12-agent-flow-tier-eligibility-strategy-design.md)。
 テスト: [`test/orchestration-profiles.test.js`](../../../../test/orchestration-profiles.test.js)。

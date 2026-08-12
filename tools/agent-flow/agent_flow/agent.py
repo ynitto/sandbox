@@ -1162,6 +1162,15 @@ def execute_agent(kind: str, goal: str, dep_results: dict, model: str | None,
     marker = '"records"' if kind == "extract" else ('"sources"' if kind == "retrieve" else "")
     if marker and marker not in prompt:
         prompt += f"\n\n【出力契約】{role}"
+    # 実行 tier（basic）の分解粒度指示は split だけに効かせる——fan-out の細かさは split の
+    # 出力要素数が決め、展開（_expand_splits）自体は LLM を通らないため、動的 fan-out へ
+    # tier 補償を届ける注入点はここしかない。continue_agent の評価指示と同じ流儀で
+    # スキル/組み込みの両経路へ一律に後置する（スキルは tier を知らないため二重注入しない）。
+    # tier の解決順も _method_context と同じ: ノード固定 tier ＞ agent-control の workload 宣言。
+    if kind == "split":
+        tier_note = tier_split_directive(str((agent or {}).get("tier") or "") or flow_tier())
+        if tier_note:
+            prompt = f"{prompt}\n\n{tier_note}"
     # プロジェクト文脈（案 H・オプトイン）を先に前置してから、グローバル指示をさらにその前へ
     # 前置する（最終順序: [instructions][context][goal/deps ...]）。context は毎回このプロンプト
     # 文字列を新規に組み立ててから 1 回だけ付けるので二重注入の心配は無い（instructions と違い

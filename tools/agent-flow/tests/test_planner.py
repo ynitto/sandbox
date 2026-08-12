@@ -149,6 +149,57 @@ class DataDrivenFanoutTests(unittest.TestCase):
         _, new, _ = kf.continue_stub("req", nodes, results, 0, max_fanout=5)
         self.assertEqual(len([t for t in new if t["kind"] == "map"]), 5)
 
+    def test_fanout_clamp_is_visible(self):
+        # クランプで黙って要素を捨てない: replan 理由・ログ・reduce goal に切り捨てを残す
+        nodes = {"s": {"goal": "g", "deps": [], "kind": "split"}}
+        results = {"s": {"status": "done", "data": list(range(100))}}
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            _, new, reason = kf.continue_stub("req", nodes, results, 0, max_fanout=5)
+        self.assertIn("fan-out クランプ", reason)
+        self.assertIn("s: 100 件中 5 件のみ", reason)
+        self.assertIn("fan-out クランプ", buf.getvalue())      # ログにも出る
+        red = next(t for t in new if t["kind"] == "reduce")
+        self.assertIn("元 100 件のうち先頭 5 件のみ", red["goal"])  # 集約結果を全件と読ませない
+        self.assertIn("残り 95 件", red["goal"])
+
+    def test_fanout_clamp_reason_in_continue_agent(self):
+        # LLM 継続経路（continue_agent）でも fan-out は先に機械展開され、同じ注記が理由へ載る
+        nodes = {"s": {"goal": "g", "deps": [], "kind": "split"}}
+        results = {"s": {"status": "done", "data": list(range(100))}}
+        with contextlib.redirect_stdout(io.StringIO()):
+            decision, new, reason = kf.continue_agent("req", nodes, results, 0, max_fanout=5)
+        self.assertEqual(decision, "replan")
+        self.assertIn("data-driven fan-out: +6", reason)
+        self.assertIn("s: 100 件中 5 件のみ", reason)
+
+    def test_fanout_without_clamp_keeps_wording_and_ids(self):
+        # 切り捨てが無いときは従来と完全に同じ文言・同じノード id（回帰確認）
+        nodes = {"s": {"goal": "g", "deps": [], "kind": "split"}}
+        results = {"s": {"status": "done", "data": ["a", "b"]}}
+        _, new, reason = kf.continue_stub("req", nodes, results, 0, max_fanout=50)
+        self.assertEqual(reason, "3 件追加")
+        self.assertEqual([t["id"] for t in new], ["s-m1", "s-m2", "s-reduce"])
+        self.assertNotIn("クランプ", next(t for t in new if t["kind"] == "reduce")["goal"])
+        _, _, reason2 = kf.continue_agent("req", nodes, results, 0, max_fanout=50)
+        self.assertEqual(reason2, "data-driven fan-out: +3")
+
+    def test_fanout_nodes_carry_no_tier(self):
+        # 動的生成ノード（map / reduce / gate・中間 reduce）は tier キーを持たない＝workload の
+        # 段を継承する。人が固定した静的ノードだけが段を保ち（retry の維持は
+        # RetryLadderTests.test_retry_nodes_inherit_pinned_tier）、「補償が届く部分だけが
+        # 段を下げる」という設計上の分離が実装上も自動的に成り立つことを固定する。
+        nodes = {"s": {"goal": "g", "deps": [], "kind": "split",
+                       "tier": "large", "agent": {"agent_cli": "codex"}}}
+        results = {"s": {"status": "done", "data": [str(i) for i in range(20)]}}
+        _, new, _ = kf.continue_stub("req", nodes, results, 0, review=True)
+        kinds = {t["kind"] for t in new}
+        self.assertEqual(kinds, {"map", "reduce", "verify"})  # gate（verify）・中間 reduce 含む
+        for t in new:
+            self.assertNotIn("tier", t, t["id"])
+            self.assertNotIn("agent", t, t["id"])   # 固定 agent も動的ノードへは伝播しない
+            self.assertNotIn("tier", kf._node_entry(t), t["id"])  # graph entry へも入らない
+
     def test_map_goal_carries_request_intent(self):
         # map ゴールに元の要求（intent）が埋め込まれ、各要素に本来のタスクが適用される
         nodes = {"t1": {"id": "t1", "goal": "分解", "deps": [], "kind": "split"}}
@@ -230,6 +281,28 @@ class RetryLadderTests(unittest.TestCase):
         self.assertEqual(new[0]["agent"]["agent_cli"], "claude")
         self.assertGreater(new[0]["agent"]["to_relative_cost"],
                            new[0]["agent"]["from_relative_cost"])
+
+    def test_retry_nodes_inherit_pinned_tier(self):
+        # 固定実行レベル（tier）は作り直しでも維持する——固定は迂回されない契約。
+        nodes = {
+            "gen": {"id": "gen", "goal": "g", "deps": [], "kind": "generate",
+                    "tier": "medium", "agent": {"agent_cli": "codex"}},
+            "chk": {"id": "chk", "goal": "検証", "deps": ["gen"], "kind": "verify",
+                    "tier": "medium"},
+        }
+        results = {"gen": {"status": "done", "output": "ok"},
+                   "chk": {"status": "done", "output": "fail", "data": {"ok": False}}}
+        decision, new, _ = kf.continue_stub("req", nodes, results, 0)
+        self.assertEqual(decision, "replan")
+        by_id = {t["id"]: t for t in new}
+        self.assertEqual(by_id["gen-r1"]["tier"], "medium")
+        self.assertEqual(by_id["chk-r1"]["tier"], "medium")
+
+    def test_failed_retry_inherits_pinned_tier(self):
+        nodes = {"t1": {"id": "t1", "goal": "g", "deps": [], "kind": "work",
+                        "tier": "large", "agent": {"agent_cli": "codex"}}}
+        _, new, _ = kf.continue_stub("req", nodes, {"t1": {"status": "failed"}}, 0)
+        self.assertEqual(new[0]["tier"], "large")
 
     def test_evaluator_replacement_uses_same_retry_ladder(self):
         old = kf._AGENT_OVERRIDES

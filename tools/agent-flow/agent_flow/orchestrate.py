@@ -136,6 +136,21 @@ def _continue(args, bus, request, nodes, results, iteration, strategy=None):
     # 再実行の口は従来どおり残る）。plan.evaluate: true で従来の継続判断に載る。
     strat = strategy or {}
     if strat.get("user_plan") and not strat.get("user_plan_evaluate"):
+        # データ駆動 fan-out（split → map/reduce）だけは機械展開（LLM 無し）なので、
+        # 「評価役の再計画でノードを足さない」原則の対象外。plan_strategy_user が split への
+        # 静的依存を「後段は実行時に自動生成される」契約で弾いている以上、ここで展開しないと
+        # split を含むカスタムフローは map/reduce が一度も生成されず run が空振りする。
+        mf = int(getattr(args, "max_fanout", 50) or 50)
+        rw = int(getattr(args, "reduce_width", _DEFAULT_REDUCE_WIDTH) or _DEFAULT_REDUCE_WIDTH)
+        cli = getattr(args, "review", "auto")   # CLI の明示 bool > 計画時に確定した review
+        review = cli if isinstance(cli, bool) else bool(strat.get("review"))
+        ef = bool(getattr(args, "exemplar_first", False))
+        clamped: list = []
+        fanout_tasks = _expand_splits(nodes, results, mf, review, request, ef, rw,
+                                      clamped=clamped)
+        if fanout_tasks:
+            return "replan", fanout_tasks, (f"data-driven fan-out: +{len(fanout_tasks)}"
+                                            + _clamp_note(clamped))
         failed = sorted(n for n, r in results.items() if r.get("status") == "failed")
         if failed:
             return "failed", [], ("ユーザー定義フローで失敗ノードあり: " + ", ".join(failed)
@@ -196,6 +211,8 @@ def _node_entry(t):
         e["dependency_input"] = str(t["dependency_input"]).strip().lower()
     if t.get("agent"):
         e["agent"] = t["agent"]
+    if t.get("tier"):  # 固定実行レベル（pinned-tier の記録と手法判定が読む）
+        e["tier"] = str(t["tier"])
     # human ノードの interaction はグラフにも保持する。worker は claim 時に graph の node を
     # 読んで park するため、ここで落とすと human ノードが「interaction 不正」で失敗終端する。
     if isinstance(t.get("interaction"), dict):
@@ -421,7 +438,9 @@ def cmd_orchestrate(args) -> int:
             if user_plan is not None and pattern:
                 raise UserPlanError("--pattern とユーザー定義 plan は同時に指定できません")
             if user_plan is not None:
-                strategy, tasks = plan_strategy_user(user_plan, args.request)
+                # 実行 tier（agent-control の workload 宣言）を review の三値解決へ通す。
+                # basic 以外では従来どおり review=False（後方互換）。
+                strategy, tasks = plan_strategy_user(user_plan, args.request, tier=flow_tier())
                 log(who, f"ユーザー定義フローを採用: {strategy['reason']}")
             else:
                 strategy, tasks = _with_run_heartbeat(

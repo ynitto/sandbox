@@ -77,6 +77,29 @@
   const api = () => root.api;
   const tierLabel = (value, fallback = '') => TIER_LABELS[String(value || '')] || fallback || String(value || '');
 
+  // 機能（kind）とオプション（continuation）から、このノードが選べる実行レベル。
+  // カタログ（overview.kindTiers）が無い・未知の kind は制限しない（加算的契約）。
+  // 標準語彙の外の独自レベル名は適格性の対象外としてそのまま通す。
+  function allowedTierIdsFor(node, ov) {
+    const kindTiers = ov && ov.kindTiers;
+    const spec = kindTiers && kindTiers.kinds && kindTiers.kinds[String((node && node.kind) || 'work')];
+    if (!spec || !Array.isArray(spec.tiers)) return null;
+    const order = Array.isArray(kindTiers.order) ? kindTiers.order : [];
+    const minOption = node && node.continuation && spec.options
+      ? spec.options[String(node.continuation)] : '';
+    const tiers = minOption
+      ? spec.tiers.filter((tier) => order.indexOf(tier) >= order.indexOf(minOption))
+      : spec.tiers;
+    return { tiers, order };
+  }
+
+  function tierEligible(node, ov, tierId) {
+    const allowed = allowedTierIdsFor(node, ov);
+    if (!allowed || tierId === 'auto') return true;
+    if (!allowed.order.includes(String(tierId))) return true; // 独自レベル名は制限しない
+    return allowed.tiers.includes(String(tierId));
+  }
+
   function runActive() {
     const pane = $id('tab-workflow-run');
     return pane && pane.classList.contains('active');
@@ -693,10 +716,14 @@
     }
     const node = workflow.nodes.find((n) => n.id === st.selectedNode);
     if (!node) return '<div class="empty">ノードを選択してください</div>';
-    const tierOptions = (ov.tiers || []).map((t) =>
+    const eligibleTiers = allowedTierIdsFor(node, ov);
+    const tierOptions = (ov.tiers || []).filter((t) => tierEligible(node, ov, t.id)).map((t) =>
       `<option value="${esc(t.id)}" ${node.tier === t.id ? 'selected' : ''}>${esc(
         t.id === 'auto' ? t.label : tierLabel(t.id, t.label)
       )}</option>`).join('');
+    const tierHelp = eligibleTiers
+      ? `この機能に任せられる実行レベル: ${eligibleTiers.tiers.map((tier) => tierLabel(tier)).join('・')}。自動は実行方針に応じてこの範囲で決まります。`
+      : '';
     const kindOptions = KINDS.map((kind) =>
       `<option value="${kind}" ${node.kind === kind ? 'selected' : ''}>${esc(KIND_META[kind][0])}</option>`).join('');
     const interaction = node.interaction || { mode: 'approval', prompt: node.goal, audience: ['reviewer'], timeout_seconds: 604800 };
@@ -715,17 +742,24 @@
         value="${esc(interaction.timeout_seconds || 604800)}"></label>
       <small>回答は同期されます。期限切れは、選択式で既定値を指定した場合だけ自動で続行します。</small>
     </section>` : '';
+    const optionMinTier = (option) => {
+      const spec = ov.kindTiers && ov.kindTiers.kinds && ov.kindTiers.kinds[node.kind];
+      const min = spec && spec.options && spec.options[option];
+      const base = spec && Array.isArray(spec.tiers) ? spec.tiers[0] : '';
+      return min && min !== base ? `実行レベルは「${tierLabel(min)}」以上になります。` : '';
+    };
     const continuation = node.kind === 'classify'
-      ? ['route', '分類後に専門工程を追加', '分類結果に応じた作業工程を agent-flow が追加します。']
+      ? ['route', '分類後に専門工程を追加', `分類結果に応じた作業工程を agent-flow が追加します。${optionMinTier('route')}`]
       : node.kind === 'verify'
-        ? ['retry', '未完了なら修正工程を追加して再検証', '検証が失敗したときだけ、修正と再検証を上限回数まで追加します。'] : null;
+        ? ['retry', '未完了なら修正工程を追加して再検証', `検証が失敗したときだけ、修正と再検証を上限回数まで追加します。${optionMinTier('retry')}`] : null;
     return `<div class="wf-inspector" data-inspector="${esc(node.id)}">
       <div><strong>${esc(roleLabelForKind(node.kind))}ロール</strong><p class="wf-kind-help">
         ${esc((KIND_META[node.kind] || [node.kind])[0])} · ${esc((KIND_META[node.kind] || ['', ''])[1])}</p></div>
       <label>表示名<input id="wf-node-label" value="${esc(node.label || node.id)}"></label>
       <label>ID<input id="wf-node-id" value="${esc(node.id)}"></label>
       <label>種類<select id="wf-node-kind">${kindOptions}</select></label>
-      ${node.kind === 'human' ? '' : `<label>実行レベル<select id="wf-node-tier">${tierOptions}</select></label>`}
+      ${node.kind === 'human' ? '' : `<label>実行レベル<select id="wf-node-tier">${tierOptions}</select>
+        ${tierHelp ? `<small class="wf-tier-help">${esc(tierHelp)}</small>` : ''}</label>`}
       <label>この工程の目的<textarea id="wf-node-goal" rows="6">${esc(node.goal)}</textarea>
         <small class="wf-goal-help">この工程で達成したいことを自然文で書きます。依頼全文・前工程の成果・出力形式は agent-flow が実行時に補います。</small></label>
       ${interactionHtml}
@@ -1002,6 +1036,14 @@
       if ((node.kind === 'classify' && selected === 'route') || (node.kind === 'verify' && selected === 'retry')) {
         node.continuation = selected;
       } else delete node.continuation;
+      // 種類・オプションの変更で今の実行レベルが適格範囲の外になったら自動へ戻す
+      //（黙って別の固定レベルへ振り替えない——自動は実行方針に応じて範囲内で決まる）。
+      if (node.kind !== 'human' && node.tier && node.tier !== 'auto'
+        && !tierEligible(node, st.overview, node.tier)) {
+        st.notice = `「${node.label || node.id}」の実行レベル「${tierLabel(node.tier)}」は`
+          + `この機能・オプションでは使えないため「自動」に戻しました`;
+        node.tier = 'auto';
+      }
       if (node.id && oldId !== node.id) {
         workflow.nodes.forEach((n) => { n.deps = (n.deps || []).map((id) => id === oldId ? node.id : id); });
         workflow.entry = (workflow.entry || []).map((id) => id === oldId ? node.id : id);

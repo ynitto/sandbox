@@ -3926,7 +3926,7 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
 .wf-drawer-head svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; }
 .wf-inspector { display: grid; gap: 12px; }
 .wf-kind-help, .wf-method-detail p { margin: 4px 0 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
-.wf-goal-help, .wf-runtime-context p { color: var(--muted); font-size: 10px; line-height: 1.45; }
+.wf-goal-help, .wf-tier-help, .wf-runtime-context p { color: var(--muted); font-size: 10px; line-height: 1.45; }
 .wf-human-options { display: grid; gap: 10px; padding-top: 11px; border-top: 1px solid var(--border); }
 .wf-human-options > small { color: var(--muted); font-size: 10px; line-height: 1.45; }
 .wf-interaction-card { display: grid; gap: 10px; margin: 12px 0; padding: 14px; border: 1px solid var(--warn); border-radius: 8px; background: var(--bg2); }

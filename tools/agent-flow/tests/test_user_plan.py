@@ -60,6 +60,31 @@ class PlanStrategyUserTests(unittest.TestCase):
             _plan([{"id": "a", "goal": "g", "agent": {"agent_cli": "codex"}}]), "r")
         self.assertEqual(tasks[0]["agent"], {"agent_cli": "codex"})
 
+    def test_tier_kept_on_nodes_and_graph_entries(self):
+        # 固定実行レベル（tier）は plan から剥がさない——pinned-tier の記録と
+        # 手法判定（when.tiers のノード tier 優先）が読む。graph のノード entry へも運ぶ。
+        _, tasks = kf.plan_strategy_user(_plan([
+            {"id": "a", "goal": "g", "tier": "large",
+             "agent": {"agent_cli": "codex", "model": "gpt-5"}},
+            {"id": "b", "goal": "h", "tier": "basic", "kind": "extract", "deps": ["a"]},
+            {"id": "c", "goal": "i", "deps": ["a"]},
+        ]), "r")
+        by_id = {t["id"]: t for t in tasks}
+        self.assertEqual(by_id["a"]["tier"], "large")
+        self.assertEqual(by_id["b"]["tier"], "basic")
+        self.assertNotIn("tier", by_id["c"])  # auto（継承）は tier を持たない
+        entry = kf._node_entry(by_id["a"])
+        self.assertEqual(entry["tier"], "large")
+        self.assertNotIn("tier", kf._node_entry(by_id["c"]))
+
+    def test_human_rejects_tier(self):
+        with self.assertRaises(kf.UserPlanError):
+            kf.plan_strategy_user(_plan([{
+                "id": "review", "goal": "確認", "kind": "human", "tier": "small",
+                "interaction": {"mode": "approval", "prompt": "進めますか",
+                                "audience": ["reviewer"]},
+            }]), "r")
+
     def test_human_plan_preserves_interaction_without_agent(self):
         _, tasks = kf.plan_strategy_user(_plan([{
             "id": "review", "goal": "人の確認を待つ", "kind": "human",
@@ -98,6 +123,57 @@ class PlanStrategyUserTests(unittest.TestCase):
         nodes = [{"id": f"n{i}", "goal": "g"} for i in range(65)]
         with self.assertRaises(kf.UserPlanError):
             kf.plan_strategy_user(_plan(nodes), "r")
+
+
+class UserPlanTierReviewTests(unittest.TestCase):
+    """review の三値解決 × 実行 tier — カスタムフローへの tier 補償（G2）。
+    "user-defined" は AGGREGATING_PATTERNS に含まれないため、basic 以外の auto は
+    従来どおり False（後方互換）。basic のときだけ verify gate が動的 fan-out に入る。"""
+
+    def _split_plan(self):
+        return _plan([{"id": "s", "goal": "分解: {{request}}", "kind": "split"}])
+
+    def test_default_non_basic_stays_false(self):
+        # 既定（review 未指定）× 非 basic → 今日と同じ False
+        strategy, _ = kf.plan_strategy_user(self._split_plan(), "r")
+        self.assertIs(strategy["review"], False)
+        self.assertNotIn("tier", strategy)
+        strategy2, _ = kf.plan_strategy_user(self._split_plan(), "r", tier="large")
+        self.assertIs(strategy2["review"], False)
+
+    def test_default_basic_turns_review_on(self):
+        strategy, _ = kf.plan_strategy_user(self._split_plan(), "r", tier="basic")
+        self.assertIs(strategy["review"], True)
+        self.assertEqual(strategy["tier"], "basic")
+
+    def test_explicit_true_respected_regardless_of_tier(self):
+        strategy, _ = kf.plan_strategy_user(
+            _plan([{"id": "a", "goal": "g"}], review=True), "r")
+        self.assertIs(strategy["review"], True)
+
+    def test_explicit_false_not_overridden_by_basic(self):
+        # tier_review_decision は明示 bool を尊重する既存仕様の確認
+        strategy, _ = kf.plan_strategy_user(
+            _plan([{"id": "a", "goal": "g"}], review=False), "r", tier="basic")
+        self.assertIs(strategy["review"], False)
+
+    def test_invalid_review_rejected(self):
+        # 厳格検証の方針どおり、三値（true/false/"auto"）以外は丸めず失敗させる
+        with self.assertRaises(kf.UserPlanError):
+            kf.plan_strategy_user(_plan([{"id": "a", "goal": "g"}], review="yes"), "r")
+
+    def test_review_true_inserts_gate_into_fanout(self):
+        # gate が入るのは動的 fan-out 領域（map→reduce 間）だけ——静的な形は変わらない
+        strategy, tasks = kf.plan_strategy_user(self._split_plan(), "r", tier="basic")
+        nodes = {t["id"]: kf._node_entry(t) for t in tasks}
+        results = {"s": {"status": "done", "data": ["a", "b"]}}
+        _, new, _ = kf.continue_stub("r", nodes, results, 0, review=strategy["review"])
+        gate = next(t for t in new if t["id"] == "s-gate")
+        self.assertEqual(gate["kind"], "verify")
+        self.assertIn("s-gate", next(t for t in new if t["id"] == "s-reduce")["deps"])
+        # 非 basic（review False）では従来どおり gate 無し
+        _, new2, _ = kf.continue_stub("r", nodes, results, 0, review=False)
+        self.assertNotIn("s-gate", [t["id"] for t in new2])
 
 
 class UserPlanBusTests(unittest.TestCase):
@@ -170,6 +246,28 @@ class UserPlanContinueTests(unittest.TestCase):
             {"a": {"status": "failed", "output": "x"}}, 0, {"user_plan": True})
         self.assertEqual((decision, tasks), ("failed", []))
         self.assertIn("a", reason)
+
+    def test_split_fanout_expands_without_evaluator(self):
+        # データ駆動 fan-out（split → map/reduce）は機械展開（LLM 無し）なので、評価役が
+        # 無効な既定でも走る——これが無いと split を含むカスタムフローは「後段は実行時に
+        # 自動生成される」契約（plan_strategy_user が静的依存を弾く理由）が果たされず空振りする。
+        nodes = {"s": {"goal": "g", "deps": [], "kind": "split"}}
+        results = {"s": {"status": "done", "data": ["a", "b"]}}
+        decision, new, reason = kf._continue(
+            self._args(), None, "r", nodes, results, 0, {"user_plan": True})
+        self.assertEqual(decision, "replan")
+        self.assertEqual([t["id"] for t in new], ["s-m1", "s-m2", "s-reduce"])
+        self.assertIn("data-driven fan-out", reason)
+
+    def test_split_fanout_gate_follows_strategy_review(self):
+        nodes = {"s": {"goal": "g", "deps": [], "kind": "split"}}
+        results = {"s": {"status": "done", "data": ["a", "b"]}}
+        _, new, _ = kf._continue(self._args(), None, "r", nodes, results, 0,
+                                 {"user_plan": True, "review": True})
+        self.assertIn("s-gate", [t["id"] for t in new])
+        _, new2, _ = kf._continue(self._args(), None, "r", nodes, results, 0,
+                                  {"user_plan": True, "review": False})
+        self.assertNotIn("s-gate", [t["id"] for t in new2])
 
     def test_evaluate_flag_falls_through_to_normal_continuation(self):
         with mock.patch.object(kf, "continue_stub",
@@ -266,6 +364,32 @@ class UserPlanEndToEndTests(unittest.TestCase):
         _, graph, final, _meta = self._graph(bus)
         self.assertEqual(graph["strategy"]["patterns"], ["adversarial-verification"])
         self.assertTrue(all(r["status"] == "done" for r in final["results"].values()))
+
+    def test_basic_tier_run_gates_dynamic_fanout(self):
+        # 配線の確認: orchestrate が flow_tier()（agent-control 宣言）を plan_strategy_user へ
+        # 渡し、basic では split の動的 fan-out に verify gate が入って run が完走する。
+        bus = self._bus()
+        ctl = tempfile.mkdtemp(prefix="kf-userplan-ctl-")
+        self.addCleanup(shutil.rmtree, ctl, ignore_errors=True)
+        pathlib.Path(ctl, "control.json").write_text(json.dumps(
+            {"workloads": {"flow": {"tier": "basic"}}}), encoding="utf-8")
+        pf = os.path.join(bus, "plan.json")
+        pathlib.Path(pf).write_text(json.dumps(_plan(
+            [{"id": "s", "goal": "分解: {{request}}", "kind": "split"}])), encoding="utf-8")
+        p = subprocess.run(
+            [sys.executable, str(SCRIPT), "--bus", bus, "run", "各件を処理",
+             "--plan-file", pf, "--workers", "2", "--planner", "stub",
+             "--executor", "stub", "--poll", "0.2"],
+            capture_output=True, text=True, timeout=90,
+            env=dict(os.environ, AGENT_CONTROL_DIR=ctl))
+        self.assertEqual(p.returncode, 0, p.stderr[-800:])
+        _, graph, final, _meta = self._graph(bus)
+        self.assertIs(graph["strategy"]["review"], True)
+        self.assertEqual(graph["strategy"]["tier"], "basic")
+        self.assertIn("s-gate", graph["nodes"])           # map→reduce 間の verify gate
+        self.assertIn("s-gate", graph["nodes"]["s-reduce"]["deps"])
+        for nid, r in final["results"].items():
+            self.assertEqual(r["status"], "done", f"{nid}: {r}")
 
     def test_invalid_plan_fails_run_without_fallback(self):
         bus = self._bus()

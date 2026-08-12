@@ -161,10 +161,10 @@ test('カスタムフローの tier を実行候補へ固定して plan を作�
   );
   try {
     const workflow = adhoc.normalizeWorkflow({
-      name: '実装と検証',
+      name: '実装と抽出',
       nodes: [
         { id: 'build', goal: '実装', tier: 'large' },
-        { id: 'verify', goal: '検証', tier: 'basic', deps: ['build'] },
+        { id: 'pick', goal: '項目を抽出', kind: 'extract', tier: 'basic', deps: ['build'] },
       ],
     });
     const plan = adhoc.planFromWorkflow({}, workflow);
@@ -172,6 +172,86 @@ test('カスタムフローの tier を実行候補へ固定して plan を作�
     assert.strictEqual(plan.nodes[1].tier, 'basic');
     assert.deepStrictEqual(plan.nodes[0].agent, { agent_cli: 'codex', model: 'gpt-5' });
     assert.deepStrictEqual(plan.nodes[1].agent, { agent_cli: 'ollama', model: 'qwen3' });
+  } finally {
+    profiles.resolveTier = original;
+  }
+});
+
+test('機能・オプションの実行可能レベル外の固定 tier は plan 生成で弾く', () => {
+  const original = profiles.resolveTier;
+  profiles.resolveTier = () => ({ agent_cli: 'ollama', model: 'qwen3' });
+  try {
+    // work（成果物を作る機能）は単純作業（basic）へ任せない
+    assert.throws(() => adhoc.planFromWorkflow({}, adhoc.normalizeWorkflow({
+      name: '不適格', nodes: [{ id: 'build', goal: '実装', tier: 'basic' }],
+    })), /「build」（work）は実行レベル「単純作業」に任せられません/);
+    // verify 単体は軽量で実行できるが、retry オプションで下限が標準へ上がる
+    assert.throws(() => adhoc.planFromWorkflow({}, adhoc.normalizeWorkflow({
+      name: '不適格retry',
+      nodes: [
+        { id: 'work', goal: '作業', tier: 'small' },
+        { id: 'check', goal: '検証', kind: 'verify', tier: 'small', deps: ['work'],
+          continuation: 'retry' },
+      ],
+    })), /「check」（verify）は実行レベル「軽量」に任せられません/);
+    // 同じ small の verify も、retry を外せば適格
+    const plan = adhoc.planFromWorkflow({}, adhoc.normalizeWorkflow({
+      name: '適格',
+      nodes: [
+        { id: 'work', goal: '作業', tier: 'small' },
+        { id: 'check', goal: '検証', kind: 'verify', tier: 'small', deps: ['work'] },
+      ],
+    }));
+    assert.strictEqual(plan.nodes[1].tier, 'small');
+  } finally {
+    profiles.resolveTier = original;
+  }
+});
+
+test('複数レベルで実行可能な自動 tier は、実行方針の戦略に応じて実行可能範囲内で決まる', () => {
+  const original = profiles.resolveTier;
+  profiles.resolveTier = (_cfg, tier) => ({ agent_cli: 'claude', model: `m-${tier}` });
+  const controlDir = tmpdir('flow-tier-strategy-');
+  const cfg = { orchestration: { controlDir } };
+  const writeStrategy = (mode, steps, flowTier) => {
+    fs.writeFileSync(path.join(controlDir, 'profiles.json'), JSON.stringify({
+      version: 1,
+      enabled: true,
+      tiers: {},
+      policy: { apply_to: ['flow'], steps, no_cap_tier: steps[0].tier },
+      execution_policy: { mode, custom: {} },
+    }));
+    fs.writeFileSync(path.join(controlDir, 'control.json'), JSON.stringify({
+      version: 1, revision: 1, workloads: { flow: { tier: flowTier } },
+    }));
+  };
+  try {
+    // 節約（常に small）: judge は標準以上なので、最も低い適格レベル medium へ固定する
+    writeStrategy('saving', [{ min_remaining_ratio: 0, tier: 'small' }], 'small');
+    const saving = adhoc.planFromWorkflow(cfg, adhoc.normalizeWorkflow({
+      name: '判定', nodes: [
+        { id: 'gen', goal: '候補を作る', kind: 'generate', tier: '自動' },
+        { id: 'pick', goal: '候補を選ぶ', kind: 'judge', tier: '自動', deps: ['gen'] },
+      ],
+    }));
+    // generate は small..large すべて適格 → 実行時の方針追従（継承）のまま
+    assert.strictEqual(saving.nodes[0].tier, undefined);
+    assert.strictEqual(saving.nodes[0].agent, undefined);
+    // judge は方針が不適格な段（small）を選びうる → 実行可能範囲へ丸めて固定
+    assert.strictEqual(saving.nodes[1].tier, 'medium');
+    assert.deepStrictEqual(saving.nodes[1].agent, { agent_cli: 'claude', model: 'm-medium' });
+    assert.match(String(saving.nodes[1].selection_reason || ''), /strategy=saving/);
+
+    // 品質優先（large→medium→small）: 今の段が large なら judge も large のまま固定
+    writeStrategy('quality', [
+      { min_remaining_ratio: 0.2, tier: 'large' },
+      { min_remaining_ratio: 0.05, tier: 'medium' },
+      { min_remaining_ratio: 0, tier: 'small' },
+    ], 'large');
+    const quality = adhoc.planFromWorkflow(cfg, adhoc.normalizeWorkflow({
+      name: '判定', nodes: [{ id: 'pick', goal: '候補を選ぶ', kind: 'judge', tier: '自動' }],
+    }));
+    assert.strictEqual(quality.nodes[0].tier, 'large');
   } finally {
     profiles.resolveTier = original;
   }
@@ -994,7 +1074,7 @@ test('カスタムフローは旧全体ルールを保存・実行しない', ()
       name: '全体手法つき', methods: ['adversarial-verify'],
       nodes: [
         { id: 'a', goal: '{{request}}', tier: 'small' },
-        { id: 'v', goal: '完了条件を確認', kind: 'verify', tier: 'small', deps: ['a'], continuation: 'retry' },
+        { id: 'v', goal: '完了条件を確認', kind: 'verify', tier: 'medium', deps: ['a'], continuation: 'retry' },
       ],
     });
     assert.strictEqual(workflow.methods, undefined);

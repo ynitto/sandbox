@@ -90,6 +90,15 @@ class MethodIntegrationTests(unittest.TestCase):
         # 上のテストが「カタログを読めていないから空」で通らないための対（両方向で縛る）。
         self.assertEqual(self._applied("work"), sorted(self.PROSE_EMITTING))
 
+    def test_tier_split_directive_keeps_machine_read_discipline(self):
+        # split は成果を機械が読む役割（LIST_CONTRACT_ROLES）。手法と同じ規律を tier 指示
+        # （プロンプト末尾への後置）にも適用する: 散文を誘発せず、配列のみの出力契約を
+        # 指示文の中で再確認する。ここが崩れると _expand_splits が展開されず run が空振りする。
+        self.assertTrue(kf.TIER_SPLIT_DIRECTIVES)
+        for tier, note in kf.TIER_SPLIT_DIRECTIVES.items():
+            self.assertIn("JSON 配列", note, f"tier={tier} の指示が配列契約を再確認していない")
+            self.assertIn("説明文", note, f"tier={tier} の指示が散文の禁止を言っていない")
+
     def test_bus_result_keeps_method_evidence(self):
         root = tempfile.mkdtemp(prefix="kf-method-bus-")
         self.addCleanup(shutil.rmtree, root, True)
