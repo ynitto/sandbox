@@ -5,6 +5,7 @@
 スタブ aider による複数状態の完走（未実行の成功申告を安全な書込へ補正して終端へ遷移）。
 dashboard の旧 in-process 実行器（stateMachineRunner.js）のテストを移植したもの。
 """
+import io
 import json
 import os
 import pathlib
@@ -12,6 +13,7 @@ import sys
 import tempfile
 import types
 import unittest
+from unittest import mock
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
@@ -106,6 +108,9 @@ class ParseAndStatusTest(unittest.TestCase):
         prompt = al._sm_planner_prompt(
             action="input.json を読む", cwd="/repo", skills=[], reads=[], history=[], retry="")
         self.assertNotIn("relative/path", prompt)
+        self.assertIn(
+            '{"type":"run","command":"executable","args":["arg"],"timeout_sec":60}',
+            prompt)
 
     def test_planner_prompt_only_claims_run_after_success(self):
         initial = al._sm_planner_prompt(
@@ -115,6 +120,7 @@ class ParseAndStatusTest(unittest.TestCase):
             history=['TOOL_RESULT {"type":"run","status":0}'], retry="")
         self.assertNotIn("already completed", initial)
         self.assertIn("already completed", completed)
+        self.assertIn("request write_files", initial)
 
 
 class RunStatemachineTest(unittest.TestCase):
@@ -234,6 +240,281 @@ class RunStatemachineTest(unittest.TestCase):
                 )
 
                 self.assertTrue(result["ok"], result.get("error"))
+
+    def test_cli_handles_gemma_placeholder_read_and_completes(self):
+        pathlib.Path(self.repo, "input.txt").write_text(
+            "source evidence\n", encoding="utf-8")
+        pathlib.Path(self.repo, "out.txt").write_text("stale\n", encoding="utf-8")
+        control = pathlib.Path(self.repo, "fake-ollama-json.py")
+        control.write_text("\n".join([
+            "import json, sys",
+            "argv = sys.argv",
+            "prompt = argv[argv.index('--message') + 1]",
+            "if 'source evidence' in prompt:",
+            "    print(json.dumps({'type': 'final', 'output': 'OK\\npath: out.txt'}))",
+            "else:",
+            "    print(json.dumps({'type': 'read_files', "
+            "'paths': ['relative/path', 'input.txt']}))",
+            "",
+        ]), encoding="utf-8")
+        editor = pathlib.Path(self.repo, "fake-aider.py")
+        editor.write_text("\n".join([
+            "import pathlib, sys",
+            "argv = sys.argv",
+            "target = pathlib.Path(argv[argv.index('--file') + 1])",
+            "if not target.read_text(encoding='utf-8'):",
+            "    target.write_text('done\\n', encoding='utf-8')",
+            "print('OK\\npath: out.txt')",
+            "",
+        ]), encoding="utf-8")
+        agents = pathlib.Path(self.repo, "agents")
+        agents.mkdir()
+        common = {
+            "prompt_via": "argv", "prompt_flag": "--message",
+            "read_flag": "--read", "model_flag": "--model", "timeout": 10,
+        }
+        (agents / "fake-aider.json").write_text(json.dumps({
+            **common,
+            "command": [sys.executable, str(editor)],
+            "file_flag": "--file",
+            "json_variant": "fake-ollama-json",
+        }), encoding="utf-8")
+        (agents / "fake-ollama-json.json").write_text(json.dumps({
+            **common,
+            "command": [sys.executable, str(control)],
+        }), encoding="utf-8")
+
+        stdout = io.StringIO()
+        args = al.argparse.Namespace(
+            workflow=".statemachine/one-step/workflow.yaml",
+            agent_cli="fake-aider", model="gemma4:e4b", param=[], input=None,
+            dir=self.repo,
+        )
+        with mock.patch("sys.stdout", stdout), mock.patch("sys.stderr", io.StringIO()), \
+                self.assertRaises(SystemExit) as exit_info:
+            al.cmd_statemachine(args, pathlib.Path(self.repo))
+
+        line = [line for line in stdout.getvalue().splitlines()
+                if line.startswith("RESULT ")][-1]
+        result = json.loads(line[len("RESULT "):])
+        self.assertEqual(exit_info.exception.code, 0, result)
+        self.assertTrue(result["ok"], result.get("error"))
+        self.assertEqual(result["finalState"], "complete")
+        self.assertEqual(pathlib.Path(self.repo, "out.txt").read_text(encoding="utf-8"),
+                         "done\n")
+        events = [json.loads(line) for line in pathlib.Path(
+            result["logFile"]).read_text(encoding="utf-8").splitlines()]
+        argv = [event.get("argv", []) for event in events if event.get("event") == "finish"]
+        self.assertTrue(any(str(control) in call for call in argv), "制御はollama-json変種を通る")
+        self.assertTrue(any(str(editor) in call for call in argv), "書き込みはaiderを通る")
+
+    def test_write_request_replaces_preexisting_output(self):
+        output = pathlib.Path(self.repo, "out.txt")
+        output.write_text("stale\n", encoding="utf-8")
+        fake = pathlib.Path(self.repo, "fake-replace.py")
+        fake.write_text("\n".join([
+            "import pathlib, sys",
+            "argv = sys.argv",
+            "def val(flag):",
+            "    return argv[argv.index(flag) + 1] if flag in argv else ''",
+            "if '--dry-run' in argv:",
+            "    print('{\"type\":\"final\",\"output\":\"OK\\\\npath: out.txt\"}')",
+            "else:",
+            "    target = pathlib.Path(val('--file'))",
+            "    if not target.read_text(encoding='utf-8'):",
+            "        target.write_text('fresh\\n', encoding='utf-8')",
+            "    print('OK\\npath: out.txt')",
+            "",
+        ]), encoding="utf-8")
+        spec = agentcli.normalize("replace", {
+            "name": "replace",
+            "command": [sys.executable, str(fake)],
+            "prompt_via": "argv",
+            "prompt_flag": "--message",
+            "file_flag": "--file",
+            "read_flag": "--read",
+            "readonly_args": ["--dry-run"],
+            "readonly": "enforced",
+            "timeout": 10,
+        }, pathlib.Path(self.repo, "fake-replace.json"))
+
+        result = al.run_statemachine(
+            workflow_path=os.path.join(
+                self.repo, ".statemachine", "one-step", "workflow.yaml"),
+            cwd=self.repo,
+            parameters={},
+            agent={"cli": "replace", "spec": spec, "model": "fake",
+                   "agentcli": agentcli},
+        )
+
+        self.assertTrue(result["ok"], result.get("error"))
+        self.assertEqual(output.read_text(encoding="utf-8"), "fresh\n")
+
+    def test_write_failure_restores_preexisting_output(self):
+        output = pathlib.Path(self.repo, "out.txt")
+        output.write_text("stale\n", encoding="utf-8")
+        workflow = os.path.join(
+            self.repo, ".statemachine", "one-step", "workflow.yaml")
+        state = {
+            "action_file": "actions/make.md",
+            "output_validator": "startswith:OK",
+        }
+        responses = [
+            '{"type":"final","output":"OK\\npath: out.txt"}',
+            al.StateMachineHarnessError("editor failed"),
+        ]
+
+        with mock.patch.object(al, "_sm_run_agent", side_effect=responses):
+            with self.assertRaisesRegex(al.StateMachineHarnessError, "editor failed"):
+                al._sm_execute_action(
+                    workflow_path=workflow, state_id="make", state=state, context={},
+                    cwd=self.repo, agent={}, log_file=os.path.join(self.repo, "run.jsonl"),
+                    touched=set())
+
+        self.assertEqual(output.read_text(encoding="utf-8"), "stale\n")
+        self.assertEqual(list(pathlib.Path(self.repo).glob("*.agent-loop-*.bak")), [])
+
+    def test_invalid_write_output_restores_preexisting_output(self):
+        output = pathlib.Path(self.repo, "out.txt")
+        output.write_text("stale\n", encoding="utf-8")
+        responses = [
+            '{"type":"final","output":"OK\\npath: out.txt"}',
+            "BROKEN",
+        ]
+
+        def fake_agent(*_args, readonly=False, files=None, **_kwargs):
+            response = responses.pop(0)
+            if not readonly:
+                pathlib.Path(files[0]).write_text("fresh\n", encoding="utf-8")
+            return response
+
+        with mock.patch.object(al, "_sm_run_agent", side_effect=fake_agent):
+            with self.assertRaisesRegex(al.StateMachineHarnessError, "Output Contract"):
+                al._sm_execute_action(
+                    workflow_path=os.path.join(
+                        self.repo, ".statemachine", "one-step", "workflow.yaml"),
+                    state_id="make",
+                    state={"action_file": "actions/make.md", "output_validator": "startswith:OK"},
+                    context={}, cwd=self.repo, agent={},
+                    log_file=os.path.join(self.repo, "run.jsonl"), touched=set())
+
+        self.assertEqual(output.read_text(encoding="utf-8"), "stale\n")
+        self.assertEqual(list(pathlib.Path(self.repo).glob("*.agent-loop-*.bak")), [])
+
+    def test_read_request_returns_small_file_content_to_control_agent(self):
+        input_file = pathlib.Path(self.repo, "input.txt")
+        input_file.write_text("source evidence\n", encoding="utf-8")
+
+        def fake_agent(_agent, prompt, **_kwargs):
+            if "source evidence" in prompt:
+                return '{"type":"final","output":"OK"}'
+            return '{"type":"read_files","paths":["input.txt"]}'
+
+        with mock.patch.object(al, "_sm_run_agent", side_effect=fake_agent):
+            output = al._sm_execute_action(
+                workflow_path=os.path.join(
+                    self.repo, ".statemachine", "one-step", "workflow.yaml"),
+                state_id="make",
+                state={"action_file": "actions/make.md", "output_validator": "startswith:OK"},
+                context={}, cwd=self.repo, agent={},
+                log_file=os.path.join(self.repo, "run.jsonl"), touched=set())
+
+        self.assertEqual(output, "OK")
+
+    def test_unmentioned_skill_script_is_not_executed(self):
+        skill = pathlib.Path(self.repo, ".github", "skills", "demo")
+        (skill / "scripts").mkdir(parents=True)
+        (skill / "SKILL.md").write_text("# demo\n", encoding="utf-8")
+        script = skill / "scripts" / "mutate.py"
+        script.write_text("raise SystemExit('must not run')\n", encoding="utf-8")
+        action = pathlib.Path(
+            self.repo, ".statemachine", "one-step", "actions", "make.md")
+        action.write_text(
+            "`demo` スキルと `input.txt` を使い out.txt を生成する。\n",
+            encoding="utf-8")
+        readonly_responses = iter([
+            json.dumps({"type": "run", "command": str(script), "args": []}),
+            '{"type":"final","output":"OK\\npath: out.txt"}',
+        ])
+
+        def fake_agent(*_args, readonly=False, files=None, **_kwargs):
+            if readonly:
+                return next(readonly_responses)
+            pathlib.Path(files[0]).write_text("fresh\n", encoding="utf-8")
+            return "OK\npath: out.txt"
+
+        with mock.patch.object(al, "_sm_run_agent", side_effect=fake_agent), \
+                mock.patch.object(al, "_sm_exec_argv") as execute:
+            output = al._sm_execute_action(
+                workflow_path=os.path.join(
+                    self.repo, ".statemachine", "one-step", "workflow.yaml"),
+                state_id="make",
+                state={"action_file": "actions/make.md", "output_validator": "startswith:OK"},
+                context={}, cwd=self.repo, agent={},
+                log_file=os.path.join(self.repo, "run.jsonl"), touched=set())
+
+        self.assertRegex(output, r"^OK")
+        execute.assert_not_called()
+
+    def test_successful_run_is_not_executed_twice(self):
+        skill = pathlib.Path(self.repo, ".github", "skills", "demo")
+        (skill / "scripts").mkdir(parents=True)
+        (skill / "SKILL.md").write_text("# demo\n", encoding="utf-8")
+        script = skill / "scripts" / "once.py"
+        script.write_text("print('done')\n", encoding="utf-8")
+        action = pathlib.Path(
+            self.repo, ".statemachine", "one-step", "actions", "make.md")
+        action.write_text(
+            "`demo` スキルの `once.py` を実行して OK を返す。\n", encoding="utf-8")
+        run = json.dumps({"type": "run", "command": str(script), "args": []})
+        responses = iter([run, run, '{"type":"final","output":"OK"}'])
+
+        with mock.patch.object(al, "_sm_run_agent", side_effect=lambda *_a, **_k: next(responses)), \
+                mock.patch.object(al, "_sm_exec_argv", return_value={
+                    "status": 0, "error": "", "stdout": "done\n", "stderr": "",
+                }) as execute:
+            output = al._sm_execute_action(
+                workflow_path=os.path.join(
+                    self.repo, ".statemachine", "one-step", "workflow.yaml"),
+                state_id="make",
+                state={"action_file": "actions/make.md", "output_validator": "startswith:OK"},
+                context={}, cwd=self.repo, agent={},
+                log_file=os.path.join(self.repo, "run.jsonl"), touched=set())
+
+        self.assertEqual(output, "OK")
+        self.assertEqual(execute.call_count, 1)
+
+    def test_different_successful_runs_are_both_executed(self):
+        skill = pathlib.Path(self.repo, ".github", "skills", "demo")
+        (skill / "scripts").mkdir(parents=True)
+        (skill / "SKILL.md").write_text("# demo\n", encoding="utf-8")
+        scripts = [skill / "scripts" / name for name in ("one.py", "two.py")]
+        for script in scripts:
+            script.write_text("print('done')\n", encoding="utf-8")
+        action = pathlib.Path(
+            self.repo, ".statemachine", "one-step", "actions", "make.md")
+        action.write_text(
+            "`demo` スキルの `one.py` と `two.py` を実行して OK を返す。\n",
+            encoding="utf-8")
+        responses = iter([
+            json.dumps({"type": "run", "command": str(script), "args": []})
+            for script in scripts
+        ] + ['{"type":"final","output":"OK"}'])
+
+        with mock.patch.object(al, "_sm_run_agent", side_effect=lambda *_a, **_k: next(responses)), \
+                mock.patch.object(al, "_sm_exec_argv", return_value={
+                    "status": 0, "error": "", "stdout": "done\n", "stderr": "",
+                }) as execute:
+            output = al._sm_execute_action(
+                workflow_path=os.path.join(
+                    self.repo, ".statemachine", "one-step", "workflow.yaml"),
+                state_id="make",
+                state={"action_file": "actions/make.md", "output_validator": "startswith:OK"},
+                context={}, cwd=self.repo, agent={},
+                log_file=os.path.join(self.repo, "run.jsonl"), touched=set())
+
+        self.assertEqual(output, "OK")
+        self.assertEqual(execute.call_count, 2)
 
 
 class ParamParsingTest(unittest.TestCase):

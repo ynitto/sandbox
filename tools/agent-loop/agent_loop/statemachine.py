@@ -159,14 +159,21 @@ def _sm_planner_prompt(*, action: str, cwd: str, skills: "list[dict]",
         + (f"{retry}\n" if retry else "")
         + f"Current action:\n---\n{action}\n---\n"
         + (f"Previous tool results:\n{chr(10).join(history)}\n" if history else "")
-        + ("A run TOOL_RESULT with status 0 already completed; do not run that command again. "
-           "Request read_files only if inspection is still required.\n"
+        + ("A run TOOL_RESULT with status 0 already completed; do not repeat the same command. "
+           "Run another command only if Current action explicitly requires it. Request "
+           "read_files only if inspection is still required.\n"
            if _tl_history_has_run(history) else
            "If the action names a command, run it and use its TOOL_RESULT as the only source "
            "of facts. Never report results you have not seen in a TOOL_RESULT.\n")
+        + ("If the action asks to create, save, or edit a file without naming a command, "
+           "request write_files. Never run a skill script unless Current action explicitly "
+           "names that script.\n")
         + ("For run.args, put every CLI token in its own JSON string. Never combine a flag and "
           "value or add flags not requested by the action.\n"
-          "Return exactly one JSON object and no markdown. Required fields by type:\n"
+          "Return exactly one JSON object and no markdown. Put type at the top level; "
+          "never use a tool name as an object key. Run shape:\n"
+          '{"type":"run","command":"executable","args":["arg"],"timeout_sec":60}\n'
+          "Required fields by type:\n"
           "- read_files: type, paths (existing concrete paths from Current action only)\n"
           "- write_files: type, paths (concrete output paths from Current action only)\n"
           "- run: type, command, args, timeout_sec\n"
@@ -186,10 +193,18 @@ def _sm_execute_action(*, workflow_path: str, state_id: str, state: dict, contex
     action = _sm_workflow_action(workflow_path, state_id, state)
     rendered = _sm_render_template(action["text"], context)
     skills = [s for s in (_sm_resolve_skill(n, cwd) for n in _sm_action_skill_names(rendered)) if s]
+    skill_scripts = {
+        os.path.realpath(script) for skill in skills for script in _sm_skill_scripts(skill)
+    }
+    named_skill_scripts = {
+        script for script in skill_scripts if os.path.basename(script) in rendered
+    }
     action_reads = _sm_action_project_files(rendered, cwd)
     reads: set = {f for f in [workflow_path, action["file"], *(s["skill_file"] for s in skills)] if f}
     validator = state.get("output_validator")
     max_attempts = _sm_max_attempts(state)
+    successful_runs: set = set()
+    provided_reads: set = set()
 
     for attempt in range(max_attempts):
         history: list[str] = []
@@ -213,6 +228,29 @@ def _sm_execute_action(*, workflow_path: str, state_id: str, state: dict, contex
                 history.append("TOOL_RESULT " + json.dumps(
                     {"rejected": True, "error": str(exc)}, ensure_ascii=False))
                 continue
+            if request["type"] == "run":
+                script = os.path.realpath(request["command"])
+                if request["args"] and os.path.realpath(request["args"][0]) in skill_scripts:
+                    script = os.path.realpath(request["args"][0])
+                if script in skill_scripts and script not in named_skill_scripts:
+                    history.append("TOOL_RESULT " + json.dumps({
+                        "rejected": True,
+                        "error": "Current action にないスキルスクリプトは実行できません: "
+                                 + os.path.basename(script),
+                    }, ensure_ascii=False))
+                    continue
+                executable = _tl_executable_on_path(request["command"]) or request["command"]
+                run_key = (os.path.realpath(executable), tuple(
+                    os.path.realpath(os.path.join(cwd, arg))
+                    if os.path.isabs(arg) or "/" in arg or "\\" in arg else arg
+                    for arg in request["args"]
+                ))
+                if run_key in successful_runs:
+                    history.append("TOOL_RESULT " + json.dumps({
+                        "rejected": True,
+                        "error": "同じ run は既に成功しています。再実行せず final を返してください",
+                    }, ensure_ascii=False))
+                    continue
             if request["type"] == "final":
                 evidence_error = _sm_final_evidence_error(request["output"], cwd, evidence, touched)
                 if evidence_error:
@@ -234,34 +272,63 @@ def _sm_execute_action(*, workflow_path: str, state_id: str, state: dict, contex
                 reads.update(existing)
                 evidence.update(existing)
                 missing = [file for file in request["paths"] if file not in existing]
+                files = []
+                for file in existing:
+                    item = {"path": file, "size": os.stat(file).st_size}
+                    if file in provided_reads:
+                        item["already_provided"] = True
+                    elif item["size"] <= _SM_MAX_AUTO_READ_BYTES:
+                        with open(file, "r", encoding="utf-8", errors="replace") as source:
+                            item["content"] = source.read()
+                        provided_reads.add(file)
+                    else:
+                        item["content_omitted"] = (
+                            f"{item['size']} bytes exceeds {_SM_MAX_AUTO_READ_BYTES} byte limit")
+                    files.append(item)
+                result = {"type": request["type"], "files": files}
                 if missing:
-                    history.append("TOOL_RESULT " + json.dumps(
-                        {"rejected": True, "error": "読み取り対象がありません: "
-                         + ", ".join(os.path.relpath(file, cwd) for file in missing)},
-                        ensure_ascii=False))
+                    result.update({"rejected": True, "error": "読み取り対象がありません: "
+                                   + ", ".join(os.path.relpath(file, cwd)
+                                               for file in missing)})
+                    history.append("TOOL_RESULT " + json.dumps(result, ensure_ascii=False))
                     continue
                 _sm_progress(f"read_files: {', '.join(os.path.relpath(f, cwd) for f in request['paths'])}")
-                history.append("TOOL_RESULT " + json.dumps(
-                    {"type": request["type"], "paths": request["paths"]}, ensure_ascii=False))
+                history.append("TOOL_RESULT " + json.dumps(result, ensure_ascii=False))
                 continue
             if request["type"] == "write_files":
-                before = {f: _sm_file_stamp(f) for f in request["paths"]}
                 for file in request["paths"]:
                     os.makedirs(os.path.dirname(file), exist_ok=True)
                 _sm_progress(f"write_files: {', '.join(os.path.relpath(f, cwd) for f in request['paths'])}")
-                output = _sm_run_agent(
-                    agent,
-                    "Execute only this action now. The editable files are stale: replace them "
-                    "from the assigned read-only inputs in this run. Do not merely describe or "
-                    "return the existing content. After editing, return only the action Output "
-                    f"Contract.\n\n{rendered}",
-                    cwd=cwd, readonly=False,
-                    read_files=[f for f in sorted(reads | set(action_reads))
-                                if f not in request["paths"]],
-                    files=request["paths"], log_file=log_file)
+                backups: dict[str, str] = {}
+                try:
+                    # Existing generated content can make a small model claim it is already done.
+                    # Keep it recoverable, but give the replacement editor an empty target.
+                    for file in request["paths"]:
+                        if os.path.isfile(file):
+                            backup = f"{file}.agent-loop-{uuid.uuid4().hex}.bak"
+                            os.replace(file, backup)
+                            backups[file] = backup
+                            Path(file).touch()
+                    staged = {f: _sm_file_stamp(f) for f in request["paths"]}
+                    output = _sm_run_agent(
+                        agent,
+                        "Execute only this action now. The editable files are stale: replace them "
+                        "from the assigned read-only inputs in this run. Do not merely describe or "
+                        "return the existing content. After editing, return only the action Output "
+                        f"Contract.\n\n{rendered}",
+                        cwd=cwd, readonly=False,
+                        read_files=[f for f in sorted(reads | set(action_reads))
+                                    if f not in request["paths"]],
+                        files=request["paths"], log_file=log_file)
+                except BaseException:
+                    for file, backup in backups.items():
+                        os.replace(backup, file)
+                    raise
                 missing = [f for f in request["paths"] if not os.path.exists(f)]
-                changed = any(_sm_file_stamp(f) != before[f] for f in request["paths"])
+                changed = any(_sm_file_stamp(f) != staged[f] for f in request["paths"])
                 if missing or not changed:
+                    for file, backup in backups.items():
+                        os.replace(backup, file)
                     error = (
                         "書き込み対象がありません: "
                         + ", ".join(os.path.relpath(f, cwd) for f in missing)
@@ -269,17 +336,27 @@ def _sm_execute_action(*, workflow_path: str, state_id: str, state: dict, contex
                     history.append("TOOL_RESULT " + json.dumps(
                         {"rejected": True, "error": error}, ensure_ascii=False))
                     continue
-                for file in request["paths"]:
-                    evidence.add(file)
-                    touched.add(file)
-                evidence_error = _sm_final_evidence_error(output, cwd, evidence, touched)
+                candidates = set(request["paths"])
+                evidence_error = _sm_final_evidence_error(
+                    output, cwd, evidence | candidates, touched | candidates)
                 if evidence_error:
+                    for file, backup in backups.items():
+                        os.replace(backup, file)
                     history.append("TOOL_RESULT " + json.dumps(
                         {"rejected": True, "error": evidence_error}, ensure_ascii=False))
                     continue
                 contract = _sm_validated_output(output, validator)
                 if contract:
+                    for backup in backups.values():
+                        try:
+                            os.unlink(backup)
+                        except OSError:
+                            pass
+                    evidence.update(candidates)
+                    touched.update(candidates)
                     return contract
+                for file, backup in backups.items():
+                    os.replace(backup, file)
                 break
             _sm_progress(f"run: {request['command']} {' '.join(request['args'])}")
             tool = _sm_exec_argv(request["command"], request["args"], cwd=cwd,
@@ -301,6 +378,8 @@ def _sm_execute_action(*, workflow_path: str, state_id: str, state: dict, contex
                 "stdout": tool["stdout"][-4000:], "stderr": tool["stderr"][-2000:],
                 "logFile": log_file,
             }, ensure_ascii=False))
+            if tool["status"] == 0 and not tool["error"]:
+                successful_runs.add(run_key)
     raise StateMachineHarnessError(f"ステート {state_id} が Output Contract を満たしませんでした")
 
 
