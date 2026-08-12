@@ -4,17 +4,55 @@ from __future__ import annotations
 # --------------------------------------------------------------------------
 # orchestrate
 # --------------------------------------------------------------------------
-def _plan_strategy(args, bus):
+def _plan_strategy(args, bus, request=None):
     review = getattr(args, "review", "auto")  # 'auto'/True/False の三値
-    gran = getattr(args, "granularity", "auto") or "auto"
+    # 実行 tier（agent-control 宣言）。basic なら granularity auto を finest へ倒し、
+    # planner へ basic 向けの分解指示を渡す（明示 granularity は人の意思なので覆さない）。
+    tier = flow_tier()
+    gran = tier_planning_granularity(getattr(args, "granularity", "auto") or "auto", tier)
+    req = args.request if request is None else request
     # プロジェクト文脈（案 H・オプトイン）。run 作成時に snapshot_context() が meta へ固定済み
     # なので、ここではその結果を読むだけ（描画・マーカー付与は snapshot 側の責務）。
     ctx = run_context_text(bus)
     if args.planner == "flow-planner":
-        return plan_strategy_flow_planner(args.request, args.model, review, gran, ctx)
+        return plan_strategy_flow_planner(req, args.model, review, gran, ctx, tier)
     if args.planner == "agent":
-        return plan_strategy_agent(args.request, args.model, review, gran, ctx)
-    return plan_strategy_stub(args.request, review, gran)
+        return plan_strategy_agent(req, args.model, review, gran, ctx, tier)
+    return plan_strategy_stub(req, review, gran, tier)
+
+
+def _plan_initial(args, bus, request):
+    """初期計画（および plan gate 差し戻し後の再計画）の共通入口。
+    `--pattern`（人の明示選択）は planner を通さない従来分岐のまま tier だけ効かせる。"""
+    pattern = str(getattr(args, "pattern", "") or "").strip()
+    if pattern:
+        tier = flow_tier()
+        return plan_strategy_pattern(
+            pattern, request, getattr(args, "review", "auto"),
+            tier_planning_granularity(getattr(args, "granularity", "auto") or "auto", tier), tier)
+    return _plan_strategy(args, bus, request=request)
+
+
+def _plan_gate_enabled(args, strategy) -> bool:
+    """計画承認ゲート（オプトイン）を挿すか。ユーザー定義フローには挿さない
+    （人が書いたグラフに人の承認ゲートを重ねない。必要なら plan に human ノードを書ける）。"""
+    return bool(getattr(args, "plan_gate", False)) and not (strategy or {}).get("user_plan")
+
+
+def _plan_gate_timeout(args) -> float:
+    try:
+        return float(getattr(args, "plan_gate_timeout", 0) or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _insert_plan_gate(graph: dict, tasks: list, args, attempt: int) -> dict:
+    """base-sync 注入後のグラフへ計画承認ゲートを差し込み、strategy へ記録する。"""
+    gate = plan_gate_task(args.request, graph.get("strategy") or {}, tasks,
+                          attempt=attempt, timeout=_plan_gate_timeout(args))
+    apply_plan_gate(graph["nodes"], tasks, gate)
+    (graph.get("strategy") or {})["plan_gate"] = gate["id"]
+    return gate
 
 
 def _plan_changes(tasks: list[dict]) -> dict:
@@ -127,7 +165,9 @@ def _continue(args, bus, request, nodes, results, iteration, strategy=None):
     # （既存の実装は毎回 request 全文を再埋め込みしており、charter/rules を分離した今
     # ここで補わないと反復のたびに分解質の材料が失われる）。
     ctx = run_context_text(bus)
-    return continue_agent(request, nodes, results, iteration, mf, review, ef, mr, rw, context=ctx)
+    # 実行 tier は評価時点の宣言を読む（basic なら再タスクも basic が実行できる粒度で足させる）。
+    return continue_agent(request, nodes, results, iteration, mf, review, ef, mr, rw,
+                          context=ctx, tier=flow_tier())
 
 
 def _read_user_plan(bus, args):
@@ -156,6 +196,10 @@ def _node_entry(t):
         e["dependency_input"] = str(t["dependency_input"]).strip().lower()
     if t.get("agent"):
         e["agent"] = t["agent"]
+    # human ノードの interaction はグラフにも保持する。worker は claim 時に graph の node を
+    # 読んで park するため、ここで落とすと human ノードが「interaction 不正」で失敗終端する。
+    if isinstance(t.get("interaction"), dict):
+        e["interaction"] = t["interaction"]
     return e
 
 
@@ -379,14 +423,11 @@ def cmd_orchestrate(args) -> int:
             if user_plan is not None:
                 strategy, tasks = plan_strategy_user(user_plan, args.request)
                 log(who, f"ユーザー定義フローを採用: {strategy['reason']}")
-            elif pattern:
-                strategy, tasks = plan_strategy_pattern(
-                    pattern, args.request, getattr(args, "review", "auto"),
-                    getattr(args, "granularity", "auto"))
-                log(who, f"標準パターンを採用: {strategy['reason']}")
             else:
                 strategy, tasks = _with_run_heartbeat(
-                    heartbeat, lease_window, lambda: _plan_strategy(args, bus))
+                    heartbeat, lease_window, lambda: _plan_initial(args, bus, args.request))
+                if pattern:
+                    log(who, f"標準パターンを採用: {strategy['reason']}")
         except UserPlanError as e:
             log(who, f"ユーザー定義フローの検証に失敗: {e}")
             _finalize_run(bus, args, 0,
@@ -398,6 +439,11 @@ def cmd_orchestrate(args) -> int:
         base_sync = inject_base_sync(graph["nodes"], bus.run_workspace())
         if base_sync:
             tasks.append(base_sync)
+        if _plan_gate_enabled(args, strategy):
+            # 計画承認ゲート（オプトイン）: root を全てゲート依存に付け替え、人の承認までは
+            # base-sync 含め何も実行させない。差し戻し（rejected）は評価ループが検知して再計画。
+            gate = _insert_plan_gate(graph, tasks, args, attempt=1)
+            log(who, f"計画承認ゲートを挿入: {gate['id']}（承認で実行開始・差し戻しで再計画）")
         _sanitize_graph(graph["nodes"])  # 未知依存・循環を弾く
         bus.write_graph(graph)
         for t in tasks:
@@ -435,6 +481,60 @@ def cmd_orchestrate(args) -> int:
         graph = bus.read_graph()
         nodes = graph["nodes"]
         results = {nid: (bus.read_result(nid) or {}) for nid in nodes}
+
+        # 計画承認ゲートの決着（オプトイン時のみグラフに存在）。承認は素通り（依存が解けて
+        # 実行へ進んでいる）。差し戻し・未承認は評価役に渡さず決定的に処理する。
+        gs = plan_gate_state(nodes, results)
+        if gs and gs["state"] == "rejected":
+            mr = int(getattr(args, "max_retries", 3) or 3)
+            if gs["attempt"] <= mr:
+                phase("planning")
+                feedback = gs["comment"]
+                log(who, f"plan-gate 差し戻し #{gs['attempt']}: 指摘を反映して再計画します"
+                         f"（{feedback[:120] or 'コメント無し'}）")
+                req2 = plan_gate_feedback_request(args.request, feedback)
+                strategy, tasks = _with_run_heartbeat(
+                    heartbeat, lease_window, lambda: _plan_initial(args, bus, req2))
+                # 旧計画のうち残すのは結果が確定したノードだけ（inherit 由来の done 等）。
+                # 旧 plan gate は残さない——failed のまま残すと resume の retry_failed が
+                # pending へ戻して人へ再質問し、stub 継続の human-failed 判定にも誤検知する。
+                keep = {nid: entry for nid, entry in graph["nodes"].items()
+                        if bus.read_result(nid) and plan_gate_attempt(nid) is None}
+                tasks = dedupe_task_ids(tasks, set(keep))
+                graph["nodes"] = keep
+                for t in tasks:
+                    graph["nodes"][t["id"]] = _node_entry(t)
+                base_sync = inject_base_sync(graph["nodes"], bus.run_workspace())
+                if base_sync:
+                    tasks.append(base_sync)
+                graph["strategy"] = strategy
+                gate = _insert_plan_gate(graph, tasks, args, attempt=gs["attempt"] + 1)
+                _sanitize_graph(graph["nodes"])
+                bus.write_graph(graph)
+                for t in tasks:
+                    bus.write_task(t)
+                bus.set_status("running")
+                bus.event(who, "plan-gate-replan", attempt=gs["attempt"], gate=gate["id"],
+                          reason=(feedback or "コメント無し")[:200],
+                          changes={"added": [t["id"] for t in tasks], "replaced": [],
+                                   "updated": [], "removed": []})
+                bus.sync_push(f"plan-gate replan #{gs['attempt']} run {args.run_id}")
+                log(who, f"再計画（plan-gate）: {[(t['id'], t.get('kind', 'work')) for t in tasks]}")
+                phase("executing")
+                continue
+            phase("finalizing")
+            why = (f"[plan-gate] 計画の差し戻しが上限（max_retries={mr}）に達しました"
+                   + (f"。最後の指摘: {gs['comment'][:200]}" if gs["comment"] else ""))
+            _finalize_run(bus, args, iteration, failure=why)
+            return 0
+        if gs and gs["state"] == "unapproved":
+            # 期限切れ・interaction 破損など「承認に至らない失敗」。承認無しで実行へ進めない
+            # （フェイルクローズ）。resume すれば failed のゲートが pending へ戻り、人へ再質問する。
+            phase("finalizing")
+            _finalize_run(bus, args, iteration,
+                          failure="[plan-gate] 計画の承認が得られませんでした"
+                                  f"（{gs['id']}: 期限切れまたは interaction エラー）")
+            return 0
 
         phase("evaluating")
         if iteration >= args.max_iterations:

@@ -265,7 +265,8 @@ def _circuit_tripped(nodes: dict, results: dict, max_retries: int) -> list:
 def human_feedback_from_results(results: dict, limit: int = 1200) -> str:
     """ノード結果の**構造化 data から人フィードバック**（`guidance` / `notes[].body`）を集める。
     executor 非依存: gitlab に限らず、委譲系 executor が結果コントラクトに載せた人の指摘を汎用に読む
-    （`decision` の有無や executor 名で分岐しない）。評価役（replan）へ「人の指摘」として渡し、
+    （`decision` の有無や executor 名で分岐しない）。human interaction の**差し戻し**
+    （outcome=rejected の answer.comment）も同じ「人の指摘」として運ぶ。評価役（replan）へ渡し、
     待機ノードの付け替え・ノード追加を人フィードバック駆動で決めさせるための材料。"""
     out: list[str] = []
     for nid, r in (results or {}).items():
@@ -280,6 +281,13 @@ def human_feedback_from_results(results: dict, limit: int = 1200) -> str:
                 b = str(note.get("body") or "").strip()
                 if b:
                     out.append(f"[{nid}] {b}")
+        # human interaction の差し戻しコメント。承認コメントは拾わない——「LGTM、あとで X も」の
+        # 類を最優先指摘として評価役へ流すと、承認済みの run に不要な replan を誘発する。
+        answer = d.get("answer") if isinstance(d.get("answer"), dict) else {}
+        if str(d.get("outcome") or "") == "rejected":
+            c = str(answer.get("comment") or "").strip()
+            if c:
+                out.append(f"[{nid}] {c}")
     return "\n".join(out)[:limit]
 
 
@@ -349,7 +357,7 @@ def _evaluator_fallback(results: dict, why: str):
 def continue_agent(request: str, nodes: dict, results: dict, iteration: int,
                   max_fanout: int = 50, review: bool = False, exemplar_first: bool = False,
                   max_retries: int = 3, reduce_width: int = _DEFAULT_REDUCE_WIDTH,
-                  context: str = ""):
+                  context: str = "", tier: str = ""):
     # データ駆動 fan-out は機械的に展開（LLM 判断不要）。先に処理する。
     fanout_tasks = _expand_splits(nodes, results, max_fanout, review, request, exemplar_first,
                                   reduce_width)
@@ -396,6 +404,11 @@ def continue_agent(request: str, nodes: dict, results: dict, iteration: int,
         "既存 id と重複しない id を使うこと。done のとき new_tasks は空配列。\n\n"
         f"元の要求: {request}{hf_block}\n\n現在の結果:\n{summary}"
     )
+    # 実行 tier（basic）の評価指示も同じ流儀でスキル/組み込みの両経路へ一律に後置する
+    # （スキルは tier を知らないため二重注入しない）。
+    tier_note = tier_evaluator_directive(tier)
+    if tier_note:
+        prompt = f"{prompt}\n\n{tier_note}"
     # プロジェクト文脈（案 H・オプトイン）は、スキル/組み込みどちらが作った prompt にも
     # ここで一律に前置する——スキルは context を知らないので二重注入の心配がなく、
     # スキルを更新しなくても両経路が同じ規約（agentcore.promptcompose）を通る。

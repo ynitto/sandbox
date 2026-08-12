@@ -96,6 +96,14 @@ CONFIG_DEFAULTS = {
     # フォールバックする。上位に同名スキルを置けば全面差し替えできる（yaml 専用）。
     "planner_skill": "flow-planner",
     "granularity": "auto",     # 分解の細かさ: auto(complexity導出・既定)/coarse/fine/finest(明示)
+    # 計画承認ゲート（オプトイン・既定 off）。true で planner が作った計画の実行前に human
+    # 承認ノード（plan-gate）を挿し、人の承認（approved）まで何も実行しない。差し戻し
+    # （rejected＋コメント）は指摘を planner へ渡して再計画する（max_retries で有界）。
+    # 期限切れ・未承認は failed 終端（フェイルクローズ）。ユーザー定義フロー（plan）には
+    # 挿さない（必要なら plan に human ノードを自分で書く）。tier:basic の緊急運転など、
+    # 普段は任せない役割へ低能力ワーカーを投入するときの人による担保に使う。
+    "plan_gate": False,
+    "plan_gate_timeout": 0.0,  # plan-gate の応答期限秒（0 = interaction 既定の 7 日）
     "exemplar_first": False,   # map-reduce で「1件先行→検証ゲート→残り展開」の見本先行分解にする
     # doctor が LLM へ渡す稼働シグナル（recent/stuck/failed/errors 等）と worker プロンプトの
     # deps 構造化 data のうち、均質な dict 配列を表形式へ畳んでトークンを削る（案 K-2・内容は

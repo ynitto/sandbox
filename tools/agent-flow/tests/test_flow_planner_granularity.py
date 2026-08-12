@@ -90,6 +90,51 @@ class ScopeAndGateTests(unittest.TestCase):
         self.assertEqual(plan.gate_tasks(tasks, "fine"), [])
 
 
+class TierPreparationTests(unittest.TestCase):
+    """実行 tier（basic）のお膳立て: auto 粒度の finest 化・Phase 3 の分解指示・review 強制。"""
+
+    def test_basic_tier_resolves_auto_to_finest(self):
+        self.assertEqual(plan.resolve_granularity("auto", "simple", "basic"), "finest")
+        self.assertEqual(plan.resolve_granularity(None, "moderate", "basic"), "finest")
+        # 明示指定は人の意思なので tier では覆さない
+        self.assertEqual(plan.resolve_granularity("coarse", "complex", "basic"), "coarse")
+        # basic 以外は従来どおり complexity 導出
+        self.assertEqual(plan.resolve_granularity("auto", "simple", "large"), "coarse")
+
+    def test_phase3_injects_tier_note_only_for_basic(self):
+        seen = {}
+
+        def fake_agent(prompt, model=None):
+            seen["prompt"] = prompt
+            return json.dumps([
+                {"id": "t1", "goal": "[scope] src/a.py\n実装", "deps": [], "kind": "work"}])
+
+        analysis = {"subtasks": ["a"], "complexity": "moderate"}
+        with mock.patch.object(plan, "run_agent", fake_agent):
+            plan.phase3_build("req", analysis, {"patterns": []}, None, "finest", tier="basic")
+        self.assertIn("実行ティア（厳守）", seen["prompt"])
+        with mock.patch.object(plan, "run_agent", fake_agent):
+            plan.phase3_build("req", analysis, {"patterns": []}, None, "finest")
+        self.assertNotIn("実行ティア", seen["prompt"])
+
+    def test_phase2_forces_review_for_basic_auto(self):
+        catalog = {"patterns": {}, "composites": {}, "use_case_mapping": [],
+                   "decision_matrix": {}}
+
+        def fake_agent(prompt, model=None):
+            return json.dumps({"patterns": ["classify-and-act"], "parallelism": 2,
+                               "reason": "r"})
+
+        analysis = {"data_flow": "static", "quality_focus": "speed", "complexity": "simple"}
+        with mock.patch.object(plan, "run_agent", fake_agent):
+            basic = plan.phase2_select("req", analysis, catalog, None, "auto", tier="basic")
+            plain = plan.phase2_select("req", analysis, catalog, None, "auto")
+            pinned = plan.phase2_select("req", analysis, catalog, None, False, tier="basic")
+        self.assertTrue(basic["review"])       # basic + auto → 常時有効
+        self.assertFalse(plain["review"])      # 集約なしの auto は従来 off
+        self.assertFalse(pinned["review"])     # 明示 false は尊重
+
+
 class Phase3RetryTests(unittest.TestCase):
     def test_retries_once_when_gate_fails(self):
         bad = [{"id": "t1", "goal": "抽象", "deps": [], "kind": "work"}]

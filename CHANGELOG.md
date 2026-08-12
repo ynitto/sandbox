@@ -7,6 +7,34 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### feat(agent-flow): 計画承認ゲートと tier:basic のお膳立てを追加した
+
+予算逼迫の緊急時、agent-profiles の縮退が `tier: basic` を宣言すると、普段は任せない
+役割・作業へ最小能力ワーカーを投入せざるを得なくなる。その下地として、どちらも
+オプトインの 2 機能を planner まわりに足した。
+
+- **計画承認ゲート（`plan_gate` / `--plan-gate`・既定 off）**: planner の計画の実行前に
+  `human` 承認ノード（`plan-gate`）を挿し、root を全てゲート依存へ付け替える。承認
+  （approved）まで base-sync 含め何も実行しない。差し戻し（rejected＋コメント）は
+  orchestrator が決定的に検知し、指摘を要求へ付けて planner を呼び直し、未確定ノードを
+  新計画で置き換えて次のゲートを挿し直す（`max_retries` で有界・旧ゲートはグラフから
+  外し結果は監査として残す）。期限切れは `[plan-gate]` タグ付き failed 終端
+  （フェイルクローズ）。決着は既存の human interaction 機構（park → service_waits →
+  `interactions/`）をそのまま使い、ユーザー定義フローには挿さない。
+  期限は `plan_gate_timeout`（秒。0 = interaction 既定の 7 日）
+- **tier:basic のお膳立て**: agent-control の `workloads.flow.tier` が `basic` のとき、
+  (1) `granularity: auto` を finest へ解決（明示指定は覆さない）、(2) planner プロンプトへ
+  「1 ノード = 1 短手順・goal に対象/成果/確認方法を明記」の分解指示を注入
+  （flow-planner スキルは新設の `--tier` で受ける。フラグを知らない旧版スキルには渡さず
+  縮退させない）、(3) `review: auto` を常時有効へ（basic の成果を無検証で集約しない）、
+  (4) 評価役の再タスク生成にも同じ basic 指示を後置。採った tier は `strategy.tier` に残る
+- **修正**: orchestrate の `_node_entry` が `interaction` を落としていたため、ユーザー定義
+  フローの `human` ノードが orchestrate 経由の graph では interaction 不正で失敗終端して
+  いた（worker は claim 時に graph の node を読む）。graph にも保持するようにした
+- human interaction の差し戻しコメント（`outcome=rejected` の `answer.comment`）を
+  `human_feedback_from_results` が「人の指摘」として評価役へ運ぶようにした
+  （承認コメントは拾わない——承認済み run へ不要な replan を誘発しない）
+
 ### docs: 複数フックとターン完了 hook を設計書・仕様書へ取り込んだ
 
 `hooks` 改称とターン完了 hook の実装が入ったあと、設計書には実装メモがそのまま残り、
