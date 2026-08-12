@@ -1,0 +1,48 @@
+{
+  "scenarios": [
+    {"id":"project-success","engine":"agent-project","test":"test_cli.TestCliEndToEnd.test_drains_and_archives","covers":["multiple-input","success","archive","stdout","exit-0"]},
+    {"id":"project-verify-failure","engine":"agent-project","test":"test_cli.TestCliEndToEnd.test_blocked_when_verify_fails","covers":["failure","blocked","needs","exit-1"]},
+    {"id":"project-budget","engine":"agent-project","test":"test_cli.TestCliEndToEnd.test_budget_stop","covers":["retry","budget-stop","exit-2"]},
+    {"id":"project-delete-output","engine":"agent-project","test":"test_cli.TestCliEndToEnd.test_no_archive_deletes_instead","covers":["output-policy","no-archive","cleanup"]},
+    {"id":"project-to-flow","engine":"agent-project","test":"test_cli.TestCliKiroFlowDelegation.test_cli_delegates_to_real_agent_flow","covers":["cross-engine","argv","delegation"]},
+
+    {"id":"flow-standalone","engine":"agent-flow","test":"test_e2e.EndToEndTests.test_r9_skill_invocation_standalone_completes_without_daemon_or_git","covers":["standalone","no-daemon","no-network"]},
+    {"id":"flow-fanout","engine":"agent-flow","test":"test_e2e.EndToEndTests.test_up_completes_all_tasks_once","covers":["fan-out","synthesis","review-gate"]},
+    {"id":"flow-recovery","engine":"agent-flow","test":"test_e2e.EndToEndTests.test_up_replan_recovers_failure","covers":["agent-error","replan","recovery"]},
+    {"id":"flow-map-reduce","engine":"agent-flow","test":"test_e2e.EndToEndTests.test_up_map_reduce_with_review","covers":["structured-input","split","map","reduce"]},
+    {"id":"flow-result-json","engine":"agent-flow","test":"test_e2e.EndToEndTests.test_result_command_presents_final_output","covers":["json-output","result-api"]},
+
+    {"id":"amigos-full-cycle","engine":"agent-amigos","test":"test_e2e.EndToEndTests.test_single_node_self_staff_full_cycle","covers":["roles","question-answer","artifacts","acceptance"]},
+    {"id":"amigos-distributed","engine":"agent-amigos","test":"test_e2e.EndToEndTests.test_two_nodes_split_roles","covers":["multi-node","claim","role-filter"]},
+    {"id":"amigos-rejection","engine":"agent-amigos","test":"test_e2e.EndToEndTests.test_reject_roundtrip_rebuilds_round","covers":["human-feedback","rejection","retry-round"]},
+
+    {"id":"loop-headless-write","engine":"agent-loop","test":"test_headless_route.GoalToolLoopTest.test_write_files_then_final_passes_the_gate","covers":["headless","tool-loop","file-write","acceptance"]},
+    {"id":"loop-headless-reject","engine":"agent-loop","test":"test_headless_route.GoalToolLoopTest.test_final_without_any_work_is_rejected","covers":["false-completion","acceptance-rejection","feedback"]},
+    {"id":"loop-single-shot-route","engine":"agent-loop","test":"test_headless_route.RunSubcommandTest.test_single_shot_cli_gets_the_tool_loop_and_reports_result","covers":["cli-routing","single-shot","result"]},
+    {"id":"loop-inbox-timeout","engine":"agent-loop","test":"test_inbox_dispatch.InboxDispatchTests.test_processing_timeout_keeps_monitor_until_completion","covers":["inbox","timeout","late-completion"]},
+    {"id":"loop-dispatch-busy","engine":"agent-loop","test":"test_dispatch_reliability.DispatchReliabilityTests.test_busy_pane_is_deferred_without_send","covers":["backpressure","busy","defer"]},
+    {"id":"loop-event-ack","engine":"agent-loop","test":"test_event_hook.EventHookDispatchTests.test_successful_event_dispatch_preserves_fresh_context_and_acks","covers":["event-hook","fresh-context","ack"]},
+    {"id":"loop-event-failure","engine":"agent-loop","test":"test_event_hook.EventHookDispatchTests.test_failed_event_dispatch_does_not_ack","covers":["event-hook","failure","no-ack"]},
+    {"id":"loop-oneshot-overlap","engine":"agent-loop","test":"test_oneshot.OneshotTests.test_dropped_overlap_completes_waiter_and_ack","covers":["oneshot","overlap","coalescing","ack"]},
+    {"id":"loop-memory-recovery","engine":"agent-loop","test":"test_lifecycle.LifecycleTests.test_memory_pause_requires_two_healthy_checks_to_resume","covers":["resource-pressure","pause","hysteresis","resume"]},
+
+    {"id":"audit-flow-collection","engine":"agent-audit","test":"test_collect.FlowBusCollectTests.test_terminal_runs_only_and_error_class","covers":["flow-ledger","terminal-filter","error-class"]},
+    {"id":"audit-session-collection","engine":"agent-audit","test":"test_collect.CliNativeCollectTests.test_collect_with_declared_session_log","covers":["session-log","plugin-definition","usage"]},
+    {"id":"audit-correlation","engine":"agent-audit","test":"test_collect.CorrelateTests.test_dense_sessions_link_by_unique_nearest_end","covers":["correlation","dense-input","nearest-match"]},
+    {"id":"audit-extract","engine":"agent-audit","test":"test_extract_distill.ExtractPipelineTests.test_extract_with_stub_llm","covers":["mock-llm","extract","idempotency"]},
+    {"id":"audit-repair-failure","engine":"agent-audit","test":"test_extract_distill.ExtractPipelineTests.test_extract_repair_retry_then_drop","covers":["invalid-json","repair","retry-limit"]},
+    {"id":"audit-distill-export","engine":"agent-audit","test":"test_extract_distill.DistillPipelineTests.test_distill_with_stub_llm_and_tasks_export","covers":["distill","task-export","idempotency"]},
+    {"id":"audit-budget-gate","engine":"agent-audit","test":"test_llm_gates.BudgetGateTests.test_token_limit_blocks","covers":["token-budget","llm-gate","blocked"]},
+    {"id":"audit-reclean","engine":"agent-audit","test":"test_reclean.RecleanTests.test_reclean_rewrites_only_existing_transcripts_without_touching_state","covers":["privacy-cleaning","transcript","state-preservation"]},
+
+    {"id":"ollama-text-usage","engine":"agent-ollama","test":"test_ollama_adapter.TestOllamaAdapter.test_main_separates_model_text_and_usage","covers":["mock-http","stdout","usage-stderr"]},
+    {"id":"ollama-tool-loop","engine":"agent-ollama","test":"test_ollama_loop.TestRunLoop.test_executes_command_then_finishes_on_marker","covers":["tool-call","command-output","completion-marker"]},
+    {"id":"ollama-readonly-denial","engine":"agent-ollama","test":"test_ollama_loop.TestToolDenial.test_repeated_denials_stop_the_run","covers":["read-only","write-denial","denial-limit"]},
+    {"id":"ollama-no-progress","engine":"agent-ollama","test":"test_ollama_loop.TestNoProgress.test_identical_command_and_result_stops_the_run","covers":["loop-detection","no-progress","stop"]},
+    {"id":"ollama-context-exhausted","engine":"agent-ollama","test":"test_ollama_loop.TestRunLoop.test_exhausted_context_stops_explicitly","covers":["context-limit","clipping","explicit-stop"]},
+    {"id":"ollama-replay-safety","engine":"agent-ollama","test":"test_ollama_replay.TestReplay.test_replay_never_uses_tools","covers":["replay","no-tools","side-effect-safety"]},
+    {"id":"ollama-json-variant","engine":"agent-ollama","test":"test_ollama_adapter.TestContractDefinition.test_json_variant_forces_the_grammar_and_carries_no_tools","covers":["json-grammar","variant","no-tools"]},
+
+    {"id":"aider-usage","engine":"agent-aider","test":"test_aider_adapter.TestAiderAdapter.test_sums_exact_message_usage","covers":["mock-cli-output","usage-parsing","multi-message"]}
+  ]
+}
