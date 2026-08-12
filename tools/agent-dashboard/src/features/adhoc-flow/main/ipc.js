@@ -10,7 +10,7 @@ function registerIpc(ctx) {
   const { handle, loadConfig, saveConfig } = ctx;
   const flow = adhoc.flow;
 
-  handle('adhocFlow:overview', ({ limit } = {}) => {
+  handle('adhocFlow:overview', ({ limit, cwd } = {}) => {
     const cfg = loadConfig();
     const busDir = adhoc.resolveBusDir(cfg);
     let runs = [];
@@ -21,10 +21,11 @@ function registerIpc(ctx) {
     }
     let methods = [];
     try {
-      methods = adhoc.availableMethods(cfg).map((m) => ({
+      methods = adhoc.availableMethods(cfg, { cwd }).map((m) => ({
         id: m.id,
         description: String(m.description || ''),
         origin: String(m.origin || ''),
+        source: String(m.source || ''),
         fragments: (Array.isArray(m.fragments) ? m.fragments : []).map((fragment) => ({
           role: String((fragment && fragment.role) || ''),
           text: String((fragment && fragment.text) || ''),
@@ -67,7 +68,7 @@ function registerIpc(ctx) {
       busDir,
       runs,
       presets: (cfg.adhocFlow && cfg.adhocFlow.presets) || [],
-      workflows: adhoc.listWorkflows(cfg),
+      workflows: adhoc.listWorkflows(cfg, { cwd }),
       patterns: adhoc.patternCatalog(cfg),
       tiers: [{ id: 'auto', label: '自動（実行方針を継承）' }, ...tierNames],
       // 機能（ノード kind）・役割ごとの実行可能レベルと、オプションが宣言する下限
@@ -144,12 +145,12 @@ function registerIpc(ctx) {
     saved: adhoc.saveWorkflow(loadConfig(), workflow),
   }));
 
-  handle('adhocFlow:deleteWorkflow', ({ id } = {}) => ({
-    deleted: adhoc.deleteWorkflow(loadConfig(), String(id || '')),
+  handle('adhocFlow:deleteWorkflow', ({ id, cwd, scope } = {}) => ({
+    deleted: adhoc.deleteWorkflow(loadConfig(), String(id || ''), { cwd, scope }),
   }));
 
-  handle('adhocFlow:snapshotSelection', ({ selection } = {}) => ({
-    flow: adhoc.snapshotSelection(loadConfig(), selection),
+  handle('adhocFlow:snapshotSelection', ({ selection, cwd } = {}) => ({
+    flow: adhoc.snapshotSelection(loadConfig(), selection, { cwd }),
   }));
 
   handle('adhocFlow:promote', (payload) => adhoc.promote(loadConfig(), payload || {}));

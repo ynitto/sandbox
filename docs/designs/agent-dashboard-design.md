@@ -105,6 +105,26 @@ GUI はその規律の外側から、人の気まぐれなタイミングで書�
 
 **確信度**: 高い。実障害が根拠。
 
+#### カスタムフローのリポジトリ共有も例外にしない
+
+`.agent-flow/workflows/*.json` と、ノードの振る舞いを決める `.agent-flow/methods/*.json` は
+成果物リポジトリに置く共有カタログだが、dashboard はこれを**読み取り専用**で探索する。
+同期の主体とタイミングは通常のソースコードと同じである。手法は参照のまま保存せず、選択時の
+本文と source hash をノードへ複製する。これにより定義更新で既存フローが暗黙に変質しない。
+
+| 案 | pull / push の主体 | タイミング | 判断 |
+|---|---|---|---|
+| dashboard が直接同期 | dashboard | 保存時・画面更新時 | **却下**。§3.1 の実障害を再導入し、人の未コミット変更・branch と競合する |
+| agent-flow `state_git` に載せる | agent-flow | run/bus 同期時 | **却下**。state_git は実行状態の鏡であり、成果物 repo の設定を運ぶ責務ではない |
+| agent-project に運ばせる | agent-project | 状態同期時 | **却下**。任意 repo と状態 repo の所有権を混ぜ、agent-project 未登録 repo では使えない |
+| 専用同期エンジンを追加 | 新 daemon | 常時または保存時 | **保留**。単一カタログのために認証・競合解決・常駐監視を増やすのは過剰 |
+| 通常の Git 運用 | 変更者・clone 更新者・CI | PR/MR 作成時、pull/checkout/deploy 時 | **採用**。定義とコードを同じ revision でレビュー・配布できる |
+
+したがって dashboard のビルダーが書くのは `~/.agents/workflows/` だけである。共有版の作成・変更は
+通常の作業 branch で `.agent-flow/workflows/<id>.json` を編集して PR/MR に載せ、各 clone は既存の
+更新手順で取得する。将来 GUI から公開する場合も、dashboard に git 資格情報を持たせず、成果物
+変更を扱う既存の作業エンジンへ「変更要求」を投函する方式を先に設計する。
+
 ### 3.2 制御面はソースツリー分離と列挙合成（フルプラグインを却下）
 
 **判断**: Electron シェル等の共通部を `src/base/` に、各制御面を `src/features/<id>/` に置き、

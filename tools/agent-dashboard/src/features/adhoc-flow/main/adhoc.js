@@ -4,7 +4,8 @@
 //   - 投入 … <bus>/inbox/<run-id>.json（submit_request 契約。plan フィールドで
 //     ユーザー定義フロー＝ビルダーの成果物を運ぶ）
 //   - 書込先 … 選択した Git cwd を workspace として固定（成果は af/<run-id> branch）
-//   - 保存 … ~/.agents/workflows/<id>.json（ユーザー共通カスタムフロー）
+//   - 保存 … ~/.agents/workflows/<id>.json（ユーザー共通）。リポジトリ内の
+//     <repo>/.agent-flow/workflows/<id>.json は読むだけで、通常の Git 運用が配布する
 //   - 手法 … run 専用の AGENT_TUNING_DIR に agent-tuning 契約のスナップショットを複製
 //     （S26 の「参照でなく複製」と同じ。source: methods/<id>@<hash> で乖離検出可能）
 // 実行系は agent-flow run そのもの（新しい実行系・状態ファイルは作らない）。
@@ -48,6 +49,39 @@ function writeJsonAtomic(file, data) {
 
 function resolveWorkflowDir(config) {
   return String(cfgOf(config).workflowDir || '').trim() || agentHomeSubdir('workflows');
+}
+
+function repositoryRoot(cwd) {
+  let dir = path.resolve(String(cwd || '').trim() || '.');
+  try {
+    if (fs.statSync(dir).isFile()) dir = path.dirname(dir);
+  } catch {
+    return '';
+  }
+  while (true) {
+    if (fs.existsSync(path.join(dir, '.git'))) return dir;
+    const parent = path.dirname(dir);
+    if (parent === dir) return '';
+    dir = parent;
+  }
+}
+
+function repositoryWorkflowDir(cwd) {
+  const root = repositoryRoot(cwd);
+  return root ? path.join(root, '.agent-flow', 'workflows') : '';
+}
+
+function repositoryMethodsDir(cwd) {
+  const root = repositoryRoot(cwd);
+  return root ? path.join(root, '.agent-flow', 'methods') : '';
+}
+
+function workflowDirs(config, cwd = '') {
+  const repository = repositoryWorkflowDir(cwd);
+  return [
+    ...(repository ? [{ scope: 'repository', dir: repository, repository: repositoryRoot(cwd) }] : []),
+    { scope: 'user', dir: resolveWorkflowDir(config), repository: '' },
+  ];
 }
 
 function workflowId(raw) {
@@ -177,39 +211,57 @@ function workflowFile(config, id) {
 
 function saveWorkflow(config, raw) {
   if (!raw || typeof raw !== 'object') throw new Error('フローが不正です');
-  const current = raw && raw.id ? loadWorkflow(config, raw.id) : null;
+  if (raw._scope === 'repository') {
+    throw new Error('リポジトリ共有フローは読み取り専用です。通常の Git 作業で変更してください');
+  }
+  const current = raw && raw.id ? loadWorkflow(config, raw.id, { scope: 'user' }) : null;
   const clean = normalizeWorkflow({ ...raw, createdAt: (current && current.createdAt) || raw.createdAt });
   clean.updatedAt = new Date().toISOString();
   writeJsonAtomic(workflowFile(config, clean.id), clean);
-  return clean;
+  return { ...clean, _scope: 'user' };
 }
 
-function loadWorkflow(config, id) {
-  try {
-    return normalizeWorkflow(JSON.parse(fs.readFileSync(workflowFile(config, id), 'utf8')));
-  } catch (err) {
-    if (err && err.code === 'ENOENT') return null;
-    throw err;
+function loadWorkflow(config, id, options = {}) {
+  const dirs = options.scope
+    ? workflowDirs(config, options.cwd).filter((item) => item.scope === options.scope)
+    : workflowDirs(config, options.cwd);
+  for (const item of dirs) {
+    try {
+      const clean = normalizeWorkflow(JSON.parse(fs.readFileSync(path.join(item.dir, `${workflowId(id)}.json`), 'utf8')));
+      return { ...clean, _scope: item.scope, ...(item.repository ? { _repository: item.repository } : {}) };
+    } catch (err) {
+      if (err && err.code === 'ENOENT') continue;
+      throw err;
+    }
   }
+  return null;
 }
 
-function listWorkflows(config) {
-  const dir = resolveWorkflowDir(config);
-  if (!fs.existsSync(dir)) return [];
-  return fs.readdirSync(dir, { withFileTypes: true })
-    .filter((e) => e.isFile() && e.name.endsWith('.json'))
-    .map((e) => {
-      try { return normalizeWorkflow(JSON.parse(fs.readFileSync(path.join(dir, e.name), 'utf8'))); }
-      catch { return null; }
-    })
-    .filter(Boolean)
-    .sort((a, b) => a.name.localeCompare(b.name));
+function listWorkflows(config, options = {}) {
+  const found = [];
+  const ids = new Set();
+  for (const item of workflowDirs(config, options.cwd)) {
+    if (!fs.existsSync(item.dir)) continue;
+    for (const entry of fs.readdirSync(item.dir, { withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+      try {
+        const clean = normalizeWorkflow(JSON.parse(fs.readFileSync(path.join(item.dir, entry.name), 'utf8')));
+        if (ids.has(clean.id)) continue;
+        ids.add(clean.id); // 同じ id は、先に探索するリポジトリ定義を優先する。
+        found.push({ ...clean, _scope: item.scope, ...(item.repository ? { _repository: item.repository } : {}) });
+      } catch { /* 壊れた1ファイルでカタログ全体を壊さない */ }
+    }
+  }
+  return found.sort((a, b) => a.name.localeCompare(b.name));
 }
 
-function deleteWorkflow(config, id) {
+function deleteWorkflow(config, id, options = {}) {
+  if (options.scope === 'repository') {
+    throw new Error('リポジトリ共有フローは読み取り専用です。通常の Git 作業で削除してください');
+  }
   const file = workflowFile(config, id);
   if (!fs.existsSync(file)) return false;
-  const trash = path.join(resolveWorkflowDir(config), '.trash');
+  const trash = path.join(path.dirname(file), '.trash');
   fs.mkdirSync(trash, { recursive: true });
   fs.renameSync(file, path.join(trash, `${workflowId(id)}-${Date.now()}.json`));
   return true;
@@ -317,7 +369,7 @@ function planFromWorkflow(config, workflow) {
   };
 }
 
-function snapshotSelection(config, selection) {
+function snapshotSelection(config, selection, options = {}) {
   const selected = selection && typeof selection === 'object' ? selection : { type: 'auto' };
   const type = String(selected.type || 'auto');
   if (type === 'auto') return { version: 1, type: 'auto' };
@@ -327,7 +379,7 @@ function snapshotSelection(config, selection) {
     return { version: 1, type: 'pattern', pattern };
   }
   if (type === 'custom') {
-    const workflow = loadWorkflow(config, selected.id);
+    const workflow = loadWorkflow(config, selected.id, { cwd: options.cwd, scope: selected.scope });
     if (!workflow) throw new Error('カスタムフローが見つかりません');
     return { version: 1, type: 'custom', id: workflow.id, ...planFromWorkflow(config, workflow) };
   }
@@ -412,7 +464,7 @@ function planFromPreset(preset) {
 // **読まれない**（置換であって合成ではない）——どの手法が効いたかを run 単位で決定的に
 // するための意図した挙動で、UI にもそう表示する。
 
-function availableMethods(config) {
+function availableMethods(config, options = {}) {
   const seen = new Map();
   for (const m of tuning.catalog(config)) {
     seen.set(String(m.id), { ...m, _from: 'catalog' });
@@ -420,6 +472,19 @@ function availableMethods(config) {
   const state = tuning.load(config);
   for (const m of Array.isArray(state.methods) ? state.methods : []) {
     if (m && m.id) seen.set(String(m.id), { ...m, _from: 'tuning' });
+  }
+  const repoDir = repositoryMethodsDir(options.cwd);
+  if (repoDir && fs.existsSync(repoDir)) {
+    for (const entry of fs.readdirSync(repoDir, { withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+      try {
+        const method = JSON.parse(fs.readFileSync(path.join(repoDir, entry.name), 'utf8'));
+        if (!method || typeof method !== 'object' || !method.id) continue;
+        const body = JSON.parse(JSON.stringify(method));
+        body.source = `repository:.agent-flow/methods/${entry.name}@${tuning.sourceHash(method)}`;
+        seen.set(String(method.id), { ...body, _from: 'repository' });
+      } catch { /* 壊れた1ファイルで手法一覧全体を壊さない */ }
+    }
   }
   return [...seen.values()];
 }
@@ -499,7 +564,7 @@ function submit(config, { request, preset, cwd, selection } = {}) {
   if (!req) throw new Error('要求テキストは必須です');
   const p = preset ? normalizePreset(preset) : null;
   const selected = selection && typeof selection === 'object' ? selection : { type: 'auto' };
-  const snapshot = snapshotSelection(config, selected);
+  const snapshot = snapshotSelection(config, selected, { cwd });
   const runId = newRunId();
   const busDir = resolveBusDir(config);
   fs.mkdirSync(path.join(busDir, 'inbox'), { recursive: true });
@@ -606,6 +671,9 @@ module.exports = {
   NODE_KINDS,
   resolveBusDir,
   resolveWorkflowDir,
+  repositoryRoot,
+  repositoryWorkflowDir,
+  repositoryMethodsDir,
   normalizeWorkflow,
   saveWorkflow,
   loadWorkflow,

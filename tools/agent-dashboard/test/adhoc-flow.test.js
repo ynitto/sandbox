@@ -48,6 +48,57 @@ test('カスタムフローをユーザー共通ファイルとして保存・�
   assert.deepStrictEqual(saved.exit, ['verify']);
 });
 
+test('Git リポジトリ内のカスタムフローは共有版を優先して読むが dashboard から変更しない', () => {
+  const repo = tmpdir('workflow-repository-');
+  fs.mkdirSync(path.join(repo, '.git'));
+  const subdir = path.join(repo, 'src', 'nested');
+  fs.mkdirSync(subdir, { recursive: true });
+  const cfg = { adhocFlow: { workflowDir: tmpdir('workflow-user-') } };
+  const base = { id: 'shared-flow', name: 'ユーザー版', nodes: [{ id: 'work', goal: 'user', tier: 'auto' }] };
+  adhoc.saveWorkflow(cfg, base);
+  const sharedDir = path.join(repo, '.agent-flow', 'workflows');
+  fs.mkdirSync(sharedDir, { recursive: true });
+  fs.writeFileSync(path.join(sharedDir, 'shared-flow.json'), `${JSON.stringify({
+    ...base, version: 2, name: '共有版', entry: ['work'], exit: ['work'],
+    nodes: [{ id: 'work', goal: 'repo', tier: 'auto' }],
+  })}\n`);
+  const listed = adhoc.listWorkflows(cfg, { cwd: subdir });
+  assert.strictEqual(listed.filter((item) => item.id === 'shared-flow').length, 1);
+  const shared = listed.find((item) => item.id === 'shared-flow');
+  assert.strictEqual(shared.name, '共有版');
+  assert.strictEqual(shared._scope, 'repository');
+  assert.strictEqual(shared._repository, repo);
+  assert.strictEqual(adhoc.snapshotSelection(cfg, { type: 'custom', id: 'shared-flow' }, { cwd: subdir }).nodes[0].goal, 'repo');
+  assert.throws(() => adhoc.saveWorkflow(cfg, { ...shared, name: '変更' }), /読み取り専用/);
+  assert.throws(() => adhoc.deleteWorkflow(cfg, 'shared-flow', { scope: 'repository', cwd: subdir }), /読み取り専用/);
+  assert.strictEqual(JSON.parse(fs.readFileSync(path.join(sharedDir, 'shared-flow.json'), 'utf8')).name, '共有版');
+});
+
+test('ノードの追加ルールも Git リポジトリから読み、選択時に本文と source hash を複製する', () => {
+  const repo = tmpdir('method-repository-');
+  fs.mkdirSync(path.join(repo, '.git'));
+  fs.mkdirSync(path.join(repo, 'src'));
+  const methodsDir = path.join(repo, '.agent-flow', 'methods');
+  fs.mkdirSync(methodsDir, { recursive: true });
+  const method = {
+    id: 'repo-test-first', description: 'リポジトリのテスト規律', enabled: true,
+    fragments: [{ role: 'worker', text: 'このリポジトリでは失敗するテストを先に追加する。' }],
+    when: { engines: ['agent-flow'], purposes: ['work'] },
+  };
+  fs.writeFileSync(path.join(methodsDir, 'repo-test-first.json'), `${JSON.stringify(method)}\n`);
+  const cfg = { orchestration: { methodsDir: tmpdir('method-user-') } };
+  const found = adhoc.availableMethods(cfg, { cwd: path.join(repo, 'src') })
+    .find((item) => item.id === method.id);
+  assert.ok(found);
+  assert.strictEqual(found._from, 'repository');
+  assert.strictEqual(found.fragments[0].text, method.fragments[0].text);
+  assert.strictEqual(found.source,
+    `repository:.agent-flow/methods/repo-test-first.json@${tuning.sourceHash(method)}`);
+  const choice = workflowUi.nodeMethodChoices([found], { kind: 'work', tier: 'auto' })[0];
+  assert.strictEqual(choice.text, method.fragments[0].text);
+  assert.strictEqual(choice.source, found.source);
+});
+
 test('version 2 は開始から終了までの実行経路だけを保存する', () => {
   const valid = adhoc.normalizeWorkflow({
     version: 2, name: '経路', entry: ['build'], exit: ['verify'],

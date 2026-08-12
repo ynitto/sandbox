@@ -15,6 +15,7 @@ module.exports = {
     // 空なら ~/.agents/flow/tuning/<run-id>/
     tuningRoot: '',
     // 空なら ~/.agents/workflows。workflowDir はテスト・ポータブル環境用の上書き。
+    // Git cwd の .agent-flow/workflows はこの値と別に自動探索する。
     workflowDir: '',
     // 実行に成功した cwd の履歴（新しい順、最大20件）。入力表記はそのまま保持する。
     cwdHistory: [],
