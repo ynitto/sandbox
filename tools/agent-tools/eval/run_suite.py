@@ -15,12 +15,15 @@ from eval_io import new_run_dir, write_json
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_RESULTS = HERE / "results"
-UNITS = ("worker", "judge", "retrieval")
+UNITS = ("coverage", "worker", "judge", "retrieval")
 
 
 def command_for(unit: str, args: argparse.Namespace, out: Path) -> tuple[list[str], dict[str, str]]:
     env: dict[str, str] = {}
-    if unit == "worker":
+    if unit == "coverage":
+        cmd = [sys.executable, str(HERE / "coverage_eval.py"),
+               "--output", str(out / "coverage.json")]
+    elif unit == "worker":
         env["WORKER_EVAL_DIR"] = str(out)
         cmd = [sys.executable, str(HERE / "worker_eval.py"), "--model", args.model,
                "--cli", args.cli, "--repeat", str(args.repeat), "--wall", str(args.wall)]

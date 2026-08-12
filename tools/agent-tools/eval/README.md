@@ -9,6 +9,26 @@ Ollama のモデルを交換するときに、**モデルの実力**と**エー�
 | judge | `judge_eval.py` | split/filter/judge/reduce/evaluator | 正解一致率、自己一貫性、形式違反 |
 | retrieval | `retrieval_eval.py` | 記憶検索（生成モデルとは独立） | hit@k、MRR、検索時間 |
 | observation | `log_stats.py` | 既存の agent-ollama ログ | prompt/output 寸法、TTFT、decode 速度 |
+| coverage | `coverage_eval.py` | flow/project/dashboard/amigos の呼び出し面 | direct/indirect/missing の棚卸し |
+
+### 網羅性（重要）
+
+**現時点では網羅していない。** `judge_eval.py` が直接測る agent-flow の処理は
+`split / filter / judge / reduce / evaluator`、`worker_eval.py` が直接測るのは `work` である。
+`generate` は work と同じ実装系契約を間接的に通すだけで、専用セルではない。planner を含む
+残りの flow 役割、および agent-project / agent-dashboard / agent-amigos 独自の LLM 呼び出しは
+まだ能力測定が無い。この状態を「suite に名前が無いから存在しない」ように見せないため、
+`coverage.json` に全呼び出し面と `direct / indirect / missing / deterministic` を明記した。
+
+```bash
+python3 tools/agent-tools/eval/coverage_eval.py
+```
+
+agent-flow の一覧は正典 `agentcore.nodecontract.VALID_KINDS` と実行時に突き合わせる。kind が増えて
+manifest の更新を忘れると coverage 測定とテストが失敗する。`human` は LLM を呼ばないので
+`deterministic` とする。project/dashboard/amigos は flow を単に呼ぶだけではなく、それぞれ
+独自プロンプト・出力契約・CLI 解決を持つため、flow の点数で代用しない。現状の `missing` は
+今後、各表面の正典プロンプトビルダーを直接呼ぶ決定的ケースを追加してから `direct` に変える。
 
 ## モデル交換時の標準測定
 
