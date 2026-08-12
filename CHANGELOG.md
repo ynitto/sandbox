@@ -7,6 +7,36 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### feat(agent-flow): カスタムフローの動的 fan-out へ tier 補償を届けるようにした
+
+`tier: basic` のお膳立て（planner/evaluator の分解指示・review 強制）はカスタムフロー
+（`plan_strategy_user`）の動的生成部分に届いていなかった。人が描いた静的な形は変えずに、
+エンジンが実行時に生成するノードだけへ補償を掛ける。実装計画:
+`docs/plans/2026-08-12-agent-flow-custom-flow-tier-compensation-implementation-plan.md`
+
+- **split の分解粒度を tier 対応に**: `execute_agent` が kind=split のとき
+  `tier_split_directive` をプロンプト末尾へ後置する（`continue_agent` の評価指示と同じ
+  流儀でスキル/組み込み両経路に 1 回だけ効く）。basic では「各要素 = 1 つの短い手順で
+  完了できる大きさ」まで割らせ、出力契約（JSON 配列のみ）は指示文の中で再確認する。
+  tier はノード固定 ＞ agent-control の workload 宣言の順で解決
+- **user plan の review を三値として tier 判定へ**: `plan_strategy_user(plan, request, tier)`
+  が `"review": False` 直書きをやめ、`plan.review`（true/false/"auto"・不正値は厳格に
+  失敗）を `tier_review_decision` へ通す。"user-defined" は集約パターンに含まれないため
+  **basic 以外では従来どおり False（後方互換）**。basic では map→reduce 間へ verify gate
+  が入る（`_emit_reduce_tree` の既存機構）。採った tier は `strategy.tier` に残る
+- **fan-out クランプの可視化**: `_expand_splits` が `max_fanout`（既定 50）超過の要素を
+  黙って捨てていた。切り捨て時はログ・replan 理由（`data-driven fan-out: +N（fan-out
+  クランプ: …）`）・reduce ノードの goal（「元 N 件のうち先頭 M 件のみを処理」）に明示し、
+  集約結果が全件のように読まれないようにした。`max_fanout` の自動引き上げはしない
+- **修正**: user plan の既定（`evaluate` 無効）では `_continue` が評価役より前に
+  done/failed を返し、データ駆動 fan-out（機械展開・LLM 無し）まで塞いでいた——split を
+  含むカスタムフローは map/reduce が一度も生成されず空振りしていた。「評価役の再計画で
+  ノードを足さない」原則は LLM 判断の話であって機械展開は対象外なので、user_plan 分岐の
+  先頭で `_expand_splits` を通すようにした
+- **段の分離をテストで固定**: 動的生成ノード（map/reduce/gate）は `tier`・`agent` を
+  持たず workload の段に従い、人が固定した静的ノード・その retry は段を保つ
+  （「補償が届くノードだけ緩める」が実装上も自動的に成り立つ）
+
 ### agent-flow の機能・役割ごとに実行可能な実行レベルを宣言し、自動 tier を実行方針で決めるようにした
 
 ワークフロービルダーはどのノード機能にもどの実行レベル（単純作業/軽量/標準/高性能）でも

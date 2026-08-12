@@ -190,41 +190,49 @@ dashboard は「持久運転 ON・basic 候補はこれ」とだけ宣言し、
 
 ## 制約と未解決点
 
-- **カスタムフローには補償の大半が構造的に届かない。**
-  `plan_strategy_user` は planner を通らない第 3 の計画経路で、tier を受け取る引数も持たない
-  （`orchestrate.py` の user_plan 分岐は `_plan_initial` を経由しない）。
+- **カスタムフローの静的な形には補償が届かない（意図的）。動的生成部分には届く（実装済み）。**
+  `plan_strategy_user` は planner を通らない第 3 の計画経路。補償の実体は「グラフの形を
+  変える」か「planner が goal に書く内容を変える」の 2 種類しかなく、人が描いた静的な形は
+  どちらも確定済みなので埋め込む場所が無い。これは実装漏れではなく意図的で、
+  「形が意図そのもの」「丸めて実行すると意図と違う形で走ったことに気付けない」という
+  user plan 契約の根幹（厳格に失敗させる）と表裏である。一方でカスタムフローには
+  `split`→`map`/`reduce` の fan-out、`classify`+route、`verify`+retry という
+  **実行時にノードが増える**設計があり、増える部分はエンジンが生成するので、
+  そこへ補償を掛けても人のグラフを作り替えることにはならない。実装計画
+  [`2026-08-12-agent-flow-custom-flow-tier-compensation-implementation-plan.md`](2026-08-12-agent-flow-custom-flow-tier-compensation-implementation-plan.md)
+  で動的部分への補償を実装した:
 
-  | 補償 | カスタムフロー | 理由 |
+  | 補償 | カスタムフロー | 現状 |
   |---|---|---|
-  | finest 分解 | ✗ | 並列ノード数のスケール。グラフは人が固定済みでスケール対象が無い |
-  | planner 指示 | ✗ | planner 呼び出しへのプロンプト注入。注入先の呼び出しが存在しない |
-  | review 常時 ON | ✗ | `_strategy_to_graph` が verify を挿す仕組み。この経路を通らない |
+  | 分解粒度（split の tier 指示） | ○ | `execute_agent` が kind=split のとき `tier_split_directive` をプロンプト末尾へ後置（basic では「1 手順で終わる大きさ」まで分解させる。出力契約＝配列のみは指示文の中で再確認）。tier はノード固定 ＞ workload 宣言の順で解決 |
+  | review 常時 ON（動的 fan-out の gate） | ○ | `plan_strategy_user(plan, request, tier)` が review を三値（`plan.review` 明示 > auto）として `tier_review_decision` へ通す。"user-defined" は `AGGREGATING_PATTERNS` に無いため basic 以外の auto は従来どおり False（後方互換）。basic では `_emit_reduce_tree` が map→reduce 間へ verify gate を挿す |
+  | planner 指示 | ✗ | planner 呼び出しへのプロンプト注入。注入先の呼び出しが存在しない（静的な形は人が確定済み） |
   | evaluator 指示 | △ | `continue_agent(tier=flow_tier())` は経路非依存。ただし user plan は既定で評価役が無効で、`plan.evaluate: true`（ビルダーは continuation 使用時に立てる）のときだけ効く |
   | `when.tiers: ["basic"]` の作業ルール | ○ | ノード単位の tier で判定されるので効く |
 
-  補償の実体は「グラフの形を変える」か「planner が goal に書く内容を変える」の 2 種類しかなく、
-  カスタムフローではどちらも人が確定済みなので埋め込む場所が無い。これは実装漏れではなく
-  意図的で、「形が意図そのもの」「丸めて実行すると意図と違う形で走ったことに気付けない」
-  という user plan 契約の根幹（厳格に失敗させる）と表裏である。
+  併せて実装時に見つかった不具合 2 件を修正した:
 
-  ただしこれが当てはまるのは**人が描いた静的な形**だけである。カスタムフローには
-  `split`→`map`/`reduce` の fan-out、`classify`+route、`verify`+retry という
-  **実行時にノードが増える**設計があり、増える部分はエンジンが生成するので補償を掛けても
-  人のグラフを作り替えることにならない。上表の ✗ のうち finest 分解と review 常時 ON は
-  「構造的に不可能」ではなく**実装が繋がっていないだけ**で、機構は既に存在する
-  （`_emit_reduce_tree(review=True)` は map→reduce 間へ verify gate を挿す）。
+  - user plan の既定（`evaluate` 無効）では `_continue` が評価役より前に done/failed を
+    返しており、**データ駆動 fan-out（機械展開・LLM 無し）まで塞いでいた**——split を含む
+    カスタムフローは map/reduce が一度も生成されず空振りしていた（`plan_strategy_user` は
+    split への静的依存を「後段は実行時に自動生成される」契約で弾いているのに、生成自体が
+    走らない）。「評価役の再計画でノードを足さない」原則は LLM 判断の話であって機械展開は
+    対象外なので、user_plan 分岐の先頭で `_expand_splits` を通すよう修正。
+  - fan-out クランプ（`max_fanout`・既定 50）が超過要素を**黙って捨てていた**。basic の
+    細分化で当たる確率が上がるため、ログ・replan 理由・reduce ノードの goal
+    （「元 N 件のうち先頭 M 件のみを処理」）へ切り捨てを明示するようにした。
+    `max_fanout` の自動引き上げはしない——上限は「この PC が同時に抱えてよい量」の話で、
+    分解の細かさとは別の軸だから（上げるかどうかは人の判断に残す）。
 
-  → 実装計画:
-  [`2026-08-12-agent-flow-custom-flow-tier-compensation-implementation-plan.md`](2026-08-12-agent-flow-custom-flow-tier-compensation-implementation-plan.md)
-  （split の呼び出しを tier 対応にし、user-plan の `review: False` 固定を三値へ解禁する）。
+  下限のルールは「カスタムフローは緩めない」ではなく**補償が届くノードだけ緩める**。
+  人が固定した静的ノードは段を保ち、動的生成ノード（map / reduce / gate）は tier を
+  持たず workload の段に従う。この分離が実装上も自動的に成り立つことはテストで固定した
+  （`test_planner.py: test_fanout_nodes_carry_no_tier`）。
 
-  したがって下限のルールは「カスタムフローは緩めない」ではなく、
-  **補償が届くノードだけ緩める**が正しい。人が固定した静的ノードは段を保ち、
-  動的生成ノード（map / reduce / gate）は tier を持たず workload の段に従うので、
-  この分離は現状の実装で既に自動的に成り立っている。
-
-  残件: `classify`+route が追加する `-act` ノードは `continue_stub` が粗い goal で
-  機械生成するため basic 向けの具体化が効かない。
+  残件: `classify`+route が追加する `-act` ノードは `continue_stub` が
+  `f"{label} 専門処理: {request[:30]}"` という粗い goal で機械生成するため basic 向けの
+  具体化が効かない。また、split を含むカスタムフローを `map-reduce` パターンとして扱う案
+  （auto が非 basic でも True になる）は平常時の挙動が変わるため見送った（別途判断）。
 - **コストが逆転しうる。** finest ×3・review 常時 ON で呼び出し回数は確実に増える。
   basic 候補がローカルでない場合、持久運転は small より高くつく。D2 の警告で伝える。
 - **判断役の消費はゼロにならない。** 持久運転でも予算は減り続ける（減速するだけ）。

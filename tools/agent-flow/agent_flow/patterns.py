@@ -289,6 +289,18 @@ TIER_EVALUATOR_DIRECTIVES = {
     ),
 }
 
+# split（データ駆動 fan-out の分解役）向け。各要素は map ノード 1 つになるので、
+# 「1 要素 = basic ワーカーが 1 手順で終えられる大きさ」まで割らせる。出力契約
+# （トップレベルが JSON 配列。崩れると _expand_splits が展開されず run が空振りする）は
+# プロンプト末尾への後置になるため、指示文の中でも配列のみをもう一度言う。
+TIER_SPLIT_DIRECTIVES = {
+    BASIC_TIER: (
+        "実行ティア: basic（各要素は最小能力のワーカーが処理する）。各要素は 1 つの短い手順"
+        "だけで完了できる大きさまで細かく分解し、判断・統合や複数手順を 1 要素に詰め込まない"
+        "こと。出力契約は変わらない——説明文・前置きを付けず、JSON 配列だけを出力すること。"
+    ),
+}
+
 
 def flow_tier() -> str:
     """flow ワークロードがいま走っている実行 tier（agent-control 宣言。未宣言は空文字）。"""
@@ -313,6 +325,10 @@ def tier_planner_directive(tier: "str | None") -> str:
 
 def tier_evaluator_directive(tier: "str | None") -> str:
     return TIER_EVALUATOR_DIRECTIVES.get(str(tier or ""), "")
+
+
+def tier_split_directive(tier: "str | None") -> str:
+    return TIER_SPLIT_DIRECTIVES.get(str(tier or ""), "")
 
 
 def tier_review_decision(review_setting, patterns, tier: "str | None") -> bool:
@@ -415,7 +431,7 @@ class UserPlanError(ValueError):
 _USER_PLAN_MAX_NODES = 64
 
 
-def plan_strategy_user(plan: dict, request: str):
+def plan_strategy_user(plan: dict, request: str, tier: str = ""):
     """ユーザー定義フロー（inbox 要求の `plan` / `--plan-file`）を検証して (strategy, tasks) に固定する。
 
     planner（LLM / stub / flow-planner）を通らない第 3 の計画経路。ビルダー（dashboard）や人が
@@ -470,11 +486,12 @@ def plan_strategy_user(plan: dict, request: str):
         # 固定 tier（実行レベル）。候補の解決は管理面（dashboard）の仕事で、エンジンは
         # 「この段として実行された」事実の記録（pinned-tier）と手法判定（when.tiers の
         # ノード tier 優先）にだけ使う。human は tier を持たない（agent と同じ扱い）。
-        tier = str(t.get("tier") or "").strip()
-        if tier:
+        # 変数名は引数 tier（workload 宣言の実行 tier）と衝突させない。
+        node_tier = str(t.get("tier") or "").strip()
+        if node_tier:
             if kind == "human":
                 raise UserPlanError(f"ノード {tid} の human には tier を指定できません")
-            node["tier"] = tier
+            node["tier"] = node_tier
         reads = normalize_read_allocation(t.get("read_allocation"))
         if reads:
             node["read_allocation"] = reads
@@ -519,11 +536,22 @@ def plan_strategy_user(plan: dict, request: str):
         raise UserPlanError(f"依存が循環しています: {', '.join(cyc)}")
     name = str(plan.get("name") or "").strip()
     roots = sum(1 for t in tasks if not t["deps"])
+    # review 三値。plan が明示すれば尊重（ビルダー側に宣言口を作るときの受け口）、未指定は
+    # auto として tier 判定へ通す。"user-defined" は AGGREGATING_PATTERNS に含まれないため
+    # basic 以外の auto は従来どおり False（後方互換）。basic のときだけ True へ倒れ、
+    # _emit_reduce_tree の verify gate が動的 fan-out（map→reduce 間）にだけ入る——
+    # 人が描いた静的な形は変わらない。
+    review = plan.get("review", "auto")
+    if not isinstance(review, bool) and review != "auto":
+        raise UserPlanError(f"plan.review が不正です: {review!r}（true / false / \"auto\" のみ）")
     strategy = {
-        "patterns": ["user-defined"], "parallelism": max(1, roots), "review": False,
+        "patterns": ["user-defined"], "parallelism": max(1, roots),
+        "review": tier_review_decision(review, ["user-defined"], tier),
         "user_plan": True,
         "reason": f"ユーザー定義フロー{f'「{name}」' if name else ''}（{len(tasks)} ノード）",
     }
+    if tier:
+        strategy["tier"] = str(tier)
     if name:
         strategy["plan_name"] = name
     # evaluate: true で評価役（evaluator-optimizer）の継続判断を有効化する。既定は無効——
