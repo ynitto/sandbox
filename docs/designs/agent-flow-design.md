@@ -238,6 +238,20 @@ LLM planner が選んだ主パターンと並列数は、同じ入力に対す�
 
 この形に落ち着いた経緯を書いておきます。戦略選定とグラフ構造には満足できていて、粒度のばらつきの主因は「通常の約 N 倍に細分化」という相対指示と、既定が常に finest だったことにありました。だから直すのは指示の側です。複雑度から目標レンジを決定的に導出し、絶対レンジとスコープ契約をプロンプトに埋め、結果を LLM なしのゲートで検査する。別 LLM に分解を批評させる案はコストと出力の揺れで、初回は粗く作って失敗したら細分化する案は初手の失敗が増えるので、どちらも却下しました（いずれもこのゲートの後段に足せる形は残しています）。ゲートが completion verifier の有無を検査しないのは意図的で、内側ノードの偽完了は flow-worker の規律と agent-project から渡された verification plan で検出します。work ノードの手戻りやスコープ逸脱が減らないようなら、分解批評か内側 verify 契約を再検討します。
 
+### tier:basic のお膳立て
+
+予算逼迫の緊急時には、agent-profiles の縮退が `workloads.flow.tier: basic`（最小能力）を宣言し、普段は任せない役割・作業へ basic ワーカーを投入せざるを得なくなります。このとき計画と評価が「普段どおりの粒度・普段どおりの検証」で作られていると、basic は 1 ノードに積まれた複数手順や暗黙の判断で確実に転びます。ノードの大きさを律速するのは要求の複雑さではなくワーカーの能力なので、planner/evaluator が tier を読んで形を寄せます。
+
+具体的には 4 点だけです。(1) `granularity: auto` を finest へ解決する（明示指定は人の意思なので tier では覆さない）。(2) 計画プロンプトへ「1 ノード = 1 短手順・goal に対象/成果/確認方法を明記・判断や統合は別ノードへ」の指示を注入する。flow-planner スキルへは `--tier` で渡し、スクリプト本文にフラグが無い旧版スキルには渡さない——未知の引数はスキルを rc=2 で落とし、計画全体が agent planner へ静かに縮退するためです。(3) `review: auto` を常時有効へ倒す（basic の成果を無検証で集約・終端しない。明示 `false` は尊重）。(4) 評価役の再タスク生成にも同じ basic 指示を足す。読むのは agent-control（`agentcore.methods.current_tier`）だけで、モデル選定はこれまでどおりルーティングと実測格付けの仕事のままです。採った tier は `strategy.tier` に記録され、後から「basic 前提の計画だった」ことを見分けられます。
+
+### 計画承認ゲート（plan gate）
+
+計画の実行前に人の承認を挟むオプトインです（設定 `plan_gate` / `--plan-gate`・既定 off）。planner の計画（`--pattern` の明示選択を含む）を作ったあと、`human` 承認ノード `plan-gate` を 1 つ挿し、root タスクを全てゲート依存に付け替えます。base-sync も含めて、承認（approved）まで一切実行しません——縮退運転で basic に普段は任せない作業を渡すとき、予算を焼く前に人が分解を見る担保になります。
+
+決着は既存の human interaction 機構そのもの（park → `service_waits` → `interactions/` の append-only response）で、専用の待ち機構は増やしていません。差し戻し（rejected＋コメント）は評価役に渡さず orchestrator が決定的に処理します: コメントを元要求へ `[計画への差し戻し指摘]` として付けて planner を呼び直し、結果が確定していないノードを新しい計画で置き換え、次のゲート（`plan-gate-2`…）を挿し直します。旧ゲートはグラフから外します——failed のまま残すと resume の `retry_failed` が pending へ戻して人へ再質問し、stub 継続の human-failed 判定にも誤検知するためです（結果ファイルは監査として残る）。差し戻しは `max_retries` で有界、期限切れ・interaction 破損は「承認に至らない失敗」として `[plan-gate]` タグ付きで failed 終端します（フェイルクローズ。resume すれば人へ再質問）。
+
+ユーザー定義フロー（plan）には挿しません。人が書いたグラフは形が意図そのもので、必要な場所には自分で `human` ノードを書けます。「自動 planner は human を生成しない」という不変条件もそのままです——ゲートは LLM の出力ではなく、人がオプトインしたときに agent-flow が決定的に挿します。評価役が反復で足す新タスクはゲートを通しません。ゲートが見るのは初期分解（とその差し戻し）だけで、実行中の反復まで人待ちにすると park & poll の利点を自分で潰すためです。
+
 ### executor プラグイン
 
 executor はタスクを実際に実行するバックエンドです。組み込みは `agent`（エージェント CLI に委譲）と `stub`（LLM なしの擬似実行）で、それ以外は `executors/<name>.py` を動的ロードします。プラグインは `execute(kind, goal, dep_results, model, art_dir, dep_arts)` を公開し `(text, data)` を返します。追加の引数（`workspace` / `references` / `request` / `instructions` / `repo_instruction`）は、シグネチャを調べて受け取れるプラグインにだけ渡します。受け取れない古いプラグインには、指示を goal の先頭へ結合する後方互換の経路が残っています。
@@ -400,7 +414,7 @@ auto-heal はこの世代交代を使いません。heal は同一 run の再開
 | `update` | スキルリポジトリからの自己更新（`--check` / `--now`） |
 | `orchestrate` / `work` | 内部コマンド。`run` が起こす |
 
-グローバル引数は `--bus`、`--git` / `--git-branch` / `--git-subdir`、`--state-git` 系、`--board`、`--workspace`、`--reference`、`--agent-cli`、`--granularity`、`--lease`、`--config` です。サブコマンドを省略すると案内を出して終了します。裸起動を黙って常駐にすると、常駐体と二重に回って inbox の要求を奪い合うためです。
+グローバル引数は `--bus`、`--git` / `--git-branch` / `--git-subdir`、`--state-git` 系、`--board`、`--workspace`、`--reference`、`--agent-cli`、`--granularity`、`--plan-gate` / `--no-plan-gate` / `--plan-gate-timeout`、`--lease`、`--config` です。サブコマンドを省略すると案内を出して終了します。裸起動を黙って常駐にすると、常駐体と二重に回って inbox の要求を奪い合うためです。
 
 ### C. 設定ファイル
 

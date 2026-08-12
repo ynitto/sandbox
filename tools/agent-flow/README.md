@@ -115,6 +115,24 @@
   stub/agent planner では明示時のみ並列ノード倍率（×1/×2/×3、上限16）が効く。要求に `x3`・`並列3` の明示が
   あればそれを尊重。agent-project から呼ぶ場合も `agent-flow.yaml` の `granularity` がそのまま効く
   （外側 backlog の INVEST 粒度とは別レイヤ）。
+- **計画承認ゲート（`plan_gate` / `--plan-gate`・オプトイン）**：planner が作った計画の実行前に
+  `human` 承認ノード（`plan-gate`）を 1 つ挟み、root タスクを全てゲート依存に付け替える。
+  **人の承認（approved）までワーカーは何も実行しない**（base-sync 含む）。差し戻し
+  （rejected＋コメント）は orchestrator が決定的に検知し、**指摘を planner へ渡して再計画**する
+  （`max_retries` で有界。旧ゲートはグラフから外れ、結果はバスに監査として残る）。期限切れ・
+  未承認は failed 終端（フェイルクローズ。resume すれば人へ再質問する）。応答は dashboard 等が
+  `interactions/` へ append-only response を書く既存の human 機構そのもの。ユーザー定義フロー
+  （plan）には挿さない——人が書いたグラフには必要な場所へ自分で `human` ノードを書ける。
+  期限は `plan_gate_timeout`（秒。既定 0 = interaction 既定の 7 日）。
+- **tier:basic のお膳立て（planner/evaluator の縮退運転対応）**：agent-control
+  （`workloads.flow.tier`）が `basic` を宣言しているとき——予算逼迫の緊急時に、普段は任せない
+  役割・作業へ最小能力ワーカーを投入する局面——planner/evaluator が basic を想定して形を寄せる。
+  (1) `granularity: auto` を finest へ解決（明示指定は人の意思なので覆さない）、(2) 計画プロンプトへ
+  「1 ノード = 1 短手順・goal に対象/成果/確認方法を明記・判断は別ノードへ」の分解指示を注入
+  （flow-planner スキルへは `--tier` で伝搬。旧版スキルには渡さず従来どおり動く）、(3) `review: auto`
+  を常時有効へ倒す（basic の成果を無検証で集約・終端しない）、(4) 評価役の再タスク生成にも同じ
+  basic 指示を足す。採った tier は `strategy.tier` に記録される。`plan_gate` と併用すれば
+  「basic が作った計画を人が承認してから流す」緊急運転になる。
 - **列挙駆動の分解**：「同じ手順を多数の独立した対象へ繰り返す」要求（各 API のドキュメント化・全ファイルへの規約適用など）では、
   対象の数を計画時に決めずに**実行時の列挙**から導出する。flow-planner は要求分析で 3 条件——手順が対象ごとに同一 /
   対象間に依存が無い / 成果が対象単位で完結——を個別に判定し、すべて満たすときだけ列挙駆動と見なす。件数が確定
@@ -388,7 +406,8 @@ agent-dashboard のクイック実行（フロービルダー）が主な投入�
 - ユーザー定義フローでは `human`（承認・選択・入力）、`extract`（根拠付き項目抽出）、
   `retrieve`（読み取り可能な道具による根拠取得）も使える。`human` はエージェントを呼ばず
   `waits/` で保留し、dashboard 等が append-only response を書くと再開する。自動 planner は
-  人待ちを勝手に増やさないため `human` を生成しない。
+  人待ちを勝手に増やさないため `human` を生成しない（planner 経路の計画承認ゲートは LLM 出力
+  ではなく、人が `plan_gate` でオプトインしたときに agent-flow が決定的に挿す別物）。
 - 既定では評価役の再計画は無効（形が意図そのもの）。失敗ノードは failed で正直に返し、
   resume（再実行）が失敗ノードを pending へ戻す。`evaluate: true` で従来の継続判断に載る。
 - 手法（F17）を run 単位で強制したいときは `AGENT_TUNING_DIR` に run 専用の tuning.json を
