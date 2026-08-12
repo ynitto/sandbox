@@ -75,7 +75,8 @@ def _emit_reduce_tree(nid: str, map_ids: list, width: int, review: bool,
 
 def _expand_splits(nodes: dict, results: dict, max_fanout: int,
                    review: bool = False, request: str = "", exemplar_first: bool = False,
-                   reduce_width: int = _DEFAULT_REDUCE_WIDTH):
+                   reduce_width: int = _DEFAULT_REDUCE_WIDTH,
+                   clamped: "list | None" = None):
     """データ駆動の動的 fan-out: 完了した split ノードの data(リスト)を見て、
     実行時に要素ごとの map タスクと、それらを集約する reduce タスクを生成する。
     （reduce は展開時に作るので、split 完了直後に reduce が先走り実行されない）
@@ -88,7 +89,14 @@ def _expand_splits(nodes: dict, results: dict, max_fanout: int,
     と reduce を展開する。同様手順の繰り返しで、1件で手順を固めてから残りを流す。
 
     map が reduce_width を超えるときは中間 reduce を挟んで集約を木構造にする
-    （_emit_reduce_tree。単段集約が規模で破綻するのを防ぐ）。"""
+    （_emit_reduce_tree。単段集約が規模で破綻するのを防ぐ）。
+
+    要素数が max_fanout を超えたら先頭 max_fanout 件へクランプする（暴走防止）が、
+    **黙って捨てない**: ログ・reduce goal（集約結果が全件のように読まれないため）・
+    呼び出し側の replan 理由（clamped 累積リスト経由）に切り捨てを残す。tier=basic の
+    細分化（tier_split_directive）で要素数は増えるので、ここに当たる確率が上がる。
+    max_fanout を tier で自動的に上げることはしない——上限は「同時に抱えてよい量」の話で、
+    分解の細かさとは別の軸。上げるかどうかは人の判断に残す。"""
     new = []
     have = set(nodes)
     for nid, node in nodes.items():
@@ -102,7 +110,15 @@ def _expand_splits(nodes: dict, results: dict, max_fanout: int,
         items = r.get("data")
         if not isinstance(items, list) or not items:
             continue
+        total = len(items)
         items = items[:max(1, max_fanout)]  # 暴走防止のクランプ
+        dropped = total - len(items)
+        if dropped:
+            log("continuation",
+                f"fan-out クランプ: {nid} の {total} 件中 先頭 {len(items)} 件のみ展開"
+                f"（max_fanout={max_fanout}・{dropped} 件を切り捨て）")
+            if clamped is not None:
+                clamped.append({"node": nid, "total": total, "kept": len(items)})
         intent = (request or node.get("goal", "")).strip()
 
         def _mgoal(i, item):
@@ -112,6 +128,9 @@ def _expand_splits(nodes: dict, results: dict, max_fanout: int,
         source = "各中間集約の結果" if chunked else "各 map の結果"
         reduce_goal = (f"{intent}（{source}を要求どおりに集約・整形して最終成果にまとめる）"
                        if intent else f"{nid} の結果を集約")
+        if dropped:
+            reduce_goal += (f"（注意: 分解結果は元 {total} 件のうち先頭 {len(items)} 件のみを"
+                            f"処理した。残り {dropped} 件は fan-out 上限で未処理）")
         pilot_gate = f"{nid}-pilot"
         m1 = f"{nid}-m1"
 
@@ -148,6 +167,15 @@ def _expand_splits(nodes: dict, results: dict, max_fanout: int,
     return new
 
 
+def _clamp_note(clamped: "list | None") -> str:
+    """fan-out クランプの切り捨てを replan 理由へ添える注記（無ければ空文字＝従来の文言のまま）。
+    graph の iteration ログ・イベントに残り、成果の欠落へ人が気付ける。"""
+    if not clamped:
+        return ""
+    detail = ", ".join(f"{c['node']}: {c['total']} 件中 {c['kept']} 件のみ" for c in clamped)
+    return f"（fan-out クランプ: {detail}）"
+
+
 def continue_stub(request: str, nodes: dict, results: dict, iteration: int,
                   max_fanout: int = 50, review: bool = False, exemplar_first: bool = False,
                   max_retries: int = 3, reduce_width: int = _DEFAULT_REDUCE_WIDTH):
@@ -160,7 +188,9 @@ def continue_stub(request: str, nodes: dict, results: dict, iteration: int,
     サーキットブレーカー: 同一系統の作り直し回数（retries）が max_retries に達したら、
     その系統の verify-fail / 失敗ノードに対する再タスクをこれ以上生成しない。達成不可能な
     完了条件で無限に再タスクを積み続けるのを防ぐ（node["retries"] で系統ごとに計上）。"""
-    new = _expand_splits(nodes, results, max_fanout, review, request, exemplar_first, reduce_width)
+    clamped: list = []
+    new = _expand_splits(nodes, results, max_fanout, review, request, exemplar_first, reduce_width,
+                         clamped=clamped)
     have = set(nodes)
     tripped = []  # サーキットブレーカーが作動した系統（理由表示用）
     human_failed = []
@@ -236,7 +266,7 @@ def continue_stub(request: str, nodes: dict, results: dict, iteration: int,
                         spec["tier"] = str(node["tier"])
                     new.append(spec)
     if new:
-        return "replan", new, f"{len(new)} 件追加"
+        return "replan", new, f"{len(new)} 件追加" + _clamp_note(clamped)
     if human_failed:
         return "failed", [], f"human interaction が未承認です: {','.join(human_failed)}"
     if tripped:
@@ -367,10 +397,12 @@ def continue_agent(request: str, nodes: dict, results: dict, iteration: int,
                   max_retries: int = 3, reduce_width: int = _DEFAULT_REDUCE_WIDTH,
                   context: str = "", tier: str = ""):
     # データ駆動 fan-out は機械的に展開（LLM 判断不要）。先に処理する。
+    clamped: list = []
     fanout_tasks = _expand_splits(nodes, results, max_fanout, review, request, exemplar_first,
-                                  reduce_width)
+                                  reduce_width, clamped=clamped)
     if fanout_tasks:
-        return "replan", fanout_tasks, f"data-driven fan-out: +{len(fanout_tasks)}"
+        return "replan", fanout_tasks, (f"data-driven fan-out: +{len(fanout_tasks)}"
+                                        + _clamp_note(clamped))
     # サーキットブレーカー: 作り直しが上限に達した系統は達成不可能とみなし打ち切る
     # （評価役 LLM が無限に再タスクを積み続けるのを防ぐ）。
     tripped = _circuit_tripped(nodes, results, max_retries)
