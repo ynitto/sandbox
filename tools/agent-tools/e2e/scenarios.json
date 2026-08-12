@@ -1,0 +1,15 @@
+{
+  "scenarios": [
+    {"id": "project-success", "engine": "agent-project", "kind": "mock", "test": "test_cli.TestCliEndToEnd.test_drains_and_archives", "covers": ["multiple-input", "success", "archive", "stdout", "exit-0"]},
+    {"id": "project-verify-failure", "engine": "agent-project", "kind": "mock", "test": "test_cli.TestCliEndToEnd.test_blocked_when_verify_fails", "covers": ["failure", "blocked", "needs", "exit-1"]},
+    {"id": "project-budget", "engine": "agent-project", "kind": "mock", "test": "test_cli.TestCliEndToEnd.test_budget_stop", "covers": ["retry", "budget-stop", "exit-2"]},
+    {"id": "project-to-flow", "engine": "agent-project", "kind": "mock", "test": "test_cli.TestCliKiroFlowDelegation.test_cli_delegates_to_real_agent_flow", "covers": ["cross-engine", "argv", "delegation"]},
+    {"id": "flow-fanout", "engine": "agent-flow", "kind": "mock", "test": "test_e2e.EndToEndTests.test_up_completes_all_tasks_once", "covers": ["fan-out", "synthesis", "review-gate"]},
+    {"id": "flow-recovery", "engine": "agent-flow", "kind": "mock", "test": "test_e2e.EndToEndTests.test_up_replan_recovers_failure", "covers": ["agent-error", "replan", "recovery"]},
+    {"id": "flow-map-reduce", "engine": "agent-flow", "kind": "mock", "test": "test_e2e.EndToEndTests.test_up_map_reduce_with_review", "covers": ["structured-input", "split", "map", "reduce"]},
+    {"id": "flow-result-json", "engine": "agent-flow", "kind": "mock", "test": "test_e2e.EndToEndTests.test_result_command_presents_final_output", "covers": ["json-output", "result-api"]},
+    {"id": "amigos-full-cycle", "engine": "agent-amigos", "kind": "mock", "test": "test_e2e.EndToEndTests.test_single_node_self_staff_full_cycle", "covers": ["roles", "question-answer", "artifacts", "acceptance"]},
+    {"id": "amigos-distributed", "engine": "agent-amigos", "kind": "mock", "test": "test_e2e.EndToEndTests.test_two_nodes_split_roles", "covers": ["multi-node", "claim", "role-filter"]},
+    {"id": "amigos-rejection", "engine": "agent-amigos", "kind": "mock", "test": "test_e2e.EndToEndTests.test_reject_roundtrip_rebuilds_round", "covers": ["human-feedback", "rejection", "retry-round"]}
+  ]
+}
