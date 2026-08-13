@@ -310,5 +310,39 @@ class FixTaskTests(unittest.TestCase):
         self.assertIn("緩和してはいけません", t["goal"])
 
 
+class VerifyPlanCliTests(unittest.TestCase):
+    """`verify-plan` サブコマンド — digest の組み立てを投入側へ再実装させない読み取り専用口。"""
+
+    def test_parser_wires_subcommand(self):
+        args = kf.build_parser().parse_args(
+            ["verify-plan", "--task-id", "run-1", "--command", "true",
+             "--workspace", "/repo"])
+        self.assertIs(args.func, kf.cmd_verify_plan)
+        self.assertEqual(args.commands, ["true"])
+        self.assertEqual(args.plan_workspace, "/repo")
+        self.assertIsNone(args.workspace, "グローバル --workspace（run の書込先）とは別物")
+
+    def test_builds_digest_stamped_plan(self):
+        args = argparse.Namespace(
+            task_id="run-1", criteria=None, plan_workspace="/repo",
+            commands=['codd-gate verify --base "$AGENT_BASE_REV"'])
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            self.assertEqual(kf.cmd_verify_plan(args), 0)
+        plan = json.loads(buf.getvalue())
+        self.assertEqual(plan["digest"], vc.plan_digest(plan))
+        self.assertEqual(vc.plan_errors(plan), [])
+        self.assertEqual(plan["task_id"], "run-1")
+        self.assertEqual(plan["workspace"], "/repo")
+        self.assertEqual([c["command"] for c in plan["commands"]],
+                         ['codd-gate verify --base "$AGENT_BASE_REV"'])
+
+    def test_empty_material_is_usage_error(self):
+        args = argparse.Namespace(task_id="run-1", criteria=None, commands=None,
+                                  plan_workspace="")
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(kf.cmd_verify_plan(args), 2)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

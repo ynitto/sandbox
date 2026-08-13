@@ -656,6 +656,8 @@
         <datalist id="wf-cwd-history">${history}</datalist>
         <div class="wf-flow-summary" id="wf-flow-summary" aria-live="polite">${selectedFlowSummaryHtml(ov, 'auto')}</div>
         <label class="wf-request">依頼<textarea id="wf-request" rows="4" placeholder="実行する内容"></textarea></label>
+        <label class="wf-coherence-option"><input type="checkbox" id="wf-coherence">
+          一貫性ゲート（codd-gate の差分ゲートを run 内の検証に載せ、ドキュメント置き去りを自己修復させる）</label>
         ${overridesHtml(ov)}
         <div class="settings-save-actions wf-run-actions"><button type="button" class="primary-inline" id="wf-submit"
           ${st.busy ? 'disabled' : ''}>${esc(st.busy || '実行')}</button></div>
@@ -1220,6 +1222,7 @@
         request: $id('wf-request')?.value || '',
         selection: selectionFrom($id('wf-flow')?.value || 'auto'),
         executionOverrides: executionOverridesFromForm(pane, st.overview || {}),
+        coherenceGate: !!$id('wf-coherence')?.checked,
       };
       renderRun();
       try {

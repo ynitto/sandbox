@@ -81,6 +81,7 @@ kind は 13 種で、正典は `agentcore.nodecontract.VALID_KINDS` です。
 | `cancel <run-id>` | 恒久停止。`--close-issues` で起票済みイシューも後始末 |
 | `status` / `result` | 進捗表示（`--follow` / `--list`） / 最終成果（`--json`） |
 | `patterns` | パターンカタログの出力（`--json`） |
+| `verify-plan` | 検証計画（§3.3）を digest 付き JSON で標準出力へ組み立てる読み取り専用コマンド。`--task-id`（必須）`--command` / `--criterion`（繰り返し可）`--workspace`。digest の canonical JSON を投入側（dashboard 等）に再実装させないための口 |
 | `gc` / `cleanup` | 古い run と孤児 inbox の削除 / バス外の一時ファイルの掃除 |
 | `doctor` | 稼働診断。所見を env / config / program に分類（`--fix` / `--json`） |
 | `update` | スキルリポジトリからの自己更新（`--check` / `--now`） |

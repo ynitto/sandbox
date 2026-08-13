@@ -13,6 +13,23 @@ from __future__ import annotations
 # ---------------------------------------------------------------------------
 
 
+def cmd_verify_plan(args) -> int:
+    """`verify-plan` サブコマンド: 検証計画を組み立てて stdout へ JSON で返す（バス不要・読み取り専用）。
+
+    digest は agentcore.verifycontract の 1 実装で計算する。投入側（dashboard の一貫性ゲート等）が
+    canonical JSON を再実装すると「同じ plan なのに digest 不一致」の偽 fail を作るため、
+    組み立てをここへ寄せて JSON をそのまま inbox 要求の verification_plan に運ばせる。"""
+    try:
+        plan = _verifycontract.build_plan(
+            str(args.task_id), criteria=args.criteria or [], commands=args.commands or [],
+            workspace=str(args.plan_workspace or ""))
+    except ValueError as e:
+        print(f"[agent-flow] verify-plan: {e}", file=sys.stderr)
+        return 2
+    print(json.dumps(plan, ensure_ascii=False))
+    return 0
+
+
 def parse_verification_plan(raw) -> "dict | None":
     """CLI 引数 / inbox 要求の verification_plan（JSON 文字列または dict）を読む。壊れていれば None。"""
     if isinstance(raw, dict):
