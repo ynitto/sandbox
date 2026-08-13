@@ -1137,6 +1137,32 @@ test('buildLaunchLine が inbox 起動・手法 env・エンジン既定のフ�
   assert.ok(!custom.includes('AGENT_TUNING_DIR'), '手法未選択なら端末の tuning を置換しない');
 });
 
+test('IPC: 同梱カタログとリポジトリ配布の作業ルールが同 id なら、設定画面もリポジトリを優先する', () => {
+  const { cfg, catalogMethod } = methodsFixture();
+  const repo = tmpdir('adhoc-overview-methods-repo-');
+  fs.mkdirSync(path.join(repo, '.git'));
+  const methodsDir = path.join(repo, '.agents', 'methods');
+  fs.mkdirSync(methodsDir, { recursive: true });
+  const override = { ...catalogMethod, description: 'リポジトリ版の説明',
+    fragments: [{ role: 'verify', text: 'このリポジトリでは3件以上の反例を探す。' }] };
+  fs.writeFileSync(path.join(methodsDir, `${catalogMethod.id}.json`), JSON.stringify(override));
+  const originalRoots = projectEngine.projectRoots;
+  projectEngine.projectRoots = () => [repo];
+  try {
+    const handlers = {};
+    require('../src/features/adhoc-flow/main/ipc.js').registerIpc({
+      handle: (ch, fn) => { handlers[ch] = fn; }, loadConfig: () => cfg, saveConfig: () => cfg,
+    });
+    const ov = handlers['adhocFlow:overview']({ cwd: repo });
+    const matches = ov.methodsCatalog.filter((m) => m.id === catalogMethod.id);
+    assert.strictEqual(matches.length, 1, '同 id は1枚のカードにする（衝突時に2枚並べない）');
+    assert.strictEqual(matches[0].storage, 'registered-folder');
+    assert.strictEqual(matches[0].description, 'リポジトリ版の説明');
+  } finally {
+    projectEngine.projectRoots = originalRoots;
+  }
+});
+
 // --- 投入（submit_request 契約の投函 + 起動） ---------------------------------
 
 test('submit が submit_request 契約を投函し plan と手法を運ぶ', () => {

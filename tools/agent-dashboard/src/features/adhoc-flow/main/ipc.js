@@ -97,16 +97,23 @@ function registerIpc(ctx) {
       cwdHistory: (cfg.adhocFlow && cfg.adhocFlow.cwdHistory) || [],
       methods,
       tuning: tuning.load(cfg),
-      methodsCatalog: [
-        ...tuning.catalog(cfg).map((method) => ({
-          ...method, storage: 'built-in', readonly: true,
-          catalog_source: `methods/${method.id}@${tuning.sourceHash(method)}`,
-        })),
-        ...methods.filter((method) => method.from === 'repository').map((method) => ({
-          ...method, storage: 'registered-folder', readonly: true,
-          catalog_source: method.source,
-        })),
-      ],
+      // 同じ id が同梱カタログとリポジトリ配布の両方にある場合、availableMethods（実行時の
+      // 手法ピッカー）と同じ優先順位（リポジトリが勝つ）に揃える。単純結合すると同 id が
+      // 2 枚のカードで並び、同梱カード側のトグルから誤ってリポジトリ版を無視できてしまう。
+      methodsCatalog: (() => {
+        const repository = methods.filter((method) => method.from === 'repository');
+        const shadowed = new Set(repository.map((method) => String(method.id)));
+        return [
+          ...tuning.catalog(cfg).filter((method) => !shadowed.has(String(method.id))).map((method) => ({
+            ...method, storage: 'built-in', readonly: true,
+            catalog_source: `methods/${method.id}@${tuning.sourceHash(method)}`,
+          })),
+          ...repository.map((method) => ({
+            ...method, storage: 'registered-folder', readonly: true,
+            catalog_source: method.source,
+          })),
+        ];
+      })(),
       agents,
       projects: registeredProjects,
       retentionDays: Math.max(1, Number(cfg.adhocFlow && cfg.adhocFlow.retentionDays) || 30),
