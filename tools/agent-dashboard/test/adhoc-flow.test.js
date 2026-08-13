@@ -147,7 +147,7 @@ test('Git リポジトリ内のカスタムフローは共有版を優先して�
   const cfg = { adhocFlow: { workflowDir: tmpdir('workflow-user-') } };
   const base = { id: 'shared-flow', name: 'ユーザー版', nodes: [{ id: 'work', goal: 'user', tier: 'auto' }] };
   adhoc.saveWorkflow(cfg, base);
-  const sharedDir = path.join(repo, '.agent-flow', 'workflows');
+  const sharedDir = path.join(repo, '.agents', 'workflows');
   fs.mkdirSync(sharedDir, { recursive: true });
   fs.writeFileSync(path.join(sharedDir, 'shared-flow.json'), `${JSON.stringify({
     ...base, version: 2, name: '共有版', entry: ['work'], exit: ['work'],
@@ -171,13 +171,13 @@ test('Git リポジトリ内のカスタムフローは共有版を優先して�
 test('未登録フォルダのフローと作業ルールは探索しない', () => {
   const repo = tmpdir('workflow-unregistered-');
   fs.mkdirSync(path.join(repo, '.git'));
-  fs.mkdirSync(path.join(repo, '.agent-flow', 'workflows'), { recursive: true });
-  fs.mkdirSync(path.join(repo, '.agent-flow', 'methods'), { recursive: true });
-  fs.writeFileSync(path.join(repo, '.agent-flow', 'workflows', 'hidden.json'), JSON.stringify({
+  fs.mkdirSync(path.join(repo, '.agents', 'workflows'), { recursive: true });
+  fs.mkdirSync(path.join(repo, '.agents', 'methods'), { recursive: true });
+  fs.writeFileSync(path.join(repo, '.agents', 'workflows', 'hidden.json'), JSON.stringify({
     version: 2, id: 'hidden', name: '未登録', entry: ['work'], exit: ['work'],
     nodes: [{ id: 'work', goal: 'hidden', tier: 'auto' }],
   }));
-  fs.writeFileSync(path.join(repo, '.agent-flow', 'methods', 'hidden.json'), JSON.stringify({
+  fs.writeFileSync(path.join(repo, '.agents', 'methods', 'hidden.json'), JSON.stringify({
     id: 'hidden', description: '未登録', fragments: [{ role: 'worker', text: 'hidden' }], when: {},
   }));
   const originalRoots = projectEngine.projectRoots;
@@ -192,7 +192,7 @@ test('ノードの追加ルールも Git リポジトリから読み、選択時
   const repo = tmpdir('method-repository-');
   fs.mkdirSync(path.join(repo, '.git'));
   fs.mkdirSync(path.join(repo, 'src'));
-  const methodsDir = path.join(repo, '.agent-flow', 'methods');
+  const methodsDir = path.join(repo, '.agents', 'methods');
   fs.mkdirSync(methodsDir, { recursive: true });
   const method = {
     id: 'repo-test-first', description: 'リポジトリのテスト規律', enabled: true,
@@ -209,7 +209,7 @@ test('ノードの追加ルールも Git リポジトリから読み、選択時
   assert.strictEqual(found._from, 'repository');
   assert.strictEqual(found.fragments[0].text, method.fragments[0].text);
   assert.strictEqual(found.source,
-    `repository:.agent-flow/methods/repo-test-first.json@${tuning.sourceHash(method)}`);
+    `repository:.agents/methods/repo-test-first.json@${tuning.sourceHash(method)}`);
   const choice = workflowUi.nodeMethodChoices([found], { kind: 'work', tier: 'auto' })[0];
   assert.strictEqual(choice.text, method.fragments[0].text);
   assert.strictEqual(choice.source, found.source);

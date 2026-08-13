@@ -731,7 +731,7 @@ test('手法: 読み取り専用の定義は別IDでユーザーホームへコ�
   const cfg = tuningCfg(tdir, mdir);
   const source = { id: 'shared-check', description: '共有の確認', enabled: true,
     fragments: [{ role: 'verify', text: '共有の観点で確認する' }], when: { engines: ['agent-flow'] },
-    source: 'repository:.agent-flow/methods/shared-check.json@abc', _from: 'repository' };
+    source: 'repository:.agents/methods/shared-check.json@abc', _from: 'repository' };
   const copied = tuning.importMethod(cfg, source, 'my-shared-check');
   const method = copied.methods[0];
   assert.strictEqual(method.id, 'my-shared-check');

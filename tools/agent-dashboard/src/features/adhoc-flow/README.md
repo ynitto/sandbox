@@ -8,13 +8,13 @@
 - Windows の cwd は実行時だけ WSL の `/mnt/<drive>/...` に変換する。履歴は入力表記のまま最大20件保持する。
 - フローは自動、`agent-flow patterns --json` の標準パターン、カスタムから選ぶ。カスタムは
   `~/.agents/workflows/*.json`（ユーザー共通）に加え、入力した Git リポジトリの
-  `.agent-flow/workflows/*.json`（リポジトリ共有）を**読み取り専用で**読む。後者は
+  `.agents/workflows/*.json`（リポジトリ共有）を**読み取り専用で**読む。後者は
   statemachine の `.statemachine/<name>/workflow.yaml` と同様に、通常のリポジトリ作業で
   commit し、各 clone の pull/checkout または CI による配布で共有する。
 - 同じ id が両方にある場合はリポジトリ共有版を優先する。実行エンジンへ登録済みの
   フォルダだけを探索し、未登録フォルダの定義は読み込まない。
 - 工程の「追加ルール」（ノードへ足すプロンプト）も、ユーザー共通の手法カタログに加えて
-  `.agent-flow/methods/*.json` を読み取り専用で探索する。同じ id はリポジトリ版を優先する。
+  `.agents/methods/*.json` を読み取り専用で探索する。同じ id はリポジトリ版を優先する。
   選択時に本文と source hash をワークフローのノードへ複製するため、後から手法ファイルが
   変わっても保存済みワークフローの振る舞いが暗黙に変わることはない。
 - inbox の `workspace` に cwd のリポジトリと現在の branch/HEAD を固定する。成果は `af/<run-id>` branch に保存される。
@@ -36,7 +36,7 @@
 
 ### Git 同期の責務
 
-dashboard は `.agent-flow/workflows/` と `.agent-flow/methods/` にファイルを書かず、
+dashboard は `.agents/workflows/` と `.agents/methods/` にファイルを書かず、
 git pull / commit / push もしない。
 共有フローはソースコードと同じ成果物なので、取得は clone を更新する人・CI・既存の更新ツール、
 公開は変更を作る人が通常のブランチと PR/MR で行う。agent-flow の `state_git` は run/bus の状態を
