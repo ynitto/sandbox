@@ -105,6 +105,7 @@ agent-ollama --replay --arm model=qwen3,think=off,format=json \
 | `ollama` | 汎用。単発 text→text（readonly）/ bash ループ（write） |
 | `ollama-json` | JSON 契約の役割（planner / evaluator / plan など）。`--format json` で文法から強制 |
 | `ollama-list` | 配列契約の役割（split）。`--format json` はトップレベルをオブジェクトに固定して配列を表せないので、スキーマを渡す `--format array` で受ける |
+| `ollama-list-thinking` | Aider/Gemma 4 の split。文法制約を外して Thinking を使い、`temperature=0` で意味的な完全被覆を安定させる |
 | `ollama-read` | 探索が要る読み取り役割。write 経路に read セットを載せ、権限はゲートが絞る |
 
 ### 「遅い」と「死んだ」を区別する

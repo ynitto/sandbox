@@ -28,6 +28,40 @@ class JsoncConfigTests(unittest.TestCase):
 
 
 class PromptConfigTests(unittest.TestCase):
+    def test_load_config_prefers_workspace_agents_over_global(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            workspace_config = workspace / al.AGENT_HOME / "agent-loop.yaml"
+            workspace_config.parent.mkdir(parents=True)
+            workspace_config.write_text(
+                "agent_cli: aider\nprompts:\n  - name: local\n    prompt: run\n",
+                encoding="utf-8",
+            )
+            global_config = root / al.AGENT_HOME / "agent-loop.yaml"
+            global_config.parent.mkdir(parents=True)
+            global_config.write_text("agent_cli: copilot\n", encoding="utf-8")
+
+            with mock.patch.object(al, "agent_home_dir", return_value=global_config.parent):
+                config, path, exists = al.load_config(workspace)
+
+            self.assertTrue(exists)
+            self.assertEqual(path, workspace_config.resolve())
+            self.assertEqual(config["agent_cli"], "aider")
+
+    def test_load_config_prefers_workspace_root_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp, "workspace")
+            workspace.mkdir()
+            direct = workspace / "agent-loop.yaml"
+            direct.write_text("agent_cli: kiro\n", encoding="utf-8")
+
+            config, path, exists = al.load_config(workspace)
+
+            self.assertTrue(exists)
+            self.assertEqual(path, direct.resolve())
+            self.assertEqual(config["agent_cli"], "kiro")
+
     def test_mapping_lookup_expands_prompt_and_cwd(self):
         with tempfile.TemporaryDirectory() as tmp:
             config = Path(tmp, al.AGENT_HOME, "agent-loop.json")

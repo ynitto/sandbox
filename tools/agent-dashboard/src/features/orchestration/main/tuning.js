@@ -143,4 +143,25 @@ function addMethod(cfg, payload) {
   return write(cfg, data, 'agent-dashboard methods add', base);
 }
 
-module.exports = { resolveTuningDir, resolveMethodsDir, load, catalog, sourceHash, setMethod, addMethod, revisionOf };
+function importMethod(cfg, source, newId) {
+  const id = String(newId || '').trim();
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(id)) throw new Error('コピー先IDは英小文字・数字・ハイフンで指定してください');
+  if (!source || typeof source !== 'object') throw new Error('コピー元の作業ルールが不正です');
+  const data = load(cfg);
+  if (catalog(cfg).some((item) => String(item.id) === id)
+      || (Array.isArray(data.methods) ? data.methods : []).some((item) => String(item && item.id) === id)) {
+    throw new Error(`同じIDの作業ルールが既にあります: ${id}`);
+  }
+  const base = revisionOf(data);
+  const method = JSON.parse(JSON.stringify(source));
+  delete method._from;
+  delete method.catalog_source;
+  method.id = id;
+  method.enabled = true;
+  method.origin = 'user';
+  method.source = `custom/${id}`;
+  data.methods = (Array.isArray(data.methods) ? data.methods : []).concat(method);
+  return write(cfg, data, 'agent-dashboard methods copy', base);
+}
+
+module.exports = { resolveTuningDir, resolveMethodsDir, load, catalog, sourceHash, setMethod, addMethod, importMethod, revisionOf };

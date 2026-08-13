@@ -12,6 +12,7 @@ module.exports = {
   adhocFlowDeletePreset: (invoke) => (payload) => invoke('adhocFlow:deletePreset', payload || {}),
   adhocFlowSaveWorkflow: (invoke) => (payload) => invoke('adhocFlow:saveWorkflow', payload || {}),
   adhocFlowDeleteWorkflow: (invoke) => (payload) => invoke('adhocFlow:deleteWorkflow', payload || {}),
+  adhocFlowCopyMethod: (invoke) => (payload) => invoke('adhocFlow:copyMethod', payload || {}),
   adhocFlowSnapshotSelection: (invoke) => (payload) => invoke('adhocFlow:snapshotSelection', payload || {}),
   adhocFlowPromote: (invoke) => (payload) => invoke('adhocFlow:promote', payload || {}),
   adhocFlowSaveSettings: (invoke) => (payload) => invoke('adhocFlow:saveSettings', payload || {}),

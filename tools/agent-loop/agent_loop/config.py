@@ -55,11 +55,16 @@ def find_default_config(cwd: Path) -> Path | None:
 
 def load_config(cwd: Path) -> tuple[dict[str, Any], Path, bool]:
     """設定ファイルを読み込み (config, resolved_path, exists) を返す。
-    ~/.agents/ 配下の DEFAULT_CONFIG_NAMES を探す。
+    workspace 直下、workspace/.agents、~/.agents の順に探す。
     ファイルが存在しない場合は空の config とデフォルトパスを返す（終了しない）。
     """
+    workspace = Path(cwd).expanduser().resolve()
     agent_home = agent_home_dir()
-    config_path = find_default_config(agent_home)
+    config_path = find_default_config(workspace)
+    if config_path is None and workspace != Path.home().resolve():
+        config_path = find_default_config(workspace / AGENT_HOME)
+    if config_path is None:
+        config_path = find_default_config(agent_home)
     if config_path is None:
         default_path = agent_home / "agent-loop.yaml"
         log.info(

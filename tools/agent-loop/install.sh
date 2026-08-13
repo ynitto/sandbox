@@ -243,6 +243,17 @@ with zipfile.ZipFile(exe, 'a') as zf:
 "
 ok "インストールしました: ${INSTALL_PATH}（zipapp）"
 
+# agentcore が実行時に参照する組み込み CLI 定義を更新する。
+# これを配らないと再インストール後も ~/.agents/agents の古い定義が first-wins になり、
+# zipapp の新しい待機判定や起動オプションと食い違う。
+AGENTS_SRC="${SCRIPT_DIR}/../../agents"
+AGENTS_DEST="${AGENT_PROJECT_AGENTS_HOME:-${HOME}/.agents}/agents"
+if [[ -d "${AGENTS_SRC}" ]]; then
+  mkdir -p "${AGENTS_DEST}"
+  find "${AGENTS_SRC}" -maxdepth 1 -name '*.json' -exec cp {} "${AGENTS_DEST}/" \;
+  ok "エージェント CLI 定義を配置しました: ${AGENTS_DEST}"
+fi
+
 HOOKS_SRC="${SCRIPT_DIR}/hooks"
 HOOKS_DEST="${INSTALL_PREFIX}/hooks"
 if [[ -d "${HOOKS_SRC}" ]]; then

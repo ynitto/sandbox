@@ -29,6 +29,13 @@ class ResultLayoutTests(unittest.TestCase):
         self.assertIn("model:tag", cmd)
         self.assertIn("aider", cmd)
 
+    def test_judge_command_uses_the_selected_cli_as_its_variant_base(self):
+        args = Namespace(model="model:tag", cli="aider", repeat=2, wall=30,
+                         embedding_model="embed", tfidf_only=False)
+        cmd, env = command_for("judge", args, Path("/tmp/result/judge"))
+        self.assertEqual(env["JUDGE_EVAL_DIR"], "/tmp/result/judge")
+        self.assertEqual(cmd[cmd.index("--base-cli") + 1], "aider")
+
     def test_coverage_inventory_matches_canonical_flow_roles(self):
         self.assertEqual(audit(load_manifest()), [])
 

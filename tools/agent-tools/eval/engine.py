@@ -71,6 +71,12 @@ def unwrap_list(data):
     return fn(data) if fn is not None else data
 
 
+def extract_list(text: str):
+    """本番の split 専用抽出を使う。古い木では従来の JSON 抽出＋器剥がしへ倒す。"""
+    fn = getattr(_FLOW, "extract_list", None)
+    return fn(text) if fn is not None else unwrap_list(extract_json(text))
+
+
 def patterns() -> dict:
     """evaluator へ渡すパターン目録。無ければ空（プロンプトが短くなる）。"""
     return getattr(_FLOW, "PATTERNS", None) or {}
@@ -112,6 +118,18 @@ def load_cmd(name: str, fallback: "list[str]") -> "tuple[list[str], str]":
     except Exception:  # noqa: BLE001 — 定義が引けないなら既知の既定で測る（測定を止めない）
         pass
     return list(fallback), "fallback（定義を読めませんでした）"
+
+
+def load_env(name: str) -> "dict[str, str]":
+    """`agents/<name>.json` の env。本番と同じ選択済み CLI 定義から読む。"""
+    cli = _agentcli()
+    try:
+        env = cli.load_cli(name).get("env") if cli is not None else None
+    except Exception:  # noqa: BLE001 — env が読めなくても既存の測定は止めない
+        env = None
+    if not isinstance(env, dict):
+        return {}
+    return {str(key): str(value) for key, value in env.items()}
 
 
 def headless_cmd(name: str, model: str, prompt: str, **kwargs) -> dict:

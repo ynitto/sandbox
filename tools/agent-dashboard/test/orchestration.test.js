@@ -725,6 +725,23 @@ test('手法: enable はカタログ snapshot を固定し revision を単調増
   }), /既にあります/);
 });
 
+test('手法: 読み取り専用の定義は別IDでユーザーホームへコピーする', () => {
+  const tdir = tmpdir('orch-tuning-copy-');
+  const mdir = tmpdir('orch-methods-copy-');
+  const cfg = tuningCfg(tdir, mdir);
+  const source = { id: 'shared-check', description: '共有の確認', enabled: true,
+    fragments: [{ role: 'verify', text: '共有の観点で確認する' }], when: { engines: ['agent-flow'] },
+    source: 'repository:.agent-flow/methods/shared-check.json@abc', _from: 'repository' };
+  const copied = tuning.importMethod(cfg, source, 'my-shared-check');
+  const method = copied.methods[0];
+  assert.strictEqual(method.id, 'my-shared-check');
+  assert.strictEqual(method.source, 'custom/my-shared-check');
+  assert.strictEqual(method.origin, 'user');
+  assert.strictEqual(method.fragments[0].text, source.fragments[0].text);
+  assert.ok(!Object.prototype.hasOwnProperty.call(method, '_from'));
+  assert.throws(() => tuning.importMethod(cfg, source, 'my-shared-check'), /既にあります/);
+});
+
 // 同梱カタログの source ダイジェストは Python（agent-loop）にも実装がある。
 // `source: methods/<id>@<hash>` はどちらが書いても同じでなければ「同じカタログ由来か」を
 // 突き合わせられないので、両側が同じ golden を読む。片方の正規化（キー順・区切り・数値

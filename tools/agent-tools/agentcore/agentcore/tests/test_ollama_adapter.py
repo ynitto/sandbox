@@ -166,6 +166,16 @@ class TestContextReporting(_NoServerMixin, unittest.TestCase):
         self.assertEqual(status["context_limit"], 8192)
         self.assertGreater(status["context_pct"], 98.0)
 
+    def test_run_start_records_effective_options(self):
+        """sampling固定が実際に送られたことを、後からセッションログで監査できる。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            log = str(Path(tmp) / "run.jsonl")
+            with mock.patch.dict(os.environ, {"AGENT_OLLAMA_OPTIONS": '{"temperature":0}'}):
+                self._run(["qwen3", "--log", log])
+            start = json.loads(Path(log).read_text().splitlines()[0])
+        self.assertEqual(start["options"]["temperature"], 0)
+        self.assertEqual(start["options"]["num_predict"], ollama_loop.DEFAULT_NUM_PREDICT)
+
     def test_context_query_mode_does_not_call_the_model(self):
         out = io.StringIO()
         with mock.patch.object(ollama_adapter.ollama_loop, "run_plain") as plain, \
@@ -452,6 +462,14 @@ class TestContractDefinition(unittest.TestCase):
         self.assertEqual(ollama_loop.format_value("array"),
                          {"type": "array", "items": {"type": "string"}})
 
+    def test_thinking_list_variant_leaves_the_grammar_unconstrained(self):
+        """Gemma split は意味的な完全被覆を考えられるよう、thinking と grammar を両立させない。"""
+        spec = agentcli.load_cli("ollama-list-thinking")
+        opts = ollama_adapter.parse_args(agentcli.headless_cmd(spec, "M", "P")["argv"][1:])
+        self.assertIs(opts["think"], True)
+        self.assertIsNone(opts["format"])
+        self.assertFalse(opts["tools"])
+
     def test_read_variant_carries_the_read_toolset(self):
         spec = agentcli.load_cli("ollama-read")
         opts = ollama_adapter.parse_args(agentcli.headless_cmd(spec, "M", "P")["argv"][1:])
@@ -462,7 +480,8 @@ class TestContractDefinition(unittest.TestCase):
 
     def test_context_exhausted_is_classified_as_env_not_transient(self):
         """同じ壁に同じ時間を掛けて再試行させない（transient にしないのが要点）。"""
-        for name in ("ollama", "ollama-json", "ollama-list", "ollama-read"):
+        for name in ("ollama", "ollama-json", "ollama-list", "ollama-list-thinking",
+                     "ollama-read"):
             spec = agentcli.load_cli(name)
             triage = agentcli.classify_error(
                 spec, "@agent-note 途中で打ち切りました（context_exhausted）。")

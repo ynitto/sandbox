@@ -780,14 +780,13 @@ const GLOBAL_SETTINGS_SECTIONS = [
   { id: 'app', label: 'アプリ' },
   { id: 'agents', label: 'エージェント' },
   { id: 'instructions', label: '共通指示' },
-  { id: 'methods', label: 'ワークフロー' },
   { id: 'control', label: '実行制御' },
   { id: 'sync', label: '同期と実行' },
   { id: 'integrations', label: '外部連携' },
 ];
 // 領域へ移した設定（保存時の表示名の解決に使う。移設後も保存経路は 1 本のまま）
 const RELOCATED_SETTINGS_LABELS = { usage: '利用状況', routine: '定常業務' };
-const ORCHESTRATION_SETTINGS_SECTIONS = new Set(['agents', 'instructions', 'methods', 'control']);
+const ORCHESTRATION_SETTINGS_SECTIONS = new Set(['agents', 'instructions', 'control']);
 
 function globalSettingsPaneHtml(id, content) {
   const active = state.globalSettingsSection === id;
@@ -1075,6 +1074,7 @@ function orchMethodTechnicalHtml(method, source) {
 }
 
 function orchMethodCardHtml(method, current) {
+  const repository = method.storage === 'registered-folder';
   const enabled = !!(current && current.enabled !== false);
   const effective = enabled ? current : method;
   const roles = orchMethodRoles(effective);
@@ -1091,9 +1091,9 @@ function orchMethodCardHtml(method, current) {
       <div class="orch-method-actions"><span class="orch-method-status${stale ? ' is-stale' : enabled ? ' is-enabled' : ''}">${stale ? '更新あり' : enabled ? '自動適用中' : '未使用'}</span>
         ${stale ? `<button type="button" class="orch-method-toggle" data-orch-method-id="${esc(effective.id)}"
           data-orch-method-enabled="true" aria-label="${esc(effective.description || effective.id)}を最新版へ更新">最新版に更新</button>` : ''}
-        <button type="button" class="orch-method-toggle" data-orch-method-id="${esc(effective.id)}"
+        ${repository && !enabled ? `<button type="button" class="orch-method-copy" data-orch-method-copy="${esc(effective.id)}" data-orch-method-repository="${esc(method.repository || '')}">自分用にコピー</button>` : `<button type="button" class="orch-method-toggle" data-orch-method-id="${esc(effective.id)}"
           data-orch-method-enabled="${enabled ? 'false' : 'true'}" aria-pressed="${enabled}"
-          aria-label="${esc(effective.description || effective.id)}を${enabled ? '適用しない' : '自動適用する'}">${enabled ? '適用しない' : '自動適用する'}</button></div>
+          aria-label="${esc(effective.description || effective.id)}を${enabled ? '適用しない' : '自動適用する'}">${enabled ? '適用しない' : '自動適用する'}</button>`}</div>
     </header>
     <p class="orch-method-effect">${esc(instruction || effective.description || '')}</p>
     <div class="orch-method-conditions">${orchMethodConditionsHtml(effective)}</div>
@@ -1184,16 +1184,10 @@ function orchMethodsPanelHtml(overview) {
   </section>`;
 }
 
-function globalSettingsMethodsHtml(overview) {
-  if (!overview) return '<div class="empty compact">ワークフローを読み込んでいます。</div>';
-  if (overview.error) return `<div class="empty compact"><strong>ワークフローを読み込めませんでした</strong><span>${esc(overview.error)}</span></div>`;
-  return `${orchTiersPanelHtml(overview)}${orchMethodsPanelHtml(overview)}`;
-}
-
 function globalSettingsControlHtml(overview) {
   if (!overview) return '<div class="empty compact">実行制御を読み込んでいます。</div>';
   if (overview.error) return `<div class="empty compact"><strong>実行制御を読み込めませんでした</strong><span>${esc(overview.error)}</span></div>`;
-  return `${orchExecutionPolicyPanelHtml(overview)}${orchConcurrencyPanelHtml(overview)}${orchStatusPanelHtml(overview)}`;
+  return `${orchExecutionPolicyPanelHtml(overview)}${orchTiersPanelHtml(overview)}${orchConcurrencyPanelHtml(overview)}${orchStatusPanelHtml(overview)}`;
 }
 
 function renderOrchestration() {
@@ -1226,7 +1220,6 @@ function renderOrchestration() {
       ${globalSettingsPaneHtml('app', globalSettingsAppHtml())}
       ${globalSettingsPaneHtml('agents', globalSettingsAgentsHtml(ov))}
       ${globalSettingsPaneHtml('instructions', globalSettingsInstructionsHtml(ov))}
-      ${globalSettingsPaneHtml('methods', globalSettingsMethodsHtml(ov))}
       ${globalSettingsPaneHtml('control', globalSettingsControlHtml(ov))}
       ${globalSettingsPaneHtml('sync', globalSettingsSyncHtml())}
       ${globalSettingsPaneHtml('integrations', globalSettingsIntegrationsHtml())}
@@ -1319,7 +1312,10 @@ async function runSetupDiagnostics(root) {
   }
 }
 
-function setupOrchestration(root) {
+function setupOrchestration(root, refreshView = async () => {
+  await refreshOrchestration();
+  renderOrchestration();
+}) {
   const refreshBtn = root.querySelector('#btn-orch-refresh');
   if (refreshBtn) refreshBtn.addEventListener('click', () => {
     if (orchestrationDraftActive()) {
@@ -1360,8 +1356,19 @@ function setupOrchestration(root) {
     btn.addEventListener('click', () => guard('作業ルール設定の保存', async () => {
       await api.orchestrationMethodSet({ id: btn.dataset.orchMethodId,
         enabled: btn.dataset.orchMethodEnabled === 'true' });
-      await refreshOrchestration();
-      renderOrchestration();
+      await refreshView();
+    }));
+  }
+  for (const btn of root.querySelectorAll('[data-orch-method-copy]')) {
+    btn.addEventListener('click', () => guard('作業ルールのコピー', async () => {
+      const sourceId = btn.dataset.orchMethodCopy;
+      const suggested = `${sourceId}-copy`;
+      const newId = window.prompt('自分用コピーのIDを入力してください', suggested);
+      if (!newId) return;
+      await api.adhocFlowCopyMethod({ id: sourceId,
+        cwd: btn.dataset.orchMethodRepository || state.selectedDir, newId: newId.trim() });
+      toast('自分用の作業ルールを作成しました', true);
+      await refreshView();
     }));
   }
   const methodDialog = root.querySelector('#dlg-orch-method-add');
@@ -1405,8 +1412,7 @@ function setupOrchestration(root) {
       await api.orchestrationMethodAdd(payload);
       if (methodDialog) methodDialog.close();
       toast('カスタム作業ルールを追加しました', true);
-      await refreshOrchestration();
-      renderOrchestration();
+      await refreshView();
     } catch (err) {
       setMethodFormStatus(`追加できませんでした: ${err.message || err}`, true);
     } finally {
@@ -1813,6 +1819,10 @@ function setupOrchestration(root) {
     renderOrchestration();
   }));
 }
+
+// ワークフロー画面の設定でも同じ作業ルールUIと保存経路を使う。
+globalThis.orchMethodsPanelHtml = orchMethodsPanelHtml;
+globalThis.setupOrchestration = setupOrchestration;
 
 function coworkStatusClass(status) {
   const s = String(status || 'unknown');

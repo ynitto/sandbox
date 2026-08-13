@@ -67,6 +67,30 @@ def unwrap_list(data):
     return data
 
 
+def extract_list(text: str):
+    """split の文字列配列を抽出し、文字列配列のグループ表現だけを正規化する。
+
+    Thinking を使うモデルは、正しい複数グループを
+    ``["a", "b"], ["c", "d"]`` のように外側の配列なしで返すことがある。この形は
+    各グループと要素が一意なので、再推論せず ``["a,b", "c,d"]`` へ畳める。
+    数値・object・混在配列は意味が決まらないため受理せず、呼び出し側の形式修復へ回す。"""
+    try:
+        data = unwrap_list(extract_json(text))
+    except (ValueError, json.JSONDecodeError) as original:
+        try:
+            data = json.loads(f"[{text}]")
+        except json.JSONDecodeError:
+            raise original
+    if isinstance(data, list) and all(isinstance(item, str) for item in data):
+        return data
+    if (isinstance(data, list) and data
+            and all(isinstance(group, list) and group
+                    and all(isinstance(item, str) for item in group)
+                    for group in data)):
+        return [",".join(group) for group in data]
+    raise ValueError("split 出力は文字列の JSON 配列ではありません")
+
+
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 
@@ -74,4 +98,3 @@ def strip_ansi(text: str) -> str:
     """端末カラー等の ANSI エスケープを除去する。
     kiro-cli の出力にはカラーコードが混ざるため、保存・解析前に正規化する。"""
     return _ANSI_RE.sub("", text or "")
-

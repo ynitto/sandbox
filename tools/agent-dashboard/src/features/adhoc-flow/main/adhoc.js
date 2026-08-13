@@ -78,10 +78,19 @@ function repositoryMethodsDir(cwd) {
   return root ? path.join(root, '.agent-flow', 'methods') : '';
 }
 
+function registeredRepositoryRoot(config, cwd) {
+  const root = repositoryRoot(cwd);
+  if (!root) return '';
+  const engine = require('../../agent-project/main/engine');
+  const registered = engine.projectRoots(config).map((dir) => path.resolve(String(dir)));
+  return registered.includes(path.resolve(root)) ? root : '';
+}
+
 function workflowDirs(config, cwd = '') {
-  const repository = repositoryWorkflowDir(cwd);
+  const registered = registeredRepositoryRoot(config, cwd);
+  const repository = registered ? path.join(registered, '.agent-flow', 'workflows') : '';
   return [
-    ...(repository ? [{ scope: 'repository', dir: repository, repository: repositoryRoot(cwd) }] : []),
+    ...(repository ? [{ scope: 'repository', dir: repository, repository: registered }] : []),
     { scope: 'user', dir: resolveWorkflowDir(config), repository: '' },
   ];
 }
@@ -523,7 +532,8 @@ function availableMethods(config, options = {}) {
   for (const m of Array.isArray(state.methods) ? state.methods : []) {
     if (m && m.id) seen.set(String(m.id), { ...m, _from: 'tuning' });
   }
-  const repoDir = repositoryMethodsDir(options.cwd);
+  const registered = registeredRepositoryRoot(config, options.cwd);
+  const repoDir = registered ? path.join(registered, '.agent-flow', 'methods') : '';
   if (repoDir && fs.existsSync(repoDir)) {
     for (const entry of fs.readdirSync(repoDir, { withFileTypes: true })) {
       if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
@@ -532,7 +542,7 @@ function availableMethods(config, options = {}) {
         if (!method || typeof method !== 'object' || !method.id) continue;
         const body = JSON.parse(JSON.stringify(method));
         body.source = `repository:.agent-flow/methods/${entry.name}@${tuning.sourceHash(method)}`;
-        seen.set(String(method.id), { ...body, _from: 'repository' });
+        seen.set(String(method.id), { ...body, _from: 'repository', _repository: registered });
       } catch { /* 壊れた1ファイルで手法一覧全体を壊さない */ }
     }
   }
@@ -752,6 +762,7 @@ module.exports = {
   repositoryRoot,
   repositoryWorkflowDir,
   repositoryMethodsDir,
+  registeredRepositoryRoot,
   normalizeWorkflow,
   saveWorkflow,
   loadWorkflow,

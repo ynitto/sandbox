@@ -227,10 +227,12 @@ class TestInteractive(_Isolated):
     def test_accessors(self):
         s = self.spec(interactive={"command": ["c"], "ready_pattern": "PAT",
                                    "failure_pattern": "FAIL", "ready_timeout_sec": 12,
+                                   "ready_tail_lines": 8,
                                    "prompt_inject": "file"})
         self.assertEqual(agentcli.ready_pattern(s, "D"), "PAT")
         self.assertEqual(s["interactive"]["failure_pattern"], "FAIL")
         self.assertEqual(agentcli.ready_timeout_sec(s), 12)
+        self.assertEqual(s["interactive"]["ready_tail_lines"], 8)
         self.assertEqual(agentcli.prompt_inject(s), "file")
         s = self.spec(interactive={"command": ["c"]})
         self.assertEqual(agentcli.ready_pattern(s, "D"), "D")

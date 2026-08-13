@@ -75,6 +75,12 @@ const GOLDEN = {
     write: ['agent-ollama', '--think', 'off', '--format', 'array', 'M'],
     readonly: ['agent-ollama', '--think', 'off', '--format', 'array', 'M'],
   },
+  'ollama-list-thinking': {
+    // Aider/Gemma の split 用。array grammar は thinking にも掛かるため外し、意味的な
+    // 完全被覆を考えられる single-shot として分離する。
+    write: ['agent-ollama', '--think', 'on', 'M'],
+    readonly: ['agent-ollama', '--think', 'on', 'M'],
+  },
   'ollama-read': {
     // 探索が要る readonly 役割用（write 経路に read セットを載せ、権限はゲートが絞る）。
     write: ['agent-ollama', '--think', 'off', 'M', '--tools', 'read',
@@ -134,7 +140,7 @@ test('同梱定義がすべて読める（壊れた定義を同梱しない）',
 // ローカル実行がクラウド実行より厳密に安い、が守られていないと降格・昇格が意味を失う。
 // 個別の値をスナップショットしても不変条件は守れないので、全定義を読んで関係を確かめる。
 const LOCAL_ENGINES = new Set([
-  'aider', 'ollama', 'ollama-json', 'ollama-list', 'ollama-read', 'opencode',
+  'aider', 'ollama', 'ollama-json', 'ollama-list', 'ollama-list-thinking', 'ollama-read', 'opencode',
 ]);
 
 test('相対コストは全同梱定義で宣言され、ローカル < クラウドの関係を保つ', () => {

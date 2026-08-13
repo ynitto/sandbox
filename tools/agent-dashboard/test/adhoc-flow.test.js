@@ -23,6 +23,7 @@ const exec = require('../src/features/routines/main/exec');
 const tuning = require('../src/features/orchestration/main/tuning');
 const profiles = require('../src/features/orchestration/main/profiles');
 const actions = require('../src/features/agent-project/main/actions');
+const projectEngine = require('../src/features/agent-project/main/engine');
 const workflowUi = require('../src/renderer/features/adhoc-flow');
 
 function tmpdir(prefix) {
@@ -152,6 +153,8 @@ test('Git リポジトリ内のカスタムフローは共有版を優先して�
     ...base, version: 2, name: '共有版', entry: ['work'], exit: ['work'],
     nodes: [{ id: 'work', goal: 'repo', tier: 'auto' }],
   })}\n`);
+  const originalRoots = projectEngine.projectRoots;
+  projectEngine.projectRoots = () => [repo];
   const listed = adhoc.listWorkflows(cfg, { cwd: subdir });
   assert.strictEqual(listed.filter((item) => item.id === 'shared-flow').length, 1);
   const shared = listed.find((item) => item.id === 'shared-flow');
@@ -162,6 +165,27 @@ test('Git リポジトリ内のカスタムフローは共有版を優先して�
   assert.throws(() => adhoc.saveWorkflow(cfg, { ...shared, name: '変更' }), /読み取り専用/);
   assert.throws(() => adhoc.deleteWorkflow(cfg, 'shared-flow', { scope: 'repository', cwd: subdir }), /読み取り専用/);
   assert.strictEqual(JSON.parse(fs.readFileSync(path.join(sharedDir, 'shared-flow.json'), 'utf8')).name, '共有版');
+  projectEngine.projectRoots = originalRoots;
+});
+
+test('未登録フォルダのフローと作業ルールは探索しない', () => {
+  const repo = tmpdir('workflow-unregistered-');
+  fs.mkdirSync(path.join(repo, '.git'));
+  fs.mkdirSync(path.join(repo, '.agent-flow', 'workflows'), { recursive: true });
+  fs.mkdirSync(path.join(repo, '.agent-flow', 'methods'), { recursive: true });
+  fs.writeFileSync(path.join(repo, '.agent-flow', 'workflows', 'hidden.json'), JSON.stringify({
+    version: 2, id: 'hidden', name: '未登録', entry: ['work'], exit: ['work'],
+    nodes: [{ id: 'work', goal: 'hidden', tier: 'auto' }],
+  }));
+  fs.writeFileSync(path.join(repo, '.agent-flow', 'methods', 'hidden.json'), JSON.stringify({
+    id: 'hidden', description: '未登録', fragments: [{ role: 'worker', text: 'hidden' }], when: {},
+  }));
+  const originalRoots = projectEngine.projectRoots;
+  projectEngine.projectRoots = () => [];
+  try {
+    assert.ok(!adhoc.listWorkflows({}, { cwd: repo }).some((item) => item.id === 'hidden'));
+    assert.ok(!adhoc.availableMethods({}, { cwd: repo }).some((item) => item._from === 'repository'));
+  } finally { projectEngine.projectRoots = originalRoots; }
 });
 
 test('ノードの追加ルールも Git リポジトリから読み、選択時に本文と source hash を複製する', () => {
@@ -177,6 +201,8 @@ test('ノードの追加ルールも Git リポジトリから読み、選択時
   };
   fs.writeFileSync(path.join(methodsDir, 'repo-test-first.json'), `${JSON.stringify(method)}\n`);
   const cfg = { orchestration: { methodsDir: tmpdir('method-user-') } };
+  const originalRoots = projectEngine.projectRoots;
+  projectEngine.projectRoots = () => [repo];
   const found = adhoc.availableMethods(cfg, { cwd: path.join(repo, 'src') })
     .find((item) => item.id === method.id);
   assert.ok(found);
@@ -187,6 +213,7 @@ test('ノードの追加ルールも Git リポジトリから読み、選択時
   const choice = workflowUi.nodeMethodChoices([found], { kind: 'work', tier: 'auto' })[0];
   assert.strictEqual(choice.text, method.fragments[0].text);
   assert.strictEqual(choice.source, found.source);
+  projectEngine.projectRoots = originalRoots;
 });
 
 test('version 2 は開始から終了までの実行経路だけを保存する', () => {

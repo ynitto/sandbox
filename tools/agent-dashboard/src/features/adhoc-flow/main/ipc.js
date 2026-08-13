@@ -5,6 +5,7 @@ const path = require('path');
 const adhoc = require('./adhoc');
 const profiles = require('../../orchestration/main/profiles');
 const flowTiers = require('../../orchestration/main/flow-tiers');
+const tuning = require('../../orchestration/main/tuning');
 
 function registerIpc(ctx) {
   const { handle, loadConfig, saveConfig } = ctx;
@@ -26,9 +27,14 @@ function registerIpc(ctx) {
     } catch {
       // バス未作成（初回）は空一覧でよい
     }
+    const registeredProjects = adhoc.listProjects(cfg);
+    const sourceFolders = cwd ? [cwd] : registeredProjects.map((project) => project.dir);
     let methods = [];
     try {
-      methods = adhoc.availableMethods(cfg, { cwd }).map((m) => ({
+      const discovered = sourceFolders.length
+        ? sourceFolders.flatMap((folder) => adhoc.availableMethods(cfg, { cwd: folder }))
+        : adhoc.availableMethods(cfg, {});
+      methods = [...new Map(discovered.map((method) => [`${method._from}:${method.source || method.id}`, method])).values()].map((m) => ({
         id: m.id,
         description: String(m.description || ''),
         origin: String(m.origin || ''),
@@ -39,6 +45,7 @@ function registerIpc(ctx) {
         })),
         when: m.when && typeof m.when === 'object' ? m.when : {},
         from: m._from || 'catalog',
+        repository: m._repository || '',
       }));
     } catch {
       // 手法カタログが無い端末では選択肢を出さないだけ（実行は可能）
@@ -75,15 +82,33 @@ function registerIpc(ctx) {
       busDir,
       runs,
       presets: (cfg.adhocFlow && cfg.adhocFlow.presets) || [],
-      workflows: adhoc.listWorkflows(cfg, { cwd }),
+      workflows: (() => {
+        const discovered = sourceFolders.length
+          ? sourceFolders.flatMap((folder) => adhoc.listWorkflows(cfg, { cwd: folder }))
+          : adhoc.listWorkflows(cfg);
+        return [...new Map(discovered.map((workflow) => [
+          `${workflow._scope}:${workflow._repository || ''}:${workflow.id}`, workflow,
+        ])).values()];
+      })(),
       patterns: adhoc.patternCatalog(cfg),
       tiers: [{ id: 'auto', label: '自動（実行方針を継承）' }, ...tierNames],
       // 機能（ノード kind）・役割ごとの実行可能レベルと、オプションが宣言する下限
       kindTiers: flowTiers.catalog(),
       cwdHistory: (cfg.adhocFlow && cfg.adhocFlow.cwdHistory) || [],
       methods,
+      tuning: tuning.load(cfg),
+      methodsCatalog: [
+        ...tuning.catalog(cfg).map((method) => ({
+          ...method, storage: 'built-in', readonly: true,
+          catalog_source: `methods/${method.id}@${tuning.sourceHash(method)}`,
+        })),
+        ...methods.filter((method) => method.from === 'repository').map((method) => ({
+          ...method, storage: 'registered-folder', readonly: true,
+          catalog_source: method.source,
+        })),
+      ],
       agents,
-      projects: adhoc.listProjects(cfg),
+      projects: registeredProjects,
       retentionDays: Math.max(1, Number(cfg.adhocFlow && cfg.adhocFlow.retentionDays) || 30),
     };
   });
@@ -171,6 +196,12 @@ function registerIpc(ctx) {
     const cfg = loadConfig();
     saveConfig({ ...cfg, adhocFlow: { ...cfg.adhocFlow, retentionDays: days } });
     return { retentionDays: days };
+  });
+  handle('adhocFlow:copyMethod', ({ id, cwd, newId } = {}) => {
+    const cfg = loadConfig();
+    const method = adhoc.availableMethods(cfg, { cwd }).find((item) => String(item.id) === String(id));
+    if (!method || method._from !== 'repository') throw new Error('登録フォルダの作業ルールが見つかりません');
+    return { tuning: tuning.importMethod(cfg, method, newId) };
   });
 }
 

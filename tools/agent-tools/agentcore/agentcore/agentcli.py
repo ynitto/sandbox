@@ -248,6 +248,7 @@ def normalize(name: str, raw: dict, path) -> dict:
                                 if "no_session_args" in inter_raw else spec["no_session_args"]),
             "ready_pattern": str(inter_raw.get("ready_pattern") or ""),
             "ready_timeout_sec": float(inter_raw.get("ready_timeout_sec") or 60),
+            "ready_tail_lines": max(1, int(inter_raw.get("ready_tail_lines") or 3)),
             # 待機/処理中の判定は CLI ごとに方法が違う（入力欄を出したまま処理する TUI では
             # ready_pattern の消失が起きない）。busy_pattern は「処理中」の正のシグナル、
             # idle_quiet_sec はパターンで判定できない CLI 向けの静穏判定。

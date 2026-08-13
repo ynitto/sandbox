@@ -941,10 +941,12 @@
 
   function savedWorkflowCardHtml(workflow) {
     const nodes = Array.isArray(workflow.nodes) ? workflow.nodes.length : 0;
+    const readonly = workflow._scope === 'repository';
     return `<button type="button" class="wf-template-card wf-saved-card" data-workflow-id="${esc(workflow.id)}">
       <strong>${esc(workflow.name || workflow.id)}</strong>
       <small>${esc(workflow.description || `${nodes}工程のワークフロー`)}</small>
-      <span class="wf-card-meta">${nodes}工程</span><b>編集する →</b></button>`;
+      <span class="wf-card-meta">${nodes}工程 · ${readonly ? '登録フォルダ（読み取り専用）' : '自分用（編集できます）'}</span>
+      <b>${readonly ? '内容を見る →' : '編集する →'}</b></button>`;
   }
 
   function workflowLibraryHtml(ov) {
@@ -1010,14 +1012,18 @@
     const inspector = st.inspectorPosition;
     const inspectorClass = inspector ? ' floating' : '';
     const inspectorStyle = inspector ? ` style="left:${Number(inspector.x)}px;top:${Number(inspector.y)}px"` : '';
+    const readonly = workflow._scope === 'repository';
     return `<section class="wf-page wf-settings" aria-label="ワークフロー設定">
       ${st.notice ? `<p class="qf-notice" role="status">${esc(st.notice)}</p>` : ''}
       <div class="wf-editor-layout"><main class="wf-editor-main">
         <div class="wf-editor-head"><button type="button" id="wf-library-home">← ワークフロー一覧</button>
           <label>名前<input id="wf-name" value="${esc(workflow.name)}" placeholder="フロー名"></label>
           <label>説明<input id="wf-description" value="${esc(workflow.description)}" placeholder="任意"></label>
-          <button type="button" id="wf-fit">全体表示</button><button type="button" class="primary" id="wf-save">保存</button>
-          ${workflow.id ? '<button type="button" id="wf-delete">削除</button>' : ''}</div>
+          <button type="button" id="wf-fit">全体表示</button>
+          ${readonly ? '<button type="button" class="primary" id="wf-copy">自分用にコピー</button>'
+    : '<button type="button" class="primary" id="wf-save">保存</button>'}
+          ${workflow.id && !readonly ? '<button type="button" id="wf-delete">削除</button>' : ''}</div>
+        ${readonly ? '<p class="field-help">登録フォルダのフローは読み取り専用です。変更するには自分用にコピーしてください。DashboardはGit操作を行いません。</p>' : ''}
         ${st.connectFrom ? `<div class="wf-connect-status" role="status">接続先の丸を選択 · Escで解除</div>` : ''}
         <div class="wf-workspace">${canvasHtml(workflow)}${pickerHtml(ov, workflow)}
           ${st.selectedNode ? `<aside class="wf-properties${inspectorClass}"${inspectorStyle}><div class="wf-drawer-head" data-drag-inspector tabindex="0" aria-label="工程の設定パネル。ドラッグで移動できます">
@@ -1086,12 +1092,20 @@
   const renderSettings = renderEdit;
 
   function settingsHtml(ov) {
-    return `<section class="wf-page"><div class="wf-title"><div><h2>設定</h2><p>ワークフロー実行履歴の保持期間を設定します。</p></div></div>
+    const methods = typeof root.orchMethodsPanelHtml === 'function'
+      ? root.orchMethodsPanelHtml({ tuning: ov.tuning, methodsCatalog: ov.methodsCatalog }) : '';
+    return `<section class="wf-page"><div class="wf-title"><div><h2>設定</h2><p>フロー、作業ルール、実行履歴を管理します。</p></div></div>
       ${st.notice ? `<p class="qf-notice" role="status">${esc(st.notice)}</p>` : ''}
       <div class="global-settings-card wf-settings-card">
-        <header class="global-settings-card-heading"><span class="summary-kicker">実行履歴</span><h2>履歴の保持</h2>
-          <p class="muted">終了したワークフローの履歴を残す期間を設定します。</p></header>
-        <div class="field wf-settings-field"><label for="wf-retention-days">保持日数</label>
+        <header class="global-settings-card-heading"><span class="summary-kicker">フローと作業ルール</span>
+          <h2>仕事の進め方</h2><p class="muted">自分用は編集できます。登録フォルダと組み込みの項目は読み取り専用で、自分用にコピーして変更します。</p></header>
+        <div class="row"><button type="button" id="wf-open-library">フローを作成・編集</button></div>
+      </div>
+      ${methods}
+      <div class="global-settings-card wf-settings-card">
+        <header class="global-settings-card-heading"><span class="summary-kicker">実行履歴</span><h2>履歴を残す期間</h2>
+          <p class="muted">終了した実行を何日残すか決めます。</p></header>
+        <div class="field wf-settings-field"><label for="wf-retention-days">残す日数</label>
           <input id="wf-retention-days" type="number" min="1" max="3650" step="1" value="${esc(ov.retentionDays || 30)}">
           <p class="field-help">期限を過ぎた終端済みの実行を削除します。未対応の人による確認がある実行は保持します。</p></div>
         <div class="settings-save-actions wf-settings-actions"><button type="button" class="primary-inline" id="wf-save-settings">保存</button></div>
@@ -1102,6 +1116,12 @@
     const pane = $id('tab-workflow-settings');
     if (!pane) return;
     pane.innerHTML = settingsHtml(st.overview || {});
+    $id('wf-open-library')?.addEventListener('click', () => {
+      document.getElementById('tab-btn-workflow-edit')?.click();
+    });
+    if (typeof root.setupOrchestration === 'function') {
+      root.setupOrchestration(pane, async () => { await loadOverview(); renderConfig(); });
+    }
     $id('wf-save-settings')?.addEventListener('click', async () => {
       try {
         const result = await api().adhocFlowSaveSettings({ retentionDays: Number($id('wf-retention-days')?.value) });
@@ -1420,6 +1440,17 @@
         st.dirty = false;
         st.notice = '保存しました';
       } catch (err) { st.notice = String((err && err.message) || err); }
+      renderSettings();
+    });
+    $id('wf-copy')?.addEventListener('click', () => {
+      const copied = collectWorkflow();
+      delete copied._scope;
+      delete copied._repository;
+      copied.id = `${copied.id}-copy-${Date.now().toString(36)}`;
+      copied.name = `${copied.name} のコピー`;
+      st.editor = copied;
+      st.dirty = true;
+      st.notice = '自分用のコピーを作りました。内容を確認して保存してください';
       renderSettings();
     });
     $id('wf-delete')?.addEventListener('click', async () => {

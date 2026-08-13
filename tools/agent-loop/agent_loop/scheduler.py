@@ -92,7 +92,7 @@ def validate_entries(
     normalized: list[dict[str, Any]] = []
     ts = float(now if now is not None else time.time())
 
-    for entry in entries:
+    for entry_index, entry in enumerate(entries):
         if not isinstance(entry, dict):
             raise ValueError(f"entry は dict である必要があります: {type(entry)!r}")
         if not entry.get("enabled", True):
@@ -132,7 +132,13 @@ def validate_entries(
                 else:
                     continue
 
-        prompt_id = str(entry.get("id") or uuid.uuid4())
+        # id 省略時も reload 間で同じエントリとして照合できる値にする。
+        # 毎回 uuid4 を生成すると、起動直後の config reload が
+        # run_immediately で設定した next_run_at を通常間隔で上書きする。
+        generated_id = uuid.uuid5(
+            uuid.NAMESPACE_URL, f"agent-loop-entry:{entry_index}:{name}"
+        )
+        prompt_id = str(entry.get("id") or generated_id)
         run_immediately = bool(
             entry.get("run_immediately_on_startup", entry.get("run_immediately", False))
         )

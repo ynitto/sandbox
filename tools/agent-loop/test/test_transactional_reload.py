@@ -51,6 +51,20 @@ class TransactionalReloadTests(unittest.TestCase):
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0]["name"], "a")
 
+    def test_missing_id_is_stable_across_reload(self):
+        raw = [{"name": "a", "prompt": "p", "interval_minutes": 5,
+                "run_immediately": True, "enabled": True}]
+        first = al.validate_entries(raw, allow_immediate_once=True, now=100)
+        reloaded = al.validate_entries(raw, allow_immediate_once=False, now=110)
+
+        self.assertEqual(first[0]["id"], reloaded[0]["id"])
+        self.assertEqual(first[0]["next_run_at"], 130)
+
+        scheduler = self._sched(raw)
+        initial_next = scheduler._entries[0]["next_run_at"]
+        self.assertTrue(scheduler.set_entries(raw))
+        self.assertEqual(scheduler._entries[0]["next_run_at"], initial_next)
+
     def test_request_reload_applies_next_tick_inherit(self):
         s = self._sched([
             {"name": "a", "prompt": "p", "interval_minutes": 10, "id": "id-a", "enabled": True},

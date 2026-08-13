@@ -40,6 +40,7 @@ PROMPT_BUILDER = Path(os.environ.get(
     str(Path.home() / ".claude/skills/flow-worker/scripts/prompt.py")))
 LEDGER_DIR = Path(os.environ.get("JUDGE_EVAL_DIR", "/tmp/agent-judge-eval"))
 MODEL = "qwen3.5:9b"
+BASE_CLI = "ollama"
 WALL_LIMIT = 600.0
 _FALLBACK_CMD = ["agent-ollama", "--think", "off", "--format", "json", "{model}"]
 
@@ -51,11 +52,13 @@ def load_cmd(name: str = "ollama-json") -> "tuple[list[str], str]":
 
 def cli_name_for(kind: str) -> str:
     """役割 → 本番が起動する CLI 定義名（split は配列契約なので `list_variant` へ）。"""
-    return engine.cli_name_for(kind)
+    return engine.cli_name_for(kind, BASE_CLI)
 
 
-def cmd_for(kind: str) -> "tuple[list[str], str]":
-    return load_cmd(cli_name_for(kind))
+def cmd_for(kind: str) -> "tuple[list[str], str, dict[str, str]]":
+    name = cli_name_for(kind)
+    cmd, source = load_cmd(name)
+    return cmd, source, engine.load_env(name)
 
 
 CMD, CMD_SOURCE = load_cmd()
@@ -136,12 +139,15 @@ def check_split_files(data, files: "list[str]", want_n: int):
         return False, f"配列でない（{type(data).__name__}）"
     if len(data) != want_n:
         return False, f"要素数 {len(data)}（期待 {want_n}）"
-    blob = json.dumps(data, ensure_ascii=False)
-    counts = {f: blob.count(f) for f in files}
+    if not all(isinstance(group, str) for group in data):
+        return False, "文字列でないグループを含む"
+    members = [item.strip() for group in data for item in group.split(",") if item.strip()]
+    counts = {f: members.count(f) for f in files}
     missing = [f for f, c in counts.items() if c == 0]
     dup = [f for f, c in counts.items() if c > 1]
-    if missing or dup:
-        return False, f"欠落 {missing} / 重複 {dup}"
+    unknown = [item for item in members if item not in counts]
+    if missing or dup or unknown:
+        return False, f"欠落 {missing} / 重複 {dup} / 未知 {unknown}"
     return True, f"{want_n} グループ・{len(files)} 件を過不足なく配分"
 
 
@@ -316,7 +322,8 @@ def build_prompt(case: dict) -> str:
     return r.stdout.strip()
 
 
-def call(prompt: str, cmd: "list[str] | None" = None) -> "tuple[int, str, str, float]":
+def call(prompt: str, cmd: "list[str] | None" = None,
+         command_env: "dict[str, str] | None" = None) -> "tuple[int, str, str, float]":
     raw = list(cmd or CMD)
     if THINK_OVERRIDE and "--think" in raw:
         raw[raw.index("--think") + 1] = THINK_OVERRIDE
@@ -324,7 +331,7 @@ def call(prompt: str, cmd: "list[str] | None" = None) -> "tuple[int, str, str, f
     started = time.time()
     try:
         p = subprocess.run(argv, input=prompt, capture_output=True, text=True,
-                           timeout=WALL_LIMIT)
+                           timeout=WALL_LIMIT, env={**os.environ, **(command_env or {})})
         rc, out, err = p.returncode, p.stdout, p.stderr
     except subprocess.TimeoutExpired:
         rc, out, err = -1, "", "TIMEOUT"
@@ -339,8 +346,8 @@ def run_one(cid: str, i: int) -> dict:
     extra, applied = method_text(kind)
     if extra:
         prompt = f"{prompt}\n\n{extra}"
-    cmd, _src = cmd_for(kind)
-    rc, out, err, wall = call(prompt, cmd)
+    cmd, _src, command_env = cmd_for(kind)
+    rc, out, err, wall = call(prompt, cmd, command_env)
     repaired = False
 
     data = None
@@ -352,7 +359,7 @@ def run_one(cid: str, i: int) -> dict:
         mode, ok, note = "empty", False, "本文が空"
     else:
         try:
-            data = extract_json(out)
+            data = engine.extract_list(out) if kind == "split" else extract_json(out)
         except Exception as e:  # noqa: BLE001 — 本番も同じ失敗をする（そこが測定対象）
             data, why = None, str(e)
         else:
@@ -360,20 +367,18 @@ def run_one(cid: str, i: int) -> dict:
         # split は本番（agent.py）が「器を剥がす → それでも配列でなければレイヤ2 の形式修復を
         # 1 回」の順で受ける。ここを省くと、**本番なら救えている失敗**をモデルの不合格として
         # 数えてしまう。剥がし方は写さず本番の関数をそのまま呼ぶ（写すとずれる）。
-        if case.get("kind") == "split":
-            data = engine.unwrap_list(data)
         if case.get("kind") == "split" and not isinstance(data, list):
             repair = (f"{prompt}\n\n[前回の出力は契約違反でした]\n"
                       f"前回の出力（先頭 400 文字）: {out[:400]}\n"
                       f"違反: {why}\n"
                       "説明・前置き・コードフェンスを付けず、指示された JSON 配列だけを"
                       "再出力してください。")
-            r_rc, r_out, r_err, r_wall = call(repair, cmd)
+            r_rc, r_out, r_err, r_wall = call(repair, cmd, command_env)
             wall += r_wall
             repaired = True
             if r_rc == 0 and r_out.strip():
                 try:
-                    fixed = extract_json(r_out)
+                    fixed = engine.extract_list(r_out)
                 except Exception:  # noqa: BLE001
                     fixed = None
                 if isinstance(fixed, list):
@@ -429,7 +434,8 @@ def selfcheck() -> int:
         "S1": [["1-250", "260-500", "501-750", "751-1000"],   # 隙間
                ["1-500", "501-1000"],                         # 分割数
                "1-250,251-500"],                              # 配列でない
-        "S2": [[f"{FILES[0]},{FILES[1]}", f"{FILES[2]}", f"{FILES[3]}", f"{FILES[4]}"]],
+        "S2": [[f"{FILES[0]},{FILES[1]}", f"{FILES[2]}", f"{FILES[3]}", f"{FILES[4]}"],
+               [",".join(FILES[:4]), ",".join(FILES[4:]), "...", "..."]],
         "F1": [["c1", "c3"], ["c1", "c2", "c3", "c4"], ["c1", "c3", "c4", "c6"]],
         "F2": [{"kept": ["c2", "c3"]}, {"kept": ["c2", "c3", "c5", "c6", "c1"]},
                # 器を使わず候補ごとに講評だけを返す形（実測で出た外し方）
@@ -463,9 +469,11 @@ def selfcheck() -> int:
 
 
 def main() -> None:
-    global WALL_LIMIT, MODEL, METHODS, TIER, THINK_OVERRIDE
+    global WALL_LIMIT, MODEL, BASE_CLI, METHODS, TIER, THINK_OVERRIDE
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default=MODEL)
+    ap.add_argument("--base-cli", default=BASE_CLI,
+                    help="役割別variantを解決する基底agent CLI定義（例: ollama, aider）")
     ap.add_argument("--repeat", type=int, default=3)
     ap.add_argument("--cases", default=",".join(CASES))
     ap.add_argument("--wall", type=float, default=WALL_LIMIT)
@@ -488,7 +496,7 @@ def main() -> None:
     THINK_OVERRIDE = args.think
     if args.selfcheck:
         raise SystemExit(selfcheck())
-    MODEL, WALL_LIMIT = args.model, args.wall
+    MODEL, BASE_CLI, WALL_LIMIT = args.model, args.base_cli, args.wall
     METHODS, TIER = load_methods(args.methods), args.tier
     cids = [c.strip() for c in args.cases.split(",") if c.strip() in CASES]
 
@@ -496,7 +504,7 @@ def main() -> None:
     ledger = LEDGER_DIR / "ledger.jsonl"
     seen = []
     for kind in dict.fromkeys(CASES[c].get("kind") or "evaluator" for c in cids):
-        cmd, src = cmd_for(kind)
+        cmd, src, _command_env = cmd_for(kind)
         line = f"{kind}: {' '.join(a for a in cmd if a not in DROP_ARGS)} （出所: {src}）"
         # 宣言した手法が when で落ちて 1 つも効いていない、を黙って測らない。
         applied = method_text(kind)[1]

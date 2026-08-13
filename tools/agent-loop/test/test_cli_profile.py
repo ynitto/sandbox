@@ -109,6 +109,24 @@ class CodexProfileTest(unittest.TestCase):
         self.assertTrue(profile.is_ready(content))
 
 
+class CopilotProfileTest(unittest.TestCase):
+    def test_wrapped_footer_does_not_hide_input_prompt(self):
+        spec_path = HERE.parents[2] / "agents" / "copilot.json"
+        with spec_path.open(encoding="utf-8") as stream:
+            profile = al.CliProfile("copilot", json.load(stream))
+        content = (
+            " ~/Workspace/sandbox-test\n"
+            " [main] Session: 0 AIC used\n"
+            "────────────────────────\n"
+            "❯\n"
+            "────────────────────────\n"
+            " ← open     ·/ commands · ? help · tab\n"
+            " sidebar      next tab\n"
+            " Auto\n"
+        )
+        self.assertTrue(profile.is_ready(content))
+
+
 class QuietDetectionTest(unittest.TestCase):
     """パターンで判定できない CLI は「画面が N 秒変化しない」ことを待機とみなす。"""
 

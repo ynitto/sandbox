@@ -93,7 +93,7 @@ class CliProfile:
     呼び出し側がツールループを供給しないと着手しない（aider・素の ollama）。
     """
 
-    _READY_TAIL_LINES = 3  # 末尾何行（空行除く）へ ready_pattern を当てるか（従来と同じ）
+    _READY_TAIL_LINES = 3  # 未指定時の互換値
 
     def __init__(self, name: str = "kiro", spec: "dict | None" = None,
                  argv: "list[str] | None" = None, *, clock=None):
@@ -107,6 +107,12 @@ class CliProfile:
         # 解決済みモデル（headless 実行の argv 組み立てと launch fingerprint で使う）
         self.model: "str | None" = None
         inter = (spec or {}).get("interactive") or {}
+        try:
+            self.ready_tail_lines = max(
+                1, int(inter.get("ready_tail_lines") or self._READY_TAIL_LINES)
+            )
+        except (TypeError, ValueError):
+            self.ready_tail_lines = self._READY_TAIL_LINES
         self._ready_re = _compile_ere(inter.get("ready_pattern", ""),
                                       label=f"{name}.ready_pattern") or _PROMPT_RE
         self._busy_re = _compile_ere(inter.get("busy_pattern", ""),
@@ -153,7 +159,7 @@ class CliProfile:
 
     def _tail(self, content: str) -> str:
         lines = [line for line in str(content or "").splitlines() if line.strip()]
-        return "\n".join(lines[-self._READY_TAIL_LINES:])
+        return "\n".join(lines[-self.ready_tail_lines:])
 
     def classify(self, content: str) -> str:
         """ペイン可視画面から 'busy' / 'idle' / 'unknown' を判定する（状態レス）。"""

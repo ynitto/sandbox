@@ -8,7 +8,7 @@
               "--no-analytics", "--no-stream", "--no-pretty", "--no-gitignore",
               "--map-tokens", "0"],
   "json_variant": "ollama-json",
-  "list_variant": "ollama-list",
+  "list_variant": "ollama-list-thinking",
   "prompt_via": "argv",
   "prompt_flag": "--message",
   "file_flag": "--file",

@@ -249,7 +249,9 @@ function areaAvailable(id) {
       return false;
     }
   }
-  if (id === 'missions') return amigosNodeHasWork();
+  // ミッションは agent-amigos を始める入口でもある。既存ホームや実行中ミッションが
+  // 無い状態で隠すと、設定方法を案内する実行画面そのものへ到達できない。
+  if (id === 'missions') return true;
   return true;
 }
 
@@ -1424,6 +1426,7 @@ function renderAllTabs() {
   renderPane('routine-settings', renderRoutineSettings);
   renderPane('usage', renderUsage);
   renderPane('usage-settings', renderUsageSettings);
+  renderPane('amigos-run', renderAmigosRun);
   renderPane('amigos', renderAmigos);
   renderPane('project-settings', renderProjectSettings);
   renderPane('orchestration', () => {

@@ -29,8 +29,10 @@ def command_for(unit: str, args: argparse.Namespace, out: Path) -> tuple[list[st
                "--cli", args.cli, "--repeat", str(args.repeat), "--wall", str(args.wall)]
     elif unit == "judge":
         env["JUDGE_EVAL_DIR"] = str(out)
+        base_cli = "ollama" if args.cli == "agent-ollama" else args.cli
         cmd = [sys.executable, str(HERE / "judge_eval.py"), "--model", args.model,
-               "--repeat", str(args.repeat), "--wall", str(args.wall)]
+               "--base-cli", base_cli, "--repeat", str(args.repeat),
+               "--wall", str(args.wall)]
     else:
         cmd = [sys.executable, str(HERE / "retrieval_eval.py"), "--model", args.embedding_model,
                "--output", str(out / "metrics.json")]

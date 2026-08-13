@@ -18,7 +18,7 @@ module.exports = {
     // workloads.routine.agent_cli / model）→ ⚙ アシスタント設定 → プロジェクト設定 の順で
     // 解決する（cowork.js の coworkChatLaunch）。
     //
-    // ここに 'kiro-cli chat --trust-all-tools' を**既定値として**置いていたのが、
+    // ここに kiro-cli の固定起動コマンドを**既定値として**置いていたのが、
     // 「定常業務だけが全体設定を無視して常に kiro-cli で起動する」不具合の正体だった。
     // saveConfig は既定値も config.json へ書き戻すので、誰も触っていなくても必ず
     // 明示上書きが載っている状態になり、CLI 解決（S9-3）へ一度も到達しなかった。

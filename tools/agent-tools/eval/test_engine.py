@@ -52,6 +52,27 @@ class MissingEngineTests(unittest.TestCase):
         with mock.patch.object(engine, "_FLOW", object()):
             self.assertEqual(engine.extract_json('{"a": 1}'), {"a": 1})
 
+    def test_extract_list_uses_the_engine_split_normalizer(self):
+        class _Flow:
+            @staticmethod
+            def extract_list(text):
+                return [text]
+
+        with mock.patch.object(engine, "_FLOW", _Flow):
+            self.assertEqual(engine.extract_list("group"), ["group"])
+
+    def test_load_env_uses_the_selected_cli_definition(self):
+        class _Cli:
+            @staticmethod
+            def load_cli(name):
+                return {"env": {"SELECTED": name}}
+
+        stub = mock.Mock(spec=["_agentcli"])
+        stub._agentcli = _Cli
+        with mock.patch.object(engine, "_FLOW", stub):
+            self.assertEqual(engine.load_env("ollama-list-thinking"),
+                             {"SELECTED": "ollama-list-thinking"})
+
 
 if __name__ == "__main__":
     unittest.main()

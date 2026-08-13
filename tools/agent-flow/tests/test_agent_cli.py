@@ -278,6 +278,10 @@ class JsonVariantRoutingTests(unittest.TestCase):
         # 配列を表現できないので、配列用の起動形（--format array）へ振り替える。
         self.assertEqual(kf._agent_for("split")[0], "ollama-list")
 
+    def test_aider_split_swaps_to_the_thinking_list_variant(self):
+        kf._AGENT_CLI = "aider"
+        self.assertEqual(kf._agent_for("split")[0], "ollama-list-thinking")
+
     def test_free_text_roles_keep_the_declared_cli(self):
         # work / verify / map はワークスペースの本文や自由記述を返すので振り替えない。
         for purpose in ("work", "verify", "map", "synthesize", ""):
@@ -1009,6 +1013,28 @@ class FormatRepairTests(unittest.TestCase):
             text, data = kf.execute_agent("split", "分割", {}, None)
         self.assertEqual(data, ["a", "b"])
         self.assertEqual(len(calls), 1)                  # 修復リトライを呼ばない
+
+    def test_split_accepts_a_sequence_of_string_arrays_without_repair(self):
+        """Thinking出力の外側配列だけが欠けても、4グループの意味を決定的に保つ。"""
+        calls = []
+
+        def once(prompt, model, purpose="", **_kw):
+            calls.append(1)
+            return '["a.py", "b.py"], ["c.py", "d.py"]'
+
+        with mock.patch.object(kf, "run_agent", side_effect=once), \
+                mock.patch.object(kf, "_FORMAT_RETRIES", 1):
+            _text, data = kf.execute_agent("split", "4ファイルを2分割", {}, None)
+        self.assertEqual(data, ["a.py,b.py", "c.py,d.py"])
+        self.assertEqual(len(calls), 1)
+
+    def test_split_does_not_coerce_mixed_nested_values(self):
+        """文字列グループ以外は意味が決まらないため、決め打ちせず従来の修復へ回す。"""
+        outs = ['[["a.py", 1], ["b.py"]]', '["a.py", "b.py"]']
+        with mock.patch.object(kf, "run_agent", side_effect=outs), \
+                mock.patch.object(kf, "_FORMAT_RETRIES", 1):
+            _text, data = kf.execute_agent("split", "分割", {}, None)
+        self.assertEqual(data, ["a.py", "b.py"])
 
     def test_split_wrapper_with_two_lists_is_not_unwrapped(self):
         """配列が 2 本ある器はどれが答えか決まらない。剥がさず修復へ回す。"""

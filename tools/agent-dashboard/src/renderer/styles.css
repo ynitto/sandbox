@@ -2933,6 +2933,26 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
 
 /* --- ミッション一覧 --- */
 .amigos-shell { display: flex; flex-direction: column; gap: 16px; }
+.amigos-run-shell { display: grid; gap: 16px; }
+.amigos-run-card {
+  display: grid;
+  grid-template-columns: minmax(180px, .8fr) minmax(260px, 1.2fr);
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg2);
+}
+.amigos-run-card > label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
+.amigos-run-card input, .amigos-run-card select, .amigos-run-card textarea { width: 100%; box-sizing: border-box; }
+.amigos-run-team-field { max-width: 360px; }
+.amigos-run-mode-field, .amigos-run-design, .amigos-run-capabilities,
+.amigos-run-roles, .amigos-run-actions { grid-column: 1 / -1; }
+.amigos-run-roles label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
+.amigos-run-feedback { flex: 1; min-height: 1.4em; margin: 0; color: var(--muted); }
+.amigos-run-feedback.is-error { color: var(--danger, #ff7d7d); }
+.amigos-run-actions { align-items: center; }
+.amigos-run-actions button { min-width: 180px; }
 .amigos-table { width: 100%; border-collapse: collapse; }
 .amigos-table th, .amigos-table td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--bg3); vertical-align: top; }
 .amigos-table td.num { text-align: right; white-space: nowrap; }
@@ -3006,6 +3026,7 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
 .amigos-buildteam-hint small { display: block; margin-top: 4px; }
 @media (max-width: 680px) {
   .amigos-mode { grid-template-columns: 1fr; }
+  .amigos-run-card { grid-template-columns: minmax(0, 1fr); }
 }
 .amigos-attention {
   padding: 9px 11px;

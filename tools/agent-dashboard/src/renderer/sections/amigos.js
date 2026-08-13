@@ -71,23 +71,146 @@ function amigosAttentionCount() {
   }, 0);
 }
 
-// ミッションも依頼先ホームも無いときはタブを隠す（cowork と同じ流儀）。
+// 実行は agent-amigos の入口なので常設する。既存ミッション一覧だけは、表示する材料が
+// できるまで隠す。これにより未設定時も実行画面の設定案内へ到達できる。
 function updateAmigosTabVisibility() {
-  const btn = $('tab-btn-amigos');
-  const pane = $('tab-amigos');
-  if (!btn || !pane) return;
-  const show = amigosNodeHasWork();
-  btn.classList.toggle('hidden', !show);
-  btn.hidden = !show;
-  pane.classList.toggle('hidden', !show);
-  pane.hidden = !show;
-  if (!show && btn.classList.contains('active')) {
-    // 退避先は同じ領域の中から探す（領域をまたいで勝手に飛ばない）。
-    // ミッション領域はタブが 1 本なので、行き先が無ければホームへ戻す。
-    const fallback = areaTabButtons(state.area).find((tab) => tab !== btn);
-    if (fallback) switchTab(fallback.dataset.tab);
-    else switchArea('home');
+  const showRun = true;
+  const showMissions = amigosNodeHasWork();
+  for (const [element, show] of [
+    [$('tab-btn-amigos-run'), showRun], [$('tab-amigos-run'), showRun],
+    [$('tab-btn-amigos'), showMissions], [$('tab-amigos'), showMissions],
+  ]) {
+    if (!element) continue;
+    element.classList.toggle('hidden', !show);
+    element.hidden = !show;
   }
+}
+
+function amigosRunMode() {
+  const checked = document.querySelector('input[name="amigos-run-mode"]:checked');
+  return checked ? checked.value : 'team-building';
+}
+
+function applyAmigosRunMode() {
+  const manual = amigosRunMode() === 'roles';
+  const roles = $('amigos-run-roles-details');
+  const capabilities = $('amigos-run-capabilities-field');
+  if (roles) roles.hidden = !manual;
+  if (capabilities) capabilities.hidden = manual;
+  const submit = $('btn-amigos-run');
+  if (submit) submit.textContent = manual ? 'このチームで実行' : 'チームを編成して実行';
+}
+
+function amigosRunFormValues() {
+  return {
+    home: $('amigos-run-home')?.value || '',
+    title: $('amigos-run-title')?.value.trim() || '',
+    goal: $('amigos-run-goal')?.value.trim() || '',
+    design: $('amigos-run-design')?.value || '',
+    capabilities: $('amigos-run-capabilities')?.value.trim() || '',
+  };
+}
+
+function setAmigosRunFeedback(message, error = false) {
+  const feedback = $('amigos-run-feedback');
+  if (!feedback) return;
+  feedback.textContent = message || '';
+  feedback.classList.toggle('is-error', error);
+  feedback.setAttribute('role', error ? 'alert' : 'status');
+}
+
+async function submitAmigosRun() {
+  const values = amigosRunFormValues();
+  if (!values.home) return setAmigosRunFeedback('実行するチームを選択してください。', true);
+  if (!values.goal && !values.design.trim()) {
+    return setAmigosRunFeedback('「完了したときの状態」か「進め方・完了条件」を入力してください。', true);
+  }
+  const button = $('btn-amigos-run');
+  if (button?.disabled) return;
+  if (button) {
+    button.disabled = true;
+    button.setAttribute('aria-busy', 'true');
+  }
+  setAmigosRunFeedback(amigosRunMode() === 'roles' ? 'ミッションを開始しています…' : 'チームを編成して開始しています…');
+  try {
+    if (amigosRunMode() === 'roles') {
+      let roles;
+      try {
+        roles = JSON.parse($('amigos-run-roles')?.value || '');
+      } catch (error) {
+        throw new Error(`担当の構成を読み取れません: ${error.message}`, { cause: error });
+      }
+      if (!Array.isArray(roles) || !roles.length) throw new Error('担当の構成には1つ以上の役割が必要です');
+      await api.amigosRequest({ ...values, roles });
+    } else {
+      await api.amigosBuildTeam(values);
+    }
+    setAmigosRunFeedback('実行を依頼しました。ミッションへ移動します。');
+    await refreshAmigos();
+    renderAmigos();
+    switchTab('amigos');
+  } catch (error) {
+    setAmigosRunFeedback(error && error.message ? error.message : String(error), true);
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.removeAttribute('aria-busy');
+    }
+  }
+}
+
+function renderAmigosRun() {
+  const el = $('tab-amigos-run');
+  if (!el) return;
+  updateAmigosTabVisibility();
+  const a = amigosNodeView(state.amigos);
+  if (a.error) {
+    el.innerHTML = `<div class="empty"><strong>実行先を読み込めませんでした</strong><span>${esc(a.error)}</span></div>`;
+    return;
+  }
+  const homes = a.homes || [];
+  if (!homes.length) {
+    el.innerHTML = '<div class="empty"><strong>実行できるチームがありません</strong><span>agent-amigos のホームを設定すると、ここからミッションを開始できます。</span></div>';
+    return;
+  }
+  const options = homes.map((home) => `<option value="${esc(home.dir)}">${esc(coworkRepoLabel(home.dir) || home.dir)}</option>`).join('');
+  el.innerHTML = `<div class="amigos-run-shell">
+    <header class="cowork-header">
+      <div><span class="summary-kicker">チームで進める作業</span><h2>ミッションを実行</h2>
+        <p class="muted">タスクに合う担当を自動で編成し、agent-amigos で作業を開始します。</p></div>
+    </header>
+    <form class="amigos-run-card" id="amigos-run-form">
+      <label class="amigos-run-team-field">チーム<select id="amigos-run-home">${options}</select></label>
+      <fieldset class="amigos-mode-field amigos-run-mode-field">
+        <legend>チーム編成</legend><div class="amigos-mode" role="radiogroup">
+          <label class="amigos-mode-option"><input type="radio" name="amigos-run-mode" value="team-building" checked>
+            <span><strong>自動で編成</strong><small>タスクに合わせて必要な役割を決めます</small></span></label>
+          <label class="amigos-mode-option"><input type="radio" name="amigos-run-mode" value="roles">
+            <span><strong>役割を調整</strong><small>担当の構成を指定して実行します</small></span></label>
+        </div>
+      </fieldset>
+      <label>タイトル<input id="amigos-run-title" placeholder="例: 社内 FAQ ボットの MVP"></label>
+      <label>完了したときの状態<input id="amigos-run-goal" placeholder="例: 必要な機能が動作し、確認できる状態にする"></label>
+      <label class="amigos-run-design">進め方・完了条件<textarea id="amigos-run-design" rows="6"
+        placeholder="例: 必要な画面を作り、テストで動作を確認する"></textarea></label>
+      <label id="amigos-run-capabilities-field" class="amigos-run-capabilities">使ってよい技術・環境 <span class="muted">省略できます</span>
+        <input id="amigos-run-capabilities" placeholder="例: Python、Web画面"></label>
+      <details id="amigos-run-roles-details" class="amigos-team-settings amigos-run-roles" hidden open>
+        <summary>担当の構成</summary><label>役割ミッション表
+          <textarea id="amigos-run-roles" rows="10" class="mono">${esc(AMIGOS_ROLES_SAMPLE)}</textarea></label>
+      </details>
+      <div class="settings-save-actions amigos-run-actions">
+        <p id="amigos-run-feedback" class="amigos-run-feedback" role="status" aria-live="polite"></p>
+        <button id="btn-amigos-run" type="submit" class="primary-inline">チームを編成して実行</button>
+      </div>
+    </form>
+  </div>`;
+  el.querySelectorAll('input[name="amigos-run-mode"]').forEach((input) => input.addEventListener('change', applyAmigosRunMode));
+  $('amigos-run-form')?.addEventListener('submit', (event) => {
+    event.preventDefault();
+    submitAmigosRun();
+  });
+  applyAmigosRunMode();
 }
 
 function amigosMin(sec) {
@@ -726,7 +849,6 @@ function renderAmigos() {
           <p class="muted">複数の担当メンバーで進める作業の状況を確認できます。</p>
         </div>
         <div class="row">
-          ${(a.homes || []).length ? '<button id="btn-amigos-request">ミッションを依頼</button>' : ''}
           <button id="btn-amigos-refresh">更新</button>
         </div>
       </header>
@@ -748,8 +870,6 @@ function renderAmigos() {
         renderAmigos();
       })
     );
-  const requestBtn = $('btn-amigos-request');
-  if (requestBtn) requestBtn.addEventListener('click', () => openAmigosRequestDialog());
   for (const btn of el.querySelectorAll('[data-amigos-detail]')) {
     btn.addEventListener('click', () => openAmigosDetail(btn.dataset.amigosDetail));
   }

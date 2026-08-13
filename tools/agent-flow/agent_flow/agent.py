@@ -1008,14 +1008,9 @@ def _repair_json_output(prompt: str, bad_text: str, purpose: str, why,
                   f"説明・前置き・コードフェンスを付けず、指示された {contract} だけを再出力してください。")
         try:
             bad_text = run_agent(repair, model, purpose=purpose, agent=agent)
-            data = extract_json(bad_text)
+            data = extract_list(bad_text) if want_list else extract_json(bad_text)
         except Exception as e:  # noqa: BLE001 — 修復呼び出し自体の失敗も「まだ壊れている」扱い
             why = str(e)
-            continue
-        if want_list:
-            data = unwrap_list(data)   # 配列 1 本を包んだオブジェクト（JSON モードの器）は剥がす
-        if want_list and not isinstance(data, list):
-            why = f"JSON としては解釈できたが配列でない（{type(data).__name__}）"
             continue
         log("agent", f"format repair 成功（purpose={purpose}）")
         return data
@@ -1246,7 +1241,7 @@ def execute_agent(kind: str, goal: str, dep_results: dict, model: str | None,
     data = None
     if kind in STRUCTURED_KINDS:
         try:
-            data = extract_json(text)
+            data = extract_list(text) if kind == "split" else extract_json(text)
         except Exception as e:  # noqa: BLE001 — 構造化できなければテキストのみ
             data = None
             why = str(e)
@@ -1255,8 +1250,6 @@ def execute_agent(kind: str, goal: str, dep_results: dict, model: str | None,
         # split は data が JSON 配列でないと fan-out（_expand_splits）が展開されず run が
         # 空振りする＝出力契約が固い。レイヤ2 の修復リトライで救う（verify/reduce は
         # _normalize_verify / _reconcile_count の寛容パーサがあるため修復不要）。
-        if kind == "split":
-            data = unwrap_list(data)   # `{"data":[...]}` 等の器を剥がしてから契約を見る
         if kind == "split" and not isinstance(data, list):
             repaired = _repair_json_output(prompt, text, kind, why, model, want_list=True, agent=agent)
             if isinstance(repaired, list):

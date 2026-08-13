@@ -15,7 +15,8 @@
   "interactive": {
     "command": ["copilot"],
     "turn_completion": "copilot",
-    "prompt_inject": "send-keys"
+    "prompt_inject": "send-keys",
+    "ready_tail_lines": 8
   },
   "errors": [
     {"match": "usage limit|quota exceeded", "class": "quota", "quota_kind": "exhausted",

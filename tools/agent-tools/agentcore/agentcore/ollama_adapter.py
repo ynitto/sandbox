@@ -398,6 +398,7 @@ def run_request(prompt: str, opts: dict, *, model: str = "", tools: "bool | None
                     cwd=str(opts.get("cwd") or os.getcwd()),
                     think=("既定" if think is None else bool(think)),
                     toolset=(toolset if use_tools else ""), format=(fmt or ""),
+                    options=ollama_loop.load_options(),
                     context_limit=tracker.limit, context_limit_source=tracker.limit_source)
         for item in loaded:
             events.emit("skill_load", **item)

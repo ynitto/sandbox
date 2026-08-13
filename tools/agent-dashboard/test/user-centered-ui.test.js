@@ -143,12 +143,14 @@ assert.match(html, /data-tab="history"[^>]*>成果</);
 assert.match(html, /data-tab="cowork"[^>]*>作業</);
 assert.match(html, /data-tab="routine-runs"[^>]*>実行の記録</);
 assert.match(html, /data-tab="routine-settings"[^>]*>設定</);
+assert.match(html, /data-tab="amigos-run"[^>]*>実行</);
 assert.match(html, /data-tab="amigos"[^>]*>ミッション</);
 assert.ok(html.includes('id="dlg-routine-agent"'), '実行状況はダイアログとして表示します');
 assert.ok(!html.includes('id="tab-btn-routine-agent"'), '実行状況をメインタブとして重複表示しません');
 assert.ok(
-  html.indexOf('data-tab="amigos"') < html.indexOf('data-tab="cowork"'),
-  'ミッションタブは定常業務の左に置きます'
+  html.indexOf('data-tab="amigos-run"') < html.indexOf('data-tab="amigos"')
+    && html.indexOf('data-tab="amigos"') < html.indexOf('data-tab="cowork"'),
+  'ミッション領域は実行、ミッションの順で定常業務の左に置きます'
 );
 assert.ok(!html.includes('tab-scope-label'), '全体設定の左に補助ラベルを置きません');
 // タブは領域の中の画面なので、領域名を繰り返さない短い名前にする（設定）。
@@ -282,9 +284,11 @@ const amigosVisibilitySource = renderer.slice(
 assert.ok(!amigosVisibilitySource.includes('budget.hasData'), '予算データだけでミッションタブを表示しません');
 assert.ok(!renderer.includes('function renderAdvancedBudgetSettings('), '詳細設定用の旧予算管理処理を残しません');
 assert.ok(!renderer.includes('id="btn-amigos-budget-save"'), '旧予算管理の保存操作を残しません');
-for (const label of ['利用状況', 'エージェント', '共通指示', 'ワークフロー', '実行制御']) {
+for (const label of ['利用状況', 'エージェント', '共通指示', '実行制御']) {
   assert.ok(renderer.includes(`label: '${label}'`), `全体設定に「${label}」タブが必要です`);
 }
+assert.ok(!renderer.includes("{ id: 'methods', label: 'ワークフロー' }"),
+  '全体設定にはワークフロータブを置きません');
 // 利用状況の受け側は全体設定ではなく利用状況領域（sections/usage.js）。
 const usageSettingsSource = renderer.slice(
   renderer.indexOf('function renderUsage('),
@@ -297,10 +301,6 @@ const agentSettingsSource = renderer.slice(
 const instructionSettingsSource = renderer.slice(
   renderer.indexOf('function globalSettingsInstructionsHtml('),
   renderer.indexOf('\nfunction orchMethodRoles(')
-);
-const methodSettingsSource = renderer.slice(
-  renderer.indexOf('function globalSettingsMethodsHtml('),
-  renderer.indexOf('\nfunction globalSettingsControlHtml(')
 );
 const controlSettingsSource = renderer.slice(
   renderer.indexOf('function globalSettingsControlHtml('),
@@ -320,8 +320,8 @@ assert.ok(!agentSettingsSource.includes('orchMatrixPanelHtml(') && agentSettings
   'エージェントタブは自動設定対象外の待ち時間とエージェント定義だけを表示します');
 assert.ok(instructionSettingsSource.includes('orchInstructionsPanelHtml(')
   && instructionSettingsSource.includes('orchSessionCommandsPanelHtml('), '共通指示タブに指示と開始コマンドを表示します');
-assert.ok(methodSettingsSource.includes('orchTiersPanelHtml(') && methodSettingsSource.includes('orchMethodsPanelHtml('),
-  'ワークフロータブに実行レベル設定と手法マーケットを表示します');
+assert.ok(workflowFeature.includes("root.orchMethodsPanelHtml({ tuning: ov.tuning, methodsCatalog: ov.methodsCatalog })"),
+  '作業ルールはワークフロー画面の設定に表示します');
 assert.ok(renderer.includes("const ORCH_TIER_LABELS = { basic: '単純作業', small: '軽量', medium: '標準', large: '高性能' };"),
   '内部tierを利用者向けの実行レベル名で表示します');
 assert.ok(renderer.includes("const ORCH_POLICY_TIER_KEYS = ['small', 'medium', 'large'];"),
@@ -410,15 +410,17 @@ workflowDialog.open = true;
 assert.strictEqual(orchestrationDraftActive(), true, 'カスタム作業ルールのダイアログを開いている間も保護します');
 assert.ok(grab('renderAllTabs').includes('!orchestrationDraftActive()')
   && grab('refreshAll').includes('!orchestrationDraftActive()'), '全体再描画と定期更新の両方で入力を保護します');
-assert.ok(grab('setupOrchestration').includes("tierList.addEventListener('input', markWorkflowDirty)"),
+assert.ok(renderer.includes("tierList.addEventListener('input', markWorkflowDirty)"),
   '実行レベルの入力開始を未保存状態として記録します');
-assert.ok(grab('setupOrchestration').includes("policyPanel.addEventListener('input', markPolicyDirty)")
-  && grab('setupOrchestration').includes('state.orchPolicyDirty = false'),
+assert.ok(renderer.includes("policyPanel.addEventListener('input', markPolicyDirty)")
+  && renderer.includes('state.orchPolicyDirty = false'),
   '実行方針の入力を自動更新から保護し、保存後に保護を解除します');
 assert.ok(controlSettingsSource.includes('orchExecutionPolicyPanelHtml(') && controlSettingsSource.includes('orchStatusPanelHtml('),
   '実行制御タブに統一した実行方針と稼働制御を表示します');
 assert.ok(controlSettingsSource.includes('orchConcurrencyPanelHtml('),
   '実行制御タブで自動実行の同時実行数を設定します');
+assert.ok(controlSettingsSource.indexOf('orchTiersPanelHtml(') < controlSettingsSource.indexOf('orchConcurrencyPanelHtml('),
+  '実行レベルの構成は実行のキャパシティより前に表示します');
 assert.ok(!controlSettingsSource.includes('orchAllocationPanelHtml(')
   && !controlSettingsSource.includes('orchProfilePolicyPanelHtml('),
   '利用量と切り替え条件を別々の設定として表示しません');
@@ -431,8 +433,10 @@ for (const copy of ['おまかせ（推奨）', '節約', '品質優先', 'カ�
 }
 assert.match(css, /\.amigos-mode-option:has\(input:checked\),\s*\.orch-policy-card:has\(input:checked\)/,
   '実行方針は既存の選択カードと同じ選択表現を使います');
-assert.ok(!controlSettingsSource.includes('orchTiersPanelHtml(') && !controlSettingsSource.includes('orchMethodsPanelHtml('),
-  '実行制御タブには実行レベルの候補設定と手法マーケットを重ねません');
+assert.ok(!controlSettingsSource.includes('orchMethodsPanelHtml('),
+  '実行制御タブには作業ルールを表示しません');
+assert.ok(workflowFeature.includes('自分用にコピー') && workflowFeature.includes('DashboardはGit操作を行いません'),
+  '共有フローは読み取り専用とし、自分用コピーとGit非操作を案内します');
 for (const copy of ['作業ルールを検索', 'カスタム作業ルールを追加', 'AIで補完']) {
   assert.ok(renderer.includes(copy), `作業ルール設定に「${copy}」が必要です`);
 }

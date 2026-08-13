@@ -725,9 +725,31 @@ test('受け取った成果物はミッションの中で見せる（別枠の�
 
 test('ミッションUIは密度を整え、検収と同じ二ペイン成果物ビューを使う', () => {
   const src = require('./helpers/renderer-src').read();
+  const html = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'renderer', 'index.html'), 'utf8');
   const css = fs.readFileSync(
     path.join(__dirname, '..', 'src', 'renderer', 'styles.css'), 'utf8');
-  assert.ok(src.includes('<button id="btn-amigos-request">ミッションを依頼</button>'));
+  assert.match(html, /data-tab="amigos-run"[^>]*>実行<\/button>/,
+    'ミッション領域の先頭に実行タブを置く');
+  assert.ok(html.indexOf('data-tab="amigos-run"') < html.indexOf('data-tab="amigos"'),
+    '実行タブを既存ミッション一覧より前へ置く');
+  assert.ok(src.includes("if (id === 'missions') return true;"),
+    'ミッション領域は未設定でも実行入口へ到達できる');
+  assert.ok(src.includes('const showRun = true;'),
+    '実行タブはホームや既存ミッションが無くても表示する');
+  assert.ok(src.includes('function renderAmigosRun('));
+  assert.ok(src.includes('name="amigos-run-mode" value="team-building" checked'),
+    '自動編成を既定にする');
+  assert.ok(src.includes('name="amigos-run-mode" value="roles"'),
+    '必要な場合だけ役割指定へ切り替えられる');
+  assert.ok(src.includes('await api.amigosBuildTeam(values)'),
+    '自動編成は既存の build-team 契約を使う');
+  assert.ok(src.includes('await api.amigosRequest({ ...values, roles })'),
+    '役割指定は既存の post 契約を使う');
+  assert.ok(src.includes("switchTab('amigos')"),
+    '実行依頼後は既存ミッション一覧へ移動する');
+  assert.ok(!src.includes('<button id="btn-amigos-request">ミッションを依頼</button>'),
+    '一覧に重複する依頼入口を置かない');
   assert.ok(!src.includes('ミッションを依頼…'));
   assert.ok(src.includes('class="amigos-card-footer"'), 'カード下段にメタ情報と操作をまとめる');
   assert.ok(src.includes('function amigosArtifactWorkspaceHtml('));
@@ -738,6 +760,8 @@ test('ミッションUIは密度を整え、検収と同じ二ペイン成果物
   assert.ok(src.includes('function amigosIntegrationHtml('),
     '自動統合は担当者ではなくシステム工程として表示する');
   assert.match(css, /\.amigos-artifact-workspace\s*\{[\s\S]*grid-template-columns/);
+  assert.match(css, /\.amigos-run-card\s*\{[^}]*grid-template-columns/s,
+    'ワークフロー実行画面と同じ二列カードを使う');
   assert.match(css, /@media \(max-width: 700px\)[\s\S]*\.amigos-artifact-workspace\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/);
 });
 
