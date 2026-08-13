@@ -1,0 +1,32 @@
+{
+  "version": 2,
+  "id": "coherence-sweep",
+  "name": "一貫性の負債掃除",
+  "description": "codd-gate の負債棚卸し（未文書化・未テスト・壊れた参照）から上位を選んで修復する単発フロー。done の根拠はこのフローではなく、投入時の一貫性ゲート（verification_plan）と昇格後の受入に置く。常設の返済は agent-project の intake（codd-gate tasks --debt）が正。",
+  "entry": ["inventory"],
+  "exit": ["fix"],
+  "nodes": [
+    {
+      "id": "inventory",
+      "label": "負債の棚卸し",
+      "goal": "{{request}}\n\nこのリポジトリで `codd-gate tasks --debt --json` を実行し、負債（未文書化・未テスト・壊れた参照）の上位から最大 5 件を選んで、それぞれの修復方針を短く列挙してください。codd-gate が無い環境では、その旨を報告して何も変更せず終了してください。",
+      "kind": "work",
+      "tier": "medium",
+      "deps": [],
+      "x": 40,
+      "y": 40
+    },
+    {
+      "id": "fix",
+      "label": "負債の修復",
+      "goal": "棚卸しで選ばれた負債を修復してください。ドキュメントの追随・壊れた参照の修正・不足テストの追加を、対象ごとに最小の変更で行い、直した根拠（対応する負債項目）を成果に明記してください。棚卸しが 0 件なら何も変更せず、その旨を報告してください。",
+      "kind": "work",
+      "tier": "medium",
+      "deps": ["inventory"],
+      "x": 340,
+      "y": 40
+    }
+  ],
+  "createdAt": "2026-08-13T00:00:00.000Z",
+  "updatedAt": "2026-08-13T00:00:00.000Z"
+}

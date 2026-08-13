@@ -1209,6 +1209,62 @@ test('カスタムフローは旧全体ルールを保存・実行しない', ()
   }
 });
 
+test('一貫性ゲート: verify-plan で組んだ検証計画を inbox へ運ぶ', () => {
+  const cfg = { adhocFlow: { busDir: tmpdir('adhoc-coherence-') } };
+  const plan = {
+    version: 1, task_id: 'x', workspace: '/repo',
+    commands: [{ command: adhoc.COHERENCE_COMMAND, source: 'user' }],
+    criteria: [], digest: 'sha256:abc',
+  };
+  const calls = [];
+  const orig = exec.shInWsl;
+  exec.shInWsl = (line) => {
+    calls.push(line);
+    if (line.startsWith('root=')) return { status: 0, stdout: '/repo\nmain' };
+    if (line.includes('verify-plan')) return { status: 0, stdout: `${JSON.stringify(plan)}\n` };
+    return { status: 0, stdout: 'launched:1', stderr: '' };
+  };
+  try {
+    const res = adhoc.submit(cfg, { request: '整合を保って直す', cwd: '/repo', coherenceGate: true });
+    const rec = JSON.parse(fs.readFileSync(
+      path.join(cfg.adhocFlow.busDir, 'inbox', `${res.runId}.json`), 'utf8'));
+    assert.deepStrictEqual(rec.verification_plan, plan, '返った JSON をそのまま運ぶ（複製実装しない）');
+    const built = calls.find((line) => line.includes('verify-plan'));
+    assert.ok(built.includes(`--task-id '${res.runId}'`));
+    assert.ok(built.includes('codd-gate verify --base'));
+    // ゲート無しの投入は verification_plan を書かない
+    const plain = adhoc.submit(cfg, { request: '整合を保って直す', cwd: '/repo' });
+    const plainRec = JSON.parse(fs.readFileSync(
+      path.join(cfg.adhocFlow.busDir, 'inbox', `${plain.runId}.json`), 'utf8'));
+    assert.strictEqual(plainRec.verification_plan, undefined);
+  } finally {
+    exec.shInWsl = orig;
+  }
+});
+
+test('一貫性ゲート: フェイルクローズ（組み立て失敗・リポジトリ未選択で起動しない）', () => {
+  const cfg = { adhocFlow: { busDir: tmpdir('adhoc-coherence-fc-') } };
+  const orig = exec.shInWsl;
+  exec.shInWsl = (line) => {
+    if (line.startsWith('root=')) return { status: 0, stdout: '/repo\nmain' };
+    if (line.includes('verify-plan')) return { status: 2, stdout: '', stderr: 'agent-flow が古い' };
+    return { status: 0, stdout: 'launched:1', stderr: '' };
+  };
+  try {
+    assert.throws(() => adhoc.submit(cfg, { request: 'x', cwd: '/repo', coherenceGate: true }),
+      /一貫性ゲートの検証計画を組み立てられませんでした/);
+    assert.throws(() => adhoc.submit(cfg, { request: 'x', coherenceGate: true }),
+      /Git リポジトリの選択が必要/);
+    // 失敗した投入は inbox に要求を残さない（書く前に止まる）
+    assert.deepStrictEqual(
+      fs.existsSync(path.join(cfg.adhocFlow.busDir, 'inbox'))
+        ? fs.readdirSync(path.join(cfg.adhocFlow.busDir, 'inbox')) : [],
+      []);
+  } finally {
+    exec.shInWsl = orig;
+  }
+});
+
 test('submit はプリセット無しでも投入できる（planner に任せる）', () => {
   const cfg = { adhocFlow: { busDir: tmpdir('adhoc-bus2-') } };
   const orig = exec.shInWsl;

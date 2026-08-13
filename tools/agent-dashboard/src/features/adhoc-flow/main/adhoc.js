@@ -445,6 +445,34 @@ function snapshotSelection(config, selection, options = {}) {
   throw new Error('フロー選択が不正です');
 }
 
+// --- 一貫性ゲート（codd-gate の差分ゲートを run 内の統一 verify に載せる） -----
+// 検証計画（verification_plan）の固定コマンドとして codd-gate を運ぶ。fail はエンジンの
+// verify-fix ループが同じ run 内で自己修復し、codd-gate 不在の端末は exit 127 =
+// inconclusive（黙って PASS しない）。digest の計算は agentcore.verifycontract の
+// 1 実装が正典なので、ここでは組み立てを `agent-flow verify-plan` へ委譲して
+// 返った JSON をそのまま inbox 要求に運ぶだけ（複製実装しない）。
+
+const COHERENCE_COMMAND = 'codd-gate verify --base "$AGENT_BASE_REV"';
+
+function buildVerificationPlan(config, { runId, workspace }) {
+  const c = cfgOf(config);
+  const cmd = String(c.agentFlowCommand || '').trim() || 'agent-flow';
+  const q = exec.shellQuote;
+  const line = `${cmd} verify-plan --task-id ${q(runId)} --workspace ${q(workspace.url)}`
+    + ` --command ${q(COHERENCE_COMMAND)}`;
+  const result = exec.shInWsl(line, 10000, c.distro || '');
+  let plan = null;
+  try {
+    plan = JSON.parse(String(result.stdout || ''));
+  } catch { /* 下の fail-close に落とす */ }
+  if (result.status !== 0 || !plan || !plan.digest) {
+    // フェイルクローズ: 頼まれたゲートを黙って外したまま起動しない
+    throw new Error(`一貫性ゲートの検証計画を組み立てられませんでした: ${
+      String(result.stderr || result.stdout || '').trim().slice(0, 300)}`);
+  }
+  return plan;
+}
+
 function gitWorkspace(config, cwd) {
   const entered = String(cwd || '').trim();
   if (!entered) throw new Error('Gitリポジトリを選択してください');
@@ -619,7 +647,7 @@ function buildLaunchLine(config, { runId, busDir, tuningDir, agentCli, model, pl
     + `${env}nohup ${cmd} ${flags} >> "$LOGDIR/${runId}.log" 2>&1 & echo launched:$!`;
 }
 
-function submit(config, { request, preset, cwd, selection, executionOverrides } = {}) {
+function submit(config, { request, preset, cwd, selection, executionOverrides, coherenceGate } = {}) {
   const req = String(request || '').trim();
   if (!req) throw new Error('要求テキストは必須です');
   const p = preset ? normalizePreset(preset) : null;
@@ -630,6 +658,9 @@ function submit(config, { request, preset, cwd, selection, executionOverrides } 
   fs.mkdirSync(path.join(busDir, 'inbox'), { recursive: true });
 
   const workspace = cwd ? gitWorkspace(config, cwd) : null;
+  if (coherenceGate && !workspace) {
+    throw new Error('一貫性ゲートには Git リポジトリの選択が必要です（差分ゲートは書込先で判定します）');
+  }
   const rec = {
     id: runId,
     request: req,
@@ -638,6 +669,7 @@ function submit(config, { request, preset, cwd, selection, executionOverrides } 
     references: [],
     submitted_at: new Date().toISOString(),
   };
+  if (coherenceGate) rec.verification_plan = buildVerificationPlan(config, { runId, workspace });
   let plan = p ? planFromPreset(p) : null;
   if (snapshot.type === 'custom') {
     plan = { name: snapshot.name, nodes: snapshot.nodes, ...(snapshot.evaluate ? { evaluate: true } : {}) };
@@ -757,6 +789,8 @@ function listProjects(config) {
 module.exports = {
   SUBMITTER,
   NODE_KINDS,
+  COHERENCE_COMMAND,
+  buildVerificationPlan,
   resolveBusDir,
   resolveWorkflowDir,
   repositoryRoot,

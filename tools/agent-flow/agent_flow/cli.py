@@ -144,6 +144,20 @@ def build_parser() -> argparse.ArgumentParser:
     pats.add_argument("--json", action="store_true", help="JSON 配列で表示")
     pats.set_defaults(func=cmd_patterns)
 
+    vplan = sub.add_parser(
+        "verify-plan",
+        help="統一 verify の検証計画（digest 付き JSON）を組み立てて標準出力へ返す。"
+             "digest の計算を投入側（dashboard 等）に再実装させないための読み取り専用コマンド")
+    vplan.add_argument("--task-id", dest="task_id", required=True,
+                       help="plan の task_id（通常は run-id）")
+    vplan.add_argument("--command", dest="commands", action="append", default=None,
+                       help="固定コマンド（複数可。exit 0=pass / 非0=fail / 127=inconclusive）")
+    vplan.add_argument("--criterion", dest="criteria", action="append", default=None,
+                       help="自然文の受入基準（複数可。verifier セッションが判定する）")
+    vplan.add_argument("--workspace", dest="plan_workspace", default=None,
+                       help="検証対象リポジトリ（plan.workspace に記録）")
+    vplan.set_defaults(func=cmd_verify_plan)
+
     orch = sub.add_parser("orchestrate", help="計画役")
     orch.add_argument("--request", required=True)
     orch.add_argument("--planner", choices=["agent", "stub", "flow-planner"], default=None)

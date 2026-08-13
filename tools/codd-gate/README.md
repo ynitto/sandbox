@@ -213,6 +213,31 @@ codd-gate tasks --base origin/main --inbox .agent-project/projects/default/inbox
 `codd-gate tasks` が生成した修復タスクは、タスク自身が持つ `codd-gate check` を完了根拠として使う。
 これは通常タスクへ一律に verify を追加する仕組みではない。
 
+## 付録: agent-flow との連携（オプション）
+
+設計は [`docs/plans/2026-08-13-codd-gate-agent-flow-integration-renewal-design.md`](../../docs/plans/2026-08-13-codd-gate-agent-flow-integration-renewal-design.md)。
+codd-gate 側の改修はゼロで、agent-flow の既存の口に載せるだけ。
+
+- **一貫性ゲート（差分ゲートの run 内実行）**: dashboard のワークフロー実行にあるトグル。
+  投入時に `agent-flow verify-plan` が組んだ検証計画（`verification_plan.commands` に
+  `codd-gate verify --base "$AGENT_BASE_REV"`）を inbox 要求へ載せる。fail はエンジンの
+  verify-fix ループが同じ run 内で自己修復し、codd-gate 不在の端末は exit 127 =
+  inconclusive（黙って PASS しない）。
+- **手法パック（予防）**: カタログの `doc-follow-through`（コード変更と同じ変更内での
+  ドキュメント追随）。codd-gate を運用するリポジトリでは、`.agent-flow/methods/` に
+  注釈宣言の手法を配布できる（リポジトリ固有の知識なのでカタログには入れない）:
+
+  ```json
+  {"id":"coherence-annotate","description":"推定の効かない接続を注釈で宣言する","enabled":false,
+   "fragments":[{"role":"worker","text":"新規ファイルや推定の効かない接続には coherence: doc=… / test=… 注釈を宣言してください。"}],
+   "when":{"purposes":["work"]},"origin":"skill://codd-gate"}
+  ```
+
+- **負債掃除フロー**: リポジトリ配布のカスタムフロー例が
+  [`.agent-flow/workflows/coherence-sweep.json`](../../.agent-flow/workflows/coherence-sweep.json)。
+  done の根拠はフローの worker ではなく、一貫性ゲートと昇格後の受入に置く。常設の返済は
+  上記 intake（`tasks --debt`）が正のまま。
+
 ## テスト
 
 ```bash

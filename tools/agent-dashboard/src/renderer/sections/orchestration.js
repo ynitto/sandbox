@@ -1101,6 +1101,22 @@ function orchMethodCardHtml(method, current) {
   </article>`;
 }
 
+function orchMethodCopyDialogHtml() {
+  // window.prompt は Electron renderer で未対応（no-op で null が返る）なので dialog で受ける。
+  return `<dialog id="dlg-orch-method-copy" class="orch-method-dialog">
+    <form method="dialog" class="dialog-shell">
+      <h2 class="dialog-heading dialog-heading-simple">自分用にコピー</h2>
+      <div class="dialog-scroll-body">
+        <label for="orch-method-copy-id">自分用コピーのID<input id="orch-method-copy-id" class="mono" /></label>
+      </div>
+      <div class="row dialog-actions">
+        <button value="cancel">キャンセル</button>
+        <button value="copy" class="primary-inline" id="btn-orch-method-copy-submit">コピーする</button>
+      </div>
+    </form>
+  </dialog>`;
+}
+
 function orchMethodDialogHtml() {
   return `<dialog id="dlg-orch-method-add" class="orch-method-dialog">
     <form method="dialog" class="dialog-shell">
@@ -1181,6 +1197,7 @@ function orchMethodsPanelHtml(overview) {
       <p id="orch-method-empty" class="empty compact" hidden>一致する作業ルールがありません。検索語や絞り込みを変更してください。</p>
     </details>
     ${orchMethodDialogHtml()}
+    ${orchMethodCopyDialogHtml()}
   </section>`;
 }
 
@@ -1359,14 +1376,23 @@ function setupOrchestration(root, refreshView = async () => {
       await refreshView();
     }));
   }
+  const copyDialog = root.querySelector('#dlg-orch-method-copy');
+  const copyIdInput = root.querySelector('#orch-method-copy-id');
   for (const btn of root.querySelectorAll('[data-orch-method-copy]')) {
-    btn.addEventListener('click', () => guard('作業ルールのコピー', async () => {
-      const sourceId = btn.dataset.orchMethodCopy;
-      const suggested = `${sourceId}-copy`;
-      const newId = window.prompt('自分用コピーのIDを入力してください', suggested);
-      if (!newId) return;
-      await api.adhocFlowCopyMethod({ id: sourceId,
-        cwd: btn.dataset.orchMethodRepository || state.selectedDir, newId: newId.trim() });
+    btn.addEventListener('click', () => {
+      if (!copyDialog || !copyIdInput) return;
+      copyIdInput.value = `${btn.dataset.orchMethodCopy}-copy`;
+      copyDialog.dataset.sourceId = btn.dataset.orchMethodCopy;
+      copyDialog.dataset.repository = btn.dataset.orchMethodRepository || '';
+      copyDialog.showModal();
+    });
+  }
+  if (copyDialog) {
+    copyDialog.addEventListener('close', () => guard('作業ルールのコピー', async () => {
+      const newId = String(copyIdInput.value || '').trim();
+      if (copyDialog.returnValue !== 'copy' || !newId) return;
+      await api.adhocFlowCopyMethod({ id: copyDialog.dataset.sourceId,
+        cwd: copyDialog.dataset.repository || state.selectedDir, newId });
       toast('自分用の作業ルールを作成しました', true);
       await refreshView();
     }));

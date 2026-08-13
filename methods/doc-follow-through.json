@@ -1,0 +1,1 @@
+{"id":"doc-follow-through","description":"接続ドキュメントを同じ変更内で追随させる","enabled":false,"fragments":[{"role":"worker","text":"コード変更では、そのコードを説明するドキュメント（README・仕様・設計書の該当箇所）を同じ変更内で更新し、更新が不要ならその理由を成果に明記してください。"}],"when":{"purposes":["work"]},"origin":"skill://codd-gate"}
