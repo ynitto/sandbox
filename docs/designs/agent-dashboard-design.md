@@ -107,7 +107,7 @@ GUI はその規律の外側から、人の気まぐれなタイミングで書�
 
 #### カスタムフローのリポジトリ共有も例外にしない
 
-`.agent-flow/workflows/*.json` と、ノードの振る舞いを決める `.agent-flow/methods/*.json` は
+`.agents/workflows/*.json` と、ノードの振る舞いを決める `.agents/methods/*.json` は
 成果物リポジトリに置く共有カタログだが、dashboard はこれを**読み取り専用**で探索する。
 同期の主体とタイミングは通常のソースコードと同じである。手法は参照のまま保存せず、選択時の
 本文と source hash をノードへ複製する。これにより定義更新で既存フローが暗黙に変質しない。
@@ -121,7 +121,7 @@ GUI はその規律の外側から、人の気まぐれなタイミングで書�
 | 通常の Git 運用 | 変更者・clone 更新者・CI | PR/MR 作成時、pull/checkout/deploy 時 | **採用**。定義とコードを同じ revision でレビュー・配布できる |
 
 したがって dashboard のビルダーが書くのは `~/.agents/workflows/` だけである。共有版の作成・変更は
-通常の作業 branch で `.agent-flow/workflows/<id>.json` を編集して PR/MR に載せ、各 clone は既存の
+通常の作業 branch で `.agents/workflows/<id>.json` を編集して PR/MR に載せ、各 clone は既存の
 更新手順で取得する。将来 GUI から公開する場合も、dashboard に git 資格情報を持たせず、成果物
 変更を扱う既存の作業エンジンへ「変更要求」を投函する方式を先に設計する。
 

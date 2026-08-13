@@ -147,7 +147,7 @@ test('Git リポジトリ内のカスタムフローは共有版を優先して�
   const cfg = { adhocFlow: { workflowDir: tmpdir('workflow-user-') } };
   const base = { id: 'shared-flow', name: 'ユーザー版', nodes: [{ id: 'work', goal: 'user', tier: 'auto' }] };
   adhoc.saveWorkflow(cfg, base);
-  const sharedDir = path.join(repo, '.agent-flow', 'workflows');
+  const sharedDir = path.join(repo, '.agents', 'workflows');
   fs.mkdirSync(sharedDir, { recursive: true });
   fs.writeFileSync(path.join(sharedDir, 'shared-flow.json'), `${JSON.stringify({
     ...base, version: 2, name: '共有版', entry: ['work'], exit: ['work'],
@@ -171,13 +171,13 @@ test('Git リポジトリ内のカスタムフローは共有版を優先して�
 test('未登録フォルダのフローと作業ルールは探索しない', () => {
   const repo = tmpdir('workflow-unregistered-');
   fs.mkdirSync(path.join(repo, '.git'));
-  fs.mkdirSync(path.join(repo, '.agent-flow', 'workflows'), { recursive: true });
-  fs.mkdirSync(path.join(repo, '.agent-flow', 'methods'), { recursive: true });
-  fs.writeFileSync(path.join(repo, '.agent-flow', 'workflows', 'hidden.json'), JSON.stringify({
+  fs.mkdirSync(path.join(repo, '.agents', 'workflows'), { recursive: true });
+  fs.mkdirSync(path.join(repo, '.agents', 'methods'), { recursive: true });
+  fs.writeFileSync(path.join(repo, '.agents', 'workflows', 'hidden.json'), JSON.stringify({
     version: 2, id: 'hidden', name: '未登録', entry: ['work'], exit: ['work'],
     nodes: [{ id: 'work', goal: 'hidden', tier: 'auto' }],
   }));
-  fs.writeFileSync(path.join(repo, '.agent-flow', 'methods', 'hidden.json'), JSON.stringify({
+  fs.writeFileSync(path.join(repo, '.agents', 'methods', 'hidden.json'), JSON.stringify({
     id: 'hidden', description: '未登録', fragments: [{ role: 'worker', text: 'hidden' }], when: {},
   }));
   const originalRoots = projectEngine.projectRoots;
@@ -192,7 +192,7 @@ test('ノードの追加ルールも Git リポジトリから読み、選択時
   const repo = tmpdir('method-repository-');
   fs.mkdirSync(path.join(repo, '.git'));
   fs.mkdirSync(path.join(repo, 'src'));
-  const methodsDir = path.join(repo, '.agent-flow', 'methods');
+  const methodsDir = path.join(repo, '.agents', 'methods');
   fs.mkdirSync(methodsDir, { recursive: true });
   const method = {
     id: 'repo-test-first', description: 'リポジトリのテスト規律', enabled: true,
@@ -209,7 +209,7 @@ test('ノードの追加ルールも Git リポジトリから読み、選択時
   assert.strictEqual(found._from, 'repository');
   assert.strictEqual(found.fragments[0].text, method.fragments[0].text);
   assert.strictEqual(found.source,
-    `repository:.agent-flow/methods/repo-test-first.json@${tuning.sourceHash(method)}`);
+    `repository:.agents/methods/repo-test-first.json@${tuning.sourceHash(method)}`);
   const choice = workflowUi.nodeMethodChoices([found], { kind: 'work', tier: 'auto' })[0];
   assert.strictEqual(choice.text, method.fragments[0].text);
   assert.strictEqual(choice.source, found.source);
@@ -1135,6 +1135,32 @@ test('buildLaunchLine が inbox 起動・手法 env・エンジン既定のフ�
   assert.ok(custom.includes('python3 /x/agent-flow.py'));
   assert.ok(!custom.includes('command -v'), '明示コマンド指定時はガード不要');
   assert.ok(!custom.includes('AGENT_TUNING_DIR'), '手法未選択なら端末の tuning を置換しない');
+});
+
+test('IPC: 同梱カタログとリポジトリ配布の作業ルールが同 id なら、設定画面もリポジトリを優先する', () => {
+  const { cfg, catalogMethod } = methodsFixture();
+  const repo = tmpdir('adhoc-overview-methods-repo-');
+  fs.mkdirSync(path.join(repo, '.git'));
+  const methodsDir = path.join(repo, '.agents', 'methods');
+  fs.mkdirSync(methodsDir, { recursive: true });
+  const override = { ...catalogMethod, description: 'リポジトリ版の説明',
+    fragments: [{ role: 'verify', text: 'このリポジトリでは3件以上の反例を探す。' }] };
+  fs.writeFileSync(path.join(methodsDir, `${catalogMethod.id}.json`), JSON.stringify(override));
+  const originalRoots = projectEngine.projectRoots;
+  projectEngine.projectRoots = () => [repo];
+  try {
+    const handlers = {};
+    require('../src/features/adhoc-flow/main/ipc.js').registerIpc({
+      handle: (ch, fn) => { handlers[ch] = fn; }, loadConfig: () => cfg, saveConfig: () => cfg,
+    });
+    const ov = handlers['adhocFlow:overview']({ cwd: repo });
+    const matches = ov.methodsCatalog.filter((m) => m.id === catalogMethod.id);
+    assert.strictEqual(matches.length, 1, '同 id は1枚のカードにする（衝突時に2枚並べない）');
+    assert.strictEqual(matches[0].storage, 'registered-folder');
+    assert.strictEqual(matches[0].description, 'リポジトリ版の説明');
+  } finally {
+    projectEngine.projectRoots = originalRoots;
+  }
 });
 
 // --- 投入（submit_request 契約の投函 + 起動） ---------------------------------

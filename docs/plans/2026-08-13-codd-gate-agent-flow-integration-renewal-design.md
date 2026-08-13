@@ -53,8 +53,8 @@
 | 修復タスクの `check` verify | 生きている。統一 verify の commands に乗り clone 内で自己完結（`--repo-dir <name>=.`） | 変更なし——①はこの既存動作の一般化 |
 | 専用配線（`codd_gate_*.py`・dashboard 専用表示） | 2026-08-02 撤去済み | 復活させない |
 | 統一 verify（検証計画＋receipt＋verify-fix） | **集約判断の後に実装**。固定コマンド・`$AGENT_BASE_REV`・exit 127=inconclusive・fail→修復ノード注入 | ①の載せ先 |
-| 手法パック（`methods/` カタログ＋repo 配布 `.agent-flow/methods/`＋run 専用 AGENT_TUNING_DIR） | 実装済み。`consistency-sweep`（origin skill://codd-gate）が 1 件だけ存在 | ②の載せ先 |
-| ユーザー定義フロー／adhoc-flow／repo 配布 `.agent-flow/workflows/` | 実装済み。`verification_plan` は inbox 契約にあるが **adhoc submit は組んでいない** | ③と、①の adhoc 側拡張点 |
+| 手法パック（`methods/` カタログ＋repo 配布 `.agents/methods/`＋run 専用 AGENT_TUNING_DIR） | 実装済み。`consistency-sweep`（origin skill://codd-gate）が 1 件だけ存在 | ②の載せ先 |
+| ユーザー定義フロー／adhoc-flow／repo 配布 `.agents/workflows/` | 実装済み。`verification_plan` は inbox 契約にあるが **adhoc submit は組んでいない** | ③と、①の adhoc 側拡張点 |
 
 ## ① 差分ゲートを検証計画へ — 本命
 
@@ -110,7 +110,7 @@ codd-gate の Amber/Gray 分類に対応する 2 件を足す。
 | 手法 | 置き場所 | fragment（worker・purposes: work） | 減らす分類 |
 |---|---|---|---|
 | `doc-follow-through` | `methods/` カタログ（enabled:false 既定） | コード変更では接続するドキュメント（README・仕様・設計書の該当箇所）を同じ変更内で更新し、更新不要ならその理由を成果に明記してください。 | Amber (doc-stale) |
-| `coherence-annotate` | **リポジトリ配布** `.agent-flow/methods/`（codd-gate 運用リポジトリだけに置く） | 新規ファイルや推定の効かない接続には `coherence: doc=…` / `test=…` 注釈を宣言してください。 | Gray (unmapped)・接続の誤検出 |
+| `coherence-annotate` | **リポジトリ配布** `.agents/methods/`（codd-gate 運用リポジトリだけに置く） | 新規ファイルや推定の効かない接続には `coherence: doc=…` / `test=…` 注釈を宣言してください。 | Gray (unmapped)・接続の誤検出 |
 
 `coherence-annotate` をカタログに入れないのは、注釈規約が codd-gate 運用リポジトリ固有の知識で、
 未運用リポジトリの worker に無意味な指示を焼くから。リポジトリ配布の口（ワークフロー設定再編で
@@ -121,7 +121,7 @@ codd-gate の Amber/Gray 分類に対応する 2 件を足す。
 
 ## ③ 負債掃除のカスタムフロー — 限定採用
 
-repo 配布 `.agent-flow/workflows/coherence-sweep.json` を参考実装として 1 本置く:
+repo 配布 `.agents/workflows/coherence-sweep.json` を参考実装として 1 本置く:
 
 ```
 inventory(work: codd-gate tasks --debt --json を実行し上位 N 件を要約)
@@ -151,7 +151,7 @@ CLI 実行結果に依存し、決定的であるべき機械展開が LLM の�
 
 | 段 | 内容 | 受入 |
 |---|---|---|
-| 1 | 手法 2 件（`methods/doc-follow-through.json`・参考実装として `.agent-flow/methods/coherence-annotate.json` の例をドキュメントへ） | カタログ検証テストが通り、when 条件で worker/work にだけ効く |
+| 1 | 手法 2 件（`methods/doc-follow-through.json`・参考実装として `.agents/methods/coherence-annotate.json` の例をドキュメントへ） | カタログ検証テストが通り、when 条件で worker/work にだけ効く |
 | 2 | adhoc-flow の `verification_plan` 対応＋一貫性ゲートトグル | トグル on の run で drift を仕込むと verify-fix が注入され、修復後 receipt が pass になる。codd-gate 不在端末では inconclusive |
 | 3 | （承認後）agent-project の `plan_commands` 汎用キー＋共通チェックから差分ゲートを外す＋codd-gate-design.md §4.3 改訂 | 同一変更に対する合否が移行前後で一致。workdir 起因の恒常 NG が再現しない |
 | 4 | 掃除フロー参考実装 | 配布 workflow が読み取り専用として一覧に載り、実行で①のラチェットが判定する |
@@ -166,5 +166,12 @@ CLI 実行結果に依存し、決定的であるべき機械展開が LLM の�
   - 段 2: `agent-flow verify-plan` サブコマンド（`verifyplan.py` / `cli.py`・spec §1.4）＋
     dashboard adhoc-flow の `coherenceGate`（`buildVerificationPlan` → inbox の
     `verification_plan`・フェイルクローズ・実行フォームのトグル）。
-  - 段 4: `.agent-flow/workflows/coherence-sweep.json`（リポジトリ配布・normalizeWorkflow 検証済み）。
+  - 段 4: `.agents/workflows/coherence-sweep.json`（リポジトリ配布・normalizeWorkflow 検証済み）。
   - 段 3 は未着手（codd-gate-design.md §4.3 の改訂承認待ち）。
+- 2026-08-13: リポジトリ配布のカスタムフロー／手法の探索先を `.agent-flow/{workflows,methods}`
+  から `.agents/{workflows,methods}` へ統一。agent-project が既に使っている project-local
+  設定の語彙（`<repo>/.agents/agent-project.yaml`）と repo-scope を合わせ、home-scope
+  （`~/.agents/workflows`・`~/.agents/methods`）とも対称にした（C7 — agent-flow だけ別名を
+  持つ不整合を解消）。コードは adhoc-flow の `repositoryWorkflowDir` / `repositoryMethodsDir`
+  / `availableMethods` の 3 箇所、ドキュメントは adhoc-flow README・agent-dashboard-design.md・
+  workflow-settings-reorganization-design.md・codd-gate README・本書。

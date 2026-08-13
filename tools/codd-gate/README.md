@@ -224,7 +224,7 @@ codd-gate 側の改修はゼロで、agent-flow の既存の口に載せるだ�
   verify-fix ループが同じ run 内で自己修復し、codd-gate 不在の端末は exit 127 =
   inconclusive（黙って PASS しない）。
 - **手法パック（予防）**: カタログの `doc-follow-through`（コード変更と同じ変更内での
-  ドキュメント追随）。codd-gate を運用するリポジトリでは、`.agent-flow/methods/` に
+  ドキュメント追随）。codd-gate を運用するリポジトリでは、`.agents/methods/` に
   注釈宣言の手法を配布できる（リポジトリ固有の知識なのでカタログには入れない）:
 
   ```json
@@ -234,7 +234,7 @@ codd-gate 側の改修はゼロで、agent-flow の既存の口に載せるだ�
   ```
 
 - **負債掃除フロー**: リポジトリ配布のカスタムフロー例が
-  [`.agent-flow/workflows/coherence-sweep.json`](../../.agent-flow/workflows/coherence-sweep.json)。
+  [`.agents/workflows/coherence-sweep.json`](../../.agents/workflows/coherence-sweep.json)。
   done の根拠はフローの worker ではなく、一貫性ゲートと昇格後の受入に置く。常設の返済は
   上記 intake（`tasks --debt`）が正のまま。
 

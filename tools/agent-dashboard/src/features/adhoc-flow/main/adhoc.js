@@ -5,7 +5,9 @@
 //     ユーザー定義フロー＝ビルダーの成果物を運ぶ）
 //   - 書込先 … 選択した Git cwd を workspace として固定（成果は af/<run-id> branch）
 //   - 保存 … ~/.agents/workflows/<id>.json（ユーザー共通）。リポジトリ内の
-//     <repo>/.agent-flow/workflows/<id>.json は読むだけで、通常の Git 運用が配布する
+//     <repo>/.agents/workflows/<id>.json は読むだけで、通常の Git 運用が配布する
+//     （agent-project の <repo>/.agents/agent-project.yaml と同じ語彙。ルートは
+//     ホーム（~）または各 git ルート）
 //   - 手法 … run 専用の AGENT_TUNING_DIR に agent-tuning 契約のスナップショットを複製
 //     （S26 の「参照でなく複製」と同じ。source: methods/<id>@<hash> で乖離検出可能）
 // 実行系は agent-flow run そのもの（新しい実行系・状態ファイルは作らない）。
@@ -70,12 +72,12 @@ function repositoryRoot(cwd) {
 
 function repositoryWorkflowDir(cwd) {
   const root = repositoryRoot(cwd);
-  return root ? path.join(root, '.agent-flow', 'workflows') : '';
+  return root ? path.join(root, '.agents', 'workflows') : '';
 }
 
 function repositoryMethodsDir(cwd) {
   const root = repositoryRoot(cwd);
-  return root ? path.join(root, '.agent-flow', 'methods') : '';
+  return root ? path.join(root, '.agents', 'methods') : '';
 }
 
 function registeredRepositoryRoot(config, cwd) {
@@ -88,7 +90,7 @@ function registeredRepositoryRoot(config, cwd) {
 
 function workflowDirs(config, cwd = '') {
   const registered = registeredRepositoryRoot(config, cwd);
-  const repository = registered ? path.join(registered, '.agent-flow', 'workflows') : '';
+  const repository = registered ? path.join(registered, '.agents', 'workflows') : '';
   return [
     ...(repository ? [{ scope: 'repository', dir: repository, repository: registered }] : []),
     { scope: 'user', dir: resolveWorkflowDir(config), repository: '' },
@@ -561,7 +563,7 @@ function availableMethods(config, options = {}) {
     if (m && m.id) seen.set(String(m.id), { ...m, _from: 'tuning' });
   }
   const registered = registeredRepositoryRoot(config, options.cwd);
-  const repoDir = registered ? path.join(registered, '.agent-flow', 'methods') : '';
+  const repoDir = registered ? path.join(registered, '.agents', 'methods') : '';
   if (repoDir && fs.existsSync(repoDir)) {
     for (const entry of fs.readdirSync(repoDir, { withFileTypes: true })) {
       if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
@@ -569,7 +571,7 @@ function availableMethods(config, options = {}) {
         const method = JSON.parse(fs.readFileSync(path.join(repoDir, entry.name), 'utf8'));
         if (!method || typeof method !== 'object' || !method.id) continue;
         const body = JSON.parse(JSON.stringify(method));
-        body.source = `repository:.agent-flow/methods/${entry.name}@${tuning.sourceHash(method)}`;
+        body.source = `repository:.agents/methods/${entry.name}@${tuning.sourceHash(method)}`;
         seen.set(String(method.id), { ...body, _from: 'repository', _repository: registered });
       } catch { /* 壊れた1ファイルで手法一覧全体を壊さない */ }
     }
