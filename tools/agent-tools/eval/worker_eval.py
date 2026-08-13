@@ -95,8 +95,13 @@ def check_t1min(wt: Path) -> tuple[bool, str]:
     return ok, note
 
 
-def check_t1(wt: Path, require_tests: bool = True) -> tuple[bool, str]:
-    """仕様どおりの human_bytes があるか。実装は見ず、振る舞いだけ突き合わせる。"""
+def probe_humansize(wt: Path) -> tuple[bool, str]:
+    """仕様 6 ケースを実際に呼んで突き合わせる。合否と**機械が出した不一致**を返す。
+
+    チェッカーと多段セルのゲートが同じ 1 実装を見る（C7）。ゲートが返す不一致は
+    課題文がすでに列挙している 6 例そのものなので、仕様を機械化しただけで、
+    一発版に無い情報を多段版へ足してはいない——ここがずれると比較が成立しない。
+    """
     mod = wt / "eval" / "humansize.py"
     if not mod.exists():
         return False, "eval/humansize.py が無い"
@@ -115,6 +120,14 @@ def check_t1(wt: Path, require_tests: bool = True) -> tuple[bool, str]:
         return False, f"import/実行が失敗: {r.stderr.strip().splitlines()[-1:] }"
     if not r.stdout.startswith("OK"):
         return False, f"振る舞いが仕様と違う: {r.stdout.strip()[:200]}"
+    return True, "仕様 6 ケース pass"
+
+
+def check_t1(wt: Path, require_tests: bool = True) -> tuple[bool, str]:
+    """仕様どおりの human_bytes があるか。実装は見ず、振る舞いだけ突き合わせる。"""
+    ok, note = probe_humansize(wt)
+    if not ok:
+        return ok, note
     if not require_tests:
         return True, "仕様 6 ケース pass（テスト契約は課していない）"
     tests = [p for p in (wt / "eval").glob("test_*.py")
@@ -125,6 +138,29 @@ def check_t1(wt: Path, require_tests: bool = True) -> tuple[bool, str]:
     if t.returncode != 0:
         return False, "追加されたテスト自体が落ちる"
     return True, f"仕様 6 ケース pass / テスト {len(tests)} ファイル pass"
+
+
+def gate_blind(wt: Path) -> tuple[bool, str]:
+    """合否は同じ probe で決めるが、**測った不一致は渡さない**ゲート。
+
+    「1 回やり直させれば直る」のか「機械が測った値を見せて初めて直る」のかを分ける
+    対照。ここが前者なら、statemachine に検査コマンドを足す設計は要らない。
+    """
+    ok, note = probe_humansize(wt)
+    return ok, note if ok else "仕様を満たしていない。実装を見直して直すこと。"
+
+
+def gate_humansize_tests(wt: Path) -> tuple[bool, str]:
+    """テスト追加ステップのゲート。追加されたか・通るかだけを機械で見る。"""
+    tests = [p for p in (wt / "eval").glob("test_*.py")
+             if "human_bytes" in p.read_text(encoding="utf-8", errors="replace")]
+    if not tests:
+        return False, "eval/test_*.py に human_bytes のテストが追加されていない"
+    t = _pytest(wt, *[str(p.relative_to(wt)) for p in tests])
+    if t.returncode != 0:
+        tail = [l for l in t.stdout.splitlines() if l.strip()][-3:]
+        return False, f"追加されたテストが落ちる: {tail}"
+    return True, f"テスト {len(tests)} ファイル pass"
 
 
 BILLING_BUGGY = '''"""日割り課金の計算。"""
@@ -217,12 +253,28 @@ def _is_new(wt: Path, p: Path) -> bool:
     return r.returncode != 0
 
 
+T1_REQUEST = "agentcore の周辺ユーティリティを整える"
+# 実装ステップの課題文。T1min（一発・実装のみ）と多段セルが**同じ 1 本**を見る。
+# 多段が勝ったときに「文面を書き直したから勝った」を疑わなくて済む。
+T1_IMPL_GOAL = ("eval/humansize.py というファイルを 1 つだけ作り、その中に関数 "
+                "human_bytes(n: int) -> str を実装する。仕様は次のとおり: "
+                "1024 未満は '512 B' のようにバイト表記、1024 以上は KiB / MiB / GiB へ"
+                "1024 ごとに繰り上げ、小数第 1 位まで出す。"
+                "例: human_bytes(0)=='0 B'、human_bytes(512)=='512 B'、"
+                "human_bytes(1024)=='1.0 KiB'、human_bytes(1536)=='1.5 KiB'、"
+                "human_bytes(1048576)=='1.0 MiB'、human_bytes(1073741824)=='1.0 GiB'。"
+                "テストは書かなくてよい。このファイル以外は一切変更しない。")
+T1_TEST_GOAL = ("既にある eval/humansize.py の human_bytes に対する単体テストを "
+                "eval/test_humansize.py に追加する。実装は変更しない。"
+                "テストは pytest で実行でき、すべて通ること。"
+                "eval/test_humansize.py 以外は一切変更しない。")
+
 TASKS = {
     "T1": dict(
         seed=seed_t1, check=check_t1,
         files=("eval/humansize.py", "eval/test_humansize.py"),
         test_cmd=f"{VENV_PY} -m pytest -q eval",
-        request="agentcore の周辺ユーティリティを整える",
+        request=T1_REQUEST,
         goal=("eval/humansize.py に関数 human_bytes(n: int) -> str を実装する。"
               "1024 未満は '512 B' のようにバイト表記、以降は KiB / MiB / GiB へ丸め、"
               "小数第 1 位まで出す（例: 1024 -> '1.0 KiB'、1536 -> '1.5 KiB'、"
@@ -232,15 +284,41 @@ TASKS = {
     "T1min": dict(
         seed=seed_t1, check=check_t1min,
         files=("eval/humansize.py",),
-        request="agentcore の周辺ユーティリティを整える",
-        goal=("eval/humansize.py というファイルを 1 つだけ作り、その中に関数 "
-              "human_bytes(n: int) -> str を実装する。仕様は次のとおり: "
-              "1024 未満は '512 B' のようにバイト表記、1024 以上は KiB / MiB / GiB へ"
-              "1024 ごとに繰り上げ、小数第 1 位まで出す。"
-              "例: human_bytes(0)=='0 B'、human_bytes(512)=='512 B'、"
-              "human_bytes(1024)=='1.0 KiB'、human_bytes(1536)=='1.5 KiB'、"
-              "human_bytes(1048576)=='1.0 MiB'、human_bytes(1073741824)=='1.0 GiB'。"
-              "テストは書かなくてよい。このファイル以外は一切変更しない。"),
+        request=T1_REQUEST, goal=T1_IMPL_GOAL,
+    ),
+    # --- T1 の多段版（tier:basic 向けの「事前分解」が効くかを測る 2 本）
+    # 一発版 T1 は同じ check で 0/9。goal の文面は T1/T1min と同じ材料しか使わない。
+    # 実装ステップだけを使った対照 2 本。再試行の回数は同じ 1 回で、**渡す材料だけ**が違う。
+    # 一発の T1min（再試行なし）が基準線。
+    "T1impl_diag": dict(
+        seed=seed_t1, check=check_t1min, request=T1_REQUEST,
+        steps=[dict(request=T1_REQUEST, goal=T1_IMPL_GOAL, files=("eval/humansize.py",),
+                    gate=probe_humansize, max_retries=1)],
+    ),
+    "T1impl_blind": dict(
+        seed=seed_t1, check=check_t1min, request=T1_REQUEST,
+        steps=[dict(request=T1_REQUEST, goal=T1_IMPL_GOAL, files=("eval/humansize.py",),
+                    gate=gate_blind, max_retries=1)],
+    ),
+    # ゲートは付くが `max_retries=0` なので**一度も作用しない**（呼び出し回数は T1seq と
+    # 同じ 2 回）。合否を分けずに「どの手順で壊れたか」だけを台帳へ残すための観測。
+    "T1seq": dict(
+        seed=seed_t1, check=check_t1, request=T1_REQUEST,
+        steps=[dict(request=T1_REQUEST, goal=T1_IMPL_GOAL, files=("eval/humansize.py",),
+                    gate=probe_humansize, max_retries=0),
+               dict(request=T1_REQUEST, goal=T1_TEST_GOAL,
+                    files=("eval/test_humansize.py",), read=("eval/humansize.py",),
+                    test_cmd=f"{VENV_PY} -m pytest -q eval",
+                    gate=gate_humansize_tests, max_retries=0)],
+    ),
+    "T1gate": dict(
+        seed=seed_t1, check=check_t1, request=T1_REQUEST,
+        steps=[dict(request=T1_REQUEST, goal=T1_IMPL_GOAL, files=("eval/humansize.py",),
+                    gate=probe_humansize, max_retries=2),
+               dict(request=T1_REQUEST, goal=T1_TEST_GOAL,
+                    files=("eval/test_humansize.py",), read=("eval/humansize.py",),
+                    test_cmd=f"{VENV_PY} -m pytest -q eval",
+                    gate=gate_humansize_tests, max_retries=1)],
     ),
     "T2": dict(
         seed=seed_t2, check=check_t2,
@@ -368,6 +446,54 @@ def classify(rc: int, wall: float, out: str, err: str) -> str:
     return "returned"
 
 
+REPAIR_NOTE = ("\n\n【前回の実行を機械で検証した結果】次の不一致が残っている:\n{}\n"
+               "この不一致だけを直すこと。他の振る舞いと他のファイルは変えない。")
+
+
+def invoke(step: dict, wt: Path) -> "tuple[int, str, str, float]":
+    """1 回だけエージェントを起こす。argv とプロンプトの作り方は経路ごとの正典に従う。"""
+    prompt = "" if CLI == "aider" else build_prompt(step)
+    argv = aider_argv(step) if CLI == "aider" else ["agent-ollama", MODEL, *WRITE_ARGS]
+    started = time.time()
+    try:
+        p = subprocess.run(argv, input=prompt, cwd=wt,
+                           env={**os.environ, "OLLAMA_API_BASE": OLLAMA_API_BASE},
+                           capture_output=True, text=True, timeout=WALL_LIMIT)
+        rc, out, err = p.returncode, p.stdout, p.stderr
+    except subprocess.TimeoutExpired:
+        rc, out, err = -1, "", "TIMEOUT"
+    return rc, out, err, time.time() - started
+
+
+def run_steps(task: dict, wt: Path) -> "tuple[list[dict], str, str]":
+    """タスクの手順を順に回す。一発版は「手順が 1 つ」として同じ道を通る。
+
+    ゲートを持つ手順は、**機械が出した不一致**を課題文へ足して同じ手順をやり直す。
+    ここが agent-loop の statemachine（`condition_rule` の決定的遷移 + 再試行）に
+    対応する部分で、遷移判断に LLM を使わないことを写している。ハーネス本体では
+    なくここに置いているのは、測りたいのが「分解と決定的ゲートが効くか」であって
+    statemachine 実装の出来ではないため（1 回の呼び出しの argv は本番と同一）。
+    """
+    steps = task.get("steps") or [task]
+    trace: "list[dict]" = []
+    out = err = ""
+    for n, step in enumerate(steps, 1):
+        goal, gate = step["goal"], step.get("gate")
+        for attempt in range(1 + int(step.get("max_retries") or 0)):
+            rc, out, err, wall = invoke({**step, "goal": goal}, wt)
+            rec = dict(step=n, attempt=attempt + 1, wall=round(wall, 1),
+                       mode=classify(rc, wall, out, err))
+            if gate is None:
+                trace.append(rec)
+                break
+            ok, feedback = gate(wt)
+            trace.append({**rec, "gate": ok, "gate_note": feedback[:160]})
+            if ok:
+                break
+            goal = step["goal"] + REPAIR_NOTE.format(feedback)
+    return trace, out, err
+
+
 def run_one(tid: str, i: int) -> dict:
     task = TASKS[tid]
     wt = WORK / f"{tid}-{i}"
@@ -384,20 +510,10 @@ def run_one(tid: str, i: int) -> dict:
     # aider は自前のシステムプロンプトと編集ループを持つので、flow-worker の
     # プロンプト（報告契約・worktree 規約）は渡さない——渡すと道具の作法と二重になる。
     # 課題文（goal）とチェッカーは両経路で同一なので、比較は成立する。
-    prompt = "" if CLI == "aider" else build_prompt(task)
+    trace, out, err = run_steps(task, wt)
+    wall = sum(s["wall"] for s in trace)
 
-    started = time.time()
-    try:
-        argv = aider_argv(task) if CLI == "aider" else ["agent-ollama", MODEL, *WRITE_ARGS]
-        p = subprocess.run(argv, input=prompt, cwd=wt,
-                           env={**os.environ, "OLLAMA_API_BASE": OLLAMA_API_BASE},
-                           capture_output=True, text=True, timeout=WALL_LIMIT)
-        rc, out, err = p.returncode, p.stdout, p.stderr
-    except subprocess.TimeoutExpired:
-        rc, out, err = -1, "", "TIMEOUT"
-    wall = time.time() - started
-
-    mode = classify(rc, wall, out, err)
+    mode = trace[-1]["mode"] if trace else "empty"
     try:
         ok, note = task["check"](wt)
     except Exception as e:  # noqa: BLE001 — チェッカーの事故は fail 扱いで記録
@@ -407,9 +523,10 @@ def run_one(tid: str, i: int) -> dict:
         if line.startswith("@agent-log"):
             log = line.split(None, 1)[-1]
     rec = dict(task=tid, iter=i, cli=CLI, model=MODEL, num_predict=NUM_PREDICT, ok=ok, mode=mode,
-               wall=round(wall, 1), note=note, log=log, out_chars=len(out))
+               wall=round(wall, 1), note=note, log=log, out_chars=len(out),
+               calls=len(trace), trace=trace)
     print(f"  {tid}#{i}: {'PASS' if ok else 'FAIL':4s} {mode:24s} "
-          f"{wall:6.1f}s  {note[:70]}", flush=True)
+          f"{wall:6.1f}s {len(trace)}call  {note[:66]}", flush=True)
     return rec
 
 
@@ -439,7 +556,8 @@ def main() -> None:
     if CLI == "aider":
         # aider には本番の定義が無い（agents/aider.json は未作成）。写しではなく
         # 「まだ正典が無い」ので、起動行に組み立てた argv をそのまま出して測定条件を残す。
-        sample = " ".join(aider_argv(TASKS[tids[0]])[:-2])
+        first = TASKS[tids[0]]
+        sample = " ".join(aider_argv((first.get("steps") or [first])[0])[:-2])
         print(f"model={MODEL} cli=aider argv={sample} …（出所: 定義ファイル未作成）")
     else:
         print(f"model={MODEL} cli={CLI} argv={' '.join(WRITE_ARGS)} "
@@ -459,8 +577,9 @@ def main() -> None:
         r = [x for x in rows if x["task"] == tid]
         n = len(r); ok = sum(1 for x in r if x["ok"])
         walls = sorted(x["wall"] for x in r)
+        calls = sum(x["calls"] for x in r)
         print(f"  {tid}: {ok}/{n}  中央値 {walls[len(walls)//2]:.0f}s  "
-              f"様式 {sorted(set(x['mode'] for x in r))}")
+              f"呼び出し {calls}回  様式 {sorted(set(x['mode'] for x in r))}")
     ok = sum(1 for x in rows if x["ok"])
     print(f"  合計: {ok}/{len(rows)}")
     print(f"\n台帳: {ledger}")
