@@ -2945,7 +2945,7 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
 }
 .amigos-run-card > label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
 .amigos-run-card input, .amigos-run-card select, .amigos-run-card textarea { width: 100%; box-sizing: border-box; }
-.amigos-run-team-field { max-width: 360px; }
+.amigos-run-team-field, .amigos-run-cwd-field { min-width: 0; }
 .amigos-run-mode-field, .amigos-run-design, .amigos-run-capabilities,
 .amigos-run-roles, .amigos-run-actions { grid-column: 1 / -1; }
 .amigos-run-roles label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }

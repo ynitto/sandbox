@@ -737,14 +737,24 @@ test('ミッションUIは密度を整え、検収と同じ二ペイン成果物
     'ミッション領域は未設定でも実行入口へ到達できる');
   assert.ok(src.includes('const showRun = true;'),
     '実行タブはホームや既存ミッションが無くても表示する');
+  assert.ok(!src.includes("if (!homes.length) {\n    el.innerHTML = '<div class=\"empty\""),
+    'ホーム未設定でも空画面へ戻さず実行フォームを表示する');
+  assert.ok(src.includes("'<option value=\"\">チーム未設定</option>'"),
+    'ホーム未設定はフォーム内のチーム欄と案内で示す');
   assert.ok(src.includes('function renderAmigosRun('));
   assert.ok(src.includes('name="amigos-run-mode" value="team-building" checked'),
     '自動編成を既定にする');
   assert.ok(src.includes('name="amigos-run-mode" value="roles"'),
     '必要な場合だけ役割指定へ切り替えられる');
-  assert.ok(src.includes('await api.amigosBuildTeam(values)'),
+  assert.ok(src.includes('id="amigos-run-cwd"') && src.includes('list="amigos-run-cwd-history"'),
+    'ワークフロー実行と同じフォルダ入力と履歴候補を表示する');
+  assert.ok(src.includes("if (!values.cwd) return setAmigosRunFeedback('作業するフォルダを入力してください。'"),
+    '作業フォルダを必須検証する');
+  assert.ok(src.includes("mission: { workspace: { repo: values.cwd } }"),
+    '選択したcwdを既存のmission.workspace契約へ渡す');
+  assert.ok(src.includes('await api.amigosBuildTeam({ ...values'),
     '自動編成は既存の build-team 契約を使う');
-  assert.ok(src.includes('await api.amigosRequest({ ...values, roles })'),
+  assert.ok(src.includes('await api.amigosRequest({ ...values, mission:'),
     '役割指定は既存の post 契約を使う');
   assert.ok(src.includes("switchTab('amigos')"),
     '実行依頼後は既存ミッション一覧へ移動する');

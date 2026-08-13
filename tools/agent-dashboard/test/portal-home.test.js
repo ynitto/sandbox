@@ -37,6 +37,10 @@ const agentAudit = fs.readFileSync(path.join(RENDERER_DIR, 'features', 'agent-au
   assert.match(sidebar, /data-area-list="projects"/);
   assert.match(sidebar, /data-area-list="routines"/);
   assert.ok(sidebar.includes('id="routine-list"'), '定常業務の対象一覧がある');
+  const missionsArea = renderer.indexOf("{ id: 'missions', label: 'ミッション'");
+  const routinesArea = renderer.indexOf("{ id: 'routines', label: '定常業務'");
+  assert.ok(missionsArea >= 0 && missionsArea < routinesArea,
+    '左メニューではミッションを定常業務の上に置く');
   console.log('ok - 左メニューは領域ナビ ＋ その領域の対象一覧');
 }
 
@@ -259,10 +263,13 @@ const portalHomeModel = new Function(`${grab('portalHomeModel')}; return portalH
   assert.ok(switchAreaSrc.includes('!visible.length'),
     '出せるタブが無い領域を、押しても何も起きない行き止まりにしない');
   assert.ok(switchAreaSrc.includes("switchArea('home')"), '行き止まりならホームへ着地させる');
-  // ミッション領域は「左メニューに出す条件」と「タブを出す条件」を同じ式にする
+  // ミッション領域と実行タブは入口なので常設し、一覧だけをデータ有無で出し分ける。
   const amigos = fs.readFileSync(path.join(RENDERER_DIR, 'sections', 'amigos.js'), 'utf8');
-  assert.ok(amigos.includes('const show = amigosNodeHasWork();'),
-    'ミッションのタブ可視性は領域の出し分けと同じ根拠を使う');
+  assert.ok(renderer.includes("if (id === 'missions') return true;"),
+    'ミッション領域は未設定でも入口として表示する');
+  assert.ok(amigos.includes('const showRun = true;')
+    && amigos.includes('const showMissions = amigosNodeHasWork();'),
+  '実行は常設し、既存ミッション一覧だけをデータ有無で出し分ける');
   assert.ok(!amigos.includes('amigosForProject'),
     'ミッションは端末の話なので、選択中プロジェクトで絞らない');
   console.log('ok - 左メニューに出ている領域は必ずどこかへ着地する');

@@ -102,8 +102,10 @@ function applyAmigosRunMode() {
 }
 
 function amigosRunFormValues() {
+  const cwd = $('amigos-run-cwd')?.value.trim() || '';
   return {
     home: $('amigos-run-home')?.value || '',
+    cwd,
     title: $('amigos-run-title')?.value.trim() || '',
     goal: $('amigos-run-goal')?.value.trim() || '',
     design: $('amigos-run-design')?.value || '',
@@ -122,6 +124,7 @@ function setAmigosRunFeedback(message, error = false) {
 async function submitAmigosRun() {
   const values = amigosRunFormValues();
   if (!values.home) return setAmigosRunFeedback('実行するチームを選択してください。', true);
+  if (!values.cwd) return setAmigosRunFeedback('作業するフォルダを入力してください。', true);
   if (!values.goal && !values.design.trim()) {
     return setAmigosRunFeedback('「完了したときの状態」か「進め方・完了条件」を入力してください。', true);
   }
@@ -141,9 +144,9 @@ async function submitAmigosRun() {
         throw new Error(`担当の構成を読み取れません: ${error.message}`, { cause: error });
       }
       if (!Array.isArray(roles) || !roles.length) throw new Error('担当の構成には1つ以上の役割が必要です');
-      await api.amigosRequest({ ...values, roles });
+      await api.amigosRequest({ ...values, mission: { workspace: { repo: values.cwd } }, roles });
     } else {
-      await api.amigosBuildTeam(values);
+      await api.amigosBuildTeam({ ...values, mission: { workspace: { repo: values.cwd } } });
     }
     setAmigosRunFeedback('実行を依頼しました。ミッションへ移動します。');
     await refreshAmigos();
@@ -169,18 +172,27 @@ function renderAmigosRun() {
     return;
   }
   const homes = a.homes || [];
-  if (!homes.length) {
-    el.innerHTML = '<div class="empty"><strong>実行できるチームがありません</strong><span>agent-amigos のホームを設定すると、ここからミッションを開始できます。</span></div>';
-    return;
-  }
-  const options = homes.map((home) => `<option value="${esc(home.dir)}">${esc(coworkRepoLabel(home.dir) || home.dir)}</option>`).join('');
+  const options = homes.length
+    ? homes.map((home) => `<option value="${esc(home.dir)}">${esc(coworkRepoLabel(home.dir) || home.dir)}</option>`).join('')
+    : '<option value="">チーム未設定</option>';
+  const cwdChoices = [...new Set([
+    state.selectedDir,
+    ...((state.discovery && state.discovery.projects) || []).map((project) => project && (project.workspace || project.dir)),
+  ].filter(Boolean))];
+  const cwdOptions = cwdChoices.map((cwd) => `<option value="${esc(cwd)}"></option>`).join('');
   el.innerHTML = `<div class="amigos-run-shell">
     <header class="cowork-header">
       <div><span class="summary-kicker">チームで進める作業</span><h2>ミッションを実行</h2>
         <p class="muted">タスクに合う担当を自動で編成し、agent-amigos で作業を開始します。</p></div>
     </header>
+    ${homes.length ? '' : `<div class="amigos-attention" role="status">
+      チームの実行設定がまだありません。内容は入力できますが、実行するには agent-amigos の設定が必要です。
+    </div>`}
     <form class="amigos-run-card" id="amigos-run-form">
-      <label class="amigos-run-team-field">チーム<select id="amigos-run-home">${options}</select></label>
+      <label class="amigos-run-team-field">チーム<select id="amigos-run-home"${homes.length ? '' : ' disabled'}>${options}</select></label>
+      <label class="amigos-run-cwd-field">フォルダ<input id="amigos-run-cwd" type="text"
+        list="amigos-run-cwd-history" placeholder="/path/to/repository" autocomplete="off"></label>
+      <datalist id="amigos-run-cwd-history">${cwdOptions}</datalist>
       <fieldset class="amigos-mode-field amigos-run-mode-field">
         <legend>チーム編成</legend><div class="amigos-mode" role="radiogroup">
           <label class="amigos-mode-option"><input type="radio" name="amigos-run-mode" value="team-building" checked>
