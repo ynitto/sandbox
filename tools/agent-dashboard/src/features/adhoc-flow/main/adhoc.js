@@ -316,6 +316,8 @@ function tierNames(tiers) {
 
 function normalizeExecutionOverrides(config, raw) {
   if (!raw || typeof raw !== 'object' || Number(raw.version) !== 1) return null;
+  const mode = ['saving', 'quality', 'cost', 'custom'].includes(String(raw.mode || ''))
+    ? String(raw.mode) : '';
   const inventory = agents.list(config);
   const available = new Set([
     ...inventory.builtins,
@@ -323,7 +325,7 @@ function normalizeExecutionOverrides(config, raw) {
       .map((item) => item.name),
   ]);
   const catalog = flowTiers.catalog();
-  const out = { version: 1, roles: {}, kinds: {} };
+  const out = { version: 1, ...(mode ? { mode } : {}), roles: {}, kinds: {} };
   const add = (group, key, value, allowed) => {
     if (!value || typeof value !== 'object') return;
     const tier = String(value.tier || '').trim();
@@ -357,7 +359,7 @@ function normalizeExecutionOverrides(config, raw) {
     const spec = catalog.kinds[kind] || { tiers: flowTiers.TIER_ORDER };
     add('kinds', kind, raw.kinds && raw.kinds[kind], spec.tiers);
   }
-  return Object.keys(out.roles).length || Object.keys(out.kinds).length ? out : null;
+  return mode || Object.keys(out.roles).length || Object.keys(out.kinds).length ? out : null;
 }
 
 function planFromWorkflow(config, workflow) {

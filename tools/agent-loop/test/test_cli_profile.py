@@ -96,6 +96,19 @@ class BusyPatternTest(unittest.TestCase):
         self.assertEqual(profile.failure_pattern, "fatal error")
 
 
+class CodexProfileTest(unittest.TestCase):
+    def test_v0147_input_box_is_ready(self):
+        spec_path = HERE.parents[2] / "agents" / "codex.json"
+        with spec_path.open(encoding="utf-8") as stream:
+            profile = al.CliProfile("codex", json.load(stream))
+        content = (
+            "› Write tests for @filename\n"
+            "\n"
+            "  gpt-5.6-luna default · ~/Workspace/sandbox-test"
+        )
+        self.assertTrue(profile.is_ready(content))
+
+
 class QuietDetectionTest(unittest.TestCase):
     """パターンで判定できない CLI は「画面が N 秒変化しない」ことを待機とみなす。"""
 

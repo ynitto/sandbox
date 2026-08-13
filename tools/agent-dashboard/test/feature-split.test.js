@@ -238,6 +238,12 @@ test('orchestration はノード予算 v2 / 制御 / ドロップイン API を�
   });
   assert.strictEqual(overview(), 'ok');
   assert.deepStrictEqual(calls, [['orchestration:overview', {}]]);
+  const apply = api.orchestrationProfilesApply((channel, args) => {
+    calls.push([channel, args]);
+    return 'applied';
+  });
+  assert.strictEqual(apply({ force: true }), 'applied');
+  assert.deepStrictEqual(calls.at(-1), ['orchestration:profilesApply', { force: true }]);
   for (const name of ['orchestrationBudgetSave', 'orchestrationRebalance', 'orchestrationCalibrate',
     'orchestrationControlSave', 'orchestrationLifecycle', 'orchestrationAgentSave', 'orchestrationAgentDelete',
     'orchestrationExecutionPolicySave',

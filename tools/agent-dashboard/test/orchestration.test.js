@@ -240,6 +240,36 @@ test('予算 v2: rebalance は R を weight 比で配り min/max でクランプ
   assert.strictEqual(raw.computed.note, '別の書き手が置いた未知キー', 'computed の未知キーを消さない');
 });
 
+test('予算 v2: 全体上限0の rebalance は無制限を維持する', () => {
+  const dir = tmpdir('orch-rebal-unlimited-');
+  fs.writeFileSync(
+    path.join(dir, 'config.json'),
+    JSON.stringify({
+      version: 2,
+      tokens: 0,
+      period: 'total',
+      allocation: {
+        mode: 'auto',
+        workloads: {
+          routine: { weight: 1 },
+          flow: { weight: 1 },
+        },
+      },
+    })
+  );
+  writeLedger(dir, utcDay(), [
+    { ts: 'x', workload: 'routine', seconds: 1, tokens_in: 519402, tokens_out: 0 },
+  ]);
+
+  const result = budget.rebalance(budgetCfg(dir));
+  const raw = JSON.parse(fs.readFileSync(path.join(dir, 'config.json'), 'utf8'));
+
+  assert.deepStrictEqual(raw.computed.workloads, {});
+  assert.strictEqual(result.workloads.routine.tokenCap, 0);
+  assert.strictEqual(result.workloads.routine.exceeded, false);
+  assert.strictEqual(result.exceeded, false);
+});
+
 // --- ノード予算 v2: レート較正（中央値） -------------------------------------
 
 test('予算 v2: calibrateRates は seconds と実測が両方ある行から中央値レートを書く', () => {

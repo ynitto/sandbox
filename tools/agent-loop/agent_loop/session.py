@@ -431,7 +431,9 @@ class SessionManager:
                 self._session_command_context(session_cwd),
                 # 人が `/skill-name` と書いた chat コマンドを、その CLI のスキル起動記号へ
                 # 差し替えてから送る（codex は `$skill-name`。既定 `/` の CLI は素通し）。
-                send_chat=lambda text: _send_to_pane(pane_target, _CLI_PROFILE.rewrite_slash(text)),
+                send_chat=lambda text: _send_chat_to_pane(
+                    pane_target, _CLI_PROFILE.rewrite_slash(text)
+                ),
                 modes=("chat",),
             )
         except Exception:  # noqa: BLE001 — 開始コマンドの送信失敗でペイン起動を無効にしない
@@ -587,7 +589,10 @@ class SessionManager:
         log.info("プロンプトを送信します [%s] (pane=%s): %s", cwd, pane_target, short)
         print(f"[agent-loop] send [{cwd}] (pane={pane_target}) {short}", file=sys.stderr, flush=True)
 
-        ok, err = _send_to_pane(pane_target, prompt_text)
+        # Codex TUI は paste-buffer 直後の Enter を送信ではなく改行として
+        # 扱う。文字列と Enter を分ける対話送信を使う。
+        sender = _send_chat_to_pane if _CLI_PROFILE.name == "codex" else _send_to_pane
+        ok, err = sender(pane_target, prompt_text)
         if not ok:
             log.warning("テキスト送信に失敗しました: %s", err)
             print(f"[agent-loop] done [{cwd}] failed", file=sys.stderr, flush=True)

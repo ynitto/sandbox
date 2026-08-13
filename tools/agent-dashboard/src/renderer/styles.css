@@ -3371,10 +3371,23 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
 .orch-tier-candidate-list { display: grid; gap: 6px; }
 .orch-tier-candidate {
   display: grid;
-  grid-template-columns: minmax(120px, 1fr) minmax(120px, 1fr) auto;
+  grid-template-columns: auto minmax(120px, 1fr) minmax(120px, 1fr) auto;
   align-items: end;
   gap: 8px;
+  border-radius: 6px;
+  transition: opacity 120ms ease, background-color 120ms ease;
 }
+.orch-tier-candidate.is-dragging { opacity: 0.55; background: var(--bg3); }
+.orch-tier-candidate-drag {
+  align-self: center;
+  min-width: 30px;
+  padding: 7px 5px;
+  cursor: grab;
+  color: var(--muted);
+  touch-action: none;
+}
+.orch-tier-candidate-drag:active { cursor: grabbing; }
+.orch-tier-candidate-list:empty { min-height: 42px; border: 1px dashed var(--border); border-radius: 6px; }
 .orch-tier-candidate label { display: flex; min-width: 0; flex-direction: column; gap: 3px; }
 .orch-tier-candidate input { width: 100%; }
 .orch-tier-candidate-add { align-self: flex-start; }
@@ -3782,13 +3795,27 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
 .wf-title, .wf-section-head, .wf-editor-head { display: flex; align-items: end; justify-content: space-between; gap: 12px; }
 .wf-title h2, .wf-section-head h3 { margin: 0; }
 .wf-title p { margin: 4px 0 0; color: var(--muted); }
-.wf-run-card { display: grid; grid-template-columns: minmax(220px, 1.4fr) minmax(180px, .8fr) auto;
+.wf-run-card { display: grid; grid-template-columns: minmax(180px, .8fr) minmax(220px, 1.4fr);
   gap: 12px; padding: 18px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg2); }
 .wf-run-card label, .wf-inspector label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
 .wf-run-card input, .wf-run-card select, .wf-run-card textarea,
 .wf-editor-head input, .wf-inspector input, .wf-inspector select, .wf-inspector textarea { width: 100%; box-sizing: border-box; }
-.wf-request { grid-column: 1 / 3; }
-.wf-run-card > button { align-self: end; min-width: 96px; }
+.wf-flow-summary { grid-column: 1 / -1; min-width: 0; }
+.wf-selected-flow-card { display: grid; gap: 10px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg3); }
+.wf-selected-flow-heading { display: flex; align-items: center; justify-content: flex-start; gap: 8px; min-width: 0; }
+.wf-selected-flow-content { min-width: 0; display: grid; grid-template-columns: minmax(220px, .8fr) minmax(0, 1.2fr);
+  align-items: center; gap: 16px; }
+.wf-selected-flow-card h3, .wf-selected-flow-card p { margin: 0; }
+.wf-selected-flow-card h3 { font-size: 15px; }
+.wf-selected-flow-description { color: var(--muted); line-height: 1.5; overflow-wrap: anywhere; }
+.wf-selected-flow-card[data-flow-summary-type="auto"] .wf-selected-flow-content,
+.wf-selected-flow-card[data-flow-summary-type="custom"] .wf-selected-flow-content {
+  grid-template-columns: minmax(0, 1fr) auto; }
+.wf-selected-flow-content > .wf-card-meta { justify-self: end; }
+.wf-request { grid-column: 1 / -1; }
+.wf-run-actions { grid-column: 1 / -1; }
+.wf-run-actions > button { min-width: 96px; }
 .wf-run-list { display: grid; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
 .wf-run-row { display: grid; grid-template-columns: minmax(220px, 1fr) 100px 180px; gap: 12px;
   width: 100%; padding: 10px 12px; border: 0; border-bottom: 1px solid var(--border); border-radius: 0;
@@ -3796,9 +3823,12 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
 .wf-run-row:last-child { border-bottom: 0; }
 .wf-run-row:hover, .wf-run-row.selected { background: rgba(88, 166, 255, .08); }
 .wf-result { display: grid; gap: 12px; padding-top: 14px; border-top: 1px solid var(--border); }
-.wf-run-overrides { grid-column: 1 / -1; border-top: 1px solid var(--border); padding-top: 10px; }
-.wf-run-overrides > summary { cursor: pointer; font-weight: 600; }
-.wf-run-overrides h3 { margin: 14px 0 6px; font-size: 13px; }
+.wf-run-policy { grid-column: 1 / -1; border-top: 1px solid var(--border); padding-top: 10px; }
+.wf-run-card .orch-policy-card { display: flex; align-items: flex-start; color: inherit; font-size: inherit; }
+.wf-run-card .orch-policy-card input { width: 1px; }
+.wf-run-policy-modes { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+.wf-run-policy-custom[hidden] { display: none; }
+.wf-run-policy-custom h3 { margin: 14px 0 6px; font-size: 13px; }
 .wf-override-row { display: grid; grid-template-columns: minmax(110px, .7fr) repeat(3, minmax(130px, 1fr));
   gap: 10px; align-items: end; padding: 8px 0; border-bottom: 1px solid var(--border); }
 .wf-override-row > strong { align-self: center; }
@@ -3807,9 +3837,8 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
 .wf-override-summary dt { color: var(--muted); }
 .wf-event-list { display: grid; gap: 8px; margin: 0; padding-left: 22px; }
 .wf-event-list time { color: var(--muted); margin-right: 8px; }
-.wf-settings-card { max-width: 520px; padding: 18px; display: grid; gap: 12px;
-  border: 1px solid var(--border); border-radius: 10px; background: var(--bg2); }
-.wf-settings-card label { display: grid; gap: 6px; }
+.wf-settings-card { width: 100%; box-sizing: border-box; }
+.wf-settings-field { max-width: 280px; }
 .wf-sidebar-runs { display: grid; min-width: 0; }
 .wf-sidebar-run { width: 100%; min-width: 0; padding: 9px 10px 9px 18px; display: grid; gap: 3px;
   border: 0; border-left: 3px solid transparent; border-radius: 0; color: inherit; background: transparent; text-align: left; }
@@ -3824,6 +3853,11 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
 .wf-need-row strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wf-need-row small { grid-column: 2; color: var(--muted); }
 @media (max-width: 860px) {
+  .wf-run-card, .wf-selected-flow-content,
+  .wf-selected-flow-card[data-flow-summary-type="auto"] .wf-selected-flow-content,
+  .wf-selected-flow-card[data-flow-summary-type="custom"] .wf-selected-flow-content {
+    grid-template-columns: minmax(0, 1fr); }
+  .wf-selected-flow-content > .wf-card-meta { justify-self: start; }
   .wf-override-row { grid-template-columns: 1fr 1fr; }
 }
 

@@ -88,6 +88,13 @@ class JsonVariantTests(unittest.TestCase):
 class ShippedDefinitionTests(unittest.TestCase):
     """同梱の ollama 定義が JSON 変種を申告していること（設計 §4.3 の実体）。"""
 
+    def test_aider_split_resolves_to_the_list_variant(self):
+        """Aider を基底 CLI に選んでも split は配列出力の起動形へ振り替わる。"""
+        repo = Path(__file__).resolve().parents[4]
+        agentcli.clear_cache()
+        self.addCleanup(agentcli.clear_cache)
+        self.assertEqual(agentcli.list_variant("aider", project_dir=repo), "ollama-list")
+
     def test_ollama_declares_the_json_variant(self):
         repo = Path(__file__).resolve().parents[4]
         spec = json.loads((repo / "agents" / "ollama.json").read_text(encoding="utf-8"))

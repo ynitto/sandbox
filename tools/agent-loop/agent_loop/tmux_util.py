@@ -44,6 +44,23 @@ def _send_to_pane(pane_id: str, text: str) -> tuple[bool, str]:
         _tmux_cmd("delete-buffer", "-b", buffer_name)
 
 
+def _send_chat_to_pane(pane_id: str, text: str) -> tuple[bool, str]:
+    """Send a session-start chat command, including Codex skill completion confirmation."""
+    key_interval_sec = 3
+    text = re.sub(r"\r?\n", " ", str(text)).strip()
+    result = _tmux_cmd("send-keys", "-t", pane_id, "-l", "--", text)
+    if result.returncode != 0:
+        return False, (result.stderr or "").strip() or "tmux send-keys(text) に失敗しました。"
+    time.sleep(key_interval_sec)
+    enter_count = 2 if re.match(r"^\$[A-Za-z0-9_.:-]+(?:\s|$)", text) else 1
+    for _ in range(enter_count):
+        result = _tmux_cmd("send-keys", "-t", pane_id, "Enter")
+        if result.returncode != 0:
+            return False, (result.stderr or "").strip() or "tmux send-keys(Enter) に失敗しました。"
+        time.sleep(key_interval_sec)
+    return True, ""
+
+
 def _tmux_cmd_or_raise(*args: str, error_label: str) -> str:
     """_tmux_cmd を実行し、失敗または空出力なら RuntimeError を送出する。"""
     result = _tmux_cmd(*args)
@@ -54,5 +71,3 @@ def _tmux_cmd_or_raise(*args: str, error_label: str) -> str:
     if not output:
         raise RuntimeError(f"{error_label}に失敗しました: 空の結果")
     return output
-
-

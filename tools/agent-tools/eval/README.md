@@ -52,6 +52,11 @@ python3 tools/agent-tools/eval/run_suite.py --model qwen3.5:9b --cli aider --lab
 残すが、モデル交換の必須条件ではない。retrieval の埋め込みモデルは生成モデルと別軸なので、
 `--embedding-model` で明示する。
 
+Gemma 4 の thinking を診断するときは、JSON 文法制約が thinking を強制 off にするため、
+`judge_eval.py --drop-format --think on` のように両方を明示する。これは本番基準線ではなく
+診断セルであり、各台帳行の `think_override` / `format_dropped` に実効条件を残す。
+追加の system instruction は `AGENT_OLLAMA_SYSTEM_PROMPT` で渡せる（未指定なら送らない）。
+
 ## worker 受入率ハーネス — ローカルモデルを 1 時間で判定する
 
 `agent-ollama` に載せたモデルを **worker として使えるか**だけを測る。合否は決定的な

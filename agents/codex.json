@@ -30,6 +30,7 @@
     "turn_completion": "codex",
     "readonly_args": ["--sandbox", "read-only"],
     "no_session_args": ["--ephemeral"],
+    "ready_pattern": "^[[:blank:]]*[>?❯›]([[:blank:]].*)?$|│[[:blank:]]*[>❯›]",
     "busy_pattern": "esc to interrupt",
     "clear_command": "/new",
     "prompt_inject": "send-keys"

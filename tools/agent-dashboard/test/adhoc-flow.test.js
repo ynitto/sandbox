@@ -29,6 +29,96 @@ function tmpdir(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 }
 
+test('実行時方針のおすすめは agent-control / agent-flow の自動決定へ委ねる', () => {
+  assert.strictEqual(workflowUi.executionOverridesForMode('recommended', {}), null);
+});
+
+test('実行時方針のコスト優先は役割・機能ごとの最低許可tierを選ぶ', () => {
+  const result = workflowUi.executionOverridesForMode('cost', { kindTiers: {
+    roles: { planner: { tiers: ['medium', 'large'] }, worker: { tiers: ['small', 'medium', 'large'] } },
+    kinds: { classify: { tiers: ['basic', 'small', 'medium', 'large'] }, synthesize: { tiers: ['medium', 'large'] } },
+  } });
+  assert.deepStrictEqual(result, {
+    version: 1,
+    mode: 'cost',
+    roles: { planner: { tier: 'medium' }, worker: { tier: 'small' } },
+    kinds: { classify: { tier: 'basic' }, synthesize: { tier: 'medium' } },
+  });
+});
+
+test('実行時方針の節約と品質優先は許可範囲内でsmallとlargeへ寄せる', () => {
+  const overview = { kindTiers: {
+    roles: { planner: { tiers: ['medium', 'large'] }, worker: { tiers: ['small', 'medium', 'large'] } },
+    kinds: { classify: { tiers: ['basic', 'small', 'medium', 'large'] }, synthesize: { tiers: ['medium', 'large'] } },
+  } };
+  assert.deepStrictEqual(workflowUi.executionOverridesForMode('saving', overview), {
+    version: 1, mode: 'saving',
+    roles: { planner: { tier: 'medium' }, worker: { tier: 'small' } },
+    kinds: { classify: { tier: 'small' }, synthesize: { tier: 'medium' } },
+  });
+  assert.deepStrictEqual(workflowUi.executionOverridesForMode('quality', overview), {
+    version: 1, mode: 'quality',
+    roles: { planner: { tier: 'large' }, worker: { tier: 'large' } },
+    kinds: { classify: { tier: 'large' }, synthesize: { tier: 'large' } },
+  });
+});
+
+test('実行タブは選択した標準フローのカード説明と工程構成を表示する', () => {
+  const previousEsc = global.esc;
+  global.esc = (value) => String(value);
+  try {
+    const html = workflowUi.selectedFlowSummaryHtml({ patterns: [{
+      id: 'build-and-verify', label: '実装して検証', description: '成果を作り、条件を満たすか検証します。',
+      template: { nodes: [
+        { id: 'build', kind: 'work', deps: [] },
+        { id: 'verify', kind: 'verify', deps: ['build'] },
+      ] },
+    }] }, 'pattern:build-and-verify');
+    assert.match(html, /標準フロー/);
+    assert.match(html, /実装して検証/);
+    assert.match(html, /成果を作り、条件を満たすか検証します。/);
+    assert.match(html, /作業/);
+    assert.match(html, /検証/);
+    assert.doesNotMatch(html, /編集を始める/);
+    assert.ok(html.includes('wf-selected-flow-heading')
+      && html.indexOf('wf-selected-flow-heading') < html.indexOf('wf-mini-flow'),
+      'バッジとタイトルをカード左上へ配置します');
+    assert.ok(html.indexOf('wf-mini-flow') < html.indexOf('wf-selected-flow-description'),
+      'ミニ工程図を説明文より左へ配置します');
+  } finally {
+    global.esc = previousEsc;
+  }
+});
+
+test('実行タブは選択したカスタムフローのカード説明と工程数を表示する', () => {
+  const previousEsc = global.esc;
+  global.esc = (value) => String(value);
+  try {
+    const html = workflowUi.selectedFlowSummaryHtml({ workflows: [{
+      id: 'release-flow', name: 'リリース準備', description: '実装、検証、リリース判定を順に行います。',
+      nodes: [{ id: 'build' }, { id: 'verify' }, { id: 'judge' }],
+    }] }, 'custom:release-flow');
+    assert.match(html, /カスタムフロー/);
+    assert.match(html, /リリース準備/);
+    assert.match(html, /実装、検証、リリース判定を順に行います。/);
+    assert.match(html, /3工程/);
+  } finally {
+    global.esc = previousEsc;
+  }
+});
+
+test('実行タブは自動フローで実行時に工程を計画することを説明する', () => {
+  const previousEsc = global.esc;
+  global.esc = (value) => String(value);
+  try {
+    const html = workflowUi.selectedFlowSummaryHtml({}, 'auto');
+    assert.match(html, /自動/);
+    assert.match(html, /依頼に合わせて工程を計画/);
+  } finally {
+    global.esc = previousEsc;
+  }
+});
+
 test('カスタムフローをユーザー共通ファイルとして保存・読込できる', () => {
   const cfg = { adhocFlow: { workflowDir: tmpdir('workflow-files-') } };
   const saved = adhoc.saveWorkflow(cfg, {
@@ -1118,11 +1208,13 @@ test('実行時指定は tier を候補へ解決して inbox に固定し、再�
       request: '実装する',
       executionOverrides: {
         version: 1,
+        mode: 'saving',
         roles: { worker: { tier: 'medium' } },
         kinds: { verify: { agent_cli: 'claude', model: 'opus' } },
       },
     });
     const firstInbox = adhoc.readInbox(cfg.adhocFlow.busDir, first.runId);
+    assert.strictEqual(firstInbox.execution_overrides.mode, 'saving');
     assert.deepStrictEqual(firstInbox.execution_overrides.roles.worker, {
       tier: 'medium', agent_cli: 'codex', model: 'model-medium', source: 'run-role', pinned: true,
     });

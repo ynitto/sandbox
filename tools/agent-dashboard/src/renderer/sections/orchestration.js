@@ -349,7 +349,9 @@ function orchProfileCandidateText(cand) {
 }
 
 function orchTierCandidateRowHtml(candidate = {}) {
-  return `<div class="orch-tier-candidate">
+  return `<div class="orch-tier-candidate" draggable="false">
+    <button type="button" class="orch-tier-candidate-drag" draggable="true"
+      aria-label="候補をドラッグして優先順位または実行レベルを変更" title="ドラッグして移動">⋮⋮</button>
     <label><span>エージェント</span><input type="text" class="orch-tier-candidate-cli mono"
       value="${esc(candidate.agent_cli || '')}" placeholder="claude" /></label>
     <label><span>モデル</span><input type="text" class="orch-tier-candidate-model mono"
@@ -379,7 +381,7 @@ function orchTiersPanelHtml(overview) {
     <header class="row"><div>
       <span class="summary-kicker">エージェントとモデルの組み合わせ</span>
       <h3>実行レベルの構成</h3>
-      <p class="muted">同じレベルの候補は、同程度の仕事を任せられる前提で扱います。短い一手順だけを任せる小型モデルは「単純作業」、Haikuなど軽量でも複数手順を扱えるモデルは「軽量」へ分けます。</p>
+      <p class="muted">候補は上から優先。つまみで並び替えやレベル間の移動ができます。</p>
     </div></header>
     <ol class="orch-profile-tiers" id="orch-profile-tiers">${tierRows}</ol>
     <div class="settings-save-actions">
@@ -1526,8 +1528,40 @@ function setupOrchestration(root) {
   const tierList = root.querySelector('#orch-profile-tiers');
   const markWorkflowDirty = () => { state.orchWorkflowDirty = true; };
   if (tierList) {
+    let draggedCandidate = null;
     tierList.addEventListener('input', markWorkflowDirty);
     tierList.addEventListener('change', markWorkflowDirty);
+    tierList.addEventListener('dragstart', (event) => {
+      const handle = event.target.closest('.orch-tier-candidate-drag');
+      if (!handle) return;
+      draggedCandidate = handle.closest('.orch-tier-candidate');
+      draggedCandidate.classList.add('is-dragging');
+      event.dataTransfer.effectAllowed = 'move';
+      event.dataTransfer.setData('text/plain', 'orch-tier-candidate');
+    });
+    tierList.addEventListener('dragover', (event) => {
+      if (!draggedCandidate) return;
+      const list = event.target.closest('.orch-tier-candidate-list');
+      if (!list) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'move';
+      const target = event.target.closest('.orch-tier-candidate');
+      if (!target || target === draggedCandidate) {
+        if (!target) list.appendChild(draggedCandidate);
+        return;
+      }
+      const before = event.clientY < target.getBoundingClientRect().top + target.offsetHeight / 2;
+      list.insertBefore(draggedCandidate, before ? target : target.nextSibling);
+    });
+    tierList.addEventListener('drop', (event) => {
+      if (!draggedCandidate || !event.target.closest('.orch-tier-candidate-list')) return;
+      event.preventDefault();
+      markWorkflowDirty();
+    });
+    tierList.addEventListener('dragend', () => {
+      if (draggedCandidate) draggedCandidate.classList.remove('is-dragging');
+      draggedCandidate = null;
+    });
     tierList.addEventListener('click', (event) => {
       const add = event.target.closest('.orch-tier-candidate-add');
       if (add) {
@@ -1567,8 +1601,9 @@ function setupOrchestration(root) {
     state.orchSaving = true;
     try {
       await api.orchestrationProfilesSave({ tiers, policy });
+      await api.orchestrationProfilesApply({ force: true });
       state.orchWorkflowDirty = false;
-      toast('実行レベルの構成を保存しました', true);
+      toast('保存し、agent-tools ファミリーへ反映しました', true);
     } finally { state.orchSaving = false; }
     await refreshOrchestration();
     renderOrchestration();

@@ -15,7 +15,7 @@ module.exports = {
     invoke('orchestration:sessionCommandsSave', payload || {}),
   orchestrationProfilesSave: (invoke) => (payload) => invoke('orchestration:profilesSave', payload || {}),
   orchestrationProfilesEvaluate: (invoke) => () => invoke('orchestration:profilesEvaluate', {}),
-  orchestrationProfilesApply: (invoke) => () => invoke('orchestration:profilesApply', {}),
+  orchestrationProfilesApply: (invoke) => (options = {}) => invoke('orchestration:profilesApply', options),
   orchestrationExecutionPolicySave: (invoke) => (payload) =>
     invoke('orchestration:executionPolicySave', payload || {}),
   orchestrationMethodSet: (invoke) => (payload) => invoke('orchestration:methodSet', payload || {}),

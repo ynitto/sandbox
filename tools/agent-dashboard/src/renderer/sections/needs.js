@@ -2163,13 +2163,9 @@ function renderNeeds(options) {
         <main class="detail-panel">${renderNeedDetail(p, model.selected)}</main>
       </div>`;
 
-  el.innerHTML = `<div class="queue-summary" aria-label="要対応の状態">
-    <span class="status-chip st-blocked">未対応 ${model.counts.open}</span>
-    <span class="status-chip st-review">送信済み ${model.counts.sent}</span>
-    <span class="status-chip st-done">回答済み ${model.counts.done}</span>
-    ${planBatch.length > 1
-      ? `<button type="button" class="primary-inline" data-approve-plan-batch>計画 ${planBatch.length} 件をまとめて承認</button>`
-      : ''}</div>${content}`;
+  el.innerHTML = `${planBatch.length > 1
+    ? `<div><button type="button" class="primary-inline" data-approve-plan-batch>計画 ${planBatch.length} 件をまとめて承認</button></div>`
+    : ''}${content}`;
   restoreNeedsScroll(el, scrollSnapshot, renderOptions);
   const batchApprove = el.querySelector('[data-approve-plan-batch]');
   if (batchApprove) {

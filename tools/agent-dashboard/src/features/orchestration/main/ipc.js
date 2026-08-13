@@ -53,7 +53,7 @@ function registerIpc(ctx) {
   //   profiles.json（state=記録）へ書く。
   handle('orchestration:profilesSave', (payload) => profiles.save(loadConfig(), payload || {}));
   handle('orchestration:profilesEvaluate', () => profiles.evaluate(loadConfig()));
-  handle('orchestration:profilesApply', () => profiles.apply(loadConfig()));
+  handle('orchestration:profilesApply', (options) => profiles.apply(loadConfig(), options || {}));
   handle('orchestration:executionPolicySave', (payload) =>
     executionPolicy.save(loadConfig(), payload || {})
   );

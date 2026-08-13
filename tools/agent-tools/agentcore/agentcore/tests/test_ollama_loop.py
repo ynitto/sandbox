@@ -173,6 +173,23 @@ class TestStreamCall(unittest.TestCase):
         self.assertIs(captured["think"], False)
         self.assertTrue(captured["stream"])
 
+    def test_system_prompt_is_sent_only_when_declared(self):
+        captured = {}
+
+        def capture(req, timeout=None):
+            captured.clear()
+            captured.update(json.loads(req.data))
+            return _FakeResponse(_gen_lines("あ"))
+
+        with mock.patch.object(ollama_loop.urllib.request, "urlopen", capture):
+            ollama_loop.run_plain("qwen3", "hello", heartbeat=0.05)
+        self.assertNotIn("system", captured)
+
+        with mock.patch.dict(os.environ, {"AGENT_OLLAMA_SYSTEM_PROMPT": "Be precise."}), \
+                mock.patch.object(ollama_loop.urllib.request, "urlopen", capture):
+            ollama_loop.run_plain("qwen3", "hello", heartbeat=0.05)
+        self.assertEqual(captured["system"], "Be precise.")
+
     def test_format_forces_think_off(self):
         """`format` 指定時は think off を**明示**する。
 

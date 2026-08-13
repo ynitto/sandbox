@@ -182,6 +182,11 @@ def resolve_think(explicit: "bool | None" = None) -> "bool | None":
     return None
 
 
+def load_system_prompt() -> str:
+    """評価・運用で追加する system instruction。未指定なら既存挙動を変えない。"""
+    return os.environ.get("AGENT_OLLAMA_SYSTEM_PROMPT", "").strip()
+
+
 # `--format array` が送る structured outputs のスキーマ。
 # ollama の JSON モード（`format: "json"`）は**トップレベルを必ずオブジェクトにする**ので、
 # 配列を求める契約（agent-flow の split）はプロンプトで何を書いても満たせない——実測では
@@ -466,6 +471,9 @@ def run_plain(model: str, prompt: str, *, think: "bool | None" = None, emit=None
     """
     body = _payload(model, think=think, options=options, fmt=fmt)
     body["prompt"] = prompt
+    system = load_system_prompt()
+    if system:
+        body["system"] = system
     return stream_call("/api/generate", body, delta_of=_generate_delta, emit=emit, **limits)
 
 
@@ -640,8 +648,10 @@ def run_loop(model: str, task: str, *, cwd: "str | None" = None, emit=None,
     ラウンド予算とコマンド上限の積（既定でも数時間）を空回りで焼き切らせない。
     """
     workdir = str(cwd or os.getcwd())
+    base_system = system_prompt(workdir, toolset)
+    extra_system = load_system_prompt()
     messages = [
-        {"role": "system", "content": system_prompt(workdir, toolset)},
+        {"role": "system", "content": (base_system + "\n" + extra_system).strip()},
         {"role": "user", "content": task},
     ]
 

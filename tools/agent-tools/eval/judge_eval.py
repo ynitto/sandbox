@@ -65,6 +65,7 @@ DROP_ARGS: "set[str]" = set()
 # `--methods` で有効化した手法パック（tuning.json と同じ形）と、`--tier` で名乗る実行段。
 METHODS: "dict | None" = None
 TIER = "small"
+THINK_OVERRIDE = ""
 
 
 def load_methods(ids: str) -> "dict | None":
@@ -316,7 +317,10 @@ def build_prompt(case: dict) -> str:
 
 
 def call(prompt: str, cmd: "list[str] | None" = None) -> "tuple[int, str, str, float]":
-    argv = [a.replace("{model}", MODEL) for a in (cmd or CMD) if a not in DROP_ARGS]
+    raw = list(cmd or CMD)
+    if THINK_OVERRIDE and "--think" in raw:
+        raw[raw.index("--think") + 1] = THINK_OVERRIDE
+    argv = [a.replace("{model}", MODEL) for a in raw if a not in DROP_ARGS]
     started = time.time()
     try:
         p = subprocess.run(argv, input=prompt, capture_output=True, text=True,
@@ -388,7 +392,8 @@ def run_one(cid: str, i: int) -> dict:
     rec = dict(case=cid, kind=kind, iter=i, ok=ok, mode=mode,
                repaired=repaired, wall=round(wall, 1), note=note, prompt_chars=len(prompt),
                out_chars=len(out), answer=json.dumps(data, ensure_ascii=False,
-                                                     default=str)[:200], log=log)
+                                                     default=str)[:200], log=log,
+               think_override=THINK_OVERRIDE or None, format_dropped=bool(DROP_ARGS))
     if applied:  # 何が効いた行かは台帳から読めないと、後で比較できない（空なら書かない）
         rec["methods"] = applied
     if engine.missing():  # 欠けた木で取った行を、揃った木の行として読まないため
@@ -458,7 +463,7 @@ def selfcheck() -> int:
 
 
 def main() -> None:
-    global WALL_LIMIT, MODEL, METHODS, TIER
+    global WALL_LIMIT, MODEL, METHODS, TIER, THINK_OVERRIDE
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default=MODEL)
     ap.add_argument("--repeat", type=int, default=3)
@@ -473,11 +478,14 @@ def main() -> None:
                          "適用条件は本番の agentcore.methods.select が判定するので、"
                          "`when` に合わない役割へは注入されない。"
                          "候補プリセットは .json のパスでも指定できる（カタログに入れずに測る）")
+    ap.add_argument("--think", choices=("on", "off"), default="",
+                    help="評価専用: 定義中の --think 値を上書きする")
     ap.add_argument("--tier", default=TIER,
                     help="この測定が名乗る実行段（手法の when.tiers と突き合わせる）")
     args = ap.parse_args()
     if args.drop_format:
         DROP_ARGS.update({"--format", "json", "array"})
+    THINK_OVERRIDE = args.think
     if args.selfcheck:
         raise SystemExit(selfcheck())
     MODEL, WALL_LIMIT = args.model, args.wall

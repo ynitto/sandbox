@@ -511,12 +511,17 @@ function rebalance(cfg) {
   const sumW = active.reduce((s, [, w]) => s + w, 0);
 
   const computedWl = {};
-  for (const [w, weight, spec] of active) {
-    const consumed = consumedByWl[w] || 0;
-    const share = sumW > 0 ? (R * weight) / sumW : 0;
-    const min = Math.max(0, Number(spec.min_tokens) || 0);
-    const max = Math.max(0, Number(spec.max_tokens) || 0);
-    computedWl[w] = { tokens: Math.round(clamp(consumed + share, min, max)) };
+  // 全体上限0は無制限。ここで consumed を computed cap として書くと、
+  // エンジンが「現在消費量 >= 上限」と判定して即時停止する。明示的な
+  // allocation.max_tokens は computed が無ければ effectiveCap() から引き続き適用される。
+  if (config.tokens > 0) {
+    for (const [w, weight, spec] of active) {
+      const consumed = consumedByWl[w] || 0;
+      const share = sumW > 0 ? (R * weight) / sumW : 0;
+      const min = Math.max(0, Number(spec.min_tokens) || 0);
+      const max = Math.max(0, Number(spec.max_tokens) || 0);
+      computedWl[w] = { tokens: Math.round(clamp(consumed + share, min, max)) };
+    }
   }
 
   const next = { ...config.raw };

@@ -94,7 +94,9 @@ fi
 info "python を確認しています..."
 
 PYTHON_CMD=""
-for cmd in python3 python; do  # python3 を優先（python は環境により未存在・別バージョンのため）
+# Codex notify hook は tomllib を使うため 3.11+ を優先する。見つからない
+# 環境では本体の最低要件 3.9 までフォールバックする。
+for cmd in python3.14 python3.13 python3.12 python3.11 python3 python; do
   if command -v "$cmd" &>/dev/null; then
     PY_VER="$("$cmd" --version 2>&1)"
     # バージョン番号を抽出して 3.9 以上か確認

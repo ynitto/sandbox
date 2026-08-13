@@ -37,6 +37,43 @@ for (const redraw of ['renderAllTabs(', 'renderCowork(', 'renderAmigos(', 'rende
 assert.ok(workflowFeature.includes('refreshNeeds: feature.refreshNeeds')
   && workflowFeature.includes('loadOverview({ includeRun: false })'),
   'ワークフローの定期更新は要対応だけを取得し、選択中runを更新しません');
+assert.ok(!grab('renderNeeds').includes('queue-summary') && !workflowFeature.includes('queue-summary'),
+  '要対応タブに状態別件数バーを表示しません');
+assert.ok(!workflowFeature.includes('<details class="wf-run-overrides">'),
+  '今回だけの実行方針は折りたたみません');
+for (const [value, label] of [['recommended', 'おすすめ'], ['saving', '節約'], ['quality', '品質優先'],
+  ['cost', 'コスト優先'], ['custom', 'カスタム']]) {
+  assert.ok(workflowFeature.includes(`value="${value}"`) && workflowFeature.includes(`<strong>${label}</strong>`),
+    `今回だけの実行方針に「${label}」を表示します`);
+}
+assert.match(workflowFeature, /name="wf-run-policy-mode" value="recommended" checked/,
+  '今回だけの実行方針はおすすめを初期選択します');
+assert.ok(workflowFeature.includes('id="wf-run-policy-custom" hidden'),
+  '役割・機能ごとの指定はカスタム選択時だけ表示します');
+assert.ok(workflowFeature.includes('id="wf-flow-summary"')
+  && workflowFeature.includes('selectedFlowSummaryHtml(ov, \'auto\')'),
+  '実行タブはフロー選択の直下に初期説明を表示します');
+assert.ok(workflowFeature.includes("flowSelect.addEventListener('change', showFlowSummary)"),
+  'フロー選択時はフォーム全体を再描画せず説明だけ更新します');
+assert.ok(workflowFeature.indexOf('<label class="wf-flow-field">フロー')
+    < workflowFeature.indexOf('<label class="wf-cwd-field">フォルダ'),
+  '実行フォームはフローを左、フォルダを右に配置します');
+assert.ok(workflowFeature.includes('class="settings-save-actions wf-run-actions"'),
+  '実行ボタンはフォーム右下の独立したアクション行へ置きます');
+assert.ok(workflowFeature.includes('class="global-settings-card wf-settings-card"')
+  && workflowFeature.includes('<header class="global-settings-card-heading">')
+  && workflowFeature.includes('class="settings-save-actions wf-settings-actions"'),
+  'ワークフロー設定は全体設定と同じカード見出し・保存アクションを使います');
+assert.match(css, /\.wf-flow-summary\s*\{[^}]*grid-column:\s*1\s*\/\s*-1/s,
+  '選択フローの説明は実行フォームの全幅を使います');
+assert.match(css, /\.wf-selected-flow-card\s*\{[^}]*display:\s*grid/s,
+  '選択フローの説明は編集タブを踏襲したカードとして表示します');
+assert.match(css, /\.wf-selected-flow-heading\s*\{[^}]*justify-content:\s*flex-start/s,
+  '選択フローのバッジとタイトルはカード左上に揃えます');
+assert.match(css, /\.wf-run-card \.orch-policy-card\s*\{[^}]*display:\s*flex/s,
+  '実行カード内でも方針カードの横並びを保ちます');
+assert.match(css, /\.wf-run-card \.orch-policy-card input\s*\{[^}]*width:\s*1px/s,
+  '実行カードの汎用入力幅で方針ラジオを広げません');
 
 {
   const state = { routineAgentTerm: { id: 'removed', name: '前の業務', target: '%1' }, cowork: {} };
@@ -317,9 +354,15 @@ assert.ok(!renderer.includes('id="btn-orch-tier-add"') && !renderer.includes('cl
   '固定された実行レベルの追加・削除操作を表示しません');
 assert.ok(renderer.includes('<h3>実行レベルの構成</h3>')
   && renderer.includes('<th>現在のレベル</th>'), '見出しと表を実行レベルへ統一します');
-assert.ok(renderer.includes('短い一手順だけを任せる小型モデルは「単純作業」')
-  && renderer.includes('Haikuなど軽量でも複数手順を扱えるモデルは「軽量」'),
-  '同じ料金帯でも能力差のあるモデルを別レベルへ分ける基準を示します');
+assert.ok(renderer.includes('候補は上から優先。つまみで並び替えやレベル間の移動ができます。'),
+  '実行レベルの編集方法を一文で示します');
+assert.ok(renderer.includes('class="orch-tier-candidate-drag" draggable="true"')
+  && renderer.includes("tierList.addEventListener('dragover'")
+  && renderer.includes("list.insertBefore(draggedCandidate"),
+  '候補は同じ実行レベル内と実行レベル間でドラッグして並び替えられます');
+assert.ok(renderer.includes('await api.orchestrationProfilesApply({ force: true })')
+  && renderer.includes('保存し、agent-tools ファミリーへ反映しました'),
+  '候補の変更を保存直後に再評価し、ファミリー共通設定へ反映します');
 assert.ok(html.includes('<label for="cowork-routine-tier">今回の実行レベル</label>'),
   '単発実行でも同じ用語を使います');
 // eslint-disable-next-line no-new-func

@@ -59,6 +59,7 @@
   const ROLE_META = { worker: '作業', verify: '検証', human: '人間', planner: '計画', evaluator: '判定', session: 'セッション' };
   const ROLE_KIND = { worker: 'work', verify: 'verify' };
   const TIER_LABELS = { basic: '単純作業', small: '軽量', medium: '標準', large: '高性能', auto: '自動', '自動': '自動' };
+  const RUN_POLICY_LABELS = { recommended: 'おすすめ', saving: '節約', quality: '品質優先', cost: 'コスト優先', custom: 'カスタム' };
   const ICONS = {
     close: '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"></path></svg>',
     plus: '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"></path></svg>',
@@ -478,6 +479,31 @@
     return type === 'auto' ? { type: 'auto' } : { type, id: rest.join(':') };
   }
 
+  function selectedFlowSummaryHtml(ov, value) {
+    const selection = selectionFrom(value);
+    if (selection.type === 'auto') {
+      return `<article class="wf-selected-flow-card" data-flow-summary-type="auto">
+        <header class="wf-selected-flow-heading"><span class="wf-template-kind">自動</span><h3>依頼に合わせて計画</h3></header>
+        <div class="wf-selected-flow-content"><p class="wf-selected-flow-description">agent-flow が依頼に合わせて工程を計画し、実行します。</p></div></article>`;
+    }
+    const pattern = selection.type === 'pattern'
+      ? (ov.patterns || []).find((item) => String(item.id) === selection.id) : null;
+    if (pattern) {
+      return `<article class="wf-selected-flow-card" data-flow-summary-type="pattern">
+        <header class="wf-selected-flow-heading"><span class="wf-template-kind">標準フロー</span><h3>${esc(pattern.label || pattern.id)}</h3></header>
+        <div class="wf-selected-flow-content">${miniFlowHtml(pattern)}
+          <p class="wf-selected-flow-description">${esc(pattern.description || '標準の工程構成で実行します。')}</p></div></article>`;
+    }
+    const workflow = selection.type === 'custom'
+      ? (ov.workflows || []).find((item) => String(item.id) === selection.id) : null;
+    if (!workflow) return '';
+    const nodes = Array.isArray(workflow.nodes) ? workflow.nodes.length : 0;
+    return `<article class="wf-selected-flow-card" data-flow-summary-type="custom">
+      <header class="wf-selected-flow-heading"><span class="wf-template-kind">カスタムフロー</span><h3>${esc(workflow.name || workflow.id)}</h3></header>
+      <div class="wf-selected-flow-content"><p class="wf-selected-flow-description">${esc(workflow.description || `${nodes}工程のワークフロー`)}</p>
+        <span class="wf-card-meta">${nodes}工程</span></div></article>`;
+  }
+
   function sidebarRunsHtml(ov) {
     const rows = ov.runs || [];
     if (!rows.length) return '<div class="empty">実行履歴はありません</div>';
@@ -549,9 +575,11 @@
     const overrides = inbox.execution_overrides || {};
     const overrideRows = [...Object.entries(overrides.roles || {}).map(([key, value]) => ['役割', key, value]),
       ...Object.entries(overrides.kinds || {}).map(([key, value]) => ['機能', key, value])];
-    const overrideHtml = overrideRows.length ? `<dl class="wf-override-summary">${overrideRows.map(([group, key, value]) =>
+    const policyLabel = RUN_POLICY_LABELS[overrides.mode];
+    const policyHtml = policyLabel ? `<p>実行方針: <strong>${esc(policyLabel)}</strong></p>` : '';
+    const overrideHtml = overrideRows.length ? `${policyHtml}<dl class="wf-override-summary">${overrideRows.map(([group, key, value]) =>
       `<div><dt>${esc(group)} ${esc(key)}</dt><dd>${esc(tierLabel(value.tier, '自動'))} · ${esc(value.agent_cli || '自動')}${value.model ? ` / ${esc(value.model)}` : ''}</dd></div>`).join('')}</dl>`
-      : '<p class="muted">エージェント選択は自動です。</p>';
+      : policyHtml || '<p class="muted">エージェント選択は自動です。</p>';
     const events = (detail.events || []).map((event) => `<li><time>${esc(event.ts || '')}</time>
       <strong>${esc(event.kind || event.event || '更新')}</strong>${event.node ? ` · ${esc(event.node)}` : ''}${event.status ? ` · ${esc(event.status)}` : ''}</li>`).join('');
     const view = st.runView === 'process'
@@ -588,10 +616,33 @@
   function overridesHtml(ov) {
     const kindLabels = Object.fromEntries(KINDS.filter((kind) => kind !== 'human').map((kind) => [kind, kindLabelForKind(kind)]));
     const roleLabels = { planner: '計画', evaluator: '継続判定', worker: '作業全般', verify: '検証全般' };
-    return `<details class="wf-run-overrides"><summary>今回だけ実行レベル・エージェントを指定</summary>
-      <p class="muted">未指定は agent-control / agent-flow の自動決定です。機能指定は役割指定より優先します。</p>
-      <h3>役割ごと</h3>${overrideRowsHtml(ov, 'roles', roleLabels)}
-      <h3>機能ごと</h3>${overrideRowsHtml(ov, 'kinds', kindLabels)}</details>`;
+    return `<section class="wf-run-policy" aria-label="今回だけの実行方針">
+      <fieldset class="orch-policy-modes wf-run-policy-modes"><legend>今回だけ実行方針を選択</legend>
+        <label class="orch-policy-card"><input type="radio" name="wf-run-policy-mode" value="recommended" checked><span><strong>おすすめ</strong><small>agent-control / agent-flow が自動で決めます。</small></span></label>
+        <label class="orch-policy-card"><input type="radio" name="wf-run-policy-mode" value="saving"><span><strong>節約</strong><small>軽量を基本に利用量を抑えます。</small></span></label>
+        <label class="orch-policy-card"><input type="radio" name="wf-run-policy-mode" value="quality"><span><strong>品質優先</strong><small>高性能を使って品質を優先します。</small></span></label>
+        <label class="orch-policy-card"><input type="radio" name="wf-run-policy-mode" value="cost"><span><strong>コスト優先</strong><small>許可される最低レベルを使い、可能な機能は単純作業にします。</small></span></label>
+        <label class="orch-policy-card"><input type="radio" name="wf-run-policy-mode" value="custom"><span><strong>カスタム</strong><small>役割・機能ごとに指定します。</small></span></label>
+      </fieldset>
+      <div class="wf-run-policy-custom" id="wf-run-policy-custom" hidden>
+        <p class="muted">未指定は自動です。機能指定は役割指定より優先します。</p>
+        <h3>役割ごと</h3>${overrideRowsHtml(ov, 'roles', roleLabels)}
+        <h3>機能ごと</h3>${overrideRowsHtml(ov, 'kinds', kindLabels)}
+      </div></section>`;
+  }
+
+  function executionOverridesForMode(mode, ov) {
+    if (mode === 'recommended') return null;
+    const catalog = (ov && ov.kindTiers) || {};
+    const tierFor = (tiers) => mode === 'cost' ? tiers[0]
+      : mode === 'quality' ? (tiers.includes('large') ? 'large' : tiers[tiers.length - 1])
+        : ['small', 'medium', 'large'].find((tier) => tiers.includes(tier)) || tiers[tiers.length - 1];
+    const select = (group) => Object.fromEntries(Object.entries(catalog[group] || {}).flatMap(([key, spec]) =>
+      Array.isArray(spec.tiers) && spec.tiers.length ? [[key, { tier: tierFor(spec.tiers) }]] : []));
+    if (['cost', 'saving', 'quality'].includes(mode)) {
+      return { version: 1, mode, roles: select('roles'), kinds: select('kinds') };
+    }
+    return null;
   }
 
   function runHtml(ov) {
@@ -600,12 +651,14 @@
       <div class="wf-title"><div><h2>ワークフロー</h2><p>Gitリポジトリでフローを実行します。</p></div></div>
       ${st.notice ? `<p class="qf-notice" role="status">${esc(st.notice)}</p>` : ''}
       <div class="wf-run-card">
-        <label>フォルダ<input id="wf-cwd" type="text" list="wf-cwd-history" placeholder="/path/to/repository" autocomplete="off"></label>
+        <label class="wf-flow-field">フロー<select id="wf-flow">${flowOptions(ov)}</select></label>
+        <label class="wf-cwd-field">フォルダ<input id="wf-cwd" type="text" list="wf-cwd-history" placeholder="/path/to/repository" autocomplete="off"></label>
         <datalist id="wf-cwd-history">${history}</datalist>
-        <label>フロー<select id="wf-flow">${flowOptions(ov)}</select></label>
+        <div class="wf-flow-summary" id="wf-flow-summary" aria-live="polite">${selectedFlowSummaryHtml(ov, 'auto')}</div>
         <label class="wf-request">依頼<textarea id="wf-request" rows="4" placeholder="実行する内容"></textarea></label>
         ${overridesHtml(ov)}
-        <button type="button" class="primary" id="wf-submit" ${st.busy ? 'disabled' : ''}>${esc(st.busy || '実行')}</button>
+        <div class="settings-save-actions wf-run-actions"><button type="button" class="primary-inline" id="wf-submit"
+          ${st.busy ? 'disabled' : ''}>${esc(st.busy || '実行')}</button></div>
       </div>
       ${runDetailHtml(st.runDetail)}
     </section>`;
@@ -994,8 +1047,6 @@
   function needsHtml(ov) {
     const items = workflowNeeds(ov);
     const bucket = (item) => item.resolution || item.expired ? 'done' : item.responded ? 'sent' : 'open';
-    const counts = { open: 0, sent: 0, done: 0 };
-    items.forEach((item) => { counts[bucket(item)] += 1; });
     const selected = items.find((item) => `${item.runId}:${item.interaction_id}` === st.selectedNeed) || items[0] || null;
     if (selected) st.selectedNeed = `${selected.runId}:${selected.interaction_id}`;
     const list = items.map((item) => {
@@ -1007,7 +1058,6 @@
         <strong>${esc(item.prompt || '人の確認')}</strong><small>${esc(item.runId)}</small></button>`;
     }).join('');
     return `<section class="wf-page"><div class="wf-title"><div><h2>要対応</h2><p>ワークフローが待っている人の判断を確認・回答します。</p></div></div>
-      <div class="queue-summary"><span class="status-chip st-blocked">未対応 ${counts.open}</span><span class="status-chip st-review">送信済み ${counts.sent}</span><span class="status-chip st-done">回答済み ${counts.done}</span></div>
       <div class="master-detail needs-layout"><aside class="master-list">${list || '<div class="empty">要対応はありません</div>'}</aside>
         <main class="detail-panel">${selected ? interactionCardsHtml([selected]) : '<div class="empty">要対応はありません</div>'}</main></div></section>`;
   }
@@ -1038,9 +1088,14 @@
   function settingsHtml(ov) {
     return `<section class="wf-page"><div class="wf-title"><div><h2>設定</h2><p>ワークフロー実行履歴の保持期間を設定します。</p></div></div>
       ${st.notice ? `<p class="qf-notice" role="status">${esc(st.notice)}</p>` : ''}
-      <div class="wf-settings-card"><label>実行履歴の保持日数<input id="wf-retention-days" type="number" min="1" max="3650" step="1" value="${esc(ov.retentionDays || 30)}"></label>
-        <p class="muted">期限を過ぎた終端済みの実行を削除します。未対応の人による確認がある実行は保持します。</p>
-        <button type="button" class="primary" id="wf-save-settings">保存</button></div></section>`;
+      <div class="global-settings-card wf-settings-card">
+        <header class="global-settings-card-heading"><span class="summary-kicker">実行履歴</span><h2>履歴の保持</h2>
+          <p class="muted">終了したワークフローの履歴を残す期間を設定します。</p></header>
+        <div class="field wf-settings-field"><label for="wf-retention-days">保持日数</label>
+          <input id="wf-retention-days" type="number" min="1" max="3650" step="1" value="${esc(ov.retentionDays || 30)}">
+          <p class="field-help">期限を過ぎた終端済みの実行を削除します。未対応の人による確認がある実行は保持します。</p></div>
+        <div class="settings-save-actions wf-settings-actions"><button type="button" class="primary-inline" id="wf-save-settings">保存</button></div>
+      </div></section>`;
   }
 
   function renderConfig() {
@@ -1068,8 +1123,10 @@
     renderSidebar();
   }
 
-  function executionOverridesFromForm(pane) {
-    const out = { version: 1, roles: {}, kinds: {} };
+  function executionOverridesFromForm(pane, ov) {
+    const mode = pane.querySelector('input[name="wf-run-policy-mode"]:checked')?.value || 'recommended';
+    if (mode !== 'custom') return executionOverridesForMode(mode, ov);
+    const out = { version: 1, mode: 'custom', roles: {}, kinds: {} };
     pane.querySelectorAll('[data-override-group]').forEach((row) => {
       const value = {
         tier: row.querySelector('[data-override-tier]')?.value || '',
@@ -1078,7 +1135,7 @@
       };
       if (value.tier || value.agent_cli || value.model) out[row.dataset.overrideGroup][row.dataset.overrideKey] = value;
     });
-    return Object.keys(out.roles).length || Object.keys(out.kinds).length ? out : null;
+    return out;
   }
 
   function wireInteractionResponses(pane, after) {
@@ -1105,6 +1162,18 @@
 
   function wireRun(pane) {
     if (!pane) return;
+    const flowSelect = $id('wf-flow');
+    const showFlowSummary = () => {
+      const summary = $id('wf-flow-summary');
+      if (summary) summary.innerHTML = selectedFlowSummaryHtml(st.overview || {}, $id('wf-flow')?.value || 'auto');
+    };
+    if (flowSelect) flowSelect.addEventListener('change', showFlowSummary);
+    const custom = pane.querySelector('#wf-run-policy-custom');
+    const showPolicyFields = () => {
+      if (custom) custom.hidden = pane.querySelector('input[name="wf-run-policy-mode"]:checked')?.value !== 'custom';
+    };
+    pane.querySelectorAll('input[name="wf-run-policy-mode"]').forEach((input) => input.addEventListener('change', showPolicyFields));
+    showPolicyFields();
     $id('wf-cwd')?.addEventListener('change', async () => {
       const cwd = $id('wf-cwd')?.value || '';
       const request = $id('wf-request')?.value || '';
@@ -1116,6 +1185,7 @@
         if ($id('wf-request')) $id('wf-request').value = request;
         if ($id('wf-flow') && [...$id('wf-flow').options].some((option) => option.value === selection)) {
           $id('wf-flow').value = selection;
+          showFlowSummary();
         }
       } catch (err) {
         st.notice = String((err && err.message) || err);
@@ -1129,7 +1199,7 @@
         cwd: $id('wf-cwd')?.value || '',
         request: $id('wf-request')?.value || '',
         selection: selectionFrom($id('wf-flow')?.value || 'auto'),
-        executionOverrides: executionOverridesFromForm(pane),
+        executionOverrides: executionOverridesFromForm(pane, st.overview || {}),
       };
       renderRun();
       try {
@@ -1557,6 +1627,7 @@
     badge,
     statusLabel,
     selectionFrom,
+    selectedFlowSummaryHtml,
     defaultGoal,
     roleLabelForKind,
     nodePresentation,
@@ -1571,6 +1642,7 @@
     nextNodePosition,
     methodPresentation,
     tierLabel,
+    executionOverridesForMode,
     edgePath,
     workflowLibraryHtml,
     connectionError,
