@@ -1,0 +1,269 @@
+'use strict';
+
+// coherence: doc=docs/plans/2026-08-13-agent-dashboard-design-session-design.md, test=tools/agent-dashboard/test/adhoc-flow.test.js
+
+// 設計セッション — 短い要望を、agent-flow がそのまま実行できる設計書まで詰める。
+//
+// 1 ラウンド = 1 本の短命な設計 run（同梱フロー design-interactive / design-auto）。
+// human ノードで park させず、ラウンドの制御は dashboard の決定的コードが持つ:
+//   ラウンドへの入力 … 元の要望・現在の設計書・前ラウンドの回答（buildRoundRequest）
+//   ラウンドの成果 … 設計書の全文と、末尾の「## 質問」節（splitDesignOutput）
+// ラウンド数に上限は無く、やめ時は人が「この設計で実行」を押した時。毎ラウンド完全な
+// 設計書が返るので、どこで止めても実装 run へ渡せる。
+//
+// 実行系は adhoc.submit そのもの（新しい実行系・投入契約は作らない）。読み取りも
+// バスパーサ（agent-project/main/flow.js）をそのまま使う（C7: 読み手を増やさない）。
+// 設計 run はファイルを変更しないため、workspace を渡しても af/<run-id> は push されない
+// （agent-flow の「変更が無ければブランチを push しない」契約）。
+
+const fs = require('fs');
+const path = require('path');
+const { agentHomeSubdir } = require('../../../base/main/agent-home');
+const adhoc = require('./adhoc');
+
+// 手法（mode）と同梱フローの対応。フロー本体は workflows/<id>.json（読み取り専用）。
+const MODE_FLOWS = { interactive: 'design-interactive', auto: 'design-auto' };
+
+// 「## 質問」節の見出し。レベルは問わない（生成側が h2 で書く前提だが、h3 でも拾う）。
+const QUESTION_HEADING = /^#{1,6}[ \t]*質問[ \t]*$/;
+
+function cfgOf(config) {
+  return (config && config.adhocFlow) || {};
+}
+
+function resolveSessionDir(config) {
+  return String(cfgOf(config).designSessionDir || '').trim()
+    || agentHomeSubdir('flow', 'design-sessions');
+}
+
+function writeJsonAtomic(file, data) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = `${file}.tmp.${process.pid}`;
+  fs.writeFileSync(tmp, `${JSON.stringify(data, null, 2)}\n`);
+  fs.renameSync(tmp, file);
+}
+
+// --- ラウンドの成果を読む ------------------------------------------------------
+
+// 設計 run の成果 = 設計書 + 次の質問。JSON ではなく Markdown の節規約で受ける
+// （長文 Markdown を JSON 文字列へ内包させると小さいモデルが壊す。節規約なら分割に
+// 失敗しても全文がそのまま読める＝劣化しても安全）。
+function splitDesignOutput(raw) {
+  const text = String(raw == null ? '' : raw).replace(/\r\n/g, '\n').trim();
+  if (!text) return { document: '', questions: [] };
+  const lines = text.split('\n');
+  // 見出しは最後のものを採る。設計書の本文が「## 質問」に言及していても、実際の質問節は
+  // 末尾にあるため。
+  let at = -1;
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    if (QUESTION_HEADING.test(lines[i])) { at = i; break; }
+  }
+  if (at < 0) return { document: text, questions: [] };
+  const questions = [];
+  let current = '';
+  for (const line of lines.slice(at + 1)) {
+    const item = line.match(/^[ \t]*(?:\d+[.)]|[-*])[ \t]+(.*)$/);
+    if (item) {
+      if (current) questions.push(current.trim());
+      current = item[1];
+    } else if (current && line.trim()) {
+      current += `\n${line.trim()}`;
+    }
+  }
+  if (current) questions.push(current.trim());
+  // 見出しはあるのに項目を1つも取れないときは、分割せず全文を設計書として残す。
+  // 中途半端に切り落として本文を失うより、読める形で全部渡すほうがましなため。
+  if (!questions.length) return { document: text, questions: [] };
+  return { document: lines.slice(0, at).join('\n').trim(), questions };
+}
+
+// 末端（sink）ノードの出力。集約せず、run の最後に確定した成果をそのまま設計書として使う。
+function sinkOutput(run) {
+  const nodes = Object.values((run && run.nodes) || {});
+  if (!nodes.length) return '';
+  const referenced = new Set(nodes.flatMap((node) => node.deps || []));
+  const usable = nodes.filter((node) => node.state === 'done' && node.output);
+  const sinks = usable.filter((node) => !referenced.has(node.id));
+  const pick = (sinks.length ? sinks : usable)
+    .sort((a, b) => String(a.finishedAt || '').localeCompare(String(b.finishedAt || '')))
+    .pop();
+  return pick ? String(pick.output) : '';
+}
+
+// --- ラウンドへの入力 ----------------------------------------------------------
+
+function buildRoundRequest({ goal, document, answers } = {}) {
+  const answered = (Array.isArray(answers) ? answers : [])
+    .map((item) => ({
+      question: String((item && item.question) || '').trim(),
+      answer: String((item && item.answer) || '').trim(),
+    }))
+    .filter((item) => item.question && item.answer);
+  const parts = [`## 元の要望\n${String(goal || '').trim()}`];
+  const current = String(document || '').trim();
+  if (current) parts.push(`## 現在の設計書\n${current}`);
+  if (answered.length) {
+    parts.push(`## 前回の質問と回答\n${answered
+      .map((item, index) => `${index + 1}. ${item.question}\n   → ${item.answer}`).join('\n')}`);
+  }
+  return parts.join('\n\n');
+}
+
+// --- セッションの保存 ----------------------------------------------------------
+
+function sessionFile(config, id) {
+  const clean = String(id || '').trim();
+  if (!/^ds-[a-zA-Z0-9-]{1,60}$/.test(clean)) throw new Error(`設計セッション id が不正です: ${id}`);
+  return path.join(resolveSessionDir(config), `${clean}.json`);
+}
+
+function newSessionId() {
+  const t = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  return `ds-${t.getFullYear()}${pad(t.getMonth() + 1)}${pad(t.getDate())}`
+    + `-${pad(t.getHours())}${pad(t.getMinutes())}${pad(t.getSeconds())}`
+    + `-${Math.floor(1000 + Math.random() * 9000)}`;
+}
+
+function readSession(config, id) {
+  try {
+    return JSON.parse(fs.readFileSync(sessionFile(config, id), 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function saveSession(config, session) {
+  const next = { ...session, updatedAt: new Date().toISOString() };
+  writeJsonAtomic(sessionFile(config, next.id), next);
+  return next;
+}
+
+function deleteSession(config, id) {
+  const file = sessionFile(config, id);
+  if (!fs.existsSync(file)) return false;
+  fs.rmSync(file);
+  return true;
+}
+
+// --- ラウンドの実行と回収 ------------------------------------------------------
+
+// run が終端していれば成果を取り込む。done は設計書と質問へ分けて保存し、失敗・中止は
+// 理由を残してラウンドを閉じる（セッションは消さない——同じ回答のまま再試行できる）。
+function harvest(config, session) {
+  if (!session.runId || session.runStatus === 'done') return session;
+  const runDir = path.join(adhoc.resolveBusDir(config), 'runs', session.runId);
+  if (!fs.existsSync(runDir)) return session;
+  const run = adhoc.flow.readRun(runDir);
+  const status = String(run.status || '');
+  if (!['done', 'failed', 'cancelled', 'canceled'].includes(status)) {
+    return session.runStatus === status ? session : saveSession(config, { ...session, runStatus: status });
+  }
+  if (status !== 'done') {
+    return saveSession(config, {
+      ...session,
+      runStatus: status,
+      error: run.failureReason || `設計 run が ${status} で終わりました`,
+    });
+  }
+  const output = sinkOutput(run);
+  if (!output) {
+    return saveSession(config, { ...session, runStatus: status, error: '設計 run の成果が空でした' });
+  }
+  const { document, questions } = splitDesignOutput(output);
+  const rounds = [...(session.rounds || [])];
+  const last = rounds[rounds.length - 1];
+  if (last && last.runId === session.runId) {
+    last.questions = questions;
+    last.finishedAt = new Date().toISOString();
+  }
+  return saveSession(config, { ...session, runStatus: status, error: '', document, questions, rounds });
+}
+
+function summarize(session) {
+  return {
+    ...session,
+    // 一覧は本文を運ばない（セッションが増えるほど画面の初期表示が重くなるため）
+    document: undefined,
+    documentLength: String(session.document || '').length,
+    questionCount: (session.questions || []).length,
+  };
+}
+
+function listSessions(config) {
+  const dir = resolveSessionDir(config);
+  if (!fs.existsSync(dir)) return [];
+  const out = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+    try {
+      const session = JSON.parse(fs.readFileSync(path.join(dir, entry.name), 'utf8'));
+      if (session && session.id) out.push(summarize(session));
+    } catch { /* 壊れた1ファイルで一覧全体を壊さない */ }
+  }
+  return out.sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
+}
+
+function getSession(config, id) {
+  const session = readSession(config, id);
+  if (!session) throw new Error(`設計セッションが見つかりません: ${id}`);
+  return harvest(config, session);
+}
+
+// セッションを作る（id 省略時）か、回答を添えて次のラウンドを投げる。
+function startRound(config, { id, cwd, goal, mode, answers } = {}) {
+  const existing = id ? getSession(config, id) : null;
+  if (id && !existing) throw new Error(`設計セッションが見つかりません: ${id}`);
+  const request = String(goal || (existing && existing.goal) || '').trim();
+  if (!request) throw new Error('やりたいことを1行でも書いてください');
+  const selectedMode = String(mode || (existing && existing.mode) || 'interactive');
+  const flowId = MODE_FLOWS[selectedMode];
+  if (!flowId) throw new Error(`設計の進め方が不正です: ${selectedMode}`);
+  const folder = String(cwd == null ? (existing && existing.cwd) || '' : cwd).trim();
+  const asked = existing ? existing.questions || [] : [];
+  const replies = (Array.isArray(answers) ? answers : []).map((answer) => String(answer || ''));
+  const paired = asked.map((question, index) => ({ question, answer: replies[index] || '' }));
+
+  const result = adhoc.submit(config, {
+    request: buildRoundRequest({
+      goal: request,
+      document: existing && existing.document,
+      answers: paired,
+    }),
+    cwd: folder,
+    selection: { type: 'custom', id: flowId },
+  });
+
+  const now = new Date().toISOString();
+  const base = existing || {
+    version: 1, id: newSessionId(), createdAt: now, rounds: [], document: '', questions: [],
+  };
+  return saveSession(config, {
+    ...base,
+    goal: request,
+    mode: selectedMode,
+    cwd: folder,
+    runId: result.runId,
+    runStatus: 'running',
+    error: '',
+    questions: [],
+    rounds: [...(base.rounds || []), {
+      runId: result.runId,
+      startedAt: now,
+      answers: paired.filter((item) => item.answer),
+      questions: [],
+    }],
+  });
+}
+
+module.exports = {
+  MODE_FLOWS,
+  resolveSessionDir,
+  splitDesignOutput,
+  sinkOutput,
+  buildRoundRequest,
+  listSessions,
+  getSession,
+  startRound,
+  deleteSession,
+};

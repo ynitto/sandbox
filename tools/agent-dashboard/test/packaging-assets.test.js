@@ -108,4 +108,15 @@ test('同梱の手法カタログが extraResources でパッケージへ入る'
   assert.strictEqual(fs.readdirSync(dir).filter((name) => name.endsWith('.json')).length, 21);
 });
 
+// 同梱フロー（workflows/<id>.json）も同じ理由でリポジトリ直下にある。入っていないと
+// パッケージ版で設計セッションが「フローが見つかりません」で始められない。
+test('同梱フローが extraResources でパッケージへ入る', () => {
+  const entry = (pkg.build.extraResources || []).find((e) => String(e && e.to) === 'workflows');
+  assert.ok(entry, 'build.extraResources に workflows/ の同梱指定が必要です');
+  const dir = path.resolve(ROOT, entry.from);
+  for (const name of ['design-interactive.json', 'design-auto.json']) {
+    assert.ok(fs.existsSync(path.join(dir, name)), `同梱元に ${name} がありません: ${dir}`);
+  }
+});
+
 console.log(`\n${passed} passed`);

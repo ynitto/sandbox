@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const adhoc = require('./adhoc');
+const designSession = require('./design-session');
 const profiles = require('../../orchestration/main/profiles');
 const flowTiers = require('../../orchestration/main/flow-tiers');
 const tuning = require('../../orchestration/main/tuning');
@@ -204,6 +205,18 @@ function registerIpc(ctx) {
     saveConfig({ ...cfg, adhocFlow: { ...cfg.adhocFlow, retentionDays: days } });
     return { retentionDays: days };
   });
+  // 設計セッション（短い要望 → 実行できる設計書）。ラウンドの制御はここだけが持つ。
+  handle('designSession:list', () => ({ sessions: designSession.listSessions(loadConfig()) }));
+  handle('designSession:get', ({ id } = {}) => ({
+    session: designSession.getSession(loadConfig(), String(id || '')),
+  }));
+  handle('designSession:start', (payload) => ({
+    session: designSession.startRound(loadConfig(), payload || {}),
+  }));
+  handle('designSession:delete', ({ id } = {}) => ({
+    deleted: designSession.deleteSession(loadConfig(), String(id || '')),
+  }));
+
   handle('adhocFlow:copyMethod', ({ id, cwd, newId } = {}) => {
     const cfg = loadConfig();
     const method = adhoc.availableMethods(cfg, { cwd }).find((item) => String(item.id) === String(id));

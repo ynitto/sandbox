@@ -69,6 +69,13 @@
         "filter": [
           "**/*.json"
         ]
+      },
+      {
+        "from": "../../workflows",
+        "to": "workflows",
+        "filter": [
+          "**/*.json"
+        ]
       }
     ]
   },

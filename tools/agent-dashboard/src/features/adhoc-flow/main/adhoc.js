@@ -88,14 +88,29 @@ function registeredRepositoryRoot(config, cwd) {
   return registered.includes(path.resolve(root)) ? root : '';
 }
 
+// 同梱フローの置き場。手法カタログ（tuning.resolveMethodsDir）と同じ配布規則で解決する
+// ——パッケージ版は extraResources、開発起動はリポジトリ直下の workflows/。
+function resolveBuiltinWorkflowDir(config) {
+  const explicit = String(cfgOf(config).builtinWorkflowDir || '').trim();
+  if (explicit) return explicit;
+  const packaged = process.resourcesPath && path.join(process.resourcesPath, 'workflows');
+  if (packaged && fs.existsSync(packaged)) return packaged;
+  return path.resolve(__dirname, '../../../../../../workflows');
+}
+
 function workflowDirs(config, cwd = '') {
   const registered = registeredRepositoryRoot(config, cwd);
   const repository = registered ? path.join(registered, '.agents', 'workflows') : '';
+  // 同じ id は先に並ぶスコープが勝つ。同梱を最後に置き、ユーザーが同 id を保存すれば
+  // 同梱版を隠せるようにする（手法カタログと同じ上書き規則）。
   return [
     ...(repository ? [{ scope: 'repository', dir: repository, repository: registered }] : []),
     { scope: 'user', dir: resolveWorkflowDir(config), repository: '' },
+    { scope: 'builtin', dir: resolveBuiltinWorkflowDir(config), repository: '' },
   ];
 }
+
+const READONLY_SCOPES = { repository: 'リポジトリ共有フロー', builtin: '同梱フロー' };
 
 function workflowId(raw) {
   const id = String(raw || '').trim();
@@ -224,8 +239,8 @@ function workflowFile(config, id) {
 
 function saveWorkflow(config, raw) {
   if (!raw || typeof raw !== 'object') throw new Error('フローが不正です');
-  if (raw._scope === 'repository') {
-    throw new Error('リポジトリ共有フローは読み取り専用です。通常の Git 作業で変更してください');
+  if (READONLY_SCOPES[raw._scope]) {
+    throw new Error(`${READONLY_SCOPES[raw._scope]}は読み取り専用です。別の id で自分用に保存してください`);
   }
   const current = raw && raw.id ? loadWorkflow(config, raw.id, { scope: 'user' }) : null;
   const clean = normalizeWorkflow({ ...raw, createdAt: (current && current.createdAt) || raw.createdAt });
@@ -269,8 +284,8 @@ function listWorkflows(config, options = {}) {
 }
 
 function deleteWorkflow(config, id, options = {}) {
-  if (options.scope === 'repository') {
-    throw new Error('リポジトリ共有フローは読み取り専用です。通常の Git 作業で削除してください');
+  if (READONLY_SCOPES[options.scope]) {
+    throw new Error(`${READONLY_SCOPES[options.scope]}は読み取り専用です。dashboard からは削除できません`);
   }
   const file = workflowFile(config, id);
   if (!fs.existsSync(file)) return false;
@@ -795,6 +810,7 @@ module.exports = {
   buildVerificationPlan,
   resolveBusDir,
   resolveWorkflowDir,
+  resolveBuiltinWorkflowDir,
   repositoryRoot,
   repositoryWorkflowDir,
   repositoryMethodsDir,

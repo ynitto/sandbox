@@ -19,6 +19,7 @@ function test(name, fn) {
 }
 
 const adhoc = require('../src/features/adhoc-flow/main/adhoc');
+const design = require('../src/features/adhoc-flow/main/design-session');
 const exec = require('../src/features/routines/main/exec');
 const tuning = require('../src/features/orchestration/main/tuning');
 const profiles = require('../src/features/orchestration/main/profiles');
@@ -130,7 +131,8 @@ test('カスタムフローをユーザー共通ファイルとして保存・�
     ],
   });
   assert.ok(saved.id.startsWith('workflow-'));
-  assert.strictEqual(adhoc.listWorkflows(cfg).length, 1);
+  // 一覧には同梱フローも並ぶので、自分用スコープだけを数える
+  assert.strictEqual(adhoc.listWorkflows(cfg).filter((item) => item._scope === 'user').length, 1);
   assert.deepStrictEqual(adhoc.loadWorkflow(cfg, saved.id), saved);
   assert.strictEqual(saved.nodes[1].tier, 'small');
   assert.strictEqual(saved.nodes[1].x, 320);
@@ -1429,6 +1431,146 @@ test('保持期限の掃除は終端済み・未対応なしの古い run だけ
   assert.ok(!fs.existsSync(path.join(tuningRoot, 'old-done')));
   for (const id of ['old-running', 'old-waiting', 'recent-done']) {
     assert.ok(fs.existsSync(path.join(busDir, 'runs', id)), `${id} は保持する`);
+  }
+});
+
+// --- 設計セッション: 短い要望 → 実行できる設計書 -------------------------------
+
+test('実行前チェックは必須4節を言い換えごと決定的に数える（実行は止めない）', () => {
+  assert.deepStrictEqual(workflowUi.readinessCheck(''), { empty: true, missing: ['目的', '変更対象', '受入基準', '検証方法'] });
+  assert.deepStrictEqual(workflowUi.readinessCheck('## 目的\nx\n## 変更対象\ny\n## 受入基準\nz\n## 検証方法\nw'),
+    { empty: false, missing: [] });
+  // 言い換え・見出しレベル・「目的:」形式のいずれでも同じ節として数える
+  assert.deepStrictEqual(workflowUi.readinessCheck('# 1. 狙い\nx\n#### スコープ\ny\n**完了条件**: z\nテスト方法: w'),
+    { empty: false, missing: [] });
+  assert.deepStrictEqual(workflowUi.readinessCheck('## 目的\nx\n## 変更対象\ny').missing, ['受入基準', '検証方法']);
+  assert.deepStrictEqual(workflowUi.readinessCheck(workflowUi.REQUEST_TEMPLATE).missing, []);
+});
+
+test('ラウンド成果は「## 質問」節で設計書と質問へ分ける（見出し無しは収束）', () => {
+  const withQuestions = design.splitDesignOutput(
+    '## 目的\nやること\n\n## 質問\n1. 対象は A と B のどちらか\n   推奨: A\n2. 期限はあるか\n'
+  );
+  assert.strictEqual(withQuestions.document, '## 目的\nやること');
+  assert.deepStrictEqual(withQuestions.questions, ['対象は A と B のどちらか\n推奨: A', '期限はあるか']);
+  // 見出しが無ければ質問なし＝収束。全文が設計書になる
+  assert.deepStrictEqual(design.splitDesignOutput('## 目的\nやること'),
+    { document: '## 目的\nやること', questions: [] });
+  // 見出しはあるのに項目を取れないときは切り落とさず全文を残す（劣化しても読める）
+  const broken = design.splitDesignOutput('## 目的\nやること\n\n## 質問\n特にありません');
+  assert.ok(broken.document.includes('特にありません'));
+  assert.deepStrictEqual(broken.questions, []);
+  assert.deepStrictEqual(design.splitDesignOutput(''), { document: '', questions: [] });
+});
+
+test('ラウンドへの入力は元の要望・現在の設計書・回答済みの質問だけを運ぶ', () => {
+  const request = design.buildRoundRequest({
+    goal: '依頼欄に設計書を読み込めるようにする',
+    document: '## 目的\n既存の設計',
+    answers: [{ question: '対象は', answer: 'A' }, { question: '期限は', answer: '  ' }],
+  });
+  assert.ok(request.includes('## 元の要望\n依頼欄に設計書を読み込めるようにする'));
+  assert.ok(request.includes('## 現在の設計書\n## 目的\n既存の設計'));
+  assert.ok(request.includes('1. 対象は\n   → A'));
+  assert.ok(!request.includes('期限は'), '未回答の質問は運ばない');
+  // 初回は設計書も回答も無い
+  assert.strictEqual(design.buildRoundRequest({ goal: 'やりたいこと' }), '## 元の要望\nやりたいこと');
+});
+
+test('設計書は末端ノードの出力から取る（final.summary は抜粋なので使わない）', () => {
+  const run = { nodes: {
+    a: { id: 'a', deps: [], state: 'done', output: '要件', finishedAt: '2026-08-13T00:00:00Z' },
+    b: { id: 'b', deps: ['a'], state: 'done', output: '## 目的\n設計書', finishedAt: '2026-08-13T00:01:00Z' },
+  } };
+  assert.strictEqual(design.sinkOutput(run), '## 目的\n設計書');
+  assert.strictEqual(design.sinkOutput({ nodes: {} }), '');
+});
+
+test('設計セッションはラウンドごとに設計 run を投げ、成果を取り込む', () => {
+  const busDir = tmpdir('design-bus-');
+  const cfg = { adhocFlow: {
+    busDir,
+    workflowDir: tmpdir('design-workflow-'),
+    designSessionDir: tmpdir('design-sessions-'),
+    tuningRoot: tmpdir('design-tuning-'),
+  } };
+  const originalExec = exec.shInWsl;
+  const originalTier = profiles.resolveTier;
+  exec.shInWsl = () => ({ status: 0, stdout: 'launched:1', stderr: '' });
+  profiles.resolveTier = () => ({ agent_cli: 'claude', model: '' });
+  try {
+    // 同梱フローが読めていること（対話・全自動の 2 本）
+    const builtin = adhoc.listWorkflows(cfg).filter((item) => item._scope === 'builtin');
+    assert.deepStrictEqual(builtin.map((item) => item.id).sort(), ['design-auto', 'design-interactive']);
+    assert.throws(() => adhoc.saveWorkflow(cfg, { ...builtin[0], name: '変更' }), /読み取り専用/);
+
+    const started = design.startRound(cfg, { goal: '依頼欄に設計書を読み込めるようにする', mode: 'interactive' });
+    assert.strictEqual(started.runStatus, 'running');
+    assert.strictEqual(started.rounds.length, 1);
+    const inbox = adhoc.readInbox(busDir, started.runId);
+    assert.strictEqual(inbox.plan.name, '設計を練る（対話）');
+    assert.ok(inbox.request.includes('## 元の要望\n依頼欄に設計書を読み込めるようにする'));
+    assert.strictEqual(inbox.workspace, null, '設計 run はワークスペースを取らない（cwd 未指定）');
+
+    // run が done になったら設計書と質問を取り込む
+    const runDir = path.join(busDir, 'runs', started.runId);
+    fs.mkdirSync(path.join(runDir, 'results'), { recursive: true });
+    fs.writeFileSync(path.join(runDir, 'meta.json'), JSON.stringify({ status: 'done' }));
+    fs.writeFileSync(path.join(runDir, 'graph.json'), JSON.stringify({ nodes: { draft: { id: 'draft', deps: [] } } }));
+    fs.writeFileSync(path.join(runDir, 'results', 'draft.json'), JSON.stringify({
+      status: 'done', output: '## 目的\nやること\n\n## 質問\n1. 対象は A と B のどちらか',
+    }));
+    const harvested = design.getSession(cfg, started.id);
+    assert.strictEqual(harvested.runStatus, 'done');
+    assert.strictEqual(harvested.document, '## 目的\nやること');
+    assert.deepStrictEqual(harvested.questions, ['対象は A と B のどちらか']);
+    assert.deepStrictEqual(harvested.rounds[0].questions, ['対象は A と B のどちらか']);
+
+    // 次のラウンドは回答を運び、直前の設計書を入力に載せる
+    const next = design.startRound(cfg, { id: started.id, answers: ['A'] });
+    assert.strictEqual(next.rounds.length, 2);
+    assert.deepStrictEqual(next.questions, [], '新しいラウンドの開始で古い質問は消える');
+    const nextInbox = adhoc.readInbox(busDir, next.runId);
+    assert.ok(nextInbox.request.includes('## 現在の設計書\n## 目的\nやること'));
+    assert.ok(nextInbox.request.includes('1. 対象は A と B のどちらか\n   → A'));
+
+    assert.strictEqual(design.listSessions(cfg).length, 1);
+    assert.strictEqual(design.listSessions(cfg)[0].document, undefined, '一覧は本文を運ばない');
+    assert.strictEqual(design.deleteSession(cfg, started.id), true);
+    assert.strictEqual(design.listSessions(cfg).length, 0);
+    assert.throws(() => design.startRound(cfg, { goal: '' }), /やりたいこと/);
+    assert.throws(() => design.startRound(cfg, { goal: 'x', mode: 'unknown' }), /進め方が不正/);
+  } finally {
+    exec.shInWsl = originalExec;
+    profiles.resolveTier = originalTier;
+  }
+});
+
+test('設計 run が失敗したらセッションに理由を残し、回答は消さない', () => {
+  const busDir = tmpdir('design-fail-bus-');
+  const cfg = { adhocFlow: {
+    busDir, workflowDir: tmpdir('design-fail-workflow-'),
+    designSessionDir: tmpdir('design-fail-sessions-'), tuningRoot: tmpdir('design-fail-tuning-'),
+  } };
+  const originalExec = exec.shInWsl;
+  const originalTier = profiles.resolveTier;
+  exec.shInWsl = () => ({ status: 0, stdout: 'launched:1', stderr: '' });
+  profiles.resolveTier = () => ({ agent_cli: 'claude', model: '' });
+  try {
+    const started = design.startRound(cfg, { goal: 'やりたいこと', mode: 'auto' });
+    const runDir = path.join(busDir, 'runs', started.runId);
+    fs.mkdirSync(runDir, { recursive: true });
+    fs.writeFileSync(path.join(runDir, 'meta.json'), JSON.stringify({
+      status: 'failed', failure_reason: 'エージェントが応答しませんでした',
+    }));
+    fs.writeFileSync(path.join(runDir, 'graph.json'), JSON.stringify({ nodes: {} }));
+    const harvested = design.getSession(cfg, started.id);
+    assert.strictEqual(harvested.runStatus, 'failed');
+    assert.strictEqual(harvested.error, 'エージェントが応答しませんでした');
+    assert.strictEqual(harvested.rounds.length, 1, 'ラウンド記録は残る');
+  } finally {
+    exec.shInWsl = originalExec;
+    profiles.resolveTier = originalTier;
   }
 });
 

@@ -91,8 +91,13 @@ test('状態リポジトリを書き換える git サブコマンドを起動し
 test('ワークフロー画面は成果物リポジトリの共有フローを書き換えない', () => {
   const adhoc = require('../src/features/adhoc-flow/main/adhoc');
   const src = codeOf(path.join(SRC, 'features', 'adhoc-flow', 'main', 'adhoc.js'));
-  assert.ok(src.includes("raw._scope === 'repository'"), '共有フローの保存拒否が必要');
-  assert.ok(src.includes("options.scope === 'repository'"), '共有フローの削除拒否が必要');
+  // 読み取り専用スコープ（リポジトリ共有・同梱）は保存も削除も受け付けない
+  for (const scope of ['repository', 'builtin']) {
+    assert.throws(() => adhoc.saveWorkflow({}, { _scope: scope, name: 'x', nodes: [] }),
+      /読み取り専用/, `${scope} の保存拒否が必要`);
+    assert.throws(() => adhoc.deleteWorkflow({}, 'any', { scope }),
+      /読み取り専用/, `${scope} の削除拒否が必要`);
+  }
   assert.ok(!/writeJsonAtomic\([^\n]*repositoryWorkflowDir/.test(src),
     'リポジトリ共有ディレクトリへ直接書いてはならない');
   assert.ok(!/writeJsonAtomic\([^\n]*repositoryMethodsDir/.test(src),
