@@ -13,6 +13,7 @@ condition_rule フィールドがある場合は LLM 評価が不要な条件を
   python scripts/next_state.py {名前} --initial-state
   python scripts/next_state.py {名前} --state classify --auto-eval --context '{"last_output":"BUG"}'
   python scripts/next_state.py {名前} --state classify --eval '{"1": false}' --context '{"last_output":"BUG"}'
+  python scripts/next_state.py {名前} --state implement --state-check
 
   旧ハーネス互換（非推奨。--context の不足値を補完する）:
   python scripts/next_state.py {名前} --state classify --list-conditions --last-output BUG
@@ -26,6 +27,17 @@ condition_rule フィールドがある場合は LLM 評価が不要な条件を
 
 --auto-eval の JSON には resolved が付く。condition_rule だけで遷移先が確定した場合は
 その state_id（全条件が偽なら "NONE"）が入り、LLM 評価は不要。
+
+--state-check は、そのステートが宣言する決定的検査を正規化して返す（外部ハーネスが
+自前で YAML を読み直さずに済むように、正規化の実装をここ 1 つに保つための口）。
+検査を実行したハーネスは、その結果を次の 3 キーで --context へ載せると
+condition_rule から決定的に分岐できる:
+
+  check_status  終了コードの文字列（実行できなかった場合は "error"）
+  check_ok      "true" / "false"
+  check_output  診断の先頭行
+
+これらは**ハーネスが測った事実**であって、モデルが書いたテキストではない。
 """
 
 from __future__ import annotations
@@ -41,6 +53,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from scripts.engine import (
     load_workflow, render_template, resolve_workflow_path, evaluate_condition_rule,
+    validate_workflow,
 )
 
 
@@ -114,6 +127,10 @@ def main() -> None:
         help="condition_rule を先に評価し、条件リストと resolved を表示して終了"
     )
     parser.add_argument(
+        "--state-check", dest="state_check", action="store_true",
+        help="そのステートの決定的検査（check）を正規化して JSON で表示して終了"
+    )
+    parser.add_argument(
         "--context", default=None, metavar="JSON",
         help='コンテキスト変数の JSON オブジェクト。'
         ' 例: \'{"last_output":"BUG","result":"PASS"}\''
@@ -144,6 +161,21 @@ def main() -> None:
     if state is None:
         print(f"ERROR: ステート '{args.state}' が見つかりません", file=sys.stderr)
         sys.exit(1)
+
+    # --state-check: 検査の宣言を正規化して返す（終端判定より前 — 宣言の照会であって遷移ではない）
+    if args.state_check:
+        errors = [e for e in validate_workflow(wf) if args.state in e]
+        if errors:
+            print("ERROR: " + "\n".join(errors), file=sys.stderr)
+            sys.exit(1)
+        print(json.dumps({
+            "state": args.state,
+            "check": state.check,
+            "check_retries": state.check_retries,
+            "check_on_exhausted": state.check_on_exhausted,
+            "check_feedback": state.check_feedback,
+        }, ensure_ascii=False, indent=2))
+        return
 
     if state.terminal:
         print("TERMINAL")

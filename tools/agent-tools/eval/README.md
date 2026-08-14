@@ -594,6 +594,76 @@ python3 tools/agent-tools/eval/worker_eval.py --model gemma4:e4b --cli aider \
 
 詳細と現行 statemachine への転用可否は `results/archive/2026-08-13-t1-decomposition-report.md`。
 
+## 推論条件の腕 — sampling と Thinking（計画 P10）
+
+過去の測定は**推論条件を一度も明示していない**。この 2 つは同じ性格の交絡なので、
+同じ対照群で 1 度に測る。どちらも**未指定なら 1 バイトも宣言しない**ので、
+既存の台帳と同じ条件がそのまま再現される（腕を足しただけで既定は変えていない）。
+
+### sampling（コード worker 経路）
+
+`agents/aider.json` は温度を指定しておらず、`aider_settings()` も渡していなかった。
+つまり**実効値は aider の既定**で、我々はそれを確認したことがない。これは結論に効く——
+T1 の実装ステップは初回 13/13 が同一の壊れ方をしたが、**貪欲デコードなら同じ入力に
+同じ出力が返るのは当たり前**である。「決定的な癖」がモデルの性質かサンプリングの性質かは
+まだ分離できていない。
+
+```bash
+# 基準線（従来と同一条件。何も宣言しない）
+python3 worker_eval.py --model gemma4:e4b --cli aider --tasks T1,T2 --repeat 3
+
+# sampling 腕（例。Gemma 3 の推奨値。Gemma 4 の推奨は要確認）
+python3 worker_eval.py --model gemma4:e4b --cli aider --tasks T1,T2 --repeat 3 \
+  --temperature 1.0 --top-p 0.95 --top-k 64
+```
+
+- **対照群（T2）を必ず入れる。** 上限や温度は失敗を安くすると同時に合格を壊しうる
+  （`--num-predict 1024` が T2 を 3/3 → 0/3 にした前科がある）。T1 だけ回して
+  「良くなった」と読むのは、この轍を踏み直すことになる。
+- sampling 腕の設定ファイルは**宣言したものだけ**を書く（`aider_settings(base=False)`）。
+  `edit_format` / `use_repo_map` / `num_ctx` を巻き込むと、測っているのが
+  「温度の効果」ではなく「温度と文脈長と編集形式の効果」になる。
+- 台帳の `sampling` 列に条件が残る。`null` は「宣言しなかった＝ aider の既定」であって
+  空欄ではない。起動行にも同じことを出す。
+- **同一入力の再現性も見る。** 同じ課題を 3 回引いて失敗が同形かどうかが、
+  「決定的な癖」の正体を分ける。
+
+### Thinking（判定・レビュー経路）
+
+`agents/*.json` は think をヘッドレスの全役割で off に焼き込んである。根拠は
+2026-08-10 の実測だが、**その台帳は `ledger-2026-08-10-qwen35-9b.jsonl` で qwen のみ**であり、
+gemma4:e4b がこのリポジトリに入るのは翌日である。sampling とまったく同じ構図——
+ある条件で測った結論が、別の条件へ黙って持ち越されている。反証も同じリポジトリ内にある
+（`agents/ollama-list-thinking.json` は gemma4 の split で Thinking を使う）。
+
+さらに**機構が 2 つある**。`--think on|off` は API の `think` フィールド、
+`--think prompt` は system prompt 先頭の `<|think|>`（Gemma 4 系の作法）で、経路が違う。
+後者は `--format` の強制 off に**巻き込まれない**ので、
+「JSON 契約の役割では Thinking を使えない」という現行の制約が当てはまらない可能性がある。
+
+```bash
+# レビュー（RV1/RV2）— サイズで跳ねた唯一のジャンル。think で e4b が届くか
+python3 text_eval.py --model gemma4:e4b --cases RV1,RV2 --repeat 3            # 基準線
+python3 text_eval.py --model gemma4:e4b --cases RV1,RV2 --repeat 3 --think prompt
+
+# 基準の取り違え（F2/J2）— 4 レバー全滅の場所。think は 5 本目のレバーになるか
+python3 judge_eval.py --model gemma4:e4b --cases F1,F2,J1,J2 --repeat 3 --think prompt
+
+# 安く先に見る: 記録済みプロンプトのオフライン再生（ライブ実行を焼かない）
+agent-ollama --replay --replay-limit 20 \
+  --arm model=gemma4:e4b,think=off,format=json \
+  --arm model=gemma4:e4b,think=prompt,format=json
+```
+
+見るのは 3 点。**(1)** `prompt` 方式で thinking が実際に発生するか（ログの
+`thinking_chars`）。**(2)** `--format json` と併用して本文が返るか（空応答率——
+qwen では 39/39 が空だった）。**(3)** 正解率が動くか。
+**そして壁時計を必ず同時に見る**——qwen で think on が全滅した理由は品質ではなく
+p90 942 秒（`agent_timeout` 600 秒超）だった。gemma4 は decode が 2 倍以上速いので
+結論が変わりうるが、**変わることを確かめずに戻さない**。
+
+動かなければ現状維持でよい。**測っていないものを「効くはず」で入れない規律は変えない。**
+
 ## 実行前のチェック
 
 1. `agent-ollama` を再ビルドしたか（`bash tools/agent-tools/install.sh`）。

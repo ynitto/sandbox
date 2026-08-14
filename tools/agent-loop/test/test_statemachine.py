@@ -5,6 +5,7 @@
 スタブ aider による複数状態の完走（未実行の成功申告を安全な書込へ補正して終端へ遷移）。
 dashboard の旧 in-process 実行器（stateMachineRunner.js）のテストを移植したもの。
 """
+import argparse
 import io
 import json
 import os
@@ -1026,6 +1027,250 @@ class NextStateContractTest(unittest.TestCase):
             self.assertNotIn("--last-output", call)
             self.assertNotIn("--output", call)
             self.assertNotIn("--list-conditions", call)
+
+
+class CheckGateTest(unittest.TestCase):
+    """決定的検査（check）— 遷移の材料を自己申告からハーネスの実測へ移す。
+
+    実測（tools/agent-tools/eval/results/archive/2026-08-13-t1-decomposition-report.md）:
+    検知を伴わない分解は受入を下げ（0/3）、決定的な検知 + 再投入で 3/3 になった。
+    ここで固定するのは、その検知が**モデルの申告では満たせない**ことと、
+    上限到達が失敗一般ではなく段の昇格シグナルとして出てくることの 2 点。
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory(prefix="agent-loop-sm-check-")
+        self.repo = os.path.realpath(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        self.counter = os.path.join(self.repo, "attempts")
+        self.machine = pathlib.Path(self.repo, ".statemachine", "gated")
+        (self.machine / "actions").mkdir(parents=True)
+        (self.machine / "actions" / "work.md").write_text("作業する。\n", encoding="utf-8")
+
+    def _workflow(self, *, passes_on: int, retries: int, extra: str = "",
+                  gated: bool = True) -> str:
+        """`passes_on` 回目の action で初めて通る検査を持つワークフローを書く。"""
+        script = pathlib.Path(self.repo, "check.py")
+        script.write_text(
+            "import pathlib, sys\n"
+            f"p = pathlib.Path({self.counter!r})\n"
+            "n = int(p.read_text()) if p.exists() else 0\n"
+            f"print('attempts=%d' % n)\n"
+            f"sys.exit(0 if n >= {passes_on} else 1)\n", encoding="utf-8")
+        check = json.dumps([sys.executable, str(script)])
+        lines = [
+            "name: gated",
+            "initial_state: work",
+            "config:",
+            "  max_steps: 3",
+            "states:",
+            "  work:",
+            "    action_file: actions/work.md",
+            '    output_validator: "startswith:OK"',
+        ]
+        if gated:
+            lines += [f"    check: {check}", f"    check_retries: {retries}"]
+            lines += [f"    {line}" for line in extra.splitlines() if line.strip()]
+        lines += [
+            "  done:",
+            "    terminal: true",
+            "transitions:",
+            "  - from: work",
+            "    to: done",
+            '    condition_rule: "%s"' % ("equals:check_ok:true" if gated
+                                          else "startswith:last_output:OK"),
+            "",
+        ]
+        (self.machine / "workflow.yaml").write_text("\n".join(lines), encoding="utf-8")
+        return str(self.machine / "workflow.yaml")
+
+    def _run(self, workflow: str, response: str = '{"type":"final","output":"OK"}'):
+        calls: list = []
+
+        def fake_agent(*args, **_kwargs):
+            calls.append(args)
+            pathlib.Path(self.counter).write_text(str(len(calls)), encoding="utf-8")
+            return response
+
+        with mock.patch.object(al, "_SM_MAX_TOOL_ROUNDS", 1), \
+                mock.patch.object(al, "_tl_run_agent", side_effect=fake_agent):
+            try:
+                return al.run_statemachine(workflow_path=workflow, cwd=self.repo,
+                                           parameters={}, agent={}), calls
+            except al.StateMachineHarnessError as exc:
+                return exc, calls
+
+    def test_passing_check_advances_and_costs_no_extra_call(self):
+        result, calls = self._run(self._workflow(passes_on=1, retries=2))
+
+        self.assertTrue(result["ok"], result.get("error"))
+        self.assertEqual(result["finalState"], "done")
+        self.assertEqual(len(calls), 1, "通る課題にゲートは課金しない")
+
+    def test_declared_check_output_reaches_the_transition_context(self):
+        workflow = self._workflow(passes_on=1, retries=0)
+        result, _calls = self._run(workflow)
+
+        events = [json.loads(line) for line
+                  in pathlib.Path(result["logFile"]).read_text(encoding="utf-8").splitlines()]
+        checks = [e for e in events if e.get("event") == "check"]
+        self.assertEqual(len(checks), 1)
+        self.assertEqual(checks[0]["check_ok"], "true")
+        self.assertEqual(checks[0]["check_status"], "0")
+        # 遷移は測った値で決まっている（--context に検査結果が載る）。
+        contexts = [json.loads(e["argv"][e["argv"].index("--context") + 1]) for e in events
+                    if e.get("event") == "finish" and "--context" in (e.get("argv") or [])]
+        self.assertTrue(any(c.get("check_ok") == "true" for c in contexts), contexts)
+
+    def test_failing_check_resubmits_the_same_state(self):
+        result, calls = self._run(self._workflow(passes_on=2, retries=2))
+
+        self.assertTrue(result["ok"], result.get("error"))
+        self.assertEqual(len(calls), 2, "落ちた 1 回目のあと同じステートをやり直す")
+
+    def test_retry_carries_the_measured_diagnostic(self):
+        _result, calls = self._run(self._workflow(passes_on=2, retries=2))
+
+        retry_prompt = "\n".join(str(a) for a in calls[1])
+        self.assertIn("check failed", retry_prompt)
+        self.assertIn("attempts=1", retry_prompt, "測った出力を課題文へ戻す")
+        self.assertIn("Do not modify the check itself", retry_prompt)
+
+    def test_feedback_can_be_reduced_to_truth_only(self):
+        _result, calls = self._run(
+            self._workflow(passes_on=2, retries=2, extra="check_feedback: false"))
+
+        retry_prompt = "\n".join(str(a) for a in calls[1])
+        self.assertIn("check failed", retry_prompt)
+        self.assertNotIn("attempts=1", retry_prompt, "真偽だけで動かす選択肢を残す")
+
+    def test_self_reported_success_cannot_satisfy_a_failing_check(self):
+        # P1 の核心。「OK」と書いても、測った事実が伴わなければ先へ進まない。
+        result, _calls = self._run(self._workflow(passes_on=99, retries=0),
+                                   response='{"type":"final","output":"OK\\nPASS 完了しました"}')
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["finalState"], "work")
+
+    def test_exhausted_retries_escalate_instead_of_failing_generically(self):
+        result, calls = self._run(self._workflow(passes_on=99, retries=1))
+
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["escalate"], "上限到達は段を上げるシグナル")
+        self.assertEqual(len(calls), 2, "上限は宣言どおり（1 回やり直して打ち切る）")
+        self.assertEqual(result["check"]["state"], "work")
+        self.assertEqual(result["check"]["check_status"], "1")
+        self.assertEqual(result["check"]["attempts"], 2)
+
+    def test_escalation_is_recorded_in_the_log(self):
+        result, _calls = self._run(self._workflow(passes_on=99, retries=0))
+
+        events = [json.loads(line) for line
+                  in pathlib.Path(result["logFile"]).read_text(encoding="utf-8").splitlines()]
+        exhausted = [e for e in events if e.get("event") == "check_exhausted"]
+        self.assertEqual(len(exhausted), 1)
+        self.assertTrue(exhausted[0]["escalate"])
+
+    def test_error_mode_fails_without_escalating(self):
+        result, _calls = self._run(
+            self._workflow(passes_on=99, retries=0, extra="check_on_exhausted: error"))
+
+        self.assertIsInstance(result, al.StateMachineHarnessError)
+        self.assertIn("検査", str(result))
+
+    def test_continue_mode_hands_the_failure_to_the_transitions(self):
+        result, _calls = self._run(
+            self._workflow(passes_on=99, retries=0, extra="check_on_exhausted: continue"))
+
+        # 成功経路（equals:check_ok:true）は成立せず、他に経路が無いので遷移不一致で止まる。
+        self.assertIsInstance(result, al.StateMachineHarnessError)
+        self.assertIn("一致する遷移がありません", str(result))
+
+    def test_ungated_state_is_untouched(self):
+        result, calls = self._run(self._workflow(passes_on=0, retries=0, gated=False))
+
+        self.assertTrue(result["ok"], result.get("error"))
+        self.assertEqual(len(calls), 1)
+        events = [json.loads(line) for line
+                  in pathlib.Path(result["logFile"]).read_text(encoding="utf-8").splitlines()]
+        self.assertEqual([e for e in events if e.get("event") == "check"], [],
+                         "宣言が無ければ検査は走らない（従来動作のまま）")
+
+    def test_broken_declaration_fails_before_any_agent_call(self):
+        (self.machine / "workflow.yaml").write_text("\n".join([
+            "name: gated",
+            "initial_state: work",
+            "states:",
+            "  work:",
+            "    action_file: actions/work.md",
+            '    check: "pytest | tee log"',
+            "  done:",
+            "    terminal: true",
+            "transitions:",
+            "  - from: work",
+            "    to: done",
+            '    condition_rule: "equals:check_ok:true"',
+            "",
+        ]), encoding="utf-8")
+
+        result, calls = self._run(str(self.machine / "workflow.yaml"))
+
+        self.assertIsInstance(result, al.StateMachineHarnessError)
+        self.assertEqual(calls, [], "壊れた宣言は投入前に落ちる（クレジットを焼かない）")
+
+
+class CheckContextContractTest(unittest.TestCase):
+    """検査結果 → コンテキストの書式。正典は statemachine-use の engine.check_context。"""
+
+    def test_success(self):
+        self.assertEqual(al._sm_check_context(0, "all good\n", "", ""),
+                         {"check_status": "0", "check_ok": "true",
+                          "check_output": "all good"})
+
+    def test_failure_keeps_first_diagnostic_line(self):
+        self.assertEqual(al._sm_check_context(1, "", "E assert 1 == 2\nmore", ""),
+                         {"check_status": "1", "check_ok": "false",
+                          "check_output": "E assert 1 == 2"})
+
+    def test_unrunnable_check_is_not_a_pass(self):
+        context = al._sm_check_context(None, "", "", "コマンドがありません")
+
+        self.assertEqual(context["check_status"], "error")
+        self.assertEqual(context["check_ok"], "false")
+
+    def test_matches_the_skill_implementation(self):
+        # 2 実装が同じ答えを返すことを固定する（キー名と書式の契約は schema.md）。
+        skill = al._sm_resolve_skill("statemachine-use", os.getcwd())
+        self.assertIsNotNone(skill, "statemachine-use スキルの実体が必要")
+        sys.path.insert(0, skill["root"])
+        self.addCleanup(lambda: sys.path.remove(skill["root"]))
+        from scripts.engine import check_context  # noqa: E402
+
+        for args in [(0, "ok", "", ""), (1, "", "boom", ""), (None, "", "", "no such file")]:
+            self.assertEqual(al._sm_check_context(*args), check_context(*args), args)
+
+
+class EscalationExitCodeTest(unittest.TestCase):
+    """呼び出し側が RESULT を読まずに終了コードだけで昇格へ振り分けられること。"""
+
+    def _exit_code(self, result: dict) -> int:
+        args = argparse.Namespace(workflow="w.yaml", dir=None, param=[], input=None,
+                                  agent_cli="aider", model="")
+        with mock.patch.object(al, "_sm_resolve_agent", return_value={"cli": "x", "model": ""}), \
+                mock.patch.object(al, "run_statemachine", return_value=result), \
+                mock.patch("sys.stdout", new=io.StringIO()):
+            with self.assertRaises(SystemExit) as caught:
+                al.cmd_statemachine(args, pathlib.Path(os.getcwd()))
+        return caught.exception.code
+
+    def test_success_is_zero(self):
+        self.assertEqual(self._exit_code({"ok": True}), 0)
+
+    def test_plain_failure_is_one(self):
+        self.assertEqual(self._exit_code({"ok": False}), 1)
+
+    def test_escalation_has_its_own_code(self):
+        self.assertEqual(self._exit_code({"ok": False, "escalate": True}), 3)
 
 
 class ParamParsingTest(unittest.TestCase):

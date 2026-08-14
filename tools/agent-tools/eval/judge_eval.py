@@ -486,8 +486,10 @@ def main() -> None:
                          "適用条件は本番の agentcore.methods.select が判定するので、"
                          "`when` に合わない役割へは注入されない。"
                          "候補プリセットは .json のパスでも指定できる（カタログに入れずに測る）")
-    ap.add_argument("--think", choices=("on", "off"), default="",
-                    help="評価専用: 定義中の --think 値を上書きする")
+    ap.add_argument("--think", choices=("on", "off", "prompt"), default="",
+                    help="評価専用: 定義中の --think 値を上書きする。"
+                         "prompt は system prompt 先頭の <|think|> 方式（Gemma 4 系の作法）で、"
+                         "API フィールドとは経路が違うため --format と併用できる")
     ap.add_argument("--tier", default=TIER,
                     help="この測定が名乗る実行段（手法の when.tiers と突き合わせる）")
     args = ap.parse_args()

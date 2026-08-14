@@ -65,10 +65,21 @@ class TestParseArgs(unittest.TestCase):
         self.assertTrue(opts["tools"])
         self.assertIs(opts["think"], False)
 
-    def test_think_accepts_on_and_off_only(self):
+    def test_think_accepts_on_off_and_prompt(self):
         self.assertIs(ollama_adapter.parse_args(["--think", "on", "m"])["think"], True)
         with self.assertRaises(ollama_adapter.ArgError):
             ollama_adapter.parse_args(["--think", "maybe", "m"])
+
+    def test_think_prompt_selects_the_system_prompt_route(self):
+        opts = ollama_adapter.parse_args(["--think", "prompt", "m"])
+
+        self.assertTrue(opts["think_prompt"])
+        self.assertIsNone(opts["think"], "API フィールドは宣言しない（経路が違う）")
+
+    def test_think_on_off_leaves_the_prompt_route_alone(self):
+        for value in ("on", "off"):
+            opts = ollama_adapter.parse_args(["--think", value, "m"])
+            self.assertFalse(opts["think_prompt"], f"--think {value}")
 
     def test_equals_form_and_repeated_skill(self):
         opts = ollama_adapter.parse_args(["--skill=pdf", "--skill", "xlsx", "m"])

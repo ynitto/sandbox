@@ -64,7 +64,10 @@ USAGE = """使い方: agent-ollama [オプション] <model>
                           ※再生は常に道具なしで行う（記録されたコマンドは再実行しない）
 
   推論:
-    --think on|off        思考モード（既定は AGENT_OLLAMA_THINK → モデル既定）
+    --think on|off|prompt 思考モード（既定は AGENT_OLLAMA_THINK → モデル既定）。
+                          on/off は API の think フィールド。prompt は system prompt
+                          先頭へ <|think|> を置く方式（Gemma 4 系の作法）で、経路が
+                          違うため --format と併用しても強制 off にならない
     --format json|array|text
                           出力の文法を強制する（json = 妥当な JSON しか出せなくなる。
                           ただしトップレベルは必ずオブジェクトになる。array = 文字列の
@@ -229,6 +232,8 @@ def _as_bool(text: str, name: str) -> bool:
         return True
     if lowered in ("off", "false", "0", "no"):
         return False
+    if name == "--think":
+        raise ArgError(f"{name} は on か off か prompt です: {text}")
     raise ArgError(f"{name} は on か off です: {text}")
 
 
@@ -249,7 +254,7 @@ def parse_args(tokens: "list[str]") -> dict:
     opts: dict = {
         "model": "", "tools": False, "toolset": ollama_loop.DEFAULT_TOOLSET,
         "tui": False, "help": False, "format": None,
-        "think": None, "skills": [], "skills_enabled": True,
+        "think": None, "think_prompt": None, "skills": [], "skills_enabled": True,
         "stall_timeout": None, "first_token_timeout": None,
         "max_rounds": ollama_loop.DEFAULT_MAX_ROUNDS,
         "command_timeout": ollama_loop.DEFAULT_COMMAND_TIMEOUT_SEC,
@@ -304,7 +309,15 @@ def parse_args(tokens: "list[str]") -> dict:
                 value = tokens[index]
                 index += 1
             if name == "--think":
-                opts["think"] = _as_bool(value, name)
+                # 3 値。on/off は API の `think` フィールド、prompt は system prompt 先頭の
+                # トークン（Gemma 4 系の作法）で、経路が違う。prompt のときは API
+                # フィールドを宣言しない——両方から指定して打ち消し合わせないため。
+                if str(value).strip().lower() == "prompt":
+                    opts["think"] = None
+                    opts["think_prompt"] = True
+                else:
+                    opts["think"] = _as_bool(value, name)
+                    opts["think_prompt"] = False
             elif name == "--format":
                 fmt = str(value).strip().lower()
                 if fmt not in ("json", "array", "text"):
@@ -422,6 +435,7 @@ def run_request(prompt: str, opts: dict, *, model: str = "", tools: "bool | None
     model = model or opts["model"]
     use_tools = opts["tools"] if tools is None else tools
     think = opts["think"] if think is None else think
+    think_prompt = ollama_loop.resolve_think_prompt(opts.get("think_prompt"))
     toolset = str(opts.get("toolset") or ollama_loop.DEFAULT_TOOLSET)
     fmt = opts.get("format")
     warn = warn or (lambda message: print(message, file=sys.stderr))
@@ -449,7 +463,8 @@ def run_request(prompt: str, opts: dict, *, model: str = "", tools: "bool | None
                     # 作業ディレクトリ。読み手（agent-audit sessions / dashboard の
                     # 「会話を見る」）が、どの作業のセッションかを絞るのに使う。
                     cwd=str(opts.get("cwd") or os.getcwd()),
-                    think=("既定" if think is None else bool(think)),
+                    think=("prompt" if think_prompt else
+                           ("既定" if think is None else bool(think))),
                     toolset=(toolset if use_tools else ""), format=(fmt or ""),
                     options=ollama_loop.load_options(),
                     context_limit=tracker.limit, context_limit_source=tracker.limit_source)
@@ -460,13 +475,14 @@ def run_request(prompt: str, opts: dict, *, model: str = "", tools: "bool | None
                 result = ollama_loop.run_loop(
                     model, prompt, cwd=opts.get("cwd"), emit=events.emit, think=think,
                     max_rounds=opts["max_rounds"], command_timeout=opts["command_timeout"],
-                    tracker=tracker, toolset=toolset, fmt=fmt, **_limits(opts))
+                    tracker=tracker, toolset=toolset, fmt=fmt,
+                    think_prompt=think_prompt, **_limits(opts))
             else:
                 # 会話の本文を残す（tools 経路は run_loop が同じ `message` を出す）。
                 events.emit("message", role="user", content=prompt)
                 result = ollama_loop.run_plain(
                     model, prompt, think=think, emit=events.emit, round_no=1,
-                    tracker=tracker, fmt=fmt, **_limits(opts))
+                    tracker=tracker, fmt=fmt, think_prompt=think_prompt, **_limits(opts))
                 events.emit("message", role="assistant", content=str(result.get("text") or ""))
                 result = dict(result, rounds=1, status="done")
                 if tracker.should_warn():

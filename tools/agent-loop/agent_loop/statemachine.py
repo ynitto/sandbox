@@ -222,9 +222,14 @@ def _sm_write_success_output(*, workflow_path: str, state_id: str, state: dict,
 
 
 def _sm_execute_action(*, workflow_path: str, state_id: str, state: dict, context: dict,
-                       cwd: str, agent: dict, log_file: str, touched: set) -> str:
+                       cwd: str, agent: dict, log_file: str, touched: set,
+                       check_note: str = "") -> str:
     action = _sm_workflow_action(workflow_path, state_id, state)
     rendered = _sm_render_template(action["text"], context)
+    if check_note:
+        # 検査が落ちた後の再投入。測った不一致を課題文へ足す（受入は真偽だけでも変わらないが、
+        # 実測では再試行が 28% 速い）。足す先は課題文そのもの——planner 周と編集周の両方が読む。
+        rendered = f"{rendered}\n\n{check_note}"
     skills = [s for s in (_sm_resolve_skill(n, cwd) for n in _sm_action_skill_names(rendered)) if s]
     skill_scripts = {
         os.path.realpath(script) for skill in skills for script in _sm_skill_scripts(skill)
@@ -467,10 +472,80 @@ def _sm_first_line(text: str) -> str:
     return str(text or "").splitlines()[0] if str(text or "") else ""
 
 
+# 検査の診断を課題文へ戻すときの上限。ローカルモデルの文脈は黙って切り捨てられるので、
+# 長い pytest 出力をそのまま積むと system prompt 側から落ちる。
+_SM_CHECK_OUTPUT_LIMIT = 2000
+
+
+def _sm_state_check_spec(*, scripts: dict, workflow_path: str, state_id: str,
+                         cwd: str, log_file: str) -> dict:
+    """ステートが宣言する決定的検査を statemachine-use から取得する。
+
+    正規化（文字列の分割・既定値・不正宣言の拒否）はスキル側の 1 実装が持つ。ここで
+    YAML を読み直すと、定義側が形を足した日に黙ってずれる（argv の写しで前科がある）。
+    """
+    spec = _sm_parse_json_object(_sm_harness_script(
+        scripts["next"], [workflow_path, "--state", state_id, "--state-check"],
+        cwd=cwd, log_file=log_file))
+    if not spec:
+        raise StateMachineHarnessError(f"ステート {state_id} の検査宣言を解析できません")
+    try:
+        retries = max(0, int(spec.get("check_retries") or 0))
+    except (TypeError, ValueError):
+        retries = 0
+    return {"check": spec.get("check") if isinstance(spec.get("check"), dict) else None,
+            "retries": retries,
+            "on_exhausted": _sm_scalar(spec.get("check_on_exhausted")) or "escalate",
+            "feedback": spec.get("check_feedback") is not False}
+
+
+def _sm_check_context(status, stdout: str, stderr: str, error: str) -> dict:
+    """検査結果 → condition_rule のコンテキスト値。
+
+    キー名と書式の正典は statemachine-use の `engine.check_context`
+    （references/schema.md「検査結果のコンテキスト変数」）。ハーネスは自分で測った値だけを
+    遷移材料に入れる——モデルが書いたテキストはここへ 1 バイトも混ぜない。
+    """
+    ok = status == 0 and not error
+    detail = error or (str(stderr or "").strip() or str(stdout or "").strip())
+    first = detail.splitlines()[0].strip() if detail.strip() else ""
+    return {"check_status": "error" if status is None else str(status),
+            "check_ok": "true" if ok else "false",
+            "check_output": first}
+
+
+def _sm_run_check(check: dict, *, state_id: str, cwd: str, log_file: str) -> dict:
+    """宣言された検査コマンドを実行する。シェルは介さない（argv を直接渡す）。"""
+    argv = [check["command"], *check["args"]]
+    _sm_progress(f"check: {' '.join(argv)}")
+    result = _sm_exec_argv(check["command"], check["args"], cwd=cwd,
+                           timeout_sec=check["timeout_sec"], log_file=log_file)
+    context = _sm_check_context(result["status"], result["stdout"], result["stderr"],
+                                result["error"])
+    _sm_append_log(log_file, {"event": "check", "state": state_id, "argv": argv, **context})
+    return {**result, "ok": context["check_ok"] == "true", "argv": argv, "context": context}
+
+
+def _sm_check_note(result: dict, attempt: int, attempts: int, *, feedback: bool) -> str:
+    """検査が落ちた後の再投入で課題文へ足す文。検査そのものは書き換えさせない。"""
+    head = (f"Retry {attempt}/{attempts - 1}: the declared check failed "
+            f"(exit status {result['context']['check_status']}).")
+    tail = "Fix the work so this exact command succeeds. Do not modify the check itself."
+    if not feedback:
+        return f"{head}\n{tail}"
+    detail = "\n".join(x for x in (result["error"], result["stderr"], result["stdout"])
+                       if x).strip()
+    return (f"{head}\nCheck command: {' '.join(result['argv'])}\n"
+            + (f"Check output:\n{detail[-_SM_CHECK_OUTPUT_LIMIT:]}\n" if detail else "")
+            + tail)
+
+
 def _sm_next_state(*, scripts: dict, workflow_path: str, state_id: str, output: str,
-                   outputs: dict, agent: dict, cwd: str, log_file: str) -> str:
+                   outputs: dict, agent: dict, cwd: str, log_file: str,
+                   extra: "dict | None" = None) -> str:
     context = {"last_output": _sm_first_line(output),
-               **{key: _sm_first_line(str(value)) for key, value in outputs.items()}}
+               **{key: _sm_first_line(str(value)) for key, value in outputs.items()},
+               **(extra or {})}
     base = [workflow_path, "--state", state_id,
             "--context", json.dumps(context, ensure_ascii=False)]
     listed = _sm_parse_json_object(
@@ -559,9 +634,25 @@ def run_statemachine(*, workflow_path: str, cwd: str, parameters: "dict | None" 
                     "logFile": log_file, "files": sorted(touched)}
         _sm_append_log(log_file, {"event": "state", "state": current, "step": step + 1})
         _sm_progress(f"state: {current} (step {step + 1}/{max_steps})")
-        last_output = _sm_execute_action(
-            workflow_path=workflow_file, state_id=current, state=state, context=context,
-            cwd=root, agent=agent, log_file=log_file, touched=touched).strip()
+        # 宣言された検査を通してからでないと次へ進めない。落ちたら同じステートをやり直す
+        # ——遷移の材料をモデルの自己申告からハーネスの実測へ移すのがこの段の目的。
+        gate = _sm_state_check_spec(scripts=scripts, workflow_path=workflow_file,
+                                    state_id=current, cwd=root, log_file=log_file)
+        attempts = gate["retries"] + 1 if gate["check"] else 1
+        checked: "dict | None" = None
+        note = ""
+        for attempt in range(attempts):
+            last_output = _sm_execute_action(
+                workflow_path=workflow_file, state_id=current, state=state, context=context,
+                cwd=root, agent=agent, log_file=log_file, touched=touched,
+                check_note=note).strip()
+            if not gate["check"]:
+                break
+            checked = _sm_run_check(gate["check"], state_id=current, cwd=root,
+                                    log_file=log_file)
+            if checked["ok"] or attempt == attempts - 1:
+                break
+            note = _sm_check_note(checked, attempt + 1, attempts, feedback=gate["feedback"])
         context["last_output"] = last_output
         context["step_count"] = step + 1
         context["history"][current] = last_output
@@ -569,9 +660,29 @@ def run_statemachine(*, workflow_path: str, cwd: str, parameters: "dict | None" 
         if output_key:
             context[output_key] = last_output
             outputs[output_key] = last_output
+        checks = checked["context"] if checked else {}
+        context.update(checks)
+        if checked and not checked["ok"] and gate["on_exhausted"] != "continue":
+            # 上限到達は「この段では解けない」の宣告。実測ではこの型の失敗は同形で揺れないので、
+            # 引き直しても埋まらない——上位の段へ回すシグナルとして失敗一般と区別する。
+            escalate = gate["on_exhausted"] == "escalate"
+            reason = (f"ステート {current} の検査が {attempts} 回とも失敗しました: "
+                      + (checks["check_output"] or f"status={checks['check_status']}"))
+            _sm_append_log(log_file, {"event": "check_exhausted", "state": current,
+                                      "attempts": attempts, "escalate": escalate, **checks})
+            _sm_progress(f"check exhausted: {current}"
+                         + (" -> escalate（上位の段へ）" if escalate else ""))
+            if not escalate:
+                raise StateMachineHarnessError(reason)
+            return {"ok": False, "escalate": True, "error": reason, "stdout": last_output,
+                    "stderr": str(checked["stderr"] or checked["stdout"] or "")
+                    [-_SM_CHECK_OUTPUT_LIMIT:],
+                    "finalState": current, "logFile": log_file, "files": sorted(touched),
+                    "check": {"state": current, "attempts": attempts,
+                              "argv": checked["argv"], **checks}}
         nxt = _sm_next_state(scripts=scripts, workflow_path=workflow_file, state_id=current,
                              output=last_output, outputs=outputs, agent=agent, cwd=root,
-                             log_file=log_file)
+                             log_file=log_file, extra=checks)
         if nxt == "NONE":
             on_none = _sm_scalar(config.get("on_no_transition")) or "error"
             if on_none == "stop":
@@ -619,6 +730,11 @@ def cmd_statemachine(args: argparse.Namespace, cwd: Path) -> None:
         result = run_statemachine(workflow_path=args.workflow, cwd=str(work_dir),
                                   parameters=params, agent=agent)
         print("RESULT " + json.dumps(result, ensure_ascii=False))
+        # 3 = 検査の再投入上限に達した（この段では解けない）。呼び出し側が RESULT を
+        # 読まずに終了コードだけで昇格へ振り分けられるようにする。非 0 を失敗として
+        # 扱う既存の呼び出し側とは互換のまま。
+        if result.get("escalate"):
+            sys.exit(3)
         sys.exit(0 if result.get("ok") else 1)
     except StateMachineHarnessError as exc:
         print("RESULT " + json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))

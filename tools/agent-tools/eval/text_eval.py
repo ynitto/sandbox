@@ -37,6 +37,7 @@ PROMPT_BUILDER = Path(os.environ.get(
 LEDGER_DIR = Path(os.environ.get("TEXT_EVAL_DIR", "/tmp/agent-text-eval"))
 MODEL = "gemma4:12b"
 WALL_LIMIT = 600.0
+THINK_OVERRIDE = ""         # --think で上書き（空 = 定義の値のまま）
 _FALLBACK_CMD = ["agent-ollama", "--think", "off", "--format", "json", "{model}"]
 
 CMD, CMD_SOURCE = engine.load_cmd("ollama-json", _FALLBACK_CMD)
@@ -355,7 +356,10 @@ def build_prompt(case: dict) -> str:
 
 
 def call(prompt: str) -> "tuple[int, str, str, float]":
-    argv = [a.replace("{model}", MODEL) for a in CMD]
+    raw = list(CMD)
+    if THINK_OVERRIDE and "--think" in raw:
+        raw[raw.index("--think") + 1] = THINK_OVERRIDE
+    argv = [a.replace("{model}", MODEL) for a in raw]
     started = time.time()
     try:
         p = subprocess.run(argv, input=prompt, capture_output=True, text=True,
@@ -386,6 +390,9 @@ def run_one(cid: str, i: int) -> dict:
             ok, note = case["check"](data)
             mode = "correct" if ok else "wrong"
     rec = dict(case=cid, genre=case["genre"], iter=i, model=MODEL, ok=ok, mode=mode,
+               # 実効条件を台帳へ。空 = 定義の値のまま（判定系の過去の数字はすべて
+               # think off で取られているので、腕を混ぜないためにここが要る）。
+               think_override=THINK_OVERRIDE or None,
                wall=round(wall, 1), note=note, prompt_chars=len(prompt),
                out_chars=len(out),
                answer=json.dumps(data, ensure_ascii=False, default=str)[:200])
@@ -465,7 +472,7 @@ def _powerset(menu):
 
 
 def main() -> None:
-    global MODEL, WALL_LIMIT
+    global MODEL, WALL_LIMIT, THINK_OVERRIDE
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default=MODEL)
     ap.add_argument("--repeat", type=int, default=3)
@@ -473,11 +480,17 @@ def main() -> None:
     ap.add_argument("--wall", type=float, default=WALL_LIMIT)
     ap.add_argument("--selfcheck", action="store_true",
                     help="チェッカーの自己検証だけを行う（LLM を呼ばない）")
+    ap.add_argument("--think", choices=("on", "off", "prompt"), default="",
+                    help="評価専用: 定義中の --think 値を上書きする。"
+                         "prompt は system prompt 先頭の <|think|> 方式（Gemma 4 系の作法）で、"
+                         "API フィールドとは経路が違うため --format と併用できる。"
+                         "レビュー（RV1/RV2）の網羅性がここで動くかを測る（計画 P10）")
     args = ap.parse_args()
     if args.selfcheck:
         raise SystemExit(selfcheck())
     MODEL = args.model
     WALL_LIMIT = args.wall
+    THINK_OVERRIDE = args.think
 
     LEDGER_DIR.mkdir(parents=True, exist_ok=True)
     ledger = LEDGER_DIR / "ledger.jsonl"
@@ -485,6 +498,8 @@ def main() -> None:
     print(f"model={MODEL} argv={' '.join(CMD)}（出所: {CMD_SOURCE}）")
     if engine.missing():
         print(f"engine 欠落: {engine.missing()}")
+    if THINK_OVERRIDE:
+        print(f"think={THINK_OVERRIDE}（評価専用の上書き。定義の値ではない）")
     print(f"wall_limit={WALL_LIMIT:.0f}s cases={cids} repeat={args.repeat}\n")
 
     rows = []

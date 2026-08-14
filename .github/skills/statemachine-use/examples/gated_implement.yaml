@@ -1,0 +1,77 @@
+# 決定的検査（check）つきの実装ループ — ローカルモデルで定型作業を回すときの基本形。
+#
+# 要点は 1 つ。「できました」と書くのはモデルだが、**進めるかどうかを決めるのは
+# ハーネスが実行したコマンドの終了コード**である。output_validator（書式）と
+# check（事実）は別物で、両方要る。
+#
+# 実測（tools/agent-tools/eval/results/archive/2026-08-13-t1-decomposition-report.md）:
+#   - 分解だけ（検査なし）  受入 0/3 — 3 本とも実装ステップで同じ壊れ方をした
+#   - 分解 + 検査 + 再投入  受入 3/3 — 機械が測った不一致を突きつけると 2 回目で通る
+#   - 通る課題では呼び出し回数が増えない（検査は成功側に課金しない）
+
+name: "gated implement"
+description: "実装 → 決定的検査 → レビュー。検査が通らない限り先へ進まない"
+initial_state: implement
+
+config:
+  max_steps: 12
+  on_no_transition: error
+
+states:
+  implement:
+    description: "仕様どおりに実装する"
+    action: |
+      `src/humansize.py` の `human_bytes(n)` を仕様どおりに実装してください。
+      仕様と境界値は `docs/humansize-spec.md` にあります。
+
+      この指示に従ってタスクを実行してください。
+      完了後、第1行に OK（実装した）または FAILED（できなかった）だけを返してください。
+      次のステップは別途指示されます。
+    # 書式の契約（モデルが書く第 1 行）。これだけでは「動くか」は分からない。
+    output_validator: "startswith:OK,FAILED"
+    # 事実の契約（ハーネスが実行する）。シェルは介さないので argv だけを書く。
+    # パイプやリダイレクトが要るならスクリプトにまとめること。
+    check: "python3 -m pytest tests/test_humansize.py -q"
+    # 落ちたら同じステートをやり直す回数。実測ではこの型の失敗は 1 回の指摘で直るか、
+    # 何度やっても同形で失敗するかのどちらかなので、1〜2 で足りる。
+    check_retries: 2
+    # 使い切っても落ちるなら止めて escalate を返す（この段では解けない、の宣告）。
+    # 既定値なので省略してよい。修復ステートへ自分で分岐したいときだけ continue にする。
+    check_on_exhausted: escalate
+
+  review:
+    description: "通った実装をレビューする"
+    action: |
+      `src/humansize.py` の実装をレビューしてください。テストは既に通っています
+      （検査結果: {{check_output}}）。読みやすさと境界の扱いだけを見てください。
+
+      この指示に従ってタスクを実行してください。
+      完了後、第1行に APPROVED または CHANGES だけを返してください。
+      次のステップは別途指示されます。
+    output_validator: "startswith:APPROVED,CHANGES"
+    output_key: verdict
+
+  complete:
+    description: "完了"
+    terminal: true
+
+  rejected:
+    description: "レビューで差し戻された"
+    terminal: true
+
+transitions:
+  # 検査が通ったときだけ次へ進む。モデルの「OK」は材料に入っていない。
+  - from: implement
+    to: review
+    condition_rule: "equals:check_ok:true"
+    priority: 1
+
+  - from: review
+    to: complete
+    condition_rule: "startswith:verdict:APPROVED"
+    priority: 1
+
+  - from: review
+    to: rejected
+    condition_rule: "startswith:verdict:CHANGES"
+    priority: 2

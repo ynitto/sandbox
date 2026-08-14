@@ -1,6 +1,6 @@
 # docs/designs 設計書 索引
 
-`docs/designs/` 配下の設計書 22 件をカテゴリ別に整理し、読む順序を示す索引。
+`docs/designs/` 配下の設計書 23 件をカテゴリ別に整理し、読む順序を示す索引。
 
 ## まず読むもの — コンセプトと主要 4 設計
 
@@ -16,7 +16,7 @@
 
 ---
 
-## カテゴリ別索引（全 20 件）
+## カテゴリ別索引（全 22 件）
 
 ### 1. コンセプトと主要 4 設計
 
@@ -29,6 +29,7 @@
 | ファイル | 要旨 |
 |---|---|
 | [`agent-loop-design.md`](./agent-loop-design.md) | agent-loop（旧 kiro-loop）の設計正典。イベントフック・Webhook・メッセージング・動的インターバル・CLI 差し替え・`slash` と、共通 dispatch gate 上の Phase 1 / Phase 2 実行基盤を扱う。旧ループ拡張 8 文書と `slash` 設計を統合済み。 |
+| [`statemachine-deterministic-check-design.md`](./statemachine-deterministic-check-design.md) | statemachine-use のステートに「ハーネスが実行する検査コマンド」（`check`）を宣言でき、その終了コードを遷移の材料にする設計。`output_validator` が見るのはモデルが書いた第1行の書式だけで偽 done を止められない、という実測（初回 13/13 が同形で壊れ、機械層を全部素通り）への回答。落ちたら同じステートへ再投入し、上限到達は `escalate`（実行レベル昇格のシグナル）として失敗一般と区別する。**fork 先への移植を主目的に、スキル側の契約と 2 段階の移植手順を仕様として書いてある**。 |
 
 ### 3. 実装・運用設計（外部連携・インフラ・実行基盤）
 
@@ -63,4 +64,4 @@
 
 ## 前提・スコープ外の事項
 
-本 README は `docs/designs/` 配下の実ファイル一覧（25 件、2026-07-27 に実在確認済み。2026-08-03 に `agent-audit-design.md` を追加し 26 件）を基準に作成した。2026-08-06 にループ拡張の 8 件を `agent-loop-design.md` へ統合・削除し、同日に追加された `agent-loop-slash-property-design.md` とあわせて実ファイル 21 件。2026-08-07 に `agent-ollama-tool-disclosure-design.md` を、2026-08-08 に `agent-ollama-expansion-design.md` を追加し実ファイル 23 件。2026-08-09 に `agent-loop-slash-property-design.md` を統合・削除して実ファイル 22 件、`agent-ollama-design.md` を追加して実ファイル 23 件、統合元 2 文書を `docs/plans/` へ移して実ファイル 21 件（索引掲載 20 件。索引外の 1 件は [`agent-tools-concept.md`](./agent-tools-concept.md) の補助資料 `agent-tools-business-improvement-prompt.md`）。
+本 README は `docs/designs/` 配下の実ファイル一覧（25 件、2026-07-27 に実在確認済み。2026-08-03 に `agent-audit-design.md` を追加し 26 件）を基準に作成した。2026-08-06 にループ拡張の 8 件を `agent-loop-design.md` へ統合・削除し、同日に追加された `agent-loop-slash-property-design.md` とあわせて実ファイル 21 件。2026-08-07 に `agent-ollama-tool-disclosure-design.md` を、2026-08-08 に `agent-ollama-expansion-design.md` を追加し実ファイル 23 件。2026-08-09 に `agent-loop-slash-property-design.md` を統合・削除して実ファイル 22 件、`agent-ollama-design.md` を追加して実ファイル 23 件、統合元 2 文書を `docs/plans/` へ移して実ファイル 21 件（索引掲載 20 件。索引外の 1 件は [`agent-tools-concept.md`](./agent-tools-concept.md) の補助資料 `agent-tools-business-improvement-prompt.md`）。2026-08-14 に [`statemachine-deterministic-check-design.md`](./statemachine-deterministic-check-design.md) を追加し、実ファイル 23 件・索引掲載 22 件（旧記載の「索引掲載 20 件」は実数と 1 件ずれていたので、この行の突き合わせ時に是正した）。

@@ -257,6 +257,18 @@ agent-ollama --replay --arm model=qwen3.5:9b,think=off,repeat=3
   3 つ目は `--format` を渡した時点で `think off` を強制するようにしたので、定義ファイルで
   復活させられない。思考が品質に変換された証拠は 1 件も取れていないので、on へ戻すなら
   記録済みプロンプトのオフライン再生で先に示すこと。
+
+  **この実測は qwen3.5:9b のものである**（台帳 `ledger-2026-08-10-qwen35-9b.jsonl`。
+  gemma4:e4b がこのリポジトリへ入るのは翌日）。全役割 off の焼き込みは、そこからの
+  一般化であって gemma4 で測り直したものではない——同じリポジトリ内に反証もある
+  （`ollama-list-thinking` は gemma4 の split で Thinking を使う）。測り直す口は下記。
+- **`--think prompt`** は system prompt 先頭へ `<|think|>` を置く方式（Gemma 4 系の作法）。
+  API の `think` フィールドとは**経路が違う**ので、`--format` の強制 off に巻き込まれない
+  ——「JSON 契約の役割では Thinking を使えない」という上の制約が、この経路では
+  当てはまらない可能性がある。**どちらなのかは未実測**で、測り方は
+  [`eval/README.md`](eval/README.md) の「推論条件の腕」にある（`--replay` の腕でも
+  `think=prompt` を指定できる）。プロンプトを汚す `/no_think` 方式とは目的が逆である点に
+  注意——あれは思考を止めるための細工だが、こちらは**モデル側の作法に従う**ための口である。
 - **`--format json`** は**デコード時の文法制約**で、プロンプトを 1 トークンも増やさない。
   JSON 契約の役割で「妥当な JSON でない出力」という故障モードが消える。全出力が JSON に
   なるので、人が読む本文が成果の役割には使わない。
@@ -289,7 +301,7 @@ agent-ollama --replay --arm model=qwen3.5:9b,think=off,repeat=3
 `AGENT_OLLAMA_NO_READLINE=1` で明示的に切れる。tmux の `send-keys` / `capture-pane` から見た
 画面は従来と同じ（`ready_pattern` の `> ` も含めて変わらない）。
 
-環境変数: `OLLAMA_HOST` / `AGENT_OLLAMA_THINK` / `AGENT_OLLAMA_OPTIONS`（JSON・`num_ctx` 等を
+環境変数: `OLLAMA_HOST` / `AGENT_OLLAMA_THINK`（on|off|prompt） / `AGENT_OLLAMA_OPTIONS`（JSON・`num_ctx` 等を
 リクエスト単位で足す）/ `AGENT_OLLAMA_KEEP_ALIVE` / `AGENT_OLLAMA_LOG_DIR` /
 `AGENT_OLLAMA_SYSTEM_PROMPT`（追加の system instruction。未指定なら送らない）/
 `AGENT_OLLAMA_SKILLS_DIR` / `AGENT_OLLAMA_STALL_TIMEOUT` / `AGENT_OLLAMA_FIRST_TOKEN_TIMEOUT` /

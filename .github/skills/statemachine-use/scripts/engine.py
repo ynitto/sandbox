@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import re
 import json
+import shlex
+import subprocess
 from datetime import datetime
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -30,6 +32,12 @@ class StateConfig:
     output_key: str = ""
     max_retries: int = 0
     output_validator: str = ""   # "startswith:VAL1,VAL2" — 第1行の形式を検証
+    # 決定的検査（ハーネスが実行する。モデルは触れない）。宣言が無ければ従来どおり素通り。
+    check: "dict | None" = None          # {command, args, timeout_sec} に正規化済み
+    check_retries: int = 0               # 検査が落ちたときに同じステートをやり直す回数
+    check_on_exhausted: str = "escalate"  # "escalate" | "continue" | "error"
+    check_feedback: bool = True          # 再投入時に検査の出力を課題文へ足すか
+    check_error: str = ""                # 宣言が壊れている場合の理由（validate が報告する）
 
 
 @dataclass
@@ -59,6 +67,132 @@ class WorkflowDefinition:
     initial_context: dict[str, Any] = field(default_factory=dict)
     config: MachineConfig = field(default_factory=MachineConfig)
     description: str = ""
+
+
+# ─────────────────────────────────────────────
+#  決定的検査（check）
+# ─────────────────────────────────────────────
+#
+#  遷移の材料を「モデルが書いたテキスト」から「ハーネスが測った事実」へ移すための口。
+#  検査コマンドは workflow.yaml が宣言し、ハーネスが実行する——モデルは中身も結果も
+#  書き換えられない。実測（tools/agent-tools/eval/results/archive/）では、決定的な検知と
+#  再投入だけで受入が 0/9 → 3/3 になり、検知を伴わない分解は逆に下がった。
+
+CHECK_ON_EXHAUSTED = ("escalate", "continue", "error")
+CHECK_DEFAULT_TIMEOUT_SEC = 120
+CHECK_OUTPUT_LIMIT = 2000
+
+# 検査結果がコンテキストへ入れるキー。condition_rule はここだけを見れば遷移を決められる。
+# agent-loop 側のハーネス（tools/agent-loop/agent_loop/statemachine.py）も同じ名前で入れる。
+CHECK_CONTEXT_KEYS = ("check_status", "check_ok", "check_output")
+
+# シェルを介さない（argv 直接実行）ので、メタ文字は解釈されずリテラルの引数になる。
+# 黙って別物を実行するより、宣言の時点で落とす。
+_CHECK_SHELL_CHARS = ("|", "&", ";", ">", "<", "`", "$(", "\n")
+
+
+def normalize_check(value: Any) -> "dict | None":
+    """state の `check` 宣言を {command, args, timeout_sec} へ正規化する。
+
+    受ける形は 3 つ。宣言が無ければ None（ゲート無し = 従来動作）。
+
+      check: "python3 -m pytest tests/test_x.py -q"     文字列（shlex で分割）
+      check: ["python3", "-m", "pytest", "tests/"]      配列（分割済み）
+      check: {command: python3, args: [...], timeout_sec: 300}
+
+    不正な宣言は ValueError を送出する（validate_workflow が理由を集めて報告する）。
+    """
+    if value is None or value == "":
+        return None
+    if isinstance(value, str):
+        for token in _CHECK_SHELL_CHARS:
+            if token in value:
+                raise ValueError(
+                    f"check にシェル記号 '{token}' は使えません（argv を直接実行するため"
+                    "解釈されません）。パイプやリダイレクトが要るならスクリプトにしてください")
+        parts = shlex.split(value)
+        if not parts:
+            raise ValueError("check が空です")
+        return {"command": parts[0], "args": parts[1:],
+                "timeout_sec": CHECK_DEFAULT_TIMEOUT_SEC}
+    if isinstance(value, list):
+        parts = [str(v) for v in value if str(v) != ""]
+        if not parts:
+            raise ValueError("check が空です")
+        return {"command": parts[0], "args": parts[1:],
+                "timeout_sec": CHECK_DEFAULT_TIMEOUT_SEC}
+    if isinstance(value, dict):
+        command = str(value.get("command") or "").strip()
+        if not command:
+            raise ValueError("check.command は必須です")
+        args = value.get("args", [])
+        if not isinstance(args, list):
+            raise ValueError("check.args はリストで指定してください")
+        raw_timeout = value.get("timeout_sec", CHECK_DEFAULT_TIMEOUT_SEC)
+        try:
+            timeout = int(float(raw_timeout))
+        except (TypeError, ValueError):
+            raise ValueError(f"check.timeout_sec は数値で指定してください: {raw_timeout!r}")
+        return {"command": command, "args": [str(a) for a in args],
+                "timeout_sec": max(1, timeout)}
+    raise ValueError("check は文字列・配列・オブジェクトのいずれかで指定してください")
+
+
+def check_context(status: "int | None", stdout: str = "", stderr: str = "",
+                  error: str = "") -> dict:
+    """検査結果を condition_rule のコンテキスト値へ変換する（キーの契約はここが正典）。
+
+    - `check_status`: 終了コードの文字列。実行できなかった場合（タイムアウト・
+      コマンド不在）は "error" — 0 でないので「落ちた」側へ倒れる。
+    - `check_ok`: "true" / "false"。`equals:check_ok:true` で書ける短縮形。
+    - `check_output`: 診断の先頭行（stderr 優先）。人にもモデルにも同じものを見せる。
+    """
+    ok = status == 0 and not error
+    detail = error or (stderr.strip() or stdout.strip())
+    first_line = detail.splitlines()[0].strip() if detail.strip() else ""
+    return {
+        "check_status": "error" if status is None else str(status),
+        "check_ok": "true" if ok else "false",
+        "check_output": first_line,
+    }
+
+
+def check_feedback_note(check: dict, result: dict, attempt: int, attempts: int) -> str:
+    """再投入時に課題文へ足す診断。実測では受入は同じで再試行が 28% 速くなる。"""
+    argv = " ".join([check["command"], *check["args"]])
+    detail = "\n".join(x for x in (result.get("error", ""), result.get("stderr", ""),
+                                   result.get("stdout", "")) if x).strip()
+    return (
+        f"Retry {attempt}/{attempts - 1}: the declared check failed "
+        f"(exit status {result['context']['check_status']}).\n"
+        f"Check command: {argv}\n"
+        + (f"Check output:\n{detail[-CHECK_OUTPUT_LIMIT:]}\n" if detail else "")
+        + "Fix the work so this exact command succeeds. Do not modify the check itself."
+    )
+
+
+def run_check(check: dict, *, cwd: "str | Path | None" = None) -> dict:
+    """検査コマンドを実行して結果を返す。シェルは介さない（argv を直接実行）。
+
+    戻り値: {ok, status, stdout, stderr, error, argv, context}
+    """
+    argv = [check["command"], *check["args"]]
+    status: "int | None" = None
+    stdout = stderr = error = ""
+    try:
+        proc = subprocess.run(argv, cwd=str(cwd or Path.cwd()), capture_output=True,
+                              text=True, errors="replace",
+                              timeout=max(1, int(check["timeout_sec"])))
+        status, stdout, stderr = proc.returncode, proc.stdout or "", proc.stderr or ""
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout.decode("utf-8", "replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
+        stderr = exc.stderr.decode("utf-8", "replace") if isinstance(exc.stderr, bytes) else (exc.stderr or "")
+        error = f"検査コマンドがタイムアウトしました ({check['timeout_sec']}s)"
+    except OSError as exc:
+        error = f"検査コマンドを実行できません: {exc}"
+    context = check_context(status, stdout, stderr, error)
+    return {"ok": context["check_ok"] == "true", "status": status, "stdout": stdout,
+            "stderr": stderr, "error": error, "argv": argv, "context": context}
 
 
 # ─────────────────────────────────────────────
@@ -110,6 +244,15 @@ def load_workflow(path: str | Path) -> WorkflowDefinition:
             if auto.exists():
                 action = auto.read_text(encoding="utf-8")
 
+        # 決定的検査。宣言が壊れていても load では落とさず、validate_workflow が
+        # 全部の理由をまとめて報告する（他のエラーと同じ扱いにする）。
+        check: "dict | None" = None
+        check_error = ""
+        try:
+            check = normalize_check(sdef.get("check"))
+        except ValueError as exc:
+            check_error = f"ステート '{state_id}' の check が不正です: {exc}"
+
         states[state_id] = StateConfig(
             id=state_id,
             description=sdef.get("description", state_id),
@@ -120,6 +263,12 @@ def load_workflow(path: str | Path) -> WorkflowDefinition:
             output_key=sdef.get("output_key", ""),
             max_retries=sdef.get("max_retries", 0),
             output_validator=sdef.get("output_validator", ""),
+            check=check,
+            # 検査の再投入予算。未宣言なら max_retries を継ぐ（実測ハーネスと同じ意味）。
+            check_retries=int(sdef.get("check_retries", sdef.get("max_retries", 0)) or 0),
+            check_on_exhausted=str(sdef.get("check_on_exhausted", "escalate")).strip(),
+            check_feedback=bool(sdef.get("check_feedback", True)),
+            check_error=check_error,
         )
 
     # トランジション（priority 順にソート）
@@ -188,6 +337,33 @@ def validate_workflow(wf: WorkflowDefinition) -> list[str]:
         )
         if not has_transition:
             errors.append(f"非終端ステート '{state_id}' に出力トランジションがありません")
+    # 決定的検査の宣言。壊れた宣言を黙って素通りさせると、ゲートが無いまま
+    # 「ゲートを置いた」つもりの実行になる——検知の欠落は最も気付けない事故なので投入前に落とす。
+    for state_id, state in wf.states.items():
+        if state.check_error:
+            errors.append(state.check_error)
+        if state.check and state.terminal:
+            errors.append(f"終端ステート '{state_id}' は check を持てません（アクションが無い）")
+        if state.check_on_exhausted not in CHECK_ON_EXHAUSTED:
+            errors.append(
+                f"ステート '{state_id}' の check_on_exhausted が不正です: "
+                f"'{state.check_on_exhausted}'（{' | '.join(CHECK_ON_EXHAUSTED)}）")
+        if state.check_retries < 0:
+            errors.append(f"ステート '{state_id}' の check_retries は 0 以上で指定してください")
+    # 検査結果のキーを見る condition_rule が、検査を宣言していないステートから出ていないか。
+    # 検査が無ければキーも無く、evaluate_condition_rule は None（= LLM 評価へフォールバック）を
+    # 返す——「決定的に見ているつもりが自己申告で決まっていた」に静かに戻る経路をここで塞ぐ。
+    for t in wf.transitions:
+        if not any(key in t.condition_rule for key in CHECK_CONTEXT_KEYS):
+            continue
+        sources = ([s for s in wf.states.values() if not s.terminal]
+                   if t.from_state == "*" else [wf.states.get(t.from_state)])
+        for source in sources:
+            if source is not None and not source.check:
+                errors.append(
+                    f"トランジション '{t.from_state}' → '{t.to_state}' は検査結果"
+                    f"（{'/'.join(CHECK_CONTEXT_KEYS)}）で分岐しますが、ステート "
+                    f"'{source.id}' に check がありません")
     return errors
 
 
@@ -286,6 +462,10 @@ class ExecutionResult:
     context: dict[str, Any]
     steps: list[dict[str, Any]]
     error: str = ""
+    # 検査の再投入上限に達した = この段では解けない。失敗一般とは別に名前を付ける
+    # （実測では上限到達の失敗は 9/9 が同形で、引き直しても揺れない——上位の段へ
+    # 回すシグナルとして使う）。
+    escalate: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -294,6 +474,7 @@ class ExecutionResult:
             "output": self.output,
             "steps": self.steps,
             "error": self.error,
+            "escalate": self.escalate,
         }
 
 
@@ -359,19 +540,41 @@ class StateMachineEngine:
             self._log(verbose, f"\n{'─'*50}")
             self._log(verbose, f"[ステップ {step_idx+1}] ステートに入りました: {current_state_id} ({state.description})")
 
-            # ステートアクションを実行（max_retries でリトライ）
-            output = await self._execute_state(state, ctx, verbose)
+            # ステートアクションを実行し、宣言があれば決定的検査を通す。
+            # 検査が落ちたら同じステートをやり直す（自己申告ではなく測った事実で決める）。
+            output, gate = await self._execute_gated(state, ctx, verbose)
             ctx["last_output"] = output
             ctx["history"][current_state_id] = output
             ctx["step_count"] = step_idx + 1
             if state.output_key:
                 ctx[state.output_key] = output
+            if gate is not None:
+                ctx.update(gate["context"])
 
             steps.append({
                 "step": step_idx + 1,
                 "state": current_state_id,
                 "output": output,
+                **({"check": {"ok": gate["ok"], "status": gate["status"],
+                              "attempts": gate["attempts"]}} if gate else {}),
             })
+
+            # 検査が最後まで通らなかった。ここから先は宣言が決める。
+            if gate is not None and not gate["ok"] and state.check_on_exhausted != "continue":
+                escalate = state.check_on_exhausted == "escalate"
+                self._log(verbose, f"  ✗ 検査が {gate['attempts']} 回とも失敗しました"
+                                   + ("（上位の段へ回す）" if escalate else ""))
+                return ExecutionResult(
+                    success=False,
+                    final_state=current_state_id,
+                    output=output,
+                    context=ctx,
+                    steps=steps,
+                    error=(f"ステート '{current_state_id}' の検査が "
+                           f"{gate['attempts']} 回とも失敗しました: "
+                           f"{gate['context']['check_output'] or gate['context']['check_status']}"),
+                    escalate=escalate,
+                )
 
             # 終端ステート → 完了
             if state.terminal:
@@ -447,8 +650,34 @@ class StateMachineEngine:
 
     # ── 内部: ステート実行 ───────────────────────────────────
 
-    async def _execute_state(
+    async def _execute_gated(
         self, state: StateConfig, ctx: dict, verbose: bool
+    ) -> "tuple[str, dict | None]":
+        """アクションを実行し、宣言された検査を通す。落ちたら同じステートをやり直す。
+
+        戻り値: (最終出力, 検査結果 | None)。検査の宣言が無ければ従来どおり 1 回だけ実行する。
+        """
+        if not state.check:
+            return await self._execute_state(state, ctx, verbose), None
+
+        attempts = max(1, state.check_retries + 1)
+        note = ""
+        for attempt in range(attempts):
+            output = await self._execute_state(state, ctx, verbose, check_note=note)
+            result = run_check(state.check)
+            self._log(verbose, f"  検査 [{' '.join(result['argv'])}]: "
+                               f"{'✓ 通過' if result['ok'] else '✗ 失敗'} "
+                               f"(status={result['context']['check_status']})")
+            if result["ok"] or attempt == attempts - 1:
+                return output, {**result, "attempts": attempt + 1}
+            note = (check_feedback_note(state.check, result, attempt + 1, attempts)
+                    if state.check_feedback else
+                    f"Retry {attempt + 1}/{attempts - 1}: the declared check failed. "
+                    "Fix the work so it succeeds.")
+        return "", None   # 到達しない（ループ内で必ず返る）
+
+    async def _execute_state(
+        self, state: StateConfig, ctx: dict, verbose: bool, check_note: str = ""
     ) -> str:
         parts = []
         if state.on_enter:
@@ -460,6 +689,8 @@ class StateMachineEngine:
             return ""
 
         base_prompt = "\n\n".join(parts)
+        if check_note:
+            base_prompt += f"\n\n{check_note}"
         max_attempts = state.max_retries + 1
 
         output = ""
