@@ -105,18 +105,25 @@ transitions:
 | 「失敗したら元に戻す」「ロールバック」 | Saga |
 | 5ステート以上の長いワークフロー | マイルストーンアンカー |
 
-### ステップ3: フォルダ構造を作成する
+### ステップ3: scaffold で骨組みを生成する
 
+フォルダとファイルを手で書かない。ステップ2で決めた状態列を scaffold へ渡す:
+
+```bash
+python .github/skills/statemachine-use/scripts/scaffold.py {名前} \
+  --state "first_state:説明" --state second_state
 ```
-.statemachine/{名前}/
-  workflow.yaml
-  actions/{state_id}.md
-  conditions/{from}_to_{to}.md   # 複雑な条件のみ。単純な条件はYAMLインラインでよい
-```
 
-### ステップ4: ファイルを生成する
+- `--state ID[:説明]` を実行順に並べる。終端は `--terminal ID[:説明]`（省略時は complete を自動で足す）。
+- `.statemachine/{名前}/` に workflow.yaml と actions/*.md スタブを生成し、**生成直後に検証する**
+  （通らない骨組みは残さない）。
+- 骨組みは直列遷移。分岐・ループ・複雑な条件（`conditions/{from}_to_{to}.md`）はステップ4で足す。
+- 新スキーマの口（`output_validator` / `check` / `check_retries` / `check_on_exhausted` / `write`）は
+  コメント付きで含まれる——ステップ2で決めた検査コマンドのコメントを外して実値にする。
 
-**workflow.yaml** — 全フィールドの仕様は `references/schema.md` を参照:
+### ステップ4: スタブを埋める
+
+生成された workflow.yaml と actions/*.md を以下の形へ埋める。全フィールドの仕様は `references/schema.md` を参照:
 
 ```yaml
 name: "ワークフロー名"
@@ -207,6 +214,21 @@ transitions:
 この指示に従ってタスクを実行してください。
 完了後、指定された形式で出力のみを返してください。次のステップは別途指示されます。
 ```
+
+### 定義のメンテナンス — migrate
+
+スキーマは加算的に拡張される（check → check_on_exhausted → write）。手持ちの定義は
+migrate で検査し、追随させる:
+
+```bash
+python .github/skills/statemachine-use/scripts/migrate.py path/to/workflow.yaml   # dry-run（検出と差分）
+python .github/skills/statemachine-use/scripts/migrate.py .statemachine --apply   # フォルダごと適用
+```
+
+検出項目: check 宣言の無いステートからの `check_*` 分岐（検証エラー・修正案の提示）、
+シェル記号入り `check`（投入前に落ちる）、`write` 未割付（編集対象が一意に決まる場合だけ提案）、
+`check_on_exhausted` の暗黙既定の明示化。後ろ 2 つはコメントを保ったまま `--apply` で書き換える。
+正規化・検証は engine.py の 1 実装を使うので、判定が実行系とずれることはない。
 
 ---
 
