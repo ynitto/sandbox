@@ -227,6 +227,34 @@ button {
 }
 button:hover { border-color: var(--accent); background: var(--bg3); }
 button:disabled { opacity: 0.4; cursor: default; }
+/* OSごとに見た目が変わる選択欄を、Dashboard共通の色・大きさ・フォーカスへ揃える。 */
+input[type="checkbox"] {
+  appearance: none;
+  display: inline-grid;
+  place-content: center;
+  width: 18px;
+  height: 18px;
+  min-width: 18px;
+  min-height: 18px;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  cursor: pointer;
+}
+input[type="checkbox"]::before {
+  content: '';
+  width: 8px;
+  height: 4px;
+  border-left: 2px solid #fff;
+  border-bottom: 2px solid #fff;
+  transform: rotate(-45deg) scale(0);
+  transform-origin: center;
+}
+input[type="checkbox"]:checked { border-color: var(--accent); background: var(--accent); }
+input[type="checkbox"]:checked::before { transform: rotate(-45deg) scale(1); }
+input[type="checkbox"]:disabled { cursor: default; opacity: .5; }
 .row { display: flex; gap: 4px; }
 .row2 { display: flex; gap: 12px; }
 .row2 > div { flex: 1; }
@@ -240,7 +268,7 @@ button:disabled { opacity: 0.4; cursor: default; }
   gap: 6px;
   cursor: pointer;
 }
-.field input[type="checkbox"] { width: auto; margin: 0; flex: none; }
+.field input[type="checkbox"] { width: 18px; margin: 0; flex: none; }
 
 /* ---------- サイドバー ---------- */
 
@@ -450,20 +478,69 @@ button:disabled { opacity: 0.4; cursor: default; }
   padding: 14px 18px 10px;
   border-bottom: 1px solid var(--border);
 }
-.project-header-main { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.project-header-main { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 #project-title { display: flex; align-items: baseline; gap: 10px; }
 #project-name { font-size: 18px; font-weight: 650; }
 #project-meta { font-size: 11px; margin-top: 3px; }
-.project-cli-chat-group { display: inline-flex; align-items: center; gap: 6px; }
+.ai-context-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  width: 100%;
+  margin: 10px 0 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg2);
+  box-sizing: border-box;
+}
+.project-cli-chat-group { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
+/* Author CSS の display がブラウザ標準の [hidden] を上書きしないようにする。
+   前の領域の相談ボタンが残ると、見出しが右へ押し出される。 */
+.project-cli-chat-group[hidden] { display: none !important; }
+.ai-context-target { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 3px 8px; min-width: 0; }
+.ai-context-label { color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+.ai-context-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 12px; }
+.ai-context-target .project-cli-chat-note { grid-column: 2; }
 /* 起動先（cwd）の選択。長い URL 由来の名前でヘッダを押し広げないよう幅を締める。 */
 .project-cli-chat-cwd { max-width: 220px; min-height: 44px; }
 .project-cli-chat-cwd:disabled { opacity: .6; }
 .project-cli-chat { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; padding: 5px 10px; }
 .project-cli-chat svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+/* 無効の理由と実効エージェントは文字で出す。色や非活性の見た目だけに載せない。 */
+.project-cli-chat-note { font-size: 12px; line-height: 1.4; margin: 0; }
+.project-cli-chat-note:empty { display: none; }
+
+/* タイトル行では警告をボタンの下へ逃がし、タイトルと操作の横幅を守る。 */
+.project-header-main .project-cli-chat-group,
+.area-header .project-cli-chat-group { position: relative; }
+.project-header-main .project-cli-chat-group:has(.project-cli-chat-note:not(:empty)),
+.area-header .project-cli-chat-group:has(.project-cli-chat-note:not(:empty)) { margin-bottom: 22px; }
+.project-header-main .project-cli-chat-note:not(:empty),
+.area-header .project-cli-chat-note:not(:empty) {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  max-width: min(360px, 70vw);
+  color: var(--yellow);
+  text-align: right;
+  white-space: normal;
+}
 
 @media (pointer: coarse) {
   .project-cli-chat { min-height: 44px; }
   .project-cli-chat-cwd { min-height: 44px; }
+}
+
+/* 狭幅では相談のボタンとフォルダ選択を縦に積む（画面全体へ横スクロールを出さない）。 */
+@media (max-width: 640px) {
+  .ai-context-bar { flex-direction: column; align-items: stretch; }
+  .ai-context-target { grid-template-columns: 1fr; }
+  .ai-context-target .project-cli-chat-note { grid-column: 1; }
+  .project-cli-chat { justify-content: center; width: 100%; }
+  .project-cli-chat-cwd { max-width: none; }
+  .wf-cwd-action, .amigos-run-cwd-action { align-items: stretch; flex-direction: column; }
 }
 
 #tabs {
@@ -494,8 +571,6 @@ button:disabled { opacity: 0.4; cursor: default; }
   margin-left: auto;
 }
 .tab-project-settings {
-  margin-left: 8px;
-  border-left: 1px solid var(--border);
   font-weight: 600;
 }
 .tab-global-settings {
@@ -857,7 +932,7 @@ button:disabled { opacity: 0.4; cursor: default; }
 .cowork-header {
   display: flex;
   align-items: flex-start;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 12px;
 }
 .cowork-header h2 { margin: 0 0 4px; }
@@ -865,7 +940,7 @@ button:disabled { opacity: 0.4; cursor: default; }
 .cowork-meta { font-size: 12px; }
 .cowork-scope {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   justify-content: space-between;
   gap: 12px;
   font-size: 12px;
@@ -874,7 +949,8 @@ button:disabled { opacity: 0.4; cursor: default; }
 .cowork-split-view {
   display: grid;
   flex: 1;
-  grid-template-rows: 240px minmax(0, 1fr);
+  grid-template-columns: minmax(240px, 320px) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   gap: 10px;
   min-width: 0;
   min-height: 0;
@@ -887,17 +963,16 @@ button:disabled { opacity: 0.4; cursor: default; }
 .cowork-routine-picker-heading {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: stretch;
   gap: 12px;
   margin-bottom: 7px;
 }
-.cowork-routine-picker-heading h3 { margin: 2px 0 0; font-size: 14px; }
-.cowork-routine-tools { display: flex; align-items: center; justify-content: flex-end; gap: 10px; min-width: 0; }
-.cowork-routine-search { width: min(240px, 36vw); min-width: 140px; }
+.cowork-routine-tools { display: flex; flex: 1; align-items: center; gap: 10px; min-width: 0; }
+.cowork-routine-search { width: 100%; min-width: 0; }
 .cowork-routine-selector {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
-  gap: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
   min-width: 0;
   flex: 1;
   min-height: 0;
@@ -907,8 +982,8 @@ button:disabled { opacity: 0.4; cursor: default; }
   overscroll-behavior: contain;
 }
 .cowork-routine-option {
-  height: 76px;
-  min-height: 76px;
+  height: 58px;
+  min-height: 58px;
   min-width: 0;
   padding: 7px 9px;
   text-align: left;
@@ -916,19 +991,15 @@ button:disabled { opacity: 0.4; cursor: default; }
   background: var(--bg2);
 }
 .cowork-routine-option:hover { background: var(--bg3); }
-.cowork-routine-option.selected { border-color: var(--accent); background: var(--bg3); box-shadow: inset 0 -2px var(--accent); }
+.cowork-routine-option.selected { border-color: var(--accent); background: var(--bg3); box-shadow: inset 3px 0 var(--accent); }
 .cowork-routine-option-head,
 .cowork-routine-option-meta { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; min-width: 0; }
 .cowork-routine-option-head strong {
-  display: -webkit-box;
+  display: block;
   min-width: 0;
-  min-height: 2.7em;
   overflow: hidden;
-  white-space: normal;
-  overflow-wrap: anywhere;
-  line-height: 1.35;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 .cowork-routine-option-head .status-chip { flex: none; align-self: flex-start; }
 .cowork-routine-option-meta { margin-top: 5px; color: var(--muted); font-size: 11px; }
@@ -947,10 +1018,32 @@ button:disabled { opacity: 0.4; cursor: default; }
 #cowork-selected-slot > .cowork-selected-detail { min-height: 100%; }
 .cowork-selected-detail.is-running { border-left-color: var(--accent2); }
 .cowork-selected-detail.is-error { border-left-color: var(--red); }
-.cowork-selected-hero { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; min-width: 0; }
+.cowork-selected-hero {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  min-width: 0;
+  margin: -18px -18px 0;
+  padding: 18px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg2);
+}
 .cowork-selected-heading { min-width: 0; }
 .cowork-selected-heading h2 { margin: 4px 0 9px; overflow-wrap: anywhere; }
-.cowork-primary-run { min-width: 130px; min-height: 44px; flex: none; }
+.cowork-selected-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex: none; }
+.cowork-header button,
+.cowork-selected-actions button,
+.cowork-section-heading button { min-height: 36px; padding: 6px 12px; }
+.cowork-primary-run { min-width: 120px; flex: none; }
+@media (pointer: coarse) {
+  .cowork-header button,
+  .cowork-selected-actions button,
+  .cowork-section-heading button { min-height: 44px; }
+}
 .cowork-prompt-preview { margin-top: 16px; }
 .cowork-prompt-preview h3 { margin: 0 0 6px; color: var(--muted); font-size: 13px; }
 .cowork-prompt-preview pre {
@@ -980,8 +1073,20 @@ button:disabled { opacity: 0.4; cursor: default; }
 .cowork-status-grid > div { min-width: 0; padding: 10px; border-radius: 7px; background: var(--bg3); }
 .cowork-status-grid span { display: block; margin-bottom: 4px; color: var(--muted); font-size: 11px; }
 .cowork-status-grid strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cowork-latest-result { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 11px 0; }
-.cowork-latest-result p { margin: 4px 0 0; overflow-wrap: anywhere; }
+.cowork-status-result { grid-column: span 1; }
+.cowork-status-result strong {
+  display: -webkit-box;
+  min-height: 2.8em;
+  line-height: 1.4;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.cowork-toolbar-actions { flex-wrap: wrap; justify-content: flex-end; }
+.cowork-inline-history { margin-top: 8px; padding-top: 14px; border-top: 1px solid var(--border); }
+.cowork-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.cowork-section-heading h3 { margin: 2px 0 0; }
 .cowork-more-details { margin-top: 8px; padding-top: 12px; border-top: 1px solid var(--border); }
 .cowork-more-details h3 { margin: 0 0 10px; color: var(--muted); }
 .cowork-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; margin: 0 0 12px; background: var(--border); border: 1px solid var(--border); }
@@ -989,10 +1094,29 @@ button:disabled { opacity: 0.4; cursor: default; }
 .cowork-facts dt { color: var(--muted); font-size: 11px; }
 .cowork-facts dd { margin: 3px 0 0; overflow-wrap: anywhere; }
 .cowork-secondary-actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+.routine-adhoc-dialog { width: min(620px, calc(100vw - 24px)); }
+.routine-adhoc-dialog .dialog-scroll-body { padding: 18px; }
+.routine-adhoc-dialog .routine-adhoc { border: 0; padding: 0; }
+
+@media (max-width: 800px) {
+  .cowork-split-view {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(180px, 34vh) minmax(0, 1fr);
+  }
+  .cowork-selected-hero { flex-direction: column; }
+  .cowork-selected-actions { width: 100%; }
+  .cowork-selected-actions > button { flex: 1; }
+  .cowork-status-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 /* 実行履歴とログ */
 .cowork-history-body { display: flex; flex-direction: column; gap: 14px; min-height: 0; }
 .cowork-history-body h3 { margin: 0 0 6px; font-size: 13px; }
 .cowork-history-table-wrap { max-height: 200px; overflow: auto; }
+.cowork-history-table { width: 100%; table-layout: fixed; }
+.cowork-history-table .cowork-history-at { width: 148px; }
+.cowork-history-table .cowork-history-result { width: 76px; }
+.cowork-history-table th:first-child,
+.cowork-history-table td:first-child { white-space: nowrap; }
 .cowork-history-msg { overflow-wrap: anywhere; word-break: break-word; }
 .cowork-history-log-layout {
   display: grid;
@@ -1013,6 +1137,10 @@ button:disabled { opacity: 0.4; cursor: default; }
 .cowork-log-list li { display: flex; flex-direction: column; gap: 1px; }
 .cowork-log-list .muted { font-size: 11px; padding-left: 8px; }
 .cowork-log-file {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
   text-align: left;
   padding: 5px 8px;
   border: 1px solid transparent;
@@ -1024,6 +1152,9 @@ button:disabled { opacity: 0.4; cursor: default; }
   white-space: nowrap;
 }
 .cowork-log-file:hover { background: var(--bg3); }
+.cowork-history-logs { font-size: 12px; }
+.cowork-log-file time { font-size: 12px; }
+.cowork-log-file .muted { padding: 0; font-size: 11px; }
 .cowork-log-file.selected { border-color: var(--accent2); background: var(--bg3); }
 .cowork-log-view-wrap { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 #cowork-log-view {
@@ -2886,8 +3017,6 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
   .cowork-status-grid,
   .routine-agent-overview-facts,
   .cowork-facts { grid-template-columns: 1fr; }
-  .cowork-latest-result { align-items: flex-start; flex-direction: column; }
-  .cowork-routine-selector { grid-template-columns: 1fr; }
   .cowork-routine-picker-heading { align-items: stretch; flex-direction: column; }
   .cowork-routine-tools { justify-content: space-between; width: 100%; }
   .cowork-routine-search { width: 100%; }
@@ -2944,8 +3073,11 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
   background: var(--bg2);
 }
 .amigos-run-card > label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
+.amigos-run-cwd-action > label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
 .amigos-run-card input, .amigos-run-card select, .amigos-run-card textarea { width: 100%; box-sizing: border-box; }
 .amigos-run-team-field, .amigos-run-cwd-field { min-width: 0; }
+.amigos-run-team-field, .amigos-run-cwd-action { align-self: start; }
+.amigos-run-team-field select, .amigos-run-cwd-field input { height: 44px; min-height: 44px; }
 .amigos-run-mode-field, .amigos-run-design, .amigos-run-capabilities,
 .amigos-run-roles, .amigos-run-actions { grid-column: 1 / -1; }
 .amigos-run-roles label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
@@ -3752,6 +3884,8 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
 .area-item-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* 領域の見出し（プロジェクト以外の領域で、プロジェクト用ヘッダーの代わりに出す） */
+.area-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; }
+.area-header > div:first-child { min-width: 0; }
 .area-header h2 { margin: 0; font-size: 18px; font-weight: 650; }
 .area-header p { margin: 3px 0 0; font-size: 12px; }
 
@@ -3814,6 +3948,24 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
 /* ワークフロー */
 .wf-page { max-width: 1180px; display: grid; gap: 18px; }
 .wf-title, .wf-section-head, .wf-editor-head { display: flex; align-items: end; justify-content: space-between; gap: 12px; }
+.wf-title-actions { display: flex; align-items: center; gap: 8px; }
+.wf-page-actions,
+.amigos-page-actions { display: flex; justify-content: flex-end; align-items: center; gap: 8px; }
+.wf-cwd-action, .amigos-run-cwd-action { position: relative; display: flex; align-items: end; gap: 8px; min-width: 0; }
+.wf-cwd-action > label, .amigos-run-cwd-action > label { flex: 1; min-width: 0; }
+.wf-cwd-action .project-cli-chat-group,
+.amigos-run-cwd-action .project-cli-chat-group { flex: none; }
+.wf-cwd-action:has(.project-cli-chat-note:not(:empty)),
+.amigos-run-cwd-action:has(.project-cli-chat-note:not(:empty)) { margin-bottom: 24px; }
+.wf-cwd-action .project-cli-chat-note:not(:empty),
+.amigos-run-cwd-action .project-cli-chat-note:not(:empty) {
+  position: absolute;
+  top: calc(100% + 5px);
+  left: 0;
+  max-width: 100%;
+  color: var(--yellow);
+  white-space: normal;
+}
 .wf-title h2, .wf-section-head h3 { margin: 0; }
 .wf-title p { margin: 4px 0 0; color: var(--muted); }
 .wf-run-card { display: grid; grid-template-columns: minmax(180px, .8fr) minmax(220px, 1.4fr);
@@ -3868,6 +4020,67 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
   padding-top: 12px; }
 .np-source-grid label { display: grid; gap: 6px; }
 .np-source-grid input { min-height: 44px; box-sizing: border-box; }
+.np-design-preview { display: grid; gap: 10px; margin-top: 14px; padding: 14px;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--bg2); }
+.np-design-preview h3, .np-design-preview p { margin: 0; }
+.np-design-preview label { display: flex; align-items: center; gap: 8px; min-height: 44px; }
+.np-design-preview fieldset { display: grid; gap: 4px; border: 1px solid var(--border); border-radius: 8px; }
+
+/* 共通タスク作成: 両領域で同じ4段階・カード・候補の視覚言語を使う。 */
+.task-create-dialog { width: min(820px, calc(100vw - 32px)); max-height: calc(100vh - 32px); }
+.task-create-dialog[open] { height: min(720px, calc(100vh - 32px)); }
+.task-create-scroll { display: grid; align-content: start; gap: 0; }
+.task-create-steps { list-style: none; display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
+  margin: 14px 0 18px; padding: 0; }
+.task-create-steps li { display: flex; align-items: center; gap: 7px; min-width: 0; color: var(--muted); font-size: 12px; }
+.task-create-steps li::after { content: ''; height: 2px; flex: 1; background: var(--border); }
+.task-create-steps li:last-child::after { display: none; }
+.task-create-steps li > span { display: grid; place-items: center; width: 28px; height: 28px; flex: 0 0 28px;
+  border: 1px solid var(--border); border-radius: 50%; }
+.task-create-steps li.current { color: var(--fg); font-weight: 600; }
+.task-create-steps li.current > span { border-color: var(--accent); background: var(--accent); color: white; }
+.task-create-steps li.done > span { border-color: var(--ok); color: var(--ok); }
+.task-create-body { min-height: 280px; display: grid; align-content: start; gap: 14px; }
+.task-create-body > .field { display: grid; gap: 6px; margin: 0; color: var(--muted); font-size: 12px; }
+.task-create-body > .field input, .task-create-body > .field select { min-height: 44px; }
+.task-create-body > .field textarea { width: 100%; resize: vertical; box-sizing: border-box; }
+.task-choice-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; border: 0; padding: 0; }
+.task-choice-grid legend { grid-column: 1 / -1; margin-bottom: 4px; font-weight: 600; }
+.task-choice-card, .task-source-row { min-height: 72px; display: flex; align-items: flex-start; gap: 10px; padding: 14px;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--bg2); cursor: pointer;
+  transition: border-color 180ms ease, background-color 180ms ease; }
+.task-choice-card { width: 100%; color: inherit; text-align: left; white-space: normal; }
+.task-source-row { width: 100%; color: inherit; text-align: left; white-space: normal; }
+.task-source-row::before { content: '＋'; display: grid; place-items: center; width: 18px; height: 18px;
+  flex: 0 0 18px; margin-top: 2px; border: 1px solid var(--border); border-radius: 4px; font-size: 13px; line-height: 1; }
+.task-source-row[aria-pressed="true"]::before { content: '✓'; border-color: var(--accent); background: var(--accent); color: #fff; }
+.task-choice-card:hover, .task-source-row:hover { border-color: var(--accent); background: var(--bg3); }
+.task-choice-card[aria-pressed="true"], .task-source-row[aria-pressed="true"],
+.task-source-row:has(input:checked) { border-color: var(--accent); background: rgba(124, 109, 240, .09); }
+.task-choice-card input, .task-source-row input { margin-top: 3px; flex: 0 0 auto; }
+.task-choice-card span, .task-source-row span { display: grid; gap: 4px; }
+.task-choice-card small, .task-source-row small { color: var(--muted); line-height: 1.45; }
+.task-candidate-card { display: grid; gap: 12px; padding: 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg2); }
+.task-candidate-card label { display: grid; gap: 6px; }
+.task-candidate-card input, .task-candidate-card select { min-height: 44px; }
+.task-candidate-select { display: inline-flex !important; align-items: center; justify-self: start; gap: 8px;
+  min-height: 44px; padding: 7px 12px; color: var(--muted); }
+.task-candidate-select::before { content: '＋'; display: grid; place-items: center; width: 18px; height: 18px;
+  border: 1px solid var(--border); border-radius: 4px; font-size: 13px; line-height: 1; }
+.task-candidate-select[aria-pressed="true"] { border-color: var(--accent); background: rgba(124, 109, 240, .09); color: var(--fg); }
+.task-candidate-select[aria-pressed="true"]::before { content: '✓'; border-color: var(--accent); background: var(--accent); color: #fff; }
+.task-source-sections { display: grid; gap: 12px; }
+.task-source-sections > section { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; }
+.task-source-sections h3 { margin: 0; font-size: 14px; }
+.task-file-picker { min-height: 44px; display: flex; align-items: center; gap: 10px; cursor: pointer; }
+.project-task-candidates { display: grid; gap: 12px; }
+.task-create-complete { min-height: 220px; display: grid; place-content: center; text-align: center; gap: 8px; }
+.task-create-complete strong { font-size: 18px; }
+.wf-queue { display: grid; gap: 12px; padding: 18px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg2); }
+.wf-queue-item { min-height: 64px; display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  padding: 12px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); }
+.wf-queue-item > div:first-child { min-width: 0; display: grid; gap: 4px; }
+.wf-queue-item small { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wf-design-questions { display: grid; gap: 10px; }
 .wf-design-questions h4 { margin: 0; font-size: 13px; }
 .wf-design-doc pre { max-height: 320px; overflow: auto; }
@@ -3895,6 +4108,17 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
 .wf-override-summary dt { color: var(--muted); }
 .wf-event-list { display: grid; gap: 8px; margin: 0; padding-left: 22px; }
 .wf-event-list time { color: var(--muted); margin-right: 8px; }
+.wf-run-meta { margin: -8px 0 12px; color: var(--muted); font-size: 12px; }
+.wf-run-folder code { min-width: 0; max-width: 70%; overflow: hidden; color: var(--fg);
+  text-overflow: ellipsis; white-space: nowrap; }
+.wf-run-result { margin: 4px 0 18px; }
+.wf-run-result .flow-section-heading h2 { margin-bottom: 8px; font-size: 16px; }
+.wf-run-result .qf-output { margin: 0; max-height: 280px; overflow: auto; white-space: pre-wrap; }
+.wf-detail-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.wf-flow-view-body { flex: 1; min-height: 0; overflow-y: auto; border: 1px solid var(--border);
+  border-radius: 9px; background: var(--bg2); }
+.wf-run-detail-page { max-width: none; height: 100%; min-height: 0; grid-template-rows: auto auto minmax(0, 1fr); }
+.wf-run-detail-page > .flow-detail-shell { height: 100%; min-height: 0; }
 .wf-settings-card { width: 100%; box-sizing: border-box; }
 .wf-settings-field { max-width: 280px; }
 .wf-sidebar-runs { display: grid; min-width: 0; }
@@ -3918,6 +4142,18 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
   .wf-selected-flow-content > .wf-card-meta { justify-self: start; }
   .wf-override-row { grid-template-columns: 1fr 1fr; }
   .np-source-grid { grid-template-columns: 1fr; }
+  .task-choice-grid { grid-template-columns: 1fr; }
+  .task-create-steps li { font-size: 0; }
+  .wf-queue-item { align-items: stretch; flex-direction: column; }
+  .wf-detail-toolbar { align-items: stretch; flex-direction: column; }
+}
+
+@media (max-width: 768px) {
+  .task-create-dialog[open] { height: calc(100vh - 16px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .task-choice-card, .task-source-row { transition: none; }
 }
 
 .wf-settings { width: 100%; max-width: none; }

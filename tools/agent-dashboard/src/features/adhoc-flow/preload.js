@@ -20,4 +20,8 @@ module.exports = {
   designSessionGet: (invoke) => (payload) => invoke('designSession:get', payload || {}),
   designSessionStart: (invoke) => (payload) => invoke('designSession:start', payload || {}),
   designSessionDelete: (invoke) => (payload) => invoke('designSession:delete', payload || {}),
+  workflowTaskList: (invoke) => () => invoke('workflowTask:list', {}),
+  workflowTaskCreate: (invoke) => (payload) => invoke('workflowTask:create', payload || {}),
+  workflowTaskDelete: (invoke) => (payload) => invoke('workflowTask:delete', payload || {}),
+  workflowTaskExecute: (invoke) => (payload) => invoke('workflowTask:execute', payload || {}),
 };

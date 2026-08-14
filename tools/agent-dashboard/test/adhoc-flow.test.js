@@ -20,6 +20,7 @@ function test(name, fn) {
 
 const adhoc = require('../src/features/adhoc-flow/main/adhoc');
 const design = require('../src/features/adhoc-flow/main/design-session');
+const taskQueue = require('../src/features/adhoc-flow/main/task-queue');
 const exec = require('../src/features/routines/main/exec');
 const tuning = require('../src/features/orchestration/main/tuning');
 const profiles = require('../src/features/orchestration/main/profiles');
@@ -33,6 +34,35 @@ function tmpdir(prefix) {
 
 test('実行時方針のおすすめは agent-control / agent-flow の自動決定へ委ねる', () => {
   assert.strictEqual(workflowUi.executionOverridesForMode('recommended', {}), null);
+});
+
+test('ワークフロータスクは作成時に実行せず、実行待ちとして保存する', () => {
+  const dir = tmpdir('adhoc-task-queue-');
+  try {
+    const config = { adhocFlow: { taskQueueDir: dir } };
+    const created = taskQueue.create(config, {
+      title: 'READMEを更新', request: '## 目的\nREADMEを更新', cwd: '/repo',
+      selection: { type: 'auto' }, sourceMode: 'new',
+    });
+    assert.match(created.id, /^wft-/);
+    assert.strictEqual(taskQueue.list(config).length, 1);
+    assert.strictEqual(taskQueue.get(config, created.id).request, '## 目的\nREADMEを更新');
+    assert.ok(!created.runId, '作成時にはrunを開始しない');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('実行待ちタスクは明示実行に成功した後だけ一覧から除く', () => {
+  const dir = tmpdir('adhoc-task-queue-');
+  try {
+    const config = { adhocFlow: { taskQueueDir: dir } };
+    const created = taskQueue.create(config, { title: '実行する', request: '本文' });
+    assert.throws(() => taskQueue.execute(config, created.id, () => { throw new Error('起動失敗'); }), /起動失敗/);
+    assert.ok(taskQueue.get(config, created.id), '失敗時は実行待ちを保持');
+    const result = taskQueue.execute(config, created.id, (payload) => ({ runId: 'run-1', payload }));
+    assert.strictEqual(result.runId, 'run-1');
+    assert.strictEqual(result.payload.title, '実行する', '実行詳細へタスク名を引き継ぐ');
+    assert.strictEqual(taskQueue.get(config, created.id), null);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('実行時方針のコスト優先は役割・機能ごとの最低許可tierを選ぶ', () => {

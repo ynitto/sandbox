@@ -489,7 +489,8 @@ test('差し込まれた面は登録・描画・表示通知の一巡で動く',
   const core = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'renderer.js'), 'utf8');
   const at = core.indexOf('const globalSettingsPanels = new Map();');
   assert.ok(at > 0, 'renderer.js に全体設定の登録簿がある');
-  const end = core.indexOf('function renderCliChatButton');
+  const end = core.indexOf('const CONSULT_SOURCES = {};');
+  assert.ok(end > at, '登録簿の切り出し終端が renderer.js に実在する');
   // eslint-disable-next-line no-new-func
   const registry = new Function('globalThis', `${core.slice(at, end)}
     return { registerGlobalSettingsPanel, globalSettingsPanelsHtml,

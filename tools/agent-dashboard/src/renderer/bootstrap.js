@@ -19,7 +19,12 @@ async function init() {
   state.config = await guard('設定読込', () => api.getConfig());
   initTabs();
   $('btn-refresh').addEventListener('click', () => refreshAll());
-  $('btn-cli-chat').addEventListener('click', openCliChat);
+  // 相談ボタンは領域ごとに別のマウント先へ描かれ、描き直しで要素が入れ替わる。
+  // 個別に addEventListener すると再描画のたびに配線が切れるので委譲で受ける。
+  document.addEventListener('click', (ev) => {
+    const button = ev.target.closest && ev.target.closest('[data-consult-open]');
+    if (button) openConsult(button.closest('[data-consult-group]'));
+  });
   $('btn-doctor').addEventListener('click', openDoctor);
   $('btn-doctor-submit').addEventListener('click', askDoctor);
   $('btn-doctor-apply-feedback').addEventListener('click', applyDoctorFeedbackDraft);

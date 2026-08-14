@@ -31,8 +31,10 @@ function maxDetailsDepth(source) {
 assert.ok(html.includes('<h1>ポータル</h1>'));
 assert.ok(html.includes('<title>ポータル</title>'));
 assert.ok(!html.includes('<h1>プロジェクト管理</h1>'));
-assert.ok(html.includes('この作業を相談'));
-assert.ok(!html.includes('AIに相談'));
+assert.ok(html.includes('AIに相談'));
+assert.ok(html.includes('>作業依頼</h2>'));
+assert.ok(!html.includes('AIに作業を依頼'));
+assert.ok(!html.includes('この作業を相談'));
 assert.ok(!html.includes('担当の構成をJSONで指定します'));
 assert.ok(!html.includes('agent-loop.yml に反映'));
 assert.ok(!html.includes('ステートマシンを作成'));
@@ -93,7 +95,8 @@ assert.ok(!reviseMarkup.includes('<input id="rv-desc"'), '作業内容の詳細�
 assert.ok(backlog.includes('<summary>詳細情報</summary>'));
 assert.ok(backlog.includes('function requestTaskDialogClose('));
 assert.ok(backlog.includes('taskDialogInputSnapshot('));
-assert.ok(html.includes('<label for="enq-accept">受入基準</label>'));
+assert.ok(backlog.includes('task-create-steps') && backlog.includes('task-candidate-card'),
+  'タスク追加は詳細フォームでなく段階式の候補確認を使います');
 assert.ok(html.includes('<label>達成条件</label>'));
 assert.ok(!html.includes('accept:'));
 

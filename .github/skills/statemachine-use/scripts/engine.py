@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import re
 import json
+from datetime import datetime
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Awaitable
@@ -338,7 +339,12 @@ class StateMachineEngine:
                 error="バリデーション失敗:\n" + "\n".join(errors),
             )
 
-        ctx = {**workflow.initial_context, **(context or {})}
+        # 組み込み変数。モデルに「今日」を推測させると学習時点の日付を書くので実行時の値を渡す。
+        # workflow の context や呼び出し側の指定が上書きできる位置に置く。
+        started = datetime.now().astimezone()
+        ctx = {"today": started.strftime("%Y-%m-%d"),
+               "now": started.isoformat(timespec="seconds"),
+               **workflow.initial_context, **(context or {})}
         ctx["input"] = input_text
         ctx["history"] = {}
         ctx["step_count"] = 0
@@ -505,6 +511,12 @@ class StateMachineEngine:
 
         for transition in candidates:
             label = transition.description or f"{transition.from_state} → {transition.to_state}"
+
+            # 0. 無条件トランジション（条件文もルールも無い）は評価せず成立させる。
+            #    空の条件文を LLM に渡すと答えが安定しない。
+            if not transition.condition.strip() and not transition.condition_rule.strip():
+                self._log(verbose, f"  条件 [{label}] (無条件): ✓ 真")
+                return transition.to_state
 
             # 1. condition_rule で決定論的評価を試みる
             rule_result = evaluate_condition_rule(transition.condition_rule, ctx)

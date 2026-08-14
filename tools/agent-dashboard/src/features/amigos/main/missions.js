@@ -246,6 +246,9 @@ function readMissionSummary(id, dir) {
     dir,
     title: mission.title || id,
     goal: mission.goal || '',
+    // 詳細画面の共通 AI 操作バーが、依頼時に選んだ作業フォルダを再利用する。
+    // object 形（{repo}）と旧 scalar 形のどちらも renderer が扱えるよう原形を保つ。
+    workspace: mission.workspace || null,
     assignmentPolicy: mission.assignment_policy || 'first-come',
     owner: mission.owner_node || '',
     postedAt: mission.posted_at || '',

@@ -100,6 +100,20 @@ transitions:
 
 `condition` も `condition_file` も指定されていない場合、`conditions/{from}_to_{to}.md` が存在すれば自動で読み込む（`from` が `*` の場合は `wildcard_to_{to}.md`）。
 
+### 無条件トランジション
+
+自動探索でも条件が見つからず `condition_rule` も無いトランジションは**無条件**として扱い、評価せずそのまま成立させる（空の条件文を LLM に渡さない）。
+
+`next_state.py --auto-eval` は、最優先の候補が無条件のとき `conditions` を組まずに次の応答を返す:
+
+```json
+{"state": "fetch", "auto_advance": true, "next_state": "parse"}
+```
+
+`priority` が後ろの無条件トランジションは、前段の条件が全て偽のときのフォールバックとして解決する。
+
+`auto_advance` が省くのは条件評価だけで、アクションの実行と `output_validator` による成功確認は省略しない。
+
 ### condition_rule 書式
 
 LLM を介さずにコンテキスト変数を決定論的に評価する。**`condition_rule` が評価可能な場合は `condition` の LLM 評価をスキップする**（LLM API 呼び出しが削減される）。
@@ -126,7 +140,8 @@ condition_rule: "startswith:last_output:RETRY;lt:retry_count:3"
 
 - キーが `ctx` に存在しない場合は `None`（LLM評価にフォールバック）
 - 解析不能なルールは `None` として扱い LLM評価にフォールバック
-- インライン実行では `next_state.py --last-output VALUE` または `--output KEY=VALUE` でコンテキストを渡す
+- インライン実行では `next_state.py --context '{"last_output":"VALUE","KEY":"VALUE"}'` でコンテキストを渡す
+  （旧引数 `--last-output` / `--output KEY=VALUE` も互換として受け付けるが、`--context` に無いキーの補完としてのみ効く）
 
 ### ワイルドカードトランジション
 
@@ -160,6 +175,8 @@ In `action` and `condition` strings, use `{{variable}}` syntax:
 |----------|-------------|
 | `{{input}}` | Original input to the machine |
 | `{{last_output}}` | Most recent state output |
+| `{{today}}` | 実行日（`YYYY-MM-DD`）。組み込み。`context:` で上書き可 |
+| `{{now}}` | 実行時刻（ISO 8601・秒精度・タイムゾーン付き）。組み込み。`context:` で上書き可 |
 | `{{current_state}}` | Current state ID |
 | `{{step_count}}` | Number of completed transitions |
 | `{{history.STATE_ID}}` | Stored output from state STATE_ID |

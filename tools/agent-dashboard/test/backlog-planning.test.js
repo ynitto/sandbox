@@ -324,30 +324,23 @@ function dropped(dir) {
       '1行1リスクの配列として送る。空なら削除する');
   });
 
-  await test('タスク追加フォームで計画規模を選び送信できる', async () => {
-    assert.match(indexHtml, /<select id="enq-size"[\s\S]*value="S"[\s\S]*value="M"[\s\S]*value="L"/);
-    assert.match(renderer, /spec\.size = enqField\('enq-size'\)/);
+  await test('タスク追加は詳細フォームを廃止し4段階で候補を確認する', async () => {
+    assert.ok(renderer.includes('task-create-steps'));
+    assert.ok(renderer.includes("['入力', '設計フロー', '候補確認', '追加完了']"));
+    assert.ok(renderer.includes('task-candidate-card'));
   });
 
-  await test('タスク追加では計画レビューの必須項目を初期表示する', async () => {
-    assert.match(indexHtml, /<details class="enq-guide-panel" open>/);
-    assert.match(indexHtml, /<summary>計画レビュー情報（必須）<\/summary>/);
-    for (const id of ['enq-title', 'enq-accept', 'enq-desc', 'enq-why', 'enq-scope', 'enq-risks']) {
-      assert.match(indexHtml, new RegExp(`id="${id}"[^>]*required`), `${id} を必須として示す`);
-    }
+  await test('タスク追加は型付き入力と設計フローから複数候補を作る', async () => {
+    assert.ok(renderer.includes('data-project-source-version'));
+    assert.ok(renderer.includes('data-project-source-note'));
+    assert.ok(renderer.includes('project-task-files'));
+    assert.ok(renderer.includes("mode: 'project-design-proposal'"));
   });
 
-  await test('タスク追加はAIで計画レビュー必須項目を補完できる', async () => {
-    assert.ok(indexHtml.includes('id="btn-enq-guide-assist"'));
-    assert.ok(indexHtml.includes('id="enq-guide-assist-status"'));
-    assert.match(indexHtml, /<div class="row need-buttons">[\s\S]*?入力済みの内容から下書きを作れます。[\s\S]*?<span class="spacer"><\/span>[\s\S]*?id="btn-enq-guide-assist">下書きを作る<\/button>[\s\S]*?<div class="muted" id="enq-guide-assist-status"/);
-    assert.match(renderer, /<div class="row need-buttons">[\s\S]*?入力済みの内容から下書きを作れます。[\s\S]*?<span class="spacer"><\/span>[\s\S]*?id="btn-guide-assist">下書きを作る<\/button>/);
-    const assist = grab('aiEnqueueGuideAssist');
-    assert.match(assist, /mode: 'task-guide'/);
-    for (const id of ['enq-why', 'enq-desc', 'enq-scope', 'enq-risks', 'enq-accept', 'enq-size']) {
-      assert.ok(assist.includes(`$('${id}')`), `${id} をAI提案から補完する`);
-    }
-    assert.match(bootstrap, /btn-enq-guide-assist'[\s\S]*aiEnqueueGuideAssist/);
+  await test('タスク追加は選択した複数候補だけを既存inbox契約へ送る', async () => {
+    assert.ok(renderer.includes('data-project-candidate'));
+    assert.ok(renderer.includes('await api.enqueueTask'));
+    assert.ok(renderer.includes('追加するタスクを選択してください'));
   });
 
   await test('メモ UI は編集と選択タスク化を分け、候補確認まで自動追加しない', async () => {
@@ -366,7 +359,10 @@ function dropped(dir) {
     assert.ok(renderer.includes("kind: 'note'"), '短いメモも共通の候補生成へ渡す');
     assert.ok(renderer.includes('api.enqueueTask'), '確認後は既存のタスク追加経路を使う');
     assert.ok(!indexHtml.includes('btn-notes-distill'), '全メモ一括分解は主要導線から外す');
-    assert.ok(/renderBacklog[\s\S]{0,4000}btn-notes/.test(renderer), 'バックログにメモボタンがある');
+    assert.ok(/task-toolbar-actions[\s\S]{0,800}id="btn-notes"/.test(renderer),
+      'タスク画面からメモ作成・編集を開ける');
+    assert.ok(renderer.includes("$('btn-notes').addEventListener('click', openNotesDialog)"),
+      'メモの入口を既存のメモ作業領域へ接続する');
   });
 
   await test('ローカル文書は一度だけ読み、既存の候補確認経路へ渡す', async () => {

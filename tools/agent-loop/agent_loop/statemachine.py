@@ -29,6 +29,8 @@ _sm_resolve_skill = _tl_resolve_skill
 _sm_action_skill_names = _tl_action_skill_names
 _sm_action_project_files = _tl_action_project_files
 _sm_skill_scripts = _tl_skill_scripts
+_sm_skill_declared_scripts = _tl_skill_declared_scripts
+_sm_run_control = _tl_run_control
 _sm_validate_tool_request = _tl_validate_tool_request
 _sm_parse_json_object = _tl_parse_json_object
 _sm_parse_tool_request = _tl_parse_tool_request
@@ -98,8 +100,13 @@ def _sm_set_nested(target: dict, key: str, value) -> None:
 
 def _sm_initial_context(workflow: dict, parameters: "dict | None") -> dict:
     declared = dict(workflow.get("context")) if isinstance(workflow.get("context"), dict) else {}
+    # 定型業務のアクションは日付を要求することが多い（日報・ダイジェスト）。モデルに
+    # 「今日」を推測させると学習時点の日付を書くので、実行時の値を組み込みで渡す。
+    now = _dt.datetime.now().astimezone()
     context: dict = {**declared, "context": declared, "input": "",
-                     "history": {}, "last_output": "", "step_count": 0}
+                     "history": {}, "last_output": "", "step_count": 0,
+                     "today": now.strftime("%Y-%m-%d"),
+                     "now": now.isoformat(timespec="seconds")}
     for key, value in (parameters or {}).items():
         if key == "input":
             context["input"] = value
@@ -222,8 +229,13 @@ def _sm_execute_action(*, workflow_path: str, state_id: str, state: dict, contex
     skill_scripts = {
         os.path.realpath(script) for skill in skills for script in _sm_skill_scripts(skill)
     }
+    # 実行してよいスキルスクリプト = アクションが名指ししたもの ∪ そのスキルの SKILL.md が
+    # 入口として載せているもの。scripts/ にあるだけの下請けは呼ばせない。
     named_skill_scripts = {
         script for script in skill_scripts if os.path.basename(script) in rendered
+    } | {
+        os.path.realpath(script) for skill in skills
+        for script in _sm_skill_declared_scripts(skill)
     }
     action_reads = _sm_action_project_files(rendered, cwd)
     reads: set = {f for f in [workflow_path, action["file"], *(s["skill_file"] for s in skills)] if f}
@@ -240,17 +252,25 @@ def _sm_execute_action(*, workflow_path: str, state_id: str, state: dict, contex
                      "the Output Contract." if attempt else "")
             # 制御応答（次の一手の JSON）は編集能力の要らない周。定義が申告していれば
             # JSON 用の変種へ振り替える（run_goal と同じ口を使う——C7）。
-            raw = _sm_run_agent(_tl_control_agent(agent, cwd), _sm_planner_prompt(
+            raw = _sm_run_control(_tl_control_agent(agent, cwd), _sm_planner_prompt(
                 action=rendered, cwd=cwd, skills=skills, reads=sorted(reads),
                 history=history, retry=retry,
-            ), cwd=cwd, readonly=True, read_files=sorted(reads), files=[], log_file=log_file)
+            ), cwd=cwd, read_files=sorted(reads), log_file=log_file)
             try:
-                request = _sm_validate_tool_request(_sm_parse_tool_request(raw), cwd, skills)
+                parsed = _sm_parse_tool_request(raw)
             except StateMachineHarnessError as exc:
-                evidence_error = _sm_final_evidence_error(raw, cwd, evidence, touched)
+                # ツール要求ですらない = 素の本文。Output Contract を満たすならそれが答え。
                 contract = _sm_validated_output(raw, validator)
-                if contract and not evidence_error:
+                if contract and not _sm_final_evidence_error(raw, cwd, evidence, touched):
                     return contract
+                history.append("TOOL_RESULT " + json.dumps(
+                    {"rejected": True, "error": str(exc)}, ensure_ascii=False))
+                continue
+            try:
+                request = _sm_validate_tool_request(parsed, cwd, skills)
+            except StateMachineHarnessError as exc:
+                # 拒否されたツール要求は「やらなかった」であって成功ではない。JSON の中身が
+                # たまたま Output Contract の形をしていても、契約文として拾わない。
                 history.append("TOOL_RESULT " + json.dumps(
                     {"rejected": True, "error": str(exc)}, ensure_ascii=False))
                 continue
@@ -336,7 +356,7 @@ def _sm_execute_action(*, workflow_path: str, state_id: str, state: dict, contex
                             backups[file] = backup
                             Path(file).touch()
                     staged = {f: _sm_file_stamp(f) for f in request["paths"]}
-                    output = _sm_run_agent(
+                    output = _tl_run_agent(
                         agent,
                         "Execute only this action now. The editable files are stale: replace them "
                         "from the assigned read-only inputs in this run. Do not merely describe or "
@@ -345,7 +365,7 @@ def _sm_execute_action(*, workflow_path: str, state_id: str, state: dict, contex
                         cwd=cwd, readonly=False,
                         read_files=[f for f in sorted(reads | set(action_reads))
                                     if f not in request["paths"]],
-                        files=request["paths"], log_file=log_file)
+                        files=request["paths"], log_file=log_file, allow_empty=True)
                 except BaseException:
                     for file, backup in backups.items():
                         os.replace(backup, file)
@@ -419,12 +439,16 @@ def _sm_execute_action(*, workflow_path: str, state_id: str, state: dict, contex
                     # 必要なら Aider が read_files を要求する。
                     if os.stat(file).st_size <= _SM_MAX_AUTO_READ_BYTES:
                         reads.add(file)
+            succeeded = tool["status"] == 0 and not tool["error"]
             history.append("TOOL_RESULT " + json.dumps({
-                "type": request["type"], "status": tool["status"], "error": tool["error"],
+                # ok は status 由来。stdout が空でも成功は成功——出力の有無で成否を
+                # 推測させると、何も印字しないコマンドの後にモデルが延々やり直す。
+                "type": request["type"], "ok": succeeded,
+                "status": tool["status"], "error": tool["error"],
                 "stdout": tool["stdout"][-4000:], "stderr": tool["stderr"][-2000:],
                 "logFile": log_file,
             }, ensure_ascii=False))
-            if tool["status"] == 0 and not tool["error"]:
+            if succeeded:
                 successful_runs.add(run_key)
     raise StateMachineHarnessError(f"ステート {state_id} が Output Contract を満たしませんでした")
 
@@ -445,31 +469,35 @@ def _sm_first_line(text: str) -> str:
 
 def _sm_next_state(*, scripts: dict, workflow_path: str, state_id: str, output: str,
                    outputs: dict, agent: dict, cwd: str, log_file: str) -> str:
-    args = [workflow_path, "--state", state_id, "--list-conditions",
-            "--last-output", _sm_first_line(output)]
-    for key, value in outputs.items():
-        args += ["--output", f"{key}={_sm_first_line(str(value))}"]
+    context = {"last_output": _sm_first_line(output),
+               **{key: _sm_first_line(str(value)) for key, value in outputs.items()}}
+    base = [workflow_path, "--state", state_id,
+            "--context", json.dumps(context, ensure_ascii=False)]
     listed = _sm_parse_json_object(
-        _sm_harness_script(scripts["next"], args, cwd=cwd, log_file=log_file))
-    if not listed or not isinstance(listed.get("conditions"), list):
+        _sm_harness_script(scripts["next"], [*base, "--auto-eval"], cwd=cwd, log_file=log_file))
+    if not listed:
+        raise StateMachineHarnessError("条件リストを解析できません")
+    # 決定済みの応答は 2 形。auto_advance（条件が無く next_state だけ返る）と
+    # resolved（condition_rule だけで確定）。どちらも LLM 評価も --eval も要らない。
+    decided = listed.get("next_state") or listed.get("resolved")
+    if isinstance(decided, str) and decided:
+        return decided
+    if not isinstance(listed.get("conditions"), list):
         raise StateMachineHarnessError("条件リストを解析できません")
     pending = [c for c in listed["conditions"] if c.get("needs_llm_eval") is True]
     evals: dict = {}
     if pending:
-        raw = _sm_run_agent(
+        raw = _sm_run_control(
             _tl_control_agent(agent, cwd),
             "Evaluate only these state-machine conditions against the completed action "
             "output. Return one JSON object mapping each index to true or false.\n"
             f"Output:\n{output}\nConditions:\n{json.dumps(pending, ensure_ascii=False)}",
-            cwd=cwd, readonly=True, read_files=[workflow_path], files=[], log_file=log_file)
+            cwd=cwd, read_files=[workflow_path], log_file=log_file)
         evals = _sm_parse_json_object(raw)
         if not evals:
             raise StateMachineHarnessError("Aider の条件評価を JSON として読めません")
-    decide = [workflow_path, "--state", state_id, "--evals", json.dumps(evals),
-              "--last-output", _sm_first_line(output)]
-    for key, value in outputs.items():
-        decide += ["--output", f"{key}={_sm_first_line(str(value))}"]
-    return _sm_harness_script(scripts["next"], decide, cwd=cwd, log_file=log_file)
+    return _sm_harness_script(scripts["next"], [*base, "--evals", json.dumps(evals)],
+                              cwd=cwd, log_file=log_file)
 
 
 def _sm_load_workflow_dict(workflow_file: str) -> dict:

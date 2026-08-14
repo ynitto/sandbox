@@ -35,20 +35,20 @@ function routineAdhocPanelHtml() {
   const options = roots.map((r) =>
     `<option value="${esc(r)}"${r === draft.root ? ' selected' : ''}>${esc(r)}</option>`).join('');
   return `<section class="global-settings-card routine-adhoc" aria-labelledby="routine-adhoc-title">
-    <div><span class="summary-kicker">その場の依頼</span><h3 id="routine-adhoc-title">アドホック起動</h3></div>
-    <p class="muted">登録済みフォルダを選んで、自由な指示でエージェントCLIを起動します。いつもの定常業務と同じ設定（CLI・モデル・共通指示）で動き、実行はこの画面の記録に残ります。</p>
+    <h3 id="routine-adhoc-title">依頼内容</h3>
+    <p class="muted">フォルダと依頼内容を指定して、AIエージェントを起動します。</p>
     ${roots.length ? `
       <div class="field">
         <select id="routine-adhoc-root" aria-label="起動するフォルダ">${options}</select>
       </div>
       <div class="field">
-        <textarea id="routine-adhoc-prompt" rows="3" placeholder="エージェントへの指示（自由文）">${esc(draft.prompt)}</textarea>
+        <textarea id="routine-adhoc-prompt" rows="3" aria-label="AIへの依頼内容" placeholder="依頼内容">${esc(draft.prompt)}</textarea>
       </div>
       <div class="row">
-        <button id="btn-routine-adhoc-run" class="primary">起動</button>
+        <button id="btn-routine-adhoc-run" class="primary">依頼する</button>
         <span id="routine-adhoc-meta" class="muted${draft.ok ? '' : ' sync-error'}">${esc(draft.message || '')}</span>
       </div>`
-    : '<p class="muted">起動先にできる登録済みフォルダがありません。「設定」タブでフォルダを登録してください。</p>'}
+    : '<p class="muted">起動先にできる登録済みフォルダがありません。「全体設定」でフォルダを登録してください。</p>'}
   </section>`;
 }
 
@@ -92,7 +92,20 @@ async function runRoutineAdhoc() {
     draft.ok = false;
     draft.message = `起動できませんでした: ${(res && (res.error || res.message)) || '原因不明'}`;
   }
-  renderRoutineRuns();
+  renderCowork();
+}
+
+function openRoutineAdhocDialog() {
+  const dialog = $('dlg-routine-adhoc');
+  const body = $('routine-adhoc-dialog-body');
+  if (!dialog || !body) return;
+  body.innerHTML = routineAdhocPanelHtml();
+  bindRoutineAdhocPanel(body);
+  const close = $('btn-routine-adhoc-close');
+  if (close) close.onclick = () => dialog.close();
+  if (!dialog.open) dialog.showModal();
+  const prompt = body.querySelector('#routine-adhoc-prompt');
+  if (prompt) prompt.focus();
 }
 
 // 実行の記録タブ。上にアドホック起動、下は左に作業、右にその作業の記録

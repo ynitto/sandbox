@@ -341,7 +341,14 @@ function overview(config, opts = {}) {
   const loop = makeLoopProvider(cfg, config);
   const addParameters = (item) => {
     const spec = routineParameterSpec(config, item);
-    return { ...item, parameters: spec.keys, parameterError: spec.error };
+    let execution = { agent_cli: '', model: '' };
+    try {
+      const resolved = resolveRoutineAgent(config, item.repo || item.cwd || '');
+      execution = { agent_cli: resolved.cli || '', model: resolved.model || '' };
+    } catch {
+      // 表示用の解決失敗で一覧全体を壊さない。
+    }
+    return { ...item, parameters: spec.keys, parameterError: spec.error, execution };
   };
   const configItems = itemsOf(cfg).map((item, i) => addParameters(normalizeItem(item, i, cfg, stateOpts, config)));
   const discovered = discoverNormalized(config, cfg, discoverOpts).map(addParameters);

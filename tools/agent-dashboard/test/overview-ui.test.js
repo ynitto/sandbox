@@ -178,7 +178,8 @@ const amigosNodeView = new Function(
 
 // 実行の記録は定常業務領域の 1 タブ。動かす画面と結果を追う画面が同じ領域に並ぶので、
 // 同じ内容のダイアログ（旧 dlg-cowork-history）は置かない。
-assert.match(html, /data-tab="routine-runs"[^>]*>実行の記録/, '定常業務に実行の記録タブがある');
+assert.match(html, /data-tab="cowork"[^>]*>定常業務</, '定常業務タブがある');
+assert.ok(!html.includes('data-tab="routine-runs"'), '実行の記録を別タブにしない');
 assert.ok(!html.includes('id="dlg-cowork-history"'), '実行履歴のダイアログは残さない');
 assert.ok(renderer.includes('data-cowork-history'), '定常業務に履歴ボタンがある');
 assert.ok(!renderer.includes('すべてのプロジェクトを表示'), '他プロジェクトを表示する切替を置かない');

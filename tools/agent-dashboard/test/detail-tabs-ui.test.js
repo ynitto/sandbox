@@ -573,14 +573,13 @@ assert.ok(failureDiagnosisHtml.includes('data-failure-diagnose="T1"'), '文面�
 assert.ok(failureDiagnosisHtml.includes('文面を生成'));
 assert.ok(!failureDiagnosisHtml.includes('data-need-consult="T1"'), '専用の失敗診断がある場合は汎用AI相談を重複表示しない');
 assert.ok(!failureDiagnosisHtml.includes('>AIに相談<'));
-assert.match(
+assert.strictEqual(
   needAssistActionsHtml({ id: 'plain', kind: 'blocked' }, false),
-  /data-need-consult="plain"[^>]*>AIに相談</,
-  '専用AI操作がない要対応には汎用相談を残す'
+  '',
+  'ホームでは用途の曖昧な汎用AI相談を表示しない'
 );
 assert.ok(!needAssistActionsHtml({ id: 'plan', kind: 'plan-review' }, false).includes('data-need-consult'));
 assert.ok(!needAssistActionsHtml({ id: 'review', kind: 'review' }, false).includes('data-need-consult'));
-assert.ok(renderer.includes("querySelectorAll('button[data-need-consult]')"), '要確認からAI相談を開く配線が必要');
 assert.ok(renderer.includes('function openFailureDiagnosis('), '失敗診断を自動開始する入口が必要');
 assert.ok(renderer.includes('mode: state.doctorMode'), '追加質問でも診断モードを維持する');
 

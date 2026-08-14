@@ -8,6 +8,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const authoring = require('../src/main/authoring');
+const projectDesign = require('../src/features/agent-project/main/project-design');
 
 let passed = 0;
 function test(name, fn) {
@@ -259,6 +260,36 @@ test('プロジェクト設計提案は存在しない計画版を参照する�
     versions: [{ id: 'v1', content: '# Charter: v1' }],
     backlogGroups: [{ id: 'g1', charter: 'missing', tasks: [{ title: '壊れた候補' }] }],
   }), /計画バージョン.*missing/);
+});
+
+test('採用したプロジェクト提案だけを計画・メモ・inboxへ一度だけ反映する', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kpv-design-'));
+  try {
+    const dir = authoring.createProject({ root: tmp, name: 'apply', master: true }).dir;
+    const proposal = {
+      versions: [
+        { id: 'v1', content: '# Charter: v1\n' },
+        { id: 'v2', content: '# Charter: v2\n' },
+      ],
+      backlogGroups: [
+        { id: 'g1', charter: 'v1', tasks: [{ id: 't1', title: '採用する' }, { id: 't2', title: '除外する' }] },
+        { id: 'g2', charter: 'v2', tasks: [{ id: 't3', title: '別版' }] },
+      ],
+      notes: [{ id: 'n1', name: 'open-question', content: '未確定事項' }],
+    };
+    const selection = { versions: ['v1'], backlogGroups: ['g1'], tasks: ['t1'], notes: ['n1'] };
+    const first = projectDesign.applyProjectDesignProposal(dir, proposal, selection, 'apply-1');
+    assert.strictEqual(first.replayed, false);
+    assert.ok(fs.existsSync(path.join(dir, 'charters', 'v1.md')));
+    assert.ok(!fs.existsSync(path.join(dir, 'charters', 'v2.md')));
+    assert.strictEqual(fs.readdirSync(path.join(dir, 'inbox')).length, 1);
+    assert.strictEqual(fs.readdirSync(path.join(dir, 'notes')).filter((name) => name.endsWith('.md')).length, 1);
+    const second = projectDesign.applyProjectDesignProposal(dir, proposal, selection, 'apply-1');
+    assert.strictEqual(second.replayed, true);
+    assert.strictEqual(fs.readdirSync(path.join(dir, 'inbox')).length, 1, '再実行で二重投入しない');
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 });
 
 console.log(`\n${passed} passed`);

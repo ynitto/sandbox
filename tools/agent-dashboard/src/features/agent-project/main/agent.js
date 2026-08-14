@@ -29,6 +29,7 @@ const { parseYaml } = require('../../../base/main/yaml');
 // フラグ・対話コマンドがハードコードされ、同じ知識が agent-project / agent-flow /
 // agent-amigos にも重複していた（同じ CLI でもツールによってフラグが違う状態だった）。
 const agentCli = require('./agentCli');
+const authoring = require('./authoring');
 
 // プロジェクト設定（agent-project.yaml → 無ければ agent-flow.yaml）から agent_cli / model を拾う。
 // 探索順は本体の _find_config と同じ root 直下 → .agents/ → .agent/。
@@ -123,6 +124,26 @@ function resolveAgent(cfg, projectDir, { workload = '', purpose = '' } = {}) {
                              spec: agentCli.loadCli('kiro', projectDir) });
 }
 
+// Agent Dashboard 自身が直接起動する AI 専用の解決器。
+// アプリ設定は dashboard 内蔵機能だけを上書きし、agent-flow / agent-amigos / agent-loop 等の
+// エンジン起動には波及させない。CLI と model は独立して上書きできる。
+function resolveDashboardAgent(cfg, projectDir, { purpose = '' } = {}) {
+  const ac = (cfg && cfg.agent) || {};
+  const baseCfg = { ...(cfg || {}), agent: { ...ac, cli: '', model: '' } };
+  const base = resolveAgent(baseCfg, projectDir, { workload: 'dashboard', purpose });
+  const cli = String(ac.cli || '').trim().toLowerCase();
+  const model = String(ac.model || '').trim();
+  if (!cli) return model ? { ...base, model, source: 'settings' } : base;
+  return {
+    ...base,
+    cli,
+    model: model || base.model,
+    source: 'settings',
+    projectFile: null,
+    spec: agentCli.loadCli(cli, projectDir),
+  };
+}
+
 function dashboardExecutionState(cfg) {
   const budget = require('../../orchestration/main/budget');
   const control = require('../../orchestration/main/control');
@@ -187,7 +208,9 @@ function recordDashboardUsage(cfg, resolved, purpose, seconds, execution) {
   }
 }
 
-async function runDashboardAgent(cfg, resolved, purpose, operation) {
+// 画面内AI を 1 回動かしてよいかを実行制御へ問い、status を残す。止める判断はここだけが持つ
+// （runDashboardAgent と相談の起動が同じ根拠で止まるようにする）。
+function assertDashboardAllowed(cfg, resolved, purpose) {
   const execution = dashboardExecutionState(cfg);
   writeDashboardStatus(cfg, resolved, purpose, execution);
   if (execution.blocked) {
@@ -196,6 +219,11 @@ async function runDashboardAgent(cfg, resolved, purpose, operation) {
       : '利用上限に達しています';
     throw new Error(`[agent-error:${execution.lifecycle !== 'run' ? 'control' : 'quota'}] ${reason}`);
   }
+  return execution;
+}
+
+async function runDashboardAgent(cfg, resolved, purpose, operation) {
+  const execution = assertDashboardAllowed(cfg, resolved, purpose);
   const started = Date.now();
   try {
     return await operation();
@@ -347,8 +375,17 @@ function interactiveLaunchSpec(cfg, projectDir,
   };
 }
 
+// 相談（対話 CLI）の workload と purpose。ここを通すことで、下書きや Doctor と同じ実行方針の
+// 配下に入る。渡さないと agent-control を素通りしてプロジェクト設定か既定の kiro へ落ちる。
+const CONSULT_WORKLOAD = 'dashboard';
+const CONSULT_PURPOSE = 'chat';
+
 function openInteractiveChat(cfg, projectDir, cwdOverride) {
-  const launch = interactiveLaunchSpec(cfg, projectDir);
+  const resolved = resolveDashboardAgent(cfg, projectDir, { purpose: CONSULT_PURPOSE });
+  // 予算切れ・実行制御の停止中に新しい対話を開かない。対話の長さは dashboard から観測できないため
+  // 秒数の記帳はせず、実測は CLI 側の台帳経路へ委ねる。
+  assertDashboardAllowed(cfg, resolved, CONSULT_PURPOSE);
+  const launch = interactiveLaunchSpec(cfg, projectDir, { resolved });
   const { runChatWindow } = require('../../cowork/main/loopProvider');
   // セッション開始コマンド（agent-session-commands）。このボタンも新しい tmux セッションを
   // 起こす経路なので、定常業務ウィンドウと同じ前準備を通す（cowork と同じ計画関数を使う）。
@@ -356,7 +393,7 @@ function openInteractiveChat(cfg, projectDir, cwdOverride) {
   // cwd は「プロジェクト（既定）」か、このノードにクローンがある成果物リポジトリ、
   // またはその場限りの手入力パス。実在しないパスで開くと端末が即死するので先に弾く。
   const cwd = String(cwdOverride || '').trim() || String(projectDir || '');
-  if (cwd && !isExistingDir(cwd)) throw new Error(`フォルダがありません: ${cwd}`);
+  if (cwd && !isExistingChatDir(cwd)) throw new Error(`フォルダがありません: ${cwd}`);
   const result = runChatWindow({
     chatCommand: launch.chatCommand,
     prompt: null,
@@ -372,7 +409,7 @@ function openInteractiveChat(cfg, projectDir, cwdOverride) {
     message: `${launch.cli} のCLIチャットを別ウィンドウで開きました`,
   });
   if (!result.ok) throw new Error(result.error || '外部ターミナルを起動できませんでした');
-  return { ...result, cli: launch.cli, model: launch.model, cwd };
+  return { ...result, cli: launch.cli, model: launch.model, source: launch.source, cwd };
 }
 
 function isExistingDir(p) {
@@ -381,6 +418,13 @@ function isExistingDir(p) {
   } catch {
     return false;
   }
+}
+
+// Windows 上の Node からは WSL 内の POSIX パスを stat できない。実在確認は
+// runChatWindow の WSL 起動前検査へ委ね、それ以外のパスはここで早期に弾く。
+function isExistingChatDir(p) {
+  const value = String(p || '').trim();
+  return process.platform === 'win32' && /^\/(?!\/)/.test(value) ? true : isExistingDir(value);
 }
 
 // Doctor は画面から渡された文脈だけを説明する。通常の charter 補完とは分け、
@@ -697,7 +741,7 @@ function methodDraftPrompt(brief, current) {
 
 async function completeMethodDraft(cfg, { dir, brief, current }) {
   if (!String(brief || '').trim()) throw new Error('作りたいルールを入力してください');
-  const resolved = resolveAgent(cfg, dir, { workload: 'dashboard', purpose: 'method-draft' });
+  const resolved = resolveDashboardAgent(cfg, dir, { purpose: 'method-draft' });
   const raw = await runDashboardAgent(cfg, resolved, 'method-draft', () =>
     runAgent(resolved, methodDraftPrompt(brief, current), dir)
   );
@@ -754,7 +798,7 @@ function normalizeAcceptanceDraft(obj) {
 // tier を指定すると段の候補（agent_cli / model）で実行する。省略時は dashboard の既定解決。
 async function completeRoutineAcceptance(cfg, { dir, name, prompt, extra = '', tier = '' }) {
   if (!String(prompt || '').trim()) throw new Error('定期プロンプトの本文がありません');
-  let resolved = resolveAgent(cfg, dir, { workload: 'dashboard', purpose: 'acceptance-draft' });
+  let resolved = resolveDashboardAgent(cfg, dir, { purpose: 'acceptance-draft' });
   const selectedTier = String(tier || '').trim();
   if (selectedTier) {
     const profiles = require('../../orchestration/main/profiles');
@@ -826,6 +870,7 @@ const DOCTOR_MODES = {
 
 const STRUCTURED_ASSIST_MODES = new Set([
   'followup-suggest', 'enqueue-assist', 'task-guide', 'source-task-candidates',
+  'project-design-proposal',
 ]);
 
 // 誘導・レビュー記述フィールド（agent-project の TASK_GUIDE_KEYS と同じ。
@@ -954,7 +999,9 @@ function openDoctorChat(cfg, { dir, context, needId, userPrompt } = {}) {
   if (cwd && !isExistingDir(cwd)) throw new Error(`フォルダがありません: ${cwd}`);
   // 診断は使い捨て（readonly + no_session）。作業用セッションと混ざると、読み取り専用の
   // つもりの窓から書き込みができてしまう（S9 §6-2 の決着）。
-  const launch = interactiveLaunchSpec(cfg, dir, { readonly: true, noSession: true });
+  const resolved = resolveDashboardAgent(cfg, dir, { purpose: 'doctor' });
+  assertDashboardAllowed(cfg, resolved, 'doctor');
+  const launch = interactiveLaunchSpec(cfg, dir, { readonly: true, noSession: true, resolved });
   const spill = writeSpill(dir, truncateSnapshot(context, 'failure-diagnosis'),
                            DOCTOR_SPILL_SUBDIR);
   const prompt = doctorBriefPrompt(context, {
@@ -1002,7 +1049,7 @@ function extractMarkdownSection(text, heading) {
 }
 
 async function completeDoctor(cfg, { dir, context, userPrompt, mode }) {
-  const resolved = resolveAgent(cfg, dir, { workload: 'dashboard', purpose: 'doctor' });
+  const resolved = resolveDashboardAgent(cfg, dir, { purpose: 'doctor' });
   const prompt = doctorPrompt(context, userPrompt, { mode });
   let spill = null;
   if (resolved.spec.spill.instruction) {
@@ -1052,6 +1099,23 @@ function taskAssistPrompt(mode, context, userPrompt = '') {
   const charter = ctx.charter
     ? `goal:\n${ctx.charter.goal || '(なし)'}\n\nacceptance:\n${ctx.charter.acceptance || '(なし)'}`
     : '(なし)';
+  if (mode === 'project-design-proposal') {
+    return (
+      'あなたはAgent Dashboardの読み取り専用プロジェクト設計アシスタントです。\n' +
+      '型付き設計材料を、レビュー可能なマスター憲章、複数の計画バージョン、計画別バックログ候補へ配分してください。\n' +
+      'コマンド実行・ファイル変更・タスク投入はしないでください。メモを確定要件と決めつけず、不明点はwarningsへ残してください。\n\n' +
+      '出力は次の形のJSONオブジェクトのみ（説明文・コードフェンスなし）:\n' +
+      '{"master":{"operation":"keep|create|update","content":"...","sourceRefs":[]},' +
+      '"versions":[{"id":"v1","name":"v1","operation":"create|update|keep","content":"...","sourceRefs":[]}],' +
+      '"backlogGroups":[{"id":"backlog-v1","charter":"v1","tasks":[{"id":"candidate-1","title":"...","why":"...","desc":"...","scope":"...","acceptance":["..."],"size":"S|M|L","after":[],"sourceRefs":[]}]}],' +
+      '"notes":[],"documents":[],"warnings":[],"sourceRefs":[]}\n' +
+      '- backlogGroups.charter は versions.id のいずれか。物理backlogは分割しない。\n' +
+      '- 既存backlog、archive、墓標と重なる候補を作らず、判断できない類似はwarningsへ書く。\n' +
+      '- sourceRefsで根拠を追跡し、入力にない決定を発明しない。\n\n' +
+      `設計材料と既存状態:\n${JSON.stringify(ctx, null, 2)}\n` +
+      (note ? `\nユーザー補足:\n${note}\n` : '')
+    );
+  }
   if (mode === 'followup-suggest') {
     const selected = ctx.selected || {};
     return (
@@ -1322,7 +1386,7 @@ async function completeTaskAssist(cfg, { dir, mode, context, userPrompt }) {
   if (!context || typeof context !== 'object') {
     throw new Error('補助コンテキストが指定されていません');
   }
-  const resolved = resolveAgent(cfg, dir, { workload: 'dashboard', purpose: mode });
+  const resolved = resolveDashboardAgent(cfg, dir, { purpose: mode });
   const promptText = taskAssistPrompt(m, context, userPrompt);
   // 構造化 Assist も読み取り専用 CLI で起動し、inbox / backlog へ直接書かない。
   // kiro は Doctor と同じ理由（positional プロンプト併用時に stdin を読まない）で
@@ -1351,7 +1415,9 @@ async function completeTaskAssist(cfg, { dir, mode, context, userPrompt }) {
   if (!obj) {
     throw new Error(`エージェントの応答から JSON を取り出せませんでした: ${String(raw).slice(0, 120)}…`);
   }
-  const fields = m === 'followup-suggest'
+  const fields = m === 'project-design-proposal'
+    ? authoring.normalizeProjectDesignProposal(obj)
+    : m === 'followup-suggest'
     ? normalizeFollowupSuggestions(obj)
     : m === 'source-task-candidates'
       ? normalizeTaskCandidates(obj, context.source && context.source.kind === 'note'
@@ -1388,7 +1454,7 @@ function normalizeDraftFields(obj) {
 //   draft  … フォームの書きかけ（spec）→ 各セクションの JSON（fields）
 //   refine … charter.md 全文（content）→ 完成版の全文（content）
 async function completeCharter(cfg, { dir, mode, spec, content }) {
-  const agent = resolveAgent(cfg, dir, { workload: 'dashboard', purpose: mode === 'refine' ? 'refine' : 'draft' });
+  const agent = resolveDashboardAgent(cfg, dir, { purpose: mode === 'refine' ? 'refine' : 'draft' });
   if (mode === 'refine') {
     const raw = await runDashboardAgent(cfg, agent, 'refine', () =>
       runAgent(agent, charterRefinePrompt(content), dir)
@@ -1413,7 +1479,11 @@ module.exports = {
   STRUCTURED_ASSIST_MODES,
   resolveAgent,
   dashboardExecutionState,
+  assertDashboardAllowed,
   runDashboardAgent,
+  resolveDashboardAgent,
+  CONSULT_WORKLOAD,
+  CONSULT_PURPOSE,
   readProjectAgent,
   readControlAgent,
   buildCommand,

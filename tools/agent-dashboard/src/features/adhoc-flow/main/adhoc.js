@@ -664,7 +664,7 @@ function buildLaunchLine(config, { runId, busDir, tuningDir, agentCli, model, pl
     + `${env}nohup ${cmd} ${flags} >> "$LOGDIR/${runId}.log" 2>&1 & echo launched:$!`;
 }
 
-function submit(config, { request, preset, cwd, selection, executionOverrides, coherenceGate } = {}) {
+function submit(config, { title, request, preset, cwd, selection, executionOverrides, coherenceGate } = {}) {
   const req = String(request || '').trim();
   if (!req) throw new Error('要求テキストは必須です');
   const p = preset ? normalizePreset(preset) : null;
@@ -680,6 +680,7 @@ function submit(config, { request, preset, cwd, selection, executionOverrides, c
   }
   const rec = {
     id: runId,
+    ...(String(title || '').trim() ? { title: String(title).trim() } : {}),
     request: req,
     submitter: SUBMITTER,
     workspace,

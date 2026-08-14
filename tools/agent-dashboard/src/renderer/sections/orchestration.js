@@ -815,6 +815,19 @@ function globalSettingsAppHtml() {
       </select>
       <p class="field-help">閲覧専用では、監視・コメント・承認だけを行います。実行用の環境設定は不要です。</p>
     </div>
+    <fieldset class="global-settings-fieldset">
+      <legend>Dashboard AI</legend>
+      <p class="field-help">相談、Doctor、下書きなど、このアプリ自身が呼び出すAIだけに適用します。
+        ワークフロー、ミッション、定常業務など各エンジンの実行設定は変えません。</p>
+      <div class="row2">
+        <div class="field"><label for="cfg-consult-agent">エージェント</label>
+          <select id="cfg-consult-agent">${consultAgentOptionsHtml()}</select></div>
+        <div class="field"><label for="cfg-consult-model">モデル</label>
+          <input id="cfg-consult-model" type="text" placeholder="実行方針に従う"></div>
+      </div>
+      <div class="field"><label for="cfg-agent-timeout">応答を待つ時間（秒）</label>
+        <input id="cfg-agent-timeout" type="number" min="30" step="1"></div>
+    </fieldset>
     <div class="field">
       <label>セットアップ診断</label>
       <p class="field-help">受け取ったプロジェクトのフォルダが正しく共有できるか確認します。</p>
@@ -825,15 +838,33 @@ function globalSettingsAppHtml() {
   </div>`;
 }
 
+// Dashboard が直接呼ぶ AI のアプリ上書き。空欄なら dashboard の実行方針へ委ねる。
+function consultAgentOptionsHtml() {
+  const current = String(((state.config || {}).agent || {}).cli || '');
+  const inv = (state.orchestration || {}).agents || { builtins: [], dropins: [] };
+  // 同名で陰っているドロップインは選ばせない（選んでも組み込みが起動して食い違う）。
+  const names = [...(inv.builtins || []),
+    ...(inv.dropins || []).filter((d) => d && !d.shadowed).map((d) => d.name)]
+    .map((n) => String(n || '')).filter(Boolean);
+  const options = ['<option value="">実行方針に従う</option>'];
+  for (const name of names) {
+    options.push(`<option value="${esc(name)}"${name === current ? ' selected' : ''}>${esc(name)}</option>`);
+  }
+  // 一覧に出ない名前が既に入っている場合も、黙って「実行方針に従う」へ倒さない。
+  if (current && !names.includes(current)) {
+    options.push(`<option value="${esc(current)}" selected>${esc(current)}（定義が見つかりません）</option>`);
+  }
+  return options.join('');
+}
+
 function globalSettingsAssistantHtml() {
   return `<section class="orch-panel">
     <header class="row"><div>
       <span class="summary-kicker">画面内AI</span>
-      <h3>AIアシスタントの待ち時間</h3>
-      <p class="muted">エージェントとモデルは実行方針から自動設定されます。ここでは自動設定の対象外である待ち時間だけを変更します。</p>
+      <h3>Dashboard AI</h3>
+      <p class="muted">エージェント、モデル、待ち時間は「アプリ」の Dashboard AI で設定します。</p>
     </div></header>
-    <div class="field global-settings-short-field"><label for="cfg-agent-timeout">応答を待つ時間（秒）</label><input id="cfg-agent-timeout" type="number" min="30" step="10" /></div>
-    <div class="settings-save-actions"><button type="button" id="btn-save-agent-settings" class="primary-inline">保存</button></div>
+    <div class="settings-save-actions"><button type="button" data-global-settings-target="app">アプリ設定を開く</button></div>
   </section>`;
 }
 
@@ -1917,7 +1948,10 @@ function selectCoworkRoutine(id, { openStatus = false } = {}) {
   const entry = entries.find(({ item, index }) => coworkEntryId(item, index) === String(id));
   if (!entry) return;
   state.coworkSelections[coworkPathKey(folder)] = coworkEntryId(entry.item, entry.index);
-  if (activeTab() === 'cowork') updateCoworkSelectedDetail(entry, folder);
+  if (activeTab() === 'cowork') {
+    updateCoworkSelectedDetail(entry, folder);
+    loadCoworkHistory(id, entry.item.name || id);
+  }
   if (openStatus) {
     openRoutineAgentTerminal({
       id: coworkEntryId(entry.item, entry.index),
@@ -1937,11 +1971,9 @@ function coworkRoutineSelectorHtml(
   if (!entries.length) return '';
   return `<section class="cowork-routine-picker" aria-labelledby="${esc(labelId)}">
     <div class="cowork-routine-picker-heading">
-      <div><span class="summary-kicker">選択</span><h3 id="${esc(labelId)}">${esc(label)}</h3></div>
       <div class="cowork-routine-tools">
         <input type="search" class="cowork-routine-search" data-cowork-search="${esc(searchKey)}"
-          aria-label="定常業務を名前で検索" placeholder="名前で検索" value="${esc(state.coworkSearches[searchKey] || '')}">
-        <span class="muted" data-cowork-visible-count>${entries.length} 件</span>
+          aria-label="業務を名前で検索" placeholder="名前で検索" value="${esc(state.coworkSearches[searchKey] || '')}">
       </div>
     </div>
     <div id="cowork-routine-selector-${esc(searchKey)}" class="cowork-routine-selector" data-ui-scroll-key role="tablist" aria-label="${esc(label)}">${entries.map(({ item, index }) => {
@@ -1966,14 +1998,10 @@ function applyCoworkRoutineFilter(root) {
   if (!input) return;
   const query = input.value.trim().toLocaleLowerCase('ja-JP');
   state.coworkSearches[input.dataset.coworkSearch] = input.value;
-  let visible = 0;
   for (const button of root.querySelectorAll('[data-cowork-select]')) {
     const matches = !query || String(button.dataset.coworkSearchText || '').includes(query);
     button.hidden = !matches;
-    if (matches) visible += 1;
   }
-  const count = root.querySelector('[data-cowork-visible-count]');
-  if (count) count.textContent = query ? `${visible} / ${root.querySelectorAll('[data-cowork-select]').length} 件` : `${visible} 件`;
 }
 
 // 作業タブと実行の記録タブは**同じ選択 UI**を使う（見た目も操作も揃える）。押したときに
@@ -2004,6 +2032,17 @@ function bindCoworkRoutineSelector(root, onSelect = selectCoworkRoutine) {
   });
 }
 
+document.addEventListener('keydown', (ev) => {
+  if (ev.key !== '/' || ev.metaKey || ev.ctrlKey || ev.altKey || activeTab() !== 'cowork') return;
+  const target = ev.target;
+  if (target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return;
+  const search = $('tab-cowork') && $('tab-cowork').querySelector('[data-cowork-search]');
+  if (!search) return;
+  ev.preventDefault();
+  search.focus();
+  search.select();
+});
+
 function coworkHasProjectConfig(cowork, projectFolder) {
   const key = coworkPathKey(projectFolder);
   return !!key && (
@@ -2027,6 +2066,54 @@ function coworkRunBannerHtml() {
   return `<div class="cowork-run-banner error" role="alert">「${esc(r.name || r.id)}」の実行に失敗しました${r.message ? `: ${esc(r.message)}` : ''}</div>`;
 }
 
+function coworkCronFieldMatches(field, value, min, max) {
+  return String(field || '').split(',').some((part) => {
+    const token = part.trim();
+    if (token === '*') return true;
+    const step = token.match(/^\*\/(\d+)$/);
+    if (step) return Number(step[1]) > 0 && (value - min) % Number(step[1]) === 0;
+    const range = token.match(/^(\d+)-(\d+)$/);
+    if (range) return value >= Number(range[1]) && value <= Number(range[2]);
+    const n = Number(token);
+    return Number.isInteger(n) && n >= min && n <= max && value === n;
+  });
+}
+
+function coworkNextRunAt(schedule, lastAt = '', nowMs = Date.now()) {
+  const value = String(schedule || '').trim();
+  if (!value) return null;
+  const interval = value.match(/^(\d+)\s*m$/i);
+  if (interval) {
+    const step = Number(interval[1]) * 60000;
+    if (!step) return null;
+    let next = lastAt && !Number.isNaN(Date.parse(lastAt)) ? Date.parse(lastAt) + step : nowMs + step;
+    while (next <= nowMs) next += step;
+    return new Date(next);
+  }
+  const fields = value.split(/\s+/);
+  if (fields.length !== 5) return null;
+  const [minute, hour, day, month, weekday] = fields;
+  const cursor = new Date(nowMs);
+  cursor.setSeconds(0, 0);
+  cursor.setMinutes(cursor.getMinutes() + 1);
+  for (let i = 0; i < 366 * 24 * 60; i += 1) {
+    if (coworkCronFieldMatches(minute, cursor.getMinutes(), 0, 59)
+      && coworkCronFieldMatches(hour, cursor.getHours(), 0, 23)
+      && coworkCronFieldMatches(day, cursor.getDate(), 1, 31)
+      && coworkCronFieldMatches(month, cursor.getMonth() + 1, 1, 12)
+      && coworkCronFieldMatches(weekday, cursor.getDay(), 0, 6)) return cursor;
+    cursor.setMinutes(cursor.getMinutes() + 1);
+  }
+  return null;
+}
+
+function coworkNextRunLabel(item, state) {
+  if (item.enabled === false) return '無効';
+  const next = coworkNextRunAt(item.schedule, state && state.lastLogAt);
+  if (!next) return item.schedule ? '日時を推定できません' : '手動実行';
+  return fmtTime(next);
+}
+
 function coworkSelectedDetailHtml(entry, observed, busyId) {
   if (!entry) return '';
   const { item, index } = entry;
@@ -2041,24 +2128,25 @@ function coworkSelectedDetailHtml(entry, observed, busyId) {
   const status = running ? 'running' : (st.status || 'unknown');
   const run = state.coworkRun && String(state.coworkRun.id) === id ? state.coworkRun : null;
   const typeDetail = workTypeLabel(item.type);
+  const history = coworkHistoryForSelected(id);
+  const execution = item.execution || {};
+  const executionLabel = [execution.agent_cli || '自動', execution.model || '既定モデル'].join(' / ');
+  const nextRun = coworkNextRunLabel(item, st);
   const prompt = String(item.prompt || item.instruction || '').trim();
-  const lastResult = running
-    ? '実行中です'
-    : run && run.phase === 'error'
-      ? run.message || '実行に失敗しました'
-      : st.lastLogAt
-        ? `${statusLabel(status)}・${fmtTime(st.lastLogAt)}`
-        : 'まだ実行記録がありません';
+  const lastRunAt = st.lastLogAt ? fmtTime(st.lastLogAt) : '未実行';
   return `<article class="cowork-selected-detail ${running ? 'is-running' : ''} ${run && run.phase === 'error' ? 'is-error' : ''}" aria-labelledby="cowork-selected-title">
     <div class="cowork-selected-hero">
       <div class="cowork-selected-heading">
-        <span class="summary-kicker">選択中の定常業務</span>
+        <span class="summary-kicker">選択中</span>
         <h2 id="cowork-selected-title" title="${esc(item.name || id)}">${esc(item.name || id)}</h2>
         <div class="row"><span class="status-chip ${coworkStatusClass(status)}">${esc(statusLabel(status))}</span>
           <span class="label-chip">${esc(workTypeLabel(item.type))}</span>${disabledWork ? '<span class="label-chip">無効</span>' : ''}</div>
       </div>
-      <button class="cowork-primary-run" data-cowork-run="${esc(id)}" data-cowork-type="${esc(item.type || 'loop')}" data-cowork-name="${esc(item.name || id)}"
-        ${busyId || disabledWork || parameterError ? 'disabled' : ''}${parameterError ? ` title="${esc(parameterError)}"` : ''}>${busyId === id ? '実行中…' : '今すぐ実行'}</button>
+      <div class="cowork-selected-actions">
+        <button data-cowork-edit="${index}" ${busyId ? 'disabled' : ''}>設定変更</button>
+        <button class="cowork-primary-run" data-cowork-run="${esc(id)}" data-cowork-type="${esc(item.type || 'loop')}" data-cowork-name="${esc(item.name || id)}"
+          ${busyId || disabledWork || parameterError ? 'disabled' : ''}${parameterError ? ` title="${esc(parameterError)}"` : ''}>${busyId === id ? '実行中…' : '今すぐ実行'}</button>
+      </div>
     </div>
     <section class="cowork-prompt-preview">
       <h3>プロンプト</h3>
@@ -2066,13 +2154,16 @@ function coworkSelectedDetailHtml(entry, observed, busyId) {
     </section>
     <div class="cowork-status-grid">
       <div><span>現在</span><strong>${esc(statusLabel(status))}</strong></div>
-      <div><span>最終結果</span><strong title="${esc(lastResult)}">${esc(lastResult)}</strong></div>
-      <div><span>実行予定</span><strong>${esc(item.schedule || '手動実行')}</strong></div>
-      <div><span>対象</span><strong title="${esc(item.repo || '')}">${esc(coworkRepoLabel(item.repo))}</strong></div>
+      <div class="cowork-status-result"><span>最終実行日時</span><strong title="${esc(lastRunAt)}">${esc(lastRunAt)}</strong></div>
+      <div><span>次回実行予定</span><strong title="${esc(item.schedule || '')}">${esc(nextRun)}</strong></div>
+      <div><span>エージェント</span><strong title="${esc(executionLabel)}">${esc(executionLabel)}</strong></div>
     </div>
-    <section class="cowork-latest-result">
-      <div><span class="summary-kicker">最新結果</span><p>${esc(lastResult)}</p></div>
-      <button data-cowork-history="${esc(id)}" data-cowork-name="${esc(item.name || id)}" ${api.coworkItemLogs ? '' : 'disabled'}>履歴とログ</button>
+    <section class="cowork-inline-history" aria-labelledby="cowork-history-title">
+      <div class="cowork-section-heading">
+        <h3 id="cowork-history-title">履歴</h3>
+        <button data-cowork-history="${esc(id)}" data-cowork-name="${esc(item.name || id)}" ${api.coworkItemLogs ? '' : 'disabled'}>更新</button>
+      </div>
+      ${history ? coworkHistoryBodyHtml(history) : '<p class="muted">実行の記録を読み込んでいます…</p>'}
     </section>
     ${parameterError ? `<p class="cowork-item-error" role="alert">入力パラメータを確認できません: ${esc(parameterError)}</p>` : ''}
     ${run && run.phase === 'error' ? `<p class="cowork-item-error" role="alert">${esc(run.message || '実行できませんでした。')}</p>` : ''}
@@ -2088,7 +2179,6 @@ function coworkSelectedDetailHtml(entry, observed, busyId) {
         ${(item.type !== 'state-machine' || pairedLoop) && item.repo && api.routineAgentListSessions
           ? `<button data-cowork-term-repo="${esc(item.repo)}" data-cowork-term-name="${esc(item.name || id)}" data-cowork-term-id="${esc(id)}">実行状況を見る</button>`
           : ''}
-        <button data-cowork-edit="${index}" ${busyId ? 'disabled' : ''}>編集</button>
         ${discovered ? '' : `<button data-cowork-delete="${index}" ${busyId ? 'disabled' : ''}>削除</button>`}
       </div>
     </section>
@@ -2112,6 +2202,7 @@ function updateCoworkSelectedDetail(entry, folder) {
   slot.innerHTML = coworkSelectedDetailHtml(entry, observed, busyId);
   slot.scrollTop = 0;
   bindCoworkDetailActions(slot, folder);
+  bindCoworkHistoryBody(slot);
 }
 
 function coworkRunError(res) {
@@ -2275,8 +2366,7 @@ function coworkRootBadgeHtml(folder) {
   const p = (state.discovery && state.discovery.projects) || [];
   const sel = p.find((x) => x && x.dir === folder);
   if (!sel || sel.kind !== 'routine') return '';
-  return '<span class="cowork-root-badge">この画面に登録したフォルダ'
-    + '<button id="btn-cowork-drop-root" type="button" class="linklike">登録を解除</button></span>';
+  return '';
 }
 
 async function addCoworkRoot() {
@@ -2325,7 +2415,7 @@ async function afterCoworkRootChange(res) {
   if ($('tab-orchestration') && state.orchestration) renderOrchestration();
 }
 
-function renderCowork() {
+function renderCoworkWorkspace() {
   const ui = captureUiState();
   const el = $('tab-cowork');
   if (!el) return;
@@ -2348,32 +2438,27 @@ function renderCowork() {
   const scopeLabel = `このフォルダの作業 ${entries.length} 件`;
   el.innerHTML = `
     <div class="cowork-shell">
-      <header class="cowork-header">
-        <div>
-          <span class="summary-kicker">自動化</span>
-          <h2>定常業務</h2>
-          <p class="muted">繰り返し実行する作業を確認・実行できます。</p>
-        </div>
-        <div class="row">
-          <button id="btn-cowork-add">追加</button>
-          <button id="btn-cowork-save">保存</button>
-          <button id="btn-cowork-refresh" title="最新の状態を確認">更新</button>
-        </div>
-      </header>
       <div class="cowork-scope muted">
         <span>${esc(scopeLabel)}</span>
-        ${coworkRootBadgeHtml(folder)}
+        <div class="row cowork-toolbar-actions">
+          <button id="btn-routine-adhoc">作業依頼</button>
+          <button id="btn-cowork-add">追加</button>
+          <button id="btn-cowork-save">変更を保存</button>
+          <button id="btn-cowork-refresh" title="最新の状態を確認">更新</button>
+        </div>
       </div>
       ${coworkRunBannerHtml()}
       ${entries.length ? `<div class="cowork-split-view">
         <section class="cowork-list-pane" aria-label="定常業務の一覧">${coworkRoutineSelectorHtml(entries, selectedId)}</section>
         <div id="cowork-selected-slot" class="cowork-detail-pane" data-ui-scroll-key>${coworkSelectedDetailHtml(selected, observed, busyId)}</div>
       </div>`
-      : '<div class="empty"><strong>このフォルダに登録された定常業務はありません</strong><span>「追加」から作業を作成できます。別のフォルダを扱うには「設定」タブの「フォルダを登録」から追加してください。</span></div>'}
+      : '<div class="empty"><strong>このフォルダに登録された定常業務はありません</strong><span>「追加」から作業を作成できます。別のフォルダを扱うには「全体設定」の「フォルダを登録」から追加してください。</span></div>'}
     </div>`;
   bindCoworkRoutineSelector(el);
   const addBtn = $('btn-cowork-add');
   if (addBtn) addBtn.addEventListener('click', () => openCoworkWorkDialog(-1));
+  const adhocBtn = $('btn-routine-adhoc');
+  if (adhocBtn) adhocBtn.addEventListener('click', openRoutineAdhocDialog);
   const dropRootBtn = $('btn-cowork-drop-root');
   if (dropRootBtn) dropRootBtn.addEventListener('click', () => dropCoworkRoot(folder));
   const saveBtn = $('btn-cowork-save');
@@ -2388,5 +2473,14 @@ function renderCowork() {
     });
   }
   bindCoworkDetailActions(el, folder);
+  bindCoworkHistoryBody(el);
   restoreUiState(ui);
+  if (selected && !coworkHistoryForSelected(selectedId)) {
+    loadCoworkHistory(selectedId, selected.item.name || selectedId);
+  }
+}
+
+// IPC更新など既存の呼び出し元はこの薄い入口を使う。
+function renderCowork() {
+  renderCoworkWorkspace();
 }

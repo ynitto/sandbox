@@ -50,16 +50,55 @@ assert.match(workflowFeature, /name="wf-run-policy-mode" value="recommended" che
   '今回だけの実行方針はおすすめを初期選択します');
 assert.ok(workflowFeature.includes('id="wf-run-policy-custom" hidden'),
   '役割・機能ごとの指定はカスタム選択時だけ表示します');
-assert.ok(workflowFeature.includes('id="wf-flow-summary"')
-  && workflowFeature.includes('selectedFlowSummaryHtml(ov, \'auto\')'),
-  '実行タブはフロー選択の直下に初期説明を表示します');
-assert.ok(workflowFeature.includes("flowSelect.addEventListener('change', showFlowSummary)"),
-  'フロー選択時はフォーム全体を再描画せず説明だけ更新します');
-assert.ok(workflowFeature.indexOf('<label class="wf-flow-field">フロー')
-    < workflowFeature.indexOf('<label class="wf-cwd-field">フォルダ'),
-  '実行フォームはフローを左、フォルダを右に配置します');
-assert.ok(workflowFeature.includes('class="settings-save-actions wf-run-actions"'),
-  '実行ボタンはフォーム右下の独立したアクション行へ置きます');
+assert.ok(workflowFeature.includes('id="wf-create-task"') && workflowFeature.includes('class="wf-queue"'),
+  '実行タブはタスク作成と実行待ち一覧を分離します');
+assert.match(renderer, /\{ id: 'workflows', label: 'ワークフロー', list: 'workflows',[\s\S]*?desc: '実行待ちのタスクを作成/,
+  'ワークフローは共通ヘッダーに領域タイトルを表示します');
+assert.match(renderer, /\{ id: 'missions', label: 'ミッション',[\s\S]*?desc: '複数のエージェントで役割を分担し、まとまった作業を進めます。' \}/,
+  'ミッションは共通ヘッダーに領域タイトルと簡単な説明を表示します');
+for (const title of ['<h2>実行中のワークフロー</h2>', '<h2>ワークフロー</h2>', '<h2>要対応</h2>', '<h2>設定</h2>']) {
+  assert.ok(!workflowFeature.includes(title), `ワークフローのタブ内に重複タイトル ${title} を表示しません`);
+}
+assert.ok(!renderer.includes('<h2>ミッションを実行</h2>') && !renderer.includes('<h2>ミッション</h2>'),
+  'ミッションのタブ内に独自タイトルを置かず、共通ヘッダーへ揃えます');
+assert.ok(workflowFeature.includes('class="dialog-scroll-body task-create-scroll"'),
+  'タスク作成ダイアログは共通のスクロール本文と余白を使います');
+assert.match(css, /\.task-create-dialog\[open\]\s*\{[^}]*height:\s*min\(720px,\s*calc\(100vh\s*-\s*32px\)\)/s,
+  'タスク追加ダイアログはステップが変わっても同じ高さを保ちます');
+assert.match(css, /input\[type="checkbox"\]\s*\{[^}]*appearance:\s*none/s,
+  'OSネイティブのチェックボックス表示をDashboard共通スタイルへ置き換えます');
+const projectTaskWizardSource = renderer.slice(
+  renderer.indexOf('function renderProjectTaskWizard('),
+  renderer.indexOf('async function advanceProjectTaskWizard(')
+);
+assert.ok(!projectTaskWizardSource.includes('type="checkbox"')
+  && projectTaskWizardSource.includes('data-project-source-version=')
+  && projectTaskWizardSource.includes('aria-pressed='),
+  'プロジェクトのタスク追加はネイティブチェックボックスではなく選択カードを使います');
+assert.ok(!workflowFeature.includes('name="wf-task-input"') && !workflowFeature.includes('name="wf-task-flow"'),
+  'タスク作成の選択カードにラジオボタンを重ねません');
+assert.ok(workflowFeature.includes('data-wf-task-input-option') && workflowFeature.includes('aria-pressed='),
+  '選択カードは押下状態を支援技術にも伝えます');
+const workflowTaskDialogSource = workflowFeature.slice(
+  workflowFeature.indexOf('function workflowTaskDialogHtml('),
+  workflowFeature.indexOf('\n  function boundaryPositions(', workflowFeature.indexOf('function workflowTaskDialogHtml('))
+);
+assert.ok(workflowTaskDialogSource.indexOf('id="wf-task-cwd"') < workflowTaskDialogSource.indexOf('<legend>入力を選択</legend>'),
+  '対象フォルダは入力方法の選択より先に表示します');
+assert.ok(workflowTaskDialogSource.includes("const inputField = wizard.inputMode === 'document'")
+  && workflowTaskDialogSource.includes('${inputField}')
+  && !workflowTaskDialogSource.includes('data-wf-task-text')
+  && !workflowTaskDialogSource.includes('data-wf-task-file'),
+  '選択中の入力方法に必要な欄だけを生成します');
+assert.ok(workflowFeature.includes('class="flow-view-tab') && workflowFeature.includes('class="flow-graph-workspace"')
+  && workflowFeature.includes('class="flow-overview-view"') && workflowFeature.includes('class="flow-history-view"'),
+  'ワークフロー実行詳細はプロジェクト実行と同じ概要・工程・履歴の構造を使います');
+assert.ok(workflowFeature.includes('id="wf-new-run">← 実行待ちへ戻る'),
+  '実行詳細から新規タスクと実行待ちへ戻れます');
+assert.ok(workflowFeature.includes('workflowTaskCreate') && workflowFeature.includes('workflowTaskExecute'),
+  '作成時は実行待ちへ保存し、一覧の明示操作で実行します');
+assert.ok(workflowFeature.includes('task-create-steps') && workflowFeature.includes('設計フロー'),
+  'タスク作成ダイアログは共通の段階表示と設計フロー選択を持ちます');
 assert.ok(workflowFeature.includes('class="global-settings-card wf-settings-card"')
   && workflowFeature.includes('<header class="global-settings-card-heading">')
   && workflowFeature.includes('class="settings-save-actions wf-settings-actions"'),
@@ -140,8 +179,8 @@ assert.match(css, /\.wf-editor-layout\s*\{[^}]*display:\s*block/s,
 assert.match(html, /data-tab="history"[^>]*>成果</);
 // 道具の名前（定常業務・ミッション…）は**左メニューの領域名**が持つ。右のタブはその領域の
 // 中の画面なので、領域名を繰り返さずに中身の名前を付ける（定常業務 → 作業／実行の記録／設定）。
-assert.match(html, /data-tab="cowork"[^>]*>作業</);
-assert.match(html, /data-tab="routine-runs"[^>]*>実行の記録</);
+assert.match(html, /data-tab="cowork"[^>]*>定常業務</);
+assert.ok(!html.includes('data-tab="routine-runs"'));
 assert.match(html, /data-tab="routine-settings"[^>]*>設定</);
 assert.match(html, /data-tab="amigos-run"[^>]*>実行</);
 assert.match(html, /data-tab="amigos"[^>]*>ミッション</);
@@ -156,18 +195,73 @@ assert.ok(!html.includes('tab-scope-label'), '全体設定の左に補助ラベ�
 // タブは領域の中の画面なので、領域名を繰り返さない短い名前にする（設定）。
 // どの設定かは左メニュー（プロジェクト領域 or 全体設定）が示す。
 assert.match(html, /data-tab="project-settings"[^>]*>設定</);
+const projectTabs = html.slice(html.indexOf('<nav id="tabs">'), html.indexOf('</nav>', html.indexOf('<nav id="tabs">')));
+const utilityTabs = projectTabs.slice(projectTabs.indexOf('<span class="tab-utility-group">'));
+assert.ok(!utilityTabs.includes('data-tab="project-settings"'),
+  'プロジェクト設定を右端のユーティリティ枠へ分離しません');
+assert.ok(!renderer.includes('<h2>プロジェクト設定</h2>'),
+  '設定タブ内にタブ名と重複する画面タイトルを表示しません');
 assert.match(html, /data-tab="orchestration"[^>]*>全体設定</);
+// プロジェクトと定常業務はタイトル行右端、ワークフローとミッションはフォルダ入力の右へ置く。
 const projectHeader = html.slice(html.indexOf('<header id="project-header">'), html.indexOf('<nav id="tabs">'));
 assert.match(projectHeader, /id="btn-cli-chat"[^>]*disabled/);
-assert.ok(projectHeader.includes('この作業を相談'), '相談は対象が分かるプロジェクトヘッダーに置きます');
-assert.ok(renderer.includes('function openCliChat('));
-assert.ok(renderer.includes('api.agentOpenChat({ dir, cwd })'),
-  '選択中ワークスペースと起動先フォルダをCLIチャット起動へ渡します');
+assert.ok(projectHeader.includes('AIに相談'), '相談の名称を全画面で統一します');
+assert.match(projectHeader, /class="project-cli-chat-group"/);
+assert.match(projectHeader, /data-consult-group="projects"/,
+  'ヘッダーの 1 組はプロジェクト領域の対象と対にします');
 // 起動先（cwd）の選択（S3）。プロジェクトのフォルダは S1 以降「状態リポジトリの clone」なので、
 // コードを触りたくて CLI を開いてもそこには 1 行もコードが無い。成果物リポジトリを選べること。
 assert.ok(projectHeader.includes('id="cli-chat-cwd"'), 'CLIチャットの起動先を選べます');
 assert.ok(renderer.includes('function refreshCliChatCwdChoices('));
+
+assert.match(projectHeader, /id="area-header"[\s\S]*data-consult-group="routines"/,
+  '定常業務はタイトル行の右端へ相談を置きます');
+const workflowQueue = workflowFeature.slice(workflowFeature.indexOf('class="wf-queue"'),
+  workflowFeature.indexOf('${workflowTaskDialogHtml(ov)}'));
+assert.ok(!workflowQueue.includes("consultControlHtml('workflows')"),
+  '実行待ちには作業フォルダが確定していないため相談を置きません');
+assert.ok(/const folder = runFolder\(st\.runDetail\);[\s\S]{0,400}\$\{folder \? consultControlHtml\('workflows'\) : ''\}/.test(workflowFeature),
+  '実行詳細では記録から作業フォルダを解決できる場合だけ相談を置きます');
+assert.ok(/function folderPath\(value\)[\s\S]{0,300}\['url', 'cwd', 'root', 'dir', 'path'\]/.test(workflowFeature),
+  'workspace オブジェクトは文字列化せず記録された実フォルダを解決します');
+assert.ok(workflowFeature.includes('class="flow-outcome-status"')
+  && workflowFeature.includes('class="advice-banner advice-${advice.cls}"')
+  && workflowFeature.includes('class="flow-progress-block"')
+  && workflowFeature.includes('class="flow-counts"'),
+  'ワークフロー概要はプロジェクト実行と同じ順序で状態・次の動き・進捗を示します');
+assert.ok(/amigos-run-cwd-action[\s\S]{0,400}consultControlHtml\('missions'\)/.test(renderer),
+  'ミッションはフォルダ入力の右へ相談を置きます');
+assert.ok(/amigos-detail-content[\s\S]{0,200}consultControlHtml\('missions'\)/.test(renderer),
+  'ミッション詳細にも相談を置きます');
+
+// ボタン・フォルダ選択・起動処理は 1 実装のまま。領域は対象フォルダの出しかたを登録するだけ。
+assert.ok(renderer.includes('function openConsult('));
+assert.ok(renderer.includes('function consultControlHtml('));
+assert.ok(renderer.includes('function registerConsultSource('));
+assert.ok(renderer.includes('api.agentOpenChat({ dir: target.dir, cwd })'),
+  '領域別に解決した対象フォルダと起動先フォルダをCLIチャット起動へ渡します');
+for (const area of ['projects', 'routines', 'missions']) {
+  assert.ok(renderer.includes(`registerConsultSource('${area}'`), `${area} の対象フォルダを登録します`);
+}
+assert.ok(workflowFeature.includes("registerConsultSource('workflows'"),
+  'ワークフローの対象フォルダを登録します');
+// 前の領域の対象が residual に残ると、画面で見ているものとは別のフォルダで CLI が開く。
+assert.ok(renderer.includes('group.hidden = group.dataset.consultGroup !== state.area'),
+  '相談コントロールは領域につき 1 組だけ出します');
+assert.match(css, /\.project-cli-chat-group\[hidden\]\s*\{[^}]*display:\s*none\s*!important/s,
+  '非表示の相談コントロールが領域タイトルを押し出しません');
+// 無効の理由と実効エージェントは色や非活性ではなく文字で出す。
+assert.ok(renderer.includes('function consultNoteText('));
+assert.match(html, /data-consult-note[^>]*aria-live="polite"/);
+assert.match(css, /\.wf-cwd-action \.project-cli-chat-note:not\(:empty\)[\s\S]*?color:\s*var\(--yellow\)/,
+  'ワークフローとミッションのフォルダ警告は入力行の下へ警告色で表示します');
 assert.match(css, /\.project-cli-chat\s*\{[^}]*min-height:\s*44px/s);
+assert.match(css, /\.amigos-run-team-field select, \.amigos-run-cwd-field input\s*\{[^}]*min-height:\s*44px/s,
+  'ミッションのチームとフォルダは同じコントロール高で下端を揃えます');
+assert.match(css, /\.amigos-run-team-field, \.amigos-run-cwd-action\s*\{[^}]*align-self:\s*start/s,
+  'フォルダ警告用の余白があってもラベル上端を基準に入力欄を揃えます');
+assert.match(css, /\.amigos-run-team-field select, \.amigos-run-cwd-field input\s*\{[^}]*height:\s*44px/s,
+  'チームとフォルダのコントロールは同じ固定高を使います');
 assert.match(css, /@media \(pointer:\s*coarse\)[\s\S]*?\.project-cli-chat\s*\{[^}]*min-height:\s*44px/s);
 assert.ok(
   html.indexOf('data-tab="project-settings"') < html.indexOf('data-tab="orchestration"'),
@@ -203,7 +297,8 @@ const projectSettingsSource = renderer.slice(
   renderer.indexOf('function renderProjectSettings('),
   renderer.indexOf('\n// プロジェクトのリセット', renderer.indexOf('function renderProjectSettings('))
 );
-assert.ok(projectSettingsSource.includes('選択中のプロジェクトに適用'));
+assert.ok(!projectSettingsSource.includes('選択中のプロジェクトに適用'),
+  '設定タブ内に補助的なページ見出しを重ねません');
 assert.ok(projectSettingsSource.includes('プロジェクト定義'));
 assert.ok(projectSettingsSource.includes('調査と高度な設定'));
 assert.ok(projectSettingsSource.includes('危険な操作'));
@@ -257,19 +352,19 @@ for (const section of ['usage', 'routine']) {
   assert.ok(!globalSections.includes(`id: '${section}'`),
     `${section} は道具ごとの設定なので全体設定に置きません`);
 }
-assert.ok(renderer.includes('function renderRoutineSettings('), '定常業務の設定は領域のタブが持ちます');
+assert.ok(renderer.includes('function renderRoutineSettings('), '定常業務の設定は他領域と同じタブが持ちます');
 assert.ok(renderer.includes('function renderUsage('), '利用状況は自分の領域が持ちます');
 assert.ok(renderer.includes('data-global-settings-section="${item.id}"'), '分類タブに設定IDを付けます');
 assert.ok(renderer.includes('role="tablist"'), '設定分類はアクセシブルなタブとして表示します');
 assert.ok(renderer.includes('role="tabpanel"'), '設定内容と分類タブを関連付けます');
 assert.ok(renderer.includes('id="global-settings-select"'), '狭幅用の設定分類セレクトが必要です');
-for (const id of ['btn-save-app-settings', 'btn-save-agent-settings', 'btn-save-sync-settings',
+for (const id of ['btn-save-app-settings', 'btn-save-sync-settings',
   'btn-save-routine-settings', 'btn-save-integrations-settings']) {
   assert.ok(renderer.includes(`id="${id}"`), `${id} で分類単位に保存します`);
 }
-assert.ok(renderer.includes('エージェントとモデルは実行方針から自動設定されます。')
-  && !renderer.includes('id="cfg-agent-cli"') && !renderer.includes('id="cfg-agent-model"'),
-  'エージェントタブでは自動設定対象のagent/modelを重ねて設定しません');
+assert.ok(renderer.includes('Dashboard AI')
+  && renderer.includes('id="cfg-consult-agent"') && renderer.includes('id="cfg-consult-model"'),
+  'Dashboard 固有のAI上書きはアプリ設定へまとめます');
 assert.ok(renderer.includes('class="settings-save-actions"'), 'カードの保存位置を共通化します');
 assert.ok(css.includes('.settings-save-actions'), '保存フッターを同じ配置で描画します');
 const renderAmigosSource = renderer.slice(
@@ -549,18 +644,18 @@ assert.match(css, /\.global-settings-tabs\s*\{/);
 assert.match(css, /\.global-settings-select\s*\{/);
 assert.match(css, /@media \(max-width: 680px\)[\s\S]*?\.global-settings-tabs\s*\{[^}]*display:\s*none/s);
 const renderCoworkSource = renderer.slice(
-  renderer.indexOf('function renderCowork('),
-  renderer.indexOf('\n// ---------------------------------------------------------------------------\n// 定常業務の実行履歴', renderer.indexOf('function renderCowork('))
+  renderer.indexOf('function renderCoworkWorkspace('),
+  renderer.indexOf('\nfunction renderCowork()', renderer.indexOf('function renderCoworkWorkspace('))
 );
 assert.ok(renderer.includes('function coworkRoutineSelectorHtml('), '定常業務の共通セレクターが必要です');
 assert.ok(renderer.includes('data-cowork-search'), '件数が多い定常業務を名前で絞り込めます');
 assert.ok(renderer.includes('function applyCoworkRoutineFilter('), '検索は一覧DOMだけを絞り込みます');
-assert.ok(renderCoworkSource.includes('coworkRoutineSelectorHtml('), '定常業務画面の上部で業務を選択します');
-assert.ok(renderCoworkSource.includes('coworkSelectedDetailHtml('), '下部には選択中の業務だけを表示します');
-assert.ok(renderCoworkSource.includes('class="cowork-split-view"'), '一覧と選択中業務を上下の固定領域に分けます');
-assert.ok(renderCoworkSource.includes('class="cowork-list-pane"'), '上段を一覧専用領域にします');
-assert.ok(renderCoworkSource.includes('class="cowork-detail-pane"'), '下段を詳細専用領域にします');
-assert.ok(renderCoworkSource.includes('<button id="btn-cowork-save">保存</button>'), '保存ボタンは省略されない短い文言にします');
+assert.ok(renderCoworkSource.includes('coworkRoutineSelectorHtml('), '定常業務画面の左で業務を選択します');
+assert.ok(renderCoworkSource.includes('coworkSelectedDetailHtml('), '右には選択中の業務だけを表示します');
+assert.ok(renderCoworkSource.includes('class="cowork-split-view"'), '一覧と選択中業務を左右の固定領域に分けます');
+assert.ok(renderCoworkSource.includes('class="cowork-list-pane"'), '左を一覧専用領域にします');
+assert.ok(renderCoworkSource.includes('class="cowork-detail-pane"'), '右を詳細専用領域にします');
+assert.ok(renderCoworkSource.includes('<button id="btn-cowork-save">変更を保存</button>'), '下書きを永続化する保存操作だと明示します');
 assert.ok(!renderCoworkSource.includes('data-open-technical-info'), '定常業務画面に重複する診断情報の導線を置きません');
 assert.ok(!renderCoworkSource.includes('openTechnicalInfo('), '定常業務から共通の詳細情報ダイアログを開きません');
 assert.ok(!renderCoworkSource.includes('class="cowork-list"'), '全業務の大きなカードを並べません');
@@ -622,15 +717,13 @@ assert.strictEqual(
   '複数候補から無関係なエージェントを推測して表示しません'
 );
 assert.match(css, /\.cowork-routine-selector\s*\{[^}]*overflow-x:\s*hidden/s);
-assert.match(css, /\.cowork-routine-selector\s*\{[^}]*grid-template-columns:/s);
+assert.match(css, /\.cowork-routine-selector\s*\{[^}]*flex-direction:\s*column/s);
 assert.match(css, /\.cowork-routine-selector\s*\{[^}]*overflow-y:\s*auto/s);
-assert.match(css, /\.cowork-routine-selector\s*\{[^}]*minmax\(230px,\s*1fr\)/s);
-assert.match(css, /\.cowork-routine-option\s*\{[^}]*height:\s*76px/s);
-assert.match(css, /\.cowork-routine-option-head strong\s*\{[^}]*-webkit-line-clamp:\s*2/s);
-assert.match(css, /\.cowork-routine-option-head strong\s*\{[^}]*white-space:\s*normal/s);
+assert.match(css, /\.cowork-routine-option\s*\{[^}]*height:\s*58px/s);
+assert.match(css, /\.cowork-routine-option-head strong\s*\{[^}]*white-space:\s*nowrap/s);
 assert.match(css, /\.cowork-selected-detail\s*\{[^}]*min-width:\s*0/s);
 assert.match(css, /#tab-cowork\.active\s*\{[^}]*overflow:\s*hidden/s);
-assert.match(css, /\.cowork-split-view\s*\{[^}]*grid-template-rows:\s*240px\s+minmax\(0,\s*1fr\)/s);
+assert.match(css, /\.cowork-split-view\s*\{[^}]*grid-template-columns:\s*minmax\(240px,\s*320px\)\s+minmax\(0,\s*1fr\)/s);
 assert.match(css, /\.cowork-list-pane\s*\{[^}]*overflow:\s*hidden/s);
 assert.match(css, /\.cowork-detail-pane\s*\{[^}]*overflow-y:\s*auto/s);
 assert.match(css, /\.routine-agent-dialog\[open\]\s*\{[^}]*height:/s);

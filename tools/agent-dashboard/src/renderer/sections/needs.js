@@ -1501,7 +1501,8 @@ function needAssistActionsHtml(need, settled) {
     specialized.push(`<button type="button" data-failure-diagnose="${esc(need.id)}">文面を生成</button>`);
   }
   if (specialized.length) return specialized.join('');
-  return `<button type="button" data-need-consult="${esc(need.id)}">AIに相談</button>`;
+  // ホームは状況把握と要対応の処理に集中させる。用途の曖昧な汎用相談は置かない。
+  return '';
 }
 
 function needListSummary(need) {
@@ -2013,12 +2014,6 @@ function bindNeedDetail(root) {
   }
   for (const btn of root.querySelectorAll('button[data-need-artifacts]')) {
     btn.addEventListener('click', () => openNeedArtifacts(btn.dataset.needArtifacts));
-  }
-  for (const btn of root.querySelectorAll('button[data-need-consult]')) {
-    btn.addEventListener('click', () => {
-      state.needsSelectedId = btn.dataset.needConsult;
-      openDoctor();
-    });
   }
   for (const btn of root.querySelectorAll('button[data-failure-diagnose]')) {
     btn.addEventListener('click', () => openFailureDiagnosis(btn.dataset.failureDiagnose));

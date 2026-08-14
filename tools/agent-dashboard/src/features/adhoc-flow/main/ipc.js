@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const adhoc = require('./adhoc');
 const designSession = require('./design-session');
+const taskQueue = require('./task-queue');
 const profiles = require('../../orchestration/main/profiles');
 const flowTiers = require('../../orchestration/main/flow-tiers');
 const tuning = require('../../orchestration/main/tuning');
@@ -216,6 +217,11 @@ function registerIpc(ctx) {
   handle('designSession:delete', ({ id } = {}) => ({
     deleted: designSession.deleteSession(loadConfig(), String(id || '')),
   }));
+  handle('workflowTask:list', () => ({ tasks: taskQueue.list(loadConfig()) }));
+  handle('workflowTask:create', (payload) => ({ task: taskQueue.create(loadConfig(), payload || {}) }));
+  handle('workflowTask:delete', ({ id } = {}) => ({ deleted: taskQueue.remove(loadConfig(), String(id || '')) }));
+  handle('workflowTask:execute', ({ id } = {}) =>
+    taskQueue.execute(loadConfig(), String(id || ''), (payload) => adhoc.submit(loadConfig(), payload)));
 
   handle('adhocFlow:copyMethod', ({ id, cwd, newId } = {}) => {
     const cfg = loadConfig();

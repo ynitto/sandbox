@@ -118,6 +118,7 @@ function makeMission(dir, mid, { phaseSetup } = {}) {
   };
   w('mission.json', {
     id: mid, title: 'テスト', goal: 'g', owner_node: 'node-a',
+    workspace: { repo: '/work/test-repo' },
     posted_at: '2026-07-17T00:00:00Z',
     budget: { execution_minutes: 1, soft_ratio: 0.9, on_exhausted: 'wrap-up' },
   });
@@ -147,6 +148,7 @@ test('ミッション: ローカルバス形式を読み phase/予算/未回答/
   const ov = missions.overview(cfgFor(tmpdir('amigos-b-'), { busDirs: [bus] }));
   assert.strictEqual(ov.missions.length, 1);
   const m = ov.missions[0];
+  assert.deepStrictEqual(m.workspace, { repo: '/work/test-repo' });
   assert.strictEqual(m.phase, 'working');
   assert.strictEqual(m.round, 0);
   assert.strictEqual(m.budget.spentSeconds, 60);
