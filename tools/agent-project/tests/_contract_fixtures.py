@@ -179,6 +179,7 @@ BOARD_NODE_CURRENT = {
     "heartbeat": "2026-08-01T12:00:00Z",
     "fresh_after_sec": 120.0,
     "contract_version": 1,
+    "budget": STATUS_NODE_BUDGET_SUMMARY,
 }
 
 BOARD_NODE_MINIMAL = {
@@ -191,7 +192,6 @@ BOARD_NODE_MINIMAL = {
 
 BOARD_NODE_WITH_UNKNOWN = {
     **BOARD_NODE_CURRENT,
-    "budget": {"can_accept": False, "reason_codes": ["token_exceeded"]},
     "extra_capability": "gpu-a100",
 }
 

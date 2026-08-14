@@ -37,6 +37,7 @@ from __future__ import annotations
 import json
 import math
 import os
+from datetime import datetime, timezone
 
 from . import vocab
 from .protocol import safe_name
@@ -55,6 +56,93 @@ from .repolocal import normalize_repo_url
 # 一斉に行う規律（C13）の下では「板だけ新しい」状態を作らないため——分けた瞬間に
 # 「板は互換だが画面は非互換」という中間状態が正当になり、更新漏れの説明が 2 系統になる。
 CONTRACT_VERSION = 1
+
+# node-budget-summary 射影の契約版（schemas/node-budget-summary.schema.json）。
+# status/<node>.json と板 nodes/<id>.json の `budget` が同じ語彙。版不一致は非適格（fail-close）。
+BUDGET_SUMMARY_CONTRACT_VERSION = 1
+
+
+def status_budget_gate(record: dict, *, at: "datetime | None" = None,
+                       enforce_default: bool = False) -> dict:
+    """status/<node>.json（または板上 nodes を同形に畳んだ record）の生存＋利用枠ゲート。
+
+    allocate/claim（agent-project.coordination）と `eligible` の**単一実装**。
+
+    戻り値:
+      alive     … node あり・availability=active・鮮度内
+      kind      … "ok" | "exhausted" | "unknown"
+                  （不明≠枯渇。stale / 版不一致 / source=unavailable / 射影欠落 → unknown）
+      eligible  … alive かつ（enforce でないか kind==ok）
+      reason_codes … 射影の固定語彙（欠落時は []）
+    enforce は射影の budget.enforce、無ければ enforce_default（既定 false）。
+    """
+    now = (at or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    node = ""
+    active = False
+    fresh = False
+    reason_codes: list[str] = []
+    can_accept: "bool | None" = None
+    enforce = bool(enforce_default)
+    kind = "unknown"
+    try:
+        node = str(record.get("node", "") or "").strip()
+        active = str(record.get("availability", "active")) == "active"
+        updated = datetime.fromisoformat(str(record["updated_iso"]).replace("Z", "+00:00"))
+        fresh_sec = float(record.get("fresh_after_sec", 120.0) or 120.0)
+        fresh = (now - updated.astimezone(timezone.utc)).total_seconds() <= fresh_sec
+    except (KeyError, TypeError, ValueError):
+        return {"node": node, "active": False, "fresh": False, "alive": False,
+                "enforce": enforce, "can_accept": None, "reason_codes": [],
+                "kind": "unknown", "eligible": False}
+    alive = bool(node) and active and fresh
+    budget = record.get("budget")
+    if isinstance(budget, dict):
+        if "enforce" in budget:
+            enforce = bool(budget.get("enforce"))
+        reason_codes = [str(c) for c in list(budget.get("reason_codes") or [])]
+        if "can_accept" in budget:
+            can_accept = bool(budget.get("can_accept"))
+        ver = budget.get("contract_version")
+        source = str(budget.get("source", "") or "")
+        if not fresh:
+            kind = "unknown"
+        elif ver != BUDGET_SUMMARY_CONTRACT_VERSION:
+            kind = "unknown"
+        elif source == "unavailable":
+            kind = "unknown"
+        elif can_accept is False:
+            kind = "exhausted"
+        elif can_accept is True:
+            kind = "ok"
+        else:
+            kind = "unknown"
+    else:
+        # 射影無し: enforce 中は不明（fail-close）。非 enforce では従来どおり alive のみ。
+        kind = "unknown"
+    eligible = alive and (not enforce or kind == "ok")
+    return {"node": node, "active": active, "fresh": fresh, "alive": alive,
+            "enforce": enforce, "can_accept": can_accept, "reason_codes": reason_codes,
+            "kind": kind, "eligible": eligible}
+
+
+def budget_kwargs_from_node(node: "dict | None") -> dict:
+    """板上 `nodes/<id>.json` → `eligible(..., **kwargs)` 用の budget / 鮮度 kwargs。
+
+    budget が無い（ミラー前・旧ノード）ときは空 dict ——呼び出し側は従来どおり適格判定のみ。
+    板の `availability`（稼働窓文字列）は status の availability 語彙と違うので渡さない。
+    """
+    if not isinstance(node, dict):
+        return {}
+    budget = node.get("budget")
+    if not isinstance(budget, dict):
+        return {}
+    out: dict = {"budget": budget, "node": str(node.get("node") or "") or None}
+    hb = node.get("heartbeat") or node.get("updated_iso")
+    if hb is not None:
+        out["heartbeat"] = hb
+    if node.get("fresh_after_sec") is not None:
+        out["fresh_after_sec"] = node.get("fresh_after_sec")
+    return {k: v for k, v in out.items() if v is not None}
 
 
 def contract_compatible(required_by_post: "int | None", *,
@@ -208,7 +296,10 @@ def node_inflight(board_root: str, node_id: str) -> int:
 
 def eligible(post: dict, *, repos=None, tags=None, agent_cli=None, workloads=None,
              contract_version: "int | None" = CONTRACT_VERSION,
-             max_concurrent: "int | None" = None, inflight: int = 0) -> bool:
+             max_concurrent: "int | None" = None, inflight: int = 0,
+             budget=None, heartbeat=None, updated_iso=None, fresh_after_sec=None,
+             node: "str | None" = None, enforce_default: bool = False,
+             at: "datetime | None" = None) -> bool:
     """このノードが公示に入札してよいか。判定材料はすべて引数で受ける（設定の読み方は
     呼び出し側の責務——agent-flow は自分の設定、常駐体は host.yaml から供給する）。
 
@@ -216,6 +307,10 @@ def eligible(post: dict, *, repos=None, tags=None, agent_cli=None, workloads=Non
     `max_concurrent` は None または 0 で「無制限」（同じくスキーマの語彙）で、正の値なら
     `inflight`（板上の自分名義の非終端件数・`node_inflight`）が上限に達したときに
     入札しない——「超過時は新規入札を控える」という板の契約の実装（P2-3）。
+
+    Phase1: 任意の `budget`（node-budget-summary）と鮮度（`heartbeat`/`updated_iso` +
+    `fresh_after_sec`）を渡すと、プロジェクト内割当と同じ `status_budget_gate` で
+    can_accept＋鮮度を見る。`budget` 省略時は従来どおり（board なし／ミラー前経路を壊さない）。
     """
     if not isinstance(post, dict):
         return False
@@ -259,5 +354,23 @@ def eligible(post: dict, *, repos=None, tags=None, agent_cli=None, workloads=Non
         return False
     for ref in (req.get("repos") or []):
         if str(ref) not in have and normalize_repo_url(str(ref)) not in have:
+            return False
+
+    # 利用枠・鮮度（allocate/claim と単一実装）。budget 無しは Phase0 互換でスキップ。
+    if isinstance(budget, dict):
+        clock = updated_iso or heartbeat
+        if clock is None:
+            # 自ノードがライブで予算だけ見る経路——時計欠落を stale に倒さない。
+            clock = datetime.now(timezone.utc).isoformat()
+        gate = status_budget_gate(
+            {"node": str(node or "self"),
+             # 板 nodes の availability は稼働窓文字列であり status の active 語彙ではない。
+             # 入札選別の時点でプロセスが動いている＝生存として畳む。
+             "availability": "active",
+             "updated_iso": clock,
+             "fresh_after_sec": (120.0 if fresh_after_sec is None else fresh_after_sec),
+             "budget": budget},
+            at=at, enforce_default=enforce_default)
+        if not gate.get("eligible"):
             return False
     return True

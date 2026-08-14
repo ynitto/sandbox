@@ -96,9 +96,12 @@ def _board_declared_repos(node_repos) -> "set[str]":
 
 
 def board_eligible(post: dict, node_repos, node_tags, node_agent_cli=None, *,
-                   node_workloads=None, max_concurrent=None, inflight=0) -> bool:
+                   node_workloads=None, max_concurrent=None, inflight=0,
+                   budget=None, heartbeat=None, updated_iso=None,
+                   fresh_after_sec=None, node=None, enforce_default=False,
+                   at=None) -> bool:
     """公示に入札してよいか（成果物リポジトリ・タグ・CLI・契約バージョン・引き受ける
-    エンジン・枠での選別）。
+    エンジン・枠・利用枠での選別）。
 
     判定規則は `agentcore.board.eligible` に一本化した——agent-flow が「同じ仕様・別実装」で
     持っていたもので、片方だけ育つと**同じ公示が経路によって拾えたり拾えなかったりする**
@@ -106,7 +109,11 @@ def board_eligible(post: dict, node_repos, node_tags, node_agent_cli=None, *,
     return _boardrules.eligible(post, repos=node_repos, tags=node_tags,
                                 agent_cli=node_agent_cli or [],
                                 workloads=node_workloads or [],
-                                max_concurrent=max_concurrent, inflight=inflight)
+                                max_concurrent=max_concurrent, inflight=inflight,
+                                budget=budget, heartbeat=heartbeat,
+                                updated_iso=updated_iso,
+                                fresh_after_sec=fresh_after_sec, node=node,
+                                enforce_default=enforce_default, at=at)
 
 
 def _node_board_declaration(daemon) -> "tuple[list, list, int | None]":
@@ -279,6 +286,10 @@ def poll_board(daemon) -> "list[str]":
     node_repos = getattr(daemon, "repos", None) or {}
     node_tags = getattr(daemon, "tags", None) or []
     node_cli, node_workloads, max_concurrent = _node_board_declaration(daemon)
+    own_rec = read_json(os.path.join(mirror.dir, "nodes",
+                                     f"{protocol.safe_name(daemon.node_id)}.json"))
+    own_budget = _boardrules.budget_kwargs_from_node(
+        own_rec if isinstance(own_rec, dict) else None)
     lease = float(getattr(daemon, "board_lease", None) or 900.0)
     _renew_dispatched_leases(daemon, mirror, lease)
     home = daemon.commands_home or daemon.home or os.getcwd()
@@ -304,7 +315,8 @@ def poll_board(daemon) -> "list[str]":
             continue
         if not board_eligible(post, node_repos, node_tags, node_cli,
                               node_workloads=node_workloads,
-                              max_concurrent=max_concurrent, inflight=inflight):
+                              max_concurrent=max_concurrent, inflight=inflight,
+                              **own_budget):
             continue
         bids_dir = os.path.join(ddir, "bids")
         assignment = str((post.get("policy") or {}).get("assignment") or "first-come")

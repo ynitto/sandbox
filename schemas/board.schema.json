@@ -53,7 +53,11 @@
         },
         "heartbeat": {"type": "string", "description": "最終更新時刻（ISO8601 UTC）。デーモンがサイクルごとに更新"},
         "fresh_after_sec": {"type": "number", "description": "この秒数を超えて heartbeat が途絶えたらノード不在とみなす（読む側の生死判定。state_git status.json と同じ流儀）"},
-        "contract_version": {"type": "integer", "minimum": 1, "description": "このノードが実装している常駐一本化のノード契約バージョン（常駐一本化設計 §9 C13）。公示（post.json）の requires.contract_version と不一致なら入札しない — 更新漏れの古いノードを誤動作でなく不参加に倒す。requires.contract_version を持たない公示は不問（バージョンを問わず入札可）"}
+        "contract_version": {"type": "integer", "minimum": 1, "description": "このノードが実装している常駐一本化のノード契約バージョン（常駐一本化設計 §9 C13）。公示（post.json）の requires.contract_version と不一致なら入札しない — 更新漏れの古いノードを誤動作でなく不参加に倒す。requires.contract_version を持たない公示は不問（バージョンを問わず入札可）"},
+        "budget": {
+          "$ref": "node-budget-summary.schema.json",
+          "description": "status/<node>.json と同形の利用枠射影ミラー（Phase1）。resident の board tick が転記。無い・版不一致は eligible 側で非適格（enforce 時）。board 非必須"
+        }
       },
       "additionalProperties": true
     },

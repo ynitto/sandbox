@@ -59,7 +59,7 @@ def _budget_summary_enforce_default(cfg: "Config") -> bool:
     """budget_summary.enforce の既定は false（Phase1）。
 
     Config / host に明示が無い限り強制しない。射影へ書く観測値。
-    allocate/claim の強制は coordination.status_budget_gate が同キーを読む。
+    allocate/claim の強制は agentcore.board.status_budget_gate（coordination 経由）が同キーを読む。
     """
     raw = getattr(cfg, "budget_summary", None)
     if isinstance(raw, dict) and "enforce" in raw:

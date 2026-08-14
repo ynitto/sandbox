@@ -246,6 +246,7 @@ class BoardNodeReaderBaselineTests(unittest.TestCase):
     def test_unknown_fields_do_not_break_eligible_or_capability(self):
         node = BOARD_NODE_WITH_UNKNOWN
         self.assertIn("budget", node)
+        self.assertIn("extra_capability", node)
         cap = km.NodeCapability(
             node=node["node"],
             workloads=list(node.get("workloads") or []),
@@ -257,16 +258,21 @@ class BoardNodeReaderBaselineTests(unittest.TestCase):
             heartbeat=node.get("heartbeat"),
             fresh_after_sec=node.get("fresh_after_sec"),
             contract_version=int(node.get("contract_version") or 1),
+            budget=node.get("budget"),
         )
         dumped = cap.to_dict()
         self.assertEqual(dumped["node"], "pc-a")
-        self.assertNotIn("budget", dumped)  # 書き手現状は未知キーを載せない
+        self.assertEqual(dumped["budget"], node["budget"])
+        self.assertNotIn("extra_capability", dumped)  # 未知キーは書き手が載せない
         post = {"op": "post", "id": "dg-2", "workload": "flow"}
+        kw = boardcore.budget_kwargs_from_node(node)
+        from datetime import datetime, timezone
+        at = datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc)
         self.assertTrue(boardcore.eligible(
             post, repos=node.get("repos"), tags=node.get("tags"),
             agent_cli=node.get("agent_cli"), workloads=node.get("workloads"),
             contract_version=node.get("contract_version"),
-            max_concurrent=node.get("max_concurrent")))
+            max_concurrent=node.get("max_concurrent"), at=at, **kw))
 
     def test_minimal_legacy_node_is_eligible_without_workloads_key(self):
         node = BOARD_NODE_MINIMAL

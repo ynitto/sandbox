@@ -171,7 +171,9 @@ def start_controller_heartbeat(cfg: "Config") -> threading.Event:
     return stop
 
 
-_BUDGET_SUMMARY_CONTRACT_VERSION = 1
+# 正典は agentcore.board（eligible と allocate/claim の共通ヘルパ）。ここは名前を通すだけ。
+_BUDGET_SUMMARY_CONTRACT_VERSION = _boardrules.BUDGET_SUMMARY_CONTRACT_VERSION
+status_budget_gate = _boardrules.status_budget_gate
 
 
 def _budget_summary_enforce(cfg: "Config") -> bool:
@@ -180,67 +182,6 @@ def _budget_summary_enforce(cfg: "Config") -> bool:
     if isinstance(raw, dict) and "enforce" in raw:
         return bool(raw.get("enforce"))
     return False
-
-
-def status_budget_gate(record: dict, *, at: "datetime | None" = None,
-                       enforce_default: bool = False) -> dict:
-    """status/<node>.json 1 件の生存＋利用枠ゲート（allocate/claim と t7 eligible の単一実装）。
-
-    戻り値:
-      alive     … node あり・availability=active・鮮度内（従来の配布適格）
-      kind      … "ok" | "exhausted" | "unknown"
-                  （不明≠枯渇。stale / 版不一致 / source=unavailable / 射影欠落 → unknown）
-      eligible  … alive かつ（enforce でないか kind==ok）
-      reason_codes … 射影の固定語彙（欠落時は []）
-    enforce は射影の budget.enforce、無ければ enforce_default（既定 false）。
-    """
-    now = (at or datetime.now(timezone.utc)).astimezone(timezone.utc)
-    node = ""
-    active = False
-    fresh = False
-    reason_codes: list[str] = []
-    can_accept: "bool | None" = None
-    enforce = bool(enforce_default)
-    kind = "unknown"
-    try:
-        node = str(record.get("node", "") or "").strip()
-        active = str(record.get("availability", "active")) == "active"
-        updated = datetime.fromisoformat(str(record["updated_iso"]).replace("Z", "+00:00"))
-        fresh_sec = float(record.get("fresh_after_sec", 120.0) or 120.0)
-        fresh = (now - updated.astimezone(timezone.utc)).total_seconds() <= fresh_sec
-    except (KeyError, TypeError, ValueError):
-        return {"node": node, "active": False, "fresh": False, "alive": False,
-                "enforce": enforce, "can_accept": None, "reason_codes": [],
-                "kind": "unknown", "eligible": False}
-    alive = bool(node) and active and fresh
-    budget = record.get("budget")
-    if isinstance(budget, dict):
-        if "enforce" in budget:
-            enforce = bool(budget.get("enforce"))
-        reason_codes = [str(c) for c in list(budget.get("reason_codes") or [])]
-        if "can_accept" in budget:
-            can_accept = bool(budget.get("can_accept"))
-        ver = budget.get("contract_version")
-        source = str(budget.get("source", "") or "")
-        if not fresh:
-            kind = "unknown"
-        elif ver != _BUDGET_SUMMARY_CONTRACT_VERSION:
-            kind = "unknown"
-        elif source == "unavailable":
-            kind = "unknown"
-        elif can_accept is False:
-            kind = "exhausted"
-        elif can_accept is True:
-            kind = "ok"
-        else:
-            kind = "unknown"
-    else:
-        # 射影無し: enforce 中は不明（fail-close）。非 enforce では従来どおり alive のみ。
-        kind = "unknown"
-    eligible = alive and (not enforce or kind == "ok")
-    return {"node": node, "active": active, "fresh": fresh, "alive": alive,
-            "enforce": enforce, "can_accept": can_accept, "reason_codes": reason_codes,
-            "kind": kind, "eligible": eligible}
 
 
 def _read_node_status(root: Path, node: str) -> "dict | None":
