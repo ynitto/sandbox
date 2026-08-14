@@ -67,7 +67,7 @@
 
 ## 3. 提案（優先度: ★=先行 ○=並行可 △=後続）
 
-### P1 ★ statemachine の検査コマンド — 自己申告を遷移材料から外す
+### P1 ★ statemachine の検査コマンド — 自己申告を遷移材料から外す（実装済み・2026-08-14）
 
 t1-decomposition レポートが特定した**唯一の中心実装**。これが無い限り、ローカル worker の
 偽 done が機械層を素通りする（事実 8）ので、ルーティングだけ変えても品質が持たない。
@@ -80,6 +80,31 @@ t1-decomposition レポートが特定した**唯一の中心実装**。これ�
 - 検査 stdout を再試行の課題文へ足すのは後段の速度最適化（28%）。**先に真偽だけで動かす**。
 - 完了後、t1-decomposition の同一セル（T1gate 相当）を**実機経路で再測**して配線を検証する
   （ハーネス側の手順模擬との差分を潰す。レポートの未着手項目）。
+
+**実装記録（2026-08-14）。** 配線は入った。残るのは実機再測（下記）。
+
+| 置き場 | 入れたもの |
+|---|---|
+| `statemachine-use/scripts/engine.py` | `check` の正規化（`normalize_check`）・結果のコンテキスト契約（`check_context`）・実行（`run_check`）・検証。非同期エンジン側のゲートと再投入 |
+| `statemachine-use/scripts/next_state.py` | `--state-check`（正規化済み宣言の照会口）。外部ハーネスが YAML を読み直さずに済ませ、正規化を 1 実装に保つ |
+| `agent-loop/agent_loop/statemachine.py` | 本番経路のゲート実行・再投入・`escalate` 返却。検査結果を `--context` へ載せて遷移を確定させる |
+| 契約 | `check_status` / `check_ok` / `check_output` の 3 キー（正典は `references/schema.md`） |
+
+宣言の形（`state.check`）は 3 つ受ける（文字列・配列・`{command,args,timeout_sec}`）。
+**シェルは介さない**（argv 直接実行）ので、メタ文字入りの宣言は投入前にエラーにする——
+黙って別物を実行するより落とす。失敗時の動作は `check_on_exhausted` が決める:
+`escalate`（既定・実行を止めて `escalate: true` + 終了コード 3）/ `continue`（検査結果を
+コンテキストへ入れて遷移評価へ進む）/ `error`（通常の失敗）。
+
+**壊れやすい 2 点をテストで塞いだ**——(a) モデルが「OK」と書いても検査が落ちれば進まないこと、
+(b) 検査を宣言していないステートから `check_ok` で分岐する定義は**検証エラーにする**こと。
+(b) を通すと、決定的に見ているつもりの遷移が `evaluate_condition_rule` の
+キー不在フォールバックで静かに LLM 評価へ落ち、P1 以前の状態に戻る。
+
+テスト: `statemachine-use/tests/test_check.py`（34 件）・
+`agent-loop/test/test_statemachine.py` の `CheckGateTest` / `CheckContextContractTest` /
+`EscalationExitCodeTest`（19 件）。既存 967 件は無変更で通る（宣言の無いステートは素通り）。
+作例は `statemachine-use/examples/gated_implement.yaml`。
 
 ### P2 ★ ルーティング宣言の更新 — 割り当てマップを 1 実装に落とす
 
@@ -161,7 +186,7 @@ log_stats の実寸（事実 9）から、1 run のクラウド消費は次の�
 
 | 段 | 内容 | 完了条件 |
 |---:|---|---|
-| 1 | **P1**（検査コマンド）+ **P2**（ルーティング宣言） | T1gate 相当を実機経路で再測し 3/3 帯を確認 |
+| 1 | **P1**（検査コマンド・配線は実装済み）+ **P2**（ルーティング宣言） | T1gate 相当を実機経路で再測し 3/3 帯を確認 |
 | 2 | **P3**（常用ローカルのプリセット） | 定型 flow がクラウド 0 で完走し、昇格だけがクラウドを呼ぶことを台帳で確認 |
 | 3 | **P4** + **P5**（判定の決定化・制約ゲート） | filter/judge の多基準ケースが決定化パイプで F1 並みに通る |
 | 独立 | **P7**（bge-m3） | 段 1〜3 と依存なし。いつでも |

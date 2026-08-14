@@ -59,6 +59,79 @@ states:
 | `output_key` | 文字列 | いいえ | — | `context[output_key]` にも出力を格納 |
 | `max_retries` | 整数 | いいえ | 0 | `output_validator` 検証に失敗した場合の action のリトライ回数 |
 | `output_validator` | 文字列 | いいえ | — | 出力の第1行を検証するルール。書式: `startswith:VAL1,VAL2` — いずれかの値で始まること。検証失敗時は `max_retries` 回までリトライする |
+| `check` | 文字列 / 配列 / オブジェクト | いいえ | — | **決定的検査**。action の後にハーネスが実行するコマンド。終了コードが遷移の材料になる（[検査](#決定的検査-check)） |
+| `check_retries` | 整数 | いいえ | `max_retries` | 検査が落ちたときに同じステートをやり直す回数 |
+| `check_on_exhausted` | 文字列 | いいえ | `escalate` | 再投入を使い切っても落ちるときの動作。`escalate` \| `continue` \| `error` |
+| `check_feedback` | 真偽値 | いいえ | true | 再投入時に検査の出力を課題文へ足すか |
+
+### 決定的検査 (check)
+
+`output_validator` が見るのは**モデルが書いた第1行の書式**であり、「PASS」と書くのはモデル自身である。
+`check` は対照的に、**ハーネスが実行するコマンドの終了コード**を遷移の材料にする。モデルは検査の
+中身にも結果にも触れない。
+
+```yaml
+states:
+  implement:
+    action_file: actions/implement.md
+    output_validator: "startswith:OK"
+    check: "python3 -m pytest tests/test_humansize.py -q"   # ← 事実はこれが決める
+    check_retries: 2
+```
+
+宣言の形は 3 つ。**シェルは介さない**（argv を直接実行する）ので、パイプ・リダイレクト・変数展開は
+使えない。必要ならスクリプトにまとめる — 文字列にシェル記号があれば投入前にエラーになる
+（黙って別物を実行するより落とす）。
+
+```yaml
+check: "python3 -m pytest tests/ -q"                        # 文字列（shlex で分割）
+check: ["python3", "-m", "pytest", "tests/"]                # 配列（分割済み）
+check: {command: "python3", args: ["-m", "pytest"], timeout_sec: 300}   # 既定 120 秒
+```
+
+動きは 3 段。
+
+1. action の後に検査を実行する。**通れば次へ**。
+2. 落ちたら同じステートを `check_retries` 回までやり直す。`check_feedback: true`（既定）なら
+   測った不一致を課題文へ足す（受入は真偽だけでも変わらないが、実測では再試行が 28% 速い）。
+3. 使い切っても落ちるときは `check_on_exhausted` が決める。
+
+| `check_on_exhausted` | 動作 | 使いどころ |
+|---|---|---|
+| `escalate`（既定） | 実行を止め、結果に `escalate: true` を立てる（agent-loop は終了コード 3） | **この段では解けない**の宣告。上位の段（クラウド）へ回すシグナル |
+| `continue` | 検査結果をコンテキストへ入れたまま遷移評価へ進む | 失敗経路を自分でグラフに書く場合（修復ステートへ分岐する等） |
+| `error` | 通常の実行エラーとして落とす | 落ちたら止まってほしいだけの場合 |
+
+`escalate` を既定にしているのは実測による — 再投入で直るのは「仕様の読み違い」族だけで、
+「作業の丸ごと欠落」族は同じ診断を突きつけても 9/9 が同形で失敗する。決定的に同じ壊れ方をする
+以上、引き直しでは埋まらないので、上限は 1〜2 で足り、到達したら段を上げるのが正しい。
+
+#### 検査結果のコンテキスト変数
+
+検査を宣言したステートでは、次の 3 つが `condition_rule` から使える。**ハーネスが測った事実**
+であって、モデルが書いたテキストではない。
+
+| 変数 | 値 | 説明 |
+|---|---|---|
+| `check_status` | `"0"` / `"1"` / … / `"error"` | 終了コードの文字列。実行できなかった場合（タイムアウト・コマンド不在）は `"error"` |
+| `check_ok` | `"true"` / `"false"` | 終了コード 0 かつ実行できた場合のみ `"true"` |
+| `check_output` | 文字列 | 診断の先頭行（stderr 優先） |
+
+```yaml
+transitions:
+  - from: implement
+    to: review
+    condition_rule: "equals:check_ok:true"      # 成果物が実際に通ったときだけ進む
+    priority: 1
+  - from: implement
+    to: repair
+    condition_rule: "equals:check_ok:false"     # check_on_exhausted: continue のとき
+    priority: 2
+```
+
+検査を宣言していないステートからこれらのキーで分岐すると、キーが存在せず
+`condition_rule` は LLM 評価へフォールバックする——「決定的に見ているつもりが自己申告で
+決まっていた」に静かに戻る。**この組み合わせは検証エラーにする**（投入前に落ちる）。
 
 ### アクションの自動探索
 
@@ -182,6 +255,7 @@ In `action` and `condition` strings, use `{{variable}}` syntax:
 | `{{history.STATE_ID}}` | Stored output from state STATE_ID |
 | `{{context.KEY}}` | Any custom context variable |
 | `{{output_key}}` | Any state output stored with `output_key:` |
+| `{{check_status}}` / `{{check_ok}}` / `{{check_output}}` | 直前の[決定的検査](#決定的検査-check)の結果（宣言したステートのみ） |
 
 ## Complete Example
 

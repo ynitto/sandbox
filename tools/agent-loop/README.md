@@ -136,6 +136,15 @@ agent-loop --version
   `next_state.py` が確定します。終了時に `RESULT {json}` を 1 行出力します
   （dashboard はこの行を実行結果の契約として読みます）。`--workflow` は作業ディレクトリ
   内のパスに限ります（dashboard からは cwd 相対で渡されます）。
+- **決定的検査（`check`）**。ステートが検査コマンドを宣言していると、アクションの後に
+  ハーネスがそれを実行し、**終了コードを遷移の材料にします**（`check_status` / `check_ok` /
+  `check_output` が `condition_rule` から見える）。`output_validator` が見るのはモデルが
+  書いた第 1 行の書式ですが、こちらは成果物が実際に動くかを測ります——モデルは検査の中身にも
+  結果にも触れません。落ちたら測った不一致を課題文へ足して同じステートをやり直し
+  （`check_retries`）、使い切っても通らなければ **`escalate: true` + 終了コード 3** で止まります
+  （「失敗した」ではなく「この段では解けない」の宣告。上位の段へ回すシグナルとして使います）。
+  宣言の書式は statemachine-use の `references/schema.md`、作例は
+  `examples/gated_implement.yaml`。宣言が無いステートは従来どおり素通りします。
 - `pause` / `resume` は local pause（`resume` は agent-control / budget の pause を迂回しません）。
 - `cancel` は managed な entry / pane だけを停止・slot 解放します（external pane は拒否）。
 - `drain` は新規受付を止め、実行中完了後に daemon を終了します。
