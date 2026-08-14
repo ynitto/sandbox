@@ -171,6 +171,94 @@ def start_controller_heartbeat(cfg: "Config") -> threading.Event:
     return stop
 
 
+_BUDGET_SUMMARY_CONTRACT_VERSION = 1
+
+
+def _budget_summary_enforce(cfg: "Config") -> bool:
+    """budget_summary.enforce 既定 false（loop 射影と同契約。coordination は loop より先に合成）。"""
+    raw = getattr(cfg, "budget_summary", None)
+    if isinstance(raw, dict) and "enforce" in raw:
+        return bool(raw.get("enforce"))
+    return False
+
+
+def status_budget_gate(record: dict, *, at: "datetime | None" = None,
+                       enforce_default: bool = False) -> dict:
+    """status/<node>.json 1 件の生存＋利用枠ゲート（allocate/claim と t7 eligible の単一実装）。
+
+    戻り値:
+      alive     … node あり・availability=active・鮮度内（従来の配布適格）
+      kind      … "ok" | "exhausted" | "unknown"
+                  （不明≠枯渇。stale / 版不一致 / source=unavailable / 射影欠落 → unknown）
+      eligible  … alive かつ（enforce でないか kind==ok）
+      reason_codes … 射影の固定語彙（欠落時は []）
+    enforce は射影の budget.enforce、無ければ enforce_default（既定 false）。
+    """
+    now = (at or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    node = ""
+    active = False
+    fresh = False
+    reason_codes: list[str] = []
+    can_accept: "bool | None" = None
+    enforce = bool(enforce_default)
+    kind = "unknown"
+    try:
+        node = str(record.get("node", "") or "").strip()
+        active = str(record.get("availability", "active")) == "active"
+        updated = datetime.fromisoformat(str(record["updated_iso"]).replace("Z", "+00:00"))
+        fresh_sec = float(record.get("fresh_after_sec", 120.0) or 120.0)
+        fresh = (now - updated.astimezone(timezone.utc)).total_seconds() <= fresh_sec
+    except (KeyError, TypeError, ValueError):
+        return {"node": node, "active": False, "fresh": False, "alive": False,
+                "enforce": enforce, "can_accept": None, "reason_codes": [],
+                "kind": "unknown", "eligible": False}
+    alive = bool(node) and active and fresh
+    budget = record.get("budget")
+    if isinstance(budget, dict):
+        if "enforce" in budget:
+            enforce = bool(budget.get("enforce"))
+        reason_codes = [str(c) for c in list(budget.get("reason_codes") or [])]
+        if "can_accept" in budget:
+            can_accept = bool(budget.get("can_accept"))
+        ver = budget.get("contract_version")
+        source = str(budget.get("source", "") or "")
+        if not fresh:
+            kind = "unknown"
+        elif ver != _BUDGET_SUMMARY_CONTRACT_VERSION:
+            kind = "unknown"
+        elif source == "unavailable":
+            kind = "unknown"
+        elif can_accept is False:
+            kind = "exhausted"
+        elif can_accept is True:
+            kind = "ok"
+        else:
+            kind = "unknown"
+    else:
+        # 射影無し: enforce 中は不明（fail-close）。非 enforce では従来どおり alive のみ。
+        kind = "unknown"
+    eligible = alive and (not enforce or kind == "ok")
+    return {"node": node, "active": active, "fresh": fresh, "alive": alive,
+            "enforce": enforce, "can_accept": can_accept, "reason_codes": reason_codes,
+            "kind": kind, "eligible": eligible}
+
+
+def _read_node_status(root: Path, node: str) -> "dict | None":
+    path = root / "status" / f"{node}.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def _gate_journal_line(action: str, gate: dict) -> str:
+    codes = gate.get("reason_codes") or []
+    return (f"budget gate: action={action} node={gate.get('node') or '-'} "
+            f"kind={gate.get('kind')} enforce={bool(gate.get('enforce'))} "
+            f"eligible={bool(gate.get('eligible'))} reason_codes={codes}")
+
+
 def claim_distributed_task(cfg: "Config", task_id: str,
                            at: "datetime | None" = None) -> "str | None":
     """ready タスクを doing へ CAS 遷移し、結果確定に必要な fencing token を返す。"""
@@ -179,6 +267,23 @@ def claim_distributed_task(cfg: "Config", task_id: str,
         return None
     claimed: dict[str, str] = {}
     now = (at or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    # 自ノード status 射影の can_accept + 鮮度。enforce false 既定では従来どおり通す
+    # （status 鮮度欠落で claim を止めない）。enforce true のときだけ fail-close。
+    own_record = _read_node_status(Path(cfg.backlog).parent, node)
+    if own_record is None:
+        gate = {"node": node, "active": True, "fresh": False, "alive": False,
+                "enforce": _budget_summary_enforce(cfg), "can_accept": None,
+                "reason_codes": [], "kind": "unknown", "eligible": False}
+        has_budget = False
+    else:
+        gate = status_budget_gate(own_record, at=now,
+                                  enforce_default=_budget_summary_enforce(cfg))
+        has_budget = isinstance(own_record.get("budget"), dict)
+    deny = bool(gate["enforce"]) and not gate["eligible"]
+    if deny or (gate["kind"] != "ok" and (gate["enforce"] or has_budget)):
+        append_journal(cfg.journal, _gate_journal_line(f"claim {task_id}", gate))
+    if deny:
+        return None
 
     def mutate(root: Path) -> bool:
         path = root / "backlog" / f"{task_id}.md"
@@ -296,29 +401,52 @@ def refresh_distributed_task(cfg: "Config", task_id: str) -> bool:
 
 
 def allocate_distributed_tasks(cfg: "Config", at: "datetime | None" = None) -> "dict[str, str]":
-    """active ノードの ready+doing 件数が最小になるよう、未割当 ready を決定的に配る。"""
+    """active ノードの ready+doing 件数が最小になるよう、未割当 ready を決定的に配る。
+
+    適格は status の生存（active+鮮度）に加え、射影の can_accept を見る。
+    budget.enforce 既定 false の間は従来どおり生存のみで配り、kind≠ok は journal に残す。
+    タイブレークは (load, name) のまま（残量を連続優先度にしない）。
+    """
     now = (at or datetime.now(timezone.utc)).astimezone(timezone.utc)
     assigned: dict[str, str] = {}
+    gate_notes: list[str] = []
 
     def mutate(root: Path) -> bool:
         # CAS push の競合で mutate が再実行された場合、失敗した試行の結果を返さない。
         assigned.clear()
+        gate_notes.clear()
         eligible: set[str] = set()
+        seen: set[str] = set()
+        enforce_default = _budget_summary_enforce(cfg)
         status_dir = root / "status"
         for path in sorted(status_dir.glob("*.json")) if status_dir.is_dir() else []:
             try:
                 record = json.loads(path.read_text(encoding="utf-8"))
-                updated = datetime.fromisoformat(str(record["updated_iso"]).replace("Z", "+00:00"))
-                fresh = float(record.get("fresh_after_sec", 120.0) or 120.0)
-                node = str(record.get("node", "") or "").strip()
-            except (KeyError, OSError, TypeError, ValueError):
+                if not isinstance(record, dict):
+                    continue
+            except (OSError, ValueError, TypeError):
                 continue
-            if node and str(record.get("availability", "active")) == "active" \
-                    and (now - updated.astimezone(timezone.utc)).total_seconds() <= fresh:
-                eligible.add(node)
+            gate = status_budget_gate(record, at=now, enforce_default=enforce_default)
+            if not gate["node"]:
+                continue
+            seen.add(gate["node"])
+            has_budget = isinstance(record.get("budget"), dict)
+            if gate["eligible"]:
+                eligible.add(gate["node"])
+            if gate["kind"] != "ok" and (gate["enforce"] or has_budget or not gate["eligible"]):
+                if gate["alive"] or gate["enforce"] or has_budget:
+                    gate_notes.append(_gate_journal_line("allocate", gate))
         own = str(getattr(cfg, "node", "") or "").strip()
+        # 自ノード: enforce false では従来どおりローカル active なら含める（status 鮮度より優先）。
+        # enforce true では射影ゲートを通し、status 欠落は不明として非適格。
         if own and availability_state(cfg, now) == "active":
-            eligible.add(own)
+            if not enforce_default:
+                eligible.add(own)
+            elif own not in eligible and own not in seen:
+                gate_notes.append(_gate_journal_line(
+                    "allocate",
+                    {"node": own, "kind": "unknown", "enforce": True,
+                     "eligible": False, "reason_codes": []}))
         if not eligible:
             return False
         tasks = sorted(load_tasks(root / "backlog"), key=lambda task: task.id)
@@ -344,7 +472,10 @@ def allocate_distributed_tasks(cfg: "Config", at: "datetime | None" = None) -> "
             changed = True
         return changed
 
-    return assigned if state_transaction(cfg, mutate, "allocate ready tasks") else {}
+    ok = state_transaction(cfg, mutate, "allocate ready tasks")
+    for line in gate_notes:
+        append_journal(cfg.journal, line)
+    return assigned if ok else {}
 
 
 def requeue_draining_tasks(cfg: "Config") -> "list[str]":
