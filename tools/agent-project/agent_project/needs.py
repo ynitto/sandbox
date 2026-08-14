@@ -671,6 +671,10 @@ def _extract_json_object_loose(text: str) -> "dict | None":
 
 def _plan_approve(cfg: "Config", t: Task, reason: str) -> None:
     """実行前レビューの承認: proposed → ready（verify を用意できなければ inbox＝triage 行き）。"""
+    # 承認時点のスコープ・受入条件・候補権限・制御ポリシーを、状態遷移より先に固定する。
+    # ready になった後で組み立てると、実行開始との競合で「承認した契約」が run ごとに
+    # 変わり得るため、ここを唯一の凍結点にする。
+    approve_execution_envelope(cfg, t, reason)
     t.status = "ready" if has_verify_plan(t) else "inbox"
     persist_task(cfg, t)
     clear_needs_file(cfg, t.id)

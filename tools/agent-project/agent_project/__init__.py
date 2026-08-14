@@ -46,6 +46,7 @@ _FRAGMENTS = (
     "needs",       # 通知・フィードバック / impact・reject
     "prioritize",  # 優先順位 / assess / spec ルーティング / triage
     "verify",      # verify ゲート / verify 合成
+    "envelope",    # 計画承認時の Execution Envelope / run snapshot
     "request",     # 実行要求の組み立て / ルーティング / workspace 解決
     "flow",        # agent-flow 連携 / act / 委譲 executor
     "config",      # Config / 納品 / journal / settle 補助

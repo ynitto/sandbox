@@ -55,6 +55,29 @@ const ROLE_MIN_TIER = {
   verify: 'small',
 };
 
+// 実測済みの用途限定候補。モデル名だけで汎用化せず、実行契約を持つ CLI と組で宣言する。
+// 12b は文章レビューでは適格だがコード worker では停止性が悪いため、verify だけに載せる。
+const ROLE_CANDIDATES = {
+  verify: [{ agent_cli: 'ollama-verify', model: 'gemma4:12b', tier: 'small' }],
+};
+
+const SEED_TIER_CANDIDATES = {
+  basic: [
+    { agent_cli: 'aider', model: 'gemma4:e4b' },
+    { agent_cli: 'ollama', model: 'gemma4:e4b' },
+  ],
+  small: [{ agent_cli: 'ollama-verify', model: 'gemma4:12b' }],
+};
+
+function cloneCandidates(candidates) {
+  return (candidates || []).map((candidate) => ({ ...candidate }));
+}
+
+function seedTierCandidates() {
+  return Object.fromEntries(Object.entries(SEED_TIER_CANDIDATES)
+    .map(([tier, candidates]) => [tier, cloneCandidates(candidates)]));
+}
+
 // オプションとして拡張する振る舞いによる下限の引き上げ。オプションは機能の複雑さを一段上げる:
 //   - classify の route（分類後に専門工程を追加）: 分類結果がフローの形を決める制御になる
 //     ——単純作業（basic）のラベル付けには任せない。
@@ -104,7 +127,10 @@ function catalog() {
   }
   const roles = {};
   for (const [role, min] of Object.entries(ROLE_MIN_TIER)) {
-    roles[role] = { tiers: tiersFrom(min) };
+    roles[role] = {
+      tiers: tiersFrom(min),
+      ...(ROLE_CANDIDATES[role] ? { candidates: cloneCandidates(ROLE_CANDIDATES[role]) } : {}),
+    };
   }
   return { order: TIER_ORDER.slice(), kinds, roles };
 }
@@ -166,9 +192,11 @@ module.exports = {
   KIND_MIN_TIER,
   ROLE_MIN_TIER,
   CONTINUATION_MIN_TIER,
+  ROLE_CANDIDATES,
   allowedTiers,
   isKnownTier,
   catalog,
+  seedTierCandidates,
   clampTier,
   decideAutoTier,
 };

@@ -64,8 +64,9 @@ function loadControl(dir) {
     return { version: 1, revision: 0, defaults: {}, workloads: {} };
   }
   return {
-    version: 1,
+    version: [1, 2].includes(Number(raw.version)) ? Number(raw.version) : 1,
     revision: Number.isFinite(Number(raw.revision)) ? Number(raw.revision) : 0,
+    valid_until: typeof raw.valid_until === 'string' ? raw.valid_until : undefined,
     defaults: isPlainObject(raw.defaults) ? raw.defaults : {},
     workloads: isPlainObject(raw.workloads) ? raw.workloads : {},
     updated_at: raw.updated_at,
@@ -127,6 +128,15 @@ function mergeWorkloadControl(base, patch) {
     else out.selection_reason = String(patch.selection_reason);
   }
   if (patch.pinned !== undefined) out.pinned = Boolean(patch.pinned);
+  if (patch.selection_policy !== undefined) {
+    if (patch.selection_policy === null) delete out.selection_policy;
+    else {
+      if (!isPlainObject(patch.selection_policy)) {
+        throw new Error('selection_policy はオブジェクトで指定してください');
+      }
+      out.selection_policy = JSON.parse(JSON.stringify(patch.selection_policy));
+    }
+  }
   if (patch.agents !== undefined) {
     if (!isPlainObject(patch.agents)) throw new Error('agents はオブジェクトで指定してください');
     const agents = isPlainObject(out.agents) ? { ...out.agents } : {};
@@ -208,7 +218,14 @@ function saveControl(cfg, patch) {
   const cur = loadControl(dir);
   const p = patch || {};
   const next = { ...(cur._raw || {}) }; // additive: 未知キーを保持
-  next.version = 1;
+  const requestedVersion = p.version === undefined ? cur.version : Number(p.version);
+  if (![1, 2].includes(requestedVersion)) throw new Error('version は 1 または 2 で指定してください');
+  next.version = requestedVersion;
+  if (p.valid_until !== undefined) {
+    if (p.valid_until === null || p.valid_until === '') delete next.valid_until;
+    else if (!Number.isFinite(Date.parse(p.valid_until))) throw new Error('valid_until は ISO8601 で指定してください');
+    else next.valid_until = String(p.valid_until);
+  }
   next.defaults = isPlainObject(cur.defaults) ? { ...cur.defaults } : {};
   next.workloads = isPlainObject(cur.workloads) ? { ...cur.workloads } : {};
 
