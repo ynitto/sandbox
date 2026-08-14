@@ -416,6 +416,9 @@ def _node_budget_record(seconds: float, ref: str = "", agent_cli: str = "",
                "tool": _NODE_BUDGET_TOOL, "seconds": round(float(seconds), 3),
                "ref": ref, "purpose": ref}
         rec.update(extra or {})
+        rid = str(os.environ.get("AGENT_RESERVATION_ID") or rec.get("reservation_id") or "").strip()
+        if rid and "reservation_id" not in rec:
+            rec["reservation_id"] = rid
         if agent_cli:
             rec["agent_cli"] = str(agent_cli)
         if model:

@@ -71,7 +71,8 @@ def _capacity_from_budget_state(st: dict) -> "tuple[dict, str | None]":
     """state(full) から capacity{limit,used,reserved} と unit を射影する。
 
     トークン上限（合計 or 自 WL 実効）を一次単位に優先し、無ければ実行秒。
-    上限無しは limit/unit=null（used は観測できた消費のみ）。reserved は Phase2 まで null。
+    上限無しは limit/unit=null（used は観測できた消費のみ）。
+    reserved は呼び出し側（_budget_summary_block）が live reservations 合計で埋める。
     """
     token_cap = float(st.get("eff_wl_tokens") or 0) or float(st.get("token_limit") or 0)
     if token_cap > 0:
@@ -109,17 +110,30 @@ def _workload_eff_limits(raw_cfg: dict) -> dict:
     return out
 
 
+def _live_reserved_for_node(cfg: "Config", node: str) -> "float | None":
+    """所有者ノードの live reservation 合計。reservations/ が無ければ 0（Phase2 writer 後）。"""
+    root = Path(cfg.backlog).parent
+    if not reservations_dir(root).is_dir():
+        return 0.0
+    expire_reservations(root)  # 射影前に期限切れを冪等回収
+    return float(sum_live_reserved(root, node))
+
+
 def _budget_summary_block(cfg: "Config", observed_at: str) -> dict:
     """node-budget-summary を agentcore.nodebudget から組み立てる（status 埋込用）。
 
     失敗時も status 書込を止めないよう unavailable 射影へ倒す。enforce 既定 false。
+    capacity.reserved は所有者ノードの live reservations 合計（Phase2）。
     """
+    node = str(getattr(cfg, "node", "") or "").strip()
     try:
         bdir = _node_budget_dir()
         raw = _nodebudget.read_config(bdir)
         acc = _nodebudget.can_accept(_NODE_BUDGET_WORKLOAD, dir=bdir, cfg=raw)
         st = acc["state"]
         capacity, unit = _capacity_from_budget_state(st)
+        # unlimited（limit null）でも reserved は 0 以上の観測値として埋める（null は未実装ではない）
+        capacity["reserved"] = _live_reserved_for_node(cfg, node)
         return {
             "contract_version": _BUDGET_SUMMARY_CONTRACT_VERSION,
             "observed_at": observed_at,
@@ -133,11 +147,14 @@ def _budget_summary_block(cfg: "Config", observed_at: str) -> dict:
             "enforce": _budget_summary_enforce_default(cfg),
         }
     except Exception:
+        reserved = 0.0
+        with contextlib.suppress(Exception):
+            reserved = _live_reserved_for_node(cfg, node)
         return {
             "contract_version": _BUDGET_SUMMARY_CONTRACT_VERSION,
             "observed_at": observed_at,
             "source": "unavailable",
-            "capacity": {"limit": None, "used": None, "reserved": None},
+            "capacity": {"limit": None, "used": None, "reserved": reserved},
             "unit": None,
             "can_accept": True,
             "reason_codes": ["unavailable"],

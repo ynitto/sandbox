@@ -82,7 +82,7 @@ class WriteStatusBudgetEmbedTests(unittest.TestCase):
         self.assertIn(budget["unit"], ("tokens", "seconds"))
         self.assertIsNotNone(budget["capacity"]["limit"])
         self.assertGreaterEqual(budget["capacity"]["used"], 0)
-        self.assertIsNone(budget["capacity"]["reserved"])
+        self.assertEqual(budget["capacity"]["reserved"], 0.0)
         self.assertIs(budget["enforce"], False)
         # 実効上限は config 射影（project に max_tokens / minutes）
         self.assertIn("project", budget["workloads"])

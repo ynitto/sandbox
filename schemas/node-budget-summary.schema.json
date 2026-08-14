@@ -29,7 +29,7 @@
     },
     "capacity": {
       "type": "object",
-      "description": "一次単位（トークン優先、無ければ実行秒）の枠。未知値は null。reserved は Phase2 reservation まで null",
+      "description": "一次単位（トークン優先、無ければ実行秒）の枠。未知値は null。reserved は所有者ノードの live reservations 合計（Phase2）。reservations/ 未作成時は 0",
       "required": ["limit", "used", "reserved"],
       "properties": {
         "limit": {"type": ["number", "null"], "minimum": 0},

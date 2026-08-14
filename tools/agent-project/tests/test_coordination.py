@@ -704,3 +704,161 @@ class TestAllocateClaimBudgetGate(unittest.TestCase):
             self.assertTrue(token)
             journal = cfg.journal.read_text(encoding="utf-8")
             self.assertIn("kind=exhausted", journal)
+
+
+class TestBudgetReservation(unittest.TestCase):
+    """Phase2: claim/award reservation + invariant + expiry close."""
+
+    def _status(self, d, node, *, limit=10, used=0, reserved=None, can_accept=True,
+                enforce=False, reason_codes=None, unit="tokens"):
+        sd = d / "status"
+        sd.mkdir(parents=True, exist_ok=True)
+        budget = {
+            "contract_version": 1,
+            "observed_at": datetime.now(timezone.utc).isoformat(),
+            "source": "local-ledger",
+            "capacity": {"limit": limit, "used": used, "reserved": reserved},
+            "unit": unit,
+            "can_accept": can_accept,
+            "reason_codes": list(reason_codes or (["ok"] if can_accept else ["exceeded"])),
+            "enforce": enforce,
+        }
+        (sd / f"{node}.json").write_text(json.dumps({
+            "node": node, "availability": "active",
+            "updated_iso": datetime.now(timezone.utc).isoformat(),
+            "fresh_after_sec": 120.0,
+            "budget": budget,
+        }, ensure_ascii=False), encoding="utf-8")
+
+    def test_claim_creates_reservation_under_cas_and_fills_reserved(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1")
+            self._status(d, "pc-a", limit=10, used=2)
+            cfg = cfg_for(d, node="pc-a")
+            km.ensure_dirs(cfg)
+
+            def fake_tx(_cfg, mutate, message=""):
+                return bool(mutate(d))
+
+            with mock.patch.object(km, "state_transaction", side_effect=fake_tx):
+                token = km.claim_distributed_task(cfg, "T1")
+            self.assertTrue(token)
+            task = km.parse_task((d / "backlog" / "T1.md").read_text(encoding="utf-8"), "T1")
+            rid = str(task.get("reservation_id") or "")
+            self.assertTrue(rid.startswith("rsv-"), rid)
+            rec = json.loads((d / "reservations" / f"{rid}.json").read_text(encoding="utf-8"))
+            self.assertEqual(rec["status"], "live")
+            self.assertEqual(rec["source"], "claim")
+            self.assertEqual(rec["amount"], 1.0)
+            self.assertEqual(km.sum_live_reserved(d, "pc-a"), 1.0)
+            # 不変条件
+            self.assertLessEqual(2 + km.sum_live_reserved(d, "pc-a"), 10)
+            km.write_status(cfg)
+            budget = json.loads((d / "status" / "pc-a.json").read_text(encoding="utf-8"))["budget"]
+            self.assertEqual(budget["capacity"]["reserved"], 1.0)
+
+    def test_invariant_denies_over_limit_claim(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1")
+            mkb(d, "T2")
+            self._status(d, "pc-a", limit=3, used=0)
+            cfg = cfg_for(d, node="pc-a")
+            cfg.budget_summary = {"reservation_amount": 2.0}
+            km.ensure_dirs(cfg)
+
+            def fake_tx(_cfg, mutate, message=""):
+                return bool(mutate(d))
+
+            with mock.patch.object(km, "state_transaction", side_effect=fake_tx):
+                self.assertTrue(km.claim_distributed_task(cfg, "T1"))
+                # used(0)+live(2)+amount(2) > 3 → deny
+                self.assertIsNone(km.claim_distributed_task(cfg, "T2"))
+            self.assertEqual(km.sum_live_reserved(d, "pc-a"), 2.0)
+
+    def test_unknown_gate_skips_reservation_claim_ok(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1")
+            # source=unavailable → kind unknown
+            sd = d / "status"
+            sd.mkdir(parents=True, exist_ok=True)
+            (sd / "pc-a.json").write_text(json.dumps({
+                "node": "pc-a", "availability": "active",
+                "updated_iso": datetime.now(timezone.utc).isoformat(),
+                "fresh_after_sec": 120.0,
+                "budget": {
+                    "contract_version": 1, "source": "unavailable",
+                    "capacity": {"limit": 10, "used": 0, "reserved": None},
+                    "can_accept": True, "reason_codes": ["unavailable"], "enforce": False,
+                },
+            }), encoding="utf-8")
+            cfg = cfg_for(d, node="pc-a")
+            km.ensure_dirs(cfg)
+
+            def fake_tx(_cfg, mutate, message=""):
+                return bool(mutate(d))
+
+            with mock.patch.object(km, "state_transaction", side_effect=fake_tx):
+                self.assertTrue(km.claim_distributed_task(cfg, "T1"))
+            self.assertFalse((d / "reservations").exists())
+
+    def test_close_and_expire_are_idempotent(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, node="pc-a")
+            km.ensure_dirs(cfg)
+            past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+            rid = "rsv-deadbeefdeadbee"
+            (d / "reservations").mkdir()
+            (d / "reservations" / f"{rid}.json").write_text(json.dumps({
+                "reservation_id": rid, "task_id": "T9", "node": "pc-a",
+                "amount": 1, "status": "live", "expires_iso": past,
+            }), encoding="utf-8")
+            got = km.expire_reservations(d)
+            self.assertEqual(got, [rid])
+            self.assertEqual(km.expire_reservations(d), [])  # idempotent
+            rec = json.loads((d / "reservations" / f"{rid}.json").read_text(encoding="utf-8"))
+            self.assertEqual(rec["status"], "expired")
+            # already terminal → close は no-op False
+            self.assertFalse(km.close_reservation(d, rid, status="closed"))
+            live = "rsv-live0000000001"
+            future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+            (d / "reservations" / f"{live}.json").write_text(json.dumps({
+                "reservation_id": live, "task_id": "T8", "node": "pc-a",
+                "amount": 1, "status": "live", "expires_iso": future,
+            }), encoding="utf-8")
+            self.assertTrue(km.close_reservation(d, live, ledger_ref="ledger:1"))
+            self.assertFalse(km.close_reservation(d, live))  # idempotent
+            closed = json.loads((d / "reservations" / f"{live}.json").read_text(encoding="utf-8"))
+            self.assertEqual(closed["status"], "closed")
+            self.assertEqual(closed["ledger_ref"], "ledger:1")
+
+    def test_award_creates_board_reservation(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            board_root = d / "board"
+            board = km.BoardRepo(str(board_root))
+            nd = board_root / "nodes"
+            nd.mkdir(parents=True)
+            (nd / "pc-b.json").write_text(json.dumps({
+                "node": "pc-b",
+                "budget": {
+                    "contract_version": 1, "source": "local-ledger",
+                    "capacity": {"limit": 10, "used": 1, "reserved": 0},
+                    "unit": "tokens", "can_accept": True,
+                    "reason_codes": ["ok"], "enforce": False,
+                },
+            }), encoding="utf-8")
+            (board_root / "delegations" / "dg-1").mkdir(parents=True)
+            board.write_award("dg-1", "pc-b", "pc-a")
+            rdir = board_root / "reservations"
+            self.assertTrue(rdir.is_dir())
+            files = list(rdir.glob("*.json"))
+            self.assertEqual(len(files), 1)
+            rec = json.loads(files[0].read_text(encoding="utf-8"))
+            self.assertEqual(rec["source"], "award")
+            self.assertEqual(rec["node"], "pc-b")
+            self.assertEqual(rec["delegation_id"], "dg-1")
+            self.assertEqual(rec["status"], "live")
