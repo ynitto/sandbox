@@ -133,6 +133,26 @@ transitions:
 `condition_rule` は LLM 評価へフォールバックする——「決定的に見ているつもりが自己申告で
 決まっていた」に静かに戻る。**この組み合わせは検証エラーにする**（投入前に落ちる）。
 
+#### 編集対象の割付 — `write`（agent-loop の headless 実行）
+
+定型の事前分解では、そのステートが編集するファイルまで決まっている。`write` に宣言すると、
+agent-loop の headless ハーネスは制御周（「次の一手」をモデルに訊く周）を挟まず、
+最初から編集 CLI をそのファイルへ向けて呼ぶ。
+
+```yaml
+states:
+  implement:
+    action_file: actions/implement.md
+    write: src/humansize.py            # 文字列またはリスト
+    check: "python3 -m pytest tests/ -q"
+```
+
+割付は制御席のモデルに訊く仕事ではない——訊くと小型モデルは pytest 実行や pip install の
+調査ループで周を使い切る（実機再測 2026-08-15 の失敗機序）。検査（check）だけを材料に
+遷移するステートでは、編集 CLI が契約文を返さず黙って直しても、書込完了を機械契約で
+受理して check に判定を委ねる。検査の再投入も同様に、前の試行が書いたファイルへの
+編集から直接入る。
+
 ### アクションの自動探索
 
 `action` も `action_file` も指定されていない場合、`actions/{state_id}.md` が存在すれば自動で読み込む。

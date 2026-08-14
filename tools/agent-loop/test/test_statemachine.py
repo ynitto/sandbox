@@ -1144,6 +1144,163 @@ class CheckGateTest(unittest.TestCase):
         self.assertIn("check failed", retry_prompt)
         self.assertNotIn("attempts=1", retry_prompt, "真偽だけで動かす選択肢を残す")
 
+    def test_silent_write_completes_when_check_is_the_material(self):
+        # 検査だけを材料に遷移するステートでは、契約文を返さない編集 CLI（黙って直す）の
+        # 完了済み書込を受理して check へ進む。書式契約で落とすと P1 の検査まで到達しない
+        # （実機再測 2026-08-15 で T1 実装ステートがここで落ちた）。
+        workflow = self._workflow(passes_on=1, retries=0)
+        out = os.path.join(self.repo, "out.txt")
+
+        def control(*_args, **_kwargs):
+            pathlib.Path(self.counter).write_text("1", encoding="utf-8")
+            return json.dumps({"type": "write_files", "paths": ["out.txt"]})
+
+        def editor(*_args, **_kwargs):
+            pathlib.Path(out).write_text("done\n", encoding="utf-8")
+            return ""
+
+        with mock.patch.object(al, "_SM_MAX_TOOL_ROUNDS", 1), \
+                mock.patch.object(al, "_sm_run_control", side_effect=control), \
+                mock.patch.object(al, "_tl_run_agent", side_effect=editor):
+            result = al.run_statemachine(workflow_path=workflow, cwd=self.repo,
+                                         parameters={}, agent={})
+
+        self.assertTrue(result["ok"], result.get("error"))
+        self.assertEqual(result["finalState"], "done")
+        self.assertEqual(pathlib.Path(out).read_text(encoding="utf-8"), "done\n")
+        events = [json.loads(line) for line
+                  in pathlib.Path(result["logFile"]).read_text(encoding="utf-8").splitlines()]
+        writes = [e for e in events if e.get("event") == "write_completed"]
+        self.assertEqual([e.get("contractSource") for e in writes], ["machine"])
+        self.assertEqual([e.get("check_ok") for e in events if e.get("event") == "check"],
+                         ["true"], "受理した書込はそのまま check で測られる")
+
+    def test_check_retry_reinvokes_editor_directly(self):
+        # 検査の再投入は制御周（次の一手を訊く）を挟まず、前の試行が書いたファイルへの
+        # 編集から入る。小型モデルの制御周は再投入で調査ループに落ちて周を使い切る
+        # （実機再測 2026-08-15 の失敗機序＝ハーネス模擬 T1gate との差分）。
+        out = os.path.join(self.repo, "out.txt")
+        script = pathlib.Path(self.repo, "check.py")
+        script.write_text(
+            "import pathlib, sys\n"
+            f"p = pathlib.Path({out!r})\n"
+            "ok = p.exists() and p.read_text().startswith('fixed')\n"
+            "sys.exit(0 if ok else 1)\n", encoding="utf-8")
+        check = json.dumps([sys.executable, str(script)])
+        (self.machine / "workflow.yaml").write_text("\n".join([
+            "name: gated",
+            "initial_state: work",
+            "config:",
+            "  max_steps: 3",
+            "states:",
+            "  work:",
+            "    action_file: actions/work.md",
+            '    output_validator: "startswith:OK"',
+            f"    check: {check}",
+            "    check_retries: 1",
+            "  done:",
+            "    terminal: true",
+            "transitions:",
+            "  - from: work",
+            "    to: done",
+            '    condition_rule: "equals:check_ok:true"',
+            "",
+        ]), encoding="utf-8")
+        controls: list = []
+        edits: list = []
+
+        def control(*args, **_kwargs):
+            controls.append(args)
+            return json.dumps({"type": "write_files", "paths": ["out.txt"]})
+
+        def editor(*args, **_kwargs):
+            edits.append(args)
+            pathlib.Path(out).write_text("fixed\n" if len(edits) > 1 else "draft\n",
+                                         encoding="utf-8")
+            return ""
+
+        with mock.patch.object(al, "_SM_MAX_TOOL_ROUNDS", 2), \
+                mock.patch.object(al, "_sm_run_control", side_effect=control), \
+                mock.patch.object(al, "_tl_run_agent", side_effect=editor):
+            result = al.run_statemachine(
+                workflow_path=str(self.machine / "workflow.yaml"),
+                cwd=self.repo, parameters={}, agent={})
+
+        self.assertTrue(result["ok"], result.get("error"))
+        self.assertEqual(result["finalState"], "done")
+        self.assertEqual(len(controls), 1, "再投入は制御周を挟まず編集へ直行する")
+        self.assertEqual(len(edits), 2)
+        self.assertEqual(pathlib.Path(out).read_text(encoding="utf-8"), "fixed\n")
+
+    def test_declared_write_seeds_editor_without_control_round(self):
+        # 定型の事前分解はファイル割付まで決めてある。`write:` を宣言したステートは
+        # 制御周を挟まず編集 CLI へ直行する——割付は制御席のモデルに訊く仕事ではない
+        # （訊くと小型モデルは pytest / pip install の調査ループで周を使い切る）。
+        out = os.path.join(self.repo, "out.txt")
+        script = pathlib.Path(self.repo, "check.py")
+        script.write_text(
+            "import pathlib, sys\n"
+            f"sys.exit(0 if pathlib.Path({out!r}).exists() else 1)\n", encoding="utf-8")
+        check = json.dumps([sys.executable, str(script)])
+        (self.machine / "workflow.yaml").write_text("\n".join([
+            "name: gated",
+            "initial_state: work",
+            "config:",
+            "  max_steps: 3",
+            "states:",
+            "  work:",
+            "    action_file: actions/work.md",
+            "    write: out.txt",
+            '    output_validator: "startswith:OK"',
+            f"    check: {check}",
+            "    check_retries: 1",
+            "  done:",
+            "    terminal: true",
+            "transitions:",
+            "  - from: work",
+            "    to: done",
+            '    condition_rule: "equals:check_ok:true"',
+            "",
+        ]), encoding="utf-8")
+        controls: list = []
+
+        def control(*args, **_kwargs):
+            controls.append(args)
+            return json.dumps({"type": "final", "output": "OK"})
+
+        def editor(*_args, **_kwargs):
+            pathlib.Path(out).write_text("done\n", encoding="utf-8")
+            return ""
+
+        with mock.patch.object(al, "_SM_MAX_TOOL_ROUNDS", 2), \
+                mock.patch.object(al, "_sm_run_control", side_effect=control), \
+                mock.patch.object(al, "_tl_run_agent", side_effect=editor):
+            result = al.run_statemachine(
+                workflow_path=str(self.machine / "workflow.yaml"),
+                cwd=self.repo, parameters={}, agent={})
+
+        self.assertTrue(result["ok"], result.get("error"))
+        self.assertEqual(result["finalState"], "done")
+        self.assertEqual(len(controls), 0, "割付宣言があれば制御周は要らない")
+
+    def test_retry_action_failure_escalates(self):
+        # 再投入がアクションを完走できない（契約不成立）のは「この段では直せない」——
+        # run 全体のエラーでなく上限到達として escalate で返す。
+        workflow = self._workflow(passes_on=99, retries=1)
+        responses = iter(['{"type":"final","output":"OK"}'])
+
+        def fake_agent(*args, **_kwargs):
+            pathlib.Path(self.counter).write_text("1", encoding="utf-8")
+            return next(responses, "garbage")
+
+        with mock.patch.object(al, "_SM_MAX_TOOL_ROUNDS", 1), \
+                mock.patch.object(al, "_tl_run_agent", side_effect=fake_agent):
+            result = al.run_statemachine(workflow_path=workflow, cwd=self.repo,
+                                         parameters={}, agent={})
+
+        self.assertFalse(result["ok"])
+        self.assertTrue(result.get("escalate"), "アクション不成立の再投入も昇格シグナルで返る")
+
     def test_self_reported_success_cannot_satisfy_a_failing_check(self):
         # P1 の核心。「OK」と書いても、測った事実が伴わなければ先へ進まない。
         result, _calls = self._run(self._workflow(passes_on=99, retries=0),

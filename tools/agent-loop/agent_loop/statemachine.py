@@ -195,6 +195,25 @@ def _sm_max_attempts(state: dict) -> int:
     return max(1, retries + 1)
 
 
+def _sm_check_only_transitions(workflow: dict, state_id: str) -> bool:
+    """state からの遷移がすべて check_* キーだけを材料にしているか。
+
+    1 つでも last_output / output_key を読む遷移があれば False——そこでは
+    モデルの書いた本文が遷移材料なので、機械が本文を合成してはいけない。
+    """
+    found = False
+    for transition in workflow.get("transitions", []):
+        if not isinstance(transition, dict) or transition.get("from") != state_id:
+            continue
+        found = True
+        rule = str(transition.get("condition_rule") or "").strip()
+        for clause in filter(None, (part.strip() for part in rule.split(";"))):
+            parts = clause.split(":")
+            if len(parts) < 3 or not parts[1].strip().startswith("check_"):
+                return False
+    return found
+
+
 def _sm_write_success_output(*, workflow_path: str, state_id: str, state: dict,
                              validator, files: set, cwd: str) -> str:
     """一意な成功遷移がある単一ファイル書込の結果を機械的に作る。"""
@@ -202,11 +221,18 @@ def _sm_write_success_output(*, workflow_path: str, state_id: str, state: dict,
     if not rule.startswith("startswith:") or len(files) != 1:
         return ""
     prefixes = [value.strip() for value in rule[len("startswith:"):].split(",")]
+    workflow = _sm_load_workflow_dict(workflow_path)
+    file = next(iter(files))
+    # 検査（check）だけを材料に遷移するステートでは、書式契約は check へ進む口でしか
+    # ない——成否を語るのはハーネスが実行する検査の exit code。編集層は黙って直すのが
+    # 普通なので、契約の欠けた完了済み書込をここで落とすと check まで到達しない。
+    # 合成する本文は先頭の宣言接頭辞（遷移はどの接頭辞でも読まない）。
+    if state.get("check") and _sm_check_only_transitions(workflow, state_id):
+        return f"{prefixes[0]}\npath: {os.path.relpath(file, cwd)}"
     keys = {"last_output"}
     if _sm_scalar(state.get("output_key")):
         keys.add(_sm_scalar(state.get("output_key")))
     successful = set()
-    workflow = _sm_load_workflow_dict(workflow_path)
     for transition in workflow.get("transitions", []):
         if not isinstance(transition, dict) or transition.get("from") != state_id:
             continue
@@ -217,13 +243,12 @@ def _sm_write_success_output(*, workflow_path: str, state_id: str, state: dict,
                           if any(f"startswith:{key}:{prefix}" in clauses for key in keys))
     if len(successful) != 1:
         return ""  # 分類など複数の正常遷移はモデルの判断を捏造しない。
-    file = next(iter(files))
     return f"{successful.pop()}\npath: {os.path.relpath(file, cwd)}"
 
 
 def _sm_execute_action(*, workflow_path: str, state_id: str, state: dict, context: dict,
                        cwd: str, agent: dict, log_file: str, touched: set,
-                       check_note: str = "") -> str:
+                       check_note: str = "", retry_paths: "list[str] | None" = None) -> str:
     action = _sm_workflow_action(workflow_path, state_id, state)
     rendered = _sm_render_template(action["text"], context)
     if check_note:
@@ -249,36 +274,56 @@ def _sm_execute_action(*, workflow_path: str, state_id: str, state: dict, contex
     successful_runs: set = set()
     provided_reads: set = set()
 
+    # 編集対象の割付。優先は (1) 検査の再投入なら前の試行が書いたファイル（契約の path 行）、
+    # (2) state の `write:` 宣言（定型の事前分解はファイル割付まで決めてある——worker_eval の
+    # steps[].files と同じ考え方で、割付は制御席のモデルに訊く仕事ではない）。
+    declared = state.get("write")
+    declared = [declared] if isinstance(declared, str) else list(declared or [])
+    seed_paths = [str(p) for p in ((retry_paths if check_note and retry_paths else None)
+                                   or declared) if str(p).strip()]
+    seeded = False
     for attempt in range(max_attempts):
         history: list[str] = []
         evidence: set = set()
         for _round in range(_SM_MAX_TOOL_ROUNDS):
-            retry = (f"Retry {attempt}/{max_attempts - 1}: the previous output violated "
-                     "the Output Contract." if attempt else "")
-            # 制御応答（次の一手の JSON）は編集能力の要らない周。定義が申告していれば
-            # JSON 用の変種へ振り替える（run_goal と同じ口を使う——C7）。
-            raw = _sm_run_control(_tl_control_agent(agent, cwd), _sm_planner_prompt(
-                action=rendered, cwd=cwd, skills=skills, reads=sorted(reads),
-                history=history, retry=retry,
-            ), cwd=cwd, read_files=sorted(reads), log_file=log_file)
-            try:
-                parsed = _sm_parse_tool_request(raw)
-            except StateMachineHarnessError as exc:
-                # ツール要求ですらない = 素の本文。Output Contract を満たすならそれが答え。
-                contract = _sm_validated_output(raw, validator)
-                if contract and not _sm_final_evidence_error(raw, cwd, evidence, touched):
-                    return contract
-                history.append("TOOL_RESULT " + json.dumps(
-                    {"rejected": True, "error": str(exc)}, ensure_ascii=False))
-                continue
-            try:
-                request = _sm_validate_tool_request(parsed, cwd, skills)
-            except StateMachineHarnessError as exc:
-                # 拒否されたツール要求は「やらなかった」であって成功ではない。JSON の中身が
-                # たまたま Output Contract の形をしていても、契約文として拾わない。
-                history.append("TOOL_RESULT " + json.dumps(
-                    {"rejected": True, "error": str(exc)}, ensure_ascii=False))
-                continue
+            request = None
+            if seed_paths and not seeded and not attempt:
+                # 編集の周から入る（制御周スキップ）。制御席へ「次の一手」を訊くと、
+                # 小型モデルは pytest 実行や pip install の調査ループで周を使い切る
+                # （実機再測 2026-08-15 の失敗機序）。割付が宣言済みなら訊く必要がない。
+                seeded = True
+                try:
+                    request = {"type": "write_files",
+                               "paths": [_sm_project_path(cwd, p) for p in seed_paths]}
+                except StateMachineHarnessError:
+                    request = None
+            if request is None:
+                retry = (f"Retry {attempt}/{max_attempts - 1}: the previous output violated "
+                         "the Output Contract." if attempt else "")
+                # 制御応答（次の一手の JSON）は編集能力の要らない周。定義が申告していれば
+                # JSON 用の変種へ振り替える（run_goal と同じ口を使う——C7）。
+                raw = _sm_run_control(_tl_control_agent(agent, cwd), _sm_planner_prompt(
+                    action=rendered, cwd=cwd, skills=skills, reads=sorted(reads),
+                    history=history, retry=retry,
+                ), cwd=cwd, read_files=sorted(reads), log_file=log_file)
+                try:
+                    parsed = _sm_parse_tool_request(raw)
+                except StateMachineHarnessError as exc:
+                    # ツール要求ですらない = 素の本文。Output Contract を満たすならそれが答え。
+                    contract = _sm_validated_output(raw, validator)
+                    if contract and not _sm_final_evidence_error(raw, cwd, evidence, touched):
+                        return contract
+                    history.append("TOOL_RESULT " + json.dumps(
+                        {"rejected": True, "error": str(exc)}, ensure_ascii=False))
+                    continue
+                try:
+                    request = _sm_validate_tool_request(parsed, cwd, skills)
+                except StateMachineHarnessError as exc:
+                    # 拒否されたツール要求は「やらなかった」であって成功ではない。JSON の中身が
+                    # たまたま Output Contract の形をしていても、契約文として拾わない。
+                    history.append("TOOL_RESULT " + json.dumps(
+                        {"rejected": True, "error": str(exc)}, ensure_ascii=False))
+                    continue
             if request["type"] == "run":
                 script = os.path.realpath(request["command"])
                 if request["args"] and os.path.realpath(request["args"][0]) in skill_scripts:
@@ -641,11 +686,21 @@ def run_statemachine(*, workflow_path: str, cwd: str, parameters: "dict | None" 
         attempts = gate["retries"] + 1 if gate["check"] else 1
         checked: "dict | None" = None
         note = ""
+        retry_paths: list = []
         for attempt in range(attempts):
-            last_output = _sm_execute_action(
-                workflow_path=workflow_file, state_id=current, state=state, context=context,
-                cwd=root, agent=agent, log_file=log_file, touched=touched,
-                check_note=note).strip()
+            try:
+                last_output = _sm_execute_action(
+                    workflow_path=workflow_file, state_id=current, state=state, context=context,
+                    cwd=root, agent=agent, log_file=log_file, touched=touched,
+                    check_note=note, retry_paths=retry_paths).strip()
+            except StateMachineHarnessError:
+                if not attempt or not gate["check"]:
+                    raise
+                # 検査の再投入がアクションを完走できなかった＝この段では直せない。run 全体の
+                # 失敗ではなく上限到達として数え、escalate の口（下の check_exhausted）へ流す。
+                _sm_append_log(log_file, {"event": "retry_action_failed", "state": current,
+                                          "attempt": attempt + 1})
+                continue
             if not gate["check"]:
                 break
             checked = _sm_run_check(gate["check"], state_id=current, cwd=root,
@@ -653,6 +708,8 @@ def run_statemachine(*, workflow_path: str, cwd: str, parameters: "dict | None" 
             if checked["ok"] or attempt == attempts - 1:
                 break
             note = _sm_check_note(checked, attempt + 1, attempts, feedback=gate["feedback"])
+            # 再投入は前の試行が書いたファイルへの編集から入る（成果の所在は契約の path 行）。
+            retry_paths = re.findall(r"^path:\s*(.+?)\s*$", last_output, re.I | re.M)
         context["last_output"] = last_output
         context["step_count"] = step + 1
         context["history"][current] = last_output

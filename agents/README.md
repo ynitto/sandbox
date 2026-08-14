@@ -107,6 +107,7 @@ chat モードのように、人が `/skill-name` と書いたテキストを送
 | `ollama-json.json` | 同上 + `--format json` | enforced（道具なし。JSON 契約の役割用） |
 | `ollama-list.json` | 同上 + `--format array` | enforced（道具なし。配列契約＝split 用） |
 | `ollama-read.json` | 同上 + `--tools read` | enforced（write でも読み取り専用コマンドだけ） |
+| `ollama-verify.json` | 同上 + `--format json --stall-timeout 180` | enforced（道具なし。テキスト検証役。既定 gemma4:12b——負けは全部タイムアウトなので stall + transient 分類の再投入で受け、コード worker の候補には入れない） |
 | `opencode.json` | `opencode run`（`agent-opencode` 経由） | best-effort（`--agent plan` は edit を拒むが bash は拒まない） |
 
 `opencode.json` だけは本体（`opencode`）を直接呼ばず `agent-opencode`（tools/opencode）を
