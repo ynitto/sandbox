@@ -95,23 +95,22 @@ def check_t1min(wt: Path) -> tuple[bool, str]:
     return ok, note
 
 
-def probe_humansize(wt: Path) -> tuple[bool, str]:
-    """仕様 6 ケースを実際に呼んで突き合わせる。合否と**機械が出した不一致**を返す。
+def _probe_cases(wt: Path, module: str, func: str, cases: list) -> tuple[bool, str]:
+    """仕様ケースを実際に呼んで突き合わせる。合否と**機械が出した不一致**を返す。
 
     チェッカーと多段セルのゲートが同じ 1 実装を見る（C7）。ゲートが返す不一致は
-    課題文がすでに列挙している 6 例そのものなので、仕様を機械化しただけで、
+    課題文がすでに列挙している例そのものなので、仕様を機械化しただけで、
     一発版に無い情報を多段版へ足してはいない——ここがずれると比較が成立しない。
     """
-    mod = wt / "eval" / "humansize.py"
+    mod = wt / "eval" / f"{module}.py"
     if not mod.exists():
-        return False, "eval/humansize.py が無い"
+        return False, f"eval/{module}.py が無い"
     probe = wt / "_probe.py"
     probe.write_text(
         "import sys; sys.path.insert(0, 'eval')\n"
-        "from humansize import human_bytes as h\n"
-        "cases = [(0,'0 B'),(512,'512 B'),(1024,'1.0 KiB'),(1536,'1.5 KiB'),\n"
-        "         (1048576,'1.0 MiB'),(1073741824,'1.0 GiB')]\n"
-        "bad = [(n, h(n), want) for n, want in cases if h(n) != want]\n"
+        f"from {module} import {func} as f\n"
+        f"cases = {cases!r}\n"
+        "bad = [(n, f(n), want) for n, want in cases if f(n) != want]\n"
         "print('BAD' if bad else 'OK', bad)\n", encoding="utf-8")
     r = subprocess.run([str(VENV_PY), "_probe.py"], cwd=wt,
                        capture_output=True, text=True, timeout=60)
@@ -120,7 +119,22 @@ def probe_humansize(wt: Path) -> tuple[bool, str]:
         return False, f"import/実行が失敗: {r.stderr.strip().splitlines()[-1:] }"
     if not r.stdout.startswith("OK"):
         return False, f"振る舞いが仕様と違う: {r.stdout.strip()[:200]}"
-    return True, "仕様 6 ケース pass"
+    return True, f"仕様 {len(cases)} ケース pass"
+
+
+HUMANSIZE_CASES = [(0, "0 B"), (512, "512 B"), (1024, "1.0 KiB"), (1536, "1.5 KiB"),
+                   (1048576, "1.0 MiB"), (1073741824, "1.0 GiB")]
+DURATION_CASES = [(0, "0s"), (45, "45s"), (600, "10m"), (3600, "1h"),
+                  (5400, "1h30m"), (125, "2m5s"), (3630, "1h30s")]
+
+
+def probe_humansize(wt: Path) -> tuple[bool, str]:
+    return _probe_cases(wt, "humansize", "human_bytes", HUMANSIZE_CASES)
+
+
+def probe_duration(wt: Path) -> tuple[bool, str]:
+    """T4 のゲート。humansize と同型の省略規則（0 の単位は書かない）を別の関数で試す。"""
+    return _probe_cases(wt, "duration", "format_duration", DURATION_CASES)
 
 
 def check_t1(wt: Path, require_tests: bool = True) -> tuple[bool, str]:
@@ -140,14 +154,19 @@ def check_t1(wt: Path, require_tests: bool = True) -> tuple[bool, str]:
     return True, f"仕様 6 ケース pass / テスト {len(tests)} ファイル pass"
 
 
-def gate_blind(wt: Path) -> tuple[bool, str]:
-    """合否は同じ probe で決めるが、**測った不一致は渡さない**ゲート。
+def blind(gate) -> "callable":
+    """合否は同じゲートで決めるが、**測った不一致は渡さない**対照用ラッパー。
 
-    「1 回やり直させれば直る」のか「機械が測った値を見せて初めて直る」のかを分ける
-    対照。ここが前者なら、statemachine に検査コマンドを足す設計は要らない。
+    「1 回やり直させれば直る」のか「機械が測った値を見せて初めて直る」のかを分ける。
+    前者なら、statemachine の検査に診断の受け渡しは要らない（真偽で足りる）。
     """
-    ok, note = probe_humansize(wt)
-    return ok, note if ok else "仕様を満たしていない。実装を見直して直すこと。"
+    def g(wt: Path) -> tuple[bool, str]:
+        ok, note = gate(wt)
+        return ok, note if ok else "仕様を満たしていない。実装を見直して直すこと。"
+    return g
+
+
+gate_blind = blind(probe_humansize)
 
 
 def gate_humansize_tests(wt: Path) -> tuple[bool, str]:
@@ -222,6 +241,24 @@ def check_t2(wt: Path) -> tuple[bool, str]:
     return True, "テスト無改変で 3 件 pass"
 
 
+def gate_billing(wt: Path) -> tuple[bool, str]:
+    """T2 のゲート。ズル検査を先に通し、pytest の落ちた尾を診断として返す。
+
+    チェッカー check_t2 と同じ 2 点（無改変・pass）を見る（C7）。診断はテストの
+    失敗出力そのもので、課題文が「テストが仕様の正」と言っている以上の情報は無い。
+    """
+    tf = wt / "eval" / "test_billing.py"
+    if not tf.exists() or hashlib.sha256(tf.read_bytes()).hexdigest() != hashlib.sha256(
+            BILLING_TEST.encode("utf-8")).hexdigest():
+        return False, ("eval/test_billing.py を変更している。テストが仕様の正なので"
+                       "元の内容へ戻し、eval/billing.py だけを直すこと。")
+    r = _pytest(wt / "eval", "test_billing.py")
+    if r.returncode != 0:
+        tail = [l for l in r.stdout.splitlines() if l.strip()][-12:]
+        return False, "テストが落ちている:\n" + "\n".join(tail)
+    return True, "テスト 3 件 pass"
+
+
 def seed_t3(wt: Path) -> None:
     pass
 
@@ -268,6 +305,28 @@ T1_TEST_GOAL = ("既にある eval/humansize.py の human_bytes に対する単�
                 "eval/test_humansize.py に追加する。実装は変更しない。"
                 "テストは pytest で実行でき、すべて通ること。"
                 "eval/test_humansize.py 以外は一切変更しない。")
+# T4: humansize と別の関数・別のバグ族（文字列組み立ての省略規則）で、
+# 「初回が決定的に同じ壊れ方をする」性質が課題固有かを測る。文面の作りは
+# T1_IMPL_GOAL と同じ（単一ファイル・仕様例の列挙・テスト無し）。
+T4_IMPL_GOAL = ("eval/duration.py というファイルを 1 つだけ作り、その中に関数 "
+                "format_duration(n: int) -> str を実装する。仕様は次のとおり: "
+                "秒数を h / m / s の単位へ分解し 'XhYmZs' の形で出す。値が 0 の単位は"
+                "書かない。n が 0 のときだけ '0s' を返す。"
+                "例: format_duration(0)=='0s'、format_duration(45)=='45s'、"
+                "format_duration(600)=='10m'、format_duration(3600)=='1h'、"
+                "format_duration(5400)=='1h30m'、format_duration(125)=='2m5s'、"
+                "format_duration(3630)=='1h30s'。"
+                "テストは書かなくてよい。このファイル以外は一切変更しない。")
+T2_REQUEST = "課金計算の不具合を直す"
+T2_GOAL = ("eval/test_billing.py が失敗している。eval/billing.py の実装を直して "
+           "3 件すべて通るようにする。**テストファイルは変更しないこと**"
+           "（テストが仕様の正）。eval/ 以外は変更しない。")
+T3_REQUEST = ("node-budget-summary スキーマを追加し status/<node>.json へ埋め込む。"
+              "Phase1 の前提である射影 schema を先に固定し、互換性テストで安全に出すため。")
+T3_GOAL = ("schemas/node-budget-summary.schema.json を追加し、status/<node>.json の "
+           "budget block に additive に埋める仕様を定義する。reader が optional で"
+           "壊れない互換性を担保する契約テストを tools/agent-project 配下に追加する。"
+           "変更してよいのは tools/agent-project 配下とリポジトリルートの schemas/ のみ。")
 
 TASKS = {
     "T1": dict(
@@ -327,22 +386,61 @@ TASKS = {
         # aider 経路でだけ使う（--test-cmd + --auto-test）。agent-ollama 経路は
         # プロンプトでテスト実行を指示しており、道具の作法がそれぞれ違う。
         test_cmd=f"{VENV_PY} -m pytest -q eval/test_billing.py",
-        request="課金計算の不具合を直す",
-        goal=("eval/test_billing.py が失敗している。eval/billing.py の実装を直して "
-              "3 件すべて通るようにする。**テストファイルは変更しないこと**"
-              "（テストが仕様の正）。eval/ 以外は変更しない。"),
+        request=T2_REQUEST, goal=T2_GOAL,
     ),
     "T3": dict(
         seed=seed_t3, check=check_t3,
         # 実タスクなので置き場所の探索が要る。ここだけリポジトリマップに予算を与える。
         files=("schemas/node-budget-summary.schema.json",), map_tokens=1024,
         test_cmd=f"{VENV_PY} -m pytest -q tools/agent-project",
-        request=("node-budget-summary スキーマを追加し status/<node>.json へ埋め込む。"
-                 "Phase1 の前提である射影 schema を先に固定し、互換性テストで安全に出すため。"),
-        goal=("schemas/node-budget-summary.schema.json を追加し、status/<node>.json の "
-              "budget block に additive に埋める仕様を定義する。reader が optional で"
-              "壊れない互換性を担保する契約テストを tools/agent-project 配下に追加する。"
-              "変更してよいのは tools/agent-project 配下とリポジトリルートの schemas/ のみ。"),
+        request=T3_REQUEST, goal=T3_GOAL,
+    ),
+    # --- 追試（分解レポート 2026-08-13 の未検証を潰すアーム群）
+    # (1) ゲート + 再投入の一般化: バグ修正（T2*）・実課題（T3gate）・別実装課題（T4*）
+    # (2) auto-test 交絡の切り分け: T2noat は --auto-test 無しの素の一発
+    # (3) 「初回が決定的に同じ壊れ方」の固有性: T4 初回の gate_note を突き合わせる
+    # ゲート付き T2 アームは test_cmd を持たない（aider 内部のオラクルを切り、
+    # ハーネスのゲートだけを検査に残す）。
+    "T2noat": dict(
+        seed=seed_t2, check=check_t2,
+        files=("eval/billing.py",), read=("eval/test_billing.py",),
+        request=T2_REQUEST, goal=T2_GOAL,
+    ),
+    "T2gate": dict(
+        seed=seed_t2, check=check_t2, request=T2_REQUEST,
+        steps=[dict(request=T2_REQUEST, goal=T2_GOAL,
+                    files=("eval/billing.py",), read=("eval/test_billing.py",),
+                    gate=gate_billing, max_retries=2)],
+    ),
+    "T2blind": dict(
+        seed=seed_t2, check=check_t2, request=T2_REQUEST,
+        steps=[dict(request=T2_REQUEST, goal=T2_GOAL,
+                    files=("eval/billing.py",), read=("eval/test_billing.py",),
+                    gate=blind(gate_billing), max_retries=2)],
+    ),
+    "T4min": dict(
+        seed=seed_t1, check=probe_duration,
+        files=("eval/duration.py",),
+        request=T1_REQUEST, goal=T4_IMPL_GOAL,
+    ),
+    "T4gate": dict(
+        seed=seed_t1, check=probe_duration, request=T1_REQUEST,
+        steps=[dict(request=T1_REQUEST, goal=T4_IMPL_GOAL, files=("eval/duration.py",),
+                    gate=probe_duration, max_retries=2)],
+    ),
+    "T4blind": dict(
+        seed=seed_t1, check=probe_duration, request=T1_REQUEST,
+        steps=[dict(request=T1_REQUEST, goal=T4_IMPL_GOAL, files=("eval/duration.py",),
+                    gate=blind(probe_duration), max_retries=2)],
+    ),
+    # 実課題でゲート + 再投入が効くか。argv は一発版 T3 と同一（auto-test 込み）で、
+    # 差はゲートと再試行だけ。診断はチェッカーの C1/C3 fail 文そのもの。
+    "T3gate": dict(
+        seed=seed_t3, check=check_t3, request=T3_REQUEST,
+        steps=[dict(request=T3_REQUEST, goal=T3_GOAL,
+                    files=("schemas/node-budget-summary.schema.json",), map_tokens=1024,
+                    test_cmd=f"{VENV_PY} -m pytest -q tools/agent-project",
+                    gate=check_t3, max_retries=2)],
     ),
 }
 
