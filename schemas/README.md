@@ -12,8 +12,10 @@ agent-project・agent-flow・codd-gate・agent-amigos が**データ契約だけ
 | [`verification-plan.schema.json`](verification-plan.schema.json) | 統一 verify の検証計画 — 受入基準（自然文 criterion・出現順 C1, C2, … 採番）＋任意の固定検証コマンドを canonical JSON の SHA-256 digest 付きで直列化。agent-project が確定し、agent-flow の専用 runner が成果 revision 上で一度だけ実行する | 共有（本ディレクトリが正典。設計は `docs/plans/2026-07-30-unified-task-verify-design.md`。digest・採番の 1 実装は `agentcore/verifycontract.py`） |
 | [`verification-receipt.schema.json`](verification-receipt.schema.json) | 統一 verify の receipt — plan digest・result revision・command 終了コード・criterion ごとの verdict（pass / fail / inconclusive）と証拠。agent-project が検算し、一致した PASS だけを done 候補に採用（fail-close）。他ノードへの検証委譲（external.json）も同じ schema | 共有（本ディレクトリが正典。全体判定の再導出と検算は `agentcore/verifycontract.py` の `receipt_overall` / `receipt_errors`） |
 | [`node-budget.schema.json`](node-budget.schema.json) | ノード単位の予算 v2 — トークン一次（実行時間上限は v1 互換で AND）＋配分宣言（`$AGENT_BUDGET_DIR`＝既定 `~/.agents/budget/` の config.json ＋ ledger/<YYYYMMDD>.jsonl） | 共有（本ディレクトリが正典。初出は agent-amigos 設計書 §6.2、v2 は `docs/plans/2026-07-19-agent-dashboard-orchestration-token-budget-design.md`） |
-| [`agent-control.schema.json`](agent-control.schema.json) | 管理面→各エンジンの宣言的オーケストレーション（`$AGENT_CONTROL_DIR`＝既定 `~/.agents/control/` の control.json ＋ status/<tool>-<pid>.json）。エージェント CLI / モデルの横断上書き・縮退・一時停止 / 停止・委譲誘導。優先順位は control > CLI 引数 > 設定ファイル > 組み込み既定 | 共有（本ディレクトリが正典。設計は `docs/plans/2026-07-19-agent-dashboard-orchestration-token-budget-design.md`） |
+| [`agent-control.schema.json`](agent-control.schema.json) | 管理面→各エンジンの宣言的オーケストレーション（`$AGENT_CONTROL_DIR`＝既定 `~/.agents/control/` の control.json ＋ status/<tool>-<pid>.json）。エージェント CLI / モデルの横断上書き・縮退・一時停止 / 停止・委譲誘導。優先順位は control > CLI 引数 > 設定ファイル > 組み込み既定。version 2 で `workloads.<wl>.selection_policy`（候補ベースのコンパイル済み選択方針）を additive に追加 | 共有（本ディレクトリが正典。設計は `docs/plans/2026-07-19-agent-dashboard-orchestration-token-budget-design.md`、selection_policy は `docs/plans/2026-08-15-agent-tools-candidate-execution-policy-dashboard-design.md` §6.3） |
 | [`agent-profiles.schema.json`](agent-profiles.schema.json) | agent-dashboard 専有の実行プロファイル自動選択（`$AGENT_CONTROL_DIR` の profiles.json）。単純作業/軽量/標準/高性能の実行レベル別に候補（agent_cli+model）を宣言し、ワークロードの予算残率（node-budget）と agent CLI ごとの枠（`node-budget` の `allocation.agents`）から純関数でレベルと候補を決定し、agent-control へ選択結果だけを投函する。**不変条件: エンジンはこの契約を読まない**。書き手は agent-dashboard と、実測から候補列を昇格・退役させる `agent-audit tune --apply`（`tiers.<name>.candidates` だけ）の 2 つ | agent-dashboard（本ディレクトリが正典。設計は `docs/plans/2026-08-05-phase1-token-efficiency-detailed-design.md` §1、還流は `docs/designs/agent-audit-design.md` §5.4） |
+| [`agent-candidate-qualifications.schema.json`](agent-candidate-qualifications.schema.json) | 候補適格性 — 実行候補（`agent_cli + model`）×処理種別の実測格付け（qualified / trial / blocked / unknown）と、昇格条件を所有する version 付き evaluation profile。**管理面専用でエンジンは読まない**。writer は agent-audit のみ（revision 付き原子的置換）、readers は agent-dashboard / Resource Controller / Execution Policy Compiler | agent-audit（本ディレクトリが正典。検証の 1 実装は `agentcore/executioncontract.py`。設計は `docs/plans/2026-08-15-agent-tools-candidate-execution-policy-dashboard-design.md` §6.2） |
+| [`execution-receipt.schema.json`](execution-receipt.schema.json) | 実行 receipt 共通ブロック — flow result / loop run / amigos turn / audit call へ加算的に埋め込む「どの候補が・なぜ選ばれ・検査がどうなったか」（execution_decision / verification / resource_snapshot）。append-only。Dashboard と agent-audit は設定から実モデルを再推測せず、この receipt を正典にする | 共有（本ディレクトリが正典。writer は実行した各 Adapter だけ。検証の 1 実装は `agentcore/executioncontract.py`。設計は同上 §6.5） |
 | [`agent-instructions.schema.json`](agent-instructions.schema.json) | 管理面→各エンジンのノード共通指示（`$AGENT_INSTRUCTIONS_DIR`＝既定 `~/.agents/instructions/` の instructions.json）。指示文・推奨スキル（名前参照）・ツール方針を各エンジンが決定的に描画して実行エージェントのプロンプトへ前置。agent-flow は run の meta.json スナップショットで委譲先ノードへ伝播。適用状況は agent-control status の `instructions_revision_applied` に相乗り。最弱の層（タスク > brief > charter/rules > 共通指示） | 共有（本ディレクトリが正典。設計は `docs/plans/2026-07-19-agent-dashboard-global-instructions-design.md`） |
 | [`agent-session-commands.schema.json`](agent-session-commands.schema.json) | 管理面→各エンジンのセッション開始コマンド（`$AGENT_SESSION_DIR`＝既定 `~/.agents/session/` の session.json）。セッションが始まった直後に配列順で 1 回だけ実行する前準備。`process` はホストのシェルで実行して完了を待ち、`chat` はセッションへ最初のプロンプトとして送る（単発系にはセッションが無いのでスキップ）。`when` で engines / workloads / agent_cli を絞れる。適用状況は agent-control status の `session_commands_revision_applied` に相乗り。**agent-instructions と違い委譲先ノードへ伝播しない** — 副作用のあるコマンドの到達範囲を各ノードのローカル設定へ閉じ込める | 共有（本ディレクトリが正典。設計は `docs/plans/2026-07-20-agent-dashboard-session-commands-design.md`） |
 | [`agent-tuning.schema.json`](agent-tuning.schema.json) | agent-loop の汎用注入・起動環境と、agent-flow / agent-loop の手法パック・2 variant trial（`$AGENT_TUNING_DIR`＝既定 `~/.agents/tuning/` の tuning.json）。`methods[].when` は engine / workload / CLI / model / role / purpose / 実行段 / 相対コストで絞る。カタログ有効化は snapshot と `source: methods/<id>@<hash>` を保存するため、カタログ更新だけでは稼働が変わらない。`profiles.external-facing` の文体注入なしは従来どおり | 共有。読み手は agent-flow / agent-loop、書き手は人・agent-dashboard・`agent-loop methods`・`agent-audit tune --apply`（許可パスのみ）。設計は `docs/plans/2026-08-08-agent-tools-resource-efficiency-plan.md` F9 / F17 |
@@ -78,6 +80,30 @@ agent-project・agent-flow・codd-gate・agent-amigos が**データ契約だけ
   適用状況は `status/<tool>-<pid>.json` へハートビート書換（`revision_applied` / `effective` /
   `lifecycle` / `budget.soft|exceeded` / `fresh_after_sec`）し、管理面が desired との乖離を
   可視化する。未知のワークロード・未知のキーは無害に無視（repos と同じ規則）。
+
+## 候補ベース実行（selection_policy / qualifications / execution receipt）— 誰がどう読む/書くか
+
+実行の選択単位を「ローカル / クラウド」でなく `agent_cli + model` 候補にする 3 契約
+（設計: `docs/plans/2026-08-15-agent-tools-candidate-execution-policy-dashboard-design.md`、
+実装順序: `docs/plans/2026-08-15-candidate-execution-parallel-implementation-plan.md`）。
+語彙と検証の 1 実装は `agentcore/executioncontract.py`、各 schema の `examples` が
+エンジン側（Resolver）と制御面（Compiler）の契約テスト共通 fixture。
+
+- **書き手は各 1 つ**（C7）: qualifications = agent-audit、`selection_policy` = Execution
+  Policy Compiler、execution receipt = 実行した各 Adapter。agent-audit は control を
+  直接書かず、適格性の変更は次回の Compiler 評価で反映する。
+- **新 reader の候補解決順**: (1) run の Execution Envelope の明示固定 →
+  (2) `selection_policy`（version 2）→ (3) 無い場合だけ既存 purpose override →
+  (4) 既存 workload 単一 `agent_cli / model` → (5) agent-profiles 既定。
+  `selection_policy` がある限り legacy fallback を再解釈しない。
+- **dual-write（移行契約）**: 移行中の Compiler は `selection_policy` と旧 reader 向けの
+  単一 fallback を併記する。rollback は v2 出力を止めて fallback へ戻す。全 Adapter が
+  version 2 を申告し、legacy reader の receipt が観測されなくなるまで legacy フィールドを
+  削除しない。未知の version を読んだエンジンは推測で実行せず、最後に対応できた control を
+  `valid_until` まで使い、その後 park する。
+- **執行の不変条件**（形はここ、執行は agentcore の Resolver）: `blocked / unknown` を
+  自動選択しない・`trial` は Envelope 明示承認 run 限定・明示固定でも lifecycle / hard
+  budget / scope / gate を迂回しない・適格候補ゼロは park（弱い候補へ黙って降格しない）。
 
 ## repos — 誰がどう読むか
 

@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "execution-receipt.schema.json",
+  "title": "実行 receipt 共通ブロック — どの候補が・なぜ選ばれ・検査がどうなったか（データ契約）",
+  "description": "flow result / loop run / amigos turn / audit call の各実行記録へ**加算的に埋め込む**共通項目。writer は実行した各 Adapter だけ・append-only。readers は agent-audit（適格性の根拠）・agent-dashboard（工程詳細・検収内訳）・agent-project（集計）で、**設定から実モデルを再推測せずこの receipt を正典にする**。本 schema は埋め込みブロックの契約であり、ホスト記録は自分の version を上げてこのブロックの採用を宣言する（設計書の schema_version 2 に対応。receipt 自体は独立の版数キーを持たない）。eligible_candidate_ids は候補本文や秘密を含めない——完全な候補順位と除外理由は同じ run の decision trace へ revision 付きで保持し、receipt から参照する。検証の 1 実装は agentcore/executioncontract.py（execution_receipt_errors）。設計: docs/plans/2026-08-15-agent-tools-candidate-execution-policy-dashboard-design.md §6.5",
+  "$defs": {
+    "execution_decision": {
+      "type": "object",
+      "description": "Resolver が返した候補決定の写し。selection_source: qualified-candidate = 適格候補の自動選択 / trial-candidate = Envelope で明示承認された試行 / explicit-pin = Envelope の明示固定（lifecycle・hard budget・scope・gate は迂回しない） / legacy-fallback = selection_policy の無い旧経路（purpose override / workload 単一 / profiles 既定）での解決",
+      "required": ["agent_cli", "model", "selection_source"],
+      "properties": {
+        "agent_cli": {"type": "string"},
+        "model": {"type": "string"},
+        "selection_source": {"enum": ["qualified-candidate", "trial-candidate", "explicit-pin", "legacy-fallback"]},
+        "qualification_id": {"type": "string", "description": "適格の根拠にした qualification（agent-candidate-qualifications 内の id）"},
+        "control_revision": {"type": "integer", "minimum": 0, "description": "決定時に読んだ agent-control の revision"},
+        "qualification_revision": {"type": "integer", "minimum": 0, "description": "決定時の qualifications の revision。control_revision と合わせて同じ決定を再現できる"},
+        "rank": {"type": "integer", "minimum": 1, "description": "selection_policy 内の順位（選択時点）"},
+        "reason": {"type": "string", "description": "人が読む選択理由（工程詳細に表示）"},
+        "fallback_from": {"type": ["string", "null"], "description": "候補切替で来た場合の切替元候補 id（agent_cli/model 表記）。初回選択は null"},
+        "eligible_candidate_ids": {"type": "array", "items": {"type": "string"}, "description": "適格だった候補の id 列（agent_cli/model 表記）。本文・秘密を含めない"}
+      },
+      "additionalProperties": true
+    },
+    "verification": {
+      "type": "object",
+      "description": "決定的ゲートの結果。verdict の語彙は verification-receipt と同じ pass / fail / inconclusive（inconclusive = 検査を起動できなかった。非 0 終了 = fail と混同しない）",
+      "required": ["kind", "verdict"],
+      "properties": {
+        "kind": {"type": "string", "description": "検査の種類（command など）"},
+        "verdict": {"enum": ["pass", "fail", "inconclusive"]},
+        "attempt": {"type": "integer", "minimum": 1, "description": "この候補での何回目の試行か（attempt は候補ごとに数え、fallback 先は 1 から）"},
+        "failure_class": {"type": ["string", "null"], "description": "失敗の分類。語彙（additive）: gate-fail / scope-violation / timeout / quota / work-omitted。候補切替・park の判断材料（設計 §13）"}
+      },
+      "additionalProperties": true
+    },
+    "resource_snapshot": {
+      "type": "object",
+      "description": "決定時点の資源状態の写し（決定の再現とクラウド消費の規律の監査に使う）",
+      "properties": {
+        "budget_remaining": {"type": "number", "minimum": 0, "maximum": 1, "description": "hard budget の残率（母数は利用者設定の上限、なければ provider quota）"},
+        "quota_scope": {"type": "string"},
+        "quota_remaining": {"type": "number", "minimum": 0, "maximum": 1}
+      },
+      "additionalProperties": true
+    }
+  },
+  "type": "object",
+  "required": ["attempt_id", "execution_decision"],
+  "properties": {
+    "run_id": {"type": "string"},
+    "work_unit_id": {"type": "string", "description": "flow node / loop entry・state / amigos role turn / audit call の id"},
+    "attempt_id": {"type": "string", "description": "試行の一意 id。慣例は <work_unit>:<agent_cli>-<model>:<attempt>（例 node-7:aider-gemma4-e4b:1）"},
+    "started_at": {"type": "string", "description": "ISO8601 UTC"},
+    "finished_at": {"type": "string", "description": "ISO8601 UTC"},
+    "operation_class": {"type": "string", "description": "処理種別（例 existing-test-repair）。候補選択に使った処理契約の要約キー"},
+    "execution_decision": {"$ref": "#/$defs/execution_decision"},
+    "resource_snapshot": {"$ref": "#/$defs/resource_snapshot"},
+    "verification": {"$ref": "#/$defs/verification"},
+    "external_data_classes": {"type": "array", "items": {"type": "string"}, "description": "端末外候補へ送信したデータ分類。送信した path の記録は持つが、secret や本文そのものは複製しない"}
+  },
+  "additionalProperties": true,
+  "examples": [
+    {
+      "run_id": "run-123",
+      "work_unit_id": "node-7",
+      "attempt_id": "node-7:aider-gemma4-e4b:1",
+      "started_at": "2026-08-15T01:02:03Z",
+      "finished_at": "2026-08-15T01:04:24Z",
+      "operation_class": "existing-test-repair",
+      "execution_decision": {
+        "agent_cli": "aider",
+        "model": "gemma4:e4b",
+        "selection_source": "qualified-candidate",
+        "qualification_id": "aider-gemma4-e4b-existing-test-repair-v1",
+        "control_revision": 42,
+        "qualification_revision": 12,
+        "rank": 1,
+        "reason": "既存テストあり、書込1ファイル、候補順位1位",
+        "fallback_from": null,
+        "eligible_candidate_ids": ["aider/gemma4:e4b", "cursor/grok-4.5"]
+      },
+      "resource_snapshot": {
+        "budget_remaining": 0.63,
+        "quota_scope": "device",
+        "quota_remaining": 1.0
+      },
+      "verification": {
+        "kind": "command",
+        "verdict": "pass",
+        "attempt": 1,
+        "failure_class": null
+      },
+      "external_data_classes": []
+    }
+  ]
+}
