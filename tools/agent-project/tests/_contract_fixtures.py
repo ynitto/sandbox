@@ -1,13 +1,14 @@
-"""Phase 0 契約 baseline — 現行形式の実 fixture（挙動変更前の基準線）。
+"""契約 baseline fixture（Phase0 形 + Phase1 budget 射影）。
 
 正典:
   - schemas/node-budget.schema.json（$defs.config / ledger_record）
+  - schemas/node-budget-summary.schema.json（status `budget` 射影）
   - schemas/board.schema.json（$defs.node）
-  - status/<node>.json（write_status 現状形・専用 schema 無し）
+  - status/<node>.json（write_status 現状形）
   - decisions/*.md + rules.md（learn / rules-promoted 昇格）
 
-未知キーは additionalProperties / 読み捨て前提（additive 互換）。新 schema・writer・
-enforcement はここへ足さない。
+未知キーは additionalProperties / 読み捨て前提（additive 互換）。
+allocate/claim/eligible の enforcement はここへ足さない（既定 false）。
 """
 from __future__ import annotations
 
@@ -15,6 +16,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 NODE_BUDGET_SCHEMA = REPO_ROOT / "schemas" / "node-budget.schema.json"
+NODE_BUDGET_SUMMARY_SCHEMA = REPO_ROOT / "schemas" / "node-budget-summary.schema.json"
 BOARD_SCHEMA = REPO_ROOT / "schemas" / "board.schema.json"
 
 # --- node-budget（$AGENT_BUDGET_DIR） -------------------------------------------------
@@ -115,6 +117,25 @@ NODE_BUDGET_LEDGER_WITH_UNKNOWN = [
 
 # --- status/<node>.json（write_status 現状形） ----------------------------------------
 
+# write_status が埋める budget 射影の代表形（unlimited / local-ledger / enforce false）
+STATUS_NODE_BUDGET_SUMMARY = {
+    "contract_version": 1,
+    "observed_at": "2026-08-01T12:00:00+00:00",
+    "source": "local-ledger",
+    "capacity": {"limit": None, "used": None, "reserved": None},
+    "unit": None,
+    "can_accept": True,
+    "reason_codes": ["unlimited"],
+    "workload": "project",
+    "workloads": {
+        "routine": {"eff_tokens": None, "execution_minutes": None},
+        "project": {"eff_tokens": None, "execution_minutes": None},
+        "flow": {"eff_tokens": None, "execution_minutes": None},
+        "amigos": {"eff_tokens": None, "execution_minutes": None},
+    },
+    "enforce": False,
+}
+
 STATUS_NODE_CURRENT = {
     "host": "fixture-host",
     "watch": True,
@@ -126,16 +147,12 @@ STATUS_NODE_CURRENT = {
     "fresh_after_sec": 600.0,
     "runtime": "darwin",
     "wsl_distro": None,
+    "budget": STATUS_NODE_BUDGET_SUMMARY,
 }
 
-# Phase 1 以降で埋まる想定の未知キー（旧 viewer / _peer_nodes は読み捨て）
+# 未知キー（旧 viewer / _peer_nodes は読み捨て）。budget は t5 以降の既知キー。
 STATUS_NODE_WITH_UNKNOWN = {
     **STATUS_NODE_CURRENT,
-    "budget": {
-        "contract_version": 1,
-        "can_accept": True,
-        "reason_codes": ["ok"],
-    },
     "knowledge": {"rules_hash": "fixture"},
 }
 

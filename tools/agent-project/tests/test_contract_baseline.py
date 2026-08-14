@@ -1,10 +1,11 @@
-"""現行契約の実 fixture 基準線（Phase 0）。
+"""現行契約の実 fixture 基準線。
 
 node-budget / status/<node>.json / board nodes / decisions・rules 昇格の現行形を
 スキーマ（または write_status 現状キー）と突き合わせ、旧ファイルのみ・未知フィールド
 additive でも読取ツールが落ちないことを固定する。
 
-挙動変更・writer・enforcement・新 schema は範囲外。
+Phase1: status の `budget`（node-budget-summary）は write_status が書く既知キー。
+allocate/claim/eligible の enforcement は範囲外（既定 false）。
 """
 from __future__ import annotations
 
@@ -27,10 +28,12 @@ from _contract_fixtures import (  # noqa: E402
     NODE_BUDGET_LEDGER_V2,
     NODE_BUDGET_LEDGER_WITH_UNKNOWN,
     NODE_BUDGET_SCHEMA,
+    NODE_BUDGET_SUMMARY_SCHEMA,
     NODE_BUDGET_V1_CONFIG,
     NODE_BUDGET_V2_CONFIG,
     RULES_MD_HUMAN_ONLY,
     RULES_MD_WITH_AUTO,
+    STATUS_NODE_BUDGET_SUMMARY,
     STATUS_NODE_CURRENT,
     STATUS_NODE_MINIMAL_LEGACY,
     STATUS_NODE_WITH_UNKNOWN,
@@ -39,10 +42,10 @@ from _contract_fixtures import (  # noqa: E402
 from agentcore import board as boardcore  # noqa: E402
 from agentcore import nodebudget as nb  # noqa: E402
 
-# write_status が現状書くキー（専用 schema 無し — ここが status/<node>.json の契約正）
+# write_status が現状書くキー（status/<node>.json の契約正。budget は summary schema）
 STATUS_NODE_KNOWN_KEYS = frozenset({
     "host", "watch", "level", "paused", "node", "availability",
-    "updated_iso", "fresh_after_sec", "runtime", "wsl_distro",
+    "updated_iso", "fresh_after_sec", "runtime", "wsl_distro", "budget",
 })
 
 
@@ -128,11 +131,19 @@ class SchemaFixtureContractTests(unittest.TestCase):
         # 未知キーを許す（additive）。既知キーは write_status が書く集合に含まれる。
         self.assertTrue(STATUS_NODE_KNOWN_KEYS.issuperset(
             k for k in STATUS_NODE_CURRENT if k in STATUS_NODE_KNOWN_KEYS))
-        for key in ("node", "updated_iso", "fresh_after_sec", "availability"):
+        for key in ("node", "updated_iso", "fresh_after_sec", "availability", "budget"):
             self.assertIn(key, STATUS_NODE_CURRENT)
+        for key in ("node", "updated_iso", "fresh_after_sec", "availability"):
             self.assertIn(key, STATUS_NODE_MINIMAL_LEGACY)
         unknown = set(STATUS_NODE_WITH_UNKNOWN) - STATUS_NODE_KNOWN_KEYS
-        self.assertIn("budget", unknown)
+        self.assertIn("knowledge", unknown)
+        self.assertNotIn("budget", unknown)
+
+    def test_status_budget_fixture_matches_summary_schema(self):
+        schema = _load_schema(NODE_BUDGET_SUMMARY_SCHEMA)
+        _assert_matches_def(self, STATUS_NODE_BUDGET_SUMMARY, schema,
+                            label="budget-summary/fixture")
+        self.assertFalse(STATUS_NODE_BUDGET_SUMMARY.get("enforce", False))
 
 
 class NodeBudgetReaderBaselineTests(unittest.TestCase):
@@ -203,8 +214,11 @@ class StatusNodeReaderBaselineTests(unittest.TestCase):
             rec = json.loads((d / "status" / "pc-a.json").read_text(encoding="utf-8"))
             for key in STATUS_NODE_KNOWN_KEYS:
                 self.assertIn(key, rec, f"write_status が `{key}` を書いていない")
-            # budget は未実装（Phase 1）— 現状形に無いことを基準線として固定
-            self.assertNotIn("budget", rec)
+            budget = rec["budget"]
+            schema = _load_schema(NODE_BUDGET_SUMMARY_SCHEMA)
+            _assert_matches_def(self, budget, schema, label="write_status/budget")
+            self.assertFalse(budget.get("enforce", True),
+                             "budget_summary.enforce 既定は false")
 
 
 class BoardNodeReaderBaselineTests(unittest.TestCase):

@@ -52,21 +52,122 @@ def _status_fresh_after_sec(cfg: "Config") -> float:
     return max([2.0 * i for i in intervals] + [120.0])
 
 
+_BUDGET_SUMMARY_CONTRACT_VERSION = 1
+
+
+def _budget_summary_enforce_default(cfg: "Config") -> bool:
+    """budget_summary.enforce の既定は false（Phase1・適格接続は t6）。
+
+    Config / host に明示が無い限り強制しない。本関数は射影へ書く観測値であり、
+    allocate/claim をここでは切り替えない。
+    """
+    raw = getattr(cfg, "budget_summary", None)
+    if isinstance(raw, dict) and "enforce" in raw:
+        return bool(raw.get("enforce"))
+    return False
+
+
+def _capacity_from_budget_state(st: dict) -> "tuple[dict, str | None]":
+    """state(full) から capacity{limit,used,reserved} と unit を射影する。
+
+    トークン上限（合計 or 自 WL 実効）を一次単位に優先し、無ければ実行秒。
+    上限無しは limit/unit=null（used は観測できた消費のみ）。reserved は Phase2 まで null。
+    """
+    token_cap = float(st.get("eff_wl_tokens") or 0) or float(st.get("token_limit") or 0)
+    if token_cap > 0:
+        used = (float(st.get("workload_spent_tokens") or 0)
+                if float(st.get("eff_wl_tokens") or 0) > 0
+                else float(st.get("spent_tokens") or 0))
+        return {"limit": token_cap, "used": used, "reserved": None}, "tokens"
+    time_cap = float(st.get("workload_limit_s") or 0) or float(st.get("limit_s") or 0)
+    if time_cap > 0:
+        used = (float(st.get("workload_spent_s") or 0)
+                if float(st.get("workload_limit_s") or 0) > 0
+                else float(st.get("spent_s") or 0))
+        return {"limit": time_cap, "used": used, "reserved": None}, "seconds"
+    used_tok = float(st.get("spent_tokens") or 0)
+    used_s = float(st.get("spent_s") or 0)
+    used = used_tok if used_tok > 0 else (used_s if used_s > 0 else None)
+    return {"limit": None, "used": used, "reserved": None}, None
+
+
+def _workload_eff_limits(raw_cfg: dict) -> dict:
+    """config から WL ごとの実効上限だけを射影（台帳再集計なし）。"""
+    alloc = raw_cfg.get("allocation") or {}
+    computed = ((raw_cfg.get("computed") or {}).get("workloads") or {})
+    wl_minutes = raw_cfg.get("workloads") or {}
+    out: dict = {}
+    for wl in _nodebudget.KNOWN_WORKLOADS:
+        wl_alloc = (alloc.get("workloads") or {}).get(wl) or {}
+        eff = float((computed.get(wl) or {}).get("tokens") or 0) or float(
+            wl_alloc.get("max_tokens") or 0)
+        mins = float(wl_minutes.get(wl) or 0)
+        out[wl] = {
+            "eff_tokens": eff if eff > 0 else None,
+            "execution_minutes": mins if mins > 0 else None,
+        }
+    return out
+
+
+def _budget_summary_block(cfg: "Config", observed_at: str) -> dict:
+    """node-budget-summary を agentcore.nodebudget から組み立てる（status 埋込用）。
+
+    失敗時も status 書込を止めないよう unavailable 射影へ倒す。enforce 既定 false。
+    """
+    try:
+        bdir = _node_budget_dir()
+        raw = _nodebudget.read_config(bdir)
+        acc = _nodebudget.can_accept(_NODE_BUDGET_WORKLOAD, dir=bdir, cfg=raw)
+        st = acc["state"]
+        capacity, unit = _capacity_from_budget_state(st)
+        return {
+            "contract_version": _BUDGET_SUMMARY_CONTRACT_VERSION,
+            "observed_at": observed_at,
+            "source": "local-ledger",
+            "capacity": capacity,
+            "unit": unit,
+            "can_accept": bool(acc["can_accept"]),
+            "reason_codes": list(acc.get("reason_codes") or []),
+            "workload": _NODE_BUDGET_WORKLOAD,
+            "workloads": _workload_eff_limits(raw),
+            "enforce": _budget_summary_enforce_default(cfg),
+        }
+    except Exception:
+        return {
+            "contract_version": _BUDGET_SUMMARY_CONTRACT_VERSION,
+            "observed_at": observed_at,
+            "source": "unavailable",
+            "capacity": {"limit": None, "used": None, "reserved": None},
+            "unit": None,
+            "can_accept": True,
+            "reason_codes": ["unavailable"],
+            "workload": _NODE_BUDGET_WORKLOAD,
+            "workloads": {wl: {"eff_tokens": None, "execution_minutes": None}
+                          for wl in _nodebudget.KNOWN_WORKLOADS},
+            "enforce": False,
+        }
+
+
 def write_status(cfg: "Config") -> None:
     """status.json（生存信号）を書く。state_git 越しにリモートの agent-dashboard が
     『daemon が今も生きているか』を判定するための最小スナップショット（watch/level の
     現在値＋更新時刻のみ）。backlog/needs/decisions/run-log 等の実データはここで重複を
     持たない（既に state_git で同期されるため）。実パス完了時に呼べば、そのパスが触った
-    他ファイルの変更と同じコミットに相乗りする＝これ単体で追加の push を生まない。"""
+    他ファイルの変更と同じコミットに相乗りする＝これ単体で追加の push を生まない。
+
+    additive: `budget`（node-budget-summary）を同じ JSON へ埋め込む。追加 push は生まない。
+    旧 viewer は未知キーを読み捨てる前提（Phase0 fixture で固定済み）。"""
+    updated = _now_ts()
     rec = {
         "host": socket.gethostname(), "watch": cfg.watch, "level": cfg.level,
         "paused": is_paused(cfg),
         # ノード名（複数 PC 分散運用）。無名エンジンは空（従来と同じ見え方）。
         "node": str(getattr(cfg, "node", "") or "").strip(),
         "availability": availability_state(cfg),
-        "updated_iso": _now_ts(), "fresh_after_sec": _status_fresh_after_sec(cfg),
+        "updated_iso": updated, "fresh_after_sec": _status_fresh_after_sec(cfg),
         # Windows ビュアーが同一マシンの WSL 本体を「別マシン」と誤認しないための信号
         **detect_runtime(),
+        "budget": _budget_summary_block(cfg, updated),
     }
     body = json.dumps(rec, ensure_ascii=False, indent=2)
     try:
