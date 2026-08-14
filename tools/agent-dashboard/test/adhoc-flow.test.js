@@ -1436,6 +1436,32 @@ test('保持期限の掃除は終端済み・未対応なしの古い run だけ
 
 // --- 設計セッション: 短い要望 → 実行できる設計書 -------------------------------
 
+test('旧設計セッションは workflow/new の共通契約として読み取れる', () => {
+  const session = design.normalizeSession({
+    version: 1, id: 'ds-old', goal: '既存要望', document: '## 目的\n既存設計', rounds: [],
+  });
+  assert.strictEqual(session.version, 2);
+  assert.strictEqual(session.target, 'workflow');
+  assert.strictEqual(session.sourceMode, 'new');
+  assert.deepStrictEqual(session.sources, []);
+  assert.strictEqual(session.proposal, null);
+  assert.strictEqual(session.application, null);
+});
+
+test('設計ラウンド入力は型付きソースの意味と本文を保つ', () => {
+  const request = design.buildRoundRequest({
+    goal: '次の計画を作る',
+    sources: [
+      { id: 'master', kind: 'master', name: 'charter.md', content: '## constraints\n- Node 24' },
+      { id: 'note-1', kind: 'note', name: 'idea.md', content: '監視も気になる' },
+    ],
+  });
+  assert.ok(request.includes('## 設計材料'));
+  assert.ok(request.includes('### master: charter.md'));
+  assert.ok(request.includes('### note: idea.md'));
+  assert.ok(request.includes('監視も気になる'));
+});
+
 test('実行前チェックは必須4節を言い換えごと決定的に数える（実行は止めない）', () => {
   assert.deepStrictEqual(workflowUi.readinessCheck(''), { empty: true, missing: ['目的', '変更対象', '受入基準', '検証方法'] });
   assert.deepStrictEqual(workflowUi.readinessCheck('## 目的\nx\n## 変更対象\ny\n## 受入基準\nz\n## 検証方法\nw'),

@@ -52,6 +52,10 @@ function openNewProject() {
   $('np-acceptance').value = '';
   $('np-repos').innerHTML = '';
   $('np-ai-status').textContent = '';
+  document.querySelector('input[name="np-design-mode"][value="new"]').checked = true;
+  for (const id of ['np-source-master', 'np-source-plans', 'np-source-notes', 'np-source-documents']) {
+    if ($(id)) $(id).value = '';
+  }
   $('btn-np-ai').disabled = false;
   $('dlg-new-project').showModal();
 }
@@ -105,6 +109,16 @@ async function submitNewProject() {
       desc: row.querySelector('.np-r-desc').value.trim(),
     }))
     .filter((r) => r.url);
+  const sourceFields = [
+    ['np-source-master', 'master'], ['np-source-plans', 'plan-version'],
+    ['np-source-notes', 'note'], ['np-source-documents', 'document'],
+  ];
+  const designSources = [];
+  for (const [id, kind] of sourceFields) {
+    for (const file of [...($(id)?.files || [])]) {
+      designSources.push({ id: `${kind}:${file.name}`, kind, name: file.name, content: await file.text() });
+    }
+  }
   const spec = {
     root: $('np-root').value.trim(),
     name: $('np-name').value.trim(),
@@ -115,6 +129,8 @@ async function submitNewProject() {
     assumptions: $('np-assumptions').value,
     acceptance: $('np-acceptance').value,
     repos,
+    designMode: document.querySelector('input[name="np-design-mode"]:checked')?.value || 'new',
+    designSources,
     // 新規プロジェクトはマスター運用で作る: charter.md は全バージョン共通の憲章（分解されない）、
     // やるべきことは計画バージョン（charters/<名前>.md）に書く。
     master: true,

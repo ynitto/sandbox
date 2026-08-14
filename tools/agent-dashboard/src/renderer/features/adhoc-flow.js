@@ -76,9 +76,10 @@
   ];
   const REQUEST_TEMPLATE = ['## 目的', '', '', '## 変更対象', '', '', '## 受入基準', '', '- [ ] ',
     '', '## 検証方法', '', ''].join('\n');
-  const DESIGN_MODES = [
-    ['interactive', '対話で詰める', '質問に答えながらラウンドを重ねます。'],
-    ['auto', '全自動', '質問せずに一度で設計書を書き上げます。'],
+  const DESIGN_SOURCE_MODES = [
+    ['new', '一から設計する', '対話しながら要件と設計を詰めます。'],
+    ['continue', '続きから設計する', '設計途中の Markdown を読み、対話を続けます。'],
+    ['use-as-is', '設計書をそのまま使う', '完成済みの Markdown を実行可能な形へ変換します。'],
   ];
   const st = {
     overview: null,
@@ -717,13 +718,15 @@
 
   function designStartFormHtml() {
     return `<div class="wf-design-start">
-      <label>やりたいこと<textarea id="wf-design-goal" rows="2"
-        placeholder="例: ワークフローの依頼欄に設計書を読み込めるようにする"></textarea></label>
-      <fieldset class="wf-design-modes"><legend>進め方</legend>${DESIGN_MODES.map(([id, label, help], index) =>
-        `<label class="orch-policy-card"><input type="radio" name="wf-design-mode" value="${id}"${index === 0 ? ' checked' : ''}>
+      <fieldset class="wf-design-modes"><legend>設計の始め方</legend>${DESIGN_SOURCE_MODES.map(([id, label, help], index) =>
+        `<label class="orch-policy-card"><input type="radio" name="wf-design-source-mode" value="${id}"${index === 0 ? ' checked' : ''}>
           <span><strong>${esc(label)}</strong><small>${esc(help)}</small></span></label>`).join('')}</fieldset>
+      <label data-design-goal-field>やりたいこと<textarea id="wf-design-goal" rows="3"
+        placeholder="例: ワークフローの依頼欄に設計書を読み込めるようにする"></textarea></label>
+      <label data-design-file-field hidden>Markdown ファイル<input id="wf-design-file" type="file"
+        accept=".md,.markdown,text/markdown"><small>元ファイルは変更しません。</small></label>
       <div class="qf-row"><button type="button" class="primary-inline" id="wf-design-start"
-        ${st.design.busy ? 'disabled' : ''}>${esc(st.design.busy || '設計を練る')}</button></div></div>`;
+        ${st.design.busy ? 'disabled' : ''}>${esc(st.design.busy || '設計を開始')}</button></div></div>`;
   }
 
   function designQuestionsHtml(session) {
@@ -769,6 +772,13 @@
   }
 
   function runHtml(ov) {
+    if (st.selectedRun && st.runDetail) {
+      return `<section class="wf-page wf-run-detail-page" aria-label="ワークフロー実行詳細">
+        <div class="wf-title"><div><h2>実行中のワークフロー</h2><p>工程、成果、履歴を確認します。</p></div>
+          <button type="button" class="primary-inline" id="wf-new-run">新しく実行</button></div>
+        <p class="qf-notice" role="status"${st.notice ? '' : ' hidden'}>${esc(st.notice)}</p>
+        ${runDetailHtml(st.runDetail)}</section>`;
+    }
     const history = (ov.cwdHistory || []).map((cwd) => `<option value="${esc(cwd)}"></option>`).join('');
     return `<section class="wf-page" aria-label="ワークフロー実行">
       <div class="wf-title"><div><h2>ワークフロー</h2><p>Gitリポジトリでフローを実行します。</p></div></div>
@@ -791,13 +801,10 @@
             placeholder="実行する内容。設計書の全文を貼り付け・ドラッグしても構いません"></textarea>
           <p class="wf-readiness" id="wf-readiness" aria-live="polite">${readinessHtml('')}</p>
         </div>
-        <label class="wf-coherence-option"><input type="checkbox" id="wf-coherence">
-          一貫性ゲート（codd-gate の差分ゲートを run 内の検証に載せ、ドキュメント置き去りを自己修復させる）</label>
         ${overridesHtml(ov)}
         <div class="settings-save-actions wf-run-actions"><button type="button" class="primary-inline" id="wf-submit"
           ${st.busy ? 'disabled' : ''}>${esc(st.busy || '実行')}</button></div>
       </div>
-      ${runDetailHtml(st.runDetail)}
     </section>`;
   }
 
@@ -1274,10 +1281,33 @@
       await loadDesign({ includeCurrent: false });
       renderDesign();
     });
-    $id('wf-design-start')?.addEventListener('click', () => startDesignRound({
-      goal: $id('wf-design-goal')?.value || '',
-      mode: host.querySelector('input[name="wf-design-mode"]:checked')?.value || 'interactive',
-    }));
+    const updateDesignSourceFields = () => {
+      const sourceMode = host.querySelector('input[name="wf-design-source-mode"]:checked')?.value || 'new';
+      const fileField = host.querySelector('[data-design-file-field]');
+      const goalField = host.querySelector('[data-design-goal-field]');
+      if (fileField) fileField.hidden = sourceMode === 'new';
+      if (goalField) goalField.hidden = sourceMode !== 'new';
+    };
+    host.querySelectorAll('input[name="wf-design-source-mode"]').forEach((input) =>
+      input.addEventListener('change', updateDesignSourceFields));
+    updateDesignSourceFields();
+    $id('wf-design-start')?.addEventListener('click', async () => {
+      const sourceMode = host.querySelector('input[name="wf-design-source-mode"]:checked')?.value || 'new';
+      const file = $id('wf-design-file')?.files?.[0];
+      if (sourceMode !== 'new' && !file) {
+        st.design.notice = 'Markdown ファイルを選択してください';
+        renderDesign();
+        return;
+      }
+      const document_ = file ? await file.text() : '';
+      await startDesignRound({
+        goal: sourceMode === 'new' ? ($id('wf-design-goal')?.value || '') : file.name,
+        sourceMode,
+        mode: sourceMode === 'use-as-is' ? 'auto' : 'interactive',
+        document: document_,
+        sources: file ? [{ kind: 'document', name: file.name, content: document_ }] : [],
+      });
+    });
     host.querySelector('[data-design-next]')?.addEventListener('click', () => {
       const answers = [...host.querySelectorAll('[data-design-answer]')]
         .sort((a, b) => Number(a.dataset.designAnswer) - Number(b.dataset.designAnswer))
@@ -1500,6 +1530,13 @@
 
   function wireRun(pane) {
     if (!pane) return;
+    $id('wf-new-run')?.addEventListener('click', () => {
+      st.selectedRun = '';
+      st.runDetail = null;
+      st.notice = '';
+      renderSidebar();
+      renderRun();
+    });
     wireDesign($id('wf-design-host'));
     wireRequestTools();
     const flowSelect = $id('wf-flow');
@@ -1541,7 +1578,6 @@
         request: $id('wf-request')?.value || '',
         selection: selectionFrom($id('wf-flow')?.value || 'auto'),
         executionOverrides: executionOverridesFromForm(pane, st.overview || {}),
-        coherenceGate: !!$id('wf-coherence')?.checked,
       };
       renderRun();
       try {

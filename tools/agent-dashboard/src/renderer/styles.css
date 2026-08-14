@@ -3821,6 +3821,9 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
 .wf-run-card label, .wf-inspector label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
 .wf-run-card input, .wf-run-card select, .wf-run-card textarea,
 .wf-editor-head input, .wf-inspector input, .wf-inspector select, .wf-inspector textarea { width: 100%; box-sizing: border-box; }
+.wf-run-card input:not([type="radio"]):not([type="checkbox"]), .wf-run-card select,
+.wf-design-start input:not([type="radio"]), .wf-design-start select { min-height: 44px; }
+.wf-run-card button, .wf-design-card button, .wf-run-detail-page button { min-height: 44px; }
 .wf-flow-summary { grid-column: 1 / -1; min-width: 0; }
 .wf-selected-flow-card { display: grid; gap: 10px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 8px;
   background: var(--bg3); }
@@ -3857,6 +3860,14 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
 .wf-design-modes { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px;
   border: 0; padding: 0; margin: 0; }
 .wf-design-modes .orch-policy-card { display: flex; align-items: flex-start; color: inherit; font-size: inherit; }
+.wf-design-modes .orch-policy-card { min-height: 88px; padding: 14px; box-sizing: border-box; }
+.wf-design-modes .orch-policy-card input { flex: 0 0 auto; margin-top: 3px; }
+.wf-design-modes .orch-policy-card small { line-height: 1.45; }
+.np-design-modes { margin-bottom: 14px; }
+.np-source-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px;
+  padding-top: 12px; }
+.np-source-grid label { display: grid; gap: 6px; }
+.np-source-grid input { min-height: 44px; box-sizing: border-box; }
 .wf-design-questions { display: grid; gap: 10px; }
 .wf-design-questions h4 { margin: 0; font-size: 13px; }
 .wf-design-doc pre { max-height: 320px; overflow: auto; }
@@ -3868,7 +3879,8 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
   text-align: left; background: transparent; }
 .wf-run-row:last-child { border-bottom: 0; }
 .wf-run-row:hover, .wf-run-row.selected { background: rgba(88, 166, 255, .08); }
-.wf-result { display: grid; gap: 12px; padding-top: 14px; border-top: 1px solid var(--border); }
+.wf-result { display: grid; gap: 12px; padding: 18px; border: 1px solid var(--border);
+  border-radius: 10px; background: var(--bg2); }
 .wf-run-policy { grid-column: 1 / -1; border-top: 1px solid var(--border); padding-top: 10px; }
 .wf-run-card .orch-policy-card { display: flex; align-items: flex-start; color: inherit; font-size: inherit; }
 .wf-run-card .orch-policy-card input { width: 1px; }
@@ -3905,6 +3917,7 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
     grid-template-columns: minmax(0, 1fr); }
   .wf-selected-flow-content > .wf-card-meta { justify-self: start; }
   .wf-override-row { grid-template-columns: 1fr 1fr; }
+  .np-source-grid { grid-template-columns: 1fr; }
 }
 
 .wf-settings { width: 100%; max-width: none; }

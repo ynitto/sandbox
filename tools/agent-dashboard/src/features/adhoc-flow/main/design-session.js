@@ -26,9 +26,27 @@ const MODE_FLOWS = { interactive: 'design-interactive', auto: 'design-auto' };
 
 // 「## 質問」節の見出し。レベルは問わない（生成側が h2 で書く前提だが、h3 でも拾う）。
 const QUESTION_HEADING = /^#{1,6}[ \t]*質問[ \t]*$/;
+const TARGETS = new Set(['workflow', 'project']);
+const SOURCE_MODES = new Set(['new', 'continue', 'use-as-is']);
 
 function cfgOf(config) {
   return (config && config.adhocFlow) || {};
+}
+
+function normalizeSession(raw) {
+  const session = raw && typeof raw === 'object' ? raw : {};
+  const target = TARGETS.has(String(session.target || '')) ? String(session.target) : 'workflow';
+  const sourceMode = SOURCE_MODES.has(String(session.sourceMode || ''))
+    ? String(session.sourceMode) : 'new';
+  return {
+    ...session,
+    version: 2,
+    target,
+    sourceMode,
+    sources: Array.isArray(session.sources) ? session.sources : [],
+    proposal: session.proposal && typeof session.proposal === 'object' ? session.proposal : null,
+    application: session.application && typeof session.application === 'object' ? session.application : null,
+  };
 }
 
 function resolveSessionDir(config) {
@@ -92,7 +110,7 @@ function sinkOutput(run) {
 
 // --- ラウンドへの入力 ----------------------------------------------------------
 
-function buildRoundRequest({ goal, document, answers } = {}) {
+function buildRoundRequest({ goal, document, answers, sources } = {}) {
   const answered = (Array.isArray(answers) ? answers : [])
     .map((item) => ({
       question: String((item && item.question) || '').trim(),
@@ -100,6 +118,11 @@ function buildRoundRequest({ goal, document, answers } = {}) {
     }))
     .filter((item) => item.question && item.answer);
   const parts = [`## 元の要望\n${String(goal || '').trim()}`];
+  const normalizedSources = normalizeSources(sources);
+  if (normalizedSources.length) {
+    parts.push(`## 設計材料\n${normalizedSources.map((source) =>
+      `### ${source.kind}: ${source.name}\n${source.content}`).join('\n\n')}`);
+  }
   const current = String(document || '').trim();
   if (current) parts.push(`## 現在の設計書\n${current}`);
   if (answered.length) {
@@ -107,6 +130,20 @@ function buildRoundRequest({ goal, document, answers } = {}) {
       .map((item, index) => `${index + 1}. ${item.question}\n   → ${item.answer}`).join('\n')}`);
   }
   return parts.join('\n\n');
+}
+
+function normalizeSources(raw) {
+  const seen = new Set();
+  return (Array.isArray(raw) ? raw : []).flatMap((item, index) => {
+    if (!item || typeof item !== 'object') return [];
+    const kind = String(item.kind || 'document').trim().toLowerCase();
+    const name = String(item.name || `${kind}-${index + 1}`).trim();
+    const content = String(item.content || '').trim();
+    const id = String(item.id || `${kind}:${name}`).trim();
+    if (!content || seen.has(id)) return [];
+    seen.add(id);
+    return [{ ...item, id, kind, name, content }];
+  });
 }
 
 // --- セッションの保存 ----------------------------------------------------------
@@ -127,14 +164,14 @@ function newSessionId() {
 
 function readSession(config, id) {
   try {
-    return JSON.parse(fs.readFileSync(sessionFile(config, id), 'utf8'));
+    return normalizeSession(JSON.parse(fs.readFileSync(sessionFile(config, id), 'utf8')));
   } catch {
     return null;
   }
 }
 
 function saveSession(config, session) {
-  const next = { ...session, updatedAt: new Date().toISOString() };
+  const next = normalizeSession({ ...session, updatedAt: new Date().toISOString() });
   writeJsonAtomic(sessionFile(config, next.id), next);
   return next;
 }
@@ -211,12 +248,17 @@ function getSession(config, id) {
 }
 
 // セッションを作る（id 省略時）か、回答を添えて次のラウンドを投げる。
-function startRound(config, { id, cwd, goal, mode, answers } = {}) {
+function startRound(config, { id, cwd, goal, mode, answers, target, sourceMode, sources, document } = {}) {
   const existing = id ? getSession(config, id) : null;
   if (id && !existing) throw new Error(`設計セッションが見つかりません: ${id}`);
-  const request = String(goal || (existing && existing.goal) || '').trim();
+  const nextSources = normalizeSources(sources == null ? existing && existing.sources : sources);
+  const initialDocument = String(document == null ? (existing && existing.document) || '' : document).trim();
+  const request = String(goal || (existing && existing.goal) || initialDocument.slice(0, 200)).trim();
   if (!request) throw new Error('やりたいことを1行でも書いてください');
-  const selectedMode = String(mode || (existing && existing.mode) || 'interactive');
+  const nextSourceMode = SOURCE_MODES.has(String(sourceMode || ''))
+    ? String(sourceMode) : (existing && existing.sourceMode) || 'new';
+  const selectedMode = String(mode || (nextSourceMode === 'use-as-is' ? 'auto' : '')
+    || (existing && existing.mode) || 'interactive');
   const flowId = MODE_FLOWS[selectedMode];
   if (!flowId) throw new Error(`設計の進め方が不正です: ${selectedMode}`);
   const folder = String(cwd == null ? (existing && existing.cwd) || '' : cwd).trim();
@@ -227,8 +269,9 @@ function startRound(config, { id, cwd, goal, mode, answers } = {}) {
   const result = adhoc.submit(config, {
     request: buildRoundRequest({
       goal: request,
-      document: existing && existing.document,
+      document: existing ? existing.document : initialDocument,
       answers: paired,
+      sources: nextSources,
     }),
     cwd: folder,
     selection: { type: 'custom', id: flowId },
@@ -236,10 +279,13 @@ function startRound(config, { id, cwd, goal, mode, answers } = {}) {
 
   const now = new Date().toISOString();
   const base = existing || {
-    version: 1, id: newSessionId(), createdAt: now, rounds: [], document: '', questions: [],
+    version: 2, id: newSessionId(), createdAt: now, rounds: [], document: initialDocument, questions: [],
   };
   return saveSession(config, {
     ...base,
+    target: TARGETS.has(String(target || '')) ? String(target) : (base.target || 'workflow'),
+    sourceMode: nextSourceMode,
+    sources: nextSources,
     goal: request,
     mode: selectedMode,
     cwd: folder,
@@ -258,10 +304,12 @@ function startRound(config, { id, cwd, goal, mode, answers } = {}) {
 
 module.exports = {
   MODE_FLOWS,
+  normalizeSession,
   resolveSessionDir,
   splitDesignOutput,
   sinkOutput,
   buildRoundRequest,
+  normalizeSources,
   listSessions,
   getSession,
   startRound,

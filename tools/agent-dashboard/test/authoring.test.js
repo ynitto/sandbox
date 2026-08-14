@@ -108,6 +108,29 @@ test('createProject は既存 charter.md を上書きしない', () => {
   }
 });
 
+test('createProject は型付き設計材料をマスター・複数計画版・メモ・文書へ結線する', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kpv-auth-'));
+  try {
+    const res = authoring.createProject({
+      root: tmp, name: 'from-design', master: true,
+      designSources: [
+        { kind: 'master', name: 'master.md', content: '# Charter: master\n\n## master\n' },
+        { kind: 'plan-version', name: 'v1.md', content: '# Charter: v1\n' },
+        { kind: 'plan-version', name: 'v2.md', content: '# Charter: v2\n' },
+        { kind: 'note', name: 'idea.md', content: '# Idea\n' },
+        { kind: 'document', name: 'spec.md', content: '# Spec\n' },
+      ],
+    });
+    assert.match(fs.readFileSync(path.join(res.dir, 'charter.md'), 'utf8'), /Charter: master/);
+    assert.ok(fs.existsSync(path.join(res.dir, 'charters', 'v1.md')));
+    assert.ok(fs.existsSync(path.join(res.dir, 'charters', 'v2.md')));
+    assert.ok(fs.existsSync(path.join(res.dir, 'notes', 'idea.md')));
+    assert.ok(fs.existsSync(path.join(res.dir, 'documents', 'spec.md')));
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 // --- readProjectFile / writeProjectFile（ホワイトリスト・JSON 検証）---
 test('read/writeProjectFile はホワイトリスト外を拒否する', () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kpv-auth-'));
@@ -211,6 +234,31 @@ test('lintTaskSpec は固定コマンドがあれば受入基準警告を出さ�
 test('lintTaskSpec は why/scope 欠落を情報として示す', () => {
   assert.ok(authoring.lintTaskSpec({ title: 't', verify: 'x' }).some((x) => x.field === 'why'));
   assert.ok(!authoring.lintTaskSpec({ title: 't', verify: 'x', why: 'なぜ', scope: '範囲' }).some((x) => x.field === 'why'));
+});
+
+test('プロジェクト設計提案は複数の計画版とバックログ群の所属を保つ', () => {
+  const proposal = authoring.normalizeProjectDesignProposal({
+    master: { name: 'master', content: '# Charter: demo' },
+    versions: [
+      { id: 'v1', name: '最初の計画', content: '# Charter: v1' },
+      { id: 'v2', name: '次の計画', content: '# Charter: v2' },
+    ],
+    backlogGroups: [
+      { id: 'g1', charter: 'v1', tasks: [{ id: 't1', title: '画面を作る' }] },
+      { id: 'g2', charter: 'v2', tasks: [{ id: 't2', title: '移行する' }] },
+    ],
+  });
+  assert.strictEqual(proposal.version, 1);
+  assert.deepStrictEqual(proposal.versions.map((item) => item.id), ['v1', 'v2']);
+  assert.deepStrictEqual(proposal.backlogGroups.map((item) => item.charter), ['v1', 'v2']);
+  assert.strictEqual(proposal.backlogGroups[0].tasks[0].charter, 'v1');
+});
+
+test('プロジェクト設計提案は存在しない計画版を参照するバックログ群を拒否する', () => {
+  assert.throws(() => authoring.normalizeProjectDesignProposal({
+    versions: [{ id: 'v1', content: '# Charter: v1' }],
+    backlogGroups: [{ id: 'g1', charter: 'missing', tasks: [{ title: '壊れた候補' }] }],
+  }), /計画バージョン.*missing/);
 });
 
 console.log(`\n${passed} passed`);

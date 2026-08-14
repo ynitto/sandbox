@@ -406,9 +406,13 @@ function createProject(spec) {
     throw new Error(`すでに charter.md が存在します（上書きしません）: ${charterFile}`);
   }
   const repos = (Array.isArray(spec.repos) ? spec.repos : []).filter((e) => e && String(e.url || '').trim());
+  const designSources = (Array.isArray(spec.designSources) ? spec.designSources : [])
+    .filter((source) => source && String(source.content || '').trim());
+  const masterSource = designSources.find((source) => source.kind === 'master');
+  const versionSources = designSources.filter((source) => source.kind === 'plan-version');
 
   fs.mkdirSync(path.dirname(charterFile), { recursive: true });
-  fs.writeFileSync(charterFile, buildCharter({ ...spec, name: master ? name : charterName || name }), 'utf8');
+  fs.writeFileSync(charterFile, masterSource ? String(masterSource.content) : buildCharter({ ...spec, name: master ? name : charterName || name }), 'utf8');
   let versionFile = null;
   if (master && charterName) {
     versionFile = path.join(dir, 'charters', `${charterName}.md`);
@@ -422,6 +426,22 @@ function createProject(spec) {
                      deliverables: spec.deliverables, acceptance: spec.acceptance }),
       'utf8'
     );
+  }
+  for (const [index, source] of versionSources.entries()) {
+    const fallback = `plan-${index + 1}.md`;
+    const base = path.basename(String(source.name || fallback)).replace(/[^a-zA-Z0-9._-]/g, '-') || fallback;
+    const file = path.join(dir, 'charters', base.endsWith('.md') ? base : `${base}.md`);
+    if (!fs.existsSync(file)) {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, String(source.content), 'utf8');
+    }
+  }
+  for (const source of designSources.filter((item) => item.kind === 'note' || item.kind === 'document')) {
+    const folder = source.kind === 'note' ? 'notes' : 'documents';
+    const base = path.basename(String(source.name || `${source.kind}.md`)).replace(/[^a-zA-Z0-9._-]/g, '-') || `${source.kind}.md`;
+    const file = path.join(dir, folder, base);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    if (!fs.existsSync(file)) fs.writeFileSync(file, String(source.content), 'utf8');
   }
   // inbox/ は外部ソース（このビュアーの投入含む）が見つけられるよう先に作っておく
   // （agent-project 本体も起動時に作る）。
@@ -668,10 +688,53 @@ function lintTaskSpec(spec) {
   return out;
 }
 
+// 共通設計セッションが project 向けに返すレビュー前の提案契約。
+// ここではファイル作成や inbox 投入を行わず、所属関係を検証して正規化する。
+// 採用操作はこの値を入力にするため、同じ提案を再表示しても副作用が起きない。
+function normalizeProjectDesignProposal(raw) {
+  const input = raw && typeof raw === 'object' ? raw : {};
+  const cleanId = (value, label) => {
+    const id = String(value || '').trim();
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}$/.test(id)) throw new Error(`${label} id が不正です: ${id}`);
+    return id;
+  };
+  const versions = (Array.isArray(input.versions) ? input.versions : []).map((item, index) => {
+    const value = item && typeof item === 'object' ? item : {};
+    const id = cleanId(value.id || `v${index + 1}`, '計画バージョン');
+    return { ...value, id, name: String(value.name || id).trim(), content: String(value.content || '').trim() };
+  });
+  const versionIds = new Set(versions.map((item) => item.id));
+  if (versionIds.size !== versions.length) throw new Error('計画バージョン id が重複しています');
+  const backlogGroups = (Array.isArray(input.backlogGroups) ? input.backlogGroups : []).map((item, index) => {
+    const value = item && typeof item === 'object' ? item : {};
+    const id = cleanId(value.id || `group-${index + 1}`, 'バックログ群');
+    const charter = cleanId(value.charter, 'バックログ群の計画バージョン');
+    if (!versionIds.has(charter)) throw new Error(`計画バージョン ${charter} がバックログ群から参照されていますが存在しません`);
+    const tasks = (Array.isArray(value.tasks) ? value.tasks : []).map((task, taskIndex) => ({
+      ...(task && typeof task === 'object' ? task : {}),
+      id: String((task && task.id) || `${id}-task-${taskIndex + 1}`).trim(),
+      title: String((task && task.title) || '').trim(),
+      charter,
+    })).filter((task) => task.title);
+    return { ...value, id, charter, tasks };
+  });
+  return {
+    version: 1,
+    master: input.master && typeof input.master === 'object' ? { ...input.master } : null,
+    versions,
+    backlogGroups,
+    notes: Array.isArray(input.notes) ? input.notes : [],
+    documents: Array.isArray(input.documents) ? input.documents : [],
+    warnings: Array.isArray(input.warnings) ? input.warnings.map(String) : [],
+    sourceRefs: Array.isArray(input.sourceRefs) ? input.sourceRefs : [],
+  };
+}
+
 module.exports = {
   EDITABLE_FILES,
   POLICY_KINDS,
   lintTaskSpec,
+  normalizeProjectDesignProposal,
   isEditable,
   buildCharter,
   charterReposLines,

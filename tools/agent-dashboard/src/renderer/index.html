@@ -620,6 +620,25 @@
     <div class="muted" style="margin-bottom:8px">
       作成先と名前を決めて、プロジェクトの目標を入力してください。
     </div>
+    <fieldset class="wf-design-modes np-design-modes">
+      <legend>設計の始め方</legend>
+      <label class="orch-policy-card"><input type="radio" name="np-design-mode" value="new" checked>
+        <span><strong>一から設計する</strong><small>対話用の目標と材料から設計を始めます。</small></span></label>
+      <label class="orch-policy-card"><input type="radio" name="np-design-mode" value="continue">
+        <span><strong>続きから設計する</strong><small>設計途中の Markdown を読み込んで続けます。</small></span></label>
+      <label class="orch-policy-card"><input type="radio" name="np-design-mode" value="use-as-is">
+        <span><strong>設計書をそのまま使う</strong><small>既存の設計書をプロジェクト入力へ変換します。</small></span></label>
+    </fieldset>
+    <details id="np-design-sources">
+      <summary>設計材料</summary>
+      <div class="np-source-grid">
+        <label>マスター憲章<input id="np-source-master" type="file" accept=".md,.markdown,text/markdown"></label>
+        <label>計画バージョン<input id="np-source-plans" type="file" multiple accept=".md,.markdown,text/markdown"></label>
+        <label>メモ<input id="np-source-notes" type="file" multiple accept=".md,.markdown,text/markdown"></label>
+        <label>ドキュメント<input id="np-source-documents" type="file" multiple accept=".md,.markdown,text/markdown"></label>
+      </div>
+      <p class="field-help">複数の計画版・メモ・ドキュメントを同時に渡せます。元ファイルは変更しません。</p>
+    </details>
     <div class="row2">
       <div class="field">
         <label>作成先の親フォルダ</label>
