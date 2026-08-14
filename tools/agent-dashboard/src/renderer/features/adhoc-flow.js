@@ -65,8 +65,24 @@
     plus: '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"></path></svg>',
     dock: '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 5h16v14H4zM15 5v14"></path></svg>',
   };
+  // 実行できる設計書の必須節と、よく使われる言い換え。見出しでも「目的:」でも拾う。
+  // 判定は決定的（LLM を使わない）で、足りなくても実行は止めない——外部の CLI / IDE が
+  // 書いた設計書は書式が多様で、ここで弾くと取り込みの摩擦が支援の価値を上回る。
+  const REQUEST_SECTIONS = [
+    ['目的', ['目的', '狙い', 'ゴール']],
+    ['変更対象', ['変更対象', '対象', 'スコープ', '範囲']],
+    ['受入基準', ['受入基準', '受け入れ基準', '完了条件']],
+    ['検証方法', ['検証方法', '検証', 'テスト方法', '確認方法']],
+  ];
+  const REQUEST_TEMPLATE = ['## 目的', '', '', '## 変更対象', '', '', '## 受入基準', '', '- [ ] ',
+    '', '## 検証方法', '', ''].join('\n');
+  const DESIGN_MODES = [
+    ['interactive', '対話で詰める', '質問に答えながらラウンドを重ねます。'],
+    ['auto', '全自動', '質問せずに一度で設計書を書き上げます。'],
+  ];
   const st = {
     overview: null,
+    design: { sessions: [], current: null, busy: '', notice: '', timer: null, open: false },
     selectedRun: '',
     runDetail: null,
     editor: null,
@@ -108,6 +124,36 @@
     if (!allowed || tierId === 'auto') return true;
     if (!allowed.order.includes(String(tierId))) return true; // 独自レベル名は制限しない
     return allowed.tiers.includes(String(tierId));
+  }
+
+  // 依頼テキストの節見出し。「## 目的」「**目的**:」「目的:」のいずれも同じ節として数える。
+  function sectionTitles(text) {
+    const out = [];
+    for (const line of String(text || '').split(/\r?\n/)) {
+      const heading = line.match(/^ {0,3}#{1,6}\s+(.*?)\s*$/);
+      const labelled = line.match(/^ {0,3}(?:[-*+]\s+)?\*{0,2}([^\s*][^:：*]{0,30})\*{0,2}\s*[:：]/);
+      const title = heading ? heading[1] : labelled ? labelled[1] : '';
+      if (title) out.push(title.replace(/[#*\s]/g, ''));
+    }
+    return out;
+  }
+
+  function readinessCheck(text) {
+    const titles = sectionTitles(text);
+    return {
+      empty: !String(text || '').trim(),
+      missing: REQUEST_SECTIONS
+        .filter(([, words]) => !titles.some((title) => words.some((word) => title.includes(word))))
+        .map(([label]) => label),
+    };
+  }
+
+  function readinessHtml(text) {
+    const { empty, missing } = readinessCheck(text);
+    if (empty) return '<span class="muted">やりたいことを書くか、設計書を読み込みます。</span>';
+    if (!missing.length) return '<span class="wf-readiness-ok">実行できる設計書の形になっています。</span>';
+    return `<span class="wf-readiness-warn">足りない節: ${esc(missing.join('・'))}</span>`
+      + '<span class="muted">このままでも実行できます。工程の解釈は agent-flow に委ねられます。</span>';
   }
 
   function runActive() {
@@ -435,7 +481,10 @@
     return workflow;
   }
 
+  // includeRun=false は要対応バッジだけの定期更新。設計セッションは実行画面にしか出ないので、
+  // その経路では取りに行かない（5 秒ごとに要らない IPC を 2 本増やさない）。
   async function loadOverview({ includeRun = true } = {}) {
+    if (includeRun && api().designSessionList) await loadDesign();
     try {
       st.overview = await api().adhocFlowOverview({ limit: 30 });
       if (includeRun && st.selectedRun) {
@@ -645,17 +694,103 @@
     return null;
   }
 
+  // --- 設計セッション（短い要望 → 実行できる設計書） ---------------------------
+  // 1 ラウンド = 1 本の設計 run。回答を待つ間 run は残らないので、答えを翌日に返しても
+  // 何も期限切れにならない。毎ラウンド完全な設計書が返るため、どこで止めても実行できる。
+
+  function designSessionListHtml() {
+    const rows = st.design.sessions || [];
+    if (!rows.length) return '';
+    return `<div class="wf-design-sessions">${rows.map((item) => `<button type="button"
+      class="nav-item ${st.design.current && st.design.current.id === item.id ? 'selected' : ''}"
+      data-design-open="${esc(item.id)}"><span>${esc(String(item.goal || item.id).slice(0, 48))}</span>
+      <small>${esc(designStatusText(item))}</small></button>`).join('')}</div>`;
+  }
+
+  function designStatusText(session) {
+    if (!session) return '';
+    if (session.runStatus === 'running') return '設計中…';
+    if (session.error) return session.error;
+    const count = session.questionCount == null ? (session.questions || []).length : session.questionCount;
+    return count ? `質問 ${count} 件` : '設計書ができています';
+  }
+
+  function designStartFormHtml() {
+    return `<div class="wf-design-start">
+      <label>やりたいこと<textarea id="wf-design-goal" rows="2"
+        placeholder="例: ワークフローの依頼欄に設計書を読み込めるようにする"></textarea></label>
+      <fieldset class="wf-design-modes"><legend>進め方</legend>${DESIGN_MODES.map(([id, label, help], index) =>
+        `<label class="orch-policy-card"><input type="radio" name="wf-design-mode" value="${id}"${index === 0 ? ' checked' : ''}>
+          <span><strong>${esc(label)}</strong><small>${esc(help)}</small></span></label>`).join('')}</fieldset>
+      <div class="qf-row"><button type="button" class="primary-inline" id="wf-design-start"
+        ${st.design.busy ? 'disabled' : ''}>${esc(st.design.busy || '設計を練る')}</button></div></div>`;
+  }
+
+  function designQuestionsHtml(session) {
+    const questions = session.questions || [];
+    if (!questions.length) return '';
+    return `<div class="wf-design-questions"><h4>質問</h4>${questions.map((question, index) =>
+      `<label class="wf-design-question"><span>${index + 1}. ${esc(question)}</span>
+        <textarea data-design-answer="${index}" rows="2"></textarea></label>`).join('')}</div>`;
+  }
+
+  function designSessionHtml(session) {
+    const running = session.runStatus === 'running';
+    const document_ = String(session.document || '');
+    const questions = session.questions || [];
+    const rounds = (session.rounds || []).length;
+    return `<div class="wf-design-current" data-design-id="${esc(session.id)}">
+      <div class="wf-section-head"><div><strong>${esc(String(session.goal || '').slice(0, 60))}</strong>
+        <span class="muted">ラウンド ${rounds} · ${esc(designStatusText(session))}</span></div>
+        <div class="qf-row"><button type="button" data-design-new>別の設計を始める</button>
+          <button type="button" data-design-delete>破棄</button></div></div>
+      ${session.error ? `<p class="qf-failure">${esc(session.error)}</p>` : ''}
+      ${running ? '<p class="muted">設計 run の完了を待っています。閉じても進みます。</p>' : ''}
+      ${document_ ? `<details class="wf-design-doc"${questions.length ? '' : ' open'}>
+        <summary>設計書（${document_.length} 文字）</summary>
+        <pre class="qf-output">${esc(document_.slice(0, 12000))}</pre></details>` : ''}
+      ${running ? '' : designQuestionsHtml(session)}
+      ${running ? '' : `<div class="qf-row wf-design-actions">
+        <button type="button" data-design-next ${st.design.busy ? 'disabled' : ''}>${
+          questions.length ? '回答して次のラウンド' : 'もう一周して詰める'}</button>
+        <button type="button" class="primary-inline" data-design-use ${document_ ? '' : 'disabled'}>この設計で実行</button>
+      </div>`}</div>`;
+  }
+
+  function designCardHtml() {
+    const current = st.design.current;
+    return `<details class="wf-design-card" id="wf-design"${st.design.open ? ' open' : ''}>
+      <summary>設計を練る<small>短いやりたいことから、実行できる設計書まで詰めます。</small></summary>
+      <div class="wf-design-body">
+        ${st.design.notice ? `<p class="qf-notice" role="status">${esc(st.design.notice)}</p>` : ''}
+        ${designSessionListHtml()}
+        ${current ? designSessionHtml(current) : designStartFormHtml()}
+      </div></details>`;
+  }
+
   function runHtml(ov) {
     const history = (ov.cwdHistory || []).map((cwd) => `<option value="${esc(cwd)}"></option>`).join('');
     return `<section class="wf-page" aria-label="ワークフロー実行">
       <div class="wf-title"><div><h2>ワークフロー</h2><p>Gitリポジトリでフローを実行します。</p></div></div>
-      ${st.notice ? `<p class="qf-notice" role="status">${esc(st.notice)}</p>` : ''}
+      <p class="qf-notice" role="status" id="wf-notice"${st.notice ? '' : ' hidden'}>${esc(st.notice)}</p>
+      <div id="wf-design-host">${designCardHtml()}</div>
       <div class="wf-run-card">
         <label class="wf-flow-field">フロー<select id="wf-flow">${flowOptions(ov)}</select></label>
         <label class="wf-cwd-field">フォルダ<input id="wf-cwd" type="text" list="wf-cwd-history" placeholder="/path/to/repository" autocomplete="off"></label>
         <datalist id="wf-cwd-history">${history}</datalist>
         <div class="wf-flow-summary" id="wf-flow-summary" aria-live="polite">${selectedFlowSummaryHtml(ov, 'auto')}</div>
-        <label class="wf-request">依頼<textarea id="wf-request" rows="4" placeholder="実行する内容"></textarea></label>
+        <div class="wf-request">
+          <div class="wf-request-head"><span>依頼</span>
+            <div class="wf-request-tools">
+              <label class="wf-import-label">設計書を読み込む
+                <input type="file" id="wf-import" accept=".md,.markdown,.txt,text/markdown,text/plain"></label>
+              <button type="button" id="wf-template">4節の雛形</button>
+              <button type="button" id="wf-request-expand">大きく表示</button>
+            </div></div>
+          <textarea id="wf-request" rows="4"
+            placeholder="実行する内容。設計書の全文を貼り付け・ドラッグしても構いません"></textarea>
+          <p class="wf-readiness" id="wf-readiness" aria-live="polite">${readinessHtml('')}</p>
+        </div>
         <label class="wf-coherence-option"><input type="checkbox" id="wf-coherence">
           一貫性ゲート（codd-gate の差分ゲートを run 内の検証に載せ、ドキュメント置き去りを自己修復させる）</label>
         ${overridesHtml(ov)}
@@ -1042,6 +1177,132 @@
     wireRun(pane);
   }
 
+  // 設計カードだけを描き直す。実行フォームの入力（書きかけの依頼）を消さないため、
+  // ラウンドの完了待ちではページ全体を再描画しない。
+  function renderDesign() {
+    const host = $id('wf-design-host');
+    if (!host) return;
+    host.innerHTML = designCardHtml();
+    wireDesign(host);
+  }
+
+  async function loadDesign({ includeCurrent = true } = {}) {
+    try {
+      const result = await api().designSessionList();
+      st.design.sessions = result.sessions || [];
+    } catch (err) {
+      st.design.notice = String((err && err.message) || err);
+    }
+    if (!includeCurrent || !st.design.current) return;
+    try {
+      const result = await api().designSessionGet({ id: st.design.current.id });
+      st.design.current = result.session;
+    } catch {
+      st.design.current = null; // 破棄済み・壊れたセッションは選択から外すだけ
+    }
+  }
+
+  // 走っているラウンドの完了を待つ。全体ポーリング（refreshNeedsOnly）は実行画面を
+  // 描き直さないので、設計カードは自前で待つ。
+  function watchDesign() {
+    clearInterval(st.design.timer);
+    st.design.timer = null;
+    if (!st.design.current || st.design.current.runStatus !== 'running') return;
+    st.design.timer = setInterval(async () => {
+      const id = st.design.current && st.design.current.id;
+      if (!id) { clearInterval(st.design.timer); st.design.timer = null; return; }
+      try {
+        const result = await api().designSessionGet({ id });
+        if (result.session.runStatus === 'running') return;
+        st.design.current = result.session;
+        await loadDesign({ includeCurrent: false });
+        clearInterval(st.design.timer);
+        st.design.timer = null;
+        renderDesign();
+      } catch { /* 次の周回で拾う */ }
+    }, 5000);
+  }
+
+  async function startDesignRound(payload) {
+    st.design.busy = '設計中…';
+    st.design.notice = '';
+    renderDesign();
+    // cwd は入力があるときだけ送る。空欄で上書きすると、継続ラウンドで
+    // セッションが覚えているリポジトリを黙って外してしまう。
+    const cwd = $id('wf-cwd')?.value || '';
+    try {
+      const result = await api().designSessionStart({ ...(cwd ? { cwd } : {}), ...payload });
+      st.design.current = result.session;
+      await loadDesign({ includeCurrent: false });
+    } catch (err) {
+      st.design.notice = String((err && err.message) || err);
+    }
+    st.design.busy = '';
+    renderDesign();
+    watchDesign();
+  }
+
+  function wireDesign(host) {
+    if (!host) return;
+    const card = $id('wf-design');
+    if (card) card.addEventListener('toggle', () => { st.design.open = card.open; });
+    host.querySelectorAll('[data-design-open]').forEach((button) => button.addEventListener('click', async () => {
+      try {
+        const result = await api().designSessionGet({ id: button.dataset.designOpen });
+        st.design.current = result.session;
+        st.design.notice = '';
+      } catch (err) { st.design.notice = String((err && err.message) || err); }
+      renderDesign();
+      watchDesign();
+    }));
+    host.querySelector('[data-design-new]')?.addEventListener('click', () => {
+      clearInterval(st.design.timer);
+      st.design.timer = null;
+      st.design.current = null;
+      st.design.notice = '';
+      renderDesign();
+    });
+    host.querySelector('[data-design-delete]')?.addEventListener('click', async () => {
+      const id = st.design.current && st.design.current.id;
+      if (!id) return;
+      if (typeof root.confirmDialog === 'function' && !(await root.confirmDialog('この設計セッションを破棄しますか？'))) return;
+      try {
+        await api().designSessionDelete({ id });
+        st.design.current = null;
+        st.design.notice = 'セッションを破棄しました';
+      } catch (err) { st.design.notice = String((err && err.message) || err); }
+      await loadDesign({ includeCurrent: false });
+      renderDesign();
+    });
+    $id('wf-design-start')?.addEventListener('click', () => startDesignRound({
+      goal: $id('wf-design-goal')?.value || '',
+      mode: host.querySelector('input[name="wf-design-mode"]:checked')?.value || 'interactive',
+    }));
+    host.querySelector('[data-design-next]')?.addEventListener('click', () => {
+      const answers = [...host.querySelectorAll('[data-design-answer]')]
+        .sort((a, b) => Number(a.dataset.designAnswer) - Number(b.dataset.designAnswer))
+        .map((field) => field.value);
+      startDesignRound({ id: st.design.current.id, answers });
+    });
+    host.querySelector('[data-design-use]')?.addEventListener('click', () => {
+      const request = $id('wf-request');
+      const session = st.design.current;
+      if (!request || !session) return;
+      request.value = String(session.document || '');
+      if (session.cwd && $id('wf-cwd') && !$id('wf-cwd').value) $id('wf-cwd').value = session.cwd;
+      updateReadiness();
+      st.design.open = false;
+      if ($id('wf-design')) $id('wf-design').open = false;
+      request.focus();
+      request.scrollIntoView({ block: 'center' });
+    });
+  }
+
+  function updateReadiness() {
+    const badge = $id('wf-readiness');
+    if (badge) badge.innerHTML = readinessHtml($id('wf-request')?.value || '');
+  }
+
   function workflowNeeds(ov) {
     const rows = (ov.runs || []).flatMap((run) => (run.interactions || []).map((item) => ({
       ...item, runId: run.runId,
@@ -1182,8 +1443,65 @@
     }));
   }
 
+  // 100KB を超える依頼は工程の入力として重すぎる。投入は止めず、警告だけ出す。
+  const REQUEST_SIZE_WARN = 100 * 1024;
+
+  async function importDesignFile(file) {
+    if (!file) return;
+    const request = $id('wf-request');
+    if (!request) return;
+    try {
+      const text = await file.text();
+      request.value = text;
+      st.notice = text.length > REQUEST_SIZE_WARN
+        ? `${file.name} を読み込みました（${Math.round(text.length / 1024)}KB。工程へ渡すには大きすぎるかもしれません）`
+        : `${file.name} を読み込みました`;
+    } catch (err) {
+      st.notice = `設計書を読み込めませんでした: ${String((err && err.message) || err)}`;
+    }
+    updateReadiness();
+    // 画面全体を描き直すと読み込んだばかりの依頼が消えるので、報せだけ差し替える
+    const notice = $id('wf-notice');
+    if (notice) {
+      notice.textContent = st.notice;
+      notice.hidden = !st.notice;
+    }
+  }
+
+  function wireRequestTools() {
+    const request = $id('wf-request');
+    if (!request) return;
+    request.addEventListener('input', updateReadiness);
+    updateReadiness();
+    $id('wf-import')?.addEventListener('change', async (event) => {
+      await importDesignFile(event.target.files && event.target.files[0]);
+      event.target.value = '';
+    });
+    request.addEventListener('dragover', (event) => {
+      if (event.dataTransfer && [...event.dataTransfer.types].includes('Files')) event.preventDefault();
+    });
+    request.addEventListener('drop', async (event) => {
+      const file = event.dataTransfer && event.dataTransfer.files && event.dataTransfer.files[0];
+      if (!file) return;
+      event.preventDefault();
+      await importDesignFile(file);
+    });
+    $id('wf-template')?.addEventListener('click', () => {
+      request.value = request.value.trim() ? `${request.value.replace(/\s+$/, '')}\n\n${REQUEST_TEMPLATE}` : REQUEST_TEMPLATE;
+      updateReadiness();
+      request.focus();
+    });
+    $id('wf-request-expand')?.addEventListener('click', () => {
+      const expanded = request.rows > 8;
+      request.rows = expanded ? 4 : 24;
+      $id('wf-request-expand').textContent = expanded ? '大きく表示' : '元の高さ';
+    });
+  }
+
   function wireRun(pane) {
     if (!pane) return;
+    wireDesign($id('wf-design-host'));
+    wireRequestTools();
     const flowSelect = $id('wf-flow');
     const showFlowSummary = () => {
       const summary = $id('wf-flow-summary');
@@ -1205,6 +1523,7 @@
         renderRun();
         if ($id('wf-cwd')) $id('wf-cwd').value = cwd;
         if ($id('wf-request')) $id('wf-request').value = request;
+        updateReadiness();
         if ($id('wf-flow') && [...$id('wf-flow').options].some((option) => option.value === selection)) {
           $id('wf-flow').value = selection;
           showFlowSummary();
@@ -1676,6 +1995,8 @@
     nextNodePosition,
     methodPresentation,
     tierLabel,
+    readinessCheck,
+    REQUEST_TEMPLATE,
     executionOverridesForMode,
     edgePath,
     workflowLibraryHtml,

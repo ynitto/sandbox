@@ -3834,7 +3834,32 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
 .wf-selected-flow-card[data-flow-summary-type="custom"] .wf-selected-flow-content {
   grid-template-columns: minmax(0, 1fr) auto; }
 .wf-selected-flow-content > .wf-card-meta { justify-self: end; }
-.wf-request { grid-column: 1 / -1; }
+.wf-request { grid-column: 1 / -1; display: grid; gap: 6px; }
+.wf-request-head { display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  color: var(--muted); font-size: 12px; }
+.wf-request-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.wf-import-label { display: inline-flex !important; align-items: center; gap: 6px; padding: 4px 10px;
+  border: 1px solid var(--border); border-radius: 6px; cursor: pointer; }
+.wf-import-label input { width: 150px !important; font-size: 11px; }
+.wf-readiness { margin: 0; display: flex; gap: 10px; flex-wrap: wrap; font-size: 12px; }
+.wf-readiness-ok { color: var(--ok, #3fb950); }
+.wf-readiness-warn { color: var(--warn, #d29922); }
+
+/* 設計セッション: 短い要望を、実行できる設計書まで詰めるカード */
+.wf-design-card { border: 1px solid var(--border); border-radius: 10px; background: var(--bg2); padding: 12px 18px; }
+.wf-design-card > summary { cursor: pointer; font-weight: 600; display: flex; align-items: baseline; gap: 10px; }
+.wf-design-card > summary small { font-weight: 400; color: var(--muted); }
+.wf-design-body { display: grid; gap: 14px; padding-top: 14px; }
+.wf-design-sessions { display: grid; gap: 4px; max-height: 160px; overflow-y: auto; }
+.wf-design-start, .wf-design-current { display: grid; gap: 12px; }
+.wf-design-start label, .wf-design-question { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
+.wf-design-start textarea, .wf-design-question textarea { width: 100%; box-sizing: border-box; }
+.wf-design-modes { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px;
+  border: 0; padding: 0; margin: 0; }
+.wf-design-modes .orch-policy-card { display: flex; align-items: flex-start; color: inherit; font-size: inherit; }
+.wf-design-questions { display: grid; gap: 10px; }
+.wf-design-questions h4 { margin: 0; font-size: 13px; }
+.wf-design-doc pre { max-height: 320px; overflow: auto; }
 .wf-run-actions { grid-column: 1 / -1; }
 .wf-run-actions > button { min-width: 96px; }
 .wf-run-list { display: grid; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }

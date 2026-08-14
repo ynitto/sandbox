@@ -16,4 +16,8 @@ module.exports = {
   adhocFlowSnapshotSelection: (invoke) => (payload) => invoke('adhocFlow:snapshotSelection', payload || {}),
   adhocFlowPromote: (invoke) => (payload) => invoke('adhocFlow:promote', payload || {}),
   adhocFlowSaveSettings: (invoke) => (payload) => invoke('adhocFlow:saveSettings', payload || {}),
+  designSessionList: (invoke) => (payload) => invoke('designSession:list', payload || {}),
+  designSessionGet: (invoke) => (payload) => invoke('designSession:get', payload || {}),
+  designSessionStart: (invoke) => (payload) => invoke('designSession:start', payload || {}),
+  designSessionDelete: (invoke) => (payload) => invoke('designSession:delete', payload || {}),
 };
