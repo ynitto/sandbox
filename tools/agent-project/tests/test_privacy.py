@@ -25,6 +25,19 @@ class TestPrivacyRedactionContract(unittest.TestCase):
             with self.subTest(case=name), self.assertRaises(AssertionError):
                 self._assert_no_sensitive_value(self._payload(case), case)
 
+    def test_redact_for_share_replaces_each_fixture_and_preserves_safe(self):
+        for name, case in PRIVACY_FIXTURE["cases"].items():
+            with self.subTest(case=name):
+                redacted = km.redact_for_share(self._payload(case), f"fixture/{name}")
+                self._assert_redacted(redacted, case)
+                km.assert_share_safe(redacted, f"fixture/{name}")
+
+    def test_assert_share_safe_rejects_unredacted_fixture(self):
+        for name, case in PRIVACY_FIXTURE["cases"].items():
+            with self.subTest(case=name), self.assertRaises(km.ShareSafetyError) as ctx:
+                km.assert_share_safe(self._payload(case), f"fixture/{name}")
+            self.assertIn(case["marker"], str(ctx.exception))
+
     def test_brief_and_decision_outputs_redact_secrets_and_preserve_safe_values(self):
         for name, case in PRIVACY_FIXTURE["cases"].items():
             with self.subTest(case=name), tempfile.TemporaryDirectory() as tmp:
@@ -82,6 +95,21 @@ class TestPrivacyRedactionContract(unittest.TestCase):
                 km.append_brief_item(cfg, task, self._payload(case), source="fixture")
 
             self.assertFalse(km.brief_path(cfg, task).exists())
+
+    def test_redact_for_share_fails_closed_on_residual(self):
+        """置換後に同じ検査器が禁止値を残すと ShareSafetyError（書き込み前に止まる）。"""
+        residual = km.ShareSafetyError("<text>", ("TOKEN",))
+        with mock.patch.object(km, "assert_share_safe", side_effect=residual), \
+                self.assertRaises(km.ShareSafetyError) as ctx:
+            km.redact_for_share(PRIVACY_FIXTURE["cases"]["token_value"]["payload"])
+        self.assertIn("TOKEN", str(ctx.exception))
+
+    def test_redact_for_share_inspection_errors_fail_closed(self):
+        with mock.patch.object(km, "_SHARE_REDACTIONS", (
+                ("TOKEN", mock.Mock(sub=mock.Mock(side_effect=RuntimeError("boom")))),
+        )), self.assertRaises(km.ShareSafetyError) as ctx:
+            km.redact_for_share("anything")
+        self.assertIn("INSPECTION", str(ctx.exception))
 
 
 if __name__ == "__main__":
