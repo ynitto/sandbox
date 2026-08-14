@@ -112,6 +112,21 @@ version 2（`selection_policy` / `valid_until`）を additive 追加（A3。設�
 | E6 | **P4 / P5 の実測クローズ（旧計画 段3 の完了条件）。** E2 の flow 処理契約へ載せた決定化パイプ（機械が測れる基準は決定的チェッカーで足切り → モデルには残候補 × 単基準だけ）で、filter / judge の多基準セル（F2 / J1 相当）を引き直し **F1 並み（3/3 帯）**を確認。制約つき生成（字数・合計値・必須語）は `check` の語彙の機械検査 + 再投入で受かることを同じハーネスで確認する。段0 で think も空振りと確定し、決定化がローカル唯一の解 | `tools/agent-tools/eval/` `tools/agent-flow/` | E2 | 中 |
 | E7 | **旧計画 段2 の受入の明文化。** strategy=economy 相当の方針で定型 flow を完走させ、**クラウド消費 0・昇格だけがクラウドを呼ぶ**ことを候補単位 receipt（E5 の台帳）で確認する。昇格率が恒常的に高い定型は (b) 族＝ローカル不適として定型から外す（旧計画リスク表の運用をここで開始） | `tools/agent-flow/` `tools/agent-audit/` | E5・U2 | 小 |
 
+**E0 実装記録（2026-08-15・完了）。** 段1 の実機再測 3/3（中央値 313s・escalate 0）と
+`write:` 割付・check 専用機械契約・再投入の編集直行をコミット。`agents/ollama-verify.json` と
+golden LOCAL_ENGINES 反映も同時に確定（P2 分）。台帳は
+`eval/results/archive/ledger-2026-08-15-p1-live-t1gate.jsonl`。
+
+**E1 実装記録（2026-08-15・完了）。** `agentcore/executionresolver.py` に
+`resolve_execution()` と `receipt_execution_decision()`。エンジンは qualifications を
+読まない（管理面専用——C7）ため、pin の適格判定は「selection_policy 内候補」または
+「Envelope の trial 明示承認」の 2 経路だけ通し、どちらでもなければ park。壊れた
+selection_policy・未知 version・期限切れも legacy へ落とさず park（§6.6 の
+「policy がある限り legacy を再解釈しない」を安全側に固定）。契約テスト 21 件は
+schema examples を fixture に §15.1 の共通契約（再現性・blocked/unknown 除外・
+pin 非迂回・park・receipt 写像）を固定。tier 上限は pin 宣言の `tier` と workload の
+`tier` を TIER_ORDER で比較し、`tier_ceiling_override` 承認 run だけ通す。
+
 E5 を E3 / E4 の後に置くのは receipt 粒度の都合そのもの——設計書 §11.4 の指摘どおり、
 loop と amigos の receipt が候補単位になるまで自動昇格の入力が揃わない。
 E6 / E7 は旧計画から引き取った測定・受入で、実装の乗り物（E2 / E5・U2）が
