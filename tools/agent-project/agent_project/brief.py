@@ -64,15 +64,21 @@ def _brief_items(cfg: "Config", task: "Task") -> "list[str]":
 def append_brief_item(cfg: "Config", task: "Task", text, source: str = "") -> bool:
     """ブリーフへ項目を 1 件追記する（正規化・重複排除・出典コメント付き・冪等）。追記したら True。
     差し戻し（feedback / revise / gitlab-reject / cohort）とノード発見の双方から呼ばれる。
-    追記のみ＝過去の項目を上書きしないので、複数回のリトライでも最初の指摘が失われない。"""
+    追記のみ＝過去の項目を上書きしないので、複数回のリトライでも最初の指摘が失われない。
+    Phase 3: observation ID を HTML コメントへ additive 付与。同一 obs ID は再取込しない。"""
     path = f"brief/{task.id}.md"
     body = _norm_brief_item(redact_for_share(text, path))
     assert_share_safe(body, path)
     if not body:
         return False
-    if body in _brief_items(cfg, task):             # 既出は冪等に無視（決定的）
-        return False
+    rh = rules_content_hash(cfg)
+    oid = observation_id(kind="brief", body=body, source=str(source or ""),
+                         task_id=task.id, rules_hash=rh)
     p = brief_path(cfg, task)
+    if file_has_observation(p, oid):                # 同一観測は冪等に無視
+        return False
+    if body in _brief_items(cfg, task):             # 既出本文も冪等に無視（決定的・後方互換）
+        return False
     p.parent.mkdir(parents=True, exist_ok=True)
     header = ""
     if not p.exists():
@@ -81,7 +87,9 @@ def append_brief_item(cfg: "Config", task: "Task", text, source: str = "") -> bo
                   "     ap/<task-id> ブランチと同じキー＝リトライ横断で引き継がれ、build_request 経由で\n"
                   "     以後の全 run・全分散ノードへ注入される（有界・一時）。人が編集・削除してよい。 -->\n\n")
     date = datetime.now().strftime("%Y-%m-%d")
-    note = f"  <!-- {source} {date} -->" if source else f"  <!-- {date} -->"
+    # obs:<id> を既存コメントへ additive。人が読める出典・日付は維持。
+    tail = f"{source} {date}".strip() if source else date
+    note = f"  <!-- obs:{oid} {tail} -->"
     with p.open("a", encoding="utf-8") as f:
         if header:
             f.write(header)
@@ -143,12 +151,17 @@ def capture_insight(cfg: "Config", task: "Task", text, source: str,
         # タグ無し）は全体スコープのまま——タグを付けると他 charter へ効かなくなるだけで得が無い。
         _cn = task_charter_name(task)
         guide = body if _cn == "default" else f"{body} :: scope=charter:{_cn}"
+        rh = rules_content_hash(cfg)
+        oid = observation_id(kind="learn-capture", body=f"{task.title}::{guide}",
+                             source=str(source or ""), task_id=task.id, rules_hash=rh)
+        prov = build_provenance(cfg, task, learn_refs=[task.id])
         append_decision(cfg, task.id, "system",
                         context=f"{task.id}（{task.title}）の {source} 由来の教訓を捕捉",
                         action=learn_action or f"capture:{source}",
                         reason=body[:200],
                         affects=f"{task.id} の run ブリーフ＋横断 learn",
-                        learn=(task.title, guide))
+                        learn=(task.title, guide),
+                        observation=oid, provenance=prov)
     return added
 
 

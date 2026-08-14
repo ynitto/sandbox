@@ -946,10 +946,15 @@ def _settle_failure(cfg, task, vmsg, cycle, ev, reasons, location="local",
             task.extra += [("feedback", guide.replace("\n", " ⏎ ")), ("autolearned", src)]
             task.status = "ready"
             persist_task(cfg, task)
+            rh = rules_content_hash(cfg)
+            oid = observation_id(kind="learn-hit", body=f"{src}:{guide}",
+                                 source="auto-resolve", task_id=task.id, rules_hash=rh)
+            prov = build_provenance(cfg, task, learn_refs=[src])
             append_decision(cfg, task.id, "auto",
                             context=f"{task.id}（{task.title}）を学習で自動解決",
                             action="auto-resolve", reason=f"learned from {src}: {guide[:120]}",
-                            affects=f"{task.id} → ready")
+                            affects=f"{task.id} → ready",
+                            observation=oid, provenance=prov)
             append_journal(cfg.journal, f"cycle {cycle}: {task.id} 学習で自動解決"
                                         f"（{src} に倣う・通知を抑制）")
         else:

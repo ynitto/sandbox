@@ -42,6 +42,7 @@ _FRAGMENTS = (
     #                （稼働レジストリと start・stop・restart は W1-9 で削除済み）
     "state",       # 状態 worktree
     "rules",       # rules.md（恒常ルール）
+    "knowledge",   # knowledge-observation envelope（Phase 3・brief/decisions より前）
     "brief",       # run ブリーフ（run/branch スコープ・差し戻し意図とノード発見制約の蓄積・伝播）
     "needs",       # 通知・フィードバック / impact・reject
     "prioritize",  # 優先順位 / assess / spec ルーティング / triage

@@ -96,6 +96,10 @@ def build_parser() -> argparse.ArgumentParser:
                         "パス。agent-project が stable_prefix 有効時に charter/rules.md/"
                         "リポジトリ理解を request 本体から外して渡す。run の meta.json へ一度だけ"
                         "固定され、planner・worker・evaluator の全プロンプト先頭へ前置される")
+    p.add_argument("--knowledge-file", dest="knowledge_file", default=None,
+                   help="知識注入メタ（rules.md content hash / skill 参照）の JSON ファイル。"
+                        "agent-project が build_request 時に渡す。run の meta.json の knowledge キーへ"
+                        "素通し固定するだけで解釈しない（Phase 3 knowledge-observation）")
     p.add_argument("--no-session-commands", dest="no_session_commands",
                    action="store_true", default=False,
                    help="セッション開始コマンド（agent-session-commands）の実行を無効化する"

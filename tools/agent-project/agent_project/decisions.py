@@ -35,18 +35,28 @@ def latest_dr_id(cfg: "Config", tid: str) -> str:
 def append_decision(cfg: "Config", tid: str, actor: str, context: str,
                     action: str, reason: str, affects: str,
                     learn: "tuple[str, str] | None" = None,
-                    avoid: "tuple[str, str] | None" = None) -> str:
+                    avoid: "tuple[str, str] | None" = None,
+                    observation: "str | None" = None,
+                    provenance: "dict | None" = None) -> str:
     """決定記録を追記。learn=(title, guidance) を渡すと『- learn:』行を残し、
     将来 find_learned_resolution が類似タスクへ自動適用できる学習材料にする。
     avoid=(title, reason) を渡すと『- avoid:』行を残し、hold/deny の予防知識として
-    投入/triage 時の類似タスク検出（find_avoidance）に使えるようにする。"""
+    投入/triage 時の類似タスク検出（find_avoidance）に使えるようにする。
+    Phase 3: observation / provenance を additive に残す（同一 observation ID は追記しない）。"""
     cfg.decisions.mkdir(parents=True, exist_ok=True)
     path = decision_path(cfg, tid)
+    # 観測 ID が既にあれば冪等 no-op（git 再取込・二重捕捉でも DR を増やさない）
+    if observation and file_has_observation(path, str(observation)):
+        return ""
     dr = next_dr_id(path)
     date = datetime.now().strftime("%Y-%m-%d")
     block = (f"## {dr}  {date}  actor: {actor}\n"
              f"- context : {context}\n- action  : {action}\n"
              f"- reason  : {reason}\n- affects : {affects}\n")
+    if observation:
+        block += f"- observation: {observation}\n"
+    if provenance:
+        block += format_provenance_line(provenance) + "\n"
     if learn:
         title, guide = learn
         block += f"- learn: {title.replace(chr(10), ' ')} :: {guide.replace(chr(10), ' ')}\n"

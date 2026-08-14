@@ -141,6 +141,28 @@ class Bus:
         write_json_atomic(self.meta_path, meta)
         return True
 
+    def snapshot_knowledge(self, path: "str | None") -> bool:
+        """知識注入メタ（`--knowledge-file`）を run の meta.json へ素通し固定する。
+        agent-project が rules.md content hash と skill 参照を渡す。本ツールは中身を解釈せず、
+        receipt / result / final へ引き継げるよう meta.knowledge に置くだけ（冪等）。"""
+        meta = read_json(self.meta_path) or {}
+        if meta.get("status") in TERMINAL:
+            return False
+        if isinstance(meta.get("knowledge"), dict):
+            return False
+        if not path:
+            return False
+        try:
+            with open(path, encoding="utf-8") as f:
+                raw = json.load(f)
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return False
+        if not isinstance(raw, dict) or not raw:
+            return False
+        meta["knowledge"] = raw
+        write_json_atomic(self.meta_path, meta)
+        return True
+
     def run_workspace(self) -> "dict | None":
         """この run の唯一の書込先ワークスペース spec（meta に記録）。無ければ None（読み取り専用 run）。"""
         meta = read_json(self.meta_path) or {}

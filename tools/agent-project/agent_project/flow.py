@@ -225,6 +225,10 @@ def build_agent_flow_cmd(task: Task, cfg: "Config", use_git: bool = False,
     ctx_file = _context_file_for(task, cfg)
     if ctx_file:
         base += ["--context-file", ctx_file]
+    # Phase 3: rules hash / skill 参照を run meta.knowledge へ素通し（agent-flow は解釈しない）
+    kn_file = write_knowledge_file(cfg, task)
+    if kn_file:
+        base += ["--knowledge-file", kn_file]
     cmd = (base + _workspace_cmd_args(cfg, task)
            + _reference_cmd_args(cfg, task) + [
         "run", build_request(task, cfg), *_task_flow_cmd_args(task, cfg), "--planner", cfg.flow_planner,
