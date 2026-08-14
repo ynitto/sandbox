@@ -7,6 +7,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-aider / agent-ollama / agent-opencode: 非ログイン起動でもプロキシを迂回して ollama へ届くようにした
+
+エンジンからの非ログイン subprocess では ~/.profile の export が届かず、agent-aider が
+既定の localhost へ向かうか、接続が社内プロキシへ流れて 504 Gateway Timeout で落ちていた。
+agent-ollama だけが持っていた ~/.profile 補完を 3 つの CLI へ広げ、プロキシ迂回まで面倒を見る。
+
+- **~/.profile 補完の対象拡大**: `OLLAMA_*` / `AGENT_OLLAMA_*` に加えて `NO_PROXY` / `no_proxy` を
+  取り込む。`OLLAMA_HOST` / `OLLAMA_API_BASE` / `NO_PROXY` が揃っていれば profile は読まない
+- **相互補完**: `OLLAMA_HOST` ⇄ `OLLAMA_API_BASE` を相互に補う（aider/litellm は API base しか
+  読まないため、片方しか export していない環境でも両方の読み手が同じサーバへ向く）
+- **プロキシ迂回の保証**: ollama のホストを `NO_PROXY` / `no_proxy` の両表記へ常に追記する。
+  親環境が不完全な `NO_PROXY` を持っていても迂回が効く
+- **適用範囲**: agent-aider と agent-opencode は単体ファイル配布で agentcore を import
+  できないため、正典（agentcore/ollama_adapter.py）の複製を持つ。テストで 3 箇所の
+  振る舞い一致を担保
+- aider.json に 504 / ProxyError を env 分類する診断ヒントを追加
+
 ### agent-dashboard: 依頼を設計書まで詰めてからワークフローを実行できるようにした
 
 依頼欄に何をどこまで書けばよいか分からず手が止まる問題への対策。外で書いた設計書を持ち込む経路と、

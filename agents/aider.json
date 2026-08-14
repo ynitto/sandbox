@@ -33,6 +33,9 @@
       "hint": "文脈が足りません。ファイルの割付を減らすか、モデル設定の num_ctx を上げてください（aider の ollama 既定は 8k）" },
     { "match": "litellm.Timeout|Read timed out",
       "class": "transient",
-      "hint": "推論がタイムアウトしました。リトライで解けることが多いですが、続くなら ollama の負荷とメモリを確認してください" }
+      "hint": "推論がタイムアウトしました。リトライで解けることが多いですが、続くなら ollama の負荷とメモリを確認してください" },
+    { "match": "504|Gateway Time.?out|ProxyError",
+      "class": "env",
+      "hint": "接続がプロキシへ流れています。NO_PROXY/no_proxy に ollama のホストが入っているか、OLLAMA_API_BASE が正しいかを確認してください（agent-aider は ~/.profile から補完します）" }
   ]
 }
