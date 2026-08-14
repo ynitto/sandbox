@@ -1349,6 +1349,9 @@ function _engineSelf(cfg) {
 // この PC のノードは engine/status.json の心拍で判定する（生存の唯一の根拠がそこにある）。
 // 他の PC は状態リポジトリ越しにこのファイルしか見えないので従来どおり鮮度で見るが、
 // 意味は「最後に作業が進んだ時刻」であって「応答が無い」ではない——文言は画面側が分ける。
+//
+// Phase5: budget 射影（capacity / reason_codes / reserved）を一次データとして添える。
+// board は呼び出し側が重ねる（ここでは状態リポジトリだけを読む＝board 非依存）。
 function readNodeStatuses(dir, cfg) {
   const self = _engineSelf(cfg);
   const sdir = path.join(dir, 'status');
@@ -1363,18 +1366,145 @@ function readNodeStatuses(dir, cfg) {
     const node = String(rec.node || f.replace(/\.json$/, ''));
     const isSelf = !!self.node && node.trim().toLowerCase() === self.node;
     const fileFresh = ageSec !== null && ageSec >= 0 && ageSec <= freshSec;
+    const budget = summarizeBudgetProjection(rec.budget, {
+      fresh: fileFresh,
+      ageSec,
+      freshAfterSec: freshSec,
+    });
     out.push({
       node,
       host: String(rec.host || ''),
       running: isSelf ? self.running : fileFresh,
       self: isSelf,
       ageSec: ageSec === null ? null : Math.round(ageSec),
+      fresh: fileFresh,
+      freshAfterSec: freshSec,
       paused: !!rec.paused,
       level: rec.level,
       watch: rec.watch,
+      budget,
+      source: 'status',
     });
   }
   return out.sort((a, b) => String(a.node).localeCompare(String(b.node)));
+}
+
+// node-budget-summary 射影の表示用要約（読取専用。can_accept は再計算しない）。
+// reason_codes 語彙は schemas/node-budget-summary.schema.json と同一（U5 突き合わせ）。
+const BUDGET_REASON_CODES = Object.freeze([
+  'unlimited', 'ok', 'soft', 'exceeded', 'time_exceeded',
+  'token_exceeded', 'degrade', 'unavailable',
+]);
+const BUDGET_SUMMARY_CONTRACT_VERSION = 1;
+
+function summarizeBudgetProjection(budget, meta = {}) {
+  if (!budget || typeof budget !== 'object') {
+    return null;
+  }
+  const cap = budget.capacity && typeof budget.capacity === 'object' ? budget.capacity : {};
+  const codes = Array.isArray(budget.reason_codes)
+    ? budget.reason_codes.map(String)
+    : [];
+  const ver = Number(budget.contract_version);
+  const source = String(budget.source || '');
+  let kind = 'unknown';
+  if (meta.fresh === false || source === 'unavailable'
+      || (Number.isFinite(ver) && ver !== BUDGET_SUMMARY_CONTRACT_VERSION)
+      || budget.can_accept === undefined || budget.can_accept === null) {
+    kind = 'unknown';
+  } else if (budget.can_accept === false) {
+    kind = 'exhausted';
+  } else if (budget.can_accept === true) {
+    kind = 'ok';
+  }
+  return {
+    contractVersion: Number.isFinite(ver) ? ver : null,
+    source,
+    canAccept: typeof budget.can_accept === 'boolean' ? budget.can_accept : null,
+    reasonCodes: codes,
+    unit: budget.unit == null ? null : String(budget.unit),
+    limit: cap.limit == null ? null : Number(cap.limit),
+    used: cap.used == null ? null : Number(cap.used),
+    reserved: cap.reserved == null ? null : Number(cap.reserved),
+    enforce: !!budget.enforce,
+    kind,
+    fresh: meta.fresh !== false,
+    workload: budget.workload ? String(budget.workload) : '',
+  };
+}
+
+// 知識裁定一覧（decisions の rule-lifecycle / rule-outcome / learn を集約。読取専用）。
+function readKnowledgeRules(dir) {
+  const decisionsDir = path.join(dir, 'decisions');
+  const needsDir = path.join(dir, 'needs');
+  const final = new Map();
+  const sources = new Map();
+  const guides = new Map();
+  const outcomes = new Map();
+  const hitCounts = new Map();
+  const lifeRe = /^- rule-lifecycle:\s*(obs-[0-9a-f]{16})\s+(\S+)\s*$/;
+  const outRe = /^- rule-outcome:\s*(obs-[0-9a-f]{16})\s+(worked|misfire|suppressed)\s*$/;
+  const learnRe = /^- learn:\s*"([^"]*)"\s*→\s*(.+)$/;
+  const hitRe = /^- action\s*:\s*learn-hit\b/;
+
+  for (const f of safeList(decisionsDir)) {
+    if (!f.endsWith('.md')) continue;
+    const text = readText(path.join(decisionsDir, f)) || '';
+    const stem = f.replace(/\.md$/, '');
+    let hits = 0;
+    for (const line of text.split('\n')) {
+      const s = line.trim();
+      let m = lifeRe.exec(s);
+      if (m) {
+        final.set(m[1], m[2]);
+        if (!sources.has(m[1])) sources.set(m[1], new Set());
+        sources.get(m[1]).add(stem);
+      }
+      m = outRe.exec(s);
+      if (m) {
+        const tallies = outcomes.get(m[1]) || { worked: 0, misfire: 0, suppressed: 0 };
+        tallies[m[2]] = (tallies[m[2]] || 0) + 1;
+        outcomes.set(m[1], tallies);
+      }
+      if (hitRe.test(s)) hits += 1;
+      m = learnRe.exec(s);
+      if (m) {
+        // rule_id は本体と同じく observation_id。画面では stem+guide をキーに近似せず、
+        // lifecycle 行が無い候補は guide だけ見せる（ID 再計算は本体に任せる）。
+        guides.set(`learn:${stem}`, String(m[2] || '').trim().slice(0, 160));
+        hitCounts.set(stem, (hitCounts.get(stem) || 0));
+      }
+    }
+    if (hits) hitCounts.set(stem, hits);
+  }
+
+  const conflicts = new Set();
+  for (const f of safeList(needsDir)) {
+    if (!f.startsWith('rule-') || !f.endsWith('.md')) continue;
+    const body = readText(path.join(needsDir, f)) || '';
+    for (const m of body.matchAll(/obs-[0-9a-f]{16}/g)) conflicts.add(m[0]);
+  }
+
+  const rows = [];
+  for (const [rid, state] of [...final.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+    const tallies = outcomes.get(rid) || { worked: 0, misfire: 0, suppressed: 0 };
+    const srcs = [...(sources.get(rid) || [])];
+    const hits = srcs.reduce((n, s) => n + (hitCounts.get(s) || 0), 0);
+    rows.push({
+      ruleId: rid,
+      state,
+      sources: srcs,
+      guide: '',
+      outcomes: tallies,
+      hits,
+      evidenceOk: (tallies.worked || 0) >= 1,
+      conflict: conflicts.has(rid),
+      pass: tallies.worked || 0,
+      fail: tallies.misfire || 0,
+      suppressed: tallies.suppressed || 0,
+    });
+  }
+  return rows;
 }
 
 // この PC の実行エンジンが監督している子のうち、状態の置き場が dir と同じものを返す。
@@ -2041,6 +2171,7 @@ function readProject(workspaceDir, cfg) {
     projectCheck: projectCheckStatus(projectCfg),
     liveness: projectLiveness(dir, undefined, cfg),
     nodes: readNodeStatuses(dir, cfg),   // 複数 PC 分散運用のノード別生存一覧（無ければ空）
+    knowledgeRules: readKnowledgeRules(dir),  // Phase5: ルール裁定一画面（読取）
     busDir: bus.busDir,
     hasBus: bus.hasBus,
     busSource: bus.source,
@@ -2066,6 +2197,10 @@ module.exports = {
   listCommandReceipts,
   commandArtifactIsCurrent,
   readNodeStatuses,
+  summarizeBudgetProjection,
+  readKnowledgeRules,
+  BUDGET_REASON_CODES,
+  BUDGET_SUMMARY_CONTRACT_VERSION,
   _splitDiff,
   _deliveryFromDetail,
   _extractMrUrls,

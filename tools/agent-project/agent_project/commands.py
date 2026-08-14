@@ -841,6 +841,10 @@ def cmd_revise(cfg: Config, tid: str, fields: dict, feedback: str, reason: str,
 COMMAND_ACTIONS = ("approve", "mr-create", "retry-mr", "hold", "pin", "defer", "revise",
                    "reject", "force-complete")
 
+# Phase5: 知識ルール裁定（dashboard は第二 writer にならず commands/ 投函のみ）
+RULE_COMMAND_ACTIONS = ("rule-promote", "rule-suspend", "rule-revise", "rule-deprecate",
+                        "promote", "suspend", "deprecate")  # promote/suspend/deprecate は rule_id 必須時のみ
+
 
 def commands_dir(cfg: "Config") -> Path:
     return cfg.backlog.parent / "commands"
@@ -974,6 +978,25 @@ def ingest_commands(cfg: "Config") -> "list[str]":
         action = str(rec.get("command", "")).strip()
         tid = str(rec.get("id", "")).strip()
         reason = str(rec.get("reason", "") or "").strip() or "commands/ からの指示"
+        # Phase5: rule 裁定（promote/suspend/revise/deprecate）。id は rule_id (obs-…)。
+        rule_id = str(rec.get("rule_id") or "").strip()
+        if action in ("rule-promote", "rule-suspend", "rule-revise", "rule-deprecate") or (
+                action in ("promote", "suspend", "deprecate", "revise") and rule_id):
+            rid = rule_id or tid
+            rc, detail = apply_rule_command(
+                cfg, action, rid, reason, str(rec.get("guide") or "").strip())
+            if rc == 0:
+                _write_command_receipt(cfg, f, action, rid, detail=detail)
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+                append_journal(cfg.journal,
+                               f"commands 取り込み: {action} {rid}（{f.name}・{detail}）")
+                done.append(f"{action}:{rid}")
+            else:
+                _reject_command(cfg, f, detail or f"{action} が失敗 (exit {rc})")
+            continue
         if action == "revive":
             # プロジェクト単位（id ではなく title 指定）: 墓標を解除して、却下したタスクを
             # 再び提案されうる状態へ戻す。**却下（reject）の取り消し口**——却下は墓標を

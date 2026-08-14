@@ -312,6 +312,164 @@ def append_rule_outcome(cfg: "Config", src: str, rule_id: str, outcome: str) -> 
         f.write(f"- rule-outcome: {rid} {out}\n")
 
 
+def list_rule_adjudication(cfg: "Config") -> "list[dict]":
+    """dashboard 知識画面用: rule ごとの状態・outcome・根拠・競合を 1 一覧に集約（読取専用）。"""
+    final: dict[str, str] = {}
+    sources: dict[str, set[str]] = {}
+    guides: dict[str, str] = {}
+    for src, text in _iter_decision_texts(cfg):
+        for line in text.splitlines():
+            m = _RULE_LIFECYCLE_RE.match(line.strip())
+            if m and m.group("state") in RULE_LIFECYCLE_STATES:
+                rid = m.group("id")
+                final[rid] = m.group("state")
+                sources.setdefault(rid, set()).add(src)
+    # learn 行から guide を拾う（rule_id 再計算で突合）
+    if cfg.decisions.exists():
+        for f in sorted(cfg.decisions.glob("*.md")):
+            try:
+                lines = f.read_text(encoding="utf-8").splitlines()
+            except OSError:
+                continue
+            for line in lines:
+                m = LEARN_RE.match(line.strip())
+                if not m:
+                    continue
+                rid = rule_id_for_guide(m.group("guide"), f.stem)
+                body, _scope = split_learn_scope(m.group("guide"))
+                guides.setdefault(rid, body.strip()[:160])
+                sources.setdefault(rid, set()).add(f.stem)
+                final.setdefault(rid, rule_lifecycle_state(cfg, rid))
+
+    conflicts: set[str] = set()
+    if cfg.needs.exists():
+        for nf in cfg.needs.glob("rule-*.md"):
+            try:
+                body = nf.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            for m in re.finditer(r"obs-[0-9a-f]{16}", body):
+                conflicts.add(m.group(0))
+
+    out: list[dict] = []
+    hits_map = count_learn_hits(cfg)
+    for rid in sorted(set(final) | set(guides)):
+        agg = aggregate_rule_outcomes(cfg, rid)
+        st = final.get(rid) or rule_lifecycle_state(cfg, rid)
+        evidence_ok = int(agg.get("worked") or 0) >= 1
+        out.append({
+            "rule_id": rid,
+            "state": st,
+            "guide": guides.get(rid, ""),
+            "sources": sorted(sources.get(rid) or []),
+            "outcomes": {
+                "worked": int(agg.get("worked") or 0),
+                "misfire": int(agg.get("misfire") or 0),
+                "suppressed": int(agg.get("suppressed") or 0),
+                "misfire_streak": int(agg.get("misfire_streak") or 0),
+            },
+            "hits": sum(hits_map.get(s, 0) for s in (sources.get(rid) or [])),
+            "evidence_ok": evidence_ok,
+            "conflict": rid in conflicts,
+        })
+    return out
+
+
+def _set_rules_md_state(cfg: "Config", rule_id: str, state: str) -> None:
+    """rules.md 表示用 state コメントを更新（正本は rule-lifecycle）。"""
+    p = rules_path(cfg)
+    if not p.exists():
+        return
+    try:
+        text = p.read_text(encoding="utf-8")
+    except OSError:
+        return
+    new = _rewrite_rule_state_in_rules_md(text, rule_id, state)
+    if new != text:
+        p.write_text(new, encoding="utf-8")
+
+
+def apply_rule_command(cfg: "Config", action: str, rule_id: str, reason: str = "",
+                       guide: str = "") -> "tuple[int, str]":
+    """人の rule 裁定（promote/suspend/revise/deprecate）。dashboard は commands/ 投函のみ。
+
+    戻り値: (exit_code, detail)。0=受理。第二の書き手にならず、decisions へ append-only。
+    """
+    rid = str(rule_id or "").strip()
+    act = str(action or "").strip().lower().replace("_", "-")
+    if act.startswith("rule-"):
+        act = act[5:]
+    if not rid or not re.match(r"^obs-[0-9a-f]{16}$", rid):
+        return 2, "rule_id は obs-+16hex 形式が必要"
+    if act not in ("promote", "suspend", "revise", "deprecate"):
+        return 2, f"未知の rule 操作: {action}"
+    # 出典 DR: 既存 sources の先頭、無ければ rule 専用
+    srcs = []
+    for item in list_rule_adjudication(cfg):
+        if item["rule_id"] == rid:
+            srcs = list(item.get("sources") or [])
+            break
+    src = srcs[0] if srcs else f"rule-{rid[4:12]}"
+    why = str(reason or "").strip() or f"commands/ rule-{act}"
+    cur = rule_lifecycle_state(cfg, rid)
+
+    if act == "promote":
+        # trial→active（outcome 条件を人が明示上書き）。candidate/suspended は trial 経由。
+        if cur in ("candidate", "suspended", "rejected"):
+            append_rule_lifecycle(cfg, src, rid, "trial", why=why)
+            cur = "trial"
+        if cur == "trial":
+            append_rule_lifecycle(cfg, src, rid, "active", why=why)
+            if int(aggregate_rule_outcomes(cfg, rid).get("worked") or 0) < 1:
+                append_rule_outcome(cfg, src, rid, "worked")
+        elif cur == "active":
+            return 0, "already active"
+        else:
+            return 2, f"promote できない状態: {cur}"
+        _set_rules_md_state(cfg, rid, "active")
+        return 0, "promoted to active"
+
+    if act == "suspend":
+        if cur in RULE_EXCLUDED_STATES and cur != "suspended":
+            return 2, f"suspend できない状態: {cur}"
+        append_rule_lifecycle(cfg, src, rid, "suspended", why=why)
+        _set_rules_md_state(cfg, rid, "suspended")
+        return 0, "suspended"
+
+    if act == "deprecate":
+        append_rule_lifecycle(cfg, src, rid, "deprecated", why=why)
+        _set_rules_md_state(cfg, rid, "deprecated")
+        return 0, "deprecated"
+
+    # revise: 文言改定は needs へ（自動マージしない）。状態は trial へ戻す。
+    if cur in ("deprecated", "rejected"):
+        return 2, f"revise できない状態: {cur}"
+    append_rule_lifecycle(cfg, src, rid, "trial", why=why)
+    _set_rules_md_state(cfg, rid, "trial")
+    g = str(guide or "").strip()
+    note = g[:200] if g else why[:200]
+    cfg.needs.mkdir(parents=True, exist_ok=True)
+    tid = f"rule-revise-{rid[4:12]}"
+    path = needs_path(cfg, tid)
+    if not path.exists():
+        path.write_text(
+            f"# ルール改定: {tid}\n\n"
+            f"## Context and Problem Statement\n\n"
+            f"- なぜ: {why}\n"
+            f"- rule: {rid}\n"
+            f"- 改定メモ: {note}\n"
+            f"- 状態: needs（人が rules.md を編集して確定）\n\n"
+            f"{DECISION_MARKER}\n\n"
+            f"- [ ] 確定（このボックスを [x] にして保存すると取り込みます）\n",
+            encoding="utf-8")
+    append_decision(cfg, src, cfg.actor,
+                    context=f"rule 改定 {rid}",
+                    action="rule-revise",
+                    reason=why[:160],
+                    affects=f"needs/{tid}.md")
+    return 0, "revised→trial + needs"
+
+
 def maybe_suspend_rule(cfg: "Config", src: str, rule_id: str, limit: int) -> bool:
     """悪化時 fail-close suspension。trial/active のみ。人手 manual は触らない。"""
     st = rule_lifecycle_state(cfg, rule_id)

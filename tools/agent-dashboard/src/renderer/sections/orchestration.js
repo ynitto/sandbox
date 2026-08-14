@@ -878,9 +878,12 @@ function boardParticipationHtml() {
         <td>${n.stale ? '<span class="muted">応答なし</span>' : '稼働中'}</td>
         <td>${esc([...(n.workloads || []), ...(n.tags || []), ...(n.agentCli || [])].join('・') || '—')}</td>
         <td>${esc((n.repos || []).join('・') || '—')}</td>
-        <td>${n.contractVersion ? esc(String(n.contractVersion)) : '<span class="muted">未宣言</span>'}</td>
+        <td>${n.budget
+          ? esc(`${(n.budget.reasonCodes || []).join(',') || '—'} / 予約 ${n.budget.reserved == null ? '—' : n.budget.reserved}（${n.budget.kind || 'unknown'}）`)
+          : '<span class="muted">射影なし</span>'}</td>
+        <td>${esc(n.eligibilityNote || (n.contractVersion ? `版 ${n.contractVersion}` : '未宣言'))}</td>
       </tr>`).join('')
-    : '<tr><td colspan="5" class="muted">まだどの端末も参加を宣言していません</td></tr>';
+    : '<tr><td colspan="6" class="muted">まだどの端末も参加を宣言していません</td></tr>';
   const intake = (board.intakeProjects || []).length
     ? `落札した仕事は ${esc((board.intakeProjects || []).join('・'))} で実行します`
     : board.nodeDirect
@@ -891,11 +894,11 @@ function boardParticipationHtml() {
   return `<h3>ほかの端末との仕事のやり取り</h3>
     <p class="field-help">端末名: <span class="mono">${esc(board.selfName || '')}</span> ／
     参加先: <span class="mono">${esc(board.location || '')}</span> ／ 募集中 ${board.openDelegations} 件 ／
-    申込中 ${(board.myBids || []).length} 件。${esc(intake)}。</p>
+    申込中 ${(board.myBids || []).length} 件。${esc(intake)}。利用枠は状態リポジトリが一次で、板は重ね表示です。</p>
     ${err}
     <div class="table-scroll"><table class="board-nodes">
       <thead><tr><th>端末</th><th>状態</th><th>引き受けられるもの</th>
-        <th>手元にあるリポジトリ</th><th>版</th></tr></thead>
+        <th>手元にあるリポジトリ</th><th>利用枠</th><th>適格性</th></tr></thead>
       <tbody>${rows}</tbody></table></div>`;
 }
 

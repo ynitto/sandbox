@@ -399,15 +399,27 @@ function boardDelegationSummary(task) {
   if (!view) return '';
   const assignee = (view.units && view.units[0] && view.units[0].assignee) || '';
   const bids = ((view.units && view.units[0] && view.units[0].bids) || [])
-    .filter((b) => b.state !== 'expired').length;
+    .filter((b) => b.state !== 'expired');
+  const eligibility = (who) => {
+    const node = (state.boardNodes || []).find((n) => String(n.name) === String(who));
+    return node && node.eligibilityNote ? `〔${node.eligibilityNote}〕` : '';
+  };
   if (view.phase === 'open') {
-    return bids ? `委任先: 未定（入札 ${bids} 件）` : '委任先: 未定（入札を待っています）';
+    if (!bids.length) return '委任先: 未定（入札を待っています）';
+    const detail = bids.slice(0, 3).map((b) => `${b.who}${eligibility(b.who)}`).join(' / ');
+    return `委任先: 未定（入札 ${bids.length} 件: ${detail}）`;
   }
-  if (view.phase === 'done') return `委任先: ${assignee || '不明'} — 完了`;
-  if (view.phase === 'failed') return `委任先: ${assignee || '不明'} — 失敗`;
+  if (view.phase === 'done') {
+    return `委任先: ${assignee || '不明'}${eligibility(assignee)} — 完了`;
+  }
+  if (view.phase === 'failed') {
+    return `委任先: ${assignee || '不明'}${eligibility(assignee)} — 失敗`;
+  }
   if (view.phase === 'cancelled') return '委任: 中止されました';
-  if (view.phase === 'waiting') return `委任先: ${assignee || '不明'} — 待機中`;
-  return `委任先: ${assignee || '不明'} — 実行中`;
+  if (view.phase === 'waiting') {
+    return `委任先: ${assignee || '不明'}${eligibility(assignee)} — 待機中`;
+  }
+  return `委任先: ${assignee || '不明'}${eligibility(assignee)} — 実行中`;
 }
 
 // タスク詳細の「委任」行。中止は板へ直接書かず、この端末の常駐体へ指示を投函する。

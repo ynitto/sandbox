@@ -243,7 +243,11 @@ def doctor_coordination_findings(cfg: "Config") -> "list[dict]":
     coordination は設定キーでなく観測で決まる（実装計画 W1-8）ため、`_coordination_active` が
     False の間はこの検査自体が無関係（origin が無い／取り合うピアがいなければ以下は起こり得ない）。
     「origin が無い」チェックは旧版にあったが、外側のゲートと同じ条件を二重に見るだけの
-    到達不能コードになったため削除した。"""
+    到達不能コードになったため削除した。
+
+    Phase5（P5）の stale 射影 / 孤立 reservation / 根拠なし active / 未知 rule hash は
+    `doctor_credit_knowledge_findings` が担う（本関数の拡張点。board 無しでも走るよう
+    cmd_doctor から常時呼ぶ）。"""
     if not _coordination_active(cfg):
         return []
     findings: list[dict] = []
@@ -264,6 +268,292 @@ def doctor_coordination_findings(cfg: "Config") -> "list[dict]":
         add("availability 設定が不正", json.dumps(getattr(cfg, "availability", {}), ensure_ascii=False),
             "timezone と daily_stop(HH:MM) を修正する")
     return findings
+
+
+# Phase5: 分散クレジット射影 + 知識ライフサイクルの決定的所見（読み取り専用）。
+_PHASE3_RULES_HASH_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+_LIVE_RESERVATION_STATES = frozenset({"live", "open", "held", "active", ""})
+
+
+def _doctor_parse_iso(value: str):
+    try:
+        return datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _doctor_status_fresh(rec: dict, *, at: "datetime | None" = None) -> "bool | None":
+    """親 status の updated_iso + fresh_after_sec。判定不能は None（不明≠枯渇）。"""
+    updated = _doctor_parse_iso(rec.get("updated_iso") or rec.get("heartbeat") or "")
+    if updated is None:
+        return None
+    try:
+        fresh_sec = float(rec.get("fresh_after_sec", 120.0) or 120.0)
+    except (TypeError, ValueError):
+        fresh_sec = 120.0
+    now = (at or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    return (now - updated.astimezone(timezone.utc)).total_seconds() <= fresh_sec
+
+
+def _doctor_read_json(path: Path) -> "dict | None":
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def _doctor_iter_status_projections(root: Path) -> "list[tuple[str, dict, str]]":
+    """(node, record, place) — place は status|board。"""
+    out: "list[tuple[str, dict, str]]" = []
+    sdir = root / "status"
+    if sdir.is_dir():
+        for path in sorted(sdir.glob("*.json")):
+            rec = _doctor_read_json(path)
+            if not rec:
+                continue
+            node = str(rec.get("node") or path.stem).strip()
+            out.append((node, rec, "status"))
+    return out
+
+
+def _doctor_iter_board_projections(board_root: "str | None") -> "list[tuple[str, dict, str]]":
+    out: "list[tuple[str, dict, str]]" = []
+    if not board_root:
+        return out
+    ndir = Path(board_root) / "nodes"
+    if not ndir.is_dir():
+        return out
+    for path in sorted(ndir.glob("*.json")):
+        rec = _doctor_read_json(path)
+        if not rec:
+            continue
+        node = str(rec.get("node") or path.stem).strip()
+        # 板は heartbeat が鮮度時計。status 形へ畳む（status_budget_gate と同契約）。
+        folded = dict(rec)
+        if "updated_iso" not in folded and folded.get("heartbeat"):
+            folded["updated_iso"] = folded["heartbeat"]
+        if "availability" not in folded:
+            folded["availability"] = "active"
+        out.append((node, folded, "board"))
+    return out
+
+
+def _doctor_iter_reservations(root: Path) -> "list[dict]":
+    """reservations/*.json（Phase2 writer が置く）。無い／読めないものは空。"""
+    rdir = root / "reservations"
+    if not rdir.is_dir():
+        return []
+    out: list[dict] = []
+    for path in sorted(rdir.glob("*.json")):
+        rec = _doctor_read_json(path)
+        if not rec:
+            continue
+        item = dict(rec)
+        item.setdefault("reservation_id", path.stem)
+        item["_path"] = str(path)
+        out.append(item)
+    return out
+
+
+def _doctor_task_claim_fields(root: Path, task_id: str) -> "dict | None":
+    path = root / "backlog" / f"{task_id}.md"
+    if not path.is_file():
+        return None
+    try:
+        body = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    fields = dict(re.findall(r"^- ([a-z_]+)\s*:\s*(.*)$", body, re.M))
+    status_m = re.search(r"^status:\s*(\S+)", body, re.M)
+    if status_m:
+        fields["status"] = status_m.group(1).strip()
+    return fields
+
+
+def doctor_budget_projection_findings(cfg: "Config",
+                                     board_root: "str | None" = None,
+                                     at: "datetime | None" = None) -> "list[dict]":
+    """stale 射影と孤立 reservation（状態リポジトリ一次・board は任意重ね）。"""
+    findings: list[dict] = []
+    root = Path(cfg.backlog).parent
+    now = (at or datetime.now(timezone.utc)).astimezone(timezone.utc)
+
+    def add(title: str, evidence: str, fix: str, severity: str = "warn") -> None:
+        findings.append({"category": "config", "severity": severity, "title": title,
+                         "evidence": evidence, "fix": fix})
+
+    for node, rec, place in (_doctor_iter_status_projections(root)
+                             + _doctor_iter_board_projections(board_root)):
+        budget = rec.get("budget")
+        if not isinstance(budget, dict):
+            continue
+        fresh = _doctor_status_fresh(rec, at=now)
+        ver = budget.get("contract_version")
+        source = str(budget.get("source", "") or "")
+        stale_reasons = []
+        if fresh is False:
+            stale_reasons.append("parent_stale")
+        if ver is not None and ver != getattr(_boardrules, "BUDGET_SUMMARY_CONTRACT_VERSION", 1):
+            stale_reasons.append(f"contract_version={ver}")
+        if source == "unavailable":
+            stale_reasons.append("source=unavailable")
+        if stale_reasons:
+            add(f"stale な利用枠射影（{place}:{node or '-'}）",
+                f"reasons={stale_reasons} can_accept={budget.get('can_accept')} "
+                f"reason_codes={budget.get('reason_codes')}",
+                "所有者ノードで status/board 射影を更新する（読取側は再計算しない）")
+
+    reservation_roots = [root]
+    if board_root:
+        reservation_roots.append(Path(board_root))
+    for rroot in reservation_roots:
+        place = "board" if board_root and rroot == Path(board_root) else "status"
+        for res in _doctor_iter_reservations(rroot):
+            st = str(res.get("status", "live") or "live").strip().lower()
+            if st not in _LIVE_RESERVATION_STATES:
+                continue
+            rid = str(res.get("reservation_id") or "").strip() or "?"
+            expires = _doctor_parse_iso(res.get("expires_iso") or res.get("lease_until") or "")
+            if expires is not None and expires.astimezone(timezone.utc) < now:
+                add(f"孤立 reservation（期限切れ・{place}）",
+                    f"reservation_id={rid} expires={expires.isoformat()}",
+                    "lease/claim expiry 回収を回すか、reservations を closed にする")
+                continue
+            tid = str(res.get("task_id") or "").strip()
+            if not tid:
+                # 板 award 経路は task_id 無しがありうる。node だけ見て projection 側へ委ねる。
+                continue
+            fields = _doctor_task_claim_fields(root, tid)
+            if fields is None:
+                add(f"孤立 reservation（タスク欠落・{place}）",
+                    f"reservation_id={rid} task_id={tid}",
+                    "reservation を closed にするか、失われたタスク参照を直す")
+                continue
+            status = str(fields.get("status") or "").strip().lower()
+            owner = str(fields.get("claim_owner") or fields.get("node") or "").strip()
+            want = str(res.get("node") or "").strip()
+            if status not in ("doing", "offloaded") or (want and owner and owner != want):
+                add(f"孤立 reservation（claim 不整合・{place}）",
+                    f"reservation_id={rid} task={tid} status={status or '-'} "
+                    f"claim_owner={owner or '-'} reserved_node={want or '-'}",
+                    "未開始/停止は expiry で回収する（第二排他を作らない）")
+
+    # capacity.reserved > 0 なのに live reservation が無い = 射影だけ残った孤立
+    live_by_node: dict[str, int] = {}
+    for res in _doctor_iter_reservations(root):
+        st = str(res.get("status", "live") or "live").strip().lower()
+        if st not in _LIVE_RESERVATION_STATES:
+            continue
+        n = str(res.get("node") or "").strip() or "*"
+        live_by_node[n] = live_by_node.get(n, 0) + 1
+    for node, rec, place in _doctor_iter_status_projections(root):
+        budget = rec.get("budget") if isinstance(rec.get("budget"), dict) else None
+        if not budget:
+            continue
+        cap = budget.get("capacity") if isinstance(budget.get("capacity"), dict) else {}
+        reserved = cap.get("reserved")
+        try:
+            reserved_n = float(reserved) if reserved is not None else None
+        except (TypeError, ValueError):
+            reserved_n = None
+        if reserved_n is None or reserved_n <= 0:
+            continue
+        if live_by_node.get(node, 0) + live_by_node.get("*", 0) == 0:
+            add(f"孤立 reservation（射影 reserved>0・実体なし・{node or '-'}）",
+                f"capacity.reserved={reserved_n} reservations/=空",
+                "所有者ノードが reserved を再計算して射影を更新する")
+
+    return findings
+
+
+def doctor_rule_lifecycle_findings(cfg: "Config") -> "list[dict]":
+    """根拠なし active rule と未知（非 Phase3）rule hash。"""
+    findings: list[dict] = []
+
+    def add(title: str, evidence: str, fix: str, severity: str = "warn") -> None:
+        findings.append({"category": "config", "severity": severity, "title": title,
+                         "evidence": evidence, "fix": fix})
+
+    # 最終 lifecycle 状態を集約
+    final: dict[str, str] = {}
+    for _src, text in _iter_decision_texts(cfg):
+        for line in text.splitlines():
+            m = _RULE_LIFECYCLE_RE.match(line.strip())
+            if m and m.group("state") in RULE_LIFECYCLE_STATES:
+                final[m.group("id")] = m.group("state")
+
+    for rid, state in sorted(final.items()):
+        if state != "active":
+            continue
+        agg = aggregate_rule_outcomes(cfg, rid)
+        if int(agg.get("worked") or 0) < 1:
+            add("根拠なし active rule",
+                f"rule_id={rid} worked={agg.get('worked', 0)} "
+                f"misfire={agg.get('misfire', 0)} suppressed={agg.get('suppressed', 0)}",
+                "commands/ で rule-suspend / rule-deprecate するか、"
+                "rule-outcome worked を確認してから active にする")
+
+    # 未知 hash: タスク刻印・provenance 行・observation メタ
+    unknown: list[str] = []
+    root = Path(cfg.backlog).parent
+    backlog = root / "backlog"
+    if backlog.is_dir():
+        for path in sorted(backlog.glob("*.md")):
+            try:
+                body = path.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            fields = dict(re.findall(r"^- ([a-z_]+)\s*:\s*(.*)$", body, re.M))
+            rh = str(fields.get("rules_hash") or "").strip()
+            if rh and not _PHASE3_RULES_HASH_RE.match(rh):
+                unknown.append(f"task:{path.stem}={rh[:48]}")
+    if cfg.decisions.exists():
+        for path in sorted(cfg.decisions.glob("*.md")):
+            try:
+                text = path.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            for line in text.splitlines():
+                s = line.strip()
+                if "rules_hash" not in s:
+                    continue
+                for m in re.finditer(r"sha256:[0-9a-fA-F]*|rules_hash[\"']?\s*[:=]\s*[\"']?([^\s\"',}]+)",
+                                     s):
+                    token = m.group(0)
+                    if token.startswith("rules_hash"):
+                        token = m.group(1) or ""
+                    token = token.strip().strip("\"'")
+                    if not token or token in ("null", "None", "fixture"):
+                        continue
+                    if not _PHASE3_RULES_HASH_RE.match(token):
+                        unknown.append(f"decisions/{path.stem}={token[:48]}")
+    if unknown:
+        sample = unknown[:8]
+        add("未知の rule hash（Phase3 形式外）",
+            f"count={len(unknown)} samples={sample}",
+            "rules_hash は sha256:<64hex>（rules_content_hash）に揃える。"
+            "旧値は成功扱いせず doctor で可視化する")
+
+    return findings
+
+
+def doctor_credit_knowledge_findings(cfg: "Config",
+                                    board_root: "str | None" = None,
+                                    at: "datetime | None" = None) -> "list[dict]":
+    """P5: stale 射影・孤立 reservation・根拠なし active・未知 rule hash。
+
+    board_root 省略時は host.yaml の板を解決（未構成なら状態リポジトリのみ＝board 非依存）。
+    """
+    root = board_root
+    if root is None:
+        try:
+            host = load_host_config()
+            root = _board_local_root(host.board, host.board_workdir)
+        except Exception:  # noqa: BLE001
+            root = None
+    return (doctor_budget_projection_findings(cfg, board_root=root, at=at)
+            + doctor_rule_lifecycle_findings(cfg))
 
 
 def _state_root_cutover_findings(state_root: str, old_safe: str, add) -> None:
@@ -1058,6 +1348,7 @@ def cmd_doctor(cfg: "Config", fix: bool = False, as_json: bool = False,
     終了コード: 0=健康 / 1=未解決の所見あり / 2=未解決の critical あり。"""
     # 決定的所見は ensure_dirs より前に集める（create-dirs 所見を消さないため）
     deterministic = (doctor_env_findings(cfg) + doctor_coordination_findings(cfg)
+                     + doctor_credit_knowledge_findings(cfg)
                      + doctor_audit_findings(cfg)
                      + doctor_wiring_findings(cfg)
                      + doctor_residency_findings(_declared_residency())
@@ -1089,6 +1380,7 @@ def cmd_doctor(cfg: "Config", fix: bool = False, as_json: bool = False,
         # 直せる類ではないので、黙って消えると人は解決したと誤解する）。
         still = {(g["category"], re.sub(r"\s+", " ", g.get("title", "").lower()).strip())
                  for g in doctor_env_findings(cfg) + doctor_coordination_findings(cfg)
+                 + doctor_credit_knowledge_findings(cfg)
                  + doctor_audit_findings(cfg) + doctor_residency_findings(_declared_residency())
                  + doctor_host_config_findings()
                  + doctor_structure_findings()

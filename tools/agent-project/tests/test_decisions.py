@@ -562,6 +562,42 @@ class TestLearnScopeAndExpiry(unittest.TestCase):
             # hits 未達のため trial 維持（active には promote_threshold+outcome が要る）
             self.assertEqual(km.rule_lifecycle_state(cfg, rid), "trial")
 
+    def test_apply_rule_command_promote_suspend_deprecate_revise(self):
+        """Phase5: 人の裁定は decisions append-only（dashboard 第二 writer 禁止）。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = self._seed(d, "OLD", "fix slugify util", "直す")
+            rid = km.rule_id_for_guide("直す", "OLD")
+            km.append_rule_lifecycle(cfg, "OLD", rid, "trial")
+            rc, detail = km.apply_rule_command(cfg, "rule-promote", rid, "人手昇格")
+            self.assertEqual(rc, 0, detail)
+            self.assertEqual(km.rule_lifecycle_state(cfg, rid), "active")
+            rc, detail = km.apply_rule_command(cfg, "rule-suspend", rid, "悪化")
+            self.assertEqual(rc, 0, detail)
+            self.assertEqual(km.rule_lifecycle_state(cfg, rid), "suspended")
+            rc, detail = km.apply_rule_command(cfg, "rule-revise", rid, "文言直し")
+            self.assertEqual(rc, 0, detail)
+            self.assertEqual(km.rule_lifecycle_state(cfg, rid), "trial")
+            self.assertTrue(any(p.name.startswith("rule-revise-") for p in cfg.needs.glob("*.md")))
+            rc, detail = km.apply_rule_command(cfg, "rule-deprecate", rid, "退役")
+            self.assertEqual(rc, 0, detail)
+            self.assertEqual(km.rule_lifecycle_state(cfg, rid), "deprecated")
+
+    def test_ingest_rule_command_via_commands_drop(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = self._seed(d, "OLD", "fix slugify util", "直す")
+            rid = km.rule_id_for_guide("直す", "OLD")
+            km.append_rule_lifecycle(cfg, "OLD", rid, "trial")
+            cdir = km.commands_dir(cfg)
+            cdir.mkdir(parents=True, exist_ok=True)
+            (cdir / "viewer-rule-promote.json").write_text(json.dumps({
+                "command": "rule-promote", "rule_id": rid, "reason": "ui",
+            }), encoding="utf-8")
+            done = km.ingest_commands(cfg)
+            self.assertTrue(any(x.startswith("rule-promote:") for x in done), done)
+            self.assertEqual(km.rule_lifecycle_state(cfg, rid), "active")
+
 
 class TestDecisionCapture(unittest.TestCase):
     """人の判断（approve 理由・hold 理由）から learn/avoid を自動抽出して蓄積する（learn_capture）。"""

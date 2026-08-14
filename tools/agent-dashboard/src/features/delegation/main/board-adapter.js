@@ -187,6 +187,11 @@ function listNodes(boardRepoDir, nowSec) {
     if (!rec || !rec.node) continue;
     const beat = Date.parse(String(rec.heartbeat || '')) / 1000;
     const freshAfter = Number(rec.fresh_after_sec) || 0;
+    const stale = Number.isFinite(beat) && freshAfter > 0 ? (now - beat) > freshAfter : false;
+    const budget = budgetOverlay(rec.budget, {
+      fresh: !stale && Number.isFinite(beat) && freshAfter > 0,
+      stale,
+    });
     out.push({
       // 表示側（全体設定）は「端末」という語彙で書く（R10: 利用者向けの文に内部名を出さない）。
       name: String(rec.node),
@@ -200,10 +205,60 @@ function listNodes(boardRepoDir, nowSec) {
       heartbeat: String(rec.heartbeat || ''),
       // 鮮度の宣言が無いノードは古さを判定できない。stale と言い切らずに未知として扱う
       // （「宣言していない」を「死んでいる」と表示すると誤解を招く）。
-      stale: Number.isFinite(beat) && freshAfter > 0 ? (now - beat) > freshAfter : false,
+      stale,
+      budget,
+      eligibilityNote: eligibilityNote(rec, budget, stale),
     });
   }
   return out;
+}
+
+// 板ミラーの budget 射影（任意）。一次は status。ここは重ね表示用。
+function budgetOverlay(budget, meta = {}) {
+  if (!budget || typeof budget !== 'object') return null;
+  const cap = budget.capacity && typeof budget.capacity === 'object' ? budget.capacity : {};
+  const codes = Array.isArray(budget.reason_codes) ? budget.reason_codes.map(String) : [];
+  let kind = 'unknown';
+  if (meta.stale || meta.fresh === false || String(budget.source || '') === 'unavailable') {
+    kind = 'unknown';
+  } else if (budget.can_accept === false) {
+    kind = 'exhausted';
+  } else if (budget.can_accept === true) {
+    kind = 'ok';
+  }
+  return {
+    canAccept: typeof budget.can_accept === 'boolean' ? budget.can_accept : null,
+    reasonCodes: codes,
+    unit: budget.unit == null ? null : String(budget.unit),
+    limit: cap.limit == null ? null : Number(cap.limit),
+    used: cap.used == null ? null : Number(cap.used),
+    reserved: cap.reserved == null ? null : Number(cap.reserved),
+    kind,
+    enforce: !!budget.enforce,
+  };
+}
+
+// 入札・落札詳細向けの適格性説明（能力・利用枠・repo）。dashboard は再計算しない。
+function eligibilityNote(rec, budget, stale) {
+  const parts = [];
+  if (stale) parts.push('心拍が古く利用枠は不明（枯渇とは区別）');
+  if (budget) {
+    if (budget.kind === 'exhausted') {
+      parts.push(`利用枠枯渇（${(budget.reasonCodes || []).join(',') || 'exceeded'}）`);
+    } else if (budget.kind === 'ok') {
+      parts.push(`利用枠OK（${(budget.reasonCodes || []).join(',') || 'ok'}）`);
+    } else {
+      parts.push('利用枠不明');
+    }
+    if (budget.reserved != null) parts.push(`予約 ${budget.reserved}`);
+  }
+  const repos = repoLabels(rec.repos);
+  if (repos.length) parts.push(`担当repo: ${repos.join('・')}`);
+  const tags = (rec.tags || []).map(String);
+  if (tags.length) parts.push(`能力: ${tags.join('・')}`);
+  const wls = (rec.workloads || []).map(String);
+  if (wls.length) parts.push(`WL: ${wls.join('・')}`);
+  return parts.join(' ／ ') || '能力宣言のみ（利用枠ミラーなし）';
 }
 
 // ノードの repos 宣言 → 表示用のリポジトリ名。mapping 形（repos.schema.json）でも
@@ -238,4 +293,4 @@ function listViews(boardRepoDir, nowSec) {
 }
 
 module.exports = { submitPost, award, cancel, toView, listViews, listNodes, readBids,
-                   repoLabels };
+                   repoLabels, budgetOverlay, eligibilityNote };

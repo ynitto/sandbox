@@ -248,13 +248,15 @@ async function deleteReviewComment(projectDir, taskId, commentId, trash) {
 // ---------------------------------------------------------------------------
 
 const COMMAND_ACTIONS = new Set(['approve', 'retry-mr', 'hold', 'pin', 'defer', 'revise', 'reject',
-  'resume-run', 'force-complete']);
+  'resume-run', 'force-complete',
+  'rule-promote', 'rule-suspend', 'rule-revise', 'rule-deprecate']);
 // 理由の記入を必須にするアクション。人が状態を確定させる不可逆な操作（却下・強制完了）は、
 // 何を根拠に決めたかが決定記録に残らないと後から追えない。本体側も同じ検査をするが、
 // 押した瞬間に画面で言えるようここでも見る（投函してから .err で気づくのは遅い）。
-const REASON_REQUIRED_ACTIONS = new Set(['force-complete']);
+const REASON_REQUIRED_ACTIONS = new Set(['force-complete', 'rule-deprecate', 'rule-suspend']);
 // プロジェクト単位（id 不要）のライフサイクル指示。リモートの本体を git 越しに操作する口。
 const LIFECYCLE_ACTIONS = new Set(['pause', 'resume', 'stop']);
+const RULE_ACTIONS = new Set(['rule-promote', 'rule-suspend', 'rule-revise', 'rule-deprecate']);
 
 // revise が受けるフィールド編集キー（agent-project の REVISE_FIELDS と同じ）。
 // 値は「置換」規約: '' / '-' / 'none' はフィールド削除、未指定（undefined/null）は触らない。
@@ -291,19 +293,21 @@ function revisePayload({ fields, feedback }) {
 // commands/<name>.json のドロップ（agent-project の ingest_commands が拾う）。
 // 書きかけを watch に読ませないよう .tmp に書いてから rename する。
 // replan / pause / resume / stop / heal はプロジェクト単位（id 不要）なので id を載せない。
-function dropCommand(projectDir, { action, id, reason, fields, feedback, run, charter, title, complete, flow }) {
+function dropCommand(projectDir, { action, id, reason, fields, feedback, run, charter, title, complete, flow, ruleId, guide }) {
   const dir = path.join(projectDir, 'commands');
   fs.mkdirSync(dir, { recursive: true });
   const projectScoped =
     action === 'replan' || action === 'heal' || action === 'distill-notes' ||
     action === 'revive' || LIFECYCLE_ACTIONS.has(action);
+  const ruleScoped = RULE_ACTIONS.has(action);
+  const rid = String(ruleId || (ruleScoped ? id : '') || '').trim();
   const rec = {
     command: action,
     ...(projectScoped ? {} : { id: String(id) }),
     reason: String(reason || ''),
     actor: 'agent-dashboard',
     ts: new Date().toISOString(),
-    ...(action === 'revise' ? revisePayload({ fields, feedback }) : {}),
+    ...(action === 'revise' && !ruleScoped ? revisePayload({ fields, feedback }) : {}),
     ...(action === 'resume-run' && run ? { run: String(run) } : {}),
     ...((action === 'replan' || action === 'distill-notes' || action === 'revive') && charter
       ? { charter: String(charter) }
@@ -312,11 +316,13 @@ function dropCommand(projectDir, { action, id, reason, fields, feedback, run, ch
     ...(action === 'revive' && title ? { title: String(title) } : {}),
     // 承認 = 完了か積み直しかは呼び出し側が明示する（本体は文面から推定しない）
     ...(action === 'approve' && complete ? { complete: true } : {}),
-    ...((action === 'approve' || action === 'revise') && flow && typeof flow === 'object'
+    ...((action === 'approve' || action === 'revise') && !ruleScoped && flow && typeof flow === 'object'
       ? { flow: JSON.parse(JSON.stringify(flow)) }
       : {}),
+    ...(ruleScoped && rid ? { rule_id: rid, id: rid } : {}),
+    ...(ruleScoped && guide ? { guide: String(guide) } : {}),
   };
-  const slug = projectScoped ? 'project' : slugify(id);
+  const slug = projectScoped ? 'project' : slugify(ruleScoped ? rid || id : id);
   const file = path.join(dir, `viewer-${action}-${slug}-${Date.now()}.json`);
   fs.writeFileSync(`${file}.tmp`, JSON.stringify(rec, null, 2), 'utf8');
   fs.renameSync(`${file}.tmp`, file);
@@ -340,19 +346,25 @@ function dropCommand(projectDir, { action, id, reason, fields, feedback, run, ch
 // 停滞を生んでいた。稼働中の本体（同一 PC の WSL・別ホスト問わず）が git 同期越しに ingest し、
 // 受理レシート（commands/processed/）でカードに「受理済み」を返す。停止中は取り込み待ちのまま
 // 残り、送信済み表示で「エンジン待ち」が見える（サイレントに失敗しない）。
-async function runAction(cfg, { dir, action, id, reason, fields, feedback, run, complete, flow }) {
+async function runAction(cfg, { dir, action, id, reason, fields, feedback, run, complete, flow, ruleId, guide }) {
   if (!COMMAND_ACTIONS.has(action)) throw new Error(`不明なアクション: ${action}`);
   if (REASON_REQUIRED_ACTIONS.has(action) && !String(reason || '').trim()) {
     throw new Error('強制完了には理由の記入が必要です（決定記録に残ります）');
   }
   const why = String(reason || '').trim() || 'agent-dashboard から操作';
-  if (action === 'revise' && Object.keys(revisePayload({ fields, feedback })).length === 0 && !flow) {
+  if (action === 'revise' && !RULE_ACTIONS.has(action)
+      && Object.keys(revisePayload({ fields, feedback })).length === 0 && !flow) {
     throw new Error('revise には変更フィールドかフィードバックの指定が必要です');
+  }
+  if (RULE_ACTIONS.has(action) && !String(ruleId || id || '').trim()) {
+    throw new Error('rule 操作には rule_id（obs-…）が必要です');
   }
   if (action === 'resume-run' && !String(run || '').trim()) {
     throw new Error('resume-run には再開する run-id の指定が必要です');
   }
-  const { file } = dropCommand(dir, { action, id, reason: why, fields, feedback, run, complete, flow });
+  const { file } = dropCommand(dir, {
+    action, id, reason: why, fields, feedback, run, complete, flow, ruleId, guide,
+  });
   return {
     output: `${action} ${id}: 指示ファイルを投入しました（稼働中の agent-project が取り込み、受理後にカードへ反映されます）`,
     file,
