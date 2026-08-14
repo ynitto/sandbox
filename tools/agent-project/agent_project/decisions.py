@@ -201,23 +201,211 @@ def learn_suppressed(path: "Path", limit: int) -> bool:
     return disabled or (limit > 0 and streak >= limit)
 
 
+# ---------------------------------------------------------------------------
+# Phase 4 結合点: W10 outcome を rule 単位へ一般化（第二評価系は作らない）
+# ---------------------------------------------------------------------------
+RULE_LIFECYCLE_STATES = (
+    "candidate", "trial", "active", "suspended", "deprecated", "rejected",
+)
+RULE_OUTCOMES = ("worked", "misfire", "suppressed")
+RULE_EXCLUDED_STATES = frozenset({"suspended", "deprecated", "rejected"})
+_RULE_LIFECYCLE_RE = re.compile(
+    r"^- rule-lifecycle:\s*(?P<id>obs-[0-9a-f]{16})\s+(?P<state>\S+)\s*$")
+_RULE_OUTCOME_RE = re.compile(
+    r"^- rule-outcome:\s*(?P<id>obs-[0-9a-f]{16})\s+(?P<out>worked|misfire|suppressed)\s*$")
+_RULE_COMMENT_RE = re.compile(
+    r"<!--\s*rule:(?P<id>obs-[0-9a-f]{16})\s+state:(?P<state>\S+).*?-->")
+
+
+def rule_id_for_guide(guide: str, source: str = "") -> str:
+    """rule 安定 ID = Phase3 observation_id（learn-capture）。task/rules_hash は混ぜない（版で ID が変わらない）。"""
+    body, _scope = split_learn_scope(str(guide or ""))
+    return observation_id(kind="learn-capture", body=body.strip(), source=str(source or ""))
+
+
+def applied_rules_hash_ok(cfg: "Config", task: "Task") -> bool:
+    """適用版 hash の健全性（Phase3 `rules_content_hash` / `sha256:<hex>` 経路を再利用）。
+
+    タスクに刻印が無い旧経路は True。形式が Phase3 でなければ False（成功扱いしない）。
+    現行 rules.md との一致は要求しない（trial 昇格追記で hash が変わり偽陰性になるため）。
+    照合材料は provenance.rules_hash に残し、drift 検知は doctor（P5）へ委ねる。"""
+    applied = str(task.get("rules_hash") or "").strip()
+    if not applied:
+        return True
+    return bool(re.match(r"^sha256:[0-9a-f]{64}$", applied))
+
+
+def _iter_decision_texts(cfg: "Config") -> "list[tuple[str, str]]":
+    out: "list[tuple[str, str]]" = []
+    if not cfg.decisions.exists():
+        return out
+    for f in sorted(cfg.decisions.glob("*.md")):
+        try:
+            out.append((f.stem, f.read_text(encoding="utf-8")))
+        except OSError:
+            continue
+    return out
+
+
+def rule_lifecycle_state(cfg: "Config", rule_id: str) -> str:
+    """append-only の `- rule-lifecycle:` 最終状態。無ければ candidate。"""
+    rid = str(rule_id or "").strip()
+    state = "candidate"
+    if not rid:
+        return state
+    for _src, text in _iter_decision_texts(cfg):
+        for line in text.splitlines():
+            m = _RULE_LIFECYCLE_RE.match(line.strip())
+            if m and m.group("id") == rid and m.group("state") in RULE_LIFECYCLE_STATES:
+                state = m.group("state")
+    return state
+
+
+def aggregate_rule_outcomes(cfg: "Config", rule_id: str) -> dict:
+    """rule 単位の worked/misfire/suppressed 集計（W10 語彙の一般化。第二系なし）。"""
+    rid = str(rule_id or "").strip()
+    tallies = {"worked": 0, "misfire": 0, "suppressed": 0}
+    streak = 0
+    if not rid:
+        return {**tallies, "misfire_streak": 0}
+    for _src, text in _iter_decision_texts(cfg):
+        for line in text.splitlines():
+            m = _RULE_OUTCOME_RE.match(line.strip())
+            if not m or m.group("id") != rid:
+                continue
+            out = m.group("out")
+            tallies[out] = tallies.get(out, 0) + 1
+            if out == "misfire":
+                streak += 1
+            elif out == "worked":
+                streak = 0
+            # suppressed は連続不発ストリークを切らない（悪化の証拠として残す）
+    tallies["misfire_streak"] = streak
+    return tallies
+
+
+def append_rule_lifecycle(cfg: "Config", src: str, rule_id: str, state: str,
+                          why: str = "") -> bool:
+    """rule 状態遷移を出典 DR へ追記。自動遷移は trial / suspended のみ（active は outcome 条件付き）。"""
+    rid = str(rule_id or "").strip()
+    st = str(state or "").strip()
+    if not rid or st not in RULE_LIFECYCLE_STATES:
+        return False
+    if rule_lifecycle_state(cfg, rid) == st:
+        return False
+    cfg.decisions.mkdir(parents=True, exist_ok=True)
+    path = decision_path(cfg, src)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(f"- rule-lifecycle: {rid} {st}\n")
+    if why:
+        append_journal(cfg.journal, f"rule {rid} → {st}: {why[:120]}")
+    return True
+
+
+def append_rule_outcome(cfg: "Config", src: str, rule_id: str, outcome: str) -> None:
+    rid = str(rule_id or "").strip()
+    out = str(outcome or "").strip()
+    if not rid or out not in RULE_OUTCOMES:
+        return
+    with decision_path(cfg, src).open("a", encoding="utf-8") as f:
+        f.write(f"- rule-outcome: {rid} {out}\n")
+
+
+def maybe_suspend_rule(cfg: "Config", src: str, rule_id: str, limit: int) -> bool:
+    """悪化時 fail-close suspension。trial/active のみ。人手 manual は触らない。"""
+    st = rule_lifecycle_state(cfg, rule_id)
+    if st not in ("trial", "active"):
+        return False
+    agg = aggregate_rule_outcomes(cfg, rule_id)
+    if limit <= 0 or agg.get("misfire_streak", 0) < limit:
+        return False
+    return append_rule_lifecycle(
+        cfg, src, rule_id, "suspended",
+        why=f"misfire_streak={agg['misfire_streak']}≥{limit}（fail-close）")
+
+
+def maybe_activate_rule(cfg: "Config", src: str, rule_id: str) -> bool:
+    """trial → active: promote_threshold（hits）+ outcome 条件（worked≥1・非 suspended）。"""
+    if rule_lifecycle_state(cfg, rule_id) != "trial":
+        return False
+    hits = count_learn_hits(cfg).get(src, 0)
+    if hits < int(getattr(cfg, "promote_threshold", 2) or 0):
+        return False
+    agg = aggregate_rule_outcomes(cfg, rule_id)
+    if agg.get("worked", 0) < 1:
+        return False
+    return append_rule_lifecycle(
+        cfg, src, rule_id, "active",
+        why=f"hits={hits} worked={agg['worked']}（threshold+outcome）")
+
+
+def rule_excluded_from_requests(cfg: "Config", rule_id: str) -> bool:
+    """suspended 等は新規要求へ入らない（完了条件）。"""
+    return rule_lifecycle_state(cfg, rule_id) in RULE_EXCLUDED_STATES
+
+
+def write_rule_conflict_needs(cfg: "Config", rule_id: str, sources: "list[str]",
+                              guide: str) -> None:
+    """競合は自動マージせず needs へ（意味的マージは範囲外・決定的な同一 guide 衝突のみ）。"""
+    rid = str(rule_id or "").strip()
+    if not rid:
+        return
+    cfg.needs.mkdir(parents=True, exist_ok=True)
+    tid = f"rule-{rid[4:12]}"
+    path = needs_path(cfg, tid)
+    if path.exists():
+        return
+    srcs = [s for s in sources if s]
+    why = (f"同一 guidance の rule 競合（{rid}）。出典 {', '.join(srcs) or '?'}。"
+           f"自動マージしない。人が一方を採用・改定・棄却する。")
+    body = (
+        f"# ルール競合: {tid}\n\n"
+        f"## Context and Problem Statement\n\n"
+        f"- なぜ: {why}\n"
+        f"- rule: {rid}\n"
+        f"- guide: {str(guide or '').strip()[:200]}\n"
+        f"- 状態: needs（人の裁定待ち・自動マージなし）\n\n"
+        f"{DECISION_MARKER}\n\n"
+        f"<!-- 人の決定の記入欄。採用する出典・改定文・棄却を書いて [x]。 -->\n"
+        f"- [ ] 確定（このボックスを [x] にして保存すると取り込みます）\n"
+    )
+    path.write_text(body, encoding="utf-8")
+    anchor = srcs[0] if srcs else tid
+    append_decision(cfg, anchor, "auto",
+                    context=f"rule 競合 {rid}",
+                    action="rule-conflict",
+                    reason=why[:160],
+                    affects=f"needs/{tid}.md")
+
+
 def _best_learn_match(task: Task, threshold: float, files: "list[Path]",
                       label, skip_id: "str | None" = None,
-                      pattern: "re.Pattern" = LEARN_RE) -> "tuple[str, str] | None":
+                      pattern: "re.Pattern" = LEARN_RE,
+                      cfg: "Config | None" = None) -> "tuple[str, str] | None":
     """与えた md 群の該当行（既定 `- learn:`／pattern で `- avoid:` 等に切替）を Jaccard で
     タイトル照合し最良を返す（決定的・LLM 不要）。pattern は title/guide の名前付きグループを持つこと。
-    guide 末尾のスコープタグ（W10）はここで解釈し、スコープ外の行は候補にしない。"""
+    guide 末尾のスコープタグ（W10）はここで解釈し、スコープ外の行は候補にしない。
+    Phase4: suspended rule は候補にしない（新規要求へ入らない）。"""
     best, best_score = None, 0.0
     for f in sorted(files):
         if skip_id is not None and f.stem == skip_id:  # 自分の履歴は除く（自己ループ防止）
             continue
-        for line in f.read_text(encoding="utf-8").splitlines():
+        try:
+            lines = f.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line in lines:
             m = pattern.match(line)
             if not m:
                 continue
             guide, (kind, name) = split_learn_scope(m.group("guide"))
             if not _learn_scope_applies(task, kind, name):
                 continue
+            if cfg is not None and pattern is LEARN_RE:
+                rid = rule_id_for_guide(m.group("guide"), f.stem)
+                if rule_excluded_from_requests(cfg, rid):
+                    continue
             score = _title_overlap(task.title, m.group("title"))
             if score >= threshold and score > best_score:
                 best, best_score = (label(f), guide), score
@@ -256,21 +444,22 @@ def find_learned_resolution(cfg: "Config", task: Task) -> "tuple[str, str] | Non
     """過去の人の判断（learn）からタイトルが十分似た指示を探す。返り値 (出典, 指示文)。
 
     ① ローカル `decisions/` を照合 → ② ヒット無し かつ cfg.ltm なら ltm-use home を横断照合。
-    どちらも決定的なファイル走査＋Jaccard で、エージェント（LLM）を一切起動しない。"""
+    どちらも決定的なファイル走査＋Jaccard で、エージェント（LLM）を一切起動しない。
+    Phase4: W10 失効に加え、suspended rule は候補外（新規要求へ入らない）。"""
     local = []
     if cfg.decisions.exists():
         limit = int(getattr(cfg, "learn_misfire_limit", 3) or 0)
         files = [f for f in cfg.decisions.glob("*.md")
                  if not learn_suppressed(f, limit)]     # 失効した出典は適用しない（W10）
         local = _best_learn_match(task, cfg.learn_threshold, files,
-                                  label=lambda f: f.stem, skip_id=task.id)
+                                  label=lambda f: f.stem, skip_id=task.id, cfg=cfg)
     if local:
         return local
     if cfg.ltm:
         mem_dir = ltm_memories_dir(cfg)
         if mem_dir and mem_dir.exists():
             return _best_learn_match(task, cfg.learn_threshold, list(mem_dir.glob("*.md")),
-                                     label=lambda f: f"ltm:{f.stem}")
+                                     label=lambda f: f"ltm:{f.stem}", cfg=cfg)
     return None
 
 
@@ -279,16 +468,54 @@ def record_learn_outcome(cfg: "Config", task: Task, worked: bool, why: str = "")
 
     done なら learn-worked、再 blocked なら learn-misfire。出典ファイル内の追記順が時系列なので、
     learn_suppressed が「worked を挟まない misfire の連続」をそのまま数えられる。ltm 出典は
-    ローカルに決定記録が無いので対象外。"""
+    ローカルに決定記録が無いので対象外。
+
+    Phase4 結合点: 同じ語彙を rule 単位へも一般化（`- rule-outcome:`）。適用版 hash 不一致の
+    成功主張は suppressed（fail-close）。連続 misfire は rule を suspended へ。"""
     src = str(task.get("autolearned") or "").strip()
     if not src or src == "1" or src.startswith("ltm:") or task.get("learn_outcome"):
         return
-    task.extra.append(("learn_outcome", "worked" if worked else "misfire"))
+    hash_ok = applied_rules_hash_ok(cfg, task)
+    if worked and not hash_ok:
+        rule_out = "suppressed"
+        w10_worked = False  # 版不一致の成功は W10 でも成功にしない（fail-close）
+    elif worked:
+        rule_out = "worked"
+        w10_worked = True
+    else:
+        rule_out = "misfire"
+        w10_worked = False
+    task.extra.append(("learn_outcome", rule_out if rule_out != "suppressed" else "misfire"))
+    prov = None
+    try:
+        prov = build_provenance(cfg, task)
+    except Exception:  # noqa: BLE001 — provenance は additive・失敗でも outcome 自体は残す
+        prov = None
     append_decision(cfg, src, "auto",
                     context=f"{task.id}（{task.title}）への learn 適用の結果",
-                    action="learn-worked" if worked else "learn-misfire",
-                    reason=(("成功: " if worked else "不発: ") + f"{task.id} {why}").strip()[:160],
-                    affects=src)
+                    action="learn-worked" if w10_worked else "learn-misfire",
+                    reason=(("成功: " if w10_worked else (
+                        "版不一致: " if rule_out == "suppressed" else "不発: "))
+                            + f"{task.id} {why}").strip()[:160],
+                    affects=src,
+                    provenance=prov)
+    # rule 単位へ一般化（安定 ID は task.rule_id 優先、無ければ guide から再導出）
+    rid = str(task.get("rule_id") or "").strip()
+    guide = str(task.get("feedback") or "").strip()
+    if not rid and guide:
+        rid = rule_id_for_guide(guide, src)
+    if not rid:
+        for s, _title, g in collect_learnings(cfg):
+            if s == src:
+                rid = rule_id_for_guide(g, src)
+                break
+    if rid:
+        append_rule_outcome(cfg, src, rid, rule_out)
+        limit = int(getattr(cfg, "learn_misfire_limit", 3) or 0)
+        if rule_out == "misfire":
+            maybe_suspend_rule(cfg, src, rid, limit)
+        elif rule_out == "worked":
+            maybe_activate_rule(cfg, src, rid)
 
 
 def find_avoidance(cfg: "Config", task: Task) -> "tuple[str, str] | None":
