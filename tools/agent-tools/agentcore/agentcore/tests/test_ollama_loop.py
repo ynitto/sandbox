@@ -209,6 +209,72 @@ class TestStreamCall(unittest.TestCase):
             self.assertEqual(captured["format"], "json")
 
 
+class TestThinkPromptMode(unittest.TestCase):
+    """`prompt` モード（system prompt 先頭の `<|think|>`）。
+
+    API の `think` フィールドとは**別経路**である。判定系の実測はすべて think off で
+    取られており、その off は別モデル（qwen）の実測を一般化したものなので、
+    ここを測り直せる口を持つ（計画 P10）。両経路から同時に指定して打ち消し合わせないこと、
+    `--format` の強制 off に巻き込まれないことの 2 点がこの経路の要件。
+    """
+
+    def _capture(self, **kwargs) -> dict:
+        captured = {}
+
+        def capture(req, timeout=None):
+            captured.clear()
+            captured.update(json.loads(req.data))
+            return _FakeResponse(_gen_lines("あ"))
+
+        with mock.patch.object(ollama_loop.urllib.request, "urlopen", capture):
+            ollama_loop.run_plain("gemma4:e4b", "hello", heartbeat=0.05, **kwargs)
+        return captured
+
+    def test_token_goes_to_the_system_prompt(self):
+        captured = self._capture(think_prompt=True)
+
+        self.assertEqual(captured["system"], ollama_loop.THINK_PROMPT_TOKEN)
+        self.assertNotIn("think", captured, "API フィールドは宣言しない（経路が違う）")
+
+    def test_token_precedes_an_existing_system_prompt(self):
+        with mock.patch.dict(os.environ, {"AGENT_OLLAMA_SYSTEM_PROMPT": "Be precise."}):
+            captured = self._capture(think_prompt=True)
+
+        self.assertEqual(captured["system"],
+                         f"{ollama_loop.THINK_PROMPT_TOKEN}\nBe precise.")
+
+    def test_format_does_not_force_it_off(self):
+        # ここが本題。API フィールドの強制 off に巻き込まれると、測りたい組み合わせ
+        # （プロンプト方式 × 文法制約）を自分で潰すことになる。
+        captured = self._capture(think_prompt=True, fmt="json")
+
+        self.assertEqual(captured["format"], "json")
+        self.assertNotIn("think", captured, "prompt モードでは think:false を送らない")
+        self.assertEqual(captured["system"], ollama_loop.THINK_PROMPT_TOKEN)
+
+    def test_off_still_forced_without_prompt_mode(self):
+        captured = self._capture(fmt="json")
+
+        self.assertIs(captured["think"], False, "従来の経路は変わらない")
+
+    def test_token_is_not_doubled(self):
+        once = ollama_loop.think_system("base", True)
+
+        self.assertEqual(ollama_loop.think_system(once, True), once)
+
+    def test_disabled_leaves_the_system_prompt_untouched(self):
+        self.assertEqual(ollama_loop.think_system("base", False), "base")
+        self.assertEqual(ollama_loop.think_system("", False), "")
+
+    def test_resolve_from_env(self):
+        with mock.patch.dict(os.environ, {"AGENT_OLLAMA_THINK": "prompt"}):
+            self.assertTrue(ollama_loop.resolve_think_prompt(None))
+            self.assertIsNone(ollama_loop.resolve_think(None),
+                              "prompt は API フィールドを宣言しない")
+        with mock.patch.dict(os.environ, {"AGENT_OLLAMA_THINK": "on"}):
+            self.assertFalse(ollama_loop.resolve_think_prompt(None))
+
+
 class TestStallReturnsPromptly(unittest.TestCase):
     """実ソケット相手の回帰テスト: 打ち切りが**即座に戻る**こと。
 
