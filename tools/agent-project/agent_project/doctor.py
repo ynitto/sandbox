@@ -1221,6 +1221,8 @@ def cmd_stats(cfg: Config, as_json: bool = False) -> int:
     print(f"retry 累計      : pending {s['retries_pending_sum']} / archived {s['retries_archived_sum']}")
     print(f"コスト(archive) : tokens {s['tokens_archived']} / usd {s['cost_archived']}")
     print(f"決定記録        : {s['decisions_total']} 件  {s['actions']}")
+    print(f"知識ループ      : rules注入 {s['rules_injected']} / learn hit {s['learn_hits']} / "
+          f"昇格 {s['promotions']} / 根拠欠落 {s['evidence_missing']}")
     return 0
 
 

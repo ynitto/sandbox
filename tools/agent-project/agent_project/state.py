@@ -105,7 +105,11 @@ def count_learn_hits(cfg: "Config") -> "dict[str, int]":
         return hits
     pat = re.compile(r"learned from (?:ltm:)?(?P<src>\S+?):")
     for df in cfg.decisions.glob("*.md"):
-        for line in df.read_text(encoding="utf-8").splitlines():
+        try:
+            lines = df.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line in lines:
             if line.strip().startswith("- reason"):
                 m = pat.search(line)
                 if m:
