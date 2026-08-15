@@ -55,6 +55,7 @@ _FRAGMENTS = (
     "work",          # cmd_work
     "run",           # cmd_run + child spawn
     "submit",        # cmd_cancel
+    "recovery",      # remote 公開失敗の検証付き force-complete
     "board",         # 委譲公示板（agent-board）への参加（入札・引き渡し）
     "daemon",        # tick 部品 + cmd_participate
     "cleanup",       # sweep / cmd_gc

@@ -641,11 +641,14 @@ function gitWorkspace(config, cwd) {
   const line = `root=$(git -C ${q(linuxPath)} rev-parse --show-toplevel 2>/dev/null) || exit 2; `
     + 'base=$(git -C "$root" symbolic-ref --short -q HEAD 2>/dev/null '
     + '|| git -C "$root" rev-parse HEAD 2>/dev/null) || exit 3; '
-    + 'printf \'%s\\n%s\\n\' "$root" "$base"';
+    + 'remote=$(git -C "$root" remote get-url origin 2>/dev/null) || exit 4; '
+    + 'printf \'%s\\n%s\\n%s\\n\' "$root" "$base" "$remote"';
   const result = exec.shInWsl(line, 10000, cfgOf(config).distro || '');
-  const [root, base] = String(result.stdout || '').split(/\r?\n/).filter(Boolean);
-  if (result.status !== 0 || !root || !base) throw new Error('Git管理されたフォルダを選択してください');
-  return { url: root, base, path: '', desc: 'workflow' };
+  const [root, base, remote] = String(result.stdout || '').split(/\r?\n/).filter(Boolean);
+  if (result.status !== 0 || !root || !base || !remote) {
+    throw new Error('共有リモート origin がある Git 管理フォルダを選択してください');
+  }
+  return { url: remote, local: root, base, path: '', desc: 'workflow' };
 }
 
 // --- プリセット（保存済みフロー定義） ---------------------------------------
@@ -807,6 +810,29 @@ function buildLaunchLine(config, { runId, busDir, tuningDir, agentCli, model, pl
     + `${env}nohup ${cmd} ${flags} >> "$LOGDIR/${runId}.log" 2>&1 & echo launched:$!`;
 }
 
+function buildForceCompleteLine(config, { busDir, runId, reason }) {
+  const c = cfgOf(config);
+  const q = exec.shellQuote;
+  const cmd = String(c.agentFlowCommand || '').trim() || 'agent-flow';
+  const guard = String(c.agentFlowCommand || '').trim()
+    ? ''
+    : 'command -v agent-flow >/dev/null 2>&1 || { echo agent-flow-not-found >&2; exit 127; }; ';
+  return `${guard}${cmd} --bus ${q(exec.toWslCwd(busDir))} force-complete ${q(runId)} --reason ${q(reason)}`;
+}
+
+function forceComplete(config, { runId, reason } = {}) {
+  const id = String(runId || '').trim();
+  const why = String(reason || '').trim();
+  if (!id || path.basename(id) !== id) throw new Error(`不正な run ID です: ${runId}`);
+  if (!why) throw new Error('強制復旧の理由を入力してください');
+  const line = buildForceCompleteLine(config, { busDir: resolveBusDir(config), runId: id, reason: why });
+  const result = exec.shInWsl(line, 120000, cfgOf(config).distro || '');
+  if (result.status !== 0) {
+    throw new Error(String(result.stderr || result.stdout || 'force-complete に失敗しました').trim().slice(0, 500));
+  }
+  return { runId: id, message: String(result.stdout || '').trim() };
+}
+
 function submit(config, { title, request, preset, cwd, selection, executionOverrides, coherenceGate } = {}) {
   const req = String(request || '').trim();
   if (!req) throw new Error('要求テキストは必須です');
@@ -861,7 +887,6 @@ function submit(config, { title, request, preset, cwd, selection, executionOverr
     busDir,
     tuningDir,
     plan: !!plan,
-    branch: workspace ? `af/${runId}` : '',
     methods: methods ? methods.map((m) => m.id) : [],
   };
 }
@@ -979,6 +1004,8 @@ module.exports = {
   writeRunTuning,
   runTuningDir,
   buildLaunchLine,
+  buildForceCompleteLine,
+  forceComplete,
   submit,
   resubmit,
   readInbox,

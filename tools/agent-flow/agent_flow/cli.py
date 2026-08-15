@@ -42,9 +42,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="executor プラグイン（<name>.py）の追加検索ディレクトリ（設定 executor_dir と同義）")
     p.add_argument("--workspace", dest="workspace", default=None,
                    help="この run（=バックログ単位）の唯一の書込先リポジトリ。素の URL でも、構造化 JSON "
-                        "（{url,path,base,target,desc}）でも可。worker が temp 領域へ clone し、作業ブランチ "
+                        "（{url,local,path,base,target,desc}）でも可。worker が temp 領域へ clone し、作業ブランチ "
                         "af/<run-id> を base から作って作業、変更があれば agent-flow が commit/push する。"
-                        "path はモノレポの作業フォルダ、target は MR/PR のターゲットブランチ。"
+                        "local は公開失敗時の復旧refを保持する元repo、path はモノレポの作業フォルダ、"
+                        "target は MR/PR のターゲットブランチ。"
                         "省略時は読み取り専用 run")
     p.add_argument("--verification-plan", dest="verification_plan", default=None,
                    help="統一 verify の検証計画（verification-plan.schema.json 準拠の JSON）。"
@@ -226,6 +227,13 @@ def build_parser() -> argparse.ArgumentParser:
                     help="park 済みの GitLab イシューに取消コメントを付けてクローズする"
                          "（既定: イシューは残し、追跡だけやめる）")
     cn.set_defaults(func=cmd_cancel)
+
+    fc = sub.add_parser(
+        "force-complete",
+        help="workspace の手動 push を remote で検証し、publication failure の run を復旧")
+    fc.add_argument("run_id", help="復旧する failed run-id")
+    fc.add_argument("--reason", required=True, help="手動復旧の理由（監査イベントへ記録）")
+    fc.set_defaults(func=cmd_force_complete)
 
     st = sub.add_parser("status", help="run の状態表示（既定 1 回 / --follow でライブ監視）")
     st.add_argument("--follow", "-f", action="store_true", help="ライブ監視（tmux ペイン向け）")
