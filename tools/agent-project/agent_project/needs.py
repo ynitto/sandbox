@@ -179,6 +179,10 @@ def write_needs_file(cfg: "Config", task: Task, reason: str, review: bool = Fals
                      settlement: "dict | None" = None) -> None:
     cfg.needs.mkdir(parents=True, exist_ok=True)
     if kind == "plan-review":   # 実行前レビュー（proposed。承認されるまで実行しない）
+        # 計画本文と同時に、実行範囲・候補権限・外部送信可否を人が確認できる形へ固定する。
+        # 承認時には同じ入力から approved 版へ置換し、run へ渡すのは approved 版だけ。
+        propose_execution_envelope(cfg, task, reason)
+        persist_task(cfg, task)
         state = "proposed（実行前レビュー待ち・未実行）"
         hint = (f"<!-- 承認して実行を許可するなら `agent-project approve {task.id}`（または空のまま [x]）。\n"
                 f"     差し戻す（agent-project にタスクを修正させる）なら下に修正指示を書いて [x]。\n"

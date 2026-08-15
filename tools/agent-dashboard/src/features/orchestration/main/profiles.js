@@ -532,7 +532,7 @@ function apply(cfg, options) {
     // lifecycle=pauseで実行を止める（復帰時に人のpause/stopと区別して自動解除する）。
     if (decision.candidate) {
       const patch = {};
-      if (curWl.lifecycle === 'pause' && curWl.lifecycle_source === 'quota') {
+      if (curWl.lifecycle === 'pause' && ['quota', 'qualification'].includes(curWl.lifecycle_source)) {
         patch.lifecycle = 'run';
         patch.lifecycle_source = null;
       }
@@ -557,11 +557,14 @@ function apply(cfg, options) {
           qualifications: qualificationDoc,
           nowMs,
         });
-        if (selectionPolicy.candidates.length) {
-          compiledAny = true;
-          if (JSON.stringify(curWl.selection_policy || null) !== JSON.stringify(selectionPolicy)) {
-            patch.selection_policy = selectionPolicy;
-          }
+        compiledAny = true;
+        if (JSON.stringify(curWl.selection_policy || null) !== JSON.stringify(selectionPolicy)) {
+          patch.selection_policy = selectionPolicy;
+        }
+        if (!selectionPolicy.candidates.length) {
+          patch.lifecycle = 'pause';
+          patch.lifecycle_source = 'qualification';
+          patch.selection_reason = '適格な候補がないため保留';
         }
       }
       if (Object.keys(patch).length > 0) controlPatch[wl] = patch;
@@ -600,7 +603,11 @@ function apply(cfg, options) {
     next.updated_by = 'dashboard';
     atomicWriteJson(path.join(dir, PROFILES_FILE), next);
   }
-  return { decisions, controlWritten: Object.keys(controlPatch).length > 0, stateWritten: stateDirty };
+  return {
+    decisions,
+    controlWritten: Object.keys(controlPatch).length > 0 || compiledAny,
+    stateWritten: stateDirty,
+  };
 }
 
 module.exports = {

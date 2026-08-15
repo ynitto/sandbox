@@ -45,14 +45,20 @@ def _control_policy_snapshot() -> dict:
         control_doc = json.loads((root / "control.json").read_text(encoding="utf-8"))
     except (OSError, ValueError, json.JSONDecodeError):
         control_doc = {}
+    selection_policies = {}
+    for workload, settings in (control_doc.get("workloads") or {}).items():
+        policy = settings.get("selection_policy") if isinstance(settings, dict) else None
+        if isinstance(policy, dict):
+            selection_policies[str(workload)] = policy
     return {
         "control_version": int(control_doc.get("version") or 1),
         "control_revision": int(control_doc.get("revision") or 0),
         "valid_until": str(control_doc.get("valid_until") or ""),
+        "selection_policies": selection_policies,
     }
 
 
-def build_execution_envelope(cfg: "Config", task: Task, reason: str = "") -> dict:
+def build_execution_envelope(cfg: "Config", task: Task, reason: str = "", *, approved: bool = True) -> dict:
     retry_raw = task.get("candidate_retry_limit", "1")
     try:
         retry_limit = max(0, int(retry_raw))
@@ -68,8 +74,11 @@ def build_execution_envelope(cfg: "Config", task: Task, reason: str = "") -> dic
     document = {
         "version": 1,
         "task_id": task.id,
-        "approved_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "approval": {"actor": cfg.actor, "reason": str(reason or "")},
+        "approval": {
+            "status": "approved" if approved else "proposed",
+            "actor": cfg.actor if approved else "",
+            "reason": str(reason or ""),
+        },
         "policy_snapshot": _control_policy_snapshot(),
         "scope": {
             "repositories": _envelope_values(task, "repos") + _envelope_values(task, "workspace"),
@@ -98,13 +107,14 @@ def build_execution_envelope(cfg: "Config", task: Task, reason: str = "") -> dic
             "hard budget increase is required",
         ],
     }
+    if approved:
+        document["approved_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     digest_source = json.dumps(document, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     document["digest"] = hashlib.sha256(digest_source.encode("utf-8")).hexdigest()
     return document
 
 
-def approve_execution_envelope(cfg: "Config", task: Task, reason: str = "") -> dict:
-    document = build_execution_envelope(cfg, task, reason)
+def _save_execution_envelope(cfg: "Config", task: Task, document: dict) -> dict:
     target = execution_envelope_path(cfg, task.id)
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.parent / f".{target.name}.tmp.{os.getpid()}"
@@ -115,11 +125,22 @@ def approve_execution_envelope(cfg: "Config", task: Task, reason: str = "") -> d
     return document
 
 
+def propose_execution_envelope(cfg: "Config", task: Task, reason: str = "") -> dict:
+    return _save_execution_envelope(
+        cfg, task, build_execution_envelope(cfg, task, reason, approved=False))
+
+
+def approve_execution_envelope(cfg: "Config", task: Task, reason: str = "") -> dict:
+    return _save_execution_envelope(cfg, task, build_execution_envelope(cfg, task, reason))
+
+
 def load_execution_envelope(cfg: "Config", task: Task) -> "dict | None":
     candidates = [execution_envelope_path(cfg, task.id)]
     configured = str(task.get("execution_envelope") or "").strip()
     if configured:
-        candidates.insert(0, cfg.root / configured)
+        configured_path = Path(configured)
+        candidates.insert(0, configured_path if configured_path.is_absolute()
+                          else cfg.backlog.parent / configured_path)
     for path in candidates:
         try:
             value = json.loads(path.read_text(encoding="utf-8"))
@@ -128,3 +149,41 @@ def load_execution_envelope(cfg: "Config", task: Task) -> "dict | None":
         if isinstance(value, dict) and value.get("digest") == task.get("execution_envelope_digest"):
             return value
     return None
+
+
+def snapshot_execution_envelope_to_run(cfg: "Config", task: Task, run_id: str,
+                                       use_git: bool = False) -> bool:
+    """承認済み Envelope を run meta へ最初の一度だけ転記する。
+
+    run の実行中に control や backlog が変わっても、監査画面が「その run が承認時に従った
+    契約」を表示できるようにする。既に snapshot があれば絶対に更新しない。
+    """
+    meta_path = _flow_run_bus(cfg, use_git) / "runs" / str(run_id) / "meta.json"
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return False
+    if not isinstance(meta, dict) or isinstance(meta.get("execution_envelope"), dict):
+        return False
+    envelope = load_execution_envelope(cfg, task)
+    if not envelope or (envelope.get("approval") or {}).get("status") != "approved":
+        return False
+    meta["execution_envelope"] = envelope
+    meta["execution_envelope_digest"] = str(envelope.get("digest") or "")
+    write_json_atomic(str(meta_path), meta)
+    return True
+
+
+def archive_execution_envelope(cfg: "Config", task: Task, archived_task_path: Path,
+                               document: "dict | None" = None) -> "Path | None":
+    """完了記録と同じstemへEnvelopeを移し、backlog側のsidecarを退役させる。"""
+    document = document or load_execution_envelope(cfg, task)
+    if not document:
+        return None
+    target = archived_task_path.with_suffix(".envelope.json")
+    write_json_atomic(str(target), document)
+    source = execution_envelope_path(cfg, task.id)
+    if source != target:
+        with contextlib.suppress(OSError):
+            source.unlink()
+    return target

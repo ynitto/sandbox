@@ -739,6 +739,15 @@ def archive_task(cfg: Config, task: Task, vmsg: str, ref: str, ts: str, evidence
     cfg.archive_dir().mkdir(parents=True, exist_ok=True)
     task.extra.append(("archived", ts))
     verify_result = "PASS" if verdict == DELIVERY_VERDICT_PASS else "未実施"
+    archive_dest = _archive_destination(cfg, task.id)
+    envelope = load_execution_envelope(cfg, task)
+    if envelope:
+        envelope_dest = archive_dest.with_suffix(".envelope.json")
+        try:
+            envelope_ref = str(envelope_dest.relative_to(cfg.backlog.parent))
+        except ValueError:
+            envelope_ref = str(envelope_dest)
+        task.set("execution_envelope", envelope_ref)
     body = serialize_task(task) + (
         f"\n## 納品書\n"
         f"- 完了 : {ts}\n"
@@ -752,22 +761,30 @@ def archive_task(cfg: Config, task: Task, vmsg: str, ref: str, ts: str, evidence
     if brief:
         body += ("\n## run ブリーフ（この試行群で確定した制約・教訓。learn 射影済み）\n"
                  f"{brief}\n")
-    _archive_write(cfg, task.id, body)
+    _archive_write(cfg, task.id, body, dest=archive_dest)
+    archive_execution_envelope(cfg, task, archive_dest, envelope)
     delete_task_file(cfg, task)
     rebuild_delivery(cfg)
 
 
-def _archive_write(cfg: "Config", tid: str, body: str) -> None:
-    """archive/<id>.md へ書く。既存（過去の同 id の退避）があれば上書きせず -2, -3… で退避する
-    （明示 id の再投入や複数 charter の同名タスクで過去の記録を失わない）。"""
+def _archive_destination(cfg: "Config", tid: str) -> Path:
+    """過去の同IDを上書きしないarchive先を決める。"""
     adir = cfg.archive_dir()
     adir.mkdir(parents=True, exist_ok=True)
     dest = adir / f"{tid}.md"
     n = 2
-    while dest.exists():
+    while dest.exists() or dest.with_suffix(".envelope.json").exists():
         dest = adir / f"{tid}-{n}.md"
         n += 1
+    return dest
+
+
+def _archive_write(cfg: "Config", tid: str, body: str, *, dest: "Path | None" = None) -> Path:
+    """archive/<id>.md へ書く。既存（過去の同 id の退避）があれば上書きせず -2, -3… で退避する
+    （明示 id の再投入や複数 charter の同名タスクで過去の記録を失わない）。"""
+    dest = dest or _archive_destination(cfg, tid)
     dest.write_text(body, encoding="utf-8")
+    return dest
 
 
 # ---------------------------------------------------------------------------

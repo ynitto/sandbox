@@ -145,6 +145,18 @@ E6 / E7 は旧計画から引き取った測定・受入で、実装の乗り物
 U0 の注意: `agents/*.json` の argv は dashboard 側のテスト・README・コメントに散在している。
 定義を触ったら golden 以外も grep して揃える（過去に踏んだ轍）。
 
+**Track U 実装記録（2026-08-15・U0〜U4 完了）。** U0 は `flow-tiers.js` の文章検証だけを
+軽量 12b 候補へ対応させ、コード worker の候補範囲は維持。U1 は
+`tools/agent-tools/eval/qualification_seed.py` で eval archive を `source: eval-archive`・
+期限付き qualifications へ決定的に変換する。U2 は dashboard の Execution Policy Compiler が
+strategy v1 で候補を順位付けし、control v2 と legacy fallback を dual-write、候補枯渇時は
+qualification 所有の pause へフェイルクローズする。U3 は plan-review で proposed Envelope を
+作り、承認時に固定、flow run meta へ初回だけ snapshot し、完了時は納品記録と同じ stem へ
+sidecar を退避する。Dashboard は工程 receipt と承認時 Envelope の控えめな詳細表示だけを行い、
+現在設定から過去の選択を再計算しない。U4 はエンジン別表を通常画面から外し、4 プリセット、
+custom 5 項目、3 行の適用方針、読み取り専用の折り畳み候補一覧へ置換した。受入は dashboard
+全テスト、agent-project 関連 277 件、qualification seed 契約テストで固定している。
+
 ## 6. Track S — statemachine-use の作成・移行自動化（独立・いつでも）
 
 **背景。** スキーマはこの 2 日で `check` / `check_on_exhausted`（コミット済み）、

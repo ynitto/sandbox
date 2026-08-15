@@ -54,7 +54,7 @@ test('品質優先は large から残量20%で medium、5%で small へ切り替
   ]);
 });
 
-test('カスタムは4項目と機能別上書きを内部契約へ変換する', () => {
+test('カスタムは5項目と機能別上書きを内部契約へ変換する', () => {
   const built = executionPolicy.build('custom', {
     strategy: 'economy',
     normalTier: 'large',
@@ -157,17 +157,20 @@ test('適格性があるとcontrol v2をselection_policyとlegacy fallbackでdua
     version: 1, revision: 7, candidates: [
       { agent_cli: 'aider', model: 'gemma4:e4b', economics: { estimated_cost: 0 }, qualifications: {
         repair: { qualification_id: 'aider-repair-v1', status: 'qualified',
-          success_rate_lower_bound: 0.7, samples: 9, p50_seconds: 140 },
+          success_rate_lower_bound: 0.7, samples: 9, p50_seconds: 140,
+          valid_until: '2099-01-01T00:00:00Z' },
       } },
       { agent_cli: 'cursor', model: 'grok-4.5', economics: { estimated_cost: 1 }, qualifications: {
         general: { qualification_id: 'cursor-general-v1', status: 'qualified',
-          success_rate_lower_bound: 0.9, samples: 9, p50_seconds: 30 },
+          success_rate_lower_bound: 0.9, samples: 9, p50_seconds: 30,
+          valid_until: '2099-01-01T00:00:00Z' },
       } },
     ],
   }));
 
   const result = executionPolicy.save(cfg, { mode: 'auto' });
   assert.strictEqual(result.ok, true);
+  assert.strictEqual(result.apply.controlWritten, true);
   const control = JSON.parse(fs.readFileSync(path.join(controlDir, 'control.json'), 'utf8'));
   assert.strictEqual(control.version, 2);
   assert.match(control.valid_until, /Z$/);
@@ -176,6 +179,37 @@ test('適格性があるとcontrol v2をselection_policyとlegacy fallbackでdua
   assert.strictEqual(control.workloads.flow.selection_policy.strategy, 'balanced');
   assert.strictEqual(control.workloads.flow.selection_policy.qualification_revision, 7);
   assert.deepStrictEqual(control.workloads.flow.selection_policy.candidates.map((candidate) => candidate.rank), [1, 2]);
+
+  fs.writeFileSync(path.join(controlDir, 'qualifications.json'), JSON.stringify({
+    version: 1, revision: 8, candidates: [
+      { agent_cli: 'aider', model: 'gemma4:e4b', qualifications: {
+        repair: { qualification_id: 'aider-repair-v1', status: 'blocked' },
+      } },
+      { agent_cli: 'cursor', model: 'grok-4.5', qualifications: {
+        general: { qualification_id: 'cursor-general-v1', status: 'unknown' },
+      } },
+    ],
+  }));
+  const exhausted = profiles.apply(cfg, { force: true });
+  const parked = JSON.parse(fs.readFileSync(path.join(controlDir, 'control.json'), 'utf8'));
+  assert.strictEqual(exhausted.controlWritten, true);
+  assert.deepStrictEqual(parked.workloads.flow.selection_policy.candidates, []);
+  assert.strictEqual(parked.workloads.flow.lifecycle, 'pause');
+  assert.strictEqual(parked.workloads.flow.lifecycle_source, 'qualification');
+
+  fs.writeFileSync(path.join(controlDir, 'qualifications.json'), JSON.stringify({
+    version: 1, revision: 9, candidates: [
+      { agent_cli: 'aider', model: 'gemma4:e4b', qualifications: {
+        repair: { qualification_id: 'aider-repair-v1', status: 'qualified',
+          valid_until: '2099-01-01T00:00:00Z' },
+      } },
+    ],
+  }));
+  profiles.apply(cfg, { force: true });
+  const recovered = JSON.parse(fs.readFileSync(path.join(controlDir, 'control.json'), 'utf8'));
+  assert.strictEqual(recovered.workloads.flow.lifecycle, 'run');
+  assert.ok(!Object.hasOwn(recovered.workloads.flow, 'lifecycle_source'));
+  assert.strictEqual(recovered.workloads.flow.selection_policy.candidates.length, 1);
 });
 
 console.log(`\n${passed} tests passed (execution-policy)`);

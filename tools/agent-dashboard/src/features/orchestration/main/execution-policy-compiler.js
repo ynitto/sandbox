@@ -26,7 +26,7 @@ function qualificationIndex(document, nowMs) {
     for (const qualification of Object.values(candidate.qualifications || {})) {
       if (!isObject(qualification) || !['qualified', 'trial'].includes(qualification.status)) continue;
       const expires = Date.parse(qualification.valid_until || '');
-      if (Number.isFinite(nowMs) && Number.isFinite(expires) && expires < nowMs) continue;
+      if (!Number.isFinite(expires) || (Number.isFinite(nowMs) && expires < nowMs)) continue;
       if (typeof qualification.qualification_id !== 'string' || !qualification.qualification_id) continue;
       usable.push(qualification);
     }
@@ -127,8 +127,9 @@ function candidatesWithinCeiling(tiers, ceiling) {
   }
   const seen = new Set();
   return rows.filter(({ candidate }) => {
+    if (!isObject(candidate) || !candidate.agent_cli || !candidate.model) return false;
     const id = candidateId(candidate);
-    if (!candidate || !candidate.agent_cli || !candidate.model || seen.has(id)) return false;
+    if (seen.has(id)) return false;
     seen.add(id);
     return true;
   });
@@ -137,7 +138,8 @@ function candidatesWithinCeiling(tiers, ceiling) {
 function compileSelectionPolicy({ strategy = 'balanced', tiers = {}, tierCeiling,
   qualifications = {}, nowMs } = {}) {
   if (!STRATEGIES.includes(strategy)) throw new Error(`strategy が不正です: ${strategy}`);
-  const evidence = qualificationIndex(qualifications, nowMs);
+  const qualificationDoc = isObject(qualifications) ? qualifications : {};
+  const evidence = qualificationIndex(qualificationDoc, nowMs);
   const ranked = [];
   for (const row of candidatesWithinCeiling(tiers, tierCeiling)) {
     const record = evidence.get(candidateId(row.candidate));
@@ -148,7 +150,7 @@ function compileSelectionPolicy({ strategy = 'balanced', tiers = {}, tierCeiling
   return {
     strategy,
     ranking_formula_version: 1,
-    qualification_revision: Number(qualifications.revision || 0),
+    qualification_revision: Number(qualificationDoc.revision || 0),
     retry_limit: 1,
     no_candidate: 'park',
     candidates: ranked.map((row, index) => ({

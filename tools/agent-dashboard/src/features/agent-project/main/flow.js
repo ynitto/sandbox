@@ -259,6 +259,9 @@ function readRun(runDir) {
     // 書き手は agent-flow — こちらで設定から再解決はしない）
     let agentCli = null;
     let agentModel = null;
+    let executionDecision = null;
+    let verification = null;
+    let operationClass = null;
     // 実行した PC（結果レコードの node。agent-flow の worker が書く）。who の綴りから
     // 推測はしない——名義の作り方の 2 実装目になる（同じ理由で agent-flow 側も
     // `results/<node>.json` の node フィールドを正典にしている）。
@@ -276,8 +279,13 @@ function readRun(runDir) {
       state = result.status === 'failed' ? 'failed' : 'done';
       who = result.who || null;
       pc = result.node || null;
-      agentCli = result.agent_cli || null;
-      agentModel = result.model || null;
+      executionDecision = result.execution_decision && typeof result.execution_decision === 'object'
+        ? result.execution_decision : null;
+      verification = result.verification && typeof result.verification === 'object'
+        ? result.verification : null;
+      operationClass = result.operation_class || null;
+      agentCli = result.agent_cli || (executionDecision && executionDecision.agent_cli) || null;
+      agentModel = result.model || (executionDecision && executionDecision.model) || null;
       finishedAt = result.finished_at || null;
       output = typeof result.output === 'string' ? result.output : null;
       data = result.data !== undefined ? result.data : null;
@@ -333,6 +341,9 @@ function readRun(runDir) {
       pc, // 実行した PC（結果に記録があるときだけ。旧い結果は null）
       agentCli, // 実行に使ったエージェント CLI（結果に記録があるときだけ）
       agentModel, // 同モデル（null = CLI 既定）
+      executionDecision, // Resolver が残した候補選択（設定から再推測しない）
+      verification, // この候補での決定的ゲート結果
+      operationClass,
       finishedAt,
       heartbeatAt,
       leaseUntil,
@@ -433,6 +444,8 @@ function readRun(runDir) {
     createdAt: meta.created_at || null,
     updatedAt: meta.updated_at || null,
     failureReason: meta.failure_reason || null,
+    executionEnvelope: meta.execution_envelope && typeof meta.execution_envelope === 'object'
+      ? meta.execution_envelope : null,
     strategy: graph.strategy || null,
     iteration: Number(graph.iteration || 0),
     planRevisions: readPlanRevisions(runDir, Object.keys(nodes)),

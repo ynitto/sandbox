@@ -760,13 +760,16 @@ test('手法: 同梱カタログの source ダイジェストが共有 golden �
 
 // --- IPC 配線（overview がまとめて返す） -------------------------------------
 
-test('IPC: orchestration:overview は budget/control/status/agents/instructions/tuning をまとめて返す', () => {
+test('IPC: orchestration:overview は制御面と候補適格性をまとめて返す', () => {
   const bdir = tmpdir('orch-ov-b-');
   const cdir = tmpdir('orch-ov-c-');
   const idir = tmpdir('orch-ov-i-');
   budget.save(budgetCfg(bdir), { tokens: 500000 });
   control.saveControl(controlCfg(cdir), { workloads: { routine: { lifecycle: 'run' } } });
   instructions.saveInstructions(instrCfg(idir), { text: '共通指示テスト' });
+  fs.writeFileSync(path.join(cdir, 'qualifications.json'), JSON.stringify({
+    version: 1, revision: 8, candidates: [{ agent_cli: 'aider', model: 'gemma4:e4b' }],
+  }));
   const cfg = { orchestration: { budgetDir: bdir, controlDir: cdir, instructionsDir: idir } };
   const handlers = {};
   require('../src/features/orchestration/index.js').registerIpc({
@@ -778,6 +781,8 @@ test('IPC: orchestration:overview は budget/control/status/agents/instructions/
   assert.ok(Array.isArray(ov.status));
   assert.ok(Array.isArray(ov.agents.dropins));
   assert.strictEqual(ov.instructions.text, '共通指示テスト');
+  assert.strictEqual(ov.qualifications.revision, 8);
+  assert.strictEqual(ov.qualifications.candidates[0].agent_cli, 'aider');
   assert.ok(ov.instructionsPreview.includes('共通指示テスト'));
   assert.strictEqual(ov.budgetDir, bdir);
   assert.strictEqual(ov.controlDir, cdir);

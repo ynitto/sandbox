@@ -765,6 +765,56 @@ const TASK_EXTRA_LABELS = {
   verification_commands: '検証コマンド',
 };
 
+function taskExecutionEnvelopeHtml(task) {
+  const envelope = task.executionEnvelope;
+  if (!envelope || typeof envelope !== 'object') return '';
+  const candidates = new Map();
+  for (const pin of (((envelope.candidate_permissions || {}).pins) || [])) {
+    if (!pin || !pin.agent_cli) continue;
+    candidates.set(`${pin.agent_cli}\u0000${pin.model || ''}`, { ...pin, pinned: true });
+  }
+  for (const policy of Object.values(((envelope.policy_snapshot || {}).selection_policies) || {})) {
+    for (const candidate of ((policy || {}).candidates || [])) {
+      if (!candidate || !candidate.agent_cli) continue;
+      const key = `${candidate.agent_cli}\u0000${candidate.model || ''}`;
+      if (!candidates.has(key)) candidates.set(key, candidate);
+    }
+  }
+  const rows = [...candidates.values()].map((candidate) =>
+    `<li><code>${esc(candidate.agent_cli)}</code> / <code>${esc(candidate.model || 'CLI既定')}</code>`
+      + `<span class="muted">${candidate.pinned ? '明示固定' : `候補順位 ${candidate.rank || '—'}`}</span></li>`
+  ).join('') || '<li>実行時に決定</li>';
+  return `<details class="task-execution-envelope">
+    <summary>使用予定のエージェントとモデル</summary>
+    <ul>${rows}</ul>
+    <p class="muted">工程ごとの確定候補と件数は、利用枠と実行時の適格性により変わります。</p>
+  </details>`;
+}
+
+function taskCandidateUsageHtml(taskId) {
+  const runs = runsForTask(taskId);
+  const run = runs.find((candidate) => candidate.status === 'done') || runs[0];
+  if (!run) return '';
+  const counts = new Map();
+  let switched = 0;
+  for (const node of Object.values(run.nodes || {})) {
+    if (node.state !== 'done') continue;
+    const decision = node.executionDecision || {};
+    const cli = decision.agent_cli || node.agentCli || '';
+    const model = decision.model || node.agentModel || '';
+    const label = cli ? `${cli} / ${model || 'CLI既定'}` : 'モデル不使用';
+    counts.set(label, (counts.get(label) || 0) + 1);
+    if (decision.fallback_from) switched += 1;
+  }
+  if (!counts.size) return '';
+  const rows = [...counts.entries()].map(([label, count]) =>
+    `<li><span>${esc(label)}</span><strong>${count}工程</strong></li>`).join('');
+  return `<details class="task-candidate-usage">
+    <summary>エージェント / モデル利用内訳</summary>
+    <ul>${rows}${switched ? `<li><span>候補切替</span><strong>${switched}工程</strong></li>` : ''}</ul>
+  </details>`;
+}
+
 function taskDialogInputSnapshot(dialog) {
   return JSON.stringify(
     [...dialog.querySelectorAll('input, textarea, select')].map((field) => [
@@ -891,6 +941,8 @@ function showTaskDialog(id, scope) {
         ${verificationDetailsRow}
         ${depRow}
       </table>
+      ${t.status === 'proposed' ? taskExecutionEnvelopeHtml(t) : ''}
+      ${scope === 'archive' || t.status === 'review' ? taskCandidateUsageHtml(t.id) : ''}
       ${relatedRunsBlock(t.id, { archived: scope === 'archive' })}
       <details class="task-technical-details">
         <summary>詳細情報</summary>

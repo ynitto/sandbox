@@ -46,6 +46,24 @@ python3 tools/agent-tools/eval/run_suite.py --model qwen3.5:9b --cli aider --lab
 または `metrics.json` が機械可読な結果である。通常の run は Git 管理外で、採用判断の根拠に
 残すスナップショットだけを `results/archive/` へ移す。過去の台帳も同所へ整理した。
 
+### 評価archiveから初期適格性を生成する
+
+`qualification_seed.py` は、保存済み台帳を候補×処理種別へ明示的に対応付け、
+`agent-candidate-qualifications` v1 を生成する。同じモデルでも agent CLI が違えば別候補として扱い、
+コード側の12b候補は既知の停止性問題があるため `blocked` のままにする。出力のwriterはこの初期変換だけで、
+運用開始後の更新は agent-audit が担う。
+
+```bash
+python3 tools/agent-tools/eval/qualification_seed.py \
+  --revision 1 \
+  --generated-at 2026-08-15T00:00:00Z \
+  --output /path/to/agent-control/qualifications.json
+```
+
+出力には根拠を区別する `source: eval-archive` と、evaluation profileの
+`valid_for_days`から計算した `valid_until` が入る。入力archive、revision、生成時刻が同じなら
+出力も同じになるため、レビューや再生成では`--generated-at`を固定する。
+
 生成モデルだけを比べる基準線は `--cli agent-ollama` のまま `--model` だけ変える。
 ハーネスを調整する実験ではモデルを固定し、`--cli`、`--wall`、個別スクリプトの
 `--methods` / `--num-predict` を **1 度に 1 つだけ**変える。worker の aider 経路は比較用に

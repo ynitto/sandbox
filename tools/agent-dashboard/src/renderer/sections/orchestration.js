@@ -220,10 +220,10 @@ function orchTierValue(value) {
   return ORCH_TIER_KEYS.find((key) => key === text || ORCH_TIER_LABELS[key] === text) || text;
 }
 const ORCH_POLICY_SUMMARIES = {
-  auto: '通常は標準。利用上限がある場合は、残り20%未満で軽量に切り替えます。',
-  saving: '常に軽量を使い、利用量を抑えます。',
-  quality: '通常は高性能。残り20%未満で標準、5%未満で軽量に切り替えます。',
-  custom: '通常時の実行レベル、上限、切り替え時期、上限到達時の動作を指定します。',
+  auto: '処理内容に適した候補から、品質と利用量のバランスを見て選択します。',
+  saving: '適格な候補から、予想費用と資源消費の小さい組み合わせを優先します。候補がなければ保留します。',
+  quality: '適格性の信頼度と品質実績が高い組み合わせを優先します。',
+  custom: '候補の選び方、実行レベル、利用上限、切り替え時期、上限到達時の動作を指定します。',
 };
 
 function orchPriorityFromWeight(value) {
@@ -231,13 +231,44 @@ function orchPriorityFromWeight(value) {
   return weight >= 1.5 ? 'high' : weight > 0 && weight < 0.75 ? 'low' : 'standard';
 }
 
-function orchPolicyDecisionRowHtml(workload, decision) {
-  if (!decision) return `<tr><td>${esc(amigosWorkloadLabel(workload))}</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>`;
-  const targetTier = decision.target_tier || decision.tier;
-  return `<tr><td>${esc(amigosWorkloadLabel(workload))}</td>
-    <td>${esc(orchTierLabel(targetTier))}</td><td>${esc(orchTierLabel(decision.tier))}</td>
-    <td class="mono">${esc(orchProfileCandidateText(decision.candidate))}</td>
-    <td>${esc(decision.reason || '—')}</td></tr>`;
+const ORCH_OPERATION_LABELS = {
+  'existing-test-repair': '既存テスト付き局所修正',
+  'constrained-edit': '制約付き編集',
+  'classification': '分類',
+  'verification': '検証',
+  'planning': '計画',
+  'review': 'レビュー',
+};
+
+function orchPolicyCandidateRowsHtml(overview) {
+  const qualifications = overview.qualifications || {};
+  const ranked = new Map();
+  for (const workload of Object.values(((overview.control || {}).workloads) || {})) {
+    for (const candidate of (((workload || {}).selection_policy || {}).candidates || [])) {
+      const key = `${candidate.agent_cli || ''}\u0000${candidate.model || ''}`;
+      const rank = Number(candidate.rank);
+      if (Number.isFinite(rank) && (!ranked.has(key) || rank < ranked.get(key))) ranked.set(key, rank);
+    }
+  }
+  const candidates = Array.isArray(qualifications.candidates) ? qualifications.candidates : [];
+  if (!candidates.length) return '<p class="muted">適格性の記録はまだありません。</p>';
+  return candidates.map((candidate) => {
+    const key = `${candidate.agent_cli || ''}\u0000${candidate.model || ''}`;
+    const evidence = Object.entries(candidate.qualifications || {});
+    const usable = evidence.filter(([, item]) => ['qualified', 'trial'].includes((item || {}).status));
+    const statuses = evidence.map(([, item]) => (item || {}).status);
+    const status = statuses.includes('qualified') ? '確認済み'
+      : statuses.includes('trial') ? '試行中'
+        : statuses.includes('blocked') ? '対象外' : '未確認';
+    const conditions = usable.map(([operation]) => ORCH_OPERATION_LABELS[operation] || operation)
+      .join('、') || '自動選択の対象外';
+    return `<article class="orch-policy-candidate">
+      <strong><code>${esc(candidate.agent_cli || '—')}</code> / <code>${esc(candidate.model || '—')}</code></strong>
+      <dl><div><dt>利用条件</dt><dd>${esc(conditions)}</dd></div>
+        <div><dt>優先度</dt><dd>${ranked.has(key) ? esc(String(ranked.get(key))) : '—'}</dd></div>
+        <div><dt>適格性</dt><dd>${esc(status)}</dd></div></dl>
+    </article>`;
+  }).join('');
 }
 
 function orchExecutionPolicyPanelHtml(overview) {
@@ -257,12 +288,14 @@ function orchExecutionPolicyPanelHtml(overview) {
   });
   const switchTiming = ['early', 'standard', 'late'].includes(custom.switchTiming)
     ? custom.switchTiming : 'standard';
+  const strategy = ['balanced', 'economy', 'quality'].includes(custom.strategy)
+    ? custom.strategy : 'balanced';
   const onExhausted = ['degrade', 'pause', 'stop'].includes(custom.onExhausted)
     ? custom.onExhausted : 'degrade';
   const modeCards = [
-    ['auto', 'おまかせ（推奨）', '品質と利用量のバランスを自動調整'],
-    ['saving', '節約', '常に軽量を使用'],
-    ['quality', '品質優先', '余裕がある間は高性能を使用'],
+    ['auto', 'おまかせ（推奨）', '適格な候補から品質と利用量のバランスを見て選択'],
+    ['saving', '節約', '予想費用と資源消費が小さい候補を優先'],
+    ['quality', '品質優先', '適格性の信頼度と品質実績を優先'],
     ['custom', 'カスタム', '必要な項目だけ自分で指定'],
   ].map(([value, label, description]) => `<label class="orch-policy-card">
       <input type="radio" name="orch-policy-mode" value="${value}"${mode === value ? ' checked' : ''} />
@@ -288,8 +321,12 @@ function orchExecutionPolicyPanelHtml(overview) {
       </select></td>
     </tr>`;
   }).join('');
-  const decisionRows = ORCH_POLICY_WORKLOADS.map((workload) =>
-    orchPolicyDecisionRowHtml(workload, (profiles.state || {})[workload])).join('');
+  const activePolicy = (profiles.policy || {});
+  const activeNormalTier = activePolicy.no_cap_tier || normalTier;
+  const lowTier = ((activePolicy.steps || []).slice().sort((a, b) =>
+    Number(a.min_remaining_ratio || 0) - Number(b.min_remaining_ratio || 0))[0] || {}).tier || 'small';
+  const candidateCount = new Set(((overview.qualifications || {}).candidates || []).map((candidate) =>
+    `${candidate.agent_cli || ''}\u0000${candidate.model || ''}`)).size;
   const controllerStatus = (overview.status || []).find((record) => record.tool === 'agent-resource-controller');
   const controllerTs = Date.parse((controllerStatus && controllerStatus.ts) || '');
   const controllerFresh = controllerStatus && Number.isFinite(controllerTs)
@@ -311,6 +348,10 @@ function orchExecutionPolicyPanelHtml(overview) {
     <p class="orch-policy-summary" id="orch-policy-summary" aria-live="polite">${esc(ORCH_POLICY_SUMMARIES[mode])}</p>
     <div class="orch-policy-custom" id="orch-policy-custom"${mode === 'custom' ? '' : ' hidden'}>
       <div class="orch-policy-custom-grid">
+        <label>候補の選び方<select id="orch-policy-strategy">
+          ${[['balanced', 'バランス'], ['economy', '利用量を優先'], ['quality', '品質を優先']].map(([v, label]) =>
+    `<option value="${v}"${strategy === v ? ' selected' : ''}>${label}</option>`).join('')}
+        </select></label>
         <label>通常時の実行レベル<select id="orch-policy-normal-tier">
           ${ORCH_POLICY_TIER_KEYS.map((tier) => `<option value="${tier}"${normalTier === tier ? ' selected' : ''}${missingPolicyTiers.includes(tier) ? ' disabled' : ''}>${esc(orchTierLabel(tier))}${missingPolicyTiers.includes(tier) ? '（候補未設定）' : ''}</option>`).join('')}
         </select></label>
@@ -331,10 +372,17 @@ function orchExecutionPolicyPanelHtml(overview) {
           <tbody>${overrideRows}</tbody></table></div>
       </details>
     </div>
-    <div class="orch-policy-preview"><strong>現在の適用結果</strong>
-      <p class="muted">ここで選ばれた組み合わせが各機能の基準になります。工程や用途に固定指定がある場合は、そちらを優先します。</p>
-      <div class="table-scroll"><table class="amigos-table orch-table"><thead><tr><th>機能</th><th>方針上のレベル</th><th>現在のレベル</th><th>エージェント / モデル</th><th>判断理由</th></tr></thead>
-        <tbody>${decisionRows}</tbody></table></div>
+    <div class="orch-policy-preview"><strong>現在の適用方針</strong>
+      <dl class="orch-policy-rules">
+        <div><dt>通常時</dt><dd>${esc(orchTierLabel(activeNormalTier))}までの候補を利用</dd></div>
+        <div><dt>残量低下時</dt><dd>${esc(orchTierLabel(lowTier))}までの候補を利用</dd></div>
+        <div><dt>候補選択</dt><dd>適格性 → 利用可能性 → 優先順位</dd></div>
+      </dl>
+      <p><strong>エージェント／モデル候補: ${candidateCount}件</strong></p>
+      <details class="orch-policy-candidates"><summary>候補の使い分けを見る</summary>
+        <p class="muted">適格性と利用条件は評価記録から生成され、ここでは変更できません。</p>
+        <div class="orch-policy-candidate-list">${orchPolicyCandidateRowsHtml(overview)}</div>
+      </details>
     </div>
     ${controllerHtml}${resultHtml}
     <div class="settings-save-actions"><button type="button" id="btn-orch-policy-save" class="primary-inline"${state.orchSaving ? ' disabled' : ''}>
@@ -1551,6 +1599,7 @@ function setupOrchestration(root, refreshView = async () => {
       };
     }
     const custom = {
+      strategy: (root.querySelector('#orch-policy-strategy') || {}).value || 'balanced',
       normalTier: (root.querySelector('#orch-policy-normal-tier') || {}).value || 'medium',
       tokenLimit: Number((root.querySelector('#orch-policy-token-limit') || {}).value || 0),
       switchTiming: (root.querySelector('#orch-policy-switch-timing') || {}).value || 'standard',

@@ -8,6 +8,7 @@ const sessionCommands = require('./sessionCommands');
 const profiles = require('./profiles');
 const tuning = require('./tuning');
 const executionPolicy = require('./execution-policy');
+const qualifications = require('./qualifications');
 
 function registerIpc(ctx) {
   const { handle, loadConfig } = ctx;
@@ -36,6 +37,7 @@ function registerIpc(ctx) {
       budgetDir: budget.resolveBudgetDir(cfg),
       controlDir,
       profiles: profiles.load(cfg),
+      qualifications: qualifications.load(cfg),
       tuning: tuning.load(cfg),
       methodsCatalog: methodsCatalog.map((method) => ({
         ...method,

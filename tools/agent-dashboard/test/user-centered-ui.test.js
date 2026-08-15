@@ -429,26 +429,18 @@ const orchTierValue = new Function('ORCH_TIER_KEYS', 'ORCH_TIER_LABELS',
 assert.deepStrictEqual(['単純作業', '軽量', '標準', '高性能'].map(orchTierValue),
   ['basic', 'small', 'medium', 'large'],
   '日本語の入力値は保存前に内部tierへ戻します');
-// eslint-disable-next-line no-new-func
-const orchPolicyDecisionRowHtml = new Function(
-  'esc', 'amigosWorkloadLabel', 'orchTierLabel', 'orchProfileCandidateText',
-  `${grab('orchPolicyDecisionRowHtml')}; return orchPolicyDecisionRowHtml;`
-)(String, (value) => value, (value) => ({ large: '高性能', medium: '標準' })[value] || value,
-  (candidate) => `${candidate.agent_cli}:${candidate.model}`);
-const quotaDecisionRow = orchPolicyDecisionRowHtml('flow', {
-  target_tier: 'large', tier: 'medium', candidate: { agent_cli: 'codex', model: 'gpt-5' },
-  reason: 'quota-fallback→medium',
-});
-assert.match(quotaDecisionRow, /高性能/);
-assert.match(quotaDecisionRow, /標準/);
-assert.match(quotaDecisionRow, /codex:gpt-5/);
-assert.match(quotaDecisionRow, /quota-fallback/);
-assert.ok(renderer.includes('<th>方針上のレベル</th>') && renderer.includes('<th>現在のレベル</th>')
-  && renderer.includes('<th>判断理由</th>'), 'クォータで変わった実行レベルと判断理由を分けて表示します');
+const policySource = grab('orchExecutionPolicyPanelHtml');
+assert.ok(policySource.includes('<dt>通常時</dt>') && policySource.includes('<dt>残量低下時</dt>')
+  && policySource.includes('<dt>候補選択</dt>'), '通常表示は候補表でなく方針を3行で要約します');
+assert.ok(policySource.includes('<details class="orch-policy-candidates">')
+  && policySource.includes('<summary>候補の使い分けを見る</summary>'),
+  '候補の組み合わせと理由は閉じた詳細へ置きます');
+assert.ok(!policySource.includes('<th>エージェント / モデル</th>'),
+  '通常表示に機能別agent/model表を戻しません');
 assert.ok(!renderer.includes('id="btn-orch-tier-add"') && !renderer.includes('class="orch-tier-remove"'),
   '固定された実行レベルの追加・削除操作を表示しません');
 assert.ok(renderer.includes('<h3>実行レベルの構成</h3>')
-  && renderer.includes('<th>現在のレベル</th>'), '見出しと表を実行レベルへ統一します');
+  && renderer.includes('使う候補（上から優先）'), '候補編集の見出しを実行レベルへ統一します');
 assert.ok(renderer.includes('候補は上から優先。つまみで並び替えやレベル間の移動ができます。'),
   '実行レベルの編集方法を一文で示します');
 assert.ok(renderer.includes('class="orch-tier-candidate-drag" draggable="true"')

@@ -514,6 +514,9 @@ def _act_run(task: Task, cfg: "Config", use_git: bool = False) -> "tuple[bool, s
     next_claim_heartbeat = time.time() + _CLAIM_HEARTBEAT_SEC
     try:
         while True:
+            # agent-flow が meta を作った時点から、承認済み契約を監視画面へ公開する。
+            # agent-flow 側の更新で一時的に落ちても、初回 snapshot が定着するまで再試行する。
+            snapshot_execution_envelope_to_run(cfg, task, rid, use_git=use_git)
             rc = proc.poll()
             if rc is not None:
                 drainer.join(timeout=2.0)
@@ -625,6 +628,9 @@ def _act_run(task: Task, cfg: "Config", use_git: bool = False) -> "tuple[bool, s
                 proc.stdout.close()
             except OSError:
                 pass
+        # 高速に終了してポーリングを1周もしなかった run と、最後の agent-flow 書き込みで
+        # snapshot が押し出された run の双方をここで確定する。
+        snapshot_execution_envelope_to_run(cfg, task, rid, use_git=use_git)
     out = "".join(out_chunks)
     task.drop("flow_run", "flow_loc")
     # 同期 run の cancelled は exit≠0 でもメッセージが日本語のため、meta で確定して
