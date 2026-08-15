@@ -773,6 +773,16 @@ def collect_flow_buses(args, store: Store) -> int:
                     result_rec["trial"] = {"id": str(result["trial"].get("id") or ""),
                                            "variant": str(result["trial"].get("variant") or "")}
                     run_trial = run_trial or result_rec["trial"]
+                # 候補ベース実行の receipt（設計 2026-08-15 §6.5）。書き手は実行した
+                # Adapter で、ここは事実をそのまま運ぶ——qualifications 生成（qualify）の
+                # 候補単位（agent_cli+model × operation_class）の入力になる。
+                if result.get("operation_class"):
+                    result_rec["operation_class"] = str(result["operation_class"])
+                if isinstance(result.get("local_patch_blockers"), list):
+                    result_rec["local_patch_blockers"] = [
+                        str(v) for v in result["local_patch_blockers"]]
+                if isinstance(result.get("execution_decision"), dict):
+                    result_rec["execution_decision"] = result["execution_decision"]
                 if store.append_record(result_rec):
                     added += 1
             if run_methods:
@@ -844,6 +854,48 @@ def collect_project_roots(args, store: Store) -> int:
                 if store.append_record(rec):
                     added += 1
             store.set_cursor(key, f.tell())
+    # statemachine run ログ（agent-loop statemachine の候補ベース receipt）。
+    # execution_decision 行を持つ完了 run だけを 1 run = 1 レコードで拾う（走行中の
+    # ログは terminal / check_exhausted が無いので次回へ持ち越す）。
+    for root in _dirs_of(args, "project_roots"):
+        pattern = os.path.join(glob.escape(root), ".statemachine-use", "logs",
+                               "agent-loop-*.jsonl")
+        for lpath in sorted(glob.glob(pattern)):
+            rid = record_id("statemachine-log", root, os.path.basename(lpath))
+            if store.has_record(rid):
+                continue
+            decision = None
+            final = ""
+            escalate = False
+            checks = check_failures = 0
+            for ev in iter_jsonl(lpath):
+                event = ev.get("event")
+                if event == "execution_decision":
+                    decision = {k: v for k, v in ev.items() if k != "event"}
+                elif event == "check":
+                    checks += 1
+                    if ev.get("check_ok") != "true":
+                        check_failures += 1
+                elif event == "terminal":
+                    final = str(ev.get("state") or "")
+                elif event == "check_exhausted":
+                    escalate = True
+            if decision is None or not (final or escalate):
+                continue
+            rec = {
+                "id": rid, "_epoch": os.path.getmtime(lpath),
+                "ts": _iso(os.path.getmtime(lpath)),
+                "kind": "run", "source": "statemachine-log",
+                "tool": "agent-loop", "workload": "routine",
+                "ref": os.path.basename(lpath),
+                "status": "escalate" if escalate else "done",
+                "agent_cli": str(decision.get("agent_cli") or ""),
+                "model": str(decision.get("model") or ""),
+                "checks": checks, "check_failures": check_failures,
+                "execution_decision": decision,
+            }
+            if store.append_record(rec):
+                added += 1
     return added
 
 
@@ -876,6 +928,27 @@ def collect_amigos_buses(args, store: Store) -> int:
                     except (TypeError, ValueError):
                         pass
                     last_ts = max(last_ts, parse_iso(ev.get("ts")) or 0.0)
+                    # 候補単位のターン receipt（E4 以降の event 行だけが agent_cli を持つ）。
+                    # ミッション集計と別に 1 ターン = 1 レコードで残し、qualify の入力にする。
+                    if ev.get("agent_cli"):
+                        turn_rec = {
+                            "id": record_id("amigos-turn", bus,
+                                            f"{mid}::{who}::{ev.get('turn')}"),
+                            "_epoch": parse_iso(ev.get("ts")) or 0.0, "ts": ev.get("ts"),
+                            "kind": "event", "source": "amigos-bus",
+                            "tool": "agent-amigos", "workload": "amigos",
+                            "ref": f"{mid}/{who}#turn{ev.get('turn')}",
+                            "agent_cli": str(ev.get("agent_cli")),
+                            "model": str(ev.get("model") or ""),
+                            "seconds": float(ev.get("cli_seconds") or 0.0),
+                            "status": "done",
+                        }
+                        if ev.get("operation_class"):
+                            turn_rec["operation_class"] = str(ev["operation_class"])
+                        if isinstance(ev.get("execution_decision"), dict):
+                            turn_rec["execution_decision"] = ev["execution_decision"]
+                        if store.append_record(turn_rec):
+                            added += 1
                 rec = {
                     "id": rid, "_epoch": last_ts or os.path.getmtime(epath),
                     "ts": _iso(last_ts), "kind": "run", "source": "amigos-bus",

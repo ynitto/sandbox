@@ -77,6 +77,15 @@ def _build_parser() -> argparse.ArgumentParser:
     tune.add_argument("--period", choices=["day", "month", "total"], default=None)
     tune.add_argument("--json", action="store_true")
 
+    qualify = sub.add_parser(
+        "qualify", help="本番 receipt から候補適格性（qualifications.json）を昇格・降格・期限切れ")
+    qualify.add_argument("--apply", action="store_true",
+                         help="qualifications.json へ原子書換（既定は dry-run）")
+    qualify.add_argument("--window-days", type=int, default=0,
+                         help="観測窓の上書き（既定は evaluation profile の window_days）")
+    qualify.add_argument("--qualifications-file", default="",
+                         help="出力先の上書き（既定 ~/.agents/control/qualifications.json）")
+
     g = sub.add_parser("gc", help="種別別保持日数での掃除（insights は対象外）")
     g.add_argument("--dry-run", action="store_true", dest="dry_run")
 
@@ -145,6 +154,14 @@ def main(argv=None) -> int:
     if args.command == "tune":
         from .tuning import cmd_tune
         return cmd_tune(args)
+    if args.command == "qualify":
+        import json as _json
+        from .configfile import resolve_audit_dir
+        from .qualifications import cmd_qualify
+        from .store import Store
+        summary = cmd_qualify(args, Store(resolve_audit_dir(args)))
+        print(_json.dumps(summary, ensure_ascii=False, indent=2))
+        return 1 if summary.get("error") else 0
     if args.command == "gc":
         from .gccmd import cmd_gc
         return cmd_gc(args)
