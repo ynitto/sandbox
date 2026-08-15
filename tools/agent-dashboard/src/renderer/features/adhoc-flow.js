@@ -1360,7 +1360,7 @@
     return '';
   }
 
-  function designAssignmentPreviewHtml(workflow, node, compact = false) {
+  function designAssignmentPreviewHtml(workflow, node) {
     if (!workflowIsDesign(workflow) || !node || DESIGN_FORBIDDEN_KINDS.has(String(node.kind || ''))) return '';
     if (st.designPreviewBusy) {
       return '<section class="wf-node-assignment-preview"><strong>割り当てプレビュー</strong><small>読み込み中…</small></section>';
@@ -1368,11 +1368,8 @@
     const preview = st.designPreview || {};
     const item = (preview.nodes || []).find((candidate) => String(candidate.id) === String(node.id));
     if (!item) {
-      const message = node.id
-        ? 'このフローを保存すると agent / model の候補を確認できます。'
-        : 'ノードを保存すると agent / model の候補を確認できます。';
       return '<section class="wf-node-assignment-preview"><strong>割り当てプレビュー</strong><small>'
-        + esc(message) + '</small></section>';
+        + '保存すると agent / model の候補を確認できます。</small></section>';
     }
     const auto = item.auto || {};
     const candidate = auto.candidate || {};
@@ -1385,7 +1382,7 @@
       return '<li><strong>' + esc((preview.labels || {})[tier] || tier) + '</strong>'
         + (candidates.length ? ': ' + esc(candidates.join('、')) : ': 候補未設定') + '</li>';
     }).join('');
-    return '<section class="wf-node-assignment-preview' + (compact ? ' compact' : '') + '">'
+    return '<section class="wf-node-assignment-preview">'
       + '<strong>agent / model 割り当てプレビュー</strong>'
       + '<p>自動: <code>' + esc(autoText) + '</code>'
       + (auto.tier ? ' · ' + esc((preview.labels || {})[auto.tier] || auto.tier) : '') + '</p>'
@@ -1406,18 +1403,17 @@
     const method = node.method ? `<span class="wf-method">${esc(node.method.description || node.method.id)}</span>` : '';
     const continuation = ({ route: '分類後に専門工程を追加', retry: '未完了なら再作業・再検証' })[node.continuation] || '';
     const inputError = st.connectFrom ? connectionError(workflow, st.connectFrom, node.id) : '';
-    const assignment = designAssignmentPreviewHtml(workflow, node, true);
     if (readonly) return `<article class="wf-node" style="left:${Number(node.x)}px;top:${Number(node.y)}px">
       <div class="wf-node-drag"><span>${esc(role)}ロール</span><span class="wf-tier">${esc(tierLabel(node.tier))}</span></div>
       <div class="wf-node-body"><strong>${esc(name)}</strong><p>${esc(node.goal)}</p>${method}
-        ${continuation ? `<span class="wf-continuation">${esc(continuation)}</span>` : ''}${assignment}</div></article>`;
+        ${continuation ? `<span class="wf-continuation">${esc(continuation)}</span>` : ''}</div></article>`;
     return `<article class="wf-node${selected}${issue ? ' invalid' : ''}" data-node-id="${esc(node.id)}"
       style="left:${Number(node.x)}px;top:${Number(node.y)}px">
       <button type="button" class="wf-port in${portState(workflow, node.id)}" data-connect-in="${esc(node.id)}"
         title="${esc(inputError || 'ここへ接続')}" aria-label="${esc(name)}へ接続"></button>
       <div class="wf-node-drag" data-drag-node="${esc(node.id)}"><span>${esc(role)}ロール</span><span class="wf-tier">${esc(tierLabel(node.tier))}</span></div>
       <div class="wf-node-body"><strong>${esc(name)}</strong><p>${esc(node.goal)}</p>${method}
-        ${continuation ? `<span class="wf-continuation">${esc(continuation)}</span>` : ''}${assignment}
+        ${continuation ? `<span class="wf-continuation">${esc(continuation)}</span>` : ''}
         ${issue ? `<span class="wf-node-issue">${esc(issue)}</span>` : ''}</div>
       <button type="button" class="wf-port out" draggable="true" data-connect-out="${esc(node.id)}"
         aria-label="${esc(name)}から接続"></button>
@@ -1564,13 +1560,12 @@
   }
 
   function designTemplateCardHtml(workflow) {
-    const nodes = Array.isArray(workflow.nodes) ? workflow.nodes.length : 0;
-    return `<button type="button" class="wf-template-card wf-saved-card wf-design-template-card"
-        data-workflow-id="${esc(workflow.id)}" data-design-template-id="${esc(workflow.id)}">
+    const nodes = Array.isArray(workflow.nodes) ? workflow.nodes : [];
+    const pattern = { id: workflow.id, label: workflow.name, template: { nodes } };
+    return `<button type="button" class="wf-template-card" data-design-template-id="${esc(workflow.id)}">
       <strong>${esc(workflow.name || workflow.id)}</strong>
-      <small>${esc(workflow.description || `${nodes}工程の設計フロー`)}</small>
-      <span class="wf-card-meta">${nodes}工程 · 同梱雛形（読み取り専用）</span>
-      <b>この雛形をコピー →</b></button>`;
+      <small>${esc(workflow.description || `${nodes.length}工程の設計フロー`)}</small>
+      ${miniFlowHtml(pattern)}<b>この雛形をコピー →</b></button>`;
   }
 
   function workflowPurposeSwitchHtml(purpose) {
@@ -1583,36 +1578,25 @@
     </div>`;
   }
 
-  function designConstraintHtml() {
-    return `<div class="wf-design-constraint-banner" role="note">
-      <strong>設計フローの制約</strong>
-      <span>設計書 Markdown を成果にする短命の設計 run 用です。human と split は使用できず、人の回答待ちや実行時分割は設計フローへ追加できません。</span>
-    </div>`;
-  }
-
   function workflowLibraryHtml(ov, purpose = st.workflowPurpose) {
     const selectedPurpose = workflowPurpose(purpose);
     const saved = visibleWorkflows(ov, selectedPurpose);
+    // 同梱の設計雛形は「新しく作る」の雛形として、実装の標準パターンと同じ形で並べる。
     const internalDesign = selectedPurpose === 'design' ? builtinDesignWorkflows(ov) : [];
     const patterns = selectedPurpose === 'implementation' ? (ov.patterns || []) : [];
     const methodPatterns = selectedPurpose === 'implementation' ? methodWorkflowPatterns(ov.methods) : [];
     return `<section class="wf-page wf-settings wf-library" aria-label="ワークフロー設定">
       ${workflowPurposeSwitchHtml(selectedPurpose)}
       ${st.notice ? `<p class="qf-notice" role="status">${esc(st.notice)}</p>` : ''}
-      ${selectedPurpose === 'design' ? designConstraintHtml() : ''}
-      <section><div class="wf-section-head"><h3>${selectedPurpose === 'design' ? '保存済み（library）' : '保存済み'}</h3></div>
+      <section><div class="wf-section-head"><h3>保存済み</h3></div>
         ${saved.length ? `<div class="wf-template-grid">${saved.map(savedWorkflowCardHtml).join('')}</div>`
     : '<div class="empty">保存済みのワークフローはありません</div>'}</section>
-      ${selectedPurpose === 'design' ? `<section><div class="wf-section-head"><h3>同梱の設計雛形</h3></div>
-        ${internalDesign.length ? `<div class="wf-template-grid">${internalDesign.map(designTemplateCardHtml).join('')}</div>`
-          : '<div class="empty">同梱の設計雛形はありません</div>'}</section>` : ''}
       <section><div class="wf-section-head"><h3>新しく作る</h3></div>
         <div class="wf-template-grid"><button type="button" class="wf-template-card wf-blank-card" id="wf-new">
           ${ICONS.plus}
-          <strong>一から作る</strong><small>${selectedPurpose === 'design'
-            ? '設計書 Markdown を成果にする空のキャンバスから作成します。'
-            : '空のキャンバスから工程を追加します。'}</small><b>編集を始める →</b></button>
-          ${patterns.map(templateCardHtml).join('')}${methodPatterns.map(templateCardHtml).join('')}</div></section></section>`;
+          <strong>一から作る</strong><small>空のキャンバスから工程を追加します。</small><b>編集を始める →</b></button>
+          ${patterns.map(templateCardHtml).join('')}${methodPatterns.map(templateCardHtml).join('')}${
+  internalDesign.map(designTemplateCardHtml).join('')}</div></section></section>`;
   }
 
   function patternChoices(ov, purpose = st.workflowPurpose) {
@@ -1668,7 +1652,6 @@
     return `<section class="wf-page wf-settings" aria-label="ワークフロー設定">
       ${workflowPurposeSwitchHtml(workflow.purpose)}
       ${st.notice ? `<p class="qf-notice" role="status">${esc(st.notice)}</p>` : ''}
-      ${workflowIsDesign(workflow) ? designConstraintHtml() : ''}
       <div class="wf-editor-layout"><main class="wf-editor-main">
         <div class="wf-editor-head"><button type="button" id="wf-library-home">← ワークフロー一覧</button>
           <label>名前<input id="wf-name" value="${esc(workflow.name)}" placeholder="フロー名"${readonly ? ' disabled' : ''}></label>
@@ -2688,7 +2671,6 @@
       st.editor = emptyWorkflow(st.workflowPurpose); st.dirty = false; resetSelection(); renderSettings();
     });
     pane.querySelectorAll('[data-workflow-id]').forEach((button) => button.addEventListener('click', () => {
-      if (button.dataset.designTemplateId) return;
       if (!canLeave()) return;
       const found = (ov.workflows || []).find((item) => item.id === button.dataset.workflowId);
       st.workflowPurpose = workflowPurpose(found && found.purpose);
@@ -2702,9 +2684,8 @@
       if (!found) return;
       st.workflowPurpose = 'design';
       st.editor = spaceForStart(unsavedWorkflowCopy(found, 'design'));
-      st.selectedNode = START;
       st.dirty = true;
-      st.notice = '同梱雛形を新しい自分用フローとしてコピーしました。確認して保存してください';
+      st.notice = '雛形を複製しました';
       resetSelection();
       st.selectedNode = START;
       renderSettings();

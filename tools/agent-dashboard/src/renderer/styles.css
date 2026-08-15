@@ -4419,24 +4419,6 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
   font-weight: 650;
 }
 
-/* 設計フローの設計契約。禁止事項を状態色と文章で常時示す。 */
-.wf-design-constraint-banner {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 4px 10px;
-  min-width: 0;
-  margin: 0 0 2px;
-  padding: 10px 12px;
-  border: 1px solid color-mix(in srgb, var(--yellow) 62%, var(--border));
-  border-left-width: 3px;
-  border-radius: 7px;
-  background: color-mix(in srgb, var(--yellow) 8%, var(--bg2));
-  color: var(--fg);
-  line-height: 1.5;
-}
-.wf-design-constraint-banner strong { color: #ffd66b; }
-.wf-design-constraint-banner span { min-width: 0; overflow-wrap: anywhere; }
-
 .wf-design-sessions .nav-item {
   display: flex;
   align-items: center;
@@ -4487,8 +4469,6 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
   overflow-wrap: anywhere;
 }
 .wf-saved-card { border-left: 3px solid var(--blue); }
-.wf-saved-card.wf-design-template-card { border-left-color: var(--accent2); }
-.wf-saved-card.wf-design-template-card:hover { border-color: var(--accent2); }
 .wf-blank-card { border-style: dashed; }
 
 /* 設計フローで工程ごとの agent / model 候補を確認する表示。 */
@@ -4519,7 +4499,6 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
   color: var(--accent);
 }
 .wf-node-assignment-preview ul { display: grid; gap: 4px; min-width: 0; margin: 5px 0 0; padding-left: 18px; }
-.wf-node-assignment-preview.compact { gap: 4px; padding: 7px 8px; }
 
 /* 読み取り専用の雛形・登録フォルダ。入力不可を面・枠・説明で明示する。 */
 .wf-editor-layout:has(.wf-canvas.readonly) { border-color: color-mix(in srgb, var(--muted) 55%, var(--border)); }
@@ -4661,7 +4640,6 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
   }
   .wf-editor-head > label:has(#wf-description) { grid-column: auto; }
   .wf-editor-head > button { width: 100%; }
-  .wf-design-constraint-banner { grid-template-columns: minmax(0, 1fr); }
   .wf-design-current > .wf-section-head { align-items: stretch; flex-direction: column; }
   .wf-design-current > .wf-section-head .qf-row { width: 100%; }
   .wf-design-current > .wf-section-head .qf-row button { flex: 1 1 160px; }

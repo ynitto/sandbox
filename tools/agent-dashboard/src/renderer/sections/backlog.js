@@ -2151,36 +2151,19 @@ function designFlowChoicesHtml(wizard) {
   }
   const items = wizard.designFlowCatalog || [];
   const cards = items.map((flow) => {
-    const snapshot = designFlowSnapshot(flow);
     const nodes = designFlowNodes(flow);
     const selected = designFlowKey(flow) === wizard.designFlowKey;
     return `<button type="button" class="task-choice-card design-flow-card" data-project-design-flow="${esc(designFlowKey(flow))}"
-        aria-pressed="${selected}"><span><strong>${esc((snapshot && snapshot.name) || flow.name || flow.id)}</strong>
-        <small>${esc((snapshot && snapshot.description) || flow.description || `${nodes.length}工程の設計フロー`)}</small>
-        <small>${esc(designFlowScopeLabel(flow))} · ${nodes.length}工程${flow.digest ? ` · ${esc(flow.digest)}` : ''}</small>
-        ${nodes.length ? `<ol>${nodes.map((node) => `<li>${esc(node.label || node.name || node.id)}${node.goal ? ` — ${esc(node.goal)}` : ''}</li>`).join('')}</ol>` : ''}
+        aria-pressed="${selected}"><span><strong>${esc(flow.name || flow.id)}</strong>
+        <small>${esc(flow.description || `${nodes.length}工程の設計フロー`)}</small>
+        <small>${esc(designFlowScopeLabel(flow))} · ${nodes.length}工程</small>
       </span></button>`;
   }).join('');
   return `<fieldset class="task-choice-grid design-flow-choice"><legend>設計フローを選択</legend>
     ${wizard.designFlowCatalogError ? `<p class="qf-failure" role="alert">${esc(wizard.designFlowCatalogError)}</p>` : ''}
     ${wizard.designFlowError ? `<p class="qf-failure" role="alert">${esc(wizard.designFlowError)}</p>` : ''}
-    ${cards || '<p class="muted">利用できる設計フローがありません。設計フローを登録してから再読み込みしてください。</p>'}
+    ${cards || '<p class="muted">利用できる設計フローがありません。</p>'}
   </fieldset>`;
-}
-
-function designFlowMaterialSummary(flow, assignments) {
-  const snapshot = designFlowSnapshot(flow, assignments);
-  if (!snapshot) return '';
-  const nodes = snapshot.nodes || [];
-  const assignmentLines = Object.entries(snapshot.assignments || {}).map(([id, value]) =>
-    `- ${id}: ${value.tier} / ${value.agent_cli}${value.model ? ` / ${value.model}` : ''}`);
-  return [
-    `## 設計フロー: ${snapshot.name}`,
-    snapshot.description,
-    '## 工程',
-    nodes.map((node, index) => `${index + 1}. ${node.label || node.id}${node.goal ? ` — ${node.goal}` : ''}`).join('\n'),
-    assignmentLines.length ? `## agent / model 割り当て\n${assignmentLines.join('\n')}` : '',
-  ].filter(Boolean).join('\n\n');
 }
 
 async function loadProjectDesignFlowCatalog(wizard, cwd, { preserveSelection = true } = {}) {
@@ -2211,8 +2194,15 @@ async function loadProjectDesignFlowCatalog(wizard, cwd, { preserveSelection = t
       } else {
         // 利用不能な repository フローを先頭の候補や自動フローへ置き換えない。
         wizard.designFlow = null;
-        wizard.designFlowError = '選択した設計フローはこの対象フォルダでは利用できません。設計フローを再選択してください';
+        wizard.designFlowError = '選択した設計フローはこの対象フォルダでは利用できません。再選択してください';
       }
+    } else {
+      // 未選択で開いた時はワークフロー画面と同じく同梱の既定フローを選んでおく。
+      const defaultId = wizard.designMode === 'auto' ? 'design-auto' : 'design-interactive';
+      const selected = wizard.designFlowCatalog.find((flow) =>
+        flow.id === defaultId && String(flow.scope || flow._scope || '') === 'builtin')
+        || wizard.designFlowCatalog[0] || null;
+      if (selected) await loadProjectDesignFlowPreview(wizard, selected);
     }
   } catch (err) {
     wizard.designFlowCatalog = [];
@@ -2226,6 +2216,8 @@ async function loadProjectDesignFlowPreview(wizard, flow) {
   wizard.designFlowKey = designFlowKey(flow);
   wizard.designFlowError = '';
   wizard.designPreview = null;
+  // 同梱フローを選んだ場合は互換のための designMode も揃える（ワークフロー画面と同じ）。
+  wizard.designMode = String((flow && flow.id) || '') === 'design-auto' ? 'auto' : 'interactive';
   if (!wizard.designFlow || !api.adhocFlowDesignPreview) return;
   wizard.busy = '設計フローの割り当てを確認中…';
   renderProjectTaskWizard();
@@ -2325,17 +2317,6 @@ function renderProjectTaskWizard() {
         <p class="muted">${wizard.documents.length ? wizard.documents.map((item) => esc(item.name)).join('、') : '未選択'}</p></section>
       ${wizard.route === 'agent-design'
         ? `${designFlowChoicesHtml(wizard)}
-          <details class="design-flow-mode-fallback"><summary>設計ラウンドの進め方（カタログ未提供時の互換設定）</summary>
-            <fieldset class="task-choice-grid">
-              <button type="button" class="task-choice-card" data-project-design-mode="interactive" aria-pressed="${wizard.designMode === 'interactive'}">
-                <span><strong>対話で設計</strong><small>設計案を作り、必要な確認事項へ回答しながら詰めます。</small></span></button>
-              <button type="button" class="task-choice-card" data-project-design-mode="auto" aria-pressed="${wizard.designMode === 'auto'}">
-                <span><strong>全自動で設計</strong><small>確認待ちを挟まず、一度で設計案をまとめます。</small></span></button>
-            </fieldset>
-          </details>
-          ${wizard.designFlow ? `<section class="task-preparation-summary"><strong>選択した設計フロー</strong>
-            <p><b>${esc(wizard.designFlow.name)}</b>${wizard.designFlow.description ? ` — ${esc(wizard.designFlow.description)}` : ''}</p>
-            <pre>${esc(designFlowMaterialSummary(wizard.designFlow, wizard.designAssignments))}</pre></section>` : ''}
           ${designAssignmentSectionHtml(wizard.designPreview, wizard.designAssignments)}`
         : ''}</div>`;
   } else if (wizard.step === 4) {
@@ -2381,7 +2362,7 @@ function renderProjectTaskWizard() {
     const flow = (wizard.designFlowCatalog || []).find((item) => designFlowKey(item) === button.dataset.projectDesignFlow);
     if (!flow) {
       wizard.designFlow = null;
-      wizard.designFlowError = '選択した設計フローは利用できません。設計フローを再選択してください';
+      wizard.designFlowError = '選択した設計フローは利用できません。再選択してください';
       renderProjectTaskWizard();
       return;
     }
@@ -2397,27 +2378,6 @@ function renderProjectTaskWizard() {
     wizard.designAssignments = collectDesignAssignmentsFrom(dialog);
     const flow = (wizard.designFlowCatalog || []).find((item) => designFlowKey(item) === wizard.designFlowKey);
     if (flow) wizard.designFlow = designFlowSnapshot(flow, wizard.designAssignments, wizard.designPreview);
-  }));
-  dialog.querySelectorAll('[data-project-design-mode]').forEach((button) => button.addEventListener('click', async () => {
-    const mode = button.dataset.projectDesignMode;
-    if (wizard.designMode === mode) return;
-    // mode は旧 API との互換用。catalog で選択した custom flow は mode 操作で
-    // 差し替えず、選択中の flow とその snapshot を保持する。
-    if (wizard.designFlow) return;
-    wizard.designMode = mode;
-    wizard.designPreview = null;
-    wizard.designAssignments = null;
-    wizard.busy = '設計フローを確認中…';
-    renderProjectTaskWizard();
-    try {
-      const result = await api.adhocFlowDesignPreview({ mode });
-      wizard.designPreview = result.preview;
-    } catch (err) {
-      wizard.designPreview = { nodes: [] };
-      console.warn('設計フローの割り当てを読み込めませんでした:', err);
-    }
-    wizard.busy = '';
-    renderProjectTaskWizard();
   }));
   dialog.querySelector('[data-project-task-next]')?.addEventListener('click', advanceProjectTaskWizard);
 }
@@ -2455,7 +2415,7 @@ async function advanceProjectTaskWizard() {
     wizard.designAssignments = collectDesignAssignmentsFrom($('dlg-enqueue')) || wizard.designAssignments;
     const selectedFlow = (wizard.designFlowCatalog || []).find((item) => designFlowKey(item) === wizard.designFlowKey);
     if (wizard.route === 'agent-design' && (!selectedFlow || !wizard.designFlow)) {
-      wizard.designFlowError = '設計フローを選択してください。利用不能なフローは自動置換されません';
+      wizard.designFlowError = '設計フローを選択してください';
       renderProjectTaskWizard();
       return;
     }

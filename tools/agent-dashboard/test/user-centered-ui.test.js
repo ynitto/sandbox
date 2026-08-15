@@ -155,10 +155,10 @@ assert.ok(workflowTaskDialogSource.includes('workflowDesignFlowChoicesHtml(wizar
   && workflowFeature.includes('designFlow: workflowDesignFlowReference(wizard.designFlow)')
   && workflowFeature.includes('designMode: wizard.designMode'),
   'ワークフローのエージェント設計はscope付きカタログから選び、準備項目へ保持します');
-assert.ok(projectTaskWizardSource.includes('data-project-design-mode="interactive"')
-  && projectTaskWizardSource.includes('data-project-design-mode="auto"')
-  && renderer.includes('designMode: wizard.designMode'),
-  'プロジェクトのエージェント設計も対話・全自動を選び、準備パッケージへ保持します');
+assert.ok(projectTaskWizardSource.includes('designFlowChoicesHtml(wizard)')
+  && renderer.includes('designMode: wizard.designMode')
+  && !projectTaskWizardSource.includes('data-project-design-mode='),
+  'プロジェクトのエージェント設計もワークフローと同じscope付きカタログから選び、準備パッケージへ保持します');
 const workflowRunHtmlSource = workflowFeature.slice(
   workflowFeature.indexOf('function runHtml('),
   workflowFeature.indexOf('\n  function executionPreviewDialogHtml(', workflowFeature.indexOf('function runHtml('))
@@ -886,16 +886,28 @@ assert.deepStrictEqual(workflowUi.patternChoices(libraryOverview, 'design'), [],
 const implementationLibraryHtml = withEsc(() => workflowUi.workflowLibraryHtml(libraryOverview, 'implementation'));
 assert.ok(implementationLibraryHtml.includes('実装フロー')
   && implementationLibraryHtml.includes('実装パターン')
-  && !implementationLibraryHtml.includes('同梱設計雛形')
-  && !implementationLibraryHtml.includes('設計フローの制約'),
+  && !implementationLibraryHtml.includes('同梱設計雛形'),
   '実装フロー画面は実装用の雛形だけを表示します');
 const designLibraryHtml = withEsc(() => workflowUi.workflowLibraryHtml(libraryOverview, 'design'));
 assert.ok(designLibraryHtml.includes('設計フロー')
   && designLibraryHtml.includes('同梱設計雛形')
-  && designLibraryHtml.includes('設計フローの制約')
   && !designLibraryHtml.includes('実装パターン')
   && !designLibraryHtml.includes('内部実装'),
   '設計フロー画面は設計用途の保存済み項目と同梱雛形だけを表示します');
+// 実装フローとの画面差異を作らない: 見出しは同じ「保存済み」で、常設の制約バナーを置かない。
+assert.ok(designLibraryHtml.includes('<h3>保存済み</h3>')
+  && !designLibraryHtml.includes('保存済み（library）')
+  && !designLibraryHtml.includes('設計フローの制約')
+  && !implementationLibraryHtml.includes('設計フローの制約'),
+  '設計フロー画面は実装フロー画面と同じ構成（保存済み・新しく作る）で表示します');
+// 同梱雛形は保存済みカード（wf-saved-card）ではなく、実装の標準パターンと同じ
+// 「新しく作る」内の雛形カードとして表示する。
+const designNewSection = designLibraryHtml.slice(designLibraryHtml.indexOf('<h3>新しく作る</h3>'));
+assert.ok(designNewSection.includes('data-design-template-id="builtin-design"'),
+  '同梱の設計雛形は「新しく作る」の雛形として表示します');
+assert.doesNotMatch(designLibraryHtml,
+  /class="[^"]*wf-saved-card[^"]*"[^>]*data-design-template-id=/,
+  '同梱の設計雛形を保存済み（自分用）カードの見た目で表示しません');
 
 // 同梱雛形を開いた時点では保存せず、自分用の別 ID として編集できるコピーにする。
 const builtinWorkflow = {
