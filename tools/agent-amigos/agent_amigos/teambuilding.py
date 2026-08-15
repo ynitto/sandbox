@@ -63,10 +63,14 @@ OUTPUT_CONTRACT = """\
      "mission": "<このロールへ渡すプロンプト（何を作り何を根拠に・完了条件・会話相手）>",
      "deliverables": ["<artifacts 内の相対パス>"], "required": true|false,
      "requires": {"tags": ["..."]}, "agent_cli": "<任意>",
-     "approver": true|false, "collaborates_with": ["<他ロールの id>"]}
+     "approver": true|false, "collaborates_with": ["<他ロールの id>"],
+     "operation": {"operation_class": "<処理種別。例 review / synthesis / extract>",
+                   "scope": {"write": ["<書く範囲>"]}, "acceptance": ["<受入条件>"]}}
   ]
 }
 - roles は 1 つ以上必須（target=amigos のとき）。mission ブロックは任意（省略時は agent-amigos の既定）。
+- operation（処理契約）は任意。書くなら operation_class は必須で、そのロールの仕事の種別を表す
+  （候補選択と実測集計の軸になる。自由文 mission だけで候補を決めないための構造化条件）。
 - integrator は書かなくてよい（オーナーが自動補充する）。明示するなら builtin: "integrator"。
 
 ## agent-flow へ委譲する場合（探索木・動的分解が本質のミッション）

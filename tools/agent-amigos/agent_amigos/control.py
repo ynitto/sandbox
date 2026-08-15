@@ -7,12 +7,15 @@ control.json に管理面（agent-dashboard / CLI / 人）が「望ましい状�
 - ロール別のエージェント / モデル上書き（`workloads.amigos.agents.<role_id>`）
 - lifecycle（run|pause|stop）— pause/stop はこのノードの amigo を働かせない
 - soft/縮退中の degraded 指定
+- version 2 の `selection_policy`（候補ベース）— 解決は agentcore の Resolver 1 実装へ委ねる
+  （設計 2026-08-15 §5.2 / §6.6。契約はデータだが、候補決定の判断は複製しない——C7）
 
 を解釈する。優先順位 control > 設定（roles[].agent_cli/model）> 既定。適用状況は
-status/<tool>-<pid>.json へハートビート書換する。結合はデータ契約のみ（コード共有なし）。
+status/<tool>-<pid>.json へハートビート書換する。
 """
 from __future__ import annotations
 
+import datetime as _dt
 import json
 import os
 
@@ -74,6 +77,25 @@ def degraded() -> "tuple[str | None, str | None]":
     d = _workload().get("degraded") or {}
     return (str(d["agent_cli"]) if d.get("agent_cli") else None,
             str(d["model"]) if d.get("model") else None)
+
+
+def policy_decision(role_id: str = "") -> "dict | None":
+    """selection_policy（version 2）があるときの Resolver 決定。無ければ None。
+
+    version 1（または selection_policy 無し）は旧 reader として従来の override 経路へ
+    委ねる。version >= 2 は壊れた policy・未知 version でも Resolver が park を返す
+    ——legacy fallback を再解釈しない（設計 §6.6）。
+    """
+    ctl = load_control()
+    version = ctl.get("version")
+    if not isinstance(version, int) or isinstance(version, bool) or version < 2:
+        return None
+    if not isinstance(_workload().get("selection_policy"), dict):
+        return None
+    from agentcore import executionresolver
+    return executionresolver.resolve_execution(
+        WORKLOAD, purpose_or_role=role_id, compiled_control=ctl,
+        now=_dt.datetime.now(_dt.timezone.utc))
 
 
 def write_status(effective_cli: str = "", effective_model: str = "", life: str = "run",

@@ -200,9 +200,32 @@ def _build_role(r: dict) -> dict:
             "collaborates_with": [str(c) for c in (r.get("collaborates_with") or [])],
             "approver": bool(r.get("approver", False)),
             "builtin": str(r.get("builtin") or "")}
+    # 処理契約（設計 2026-08-15 §3.4）。team builder が生成できる任意宣言で、形が契約に
+    # 合うものだけ運ぶ（壊れた宣言は無いのと同じ——agent-flow の _coerce_tasks と同じ規律）。
+    operation = r.get("operation")
+    if isinstance(operation, dict):
+        from agentcore import nodecontract
+        if not nodecontract.operation_contract_errors(operation):
+            role["operation"] = operation
     if role["builtin"] == "integrator" and seats != 1:
         raise SystemExit("[agent-amigos] integrator に seats>1 は指定できません")
     return role
+
+
+def role_operation_contract(role: dict) -> dict:
+    """role の処理契約（§3.4 への写像）。宣言（role.operation）があればそれを使い、
+    無ければ role のフィールドから自動判定で組む（手動 roles.yaml の role は宣言を
+    持たないのが普通。deliverables → scope.write / deliverables の機械写像で足りる
+    範囲だけ埋め、operation_class は汎用の role-turn にする）。"""
+    declared = role.get("operation")
+    if isinstance(declared, dict):
+        return declared
+    rid = str(role.get("id") or "")
+    deliverables = [f"artifacts/{rid}/{d}" for d in (role.get("deliverables") or [])]
+    contract = {"operation_class": "role-turn", "deliverables": deliverables}
+    if deliverables:
+        contract["scope"] = {"write": deliverables}
+    return contract
 
 
 def normalize_added_roles(roles_in: list, existing_ids: "set[str]") -> list:

@@ -32,6 +32,13 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+# agent-control をモジュールレベルで隔離する（AmigosTestCase を継承しないテストも守る）。
+# 開発者の実 ~/.agents/control/control.json に workloads.amigos の上書きがあると、
+# stub 指定を実 CLI（例 ollama-verify/gemma4:12b）へ差し替え、テストごとに本物の
+# ローカル LLM を呼んでしまう（実測で発覚——1 テスト数分・スイートが終わらない）。
+os.environ["AGENT_CONTROL_DIR"] = os.path.join(
+    tempfile.gettempdir(), "agent-amigos-test-no-control")
+
 from agent_amigos.assign import claim_role, mirror_roster, winner  # noqa: E402
 from agent_amigos.bus import Bus  # noqa: E402
 from agent_amigos.daemon import NodeDaemon  # noqa: E402
@@ -74,6 +81,14 @@ class AmigosTestCase(unittest.TestCase):
         self.addCleanup(os.environ.pop, "AGENT_AMIGOS_STUB_COST", None)
         os.environ["AGENT_BUDGET_DIR"] = os.path.join(self.tmp, "node-budget")
         self.addCleanup(os.environ.pop, "AGENT_BUDGET_DIR", None)
+        # agent-control も隔離する。開発者の実 ~/.agents/control/control.json に
+        # workloads.amigos の上書きがあると stub 指定を実 CLI（例 ollama-verify/12b）へ
+        # 差し替え、テストごとに本物のローカル LLM を呼んでしまう（実測で発覚）。
+        os.environ["AGENT_CONTROL_DIR"] = os.path.join(self.tmp, "control")
+        self.addCleanup(os.environ.pop, "AGENT_CONTROL_DIR", None)
+        from agent_amigos import control as _control
+        _control._CACHE["mtime"] = None
+        self.addCleanup(_control._CACHE.__setitem__, "mtime", None)
         # 手番マーカー（PC 単位の同時実行上限の根拠）も実ホームを汚さない場所へ
         self.turns_dir = os.path.join(self.tmp, "turns")
         os.environ["AGENT_AMIGOS_TURNS_DIR"] = self.turns_dir

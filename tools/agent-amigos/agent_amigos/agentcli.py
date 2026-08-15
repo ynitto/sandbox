@@ -24,7 +24,9 @@ from .util import strip_ansi
 # stub は LLM を使わないプロトコル検証用（runner が横取りする）。組み込み CLI の一覧は
 # S9 で持たなくなった——全 CLI が agents/<name>.json 定義で動く。
 BUILTIN_CLIS = ("stub",)
-AGENT_ERROR_ENV_CLASSES = ("quota", "auth", "env")
+# control は管理面の指定（lifecycle / selection_policy の park）——リトライで直らない
+# 環境要因として paused へ運ぶ（agent-flow と同じ語彙）。
+AGENT_ERROR_ENV_CLASSES = ("quota", "auth", "env", "control")
 
 DEFAULT_TIMEOUT = 600.0
 DEFAULT_ARGV_LIMIT = 100000
@@ -46,7 +48,7 @@ def _agent_argv_limit() -> int:
     """argv 渡しのプロンプト上限（バイト）。設定 argv_limit（0 以下なら既定 100000）。"""
     return _ARGV_LIMIT if _ARGV_LIMIT > 0 else DEFAULT_ARGV_LIMIT
 
-_AGENT_ERROR_TAG_RE = re.compile(r"\[agent-error:(quota|auth|env|transient)\]")
+_AGENT_ERROR_TAG_RE = re.compile(r"\[agent-error:(quota|auth|env|transient|control)\]")
 _AGENT_ERROR_PATTERNS = (
     ("quota", re.compile(r"usage limit|quota exceeded|rate.?limit|too many requests", re.I),
      "利用上限に達しています（時間をおくか、プラン・クレジットを見直してください）"),
