@@ -572,6 +572,14 @@ class TestLearnScopeAndExpiry(unittest.TestCase):
             rc, detail = km.apply_rule_command(cfg, "rule-promote", rid, "人手昇格")
             self.assertEqual(rc, 0, detail)
             self.assertEqual(km.rule_lifecycle_state(cfg, rid), "active")
+            # active は「全該当タスクへ注入」——hit 閾値前でも rules.md に行ができる
+            self.assertIn(rid, km.rules_path(cfg).read_text(encoding="utf-8"))
+            # 人手昇格は outcome を捏造しない（evidence は実測のみ。doctor が観測できる）
+            src_text = (d / "decisions" / "OLD.md").read_text(encoding="utf-8")
+            self.assertNotIn(f"rule-outcome: {rid} worked", src_text)
+            # 未知 rid（learn / lifecycle に出典なし）は幽霊ルールを作らず拒否
+            rc2, _ = km.apply_rule_command(cfg, "rule-promote", "obs-" + "0" * 16, "typo")
+            self.assertEqual(rc2, 2)
             rc, detail = km.apply_rule_command(cfg, "rule-suspend", rid, "悪化")
             self.assertEqual(rc, 0, detail)
             self.assertEqual(km.rule_lifecycle_state(cfg, rid), "suspended")
