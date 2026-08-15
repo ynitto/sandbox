@@ -72,6 +72,36 @@ def _control_override() -> "tuple[str | None, str | None]":
     return (str(cli) if cli else None, str(model) if model else None)
 
 
+def _control_policy_decision(purpose: str = "") -> "dict | None":
+    """selection_policy（agent-control version 2）があるときの Resolver 決定。無ければ None。
+
+    候補の解決は agentcore.executionresolver の 1 実装（設計 2026-08-15 §5.2）。version 1
+    （または selection_policy 無し）は旧 reader として従来の `_control_override` 経路へ
+    委ね、version >= 2 は壊れた policy・未知 version でも Resolver が park を返す——
+    legacy fallback を再解釈しない（§6.6）。
+    """
+    ctl = _load_control()
+    version = ctl.get("version")
+    if not isinstance(version, int) or isinstance(version, bool) or version < 2:
+        return None
+    if not isinstance(_control_workload().get("selection_policy"), dict):
+        return None
+    from agentcore import executionresolver
+    return executionresolver.resolve_execution(
+        _NODE_BUDGET_WORKLOAD, purpose_or_role=purpose, compiled_control=ctl,
+        now=_dt.datetime.now(_dt.timezone.utc))
+
+
+def _control_policy_park() -> "dict | None":
+    """selection_policy の決定が park のときその decision（それ以外は None）。
+
+    park は「適格候補が今は無い」——弱い候補へ黙って降格せず新規の実行を控える。
+    運び方は lifecycle=pause と同じディスパッチゲート（scheduler の _lifecycle_gate）。
+    """
+    decision = _control_policy_decision()
+    return decision if decision is not None and decision.get("parked") else None
+
+
 def _apply_control_agent(config: dict) -> dict:
     """起動時に desired agent/model をツール設定へ重ねる。
 
@@ -83,13 +113,21 @@ def _apply_control_agent(config: dict) -> dict:
     global _REVISION_APPLIED
     out = dict(config or {})
     _REVISION_APPLIED = _load_control().get("revision")
-    cli, model = _control_override()
-    budget = _node_budget_state()
-    if budget and (budget.get("soft") or
-                   (budget.get("exceeded") and budget.get("on_exhausted") == "degrade")):
-        degraded = _control_workload().get("degraded") or {}
-        cli = degraded.get("agent_cli") or cli
-        model = degraded.get("model") or model
+    decision = _control_policy_decision()
+    if decision is not None:
+        # 候補ベース（version 2）: selection_policy がある限り legacy（workload 直下・
+        # 縮退）を再解釈しない（§6.6）。縮退は Compiler が strategy へ織り込む。
+        # park は選択なし——新規実行は scheduler のディスパッチゲートが控える。
+        selected = decision.get("selected") or {}
+        cli, model = selected.get("agent_cli"), selected.get("model")
+    else:
+        cli, model = _control_override()
+        budget = _node_budget_state()
+        if budget and (budget.get("soft") or
+                       (budget.get("exceeded") and budget.get("on_exhausted") == "degrade")):
+            degraded = _control_workload().get("degraded") or {}
+            cli = degraded.get("agent_cli") or cli
+            model = degraded.get("model") or model
     if cli:
         out["agent_cli"] = str(cli)
     if model:
@@ -280,7 +318,15 @@ def _write_status(lifecycle: str = "run", budget: "dict | None" = None,
         os.makedirs(d, exist_ok=True)
         actual_cli = effective_cli or getattr(_CLI_PROFILE, "name", "kiro") or "kiro"
         actual_model = effective_model or _EFFECTIVE_AGENT_MODEL
-        desired_cli, desired_model = _control_override()
+        # restart_required の desired は候補ベース（selection_policy）ならその決定、
+        # 無ければ従来の workload 上書き。park 中は desired 無し（差し替え待ちではない）。
+        decision = _control_policy_decision()
+        if decision is not None:
+            selected = decision.get("selected") or {}
+            desired_cli = selected.get("agent_cli") or None
+            desired_model = selected.get("model") or None
+        else:
+            desired_cli, desired_model = _control_override()
         wl = _control_workload()
         # restart_required = 「差し替えがセッション境界待ち」。headless 経路は実行ごとが
         # 境界なので立たない。対話経路で無限キープの entry だけが立つ——その事実を
@@ -300,9 +346,13 @@ def _write_status(lifecycle: str = "run", budget: "dict | None" = None,
                "pid": os.getpid(), "lifecycle": lifecycle,
                "effective": {"agent_cli": actual_cli, "model": actual_model,
                              "tier": wl.get("tier"),
-                             "selection_source": wl.get("selection_source") or
-                             ("control-workload" if desired_cli or desired_model else "tool-config"),
-                             "selection_reason": wl.get("selection_reason") or "",
+                             "selection_source": ((decision.get("selection_source") or "parked")
+                                                  if decision is not None else
+                                                  wl.get("selection_source") or
+                                                  ("control-workload" if desired_cli or desired_model
+                                                   else "tool-config")),
+                             "selection_reason": ((decision.get("reason") if decision is not None
+                                                   else wl.get("selection_reason")) or ""),
                              "pinned": bool(wl.get("pinned", False)),
                              "restart_required": restart_required},
                "fresh_after_sec": fresh_after_sec, "ts": _utc_iso()}

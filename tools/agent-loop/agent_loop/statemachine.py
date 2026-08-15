@@ -633,15 +633,28 @@ def _sm_load_workflow_dict(workflow_file: str) -> dict:
 
 
 def run_statemachine(*, workflow_path: str, cwd: str, parameters: "dict | None" = None,
-                     agent: dict) -> dict:
+                     agent: dict, decision: "dict | None" = None) -> dict:
     """ステートマシンを headless エージェントで完走させる。
 
     戻り値: {ok, stdout, stderr, finalState, logFile, files}（dashboard の旧 in-process
     実行器と同じ結果契約。stdout は最終ステートの出力）。
+
+    `decision` は候補ベース実行（selection_policy）の ExecutionDecision。渡されたら
+    receipt としてログへ残し、**編集 state（`write:` 宣言あり）の `check` を必須にする**
+    ——小型候補は検査なしでは完了扱いにしない（設計 2026-08-15 §2.1。宣言の無い定義は
+    実行前に落とし、静かに未検証で走らせない）。
     """
     root = os.path.realpath(str(cwd))
     workflow_file = _sm_project_path(root, workflow_path)
     workflow = _sm_load_workflow_dict(workflow_file)
+    if decision is not None and decision.get("selected"):
+        missing = sorted(sid for sid, st in (workflow.get("states") or {}).items()
+                         if isinstance(st, dict) and st.get("write") and not st.get("check"))
+        if missing:
+            raise StateMachineHarnessError(
+                "[selection-policy] 小型候補の実行では write 宣言のある state に check が"
+                f"必須です（無い state: {', '.join(missing)}）。定義へ検査コマンドを"
+                "足すか、--agent-cli で候補を明示してください")
     harness_skill = _sm_resolve_skill("statemachine-use", root)
     if not harness_skill:
         raise StateMachineHarnessError("statemachine-use スキルの実体が見つかりません")
@@ -653,6 +666,12 @@ def run_statemachine(*, workflow_path: str, cwd: str, parameters: "dict | None" 
     os.makedirs(log_dir, exist_ok=True)
     log_file = os.path.join(log_dir, f"agent-loop-{int(time.time() * 1000)}-{os.getpid()}.jsonl")
     touched: set = set()
+    if decision is not None and decision.get("selected"):
+        # 実行 receipt v2 の execution_decision ブロック。読み手（agent-audit）は設定から
+        # 実モデルを再推測せず、このログ行と予算台帳を正典にする（§6.5）。
+        from agentcore import executionresolver
+        _sm_append_log(log_file, {"event": "execution_decision",
+                                  **executionresolver.receipt_execution_decision(decision)})
     _sm_progress(f"workflow: {os.path.relpath(workflow_file, root)} (log: {log_file})")
     _sm_harness_script(scripts["dry"], [workflow_file, "--dry-run"], cwd=root, log_file=log_file)
     current = _sm_harness_script(scripts["next"], [workflow_file, "--initial-state"],
@@ -780,12 +799,24 @@ def cmd_statemachine(args: argparse.Namespace, cwd: Path) -> None:
     try:
         params = _sm_parse_params(getattr(args, "param", None) or [],
                                   getattr(args, "input", None))
-        agent = _sm_resolve_agent(getattr(args, "agent_cli", None) or "aider",
-                                  getattr(args, "model", None) or "", str(work_dir))
+        # 候補ベース（agent-control v2 selection_policy）: 人が --agent-cli を明示したら
+        # それが pin（従来どおり最優先）。指定が無いときだけ Resolver の決定を使う。
+        # park は lifecycle と同じ環境要因として実行前に止める（3 = escalate と別の 1）。
+        pin_cli = getattr(args, "agent_cli", None)
+        decision = None if pin_cli else _control_policy_decision("statemachine")
+        if decision is not None and decision.get("parked"):
+            raise StateMachineHarnessError(
+                f"[agent-error:control] [selection-policy] park"
+                f"（{decision.get('park_reason')}）: {decision.get('reason')}。"
+                f"再開条件: {decision.get('resume_condition')}")
+        selected = (decision or {}).get("selected") or {}
+        agent = _sm_resolve_agent(pin_cli or selected.get("agent_cli") or "aider",
+                                  getattr(args, "model", None) or selected.get("model") or "",
+                                  str(work_dir))
         _sm_progress(f"agent: {agent['cli']}"
                      + (f" / model: {agent['model']}" if agent["model"] else " (default model)"))
         result = run_statemachine(workflow_path=args.workflow, cwd=str(work_dir),
-                                  parameters=params, agent=agent)
+                                  parameters=params, agent=agent, decision=decision)
         print("RESULT " + json.dumps(result, ensure_ascii=False))
         # 3 = 検査の再投入上限に達した（この段では解けない）。呼び出し側が RESULT を
         # 読まずに終了コードだけで昇格へ振り分けられるようにする。非 0 を失敗として
