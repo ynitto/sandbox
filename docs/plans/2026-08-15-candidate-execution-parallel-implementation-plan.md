@@ -141,6 +141,35 @@ E1 Resolver を呼び、`_agent_for` の control 層を置き換える（legacy 
 **残置**: flow-planner skill への処理契約の生成指示と retry ladder（escalation pin）の
 候補ベース化は E6 の決定化パイプ側で扱う。
 
+**E3 実装記録（2026-08-15・完了）。** `_apply_control_agent` が v2 + `selection_policy` の
+とき Resolver の決定で legacy 層を置き換え、park は scheduler の `_lifecycle_gate` に
+pause と同じ口で載せた（新規ディスパッチだけ控える）。routine entry へ `operation`
+（処理契約）を追加（起動時 fail fast）。statemachine は `--agent-cli` 未指定時に
+Resolver の決定で候補を選び、`execution_decision` を run ログへ記録、policy 候補の
+実行では `write:` state の `check` を必須化。**run 内では候補を固定**（state 単位の
+再解決はしない——再現性優先。state 単位の適格は check 必須ゲートで担保）。
+restart_required は desired を decision から取る形で維持。loop の候補単位 receipt は
+予算台帳の agent_cli/model 行 + statemachine ログの execution_decision 行。
+
+**E4 実装記録（2026-08-15・完了）。** `_resolve_cli` を Resolver 決定で置き換え（park は
+新設の control エラー class で paused へ——amigos のエラー語彙に control を追加）。turn
+event 行を候補単位 receipt 化（agent_cli / model / operation_class /
+`execution_decision`・通常＋討論ターン）。role 処理契約は team builder の出力契約に
+`operation` を追加し、宣言の無い手動 role は `role_operation_contract` が deliverables
+から自動判定（既定 operation_class=role-turn）。**副産物**: amigos テストが
+agent-control を隔離しておらず、実機 control.json の workloads.amigos 上書き
+（ollama-verify/12b）が stub を差し替えて実 LLM を呼んでいた——`tests/_shared.py` の
+モジュールレベル隔離で修正（ベースラインでも再現する既存問題）。
+
+**E5 実装記録（2026-08-15・完了）。** collect へ候補単位 receipt の 3 読取（flow result
+の receipt ブロック・amigos turn event・statemachine run ログ）を追加し、新設の
+`agent-audit qualify`（既定 dry-run・`--apply` で原子書換 + revision 楽観検査）が
+(候補 × operation_class) の実測を evaluation profile で判定して qualifications.json を
+更新する。期限切れ + 新実測なしは unknown へ、eval-archive seed は receipt 実測が
+同セルを置き換えるまで保持。**control.json は書かない**（反映は Compiler の次回評価）。
+出力は executioncontract.qualifications_errors の 1 実装検証を通してから書く。
+operation_class の無い旧レコードは数えない（モデル名だけで広い適格を与えない——§2.2）。
+
 E5 を E3 / E4 の後に置くのは receipt 粒度の都合そのもの——設計書 §11.4 の指摘どおり、
 loop と amigos の receipt が候補単位になるまで自動昇格の入力が揃わない。
 E6 / E7 は旧計画から引き取った測定・受入で、実装の乗り物（E2 / E5・U2）が
