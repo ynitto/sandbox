@@ -10,6 +10,35 @@ const adhoc = require('../src/features/adhoc-flow/main/adhoc');
 const designSession = require('../src/features/adhoc-flow/main/design-session');
 const preparationIpc = require('../src/features/adhoc-flow/main/ipc');
 
+const completeDesignDocument = [
+  '## 目的\nCSVの文字コード判定を改善する',
+  '## 変更対象\nsrc/csv.js',
+  '## 受入基準\nUTF-8とShift_JISを読める',
+  '## 検証方法\nnpm test',
+].join('\n\n');
+
+function designFlowSnapshot(overrides = {}) {
+  return {
+    version: 1,
+    id: 'custom-design-flow',
+    name: 'カスタム設計フロー',
+    origin: { scope: 'user', repository: '' },
+    digest: 'sha256:custom-design-flow',
+    definition: {
+      version: 2,
+      purpose: 'design',
+      libraryVisibility: 'library',
+      entry: ['draft'],
+      exit: ['finish'],
+      nodes: [
+        { id: 'draft', goal: '要件を整理する', kind: 'work', tier: 'auto', deps: [] },
+        { id: 'finish', goal: '設計書を仕上げる', kind: 'synthesize', tier: 'auto', deps: ['draft'] },
+      ],
+    },
+    ...overrides,
+  };
+}
+
 test('情報が不足した要望にはエージェント設計を推奨する', () => {
   const recommendation = preparation.recommendRoute({ goal: 'CSV対応を改善したい' });
   assert.strictEqual(recommendation.route, 'agent-design');
@@ -97,6 +126,65 @@ test('準備パッケージは選択した設計フローを子項目へ引き�
   assert.strictEqual(package_.items[0].designMode, 'auto');
 });
 
+test('設計flowは正規形のsnapshotとして保存し、永続化後も定義・出所・digestを保持する', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'preparation-design-flow-'));
+  try {
+    const config = { preparationDir: dir };
+    const flow = designFlowSnapshot();
+    const item = preparation.createItem({
+      id: 'prep-design-flow', title: '設計フロー付き', goal: 'CSV対応を改善する',
+      route: 'agent-design', design: { flow },
+    });
+    const saved = preparation.saveItem(config, item);
+    const loaded = preparation.getItem(config, saved.id);
+    assert.deepStrictEqual(saved.design.flow, flow);
+    assert.deepStrictEqual(loaded.design.flow, flow);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('親の設計flowはagent-design子へ継承し、external/direct子には保持しない', () => {
+  const flow = designFlowSnapshot();
+  const package_ = preparation.createPackage({
+    projectDir: '/projects/csv', goal: 'CSV改善を分解する',
+    design: { flow },
+    candidates: [
+      { title: '設計する子', goal: '要件を設計する', route: 'agent-design' },
+      { title: '外部設計の子', goal: '設計書を使う', route: 'external-design' },
+      { title: '直接実装の子', goal: 'そのまま実装する', route: 'direct' },
+    ],
+  });
+  assert.deepStrictEqual(package_.items[0].design.flow, flow);
+  assert.ok(!package_.items[1].design.flow, 'external-design子へ設計flowを持ち込まない');
+  assert.ok(!package_.items[2].design.flow, 'direct子へ設計flowを持ち込まない');
+});
+
+test('既存のmode=auto保存物は設計開始時にdesign-autoのsnapshotを遅延補完する', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'preparation-legacy-mode-'));
+  try {
+    const config = { preparationDir: dir };
+    const item = preparation.createItem({
+      id: 'prep-legacy-auto', title: '旧形式の自動設計', goal: 'CSV対応を改善する',
+      route: 'agent-design', designMode: 'auto',
+    });
+    const legacy = { ...item, design: { sessionId: '', document: '', runIds: [] } };
+    const itemFile = path.join(dir, 'items', `${item.id}.json`);
+    fs.mkdirSync(path.dirname(itemFile), { recursive: true });
+    fs.writeFileSync(itemFile, `${JSON.stringify(legacy)}\n`, 'utf8');
+
+    const started = preparation.startDesign(preparation.getItem(config, item.id), {
+      sessionId: 'ds-auto', runId: 'design-run-auto',
+    });
+    const saved = preparation.saveItem(config, started);
+    assert.strictEqual(saved.design.flow.id, 'design-auto');
+    assert.strictEqual(saved.design.flow.origin.scope, 'builtin');
+    assert.strictEqual(preparation.getItem(config, item.id).design.flow.id, 'design-auto');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('設計開始は準備項目で選択した設計フローを実行する', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'preparation-design-mode-'));
   const config = { preparationDir: dir };
@@ -161,7 +249,7 @@ test('エージェント設計の成果を実装材料へ追加して実装可�
     goal: '文字コード対応を改善する', route: 'agent-design',
   });
   const completed = preparation.completeDesign(item, {
-    sessionId: 'ds-1', document: '# 設計結果', runIds: ['design-run-1'],
+    sessionId: 'ds-1', document: completeDesignDocument, runIds: ['design-run-1'],
   });
   assert.deepStrictEqual({
     phase: completed.phase,
@@ -171,9 +259,9 @@ test('エージェント設計の成果を実装材料へ追加して実装可�
   }, {
     phase: 'implementation-ready',
     canHandoff: true,
-    design: { sessionId: 'ds-1', document: '# 設計結果', runIds: ['design-run-1'] },
+    design: { sessionId: 'ds-1', document: completeDesignDocument, runIds: ['design-run-1'] },
     material: {
-      id: `design-result:${item.id}`, kind: 'design-result', name: '設計結果.md', content: '# 設計結果',
+      id: `design-result:${item.id}`, kind: 'design-result', name: '設計結果.md', content: completeDesignDocument,
       sourcePath: '', sourceHash: '', selectedFor: ['design', 'implementation'],
     },
   });
@@ -238,7 +326,7 @@ test('別々の設計runと実装runを同じ仕事の履歴として保持す�
   });
   const designing = preparation.startDesign(draft, { sessionId: 'ds-1', runId: 'design-run-1' });
   const ready = preparation.completeDesign(designing, {
-    sessionId: 'ds-1', document: '# 設計結果', runIds: ['design-run-1'],
+    sessionId: 'ds-1', document: completeDesignDocument, runIds: ['design-run-1'],
   });
   const implementing = preparation.recordHandoff(ready, { runId: 'implementation-run-1' });
   assert.deepStrictEqual({ phase: implementing.phase, design: implementing.design.runIds,
@@ -280,7 +368,7 @@ test('不正な準備・遷移・保存入力は境界で拒否する', () => {
   assert.throws(() => preparation.startDesign(null, {}), /設計run/);
   assert.throws(() => preparation.startDesign(designItem, {}), /セッションとrun ID/);
   assert.throws(() => preparation.recordHandoff(designItem, {}), /実装準備/);
-  const ready = preparation.completeDesign(designItem, { document: '設計' });
+  const ready = preparation.completeDesign(designItem, { document: completeDesignDocument });
   assert.throws(() => preparation.recordHandoff(ready, {}), /実装先のID/);
   const queued = preparation.recordHandoff(ready, { taskId: 'task-1' });
   assert.deepStrictEqual({ phase: queued.phase, taskId: queued.handoff.taskId },
@@ -288,6 +376,17 @@ test('不正な準備・遷移・保存入力は境界で拒否する', () => {
   assert.throws(() => preparation.saveItem({ preparationDir: '/tmp' }, null), /項目が不正/);
   assert.throws(() => preparation.getItem({ preparationDir: '/tmp' }, '../bad'), /IDが不正/);
   assert.throws(() => preparation.savePackage({ preparationDir: '/tmp' }, null), /パッケージが不正/);
+});
+
+test('不完全な設計結果はcompleteDesignで拒否し、実装待ちへ移せない', () => {
+  const item = preparation.createItem({ title: '不完全な設計', goal: 'x', route: 'agent-design' });
+  const before = JSON.parse(JSON.stringify(item));
+  assert.throws(() => preparation.completeDesign(item, {
+    sessionId: 'ds-incomplete', document: '## 目的\n目的だけです', runIds: ['run-incomplete'],
+  }), /必須|検証方法/);
+  assert.deepStrictEqual(item, before);
+  assert.strictEqual(item.phase, 'design-ready');
+  assert.strictEqual(preparation.canHandoff(item), false);
 });
 
 test('保存一覧は未作成・欠損・壊れたファイルを安全に扱う', () => {
