@@ -379,16 +379,24 @@ function routineTierOverview(config) {
     const profile = profiles.load(config);
     const routineTiers = Object.entries(profile.tiers || {})
       .sort((a, b) => b[1].order - a[1].order)
-      .flatMap(([id, tier]) => {
-        const candidate = profiles.resolveTier(config, id);
-        return candidate ? [{ id, label: tier.label || id, ...candidate }] : [];
-      });
+      // 「今すぐ実行」は自動選択の結果だけを見る画面ではなく、今回だけ使う組み合わせを
+      // 人が選ぶ画面。resolveTier で各段を先頭の実効候補へ潰さず、保存された全候補を渡す。
+      .flatMap(([id, tier]) => (Array.isArray(tier.candidates) ? tier.candidates : [])
+        .filter((candidate) => candidate && typeof candidate === 'object')
+        .map((candidate) => ({ id, tier: id, label: tier.label || id, ...candidate })));
     const remembered = profile.state && profile.state.routine && profile.state.routine.tier;
+    const rememberedCandidate = profile.state && profile.state.routine && profile.state.routine.candidate;
     const currentRoutineTier = routineTiers.some((tier) => tier.id === remembered)
       ? remembered : ((routineTiers[0] && routineTiers[0].id) || '');
-    return { routineTiers, currentRoutineTier };
+    const currentRoutineCandidate = rememberedCandidate && typeof rememberedCandidate === 'object'
+      ? {
+        agent_cli: String(rememberedCandidate.agent_cli || ''),
+        model: String(rememberedCandidate.model || ''),
+      }
+      : null;
+    return { routineTiers, currentRoutineTier, currentRoutineCandidate };
   } catch {
-    return { routineTiers: [], currentRoutineTier: '' };
+    return { routineTiers: [], currentRoutineTier: '', currentRoutineCandidate: null };
   }
 }
 
@@ -1002,16 +1010,27 @@ const LEGACY_CHAT_COMMAND = 'kiro-cli chat --trust-all-tools';
 // `cowork.chatCommand` は明示上書き（空なら解決結果）。
 // 解決できないとき（定義が見つからない等）は従来の文字列へ落として、定常業務を止めない。
 // ただし黙っては落とさず、フォールバックした事実を警告ログに残す。
-function resolveRoutineAgent(config, repo, tier = '') {
+function resolveRoutineAgent(config, repo, executionChoice = '') {
   const agent = require('../../agent-project/main/agent');
   const base = agent.resolveAgent(config, repo, { workload: ROUTINE_WORKLOAD });
-  const selectedTier = String(tier || '').trim();
+  const requested = executionChoice && typeof executionChoice === 'object'
+    ? executionChoice : { tier: executionChoice };
+  const selectedTier = String(requested.tier || '').trim();
   if (!selectedTier) return base;
   const profile = profiles.load(config);
-  if (!Object.prototype.hasOwnProperty.call(profile.tiers || {}, selectedTier)) {
+  const tierSpec = (profile.tiers || {})[selectedTier];
+  if (!tierSpec) {
     throw new Error(`段「${selectedTier}」は定義されていません`);
   }
-  const candidate = profiles.resolveTier(config, selectedTier);
+  const explicitlySelected = executionChoice && typeof executionChoice === 'object';
+  const candidate = explicitlySelected
+    ? (Array.isArray(tierSpec.candidates) ? tierSpec.candidates : []).find((item) => item
+      && String(item.agent_cli || '') === String(requested.agent_cli || '')
+      && String(item.model || '') === String(requested.model || ''))
+    : profiles.resolveTier(config, selectedTier);
+  if (explicitlySelected && !candidate) {
+    throw new Error(`段「${selectedTier}」に選択したエージェントとモデルの候補が定義されていません`);
+  }
   if (!candidate) throw new Error(`段「${selectedTier}」には現在実行できる候補がありません`);
   const cli = candidate.agent_cli || base.cli;
   return {

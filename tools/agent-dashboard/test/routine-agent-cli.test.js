@@ -204,6 +204,50 @@ test('今すぐ実行の段は候補を同じ段内で解決し、設定へ保�
   assert.throws(() => cowork.resolveRoutineAgent(config, emptyRepo(), 'missing'), /段.*missing/);
 });
 
+test('今すぐ実行は全実行レベルの全候補を表示し、選んだ組み合わせをそのまま解決する', () => {
+  const config = configWithControl({ workloads: { routine: {} } });
+  writeProfiles(config, {
+    tiers: {
+      medium: {
+        order: 20,
+        label: '標準',
+        candidates: [
+          { agent_cli: 'ollama', model: 'qwen3:8b' },
+          { agent_cli: 'aider', model: 'gemma4:e2b' },
+        ],
+      },
+      small: {
+        order: 10,
+        label: '軽量',
+        candidates: [{ agent_cli: 'aider', model: 'gemma4:e4b' }],
+      },
+    },
+    state: {
+      routine: {
+        tier: 'medium',
+        candidate: { agent_cli: 'aider', model: 'gemma4:e2b' },
+      },
+    },
+  });
+
+  const ov = cowork.overview(config);
+  assert.deepStrictEqual(ov.routineTiers.map((choice) => [choice.id, choice.agent_cli, choice.model]), [
+    ['medium', 'ollama', 'qwen3:8b'],
+    ['medium', 'aider', 'gemma4:e2b'],
+    ['small', 'aider', 'gemma4:e4b'],
+  ]);
+  assert.deepStrictEqual(ov.currentRoutineCandidate, { agent_cli: 'aider', model: 'gemma4:e2b' });
+
+  const selected = cowork.resolveRoutineAgent(config, emptyRepo(), {
+    tier: 'medium', agent_cli: 'aider', model: 'gemma4:e2b',
+  });
+  assert.strictEqual(selected.cli, 'aider');
+  assert.strictEqual(selected.model, 'gemma4:e2b');
+  assert.throws(() => cowork.resolveRoutineAgent(config, emptyRepo(), {
+    tier: 'medium', agent_cli: 'aider', model: 'not-configured',
+  }), /候補.*定義されていません/);
+});
+
 test('定常業務の実行は全体設定で指定した CLI のウィンドウを開く（設定を落とさない）', () => {
   const config = configWithControl({
     workloads: { routine: { agent_cli: 'ollama', model: 'qwen3:8b' } },

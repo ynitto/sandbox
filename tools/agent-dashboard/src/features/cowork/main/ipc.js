@@ -5,11 +5,11 @@ const cowork = require('./cowork');
 function registerIpc(ctx) {
   const { handle, loadConfig, saveConfig } = ctx;
   handle('cowork:overview', (opts) => cowork.overview(loadConfig(), opts || {}));
-  handle('cowork:runLoop', ({ itemId, jobId, parameters, tier }) =>
-    cowork.runLoop(loadConfig(), itemId || jobId, parameters, tier)
+  handle('cowork:runLoop', ({ itemId, jobId, parameters, executionChoice, tier }) =>
+    cowork.runLoop(loadConfig(), itemId || jobId, parameters, executionChoice || tier)
   );
-  handle('cowork:runStateMachine', ({ itemId, machineId, parameters, tier }) =>
-    cowork.runStateMachine(loadConfig(), itemId || machineId, parameters, tier)
+  handle('cowork:runStateMachine', ({ itemId, machineId, parameters, executionChoice, tier }) =>
+    cowork.runStateMachine(loadConfig(), itemId || machineId, parameters, executionChoice || tier)
   );
   handle('cowork:generateStateMachine', (payload) => cowork.generateStateMachine(loadConfig(), payload || {}));
   // アドホック起動（M2）: 登録フォルダ + 自由文で対話 CLI を起動する（項目非依存）
