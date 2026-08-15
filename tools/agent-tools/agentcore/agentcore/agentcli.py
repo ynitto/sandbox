@@ -169,6 +169,13 @@ def normalize(name: str, raw: dict, path) -> dict:
         inter_raw = raw.get("interactive")
         if not isinstance(inter_raw, dict):
             raise AgentCliError(f"エージェント定義 {path}: interactive はオブジェクトです")
+    if "variants" not in raw or raw.get("variants") is None:
+        variants_raw: dict = {}
+    else:
+        variants_raw = raw.get("variants")
+        if not isinstance(variants_raw, dict) or not all(
+                isinstance(k, str) and isinstance(v, str) for k, v in variants_raw.items()):
+            raise AgentCliError(f"エージェント定義 {path}: variants は文字列→文字列のオブジェクトです")
     readonly = str(raw.get("readonly", "best-effort"))
     if readonly not in ("enforced", "best-effort"):
         raise AgentCliError(f"エージェント定義 {path}: readonly は enforced か best-effort です")
@@ -205,11 +212,15 @@ def normalize(name: str, raw: dict, path) -> dict:
         "env": dict(env_raw),
         "timeout": raw.get("timeout"),
         "empty_output_is_error": bool(raw.get("empty_output_is_error", True)),
-        # JSON 契約の役割（planner / split 等）へ自動で振り替える変種の名前。空 = 変種なし。
-        # 「どの役割が JSON 契約か」はエンジンの語彙、「その CLI に JSON 用の変種があるか」は
+        # 用途（role/kind/purpose 名。例 "planner" "split" "verify" "retrieve"）ごとに
+        # 自動で振り替える変種の名前。空 = 変種なし。「どの用途で振り替えるか」はエンジン側の
+        # 語彙（呼び出し元が対象の用途集合を持つ）、「その用途にはこの変種を使う」は
         # 定義側の申告——こう分けると、エンジンが CLI 名で分岐せずに済む（適用拡大設計 §4.3）。
-        "json_variant": str(raw.get("json_variant") or "").strip().lower(),
-        "list_variant": str(raw.get("list_variant") or "").strip().lower(),
+        # variant は 1 つのエージェント（例 ollama）が用途で使い分ける実体を表す——
+        # variant 先の定義自身の default_model も用途専用のチューニング（ollama-verify の
+        # gemma4:12b 等）を持つため、振り替え時は cli と一緒にそちらへ寄せる。
+        "variants": {str(k).strip().lower(): str(v).strip().lower()
+                    for k, v in variants_raw.items() if str(k).strip() and str(v).strip()},
         "write_args": _strs(raw.get("write_args"), "write_args", path),
         "readonly_args": _strs(raw.get("readonly_args"), "readonly_args", path),
         "readonly": readonly,
@@ -310,51 +321,41 @@ def clear_cache() -> None:
     _CACHE.clear()
 
 
-def json_variant(name: str, project_dir=None) -> str:
-    """JSON 契約の役割に使う CLI 名（定義が変種を申告していなければ `name` のまま）。
+def resolve_variant(name: str, purpose: str, project_dir=None) -> "dict | None":
+    """用途（role/kind/purpose 名）に使う変種（cli + 既定モデル）。無ければ None。
 
-    JSON だけを返す契約の役割（agent-flow の planner/evaluator/split 等、agent-project の
-    plan/adjudicate 等）に、ツールループ前提の定義をそのまま使うと契約が成立しない——
-    出力が本文ではなく制御語だけになり、空応答として落ちる。定義側に「自分の JSON 用の
-    変種はこれ」と申告させ、エンジンは役割の性質だけで振り替える。
+    ollama や aider のように 1 つのエージェントが用途で使い分ける実体（tool-loop 前提の
+    ツールループ役、JSON 専用役、配列専用役、検証専用役…）を、呼び出し元は「変種を
+    持つかもしれない 1 つのエージェント」として選ぶだけでよい——用途ごとにどの変種を
+    使うかは定義側（agents/<name>.json の `variants`）が申告し、この関数が引く。
 
-    人が役割ごとに `agents:` を書き並べる運用にすると、節約のための設定を人の時間で払う
-    ことになる（コンセプト 柱3「チューニングの手間も人介在」）。振り替えは既定で効かせ、
-    外したい定義は `json_variant` を書かなければよい。
+    呼び出し元（agent-flow / agent-project）は、どの用途で振り替えを試みるかの集合
+    （例: JSON 契約の役割、配列契約の役割、検証役）を自分で持つ——契約の性質を知って
+    いるのは呼び出し元で、CLI 名で分岐させない（適用拡大設計 §4.3 の分業を維持）。
 
-    申告先が実在しない・自分自身を指す場合は `name` のまま（設定ミスで実行を殺さない）。
+    変種は自分自身の `default_model` を持つことが多い（例: ollama-verify の gemma4:12b
+    は検証用にチューニングされた既定）。呼び出し元が明示的にモデルを指定していなければ、
+    その既定モデルも一緒に返す——base 定義で選んだモデルは「base をそのまま使う用途」に
+    しか効かず、変種へ振り替わった用途では変種自身の調整が優先される。
+
+    申告先が実在しない・自分自身を指す場合は None（設定ミスで実行を殺さない）。
     """
-    return _variant(name, "json_variant", project_dir)
-
-
-def list_variant(name: str, project_dir=None) -> str:
-    """JSON **配列**を返す契約の役割（agent-flow の split）に使う CLI 名。
-
-    JSON モードを持つエンジンの一部（ollama）はトップレベルをオブジェクトに固定するため、
-    `json_variant` の起動形では配列契約を満たしようがない（要素をキーへ散らした器で返り、
-    形式修復リトライも必ず空振りする＝1 呼び出し分を捨てる）。スキーマを渡せる起動形を
-    定義側が `list_variant` として申告し、エンジンは役割の性質だけで振り替える。
-
-    申告が無ければ `json_variant` へ落とす——配列契約は JSON 契約の一種なので、
-    区別の要らないエンジン（配列をそのまま返せる CLI）は何も書かなくてよい。
-    """
-    variant = _variant(name, "list_variant", project_dir)
-    return variant if variant != name else json_variant(name, project_dir)
-
-
-def _variant(name: str, field: str, project_dir=None) -> str:
     key = str(name or "").strip().lower()
+    purpose_key = str(purpose or "").strip().lower()
+    if not purpose_key:
+        return None
     try:
-        variant = str(load_cli(key, project_dir).get(field) or "")
+        spec = load_cli(key, project_dir)
     except AgentCliError:
-        return name
+        return None
+    variant = str((spec.get("variants") or {}).get(purpose_key) or "")
     if not variant or variant == key:
-        return name
+        return None
     try:
-        load_cli(variant, project_dir)
+        variant_spec = load_cli(variant, project_dir)
     except AgentCliError:
-        return name
-    return variant
+        return None
+    return {"agent_cli": variant, "default_model": variant_spec.get("default_model") or None}
 
 
 def costlier_fallback(current: str, candidates, project_dir=None) -> "dict | None":

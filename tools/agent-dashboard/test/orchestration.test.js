@@ -546,7 +546,32 @@ test('エージェント: list は first-wins で同名を陰らせ、契約違�
   }
 });
 
-// ALLOWED_KEYS が schemas/agent-cli.schema.json から取り残されると、json_variant /
+test('エージェント: list は variants の値に現れる名前を isVariantTarget として印付ける', () => {
+  const savedEnv = process.env.KIRO_AGENTS_DIR;
+  const dir = tmpdir('orch-agents-variant-');
+  // ollama は用途ごとに ollama-json / ollama-verify を使い分ける（1 つのエージェント）。
+  fs.writeFileSync(path.join(dir, 'ollama.json'), JSON.stringify({
+    command: ['agent-ollama', '{model}'],
+    variants: { planner: 'ollama-json', verify: 'ollama-verify' },
+  }));
+  fs.writeFileSync(path.join(dir, 'ollama-json.json'), JSON.stringify({ command: ['agent-ollama', '--format', 'json'] }));
+  fs.writeFileSync(path.join(dir, 'ollama-verify.json'), JSON.stringify({ command: ['agent-ollama', '--format', 'json'] }));
+  fs.writeFileSync(path.join(dir, 'cursor.json'), JSON.stringify({ command: ['cursor', 'run'] }));
+  try {
+    process.env.KIRO_AGENTS_DIR = dir;
+    const res = agents.list({ orchestration: {} });
+    const byName = Object.fromEntries(res.dropins.map((d) => [d.name, d]));
+    assert.strictEqual(byName.ollama.isVariantTarget, false, 'base 定義自身は variant 先ではない');
+    assert.strictEqual(byName['ollama-json'].isVariantTarget, true);
+    assert.strictEqual(byName['ollama-verify'].isVariantTarget, true);
+    assert.strictEqual(byName.cursor.isVariantTarget, false, '他の定義から参照されない名前は対象外');
+  } finally {
+    if (savedEnv === undefined) delete process.env.KIRO_AGENTS_DIR;
+    else process.env.KIRO_AGENTS_DIR = savedEnv;
+  }
+});
+
+// ALLOWED_KEYS が schemas/agent-cli.schema.json から取り残されると、variants /
 // headless_autonomy / interactive 等を宣言する実在の定義（ollama 系・aider・組み込み4種の
 // 同梱 JSON）が軒並み「未知のフィールド」エラーになり、実行時指定の利用可能集合
 // （adhoc.js の available、errors 付きドロップインを除外）からも締め出される。
@@ -562,10 +587,15 @@ test('エージェント: 同梱の agents/*.json（variant・headless_autonomy 
   }
 });
 
-test('エージェント: validateSpec は variant・headless_autonomy 等の新フィールドを型検証する', () => {
+test('エージェント: validateSpec は variants・headless_autonomy 等の新フィールドを型検証する', () => {
   const base = { command: ['x'] };
-  assert.deepStrictEqual(agents.validateSpec({ ...base, json_variant: 'x-json' }), []);
-  assert.deepStrictEqual(agents.validateSpec({ ...base, list_variant: 'x-list' }), []);
+  assert.deepStrictEqual(agents.validateSpec({
+    ...base, variants: { planner: 'x-json', verify: 'x-verify' },
+  }), []);
+  assert.ok(agents.validateSpec({ ...base, variants: { planner: 1 } })
+    .some((e) => e.includes('variants は文字列')), 'variants の値は文字列限定');
+  assert.ok(agents.validateSpec({ ...base, variants: ['not', 'an', 'object'] })
+    .some((e) => e.includes('variants は文字列')), 'variants は配列を拒否');
   assert.deepStrictEqual(agents.validateSpec({
     ...base, write_args: ['--a'], readonly_args: ['--ro'], no_session_args: ['--ns'], command_suffix: ['-'],
   }), []);

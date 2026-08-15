@@ -7,8 +7,15 @@
   "default_model": "qwen3",
   "output": "stdout",
   "empty_output_is_error": true,
-  "json_variant": "ollama-json",
-  "list_variant": "ollama-list",
+  "variants": {
+    "planner": "ollama-json", "evaluator": "ollama-json", "filter": "ollama-json",
+    "judge": "ollama-json", "reduce": "ollama-json", "extract": "ollama-json",
+    "plan": "ollama-json", "review": "ollama-json", "prioritize": "ollama-json",
+    "route": "ollama-json", "adjudicate": "ollama-json", "assess": "ollama-json",
+    "split": "ollama-list",
+    "retrieve": "ollama-read",
+    "verify": "ollama-verify"
+  },
   "write_args": ["--think", "off", "--tools", "bash",
                  "--max-rounds", "12", "--command-timeout", "900"],
   "readonly_args": ["--think", "off"],

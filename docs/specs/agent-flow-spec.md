@@ -155,7 +155,7 @@ kind は 13 種で、正典は `agentcore.nodecontract.VALID_KINDS` です。
 
 `agents:` のキーは役割（`planner` / `evaluator` / `worker`）と個別の kind で、値は `{agent_cli, model, readonly, fallbacks}` です。解決順は agent-control の上書き、`agents[役割]`、kind なら `agents.worker`、グローバル `agent_cli` の順。planner と evaluator は明示しない限り readonly で起動します。`fallbacks` は内容失敗の初回だけ、`relative_cost` が厳密に大きい最初の候補へ昇格する宣言です。
 
-JSON 契約の役割（planner / evaluator / split / filter / judge / reduce / extract）は CLI 定義の `json_variant` へ、`split` は配列を表現できる `list_variant` へ、`retrieve` は ollama 系なら `ollama-read` へ、それぞれ起動形を振り替えます。
+JSON 契約の役割（planner / evaluator / filter / judge / reduce / extract）・配列契約の split・根拠を読む retrieve・検証専用チューニングを使う verify は、CLI 定義の用途別の変種（`variants`。用途キー→振り替え先の agent_cli 名）へそれぞれ起動形を振り替えます。variant は「1 つのエージェント（例 ollama）を用途で使い分ける」実体で、振り替え後のモデルも明示指定が無ければ変種自身の既定モデルへ寄せます（例: `verify` → `ollama-verify`・`gemma4:12b`）。
 
 タイムアウトの解決順は次のとおりです。上から順に最初に見つかった値を使い、control は呼び出しごとに読み直します（すでに動いている subprocess の期限は変えません）。
 

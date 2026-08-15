@@ -7,8 +7,13 @@
               "--no-show-model-warnings",
               "--no-analytics", "--no-stream", "--no-pretty", "--no-gitignore",
               "--map-tokens", "0"],
-  "json_variant": "ollama-json",
-  "list_variant": "ollama-list-thinking",
+  "variants": {
+    "planner": "ollama-json", "evaluator": "ollama-json", "filter": "ollama-json",
+    "judge": "ollama-json", "reduce": "ollama-json", "extract": "ollama-json",
+    "plan": "ollama-json", "review": "ollama-json", "prioritize": "ollama-json",
+    "route": "ollama-json", "adjudicate": "ollama-json", "assess": "ollama-json",
+    "split": "ollama-list-thinking"
+  },
   "prompt_via": "argv",
   "prompt_flag": "--message",
   "file_flag": "--file",

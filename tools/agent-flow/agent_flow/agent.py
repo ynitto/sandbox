@@ -84,17 +84,22 @@ EXECUTION_ROLES = frozenset((*AGENT_ROLES, "verify", "human", "session"))
 # 差し替えたときに、契約どおりの JSON 応答が「規約から外れています」と蹴られて planner が
 # 空回りする。設定 `agents: {planner: {readonly: false}}` と明示すれば従来どおり write で呼べる。
 READONLY_ROLES = frozenset({"planner", "evaluator"})
-# 出力が JSON だけと決まっている役割（適用拡大設計 §4.3）。CLI 定義が JSON 用の変種
-# （`json_variant`）を申告していれば、この役割に限って自動でそちらへ振り替える。
+# 出力が JSON だけと決まっている役割（適用拡大設計 §4.3）。CLI 定義が用途別の変種
+# （`variants`）を申告していれば、この役割に限って自動でそちらへ振り替える。
 # verify / map / work は成果物側にワークスペースの本文や自由記述を含むので入れない。
 # STRUCTURED_KINDS（JSON を抽出しようと試みる kind）とは別物: あちらは「JSON なら拾う」、
 # こちらは「JSON 以外を返してはいけない」。
 JSON_CONTRACT_ROLES = frozenset({"planner", "evaluator", "split", "filter", "judge", "reduce", "extract"})
 # うち、トップレベルが JSON **配列**でなければ下流が動かない役割。split の data が配列で
-# ないと `_expand_splits` が展開されず run が空振りする。ollama の JSON モードは
-# トップレベルをオブジェクトに固定するので、この役割だけ配列用の起動形（`list_variant`）
-# へ振り替える（申告が無い CLI は json_variant のまま）。
+# ないと `_expand_splits` が展開されず run が空振りする（申告が無い CLI へは振り替わらない
+# ——variants に該当キーが無ければ resolve_variant が None を返すだけ）。
 LIST_CONTRACT_ROLES = frozenset({"split"})
+# variant 振り替えの対象となる用途の全体集合。JSON/配列契約に加え、根拠を実際に読む
+# 必要がある retrieve（ollama-json へ寄せると read tool を失う）と、検証専用チューニング
+# を持つ verify（ollama-verify の gemma4:12b 等）も含む——いずれも「この用途では base
+# 定義のままでは要件を満たせない」という同種の事情なので、同じ口（agents/<name>.json の
+# `variants`）で申告させる。
+VARIANT_ELIGIBLE_ROLES = JSON_CONTRACT_ROLES | LIST_CONTRACT_ROLES | frozenset({"retrieve", "verify"})
 # 本文の末尾に完了可否の封筒 `{"ok": ...}` を置くよう指示している kind（実行系のうち
 # JSON 抽出をしないもの）。プロンプトの指示とここが食い違うと、自己申告した未完了が
 # 黙って done になる——一致は tests/test_agent_cli.py が prompt 側の EXEC_KINDS と突き合わせる。
@@ -215,16 +220,21 @@ def _agent_for(purpose: str) -> "tuple[str, str | None]":
     agent-control（管理面の横断上書き）＞ agents[purpose] ＞（purpose がノード kind なら）
     agents["worker"] ＞ グローバル agent_cli。soft/縮退中は control の degraded を重ねる。
 
-    解決した CLI が JSON 用の変種を申告していれば、JSON 契約の役割
-    （JSON_CONTRACT_ROLES）だけ最後にそちらへ振り替える。配列契約の役割
-    （LIST_CONTRACT_ROLES）はさらに配列用の変種を優先する。振り替えは同じエンジン・同じ
-    モデルの起動形の違いなので、どの層で CLI が決まっても同じ規則が効く。"""
+    解決した CLI が用途別の変種（`variants`）を申告していれば、対象の用途
+    （VARIANT_ELIGIBLE_ROLES）だけ最後にそちらへ振り替える。振り替えは同じエンジンでの
+    起動形の違いなので、どの層で CLI が決まっても同じ規則が効く。モデルは、人が明示した
+    層（設定 `agents:` の役割別モデル・run 単位の実行時指定）が無ければ変種自身の既定
+    モデルへ寄せる——変種は用途専用にチューニングされていることが多く（例:
+    ollama-verify の gemma4:12b）、tier/agent-control が自動選択したモデルをそのまま
+    持ち込むと調整が無効化される。人が明示した層は最優先のまま変更しない（自動選択層
+    だけを変種の既定で上書きする）。"""
     ov = _AGENT_OVERRIDES.get(purpose)
     if ov is None and purpose in VALID_KINDS:
         ov = _AGENT_OVERRIDES.get("worker")
     ov = ov or {}
     cli = str(ov.get("agent_cli") or _AGENT_CLI).lower()
     model = ov.get("model") or None
+    configured_model = bool(model)
     # 候補ベース（version 2）: selection_policy があれば Resolver の決定が control 層を
     # 置き換える。park のときは candidate を変えない——実行は run_agent の環境ガードが
     # 実行前に止めるので、ここで legacy / 縮退候補へ黙って降格しない（設計 §6.6 / §5.2）。
@@ -254,18 +264,17 @@ def _agent_for(purpose: str) -> "tuple[str, str | None]":
     # run 単位の固定は、保存済みノード・control・縮退候補より優先する。hard budget と lifecycle
     # はエージェント解決の外側で止めるため、この固定で安全弁を迂回することはない。
     run_ov = _execution_override(purpose)
+    explicit_model = configured_model or bool(run_ov.get("model"))
     if run_ov.get("agent_cli"):
         cli = str(run_ov["agent_cli"]).lower()
     if run_ov.get("model"):
         model = str(run_ov["model"])
-    # retrieve は根拠を実際に読める必要がある。ollama-json へ寄せると read tool を失うため、
-    # Ollama 系だけ既存の読み取り専用定義を使い、末尾 JSON は下流の validator で担保する。
-    if purpose == "retrieve" and cli in ("ollama", "ollama-json"):
-        cli = "ollama-read"
-    elif purpose in LIST_CONTRACT_ROLES:
-        cli = _agentcli.list_variant(cli)
-    elif purpose in JSON_CONTRACT_ROLES:
-        cli = _agentcli.json_variant(cli)
+    if purpose in VARIANT_ELIGIBLE_ROLES:
+        variant = _agentcli.resolve_variant(cli, purpose)
+        if variant:
+            cli = variant["agent_cli"]
+            if not explicit_model and variant["default_model"]:
+                model = variant["default_model"]
     return cli, model
 
 

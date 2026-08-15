@@ -4,7 +4,7 @@
   "relative_cost": 0,
   "command": ["agent-ollama", "--think", "off", "--format", "json",
               "--stall-timeout", "180", "{model}"],
-  "list_variant": "ollama-list",
+  "variants": { "split": "ollama-list" },
   "prompt_via": "stdin",
   "default_model": "gemma4:12b",
   "output": "stdout",

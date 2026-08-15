@@ -274,16 +274,21 @@ class EmptyOutputRetryTests(unittest.TestCase):
 
 
 class JsonVariantRoutingTests(unittest.TestCase):
-    """JSON 契約の役割は、CLI 定義が申告する JSON 変種へ自動で振り替わる（柱3 / C9）。
+    """JSON 契約の役割は、CLI 定義が申告する用途別の変種へ自動で振り替わる（柱3 / C9）。
 
-    人が役割ごとに `agents:` を書き並べる運用にすると、節約のための設定を人の時間で払う。"""
+    人が役割ごとに `agents:` を書き並べる運用にすると、節約のための設定を人の時間で払う。
+    variant は「1 つのエージェント（ollama）を用途で使い分ける」実体なので、振り替え後の
+    モデルも変種自身の調整（default_model）へ寄せる——base 側で選んだモデルは、振り替わら
+    ない用途（work 等・素の ollama をそのまま使う）にだけ効く。"""
 
     def setUp(self):
         self._cli, self._ov = kf._AGENT_CLI, kf._AGENT_OVERRIDES
-        kf._AGENT_CLI, kf._AGENT_OVERRIDES = "ollama", {}
+        self._run_ov = dict(kf._EXECUTION_OVERRIDES)
+        kf._AGENT_CLI, kf._AGENT_OVERRIDES, kf._EXECUTION_OVERRIDES = "ollama", {}, {}
 
     def tearDown(self):
         kf._AGENT_CLI, kf._AGENT_OVERRIDES = self._cli, self._ov
+        kf._EXECUTION_OVERRIDES = self._run_ov
 
     def test_json_contract_roles_swap_to_the_variant(self):
         for purpose in ("planner", "evaluator", "filter", "judge", "reduce"):
@@ -298,20 +303,37 @@ class JsonVariantRoutingTests(unittest.TestCase):
         kf._AGENT_CLI = "aider"
         self.assertEqual(kf._agent_for("split")[0], "ollama-list-thinking")
 
+    def test_verify_swaps_to_its_own_tuned_variant(self):
+        # ollama-verify は他の変種から辿られない——variants 経由がこの用途への唯一の入口。
+        self.assertEqual(kf._agent_for("verify"), ("ollama-verify", "gemma4:12b"))
+
+    def test_retrieve_swaps_to_the_read_capable_variant(self):
+        # ollama-json へ寄せると read tool を失うため、根拠を読める定義へ振り替える。
+        self.assertEqual(kf._agent_for("retrieve")[0], "ollama-read")
+
     def test_free_text_roles_keep_the_declared_cli(self):
-        # work / verify / map はワークスペースの本文や自由記述を返すので振り替えない。
-        for purpose in ("work", "verify", "map", "synthesize", ""):
+        # work / map はワークスペースの本文や自由記述を返すので振り替えない。
+        for purpose in ("work", "map", "synthesize", ""):
             self.assertEqual(kf._agent_for(purpose)[0], "ollama", purpose)
 
     def test_cli_without_a_declared_variant_is_untouched(self):
         kf._AGENT_CLI = "codex"
         self.assertEqual(kf._agent_for("split")[0], "codex")
 
-    def test_model_override_survives_the_swap(self):
-        # 変種は同じエンジンの起動形違い。モデル指定は振り替えても持ち越す。
+    def test_configured_model_survives_the_swap(self):
+        # 変種は同じエンジンの起動形違い。設定 agents: で人が明示したモデルは、
+        # tier/agent-control が自動選択したモデルとは違い、振り替えても持ち越す。
         kf._AGENT_OVERRIDES = kf._normalize_agent_overrides(
             {"split": {"agent_cli": "ollama", "model": "qwen3.5:9b"}})
         self.assertEqual(kf._agent_for("split"), ("ollama-list", "qwen3.5:9b"))
+
+    def test_explicit_run_level_model_survives_the_swap(self):
+        # run 単位の明示指定（この実行だけの固定）は自動選択層より優先するという既存の
+        # 不変条件を、variant の既定モデルにも適用する——ここだけは変種で上書きしない。
+        kf._EXECUTION_OVERRIDES = kf._normalize_execution_overrides({
+            "version": 1, "kinds": {"verify": {"agent_cli": "ollama", "model": "custom-model"}},
+        })
+        self.assertEqual(kf._agent_for("verify"), ("ollama-verify", "custom-model"))
 
 
 class ExplicitAgentOverrideTests(unittest.TestCase):
@@ -339,7 +361,9 @@ class ExplicitAgentOverrideTests(unittest.TestCase):
         kf._AGENT_OVERRIDES = kf._normalize_agent_overrides({"verify": {"model": "qwen3"}})
         self.assertEqual(kf._effective_agent("verify", None, {"agent_cli": "codex"}),
                          ("codex", "qwen3"))
-        self.assertEqual(kf._effective_agent("verify", None, None), ("ollama", "qwen3"))
+        # cli は verify 用の変種（ollama-verify）へ構造的に振り替わるが、設定で明示した
+        # モデルは変種の既定（gemma4:12b）に置き換わらず持ち越す。
+        self.assertEqual(kf._effective_agent("verify", None, None), ("ollama-verify", "qwen3"))
 
     def test_explicit_timeout_is_used_for_the_call(self):
         seen = {}
@@ -366,8 +390,10 @@ class ExplicitAgentOverrideTests(unittest.TestCase):
         self.assertEqual(seen["timeout"], 600.0)
 
     def test_no_override_leaves_resolution_untouched(self):
-        self.assertEqual(kf._effective_agent("verify", "m", None), ("ollama", "m"))
-        self.assertEqual(kf._effective_agent("verify", "m", {}), ("ollama", "m"))
+        # 設定・run いずれも明示していないので、verify は自身の変種（gemma4:12b
+        # チューニング）へ振り替わる——呼び出し値 "m" は変種の既定に置き換わる。
+        self.assertEqual(kf._effective_agent("verify", "m", None), ("ollama-verify", "gemma4:12b"))
+        self.assertEqual(kf._effective_agent("verify", "m", {}), ("ollama-verify", "gemma4:12b"))
 
 
 class AgentTimeoutTests(unittest.TestCase):
@@ -1142,7 +1168,16 @@ class AgentControlTests(unittest.TestCase):
         self._control({"version": 1,
                        "workloads": {"flow": {"agents": {"verify": {"model": "opus"}}}}})
         cli, model = kf._agent_for("verify")
-        self.assertEqual(model, "opus")                 # control が最優先
+        self.assertEqual(model, "opus")                 # control が最優先（kiro は変種を持たない）
+
+    def test_variant_default_model_overrides_a_tier_selected_model(self):
+        # tier/agent-control（dashboard の自動割り当て）が選んだ agent_cli + model は
+        # 「その CLI を用途を問わずそのまま使う」という明示ではない——用途が variant を
+        # 要求すれば、そちらの調整済みモデルへ寄せる（agents: の明示設定とは異なる層）。
+        self._control({"version": 1,
+                       "workloads": {"flow": {"agents": {
+                           "verify": {"agent_cli": "ollama", "model": "qwen3:8b"}}}}})
+        self.assertEqual(kf._agent_for("verify"), ("ollama-verify", "gemma4:12b"))
 
     def test_lifecycle_pause_blocks_run_agent(self):
         self._control({"version": 1, "workloads": {"flow": {"lifecycle": "pause"}}})

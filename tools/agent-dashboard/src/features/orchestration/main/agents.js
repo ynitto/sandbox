@@ -19,7 +19,7 @@ const BUILTINS = ['kiro', 'claude', 'copilot', 'codex'];
 const ALLOWED_KEYS = [
   'name', 'relative_cost', 'command', 'prompt_via', 'prompt_flag', 'file_flag', 'read_flag',
   'model_flag', 'default_model', 'output', 'env', 'timeout', 'empty_output_is_error',
-  'json_variant', 'list_variant', 'command_suffix', 'skill_command_prefix',
+  'variants', 'command_suffix', 'skill_command_prefix',
   'write_args', 'readonly_args', 'readonly', 'headless_autonomy', 'no_session_args', 'spill',
   'interactive', 'errors', 'session_log',
 ];
@@ -111,6 +111,11 @@ function validateSpec(spec) {
     }
   }
   if (spec.env !== undefined && !isPlainObject(spec.env)) errors.push('env はオブジェクトで指定してください');
+  if (spec.variants !== undefined) {
+    if (!isPlainObject(spec.variants) || !Object.values(spec.variants).every((v) => typeof v === 'string')) {
+      errors.push('variants は文字列→文字列のオブジェクトで指定してください');
+    }
+  }
   if (spec.readonly !== undefined && !READONLY_ENUM.includes(spec.readonly)) {
     errors.push(`readonly が不正です: ${spec.readonly}（enforced / best-effort）`);
   }
@@ -180,6 +185,22 @@ function list(cfg) {
       if (!shadowed) seen.add(name);
       dropins.push({ name, dir, path: full, spec, shadowed, errors });
     }
+  }
+  // variant は「1 つのエージェントを用途で使い分ける」実体（例: ollama-json は ollama の
+  // planner/judge 用の変種）。variants の値に現れる名前は他の定義の内部部品であり、
+  // 一覧・候補選択では base 定義（ollama）とは別枠の独立候補として出さない
+  // （UI 側が isVariantTarget で絞り込む。読み込み・検証・argv 組み立ては従来どおり行う
+  // ——エンジンは base の agent_cli をそのまま渡して自分で解決するため、この定義自体は
+  // 引き続き実在・ロード可能である必要がある）。
+  const variantTargets = new Set();
+  for (const { spec } of dropins) {
+    if (!isPlainObject(spec) || !isPlainObject(spec.variants)) continue;
+    for (const target of Object.values(spec.variants)) {
+      if (typeof target === 'string' && target.trim()) variantTargets.add(target.trim().toLowerCase());
+    }
+  }
+  for (const dropin of dropins) {
+    dropin.isVariantTarget = variantTargets.has(dropin.name.toLowerCase());
   }
   return { builtins: BUILTINS.slice(), dropins };
 }
