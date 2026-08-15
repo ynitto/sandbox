@@ -79,7 +79,7 @@ function nodesSummaryHtml(nodes, boardNodes) {
   return `<section class="summary-card nodes-card" aria-label="実行する PC の一覧">
     <h2 class="summary-kicker">実行する PC（fleet）</h2>
     <ul class="nodes-list">${rows}</ul>
-    <p class="muted">一次は状態リポジトリの利用枠射影。板があるときだけ重ねます。資格情報は預かりません。</p>
+    <p class="muted">この PC は稼働状況、ほかの PC は最終更新を表示します。</p>
   </section>`;
 }
 

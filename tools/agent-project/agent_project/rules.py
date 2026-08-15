@@ -83,6 +83,9 @@ def _auto_section_learn_sources(text: str) -> "dict[str, str]":
         if not s.startswith("- "):
             continue
         body = re.sub(r"\s*<!--.*?-->\s*$", "", s[2:]).strip()
+        # 競合照合は promote_rules と同じ「scope タグを外した本文」で行う
+        # （キーに `:: scope=…` が残ると scope 付き learn の同一 guidance 競合を取りこぼす）
+        body = split_learn_scope(body)[0].strip()
         m = re.search(r"learn:(\S+)", line)
         if body:
             out[body] = m.group(1) if m else ""

@@ -344,6 +344,8 @@ def list_rule_adjudication(cfg: "Config") -> "list[dict]":
     conflicts: set[str] = set()
     if cfg.needs.exists():
         for nf in cfg.needs.glob("rule-*.md"):
+            if nf.name.startswith("rule-revise-"):
+                continue  # revise の改定 needs は競合ではない（rule-<8hex>.md だけが競合票）
             try:
                 body = nf.read_text(encoding="utf-8")
             except OSError:
@@ -389,6 +391,37 @@ def _set_rules_md_state(cfg: "Config", rule_id: str, state: str) -> None:
         p.write_text(new, encoding="utf-8")
 
 
+def _append_rule_line_to_rules_md(cfg: "Config", rule_id: str, src: str,
+                                  guide: str, state: str = "active") -> None:
+    """rules.md に rule 行が無ければ自動節へ追記する（promote_rules と同じ行形式）。
+
+    hit 閾値前の candidate を人が promote すると lifecycle は active でも rules.md に
+    行が無く、注入されない active ができる——それを防ぐ。guide 不明（learn 行なし）は
+    書けないので何もしない（幽霊行を作らない）。"""
+    body = str(guide or "").strip()
+    if not body:
+        return
+    p = rules_path(cfg)
+    text = ""
+    if p.exists():
+        try:
+            text = p.read_text(encoding="utf-8")
+        except OSError:
+            return
+    if re.search(rf"rule:{re.escape(rule_id)}\b", text) or body in text:
+        return
+    if not text:
+        text = ("# プロジェクトルール\n\n"
+                "<!-- フローを回して判明した恒常ルール（暗黙知）の明文化先。人が書くのが正。\n"
+                "     全タスクの act / plan / verify 合成に常時注入される（有界）。 -->\n")
+    if RULES_AUTO_SECTION not in text:
+        text = text.rstrip() + f"\n\n{RULES_AUTO_SECTION}\n"
+    date = datetime.now().strftime("%Y-%m-%d")
+    text = (text.rstrip()
+            + f"\n- {body}  <!-- rule:{rule_id} state:{state} learn:{src} {date} -->\n")
+    p.write_text(text, encoding="utf-8")
+
+
 def apply_rule_command(cfg: "Config", action: str, rule_id: str, reason: str = "",
                        guide: str = "") -> "tuple[int, str]":
     """人の rule 裁定（promote/suspend/revise/deprecate）。dashboard は commands/ 投函のみ。
@@ -403,29 +436,38 @@ def apply_rule_command(cfg: "Config", action: str, rule_id: str, reason: str = "
         return 2, "rule_id は obs-+16hex 形式が必要"
     if act not in ("promote", "suspend", "revise", "deprecate"):
         return 2, f"未知の rule 操作: {action}"
-    # 出典 DR: 既存 sources の先頭、無ければ rule 専用
+    # 出典 DR: 既存 sources の先頭。learn にも lifecycle にも無い rid は受けない
+    # （typo が decisions/ へ幽霊ルールを作り、後続遷移を影で上書きするのを防ぐ）。
     srcs = []
+    guide_body = ""
     for item in list_rule_adjudication(cfg):
         if item["rule_id"] == rid:
             srcs = list(item.get("sources") or [])
+            guide_body = str(item.get("guide") or "")
             break
-    src = srcs[0] if srcs else f"rule-{rid[4:12]}"
+    if not srcs:
+        return 2, f"未知の rule_id: {rid}（learn / lifecycle に出典なし）"
+    src = srcs[0]
     why = str(reason or "").strip() or f"commands/ rule-{act}"
     cur = rule_lifecycle_state(cfg, rid)
 
     if act == "promote":
         # trial→active（outcome 条件を人が明示上書き）。candidate/suspended は trial 経由。
-        if cur in ("candidate", "suspended", "rejected"):
+        # rejected は計画のライフサイクル図どおり終端（deprecated と同じく復活させない）。
+        if cur in ("candidate", "suspended"):
             append_rule_lifecycle(cfg, src, rid, "trial", why=why)
             cur = "trial"
         if cur == "trial":
+            # outcome は捏造しない——人手 active は evidence_ok=false のまま残り、
+            # doctor の「根拠なし active」が観測できる（説明可能性を優先）。
             append_rule_lifecycle(cfg, src, rid, "active", why=why)
-            if int(aggregate_rule_outcomes(cfg, rid).get("worked") or 0) < 1:
-                append_rule_outcome(cfg, src, rid, "worked")
         elif cur == "active":
             return 0, "already active"
         else:
             return 2, f"promote できない状態: {cur}"
+        # hit 閾値前の candidate は rules.md にまだ行が無い。active は「全該当タスクへ
+        # 注入する」なので、無ければここで自動節へ追記する（追記が正・書換は表示のみ）。
+        _append_rule_line_to_rules_md(cfg, rid, src, guide_body, state="active")
         _set_rules_md_state(cfg, rid, "active")
         return 0, "promoted to active"
 
@@ -447,9 +489,11 @@ def apply_rule_command(cfg: "Config", action: str, rule_id: str, reason: str = "
     append_rule_lifecycle(cfg, src, rid, "trial", why=why)
     _set_rules_md_state(cfg, rid, "trial")
     g = str(guide or "").strip()
-    note = g[:200] if g else why[:200]
     cfg.needs.mkdir(parents=True, exist_ok=True)
     tid = f"rule-revise-{rid[4:12]}"
+    # dashboard 経由の自由入力は共有前に redaction（brief/decisions の書き手と同じ規約）
+    note = redact_for_share(g[:200] if g else why[:200], path=f"needs/{tid}.md")
+    why = redact_for_share(why, path=f"needs/{tid}.md")
     path = needs_path(cfg, tid)
     if not path.exists():
         path.write_text(
@@ -522,7 +566,7 @@ def write_rule_conflict_needs(cfg: "Config", rule_id: str, sources: "list[str]",
         f"## Context and Problem Statement\n\n"
         f"- なぜ: {why}\n"
         f"- rule: {rid}\n"
-        f"- guide: {str(guide or '').strip()[:200]}\n"
+        f"- guide: {redact_for_share(str(guide or '').strip()[:200], path=f'needs/{tid}.md')}\n"
         f"- 状態: needs（人の裁定待ち・自動マージなし）\n\n"
         f"{DECISION_MARKER}\n\n"
         f"<!-- 人の決定の記入欄。採用する出典・改定文・棄却を書いて [x]。 -->\n"

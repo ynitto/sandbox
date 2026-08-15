@@ -282,6 +282,21 @@ class BudgetEligibilityTests(unittest.TestCase):
             heartbeat="2026-08-01T12:00:00Z", fresh_after_sec=3600,
             at=__import__("datetime").datetime(2026, 8, 1, 12, 1, tzinfo=__import__("datetime").timezone.utc)))
 
+    def test_stale_heartbeat_enforce_false_remains_eligible(self):
+        """鮮度切れは unknown。enforce=false は観測のみで入札を止めない（§6 移行）。"""
+        from datetime import datetime, timezone
+        at = datetime(2026, 8, 1, 14, 0, tzinfo=timezone.utc)  # 2h 経過 > fresh 3600s
+        self.assertTrue(board.eligible(
+            post(), repos=REGISTRY, budget=self._budget(can_accept=True, enforce=False),
+            heartbeat="2026-08-01T12:00:00Z", fresh_after_sec=3600, at=at))
+
+    def test_stale_heartbeat_enforce_true_not_eligible(self):
+        from datetime import datetime, timezone
+        at = datetime(2026, 8, 1, 14, 0, tzinfo=timezone.utc)
+        self.assertFalse(board.eligible(
+            post(), repos=REGISTRY, budget=self._budget(can_accept=True, enforce=True),
+            heartbeat="2026-08-01T12:00:00Z", fresh_after_sec=3600, at=at))
+
     def test_version_mismatch_is_unknown_not_eligible_when_enforce(self):
         from datetime import datetime, timezone
         at = datetime(2026, 8, 1, 12, 1, tzinfo=timezone.utc)

@@ -358,7 +358,7 @@ assert.match(renderer, /個別のrunを止める操作ではありません/);
   // eslint-disable-next-line no-new-func
   const nodesSummaryHtml = new Function(
     'esc', 'humanizeAge',
-    `${grab('nodesSummaryHtml')}; return nodesSummaryHtml;`
+    `${grab('mergeFleetNodes')}; ${grab('nodesSummaryHtml')}; return nodesSummaryHtml;`
   )((s) => String(s == null ? '' : s), (ms) => `${Math.round(ms / 1000)}秒前`);
   assert.strictEqual(nodesSummaryHtml([]), '', 'ノードが無ければ何も出さない（従来の見た目）');
   assert.strictEqual(nodesSummaryHtml(undefined), '', 'undefined でも安全');

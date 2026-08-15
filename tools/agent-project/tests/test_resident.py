@@ -1291,6 +1291,8 @@ class ResidentBoardTickTests(unittest.TestCase):
         self.commands = self.tmp / "node-commands"
         os.environ["AGENT_COMMANDS_DIR"] = str(self.commands)
         self.addCleanup(os.environ.pop, "AGENT_COMMANDS_DIR", None)
+        os.environ["AGENT_BUDGET_DIR"] = str(self.tmp / "budget")
+        self.addCleanup(os.environ.pop, "AGENT_BUDGET_DIR", None)
         self.board = self.tmp / "board"
         (self.board / "delegations").mkdir(parents=True)
 
@@ -1332,12 +1334,15 @@ class ResidentBoardTickTests(unittest.TestCase):
         self.assertEqual(rec["contract_version"], km.CONTRACT_VERSION)
         self.assertTrue(rec["heartbeat"])
         self.assertGreater(rec["fresh_after_sec"], 0)
-        # Phase1: status と同形の budget ミラー
+        # Phase1: status と同形の budget ミラー。台帳が読めるのに unavailable へ
+        # 倒れていたら退行（builder へ渡す cfg スタブの属性欠け）。
         budget = rec["budget"]
         self.assertEqual(budget["contract_version"], 1)
-        self.assertIn(budget["source"], ("local-ledger", "unavailable"))
+        self.assertEqual(budget["source"], "local-ledger")
         self.assertIn("can_accept", budget)
         self.assertIs(budget.get("enforce"), False)
+        # reservation はプロジェクト状態リポジトリ単位。板ミラーには文脈が無いので未知(null)。
+        self.assertIsNone(budget["capacity"]["reserved"])
 
     def test_board_absent_tick_does_not_require_budget_mirror(self):
         """board 未設定経路は nodes を書かず、status.board.configured=False で終わる。"""

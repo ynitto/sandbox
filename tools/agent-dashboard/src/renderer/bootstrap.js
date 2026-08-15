@@ -37,6 +37,7 @@ async function init() {
   $('cw-type').addEventListener('change', updateCoworkWorkFields);
   $('btn-cw-ok').addEventListener('click', async (ev) => { ev.preventDefault(); await applyCoworkWorkDialog(); });
   setupAmigosDialogs();
+  setupRuleReasonDialog();
   $('btn-cw-save-cancel').addEventListener('click', () => $('dlg-cowork-save').close());
   $('btn-cw-save-ok').addEventListener('click', (ev) => { ev.preventDefault(); saveCoworkDraft(); });
   $('btn-task-close').addEventListener('click', requestTaskDialogClose);

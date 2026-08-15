@@ -193,6 +193,11 @@ def _read_node_status(root: Path, node: str) -> "dict | None":
         return None
 
 
+# allocate は数十秒毎に回る。同一内容の gate 行を毎パス journal（append-only・同期対象）へ
+# 書くと、枯渇/停止ノードが 1 台あるだけで無限に積もる。プロセス内 dedup で状態変化時のみ書く。
+_GATE_JOURNAL_SEEN: "set[str]" = set()
+
+
 def _gate_journal_line(action: str, gate: dict) -> str:
     codes = gate.get("reason_codes") or []
     return (f"budget gate: action={action} node={gate.get('node') or '-'} "
@@ -205,6 +210,10 @@ def _gate_journal_line(action: str, gate: dict) -> str:
 _LIVE_RESERVATION_STATES = frozenset({"live", "open", "held", "active", ""})
 _TERMINAL_RESERVATION_STATES = frozenset({"closed", "expired", "released"})
 _RESERVATION_ENV = "AGENT_RESERVATION_ID"
+# batch は複数タスクを ThreadPool で並行実行する。プロセス env に置くと最後に bind した
+# 1 件が全タスクの記帳へ付くため、束縛はスレッドローカルに持ち、子プロセスへは
+# spawn 時に env へ写す（プロセス env はエンジン自身が env 越しに起動された場合の入力のみ）。
+_RESERVATION_TLS = threading.local()
 
 
 def reservations_dir(root: Path) -> Path:
@@ -470,9 +479,8 @@ def close_reservation_for_task(cfg: "Config", task: "Task | None" = None,
     rid = str(reservation_id or (task.get("reservation_id") if task else "") or "").strip()
     tid = str((task.id if task else "") or "").strip()
     ok = close_reservation(root, rid, task_id=tid, ledger_ref=ledger_ref)
-    if rid:
-        with contextlib.suppress(Exception):
-            os.environ.pop(_RESERVATION_ENV, None)
+    if rid and current_reservation_id() == rid:
+        bind_reservation_env("")
     return ok
 
 
@@ -499,12 +507,14 @@ def expire_reservations_for(cfg: "Config", at: "datetime | None" = None) -> "lis
 
 
 def bind_reservation_env(reservation_id: str) -> None:
-    """実行開始時に予約 ID を環境へ引き継ぐ（ledger 記帳が読む）。"""
-    rid = str(reservation_id or "").strip()
-    if rid:
-        os.environ[_RESERVATION_ENV] = rid
-    else:
-        os.environ.pop(_RESERVATION_ENV, None)
+    """実行開始時に予約 ID を実行スレッドへ束縛する（ledger 記帳・CLI spawn env が読む）。"""
+    _RESERVATION_TLS.rid = str(reservation_id or "").strip()
+
+
+def current_reservation_id() -> str:
+    """このスレッドに束縛された予約 ID。無ければプロセス env（外部起動時の入力）。"""
+    rid = str(getattr(_RESERVATION_TLS, "rid", "") or "")
+    return rid or str(os.environ.get(_RESERVATION_ENV) or "").strip()
 
 
 def claim_distributed_task(cfg: "Config", task_id: str,
@@ -594,6 +604,17 @@ def create_local_claim_reservation(cfg: "Config", task: "Task",
         return None
     root = Path(cfg.backlog).parent
     now = (at or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    # offload → reap の再 claim で live 予約が残っていれば引き継ぐ（二重計上しない）
+    rid_prev = str(task.get("reservation_id") or "").strip()
+    if rid_prev:
+        try:
+            prev = json.loads((reservations_dir(root) / f"{rid_prev}.json")
+                              .read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            prev = None
+        if isinstance(prev, dict) and reservation_is_live(prev, at=now):
+            bind_reservation_env(rid_prev)
+            return prev
     record = _read_node_status(root, node)
     if record is None:
         gate = {"kind": "unknown", "node": node}
@@ -770,6 +791,9 @@ def allocate_distributed_tasks(cfg: "Config", at: "datetime | None" = None) -> "
 
     ok = state_transaction(cfg, mutate, "allocate ready tasks")
     for line in gate_notes:
+        if line in _GATE_JOURNAL_SEEN:
+            continue
+        _GATE_JOURNAL_SEEN.add(line)
         append_journal(cfg.journal, line)
     return assigned if ok else {}
 

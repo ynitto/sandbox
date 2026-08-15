@@ -40,26 +40,51 @@ function knowledgeRulesHtml(rules) {
 
 function bindKnowledgeRuleActions(root, p) {
   for (const btn of root.querySelectorAll('button[data-rule-act]')) {
-    btn.addEventListener('click', async () => {
+    btn.addEventListener('click', () => {
       const action = btn.dataset.ruleAct;
       const ruleId = btn.dataset.ruleId;
       if (!action || !ruleId || !p) return;
-      const reason = window.prompt(
-        `${action.replace(/^rule-/, '')} の理由（決定記録に残ります）`,
-        'agent-dashboard から裁定'
-      );
-      if (reason == null) return;
-      const ok = await guard('ルール裁定', async () => {
-        const res = await api.runAction({
-          dir: p.dir, action, id: ruleId, ruleId, reason: String(reason || '').trim(),
-        });
-        uiLog('rule-command', action, ruleId, res);
-        toast(`${action} を投函しました（本体が取り込みます）`, true);
-        return true;
-      });
-      if (ok) await reloadProject();
+      openRuleReasonDialog(action, ruleId, p.dir);
     });
   }
+}
+
+// 理由の入力。Electron の renderer には window.prompt が無いので、
+// 他のダイアログと同じ <dialog> + form で受ける。
+function openRuleReasonDialog(action, ruleId, dir) {
+  const dlg = $('dlg-rule-reason');
+  if (!dlg) return;
+  state.ruleReason = { action, ruleId, dir };
+  $('rule-reason-title').textContent =
+    `${action.replace(/^rule-/, '')}: ${ruleId}`;
+  $('rule-reason-text').value = '';
+  dlg.showModal();
+  $('rule-reason-text').focus();
+}
+
+function setupRuleReasonDialog() {
+  const dlg = $('dlg-rule-reason');
+  if (!dlg) return;
+  $('btn-rule-reason-cancel').addEventListener('click', () => dlg.close());
+  dlg.addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    const target = state.ruleReason || {};
+    const reason = $('rule-reason-text').value.trim();
+    if (!reason) {
+      toast('理由を入力してください');
+      return;
+    }
+    guard('ルール裁定', async () => {
+      const res = await api.runAction({
+        dir: target.dir, action: target.action,
+        id: target.ruleId, ruleId: target.ruleId, reason,
+      });
+      uiLog('rule-command', target.action, target.ruleId, res);
+      dlg.close();
+      toast(`${target.action} を投函しました（本体が取り込みます）`, true);
+      await reloadProject();
+    });
+  });
 }
 
 function renderHistory() {
