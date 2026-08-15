@@ -58,7 +58,7 @@ function designReferenceFrom(raw) {
 function designSelectionFrom(raw, mode) {
   const value = raw && typeof raw === 'object' ? raw : {};
   const hasReference = value.id != null || value.scope != null || value.repository != null
-    || value.cwd != null || value.flow || value.snapshot || value.designFlow || value.selection;
+    || value.flow || value.snapshot || value.designFlow || value.selection;
   if (!hasReference) {
     const flowId = designSession.MODE_FLOWS[String(mode || '')];
     if (!flowId) designReferenceError(`設計の進め方が不正です: ${mode || '(未指定)'}`);
@@ -109,6 +109,29 @@ function designFlowSnapshot(workflow, reference) {
   };
 }
 
+function trustedDesignSnapshot(raw, label = '保存済み設計フロー') {
+  const snapshot = preparation.normalizeDesignFlow(raw);
+  if (!snapshot || snapshot.definition.purpose !== 'design') {
+    throw new Error(`${label}が不正です: design purpose のsnapshotが必要です`);
+  }
+  try {
+    adhoc.normalizeWorkflow({
+      ...snapshot.definition,
+      id: snapshot.id,
+      name: snapshot.name,
+    }, { purpose: 'design' });
+  } catch (error) {
+    throw new Error(`${label}のdefinitionが不正です: ${error && error.message ? error.message : '検証に失敗しました'}`, {
+      cause: error,
+    });
+  }
+  const digest = digestDefinition(snapshot.definition);
+  if (snapshot.digest !== digest) {
+    throw new Error(`${label}のdigestが定義と一致しません`);
+  }
+  return snapshot;
+}
+
 function repositoryForDesignReference(config, reference) {
   if (reference.scope !== 'repository') return '';
   const registered = adhoc.registeredRepositoryRoot(config, reference.repository);
@@ -126,6 +149,7 @@ function resolveDesignFlow(config, raw, purpose = 'design') {
     workflow = adhoc.loadWorkflow(config, reference.id, {
       scope: reference.scope,
       cwd: repository,
+      purpose,
     });
   } catch (error) {
     designReferenceError(error && error.message ? error.message : 'id を解決できません');
@@ -201,7 +225,8 @@ function prepareDesignInput(config, raw, fallbackSnapshot = null) {
   const input = { ...(raw && typeof raw === 'object' ? raw : {}) };
   const selected = designFlowFromPreparation(input);
   const resolved = selected ? resolveDesignFlow(config, selected) : null;
-  const snapshot = resolved ? resolved.snapshot : fallbackSnapshot;
+  const snapshot = resolved ? resolved.snapshot
+    : (fallbackSnapshot ? trustedDesignSnapshot(fallbackSnapshot, '継承する設計フロー') : null);
   // Do not pass Renderer-authored definition/plan/design state through to the
   // preparation domain. A snapshot here was made from a file read in main.
   delete input.designFlow;
@@ -215,7 +240,7 @@ function prepareDesignInput(config, raw, fallbackSnapshot = null) {
 
 function attachDesignSnapshot(item, snapshot) {
   if (!item || !snapshot || item.route !== 'agent-design') return item;
-  return { ...item, design: { ...(item.design || {}), flow: snapshot } };
+  return { ...item, design: { ...(item.design || {}), flow: trustedDesignSnapshot(snapshot) } };
 }
 
 function registerIpc(ctx) {
@@ -413,10 +438,12 @@ function registerIpc(ctx) {
   handle('adhocFlow:snapshotSelection', ({ selection, cwd, purpose } = {}) => {
     const cfg = loadConfig();
     const selected = selection && typeof selection === 'object' ? selection : { type: 'auto' };
-    if (selected.type === 'custom' && purpose === 'design') {
+    if (purpose === 'design') {
       const resolved = resolveDesignFlow(cfg, {
         ...selected,
-        repository: selected.repository || cwd || '',
+        // user/builtin の cwd は参照解決に不要。repository scope のときだけ
+        // cwd を共有リポジトリ参照として補う。
+        repository: selected.repository || (selected.scope === 'repository' ? cwd : ''),
       });
       return {
         flow: resolved.snapshot,
@@ -426,7 +453,7 @@ function registerIpc(ctx) {
     // 実装フローの既存契約は維持するが、custom の definition/plan は一切渡さず、
     // id/scope/repository から main 側で読み直した定義だけを snapshot 化する。
     if (selected.type === 'custom' && selected.scope) {
-      const repository = selected.repository || cwd || '';
+      const repository = selected.repository || (selected.scope === 'repository' ? cwd : '');
       const reference = designReferenceFrom({ ...selected, repository });
       const resolvedRepository = reference.scope === 'repository'
         ? adhoc.registeredRepositoryRoot(cfg, reference.repository) : '';
@@ -443,9 +470,9 @@ function registerIpc(ctx) {
       return { flow: adhoc.snapshotSelection(cfg, {
         type: 'custom', id: workflow.id, scope: reference.scope,
         ...(selected.nodeAssignments ? { nodeAssignments: selected.nodeAssignments } : {}),
-      }, { cwd: resolvedRepository }) };
+      }, { cwd: resolvedRepository, purpose: 'implementation' }) };
     }
-    return { flow: adhoc.snapshotSelection(cfg, selected, { cwd }) };
+    return { flow: adhoc.snapshotSelection(cfg, selected, { cwd, purpose }) };
   });
 
   // 設計フロー（同梱 design-interactive / design-auto や任意のフロー）のノードごとの
@@ -458,6 +485,8 @@ function registerIpc(ctx) {
         id: resolved.workflow.id,
         cwd: resolved.reference.repository,
         scope: resolved.reference.scope,
+        workflow: resolved.workflow,
+        purpose: 'design',
       }),
       snapshot: resolved.snapshot,
       selection: resolved.reference,
@@ -487,10 +516,34 @@ function registerIpc(ctx) {
     session: designSession.getSession(loadConfig(), String(id || '')),
   }));
   handle('designSession:start', (payload) => {
-    // resolvedFlowSnapshot は準備経路だけが main process 内で付ける値。Renderer から
-    // 同名の定義を持ち込ませず、通常の開始は参照を startRound 側で再解決する。
+    // Renderer は参照だけを送れる。definition/plan/designFlow はここで捨て、
+    // main が参照を解決して作ったsnapshotだけを startRound へ渡す。
+    const cfg = loadConfig();
     const input = { ...(payload || {}) };
-    delete input.resolvedFlowSnapshot;
+    const existingSession = String(input.id || '').trim();
+    if (!existingSession) {
+      const flowInput = input.selection || input.designFlow || input.flow || input.snapshot || {};
+      const assignments = flowInput && typeof flowInput === 'object'
+        && flowInput.nodeAssignments && typeof flowInput.nodeAssignments === 'object'
+        ? flowInput.nodeAssignments : null;
+      const resolved = resolveDesignFlow(cfg, designSelectionFrom(input, input.mode || 'interactive'));
+      input.selection = {
+        ...resolved.reference,
+        ...(assignments ? { nodeAssignments: assignments } : {}),
+      };
+      input.resolvedFlowSnapshot = resolved.snapshot;
+    } else if (input.selection && typeof input.selection === 'object') {
+      // 継続roundは session に保存済みのsnapshotを使う。Rendererから定義を
+      // 持ち込ませず、roundごとの変更可能項目はnodeAssignmentsだけに絞る。
+      input.selection = input.selection.nodeAssignments && typeof input.selection.nodeAssignments === 'object'
+        ? { nodeAssignments: input.selection.nodeAssignments } : undefined;
+    }
+    delete input.designFlow;
+    delete input.designSelection;
+    delete input.flow;
+    delete input.snapshot;
+    delete input.definition;
+    delete input.plan;
     return { session: designSession.startRound(loadConfig(), input) };
   });
   handle('designSession:delete', ({ id } = {}) => ({
@@ -541,7 +594,8 @@ function registerIpc(ctx) {
     const cfg = loadConfig();
     const item = preparation.getItem(cfg, String(id || ''));
     if (!item) throw new Error('作業準備項目が見つかりません');
-    const storedFlow = preparation.normalizeDesignFlow(item.design && item.design.flow);
+    const storedRawFlow = item.design && item.design.flow;
+    const storedFlow = storedRawFlow ? trustedDesignSnapshot(storedRawFlow) : null;
     const resolved = storedFlow ? null
       : resolveDesignFlow(cfg, designSelectionFrom({}, item.designMode || 'interactive'));
     const flow = storedFlow || resolved.snapshot;

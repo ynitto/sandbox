@@ -696,10 +696,13 @@ function tierCandidateCatalog(config) {
 }
 
 // フロー（設計フロー等）のノードごとの自動割り当てと選択可能な候補。
-function flowAssignmentPreview(config, { id, cwd, scope } = {}) {
-  const workflow = loadWorkflow(config, id, { cwd, scope });
-  if (!workflow) throw new Error(`フローが見つかりません: ${id}`);
-  const clean = normalizeWorkflow(workflow);
+function flowAssignmentPreview(config, { id, cwd, scope, workflow, purpose } = {}) {
+  // 設計 preview は IPC が解決した workflow をそのまま使う。ここで再読込すると、
+  // 解決直後の元ファイル編集・削除で preview だけ別定義になるため、読み取り用の
+  // workflow を渡せるようにする（workflow は Renderer 入力ではなく main 内の値）。
+  const resolved = workflow || loadWorkflow(config, id, { cwd, scope });
+  if (!resolved) throw new Error(`フローが見つかりません: ${id}`);
+  const clean = normalizeWorkflow(resolved, { purpose });
   const strategy = flowStrategy(config);
   const nodes = clean.nodes.map((n) => {
     if (n.kind === 'human') {
@@ -988,11 +991,20 @@ function submit(config, {
     cwd, ...(expectedPurpose ? { purpose: expectedPurpose } : {}),
   });
   const effectivePurpose = snapshot.purpose || expectedPurpose || 'implementation';
+  if (effectivePurpose === 'design' && p) {
+    throw new Error('設計runでは実装用プリセットを使用できません');
+  }
+  if (effectivePurpose === 'design' && coherenceGate) {
+    throw new Error('設計runでは一貫性ゲートを使用できません');
+  }
   const runId = newRunId();
   const busDir = resolveBusDir(config);
   fs.mkdirSync(path.join(busDir, 'inbox'), { recursive: true });
 
-  const workspace = cwd ? gitWorkspace(config, cwd) : null;
+  // cwd は設計フローの参照解決には使えるが、設計runは必ず読み取り専用の
+  // workspace=null 契約で投入する。gitWorkspace を呼ばないこと自体も重要で、
+  // cwd指定だけで af/<run-id> 用のworkspaceを作成しない。
+  const workspace = effectivePurpose === 'design' ? null : (cwd ? gitWorkspace(config, cwd) : null);
   if (coherenceGate && !workspace) {
     throw new Error('一貫性ゲートには Git リポジトリの選択が必要です（差分ゲートは書込先で判定します）');
   }
@@ -1047,8 +1059,20 @@ function resubmit(config, runId) {
   const busDir = resolveBusDir(config);
   const old = readInbox(busDir, runId);
   if (!old) throw new Error(`inbox 記録が見つかりません: ${runId}`);
+  const purpose = normalizeExpectedPurpose(old.purpose || 'implementation') || 'implementation';
+  if (purpose === 'design' && old.pattern) {
+    throw new Error('設計runへ実装用パターンを再投入できません');
+  }
   const next = newRunId();
-  const rec = { ...old, id: next, submitted_at: new Date().toISOString() };
+  const rec = {
+    ...old,
+    id: next,
+    purpose,
+    // 古いinboxにworkspaceが残っていても、再投入で設計runの契約を復元する。
+    workspace: purpose === 'design' ? null : (old.workspace || null),
+    submitted_at: new Date().toISOString(),
+  };
+  if (purpose === 'design') delete rec.verification_plan;
   writeJsonAtomic(path.join(busDir, 'inbox', `${next}.json`), rec);
   // 旧 run の手法スナップショットも新 run へ写す（同条件の再実行）
   let tuningDir = null;
