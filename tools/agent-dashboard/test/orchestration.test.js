@@ -546,6 +546,55 @@ test('エージェント: list は first-wins で同名を陰らせ、契約違�
   }
 });
 
+// ALLOWED_KEYS が schemas/agent-cli.schema.json から取り残されると、json_variant /
+// headless_autonomy / interactive 等を宣言する実在の定義（ollama 系・aider・組み込み4種の
+// 同梱 JSON）が軒並み「未知のフィールド」エラーになり、実行時指定の利用可能集合
+// （adhoc.js の available、errors 付きドロップインを除外）からも締め出される。
+// リポジトリ同梱の agents/*.json 全件を正典として検証を固定する。
+test('エージェント: 同梱の agents/*.json（variant・headless_autonomy 等を含む）は全件 validateSpec を通る', () => {
+  const dir = path.join(__dirname, '..', '..', '..', 'agents');
+  const files = fs.readdirSync(dir).filter((n) => n.endsWith('.json'));
+  assert.ok(files.length > 0, 'agents/ に定義ファイルが無い');
+  for (const file of files) {
+    const spec = JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8'));
+    const errors = agents.validateSpec(spec);
+    assert.deepStrictEqual(errors, [], `${file}: ${errors.join(' / ')}`);
+  }
+});
+
+test('エージェント: validateSpec は variant・headless_autonomy 等の新フィールドを型検証する', () => {
+  const base = { command: ['x'] };
+  assert.deepStrictEqual(agents.validateSpec({ ...base, json_variant: 'x-json' }), []);
+  assert.deepStrictEqual(agents.validateSpec({ ...base, list_variant: 'x-list' }), []);
+  assert.deepStrictEqual(agents.validateSpec({
+    ...base, write_args: ['--a'], readonly_args: ['--ro'], no_session_args: ['--ns'], command_suffix: ['-'],
+  }), []);
+  assert.deepStrictEqual(agents.validateSpec({ ...base, readonly: 'enforced' }), []);
+  assert.ok(agents.validateSpec({ ...base, readonly: 'always' })
+    .some((e) => e.includes('readonly が不正です')));
+  assert.deepStrictEqual(agents.validateSpec({ ...base, headless_autonomy: 'tool-loop' }), []);
+  assert.ok(agents.validateSpec({ ...base, headless_autonomy: 'sometimes' })
+    .some((e) => e.includes('headless_autonomy が不正です')));
+  assert.ok(agents.validateSpec({ ...base, write_args: 'not-an-array' })
+    .some((e) => e.includes('write_args は文字列の配列')));
+  assert.deepStrictEqual(agents.validateSpec({
+    ...base, interactive: { command: ['x', '--tui'], ready_pattern: '>' },
+  }), []);
+  assert.ok(agents.validateSpec({ ...base, interactive: { ready_pattern: '>' } })
+    .some((e) => e.includes('interactive.command')));
+  assert.deepStrictEqual(agents.validateSpec({
+    ...base, session_log: { format: 'jsonl-dir', paths: ['~/.agents/logs/x'] },
+  }), []);
+  assert.ok(agents.validateSpec({ ...base, session_log: { format: 'weird', paths: ['~/x'] } })
+    .some((e) => e.includes('session_log.format が不正です')));
+  assert.ok(agents.validateSpec({ ...base, session_log: { format: 'jsonl-dir' } })
+    .some((e) => e.includes('session_log.paths')));
+  assert.deepStrictEqual(agents.validateSpec({ ...base, spill: { args: ['--trust-tools=fs_read'] } }), []);
+  // 未知のフィールドは引き続き弾く（ALLOWED_KEYS の網を広げすぎていないことの固定）
+  assert.ok(agents.validateSpec({ ...base, totally_unknown_field: 1 })
+    .some((e) => e.includes('未知のフィールド: totally_unknown_field')));
+});
+
 test('エージェント: save は検証を通し組み込み名を拒否、remove は既知ディレクトリだけ', () => {
   const savedEnv = process.env.KIRO_AGENTS_DIR;
   const dir = tmpdir('orch-agents-save-');

@@ -15,13 +15,21 @@ const path = require('path');
 const { agentHomeSubdir } = require('../../../base/main/agent-home');
 
 const BUILTINS = ['kiro', 'claude', 'copilot', 'codex'];
+// schemas/agent-cli.schema.json の properties と 1:1（正典はスキーマ。ここは静的検証の複製）。
 const ALLOWED_KEYS = [
-  'name', 'relative_cost', 'command', 'prompt_via', 'prompt_flag', 'model_flag', 'default_model',
-  'output', 'env', 'timeout', 'empty_output_is_error', 'errors',
+  'name', 'relative_cost', 'command', 'prompt_via', 'prompt_flag', 'file_flag', 'read_flag',
+  'model_flag', 'default_model', 'output', 'env', 'timeout', 'empty_output_is_error',
+  'json_variant', 'list_variant', 'command_suffix', 'skill_command_prefix',
+  'write_args', 'readonly_args', 'readonly', 'headless_autonomy', 'no_session_args', 'spill',
+  'interactive', 'errors', 'session_log',
 ];
 const OUTPUT_ENUM = ['stdout', 'file'];
 const PROMPT_VIA_ENUM = ['stdin', 'argv'];
 const ERROR_CLASS_ENUM = ['quota', 'auth', 'env', 'transient'];
+const READONLY_ENUM = ['enforced', 'best-effort'];
+const HEADLESS_AUTONOMY_ENUM = ['tool-loop', 'single-shot'];
+const SESSION_LOG_FORMAT_ENUM = ['jsonl-dir', 'kiro-sqlite', 'opencode-sqlite'];
+const STRING_ARRAY_FIELDS = ['command_suffix', 'write_args', 'readonly_args', 'no_session_args'];
 
 function expandHome(p) {
   if (!p) return p;
@@ -103,6 +111,42 @@ function validateSpec(spec) {
     }
   }
   if (spec.env !== undefined && !isPlainObject(spec.env)) errors.push('env はオブジェクトで指定してください');
+  if (spec.readonly !== undefined && !READONLY_ENUM.includes(spec.readonly)) {
+    errors.push(`readonly が不正です: ${spec.readonly}（enforced / best-effort）`);
+  }
+  if (spec.headless_autonomy !== undefined && !HEADLESS_AUTONOMY_ENUM.includes(spec.headless_autonomy)) {
+    errors.push(`headless_autonomy が不正です: ${spec.headless_autonomy}（tool-loop / single-shot）`);
+  }
+  for (const field of STRING_ARRAY_FIELDS) {
+    const value = spec[field];
+    if (value !== undefined && (!Array.isArray(value) || !value.every((v) => typeof v === 'string'))) {
+      errors.push(`${field} は文字列の配列で指定してください`);
+    }
+  }
+  if (spec.interactive !== undefined) {
+    if (!isPlainObject(spec.interactive)) {
+      errors.push('interactive はオブジェクトで指定してください');
+    } else if (!Array.isArray(spec.interactive.command) || spec.interactive.command.length < 1
+        || !spec.interactive.command.every((c) => typeof c === 'string')) {
+      errors.push('interactive.command は 1 要素以上の文字列配列（実行 argv）が必要です');
+    }
+  }
+  if (spec.spill !== undefined && !isPlainObject(spec.spill)) {
+    errors.push('spill はオブジェクトで指定してください');
+  }
+  if (spec.session_log !== undefined) {
+    if (!isPlainObject(spec.session_log)) {
+      errors.push('session_log はオブジェクトで指定してください');
+    } else {
+      if (!SESSION_LOG_FORMAT_ENUM.includes(spec.session_log.format)) {
+        errors.push(`session_log.format が不正です: ${spec.session_log.format}（${SESSION_LOG_FORMAT_ENUM.join(' / ')}）`);
+      }
+      if (!Array.isArray(spec.session_log.paths) || !spec.session_log.paths.length
+          || !spec.session_log.paths.every((p) => typeof p === 'string')) {
+        errors.push('session_log.paths は 1 要素以上の文字列配列が必要です');
+      }
+    }
+  }
   return errors;
 }
 
