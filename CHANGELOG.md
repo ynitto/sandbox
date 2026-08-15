@@ -7,6 +7,35 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-dashboard: カスタム設計フローを実装フローと分離し、作業準備から引き継げるようにした
+
+設計フローを通常の実装フローと同じ保存済み一覧・実行経路で扱うと、設計 run を実装 run と誤認し、
+同梱の設計用フローまで利用者の編集対象に見えていた。設計と実装を同じ仕事の別フェーズとして追えるよう、
+用途・公開範囲・作業準備の契約を揃えた。
+
+- **用途と公開範囲**: フロー定義に `purpose: implementation|design` と
+  `libraryVisibility: library|internal` を持たせる。既存定義は `implementation/library` として互換読込し、
+  `design/internal` の同梱 `design-interactive` / `design-auto` は通常の実装フロー編集ライブラリへ混ぜない
+- **scope 付きカタログと snapshot**: 設計フローは対象 cwd の登録済みリポジトリ共有・ユーザー共通・同梱を
+  `scope: repository|user|builtin` 付きで列挙し、選択キーを `id + scope + repository` に固定する。選択時に
+  正規化定義、出所、digest を snapshot へ固定するため、後から元定義を編集しても準備中の仕事や handoff は変わらない
+- **読み取り専用の設計 run**: 設計 run は実装 run と別 ID の短命 run、workspace なし、human / split なし、
+  `af/` ブランチなしとする。ノードへファイル変更・commit・push 禁止を付け、agent-flow 本体の run / plan /
+  workspace 契約は変更しない
+- **成果 Markdown**: 実装へ渡す `設計結果.md` は `## 目的`、`## 変更対象`、`## 受入基準`、
+  `## 検証方法` の必須4節を持つ。未決事項は `## 質問` と推奨回答・理由へ残し、検証コマンドは実装 run の
+  verify 契約で実行する。未完成成果は実装準備完了にせず、直前の回答・材料を保持して再試行する
+- **作業準備と遅延補完**: `agent-design` / `external-design` / `direct` の3経路を作業準備項目へ合流させ、
+  設計結果を `design-result` 材料として実装へ渡す。旧 `designMode: auto` 項目は一括移行せず、設計開始時に
+  `design-auto` の builtin snapshot を遅延補完する
+- **保存・削除と Git**: Dashboard が保存・編集・削除できるのは `~/.agents/workflows/` の自分用だけ。共有版・
+  同梱版は読み取り専用で、自分用の削除は `.trash/` へ移動する。成果物 repository の git 書き込み・同期は
+  通常の Git 運用、PR/MR、clone 更新または CI に任せる
+
+契約検証: `cd tools/agent-dashboard && node --test test/adhoc-flow.test.js test/preparation.test.js`
+
+設計: `docs/plans/2026-08-15-agent-dashboard-design-implementation-lifecycle-design.md`
+
 ### agent-dashboard: 相談を 4 領域それぞれの対象フォルダへ結び直した
 
 「この作業を相談」は全領域共通のヘッダーに 1 組だけあり、対象はプロジェクト選択に固定されていた。

@@ -1,6 +1,6 @@
 # agent-dashboard — 複数エージェントを束ねる操作面 設計書
 
-> 作成 2026-07-14 ／ 最終更新 2026-08-11（ポータル化、検証の決着、定常業務の
+> 作成 2026-07-14 ／ 最終更新 2026-08-16（ポータル化、検証の決着、定常業務の
 > 実行パラメータ、ヘッドレス資源制御、定型業務の headless CLI 実行を反映）
 > 実装: `tools/agent-dashboard/`（Electron。本番依存は `diff2html` / `yaml` の 2 つだけ。テスト 84 ファイル・`npm test`）
 > 読む契約: [`schemas/node-budget.schema.json`](../../schemas/node-budget.schema.json) /
@@ -24,6 +24,7 @@
 1. dashboard は状態の**書き手にならない**。読むのはファイル、書くのは公式契約（`commands/` 等）の投函だけ。
 2. 制御面はソースツリーで分け、`features/index.js` の配列 1 本で合成する。動的プラグインにはしない。
 3. agent-project プロジェクトの発見は実行側が書く状況ファイル 1 枚（`engine/status.json`）が唯一の根拠（定常業務専用フォルダだけは dashboard 自身が実行側なので `cowork.roots` に持つ・§3.3）。
+4. 設計フローと実装フローは `purpose` と `libraryVisibility` で分離し、設計 run は読み取り専用、成果は作業準備項目を介して実装 run へ渡す。
 
 **却下した主要案**: dashboard 自身が状態共有リポジトリを pull / push する案。一度実装したが、
 viewer の push が本体の状態ファイルへコンフリクトマーカーを書き込んで状態を失わせたので撤去した（§3.1）。
@@ -124,6 +125,70 @@ GUI はその規律の外側から、人の気まぐれなタイミングで書�
 通常の作業 branch で `.agents/workflows/<id>.json` を編集して PR/MR に載せ、各 clone は既存の
 更新手順で取得する。将来 GUI から公開する場合も、dashboard に git 資格情報を持たせず、成果物
 変更を扱う既存の作業エンジンへ「変更要求」を投函する方式を先に設計する。
+
+#### 設計フローと実装フローの用途・公開範囲・snapshot
+
+設計を必要とする仕事と、設計済み・設計不要の仕事を同じ実装 run に押し込めない。フロー定義には次の
+ドメイン属性を持たせ、保存場所だけで用途を推測しない。
+
+```json
+{
+  "purpose": "design",
+  "libraryVisibility": "internal"
+}
+```
+
+| 属性 | 許される値 | 意味 |
+|---|---|---|
+| `purpose` | `implementation` / `design` | 実装 run 用か、設計書を返す設計 run 用か。旧定義の既定は `implementation` |
+| `libraryVisibility` | `library` / `internal` | 通常の保存済みライブラリへ表示するか。旧定義の既定は `library` |
+| `scope`（参照時） | `repository` / `user` / `builtin` | その定義の出所。`repository` は登録済み cwd にだけ許可 |
+
+同梱の `design-interactive` / `design-auto` は `design/internal` とする。通常の実装フロー一覧は
+`library` のみを表示し、設計フローのカタログは別に `purpose: design` を列挙する。設計カタログの候補は
+対象 cwd の登録済みリポジトリ共有 → ユーザー共通 → 同梱の順で読み、同じ id の別 scope を省略しない。
+参照キーは `id + scope + repository` とし、id だけで別の定義を選ばない。
+
+選択時に main が scope 付き参照を再解決し、正規化した定義（entry / exit / nodes を含む）、
+`origin.scope` / `origin.repository`、`digest` を snapshot 化する。renderer が送る定義本文や plan は信頼せず、
+登録済み repository と `purpose` の一致を検証する。保存済みの作業準備項目・設計 run・実装 handoff はこの
+snapshot を使い、元定義やカタログの後変更で暗黙に変わらない。
+
+設計 run は既存の `adhoc.submit` を使うが、実装 run と別の短命 run である。`workspace` は持たず、cwd を
+カタログや材料の参照に使っても、対象リポジトリのファイル変更、commit、push、ブランチ作成をしない。
+設計フローは human / split を使わず、終了ノードを1つの `work` または `synthesize` に限定する。
+したがって設計 run は `af/<run-id>` branch を作らず、agent-flow の run / plan / workspace 契約も変更しない。
+
+各設計ノードへ読み取り専用・ファイル変更・commit・push 禁止の契約を付け、終端へ設計書 Markdown 全文を要求する。
+実装へ handoff できる成果は次の必須4節を持つ。
+
+```markdown
+## 目的
+## 変更対象
+## 受入基準
+## 検証方法
+```
+
+未決事項は任意の `## 質問` 節に番号付きで残し、推奨する回答と理由を添える。設計書は `final.summary` ではなく
+sink ノードの出力から取得する。`## 検証方法` に書いたコマンドは実装後に既存の verify 契約で実行し、設計 run
+自体はコマンドを実行しない。不足した成果は実装準備完了にせず、直前の成果・回答・材料を保持して再試行する。
+
+設計と実装の間には dashboard ローカルの作業準備項目を置く。経路は `agent-design` / `external-design` /
+`direct` の3つで、設計結果は `kind: design-result` の `設計結果.md` として材料へ追加する。必須4節を満たした
+`implementation-ready` 項目だけが既存の `adhoc.submit` または project の `inbox/` へ handoff される。
+材料は読み込み時点の本文・source hash として保存し、実装へ既定で引き継ぐ。親の準備パッケージから子へは、
+`agent-design` 子だけが設計フロー snapshot を継承し、external/direct 子へ設計 run を持ち込まない。
+
+旧形式で `designMode: auto` だけを持つ作業準備項目は一括移行しない。設計開始時に `design-auto` の
+`scope: builtin` snapshot を遅延補完し、以後の再試行と handoff で同じ定義を使う。
+
+保存・削除の境界も用途と出所で固定する。画面から新規作成・編集・削除できるのはユーザー共通の
+`~/.agents/workflows/*.json` だけで、リポジトリ共有版と同梱版は読み取り専用とする。変更したいときは別 id で
+自分用へコピーし、ユーザー共通の削除は `.trash/` へ移動して復元可能にする。共有フローの作成・配布は通常の
+Git、PR/MR、clone 更新または CI の責務であり、dashboard と設計 run は成果物 repository へ git 書き込みをしない。
+
+契約の回帰確認は `cd tools/agent-dashboard && node --test test/adhoc-flow.test.js test/preparation.test.js`、
+全体確認は `cd tools/agent-dashboard && npm test` とする。
 
 ### 3.2 制御面はソースツリー分離と列挙合成（フルプラグインを却下）
 
@@ -351,6 +416,7 @@ amigos / delegation / orchestration は 15 秒）。純プル型なので、気�
 | feature | 見せるもの | 書くもの |
 |---|---|---|
 | `agent-project` | charter / 達成状況 / バックログ / 要対応 / 実行グラフ / レビュー待ち / 履歴 | `needs/` 記入・`inbox/` 投入・`commands/` ドロップ・上位入力ファイル（charter / policy / repos）の編集 |
+| `adhoc-flow` / preparation | 実装フロー・設計フローの scope 付きカタログ、作業準備項目、設計セッション、run の履歴 | ユーザー共通フロー、dashboard ローカルの準備・セッション、公式 `inbox/` 投函。リポジトリ共有版・同梱版と成果物 repository は書き換えない |
 | `cowork` | 定期実行ジョブと定型業務の一覧・設定同期・実行 | 人の成果物リポジトリ（プロジェクト状態には触れない）＋ 自分の設定（`cowork.items` / `cowork.roots`） |
 | `routines` | 稼働中ループの構造化状態・会話画面・復旧送信 | 何も書かない（`agent-loop send` への依頼だけ） |
 | `amigos` | ミッションの進行・担当・やりとり・納品棚 | ホームの `commands/` ドロップのみ（バスへは書かない） |
@@ -714,7 +780,8 @@ CLI の定型業務実行（agent-loop のステートマシンハーネス経�
 `test/cowork.test.js`・`test/routine-area-ui.test.js`（定常業務の実行パラメータと段の選択）／
 `test/state-machine-window.test.js`（定型業務の Windows → WSL 起動と tmux の扱い）／
 `test/settlement-ui.test.js`（検証の決着）／ `test/resource-control.test.js`（ヘッドレス資源制御）／
-`test/packaging-assets.test.js`（配布物の取りこぼし、§8）。
+`test/adhoc-flow.test.js`・`test/preparation.test.js`（設計/実装フローの用途分類、snapshot、
+作業準備 handoff、設計 run の読み取り専用契約）／ `test/packaging-assets.test.js`（配布物の取りこぼし、§8）。
 
 本書は 2026-07-26 に、次の 3 本を統合して作った。旧ファイルは削除済み。
 
