@@ -151,7 +151,7 @@ test('設計purposeの追加が実装フロー・標準パターン・共有フ�
     const designRecord = JSON.parse(fs.readFileSync(
       path.join(busDir, 'inbox', `${designRun.runId}.json`), 'utf8'));
     assert.strictEqual(designRecord.purpose, 'design');
-    assert.strictEqual(designRecord.workspace.local, repo);
+    assert.strictEqual(designRecord.workspace, null);
     assert.match(designRecord.plan.nodes[0].goal, /リポジトリは読み取り専用です/);
     assert.ok(launchLines.every((line) => !/\b(?:commit|push|branch|checkout)\b/.test(line)),
       'dashboardの設計run起動行へGit書込み操作を混ぜない');
