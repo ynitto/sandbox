@@ -185,6 +185,7 @@ tier（実行段）は `control.workloads.flow.tier` を読みます。`basic` �
 | `submitter` | str | 投入者名義 |
 | `workspace` | dict \| null | 唯一の書込先リポジトリ spec（`{url, path, base, target, desc}`）。null なら読み取り専用 run |
 | `references` | list[dict] | 参照リポジトリ（読むだけ） |
+| `readonly` | bool | true なら動的追加ノードを含む run 全体で executor の書き込み権限を禁止 |
 | `submitted_at` | str (ISO) | 投入時刻。孤児 inbox の gc 年齢判定に使う |
 | `inherit_from` | str | リトライ時の先行 run-id。done の成果を引き継ぐ（世代交代の判断は[設計書](../designs/agent-flow-design.md)） |
 | `delegation` | dict | 委譲公示板由来の来歴 `{id, board}` |
@@ -211,6 +212,7 @@ tier（実行段）は `control.workloads.flow.tier` を読みます。`basic` �
     {"id": "a", "goal": "{{request}} を調査", "deps": [], "kind": "work",
      "agent": {"agent_cli": "claude", "model": "..."},   // この経路でだけ受理
      "tier": "small",                   // pinned-tier として記録。手法判定の when.tiers にも効く
+     "readonly": true,                   // executor まで伝播。書き込み権限を付与しない
      "read_allocation": {...}, "dependency_input": "full", "retries": 2},
     {"id": "ok?", "kind": "human", "deps": ["a"],
      "interaction": {"mode": "approval", "prompt": "...", "timeout_seconds": 604800}}
@@ -220,7 +222,9 @@ tier（実行段）は `control.workloads.flow.tier` を読みます。`basic` �
 
 `goal` の `{{request}}` は要求テキストへ置換されます。置換はエンジン側のこの 1 か所だけで、投入側は複製実装しません。
 
-検証は厳格で、次のいずれかに当たると planner へフォールバックせず `[user-plan]` タグ付きで failed 終端します: `nodes` が空か list でない、ノード数が 64 を超える、`id` の欠落・重複、`goal` が置換後に空、`kind` が 13 種の外、`human` への `agent` / `tier` 指定、`interaction` の不正、未知依存・自己依存・循環、`split` ノードへの静的依存（後段は実行時に自動生成される契約のため）、`review` が三値の外、`--pattern` との同時指定。
+検証は厳格で、次のいずれかに当たると planner へフォールバックせず `[user-plan]` タグ付きで failed 終端します: `nodes` が空か list でない、ノード数が 64 を超える、`id` の欠落・重複、`goal` が置換後に空、`kind` が 13 種の外、`readonly` が bool でない、`human` への `agent` / `tier` / `readonly` 指定、`interaction` の不正、未知依存・自己依存・循環、`split` ノードへの静的依存（後段は実行時に自動生成される契約のため）、`review` が三値の外、`--pattern` との同時指定。
+
+`readonly: true` は graph と task に保存され、worker から executor まで伝播します。組み込み `agent` executor は書き込み権限を付与せず、workspace が無い run では最初の既存ローカル参照を作業ディレクトリとして読み取ります。readonly 引数を受け取れないカスタム executor は契約を保証できないため fail-close します。
 
 `evaluate` が無効でも、データ駆動 fan-out（`split` の機械展開）だけは通ります。評価役を使わない契約は LLM 判断の話で、LLM を通らない展開は対象外だからです。`human` ノードの決着は park と `interactions/` の append-only response で行います。
 
@@ -287,10 +291,10 @@ def execute(kind, goal, dep_results, model, art_dir, dep_arts) -> (text, data)
   inbox/claims/<run-id>/<who>.json  受理の claim
   inbox/cancels/<run-id>.json       キャンセルマーカー
   runs/<run-id>/
-    meta.json          request・status・phase・workspace・references・instructions・
+    meta.json          request・status・phase・workspace・references・readonly・instructions・
                        リース簿記（orch_lease_until / heartbeat_at）・resume_*・heal_*・
                        superseded・failure_reason・base_rev
-    graph.json         strategy + nodes{id: {goal, deps, kind, retries?, agent?, tier?,
+    graph.json         strategy + nodes{id: {goal, deps, kind, retries?, agent?, tier?, readonly?,
                        read_allocation?, dependency_input?, interaction?}} + iteration
     tasks/<id>.json    ノード仕様
     claims/<id>/<who>.json

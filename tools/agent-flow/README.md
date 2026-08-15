@@ -398,7 +398,7 @@ agent-dashboard のクイック実行（フロービルダー）が主な投入�
   "name": "二段検証つき調査",     // 任意（strategy.plan_name に記録）
   "evaluate": false,              // true で評価役の継続判断（再計画）を有効化。既定は無効
   "nodes": [
-    {"id": "a", "goal": "調査: {{request}}", "kind": "work"},
+    {"id": "a", "goal": "調査: {{request}}", "kind": "work", "readonly": true},
     {"id": "v", "goal": "検証", "deps": ["a"], "kind": "verify",
      "agent": {"agent_cli": "ollama", "model": "qwen3.5:9b"}}   // per-node の明示指定（人だけが書ける）
   ]
@@ -411,6 +411,9 @@ agent-dashboard のクイック実行（フロービルダー）が主な投入�
 - `goal` 中の `{{request}}` は要求テキストへ置換される（プリセット使い回しの口。置換はこの 1 か所）。
 - per-node `agent` はこの経路でだけ受ける。LLM planner の出力からは従来どおり剥がす
   （モデル選定はルーティング・実測格付けの仕事）。
+- per-node `readonly: true` は graph と worker を通って executor まで保存される。組み込み
+  `agent` は書き込み権限を外し、workspace が無ければ最初のローカル参照を作業ディレクトリとして
+  読む。readonly 契約を受け取れないカスタム executor は、安全側で実行を拒否する。
 - `split` ノードへの静的依存は投入時に弾く（map/reduce は実行時に動的生成されるため）。
 - ユーザー定義フローでは `human`（承認・選択・入力）、`extract`（根拠付き項目抽出）、
   `retrieve`（読み取り可能な道具による根拠取得）も使える。`human` はエージェントを呼ばず

@@ -54,7 +54,8 @@ class Bus:
 
     def ensure_run(self, request: str, workspace: "dict | None" = None,
                    references: "list[dict] | None" = None,
-                   verification_plan: "dict | None" = None) -> None:
+                   verification_plan: "dict | None" = None,
+                   readonly: bool = False) -> None:
         self.ensure_dirs()
         meta = read_json(self.meta_path)
         if meta is None:
@@ -65,6 +66,9 @@ class Bus:
                 "workspace": workspace or None,
                 # 参照リポジトリ（読むだけ・書き込まない）。executor がイシュー/プロンプトに描画する。
                 "references": list(references or []),
+                # run 全体の実行権限。動的 fan-out / replan で後から追加されたノードも
+                # worker が読み取り専用として強制する（ノード宣言だけに依存しない）。
+                "readonly": readonly is True,
                 "status": "planning",
                 "created_at": now_iso(),
             }
@@ -87,6 +91,9 @@ class Bus:
         # workspace は「無い → 有る」の補充だけ行い、既存 spec の差し替えはしない
         # （inherit が done の commit を保つため base を旧ブランチへ差した spec を壊さない）。
         changed = False
+        if readonly is True and meta.get("readonly") is not True:
+            meta["readonly"] = True
+            changed = True
         cur_ws = meta.get("workspace")
         if isinstance(workspace, dict) and workspace.get("url") \
                 and not (isinstance(cur_ws, dict) and cur_ws.get("url")):
@@ -174,6 +181,11 @@ class Bus:
         meta = read_json(self.meta_path) or {}
         r = meta.get("references")
         return [s for s in r if isinstance(s, dict) and s.get("url")] if isinstance(r, list) else []
+
+    def run_readonly(self) -> bool:
+        """動的追加ノードも含む、この run 全体の読み取り専用契約。"""
+        meta = read_json(self.meta_path) or {}
+        return meta.get("readonly") is True
 
     # --- メタ / グラフ ---
     def set_status(self, status: str) -> None:
@@ -790,6 +802,7 @@ class Bus:
             "request": (request or "").strip() or old_meta.get("request", ""),
             "workspace": ws or None,
             "references": list(old_meta.get("references") or []),
+            "readonly": old_meta.get("readonly") is True,
             "status": "planning",
             "created_at": now_iso(),
             "inherited_from": old_id,                  # 由来（可視化・監査用）
@@ -982,6 +995,7 @@ class Bus:
             "request": req.get("request", ""),
             "workspace": req.get("workspace"),
             "references": list(req.get("references") or []),
+            "readonly": req.get("readonly") is True,
             "status": "failed",
             "created_at": now_iso(),
             "updated_at": now_iso(),
@@ -1003,6 +1017,7 @@ class Bus:
             "request": req.get("request", ""),
             "workspace": req.get("workspace"),
             "references": list(req.get("references") or []),
+            "readonly": req.get("readonly") is True,
             "status": "cancelled",
             "created_at": now_iso(),
             "updated_at": now_iso(),
@@ -1076,7 +1091,8 @@ class Bus:
                        delegation: "dict | None" = None,
                        verification_plan: "dict | None" = None,
                        plan: "dict | None" = None,
-                       pattern: "str | None" = None) -> None:
+                       pattern: "str | None" = None,
+                       readonly: bool = False) -> None:
         rec = {
             "id": req_id,
             "request": request,
@@ -1085,6 +1101,8 @@ class Bus:
             "references": list(references or []),  # 参照リポジトリも daemon の orchestrate へ伝搬する
             "submitted_at": now_iso(),
         }
+        if readonly is True:
+            rec["readonly"] = True
         if inherit_from:                      # リトライ: 先行 run の引き継ぎ元を orchestrate へ伝搬
             rec["inherit_from"] = inherit_from
         if isinstance(delegation, dict) and delegation.get("id"):

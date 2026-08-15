@@ -1000,6 +1000,29 @@ class ArtifactProtocolTests(unittest.TestCase):
         self.assertEqual(claimed[0]["agent_cli"], "claude")
         self.assertEqual(claimed[0]["model"], "opus")
 
+    def test_run_readonly_applies_to_nodes_without_node_flag(self):
+        bus = kf.Bus(self.tmp, "run-readonly")
+        bus.ensure_run("req", readonly=True)
+        # split / evaluator が動的追加したノードを模し、node 自体には readonly を書かない。
+        bus.write_graph({"nodes": {"dynamic": {
+            "goal": "設計を続ける", "deps": [], "kind": "work",
+        }}, "iteration": 1})
+        bus.write_task({"id": "dynamic", "goal": "設計を続ける", "deps": [], "kind": "work"})
+        bus.set_status("running")
+        captured = {}
+
+        def fake_exec(kind, goal, dep_results, model, art_dir=None, dep_arts=None, **kwargs):
+            captured.update(kwargs)
+            return "ok", None
+
+        args = mock.Mock(bus=self.tmp, run_id="run-readonly", git=None, node_id="w1",
+                         executor="stub", model=None, lease=60, poll=0,
+                         keep_alive=False, idle_exit=True)
+        with mock.patch.object(kf, "execute_stub", side_effect=fake_exec), \
+             mock.patch.object(kf, "make_bus", return_value=bus):
+            kf.cmd_work(args)
+        self.assertIs(captured.get("readonly"), True)
+
     def test_worker_stub_result_has_no_agent_fields(self):
         # stub executor は LLM を呼ばない＝エージェント記録を書かない（従来形のまま）
         bus = self.bus

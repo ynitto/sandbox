@@ -151,10 +151,10 @@ assert.ok(workflowTaskDialogSource.includes('id="wf-task-materials"')
   && workflowTaskDialogSource.includes('multiple')
   && workflowTaskDialogSource.includes("wizard.route === 'external-design'"),
   '選択した経路に応じて複数のファイルとデータを材料にできます');
-assert.ok(workflowTaskDialogSource.includes('data-wf-design-mode="interactive"')
-  && workflowTaskDialogSource.includes('data-wf-design-mode="auto"')
+assert.ok(workflowTaskDialogSource.includes('workflowDesignFlowChoicesHtml(wizard)')
+  && workflowFeature.includes('designFlow: workflowDesignFlowReference(wizard.designFlow)')
   && workflowFeature.includes('designMode: wizard.designMode'),
-  'ワークフローのエージェント設計は対話・全自動を選び、準備項目へ保持します');
+  'ワークフローのエージェント設計はscope付きカタログから選び、準備項目へ保持します');
 assert.ok(projectTaskWizardSource.includes('data-project-design-mode="interactive"')
   && projectTaskWizardSource.includes('data-project-design-mode="auto"')
   && renderer.includes('designMode: wizard.designMode'),
@@ -924,6 +924,13 @@ try {
     step: 3, title: '', goal: 'CSV対応を改善する', route: 'direct', recommendation: null,
     materials: [], cwd: '', error: '', busy: '', designMode: 'interactive',
     designPreview: null, designAssignments: null,
+    designFlowCatalogKey: '/project-a', designFlowCatalog: [{
+      id: 'shared-design', name: '登録フォルダの設計', purpose: 'design',
+      scope: 'repository', cwd: '/project-a', nodes: [{ id: 'draft', label: '要件整理' }],
+    }],
+    designFlowKey: 'repository:/project-a:shared-design',
+    designFlow: { id: 'shared-design', name: '登録フォルダの設計', scope: 'repository', cwd: '/project-a' },
+    designFlowCatalogError: '', designFlowError: '',
   };
   workflowUi._state.taskWizard = { ...wizardBase, route: 'direct' };
   const directTaskHtml = withEsc(() => workflowUi.workflowTaskDialogHtml({ cwdHistory: [] }));
@@ -936,9 +943,9 @@ try {
   assert.ok(!externalDesignTaskHtml.includes('設計フローを選択') && !externalDesignTaskHtml.includes('data-wf-design-mode'),
     '外部設計の利用では設計フロー欄を表示しません');
   assert.ok(agentDesignTaskHtml.includes('設計フローを選択')
-    && agentDesignTaskHtml.includes('data-wf-design-mode="interactive"')
-    && agentDesignTaskHtml.includes('data-wf-design-mode="auto"'),
-  'エージェント設計を選んだ時だけ設計フロー欄と進め方を表示します');
+    && agentDesignTaskHtml.includes('data-wf-design-flow="repository:/project-a:shared-design"')
+    && agentDesignTaskHtml.includes('登録フォルダの設計'),
+  'エージェント設計を選んだ時だけscope付き設計フロー候補を表示します');
 } finally {
   workflowUi._state.taskWizard = previousTaskWizard;
 }
@@ -977,6 +984,10 @@ assert.ok(backlogFeature.includes('wizard.designFlowCatalogKey === catalogKey')
   && backlogFeature.includes('api.adhocFlowDesignCatalog({ cwd: catalogKey })')
   && backlogFeature.includes('api.adhocFlowOverview({ cwd: catalogKey })'),
   '対象 cwd が変わった時だけ、その cwd を指定して設計フローカタログを再取得します');
+assert.ok(workflowFeature.includes('api().adhocFlowDesignCatalog({ cwd: catalogKey })')
+  && workflowFeature.includes('data-wf-design-flow')
+  && workflowFeature.includes('designFlow: workflowDesignFlowReference(wizard.designFlow)'),
+  'workflow側もcwd別カタログからscope付き参照を選択し、作業準備へ渡します');
 
 async function verifyDesignFlowCatalogBehavior() {
   const calls = [];

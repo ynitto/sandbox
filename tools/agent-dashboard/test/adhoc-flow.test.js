@@ -437,6 +437,9 @@ test('設計カタログはpurpose別に全scopeを列挙し、同名IDをscope�
   const repoWorkflowDir = path.join(repo, '.agents', 'workflows');
   writeDefinition(repoWorkflowDir, definition('登録フォルダ版', 'design'));
   writeDefinition(builtinWorkflowDir, definition('同梱版', 'design', 'internal'));
+  writeDefinition(builtinWorkflowDir, {
+    ...definition('同梱設定雛形', 'design', 'internal'), id: 'builtin-internal',
+  });
   adhoc.saveWorkflow(cfg, definition('自分用版', 'design'));
   writeDefinition(workflowDir, { ...definition('実装フロー', 'implementation'), id: 'implementation-only' });
 
@@ -450,10 +453,15 @@ test('設計カタログはpurpose別に全scopeを列挙し、同名IDをscope�
     });
     const catalog = handlers['adhocFlow:designCatalog']({ cwd: repo });
     assert.ok(catalog, '設計カタログIPCを公開する');
-    assert.deepStrictEqual(catalog.items.map((item) => item.scope).sort(), ['builtin', 'repository', 'user']);
+    assert.deepStrictEqual(catalog.items.filter((item) => item.id === 'same-design-id')
+      .map((item) => item.scope).sort(), ['builtin', 'repository', 'user']);
     assert.ok(catalog.items.every((item) => item.purpose === 'design'));
     assert.ok(!catalog.items.some((item) => item.id === 'implementation-only'));
     assert.ok(catalog.items.every((item) => item.nodeCount === 2 && /^sha256:/.test(item.digest)));
+    const overview = handlers['adhocFlow:overview']({ cwd: repo });
+    assert.ok(overview.workflows.some((item) => item.id === 'builtin-internal'
+      && item._scope === 'builtin' && item.libraryVisibility === 'internal'),
+    'overview は設定画面がコピーに使う同梱の内部設計フローも返す');
 
     assert.strictEqual(
       adhoc.loadWorkflow(cfg, 'same-design-id', { scope: 'user' }).name, '自分用版'
@@ -1427,6 +1435,8 @@ test('設計runのplanはreadonly指示と終端の設計書成果契約を全go
     const plan = adhoc.planFromWorkflow({}, workflow, { purpose: 'design' });
     assert.ok(plan.nodes.every((node) => /読み取り専用/.test(node.goal)
       && /変更.*commit.*push/.test(node.goal)), '全ノードに変更不能な指示を付ける');
+    assert.ok(plan.nodes.every((node) => node.readonly === true),
+      '設計ノードの読み取り専用契約を agent-flow の実行境界へ構造化して渡す');
     const terminal = plan.nodes.find((node) => node.id === 'finish');
     assert.match(terminal.goal, /設計書.*全文/);
     for (const section of ['## 目的', '## 変更対象', '## 受入基準', '## 検証方法']) {
@@ -1436,6 +1446,40 @@ test('設計runのplanはreadonly指示と終端の設計書成果契約を全go
     assert.match(terminal.goal, /推奨.*理由/);
   } finally {
     profiles.resolveTier = originalTier;
+  }
+});
+
+test('設計runは選択したGit cwdを読み取り専用referenceとして投入する', () => {
+  const busDir = tmpdir('design-reference-bus-');
+  const workflowDir = tmpdir('design-reference-workflow-');
+  const cfg = { adhocFlow: { busDir, workflowDir } };
+  const originalExec = exec.shInWsl;
+  const originalTier = profiles.resolveTier;
+  exec.shInWsl = (line) => String(line).includes('rev-parse --show-toplevel')
+    ? { status: 0, stdout: '/work/repo\nmain\ngit@example.invalid:team/repo.git\n', stderr: '' }
+    : { status: 0, stdout: 'launched:1', stderr: '' };
+  profiles.resolveTier = () => ({ agent_cli: 'codex', model: 'gpt-5' });
+  try {
+    const flow = adhoc.saveWorkflow(cfg, {
+      id: 'design-reference', name: '参照して設計', purpose: 'design',
+      nodes: [{ id: 'finish', goal: '既存コードを調べて設計する', tier: 'large' }],
+    });
+    const result = adhoc.submit(cfg, {
+      request: '既存コードに合わせて設計する', purpose: 'design', cwd: '/work/repo',
+      selection: { type: 'custom', id: flow.id, scope: 'user' },
+    });
+    const inbox = adhoc.readInbox(busDir, result.runId);
+    assert.strictEqual(inbox.readonly, true, '動的追加ノードを含む設計run全体を読み取り専用にする');
+    assert.strictEqual(inbox.workspace, null, '設計runは書込workspaceを持たない');
+    assert.deepStrictEqual(inbox.references, [{
+      url: 'git@example.invalid:team/repo.git', local: '/work/repo', base: 'main',
+      path: '', desc: 'workflow',
+    }]);
+  } finally {
+    exec.shInWsl = originalExec;
+    profiles.resolveTier = originalTier;
+    fs.rmSync(busDir, { recursive: true, force: true });
+    fs.rmSync(workflowDir, { recursive: true, force: true });
   }
 });
 

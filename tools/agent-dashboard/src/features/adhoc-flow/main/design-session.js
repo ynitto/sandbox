@@ -443,7 +443,8 @@ function startRound(config, {
     || resolveFlowSnapshot(config, { selection, designFlow, mode: selectedMode, cwd: folder });
   const materialized = materializeSnapshot(config, base.id, flowSnapshot);
 
-  // cwd は設計フローの参照には使うが、設計 run の workspace には渡さない。
+  // cwd は設計フローの参照解決と読み取り専用 reference に使う。submit 側が
+  // purpose=design を workspace=null に固定するため、書込 workspace にはならない。
   // snapshot workflow はセッション専用ディレクトリから読むため、元定義の更新・削除にも依存しない。
   const result = adhoc.submit(materialized.config, {
     request: buildRoundRequest({
@@ -452,7 +453,7 @@ function startRound(config, {
       answers: paired,
       sources: nextSources,
     }),
-    cwd: '',
+    cwd: folder,
     purpose: 'design',
     selection: {
       type: 'custom',

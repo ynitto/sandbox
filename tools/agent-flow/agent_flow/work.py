@@ -169,6 +169,8 @@ def cmd_work(args) -> int:
         idle_polls = 0
         nid, node = candidate
         kind = node.get("kind", "work")
+        # run-level 契約は、split / evaluator が後から作ったノードにも適用する。
+        node_readonly = bus.run_readonly() or node.get("readonly") is True
         _set_method_context(args.run_id, nid)
         if not bus.try_claim(nid, who, args.lease):
             continue  # 競り負け
@@ -283,7 +285,7 @@ def cmd_work(args) -> int:
                         instructions=run_instructions,
                         prompt_table=bool(getattr(args, "prompt_table", False)),
                         repair=repair, context=run_context, read_allocation=read_allocation,
-                        agent=node_agent)
+                        agent=node_agent, readonly=node_readonly)
                     if isinstance(agent_data, dict):
                         rdata.update(agent_data)
                 else:
@@ -297,7 +299,8 @@ def cmd_work(args) -> int:
                                               instructions=run_instructions,
                                               prompt_table=bool(getattr(args, "prompt_table", False)),
                                               repair=repair, context=run_context,
-                                              read_allocation=read_allocation, agent=node_agent)
+                                              read_allocation=read_allocation, agent=node_agent,
+                                              readonly=node_readonly)
             if kind != "verify" and isinstance(rdata, dict) and rdata.get("ok") is False:
                 if kind == "base-sync":
                     failure_class = _work_failure_class(kind, output, rdata)

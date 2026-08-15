@@ -320,8 +320,8 @@ function registerIpc(ctx) {
       presets: (cfg.adhocFlow && cfg.adhocFlow.presets) || [],
       workflows: (() => {
         const discovered = sourceFolders.length
-          ? sourceFolders.flatMap((folder) => adhoc.listWorkflows(cfg, { cwd: folder }))
-          : adhoc.listWorkflows(cfg);
+          ? sourceFolders.flatMap((folder) => adhoc.listWorkflows(cfg, { cwd: folder, includeInternal: true }))
+          : adhoc.listWorkflows(cfg, { includeInternal: true });
         return [...new Map(discovered.map((workflow) => [
           `${workflow._scope}:${workflow._repository || ''}:${workflow.id}`, workflow,
         ])).values()];

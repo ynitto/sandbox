@@ -77,6 +77,20 @@ class PlanStrategyUserTests(unittest.TestCase):
         self.assertEqual(entry["tier"], "large")
         self.assertNotIn("tier", kf._node_entry(by_id["c"]))
 
+    def test_readonly_kept_on_nodes_and_graph_entries(self):
+        _, tasks = kf.plan_strategy_user(_plan([
+            {"id": "design", "goal": "設計する", "kind": "work", "readonly": True},
+        ]), "r")
+        self.assertIs(tasks[0]["readonly"], True)
+        self.assertIs(kf._node_entry(tasks[0])["readonly"], True)
+
+    def test_human_rejects_readonly_even_when_false(self):
+        with self.assertRaises(kf.UserPlanError):
+            kf.plan_strategy_user(_plan([{
+                "id": "approve", "goal": "承認", "kind": "human", "readonly": False,
+                "interaction": {"mode": "approval", "prompt": "進めますか"},
+            }]), "r")
+
     def test_human_rejects_tier(self):
         with self.assertRaises(kf.UserPlanError):
             kf.plan_strategy_user(_plan([{
@@ -337,16 +351,18 @@ class UserPlanEndToEndTests(unittest.TestCase):
         b = kf.Bus(bus, req_id)
         os.makedirs(b.inbox_dir, exist_ok=True)
         b.submit_request(req_id, "inbox 経由", "tester", plan=_plan(
-            [{"id": "solo", "goal": "単独: {{request}}", "kind": "work"}]))
+            [{"id": "solo", "goal": "単独: {{request}}", "kind": "work"}]),
+            readonly=True)
         p = subprocess.run(
             [sys.executable, str(SCRIPT), "--bus", bus, "--run-id", req_id, "run",
              "--from-inbox", "--workers", "1", "--planner", "stub",
              "--executor", "stub", "--poll", "0.2"],
             capture_output=True, text=True, timeout=90)
         self.assertEqual(p.returncode, 0, p.stderr[-800:])
-        _, graph, final, _meta = self._graph(bus)
+        _, graph, final, meta = self._graph(bus)
         self.assertEqual(set(graph["nodes"]), {"solo"})
         self.assertEqual(graph["nodes"]["solo"]["goal"], "単独: inbox 経由")
+        self.assertIs(meta["readonly"], True)
         self.assertEqual(final["results"]["solo"]["status"], "done")
 
     def test_inbox_pattern_reaches_orchestrator(self):

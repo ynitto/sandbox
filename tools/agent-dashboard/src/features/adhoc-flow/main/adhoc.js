@@ -546,6 +546,7 @@ const DESIGN_OUTPUT_CONTRACT = [
 function planFromWorkflow(config, workflow, options = {}) {
   const clean = normalizeWorkflow(workflow, { purpose: options.purpose });
   const purpose = options.purpose || clean.purpose;
+  const executionContract = purpose === 'design' ? { readonly: true } : {};
   const assignments = normalizeNodeAssignments(config, clean, options.nodeAssignments);
   const candidates = new Map();
   const strategy = flowStrategy(config);
@@ -574,6 +575,7 @@ function planFromWorkflow(config, workflow, options = {}) {
         goal: terminalGoal,
         kind: n.kind,
         deps: n.deps,
+        ...executionContract,
         tier: assigned.tier,
         agent: { agent_cli: assigned.agent_cli, ...(assigned.model ? { model: assigned.model } : {}) },
         selection_reason: 'user-node-assignment',
@@ -591,7 +593,7 @@ function planFromWorkflow(config, workflow, options = {}) {
         policyTiers: strategy.policyTiers, controlTier: strategy.controlTier,
       });
       if (decision.inherit) {
-        return { id: n.id, goal: terminalGoal, kind: n.kind, deps: n.deps };
+        return { id: n.id, goal: terminalGoal, kind: n.kind, deps: n.deps, ...executionContract };
       }
       tier = decision.tier;
       pinReason = decision.reason || '';
@@ -609,6 +611,7 @@ function planFromWorkflow(config, workflow, options = {}) {
       goal: terminalGoal,
       kind: n.kind,
       deps: n.deps,
+      ...executionContract,
       tier,
       agent: { agent_cli: candidate.agent_cli, ...(candidate.model ? { model: candidate.model } : {}) },
       ...(pinReason ? { selection_reason: pinReason } : {}),
@@ -1001,10 +1004,10 @@ function submit(config, {
   const busDir = resolveBusDir(config);
   fs.mkdirSync(path.join(busDir, 'inbox'), { recursive: true });
 
-  // cwd は設計フローの参照解決には使えるが、設計runは必ず読み取り専用の
-  // workspace=null 契約で投入する。gitWorkspace を呼ばないこと自体も重要で、
-  // cwd指定だけで af/<run-id> 用のworkspaceを作成しない。
+  // cwd は設計フローの参照解決と、origin 情報を持つ読み取り専用 reference に使う。
+  // 設計runは workspace=null のままなので、af/<run-id> 用の書込ブランチは作られない。
   const workspace = effectivePurpose === 'design' ? null : (cwd ? gitWorkspace(config, cwd) : null);
+  const references = effectivePurpose === 'design' && cwd ? [gitWorkspace(config, cwd)] : [];
   if (coherenceGate && !workspace) {
     throw new Error('一貫性ゲートには Git リポジトリの選択が必要です（差分ゲートは書込先で判定します）');
   }
@@ -1014,8 +1017,9 @@ function submit(config, {
     request: req,
     submitter: SUBMITTER,
     purpose: effectivePurpose,
+    ...(effectivePurpose === 'design' ? { readonly: true } : {}),
     workspace,
-    references: [],
+    references,
     submitted_at: new Date().toISOString(),
   };
   if (coherenceGate) rec.verification_plan = buildVerificationPlan(config, { runId, workspace });
@@ -1070,6 +1074,7 @@ function resubmit(config, runId) {
     purpose,
     // 古いinboxにworkspaceが残っていても、再投入で設計runの契約を復元する。
     workspace: purpose === 'design' ? null : (old.workspace || null),
+    ...(purpose === 'design' ? { readonly: true } : {}),
     submitted_at: new Date().toISOString(),
   };
   if (purpose === 'design') delete rec.verification_plan;
