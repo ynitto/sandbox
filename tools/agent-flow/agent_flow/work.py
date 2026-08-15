@@ -200,8 +200,20 @@ def cmd_work(args) -> int:
             agent_cli, _model_ov = _effective_agent(kind, getattr(args, "model", None), node_agent)
             agent_model = _model_ov
         selection = _selection_meta(kind, node_agent)
+        # 処理契約（node.operation）は claim / result に事実として残す。局所修正の適格は
+        # 宣言（operation_class）でなく機械判定（nodecontract の 1 実装）で、満たさない
+        # 理由（blockers）も残す——読み手（audit / E6 ハーネス）が再判定しないため（§8.3）。
+        operation = node.get("operation") if isinstance(node.get("operation"), dict) else None
+        op_meta = {}
+        if operation:
+            op_meta["operation_class"] = str(operation.get("operation_class") or "") or None
+            if (operation.get("scope") or {}).get("write"):
+                blockers = _nodecontract.local_patch_blockers(operation)
+                if blockers:
+                    op_meta["local_patch_blockers"] = blockers
         bus.event(who, "claimed", node=nid,
-                  **({"agent_cli": agent_cli, "model": agent_model, **selection} if agent_cli else {}))
+                  **({"agent_cli": agent_cli, "model": agent_model, **selection, **op_meta}
+                     if agent_cli else {}))
 
         # throttle（バックプレッシャ）: 同時未決着イシューが上限に達していたら、起票せず
         # throttled park して claim を解放する。エラーにはしない＝人のレビュー速度に発行を
@@ -359,7 +371,8 @@ def cmd_work(args) -> int:
                          agent_cli=agent_cli, model=agent_model,
                          context_allocation=context_allocation,
                          dependency_context=dependency_context, escalation=node_agent,
-                         methods=method_app.get("methods"), trial=method_app.get("trial"), **selection)
+                         methods=method_app.get("methods"), trial=method_app.get("trial"),
+                         **selection, **op_meta)
         if node_agent:
             _node_budget_record(0, ref=kind, agent_cli=agent_cli or "", model=agent_model or "",
                                 extra={"event": "model_escalation", "escalation": node_agent})

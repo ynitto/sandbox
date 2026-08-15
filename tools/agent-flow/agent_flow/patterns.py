@@ -103,6 +103,11 @@ def _coerce_tasks(raw, existing=()):
             retries = 0
         if retries > 0:
             node["retries"] = retries
+        # 処理契約（設計 2026-08-15 §3.4）。自由文 goal だけで候補を決めないための
+        # 構造化条件で、形が契約に合うものだけを運ぶ（壊れた宣言は無いのと同じ）。
+        operation = t.get("operation")
+        if isinstance(operation, dict) and not _nodecontract.operation_contract_errors(operation):
+            node["operation"] = operation
         out.append(node)
     return out
 

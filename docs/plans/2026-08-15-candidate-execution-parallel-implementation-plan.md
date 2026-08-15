@@ -127,6 +127,20 @@ schema examples を fixture に §15.1 の共通契約（再現性・blocked/unk
 pin 非迂回・park・receipt 写像）を固定。tier 上限は pin 宣言の `tier` と workload の
 `tier` を TIER_ORDER で比較し、`tier_ceiling_override` 承認 run だけ通す。
 
+**E2 実装記録（2026-08-15・完了）。** (1) nodecontract へ処理契約
+（`operation_contract_errors` / `local_patch_blockers`・§3.4 / §2.1）。(2) agent-flow の
+Resolver 統合——`_control_policy_decision()` が version 2 + `selection_policy` のとき
+E1 Resolver を呼び、`_agent_for` の control 層を置き換える（legacy 上書き・縮退は
+再解釈しない）。park は run_agent の環境ガード（lifecycle と同じ
+`[agent-error:control]` 経路）で実行前に止め、run 打ち切り → cooldown の既存機構に
+載せる。呼び出し 1 回の明示指定（verification の `agent`）と run 固定は人の承認済み
+指定として park でも止めない。(3) claim イベントと result に `execution_decision`
+（receipt v2 ブロック・§6.5）と `operation_class` / `local_patch_blockers` を事実として
+記録（正典は result、読み手は再推測しない）。(4) planner 出力の `operation` は形が
+契約に合うものだけ `_coerce_tasks` が運ぶ。テストは agent-flow 912 / agentcore 218 全緑。
+**残置**: flow-planner skill への処理契約の生成指示と retry ladder（escalation pin）の
+候補ベース化は E6 の決定化パイプ側で扱う。
+
 E5 を E3 / E4 の後に置くのは receipt 粒度の都合そのもの——設計書 §11.4 の指摘どおり、
 loop と amigos の receipt が候補単位になるまで自動昇格の入力が揃わない。
 E6 / E7 は旧計画から引き取った測定・受入で、実装の乗り物（E2 / E5・U2）が
