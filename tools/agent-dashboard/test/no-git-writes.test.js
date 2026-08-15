@@ -77,7 +77,7 @@ test('検査範囲が全制御面を覆う（cowork のみ除外）', () => {
 test('状態リポジトリを書き換える git サブコマンドを起動しない', () => {
   // 読み取り（rev-parse / status / diff / rev-list / merge-base）と、成果物リポジトリの
   // fetch だけが許される。作業ツリー・履歴・リモートを変える口はここで落とす。
-  const forbidden = ['pull', 'push', 'commit', 'rebase', 'merge', 'worktree', 'checkout', 'add', 'stash'];
+  const forbidden = ['pull', 'push', 'commit', 'rebase', 'merge', 'worktree', 'checkout', 'branch', 'add', 'stash'];
   for (const file of files) {
     const code = codeOf(file);
     for (const sub of forbidden) {
@@ -113,6 +113,47 @@ test('git の書き込み API を IPC・preload に載せない', () => {
     for (const name of gone) {
       assert.ok(!code.includes(name), `${rel(file)}: ${name} は削除済みのはず`);
     }
+  }
+});
+
+test('設計runは読み取り専用契約をplanへ運び、設計セッション自身はGit操作を持たない', () => {
+  const adhoc = require('../src/features/adhoc-flow/main/adhoc');
+  const profiles = require('../src/features/orchestration/main/profiles');
+  const designSessionSource = codeOf(
+    path.join(SRC, 'features', 'adhoc-flow', 'main', 'design-session.js'),
+  );
+  const workflow = {
+    version: 2,
+    id: 'design-readonly-guard',
+    name: '設計読み取り専用ガード',
+    purpose: 'design',
+    entry: ['draft'],
+    exit: ['finish'],
+    nodes: [
+      { id: 'draft', goal: '要望を整理する', kind: 'work', tier: 'large', deps: [] },
+      { id: 'finish', goal: '設計書を出力する', kind: 'synthesize', tier: 'large', deps: ['draft'] },
+    ],
+  };
+  const originalResolveTier = profiles.resolveTier;
+  profiles.resolveTier = () => ({ agent_cli: 'codex', model: 'test' });
+  try {
+    const plan = adhoc.planFromWorkflow({}, workflow, { purpose: 'design' });
+    assert.strictEqual(plan.nodes.length, 2);
+    for (const node of plan.nodes) {
+      assert.match(node.goal, /リポジトリは読み取り専用です/);
+      assert.match(node.goal, /commit、pushは禁止です/);
+      assert.doesNotMatch(node.goal, /af\//, '設計成果へ作業ブランチを持ち込まない');
+    }
+    assert.match(plan.nodes.find((node) => node.id === 'finish').goal, /## 目的/);
+    assert.match(plan.nodes.find((node) => node.id === 'finish').goal, /## 検証方法/);
+
+    // 設計セッションは既存の adhoc.submit 契約を使うだけで、Gitの書込み経路を増やさない。
+    assert.match(designSessionSource, /adhoc\.submit\(config/);
+    assert.doesNotMatch(designSessionSource, /\b(?:git|commit|branch|checkout)\b/);
+    assert.ok(!designSessionSource.split('\n').some((line) =>
+      /\b(?:commit|push)\b/.test(line) && !/\.push\s*\(/.test(line)));
+  } finally {
+    profiles.resolveTier = originalResolveTier;
   }
 });
 
