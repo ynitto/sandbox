@@ -193,7 +193,8 @@ function list(cfg) {
   // ——エンジンは base の agent_cli をそのまま渡して自分で解決するため、この定義自体は
   // 引き続き実在・ロード可能である必要がある）。
   const variantTargets = new Set();
-  for (const { spec } of dropins) {
+  for (const { spec, shadowed, errors } of dropins) {
+    if (shadowed || errors.length) continue;
     if (!isPlainObject(spec) || !isPlainObject(spec.variants)) continue;
     for (const target of Object.values(spec.variants)) {
       if (typeof target === 'string' && target.trim()) variantTargets.add(target.trim().toLowerCase());

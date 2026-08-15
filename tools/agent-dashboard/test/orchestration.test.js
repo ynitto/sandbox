@@ -557,6 +557,9 @@ test('エージェント: list は variants の値に現れる名前を isVarian
   fs.writeFileSync(path.join(dir, 'ollama-json.json'), JSON.stringify({ command: ['agent-ollama', '--format', 'json'] }));
   fs.writeFileSync(path.join(dir, 'ollama-verify.json'), JSON.stringify({ command: ['agent-ollama', '--format', 'json'] }));
   fs.writeFileSync(path.join(dir, 'cursor.json'), JSON.stringify({ command: ['cursor', 'run'] }));
+  fs.writeFileSync(path.join(dir, 'broken-base.json'), JSON.stringify({
+    command: [], variants: { verify: 'cursor' },
+  }));
   try {
     process.env.KIRO_AGENTS_DIR = dir;
     const res = agents.list({ orchestration: {} });
@@ -564,7 +567,8 @@ test('エージェント: list は variants の値に現れる名前を isVarian
     assert.strictEqual(byName.ollama.isVariantTarget, false, 'base 定義自身は variant 先ではない');
     assert.strictEqual(byName['ollama-json'].isVariantTarget, true);
     assert.strictEqual(byName['ollama-verify'].isVariantTarget, true);
-    assert.strictEqual(byName.cursor.isVariantTarget, false, '他の定義から参照されない名前は対象外');
+    assert.strictEqual(byName.cursor.isVariantTarget, false,
+      '契約違反の定義が参照してもvariant先にしない');
   } finally {
     if (savedEnv === undefined) delete process.env.KIRO_AGENTS_DIR;
     else process.env.KIRO_AGENTS_DIR = savedEnv;
