@@ -371,6 +371,8 @@ def eligible(post: dict, *, repos=None, tags=None, agent_cli=None, workloads=Non
              "fresh_after_sec": (120.0 if fresh_after_sec is None else fresh_after_sec),
              "budget": budget},
             at=at, enforce_default=enforce_default)
-        if not gate.get("eligible"):
+        # enforce=false は観測のみ（§6: 従来の落札を変えない）。enforce 時のみ kind==ok を
+        # 要求し、stale・版不一致・unavailable は unknown ＝非適格（fail-close）。
+        if bool(gate.get("enforce")) and gate.get("kind") != "ok":
             return False
     return True
