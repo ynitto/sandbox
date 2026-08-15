@@ -151,6 +151,15 @@ class AcceptanceGateTest(unittest.TestCase):
         before = al.acceptance_stamps(self.acc, self.dir)
         self.assertTrue(self._errors({self.target}, before))
 
+    def test_timestamp_only_touch_does_not_count_as_change(self):
+        os.makedirs(os.path.dirname(self.target))
+        Path(self.target).write_text("x", encoding="utf-8")
+        before = al.acceptance_stamps(self.acc, self.dir)
+        stat = os.stat(self.target)
+        os.utime(self.target, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
+        self.assertTrue(self._errors({self.target}, before),
+                        "内容が同じなら更新時刻だけ変わっても受入条件を満たさない")
+
     def test_touched_and_changed_passes(self):
         before = al.acceptance_stamps(self.acc, self.dir)
         os.makedirs(os.path.dirname(self.target))
@@ -292,6 +301,39 @@ class GoalToolLoopTest(unittest.TestCase):
         al.run_goal(goal="out.md に書く", cwd=self.dir, agent={}, log_file=self.log,
                     acceptance=["`out.md` が更新されている"])
         self.assertIn("FACT-42", prompts[-1])
+
+    def test_failed_run_cannot_pass_via_a_later_write(self):
+        # コマンド失敗後に成果物へ触れただけで done になっていた実機回帰。
+        self._script([
+            '{"type":"run","command":"agent-audit","args":["--period","day"]}',
+            '{"type":"write_files","paths":["out.md"]}',
+            "wrote",
+        ])
+        failed = {"status": 2, "error": "", "stdout": "", "stderr": "invalid command"}
+        with mock.patch.object(al, "_tl_exec_argv", return_value=failed):
+            result = al.run_goal(
+                goal="agent-audit の結果を out.md に書く", cwd=self.dir,
+                agent={}, log_file=self.log,
+                acceptance=["`out.md` が更新されている"], max_rounds=2)
+        self.assertFalse(result["ok"])
+        self.assertTrue(any("コマンド実行が失敗" in error
+                            for error in result["evidenceErrors"]))
+
+    def test_successful_retry_resolves_a_failed_run(self):
+        self._script([
+            '{"type":"run","command":"agent-audit","args":["--period","day"]}',
+            '{"type":"run","command":"agent-audit","args":["usage","--period","day"]}',
+            '{"type":"write_files","paths":["out.md"]}',
+            "wrote",
+        ])
+        failed = {"status": 2, "error": "", "stdout": "", "stderr": "invalid command"}
+        passed = {"status": 0, "error": "", "stdout": "no records", "stderr": ""}
+        with mock.patch.object(al, "_tl_exec_argv", side_effect=[failed, passed]):
+            result = al.run_goal(
+                goal="agent-audit の結果を out.md に書く", cwd=self.dir,
+                agent={}, log_file=self.log,
+                acceptance=["`out.md` が更新されている"], max_rounds=3)
+        self.assertTrue(result["ok"])
 
     def test_control_rounds_use_the_json_variant(self):
         # 制御応答は編集能力の要らない周。定義が json_variant を申告していれば、その周

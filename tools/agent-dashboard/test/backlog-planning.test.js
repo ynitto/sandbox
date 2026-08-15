@@ -324,9 +324,9 @@ function dropped(dir) {
       '1行1リスクの配列として送る。空なら削除する');
   });
 
-  await test('タスク追加は要望・進め方・材料・候補確認の順に進む', async () => {
+  await test('タスク作成は要望・進め方・材料・確認の順に進む', async () => {
     assert.ok(renderer.includes('task-create-steps'));
-    assert.ok(renderer.includes("['やりたいこと', '進め方', '材料', '候補確認']"));
+    assert.ok(renderer.includes("['やりたいこと', '進め方', '材料', '確認']"));
     assert.ok(renderer.includes('エージェントと設計する'));
     assert.ok(renderer.includes('外部の設計結果を使う'));
     assert.ok(renderer.includes('そのまま実装する'));

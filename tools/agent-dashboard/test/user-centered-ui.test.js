@@ -71,6 +71,15 @@ const projectTaskWizardSource = renderer.slice(
   renderer.indexOf('function renderProjectTaskWizard('),
   renderer.indexOf('async function advanceProjectTaskWizard(')
 );
+assert.ok(projectTaskWizardSource.includes("dialog.classList.add('task-create-dialog')"),
+  'プロジェクトのタスク作成にもワークフローと同じ固定サイズを適用します');
+assert.ok(projectTaskWizardSource.includes('<h2>タスクを作成</h2>')
+  && projectTaskWizardSource.includes('<label class="field">やりたいこと'),
+  'プロジェクトのダイアログ見出しと最初の入力レイアウトをワークフローへ揃えます');
+assert.ok(projectTaskWizardSource.includes('<svg aria-hidden="true" viewBox="0 0 24 24">'),
+  '閉じるボタンも同じSVG寸法にしてヘッダー高を揃えます');
+assert.match(renderer, /id="btn-enqueue"[^>]*>タスクを作成<\/button>/,
+  'プロジェクトの入口もタスク作成として表示します');
 assert.ok(!projectTaskWizardSource.includes('type="checkbox"')
   && projectTaskWizardSource.includes('data-project-source-version=')
   && projectTaskWizardSource.includes('aria-pressed='),
@@ -83,6 +92,9 @@ const workflowTaskDialogSource = workflowFeature.slice(
   workflowFeature.indexOf('function workflowTaskDialogHtml('),
   workflowFeature.indexOf('\n  function boundaryPositions(', workflowFeature.indexOf('function workflowTaskDialogHtml('))
 );
+assert.ok(!workflowFeature.includes('仕事を準備')
+  && workflowTaskDialogSource.includes('<h2>タスクを作成</h2>'),
+  'ワークフローの入口とダイアログは「タスクを作成」に統一します');
 assert.ok(workflowTaskDialogSource.indexOf('<legend>進め方を選択</legend>')
   < workflowTaskDialogSource.indexOf('id="wf-task-cwd"'),
   '進め方を選択した後に対象フォルダと材料を指定します');

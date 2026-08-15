@@ -466,9 +466,17 @@ def _tl_final_evidence_error(output, cwd: str, evidence: set, executed: set) -> 
 
 
 def _tl_file_stamp(file: str) -> str:
+    """更新時刻ではなく内容そのものの指紋を返す。
+
+    エディタ CLI は変更を加えなくてもファイルへ書き戻し、mtime だけを更新することがある。
+    それを成果物の更新として扱うと、受入条件を満たしていない実行が done になる。
+    """
     try:
-        stat = os.stat(file)
-        return f"{stat.st_size}:{stat.st_mtime_ns}"
+        digest = hashlib.sha256()
+        with open(file, "rb") as stream:
+            while chunk := stream.read(1024 * 1024):
+                digest.update(chunk)
+        return digest.hexdigest()
     except OSError:
         return ""
 
@@ -725,6 +733,7 @@ def run_goal(*, goal: str, cwd: str, agent: dict, log_file: str,
     touched: set = set()
     history: list[str] = []
     output = ""
+    pending_run_error = ""
     control = _tl_control_agent(agent, root)
     if control is not agent:
         _tl_progress(f"制御応答: {control['cli']}（編集: {agent['cli']}）", tag)
@@ -817,7 +826,7 @@ def run_goal(*, goal: str, cwd: str, agent: dict, log_file: str,
             # 走り続ける（実測: 1 回で書けた仕事に 8 ラウンド）。done の根拠は元から
             # 機械検証だけ（C5）なので、その PASS を停止条件にしても緩まない。
             # 照合できる受入条件が無いときは従来どおり final を待つ——止める根拠が無い。
-            if _tl_verified(criteria, root) and not acceptance_evidence_errors(
+            if _tl_verified(criteria, root) and not pending_run_error and not acceptance_evidence_errors(
                     criteria, cwd=root, touched=touched, stamps_before=stamps_before):
                 _tl_progress("受入条件を満たしました（final を待たずに完了）", tag)
                 break
@@ -826,6 +835,16 @@ def run_goal(*, goal: str, cwd: str, agent: dict, log_file: str,
         _tl_progress(f"run: {request['command']} {' '.join(request['args'])}", tag)
         tool = _tl_exec_argv(request["command"], request["args"], cwd=root,
                              timeout_sec=request["timeout_sec"], log_file=log_file)
+        run_ok = tool["status"] == 0 and not tool["error"]
+        if run_ok:
+            # 引数を直した再試行も回復として扱う。小型モデルは最初の要求でサブコマンドを
+            # 落とすことがあるため、完全一致の再実行だけに絞ると正しい修正まで失敗になる。
+            pending_run_error = ""
+        else:
+            command = shlex.join([request["command"], *request["args"]])
+            pending_run_error = (
+                f"コマンド実行が失敗したままです（status {tool['status']}）: {command}")
+            _tl_progress(pending_run_error, tag)
         for arg in request["args"]:
             try:
                 file = _tl_project_path(root, arg)
@@ -839,7 +858,7 @@ def run_goal(*, goal: str, cwd: str, agent: dict, log_file: str,
                     reads.add(file)
         history.append("TOOL_RESULT " + json.dumps({
             # ok は status 由来。stdout が空でも成功は成功（statemachine 側と同じ形）。
-            "type": request["type"], "ok": tool["status"] == 0 and not tool["error"],
+            "type": request["type"], "ok": run_ok,
             "status": tool["status"], "error": tool["error"],
             "stdout": tool["stdout"][-4000:], "stderr": tool["stderr"][-2000:],
             "logFile": log_file,
@@ -847,6 +866,8 @@ def run_goal(*, goal: str, cwd: str, agent: dict, log_file: str,
 
     evidence_errors = acceptance_evidence_errors(
         criteria, cwd=root, touched=touched, stamps_before=stamps_before)
+    if pending_run_error:
+        evidence_errors.append(pending_run_error)
     ok = bool(output) and not evidence_errors
     verified = _tl_verified(criteria, root)
     _tl_append_log(log_file, {"event": "goal_done", "ok": ok, "verified": verified,

@@ -615,7 +615,7 @@ function renderBacklog() {
       </div>
       <div class="task-toolbar-actions">
         <button id="btn-notes" title="考えや気づきを書き残し、必要な部分をタスク候補にできます">メモ</button>
-        <button id="btn-enqueue" class="primary-inline" title="入力と設計フローを選び、タスク候補を追加します">タスクを追加</button>
+        <button id="btn-enqueue" class="primary-inline" title="入力と設計フローを選び、タスクを作成します">タスクを作成</button>
       </div>
     </div>
     ${preparationHtml}
@@ -1989,6 +1989,7 @@ let projectTaskWizard = null;
 
 function openProjectPreparationDesign(item, session) {
   const dialog = $('dlg-enqueue');
+  dialog.classList.remove('task-create-dialog');
   const questions = session.questions || [];
   dialog.innerHTML = `<div class="dialog-heading"><h2>${esc(item.title)}の設計</h2>
     <button type="button" class="wf-icon-button" data-project-design-close aria-label="閉じる">×</button></div>
@@ -2028,7 +2029,7 @@ function openProjectPreparationDesign(item, session) {
 }
 
 function projectTaskStepsHtml(step) {
-  return `<ol class="task-create-steps" aria-label="タスク準備の進行">${['やりたいこと', '進め方', '材料', '候補確認']
+  return `<ol class="task-create-steps" aria-label="タスク作成の進行">${['やりたいこと', '進め方', '材料', '確認']
     .map((label, index) => `<li class="${step === index + 1 ? 'current' : step > index + 1 ? 'done' : ''}"
       ${step === index + 1 ? 'aria-current="step"' : ''}><span>${index + 1}</span>${label}</li>`).join('')}</ol>`;
 }
@@ -2037,11 +2038,12 @@ function renderProjectTaskWizard() {
   const wizard = projectTaskWizard;
   const p = state.project;
   const dialog = $('dlg-enqueue');
+  dialog.classList.add('task-create-dialog');
   let body;
   if (wizard.step === 1) {
-    body = `<section><h3>やりたいこと</h3><textarea id="project-task-text" rows="7"
+    body = `<label class="field">やりたいこと<textarea id="project-task-text" rows="7"
       placeholder="作りたいタスクや達成したいこと">${esc(wizard.text)}</textarea>
-      <p class="field-help">まず要望を書いてください。設計要否は次の画面で提案します。</p></section>`;
+      <small>まず要望を書いてください。設計要否は次の画面で提案します。</small></label>`;
   } else if (wizard.step === 2) {
     const recommended = wizard.recommendation || {};
     body = `<div class="task-route-recommendation"><strong>おすすめ: ${esc(PROJECT_PREPARATION_ROUTES.find(([id]) => id === recommended.route)?.[1] || '確認中')}</strong>
@@ -2076,13 +2078,13 @@ function renderProjectTaskWizard() {
         `<button type="button" data-project-candidate-route="${index}:${id}" aria-pressed="${task.route === id}">${label}</button>`).join('')}</fieldset>
       </article>`).join('')}</div>`;
   }
-  dialog.innerHTML = `<div class="dialog-heading"><h2>タスクを追加</h2><button type="button" class="wf-icon-button"
-    data-project-task-close aria-label="閉じる">×</button></div><div class="dialog-scroll-body task-create-scroll">
+  dialog.innerHTML = `<div class="dialog-heading"><h2>タスクを作成</h2><button type="button" class="wf-icon-button"
+    data-project-task-close aria-label="閉じる"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"></path></svg></button></div><div class="dialog-scroll-body task-create-scroll">
     ${projectTaskStepsHtml(wizard.step)}
     <div class="task-create-body">${wizard.error ? `<p class="qf-failure" role="alert">${esc(wizard.error)}</p>` : ''}${body}</div></div>
     <div class="dialog-actions">${wizard.step > 1 ? '<button data-project-task-back>戻る</button>' : ''}
       <span class="spacer"></span><button data-project-task-close>キャンセル</button>
-      <button class="primary-inline" data-project-task-next ${wizard.busy ? 'disabled' : ''}>${esc(wizard.busy || (wizard.step === 4 ? '選択した項目を準備する' : '次へ'))}</button></div>`;
+      <button class="primary-inline" data-project-task-next ${wizard.busy ? 'disabled' : ''}>${esc(wizard.busy || (wizard.step === 4 ? '選択したタスクを作成' : '次へ'))}</button></div>`;
   dialog.querySelectorAll('[data-project-task-close]').forEach((button) => button.addEventListener('click', () => dialog.close()));
   dialog.querySelector('[data-project-task-back]')?.addEventListener('click', () => {
     wizard.step -= 1; wizard.error = ''; renderProjectTaskWizard();

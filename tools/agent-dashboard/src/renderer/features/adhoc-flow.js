@@ -902,7 +902,7 @@
     }[phase] || phase || '準備中');
     const routeLabel = (route) => PREPARATION_ROUTES.find(([id]) => id === route)?.[1] || route;
     return `<section class="wf-page" aria-label="ワークフロー実行">
-      <div class="wf-page-actions"><button type="button" class="primary-inline" id="wf-create-task">仕事を準備</button></div>
+      <div class="wf-page-actions"><button type="button" class="primary-inline" id="wf-create-task">タスクを作成</button></div>
       <p class="qf-notice" role="status" id="wf-notice"${st.notice ? '' : ' hidden'}>${esc(st.notice)}</p>
       <section class="wf-queue" aria-labelledby="wf-queue-title"><div class="wf-section-head"><div>
         <h3 id="wf-queue-title">作業準備</h3><span class="muted">${prepared.length}件</span></div></div>
@@ -913,7 +913,7 @@
             ${item.phase === 'design-ready' ? `<button type="button" class="primary-inline" data-preparation-design="${esc(item.id)}">設計を開始</button>` : ''}
             ${['designing', 'design-review'].includes(item.phase) ? `<button type="button" class="primary-inline" data-preparation-open="${esc(item.id)}">設計を確認</button>` : ''}
             ${item.phase === 'implementation-ready' ? `<button type="button" class="primary-inline" data-preparation-execute="${esc(item.id)}">実装を開始</button>` : ''}</div></article>`).join('')
-          : '<div class="empty">準備中の仕事はありません。「仕事を準備」から追加できます。</div>'}
+          : '<div class="empty">準備中のタスクはありません。「タスクを作成」から追加できます。</div>'}
       </section>
       ${queued.length ? `<details class="wf-legacy-queue"><summary>以前の実行待ち ${queued.length}件</summary>${queued.map((task) => `<article class="wf-queue-item" data-wf-task="${esc(task.id)}">
         <div><strong>${esc(task.title)}</strong><small>${esc(task.cwd || '対象フォルダ未指定')}</small></div>
@@ -931,7 +931,7 @@
   ];
 
   function taskStepsHtml(step) {
-    return `<ol class="task-create-steps" aria-label="作業準備の進行">${['やりたいこと', '進め方', '材料', '確認']
+    return `<ol class="task-create-steps" aria-label="タスク作成の進行">${['やりたいこと', '進め方', '材料', '確認']
       .map((label, index) => `<li class="${step === index + 1 ? 'current' : step > index + 1 ? 'done' : ''}"
         ${step === index + 1 ? 'aria-current="step"' : ''}><span>${index + 1}</span>${label}</li>`).join('')}</ol>`;
   }
@@ -960,17 +960,17 @@
         <small>${wizard.materials.length ? wizard.materials.map((item) => esc(item.name)).join('、') : '必要な設計書・仕様・関連ファイルを選択できます。'}</small></label>
       ${wizard.route === 'external-design' ? '<p class="field-help">完成済みの設計書を1件以上選択してください。</p>' : ''}`;
     if (wizard.step === 4) body = `<article class="task-candidate-card"><span class="status-chip st-review">準備前</span>
-      <label>仕事名<input id="wf-task-title" value="${esc(wizard.title || String(wizard.goal || '').split(/\r?\n/)[0].slice(0, 80))}"></label>
+      <label>タスク名<input id="wf-task-title" value="${esc(wizard.title || String(wizard.goal || '').split(/\r?\n/)[0].slice(0, 80))}"></label>
       <dl class="task-preparation-summary"><div><dt>進め方</dt><dd>${esc(PREPARATION_ROUTES.find(([id]) => id === wizard.route)?.[1] || '')}</dd></div>
         <div><dt>材料</dt><dd>${wizard.materials.length}件</dd></div></dl>
       <details><summary>やりたいこと</summary><pre>${esc(wizard.goal || '')}</pre></details></article>`;
-    return `<dialog id="wf-task-dialog" class="task-create-dialog"><div class="dialog-heading"><h2>仕事を準備</h2>
+    return `<dialog id="wf-task-dialog" class="task-create-dialog"><div class="dialog-heading"><h2>タスクを作成</h2>
       <button type="button" class="wf-icon-button" data-wf-task-close aria-label="閉じる">${ICONS.close}</button></div>
       <div class="dialog-scroll-body task-create-scroll">${taskStepsHtml(wizard.step)}
         <div class="task-create-body">${wizard.error ? `<p role="alert" class="qf-failure">${esc(wizard.error)}</p>` : ''}${body}</div></div>
       <div class="dialog-actions">${wizard.step > 1 ? '<button type="button" data-wf-task-back>戻る</button>' : ''}
         <span class="spacer"></span><button type="button" data-wf-task-close>キャンセル</button>
-        <button type="button" class="primary-inline" data-wf-task-next ${wizard.busy ? 'disabled' : ''}>${esc(wizard.busy || (wizard.step === 4 ? 'この内容で準備する' : '次へ'))}</button></div></dialog>`;
+        <button type="button" class="primary-inline" data-wf-task-next ${wizard.busy ? 'disabled' : ''}>${esc(wizard.busy || (wizard.step === 4 ? 'この内容で作成' : '次へ'))}</button></div></dialog>`;
   }
 
   function boundaryPositions(nodes) {
