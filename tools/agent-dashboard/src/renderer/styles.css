@@ -4385,3 +4385,290 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
   .wf-request { grid-column: auto; }
   .wf-properties { max-height: calc(100% - 24px); }
 }
+
+/* ---------- ワークフロー作成・設計フローの状態 ---------- */
+
+/* 実装フロー／設計フローを同じ画面で切り替える。選択は色だけに頼らず、面と枠でも示す。 */
+.wf-purpose-switch {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+  width: min(100%, 440px);
+  min-width: 0;
+  margin-bottom: 4px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg2);
+}
+.wf-purpose-switch button {
+  min-width: 0;
+  min-height: 44px;
+  padding: 8px 12px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+  white-space: normal;
+}
+.wf-purpose-switch button:hover,
+.wf-purpose-switch button[aria-selected="true"],
+.wf-purpose-switch button.selected {
+  border-color: var(--accent);
+  background: var(--bg3);
+  color: var(--fg);
+  font-weight: 650;
+}
+
+.wf-design-sessions .nav-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  padding: 8px 10px;
+  text-align: left;
+  white-space: normal;
+}
+.wf-design-sessions .nav-item span,
+.wf-design-sessions .nav-item small {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.wf-design-sessions .nav-item span { flex: 1; }
+.wf-design-sessions .nav-item small { flex: none; color: var(--muted); }
+.wf-design-sessions .nav-item.selected { border-color: var(--accent); background: var(--bg3); }
+
+/* 選択したフローの確認カード。説明や工程数が長くてもカードの幅を押し広げない。 */
+.wf-selected-flow-card {
+  min-width: 0;
+  overflow: hidden;
+}
+.wf-selected-flow-heading h3,
+.wf-selected-flow-description,
+.wf-selected-flow-content > .wf-card-meta {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.wf-selected-flow-heading h3 { flex: 1; }
+.wf-selected-flow-content > .wf-card-meta { flex: none; }
+.wf-selected-flow-card[data-flow-summary-type="auto"] { border-left: 3px solid var(--blue); }
+.wf-selected-flow-card[data-flow-summary-type="pattern"] { border-left: 3px solid var(--accent2); }
+.wf-selected-flow-card[data-flow-summary-type="custom"] { border-left: 3px solid var(--accent); }
+
+.wf-template-card {
+  min-width: 0;
+  overflow: hidden;
+}
+.wf-template-card > strong,
+.wf-template-card > small,
+.wf-template-card > b,
+.wf-template-card > .wf-card-meta {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.wf-saved-card { border-left: 3px solid var(--blue); }
+.wf-blank-card { border-style: dashed; }
+
+/* 設計フローで工程ごとの agent / model 候補を確認する表示。 */
+.wf-node-assignment-preview {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  margin-top: 8px;
+  padding: 8px 9px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent2);
+  border-radius: 6px;
+  background: var(--bg);
+  font-size: 11px;
+}
+.wf-node-assignment-preview strong { color: var(--fg); }
+.wf-node-assignment-preview p,
+.wf-node-assignment-preview small { margin: 0; overflow-wrap: anywhere; line-height: 1.45; }
+.wf-node-assignment-preview small { color: var(--muted); }
+.wf-node-assignment-preview code,
+.wf-node-assignment-preview li { overflow-wrap: anywhere; word-break: break-word; }
+.wf-node-assignment-preview details { min-width: 0; margin-top: 2px; }
+.wf-node-assignment-preview summary {
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  color: var(--accent);
+}
+.wf-node-assignment-preview ul { display: grid; gap: 4px; min-width: 0; margin: 5px 0 0; padding-left: 18px; }
+
+/* 読み取り専用の雛形・登録フォルダ。入力不可を面・枠・説明で明示する。 */
+.wf-editor-layout:has(.wf-canvas.readonly) { border-color: color-mix(in srgb, var(--muted) 55%, var(--border)); }
+.wf-editor-layout:has(.wf-canvas.readonly) .wf-editor-head { background: color-mix(in srgb, var(--bg3) 45%, var(--bg2)); }
+.wf-editor-main:has(#wf-copy) > .field-help {
+  margin: 0;
+  padding: 8px 12px;
+  border-left: 3px solid var(--muted);
+  background: var(--bg3);
+  overflow-wrap: anywhere;
+}
+.wf-editor-head input:disabled {
+  border-style: dashed;
+  background: var(--bg);
+  color: var(--muted);
+  cursor: not-allowed;
+}
+.wf-canvas.readonly .wf-node {
+  border-color: color-mix(in srgb, var(--border) 75%, var(--muted));
+  box-shadow: none;
+  cursor: default;
+}
+.wf-canvas.readonly .wf-node-drag { cursor: default; }
+
+/* 保存・削除・設計セッション操作の失敗は、通常の案内と同じ見た目にしない。 */
+.wf-save-error,
+.wf-delete-error,
+.wf-error-banner,
+.wf-form-error,
+.wf-settings .qf-failure,
+.wf-design-current .qf-failure,
+.wf-editor-main > .qf-failure,
+.wf-settings > .qf-notice[role="alert"],
+.wf-editor-main > .qf-notice[role="alert"],
+.task-create-body > [role="alert"] {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  margin: 0 0 10px;
+  padding: 9px 11px;
+  border: 1px solid color-mix(in srgb, var(--red) 65%, var(--border));
+  border-left-width: 3px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--red) 10%, var(--bg2));
+  color: #ffb4ad;
+  overflow-wrap: anywhere;
+}
+.wf-publication.warn { border-left-width: 3px; border-left-color: var(--red); }
+
+/* キーボード操作の現在位置は、背景色に依存せず常に見えるようにする。 */
+.wf-purpose-switch button:focus-visible,
+.wf-template-card:focus-visible,
+.wf-design-sessions .nav-item:focus-visible,
+.task-choice-card:focus-visible,
+.task-source-row:focus-visible,
+.task-candidate-select:focus-visible,
+.wf-node-picker button:focus-visible,
+.wf-node-assignment-preview summary:focus-visible,
+.wf-canvas:focus-visible {
+  position: relative;
+  z-index: 2;
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+.wf-design-modes .orch-policy-card:has(input:focus-visible),
+.design-assignments select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+/* ---------- ワークフローの横溢れ防止 ---------- */
+
+.wf-library,
+.wf-library > section,
+.wf-editor-layout,
+.wf-editor-main,
+.wf-workspace,
+.wf-design-card,
+.wf-design-body,
+.wf-design-start,
+.wf-design-current,
+.task-create-dialog,
+.task-create-scroll,
+.task-create-body,
+.task-candidate-card,
+.design-assignments {
+  min-width: 0;
+  max-width: 100%;
+}
+.wf-editor-layout,
+.task-create-dialog { overflow: hidden; }
+.task-create-scroll { overflow-x: hidden; }
+.wf-design-start label,
+.wf-design-question,
+.design-assignments .design-assignment-row,
+.task-choice-card span,
+.task-source-row span,
+.task-candidate-card label,
+.task-preparation-summary > div,
+.task-candidate-route button { min-width: 0; }
+.task-choice-card span,
+.task-source-row span { overflow-wrap: anywhere; }
+.task-choice-card small,
+.task-source-row small { overflow-wrap: anywhere; }
+.task-candidate-route button { white-space: normal; overflow-wrap: anywhere; }
+.task-preparation-summary dd { min-width: 0; }
+.wf-editor-head > label,
+.wf-editor-head > button { min-width: 0; }
+
+@media (min-width: 1200px) {
+  .wf-template-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+@media (max-width: 1024px) {
+  .wf-template-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .wf-editor-head {
+    display: grid;
+    grid-template-columns: minmax(0, auto) repeat(2, minmax(0, 1fr));
+    align-items: stretch;
+  }
+  .wf-editor-head > label,
+  .wf-editor-head > label:has(#wf-name),
+  .wf-editor-head > label:has(#wf-description) {
+    min-width: 0;
+    flex: none;
+  }
+  .wf-editor-head > label:has(#wf-description) { grid-column: 1 / -1; }
+  .wf-editor-head > button { min-width: 0; }
+  .wf-selected-flow-content { grid-template-columns: minmax(0, 1fr); }
+  .wf-selected-flow-content > .wf-card-meta { justify-self: start; }
+}
+
+@media (max-width: 768px) {
+  .wf-purpose-switch { width: 100%; }
+  .wf-template-grid { grid-template-columns: minmax(0, 1fr); }
+  .wf-editor-head {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 10px 12px;
+  }
+  .wf-editor-head > label:has(#wf-description) { grid-column: auto; }
+  .wf-editor-head > button { width: 100%; }
+  .wf-design-current > .wf-section-head { align-items: stretch; flex-direction: column; }
+  .wf-design-current > .wf-section-head .qf-row { width: 100%; }
+  .wf-design-current > .wf-section-head .qf-row button { flex: 1 1 160px; }
+  .task-create-dialog {
+    width: calc(100vw - 16px);
+    max-width: calc(100vw - 16px);
+  }
+  .task-create-dialog[open] { height: calc(100vh - 16px); max-height: calc(100vh - 16px); }
+  .task-candidate-route { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .task-preparation-summary > div { grid-template-columns: minmax(72px, .35fr) minmax(0, 1fr); gap: 8px; }
+  .design-assignments { padding: 10px; }
+}
+
+@media (max-width: 375px) {
+  .wf-purpose-switch button { padding-inline: 6px; }
+  .wf-design-modes { grid-template-columns: minmax(0, 1fr); }
+  .wf-editor-head { padding-inline: 10px; }
+  .wf-node-picker { top: 4px; left: 4px; width: calc(100% - 8px); max-height: calc(100% - 8px); padding: 10px; }
+  .wf-picker-section > div,
+  .wf-all-kinds { grid-template-columns: minmax(0, 1fr); }
+  .task-candidate-route { grid-template-columns: minmax(0, 1fr); }
+  .task-create-dialog {
+    width: calc(100vw - 12px);
+    max-width: calc(100vw - 12px);
+  }
+  .task-create-scroll { padding: 12px; }
+  .task-create-steps { gap: 3px; margin: 10px 0 14px; }
+  .task-preparation-summary > div { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+  .task-choice-card,
+  .task-source-row,
+  .task-candidate-card { padding: 11px; }
+}

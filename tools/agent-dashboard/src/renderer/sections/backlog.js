@@ -2062,6 +2062,181 @@ function collectDesignAssignmentsFrom(rootEl) {
   return Object.keys(out).length ? out : null;
 }
 
+// 設計フローの選択は ID だけでは一意にならない。登録フォルダ版・同梱版・自分用版が
+// 同じ ID を持てるため、保存する参照と画面上の選択判定の両方で scope / repository まで
+// 含める。catalog が cwd ごとに変わっても、別のフローへ黙って差し替えないための鍵。
+function designFlowKey(flow) {
+  if (!flow || typeof flow !== 'object') return '';
+  const raw = flow.snapshot && typeof flow.snapshot === 'object' ? flow.snapshot
+    : flow.flow && typeof flow.flow === 'object' ? flow.flow : flow;
+  const id = String(raw.id || flow.id || '').trim();
+  if (!id) return '';
+  const scope = String(raw.scope || flow.scope || raw._scope || flow._scope || 'user').trim();
+  const cwd = String(raw.cwd || flow.cwd || raw.repository || flow.repository
+    || raw._repository || flow._repository || '').trim();
+  return `${scope}:${cwd}:${id}`;
+}
+
+function designFlowSnapshot(flow, assignments = null, preview = null) {
+  if (!flow || typeof flow !== 'object') return null;
+  const raw = flow.snapshot && typeof flow.snapshot === 'object' ? flow.snapshot
+    : flow.flow && typeof flow.flow === 'object' ? flow.flow : flow;
+  const catalogNodes = Array.isArray(raw.nodes) ? raw.nodes
+    : Array.isArray(flow.nodes) ? flow.nodes
+      : raw.template && Array.isArray(raw.template.nodes) ? raw.template.nodes : [];
+  const previewNodes = preview && Array.isArray(preview.nodes) ? preview.nodes : [];
+  const previewById = new Map(previewNodes.map((node) => [String((node && node.id) || ''), node]));
+  const nodes = catalogNodes.length ? catalogNodes.map((node) => ({
+    ...node, ...(previewById.get(String((node && node.id) || '')) || {}),
+  })) : previewNodes;
+  const id = String(raw.id || flow.id || '').trim();
+  if (!id) return null;
+  const scope = String(raw.scope || flow.scope || raw._scope || flow._scope || 'user').trim();
+  const cwd = String(raw.cwd || flow.cwd || raw.repository || flow.repository
+    || raw._repository || flow._repository || '').trim();
+  const snapshot = {
+    version: Number(raw.version || flow.version) || 1,
+    type: 'custom',
+    id,
+    scope,
+    ...(cwd ? { cwd } : {}),
+    name: String(raw.name || flow.name || id),
+    description: String(raw.description || flow.description || ''),
+    ...(raw.digest || flow.digest ? { digest: String(raw.digest || flow.digest) } : {}),
+    nodes: nodes.map((node) => ({
+      id: String((node && node.id) || ''),
+      label: String((node && (node.label || node.name)) || ''),
+      goal: String((node && node.goal) || ''),
+      kind: String((node && node.kind) || 'work'),
+      deps: Array.isArray(node && node.deps) ? node.deps.map(String) : [],
+    })).filter((node) => node.id),
+  };
+  if (assignments && typeof assignments === 'object') {
+    snapshot.assignments = Object.fromEntries(Object.entries(assignments).map(([nodeId, value]) => [
+      String(nodeId), {
+        tier: String((value && value.tier) || ''),
+        agent_cli: String((value && value.agent_cli) || ''),
+        model: String((value && value.model) || ''),
+      },
+    ]).filter(([, value]) => value.tier && value.agent_cli));
+  }
+  return snapshot;
+}
+
+function designFlowCatalogItems(result) {
+  const raw = result && (result.items || result.catalog || result.workflows);
+  return (Array.isArray(raw) ? raw : []).filter((flow) => {
+    if (!flow || typeof flow !== 'object') return false;
+    return !flow.purpose || String(flow.purpose) === 'design';
+  });
+}
+
+function designFlowNodes(flow) {
+  const raw = flow && flow.snapshot && typeof flow.snapshot === 'object' ? flow.snapshot
+    : flow && flow.flow && typeof flow.flow === 'object' ? flow.flow : flow || {};
+  return Array.isArray(raw.nodes) ? raw.nodes
+    : Array.isArray(flow && flow.nodes) ? flow.nodes
+      : raw.template && Array.isArray(raw.template.nodes) ? raw.template.nodes : [];
+}
+
+function designFlowScopeLabel(flow) {
+  const scope = String((flow && (flow.scope || flow._scope)) || 'user');
+  return scope === 'repository' ? '登録フォルダ' : scope === 'builtin' ? '同梱雛形' : '自分用';
+}
+
+function designFlowChoicesHtml(wizard) {
+  if (wizard.designFlowCatalog === null) {
+    return `<fieldset class="task-choice-grid design-flow-choice"><legend>設計フローを選択</legend>
+      <p class="muted">設計フローを読み込んでいます…</p></fieldset>`;
+  }
+  const items = wizard.designFlowCatalog || [];
+  const cards = items.map((flow) => {
+    const nodes = designFlowNodes(flow);
+    const selected = designFlowKey(flow) === wizard.designFlowKey;
+    return `<button type="button" class="task-choice-card design-flow-card" data-project-design-flow="${esc(designFlowKey(flow))}"
+        aria-pressed="${selected}"><span><strong>${esc(flow.name || flow.id)}</strong>
+        <small>${esc(flow.description || `${nodes.length}工程の設計フロー`)}</small>
+        <small>${esc(designFlowScopeLabel(flow))} · ${nodes.length}工程</small>
+      </span></button>`;
+  }).join('');
+  return `<fieldset class="task-choice-grid design-flow-choice"><legend>設計フローを選択</legend>
+    ${wizard.designFlowCatalogError ? `<p class="qf-failure" role="alert">${esc(wizard.designFlowCatalogError)}</p>` : ''}
+    ${wizard.designFlowError ? `<p class="qf-failure" role="alert">${esc(wizard.designFlowError)}</p>` : ''}
+    ${cards || '<p class="muted">利用できる設計フローがありません。</p>'}
+  </fieldset>`;
+}
+
+async function loadProjectDesignFlowCatalog(wizard, cwd, { preserveSelection = true } = {}) {
+  const catalogKey = String(cwd || '').trim();
+  if (wizard.designFlowCatalogKey === catalogKey && wizard.designFlowCatalog !== null) return;
+  const previousKey = preserveSelection ? wizard.designFlowKey : '';
+  wizard.designFlowCatalogKey = catalogKey;
+  wizard.designFlowCatalog = null;
+  wizard.designFlowCatalogError = '';
+  wizard.designFlowError = '';
+  renderProjectTaskWizard();
+  try {
+    let result;
+    if (api.adhocFlowDesignCatalog) {
+      result = await api.adhocFlowDesignCatalog({ cwd: catalogKey });
+    } else if (api.adhocFlowOverview) {
+      // 移行中の Dashboard では専用 IPC がまだ無い場合がある。overview を使う場合も
+      // cwd を必ず渡し、登録フォルダの解決結果を現在の対象と一致させる。
+      result = await api.adhocFlowOverview({ cwd: catalogKey });
+    } else {
+      throw new Error('設計フローのカタログAPIが利用できません');
+    }
+    wizard.designFlowCatalog = designFlowCatalogItems(result);
+    if (previousKey) {
+      const selected = wizard.designFlowCatalog.find((flow) => designFlowKey(flow) === previousKey);
+      if (selected) {
+        wizard.designFlow = designFlowSnapshot(selected, wizard.designAssignments);
+      } else {
+        // 利用不能な repository フローを先頭の候補や自動フローへ置き換えない。
+        wizard.designFlow = null;
+        wizard.designFlowError = '選択した設計フローはこの対象フォルダでは利用できません。再選択してください';
+      }
+    } else {
+      // 未選択で開いた時はワークフロー画面と同じく同梱の既定フローを選んでおく。
+      const defaultId = wizard.designMode === 'auto' ? 'design-auto' : 'design-interactive';
+      const selected = wizard.designFlowCatalog.find((flow) =>
+        flow.id === defaultId && String(flow.scope || flow._scope || '') === 'builtin')
+        || wizard.designFlowCatalog[0] || null;
+      if (selected) await loadProjectDesignFlowPreview(wizard, selected);
+    }
+  } catch (err) {
+    wizard.designFlowCatalog = [];
+    wizard.designFlowCatalogError = `設計フローを読み込めませんでした: ${err.message || err}`;
+  }
+  renderProjectTaskWizard();
+}
+
+async function loadProjectDesignFlowPreview(wizard, flow) {
+  wizard.designFlow = designFlowSnapshot(flow, wizard.designAssignments);
+  wizard.designFlowKey = designFlowKey(flow);
+  wizard.designFlowError = '';
+  wizard.designPreview = null;
+  // 同梱フローを選んだ場合は互換のための designMode も揃える（ワークフロー画面と同じ）。
+  wizard.designMode = String((flow && flow.id) || '') === 'design-auto' ? 'auto' : 'interactive';
+  if (!wizard.designFlow || !api.adhocFlowDesignPreview) return;
+  wizard.busy = '設計フローの割り当てを確認中…';
+  renderProjectTaskWizard();
+  try {
+    const result = await api.adhocFlowDesignPreview({
+      id: wizard.designFlow.id,
+      scope: wizard.designFlow.scope,
+      ...(wizard.designFlow.cwd ? { cwd: wizard.designFlow.cwd } : {}),
+    });
+    wizard.designPreview = result.preview || null;
+    wizard.designFlow = designFlowSnapshot(flow, wizard.designAssignments, wizard.designPreview);
+  } catch (err) {
+    wizard.designFlowError = `設計フローの割り当てを読み込めませんでした: ${err.message || err}`;
+  } finally {
+    wizard.busy = '';
+    renderProjectTaskWizard();
+  }
+}
+
 function openProjectPreparationDesign(item, session) {
   const dialog = $('dlg-enqueue');
   dialog.classList.remove('task-create-dialog');
@@ -2141,11 +2316,7 @@ function renderProjectTaskWizard() {
         <input id="project-task-files" type="file" multiple accept=".md,.markdown,text/markdown"></label>
         <p class="muted">${wizard.documents.length ? wizard.documents.map((item) => esc(item.name)).join('、') : '未選択'}</p></section>
       ${wizard.route === 'agent-design'
-        ? `<fieldset class="task-choice-grid design-flow-choice"><legend>設計フローを選択</legend>
-          <button type="button" class="task-choice-card" data-project-design-mode="interactive" aria-pressed="${wizard.designMode === 'interactive'}">
-            <span><strong>対話で設計</strong><small>設計案を作り、必要な確認事項へ回答しながら詰めます。</small></span></button>
-          <button type="button" class="task-choice-card" data-project-design-mode="auto" aria-pressed="${wizard.designMode === 'auto'}">
-            <span><strong>全自動で設計</strong><small>確認待ちを挟まず、一度で設計案をまとめます。</small></span></button></fieldset>
+        ? `${designFlowChoicesHtml(wizard)}
           ${designAssignmentSectionHtml(wizard.designPreview, wizard.designAssignments)}`
         : ''}</div>`;
   } else if (wizard.step === 4) {
@@ -2187,6 +2358,17 @@ function renderProjectTaskWizard() {
   dialog.querySelector('#project-source-master')?.addEventListener('click', (event) => togglePressed(event.currentTarget));
   dialog.querySelectorAll('[data-project-source-version], [data-project-source-note], [data-project-candidate]')
     .forEach((button) => button.addEventListener('click', () => togglePressed(button)));
+  dialog.querySelectorAll('[data-project-design-flow]').forEach((button) => button.addEventListener('click', async () => {
+    const flow = (wizard.designFlowCatalog || []).find((item) => designFlowKey(item) === button.dataset.projectDesignFlow);
+    if (!flow) {
+      wizard.designFlow = null;
+      wizard.designFlowError = '選択した設計フローは利用できません。再選択してください';
+      renderProjectTaskWizard();
+      return;
+    }
+    wizard.designAssignments = null;
+    await loadProjectDesignFlowPreview(wizard, flow);
+  }));
   dialog.querySelector('#project-task-files')?.addEventListener('change', async (event) => {
     wizard.documents = await Promise.all([...event.target.files].map(async (file) => ({ name: file.name, content: await file.text() })));
     renderProjectTaskWizard();
@@ -2194,24 +2376,8 @@ function renderProjectTaskWizard() {
   // 設計フローの割り当ては再描画で消えないよう、変更のたびに状態へ写す。
   dialog.querySelectorAll('[data-design-node]').forEach((select) => select.addEventListener('change', () => {
     wizard.designAssignments = collectDesignAssignmentsFrom(dialog);
-  }));
-  dialog.querySelectorAll('[data-project-design-mode]').forEach((button) => button.addEventListener('click', async () => {
-    const mode = button.dataset.projectDesignMode;
-    if (wizard.designMode === mode) return;
-    wizard.designMode = mode;
-    wizard.designPreview = null;
-    wizard.designAssignments = null;
-    wizard.busy = '設計フローを確認中…';
-    renderProjectTaskWizard();
-    try {
-      const result = await api.adhocFlowDesignPreview({ mode });
-      wizard.designPreview = result.preview;
-    } catch (err) {
-      wizard.designPreview = { nodes: [] };
-      console.warn('設計フローの割り当てを読み込めませんでした:', err);
-    }
-    wizard.busy = '';
-    renderProjectTaskWizard();
+    const flow = (wizard.designFlowCatalog || []).find((item) => designFlowKey(item) === wizard.designFlowKey);
+    if (flow) wizard.designFlow = designFlowSnapshot(flow, wizard.designAssignments, wizard.designPreview);
   }));
   dialog.querySelector('[data-project-task-next]')?.addEventListener('click', advanceProjectTaskWizard);
 }
@@ -2240,24 +2406,20 @@ async function advanceProjectTaskWizard() {
     if (!wizard.route) wizard.error = '進め方を選択してください';
     else {
       wizard.step = 3;
-      if (wizard.route === 'agent-design' && !wizard.designPreview && api.adhocFlowDesignPreview) {
-        wizard.busy = '設計フローを確認中…'; renderProjectTaskWizard();
-        try {
-          const result = await api.adhocFlowDesignPreview({ mode: wizard.designMode });
-          wizard.designPreview = result.preview;
-        } catch (err) {
-          // 割り当てUIが読めなくても準備は進められる（自動割り当てで実行される）。
-          wizard.designPreview = { nodes: [] };
-          console.warn('設計フローの割り当てを読み込めませんでした:', err);
-        }
-        wizard.busy = '';
-      }
+      if (wizard.route === 'agent-design') await loadProjectDesignFlowCatalog(wizard, p.dir);
     }
     renderProjectTaskWizard();
     return;
   }
   if (wizard.step === 3) {
     wizard.designAssignments = collectDesignAssignmentsFrom($('dlg-enqueue')) || wizard.designAssignments;
+    const selectedFlow = (wizard.designFlowCatalog || []).find((item) => designFlowKey(item) === wizard.designFlowKey);
+    if (wizard.route === 'agent-design' && (!selectedFlow || !wizard.designFlow)) {
+      wizard.designFlowError = '設計フローを選択してください';
+      renderProjectTaskWizard();
+      return;
+    }
+    if (selectedFlow) wizard.designFlow = designFlowSnapshot(selectedFlow, wizard.designAssignments, wizard.designPreview);
     wizard.includeMaster = $('project-source-master')?.getAttribute('aria-pressed') === 'true';
     wizard.versionNames = [...document.querySelectorAll('[data-project-source-version][aria-pressed="true"]')]
       .map((button) => button.dataset.projectSourceVersion);
@@ -2306,12 +2468,25 @@ async function advanceProjectTaskWizard() {
   if (wizard.step === 4) {
     const selected = wizard.candidates.flatMap((task, index) => {
       if (document.querySelector(`[data-project-candidate="${index}"]`)?.getAttribute('aria-pressed') !== 'true') return [];
-      return [{ ...task,
+      const design = task.route === 'agent-design' && wizard.designFlow
+        ? { flow: designFlowSnapshot(wizard.designFlow, wizard.designAssignments) } : null;
+      const candidate = { ...task,
         title: document.querySelector(`[data-project-candidate-title="${index}"]`)?.value.trim(),
         desc: document.querySelector(`[data-project-candidate-desc="${index}"]`)?.value.trim(),
         acceptance: (document.querySelector(`[data-project-candidate-accept="${index}"]`)?.value || '').split('\n').map((line) => line.trim()).filter(Boolean),
         charter: document.querySelector(`[data-project-candidate-charter="${index}"]`)?.value || task.charter,
-      }];
+        ...(design ? {
+          design,
+          designMode: wizard.designMode,
+          designAssignments: wizard.designAssignments || null,
+        } : {}),
+      };
+      if (task.route !== 'agent-design') {
+        delete candidate.design;
+        delete candidate.designMode;
+        delete candidate.designAssignments;
+      }
+      return [candidate];
     }).filter((task) => task.title);
     if (!selected.length) { wizard.error = '追加するタスクを選択してください'; renderProjectTaskWizard(); return; }
     wizard.busy = '準備中…'; renderProjectTaskWizard();
@@ -2319,8 +2494,6 @@ async function advanceProjectTaskWizard() {
       const result = await api.preparationCreatePackage({
         projectDir: p.dir, title: wizard.text.slice(0, 80), goal: wizard.text,
         materials: wizard.materials, candidates: selected,
-        designMode: wizard.designMode,
-        ...(wizard.designAssignments ? { designAssignments: wizard.designAssignments } : {}),
       });
       state.projectPreparations = [...(result.items || []), ...(state.projectPreparations || [])];
       $('dlg-enqueue').close();
@@ -2340,7 +2513,8 @@ async function openProjectTaskWizard(prefill = {}) {
   projectTaskWizard = { step: 1, text: inherited, includeMaster: false,
     versionNames: prefill.charter ? [prefill.charter] : [], noteNames: [], documents: [], notes,
     route: '', recommendation: null, materials: [], proposal: null, candidates: [], error: '', busy: '',
-    designMode: 'interactive', designPreview: null, designAssignments: null };
+    designMode: 'interactive', designFlowCatalogKey: '', designFlowCatalog: null, designFlowCatalogError: '',
+    designFlowError: '', designFlowKey: '', designFlow: null, designPreview: null, designAssignments: null };
   renderProjectTaskWizard();
   $('dlg-enqueue').showModal();
 }

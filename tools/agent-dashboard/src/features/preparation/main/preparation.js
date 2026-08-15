@@ -5,6 +5,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { agentHomeSubdir } = require('../../../base/main/agent-home');
 
 const REQUIRED_SECTIONS = [
@@ -13,6 +14,7 @@ const REQUIRED_SECTIONS = [
   ['受入基準', '完了条件'],
   ['検証方法', '検証', 'テスト方法'],
 ];
+const DESIGN_RESULT_SECTIONS = ['目的', '変更対象', '受入基準', '検証方法'];
 
 function hasHeading(text, names) {
   return String(text || '').split(/\r?\n/).some((line) => {
@@ -23,6 +25,10 @@ function hasHeading(text, names) {
 
 function isCompleteDocument(text) {
   return REQUIRED_SECTIONS.every((names) => hasHeading(text, names));
+}
+
+function isCompleteDesignDocument(text) {
+  return DESIGN_RESULT_SECTIONS.every((name) => hasHeading(text, [name]));
 }
 
 function recommendRoute({ goal, materials } = {}) {
@@ -67,6 +73,106 @@ function normalizeMaterials(raw) {
 const ROUTES = new Set(['agent-design', 'external-design', 'direct']);
 const TARGETS = new Set(['workflow', 'project']);
 const DESIGN_MODES = new Set(['interactive', 'auto']);
+const DESIGN_SCOPES = new Set(['user', 'repository', 'builtin']);
+
+function cloneValue(value) {
+  if (!value || typeof value !== 'object') return value;
+  if (Array.isArray(value)) return value.map(cloneValue);
+  return Object.fromEntries(Object.entries(value).map(([key, nested]) => [key, cloneValue(nested)]));
+}
+
+function normalizeDefinitionNode(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const id = String(raw.id || '').trim();
+  if (!id) return null;
+  const node = {
+    id,
+    goal: String(raw.goal || '').trim(),
+    kind: String(raw.kind || 'work').trim() || 'work',
+    deps: (Array.isArray(raw.deps) ? raw.deps : []).map(String),
+  };
+  if (raw.tier) node.tier = String(raw.tier).trim();
+  if (raw.interaction && typeof raw.interaction === 'object') node.interaction = cloneValue(raw.interaction);
+  if (raw.method && typeof raw.method === 'object') node.method = cloneValue(raw.method);
+  if (raw.continuation) node.continuation = String(raw.continuation).trim();
+  return node;
+}
+
+function normalizeDesignDefinition(raw) {
+  if (!raw || typeof raw !== 'object' || !Array.isArray(raw.nodes)) return null;
+  const nodes = raw.nodes.map(normalizeDefinitionNode);
+  if (!nodes.length || nodes.some((node) => !node)) return null;
+  return {
+    version: Number(raw.version) || 2,
+    purpose: String(raw.purpose || 'implementation').trim() || 'implementation',
+    libraryVisibility: String(raw.libraryVisibility || 'library').trim() || 'library',
+    entry: (Array.isArray(raw.entry) ? raw.entry : []).map(String),
+    exit: (Array.isArray(raw.exit) ? raw.exit : []).map(String),
+    nodes,
+  };
+}
+
+// design.flow は renderer の選択値ではなく、main が解決した workflow の snapshot だけを保存する。
+function normalizeDesignFlow(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const id = String(raw.id || '').trim();
+  const originRaw = raw.origin && typeof raw.origin === 'object' ? raw.origin : {};
+  const scope = String(originRaw.scope || '').trim();
+  const repository = String(originRaw.repository || '').trim();
+  const digest = String(raw.digest || '').trim();
+  const definition = normalizeDesignDefinition(raw.definition);
+  if (!id || !DESIGN_SCOPES.has(scope) || !digest || !definition) return null;
+  if (scope === 'repository' ? !repository : repository) return null;
+  return {
+    version: Number(raw.version) || 1,
+    id,
+    name: String(raw.name || id).trim() || id,
+    origin: { scope, repository },
+    digest,
+    definition,
+  };
+}
+
+function normalizeDesign(raw, flow = null) {
+  const value = raw && typeof raw === 'object' ? raw : {};
+  const normalizedFlow = normalizeDesignFlow(flow || value.flow);
+  return {
+    sessionId: String(value.sessionId || ''),
+    document: String(value.document || ''),
+    runIds: [...new Set((Array.isArray(value.runIds) ? value.runIds : []).map(String).filter(Boolean))],
+    ...(normalizedFlow ? { flow: normalizedFlow } : {}),
+  };
+}
+
+function digestDefinition(definition) {
+  return `sha256:${crypto.createHash('sha256').update(JSON.stringify(definition)).digest('hex')}`;
+}
+
+function builtinDesignFlowSnapshot(mode) {
+  const id = mode === 'auto' ? 'design-auto' : 'design-interactive';
+  const candidates = [
+    process.resourcesPath && path.join(process.resourcesPath, 'workflows', `${id}.json`),
+    path.resolve(__dirname, '../../../../../../workflows', `${id}.json`),
+  ].filter(Boolean);
+  for (const file of candidates) {
+    try {
+      const workflow = JSON.parse(fs.readFileSync(file, 'utf8'));
+      const definition = normalizeDesignDefinition(workflow);
+      if (!definition) continue;
+      return normalizeDesignFlow({
+        version: 1,
+        id: workflow.id || id,
+        name: workflow.name || id,
+        origin: { scope: 'builtin', repository: '' },
+        digest: digestDefinition(definition),
+        definition,
+      });
+    } catch (error) {
+      if (!error || error.code !== 'ENOENT') continue;
+    }
+  }
+  return null;
+}
 
 // 設計フローのノードへ人が固定したエージェント・モデル（{ nodeId: {tier, agent_cli, model} }）。
 // ここでは形だけを整えて保存する——tier の適格性と候補の実在は、設計runを組む adhoc 側が
@@ -94,6 +200,7 @@ function createItem(raw = {}) {
   const routeRecommendation = recommendRoute({ goal, materials });
   const route = ROUTES.has(raw.route) ? raw.route : routeRecommendation.route;
   const now = new Date().toISOString();
+  const design = route === 'agent-design' ? normalizeDesign(raw.design) : normalizeDesign();
   return {
     version: 1,
     id: String(raw.id || `prep-${Date.now().toString(36)}-${Math.floor(1000 + Math.random() * 9000)}`),
@@ -110,7 +217,7 @@ function createItem(raw = {}) {
     designAssignments: normalizeDesignAssignments(raw.designAssignments),
     taskSpec: raw.taskSpec && typeof raw.taskSpec === 'object' ? { ...raw.taskSpec } : null,
     phase: route === 'agent-design' ? 'design-ready' : 'implementation-ready',
-    design: { sessionId: '', document: '', runIds: [] },
+    design,
     handoff: { taskId: '', implementationRunIds: [] },
     createdAt: String(raw.createdAt || now),
     updatedAt: now,
@@ -126,7 +233,28 @@ function createPackage(raw = {}) {
   if (!candidates.length) throw new Error('バックログ候補は1件以上必要です');
   const id = String(raw.id || `pkg-${Date.now().toString(36)}-${Math.floor(1000 + Math.random() * 9000)}`);
   const materials = normalizeMaterials(raw.materials);
+  const packageFlow = normalizeDesignFlow(raw.design && raw.design.flow);
   const now = new Date().toISOString();
+  const makeCandidate = (rawCandidate) => {
+    const candidate = rawCandidate && typeof rawCandidate === 'object' ? rawCandidate : {};
+    const candidateMaterials = [...materials, ...(Array.isArray(candidate.materials) ? candidate.materials : [])];
+    const recommendation = recommendRoute({ goal: String(candidate.goal || ''), materials: candidateMaterials });
+    const route = ROUTES.has(candidate.route) ? candidate.route : recommendation.route;
+    const candidateFlow = route === 'agent-design'
+      ? normalizeDesignFlow(candidate.design && candidate.design.flow) || packageFlow
+      : null;
+    return createItem({
+      ...candidate,
+      target: 'project',
+      projectDir,
+      packageId: id,
+      taskSpec: candidate,
+      designMode: candidate.designMode || raw.designMode,
+      designAssignments: candidate.designAssignments || raw.designAssignments,
+      materials: candidateMaterials,
+      ...(candidateFlow ? { design: { ...(candidate.design || {}), flow: candidateFlow } } : { design: undefined }),
+    });
+  };
   return {
     version: 1,
     id,
@@ -135,43 +263,49 @@ function createPackage(raw = {}) {
     title: String(raw.title || goal.slice(0, 80)),
     goal,
     materials,
-    items: candidates.map((candidate) => createItem({
-      ...candidate,
-      target: 'project',
-      projectDir,
-      packageId: id,
-      taskSpec: candidate,
-      designMode: candidate.designMode || raw.designMode,
-      designAssignments: candidate.designAssignments || raw.designAssignments,
-      materials: [...materials, ...(Array.isArray(candidate.materials) ? candidate.materials : [])],
-    })),
+    ...(packageFlow ? { design: { flow: packageFlow } } : {}),
+    items: candidates.map(makeCandidate),
     createdAt: String(raw.createdAt || now),
     updatedAt: now,
   };
 }
 
 function canHandoff(item) {
-  return !!item && item.phase === 'implementation-ready';
+  if (!item || item.phase !== 'implementation-ready') return false;
+  return item.route !== 'agent-design'
+    || isCompleteDesignDocument(item.design && item.design.document);
 }
 
 function completeDesign(item, result = {}) {
   if (!item || item.route !== 'agent-design') throw new Error('エージェント設計の項目ではありません');
   const document = String(result.document || '').trim();
   if (!document) throw new Error('設計結果は必須です');
+  if (!isCompleteDesignDocument(document)) {
+    throw new Error('設計結果には必須4節（目的・変更対象・受入基準・検証方法）が必要です');
+  }
+  const currentDesign = normalizeDesign(item.design);
+  const resultMaterialId = `design-result:${item.id}`;
   const design = {
-    sessionId: String(result.sessionId || ''),
+    ...currentDesign,
+    sessionId: String(result.sessionId || currentDesign.sessionId || ''),
     document,
-    runIds: (Array.isArray(result.runIds) ? result.runIds : []).map(String).filter(Boolean),
+    runIds: [...new Set([
+      ...currentDesign.runIds,
+      ...(Array.isArray(result.runIds) ? result.runIds : []).map(String).filter(Boolean),
+    ])],
   };
   return {
     ...item,
     phase: 'implementation-ready',
-    materials: normalizeMaterials([...(item.materials || []), {
-      id: `design-result:${item.id}`,
-      kind: 'design-result',
-      name: '設計結果.md',
-      content: document,
-    }]),
+    materials: normalizeMaterials([
+      ...(item.materials || []).filter((material) => material && material.id !== resultMaterialId),
+      {
+        id: resultMaterialId,
+        kind: 'design-result',
+        name: '設計結果.md',
+        content: document,
+      },
+    ]),
     design,
     updatedAt: new Date().toISOString(),
   };
@@ -182,13 +316,19 @@ function startDesign(item, result = {}) {
   const sessionId = String(result.sessionId || '').trim();
   const runId = String(result.runId || '').trim();
   if (!sessionId || !runId) throw new Error('設計セッションとrun IDは必須です');
+  const storedFlow = normalizeDesignFlow(item.design && item.design.flow);
+  const suppliedFlow = normalizeDesignFlow(result.designFlow)
+    || normalizeDesignFlow(result.flow)
+    || normalizeDesignFlow(result.design && result.design.flow);
+  const flow = storedFlow || suppliedFlow || builtinDesignFlowSnapshot(item.designMode);
   return {
     ...item,
     phase: 'designing',
     design: {
-      ...(item.design || {}),
+      ...normalizeDesign(item.design, flow),
       sessionId,
-      runIds: [...new Set([...(item.design && item.design.runIds || []), runId])],
+      runIds: [...new Set([...normalizeDesign(item.design).runIds, runId])],
+      ...(flow ? { flow } : {}),
     },
     updatedAt: new Date().toISOString(),
   };
@@ -233,7 +373,11 @@ function writeAtomic(file, value) {
 
 function saveItem(config, item) {
   if (!item || typeof item !== 'object') throw new Error('作業準備項目が不正です');
-  const next = { ...item, updatedAt: new Date().toISOString() };
+  const next = {
+    ...item,
+    design: item.route === 'agent-design' ? normalizeDesign(item.design) : normalizeDesign(),
+    updatedAt: new Date().toISOString(),
+  };
   writeAtomic(itemFile(config, next.id), next);
   return next;
 }
@@ -270,8 +414,10 @@ function savePackage(config, package_) {
   }
   const items = Array.isArray(package_.items) ? package_.items : [];
   for (const item of items) saveItem(config, item);
+  const packageFlow = normalizeDesignFlow(package_.design && package_.design.flow);
   const next = {
     ...package_,
+    ...(packageFlow ? { design: { flow: packageFlow } } : package_.design ? { design: {} } : {}),
     items: undefined,
     itemIds: items.map((item) => item.id),
     updatedAt: new Date().toISOString(),
@@ -293,7 +439,9 @@ function implementationRequest(item) {
 }
 
 module.exports = {
-  recommendRoute, normalizeMaterials, normalizeDesignAssignments, createItem, createPackage,
+  recommendRoute, normalizeMaterials, normalizeDesignAssignments, normalizeDesignFlow,
+  isCompleteDesignDocument,
+  createItem, createPackage,
   canHandoff, startDesign, completeDesign,
   recordHandoff,
   implementationRequest, resolveDir, saveItem, getItem, removeItem, listItems, savePackage,

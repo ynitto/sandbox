@@ -6,6 +6,7 @@
 const assert = require('assert');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 
 const { loadFeatures } = require('../src/features');
 
@@ -29,6 +30,140 @@ test('各 feature が registerIpc / preloadApi / configDefaults を持つ', () =
     assert.strictEqual(typeof f.registerIpc, 'function', `${f.id}.registerIpc`);
     assert.strictEqual(typeof f.preloadApi, 'function', `${f.id}.preloadApi`);
     assert.ok(f.configDefaults && typeof f.configDefaults === 'object', `${f.id}.configDefaults`);
+  }
+});
+
+test('adhoc-flow は設計セッションを実装runとは別のIPC入口で公開する', () => {
+  const stack = loadFeatures().find((f) => f.id === 'adhoc-flow');
+  const api = stack.preloadApi();
+  for (const name of ['adhocFlowSubmit', 'adhocFlowSnapshotSelection',
+    'designSessionList', 'designSessionGet', 'designSessionStart', 'designSessionDelete']) {
+    assert.strictEqual(typeof api[name], 'function', name);
+  }
+  const calls = [];
+  const invoke = (channel, payload) => {
+    calls.push([channel, payload]);
+    return 'ok';
+  };
+  assert.strictEqual(api.adhocFlowSubmit(invoke)({ request: '実装する' }), 'ok');
+  assert.strictEqual(api.designSessionStart(invoke)({ goal: '設計する', mode: 'auto' }), 'ok');
+  assert.deepStrictEqual(calls, [
+    ['adhocFlow:submit', { request: '実装する' }],
+    ['designSession:start', { goal: '設計する', mode: 'auto' }],
+  ]);
+});
+
+test('設計purposeの追加が実装フロー・標準パターン・共有フローへ混入しない', () => {
+  const adhoc = require('../src/features/adhoc-flow/main/adhoc');
+  const profiles = require('../src/features/orchestration/main/profiles');
+  const exec = require('../src/features/routines/main/exec');
+  const projectEngine = require('../src/features/agent-project/main/engine');
+  const workflowDir = fs.mkdtempSync(path.join(os.tmpdir(), 'feature-split-workflows-'));
+  const builtinWorkflowDir = fs.mkdtempSync(path.join(os.tmpdir(), 'feature-split-builtin-'));
+  const busDir = fs.mkdtempSync(path.join(os.tmpdir(), 'feature-split-bus-'));
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'feature-split-repo-'));
+  const cfg = { adhocFlow: { workflowDir, builtinWorkflowDir, busDir } };
+  const originalResolveTier = profiles.resolveTier;
+  const originalShInWsl = exec.shInWsl;
+  const originalProjectRoots = projectEngine.projectRoots;
+  profiles.resolveTier = () => ({ agent_cli: 'codex', model: 'test' });
+  const launchLines = [];
+  exec.shInWsl = (line) => {
+    launchLines.push(line);
+    if (line.includes('rev-parse --show-toplevel')) {
+      return { status: 0, stdout: `${repo}\nmain\ngit@example.invalid:shared.git\n`, stderr: '' };
+    }
+    return { status: 0, stdout: 'launched:1\n', stderr: '' };
+  };
+  fs.mkdirSync(path.join(repo, '.git'));
+  fs.mkdirSync(path.join(repo, '.agents', 'workflows'), { recursive: true });
+  projectEngine.projectRoots = () => [repo];
+  try {
+    const implementation = adhoc.saveWorkflow(cfg, {
+      id: 'implementation-flow-guard', name: '既存実装フロー',
+      nodes: [{ id: 'work', goal: '実装する', kind: 'work', tier: 'large' }],
+    });
+    const design = adhoc.saveWorkflow(cfg, {
+      id: 'design-flow-guard', name: '設計フロー', purpose: 'design',
+      nodes: [{ id: 'finish', goal: '設計書を出力する', kind: 'work', tier: 'large' }],
+    });
+    const sharedFile = path.join(repo, '.agents', 'workflows', 'shared-implementation.json');
+    fs.writeFileSync(sharedFile, `${JSON.stringify({
+      version: 2, id: 'shared-implementation', name: '共有実装フロー',
+      purpose: 'implementation', entry: ['work'], exit: ['work'],
+      nodes: [{ id: 'work', goal: '共有フローで実装する', kind: 'work', tier: 'large', deps: [] }],
+    })}\n`);
+    const sharedBeforeRun = fs.readFileSync(sharedFile, 'utf8');
+
+    const implementationSnapshot = adhoc.snapshotSelection(cfg, {
+      type: 'custom', id: implementation.id, scope: 'user',
+    });
+    assert.strictEqual(implementationSnapshot.purpose, 'implementation');
+    assert.strictEqual(implementationSnapshot.nodes[0].goal, '実装する');
+    assert.strictEqual(adhoc.snapshotSelection(cfg, {
+      type: 'pattern', id: 'build-and-verify',
+    }).pattern, 'build-and-verify');
+    assert.deepStrictEqual(adhoc.snapshotSelection(cfg, { type: 'auto' }), {
+      version: 1, type: 'auto',
+    });
+
+    const sharedSnapshot = adhoc.snapshotSelection(cfg, {
+      type: 'custom', id: 'shared-implementation', scope: 'repository',
+    }, { cwd: repo });
+    assert.strictEqual(sharedSnapshot.purpose, 'implementation');
+    assert.strictEqual(sharedSnapshot.nodes[0].goal, '共有フローで実装する');
+
+    assert.throws(() => adhoc.snapshotSelection(cfg, {
+      type: 'auto',
+    }, { purpose: 'design' }), /カスタムの design/);
+    assert.throws(() => adhoc.snapshotSelection(cfg, {
+      type: 'custom', id: implementation.id, scope: 'user',
+    }, { purpose: 'design' }), /purpose/);
+    const designSnapshot = adhoc.snapshotSelection(cfg, {
+      type: 'custom', id: design.id, scope: 'user',
+    }, { purpose: 'design' });
+    assert.strictEqual(designSnapshot.purpose, 'design');
+    assert.match(designSnapshot.nodes[0].goal, /リポジトリは読み取り専用です/);
+    assert.match(designSnapshot.nodes[0].goal, /commit、pushは禁止です/);
+
+    const implementationRun = adhoc.submit(cfg, {
+      request: '実装runの回帰',
+      selection: { type: 'custom', id: implementation.id, scope: 'user' },
+    });
+    const implementationRecord = JSON.parse(fs.readFileSync(
+      path.join(busDir, 'inbox', `${implementationRun.runId}.json`), 'utf8'));
+    assert.strictEqual(implementationRecord.purpose, 'implementation');
+    assert.strictEqual(implementationRecord.plan.nodes[0].goal, '実装する');
+
+    const patternRun = adhoc.submit(cfg, {
+      request: '標準パターンrunの回帰',
+      selection: { type: 'pattern', id: 'build-and-verify' },
+    });
+    const patternRecord = JSON.parse(fs.readFileSync(
+      path.join(busDir, 'inbox', `${patternRun.runId}.json`), 'utf8'));
+    assert.strictEqual(patternRecord.purpose, 'implementation');
+    assert.strictEqual(patternRecord.pattern, 'build-and-verify');
+
+    const designRun = adhoc.submit(cfg, {
+      request: '設計runの回帰', cwd: repo,
+      selection: { type: 'custom', id: design.id, scope: 'user' },
+    });
+    const designRecord = JSON.parse(fs.readFileSync(
+      path.join(busDir, 'inbox', `${designRun.runId}.json`), 'utf8'));
+    assert.strictEqual(designRecord.purpose, 'design');
+    assert.strictEqual(designRecord.workspace, null);
+    assert.match(designRecord.plan.nodes[0].goal, /リポジトリは読み取り専用です/);
+    assert.ok(launchLines.every((line) => !/\b(?:commit|push|branch|checkout)\b/.test(line)),
+      'dashboardの設計run起動行へGit書込み操作を混ぜない');
+    assert.strictEqual(fs.readFileSync(sharedFile, 'utf8'), sharedBeforeRun,
+      '設計run後も共有フロー定義を書き換えない');
+  } finally {
+    profiles.resolveTier = originalResolveTier;
+    exec.shInWsl = originalShInWsl;
+    projectEngine.projectRoots = originalProjectRoots;
+    for (const dir of [workflowDir, builtinWorkflowDir, busDir, repo]) {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   }
 });
 

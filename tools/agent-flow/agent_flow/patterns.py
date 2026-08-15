@@ -473,6 +473,13 @@ def plan_strategy_user(plan: dict, request: str, tier: str = ""):
                                 f"（有効: {', '.join(sorted(VALID_KINDS))}）")
         node = {"id": tid, "goal": goal,
                 "deps": [str(d) for d in (t.get("deps") or [])], "kind": kind}
+        readonly = t.get("readonly")
+        if readonly is not None and not isinstance(readonly, bool):
+            raise UserPlanError(f"ノード {tid} の readonly は真偽値で指定してください")
+        if readonly is not None and kind == "human":
+            raise UserPlanError(f"ノード {tid} の human には readonly を指定できません")
+        if readonly:
+            node["readonly"] = True
         agent = t.get("agent")
         if kind == "human":
             if agent is not None:

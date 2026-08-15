@@ -826,7 +826,8 @@ def _agent_failure(cli: str, rc: int, out: str, err: str) -> str:
 
 
 def run_agent(prompt: str, model: str | None, purpose: str = "", cwd: "str | None" = None,
-              agent: "dict | None" = None, files: "list[str] | None" = None) -> str:
+              agent: "dict | None" = None, files: "list[str] | None" = None,
+              readonly: "bool | None" = None) -> str:
     """エージェント CLI を呼び出してテキスト応答を返す（このツールの全 LLM 呼び出しの単一チョーク
     ポイント: planner / evaluator / executor / verify / 裁定）。
 
@@ -884,7 +885,8 @@ def run_agent(prompt: str, model: str | None, purpose: str = "", cwd: "str | Non
     while attempt <= max(0, _TRANSIENT_RETRIES):
         try:
             t0 = time.monotonic()
-            text = _run_agent_once(prompt, model, purpose, cwd, agent=agent, files=files)
+            text = _run_agent_once(prompt, model, purpose, cwd, agent=agent, files=files,
+                                   readonly=readonly)
             _node_budget_record(time.monotonic() - t0, ref=purpose or "worker",
                                 agent_cli=cli_used, model=model_used or "",
                                 tokens_in=getattr(text, "tokens_in", None),
@@ -951,7 +953,8 @@ def _effective_agent(purpose: str, model: "str | None",
 
 def _run_agent_once(prompt: str, model: str | None, purpose: str = "",
                     cwd: "str | None" = None, agent: "dict | None" = None,
-                    files: "list[str] | None" = None) -> str:
+                    files: "list[str] | None" = None,
+                    readonly: "bool | None" = None) -> str:
     """エージェント CLI（設定 agent_cli: kiro/claude/copilot/codex）を 1 回呼び出してテキスト応答を返す。
     purpose（planner / evaluator / ノード kind）を渡すと設定 agents: の役割毎上書きが効く
     （kind は agents["worker"] へフォールバック）。model は 上書き ＞ 呼び出し値。
@@ -973,7 +976,8 @@ def _run_agent_once(prompt: str, model: str | None, purpose: str = "",
     # 読込割付のパスは本文だけでなく argv でも渡す。「チャットに入っているファイルしか
     # 編集しない」CLI（aider）は、本文に書いてあっても着手できない——定義が file_flag を
     # 宣言していなければ 1 トークンも増えないので、他の CLI の起動形は変わらない。
-    built = _agentcli.headless_cmd(plug, model, prompt, readonly=_agent_readonly(purpose),
+    use_readonly = _agent_readonly(purpose) if readonly is None else bool(readonly)
+    built = _agentcli.headless_cmd(plug, model, prompt, readonly=use_readonly,
                                    files=files or ())
     cmd, stdin_text, out_file = built["argv"], built["stdin"], built["output_file"]
     # 発生源で色を抑止（NO_COLOR/TERM=dumb）。残った ANSI は strip_ansi で除去する二段構え
@@ -1081,7 +1085,7 @@ def _stub_sleep() -> None:
 
 def execute_stub(kind: str, goal: str, dep_results: dict, model: str | None,
                  art_dir: "str | None" = None, dep_arts: "dict | None" = None,
-                 repo_instruction: str = ""):
+                 repo_instruction: str = "", readonly: bool = False):
     # repo_instruction（成果物リポジトリの clone 指示）は stub の判定に使わない（goal は本来の goal）。
     _stub_sleep()  # 実行時間を模す（AGENT_FLOW_STUB_SLEEP_MAX で調整可）
     # 失敗注入: "FAIL" を含むと失敗（retry される）/ "FLAKY" は一旦 issue を残す（verify loop 用）
@@ -1170,7 +1174,7 @@ def execute_agent(kind: str, goal: str, dep_results: dict, model: str | None,
                  instructions: str = "", prompt_table: bool = False,
                  repair: "dict | None" = None, context: str = "",
                  read_allocation: "list[dict] | None" = None,
-                 agent: "dict | None" = None):
+                 agent: "dict | None" = None, readonly: bool = False):
     role = {
         "classify": "分類役。入力を適切なカテゴリへ分類し『class=<ラベル>』形式で出力。",
         "synthesize": "統合役。依存タスクの成果を統合して 1 つの成果物にまとめる。",
@@ -1268,12 +1272,17 @@ def execute_agent(kind: str, goal: str, dep_results: dict, model: str | None,
     prompt = prepend_instructions(prompt, instructions)
     # 割付があるならパスを argv へも回す（本文の【読込割付】と同じ出どころ・同じ順序）。
     alloc_files = [row["path"] for row in normalize_read_allocation(read_allocation)]
+    reference_cwd = next((str(ref.get("local")) for ref in (references or [])
+                          if isinstance(ref, dict) and ref.get("local")
+                          and os.path.isdir(str(ref.get("local")))), None)
     if workspace and workspace.get("clone"):
         text = run_agent(prompt, model, purpose=kind, cwd=str(workspace["clone"]), agent=agent,
-                         files=alloc_files)
+                         files=alloc_files, readonly=readonly)
     else:
         # agents: の kind 別上書き（無ければ worker）
-        text = run_agent(prompt, model, purpose=kind, agent=agent, files=alloc_files)
+        text = run_agent(prompt, model, purpose=kind,
+                         cwd=reference_cwd if readonly else None,
+                         agent=agent, files=alloc_files, readonly=readonly)
     # 構造化データを意図する kind のみ JSON を抽出（自由記述の本文から JSON 風断片を
     # data に誤昇格させない）。
     data = None

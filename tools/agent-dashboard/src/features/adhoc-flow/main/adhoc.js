@@ -19,6 +19,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { agentHomeSubdir } = require('../../../base/main/agent-home');
 const exec = require('../../routines/main/exec');
 const flow = require('../../agent-project/main/flow');
@@ -32,6 +33,8 @@ const SUBMITTER = 'agent-dashboard-adhoc';
 const NODE_KINDS = ['work', 'generate', 'classify', 'synthesize', 'verify', 'filter', 'judge',
   'reduce', 'split', 'map', 'human', 'extract', 'retrieve'];
 const EXECUTION_ROLES = ['planner', 'evaluator', 'worker', 'verify'];
+const WORKFLOW_PURPOSES = ['implementation', 'design'];
+const DESIGN_TERMINAL_KINDS = new Set(['work', 'synthesize']);
 
 function cfgOf(config) {
   return (config && config.adhocFlow) || {};
@@ -44,9 +47,14 @@ function resolveBusDir(config) {
 
 function writeJsonAtomic(file, data) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  const tmp = `${file}.tmp.${process.pid}`;
-  fs.writeFileSync(tmp, `${JSON.stringify(data, null, 2)}\n`);
-  fs.renameSync(tmp, file);
+  const tmp = `${file}.tmp.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}`;
+  try {
+    fs.writeFileSync(tmp, `${JSON.stringify(data, null, 2)}\n`);
+    fs.renameSync(tmp, file);
+  } catch (error) {
+    try { fs.rmSync(tmp, { force: true }); } catch { /* 元のエラーを優先する */ }
+    throw error;
+  }
 }
 
 // --- ユーザー共通ワークフロー -------------------------------------------------
@@ -120,6 +128,13 @@ function workflowId(raw) {
   return id || `workflow-${Date.now()}`;
 }
 
+function normalizeExpectedPurpose(raw) {
+  if (raw == null || String(raw).trim() === '') return '';
+  const purpose = String(raw).trim();
+  if (!WORKFLOW_PURPOSES.includes(purpose)) throw new Error(`フローのpurposeが不正です: ${purpose}`);
+  return purpose;
+}
+
 function normalizeInteraction(raw) {
   const value = raw && typeof raw === 'object' ? raw : {};
   const mode = String(value.mode || 'approval').trim();
@@ -147,10 +162,16 @@ function normalizeInteraction(raw) {
   return interaction;
 }
 
-function normalizeWorkflow(raw) {
+function normalizeWorkflow(raw, options = {}) {
   if (!raw || typeof raw !== 'object') throw new Error('フローが不正です');
   const name = String(raw.name || '').trim();
   if (!name) throw new Error('フロー名は必須です');
+  const rawPurpose = String(raw.purpose || '').trim();
+  const purpose = rawPurpose ? normalizeExpectedPurpose(rawPurpose) : 'implementation';
+  const expectedPurpose = normalizeExpectedPurpose(options.purpose);
+  if (expectedPurpose && expectedPurpose !== purpose) {
+    throw new Error(`フローのpurposeが不一致です: ${raw.id || '(未指定)'} は ${purpose} 用です`);
+  }
   const seen = new Set();
   const nodes = (Array.isArray(raw.nodes) ? raw.nodes : []).map((n) => {
     const id = String((n && n.id) || '').trim();
@@ -159,6 +180,9 @@ function normalizeWorkflow(raw) {
     const tier = rawTier === '自動' ? 'auto' : rawTier;
     const kind = String((n && n.kind) || 'work').trim() || 'work';
     if (!NODE_KINDS.includes(kind)) throw new Error(`ノード種別が不正です: ${kind}`);
+    if (purpose === 'design' && ['human', 'split'].includes(kind)) {
+      throw new Error(`設計フローでは ${kind} ノードを使用できません`);
+    }
     if (!id || !goal || (kind !== 'human' && !tier)) throw new Error('ノードには id・内容・tier が必要です');
     if (seen.has(id)) throw new Error(`ノード id が重複しています: ${id}`);
     seen.add(id);
@@ -217,15 +241,45 @@ function normalizeWorkflow(raw) {
   const exit = explicit ? endpoints(raw.exit) : leaves;
   const sameIds = (a, b) => a.length === new Set(a).size
     && a.length === b.length && a.every((id) => b.includes(id));
+  if (purpose === 'design' && exit.length !== 1) {
+    throw new Error('設計フローの終了は1つだけ指定してください');
+  }
   if (!sameIds(entry, roots)) throw new Error('開始はすべてのルートノードへ接続してください');
   if (!sameIds(exit, leaves)) throw new Error('すべての末端ノードを終了へ接続してください');
+  if (purpose === 'design') {
+    const terminal = byId.get(exit[0]);
+    if (!terminal || !DESIGN_TERMINAL_KINDS.has(terminal.kind)) {
+      throw new Error(`設計フローの終端kindは work または synthesize が必要です: ${terminal && terminal.kind}`);
+    }
+    const dependents = new Map(nodes.map((node) => [node.id, []]));
+    nodes.forEach((node) => node.deps.forEach((dep) => dependents.get(dep).push(node.id)));
+    const visitFrom = (starts, next) => {
+      const reached = new Set();
+      const pending = [...starts];
+      while (pending.length) {
+        const id = pending.pop();
+        if (reached.has(id)) continue;
+        reached.add(id);
+        pending.push(...next(id));
+      }
+      return reached;
+    };
+    const fromEntry = visitFrom(entry, (id) => dependents.get(id) || []);
+    if (fromEntry.size !== nodes.length) {
+      throw new Error('設計フローの全ノードが開始から到達可能である必要があります');
+    }
+    const toExit = visitFrom(exit, (id) => byId.get(id).deps);
+    if (toExit.size !== nodes.length) {
+      throw new Error('設計フローの全ノードが終了へ到達可能である必要があります');
+    }
+  }
   const now = new Date().toISOString();
   return {
     version: 2,
     id: workflowId(raw.id),
     name,
     description: String(raw.description || '').trim(),
-    purpose: raw.purpose === 'design' ? 'design' : 'implementation',
+    purpose,
     libraryVisibility: raw.libraryVisibility === 'internal' ? 'internal' : 'library',
     entry,
     exit,
@@ -235,8 +289,49 @@ function normalizeWorkflow(raw) {
   };
 }
 
+// digest の対象は表示位置や作成日時を含まない v2 定義の正規形に限定する。
+// IPC 側の設計スナップショットと同じキー順・語彙にして、同じ定義から常に同じ値を得る。
+function workflowDefinition(raw) {
+  const workflow = normalizeWorkflow(raw);
+  return {
+    version: workflow.version,
+    purpose: workflow.purpose,
+    libraryVisibility: workflow.libraryVisibility,
+    entry: workflow.entry.map(String),
+    exit: workflow.exit.map(String),
+    nodes: workflow.nodes.map((node) => {
+      const out = {
+        id: String(node.id),
+        goal: String(node.goal || ''),
+        kind: String(node.kind || 'work'),
+        deps: Array.isArray(node.deps) ? node.deps.map(String) : [],
+      };
+      if (node.tier) out.tier = String(node.tier);
+      if (node.interaction && typeof node.interaction === 'object') out.interaction = node.interaction;
+      if (node.method && typeof node.method === 'object') out.method = node.method;
+      if (node.continuation) out.continuation = String(node.continuation);
+      return out;
+    }),
+  };
+}
+
+function digestDefinition(definition) {
+  return `sha256:${crypto.createHash('sha256')
+    .update(JSON.stringify(definition), 'utf8').digest('hex')}`;
+}
+
+function workflowDigest(workflow) {
+  return digestDefinition(workflowDefinition(workflow));
+}
+
 function workflowFile(config, id) {
   return path.join(resolveWorkflowDir(config), `${workflowId(id)}.json`);
+}
+
+function workflowDirsFor(config, options = {}) {
+  const scope = String(options.scope || '').trim();
+  const dirs = workflowDirs(config, options.cwd);
+  return scope ? dirs.filter((item) => item.scope === scope) : dirs;
 }
 
 function saveWorkflow(config, raw) {
@@ -246,18 +341,22 @@ function saveWorkflow(config, raw) {
   }
   const current = raw && raw.id ? loadWorkflow(config, raw.id, { scope: 'user' }) : null;
   const clean = normalizeWorkflow({ ...raw, createdAt: (current && current.createdAt) || raw.createdAt });
+  // ユーザー保存物は通常ライブラリとして扱う。同梱 internal 定義を複製した場合も、
+  // 保存済み一覧から自分の定義まで隠れないようにする。
+  clean.libraryVisibility = 'library';
   clean.updatedAt = new Date().toISOString();
   writeJsonAtomic(workflowFile(config, clean.id), clean);
   return { ...clean, _scope: 'user' };
 }
 
 function loadWorkflow(config, id, options = {}) {
-  const dirs = options.scope
-    ? workflowDirs(config, options.cwd).filter((item) => item.scope === options.scope)
-    : workflowDirs(config, options.cwd);
+  const dirs = workflowDirsFor(config, options);
   for (const item of dirs) {
     try {
-      const clean = normalizeWorkflow(JSON.parse(fs.readFileSync(path.join(item.dir, `${workflowId(id)}.json`), 'utf8')));
+      const clean = normalizeWorkflow(
+        JSON.parse(fs.readFileSync(path.join(item.dir, `${workflowId(id)}.json`), 'utf8')),
+        options,
+      );
       return { ...clean, _scope: item.scope, ...(item.repository ? { _repository: item.repository } : {}) };
     } catch (err) {
       if (err && err.code === 'ENOENT') continue;
@@ -270,15 +369,25 @@ function loadWorkflow(config, id, options = {}) {
 function listWorkflows(config, options = {}) {
   const found = [];
   const ids = new Set();
-  for (const item of workflowDirs(config, options.cwd)) {
+  const purpose = normalizeExpectedPurpose(options.purpose);
+  const includeInternal = options.includeInternal === true;
+  const includeShadowed = options.includeShadowed === true;
+  for (const item of workflowDirsFor(config, options)) {
     if (!fs.existsSync(item.dir)) continue;
     for (const entry of fs.readdirSync(item.dir, { withFileTypes: true })) {
       if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
       try {
         const clean = normalizeWorkflow(JSON.parse(fs.readFileSync(path.join(item.dir, entry.name), 'utf8')));
-        if (ids.has(clean.id)) continue;
+        if (purpose && clean.purpose !== purpose) continue;
+        if (!includeInternal && clean.libraryVisibility === 'internal') continue;
+        if (!includeShadowed && ids.has(clean.id)) continue;
         ids.add(clean.id); // 同じ id は、先に探索するリポジトリ定義を優先する。
-        found.push({ ...clean, _scope: item.scope, ...(item.repository ? { _repository: item.repository } : {}) });
+        found.push({
+          ...clean,
+          digest: workflowDigest(clean),
+          _scope: item.scope,
+          ...(item.repository ? { _repository: item.repository } : {}),
+        });
       } catch { /* 壊れた1ファイルでカタログ全体を壊さない */ }
     }
   }
@@ -424,8 +533,20 @@ function normalizeNodeAssignments(config, clean, raw) {
   return out;
 }
 
+const DESIGN_NODE_CONTRACT = '設計runとして実行します。リポジトリは読み取り専用です。ファイルの変更、commit、pushは禁止です。';
+const DESIGN_OUTPUT_CONTRACT = [
+  '最終成果は設計書の全文です。次の4節を必ず含めてください。',
+  '## 目的',
+  '## 変更対象',
+  '## 受入基準',
+  '## 検証方法',
+  '未決事項があれば「## 質問」節を作り、推奨する答えとその理由を添えてください。',
+].join('\n');
+
 function planFromWorkflow(config, workflow, options = {}) {
-  const clean = normalizeWorkflow(workflow);
+  const clean = normalizeWorkflow(workflow, { purpose: options.purpose });
+  const purpose = options.purpose || clean.purpose;
+  const executionContract = purpose === 'design' ? { readonly: true } : {};
   const assignments = normalizeNodeAssignments(config, clean, options.nodeAssignments);
   const candidates = new Map();
   const strategy = flowStrategy(config);
@@ -437,17 +558,24 @@ function planFromWorkflow(config, workflow, options = {}) {
     if (n.kind === 'human') {
       return { id: n.id, goal: n.goal, kind: n.kind, deps: n.deps, interaction: n.interaction };
     }
-    const goal = n.method
+    const baseGoal = n.method
       ? `${n.goal}\n\n実行手法「${n.method.description || n.method.id}」:\n${n.method.text}`
       : n.goal;
+    const goal = purpose === 'design'
+      ? `${baseGoal}\n\n${DESIGN_NODE_CONTRACT}`
+      : baseGoal;
+    const terminalGoal = purpose === 'design' && clean.exit.includes(n.id)
+      ? `${goal}\n\n${DESIGN_OUTPUT_CONTRACT}`
+      : goal;
     const assigned = assignments[n.id];
     if (assigned) {
       // 人の選択は自動割り当てより優先し、固定 tier ノードと同じ扱い（降格しない）で運ぶ。
       return {
         id: n.id,
-        goal,
+        goal: terminalGoal,
         kind: n.kind,
         deps: n.deps,
+        ...executionContract,
         tier: assigned.tier,
         agent: { agent_cli: assigned.agent_cli, ...(assigned.model ? { model: assigned.model } : {}) },
         selection_reason: 'user-node-assignment',
@@ -465,7 +593,7 @@ function planFromWorkflow(config, workflow, options = {}) {
         policyTiers: strategy.policyTiers, controlTier: strategy.controlTier,
       });
       if (decision.inherit) {
-        return { id: n.id, goal, kind: n.kind, deps: n.deps };
+        return { id: n.id, goal: terminalGoal, kind: n.kind, deps: n.deps, ...executionContract };
       }
       tier = decision.tier;
       pinReason = decision.reason || '';
@@ -480,9 +608,10 @@ function planFromWorkflow(config, workflow, options = {}) {
     }
     return {
       id: n.id,
-      goal,
+      goal: terminalGoal,
       kind: n.kind,
       deps: n.deps,
+      ...executionContract,
       tier,
       agent: { agent_cli: candidate.agent_cli, ...(candidate.model ? { model: candidate.model } : {}) },
       ...(pinReason ? { selection_reason: pinReason } : {}),
@@ -497,21 +626,35 @@ function planFromWorkflow(config, workflow, options = {}) {
 
 function snapshotSelection(config, selection, options = {}) {
   const selected = selection && typeof selection === 'object' ? selection : { type: 'auto' };
+  const expectedPurpose = normalizeExpectedPurpose(
+    options.purpose === undefined ? selected.purpose : options.purpose,
+  );
   const type = String(selected.type || 'auto');
-  if (type === 'auto') return { version: 1, type: 'auto' };
+  if (type === 'auto') {
+    if (expectedPurpose === 'design') throw new Error('設計フローにはカスタムの design フローが必要です');
+    return { version: 1, type: 'auto' };
+  }
   if (type === 'pattern') {
+    if (expectedPurpose === 'design') throw new Error('設計フローには標準の実装パターンを使用できません');
     const pattern = String(selected.id || selected.pattern || '').trim();
     if (!pattern) throw new Error('標準フローを選択してください');
     return { version: 1, type: 'pattern', pattern };
   }
   if (type === 'custom') {
-    const workflow = loadWorkflow(config, selected.id, { cwd: options.cwd, scope: selected.scope });
+    const workflow = loadWorkflow(config, selected.id, {
+      cwd: options.cwd, scope: selected.scope, purpose: expectedPurpose,
+    });
     if (!workflow) throw new Error('カスタムフローが見つかりません');
     return {
       version: 1,
       type: 'custom',
       id: workflow.id,
-      ...planFromWorkflow(config, workflow, { nodeAssignments: selected.nodeAssignments }),
+      purpose: workflow.purpose,
+      digest: workflowDigest(workflow),
+      ...planFromWorkflow(config, workflow, {
+        nodeAssignments: selected.nodeAssignments,
+        purpose: expectedPurpose || workflow.purpose,
+      }),
     };
   }
   throw new Error('フロー選択が不正です');
@@ -556,10 +699,13 @@ function tierCandidateCatalog(config) {
 }
 
 // フロー（設計フロー等）のノードごとの自動割り当てと選択可能な候補。
-function flowAssignmentPreview(config, { id, cwd, scope } = {}) {
-  const workflow = loadWorkflow(config, id, { cwd, scope });
-  if (!workflow) throw new Error(`フローが見つかりません: ${id}`);
-  const clean = normalizeWorkflow(workflow);
+function flowAssignmentPreview(config, { id, cwd, scope, workflow, purpose } = {}) {
+  // 設計 preview は IPC が解決した workflow をそのまま使う。ここで再読込すると、
+  // 解決直後の元ファイル編集・削除で preview だけ別定義になるため、読み取り用の
+  // workflow を渡せるようにする（workflow は Renderer 入力ではなく main 内の値）。
+  const resolved = workflow || loadWorkflow(config, id, { cwd, scope });
+  if (!resolved) throw new Error(`フローが見つかりません: ${id}`);
+  const clean = normalizeWorkflow(resolved, { purpose });
   const strategy = flowStrategy(config);
   const nodes = clean.nodes.map((n) => {
     if (n.kind === 'human') {
@@ -833,17 +979,35 @@ function forceComplete(config, { runId, reason } = {}) {
   return { runId: id, message: String(result.stdout || '').trim() };
 }
 
-function submit(config, { title, request, preset, cwd, selection, executionOverrides, coherenceGate } = {}) {
+function submit(config, {
+  title, request, preset, cwd, selection, purpose, executionOverrides, coherenceGate,
+} = {}) {
   const req = String(request || '').trim();
   if (!req) throw new Error('要求テキストは必須です');
+  const expectedPurpose = normalizeExpectedPurpose(purpose);
   const p = preset ? normalizePreset(preset) : null;
+  if (expectedPurpose === 'design' && p) {
+    throw new Error('設計runでは実装用プリセットを使用できません');
+  }
   const selected = selection && typeof selection === 'object' ? selection : { type: 'auto' };
-  const snapshot = snapshotSelection(config, selected, { cwd });
+  const snapshot = snapshotSelection(config, selected, {
+    cwd, ...(expectedPurpose ? { purpose: expectedPurpose } : {}),
+  });
+  const effectivePurpose = snapshot.purpose || expectedPurpose || 'implementation';
+  if (effectivePurpose === 'design' && p) {
+    throw new Error('設計runでは実装用プリセットを使用できません');
+  }
+  if (effectivePurpose === 'design' && coherenceGate) {
+    throw new Error('設計runでは一貫性ゲートを使用できません');
+  }
   const runId = newRunId();
   const busDir = resolveBusDir(config);
   fs.mkdirSync(path.join(busDir, 'inbox'), { recursive: true });
 
-  const workspace = cwd ? gitWorkspace(config, cwd) : null;
+  // cwd は設計フローの参照解決と、origin 情報を持つ読み取り専用 reference に使う。
+  // 設計runは workspace=null のままなので、af/<run-id> 用の書込ブランチは作られない。
+  const workspace = effectivePurpose === 'design' ? null : (cwd ? gitWorkspace(config, cwd) : null);
+  const references = effectivePurpose === 'design' && cwd ? [gitWorkspace(config, cwd)] : [];
   if (coherenceGate && !workspace) {
     throw new Error('一貫性ゲートには Git リポジトリの選択が必要です（差分ゲートは書込先で判定します）');
   }
@@ -852,8 +1016,10 @@ function submit(config, { title, request, preset, cwd, selection, executionOverr
     ...(String(title || '').trim() ? { title: String(title).trim() } : {}),
     request: req,
     submitter: SUBMITTER,
+    purpose: effectivePurpose,
+    ...(effectivePurpose === 'design' ? { readonly: true } : {}),
     workspace,
-    references: [],
+    references,
     submitted_at: new Date().toISOString(),
   };
   if (coherenceGate) rec.verification_plan = buildVerificationPlan(config, { runId, workspace });
@@ -897,8 +1063,21 @@ function resubmit(config, runId) {
   const busDir = resolveBusDir(config);
   const old = readInbox(busDir, runId);
   if (!old) throw new Error(`inbox 記録が見つかりません: ${runId}`);
+  const purpose = normalizeExpectedPurpose(old.purpose || 'implementation') || 'implementation';
+  if (purpose === 'design' && old.pattern) {
+    throw new Error('設計runへ実装用パターンを再投入できません');
+  }
   const next = newRunId();
-  const rec = { ...old, id: next, submitted_at: new Date().toISOString() };
+  const rec = {
+    ...old,
+    id: next,
+    purpose,
+    // 古いinboxにworkspaceが残っていても、再投入で設計runの契約を復元する。
+    workspace: purpose === 'design' ? null : (old.workspace || null),
+    ...(purpose === 'design' ? { readonly: true } : {}),
+    submitted_at: new Date().toISOString(),
+  };
+  if (purpose === 'design') delete rec.verification_plan;
   writeJsonAtomic(path.join(busDir, 'inbox', `${next}.json`), rec);
   // 旧 run の手法スナップショットも新 run へ写す（同条件の再実行）
   let tuningDir = null;
@@ -983,6 +1162,11 @@ module.exports = {
   repositoryRoot,
   repositoryWorkflowDir,
   repositoryMethodsDir,
+  workflowDefinition,
+  definitionSnapshot: workflowDefinition,
+  digestDefinition,
+  workflowDigest,
+  digestWorkflow: workflowDigest,
   registeredRepositoryRoot,
   normalizeWorkflow,
   saveWorkflow,

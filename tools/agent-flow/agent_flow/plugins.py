@@ -39,7 +39,8 @@ def call_executor(execute, kind: str, goal: str, dep_results: dict, model: "str 
                   art_dir, dep_arts, repo_instruction: str = "", workspace: "dict | None" = None,
                   references: "list[dict] | None" = None, request: str = "", instructions: str = "",
                   prompt_table: bool = False, repair: "dict | None" = None, context: str = "",
-                  read_allocation: "list[dict] | None" = None, agent: "dict | None" = None):
+                  read_allocation: "list[dict] | None" = None, agent: "dict | None" = None,
+                  readonly: bool = False):
     """executor を呼ぶ単一の入口。
     - `repo_instruction`（ワークスペース＋参照の作業指示テキスト）は、受け取れる executor には**別引数**で
       渡して goal を汚さない（gitlab のイシュータイトル/目的が指示で埋まらないようにする）。
@@ -77,6 +78,10 @@ def call_executor(execute, kind: str, goal: str, dep_results: dict, model: "str 
         kwargs["read_allocation"] = read_allocation
     if agent and _executor_accepts(execute, "agent"):
         kwargs["agent"] = agent
+    if readonly:
+        if not _executor_accepts(execute, "readonly"):
+            raise RuntimeError("読み取り専用ノードを実行できない executor です（readonly 契約がありません）")
+        kwargs["readonly"] = True
     if kwargs or not repo_instruction:
         return execute(kind, goal, dep_results, model, art_dir, dep_arts, **kwargs)
     g = (repo_instruction + "\n\n" + goal) if repo_instruction else goal

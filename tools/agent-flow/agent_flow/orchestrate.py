@@ -211,6 +211,8 @@ def _node_entry(t):
         e["dependency_input"] = str(t["dependency_input"]).strip().lower()
     if t.get("agent"):
         e["agent"] = t["agent"]
+    if t.get("readonly") is True:
+        e["readonly"] = True
     if t.get("tier"):  # 固定実行レベル（pinned-tier の記録と手法判定が読む）
         e["tier"] = str(t["tier"])
     # human ノードの interaction はグラフにも保持する。worker は claim 時に graph の node を
@@ -371,9 +373,11 @@ def cmd_orchestrate(args) -> int:
         log(who, f"先行 run {inh} を処理: {info['reason']}"
                  f"（引き継ぎ {info['seeded_nodes']} ノード・削除={info['deleted']}）")
         bus.sync_push(f"inherit {inh} -> {args.run_id}: {info['reason']}")
+    inbox_request = bus.read_inbox(args.run_id) or {}
     bus.ensure_run(args.request, parse_workspace(getattr(args, "workspace", None)),
                    parse_references(getattr(args, "references", None)),
-                   parse_verification_plan(getattr(args, "verification_plan", None)))
+                   parse_verification_plan(getattr(args, "verification_plan", None)),
+                   readonly=inbox_request.get("readonly") is True)
     bus.note_executor(getattr(args, "executor", None) or "agent")   # viewer の表示切替用
     _deleg_raw = getattr(args, "delegation", None)                  # 委譲公示板由来の来歴（board）
     if _deleg_raw:

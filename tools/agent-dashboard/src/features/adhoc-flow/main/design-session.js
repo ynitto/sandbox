@@ -9,7 +9,8 @@
 //   ラウンドへの入力 … 元の要望・現在の設計書・前ラウンドの回答（buildRoundRequest）
 //   ラウンドの成果 … 設計書の全文と、末尾の「## 質問」節（splitDesignOutput）
 // ラウンド数に上限は無く、やめ時は人が「この設計で実行」を押した時。毎ラウンド完全な
-// 設計書が返るので、どこで止めても実装 run へ渡せる。
+// 設計書が返るので、どこで止めても実装 run へ渡せる。初回に解決したフロー定義は
+// セッションの flowSnapshot として保存し、以後のラウンドではその定義だけを使う。
 //
 // 実行系は adhoc.submit そのもの（新しい実行系・投入契約は作らない）。読み取りも
 // バスパーサ（agent-project/main/flow.js）をそのまま使う（C7: 読み手を増やさない）。
@@ -26,6 +27,8 @@ const MODE_FLOWS = { interactive: 'design-interactive', auto: 'design-auto' };
 
 // 「## 質問」節の見出し。レベルは問わない（生成側が h2 で書く前提だが、h3 でも拾う）。
 const QUESTION_HEADING = /^#{1,6}[ \t]*質問[ \t]*$/;
+const REQUIRED_DESIGN_SECTIONS = ['目的', '変更対象', '受入基準', '検証方法'];
+const SNAPSHOT_DIR = '.snapshots';
 const TARGETS = new Set(['workflow', 'project']);
 const SOURCE_MODES = new Set(['new', 'continue', 'use-as-is']);
 
@@ -38,6 +41,9 @@ function normalizeSession(raw) {
   const target = TARGETS.has(String(session.target || '')) ? String(session.target) : 'workflow';
   const sourceMode = SOURCE_MODES.has(String(session.sourceMode || ''))
     ? String(session.sourceMode) : 'new';
+  const flowSnapshot = normalizeFlowSnapshot(
+    session.flowSnapshot || session.designFlow || (session.design && session.design.flow)
+  );
   return {
     ...session,
     version: 2,
@@ -47,7 +53,130 @@ function normalizeSession(raw) {
     nodeAssignments: normalizeNodeAssignments(session.nodeAssignments),
     proposal: session.proposal && typeof session.proposal === 'object' ? session.proposal : null,
     application: session.application && typeof session.application === 'object' ? session.application : null,
+    ...(flowSnapshot ? { flowSnapshot, designFlow: flowSnapshot } : {}),
   };
+}
+
+function normalizeFlowSnapshot(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const source = raw.definition && typeof raw.definition === 'object' ? raw.definition : raw;
+  const nodes = Array.isArray(source.nodes) ? source.nodes.map((node) => {
+    if (!node || typeof node !== 'object') return null;
+    const out = {
+      id: String(node.id || '').trim(),
+      goal: String(node.goal || '').trim(),
+      kind: String(node.kind || 'work').trim() || 'work',
+      deps: Array.isArray(node.deps) ? node.deps.map(String) : [],
+    };
+    if (node.tier) out.tier = String(node.tier);
+    if (node.method && typeof node.method === 'object') out.method = { ...node.method };
+    if (node.interaction && typeof node.interaction === 'object') out.interaction = { ...node.interaction };
+    if (node.continuation) out.continuation = String(node.continuation);
+    return out.id && out.goal ? out : null;
+  }).filter(Boolean) : [];
+  if (!nodes.length) return null;
+  const definition = {
+    version: Number(source.version) || 2,
+    purpose: String(source.purpose || 'design'),
+    libraryVisibility: String(source.libraryVisibility || 'internal'),
+    entry: Array.isArray(source.entry) ? source.entry.map(String) : [],
+    exit: Array.isArray(source.exit) ? source.exit.map(String) : [],
+    nodes,
+  };
+  if (definition.purpose !== 'design') return null;
+  const origin = raw.origin && typeof raw.origin === 'object' ? raw.origin : {};
+  const scope = String(raw.scope || origin.scope || '').trim();
+  const repository = String(raw.repository || origin.repository || '').trim();
+  const id = String(raw.id || '').trim();
+  if (!id || !['repository', 'user', 'builtin'].includes(scope)) return null;
+  if (scope === 'repository' ? !repository : repository) return null;
+  return {
+    version: 1,
+    id,
+    name: String(raw.name || id).trim() || id,
+    origin: { scope, repository },
+    digest: String(raw.digest || adhoc.digestDefinition(definition)),
+    definition,
+  };
+}
+
+function flowSnapshotFromWorkflow(workflow, origin) {
+  const definition = adhoc.workflowDefinition(workflow);
+  const scope = String((origin && origin.scope) || workflow._scope || 'builtin').trim();
+  const repository = String((origin && origin.repository) || workflow._repository || '').trim();
+  return normalizeFlowSnapshot({
+    version: 1,
+    id: workflow.id,
+    name: workflow.name,
+    origin: { scope, repository },
+    digest: adhoc.digestDefinition(definition),
+    definition,
+  });
+}
+
+function snapshotWorkflowId(sessionId) {
+  return `design-session-${String(sessionId).trim()}`;
+}
+
+function snapshotWorkflowDir(config, sessionId) {
+  return path.join(resolveSessionDir(config), SNAPSHOT_DIR, String(sessionId));
+}
+
+function materializeSnapshot(config, sessionId, snapshot) {
+  const id = snapshotWorkflowId(sessionId);
+  const dir = snapshotWorkflowDir(config, sessionId);
+  const definition = snapshot.definition;
+  writeJsonAtomic(path.join(dir, `${id}.json`), {
+    ...definition,
+    id,
+    name: snapshot.name,
+    purpose: 'design',
+    libraryVisibility: definition.libraryVisibility || 'internal',
+  });
+  return {
+    config: {
+      ...(config || {}),
+      adhocFlow: { ...cfgOf(config), workflowDir: dir },
+    },
+    id,
+  };
+}
+
+function resolveFlowSnapshot(config, { selection, designFlow, mode, cwd } = {}) {
+  const supplied = selection && typeof selection === 'object'
+    ? selection : (designFlow && typeof designFlow === 'object' ? designFlow : {});
+  const origin = supplied.origin && typeof supplied.origin === 'object' ? supplied.origin : {};
+  const id = String(supplied.id || MODE_FLOWS[String(mode || '')] || '').trim();
+  const requestedScope = String(supplied.scope || origin.scope || '').trim();
+  const scope = requestedScope || (selection ? '' : 'builtin');
+  const repository = String(supplied.repository || origin.repository || '').trim();
+  if (!id || (scope && !['repository', 'user', 'builtin'].includes(scope))) {
+    throw new Error('設計フローの snapshot を解決できません');
+  }
+  if (scope === 'repository' && !repository) {
+    throw new Error('共有設計フローには repository が必要です');
+  }
+  const options = {
+    cwd: scope === 'repository' ? repository : String(cwd || '').trim(),
+    purpose: 'design',
+  };
+  if (scope) options.scope = scope;
+  const workflow = adhoc.loadWorkflow(config, id, options);
+  if (!workflow) throw new Error(`設計フローを利用できません: ${id} (${scope})`);
+  const resolvedScope = scope || String(workflow._scope || '').trim();
+  const resolvedRepository = resolvedScope === 'repository'
+    ? String(workflow._repository || repository).trim() : '';
+  return flowSnapshotFromWorkflow(workflow, {
+    scope: resolvedScope, repository: resolvedRepository,
+  });
+}
+
+function requiredDesignSections(document) {
+  const text = String(document || '');
+  return REQUIRED_DESIGN_SECTIONS.filter((section) => {
+    const escaped = section.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return !new RegExp(`^#{1,6}[ \\t]*${escaped}[ \\t]*$`, 'm').test(text);
+  });
 }
 
 // 設計フローのノードへ人が固定したエージェント・モデル（{ nodeId: {tier, agent_cli, model} }）。
@@ -196,6 +325,7 @@ function deleteSession(config, id) {
   const file = sessionFile(config, id);
   if (!fs.existsSync(file)) return false;
   fs.rmSync(file);
+  fs.rmSync(snapshotWorkflowDir(config, id), { recursive: true, force: true });
   return true;
 }
 
@@ -224,6 +354,14 @@ function harvest(config, session) {
     return saveSession(config, { ...session, runStatus: status, error: '設計 run の成果が空でした' });
   }
   const { document, questions } = splitDesignOutput(output);
+  const missing = requiredDesignSections(document);
+  if (missing.length) {
+    return saveSession(config, {
+      ...session,
+      runStatus: status,
+      error: `設計成果に必須節が不足しています: ${missing.join('、')}`,
+    });
+  }
   const rounds = [...(session.rounds || [])];
   const last = rounds[rounds.length - 1];
   if (last && last.runId === session.runId) {
@@ -250,7 +388,7 @@ function listSessions(config) {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
     try {
-      const session = JSON.parse(fs.readFileSync(path.join(dir, entry.name), 'utf8'));
+      const session = normalizeSession(JSON.parse(fs.readFileSync(path.join(dir, entry.name), 'utf8')));
       if (session && session.id) out.push(summarize(session));
     } catch { /* 壊れた1ファイルで一覧全体を壊さない */ }
   }
@@ -266,6 +404,7 @@ function getSession(config, id) {
 // セッションを作る（id 省略時）か、回答を添えて次のラウンドを投げる。
 function startRound(config, {
   id, cwd, goal, mode, answers, target, sourceMode, sources, document, nodeAssignments,
+  selection, designFlow, resolvedFlowSnapshot,
 } = {}) {
   const existing = id ? getSession(config, id) : null;
   if (id && !existing) throw new Error(`設計セッションが見つかりません: ${id}`);
@@ -273,7 +412,9 @@ function startRound(config, {
   // 割り当ては最初のラウンドで固定し、以降のラウンドも同じ組み合わせで実行する
   // （途中で渡し直せば更新できる）。
   const nextAssignments = nodeAssignments === undefined
-    ? (existing && existing.nodeAssignments) || null
+    ? (existing && existing.nodeAssignments)
+      || normalizeNodeAssignments(selection && selection.nodeAssignments)
+      || null
     : normalizeNodeAssignments(nodeAssignments);
   const initialDocument = String(document == null ? (existing && existing.document) || '' : document).trim();
   const request = String(goal || (existing && existing.goal) || initialDocument.slice(0, 200)).trim();
@@ -289,7 +430,23 @@ function startRound(config, {
   const replies = (Array.isArray(answers) ? answers : []).map((answer) => String(answer || ''));
   const paired = asked.map((question, index) => ({ question, answer: replies[index] || '' }));
 
-  const result = adhoc.submit(config, {
+  const now = new Date().toISOString();
+  const base = existing || {
+    version: 2, id: newSessionId(), createdAt: now, rounds: [], document: initialDocument, questions: [],
+  };
+  // preparation:startDesign が main process で保持している snapshot は、元定義を
+  // 再解決せずに使う。公開 IPC の designFlow は従来どおり参照から再解決するため、
+  // Renderer が作った定義を信頼する経路にはしない。
+  const flowSnapshot = (existing && normalizeFlowSnapshot(
+    existing.flowSnapshot || existing.designFlow || (existing.design && existing.design.flow)
+  )) || normalizeFlowSnapshot(resolvedFlowSnapshot)
+    || resolveFlowSnapshot(config, { selection, designFlow, mode: selectedMode, cwd: folder });
+  const materialized = materializeSnapshot(config, base.id, flowSnapshot);
+
+  // cwd は設計フローの参照解決と読み取り専用 reference に使う。submit 側が
+  // purpose=design を workspace=null に固定するため、書込 workspace にはならない。
+  // snapshot workflow はセッション専用ディレクトリから読むため、元定義の更新・削除にも依存しない。
+  const result = adhoc.submit(materialized.config, {
     request: buildRoundRequest({
       goal: request,
       document: existing ? existing.document : initialDocument,
@@ -297,23 +454,23 @@ function startRound(config, {
       sources: nextSources,
     }),
     cwd: folder,
+    purpose: 'design',
     selection: {
       type: 'custom',
-      id: flowId,
+      id: materialized.id,
+      scope: 'user',
       ...(nextAssignments ? { nodeAssignments: nextAssignments } : {}),
     },
   });
 
-  const now = new Date().toISOString();
-  const base = existing || {
-    version: 2, id: newSessionId(), createdAt: now, rounds: [], document: initialDocument, questions: [],
-  };
   return saveSession(config, {
     ...base,
     target: TARGETS.has(String(target || '')) ? String(target) : (base.target || 'workflow'),
     sourceMode: nextSourceMode,
     sources: nextSources,
     nodeAssignments: nextAssignments,
+    flowSnapshot,
+    designFlow: flowSnapshot,
     goal: request,
     mode: selectedMode,
     cwd: folder,
@@ -332,7 +489,11 @@ function startRound(config, {
 
 module.exports = {
   MODE_FLOWS,
+  REQUIRED_DESIGN_SECTIONS,
   normalizeSession,
+  normalizeFlowSnapshot,
+  resolveFlowSnapshot,
+  requiredDesignSections,
   resolveSessionDir,
   splitDesignOutput,
   sinkOutput,

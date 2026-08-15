@@ -6,7 +6,7 @@
 
 - Git 管理された cwd、依頼、フローを選ぶ。
 - Windows の cwd は実行時だけ WSL の `/mnt/<drive>/...` に変換する。履歴は入力表記のまま最大20件保持する。
-- フローは自動、`agent-flow patterns --json` の標準パターン、カスタムから選ぶ。カスタムは
+- 実装フローは自動、`agent-flow patterns --json` の標準パターン、カスタムから選ぶ。カスタムは
   `~/.agents/workflows/*.json`（ユーザー共通）に加え、入力した Git リポジトリの
   `.agents/workflows/*.json`（リポジトリ共有）を**読み取り専用で**読む。後者は
   statemachine の `.statemachine/<name>/workflow.yaml` と同様に、通常のリポジトリ作業で
@@ -16,11 +16,25 @@
   ユーザー共通に保存すれば同梱版を隠せる。
 - 同じ id が複数にある場合は上の順で先に見つかった版を使う。実行エンジンへ登録済みの
   フォルダだけを探索し、未登録フォルダの定義は読み込まない。
+- フロー定義には `purpose`（`implementation` / `design`）と `libraryVisibility`
+  （`library` / `internal`）を持たせる。項目が無い旧定義は `implementation/library` として読む。
+  `internal` は通常の保存済みライブラリから隠す分類で、同梱の `design-interactive` と `design-auto` は
+  `design/internal` として設計カタログからだけ解決する。
+- 設計フローのカタログは実装フロー一覧と混ぜず、対象 cwd に対する登録済みリポジトリ共有、ユーザー共通、
+  同梱の順で `purpose: design` だけを列挙する。カタログ項目は `id` だけでなく `scope`
+  （`repository` / `user` / `builtin`）と `repository` を持つ。同じ id の別 scope は省略せず、
+  `(id, scope, repository)` を選択キーにする。
+- 選択時に main が scope 付き参照を再解決し、正規化した定義・`origin`・`digest` を snapshot に固定する。
+  renderer から渡された定義や plan は信頼せず、対象 repository が登録済みであることと `purpose` の一致を
+  検査してから run / 作業準備項目へ保存する。後から元ファイルを編集しても保存済みの定義は変わらない。
 - 工程の「追加ルール」（ノードへ足すプロンプト）も、ユーザー共通の手法カタログに加えて
   `.agents/methods/*.json` を読み取り専用で探索する。同じ id はリポジトリ版を優先する。
   選択時に本文と source hash をワークフローのノードへ複製するため、後から手法ファイルが
   変わっても保存済みワークフローの振る舞いが暗黙に変わることはない。
-- inbox の `workspace` に cwd のリポジトリと現在の branch/HEAD を固定する。成果は `af/<run-id>` branch に保存される。
+- 実装 run は inbox の `workspace` に cwd のリポジトリと現在の branch/HEAD を固定し、成果は `af/<run-id>` branch に保存する。
+- 設計 run は `workspace: null` の短命な読み取り専用 run とする。対象 cwd を参照してもファイルを変更せず、
+  commit / push / ブランチ作成を禁止し、`af/` ブランチを作らない。agent-flow の run / plan / workspace 契約は
+ 変更せず、設計と実装は別 run ID で履歴に表示する。
 
 ## 依頼を設計書にする
 
@@ -44,21 +58,45 @@
 - ラウンドへの入力は元の要望・現在の設計書・前ラウンドの回答をテンプレで組み立てる。
   成果は設計書の全文で、末尾に `## 質問` 節があれば番号付きリストを質問として切り出す。
   見出しが無ければ収束、見出しはあるのに項目を取れなければ切り落とさず全文を設計書にする。
-- **human ノードは使わない**。park する run が無いので、答えを翌日に返しても期限切れ・
+- **human / split ノードは使わない**。park する run が無いので、答えを翌日に返しても期限切れ・
   リース失効・孤児回収を気にしなくてよい。ラウンド数に上限はなく、やめ時は
   「この設計で実行」を押した時。毎ラウンド完全な設計書が返るのでどこで止めても実行できる。
 - 設計書は末端（sink）ノードの出力から取る。`final.summary` は各ノード 200 文字の抜粋なので
-  使わない。設計フローはファイルを変更しないため、cwd を渡しても
-  `af/<run-id>` は push されない（agent-flow の「変更が無ければ push しない」契約）。
+  使わない。終端は1つの `work` または `synthesize` とし、全ノードが開始・終端へ到達できる形にする。
+- 全ノードへ「リポジトリは読み取り専用、ファイル変更・commit・push 禁止」を付け、終端へ設計書全文と
+  必須4節を要求する。`## 検証方法` は実装後に実行する検証コマンドまたは手動確認を記す節であり、設計 run
+  自体がコマンドを実行して合否を決めるものではない。
+- 設計結果が必須4節を満たさない間は実装準備完了にせず、直前の設計書・回答・材料を保持して再試行できる。
 - セッションは `~/.agents/flow/design-sessions/<id>.json`。実装 run とは分かれていて、
   「この設計で実行」は設計書の全文を依頼欄へ流し込むだけ。フローは従来どおり別に選ぶ。
+
+## 作業準備との連携
+
+設計・外部設計・設計省略を一つの仕事として扱うため、ワークフロー画面では先に作業準備項目を作る。
+経路は次の3つで、推奨は決定的な必須節チェックに基づく警告であり、利用者が上書きできる。
+
+- `agent-design`: 不足・矛盾する要望を設計 run で具体化する。選択した設計フローの snapshot と材料を保持する。
+- `external-design`: 持ち込んだ完成済み Markdown を使う。設計 run は起動しない。
+- `direct`: 必須情報が揃った依頼をそのまま実装へ渡す。設計 run は起動しない。
+
+材料は読み込み時点の本文・source hash を snapshot として保存し、設計結果は `kind: design-result` の
+`設計結果.md` として実装材料へ追加する。実装へ進めるのは必須4節を満たした `implementation-ready` 項目だけで、
+既存の `adhoc.submit` またはプロジェクトの `inbox/` 投入へ handoff する。設計 run と実装 run は結合せず、
+実装側の検証コマンドは既存の verify 契約で実行する。
+
+旧形式で `designMode: auto` だけを持つ作業準備項目は一括書換えしない。設計開始時に `design-auto` を解決して
+`scope: builtin` の snapshot を遅延補完し、その後の再試行・実装 handoff で同じ定義を使う。
 
 設計: `docs/plans/2026-08-13-agent-dashboard-design-session-design.md`。
 
 ## 設定
 
 - カスタムフローは1フロー1JSONファイル。画面で新規作成・編集・削除できるのは従来どおり
-  ユーザー共通だけ。リポジトリ共有版は dashboard から書き換えず、通常の Git 作業で管理する。
+  ユーザー共通（`~/.agents/workflows/`）だけ。リポジトリ共有版と同梱版は dashboard から書き換えず、
+  通常の Git 作業または配布物で管理する。保存時は自分用の `library` 定義として扱い、共有・同梱の定義を
+  変更したい場合は別 id で「自分用にコピー」する。
+- リポジトリ共有版・同梱版の編集／削除は拒否する。ユーザー共通の削除は物理削除ではなく
+  `~/.agents/workflows/.trash/` への移動とし、復元可能にする。
 - 作業ルールも同じ規則とする。登録フォルダと同梱カタログは読み取り専用で、変更したい場合は
   「自分用にコピー」でユーザーホームの tuning へ別 ID の定義を作ってから編集する。
 - ノードは `kind`、依存、位置、tier を持つ。
@@ -72,8 +110,10 @@
 
 ### Git 同期の責務
 
-dashboard は `.agents/workflows/` と `.agents/methods/` にファイルを書かず、
+dashboard は成果物リポジトリの `.agents/workflows/` と `.agents/methods/` にファイルを書かず、
 git pull / commit / push もしない。
+設計 run も同じく対象リポジトリへ書き込まない。`git status` / `log` / `fetch` などの読み取りは、
+書き込みを伴わない範囲でのみ許可する。
 共有フローはソースコードと同じ成果物なので、取得は clone を更新する人・CI・既存の更新ツール、
 公開は変更を作る人が通常のブランチと PR/MR で行う。agent-flow の `state_git` は run/bus の状態を
 同期する仕組みであり、成果物リポジトリの設定配布には流用しない。agent-project の状態同期へ
@@ -83,4 +123,5 @@ git pull / commit / push もしない。
 
 実行前レビューと再実行で同じフロー一覧を選べる。選択は `backlog/<task-id>.flow.json` に固定し、agent-project が `--pattern` または `--plan-file` として agent-flow へ渡す。sidecar が無い場合は自動。
 
-テスト: `node test/adhoc-flow.test.js`
+契約検証: `cd tools/agent-dashboard && node --test test/adhoc-flow.test.js test/preparation.test.js`
+全体検証: `cd tools/agent-dashboard && npm test`

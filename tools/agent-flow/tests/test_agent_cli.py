@@ -109,6 +109,16 @@ class StructuredResultTests(unittest.TestCase):
         text, data = kf.execute_stub("work", "ふつうの仕事", {}, None)
         self.assertIsNone(data)
 
+    def test_readonly_fails_closed_for_legacy_executor(self):
+        def legacy_executor(kind, goal, dep_results, model, art_dir, dep_arts):
+            return "書き込み権限のある旧 executor", None
+
+        with self.assertRaisesRegex(RuntimeError, "readonly 契約がありません"):
+            kf.call_executor(
+                legacy_executor, "work", "設計する", {}, None, None, None,
+                readonly=True,
+            )
+
     def test_extract_and_retrieve_repair_invalid_contracts(self):
         valid = {
             "extract": {"records": [{"fields": {"name": "A"}, "evidence": [{
@@ -913,6 +923,16 @@ class AgentOverrideTests(unittest.TestCase):
             kf.run_agent("プロンプト", None, purpose="work")
         self.assertNotIn("--dangerously-skip-permissions", calls[0])
         self.assertIn("--dangerously-skip-permissions", calls[1])
+
+    def test_node_readonly_overrides_the_write_role_and_uses_reference_cwd(self):
+        repo = tempfile.mkdtemp(prefix="agent-flow-readonly-reference-")
+        self.addCleanup(shutil.rmtree, repo, ignore_errors=True)
+        with mock.patch.object(kf, "run_agent", return_value="設計書") as run:
+            kf.execute_agent("work", "設計する", {}, None,
+                             references=[{"url": "https://example.invalid/repo.git",
+                                          "local": repo}], readonly=True)
+        self.assertEqual(run.call_args.kwargs["cwd"], repo)
+        self.assertIs(run.call_args.kwargs["readonly"], True)
 
 
 class TestAgentPluginAndTriage(unittest.TestCase):

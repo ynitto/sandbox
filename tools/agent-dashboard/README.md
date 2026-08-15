@@ -117,6 +117,86 @@ agent-audit 側のゲート設定に任せる。画面は**「利用量」（見
 多重起動は main プロセスで直列化する（agent-audit 側にロックが無いため）。詳細は
 [`src/features/agent-audit/README.md`](./src/features/agent-audit/README.md)。
 
+## ワークフローの作成 — 実装フローと設計フロー
+
+ワークフロー画面で扱う「仕事」は、設計が必要かどうかに関係なく、まず作業準備項目として保存する。
+実装フローをすぐ実行する場合も、設計書を持ち込む場合も、エージェント設計を始める場合も、同じ項目から
+次の実装待ちへ進む。
+
+### 進め方の選択
+
+要望と選択した材料を決定的に確認し、次の経路を推奨する。推奨は警告であり、利用者は変更できる。
+
+- `agent-design`: 目的・対象・受入基準・検証方法が不足、矛盾、または複数の実装単位が混在するとき。
+- `external-design`: 完成済みの Markdown があり、必須4節（`## 目的` / `## 変更対象` /
+  `## 受入基準` / `## 検証方法`）を満たすとき。
+- `direct`: 依頼欄そのものに必須4節が揃っているとき。設計 run は起動しない。
+
+### 設計フローの選択と固定
+
+フロー定義の `purpose` は `implementation` と `design` を分け、`libraryVisibility` は `library`（通常の
+保存済み一覧に表示）と `internal`（通常の編集ライブラリには表示しない）を表す。既存定義に項目が無い場合は
+`implementation/library` として扱う。
+
+設計フローは実装フロー一覧から分離した scope 付きカタログで選ぶ。対象 cwd が登録済みリポジトリなら
+`.agents/workflows/` の `scope: repository`、ユーザー共通の `~/.agents/workflows/` の `user`、同梱の
+`workflows/` の `builtin` を候補にする。同じ id の別 scope は別候補として表示し、選択キーは
+`id + scope + repository` とする。`design-interactive` / `design-auto` は `design/internal` の同梱候補である。
+
+選択時に main が参照を再解決し、正規化した定義、出所 (`origin.scope` / `origin.repository`)、`digest`、
+ノード構成を snapshot にする。以後の作業準備項目・設計 run・実装 handoff はこの snapshot を使うため、
+元ファイルやカタログを後から編集しても保存済みの仕事の振る舞いは変わらない。画面から送る定義本文や plan は
+信頼せず、対象 repository の登録と `purpose: design` の一致を main で検査する。
+
+### 設計 run と成果
+
+設計 run は実装 run と別の短命 run で、`workspace` は持たない。cwd を材料や共有カタログの参照に使っても、
+リポジトリのファイル変更、commit、push、ブランチ作成をしない。`af/<run-id>` ブランチも作らない。
+設計フローは human / split を使わず、終了は1つの `work` または `synthesize` とし、全ノードが開始から終了へ
+到達できる構造にする。
+
+成果は `final.summary` ではなく、末端（sink）ノードの出力から設計書 Markdown 全文として取得する。実装へ
+渡す成果には次の4節を必須とする。
+
+```markdown
+## 目的
+## 変更対象
+## 受入基準
+## 検証方法
+```
+
+未決事項は任意の `## 質問` 節に番号付きで残し、推奨する回答と理由を添える。`## 検証方法` に書くコマンドは
+実装後に既存の verify 契約で実行するもので、設計 run 自体はコマンドを実行して合否を確定しない。不足した
+成果は実装準備完了にせず、直前の設計書・回答・材料を保持して再試行できる。
+
+設計結果は `kind: design-result` の `設計結果.md` として実装材料へ追加され、必須4節を満たした項目だけが
+`implementation-ready` になる。設計 run の ID と実装 run の ID は同一化せず、UI では一つの仕事の履歴として
+時系列に表示する。
+
+### 保存・削除と Git の境界
+
+画面から新規作成・編集・削除できるカスタムフローはユーザー共通の `~/.agents/workflows/*.json` だけである。
+リポジトリ共有版と同梱版は読み取り専用で、変更したい場合は別 id で自分用へコピーする。共有版・同梱版の
+削除もできない。自分用の削除は `.trash/` へ移動するため復元できる。
+
+Dashboard はフロー定義を成果物リポジトリへ書かず、pull / commit / push / checkout / reset もしない。共有版の
+作成・配布は通常の Git 作業、PR/MR、clone 更新または CI の責務である。設計 run の読み取り専用契約も同じ境界に
+従う。詳細な形式・実行・準備連携は [`src/features/adhoc-flow/README.md`](./src/features/adhoc-flow/README.md) を参照。
+
+### 作業準備から実装へ
+
+設計を始める項目では、選択したフローと材料を読み込み時点の snapshot として保存する。設計結果を確認したら
+「この設計で実装待ちへ進む」を押し、既存の `adhoc.submit` またはプロジェクトの `inbox/` 投入へ handoff する。
+`external-design` と `direct` は設計 run を起動しない。旧形式で `designMode: auto` だけが保存された項目は一括
+移行せず、設計開始時に `design-auto` の `scope: builtin` snapshot を遅延補完する。
+
+設計フロー契約の確認には次を使う。
+
+```bash
+cd tools/agent-dashboard
+node --test test/adhoc-flow.test.js test/preparation.test.js
+```
+
 **セッション開始コマンド**（[agent-session-commands 契約](../../schemas/agent-session-commands.schema.json)
 — 「全体設定 → エージェント → 共通設定」で編集）: エージェントのセッションが始まった直後に、
 上から順に 1 回だけ実行する前準備。`process` はホストのシェルで実行して完了を待ち（`git fetch`・
