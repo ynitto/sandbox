@@ -296,6 +296,93 @@ test('既存ワークフローは実装用のライブラリ項目として正�
   assert.strictEqual(workflow.libraryVisibility, 'library');
 });
 
+test('設計フローは既定値を補い、human・split・複数終端・終端kindを拒否する', () => {
+  const normalized = adhoc.normalizeWorkflow({
+    id: 'design-defaults', name: '設計の既定値', purpose: 'design',
+    nodes: [{ id: 'draft', goal: '設計する', tier: '自動', deps: [] }],
+  });
+  assert.strictEqual(normalized.version, 2);
+  assert.strictEqual(normalized.purpose, 'design');
+  assert.strictEqual(normalized.libraryVisibility, 'library');
+  assert.deepStrictEqual(normalized.entry, ['draft']);
+  assert.deepStrictEqual(normalized.exit, ['draft']);
+  assert.deepStrictEqual(normalized.nodes[0], {
+    id: 'draft', label: 'draft', goal: '設計する', kind: 'work', tier: 'auto', deps: [], x: 40, y: 40,
+  });
+  const human = adhoc.normalizeWorkflow({
+    name: '人の確認', nodes: [{ id: 'ask', goal: '確認する', kind: 'human' }],
+  });
+  assert.deepStrictEqual(human.nodes[0].interaction, {
+    mode: 'approval', audience: ['reviewer'], timeout_seconds: 604800,
+    prompt: '確認する',
+  });
+
+  for (const kind of ['human', 'split']) {
+    assert.throws(() => adhoc.normalizeWorkflow({
+      id: `design-${kind}`, name: `${kind}を含む設計`, purpose: 'design',
+      nodes: [{ id: kind, goal: '設計成果', kind, ...(kind === 'split' ? { tier: 'large' } : {}) }],
+    }), new RegExp(kind));
+  }
+
+  assert.throws(() => adhoc.normalizeWorkflow({
+    id: 'design-two-exits', name: '複数終端', purpose: 'design',
+    version: 2, entry: ['draft'], exit: ['finish-a', 'finish-b'],
+    nodes: [
+      { id: 'draft', goal: '要件を整理', tier: 'large' },
+      { id: 'finish-a', goal: '設計書A', kind: 'work', tier: 'large', deps: ['draft'] },
+      { id: 'finish-b', goal: '設計書B', kind: 'work', tier: 'large', deps: ['draft'] },
+    ],
+  }), /終了/);
+
+  assert.throws(() => adhoc.normalizeWorkflow({
+    id: 'design-bad-exit', name: '終端kind不正', purpose: 'design',
+    version: 2, entry: ['draft'], exit: ['check'],
+    nodes: [
+      { id: 'draft', goal: '要件を整理', tier: 'large' },
+      { id: 'check', goal: '検証だけする', kind: 'verify', tier: 'large', deps: ['draft'] },
+    ],
+  }), /終端|verify/);
+});
+
+test('設計フローの保存・読込・削除は正規化された自分用定義だけを扱う', () => {
+  const workflowDir = tmpdir('design-workflow-store-');
+  const cfg = { adhocFlow: { workflowDir, builtinWorkflowDir: tmpdir('design-workflow-builtin-') } };
+  try {
+    const saved = adhoc.saveWorkflow(cfg, {
+      id: 'design-store', name: '保存する設計', purpose: 'design',
+      nodes: [{ id: 'finish', goal: '設計書を出力', tier: 'large' }],
+    });
+    assert.strictEqual(saved.purpose, 'design');
+    assert.strictEqual(saved.libraryVisibility, 'library');
+    assert.deepStrictEqual(adhoc.loadWorkflow(cfg, saved.id), saved);
+    assert.ok(!fs.readdirSync(workflowDir).some((name) => name.includes('.tmp.')),
+      '保存後に一時ファイルを残さない');
+
+    const originalRename = fs.renameSync;
+    fs.renameSync = (from, to) => {
+      if (to === path.join(workflowDir, `${saved.id}.json`)) throw new Error('atomic replace failed');
+      return originalRename(from, to);
+    };
+    try {
+      assert.throws(() => adhoc.saveWorkflow(cfg, {
+        ...saved, name: '置換に失敗した設計', nodes: [{ ...saved.nodes[0], goal: '新しい成果' }],
+      }), /atomic replace failed/);
+      assert.strictEqual(adhoc.loadWorkflow(cfg, saved.id).name, '保存する設計');
+    } finally {
+      fs.renameSync = originalRename;
+    }
+
+    assert.strictEqual(adhoc.deleteWorkflow(cfg, saved.id), true);
+    const trash = path.join(workflowDir, '.trash');
+    const trashed = fs.readdirSync(trash).filter((name) => name.startsWith(`${saved.id}-`));
+    assert.strictEqual(trashed.length, 1, '削除は復元可能な墓地へ移す');
+    assert.strictEqual(adhoc.loadWorkflow(cfg, saved.id), null);
+  } finally {
+    fs.rmSync(workflowDir, { recursive: true, force: true });
+    fs.rmSync(cfg.adhocFlow.builtinWorkflowDir, { recursive: true, force: true });
+  }
+});
+
 test('Git リポジトリ内のカスタムフローは共有版を優先して読むが dashboard から変更しない', () => {
   const repo = tmpdir('workflow-repository-');
   fs.mkdirSync(path.join(repo, '.git'));
@@ -323,6 +410,70 @@ test('Git リポジトリ内のカスタムフローは共有版を優先して�
   assert.throws(() => adhoc.deleteWorkflow(cfg, 'shared-flow', { scope: 'repository', cwd: subdir }), /読み取り専用/);
   assert.strictEqual(JSON.parse(fs.readFileSync(path.join(sharedDir, 'shared-flow.json'), 'utf8')).name, '共有版');
   projectEngine.projectRoots = originalRoots;
+});
+
+test('設計カタログはpurpose別に全scopeを列挙し、同名IDをscope付きで解決する', () => {
+  const repo = tmpdir('design-catalog-repo-');
+  const workflowDir = tmpdir('design-catalog-user-');
+  const builtinWorkflowDir = tmpdir('design-catalog-builtin-');
+  const cfg = { adhocFlow: { workflowDir, builtinWorkflowDir } };
+  const writeDefinition = (dir, definition) => {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, `${definition.id}.json`), `${JSON.stringify(definition)}\n`);
+  };
+  const definition = (name, purpose, libraryVisibility = 'library') => ({
+    version: 2, id: 'same-design-id', name, purpose, libraryVisibility,
+    entry: ['draft'], exit: ['finish'],
+    nodes: [
+      { id: 'draft', goal: '要件を整理', tier: 'large', deps: [] },
+      { id: 'finish', goal: '設計書を出力', kind: 'synthesize', tier: 'large', deps: ['draft'] },
+    ],
+  });
+  fs.mkdirSync(path.join(repo, '.git'));
+  const repoWorkflowDir = path.join(repo, '.agents', 'workflows');
+  writeDefinition(repoWorkflowDir, definition('登録フォルダ版', 'design'));
+  writeDefinition(builtinWorkflowDir, definition('同梱版', 'design', 'internal'));
+  adhoc.saveWorkflow(cfg, definition('自分用版', 'design'));
+  writeDefinition(workflowDir, { ...definition('実装フロー', 'implementation'), id: 'implementation-only' });
+
+  const originalRoots = projectEngine.projectRoots;
+  projectEngine.projectRoots = () => [repo];
+  try {
+    const handlers = {};
+    require('../src/features/adhoc-flow/main/ipc.js').registerIpc({
+      handle: (channel, fn) => { handlers[channel] = fn; },
+      loadConfig: () => cfg, saveConfig: () => cfg,
+    });
+    const catalog = handlers['adhocFlow:designCatalog']({ cwd: repo });
+    assert.ok(catalog, '設計カタログIPCを公開する');
+    assert.deepStrictEqual(catalog.items.map((item) => item.scope).sort(), ['builtin', 'repository', 'user']);
+    assert.ok(catalog.items.every((item) => item.purpose === 'design'));
+    assert.ok(!catalog.items.some((item) => item.id === 'implementation-only'));
+    assert.ok(catalog.items.every((item) => item.nodeCount === 2 && /^sha256:/.test(item.digest)));
+
+    assert.strictEqual(
+      adhoc.loadWorkflow(cfg, 'same-design-id', { scope: 'user' }).name, '自分用版'
+    );
+    assert.strictEqual(
+      adhoc.loadWorkflow(cfg, 'same-design-id', { scope: 'repository', cwd: repo }).name, '登録フォルダ版'
+    );
+    assert.strictEqual(
+      adhoc.loadWorkflow(cfg, 'same-design-id', { scope: 'builtin', cwd: repo }).name, '同梱版'
+    );
+    assert.strictEqual(
+      adhoc.snapshotSelection(cfg, { type: 'custom', id: 'same-design-id', scope: 'user' }, { cwd: repo }).name,
+      '自分用版'
+    );
+    assert.strictEqual(
+      adhoc.snapshotSelection(cfg, { type: 'custom', id: 'same-design-id', scope: 'repository' }, { cwd: repo }).name,
+      '登録フォルダ版'
+    );
+  } finally {
+    projectEngine.projectRoots = originalRoots;
+    fs.rmSync(repo, { recursive: true, force: true });
+    fs.rmSync(workflowDir, { recursive: true, force: true });
+    fs.rmSync(builtinWorkflowDir, { recursive: true, force: true });
+  }
 });
 
 test('未登録フォルダのフローと作業ルールは探索しない', () => {
@@ -1227,6 +1378,89 @@ test('バックログ用フロースナップショットは自動・標準・�
   }
 });
 
+test('実装runと設計runは異なるpurposeのフローを投入できない', () => {
+  const cfg = { adhocFlow: { workflowDir: tmpdir('purpose-mix-workflows-') } };
+  const originalExec = exec.shInWsl;
+  const originalTier = profiles.resolveTier;
+  exec.shInWsl = () => ({ status: 0, stdout: 'launched:1', stderr: '' });
+  profiles.resolveTier = () => ({ agent_cli: 'codex', model: 'gpt-5' });
+  try {
+    const designFlow = adhoc.saveWorkflow(cfg, {
+      id: 'design-only', name: '設計専用', purpose: 'design',
+      nodes: [{ id: 'finish', goal: '設計書を出す', tier: 'large' }],
+    });
+    const implementationFlow = adhoc.saveWorkflow(cfg, {
+      id: 'implementation-only', name: '実装専用', purpose: 'implementation',
+      nodes: [{ id: 'build', goal: '実装する', tier: 'large' }],
+    });
+    assert.throws(() => adhoc.submit(cfg, {
+      request: '実装する', purpose: 'implementation',
+      selection: { type: 'custom', id: designFlow.id, scope: 'user' },
+    }), /purpose|設計/);
+    assert.throws(() => adhoc.submit(cfg, {
+      request: '設計する', purpose: 'design',
+      selection: { type: 'custom', id: implementationFlow.id, scope: 'user' },
+    }), /purpose|実装/);
+  } finally {
+    exec.shInWsl = originalExec;
+    profiles.resolveTier = originalTier;
+    fs.rmSync(cfg.adhocFlow.workflowDir, { recursive: true, force: true });
+  }
+});
+
+test('設計runのplanはreadonly指示と終端の設計書成果契約を全goalへ付加する', () => {
+  const originalTier = profiles.resolveTier;
+  profiles.resolveTier = () => ({ agent_cli: 'codex', model: 'gpt-5' });
+  try {
+    const workflow = adhoc.normalizeWorkflow({
+      id: 'design-contract', name: '設計契約', purpose: 'design',
+      version: 2, entry: ['draft'], exit: ['finish'],
+      nodes: [
+        { id: 'draft', goal: '要件を整理する', tier: 'large' },
+        { id: 'finish', goal: '設計を仕上げる', kind: 'synthesize', tier: 'large', deps: ['draft'] },
+      ],
+    });
+    const plan = adhoc.planFromWorkflow({}, workflow, { purpose: 'design' });
+    assert.ok(plan.nodes.every((node) => /読み取り専用/.test(node.goal)
+      && /変更.*commit.*push/.test(node.goal)), '全ノードに変更不能な指示を付ける');
+    const terminal = plan.nodes.find((node) => node.id === 'finish');
+    assert.match(terminal.goal, /設計書.*全文/);
+    for (const section of ['## 目的', '## 変更対象', '## 受入基準', '## 検証方法']) {
+      assert.match(terminal.goal, new RegExp(section.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    }
+    assert.match(terminal.goal, /## 質問/);
+    assert.match(terminal.goal, /推奨.*理由/);
+  } finally {
+    profiles.resolveTier = originalTier;
+  }
+});
+
+test('設計フローのsnapshot後に元定義を変更しても保存済みplanは変わらない', () => {
+  const workflowDir = tmpdir('design-snapshot-isolation-');
+  const cfg = { adhocFlow: { workflowDir } };
+  const originalTier = profiles.resolveTier;
+  profiles.resolveTier = () => ({ agent_cli: 'codex', model: 'gpt-5' });
+  try {
+    const saved = adhoc.saveWorkflow(cfg, {
+      id: 'design-snapshot', name: '固定前', purpose: 'design',
+      nodes: [{ id: 'finish', goal: '元の設計成果', tier: 'large' }],
+    });
+    const snapshot = adhoc.snapshotSelection(
+      cfg, { type: 'custom', id: saved.id, scope: 'user' }, { purpose: 'design' }
+    );
+    adhoc.saveWorkflow(cfg, {
+      ...saved,
+      name: '変更後',
+      nodes: [{ ...saved.nodes[0], goal: '変更後の別成果' }],
+    });
+    assert.strictEqual(snapshot.name, '固定前');
+    assert.strictEqual(snapshot.nodes[0].goal, '元の設計成果');
+  } finally {
+    profiles.resolveTier = originalTier;
+    fs.rmSync(workflowDir, { recursive: true, force: true });
+  }
+});
+
 test('Git cwd は Windows パスを WSL に変換して workspace 契約へする', () => {
   const original = exec.shInWsl;
   let command = '';
@@ -1802,6 +2036,22 @@ test('同梱設計フローは内部設計用として分類する', () => {
   assert.ok(builtin.every((item) => item.purpose === 'design' && item.libraryVisibility === 'internal'));
 });
 
+test('ワークフローcatalogはpurposeを混ぜず、設計ではhumanとsplitを追加候補から除く', () => {
+  const overview = { workflows: [
+    { id: 'impl', name: '実装', purpose: 'implementation', libraryVisibility: 'library' },
+    { id: 'impl-internal', name: '実装内部', purpose: 'implementation', libraryVisibility: 'internal' },
+    { id: 'design', name: '設計', purpose: 'design', libraryVisibility: 'library' },
+    { id: 'design-internal', name: '設計同梱', purpose: 'design', libraryVisibility: 'internal' },
+  ] };
+  assert.deepStrictEqual(workflowUi.visibleWorkflows(overview, 'implementation').map((item) => item.id), ['impl']);
+  assert.deepStrictEqual(workflowUi.visibleWorkflows(overview, 'design').map((item) => item.id), ['design']);
+  assert.deepStrictEqual(workflowUi.builtinDesignWorkflows(overview).map((item) => item.id), ['design-internal']);
+  const designKinds = workflowUi.editableKindsForWorkflow({ purpose: 'design' });
+  assert.ok(!designKinds.includes('human') && !designKinds.includes('split'));
+  assert.ok(workflowUi.editableKindsForWorkflow({ purpose: 'implementation' }).includes('human'));
+  assert.ok(!workflowUi.recommendedKinds({ purpose: 'design', nodes: [] }, '__start__').includes('human'));
+});
+
 test('設計セッションはラウンドごとに設計 run を投げ、成果を取り込む', () => {
   const busDir = tmpdir('design-bus-');
   const cfg = { adhocFlow: {
@@ -1860,6 +2110,64 @@ test('設計セッションはラウンドごとに設計 run を投げ、成果
     exec.shInWsl = originalExec;
     profiles.resolveTier = originalTier;
   }
+});
+
+test('必須4節が不足した設計成果は既存の設計書を保持し、再試行情報を残す', () => {
+  const busDir = tmpdir('design-incomplete-bus-');
+  const cfg = { adhocFlow: {
+    busDir,
+    workflowDir: tmpdir('design-incomplete-workflow-'),
+    designSessionDir: tmpdir('design-incomplete-sessions-'),
+    tuningRoot: tmpdir('design-incomplete-tuning-'),
+  } };
+  const originalExec = exec.shInWsl;
+  const originalTier = profiles.resolveTier;
+  exec.shInWsl = () => ({ status: 0, stdout: 'launched:1', stderr: '' });
+  profiles.resolveTier = () => ({ agent_cli: 'claude', model: '' });
+  const completeRun = (runId, output) => {
+    const runDir = path.join(busDir, 'runs', runId);
+    fs.mkdirSync(path.join(runDir, 'results'), { recursive: true });
+    fs.writeFileSync(path.join(runDir, 'meta.json'), JSON.stringify({ status: 'done' }));
+    fs.writeFileSync(path.join(runDir, 'graph.json'), JSON.stringify({
+      nodes: { draft: { id: 'draft', deps: [] } },
+    }));
+    fs.writeFileSync(path.join(runDir, 'results', 'draft.json'), JSON.stringify({
+      status: 'done', output,
+    }));
+  };
+  const valid = '## 目的\n既存の設計\n\n## 変更対象\n対象\n\n## 受入基準\n完了\n\n## 検証方法\nテスト';
+  try {
+    const first = design.startRound(cfg, { goal: '設計する', mode: 'interactive' });
+    completeRun(first.runId, valid);
+    assert.strictEqual(design.getSession(cfg, first.id).document, valid);
+
+    const second = design.startRound(cfg, { id: first.id, answers: [] });
+    completeRun(second.runId, '## 目的\n不完全な別成果');
+    const kept = design.getSession(cfg, first.id);
+    assert.strictEqual(kept.document, valid);
+    assert.match(kept.error, /必須|不足|節/);
+    assert.strictEqual(kept.rounds.length, 2);
+    assert.strictEqual(kept.runId, second.runId, '同じスナップショットで再試行できる');
+  } finally {
+    exec.shInWsl = originalExec;
+    profiles.resolveTier = originalTier;
+    for (const dir of [busDir, cfg.adhocFlow.workflowDir, cfg.adhocFlow.designSessionDir,
+      cfg.adhocFlow.tuningRoot]) fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('modeだけを持つ旧設計セッションをworkflowの新規設計として互換読込する', () => {
+  const session = design.normalizeSession({
+    version: 1, id: 'ds-mode-only', goal: '既存の要望', mode: 'auto',
+    document: '## 目的\n既存設計', rounds: [],
+  });
+  assert.strictEqual(session.version, 2);
+  assert.strictEqual(session.mode, 'auto');
+  assert.strictEqual(session.target, 'workflow');
+  assert.strictEqual(session.sourceMode, 'new');
+  assert.deepStrictEqual(session.sources, []);
+  assert.strictEqual(session.proposal, null);
+  assert.strictEqual(session.application, null);
 });
 
 test('設計セッションのノード割り当ては plan へ固定され、次のラウンドにも引き継ぐ', () => {
