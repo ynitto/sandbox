@@ -138,6 +138,22 @@ def headless_cmd(name: str, model: str, prompt: str, **kwargs) -> dict:
     return cli.headless_cmd(cli.load_cli(name), model, prompt, **kwargs)
 
 
+# ---------------------------------------------------------------- 決定化パイプ（P4 / E6）
+
+
+def decide_candidates(criteria, facts, tie_break=None):
+    """多基準判定の決定的部分。本番（agentcore.nodecontract）を呼ぶ（写さない）。
+    無い木では None——呼び出し側がその測定だけを落とす。"""
+    try:
+        from agentcore import nodecontract  # noqa: PLC0415
+    except Exception as e:  # noqa: BLE001
+        if "agentcore.nodecontract" not in str(_MISSING):
+            _MISSING.append(f"agentcore.nodecontract ({e})")
+        return None
+    fn = _need(nodecontract, "decide_candidates", "decide_candidates（決定的判定）")
+    return fn(criteria, facts, tie_break=tie_break) if fn is not None else None
+
+
 # ---------------------------------------------------------------- 手法パック
 
 

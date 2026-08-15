@@ -105,5 +105,47 @@ class OperationContractTest(unittest.TestCase):
                             nodecontract.local_patch_blockers(mismatch)))
 
 
+class DecideCandidatesTest(unittest.TestCase):
+    FACTS = [
+        {"id": "c1", "tests": "pass", "extra_deps": True, "lines": 30},
+        {"id": "c2", "tests": "fail", "extra_deps": False, "lines": 48},
+        {"id": "c3", "tests": "pass", "extra_deps": False, "lines": 41},
+        {"id": "c4", "tests": "pass", "extra_deps": True, "lines": 27},
+        {"id": "c5", "tests": "fail", "extra_deps": False, "lines": 35},
+        {"id": "c6", "tests": "none", "extra_deps": False, "lines": 52},
+    ]
+
+    def test_filter_single_criterion(self):
+        decision = nodecontract.decide_candidates(
+            [{"fact": "extra_deps", "op": "eq", "value": False}], self.FACTS)
+        self.assertEqual(decision["kept"], ["c2", "c3", "c5", "c6"])
+        self.assertEqual(decision["undecided"], [])
+        self.assertIsNone(decision["winner"])
+
+    def test_judge_multi_criteria_with_tie_break(self):
+        decision = nodecontract.decide_candidates(
+            [{"fact": "tests", "op": "eq", "value": "pass"},
+             {"fact": "extra_deps", "op": "eq", "value": False}],
+            self.FACTS, tie_break={"fact": "lines", "op": "min"})
+        self.assertEqual(decision["kept"], ["c3"])
+        self.assertEqual(decision["winner"], "c3")
+
+    def test_missing_fact_goes_undecided_and_blocks_winner(self):
+        facts = [dict(f) for f in self.FACTS]
+        del facts[2]["extra_deps"]      # c3 の事実が欠測
+        decision = nodecontract.decide_candidates(
+            [{"fact": "tests", "op": "eq", "value": "pass"},
+             {"fact": "extra_deps", "op": "eq", "value": False}],
+            facts, tie_break={"fact": "lines", "op": "min"})
+        self.assertIn("c3", decision["undecided"])
+        self.assertIsNone(decision["winner"], "欠測があるのに確定しない")
+
+    def test_tie_break_equal_uses_id_order_and_max(self):
+        facts = [{"id": "b", "score": 5}, {"id": "a", "score": 5}, {"id": "c", "score": 3}]
+        decision = nodecontract.decide_candidates(
+            [], facts, tie_break={"fact": "score", "op": "max"})
+        self.assertEqual(decision["winner"], "a")
+
+
 if __name__ == "__main__":
     unittest.main()

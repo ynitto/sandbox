@@ -1,0 +1,237 @@
+{
+ "what": "E7 受入証跡: strategy=economy の定型 flow がクラウド 0 で完走し、候補単位 receipt が E5 の台帳（qualify）で読めることの確認",
+ "date": "2026-08-15",
+ "control": {
+  "version": 2,
+  "revision": 100,
+  "workloads": {
+   "flow": {
+    "agent_cli": "ollama",
+    "model": "gemma4:e4b",
+    "tier": "small",
+    "selection_policy": {
+     "strategy": "economy",
+     "ranking_formula_version": 1,
+     "qualification_revision": 1,
+     "retry_limit": 1,
+     "no_candidate": "park",
+     "candidates": [
+      {
+       "agent_cli": "ollama",
+       "model": "gemma4:e4b",
+       "qualification_refs": [
+        "ollama-gemma4-e4b-bounded-analysis-v1"
+       ],
+       "rank": 1
+      }
+     ]
+    }
+   }
+  },
+  "updated_at": "2026-08-15T00:00:00Z",
+  "updated_by": "e7-acceptance"
+ },
+ "plan": {
+  "name": "e7-candidate-triage",
+  "nodes": [
+   {
+    "id": "f1",
+    "kind": "filter",
+    "deps": [],
+    "goal": "候補のうちテストが通っているものだけを残す。採用した候補の id だけを JSON 配列で出力する（例: [\"c1\",\"c2\"]）。落とした候補の id は出力に含めないこと。\n候補:\n[c1] 集計スクリプト案 A: 30 行。テスト: pass（12 件）\n[c2] 集計スクリプト案 B: 48 行。テスト: fail（3 件が失敗）\n[c3] 集計スクリプト案 C: 41 行。テスト: pass（12 件）\n[c4] 集計スクリプト案 D: 27 行。テスト: 未実行"
+   },
+   {
+    "id": "j1",
+    "kind": "judge",
+    "deps": [
+     "f1"
+    ],
+    "goal": "依存（f1）が残した候補のうち、行数が最も少ないものを 1 つ選ぶ。出力は JSON {\"winner\":\"<id>\",\"reason\":\"...\"} だけ。行数の情報: c1=30 行・c2=48 行・c3=41 行・c4=27 行"
+   },
+   {
+    "id": "r1",
+    "kind": "reduce",
+    "deps": [
+     "f1",
+     "j1"
+    ],
+    "goal": "依存の結果を 1 つの JSON へ集約する。出力は {\"kept\":[...],\"winner\":\"<id>\",\"count\":<kept の要素数>} だけ。count は kept の実際の要素数と一致させること。"
+   }
+  ]
+ },
+ "meta": {
+  "request": "E7 受入: 候補整理の定型フロー（economy・ローカル候補のみ）",
+  "status": "done",
+  "updated_at": "2026-08-15T02:18:31Z"
+ },
+ "results": [
+  {
+   "id": "f1",
+   "who": "mac-w1",
+   "status": "done",
+   "output": "{\n\"kept\": [\"c1\", \"c3\"]\n}",
+   "finished_at": "2026-08-15T02:18:10Z",
+   "node": "mac",
+   "kind": "filter",
+   "agent_cli": "ollama-json",
+   "model": "gemma4:e4b",
+   "tier": "small",
+   "selection_source": "qualified-candidate",
+   "selection_reason": "strategy=economy の順位 1 位",
+   "execution_decision": {
+    "agent_cli": "ollama",
+    "model": "gemma4:e4b",
+    "selection_source": "qualified-candidate",
+    "qualification_id": "ollama-gemma4-e4b-bounded-analysis-v1",
+    "control_revision": 100,
+    "qualification_revision": 1,
+    "rank": 1,
+    "reason": "strategy=economy の順位 1 位",
+    "fallback_from": null,
+    "eligible_candidate_ids": [
+     "ollama/gemma4:e4b"
+    ]
+   },
+   "data": {
+    "kept": [
+     "c1",
+     "c3"
+    ]
+   },
+   "dependency_context": {
+    "mode": "full",
+    "before_chars": 2,
+    "after_chars": 2,
+    "saved_chars": 0
+   }
+  },
+  {
+   "id": "j1",
+   "who": "mac-w1",
+   "status": "done",
+   "output": "{\"winner\":\"c4\",\"reason\":\"タスクの目的は「行数が最も少ないものを選ぶ」ことです。提供された情報（行数: c1=30 行・c2=48 行・c3=41 行・c4=27 行）に基づき、選択肢c4が最も少なく、この最少行数の制約を完全に満たしているため。\" }",
+   "finished_at": "2026-08-15T02:18:19Z",
+   "node": "mac",
+   "kind": "judge",
+   "agent_cli": "ollama-json",
+   "model": "gemma4:e4b",
+   "tier": "small",
+   "selection_source": "qualified-candidate",
+   "selection_reason": "strategy=economy の順位 1 位",
+   "execution_decision": {
+    "agent_cli": "ollama",
+    "model": "gemma4:e4b",
+    "selection_source": "qualified-candidate",
+    "qualification_id": "ollama-gemma4-e4b-bounded-analysis-v1",
+    "control_revision": 100,
+    "qualification_revision": 1,
+    "rank": 1,
+    "reason": "strategy=economy の順位 1 位",
+    "fallback_from": null,
+    "eligible_candidate_ids": [
+     "ollama/gemma4:e4b"
+    ]
+   },
+   "data": {
+    "winner": "c4",
+    "reason": "タスクの目的は「行数が最も少ないものを選ぶ」ことです。提供された情報（行数: c1=30 行・c2=48 行・c3=41 行・c4=27 行）に基づき、選択肢c4が最も少なく、この最少行数の制約を完全に満たしているため。"
+   },
+   "dependency_context": {
+    "mode": "full",
+    "before_chars": 808,
+    "after_chars": 808,
+    "saved_chars": 0
+   }
+  },
+  {
+   "id": "r1",
+   "who": "mac-w1",
+   "status": "done",
+   "output": "{\"kept\": [\"c1\", \"c3\"], \"winner\": \"c4\", \"count\": 2}",
+   "finished_at": "2026-08-15T02:18:29Z",
+   "node": "mac",
+   "kind": "reduce",
+   "agent_cli": "ollama-json",
+   "model": "gemma4:e4b",
+   "tier": "small",
+   "selection_source": "qualified-candidate",
+   "selection_reason": "strategy=economy の順位 1 位",
+   "execution_decision": {
+    "agent_cli": "ollama",
+    "model": "gemma4:e4b",
+    "selection_source": "qualified-candidate",
+    "qualification_id": "ollama-gemma4-e4b-bounded-analysis-v1",
+    "control_revision": 100,
+    "qualification_revision": 1,
+    "rank": 1,
+    "reason": "strategy=economy の順位 1 位",
+    "fallback_from": null,
+    "eligible_candidate_ids": [
+     "ollama/gemma4:e4b"
+    ]
+   },
+   "data": {
+    "kept": [
+     "c1",
+     "c3"
+    ],
+    "winner": "c4",
+    "count": 2
+   },
+   "dependency_context": {
+    "mode": "full",
+    "before_chars": 1851,
+    "after_chars": 1851,
+    "saved_chars": 0
+   }
+  }
+ ],
+ "budget_ledger": [
+  {
+   "ts": "2026-08-15T02:18:10Z",
+   "workload": "flow",
+   "tool": "agent-flow",
+   "seconds": 5.819,
+   "ref": "filter",
+   "purpose": "filter",
+   "run_id": "run-20260815-111803-4971",
+   "flow_node": "f1",
+   "agent_cli": "ollama-json",
+   "model": "gemma4:e4b",
+   "tokens_in": 550.0,
+   "tokens_out": 16.0
+  },
+  {
+   "ts": "2026-08-15T02:18:19Z",
+   "workload": "flow",
+   "tool": "agent-flow",
+   "seconds": 8.998,
+   "ref": "judge",
+   "purpose": "judge",
+   "run_id": "run-20260815-111803-4971",
+   "flow_node": "j1",
+   "agent_cli": "ollama-json",
+   "model": "gemma4:e4b",
+   "tokens_in": 529.0,
+   "tokens_out": 85.0
+  },
+  {
+   "ts": "2026-08-15T02:18:29Z",
+   "workload": "flow",
+   "tool": "agent-flow",
+   "seconds": 10.042,
+   "ref": "reduce",
+   "purpose": "reduce",
+   "run_id": "run-20260815-111803-4971",
+   "flow_node": "r1",
+   "agent_cli": "ollama-json",
+   "model": "gemma4:e4b",
+   "tokens_in": 668.0,
+   "tokens_out": 25.0
+  }
+ ],
+ "qualify_dry_run": {
+  "observed_cells": 3,
+  "status_changes": "ollama-json/gemma4:e4b × filter/judge/reduce → trial（samples=1・min_samples 未満は昇格しない）"
+ }
+}

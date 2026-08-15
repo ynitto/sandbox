@@ -134,6 +134,49 @@ def _creates_test_schema_doc(path: str) -> bool:
     return name.endswith((".md", ".rst"))
 
 
+def decide_candidates(criteria, facts, *, tie_break=None) -> dict:
+    """多基準 filter / judge の決定的判定部（P4 決定化パイプ。旧計画 §P4 / 実装計画 E6）。
+
+    モデルに多基準判定を訊かない——モデル（extract・適格 6/6）または構造化生成が出した
+    機械可読の事実 ``facts = [{"id", <fact>: value}, ...]`` に対し、``criteria``
+    （``[{"fact","op","value"}]``・AND）を機械が適用する。
+
+    - op は ``eq`` / ``ne``。``tie_break={"fact","op":"min"|"max"}`` は kept が
+      複数のときの順位基準（同値は id 昇順）。
+    - **事実が欠けた候補は落とさず undecided へ**——欠測を静かに合格 / 不合格にしない。
+      undecided が残る限り winner は出さない（誤った確定より人 / 上位へ返す）。
+    """
+    kept: list = []
+    undecided: list = []
+    for fact in facts or []:
+        if not isinstance(fact, dict) or not str(fact.get("id") or "").strip():
+            continue
+        verdicts = []
+        for criterion in criteria or []:
+            value = fact.get(criterion.get("fact"))
+            if value is None:
+                verdicts.append(None)
+            elif criterion.get("op") == "ne":
+                verdicts.append(value != criterion.get("value"))
+            else:  # 既定 eq
+                verdicts.append(value == criterion.get("value"))
+        if any(v is False for v in verdicts):
+            continue
+        (undecided if any(v is None for v in verdicts) else kept).append(fact)
+    winner = None
+    if isinstance(tie_break, dict) and kept and not undecided:
+        key = tie_break.get("fact")
+        ranked = [f for f in kept
+                  if isinstance(f.get(key), (int, float)) and not isinstance(f.get(key), bool)]
+        if len(ranked) == len(kept):    # 順位基準に欠測があるなら winner を出さない
+            reverse = tie_break.get("op") == "max"
+            ranked.sort(key=lambda f: (-f[key] if reverse else f[key], str(f["id"])))
+            winner = str(ranked[0]["id"])
+    return {"kept": [str(f["id"]) for f in kept],
+            "undecided": [str(f["id"]) for f in undecided],
+            "winner": winner}
+
+
 def local_patch_blockers(contract, *, existing_paths=None) -> "list[str]":
     """局所修正（§2.1 の適格条件）を満たさない理由のリスト（空 = 機械判定で適格）。
 

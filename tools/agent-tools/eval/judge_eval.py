@@ -219,6 +219,67 @@ FILES = ["ingest.py", "normalize.py", "aggregate.py", "render.py",
 REQUEST = ("run ログから日次のトークン消費レポートを作る仕組みを用意する。"
            "収集・集計・出力の 3 段で、追加の依存は増やさない方針。")
 
+# --- 決定化パイプ（P4 / 実装計画 E6）--------------------------------------------------
+# 多基準 filter / judge をモデルに訊かない。モデルの仕事は**事実の抽出だけ**
+# （e4b の適格領域 6/6）で、判定は agentcore.nodecontract.decide_candidates（機械）。
+# F2 / J1 と同じ素材・同じ正解で、パイプに組み替えた形が F1 並み（3/3 帯）に届くかを測る。
+
+FACT_GOAL = (
+    "各候補について機械可読の事実だけを抽出する。**判定・選択はしない**。出力は JSON "
+    '{"facts":[{"id":"c1","tests":"pass","extra_deps":false,"lines":30}, ...]} だけ。\n'
+    "- tests: 「テスト: pass」なら \"pass\"、fail や実行時エラーなら \"fail\"、"
+    "未実行なら \"none\"\n"
+    "- extra_deps: 標準ライブラリ以外の追加依存が要るなら true、標準ライブラリのみなら false\n"
+    "- lines: 行数の整数\n"
+    "6 候補（c1〜c6）すべてを facts に含めること。")
+
+
+def _norm_facts(data) -> "list[dict]":
+    """モデル出力の facts を decide_candidates の入力へ正規化（表記ゆれの吸収だけ。
+    値の欠落・不明値は None のまま渡す——undecided として機械側が扱う）。"""
+    facts = data.get("facts") if isinstance(data, dict) else None
+    out = []
+    for f in facts if isinstance(facts, list) else []:
+        if not isinstance(f, dict):
+            continue
+        rec: dict = {"id": str(f.get("id") or "").strip()}
+        tests = str(f.get("tests") or "").strip().lower()
+        rec["tests"] = tests if tests in ("pass", "fail", "none") else None
+        deps = f.get("extra_deps")
+        rec["extra_deps"] = deps if isinstance(deps, bool) else None
+        lines = f.get("lines")
+        rec["lines"] = lines if isinstance(lines, int) and not isinstance(lines, bool) else None
+        out.append(rec)
+    return out
+
+
+def check_pipe_filter(data):
+    decision = engine.decide_candidates(
+        [{"fact": "extra_deps", "op": "eq", "value": False}], _norm_facts(data))
+    if decision is None:
+        return False, "decide_candidates がこの木に無い"
+    if decision["undecided"]:
+        return False, f"事実の欠測で未決: {decision['undecided']}"
+    kept, want = set(decision["kept"]), {"c2", "c3", "c5", "c6"}
+    if kept == want:
+        return True, f"抽出→機械判定 kept={sorted(kept)}"
+    return False, f"kept={sorted(kept)}（期待 {sorted(want)}）"
+
+
+def check_pipe_judge(data):
+    decision = engine.decide_candidates(
+        [{"fact": "tests", "op": "eq", "value": "pass"},
+         {"fact": "extra_deps", "op": "eq", "value": False}],
+        _norm_facts(data), tie_break={"fact": "lines", "op": "min"})
+    if decision is None:
+        return False, "decide_candidates がこの木に無い"
+    if decision["undecided"]:
+        return False, f"事実の欠測で未決: {decision['undecided']}"
+    if decision["winner"] == "c3":
+        return True, "抽出→機械判定 winner=c3"
+    return False, f"winner={decision['winner']}（期待 c3）"
+
+
 CASES = {
     "S1": dict(kind="split", expect="4 分割・1〜1000 を被覆",
                goal=("処理対象の ID 範囲 1〜1000 を、4 つの連続する区間へ等分する。"
@@ -250,6 +311,17 @@ CASES = {
                      "reason に他の候補の id を書かないこと。"),
                deps={"gen": {"output": CANDIDATES}},
                check=lambda d: check_winner(d, "c3")),
+    # 決定化パイプでは抽出を filter / judge の役割で走らせない——role 行の出力契約
+    # （kept / winner）がゴールを上書きし、モデルが判定へ滑り戻る（実測: 旧契約の
+    # 即答が混ざり F2P 1/3）。本番でも抽出は独立ノード（extract）にする。
+    "F2P": dict(kind="extract", expect="決定化: 抽出→機械判定で kept=c2,c3,c5,c6",
+                goal=FACT_GOAL,
+                deps={"gen": {"output": CANDIDATES}},
+                check=check_pipe_filter),
+    "J1P": dict(kind="extract", expect="決定化: 抽出→機械判定で winner=c3",
+                goal=FACT_GOAL,
+                deps={"gen": {"output": CANDIDATES}},
+                check=check_pipe_judge),
     "J2": dict(kind="judge", expect="c4",
                goal=("候補から最良の 1 案を選ぶ。基準は「テストが通っている案のうち"
                      "最も行数が少ないもの」だけで、依存の有無は問わない。"
@@ -429,7 +501,15 @@ def selfcheck() -> int:
                          "retry", "config"], "count": 8},
         "E1": {"decision": "replan", "reason": "出力段が無い", "new_tasks": [{"id": "t5"}]},
         "E2": {"decision": "done", "reason": "全項目 pass", "new_tasks": []},
+        "F2P": {"facts": [
+            {"id": "c1", "tests": "pass", "extra_deps": True, "lines": 30},
+            {"id": "c2", "tests": "fail", "extra_deps": False, "lines": 48},
+            {"id": "c3", "tests": "pass", "extra_deps": False, "lines": 41},
+            {"id": "c4", "tests": "pass", "extra_deps": True, "lines": 27},
+            {"id": "c5", "tests": "fail", "extra_deps": False, "lines": 35},
+            {"id": "c6", "tests": "none", "extra_deps": False, "lines": 52}]},
     }
+    good["J1P"] = good["F2P"]
     bad = {
         "S1": [["1-250", "260-500", "501-750", "751-1000"],   # 隙間
                ["1-500", "501-1000"],                         # 分割数
@@ -449,6 +529,23 @@ def selfcheck() -> int:
                           "retry", "config"], "count": 12}],   # 件数だけ合わない
         "E1": [{"decision": "done"}, {}, None],
         "E2": [{"decision": "replan"}],
+        # 抽出の取り違え（c1 の依存を false と誤抽出）→ kept/winner がずれて落ちる。
+        # 欠測（c3 の extra_deps 抜け）→ 未決として落ちる（静かに合格させない）。
+        "F2P": [{"facts": [
+            {"id": "c1", "tests": "pass", "extra_deps": False, "lines": 30},
+            {"id": "c2", "tests": "fail", "extra_deps": False, "lines": 48},
+            {"id": "c3", "tests": "pass", "extra_deps": False, "lines": 41},
+            {"id": "c4", "tests": "pass", "extra_deps": True, "lines": 27},
+            {"id": "c5", "tests": "fail", "extra_deps": False, "lines": 35},
+            {"id": "c6", "tests": "none", "extra_deps": False, "lines": 52}]},
+            {"facts": [{"id": "c2", "tests": "fail", "extra_deps": False, "lines": 48}]}],
+        "J1P": [{"facts": [
+            {"id": "c1", "tests": "pass", "extra_deps": True, "lines": 30},
+            {"id": "c2", "tests": "fail", "extra_deps": False, "lines": 48},
+            {"id": "c3", "tests": "pass", "lines": 41},
+            {"id": "c4", "tests": "pass", "extra_deps": True, "lines": 27},
+            {"id": "c5", "tests": "fail", "extra_deps": False, "lines": 35},
+            {"id": "c6", "tests": "none", "extra_deps": False, "lines": 52}]}],
     }
     fails = []
     for cid, case in CASES.items():

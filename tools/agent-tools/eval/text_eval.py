@@ -38,6 +38,7 @@ LEDGER_DIR = Path(os.environ.get("TEXT_EVAL_DIR", "/tmp/agent-text-eval"))
 MODEL = "gemma4:12b"
 WALL_LIMIT = 600.0
 THINK_OVERRIDE = ""         # --think で上書き（空 = 定義の値のまま）
+REPAIR = False              # --repair: 機械検査の診断を付けた 1 回再投入（P5 / E6）
 _FALLBACK_CMD = ["agent-ollama", "--think", "off", "--format", "json", "{model}"]
 
 CMD, CMD_SOURCE = engine.load_cmd("ollama-json", _FALLBACK_CMD)
@@ -370,10 +371,8 @@ def call(prompt: str) -> "tuple[int, str, str, float]":
     return rc, out, err, time.time() - started
 
 
-def run_one(cid: str, i: int) -> dict:
-    case = CASES[cid]
-    prompt = build_prompt(case)
-    rc, out, err, wall = call(prompt)
+def _judge_output(case: dict, rc: int, out: str, err: str, wall: float):
+    """1 回の応答を (data, mode, ok, note) へ判定する（再投入の前後で同じ規則）。"""
     data = None
     if wall >= WALL_LIMIT:
         mode, ok, note = "timeout", False, "上限超過"
@@ -389,7 +388,32 @@ def run_one(cid: str, i: int) -> dict:
         else:
             ok, note = case["check"](data)
             mode = "correct" if ok else "wrong"
+    return data, mode, ok, note
+
+
+def run_one(cid: str, i: int) -> dict:
+    case = CASES[cid]
+    prompt = build_prompt(case)
+    rc, out, err, wall = call(prompt)
+    data, mode, ok, note = _judge_output(case, rc, out, err, wall)
+    repaired = False
+    # 制約つき生成のゲート（P5 / 実装計画 E6）: 機械検査の不合格理由（note＝チェッカーの
+    # 決定的診断）を付けて 1 回だけ再投入する。statemachine の check 再投入と同じ運び方で、
+    # 「決定的に測れる制約は機械検査 + 再投入で受ける」を同じハーネスで確かめる。
+    if REPAIR and not ok and mode in ("wrong", "unparsable") and wall < WALL_LIMIT:
+        fix = (f"{prompt}\n\n[機械検査の結果、前回の出力は不合格でした]\n"
+               f"前回の出力（先頭 400 文字）: {out[:400]}\n"
+               f"不合格の理由: {note}\n"
+               "理由を解消し、指示された JSON だけを再出力してください。")
+        r_rc, r_out, r_err, r_wall = call(fix)
+        wall += r_wall
+        repaired = True
+        data, mode, ok, note = _judge_output(case, r_rc, r_out, r_err, r_wall)
+        mode += "_after_repair"
+        if r_rc == 0 and r_out.strip():
+            out = r_out
     rec = dict(case=cid, genre=case["genre"], iter=i, model=MODEL, ok=ok, mode=mode,
+               repaired=repaired,
                # 実効条件を台帳へ。空 = 定義の値のまま（判定系の過去の数字はすべて
                # think off で取られているので、腕を混ぜないためにここが要る）。
                think_override=THINK_OVERRIDE or None,
@@ -472,12 +496,14 @@ def _powerset(menu):
 
 
 def main() -> None:
-    global MODEL, WALL_LIMIT, THINK_OVERRIDE
+    global MODEL, WALL_LIMIT, THINK_OVERRIDE, REPAIR
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default=MODEL)
     ap.add_argument("--repeat", type=int, default=3)
     ap.add_argument("--cases", default=",".join(CASES))
     ap.add_argument("--wall", type=float, default=WALL_LIMIT)
+    ap.add_argument("--repair", action="store_true",
+                    help="不合格時に機械検査の診断を付けて 1 回だけ再投入する（P5 のゲート形）")
     ap.add_argument("--selfcheck", action="store_true",
                     help="チェッカーの自己検証だけを行う（LLM を呼ばない）")
     ap.add_argument("--think", choices=("on", "off", "prompt"), default="",
@@ -491,6 +517,7 @@ def main() -> None:
     MODEL = args.model
     WALL_LIMIT = args.wall
     THINK_OVERRIDE = args.think
+    REPAIR = args.repair
 
     LEDGER_DIR.mkdir(parents=True, exist_ok=True)
     ledger = LEDGER_DIR / "ledger.jsonl"

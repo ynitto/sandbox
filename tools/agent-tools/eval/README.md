@@ -760,3 +760,60 @@ worker_eval と同一定数）を、本番経路 `agent-loop statemachine` + aid
    `--test-cmd` はリポジトリルートの `.venv/bin/python` を使う（`worker_eval.py` の
    `VENV_PY`）。worktree には `.venv` が無いので、メインの checkout から symlink を張るか、
    メインの checkout で回す。
+
+---
+
+## 実測 2026-08-15 — E6/E7（決定化パイプと economy クラウド 0 受入）
+
+実装計画（2026-08-15 候補ベース実行）の E6/E7。モデルは gemma4:e4b、
+台帳は `results/archive/ledger-2026-08-15-e6-*.jsonl` と
+`results/archive/2026-08-15-e7-cloud-zero-acceptance.json`。
+
+### E6-1: 多基準 filter / judge の決定化パイプ（P4）— 3/3 帯に到達
+
+F2 / J1（4+1 レバー全滅・0/3）を、**モデル=事実抽出のみ・判定=機械**へ組み替えた
+セル F2P / J1P で引き直した。抽出の出力は `{"facts":[{id,tests,extra_deps,lines}]}`、
+判定は `agentcore.nodecontract.decide_candidates`（1 実装。欠測は undecided として
+確定を拒む）。
+
+| セル | 素 F2/J1（過去） | 決定化パイプ | 中央値 |
+|---|---:|---:|---:|
+| F2P（filter 相当） | 0/3 | **3/3** | 7s |
+| J1P（judge 相当） | 0/3 | **3/3** | 5s |
+
+**組み替えの注意（1 回目の失敗から）。** 抽出ゴールを filter / judge の kind のまま
+流すと、flow-worker プロンプトの役割行（「末尾に {"kept": ...} を添える」等）が
+ゴールを上書きし、モデルが判定へ滑り戻る（F2P 1/3・旧契約の即答が混入）。
+**決定化パイプの抽出は独立ノード（extract 系）として走らせる**こと。台帳の
+前半 6 行（kind=filter/judge）がその失敗の証跡、後半 6 行（kind=extract）が本測定。
+
+### E6-2: 制約つき生成のゲート（P5）— 機械検査 + 再投入
+
+チェッカーの決定的診断（note）を付けた 1 回再投入（`text_eval.py --repair`。
+statemachine の check 再投入と同じ運び方）。
+
+| セル | 素（過去・12b/e4b 4/6 帯） | 検査+再投入 | 内訳 |
+|---|---:|---:|---|
+| SM2（220 字・必須言及・数値捏造なし） | 4/6 | **3/3** | 1 本は再投入で回復 |
+| PR1（予算 10 の一意最適） | 4/6 | 2/3 | 2 本再投入で回復・1 本は組合せ選択の誤りが残存 |
+
+PR1 の残差は制約検査でなく**組合せ最適の選択誤り＝P4 系**。この形は総当たりが
+決定的に書ける（selfcheck が実際に総当たりで検算している）ので、実運用では
+モデルに選ばせず決定化する。
+
+### E7: strategy=economy の定型 flow — クラウド消費 0 の受入
+
+隔離 control（v2・economy・候補=ollama/gemma4:e4b のみ・dual-write）で
+plan-file 定型（filter→judge→reduce）を `--executor agent` 完走。
+
+- 全 3 ノード done。result の `execution_decision` は全て
+  `selection_source=qualified-candidate / rank=1 / control_revision=100`。
+- 予算台帳の CLI は `ollama-json` のみ——**metered CLI（claude/codex/copilot/kiro）の
+  行は 0**。昇格経路は不発火（クラウド行 0 が負性確認）。
+- E5 の輪: `collect_flow_buses` → `agent-audit qualify`（dry-run）が同 run から
+  3 セル（ollama-json/gemma4:e4b × filter/judge/reduce）を観測し、samples=1 は
+  min_samples 未満なので **trial 止まり**（保守側の既定どおり昇格しない）。
+
+副観測: flow 側 j1（単基準のつもりの judge）が依存 f1 の絞り込みを無視して
+c4 を選んだ——多基準の取り違えは本番経路でも再現する。判定を決定化パイプへ
+寄せる根拠がまた 1 つ増えた。

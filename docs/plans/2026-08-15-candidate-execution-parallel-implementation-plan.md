@@ -170,6 +170,23 @@ agent-control を隔離しておらず、実機 control.json の workloads.amigo
 出力は executioncontract.qualifications_errors の 1 実装検証を通してから書く。
 operation_class の無い旧レコードは数えない（モデル名だけで広い適格を与えない——§2.2）。
 
+**E6 実装記録（2026-08-15・完了）。** 決定的判定は `agentcore.nodecontract.decide_candidates`
+（1 実装。欠測は undecided で確定拒否）、eval は engine.py 経由で本番を呼ぶ。
+F2P/J1P（モデル=事実抽出のみ・判定=機械）で **3/3・3/3**（素 F2/J1 は 0/3）。
+組み替えの学び: 抽出を filter/judge の kind のまま流すと役割行の出力契約がゴールを
+上書きしモデルが判定へ滑り戻る（1 回目 1/3）——**抽出は独立ノード（extract 系）で走らせる**。
+P5 は `text_eval --repair`（機械検査の診断付き 1 回再投入）で SM2 **3/3**・PR1 2/3
+（残差は組合せ選択＝P4 系で、総当たり決定化で消える種類）。台帳は
+`eval/results/archive/ledger-2026-08-15-e6-*.jsonl`、詳細は eval/README の同日節。
+
+**E7 実装記録（2026-08-15・完了）。** 隔離 control（v2 economy・ローカル候補のみ・
+dual-write）で plan-file 定型（filter→judge→reduce）を完走。全ノードの
+execution_decision = qualified-candidate/rank1、予算台帳の CLI は ollama-json のみで
+**metered CLI 行 0**（昇格経路は不発火・クラウド行 0 が負性確認）。E5 の輪も確認——
+collect→qualify が同 run から 3 セルを観測し samples=1 は trial 止まり（保守既定どおり）。
+証跡は `eval/results/archive/2026-08-15-e7-cloud-zero-acceptance.json`。
+副観測: flow 本番経路の judge も依存の絞り込みを無視する取り違えを再現（決定化の根拠）。
+
 E5 を E3 / E4 の後に置くのは receipt 粒度の都合そのもの——設計書 §11.4 の指摘どおり、
 loop と amigos の receipt が候補単位になるまで自動昇格の入力が揃わない。
 E6 / E7 は旧計画から引き取った測定・受入で、実装の乗り物（E2 / E5・U2）が
