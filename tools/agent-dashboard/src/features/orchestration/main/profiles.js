@@ -16,6 +16,7 @@ const fs = require('fs');
 const path = require('path');
 const budget = require('./budget');
 const control = require('./control');
+const agents = require('./agents');
 const qualifications = require('./qualifications');
 const policyCompiler = require('./execution-policy-compiler');
 
@@ -79,6 +80,26 @@ function normalizeTiers(raw) {
     out[name] = { order, label: typeof spec.label === 'string' && spec.label ? spec.label : name, candidates };
   }
   return out;
+}
+
+function withoutVariantTargets(tiers, targets) {
+  const removed = [];
+  const sanitized = {};
+  for (const [tier, spec] of Object.entries(tiers || {})) {
+    const candidates = (spec.candidates || []).filter((candidate) => {
+      const cli = String(candidate.agent_cli || '').trim().toLowerCase();
+      if (!cli || !targets.has(cli)) return true;
+      removed.push({ tier, ...candidate });
+      return false;
+    });
+    sanitized[tier] = { ...spec, candidates };
+  }
+  return { tiers: removed.length ? sanitized : tiers, removed };
+}
+
+function selectableProfile(cfg, profile) {
+  const filtered = withoutVariantTargets(profile.tiers, agents.variantTargetNames(cfg));
+  return { ...profile, tiers: filtered.tiers, removedVariantCandidates: filtered.removed };
 }
 
 function normalizePolicy(raw) {
@@ -161,7 +182,7 @@ function loadProfiles(dir) {
 }
 
 function load(cfg) {
-  return loadProfiles(resolveProfilesDir(cfg));
+  return selectableProfile(cfg, loadProfiles(resolveProfilesDir(cfg)));
 }
 
 // tiers / policy の宣言を保存する（部分更新。policy はフィールド単位でマージ——interval_sec
@@ -172,14 +193,22 @@ function save(cfg, patch) {
   const dir = resolveProfilesDir(cfg);
   const cur = loadProfiles(dir);
   const p = patch || {};
+  const variantTargets = agents.variantTargetNames(cfg);
   const next = { ...(cur.raw || {}) };
   next.version = 1;
   next.enabled = p.enabled !== undefined ? Boolean(p.enabled) : cur.enabled;
   if (p.tiers !== undefined) {
     if (!isPlainObject(p.tiers)) throw new Error('tiers はオブジェクトで指定してください');
-    next.tiers = normalizeTiers(p.tiers);
+    const normalized = normalizeTiers(p.tiers);
+    const invalid = withoutVariantTargets(normalized, variantTargets).removed;
+    if (invalid.length) {
+      const names = [...new Set(invalid.map((candidate) => candidate.agent_cli))];
+      throw new Error(`variant（変種）先は汎用tier候補に指定できません: ${names.join(', ')}`);
+    }
+    next.tiers = normalized;
   } else {
-    next.tiers = cur.tiers;
+    // 旧版が保存した variant 直接候補は、他項目の保存時にも移行する。
+    next.tiers = withoutVariantTargets(cur.tiers, variantTargets).tiers;
   }
   if (p.policy !== undefined) {
     if (!isPlainObject(p.policy)) throw new Error('policy はオブジェクトで指定してください');
@@ -200,7 +229,7 @@ function save(cfg, patch) {
   next.updated_at = nowStamp();
   next.updated_by = 'dashboard';
   atomicWriteJson(path.join(dir, PROFILES_FILE), next);
-  return loadProfiles(dir);
+  return load(cfg);
 }
 
 // --- 決定ロジック（純関数） -------------------------------------------------
@@ -483,8 +512,7 @@ function decide(profiles, usage, nowMs) {
 
 // 書かずに決定だけ見せる（画面の dry-run ボタン用）。
 function evaluate(cfg, { force = false, nowMs = Date.now() } = {}) {
-  const dir = resolveProfilesDir(cfg);
-  const profiles = loadProfiles(dir);
+  const profiles = load(cfg);
   const usage = budget.usage(cfg);
   const decisions = decide(force ? { ...profiles, state: {} } : profiles, usage, nowMs);
   return { profiles, usage, decisions, nowMs };
@@ -595,9 +623,11 @@ function apply(cfg, options) {
       workloads: controlPatch,
     });
   }
-  if (stateDirty) {
+  const tiersDirty = profiles.removedVariantCandidates.length > 0;
+  if (stateDirty || tiersDirty) {
     const next = { ...(profiles.raw || {}) };
     next.version = 1;
+    if (tiersDirty) next.tiers = profiles.tiers;
     next.state = nextState;
     next.updated_at = nowStamp();
     next.updated_by = 'dashboard';
@@ -606,7 +636,7 @@ function apply(cfg, options) {
   return {
     decisions,
     controlWritten: Object.keys(controlPatch).length > 0 || compiledAny,
-    stateWritten: stateDirty,
+    stateWritten: stateDirty || tiersDirty,
   };
 }
 
