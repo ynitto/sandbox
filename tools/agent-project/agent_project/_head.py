@@ -135,6 +135,13 @@ _SHARE_REDACTIONS = (
         r"(?i)\b(?:password|passwd|api[_-]?key|client[_-]?secret|private[_-]?key|credential)"
         r"\s*[:=]\s*(?!\[REDACTED:)[^\s,;'\"<>]+|"
         r"\bhttps?://[^\s/:@]+:[^\s/@]+@")),
+    # 金額: 射影へ載せてはいけない貨幣額。task 原価の `usd=` / `@cost` は既存共有経路が
+    # 使うため対象外（Phase 0 挙動非破壊）。ラベル付き amount/price と $/¥ を禁止する。
+    ("AMOUNT", re.compile(
+        r"(?i)\b(?:amount|price|billing(?:_amount)?|invoice(?:_total)?)\s*[:=]\s*"
+        r"(?!\[REDACTED:)[^\s,;'\"<>]+|"
+        r"\$\s*\d+(?:,\d{3})*(?:\.\d{1,4})?|"
+        r"¥\s*\d+(?:,\d{3})*(?:\.\d{1,4})?")),
 )
 
 

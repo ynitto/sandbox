@@ -4051,6 +4051,7 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
 /* 共通タスク作成: 両領域で同じ4段階・カード・候補の視覚言語を使う。 */
 .task-create-dialog { width: min(820px, calc(100vw - 32px)); max-height: calc(100vh - 32px); }
 .task-create-dialog[open] { height: min(720px, calc(100vh - 32px)); }
+.task-create-dialog > .dialog-actions { position: sticky; bottom: 0; }
 .task-create-scroll { display: grid; align-content: start; gap: 0; }
 .task-create-steps { list-style: none; display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
   margin: 14px 0 18px; padding: 0; }
@@ -4150,6 +4151,16 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
 .wf-event-list { display: grid; gap: 8px; margin: 0; padding-left: 22px; }
 .wf-event-list time { color: var(--muted); margin-right: 8px; }
 .wf-run-meta { margin: -8px 0 12px; color: var(--muted); font-size: 12px; }
+.wf-publication { margin: -4px 0 14px; color: var(--muted); font-size: 12px; }
+.wf-publication.warn { color: var(--warn); }
+.wf-publication-meta { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 0; }
+.wf-publication-details { margin-top: 5px; color: var(--fg); }
+.wf-publication-details > summary { color: var(--muted); cursor: pointer; }
+.wf-publication-details dl { display: grid; gap: 4px; margin: 8px 0; }
+.wf-publication-details dl > div { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 8px; }
+.wf-publication-details dt { color: var(--muted); }
+.wf-publication-details dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.wf-publication-details pre { max-height: 120px; overflow: auto; }
 .wf-run-folder code { min-width: 0; max-width: 70%; overflow: hidden; color: var(--fg);
   text-overflow: ellipsis; white-space: nowrap; }
 .wf-run-result { margin: 4px 0 18px; }

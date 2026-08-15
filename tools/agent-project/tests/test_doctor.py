@@ -795,3 +795,77 @@ class TestStructureFindings(unittest.TestCase):
         self.assertTrue(any("nodeid" in e for e in status.recent_errors))
         self.assertTrue(all(e.startswith("doctor[") for e in status.recent_errors))
         self.assertEqual(km._record_diagnostic_findings(host, status), 0)   # 毎 tick 積まない
+
+
+class TestDoctorCreditKnowledge(unittest.TestCase):
+    """Phase5: stale 射影 / 孤立 reservation / 根拠なし active / 未知 rule hash。"""
+
+    def _cfg(self, d, **kw):
+        kw.setdefault("planner", "none")
+        kw.setdefault("executor", "stub")
+        kw.setdefault("auto_adjudicate", False)
+        return cfg_for(Path(d), **kw)
+
+    def test_stale_projection_and_orphan_reservation(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = self._cfg(d)
+            km.ensure_dirs(cfg)
+            status = d / "status"
+            status.mkdir(parents=True, exist_ok=True)
+            stale_iso = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+            (status / "pc-a.json").write_text(json.dumps({
+                "node": "pc-a", "availability": "active",
+                "updated_iso": stale_iso, "fresh_after_sec": 60,
+                "budget": {
+                    "contract_version": 1, "observed_at": stale_iso,
+                    "source": "local-ledger",
+                    "capacity": {"limit": 100, "used": 10, "reserved": 5},
+                    "can_accept": True, "reason_codes": ["ok"], "enforce": False,
+                },
+            }), encoding="utf-8")
+            rdir = d / "reservations"
+            rdir.mkdir()
+            (rdir / "rsv-1.json").write_text(json.dumps({
+                "reservation_id": "rsv-1", "task_id": "MISSING", "node": "pc-a",
+                "amount": 5, "status": "live",
+            }), encoding="utf-8")
+            titles = {f["title"] for f in km.doctor_credit_knowledge_findings(cfg)}
+            self.assertTrue(any("stale" in t for t in titles), titles)
+            self.assertTrue(any("孤立 reservation" in t for t in titles), titles)
+
+    def test_active_without_evidence_and_unknown_hash(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = self._cfg(d)
+            km.ensure_dirs(cfg)
+            rid = "obs-" + ("ab" * 8)
+            (cfg.decisions / "R1.md").write_text(
+                f"# R1\n\n- rule-lifecycle: {rid} active\n", encoding="utf-8")
+            (cfg.backlog / "T1.md").write_text(
+                "---\nid: T1\nstatus: ready\n---\n# T1\n\n"
+                "- rules_hash: not-a-phase3-hash\n", encoding="utf-8")
+            titles = {f["title"] for f in km.doctor_credit_knowledge_findings(cfg)}
+            self.assertIn("根拠なし active rule", titles)
+            self.assertTrue(any("未知の rule hash" in t for t in titles), titles)
+
+    def test_board_overlay_stale_projection(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = self._cfg(d)
+            km.ensure_dirs(cfg)
+            board = d / "board"
+            nodes = board / "nodes"
+            nodes.mkdir(parents=True)
+            old = (datetime.now(timezone.utc) - timedelta(hours=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            (nodes / "pc-b.json").write_text(json.dumps({
+                "node": "pc-b", "heartbeat": old, "fresh_after_sec": 30,
+                "budget": {
+                    "contract_version": 1, "observed_at": old, "source": "local-ledger",
+                    "capacity": {"limit": 1, "used": 0, "reserved": None},
+                    "can_accept": True, "reason_codes": ["ok"],
+                },
+            }), encoding="utf-8")
+            titles = {f["title"] for f in km.doctor_credit_knowledge_findings(
+                cfg, board_root=str(board))}
+            self.assertTrue(any("stale" in t and "board" in t for t in titles), titles)

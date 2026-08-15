@@ -277,7 +277,7 @@ def _finalize_run(bus, args, iteration: int, failure: "str | None" = None) -> No
     summary = "\n".join(
         f"- {nid} [{r.get('status')}]: {str(r.get('output',''))[:200]}"
         for nid, r in results.items())
-    write_json_atomic(bus.final_path, {
+    final_body = {
         "request": args.request,
         "finished_at": now_iso(),
         "iterations": iteration,
@@ -285,7 +285,12 @@ def _finalize_run(bus, args, iteration: int, failure: "str | None" = None) -> No
         "summary": summary,
         "results": results,
         **({"failure_reason": failure} if failure else {}),
-    })
+    }
+    # knowledge は meta の素通しコピー（解釈しない）。無い run ではキー自体を足さない。
+    kn = (bus.run_meta(args.run_id) or {}).get("knowledge")
+    if isinstance(kn, dict) and kn:
+        final_body["knowledge"] = kn
+    write_json_atomic(bus.final_path, final_body)
     if failure:
         bus.mark_run_failed(args.run_id, failure)
         log(args.node_id, f"打ち切り（iteration={iteration}）: {failure}")
@@ -390,6 +395,11 @@ def cmd_orchestrate(args) -> int:
     if ctx_file:
         if bus.snapshot_context(ctx_file):
             bus.sync_push(f"snapshot project context {args.run_id}")
+    # 知識注入メタ（Phase 3）: rules hash / skill 参照を meta.knowledge へ素通し。解釈しない。
+    kn_file = getattr(args, "knowledge_file", None)
+    if kn_file:
+        if bus.snapshot_knowledge(kn_file):
+            bus.sync_push(f"snapshot knowledge injection {args.run_id}")
     # 生存リース（heartbeat）は orchestrator 自身が張る。daemon 経由の run だけが lease を持つと、
     # agent-flow run で都度起動される run（agent-project の主経路）には lease が永久に書かれず、
     # 消費者側の「停滞 run か？」判定（run_is_orphaned / _run_resumable）が lease の不在を

@@ -50,11 +50,13 @@ class NodeCapability:
     heartbeat: "str | None" = None
     fresh_after_sec: "float | None" = None
     contract_version: int = CONTRACT_VERSION
+    # status/<node>.json と同形の node-budget-summary（Phase1 ミラー・任意）。
+    budget: "dict | None" = None
 
     def to_dict(self) -> dict:
         d = {"node": self.node, "tags": list(self.tags),
-            "agent_cli": list(self.agent_cli), "max_concurrent": self.max_concurrent,
-            "contract_version": self.contract_version}
+             "agent_cli": list(self.agent_cli), "max_concurrent": self.max_concurrent,
+             "contract_version": self.contract_version}
         # `workloads` は**空なら出さない**（P2-3）。スキーマの語彙では「空 = 全部」で、
         # キーが無いことと同義。宣言していないものを空配列として配ると、読み手には
         # 「宣言したうえで空」と区別が付かない。tags / agent_cli は「要求との突き合わせ」で
@@ -69,6 +71,8 @@ class NodeCapability:
             d["heartbeat"] = self.heartbeat
         if self.fresh_after_sec is not None:
             d["fresh_after_sec"] = self.fresh_after_sec
+        if self.budget is not None:
+            d["budget"] = self.budget
         return d
 
     def write(self, board_root: str) -> str:

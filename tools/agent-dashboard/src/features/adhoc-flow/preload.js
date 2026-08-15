@@ -7,6 +7,7 @@ module.exports = {
   adhocFlowSubmit: (invoke) => (payload) => invoke('adhocFlow:submit', payload || {}),
   adhocFlowResubmit: (invoke) => (payload) => invoke('adhocFlow:resubmit', payload || {}),
   adhocFlowCancel: (invoke) => (payload) => invoke('adhocFlow:cancel', payload || {}),
+  adhocFlowForceComplete: (invoke) => (payload) => invoke('adhocFlow:forceComplete', payload || {}),
   adhocFlowDeleteRun: (invoke) => (payload) => invoke('adhocFlow:deleteRun', payload || {}),
   adhocFlowSavePreset: (invoke) => (payload) => invoke('adhocFlow:savePreset', payload || {}),
   adhocFlowDeletePreset: (invoke) => (payload) => invoke('adhocFlow:deletePreset', payload || {}),

@@ -252,5 +252,63 @@ class ContractCompatibleTests(unittest.TestCase):
         self.assertFalse(board.contract_compatible(1, declared=2))
 
 
+class BudgetEligibilityTests(unittest.TestCase):
+    """can_accept + freshness（status_budget_gate と単一実装）。budget 省略は従来互換。"""
+
+    def _budget(self, can_accept=True, reason_codes=None, enforce=False,
+                contract_version=1, source="local-ledger"):
+        return {
+            "contract_version": contract_version,
+            "observed_at": "2026-08-01T12:00:00Z",
+            "source": source,
+            "capacity": {"limit": 1, "used": 0 if can_accept else 1, "reserved": None},
+            "can_accept": can_accept,
+            "reason_codes": list(reason_codes or (["ok"] if can_accept else ["exceeded"])),
+            "enforce": enforce,
+        }
+
+    def test_budget_omitted_keeps_legacy_eligible(self):
+        self.assertTrue(board.eligible(post(), repos=REGISTRY))
+
+    def test_enforce_false_exhausted_remains_eligible(self):
+        self.assertTrue(board.eligible(
+            post(), repos=REGISTRY, budget=self._budget(can_accept=False, enforce=False),
+            heartbeat="2026-08-01T12:00:00Z", fresh_after_sec=3600,
+            at=__import__("datetime").datetime(2026, 8, 1, 12, 1, tzinfo=__import__("datetime").timezone.utc)))
+
+    def test_enforce_true_exhausted_not_eligible(self):
+        self.assertFalse(board.eligible(
+            post(), repos=REGISTRY, budget=self._budget(can_accept=False, enforce=True),
+            heartbeat="2026-08-01T12:00:00Z", fresh_after_sec=3600,
+            at=__import__("datetime").datetime(2026, 8, 1, 12, 1, tzinfo=__import__("datetime").timezone.utc)))
+
+    def test_version_mismatch_is_unknown_not_eligible_when_enforce(self):
+        from datetime import datetime, timezone
+        at = datetime(2026, 8, 1, 12, 1, tzinfo=timezone.utc)
+        self.assertFalse(board.eligible(
+            post(), repos=REGISTRY,
+            budget=self._budget(can_accept=True, enforce=True, contract_version=99),
+            heartbeat="2026-08-01T12:00:00Z", fresh_after_sec=3600, at=at))
+        gate = board.status_budget_gate(
+            {"node": "pc-a", "availability": "active",
+             "updated_iso": "2026-08-01T12:00:00Z", "fresh_after_sec": 3600,
+             "budget": self._budget(can_accept=True, enforce=True, contract_version=99)},
+            at=at)
+        self.assertEqual(gate["kind"], "unknown")
+        self.assertFalse(gate["eligible"])
+
+    def test_budget_kwargs_from_node_empty_without_budget(self):
+        self.assertEqual(board.budget_kwargs_from_node({"node": "pc-a"}), {})
+        self.assertEqual(board.budget_kwargs_from_node(None), {})
+
+    def test_budget_kwargs_from_node_maps_heartbeat(self):
+        kw = board.budget_kwargs_from_node({
+            "node": "pc-a", "heartbeat": "2026-08-01T12:00:00Z",
+            "fresh_after_sec": 90, "budget": self._budget()})
+        self.assertEqual(kw["heartbeat"], "2026-08-01T12:00:00Z")
+        self.assertEqual(kw["fresh_after_sec"], 90)
+        self.assertIn("budget", kw)
+
+
 if __name__ == "__main__":
     unittest.main()

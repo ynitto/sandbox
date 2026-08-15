@@ -146,7 +146,8 @@ def _scan_learn_lines(decisions_dir: Path, limit: int = 12) -> "list[str]":
 def linked_learnings_context(cfg: "Config", max_chars: int = 800,
                              task: "Task | None" = None) -> str:
     """charter `## links` 先プロジェクトの判断（decisions の learn）を act ワーカーへ取り込む（横展開）。
-    リンク先で人が下した再利用可能な判断を、別プロジェクトの作業にも効かせる（明示 opt-in・有界）。"""
+    リンク先で人が下した再利用可能な判断を、別プロジェクトの作業にも効かせる（明示 opt-in・有界）。
+    Phase 3: 共有前 privacy 検査。scope 付き learn は現行タスクへ適用できるものだけ残す。"""
     try:
         ch = charter_for_task(cfg, task)
     except (OSError, ValueError):
@@ -156,7 +157,17 @@ def linked_learnings_context(cfg: "Config", max_chars: int = 800,
     lines: list[str] = []
     for name, root in resolve_linked_projects(cfg, ch):
         for ln in _scan_learn_lines(root / "decisions"):
-            lines.append(f"[{name}] {ln}")
+            # ln = "title :: guide"
+            guide = ln.split(" :: ", 1)[-1] if " :: " in ln else ln
+            body, (kind, sname) = split_learn_scope(guide)
+            if task is not None and not _learn_scope_applies(task, kind, sname):
+                continue
+            # linked から自プロジェクト要求へ載せる＝共有経路。privacy 検査を通す。
+            safe = prepare_share_text(f"{ln.split(' :: ', 1)[0]} :: {body}" if " :: " in ln else body,
+                                      f"linked/{name}/decisions")
+            if safe is None:
+                continue
+            lines.append(f"[{name}] {safe}")
     if not lines:
         return ""
     block = "\n".join(f"- {x}" for x in lines)
@@ -324,6 +335,11 @@ def build_request(task: Task, cfg: "Config | None" = None, *,
             if matched:
                 base += ("\n\n類似タスクでの学び（分解・verify・実装で踏まえ、同種の手戻りを繰り返さないこと）:\n"
                          f"- {matched[1]}")
+    # Phase 3: rules hash / skill 参照を要求文末尾の機械コメントへ載せ、run meta へ素通しできる形にする。
+    # 本文の完了条件・作業指示には混ぜない。生プロンプトは含めない。
+    if cfg is not None:
+        inj = knowledge_injection_meta(cfg, task)
+        base += "\n\n" + knowledge_injection_comment(inj)
     return base
 
 

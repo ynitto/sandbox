@@ -99,17 +99,39 @@ def _slug(text: str) -> str:
 
 
 def count_learn_hits(cfg: "Config") -> "dict[str, int]":
-    """各 learn ルール（出典 DR id）が auto-resolve で実際に効いた回数を数える（昇格の根拠）。"""
+    """各 learn ルール（出典 DR id）が auto-resolve で実際に効いた回数を数える（昇格の根拠）。
+
+    Phase 3: 同一 observation ID は 1 回だけ数える（git 再取込で行が二重でも hit が膨らまない）。
+    observation の無い旧記録は従来どおり行出現数。"""
     hits: dict[str, int] = {}
+    seen_obs: dict[str, set[str]] = {}
     if not cfg.decisions.exists():
         return hits
     pat = re.compile(r"learned from (?:ltm:)?(?P<src>\S+?):")
     for df in cfg.decisions.glob("*.md"):
-        for line in df.read_text(encoding="utf-8").splitlines():
-            if line.strip().startswith("- reason"):
+        try:
+            text = df.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for block in re.split(r"(?=^##\s)", text, flags=re.M):
+            if not block.strip():
+                continue
+            obs_ids = parse_observation_ids(block)
+            for line in block.splitlines():
+                if not line.strip().startswith("- reason"):
+                    continue
                 m = pat.search(line)
-                if m:
-                    src = m.group("src")
+                if not m:
+                    continue
+                src = m.group("src")
+                if obs_ids:
+                    bucket = seen_obs.setdefault(src, set())
+                    for oid in obs_ids:
+                        if oid in bucket:
+                            continue
+                        bucket.add(oid)
+                        hits[src] = hits.get(src, 0) + 1
+                else:
                     hits[src] = hits.get(src, 0) + 1
     return hits
 
@@ -135,7 +157,8 @@ def _promote_marker(cfg: "Config", src: str) -> bool:
 def write_ltm_memory(mem_dir: Path, title: str, guide: str, src: str, hits: int) -> str:
     """ltm-use 記憶フォーマット（frontmatter＋本文）で1件書き出し、記憶IDを返す。
 
-    本文に機械可読な `- learn: <title> :: <guide>` を残し、recall 時に同じ LEARN_RE で読み戻す。"""
+    本文に機械可読な `- learn: <title> :: <guide>` を残し、recall 時に同じ LEARN_RE で読み戻す。
+    Phase 3: 呼び出し側が privacy/scope 検査済みであること（本関数は書込のみ）。"""
     mem_dir.mkdir(parents=True, exist_ok=True)
     n = len(list(mem_dir.glob("*.md"))) + 1
     date = datetime.now().strftime("%Y-%m-%d")
@@ -162,14 +185,18 @@ def write_ltm_memory(mem_dir: Path, title: str, guide: str, src: str, hits: int)
         f"## 学び・結論\n"
         f"- learn: {title} :: {guide}\n"
     )
-    (mem_dir / f"{name}.md").write_text(body, encoding="utf-8")
+    safe = prepare_share_text(body, f"ltm/{name}.md")
+    if safe is None:
+        return ""
+    (mem_dir / f"{name}.md").write_text(safe, encoding="utf-8")
     return memid
 
 
 def promote_learnings(cfg: "Config") -> "list[tuple[str, str]]":
     """効果が再現した learn ルール（hits ≥ promote_threshold・未昇格）を ltm-use home へ昇格。
 
-    返り値 [(出典id, 記憶id)]。ltm 無効や home 未解決なら何もしない（グレースフル no-op）。"""
+    返り値 [(出典id, 記憶id)]。ltm 無効や home 未解決なら何もしない（グレースフル no-op）。
+    Phase 3: scope 付き learn と共有検査に落ちる本文は ltm へ渡さない。"""
     mem_dir = ltm_memories_dir(cfg)
     if mem_dir is None:
         return []
@@ -180,7 +207,13 @@ def promote_learnings(cfg: "Config") -> "list[tuple[str, str]]":
         if src in seen or hits.get(src, 0) < cfg.promote_threshold or _promote_marker(cfg, src):
             continue
         seen.add(src)
+        if not may_export_guide(guide):
+            continue
+        if prepare_share_text(f"{title}\n{guide}", f"decisions/{src}.md") is None:
+            continue
         memid = write_ltm_memory(mem_dir, title, guide, src, hits[src])
+        if not memid:
+            continue
         with decision_path(cfg, src).open("a", encoding="utf-8") as f:
             f.write(f"- promoted: {memid}（ltm-use home へ昇格 / hits={hits[src]}）\n")
         append_journal(cfg.journal, f"学習昇格: {src} → ltm-use {memid}（hits={hits[src]}）")

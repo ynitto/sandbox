@@ -507,6 +507,97 @@ class TestLearnScopeAndExpiry(unittest.TestCase):
             km.record_learn_outcome(cfg, t2, worked=True)
             self.assertFalse((d / "decisions" / "ltm:mem-1.md").exists())
 
+    def test_rule_outcome_generalizes_w10_and_suspends(self):
+        """Phase4 結合点: worked/misfire を rule 単位へ集計し、悪化で fail-close suspended。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = self._seed(d, "OLD", "fix slugify util", "直す")
+            cfg = cfg_for(d, learn_misfire_limit=2)
+            rid = km.rule_id_for_guide("直す", "OLD")
+            km.append_rule_lifecycle(cfg, "OLD", rid, "trial")
+            for i, worked in enumerate((False, False)):
+                t = km.Task(id=f"T{i}", title="x")
+                t.set("autolearned", "OLD")
+                t.set("rule_id", rid)
+                t.set("feedback", "直す")
+                km.record_learn_outcome(cfg, t, worked=worked, why="ng")
+            src = (d / "decisions" / "OLD.md").read_text(encoding="utf-8")
+            self.assertEqual(src.count("rule-outcome:"), 2)
+            self.assertIn(f"rule-outcome: {rid} misfire", src)
+            self.assertEqual(km.rule_lifecycle_state(cfg, rid), "suspended")
+            self.assertTrue(km.rule_excluded_from_requests(cfg, rid))
+            # suspended は新規 learn 照合に出ない
+            self.assertIsNone(km.find_learned_resolution(
+                cfg, km.Task(id="NEW", title="fix slugify util again")))
+
+    def test_rules_hash_mismatch_is_suppressed_not_worked(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = self._seed(d, "OLD", "fix slugify util", "直す")
+            rid = km.rule_id_for_guide("直す", "OLD")
+            t = km.Task(id="T1", title="x")
+            t.set("autolearned", "OLD")
+            t.set("rule_id", rid)
+            t.set("rules_hash", "not-a-phase3-hash")  # Phase3 形式外＝成功扱いしない
+            km.record_learn_outcome(cfg, t, worked=True, why="見た目は成功")
+            src = (d / "decisions" / "OLD.md").read_text(encoding="utf-8")
+            self.assertIn(f"rule-outcome: {rid} suppressed", src)
+            self.assertIn("learn-misfire", src)  # 成功扱いしない
+            self.assertNotIn("learn-worked", src)
+
+    def test_phase3_rules_hash_stamp_allows_worked(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = self._seed(d, "OLD", "fix slugify util", "直す")
+            rid = km.rule_id_for_guide("直す", "OLD")
+            km.append_rule_lifecycle(cfg, "OLD", rid, "trial")
+            t = km.Task(id="T1", title="x")
+            t.set("autolearned", "OLD")
+            t.set("rule_id", rid)
+            t.set("rules_hash", "sha256:" + ("ab" * 32))
+            km.record_learn_outcome(cfg, t, worked=True, why="ok")
+            src = (d / "decisions" / "OLD.md").read_text(encoding="utf-8")
+            self.assertIn(f"rule-outcome: {rid} worked", src)
+            self.assertIn("learn-worked", src)
+            # hits 未達のため trial 維持（active には promote_threshold+outcome が要る）
+            self.assertEqual(km.rule_lifecycle_state(cfg, rid), "trial")
+
+    def test_apply_rule_command_promote_suspend_deprecate_revise(self):
+        """Phase5: 人の裁定は decisions append-only（dashboard 第二 writer 禁止）。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = self._seed(d, "OLD", "fix slugify util", "直す")
+            rid = km.rule_id_for_guide("直す", "OLD")
+            km.append_rule_lifecycle(cfg, "OLD", rid, "trial")
+            rc, detail = km.apply_rule_command(cfg, "rule-promote", rid, "人手昇格")
+            self.assertEqual(rc, 0, detail)
+            self.assertEqual(km.rule_lifecycle_state(cfg, rid), "active")
+            rc, detail = km.apply_rule_command(cfg, "rule-suspend", rid, "悪化")
+            self.assertEqual(rc, 0, detail)
+            self.assertEqual(km.rule_lifecycle_state(cfg, rid), "suspended")
+            rc, detail = km.apply_rule_command(cfg, "rule-revise", rid, "文言直し")
+            self.assertEqual(rc, 0, detail)
+            self.assertEqual(km.rule_lifecycle_state(cfg, rid), "trial")
+            self.assertTrue(any(p.name.startswith("rule-revise-") for p in cfg.needs.glob("*.md")))
+            rc, detail = km.apply_rule_command(cfg, "rule-deprecate", rid, "退役")
+            self.assertEqual(rc, 0, detail)
+            self.assertEqual(km.rule_lifecycle_state(cfg, rid), "deprecated")
+
+    def test_ingest_rule_command_via_commands_drop(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = self._seed(d, "OLD", "fix slugify util", "直す")
+            rid = km.rule_id_for_guide("直す", "OLD")
+            km.append_rule_lifecycle(cfg, "OLD", rid, "trial")
+            cdir = km.commands_dir(cfg)
+            cdir.mkdir(parents=True, exist_ok=True)
+            (cdir / "viewer-rule-promote.json").write_text(json.dumps({
+                "command": "rule-promote", "rule_id": rid, "reason": "ui",
+            }), encoding="utf-8")
+            done = km.ingest_commands(cfg)
+            self.assertTrue(any(x.startswith("rule-promote:") for x in done), done)
+            self.assertEqual(km.rule_lifecycle_state(cfg, rid), "active")
+
 
 class TestDecisionCapture(unittest.TestCase):
     """人の判断（approve 理由・hold 理由）から learn/avoid を自動抽出して蓄積する（learn_capture）。"""
@@ -606,8 +697,12 @@ class ProjectRulesTests(unittest.TestCase):
             self.assertEqual(promoted, ["OLD"])
             text = km.rules_path(cfg).read_text(encoding="utf-8")
             self.assertIn("pytest -q で実行する", text)
-            self.assertIn("<!-- learn:OLD hits=2", text)            # 出典つき（人が消してよい）
+            self.assertIn("learn:OLD hits=2", text)                 # 出典つき（人が消してよい）
+            self.assertIn("state:trial", text)                      # 自動は trial から
+            self.assertIn("rule:obs-", text)
             self.assertIn("- rules-promoted: rules.md",
+                          (cfg.decisions / "OLD.md").read_text(encoding="utf-8"))
+            self.assertIn("- rule-lifecycle:",
                           (cfg.decisions / "OLD.md").read_text(encoding="utf-8"))
             # 冪等: 2 回目は追記しない
             self.assertEqual(km.promote_rules(cfg), [])
@@ -638,6 +733,45 @@ class ProjectRulesTests(unittest.TestCase):
             self.assertIn("コミットメッセージは日本語", text)
             self.assertIn(km.RULES_AUTO_SECTION, text)
             self.assertIn("pytest -q で実行する", text)
+
+    def test_suspended_auto_rule_excluded_from_context_human_kept(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = self._learn_setup(d, hits=2)
+            km.rules_path(cfg).write_text(
+                "# プロジェクトルール\n\n- 人手ルールは残す\n", encoding="utf-8")
+            km.promote_rules(cfg)
+            rid = km.rule_id_for_guide("テストは必ず pytest -q で実行する", "OLD")
+            km.append_rule_lifecycle(cfg, "OLD", rid, "suspended", why="test")
+            ctx = km.project_rules_context(cfg)
+            self.assertIn("人手ルールは残す", ctx)
+            self.assertNotIn("pytest -q", ctx)
+
+    def test_rule_conflict_goes_to_needs_no_merge(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = self._learn_setup(d, hits=2)
+            km.promote_rules(cfg)
+            # 別出典で同一 guide を昇格しようとする → needs、rules.md は増やさない
+            (cfg.decisions / "OTHER.md").write_text(
+                "## DR-0001  2026-07-01  actor: human\n"
+                "- learn: テストの回し方 :: テストは必ず pytest -q で実行する\n",
+                encoding="utf-8")
+            body = ""
+            for i in range(2):
+                body += (f"## DR-{i+10:04d}  2026-07-0{i+2}  actor: auto\n"
+                         f"- context : X\n- action  : auto-resolve\n"
+                         f"- reason  : learned from OTHER: テストは必ず pytest -q で実行する\n"
+                         f"- affects : X → ready\n")
+            (cfg.decisions / "HX.md").write_text(body, encoding="utf-8")
+            before = km.rules_path(cfg).read_text(encoding="utf-8")
+            km.promote_rules(cfg)
+            after = km.rules_path(cfg).read_text(encoding="utf-8")
+            self.assertEqual(before.count("pytest -q"), after.count("pytest -q"))
+            needs = list((d / "needs").glob("rule-*.md"))
+            self.assertTrue(needs)
+            self.assertIn("rule-conflict", (cfg.decisions / "OLD.md").read_text(encoding="utf-8")
+                          + (cfg.decisions / "OTHER.md").read_text(encoding="utf-8"))
 
     def test_state_git_remote_wins_includes_rules(self):
         # rules.md は人の入力パス（同時変更はリモート＝人の編集を優先）

@@ -925,10 +925,10 @@ class DaemonPrimitiveTests(unittest.TestCase):
         u = kf.parse_workspace("https://git/app.git")
         self.assertEqual((u["url"], u["path"], u["base"]), ("https://git/app.git", "", ""))
         j = kf.parse_workspace(
-            '{"url":"https://git/shop.git","path":"apps/api","base":"main",'
+            '{"url":"https://git/shop.git","local":"/work/shop","path":"apps/api","base":"main",'
             '"target":"develop","desc":"API"}')
-        self.assertEqual((j["path"], j["base"], j["target"], j["desc"]),
-                         ("apps/api", "main", "develop", "API"))
+        self.assertEqual((j["local"], j["path"], j["base"], j["target"], j["desc"]),
+                         ("/work/shop", "apps/api", "main", "develop", "API"))
         self.assertIsNone(kf.parse_workspace(None))
         self.assertIsNone(kf.parse_workspace(""))
 

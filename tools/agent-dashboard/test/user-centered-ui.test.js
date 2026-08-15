@@ -65,6 +65,8 @@ assert.ok(workflowFeature.includes('class="dialog-scroll-body task-create-scroll
   'タスク作成ダイアログは共通のスクロール本文と余白を使います');
 assert.match(css, /\.task-create-dialog\[open\]\s*\{[^}]*height:\s*min\(720px,\s*calc\(100vh\s*-\s*32px\)\)/s,
   'タスク追加ダイアログはステップが変わっても同じ高さを保ちます');
+assert.match(css, /\.task-create-dialog\s*>\s*\.dialog-actions\s*\{[^}]*position:\s*sticky[^}]*bottom:\s*0/s,
+  'タスク追加とモデル選択の主要操作は本文をスクロールしても画面内に残します');
 assert.match(css, /input\[type="checkbox"\]\s*\{[^}]*appearance:\s*none/s,
   'OSネイティブのチェックボックス表示をDashboard共通スタイルへ置き換えます');
 const projectTaskWizardSource = renderer.slice(
@@ -102,6 +104,33 @@ assert.ok(workflowTaskDialogSource.includes('id="wf-task-materials"')
   && workflowTaskDialogSource.includes('multiple')
   && workflowTaskDialogSource.includes("wizard.route === 'external-design'"),
   '選択した経路に応じて複数のファイルとデータを材料にできます');
+assert.ok(workflowTaskDialogSource.includes('data-wf-design-mode="interactive"')
+  && workflowTaskDialogSource.includes('data-wf-design-mode="auto"')
+  && workflowFeature.includes('designMode: wizard.designMode'),
+  'ワークフローのエージェント設計は対話・全自動を選び、準備項目へ保持します');
+assert.ok(projectTaskWizardSource.includes('data-project-design-mode="interactive"')
+  && projectTaskWizardSource.includes('data-project-design-mode="auto"')
+  && renderer.includes('designMode: wizard.designMode'),
+  'プロジェクトのエージェント設計も対話・全自動を選び、準備パッケージへ保持します');
+const workflowRunHtmlSource = workflowFeature.slice(
+  workflowFeature.indexOf('function runHtml('),
+  workflowFeature.indexOf('\n  function executionPreviewDialogHtml(', workflowFeature.indexOf('function runHtml('))
+);
+const wireRunSource = workflowFeature.slice(
+  workflowFeature.indexOf('function wireRun('),
+  workflowFeature.indexOf('\n  function wireSettings(', workflowFeature.indexOf('function wireRun('))
+);
+const directStartSource = wireRunSource.slice(
+  wireRunSource.indexOf("querySelectorAll('[data-preparation-execute]')"),
+  wireRunSource.indexOf("querySelectorAll('[data-preparation-configure]')")
+);
+assert.ok(workflowRunHtmlSource.includes('data-preparation-execute=')
+  && workflowRunHtmlSource.includes('data-preparation-configure=')
+  && workflowRunHtmlSource.includes('モデルを選んで開始'),
+  '実装待ちは既定の開始と任意のモデル選択を別操作として表示します');
+assert.ok(directStartSource.includes('preparationHandoff')
+  && !directStartSource.includes('adhocFlowExecutionPreview'),
+  '主要な実装開始はモデル選択画面を挟まず1クリックで投入します');
 assert.ok(workflowFeature.includes('class="flow-view-tab') && workflowFeature.includes('class="flow-graph-workspace"')
   && workflowFeature.includes('class="flow-overview-view"') && workflowFeature.includes('class="flow-history-view"'),
   'ワークフロー実行詳細はプロジェクト実行と同じ概要・工程・履歴の構造を使います');

@@ -19,6 +19,7 @@ function test(name, fn) {
 }
 
 const adhoc = require('../src/features/adhoc-flow/main/adhoc');
+const adhocPreload = require('../src/features/adhoc-flow/preload');
 const design = require('../src/features/adhoc-flow/main/design-session');
 const taskQueue = require('../src/features/adhoc-flow/main/task-queue');
 const exec = require('../src/features/routines/main/exec');
@@ -34,6 +35,106 @@ function tmpdir(prefix) {
 
 test('実行時方針のおすすめは agent-control / agent-flow の自動決定へ委ねる', () => {
   assert.strictEqual(workflowUi.executionOverridesForMode('recommended', {}), null);
+});
+
+test('preload は force-complete を専用 IPC channel へ渡す', () => {
+  const calls = [];
+  const invoke = (...args) => { calls.push(args); return { ok: true }; };
+
+  adhocPreload.adhocFlowForceComplete(invoke)({ runId: 'run-1', reason: '手動 push 済み' });
+
+  assert.deepStrictEqual(calls, [[
+    'adhocFlow:forceComplete', { runId: 'run-1', reason: '手動 push 済み' },
+  ]]);
+});
+
+test('公開失敗は run の構造化 publication から復旧可能状態として表示する', () => {
+  const view = workflowUi.publicationPresentation({
+    status: 'failed',
+    workspace: { url: 'git@github.com:ynitto/sandbox.git', local: '/repo' },
+    nodes: { work: { data: { publication: {
+      state: 'failed', url: 'git@github.com:ynitto/sandbox.git',
+      branch: 'af/run-1', commit: 'a'.repeat(40),
+      recovery: { repository: '/repo', ref: 'refs/agent-flow/recovery/run-1' },
+    } } } },
+  });
+
+  assert.strictEqual(view.state, 'failed');
+  assert.strictEqual(view.label, '公開失敗');
+  assert.strictEqual(view.branch, 'af/run-1');
+  assert.strictEqual(view.commit, 'a'.repeat(40));
+  assert.strictEqual(view.canForceComplete, true);
+});
+
+test('公開成功は delivery 内の publication からブランチとコミットを表示する', () => {
+  const view = workflowUi.publicationPresentation({
+    status: 'done', workspace: { url: 'git@github.com:ynitto/sandbox.git', local: '/repo' },
+    nodes: { work: { data: { delivery: { publication: {
+      state: 'published', url: 'git@github.com:ynitto/sandbox.git',
+      branch: 'af/run-2', commit: 'b'.repeat(40),
+    } } } } },
+  });
+
+  assert.strictEqual(view.state, 'published');
+  assert.strictEqual(view.label, '公開済み');
+  assert.strictEqual(view.branch, 'af/run-2');
+  assert.strictEqual(view.commit, 'b'.repeat(40));
+  assert.strictEqual(view.canForceComplete, false);
+});
+
+test('force-complete 後は手動公開済みとして通常状態に戻す', () => {
+  const view = workflowUi.publicationPresentation({
+    status: 'done', workspace: { url: 'git@example.invalid:repo.git', local: '/repo' },
+    nodes: { work: { data: { publication: {
+      state: 'published-manually', url: 'git@example.invalid:repo.git',
+      branch: 'af/run-3', commit: 'c'.repeat(40), reason: '認証復旧後に手動 push',
+    } } } },
+  });
+
+  assert.strictEqual(view.state, 'published-manually');
+  assert.strictEqual(view.label, '手動公開済み');
+  assert.strictEqual(view.reason, '認証復旧後に手動 push');
+  assert.strictEqual(view.canForceComplete, false);
+});
+
+test('明示された publication not-required は旧 run の unknown と区別する', () => {
+  const noChange = workflowUi.publicationPresentation({
+    status: 'done', workspace: { url: 'git@example.invalid:repo.git', local: '/repo' },
+    nodes: { work: { data: { publication: {
+      state: 'not-required', url: 'git@example.invalid:repo.git', branch: 'af/run-4',
+    } } } },
+  });
+  const legacy = workflowUi.publicationPresentation({
+    status: 'done', workspace: { url: '/repo' }, nodes: { work: { data: {} } },
+  });
+
+  assert.strictEqual(noChange.state, 'not-required');
+  assert.strictEqual(noChange.label, '変更なし');
+  assert.strictEqual(legacy.state, 'unknown');
+});
+
+test('公開失敗の詳細は控えめなメタ情報と緊急復旧操作として描画する', () => {
+  const previousEsc = global.esc;
+  global.esc = (value) => String(value)
+    .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
+  try {
+    const html = workflowUi.publicationHtml({
+      status: 'failed', workspace: { url: 'git@example.invalid:repo.git', local: '/repo' },
+      nodes: { work: { data: { publication: {
+        state: 'failed', url: 'git@example.invalid:repo.git', branch: 'af/run-5',
+        commit: 'd'.repeat(40), recovery: {
+          repository: '/repo', ref: 'refs/agent-flow/recovery/run-5',
+        },
+      } } } },
+    });
+    assert.match(html, /wf-publication-meta/);
+    assert.match(html, /保存: ローカル/);
+    assert.match(html, /公開: 公開失敗/);
+    assert.match(html, /保存と公開の詳細/);
+    assert.match(html, /data-force-complete/);
+  } finally {
+    global.esc = previousEsc;
+  }
 });
 
 test('ワークフロータスクは作成時に実行せず、実行待ちとして保存する', () => {
@@ -1131,11 +1232,12 @@ test('Git cwd は Windows パスを WSL に変換して workspace 契約へす�
   let command = '';
   exec.shInWsl = (line) => {
     command = line;
-    return { status: 0, stdout: '/mnt/c/dev/repo\nmain', stderr: '' };
+    return { status: 0, stdout: '/mnt/c/dev/repo\nmain\ngit@github.com:ynitto/sandbox.git', stderr: '' };
   };
   try {
     assert.deepStrictEqual(adhoc.gitWorkspace({}, 'C:\\dev\\repo'), {
-      url: '/mnt/c/dev/repo', base: 'main', path: '', desc: 'workflow',
+      url: 'git@github.com:ynitto/sandbox.git', local: '/mnt/c/dev/repo',
+      base: 'main', path: '', desc: 'workflow',
     });
     assert.ok(command.includes("'/mnt/c/dev/repo'"));
   } finally {
@@ -1284,6 +1386,16 @@ test('buildLaunchLine が inbox 起動・手法 env・エンジン既定のフ�
   assert.ok(!custom.includes('AGENT_TUNING_DIR'), '手法未選択なら端末の tuning を置換しない');
 });
 
+test('force-complete コマンドは bus・run・監査理由を安全に渡す', () => {
+  const line = adhoc.buildForceCompleteLine(
+    { adhocFlow: { agentFlowCommand: 'agent-flow' } },
+    { busDir: '/tmp/flow bus', runId: 'run-1', reason: "認証を直して手動 push 済み" },
+  );
+  assert.match(line, /--bus '\/tmp\/flow bus'/);
+  assert.match(line, /force-complete 'run-1'/);
+  assert.match(line, /--reason '認証を直して手動 push 済み'/);
+});
+
 test('IPC: 同梱カタログとリポジトリ配布の作業ルールが同 id なら、設定画面もリポジトリを優先する', () => {
   const { cfg, catalogMethod } = methodsFixture();
   const repo = tmpdir('adhoc-overview-methods-repo-');
@@ -1412,7 +1524,9 @@ test('一貫性ゲート: verify-plan で組んだ検証計画を inbox へ運�
   const orig = exec.shInWsl;
   exec.shInWsl = (line) => {
     calls.push(line);
-    if (line.startsWith('root=')) return { status: 0, stdout: '/repo\nmain' };
+    if (line.startsWith('root=')) {
+      return { status: 0, stdout: '/repo\nmain\ngit@github.com:ynitto/sandbox.git' };
+    }
     if (line.includes('verify-plan')) return { status: 0, stdout: `${JSON.stringify(plan)}\n` };
     return { status: 0, stdout: 'launched:1', stderr: '' };
   };
@@ -1438,7 +1552,9 @@ test('一貫性ゲート: フェイルクローズ（組み立て失敗・リポ
   const cfg = { adhocFlow: { busDir: tmpdir('adhoc-coherence-fc-') } };
   const orig = exec.shInWsl;
   exec.shInWsl = (line) => {
-    if (line.startsWith('root=')) return { status: 0, stdout: '/repo\nmain' };
+    if (line.startsWith('root=')) {
+      return { status: 0, stdout: '/repo\nmain\ngit@github.com:ynitto/sandbox.git' };
+    }
     if (line.includes('verify-plan')) return { status: 2, stdout: '', stderr: 'agent-flow が古い' };
     return { status: 0, stdout: 'launched:1', stderr: '' };
   };
@@ -1514,7 +1630,7 @@ test('submit が Git cwd と標準フローを inbox に固定する', () => {
   const cfg = { adhocFlow: { busDir: tmpdir('workflow-bus-') } };
   const original = exec.shInWsl;
   exec.shInWsl = (line) => (line.includes('rev-parse --show-toplevel')
-    ? { status: 0, stdout: '/repo\nmain', stderr: '' }
+    ? { status: 0, stdout: '/repo\nmain\ngit@github.com:ynitto/sandbox.git', stderr: '' }
     : { status: 0, stdout: 'launched:1', stderr: '' });
   try {
     const result = adhoc.submit(cfg, {
@@ -1522,10 +1638,13 @@ test('submit が Git cwd と標準フローを inbox に固定する', () => {
     });
     const rec = JSON.parse(fs.readFileSync(
       path.join(cfg.adhocFlow.busDir, 'inbox', `${result.runId}.json`), 'utf8'));
-    assert.deepStrictEqual(rec.workspace, { url: '/repo', base: 'main', path: '', desc: 'workflow' });
+    assert.deepStrictEqual(rec.workspace, {
+      url: 'git@github.com:ynitto/sandbox.git', local: '/repo',
+      base: 'main', path: '', desc: 'workflow',
+    });
     assert.strictEqual(rec.pattern, 'map-reduce');
     assert.strictEqual(rec.plan, undefined);
-    assert.strictEqual(result.branch, `af/${result.runId}`);
+    assert.strictEqual(result.branch, undefined, '公開前に Dashboard が branch を推測しない');
   } finally {
     exec.shInWsl = original;
   }

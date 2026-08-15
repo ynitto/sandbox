@@ -179,9 +179,9 @@ class GcOrphanInboxTests(unittest.TestCase):
         rec["submitted_at"] = "2020-01-01T00:00:00Z"   # 十分古い
         kf.write_json_atomic(p, rec)
 
-    def _run(self, run_id, status="done"):
+    def _run(self, run_id, status="done", workspace=None):
         b = kf.Bus(self.tmp, run_id)
-        b.ensure_run(f"run {run_id}")
+        b.ensure_run(f"run {run_id}", workspace=workspace)
         m = kf.read_json(b.meta_path)
         m["status"] = status
         m["created_at"] = "2020-01-01T00:00:00Z"
@@ -235,6 +235,30 @@ class GcOrphanInboxTests(unittest.TestCase):
         out = self._gc(dry_run=True)
         self.assertIn("[dry-run] 孤児 inbox 掃除: orphanOld", out)
         self.assertIn("orphanOld", self.bus.list_inbox())   # 消えていない
+
+    def test_gc_deletes_only_the_recovery_ref_for_the_deleted_run(self):
+        repo = os.path.join(self.tmp, "workspace")
+        subprocess.run(["git", "init", "-q", repo], check=True)
+        subprocess.run(["git", "-C", repo, "config", "user.email", "t@example.com"], check=True)
+        subprocess.run(["git", "-C", repo, "config", "user.name", "test"], check=True)
+        pathlib.Path(repo, "tracked.txt").write_text("saved\n")
+        subprocess.run(["git", "-C", repo, "add", "tracked.txt"], check=True)
+        subprocess.run(["git", "-C", repo, "commit", "-qm", "saved"], check=True)
+        head = subprocess.run(["git", "-C", repo, "rev-parse", "HEAD"], check=True,
+                              capture_output=True, text=True).stdout.strip()
+        for run_id in ("deleteMe", "keepMe"):
+            subprocess.run(["git", "-C", repo, "update-ref",
+                            kf.recovery_ref_name(run_id), head], check=True)
+        self._run("deleteMe", workspace={"url": "unused", "local": repo})
+
+        self._gc()
+
+        missing = subprocess.run(["git", "-C", repo, "show-ref", "--verify", "--quiet",
+                                  kf.recovery_ref_name("deleteMe")])
+        kept = subprocess.run(["git", "-C", repo, "show-ref", "--verify", "--quiet",
+                               kf.recovery_ref_name("keepMe")])
+        self.assertNotEqual(missing.returncode, 0)
+        self.assertEqual(kept.returncode, 0)
 
 
 class GitDistributedTests(unittest.TestCase):
@@ -929,6 +953,28 @@ class ArtifactProtocolTests(unittest.TestCase):
         r = bus.read_result("t1")
         self.assertEqual(r["status"], "done")
         self.assertIn(os.path.join("artifacts", "t1", "result.bin"), r["artifacts"])
+
+    def test_worker_records_not_required_when_workspace_has_no_changes(self):
+        bus = kf.Bus(self.tmp, "run-no-change")
+        bus.ensure_run("req", workspace={"url": "/remote.git", "local": "/repo", "base": "main"})
+        bus.write_graph({"nodes": {"t1": {"goal": "g", "deps": [], "kind": "work"}},
+                         "iteration": 0})
+        bus.write_task({"id": "t1", "goal": "g", "deps": [], "kind": "work"})
+        bus.set_status("running")
+        args = mock.Mock(bus=self.tmp, run_id="run-no-change", git=None, node_id="w1",
+                         executor="stub", model=None, lease=60, poll=0,
+                         keep_alive=False, idle_exit=True)
+        workspace = {"url": "/remote.git", "local": "/repo", "base": "main",
+                     "clone": self.tmp, "branch": "af/run-no-change"}
+        with mock.patch.object(kf, "ensure_workspace_clone", return_value=workspace), \
+             mock.patch.object(kf, "execute_stub", return_value=("変更なし", {})), \
+             mock.patch.object(kf, "finalize_workspace", return_value=None), \
+             mock.patch.object(kf, "make_bus", return_value=bus):
+            kf.cmd_work(args)
+
+        publication = bus.read_result("t1")["data"]["publication"]
+        self.assertEqual(publication["state"], "not-required")
+        self.assertEqual(publication["branch"], "af/run-no-change")
 
     def test_worker_records_effective_agent_in_result_and_claimed(self):
         # 実行に使ったエージェント CLI / モデルは書き手（worker）が claimed イベントと

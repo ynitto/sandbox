@@ -357,10 +357,12 @@ CLI からも付与・修正できる。
 
 ### 共有前 redaction 契約
 
-**結論**: agent-project は、資格情報、認証 token、ホームディレクトリの実パス、生プロンプトを共有禁止とする。
+**結論**: agent-project は、資格情報、認証 token、ホームディレクトリの実パス、生プロンプト、
+ラベル付き金額（`amount=` / `$` / `¥`）を共有禁止とする。
 `brief/` と `decisions/` では追記前に置換し、状態リポジトリでは commit/push 対象のスナップショットを再検査する。
 どちらかを通過できなければ共有処理を止める。ログには元の値や該当行を残さず、ファイルパスと検出区分だけを出す。
-置換には `[REDACTED:TOKEN]`、`[REDACTED:HOME]`、`[REDACTED:PROMPT]`、`[REDACTED:CREDENTIAL]` を使う。
+置換には `[REDACTED:TOKEN]`、`[REDACTED:HOME]`、`[REDACTED:PROMPT]`、`[REDACTED:CREDENTIAL]`、
+`[REDACTED:AMOUNT]` を使う。task 原価の `usd=` / `@cost` 記帳は現行共有経路が使うため AMOUNT 対象外。
 
 | 検査境界 | 対象 | 失敗時 |
 |---|---|---|
@@ -371,10 +373,12 @@ CLI からも付与・修正できる。
 置換できない場合は fail-closed とする。既存履歴は自動で書き換えない。過去の漏出を検出した場合も同期を止め、
 履歴の除去は人が別作業で行う。
 
-プライバシー fixture には、実在しない token、POSIX/Windows のホームパス、生プロンプト、生の資格情報を
-区別できる sentinel として置く。契約テストは各 sentinel を `brief/` と `decisions/` の入口から流し、共有候補の
-全ファイルに元値が無く、無害な本文は残ることを確認する。さらに禁止値を共有スナップショットへ直接混入させ、
-state git が非ゼロで終了し commit/push しないことを固定する。実在の秘密は fixture、失敗メッセージ、テスト成果物に使わない。
+プライバシー fixture には、実在しない token（埋め込み・Bearer 含む）、POSIX/macOS/Windows のホームパス、
+生プロンプト（英/日）、生の資格情報、ラベル付き金額（`amount=` / `$`）を区別できる sentinel として置く。
+契約テストは各 sentinel を `redact_for_share` 本体・`brief/` / `decisions/` の入口から流し、共有候補の
+全ファイルに元値が無く、無害な本文（相対パス・公開 URL・既存 `usd=` 原価記帳を含む）は残ることを確認する。
+さらに禁止値を共有スナップショットへ直接混入させ、state git が非ゼロで終了し commit/push しないことを固定する。
+残渣・検査器例外は fail-closed。実在の秘密は fixture、失敗メッセージ、テスト成果物に使わない。
 
 このテストは既存の `tools/agent-project/tests` に置く。GitHub Actions の agent-project unittest ジョブが pull request と
 `main` への push で同ディレクトリを全件実行するため、redaction の失敗は CI 失敗になる。保証範囲は fixture が通る

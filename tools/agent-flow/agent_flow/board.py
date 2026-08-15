@@ -39,9 +39,12 @@ def _node_repo_ids(node_repos) -> "set[str]":
 
 
 def board_eligible(post: dict, node_repos, node_tags, node_agent_cli=None, *,
-                   node_workloads=None, max_concurrent=None, inflight=0) -> bool:
+                   node_workloads=None, max_concurrent=None, inflight=0,
+                   budget=None, heartbeat=None, updated_iso=None,
+                   fresh_after_sec=None, node=None, enforce_default=False,
+                   at=None) -> bool:
     """このノードが公示に入札してよいか（成果物リポジトリ・タグ・CLI・契約バージョン・
-    引き受けるエンジン・枠での選別）。
+    引き受けるエンジン・枠・利用枠での選別）。
 
     判定規則は `agentcore.board.eligible` に一本化した——同じ規則を agent-amigos も
     「同じ仕様・別実装」で持っていて、片方だけ育つと**同じ公示が経路によって拾えたり
@@ -49,7 +52,11 @@ def board_eligible(post: dict, node_repos, node_tags, node_agent_cli=None, *,
     return _boardrules.eligible(post, repos=node_repos, tags=node_tags,
                                 agent_cli=node_agent_cli or [],
                                 workloads=node_workloads or [],
-                                max_concurrent=max_concurrent, inflight=inflight)
+                                max_concurrent=max_concurrent, inflight=inflight,
+                                budget=budget, heartbeat=heartbeat,
+                                updated_iso=updated_iso,
+                                fresh_after_sec=fresh_after_sec, node=node,
+                                enforce_default=enforce_default, at=at)
 
 
 def _board_request(post: dict) -> str:
@@ -280,6 +287,14 @@ def poll_board(bus_local: "Bus", args, node_id: str) -> "list[str]":
     report_board_results(bus_local, board, node_id)
     node_repos, node_tags, node_agent_cli, node_workloads, max_concurrent = \
         _node_declaration(args)
+    # 板上 nodes/<self>.json の budget ミラー（resident board tick）。無ければ従来どおり。
+    own_budget = {}
+    try:
+        with open(os.path.join(board.root, "nodes",
+                               f"{protocol.safe_name(node_id)}.json"), encoding="utf-8") as f:
+            own_budget = _boardrules.budget_kwargs_from_node(json.load(f))
+    except (OSError, ValueError, TypeError):
+        own_budget = {}
     lease = float(getattr(args, "board_lease", None) or 900.0)
     _renew_dispatched_leases(board, node_id, lease)
     deleg_root = os.path.join(board.root, "delegations")
@@ -324,7 +339,7 @@ def poll_board(bus_local: "Bus", args, node_id: str) -> "list[str]":
             if not forced and not board_eligible(
                     post, node_repos, node_tags, node_agent_cli,
                     node_workloads=node_workloads, max_concurrent=max_concurrent,
-                    inflight=inflight):
+                    inflight=inflight, **own_budget):
                 continue
             award = read_json(os.path.join(ddir, "award.json"))
             awarded_node = award.get("node") if isinstance(award, dict) else None
@@ -342,7 +357,7 @@ def poll_board(bus_local: "Bus", args, node_id: str) -> "list[str]":
             if not forced and not board_eligible(
                     post, node_repos, node_tags, node_agent_cli,
                     node_workloads=node_workloads, max_concurrent=max_concurrent,
-                    inflight=inflight):
+                    inflight=inflight, **own_budget):
                 continue
             if not board._try_claim_in(bids_dir, node_id, lease, f"bid {did} by {node_id}"):
                 continue

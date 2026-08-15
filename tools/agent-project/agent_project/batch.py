@@ -358,15 +358,33 @@ def claim_task(cfg: "Config", task: "Task") -> bool:
             release_claim(cfg, task)
             return False
         _adopt_task(task, live)
+        if task.get("reservation_id"):
+            bind_reservation_env(str(task.get("reservation_id") or ""))
+    else:
+        # 単独ノード: CAS 無しでも claim と同時に予約（並行受注の二重利用防止）
+        create_local_claim_reservation(cfg, task)
+        if task.get("reservation_id"):
+            persist_task(cfg, task)
     return True
 
 
 def release_claim(cfg: "Config", task: "Task") -> None:
-    """実行権を解放する（done/review/blocked/積み直しのいずれでも、doing でなくなったら呼ぶ）。"""
+    """実行権を解放する（done/review/blocked/積み直しのいずれでも、doing でなくなったら呼ぶ）。
+
+    Phase2: 紐づく reservation を ledger close（冪等）。ただし offloaded（委譲実行中）は
+    残量を使っている途中なので予約を維持し、settle / expiry / 停止回収で閉じる。
+    """
     try:
         (_claims_dir(cfg) / f"{task.id}.lock").unlink()
     except OSError:
         pass
+    try:
+        if task.norm_status() == "offloaded":
+            return
+    except Exception:  # noqa: BLE001
+        pass
+    ledger_ref = str(os.environ.get(_RESERVATION_ENV) or task.get("reservation_id") or "")
+    close_reservation_for_task(cfg, task, ledger_ref=ledger_ref or "")
 
 
 def _claim_alive(cfg: "Config", tid: str) -> bool:
@@ -416,8 +434,8 @@ def recover_stale_doing(cfg: "Config", tasks: "list[Task]") -> "list[str]":
             (f"doing 隔離: {t.id} を blocked 化（分散実行者が失踪）" if distributed else
              f"doing 回復: {t.id} を ready へ戻す（実行者が失踪＝結果は返らない）"))
         revived.append(t.id)
+    expire_reservations_for(cfg)
     return revived
-
 
 def _act_batch(batch: "list[Task]", cfg: "Config", act, policy) -> "dict[str, tuple[str, str]]":
     """batch のうち**クレームできたタスクだけ** doing にして act（2件以上は ThreadPool で並行）。
@@ -425,6 +443,8 @@ def _act_batch(batch: "list[Task]", cfg: "Config", act, policy) -> "dict[str, tu
     claimed = [t for t in batch if claim_task(cfg, t)]   # 二重実行防止: 取れた者だけ進む
     for t in claimed:
         t.status = "doing"
+        if t.get("reservation_id"):
+            bind_reservation_env(str(t.get("reservation_id") or ""))
         resolve_and_persist_workspace(cfg, t, policy)    # タスク→1つの書込先へルーティング（決定を md へ永続化）
         persist_task(cfg, t)
     locs = {t.id: decide_location(t, policy, cfg) for t in claimed}
