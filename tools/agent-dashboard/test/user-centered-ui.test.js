@@ -9,6 +9,8 @@ const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
 const renderer = require('./helpers/renderer-src').read();
 const css = fs.readFileSync(path.join(root, 'styles.css'), 'utf8');
 const workflowFeature = fs.readFileSync(path.join(root, 'features', 'adhoc-flow.js'), 'utf8');
+const backlogFeature = fs.readFileSync(path.join(root, 'sections', 'backlog.js'), 'utf8');
+const workflowUi = require('../src/renderer/features/adhoc-flow');
 
 function grab(name) {
   const at = renderer.indexOf(`function ${name}(`);
@@ -23,6 +25,51 @@ function grab(name) {
     }
   }
   throw new Error(`function ${name} の閉じ括弧が見つかりません`);
+}
+
+function grabFrom(source, name) {
+  const asyncAt = source.indexOf(`async function ${name}(`);
+  const regularAt = source.indexOf(`function ${name}(`);
+  const at = asyncAt >= 0 ? asyncAt : regularAt;
+  assert.ok(at >= 0, `${name} が見つかりません`);
+  let i = source.indexOf('{', source.indexOf(')', at));
+  let depth = 0;
+  for (; i < source.length; i++) {
+    if (source[i] === '{') depth++;
+    else if (source[i] === '}') {
+      depth--;
+      if (depth === 0) return source.slice(at, i + 1);
+    }
+  }
+  throw new Error(`${name} の閉じ括弧が見つかりません`);
+}
+
+function withEsc(fn) {
+  const previous = global.esc;
+  const previousAssignment = global.designAssignmentSectionHtml;
+  global.esc = (value) => String(value == null ? '' : value)
+    .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;');
+  if (previousAssignment === undefined) global.designAssignmentSectionHtml = () => '';
+  try {
+    return fn();
+  } finally {
+    if (previous === undefined) delete global.esc;
+    else global.esc = previous;
+    if (previousAssignment === undefined) delete global.designAssignmentSectionHtml;
+    else global.designAssignmentSectionHtml = previousAssignment;
+  }
+}
+
+function designFlowHarness(api, render = () => {}) {
+  const helpers = [
+    'designFlowKey', 'designFlowSnapshot', 'designFlowCatalogItems',
+    'loadProjectDesignFlowCatalog', 'loadProjectDesignFlowPreview',
+  ].map((name) => grabFrom(backlogFeature, name)).join('\n');
+  // eslint-disable-next-line no-new-func
+  return new Function('api', 'renderProjectTaskWizard', 'esc', `${helpers}
+    return { designFlowKey, designFlowSnapshot, designFlowCatalogItems,
+      loadProjectDesignFlowCatalog, loadProjectDesignFlowPreview };`)(api, render, global.esc);
 }
 
 const pollingSource = grab('setupPolling');
@@ -806,4 +853,185 @@ assert.ok(renderer.includes("why: '目的・背景'"), '誘導フィールド表
 assert.ok(!renderer.includes('空にすると削除）'), '修正フォームのラベルに削除規約の括弧説明を詰め込みません');
 assert.ok(!renderer.includes('概要（desc）・目的（why）'), '要対応の案内にスキーマ名を出しません');
 
-console.log('user-centered-ui: all tests passed');
+// 用途別ライブラリは同じ ID のフローがあっても、実装・設計を相互に表示しない。
+const libraryOverview = {
+  workflows: [
+    { id: 'impl-shared', name: '実装フロー', purpose: 'implementation', libraryVisibility: 'library', nodes: [] },
+    { id: 'design-shared', name: '設計フロー', purpose: 'design', libraryVisibility: 'library', nodes: [] },
+    { id: 'builtin-design', name: '同梱設計雛形', purpose: 'design', libraryVisibility: 'internal', _scope: 'builtin', nodes: [] },
+    { id: 'hidden-impl', name: '内部実装', purpose: 'implementation', libraryVisibility: 'internal', nodes: [] },
+  ],
+  patterns: [{ id: 'implementation-pattern', label: '実装パターン', description: '実装用', template: { nodes: [
+    { id: 'one', kind: 'work', deps: [] }, { id: 'two', kind: 'verify', deps: ['one'] },
+  ] } }],
+  methods: [],
+};
+assert.deepStrictEqual(
+  workflowUi.visibleWorkflows(libraryOverview, 'implementation').map((workflow) => workflow.id),
+  ['impl-shared'],
+  '実装フロー一覧には実装用途のライブラリだけを表示します'
+);
+assert.deepStrictEqual(
+  workflowUi.visibleWorkflows(libraryOverview, 'design').map((workflow) => workflow.id),
+  ['design-shared'],
+  '設計フロー一覧には保存済み設計用途だけを表示します'
+);
+assert.deepStrictEqual(
+  workflowUi.builtinDesignWorkflows(libraryOverview).map((workflow) => workflow.id),
+  ['builtin-design'],
+  '同梱の設計雛形は保存済みライブラリと分けて表示します'
+);
+assert.deepStrictEqual(workflowUi.patternChoices(libraryOverview, 'design'), [],
+  '実装用パターンを設計フローへ混入させません');
+const implementationLibraryHtml = withEsc(() => workflowUi.workflowLibraryHtml(libraryOverview, 'implementation'));
+assert.ok(implementationLibraryHtml.includes('実装フロー')
+  && implementationLibraryHtml.includes('実装パターン')
+  && !implementationLibraryHtml.includes('同梱設計雛形')
+  && !implementationLibraryHtml.includes('設計フローの制約'),
+  '実装フロー画面は実装用の雛形だけを表示します');
+const designLibraryHtml = withEsc(() => workflowUi.workflowLibraryHtml(libraryOverview, 'design'));
+assert.ok(designLibraryHtml.includes('設計フロー')
+  && designLibraryHtml.includes('同梱設計雛形')
+  && designLibraryHtml.includes('設計フローの制約')
+  && !designLibraryHtml.includes('実装パターン')
+  && !designLibraryHtml.includes('内部実装'),
+  '設計フロー画面は設計用途の保存済み項目と同梱雛形だけを表示します');
+
+// 同梱雛形を開いた時点では保存せず、自分用の別 ID として編集できるコピーにする。
+const builtinWorkflow = {
+  id: 'design-shared', name: '同梱設計雛形', purpose: 'design', libraryVisibility: 'internal',
+  _scope: 'builtin', _repository: '/bundled/workflows',
+  nodes: [{ id: 'draft', goal: '要件を整理する', deps: [] }],
+};
+const copiedWorkflow = workflowUi.unsavedWorkflowCopy(builtinWorkflow, 'design');
+assert.notStrictEqual(copiedWorkflow, builtinWorkflow, '雛形の編集対象は別オブジェクトです');
+assert.notStrictEqual(copiedWorkflow.id, builtinWorkflow.id, '雛形コピーは保存済み雛形と別 ID です');
+assert.strictEqual(copiedWorkflow.name, '同梱設計雛形 のコピー');
+assert.strictEqual(copiedWorkflow.purpose, 'design');
+assert.strictEqual(copiedWorkflow.libraryVisibility, 'library');
+assert.ok(!('_scope' in copiedWorkflow) && !('_repository' in copiedWorkflow),
+  '雛形コピーへ読み取り専用の出所を持ち込みません');
+copiedWorkflow.nodes[0].goal = '変更した設計';
+assert.strictEqual(builtinWorkflow.nodes[0].goal, '要件を整理する', '雛形本体を未保存編集で変更しません');
+assert.match(designLibraryHtml, /<button type="button"[^>]*data-design-template-id="builtin-design"/,
+  '同梱雛形はキーボード操作可能なコピーカードとして表示します');
+assert.ok(designLibraryHtml.includes('この雛形をコピー'), '同梱雛形カードの操作目的を名前で伝えます');
+
+// 設計フロー欄は agent-design の時だけ表示し、direct / external-design へ混入させない。
+const previousTaskWizard = workflowUi._state.taskWizard;
+try {
+  const wizardBase = {
+    step: 3, title: '', goal: 'CSV対応を改善する', route: 'direct', recommendation: null,
+    materials: [], cwd: '', error: '', busy: '', designMode: 'interactive',
+    designPreview: null, designAssignments: null,
+  };
+  workflowUi._state.taskWizard = { ...wizardBase, route: 'direct' };
+  const directTaskHtml = withEsc(() => workflowUi.workflowTaskDialogHtml({ cwdHistory: [] }));
+  workflowUi._state.taskWizard = { ...wizardBase, route: 'external-design' };
+  const externalDesignTaskHtml = withEsc(() => workflowUi.workflowTaskDialogHtml({ cwdHistory: [] }));
+  workflowUi._state.taskWizard = { ...wizardBase, route: 'agent-design' };
+  const agentDesignTaskHtml = withEsc(() => workflowUi.workflowTaskDialogHtml({ cwdHistory: [] }));
+  assert.ok(!directTaskHtml.includes('設計フローを選択') && !directTaskHtml.includes('data-wf-design-mode'),
+    'そのまま実装では設計フロー欄を表示しません');
+  assert.ok(!externalDesignTaskHtml.includes('設計フローを選択') && !externalDesignTaskHtml.includes('data-wf-design-mode'),
+    '外部設計の利用では設計フロー欄を表示しません');
+  assert.ok(agentDesignTaskHtml.includes('設計フローを選択')
+    && agentDesignTaskHtml.includes('data-wf-design-mode="interactive"')
+    && agentDesignTaskHtml.includes('data-wf-design-mode="auto"'),
+  'エージェント設計を選んだ時だけ設計フロー欄と進め方を表示します');
+} finally {
+  workflowUi._state.taskWizard = previousTaskWizard;
+}
+assert.ok(backlogFeature.includes("wizard.route === 'agent-design'")
+  && backlogFeature.includes('data-project-design-flow'),
+  'プロジェクト側も agent-design 選択時だけ設計フロー候補を描画します');
+
+// 用途切替・雛形・選択・保存・エラーは、div の独自キー処理ではなく native button と状態属性で操作できる。
+const purposeSwitchHtml = withEsc(() => workflowUi.workflowPurposeSwitchHtml('design'));
+assert.match(purposeSwitchHtml, /<div class="wf-purpose-switch" role="tablist" aria-label="フローの用途">/);
+assert.match(purposeSwitchHtml, /<button type="button" role="tab"[^>]*data-workflow-purpose="implementation"[^>]*aria-selected="false"/);
+assert.match(purposeSwitchHtml, /<button type="button" role="tab"[^>]*data-workflow-purpose="design"[^>]*aria-selected="true"/);
+assert.match(workflowFeature, /function templateCardHtml\(pattern\)[\s\S]*?<button type="button" class="wf-template-card"/,
+  '雛形カードはTab/Enter/Spaceで操作できるbuttonです');
+assert.match(workflowFeature, /data-wf-task-route="\$\{id\}" aria-pressed=/,
+  'ワークフローの進め方選択は押下状態を支援技術へ伝えます');
+assert.match(backlogFeature, /data-project-task-route="\$\{id\}"[\s\S]*?aria-pressed=/,
+  'プロジェクトの進め方選択も押下状態を支援技術へ伝えます');
+assert.match(backlogFeature, /data-project-design-flow="\$\{esc\(designFlowKey\(flow\)\)\}"[\s\S]*?aria-pressed=/,
+  '設計フロー選択カードは scope 付きキーと押下状態を持ちます');
+assert.match(workflowFeature, /id="wf-save">保存<\/button>/,
+  'ワークフロー保存操作はアクセシブルな名前を持つbuttonです');
+assert.match(backlogFeature, /<p class="qf-failure" role="alert">\$\{esc\(wizard\.designFlowError\)\}<\/p>/,
+  '利用不能な設計フローは支援技術へalertとして通知します');
+
+// プロジェクト側の設計フロー参照は ID だけでなく scope/cwd を送り、cwd変更後に再取得する。
+assert.ok(backlogFeature.includes('api.adhocFlowDesignPreview({')
+  && backlogFeature.includes('scope: wizard.designFlow.scope')
+  && backlogFeature.includes('wizard.designFlow.cwd ? { cwd: wizard.designFlow.cwd }'),
+  '設計フローの割り当て確認へ scope と cwd を付けて送信します');
+assert.ok(backlogFeature.includes('? { flow: designFlowSnapshot(wizard.designFlow, wizard.designAssignments) }')
+  && backlogFeature.includes('candidates: selected')
+  && backlogFeature.includes('function designFlowSnapshot(flow, assignments = null, preview = null)'),
+  '作成時の参照スナップショットへ scope 付き設計フローを引き継ぎます');
+assert.ok(backlogFeature.includes('wizard.designFlowCatalogKey === catalogKey')
+  && backlogFeature.includes('api.adhocFlowDesignCatalog({ cwd: catalogKey })')
+  && backlogFeature.includes('api.adhocFlowOverview({ cwd: catalogKey })'),
+  '対象 cwd が変わった時だけ、その cwd を指定して設計フローカタログを再取得します');
+
+async function verifyDesignFlowCatalogBehavior() {
+  const calls = [];
+  const sharedAtA = {
+    id: 'shared', name: '登録フォルダの設計', purpose: 'design', scope: 'repository', cwd: '/project-a',
+    nodes: [{ id: 'draft', label: '要件整理', kind: 'work', deps: [] }],
+  };
+  const api = {
+    adhocFlowDesignCatalog: async ({ cwd }) => {
+      calls.push(cwd);
+      return { items: [{ ...sharedAtA, cwd }] };
+    },
+  };
+  const harness = designFlowHarness(api);
+  const wizard = {
+    designFlowCatalogKey: '', designFlowCatalog: null,
+    designFlowKey: 'repository:/project-a:shared',
+    designFlow: { id: 'shared', scope: 'repository', cwd: '/project-a' },
+    designAssignments: null, designFlowCatalogError: '', designFlowError: '',
+  };
+  await harness.loadProjectDesignFlowCatalog(wizard, '/project-a');
+  await harness.loadProjectDesignFlowCatalog(wizard, '/project-b');
+  await harness.loadProjectDesignFlowCatalog(wizard, '/project-b');
+  assert.deepStrictEqual(calls, ['/project-a', '/project-b'],
+    'cwd変更時にだけ設計フローカタログを再取得します');
+  assert.strictEqual(wizard.designFlow, null,
+    '現在のcwdにない選択を別の設計フローへ黙って置き換えません');
+  assert.match(wizard.designFlowError, /利用できません.*再選択/, '利用不能な選択の理由と復帰操作を表示します');
+
+  const previewCalls = [];
+  const previewApi = {
+    adhocFlowDesignPreview: async (payload) => {
+      previewCalls.push(payload);
+      return { preview: { nodes: [{ id: 'draft', auto: { tier: 'medium' } }] } };
+    },
+  };
+  const previewHarness = designFlowHarness(previewApi);
+  const previewWizard = {
+    designFlow: null, designFlowKey: '', designAssignments: null, designPreview: null,
+    designFlowError: '', busy: '',
+  };
+  await previewHarness.loadProjectDesignFlowPreview(previewWizard, {
+    id: 'shared', name: '登録フォルダの設計', scope: 'repository', cwd: '/project-a',
+    nodes: [{ id: 'draft', label: '要件整理', kind: 'work', deps: [] }],
+  });
+  assert.deepStrictEqual(previewCalls, [{ id: 'shared', scope: 'repository', cwd: '/project-a' }],
+    '設計フローの参照確認には ID だけでなく scope と cwd を送信します');
+  assert.strictEqual(previewWizard.designFlow.scope, 'repository');
+  assert.strictEqual(previewWizard.designFlow.cwd, '/project-a');
+}
+
+verifyDesignFlowCatalogBehavior().then(
+  () => console.log('user-centered-ui: all tests passed'),
+  (error) => {
+    console.error(error);
+    process.exitCode = 1;
+  }
+);
