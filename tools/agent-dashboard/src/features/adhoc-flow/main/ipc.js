@@ -486,9 +486,13 @@ function registerIpc(ctx) {
   handle('designSession:get', ({ id } = {}) => ({
     session: designSession.getSession(loadConfig(), String(id || '')),
   }));
-  handle('designSession:start', (payload) => ({
-    session: designSession.startRound(loadConfig(), payload || {}),
-  }));
+  handle('designSession:start', (payload) => {
+    // resolvedFlowSnapshot は準備経路だけが main process 内で付ける値。Renderer から
+    // 同名の定義を持ち込ませず、通常の開始は参照を startRound 側で再解決する。
+    const input = { ...(payload || {}) };
+    delete input.resolvedFlowSnapshot;
+    return { session: designSession.startRound(loadConfig(), input) };
+  });
   handle('designSession:delete', ({ id } = {}) => ({
     deleted: designSession.deleteSession(loadConfig(), String(id || '')),
   }));
@@ -537,15 +541,20 @@ function registerIpc(ctx) {
     const cfg = loadConfig();
     const item = preparation.getItem(cfg, String(id || ''));
     if (!item) throw new Error('作業準備項目が見つかりません');
-    const storedFlow = item.design && item.design.flow;
-    const resolved = storedFlow
-      ? resolveDesignFlow(cfg, storedFlow)
+    const storedFlow = preparation.normalizeDesignFlow(item.design && item.design.flow);
+    const resolved = storedFlow ? null
       : resolveDesignFlow(cfg, designSelectionFrom({}, item.designMode || 'interactive'));
+    const flow = storedFlow || resolved.snapshot;
+    const reference = storedFlow ? {
+      id: storedFlow.id,
+      scope: storedFlow.origin.scope,
+      repository: storedFlow.origin.repository,
+    } : resolved.reference;
     const selection = {
       type: 'custom',
-      id: resolved.reference.id,
-      scope: resolved.reference.scope,
-      repository: resolved.reference.repository,
+      id: reference.id,
+      scope: reference.scope,
+      repository: reference.repository,
       ...(item.designAssignments ? { nodeAssignments: item.designAssignments } : {}),
     };
     const session = designSession.startRound(cfg, {
@@ -558,12 +567,13 @@ function registerIpc(ctx) {
         (material.selectedFor || []).includes('design')),
       ...(item.designAssignments ? { nodeAssignments: item.designAssignments } : {}),
       selection,
-      designFlow: resolved.snapshot,
+      designFlow: flow,
+      resolvedFlowSnapshot: flow,
     });
     const next = preparation.startDesign(item, {
-      sessionId: session.id, runId: session.runId, designFlow: resolved.snapshot,
+      sessionId: session.id, runId: session.runId, designFlow: flow,
     });
-    const updated = attachDesignSnapshot(next, resolved.snapshot);
+    const updated = attachDesignSnapshot(next, flow);
     return { item: preparation.saveItem(cfg, updated), session };
   });
   handle('preparation:syncDesign', ({ id } = {}) => {
@@ -571,12 +581,17 @@ function registerIpc(ctx) {
     const item = preparation.getItem(cfg, String(id || ''));
     if (!item || !item.design || !item.design.sessionId) throw new Error('設計セッションがありません');
     const session = designSession.getSession(cfg, item.design.sessionId);
+    const sessionDocument = String(session.document || '').trim();
+    const complete = preparation.isCompleteDesignDocument(sessionDocument);
+    const previousDocument = String(item.design.document || '').trim();
+    const successful = session.runStatus === 'done' && !String(session.error || '').trim() && complete;
     const next = {
       ...item,
-      phase: session.runStatus === 'done' ? 'design-review' : 'designing',
+      // 不完全/失敗した成果では旧成果を消さず、handoff可能な review にも進めない。
+      phase: successful ? 'design-review' : 'designing',
       design: {
         ...item.design,
-        document: String(session.document || ''),
+        document: complete ? sessionDocument : previousDocument,
         runIds: [...new Set((session.rounds || []).map((round) => round.runId).filter(Boolean))],
       },
     };
@@ -587,6 +602,9 @@ function registerIpc(ctx) {
     const item = preparation.getItem(cfg, String(id || ''));
     if (!item || !item.design || !item.design.sessionId) throw new Error('設計セッションがありません');
     const session = designSession.getSession(cfg, item.design.sessionId);
+    if (String(session.error || '').trim()) {
+      throw new Error(`設計成果を完了できません: ${session.error}`);
+    }
     const next = preparation.completeDesign(item, {
       sessionId: session.id,
       document: session.document,

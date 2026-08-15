@@ -14,6 +14,7 @@ const REQUIRED_SECTIONS = [
   ['受入基準', '完了条件'],
   ['検証方法', '検証', 'テスト方法'],
 ];
+const DESIGN_RESULT_SECTIONS = ['目的', '変更対象', '受入基準', '検証方法'];
 
 function hasHeading(text, names) {
   return String(text || '').split(/\r?\n/).some((line) => {
@@ -24,6 +25,10 @@ function hasHeading(text, names) {
 
 function isCompleteDocument(text) {
   return REQUIRED_SECTIONS.every((names) => hasHeading(text, names));
+}
+
+function isCompleteDesignDocument(text) {
+  return DESIGN_RESULT_SECTIONS.every((name) => hasHeading(text, [name]));
 }
 
 function recommendRoute({ goal, materials } = {}) {
@@ -266,31 +271,41 @@ function createPackage(raw = {}) {
 }
 
 function canHandoff(item) {
-  return !!item && item.phase === 'implementation-ready';
+  if (!item || item.phase !== 'implementation-ready') return false;
+  return item.route !== 'agent-design'
+    || isCompleteDesignDocument(item.design && item.design.document);
 }
 
 function completeDesign(item, result = {}) {
   if (!item || item.route !== 'agent-design') throw new Error('エージェント設計の項目ではありません');
   const document = String(result.document || '').trim();
   if (!document) throw new Error('設計結果は必須です');
-  if (!isCompleteDocument(document)) {
+  if (!isCompleteDesignDocument(document)) {
     throw new Error('設計結果には必須4節（目的・変更対象・受入基準・検証方法）が必要です');
   }
+  const currentDesign = normalizeDesign(item.design);
+  const resultMaterialId = `design-result:${item.id}`;
   const design = {
-    ...normalizeDesign(item.design),
-    sessionId: String(result.sessionId || ''),
+    ...currentDesign,
+    sessionId: String(result.sessionId || currentDesign.sessionId || ''),
     document,
-    runIds: [...new Set((Array.isArray(result.runIds) ? result.runIds : []).map(String).filter(Boolean))],
+    runIds: [...new Set([
+      ...currentDesign.runIds,
+      ...(Array.isArray(result.runIds) ? result.runIds : []).map(String).filter(Boolean),
+    ])],
   };
   return {
     ...item,
     phase: 'implementation-ready',
-    materials: normalizeMaterials([...(item.materials || []), {
-      id: `design-result:${item.id}`,
-      kind: 'design-result',
-      name: '設計結果.md',
-      content: document,
-    }]),
+    materials: normalizeMaterials([
+      ...(item.materials || []).filter((material) => material && material.id !== resultMaterialId),
+      {
+        id: resultMaterialId,
+        kind: 'design-result',
+        name: '設計結果.md',
+        content: document,
+      },
+    ]),
     design,
     updatedAt: new Date().toISOString(),
   };
@@ -425,6 +440,7 @@ function implementationRequest(item) {
 
 module.exports = {
   recommendRoute, normalizeMaterials, normalizeDesignAssignments, normalizeDesignFlow,
+  isCompleteDesignDocument,
   createItem, createPackage,
   canHandoff, startDesign, completeDesign,
   recordHandoff,

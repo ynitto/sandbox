@@ -212,6 +212,91 @@ test('設計開始は準備項目で選択した設計フローを実行する',
   }
 });
 
+test('保存済み設計snapshotは元フロー変更後もagent-design子へ引き継ぐ', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'preparation-design-snapshot-'));
+  const workflowDir = fs.mkdtempSync(path.join(os.tmpdir(), 'preparation-design-workflows-'));
+  const builtinWorkflowDir = fs.mkdtempSync(path.join(os.tmpdir(), 'preparation-design-builtin-'));
+  const busDir = fs.mkdtempSync(path.join(os.tmpdir(), 'preparation-design-bus-'));
+  const config = {
+    preparationDir: dir,
+    adhocFlow: { workflowDir, builtinWorkflowDir, busDir },
+  };
+  const originalStartRound = designSession.startRound;
+  const workflow = adhoc.saveWorkflow(config, {
+    id: 'snapshot-child-flow', name: 'snapshot対象', purpose: 'design', version: 2,
+    entry: ['draft'], exit: ['finish'],
+    nodes: [
+      { id: 'draft', goal: '旧ドラフト', tier: 'large', deps: [] },
+      { id: 'finish', goal: '旧成果', kind: 'synthesize', tier: 'large', deps: ['draft'] },
+    ],
+  });
+  let received;
+  designSession.startRound = (_config, payload) => {
+    received = payload;
+    return { id: 'ds-snapshot', runId: 'run-snapshot' };
+  };
+  const handlers = {};
+  try {
+    preparationIpc.registerIpc({
+      handle: (name, handler) => { handlers[name] = handler; },
+      loadConfig: () => config,
+      saveConfig: () => {},
+    });
+    const created = handlers['preparation:create']({
+      title: 'snapshotを使う子', goal: '設計する', route: 'agent-design',
+      designFlow: { id: workflow.id, scope: 'user', repository: '' },
+    }).item;
+    adhoc.saveWorkflow(config, {
+      ...workflow,
+      nodes: workflow.nodes.map((node) => ({ ...node, goal: `新しい${node.goal}` })),
+    });
+
+    const started = handlers['preparation:startDesign']({ id: created.id });
+    assert.strictEqual(
+      received.resolvedFlowSnapshot.definition.nodes[0].goal,
+      '旧ドラフト',
+      '設計run起動時に元フローを再読込してはならない'
+    );
+    assert.strictEqual(started.item.design.flow.definition.nodes[1].goal, '旧成果');
+  } finally {
+    designSession.startRound = originalStartRound;
+    for (const target of [dir, workflowDir, builtinWorkflowDir, busDir]) {
+      fs.rmSync(target, { recursive: true, force: true });
+    }
+  }
+});
+
+test('不完全な再設計成果は旧成果を保持するがhandoffへ進めない', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'preparation-design-retain-'));
+  const config = { preparationDir: dir };
+  const originalGetSession = designSession.getSession;
+  const valid = preparation.completeDesign(preparation.createItem({
+    id: 'prep-retain', title: '旧成果を保持', goal: '設計する', route: 'agent-design',
+  }), { sessionId: 'ds-old', document: completeDesignDocument, runIds: ['run-old'] });
+  const designing = preparation.startDesign(valid, { sessionId: 'ds-new', runId: 'run-new' });
+  preparation.saveItem(config, designing);
+  designSession.getSession = () => ({
+    id: 'ds-new', runStatus: 'done', error: '設計成果に必須節が不足しています', document: '',
+    rounds: [{ runId: 'run-new' }],
+  });
+  const handlers = {};
+  try {
+    preparationIpc.registerIpc({
+      handle: (name, handler) => { handlers[name] = handler; },
+      loadConfig: () => config,
+      saveConfig: () => {},
+    });
+    const synced = handlers['preparation:syncDesign']({ id: designing.id }).item;
+    assert.strictEqual(synced.design.document, completeDesignDocument);
+    assert.strictEqual(synced.phase, 'designing');
+    assert.strictEqual(preparation.canHandoff(synced), false);
+    assert.throws(() => handlers['preparation:completeDesign']({ id: designing.id }), /完了できません/);
+  } finally {
+    designSession.getSession = originalGetSession;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('推奨が設計でも利用者は直接実装を選べる', () => {
   const item = preparation.createItem({
     target: 'workflow', title: 'CSV対応', goal: 'CSV対応を改善したい', route: 'direct',
@@ -387,6 +472,13 @@ test('不完全な設計結果はcompleteDesignで拒否し、実装待ちへ移
   assert.deepStrictEqual(item, before);
   assert.strictEqual(item.phase, 'design-ready');
   assert.strictEqual(preparation.canHandoff(item), false);
+  const forgedReady = {
+    ...item,
+    phase: 'implementation-ready',
+    design: { ...item.design, document: '## 目的\n目的だけです' },
+  };
+  assert.strictEqual(preparation.canHandoff(forgedReady), false);
+  assert.throws(() => preparation.recordHandoff(forgedReady, { runId: 'run-forged' }), /実装準備/);
 });
 
 test('保存一覧は未作成・欠損・壊れたファイルを安全に扱う', () => {

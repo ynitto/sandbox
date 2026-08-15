@@ -148,7 +148,10 @@ test('設計runは読み取り専用契約をplanへ運び、設計セッショ�
     assert.match(plan.nodes.find((node) => node.id === 'finish').goal, /## 検証方法/);
 
     // 設計セッションは既存の adhoc.submit 契約を使うだけで、Gitの書込み経路を増やさない。
-    assert.match(designSessionSource, /adhoc\.submit\(config/);
+    // 設計runはセッション専用に materialize した snapshot 用 config で既存の
+    // adhoc.submit 契約へ入る。元の config を直接使うと、元定義の更新が次ラウンドへ
+    // 混入するため、旧来の文字列（adhoc.submit(config））へ戻さない。
+    assert.match(designSessionSource, /adhoc\.submit\(materialized\.config/);
     assert.doesNotMatch(designSessionSource, /\b(?:git|commit|branch|checkout)\b/);
     assert.ok(!designSessionSource.split('\n').some((line) =>
       /\b(?:commit|push)\b/.test(line) && !/\.push\s*\(/.test(line)));

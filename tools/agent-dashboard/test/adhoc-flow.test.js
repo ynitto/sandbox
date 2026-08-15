@@ -310,12 +310,16 @@ test('設計フローは既定値を補い、human・split・複数終端・終�
     id: 'draft', label: 'draft', goal: '設計する', kind: 'work', tier: 'auto', deps: [], x: 40, y: 40,
   });
   const human = adhoc.normalizeWorkflow({
-    name: '人の確認', nodes: [{ id: 'ask', goal: '確認する', kind: 'human' }],
+    name: '人の確認', nodes: [{ id: 'ask', goal: '確認する', kind: 'human',
+      interaction: { mode: 'approval', prompt: '確認する' } }],
   });
   assert.deepStrictEqual(human.nodes[0].interaction, {
     mode: 'approval', audience: ['reviewer'], timeout_seconds: 604800,
     prompt: '確認する',
   });
+  assert.throws(() => adhoc.normalizeWorkflow({
+    name: '確認内容なし', nodes: [{ id: 'ask', goal: '確認する', kind: 'human' }],
+  }), /human/);
 
   for (const kind of ['human', 'split']) {
     assert.throws(() => adhoc.normalizeWorkflow({
@@ -1454,7 +1458,11 @@ test('設計フローのsnapshot後に元定義を変更しても保存済みpla
       nodes: [{ ...saved.nodes[0], goal: '変更後の別成果' }],
     });
     assert.strictEqual(snapshot.name, '固定前');
-    assert.strictEqual(snapshot.nodes[0].goal, '元の設計成果');
+    assert.match(snapshot.nodes[0].goal, /^元の設計成果/);
+    assert.match(snapshot.nodes[0].goal, /## 目的/);
+    assert.match(snapshot.nodes[0].goal, /## 変更対象/);
+    assert.match(snapshot.nodes[0].goal, /## 受入基準/);
+    assert.match(snapshot.nodes[0].goal, /## 検証方法/);
   } finally {
     profiles.resolveTier = originalTier;
     fs.rmSync(workflowDir, { recursive: true, force: true });
@@ -2030,7 +2038,7 @@ test('設計書は末端ノードの出力から取る（final.summary は抜粋
 });
 
 test('同梱設計フローは内部設計用として分類する', () => {
-  const builtin = adhoc.listWorkflows({ adhocFlow: {} })
+  const builtin = adhoc.listWorkflows({ adhocFlow: {} }, { includeInternal: true })
     .filter((item) => ['design-auto', 'design-interactive'].includes(item.id));
   assert.strictEqual(builtin.length, 2);
   assert.ok(builtin.every((item) => item.purpose === 'design' && item.libraryVisibility === 'internal'));
@@ -2066,7 +2074,8 @@ test('設計セッションはラウンドごとに設計 run を投げ、成果
   profiles.resolveTier = () => ({ agent_cli: 'claude', model: '' });
   try {
     // 同梱フローが読めていること（対話・全自動の 2 本）
-    const builtin = adhoc.listWorkflows(cfg).filter((item) => item._scope === 'builtin');
+    const builtin = adhoc.listWorkflows(cfg, { includeInternal: true })
+      .filter((item) => item._scope === 'builtin');
     assert.deepStrictEqual(builtin.map((item) => item.id).sort(), ['design-auto', 'design-interactive']);
     assert.throws(() => adhoc.saveWorkflow(cfg, { ...builtin[0], name: '変更' }), /読み取り専用/);
 
@@ -2084,11 +2093,22 @@ test('設計セッションはラウンドごとに設計 run を投げ、成果
     fs.writeFileSync(path.join(runDir, 'meta.json'), JSON.stringify({ status: 'done' }));
     fs.writeFileSync(path.join(runDir, 'graph.json'), JSON.stringify({ nodes: { draft: { id: 'draft', deps: [] } } }));
     fs.writeFileSync(path.join(runDir, 'results', 'draft.json'), JSON.stringify({
-      status: 'done', output: '## 目的\nやること\n\n## 質問\n1. 対象は A と B のどちらか',
+      status: 'done', output: [
+        '## 目的\nやること',
+        '## 変更対象\n対象ファイル',
+        '## 受入基準\n条件を満たす',
+        '## 検証方法\nテストする',
+        '## 質問\n1. 対象は A と B のどちらか',
+      ].join('\n\n'),
     }));
     const harvested = design.getSession(cfg, started.id);
     assert.strictEqual(harvested.runStatus, 'done');
-    assert.strictEqual(harvested.document, '## 目的\nやること');
+    assert.strictEqual(harvested.document, [
+      '## 目的\nやること',
+      '## 変更対象\n対象ファイル',
+      '## 受入基準\n条件を満たす',
+      '## 検証方法\nテストする',
+    ].join('\n\n'));
     assert.deepStrictEqual(harvested.questions, ['対象は A と B のどちらか']);
     assert.deepStrictEqual(harvested.rounds[0].questions, ['対象は A と B のどちらか']);
 

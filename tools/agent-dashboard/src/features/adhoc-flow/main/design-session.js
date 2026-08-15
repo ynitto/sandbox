@@ -404,7 +404,7 @@ function getSession(config, id) {
 // セッションを作る（id 省略時）か、回答を添えて次のラウンドを投げる。
 function startRound(config, {
   id, cwd, goal, mode, answers, target, sourceMode, sources, document, nodeAssignments,
-  selection, designFlow,
+  selection, designFlow, resolvedFlowSnapshot,
 } = {}) {
   const existing = id ? getSession(config, id) : null;
   if (id && !existing) throw new Error(`設計セッションが見つかりません: ${id}`);
@@ -434,9 +434,13 @@ function startRound(config, {
   const base = existing || {
     version: 2, id: newSessionId(), createdAt: now, rounds: [], document: initialDocument, questions: [],
   };
+  // preparation:startDesign が main process で保持している snapshot は、元定義を
+  // 再解決せずに使う。公開 IPC の designFlow は従来どおり参照から再解決するため、
+  // Renderer が作った定義を信頼する経路にはしない。
   const flowSnapshot = (existing && normalizeFlowSnapshot(
     existing.flowSnapshot || existing.designFlow || (existing.design && existing.design.flow)
-  )) || resolveFlowSnapshot(config, { selection, designFlow, mode: selectedMode, cwd: folder });
+  )) || normalizeFlowSnapshot(resolvedFlowSnapshot)
+    || resolveFlowSnapshot(config, { selection, designFlow, mode: selectedMode, cwd: folder });
   const materialized = materializeSnapshot(config, base.id, flowSnapshot);
 
   // cwd は設計フローの参照には使うが、設計 run の workspace には渡さない。
