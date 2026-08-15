@@ -111,11 +111,19 @@ def _workload_eff_limits(raw_cfg: dict) -> dict:
 
 
 def _live_reserved_for_node(cfg: "Config", node: str) -> "float | None":
-    """所有者ノードの live reservation 合計。reservations/ が無ければ 0（Phase2 writer 後）。"""
-    root = Path(cfg.backlog).parent
+    """所有者ノードの live reservation 合計。reservations/ が無ければ 0（Phase2 writer 後）。
+
+    reservation はプロジェクト状態リポジトリ単位。板ミラーなどプロジェクト文脈の無い
+    呼び出し（backlog 属性なし）では未知として null を返す。"""
+    backlog = getattr(cfg, "backlog", None)
+    if not backlog:
+        return None
+    root = Path(backlog).parent
     if not reservations_dir(root).is_dir():
         return 0.0
-    expire_reservations(root)  # 射影前に期限切れを冪等回収
+    # ここでは expire の on-disk 回収をしない——status 射影は読取パスで、他ノード所有の
+    # rsv-*.json を書き換えると close（所有者）と並行 rewrite になり同期マージを踏む。
+    # 期限切れは reservation_is_live が時刻で除外し、回収は claim / recover 経路が担う。
     return float(sum_live_reserved(root, node))
 
 

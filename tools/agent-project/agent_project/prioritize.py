@@ -416,7 +416,7 @@ def _node_budget_record(seconds: float, ref: str = "", agent_cli: str = "",
                "tool": _NODE_BUDGET_TOOL, "seconds": round(float(seconds), 3),
                "ref": ref, "purpose": ref}
         rec.update(extra or {})
-        rid = str(os.environ.get("AGENT_RESERVATION_ID") or rec.get("reservation_id") or "").strip()
+        rid = str(rec.get("reservation_id") or current_reservation_id() or "").strip()
         if rid and "reservation_id" not in rec:
             rec["reservation_id"] = rid
         if agent_cli:
@@ -605,6 +605,12 @@ def _run_agent_cli_once(prompt: str, model: "str | None", purpose: str = "",
                                                readonly=_agent_readonly(purpose))
         # 発生源で色を抑止（NO_COLOR/TERM=dumb）。残った ANSI は strip_ansi で除去する二段構え。
         env = {**os.environ, "NO_COLOR": "1", "TERM": "dumb", **(plug.get("env") or {})}
+        # 予約 ID はスレッドローカル束縛から子プロセスへ写す（並行 batch でも帰属が混ざらない）
+        _rsv = current_reservation_id()
+        if _rsv:
+            env["AGENT_RESERVATION_ID"] = _rsv
+        else:
+            env.pop("AGENT_RESERVATION_ID", None)
         configured_timeout = (_RUNTIME_CONFIG.agent_timeout
                               if _RUNTIME_CONFIG is not None else 300.0)
         timeout = plug.get("timeout") or (configured_timeout if configured_timeout > 0 else None)

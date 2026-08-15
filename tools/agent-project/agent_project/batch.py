@@ -358,8 +358,7 @@ def claim_task(cfg: "Config", task: "Task") -> bool:
             release_claim(cfg, task)
             return False
         _adopt_task(task, live)
-        if task.get("reservation_id"):
-            bind_reservation_env(str(task.get("reservation_id") or ""))
+        bind_reservation_env(str(task.get("reservation_id") or ""))
     else:
         # 単独ノード: CAS 無しでも claim と同時に予約（並行受注の二重利用防止）
         create_local_claim_reservation(cfg, task)
@@ -383,7 +382,7 @@ def release_claim(cfg: "Config", task: "Task") -> None:
             return
     except Exception:  # noqa: BLE001
         pass
-    ledger_ref = str(os.environ.get(_RESERVATION_ENV) or task.get("reservation_id") or "")
+    ledger_ref = str(task.get("reservation_id") or current_reservation_id() or "")
     close_reservation_for_task(cfg, task, ledger_ref=ledger_ref or "")
 
 
@@ -443,8 +442,6 @@ def _act_batch(batch: "list[Task]", cfg: "Config", act, policy) -> "dict[str, tu
     claimed = [t for t in batch if claim_task(cfg, t)]   # 二重実行防止: 取れた者だけ進む
     for t in claimed:
         t.status = "doing"
-        if t.get("reservation_id"):
-            bind_reservation_env(str(t.get("reservation_id") or ""))
         resolve_and_persist_workspace(cfg, t, policy)    # タスク→1つの書込先へルーティング（決定を md へ永続化）
         persist_task(cfg, t)
     locs = {t.id: decide_location(t, policy, cfg) for t in claimed}
@@ -454,6 +451,9 @@ def _act_batch(batch: "list[Task]", cfg: "Config", act, policy) -> "dict[str, tu
         return {}
 
     def _one(t):
+        # 帰属はスレッドローカル（ThreadPool 並行時に他タスクの予約 ID を拾わない）。
+        # 予約の無いタスクは空で束縛し、前のタスクの ID を引き継がない。
+        bind_reservation_env(str(t.get("reservation_id") or ""))
         reuse_done_run = str(t.get("reuse_done_run") or "").strip()
         if reuse_done_run:
             # revise が確認した完了済み成果を一度だけ流用する。予約を先に永続化して

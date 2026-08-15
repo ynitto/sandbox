@@ -468,7 +468,14 @@ def _act_run(task: Task, cfg: "Config", use_git: bool = False) -> "tuple[bool, s
     # （env 渡しは不安定として人が却下・2026-07-31。両ツールは同時更新が前提）。
     try:
         # Popen＋ポーリング: subprocess.run だと timeout まで mid-revise を検知できない。
-        proc = subprocess.Popen(cmd, cwd=str(cfg.workdir),
+        # 予約 ID はスレッドローカル束縛から子 env へ写す（並行 batch でも帰属が混ざらない）。
+        flow_env = {**os.environ}
+        _rsv = current_reservation_id()
+        if _rsv:
+            flow_env["AGENT_RESERVATION_ID"] = _rsv
+        else:
+            flow_env.pop("AGENT_RESERVATION_ID", None)
+        proc = subprocess.Popen(cmd, cwd=str(cfg.workdir), env=flow_env,
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
     except FileNotFoundError as e:
         task.drop("flow_run", "flow_loc")
