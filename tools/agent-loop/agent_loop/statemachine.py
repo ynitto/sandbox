@@ -29,6 +29,8 @@ _sm_resolve_skill = _tl_resolve_skill
 _sm_action_skill_names = _tl_action_skill_names
 _sm_action_project_files = _tl_action_project_files
 _sm_skill_scripts = _tl_skill_scripts
+_sm_skill_declared_scripts = _tl_skill_declared_scripts
+_sm_run_control = _tl_run_control
 _sm_validate_tool_request = _tl_validate_tool_request
 _sm_parse_json_object = _tl_parse_json_object
 _sm_parse_tool_request = _tl_parse_tool_request
@@ -98,8 +100,13 @@ def _sm_set_nested(target: dict, key: str, value) -> None:
 
 def _sm_initial_context(workflow: dict, parameters: "dict | None") -> dict:
     declared = dict(workflow.get("context")) if isinstance(workflow.get("context"), dict) else {}
+    # 定型業務のアクションは日付を要求することが多い（日報・ダイジェスト）。モデルに
+    # 「今日」を推測させると学習時点の日付を書くので、実行時の値を組み込みで渡す。
+    now = _dt.datetime.now().astimezone()
     context: dict = {**declared, "context": declared, "input": "",
-                     "history": {}, "last_output": "", "step_count": 0}
+                     "history": {}, "last_output": "", "step_count": 0,
+                     "today": now.strftime("%Y-%m-%d"),
+                     "now": now.isoformat(timespec="seconds")}
     for key, value in (parameters or {}).items():
         if key == "input":
             context["input"] = value
@@ -188,6 +195,25 @@ def _sm_max_attempts(state: dict) -> int:
     return max(1, retries + 1)
 
 
+def _sm_check_only_transitions(workflow: dict, state_id: str) -> bool:
+    """state からの遷移がすべて check_* キーだけを材料にしているか。
+
+    1 つでも last_output / output_key を読む遷移があれば False——そこでは
+    モデルの書いた本文が遷移材料なので、機械が本文を合成してはいけない。
+    """
+    found = False
+    for transition in workflow.get("transitions", []):
+        if not isinstance(transition, dict) or transition.get("from") != state_id:
+            continue
+        found = True
+        rule = str(transition.get("condition_rule") or "").strip()
+        for clause in filter(None, (part.strip() for part in rule.split(";"))):
+            parts = clause.split(":")
+            if len(parts) < 3 or not parts[1].strip().startswith("check_"):
+                return False
+    return found
+
+
 def _sm_write_success_output(*, workflow_path: str, state_id: str, state: dict,
                              validator, files: set, cwd: str) -> str:
     """一意な成功遷移がある単一ファイル書込の結果を機械的に作る。"""
@@ -195,11 +221,18 @@ def _sm_write_success_output(*, workflow_path: str, state_id: str, state: dict,
     if not rule.startswith("startswith:") or len(files) != 1:
         return ""
     prefixes = [value.strip() for value in rule[len("startswith:"):].split(",")]
+    workflow = _sm_load_workflow_dict(workflow_path)
+    file = next(iter(files))
+    # 検査（check）だけを材料に遷移するステートでは、書式契約は check へ進む口でしか
+    # ない——成否を語るのはハーネスが実行する検査の exit code。編集層は黙って直すのが
+    # 普通なので、契約の欠けた完了済み書込をここで落とすと check まで到達しない。
+    # 合成する本文は先頭の宣言接頭辞（遷移はどの接頭辞でも読まない）。
+    if state.get("check") and _sm_check_only_transitions(workflow, state_id):
+        return f"{prefixes[0]}\npath: {os.path.relpath(file, cwd)}"
     keys = {"last_output"}
     if _sm_scalar(state.get("output_key")):
         keys.add(_sm_scalar(state.get("output_key")))
     successful = set()
-    workflow = _sm_load_workflow_dict(workflow_path)
     for transition in workflow.get("transitions", []):
         if not isinstance(transition, dict) or transition.get("from") != state_id:
             continue
@@ -210,20 +243,29 @@ def _sm_write_success_output(*, workflow_path: str, state_id: str, state: dict,
                           if any(f"startswith:{key}:{prefix}" in clauses for key in keys))
     if len(successful) != 1:
         return ""  # 分類など複数の正常遷移はモデルの判断を捏造しない。
-    file = next(iter(files))
     return f"{successful.pop()}\npath: {os.path.relpath(file, cwd)}"
 
 
 def _sm_execute_action(*, workflow_path: str, state_id: str, state: dict, context: dict,
-                       cwd: str, agent: dict, log_file: str, touched: set) -> str:
+                       cwd: str, agent: dict, log_file: str, touched: set,
+                       check_note: str = "", retry_paths: "list[str] | None" = None) -> str:
     action = _sm_workflow_action(workflow_path, state_id, state)
     rendered = _sm_render_template(action["text"], context)
+    if check_note:
+        # 検査が落ちた後の再投入。測った不一致を課題文へ足す（受入は真偽だけでも変わらないが、
+        # 実測では再試行が 28% 速い）。足す先は課題文そのもの——planner 周と編集周の両方が読む。
+        rendered = f"{rendered}\n\n{check_note}"
     skills = [s for s in (_sm_resolve_skill(n, cwd) for n in _sm_action_skill_names(rendered)) if s]
     skill_scripts = {
         os.path.realpath(script) for skill in skills for script in _sm_skill_scripts(skill)
     }
+    # 実行してよいスキルスクリプト = アクションが名指ししたもの ∪ そのスキルの SKILL.md が
+    # 入口として載せているもの。scripts/ にあるだけの下請けは呼ばせない。
     named_skill_scripts = {
         script for script in skill_scripts if os.path.basename(script) in rendered
+    } | {
+        os.path.realpath(script) for skill in skills
+        for script in _sm_skill_declared_scripts(skill)
     }
     action_reads = _sm_action_project_files(rendered, cwd)
     reads: set = {f for f in [workflow_path, action["file"], *(s["skill_file"] for s in skills)] if f}
@@ -232,28 +274,56 @@ def _sm_execute_action(*, workflow_path: str, state_id: str, state: dict, contex
     successful_runs: set = set()
     provided_reads: set = set()
 
+    # 編集対象の割付。優先は (1) 検査の再投入なら前の試行が書いたファイル（契約の path 行）、
+    # (2) state の `write:` 宣言（定型の事前分解はファイル割付まで決めてある——worker_eval の
+    # steps[].files と同じ考え方で、割付は制御席のモデルに訊く仕事ではない）。
+    declared = state.get("write")
+    declared = [declared] if isinstance(declared, str) else list(declared or [])
+    seed_paths = [str(p) for p in ((retry_paths if check_note and retry_paths else None)
+                                   or declared) if str(p).strip()]
+    seeded = False
     for attempt in range(max_attempts):
         history: list[str] = []
         evidence: set = set()
         for _round in range(_SM_MAX_TOOL_ROUNDS):
-            retry = (f"Retry {attempt}/{max_attempts - 1}: the previous output violated "
-                     "the Output Contract." if attempt else "")
-            # 制御応答（次の一手の JSON）は編集能力の要らない周。定義が申告していれば
-            # JSON 用の変種へ振り替える（run_goal と同じ口を使う——C7）。
-            raw = _sm_run_agent(_tl_control_agent(agent, cwd), _sm_planner_prompt(
-                action=rendered, cwd=cwd, skills=skills, reads=sorted(reads),
-                history=history, retry=retry,
-            ), cwd=cwd, readonly=True, read_files=sorted(reads), files=[], log_file=log_file)
-            try:
-                request = _sm_validate_tool_request(_sm_parse_tool_request(raw), cwd, skills)
-            except StateMachineHarnessError as exc:
-                evidence_error = _sm_final_evidence_error(raw, cwd, evidence, touched)
-                contract = _sm_validated_output(raw, validator)
-                if contract and not evidence_error:
-                    return contract
-                history.append("TOOL_RESULT " + json.dumps(
-                    {"rejected": True, "error": str(exc)}, ensure_ascii=False))
-                continue
+            request = None
+            if seed_paths and not seeded and not attempt:
+                # 編集の周から入る（制御周スキップ）。制御席へ「次の一手」を訊くと、
+                # 小型モデルは pytest 実行や pip install の調査ループで周を使い切る
+                # （実機再測 2026-08-15 の失敗機序）。割付が宣言済みなら訊く必要がない。
+                seeded = True
+                try:
+                    request = {"type": "write_files",
+                               "paths": [_sm_project_path(cwd, p) for p in seed_paths]}
+                except StateMachineHarnessError:
+                    request = None
+            if request is None:
+                retry = (f"Retry {attempt}/{max_attempts - 1}: the previous output violated "
+                         "the Output Contract." if attempt else "")
+                # 制御応答（次の一手の JSON）は編集能力の要らない周。定義が申告していれば
+                # JSON 用の変種へ振り替える（run_goal と同じ口を使う——C7）。
+                raw = _sm_run_control(_tl_control_agent(agent, cwd), _sm_planner_prompt(
+                    action=rendered, cwd=cwd, skills=skills, reads=sorted(reads),
+                    history=history, retry=retry,
+                ), cwd=cwd, read_files=sorted(reads), log_file=log_file)
+                try:
+                    parsed = _sm_parse_tool_request(raw)
+                except StateMachineHarnessError as exc:
+                    # ツール要求ですらない = 素の本文。Output Contract を満たすならそれが答え。
+                    contract = _sm_validated_output(raw, validator)
+                    if contract and not _sm_final_evidence_error(raw, cwd, evidence, touched):
+                        return contract
+                    history.append("TOOL_RESULT " + json.dumps(
+                        {"rejected": True, "error": str(exc)}, ensure_ascii=False))
+                    continue
+                try:
+                    request = _sm_validate_tool_request(parsed, cwd, skills)
+                except StateMachineHarnessError as exc:
+                    # 拒否されたツール要求は「やらなかった」であって成功ではない。JSON の中身が
+                    # たまたま Output Contract の形をしていても、契約文として拾わない。
+                    history.append("TOOL_RESULT " + json.dumps(
+                        {"rejected": True, "error": str(exc)}, ensure_ascii=False))
+                    continue
             if request["type"] == "run":
                 script = os.path.realpath(request["command"])
                 if request["args"] and os.path.realpath(request["args"][0]) in skill_scripts:
@@ -336,7 +406,7 @@ def _sm_execute_action(*, workflow_path: str, state_id: str, state: dict, contex
                             backups[file] = backup
                             Path(file).touch()
                     staged = {f: _sm_file_stamp(f) for f in request["paths"]}
-                    output = _sm_run_agent(
+                    output = _tl_run_agent(
                         agent,
                         "Execute only this action now. The editable files are stale: replace them "
                         "from the assigned read-only inputs in this run. Do not merely describe or "
@@ -345,7 +415,7 @@ def _sm_execute_action(*, workflow_path: str, state_id: str, state: dict, contex
                         cwd=cwd, readonly=False,
                         read_files=[f for f in sorted(reads | set(action_reads))
                                     if f not in request["paths"]],
-                        files=request["paths"], log_file=log_file)
+                        files=request["paths"], log_file=log_file, allow_empty=True)
                 except BaseException:
                     for file, backup in backups.items():
                         os.replace(backup, file)
@@ -419,12 +489,16 @@ def _sm_execute_action(*, workflow_path: str, state_id: str, state: dict, contex
                     # 必要なら Aider が read_files を要求する。
                     if os.stat(file).st_size <= _SM_MAX_AUTO_READ_BYTES:
                         reads.add(file)
+            succeeded = tool["status"] == 0 and not tool["error"]
             history.append("TOOL_RESULT " + json.dumps({
-                "type": request["type"], "status": tool["status"], "error": tool["error"],
+                # ok は status 由来。stdout が空でも成功は成功——出力の有無で成否を
+                # 推測させると、何も印字しないコマンドの後にモデルが延々やり直す。
+                "type": request["type"], "ok": succeeded,
+                "status": tool["status"], "error": tool["error"],
                 "stdout": tool["stdout"][-4000:], "stderr": tool["stderr"][-2000:],
                 "logFile": log_file,
             }, ensure_ascii=False))
-            if tool["status"] == 0 and not tool["error"]:
+            if succeeded:
                 successful_runs.add(run_key)
     raise StateMachineHarnessError(f"ステート {state_id} が Output Contract を満たしませんでした")
 
@@ -443,33 +517,107 @@ def _sm_first_line(text: str) -> str:
     return str(text or "").splitlines()[0] if str(text or "") else ""
 
 
+# 検査の診断を課題文へ戻すときの上限。ローカルモデルの文脈は黙って切り捨てられるので、
+# 長い pytest 出力をそのまま積むと system prompt 側から落ちる。
+_SM_CHECK_OUTPUT_LIMIT = 2000
+
+
+def _sm_state_check_spec(*, scripts: dict, workflow_path: str, state_id: str,
+                         cwd: str, log_file: str) -> dict:
+    """ステートが宣言する決定的検査を statemachine-use から取得する。
+
+    正規化（文字列の分割・既定値・不正宣言の拒否）はスキル側の 1 実装が持つ。ここで
+    YAML を読み直すと、定義側が形を足した日に黙ってずれる（argv の写しで前科がある）。
+    """
+    spec = _sm_parse_json_object(_sm_harness_script(
+        scripts["next"], [workflow_path, "--state", state_id, "--state-check"],
+        cwd=cwd, log_file=log_file))
+    if not spec:
+        raise StateMachineHarnessError(f"ステート {state_id} の検査宣言を解析できません")
+    try:
+        retries = max(0, int(spec.get("check_retries") or 0))
+    except (TypeError, ValueError):
+        retries = 0
+    return {"check": spec.get("check") if isinstance(spec.get("check"), dict) else None,
+            "retries": retries,
+            "on_exhausted": _sm_scalar(spec.get("check_on_exhausted")) or "escalate",
+            "feedback": spec.get("check_feedback") is not False}
+
+
+def _sm_check_context(status, stdout: str, stderr: str, error: str) -> dict:
+    """検査結果 → condition_rule のコンテキスト値。
+
+    キー名と書式の正典は statemachine-use の `engine.check_context`
+    （references/schema.md「検査結果のコンテキスト変数」）。ハーネスは自分で測った値だけを
+    遷移材料に入れる——モデルが書いたテキストはここへ 1 バイトも混ぜない。
+    """
+    ok = status == 0 and not error
+    detail = error or (str(stderr or "").strip() or str(stdout or "").strip())
+    first = detail.splitlines()[0].strip() if detail.strip() else ""
+    return {"check_status": "error" if status is None else str(status),
+            "check_ok": "true" if ok else "false",
+            "check_output": first}
+
+
+def _sm_run_check(check: dict, *, state_id: str, cwd: str, log_file: str) -> dict:
+    """宣言された検査コマンドを実行する。シェルは介さない（argv を直接渡す）。"""
+    argv = [check["command"], *check["args"]]
+    _sm_progress(f"check: {' '.join(argv)}")
+    result = _sm_exec_argv(check["command"], check["args"], cwd=cwd,
+                           timeout_sec=check["timeout_sec"], log_file=log_file)
+    context = _sm_check_context(result["status"], result["stdout"], result["stderr"],
+                                result["error"])
+    _sm_append_log(log_file, {"event": "check", "state": state_id, "argv": argv, **context})
+    return {**result, "ok": context["check_ok"] == "true", "argv": argv, "context": context}
+
+
+def _sm_check_note(result: dict, attempt: int, attempts: int, *, feedback: bool) -> str:
+    """検査が落ちた後の再投入で課題文へ足す文。検査そのものは書き換えさせない。"""
+    head = (f"Retry {attempt}/{attempts - 1}: the declared check failed "
+            f"(exit status {result['context']['check_status']}).")
+    tail = "Fix the work so this exact command succeeds. Do not modify the check itself."
+    if not feedback:
+        return f"{head}\n{tail}"
+    detail = "\n".join(x for x in (result["error"], result["stderr"], result["stdout"])
+                       if x).strip()
+    return (f"{head}\nCheck command: {' '.join(result['argv'])}\n"
+            + (f"Check output:\n{detail[-_SM_CHECK_OUTPUT_LIMIT:]}\n" if detail else "")
+            + tail)
+
+
 def _sm_next_state(*, scripts: dict, workflow_path: str, state_id: str, output: str,
-                   outputs: dict, agent: dict, cwd: str, log_file: str) -> str:
-    args = [workflow_path, "--state", state_id, "--list-conditions",
-            "--last-output", _sm_first_line(output)]
-    for key, value in outputs.items():
-        args += ["--output", f"{key}={_sm_first_line(str(value))}"]
+                   outputs: dict, agent: dict, cwd: str, log_file: str,
+                   extra: "dict | None" = None) -> str:
+    context = {"last_output": _sm_first_line(output),
+               **{key: _sm_first_line(str(value)) for key, value in outputs.items()},
+               **(extra or {})}
+    base = [workflow_path, "--state", state_id,
+            "--context", json.dumps(context, ensure_ascii=False)]
     listed = _sm_parse_json_object(
-        _sm_harness_script(scripts["next"], args, cwd=cwd, log_file=log_file))
-    if not listed or not isinstance(listed.get("conditions"), list):
+        _sm_harness_script(scripts["next"], [*base, "--auto-eval"], cwd=cwd, log_file=log_file))
+    if not listed:
+        raise StateMachineHarnessError("条件リストを解析できません")
+    # 決定済みの応答は 2 形。auto_advance（条件が無く next_state だけ返る）と
+    # resolved（condition_rule だけで確定）。どちらも LLM 評価も --eval も要らない。
+    decided = listed.get("next_state") or listed.get("resolved")
+    if isinstance(decided, str) and decided:
+        return decided
+    if not isinstance(listed.get("conditions"), list):
         raise StateMachineHarnessError("条件リストを解析できません")
     pending = [c for c in listed["conditions"] if c.get("needs_llm_eval") is True]
     evals: dict = {}
     if pending:
-        raw = _sm_run_agent(
+        raw = _sm_run_control(
             _tl_control_agent(agent, cwd),
             "Evaluate only these state-machine conditions against the completed action "
             "output. Return one JSON object mapping each index to true or false.\n"
             f"Output:\n{output}\nConditions:\n{json.dumps(pending, ensure_ascii=False)}",
-            cwd=cwd, readonly=True, read_files=[workflow_path], files=[], log_file=log_file)
+            cwd=cwd, read_files=[workflow_path], log_file=log_file)
         evals = _sm_parse_json_object(raw)
         if not evals:
             raise StateMachineHarnessError("Aider の条件評価を JSON として読めません")
-    decide = [workflow_path, "--state", state_id, "--evals", json.dumps(evals),
-              "--last-output", _sm_first_line(output)]
-    for key, value in outputs.items():
-        decide += ["--output", f"{key}={_sm_first_line(str(value))}"]
-    return _sm_harness_script(scripts["next"], decide, cwd=cwd, log_file=log_file)
+    return _sm_harness_script(scripts["next"], [*base, "--evals", json.dumps(evals)],
+                              cwd=cwd, log_file=log_file)
 
 
 def _sm_load_workflow_dict(workflow_file: str) -> dict:
@@ -485,15 +633,28 @@ def _sm_load_workflow_dict(workflow_file: str) -> dict:
 
 
 def run_statemachine(*, workflow_path: str, cwd: str, parameters: "dict | None" = None,
-                     agent: dict) -> dict:
+                     agent: dict, decision: "dict | None" = None) -> dict:
     """ステートマシンを headless エージェントで完走させる。
 
     戻り値: {ok, stdout, stderr, finalState, logFile, files}（dashboard の旧 in-process
     実行器と同じ結果契約。stdout は最終ステートの出力）。
+
+    `decision` は候補ベース実行（selection_policy）の ExecutionDecision。渡されたら
+    receipt としてログへ残し、**編集 state（`write:` 宣言あり）の `check` を必須にする**
+    ——小型候補は検査なしでは完了扱いにしない（設計 2026-08-15 §2.1。宣言の無い定義は
+    実行前に落とし、静かに未検証で走らせない）。
     """
     root = os.path.realpath(str(cwd))
     workflow_file = _sm_project_path(root, workflow_path)
     workflow = _sm_load_workflow_dict(workflow_file)
+    if decision is not None and decision.get("selected"):
+        missing = sorted(sid for sid, st in (workflow.get("states") or {}).items()
+                         if isinstance(st, dict) and st.get("write") and not st.get("check"))
+        if missing:
+            raise StateMachineHarnessError(
+                "[selection-policy] 小型候補の実行では write 宣言のある state に check が"
+                f"必須です（無い state: {', '.join(missing)}）。定義へ検査コマンドを"
+                "足すか、--agent-cli で候補を明示してください")
     harness_skill = _sm_resolve_skill("statemachine-use", root)
     if not harness_skill:
         raise StateMachineHarnessError("statemachine-use スキルの実体が見つかりません")
@@ -505,6 +666,12 @@ def run_statemachine(*, workflow_path: str, cwd: str, parameters: "dict | None" 
     os.makedirs(log_dir, exist_ok=True)
     log_file = os.path.join(log_dir, f"agent-loop-{int(time.time() * 1000)}-{os.getpid()}.jsonl")
     touched: set = set()
+    if decision is not None and decision.get("selected"):
+        # 実行 receipt v2 の execution_decision ブロック。読み手（agent-audit）は設定から
+        # 実モデルを再推測せず、このログ行と予算台帳を正典にする（§6.5）。
+        from agentcore import executionresolver
+        _sm_append_log(log_file, {"event": "execution_decision",
+                                  **executionresolver.receipt_execution_decision(decision)})
     _sm_progress(f"workflow: {os.path.relpath(workflow_file, root)} (log: {log_file})")
     _sm_harness_script(scripts["dry"], [workflow_file, "--dry-run"], cwd=root, log_file=log_file)
     current = _sm_harness_script(scripts["next"], [workflow_file, "--initial-state"],
@@ -531,9 +698,37 @@ def run_statemachine(*, workflow_path: str, cwd: str, parameters: "dict | None" 
                     "logFile": log_file, "files": sorted(touched)}
         _sm_append_log(log_file, {"event": "state", "state": current, "step": step + 1})
         _sm_progress(f"state: {current} (step {step + 1}/{max_steps})")
-        last_output = _sm_execute_action(
-            workflow_path=workflow_file, state_id=current, state=state, context=context,
-            cwd=root, agent=agent, log_file=log_file, touched=touched).strip()
+        # 宣言された検査を通してからでないと次へ進めない。落ちたら同じステートをやり直す
+        # ——遷移の材料をモデルの自己申告からハーネスの実測へ移すのがこの段の目的。
+        gate = _sm_state_check_spec(scripts=scripts, workflow_path=workflow_file,
+                                    state_id=current, cwd=root, log_file=log_file)
+        attempts = gate["retries"] + 1 if gate["check"] else 1
+        checked: "dict | None" = None
+        note = ""
+        retry_paths: list = []
+        for attempt in range(attempts):
+            try:
+                last_output = _sm_execute_action(
+                    workflow_path=workflow_file, state_id=current, state=state, context=context,
+                    cwd=root, agent=agent, log_file=log_file, touched=touched,
+                    check_note=note, retry_paths=retry_paths).strip()
+            except StateMachineHarnessError:
+                if not attempt or not gate["check"]:
+                    raise
+                # 検査の再投入がアクションを完走できなかった＝この段では直せない。run 全体の
+                # 失敗ではなく上限到達として数え、escalate の口（下の check_exhausted）へ流す。
+                _sm_append_log(log_file, {"event": "retry_action_failed", "state": current,
+                                          "attempt": attempt + 1})
+                continue
+            if not gate["check"]:
+                break
+            checked = _sm_run_check(gate["check"], state_id=current, cwd=root,
+                                    log_file=log_file)
+            if checked["ok"] or attempt == attempts - 1:
+                break
+            note = _sm_check_note(checked, attempt + 1, attempts, feedback=gate["feedback"])
+            # 再投入は前の試行が書いたファイルへの編集から入る（成果の所在は契約の path 行）。
+            retry_paths = re.findall(r"^path:\s*(.+?)\s*$", last_output, re.I | re.M)
         context["last_output"] = last_output
         context["step_count"] = step + 1
         context["history"][current] = last_output
@@ -541,9 +736,29 @@ def run_statemachine(*, workflow_path: str, cwd: str, parameters: "dict | None" 
         if output_key:
             context[output_key] = last_output
             outputs[output_key] = last_output
+        checks = checked["context"] if checked else {}
+        context.update(checks)
+        if checked and not checked["ok"] and gate["on_exhausted"] != "continue":
+            # 上限到達は「この段では解けない」の宣告。実測ではこの型の失敗は同形で揺れないので、
+            # 引き直しても埋まらない——上位の段へ回すシグナルとして失敗一般と区別する。
+            escalate = gate["on_exhausted"] == "escalate"
+            reason = (f"ステート {current} の検査が {attempts} 回とも失敗しました: "
+                      + (checks["check_output"] or f"status={checks['check_status']}"))
+            _sm_append_log(log_file, {"event": "check_exhausted", "state": current,
+                                      "attempts": attempts, "escalate": escalate, **checks})
+            _sm_progress(f"check exhausted: {current}"
+                         + (" -> escalate（上位の段へ）" if escalate else ""))
+            if not escalate:
+                raise StateMachineHarnessError(reason)
+            return {"ok": False, "escalate": True, "error": reason, "stdout": last_output,
+                    "stderr": str(checked["stderr"] or checked["stdout"] or "")
+                    [-_SM_CHECK_OUTPUT_LIMIT:],
+                    "finalState": current, "logFile": log_file, "files": sorted(touched),
+                    "check": {"state": current, "attempts": attempts,
+                              "argv": checked["argv"], **checks}}
         nxt = _sm_next_state(scripts=scripts, workflow_path=workflow_file, state_id=current,
                              output=last_output, outputs=outputs, agent=agent, cwd=root,
-                             log_file=log_file)
+                             log_file=log_file, extra=checks)
         if nxt == "NONE":
             on_none = _sm_scalar(config.get("on_no_transition")) or "error"
             if on_none == "stop":
@@ -584,13 +799,30 @@ def cmd_statemachine(args: argparse.Namespace, cwd: Path) -> None:
     try:
         params = _sm_parse_params(getattr(args, "param", None) or [],
                                   getattr(args, "input", None))
-        agent = _sm_resolve_agent(getattr(args, "agent_cli", None) or "aider",
-                                  getattr(args, "model", None) or "", str(work_dir))
+        # 候補ベース（agent-control v2 selection_policy）: 人が --agent-cli を明示したら
+        # それが pin（従来どおり最優先）。指定が無いときだけ Resolver の決定を使う。
+        # park は lifecycle と同じ環境要因として実行前に止める（3 = escalate と別の 1）。
+        pin_cli = getattr(args, "agent_cli", None)
+        decision = None if pin_cli else _control_policy_decision("statemachine")
+        if decision is not None and decision.get("parked"):
+            raise StateMachineHarnessError(
+                f"[agent-error:control] [selection-policy] park"
+                f"（{decision.get('park_reason')}）: {decision.get('reason')}。"
+                f"再開条件: {decision.get('resume_condition')}")
+        selected = (decision or {}).get("selected") or {}
+        agent = _sm_resolve_agent(pin_cli or selected.get("agent_cli") or "aider",
+                                  getattr(args, "model", None) or selected.get("model") or "",
+                                  str(work_dir))
         _sm_progress(f"agent: {agent['cli']}"
                      + (f" / model: {agent['model']}" if agent["model"] else " (default model)"))
         result = run_statemachine(workflow_path=args.workflow, cwd=str(work_dir),
-                                  parameters=params, agent=agent)
+                                  parameters=params, agent=agent, decision=decision)
         print("RESULT " + json.dumps(result, ensure_ascii=False))
+        # 3 = 検査の再投入上限に達した（この段では解けない）。呼び出し側が RESULT を
+        # 読まずに終了コードだけで昇格へ振り分けられるようにする。非 0 を失敗として
+        # 扱う既存の呼び出し側とは互換のまま。
+        if result.get("escalate"):
+            sys.exit(3)
         sys.exit(0 if result.get("ok") else 1)
     except StateMachineHarnessError as exc:
         print("RESULT " + json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))

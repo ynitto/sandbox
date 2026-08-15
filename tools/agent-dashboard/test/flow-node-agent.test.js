@@ -70,6 +70,31 @@ test('readRun は結果の agent_cli / model を工程へ写す（無ければ n
   assert.strictEqual(run.nodes.t2.agentModel, null);
 });
 
+test('readRun は Envelope snapshot と候補選択・検証 receipt を表示モデルへ写す', () => {
+  const runDir = makeRun('run-receipt', ['t1']);
+  const envelope = { version: 1, digest: 'abc', approval: { status: 'approved' } };
+  writeJson(path.join(runDir, 'meta.json'), {
+    request: 'r', status: 'done', created_at: '2026-01-01T00:00:00Z',
+    execution_envelope: envelope,
+  });
+  writeJson(path.join(runDir, 'results', 't1.json'), {
+    id: 't1', who: 'w1', status: 'done', output: '',
+    execution_decision: {
+      agent_cli: 'aider', model: 'gemma4:e4b', selection_source: 'qualified-candidate',
+      qualification_id: 'aider-e4b-repair-v1', rank: 1,
+      reason: '適格性確認済み、標準以内、優先順位1位',
+      fallback_from: 'cursor/grok-4.5', eligible_candidate_ids: ['aider/gemma4:e4b', 'cursor/grok-4.5'],
+    },
+    verification: { kind: 'command', verdict: 'pass', attempt: 1, failure_class: null },
+  });
+
+  const run = flow.readRun(runDir);
+  assert.deepStrictEqual(run.executionEnvelope, envelope);
+  assert.strictEqual(run.nodes.t1.executionDecision.rank, 1);
+  assert.strictEqual(run.nodes.t1.executionDecision.fallback_from, 'cursor/grok-4.5');
+  assert.strictEqual(run.nodes.t1.verification.verdict, 'pass');
+});
+
 test('readRun は明示 phase を公開し、旧runの全工程完了は finalizing へ縮退する', () => {
   const explicitDir = makeRun('run-phase-explicit', ['t1']);
   writeJson(path.join(explicitDir, 'meta.json'), {

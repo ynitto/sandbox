@@ -12,6 +12,7 @@ const git = require('../../../base/main/git');
 const { openInReviewViewer } = require('./review');
 const actions = require('./actions');
 const authoring = require('./authoring');
+const projectDesign = require('./project-design');
 const agent = require('./agent');
 const reset = require('./reset');
 
@@ -429,6 +430,8 @@ function registerIpc(ctx) {
   //   createProject … <root>/projects/<name>/ に charter.md（＋ repos.json）を作る
   //   readFile/writeFile … charter.md / policy.md / repos.* の直接編集
   handle('dashboard:createProject', ({ spec }) => authoring.createProject(spec || {}));
+  handle('dashboard:applyProjectDesign', ({ dir, proposal, selection, applicationId }) =>
+    projectDesign.applyProjectDesignProposal(dir, proposal || {}, selection || {}, applicationId));
   // 初版 charter.md へ後からバージョン名を付ける（charters/<name>.md へ昇格）。
   // charters/ 運用では charter.md が駆動対象から外れるため、初版を並行駆動に含める正規の口。
   handle('dashboard:promoteCharter', ({ dir, name }) => {

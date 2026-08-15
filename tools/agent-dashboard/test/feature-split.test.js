@@ -113,6 +113,12 @@ test('cowork は定期実行と定型業務 API を登録する', () => {
     'cowork:runLoop',
     { itemId: 'job-1', parameters: { target: 'main' } },
   ]);
+  const executionChoice = { tier: 'medium', agent_cli: 'aider', model: 'gemma4:e2b' };
+  assert.strictEqual(runLoop('job-2', {}, executionChoice), 'started');
+  assert.deepStrictEqual(calls[3], [
+    'cowork:runLoop',
+    { itemId: 'job-2', parameters: {}, executionChoice },
+  ]);
   assert.deepStrictEqual(cowork.configDefaults.cowork.items, []);
 });
 

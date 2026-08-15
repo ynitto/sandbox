@@ -8,6 +8,10 @@
 // オーサリング: 新規プロジェクト作成・プロジェクトファイル編集
 // ---------------------------------------------------------------------------
 
+let newProjectDesignProposal = null;
+let newProjectApplicationId = '';
+let newProjectProposalSourceKey = '';
+
 // 既知プロジェクトの親フォルダ（新規作成先の候補）
 function knownRoots() {
   const roots = new Set();
@@ -52,6 +56,16 @@ function openNewProject() {
   $('np-acceptance').value = '';
   $('np-repos').innerHTML = '';
   $('np-ai-status').textContent = '';
+  newProjectDesignProposal = null;
+  newProjectApplicationId = '';
+  newProjectProposalSourceKey = '';
+  $('np-design-preview').classList.add('hidden');
+  $('np-design-preview').innerHTML = '';
+  $('btn-np-submit').textContent = '作成';
+  document.querySelector('input[name="np-design-mode"][value="new"]').checked = true;
+  for (const id of ['np-source-master', 'np-source-plans', 'np-source-notes', 'np-source-documents']) {
+    if ($(id)) $(id).value = '';
+  }
   $('btn-np-ai').disabled = false;
   $('dlg-new-project').showModal();
 }
@@ -105,6 +119,71 @@ async function submitNewProject() {
       desc: row.querySelector('.np-r-desc').value.trim(),
     }))
     .filter((r) => r.url);
+  const sourceFields = [
+    ['np-source-master', 'master'], ['np-source-plans', 'plan-version'],
+    ['np-source-notes', 'note'], ['np-source-documents', 'document'],
+  ];
+  const designSources = [];
+  for (const [id, kind] of sourceFields) {
+    for (const file of [...($(id)?.files || [])]) {
+      designSources.push({ id: `${kind}:${file.name}`, kind, name: file.name, content: await file.text() });
+    }
+  }
+  const designMode = document.querySelector('input[name="np-design-mode"]:checked')?.value || 'new';
+  const sourceKey = JSON.stringify({
+    designMode,
+    sources: designSources.map((source) => [source.kind, source.name, source.content]),
+    draft: [$('np-goal').value, $('np-memo').value, $('np-deliverables').value,
+      $('np-constraints').value, $('np-assumptions').value, $('np-acceptance').value],
+  });
+  if (newProjectDesignProposal && sourceKey !== newProjectProposalSourceKey) {
+    newProjectDesignProposal = null;
+    $('np-design-preview').classList.add('hidden');
+  }
+  if (designMode !== 'new' && !designSources.length) {
+    return toast('設計材料のMarkdownファイルを選択してください');
+  }
+  if (!newProjectDesignProposal) {
+    const button = $('btn-np-submit');
+    button.disabled = true;
+    button.textContent = '設計を解析中…';
+    try {
+      const result = await api.agentTaskAssist({
+        mode: 'project-design-proposal',
+        context: {
+          target: 'project', sourceMode: designMode, sources: designSources,
+          draft: {
+            goal: $('np-goal').value, memo: $('np-memo').value,
+            deliverables: $('np-deliverables').value, constraints: $('np-constraints').value,
+            assumptions: $('np-assumptions').value, acceptance: $('np-acceptance').value,
+          },
+        },
+      });
+      newProjectDesignProposal = result.fields;
+      newProjectProposalSourceKey = sourceKey;
+      newProjectApplicationId = `design-${Date.now()}`;
+      const proposal = newProjectDesignProposal;
+      $('np-design-preview').innerHTML = `<h3>配分・バックログ確認</h3>
+        <p class="muted">採用する項目を確認してからプロジェクトを作成します。</p>
+        ${(proposal.warnings || []).map((warning) => `<p class="qf-failure">${esc(warning)}</p>`).join('')}
+        ${proposal.master ? '<label><input type="checkbox" data-np-master checked> マスター憲章</label>' : ''}
+        ${(proposal.versions || []).map((version) => `<label><input type="checkbox" data-np-version="${esc(version.id)}" checked>
+          計画バージョン: ${esc(version.name || version.id)}</label>`).join('')}
+        ${(proposal.backlogGroups || []).map((group) => `<fieldset><legend>${esc(group.charter)} のバックログ候補</legend>
+          <label><input type="checkbox" data-np-group="${esc(group.id)}" checked> この候補群を採用</label>
+          ${(group.tasks || []).map((task) => `<label><input type="checkbox" data-np-task="${esc(task.id)}" checked>
+            ${esc(task.title)}</label>`).join('')}</fieldset>`).join('')}`;
+      $('np-design-preview').classList.remove('hidden');
+      button.textContent = '採用して作成';
+      return;
+    } catch (err) {
+      toast(`設計の解析に失敗しました: ${err.message || err}`);
+      button.textContent = '作成';
+      return;
+    } finally {
+      button.disabled = false;
+    }
+  }
   const spec = {
     root: $('np-root').value.trim(),
     name: $('np-name').value.trim(),
@@ -115,6 +194,8 @@ async function submitNewProject() {
     assumptions: $('np-assumptions').value,
     acceptance: $('np-acceptance').value,
     repos,
+    designMode,
+    designSources,
     // 新規プロジェクトはマスター運用で作る: charter.md は全バージョン共通の憲章（分解されない）、
     // やるべきことは計画バージョン（charters/<名前>.md）に書く。
     master: true,
@@ -125,6 +206,23 @@ async function submitNewProject() {
     return r;
   });
   if (!res) return;
+  if (newProjectDesignProposal) {
+    const checked = (selector, attr) => [...document.querySelectorAll(selector)]
+      .filter((input) => input.checked).map((input) => input.getAttribute(attr));
+    const selection = {
+      master: !!document.querySelector('[data-np-master]:checked'),
+      versions: checked('[data-np-version]', 'data-np-version'),
+      backlogGroups: checked('[data-np-group]', 'data-np-group'),
+      tasks: checked('[data-np-task]', 'data-np-task'),
+    };
+    const applied = await guard('設計提案の反映', () => api.applyProjectDesign({
+      dir: res.dir,
+      proposal: newProjectDesignProposal,
+      selection,
+      applicationId: newProjectApplicationId,
+    }));
+    if (!applied) return;
+  }
   $('dlg-new-project').close();
   await refreshDiscovery();
   const known = (state.discovery.projects || []).some((p) => p.dir === res.dir);

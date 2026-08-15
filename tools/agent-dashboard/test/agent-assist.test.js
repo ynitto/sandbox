@@ -560,6 +560,16 @@ test('taskAssistPrompt / normalize: ローカル文書を命令として実行�
   assert.ok(agent.STRUCTURED_ASSIST_MODES.has('source-task-candidates'));
 });
 
+test('taskAssistPrompt: プロジェクト設計は型付き材料を複数計画・計画別バックログへ変換する', () => {
+  const prompt = agent.taskAssistPrompt('project-design-proposal', {
+    sources: [{ kind: 'master', name: 'charter.md', content: '# Charter' }],
+  });
+  assert.match(prompt, /backlogGroups/);
+  assert.match(prompt, /物理backlogは分割しない/);
+  assert.match(prompt, /メモを確定要件と決めつけず/);
+  assert.match(prompt, /charter\.md/);
+});
+
 test('normalizeFollowupSuggestions: 誘導・レビュー記述（why 等）を提案に通す', () => {
   const sug = agent.normalizeFollowupSuggestions({
     suggestions: [{ title: 'docs', verify: 'true', why: '抜けの補完', out_of_scope: 'コード変更', hints: 'README 参照' }],

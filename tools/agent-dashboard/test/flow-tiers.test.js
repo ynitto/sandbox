@@ -55,6 +55,23 @@ test('役割（planner/evaluator）は run の形と継続を決めるため標�
   assert.strictEqual(flowTiers.ROLE_MIN_TIER.verify, flowTiers.KIND_MIN_TIER.verify);
 });
 
+test('文章検証は12b候補を軽量へ載せるがコードworkerには載せない', () => {
+  const catalog = flowTiers.catalog();
+  assert.deepStrictEqual(catalog.roles.verify.candidates, [
+    { agent_cli: 'ollama-verify', model: 'gemma4:12b', tier: 'small' },
+  ]);
+  assert.deepStrictEqual(flowTiers.seedTierCandidates().basic, [
+    { agent_cli: 'aider', model: 'gemma4:e4b' },
+    { agent_cli: 'ollama', model: 'gemma4:e4b' },
+  ]);
+  assert.deepStrictEqual(flowTiers.seedTierCandidates().small, [
+    { agent_cli: 'ollama-verify', model: 'gemma4:12b' },
+  ]);
+  assert.ok(!flowTiers.seedTierCandidates().basic.some(
+    (candidate) => candidate.agent_cli === 'aider' && candidate.model === 'gemma4:12b'
+  ));
+});
+
 test('オプションとして拡張する振る舞いは下限を引き上げる', () => {
   // classify 単体は basic 可、route（分類結果でフローの形が決まる）は small 以上
   assert.deepStrictEqual(flowTiers.allowedTiers('classify'),

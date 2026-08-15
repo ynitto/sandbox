@@ -245,6 +245,17 @@ def validate_entries(
         else:
             raise ValueError(f"entry {name!r}: acceptance は文字列配列です")
 
+        # 処理契約（設計 2026-08-15 §3.4）。自由文 prompt だけで候補を決めないための
+        # 構造化条件。形の検査は agentcore.nodecontract の 1 実装（壊れた宣言は起動で落とす
+        # ——他の entry 検証と同じ fail fast）。
+        operation = entry.get("operation")
+        if operation is not None:
+            from agentcore import nodecontract
+            errors = (nodecontract.operation_contract_errors(operation)
+                      if isinstance(operation, dict) else ["オブジェクトである必要があります"])
+            if errors:
+                raise ValueError(f"entry {name!r}: operation が不正です: {'; '.join(errors[:2])}")
+
         if mode == "ralph" and oneshot:
             raise ValueError(f"entry {name!r}: mode=ralph と oneshot は併用できません")
         if oneshot and clean_session is not None:
@@ -286,6 +297,7 @@ def validate_entries(
             "model": entry_model,
             "session": session,
             "acceptance": acceptance,
+            "operation": dict(operation) if isinstance(operation, dict) else None,
             # oneshot runtime（process-local）
             "overlap_pending": None,
             "oneshot_state": "IDLE",
@@ -2158,6 +2170,18 @@ class PeriodicScheduler:
                 log.warning("[agent-control] 管理面により lifecycle=pause 指定です。"
                             "定期送信を停止中 — dashboard の全体設定から "
                             "run に戻してください。")
+            return "pause"
+
+        # 候補ベース（selection_policy）の park: 適格候補が今は無い。弱い候補へ黙って
+        # 降格せず、lifecycle=pause と同じゲートで新規ディスパッチだけを控える（§5.2）。
+        parked = _control_policy_park()
+        if parked is not None:
+            self._run_state = "paused"
+            if now - self._node_budget_warned_at > 600:
+                self._node_budget_warned_at = now
+                log.warning("[agent-control] selection_policy park（%s）: %s — 再開条件: %s",
+                            parked.get("park_reason"), parked.get("reason"),
+                            parked.get("resume_condition"))
             return "pause"
 
         if nb and nb["exceeded"]:

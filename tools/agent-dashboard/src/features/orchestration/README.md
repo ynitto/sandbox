@@ -17,13 +17,14 @@
 | [agent-instructions](../../../../../schemas/agent-instructions.schema.json) | プロジェクト配下 | 共通指示の編集（委譲先ノードへ伝播する） |
 | [agent-session-commands](../../../../../schemas/agent-session-commands.schema.json) | その端末の設定ファイル | セッション開始時の前準備コマンド（**伝播しない**） |
 | [agent-profiles](../../../../../schemas/agent-profiles.schema.json) | `$AGENT_CONTROL_DIR`（既定 `~/.agents/control/`） | 実行レベル（単純作業/軽量/標準/高性能）の宣言と、ワークロードの予算残率・agent CLI ごとの枠からの決定的なtier/候補の選択。**エンジンはこの契約を読まない**——選択結果は agent-control（上の行）へ投函するだけ |
+| [agent-candidate-qualifications](../../../../../schemas/agent-candidate-qualifications.schema.json) | `$AGENT_CONTROL_DIR/qualifications.json`（`orchestration.qualificationsFile`で上書き可） | agent-auditが生成した候補×処理種別の適格性を読み取り専用で表示し、Execution Policy Compilerの入力にする |
 | [agent-tuning](../../../../../schemas/agent-tuning.schema.json) | `$AGENT_TUNING_DIR`（既定 `~/.agents/tuning/`）と `$AGENT_METHODS_DIR`（既定 `~/.agents/methods/`） | 作業ルールの説明・適用条件を表示し、自動適用または独自ルールを保存。有効化時はsnapshot + source hashで固定し、更新がある場合だけ明示的な更新操作を出す |
 
 ## 全体設定から宣言できるもの（この面が control.json へ書く）
 
 | 画面 | 契約のキー | 読む側 |
 |---|---|---|
-| 実行制御 → 実行方針 | agent-profilesから`workloads.<wl>.tier` / `agent_cli` / `model`へ投函 | 各エンジン（`routine` は dashboard 自身＝定常業務の tmux 起動） |
+| 実行制御 → 実行方針 | agent-profilesと候補適格性から`workloads.<wl>.selection_policy`をコンパイルし、旧reader向け`agent_cli` / `model`も併記 | 各エンジン（`routine` は dashboard 自身＝定常業務の tmux 起動） |
 | 実行制御 → 実行の許可・停止 | `workloads.<wl>.lifecycle` | 各エンジン |
 | 実行制御 → 同時に動かす数（自動実行） | `workloads.flow.concurrency`（`max_runs` / `workers`） | agent-flow / agent-project 常駐体（`max_runs` を自分のワーカープール枠として読む） |
 
@@ -48,16 +49,24 @@ lifecycle を `pause` / `stop` にしてもプロセスは殺さない — 各�
 agent-control（control.json）へ投函する。段は budget の残率だけで決め（ヒステリシス＋最小保持で
 フラッピングを防ぐ）、CLI 枠の枯渇は**候補の選択**にのみ影響する（一段下へフォールバック）。
 
-- **不変条件: エンジンは profiles.json を読まない。** 選択ロジックは dashboard の 1 実装に閉じる
+- **不変条件: エンジンは profiles.json / qualifications.json を読まない。** 選択ロジックはdashboardの
+  Execution Policy Compiler 1実装に閉じ、エンジンは`control.json`の順位を再計算しない
   （柱1 / C2・C7）。エンジンは今日どおり agent-control を読むだけ。
-- `apply()` は現状の control.json と一致する決定を書かない（`saveControl` は必ず
-  `revision` を+1 するため、無変化の書き込みは各エンジンの `revision_applied` 突き合わせを
-  無意味にする）。
+- legacy決定だけを使う場合、`apply()` は現状のcontrol.jsonと一致する決定を書かない。
+  候補ベースではqualificationの有効期限をcontroller周期ごとに再評価し、`selection_policy`の
+  `valid_until`とcontrolの`revision`を更新する。これにより期限切れ候補が前回の順位に残らない。
 - 画面（全体設定 → 実行制御）は「評価する（dry-run。書かない）」→「適用」の 2 段。
 - 自動評価（`policy.interval_sec`）は現時点で**宣言のみ**（保存はされるが、定期実行の
   スケジューラは未実装）。今日の手段は手動の評価/適用ボタン。
 
 設計: [`docs/plans/2026-08-05-phase1-token-efficiency-detailed-design.md`](../../../../../docs/plans/2026-08-05-phase1-token-efficiency-detailed-design.md) §1。
+
+## 候補ベースのExecution Policy Compiler
+
+`execution-policy-compiler.js`はtier ceiling内の候補を適格性で絞り、`balanced / economy / quality`の
+version 1辞書順で決定的な`rank`を付ける。`blocked / unknown`と期限切れを除外し、候補が空なら
+`no_candidate: park`としてworkloadを一時停止する。移行中は`selection_policy`と先頭候補の
+legacy fallbackをdual-writeし、出力にはcontrol期限とqualification revisionを残す。
 
 ## 機能・役割別の実行可能レベル（`flow-tiers.js`）
 

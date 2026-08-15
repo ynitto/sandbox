@@ -156,10 +156,13 @@ _ARM_KEYS = {"model", "think", "format", "label", "repeat"}
 def parse_arm(spec: str) -> dict:
     """`model=qwen3,think=off,format=json,repeat=3` を腕へ。
 
-    `think` は on/off だけ（既定に任せたいなら書かない）。`format` は json/array/text。
-    `repeat` は同じ設定を何回引くか（自己一貫性の測定に使う）。
+    `think` は on / off / **prompt**（既定に任せたいなら書かない）。prompt は
+    system prompt 先頭の `<|think|>` で有効化する別経路で、API の think フィールドとは
+    違って `format` と併用しても強制 off にならない——その組み合わせを測るための値である。
+    `format` は json/array/text。`repeat` は同じ設定を何回引くか（自己一貫性の測定に使う）。
     """
-    arm: dict = {"model": "", "think": None, "format": None, "label": "", "repeat": 1}
+    arm: dict = {"model": "", "think": None, "think_prompt": False,
+                 "format": None, "label": "", "repeat": 1}
     for chunk in str(spec or "").split(","):
         chunk = chunk.strip()
         if not chunk:
@@ -171,9 +174,11 @@ def parse_arm(spec: str) -> dict:
             raise ArmError(f"腕の知らないキーです: {key}（{'/'.join(sorted(_ARM_KEYS))}）")
         if key == "think":
             lowered = value.lower()
-            if lowered not in ("on", "off"):
-                raise ArmError(f"think は on か off です: {value}")
-            arm["think"] = lowered == "on"
+            if lowered not in ("on", "off", "prompt"):
+                raise ArmError(f"think は on か off か prompt です: {value}")
+            # prompt は API フィールドを宣言しない（両経路から指定して打ち消し合わせない）。
+            arm["think_prompt"] = lowered == "prompt"
+            arm["think"] = None if lowered == "prompt" else (lowered == "on")
         elif key == "format":
             lowered = value.lower()
             if lowered not in ("json", "array", "text"):
@@ -196,14 +201,18 @@ def label_of(arm: dict) -> str:
     """腕の既定の名前（記録と集計の見出しになる）。"""
     parts = [arm.get("model") or "既定"]
     think = arm.get("think")
-    parts.append("think=既定" if think is None else f"think={'on' if think else 'off'}")
+    if arm.get("think_prompt"):
+        parts.append("think=prompt")
+    else:
+        parts.append("think=既定" if think is None else f"think={'on' if think else 'off'}")
     parts.append(f"format={arm.get('format') or 'text'}")
     return " ".join(parts)
 
 
-def _default_generate(model: str, prompt: str, *, think, fmt) -> dict:
+def _default_generate(model: str, prompt: str, *, think, fmt, think_prompt=False) -> dict:
     """既定の 1 発生成。**道具は持たない**（このモジュールの不変条件）。"""
-    return ollama_loop.run_plain(model, prompt, think=think, fmt=fmt)
+    return ollama_loop.run_plain(model, prompt, think=think, fmt=fmt,
+                                 think_prompt=think_prompt)
 
 
 def replay_case(case: dict, arm: dict, *, generate=None, attempt: int = 1) -> dict:
@@ -220,6 +229,8 @@ def replay_case(case: dict, arm: dict, *, generate=None, attempt: int = 1) -> di
         "attempt": attempt,
         "model": model,
         "think": arm.get("think"),
+        # 腕の条件は台帳から後追いできる形で残す（どの経路で thinking を入れたか）。
+        "think_prompt": bool(arm.get("think_prompt")),
         "format": arm.get("format") or "",
         "origin_mode": case.get("origin_mode", ""),
         "origin_status": case.get("origin_status", ""),
@@ -227,8 +238,12 @@ def replay_case(case: dict, arm: dict, *, generate=None, attempt: int = 1) -> di
     }
     started = time.monotonic()
     try:
+        # `think_prompt` は**使うときだけ**渡す。generate は差し込み口（テストと
+        # 呼び出し側が自前の実装を入れる）なので、既存の腕で常に新しいキーワードを
+        # 送ると、これまで動いていた実装が一斉に TypeError で落ちる。
+        extra = {"think_prompt": True} if arm.get("think_prompt") else {}
         result = generate(model, case.get("prompt") or "",
-                          think=arm.get("think"), fmt=arm.get("format"))
+                          think=arm.get("think"), fmt=arm.get("format"), **extra)
     except Exception as exc:  # 測定は止めない（理由だけ残す）
         record.update({"ok": False, "error": str(exc), "kind_of": type(exc).__name__,
                        "text": "", "empty": True,

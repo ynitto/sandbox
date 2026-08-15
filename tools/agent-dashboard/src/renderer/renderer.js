@@ -13,6 +13,8 @@ const state = {
   // 領域ごとに最後に選んでいた対象（領域 id → dir）。選択そのものは selectedDir 1 つだけ
   // なので、これが無いと領域を往復するたびに前の領域の対象が残るか、先頭へ戻される。
   areaSelection: {},
+  // 相談（対話 CLI）の対象は領域ごとの既存状態から都度引く。起動中だけ共通で持つ。
+  consultBusy: false,
   project: null, // readProject のスナップショット
   flowRuns: [],
   engine: null, // engine/status.json のスナップショット（稼働・共有の状況・切り離し）
@@ -224,8 +226,10 @@ function statusLabel(status) {
 const AREAS = [
   { id: 'home', label: 'ホーム', desc: '判断待ちと、全体のいまが分かります。' },
   { id: 'projects', label: 'プロジェクト', list: 'projects' },
-  { id: 'workflows', label: 'ワークフロー', list: 'workflows', ownHeader: true },
-  { id: 'missions', label: 'ミッション', ownHeader: true },
+  { id: 'workflows', label: 'ワークフロー', list: 'workflows',
+    desc: '実行待ちのタスクを作成し、進行中・完了済みの作業を確認します。' },
+  { id: 'missions', label: 'ミッション',
+    desc: '複数のエージェントで役割を分担し、まとまった作業を進めます。' },
   { id: 'routines', label: '定常業務', list: 'routines', desc: '繰り返す作業を、この端末で動かします。' },
   { id: 'participation', label: '参加', ownHeader: true },
   { id: 'usage', label: '利用状況', desc: 'この端末で使ったトークンと、実行の品質。' },
@@ -1330,26 +1334,120 @@ function revealGlobalSettingsPanels(root, section) {
   });
 }
 
-function renderCliChatButton() {
-  const button = $('btn-cli-chat');
-  if (!button) return;
-  button.disabled = !selectedProjectFolder() || button.dataset.busy === 'true';
-  renderCliChatCwdOptions();
+// ---------------------------------------------------------------------------
+// 相談（対話 CLI を外部ウィンドウで開く）
+//
+// 設計: docs/plans/2026-08-14-agent-dashboard-consult-entry-design.md
+//
+// ボタン・フォルダ選択・起動処理は 1 実装のままにし、**対象フォルダを供給する側だけ**を
+// 領域ごとに差し替える。相談のための選択状態は新しく持たない——その領域で対象を決めている
+// 既存の状態（プロジェクト選択・実行フォームの入力・作業フォルダ選択）だけを読む。
+//
+// 置き場は各ページ見出し直下の共通操作バー。領域につき 1 組だけ描く。
+// 全領域で 1 組を使い回していた頃は、ワークフローとミッションで前の領域の選択が残ったまま
+// ボタンが活性になり、画面で見ている対象とは**別のフォルダで CLI が開いていた**。
+// ---------------------------------------------------------------------------
+
+const CONSULT_SOURCES = {};
+
+// 領域が自分の対象フォルダの出しかたを登録する。戻り値は
+// { dir, choices?: [{path,label,enabled,reason}], reason?: 未確定の理由 }。
+function registerConsultSource(areaId, fn) {
+  CONSULT_SOURCES[String(areaId)] = fn;
 }
 
-// 起動先（cwd）の候補。既定はプロジェクト（状態リポジトリ）で、**選択中プロジェクトの
-// repos レジストリにある**成果物リポジトリも選べる（他プロジェクト用のクローンは並べない）。
-// S1 以降プロジェクトのフォルダは状態リポジトリの clone なので、コードを触りたくて CLI を
-// 開いてもそこには 1 行もコードが無い。
-//
-// 宣言が無い／実体が見つからないリポジトリは **消さずに非活性で並べる**——一覧から消えると
-// 「なぜ選べないのか」が分からず、host.yaml への宣言し忘れに気付けない。
-function renderCliChatCwdOptions() {
-  const sel = $('cli-chat-cwd');
-  if (!sel) return;
+function consultTarget() {
+  const source = CONSULT_SOURCES[state.area];
+  if (!source) return { dir: '', choices: [], reason: '' };
+  try {
+    const target = source() || {};
+    return {
+      dir: String(target.dir || ''),
+      choices: Array.isArray(target.choices) ? target.choices : [],
+      reason: String(target.reason || ''),
+    };
+  } catch (err) {
+    uiLog('consult source failed', String((err && err.stack) || err));
+    return { dir: '', choices: [], reason: '対象フォルダを取得できません' };
+  }
+}
+
+// プロジェクトは状態リポジトリに加えて、このノードにクローンがある成果物リポジトリも選べる。
+registerConsultSource('projects', () => {
   const dir = selectedProjectFolder();
-  const choices = state.cliChatCwdChoices || [];
-  sel.disabled = !dir || choices.length <= 1;
+  return {
+    dir,
+    choices: dir ? (state.cliChatCwdChoices || []) : [],
+    reason: dir ? '' : 'プロジェクトを選択してください',
+  };
+});
+
+// 定常業務の対象は左ペインで選んだ作業フォルダそのもの。プロジェクト前提の候補計算は通さない
+// （レジストリを持たない作業フォルダが「プロジェクト（状態リポジトリ）」と名乗ってしまう）。
+registerConsultSource('routines', () => {
+  const dir = selectedProjectFolder();
+  return { dir, choices: [], reason: dir ? '' : '作業フォルダを選択してください' };
+});
+
+// ミッションの対象は依頼フォームの入力そのもの（sections/amigos.js が同じ入力を実行にも使う）。
+registerConsultSource('missions', () => {
+  const detail = $('dlg-amigos-detail');
+  const detailDir = detail && detail.open ? String(detail.dataset.consultDir || '').trim() : '';
+  const input = $('amigos-run-cwd');
+  const dir = detailDir || (input ? String(input.value || '').trim() : '');
+  return { dir, choices: [], reason: dir ? '' : '作業フォルダを入力してください' };
+});
+
+// 相談コントロールの markup。各領域はこれを自分のテンプレートへ差し込むだけでよい。
+function consultControlHtml(areaId) {
+  return `<div class="project-cli-chat-group" data-consult-group="${esc(areaId)}" hidden>
+    <select class="project-cli-chat-cwd" data-consult-cwd
+      title="相談する作業フォルダ" aria-label="相談する作業フォルダ" hidden></select>
+    <p class="project-cli-chat-note muted" data-consult-note aria-live="polite"></p>
+    <button type="button" class="project-cli-chat" data-consult-open disabled>
+      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <path d="M4 5h16v14H4z"/><path d="m8 9 3 3-3 3M13 15h3"/>
+      </svg>
+      <span>AIに相談</span>
+    </button>
+  </div>`;
+}
+
+function renderConsultControls() {
+  const target = consultTarget();
+  for (const group of document.querySelectorAll('[data-consult-group]')) {
+    // 領域につき 1 組。ヘッダーの 1 組が他領域へ residual に残らないよう、常に出し分ける。
+    group.hidden = group.dataset.consultGroup !== state.area;
+    if (group.hidden) continue;
+    const button = group.querySelector('[data-consult-open]');
+    const note = group.querySelector('[data-consult-note]');
+    const path = group.querySelector('[data-consult-path]');
+    // 対象未選択でも理由を説明できるよう、処理中以外は押せる状態にする。
+    if (button) button.disabled = state.consultBusy;
+    if (path) path.textContent = target.dir || '未選択';
+    renderConsultCwdOptions(group, target);
+    const noteText = consultNoteText(target);
+    if (note) note.textContent = noteText;
+    if (button) button.title = target.dir
+      ? `${target.dir} でAIに相談します`
+      : (target.reason || '対象フォルダを選択してください');
+  }
+}
+
+// 無効の理由は、色や非活性の見た目だけでなく必ず文字で出す。
+function consultNoteText(target) {
+  if (!target.dir) return target.reason || '対象フォルダが決まっていません';
+  return '';
+}
+
+function renderConsultCwdOptions(group, target) {
+  const sel = group.querySelector('[data-consult-cwd]');
+  if (!sel) return;
+  const choices = target.choices || [];
+  // 候補が 1 つしか無い領域では選択コントロール自体を出さない（選べない select を置かない）。
+  sel.hidden = choices.length <= 1;
+  sel.disabled = !target.dir || choices.length <= 1;
+  if (sel.hidden) { sel.innerHTML = ''; return; }
   const keep = sel.value;
   sel.innerHTML = '';
   for (const c of choices) {
@@ -1363,40 +1461,50 @@ function renderCliChatCwdOptions() {
   if (keep && choices.some((c) => c.enabled && c.path === keep)) sel.value = keep;
 }
 
+// 互換名。起動モデルを事前取得・表示せず、対象と活性状態だけを更新する。
+async function refreshConsultInfo() {
+  renderConsultControls();
+}
+
+async function openConsult(group) {
+  const target = consultTarget();
+  if (!target.dir) return toast(target.reason || '相談する対象フォルダを選択してください');
+  const sel = group && group.querySelector('[data-consult-cwd]');
+  const cwd = sel && !sel.hidden && sel.value && sel.value !== target.dir ? sel.value : '';
+  state.consultBusy = true;
+  renderConsultControls();
+  try {
+    const result = await guard('CLIチャットを開けません',
+      () => api.agentOpenChat({ dir: target.dir, cwd }));
+    if (result) {
+      const where = result.cwd && result.cwd !== target.dir ? `（${result.cwd}）` : '';
+      toast(`${result.cli}${result.model ? ` / ${result.model}` : ''} のCLIチャットを開きました${where}`, true);
+    }
+  } finally {
+    state.consultBusy = false;
+    renderConsultControls();
+  }
+}
+
+// 起動先（cwd）の候補。既定はプロジェクト（状態リポジトリ）で、**選択中プロジェクトの
+// repos レジストリにある**成果物リポジトリも選べる（他プロジェクト用のクローンは並べない）。
+// S1 以降プロジェクトのフォルダは状態リポジトリの clone なので、コードを触りたくて CLI を
+// 開いてもそこには 1 行もコードが無い。
+//
+// 宣言が無い／実体が見つからないリポジトリは **消さずに非活性で並べる**——一覧から消えると
+// 「なぜ選べないのか」が分からず、host.yaml への宣言し忘れに気付けない。
 async function refreshCliChatCwdChoices() {
   const dir = selectedProjectFolder();
   if (!dir) {
     state.cliChatCwdChoices = [];
-    return renderCliChatCwdOptions();
+    return refreshConsultInfo();
   }
   try {
     state.cliChatCwdChoices = (await api.agentChatCwdChoices(dir)) || [];
   } catch {
     state.cliChatCwdChoices = [];   // 候補が出せなくても既定（プロジェクト）で開ける
   }
-  renderCliChatCwdOptions();
-}
-
-async function openCliChat() {
-  const dir = selectedProjectFolder();
-  if (!dir) return toast('CLIチャットを開くプロジェクトを選択してください');
-  const button = $('btn-cli-chat');
-  const sel = $('cli-chat-cwd');
-  const cwd = sel && sel.value && sel.value !== dir ? sel.value : '';
-  button.dataset.busy = 'true';
-  button.setAttribute('aria-busy', 'true');
-  renderCliChatButton();
-  try {
-    const result = await guard('CLIチャットを開けません', () => api.agentOpenChat({ dir, cwd }));
-    if (result) {
-      const where = result.cwd && result.cwd !== dir ? `（${result.cwd}）` : '';
-      toast(`${result.cli}${result.model ? ` / ${result.model}` : ''} のCLIチャットを開きました${where}`, true);
-    }
-  } finally {
-    delete button.dataset.busy;
-    button.removeAttribute('aria-busy');
-    renderCliChatButton();
-  }
+  await refreshConsultInfo();
 }
 
 // 1 つの画面の描画が失敗しても、ほかの画面まで道連れにしない。
@@ -1414,15 +1522,13 @@ function renderPane(name, render) {
 
 function renderAllTabs() {
   const ui = captureUiState();
-  renderPane('cliChat', renderCliChatButton);
   renderPane('overview', renderOverview);
   renderPane('backlog', renderBacklog);
   renderPane('needs', renderNeeds);
   renderPane('flow', renderFlow);
   renderPane('gitlab', renderGitLab);
   renderPane('history', renderHistory);
-  renderPane('cowork', renderCowork);
-  renderPane('routine-runs', renderRoutineRuns);
+  renderPane('cowork', renderCoworkWorkspace);
   renderPane('routine-settings', renderRoutineSettings);
   renderPane('usage', renderUsage);
   renderPane('usage-settings', renderUsageSettings);
@@ -1433,6 +1539,9 @@ function renderAllTabs() {
     if (!orchestrationDraftActive() || !$('tab-orchestration').childElementCount) renderOrchestration();
   });
   for (const [name] of featureTabs) renderPane(name, () => renderFeatureTab(name));
+  // 相談コントロールは各画面が innerHTML を差し替えたあとに書き戻す。先に描くと、
+  // 直後の再描画で作り直された要素が既定の（無効・理由なし）状態のまま残る。
+  renderPane('consult', renderConsultControls);
   // ナビは**画面を描いたあと**に組む。どのタブを出せるかは各画面が描画のなかで決める
   // （募集が無ければ参加タブを隠す等）ので、先に組むと 1 周遅れの状態が出る。
   renderAreaNav();
@@ -1661,6 +1770,8 @@ async function switchArea(id) {
     if (visible.length) return switchTab(visible[0].dataset.tab);
   }
   renderAreaHeader();
+  // switchTab を経由せずに着地した経路（現在のタブがそのまま使える場合）でも相談を揃える。
+  refreshConsultInfo();
 }
 
 function initTabs() {
@@ -1702,6 +1813,7 @@ function populateSettingsFields() {
   // 空欄 = 未設定（プロジェクト設定 → 既定 kiro のフォールバック）。'kiro' で埋めると
   // 保存時に「明示 kiro」が固定され、プロジェクトの agent_cli が二度と効かなくなる。
   setValue('cfg-agent-timeout', (cfg.agent && cfg.agent.timeoutSec) || 180);
+  setValue('cfg-consult-model', (cfg.agent && cfg.agent.model) || '');
   setValue('cfg-gl-url', (cfg.gitlab && cfg.gitlab.baseUrl) || '');
   setValue('cfg-gl-token', (cfg.gitlab && cfg.gitlab.token) || '');
   setValue('cfg-rv-mode', (cfg.reviewViewer && cfg.reviewViewer.mode) || 'protocol');
@@ -1844,9 +1956,12 @@ async function saveGlobalSettingsSection(section) {
     cfg.notifications.enabled = $('cfg-notify').checked;
     cfg.projects.needsSlaHours = Math.max(1, parseInt($('cfg-needs-sla').value, 10) || 24);
     if ($('cfg-role')) cfg.role = $('cfg-role').value === 'viewer' ? 'viewer' : 'engineer';
-  } else if (section === 'agents') {
     cfg.agent = cfg.agent || {};
-    cfg.agent.timeoutSec = Math.max(30, parseInt($('cfg-agent-timeout').value, 10) || 180);
+    cfg.agent.cli = String(($('cfg-consult-agent') || {}).value || '').trim();
+    cfg.agent.model = String(($('cfg-consult-model') || {}).value || '').trim();
+    cfg.agent.timeoutSec = Math.max(30, parseInt(($('cfg-agent-timeout') || {}).value, 10) || 180);
+  } else if (section === 'agents') {
+    // Dashboard AI の設定は「アプリ」へ集約済み。
   } else if (section === 'sync') {
     cfg.projects = cfg.projects || {};
     cfg.engine = cfg.engine || {};
@@ -1880,6 +1995,7 @@ async function saveGlobalSettingsSection(section) {
     throw new Error('保存する設定の種類が不明です');
   }
   state.config = await api.saveConfig(cfg);
+  if (section === 'app') await refreshConsultInfo(true);
   state.globalSettingsDirty = false;
   setupPolling();
   await refreshAll();

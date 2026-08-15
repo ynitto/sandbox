@@ -2,7 +2,9 @@
 
 const assert = require('assert');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
+const project = require('../src/main/project');
 
 const renderer = require('./helpers/renderer-src').read();
 const css = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'styles.css'), 'utf8');
@@ -89,6 +91,33 @@ const taskListItemHtml = new Function(
   assert.match(css, /\.task-list-next\s*\{[^}]*overflow-wrap:\s*anywhere[^}]*white-space:\s*normal/s);
   assert.match(css, /@media \(max-width:\s*768px\)[\s\S]*\.task-list-item\s*\{[^}]*grid-template-columns:\s*1fr\s+auto/s);
   assert.match(css, /@media \(max-width:\s*768px\)[\s\S]*\.task-list-header\s*\{[^}]*display:\s*none/s);
+}
+
+{
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'task-envelope-ui-'));
+  const backlogDir = path.join(root, 'backlog');
+  fs.mkdirSync(backlogDir);
+  fs.writeFileSync(path.join(backlogDir, 'T1.md'), [
+    '## T1: Envelope',
+    '- status: proposed',
+    '- execution_envelope_digest: abc',
+    '',
+  ].join('\n'));
+  fs.writeFileSync(path.join(backlogDir, 'T1.envelope.json'), JSON.stringify({
+    version: 1, digest: 'abc', approval: { status: 'proposed' },
+  }));
+  const task = project.listTasks(backlogDir)[0];
+  assert.strictEqual(task.executionEnvelope.digest, 'abc', 'タスク詳細へEnvelope sidecarを添付します');
+
+  fs.writeFileSync(path.join(backlogDir, 'T2.md'), [
+    '## T2: Broken envelope',
+    '- status: proposed',
+    '- execution_envelope_digest: expected',
+    '',
+  ].join('\n'));
+  fs.writeFileSync(path.join(backlogDir, 'T2.envelope.json'), JSON.stringify({ digest: 'tampered' }));
+  const broken = project.listTasks(backlogDir).find((item) => item.id === 'T2');
+  assert.strictEqual(broken.executionEnvelope, null, 'digestが一致しないEnvelopeは表示しません');
 }
 
 console.log('task-layout-ui: all tests passed');

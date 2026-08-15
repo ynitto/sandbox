@@ -225,6 +225,8 @@ function normalizeWorkflow(raw) {
     id: workflowId(raw.id),
     name,
     description: String(raw.description || '').trim(),
+    purpose: raw.purpose === 'design' ? 'design' : 'implementation',
+    libraryVisibility: raw.libraryVisibility === 'internal' ? 'internal' : 'library',
     entry,
     exit,
     nodes,
@@ -388,8 +390,43 @@ function normalizeExecutionOverrides(config, raw) {
   return mode || Object.keys(out.roles).length || Object.keys(out.kinds).length ? out : null;
 }
 
-function planFromWorkflow(config, workflow) {
+// ノード単位の人による割り当て（タスク追加ダイアログ・実行前フロー表示の選択結果）。
+// 形: { <nodeId>: { tier, agent_cli, model } }。tier はそのノードの実行可能レベルの中から、
+// 候補は profiles.json でその tier に宣言された組み合わせだけを受け付ける（自由入力を
+// plan へ運ばない——資格の無い組み合わせが実行時に黙って走る経路を作らないため）。
+// フロー定義の更新でノード id が消えた割り当ては黙って捨てる（自動割り当てで実行できる）。
+function normalizeNodeAssignments(config, clean, raw) {
+  if (!raw || typeof raw !== 'object') return {};
+  const byId = new Map(clean.nodes.map((n) => [n.id, n]));
+  const profile = profiles.load(config);
+  const out = {};
+  for (const [nodeId, value] of Object.entries(raw)) {
+    const node = byId.get(String(nodeId));
+    if (!node || node.kind === 'human' || !value || typeof value !== 'object') continue;
+    const tier = String(value.tier || '').trim();
+    if (!tier) continue;
+    const allowed = flowTiers.allowedTiers(node.kind, node);
+    if (flowTiers.isKnownTier(tier) && !allowed.includes(tier)) {
+      throw new Error(`ノード「${node.id}」（${node.kind}）は実行レベル「${
+        flowTiers.TIER_LABELS[tier] || tier}」に任せられません（選べる実行レベル: ${tierNames(allowed)}）`);
+    }
+    const spec = (profile.tiers || {})[tier];
+    if (!spec) throw new Error(`実行レベル「${tier}」は定義されていません`);
+    const candidate = (spec.candidates || []).find((item) => item
+      && String(item.agent_cli || '') === String(value.agent_cli || '')
+      && String(item.model || '') === String(value.model || ''));
+    if (!candidate || !candidate.agent_cli) {
+      throw new Error(`ノード「${node.id}」に選択したエージェントとモデルは実行レベル「${
+        flowTiers.TIER_LABELS[tier] || spec.label || tier}」の候補にありません`);
+    }
+    out[node.id] = { tier, agent_cli: String(candidate.agent_cli), model: String(candidate.model || '') };
+  }
+  return out;
+}
+
+function planFromWorkflow(config, workflow, options = {}) {
   const clean = normalizeWorkflow(workflow);
+  const assignments = normalizeNodeAssignments(config, clean, options.nodeAssignments);
   const candidates = new Map();
   const strategy = flowStrategy(config);
   const resolveCandidate = (tier) => {
@@ -403,6 +440,19 @@ function planFromWorkflow(config, workflow) {
     const goal = n.method
       ? `${n.goal}\n\n実行手法「${n.method.description || n.method.id}」:\n${n.method.text}`
       : n.goal;
+    const assigned = assignments[n.id];
+    if (assigned) {
+      // 人の選択は自動割り当てより優先し、固定 tier ノードと同じ扱い（降格しない）で運ぶ。
+      return {
+        id: n.id,
+        goal,
+        kind: n.kind,
+        deps: n.deps,
+        tier: assigned.tier,
+        agent: { agent_cli: assigned.agent_cli, ...(assigned.model ? { model: assigned.model } : {}) },
+        selection_reason: 'user-node-assignment',
+      };
+    }
     const allowed = flowTiers.allowedTiers(n.kind, n);
     let tier = n.tier;
     let pinReason = '';
@@ -457,9 +507,102 @@ function snapshotSelection(config, selection, options = {}) {
   if (type === 'custom') {
     const workflow = loadWorkflow(config, selected.id, { cwd: options.cwd, scope: selected.scope });
     if (!workflow) throw new Error('カスタムフローが見つかりません');
-    return { version: 1, type: 'custom', id: workflow.id, ...planFromWorkflow(config, workflow) };
+    return {
+      version: 1,
+      type: 'custom',
+      id: workflow.id,
+      ...planFromWorkflow(config, workflow, { nodeAssignments: selected.nodeAssignments }),
+    };
   }
   throw new Error('フロー選択が不正です');
+}
+
+// --- 割り当てプレビュー（自動割り当ての可視化と選択肢） -----------------------
+// 実行前に「自動ならどの実行レベル・どの候補になるか」と「人が選べる候補一覧」を
+// UI へ渡すための読み取り専用ビュー。plan 生成（planFromWorkflow）と同じ材料
+// （flowStrategy / flowTiers / profiles）から導出し、決定ロジックを複製しない。
+
+function autoAssignmentFor(config, strategy, allowed) {
+  const policy = (strategy.policyTiers || []).map(String).filter(Boolean);
+  const inherit = policy.length > 0
+    && policy.every((tier) => !flowTiers.isKnownTier(tier) || allowed.includes(tier));
+  const base = flowTiers.isKnownTier(strategy.controlTier)
+    ? String(strategy.controlTier)
+    : flowTiers.modeDefaultTier(strategy.mode, strategy.custom);
+  const tier = flowTiers.clampTier(allowed, base, strategy.mode);
+  const candidate = tier ? profiles.resolveTier(config, tier) : null;
+  return { inherit, tier, candidate };
+}
+
+// profiles.json の宣言から、標準語彙の各実行レベルで選べる候補一覧を組む。
+function tierCandidateCatalog(config) {
+  const profile = profiles.load(config);
+  const out = {};
+  for (const tier of flowTiers.TIER_ORDER) {
+    const spec = (profile.tiers || {})[tier];
+    const candidates = spec && Array.isArray(spec.candidates)
+      ? spec.candidates
+        .filter((candidate) => candidate && candidate.agent_cli)
+        .map((candidate) => ({
+          agent_cli: String(candidate.agent_cli),
+          model: String(candidate.model || ''),
+        }))
+      : [];
+    if (candidates.length) {
+      out[tier] = { label: flowTiers.TIER_LABELS[tier] || (spec && spec.label) || tier, candidates };
+    }
+  }
+  return out;
+}
+
+// フロー（設計フロー等）のノードごとの自動割り当てと選択可能な候補。
+function flowAssignmentPreview(config, { id, cwd, scope } = {}) {
+  const workflow = loadWorkflow(config, id, { cwd, scope });
+  if (!workflow) throw new Error(`フローが見つかりません: ${id}`);
+  const clean = normalizeWorkflow(workflow);
+  const strategy = flowStrategy(config);
+  const nodes = clean.nodes.map((n) => {
+    if (n.kind === 'human') {
+      return { id: n.id, label: n.label, kind: n.kind, human: true };
+    }
+    const allowed = flowTiers.allowedTiers(n.kind, n);
+    if (n.tier && n.tier !== 'auto') {
+      const candidate = profiles.resolveTier(config, n.tier);
+      return { id: n.id, label: n.label, kind: n.kind, allowed, auto: { inherit: false, tier: n.tier, candidate } };
+    }
+    return { id: n.id, label: n.label, kind: n.kind, allowed, auto: autoAssignmentFor(config, strategy, allowed) };
+  });
+  return {
+    id: clean.id,
+    name: clean.name,
+    order: flowTiers.TIER_ORDER.slice(),
+    labels: { ...flowTiers.TIER_LABELS },
+    tierCandidates: tierCandidateCatalog(config),
+    nodes,
+  };
+}
+
+// 実装フロー（自動 plan）の役割・機能ごとの自動割り当てと選択可能な候補。
+// 実行前のフロー表示で「今実行するとこうなる」を見せ、execution_overrides の入力に使う。
+function executionAssignmentPreview(config) {
+  const strategy = flowStrategy(config);
+  const catalog = flowTiers.catalog();
+  const entry = (allowed) => ({ allowed, auto: autoAssignmentFor(config, strategy, allowed) });
+  const roles = {};
+  for (const role of EXECUTION_ROLES) {
+    roles[role] = entry((catalog.roles[role] || { tiers: flowTiers.TIER_ORDER }).tiers);
+  }
+  const kinds = {};
+  for (const kind of NODE_KINDS.filter((item) => item !== 'human')) {
+    kinds[kind] = entry((catalog.kinds[kind] || { tiers: flowTiers.TIER_ORDER }).tiers);
+  }
+  return {
+    order: flowTiers.TIER_ORDER.slice(),
+    labels: { ...flowTiers.TIER_LABELS },
+    tierCandidates: tierCandidateCatalog(config),
+    roles,
+    kinds,
+  };
 }
 
 // --- 一貫性ゲート（codd-gate の差分ゲートを run 内の統一 verify に載せる） -----
@@ -664,7 +807,7 @@ function buildLaunchLine(config, { runId, busDir, tuningDir, agentCli, model, pl
     + `${env}nohup ${cmd} ${flags} >> "$LOGDIR/${runId}.log" 2>&1 & echo launched:$!`;
 }
 
-function submit(config, { request, preset, cwd, selection, executionOverrides, coherenceGate } = {}) {
+function submit(config, { title, request, preset, cwd, selection, executionOverrides, coherenceGate } = {}) {
   const req = String(request || '').trim();
   if (!req) throw new Error('要求テキストは必須です');
   const p = preset ? normalizePreset(preset) : null;
@@ -680,6 +823,7 @@ function submit(config, { request, preset, cwd, selection, executionOverrides, c
   }
   const rec = {
     id: runId,
+    ...(String(title || '').trim() ? { title: String(title).trim() } : {}),
     request: req,
     submitter: SUBMITTER,
     workspace,
@@ -822,7 +966,10 @@ module.exports = {
   deleteWorkflow,
   patternCatalog,
   normalizeExecutionOverrides,
+  normalizeNodeAssignments,
   planFromWorkflow,
+  flowAssignmentPreview,
+  executionAssignmentPreview,
   snapshotSelection,
   gitWorkspace,
   normalizePreset,

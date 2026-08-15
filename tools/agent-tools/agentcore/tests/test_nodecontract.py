@@ -53,5 +53,99 @@ class NodeContractTests(unittest.TestCase):
             })
 
 
+class OperationContractTest(unittest.TestCase):
+    CONTRACT = {
+        "operation_class": "existing-test-repair",
+        "scope": {"read": ["src/format.py", "tests/test_format.py"],
+                  "write": ["src/format.py"],
+                  "protected": ["schemas/", "docs/architecture/"]},
+        "deliverables": ["src/format.py"],
+        "acceptance": ["pytest tests/test_format.py が成功する"],
+        "verification": {"commands": [["pytest", "tests/test_format.py"]]},
+    }
+
+    def test_design_example_passes(self):
+        self.assertEqual(nodecontract.operation_contract_errors(self.CONTRACT), [])
+
+    def test_shape_errors(self):
+        self.assertTrue(nodecontract.operation_contract_errors("x"))
+        self.assertTrue(nodecontract.operation_contract_errors({}))
+        broken = dict(self.CONTRACT, verification={"commands": ["pytest tests"]})
+        self.assertTrue(any("argv" in e for e in
+                            nodecontract.operation_contract_errors(broken)))
+
+    def test_local_patch_eligible(self):
+        self.assertEqual(nodecontract.local_patch_blockers(self.CONTRACT), [])
+        self.assertEqual(nodecontract.local_patch_blockers(
+            self.CONTRACT, existing_paths=["src/format.py"]), [])
+
+    def test_local_patch_blockers(self):
+        multi = dict(self.CONTRACT,
+                     scope=dict(self.CONTRACT["scope"], write=["src/a.py", "src/b.py"]))
+        self.assertTrue(any("1 ファイル" in b for b in
+                            nodecontract.local_patch_blockers(multi)))
+        no_check = dict(self.CONTRACT, verification=None)
+        self.assertTrue(any("verification" in b for b in
+                            nodecontract.local_patch_blockers(no_check)))
+        new_test = dict(self.CONTRACT,
+                        scope=dict(self.CONTRACT["scope"], write=["tests/test_new.py"]),
+                        deliverables=["tests/test_new.py"])
+        self.assertTrue(any("対象外" in b for b in
+                            nodecontract.local_patch_blockers(new_test)))
+        protected = dict(self.CONTRACT,
+                         scope=dict(self.CONTRACT["scope"], write=["schemas/x.json"]),
+                         deliverables=["schemas/x.json"])
+        self.assertTrue(any("protected" in b for b in
+                            nodecontract.local_patch_blockers(protected)))
+        new_file = nodecontract.local_patch_blockers(
+            self.CONTRACT, existing_paths=["src/other.py"])
+        self.assertTrue(any("新規ファイル" in b for b in new_file))
+        mismatch = dict(self.CONTRACT, deliverables=["src/other.py"])
+        self.assertTrue(any("書込 scope" in b for b in
+                            nodecontract.local_patch_blockers(mismatch)))
+
+
+class DecideCandidatesTest(unittest.TestCase):
+    FACTS = [
+        {"id": "c1", "tests": "pass", "extra_deps": True, "lines": 30},
+        {"id": "c2", "tests": "fail", "extra_deps": False, "lines": 48},
+        {"id": "c3", "tests": "pass", "extra_deps": False, "lines": 41},
+        {"id": "c4", "tests": "pass", "extra_deps": True, "lines": 27},
+        {"id": "c5", "tests": "fail", "extra_deps": False, "lines": 35},
+        {"id": "c6", "tests": "none", "extra_deps": False, "lines": 52},
+    ]
+
+    def test_filter_single_criterion(self):
+        decision = nodecontract.decide_candidates(
+            [{"fact": "extra_deps", "op": "eq", "value": False}], self.FACTS)
+        self.assertEqual(decision["kept"], ["c2", "c3", "c5", "c6"])
+        self.assertEqual(decision["undecided"], [])
+        self.assertIsNone(decision["winner"])
+
+    def test_judge_multi_criteria_with_tie_break(self):
+        decision = nodecontract.decide_candidates(
+            [{"fact": "tests", "op": "eq", "value": "pass"},
+             {"fact": "extra_deps", "op": "eq", "value": False}],
+            self.FACTS, tie_break={"fact": "lines", "op": "min"})
+        self.assertEqual(decision["kept"], ["c3"])
+        self.assertEqual(decision["winner"], "c3")
+
+    def test_missing_fact_goes_undecided_and_blocks_winner(self):
+        facts = [dict(f) for f in self.FACTS]
+        del facts[2]["extra_deps"]      # c3 の事実が欠測
+        decision = nodecontract.decide_candidates(
+            [{"fact": "tests", "op": "eq", "value": "pass"},
+             {"fact": "extra_deps", "op": "eq", "value": False}],
+            facts, tie_break={"fact": "lines", "op": "min"})
+        self.assertIn("c3", decision["undecided"])
+        self.assertIsNone(decision["winner"], "欠測があるのに確定しない")
+
+    def test_tie_break_equal_uses_id_order_and_max(self):
+        facts = [{"id": "b", "score": 5}, {"id": "a", "score": 5}, {"id": "c", "score": 3}]
+        decision = nodecontract.decide_candidates(
+            [], facts, tie_break={"fact": "score", "op": "max"})
+        self.assertEqual(decision["winner"], "a")
+
+
 if __name__ == "__main__":
     unittest.main()

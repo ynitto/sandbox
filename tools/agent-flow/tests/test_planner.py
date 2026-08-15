@@ -263,6 +263,19 @@ class CoerceTasksTests(unittest.TestCase):
         out = kf._coerce_tasks([{"id": "a", "deps": [1, "b"]}])
         self.assertEqual(out[0]["deps"], ["1", "b"])
 
+    def test_operation_contract_passthrough(self):
+        # 形が契約（§3.4）に合う処理契約だけ運ぶ。壊れた宣言は無いのと同じ。
+        good = {"operation_class": "existing-test-repair",
+                "scope": {"write": ["src/a.py"]},
+                "deliverables": ["src/a.py"],
+                "verification": {"commands": [["pytest", "-q"]]}}
+        out = kf._coerce_tasks([{"id": "a", "operation": good},
+                                {"id": "b", "operation": {"scope": "broken"}},
+                                {"id": "c"}])
+        self.assertEqual(out[0]["operation"], good)
+        self.assertNotIn("operation", out[1])
+        self.assertNotIn("operation", out[2])
+
     def test_replacement_metadata_preserved(self):
         out = kf._coerce_tasks([{"id": "a", "replaces": "old", "retries": "2"}])
         self.assertEqual(out[0]["replaces"], "old")

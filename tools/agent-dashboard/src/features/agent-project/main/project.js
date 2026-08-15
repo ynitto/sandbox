@@ -151,7 +151,12 @@ function listTasks(dir) {
     const file = path.join(dir, f);
     const text = readText(file);
     if (text === null) continue;
-    const task = parseTask(text, f.replace(/\.md$/, ''));
+    const stem = f.replace(/\.md$/, '');
+    const task = parseTask(text, stem);
+    const envelope = readJson(path.join(dir, `${stem}.envelope.json`));
+    const expectedDigest = String((task.extra && task.extra.execution_envelope_digest) || '');
+    task.executionEnvelope = envelope
+      && (!expectedDigest || envelope.digest === expectedDigest) ? envelope : null;
     task.mtime = statMtime(file);
     task.file = file;
     tasks.push(task);
@@ -2182,6 +2187,7 @@ function readProject(workspaceDir, cfg) {
 module.exports = {
   dependentsOf,
   parseTask,
+  listTasks,
   readAssignments,
   effectiveOwner,
   ASSIGNMENTS_FILE,

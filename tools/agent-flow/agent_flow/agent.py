@@ -225,20 +225,32 @@ def _agent_for(purpose: str) -> "tuple[str, str | None]":
     ov = ov or {}
     cli = str(ov.get("agent_cli") or _AGENT_CLI).lower()
     model = ov.get("model") or None
-    # agent-control（control > CLI引数 > 設定ファイル > 組み込み既定）が最優先の上書き。
-    c_cli, c_model = _control_override(purpose)
-    if c_cli:
-        cli = c_cli.lower()
-    if c_model:
-        model = c_model
-    # node-budget の soft_ratio 到達中（または on_exhausted=degrade で超過中）は縮退指定を重ねる。
-    nb = _node_budget_state()
-    if nb and (nb.get("soft") or (nb.get("exceeded") and nb.get("on_exhausted") == "degrade")):
-        d_cli, d_model = _control_degraded()
-        if d_cli:
-            cli = d_cli.lower()
-        if d_model:
-            model = d_model
+    # 候補ベース（version 2）: selection_policy があれば Resolver の決定が control 層を
+    # 置き換える。park のときは candidate を変えない——実行は run_agent の環境ガードが
+    # 実行前に止めるので、ここで legacy / 縮退候補へ黙って降格しない（設計 §6.6 / §5.2）。
+    decision = _control_policy_decision(purpose)
+    if decision is not None:
+        selected = decision.get("selected")
+        if selected:
+            cli = str(selected["agent_cli"]).lower()
+            model = selected.get("model") or model
+        # 縮退（degraded）は legacy の口。候補ベースでは Compiler の strategy が消費を
+        # 織り込んで rank を出すので、二重に重ねない。
+    else:
+        # agent-control（control > CLI引数 > 設定ファイル > 組み込み既定）が最優先の上書き。
+        c_cli, c_model = _control_override(purpose)
+        if c_cli:
+            cli = c_cli.lower()
+        if c_model:
+            model = c_model
+        # node-budget の soft_ratio 到達中（または on_exhausted=degrade で超過中）は縮退指定を重ねる。
+        nb = _node_budget_state()
+        if nb and (nb.get("soft") or (nb.get("exceeded") and nb.get("on_exhausted") == "degrade")):
+            d_cli, d_model = _control_degraded()
+            if d_cli:
+                cli = d_cli.lower()
+            if d_model:
+                model = d_model
     # run 単位の固定は、保存済みノード・control・縮退候補より優先する。hard budget と lifecycle
     # はエージェント解決の外側で止めるため、この固定で安全弁を迂回することはない。
     run_ov = _execution_override(purpose)
@@ -509,6 +521,81 @@ def _control_degraded() -> "tuple[str | None, str | None]":
             str(d["model"]) if d.get("model") else None)
 
 
+# run meta の execution_envelope（agent-project が計画承認時に snapshot する承認済み契約）。
+# ワーカーが claim 時に据え、candidate_permissions（pins / trials / tier_ceiling_override /
+# retry_limit）だけを Resolver の明示固定として解釈する。scope / 受入条件は監査用のまま。
+_EXECUTION_ENVELOPE: dict = {}
+
+
+def _set_execution_envelope(meta) -> None:
+    """run meta から承認済み Execution Envelope を実行文脈へ据える（無ければ空）。"""
+    global _EXECUTION_ENVELOPE
+    envelope = (meta or {}).get("execution_envelope")
+    approved = (isinstance(envelope, dict)
+                and (envelope.get("approval") or {}).get("status") == "approved")
+    _EXECUTION_ENVELOPE = envelope if approved else {}
+
+
+def _envelope_pin(purpose: str) -> "dict | None":
+    """Envelope の candidate_permissions → Resolver の explicit_pin（該当なしは None）。
+
+    - pins: 明示固定。policy の適格候補か、trials にも載る候補だけ実行できる
+      （執行は Resolver——ここは写像だけ）。
+    - trials: pin が無くても、その候補を「この run 限定の trial」として固定する
+      ——trial は走らないと実測が貯まらず昇格できない（E5 の入口）。
+    - 項目の purpose / kind でロールを絞れる（省略 = 全ロール）。
+    """
+    perms = (_EXECUTION_ENVELOPE or {}).get("candidate_permissions") or {}
+    pins = [p for p in (perms.get("pins") or []) if isinstance(p, dict)]
+    trials = [t for t in (perms.get("trials") or []) if isinstance(t, dict)]
+
+    def usable(item):
+        scope = str(item.get("purpose") or item.get("kind") or "").strip()
+        return (item.get("agent_cli") and item.get("model")
+                and (not scope or scope == purpose))
+
+    chosen = next((p for p in pins if usable(p)), None)
+    trial_entry = chosen is None
+    if chosen is None:
+        chosen = next((t for t in trials if usable(t)), None)
+    if chosen is None:
+        return None
+    pin = {"agent_cli": str(chosen["agent_cli"]), "model": str(chosen["model"])}
+    if chosen.get("tier"):
+        pin["tier"] = str(chosen["tier"])
+    override = str(perms.get("tier_ceiling_override") or "")
+    if override:
+        pin["tier_ceiling_override"] = override
+    retry = perms.get("retry_limit")
+    if isinstance(retry, int) and not isinstance(retry, bool):
+        pin["retry_limit"] = retry
+    if trial_entry or any(t.get("agent_cli") == pin["agent_cli"]
+                          and t.get("model") == pin["model"] for t in trials):
+        pin["trial_approved"] = True
+    return pin
+
+
+def _control_policy_decision(purpose: str) -> "dict | None":
+    """selection_policy（agent-control version 2）があるときの Resolver 決定。無ければ None。
+
+    候補の解決は agentcore.executionresolver の 1 実装（E1）。ここは control と
+    Envelope の明示固定を渡すだけで、順位・除外・park の判断を複製しない。
+    version 1（または selection_policy 無し）は旧 reader として従来の
+    `_control_override` 経路へ委ね、version >= 2 は壊れた policy・未知 version でも
+    Resolver が park を返す——legacy fallback を再解釈しない（設計 §6.6）。
+    """
+    ctl = _load_control()
+    version = ctl.get("version")
+    if not isinstance(version, int) or isinstance(version, bool) or version < 2:
+        return None
+    if not isinstance(_control_workload().get("selection_policy"), dict):
+        return None
+    return _executionresolver.resolve_execution(
+        _NODE_BUDGET_WORKLOAD, purpose_or_role=purpose,
+        explicit_pin=_envelope_pin(purpose), compiled_control=ctl,
+        now=datetime.now(timezone.utc))
+
+
 def _control_concurrency() -> dict:
     """同時実行数の上書き（`workloads.flow.concurrency`）。宣言された整数キーだけを返す。
 
@@ -550,12 +637,24 @@ def _selection_meta(purpose: str = "", agent: "dict | None" = None) -> dict:
     run_ov = _execution_override(purpose)
     tier = str(run_ov.get("tier") or (agent or {}).get("tier") or wl.get("tier") or "")
     purpose_control = (wl.get("agents") or {}).get(purpose) if purpose else None
+    decision = None if (run_ov or agent) else _control_policy_decision(purpose)
     if run_ov:
         source = run_ov["source"]
     elif agent and agent.get("tier"):
         source = "pinned-tier"
     elif agent:
         source = "pinned-agent"
+    elif decision is not None:
+        # 候補ベースの決定。読み手（dashboard / audit）が設定から再推測しないよう、
+        # receipt v2 の execution_decision ブロックを事実としてそのまま残す（§6.5）。
+        # park は選択が無いので block を載せない（park_reason は selection_source で読める）。
+        source = decision.get("selection_source") or "parked"
+        meta = {"tier": tier or None, "selection_source": source,
+                "selection_reason": decision.get("reason") or "",
+                "pinned": source in ("explicit-pin", "trial-candidate")}
+        if decision.get("selected"):
+            meta["execution_decision"] = _executionresolver.receipt_execution_decision(decision)
+        return meta
     elif purpose_control:
         source = "control-purpose"
     else:
@@ -752,6 +851,18 @@ def run_agent(prompt: str, model: str | None, purpose: str = "", cwd: "str | Non
             f"{nb['spent_tokens']:.0f}tok/{nb['token_limit']:.0f}tok・period={nb['period']}）。"
             "上限を上げる（dashboard のオーケストレーションタブ / agent-amigos budget node）か"
             "期間の更新を待ってください")
+    # 候補ベース（selection_policy）の park。呼び出し 1 回の明示指定（verification 等の
+    # `agent`）と run 固定は人の承認済み指定なので止めない。park は lifecycle と同じ
+    # 環境要因として運ぶ——弱い候補へ黙って降格せず、run 単位の打ち切りへ載せる（§5.2）。
+    if not (agent and (agent.get("agent_cli") or agent.get("model"))) \
+            and not _execution_override(purpose):
+        decision = _control_policy_decision(purpose)
+        if decision is not None and decision.get("parked"):
+            _write_status(lifecycle=lifecycle, budget=nb)
+            raise RuntimeError(
+                f"[agent-error:control] [selection-policy] park"
+                f"（{decision.get('park_reason')}）: {decision.get('reason')}。"
+                f"再開条件: {decision.get('resume_condition')}")
     cli_used, model_used = _effective_agent(purpose, model, agent)
     prompt = _apply_methods(prompt, purpose, cli_used, model_used,
                             str((agent or {}).get("tier") or ""))

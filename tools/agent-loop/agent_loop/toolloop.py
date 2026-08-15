@@ -35,6 +35,13 @@ _TL_DEFAULT_AIDER_TIMEOUT_SEC = 180
 # ponytail: 上限は固定値。経路ごとに変えたくなるまで設定にしない。
 _TL_SHELLS = {"sh", "bash", "zsh", "fish", "cmd", "cmd.exe",
               "powershell", "powershell.exe", "pwsh"}
+# 拡張子ごとの固定インタプリタ。.py は _tl_python_command()（3.10 以上を選ぶ）。
+_TL_SCRIPT_INTERPRETERS = {".js": ("node",), ".sh": ("bash", "sh")}
+# 制御応答の一時障害だけを再試行する。恒久的な失敗（契約違反・設定ミス）は即座に上げる。
+_TL_CONTROL_RETRIES = 2
+_TL_TRANSIENT_RE = re.compile(
+    r"タイムアウト|timeout|一時|rate.?limit|too many requests|空の応答|"
+    r"connection|接続|temporar|unavailable|overload|50[234]\b", re.I)
 # statemachine-use のスクリプトが要求する Python（README の動作環境と同じ 3.10 以上）。
 _TL_SKILL_PYTHON_MIN = (3, 10)
 _TL_PYTHON_CANDIDATES = ("python3", "python", "python3.14", "python3.13",
@@ -132,6 +139,20 @@ def _tl_skill_scripts(skill: dict) -> "list[str]":
         return []
 
 
+def _tl_skill_declared_scripts(skill: dict) -> "list[str]":
+    """SKILL.md が名指ししているスクリプトだけ。
+
+    scripts/ に置いてあること自体は実行してよい根拠にならない（内部の下請けや実験物が
+    混ざる）。何を呼んでよいかを決めるのはスキル自身の SKILL.md——アクションが
+    スキルへ移譲するとき、入口はそこに書かれたものに限る。
+    """
+    try:
+        text = Path(skill["skill_file"]).read_text(encoding="utf-8")
+    except (OSError, KeyError, TypeError):
+        return []
+    return [s for s in _tl_skill_scripts(skill) if os.path.basename(s) in text]
+
+
 def _tl_executable_on_path(command: str) -> str:
     return shutil.which(str(command)) or ""
 
@@ -176,6 +197,27 @@ def _tl_validate_arg_paths(args: "list[str]", cwd: str, skill_dirs: "list[str]")
                 raise ToolLoopError(f"作業フォルダ外の引数パスは使えません: {arg}")
 
 
+def _tl_script_interpreter(command: str) -> str:
+    """スクリプトを動かす固定インタプリタ。実行ファイルなら空文字。
+
+    拡張子つきのスクリプトを直接 exec させない。実行ビットや shebang に従うと、
+    どのシェル・どのランタイムが走るかを**スクリプト側**が決めることになり、
+    「任意のシェルは使わせない」という契約がファイル 1 個で迂回される。
+    """
+    ext = os.path.splitext(str(command or ""))[1].lower()
+    if ext == ".py":
+        return _tl_python_command()
+    if ext not in _TL_SCRIPT_INTERPRETERS:
+        return ""
+    names = _TL_SCRIPT_INTERPRETERS[ext]
+    for name in names:
+        found = _tl_executable_on_path(name)
+        if found:
+            return found
+    raise ToolLoopError(
+        f"{ext} を実行するインタプリタが PATH にありません: {' / '.join(names)}")
+
+
 def _tl_validate_tool_request(raw, cwd: str, skills: "list[dict]") -> dict:
     if not isinstance(raw, dict):
         raise ToolLoopError("ツール要求が JSON オブジェクトではありません")
@@ -194,9 +236,10 @@ def _tl_validate_tool_request(raw, cwd: str, skills: "list[dict]") -> dict:
         args = [str(a) for a in args]
         _tl_validate_arg_paths(args, cwd, skill_dirs)
         command = _tl_validate_command(raw.get("command"), cwd, skill_dirs)
-        if re.search(r"\.py$", command, re.I):
+        interpreter = _tl_script_interpreter(command)
+        if interpreter:
             args = [command, *args]
-            command = _tl_python_command()
+            command = interpreter
         try:
             timeout_sec = int(float(raw.get("timeout_sec") or 0)) or 60
         except (TypeError, ValueError):
@@ -349,8 +392,14 @@ def _tl_failure_hint(agent: dict, detail: str) -> str:
 
 
 def _tl_run_agent(agent: dict, prompt: str, *, cwd: str, readonly: bool,
-                  read_files: "list[str]", files: "list[str]", log_file: str) -> str:
-    """エージェント CLI（aider 等）を headless で 1 回呼び、応答本文を返す。"""
+                  read_files: "list[str]", files: "list[str]", log_file: str,
+                  allow_empty: bool = False) -> str:
+    """エージェント CLI（aider 等）を headless で 1 回呼び、応答本文を返す。
+
+    allow_empty: 空の stdout を正常な空結果として返す。編集の周では「黙って直した」が
+    普通にあり、そこを失敗にすると成果物ができているのに実行が落ちる。制御の周
+    （次の一手の JSON を求める周）は空＝答えが無いので既定のまま失敗にする。
+    """
     mod = agent["agentcli"]
     built = mod.headless_cmd(agent["spec"], agent["model"], prompt,
                              readonly=readonly, no_session=True,
@@ -366,9 +415,31 @@ def _tl_run_agent(agent: dict, prompt: str, *, cwd: str, readonly: bool,
         hint = _tl_failure_hint(agent, detail)
         raise ToolLoopError(hint or detail or f"{argv[0]} が失敗しました")
     output = str(result["stdout"] or "").strip()
-    if not output:
+    if not output and not allow_empty:
         raise ToolLoopError("エージェントが空の応答を返しました")
     return output
+
+
+def _tl_run_control(agent: dict, prompt: str, *, cwd: str, read_files: "list[str]",
+                    log_file: str) -> str:
+    """制御応答（次の一手の JSON）を求める周。一時障害だけ限定回数で再試行する。
+
+    ローカルモデルはタイムアウト・過負荷・空応答をときどき返す。そこで実行ごと落とすと
+    人が張り付いて再投入することになる（柱2）。一方で契約違反や設定ミスまで再試行すると
+    同じ失敗をクレジット分だけ繰り返すので、一時障害と読める失敗だけに絞る。
+    """
+    for attempt in range(_TL_CONTROL_RETRIES + 1):
+        try:
+            return _tl_run_agent(agent, prompt, cwd=cwd, readonly=True,
+                                 read_files=read_files, files=[], log_file=log_file)
+        except ToolLoopError as exc:
+            if attempt >= _TL_CONTROL_RETRIES or not _TL_TRANSIENT_RE.search(str(exc)):
+                raise
+            _tl_progress(f"制御応答の一時障害を再試行 "
+                         f"({attempt + 1}/{_TL_CONTROL_RETRIES}): {exc}")
+            _tl_append_log(log_file, {"event": "control_retry", "attempt": attempt + 1,
+                                      "error": str(exc)})
+    raise ToolLoopError("制御応答を取得できません")   # 到達しない（ループが必ず返すか投げる）
 
 
 _TL_FAILURE_RE = re.compile(r"^(?:[A-Z][A-Z0-9_]*_)?(?:FAILED|ERROR)\b", re.I)
@@ -395,9 +466,17 @@ def _tl_final_evidence_error(output, cwd: str, evidence: set, executed: set) -> 
 
 
 def _tl_file_stamp(file: str) -> str:
+    """更新時刻ではなく内容そのものの指紋を返す。
+
+    エディタ CLI は変更を加えなくてもファイルへ書き戻し、mtime だけを更新することがある。
+    それを成果物の更新として扱うと、受入条件を満たしていない実行が done になる。
+    """
     try:
-        stat = os.stat(file)
-        return f"{stat.st_size}:{stat.st_mtime_ns}"
+        digest = hashlib.sha256()
+        with open(file, "rb") as stream:
+            while chunk := stream.read(1024 * 1024):
+                digest.update(chunk)
+        return digest.hexdigest()
     except OSError:
         return ""
 
@@ -654,6 +733,7 @@ def run_goal(*, goal: str, cwd: str, agent: dict, log_file: str,
     touched: set = set()
     history: list[str] = []
     output = ""
+    pending_run_error = ""
     control = _tl_control_agent(agent, root)
     if control is not agent:
         _tl_progress(f"制御応答: {control['cli']}（編集: {agent['cli']}）", tag)
@@ -669,10 +749,10 @@ def run_goal(*, goal: str, cwd: str, agent: dict, log_file: str,
 
     for _round in range(rounds):
         _tl_progress(f"ラウンド {_round + 1}/{rounds}: エージェントに問い合わせ中…", tag)
-        raw = _tl_run_agent(control, _tl_goal_prompt(
+        raw = _tl_run_control(control, _tl_goal_prompt(
             goal=goal, cwd=root, skills=skills, reads=sorted(reads),
             acceptance=criteria, history=history,
-        ), cwd=root, readonly=True, read_files=sorted(reads), files=[], log_file=log_file)
+        ), cwd=root, read_files=sorted(reads), log_file=log_file)
         try:
             request = _tl_validate_tool_request(_tl_parse_tool_request(raw), root, skills)
         except ToolLoopError as exc:
@@ -746,7 +826,7 @@ def run_goal(*, goal: str, cwd: str, agent: dict, log_file: str,
             # 走り続ける（実測: 1 回で書けた仕事に 8 ラウンド）。done の根拠は元から
             # 機械検証だけ（C5）なので、その PASS を停止条件にしても緩まない。
             # 照合できる受入条件が無いときは従来どおり final を待つ——止める根拠が無い。
-            if _tl_verified(criteria, root) and not acceptance_evidence_errors(
+            if _tl_verified(criteria, root) and not pending_run_error and not acceptance_evidence_errors(
                     criteria, cwd=root, touched=touched, stamps_before=stamps_before):
                 _tl_progress("受入条件を満たしました（final を待たずに完了）", tag)
                 break
@@ -755,6 +835,16 @@ def run_goal(*, goal: str, cwd: str, agent: dict, log_file: str,
         _tl_progress(f"run: {request['command']} {' '.join(request['args'])}", tag)
         tool = _tl_exec_argv(request["command"], request["args"], cwd=root,
                              timeout_sec=request["timeout_sec"], log_file=log_file)
+        run_ok = tool["status"] == 0 and not tool["error"]
+        if run_ok:
+            # 引数を直した再試行も回復として扱う。小型モデルは最初の要求でサブコマンドを
+            # 落とすことがあるため、完全一致の再実行だけに絞ると正しい修正まで失敗になる。
+            pending_run_error = ""
+        else:
+            command = shlex.join([request["command"], *request["args"]])
+            pending_run_error = (
+                f"コマンド実行が失敗したままです（status {tool['status']}）: {command}")
+            _tl_progress(pending_run_error, tag)
         for arg in request["args"]:
             try:
                 file = _tl_project_path(root, arg)
@@ -767,13 +857,17 @@ def run_goal(*, goal: str, cwd: str, agent: dict, log_file: str,
                 if os.stat(file).st_size <= _TL_MAX_AUTO_READ_BYTES:
                     reads.add(file)
         history.append("TOOL_RESULT " + json.dumps({
-            "type": request["type"], "status": tool["status"], "error": tool["error"],
+            # ok は status 由来。stdout が空でも成功は成功（statemachine 側と同じ形）。
+            "type": request["type"], "ok": run_ok,
+            "status": tool["status"], "error": tool["error"],
             "stdout": tool["stdout"][-4000:], "stderr": tool["stderr"][-2000:],
             "logFile": log_file,
         }, ensure_ascii=False))
 
     evidence_errors = acceptance_evidence_errors(
         criteria, cwd=root, touched=touched, stamps_before=stamps_before)
+    if pending_run_error:
+        evidence_errors.append(pending_run_error)
     ok = bool(output) and not evidence_errors
     verified = _tl_verified(criteria, root)
     _tl_append_log(log_file, {"event": "goal_done", "ok": ok, "verified": verified,

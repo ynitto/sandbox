@@ -70,24 +70,36 @@
         <!-- 領域の見出し。プロジェクト以外の領域では、プロジェクト用のヘッダーの代わりに
              こちらを出す（左で選んだものと右の見出しを一致させる）。 -->
         <div id="area-header" class="area-header hidden" hidden>
-          <h2 id="area-header-title"></h2>
-          <p id="area-header-desc" class="muted"></p>
+          <div><h2 id="area-header-title"></h2><p id="area-header-desc" class="muted"></p></div>
+          <div class="project-cli-chat-group" data-consult-group="routines" hidden>
+            <p class="project-cli-chat-note muted" data-consult-note aria-live="polite"></p>
+            <button type="button" class="project-cli-chat" data-consult-open disabled>
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M4 5h16v14H4z"/><path d="m8 9 3 3-3 3M13 15h3"/>
+              </svg><span>AIに相談</span>
+            </button>
+          </div>
         </div>
         <div class="project-header-main">
           <div id="project-title">
             <span id="project-name" class="muted">プロジェクトを選択してください</span>
             <span id="project-badges"></span>
           </div>
-          <div class="project-cli-chat-group">
-
-            <select id="cli-chat-cwd" class="project-cli-chat-cwd"
-              title="相談する作業フォルダ" aria-label="相談する作業フォルダ"></select>
+          <!-- 相談はプロジェクト領域のときだけここに出る。対象は左ペインで選び、起動先
+               リポジトリの選択もここにあるので、ヘッダーが対象を決める場と一致している。
+               他の領域では、その領域で対象フォルダを決めているコントロールの隣へ出る
+               （renderer.js の consultControlHtml / renderConsultControls）。 -->
+          <div class="project-cli-chat-group" data-consult-group="projects" hidden>
+            <select id="cli-chat-cwd" class="project-cli-chat-cwd" data-consult-cwd
+              title="相談する作業フォルダ" aria-label="相談する作業フォルダ" hidden></select>
+            <p class="project-cli-chat-note muted" data-consult-note aria-live="polite"></p>
             <button id="btn-cli-chat" class="project-cli-chat" type="button" disabled
-              title="選んだフォルダで、全体設定のエージェントを使って開きます">
+              data-consult-open
+              title="選んだフォルダで、実行方針が決めたエージェントを使って開きます">
               <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                 <path d="M4 5h16v14H4z"/><path d="m8 9 3 3-3 3M13 15h3"/>
               </svg>
-              <span>この作業を相談</span>
+              <span>AIに相談</span>
             </button>
           </div>
         </div>
@@ -104,12 +116,13 @@
         <button class="tab" data-tab="needs" data-area="projects" data-feature="agent-project">要対応 <span id="needs-badge" class="badge hidden"></span></button>
         <button class="tab" data-tab="flow" data-area="projects" data-feature="agent-project">実行</button>
         <button class="tab" data-tab="history" data-area="projects" data-feature="agent-project">成果</button>
+        <button class="tab tab-project-settings hidden" data-tab="project-settings" data-area="projects" data-feature="agent-project"
+          id="tab-btn-project-settings" hidden>設定</button>
         <button class="tab hidden" data-tab="amigos-run" data-area="missions" data-feature="amigos"
           id="tab-btn-amigos-run" hidden>実行</button>
         <button class="tab hidden" data-tab="amigos" data-area="missions" data-feature="amigos"
           id="tab-btn-amigos" hidden>ミッション</button>
-        <button class="tab hidden" data-tab="cowork" data-area="routines" data-feature="cowork" id="tab-btn-cowork" hidden>作業</button>
-        <button class="tab" data-tab="routine-runs" data-area="routines" data-feature="cowork" id="tab-btn-routine-runs">実行の記録</button>
+        <button class="tab hidden" data-tab="cowork" data-area="routines" data-feature="cowork" id="tab-btn-cowork" hidden>定常業務</button>
         <button class="tab" data-tab="routine-settings" data-area="routines" data-feature="cowork" id="tab-btn-routine-settings">設定</button>
         <button class="tab hidden" data-tab="participation" data-area="participation" data-feature="participation"
           id="tab-btn-participation" hidden>参加できる仕事</button>
@@ -124,8 +137,6 @@
         <button class="tab" data-tab="usage-settings" data-area="usage" data-feature="agent-audit"
           id="tab-btn-usage-settings">設定</button>
         <span class="tab-utility-group">
-          <button class="tab tab-project-settings hidden" data-tab="project-settings" data-area="projects" data-feature="agent-project"
-            id="tab-btn-project-settings" hidden>設定</button>
           <button class="tab tab-global-settings" data-tab="orchestration" data-area="settings" data-feature="orchestration" id="tab-btn-orchestration"
             title="すべてのプロジェクトで使う設定">全体設定</button>
         </span>
@@ -139,7 +150,6 @@
         <div id="tab-flow" class="tabpane" data-feature="agent-project"></div>
         <div id="tab-history" class="tabpane" data-feature="agent-project"></div>
         <div id="tab-cowork" class="tabpane" data-feature="cowork"></div>
-        <div id="tab-routine-runs" class="tabpane" data-feature="cowork"></div>
         <div id="tab-routine-settings" class="tabpane" data-feature="cowork"></div>
         <div id="tab-amigos-run" class="tabpane hidden" data-feature="amigos" hidden></div>
         <div id="tab-amigos" class="tabpane hidden" data-feature="amigos" hidden></div>
@@ -156,6 +166,15 @@
       </section>
     </main>
   </div>
+
+  <dialog id="dlg-routine-adhoc" class="routine-adhoc-dialog" data-feature="cowork"
+    aria-labelledby="routine-adhoc-dialog-title">
+    <header class="dialog-heading">
+      <div><span class="summary-kicker">その場の依頼</span><h2 id="routine-adhoc-dialog-title">作業依頼</h2></div>
+      <button type="button" id="btn-routine-adhoc-close" aria-label="作業依頼を閉じる">閉じる</button>
+    </header>
+    <div id="routine-adhoc-dialog-body" class="dialog-scroll-body"></div>
+  </dialog>
 
   <!-- ======== 選択中の定常業務の実行状況 ======== -->
   <dialog id="dlg-routine-agent" class="routine-agent-dialog" data-feature="routines" aria-labelledby="routine-agent-dialog-title">
@@ -204,6 +223,11 @@
         <label for="cw-schedule">実行予定</label>
         <input id="cw-schedule" class="mono" placeholder="例: 0 9 * * *" />
         <small class="muted">空欄の場合は手動実行のみです。</small>
+      </div>
+      <div class="field">
+        <label for="cw-execution">実行エージェント</label>
+        <select id="cw-execution"></select>
+        <small class="muted">既定は自動割り当てです。選ぶと、この業務はいつも選んだエージェントとモデルで実行します（「今すぐ実行」での一回限りの選択はここに保存されません）。</small>
       </div>
       <div class="dialog-actions">
         <button id="btn-cw-cancel" value="cancel">キャンセル</button>
@@ -396,7 +420,7 @@
 
   <!-- ======== タスク追加ダイアログ ======== -->
   <dialog id="dlg-enqueue">
-    <h2 id="enq-heading">タスクを追加</h2>
+    <h2 id="enq-heading">タスクを作成</h2>
     <div id="enq-reinject-note" class="muted hidden" style="margin-bottom:8px"></div>
     <div class="field" id="enq-charter-field">
       <label for="enq-charter">計画バージョン</label>
@@ -620,6 +644,25 @@
     <div class="muted" style="margin-bottom:8px">
       作成先と名前を決めて、プロジェクトの目標を入力してください。
     </div>
+    <fieldset class="wf-design-modes np-design-modes">
+      <legend>設計の始め方</legend>
+      <label class="orch-policy-card"><input type="radio" name="np-design-mode" value="new" checked>
+        <span><strong>一から設計する</strong><small>対話用の目標と材料から設計を始めます。</small></span></label>
+      <label class="orch-policy-card"><input type="radio" name="np-design-mode" value="continue">
+        <span><strong>続きから設計する</strong><small>設計途中の Markdown を読み込んで続けます。</small></span></label>
+      <label class="orch-policy-card"><input type="radio" name="np-design-mode" value="use-as-is">
+        <span><strong>設計書をそのまま使う</strong><small>既存の設計書をプロジェクト入力へ変換します。</small></span></label>
+    </fieldset>
+    <details id="np-design-sources">
+      <summary>設計材料</summary>
+      <div class="np-source-grid">
+        <label>マスター憲章<input id="np-source-master" type="file" accept=".md,.markdown,text/markdown"></label>
+        <label>計画バージョン<input id="np-source-plans" type="file" multiple accept=".md,.markdown,text/markdown"></label>
+        <label>メモ<input id="np-source-notes" type="file" multiple accept=".md,.markdown,text/markdown"></label>
+        <label>ドキュメント<input id="np-source-documents" type="file" multiple accept=".md,.markdown,text/markdown"></label>
+      </div>
+      <p class="field-help">複数の計画版・メモ・ドキュメントを同時に渡せます。元ファイルは変更しません。</p>
+    </details>
     <div class="row2">
       <div class="field">
         <label>作成先の親フォルダ</label>
@@ -692,6 +735,7 @@
       <div id="np-repos"></div>
       <button id="np-add-repo" type="button" class="chip">＋ リポジトリを追加</button>
     </details>
+    <section id="np-design-preview" class="np-design-preview hidden" aria-live="polite"></section>
     <div class="dialog-actions">
       <button id="btn-np-cancel">キャンセル</button>
       <button id="btn-np-submit" class="primary-inline">作成</button>

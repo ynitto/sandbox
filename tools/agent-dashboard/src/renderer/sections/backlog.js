@@ -156,6 +156,9 @@ function switchTab(name) {
   }
   renderAreaHeader();
   if (featureTabs.has(name)) renderFeatureTab(name); // 登録済みフィーチャータブは遷移時に描画
+  // タブの切り替えでも領域は変わりうる（上の data-area 分岐）。相談の 1 組と実効エージェントを
+  // ここで揃えないと、前の領域の対象を指したままのボタンが次の定期更新まで残る。
+  refreshConsultInfo();
 }
 
 // run を選んでフロータブへ遷移。
@@ -520,6 +523,16 @@ function renderBacklog() {
     el.innerHTML = '';
     return;
   }
+  if (state.projectPreparationDir !== p.dir) {
+    state.projectPreparationDir = p.dir;
+    state.projectPreparations = [];
+    api.preparationList({ target: 'project', projectDir: p.dir }).then((result) => {
+      if (state.project && state.project.dir === p.dir) {
+        state.projectPreparations = result.items || [];
+        renderBacklog();
+      }
+    }).catch((err) => toast(`作業準備を読み込めませんでした: ${err.message || err}`));
+  }
   const chips = BACKLOG_FILTERS.map(
     ([key, label]) =>
       `<button class="chip ${state.backlogFilter === key ? 'active' : ''}" data-filter="${key}" aria-pressed="${state.backlogFilter === key}">${label}</button>`
@@ -585,6 +598,22 @@ function renderBacklog() {
     .join('');
 
   const replanPending = !!p.replanPending;
+  const preparations = state.projectPreparations || [];
+  const phaseLabel = (phase) => ({
+    'design-ready': '設計開始待ち', designing: '設計中', 'design-review': '設計確認',
+    'implementation-ready': '実装待ち', queued: '追加待ち', implementing: '実装中', completed: '完了',
+  }[phase] || phase || '準備中');
+  const routeLabel = (route) => PROJECT_PREPARATION_ROUTES.find(([id]) => id === route)?.[1] || route;
+  const preparationHtml = preparations.length ? `<section class="project-preparation-list" aria-label="作業準備">
+    <div class="wf-section-head"><div><h3>作業準備</h3><span class="muted">${preparations.length}件</span></div></div>
+    ${preparations.map((item) => `<article class="wf-queue-item" data-project-preparation="${esc(item.id)}">
+      <div><span class="status-chip st-review">${esc(phaseLabel(item.phase))}</span><strong>${esc(item.title)}</strong>
+        <small>${esc(routeLabel(item.route))}${item.packageId ? ` · 分解 ${esc(item.packageId)}` : ''}</small></div>
+      <div class="qf-row"><button data-project-preparation-delete="${esc(item.id)}">削除</button>
+        ${item.phase === 'design-ready' ? `<button class="primary-inline" data-project-preparation-design="${esc(item.id)}">設計を開始</button>` : ''}
+        ${['designing', 'design-review'].includes(item.phase) ? `<button class="primary-inline" data-project-preparation-open="${esc(item.id)}">設計を確認</button>` : ''}
+        ${item.phase === 'implementation-ready' ? `<button class="primary-inline" data-project-preparation-handoff="${esc(item.id)}">バックログへ追加</button>` : ''}</div>
+    </article>`).join('')}</section>` : '';
   el.innerHTML = `
     ${pipelineRibbonHtml(p)}
     <div class="task-toolbar">
@@ -597,12 +626,11 @@ function renderBacklog() {
         ${ownerChips ? `<div class="filters task-owner-filters" aria-label="監視担当で絞り込む">${ownerChips}</div>` : ''}
       </div>
       <div class="task-toolbar-actions">
-        <button id="btn-notes" title="気になったことをメモに書き溜めます（計画は勝手に動きません）">メモ</button>
-        <button id="btn-document-tasks" title="ローカルのMarkdown・テキスト文書からタスク候補を作ります">文書から作る</button>
-        <button id="btn-replan"${replanPending ? ' disabled' : ''} title="プロジェクト憲章からタスクを作ります。自動では作られないので、最初の分解もここから始めます">バックログを分解</button>
-        <button id="btn-enqueue" class="primary-inline" title="タスクを1件追加します">タスクを追加</button>
+        <button id="btn-notes" title="考えや気づきを書き残し、必要な部分をタスク候補にできます">メモ</button>
+        <button id="btn-enqueue" class="primary-inline" title="入力と設計フローを選び、タスクを作成します">タスクを作成</button>
       </div>
     </div>
+    ${preparationHtml}
     ${
       taskItems
         ? `<div class="task-list-grid" role="list" aria-label="タスク一覧">
@@ -616,13 +644,39 @@ function renderBacklog() {
     ${tombstonesHtml(p)}`;
 
   bindTombstones(el, p);
+  $('btn-notes').addEventListener('click', openNotesDialog);
   $('btn-enqueue').addEventListener('click', () => openEnqueueDialog());
-  const replanBtn = $('btn-replan');
-  if (replanBtn && !replanPending) replanBtn.addEventListener('click', openReplanDialog);
-  const notesBtn = $('btn-notes');
-  if (notesBtn) notesBtn.addEventListener('click', openNotesDialog);
-  const documentBtn = $('btn-document-tasks');
-  if (documentBtn) documentBtn.addEventListener('click', openDocumentTaskDialog);
+  el.querySelectorAll('[data-project-preparation-delete]').forEach((button) => button.addEventListener('click', async () => {
+    await api.preparationDelete({ id: button.dataset.projectPreparationDelete });
+    state.projectPreparations = state.projectPreparations.filter((item) => item.id !== button.dataset.projectPreparationDelete);
+    renderBacklog();
+  }));
+  el.querySelectorAll('[data-project-preparation-design]').forEach((button) => button.addEventListener('click', async () => {
+    try {
+      const result = await api.preparationStartDesign({ id: button.dataset.projectPreparationDesign });
+      state.projectPreparations = state.projectPreparations.map((item) => item.id === result.item.id ? result.item : item);
+      toast('設計runを開始しました', true);
+    } catch (err) { toast(`設計を開始できませんでした: ${err.message || err}`); }
+    renderBacklog();
+  }));
+  el.querySelectorAll('[data-project-preparation-open]').forEach((button) => button.addEventListener('click', async () => {
+    try {
+      const result = await api.preparationSyncDesign({ id: button.dataset.projectPreparationOpen });
+      state.projectPreparations = state.projectPreparations.map((item) => item.id === result.item.id ? result.item : item);
+      if (result.session.runStatus !== 'done') toast('設計runはまだ実行中です');
+      else openProjectPreparationDesign(result.item, result.session);
+    } catch (err) { toast(`設計を読み込めませんでした: ${err.message || err}`); }
+    renderBacklog();
+  }));
+  el.querySelectorAll('[data-project-preparation-handoff]').forEach((button) => button.addEventListener('click', async () => {
+    button.disabled = true;
+    try {
+      const result = await api.preparationHandoff({ id: button.dataset.projectPreparationHandoff });
+      state.projectPreparations = state.projectPreparations.map((item) => item.id === result.item.id ? result.item : item);
+      toast('バックログへの追加待ちにしました', true);
+      await reloadProject();
+    } catch (err) { toast(`バックログへ追加できませんでした: ${err.message || err}`); }
+  }));
 
   for (const chip of el.querySelectorAll('.chip[data-filter]')) {
     chip.addEventListener('click', () => {
@@ -781,6 +835,56 @@ const TASK_EXTRA_LABELS = {
   verification_commands: '検証コマンド',
 };
 
+function taskExecutionEnvelopeHtml(task) {
+  const envelope = task.executionEnvelope;
+  if (!envelope || typeof envelope !== 'object') return '';
+  const candidates = new Map();
+  for (const pin of (((envelope.candidate_permissions || {}).pins) || [])) {
+    if (!pin || !pin.agent_cli) continue;
+    candidates.set(`${pin.agent_cli}\u0000${pin.model || ''}`, { ...pin, pinned: true });
+  }
+  for (const policy of Object.values(((envelope.policy_snapshot || {}).selection_policies) || {})) {
+    for (const candidate of ((policy || {}).candidates || [])) {
+      if (!candidate || !candidate.agent_cli) continue;
+      const key = `${candidate.agent_cli}\u0000${candidate.model || ''}`;
+      if (!candidates.has(key)) candidates.set(key, candidate);
+    }
+  }
+  const rows = [...candidates.values()].map((candidate) =>
+    `<li><code>${esc(candidate.agent_cli)}</code> / <code>${esc(candidate.model || 'CLI既定')}</code>`
+      + `<span class="muted">${candidate.pinned ? '明示固定' : `候補順位 ${candidate.rank || '—'}`}</span></li>`
+  ).join('') || '<li>実行時に決定</li>';
+  return `<details class="task-execution-envelope">
+    <summary>使用予定のエージェントとモデル</summary>
+    <ul>${rows}</ul>
+    <p class="muted">工程ごとの確定候補と件数は、利用枠と実行時の適格性により変わります。</p>
+  </details>`;
+}
+
+function taskCandidateUsageHtml(taskId) {
+  const runs = runsForTask(taskId);
+  const run = runs.find((candidate) => candidate.status === 'done') || runs[0];
+  if (!run) return '';
+  const counts = new Map();
+  let switched = 0;
+  for (const node of Object.values(run.nodes || {})) {
+    if (node.state !== 'done') continue;
+    const decision = node.executionDecision || {};
+    const cli = decision.agent_cli || node.agentCli || '';
+    const model = decision.model || node.agentModel || '';
+    const label = cli ? `${cli} / ${model || 'CLI既定'}` : 'モデル不使用';
+    counts.set(label, (counts.get(label) || 0) + 1);
+    if (decision.fallback_from) switched += 1;
+  }
+  if (!counts.size) return '';
+  const rows = [...counts.entries()].map(([label, count]) =>
+    `<li><span>${esc(label)}</span><strong>${count}工程</strong></li>`).join('');
+  return `<details class="task-candidate-usage">
+    <summary>エージェント / モデル利用内訳</summary>
+    <ul>${rows}${switched ? `<li><span>候補切替</span><strong>${switched}工程</strong></li>` : ''}</ul>
+  </details>`;
+}
+
 function taskDialogInputSnapshot(dialog) {
   return JSON.stringify(
     [...dialog.querySelectorAll('input, textarea, select')].map((field) => [
@@ -907,6 +1011,8 @@ function showTaskDialog(id, scope) {
         ${verificationDetailsRow}
         ${depRow}
       </table>
+      ${t.status === 'proposed' ? taskExecutionEnvelopeHtml(t) : ''}
+      ${scope === 'archive' || t.status === 'review' ? taskCandidateUsageHtml(t.id) : ''}
       ${relatedRunsBlock(t.id, { archived: scope === 'archive' })}
       <details class="task-technical-details">
         <summary>詳細情報</summary>
@@ -1886,58 +1992,339 @@ async function applySelectedEnqueueAdjustments(applyList) {
   }
 }
 
+const PROJECT_PREPARATION_ROUTES = [
+  ['agent-design', 'エージェントと設計する', '候補ごとに必要な設計を詰めてから実装します。'],
+  ['external-design', '外部の設計結果を使う', '別のエージェント等で作った設計書を材料にします。'],
+  ['direct', 'そのまま実装する', '十分に具体的な候補は設計runなしで実装へ進めます。'],
+];
+let projectTaskWizard = null;
+
+// ---------------------------------------------------------------------------
+// 設計フローのノード割り当てUI（プロジェクト／ワークフローのタスク追加ダイアログで共有）。
+// adhocFlow:designPreview の結果（ノードごとの自動割り当てと、実行可能レベルごとの候補）を
+// 選択肢へ展開する。既定（値 ''）は自動割り当てで、自動が今選ぶ具体的な候補を表示する。
+// 選択肢はそのノードの実行可能レベル（tier）に宣言された候補だけに絞る。
+// ---------------------------------------------------------------------------
+
+function designAssignmentValue(tier, candidate) {
+  return [tier, candidate.agent_cli || '', candidate.model || ''].map(encodeURIComponent).join('|');
+}
+
+function parseDesignAssignmentValue(raw) {
+  if (!raw) return null;
+  const [tier, agentCli, model] = String(raw).split('|').map(decodeURIComponent);
+  return tier && agentCli ? { tier, agent_cli: agentCli, model: model || '' } : null;
+}
+
+function designAssignmentSectionHtml(preview, assignments, options = {}) {
+  const legend = options.legend || '設計フローの実行エージェント';
+  if (!preview) {
+    return `<fieldset class="design-assignments"><legend>${esc(legend)}</legend>
+      <p class="muted">${esc(options.pendingText || '割り当てを読み込んでいます…')}</p></fieldset>`;
+  }
+  const nodes = (preview.nodes || []).filter((node) => !node.human);
+  if (!nodes.length) return '';
+  const tierLabel = (tier) => (preview.labels || {})[tier] || tier;
+  const rows = nodes.map((node) => {
+    const current = (assignments || {})[node.id] || null;
+    const auto = node.auto || {};
+    const autoCandidate = auto.candidate || null;
+    const autoLabel = autoCandidate
+      ? `自動割り当て（${tierLabel(auto.tier)} — ${autoCandidate.agent_cli || '既定'} / ${autoCandidate.model || '既定モデル'}）`
+      : '自動割り当て（実行レベルの候補が未設定）';
+    const choices = [`<option value="">${esc(autoLabel)}</option>`];
+    for (const tier of node.allowed || []) {
+      const spec = (preview.tierCandidates || {})[tier];
+      for (const candidate of (spec && spec.candidates) || []) {
+        const value = designAssignmentValue(tier, candidate);
+        const selected = current && current.tier === tier
+          && String(current.agent_cli || '') === String(candidate.agent_cli || '')
+          && String(current.model || '') === String(candidate.model || '');
+        choices.push(`<option value="${esc(value)}"${selected ? ' selected' : ''}>${
+          esc(tierLabel(tier))} — ${esc(candidate.agent_cli || '既定')} / ${esc(candidate.model || '既定モデル')}</option>`);
+      }
+    }
+    return `<label class="field design-assignment-row">${esc(node.label || node.id)}
+      <select data-design-node="${esc(node.id)}">${choices.join('')}</select></label>`;
+  });
+  return `<fieldset class="design-assignments"><legend>${esc(legend)}</legend>
+    <small class="muted">${esc(options.helpText
+      || '各工程の既定は自動割り当てです。変更する場合も、その工程に任せられる実行レベルの候補からだけ選べます。')}</small>
+    ${rows.join('')}</fieldset>`;
+}
+
+function collectDesignAssignmentsFrom(rootEl) {
+  const out = {};
+  rootEl.querySelectorAll('[data-design-node]').forEach((select) => {
+    const assignment = parseDesignAssignmentValue(select.value);
+    if (assignment) out[select.dataset.designNode] = assignment;
+  });
+  return Object.keys(out).length ? out : null;
+}
+
+function openProjectPreparationDesign(item, session) {
+  const dialog = $('dlg-enqueue');
+  dialog.classList.remove('task-create-dialog');
+  const questions = session.questions || [];
+  dialog.innerHTML = `<div class="dialog-heading"><h2>${esc(item.title)}の設計</h2>
+    <button type="button" class="wf-icon-button" data-project-design-close aria-label="閉じる">×</button></div>
+    <div class="dialog-scroll-body task-create-scroll">
+      ${session.error ? `<p class="qf-failure" role="alert">${esc(session.error)}</p>` : ''}
+      <details class="wf-design-doc" open><summary>現在の設計書</summary><pre class="qf-output">${esc(session.document || '')}</pre></details>
+      ${questions.length ? `<section class="wf-design-questions"><h3>確認したいこと</h3>${questions.map((question, index) =>
+        `<label><span>${index + 1}. ${esc(question)}</span><textarea data-project-design-answer="${index}" rows="2"></textarea></label>`).join('')}</section>`
+    : '<p class="qf-notice">質問はありません。この設計で実装準備へ進めます。</p>'}
+    </div><div class="dialog-actions"><button data-project-design-close>閉じる</button><span class="spacer"></span>
+      ${questions.length ? '<button data-project-design-next>回答して設計を続ける</button>' : ''}
+      <button class="primary-inline" data-project-design-complete>この設計で実装待ちへ進む</button></div>`;
+  dialog.querySelectorAll('[data-project-design-close]').forEach((button) => button.addEventListener('click', () => dialog.close()));
+  dialog.querySelector('[data-project-design-next]')?.addEventListener('click', async () => {
+    const answers = [...dialog.querySelectorAll('[data-project-design-answer]')]
+      .sort((a, b) => Number(a.dataset.projectDesignAnswer) - Number(b.dataset.projectDesignAnswer))
+      .map((field) => field.value);
+    try {
+      await api.designSessionStart({ id: session.id, answers });
+      const synced = await api.preparationSyncDesign({ id: item.id });
+      state.projectPreparations = state.projectPreparations.map((row) => row.id === item.id ? synced.item : row);
+      dialog.close();
+      toast('次の設計runを開始しました', true);
+      renderBacklog();
+    } catch (err) { toast(`設計を続けられませんでした: ${err.message || err}`); }
+  });
+  dialog.querySelector('[data-project-design-complete]')?.addEventListener('click', async () => {
+    try {
+      const completed = await api.preparationCompleteDesign({ id: item.id });
+      state.projectPreparations = state.projectPreparations.map((row) => row.id === item.id ? completed.item : row);
+      dialog.close();
+      toast('設計結果を実装材料へ追加しました', true);
+      renderBacklog();
+    } catch (err) { toast(`設計を確定できませんでした: ${err.message || err}`); }
+  });
+  if (!dialog.open) dialog.showModal();
+}
+
+function projectTaskStepsHtml(step) {
+  return `<ol class="task-create-steps" aria-label="タスク作成の進行">${['やりたいこと', '進め方', '材料', '確認']
+    .map((label, index) => `<li class="${step === index + 1 ? 'current' : step > index + 1 ? 'done' : ''}"
+      ${step === index + 1 ? 'aria-current="step"' : ''}><span>${index + 1}</span>${label}</li>`).join('')}</ol>`;
+}
+
+function renderProjectTaskWizard() {
+  const wizard = projectTaskWizard;
+  const p = state.project;
+  const dialog = $('dlg-enqueue');
+  dialog.classList.add('task-create-dialog');
+  let body;
+  if (wizard.step === 1) {
+    body = `<label class="field">やりたいこと<textarea id="project-task-text" rows="7"
+      placeholder="作りたいタスクや達成したいこと">${esc(wizard.text)}</textarea>
+      <small>まず要望を書いてください。設計要否は次の画面で提案します。</small></label>`;
+  } else if (wizard.step === 2) {
+    const recommended = wizard.recommendation || {};
+    body = `<div class="task-route-recommendation"><strong>おすすめ: ${esc(PROJECT_PREPARATION_ROUTES.find(([id]) => id === recommended.route)?.[1] || '確認中')}</strong>
+      ${(recommended.reasons || []).map((reason) => `<small>${esc(reason)}</small>`).join('')}</div>
+      <fieldset class="task-choice-grid"><legend>進め方を選択</legend>${PROJECT_PREPARATION_ROUTES.map(([id, label, help]) =>
+      `<button type="button" class="task-choice-card" data-project-task-route="${id}"
+        aria-pressed="${wizard.route === id}"><span><strong>${label}${recommended.route === id ? '<em>おすすめ</em>' : ''}</strong><small>${help}</small></span></button>`).join('')}</fieldset>`;
+  } else if (wizard.step === 3) {
+    const versions = (p.charters || []).map((charter) => `<button type="button" class="task-source-row"
+      data-project-source-version="${esc(charter.name)}" aria-pressed="${wizard.versionNames.includes(charter.name)}">
+      <span><strong>${esc(charter.name)}</strong><small>${esc(charter.goal || '計画バージョン')}</small></span></button>`).join('');
+    const notes = wizard.notes.map((note) => `<button type="button" class="task-source-row"
+      data-project-source-note="${esc(note.name)}" aria-pressed="${wizard.noteNames.includes(note.name)}">
+      <span><strong>${esc(note.name)}</strong><small>${esc(String(note.body || '').slice(0, 80))}</small></span></button>`).join('');
+    body = `<div class="task-source-sections"><section><button type="button" class="task-source-row" id="project-source-master" aria-pressed="${wizard.includeMaster}">
+        <span><strong>マスター憲章</strong><small>共通の目的・制約・前提</small></span></button></section>
+      <section><h3>計画バージョン</h3>${versions || '<p class="muted">計画バージョンはありません</p>'}</section>
+      <section><h3>メモ</h3>${notes || '<p class="muted">メモはありません</p>'}</section>
+      <section><h3>ドキュメント</h3><label class="task-file-picker">Markdownを選択
+        <input id="project-task-files" type="file" multiple accept=".md,.markdown,text/markdown"></label>
+        <p class="muted">${wizard.documents.length ? wizard.documents.map((item) => esc(item.name)).join('、') : '未選択'}</p></section>
+      ${wizard.route === 'agent-design'
+        ? designAssignmentSectionHtml(wizard.designPreview, wizard.designAssignments)
+        : ''}</div>`;
+  } else if (wizard.step === 4) {
+    body = `<div class="project-task-candidates">${wizard.candidates.map((task, index) => `<article class="task-candidate-card">
+      <button type="button" class="task-candidate-select" data-project-candidate="${index}"
+        aria-pressed="${task.selected}"><span>追加する</span></button>
+      <label>タスク名<input data-project-candidate-title="${index}" value="${esc(task.title)}"></label>
+      <label>目的・作業概要<textarea data-project-candidate-desc="${index}" rows="3">${esc(task.desc || '')}</textarea></label>
+      <label>完了条件<textarea data-project-candidate-accept="${index}" rows="3">${esc((task.acceptance || []).join('\n'))}</textarea></label>
+      <label>計画バージョン<select data-project-candidate-charter="${index}"><option value="">初版</option>${(p.charters || []).map((charter) =>
+        `<option value="${esc(charter.name)}" ${task.charter === charter.name ? 'selected' : ''}>${esc(charter.name)}</option>`).join('')}</select></label>
+      <fieldset class="task-candidate-route"><legend>この項目の進め方</legend>${PROJECT_PREPARATION_ROUTES.map(([id, label]) =>
+        `<button type="button" data-project-candidate-route="${index}:${id}" aria-pressed="${task.route === id}">${label}</button>`).join('')}</fieldset>
+      </article>`).join('')}</div>`;
+  }
+  dialog.innerHTML = `<div class="dialog-heading"><h2>タスクを作成</h2><button type="button" class="wf-icon-button"
+    data-project-task-close aria-label="閉じる"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"></path></svg></button></div><div class="dialog-scroll-body task-create-scroll">
+    ${projectTaskStepsHtml(wizard.step)}
+    <div class="task-create-body">${wizard.error ? `<p class="qf-failure" role="alert">${esc(wizard.error)}</p>` : ''}${body}</div></div>
+    <div class="dialog-actions">${wizard.step > 1 ? '<button data-project-task-back>戻る</button>' : ''}
+      <span class="spacer"></span><button data-project-task-close>キャンセル</button>
+      <button class="primary-inline" data-project-task-next ${wizard.busy ? 'disabled' : ''}>${esc(wizard.busy || (wizard.step === 4 ? '選択したタスクを作成' : '次へ'))}</button></div>`;
+  dialog.querySelectorAll('[data-project-task-close]').forEach((button) => button.addEventListener('click', () => dialog.close()));
+  dialog.querySelector('[data-project-task-back]')?.addEventListener('click', () => {
+    wizard.step -= 1; wizard.error = ''; renderProjectTaskWizard();
+  });
+  dialog.querySelectorAll('[data-project-task-route]').forEach((button) => button.addEventListener('click', () => {
+    wizard.route = button.dataset.projectTaskRoute;
+    dialog.querySelectorAll('[data-project-task-route]').forEach((choice) =>
+      choice.setAttribute('aria-pressed', String(choice === button)));
+  }));
+  dialog.querySelectorAll('[data-project-candidate-route]').forEach((button) => button.addEventListener('click', () => {
+    const [index, route] = button.dataset.projectCandidateRoute.split(':');
+    wizard.candidates[Number(index)].route = route;
+    dialog.querySelectorAll(`[data-project-candidate-route^="${index}:"]`).forEach((choice) =>
+      choice.setAttribute('aria-pressed', String(choice === button)));
+  }));
+  const togglePressed = (button) => button.setAttribute('aria-pressed', String(button.getAttribute('aria-pressed') !== 'true'));
+  dialog.querySelector('#project-source-master')?.addEventListener('click', (event) => togglePressed(event.currentTarget));
+  dialog.querySelectorAll('[data-project-source-version], [data-project-source-note], [data-project-candidate]')
+    .forEach((button) => button.addEventListener('click', () => togglePressed(button)));
+  dialog.querySelector('#project-task-files')?.addEventListener('change', async (event) => {
+    wizard.documents = await Promise.all([...event.target.files].map(async (file) => ({ name: file.name, content: await file.text() })));
+    renderProjectTaskWizard();
+  });
+  // 設計フローの割り当ては再描画で消えないよう、変更のたびに状態へ写す。
+  dialog.querySelectorAll('[data-design-node]').forEach((select) => select.addEventListener('change', () => {
+    wizard.designAssignments = collectDesignAssignmentsFrom(dialog);
+  }));
+  dialog.querySelector('[data-project-task-next]')?.addEventListener('click', advanceProjectTaskWizard);
+}
+
+async function advanceProjectTaskWizard() {
+  const wizard = projectTaskWizard;
+  const p = state.project;
+  wizard.error = '';
+  if (wizard.step === 1) {
+    wizard.text = $('project-task-text')?.value.trim() || '';
+    if (!wizard.text) wizard.error = 'やりたいことを入力してください';
+    if (!wizard.error) {
+      wizard.busy = '進め方を確認中…'; renderProjectTaskWizard();
+      try {
+        const result = await api.preparationRecommend({ goal: wizard.text });
+        wizard.recommendation = result.recommendation;
+        wizard.route = result.recommendation.route;
+        wizard.step = 2;
+      } catch (err) { wizard.error = String(err.message || err); }
+      wizard.busy = '';
+    }
+    renderProjectTaskWizard();
+    return;
+  }
+  if (wizard.step === 2) {
+    if (!wizard.route) wizard.error = '進め方を選択してください';
+    else {
+      wizard.step = 3;
+      if (wizard.route === 'agent-design' && !wizard.designPreview && api.adhocFlowDesignPreview) {
+        wizard.busy = '設計フローを確認中…'; renderProjectTaskWizard();
+        try {
+          const result = await api.adhocFlowDesignPreview({ mode: 'interactive' });
+          wizard.designPreview = result.preview;
+        } catch (err) {
+          // 割り当てUIが読めなくても準備は進められる（自動割り当てで実行される）。
+          wizard.designPreview = { nodes: [] };
+          console.warn('設計フローの割り当てを読み込めませんでした:', err);
+        }
+        wizard.busy = '';
+      }
+    }
+    renderProjectTaskWizard();
+    return;
+  }
+  if (wizard.step === 3) {
+    wizard.designAssignments = collectDesignAssignmentsFrom($('dlg-enqueue')) || wizard.designAssignments;
+    wizard.includeMaster = $('project-source-master')?.getAttribute('aria-pressed') === 'true';
+    wizard.versionNames = [...document.querySelectorAll('[data-project-source-version][aria-pressed="true"]')]
+      .map((button) => button.dataset.projectSourceVersion);
+    wizard.noteNames = [...document.querySelectorAll('[data-project-source-note][aria-pressed="true"]')]
+      .map((button) => button.dataset.projectSourceNote);
+    if (wizard.route === 'external-design' && !wizard.documents.length) {
+      wizard.error = '外部の設計結果となるMarkdownを選択してください';
+      renderProjectTaskWizard();
+      return;
+    }
+    wizard.busy = 'タスク候補を設計中…'; renderProjectTaskWizard();
+    const sources = [];
+    if (wizard.text) sources.push({ id: 'free-text', kind: 'note', name: '自由入力', content: wizard.text });
+    if (wizard.includeMaster && p.charter) sources.push({ id: 'master', kind: 'master', name: 'charter.md', content: JSON.stringify(p.charter) });
+    for (const name of wizard.versionNames) {
+      const version = (p.charters || []).find((item) => item.name === name);
+      if (version) sources.push({ id: `version:${name}`, kind: 'plan-version', name, content: JSON.stringify(version) });
+    }
+    for (const name of wizard.noteNames) {
+      const note = wizard.notes.find((item) => item.name === name);
+      if (note) sources.push({ id: `note:${name}`, kind: 'note', name, content: note.body });
+    }
+    sources.push(...wizard.documents.map((item) => ({ id: `document:${item.name}`, kind: 'document', ...item })));
+    try {
+      const result = await api.agentTaskAssist({ dir: p.dir, mode: 'project-design-proposal',
+        context: { target: 'project', sourceMode: wizard.route, sources, backlog: backlogAssistRows(p),
+          archive: p.archive || [], tombstones: p.tombstones || [] },
+        userPrompt: '入力を独立して実装できるバックログ候補へ分解してください。' });
+      wizard.proposal = result.fields;
+      wizard.candidates = await Promise.all((result.fields.backlogGroups || []).flatMap((group) =>
+        (group.tasks || []).map(async (task) => {
+          const goal = `## 目的\n${task.why || task.title}\n\n## 変更対象\n${task.desc || ''}`
+            + `\n\n## 受入基準\n${(task.acceptance || []).map((line) => `- ${line}`).join('\n')}`
+            + '\n\n## 検証方法\n- 受入基準に対応する証跡を提示する';
+          const recommended = await api.preparationRecommend({ goal, materials: sources });
+          return { ...task, goal, charter: group.charter, selected: true,
+            route: recommended.recommendation.route, routeRecommendation: recommended.recommendation };
+        })));
+      if (!wizard.candidates.length) throw new Error('追加できるタスク候補がありませんでした');
+      wizard.materials = sources;
+      wizard.step = 4;
+    } catch (err) { wizard.error = String(err.message || err); }
+    wizard.busy = ''; renderProjectTaskWizard();
+    return;
+  }
+  if (wizard.step === 4) {
+    const selected = wizard.candidates.flatMap((task, index) => {
+      if (document.querySelector(`[data-project-candidate="${index}"]`)?.getAttribute('aria-pressed') !== 'true') return [];
+      return [{ ...task,
+        title: document.querySelector(`[data-project-candidate-title="${index}"]`)?.value.trim(),
+        desc: document.querySelector(`[data-project-candidate-desc="${index}"]`)?.value.trim(),
+        acceptance: (document.querySelector(`[data-project-candidate-accept="${index}"]`)?.value || '').split('\n').map((line) => line.trim()).filter(Boolean),
+        charter: document.querySelector(`[data-project-candidate-charter="${index}"]`)?.value || task.charter,
+      }];
+    }).filter((task) => task.title);
+    if (!selected.length) { wizard.error = '追加するタスクを選択してください'; renderProjectTaskWizard(); return; }
+    wizard.busy = '準備中…'; renderProjectTaskWizard();
+    try {
+      const result = await api.preparationCreatePackage({
+        projectDir: p.dir, title: wizard.text.slice(0, 80), goal: wizard.text,
+        materials: wizard.materials, candidates: selected,
+        ...(wizard.designAssignments ? { designAssignments: wizard.designAssignments } : {}),
+      });
+      state.projectPreparations = [...(result.items || []), ...(state.projectPreparations || [])];
+      $('dlg-enqueue').close();
+      toast(`${selected.length}件を作業準備へ追加しました`, true);
+      renderBacklog();
+    } catch (err) { wizard.error = String(err.message || err); }
+    wizard.busy = ''; renderProjectTaskWizard();
+  }
+}
+
+async function openProjectTaskWizard(prefill = {}) {
+  const p = state.project;
+  if (!p) return toast('プロジェクトを選択してください');
+  let notes = [];
+  try { notes = await api.listNotes(p.dir); } catch { /* メモ無しとして続ける */ }
+  const inherited = [prefill.title, prefill.desc, prefill.accept].filter(Boolean).join('\n\n');
+  projectTaskWizard = { step: 1, text: inherited, includeMaster: false,
+    versionNames: prefill.charter ? [prefill.charter] : [], noteNames: [], documents: [], notes,
+    route: '', recommendation: null, materials: [], proposal: null, candidates: [], error: '', busy: '',
+    designPreview: null, designAssignments: null };
+  renderProjectTaskWizard();
+  $('dlg-enqueue').showModal();
+}
+
 // タスク追加ダイアログを開く。prefill.reinject が真のときは archive タスクの
 // 「revise して再投入」モード（エラー復帰用途）— 元タスクの内容を編集して inbox へ入れる。
 function openEnqueueDialog(prefill = {}) {
-  const reinject = !!prefill.reinject;
-  $('enq-heading').textContent = reinject
-    ? '完了タスクを編集してやり直す'
-    : 'タスクを追加';
-  const note = $('enq-reinject-note');
-  if (reinject) {
-    note.textContent =
-      `完了タスク ${prefill.id || ''} の内容を引き継いで、新しいタスクとして追加します。` +
-      '完了の記録はそのまま残ります（誤って完了になった場合のやり直しに使えます）。';
-    note.classList.remove('hidden');
-  } else {
-    note.classList.add('hidden');
-  }
-  $('enq-title').value = prefill.title || '';
-  $('enq-verify').value = prefill.verify || '';
-  $('enq-accept').value = prefill.accept || '';
-  $('enq-priority').value = prefill.priority != null && prefill.priority !== '' ? String(prefill.priority) : '0';
-  $('enq-note').value = prefill.note || '';
-  $('enq-id').value = prefill.id || '';
-  $('enq-after').value = Array.isArray(prefill.after) ? prefill.after.join(', ') : (prefill.after || '');
-  // 構造化フォームの入力（案5・案3）。再投入では元の値を引き継ぎ、通常は空にする。
-  // desc（作業内容の概要）は複数行 textarea なので ⏎ 規約を改行へ戻して見せる。
-  const setEnq = (id, v) => { const el = $(id); if (el) el.value = v || ''; };
-  setEnq('enq-verify-template', prefill.verify_template);
-  setEnq('enq-desc', String(prefill.desc || '').replace(/\s*⏎\s*/g, '\n'));
-  setEnq('enq-why', prefill.why);
-  setEnq('enq-scope', prefill.scope);
-  setEnq('enq-out_of_scope', prefill.out_of_scope);
-  setEnq('enq-risks', Array.isArray(prefill.risks) ? prefill.risks.join('\n') : prefill.risks);
-  setEnq('enq-size', prefill.size);
-  fillCharterSelect($('enq-charter'), state.project, prefill.charter || '');
-  updateCharterSelectContext('enq-charter', 'enq-charter-description');
-  fillWorkspaceSelect($('enq-workspace'), state.project, prefill.workspace || '');
-  // level / track と誘導・レビュー記述（why 等）・ルーティング/検収系（refs/paths/review/expect/
-  // followup/verify_template）はフォームに出さないが、再投入・フォローアップ提案では
-  // 元の値を引き継いで送る（task.schema.json の「未知キーは保持」契約を UI 経由でも守る）
-  state.enqueueExtra = Object.fromEntries(
-    ENQUEUE_PASSTHROUGH_KEYS.map((k) => [
-      k,
-      Array.isArray(prefill[k]) ? prefill[k].join(', ') : prefill[k] || '',
-    ])
-  );
-  fillEnqueueAfterOptions(state.project);
-  renderEnqueueBacklogSummary(state.project);
-  state.enqueueAdjustments = [];
-  void refreshEnqueueAdjustmentPlan();
-  const status = $('enq-ai-status');
-  if (status) status.textContent = '';
-  $('dlg-enqueue').showModal();
+  return openProjectTaskWizard(prefill);
 }
 
 async function aiEnqueueGuideAssist() {

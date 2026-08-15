@@ -52,6 +52,47 @@ ls .github/skills/
    完了後、指定された形式で出力のみを返してください。次のステップは別途指示されます。
    ```
 5. **スクリプトは原則作成しない** — スキル（ステップ1で確認）や他のAI機能でアクションを実行する
+6. **スキルへ移譲するときはスキル名を明記する** — アクション本文に `` `skill-name` スキル `` と書く。この記法が無いと実行ハーネスはスキルを読み込まず、スクリプトの場所も分からない
+7. **成功条件を `output_validator` で定義する** — 「第1行が `OK` か `FAILED`」のような機械が判定できる出力契約を states に書く。書かないとアクションの成否を確認できず、失敗したまま次のステートへ進む
+8. **成果物の正しさは `check` で測る** — `output_validator` が見るのは書式だけで、「OK」と書くのはモデル自身である。**成果物が実際に仕様どおり動くかを見るには、ハーネスが実行する検査コマンドを宣言する**（下記）
+
+**`check` — 遷移の材料を自己申告から実測へ移す**
+
+```yaml
+states:
+  implement:
+    action_file: actions/implement.md
+    output_validator: "startswith:OK"      # 書式（モデルが書く）
+    check: "python3 -m pytest tests/test_x.py -q"   # 事実（ハーネスが測る）
+    check_retries: 2
+transitions:
+  - from: implement
+    to: review
+    condition_rule: "equals:check_ok:true"  # 実際に通ったときだけ進む
+```
+
+検査が落ちたら、測った不一致を課題文へ足して**同じステートをやり直す**。再投入を使い切っても
+落ちるなら、実行を止めて `escalate`（この段では解けない = 上位の段へ回すシグナル）を返す。
+
+ローカルモデルで定型作業を回すなら、これが**受入率を決める唯一のレバー**である。実測では
+検知を伴わない分解は受入を下げ（0/3）、決定的な検知 + 再投入で 3/3 になった。逆に**通る課題に
+ゲートは課金しない**（呼び出し回数は増えない）。書式・使える宣言の形・失敗時の動作は
+`references/schema.md` の「決定的検査 (check)」を参照。作例は `examples/gated_implement.yaml`。
+
+**検査を置ける単位で割る** — ステートを細かく割ること自体に効果は無い（実測では逆に下がる）。
+分解の目的は**検査を差し込む場所を作ること**である。1 つのステートを設計するとき、
+「このステートの成果は、どのコマンドの終了コードで測れるか」を先に決める。決められないなら、
+そのステートはまだ割り方が正しくない。
+
+**実行できるスクリプトの範囲**（ハーネスが強制する。定義側もこれに合わせて書く）:
+
+| 決まり | 意味 |
+|---|---|
+| アクション本文が名指しした `.py` / `.js` / `.sh`、または移譲先スキルの SKILL.md に載っている `.py` / `.js` / `.sh` のみ | `scripts/` に置いてあるだけの下請けは呼べない |
+| 固定インタプリタで実行する（`.py`→python / `.js`→node / `.sh`→bash または sh） | shebang や実行ビットで走らせるものを決めさせない |
+| スキル名は実行コマンドではない | `` `demo` スキル `` の `demo` を command に置いても動かない。スクリプトのパスを書く |
+| `bash -c` などの任意シェルは使えない | シェル経由の合成コマンドは拒否される |
+| コマンドの stdout が空でも exit 0 なら成功 | 出力の有無で成否を判定しない。空の結果は正常な空結果 |
 
 **パターンの自動検出** — 詳細テンプレートは `references/patterns.md` を参照:
 
@@ -64,18 +105,25 @@ ls .github/skills/
 | 「失敗したら元に戻す」「ロールバック」 | Saga |
 | 5ステート以上の長いワークフロー | マイルストーンアンカー |
 
-### ステップ3: フォルダ構造を作成する
+### ステップ3: scaffold で骨組みを生成する
 
+フォルダとファイルを手で書かない。ステップ2で決めた状態列を scaffold へ渡す:
+
+```bash
+python .github/skills/statemachine-use/scripts/scaffold.py {名前} \
+  --state "first_state:説明" --state second_state
 ```
-.statemachine/{名前}/
-  workflow.yaml
-  actions/{state_id}.md
-  conditions/{from}_to_{to}.md   # 複雑な条件のみ。単純な条件はYAMLインラインでよい
-```
 
-### ステップ4: ファイルを生成する
+- `--state ID[:説明]` を実行順に並べる。終端は `--terminal ID[:説明]`（省略時は complete を自動で足す）。
+- `.statemachine/{名前}/` に workflow.yaml と actions/*.md スタブを生成し、**生成直後に検証する**
+  （通らない骨組みは残さない）。
+- 骨組みは直列遷移。分岐・ループ・複雑な条件（`conditions/{from}_to_{to}.md`）はステップ4で足す。
+- 新スキーマの口（`output_validator` / `check` / `check_retries` / `check_on_exhausted` / `write`）は
+  コメント付きで含まれる——ステップ2で決めた検査コマンドのコメントを外して実値にする。
 
-**workflow.yaml** — 全フィールドの仕様は `references/schema.md` を参照:
+### ステップ4: スタブを埋める
+
+生成された workflow.yaml と actions/*.md を以下の形へ埋める。全フィールドの仕様は `references/schema.md` を参照:
 
 ```yaml
 name: "ワークフロー名"
@@ -167,6 +215,21 @@ transitions:
 完了後、指定された形式で出力のみを返してください。次のステップは別途指示されます。
 ```
 
+### 定義のメンテナンス — migrate
+
+スキーマは加算的に拡張される（check → check_on_exhausted → write）。手持ちの定義は
+migrate で検査し、追随させる:
+
+```bash
+python .github/skills/statemachine-use/scripts/migrate.py path/to/workflow.yaml   # dry-run（検出と差分）
+python .github/skills/statemachine-use/scripts/migrate.py .statemachine --apply   # フォルダごと適用
+```
+
+検出項目: check 宣言の無いステートからの `check_*` 分岐（検証エラー・修正案の提示）、
+シェル記号入り `check`（投入前に落ちる）、`write` 未割付（編集対象が一意に決まる場合だけ提案）、
+`check_on_exhausted` の暗黙既定の明示化。後ろ 2 つはコメントを保ったまま `--apply` で書き換える。
+正規化・検証は engine.py の 1 実装を使うので、判定が実行系とずれることはない。
+
 ---
 
 ## 実行モード
@@ -209,36 +272,48 @@ python .github/skills/statemachine-use/scripts/next_state.py {名前} --initial-
 
 > **重要**: アクション実行前に条件を確認してはならない。出力が確定してから条件リストを取得する。
 
-**② 条件リストを取得する（Python）**
+**② 条件を自動評価する（Python）**
+
+状態値は `--context` の JSON オブジェクトで渡す（`last_output` と各 `output_key`）。
 
 ```bash
 python .github/skills/statemachine-use/scripts/next_state.py {名前} \
-  --state {現在のstate_id} --list-conditions \
-  --last-output "{last_outputの第1行}"
+  --state {現在のstate_id} --auto-eval \
+  --context '{"last_output":"{last_outputの第1行}"}'
 ```
 
-`needs_llm_eval: false` の条件は `condition_rule` で自動評価済み（LLM評価不要）。
-`needs_llm_eval: true` の条件のみ次のステップで評価する。
+遷移先がここで確定する応答は 2 形。どちらも ③④ を飛ばして ⑤ へ進む:
 
-**③ 各条件を評価する（LLM）**
+- `auto_advance: true` — 無条件トランジション。`conditions` は返らず `next_state` が遷移先。
+- `resolved` が `null` 以外 — `condition_rule` だけで確定。
+
+> `auto_advance` が省くのは**条件評価だけ**。① のアクション実行と `output_validator` による成功確認は省略しない。
+> アクションが失敗したステートから遷移してはならない。
+
+`resolved` が `null` の場合のみ `needs_llm_eval: true` の条件を LLM で評価する。
+
+> 旧ハーネス互換として `--list-conditions` / `--last-output` / `--output KEY=VALUE` も受け付ける。
+> 旧引数は `--context` に無いキーの補完としてのみ効く。新規の呼び出しでは使わない。
+
+**③ 残った条件を評価する（LLM）**
 
 `needs_llm_eval: true` の条件のみ `last_output` に対して YES / NO で評価し、JSON を構築する:
 ```json
 {"1": false}
 ```
-（`needs_llm_eval: false` の条件インデックスは省略可。`--evals` 渡し時に自動上書きされる）
+（`needs_llm_eval: false` の条件インデックスは省略可。`--eval` 渡し時に自動上書きされる）
 
 **④ 遷移先を確定する（Python）**
 
 ```bash
 python .github/skills/statemachine-use/scripts/next_state.py {名前} \
-  --state {現在のstate_id} --evals '{"1": false}' \
-  --last-output "{last_outputの第1行}"
+  --state {現在のstate_id} --eval '{"1": false}' \
+  --context '{"last_output":"{last_outputの第1行}"}'
 ```
 
 出力: 次の `state_id`、`NONE`（一致なし）、`TERMINAL`（終端）
 
-> `condition_rule` がある条件は `--last-output` から自動評価され、`--evals` の値を上書きする。
+> `condition_rule` がある条件は `--context` から自動評価され、`--eval` の値を上書きする。
 
 **⑤ 完了を記録する**
 

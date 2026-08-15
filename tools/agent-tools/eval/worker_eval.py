@@ -39,6 +39,7 @@ WORK = Path(os.environ.get("WORKER_EVAL_DIR",
 MODEL = "qwen3.5:9b"        # --model で上書き
 CLI = "agent-ollama"        # --cli で上書き（agent-ollama | aider）
 NUM_PREDICT = 0             # --num-predict で上書き（0 = 上限なし。aider 経路のみ）
+SAMPLING: dict = {}         # --temperature / --top-p / --top-k で上書き（空 = 宣言しない）
 OLLAMA_API_BASE = os.environ.get("OLLAMA_API_BASE", "http://127.0.0.1:11434")
 WALL_LIMIT = 600.0          # agent-flow の agent_timeout 既定
 # 本番の argv は agents/ollama.json の write_args。**書き写さずに読む**——初版は
@@ -463,20 +464,38 @@ def build_prompt(task: dict) -> str:
     return r.stdout.strip()
 
 
-def aider_settings(model: str, num_ctx: int = 32768, num_predict: int = 0) -> Path:
-    """aider へ渡すモデル設定（文脈と 1 ターンの生成上限）。
+def aider_settings(model: str, num_ctx: int = 32768, num_predict: int = 0,
+                   sampling: "dict | None" = None, base: bool = True) -> Path:
+    """aider へ渡すモデル設定（文脈・1 ターンの生成上限・sampling）。
 
     aider の直し直しは 3 回で止まる（`max_reflections`・CLI フラグは無い）ので、壁時計を
     焼くのは回数ではなく **1 ターンの生成の長さ**である——実測で最後のターンが受信 3.7k
     トークン、26.5 tok/s で約 140 秒。`num_predict` はそこへ効く上限で、**失敗を安く切る**
     ためのレバー。合否そのものは変わらない（途中で切られた編集は適用されず fail になる）。
+
+    `base=False` は**指定されたものだけ**を書く。sampling の腕はこれを使う——`base=True`
+    は `edit_format` / `use_repo_map` / `num_ctx` も一緒に書くので、それで sampling を
+    測ると「温度を変えた」ではなく「温度と文脈長と編集形式を変えた」を測ることになる。
+    **1 度に 1 つだけ変える**（README の測定規律）を設定ファイルの粒度でも守るための口。
     """
     path = WORK / "aider.model.settings.yml"
     path.parent.mkdir(parents=True, exist_ok=True)
-    lines = [f"- name: ollama_chat/{model}", "  edit_format: diff",
-             "  use_repo_map: false", "  extra_params:", f"    num_ctx: {num_ctx}"]
+    lines = [f"- name: ollama_chat/{model}"]
+    if base:
+        lines += ["  edit_format: diff", "  use_repo_map: false"]
+    params = []
+    if base:
+        params.append(f"    num_ctx: {num_ctx}")
     if num_predict > 0:
-        lines.append(f"    num_predict: {num_predict}")
+        params.append(f"    num_predict: {num_predict}")
+    # sampling は宣言したものだけ。未宣言のキーは書かない = aider / ollama の既定のまま。
+    for key in ("temperature", "top_p", "top_k"):
+        value = (sampling or {}).get(key)
+        if value is not None:
+            params.append(f"    {key}: {value}")
+    if params:
+        lines.append("  extra_params:")
+        lines += params
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
 
@@ -495,8 +514,11 @@ def aider_argv(task: dict) -> "list[str]":
                                 read_files=task.get("read") or ())
     argv = built["argv"]
     extra = []
-    if NUM_PREDICT > 0:
-        extra += ["--model-settings-file", str(aider_settings(MODEL, num_predict=NUM_PREDICT))]
+    if NUM_PREDICT > 0 or SAMPLING:
+        # sampling だけの腕では base を書かない（上の docstring 参照——余計な差を
+        # 一緒に入れると、測っているものが「温度の効果」でなくなる）。
+        extra += ["--model-settings-file", str(aider_settings(
+            MODEL, num_predict=NUM_PREDICT, sampling=SAMPLING, base=NUM_PREDICT > 0))]
     if task.get("map_tokens"):
         # 定義の `--map-tokens 0` を**消してから**置き換える。同じフラグを 2 回並べて
         # 後勝ちに賭けると、定義側が並び順を変えた日に静かに 0 へ戻る。
@@ -621,6 +643,10 @@ def run_one(tid: str, i: int) -> dict:
         if line.startswith("@agent-log"):
             log = line.split(None, 1)[-1]
     rec = dict(task=tid, iter=i, cli=CLI, model=MODEL, num_predict=NUM_PREDICT, ok=ok, mode=mode,
+               # sampling は台帳に必ず残す。null は「宣言しなかった」＝ aider / ollama の
+               # 既定で走ったという意味で、**空欄と同義ではない**——腕の条件を後から
+               # 台帳だけで復元できないと、条件の違う数字が同じ表に並ぶ。
+               sampling=(SAMPLING or None),
                wall=round(wall, 1), note=note, log=log, out_chars=len(out),
                calls=len(trace), trace=trace)
     print(f"  {tid}#{i}: {'PASS' if ok else 'FAIL':4s} {mode:24s} "
@@ -629,7 +655,7 @@ def run_one(tid: str, i: int) -> dict:
 
 
 def main() -> None:
-    global WALL_LIMIT, MODEL, CLI, NUM_PREDICT
+    global WALL_LIMIT, MODEL, CLI, NUM_PREDICT, SAMPLING
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default=MODEL,
                     help="測るモデル。別モデルの判定はここだけ変えればよい")
@@ -642,11 +668,24 @@ def main() -> None:
     ap.add_argument("--num-predict", type=int, default=NUM_PREDICT,
                     help="1 ターンの生成上限（aider 経路のみ・0 で無効）。"
                          "収束しない課題の壁時計を切るレバー")
+    # sampling（aider 経路のみ）。**未指定なら 1 バイトも宣言しない**ので、
+    # これまでの測定条件（aider / ollama の既定）がそのまま再現される。
+    ap.add_argument("--temperature", type=float, default=None,
+                    help="sampling の温度。未指定なら aider の既定のまま。"
+                         "Gemma 系は低温が推奨されない可能性がある（要実測・計画 P10）")
+    ap.add_argument("--top-p", type=float, default=None, help="nucleus sampling。同上")
+    ap.add_argument("--top-k", type=int, default=None, help="top-k sampling。同上")
     args = ap.parse_args()
     WALL_LIMIT = args.wall
     MODEL = args.model
     CLI = args.cli
     NUM_PREDICT = args.num_predict
+    SAMPLING = {k: v for k, v in (("temperature", args.temperature),
+                                  ("top_p", args.top_p), ("top_k", args.top_k))
+                if v is not None}
+    if SAMPLING and CLI != "aider":
+        raise SystemExit("--temperature / --top-p / --top-k は aider 経路のみです"
+                         "（agent-ollama は AGENT_OLLAMA_OPTIONS で渡してください）")
 
     WORK.mkdir(parents=True, exist_ok=True)
     ledger = WORK / "ledger.jsonl"
@@ -660,7 +699,12 @@ def main() -> None:
     else:
         print(f"model={MODEL} cli={CLI} argv={' '.join(WRITE_ARGS)} "
               f"（出所: {WRITE_ARGS_SOURCE}）")
-    print(f"wall_limit={WALL_LIMIT:.0f}s tasks={tids} repeat={args.repeat}\n")
+    print(f"wall_limit={WALL_LIMIT:.0f}s tasks={tids} repeat={args.repeat}")
+    # 腕の条件を起動行にも出す。「宣言しなかった」と「既定値を宣言した」は別物なので、
+    # 前者は既定と明示する——実効値が不明なまま数字だけが残るのを避ける
+    # （実効 sampling の未確認は計画 P10 が潰す当の交絡）。
+    print("sampling=" + (", ".join(f"{k}={v}" for k, v in SAMPLING.items())
+                         if SAMPLING else "未宣言（aider / ollama の既定のまま）") + "\n")
 
     rows = []
     for tid in tids:

@@ -7,6 +7,49 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-dashboard: 相談を 4 領域それぞれの対象フォルダへ結び直した
+
+「この作業を相談」は全領域共通のヘッダーに 1 組だけあり、対象はプロジェクト選択に固定されていた。
+ワークフローとミッションには対象フォルダの一覧が無いため領域切替で選択が引き継がれず、
+**画面で見ている対象とは別のフォルダで CLI が開いていた**。無効化されるのではなく黙って別の対象を掴む。
+
+- **配置規則**: 相談ボタンは、その領域で対象フォルダを決めているコントロールの隣へ、領域につき
+  1 組だけ置く。プロジェクトはヘッダー据え置き、ワークフローとミッションは各フォームの
+  フォルダ入力の直下、定常業務は作業タブの対象フォルダ表示の隣
+- **1 実装のまま**: ボタン・フォルダ選択・起動処理は共通で、領域は対象フォルダの出しかたを
+  `registerConsultSource` で登録するだけ。相談用の選択状態は新設しない
+- **定常業務の表示崩れを修正**: レジストリを持たない作業フォルダが起動先候補で
+  「プロジェクト（状態リポジトリ）」と名乗っていたのをやめ、候補計算自体を通さないようにした
+- **実行方針へ接続**: 相談が `workload: dashboard` / `purpose: chat` を渡さず agent-control を
+  素通りしていた。UI は「エージェントとモデルは実行方針から自動設定されます」と表示していたが、
+  相談だけがプロジェクト設定か既定の kiro へ落ちていた
+- **実行制御を尊重**: `lifecycle` が `pause` / `stop`、または利用上限に達しているときは新しい対話を
+  開かず理由を出す。秒数の台帳へは記帳しない（対話の長さを dashboard から観測できず、0 秒の行は
+  「相談は無料」に見えるため。実測は CLI 側の既存経路へ委ねる）
+- **全体設定 ＞ アプリに「相談で使うエージェント」を追加**: 既定は「実行方針に従う」。保存先は
+  `control.json` の `workloads.dashboard.agents.chat` 1 か所で、設定用のキーを新設しない
+- **起動前に実効エージェントを表示**: エージェント名・モデル・由来（実行方針／全体設定／
+  プロジェクト設定／既定）と、押せない場合の理由を文字で出す
+
+設計: `docs/plans/2026-08-14-agent-dashboard-consult-entry-design.md`
+
+### agent-aider / agent-ollama / agent-opencode: 非ログイン起動でもプロキシを迂回して ollama へ届くようにした
+
+エンジンからの非ログイン subprocess では ~/.profile の export が届かず、agent-aider が
+既定の localhost へ向かうか、接続が社内プロキシへ流れて 504 Gateway Timeout で落ちていた。
+agent-ollama だけが持っていた ~/.profile 補完を 3 つの CLI へ広げ、プロキシ迂回まで面倒を見る。
+
+- **~/.profile 補完の対象拡大**: `OLLAMA_*` / `AGENT_OLLAMA_*` に加えて `NO_PROXY` / `no_proxy` を
+  取り込む。`OLLAMA_HOST` / `OLLAMA_API_BASE` / `NO_PROXY` が揃っていれば profile は読まない
+- **相互補完**: `OLLAMA_HOST` ⇄ `OLLAMA_API_BASE` を相互に補う（aider/litellm は API base しか
+  読まないため、片方しか export していない環境でも両方の読み手が同じサーバへ向く）
+- **プロキシ迂回の保証**: ollama のホストを `NO_PROXY` / `no_proxy` の両表記へ常に追記する。
+  親環境が不完全な `NO_PROXY` を持っていても迂回が効く
+- **適用範囲**: agent-aider と agent-opencode は単体ファイル配布で agentcore を import
+  できないため、正典（agentcore/ollama_adapter.py）の複製を持つ。テストで 3 箇所の
+  振る舞い一致を担保
+- aider.json に 504 / ProxyError を env 分類する診断ヒントを追加
+
 ### agent-dashboard: 依頼を設計書まで詰めてからワークフローを実行できるようにした
 
 依頼欄に何をどこまで書けばよいか分からず手が止まる問題への対策。外で書いた設計書を持ち込む経路と、

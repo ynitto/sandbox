@@ -454,7 +454,10 @@ class Bus:
                      escalation: "dict | None" = None, methods: "list[str] | None" = None,
                      trial: "dict | None" = None, tier: "str | None" = None,
                      selection_source: "str | None" = None, pinned: bool = False,
-                     selection_reason: "str | None" = None) -> None:
+                     selection_reason: "str | None" = None,
+                     execution_decision: "dict | None" = None,
+                     operation_class: "str | None" = None,
+                     local_patch_blockers: "list[str] | None" = None) -> None:
         """ノードの結果を確定する。
 
         `node` は**実行した PC**（node_id の正規形）。`who`（worker の名義）にも PC 名は
@@ -488,6 +491,14 @@ class Bus:
             rec["pinned"] = True
         if selection_reason:
             rec["selection_reason"] = selection_reason
+        if execution_decision is not None:
+            # 実行 receipt v2 の execution_decision ブロック（schemas/execution-receipt）。
+            # 読み手（dashboard / agent-audit）は設定から実モデルを再推測せず、これを正典にする。
+            rec["execution_decision"] = execution_decision
+        if operation_class:
+            rec["operation_class"] = operation_class
+        if local_patch_blockers:
+            rec["local_patch_blockers"] = list(local_patch_blockers)
         if data is not None:  # 構造化成果（任意）。エージェント間を JSON で流す
             rec["data"] = data
         if context_allocation is not None:

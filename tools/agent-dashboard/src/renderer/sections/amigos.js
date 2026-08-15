@@ -181,17 +181,14 @@ function renderAmigosRun() {
   ].filter(Boolean))];
   const cwdOptions = cwdChoices.map((cwd) => `<option value="${esc(cwd)}"></option>`).join('');
   el.innerHTML = `<div class="amigos-run-shell">
-    <header class="cowork-header">
-      <div><span class="summary-kicker">チームで進める作業</span><h2>ミッションを実行</h2>
-        <p class="muted">タスクに合う担当を自動で編成し、agent-amigos で作業を開始します。</p></div>
-    </header>
     ${homes.length ? '' : `<div class="amigos-attention" role="status">
       チームの実行設定がまだありません。内容は入力できますが、実行するには agent-amigos の設定が必要です。
     </div>`}
     <form class="amigos-run-card" id="amigos-run-form">
       <label class="amigos-run-team-field">チーム<select id="amigos-run-home"${homes.length ? '' : ' disabled'}>${options}</select></label>
-      <label class="amigos-run-cwd-field">フォルダ<input id="amigos-run-cwd" type="text"
+      <div class="amigos-run-cwd-action"><label class="amigos-run-cwd-field">フォルダ<input id="amigos-run-cwd" type="text"
         list="amigos-run-cwd-history" placeholder="/path/to/repository" autocomplete="off"></label>
+        ${consultControlHtml('missions')}</div>
       <datalist id="amigos-run-cwd-history">${cwdOptions}</datalist>
       <fieldset class="amigos-mode-field amigos-run-mode-field">
         <legend>チーム編成</legend><div class="amigos-mode" role="radiogroup">
@@ -222,7 +219,11 @@ function renderAmigosRun() {
     event.preventDefault();
     submitAmigosRun();
   });
+  // 相談の対象フォルダは依頼フォームの入力そのもの。入力中は描画だけ、確定でエージェントを引き直す。
+  $('amigos-run-cwd')?.addEventListener('input', () => renderConsultControls());
+  $('amigos-run-cwd')?.addEventListener('change', () => refreshConsultInfo());
   applyAmigosRunMode();
+  renderConsultControls();
 }
 
 function amigosMin(sec) {
@@ -546,6 +547,7 @@ function amigosMissionDetailHtml(m) {
       <div class="amigos-conversation">${conversation}</div>
     </section>`;
   return `<div class="amigos-detail-content">
+    ${consultControlHtml('missions')}
     <section class="amigos-detail-overview">
       <div class="amigos-detail-overview-head">
         <h3>現在の状況</h3>
@@ -687,6 +689,9 @@ function openAmigosDetail(missionId) {
   const mission = (scoped.missions || []).find((m) => m.id === missionId)
     || (scoped.orphanMissions || []).find((m) => m.id === missionId);
   if (!mission) return;
+  const workspace = mission.workspace && typeof mission.workspace === 'object'
+    ? mission.workspace.repo : mission.workspace;
+  $('dlg-amigos-detail').dataset.consultDir = String(workspace || mission.cwd || '');
   $('amigos-detail-title').textContent = mission.title || 'ミッション詳細';
   $('amigos-detail-body').innerHTML = amigosMissionDetailHtml(mission);
   setupAmigosClaimButtons($('amigos-detail-body'));
@@ -696,6 +701,7 @@ function openAmigosDetail(missionId) {
   setupAmigosArtifactWorkspace($('amigos-detail-body'), (mission.deliverable || {}).files || []);
   setupAmigosReceived($('amigos-detail-body'), mission);
   $('dlg-amigos-detail').showModal();
+  refreshConsultInfo();
 }
 
 const AMIGOS_ROLES_SAMPLE = JSON.stringify(
@@ -762,7 +768,12 @@ function setupAmigosDialogs() {
   const dlg = $('dlg-amigos-post');
   if (!dlg) return;
   $('btn-amigos-post-cancel').addEventListener('click', () => dlg.close());
-  $('btn-amigos-detail-close').addEventListener('click', () => $('dlg-amigos-detail').close());
+  $('btn-amigos-detail-close').addEventListener('click', () => {
+    const detail = $('dlg-amigos-detail');
+    detail.close();
+    delete detail.dataset.consultDir;
+    refreshConsultInfo();
+  });
   document.querySelectorAll('input[name="amigos-post-mode"]').forEach((el) => {
     el.addEventListener('change', applyAmigosPostMode);
   });
@@ -854,16 +865,11 @@ function renderAmigos() {
     : '';
   el.innerHTML = `
     <div class="amigos-shell">
-      <header class="cowork-header">
-        <div>
-          <span class="summary-kicker">協働</span>
-          <h2>ミッション</h2>
-          <p class="muted">複数の担当メンバーで進める作業の状況を確認できます。</p>
-        </div>
+      <div class="amigos-page-actions">
         <div class="row">
           <button id="btn-amigos-refresh">更新</button>
         </div>
-      </header>
+      </div>
       ${pendingHtml}
       <section>
         <h3>ミッション（${missions.length} 件）</h3>

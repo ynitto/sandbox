@@ -9,6 +9,7 @@ const POLICY_TIERS = ['small', 'medium', 'large'];
 const SWITCH_RATIOS = { early: 0.3, standard: 0.2, late: 0.1 };
 const PRIORITY_WEIGHTS = { low: 0.5, standard: 1, high: 2 };
 const ON_EXHAUSTED = ['degrade', 'pause', 'stop'];
+const SELECTION_STRATEGIES = ['balanced', 'economy', 'quality'];
 
 function equalWorkloads(onExhausted = 'degrade') {
   return Object.fromEntries(WORKLOADS.map((workload) => [workload, {
@@ -26,6 +27,7 @@ function nonNegative(value, label) {
 }
 
 function customPreset(input) {
+  const strategy = SELECTION_STRATEGIES.includes(input.strategy) ? input.strategy : 'balanced';
   const normalTier = input.normalTier || 'medium';
   if (!POLICY_TIERS.includes(normalTier)) {
     throw new Error('通常時の実行レベルは軽量・標準・高性能から選んでください。単純作業は工程ごとに指定します');
@@ -62,7 +64,7 @@ function customPreset(input) {
     softRatio: normalTier === 'small' ? 0 : 1 - threshold,
     tokenLimit,
     workloads,
-    custom: { normalTier, tokenLimit,
+    custom: { strategy, normalTier, tokenLimit,
       switchTiming, onExhausted, overrides: input.overrides || {} },
   };
 }

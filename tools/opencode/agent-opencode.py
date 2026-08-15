@@ -36,6 +36,7 @@ import signal
 import subprocess
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -52,11 +53,87 @@ USAGE = """使い方: agent-opencode [--check] [--no-preflight] [opencode run �
     AGENT_OPENCODE_PROVIDER       モデル名に provider/ が無いときの既定プロバイダ（既定 ollama）
     AGENT_OPENCODE_SKIP_PREFLIGHT 1 で到達性チェックを省く
     AGENT_OPENCODE_PREFLIGHT_TIMEOUT  到達性チェックの秒数（既定 5）
+
+  OLLAMA_HOST / OLLAMA_API_BASE / NO_PROXY が揃っていなければ ~/.profile から補完し、
+  ollama のホストを NO_PROXY / no_proxy へ追記してプロキシを迂回する
+  （非ログインシェル起動で環境変数が届かない場合の救済。agent-ollama と同じ挙動）
 """
 
 _COMMENT_RE = re.compile(r'"(?:\\.|[^"\\])*"|//[^\n]*|/\*.*?\*/', re.S)
 _TRAILING_COMMA_RE = re.compile(r",(\s*[}\]])")
 _ENV_TEMPLATE_RE = re.compile(r"\{env:([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
+# ---------------------------------------------------------------------------
+# 環境の補完（非ログインシェル対策）
+#
+# agentcore/ollama_adapter.py の同名ブロックの複製（正典はあちら）。agent-opencode は
+# 単体ファイルで配布され agentcore を import できない。直すときは 3 箇所
+# （ollama_adapter / aider_adapter / ここ）を揃えること。補完が無いと、設定の
+# {env:OLLAMA_API_BASE} テンプレートが空へ展開されたり、opencode と到達性チェックの
+# 接続がプロキシへ流れて 504 Gateway Timeout になる。
+# ---------------------------------------------------------------------------
+_PROFILE_ENV_PREFIXES = ("OLLAMA_", "AGENT_OLLAMA_")
+_PROFILE_ENV_EXACT = ("NO_PROXY", "no_proxy")
+
+
+def _complete_ollama_env() -> None:
+    host = os.environ.get("OLLAMA_HOST", "")
+    base = os.environ.get("OLLAMA_API_BASE", "")
+    if host and not base:
+        os.environ["OLLAMA_API_BASE"] = host if "://" in host else f"http://{host}"
+    elif base and not host:
+        os.environ["OLLAMA_HOST"] = base
+    target = os.environ.get("OLLAMA_API_BASE") or os.environ.get("OLLAMA_HOST") or ""
+    try:
+        hostname = urllib.parse.urlsplit(
+            target if "://" in target else f"//{target}").hostname
+    except ValueError:
+        hostname = None
+    hosts = [hostname] if hostname else ["localhost", "127.0.0.1"]
+    entries: "list[str]" = []
+    for var in ("NO_PROXY", "no_proxy"):
+        for item in os.environ.get(var, "").split(","):
+            item = item.strip()
+            if item and item not in entries:
+                entries.append(item)
+    entries.extend(h for h in hosts if h not in entries)
+    os.environ["NO_PROXY"] = os.environ["no_proxy"] = ",".join(entries)
+
+
+def _import_profile_env(path: str) -> dict:
+    profile = os.path.expanduser(path)
+    if not os.path.isfile(profile):
+        return {}
+    # profile を source した後の環境を JSON で受け取る。stdin は閉じる——
+    # このプロセスの stdin はプロンプト本文なので、profile に読ませてはいけない。
+    dump = "import json, os; print(json.dumps(dict(os.environ)))"
+    try:
+        proc = subprocess.run(
+            ["sh", "-c", '. "$1" >/dev/null 2>&1; exec "$2" -c "$3"',
+             "sh", profile, sys.executable, dump],
+            stdin=subprocess.DEVNULL, capture_output=True, timeout=10)
+        data = json.loads(proc.stdout.decode("utf-8", "replace"))
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    imported: dict = {}
+    for name, value in data.items():
+        if ((name.startswith(_PROFILE_ENV_PREFIXES) or name in _PROFILE_ENV_EXACT)
+                and name not in os.environ and isinstance(value, str)):
+            os.environ[name] = value
+            imported[name] = value
+    return imported
+
+
+def load_profile_env(path: str = "~/.profile") -> dict:
+    imported: dict = {}
+    if not (os.environ.get("OLLAMA_HOST") and os.environ.get("OLLAMA_API_BASE")
+            and (os.environ.get("NO_PROXY") or os.environ.get("no_proxy"))):
+        imported = _import_profile_env(path)
+    _complete_ollama_env()
+    return imported
 
 
 def _strip_jsonc(text: str) -> str:
@@ -281,6 +358,10 @@ def main(argv=None) -> int:
     skip = ("--no-preflight" in args
             or os.environ.get("AGENT_OPENCODE_SKIP_PREFLIGHT", "") == "1")
     args = [a for a in args if a not in ("--check", "--no-preflight")]
+
+    # 到達性チェックと opencode の起動より前に環境を補完する
+    # （設定の {env:...} 展開・プロキシ迂回の両方に効く）。
+    load_profile_env()
 
     if check_only or not skip:
         ok, message = preflight(args)

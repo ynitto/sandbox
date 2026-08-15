@@ -25,6 +25,22 @@ class StructuredResultTests(unittest.TestCase):
         self.bus.write_result("t1", "w", "done", "txt")
         self.assertNotIn("data", self.bus.read_result("t1"))
 
+    def test_result_receipt_fields_roundtrip(self):
+        # 実行 receipt v2（execution_decision）と処理契約の機械判定結果は result が正典。
+        block = {"agent_cli": "ollama", "model": "gemma4:e4b",
+                 "selection_source": "qualified-candidate", "rank": 1,
+                 "reason": "r", "fallback_from": None}
+        self.bus.write_result("t1", "w", "done", "txt", execution_decision=block,
+                              operation_class="existing-test-repair",
+                              local_patch_blockers=["書込 scope は 1 ファイル（2 件）"])
+        rec = self.bus.read_result("t1")
+        self.assertEqual(rec["execution_decision"], block)
+        self.assertEqual(rec["operation_class"], "existing-test-repair")
+        self.assertEqual(len(rec["local_patch_blockers"]), 1)
+        self.bus.write_result("t2", "w", "done", "txt")
+        for key in ("execution_decision", "operation_class", "local_patch_blockers"):
+            self.assertNotIn(key, self.bus.read_result("t2"))
+
     def test_collect_dep_results_sees_through_gate(self):
         # planner が work→gate→synth と直列にしても、集約役は gate が検証した
         # 上流（t2,t3）の成果を受け取れる（gate 経由でも入力が空にならない）
@@ -1135,6 +1151,152 @@ class AgentControlTests(unittest.TestCase):
         self.assertIn("[agent-control]", str(ctx.exception))
         self.assertIn("[agent-error:control]", str(ctx.exception))
         self.assertEqual(kf.classify_agent_failure(str(ctx.exception))[0], "control")
+
+    # -- 候補ベース（version 2 selection_policy → Resolver。設計 2026-08-15 §6.6） ----
+
+    _POLICY = {
+        "strategy": "economy", "retry_limit": 1, "no_candidate": "park",
+        "qualification_revision": 12,
+        "candidates": [
+            {"agent_cli": "ollama", "model": "gemma4:e4b", "rank": 1,
+             "qualification_refs": ["ollama-gemma4-e4b-extract-v1"]},
+            {"agent_cli": "kiro", "model": "sonnet", "rank": 2},
+        ],
+    }
+
+    def _policy_control(self, **overrides):
+        ctl = {"version": 2, "revision": 42,
+               "workloads": {"flow": {"agent_cli": "cursor", "model": "legacy-model",
+                                      "selection_policy": json.loads(json.dumps(self._POLICY))}}}
+        ctl.update(overrides)
+        return ctl
+
+    def test_selection_policy_replaces_legacy_override(self):
+        # workload 直下（legacy dual-write）は cursor/legacy-model だが、policy がある限り
+        # 再解釈しない——Resolver の rank1 が実効になる。
+        self._control(self._policy_control())
+        cli, model = kf._agent_for("work")
+        self.assertEqual((cli, model), ("ollama", "gemma4:e4b"))
+
+    def test_selection_policy_keeps_json_variant_swap(self):
+        # 候補ベースで決めた CLI にも JSON 契約役の変種振替（同エンジンの起動形）は効く。
+        self._control(self._policy_control())
+        self.assertEqual(kf._agent_for("judge")[0], "ollama-json")
+
+    def test_expired_policy_parks_run_agent(self):
+        ctl = self._policy_control(valid_until="2000-01-01T00:00:00Z")
+        self._control(ctl)
+        with self.assertRaises(RuntimeError) as ctx:
+            kf.run_agent("x", None, purpose="work")
+        message = str(ctx.exception)
+        self.assertIn("[agent-error:control]", message)
+        self.assertIn("park", message)
+        self.assertEqual(kf.classify_agent_failure(message)[0], "control")
+
+    def test_broken_policy_parks_instead_of_legacy(self):
+        ctl = self._policy_control()
+        ctl["workloads"]["flow"]["selection_policy"]["candidates"] = []
+        self._control(ctl)
+        with self.assertRaises(RuntimeError) as ctx:
+            kf.run_agent("x", None, purpose="work")
+        self.assertIn("invalid-selection-policy", str(ctx.exception))
+
+    def test_percall_pin_skips_park_guard(self):
+        # 呼び出し 1 回の明示指定（検証計画の「これで確かめてくれ」）は人の承認済み指定。
+        # policy が park でも止めない（弱い候補への黙った降格ではなく明示指定の実行）。
+        self._control(self._policy_control(valid_until="2000-01-01T00:00:00Z"))
+        with mock.patch.object(kf, "_run_agent_once", return_value="ok"):
+            out = kf.run_agent("x", None, purpose="verify",
+                               agent={"agent_cli": "kiro", "model": "sonnet"})
+        self.assertEqual(out, "ok")
+
+    def test_selection_meta_carries_execution_decision(self):
+        self._control(self._policy_control())
+        meta = kf._selection_meta("work")
+        self.assertEqual(meta["selection_source"], "qualified-candidate")
+        block = meta["execution_decision"]
+        self.assertEqual(block["agent_cli"], "ollama")
+        self.assertEqual(block["control_revision"], 42)
+        self.assertEqual(block["qualification_revision"], 12)
+        self.assertEqual(block["qualification_id"], "ollama-gemma4-e4b-extract-v1")
+        # receipt v2 の共通ブロックとして形が合う（1 実装の検証で確認）
+        from agentcore.executioncontract import execution_receipt_errors
+        self.assertEqual(execution_receipt_errors(
+            {"attempt_id": "n1:ollama-gemma4-e4b:1", "execution_decision": block}), [])
+
+    def test_selection_meta_pin_stays_legacy_labels(self):
+        self._control(self._policy_control())
+        meta = kf._selection_meta("verify", {"agent_cli": "ollama"})
+        self.assertEqual(meta["selection_source"], "pinned-agent")
+        self.assertNotIn("execution_decision", meta)
+
+    # -- Execution Envelope（agent-project の承認済み snapshot → 明示固定。E2↔U3 結合） --
+    # fixture の形の正典は agent-project/agent_project/envelope.py build_execution_envelope。
+
+    def _envelope(self, perms, approved=True):
+        kf._set_execution_envelope({"execution_envelope": {
+            "version": 1, "task_id": "t-1",
+            "approval": {"status": "approved" if approved else "proposed",
+                         "actor": "human", "reason": "test"},
+            "candidate_permissions": perms}})
+        self.addCleanup(kf._set_execution_envelope, None)
+
+    def test_envelope_pin_selects_policy_candidate(self):
+        self._control(self._policy_control())
+        self._envelope({"pins": [{"agent_cli": "kiro", "model": "sonnet"}]})
+        self.assertEqual(kf._agent_for("work"), ("kiro", "sonnet"))  # rank2 を明示固定
+        meta = kf._selection_meta("work")
+        self.assertEqual(meta["selection_source"], "explicit-pin")
+        self.assertTrue(meta["pinned"])
+        self.assertEqual(meta["execution_decision"]["selection_source"], "explicit-pin")
+
+    def test_envelope_trial_entry_runs_policy_trial_candidate(self):
+        # trial 裏付けのみの候補（Compiler が status: trial を明記）は通常 run で選ばれず、
+        # Envelope の trials に載った run でだけ走る——E5 昇格ループの入口。
+        ctl = self._policy_control()
+        ctl["workloads"]["flow"]["selection_policy"]["candidates"].append(
+            {"agent_cli": "ollama-verify", "model": "gemma4:12b", "rank": 3,
+             "status": "trial", "qualification_refs": ["ollama-12b-review-trial"]})
+        self._control(ctl)
+        normal = kf._agent_for("work")
+        self.assertEqual(normal[0], "ollama")            # 通常 run は rank1 のまま
+        self._envelope({"trials": [{"agent_cli": "ollama-verify", "model": "gemma4:12b"}]})
+        self.assertEqual(kf._agent_for("work"), ("ollama-verify", "gemma4:12b"))
+        meta = kf._selection_meta("work")
+        self.assertEqual(meta["selection_source"], "trial-candidate")
+        self.assertTrue(meta["pinned"])
+
+    def test_unapproved_envelope_is_ignored(self):
+        self._control(self._policy_control())
+        self._envelope({"pins": [{"agent_cli": "kiro", "model": "sonnet"}]}, approved=False)
+        decision = kf._control_policy_decision("work")
+        self.assertEqual(decision["selection_source"], "qualified-candidate")
+
+    def test_envelope_pin_outside_policy_parks_run_agent(self):
+        self._control(self._policy_control())
+        self._envelope({"pins": [{"agent_cli": "codex", "model": "gpt-6"}]})
+        with self.assertRaises(RuntimeError) as ctx:
+            kf.run_agent("x", None, purpose="work")
+        self.assertIn("pin-not-qualified", str(ctx.exception))
+
+    def test_envelope_tier_ceiling_override(self):
+        ctl = self._policy_control()
+        ctl["workloads"]["flow"]["tier"] = "medium"
+        self._control(ctl)
+        pin = {"agent_cli": "codex", "model": "gpt-6", "tier": "large"}
+        self._envelope({"pins": [pin], "trials": [pin]})
+        blocked = kf._control_policy_decision("work")
+        self.assertEqual(blocked["park_reason"], "pin-exceeds-tier")
+        self._envelope({"pins": [pin], "trials": [pin], "tier_ceiling_override": "large"})
+        allowed = kf._control_policy_decision("work")
+        self.assertEqual(allowed["selected"], {"agent_cli": "codex", "model": "gpt-6"})
+        self.assertEqual(allowed["selection_source"], "trial-candidate")
+
+    def test_envelope_purpose_scope(self):
+        self._control(self._policy_control())
+        self._envelope({"pins": [{"agent_cli": "kiro", "model": "sonnet", "purpose": "verify"}]})
+        self.assertEqual(kf._agent_for("work")[0], "ollama")    # 対象外ロールには効かない
+        self.assertEqual(kf._agent_for("verify"), ("kiro", "sonnet"))
 
     def test_status_heartbeat_written(self):
         self._control({"version": 1, "revision": 7, "workloads": {"flow": {}}})

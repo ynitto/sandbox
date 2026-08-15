@@ -249,12 +249,47 @@ function dynamicState(item, cfg, { probeProcess = false } = {}, config = null) {
   };
 }
 
+// 業務ごとの実行エージェント設定（{ tier, agent_cli, model } | null）。
+// 自動割り当て（resolveAgent / profiles）より優先する人の選択で、「今すぐ実行」の
+// 一回限りの選択とは別物——ここに書かれた値だけが毎回の実行に効く。
+function normalizeExecutionChoice(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const tier = String(raw.tier || '').trim();
+  const agentCli = String(raw.agent_cli || '').trim();
+  if (!tier || !agentCli) return null;
+  return { tier, agent_cli: agentCli, model: String(raw.model || '').trim() };
+}
+
+// 発見項目（実体ファイルが正）の実行エージェント設定は、実体ファイルへ dashboard 語彙を
+// 持ち込まず、dashboard 設定の対応表（cowork.executionChoices[項目id]）で持つ。
+function executionChoicesOf(cfg) {
+  const raw = cfg && cfg.executionChoices;
+  if (!raw || typeof raw !== 'object') return {};
+  const out = {};
+  for (const [id, value] of Object.entries(raw)) {
+    const choice = normalizeExecutionChoice(value);
+    if (choice) out[String(id)] = choice;
+  }
+  return out;
+}
+
+// 項目に効いている永続設定（手動項目は項目自身、発見項目は対応表から）。
+function storedExecutionChoice(config, item) {
+  if (!item) return null;
+  if (item.source === 'discovered') {
+    return executionChoicesOf((config || {}).cowork || {})[String(item.id || '')] || null;
+  }
+  return normalizeExecutionChoice(item.executionChoice);
+}
+
 function normalizeItem(item, i, cfg, stateOpts, config) {
   const type = item.type === 'state-machine' ? 'state-machine' : 'loop';
   const id = itemId({ ...item, type }, i);
+  const executionChoice = normalizeExecutionChoice(item.executionChoice);
   return {
     id,
     type,
+    ...(executionChoice ? { executionChoice } : {}),
     name: String(item.name || item.id || (type === 'loop' ? `定期実行 ${i + 1}` : `定型業務 ${i + 1}`)),
     repo: item.repo || item.cwd || '',
     // 手動登録では人が選んだフォルダがそのまま登録フォルダ（実行の cwd）になる。
@@ -341,7 +376,37 @@ function overview(config, opts = {}) {
   const loop = makeLoopProvider(cfg, config);
   const addParameters = (item) => {
     const spec = routineParameterSpec(config, item);
-    return { ...item, parameters: spec.keys, parameterError: spec.error };
+    // 自動割り当ての結果は設定の有無に関わらず出す（編集画面が「自動ならこうなる」を
+    // 具体的なエージェント・モデルで見せるため）。
+    let autoExecution = { agent_cli: '', model: '' };
+    try {
+      const resolved = resolveRoutineAgent(config, item.repo || item.cwd || '');
+      autoExecution = { agent_cli: resolved.cli || '', model: resolved.model || '' };
+    } catch {
+      // 表示用の解決失敗で一覧全体を壊さない。
+    }
+    const choice = storedExecutionChoice(config, item);
+    let execution = autoExecution;
+    let executionSource = 'auto';
+    if (choice) {
+      try {
+        const resolved = resolveRoutineAgent(config, item.repo || item.cwd || '', choice);
+        execution = { agent_cli: resolved.cli || '', model: resolved.model || '' };
+        executionSource = 'user';
+      } catch {
+        // 候補の宣言が変わって設定が無効になったときは自動割り当てへ落として見せる
+        // （実行時は resolveRoutineAgent が同じ理由で明示的に失敗する）。
+      }
+    }
+    return {
+      ...item,
+      parameters: spec.keys,
+      parameterError: spec.error,
+      execution,
+      executionSource,
+      autoExecution,
+      executionChoice: choice,
+    };
   };
   const configItems = itemsOf(cfg).map((item, i) => addParameters(normalizeItem(item, i, cfg, stateOpts, config)));
   const discovered = discoverNormalized(config, cfg, discoverOpts).map(addParameters);
@@ -372,16 +437,24 @@ function routineTierOverview(config) {
     const profile = profiles.load(config);
     const routineTiers = Object.entries(profile.tiers || {})
       .sort((a, b) => b[1].order - a[1].order)
-      .flatMap(([id, tier]) => {
-        const candidate = profiles.resolveTier(config, id);
-        return candidate ? [{ id, label: tier.label || id, ...candidate }] : [];
-      });
+      // 「今すぐ実行」は自動選択の結果だけを見る画面ではなく、今回だけ使う組み合わせを
+      // 人が選ぶ画面。resolveTier で各段を先頭の実効候補へ潰さず、保存された全候補を渡す。
+      .flatMap(([id, tier]) => (Array.isArray(tier.candidates) ? tier.candidates : [])
+        .filter((candidate) => candidate && typeof candidate === 'object')
+        .map((candidate) => ({ id, tier: id, label: tier.label || id, ...candidate })));
     const remembered = profile.state && profile.state.routine && profile.state.routine.tier;
+    const rememberedCandidate = profile.state && profile.state.routine && profile.state.routine.candidate;
     const currentRoutineTier = routineTiers.some((tier) => tier.id === remembered)
       ? remembered : ((routineTiers[0] && routineTiers[0].id) || '');
-    return { routineTiers, currentRoutineTier };
+    const currentRoutineCandidate = rememberedCandidate && typeof rememberedCandidate === 'object'
+      ? {
+        agent_cli: String(rememberedCandidate.agent_cli || ''),
+        model: String(rememberedCandidate.model || ''),
+      }
+      : null;
+    return { routineTiers, currentRoutineTier, currentRoutineCandidate };
   } catch {
-    return { routineTiers: [], currentRoutineTier: '' };
+    return { routineTiers: [], currentRoutineTier: '', currentRoutineCandidate: null };
   }
 }
 
@@ -732,6 +805,8 @@ function runLoop(config, itemIdValue, parameters, tier = '') {
   const cfg = config.cowork || {};
   const item = resolveItem(config, itemIdValue);
   if (!item) throw new Error(`Cowork 作業が見つかりません: ${itemIdValue}`);
+  // 優先順: 今回だけの選択（今すぐ実行）＞業務の設定＞自動割り当て。
+  tier = tier || storedExecutionChoice(config, item) || '';
   const spec = routineParameterSpec(config, item);
   const values = validateParameters(spec, parameters);
   // 実行対象は agent-loop の prompt 名（合成 id ではない）。`send` が cwd の
@@ -809,6 +884,8 @@ function runStateMachine(config, itemIdValue, parameters, tier = '') {
   const cfg = config.cowork || {};
   const item = resolveItem(config, itemIdValue);
   if (!item) throw new Error(`Cowork 定型業務が見つかりません: ${itemIdValue}`);
+  // 優先順: 今回だけの選択（今すぐ実行）＞業務の設定＞自動割り当て。
+  tier = tier || storedExecutionChoice(config, item) || '';
   const cwd = launchCwd(item, config) || process.cwd();
   const spec = routineParameterSpec(config, item);
   // 旧 preload の文字列 input を読む互換。新しい画面は常に key/value オブジェクトを渡す。
@@ -995,16 +1072,27 @@ const LEGACY_CHAT_COMMAND = 'kiro-cli chat --trust-all-tools';
 // `cowork.chatCommand` は明示上書き（空なら解決結果）。
 // 解決できないとき（定義が見つからない等）は従来の文字列へ落として、定常業務を止めない。
 // ただし黙っては落とさず、フォールバックした事実を警告ログに残す。
-function resolveRoutineAgent(config, repo, tier = '') {
+function resolveRoutineAgent(config, repo, executionChoice = '') {
   const agent = require('../../agent-project/main/agent');
   const base = agent.resolveAgent(config, repo, { workload: ROUTINE_WORKLOAD });
-  const selectedTier = String(tier || '').trim();
+  const requested = executionChoice && typeof executionChoice === 'object'
+    ? executionChoice : { tier: executionChoice };
+  const selectedTier = String(requested.tier || '').trim();
   if (!selectedTier) return base;
   const profile = profiles.load(config);
-  if (!Object.prototype.hasOwnProperty.call(profile.tiers || {}, selectedTier)) {
+  const tierSpec = (profile.tiers || {})[selectedTier];
+  if (!tierSpec) {
     throw new Error(`段「${selectedTier}」は定義されていません`);
   }
-  const candidate = profiles.resolveTier(config, selectedTier);
+  const explicitlySelected = executionChoice && typeof executionChoice === 'object';
+  const candidate = explicitlySelected
+    ? (Array.isArray(tierSpec.candidates) ? tierSpec.candidates : []).find((item) => item
+      && String(item.agent_cli || '') === String(requested.agent_cli || '')
+      && String(item.model || '') === String(requested.model || ''))
+    : profiles.resolveTier(config, selectedTier);
+  if (explicitlySelected && !candidate) {
+    throw new Error(`段「${selectedTier}」に選択したエージェントとモデルの候補が定義されていません`);
+  }
   if (!candidate) throw new Error(`段「${selectedTier}」には現在実行できる候補がありません`);
   const cli = candidate.agent_cli || base.cli;
   return {
@@ -1226,8 +1314,16 @@ function applyDiscoveredEdits(discovered, config) {
 }
 
 // 手動項目を config へ保存する際、実行時フィールドを落とす。
+// executionChoice は残す（業務ごとの実行エージェント設定＝人の選択の保存場所）。
 function stripRuntimeFields(it) {
-  const { state, _src, source, enabled, command, ...rest } = it;
+  const {
+    state, _src, source, enabled, command,
+    parameters, parameterError, execution, executionSource, autoExecution,
+    ...rest
+  } = it;
+  const choice = normalizeExecutionChoice(rest.executionChoice);
+  if (choice) rest.executionChoice = choice;
+  else delete rest.executionChoice;
   return rest;
 }
 
@@ -1327,9 +1423,20 @@ function saveWork(config, saveConfig, { items, branch, createBranch, push } = {}
   const configItems = all.filter((it) => it.source !== 'discovered');
   const discovered = all.filter((it) => it.source === 'discovered' && it._src);
 
-  // 1) 手動項目のみ dashboard 設定へ保存（発見項目は実体ファイルが正）
+  // 1) 手動項目のみ dashboard 設定へ保存（発見項目は実体ファイルが正）。
+  //    発見項目の実行エージェント設定だけは実体ファイルへ書かず、対応表として dashboard
+  //    設定に持つ（agent-loop / statemachine の契約に dashboard 語彙を持ち込まない）。
   const cfg = { ...(config || {}) };
-  cfg.cowork = { ...(cfg.cowork || {}), items: configItems.map(stripRuntimeFields) };
+  const executionChoices = {};
+  for (const it of discovered) {
+    const choice = normalizeExecutionChoice(it.executionChoice);
+    if (choice && it.id) executionChoices[String(it.id)] = choice;
+  }
+  cfg.cowork = {
+    ...(cfg.cowork || {}),
+    items: configItems.map(stripRuntimeFields),
+    executionChoices,
+  };
   const saved = saveConfig(cfg);
 
   // 2) 発見項目の編集を実体ファイルへ書き戻し
@@ -1372,6 +1479,7 @@ module.exports = {
   itemLogs, readLog, appendHistory, readHistory, historyFile,
   resolveLoopPromptText, withGlobalInstructions, planSessionCommands,
   coworkChatLaunch, routineLaunchPlan, resolveRoutineAgent, routineTierOverview,
+  normalizeExecutionChoice, storedExecutionChoice,
   ROUTINE_WORKLOAD, LEGACY_CHAT_COMMAND,
   applyManagedItems, stateMachineCreationPrompt,
   inspectCoworkRoot, setCoworkRoot,

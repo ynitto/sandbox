@@ -35,20 +35,20 @@ function routineAdhocPanelHtml() {
   const options = roots.map((r) =>
     `<option value="${esc(r)}"${r === draft.root ? ' selected' : ''}>${esc(r)}</option>`).join('');
   return `<section class="global-settings-card routine-adhoc" aria-labelledby="routine-adhoc-title">
-    <div><span class="summary-kicker">その場の依頼</span><h3 id="routine-adhoc-title">アドホック起動</h3></div>
-    <p class="muted">登録済みフォルダを選んで、自由な指示でエージェントCLIを起動します。いつもの定常業務と同じ設定（CLI・モデル・共通指示）で動き、実行はこの画面の記録に残ります。</p>
+    <h3 id="routine-adhoc-title">依頼内容</h3>
+    <p class="muted">フォルダと依頼内容を指定して、AIエージェントを起動します。</p>
     ${roots.length ? `
       <div class="field">
         <select id="routine-adhoc-root" aria-label="起動するフォルダ">${options}</select>
       </div>
       <div class="field">
-        <textarea id="routine-adhoc-prompt" rows="3" placeholder="エージェントへの指示（自由文）">${esc(draft.prompt)}</textarea>
+        <textarea id="routine-adhoc-prompt" rows="3" aria-label="AIへの依頼内容" placeholder="依頼内容">${esc(draft.prompt)}</textarea>
       </div>
       <div class="row">
-        <button id="btn-routine-adhoc-run" class="primary">起動</button>
+        <button id="btn-routine-adhoc-run" class="primary">依頼する</button>
         <span id="routine-adhoc-meta" class="muted${draft.ok ? '' : ' sync-error'}">${esc(draft.message || '')}</span>
       </div>`
-    : '<p class="muted">起動先にできる登録済みフォルダがありません。「設定」タブでフォルダを登録してください。</p>'}
+    : '<p class="muted">起動先にできる登録済みフォルダがありません。「全体設定」でフォルダを登録してください。</p>'}
   </section>`;
 }
 
@@ -92,7 +92,20 @@ async function runRoutineAdhoc() {
     draft.ok = false;
     draft.message = `起動できませんでした: ${(res && (res.error || res.message)) || '原因不明'}`;
   }
-  renderRoutineRuns();
+  renderCowork();
+}
+
+function openRoutineAdhocDialog() {
+  const dialog = $('dlg-routine-adhoc');
+  const body = $('routine-adhoc-dialog-body');
+  if (!dialog || !body) return;
+  body.innerHTML = routineAdhocPanelHtml();
+  bindRoutineAdhocPanel(body);
+  const close = $('btn-routine-adhoc-close');
+  if (close) close.onclick = () => dialog.close();
+  if (!dialog.open) dialog.showModal();
+  const prompt = body.querySelector('#routine-adhoc-prompt');
+  if (prompt) prompt.focus();
 }
 
 // 実行の記録タブ。上にアドホック起動、下は左に作業、右にその作業の記録
@@ -690,8 +703,38 @@ function openCoworkWorkDialog(index) {
   ));
   $('cw-prompt').value = item.prompt || '';
   $('cw-instruction').value = item.instruction || '';
+  fillCoworkExecutionSelect(item);
   updateCoworkWorkFields();
   $('dlg-cowork-work').showModal();
+}
+
+// 実行エージェントの選択肢。既定（値 ''）は自動割り当てで、自動割り当てが今選ぶ具体的な
+// エージェント・モデルをそのまま表示する。それ以外は全体設定の実行レベル構成に宣言された
+// （実行レベル×候補）の組だけ——自由入力の組み合わせは実行資格の裏付けが無いので出さない。
+function fillCoworkExecutionSelect(item) {
+  const select = $('cw-execution');
+  const tiers = Array.isArray(state.cowork && state.cowork.routineTiers) ? state.cowork.routineTiers : [];
+  const auto = (item && item.autoExecution) || {};
+  const autoLabel = `自動割り当て（現在: ${auto.agent_cli || '既定'} / ${auto.model || '既定モデル'}）`;
+  select.innerHTML = [
+    `<option value="">${esc(autoLabel)}</option>`,
+    ...tiers.map((tier, index) =>
+      `<option value="${index}">${esc(orchTierLabel(tier.id, tier.label))} — ${esc(tier.agent_cli || '既定')} / ${esc(tier.model || '既定')}</option>`),
+  ].join('');
+  const choice = item && item.executionChoice;
+  const selected = choice ? tiers.findIndex((tier) => tier.id === choice.tier
+    && String(tier.agent_cli || '') === String(choice.agent_cli || '')
+    && String(tier.model || '') === String(choice.model || '')) : -1;
+  select.value = selected >= 0 ? String(selected) : '';
+  select.disabled = !tiers.length;
+}
+
+function coworkExecutionSelection() {
+  const tiers = Array.isArray(state.cowork && state.cowork.routineTiers) ? state.cowork.routineTiers : [];
+  const raw = $('cw-execution').value;
+  if (raw === '') return null;
+  const tier = tiers[Number(raw)];
+  return tier ? { tier: tier.id, agent_cli: tier.agent_cli || '', model: tier.model || '' } : null;
 }
 
 function updateCoworkWorkFields() {
@@ -736,12 +779,14 @@ async function applyCoworkWorkDialog() {
       return;
     }
   }
+  const executionChoice = coworkExecutionSelection();
   let item;
   if (discovered) {
     item = {
       ...existing,
       name,
       schedule: $('cw-schedule').value.trim(),
+      executionChoice,
       ...(type === 'loop' ? { prompt } : instruction ? { instruction } : {}),
     };
   } else {
@@ -752,6 +797,7 @@ async function applyCoworkWorkDialog() {
       name,
       repo,
       schedule: $('cw-schedule').value.trim(),
+      executionChoice,
       ...(type === 'loop' ? { prompt, instruction: '' } : { instruction, prompt: '', workflow: machine }),
       managed: true,
       source: 'config',

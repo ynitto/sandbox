@@ -171,6 +171,11 @@ def resolve_think(explicit: "bool | None" = None) -> "bool | None":
     宣言しない（None）ときはフィールドを送らず、モデル/サーバの既定に委ねる。
     プロンプトへ `/no_think` を混ぜる方式は採らない——モデル依存で、成果物本文へ
     漏れる事故もある。API のフィールドで指定するのが唯一の確実な口。
+
+    例外が 1 つある: **`prompt` モード**（下記 `THINK_PROMPT_TOKEN`）。これは
+    「思考を止める」ためにプロンプトを汚す方式ではなく、モデル側の作法が
+    system prompt 先頭のトークンである場合に**それに従う**ための口で、API フィールドとは
+    別経路である。ここでは API フィールドを宣言しない（None）ことで両者の併用を避ける。
     """
     if explicit is not None:
         return explicit
@@ -180,6 +185,31 @@ def resolve_think(explicit: "bool | None" = None) -> "bool | None":
     if raw in ("on", "true", "1", "yes"):
         return True
     return None
+
+
+# Gemma 4 系が Thinking を有効化する作法（Ollama 公式仕様）。API の `think` フィールドとは
+# 別経路なので、`--format` の文法制約と併用できる可能性がある——現行の「format を渡したら
+# think を強制 off」は API フィールド側の制約であって、こちらには当てはまらないかもしれない。
+# どちらなのかは実測で決める（計画 P10）。
+THINK_PROMPT_TOKEN = "<|think|>"
+
+
+def resolve_think_prompt(explicit: "bool | None" = None) -> bool:
+    """`prompt` モードの解決（CLI 引数 → `AGENT_OLLAMA_THINK=prompt`）。"""
+    if explicit is not None:
+        return bool(explicit)
+    return os.environ.get("AGENT_OLLAMA_THINK", "").strip().lower() == "prompt"
+
+
+def think_system(system: str, think_prompt: bool = False) -> str:
+    """system prompt 先頭へ Thinking トークンを置く（`prompt` モードのときだけ）。
+
+    二重付与はしない（再生・再試行で同じ system を通しても増えない）。
+    """
+    text = str(system or "").strip()
+    if not think_prompt or text.startswith(THINK_PROMPT_TOKEN):
+        return text
+    return f"{THINK_PROMPT_TOKEN}\n{text}".strip()
 
 
 def load_system_prompt() -> str:
@@ -204,7 +234,7 @@ def format_value(fmt: "str | None"):
 
 
 def _payload(model: str, *, think: "bool | None", options: "dict | None",
-             fmt: "str | None" = None) -> dict:
+             fmt: "str | None" = None, think_prompt: bool = False) -> dict:
     body: dict = {"model": model, "stream": True}
     merged = load_options()
     if options:
@@ -220,7 +250,12 @@ def _payload(model: str, *, think: "bool | None", options: "dict | None",
         # ことになり、思考モデルでは既定が on なので同じ空応答を踏む。
         # 代償: think 非対応モデルへ `think` を送ると 400 になる。空応答の沈黙より、
         # メッセージの出るエラーのほうがましなので受ける。
-        think = False
+        #
+        # ただし `prompt` モードのときは強制しない。あれは system prompt のトークンで
+        # 有効化する別経路なので、ここで `think: false` を送ると**測ろうとしている当の
+        # 組み合わせ（プロンプト方式 × 文法制約）を自分で潰す**ことになる。
+        if not think_prompt:
+            think = False
     if think is not None:
         body["think"] = bool(think)
     if fmt:
@@ -463,15 +498,16 @@ def _chat_delta(chunk: dict) -> "tuple[str, str]":
 
 
 def run_plain(model: str, prompt: str, *, think: "bool | None" = None, emit=None,
-              options: "dict | None" = None, fmt: "str | None" = None, **limits) -> dict:
+              options: "dict | None" = None, fmt: "str | None" = None,
+              think_prompt: bool = False, **limits) -> dict:
     """単発 text → text（ツールなし）。案 A の主経路をストリーミングで回す版。
 
     ツールを持たないので `readonly: enforced` の宣言が嘘にならない——このモードは
     ファイルもコマンドも触れない。
     """
-    body = _payload(model, think=think, options=options, fmt=fmt)
+    body = _payload(model, think=think, options=options, fmt=fmt, think_prompt=think_prompt)
     body["prompt"] = prompt
-    system = load_system_prompt()
+    system = think_system(load_system_prompt(), think_prompt)
     if system:
         body["system"] = system
     return stream_call("/api/generate", body, delta_of=_generate_delta, emit=emit, **limits)
@@ -479,8 +515,8 @@ def run_plain(model: str, prompt: str, *, think: "bool | None" = None, emit=None
 
 def chat_once(model: str, messages: "list[dict]", *, think: "bool | None" = None, emit=None,
               options: "dict | None" = None, round_no: int = 0,
-              fmt: "str | None" = None, **limits) -> dict:
-    body = _payload(model, think=think, options=options, fmt=fmt)
+              fmt: "str | None" = None, think_prompt: bool = False, **limits) -> dict:
+    body = _payload(model, think=think, options=options, fmt=fmt, think_prompt=think_prompt)
     body["messages"] = messages
     return stream_call("/api/chat", body, delta_of=_chat_delta, emit=emit,
                        round_no=round_no, **limits)
@@ -627,7 +663,8 @@ def run_loop(model: str, task: str, *, cwd: "str | None" = None, emit=None,
              command_timeout: float = DEFAULT_COMMAND_TIMEOUT_SEC,
              max_output_chars: int = DEFAULT_MAX_OUTPUT_CHARS,
              options: "dict | None" = None, tracker=None,
-             toolset: str = DEFAULT_TOOLSET, fmt: "str | None" = None, **limits) -> dict:
+             toolset: str = DEFAULT_TOOLSET, fmt: "str | None" = None,
+             think_prompt: bool = False, **limits) -> dict:
     """bash 1 ツールの最小エージェントループ。
 
     1 ラウンド = 「モデルに聞く → コードブロックがあれば実行して結果を返す」。
@@ -651,7 +688,8 @@ def run_loop(model: str, task: str, *, cwd: "str | None" = None, emit=None,
     base_system = system_prompt(workdir, toolset)
     extra_system = load_system_prompt()
     messages = [
-        {"role": "system", "content": (base_system + "\n" + extra_system).strip()},
+        {"role": "system",
+         "content": think_system((base_system + "\n" + extra_system).strip(), think_prompt)},
         {"role": "user", "content": task},
     ]
 
@@ -681,7 +719,8 @@ def run_loop(model: str, task: str, *, cwd: "str | None" = None, emit=None,
         if emit is not None:
             emit("round_start", round=round_no, rounds_max=max_rounds)
         result = chat_once(model, messages, think=think, emit=emit, options=options,
-                           round_no=round_no, tracker=tracker, fmt=fmt, **limits)
+                           round_no=round_no, tracker=tracker, fmt=fmt,
+                           think_prompt=think_prompt, **limits)
         tokens_in += int(result.get("tokens_in") or 0)
         tokens_out += int(result.get("tokens_out") or 0)
         text = str(result.get("text") or "")

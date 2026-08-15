@@ -12,6 +12,8 @@ const flow = fs.readFileSync(path.join(rendererRoot, 'sections', 'flow.js'), 'ut
 const cowork = fs.readFileSync(path.join(rendererRoot, 'sections', 'cowork.js'), 'utf8');
 const nodeDetail = fs.readFileSync(path.join(rendererRoot, 'sections', 'node-detail.js'), 'utf8');
 const backlog = fs.readFileSync(path.join(rendererRoot, 'sections', 'backlog.js'), 'utf8');
+const orchestrationIpc = fs.readFileSync(path.join(__dirname, '..', 'src', 'features',
+  'orchestration', 'main', 'ipc.js'), 'utf8');
 
 function maxDetailsDepth(source) {
   let depth = 0;
@@ -31,8 +33,10 @@ function maxDetailsDepth(source) {
 assert.ok(html.includes('<h1>ポータル</h1>'));
 assert.ok(html.includes('<title>ポータル</title>'));
 assert.ok(!html.includes('<h1>プロジェクト管理</h1>'));
-assert.ok(html.includes('この作業を相談'));
-assert.ok(!html.includes('AIに相談'));
+assert.ok(html.includes('AIに相談'));
+assert.ok(html.includes('>作業依頼</h2>'));
+assert.ok(!html.includes('AIに作業を依頼'));
+assert.ok(!html.includes('この作業を相談'));
 assert.ok(!html.includes('担当の構成をJSONで指定します'));
 assert.ok(!html.includes('agent-loop.yml に反映'));
 assert.ok(!html.includes('ステートマシンを作成'));
@@ -66,6 +70,25 @@ for (const copy of [
   '実行場所と端末間の共有先を設定します。',
 ]) assert.ok(orchestration.includes(copy), `設定説明を短文化します: ${copy}`);
 
+// 候補ベース実行方針（設計 §15.2）: 通常表示は方針だけ、候補は閉じた詳細で確認する。
+const executionPolicyMarkup = orchestration.slice(
+  orchestration.indexOf('function orchExecutionPolicyPanelHtml('),
+  orchestration.indexOf('function orchProfileCandidateText(')
+);
+for (const label of ['おまかせ（推奨）', '節約', '品質優先', 'カスタム']) {
+  assert.ok(executionPolicyMarkup.includes(label), `${label}を維持します`);
+}
+assert.ok(!executionPolicyMarkup.includes('<th>エージェント / モデル</th>'),
+  '通常表示に機能別agent/model表を出しません');
+assert.ok(executionPolicyMarkup.includes('<details class="orch-policy-candidates">'));
+assert.ok(executionPolicyMarkup.includes('<summary>候補の使い分けを見る</summary>'));
+for (const id of ['strategy', 'normal-tier', 'token-limit', 'switch-timing', 'on-exhausted']) {
+  assert.ok(executionPolicyMarkup.includes(`id="orch-policy-${id}"`), `カスタム主要入力 ${id}`);
+}
+assert.ok(!executionPolicyMarkup.includes('ローカル優先'), '節約を実行場所で説明しません');
+assert.ok(orchestrationIpc.includes('qualifications: qualifications.load(cfg)'),
+  '候補詳細は適格性の正典を読み取り専用で表示します');
+
 // 工程途中のチェックと、成果全体の受け入れを同じ表示名にしない。
 assert.ok(nodeDetail.includes("verify: '工程内チェック'"));
 assert.ok(nodeDetail.includes('作業グラフの途中で、後続工程へ進めるかを判断します'));
@@ -91,9 +114,17 @@ for (const id of ['rv-feedback', 'rv-title', 'rv-acceptance', 'rv-priority', 'rv
 assert.match(reviseMarkup, /<textarea id="rv-desc" rows="3">/, '作業内容の詳細は折り返せる複数行入力にします');
 assert.ok(!reviseMarkup.includes('<input id="rv-desc"'), '作業内容の詳細を一行入力へ戻しません');
 assert.ok(backlog.includes('<summary>詳細情報</summary>'));
+assert.ok(backlog.includes('<summary>使用予定のエージェントとモデル</summary>'),
+  '計画承認ではEnvelopeの候補見込みを閉じて表示します');
+assert.ok(backlog.includes('<summary>エージェント / モデル利用内訳</summary>'),
+  '最終検収ではreceiptの利用実績を閉じて表示します');
+for (const label of ['選択:', '利用条件:', '選択理由:', '代替候補:', '検証:']) {
+  assert.ok(nodeDetail.includes(label), `工程詳細に ${label} を表示します`);
+}
 assert.ok(backlog.includes('function requestTaskDialogClose('));
 assert.ok(backlog.includes('taskDialogInputSnapshot('));
-assert.ok(html.includes('<label for="enq-accept">受入基準</label>'));
+assert.ok(backlog.includes('task-create-steps') && backlog.includes('task-candidate-card'),
+  'タスク追加は詳細フォームでなく段階式の候補確認を使います');
 assert.ok(html.includes('<label>達成条件</label>'));
 assert.ok(!html.includes('accept:'));
 

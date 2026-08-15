@@ -184,6 +184,30 @@ function nodeAgentLine(node) {
   </div>`;
 }
 
+function nodeExecutionReceiptHtml(node) {
+  const decision = node.executionDecision;
+  if (!decision || typeof decision !== 'object') return '';
+  const source = {
+    'qualified-candidate': '自動', 'trial-candidate': '承認済みの試行',
+    'explicit-pin': '明示固定', 'legacy-fallback': '互換設定',
+  }[decision.selection_source] || decision.selection_source || '自動';
+  const selected = `${decision.agent_cli || ''}/${decision.model || ''}`;
+  const alternatives = (decision.eligible_candidate_ids || [])
+    .map(String).filter((candidate) => candidate && candidate !== selected);
+  const fallback = alternatives.join('、') || 'なし';
+  const condition = node.operationClass || decision.qualification_id || '処理条件に適合';
+  const verification = node.verification && typeof node.verification === 'object'
+    ? `${node.verification.kind || '工程内チェック'} ${String(node.verification.verdict || '').toUpperCase()}`
+    : '記録なし';
+  return `<dl class="node-execution-receipt">
+    <div><dt>選択:</dt><dd>${esc(source)}</dd></div>
+    <div><dt>利用条件:</dt><dd>${esc(condition)}</dd></div>
+    <div><dt>選択理由:</dt><dd>${esc(decision.reason || `候補順位${decision.rank || '—'}位`)}</dd></div>
+    <div><dt>代替候補:</dt><dd>${esc(fallback)}${decision.fallback_from ? `（${esc(decision.fallback_from)}から切替）` : ''}</dd></div>
+    <div><dt>検証:</dt><dd>${esc(verification)}</dd></div>
+  </dl>`;
+}
+
 // この工程のエージェント会話を開く。会話は CLI のネイティブセッション記録（ローカル）に
 // しかないので、読みは agent-audit の 1 実装（sessions サブコマンド）へ委ね、ここは
 // 「この試行の時間帯 × その CLI」で絞って人に見せるだけ。複数候補は人が選ぶ（C4）。
@@ -376,6 +400,7 @@ function renderFlowNode(run, node, retryUi, advice) {
       ${nodeParkLine(node)}
       ${nodeProgressLine(node)}
       ${nodeAgentLine(node)}
+      ${nodeExecutionReceiptHtml(node)}
       ${nodeIssueBlock(run, node)}
       ${node.output || node.data ? '<button type="button" class="subtle-action" data-open-technical-info>出力の詳細を開く</button>' : ''}
       ${timeline}

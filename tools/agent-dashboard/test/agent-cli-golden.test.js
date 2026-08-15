@@ -140,7 +140,8 @@ test('同梱定義がすべて読める（壊れた定義を同梱しない）',
 // ローカル実行がクラウド実行より厳密に安い、が守られていないと降格・昇格が意味を失う。
 // 個別の値をスナップショットしても不変条件は守れないので、全定義を読んで関係を確かめる。
 const LOCAL_ENGINES = new Set([
-  'aider', 'ollama', 'ollama-json', 'ollama-list', 'ollama-list-thinking', 'ollama-read', 'opencode',
+  'aider', 'ollama', 'ollama-json', 'ollama-list', 'ollama-list-thinking', 'ollama-read',
+  'ollama-verify', 'opencode',
 ]);
 
 test('相対コストは全同梱定義で宣言され、ローカル < クラウドの関係を保つ', () => {

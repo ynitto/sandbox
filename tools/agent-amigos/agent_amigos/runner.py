@@ -16,7 +16,7 @@ from . import agentcli, control, nodebudget, turnmark
 from .bus import Bus, MissionPaths, TurnTxn
 from .mission import (DEFAULT_ANSWER_FILE, DEFAULT_SCORE_FILE, convergence_state,
                       current_round, load_mission, load_roles, pruned_roles,
-                      topology_neighbors)
+                      role_operation_contract, topology_neighbors)
 from .messages import (build_message, message_path, new_messages, read_channel_all,
                        valid_target)
 from .util import extract_json, log, now_iso, read_json, safe_relpath
@@ -85,20 +85,58 @@ class AmigoRunner:
         """
         cli = self.agent_cli or role.get("agent_cli") or ""
         model = self.model or role.get("model") or None
-        c_cli, c_model = control.override(self.role_id)
-        if c_cli:
-            cli = c_cli
-        if c_model:
-            model = c_model
-        if nb.get("soft") or (nb.get("exceeded") and nb.get("on_exhausted") == "degrade"):
-            d_cli, d_model = control.degraded()
-            if d_cli:
-                cli = d_cli
-            if d_model:
-                model = d_model
+        # 候補ベース（version 2 selection_policy）: control 層を Resolver の決定で置き換える。
+        # park は弱い候補へ黙って降格せず環境エラーで paused へ（lifecycle と同じ運び方）。
+        # 縮退（degraded）は legacy の口——候補ベースでは Compiler が消費を織り込むので重ねない。
+        decision = control.policy_decision(self.role_id)
+        self._policy_decision = decision
+        if decision is not None:
+            if decision.get("parked"):
+                raise RuntimeError(
+                    f"[agent-error:control] [selection-policy] park"
+                    f"（{decision.get('park_reason')}）: {decision.get('reason')}。"
+                    f"再開条件: {decision.get('resume_condition')}")
+            selected = decision["selected"]
+            cli = str(selected["agent_cli"])
+            model = selected.get("model") or model
+        else:
+            c_cli, c_model = control.override(self.role_id)
+            if c_cli:
+                cli = c_cli
+            if c_model:
+                model = c_model
+            if nb.get("soft") or (nb.get("exceeded") and nb.get("on_exhausted") == "degrade"):
+                d_cli, d_model = control.degraded()
+                if d_cli:
+                    cli = d_cli
+                if d_model:
+                    model = d_model
         if not cli:
             raise RuntimeError(self.NO_CLI_ERROR)
         return cli, model
+
+    def _turn_receipt(self, role: dict, turn: int, cli_seconds: float, cli: str,
+                      model: "str | None", *, actions: int, rejected: int) -> dict:
+        """ターンの event 行 = ミッション予算の元帳 + 候補単位 receipt（設計 §6.5）。
+
+        読み手（agent-audit / dashboard）は設定から実モデルを再推測せず、この行と
+        node-budget 台帳を正典にする。処理契約の operation_class（team builder 生成の
+        宣言、無ければ role フィールドからの自動判定）も候補単位集計の軸として残す。
+        """
+        rec = {"ts": now_iso(), "turn": turn, "cli_seconds": cli_seconds,
+               "actions": actions, "rejected": rejected}
+        if cli:
+            rec["agent_cli"] = cli
+        if model:
+            rec["model"] = model
+        operation = role_operation_contract(role)
+        if operation.get("operation_class"):
+            rec["operation_class"] = operation["operation_class"]
+        decision = getattr(self, "_policy_decision", None)
+        if decision is not None and decision.get("selected"):
+            from agentcore import executionresolver
+            rec["execution_decision"] = executionresolver.receipt_execution_decision(decision)
+        return rec
 
     # --- 状態（status/<who>.json = 自分名義） --------------------------------
     def _load_status(self) -> dict:
@@ -241,8 +279,8 @@ class AmigoRunner:
         self._escalate_stale_questions(txn, mission, st)
         txn.write_json(self.mp.status(self.who), st)
         txn.append_jsonl(self.mp.events(self.who),
-                         {"ts": now_iso(), "turn": st["turn"], "cli_seconds": cli_seconds,
-                          "actions": len(applied), "rejected": rejected})
+                         self._turn_receipt(role, st["turn"], cli_seconds, cli, model,
+                                            actions=len(applied), rejected=rejected))
         txn.apply(self.bus, f"{self.who} turn {st['turn']}")
         # ノードの共有台帳へも記帳（バス events = ミッション予算、台帳 = ノード予算）。
         # agent_cli / model を帰属として付す（トークンは stub/CLI とも実測できないため付さない）。
@@ -584,8 +622,8 @@ class AmigoRunner:
         st["handover"] = self._handover_note(st, rnd)
         txn.write_json(self.mp.status(self.who), st)
         txn.append_jsonl(self.mp.events(self.who),
-                         {"ts": now_iso(), "turn": st["turn"], "cli_seconds": secs,
-                          "actions": len(applied), "rejected": rejected})
+                         self._turn_receipt(role, st["turn"], secs, cli, model,
+                                            actions=len(applied), rejected=rejected))
         txn.apply(self.bus, f"{self.who} debate turn {st['turn']}")
         nodebudget.record(secs, ref=f"{self.mp.mission_id}/{self.role_id}",
                           node=self.node_id, agent_cli=cli, model=model or "",

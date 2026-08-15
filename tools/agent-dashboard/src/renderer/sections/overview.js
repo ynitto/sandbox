@@ -425,13 +425,6 @@ function renderProjectSettings() {
     : '';
 
   el.innerHTML = `<div class="project-settings-shell">
-    <header class="cowork-header">
-      <div>
-        <span class="summary-kicker">選択中のプロジェクトに適用</span>
-        <h2>プロジェクト設定</h2>
-        <p class="muted">${esc(p.name)} の目的やルールを変更できます。</p>
-      </div>
-    </header>
     <section class="project-settings-card" aria-labelledby="project-settings-definition-title">
       <span class="summary-kicker">基本設定</span>
       <h3 id="project-settings-definition-title">プロジェクト定義</h3>

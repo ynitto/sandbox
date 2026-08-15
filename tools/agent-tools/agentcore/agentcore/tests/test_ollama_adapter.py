@@ -65,10 +65,21 @@ class TestParseArgs(unittest.TestCase):
         self.assertTrue(opts["tools"])
         self.assertIs(opts["think"], False)
 
-    def test_think_accepts_on_and_off_only(self):
+    def test_think_accepts_on_off_and_prompt(self):
         self.assertIs(ollama_adapter.parse_args(["--think", "on", "m"])["think"], True)
         with self.assertRaises(ollama_adapter.ArgError):
             ollama_adapter.parse_args(["--think", "maybe", "m"])
+
+    def test_think_prompt_selects_the_system_prompt_route(self):
+        opts = ollama_adapter.parse_args(["--think", "prompt", "m"])
+
+        self.assertTrue(opts["think_prompt"])
+        self.assertIsNone(opts["think"], "API フィールドは宣言しない（経路が違う）")
+
+    def test_think_on_off_leaves_the_prompt_route_alone(self):
+        for value in ("on", "off"):
+            opts = ollama_adapter.parse_args(["--think", value, "m"])
+            self.assertFalse(opts["think_prompt"], f"--think {value}")
 
     def test_equals_form_and_repeated_skill(self):
         opts = ollama_adapter.parse_args(["--skill=pdf", "--skill", "xlsx", "m"])
@@ -306,12 +317,22 @@ class TestMainModes(_NoServerMixin, unittest.TestCase):
 
 
 class TestLoadProfileEnv(unittest.TestCase):
-    """エンジンの非ログインシェル起動でも ~/.profile の OLLAMA_HOST が効くこと。"""
+    """エンジンの非ログインシェル起動でも ~/.profile の OLLAMA_HOST / NO_PROXY が効くこと。"""
+
+    _VARS = ("OLLAMA_HOST", "OLLAMA_API_BASE", "AGENT_OLLAMA_THINK",
+             "NO_PROXY", "no_proxy", "UNRELATED_VAR")
 
     def _write_profile(self, tmp, body):
         path = Path(tmp) / "profile"
         path.write_text(body, encoding="utf-8")
         return str(path)
+
+    def _clean_env(self):
+        ctx = mock.patch.dict(ollama_adapter.os.environ)
+        ctx.start()
+        self.addCleanup(ctx.stop)
+        for name in self._VARS:
+            ollama_adapter.os.environ.pop(name, None)
 
     def test_imports_ollama_vars_when_host_is_unset(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -319,15 +340,13 @@ class TestLoadProfileEnv(unittest.TestCase):
                 "export OLLAMA_HOST=http://10.0.0.5:11434\n"
                 "export AGENT_OLLAMA_THINK=off\n"
                 "export UNRELATED_VAR=nope\n"))
-            with mock.patch.dict(ollama_adapter.os.environ):
-                for name in ("OLLAMA_HOST", "AGENT_OLLAMA_THINK", "UNRELATED_VAR"):
-                    ollama_adapter.os.environ.pop(name, None)
-                imported = ollama_adapter.load_profile_env(profile)
-                self.assertEqual(ollama_adapter.os.environ["OLLAMA_HOST"],
-                                 "http://10.0.0.5:11434")
-                self.assertEqual(ollama_adapter.os.environ["AGENT_OLLAMA_THINK"], "off")
-                self.assertNotIn("UNRELATED_VAR", ollama_adapter.os.environ,
-                                 "OLLAMA_*/AGENT_OLLAMA_* 以外は取り込まない")
+            self._clean_env()
+            imported = ollama_adapter.load_profile_env(profile)
+            self.assertEqual(ollama_adapter.os.environ["OLLAMA_HOST"],
+                             "http://10.0.0.5:11434")
+            self.assertEqual(ollama_adapter.os.environ["AGENT_OLLAMA_THINK"], "off")
+            self.assertNotIn("UNRELATED_VAR", ollama_adapter.os.environ,
+                             "OLLAMA_*/AGENT_OLLAMA_*/NO_PROXY 以外は取り込まない")
         self.assertEqual(set(imported), {"OLLAMA_HOST", "AGENT_OLLAMA_THINK"})
 
     def test_existing_environment_always_wins(self):
@@ -335,31 +354,74 @@ class TestLoadProfileEnv(unittest.TestCase):
             profile = self._write_profile(tmp, (
                 "export OLLAMA_HOST=http://profile:11434\n"
                 "export AGENT_OLLAMA_THINK=off\n"))
-            with mock.patch.dict(ollama_adapter.os.environ,
-                                 {"AGENT_OLLAMA_THINK": "on"}):
-                ollama_adapter.os.environ.pop("OLLAMA_HOST", None)
-                ollama_adapter.load_profile_env(profile)
-                self.assertEqual(ollama_adapter.os.environ["AGENT_OLLAMA_THINK"], "on",
-                                 "呼び出し側の明示指定を profile で潰さない")
+            self._clean_env()
+            ollama_adapter.os.environ["AGENT_OLLAMA_THINK"] = "on"
+            ollama_adapter.load_profile_env(profile)
+            self.assertEqual(ollama_adapter.os.environ["AGENT_OLLAMA_THINK"], "on",
+                             "呼び出し側の明示指定を profile で潰さない")
 
-    def test_noop_when_host_is_already_set(self):
-        with mock.patch.dict(ollama_adapter.os.environ,
-                             {"OLLAMA_HOST": "http://set:11434"}), \
-                mock.patch.object(ollama_adapter.subprocess, "run") as run:
+    def test_noop_when_fully_configured(self):
+        self._clean_env()
+        ollama_adapter.os.environ.update({
+            "OLLAMA_HOST": "http://set:11434",
+            "OLLAMA_API_BASE": "http://set:11434",
+            "NO_PROXY": "set"})
+        with mock.patch.object(ollama_adapter.subprocess, "run") as run:
             self.assertEqual(ollama_adapter.load_profile_env("/nonexistent"), {})
         self.assertEqual(run.call_count, 0, "構成済みなら subprocess を起こさない")
 
     def test_missing_or_broken_profile_is_silent(self):
-        with mock.patch.dict(ollama_adapter.os.environ):
-            ollama_adapter.os.environ.pop("OLLAMA_HOST", None)
-            self.assertEqual(ollama_adapter.load_profile_env("/no/such/profile"), {})
+        self._clean_env()
+        self.assertEqual(ollama_adapter.load_profile_env("/no/such/profile"), {})
         with tempfile.TemporaryDirectory() as tmp:
             profile = self._write_profile(tmp, "this-is-not-a-command --boom\n")
-            with mock.patch.dict(ollama_adapter.os.environ):
-                ollama_adapter.os.environ.pop("OLLAMA_HOST", None)
-                # 壊れた行があっても sh は続行し、環境の取得自体は成功する。
-                # 少なくとも例外で推論を止めないことだけを保証する。
-                ollama_adapter.load_profile_env(profile)
+            # 壊れた行があっても sh は続行し、環境の取得自体は成功する。
+            # 少なくとも例外で推論を止めないことだけを保証する。
+            ollama_adapter.load_profile_env(profile)
+
+    def test_no_proxy_is_imported_and_ollama_host_is_appended(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            profile = self._write_profile(tmp, (
+                "export OLLAMA_HOST=http://10.0.0.5:11434\n"
+                "export NO_PROXY=intra.example\n"))
+            self._clean_env()
+            imported = ollama_adapter.load_profile_env(profile)
+            self.assertEqual(set(imported), {"OLLAMA_HOST", "NO_PROXY"})
+            for var in ("NO_PROXY", "no_proxy"):
+                self.assertEqual(ollama_adapter.os.environ[var],
+                                 "intra.example,10.0.0.5",
+                                 "ollama のホストは NO_PROXY の両表記へ追記される")
+
+    def test_ollama_host_is_appended_even_when_no_proxy_preexists(self):
+        # 親環境が不完全な NO_PROXY を持つ（＝profile の値は取り込まれない）場合でも、
+        # ollama のホストだけは確実にプロキシ対象から外れること（504 対策の本丸）。
+        self._clean_env()
+        ollama_adapter.os.environ.update({
+            "OLLAMA_HOST": "http://10.0.0.5:11434",
+            "OLLAMA_API_BASE": "http://10.0.0.5:11434",
+            "NO_PROXY": "corp.local"})
+        ollama_adapter.load_profile_env("/nonexistent")
+        for var in ("NO_PROXY", "no_proxy"):
+            self.assertEqual(ollama_adapter.os.environ[var], "corp.local,10.0.0.5")
+
+    def test_api_base_and_host_complete_each_other(self):
+        self._clean_env()
+        ollama_adapter.os.environ["OLLAMA_HOST"] = "10.0.0.5:11434"
+        ollama_adapter.load_profile_env("/nonexistent")
+        self.assertEqual(ollama_adapter.os.environ["OLLAMA_API_BASE"],
+                         "http://10.0.0.5:11434",
+                         "スキーム無しの OLLAMA_HOST からでも API base を組める")
+
+        self._clean_env()
+        ollama_adapter.os.environ["OLLAMA_API_BASE"] = "http://10.0.0.6:11434"
+        ollama_adapter.load_profile_env("/nonexistent")
+        self.assertEqual(ollama_adapter.os.environ["OLLAMA_HOST"],
+                         "http://10.0.0.6:11434")
+
+    def test_localhost_is_excluded_when_nothing_is_configured(self):
+        self._clean_env()
+        ollama_adapter.load_profile_env("/nonexistent")
+        self.assertEqual(ollama_adapter.os.environ["NO_PROXY"], "localhost,127.0.0.1")
 
 
 class TestSkillToolsetGuard(_NoServerMixin, unittest.TestCase):

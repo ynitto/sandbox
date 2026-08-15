@@ -204,6 +204,137 @@ test('今すぐ実行の段は候補を同じ段内で解決し、設定へ保�
   assert.throws(() => cowork.resolveRoutineAgent(config, emptyRepo(), 'missing'), /段.*missing/);
 });
 
+test('今すぐ実行は全実行レベルの全候補を表示し、選んだ組み合わせをそのまま解決する', () => {
+  const config = configWithControl({ workloads: { routine: {} } });
+  writeProfiles(config, {
+    tiers: {
+      medium: {
+        order: 20,
+        label: '標準',
+        candidates: [
+          { agent_cli: 'ollama', model: 'qwen3:8b' },
+          { agent_cli: 'aider', model: 'gemma4:e2b' },
+        ],
+      },
+      small: {
+        order: 10,
+        label: '軽量',
+        candidates: [{ agent_cli: 'aider', model: 'gemma4:e4b' }],
+      },
+    },
+    state: {
+      routine: {
+        tier: 'medium',
+        candidate: { agent_cli: 'aider', model: 'gemma4:e2b' },
+      },
+    },
+  });
+
+  const ov = cowork.overview(config);
+  assert.deepStrictEqual(ov.routineTiers.map((choice) => [choice.id, choice.agent_cli, choice.model]), [
+    ['medium', 'ollama', 'qwen3:8b'],
+    ['medium', 'aider', 'gemma4:e2b'],
+    ['small', 'aider', 'gemma4:e4b'],
+  ]);
+  assert.deepStrictEqual(ov.currentRoutineCandidate, { agent_cli: 'aider', model: 'gemma4:e2b' });
+
+  const selected = cowork.resolveRoutineAgent(config, emptyRepo(), {
+    tier: 'medium', agent_cli: 'aider', model: 'gemma4:e2b',
+  });
+  assert.strictEqual(selected.cli, 'aider');
+  assert.strictEqual(selected.model, 'gemma4:e2b');
+  assert.throws(() => cowork.resolveRoutineAgent(config, emptyRepo(), {
+    tier: 'medium', agent_cli: 'aider', model: 'not-configured',
+  }), /候補.*定義されていません/);
+});
+
+test('業務ごとの実行エージェント設定は自動割り当てより優先し、一覧が両方を見せる', () => {
+  const repo = emptyRepo();
+  const config = configWithControl({
+    workloads: { routine: { agent_cli: 'ollama', model: 'base-model' } },
+  }, {
+    cowork: {
+      items: [{
+        id: 'daily-report', type: 'loop', name: 'daily-report', repo, prompt: '日報を書く',
+        executionChoice: { tier: 'small', agent_cli: 'aider', model: 'gemma4:e4b' },
+      }],
+    },
+  });
+  writeProfiles(config, {
+    tiers: {
+      medium: { order: 20, label: '標準', candidates: [{ agent_cli: 'ollama', model: 'qwen3:8b' }] },
+      small: { order: 10, label: '軽量', candidates: [{ agent_cli: 'aider', model: 'gemma4:e4b' }] },
+    },
+  });
+  const item = cowork.resolveItem(config, 'daily-report');
+  assert.deepStrictEqual(cowork.storedExecutionChoice(config, item),
+    { tier: 'small', agent_cli: 'aider', model: 'gemma4:e4b' });
+  const row = cowork.overview(config).items.find((it) => it.id === 'daily-report');
+  assert.strictEqual(row.executionSource, 'user');
+  assert.deepStrictEqual(row.execution, { agent_cli: 'aider', model: 'gemma4:e4b' },
+    '一覧・詳細は設定どおりの実効エージェントを見せる');
+  assert.deepStrictEqual(row.autoExecution, { agent_cli: 'ollama', model: 'base-model' },
+    '自動割り当てなら何になるかも編集画面向けに出す');
+  assert.deepStrictEqual(row.executionChoice, { tier: 'small', agent_cli: 'aider', model: 'gemma4:e4b' });
+
+  // 設定の無い項目は従来どおり自動割り当て
+  const auto = configWithControl({
+    workloads: { routine: { agent_cli: 'ollama', model: 'base-model' } },
+  }, { cowork: { items: [{ id: 'plain', type: 'loop', name: 'plain', repo, prompt: 'x' }] } });
+  const autoRow = cowork.overview(auto).items.find((it) => it.id === 'plain');
+  assert.strictEqual(autoRow.executionSource, 'auto');
+  assert.deepStrictEqual(autoRow.execution, { agent_cli: 'ollama', model: 'base-model' });
+});
+
+test('発見項目の実行エージェント設定は対応表で持ち、実体ファイルを変更しない', () => {
+  const config = configWithControl({ workloads: { routine: { agent_cli: 'ollama' } } }, {
+    cowork: {
+      executionChoices: {
+        'disc:loop:repo:daily': { tier: 'medium', agent_cli: 'ollama', model: 'qwen3:8b' },
+        broken: { tier: '', agent_cli: 'x' }, // 形の崩れた対応は無視する
+      },
+    },
+  });
+  assert.deepStrictEqual(
+    cowork.storedExecutionChoice(config, { id: 'disc:loop:repo:daily', source: 'discovered' }),
+    { tier: 'medium', agent_cli: 'ollama', model: 'qwen3:8b' }
+  );
+  assert.strictEqual(
+    cowork.storedExecutionChoice(config, { id: 'broken', source: 'discovered' }), null);
+  assert.strictEqual(
+    cowork.storedExecutionChoice(config, { id: 'unknown', source: 'discovered' }), null);
+});
+
+test('saveWork は手動項目の設定を残し、発見項目の設定を対応表として保存する', () => {
+  const config = { cowork: {} };
+  let savedConfig = null;
+  const saveConfig = (next) => { savedConfig = next; return next; };
+  cowork.saveWork(config, saveConfig, {
+    items: [
+      {
+        id: 'daily-report', type: 'loop', name: 'daily-report', repo: '', prompt: '日報',
+        source: 'config', state: { status: 'idle' }, parameters: [], parameterError: '',
+        execution: { agent_cli: 'aider', model: 'gemma4:e4b' }, executionSource: 'user',
+        autoExecution: { agent_cli: 'ollama', model: 'base' },
+        executionChoice: { tier: 'small', agent_cli: 'aider', model: 'gemma4:e4b' },
+      },
+      {
+        id: 'disc:loop:repo:sync', type: 'loop', name: 'sync', repo: '', prompt: 'x',
+        source: 'discovered', _src: { kind: 'loop', file: '/no/such/file', format: 'yaml' },
+        executionChoice: { tier: 'medium', agent_cli: 'ollama', model: 'qwen3:8b' },
+      },
+    ],
+  });
+  const [manual] = savedConfig.cowork.items;
+  assert.deepStrictEqual(manual.executionChoice,
+    { tier: 'small', agent_cli: 'aider', model: 'gemma4:e4b' }, '手動項目は項目自身に設定を持つ');
+  assert.ok(!('execution' in manual) && !('parameters' in manual) && !('autoExecution' in manual),
+    '実行時フィールドは保存しない');
+  assert.deepStrictEqual(savedConfig.cowork.executionChoices,
+    { 'disc:loop:repo:sync': { tier: 'medium', agent_cli: 'ollama', model: 'qwen3:8b' } },
+    '発見項目の設定は対応表として dashboard 設定に持つ');
+});
+
 test('定常業務の実行は全体設定で指定した CLI のウィンドウを開く（設定を落とさない）', () => {
   const config = configWithControl({
     workloads: { routine: { agent_cli: 'ollama', model: 'qwen3:8b' } },

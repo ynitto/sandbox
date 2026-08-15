@@ -20,6 +20,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 _HERE = Path(__file__).resolve().parent
 _SRC = _HERE.parent / "agent-opencode.py"
@@ -207,6 +208,23 @@ class TestRunAdapter(_Isolated):
                               capture_output=True, env=env, cwd=str(self.tmp))
         self.assertEqual(proc.returncode, 127)
         self.assertIn("opencode が見つかりません", proc.stderr)
+
+
+class TestLoadProfileEnv(unittest.TestCase):
+    """複製した環境補完（正典: agentcore/ollama_adapter.py）が同じ振る舞いをすること。"""
+
+    def test_env_completion_matches_canonical_implementation(self):
+        with mock.patch.dict(adapter.os.environ):
+            for name in ("OLLAMA_HOST", "OLLAMA_API_BASE", "NO_PROXY", "no_proxy"):
+                adapter.os.environ.pop(name, None)
+            adapter.os.environ["OLLAMA_HOST"] = "http://10.0.0.5:11434"
+            adapter.load_profile_env("/nonexistent")
+            self.assertEqual(adapter.os.environ["OLLAMA_API_BASE"],
+                             "http://10.0.0.5:11434",
+                             "設定の {env:OLLAMA_API_BASE} テンプレートが空にならない")
+            for var in ("NO_PROXY", "no_proxy"):
+                self.assertEqual(adapter.os.environ[var], "10.0.0.5",
+                                 "ollama のホストはプロキシ対象から外れる")
 
 
 class TestBundledDefinition(unittest.TestCase):

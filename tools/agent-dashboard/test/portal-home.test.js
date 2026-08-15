@@ -81,7 +81,6 @@ const agentAudit = fs.readFileSync(path.join(RENDERER_DIR, 'features', 'agent-au
     ['history', 'projects'],
     ['project-settings', 'projects'],
     ['cowork', 'routines'],
-    ['routine-runs', 'routines'],
     ['routine-settings', 'routines'],
     ['amigos', 'missions'],
     ['participation', 'participation'],
@@ -91,10 +90,11 @@ const agentAudit = fs.readFileSync(path.join(RENDERER_DIR, 'features', 'agent-au
     assert.strictEqual(areaOf(tab), area, `${tab} タブは ${area} 領域`);
   }
   // 定常業務は dashboard 自身が実行側なので、動かす・記録を追う・設定するが 1 領域に揃う。
-  for (const id of ['tab-routine-runs', 'tab-routine-settings', 'tab-usage']) {
+  for (const id of ['tab-cowork', 'tab-routine-settings', 'tab-usage']) {
     assert.ok(html.includes(`id="${id}"`), `${id} のペインがある`);
   }
-  console.log('ok - 各領域に「動かす／記録を追う／設定する」が揃っている');
+  assert.ok(!html.includes('id="tab-routine-runs"'));
+  console.log('ok - 定常業務は履歴を画面内に持ち、設定は共通のタブ構成を使う');
 }
 
 // --- 4) 領域の絞り込みは feature の出し分けと別のしるし -----------------------

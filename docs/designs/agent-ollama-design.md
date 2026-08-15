@@ -68,8 +68,12 @@ CLI の実行面は次の 4 つに絞る。
 
 `ollama_adapter.py` は引数解釈とモード分岐だけを持ち、実行を次の順に組み立てる。
 
-1. 非ログイン subprocess でも接続先を解決できるよう、環境に `OLLAMA_HOST` が無い場合だけ
-   `~/.profile` から `OLLAMA_*` / `AGENT_OLLAMA_*` を補完する。呼び出し側の明示環境が常に勝つ。
+1. 非ログイン subprocess でも接続先を解決できるよう、環境に `OLLAMA_HOST` / `OLLAMA_API_BASE` /
+   `NO_PROXY` が揃っていない場合だけ `~/.profile` から `OLLAMA_*` / `AGENT_OLLAMA_*` / `NO_PROXY` を
+   補完する。呼び出し側の明示環境が常に勝つ。加えて `OLLAMA_HOST` ⇄ `OLLAMA_API_BASE` を相互に
+   補い、ollama のホストを `NO_PROXY` / `no_proxy` へ常に追記する（プロキシ環境で接続が
+   プロキシへ流れて 504 になるのを防ぐ）。この補完ブロックが正典で、単体ファイルで配る
+   `agent-aider`（aider_adapter.py）と `agent-opencode` は同一の複製を持つ。
 2. 明示されたスキルを 1 回だけ展開し、イベントログと `ContextTracker` を開始する。
 3. 道具なしは `/api/generate`、道具ありは `/api/chat` を `stream: true` で呼ぶ。
 4. API の `think` / `format` / `options` / `keep_alive` フィールドへ設定を渡す。思考本文は成果本文と

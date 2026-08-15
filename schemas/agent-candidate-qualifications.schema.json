@@ -1,0 +1,149 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agent-candidate-qualifications.schema.json",
+  "title": "候補適格性 — 候補（agent_cli+model）×処理種別の実測格付け（データ契約）",
+  "description": "agent-audit が評価台帳（eval archive）と本番 receipt から生成する、実行候補ごとの仕事別適格性。管理面専用でエンジンは読まない（エンジンが読むのはコンパイル済み agent-control だけ）。writer は agent-audit のみ・revision 付き原子的置換。readers は agent-dashboard / Resource Controller / Execution Policy Compiler。昇格・降格の条件は処理種別ごとの version 付き evaluation profile が所有し、agent-audit は条件をすべて満たす場合だけ qualified へ自動昇格する。重大な scope 逸脱・成果物欠落は即時降格でき、期限切れ（valid_until 超過）は unknown へ戻す。手動 override は通常 UI に出さず、実行者・理由・期限を監査記録へ残す。検証の 1 実装は agentcore/executioncontract.py（qualifications_errors）。設計: docs/plans/2026-08-15-agent-tools-candidate-execution-policy-dashboard-design.md §6.2",
+  "$defs": {
+    "evaluation_profile": {
+      "type": "object",
+      "description": "昇格条件の所有者。キー（例 existing-test-repair-v1）が evaluation_profile_id で、処理種別＋制約 version を固定する。条件・候補・処理種別が一致しない古い証拠で qualified を名乗らせない",
+      "required": ["min_samples", "min_pass_rate", "valid_for_days"],
+      "properties": {
+        "operation_class": {"type": "string", "description": "対象の処理種別（例 existing-test-repair）"},
+        "min_samples": {"type": "integer", "minimum": 1, "description": "qualified に必要な最小サンプル数。不足では昇格しない"},
+        "min_pass_rate": {"type": "number", "minimum": 0, "maximum": 1},
+        "max_timeout_rate": {"type": "number", "minimum": 0, "maximum": 1},
+        "forbidden_failure_modes": {"type": "array", "items": {"type": "string"}, "description": "1 件でも観測したら qualified を許さない重大失敗（例 required-deliverable-omitted / scope-violation）"},
+        "window_days": {"type": "integer", "minimum": 1, "description": "観測窓（この日数より古い実測は数えない）"},
+        "valid_for_days": {"type": "integer", "minimum": 1, "description": "昇格後の有効日数。qualification の valid_until の根拠"}
+      },
+      "additionalProperties": true
+    },
+    "qualification": {
+      "type": "object",
+      "description": "候補×処理種別 1 件の格付け。status の意味: qualified = 必要サンプルと品質条件を満たす / trial = Execution Envelope で明示承認した run だけ試行可 / blocked = 既知の失敗があり自動選択しない（明示固定でも実行不可） / unknown = 証拠不足（通常は自動選択しない。期限切れもここへ戻る）",
+      "required": ["qualification_id", "status"],
+      "properties": {
+        "qualification_id": {"type": "string", "description": "参照の正典（例 aider-gemma4-e4b-existing-test-repair-v1）。selection_policy の qualification_refs はこの id で固定し、文字列名では参照しない"},
+        "status": {"enum": ["qualified", "trial", "blocked", "unknown"]},
+        "evaluation_profile_id": {"type": "string", "description": "昇格条件を所有する evaluation_profiles のキー"},
+        "samples": {"type": "integer", "minimum": 0},
+        "passed": {"type": "integer", "minimum": 0},
+        "timeout_rate": {"type": "number", "minimum": 0, "maximum": 1},
+        "p50_seconds": {"type": "number", "minimum": 0},
+        "constraints": {
+          "type": "object",
+          "description": "この格付けが有効な処理契約の条件。**すべて AND で満たす**（qualification_refs の OR と対）。例: max_write_files / max_deliverables / requires_existing_verification / forbids_new_contract_artifacts / max_diff_lines",
+          "additionalProperties": true
+        },
+        "failure_modes": {"type": "array", "items": {"type": "string"}, "description": "観測した失敗モード（例 required-deliverable-omitted）。blocked の根拠"},
+        "source": {"enum": ["eval-archive", "receipt"], "description": "証拠の出所。評価データと本番 receipt を混ぜて集計しない"},
+        "last_evaluated_at": {"type": "string", "description": "ISO8601 UTC"},
+        "valid_until": {"type": "string", "description": "ISO8601 UTC。超過で unknown へ戻す"}
+      },
+      "additionalProperties": true
+    },
+    "candidate": {
+      "type": "object",
+      "description": "実行候補 1 件。識別子は agent_cli + model の組（同じモデルでもエージェントが違えば別候補——ツール契約・編集能力・停止性・出力形式が変わる）。実行場所とコストは独立の属性で、execution_site=device が estimated_cost=0 を意味する設計にしない",
+      "required": ["agent_cli", "model"],
+      "properties": {
+        "agent_cli": {"type": "string", "description": "組み込み名またはドロップイン名（agents/<name>.json）"},
+        "model": {"type": "string"},
+        "qualifications": {
+          "type": "object",
+          "description": "処理種別（operation_class）→ 格付け",
+          "additionalProperties": {"$ref": "#/$defs/qualification"}
+        },
+        "execution_site": {"enum": ["device", "external", "managed"], "description": "実行場所。端末外候補はこの属性だけで選ばず、Execution Envelope の送信許可も満たす場合だけ選べる"},
+        "resource_group": {"type": "string", "description": "同時常駐できない資源群（例 local-llm——e4b と 12b を同時常駐させない）。同時実行数の制約は resource scheduler が解釈する"},
+        "quota_scope": {"type": "string", "description": "利用枠の単位（CLI アカウント / 端末 / モデル）"},
+        "economics": {
+          "type": "object",
+          "properties": {
+            "estimated_cost": {"type": "number", "minimum": 0, "description": "現時点の予想費用。0 をローカルと同義に扱わない"},
+            "currency": {"type": "string"}
+          },
+          "additionalProperties": true
+        },
+        "latency": {
+          "type": "object",
+          "properties": {
+            "p50_seconds": {"type": "number", "minimum": 0},
+            "timeout_rate": {"type": "number", "minimum": 0, "maximum": 1}
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "type": "object",
+  "required": ["version", "revision", "candidates"],
+  "properties": {
+    "version": {"type": "integer", "const": 1},
+    "revision": {"type": "integer", "minimum": 0, "description": "単調増加。selection_policy の qualification_revision / receipt の qualification_revision と突き合わせて決定を再現する"},
+    "generated_at": {"type": "string", "description": "ISO8601 UTC"},
+    "evaluation_profiles": {
+      "type": "object",
+      "description": "evaluation_profile_id → 昇格条件",
+      "additionalProperties": {"$ref": "#/$defs/evaluation_profile"}
+    },
+    "candidates": {"type": "array", "items": {"$ref": "#/$defs/candidate"}}
+  },
+  "additionalProperties": true,
+  "examples": [
+    {
+      "version": 1,
+      "revision": 12,
+      "generated_at": "2026-08-15T00:00:00Z",
+      "evaluation_profiles": {
+        "existing-test-repair-v1": {
+          "operation_class": "existing-test-repair",
+          "min_samples": 9,
+          "min_pass_rate": 0.9,
+          "max_timeout_rate": 0.1,
+          "forbidden_failure_modes": ["required-deliverable-omitted", "scope-violation"],
+          "window_days": 90,
+          "valid_for_days": 90
+        }
+      },
+      "candidates": [
+        {
+          "agent_cli": "aider",
+          "model": "gemma4:e4b",
+          "qualifications": {
+            "existing-test-repair": {
+              "qualification_id": "aider-gemma4-e4b-existing-test-repair-v1",
+              "status": "qualified",
+              "evaluation_profile_id": "existing-test-repair-v1",
+              "samples": 9,
+              "passed": 9,
+              "p50_seconds": 141,
+              "constraints": {
+                "max_write_files": 1,
+                "max_deliverables": 1,
+                "requires_existing_verification": true,
+                "forbids_new_contract_artifacts": true
+              },
+              "source": "eval-archive",
+              "last_evaluated_at": "2026-08-14T00:00:00Z",
+              "valid_until": "2026-11-12T00:00:00Z"
+            },
+            "multi-artifact-worker": {
+              "qualification_id": "aider-gemma4-e4b-multi-artifact-worker-v1",
+              "status": "blocked",
+              "samples": 3,
+              "passed": 0,
+              "failure_modes": ["required-deliverable-omitted"],
+              "source": "eval-archive"
+            }
+          },
+          "execution_site": "device",
+          "resource_group": "local-llm",
+          "economics": {"estimated_cost": 0, "currency": "JPY"}
+        }
+      ]
+    }
+  ]
+}

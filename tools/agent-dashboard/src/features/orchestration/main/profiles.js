@@ -16,6 +16,8 @@ const fs = require('fs');
 const path = require('path');
 const budget = require('./budget');
 const control = require('./control');
+const qualifications = require('./qualifications');
+const policyCompiler = require('./execution-policy-compiler');
 
 const PROFILES_FILE = 'profiles.json';
 const METERED_CLIS = new Set(['claude', 'codex', 'copilot', 'kiro']);
@@ -485,7 +487,18 @@ function evaluate(cfg, { force = false, nowMs = Date.now() } = {}) {
   const profiles = loadProfiles(dir);
   const usage = budget.usage(cfg);
   const decisions = decide(force ? { ...profiles, state: {} } : profiles, usage, nowMs);
-  return { profiles, usage, decisions };
+  return { profiles, usage, decisions, nowMs };
+}
+
+function strategyOf(executionPolicy) {
+  const mode = executionPolicy && executionPolicy.mode;
+  if (mode === 'saving') return 'economy';
+  if (mode === 'quality') return 'quality';
+  if (mode === 'custom') {
+    const strategy = executionPolicy.custom && executionPolicy.custom.strategy;
+    return policyCompiler.STRATEGIES.includes(strategy) ? strategy : 'balanced';
+  }
+  return 'balanced';
 }
 
 // 決定を control.json（選択結果）と profiles.json（state=記録）へ書く。
@@ -493,13 +506,15 @@ function evaluate(cfg, { force = false, nowMs = Date.now() } = {}) {
 // revision_applied 突き合わせを無意味にする）。
 function apply(cfg, options) {
   const dir = resolveProfilesDir(cfg);
-  const { profiles, decisions } = evaluate(cfg, options);
+  const { profiles, decisions, nowMs } = evaluate(cfg, options);
   const controlDir = control.resolveControlDir(cfg);
   const curControl = control.loadControl(controlDir);
+  const qualificationDoc = qualifications.load(cfg);
 
   const controlPatch = {};
   const nextState = { ...profiles.state };
   let stateDirty = false;
+  let compiledAny = false;
 
   for (const [wl, decision] of Object.entries(decisions)) {
     const curWl = curControl.workloads[wl] || {};
@@ -517,7 +532,7 @@ function apply(cfg, options) {
     // lifecycle=pauseで実行を止める（復帰時に人のpause/stopと区別して自動解除する）。
     if (decision.candidate) {
       const patch = {};
-      if (curWl.lifecycle === 'pause' && curWl.lifecycle_source === 'quota') {
+      if (curWl.lifecycle === 'pause' && ['quota', 'qualification'].includes(curWl.lifecycle_source)) {
         patch.lifecycle = 'run';
         patch.lifecycle_source = null;
       }
@@ -534,6 +549,24 @@ function apply(cfg, options) {
       if (curWl.selection_source !== 'control-workload') patch.selection_source = 'control-workload';
       if (curWl.selection_reason !== decision.reason) patch.selection_reason = decision.reason;
       if (curWl.pinned !== false) patch.pinned = false;
+      if (qualificationDoc.exists) {
+        const selectionPolicy = policyCompiler.compileSelectionPolicy({
+          strategy: strategyOf(profiles.executionPolicy),
+          tiers: profiles.tiers,
+          tierCeiling: decision.tier,
+          qualifications: qualificationDoc,
+          nowMs,
+        });
+        compiledAny = true;
+        if (JSON.stringify(curWl.selection_policy || null) !== JSON.stringify(selectionPolicy)) {
+          patch.selection_policy = selectionPolicy;
+        }
+        if (!selectionPolicy.candidates.length) {
+          patch.lifecycle = 'pause';
+          patch.lifecycle_source = 'qualification';
+          patch.selection_reason = '適格な候補がないため保留';
+        }
+      }
       if (Object.keys(patch).length > 0) controlPatch[wl] = patch;
     }
     const prev = profiles.state[wl];
@@ -553,8 +586,14 @@ function apply(cfg, options) {
     }
   }
 
-  if (Object.keys(controlPatch).length > 0) {
-    control.saveControl(cfg, { workloads: controlPatch });
+  if (Object.keys(controlPatch).length > 0 || compiledAny) {
+    control.saveControl(cfg, {
+      ...(compiledAny ? {
+        version: 2,
+        valid_until: new Date(nowMs + 15 * 60 * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z'),
+      } : {}),
+      workloads: controlPatch,
+    });
   }
   if (stateDirty) {
     const next = { ...(profiles.raw || {}) };
@@ -564,7 +603,11 @@ function apply(cfg, options) {
     next.updated_by = 'dashboard';
     atomicWriteJson(path.join(dir, PROFILES_FILE), next);
   }
-  return { decisions, controlWritten: Object.keys(controlPatch).length > 0, stateWritten: stateDirty };
+  return {
+    decisions,
+    controlWritten: Object.keys(controlPatch).length > 0 || compiledAny,
+    stateWritten: stateDirty,
+  };
 }
 
 module.exports = {

@@ -242,12 +242,34 @@ async function main() {
   assert.ok(/submit\.disabled = running \|\| inputs\.some\(/.test(dialogSrc),
     '実行可否は入力欄の中身で決める（欄が 0 件ならそのまま実行できる）');
   assert.ok(dialogSrc.includes('tierSelect.focus()'), '段の選択へ最初にフォーカスする');
-  assert.ok(src.includes('run(parameters, tier)'), '段とパラメータを一回の実行へだけ渡す');
-  assert.ok(src.includes('api.coworkRunStateMachine(id, parameters, tier)'), 'state-machine IPCへ段を渡す');
+  assert.ok(dialogSrc.includes('tiers.map((tier, index)'), '同じ実行レベルの全候補を別々の選択肢にする');
+  assert.ok(dialogSrc.includes('const executionChoice = tiers[Number(tierSelect.value)]'),
+    '選んだ実行レベル・エージェント・モデルの組み合わせを確定する');
+  assert.ok(src.includes('run(parameters, executionChoice)'), '実行条件とパラメータを一回の実行へだけ渡す');
+  assert.ok(src.includes('api.coworkRunStateMachine(id, parameters, executionChoice)'),
+    'state-machine IPCへ選んだ実行条件を渡す');
   assert.ok(src.includes('type="text" autocomplete="off" required'), '初版は必須の文字列入力だけにする');
   assert.ok(src.includes('dlg.showModal()'), 'HTML dialog をモーダル表示する');
   assert.ok(src.includes("dlg.addEventListener('cancel', onCancel)"), 'Escape では実行せず閉じる');
   console.log('ok - 今すぐ実行は段と入力を HTML ダイアログで確定する');
+}
+
+// --- 6) 全体設定はワークフローと同じ左揃えのタイトル構造を使う -----------------
+
+{
+  const renderSettingsSrc = fn('renderOrchestration');
+  assert.ok(renderSettingsSrc.includes('<header class="area-header global-settings-header">'),
+    '全体設定のタイトルは領域共通ヘッダと同じ構造を使う');
+  assert.ok(!renderSettingsSrc.includes('<header class="cowork-header">'),
+    '右寄せの定常業務ヘッダを全体設定へ流用しない');
+  assert.match(renderSettingsSrc, /<h2>全体設定<\/h2>[\s\S]*?<p class="muted">すべてのプロジェクトに適用。/,
+    'ワークフローと同じタイトル・一行サブタイトルの粒度に揃える');
+  const tierSaveStart = src.indexOf("const tiersSave = root.querySelector('#btn-orch-tiers-save')");
+  const tierSaveEnd = src.indexOf('// グローバル指示', tierSaveStart);
+  const tierSaveSrc = src.slice(tierSaveStart, tierSaveEnd);
+  assert.ok(tierSaveSrc.includes('await refreshCowork();'),
+    '実行レベル保存直後に定常業務の選択肢も正本から更新する');
+  console.log('ok - 全体設定のヘッダと保存後の定常業務反映を揃える');
 }
 
 console.log('\nroutine-area-ui: all tests passed');

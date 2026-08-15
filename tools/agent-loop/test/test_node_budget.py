@@ -197,5 +197,106 @@ class ControlLifecycleTests(unittest.TestCase):
         self.assertEqual(rec["pid"], os.getpid())
 
 
+class SelectionPolicyTests(unittest.TestCase):
+    """候補ベース実行（agent-control v2 selection_policy → agentcore Resolver）。
+    実装計画 2026-08-15 E3。"""
+
+    POLICY = {
+        "strategy": "economy", "retry_limit": 1, "no_candidate": "park",
+        "qualification_revision": 5,
+        "candidates": [{"agent_cli": "aider", "model": "gemma4:e4b", "rank": 1,
+                        "qualification_refs": ["aider-gemma4-e4b-existing-test-repair-v1"]}],
+    }
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="al-ctl-sp-")
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+        os.environ["AGENT_CONTROL_DIR"] = self.dir
+        self.addCleanup(os.environ.pop, "AGENT_CONTROL_DIR", None)
+        os.environ["AGENT_BUDGET_DIR"] = self.dir      # 予算は無設定（None）
+        self.addCleanup(os.environ.pop, "AGENT_BUDGET_DIR", None)
+        al._CONTROL_CACHE["mtime"] = None
+        # _apply_control_agent は適用した revision をモジュール大域へ控える。この
+        # テストの control.json（revision 7）を後続のテストへ持ち越さない。
+        self.addCleanup(setattr, al, "_REVISION_APPLIED", al._REVISION_APPLIED)
+
+    def _control(self, obj):
+        with open(os.path.join(self.dir, "control.json"), "w", encoding="utf-8") as f:
+            json.dump(obj, f)
+        al._CONTROL_CACHE["mtime"] = None
+
+    def _v2(self, **workload_extra):
+        wl = {"agent_cli": "claude", "model": "legacy",
+              "selection_policy": json.loads(json.dumps(self.POLICY)), **workload_extra}
+        return {"version": 2, "revision": 7, "workloads": {"routine": wl}}
+
+    def test_v1_ignores_policy_field(self):
+        self._control({"version": 1, "workloads": {"routine": {"selection_policy": self.POLICY}}})
+        self.assertIsNone(al._control_policy_decision())
+
+    def test_policy_replaces_legacy_in_apply_control_agent(self):
+        self._control(self._v2())
+        resolved = al._apply_control_agent({"agent_cli": "kiro"})
+        self.assertEqual(resolved["agent_cli"], "aider")       # legacy の claude ではない
+        self.assertEqual(resolved["agent_cli_options"]["model"], "gemma4:e4b")
+
+    def test_park_detected_and_config_untouched(self):
+        ctl = self._v2()
+        ctl["workloads"]["routine"]["selection_policy"]["candidates"] = []
+        self._control(ctl)
+        parked = al._control_policy_park()
+        self.assertIsNotNone(parked)
+        self.assertEqual(parked["park_reason"], "invalid-selection-policy")
+        resolved = al._apply_control_agent({"agent_cli": "kiro"})
+        self.assertEqual(resolved["agent_cli"], "kiro")        # 選択なし＝弱い候補へ降格しない
+
+    def test_status_reflects_policy_decision(self):
+        self._control(self._v2())
+        al._apply_control_agent({"agent_cli": "kiro"})
+        al._write_status(effective_cli="aider", effective_model="gemma4:e4b")
+        status_dir = os.path.join(self.dir, "status")
+        files = [n for n in os.listdir(status_dir) if n.endswith(".json")]
+        with open(os.path.join(status_dir, files[0]), encoding="utf-8") as f:
+            rec = json.load(f)
+        self.assertEqual(rec["effective"]["selection_source"], "qualified-candidate")
+        self.assertFalse(rec["effective"]["restart_required"])  # desired = 実効
+
+
+class StatemachinePolicyGateTests(unittest.TestCase):
+    """小型候補（policy 選択）では write 宣言のある state に check が必須（E3）。"""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="al-sm-gate-")
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+
+    def _workflow(self, state):
+        path = os.path.join(self.dir, "workflow.yaml")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"name": "t", "initial_state": "s1",
+                       "states": {"s1": state, "done": {"terminal": True}},
+                       "transitions": []}, f)   # YAML は JSON を受ける
+        return path
+
+    def test_write_without_check_is_rejected(self):
+        decision = {"selected": {"agent_cli": "aider", "model": "gemma4:e4b"}}
+        path = self._workflow({"action": "edit", "write": "a.py"})
+        with self.assertRaisesRegex(al.StateMachineHarnessError, "check が必須"):
+            al.run_statemachine(workflow_path=path, cwd=self.dir,
+                                agent={"cli": "aider", "spec": {}, "model": None,
+                                       "agentcli": None}, decision=decision)
+
+    def test_write_with_check_passes_gate(self):
+        # ゲートは通る（その先はハーネススキル解決で落ちる——ここでは check 必須の
+        # 判定だけを見る）。
+        decision = {"selected": {"agent_cli": "aider", "model": "gemma4:e4b"}}
+        path = self._workflow({"action": "edit", "write": "a.py",
+                               "check": "python3 -m pytest -q"})
+        with self.assertRaises(al.StateMachineHarnessError) as ctx:
+            al.run_statemachine(workflow_path=path, cwd=self.dir,
+                                agent={"cli": "aider", "spec": {}, "model": None,
+                                       "agentcli": None}, decision=decision)
+        self.assertNotIn("check が必須", str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -117,6 +117,40 @@ class TestArms(unittest.TestCase):
         arm = ollama_replay.parse_arm("model=qwen3,think=on")
         self.assertEqual(arm["label"], "qwen3 think=on format=text")
 
+    def test_think_prompt_is_its_own_route(self):
+        """`think=prompt` は system prompt 経路。API フィールドは宣言しない。"""
+        arm = ollama_replay.parse_arm("model=gemma4:e4b,think=prompt,format=json")
+
+        self.assertTrue(arm["think_prompt"])
+        self.assertIsNone(arm["think"])
+        self.assertEqual(arm["label"], "gemma4:e4b think=prompt format=json")
+
+    def test_think_prompt_reaches_the_generator(self):
+        seen = {}
+
+        def generate(model, prompt, *, think, fmt, think_prompt=False):
+            seen.update(model=model, think=think, fmt=fmt, think_prompt=think_prompt)
+            return {"text": "ok"}
+
+        ollama_replay.replay_case({"prompt": "p", "log": "l"},
+                                  ollama_replay.parse_arm("model=m,think=prompt"),
+                                  generate=generate)
+
+        self.assertTrue(seen["think_prompt"])
+        self.assertIsNone(seen["think"])
+
+    def test_existing_generators_keep_working(self):
+        """`think_prompt` は使うときだけ渡す。差し込み口の既存実装を一斉に壊さない。"""
+        def legacy(model, prompt, *, think, fmt):   # 新しいキーワードを知らない実装
+            return {"text": "ok"}
+
+        record = ollama_replay.replay_case({"prompt": "p", "log": "l"},
+                                           ollama_replay.parse_arm("model=m,think=off"),
+                                           generate=legacy)
+
+        self.assertTrue(record["ok"], record.get("error"))
+        self.assertFalse(record["think_prompt"])
+
 
 class TestReplay(unittest.TestCase):
     def test_replay_never_uses_tools(self):

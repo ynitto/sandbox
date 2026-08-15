@@ -46,6 +46,24 @@ python3 tools/agent-tools/eval/run_suite.py --model qwen3.5:9b --cli aider --lab
 または `metrics.json` が機械可読な結果である。通常の run は Git 管理外で、採用判断の根拠に
 残すスナップショットだけを `results/archive/` へ移す。過去の台帳も同所へ整理した。
 
+### 評価archiveから初期適格性を生成する
+
+`qualification_seed.py` は、保存済み台帳を候補×処理種別へ明示的に対応付け、
+`agent-candidate-qualifications` v1 を生成する。同じモデルでも agent CLI が違えば別候補として扱い、
+コード側の12b候補は既知の停止性問題があるため `blocked` のままにする。出力のwriterはこの初期変換だけで、
+運用開始後の更新は agent-audit が担う。
+
+```bash
+python3 tools/agent-tools/eval/qualification_seed.py \
+  --revision 1 \
+  --generated-at 2026-08-15T00:00:00Z \
+  --output /path/to/agent-control/qualifications.json
+```
+
+出力には根拠を区別する `source: eval-archive` と、evaluation profileの
+`valid_for_days`から計算した `valid_until` が入る。入力archive、revision、生成時刻が同じなら
+出力も同じになるため、レビューや再生成では`--generated-at`を固定する。
+
 生成モデルだけを比べる基準線は `--cli agent-ollama` のまま `--model` だけ変える。
 ハーネスを調整する実験ではモデルを固定し、`--cli`、`--wall`、個別スクリプトの
 `--methods` / `--num-predict` を **1 度に 1 つだけ**変える。worker の aider 経路は比較用に
@@ -594,6 +612,143 @@ python3 tools/agent-tools/eval/worker_eval.py --model gemma4:e4b --cli aider \
 
 詳細と現行 statemachine への転用可否は `results/archive/2026-08-13-t1-decomposition-report.md`。
 
+## 推論条件の腕 — sampling と Thinking（計画 P10）
+
+過去の測定は**推論条件を一度も明示していない**。この 2 つは同じ性格の交絡なので、
+同じ対照群で 1 度に測る。どちらも**未指定なら 1 バイトも宣言しない**ので、
+既存の台帳と同じ条件がそのまま再現される（腕を足しただけで既定は変えていない）。
+
+### sampling（コード worker 経路）
+
+`agents/aider.json` は温度を指定しておらず、`aider_settings()` も渡していなかった。
+つまり**実効値は aider の既定**で、我々はそれを確認したことがない。これは結論に効く——
+T1 の実装ステップは初回 13/13 が同一の壊れ方をしたが、**貪欲デコードなら同じ入力に
+同じ出力が返るのは当たり前**である。「決定的な癖」がモデルの性質かサンプリングの性質かは
+まだ分離できていない。
+
+```bash
+# 基準線（従来と同一条件。何も宣言しない）
+python3 worker_eval.py --model gemma4:e4b --cli aider --tasks T1,T2 --repeat 3
+
+# sampling 腕（例。Gemma 3 の推奨値。Gemma 4 の推奨は要確認）
+python3 worker_eval.py --model gemma4:e4b --cli aider --tasks T1,T2 --repeat 3 \
+  --temperature 1.0 --top-p 0.95 --top-k 64
+```
+
+- **対照群（T2）を必ず入れる。** 上限や温度は失敗を安くすると同時に合格を壊しうる
+  （`--num-predict 1024` が T2 を 3/3 → 0/3 にした前科がある）。T1 だけ回して
+  「良くなった」と読むのは、この轍を踏み直すことになる。
+- sampling 腕の設定ファイルは**宣言したものだけ**を書く（`aider_settings(base=False)`）。
+  `edit_format` / `use_repo_map` / `num_ctx` を巻き込むと、測っているのが
+  「温度の効果」ではなく「温度と文脈長と編集形式の効果」になる。
+- 台帳の `sampling` 列に条件が残る。`null` は「宣言しなかった＝ aider の既定」であって
+  空欄ではない。起動行にも同じことを出す。
+- **同一入力の再現性も見る。** 同じ課題を 3 回引いて失敗が同形かどうかが、
+  「決定的な癖」の正体を分ける。
+
+### Thinking（判定・レビュー経路）
+
+`agents/*.json` は think をヘッドレスの全役割で off に焼き込んである。根拠は
+2026-08-10 の実測だが、**その台帳は `ledger-2026-08-10-qwen35-9b.jsonl` で qwen のみ**であり、
+gemma4:e4b がこのリポジトリに入るのは翌日である。sampling とまったく同じ構図——
+ある条件で測った結論が、別の条件へ黙って持ち越されている。反証も同じリポジトリ内にある
+（`agents/ollama-list-thinking.json` は gemma4 の split で Thinking を使う）。
+
+さらに**機構が 2 つある**。`--think on|off` は API の `think` フィールド、
+`--think prompt` は system prompt 先頭の `<|think|>`（Gemma 4 系の作法）で、経路が違う。
+後者は `--format` の強制 off に**巻き込まれない**ので、
+「JSON 契約の役割では Thinking を使えない」という現行の制約が当てはまらない可能性がある。
+
+```bash
+# レビュー（RV1/RV2）— サイズで跳ねた唯一のジャンル。think で e4b が届くか
+python3 text_eval.py --model gemma4:e4b --cases RV1,RV2 --repeat 3            # 基準線
+python3 text_eval.py --model gemma4:e4b --cases RV1,RV2 --repeat 3 --think prompt
+
+# 基準の取り違え（F2/J2）— 4 レバー全滅の場所。think は 5 本目のレバーになるか
+python3 judge_eval.py --model gemma4:e4b --cases F1,F2,J1,J2 --repeat 3 --think prompt
+
+# 安く先に見る: 記録済みプロンプトのオフライン再生（ライブ実行を焼かない）
+agent-ollama --replay --replay-limit 20 \
+  --arm model=gemma4:e4b,think=off,format=json \
+  --arm model=gemma4:e4b,think=prompt,format=json
+```
+
+見るのは 3 点。**(1)** `prompt` 方式で thinking が実際に発生するか（ログの
+`thinking_chars`）。**(2)** `--format json` と併用して本文が返るか（空応答率——
+qwen では 39/39 が空だった）。**(3)** 正解率が動くか。
+**そして壁時計を必ず同時に見る**——qwen で think on が全滅した理由は品質ではなく
+p90 942 秒（`agent_timeout` 600 秒超）だった。gemma4 は decode が 2 倍以上速いので
+結論が変わりうるが、**変わることを確かめずに戻さない**。
+
+動かなければ現状維持でよい。**測っていないものを「効くはず」で入れない規律は変えない。**
+
+### 実測 2026-08-15 — 段0 の結果
+
+モデルは gemma4:e4b。台帳は `results/archive/ledger-2026-08-15-p10-{worker-sampling,text-think,judge-think}.jsonl` と `replay-2026-08-15-p10-think.jsonl`。
+
+**sampling。実効値は temperature=0 だった。** aider は既定（`use_temperature: true`）で
+リクエストへ `"temperature": 0` を明示送信する。ソースと `--verbose` のライブ実行の両方で
+確認した。つまり**過去の worker 実測はすべて貪欲デコード**である。
+
+| 腕 | T1 | T2（対照） | T1 の失敗の形 |
+|---|---|---|---|
+| 基準線（宣言なし = temp 0） | 0/3 | 3/3（中央値 209s） | 3 本とも同形（追加テスト自体が落ちる） |
+| 推奨 sampling（1.0 / 0.95 / 64） | 1/3 | 3/3（中央値 237s） | 3 様に割れる（PASS / ImportError / テスト未追加） |
+
+「初回失敗 13/13 同形」は貪欲デコードの帰結で、モデルの決定的な癖とはまだ言えない——
+推奨 sampling では失敗が揺れ、1 本は受入まで届いた。**対照群 T2 は壊れない。**
+代償は壁時計で、T1 の中央値が 470s → 600s（timeout 2 本）。
+(b) 族「引き直しても揺れない」は温度 0 下の観察だったので、`check_on_exhausted` の
+既定（escalate）の前に「推奨 sampling で引き直す」段を挟む選択肢に実測の根拠が付いた。
+
+**Thinking（`--think prompt`）。3 点の答え:**
+
+1. **thinking は本文に出ない。** replay 20 件で think 系マークアップ 0。`--format json` の
+   文法制約下では思考セクションは物理的に出せない。ただし出力は変わる（腕間一致 15%・
+   出力トークン +21%）——効き方は明示的な思考ではなくプロンプト条件付け。
+2. **本文は返る。** 空応答 0/20（qwen は 39/39 空だった）。壁時計も中央値 10.25s で
+   off（11.18s）と同等。**gemma4 では JSON 契約役割と think=prompt は併用できる。**
+3. **正解率はレビュー網羅性だけ動く。**
+
+| セル | think=off | think=prompt |
+|---|---|---|
+| RV1（レビュー網羅） | 0/3（同日基準線。8/14 実測も 2/6 帯） | **2/3**（合格 run は 4s → 24〜33s に伸び検出 2 件） |
+| RV2(違反特定) | 0/3 | 0/3（violations に dict が混ざり出力が崩れ気味） |
+| F1 / J2 | 3/3（8/11） | 3/3 |
+| F2 / J1 | 0/3（8/11） | 0/3（**誤答まで同一**: F2=c3・J1=c4） |
+
+基準の取り違え（F2 / J1）は think でも誤答ごと再現した。**5 本目のレバーも空振り**で、
+決定化（P4）行きの判断は維持。RV1 が動いたのは事実だが 12b（6/6）の代替には届かない。
+
+## 実測 2026-08-15 — 段1 実機再測（P1 配線の検証）
+
+T1gate 相当（implement → add_tests・決定的 check + 再投入・課題文とチェッカーは
+worker_eval と同一定数）を、本番経路 `agent-loop statemachine` + aider / gemma4:e4b で
+3 run 引いた。台帳は `results/archive/ledger-2026-08-15-p1-live-t1gate.jsonl`。
+
+**結果: 3/3・中央値 313s・escalate 0。** ハーネス模擬（中央値 952s）より短い
+（再試行回数の揺れがあるので同条件比較ではないが、実機経路のオーバーヘッドが
+受入を壊さないことは確定）。
+
+ただし**素通しでは 0/3 帯だった**。模擬との差分が 3 つあり、いずれも
+「定型の実行で小型モデルに訊いてはいけないことを訊く」配線だった（修正済み・
+`agent-loop/test/test_statemachine.py` の CheckGateTest に固定）:
+
+1. **check ゲート状態の書込を書式契約で落としていた。** 編集 CLI は黙って直すのが普通
+   （契約文を返さない）だが、機械契約の合成が `startswith:last_output:` 型の遷移しか
+   見ておらず、`equals:check_ok:true` 型では check まで到達せず落ちた。→ 検査だけを
+   材料に遷移するステートでは完了済み書込へ機械契約を合成し、判定を check に委ねる。
+2. **check 失敗後の再投入が制御周（次の一手を訊く）へ戻っていた。** e4b は診断を渡されても
+   調査ループ（テスト再実行）で周を使い切る。→ 再投入は前試行が書いたファイルへの編集で
+   直接入る（worker_eval の再試行と同型）。再投入がアクション不成立なら escalate へ数える。
+3. **初回のファイル割付を制御席に訊いていた。** e4b は「テストを書く」前に pytest 実行や
+   `pip install` の環境いじりへ逸れて周を焼く。→ state の `write:` 宣言（schema 拡張）で
+   割付を固定し、宣言があれば制御周を挟まず編集 CLI へ直行する。
+
+一般化すると、**定型（事前分解済み）の実行では、割付・完了判定・再投入先はすべて宣言で
+決まっており、モデルに訊く場面は編集そのものだけ**である。制御周は宣言の無い
+非定型アクションのフォールバックに残る。
+
 ## 実行前のチェック
 
 1. `agent-ollama` を再ビルドしたか（`bash tools/agent-tools/install.sh`）。
@@ -605,3 +760,60 @@ python3 tools/agent-tools/eval/worker_eval.py --model gemma4:e4b --cli aider \
    `--test-cmd` はリポジトリルートの `.venv/bin/python` を使う（`worker_eval.py` の
    `VENV_PY`）。worktree には `.venv` が無いので、メインの checkout から symlink を張るか、
    メインの checkout で回す。
+
+---
+
+## 実測 2026-08-15 — E6/E7（決定化パイプと economy クラウド 0 受入）
+
+実装計画（2026-08-15 候補ベース実行）の E6/E7。モデルは gemma4:e4b、
+台帳は `results/archive/ledger-2026-08-15-e6-*.jsonl` と
+`results/archive/2026-08-15-e7-cloud-zero-acceptance.json`。
+
+### E6-1: 多基準 filter / judge の決定化パイプ（P4）— 3/3 帯に到達
+
+F2 / J1（4+1 レバー全滅・0/3）を、**モデル=事実抽出のみ・判定=機械**へ組み替えた
+セル F2P / J1P で引き直した。抽出の出力は `{"facts":[{id,tests,extra_deps,lines}]}`、
+判定は `agentcore.nodecontract.decide_candidates`（1 実装。欠測は undecided として
+確定を拒む）。
+
+| セル | 素 F2/J1（過去） | 決定化パイプ | 中央値 |
+|---|---:|---:|---:|
+| F2P（filter 相当） | 0/3 | **3/3** | 7s |
+| J1P（judge 相当） | 0/3 | **3/3** | 5s |
+
+**組み替えの注意（1 回目の失敗から）。** 抽出ゴールを filter / judge の kind のまま
+流すと、flow-worker プロンプトの役割行（「末尾に {"kept": ...} を添える」等）が
+ゴールを上書きし、モデルが判定へ滑り戻る（F2P 1/3・旧契約の即答が混入）。
+**決定化パイプの抽出は独立ノード（extract 系）として走らせる**こと。台帳の
+前半 6 行（kind=filter/judge）がその失敗の証跡、後半 6 行（kind=extract）が本測定。
+
+### E6-2: 制約つき生成のゲート（P5）— 機械検査 + 再投入
+
+チェッカーの決定的診断（note）を付けた 1 回再投入（`text_eval.py --repair`。
+statemachine の check 再投入と同じ運び方）。
+
+| セル | 素（過去・12b/e4b 4/6 帯） | 検査+再投入 | 内訳 |
+|---|---:|---:|---|
+| SM2（220 字・必須言及・数値捏造なし） | 4/6 | **3/3** | 1 本は再投入で回復 |
+| PR1（予算 10 の一意最適） | 4/6 | 2/3 | 2 本再投入で回復・1 本は組合せ選択の誤りが残存 |
+
+PR1 の残差は制約検査でなく**組合せ最適の選択誤り＝P4 系**。この形は総当たりが
+決定的に書ける（selfcheck が実際に総当たりで検算している）ので、実運用では
+モデルに選ばせず決定化する。
+
+### E7: strategy=economy の定型 flow — クラウド消費 0 の受入
+
+隔離 control（v2・economy・候補=ollama/gemma4:e4b のみ・dual-write）で
+plan-file 定型（filter→judge→reduce）を `--executor agent` 完走。
+
+- 全 3 ノード done。result の `execution_decision` は全て
+  `selection_source=qualified-candidate / rank=1 / control_revision=100`。
+- 予算台帳の CLI は `ollama-json` のみ——**metered CLI（claude/codex/copilot/kiro）の
+  行は 0**。昇格経路は不発火（クラウド行 0 が負性確認）。
+- E5 の輪: `collect_flow_buses` → `agent-audit qualify`（dry-run）が同 run から
+  3 セル（ollama-json/gemma4:e4b × filter/judge/reduce）を観測し、samples=1 は
+  min_samples 未満なので **trial 止まり**（保守側の既定どおり昇格しない）。
+
+副観測: flow 側 j1（単基準のつもりの judge）が依存 f1 の絞り込みを無視して
+c4 を選んだ——多基準の取り違えは本番経路でも再現する。判定を決定化パイプへ
+寄せる根拠がまた 1 つ増えた。

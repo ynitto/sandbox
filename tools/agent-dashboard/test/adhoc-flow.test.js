@@ -20,6 +20,7 @@ function test(name, fn) {
 
 const adhoc = require('../src/features/adhoc-flow/main/adhoc');
 const design = require('../src/features/adhoc-flow/main/design-session');
+const taskQueue = require('../src/features/adhoc-flow/main/task-queue');
 const exec = require('../src/features/routines/main/exec');
 const tuning = require('../src/features/orchestration/main/tuning');
 const profiles = require('../src/features/orchestration/main/profiles');
@@ -33,6 +34,50 @@ function tmpdir(prefix) {
 
 test('実行時方針のおすすめは agent-control / agent-flow の自動決定へ委ねる', () => {
   assert.strictEqual(workflowUi.executionOverridesForMode('recommended', {}), null);
+});
+
+test('ワークフロータスクは作成時に実行せず、実行待ちとして保存する', () => {
+  const dir = tmpdir('adhoc-task-queue-');
+  try {
+    const config = { adhocFlow: { taskQueueDir: dir } };
+    const created = taskQueue.create(config, {
+      title: 'READMEを更新', request: '## 目的\nREADMEを更新', cwd: '/repo',
+      selection: { type: 'auto' }, sourceMode: 'new',
+    });
+    assert.match(created.id, /^wft-/);
+    assert.strictEqual(taskQueue.list(config).length, 1);
+    assert.strictEqual(taskQueue.get(config, created.id).request, '## 目的\nREADMEを更新');
+    assert.ok(!created.runId, '作成時にはrunを開始しない');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('実行待ちタスクは明示実行に成功した後だけ一覧から除く', () => {
+  const dir = tmpdir('adhoc-task-queue-');
+  try {
+    const config = { adhocFlow: { taskQueueDir: dir } };
+    const created = taskQueue.create(config, { title: '実行する', request: '本文' });
+    assert.throws(() => taskQueue.execute(config, created.id, () => { throw new Error('起動失敗'); }), /起動失敗/);
+    assert.ok(taskQueue.get(config, created.id), '失敗時は実行待ちを保持');
+    const result = taskQueue.execute(config, created.id, (payload) => ({ runId: 'run-1', payload }));
+    assert.strictEqual(result.runId, 'run-1');
+    assert.strictEqual(result.payload.title, '実行する', '実行詳細へタスク名を引き継ぐ');
+    assert.strictEqual(taskQueue.get(config, created.id), null);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('ワークフロー作成は要望の後に三つの準備経路を選び、その後で材料を指定する', () => {
+  const previousEsc = global.esc;
+  global.esc = (value) => String(value);
+  try {
+    workflowUi._state.taskWizard = {
+      step: 2, goal: 'CSV対応を改善する', route: 'agent-design',
+      recommendation: { route: 'agent-design', reasons: ['完了条件が不足'] }, materials: [], error: '', busy: '',
+    };
+    const html = workflowUi.workflowTaskDialogHtml({ cwdHistory: [] });
+    assert.ok(html.includes('やりたいこと') && html.includes('進め方') && html.includes('材料') && html.includes('確認')
+      && html.includes('エージェントと設計する') && html.includes('外部の設計結果を使う')
+      && html.includes('そのまま実装する') && html.indexOf('進め方') < html.indexOf('材料'));
+  } finally { global.esc = previousEsc; }
 });
 
 test('実行時方針のコスト優先は役割・機能ごとの最低許可tierを選ぶ', () => {
@@ -139,6 +184,15 @@ test('カスタムフローをユーザー共通ファイルとして保存・�
   assert.strictEqual(saved.version, 2);
   assert.deepStrictEqual(saved.entry, ['build']);
   assert.deepStrictEqual(saved.exit, ['verify']);
+});
+
+test('既存ワークフローは実装用のライブラリ項目として正規化する', () => {
+  const workflow = adhoc.normalizeWorkflow({
+    id: 'legacy-flow', name: '既存フロー',
+    nodes: [{ id: 'work', goal: '実装する', kind: 'work', tier: 'small', deps: [] }],
+  });
+  assert.strictEqual(workflow.purpose, 'implementation');
+  assert.strictEqual(workflow.libraryVisibility, 'library');
 });
 
 test('Git リポジトリ内のカスタムフローは共有版を優先して読むが dashboard から変更しない', () => {
@@ -325,6 +379,92 @@ test('機能・オプションの実行可能レベル外の固定 tier は plan
   } finally {
     profiles.resolveTier = original;
   }
+});
+
+test('ノード割り当ては自動割り当てより優先し、宣言済み候補だけを plan へ固定する', () => {
+  const controlDir = tmpdir('flow-node-assign-');
+  const cfg = { orchestration: { controlDir } };
+  fs.writeFileSync(path.join(controlDir, 'profiles.json'), JSON.stringify({
+    version: 1,
+    enabled: true,
+    tiers: {
+      medium: { order: 20, label: '標準', candidates: [{ agent_cli: 'claude', model: 'sonnet' }] },
+      large: { order: 30, label: '高性能', candidates: [{ agent_cli: 'codex', model: 'gpt-5' }] },
+    },
+    policy: { apply_to: ['flow'], steps: [{ min_remaining_ratio: 0, tier: 'medium' }], no_cap_tier: 'medium' },
+  }));
+  const workflow = adhoc.normalizeWorkflow({
+    name: '割り当て',
+    nodes: [
+      { id: 'build', goal: '実装', tier: 'auto' },
+      { id: 'check', goal: '検証', kind: 'verify', tier: 'auto', deps: ['build'] },
+    ],
+  });
+  const plan = adhoc.planFromWorkflow(cfg, workflow, {
+    nodeAssignments: {
+      build: { tier: 'large', agent_cli: 'codex', model: 'gpt-5' },
+      ghost: { tier: 'large', agent_cli: 'codex', model: 'gpt-5' }, // 消えたノードは黙って捨てる
+    },
+  });
+  const build = plan.nodes.find((node) => node.id === 'build');
+  assert.strictEqual(build.tier, 'large');
+  assert.deepStrictEqual(build.agent, { agent_cli: 'codex', model: 'gpt-5' });
+  assert.strictEqual(build.selection_reason, 'user-node-assignment');
+  const check = plan.nodes.find((node) => node.id === 'check');
+  assert.ok(!check.agent, '割り当ての無いノードは従来どおり自動決定（継承）のまま');
+
+  // 実行可能レベル外の割り当ては固定 tier と同じ口で弾く
+  assert.throws(() => adhoc.planFromWorkflow(cfg, adhoc.normalizeWorkflow({
+    name: '不適格割り当て', nodes: [{ id: 'pick', goal: '判定', kind: 'judge', tier: 'auto' }],
+  }), { nodeAssignments: { pick: { tier: 'small', agent_cli: 'claude', model: 'sonnet' } } }),
+  /「pick」（judge）は実行レベル「軽量」に任せられません/);
+
+  // その tier に宣言されていない組み合わせは plan へ運ばない
+  assert.throws(() => adhoc.planFromWorkflow(cfg, workflow, {
+    nodeAssignments: { build: { tier: 'medium', agent_cli: 'codex', model: 'gpt-5' } },
+  }), /実行レベル「標準」の候補にありません/);
+});
+
+test('割り当てプレビューはノードごとの自動割り当てと実行可能レベル内の候補を返す', () => {
+  const controlDir = tmpdir('flow-assign-preview-');
+  const workflowDir = tmpdir('flow-assign-preview-wf-');
+  const cfg = { orchestration: { controlDir }, adhocFlow: { workflowDir } };
+  fs.writeFileSync(path.join(controlDir, 'profiles.json'), JSON.stringify({
+    version: 1,
+    enabled: true,
+    tiers: {
+      small: { order: 10, label: '軽量', candidates: [{ agent_cli: 'aider', model: 'gemma4:e4b' }] },
+      medium: { order: 20, label: '標準', candidates: [{ agent_cli: 'claude', model: 'sonnet' }] },
+    },
+    policy: { apply_to: ['flow'], steps: [{ min_remaining_ratio: 0, tier: 'medium' }], no_cap_tier: 'medium' },
+  }));
+  adhoc.saveWorkflow(cfg, {
+    name: 'プレビュー対象',
+    id: 'preview-target',
+    nodes: [
+      { id: 'draft', goal: '設計を更新', tier: 'auto' },
+      { id: 'gate', goal: '確認', kind: 'human', deps: ['draft'],
+        interaction: { mode: 'approval', prompt: '確認してください' } },
+    ],
+  });
+  const preview = adhoc.flowAssignmentPreview(cfg, { id: 'preview-target' });
+  assert.strictEqual(preview.id, 'preview-target');
+  assert.deepStrictEqual(Object.keys(preview.tierCandidates).sort(), ['medium', 'small']);
+  const draft = preview.nodes.find((node) => node.id === 'draft');
+  assert.ok(draft.allowed.includes('small') && draft.allowed.includes('large'));
+  assert.strictEqual(draft.auto.tier, 'medium', '実行方針（medium）どおりの自動割り当てを見せる');
+  assert.deepStrictEqual(draft.auto.candidate, { agent_cli: 'claude', model: 'sonnet' });
+  const gate = preview.nodes.find((node) => node.id === 'gate');
+  assert.strictEqual(gate.human, true, 'human ノードは割り当て対象外として返す');
+
+  // 実装フロー（自動 plan）向けの役割・機能プレビュー
+  const execution = adhoc.executionAssignmentPreview(cfg);
+  assert.ok(execution.roles.planner.allowed.includes('medium'));
+  assert.ok(!execution.roles.planner.allowed.includes('small'), 'planner は標準以上だけ');
+  assert.strictEqual(execution.roles.worker.auto.tier, 'medium');
+  assert.deepStrictEqual(execution.roles.worker.auto.candidate, { agent_cli: 'claude', model: 'sonnet' });
+  assert.ok(execution.kinds.classify.allowed.includes('basic'));
+  assert.ok(!('human' in execution.kinds), 'human は実行割り当てを持たない');
 });
 
 test('複数レベルで実行可能な自動 tier は、実行方針の戦略に応じて実行可能範囲内で決まる', () => {
@@ -770,7 +910,11 @@ test('初期画面は保存済み・一から作る・雛形を同じカード�
   global.esc = (value) => String(value);
   try {
     const html = workflowUi.workflowLibraryHtml({
-      workflows: [{ id: 'saved', name: '保存済みフロー', description: '続きから編集する' }],
+      workflows: [
+        { id: 'saved', name: '保存済みフロー', description: '続きから編集する' },
+        { id: 'design-interactive', name: '対話型設計', description: '内部設計フロー',
+          purpose: 'design', libraryVisibility: 'internal' },
+      ],
       patterns: [{
         id: 'verify', label: '検証つき', description: '作業後に検証する',
         template: { nodes: [{ id: 'work', kind: 'work', deps: [] }] },
@@ -784,6 +928,7 @@ test('初期画面は保存済み・一から作る・雛形を同じカード�
       }],
     });
     assert.match(html, /data-workflow-id="saved"/);
+    assert.doesNotMatch(html, /data-workflow-id="design-interactive"|内部設計フロー/);
     assert.match(html, /id="wf-new"/);
     assert.match(html, /data-pattern-id="verify"/);
     assert.match(html, /data-method-pattern-id="build-review"/);
@@ -1165,6 +1310,25 @@ test('IPC: 同梱カタログとリポジトリ配布の作業ルールが同 id
   }
 });
 
+test('IPC: 作業準備項目を作成して対象別に一覧できる', () => {
+  const dir = tmpdir('preparation-ipc-');
+  const cfg = { preparationDir: dir, adhocFlow: {} };
+  try {
+    const handlers = {};
+    require('../src/features/adhoc-flow/main/ipc.js').registerIpc({
+      handle: (channel, fn) => { handlers[channel] = fn; }, loadConfig: () => cfg, saveConfig: () => cfg,
+    });
+    const created = handlers['preparation:create']({
+      target: 'workflow', title: 'README更新', goal: 'README更新', route: 'direct',
+    });
+    const listed = handlers['preparation:list']({ target: 'workflow' });
+    assert.deepStrictEqual({ route: created.item.route, phase: created.item.phase,
+      ids: listed.items.map((item) => item.id) }, {
+      route: 'direct', phase: 'implementation-ready', ids: [created.item.id],
+    });
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 // --- 投入（submit_request 契約の投函 + 起動） ---------------------------------
 
 test('submit が submit_request 契約を投函し plan と手法を運ぶ', () => {
@@ -1436,6 +1600,32 @@ test('保持期限の掃除は終端済み・未対応なしの古い run だけ
 
 // --- 設計セッション: 短い要望 → 実行できる設計書 -------------------------------
 
+test('旧設計セッションは workflow/new の共通契約として読み取れる', () => {
+  const session = design.normalizeSession({
+    version: 1, id: 'ds-old', goal: '既存要望', document: '## 目的\n既存設計', rounds: [],
+  });
+  assert.strictEqual(session.version, 2);
+  assert.strictEqual(session.target, 'workflow');
+  assert.strictEqual(session.sourceMode, 'new');
+  assert.deepStrictEqual(session.sources, []);
+  assert.strictEqual(session.proposal, null);
+  assert.strictEqual(session.application, null);
+});
+
+test('設計ラウンド入力は型付きソースの意味と本文を保つ', () => {
+  const request = design.buildRoundRequest({
+    goal: '次の計画を作る',
+    sources: [
+      { id: 'master', kind: 'master', name: 'charter.md', content: '## constraints\n- Node 24' },
+      { id: 'note-1', kind: 'note', name: 'idea.md', content: '監視も気になる' },
+    ],
+  });
+  assert.ok(request.includes('## 設計材料'));
+  assert.ok(request.includes('### master: charter.md'));
+  assert.ok(request.includes('### note: idea.md'));
+  assert.ok(request.includes('監視も気になる'));
+});
+
 test('実行前チェックは必須4節を言い換えごと決定的に数える（実行は止めない）', () => {
   assert.deepStrictEqual(workflowUi.readinessCheck(''), { empty: true, missing: ['目的', '変更対象', '受入基準', '検証方法'] });
   assert.deepStrictEqual(workflowUi.readinessCheck('## 目的\nx\n## 変更対象\ny\n## 受入基準\nz\n## 検証方法\nw'),
@@ -1484,6 +1674,13 @@ test('設計書は末端ノードの出力から取る（final.summary は抜粋
   } };
   assert.strictEqual(design.sinkOutput(run), '## 目的\n設計書');
   assert.strictEqual(design.sinkOutput({ nodes: {} }), '');
+});
+
+test('同梱設計フローは内部設計用として分類する', () => {
+  const builtin = adhoc.listWorkflows({ adhocFlow: {} })
+    .filter((item) => ['design-auto', 'design-interactive'].includes(item.id));
+  assert.strictEqual(builtin.length, 2);
+  assert.ok(builtin.every((item) => item.purpose === 'design' && item.libraryVisibility === 'internal'));
 });
 
 test('設計セッションはラウンドごとに設計 run を投げ、成果を取り込む', () => {
@@ -1543,6 +1740,54 @@ test('設計セッションはラウンドごとに設計 run を投げ、成果
   } finally {
     exec.shInWsl = originalExec;
     profiles.resolveTier = originalTier;
+  }
+});
+
+test('設計セッションのノード割り当ては plan へ固定され、次のラウンドにも引き継ぐ', () => {
+  const busDir = tmpdir('design-assign-bus-');
+  const controlDir = tmpdir('design-assign-control-');
+  const cfg = {
+    orchestration: { controlDir },
+    adhocFlow: {
+      busDir, workflowDir: tmpdir('design-assign-workflow-'),
+      designSessionDir: tmpdir('design-assign-sessions-'), tuningRoot: tmpdir('design-assign-tuning-'),
+    },
+  };
+  fs.writeFileSync(path.join(controlDir, 'profiles.json'), JSON.stringify({
+    version: 1,
+    enabled: true,
+    tiers: { large: { order: 30, label: '高性能', candidates: [{ agent_cli: 'codex', model: 'gpt-5' }] } },
+    policy: { apply_to: ['flow'], steps: [{ min_remaining_ratio: 0, tier: 'large' }], no_cap_tier: 'large' },
+  }));
+  const originalExec = exec.shInWsl;
+  exec.shInWsl = () => ({ status: 0, stdout: 'launched:1', stderr: '' });
+  try {
+    const started = design.startRound(cfg, {
+      goal: '設計を詰める', mode: 'interactive',
+      nodeAssignments: { draft: { tier: 'large', agent_cli: 'codex', model: 'gpt-5' } },
+    });
+    assert.deepStrictEqual(started.nodeAssignments,
+      { draft: { tier: 'large', agent_cli: 'codex', model: 'gpt-5' } });
+    const inbox = adhoc.readInbox(busDir, started.runId);
+    const draft = inbox.plan.nodes.find((node) => node.id === 'draft');
+    assert.strictEqual(draft.tier, 'large');
+    assert.deepStrictEqual(draft.agent, { agent_cli: 'codex', model: 'gpt-5' });
+    assert.strictEqual(draft.selection_reason, 'user-node-assignment');
+
+    // ラウンド 2 は割り当てを渡し直さなくても同じ組み合わせで実行する
+    const runDir = path.join(busDir, 'runs', started.runId);
+    fs.mkdirSync(path.join(runDir, 'results'), { recursive: true });
+    fs.writeFileSync(path.join(runDir, 'meta.json'), JSON.stringify({ status: 'done' }));
+    fs.writeFileSync(path.join(runDir, 'graph.json'), JSON.stringify({ nodes: { draft: { id: 'draft', deps: [] } } }));
+    fs.writeFileSync(path.join(runDir, 'results', 'draft.json'), JSON.stringify({
+      status: 'done', output: '## 目的\nやること\n\n## 質問\n1. 続けるか',
+    }));
+    design.getSession(cfg, started.id);
+    const next = design.startRound(cfg, { id: started.id, answers: ['続ける'] });
+    const nextDraft = adhoc.readInbox(busDir, next.runId).plan.nodes.find((node) => node.id === 'draft');
+    assert.deepStrictEqual(nextDraft.agent, { agent_cli: 'codex', model: 'gpt-5' });
+  } finally {
+    exec.shInWsl = originalExec;
   }
 });
 

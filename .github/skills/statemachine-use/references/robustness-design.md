@@ -58,7 +58,7 @@ return response.startswith("YES")
 - コンテキストが長くなると条件と無関係な判断をする可能性がある
 - `startswith("YES")`は脆弱で、"YES, however..."のような回答を真と判定する
 
-**同様に**: `next_state.py`の`--list-conditions`でLLMが評価する条件テキストも、設計者の書き方次第で評価精度が大きく変わる。
+**同様に**: `next_state.py`の`--auto-eval`が残した（LLMが評価する）条件テキストも、設計者の書き方次第で評価精度が大きく変わる。
 
 ### 課題C: アクションプロンプトの非体系化
 

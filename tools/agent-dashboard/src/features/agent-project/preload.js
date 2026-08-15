@@ -56,6 +56,7 @@ module.exports = {
   resetProject: (invoke) => (dir, workspace) => invoke('dashboard:reset', { dir, workspace }),
 
   createProject: (invoke) => (spec) => invoke('dashboard:createProject', { spec }),
+  applyProjectDesign: (invoke) => (args) => invoke('dashboard:applyProjectDesign', args),
   promoteCharter: (invoke) => (dir, name) => invoke('dashboard:promoteCharter', { dir, name }),
   deleteCharter: (invoke) => (dir, name) => invoke('dashboard:deleteCharter', { dir, name }),
   readProjectFile: (invoke) => (dir, name) => invoke('dashboard:readFile', { dir, name }),
@@ -80,7 +81,6 @@ module.exports = {
   agentResolve: (invoke) => (dir) => invoke('agent:resolve', { dir }),
   agentOpenChat: (invoke) => (args) => invoke('agent:openChat', args || {}),
   agentChatCwdChoices: (invoke) => (dir) => invoke('agent:chatCwdChoices', { dir }),
-
   glReconcileRun: (invoke) => (args) => invoke('gitlab:reconcileRun', args),
 
   openReview: (invoke) => (target) => invoke('review:open', { target }),
