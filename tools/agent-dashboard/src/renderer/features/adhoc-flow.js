@@ -28,6 +28,7 @@
 })(typeof globalThis !== 'undefined' ? globalThis : window, (root) => {
   const KINDS = ['work', 'generate', 'classify', 'synthesize', 'verify', 'filter', 'judge', 'reduce', 'split', 'map',
     'human', 'extract', 'retrieve'];
+  const DESIGN_FORBIDDEN_KINDS = new Set(['human', 'split']);
   const START = '__start__';
   const END = '__end__';
   const KIND_META = {
@@ -87,6 +88,10 @@
   ];
   const st = {
     overview: null,
+    workflowPurpose: 'implementation',
+    designPreview: null,
+    designPreviewKey: '',
+    designPreviewBusy: false,
     design: { sessions: [], current: null, busy: '', notice: '', timer: null, open: false },
     selectedRun: '',
     selectedPreparation: '',
@@ -111,6 +116,65 @@
     executionDialog: null,
   };
   const esc = (s) => root.esc(String(s == null ? '' : s));
+
+  function workflowPurpose(value) {
+    return String(value || '').trim() === 'design' ? 'design' : 'implementation';
+  }
+
+  function workflowPurposeLabel(value) {
+    return workflowPurpose(value) === 'design' ? '設計フロー' : '実装フロー';
+  }
+
+  function workflowIsDesign(workflow) {
+    return workflowPurpose(workflow && workflow.purpose) === 'design';
+  }
+
+  function workflowIsReadonly(workflow) {
+    return Boolean(workflow && (['repository', 'builtin'].includes(String(workflow._scope || ''))
+      || workflow.libraryVisibility === 'internal'));
+  }
+
+  function workflowScopeLabel(workflow) {
+    if (workflow && workflow._scope === 'builtin') return '同梱雛形';
+    if (workflow && workflow._scope === 'repository') return '登録フォルダ';
+    return '読み取り専用';
+  }
+
+  function editableKindsForWorkflow(workflow) {
+    const design = workflowIsDesign(workflow);
+    return KINDS.filter((kind) => !design || !DESIGN_FORBIDDEN_KINDS.has(kind));
+  }
+
+  function visibleWorkflows(ov, purpose) {
+    const target = workflowPurpose(purpose);
+    return (ov && ov.workflows || []).filter((workflow) => {
+      if (workflowPurpose(workflow && workflow.purpose) !== target) return false;
+      if (target === 'implementation') return workflow.libraryVisibility !== 'internal';
+      return workflow.libraryVisibility === 'library';
+    });
+  }
+
+  function builtinDesignWorkflows(ov) {
+    return (ov && ov.workflows || []).filter((workflow) => workflowIsDesign(workflow)
+      && workflow.libraryVisibility === 'internal');
+  }
+
+  function copyWorkflowId(workflow) {
+    const base = String((workflow && workflow.id) || 'workflow').replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-+|-+$/g, '')
+      || 'workflow';
+    return `${base}-copy-${Date.now().toString(36)}`.slice(0, 80);
+  }
+
+  function unsavedWorkflowCopy(workflow, purpose = workflowPurpose(workflow && workflow.purpose)) {
+    const copied = clone(workflow || emptyWorkflow(purpose));
+    delete copied._scope;
+    delete copied._repository;
+    copied.id = copyWorkflowId(workflow);
+    copied.name = `${copied.name || workflowPurposeLabel(purpose)} のコピー`;
+    copied.purpose = workflowPurpose(purpose);
+    copied.libraryVisibility = 'library';
+    return copied;
+  }
 
   function folderPath(value) {
     if (typeof value === 'string') return value.trim();
@@ -285,8 +349,11 @@
       </details></div>`;
   }
 
-  function emptyWorkflow() {
-    return { version: 2, id: '', name: '', description: '', entry: [], exit: [], nodes: [] };
+  function emptyWorkflow(purpose = 'implementation') {
+    return {
+      version: 2, id: '', name: '', description: '', purpose: workflowPurpose(purpose),
+      libraryVisibility: 'library', entry: [], exit: [], nodes: [],
+    };
   }
 
   function defaultGoal(kind) {
@@ -383,7 +450,7 @@
     return (methods || []).map(methodWorkflowPattern).filter(Boolean);
   }
 
-  function workflowFromPattern(pattern, tier) {
+  function workflowFromPattern(pattern, tier, purpose = workflowPurpose(pattern && pattern.purpose)) {
     const source = pattern && pattern.template && Array.isArray(pattern.template.nodes)
       ? pattern.template.nodes : [];
     const hidden = new Set(pattern && pattern.id === 'fan-out-and-synthesize'
@@ -426,6 +493,7 @@
     const used = new Set(nodes.flatMap((node) => node.deps));
     return {
       ...emptyWorkflow(),
+      purpose: workflowPurpose(purpose),
       name: `${String(pattern.label || pattern.id || '標準パターン')} のコピー`,
       description: String(pattern.description || ''),
       entry: nodes.filter((node) => !node.deps.length).map((node) => node.id),
@@ -481,13 +549,15 @@
     return [...columns].sort((a, b) => a[0] - b[0]).map((entry) => entry[1]);
   }
 
-  function recommendedKinds(workflow, from) {
-    if (from === START) return ['work', 'retrieve', 'extract', 'human'];
+  function recommendedKinds(workflow, from, purpose = workflowPurpose(workflow && workflow.purpose)) {
+    const allowed = (kinds) => kinds.filter((kind) => workflowPurpose(purpose) !== 'design'
+      || !DESIGN_FORBIDDEN_KINDS.has(kind));
+    if (from === START) return allowed(['work', 'retrieve', 'extract', 'human']);
     const kind = (workflow.nodes || []).find((node) => node.id === from)?.kind;
-    if (kind === 'generate') return ['filter', 'judge', 'synthesize'];
-    if (kind === 'verify') return ['work', 'verify'];
+    if (kind === 'generate') return allowed(['filter', 'judge', 'synthesize']);
+    if (kind === 'verify') return allowed(['work', 'verify']);
     if (kind === 'split') return [];
-    return ['work', 'verify', 'synthesize'];
+    return allowed(['work', 'verify', 'synthesize']);
   }
 
   function nextNodePosition(workflow, from) {
@@ -643,7 +713,7 @@
   function flowOptions(ov) {
     const patterns = (ov.patterns || []).map((p) =>
       `<option value="pattern:${esc(p.id)}">${esc(p.label)}</option>`).join('');
-    const custom = (ov.workflows || []).filter((p) => p.libraryVisibility !== 'internal').map((p) =>
+    const custom = visibleWorkflows(ov, 'implementation').map((p) =>
       `<option value="custom:${esc(p.id)}">${esc(p.name)}</option>`).join('');
     return `<option value="auto">自動</option>`
       + (patterns ? `<optgroup label="標準">${patterns}</optgroup>` : '')
@@ -671,7 +741,7 @@
           <p class="wf-selected-flow-description">${esc(pattern.description || '標準の工程構成で実行します。')}</p></div></article>`;
     }
     const workflow = selection.type === 'custom'
-      ? (ov.workflows || []).find((item) => String(item.id) === selection.id) : null;
+      ? visibleWorkflows(ov, 'implementation').find((item) => String(item.id) === selection.id) : null;
     if (!workflow) return '';
     const nodes = Array.isArray(workflow.nodes) ? workflow.nodes.length : 0;
     return `<article class="wf-selected-flow-card" data-flow-summary-type="custom">
@@ -1241,6 +1311,40 @@
     return '';
   }
 
+  function designAssignmentPreviewHtml(workflow, node, compact = false) {
+    if (!workflowIsDesign(workflow) || !node || DESIGN_FORBIDDEN_KINDS.has(String(node.kind || ''))) return '';
+    if (st.designPreviewBusy) {
+      return '<section class="wf-node-assignment-preview"><strong>割り当てプレビュー</strong><small>読み込み中…</small></section>';
+    }
+    const preview = st.designPreview || {};
+    const item = (preview.nodes || []).find((candidate) => String(candidate.id) === String(node.id));
+    if (!item) {
+      const message = node.id
+        ? 'このフローを保存すると agent / model の候補を確認できます。'
+        : 'ノードを保存すると agent / model の候補を確認できます。';
+      return '<section class="wf-node-assignment-preview"><strong>割り当てプレビュー</strong><small>'
+        + esc(message) + '</small></section>';
+    }
+    const auto = item.auto || {};
+    const candidate = auto.candidate || {};
+    const autoText = candidate.agent_cli
+      ? String(candidate.agent_cli) + ' / ' + String(candidate.model || 'モデル既定') : '候補未設定';
+    const tiers = (item.allowed || []).map((tier) => {
+      const spec = (preview.tierCandidates || {})[tier] || {};
+      const candidates = (spec.candidates || []).map((entry) =>
+        String(entry.agent_cli || '既定') + ' / ' + String(entry.model || 'モデル既定'));
+      return '<li><strong>' + esc((preview.labels || {})[tier] || tier) + '</strong>'
+        + (candidates.length ? ': ' + esc(candidates.join('、')) : ': 候補未設定') + '</li>';
+    }).join('');
+    return '<section class="wf-node-assignment-preview' + (compact ? ' compact' : '') + '">'
+      + '<strong>agent / model 割り当てプレビュー</strong>'
+      + '<p>自動: <code>' + esc(autoText) + '</code>'
+      + (auto.tier ? ' · ' + esc((preview.labels || {})[auto.tier] || auto.tier) : '') + '</p>'
+      + (tiers ? '<details><summary>選択可能な候補（' + (item.allowed || []).length
+        + ' レベル）</summary><ul>' + tiers + '</ul></details>' : '')
+      + '</section>';
+  }
+
   function portState(workflow, target) {
     if (!st.connectFrom) return '';
     return connectionError(workflow, st.connectFrom, target) ? ' invalid' : ' valid';
@@ -1253,17 +1357,18 @@
     const method = node.method ? `<span class="wf-method">${esc(node.method.description || node.method.id)}</span>` : '';
     const continuation = ({ route: '分類後に専門工程を追加', retry: '未完了なら再作業・再検証' })[node.continuation] || '';
     const inputError = st.connectFrom ? connectionError(workflow, st.connectFrom, node.id) : '';
+    const assignment = designAssignmentPreviewHtml(workflow, node, true);
     if (readonly) return `<article class="wf-node" style="left:${Number(node.x)}px;top:${Number(node.y)}px">
       <div class="wf-node-drag"><span>${esc(role)}ロール</span><span class="wf-tier">${esc(tierLabel(node.tier))}</span></div>
       <div class="wf-node-body"><strong>${esc(name)}</strong><p>${esc(node.goal)}</p>${method}
-        ${continuation ? `<span class="wf-continuation">${esc(continuation)}</span>` : ''}</div></article>`;
+        ${continuation ? `<span class="wf-continuation">${esc(continuation)}</span>` : ''}${assignment}</div></article>`;
     return `<article class="wf-node${selected}${issue ? ' invalid' : ''}" data-node-id="${esc(node.id)}"
       style="left:${Number(node.x)}px;top:${Number(node.y)}px">
       <button type="button" class="wf-port in${portState(workflow, node.id)}" data-connect-in="${esc(node.id)}"
         title="${esc(inputError || 'ここへ接続')}" aria-label="${esc(name)}へ接続"></button>
       <div class="wf-node-drag" data-drag-node="${esc(node.id)}"><span>${esc(role)}ロール</span><span class="wf-tier">${esc(tierLabel(node.tier))}</span></div>
       <div class="wf-node-body"><strong>${esc(name)}</strong><p>${esc(node.goal)}</p>${method}
-        ${continuation ? `<span class="wf-continuation">${esc(continuation)}</span>` : ''}
+        ${continuation ? `<span class="wf-continuation">${esc(continuation)}</span>` : ''}${assignment}
         ${issue ? `<span class="wf-node-issue">${esc(issue)}</span>` : ''}</div>
       <button type="button" class="wf-port out" draggable="true" data-connect-out="${esc(node.id)}"
         aria-label="${esc(name)}から接続"></button>
@@ -1320,7 +1425,7 @@
     const tierHelp = eligibleTiers
       ? `この機能に任せられる実行レベル: ${eligibleTiers.tiers.map((tier) => tierLabel(tier)).join('・')}。自動は実行方針に応じてこの範囲で決まります。`
       : '';
-    const kindOptions = KINDS.map((kind) =>
+    const kindOptions = editableKindsForWorkflow(workflow).map((kind) =>
       `<option value="${kind}" ${node.kind === kind ? 'selected' : ''}>${esc(KIND_META[kind][0])}</option>`).join('');
     const interaction = node.interaction || { mode: 'approval', prompt: node.goal, audience: ['reviewer'], timeout_seconds: 604800 };
     const interactionHtml = node.kind === 'human' ? `<section class="wf-human-options">
@@ -1364,6 +1469,7 @@
       ${continuation ? `<label class="wf-continuation-option"><input type="checkbox" id="wf-node-continuation"
         value="${continuation[0]}" ${node.continuation === continuation[0] ? 'checked' : ''}><span><strong>${continuation[1]}</strong>
         <small>${continuation[2]}</small></span></label>` : ''}
+      ${designAssignmentPreviewHtml(workflow, node)}
       ${node.kind === 'human' ? '' : nodeMethodOptionsHtml(ov.methods, node)}
       <button type="button" id="wf-node-delete">ノードを削除</button>
     </div>`;
@@ -1400,31 +1506,68 @@
 
   function savedWorkflowCardHtml(workflow) {
     const nodes = Array.isArray(workflow.nodes) ? workflow.nodes.length : 0;
-    const readonly = workflow._scope === 'repository';
+    const readonly = workflowIsReadonly(workflow);
     return `<button type="button" class="wf-template-card wf-saved-card" data-workflow-id="${esc(workflow.id)}">
       <strong>${esc(workflow.name || workflow.id)}</strong>
       <small>${esc(workflow.description || `${nodes}工程のワークフロー`)}</small>
-      <span class="wf-card-meta">${nodes}工程 · ${readonly ? '登録フォルダ（読み取り専用）' : '自分用（編集できます）'}</span>
+      <span class="wf-card-meta">${nodes}工程 · ${readonly ? `${esc(workflowScopeLabel(workflow))}（読み取り専用）` : '自分用（編集できます）'}</span>
       <b>${readonly ? '内容を見る →' : '編集する →'}</b></button>`;
   }
 
-  function workflowLibraryHtml(ov) {
-    const saved = (ov.workflows || []).filter((workflow) => workflow.libraryVisibility !== 'internal');
-    const patterns = ov.patterns || [];
-    const methodPatterns = methodWorkflowPatterns(ov.methods);
+  function designTemplateCardHtml(workflow) {
+    const nodes = Array.isArray(workflow.nodes) ? workflow.nodes.length : 0;
+    return `<button type="button" class="wf-template-card wf-saved-card wf-design-template-card"
+        data-workflow-id="${esc(workflow.id)}" data-design-template-id="${esc(workflow.id)}">
+      <strong>${esc(workflow.name || workflow.id)}</strong>
+      <small>${esc(workflow.description || `${nodes}工程の設計フロー`)}</small>
+      <span class="wf-card-meta">${nodes}工程 · 同梱雛形（読み取り専用）</span>
+      <b>この雛形をコピー →</b></button>`;
+  }
+
+  function workflowPurposeSwitchHtml(purpose) {
+    const selected = workflowPurpose(purpose);
+    return `<div class="wf-purpose-switch" role="tablist" aria-label="フローの用途">
+      <button type="button" role="tab" data-workflow-purpose="implementation"
+        aria-selected="${selected === 'implementation'}"${selected === 'implementation' ? ' class="selected"' : ''}>実装フロー</button>
+      <button type="button" role="tab" data-workflow-purpose="design"
+        aria-selected="${selected === 'design'}"${selected === 'design' ? ' class="selected"' : ''}>設計フロー</button>
+    </div>`;
+  }
+
+  function designConstraintHtml() {
+    return `<div class="wf-design-constraint-banner" role="note">
+      <strong>設計フローの制約</strong>
+      <span>設計書 Markdown を成果にする短命の設計 run 用です。human と split は使用できず、人の回答待ちや実行時分割は設計フローへ追加できません。</span>
+    </div>`;
+  }
+
+  function workflowLibraryHtml(ov, purpose = st.workflowPurpose) {
+    const selectedPurpose = workflowPurpose(purpose);
+    const saved = visibleWorkflows(ov, selectedPurpose);
+    const internalDesign = selectedPurpose === 'design' ? builtinDesignWorkflows(ov) : [];
+    const patterns = selectedPurpose === 'implementation' ? (ov.patterns || []) : [];
+    const methodPatterns = selectedPurpose === 'implementation' ? methodWorkflowPatterns(ov.methods) : [];
     return `<section class="wf-page wf-settings wf-library" aria-label="ワークフロー設定">
+      ${workflowPurposeSwitchHtml(selectedPurpose)}
       ${st.notice ? `<p class="qf-notice" role="status">${esc(st.notice)}</p>` : ''}
-      <section><div class="wf-section-head"><h3>保存済み</h3></div>
+      ${selectedPurpose === 'design' ? designConstraintHtml() : ''}
+      <section><div class="wf-section-head"><h3>${selectedPurpose === 'design' ? '保存済み（library）' : '保存済み'}</h3></div>
         ${saved.length ? `<div class="wf-template-grid">${saved.map(savedWorkflowCardHtml).join('')}</div>`
     : '<div class="empty">保存済みのワークフローはありません</div>'}</section>
+      ${selectedPurpose === 'design' ? `<section><div class="wf-section-head"><h3>同梱の設計雛形</h3></div>
+        ${internalDesign.length ? `<div class="wf-template-grid">${internalDesign.map(designTemplateCardHtml).join('')}</div>`
+          : '<div class="empty">同梱の設計雛形はありません</div>'}</section>` : ''}
       <section><div class="wf-section-head"><h3>新しく作る</h3></div>
         <div class="wf-template-grid"><button type="button" class="wf-template-card wf-blank-card" id="wf-new">
           ${ICONS.plus}
-          <strong>一から作る</strong><small>空のキャンバスから工程を追加します。</small><b>編集を始める →</b></button>
+          <strong>一から作る</strong><small>${selectedPurpose === 'design'
+            ? '設計書 Markdown を成果にする空のキャンバスから作成します。'
+            : '空のキャンバスから工程を追加します。'}</small><b>編集を始める →</b></button>
           ${patterns.map(templateCardHtml).join('')}${methodPatterns.map(templateCardHtml).join('')}</div></section></section>`;
   }
 
-  function patternChoices(ov) {
+  function patternChoices(ov, purpose = st.workflowPurpose) {
+    if (workflowPurpose(purpose) === 'design') return [];
     const patterns = (ov.patterns || []).filter((pattern) =>
       pattern && pattern.template && Array.isArray(pattern.template.nodes) && pattern.template.nodes.length > 1);
     return [...patterns, ...methodWorkflowPatterns(ov.methods)];
@@ -1432,17 +1575,19 @@
 
   function pickerHtml(ov, workflow) {
     if (!st.pickerFrom) return '';
-    const recommended = recommendedKinds(workflow, st.pickerFrom);
+    const purpose = workflowPurpose(workflow && workflow.purpose);
+    const availableKinds = editableKindsForWorkflow(workflow);
+    const recommended = recommendedKinds(workflow, st.pickerFrom, purpose);
     const card = (kind) => `<button type="button" class="wf-palette-card" draggable="true" data-palette="${kind}">
       <span>${esc(roleLabelForKind(kind))}ロール</span>
       <strong>${esc(KIND_META[kind][0])}</strong><small>${esc(KIND_META[kind][1])}</small></button>`;
-    const patterns = patternChoices(ov);
+    const patterns = patternChoices(ov, purpose);
     return `<section class="wf-node-picker" role="dialog" aria-label="次の工程を追加">
       <div class="wf-picker-head"><div><strong>次の工程</strong><small>${esc(st.pickerFrom === START ? '開始' : st.pickerFrom)} の後に追加</small></div>
         <button type="button" class="wf-icon-button" id="wf-picker-close" aria-label="閉じる" title="閉じる">${ICONS.close}</button></div>
       ${recommended.length ? `<div class="wf-picker-section"><span>おすすめ</span><div>${recommended.map(card).join('')}</div></div>` : ''}
       ${connectionError(workflow, st.pickerFrom, END) ? '' : '<button type="button" class="wf-end-choice" data-connect-end>終了につなぐ</button>'}
-      <details><summary>すべての工程</summary><div class="wf-all-kinds">${KINDS.map(card).join('')}</div></details>
+      <details><summary>すべての工程</summary><div class="wf-all-kinds">${availableKinds.map(card).join('')}</div></details>
       ${patterns.length ? `<details><summary>工程セットを追加</summary><div class="wf-pattern-choices">${patterns.map((pattern) =>
     `<button type="button" class="wf-pattern-card" draggable="true" data-pattern-palette="${esc(pattern.id)}">
         <span><strong>${esc(pattern.label || pattern.id)}</strong><b>${pattern.type === 'method' ? '作業ルール' : '複数工程'}</b></span>
@@ -1465,26 +1610,28 @@
   }
 
   function editorHtml(ov) {
-    if (!st.editor) return workflowLibraryHtml(ov);
+    if (!st.editor) return workflowLibraryHtml(ov, st.workflowPurpose);
     const workflow = st.editor;
     const inspector = st.inspectorPosition;
     const inspectorClass = inspector ? ' floating' : '';
     const inspectorStyle = inspector ? ` style="left:${Number(inspector.x)}px;top:${Number(inspector.y)}px"` : '';
-    const readonly = workflow._scope === 'repository';
+    const readonly = workflowIsReadonly(workflow);
     return `<section class="wf-page wf-settings" aria-label="ワークフロー設定">
+      ${workflowPurposeSwitchHtml(workflow.purpose)}
       ${st.notice ? `<p class="qf-notice" role="status">${esc(st.notice)}</p>` : ''}
+      ${workflowIsDesign(workflow) ? designConstraintHtml() : ''}
       <div class="wf-editor-layout"><main class="wf-editor-main">
         <div class="wf-editor-head"><button type="button" id="wf-library-home">← ワークフロー一覧</button>
-          <label>名前<input id="wf-name" value="${esc(workflow.name)}" placeholder="フロー名"></label>
-          <label>説明<input id="wf-description" value="${esc(workflow.description)}" placeholder="任意"></label>
+          <label>名前<input id="wf-name" value="${esc(workflow.name)}" placeholder="フロー名"${readonly ? ' disabled' : ''}></label>
+          <label>説明<input id="wf-description" value="${esc(workflow.description)}" placeholder="任意"${readonly ? ' disabled' : ''}></label>
           <button type="button" id="wf-fit">全体表示</button>
           ${readonly ? '<button type="button" class="primary" id="wf-copy">自分用にコピー</button>'
     : '<button type="button" class="primary" id="wf-save">保存</button>'}
           ${workflow.id && !readonly ? '<button type="button" id="wf-delete">削除</button>' : ''}</div>
-        ${readonly ? '<p class="field-help">登録フォルダのフローは読み取り専用です。変更するには自分用にコピーしてください。DashboardはGit操作を行いません。</p>' : ''}
+        ${readonly ? `<p class="field-help">${esc(workflowScopeLabel(workflow))}のフローは読み取り専用です。変更するには「自分用にコピー」を押してください。DashboardはGit操作を行いません。</p>` : ''}
         ${st.connectFrom ? `<div class="wf-connect-status" role="status">接続先の丸を選択 · Escで解除</div>` : ''}
-        <div class="wf-workspace">${canvasHtml(workflow)}${pickerHtml(ov, workflow)}
-          ${st.selectedNode ? `<aside class="wf-properties${inspectorClass}"${inspectorStyle}><div class="wf-drawer-head" data-drag-inspector tabindex="0" aria-label="工程の設定パネル。ドラッグで移動できます">
+        <div class="wf-workspace">${canvasHtml(workflow, readonly)}${readonly ? '' : pickerHtml(ov, workflow)}
+          ${st.selectedNode && !readonly ? `<aside class="wf-properties${inspectorClass}"${inspectorStyle}><div class="wf-drawer-head" data-drag-inspector tabindex="0" aria-label="工程の設定パネル。ドラッグで移動できます">
             <div><h3>工程の設定</h3><small>ドラッグで移動</small></div><span>
             <button type="button" class="wf-icon-button" id="wf-inspector-dock" aria-label="右側へ戻す" title="右側へ戻す">${ICONS.dock}</button>
             <button type="button" class="wf-icon-button" id="wf-inspector-close" aria-label="閉じる" title="閉じる">${ICONS.close}</button></span></div>${inspectorHtml(ov, workflow)}</aside>` : ''}
@@ -1707,6 +1854,29 @@
       renderNeeds();
     }));
     wireInteractionResponses(pane, async () => { await loadOverview(); renderNeeds(); });
+  }
+
+  async function loadDesignAssignmentPreview(workflow, sourceId = workflow && workflow.id) {
+    if (!workflowIsDesign(workflow) || !sourceId || !api().adhocFlowDesignPreview) return;
+    const key = `${workflowPurpose(workflow.purpose)}:${sourceId}:${workflow._scope || ''}:${workflow._repository || ''}`;
+    st.designPreview = null;
+    st.designPreviewKey = key;
+    st.designPreviewBusy = true;
+    renderSettings();
+    try {
+      const result = await api().adhocFlowDesignPreview({
+        id: sourceId, scope: workflow._scope, cwd: workflow._repository,
+      });
+      if (st.designPreviewKey !== key) return;
+      st.designPreview = result.preview || null;
+    } catch {
+      if (st.designPreviewKey === key) st.designPreview = null;
+    } finally {
+      if (st.designPreviewKey === key) {
+        st.designPreviewBusy = false;
+        renderSettings();
+      }
+    }
   }
 
   function renderEdit() {
@@ -2227,7 +2397,11 @@
   }
 
   function collectWorkflow() {
-    const workflow = st.editor || (st.editor = emptyWorkflow());
+    const workflow = st.editor || (st.editor = emptyWorkflow(st.workflowPurpose));
+    workflow.purpose = workflowPurpose(workflow.purpose || st.workflowPurpose);
+    if (!workflowIsReadonly(workflow)) {
+      workflow.libraryVisibility = workflow.libraryVisibility === 'internal' ? 'library' : (workflow.libraryVisibility || 'library');
+    }
     if ($id('wf-name')) workflow.name = $id('wf-name').value;
     workflow.description = $id('wf-description')?.value || '';
     const node = workflow.nodes.find((n) => n.id === st.selectedNode);
@@ -2236,6 +2410,10 @@
       node.label = $id('wf-node-label').value.trim() || node.id;
       node.id = $id('wf-node-id').value.trim();
       node.kind = $id('wf-node-kind').value;
+      if (workflowIsDesign(workflow) && DESIGN_FORBIDDEN_KINDS.has(node.kind)) {
+        node.kind = 'work';
+        st.notice = '設計フローでは human と split を使用できないため、作業へ戻しました';
+      }
       if (node.kind === 'human') {
         delete node.tier;
         delete node.method;
@@ -2283,6 +2461,11 @@
 
   function addNode(kind, x, y, ov) {
     const workflow = collectWorkflow();
+    if (!editableKindsForWorkflow(workflow).includes(kind)) {
+      st.notice = '設計フローでは human と split を追加できません';
+      renderSettings();
+      return;
+    }
     const used = new Set(workflow.nodes.map((n) => n.id));
     const tier = ov.tiers && ov.tiers[0] ? ov.tiers[0].id : '';
     let i = workflow.nodes.length + 1;
@@ -2354,31 +2537,62 @@
     const resetSelection = () => {
       st.selectedNode = ''; st.selectedEdge = null; st.connectFrom = ''; st.pickerFrom = ''; st.zoom = 1;
       st.inspectorPosition = null;
+      st.designPreview = null; st.designPreviewKey = ''; st.designPreviewBusy = false;
     };
+    pane.querySelectorAll('[data-workflow-purpose]').forEach((button) => button.addEventListener('click', () => {
+      const nextPurpose = workflowPurpose(button.dataset.workflowPurpose);
+      if (nextPurpose === workflowPurpose(st.workflowPurpose) && !st.editor) return;
+      if (!canLeave()) return;
+      st.workflowPurpose = nextPurpose;
+      st.editor = null;
+      st.dirty = false;
+      resetSelection();
+      st.notice = '';
+      renderSettings();
+    }));
     $id('wf-library-home')?.addEventListener('click', () => {
       if (!canLeave()) return;
       st.editor = null; st.dirty = false; resetSelection(); renderSettings();
     });
     $id('wf-new')?.addEventListener('click', () => {
       if (!canLeave()) return;
-      st.editor = emptyWorkflow(); st.dirty = false; resetSelection(); renderSettings();
+      st.editor = emptyWorkflow(st.workflowPurpose); st.dirty = false; resetSelection(); renderSettings();
     });
     pane.querySelectorAll('[data-workflow-id]').forEach((button) => button.addEventListener('click', () => {
+      if (button.dataset.designTemplateId) return;
       if (!canLeave()) return;
       const found = (ov.workflows || []).find((item) => item.id === button.dataset.workflowId);
-      st.editor = found ? spaceForStart(clone(found)) : emptyWorkflow();
+      st.workflowPurpose = workflowPurpose(found && found.purpose);
+      st.editor = found ? spaceForStart(clone(found)) : emptyWorkflow(st.workflowPurpose);
       st.dirty = false; resetSelection(); renderSettings();
+      if (found && workflowIsDesign(found)) loadDesignAssignmentPreview(st.editor);
+    }));
+    pane.querySelectorAll('[data-design-template-id]').forEach((button) => button.addEventListener('click', () => {
+      if (!canLeave()) return;
+      const found = (ov.workflows || []).find((item) => item.id === button.dataset.designTemplateId);
+      if (!found) return;
+      st.workflowPurpose = 'design';
+      st.editor = spaceForStart(unsavedWorkflowCopy(found, 'design'));
+      st.selectedNode = START;
+      st.dirty = true;
+      st.notice = '同梱雛形を新しい自分用フローとしてコピーしました。確認して保存してください';
+      resetSelection();
+      st.selectedNode = START;
+      renderSettings();
+      loadDesignAssignmentPreview(st.editor, found.id);
     }));
     pane.querySelectorAll('[data-pattern-id]').forEach((button) => button.addEventListener('click', () => {
       const found = (ov.patterns || []).find((item) => item.id === button.dataset.patternId);
       if (!found || !canLeave()) return;
-      st.editor = workflowFromPattern(found, ov.tiers?.[0]?.id || '');
+      st.workflowPurpose = 'implementation';
+      st.editor = workflowFromPattern(found, ov.tiers?.[0]?.id || '', 'implementation');
       st.selectedNode = START; st.dirty = true; st.notice = '雛形を複製しました'; renderSettings();
     }));
     pane.querySelectorAll('[data-method-pattern-id]').forEach((button) => button.addEventListener('click', () => {
       const found = methodWorkflowPatterns(ov.methods).find((item) => item.methodId === button.dataset.methodPatternId);
       if (!found || !canLeave()) return;
-      st.editor = workflowFromPattern(found, ov.tiers?.[0]?.id || '');
+      st.workflowPurpose = 'implementation';
+      st.editor = workflowFromPattern(found, ov.tiers?.[0]?.id || '', 'implementation');
       st.selectedNode = START; st.dirty = true; st.notice = '作業ルールを工程へ展開しました'; renderSettings();
     }));
     $id('wf-fit')?.addEventListener('click', () => {
@@ -2392,7 +2606,10 @@
     });
     $id('wf-save')?.addEventListener('click', async () => {
       try {
-        const result = await api().adhocFlowSaveWorkflow({ workflow: collectWorkflow() });
+        const workflow = collectWorkflow();
+        const result = await api().adhocFlowSaveWorkflow({
+          workflow, scope: workflow._scope || 'user', cwd: workflow._repository || '',
+        });
         st.editor = clone(result.saved);
         const index = (ov.workflows || []).findIndex((item) => item.id === result.saved.id);
         if (index < 0) (ov.workflows || (ov.workflows = [])).unshift(clone(result.saved));
@@ -2401,19 +2618,21 @@
         st.notice = '保存しました';
       } catch (err) { st.notice = String((err && err.message) || err); }
       renderSettings();
+      if (st.editor && workflowIsDesign(st.editor) && st.editor.id) loadDesignAssignmentPreview(st.editor);
     });
     $id('wf-copy')?.addEventListener('click', () => {
-      const copied = collectWorkflow();
-      delete copied._scope;
-      delete copied._repository;
-      copied.id = `${copied.id}-copy-${Date.now().toString(36)}`;
-      copied.name = `${copied.name} のコピー`;
+      const copied = unsavedWorkflowCopy(collectWorkflow(), workflowPurpose(st.editor && st.editor.purpose));
       st.editor = copied;
       st.dirty = true;
       st.notice = '自分用のコピーを作りました。内容を確認して保存してください';
       renderSettings();
     });
     $id('wf-delete')?.addEventListener('click', async () => {
+      if (!st.editor || workflowIsReadonly(st.editor)) {
+        st.notice = '読み取り専用のフローはDashboardから削除できません。自分用にコピーしてください';
+        renderSettings();
+        return;
+      }
       try {
         await api().adhocFlowDeleteWorkflow({
           id: st.editor.id, scope: st.editor._scope, cwd: st.editor._repository,
@@ -2434,7 +2653,7 @@
       button.addEventListener('dragstart', (event) => event.dataTransfer.setData('text/workflow-kind', button.dataset.palette));
     });
     pane.querySelectorAll('[data-pattern-palette]').forEach((button) => {
-      const pattern = patternChoices(ov).find((item) => item.id === button.dataset.patternPalette);
+      const pattern = patternChoices(ov, st.workflowPurpose).find((item) => item.id === button.dataset.patternPalette);
       button.addEventListener('click', () => {
         const pos = palettePosition(st.editor || emptyWorkflow());
         if (pattern) addPattern(pattern, pos.x, pos.y, ov);
@@ -2451,7 +2670,7 @@
       event.preventDefault();
       const kind = event.dataTransfer.getData('text/workflow-kind');
       const patternId = event.dataTransfer.getData('text/workflow-pattern');
-      const pattern = patternChoices(ov).find((item) => item.id === patternId);
+      const pattern = patternChoices(ov, st.workflowPurpose).find((item) => item.id === patternId);
       if ((!KINDS.includes(kind) && !pattern) || !st.editor) return;
       const box = canvas.getBoundingClientRect();
       const x = Math.max(20, (event.clientX - box.left + canvas.scrollLeft) / st.zoom - 110);
@@ -2619,8 +2838,19 @@
     statusLabel,
     publicationPresentation,
     publicationHtml,
+    flowOptions,
     selectionFrom,
     selectedFlowSummaryHtml,
+    workflowPurpose,
+    workflowPurposeLabel,
+    workflowPurposeSwitchHtml,
+    visibleWorkflows,
+    builtinDesignWorkflows,
+    workflowIsReadonly,
+    unsavedWorkflowCopy,
+    editableKindsForWorkflow,
+    designAssignmentPreviewHtml,
+    emptyWorkflow,
     defaultGoal,
     roleLabelForKind,
     nodePresentation,
@@ -2640,6 +2870,7 @@
     executionOverridesForMode,
     edgePath,
     workflowLibraryHtml,
+    patternChoices,
     workflowTaskDialogHtml,
     connectionError,
     consultTarget,
