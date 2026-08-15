@@ -53,5 +53,57 @@ class NodeContractTests(unittest.TestCase):
             })
 
 
+class OperationContractTest(unittest.TestCase):
+    CONTRACT = {
+        "operation_class": "existing-test-repair",
+        "scope": {"read": ["src/format.py", "tests/test_format.py"],
+                  "write": ["src/format.py"],
+                  "protected": ["schemas/", "docs/architecture/"]},
+        "deliverables": ["src/format.py"],
+        "acceptance": ["pytest tests/test_format.py が成功する"],
+        "verification": {"commands": [["pytest", "tests/test_format.py"]]},
+    }
+
+    def test_design_example_passes(self):
+        self.assertEqual(nodecontract.operation_contract_errors(self.CONTRACT), [])
+
+    def test_shape_errors(self):
+        self.assertTrue(nodecontract.operation_contract_errors("x"))
+        self.assertTrue(nodecontract.operation_contract_errors({}))
+        broken = dict(self.CONTRACT, verification={"commands": ["pytest tests"]})
+        self.assertTrue(any("argv" in e for e in
+                            nodecontract.operation_contract_errors(broken)))
+
+    def test_local_patch_eligible(self):
+        self.assertEqual(nodecontract.local_patch_blockers(self.CONTRACT), [])
+        self.assertEqual(nodecontract.local_patch_blockers(
+            self.CONTRACT, existing_paths=["src/format.py"]), [])
+
+    def test_local_patch_blockers(self):
+        multi = dict(self.CONTRACT,
+                     scope=dict(self.CONTRACT["scope"], write=["src/a.py", "src/b.py"]))
+        self.assertTrue(any("1 ファイル" in b for b in
+                            nodecontract.local_patch_blockers(multi)))
+        no_check = dict(self.CONTRACT, verification=None)
+        self.assertTrue(any("verification" in b for b in
+                            nodecontract.local_patch_blockers(no_check)))
+        new_test = dict(self.CONTRACT,
+                        scope=dict(self.CONTRACT["scope"], write=["tests/test_new.py"]),
+                        deliverables=["tests/test_new.py"])
+        self.assertTrue(any("対象外" in b for b in
+                            nodecontract.local_patch_blockers(new_test)))
+        protected = dict(self.CONTRACT,
+                         scope=dict(self.CONTRACT["scope"], write=["schemas/x.json"]),
+                         deliverables=["schemas/x.json"])
+        self.assertTrue(any("protected" in b for b in
+                            nodecontract.local_patch_blockers(protected)))
+        new_file = nodecontract.local_patch_blockers(
+            self.CONTRACT, existing_paths=["src/other.py"])
+        self.assertTrue(any("新規ファイル" in b for b in new_file))
+        mismatch = dict(self.CONTRACT, deliverables=["src/other.py"])
+        self.assertTrue(any("書込 scope" in b for b in
+                            nodecontract.local_patch_blockers(mismatch)))
+
+
 if __name__ == "__main__":
     unittest.main()
