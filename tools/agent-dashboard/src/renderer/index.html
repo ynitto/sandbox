@@ -224,6 +224,11 @@
         <input id="cw-schedule" class="mono" placeholder="例: 0 9 * * *" />
         <small class="muted">空欄の場合は手動実行のみです。</small>
       </div>
+      <div class="field">
+        <label for="cw-execution">実行エージェント</label>
+        <select id="cw-execution"></select>
+        <small class="muted">既定は自動割り当てです。選ぶと、この業務はいつも選んだエージェントとモデルで実行します（「今すぐ実行」での一回限りの選択はここに保存されません）。</small>
+      </div>
       <div class="dialog-actions">
         <button id="btn-cw-cancel" value="cancel">キャンセル</button>
         <button id="btn-cw-ok" value="default">反映</button>

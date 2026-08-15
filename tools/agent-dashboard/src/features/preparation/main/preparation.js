@@ -67,6 +67,22 @@ function normalizeMaterials(raw) {
 const ROUTES = new Set(['agent-design', 'external-design', 'direct']);
 const TARGETS = new Set(['workflow', 'project']);
 
+// 設計フローのノードへ人が固定したエージェント・モデル（{ nodeId: {tier, agent_cli, model} }）。
+// ここでは形だけを整えて保存する——tier の適格性と候補の実在は、設計runを組む adhoc 側が
+// 実行時点の宣言（profiles.json）で検証する。
+function normalizeDesignAssignments(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const out = {};
+  for (const [nodeId, value] of Object.entries(raw)) {
+    if (!value || typeof value !== 'object') continue;
+    const tier = String(value.tier || '').trim();
+    const agentCli = String(value.agent_cli || '').trim();
+    if (!tier || !agentCli) continue;
+    out[String(nodeId)] = { tier, agent_cli: agentCli, model: String(value.model || '').trim() };
+  }
+  return Object.keys(out).length ? out : null;
+}
+
 function createItem(raw = {}) {
   const title = String(raw.title || '').trim();
   const goal = String(raw.goal || '').trim();
@@ -89,6 +105,7 @@ function createItem(raw = {}) {
     route,
     routeRecommendation,
     materials,
+    designAssignments: normalizeDesignAssignments(raw.designAssignments),
     taskSpec: raw.taskSpec && typeof raw.taskSpec === 'object' ? { ...raw.taskSpec } : null,
     phase: route === 'agent-design' ? 'design-ready' : 'implementation-ready',
     design: { sessionId: '', document: '', runIds: [] },
@@ -122,6 +139,7 @@ function createPackage(raw = {}) {
       projectDir,
       packageId: id,
       taskSpec: candidate,
+      designAssignments: candidate.designAssignments || raw.designAssignments,
       materials: [...materials, ...(Array.isArray(candidate.materials) ? candidate.materials : [])],
     })),
     createdAt: String(raw.createdAt || now),
@@ -272,7 +290,8 @@ function implementationRequest(item) {
 }
 
 module.exports = {
-  recommendRoute, normalizeMaterials, createItem, createPackage, canHandoff, startDesign, completeDesign,
+  recommendRoute, normalizeMaterials, normalizeDesignAssignments, createItem, createPackage,
+  canHandoff, startDesign, completeDesign,
   recordHandoff,
   implementationRequest, resolveDir, saveItem, getItem, removeItem, listItems, savePackage,
 };

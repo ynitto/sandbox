@@ -44,9 +44,25 @@ function normalizeSession(raw) {
     target,
     sourceMode,
     sources: Array.isArray(session.sources) ? session.sources : [],
+    nodeAssignments: normalizeNodeAssignments(session.nodeAssignments),
     proposal: session.proposal && typeof session.proposal === 'object' ? session.proposal : null,
     application: session.application && typeof session.application === 'object' ? session.application : null,
   };
+}
+
+// 設計フローのノードへ人が固定したエージェント・モデル（{ nodeId: {tier, agent_cli, model} }）。
+// 形だけをここで整える——tier の適格性と候補の実在は plan を組む adhoc 側が検証する。
+function normalizeNodeAssignments(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const out = {};
+  for (const [nodeId, value] of Object.entries(raw)) {
+    if (!value || typeof value !== 'object') continue;
+    const tier = String(value.tier || '').trim();
+    const agentCli = String(value.agent_cli || '').trim();
+    if (!tier || !agentCli) continue;
+    out[String(nodeId)] = { tier, agent_cli: agentCli, model: String(value.model || '').trim() };
+  }
+  return Object.keys(out).length ? out : null;
 }
 
 function resolveSessionDir(config) {
@@ -248,10 +264,17 @@ function getSession(config, id) {
 }
 
 // セッションを作る（id 省略時）か、回答を添えて次のラウンドを投げる。
-function startRound(config, { id, cwd, goal, mode, answers, target, sourceMode, sources, document } = {}) {
+function startRound(config, {
+  id, cwd, goal, mode, answers, target, sourceMode, sources, document, nodeAssignments,
+} = {}) {
   const existing = id ? getSession(config, id) : null;
   if (id && !existing) throw new Error(`設計セッションが見つかりません: ${id}`);
   const nextSources = normalizeSources(sources == null ? existing && existing.sources : sources);
+  // 割り当ては最初のラウンドで固定し、以降のラウンドも同じ組み合わせで実行する
+  // （途中で渡し直せば更新できる）。
+  const nextAssignments = nodeAssignments === undefined
+    ? (existing && existing.nodeAssignments) || null
+    : normalizeNodeAssignments(nodeAssignments);
   const initialDocument = String(document == null ? (existing && existing.document) || '' : document).trim();
   const request = String(goal || (existing && existing.goal) || initialDocument.slice(0, 200)).trim();
   if (!request) throw new Error('やりたいことを1行でも書いてください');
@@ -274,7 +297,11 @@ function startRound(config, { id, cwd, goal, mode, answers, target, sourceMode, 
       sources: nextSources,
     }),
     cwd: folder,
-    selection: { type: 'custom', id: flowId },
+    selection: {
+      type: 'custom',
+      id: flowId,
+      ...(nextAssignments ? { nodeAssignments: nextAssignments } : {}),
+    },
   });
 
   const now = new Date().toISOString();
@@ -286,6 +313,7 @@ function startRound(config, { id, cwd, goal, mode, answers, target, sourceMode, 
     target: TARGETS.has(String(target || '')) ? String(target) : (base.target || 'workflow'),
     sourceMode: nextSourceMode,
     sources: nextSources,
+    nodeAssignments: nextAssignments,
     goal: request,
     mode: selectedMode,
     cwd: folder,

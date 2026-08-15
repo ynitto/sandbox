@@ -1987,6 +1987,69 @@ const PROJECT_PREPARATION_ROUTES = [
 ];
 let projectTaskWizard = null;
 
+// ---------------------------------------------------------------------------
+// 設計フローのノード割り当てUI（プロジェクト／ワークフローのタスク追加ダイアログで共有）。
+// adhocFlow:designPreview の結果（ノードごとの自動割り当てと、実行可能レベルごとの候補）を
+// 選択肢へ展開する。既定（値 ''）は自動割り当てで、自動が今選ぶ具体的な候補を表示する。
+// 選択肢はそのノードの実行可能レベル（tier）に宣言された候補だけに絞る。
+// ---------------------------------------------------------------------------
+
+function designAssignmentValue(tier, candidate) {
+  return [tier, candidate.agent_cli || '', candidate.model || ''].map(encodeURIComponent).join('|');
+}
+
+function parseDesignAssignmentValue(raw) {
+  if (!raw) return null;
+  const [tier, agentCli, model] = String(raw).split('|').map(decodeURIComponent);
+  return tier && agentCli ? { tier, agent_cli: agentCli, model: model || '' } : null;
+}
+
+function designAssignmentSectionHtml(preview, assignments, options = {}) {
+  const legend = options.legend || '設計フローの実行エージェント';
+  if (!preview) {
+    return `<fieldset class="design-assignments"><legend>${esc(legend)}</legend>
+      <p class="muted">${esc(options.pendingText || '割り当てを読み込んでいます…')}</p></fieldset>`;
+  }
+  const nodes = (preview.nodes || []).filter((node) => !node.human);
+  if (!nodes.length) return '';
+  const tierLabel = (tier) => (preview.labels || {})[tier] || tier;
+  const rows = nodes.map((node) => {
+    const current = (assignments || {})[node.id] || null;
+    const auto = node.auto || {};
+    const autoCandidate = auto.candidate || null;
+    const autoLabel = autoCandidate
+      ? `自動割り当て（${tierLabel(auto.tier)} — ${autoCandidate.agent_cli || '既定'} / ${autoCandidate.model || '既定モデル'}）`
+      : '自動割り当て（実行レベルの候補が未設定）';
+    const choices = [`<option value="">${esc(autoLabel)}</option>`];
+    for (const tier of node.allowed || []) {
+      const spec = (preview.tierCandidates || {})[tier];
+      for (const candidate of (spec && spec.candidates) || []) {
+        const value = designAssignmentValue(tier, candidate);
+        const selected = current && current.tier === tier
+          && String(current.agent_cli || '') === String(candidate.agent_cli || '')
+          && String(current.model || '') === String(candidate.model || '');
+        choices.push(`<option value="${esc(value)}"${selected ? ' selected' : ''}>${
+          esc(tierLabel(tier))} — ${esc(candidate.agent_cli || '既定')} / ${esc(candidate.model || '既定モデル')}</option>`);
+      }
+    }
+    return `<label class="field design-assignment-row">${esc(node.label || node.id)}
+      <select data-design-node="${esc(node.id)}">${choices.join('')}</select></label>`;
+  });
+  return `<fieldset class="design-assignments"><legend>${esc(legend)}</legend>
+    <small class="muted">${esc(options.helpText
+      || '各工程の既定は自動割り当てです。変更する場合も、その工程に任せられる実行レベルの候補からだけ選べます。')}</small>
+    ${rows.join('')}</fieldset>`;
+}
+
+function collectDesignAssignmentsFrom(rootEl) {
+  const out = {};
+  rootEl.querySelectorAll('[data-design-node]').forEach((select) => {
+    const assignment = parseDesignAssignmentValue(select.value);
+    if (assignment) out[select.dataset.designNode] = assignment;
+  });
+  return Object.keys(out).length ? out : null;
+}
+
 function openProjectPreparationDesign(item, session) {
   const dialog = $('dlg-enqueue');
   const questions = session.questions || [];
@@ -2062,7 +2125,10 @@ function renderProjectTaskWizard() {
       <section><h3>メモ</h3>${notes || '<p class="muted">メモはありません</p>'}</section>
       <section><h3>ドキュメント</h3><label class="task-file-picker">Markdownを選択
         <input id="project-task-files" type="file" multiple accept=".md,.markdown,text/markdown"></label>
-        <p class="muted">${wizard.documents.length ? wizard.documents.map((item) => esc(item.name)).join('、') : '未選択'}</p></section></div>`;
+        <p class="muted">${wizard.documents.length ? wizard.documents.map((item) => esc(item.name)).join('、') : '未選択'}</p></section>
+      ${wizard.route === 'agent-design'
+        ? designAssignmentSectionHtml(wizard.designPreview, wizard.designAssignments)
+        : ''}</div>`;
   } else if (wizard.step === 4) {
     body = `<div class="project-task-candidates">${wizard.candidates.map((task, index) => `<article class="task-candidate-card">
       <button type="button" class="task-candidate-select" data-project-candidate="${index}"
@@ -2106,6 +2172,10 @@ function renderProjectTaskWizard() {
     wizard.documents = await Promise.all([...event.target.files].map(async (file) => ({ name: file.name, content: await file.text() })));
     renderProjectTaskWizard();
   });
+  // 設計フローの割り当ては再描画で消えないよう、変更のたびに状態へ写す。
+  dialog.querySelectorAll('[data-design-node]').forEach((select) => select.addEventListener('change', () => {
+    wizard.designAssignments = collectDesignAssignmentsFrom(dialog);
+  }));
   dialog.querySelector('[data-project-task-next]')?.addEventListener('click', advanceProjectTaskWizard);
 }
 
@@ -2131,11 +2201,26 @@ async function advanceProjectTaskWizard() {
   }
   if (wizard.step === 2) {
     if (!wizard.route) wizard.error = '進め方を選択してください';
-    else wizard.step = 3;
+    else {
+      wizard.step = 3;
+      if (wizard.route === 'agent-design' && !wizard.designPreview && api.adhocFlowDesignPreview) {
+        wizard.busy = '設計フローを確認中…'; renderProjectTaskWizard();
+        try {
+          const result = await api.adhocFlowDesignPreview({ mode: 'interactive' });
+          wizard.designPreview = result.preview;
+        } catch (err) {
+          // 割り当てUIが読めなくても準備は進められる（自動割り当てで実行される）。
+          wizard.designPreview = { nodes: [] };
+          console.warn('設計フローの割り当てを読み込めませんでした:', err);
+        }
+        wizard.busy = '';
+      }
+    }
     renderProjectTaskWizard();
     return;
   }
   if (wizard.step === 3) {
+    wizard.designAssignments = collectDesignAssignmentsFrom($('dlg-enqueue')) || wizard.designAssignments;
     wizard.includeMaster = $('project-source-master')?.getAttribute('aria-pressed') === 'true';
     wizard.versionNames = [...document.querySelectorAll('[data-project-source-version][aria-pressed="true"]')]
       .map((button) => button.dataset.projectSourceVersion);
@@ -2197,6 +2282,7 @@ async function advanceProjectTaskWizard() {
       const result = await api.preparationCreatePackage({
         projectDir: p.dir, title: wizard.text.slice(0, 80), goal: wizard.text,
         materials: wizard.materials, candidates: selected,
+        ...(wizard.designAssignments ? { designAssignments: wizard.designAssignments } : {}),
       });
       state.projectPreparations = [...(result.items || []), ...(state.projectPreparations || [])];
       $('dlg-enqueue').close();
@@ -2215,7 +2301,8 @@ async function openProjectTaskWizard(prefill = {}) {
   const inherited = [prefill.title, prefill.desc, prefill.accept].filter(Boolean).join('\n\n');
   projectTaskWizard = { step: 1, text: inherited, includeMaster: false,
     versionNames: prefill.charter ? [prefill.charter] : [], noteNames: [], documents: [], notes,
-    route: '', recommendation: null, materials: [], proposal: null, candidates: [], error: '', busy: '' };
+    route: '', recommendation: null, materials: [], proposal: null, candidates: [], error: '', busy: '',
+    designPreview: null, designAssignments: null };
   renderProjectTaskWizard();
   $('dlg-enqueue').showModal();
 }

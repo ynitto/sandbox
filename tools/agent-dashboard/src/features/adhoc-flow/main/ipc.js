@@ -196,6 +196,23 @@ function registerIpc(ctx) {
     flow: adhoc.snapshotSelection(loadConfig(), selection, { cwd }),
   }));
 
+  // 設計フロー（同梱 design-interactive / design-auto や任意のフロー）のノードごとの
+  // 自動割り当てと選択可能な候補。タスク追加ダイアログの割り当て UI が読む。
+  handle('adhocFlow:designPreview', ({ mode, id, cwd, scope } = {}) => ({
+    preview: adhoc.flowAssignmentPreview(loadConfig(), {
+      id: designSession.MODE_FLOWS[String(mode || '')] || String(id || '')
+        || designSession.MODE_FLOWS.interactive,
+      cwd,
+      scope,
+    }),
+  }));
+
+  // 実装フロー（自動 plan）の役割・機能ごとの自動割り当てと選択可能な候補。
+  // 実行前のフロー表示（作業準備の「実行」）が読む。
+  handle('adhocFlow:executionPreview', () => ({
+    preview: adhoc.executionAssignmentPreview(loadConfig()),
+  }));
+
   handle('adhocFlow:promote', (payload) => adhoc.promote(loadConfig(), payload || {}));
 
   handle('adhocFlow:saveSettings', ({ retentionDays } = {}) => {
@@ -254,6 +271,7 @@ function registerIpc(ctx) {
       cwd: item.cwd || item.projectDir,
       sources: (item.materials || []).filter((material) =>
         (material.selectedFor || []).includes('design')),
+      ...(item.designAssignments ? { nodeAssignments: item.designAssignments } : {}),
     });
     const next = preparation.startDesign(item, { sessionId: session.id, runId: session.runId });
     return { item: preparation.saveItem(cfg, next), session };
@@ -286,7 +304,7 @@ function registerIpc(ctx) {
     });
     return { item: preparation.saveItem(cfg, next), session };
   });
-  handle('preparation:handoff', ({ id } = {}) => {
+  handle('preparation:handoff', ({ id, executionOverrides } = {}) => {
     const cfg = loadConfig();
     const item = preparation.getItem(cfg, String(id || ''));
     if (!item || !preparation.canHandoff(item)) throw new Error('実装準備が完了していません');
@@ -307,6 +325,7 @@ function registerIpc(ctx) {
       cwd: item.cwd,
       request: preparation.implementationRequest(item),
       selection: { type: 'auto' },
+      ...(executionOverrides ? { executionOverrides } : {}),
     });
     const next = preparation.recordHandoff(item, { runId: result.runId });
     return { item: preparation.saveItem(cfg, next), result };
