@@ -420,7 +420,17 @@ test('設計カタログはpurpose別に全scopeを列挙し、同名IDをscope�
   const repo = tmpdir('design-catalog-repo-');
   const workflowDir = tmpdir('design-catalog-user-');
   const builtinWorkflowDir = tmpdir('design-catalog-builtin-');
-  const cfg = { adhocFlow: { workflowDir, builtinWorkflowDir } };
+  const controlDir = tmpdir('design-catalog-control-');
+  // 定義が tier「large」を固定するので、その候補を宣言しておく（無いと plan 生成で弾かれる）。
+  fs.writeFileSync(path.join(controlDir, 'profiles.json'), JSON.stringify({
+    version: 1,
+    enabled: true,
+    tiers: {
+      large: { order: 30, label: '高性能', candidates: [{ agent_cli: 'codex', model: 'gpt-5' }] },
+    },
+    policy: { apply_to: ['flow'], steps: [{ min_remaining_ratio: 0, tier: 'large' }], no_cap_tier: 'large' },
+  }));
+  const cfg = { adhocFlow: { workflowDir, builtinWorkflowDir }, orchestration: { controlDir } };
   const writeDefinition = (dir, definition) => {
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, `${definition.id}.json`), `${JSON.stringify(definition)}\n`);
