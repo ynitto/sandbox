@@ -82,7 +82,7 @@ _RUNTIME_CONFIG = None
 AGENT_PURPOSES = ("plan", "review", "prioritize", "route", "adjudicate", "verify",
                   "distill", "assess", "repo_map", "doctor")
 # 出力が JSON だけと決まっている処理（応答を JSON として解釈し、崩れたら既定へ倒す処理）。
-# CLI 定義が JSON 用の変種（`json_variant`）を申告していれば、この処理に限って自動で
+# CLI 定義が用途別の変種（`variants`）を申告していれば、この処理に限って自動で
 # そちらへ振り替える（適用拡大設計 §4.3・agent-flow の JSON_CONTRACT_ROLES と対）。
 # verify は寛容パーサ＋証跡の本文を伴い、distill は `条件 :: 指針` の行形式、
 # repo_map / doctor の出力は人が読む散文なので入れない。
@@ -152,8 +152,10 @@ def _agent_for(purpose: str) -> "tuple[str, str | None]":
     agent-control（管理面の横断上書き）＞ 設定 agents: の該当キー ＞ グローバル agent_cli。
     soft/縮退中は control の degraded を重ねる（model 上書きは無ければ None＝呼び出し値）。
 
-    解決した CLI が JSON 用の変種を申告していれば、JSON 契約の処理
-    （JSON_CONTRACT_PURPOSES）だけ最後にそちらへ振り替える。"""
+    解決した CLI が用途別の変種（`variants`）を申告していれば、JSON 契約の処理
+    （JSON_CONTRACT_PURPOSES）だけ最後にそちらへ振り替える。変種自身の既定モデルが
+    あればモデルもそちらへ寄せる（用途専用のチューニングを base のモデル指定で
+    上書きさせない）。"""
     cfg = _RUNTIME_CONFIG
     ov = ((cfg.agents if cfg is not None else {}) or {}).get(purpose) or {}
     cli = str(ov.get("agent_cli") or (cfg.agent_cli if cfg is not None else "kiro")).lower()
@@ -171,7 +173,11 @@ def _agent_for(purpose: str) -> "tuple[str, str | None]":
         if d_model:
             model = d_model
     if purpose in JSON_CONTRACT_PURPOSES:
-        cli = _agentcli.json_variant(cli)
+        variant = _agentcli.resolve_variant(cli, purpose)
+        if variant:
+            cli = variant["agent_cli"]
+            if variant["default_model"]:
+                model = variant["default_model"]
     return cli, model
 
 

@@ -544,20 +544,23 @@ def _tl_control_agent(agent: dict, cwd: str) -> dict:
     成果物の本文を書き始める——しかも制御の周は readonly（`--dry-run`）なので、その本文は
     捨てられる。1 周 50〜90 秒を捨てることになる（実測）。
 
-    定義が `json_variant` を申告していれば、制御の周だけそちらへ振り替える。JSON モードの
-    起動形は本文を返しようがないので、この失敗自体が起きない。申告が無い CLI・解決に失敗
-    した場合は元のエージェントのまま（設定ミスで実行を殺さない——agentcli の方針と同じ）。
-    役割の性質で振り替える口は agentcore が持っており、agent-flow / agent-project は既に
-    使っている。ここは同じ口を使うだけで、新しい設定面を人に書かせない（C7・柱3）。
+    定義が用途別の変種（`variants`）に "planner" を申告していれば、制御の周だけ
+    そちらへ振り替える（agent-flow の planner と同じ「次に何をするか JSON で言わせる」
+    契約なので、同じ用途キーを引く）。JSON モードの起動形は本文を返しようがないので、
+    この失敗自体が起きない。申告が無い CLI・解決に失敗した場合は元のエージェントのまま
+    （設定ミスで実行を殺さない——agentcli の方針と同じ）。役割の性質で振り替える口は
+    agentcore が持っており、agent-flow / agent-project は既に使っている。ここは同じ口を
+    使うだけで、新しい設定面を人に書かせない（C7・柱3）。モデルは元のエージェントの
+    指定をそのまま持ち越す（呼び出し元が明示解決したモデルを、この振り替えは変えない）。
     """
     mod = agent.get("agentcli")
     name = str(agent.get("cli") or "")
     if mod is None or not name:
         return agent
     try:
-        variant = mod.json_variant(name, cwd)
-        return agent if variant == name else _tl_resolve_agent(
-            variant, agent.get("model") or "", cwd)
+        variant = mod.resolve_variant(name, "planner", cwd)
+        return agent if not variant else _tl_resolve_agent(
+            variant["agent_cli"], agent.get("model") or "", cwd)
     except (ToolLoopError, AttributeError):
         return agent
 

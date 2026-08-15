@@ -496,8 +496,8 @@ class FlowPlannerAgentCliTests(unittest.TestCase):
         cmd = self._capture_cmd()
         self.assertEqual(cmd[cmd.index("--agent-cli") + 1], "cursor")
 
-    def test_planner_uses_the_declared_json_variant(self):
-        """planner は JSON 契約の役割なので、定義が申告する JSON 変種へ自動で振り替わる。
+    def test_planner_uses_the_declared_variant(self):
+        """planner は JSON 契約の役割なので、定義が申告する用途別の変種へ自動で振り替わる。
         人が agents: を役割ごとに書き並べなくても、計画がツールループ型の起動形で
         空回りしない（コンセプト 柱3 / C9）。"""
         kf._AGENT_CLI = "ollama"

@@ -27,7 +27,7 @@ Ollama のローカル推論を、クラウド CLI の枠が乏しいときの�
 
 ## 2. CLI 定義と実行面
 
-一般の `write_args` / `readonly_args` / `json_variant` / `list_variant` / `interactive` / `errors` /
+一般の `write_args` / `readonly_args` / `variants` / `interactive` / `errors` /
 `session_log` 契約は
 [`agent-cli-plugin-design.md`](./agent-cli-plugin-design.md) を正典とし、本書では Ollama への割当だけを定める。
 
@@ -178,7 +178,7 @@ transient として定義する。エンジンは同じトリアージ契約を�
 | 段 | 内容 | 状態 |
 |---:|---|---|
 | 0 | 役割別設定でローカルへ opt-in、クラウド CLI は既定のまま | 利用口・設定例を配布済み |
-| 1 | `--format json`、think（readonly on / write off）、`json_variant` による JSON 契約 | 実装済み |
+| 1 | `--format json`、think（readonly on / write off）、`variants` による JSON 契約の振り替え | 実装済み |
 | 2 | エンジン側の役割別 readonly 宣言 | 実装済み |
 | 3 | `ollama-read` と決定的 read ゲート | 実装済み |
 | 4 | edit セットによる安全なファイル編集 | 未実装。段 0〜3 の品質・節約実測が着手条件 |

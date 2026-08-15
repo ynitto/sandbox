@@ -335,12 +335,12 @@ class GoalToolLoopTest(unittest.TestCase):
                 acceptance=["`out.md` が更新されている"], max_rounds=3)
         self.assertTrue(result["ok"])
 
-    def test_control_rounds_use_the_json_variant(self):
-        # 制御応答は編集能力の要らない周。定義が json_variant を申告していれば、その周
+    def test_control_rounds_use_the_declared_variant(self):
+        # 制御応答は編集能力の要らない周。定義が variants.planner を申告していれば、その周
         # だけ JSON 用の起動形へ振り替える（編集は元の CLI のまま）。
         _write_cli(self.dir, "editor", {
             "command": ["editor"], "prompt_via": "argv", "prompt_flag": "--message",
-            "file_flag": "--file", "read_flag": "--read", "json_variant": "jsonner",
+            "file_flag": "--file", "read_flag": "--read", "variants": {"planner": "jsonner"},
             "headless_autonomy": "single-shot",
         })
         _write_cli(self.dir, "jsonner", {
@@ -364,7 +364,7 @@ class GoalToolLoopTest(unittest.TestCase):
     def test_control_agent_falls_back_when_the_variant_is_missing(self):
         _write_cli(self.dir, "editor2", {
             "command": ["editor2"], "prompt_via": "argv", "prompt_flag": "--message",
-            "json_variant": "nonexistent", "headless_autonomy": "single-shot",
+            "variants": {"planner": "nonexistent"}, "headless_autonomy": "single-shot",
         })
         agent = al._tl_resolve_agent("editor2", "", self.dir)
         self.assertIs(al._tl_control_agent(agent, self.dir), agent)

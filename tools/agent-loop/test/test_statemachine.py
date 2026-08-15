@@ -305,7 +305,7 @@ class RunStatemachineTest(unittest.TestCase):
             **common,
             "command": [sys.executable, str(editor)],
             "file_flag": "--file",
-            "json_variant": "fake-ollama-json",
+            "variants": {"planner": "fake-ollama-json"},
         }), encoding="utf-8")
         (agents / "fake-ollama-json.json").write_text(json.dumps({
             **common,

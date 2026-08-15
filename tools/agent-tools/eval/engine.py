@@ -92,20 +92,22 @@ def _agentcli():
 def cli_name_for(kind: str, base: str = "ollama") -> str:
     """役割 → 本番が起動する CLI 定義名。振り替え規則は写さず本番の解決器を呼ぶ。
 
-    配列契約の振り替え（`list_variant`）を持たない木では JSON 変種へ倒す。倒したことは
-    `missing()` に残るので、その木で取った split の数字は「振り替え前」と読める。
+    用途別の変種振り替え（`resolve_variant`）を持たない木では振り替え前の base のまま
+    返す。倒したことは `missing()` に残るので、その木で取った split の数字は
+    「振り替え前」と読める。
     """
     cli = _agentcli()
     if cli is None:
         return base
-    list_roles = getattr(_FLOW, "LIST_CONTRACT_ROLES", None)
-    list_variant = getattr(cli, "list_variant", None)
-    if list_roles is None or list_variant is None:
-        _need(None, "", "list_variant（配列契約の振り替え）")
-    elif kind in list_roles:
-        return list_variant(base)
-    json_variant = getattr(cli, "json_variant", None)
-    return json_variant(base) if json_variant else base
+    eligible = getattr(_FLOW, "VARIANT_ELIGIBLE_ROLES", None) or getattr(_FLOW, "LIST_CONTRACT_ROLES", None)
+    resolve_variant = getattr(cli, "resolve_variant", None)
+    if eligible is None or resolve_variant is None:
+        _need(None, "", "resolve_variant（用途別の変種振り替え）")
+        return base
+    if kind not in eligible:
+        return base
+    variant = resolve_variant(base, kind)
+    return variant["agent_cli"] if variant else base
 
 
 def load_cmd(name: str, fallback: "list[str]") -> "tuple[list[str], str]":
