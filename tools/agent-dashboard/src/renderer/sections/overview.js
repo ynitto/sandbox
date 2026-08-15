@@ -39,11 +39,10 @@ async function submitPromoteCharter(name) {
 // 起動だけはこの画面からは行わない——止まっているエンジンは commands/ を
 // 読めず、この PC から CLI で起こすと WSL 側の本体と二重に立つ。上げ直しは OS の起動系の
 // 役目なので、ここは起動コマンドを案内するところまでを担う。
-// 複数 PC 分散運用のノード別生存一覧（案6）。status/<node>.json 由来の p.nodes を表示する。
-// どのノード（PC）が生きているか・応答なし（heartbeat 途絶）かを一目で見せる。ノードが
-// 無い（無名エンジン・単一 PC）ときは何も出さない＝従来の見た目を変えない。純関数。
-function nodesSummaryHtml(nodes) {
-  const list = Array.isArray(nodes) ? nodes : [];
+// 複数 PC 分散運用のノード別生存一覧（案6）＋ Phase5 fleet（capacity / 鮮度 / 予約 / reason）。
+// 一次データは status/<node>.json（p.nodes）。board 参加ノードはあれば重ねる（必須にしない）。
+function nodesSummaryHtml(nodes, boardNodes) {
+  const list = mergeFleetNodes(nodes, boardNodes);
   if (!list.length) return '';
   const rows = list
     .map((n) => {
@@ -52,9 +51,6 @@ function nodesSummaryHtml(nodes) {
       const ago = typeof humanizeAge === 'function'
         ? humanizeAge((n.ageSec || 0) * 1000)
         : `${Math.round(n.ageSec || 0)}秒前`;
-      // この PC は常駐体の心拍で見る。ほかの PC は状態リポジトリ越しの
-      // status/<node>.json しか見えず、それは**作業が進んだときに書かれる記録**なので、
-      // 古いことは「応答が無い」ではなく「しばらく作業が進んでいない」を意味する。
       const age = n.self
         ? (n.running ? 'この PC・稼働中' : 'この PC・実行エンジンが停止しています')
         : n.running
@@ -63,14 +59,58 @@ function nodesSummaryHtml(nodes) {
             ? '更新の記録がありません'
             : `しばらく更新がありません（最終 ${ago}）`;
       const host = n.host ? ` <span class="muted">@${esc(n.host)}</span>` : '';
-      return `<li class="node-row node-${alive}">${dot} <b>${esc(n.node)}</b>${host} <span class="muted">${esc(age)}</span></li>`;
+      const budget = n.budget;
+      let cap = '';
+      if (budget) {
+        const unit = budget.unit || '';
+        const lim = budget.limit == null ? '∞' : String(budget.limit);
+        const used = budget.used == null ? '—' : String(budget.used);
+        const reserved = budget.reserved == null ? '—' : String(budget.reserved);
+        const codes = (budget.reasonCodes || []).join(',') || '—';
+        const kind = budget.kind || 'unknown';
+        cap = ` <span class="muted">枠 ${esc(used)}/${esc(lim)}${unit ? ` ${esc(unit)}` : ''}・予約 ${esc(reserved)}・${esc(codes)}（${esc(kind)}）</span>`;
+      }
+      const overlay = n.boardNote
+        ? ` <span class="muted">［板］${esc(n.boardNote)}</span>`
+        : '';
+      return `<li class="node-row node-${alive}">${dot} <b>${esc(n.node)}</b>${host} <span class="muted">${esc(age)}</span>${cap}${overlay}</li>`;
     })
     .join('');
   return `<section class="summary-card nodes-card" aria-label="実行する PC の一覧">
-    <h2 class="summary-kicker">実行する PC</h2>
+    <h2 class="summary-kicker">実行する PC（fleet）</h2>
     <ul class="nodes-list">${rows}</ul>
-    <p class="muted">この PC は稼働状況、ほかの PC は最終更新を表示します。</p>
+    <p class="muted">一次は状態リポジトリの利用枠射影。板があるときだけ重ねます。資格情報は預かりません。</p>
   </section>`;
+}
+
+// status 一次・board 任意重ね（同名ノードは status を残し板の適格メモだけ足す）。
+function mergeFleetNodes(nodes, boardNodes) {
+  const by = new Map();
+  for (const n of Array.isArray(nodes) ? nodes : []) {
+    by.set(String(n.node || '').toLowerCase(), { ...n });
+  }
+  for (const b of Array.isArray(boardNodes) ? boardNodes : []) {
+    const key = String(b.name || '').toLowerCase();
+    if (!key) continue;
+    const note = b.eligibilityNote || '';
+    if (by.has(key)) {
+      const cur = by.get(key);
+      cur.boardNote = note;
+      if (!cur.budget && b.budget) cur.budget = b.budget;
+    } else {
+      by.set(key, {
+        node: b.name,
+        host: '',
+        running: !b.stale,
+        self: false,
+        ageSec: null,
+        budget: b.budget || null,
+        boardNote: note || '板のみ（状態リポジトリに status なし）',
+        source: 'board',
+      });
+    }
+  }
+  return [...by.values()].sort((a, b) => String(a.node).localeCompare(String(b.node)));
 }
 
 function lifecycleCardHtml(p) {
@@ -308,7 +348,7 @@ function renderOverview() {
         <div class="summary-progress-label">${s.total ? `${s.done} / ${s.total} 件完了（${s.progress}%）` : 'タスクはまだありません'}</div>
       </section>
 
-      ${nodesSummaryHtml(p.nodes)}
+      ${nodesSummaryHtml(p.nodes, state.boardNodes)}
       <div class="overview-grid">
         <section class="summary-card action-card ${s.undecided.length ? 'has-action' : ''}" aria-labelledby="summary-action-title">
           <h2 class="summary-kicker" id="summary-action-title">あなたの対応</h2>

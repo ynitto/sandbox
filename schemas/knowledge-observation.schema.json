@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "knowledge-observation.schema.json",
+  "title": "knowledge-observation — 知識観測 envelope（Phase 3）",
+  "description": "新しい正本ストアを作らず、既存の brief/decisions（および run meta の素通しキー knowledge）へ additive に載せる観測メタ。outcome は verification-receipt の plan_digest / result_rev 参照のみ（新証跡 hash 禁止）。取込は observation_id で冪等。生プロンプトは必須にしない。設計: docs/plans/2026-07-29-agent-tools-distributed-credit-knowledge-plan.md §3.2 / Phase 3。agent-flow は knowledge キーを解釈せず receipt/result/meta へ素通しするだけ。",
+  "type": "object",
+  "required": ["contract_version", "observation_id"],
+  "properties": {
+    "contract_version": {
+      "type": "integer",
+      "const": 1,
+      "description": "envelope 契約版。additive のみ進化"
+    },
+    "observation_id": {
+      "type": "string",
+      "pattern": "^obs-[0-9a-f]{16}$",
+      "description": "内容アドレス観測 ID。同一観測の再取込は同じ ID → hit 計上を冪等化"
+    },
+    "kind": {
+      "type": "string",
+      "enum": ["injection", "brief", "decision", "learn-hit", "learn-capture"],
+      "description": "観測の種別"
+    },
+    "identity": {
+      "type": "object",
+      "description": "発生元の識別（project/task/run/node/時刻）。任意・additive",
+      "properties": {
+        "project": {"type": "string"},
+        "task_id": {"type": "string"},
+        "run_id": {"type": "string"},
+        "node": {"type": "string"},
+        "observed_at": {"type": "string", "description": "ISO8601 または YYYY-MM-DD"}
+      },
+      "additionalProperties": true
+    },
+    "input": {
+      "type": "object",
+      "description": "注入時入力の参照。rules.md content hash と skill 名参照。生プロンプトは持たない",
+      "properties": {
+        "rules_hash": {
+          "type": "string",
+          "description": "rules.md 全文の sha256:…（無ければ空）"
+        },
+        "skills": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {
+              "name": {"type": "string"},
+              "role": {"type": "string"},
+              "version": {"type": "string"}
+            },
+            "additionalProperties": true
+          }
+        },
+        "learn_refs": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "関連 learn の安定参照（decisions stem 等）"
+        }
+      },
+      "additionalProperties": true
+    },
+    "outcome": {
+      "type": "object",
+      "description": "verify 結果への参照のみ。receipt の plan_digest / result_rev。新 hash を作らない",
+      "properties": {
+        "plan_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "result_rev": {"type": "string"},
+        "verdict": {"type": "string", "enum": ["pass", "fail", "inconclusive"]}
+      },
+      "additionalProperties": true
+    },
+    "provenance": {
+      "type": "object",
+      "description": "出所・適用根拠の要約（rules_hash / skills / outcome refs を含む）。秘密や生プロンプトを入れない",
+      "additionalProperties": true
+    },
+    "privacy": {
+      "type": "object",
+      "description": "共有可否。linked/ltm へ渡す前に検査する",
+      "properties": {
+        "shareable": {"type": "boolean"},
+        "redacted": {"type": "boolean"}
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "injection_meta": {
+      "type": "object",
+      "description": "build_request が run meta.knowledge へ渡す注入スナップショット（agent-flow は素通し）",
+      "required": ["contract_version", "rules_hash", "skills"],
+      "properties": {
+        "contract_version": {"type": "integer", "const": 1},
+        "rules_hash": {"type": "string"},
+        "skills": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {
+              "name": {"type": "string"},
+              "role": {"type": "string"},
+              "version": {"type": "string"}
+            },
+            "additionalProperties": true
+          }
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}

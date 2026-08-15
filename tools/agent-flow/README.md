@@ -94,10 +94,13 @@
   GitLab の pack 生成負荷を抑える）。毎回 fetch してから最新コミットで worktree を作るので**鮮度は従来の都度 clone と同等**。
   ミラー/worktree が使えない環境では従来の direct clone に自動フォールバックする。共有ミラーの置き場は
   `KIRO_GIT_CACHE_DIR`（既定 `$TMPDIR/kiro-git-cache`、agent-project と共有）。詳細は
-  [docs/designs/git-worktree-cache-pattern.md](../../docs/designs/git-worktree-cache-pattern.md)。**エージェントが編集したら agent-flow が commit して
-  push**（分散の別 worker は同じ `af/<run-id>` へ push し、rebase リトライで統合）。**変更が無ければブランチを push しない**＝
+  [docs/designs/git-worktree-cache-pattern.md](../../docs/designs/git-worktree-cache-pattern.md)。**エージェントが編集したら agent-flow が commit し、
+  remote の作業ブランチまで push できた時だけ成功とする**（分散の別 worker は同じ `af/<run-id>` へ push し、rebase リトライで統合）。
+  push に失敗した場合は run を `failed` にして、commit・URL・branch・エラーと手動復旧用の
+  `refs/agent-flow/recovery/<run-id>` を記録する。**変更が無ければブランチを push しない**＝
   調査だけの読み取り専用グラフでは何も書き込まない。**作業後に clone を必ず削除**。ワークスペースは run の bus メタに載るため
-  ローカル実行でも分散でも同一に働く。`--workspace` 値は素の URL でも、構造化 JSON（`{url,path,base,target,desc}`）でも受ける。
+  ローカル実行でも分散でも同一に働く。`--workspace` 値は素の URL でも、構造化 JSON
+  （`{url,local,path,base,target,desc}`。`local` は復旧 ref を保持する元リポジトリ）でも受ける。
   **リポジトリの同一性は (url, path, base)**（同 URL でも path（モノレポのフォルダ）や base（作業ブランチ）が違えば別）。
   作業指示は `workspace_instruction` で「path 配下のみ変更・MR/PR ターゲット=target」を伝え、gitlab executor 経由なら
   **起票先プロジェクトをこのワークスペース URL から解決**してイシュー本文にも載る。
@@ -155,6 +158,11 @@
   選択肢としての when_to_use / when_not_to_use / 例示 / 適用具体例は flow-planner カタログの
   `variants.pilot-then-batch`（`.github/skills/flow-planner/patterns-catalog.yaml`）にまとめてある。
 - **再開**：`run --run-id <id>` で中断した run を再開（計画はやり直さず未完タスクから継続）。
+- **公開失敗からの手動復旧**：表示された commit を同じ URL・branch へ手動 push した後、
+  `agent-flow ... force-complete <run-id> --reason "<理由>"` を実行する。agent-flow は remote branch が
+  期待 commit を含むことを fetch して検証し、監査理由とともに `published-manually` へ確定する。
+  未実行の後続ノードがあれば done に偽装せず通常の `run --from-inbox` を起動して続行する。
+  通信失敗や別commitへの誤pushでは完了にせず、元の failed 記録を保つ。
 - **lease ハートビート**：実行中はリースを延長し続け、長時間タスクでも他ノードに横取りされない。
 - **`status`**：状態を 1 回表示。`--follow` でライブ監視（tmux ペインに置けば監視ダッシュボード）。
 - **`gc`**：古い・完了済みの run をバスから削除（git バスでは git rm＋push）。対応する inbox 要求と
@@ -163,7 +171,8 @@
   crash 等で取り残された要求は、受理ゲート（`run_exists` のみ）から見ると「新規要求」に
   見え、**不要な run を再起動する**。`--older-than` より古く、かつ現在 claim されていない（lease 内で
   担当中でない）孤児だけを消す（フレッシュな未受理要求＝正規の受理待ちは保護。`--status` 指定時は
-  run status で絞る意図なので触らない）。`--dry-run` で対象確認できる。
+  run status で絞る意図なので触らない）。run を削除すると対応する recovery ref だけを削除し、
+  他runの復旧可能性は残す。`--dry-run` で対象確認できる。
 - **一時ファイルの掃除**：`agent-flow cleanup` がバス外に溜まる一時ファイルを掃除する
   （未使用ロック `$TMPDIR/agent-flow-locks/`、`*.tmp.<pid>` の中間ファイル残骸、孤立した git クローン、
   孤立したワークスペース temp clone、長期未使用の共有ミラー）。保持中のロックや稼働中クローンは消さない。

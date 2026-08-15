@@ -450,6 +450,65 @@ class TestLoopEngineering(unittest.TestCase):
             self.assertEqual(s["delivery_rows"], 1)
             self.assertEqual(s["first_pass_done"], 1)
             self.assertEqual(km.cmd_stats(cfg, as_json=True), 0)
+            # 知識ループ指標は常にキーが在る（旧 decisions でも 0）
+            for k in ("rules_injected", "learn_hits", "promotions", "evidence_missing"):
+                self.assertIn(k, s)
+                self.assertEqual(s[k], 0)
+
+    def test_stats_knowledge_loop_baseline(self):
+        """rules 注入・learn hit・昇格・根拠欠落を読み取り専用で数える（Phase 0 基準値）。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            (d / "backlog").mkdir()
+            dec = d / "decisions"
+            dec.mkdir()
+            (dec / "OLD.md").write_text(
+                "## DR-1  2026-06-18  actor: alice\n- action  : feedback-resume\n"
+                "- learn: pytest :: 必ず pytest -q\n"
+                "- rules-promoted: rules.md\n"
+                "- promoted: mem-20260618-001（ltm-use home へ昇格 / hits=2）\n",
+                encoding="utf-8")
+            for i in range(2):
+                (dec / f"H{i}.md").write_text(
+                    f"## DR-1  2026-06-18  actor: auto\n- action  : auto-resolve\n"
+                    f"- reason  : learned from OLD: なおせ\n", encoding="utf-8")
+            (d / "rules.md").write_text(
+                "# プロジェクトルール\n\n"
+                "- 人手ルール\n\n"
+                f"{km.RULES_AUTO_SECTION}\n"
+                "- 必ず pytest -q  <!-- learn:OLD hits=2 2026-06-18 -->\n"
+                "- 出典コメント欠落の自動行\n",
+                encoding="utf-8")
+            cfg = cfg_for(d, learn=False)
+            s = km.compute_stats(cfg)
+            self.assertEqual(s["rules_injected"], 3)       # 人手1 + 自動2（コメント除去後）
+            self.assertEqual(s["learn_hits"], 2)
+            self.assertEqual(s["promotions"], 2)           # rules-promoted + promoted
+            # hit あり・outcome 無し（OLD）+ 自動行の learn: 欠落 1
+            self.assertEqual(s["evidence_missing"], 2)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                self.assertEqual(km.cmd_stats(cfg, as_json=False), 0)
+            self.assertIn("知識ループ", buf.getvalue())
+            self.assertIn("rules注入 3", buf.getvalue())
+
+    def test_stats_knowledge_loop_old_decisions_only(self):
+        """旧 decisions（learn/outcome/昇格無し）だけでも集計が落ちない。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            (d / "backlog").mkdir()
+            (d / "decisions").mkdir()
+            (d / "decisions" / "T1.md").write_text(
+                "## DR-1  2026-01-01  actor: alice\n"
+                "- context : 旧形式\n- action  : feedback-resume\n"
+                "- reason  : 直した\n- affects : T1\n",
+                encoding="utf-8")
+            cfg = cfg_for(d, learn=False)
+            s = km.compute_stats(cfg)
+            self.assertEqual(
+                (s["rules_injected"], s["learn_hits"], s["promotions"], s["evidence_missing"]),
+                (0, 0, 0, 0))
+            self.assertEqual(s["actions"].get("feedback-resume"), 1)
 
     # --- タスク自己生成 ---
     def test_followup_spawn_static(self):

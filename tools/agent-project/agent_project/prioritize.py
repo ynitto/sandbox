@@ -375,7 +375,9 @@ def _agent_failure(cli: str, rc: int, out: str, err: str) -> str:
 # （0 = 無制限）を超えたら新規の LLM 実行を控える。v2 で一次単位をトークンへ拡張（時間上限は
 # v1 互換で AND）。台帳には実測のみ（実測秒＋実測できたトークン）を書き、未報告行は rates で
 # 読み出し時に推定する。配分・較正の知能は管理面（dashboard）にあり、エンジンは単純比較のみ。
-# 読み書きは各ツールが自前で持つ（データ契約のみ・コード共有なし）。
+# 読取・推定・state は agentcore.nodebudget に集約（C7）。記帳は各ツールが自前で持つ。
+from agentcore import nodebudget as _nodebudget  # noqa: E402
+
 _NODE_BUDGET_WORKLOAD = "project"
 _NODE_BUDGET_TOOL = "agent-project"
 
@@ -390,106 +392,19 @@ def _node_budget_dir() -> str:
 
 def _node_budget_rate(cfg: dict, cli: str, model: str) -> float:
     """トークン未報告行の推定レート（tokens/秒）。解決順 cli:model → cli → default。"""
-    rates = cfg.get("rates") or {}
-    per = rates.get("per_cli") or {}
-    for key in (f"{cli}:{model}" if model else None, cli or None):
-        if key and per.get(key):
-            try:
-                return float(per[key])
-            except (TypeError, ValueError):
-                pass
-    try:
-        return float(rates.get("default_tokens_per_second") or 0)
-    except (TypeError, ValueError):
-        return 0.0
+    return _nodebudget.rate(cfg, cli, model)
 
 
 def _row_tokens(rec: dict, cfg: dict) -> float:
     """1 記帳のトークン消費。実測（tokens_in+tokens_out）があればその値、無ければ秒 × レート。"""
-    ti, to = rec.get("tokens_in"), rec.get("tokens_out")
-    if ti is not None or to is not None:
-        try:
-            return float(ti or 0) + float(to or 0)
-        except (TypeError, ValueError):
-            return 0.0
-    try:
-        sec = float(rec.get("seconds") or 0)
-    except (TypeError, ValueError):
-        return 0.0
-    if sec <= 0:
-        return 0.0
-    return sec * _node_budget_rate(cfg, str(rec.get("agent_cli") or ""), str(rec.get("model") or ""))
+    return _nodebudget.row_tokens(rec, cfg)
 
 
 def _node_budget_state() -> "dict | None":
     """ノード予算の消費状況。設定が無い/上限が全て 0 なら None（= 無制限・チェック不要）。
     exceeded は時間上限・トークン上限（合計 or 自ワークロードの実効上限）のいずれか到達。
     soft は縮退開始（soft_ratio 到達・未超過）。on_exhausted は超過時の方針。"""
-    base = _node_budget_dir()
-    try:
-        with open(os.path.join(base, "config.json"), encoding="utf-8") as f:
-            cfg = json.load(f)
-    except (OSError, ValueError):
-        return None
-    limit_min = float(cfg.get("execution_minutes") or 0)
-    wl_limit_min = float((cfg.get("workloads") or {}).get(_NODE_BUDGET_WORKLOAD) or 0)
-    token_limit = float(cfg.get("tokens") or 0)
-    alloc = cfg.get("allocation") or {}
-    wl_alloc = (alloc.get("workloads") or {}).get(_NODE_BUDGET_WORKLOAD) or {}
-    computed = ((cfg.get("computed") or {}).get("workloads") or {}).get(_NODE_BUDGET_WORKLOAD) or {}
-    eff_wl_tokens = float(computed.get("tokens") or 0) or float(wl_alloc.get("max_tokens") or 0)
-    on_exhausted = str(wl_alloc.get("on_exhausted") or "pause")
-    try:
-        soft_ratio = float(alloc.get("soft_ratio") or 0.9)
-    except (TypeError, ValueError):
-        soft_ratio = 0.9
-    if limit_min <= 0 and wl_limit_min <= 0 and token_limit <= 0 and eff_wl_tokens <= 0:
-        return None
-    period = str(cfg.get("period") or "day")
-    prefix = (time.strftime("%Y%m%d", time.gmtime()) if period == "day"
-              else time.strftime("%Y%m", time.gmtime()) if period == "month" else "")
-    total = wl_total = tok_total = wl_tok = 0.0
-    led = os.path.join(base, "ledger")
-    try:
-        names = sorted(n for n in os.listdir(led)
-                       if n.endswith(".jsonl") and n.startswith(prefix))
-    except OSError:
-        names = []
-    for name in names:
-        try:
-            with open(os.path.join(led, name), encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        rec = json.loads(line)
-                        sec = float(rec.get("seconds") or 0)
-                    except (ValueError, TypeError):
-                        continue
-                    toks = _row_tokens(rec, cfg)
-                    is_wl = rec.get("workload") == _NODE_BUDGET_WORKLOAD
-                    if sec > 0:
-                        total += sec
-                        if is_wl:
-                            wl_total += sec
-                    if toks > 0:
-                        tok_total += toks
-                        if is_wl:
-                            wl_tok += toks
-        except OSError:
-            continue
-    time_exceeded = ((limit_min > 0 and total >= limit_min * 60)
-                     or (wl_limit_min > 0 and wl_total >= wl_limit_min * 60))
-    token_exceeded = ((token_limit > 0 and tok_total >= token_limit)
-                      or (eff_wl_tokens > 0 and wl_tok >= eff_wl_tokens))
-    exceeded = bool(time_exceeded or token_exceeded)
-    soft_cap = eff_wl_tokens or token_limit
-    soft_spent = wl_tok if eff_wl_tokens else tok_total
-    soft = bool(soft_cap > 0 and soft_spent >= soft_ratio * soft_cap and not exceeded)
-    return {"exceeded": exceeded, "soft": soft, "on_exhausted": on_exhausted,
-            "spent_min": total / 60, "limit_min": limit_min,
-            "spent_tokens": tok_total, "token_limit": token_limit, "period": period}
+    return _nodebudget.state(_NODE_BUDGET_WORKLOAD, dir=_node_budget_dir(), view="engine")
 
 
 def _node_budget_record(seconds: float, ref: str = "", agent_cli: str = "",
@@ -507,6 +422,9 @@ def _node_budget_record(seconds: float, ref: str = "", agent_cli: str = "",
                "tool": _NODE_BUDGET_TOOL, "seconds": round(float(seconds), 3),
                "ref": ref, "purpose": ref}
         rec.update(extra or {})
+        rid = str(os.environ.get("AGENT_RESERVATION_ID") or rec.get("reservation_id") or "").strip()
+        if rid and "reservation_id" not in rec:
+            rec["reservation_id"] = rid
         if agent_cli:
             rec["agent_cli"] = str(agent_cli)
         if model:

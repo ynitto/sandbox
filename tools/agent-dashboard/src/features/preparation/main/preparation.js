@@ -66,6 +66,7 @@ function normalizeMaterials(raw) {
 
 const ROUTES = new Set(['agent-design', 'external-design', 'direct']);
 const TARGETS = new Set(['workflow', 'project']);
+const DESIGN_MODES = new Set(['interactive', 'auto']);
 
 // 設計フローのノードへ人が固定したエージェント・モデル（{ nodeId: {tier, agent_cli, model} }）。
 // ここでは形だけを整えて保存する——tier の適格性と候補の実在は、設計runを組む adhoc 側が
@@ -105,6 +106,7 @@ function createItem(raw = {}) {
     route,
     routeRecommendation,
     materials,
+    designMode: DESIGN_MODES.has(raw.designMode) ? raw.designMode : 'interactive',
     designAssignments: normalizeDesignAssignments(raw.designAssignments),
     taskSpec: raw.taskSpec && typeof raw.taskSpec === 'object' ? { ...raw.taskSpec } : null,
     phase: route === 'agent-design' ? 'design-ready' : 'implementation-ready',
@@ -139,6 +141,7 @@ function createPackage(raw = {}) {
       projectDir,
       packageId: id,
       taskSpec: candidate,
+      designMode: candidate.designMode || raw.designMode,
       designAssignments: candidate.designAssignments || raw.designAssignments,
       materials: [...materials, ...(Array.isArray(candidate.materials) ? candidate.materials : [])],
     })),

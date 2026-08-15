@@ -106,7 +106,8 @@
     queuedTasks: [],
     preparationItems: [],
     taskWizard: { step: 1, title: '', goal: '', route: '', recommendation: null,
-      materials: [], cwd: '', error: '', busy: '', designPreview: null, designAssignments: null },
+      materials: [], cwd: '', error: '', busy: '', designMode: 'interactive',
+      designPreview: null, designAssignments: null },
     executionDialog: null,
   };
   const esc = (s) => root.esc(String(s == null ? '' : s));
@@ -199,6 +200,89 @@
   function statusLabel(status) {
     return ({ done: '終了', failed: '失敗', cancelled: '中止', running: '実行中', planning: '計画中' })[status]
       || String(status || '—');
+  }
+
+  function publicationPresentation(run) {
+    const records = Object.values((run && run.nodes) || {}).flatMap((node) => {
+      const data = node && node.data && typeof node.data === 'object' ? node.data : {};
+      const direct = data.publication && typeof data.publication === 'object' ? data.publication : null;
+      const delivery = data.delivery && typeof data.delivery === 'object' ? data.delivery : null;
+      const nested = delivery && delivery.publication && typeof delivery.publication === 'object'
+        ? delivery.publication : null;
+      return direct || nested ? [direct || nested] : [];
+    });
+    const failed = records.find((record) => record.state === 'failed');
+    if (failed) {
+      const recovery = failed.recovery && typeof failed.recovery === 'object' ? failed.recovery : {};
+      return {
+        state: 'failed', label: '公開失敗', tone: 'warn',
+        url: String(failed.url || (run.workspace && run.workspace.url) || ''),
+        local: String(recovery.repository || (run.workspace && run.workspace.local) || ''),
+        branch: String(failed.branch || ''), commit: String(failed.commit || ''),
+        recoveryRef: String(recovery.ref || ''),
+        canForceComplete: Boolean(recovery.repository && recovery.ref && failed.branch && failed.commit),
+      };
+    }
+    const manual = records.find((record) => record.state === 'published-manually');
+    if (manual) {
+      return {
+        state: 'published-manually', label: '手動公開済み', tone: 'muted',
+        url: String(manual.url || (run.workspace && run.workspace.url) || ''),
+        local: String((run.workspace && run.workspace.local) || ''),
+        branch: String(manual.branch || ''), commit: String(manual.commit || ''),
+        recoveryRef: '', reason: String(manual.reason || ''), canForceComplete: false,
+      };
+    }
+    const published = records.find((record) => record.state === 'published');
+    if (published) {
+      return {
+        state: 'published', label: '公開済み', tone: 'muted',
+        url: String(published.url || (run.workspace && run.workspace.url) || ''),
+        local: String((run.workspace && run.workspace.local) || ''),
+        branch: String(published.branch || ''), commit: String(published.commit || ''),
+        recoveryRef: '', canForceComplete: false,
+      };
+    }
+    const noChange = records.find((record) => record.state === 'not-required');
+    if (noChange) {
+      return {
+        state: 'not-required', label: '変更なし', tone: 'muted',
+        url: String(noChange.url || (run.workspace && run.workspace.url) || ''),
+        local: String((run.workspace && run.workspace.local) || ''),
+        branch: String(noChange.branch || ''), commit: '', recoveryRef: '',
+        canForceComplete: false,
+      };
+    }
+    return { state: 'unknown', label: '公開状態を確認できません', tone: 'muted',
+      url: '', local: '', branch: '', commit: '', recoveryRef: '', canForceComplete: false };
+  }
+
+  function publicationHtml(run) {
+    const view = publicationPresentation(run || {});
+    const shortCommit = view.commit ? view.commit.slice(0, 12) : '';
+    const branch = view.branch ? ` · ${view.branch}` : '';
+    const commit = shortCommit ? ` · ${shortCommit}` : '';
+    const rows = [
+      view.url ? ['公開先', view.url] : null,
+      view.local ? ['ローカル保存先', view.local] : null,
+      view.branch ? ['ブランチ', view.branch] : null,
+      view.commit ? ['コミット', view.commit] : null,
+      view.recoveryRef ? ['復旧 ref', view.recoveryRef] : null,
+      view.reason ? ['手動復旧理由', view.reason] : null,
+    ].filter(Boolean).map(([key, value]) => `<div><dt>${esc(key)}</dt><dd><code>${esc(value)}</code></dd></div>`).join('');
+    const quote = (value) => `'${String(value || '').replaceAll("'", `'"'"'`)}'`;
+    const manual = view.canForceComplete
+      ? `git -C ${quote(view.local)} push ${quote(view.url)} ${quote(`${view.recoveryRef}:refs/heads/${view.branch}`)}`
+      : '';
+    return `<div class="wf-publication ${esc(view.tone)}">
+      <p class="wf-publication-meta" role="status"><span>保存: ${view.local ? 'ローカル' : '記録なし'}</span>
+        <span>公開: ${esc(view.label)}${esc(branch)}${esc(commit)}</span></p>
+      <details class="wf-publication-details"><summary>保存と公開の詳細</summary>
+        ${rows ? `<dl>${rows}</dl>` : '<p class="muted">この run には公開記録がありません。</p>'}
+        ${manual ? `<p>次の commit を手動で公開した後、remote 検証付きで run を復旧できます。</p>
+          <pre><code>${esc(manual)}</code></pre>
+          <button type="button" data-force-complete>手動 push を確認して復旧</button>` : ''}
+      </details></div>`;
   }
 
   function emptyWorkflow() {
@@ -722,16 +806,19 @@
     const terminal = ['done', 'failed', 'cancelled', 'canceled'].includes(String(run.status));
     const folder = runFolder(detail);
     const advice = workflowRunAdvice(detail);
+    const publication = publicationPresentation(run);
+    const publicationBlock = publicationHtml(run);
     const finalSummary = String((run.final && run.final.summary) || '').trim();
     const overviewView = `<section class="flow-overview-view">
       <div class="flow-run-heading"><div><span class="summary-kicker">選択中の作業</span><h2>${esc(title)}</h2>
-        <p class="wf-run-meta">${esc(flowName)} · af/${esc(run.runId || st.selectedRun)}</p></div></div>
+        <p class="wf-run-meta">${esc(flowName)}${publication.branch ? ` · ${esc(publication.branch)}` : ''}</p></div></div>
       <section class="flow-outcome-status" aria-label="実行の状態と作業フォルダ">
         <div><span>実行</span><strong class="status-chip st-${esc(run.status || 'inbox')}">${esc(statusLabel(run.status))}</strong></div>
         <div class="wf-run-folder"><span>作業フォルダ</span>${folder
     ? `<code title="${esc(folder)}">${esc(folder)}</code>`
     : '<strong class="muted">記録なし</strong>'}</div>
       </section>
+      ${publicationBlock}
       <div class="advice-banner advice-${advice.cls}"><span class="advice-chip advice-${advice.cls}">${esc(advice.label)}</span>
         <span>${esc(advice.text)}</span></div>
       ${run.failureReason ? `<div class="flow-failure">失敗理由: ${esc(run.failureReason)}</div>` : ''}
@@ -913,7 +1000,8 @@
           <div class="qf-row"><button type="button" data-preparation-delete="${esc(item.id)}">削除</button>
             ${item.phase === 'design-ready' ? `<button type="button" class="primary-inline" data-preparation-design="${esc(item.id)}">設計を開始</button>` : ''}
             ${['designing', 'design-review'].includes(item.phase) ? `<button type="button" class="primary-inline" data-preparation-open="${esc(item.id)}">設計を確認</button>` : ''}
-            ${item.phase === 'implementation-ready' ? `<button type="button" class="primary-inline" data-preparation-execute="${esc(item.id)}">実装を開始</button>` : ''}</div></article>`).join('')
+            ${item.phase === 'implementation-ready' ? `<button type="button" data-preparation-configure="${esc(item.id)}">モデルを選んで開始</button>
+              <button type="button" class="primary-inline" data-preparation-execute="${esc(item.id)}">実装を開始</button>` : ''}</div></article>`).join('')
           : '<div class="empty">準備中のタスクはありません。「タスクを作成」から追加できます。</div>'}
       </section>
       ${queued.length ? `<details class="wf-legacy-queue"><summary>以前の実行待ち ${queued.length}件</summary>${queued.map((task) => `<article class="wf-queue-item" data-wf-task="${esc(task.id)}">
@@ -1013,11 +1101,17 @@
         <small>${wizard.materials.length ? wizard.materials.map((item) => esc(item.name)).join('、') : '必要な設計書・仕様・関連ファイルを選択できます。'}</small></label>
       ${wizard.route === 'external-design' ? '<p class="field-help">完成済みの設計書を1件以上選択してください。</p>' : ''}
       ${wizard.route === 'agent-design'
-        ? designAssignmentSectionHtml(wizard.designPreview, wizard.designAssignments)
+        ? `<fieldset class="task-choice-grid design-flow-choice"><legend>設計フローを選択</legend>
+          <button type="button" class="task-choice-card" data-wf-design-mode="interactive" aria-pressed="${wizard.designMode === 'interactive'}">
+            <span><strong>対話で設計</strong><small>設計案を作り、必要な確認事項へ回答しながら詰めます。</small></span></button>
+          <button type="button" class="task-choice-card" data-wf-design-mode="auto" aria-pressed="${wizard.designMode === 'auto'}">
+            <span><strong>全自動で設計</strong><small>確認待ちを挟まず、一度で設計案をまとめます。</small></span></button></fieldset>
+          ${designAssignmentSectionHtml(wizard.designPreview, wizard.designAssignments)}`
         : ''}`;
     if (wizard.step === 4) body = `<article class="task-candidate-card"><span class="status-chip st-review">準備前</span>
       <label>タスク名<input id="wf-task-title" value="${esc(wizard.title || String(wizard.goal || '').split(/\r?\n/)[0].slice(0, 80))}"></label>
       <dl class="task-preparation-summary"><div><dt>進め方</dt><dd>${esc(PREPARATION_ROUTES.find(([id]) => id === wizard.route)?.[1] || '')}</dd></div>
+        ${wizard.route === 'agent-design' ? `<div><dt>設計フロー</dt><dd>${wizard.designMode === 'auto' ? '全自動で設計' : '対話で設計'}</dd></div>` : ''}
         <div><dt>材料</dt><dd>${wizard.materials.length}件</dd></div></dl>
       <details><summary>やりたいこと</summary><pre>${esc(wizard.goal || '')}</pre></details></article>`;
     return `<dialog id="wf-task-dialog" class="task-create-dialog"><div class="dialog-heading"><h2>タスクを作成</h2>
@@ -1779,7 +1873,8 @@
     };
     $id('wf-create-task')?.addEventListener('click', () => {
       st.taskWizard = { step: 1, title: '', goal: '', route: '', recommendation: null,
-        materials: [], cwd: '', error: '', busy: '', designPreview: null, designAssignments: null };
+        materials: [], cwd: '', error: '', busy: '', designMode: 'interactive',
+        designPreview: null, designAssignments: null };
       reopenTaskDialog();
     });
     const taskDialog = $id('wf-task-dialog');
@@ -1804,6 +1899,25 @@
     // 設計フローの割り当ては再描画で消えないよう、変更のたびに状態へ写す。
     taskDialog?.querySelectorAll('[data-design-node]').forEach((select) => select.addEventListener('change', () => {
       st.taskWizard.designAssignments = collectDesignAssignmentsFrom(taskDialog);
+    }));
+    taskDialog?.querySelectorAll('[data-wf-design-mode]').forEach((button) => button.addEventListener('click', async () => {
+      const wizard = st.taskWizard;
+      const mode = button.dataset.wfDesignMode;
+      if (wizard.designMode === mode) return;
+      wizard.designMode = mode;
+      wizard.designPreview = null;
+      wizard.designAssignments = null;
+      wizard.busy = '設計フローを確認中…';
+      reopenTaskDialog();
+      try {
+        const result = await api().adhocFlowDesignPreview({ mode });
+        wizard.designPreview = result.preview;
+      } catch (err) {
+        wizard.designPreview = { nodes: [] };
+        console.warn('設計フローの割り当てを読み込めませんでした:', err);
+      }
+      wizard.busy = '';
+      reopenTaskDialog();
     }));
     taskDialog?.querySelector('[data-wf-task-next]')?.addEventListener('click', async () => {
       const wizard = st.taskWizard;
@@ -1833,7 +1947,7 @@
             wizard.busy = '設計フローを確認中…';
             reopenTaskDialog();
             try {
-              const result = await api().adhocFlowDesignPreview({ mode: 'interactive' });
+              const result = await api().adhocFlowDesignPreview({ mode: wizard.designMode });
               wizard.designPreview = result.preview;
             } catch (err) {
               // 割り当てUIが読めなくても準備は進められる（自動割り当てで実行される）。
@@ -1865,6 +1979,7 @@
           const created = await api().preparationCreate({
             target: 'workflow', title: wizard.title, goal: wizard.goal, route: wizard.route,
             materials: wizard.materials, cwd: wizard.cwd,
+            ...(wizard.route === 'agent-design' ? { designMode: wizard.designMode } : {}),
             ...(wizard.route === 'agent-design' && wizard.designAssignments
               ? { designAssignments: wizard.designAssignments } : {}),
           });
@@ -1917,20 +2032,10 @@
       } catch (err) { st.notice = String(err.message || err); }
       renderRun();
     }));
-    // 実行前のフロー表示を開く。割り当てを確認・変更してから実装 run を投入する。
+    // 既定の自動割り当ては1クリックで開始する。モデルを変えたい場合だけ別の設定操作を使う。
     pane.querySelectorAll('[data-preparation-execute]').forEach((button) => button.addEventListener('click', async () => {
       button.disabled = true;
       const id = button.dataset.preparationExecute;
-      const item = (st.preparationItems || []).find((row) => row.id === id) || {};
-      try {
-        const result = await api().adhocFlowExecutionPreview({});
-        st.executionDialog = { id, title: item.title || '', preview: result.preview, overrides: {} };
-        renderRun(); // wireRun が描画後にダイアログを開く
-        return;
-      } catch (err) {
-        // プレビューが読めない端末でも実行は止めない（従来どおり自動割り当てで投入）。
-        console.warn('実行前プレビューを読み込めませんでした:', err);
-      }
       try {
         const handed = await api().preparationHandoff({ id });
         st.selectedRun = handed.result.runId;
@@ -1938,6 +2043,19 @@
         await loadOverview();
       } catch (err) { st.notice = String(err.message || err); }
       renderRun();
+    }));
+    // 必要な人だけ、実行前にモデルの自動割り当てを確認・変更する。
+    pane.querySelectorAll('[data-preparation-configure]').forEach((button) => button.addEventListener('click', async () => {
+      button.disabled = true;
+      const id = button.dataset.preparationConfigure;
+      const item = (st.preparationItems || []).find((row) => row.id === id) || {};
+      try {
+        const result = await api().adhocFlowExecutionPreview({});
+        st.executionDialog = { id, title: item.title || '', preview: result.preview, overrides: {} };
+      } catch (err) {
+        st.notice = `モデル候補を読み込めませんでした: ${String(err.message || err)}`;
+      }
+      renderRun(); // wireRun が描画後にダイアログを開く
     }));
     const executeDialog = $id('wf-execute-dialog');
     executeDialog?.querySelectorAll('[data-wf-execute-close]').forEach((button) => button.addEventListener('click', () => {
@@ -1970,7 +2088,7 @@
         });
         st.executionDialog = null;
         st.selectedRun = handed.result.runId;
-        st.notice = `実装を開始しました · ${handed.result.branch || handed.result.runId}`;
+        st.notice = `実装を開始しました · ${handed.result.runId}`;
         await loadOverview();
       } catch (err) {
         st.notice = String(err.message || err);
@@ -1990,7 +2108,7 @@
       try {
         const result = await api().workflowTaskExecute({ id: button.dataset.wfTaskExecute });
         st.selectedRun = result.runId;
-        st.notice = `実行を開始しました · af/${result.runId}`;
+        st.notice = `実行を開始しました · ${result.runId}`;
         await refresh();
       } catch (err) {
         st.notice = String(err.message || err);
@@ -2057,7 +2175,7 @@
       try {
         const result = await api().adhocFlowSubmit(payload);
         st.selectedRun = result.runId;
-        st.notice = `実行を開始しました · ${result.branch}`;
+        st.notice = `実行を開始しました · ${result.runId}`;
       } catch (err) {
         st.notice = String((err && err.message) || err);
       }
@@ -2079,13 +2197,23 @@
       try {
         const result = await api().adhocFlowResubmit({ runId: st.selectedRun });
         st.selectedRun = result.runId;
-        st.notice = `再実行しました · af/${result.runId}`;
+        st.notice = `再実行しました · ${result.runId}`;
       } catch (err) { st.notice = String((err && err.message) || err); }
       await refresh();
     });
     $id('wf-cancel')?.addEventListener('click', async () => {
       try { await api().adhocFlowCancel({ runId: st.selectedRun }); }
       catch (err) { st.notice = String((err && err.message) || err); }
+      await refresh();
+    });
+    pane.querySelector('[data-force-complete]')?.addEventListener('click', async () => {
+      const reason = String(root.prompt?.('手動 push を行った理由を入力してください') || '').trim();
+      if (!reason) return;
+      if (root.confirm && !root.confirm('remote 上の commit を検証して run を復旧します。続行しますか？')) return;
+      try {
+        const result = await api().adhocFlowForceComplete({ runId: st.selectedRun, reason });
+        st.notice = result.message || '手動公開を確認し、run を復旧しました';
+      } catch (err) { st.notice = String((err && err.message) || err); }
       await refresh();
     });
     $id('wf-delete-run')?.addEventListener('click', async () => {
@@ -2489,6 +2617,8 @@
     refreshNeeds,
     badge,
     statusLabel,
+    publicationPresentation,
+    publicationHtml,
     selectionFrom,
     selectedFlowSummaryHtml,
     defaultGoal,

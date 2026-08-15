@@ -7,6 +7,7 @@ const path = require('node:path');
 const test = require('node:test');
 const preparation = require('../src/features/preparation/main/preparation');
 const adhoc = require('../src/features/adhoc-flow/main/adhoc');
+const designSession = require('../src/features/adhoc-flow/main/design-session');
 const preparationIpc = require('../src/features/adhoc-flow/main/ipc');
 
 test('情報が不足した要望にはエージェント設計を推奨する', () => {
@@ -79,6 +80,48 @@ test('設計フローのノード割り当ては形を整えて保存し、パ�
   assert.deepStrictEqual(package_.items[1].designAssignments,
     { draft: { tier: 'medium', agent_cli: 'claude', model: 'sonnet' } },
     '子項目固有の割り当てが親より優先する');
+});
+
+test('作業準備項目は選択した設計フローを保持する', () => {
+  const item = preparation.createItem({
+    title: '全自動で設計', goal: 'CSV対応を改善したい', route: 'agent-design', designMode: 'auto',
+  });
+  assert.strictEqual(item.designMode, 'auto');
+});
+
+test('準備パッケージは選択した設計フローを子項目へ引き継ぐ', () => {
+  const package_ = preparation.createPackage({
+    projectDir: '/tmp/project', goal: 'CSV対応を分解する', designMode: 'auto',
+    candidates: [{ title: '読込', goal: 'CSV読込を改善する', route: 'agent-design' }],
+  });
+  assert.strictEqual(package_.items[0].designMode, 'auto');
+});
+
+test('設計開始は準備項目で選択した設計フローを実行する', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'preparation-design-mode-'));
+  const config = { preparationDir: dir };
+  const item = preparation.saveItem(config, preparation.createItem({
+    title: '全自動で設計', goal: 'CSV対応を改善したい', route: 'agent-design', designMode: 'auto',
+  }));
+  const handlers = {};
+  const originalStartRound = designSession.startRound;
+  let received;
+  designSession.startRound = (_config, payload) => {
+    received = payload;
+    return { id: 'ds-auto', runId: 'design-run-auto' };
+  };
+  try {
+    preparationIpc.registerIpc({
+      handle: (name, handler) => { handlers[name] = handler; },
+      loadConfig: () => config,
+      saveConfig: () => {},
+    });
+    handlers['preparation:startDesign']({ id: item.id });
+    assert.strictEqual(received.mode, 'auto');
+  } finally {
+    designSession.startRound = originalStartRound;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('推奨が設計でも利用者は直接実装を選べる', () => {

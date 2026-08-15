@@ -514,6 +514,17 @@ def _board_repo_declaration(repos: "list[dict]") -> "list[dict] | None":
     return [r for r in out if str(r.get("url") or "").strip()] or None
 
 
+def _board_budget_mirror(observed_at: str) -> dict:
+    """status/<node>.json と同形の budget 射影を板へ載せる（Phase1 ミラー）。
+
+    計算は `loop._budget_summary_block`（write_status と同じ builder）。board 未構成では
+    呼ばれない（`_board_participate_tick` が先に return）。失敗しても板 tick は止めない。
+    """
+    class _Cfg:
+        budget_summary = None
+    return _budget_summary_block(_Cfg(), observed_at)
+
+
 def _node_capability(host: "HostConfig") -> dict:
     """host.yaml の宣言 → 板の `nodes/<node-id>.json`（`board.schema.json` の `$defs.node`）。
 
@@ -521,7 +532,10 @@ def _node_capability(host: "HostConfig") -> dict:
     タグ・使える CLI・稼働時間帯・同時実行上限・契約バージョン・心拍。`local`（P2-2）は
     落とし、`workloads` は宣言があるときだけ載せる（P2-3）——導出値を宣言として配ると、
     owner-picks の落札判断と端末一覧が「host.yaml が言っていないこと」を読むことになる。
+
+    Phase1: `budget`（node-budget-summary）を status 射影と同形でミラーする。
     """
+    heartbeat = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
     cap = NodeCapability(
         node=host.node_id,
         workloads=list(host.workloads),
@@ -532,8 +546,9 @@ def _node_capability(host: "HostConfig") -> dict:
         # 未宣言のノードは「既定に従う」＝板から見れば無制限ではなく既定枠。板の語彙には
         # 「既定」が無いので、実効値（`_effective_max_concurrent`）を宣言する。
         max_concurrent=_effective_max_concurrent(host),
-        heartbeat=datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+        heartbeat=heartbeat,
         fresh_after_sec=_NODE_HEARTBEAT_INTERVAL_SEC * _NODE_FRESH_FACTOR,
+        budget=_board_budget_mirror(heartbeat),
     )
     return cap.to_dict()
 

@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "node-budget-summary.schema.json",
+  "title": "node-budget-summary — ノード利用枠の射影（判断用の期限付き要約）",
+  "description": "正本は各ノードの node-budget（$AGENT_BUDGET_DIR / schemas/node-budget.schema.json）。本 schema はその射影 block を 1 回定義し、status/<node>.json の additive キー `budget` と（任意）板の nodes/<id>.json の両方から参照する。書き手は所有者ノードのみ。他ノードは can_accept を再計算しない。鮮度は射影独自時計を持たず、親の updated_iso + fresh_after_sec を再利用する（§3.0）。can_accept の計算は agentcore.nodebudget 単一実装のみ。budget_summary.enforce は Phase1 既定 false（適格接続への強制は後続）。設計: docs/plans/2026-07-29-agent-tools-distributed-credit-knowledge-plan.md §3.0 / §3.1",
+  "type": "object",
+  "required": [
+    "contract_version",
+    "observed_at",
+    "source",
+    "capacity",
+    "can_accept",
+    "reason_codes"
+  ],
+  "properties": {
+    "contract_version": {
+      "type": "integer",
+      "minimum": 1,
+      "const": 1,
+      "description": "射影契約版。additive にのみ進化。版不一致・未知値は読み手側で非適格（fail-close）"
+    },
+    "observed_at": {
+      "type": "string",
+      "description": "射影を書いた時刻（ISO8601）。鮮度判定の正は親 status の updated_iso + fresh_after_sec"
+    },
+    "source": {
+      "enum": ["local-ledger", "cli-reported", "manual", "unavailable"],
+      "description": "射影の出所。local-ledger=所有者の台帳/設定観測、cli-reported=CLI 残量 adapter、manual=人手宣言、unavailable=取得不能（枯渇・無制限と区別）"
+    },
+    "capacity": {
+      "type": "object",
+      "description": "一次単位（トークン優先、無ければ実行秒）の枠。未知値は null。reserved は所有者ノードの live reservations 合計（Phase2）。reservations/ 未作成時は 0",
+      "required": ["limit", "used", "reserved"],
+      "properties": {
+        "limit": {"type": ["number", "null"], "minimum": 0},
+        "used": {"type": ["number", "null"], "minimum": 0},
+        "reserved": {"type": ["number", "null"], "minimum": 0}
+      },
+      "additionalProperties": true
+    },
+    "unit": {
+      "enum": ["tokens", "seconds", null],
+      "description": "capacity の一次単位。上限無し（unlimited）のときは null"
+    },
+    "can_accept": {
+      "type": "boolean",
+      "description": "所有者ノードが計算した『新規仕事を受けられるか』。他ノードは再計算しない"
+    },
+    "reason_codes": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "unlimited",
+          "ok",
+          "soft",
+          "exceeded",
+          "time_exceeded",
+          "token_exceeded",
+          "degrade",
+          "unavailable"
+        ]
+      },
+      "description": "agentcore.nodebudget.can_accept の固定語彙。未知コードを足すな"
+    },
+    "workload": {
+      "enum": ["routine", "project", "flow", "amigos"],
+      "description": "トップレベル can_accept が対象にしたワークロード（書き手エンジンの主 WL）"
+    },
+    "workloads": {
+      "type": "object",
+      "description": "ワークロードごとの実効上限（射影。消費の再集計はしない）",
+      "properties": {
+        "routine": {"$ref": "#/$defs/workload_eff"},
+        "project": {"$ref": "#/$defs/workload_eff"},
+        "flow": {"$ref": "#/$defs/workload_eff"},
+        "amigos": {"$ref": "#/$defs/workload_eff"}
+      },
+      "additionalProperties": {"$ref": "#/$defs/workload_eff"}
+    },
+    "enforce": {
+      "type": "boolean",
+      "default": false,
+      "description": "budget_summary.enforce。true のときだけ適格判定が can_accept+鮮度を強制する（Phase1 既定 false・接続は t6）"
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "workload_eff": {
+      "type": "object",
+      "description": "1 ワークロードの実効上限（トークン / 実行分）。0・省略は無制限 → null",
+      "properties": {
+        "eff_tokens": {"type": ["number", "null"], "minimum": 0},
+        "execution_minutes": {"type": ["number", "null"], "minimum": 0}
+      },
+      "additionalProperties": true
+    }
+  }
+}

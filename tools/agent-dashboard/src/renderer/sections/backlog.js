@@ -402,15 +402,27 @@ function boardDelegationSummary(task) {
   if (!view) return '';
   const assignee = (view.units && view.units[0] && view.units[0].assignee) || '';
   const bids = ((view.units && view.units[0] && view.units[0].bids) || [])
-    .filter((b) => b.state !== 'expired').length;
+    .filter((b) => b.state !== 'expired');
+  const eligibility = (who) => {
+    const node = (state.boardNodes || []).find((n) => String(n.name) === String(who));
+    return node && node.eligibilityNote ? `〔${node.eligibilityNote}〕` : '';
+  };
   if (view.phase === 'open') {
-    return bids ? `委任先: 未定（入札 ${bids} 件）` : '委任先: 未定（入札を待っています）';
+    if (!bids.length) return '委任先: 未定（入札を待っています）';
+    const detail = bids.slice(0, 3).map((b) => `${b.who}${eligibility(b.who)}`).join(' / ');
+    return `委任先: 未定（入札 ${bids.length} 件: ${detail}）`;
   }
-  if (view.phase === 'done') return `委任先: ${assignee || '不明'} — 完了`;
-  if (view.phase === 'failed') return `委任先: ${assignee || '不明'} — 失敗`;
+  if (view.phase === 'done') {
+    return `委任先: ${assignee || '不明'}${eligibility(assignee)} — 完了`;
+  }
+  if (view.phase === 'failed') {
+    return `委任先: ${assignee || '不明'}${eligibility(assignee)} — 失敗`;
+  }
   if (view.phase === 'cancelled') return '委任: 中止されました';
-  if (view.phase === 'waiting') return `委任先: ${assignee || '不明'} — 待機中`;
-  return `委任先: ${assignee || '不明'} — 実行中`;
+  if (view.phase === 'waiting') {
+    return `委任先: ${assignee || '不明'}${eligibility(assignee)} — 待機中`;
+  }
+  return `委任先: ${assignee || '不明'}${eligibility(assignee)} — 実行中`;
 }
 
 // タスク詳細の「委任」行。中止は板へ直接書かず、この端末の常駐体へ指示を投函する。
@@ -2129,7 +2141,12 @@ function renderProjectTaskWizard() {
         <input id="project-task-files" type="file" multiple accept=".md,.markdown,text/markdown"></label>
         <p class="muted">${wizard.documents.length ? wizard.documents.map((item) => esc(item.name)).join('、') : '未選択'}</p></section>
       ${wizard.route === 'agent-design'
-        ? designAssignmentSectionHtml(wizard.designPreview, wizard.designAssignments)
+        ? `<fieldset class="task-choice-grid design-flow-choice"><legend>設計フローを選択</legend>
+          <button type="button" class="task-choice-card" data-project-design-mode="interactive" aria-pressed="${wizard.designMode === 'interactive'}">
+            <span><strong>対話で設計</strong><small>設計案を作り、必要な確認事項へ回答しながら詰めます。</small></span></button>
+          <button type="button" class="task-choice-card" data-project-design-mode="auto" aria-pressed="${wizard.designMode === 'auto'}">
+            <span><strong>全自動で設計</strong><small>確認待ちを挟まず、一度で設計案をまとめます。</small></span></button></fieldset>
+          ${designAssignmentSectionHtml(wizard.designPreview, wizard.designAssignments)}`
         : ''}</div>`;
   } else if (wizard.step === 4) {
     body = `<div class="project-task-candidates">${wizard.candidates.map((task, index) => `<article class="task-candidate-card">
@@ -2178,6 +2195,24 @@ function renderProjectTaskWizard() {
   dialog.querySelectorAll('[data-design-node]').forEach((select) => select.addEventListener('change', () => {
     wizard.designAssignments = collectDesignAssignmentsFrom(dialog);
   }));
+  dialog.querySelectorAll('[data-project-design-mode]').forEach((button) => button.addEventListener('click', async () => {
+    const mode = button.dataset.projectDesignMode;
+    if (wizard.designMode === mode) return;
+    wizard.designMode = mode;
+    wizard.designPreview = null;
+    wizard.designAssignments = null;
+    wizard.busy = '設計フローを確認中…';
+    renderProjectTaskWizard();
+    try {
+      const result = await api.adhocFlowDesignPreview({ mode });
+      wizard.designPreview = result.preview;
+    } catch (err) {
+      wizard.designPreview = { nodes: [] };
+      console.warn('設計フローの割り当てを読み込めませんでした:', err);
+    }
+    wizard.busy = '';
+    renderProjectTaskWizard();
+  }));
   dialog.querySelector('[data-project-task-next]')?.addEventListener('click', advanceProjectTaskWizard);
 }
 
@@ -2208,7 +2243,7 @@ async function advanceProjectTaskWizard() {
       if (wizard.route === 'agent-design' && !wizard.designPreview && api.adhocFlowDesignPreview) {
         wizard.busy = '設計フローを確認中…'; renderProjectTaskWizard();
         try {
-          const result = await api.adhocFlowDesignPreview({ mode: 'interactive' });
+          const result = await api.adhocFlowDesignPreview({ mode: wizard.designMode });
           wizard.designPreview = result.preview;
         } catch (err) {
           // 割り当てUIが読めなくても準備は進められる（自動割り当てで実行される）。
@@ -2284,6 +2319,7 @@ async function advanceProjectTaskWizard() {
       const result = await api.preparationCreatePackage({
         projectDir: p.dir, title: wizard.text.slice(0, 80), goal: wizard.text,
         materials: wizard.materials, candidates: selected,
+        designMode: wizard.designMode,
         ...(wizard.designAssignments ? { designAssignments: wizard.designAssignments } : {}),
       });
       state.projectPreparations = [...(result.items || []), ...(state.projectPreparations || [])];
@@ -2304,7 +2340,7 @@ async function openProjectTaskWizard(prefill = {}) {
   projectTaskWizard = { step: 1, text: inherited, includeMaster: false,
     versionNames: prefill.charter ? [prefill.charter] : [], noteNames: [], documents: [], notes,
     route: '', recommendation: null, materials: [], proposal: null, candidates: [], error: '', busy: '',
-    designPreview: null, designAssignments: null };
+    designMode: 'interactive', designPreview: null, designAssignments: null };
   renderProjectTaskWizard();
   $('dlg-enqueue').showModal();
 }

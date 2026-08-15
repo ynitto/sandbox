@@ -1332,14 +1332,31 @@ class ResidentBoardTickTests(unittest.TestCase):
         self.assertEqual(rec["contract_version"], km.CONTRACT_VERSION)
         self.assertTrue(rec["heartbeat"])
         self.assertGreater(rec["fresh_after_sec"], 0)
+        # Phase1: status と同形の budget ミラー
+        budget = rec["budget"]
+        self.assertEqual(budget["contract_version"], 1)
+        self.assertIn(budget["source"], ("local-ledger", "unavailable"))
+        self.assertIn("can_accept", budget)
+        self.assertIs(budget.get("enforce"), False)
+
+    def test_board_absent_tick_does_not_require_budget_mirror(self):
+        """board 未設定経路は nodes を書かず、status.board.configured=False で終わる。"""
+        status = self._tick(self._host(board=""))
+        self.assertEqual(status.board, {"configured": False})
+        self.assertFalse((self.board / "nodes" / "pc-a.json").exists())
 
     def test_local_clone_paths_are_not_published_to_the_board(self):
         """板は共有リポジトリ＝置いた値は全 PC へ配られる。`local` はホスト固有の絶対パスで、
-        `repos.schema.json` が「共有レジストリには置けない」と宣言しているもの（P2-2）。"""
+        `repos.schema.json` が「共有レジストリには置けない」と宣言しているもの（P2-2）。
+
+        注: budget.source=`local-ledger` は別語彙（射影の出所）。全体文字列の `local` 部分一致は見ない。
+        """
         self._tick()
         raw = (self.board / "nodes" / "pc-a.json").read_text(encoding="utf-8")
-        self.assertNotIn("local", raw)
         self.assertNotIn("/home/me/mirrors/app", raw)
+        rec = json.loads(raw)
+        for entry in rec.get("repos") or []:
+            self.assertNotIn("local", entry)
 
     def test_local_declaration_still_reaches_the_workspace(self):
         """板から落としても速度最適化は効く（＝落としてよい根拠）。請負ノードは**自分の**

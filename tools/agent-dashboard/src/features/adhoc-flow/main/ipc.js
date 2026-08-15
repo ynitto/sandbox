@@ -162,6 +162,9 @@ function registerIpc(ctx) {
     });
   });
 
+  handle('adhocFlow:forceComplete', ({ runId, reason } = {}) =>
+    adhoc.forceComplete(loadConfig(), { runId: String(runId || ''), reason: String(reason || '') }));
+
   handle('adhocFlow:deleteRun', ({ runId } = {}) => {
     const cfg = loadConfig();
     return flow.prepareRunDeletion(adhoc.resolveBusDir(cfg), String(runId || ''));
@@ -266,7 +269,7 @@ function registerIpc(ctx) {
     const session = designSession.startRound(cfg, {
       target: item.target,
       sourceMode: 'new',
-      mode: 'interactive',
+      mode: item.designMode || 'interactive',
       goal: item.goal,
       cwd: item.cwd || item.projectDir,
       sources: (item.materials || []).filter((material) =>

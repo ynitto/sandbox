@@ -69,6 +69,43 @@ class ContextSnapshotTests(unittest.TestCase):
         self.assertEqual(kf.run_context_text(bus), "")
 
 
+class KnowledgePassthroughTests(unittest.TestCase):
+    """Phase 3: --knowledge-file を meta.knowledge へ素通し（解釈しない）。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="kf-knowledge-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def _knowledge_file(self, obj):
+        path = _os.path.join(self.tmp, "knowledge.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(obj, f)
+        return path
+
+    def test_snapshot_writes_meta_without_interpreting(self):
+        payload = {"contract_version": 1, "rules_hash": "sha256:abc",
+                   "skills": [{"name": "flow-planner", "role": "planner"}]}
+        path = self._knowledge_file(payload)
+        bus = kf.Bus(self.tmp, "run-kn")
+        bus.ensure_run("req")
+        self.assertTrue(bus.snapshot_knowledge(path))
+        meta = bus.run_meta("run-kn")
+        self.assertEqual(meta["knowledge"], payload)
+        # 冪等
+        self.assertFalse(bus.snapshot_knowledge(path))
+
+    def test_snapshot_skips_bad_or_empty(self):
+        bus = kf.Bus(self.tmp, "run-bad")
+        bus.ensure_run("req")
+        self.assertFalse(bus.snapshot_knowledge(None))
+        self.assertFalse(bus.snapshot_knowledge(_os.path.join(self.tmp, "nope.json")))
+        bad = _os.path.join(self.tmp, "bad.json")
+        with open(bad, "w", encoding="utf-8") as f:
+            f.write("not-json")
+        self.assertFalse(bus.snapshot_knowledge(bad))
+        self.assertNotIn("knowledge", bus.run_meta("run-bad"))
+
+
 class ReadAllocationTests(unittest.TestCase):
     def test_prompt_and_report_expose_outside_reads(self):
         allocation = [{"path": "src/a.py", "range": "10-20", "reason": "変更点"}]

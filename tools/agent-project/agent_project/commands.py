@@ -841,6 +841,10 @@ def cmd_revise(cfg: Config, tid: str, fields: dict, feedback: str, reason: str,
 COMMAND_ACTIONS = ("approve", "mr-create", "retry-mr", "hold", "pin", "defer", "revise",
                    "reject", "force-complete")
 
+# Phase5: 知識ルール裁定（dashboard は第二 writer にならず commands/ 投函のみ）
+RULE_COMMAND_ACTIONS = ("rule-promote", "rule-suspend", "rule-revise", "rule-deprecate",
+                        "promote", "suspend", "deprecate")  # promote/suspend/deprecate は rule_id 必須時のみ
+
 
 def commands_dir(cfg: "Config") -> Path:
     return cfg.backlog.parent / "commands"
@@ -974,6 +978,25 @@ def ingest_commands(cfg: "Config") -> "list[str]":
         action = str(rec.get("command", "")).strip()
         tid = str(rec.get("id", "")).strip()
         reason = str(rec.get("reason", "") or "").strip() or "commands/ からの指示"
+        # Phase5: rule 裁定（promote/suspend/revise/deprecate）。id は rule_id (obs-…)。
+        rule_id = str(rec.get("rule_id") or "").strip()
+        if action in ("rule-promote", "rule-suspend", "rule-revise", "rule-deprecate") or (
+                action in ("promote", "suspend", "deprecate", "revise") and rule_id):
+            rid = rule_id or tid
+            rc, detail = apply_rule_command(
+                cfg, action, rid, reason, str(rec.get("guide") or "").strip())
+            if rc == 0:
+                _write_command_receipt(cfg, f, action, rid, detail=detail)
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+                append_journal(cfg.journal,
+                               f"commands 取り込み: {action} {rid}（{f.name}・{detail}）")
+                done.append(f"{action}:{rid}")
+            else:
+                _reject_command(cfg, f, detail or f"{action} が失敗 (exit {rc})")
+            continue
         if action == "revive":
             # プロジェクト単位（id ではなく title 指定）: 墓標を解除して、却下したタスクを
             # 再び提案されうる状態へ戻す。**却下（reject）の取り消し口**——却下は墓標を
@@ -1159,12 +1182,88 @@ def _decision_action_tally(decisions_dir: Path) -> "dict[str, int]":
         return tally
     pat = re.compile(r"^- action\s*:\s*(?P<a>.+)$")
     for f in decisions_dir.glob("*.md"):
-        for line in f.read_text(encoding="utf-8").splitlines():
+        try:
+            lines = f.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line in lines:
             m = pat.match(line.strip())
             if m:
                 a = m.group("a").strip()
                 tally[a] = tally.get(a, 0) + 1
     return tally
+
+
+def _knowledge_loop_stats(cfg: Config) -> dict:
+    """知識ループの読み取り専用基準値（rules 注入・learn hit・昇格・根拠欠落）。
+
+    旧形式の decisions のみ（outcome / 昇格マーカー無し・rules.md 無し）でも例外を投げず
+    0 埋めする。書込・昇格・失効は行わない。"""
+    rules_injected = 0
+    rp = rules_path(cfg)
+    if rp.exists():
+        try:
+            raw = rp.read_text(encoding="utf-8")
+        except OSError:
+            raw = ""
+        # 注入時と同じく HTML コメントは本文に出さない（件数は人が見る箇条書き）
+        body = re.sub(r"<!--.*?-->", "", raw, flags=re.S)
+        rules_injected = sum(1 for ln in body.splitlines() if ln.strip().startswith("- "))
+
+    try:
+        hits = count_learn_hits(cfg)
+    except OSError:
+        hits = {}
+    learn_hits = sum(hits.values())
+
+    promotions = 0
+    promoted_srcs: set[str] = set()
+    if cfg.decisions.exists():
+        for f in cfg.decisions.glob("*.md"):
+            try:
+                text = f.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            for line in text.splitlines():
+                s = line.strip()
+                if s.startswith("- rules-promoted:") or s.startswith("- promoted:"):
+                    promotions += 1
+                    promoted_srcs.add(f.stem)
+
+    evidence_missing = 0
+    # 適用された（hit>0）のに learn-worked / learn-misfire が無い出典＝適用結果の根拠欠落
+    for src, n in hits.items():
+        if n <= 0:
+            continue
+        dp = decision_path(cfg, src)
+        try:
+            text = dp.read_text(encoding="utf-8") if dp.exists() else ""
+        except OSError:
+            text = ""
+        if "action  : learn-worked" not in text and "action  : learn-misfire" not in text:
+            evidence_missing += 1
+    # 自動昇格セクションの箇条に learn: 出典コメントが無い＝ provenance 欠落
+    if rp.exists():
+        try:
+            rtxt = rp.read_text(encoding="utf-8")
+        except OSError:
+            rtxt = ""
+        if RULES_AUTO_SECTION in rtxt:
+            auto = rtxt.split(RULES_AUTO_SECTION, 1)[1]
+            for ln in auto.splitlines():
+                if ln.strip().startswith("- ") and "learn:" not in ln:
+                    evidence_missing += 1
+    # 昇格マーカーがあるのに hit が 0＝昇格根拠欠落
+    for src in promoted_srcs:
+        if hits.get(src, 0) <= 0:
+            evidence_missing += 1
+
+    return {
+        "rules_injected": rules_injected,
+        "learn_hits": learn_hits,
+        "promotions": promotions,
+        "evidence_missing": evidence_missing,
+    }
 
 
 def compute_stats(cfg: Config) -> dict:
@@ -1196,7 +1295,7 @@ def compute_stats(cfg: Config) -> dict:
         dt, du = parse_cost("@cost " + t.get("cost", ""))
         tok_total += dt
         usd_total += du
-    return {
+    out = {
         "backlog_pending": len(tasks),
         "by_status": by_status,
         "pending_human": pending_human,                 # blocked + review（要対応）
@@ -1213,6 +1312,8 @@ def compute_stats(cfg: Config) -> dict:
         "tokens_archived": tok_total,                     # archive 済みタスクの累計コスト
         "cost_archived": round(usd_total, 4),
     }
+    out.update(_knowledge_loop_stats(cfg))
+    return out
 
 
 # ---------------------------------------------------------------------------

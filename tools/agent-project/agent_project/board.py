@@ -285,14 +285,82 @@ class BoardRepo:
             return path
 
     def write_award(self, did: str, node: str, by: str) -> str:
-        """owner-picks の落札を確定する。"""
+        """owner-picks の落札を確定する。
+
+        Phase2: award と同時に板ルートへ budget reservation を作成（claim と同契約）。
+        board は任意のまま。予約失敗（unknown/不変条件）でも award 自体は残す——
+        落札記録の喪失より予約欠落の方が回復しやすい。不変条件違反は journal 相当を残さない
+        （板に journal が無い）が reservations は作らない。
+        """
         with self._locked():
             self._ensure()
             path = os.path.join(self.delegation_dir(did), "award.json")
+            awarded_at = _now_iso_utc()
             write_json_atomic(path, {"node": str(node), "awarded_by": str(by or ""),
-                                     "awarded_at": _now_iso_utc()})
+                                     "awarded_at": awarded_at})
+            self._create_award_reservation(did, str(node), awarded_at)
             return path
 
+    def _create_award_reservation(self, did: str, node: str, awarded_at: str) -> None:
+        """板ルートに award 経路の reservation を書く（失敗は award をロールバックしない）。"""
+        try:
+            root = Path(self.dir)
+            # 板 nodes/<node>.json の budget ミラーがあればゲート材料にする
+            status_record = None
+            node_path = root / "nodes" / f"{_safe_node(node)}.json"
+            try:
+                raw = json.loads(node_path.read_text(encoding="utf-8"))
+                if isinstance(raw, dict):
+                    budget = raw.get("budget") if isinstance(raw.get("budget"), dict) else None
+                    if budget is None and isinstance(raw.get("capacity"), dict):
+                        budget = {
+                            "contract_version": 1,
+                            "source": "local-ledger",
+                            "capacity": raw.get("capacity"),
+                            "can_accept": raw.get("can_accept", True),
+                            "reason_codes": list(raw.get("reason_codes") or ["ok"]),
+                        }
+                    if isinstance(budget, dict):
+                        status_record = {
+                            "node": node,
+                            "availability": "active",
+                            "updated_iso": awarded_at,
+                            "fresh_after_sec": 3600.0,
+                            "budget": budget,
+                        }
+            except (OSError, ValueError, TypeError):
+                status_record = None
+            if status_record is None:
+                # ミラー前・board 単独: unlimited 相当で予約量 0 の live を残し追跡可能にする
+                status_record = {
+                    "node": node,
+                    "availability": "active",
+                    "updated_iso": awarded_at,
+                    "fresh_after_sec": 3600.0,
+                    "budget": {
+                        "contract_version": 1,
+                        "source": "local-ledger",
+                        "capacity": {"limit": None, "used": None, "reserved": None},
+                        "unit": None,
+                        "can_accept": True,
+                        "reason_codes": ["unlimited"],
+                        "enforce": False,
+                    },
+                }
+            gate = status_budget_gate(status_record, enforce_default=False)
+            # Config 無しでも動く最小スタブ（board は agent-project Config に依存しない）
+            class _Cfg:
+                backlog = root / "backlog"
+                journal = None
+                budget_summary = None
+                controller_lease_sec = 900.0
+            create_reservation_in_root(
+                root, _Cfg(), node=node, source="award", gate=gate,
+                status_record=status_record, delegation_id=did,
+                claim_token=f"award:{did}:{node}", at=None,
+                ttl_sec=900.0, journal=False)
+        except Exception:  # noqa: BLE001 — award 本体を守る
+            pass
     def read_result(self, did: str) -> "dict | None":
         path = os.path.join(self.delegation_dir(did), "result.json")
         try:

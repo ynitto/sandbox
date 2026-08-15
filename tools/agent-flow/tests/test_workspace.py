@@ -71,5 +71,65 @@ class FixStagedWhitespaceTest(unittest.TestCase):
         self.assertEqual(kf._fix_staged_whitespace(clone), [])
 
 
+class WorkspacePublicationTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.addCleanup(kf.cleanup_workspace)
+
+    def test_failed_remote_push_keeps_a_local_recovery_ref(self):
+        local = _init_repo(os.path.join(self.tmp, "local"), {"seed.txt": "seed\n"})
+        remote = os.path.join(self.tmp, "remote.git")
+        subprocess.run(["git", "init", "-q", "--bare", remote], check=True)
+        subprocess.run(["git", "-C", local, "remote", "add", "origin", remote], check=True)
+        subprocess.run(["git", "-C", local, "push", "-q", "-u", "origin", "main"], check=True)
+        hook = pathlib.Path(remote, "hooks", "pre-receive")
+        hook.write_text("#!/bin/sh\nexit 1\n")
+        hook.chmod(0o755)
+        run_id = "recover-push"
+        ws = kf.ensure_workspace_clone(
+            {"url": remote, "local": local, "base": "main", "path": "", "desc": "test"},
+            run_id,
+        )
+        pathlib.Path(ws["clone"], "result.txt").write_text("result\n")
+
+        with self.assertRaises(kf.WorkspacePublishError) as raised:
+            kf.finalize_workspace(ws, run_id, "work")
+
+        publication = raised.exception.data["publication"]
+        self.assertEqual(publication["state"], "failed")
+        self.assertEqual(publication["branch"], f"af/{run_id}")
+        self.assertEqual(publication["recovery"]["repository"], local)
+        self.assertEqual(publication["recovery"]["ref"], f"refs/agent-flow/recovery/{run_id}")
+        recovery = subprocess.run(
+            ["git", "-C", local, "rev-parse", "--verify", f"refs/agent-flow/recovery/{run_id}"],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(recovery.returncode, 0, recovery.stderr)
+
+    def test_successful_remote_push_records_publication_and_removes_recovery_ref(self):
+        local = _init_repo(os.path.join(self.tmp, "local-ok"), {"seed.txt": "seed\n"})
+        remote = os.path.join(self.tmp, "remote-ok.git")
+        subprocess.run(["git", "init", "-q", "--bare", remote], check=True)
+        subprocess.run(["git", "-C", local, "remote", "add", "origin", remote], check=True)
+        subprocess.run(["git", "-C", local, "push", "-q", "-u", "origin", "main"], check=True)
+        run_id = "publish-ok"
+        ws = kf.ensure_workspace_clone(
+            {"url": remote, "local": local, "base": "main", "path": "", "desc": "test"},
+            run_id,
+        )
+        pathlib.Path(ws["clone"], "result.txt").write_text("result\n")
+
+        delivery = kf.finalize_workspace(ws, run_id, "work")
+
+        self.assertEqual(delivery["publication"]["state"], "published")
+        self.assertEqual(delivery["publication"]["commit"], delivery["commit"])
+        recovery = subprocess.run(
+            ["git", "-C", local, "rev-parse", "--verify", f"refs/agent-flow/recovery/{run_id}"],
+            capture_output=True, text=True,
+        )
+        self.assertNotEqual(recovery.returncode, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

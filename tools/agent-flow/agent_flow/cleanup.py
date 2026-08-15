@@ -244,6 +244,9 @@ def cmd_gc(args) -> int:
         print(f"{tag}削除: {rid} (status={meta.get('status')}, age={_age_hours(meta):.1f}h)")
         if not args.dry_run:
             bus.remove_run(rid)
+            workspace = meta.get("workspace")
+            if isinstance(workspace, dict):
+                _delete_recovery_ref(workspace, rid)
 
     # 孤児 inbox 要求の掃除: run を伴わない inbox 要求は、daemon がこれを「新規要求」と誤認して
     # 再び orchestrator を起動し **不要な run を走らせる**原因になる（受理ゲートは run_exists のみ）。
