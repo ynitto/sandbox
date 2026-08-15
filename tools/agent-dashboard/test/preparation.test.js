@@ -10,9 +10,11 @@ const adhoc = require('../src/features/adhoc-flow/main/adhoc');
 const designSession = require('../src/features/adhoc-flow/main/design-session');
 const preparationIpc = require('../src/features/adhoc-flow/main/ipc');
 
+// 設計 run の成果は必須4節に加えて「変更対象の強制レイヤー」まで要る
+// （文言でしか守られていない契約を実装 run へ渡さないため）。
 const completeDesignDocument = [
   '## 目的\nCSVの文字コード判定を改善する',
-  '## 変更対象\nsrc/csv.js',
+  '## 変更対象\nsrc/csv.js\n- 強制レイヤー: 読み込みは csv.js の decode() で強制する',
   '## 受入基準\nUTF-8とShift_JISを読める',
   '## 検証方法\nnpm test',
 ].join('\n\n');

@@ -55,6 +55,24 @@ class EndToEndTests(unittest.TestCase):
         self.assertTrue(final["strategy"]["review"])
         self.assertIn("gate", results)
 
+    def test_every_evaluation_round_is_recorded(self):
+        """成果ゼロの評価ラウンドも run 履歴へ残ること（P4: 無言の欠番を作らない）。
+
+        設計: docs/plans/2026-08-15-workflow-feature-improvement-proposals.md P4
+        """
+        bus = tempfile.mkdtemp(prefix="kf-eval-ev-")
+        self.addCleanup(shutil.rmtree, bus, ignore_errors=True)
+        p = self._run_up(bus, "x; y")
+        self.assertEqual(p.returncode, 0, p.stderr[-800:])
+        run_id = sorted(os.listdir(os.path.join(bus, "runs")))[0]
+        view = kf.Bus(bus, run_id)
+        evaluations = [e for e in view.recent_events(50) if e.get("kind") == "evaluate"]
+        self.assertTrue(evaluations, "評価ラウンドの記録が無い")
+        for event in evaluations:
+            self.assertIn(event["decision"], ("done", "replan", "failed"))
+            self.assertTrue(str(event.get("reason") or "").strip(), event)
+            self.assertEqual(event["lenses"], ["duplication", "divergence", "verbosity"])
+
     def test_up_replan_recovers_failure(self):
         bus = tempfile.mkdtemp(prefix="kf-e2e-")
         p = self._run_up(bus, "good; FAIL bad")

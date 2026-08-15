@@ -30,6 +30,8 @@
     "scope-guard": "89e5d3a1e73d",
     "self-consistency": "af0e1368a407",
     "spec-first": "85a6736bbedb",
-    "test-first": "07ffff0e5346"
+    "test-first": "07ffff0e5346",
+    "test-green-evidence": "24a58f1ccb52",
+    "ui-consistency": "0e3e127ae356"
   }
 }

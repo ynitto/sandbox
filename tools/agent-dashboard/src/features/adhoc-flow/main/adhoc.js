@@ -32,6 +32,14 @@ const flowTiers = require('../../orchestration/main/flow-tiers');
 const SUBMITTER = 'agent-dashboard-adhoc';
 const NODE_KINDS = ['work', 'generate', 'classify', 'synthesize', 'verify', 'filter', 'judge',
   'reduce', 'split', 'map', 'human', 'extract', 'retrieve'];
+// ノードが触る面（surface）— 「何を作るか」ではなく「どの種類の成果物を触るか」の宣言。
+// 面ごとに決まった作業ルールを plan 生成で自動付与する。ルール本文はカタログ（methods/）が
+// 正典で、ここは面 → 手法 id の対応だけを持つ（本文を二重に持たない）。
+// 設計: docs/plans/2026-08-15-workflow-feature-improvement-proposals.md P1・P3
+const NODE_SURFACES = {
+  ui: { label: '画面（UI）', method: 'ui-consistency' },
+  test: { label: 'テスト', method: 'test-green-evidence' },
+};
 const EXECUTION_ROLES = ['planner', 'evaluator', 'worker', 'verify'];
 const WORKFLOW_PURPOSES = ['implementation', 'design'];
 const DESIGN_TERMINAL_KINDS = new Set(['work', 'synthesize']);
@@ -186,6 +194,10 @@ function normalizeWorkflow(raw, options = {}) {
     if (!id || !goal || (kind !== 'human' && !tier)) throw new Error('ノードには id・内容・tier が必要です');
     if (seen.has(id)) throw new Error(`ノード id が重複しています: ${id}`);
     seen.add(id);
+    const surface = String((n && n.surface) || '').trim();
+    if (surface && !Object.prototype.hasOwnProperty.call(NODE_SURFACES, surface)) {
+      throw new Error(`ノードが触る面が不正です: ${surface}`);
+    }
     const rawMethod = n.method && typeof n.method === 'object' ? n.method : null;
     const method = rawMethod && String(rawMethod.id || '').trim() && String(rawMethod.text || '').trim()
       ? {
@@ -205,6 +217,7 @@ function normalizeWorkflow(raw, options = {}) {
       x: Number.isFinite(Number(n.x)) ? Number(n.x) : 40,
       y: Number.isFinite(Number(n.y)) ? Number(n.y) : 40,
       ...(method && kind !== 'human' ? { method } : {}),
+      ...(surface && kind !== 'human' ? { surface } : {}),
       ...((kind === 'classify' && n.continuation === 'route')
         || (kind === 'verify' && n.continuation === 'retry')
         ? { continuation: n.continuation } : {}),
@@ -309,6 +322,7 @@ function workflowDefinition(raw) {
       if (node.tier) out.tier = String(node.tier);
       if (node.interaction && typeof node.interaction === 'object') out.interaction = node.interaction;
       if (node.method && typeof node.method === 'object') out.method = node.method;
+      if (node.surface) out.surface = String(node.surface);
       if (node.continuation) out.continuation = String(node.continuation);
       return out;
     }),
@@ -534,14 +548,45 @@ function normalizeNodeAssignments(config, clean, raw) {
 }
 
 const DESIGN_NODE_CONTRACT = '設計runとして実行します。リポジトリは読み取り専用です。ファイルの変更、commit、pushは禁止です。';
+// 「## 変更対象」へ契約ごとの強制レイヤーを書かせる（P5）。プロンプト上の約束（文言）と、
+// 実行時に効く強制（CLI 引数・スキーマ検査・ゲート）を書き分けさせないと、契約が
+// 設計書の中だけで守られたまま実装レイヤーへ落ちない。
+const DESIGN_ENFORCEMENT_CONTRACT = [
+  '「## 変更対象」には、契約ごとの「強制レイヤー」を明記してください',
+  '（例: 読み取り専用は agent-flow の起動引数で強制、dashboard は表示のみ）。',
+  '文言でしか守られていない契約が残っていないか自己点検し、残るなら強制する層を決めてください。',
+].join('');
 const DESIGN_OUTPUT_CONTRACT = [
   '最終成果は設計書の全文です。次の4節を必ず含めてください。',
   '## 目的',
   '## 変更対象',
   '## 受入基準',
   '## 検証方法',
+  DESIGN_ENFORCEMENT_CONTRACT,
   '未決事項があれば「## 質問」節を作り、推奨する答えとその理由を添えてください。',
 ].join('\n');
+
+// 面（surface）ごとの作業ルール。本文はカタログ（methods/<id>.json）が正典で、ここでは
+// 引くだけ。カタログに無い＝ルールを黙って外して走らせない（フェイルクローズ）。
+function surfaceRule(config, surface) {
+  const spec = NODE_SURFACES[String(surface || '')];
+  if (!spec) throw new Error(`ノードが触る面が不正です: ${surface}`);
+  const available = availableMethods(config).some((item) => String(item.id) === spec.method);
+  // 複製の作法（source に取得元と hash を残す）は手法スナップショットと同じ 1 実装を通す。
+  const method = available ? (methodsSnapshot(config, [spec.method]) || [])[0] : null;
+  const fragments = method && Array.isArray(method.fragments) ? method.fragments : [];
+  const text = fragments.filter((fragment) => fragment && String(fragment.role || '') === 'worker'
+    && String(fragment.text || '').trim())
+    .map((fragment) => String(fragment.text).trim()).join('\n');
+  if (!text) throw new Error(`作業ルールが見つかりません: ${spec.method}（${spec.label}）`);
+  return {
+    id: String(method.id),
+    description: String(method.description || method.id),
+    role: 'worker',
+    text,
+    source: String(method.source || `methods/${method.id}`),
+  };
+}
 
 function planFromWorkflow(config, workflow, options = {}) {
   const clean = normalizeWorkflow(workflow, { purpose: options.purpose });
@@ -558,9 +603,14 @@ function planFromWorkflow(config, workflow, options = {}) {
     if (n.kind === 'human') {
       return { id: n.id, goal: n.goal, kind: n.kind, deps: n.deps, interaction: n.interaction };
     }
-    const baseGoal = n.method
-      ? `${n.goal}\n\n実行手法「${n.method.description || n.method.id}」:\n${n.method.text}`
-      : n.goal;
+    // 面（surface）の作業ルールは、人が選んだ実行手法と同じ形で goal へ複製する
+    // （実行時にカタログを読み直さない＝保存済み run の振る舞いが後から変わらない）。
+    const rule = n.surface ? surfaceRule(config, n.surface) : null;
+    const baseGoal = [
+      n.goal,
+      n.method ? `実行手法「${n.method.description || n.method.id}」:\n${n.method.text}` : '',
+      rule ? `作業ルール「${rule.description}」:\n${rule.text}` : '',
+    ].filter(Boolean).join('\n\n');
     const goal = purpose === 'design'
       ? `${baseGoal}\n\n${DESIGN_NODE_CONTRACT}`
       : baseGoal;
@@ -1154,6 +1204,9 @@ function listProjects(config) {
 module.exports = {
   SUBMITTER,
   NODE_KINDS,
+  NODE_SURFACES,
+  DESIGN_ENFORCEMENT_CONTRACT,
+  surfaceRule,
   COHERENCE_COMMAND,
   buildVerificationPlan,
   resolveBusDir,

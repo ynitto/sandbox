@@ -330,6 +330,8 @@ function registerIpc(ctx) {
       tiers: [{ id: 'auto', label: '自動（実行方針を継承）' }, ...tierNames],
       // 機能（ノード kind）・役割ごとの実行可能レベルと、オプションが宣言する下限
       kindTiers: flowTiers.catalog(),
+      // ノードが作るもの（面）と、面ごとに自動付与する作業ルールの対応
+      nodeSurfaces: adhoc.NODE_SURFACES,
       cwdHistory: (cfg.adhocFlow && cfg.adhocFlow.cwdHistory) || [],
       methods,
       tuning: tuning.load(cfg),

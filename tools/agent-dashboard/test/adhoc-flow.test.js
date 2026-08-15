@@ -1057,14 +1057,14 @@ test('複数工程の雛形を既存ノードの後へ接続済みで追加す�
   assert.deepStrictEqual(workflow.exit, [], '追加した末端を明示的に終了へつなぐまで未完了にする');
 });
 
-test('雛形カードは分岐を含む接続例を左から表す', () => {
+test('雛形カードは分岐を含む接続例を左から表す（終端の統合検証まで含む）', () => {
   const columns = workflowUi.patternColumns({ template: { nodes: [
     { id: 'draft-a', kind: 'generate', deps: [] },
     { id: 'draft-b', kind: 'generate', deps: [] },
     { id: 'pick', kind: 'judge', deps: ['draft-a', 'draft-b'] },
   ] } });
   assert.deepStrictEqual(columns, [
-    ['開始'], ['生成', '生成'], ['判定'], ['終了'],
+    ['開始'], ['生成', '生成'], ['判定'], ['検証'], ['終了'],
   ]);
 });
 
@@ -1154,18 +1154,19 @@ test('雛形カードと編集開始時は同じノード構成を使う', () =>
     { id: 'c', kind: 'work', deps: [] }, { id: 'd', kind: 'work', deps: [] },
     { id: 'join', kind: 'synthesize', deps: ['a', 'b', 'c', 'd'] },
   ] } };
-  const workflow = workflowUi.workflowFromPattern(pattern, 'small');
+  const workflow = workflowUi.templateWorkflow(pattern, 'small');
   assert.strictEqual(workflow.nodes.filter((node) => node.kind === 'work').length, 3,
     'カードに表示する三並列と編集開始時の実ノード数を揃える');
   assert.deepStrictEqual(workflowUi.patternColumns(pattern),
     workflowUi.workflowColumns(workflowUi.visualWorkflow(workflow)));
   assert.deepStrictEqual(workflowUi.patternColumns(pattern),
-    [['開始'], ['作業', '作業', '作業'], ['統合'], ['終了']]);
+    [['開始'], ['作業', '作業', '作業'], ['統合'], ['検証'], ['終了']]);
 });
 
 test('実行時に増える工程もカードと編集画面の両方へ同じ読み取り専用ノードで示す', () => {
   const mapPattern = { id: 'map-reduce', template: { nodes: [{ id: 'split', kind: 'split', deps: [] }] } };
-  const mapVisual = workflowUi.visualWorkflow(workflowUi.workflowFromPattern(mapPattern, 'small'));
+  const mapVisual = workflowUi.visualWorkflow(workflowUi.templateWorkflow(mapPattern, 'small'));
+  // 分割の後段は実行時に展開されるため、統合検証は静的には足さない
   assert.deepStrictEqual(workflowUi.patternColumns(mapPattern),
     [['開始'], ['分割'], ['個別処理', '個別処理', '個別処理'], ['集約'], ['終了']]);
   assert.strictEqual(mapVisual.nodes.filter((node) => node.runtime).length, 4);
@@ -1174,8 +1175,9 @@ test('実行時に増える工程もカードと編集画面の両方へ同じ�
   const routePattern = {
     id: 'classify-and-act', template: { nodes: [{ id: 'classify', kind: 'classify', deps: [] }] },
   };
-  const routeVisual = workflowUi.visualWorkflow(workflowUi.workflowFromPattern(routePattern, 'small'));
-  assert.deepStrictEqual(workflowUi.patternColumns(routePattern), [['開始'], ['分類'], ['作業'], ['終了']]);
+  const routeVisual = workflowUi.visualWorkflow(workflowUi.templateWorkflow(routePattern, 'small'));
+  assert.deepStrictEqual(workflowUi.patternColumns(routePattern),
+    [['開始'], ['分類'], ['作業'], ['検証'], ['終了']]);
   assert.strictEqual(routeVisual.nodes.find((node) => node.runtime).label, '専門作業');
 });
 
@@ -2041,15 +2043,23 @@ test('設計ラウンド入力は型付きソースの意味と本文を保つ',
   assert.ok(request.includes('監視も気になる'));
 });
 
-test('実行前チェックは必須4節を言い換えごと決定的に数える（実行は止めない）', () => {
-  assert.deepStrictEqual(workflowUi.readinessCheck(''), { empty: true, missing: ['目的', '変更対象', '受入基準', '検証方法'] });
-  assert.deepStrictEqual(workflowUi.readinessCheck('## 目的\nx\n## 変更対象\ny\n## 受入基準\nz\n## 検証方法\nw'),
-    { empty: false, missing: [] });
+test('実行前チェックは必須4節と強制レイヤーを言い換えごと決定的に数える（実行は止めない）', () => {
+  assert.deepStrictEqual(workflowUi.readinessCheck(''), {
+    empty: true, missing: ['目的', '変更対象', '受入基準', '検証方法'],
+    missingItems: ['変更対象の強制レイヤー'],
+  });
+  assert.deepStrictEqual(
+    workflowUi.readinessCheck('## 目的\nx\n## 変更対象\n強制レイヤー: CLI 引数\n## 受入基準\nz\n## 検証方法\nw'),
+    { empty: false, missing: [], missingItems: [] });
   // 言い換え・見出しレベル・「目的:」形式のいずれでも同じ節として数える
-  assert.deepStrictEqual(workflowUi.readinessCheck('# 1. 狙い\nx\n#### スコープ\ny\n**完了条件**: z\nテスト方法: w'),
-    { empty: false, missing: [] });
+  assert.deepStrictEqual(workflowUi.readinessCheck('# 1. 狙い\nx\n#### スコープ\ny\n**完了条件**: z\nテスト方法: w').missing, []);
   assert.deepStrictEqual(workflowUi.readinessCheck('## 目的\nx\n## 変更対象\ny').missing, ['受入基準', '検証方法']);
+  // 節はあるのに強制レイヤーが無い設計書は、節の不足と同じ助言として出す
+  assert.deepStrictEqual(
+    workflowUi.readinessCheck('## 目的\nx\n## 変更対象\ny\n## 受入基準\nz\n## 検証方法\nw').missingItems,
+    ['変更対象の強制レイヤー']);
   assert.deepStrictEqual(workflowUi.readinessCheck(workflowUi.REQUEST_TEMPLATE).missing, []);
+  assert.deepStrictEqual(workflowUi.readinessCheck(workflowUi.REQUEST_TEMPLATE).missingItems, []);
 });
 
 test('ラウンド成果は「## 質問」節で設計書と質問へ分ける（見出し無しは収束）', () => {
@@ -2149,7 +2159,7 @@ test('設計セッションはラウンドごとに設計 run を投げ、成果
     fs.writeFileSync(path.join(runDir, 'results', 'draft.json'), JSON.stringify({
       status: 'done', output: [
         '## 目的\nやること',
-        '## 変更対象\n対象ファイル',
+        '## 変更対象\n対象ファイル（強制レイヤー: agent-flow の起動引数）',
         '## 受入基準\n条件を満たす',
         '## 検証方法\nテストする',
         '## 質問\n1. 対象は A と B のどちらか',
@@ -2159,7 +2169,7 @@ test('設計セッションはラウンドごとに設計 run を投げ、成果
     assert.strictEqual(harvested.runStatus, 'done');
     assert.strictEqual(harvested.document, [
       '## 目的\nやること',
-      '## 変更対象\n対象ファイル',
+      '## 変更対象\n対象ファイル（強制レイヤー: agent-flow の起動引数）',
       '## 受入基準\n条件を満たす',
       '## 検証方法\nテストする',
     ].join('\n\n'));
@@ -2186,7 +2196,7 @@ test('設計セッションはラウンドごとに設計 run を投げ、成果
   }
 });
 
-test('必須4節が不足した設計成果は既存の設計書を保持し、再試行情報を残す', () => {
+test('必須項目が不足した設計成果は既存の設計書を保持し、再試行情報を残す', () => {
   const busDir = tmpdir('design-incomplete-bus-');
   const cfg = { adhocFlow: {
     busDir,
@@ -2209,7 +2219,8 @@ test('必須4節が不足した設計成果は既存の設計書を保持し、�
       status: 'done', output,
     }));
   };
-  const valid = '## 目的\n既存の設計\n\n## 変更対象\n対象\n\n## 受入基準\n完了\n\n## 検証方法\nテスト';
+  const valid = '## 目的\n既存の設計\n\n## 変更対象\n対象\n- 強制レイヤー: CLI 起動引数\n'
+    + '\n## 受入基準\n完了\n\n## 検証方法\nテスト';
   try {
     const first = design.startRound(cfg, { goal: '設計する', mode: 'interactive' });
     completeRun(first.runId, valid);
@@ -2222,6 +2233,13 @@ test('必須4節が不足した設計成果は既存の設計書を保持し、�
     assert.match(kept.error, /必須|不足|節/);
     assert.strictEqual(kept.rounds.length, 2);
     assert.strictEqual(kept.runId, second.runId, '同じスナップショットで再試行できる');
+
+    // 4節はあるが「変更対象の強制レイヤー」が無い成果も、実装へは渡さず再試行に残す
+    const third = design.startRound(cfg, { id: first.id, answers: [] });
+    completeRun(third.runId, '## 目的\nx\n\n## 変更対象\ny\n\n## 受入基準\nz\n\n## 検証方法\nw');
+    const still = design.getSession(cfg, first.id);
+    assert.strictEqual(still.document, valid);
+    assert.match(still.error, /強制レイヤー/);
   } finally {
     exec.shInWsl = originalExec;
     profiles.resolveTier = originalTier;
@@ -2331,5 +2349,187 @@ test('promote はエンジンが担当していないフォルダを拒否する
   );
   assert.throws(() => adhoc.promote({}, { spec: { title: 'x' } }), /昇格先/);
 });
+
+
+// --- ワークフロー機能の改善（2026-08-15 改善提案 P1・P3・P5・P6） ---------------
+// 設計: docs/plans/2026-08-15-workflow-feature-improvement-proposals.md
+
+test('実装フローの雛形は終端へ統合検証（未完了なら修正して再検証）を既定で備える', () => {
+  const template = workflowUi.templateWorkflow({
+    id: 'fan-out-and-synthesize',
+    template: { nodes: [
+      { id: 'a', kind: 'work', deps: [] },
+      { id: 'b', kind: 'work', deps: [] },
+      { id: 'join', kind: 'synthesize', deps: ['a', 'b'] },
+    ] },
+  }, 'medium', 'implementation');
+  const verify = template.nodes[template.nodes.length - 1];
+  assert.strictEqual(verify.kind, 'verify');
+  assert.strictEqual(verify.continuation, 'retry');
+  assert.deepStrictEqual(verify.deps, ['join'], '並列作業をまとめた後の終端へ付く');
+  assert.deepStrictEqual(template.exit, [verify.id]);
+  assert.match(verify.goal, /テストスイート全体/);
+  assert.match(verify.goal, /CI と同じ系統/);
+  // 雛形は main の契約（正規化・plan 生成）をそのまま通る形であること
+  const plan = (() => {
+    const original = profiles.resolveTier;
+    profiles.resolveTier = () => ({ agent_cli: 'claude', model: '' });
+    try {
+      return adhoc.planFromWorkflow({}, adhoc.normalizeWorkflow({ ...template, name: '雛形' }));
+    } finally {
+      profiles.resolveTier = original;
+    }
+  })();
+  assert.strictEqual(plan.evaluate, true, '再検証は評価役の継続判断で回る');
+});
+
+test('設計フローと分割フローには統合検証を足さない', () => {
+  const design = workflowUi.templateWorkflow({
+    id: 'design-interactive', purpose: 'design',
+    template: { nodes: [{ id: 'draft', kind: 'work', deps: [] }] },
+  }, 'medium', 'design');
+  assert.deepStrictEqual(design.nodes.map((node) => node.kind), ['work']);
+  const split = workflowUi.templateWorkflow({
+    id: 'map-reduce', template: { nodes: [{ id: 'split1', kind: 'split', deps: [] }] },
+  }, 'medium', 'implementation');
+  assert.deepStrictEqual(split.nodes.map((node) => node.kind), ['split']);
+});
+
+test('既に終端が再検証つき検証の実装フローへは統合検証を重ねない', () => {
+  const workflow = {
+    version: 2, purpose: 'implementation', entry: ['work'], exit: ['check'],
+    nodes: [
+      { id: 'work', kind: 'work', tier: 'medium', deps: [], x: 300, y: 70 },
+      { id: 'check', kind: 'verify', continuation: 'retry', tier: 'medium', deps: ['work'], x: 570, y: 70 },
+    ],
+  };
+  assert.strictEqual(workflowUi.withIntegrationVerify(workflow), workflow);
+});
+
+test('run の完了条件は全ノード done ではなく終端の統合検証が緑であること', () => {
+  const run = (verifyResult) => ({
+    status: 'done',
+    nodes: {
+      work: { id: 'work', kind: 'work', deps: [], state: 'done', output: 'ok' },
+      check: { id: 'check', kind: 'verify', deps: ['work'], ...verifyResult },
+    },
+  });
+
+  const red = workflowUi.integrationVerifyPresentation(run({ state: 'done', output: '3 tests fail' }));
+  assert.strictEqual(red.state, 'failed');
+  assert.strictEqual(red.label, '検証が赤');
+  assert.strictEqual(workflowUi.workflowRunAdvice({ run: run({ state: 'done', output: 'fail' }) }).label, '要対応');
+
+  const green = workflowUi.integrationVerifyPresentation(run({ state: 'done', output: '10 tests passed' }));
+  assert.strictEqual(green.state, 'passed');
+  assert.strictEqual(workflowUi.workflowRunAdvice({ run: run({ state: 'done', output: 'passed' }) }).label, '完了');
+
+  assert.strictEqual(workflowUi.integrationVerifyPresentation(run({ state: 'running' })).state, 'pending');
+  assert.strictEqual(workflowUi.integrationVerifyPresentation(run({ state: 'failed' })).state, 'failed');
+  // 検証工程を持たない run は従来どおり（統合検証の判定を持ち込まない）
+  assert.strictEqual(workflowUi.integrationVerifyPresentation({
+    status: 'done', nodes: { work: { id: 'work', kind: 'work', deps: [], state: 'done' } },
+  }).state, 'none');
+});
+
+test('公開後の CI 結果は公開レコードと同じ器から読み、赤なら要対応にする', () => {
+  const run = (ci) => ({
+    status: 'done',
+    workspace: { url: 'git@github.com:ynitto/sandbox.git', local: '/repo' },
+    nodes: { work: { id: 'work', kind: 'work', deps: [], state: 'done', data: { delivery: {
+      publication: { state: 'published', url: 'git@github.com:ynitto/sandbox.git', branch: 'af/run-9' },
+      ci,
+    } } } },
+  });
+
+  const red = workflowUi.ciPresentation(run({
+    state: 'failed', url: 'https://ci.example/runs/1',
+    checks: [{ name: 'dashboard', state: 'failed', url: 'https://ci.example/runs/1/dashboard' }],
+  }));
+  assert.strictEqual(red.state, 'failed');
+  assert.strictEqual(red.label, 'CI 赤');
+  assert.deepStrictEqual(red.checks.map((check) => check.name), ['dashboard']);
+  assert.strictEqual(workflowUi.workflowRunAdvice({ run: run({ state: 'failed' }) }).label, '要対応');
+
+  assert.strictEqual(workflowUi.ciPresentation(run({ state: 'passed' })).label, 'CI 緑');
+  assert.strictEqual(workflowUi.workflowRunAdvice({ run: run({ state: 'passed' }) }).label, '完了');
+  // 記録が無い run は従来どおり（CI を問い合わせに行かない）
+  assert.strictEqual(workflowUi.ciPresentation({ status: 'done', nodes: {} }).state, 'none');
+});
+
+test('ノードが作るものを宣言すると、その作業ルールが plan の goal へ複製される', () => {
+  const original = profiles.resolveTier;
+  profiles.resolveTier = () => ({ agent_cli: 'claude', model: '' });
+  try {
+    const plan = adhoc.planFromWorkflow({}, adhoc.normalizeWorkflow({
+      name: '面つき',
+      nodes: [
+        { id: 'screen', goal: '一覧画面を追加する', tier: 'medium', surface: 'ui' },
+        { id: 'test', goal: 'テストを足す', tier: 'medium', deps: ['screen'], surface: 'test' },
+        { id: 'other', goal: '設定を書く', tier: 'medium', deps: ['test'] },
+      ],
+    }));
+    assert.match(plan.nodes[0].goal, /同じ用途の既存 UI/);
+    assert.match(plan.nodes[0].goal, /内部語彙/);
+    assert.match(plan.nodes[1].goal, /単独で実行/);
+    assert.doesNotMatch(plan.nodes[2].goal, /作業ルール/, '宣言していないノードへは付けない');
+    // 面はフロー定義（digest 対象）にも残り、後から解釈が変わらない
+    const definition = adhoc.workflowDefinition({
+      name: '面つき', nodes: [{ id: 'screen', goal: '一覧画面', tier: 'medium', surface: 'ui' }],
+    });
+    assert.strictEqual(definition.nodes[0].surface, 'ui');
+    assert.throws(() => adhoc.normalizeWorkflow({
+      name: '不正な面', nodes: [{ id: 'x', goal: 'y', tier: 'medium', surface: 'backend' }],
+    }), /触る面が不正/);
+  } finally {
+    profiles.resolveTier = original;
+  }
+});
+
+test('作業ルールはカタログが正典で、引けなければ黙って外さず失敗する', () => {
+  const rule = adhoc.surfaceRule({}, 'ui');
+  assert.strictEqual(rule.id, 'ui-consistency');
+  assert.match(rule.source, /ui-consistency/);
+  assert.throws(() => adhoc.surfaceRule({ orchestration: { methodsDir: tmpdir('no-methods-') } }, 'ui'),
+    /作業ルールが見つかりません/);
+});
+
+test('設計成果の必須項目は節と節内の強制レイヤーの両方を数える', () => {
+  const complete = ['## 目的\nx', '## 変更対象\ny\n- 強制レイヤー: CLI 引数で強制',
+    '## 受入基準\nz', '## 検証方法\nw'].join('\n\n');
+  assert.deepStrictEqual(design.designDocumentIssues(complete), []);
+  assert.deepStrictEqual(
+    design.designDocumentIssues(['## 目的\nx', '## 変更対象\ny', '## 受入基準\nz', '## 検証方法\nw'].join('\n\n')),
+    ['変更対象の強制レイヤー']);
+  assert.deepStrictEqual(design.designDocumentIssues('## 目的\nx'),
+    ['変更対象', '受入基準', '検証方法']);
+  // 節の切れ目を見る: 別の節に強制レイヤーがあっても変更対象の不足は消えない
+  assert.deepStrictEqual(design.designDocumentIssues(
+    ['## 目的\nx', '## 変更対象\ny', '## 受入基準\n強制レイヤーを検査する', '## 検証方法\nw'].join('\n\n')),
+  ['変更対象の強制レイヤー']);
+});
+
+test('設計フローは強制レイヤーを設計書へ書かせる', () => {
+  const cfg = {};
+  for (const id of ['design-interactive', 'design-auto']) {
+    const workflow = adhoc.loadWorkflow(cfg, id, { purpose: 'design' });
+    assert.ok(workflow, `${id} を読めること`);
+    assert.ok(workflow.nodes.some((node) => node.goal.includes('強制レイヤー')),
+      `${id} のどこかで強制レイヤーを要求すること`);
+  }
+  const plan = (() => {
+    const original = profiles.resolveTier;
+    profiles.resolveTier = () => ({ agent_cli: 'claude', model: '' });
+    try {
+      return adhoc.planFromWorkflow(cfg, adhoc.loadWorkflow(cfg, 'design-auto', { purpose: 'design' }),
+        { purpose: 'design' });
+    } finally {
+      profiles.resolveTier = original;
+    }
+  })();
+  const terminal = plan.nodes[plan.nodes.length - 1];
+  assert.match(terminal.goal, /強制レイヤー/, '終端の出力契約でも強制レイヤーを要求する');
+});
+
 
 console.log(`\n${passed} tests passed`);

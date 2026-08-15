@@ -17,7 +17,8 @@ def _plan_strategy(args, bus, request=None):
     if args.planner == "flow-planner":
         return plan_strategy_flow_planner(req, args.model, review, gran, ctx, tier)
     if args.planner == "agent":
-        return plan_strategy_agent(req, args.model, review, gran, ctx, tier)
+        return plan_strategy_agent(req, args.model, review, gran, ctx, tier,
+                                   split_policy(getattr(args, "split_policy", None)))
     return plan_strategy_stub(req, review, gran, tier)
 
 
@@ -578,6 +579,13 @@ def cmd_orchestrate(args) -> int:
                 lambda: _continue(args, bus, args.request, nodes, results, iteration,
                                   graph.get("strategy")))
         log(who, f"評価 #{iteration}: {decision} — {reason}")
+        # 評価ラウンドは成果の有無によらず履歴へ残す。replan だけを記録していると、
+        # 「回したが何も出なかったラウンド」と「回さなかったラウンド」が run 履歴で
+        # 区別できず、無言の欠番になる（P4）。reason には観点ごとの所見が入る。
+        bus.event(who, "evaluate", iteration=iteration, decision=decision,
+                  reason=(reason or "所見なし")[:2000],
+                  lenses=[key for key, _label, _detail in REVIEW_LENSES],
+                  added=[t["id"] for t in new_tasks])
 
         if decision == "replan" and new_tasks:
             iteration += 1
