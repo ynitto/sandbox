@@ -106,7 +106,8 @@
     queuedTasks: [],
     preparationItems: [],
     taskWizard: { step: 1, title: '', goal: '', route: '', recommendation: null,
-      materials: [], cwd: '', error: '', busy: '' },
+      materials: [], cwd: '', error: '', busy: '', designPreview: null, designAssignments: null },
+    executionDialog: null,
   };
   const esc = (s) => root.esc(String(s == null ? '' : s));
 
@@ -921,7 +922,59 @@
           <button type="button" class="primary-inline" data-wf-task-execute="${esc(task.id)}">実行</button></div></article>`).join('')}</details>` : ''}
       ${st.selectedPreparation && st.design.current ? `<div id="wf-design-host">${designCardHtml()}</div>` : ''}
       ${workflowTaskDialogHtml(ov)}
+      ${st.executionDialog ? executionPreviewDialogHtml() : ''}
     </section>`;
+  }
+
+  // 実装を開始する前のフロー表示。実装フローは自動で計画されるため、確定済みノードの
+  // 代わりに役割・機能（工程種別）ごとの割り当てを見せる。既定は自動割り当てで、
+  // 変更はその役割・機能に任せられる実行レベルの候補からだけ選べる。
+  function executionPreviewDialogHtml() {
+    const dialogState = st.executionDialog;
+    const preview = dialogState.preview || {};
+    const overrides = dialogState.overrides || {};
+    const tierLabel = (tier) => (preview.labels || {})[tier] || tier;
+    const rowHtml = (group, key, label, entry) => {
+      const current = (overrides[group] || {})[key] || null;
+      const auto = (entry && entry.auto) || {};
+      const autoCandidate = auto.candidate || null;
+      const autoLabel = autoCandidate
+        ? `自動割り当て（${tierLabel(auto.tier)} — ${autoCandidate.agent_cli || '既定'} / ${autoCandidate.model || '既定モデル'}）`
+        : '自動割り当て（実行レベルの候補が未設定）';
+      const choices = [`<option value="">${esc(autoLabel)}</option>`];
+      for (const tier of (entry && entry.allowed) || []) {
+        const spec = (preview.tierCandidates || {})[tier];
+        for (const candidate of (spec && spec.candidates) || []) {
+          const value = designAssignmentValue(tier, candidate);
+          const selected = current && current.tier === tier
+            && String(current.agent_cli || '') === String(candidate.agent_cli || '')
+            && String(current.model || '') === String(candidate.model || '');
+          choices.push(`<option value="${esc(value)}"${selected ? ' selected' : ''}>${
+            esc(tierLabel(tier))} — ${esc(candidate.agent_cli || '既定')} / ${esc(candidate.model || '既定モデル')}</option>`);
+        }
+      }
+      return `<label class="field design-assignment-row">${esc(label)}
+        <select data-exec-assign="${esc(`${group}:${key}`)}">${choices.join('')}</select></label>`;
+    };
+    const roleLabels = { planner: '計画', evaluator: '継続判定', worker: '作業全般', verify: '検証全般' };
+    const roleRows = Object.entries(preview.roles || {})
+      .map(([role, entry]) => rowHtml('roles', role, roleLabels[role] || role, entry)).join('');
+    const kindRows = Object.entries(preview.kinds || {})
+      .map(([kind, entry]) => rowHtml('kinds', kind, kindLabelForKind(kind), entry)).join('');
+    return `<dialog id="wf-execute-dialog" class="task-create-dialog">
+      <div class="dialog-heading"><h2>実行前の確認 — ${esc(dialogState.title || '')}</h2>
+        <button type="button" class="wf-icon-button" data-wf-execute-close aria-label="閉じる">${ICONS.close}</button></div>
+      <div class="dialog-scroll-body task-create-scroll">
+        <p class="field-help">実装フローは自動で計画されます。各工程を実行するエージェント・モデルは下の割り当てで決まります。
+          既定は自動割り当てで、この画面の変更はこの実行にだけ適用されます。</p>
+        <fieldset class="design-assignments"><legend>役割ごとの割り当て</legend>${roleRows}</fieldset>
+        <details><summary>工程の種類ごとの割り当て</summary>
+          <fieldset class="design-assignments">${kindRows}</fieldset></details>
+      </div>
+      <div class="dialog-actions"><button type="button" data-wf-execute-close>キャンセル</button>
+        <span class="spacer"></span>
+        <button type="button" class="primary-inline" data-wf-execute-run>実装を開始</button></div>
+    </dialog>`;
   }
 
   const PREPARATION_ROUTES = [
@@ -958,7 +1011,10 @@
       <datalist id="wf-task-cwd-list">${histories}</datalist>
       <label class="field">ファイルとデータ<input id="wf-task-materials" type="file" multiple>
         <small>${wizard.materials.length ? wizard.materials.map((item) => esc(item.name)).join('、') : '必要な設計書・仕様・関連ファイルを選択できます。'}</small></label>
-      ${wizard.route === 'external-design' ? '<p class="field-help">完成済みの設計書を1件以上選択してください。</p>' : ''}`;
+      ${wizard.route === 'external-design' ? '<p class="field-help">完成済みの設計書を1件以上選択してください。</p>' : ''}
+      ${wizard.route === 'agent-design'
+        ? designAssignmentSectionHtml(wizard.designPreview, wizard.designAssignments)
+        : ''}`;
     if (wizard.step === 4) body = `<article class="task-candidate-card"><span class="status-chip st-review">準備前</span>
       <label>タスク名<input id="wf-task-title" value="${esc(wizard.title || String(wizard.goal || '').split(/\r?\n/)[0].slice(0, 80))}"></label>
       <dl class="task-preparation-summary"><div><dt>進め方</dt><dd>${esc(PREPARATION_ROUTES.find(([id]) => id === wizard.route)?.[1] || '')}</dd></div>
@@ -1723,7 +1779,7 @@
     };
     $id('wf-create-task')?.addEventListener('click', () => {
       st.taskWizard = { step: 1, title: '', goal: '', route: '', recommendation: null,
-        materials: [], cwd: '', error: '', busy: '' };
+        materials: [], cwd: '', error: '', busy: '', designPreview: null, designAssignments: null };
       reopenTaskDialog();
     });
     const taskDialog = $id('wf-task-dialog');
@@ -1745,6 +1801,10 @@
       st.taskWizard.error = '';
       reopenTaskDialog();
     });
+    // 設計フローの割り当ては再描画で消えないよう、変更のたびに状態へ写す。
+    taskDialog?.querySelectorAll('[data-design-node]').forEach((select) => select.addEventListener('change', () => {
+      st.taskWizard.designAssignments = collectDesignAssignmentsFrom(taskDialog);
+    }));
     taskDialog?.querySelector('[data-wf-task-next]')?.addEventListener('click', async () => {
       const wizard = st.taskWizard;
       wizard.error = '';
@@ -1767,12 +1827,28 @@
       }
       if (wizard.step === 2) {
         if (!wizard.route) wizard.error = '進め方を選択してください';
-        else wizard.step = 3;
+        else {
+          wizard.step = 3;
+          if (wizard.route === 'agent-design' && !wizard.designPreview) {
+            wizard.busy = '設計フローを確認中…';
+            reopenTaskDialog();
+            try {
+              const result = await api().adhocFlowDesignPreview({ mode: 'interactive' });
+              wizard.designPreview = result.preview;
+            } catch (err) {
+              // 割り当てUIが読めなくても準備は進められる（自動割り当てで実行される）。
+              wizard.designPreview = { nodes: [] };
+              console.warn('設計フローの割り当てを読み込めませんでした:', err);
+            }
+            wizard.busy = '';
+          }
+        }
         reopenTaskDialog();
         return;
       }
       if (wizard.step === 3) {
         wizard.cwd = $id('wf-task-cwd')?.value.trim() || wizard.cwd;
+        wizard.designAssignments = collectDesignAssignmentsFrom(taskDialog) || wizard.designAssignments;
         if (wizard.route === 'external-design' && !wizard.materials.length) {
           wizard.error = '完成済みの設計書を選択してください';
         } else wizard.step = 4;
@@ -1789,6 +1865,8 @@
           const created = await api().preparationCreate({
             target: 'workflow', title: wizard.title, goal: wizard.goal, route: wizard.route,
             materials: wizard.materials, cwd: wizard.cwd,
+            ...(wizard.route === 'agent-design' && wizard.designAssignments
+              ? { designAssignments: wizard.designAssignments } : {}),
           });
           if (wizard.route === 'agent-design') {
             const started = await api().preparationStartDesign({ id: created.item.id });
@@ -1839,16 +1917,68 @@
       } catch (err) { st.notice = String(err.message || err); }
       renderRun();
     }));
+    // 実行前のフロー表示を開く。割り当てを確認・変更してから実装 run を投入する。
     pane.querySelectorAll('[data-preparation-execute]').forEach((button) => button.addEventListener('click', async () => {
       button.disabled = true;
+      const id = button.dataset.preparationExecute;
+      const item = (st.preparationItems || []).find((row) => row.id === id) || {};
       try {
-        const handed = await api().preparationHandoff({ id: button.dataset.preparationExecute });
+        const result = await api().adhocFlowExecutionPreview({});
+        st.executionDialog = { id, title: item.title || '', preview: result.preview, overrides: {} };
+        renderRun(); // wireRun が描画後にダイアログを開く
+        return;
+      } catch (err) {
+        // プレビューが読めない端末でも実行は止めない（従来どおり自動割り当てで投入）。
+        console.warn('実行前プレビューを読み込めませんでした:', err);
+      }
+      try {
+        const handed = await api().preparationHandoff({ id });
         st.selectedRun = handed.result.runId;
         st.notice = `実装を開始しました · ${handed.result.branch || handed.result.runId}`;
         await loadOverview();
       } catch (err) { st.notice = String(err.message || err); }
       renderRun();
     }));
+    const executeDialog = $id('wf-execute-dialog');
+    executeDialog?.querySelectorAll('[data-wf-execute-close]').forEach((button) => button.addEventListener('click', () => {
+      executeDialog.close();
+      st.executionDialog = null;
+      renderRun();
+    }));
+    executeDialog?.querySelectorAll('[data-exec-assign]').forEach((select) => select.addEventListener('change', () => {
+      const overrides = { roles: {}, kinds: {} };
+      executeDialog.querySelectorAll('[data-exec-assign]').forEach((row) => {
+        const parsed = parseDesignAssignmentValue(row.value);
+        if (!parsed) return;
+        const [group, key] = row.dataset.execAssign.split(':');
+        if (overrides[group]) overrides[group][key] = parsed;
+      });
+      if (st.executionDialog) st.executionDialog.overrides = overrides;
+    }));
+    executeDialog?.querySelector('[data-wf-execute-run]')?.addEventListener('click', async (event) => {
+      const dialogState = st.executionDialog;
+      if (!dialogState) return;
+      const runButton = event.currentTarget;
+      runButton.disabled = true;
+      const overrides = dialogState.overrides || {};
+      const hasOverrides = Object.keys(overrides.roles || {}).length
+        || Object.keys(overrides.kinds || {}).length;
+      try {
+        const handed = await api().preparationHandoff({
+          id: dialogState.id,
+          ...(hasOverrides ? { executionOverrides: { version: 1, roles: overrides.roles || {}, kinds: overrides.kinds || {} } } : {}),
+        });
+        st.executionDialog = null;
+        st.selectedRun = handed.result.runId;
+        st.notice = `実装を開始しました · ${handed.result.branch || handed.result.runId}`;
+        await loadOverview();
+      } catch (err) {
+        st.notice = String(err.message || err);
+        st.executionDialog = null;
+      }
+      renderRun();
+    });
+    if (st.executionDialog && executeDialog && !executeDialog.open) executeDialog.showModal();
     pane.querySelectorAll('[data-wf-task-delete]').forEach((button) => button.addEventListener('click', async () => {
       await api().workflowTaskDelete({ id: button.dataset.wfTaskDelete });
       const queued = await api().workflowTaskList();

@@ -46,6 +46,41 @@ test('材料はIDで重複を除き設計と実装の両方へ引き継ぐ', () 
   }]);
 });
 
+test('設計フローのノード割り当ては形を整えて保存し、パッケージの子項目へ引き継ぐ', () => {
+  const item = preparation.createItem({
+    title: '割り当て付き',
+    goal: 'CSV対応を改善したい',
+    route: 'agent-design',
+    designAssignments: {
+      draft: { tier: 'large', agent_cli: 'codex', model: 'gpt-5' },
+      broken: { tier: '', agent_cli: 'codex' },      // tier 無しは捨てる
+      noagent: { tier: 'large', agent_cli: '' },     // agent 無しは捨てる
+    },
+  });
+  assert.deepStrictEqual(item.designAssignments,
+    { draft: { tier: 'large', agent_cli: 'codex', model: 'gpt-5' } });
+  assert.strictEqual(preparation.createItem({
+    title: '割り当てなし', goal: 'x', route: 'direct',
+  }).designAssignments, null);
+
+  const package_ = preparation.createPackage({
+    projectDir: '/tmp/project',
+    goal: '大きな要望',
+    designAssignments: { draft: { tier: 'large', agent_cli: 'codex', model: 'gpt-5' } },
+    candidates: [
+      { title: '子A', goal: 'a', route: 'agent-design' },
+      { title: '子B', goal: 'b', route: 'direct',
+        designAssignments: { draft: { tier: 'medium', agent_cli: 'claude', model: 'sonnet' } } },
+    ],
+  });
+  assert.deepStrictEqual(package_.items[0].designAssignments,
+    { draft: { tier: 'large', agent_cli: 'codex', model: 'gpt-5' } },
+    '親の割り当てを継承する');
+  assert.deepStrictEqual(package_.items[1].designAssignments,
+    { draft: { tier: 'medium', agent_cli: 'claude', model: 'sonnet' } },
+    '子項目固有の割り当てが親より優先する');
+});
+
 test('推奨が設計でも利用者は直接実装を選べる', () => {
   const item = preparation.createItem({
     target: 'workflow', title: 'CSV対応', goal: 'CSV対応を改善したい', route: 'direct',

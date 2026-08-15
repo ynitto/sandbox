@@ -198,5 +198,6 @@ module.exports = {
   catalog,
   seedTierCandidates,
   clampTier,
+  modeDefaultTier,
   decideAutoTier,
 };

@@ -186,8 +186,13 @@ class StatusHeartbeatTests(unittest.TestCase):
         al._CONTROL_CACHE["mtime"] = None
         al._INSTRUCTIONS_REV_APPLIED = None
         al._SESSION_COMMANDS_REV_APPLIED = None
+        # 適用済み revision（_apply_control_agent が控える）も未適用へ戻す。同じプロセスで
+        # 先に走った別のテストが控えた値を引き継ぐと、「まだ適用していないので control.json
+        # の revision を報告する」経路を検証できない（実行順で結果が変わる）。
+        al._REVISION_APPLIED = None
         self.addCleanup(setattr, al, "_INSTRUCTIONS_REV_APPLIED", None)
         self.addCleanup(setattr, al, "_SESSION_COMMANDS_REV_APPLIED", None)
+        self.addCleanup(setattr, al, "_REVISION_APPLIED", None)
 
     def _read_status(self):
         status_dir = os.path.join(self.dir, "status")

@@ -216,6 +216,9 @@ class SelectionPolicyTests(unittest.TestCase):
         os.environ["AGENT_BUDGET_DIR"] = self.dir      # 予算は無設定（None）
         self.addCleanup(os.environ.pop, "AGENT_BUDGET_DIR", None)
         al._CONTROL_CACHE["mtime"] = None
+        # _apply_control_agent は適用した revision をモジュール大域へ控える。この
+        # テストの control.json（revision 7）を後続のテストへ持ち越さない。
+        self.addCleanup(setattr, al, "_REVISION_APPLIED", al._REVISION_APPLIED)
 
     def _control(self, obj):
         with open(os.path.join(self.dir, "control.json"), "w", encoding="utf-8") as f:
