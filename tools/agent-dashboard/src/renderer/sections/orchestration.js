@@ -2180,8 +2180,13 @@ function coworkSelectedDetailHtml(entry, observed, busyId) {
   const run = state.coworkRun && String(state.coworkRun.id) === id ? state.coworkRun : null;
   const typeDetail = workTypeLabel(item.type);
   const history = coworkHistoryForSelected(id);
-  const execution = item.execution || {};
-  const executionLabel = [execution.agent_cli || '自動', execution.model || '既定モデル'].join(' / ');
+  // 保存前のドラフト（設定変更ダイアログの反映直後）でも選択を映すため、
+  // executionChoice があればそれを優先して表示する。
+  const execution = item.executionChoice
+    ? { agent_cli: item.executionChoice.agent_cli, model: item.executionChoice.model }
+    : (item.execution || {});
+  const executionLabel = [execution.agent_cli || '自動', execution.model || '既定モデル'].join(' / ')
+    + (item.executionChoice ? '（手動設定）' : '（自動割り当て）');
   const nextRun = coworkNextRunLabel(item, st);
   const prompt = String(item.prompt || item.instruction || '').trim();
   const lastRunAt = st.lastLogAt ? fmtTime(st.lastLogAt) : '未実行';
@@ -2314,11 +2319,16 @@ function openCoworkParametersDialog(routine, run) {
   tierSelect.innerHTML = tiers.length
     ? tiers.map((tier, index) => `<option value="${index}">${esc(orchTierLabel(tier.id, tier.label))} — ${esc(tier.agent_cli || '既定')} / ${esc(tier.model || '既定')}</option>`).join('')
     : '<option value="">現在の全体設定</option>';
+  // 初期値は「この業務の設定」＞「前回の全体状態」。この画面の選択は今回の実行だけに
+  // 効き、業務の設定へは保存しない（保存は設定変更ダイアログから）。
+  const storedChoice = (routine && routine.executionChoice) || null;
+  const matchIndex = (tier, candidate) => tiers.findIndex((row) => row.id === tier && candidate
+    && String(row.agent_cli || '') === String(candidate.agent_cli || '')
+    && String(row.model || '') === String(candidate.model || ''));
   const currentTier = String((state.cowork && state.cowork.currentRoutineTier) || '');
   const currentCandidate = (state.cowork && state.cowork.currentRoutineCandidate) || null;
-  let currentIndex = tiers.findIndex((tier) => tier.id === currentTier && currentCandidate
-    && String(tier.agent_cli || '') === String(currentCandidate.agent_cli || '')
-    && String(tier.model || '') === String(currentCandidate.model || ''));
+  let currentIndex = storedChoice ? matchIndex(storedChoice.tier, storedChoice) : -1;
+  if (currentIndex < 0) currentIndex = matchIndex(currentTier, currentCandidate);
   if (currentIndex < 0) currentIndex = tiers.findIndex((tier) => tier.id === currentTier);
   if (currentIndex >= 0) tierSelect.value = String(currentIndex);
   fields.innerHTML = keys.map((key, index) => `<div class="field">

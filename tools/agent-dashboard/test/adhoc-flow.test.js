@@ -381,6 +381,92 @@ test('機能・オプションの実行可能レベル外の固定 tier は plan
   }
 });
 
+test('ノード割り当ては自動割り当てより優先し、宣言済み候補だけを plan へ固定する', () => {
+  const controlDir = tmpdir('flow-node-assign-');
+  const cfg = { orchestration: { controlDir } };
+  fs.writeFileSync(path.join(controlDir, 'profiles.json'), JSON.stringify({
+    version: 1,
+    enabled: true,
+    tiers: {
+      medium: { order: 20, label: '標準', candidates: [{ agent_cli: 'claude', model: 'sonnet' }] },
+      large: { order: 30, label: '高性能', candidates: [{ agent_cli: 'codex', model: 'gpt-5' }] },
+    },
+    policy: { apply_to: ['flow'], steps: [{ min_remaining_ratio: 0, tier: 'medium' }], no_cap_tier: 'medium' },
+  }));
+  const workflow = adhoc.normalizeWorkflow({
+    name: '割り当て',
+    nodes: [
+      { id: 'build', goal: '実装', tier: 'auto' },
+      { id: 'check', goal: '検証', kind: 'verify', tier: 'auto', deps: ['build'] },
+    ],
+  });
+  const plan = adhoc.planFromWorkflow(cfg, workflow, {
+    nodeAssignments: {
+      build: { tier: 'large', agent_cli: 'codex', model: 'gpt-5' },
+      ghost: { tier: 'large', agent_cli: 'codex', model: 'gpt-5' }, // 消えたノードは黙って捨てる
+    },
+  });
+  const build = plan.nodes.find((node) => node.id === 'build');
+  assert.strictEqual(build.tier, 'large');
+  assert.deepStrictEqual(build.agent, { agent_cli: 'codex', model: 'gpt-5' });
+  assert.strictEqual(build.selection_reason, 'user-node-assignment');
+  const check = plan.nodes.find((node) => node.id === 'check');
+  assert.ok(!check.agent, '割り当ての無いノードは従来どおり自動決定（継承）のまま');
+
+  // 実行可能レベル外の割り当ては固定 tier と同じ口で弾く
+  assert.throws(() => adhoc.planFromWorkflow(cfg, adhoc.normalizeWorkflow({
+    name: '不適格割り当て', nodes: [{ id: 'pick', goal: '判定', kind: 'judge', tier: 'auto' }],
+  }), { nodeAssignments: { pick: { tier: 'small', agent_cli: 'claude', model: 'sonnet' } } }),
+  /「pick」（judge）は実行レベル「軽量」に任せられません/);
+
+  // その tier に宣言されていない組み合わせは plan へ運ばない
+  assert.throws(() => adhoc.planFromWorkflow(cfg, workflow, {
+    nodeAssignments: { build: { tier: 'medium', agent_cli: 'codex', model: 'gpt-5' } },
+  }), /実行レベル「標準」の候補にありません/);
+});
+
+test('割り当てプレビューはノードごとの自動割り当てと実行可能レベル内の候補を返す', () => {
+  const controlDir = tmpdir('flow-assign-preview-');
+  const workflowDir = tmpdir('flow-assign-preview-wf-');
+  const cfg = { orchestration: { controlDir }, adhocFlow: { workflowDir } };
+  fs.writeFileSync(path.join(controlDir, 'profiles.json'), JSON.stringify({
+    version: 1,
+    enabled: true,
+    tiers: {
+      small: { order: 10, label: '軽量', candidates: [{ agent_cli: 'aider', model: 'gemma4:e4b' }] },
+      medium: { order: 20, label: '標準', candidates: [{ agent_cli: 'claude', model: 'sonnet' }] },
+    },
+    policy: { apply_to: ['flow'], steps: [{ min_remaining_ratio: 0, tier: 'medium' }], no_cap_tier: 'medium' },
+  }));
+  adhoc.saveWorkflow(cfg, {
+    name: 'プレビュー対象',
+    id: 'preview-target',
+    nodes: [
+      { id: 'draft', goal: '設計を更新', tier: 'auto' },
+      { id: 'gate', goal: '確認', kind: 'human', deps: ['draft'],
+        interaction: { mode: 'approval', prompt: '確認してください' } },
+    ],
+  });
+  const preview = adhoc.flowAssignmentPreview(cfg, { id: 'preview-target' });
+  assert.strictEqual(preview.id, 'preview-target');
+  assert.deepStrictEqual(Object.keys(preview.tierCandidates).sort(), ['medium', 'small']);
+  const draft = preview.nodes.find((node) => node.id === 'draft');
+  assert.ok(draft.allowed.includes('small') && draft.allowed.includes('large'));
+  assert.strictEqual(draft.auto.tier, 'medium', '実行方針（medium）どおりの自動割り当てを見せる');
+  assert.deepStrictEqual(draft.auto.candidate, { agent_cli: 'claude', model: 'sonnet' });
+  const gate = preview.nodes.find((node) => node.id === 'gate');
+  assert.strictEqual(gate.human, true, 'human ノードは割り当て対象外として返す');
+
+  // 実装フロー（自動 plan）向けの役割・機能プレビュー
+  const execution = adhoc.executionAssignmentPreview(cfg);
+  assert.ok(execution.roles.planner.allowed.includes('medium'));
+  assert.ok(!execution.roles.planner.allowed.includes('small'), 'planner は標準以上だけ');
+  assert.strictEqual(execution.roles.worker.auto.tier, 'medium');
+  assert.deepStrictEqual(execution.roles.worker.auto.candidate, { agent_cli: 'claude', model: 'sonnet' });
+  assert.ok(execution.kinds.classify.allowed.includes('basic'));
+  assert.ok(!('human' in execution.kinds), 'human は実行割り当てを持たない');
+});
+
 test('複数レベルで実行可能な自動 tier は、実行方針の戦略に応じて実行可能範囲内で決まる', () => {
   const original = profiles.resolveTier;
   profiles.resolveTier = (_cfg, tier) => ({ agent_cli: 'claude', model: `m-${tier}` });
@@ -1654,6 +1740,54 @@ test('設計セッションはラウンドごとに設計 run を投げ、成果
   } finally {
     exec.shInWsl = originalExec;
     profiles.resolveTier = originalTier;
+  }
+});
+
+test('設計セッションのノード割り当ては plan へ固定され、次のラウンドにも引き継ぐ', () => {
+  const busDir = tmpdir('design-assign-bus-');
+  const controlDir = tmpdir('design-assign-control-');
+  const cfg = {
+    orchestration: { controlDir },
+    adhocFlow: {
+      busDir, workflowDir: tmpdir('design-assign-workflow-'),
+      designSessionDir: tmpdir('design-assign-sessions-'), tuningRoot: tmpdir('design-assign-tuning-'),
+    },
+  };
+  fs.writeFileSync(path.join(controlDir, 'profiles.json'), JSON.stringify({
+    version: 1,
+    enabled: true,
+    tiers: { large: { order: 30, label: '高性能', candidates: [{ agent_cli: 'codex', model: 'gpt-5' }] } },
+    policy: { apply_to: ['flow'], steps: [{ min_remaining_ratio: 0, tier: 'large' }], no_cap_tier: 'large' },
+  }));
+  const originalExec = exec.shInWsl;
+  exec.shInWsl = () => ({ status: 0, stdout: 'launched:1', stderr: '' });
+  try {
+    const started = design.startRound(cfg, {
+      goal: '設計を詰める', mode: 'interactive',
+      nodeAssignments: { draft: { tier: 'large', agent_cli: 'codex', model: 'gpt-5' } },
+    });
+    assert.deepStrictEqual(started.nodeAssignments,
+      { draft: { tier: 'large', agent_cli: 'codex', model: 'gpt-5' } });
+    const inbox = adhoc.readInbox(busDir, started.runId);
+    const draft = inbox.plan.nodes.find((node) => node.id === 'draft');
+    assert.strictEqual(draft.tier, 'large');
+    assert.deepStrictEqual(draft.agent, { agent_cli: 'codex', model: 'gpt-5' });
+    assert.strictEqual(draft.selection_reason, 'user-node-assignment');
+
+    // ラウンド 2 は割り当てを渡し直さなくても同じ組み合わせで実行する
+    const runDir = path.join(busDir, 'runs', started.runId);
+    fs.mkdirSync(path.join(runDir, 'results'), { recursive: true });
+    fs.writeFileSync(path.join(runDir, 'meta.json'), JSON.stringify({ status: 'done' }));
+    fs.writeFileSync(path.join(runDir, 'graph.json'), JSON.stringify({ nodes: { draft: { id: 'draft', deps: [] } } }));
+    fs.writeFileSync(path.join(runDir, 'results', 'draft.json'), JSON.stringify({
+      status: 'done', output: '## 目的\nやること\n\n## 質問\n1. 続けるか',
+    }));
+    design.getSession(cfg, started.id);
+    const next = design.startRound(cfg, { id: started.id, answers: ['続ける'] });
+    const nextDraft = adhoc.readInbox(busDir, next.runId).plan.nodes.find((node) => node.id === 'draft');
+    assert.deepStrictEqual(nextDraft.agent, { agent_cli: 'codex', model: 'gpt-5' });
+  } finally {
+    exec.shInWsl = originalExec;
   }
 });
 

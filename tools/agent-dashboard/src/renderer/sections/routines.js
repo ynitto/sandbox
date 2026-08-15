@@ -703,8 +703,38 @@ function openCoworkWorkDialog(index) {
   ));
   $('cw-prompt').value = item.prompt || '';
   $('cw-instruction').value = item.instruction || '';
+  fillCoworkExecutionSelect(item);
   updateCoworkWorkFields();
   $('dlg-cowork-work').showModal();
+}
+
+// 実行エージェントの選択肢。既定（値 ''）は自動割り当てで、自動割り当てが今選ぶ具体的な
+// エージェント・モデルをそのまま表示する。それ以外は全体設定の実行レベル構成に宣言された
+// （実行レベル×候補）の組だけ——自由入力の組み合わせは実行資格の裏付けが無いので出さない。
+function fillCoworkExecutionSelect(item) {
+  const select = $('cw-execution');
+  const tiers = Array.isArray(state.cowork && state.cowork.routineTiers) ? state.cowork.routineTiers : [];
+  const auto = (item && item.autoExecution) || {};
+  const autoLabel = `自動割り当て（現在: ${auto.agent_cli || '既定'} / ${auto.model || '既定モデル'}）`;
+  select.innerHTML = [
+    `<option value="">${esc(autoLabel)}</option>`,
+    ...tiers.map((tier, index) =>
+      `<option value="${index}">${esc(orchTierLabel(tier.id, tier.label))} — ${esc(tier.agent_cli || '既定')} / ${esc(tier.model || '既定')}</option>`),
+  ].join('');
+  const choice = item && item.executionChoice;
+  const selected = choice ? tiers.findIndex((tier) => tier.id === choice.tier
+    && String(tier.agent_cli || '') === String(choice.agent_cli || '')
+    && String(tier.model || '') === String(choice.model || '')) : -1;
+  select.value = selected >= 0 ? String(selected) : '';
+  select.disabled = !tiers.length;
+}
+
+function coworkExecutionSelection() {
+  const tiers = Array.isArray(state.cowork && state.cowork.routineTiers) ? state.cowork.routineTiers : [];
+  const raw = $('cw-execution').value;
+  if (raw === '') return null;
+  const tier = tiers[Number(raw)];
+  return tier ? { tier: tier.id, agent_cli: tier.agent_cli || '', model: tier.model || '' } : null;
 }
 
 function updateCoworkWorkFields() {
@@ -749,12 +779,14 @@ async function applyCoworkWorkDialog() {
       return;
     }
   }
+  const executionChoice = coworkExecutionSelection();
   let item;
   if (discovered) {
     item = {
       ...existing,
       name,
       schedule: $('cw-schedule').value.trim(),
+      executionChoice,
       ...(type === 'loop' ? { prompt } : instruction ? { instruction } : {}),
     };
   } else {
@@ -765,6 +797,7 @@ async function applyCoworkWorkDialog() {
       name,
       repo,
       schedule: $('cw-schedule').value.trim(),
+      executionChoice,
       ...(type === 'loop' ? { prompt, instruction: '' } : { instruction, prompt: '', workflow: machine }),
       managed: true,
       source: 'config',
