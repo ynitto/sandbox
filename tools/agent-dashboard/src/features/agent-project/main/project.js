@@ -1473,7 +1473,8 @@ function readKnowledgeRules(dir) {
   const outcomes = new Map();
   const hitCounts = new Map(); // learn 出典 stem → hit 数
   const seenObs = new Map();   // 出典 stem → 計上済み observation ID（git 再取込の二重計上防止）
-  const lifeRe = /^- rule-lifecycle:\s*(obs-[0-9a-f]{16})\s+(\S+)\s*$/;
+  const lifecycleOrder = new Map();
+  const lifeRe = /^- rule-lifecycle:\s*(obs-[0-9a-f]{16})\s+(\S+)(?:\s+(\{.*\}))?\s*$/;
   const outRe = /^- rule-outcome:\s*(obs-[0-9a-f]{16})\s+(worked|misfire|suppressed)\s*$/;
   const learnRe = /^- learn:\s*(.+?)\s*::\s*(.+)$/;
   const reasonHitRe = /learned from (?:ltm:)?(\S+?):/;
@@ -1483,11 +1484,27 @@ function readKnowledgeRules(dir) {
     if (!f.endsWith('.md')) continue;
     const text = readText(path.join(decisionsDir, f)) || '';
     const stem = f.replace(/\.md$/, '');
-    for (const line of text.split('\n')) {
+    for (const [lineIndex, line] of text.split('\n').entries()) {
       const s = line.trim();
       let m = lifeRe.exec(s);
       if (m) {
-        final.set(m[1], m[2]);
+        let meta;
+        try { meta = m[3] ? JSON.parse(m[3]) : {}; } catch { meta = {}; }
+        const rawAt = String(meta.at || '').trim();
+        const at = rawAt && Number.isFinite(Date.parse(rawAt)) ? rawAt : '';
+        // 新形式は at が第一時計。旧形式は従来の (file, line) 順で互換解決する。
+        const order = [at ? 1 : 0, at, stem, lineIndex];
+        const previous = lifecycleOrder.get(m[1]);
+        const newer = !previous
+          || order[0] > previous[0]
+          || (order[0] === previous[0] && order[1] > previous[1])
+          || (order[0] === previous[0] && order[1] === previous[1] && order[2] > previous[2])
+          || (order[0] === previous[0] && order[1] === previous[1]
+              && order[2] === previous[2] && order[3] > previous[3]);
+        if (newer) {
+          lifecycleOrder.set(m[1], order);
+          final.set(m[1], m[2]);
+        }
         if (!sources.has(m[1])) sources.set(m[1], new Set());
         sources.get(m[1]).add(stem);
       }

@@ -71,6 +71,29 @@ function readDropped(dir) {
     assert.strictEqual(live.running, true); // 稼働中（同期経由の推定）かつ一時停止中
   });
 
+  await test('readKnowledgeRules は lifecycle の記録時刻で最終状態を決める', async () => {
+    const dir = mkProject();
+    const decisions = path.join(dir, 'decisions');
+    fs.mkdirSync(decisions, { recursive: true });
+    const rid = 'obs-0123456789abcdef';
+    // sort 順では Z.md が最後だが、時系列では A.md の suspended が最後。
+    fs.writeFileSync(
+      path.join(decisions, 'A.md'),
+      `- rule-lifecycle: ${rid} suspended `
+        + '{"actor":"alice","at":"2026-08-15T02:00:00.000000Z","why":"later"}\n',
+      'utf8'
+    );
+    fs.writeFileSync(
+      path.join(decisions, 'Z.md'),
+      `- rule-lifecycle: ${rid} active `
+        + '{"actor":"bob","at":"2026-08-15T01:00:00.000000Z","why":"earlier"}\n',
+      'utf8'
+    );
+    const row = project.readKnowledgeRules(dir).find((item) => item.ruleId === rid);
+    assert.ok(row);
+    assert.strictEqual(row.state, 'suspended');
+  });
+
   console.log(`\n${passed} passed`);
 })().catch((err) => {
   console.error(err);

@@ -490,6 +490,69 @@ class TestLearnScopeAndExpiry(unittest.TestCase):
             self.assertIsNone(km.find_learned_resolution(
                 cfg, km.Task(id="NEW", title="fix slugify util again")))
 
+    def test_rule_lifecycle_uses_recorded_time_across_source_files(self):
+        """ファイル名順ではなく lifecycle 行の記録時刻で最終状態を決める。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            cfg.decisions.mkdir(parents=True, exist_ok=True)
+            rid = "obs-0123456789abcdef"
+            # sort 順では Z.md が最後だが、時系列では A.md の suspended が最後。
+            (cfg.decisions / "A.md").write_text(
+                f'- rule-lifecycle: {rid} suspended '
+                '{"actor":"alice","at":"2026-08-15T02:00:00.000000Z","why":"later"}\n',
+                encoding="utf-8")
+            (cfg.decisions / "Z.md").write_text(
+                f'- rule-lifecycle: {rid} active '
+                '{"actor":"bob","at":"2026-08-15T01:00:00.000000Z","why":"earlier"}\n',
+                encoding="utf-8")
+            self.assertEqual(km.rule_lifecycle_state(cfg, rid), "suspended")
+
+    def test_rule_lifecycle_index_reuses_text_until_decisions_change(self):
+        """同じ decisions snapshot は再走査せず、変更時だけ索引を再構築する。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            cfg.decisions.mkdir(parents=True, exist_ok=True)
+            rid = "obs-0123456789abcdef"
+            for name in ("A.md", "B.md"):
+                (cfg.decisions / name).write_text(
+                    f"- rule-lifecycle: {rid} trial\n", encoding="utf-8")
+
+            original_read_text = Path.read_text
+            reads = []
+
+            def counted_read_text(path, *args, **kwargs):
+                if path.parent == cfg.decisions:
+                    reads.append(path.name)
+                return original_read_text(path, *args, **kwargs)
+
+            with mock.patch.object(Path, "read_text", counted_read_text):
+                self.assertEqual(km.rule_lifecycle_state(cfg, rid), "trial")
+                first_scan_reads = len(reads)
+                self.assertGreater(first_scan_reads, 0)
+                self.assertEqual(km.rule_lifecycle_state(cfg, rid), "trial")
+                self.assertEqual(len(reads), first_scan_reads)
+                self.assertTrue(km.append_rule_lifecycle(
+                    cfg, "A", rid, "suspended", why="changed"))
+                self.assertEqual(km.rule_lifecycle_state(cfg, rid), "suspended")
+                self.assertGreater(len(reads), first_scan_reads)
+
+    def test_rule_lifecycle_line_keeps_actor_and_why(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, actor="alice")
+            rid = "obs-0123456789abcdef"
+            self.assertTrue(km.append_rule_lifecycle(
+                cfg, "OLD", rid, "trial", why="人手で試行を開始"))
+            line = (cfg.decisions / "OLD.md").read_text(encoding="utf-8").strip()
+            prefix = f"- rule-lifecycle: {rid} trial "
+            self.assertTrue(line.startswith(prefix), line)
+            meta = json.loads(line[len(prefix):])
+            self.assertEqual(meta["actor"], "alice")
+            self.assertEqual(meta["why"], "人手で試行を開始")
+            self.assertRegex(meta["at"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{6}Z$")
+
     def test_outcome_is_recorded_to_the_source(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
@@ -710,8 +773,13 @@ class ProjectRulesTests(unittest.TestCase):
             self.assertIn("rule:obs-", text)
             self.assertIn("- rules-promoted: rules.md",
                           (cfg.decisions / "OLD.md").read_text(encoding="utf-8"))
-            self.assertIn("- rule-lifecycle:",
-                          (cfg.decisions / "OLD.md").read_text(encoding="utf-8"))
+            decision_text = (cfg.decisions / "OLD.md").read_text(encoding="utf-8")
+            self.assertIn("- rule-lifecycle:", decision_text)
+            lifecycle_line = next(
+                line for line in decision_text.splitlines()
+                if line.startswith("- rule-lifecycle:"))
+            self.assertEqual(json.loads(lifecycle_line[lifecycle_line.index("{"):])["actor"],
+                             "auto")
             # 冪等: 2 回目は追記しない
             self.assertEqual(km.promote_rules(cfg), [])
             self.assertEqual(text, km.rules_path(cfg).read_text(encoding="utf-8"))

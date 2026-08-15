@@ -155,7 +155,8 @@ def promote_rules(cfg: "Config") -> "list[str]":
         with decision_path(cfg, src).open("a", encoding="utf-8") as f:
             f.write("- rules-promoted: rules.md\n")
         append_rule_lifecycle(cfg, src, rid, "trial",
-                              why=f"hits={hits[src]}≥{cfg.promote_threshold}")
+                              why=f"hits={hits[src]}≥{cfg.promote_threshold}",
+                              actor="auto")
         # 既に worked があれば同サイクルで active へ（threshold+outcome）
         if maybe_activate_rule(cfg, src, rid):
             text = _rewrite_rule_state_in_rules_md(text, rid, "active")

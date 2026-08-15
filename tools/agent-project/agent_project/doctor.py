@@ -475,13 +475,11 @@ def doctor_rule_lifecycle_findings(cfg: "Config") -> "list[dict]":
         findings.append({"category": "config", "severity": severity, "title": title,
                          "evidence": evidence, "fix": fix})
 
-    # 最終 lifecycle 状態を集約
-    final: dict[str, str] = {}
-    for _src, text in _iter_decision_texts(cfg):
-        for line in text.splitlines():
-            m = _RULE_LIFECYCLE_RE.match(line.strip())
-            if m and m.group("state") in RULE_LIFECYCLE_STATES:
-                final[m.group("id")] = m.group("state")
+    # 最終 lifecycle 状態は decisions の時系列索引を共有する。
+    final: dict[str, str] = {
+        rid: str(event["state"])
+        for rid, event in _rule_decision_index(cfg)["lifecycle"].items()
+    }
 
     for rid, state in sorted(final.items()):
         if state != "active":

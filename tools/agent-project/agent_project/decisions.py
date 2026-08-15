@@ -210,11 +210,15 @@ RULE_LIFECYCLE_STATES = (
 RULE_OUTCOMES = ("worked", "misfire", "suppressed")
 RULE_EXCLUDED_STATES = frozenset({"suspended", "deprecated", "rejected"})
 _RULE_LIFECYCLE_RE = re.compile(
-    r"^- rule-lifecycle:\s*(?P<id>obs-[0-9a-f]{16})\s+(?P<state>\S+)\s*$")
+    r"^- rule-lifecycle:\s*(?P<id>obs-[0-9a-f]{16})\s+(?P<state>\S+)"
+    r"(?:\s+(?P<meta>\{.*\}))?\s*$")
 _RULE_OUTCOME_RE = re.compile(
     r"^- rule-outcome:\s*(?P<id>obs-[0-9a-f]{16})\s+(?P<out>worked|misfire|suppressed)\s*$")
 _RULE_COMMENT_RE = re.compile(
     r"<!--\s*rule:(?P<id>obs-[0-9a-f]{16})\s+state:(?P<state>\S+).*?-->")
+_RULE_DECISION_INDEX_CACHE: dict[str, dict] = {}
+_RULE_DECISION_INDEX_LOCK = threading.RLock()
+_RULE_DECISION_INDEX_MAX = 16
 
 
 def rule_id_for_guide(guide: str, source: str = "") -> str:
@@ -235,30 +239,139 @@ def applied_rules_hash_ok(cfg: "Config", task: "Task") -> bool:
     return bool(re.match(r"^sha256:[0-9a-f]{64}$", applied))
 
 
-def _iter_decision_texts(cfg: "Config") -> "list[tuple[str, str]]":
-    out: "list[tuple[str, str]]" = []
-    if not cfg.decisions.exists():
-        return out
-    for f in sorted(cfg.decisions.glob("*.md")):
+def _decision_file_snapshot(cfg: "Config") -> "tuple[tuple, list[tuple[Path, tuple]]]":
+    """decisions/*.md の安価な署名。本文は変更ファイルだけ再読するためここでは stat のみ。"""
+    root = Path(cfg.decisions)
+    try:
+        root_stat = root.stat()
+    except OSError:
+        return (("missing",), ()), []
+    files: "list[tuple[Path, tuple]]" = []
+    for path in sorted(root.glob("*.md")):
         try:
-            out.append((f.stem, f.read_text(encoding="utf-8")))
+            st = path.stat()
         except OSError:
             continue
-    return out
+        ident = (path.name, st.st_dev, st.st_ino, st.st_size,
+                 st.st_mtime_ns, st.st_ctime_ns)
+        files.append((path, ident))
+    signature = ((root_stat.st_dev, root_stat.st_ino, root_stat.st_mtime_ns),
+                 tuple(ident for _path, ident in files))
+    return signature, files
+
+
+def _rule_lifecycle_meta(match: "re.Match") -> dict:
+    raw = match.groupdict().get("meta") or ""
+    if not raw:
+        return {}
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _rule_lifecycle_at(meta: dict) -> str:
+    """比較用 UTC RFC3339。writer の固定6桁形式なら文字列比較が時系列比較になる。"""
+    raw = str(meta.get("at") or "").strip()
+    if not raw:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return ""
+    if parsed.tzinfo is None:
+        return ""
+    return parsed.astimezone(timezone.utc).isoformat(
+        timespec="microseconds").replace("+00:00", "Z")
+
+
+def _parse_decision_file(path: Path, ident: tuple) -> dict:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        text = ""
+    lifecycle: list[dict] = []
+    for line_no, line in enumerate(text.splitlines(), start=1):
+        match = _RULE_LIFECYCLE_RE.match(line.strip())
+        if not match or match.group("state") not in RULE_LIFECYCLE_STATES:
+            continue
+        meta = _rule_lifecycle_meta(match)
+        at = _rule_lifecycle_at(meta)
+        # 新形式は at を第一時計にする。旧形式は復元不能なので従来どおり
+        # (ファイル名, 行番号) の決定順を保ち、新形式より前の互換履歴として扱う。
+        order = (1 if at else 0, at, path.stem, line_no)
+        lifecycle.append({
+            "rule_id": match.group("id"),
+            "state": match.group("state"),
+            "at": at,
+            "actor": str(meta.get("actor") or ""),
+            "why": str(meta.get("why") or ""),
+            "source": path.stem,
+            "line": line_no,
+            "order": order,
+        })
+    return {"ident": ident, "text": text, "lifecycle": tuple(lifecycle)}
+
+
+def _build_rule_decision_index(cfg: "Config", signature: tuple,
+                               files: "list[tuple[Path, tuple]]",
+                               previous: "dict | None") -> dict:
+    previous_files = (previous or {}).get("files") or {}
+    indexed_files: dict[str, dict] = {}
+    for path, ident in files:
+        old = previous_files.get(path.name)
+        indexed_files[path.name] = (
+            old if old and old.get("ident") == ident
+            else _parse_decision_file(path, ident)
+        )
+    lifecycle: dict[str, dict] = {}
+    texts: list[tuple[str, str]] = []
+    for name in sorted(indexed_files):
+        entry = indexed_files[name]
+        texts.append((Path(name).stem, entry["text"]))
+        for event in entry["lifecycle"]:
+            current = lifecycle.get(event["rule_id"])
+            if current is None or event["order"] > current["order"]:
+                lifecycle[event["rule_id"]] = event
+    return {"signature": signature, "files": indexed_files,
+            "texts": tuple(texts), "lifecycle": lifecycle}
+
+
+def _rule_decision_index(cfg: "Config") -> dict:
+    """decisions 索引。変更のない Markdown は再読せず、変更ファイルだけ再解析する。"""
+    key = str(Path(cfg.decisions).resolve())
+    with _RULE_DECISION_INDEX_LOCK:
+        previous = _RULE_DECISION_INDEX_CACHE.get(key)
+        # 読み込み中の外部更新を取り逃さないよう、最大2回 snapshot を照合する。
+        for _attempt in range(2):
+            signature, files = _decision_file_snapshot(cfg)
+            if previous and previous.get("signature") == signature:
+                return previous
+            built = _build_rule_decision_index(cfg, signature, files, previous)
+            after, _after_files = _decision_file_snapshot(cfg)
+            if after == signature:
+                if key not in _RULE_DECISION_INDEX_CACHE and (
+                        len(_RULE_DECISION_INDEX_CACHE) >= _RULE_DECISION_INDEX_MAX):
+                    _RULE_DECISION_INDEX_CACHE.pop(next(iter(_RULE_DECISION_INDEX_CACHE)))
+                _RULE_DECISION_INDEX_CACHE[key] = built
+                return built
+            previous = built
+        # 絶えず更新されている場合も、最後に完全に読めた snapshot は返す。
+        return built
+
+
+def _iter_decision_texts(cfg: "Config") -> "list[tuple[str, str]]":
+    return list(_rule_decision_index(cfg)["texts"])
 
 
 def rule_lifecycle_state(cfg: "Config", rule_id: str) -> str:
-    """append-only の `- rule-lifecycle:` 最終状態。無ければ candidate。"""
+    """append-only lifecycle の記録時刻上の最終状態。無ければ candidate。"""
     rid = str(rule_id or "").strip()
-    state = "candidate"
     if not rid:
-        return state
-    for _src, text in _iter_decision_texts(cfg):
-        for line in text.splitlines():
-            m = _RULE_LIFECYCLE_RE.match(line.strip())
-            if m and m.group("id") == rid and m.group("state") in RULE_LIFECYCLE_STATES:
-                state = m.group("state")
-    return state
+        return "candidate"
+    event = _rule_decision_index(cfg)["lifecycle"].get(rid)
+    return str(event["state"]) if event else "candidate"
 
 
 def aggregate_rule_outcomes(cfg: "Config", rule_id: str) -> dict:
@@ -285,8 +398,8 @@ def aggregate_rule_outcomes(cfg: "Config", rule_id: str) -> dict:
 
 
 def append_rule_lifecycle(cfg: "Config", src: str, rule_id: str, state: str,
-                          why: str = "") -> bool:
-    """rule 状態遷移を出典 DR へ追記。自動遷移は trial / suspended のみ（active は outcome 条件付き）。"""
+                          why: str = "", actor: str = "") -> bool:
+    """rule 状態遷移を時刻・actor・why とともに出典 DR へ追記する。"""
     rid = str(rule_id or "").strip()
     st = str(state or "").strip()
     if not rid or st not in RULE_LIFECYCLE_STATES:
@@ -296,10 +409,21 @@ def append_rule_lifecycle(cfg: "Config", src: str, rule_id: str, state: str,
     cfg.decisions.mkdir(parents=True, exist_ok=True)
     path = decision_path(cfg, src)
     path.parent.mkdir(parents=True, exist_ok=True)
+    share_path = f"decisions/{path.name}"
+    clean_actor = redact_for_share(
+        str(actor or getattr(cfg, "actor", "") or "auto").strip(), share_path)
+    clean_why = redact_for_share(str(why or "").strip(), share_path)
+    meta = {
+        "actor": clean_actor,
+        "at": datetime.now(timezone.utc).isoformat(
+            timespec="microseconds").replace("+00:00", "Z"),
+        "why": clean_why,
+    }
     with path.open("a", encoding="utf-8") as f:
-        f.write(f"- rule-lifecycle: {rid} {st}\n")
-    if why:
-        append_journal(cfg.journal, f"rule {rid} → {st}: {why[:120]}")
+        f.write(f"- rule-lifecycle: {rid} {st} "
+                f"{json.dumps(meta, ensure_ascii=False, sort_keys=True, separators=(',', ':'))}\n")
+    if clean_why:
+        append_journal(cfg.journal, f"rule {rid} → {st}: {clean_why[:120]}")
     return True
 
 
@@ -314,32 +438,26 @@ def append_rule_outcome(cfg: "Config", src: str, rule_id: str, outcome: str) -> 
 
 def list_rule_adjudication(cfg: "Config") -> "list[dict]":
     """dashboard 知識画面用: rule ごとの状態・outcome・根拠・競合を 1 一覧に集約（読取専用）。"""
-    final: dict[str, str] = {}
+    index = _rule_decision_index(cfg)
+    final: dict[str, str] = {
+        rid: str(event["state"]) for rid, event in index["lifecycle"].items()
+    }
     sources: dict[str, set[str]] = {}
     guides: dict[str, str] = {}
-    for src, text in _iter_decision_texts(cfg):
+    for src, text in index["texts"]:
         for line in text.splitlines():
             m = _RULE_LIFECYCLE_RE.match(line.strip())
             if m and m.group("state") in RULE_LIFECYCLE_STATES:
                 rid = m.group("id")
-                final[rid] = m.group("state")
                 sources.setdefault(rid, set()).add(src)
-    # learn 行から guide を拾う（rule_id 再計算で突合）
-    if cfg.decisions.exists():
-        for f in sorted(cfg.decisions.glob("*.md")):
-            try:
-                lines = f.read_text(encoding="utf-8").splitlines()
-            except OSError:
+            m = LEARN_RE.match(line.strip())
+            if not m:
                 continue
-            for line in lines:
-                m = LEARN_RE.match(line.strip())
-                if not m:
-                    continue
-                rid = rule_id_for_guide(m.group("guide"), f.stem)
-                body, _scope = split_learn_scope(m.group("guide"))
-                guides.setdefault(rid, body.strip()[:160])
-                sources.setdefault(rid, set()).add(f.stem)
-                final.setdefault(rid, rule_lifecycle_state(cfg, rid))
+            rid = rule_id_for_guide(m.group("guide"), src)
+            body, _scope = split_learn_scope(m.group("guide"))
+            guides.setdefault(rid, body.strip()[:160])
+            sources.setdefault(rid, set()).add(src)
+            final.setdefault(rid, "candidate")
 
     conflicts: set[str] = set()
     if cfg.needs.exists():
@@ -524,7 +642,8 @@ def maybe_suspend_rule(cfg: "Config", src: str, rule_id: str, limit: int) -> boo
         return False
     return append_rule_lifecycle(
         cfg, src, rule_id, "suspended",
-        why=f"misfire_streak={agg['misfire_streak']}≥{limit}（fail-close）")
+        why=f"misfire_streak={agg['misfire_streak']}≥{limit}（fail-close）",
+        actor="auto")
 
 
 def maybe_activate_rule(cfg: "Config", src: str, rule_id: str) -> bool:
@@ -539,7 +658,8 @@ def maybe_activate_rule(cfg: "Config", src: str, rule_id: str) -> bool:
         return False
     return append_rule_lifecycle(
         cfg, src, rule_id, "active",
-        why=f"hits={hits} worked={agg['worked']}（threshold+outcome）")
+        why=f"hits={hits} worked={agg['worked']}（threshold+outcome）",
+        actor="auto")
 
 
 def rule_excluded_from_requests(cfg: "Config", rule_id: str) -> bool:
