@@ -310,7 +310,9 @@ class GoalToolLoopTest(unittest.TestCase):
             "wrote",
         ])
         failed = {"status": 2, "error": "", "stdout": "", "stderr": "invalid command"}
-        with mock.patch.object(al, "_tl_exec_argv", return_value=failed):
+        with (mock.patch.object(al, "_tl_executable_on_path",
+                                return_value="/usr/bin/agent-audit"),
+              mock.patch.object(al, "_tl_exec_argv", return_value=failed)):
             result = al.run_goal(
                 goal="agent-audit の結果を out.md に書く", cwd=self.dir,
                 agent={}, log_file=self.log,
@@ -328,7 +330,9 @@ class GoalToolLoopTest(unittest.TestCase):
         ])
         failed = {"status": 2, "error": "", "stdout": "", "stderr": "invalid command"}
         passed = {"status": 0, "error": "", "stdout": "no records", "stderr": ""}
-        with mock.patch.object(al, "_tl_exec_argv", side_effect=[failed, passed]):
+        with (mock.patch.object(al, "_tl_executable_on_path",
+                                return_value="/usr/bin/agent-audit"),
+              mock.patch.object(al, "_tl_exec_argv", side_effect=[failed, passed])):
             result = al.run_goal(
                 goal="agent-audit の結果を out.md に書く", cwd=self.dir,
                 agent={}, log_file=self.log,
