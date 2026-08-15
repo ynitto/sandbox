@@ -1414,7 +1414,7 @@ function summarizeBudgetProjection(budget, meta = {}) {
   const source = String(budget.source || '');
   let kind = 'unknown';
   if (meta.fresh === false || source === 'unavailable'
-      || (Number.isFinite(ver) && ver !== BUDGET_SUMMARY_CONTRACT_VERSION)
+      || ver !== BUDGET_SUMMARY_CONTRACT_VERSION // 版欠落・非数値も fail-close（schema 必須項目）
       || budget.can_accept === undefined || budget.can_accept === null) {
     kind = 'unknown';
   } else if (budget.can_accept === false) {
@@ -1439,6 +1439,31 @@ function summarizeBudgetProjection(budget, meta = {}) {
 }
 
 // 知識裁定一覧（decisions の rule-lifecycle / rule-outcome / learn を集約。読取専用）。
+// 行形式・ID 導出・hit 計数は Python 側 canon と同じ:
+//   learn 行     … `- learn: <title> :: <guide>`（_head.LEARN_RE）
+//   rule_id      … observation_id(kind="learn-capture", body, source)（decisions.rule_id_for_guide）
+//   hit          … `- reason` 行の `learned from <src>:` を ## ブロックの observation ID で
+//                  冪等化して数える（state.count_learn_hits）
+function _learnScopeSplit(guide) {
+  const m = /\s*::\s*scope=(charter|repo):(\S+)\s*$/.exec(String(guide || ''));
+  return m ? String(guide).slice(0, m.index).trim() : String(guide || '').trim();
+}
+
+function _ruleIdForGuide(guide, source) {
+  // Python json.dumps(sort_keys=True, separators=(",",":"), ensure_ascii=False) と
+  // 同一バイト列になるようキー昇順のリテラルで直列化する。
+  const payload = JSON.stringify({
+    body: _learnScopeSplit(guide),
+    extra: '',
+    kind: 'learn-capture',
+    rules_hash: '',
+    source: String(source || ''),
+    task_id: '',
+  });
+  const crypto = require('crypto');
+  return `obs-${crypto.createHash('sha256').update(payload, 'utf8').digest('hex').slice(0, 16)}`;
+}
+
 function readKnowledgeRules(dir) {
   const decisionsDir = path.join(dir, 'decisions');
   const needsDir = path.join(dir, 'needs');
@@ -1446,17 +1471,18 @@ function readKnowledgeRules(dir) {
   const sources = new Map();
   const guides = new Map();
   const outcomes = new Map();
-  const hitCounts = new Map();
+  const hitCounts = new Map(); // learn 出典 stem → hit 数
+  const seenObs = new Map();   // 出典 stem → 計上済み observation ID（git 再取込の二重計上防止）
   const lifeRe = /^- rule-lifecycle:\s*(obs-[0-9a-f]{16})\s+(\S+)\s*$/;
   const outRe = /^- rule-outcome:\s*(obs-[0-9a-f]{16})\s+(worked|misfire|suppressed)\s*$/;
-  const learnRe = /^- learn:\s*"([^"]*)"\s*→\s*(.+)$/;
-  const hitRe = /^- action\s*:\s*learn-hit\b/;
+  const learnRe = /^- learn:\s*(.+?)\s*::\s*(.+)$/;
+  const reasonHitRe = /learned from (?:ltm:)?(\S+?):/;
+  const obsLineRe = /^- observation:\s*(obs-[0-9a-f]{16})\s*$/;
 
-  for (const f of safeList(decisionsDir)) {
+  for (const f of [...safeList(decisionsDir)].sort()) {
     if (!f.endsWith('.md')) continue;
     const text = readText(path.join(decisionsDir, f)) || '';
     const stem = f.replace(/\.md$/, '');
-    let hits = 0;
     for (const line of text.split('\n')) {
       const s = line.trim();
       let m = lifeRe.exec(s);
@@ -1471,21 +1497,48 @@ function readKnowledgeRules(dir) {
         tallies[m[2]] = (tallies[m[2]] || 0) + 1;
         outcomes.set(m[1], tallies);
       }
-      if (hitRe.test(s)) hits += 1;
       m = learnRe.exec(s);
       if (m) {
-        // rule_id は本体と同じく observation_id。画面では stem+guide をキーに近似せず、
-        // lifecycle 行が無い候補は guide だけ見せる（ID 再計算は本体に任せる）。
-        guides.set(`learn:${stem}`, String(m[2] || '').trim().slice(0, 160));
-        hitCounts.set(stem, (hitCounts.get(stem) || 0));
+        const rid = _ruleIdForGuide(m[2], stem);
+        if (!guides.has(rid)) guides.set(rid, _learnScopeSplit(m[2]).slice(0, 160));
+        if (!sources.has(rid)) sources.set(rid, new Set());
+        sources.get(rid).add(stem);
+        if (!final.has(rid)) final.set(rid, 'candidate');
       }
     }
-    if (hits) hitCounts.set(stem, hits);
+    for (const block of text.split(/(?=^## )/m)) {
+      if (!block.trim()) continue;
+      const obsIds = [];
+      for (const line of block.split('\n')) {
+        const om = obsLineRe.exec(line.trim())
+          || /\bobs:(obs-[0-9a-f]{16})\b/.exec(line);
+        if (om && !obsIds.includes(om[1])) obsIds.push(om[1]);
+      }
+      for (const line of block.split('\n')) {
+        const s = line.trim();
+        if (!s.startsWith('- reason')) continue;
+        const hm = reasonHitRe.exec(s);
+        if (!hm) continue;
+        const src = hm[1];
+        if (obsIds.length) {
+          let bucket = seenObs.get(src);
+          if (!bucket) { bucket = new Set(); seenObs.set(src, bucket); }
+          for (const oid of obsIds) {
+            if (bucket.has(oid)) continue;
+            bucket.add(oid);
+            hitCounts.set(src, (hitCounts.get(src) || 0) + 1);
+          }
+        } else {
+          hitCounts.set(src, (hitCounts.get(src) || 0) + 1);
+        }
+      }
+    }
   }
 
   const conflicts = new Set();
   for (const f of safeList(needsDir)) {
     if (!f.startsWith('rule-') || !f.endsWith('.md')) continue;
+    if (f.startsWith('rule-revise-')) continue; // 改定 needs は競合票ではない（本体と同じ除外）
     const body = readText(path.join(needsDir, f)) || '';
     for (const m of body.matchAll(/obs-[0-9a-f]{16}/g)) conflicts.add(m[0]);
   }
@@ -1499,7 +1552,7 @@ function readKnowledgeRules(dir) {
       ruleId: rid,
       state,
       sources: srcs,
-      guide: '',
+      guide: guides.get(rid) || '',
       outcomes: tallies,
       hits,
       evidenceOk: (tallies.worked || 0) >= 1,

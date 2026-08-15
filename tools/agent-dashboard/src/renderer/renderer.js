@@ -60,6 +60,7 @@ const state = {
   amigos: null, // amigos:overview のスナップショット { missions, budget, errors }
   amigosBudgetSaving: false,
   amigosReject: null, // 修正依頼ダイアログの対象 { home, missionId }
+  ruleReason: null, // 知識ルール裁定ダイアログの対象 { action, ruleId, dir }
   // 定常業務の agent-loop 端末
   routineAgentTerm: null, // { repo, name, target, session, items, text, error, at }
   routineAgentCache: RoutineUiCache.createBoundedAsyncCache({ max: 8, ttlMs: 30000 }), // repo → session list

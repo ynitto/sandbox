@@ -360,6 +360,23 @@
     </form>
   </dialog>
 
+  <!-- ======== 知識ルール裁定の理由 ======== -->
+  <dialog id="dlg-rule-reason">
+    <form method="dialog">
+      <h2 id="rule-reason-title">ルールを裁定</h2>
+      <p class="muted">理由は決定記録（decisions/）に残ります。</p>
+      <div class="field">
+        <label for="rule-reason-text">理由</label>
+        <textarea id="rule-reason-text" rows="4"
+          placeholder="例: trial で 3 回 PASS したため active へ"></textarea>
+      </div>
+      <div class="dialog-actions">
+        <button id="btn-rule-reason-cancel" value="cancel" type="button">キャンセル</button>
+        <button id="btn-rule-reason-ok" value="default">投函する</button>
+      </div>
+    </form>
+  </dialog>
+
   <!-- ======== 選択中の画面・実行の詳細情報 ======== -->
   <dialog id="dlg-technical-info" class="wide developer-dialog">
     <div class="dialog-heading">

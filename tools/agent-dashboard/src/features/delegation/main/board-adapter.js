@@ -214,12 +214,17 @@ function listNodes(boardRepoDir, nowSec) {
 }
 
 // 板ミラーの budget 射影（任意）。一次は status。ここは重ね表示用。
+const BUDGET_SUMMARY_CONTRACT_VERSION = 1; // schemas/node-budget-summary.schema.json
+
 function budgetOverlay(budget, meta = {}) {
   if (!budget || typeof budget !== 'object') return null;
   const cap = budget.capacity && typeof budget.capacity === 'object' ? budget.capacity : {};
   const codes = Array.isArray(budget.reason_codes) ? budget.reason_codes.map(String) : [];
+  const ver = Number(budget.contract_version);
   let kind = 'unknown';
-  if (meta.stale || meta.fresh === false || String(budget.source || '') === 'unavailable') {
+  if (meta.stale || meta.fresh === false || String(budget.source || '') === 'unavailable'
+      || ver !== BUDGET_SUMMARY_CONTRACT_VERSION) {
+    // 版不一致・版欠落は fail-close で不明（§3.0。未知の意味論を ok/exhausted に畳まない）
     kind = 'unknown';
   } else if (budget.can_accept === false) {
     kind = 'exhausted';

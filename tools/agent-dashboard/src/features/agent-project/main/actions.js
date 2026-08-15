@@ -349,7 +349,7 @@ function dropCommand(projectDir, { action, id, reason, fields, feedback, run, ch
 async function runAction(cfg, { dir, action, id, reason, fields, feedback, run, complete, flow, ruleId, guide }) {
   if (!COMMAND_ACTIONS.has(action)) throw new Error(`不明なアクション: ${action}`);
   if (REASON_REQUIRED_ACTIONS.has(action) && !String(reason || '').trim()) {
-    throw new Error('強制完了には理由の記入が必要です（決定記録に残ります）');
+    throw new Error(`${action} には理由の記入が必要です（決定記録に残ります）`);
   }
   const why = String(reason || '').trim() || 'agent-dashboard から操作';
   if (action === 'revise' && !RULE_ACTIONS.has(action)
