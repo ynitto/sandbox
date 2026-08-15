@@ -89,6 +89,7 @@
     overview: null,
     design: { sessions: [], current: null, busy: '', notice: '', timer: null, open: false },
     selectedRun: '',
+    selectedPreparation: '',
     runDetail: null,
     editor: null,
     selectedNode: '',
@@ -103,7 +104,9 @@
     runView: 'overview',
     selectedNeed: '',
     queuedTasks: [],
-    taskWizard: { step: 1, inputMode: 'text', flow: 'requirements', text: '', fileName: '', fileContent: '', candidate: null, error: '', busy: '' },
+    preparationItems: [],
+    taskWizard: { step: 1, title: '', goal: '', route: '', recommendation: null,
+      materials: [], cwd: '', error: '', busy: '' },
   };
   const esc = (s) => root.esc(String(s == null ? '' : s));
 
@@ -522,6 +525,10 @@
         const queued = await api().workflowTaskList();
         st.queuedTasks = queued.tasks || [];
       }
+      if (includeRun && api().preparationList) {
+        const prepared = await api().preparationList({ target: 'workflow' });
+        st.preparationItems = prepared.items || [];
+      }
       if (includeRun && st.selectedRun) {
         try { st.runDetail = await api().adhocFlowRun({ runId: st.selectedRun }); }
         catch { st.runDetail = null; }
@@ -551,7 +558,7 @@
   function flowOptions(ov) {
     const patterns = (ov.patterns || []).map((p) =>
       `<option value="pattern:${esc(p.id)}">${esc(p.label)}</option>`).join('');
-    const custom = (ov.workflows || []).map((p) =>
+    const custom = (ov.workflows || []).filter((p) => p.libraryVisibility !== 'internal').map((p) =>
       `<option value="custom:${esc(p.id)}">${esc(p.name)}</option>`).join('');
     return `<option value="auto">自動</option>`
       + (patterns ? `<optgroup label="標準">${patterns}</optgroup>` : '')
@@ -887,31 +894,44 @@
         <p class="qf-notice" role="status"${st.notice ? '' : ' hidden'}>${esc(st.notice)}</p>
         ${runDetailHtml(st.runDetail)}</section>`;
     }
+    const prepared = st.preparationItems || [];
     const queued = st.queuedTasks || [];
+    const phaseLabel = (phase) => ({
+      'design-ready': '設計開始待ち', designing: '設計中', 'design-review': '設計確認',
+      'implementation-ready': '実装待ち', queued: '実行待ち', implementing: '実装中', completed: '完了',
+    }[phase] || phase || '準備中');
+    const routeLabel = (route) => PREPARATION_ROUTES.find(([id]) => id === route)?.[1] || route;
     return `<section class="wf-page" aria-label="ワークフロー実行">
-      <div class="wf-page-actions"><button type="button" class="primary-inline" id="wf-create-task">タスクを作成</button></div>
+      <div class="wf-page-actions"><button type="button" class="primary-inline" id="wf-create-task">仕事を準備</button></div>
       <p class="qf-notice" role="status" id="wf-notice"${st.notice ? '' : ' hidden'}>${esc(st.notice)}</p>
       <section class="wf-queue" aria-labelledby="wf-queue-title"><div class="wf-section-head"><div>
-        <h3 id="wf-queue-title">実行待ち</h3><span class="muted">${queued.length}件</span></div></div>
-        ${queued.length ? queued.map((task) => `<article class="wf-queue-item" data-wf-task="${esc(task.id)}">
-          <div><strong>${esc(task.title)}</strong><small>${esc(task.cwd || '対象フォルダ未指定')}</small></div>
-          <div class="qf-row"><button type="button" data-wf-task-delete="${esc(task.id)}">削除</button>
-            <button type="button" class="primary-inline" data-wf-task-execute="${esc(task.id)}">実行</button></div></article>`).join('')
-          : '<div class="empty">実行待ちのタスクはありません。「タスクを作成」から追加できます。</div>'}
+        <h3 id="wf-queue-title">作業準備</h3><span class="muted">${prepared.length}件</span></div></div>
+        ${prepared.length ? prepared.map((item) => `<article class="wf-queue-item" data-preparation-id="${esc(item.id)}">
+          <div><span class="status-chip st-review">${esc(phaseLabel(item.phase))}</span><strong>${esc(item.title)}</strong>
+            <small>${esc(routeLabel(item.route))} · ${esc(item.cwd || '対象フォルダ未指定')}</small></div>
+          <div class="qf-row"><button type="button" data-preparation-delete="${esc(item.id)}">削除</button>
+            ${item.phase === 'design-ready' ? `<button type="button" class="primary-inline" data-preparation-design="${esc(item.id)}">設計を開始</button>` : ''}
+            ${['designing', 'design-review'].includes(item.phase) ? `<button type="button" class="primary-inline" data-preparation-open="${esc(item.id)}">設計を確認</button>` : ''}
+            ${item.phase === 'implementation-ready' ? `<button type="button" class="primary-inline" data-preparation-execute="${esc(item.id)}">実装を開始</button>` : ''}</div></article>`).join('')
+          : '<div class="empty">準備中の仕事はありません。「仕事を準備」から追加できます。</div>'}
       </section>
+      ${queued.length ? `<details class="wf-legacy-queue"><summary>以前の実行待ち ${queued.length}件</summary>${queued.map((task) => `<article class="wf-queue-item" data-wf-task="${esc(task.id)}">
+        <div><strong>${esc(task.title)}</strong><small>${esc(task.cwd || '対象フォルダ未指定')}</small></div>
+        <div class="qf-row"><button type="button" data-wf-task-delete="${esc(task.id)}">削除</button>
+          <button type="button" class="primary-inline" data-wf-task-execute="${esc(task.id)}">実行</button></div></article>`).join('')}</details>` : ''}
+      ${st.selectedPreparation && st.design.current ? `<div id="wf-design-host">${designCardHtml()}</div>` : ''}
       ${workflowTaskDialogHtml(ov)}
     </section>`;
   }
 
-  const TASK_DESIGN_FLOWS = [
-    ['requirements', '要件を整理する', '曖昧な要望を、目的と完了条件が明確なタスクへ整えます。'],
-    ['implementation', '実装計画を作る', '変更対象と実装の進め方を具体化します。'],
-    ['gaps', '不足を確認する', '矛盾や不足を洗い出し、実行可能なタスクへ整えます。'],
-    ['document', '設計書からタスク化する', 'Markdownの決定を保ったまま単一タスクへ変換します。'],
+  const PREPARATION_ROUTES = [
+    ['agent-design', 'エージェントと設計する', '質問に答えながら設計を詰めてから実装します。'],
+    ['external-design', '外部の設計結果を使う', '別のエージェント等で作った設計書を引き継ぎます。'],
+    ['direct', 'そのまま実装する', '入力した内容と材料を設計runなしで実装へ渡します。'],
   ];
 
   function taskStepsHtml(step) {
-    return `<ol class="task-create-steps" aria-label="タスク作成の進行">${['入力', '設計フロー', '候補確認', '追加完了']
+    return `<ol class="task-create-steps" aria-label="作業準備の進行">${['やりたいこと', '進め方', '材料', '確認']
       .map((label, index) => `<li class="${step === index + 1 ? 'current' : step > index + 1 ? 'done' : ''}"
         ${step === index + 1 ? 'aria-current="step"' : ''}><span>${index + 1}</span>${label}</li>`).join('')}</ol>`;
   }
@@ -921,36 +941,36 @@
     const histories = (ov.cwdHistory || []).map((cwd) => `<option value="${esc(cwd)}"></option>`).join('');
     let body = '';
     if (wizard.step === 1) {
-      const inputField = wizard.inputMode === 'document'
-        ? `<label class="field">Markdownファイル
-          <input id="wf-task-file" type="file" accept=".md,.markdown,text/markdown"><small>${esc(wizard.fileName || 'ファイルを選択してください')}</small></label>`
-        : `<label class="field">やりたいこと
-          <textarea id="wf-task-text" rows="6" placeholder="例: READMEに導入手順を追加する">${esc(wizard.text)}</textarea></label>`;
-      body = `<label class="field">対象フォルダ<input id="wf-task-cwd" list="wf-task-cwd-list"
-          value="${esc(wizard.cwd || '')}" placeholder="/path/to/repository"></label>
-        <datalist id="wf-task-cwd-list">${histories}</datalist>
-        <fieldset class="task-choice-grid"><legend>入力を選択</legend>
-          <button type="button" class="task-choice-card" data-wf-task-input-option="text" aria-pressed="${wizard.inputMode === 'text'}">
-            <span><strong>自由入力</strong><small>やりたいことを文章で入力します。</small></span></button>
-          <button type="button" class="task-choice-card" data-wf-task-input-option="document" aria-pressed="${wizard.inputMode === 'document'}">
-            <span><strong>Markdown</strong><small>設計書や仕様書を読み込みます。</small></span></button></fieldset>
-        ${inputField}`;
+      body = `<label class="field">やりたいこと
+        <textarea id="wf-task-goal" rows="7" placeholder="例: READMEに導入手順を追加する">${esc(wizard.goal || '')}</textarea>
+        <small>まず目的を書いてください。設計が必要かどうかは次の画面で提案します。</small></label>`;
     }
-    if (wizard.step === 2) body = `<fieldset class="task-choice-grid"><legend>設計フローを選択</legend>${TASK_DESIGN_FLOWS.map(([id, label, help]) =>
-      `<button type="button" class="task-choice-card" data-wf-task-flow="${id}" aria-pressed="${wizard.flow === id}">
-        <span><strong>${label}</strong><small>${help}</small></span></button>`).join('')}</fieldset>`;
-    if (wizard.step === 3 && wizard.candidate) body = `<article class="task-candidate-card"><span class="status-chip st-review">追加前</span>
-      <label>タスク名<input id="wf-candidate-title" value="${esc(wizard.candidate.title)}"></label>
-      <label>目的・作業概要<textarea id="wf-candidate-desc" rows="5">${esc(wizard.candidate.desc || '')}</textarea></label>
-      <label>完了条件<textarea id="wf-candidate-accept" rows="4">${esc((wizard.candidate.acceptance || []).join('\n'))}</textarea></label></article>`;
-    if (wizard.step === 4) body = '<div class="task-create-complete"><strong>実行待ちへ追加しました</strong><p>実行待ち一覧から、開始するタイミングを選べます。</p></div>';
-    return `<dialog id="wf-task-dialog" class="task-create-dialog"><div class="dialog-heading"><h2>タスクを作成</h2>
+    if (wizard.step === 2) {
+      const recommendation = wizard.recommendation || {};
+      body = `<div class="task-route-recommendation"><strong>おすすめ: ${esc(PREPARATION_ROUTES.find(([id]) => id === recommendation.route)?.[1] || '確認中')}</strong>
+        ${(recommendation.reasons || []).map((reason) => `<small>${esc(reason)}</small>`).join('')}</div>
+        <fieldset class="task-choice-grid"><legend>進め方を選択</legend>${PREPARATION_ROUTES.map(([id, label, help]) =>
+        `<button type="button" class="task-choice-card" data-wf-task-route="${id}" aria-pressed="${wizard.route === id}">
+          <span><strong>${label}${recommendation.route === id ? '<em>おすすめ</em>' : ''}</strong><small>${help}</small></span></button>`).join('')}</fieldset>`;
+    }
+    if (wizard.step === 3) body = `<label class="field">対象フォルダ<input id="wf-task-cwd" list="wf-task-cwd-list"
+        value="${esc(wizard.cwd || '')}" placeholder="/path/to/repository"></label>
+      <datalist id="wf-task-cwd-list">${histories}</datalist>
+      <label class="field">ファイルとデータ<input id="wf-task-materials" type="file" multiple>
+        <small>${wizard.materials.length ? wizard.materials.map((item) => esc(item.name)).join('、') : '必要な設計書・仕様・関連ファイルを選択できます。'}</small></label>
+      ${wizard.route === 'external-design' ? '<p class="field-help">完成済みの設計書を1件以上選択してください。</p>' : ''}`;
+    if (wizard.step === 4) body = `<article class="task-candidate-card"><span class="status-chip st-review">準備前</span>
+      <label>仕事名<input id="wf-task-title" value="${esc(wizard.title || String(wizard.goal || '').split(/\r?\n/)[0].slice(0, 80))}"></label>
+      <dl class="task-preparation-summary"><div><dt>進め方</dt><dd>${esc(PREPARATION_ROUTES.find(([id]) => id === wizard.route)?.[1] || '')}</dd></div>
+        <div><dt>材料</dt><dd>${wizard.materials.length}件</dd></div></dl>
+      <details><summary>やりたいこと</summary><pre>${esc(wizard.goal || '')}</pre></details></article>`;
+    return `<dialog id="wf-task-dialog" class="task-create-dialog"><div class="dialog-heading"><h2>仕事を準備</h2>
       <button type="button" class="wf-icon-button" data-wf-task-close aria-label="閉じる">${ICONS.close}</button></div>
       <div class="dialog-scroll-body task-create-scroll">${taskStepsHtml(wizard.step)}
         <div class="task-create-body">${wizard.error ? `<p role="alert" class="qf-failure">${esc(wizard.error)}</p>` : ''}${body}</div></div>
-      <div class="dialog-actions">${wizard.step > 1 && wizard.step < 4 ? '<button type="button" data-wf-task-back>戻る</button>' : ''}
-        <span class="spacer"></span><button type="button" data-wf-task-close>${wizard.step === 4 ? '閉じる' : 'キャンセル'}</button>
-        ${wizard.step < 4 ? `<button type="button" class="primary-inline" data-wf-task-next ${wizard.busy ? 'disabled' : ''}>${esc(wizard.busy || (wizard.step === 1 ? '次へ' : wizard.step === 2 ? 'エージェントを実行' : '実行待ちへ追加'))}</button>` : ''}</div></dialog>`;
+      <div class="dialog-actions">${wizard.step > 1 ? '<button type="button" data-wf-task-back>戻る</button>' : ''}
+        <span class="spacer"></span><button type="button" data-wf-task-close>キャンセル</button>
+        <button type="button" class="primary-inline" data-wf-task-next ${wizard.busy ? 'disabled' : ''}>${esc(wizard.busy || (wizard.step === 4 ? 'この内容で準備する' : '次へ'))}</button></div></dialog>`;
   }
 
   function boundaryPositions(nodes) {
@@ -1239,7 +1259,7 @@
   }
 
   function workflowLibraryHtml(ov) {
-    const saved = ov.workflows || [];
+    const saved = (ov.workflows || []).filter((workflow) => workflow.libraryVisibility !== 'internal');
     const patterns = ov.patterns || [];
     const methodPatterns = methodWorkflowPatterns(ov.methods);
     return `<section class="wf-page wf-settings wf-library" aria-label="ワークフロー設定">
@@ -1452,13 +1472,36 @@
         sources: file ? [{ kind: 'document', name: file.name, content: document_ }] : [],
       });
     });
-    host.querySelector('[data-design-next]')?.addEventListener('click', () => {
+    host.querySelector('[data-design-next]')?.addEventListener('click', async () => {
       const answers = [...host.querySelectorAll('[data-design-answer]')]
         .sort((a, b) => Number(a.dataset.designAnswer) - Number(b.dataset.designAnswer))
         .map((field) => field.value);
-      startDesignRound({ id: st.design.current.id, answers });
+      await startDesignRound({ id: st.design.current.id, answers });
+      if (st.selectedPreparation && api().preparationSyncDesign) {
+        try {
+          const synced = await api().preparationSyncDesign({ id: st.selectedPreparation });
+          st.preparationItems = st.preparationItems.map((item) => item.id === synced.item.id ? synced.item : item);
+        } catch (err) {
+          st.design.notice = String((err && err.message) || err);
+          renderDesign();
+        }
+      }
     });
-    host.querySelector('[data-design-use]')?.addEventListener('click', () => {
+    host.querySelector('[data-design-use]')?.addEventListener('click', async () => {
+      if (st.selectedPreparation && api().preparationCompleteDesign) {
+        try {
+          await api().preparationCompleteDesign({ id: st.selectedPreparation });
+          st.notice = '設計結果を実装材料へ追加しました';
+          st.selectedPreparation = '';
+          st.design.current = null;
+          await loadOverview();
+          renderRun();
+        } catch (err) {
+          st.design.notice = String((err && err.message) || err);
+          renderDesign();
+        }
+        return;
+      }
       const request = $id('wf-request');
       const session = st.design.current;
       if (!request || !session) return;
@@ -1679,31 +1722,23 @@
       $id('wf-task-dialog')?.showModal();
     };
     $id('wf-create-task')?.addEventListener('click', () => {
-      st.taskWizard = { step: 1, inputMode: 'text', flow: 'requirements', text: '', fileName: '', fileContent: '', cwd: '', candidate: null, error: '', busy: '' };
+      st.taskWizard = { step: 1, title: '', goal: '', route: '', recommendation: null,
+        materials: [], cwd: '', error: '', busy: '' };
       reopenTaskDialog();
     });
     const taskDialog = $id('wf-task-dialog');
     taskDialog?.querySelectorAll('[data-wf-task-close]').forEach((button) => button.addEventListener('click', () => taskDialog.close()));
-    taskDialog?.querySelectorAll('[data-wf-task-input-option]').forEach((input) => input.addEventListener('click', () => {
-      const inputMode = input.dataset.wfTaskInputOption;
-      if (inputMode === st.taskWizard.inputMode) return;
-      st.taskWizard.text = $id('wf-task-text')?.value || st.taskWizard.text;
-      st.taskWizard.cwd = $id('wf-task-cwd')?.value || st.taskWizard.cwd;
-      st.taskWizard.inputMode = inputMode;
-      reopenTaskDialog();
-    }));
-    taskDialog?.querySelectorAll('[data-wf-task-flow]').forEach((button) => button.addEventListener('click', () => {
-      st.taskWizard.flow = button.dataset.wfTaskFlow;
-      taskDialog.querySelectorAll('[data-wf-task-flow]').forEach((choice) =>
+    taskDialog?.querySelectorAll('[data-wf-task-route]').forEach((button) => button.addEventListener('click', () => {
+      st.taskWizard.route = button.dataset.wfTaskRoute;
+      taskDialog.querySelectorAll('[data-wf-task-route]').forEach((choice) =>
         choice.setAttribute('aria-pressed', String(choice === button)));
     }));
-    $id('wf-task-file')?.addEventListener('change', async (event) => {
-      const file = event.target.files && event.target.files[0];
-      if (!file) return;
-      st.taskWizard.fileName = file.name;
-      st.taskWizard.fileContent = await file.text();
-      const note = event.target.parentElement.querySelector('small');
-      if (note) note.textContent = `${file.name} · ${Math.ceil(file.size / 1024)} KiB`;
+    $id('wf-task-materials')?.addEventListener('change', async (event) => {
+      st.taskWizard.materials = await Promise.all([...event.target.files].map(async (file) => ({
+        id: `document:${file.name}`, kind: 'document', name: file.name, content: await file.text(),
+        sourcePath: file.path || '', selectedFor: ['design', 'implementation'],
+      })));
+      reopenTaskDialog();
     });
     taskDialog?.querySelector('[data-wf-task-back]')?.addEventListener('click', () => {
       st.taskWizard.step -= 1;
@@ -1714,63 +1749,106 @@
       const wizard = st.taskWizard;
       wizard.error = '';
       if (wizard.step === 1) {
-        wizard.text = $id('wf-task-text')?.value || wizard.text;
-        wizard.cwd = $id('wf-task-cwd')?.value || wizard.cwd;
-        if (wizard.inputMode === 'text' && !wizard.text.trim()) wizard.error = 'やりたいことを入力してください';
-        if (wizard.inputMode === 'document' && !wizard.fileContent.trim()) wizard.error = 'Markdownファイルを選択してください';
-        if (!wizard.error) wizard.step = 2;
+        wizard.goal = $id('wf-task-goal')?.value.trim() || wizard.goal;
+        if (!wizard.goal) wizard.error = 'やりたいことを入力してください';
+        if (!wizard.error) {
+          wizard.busy = '進め方を確認中…';
+          reopenTaskDialog();
+          try {
+            const result = await api().preparationRecommend({ goal: wizard.goal });
+            wizard.recommendation = result.recommendation;
+            wizard.route = result.recommendation.route;
+            wizard.step = 2;
+          } catch (err) { wizard.error = String(err.message || err); }
+          wizard.busy = '';
+        }
         reopenTaskDialog();
         return;
       }
       if (wizard.step === 2) {
-        wizard.busy = 'タスクを設計中…';
-        reopenTaskDialog();
-        try {
-          const source = wizard.inputMode === 'document'
-            ? { kind: 'document', name: wizard.fileName, content: wizard.fileContent }
-            : { kind: 'note', name: '自由入力', content: wizard.text, fallbackItems: [{ text: wizard.text }] };
-          const flowLabel = TASK_DESIGN_FLOWS.find(([id]) => id === wizard.flow)?.[1] || wizard.flow;
-          const result = await api().agentTaskAssist({
-            dir: wizard.cwd || null,
-            mode: 'source-task-candidates',
-            context: { source, backlog: [] },
-            userPrompt: `設計フロー: ${flowLabel}。ワークフロー実行待ちへ入れるため、候補は必ず1件だけ返してください。`,
-          });
-          const tasks = result.fields && result.fields.tasks || [];
-          if (tasks.length !== 1) throw new Error(`単一タスクを作れませんでした（候補 ${tasks.length} 件）`);
-          wizard.candidate = tasks[0];
-          wizard.step = 3;
-        } catch (err) {
-          wizard.error = String(err.message || err);
-        }
-        wizard.busy = '';
+        if (!wizard.route) wizard.error = '進め方を選択してください';
+        else wizard.step = 3;
         reopenTaskDialog();
         return;
       }
       if (wizard.step === 3) {
-        wizard.candidate.title = $id('wf-candidate-title')?.value.trim() || '';
-        wizard.candidate.desc = $id('wf-candidate-desc')?.value.trim() || '';
-        wizard.candidate.acceptance = ($id('wf-candidate-accept')?.value || '').split('\n').map((line) => line.trim()).filter(Boolean);
-        if (!wizard.candidate.title) {
-          wizard.error = 'タスク名を入力してください';
-          reopenTaskDialog();
-          return;
-        }
-        const request = `## 目的\n${wizard.candidate.why || wizard.candidate.title}\n\n## 変更対象\n${wizard.candidate.desc || wizard.candidate.title}\n\n## 受入基準\n${wizard.candidate.acceptance.map((line) => `- ${line}`).join('\n') || '- 完了結果を確認できる'}\n\n## 検証方法\n- 受入基準に対応する証跡を提示する`;
-        wizard.busy = '追加中…';
+        wizard.cwd = $id('wf-task-cwd')?.value.trim() || wizard.cwd;
+        if (wizard.route === 'external-design' && !wizard.materials.length) {
+          wizard.error = '完成済みの設計書を選択してください';
+        } else wizard.step = 4;
+        reopenTaskDialog();
+        return;
+      }
+      if (wizard.step === 4) {
+        wizard.title = $id('wf-task-title')?.value.trim() || wizard.title;
+        if (!wizard.title) wizard.error = '仕事名を入力してください';
+        if (wizard.error) { reopenTaskDialog(); return; }
+        wizard.busy = wizard.route === 'agent-design' ? '設計を開始中…' : '準備を保存中…';
         reopenTaskDialog();
         try {
-          await api().workflowTaskCreate({ title: wizard.candidate.title, request, cwd: wizard.cwd,
-            sourceMode: wizard.inputMode, sources: wizard.inputMode === 'document'
-              ? [{ kind: 'document', name: wizard.fileName, content: wizard.fileContent }] : [] });
-          const queued = await api().workflowTaskList();
-          st.queuedTasks = queued.tasks || [];
-          wizard.step = 4;
-        } catch (err) { wizard.error = String(err.message || err); }
-        wizard.busy = '';
-        reopenTaskDialog();
+          const created = await api().preparationCreate({
+            target: 'workflow', title: wizard.title, goal: wizard.goal, route: wizard.route,
+            materials: wizard.materials, cwd: wizard.cwd,
+          });
+          if (wizard.route === 'agent-design') {
+            const started = await api().preparationStartDesign({ id: created.item.id });
+            st.selectedPreparation = started.item.id;
+            st.design.current = started.session;
+            st.design.open = true;
+          }
+          const prepared = await api().preparationList({ target: 'workflow' });
+          st.preparationItems = prepared.items || [];
+          taskDialog.close();
+          renderRun();
+        } catch (err) {
+          wizard.error = String(err.message || err);
+          wizard.busy = '';
+          reopenTaskDialog();
+        }
       }
     });
+    pane.querySelectorAll('[data-preparation-delete]').forEach((button) => button.addEventListener('click', async () => {
+      await api().preparationDelete({ id: button.dataset.preparationDelete });
+      const prepared = await api().preparationList({ target: 'workflow' });
+      st.preparationItems = prepared.items || [];
+      if (st.selectedPreparation === button.dataset.preparationDelete) {
+        st.selectedPreparation = '';
+        st.design.current = null;
+      }
+      renderRun();
+    }));
+    pane.querySelectorAll('[data-preparation-design]').forEach((button) => button.addEventListener('click', async () => {
+      try {
+        const started = await api().preparationStartDesign({ id: button.dataset.preparationDesign });
+        st.selectedPreparation = started.item.id;
+        st.design.current = started.session;
+        st.design.open = true;
+        const prepared = await api().preparationList({ target: 'workflow' });
+        st.preparationItems = prepared.items || [];
+      } catch (err) { st.notice = String(err.message || err); }
+      renderRun();
+    }));
+    pane.querySelectorAll('[data-preparation-open]').forEach((button) => button.addEventListener('click', async () => {
+      try {
+        const synced = await api().preparationSyncDesign({ id: button.dataset.preparationOpen });
+        st.selectedPreparation = synced.item.id;
+        st.design.current = synced.session;
+        st.design.open = true;
+        const index = st.preparationItems.findIndex((item) => item.id === synced.item.id);
+        if (index >= 0) st.preparationItems[index] = synced.item;
+      } catch (err) { st.notice = String(err.message || err); }
+      renderRun();
+    }));
+    pane.querySelectorAll('[data-preparation-execute]').forEach((button) => button.addEventListener('click', async () => {
+      button.disabled = true;
+      try {
+        const handed = await api().preparationHandoff({ id: button.dataset.preparationExecute });
+        st.selectedRun = handed.result.runId;
+        st.notice = `実装を開始しました · ${handed.result.branch || handed.result.runId}`;
+        await loadOverview();
+      } catch (err) { st.notice = String(err.message || err); }
+      renderRun();
+    }));
     pane.querySelectorAll('[data-wf-task-delete]').forEach((button) => button.addEventListener('click', async () => {
       await api().workflowTaskDelete({ id: button.dataset.wfTaskDelete });
       const queued = await api().workflowTaskList();
@@ -2302,6 +2380,7 @@
     executionOverridesForMode,
     edgePath,
     workflowLibraryHtml,
+    workflowTaskDialogHtml,
     connectionError,
     consultTarget,
     connectWorkflow,

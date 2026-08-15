@@ -5,6 +5,7 @@ const path = require('path');
 const adhoc = require('./adhoc');
 const designSession = require('./design-session');
 const taskQueue = require('./task-queue');
+const preparation = require('../../preparation/main/preparation');
 const profiles = require('../../orchestration/main/profiles');
 const flowTiers = require('../../orchestration/main/flow-tiers');
 const tuning = require('../../orchestration/main/tuning');
@@ -222,6 +223,94 @@ function registerIpc(ctx) {
   handle('workflowTask:delete', ({ id } = {}) => ({ deleted: taskQueue.remove(loadConfig(), String(id || '')) }));
   handle('workflowTask:execute', ({ id } = {}) =>
     taskQueue.execute(loadConfig(), String(id || ''), (payload) => adhoc.submit(loadConfig(), payload)));
+  handle('preparation:list', (filters) => ({
+    items: preparation.listItems(loadConfig(), filters || {}),
+  }));
+  handle('preparation:create', (payload) => ({
+    item: preparation.saveItem(loadConfig(), preparation.createItem(payload || {})),
+  }));
+  handle('preparation:recommend', (payload) => ({
+    recommendation: preparation.recommendRoute(payload || {}),
+  }));
+  handle('preparation:get', ({ id } = {}) => ({
+    item: preparation.getItem(loadConfig(), String(id || '')),
+  }));
+  handle('preparation:delete', ({ id } = {}) => ({
+    deleted: preparation.removeItem(loadConfig(), String(id || '')),
+  }));
+  handle('preparation:createPackage', (payload) => {
+    const package_ = preparation.createPackage(payload || {});
+    return { package: preparation.savePackage(loadConfig(), package_), items: package_.items };
+  });
+  handle('preparation:startDesign', ({ id } = {}) => {
+    const cfg = loadConfig();
+    const item = preparation.getItem(cfg, String(id || ''));
+    if (!item) throw new Error('作業準備項目が見つかりません');
+    const session = designSession.startRound(cfg, {
+      target: item.target,
+      sourceMode: 'new',
+      mode: 'interactive',
+      goal: item.goal,
+      cwd: item.cwd || item.projectDir,
+      sources: (item.materials || []).filter((material) =>
+        (material.selectedFor || []).includes('design')),
+    });
+    const next = preparation.startDesign(item, { sessionId: session.id, runId: session.runId });
+    return { item: preparation.saveItem(cfg, next), session };
+  });
+  handle('preparation:syncDesign', ({ id } = {}) => {
+    const cfg = loadConfig();
+    const item = preparation.getItem(cfg, String(id || ''));
+    if (!item || !item.design || !item.design.sessionId) throw new Error('設計セッションがありません');
+    const session = designSession.getSession(cfg, item.design.sessionId);
+    const next = {
+      ...item,
+      phase: session.runStatus === 'done' ? 'design-review' : 'designing',
+      design: {
+        ...item.design,
+        document: String(session.document || ''),
+        runIds: [...new Set((session.rounds || []).map((round) => round.runId).filter(Boolean))],
+      },
+    };
+    return { item: preparation.saveItem(cfg, next), session };
+  });
+  handle('preparation:completeDesign', ({ id } = {}) => {
+    const cfg = loadConfig();
+    const item = preparation.getItem(cfg, String(id || ''));
+    if (!item || !item.design || !item.design.sessionId) throw new Error('設計セッションがありません');
+    const session = designSession.getSession(cfg, item.design.sessionId);
+    const next = preparation.completeDesign(item, {
+      sessionId: session.id,
+      document: session.document,
+      runIds: (session.rounds || []).map((round) => round.runId),
+    });
+    return { item: preparation.saveItem(cfg, next), session };
+  });
+  handle('preparation:handoff', ({ id } = {}) => {
+    const cfg = loadConfig();
+    const item = preparation.getItem(cfg, String(id || ''));
+    if (!item || !preparation.canHandoff(item)) throw new Error('実装準備が完了していません');
+    if (item.target === 'project') {
+      const taskSpec = item.taskSpec || {};
+      const spec = {
+        ...taskSpec,
+        title: item.title,
+        desc: taskSpec.desc || item.goal,
+        task_acceptance_criteria: taskSpec.task_acceptance_criteria || taskSpec.acceptance,
+      };
+      const result = adhoc.promote(cfg, { projectDir: item.projectDir, spec });
+      const next = preparation.recordHandoff(item, { taskId: String(result && result.id || spec.id || item.id) });
+      return { item: preparation.saveItem(cfg, next), result };
+    }
+    const result = adhoc.submit(cfg, {
+      title: item.title,
+      cwd: item.cwd,
+      request: preparation.implementationRequest(item),
+      selection: { type: 'auto' },
+    });
+    const next = preparation.recordHandoff(item, { runId: result.runId });
+    return { item: preparation.saveItem(cfg, next), result };
+  });
 
   handle('adhocFlow:copyMethod', ({ id, cwd, newId } = {}) => {
     const cfg = loadConfig();

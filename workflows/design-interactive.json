@@ -3,6 +3,8 @@
   "id": "design-interactive",
   "name": "設計を練る（対話）",
   "description": "設計書を1ラウンド分書き直し、まだ決まっていないことを質問として返す。dashboard の設計セッションが繰り返し呼ぶ。",
+  "purpose": "design",
+  "libraryVisibility": "internal",
   "entry": ["draft"],
   "exit": ["draft"],
   "nodes": [

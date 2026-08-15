@@ -3,6 +3,8 @@
   "id": "design-auto",
   "name": "設計を練る（全自動）",
   "description": "短い要望から、質問を返さずに設計書を書き上げる。要件展開・設計・自己点検の3工程。",
+  "purpose": "design",
+  "libraryVisibility": "internal",
   "entry": ["requirements"],
   "exit": ["review"],
   "nodes": [

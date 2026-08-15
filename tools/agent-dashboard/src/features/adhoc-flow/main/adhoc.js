@@ -225,6 +225,8 @@ function normalizeWorkflow(raw) {
     id: workflowId(raw.id),
     name,
     description: String(raw.description || '').trim(),
+    purpose: raw.purpose === 'design' ? 'design' : 'implementation',
+    libraryVisibility: raw.libraryVisibility === 'internal' ? 'internal' : 'library',
     entry,
     exit,
     nodes,

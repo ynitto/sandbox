@@ -324,22 +324,32 @@ function dropped(dir) {
       '1行1リスクの配列として送る。空なら削除する');
   });
 
-  await test('タスク追加は詳細フォームを廃止し4段階で候補を確認する', async () => {
+  await test('タスク追加は要望・進め方・材料・候補確認の順に進む', async () => {
     assert.ok(renderer.includes('task-create-steps'));
-    assert.ok(renderer.includes("['入力', '設計フロー', '候補確認', '追加完了']"));
+    assert.ok(renderer.includes("['やりたいこと', '進め方', '材料', '候補確認']"));
+    assert.ok(renderer.includes('エージェントと設計する'));
+    assert.ok(renderer.includes('外部の設計結果を使う'));
+    assert.ok(renderer.includes('そのまま実装する'));
     assert.ok(renderer.includes('task-candidate-card'));
   });
 
-  await test('タスク追加は型付き入力と設計フローから複数候補を作る', async () => {
+  await test('タスク追加は経路選択後の型付き材料から複数候補を作る', async () => {
     assert.ok(renderer.includes('data-project-source-version'));
     assert.ok(renderer.includes('data-project-source-note'));
     assert.ok(renderer.includes('project-task-files'));
+    assert.ok(renderer.includes('data-project-task-route'));
+    assert.ok(renderer.includes('preparationRecommend'));
     assert.ok(renderer.includes("mode: 'project-design-proposal'"));
   });
 
-  await test('タスク追加は選択した複数候補だけを既存inbox契約へ送る', async () => {
+  await test('タスク追加は選択した複数候補を準備パッケージへ保存する', async () => {
+    const advanceSource = renderer.slice(
+      renderer.indexOf('async function advanceProjectTaskWizard('),
+      renderer.indexOf('async function openProjectTaskWizard(')
+    );
     assert.ok(renderer.includes('data-project-candidate'));
-    assert.ok(renderer.includes('await api.enqueueTask'));
+    assert.ok(advanceSource.includes('preparationCreatePackage'));
+    assert.ok(!advanceSource.includes('await api.enqueueTask'));
     assert.ok(renderer.includes('追加するタスクを選択してください'));
   });
 

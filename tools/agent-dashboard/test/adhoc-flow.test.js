@@ -65,6 +65,21 @@ test('実行待ちタスクは明示実行に成功した後だけ一覧から�
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('ワークフロー作成は要望の後に三つの準備経路を選び、その後で材料を指定する', () => {
+  const previousEsc = global.esc;
+  global.esc = (value) => String(value);
+  try {
+    workflowUi._state.taskWizard = {
+      step: 2, goal: 'CSV対応を改善する', route: 'agent-design',
+      recommendation: { route: 'agent-design', reasons: ['完了条件が不足'] }, materials: [], error: '', busy: '',
+    };
+    const html = workflowUi.workflowTaskDialogHtml({ cwdHistory: [] });
+    assert.ok(html.includes('やりたいこと') && html.includes('進め方') && html.includes('材料') && html.includes('確認')
+      && html.includes('エージェントと設計する') && html.includes('外部の設計結果を使う')
+      && html.includes('そのまま実装する') && html.indexOf('進め方') < html.indexOf('材料'));
+  } finally { global.esc = previousEsc; }
+});
+
 test('実行時方針のコスト優先は役割・機能ごとの最低許可tierを選ぶ', () => {
   const result = workflowUi.executionOverridesForMode('cost', { kindTiers: {
     roles: { planner: { tiers: ['medium', 'large'] }, worker: { tiers: ['small', 'medium', 'large'] } },
@@ -169,6 +184,15 @@ test('カスタムフローをユーザー共通ファイルとして保存・�
   assert.strictEqual(saved.version, 2);
   assert.deepStrictEqual(saved.entry, ['build']);
   assert.deepStrictEqual(saved.exit, ['verify']);
+});
+
+test('既存ワークフローは実装用のライブラリ項目として正規化する', () => {
+  const workflow = adhoc.normalizeWorkflow({
+    id: 'legacy-flow', name: '既存フロー',
+    nodes: [{ id: 'work', goal: '実装する', kind: 'work', tier: 'small', deps: [] }],
+  });
+  assert.strictEqual(workflow.purpose, 'implementation');
+  assert.strictEqual(workflow.libraryVisibility, 'library');
 });
 
 test('Git リポジトリ内のカスタムフローは共有版を優先して読むが dashboard から変更しない', () => {
@@ -800,7 +824,11 @@ test('初期画面は保存済み・一から作る・雛形を同じカード�
   global.esc = (value) => String(value);
   try {
     const html = workflowUi.workflowLibraryHtml({
-      workflows: [{ id: 'saved', name: '保存済みフロー', description: '続きから編集する' }],
+      workflows: [
+        { id: 'saved', name: '保存済みフロー', description: '続きから編集する' },
+        { id: 'design-interactive', name: '対話型設計', description: '内部設計フロー',
+          purpose: 'design', libraryVisibility: 'internal' },
+      ],
       patterns: [{
         id: 'verify', label: '検証つき', description: '作業後に検証する',
         template: { nodes: [{ id: 'work', kind: 'work', deps: [] }] },
@@ -814,6 +842,7 @@ test('初期画面は保存済み・一から作る・雛形を同じカード�
       }],
     });
     assert.match(html, /data-workflow-id="saved"/);
+    assert.doesNotMatch(html, /data-workflow-id="design-interactive"|内部設計フロー/);
     assert.match(html, /id="wf-new"/);
     assert.match(html, /data-pattern-id="verify"/);
     assert.match(html, /data-method-pattern-id="build-review"/);
@@ -1195,6 +1224,25 @@ test('IPC: 同梱カタログとリポジトリ配布の作業ルールが同 id
   }
 });
 
+test('IPC: 作業準備項目を作成して対象別に一覧できる', () => {
+  const dir = tmpdir('preparation-ipc-');
+  const cfg = { preparationDir: dir, adhocFlow: {} };
+  try {
+    const handlers = {};
+    require('../src/features/adhoc-flow/main/ipc.js').registerIpc({
+      handle: (channel, fn) => { handlers[channel] = fn; }, loadConfig: () => cfg, saveConfig: () => cfg,
+    });
+    const created = handlers['preparation:create']({
+      target: 'workflow', title: 'README更新', goal: 'README更新', route: 'direct',
+    });
+    const listed = handlers['preparation:list']({ target: 'workflow' });
+    assert.deepStrictEqual({ route: created.item.route, phase: created.item.phase,
+      ids: listed.items.map((item) => item.id) }, {
+      route: 'direct', phase: 'implementation-ready', ids: [created.item.id],
+    });
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 // --- 投入（submit_request 契約の投函 + 起動） ---------------------------------
 
 test('submit が submit_request 契約を投函し plan と手法を運ぶ', () => {
@@ -1540,6 +1588,13 @@ test('設計書は末端ノードの出力から取る（final.summary は抜粋
   } };
   assert.strictEqual(design.sinkOutput(run), '## 目的\n設計書');
   assert.strictEqual(design.sinkOutput({ nodes: {} }), '');
+});
+
+test('同梱設計フローは内部設計用として分類する', () => {
+  const builtin = adhoc.listWorkflows({ adhocFlow: {} })
+    .filter((item) => ['design-auto', 'design-interactive'].includes(item.id));
+  assert.strictEqual(builtin.length, 2);
+  assert.ok(builtin.every((item) => item.purpose === 'design' && item.libraryVisibility === 'internal'));
 });
 
 test('設計セッションはラウンドごとに設計 run を投げ、成果を取り込む', () => {

@@ -77,28 +77,29 @@ assert.ok(!projectTaskWizardSource.includes('type="checkbox"')
   'プロジェクトのタスク追加はネイティブチェックボックスではなく選択カードを使います');
 assert.ok(!workflowFeature.includes('name="wf-task-input"') && !workflowFeature.includes('name="wf-task-flow"'),
   'タスク作成の選択カードにラジオボタンを重ねません');
-assert.ok(workflowFeature.includes('data-wf-task-input-option') && workflowFeature.includes('aria-pressed='),
+assert.ok(workflowFeature.includes('data-wf-task-route') && workflowFeature.includes('aria-pressed='),
   '選択カードは押下状態を支援技術にも伝えます');
 const workflowTaskDialogSource = workflowFeature.slice(
   workflowFeature.indexOf('function workflowTaskDialogHtml('),
   workflowFeature.indexOf('\n  function boundaryPositions(', workflowFeature.indexOf('function workflowTaskDialogHtml('))
 );
-assert.ok(workflowTaskDialogSource.indexOf('id="wf-task-cwd"') < workflowTaskDialogSource.indexOf('<legend>入力を選択</legend>'),
-  '対象フォルダは入力方法の選択より先に表示します');
-assert.ok(workflowTaskDialogSource.includes("const inputField = wizard.inputMode === 'document'")
-  && workflowTaskDialogSource.includes('${inputField}')
-  && !workflowTaskDialogSource.includes('data-wf-task-text')
-  && !workflowTaskDialogSource.includes('data-wf-task-file'),
-  '選択中の入力方法に必要な欄だけを生成します');
+assert.ok(workflowTaskDialogSource.indexOf('<legend>進め方を選択</legend>')
+  < workflowTaskDialogSource.indexOf('id="wf-task-cwd"'),
+  '進め方を選択した後に対象フォルダと材料を指定します');
+assert.ok(workflowTaskDialogSource.includes('id="wf-task-materials"')
+  && workflowTaskDialogSource.includes('multiple')
+  && workflowTaskDialogSource.includes("wizard.route === 'external-design'"),
+  '選択した経路に応じて複数のファイルとデータを材料にできます');
 assert.ok(workflowFeature.includes('class="flow-view-tab') && workflowFeature.includes('class="flow-graph-workspace"')
   && workflowFeature.includes('class="flow-overview-view"') && workflowFeature.includes('class="flow-history-view"'),
   'ワークフロー実行詳細はプロジェクト実行と同じ概要・工程・履歴の構造を使います');
 assert.ok(workflowFeature.includes('id="wf-new-run">← 実行待ちへ戻る'),
   '実行詳細から新規タスクと実行待ちへ戻れます');
-assert.ok(workflowFeature.includes('workflowTaskCreate') && workflowFeature.includes('workflowTaskExecute'),
-  '作成時は実行待ちへ保存し、一覧の明示操作で実行します');
-assert.ok(workflowFeature.includes('task-create-steps') && workflowFeature.includes('設計フロー'),
-  'タスク作成ダイアログは共通の段階表示と設計フロー選択を持ちます');
+assert.ok(workflowFeature.includes('preparationCreate') && workflowFeature.includes('preparationHandoff'),
+  '作成時は作業準備へ保存し、準備完了後の明示操作で実装します');
+assert.ok(workflowFeature.includes('task-create-steps') && workflowFeature.includes('エージェントと設計する')
+  && workflowFeature.includes('外部の設計結果を使う') && workflowFeature.includes('そのまま実装する'),
+  '作成ダイアログは共通の段階表示と三つの準備経路を持ちます');
 assert.ok(workflowFeature.includes('class="global-settings-card wf-settings-card"')
   && workflowFeature.includes('<header class="global-settings-card-heading">')
   && workflowFeature.includes('class="settings-save-actions wf-settings-actions"'),
