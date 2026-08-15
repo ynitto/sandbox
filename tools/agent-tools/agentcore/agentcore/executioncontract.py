@@ -45,6 +45,9 @@ QUALIFICATION_STATUSES = ("qualified", "trial", "blocked", "unknown")
 # 通常方針で自動選択してよい status。trial は Execution Envelope で明示承認された run 限定、
 # blocked / unknown は明示固定でも実行不可（試すなら agent-audit の隔離評価へ）。
 AUTO_SELECTABLE_STATUSES = frozenset({"qualified"})
+# selection_policy の候補に載せてよい status（省略 = qualified）。blocked / unknown は
+# Compiler が policy から落とす——「載っているが実行不可」という中間状態を作らない。
+POLICY_CANDIDATE_STATUSES = frozenset({"qualified", "trial"})
 QUALIFICATION_SOURCES = ("eval-archive", "receipt")
 EXECUTION_SITES = ("device", "external", "managed")
 STRATEGIES = ("balanced", "economy", "quality")
@@ -177,6 +180,9 @@ def selection_policy_errors(policy) -> "list[str]":
             errors.append(f"{label}.rank は 1 以上の整数である必要があります")
         if "qualification_refs" in candidate and not _str_list(candidate.get("qualification_refs")):
             errors.append(f"{label}.qualification_refs は文字列配列である必要があります")
+        if "status" in candidate and candidate.get("status") not in POLICY_CANDIDATE_STATUSES:
+            errors.append(f"{label}.status が不正です: {candidate.get('status')}"
+                          "（policy に載せてよいのは qualified / trial）")
     return errors
 
 

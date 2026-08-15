@@ -104,6 +104,14 @@ class SelectionPolicyContractTests(unittest.TestCase):
         bad["no_candidate"] = "degrade"
         self.assertTrue(any("no_candidate" in e for e in ec.selection_policy_errors(bad)))
 
+        # policy に載せてよい status は qualified / trial だけ（blocked は Compiler が落とす）
+        bad = copy.deepcopy(self.policy)
+        bad["candidates"][0]["status"] = "blocked"
+        self.assertTrue(any("status" in e for e in ec.selection_policy_errors(bad)))
+        ok = copy.deepcopy(self.policy)
+        ok["candidates"][0]["status"] = "trial"
+        self.assertEqual(ec.selection_policy_errors(ok), [])
+
 
 class ExecutionReceiptContractTests(unittest.TestCase):
     def setUp(self):

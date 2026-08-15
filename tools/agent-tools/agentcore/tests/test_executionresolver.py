@@ -141,12 +141,32 @@ def test_pin_tier_needs_ceiling_override(control):
     assert allowed["selected"] == {"agent_cli": "codex", "model": "gpt-6"}
 
 
+def test_policy_trial_candidate_needs_envelope_approval(control):
+    # Compiler が trial 裏付けのみの候補へ status: trial を明記する。自動選択からは
+    # 除外され、pin だけでも走らず、Envelope の trial 承認がある run でだけ選択できる。
+    policy = control["workloads"]["flow"]["selection_policy"]
+    policy["candidates"].append({"agent_cli": "ollama", "model": "gemma4:12b",
+                                 "rank": 3, "status": "trial",
+                                 "qualification_refs": ["ollama-12b-review-trial"]})
+    auto = resolve(control, unavailable={"aider/gemma4:e4b", "cursor/grok-4.5"})
+    assert auto["parked"] is True                       # trial へ黙って降格しない
+    pin = {"agent_cli": "ollama", "model": "gemma4:12b"}
+    unapproved = resolve(control, explicit_pin=pin)
+    assert unapproved["park_reason"] == "pin-not-qualified"
+    approved = resolve(control, explicit_pin={**pin, "trial_approved": True})
+    assert approved["selection_source"] == "trial-candidate"
+    assert approved["rank"] == 3
+    assert approved["qualification_id"] == "ollama-12b-review-trial"
+
+
 def test_pin_of_blocked_status_candidate_never_runs(control):
+    # blocked は policy に載せてよい status ではない（Compiler が落とす契約）。
+    # 紛れ込んだ場合は policy 全体が不正 = park——trial 承認付き pin でも実行されない。
     control["workloads"]["flow"]["selection_policy"]["candidates"][0]["status"] = "blocked"
     decision = resolve(control, explicit_pin={
         "agent_cli": "aider", "model": "gemma4:e4b", "trial_approved": True})
     assert decision["parked"] is True
-    assert decision["park_reason"] == "pin-not-qualified"
+    assert decision["park_reason"] == "invalid-selection-policy"
 
 
 def test_pin_retry_exhausted_parks(control):

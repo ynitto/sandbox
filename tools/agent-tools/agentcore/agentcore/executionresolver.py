@@ -221,6 +221,16 @@ def resolve_execution(workload: str, *, purpose_or_role=None, execution_contract
                        None)
         if matched is not None:
             status = matched.get("status")
+            if status == "trial":
+                # policy 掲載の trial 候補は Envelope の明示承認がある run でだけ実行できる。
+                if pin.get("trial_approved"):
+                    return _selected(matched, "trial-candidate",
+                                     "Envelope が trial を明示承認した run の固定（policy 掲載候補）",
+                                     base=base, rank=matched.get("rank"),
+                                     refs=matched.get("qualification_refs") or [])
+                return _park("pin-not-qualified",
+                             f"pin 候補 {cid} は trial です（Envelope の trial 承認が必要）",
+                             "Envelope で trial を承認する", base=base)
             if status is not None and status not in AUTO_SELECTABLE_STATUSES:
                 return _park("pin-not-qualified",
                              f"pin 候補 {cid} の status が {status} です（明示固定でも実行不可）",

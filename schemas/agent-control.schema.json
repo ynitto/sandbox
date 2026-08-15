@@ -15,6 +15,10 @@
           "type": "array", "items": {"type": "string"},
           "description": "適格の根拠（agent-candidate-qualifications の qualification_id）。**OR で評価**し、1 つでも処理契約へ完全一致すれば適格候補になる（qualification 内の constraints は AND）"
         },
+        "status": {
+          "enum": ["qualified", "trial"],
+          "description": "候補の格付け（省略 = qualified）。trial は Compiler が「trial 裏付けしか無い候補」に明記する——Resolver は自動選択から除外し、Execution Envelope の trial 明示承認 run でだけ選択を許す（§5.2）。blocked / unknown は policy に載せない（Compiler が落とす）"
+        },
         "rank": {"type": "integer", "minimum": 1, "description": "Compiler が strategy から確定した順位。control revision 中は不変で、Resolver は実行時 availability による除外以外の再採点をしない。同順位は利用者設定の候補順 → agent_cli/model 昇順で決める"}
       },
       "additionalProperties": true

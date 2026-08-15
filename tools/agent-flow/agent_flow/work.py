@@ -196,6 +196,9 @@ def cmd_work(args) -> int:
                 log(who, f"human wait: {nid}（{request['interaction_id']}）— claim 解放")
             time.sleep(random.uniform(0, 0.3))
             continue
+        # 承認済み Execution Envelope（agent-project の snapshot）を実行文脈へ据える。
+        # candidate_permissions が Resolver の明示固定（pin / trial 承認）として効く。
+        _set_execution_envelope(read_json(bus.meta_path))
         if args.executor == "agent":
             agent_cli, _model_ov = _effective_agent(kind, getattr(args, "model", None), node_agent)
             agent_model = _model_ov

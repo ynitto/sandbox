@@ -254,14 +254,25 @@ next_state.py / run_machine.py）だけで、**定義の新規作成は SKILL.md
 
 | 里程 | 内容 | 完了条件 |
 |---|---|---|
-| M1 | 段A 完了 | 3 契約の schema + fixture が入り、両トラックが契約テストを書ける |
-| M2 | E0 + U0（段1 クローズ） | T1gate 相当を実機経路で 3/3 帯。12b 検証役が dashboard カタログに載る |
-| M3 | E1 + U2 | Compiler の出力 control を Resolver が読み、同じ fixture で契約テストが噛み合う（§15.1 の再現性・park・pin 非迂回） |
-| M4 | E2 + U3 | project 承認 → Envelope snapshot → flow 実 run が receipt v2 を書く。通常の候補切替で要対応が増えない |
-| M5 | U4 + E3 + E4 | エンジン別表が消え方針要約へ。loop / amigos が候補単位 receipt を書く |
-| M6 | E5 | 本番 receipt からの自動昇格・降格が evaluation profile どおり動く |
-| M7 | E6 + E7（ローカル主体運転の受入クローズ） | 多基準 filter / judge が決定化パイプで F1 並み（3/3 帯）。定型 flow がクラウド 0 で完走し、昇格だけがクラウドを呼ぶことを候補単位台帳で確認 |
-| 独立 | Track S | scaffold で作った定義がそのまま実行を通り、examples の migrate round-trip が無差分 |
+| M1 **済** | 段A 完了 | 3 契約の schema + fixture が入り、両トラックが契約テストを書ける |
+| M2 **済** | E0 + U0（段1 クローズ） | T1gate 相当を実機経路で 3/3 帯。12b 検証役が dashboard カタログに載る |
+| M3 **済** | E1 + U2 | Compiler の出力 control を Resolver が読み、同じ fixture で契約テストが噛み合う（§15.1 の再現性・park・pin 非迂回）。直結は `test_compiler_resolver_handshake`（実 JS Compiler → 実 Resolver・node 無し環境は skip） |
+| M4 **済** | E2 + U3 | project 承認 → Envelope snapshot → flow 実 run が receipt v2 を書く。通常の候補切替で要対応が増えない。**Envelope 配線**（下記 2026-08-15 追補）で candidate_permissions が実行にも効く |
+| M5 **済** | U4 + E3 + E4 | エンジン別表が消え方針要約へ。loop / amigos が候補単位 receipt を書く |
+| M6 **済** | E5 | 本番 receipt からの自動昇格・降格が evaluation profile どおり動く |
+| M7 **済** | E6 + E7（ローカル主体運転の受入クローズ） | 多基準 filter / judge が決定化パイプで F1 並み（3/3 帯）。定型 flow がクラウド 0 で完走し、昇格だけがクラウドを呼ぶことを候補単位台帳で確認 |
+| 独立 **済** | Track S | scaffold で作った定義がそのまま実行を通り、examples の migrate round-trip が無差分 |
+
+**追補（2026-08-15・E2↔U3 の Envelope 配線と trial 語彙の締め）。** 完了チェックで残っていた
+2 つを閉じた。(1) flow が run meta の承認済み `execution_envelope.candidate_permissions` を
+claim 時に読み、Resolver の明示固定へ写像（pins → explicit-pin・trials → その run 限定の
+trial 固定・tier_ceiling_override / retry_limit も透過）。**これで trial 昇格ループの入口が
+本番で開く**（trial は走らないと実測が貯まらず昇格できない鶏卵の解消）。未承認 Envelope は
+無視、policy 外 pin は park。(2) M3 直結検証で **Compiler が trial 裏付けのみの候補を無印で
+policy へ出すと通常 run で trial が走る**穴を発見——`policy_candidate.status`
+（qualified/trial・additive）を schema へ足し、Compiler が明記・Resolver は自動選択から除外し
+「pin + Envelope trial 承認」でだけ実行。blocked は policy に載らない（載っていたら policy
+不正 = park）。handshake はテスト化して回帰網に組み込み。
 
 ## 9. やらないこと
 

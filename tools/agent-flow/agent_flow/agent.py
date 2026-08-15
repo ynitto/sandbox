@@ -603,13 +603,68 @@ def _control_degraded() -> "tuple[str | None, str | None]":
             str(d["model"]) if d.get("model") else None)
 
 
+# run meta の execution_envelope（agent-project が計画承認時に snapshot する承認済み契約）。
+# ワーカーが claim 時に据え、candidate_permissions（pins / trials / tier_ceiling_override /
+# retry_limit）だけを Resolver の明示固定として解釈する。scope / 受入条件は監査用のまま。
+_EXECUTION_ENVELOPE: dict = {}
+
+
+def _set_execution_envelope(meta) -> None:
+    """run meta から承認済み Execution Envelope を実行文脈へ据える（無ければ空）。"""
+    global _EXECUTION_ENVELOPE
+    envelope = (meta or {}).get("execution_envelope")
+    approved = (isinstance(envelope, dict)
+                and (envelope.get("approval") or {}).get("status") == "approved")
+    _EXECUTION_ENVELOPE = envelope if approved else {}
+
+
+def _envelope_pin(purpose: str) -> "dict | None":
+    """Envelope の candidate_permissions → Resolver の explicit_pin（該当なしは None）。
+
+    - pins: 明示固定。policy の適格候補か、trials にも載る候補だけ実行できる
+      （執行は Resolver——ここは写像だけ）。
+    - trials: pin が無くても、その候補を「この run 限定の trial」として固定する
+      ——trial は走らないと実測が貯まらず昇格できない（E5 の入口）。
+    - 項目の purpose / kind でロールを絞れる（省略 = 全ロール）。
+    """
+    perms = (_EXECUTION_ENVELOPE or {}).get("candidate_permissions") or {}
+    pins = [p for p in (perms.get("pins") or []) if isinstance(p, dict)]
+    trials = [t for t in (perms.get("trials") or []) if isinstance(t, dict)]
+
+    def usable(item):
+        scope = str(item.get("purpose") or item.get("kind") or "").strip()
+        return (item.get("agent_cli") and item.get("model")
+                and (not scope or scope == purpose))
+
+    chosen = next((p for p in pins if usable(p)), None)
+    trial_entry = chosen is None
+    if chosen is None:
+        chosen = next((t for t in trials if usable(t)), None)
+    if chosen is None:
+        return None
+    pin = {"agent_cli": str(chosen["agent_cli"]), "model": str(chosen["model"])}
+    if chosen.get("tier"):
+        pin["tier"] = str(chosen["tier"])
+    override = str(perms.get("tier_ceiling_override") or "")
+    if override:
+        pin["tier_ceiling_override"] = override
+    retry = perms.get("retry_limit")
+    if isinstance(retry, int) and not isinstance(retry, bool):
+        pin["retry_limit"] = retry
+    if trial_entry or any(t.get("agent_cli") == pin["agent_cli"]
+                          and t.get("model") == pin["model"] for t in trials):
+        pin["trial_approved"] = True
+    return pin
+
+
 def _control_policy_decision(purpose: str) -> "dict | None":
     """selection_policy（agent-control version 2）があるときの Resolver 決定。無ければ None。
 
-    候補の解決は agentcore.executionresolver の 1 実装（E1）。ここは control を渡すだけで、
-    順位・除外・park の判断を複製しない。version 1（または selection_policy 無し）は
-    旧 reader として従来の `_control_override` 経路へ委ね、version >= 2 は壊れた policy・
-    未知 version でも Resolver が park を返す——legacy fallback を再解釈しない（設計 §6.6）。
+    候補の解決は agentcore.executionresolver の 1 実装（E1）。ここは control と
+    Envelope の明示固定を渡すだけで、順位・除外・park の判断を複製しない。
+    version 1（または selection_policy 無し）は旧 reader として従来の
+    `_control_override` 経路へ委ね、version >= 2 は壊れた policy・未知 version でも
+    Resolver が park を返す——legacy fallback を再解釈しない（設計 §6.6）。
     """
     ctl = _load_control()
     version = ctl.get("version")
@@ -618,7 +673,8 @@ def _control_policy_decision(purpose: str) -> "dict | None":
     if not isinstance(_control_workload().get("selection_policy"), dict):
         return None
     return _executionresolver.resolve_execution(
-        _NODE_BUDGET_WORKLOAD, purpose_or_role=purpose, compiled_control=ctl,
+        _NODE_BUDGET_WORKLOAD, purpose_or_role=purpose,
+        explicit_pin=_envelope_pin(purpose), compiled_control=ctl,
         now=datetime.now(timezone.utc))
 
 
@@ -674,9 +730,10 @@ def _selection_meta(purpose: str = "", agent: "dict | None" = None) -> dict:
         # 候補ベースの決定。読み手（dashboard / audit）が設定から再推測しないよう、
         # receipt v2 の execution_decision ブロックを事実としてそのまま残す（§6.5）。
         # park は選択が無いので block を載せない（park_reason は selection_source で読める）。
-        meta = {"tier": tier or None,
-                "selection_source": decision.get("selection_source") or "parked",
-                "selection_reason": decision.get("reason") or "", "pinned": False}
+        source = decision.get("selection_source") or "parked"
+        meta = {"tier": tier or None, "selection_source": source,
+                "selection_reason": decision.get("reason") or "",
+                "pinned": source in ("explicit-pin", "trial-candidate")}
         if decision.get("selected"):
             meta["execution_decision"] = _executionresolver.receipt_execution_decision(decision)
         return meta

@@ -143,6 +143,27 @@ test('期限切れ・unknown・壊れた候補を除外し、trialと複数の�
   assert.deepStrictEqual(policy.candidates[0].qualification_refs, ['trial-one', 'trial-two']);
 });
 
+test('trial 裏付けのみの候補は status: trial を明記し、qualified は無印のまま', () => {
+  // 無印で出すと Resolver が通常 run の自動選択に含め「trial は Envelope 明示承認
+  // run 限定」（設計 §5.2）が破れる。Resolver 側の除外は status 明記が前提。
+  const doc = fixture();
+  doc.candidates.push({
+    agent_cli: 'ollama', model: 'gemma4:12b', economics: { estimated_cost: 0 },
+    qualifications: { review: qualification('ollama-12b-review-v1', 'trial', 0.5, 0, 60) },
+  });
+  const withTrial = {
+    ...tiers,
+    small: { order: 1, candidates: [{ agent_cli: 'ollama', model: 'gemma4:12b' }] },
+  };
+  const policy = compiler.compileSelectionPolicy({
+    strategy: 'economy', tiers: withTrial, tierCeiling: 'medium', qualifications: doc,
+  });
+  const trial = policy.candidates.find((candidate) => candidate.agent_cli === 'ollama');
+  assert.strictEqual(trial.status, 'trial');
+  const qualified = policy.candidates.find((candidate) => candidate.agent_cli === 'aider');
+  assert.ok(!('status' in qualified), 'qualified 候補に status を付けない（省略 = qualified）');
+});
+
 test('不正strategyと実行レベル未定義は安全側へ倒す', () => {
   assert.throws(() => compiler.compileSelectionPolicy({ strategy: 'local-first' }), /strategy が不正/);
   assert.deepStrictEqual(compiler.compileSelectionPolicy({

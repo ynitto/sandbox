@@ -159,6 +159,11 @@ function compileSelectionPolicy({ strategy = 'balanced', tiers = {}, tierCeiling
       qualification_refs: row.record.qualifications
         .map((qualification) => qualification.qualification_id).sort(),
       rank: index + 1,
+      // trial 裏付けしか無い候補は明記する。Resolver は自動選択から除外し、
+      // Execution Envelope の trial 明示承認 run でだけ選択を許す（設計 §5.2。
+      // 無印のまま出すと通常 run で trial が走り「明示承認 run 限定」が破れる）。
+      ...(row.record.qualifications.some((q) => q.status === 'qualified')
+        ? {} : { status: 'trial' }),
     })),
   };
 }

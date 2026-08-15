@@ -1230,6 +1230,74 @@ class AgentControlTests(unittest.TestCase):
         self.assertEqual(meta["selection_source"], "pinned-agent")
         self.assertNotIn("execution_decision", meta)
 
+    # -- Execution Envelope（agent-project の承認済み snapshot → 明示固定。E2↔U3 結合） --
+    # fixture の形の正典は agent-project/agent_project/envelope.py build_execution_envelope。
+
+    def _envelope(self, perms, approved=True):
+        kf._set_execution_envelope({"execution_envelope": {
+            "version": 1, "task_id": "t-1",
+            "approval": {"status": "approved" if approved else "proposed",
+                         "actor": "human", "reason": "test"},
+            "candidate_permissions": perms}})
+        self.addCleanup(kf._set_execution_envelope, None)
+
+    def test_envelope_pin_selects_policy_candidate(self):
+        self._control(self._policy_control())
+        self._envelope({"pins": [{"agent_cli": "kiro", "model": "sonnet"}]})
+        self.assertEqual(kf._agent_for("work"), ("kiro", "sonnet"))  # rank2 を明示固定
+        meta = kf._selection_meta("work")
+        self.assertEqual(meta["selection_source"], "explicit-pin")
+        self.assertTrue(meta["pinned"])
+        self.assertEqual(meta["execution_decision"]["selection_source"], "explicit-pin")
+
+    def test_envelope_trial_entry_runs_policy_trial_candidate(self):
+        # trial 裏付けのみの候補（Compiler が status: trial を明記）は通常 run で選ばれず、
+        # Envelope の trials に載った run でだけ走る——E5 昇格ループの入口。
+        ctl = self._policy_control()
+        ctl["workloads"]["flow"]["selection_policy"]["candidates"].append(
+            {"agent_cli": "ollama-verify", "model": "gemma4:12b", "rank": 3,
+             "status": "trial", "qualification_refs": ["ollama-12b-review-trial"]})
+        self._control(ctl)
+        normal = kf._agent_for("work")
+        self.assertEqual(normal[0], "ollama")            # 通常 run は rank1 のまま
+        self._envelope({"trials": [{"agent_cli": "ollama-verify", "model": "gemma4:12b"}]})
+        self.assertEqual(kf._agent_for("work"), ("ollama-verify", "gemma4:12b"))
+        meta = kf._selection_meta("work")
+        self.assertEqual(meta["selection_source"], "trial-candidate")
+        self.assertTrue(meta["pinned"])
+
+    def test_unapproved_envelope_is_ignored(self):
+        self._control(self._policy_control())
+        self._envelope({"pins": [{"agent_cli": "kiro", "model": "sonnet"}]}, approved=False)
+        decision = kf._control_policy_decision("work")
+        self.assertEqual(decision["selection_source"], "qualified-candidate")
+
+    def test_envelope_pin_outside_policy_parks_run_agent(self):
+        self._control(self._policy_control())
+        self._envelope({"pins": [{"agent_cli": "codex", "model": "gpt-6"}]})
+        with self.assertRaises(RuntimeError) as ctx:
+            kf.run_agent("x", None, purpose="work")
+        self.assertIn("pin-not-qualified", str(ctx.exception))
+
+    def test_envelope_tier_ceiling_override(self):
+        ctl = self._policy_control()
+        ctl["workloads"]["flow"]["tier"] = "medium"
+        self._control(ctl)
+        pin = {"agent_cli": "codex", "model": "gpt-6", "tier": "large"}
+        self._envelope({"pins": [pin], "trials": [pin]})
+        blocked = kf._control_policy_decision("work")
+        self.assertEqual(blocked["park_reason"], "pin-exceeds-tier")
+        self._envelope({"pins": [pin], "trials": [pin], "tier_ceiling_override": "large"})
+        allowed = kf._control_policy_decision("work")
+        self.assertEqual(allowed["selected"], {"agent_cli": "codex", "model": "gpt-6"})
+        self.assertEqual(allowed["selection_source"], "trial-candidate")
+
+    def test_envelope_purpose_scope(self):
+        self._control(self._policy_control())
+        self._envelope({"pins": [{"agent_cli": "kiro", "model": "sonnet", "purpose": "verify"}]})
+        self.assertEqual(kf._agent_for("work")[0], "ollama")    # 対象外ロールには効かない
+        self.assertEqual(kf._agent_for("verify"), ("kiro", "sonnet"))
+
     def test_status_heartbeat_written(self):
         self._control({"version": 1, "revision": 7, "workloads": {"flow": {}}})
         with mock.patch.object(kf, "_run_agent_once", return_value="ok"):
