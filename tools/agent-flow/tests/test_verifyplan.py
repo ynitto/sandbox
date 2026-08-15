@@ -286,11 +286,15 @@ class PlanAgentTests(unittest.TestCase):
         self.assertIn("elapsed_sec", receipt["verified_with"])   # 見積りの根拠
 
     def test_without_a_plan_agent_the_node_setting_is_recorded(self):
+        # plan・設定 agents:・run 単位のいずれも明示していないので、verify は自身の
+        # 変種（ollama-verify・gemma4:12b チューニング）へ振り替わる。ノードの model
+        # 設定（qwen3.5:9b）は _agent_for が何も明示解決しなかったときだけ効く
+        # フォールバックなので、変種の既定に置き換わる。
         receipt, seen = self._run(_plan(criteria=["hello.txt がある"]))
         self.assertIsNone(seen["agent"])
         self.assertEqual(receipt["verified_with"]["source"], "node")
-        self.assertEqual(receipt["verified_with"]["agent_cli"], "ollama")
-        self.assertEqual(receipt["verified_with"]["model"], "qwen3.5:9b")
+        self.assertEqual(receipt["verified_with"]["agent_cli"], "ollama-verify")
+        self.assertEqual(receipt["verified_with"]["model"], "gemma4:12b")
 
     def test_command_only_plan_records_nothing(self):
         # 自然文基準を判定していない receipt に「何で確かめたか」は無い（嘘を書かない）

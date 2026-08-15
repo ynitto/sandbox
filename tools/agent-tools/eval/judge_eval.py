@@ -51,7 +51,7 @@ def load_cmd(name: str = "ollama-json") -> "tuple[list[str], str]":
 
 
 def cli_name_for(kind: str) -> str:
-    """役割 → 本番が起動する CLI 定義名（split は配列契約なので `list_variant` へ）。"""
+    """役割 → 本番が起動する CLI 定義名（split は配列契約なので用途別変種へ振り替わる）。"""
     return engine.cli_name_for(kind, BASE_CLI)
 
 

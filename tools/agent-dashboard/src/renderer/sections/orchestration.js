@@ -782,9 +782,12 @@ function orchInventoryPanelHtml(overview) {
       ? `<div class="orch-errors">${d.errors.map((e) => `<div class="orch-error">${esc(e)}</div>`).join('')}</div>`
       : '';
     const shadow = d.shadowed ? orchBadge('soft', '同名の設定があるため無効') : orchBadge('ok', '利用可能');
+    // variant 先は他の定義の内部部品（用途ごとの使い分け）。tier・実行方針の候補選択
+    // には base 名を出す運用なので、ここでは区別できるようにだけしておく。
+    const variantBadge = d.isVariantTarget ? orchBadge('muted', '変種（他のエージェントが用途で使用）') : '';
     const specText = d.spec ? JSON.stringify(d.spec, null, 2) : '';
     return `<details class="orch-dropin" data-orch-dropin="${i}" data-ui-key="orch-dropin-${esc(d.name)}">
-      <summary><strong>${esc(d.name)}</strong> ${shadow}
+      <summary><strong>${esc(d.name)}</strong> ${shadow} ${variantBadge}
         <small class="muted">${esc(d.dir || '')}</small></summary>
       ${errs}
       <textarea class="orch-dropin-spec mono" rows="8" data-orch-name="${esc(d.name)}" data-orch-dir="${esc(d.dir || '')}">${esc(specText)}</textarea>
@@ -891,8 +894,10 @@ function consultAgentOptionsHtml() {
   const current = String(((state.config || {}).agent || {}).cli || '');
   const inv = (state.orchestration || {}).agents || { builtins: [], dropins: [] };
   // 同名で陰っているドロップインは選ばせない（選んでも組み込みが起動して食い違う）。
+  // variant 先（例: ollama-json・ollama-verify）は「ollama を用途で使い分ける」ための
+  // 内部部品なので、ここでは base 定義だけを候補にする（1 つのエージェントとして扱う）。
   const names = [...(inv.builtins || []),
-    ...(inv.dropins || []).filter((d) => d && !d.shadowed).map((d) => d.name)]
+    ...(inv.dropins || []).filter((d) => d && !d.shadowed && !d.isVariantTarget).map((d) => d.name)]
     .map((n) => String(n || '')).filter(Boolean);
   const options = ['<option value="">実行方針に従う</option>'];
   for (const name of names) {

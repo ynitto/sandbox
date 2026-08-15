@@ -28,18 +28,34 @@ class MissingEngineTests(unittest.TestCase):
             self.assertEqual(engine.unwrap_list({"data": [1, 2]}), {"data": [1, 2]})
         self.assertTrue(any("unwrap_list" in gap for gap in engine.missing()))
 
-    def test_cli_name_falls_back_to_the_json_variant(self):
-        """配列契約の振り替えが無ければ JSON 変種へ倒し、欠けたことを残す。"""
+    def test_cli_name_without_resolve_variant_falls_back_to_base(self):
+        """用途別の変種振り替え（resolve_variant）が無い木では base のまま返し、欠けたことを残す。"""
         class _Cli:
             @staticmethod
-            def json_variant(name):
+            def json_variant(name):  # 旧シンボルだけが残る木を模す
                 return f"{name}-json"
 
-        stub = mock.Mock(spec=["_agentcli"])
+        stub = mock.Mock(spec=["_agentcli", "LIST_CONTRACT_ROLES"])
         stub._agentcli = _Cli
+        stub.LIST_CONTRACT_ROLES = frozenset({"split"})
         with mock.patch.object(engine, "_FLOW", stub):
-            self.assertEqual(engine.cli_name_for("split"), "ollama-json")
-        self.assertTrue(any("list_variant" in gap for gap in engine.missing()))
+            self.assertEqual(engine.cli_name_for("split"), "ollama")
+        self.assertTrue(any("resolve_variant" in gap for gap in engine.missing()))
+
+    def test_cli_name_uses_resolve_variant_when_present(self):
+        """resolve_variant を持つ木は本番の解決器をそのまま呼ぶ。"""
+        class _Cli:
+            @staticmethod
+            def resolve_variant(name, purpose):
+                return {"agent_cli": f"{name}-{purpose}", "default_model": None} if purpose == "split" else None
+
+        stub = mock.Mock(spec=["_agentcli", "VARIANT_ELIGIBLE_ROLES"])
+        stub._agentcli = _Cli
+        stub.VARIANT_ELIGIBLE_ROLES = frozenset({"split", "verify"})
+        with mock.patch.object(engine, "_FLOW", stub):
+            self.assertEqual(engine.cli_name_for("split"), "ollama-split")
+            self.assertEqual(engine.cli_name_for("planner"), "ollama")  # 対象外の役割は素通り
+        self.assertEqual(engine.missing(), [])
 
     def test_missing_is_empty_when_the_engine_is_complete(self):
         """揃っている木では 1 件も記録しない（常時警告は読まれなくなる）。"""

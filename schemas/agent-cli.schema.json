@@ -103,14 +103,13 @@
       "default": true,
       "description": "rc=0 でも本文が空なら失敗として扱う（認証切れで空応答を返す CLI の静かな失敗を防ぐ）。"
     },
-    "json_variant": {
-      "type": "string",
-      "description": "JSON だけを返す契約の役割（agent-flow の planner / evaluator / split / filter / judge / reduce、agent-project の plan / review / prioritize / route / adjudicate / assess）に、この CLI の代わりに使う定義名。エンジンは役割の性質だけを見てここへ振り替えるので、人が役割ごとに agents: を書き並べなくてよい。ツールループ前提の定義（--tools 付き）を JSON 契約の役割に使うと出力が制御語だけになり空応答で落ちるため、その組み合わせに対応する変種を定義側が申告する。指す先が存在しない・自分自身を指す場合は無視され元の定義が使われる。例: ollama → ollama-json。"
-    },
-    "list_variant": {
-      "type": "string",
-      "description": "JSON **配列**を返す契約の役割（agent-flow の split）に、この CLI の代わりに使う定義名。JSON モードでトップレベルがオブジェクトに固定されるエンジン（ollama の format:json）は、json_variant の起動形では配列契約を満たしようがないため、スキーマを渡せる起動形をここで申告する。書かなければ json_variant へ落ちるので、配列をそのまま返せる CLI は書かなくてよい。指す先が存在しない・自分自身を指す場合は無視される。例: ollama → ollama-list。",
-      "$comment": "json_variant と同じ解決規則（agentcore.agentcli._variant）で引かれる。"
+    "variants": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "用途（role/kind/purpose 名。例 \"planner\" \"judge\" \"split\" \"verify\" \"retrieve\"）ごとに、この CLI の代わりに使う定義名。variant は「1 つのエージェント（例 ollama）を用途で使い分ける」ことを表す——base 定義を選ぶだけで、用途ごとにどの起動形・どのモデルを使うかはこの申告に従ってエンジンが自動で振り替える。人が用途ごとに agents: を書き並べなくてよい。エンジンは自分が扱う用途の集合（例: agent-flow の JSON_CONTRACT_ROLES・agent-project の JSON_CONTRACT_PURPOSES）だけをこのマップへ問い合わせる——キーが存在するからといって、どの呼び出し元でも無条件に振り替わるわけではない。指す先が存在しない・自分自身を指す場合はそのキーは無視され元の定義が使われる。例: ollama → {\"planner\": \"ollama-json\", \"split\": \"ollama-list\", \"verify\": \"ollama-verify\", \"retrieve\": \"ollama-read\"}。振り替え後のモデルは、呼び出し元が明示指定していなければ variant 先自身の default_model を使う（用途専用のチューニングを base のモデル指定で上書きさせないため）。",
+      "$comment": "解決は agentcore.agentcli.resolve_variant(name, purpose) の 1 実装（agentcore/agentcli.py）。"
     },
     "command_suffix": {
       "type": "array",
