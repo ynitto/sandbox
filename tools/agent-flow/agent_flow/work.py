@@ -366,6 +366,13 @@ def cmd_work(args) -> int:
         artifacts = [os.path.relpath(p, bus.run_dir) for p in bus.list_artifacts(nid)]
         if delivery:  # ワークスペースへ push したブランチ/コミットを result に残す（消費側が追跡）
             rdata = {**(rdata if isinstance(rdata, dict) else {}), "delivery": delivery}
+        elif ws and rstatus == "done":
+            # workspace は有るが commit 対象の差分が無い。読み手が「古い result で公開状態不明」と
+            # 「公開不要」を推測で混同しないよう、事実を明示する。
+            rdata = {**(rdata if isinstance(rdata, dict) else {}), "publication": {
+                "state": "not-required", "url": ws.get("url"), "branch": ws.get("branch"),
+                "attempted_at": now_iso(),
+            }}
         output, context_allocation = extract_read_report(output, read_allocation)
         method_app = _last_methods(kind) if args.executor == "agent" else {"methods": [], "trial": None}
         # 実行した PC を結果に残す（読み手が who の綴りを割って推測しないで済むように）

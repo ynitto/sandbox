@@ -33,14 +33,14 @@ def parse_workspace(token: "str | None") -> "dict | None":
     token = (token or "").strip()
     if not token:
         return None
-    spec = {"url": "", "path": "", "base": "", "target": "", "desc": ""}
+    spec = {"url": "", "local": "", "path": "", "base": "", "target": "", "desc": ""}
     if token.startswith("{"):
         try:
             d = json.loads(token)
         except (ValueError, TypeError):
             d = None
         if isinstance(d, dict) and d.get("url"):
-            for k in ("url", "path", "base", "target", "desc", "branch"):
+            for k in ("url", "local", "path", "base", "target", "desc", "branch"):
                 if d.get(k):
                     spec[k] = str(d[k]).strip()
             return spec
@@ -90,6 +90,61 @@ def workspace_id(spec: dict) -> tuple:
 def run_branch_name(run_id: str) -> str:
     """この run の作業ブランチ名。worker が base から作り、変更を push する先。"""
     return f"af/{_safe(run_id)}"
+
+
+def recovery_ref_name(run_id: str) -> str:
+    """remote 公開に失敗しても手元から再 push できる hidden ref。"""
+    return f"refs/agent-flow/recovery/{_safe(run_id)}"
+
+
+def _save_recovery_ref(ws: dict, run_id: str) -> "str | None":
+    """現在の workspace HEAD をローカル元リポジトリへ保存する。
+
+    local が無い remote-only run は従来どおり remote push だけを行う。Dashboard 起点の run は
+    local を必ず渡すため、公開失敗時も一時 worktree の掃除で commit が消えない。
+    """
+    local = str(ws.get("local") or "").strip()
+    if not local:
+        return None
+    clone = str(ws.get("clone") or "")
+    ref = recovery_ref_name(run_id)
+    head = _ws_git(clone, "rev-parse", "HEAD").stdout.strip()
+    saved = _ws_git(local, "update-ref", ref, head)
+    if saved.returncode != 0:
+        raise RuntimeError(
+            f"workspace recovery ref を保存できませんでした: "
+            f"{(saved.stderr or saved.stdout).strip()[:300]}")
+    return ref
+
+
+def _delete_recovery_ref(ws: dict, run_id: str) -> None:
+    """remote 公開済みの recovery ref を後始末する（失敗時は GC に委ねる）。"""
+    local = str(ws.get("local") or "").strip()
+    if local:
+        _ws_git(local, "update-ref", "-d", recovery_ref_name(run_id))
+
+
+class WorkspacePublishError(RuntimeError):
+    """commit は保存済みだが remote branch へ公開できなかった失敗。"""
+
+    def __init__(self, message: str, publication: dict):
+        super().__init__(message)
+        self.data = {"error_class": "workspace_publish", "publication": publication}
+
+
+def _workspace_publish_error(ws: dict, run_id: str, branch: str, detail: str) -> WorkspacePublishError:
+    clone = str(ws.get("clone") or "")
+    head = _ws_git(clone, "rev-parse", "HEAD").stdout.strip()
+    message = f"workspace push が {branch} へ反映できませんでした: {detail.strip()[:300]}"
+    publication = {"state": "failed", "url": ws.get("url"), "branch": branch,
+                   "commit": head, "attempted_at": now_iso(), "error": detail.strip()[:300]}
+    local = str(ws.get("local") or "").strip()
+    if local:
+        publication["recovery"] = {
+            "repository": local,
+            "ref": recovery_ref_name(run_id),
+        }
+    return WorkspacePublishError(message, publication)
 
 
 def _clone_repo(url: str, base: str, dest: str) -> str:
@@ -341,6 +396,7 @@ def finalize_workspace(ws: "dict | None", run_id: str, node_id: str) -> "dict | 
         # エージェントの編集を含まない古い HEAD が push され「変更が入ったつもりの
         # delivery」で done になる（サイレントなデータ喪失）。ここで明示的に失敗させる。
         raise RuntimeError(f"workspace commit が失敗しました: {(c.stderr or c.stdout).strip()[:300]}")
+    _save_recovery_ref(ws, run_id)
     target_rev = str(ws.get("target_rev") or "")
     last_push = None
     for i in range(5):
@@ -351,8 +407,12 @@ def finalize_workspace(ws: "dict | None", run_id: str, node_id: str) -> "dict | 
         last_push = _ws_git(clone, "push", "origin", f"HEAD:refs/heads/{branch}")
         if last_push.returncode == 0:
             head = _ws_git(clone, "rev-parse", "HEAD").stdout.strip()
+            _delete_recovery_ref(ws, run_id)
             return {"url": ws.get("url"), "branch": branch, "commit": head,
-                    "target": ws.get("target") or ws.get("base") or "", "path": ws.get("path") or ""}
+                    "target": ws.get("target") or ws.get("base") or "", "path": ws.get("path") or "",
+                    "publication": {"state": "published", "url": ws.get("url"),
+                                    "branch": branch, "commit": head,
+                                    "attempted_at": now_iso()}}
         # 失敗の理由を見分ける。rebase で解けるのは「リモートが進んでいた」だけで、認証切れ・
         # 権限不足・保護ブランチ・ネットワーク断は何度 rebase しても解けない。見分けずに
         # rebase へ倒すと、押せなかった本当の理由（例: could not read Username）が捨てられ、
@@ -362,15 +422,14 @@ def finalize_workspace(ws: "dict | None", run_id: str, node_id: str) -> "dict | 
         # 固定しているため。
         push_detail = (last_push.stderr or last_push.stdout or "")
         if not any(m in push_detail for m in _PUSH_STALE_MARKERS):
-            raise RuntimeError(
-                f"workspace push が {branch} へ反映できませんでした: {push_detail.strip()[:300]}")
+            raise _workspace_publish_error(ws, run_id, branch, push_detail)
         # リモートの branch を FETCH_HEAD に取り込み（共有 cache の ref は書き換えない）、
         # detached のまま rebase して再 push。分散ワーカーの push を統合する。
         fetched = _ws_git(clone, "fetch", "--quiet", "origin", branch)
         if fetched.returncode != 0:
-            raise RuntimeError(
-                f"workspace push が {branch} へ反映できませんでした（統合のための fetch も失敗）: "
-                f"{push_detail.strip()[:200]} / {(fetched.stderr or fetched.stdout).strip()[:150]}")
+            detail = (f"{push_detail.strip()[:200]} / 統合のための fetch も失敗: "
+                      f"{(fetched.stderr or fetched.stdout).strip()[:150]}")
+            raise _workspace_publish_error(ws, run_id, branch, detail)
         rb = _ws_git(clone, "rebase", "FETCH_HEAD")
         if rb.returncode != 0:
             # コンフリクトした rebase を放置したまま push を繰り返しても解消しない上、
@@ -378,10 +437,11 @@ def finalize_workspace(ws: "dict | None", run_id: str, node_id: str) -> "dict | 
             _ws_git(clone, "rebase", "--abort")
             raise RuntimeError(
                 f"workspace rebase が競合しました（{branch}）: {(rb.stderr or rb.stdout).strip()[:300]}")
+        _save_recovery_ref(ws, run_id)
         backoff_sleep(2 ** i if i < 4 else 16)
     detail = ((last_push.stderr or last_push.stdout).strip()[:300]
               if last_push is not None else "")
-    raise RuntimeError(f"workspace push が {branch} へ反映できませんでした: {detail}")
+    raise _workspace_publish_error(ws, run_id, branch, detail)
 
 
 def cleanup_workspace() -> None:
