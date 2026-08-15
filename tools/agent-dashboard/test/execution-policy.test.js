@@ -106,6 +106,56 @@ test('適用中の実行レベルから最後の候補を削除できない', ()
   }), /候補がありません/);
 });
 
+test('variant先は汎用tier候補として保存・適用しない', () => {
+  const savedEnv = process.env.KIRO_AGENTS_DIR;
+  const agentsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'exec-policy-variant-agents-'));
+  const controlDir = fs.mkdtempSync(path.join(os.tmpdir(), 'exec-policy-variant-control-'));
+  const cfg = { orchestration: { controlDir } };
+  fs.writeFileSync(path.join(agentsDir, 'ollama.json'), JSON.stringify({
+    command: ['agent-ollama', '{model}'], variants: { verify: 'ollama-verify' },
+  }));
+  fs.writeFileSync(path.join(agentsDir, 'ollama-verify.json'), JSON.stringify({
+    command: ['agent-ollama', '--format', 'json', '{model}'],
+  }));
+  try {
+    process.env.KIRO_AGENTS_DIR = agentsDir;
+    assert.throws(() => profiles.save(cfg, { tiers: {
+      small: { order: 1, candidates: [{ agent_cli: 'ollama-verify', model: 'gemma4:12b' }] },
+    } }), /variant|\u5909種/);
+
+    fs.writeFileSync(path.join(controlDir, 'profiles.json'), JSON.stringify({
+      version: 1,
+      enabled: true,
+      tiers: {
+        small: { order: 1, candidates: [
+          { agent_cli: 'ollama-verify', model: 'gemma4:12b' },
+          { agent_cli: 'codex', model: 'gpt-5.6-luna' },
+        ] },
+      },
+      policy: {
+        apply_to: ['flow'],
+        steps: [{ min_remaining_ratio: 0, tier: 'small' }],
+        no_cap_tier: 'small',
+      },
+      state: {},
+    }));
+
+    assert.deepStrictEqual(profiles.load(cfg).tiers.small.candidates, [
+      { agent_cli: 'codex', model: 'gpt-5.6-luna' },
+    ], '既存設定に残るvariant先も選定対象から除外する');
+    profiles.apply(cfg, { force: true, nowMs: Date.parse('2026-08-15T14:00:00Z') });
+    const control = JSON.parse(fs.readFileSync(path.join(controlDir, 'control.json'), 'utf8'));
+    assert.strictEqual(control.workloads.flow.agent_cli, 'codex');
+    const migrated = JSON.parse(fs.readFileSync(path.join(controlDir, 'profiles.json'), 'utf8'));
+    assert.deepStrictEqual(migrated.tiers.small.candidates, [
+      { agent_cli: 'codex', model: 'gpt-5.6-luna' },
+    ], '適用時に汚染された既存設定も永続的に移行する');
+  } finally {
+    if (savedEnv === undefined) delete process.env.KIRO_AGENTS_DIR;
+    else process.env.KIRO_AGENTS_DIR = savedEnv;
+  }
+});
+
 test('単一保存はbudgetとprofilesを更新してcontrolへ反映する', () => {
   const budgetDir = fs.mkdtempSync(path.join(os.tmpdir(), 'exec-policy-budget-'));
   const controlDir = fs.mkdtempSync(path.join(os.tmpdir(), 'exec-policy-control-'));

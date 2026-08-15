@@ -193,7 +193,8 @@ function list(cfg) {
   // ——エンジンは base の agent_cli をそのまま渡して自分で解決するため、この定義自体は
   // 引き続き実在・ロード可能である必要がある）。
   const variantTargets = new Set();
-  for (const { spec } of dropins) {
+  for (const { spec, shadowed, errors } of dropins) {
+    if (shadowed || errors.length) continue;
     if (!isPlainObject(spec) || !isPlainObject(spec.variants)) continue;
     for (const target of Object.values(spec.variants)) {
       if (typeof target === 'string' && target.trim()) variantTargets.add(target.trim().toLowerCase());
@@ -203,6 +204,16 @@ function list(cfg) {
     dropin.isVariantTarget = variantTargets.has(dropin.name.toLowerCase());
   }
   return { builtins: BUILTINS.slice(), dropins };
+}
+
+// variant 先は base エージェントの用途別実体であり、tier や workload の
+// 汎用候補として直接選ばない。判定を renderer と profiles で複製しないよう、
+// first-wins で有効な定義だけから対象名を返す。
+function variantTargetNames(cfg) {
+  return new Set(list(cfg).dropins
+    .filter((item) => !item.shadowed && !(item.errors || []).length && item.isVariantTarget)
+    .map((item) => String(item.name || '').trim().toLowerCase())
+    .filter(Boolean));
 }
 
 // ドロップイン定義の作成・編集。既定の書込先は ~/.agents/agents/。検証を通ってから原子書換。
@@ -245,4 +256,4 @@ function remove(cfg, payload) {
   return { name, dir, path: target, removed: true };
 }
 
-module.exports = { list, save, remove, validateSpec, searchDirs, BUILTINS };
+module.exports = { list, variantTargetNames, save, remove, validateSpec, searchDirs, BUILTINS };
