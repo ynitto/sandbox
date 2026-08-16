@@ -167,9 +167,10 @@ assert.ok(workflowFeature.includes('item.design.runIds')
   && workflowFeature.includes('item.handoff.implementationRunIds')
   && workflowFeature.includes('group.attempts.length > 1'),
 '左メニューは設計・実装・やり直しを一つのタスクにまとめます');
-assert.ok(workflowFeature.includes("[['overview', '概要'], ['graph', '工程'], ['history', '履歴']]")
-  && workflowFeature.includes('id="flow-view-body"'),
-'プロジェクトとワークフローの実行詳細は同じタブ名・表示領域を使います');
+assert.ok(workflowFeature.includes('root.executionDetailShellHtml')
+  && workflowFeature.includes("tabAttribute: 'data-run-view'")
+  && !workflowFeature.includes('<div id="flow-view-body">'),
+'ワークフロー実行詳細は共通フレームを使い、プロジェクトと重複するDOM IDを作りません');
 const wireRunSource = workflowFeature.slice(
   workflowFeature.indexOf('function wireRun('),
   workflowFeature.indexOf('\n  function wireSettings(', workflowFeature.indexOf('function wireRun('))
@@ -188,7 +189,7 @@ assert.ok(directStartSource.includes('preparationHandoff')
 assert.ok(workflowFeature.includes('class="flow-view-tab') && workflowFeature.includes('class="flow-graph-workspace"')
   && workflowFeature.includes('class="flow-overview-view"') && workflowFeature.includes('class="flow-history-view"'),
   'ワークフロー実行詳細はプロジェクト実行と同じ概要・工程・履歴の構造を使います');
-assert.ok(workflowFeature.includes('id="wf-new-run">← 実行待ちへ戻る'),
+assert.ok(workflowFeature.includes('id="wf-new-run">実行待ちへ戻る'),
   '実行詳細から新規タスクと実行待ちへ戻れます');
 assert.ok(workflowFeature.includes('preparationCreate') && workflowFeature.includes('preparationHandoff'),
   '作成時は作業準備へ保存し、準備完了後の明示操作で実装します');
@@ -316,7 +317,7 @@ const workflowQueue = workflowFeature.slice(workflowFeature.indexOf('class="wf-q
   workflowFeature.indexOf('${workflowTaskDialogHtml(ov)}'));
 assert.ok(!workflowQueue.includes("consultControlHtml('workflows')"),
   '実行待ちには作業フォルダが確定していないため相談を置きません');
-assert.ok(/const folder = runFolder\(st\.runDetail\);[\s\S]{0,400}\$\{folder \? consultControlHtml\('workflows'\) : ''\}/.test(workflowFeature),
+assert.ok(/const folder = runFolder\(detail\);[\s\S]{0,1800}\$\{folder \? consultControlHtml\('workflows'\) : ''\}/.test(workflowFeature),
   '実行詳細では記録から作業フォルダを解決できる場合だけ相談を置きます');
 assert.ok(/function folderPath\(value\)[\s\S]{0,300}\['url', 'cwd', 'root', 'dir', 'path'\]/.test(workflowFeature),
   'workspace オブジェクトは文字列化せず記録された実フォルダを解決します');

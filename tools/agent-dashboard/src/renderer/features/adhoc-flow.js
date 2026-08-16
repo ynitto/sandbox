@@ -1127,7 +1127,9 @@
     const finalSummary = String((run.final && run.final.summary) || '').trim();
     const overviewView = `<section class="flow-overview-view">
       <div class="flow-run-heading"><div><span class="summary-kicker">選択中の作業</span><h2>${esc(title)}</h2>
-        <p class="wf-run-meta">${esc(flowName)}${publication.branch ? ` · ${esc(publication.branch)}` : ''}</p></div></div>
+        <p class="wf-run-meta">${esc(flowName)}${publication.branch ? ` · ${esc(publication.branch)}` : ''}</p></div>
+        <div class="flow-heading-actions"><button type="button" id="wf-new-run">実行待ちへ戻る</button>
+          ${folder ? consultControlHtml('workflows') : ''}</div></div>
       <section class="flow-outcome-status" aria-label="実行の状態と作業フォルダ">
         <div><span>実行</span><strong class="status-chip st-${esc(run.status || 'inbox')}">${esc(statusLabel(run.status))}</strong></div>
         ${verify.state === 'none' ? '' : `<div><span>統合検証</span>
@@ -1163,12 +1165,11 @@
       <div class="events flow-events">${events || '<span class="muted">イベントはありません</span>'}</div>
       <details class="flow-technical"><summary>実行時のエージェント指定</summary>${overrideHtml}</details></section>`;
     const view = st.runView === 'graph' ? graphView : st.runView === 'history' ? historyView : overviewView;
-    return `<div class="flow-detail-shell"><button class="mobile-master-back" data-flow-back>一覧へ戻る</button>
-      <div class="flow-view-tabs" role="tablist" aria-label="実行の詳細">
-      ${[['overview', '概要'], ['graph', '工程'], ['history', '履歴']].map(([key, label]) =>
-        `<button type="button" role="tab" data-run-view="${key}" class="flow-view-tab ${st.runView === key ? 'active' : ''}"
-          aria-selected="${st.runView === key}">${label}</button>`).join('')}</div>
-      <div id="flow-view-body">${view}</div></div>`;
+    const shell = root.executionDetailShellHtml || ((options) => `<div class="flow-detail-shell">
+      <div class="flow-view-tabs">${[['overview', '概要'], ['graph', '工程'], ['history', '履歴']].map(([key, label]) =>
+    `<button data-run-view="${key}" class="flow-view-tab ${options.active === key ? 'active' : ''}">${label}</button>`).join('')}</div>
+      <div class="flow-view-body">${options.body}</div></div>`);
+    return shell({ active: st.runView, tabAttribute: 'data-run-view', backAttribute: 'data-flow-back', body: view });
   }
 
   function overrideRowsHtml(ov, group, labels) {
@@ -1294,10 +1295,7 @@
 
   function runHtml(ov) {
     if (st.selectedRun && st.runDetail) {
-      const folder = runFolder(st.runDetail);
       return `<section class="wf-page wf-run-detail-page" aria-label="ワークフロー実行詳細">
-        <div class="wf-detail-toolbar"><button type="button" id="wf-new-run">← 実行待ちへ戻る</button>
-          ${folder ? consultControlHtml('workflows') : ''}</div>
         <p class="qf-notice" role="status"${st.notice ? '' : ' hidden'}>${esc(st.notice)}</p>
         ${runDetailHtml(st.runDetail)}</section>`;
     }
