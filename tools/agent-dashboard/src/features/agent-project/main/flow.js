@@ -457,7 +457,15 @@ function readRun(runDir) {
     progress: total ? (counts.done + counts.failed) / total : 0,
     gitlabIssues,
     final: finalJson
-      ? { finishedAt: finalJson.finished_at || null, summary: finalJson.summary || '' }
+      ? {
+        finishedAt: finalJson.finished_at || null,
+        summary: finalJson.summary || '',
+        // 終端の検証（run の完了条件）と公開後の CI は agent-flow が final へ記録する。
+        // 画面側で成果テキストから読み直さず、書き手の判定をそのまま運ぶ。
+        verification: finalJson.verification && typeof finalJson.verification === 'object'
+          ? finalJson.verification : null,
+        ci: finalJson.ci && typeof finalJson.ci === 'object' ? finalJson.ci : null,
+      }
       : null,
   };
 }

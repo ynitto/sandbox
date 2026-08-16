@@ -49,7 +49,9 @@ _使わない_: 設計チャット, 対話モード
 **統合検証（Integration Verify）**:
 実装フローの終端に既定で置く検証工程。並列で作った変更をまとめた状態で対象パッケージのテストスイート
 全体を CI と同じ系統で実行し、失敗したら修正して再検証する（`kind: verify` + `continuation: retry`）。
-run の完了は「全ノード done」ではなく、この終端検証が緑であることで表す。
+run の完了は「全ノード done」ではなく、この終端検証が緑であることで表す。判定の正典は agent-flow が
+`final.json` の `verification` へ記録したもの（`state` / `nodes` / `failed`）で、赤なら run 自体が
+failed で終端する。dashboard は記録を読むだけで、成果テキストからの読み直しは記録の無い旧 run に限る。
 _使わない_: 最終テスト, 総合テスト
 
 **面（Surface）**:

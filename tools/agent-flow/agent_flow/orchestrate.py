@@ -272,21 +272,87 @@ def _sanitize_graph(nodes: dict) -> dict:
     return nodes
 
 
+# --------------------------------------------------------------------------
+# 終端の検証（run の完了条件）
+# --------------------------------------------------------------------------
+# 「全ノードが done」は完了条件として弱い。並列で作った変更をまとめた後の検証が赤でも、
+# ノード自体は「検証を実行して報告した」という仕事を終えているので done になり、run は
+# 成功として下流（agent-project / dashboard / 板）へ渡ってしまう。終端（他ノードから依存
+# されていない）の verify ノードの判定を run の完了条件にする。
+# 判定は verify の構造化成果 `data.ok`（waits._normalize_verify が本文の verify=pass/fail
+# からも導き、曖昧な出力は fail へ倒す）を読む——本文の文字列を orchestrator 側で再解釈
+# しない（"no failures" を赤と読むような二重解釈を作らないため）。
+# 設計: docs/plans/2026-08-15-workflow-feature-improvement-proposals.md P1
+
+
+def terminal_verification(nodes: dict, results: dict) -> dict:
+    """終端 verify ノードの判定をまとめる。state は passed / failed / pending / none。"""
+    depended = {d for n in (nodes or {}).values() for d in (n.get("deps") or [])}
+    terminal = [nid for nid, node in (nodes or {}).items()
+                if str(node.get("kind") or "work") == "verify" and nid not in depended]
+    if not terminal:
+        return {"state": "none", "nodes": []}
+    failed, pending = [], []
+    for nid in sorted(terminal):
+        result = (results or {}).get(nid) or {}
+        status = str(result.get("status") or "")
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        if status == "failed":
+            failed.append(nid)
+        elif status != "done":
+            pending.append(nid)
+        elif not _normalize_verify(str(result.get("output") or ""), data).get("ok"):
+            # 判定の読み方は _normalize_verify の 1 実装に委ねる（構造化 ok → 本文の
+            # verify=pass/fail の順に読み、どちらも無い曖昧な出力は fail へ倒す）。
+            failed.append(nid)
+    state = "failed" if failed else ("pending" if pending else "passed")
+    outcome = {"state": state, "nodes": sorted(terminal)}
+    if failed:
+        outcome["failed"] = failed
+    if pending:
+        outcome["pending"] = pending
+    return outcome
+
+
+def _verification_failure(outcome: dict) -> "str | None":
+    """終端検証が緑でないときの失敗理由（トリアージタグ付き）。緑・検証なしなら None。"""
+    state = str((outcome or {}).get("state") or "none")
+    if state == "failed":
+        return ("[verification] 終端の検証が緑になっていません: "
+                + ", ".join(outcome.get("failed") or []))
+    if state == "pending":
+        return ("[verification] 終端の検証の判定を読み取れませんでした: "
+                + ", ".join(outcome.get("pending") or []))
+    return None
+
+
 def _finalize_run(bus, args, iteration: int, failure: "str | None" = None) -> None:
     """全ノードの結果を集約して final.json を書き出し、run を終端して push・ログ出力する。
     failure（環境要因の打ち切り等）が渡されたら done でなく failed で終端し、理由を
-    meta.failure_reason に残す（トリアージタグ付き → agent-project / viewer が同じ判定を読む）。"""
+    meta.failure_reason に残す（トリアージタグ付き → agent-project / viewer が同じ判定を読む）。
+
+    failure が無くても、終端の検証が緑でなければ failed で終端する（完了条件は「全ノード
+    done」ではなく「終端の検証が緑」）。公開後の CI 結果は、取り込みを宣言している場合だけ
+    公開レコードへ書き戻し、run 全体の状態を final へ載せる。"""
+    ci = attach_ci_results(bus, args)
     results = {nid: (bus.read_result(nid) or {}) for nid in bus.task_ids()}
     summary = "\n".join(
         f"- {nid} [{r.get('status')}]: {str(r.get('output',''))[:200]}"
         for nid, r in results.items())
+    graph = bus.read_graph() or {}
+    verification = terminal_verification(graph.get("nodes") or {}, results)
+    # 環境要因の打ち切り（failure）では成果が確定していないので、検証の判定は理由にしない。
+    if not failure:
+        failure = _verification_failure(verification)
     final_body = {
         "request": args.request,
         "finished_at": now_iso(),
         "iterations": iteration,
-        "strategy": (bus.read_graph() or {}).get("strategy", {}),
+        "strategy": graph.get("strategy", {}),
         "summary": summary,
         "results": results,
+        "verification": verification,
+        **({"ci": ci} if ci else {}),
         **({"failure_reason": failure} if failure else {}),
     }
     # knowledge は meta の素通しコピー（解釈しない）。無い run ではキー自体を足さない。

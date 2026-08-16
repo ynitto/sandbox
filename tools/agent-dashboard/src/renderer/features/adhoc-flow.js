@@ -415,7 +415,36 @@
   // 判定は構造（末端の検証工程）で行い、文言や id には依存しない——利用者が名前を
   // 変えても、雛形以外の実装フローでも同じ器で読めるようにする。
   // 失敗の判定は agent-flow の評価役と同じ規則（結果に fail が出ていれば赤）に揃える。
+  const VERIFY_VIEWS = {
+    failed: {
+      state: 'failed', label: '検証が赤', tone: 'warn',
+      text: '終端の統合検証が緑になっていません。失敗した検証の出力を確認し、直してから再実行してください。',
+    },
+    pending: {
+      state: 'pending', label: '検証中', tone: 'muted',
+      text: '終端の統合検証はまだ終わっていません。',
+    },
+    passed: {
+      state: 'passed', label: '検証が緑', tone: 'ok',
+      text: '終端の統合検証が緑になりました。',
+    },
+  };
+
   function integrationVerifyPresentation(run) {
+    // 判定の正典は agent-flow が final へ書いた記録（run の完了条件そのもの）。
+    // 記録を持たない古い run だけ、工程の並びと成果から画面側で読み取る。
+    const recorded = (run && run.final && run.final.verification) || null;
+    if (recorded && VERIFY_VIEWS[String(recorded.state || '')]) {
+      const failed = Array.isArray(recorded.failed) ? recorded.failed : [];
+      const pending = Array.isArray(recorded.pending) ? recorded.pending : [];
+      return {
+        ...VERIFY_VIEWS[String(recorded.state)],
+        nodeId: String(failed[0] || pending[0] || (Array.isArray(recorded.nodes) ? recorded.nodes[0] : '') || ''),
+      };
+    }
+    if (recorded && String(recorded.state || '') === 'none') {
+      return { state: 'none', label: '統合検証なし', tone: 'muted', nodeId: '', text: '' };
+    }
     const nodes = Object.values((run && run.nodes) || {});
     const referenced = new Set(nodes.flatMap((node) => node.deps || []));
     const terminals = nodes.filter((node) => node.kind === 'verify' && !referenced.has(node.id));
@@ -423,38 +452,38 @@
       return { state: 'none', label: '統合検証なし', tone: 'muted', nodeId: '', text: '' };
     }
     const verdictOf = (node) => {
+      // 構造化された判定（verify の成果 data.ok / 決定的ゲートの verdict）を優先し、
+      // 本文の文字列は最後の手掛かりにする。
       const declared = node.verification && typeof node.verification === 'object'
         ? String(node.verification.verdict || '') : '';
       if (declared === 'fail' || node.state === 'failed') return 'fail';
       if (declared === 'pass') return 'pass';
       if (node.state !== 'done') return 'pending';
-      return String(node.output || '').toLowerCase().includes('fail') ? 'fail' : 'pass';
+      const data = node.data && typeof node.data === 'object' ? node.data : null;
+      if (data && typeof data.ok === 'boolean') return data.ok ? 'pass' : 'fail';
+      const output = String(node.output || '').toLowerCase();
+      if (output.includes('verify=fail')) return 'fail';
+      if (output.includes('verify=pass')) return 'pass';
+      return output.includes('fail') ? 'fail' : 'pass';
     };
     const failed = terminals.find((node) => verdictOf(node) === 'fail');
     if (failed) {
-      return {
-        state: 'failed', label: '検証が赤', tone: 'warn', nodeId: failed.id,
-        text: '終端の統合検証が緑になっていません。失敗した検証の出力を確認し、直してから再実行してください。',
-      };
+      return { ...VERIFY_VIEWS.failed, nodeId: failed.id };
     }
     const pending = terminals.find((node) => verdictOf(node) === 'pending');
     if (pending) {
-      return {
-        state: 'pending', label: '検証中', tone: 'muted', nodeId: pending.id,
-        text: '終端の統合検証はまだ終わっていません。',
-      };
+      return { ...VERIFY_VIEWS.pending, nodeId: pending.id };
     }
-    return {
-      state: 'passed', label: '検証が緑', tone: 'ok', nodeId: terminals[0].id,
-      text: '終端の統合検証が緑になりました。',
-    };
+    return { ...VERIFY_VIEWS.passed, nodeId: terminals[0].id };
   }
 
   // 公開（ブランチ push）後の CI 結果（P6）。公開レコードと同じ器（結果ノードの
   // publication / delivery）に載った記録だけを読む——dashboard から CI へは問い合わせない。
   function ciPresentation(run) {
     const view = publicationPresentation(run || {});
-    const ci = view.ci;
+    // 公開レコードの記録が主。run 全体の集計しか無い場合（公開ノードを読めない古い run）は
+    // agent-flow が final へ書いた集計を使う。
+    const ci = view.ci || (run && run.final && run.final.ci) || null;
     if (!ci || !ci.state) return { state: 'none', label: 'CI 記録なし', tone: 'muted', url: '', checks: [] };
     const checks = (Array.isArray(ci.checks) ? ci.checks : []).map((check) => ({
       name: String((check && check.name) || ''),
@@ -1034,8 +1063,13 @@
         }
         return { cls: 'ok', label: '完了', text: '実行は完了しました。実行結果と工程ごとの成果を確認できます。' };
       }
-      case 'failed':
+      case 'failed': {
+        // 終端の検証が赤で終わった実行は、環境要因の失敗と混ぜずに検証の話として出す
+        // （直す場所が「実行環境」ではなく「成果」なので、次の操作が変わる）。
+        const verify = integrationVerifyPresentation(run);
+        if (verify.state === 'failed') return { cls: 'act', label: '要対応', text: verify.text };
         return { cls: 'act', label: '要確認', text: '実行が失敗しました。失敗理由を確認し、必要なら再実行してください。' };
+      }
       case 'cancelled':
       case 'canceled':
         return { cls: 'muted', label: '中止済み', text: '実行は中止されています。必要なら再実行できます。' };

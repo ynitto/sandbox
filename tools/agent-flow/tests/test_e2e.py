@@ -81,6 +81,49 @@ class EndToEndTests(unittest.TestCase):
         self.assertGreaterEqual(final["iterations"], 1)        # 再計画が回った
         self.assertEqual(final["results"]["t2r"]["status"], "done")  # retry 成功
 
+    def test_red_terminal_verify_fails_the_run(self):
+        """終端の検証が赤の run は done にしない（P1: 完了条件は「終端の検証が緑」）。
+
+        設計: docs/plans/2026-08-15-workflow-feature-improvement-proposals.md P1
+        """
+        bus = tempfile.mkdtemp(prefix="kf-verify-red-")
+        self.addCleanup(shutil.rmtree, bus, ignore_errors=True)
+        plan_file = os.path.join(bus, "plan.json")
+        # stub の verify は依存の出力に issue があれば verify=fail を返す
+        with open(plan_file, "w", encoding="utf-8") as f:
+            json.dump({"name": "赤い検証", "nodes": [
+                {"id": "build", "goal": "issue が残る実装", "kind": "work", "deps": []},
+                {"id": "check", "goal": "統合検証", "kind": "verify", "deps": ["build"]},
+            ]}, f, ensure_ascii=False)
+        p = self._run_up(bus, "実装して検証する", extra=["--plan-file", plan_file])
+        self.assertEqual(p.returncode, 1, "赤い検証で終端した run は失敗として返る")
+        run_id = sorted(os.listdir(os.path.join(bus, "runs")))[0]
+        meta = kf.read_json(os.path.join(bus, "runs", run_id, "meta.json"))
+        final = self._final(bus)
+
+        # 全ノードは done（検証は「赤いと報告する仕事」を終えている）だが run は failed
+        self.assertTrue(all(r["status"] == "done" for r in final["results"].values()), final)
+        self.assertEqual(meta["status"], "failed")
+        self.assertIn("[verification]", meta["failure_reason"])
+        self.assertEqual(final["verification"]["state"], "failed")
+        self.assertEqual(final["verification"]["failed"], ["check"])
+
+    def test_green_terminal_verify_keeps_the_run_done(self):
+        bus = tempfile.mkdtemp(prefix="kf-verify-green-")
+        self.addCleanup(shutil.rmtree, bus, ignore_errors=True)
+        plan_file = os.path.join(bus, "plan.json")
+        with open(plan_file, "w", encoding="utf-8") as f:
+            json.dump({"name": "緑の検証", "nodes": [
+                {"id": "build", "goal": "実装する", "kind": "work", "deps": []},
+                {"id": "check", "goal": "統合検証", "kind": "verify", "deps": ["build"]},
+            ]}, f, ensure_ascii=False)
+        p = self._run_up(bus, "実装して検証する", extra=["--plan-file", plan_file])
+        self.assertEqual(p.returncode, 0, p.stderr[-800:])
+        run_id = sorted(os.listdir(os.path.join(bus, "runs")))[0]
+        meta = kf.read_json(os.path.join(bus, "runs", run_id, "meta.json"))
+        self.assertEqual(meta["status"], "done")
+        self.assertEqual(self._final(bus)["verification"]["state"], "passed")
+
     def test_up_map_reduce_with_review(self):
         # データ駆動 fan-out（split→map）＋統合前 gate（--review）の複合を end-to-end で
         bus = tempfile.mkdtemp(prefix="kf-e2e-")
