@@ -136,6 +136,11 @@
         <button class="tab" data-tab="usage" data-area="usage" data-feature="agent-audit" id="tab-btn-usage">利用量</button>
         <button class="tab" data-tab="usage-settings" data-area="usage" data-feature="agent-audit"
           id="tab-btn-usage-settings">設定</button>
+        <!-- 領域名（知識）はタブで繰り返さない。中身の名前だけを出す。 -->
+        <button class="tab" data-tab="knowledge" data-area="knowledge" data-feature="agent-knowledge"
+          id="tab-btn-knowledge">記憶と共有</button>
+        <button class="tab" data-tab="knowledge-settings" data-area="knowledge" data-feature="agent-knowledge"
+          id="tab-btn-knowledge-settings">設定</button>
         <span class="tab-utility-group">
           <button class="tab tab-global-settings" data-tab="orchestration" data-area="settings" data-feature="orchestration" id="tab-btn-orchestration"
             title="すべてのプロジェクトで使う設定">全体設定</button>
@@ -161,6 +166,8 @@
         <div id="tab-workflow-settings" class="tabpane" data-feature="adhoc-flow"></div>
         <div id="tab-usage" class="tabpane" data-feature="agent-audit"></div>
         <div id="tab-usage-settings" class="tabpane" data-feature="agent-audit"></div>
+        <div id="tab-knowledge" class="tabpane" data-feature="agent-knowledge"></div>
+        <div id="tab-knowledge-settings" class="tabpane" data-feature="agent-knowledge"></div>
         <div id="tab-project-settings" class="tabpane" data-feature="agent-project"></div>
         <div id="tab-orchestration" class="tabpane" data-feature="orchestration"></div>
       </section>
@@ -897,9 +904,11 @@
   <script src="sections/cowork.js"></script>
   <script src="sections/routines.js"></script>
   <script src="sections/usage.js"></script>
+  <script src="sections/knowledge.js"></script>
   <script src="../features/participation/model.js"></script>
   <script src="features/participation.js"></script>
   <script src="features/agent-audit.js"></script>
+  <script src="features/agent-knowledge.js"></script>
   <script src="features/adhoc-flow.js"></script>
   <script src="bootstrap.js"></script>
 </body>

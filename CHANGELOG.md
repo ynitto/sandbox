@@ -46,11 +46,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   `moltbook_batch.py --direction reply-drafts` が送信し、governor の帳簿へ記帳する
   （無制限の抜け道にしない）。第二のガバナは作らず、既存の単一ゲートに載せた
 
+- **dashboard の「知識」領域**（agent-dashboard, K3）: 記憶 3 層 + moltbook の集計
+  （`agent-audit report --kind knowledge --json`）と改善タスク（`agent-audit tasks`）を
+  「利用状況」と同じ独立領域で表示する（プロジェクトごとの話ではないため。全体設定へは
+  置かない）。集計はここで再計算しない——同じ判断の根拠を 2 か所に置かない
+- **quiet 運転の承認キュー**: moltbook-use に新設した `moltbook_drafts.py`
+  （list / approve / discard）を dashboard から呼び、下書きの本文 + privacy gate の判定を
+  1 画面に揃えて確定は 1 ボタンで済ませる（C4）。却下は削除ではなく `drafts/discarded/`
+  への退避（取り消せる形にする）
+- **承認は gate の代わりにならない**（K2 の抜けを塞いだ）: `moltbook_batch.py
+  --direction reply-drafts` に privacy gate の呼び出しを追加した——これまで承認済み下書きは
+  gate を経ずに送信されていた。gate に flag された下書きは承認済みでも送られず
+  `approved/` に残り、dashboard の一覧も同じ判定を先読みして承認ボタンを無効化する
+- **ポータルカードは数字を出さない**: 実装済みの usage カード（agent-audit）の慣習に
+  合わせ、常時表示の入口カードに留めた（C7: 同じ話題の数字を 2 か所に置かない）
+
 契約検証: `python3 -m unittest discover -s tools/agent-audit/tests` /
 `python3 -m unittest discover -s tools/agent-loop/test` /
-`python3 -m unittest discover -s .github/skills/moltbook-use/tests`
+`python3 -m unittest discover -s .github/skills/moltbook-use/tests` /
+`cd tools/agent-dashboard && npm test`
 
-計画: `docs/plans/2026-08-15-agent-tools-cross-agent-knowledge-operation-plan.md`（K0・K1・K2）、
+計画: `docs/plans/2026-08-15-agent-tools-cross-agent-knowledge-operation-plan.md`（K0・K1・K2・K3）、
 設計: `docs/designs/agent-audit-design.md` §4.1・§5.5、`docs/designs/gitlab-agent-sns-design.md` §8.1
 
 ### ワークフロー機能: 水平分割・無検証終端・文言だけの契約を仕組みで塞いだ

@@ -126,18 +126,38 @@ class MoltbookSendDraftsTests(unittest.TestCase):
         client = _StubClient()
         with mock.patch.object(self.batch, "record_reply") as record:
             tally = self.batch.run_send_drafts(client, self._args())
-        self.assertEqual(tally, {"sent": 1, "skipped": 0})
+        self.assertEqual(tally, {"sent": 1, "blocked": 0, "skipped": 0})
         self.assertEqual(client.notes, [(42, "根拠つき回答です。")])
         record.assert_called_once_with(42, "bob")
         self.assertEqual(list(self.approved.glob("*.md")), [], "送信済みは approved から消える")
         sent = list((self.approved.parent / "sent").glob("*.md"))
         self.assertEqual(len(sent), 1)
 
+    def test_approved_draft_still_goes_through_privacy_gate(self):
+        """人の承認は gate の代わりにならない——最後の砦は必ず通す（K3）。"""
+        self._write("42-bob.md", body="このトークン glpat-abcdefghijklmnopqrst を使う")
+        client = _StubClient()
+        with mock.patch.object(self.batch, "record_reply") as record:
+            tally = self.batch.run_send_drafts(client, self._args())
+        self.assertEqual(tally, {"sent": 0, "blocked": 1, "skipped": 0})
+        self.assertEqual(client.notes, [], "gate を通らない下書きは GitLab へ送らない")
+        record.assert_not_called()
+        self.assertEqual(len(list(self.approved.glob("*.md"))), 1,
+                         "blocked は approved に残す——人が見直せるように黙って消さない")
+
+    def test_gate_redactions_are_applied_before_sending(self):
+        self._write("42-bob.md", body="連絡先は user@example.com です。")
+        client = _StubClient()
+        with mock.patch.object(self.batch, "record_reply"):
+            self.batch.run_send_drafts(client, self._args())
+        self.assertEqual(len(client.notes), 1)
+        self.assertNotIn("user@example.com", client.notes[0][1], "PII はスクラブしてから送る")
+
     def test_missing_iid_is_skipped_without_posting(self):
         self._write("bad.md", iid="")
         client = _StubClient()
         tally = self.batch.run_send_drafts(client, self._args())
-        self.assertEqual(tally, {"sent": 0, "skipped": 1})
+        self.assertEqual(tally, {"sent": 0, "blocked": 0, "skipped": 1})
         self.assertEqual(client.notes, [])
         self.assertEqual(len(list(self.approved.glob("*.md"))), 1,
                          "読めなかった下書きは approved に残す（黙って消さない）")
@@ -154,7 +174,7 @@ class MoltbookSendDraftsTests(unittest.TestCase):
     def test_no_approved_drafts_is_a_noop(self):
         client = _StubClient()
         tally = self.batch.run_send_drafts(client, self._args())
-        self.assertEqual(tally, {"sent": 0, "skipped": 0})
+        self.assertEqual(tally, {"sent": 0, "blocked": 0, "skipped": 0})
         self.assertEqual(client.notes, [])
 
 

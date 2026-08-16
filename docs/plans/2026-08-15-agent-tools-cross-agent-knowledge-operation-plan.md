@@ -11,7 +11,8 @@
 > — K0 実装済み（2026-08-16: agent-audit `memory-store` 源泉 + `report --kind knowledge` + doctor）、
 > K1 実装済み（同: `memory-maintenance-hook.py` + 「記憶メンテナンス当番」エントリ）、
 > K2 実装済み（同: `moltbook-duty-hook.py` + 「Moltbook 当番」エントリ + quiet 運転の下書き/
-> `reply-drafts` バッチ）。K3〜K4 は未着手
+> `reply-drafts` バッチ）、K3 実装済み（同: dashboard の「知識」領域 + 承認キュー
+> `moltbook_drafts.py` + `reply-drafts` への gate 追加）。K4 は未着手
 
 ## 0. 一文で
 
@@ -165,17 +166,25 @@ drafts として置くだけ**にし、dashboard の知識面で人が確定（�
 ### 3.4 見せる・決めさせる — dashboard の「知識」面
 
 既存の 3 登録簿の手順（feature ディレクトリ + `features/index.js` 1 行 + renderer 差し込み）で
-足す。書くものは既存契約（needs / commands / inbox）だけ:
+足す。書くものは agent-audit の集計・agent-project の intake の**外**にある唯一の新規契約
+（quiet 運転の下書き承認キュー: `outbox/drafts/approved/` `discarded/`）だけ:
 
-- **ポータルカード**: `agent-audit report --kind knowledge --json` の要約
-  （publish 待ち N 件・忘却リスク N 件・outbox 滞留 N 件・未回答メンション N 件）。
-  audit が使えない端末ではカードを出さない（`html()` が `''`）——agent-audit feature が
-  usage 表示で既に使っている縮退と同じ形。
-- **全体設定パネル「知識」**: 3 層 + moltbook の集計詳細、整理タスク（audit tasks 由来）の
-  一覧、quiet 運転の承認キュー（下書きの本文 + privacy gate の判定 + 根拠記憶への参照を
-  1 画面に揃え、確定は 1 ボタン——C4 の「材料を揃えて 1 回で」）。
+- **ポータルカード**: 実装時点の dashboard の実際の慣習（agent-audit の usage カードが
+  「利用状況」領域へ独立した後、ポータルカードから数字を落とし入口専用にしていた）に合わせ、
+  **数字は出さない**（C7: 同じ話題の数字を 2 か所に置かない、を usage 領域の先例が体現していた
+  形にそのまま倣った）。常時表示（「知識」領域への入口だけ）で、agent-audit 側の取得状況に
+  よる出し分けは行わない——usage カードと同じ約束。
+- **「知識」領域**（利用状況と同じ独立領域。全体設定へは置かない——数字は端末のもので
+  プロジェクトごとではないため）: 3 層 + moltbook の集計詳細（`agent-audit report --kind
+  knowledge --json`）、整理タスク一覧（`agent-audit tasks`。読み取りのみ）、quiet 運転の
+  承認キュー（下書きの本文 + privacy gate の判定を 1 画面に揃え、確定は 1 ボタン——C4）。
+- **承認は gate の代わりにならない**: `moltbook_batch.py --direction reply-drafts`
+  （送信側）に privacy gate 呼び出しを追加した（K2 実装時点の抜け——reply に gate が
+  適用されていなかった）。承認済みでも gate に flag された下書きは送られず
+  `approved/` に残る。dashboard の一覧はこの gate を**表示用に**先読みし、
+  flag された下書きは承認ボタンを無効化する（判断はしない。見せるだけ）。
 - **AI は下書きまで**: 返信・publish 本文の下書き生成は当番（agent-loop 側）が済ませておく。
-  dashboard 側のアシスタントは既存 4 モードを増やさず、差し戻し文面の候補提示に留める。
+  dashboard 側のアシスタントは既存 4 モードを増やさず、この画面にも新設しない。
 
 設計書 §8 の「決定メモリ」（decisions の索引と policy 昇格提案）とは後段で合流させる——
 知識面が先に「audit の JSON を読む」契約で立っていれば、決定メモリは同じ面への
@@ -215,7 +224,7 @@ drafts として置くだけ**にし、dashboard の知識面で人が確定（�
 | K0 ✅ | agent-audit に `memory-store` 収集器 + `report --kind knowledge` + doctor 拡張（決定的集計のみ・LLM なし） | 単独ノードで 3 層 + moltbook の健全性が 1 コマンドで出る。未設定ストアが「未収集」と明示される |
 | K1 ✅ | agent-loop に memory-maintenance フック（LLM なし）+「記憶メンテナンス当番」エントリ。削除の needs 経路 | retention 更新・索引・lint が人手ゼロで回る。consolidate が dry-run → 適用で自走し、削除は承認なしに実行されない |
 | K2 ✅ | 「Moltbook 当番」エントリ（timeline / 根拠つき reply / outbox sweep / good）+ quiet 運転の drafts | 空き時間に publish 待ちが減る。reply がガバナ予算を超えない。privacy gate の flagged が人へ回る |
-| K3 | dashboard の知識面（ポータルカード + 全体設定パネル + 承認キュー） | publish 待ち・忘却リスク・未回答が開いて 10 秒で見え、quiet の確定が 1 ボタンで済む |
+| K3 ✅ | dashboard の知識面（ポータルカード + 「知識」領域 + 承認キュー） | publish 待ち・忘却リスク・未回答が開いて 10 秒で見え、quiet の確定が 1 ボタンで済む |
 | K4 | 活用の実測（利用指標の knowledge 集計・退役候補・rules 昇格 tasks）+ retrieval_eval 回帰ゲート + 埋め込み recall / wiki 検索強化の投入 | 「保存 → 再利用 → 成果」が数字で追え、未使用知見の退役と有効知見の昇格が実測から駆動される。整理後の hit@5 / MRR が基準線を割らない |
 
 各段は独立にリリース可能で、K0 の時点から価値が出る（測るだけでも publish 待ちの

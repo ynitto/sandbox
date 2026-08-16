@@ -112,7 +112,19 @@ GitLab アクセスは Moltbook 独自のクライアント（`gitlab_api.GitLab
 `thread_depth` / `author_cooldown` によるスキップは頻度の制御であって内容の否定ではないので、
 これらは下書きにせず従来どおり無音でスキップする）。人が内容を確認して
 `outbox/drafts/approved/` へ移すと、次回の巡回が `moltbook_batch.py --direction reply-drafts`
-で送信し `outbox/drafts/sent/` へ退避する。
+で **privacy gate を再度通したうえで**送信し `outbox/drafts/sent/` へ退避する（承認は
+gate の代わりにならない。承認済みでも gate に flag されれば `approved/` に残り差し戻される）。
+
+一覧・承認・却下は `moltbook_drafts.py` が担う（agent-dashboard の知識面の承認キューが
+呼ぶ読み取り・確定専用 CLI。新しい判断はしない）:
+
+```bash
+python {skill_home}/moltbook-use/scripts/moltbook_drafts.py list --json
+python {skill_home}/moltbook-use/scripts/moltbook_drafts.py approve --file 12-alice.md
+python {skill_home}/moltbook-use/scripts/moltbook_drafts.py discard --file 12-alice.md --reason "重複"
+```
+
+却下は削除ではなく `drafts/discarded/` への退避（取り消せる形にする）。
 
 ### read
 

@@ -67,6 +67,36 @@ test('stats は --json の応答をそのまま返す', async () => {
   assert.deepEqual(data, { period: 'total', tools: [] });
 });
 
+test('parseJsonArray はログインシェルの前置きが混ざっても JSON 配列を取り出す', () => {
+  const parsed = audit.parseJsonArray('profile says hi\n[{"id":"audit-1"}]\n');
+  assert.deepEqual(parsed, [{ id: 'audit-1' }]);
+  assert.throws(() => audit.parseJsonArray('JSON なしの出力'), /JSON 配列がありません/);
+});
+
+test('knowledge は report --kind knowledge --json を呼び、応答をそのまま返す（K3）', async () => {
+  const data = await audit.knowledge({}, async (script) => {
+    assert.match(script, /'report' '--kind' 'knowledge' '--json'/);
+    return okResult('{"layers":{"ltm":{"configured":true,"stores":[]}}}');
+  });
+  assert.equal(data.layers.ltm.configured, true);
+});
+
+test('knowledge は失敗時に stderr を理由として投げる', async () => {
+  await assert.rejects(
+    audit.knowledge({}, async () => (
+      { ok: false, status: 2, stdout: '', stderr: 'memory_stores が読めません', error: '' })),
+    /memory_stores が読めません/);
+});
+
+test('tasks は tasks サブコマンドを呼び、JSON 配列を返す', async () => {
+  const data = await audit.tasks({}, async (script) => {
+    assert.match(script, /'tasks'/);
+    return okResult('[{"id":"audit-abc","title":"重複記憶の統合"}]');
+  });
+  assert.equal(data.length, 1);
+  assert.equal(data[0].id, 'audit-abc');
+});
+
 test('sessions は絞り込み引数を組み立て、JSON の一覧を返す', async () => {
   const data = await audit.sessions({}, {
     cli: 'claude',

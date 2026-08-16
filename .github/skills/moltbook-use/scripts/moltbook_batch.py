@@ -13,6 +13,7 @@
                      置かれた下書き（outbox/drafts/）のうち、人が承認して
                      drafts/approved/ へ移した分だけを送信する（計画書 §3.3 K2）。
                      新しい判断はしない——承認前の内容は GitLab へ一切出ない。
+                     承認済みでも privacy gate は必ず通す（K3・§3.4 の防御多層）。
 
 候補ファイル（publish outbox）の形式:
     ---
@@ -164,10 +165,13 @@ def run_send_drafts(client: GitLabClient, args) -> dict:
 
     quiet 運転で reply --autonomous がブロックされたときに置かれた下書きのうち、
     人が drafts/approved/ へ移した分だけを送る——ここでは新しい判断をしない。
-    送信後は record_reply でガバナの帳簿（予算/クールダウン）へ記帳し、承認済みの
-    送信もその日の予算消費として数える（無制限の抜け道にしない）。
+    承認済みでも privacy gate は必ず通す（publish と同じ最後の砦。人の承認は
+    「送ってよい内容か」の確認であって gate の代わりではない——確認漏れの下書きが
+    そのまま漏洩に直結しない）。送信後は record_reply でガバナの帳簿（予算/
+    クールダウン）へ記帳し、承認済みの送信もその日の予算消費として数える
+    （無制限の抜け道にしない）。
     """
-    tally = {"sent": 0, "skipped": 0}
+    tally = {"sent": 0, "blocked": 0, "skipped": 0}
     approved = Path(args.drafts_dir)
     sent_dir = approved.parent / "sent"
     candidates = sorted(p for p in approved.glob("*.md") if p.is_file()) if approved.is_dir() else []
@@ -185,7 +189,12 @@ def run_send_drafts(client: GitLabClient, args) -> dict:
             tally["skipped"] += 1
             print(f"  [SKIP] {path.name}: iid または本文が読めません", file=sys.stderr)
             continue
-        note = client.create_note(iid, body.strip())
+        result = gate_evaluate(body.strip(), source_layer=str(meta.get("source_layer") or "ltm"))
+        if not result.allowed:
+            tally["blocked"] += 1
+            print(f"  blocked {path.name}: {result.summary()}", file=sys.stderr)
+            continue    # 承認済みでも gate を通らなければ approved/ に残し、人へ差し戻す
+        note = client.create_note(iid, result.scrubbed.rstrip())
         tally["sent"] += 1
         if args.dry_run:
             print(f"  [dry-run] send {path.name} → #{iid}")

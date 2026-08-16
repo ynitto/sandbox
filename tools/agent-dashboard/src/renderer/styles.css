@@ -3924,6 +3924,22 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
 .routine-page { max-width: 1120px; }
 .usage-page { max-width: 1120px; }
 
+/* 知識領域（記憶3層 + moltbook の可視化・quiet 運転の承認キュー） */
+.knowledge-layer { margin-top: 14px; }
+.knowledge-store + .knowledge-store { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); }
+.knowledge-store h4 { margin: 0 0 6px; font-size: 13px; color: var(--muted); font-weight: 500; }
+.knowledge-tasks, .knowledge-queue { margin-top: 14px; }
+.knowledge-draft {
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg3);
+  padding: 10px 12px;
+  margin-top: 10px;
+}
+.knowledge-draft > header.row { justify-content: space-between; align-items: center; gap: 8px; }
+.knowledge-draft-body { white-space: pre-wrap; overflow-wrap: anywhere; margin: 8px 0; }
+.knowledge-draft .row { gap: 8px; margin-top: 6px; }
+
 /* 参加の状況（この端末が引き受けた仕事の追跡） */
 .participation-session { margin-top: 18px; }
 .participation-session h3 { margin: 0 0 8px; font-size: 15px; }

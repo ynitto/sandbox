@@ -234,6 +234,7 @@ const AREAS = [
   { id: 'routines', label: '定常業務', list: 'routines', desc: '繰り返す作業を、この端末で動かします。' },
   { id: 'participation', label: '参加', ownHeader: true },
   { id: 'usage', label: '利用状況', desc: 'この端末で使ったトークンと、実行の品質。' },
+  { id: 'knowledge', label: '知識', desc: '記憶3層（ペルソナ・記憶・ウィキ）とMoltbook共有の状況。' },
   { id: 'settings', label: '全体設定', footer: true, ownHeader: true },
 ];
 
@@ -1533,6 +1534,8 @@ function renderAllTabs() {
   renderPane('routine-settings', renderRoutineSettings);
   renderPane('usage', renderUsage);
   renderPane('usage-settings', renderUsageSettings);
+  renderPane('knowledge', renderKnowledge);
+  renderPane('knowledge-settings', renderKnowledgeSettings);
   renderPane('amigos-run', renderAmigosRun);
   renderPane('amigos', renderAmigos);
   renderPane('project-settings', renderProjectSettings);
