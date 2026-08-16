@@ -979,9 +979,47 @@
   function sidebarRunsHtml(ov) {
     const rows = ov.runs || [];
     if (!rows.length) return '<div class="empty">実行履歴はありません</div>';
-    return `<div class="wf-sidebar-runs">${rows.map((r) => `<button type="button" class="nav-item wf-sidebar-run ${st.selectedRun === r.runId ? 'selected' : ''}"
-      data-workflow-run-id="${esc(r.runId)}"><span>${esc(String(r.request || r.runId).slice(0, 42))}</span>
-      <small>${esc(statusLabel(r.status))} · ${esc(r.updatedAt || r.createdAt || '')}</small></button>`).join('')}</div>`;
+    const inboxByRun = new Map((ov.runInbox || []).map((item) => [String(item.id), item]));
+    const assigned = new Set();
+    const groups = [];
+    // 作業準備は、設計・実装を別々に起動しても利用者にとっては一つのタスク。
+    // preparation が保持する正規の関連 ID を使い、推測で似た依頼を束ねない。
+    for (const item of st.preparationItems || []) {
+      const ids = [...(item.design && item.design.runIds || []),
+        ...(item.handoff && item.handoff.implementationRunIds || [])].map(String);
+      const attempts = rows.filter((run) => ids.includes(String(run.runId)));
+      if (!attempts.length) continue;
+      attempts.forEach((run) => assigned.add(String(run.runId)));
+      groups.push({ key: `preparation:${item.id}`, title: item.title, attempts });
+    }
+    // preparation 導入前の run と再実行も、inbox の明示的な lineage だけで一つにする。
+    for (const run of rows) {
+      if (assigned.has(String(run.runId))) continue;
+      const inbox = inboxByRun.get(String(run.runId)) || {};
+      const rootId = String(inbox.root_run_id || run.runId);
+      const attempts = rows.filter((candidate) => {
+        if (assigned.has(String(candidate.runId))) return false;
+        const candidateInbox = inboxByRun.get(String(candidate.runId)) || {};
+        return String(candidateInbox.root_run_id || candidate.runId) === rootId;
+      });
+      attempts.forEach((candidate) => assigned.add(String(candidate.runId)));
+      groups.push({ key: `run:${rootId}`, title: inbox.title || run.request || run.runId, attempts });
+    }
+    groups.sort((a, b) => String(b.attempts[0]?.updatedAt || b.attempts[0]?.createdAt || '')
+      .localeCompare(String(a.attempts[0]?.updatedAt || a.attempts[0]?.createdAt || '')));
+    return `<div class="wf-sidebar-runs">${groups.map((group) => {
+      const latest = group.attempts[0];
+      const selected = group.attempts.some((run) => String(run.runId) === String(st.selectedRun));
+      const inboxes = group.attempts.map((run) => inboxByRun.get(String(run.runId)) || {});
+      const hasDesign = inboxes.some((item) => item.purpose === 'design');
+      const hasImplementation = inboxes.some((item) => item.purpose !== 'design');
+      const stages = [hasDesign ? '設計' : '', hasImplementation ? '実装' : '',
+        group.attempts.length > 1 ? `試行 ${group.attempts.length}回` : ''].filter(Boolean).join(' → ');
+      return `<button type="button" class="nav-item wf-sidebar-run ${selected ? 'selected' : ''}"
+        data-workflow-run-id="${esc(latest.runId)}" data-workflow-group="${esc(group.key)}">
+        <span>${esc(String(group.title || latest.runId).slice(0, 42))}</span>
+        <small>${esc(statusLabel(latest.status))}${stages ? ` · ${esc(stages)}` : ''}</small></button>`;
+    }).join('')}</div>`;
   }
 
   function renderSidebar() {
@@ -1123,7 +1161,9 @@
     const finalSummary = String((run.final && run.final.summary) || '').trim();
     const overviewView = `<section class="flow-overview-view">
       <div class="flow-run-heading"><div><span class="summary-kicker">選択中の作業</span><h2>${esc(title)}</h2>
-        <p class="wf-run-meta">${esc(flowName)}${publication.branch ? ` · ${esc(publication.branch)}` : ''}</p></div></div>
+        <p class="wf-run-meta">${esc(flowName)}${publication.branch ? ` · ${esc(publication.branch)}` : ''}</p></div>
+        <div class="flow-heading-actions"><button type="button" id="wf-new-run">実行待ちへ戻る</button>
+          ${folder ? consultControlHtml('workflows') : ''}</div></div>
       <section class="flow-outcome-status" aria-label="実行の状態と作業フォルダ">
         <div><span>実行</span><strong class="status-chip st-${esc(run.status || 'inbox')}">${esc(statusLabel(run.status))}</strong></div>
         ${verify.state === 'none' ? '' : `<div><span>統合検証</span>
@@ -1149,7 +1189,7 @@
     : '<button type="button" class="danger" id="wf-cancel">中止</button>'}</div>
       ${request ? `<details class="flow-request-details"><summary>依頼内容を表示</summary><pre class="qf-output">${esc(request)}</pre></details>` : ''}
     </section>`;
-    const processView = `<div class="flow-graph-workspace"><section class="flow-graph-surface">
+    const graphView = `<div class="flow-graph-workspace"><section class="flow-graph-surface">
       <div class="flow-section-heading"><div><span class="summary-kicker">作業の流れ</span><h2>工程</h2></div>
         <span class="muted">工程と依存関係を確認できます</span></div><div class="qf-graph">${graph}</div></section>
       <aside class="flow-node-detail"><span class="summary-kicker">工程の成果</span>
@@ -1158,12 +1198,12 @@
       <div><span class="summary-kicker">これまでの動き</span><h2>更新履歴</h2></div></div>
       <div class="events flow-events">${events || '<span class="muted">イベントはありません</span>'}</div>
       <details class="flow-technical"><summary>実行時のエージェント指定</summary>${overrideHtml}</details></section>`;
-    const view = st.runView === 'process' ? processView : st.runView === 'history' ? historyView : overviewView;
-    return `<div class="flow-detail-shell"><div class="flow-view-tabs" role="tablist" aria-label="実行の詳細">
-      ${[['overview', '概要'], ['process', '工程'], ['history', '履歴']].map(([key, label]) =>
-        `<button type="button" role="tab" data-run-view="${key}" class="flow-view-tab ${st.runView === key ? 'active' : ''}"
-          aria-selected="${st.runView === key}">${label}</button>`).join('')}</div>
-      <div class="wf-flow-view-body">${view}</div></div>`;
+    const view = st.runView === 'graph' ? graphView : st.runView === 'history' ? historyView : overviewView;
+    const shell = root.executionDetailShellHtml || ((options) => `<div class="flow-detail-shell">
+      <div class="flow-view-tabs">${[['overview', '概要'], ['graph', '工程'], ['history', '履歴']].map(([key, label]) =>
+    `<button data-run-view="${key}" class="flow-view-tab ${options.active === key ? 'active' : ''}">${label}</button>`).join('')}</div>
+      <div class="flow-view-body">${options.body}</div></div>`);
+    return shell({ active: st.runView, tabAttribute: 'data-run-view', backAttribute: 'data-flow-back', body: view });
   }
 
   function overrideRowsHtml(ov, group, labels) {
@@ -1289,10 +1329,7 @@
 
   function runHtml(ov) {
     if (st.selectedRun && st.runDetail) {
-      const folder = runFolder(st.runDetail);
       return `<section class="wf-page wf-run-detail-page" aria-label="ワークフロー実行詳細">
-        <div class="wf-detail-toolbar"><button type="button" id="wf-new-run">← 実行待ちへ戻る</button>
-          ${folder ? consultControlHtml('workflows') : ''}</div>
         <p class="qf-notice" role="status"${st.notice ? '' : ' hidden'}>${esc(st.notice)}</p>
         ${runDetailHtml(st.runDetail)}</section>`;
     }
@@ -2602,6 +2639,13 @@
       }
     }));
     $id('wf-new-run')?.addEventListener('click', () => {
+      st.selectedRun = '';
+      st.runDetail = null;
+      st.notice = '';
+      renderSidebar();
+      renderRun();
+    });
+    pane.querySelector('[data-flow-back]')?.addEventListener('click', () => {
       st.selectedRun = '';
       st.runDetail = null;
       st.notice = '';

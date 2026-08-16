@@ -317,6 +317,18 @@ function registerIpc(ctx) {
     return {
       busDir,
       runs,
+      // 一覧の各行を run ではなく「人が依頼したタスク」で束ねるための最小メタデータ。
+      // renderer にファイルパスや実行契約全体は渡さない。
+      runInbox: runs.map((run) => {
+        const inbox = adhoc.readInbox(busDir, run.runId) || {};
+        return {
+          id: run.runId,
+          title: String(inbox.title || ''),
+          purpose: String(inbox.purpose || 'implementation'),
+          root_run_id: String(inbox.root_run_id || ''),
+          previous_run_id: String(inbox.previous_run_id || ''),
+        };
+      }),
       presets: (cfg.adhocFlow && cfg.adhocFlow.presets) || [],
       workflows: (() => {
         const discovered = sourceFolders.length

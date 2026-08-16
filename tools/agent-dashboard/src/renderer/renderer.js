@@ -205,6 +205,19 @@ function statusLabel(status) {
   return STATUS_LABELS[s] || s;
 }
 
+// プロジェクトとワークフローで共通の実行詳細フレーム。
+// 各機能が持つのは各ビューの中身だけにし、タブの順序・ARIA・余白を生む DOM はここで固定する。
+function executionDetailShellHtml({ active = 'overview', tabAttribute, backAttribute, body, bodyId = '' }) {
+  const tabs = [['overview', '概要'], ['graph', '工程'], ['history', '履歴']]
+    .map(([key, label]) => `<button type="button" role="tab" class="flow-view-tab ${active === key ? 'active' : ''}"
+      ${tabAttribute}="${key}" aria-selected="${active === key}">${label}</button>`).join('');
+  return `<div class="flow-detail-shell">
+    <button type="button" class="mobile-master-back" ${backAttribute}>一覧へ戻る</button>
+    <div class="flow-view-tabs" role="tablist" aria-label="実行の詳細">${tabs}</div>
+    <div${bodyId ? ` id="${bodyId}"` : ''} class="flow-view-body">${body}</div>
+  </div>`;
+}
+
 // ---------------------------------------------------------------------------
 // 領域（ワークロード）— サイドバーの第一ナビ
 // ---------------------------------------------------------------------------

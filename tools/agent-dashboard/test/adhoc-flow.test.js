@@ -1974,6 +1974,12 @@ test('resubmit が inbox 記録（plan 込み）と手法スナップショッ�
     const rec = JSON.parse(fs.readFileSync(
       path.join(cfg.adhocFlow.busDir, 'inbox', `${second.runId}.json`), 'utf8'));
     assert.strictEqual(rec.plan.name, 'F');
+    assert.strictEqual(rec.root_run_id, first.runId, '再実行は最初の run を同じタスクの起点として残す');
+    assert.strictEqual(rec.previous_run_id, first.runId, '再実行は直前の試行を辿れる');
+    const third = adhoc.resubmit(cfg, second.runId);
+    const thirdRec = adhoc.readInbox(cfg.adhocFlow.busDir, third.runId);
+    assert.strictEqual(thirdRec.root_run_id, first.runId, '複数回やり直してもタスクの起点を変えない');
+    assert.strictEqual(thirdRec.previous_run_id, second.runId);
     const tuningFile = path.join(adhoc.runTuningDir(cfg, second.runId), 'tuning.json');
     assert.ok(fs.existsSync(tuningFile), '手法スナップショットも新 run へ写る');
     assert.throws(() => adhoc.resubmit(cfg, 'no-such-run'), /inbox 記録/);

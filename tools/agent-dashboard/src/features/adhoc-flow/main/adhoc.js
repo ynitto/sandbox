@@ -1121,6 +1121,10 @@ function resubmit(config, runId) {
   const rec = {
     ...old,
     id: next,
+    // 再実行を左メニューで別の仕事に見せないため、最初の run と直前の run を記録する。
+    // 古い inbox にはこの情報がないので、最初の再実行時は指定された run を起点にする。
+    root_run_id: String(old.root_run_id || runId),
+    previous_run_id: String(runId),
     purpose,
     // 古いinboxにworkspaceが残っていても、再投入で設計runの契約を復元する。
     workspace: purpose === 'design' ? null : (old.workspace || null),

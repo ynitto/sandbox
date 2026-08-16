@@ -691,18 +691,6 @@ function renderFlowDetail() {
             rec && rec.loading ? '取得中…' : '⟳ GitLab 最新化'
           }${recHits ? `（反映 ${recHits}）` : ''}</button>`
       : '';
-const viewTabs = [
-    ['overview', '概要'],
-    ['graph', '工程'],
-    ['history', '履歴'],
-  ]
-    .map(
-      ([key, label]) =>
-        `<button role="tab" class="flow-view-tab ${state.flowDetailView === key ? 'active' : ''}"
-          data-flow-view="${key}" aria-selected="${state.flowDetailView === key}">${label}</button>`
-    )
-    .join('');
-
   const req = splitRequest(run.request);
   const overviewView = `<section class="flow-overview-view">
     <div class="flow-run-heading">
@@ -788,10 +776,12 @@ const viewTabs = [
         ? historyView
         : overviewView;
 
-  return `<div class="flow-detail-shell">
-    <button class="mobile-master-back" data-flow-back>一覧へ戻る</button>
-    <div class="flow-view-tabs" role="tablist" aria-label="実行の詳細">${viewTabs}</div>
-    <div id="flow-view-body">${body}</div>
-  </div>`;
+  return executionDetailShellHtml({
+    active: state.flowDetailView,
+    tabAttribute: 'data-flow-view',
+    backAttribute: 'data-flow-back',
+    body,
+    bodyId: 'flow-view-body',
+  });
 
 }
