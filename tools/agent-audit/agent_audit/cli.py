@@ -24,7 +24,7 @@ def _build_parser() -> argparse.ArgumentParser:
     c = sub.add_parser("collect", help="源泉と対応CLI quotaの増分収集・正規化（LLM不使用）")
     c.add_argument("--source", action="append",
                    help="収集する源泉を絞る（budget-ledger / cli-native / cli-quota / flow-bus / "
-                        "project-root / amigos-bus / loop-log。複数可）")
+                        "project-root / amigos-bus / loop-log / memory-store。複数可）")
     c.add_argument("--since", help="この時刻（ISO8601）以降のセッションだけ収集")
     c.add_argument("--with-transcripts", action="store_true", dest="with_transcripts",
                    help="transcript 本文もローカル保存する（ノード外へは出さない）")
@@ -65,8 +65,11 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="間隔・蓄積ゲートを飛ばす（段別上限と予算は飛ばせない）")
 
     r = sub.add_parser("report", help="Markdown レポート")
-    r.add_argument("--kind", choices=["usage", "quality", "insights", "all"], default="all")
+    r.add_argument("--kind", choices=["usage", "quality", "knowledge", "insights", "all"],
+                   default="all")
     r.add_argument("--out", help="出力先（既定は <audit>/reports/）")
+    r.add_argument("--json", action="store_true",
+                   help="記憶層の集計を JSON で出す（--kind knowledge のときだけ）")
 
     t = sub.add_parser("tasks", help="洞察 → 改善タスク（task.schema.json 形を stdout へ）")
     t.add_argument("--mark-exported", action="store_true", dest="mark_exported",

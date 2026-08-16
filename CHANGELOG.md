@@ -7,6 +7,33 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### 記憶層を測れるようにした（エージェント横断ナレッジ運転 K0）
+
+記憶の 3 層（persona-use / ltm-use / wiki-use）と共有路（moltbook-use）は揃っているのに、
+**誰も測っていない**ため「保存したのに共有されていない」「引かれないまま眠っている」が
+見えなかった。agent-audit に読み取り専用の源泉を 1 つ足して、この空白を埋めた。
+新ツール・新スキル・新ストアは作っていない。
+
+- **`memory-store` 源泉**（agent-audit collect）: `memory_stores:` に設定した ltm / wiki /
+  persona / moltbook のローカル状態から、**メタデータだけ**（frontmatter・件数・mtime・
+  索引・ログ）を増分・冪等に収集する。内容が変わったときだけ snapshot が 1 行増える
+  （cli-quota と同じ署名カーソル）。記憶ファイルへは書かない——整理の実行はスキル側の
+  スクリプトのままで、audit は読み手に徹する
+- **`report --kind knowledge [--json]`**: publish 待ち（share_score >= 閾値かつ未公開）・
+  忘却リスク帯・退役候補（未参照のまま N 日超）・類似クラスタ・索引の乖離・wiki の
+  index 乖離と lint 相当違反・queries ヒット率・persona 観察ログの滞留・moltbook の
+  outbox 滞留を 1 コマンドで出す（LLM 不使用）。JSON は dashboard・当番プロンプト向け
+- **測れないものを 0 と偽らない**: 未設定のストアは「未収集」と明示し、moltbook の
+  未回答メンション・goods は GitLab を引かないと測れないため `uncollected` に名指しで残す。
+  設定したのに読めないパスは collect / report とも exit 2（fail-close）
+- **persona は件数と滞留日数だけ**: 本文・タイトル・ファイル名は audit のレコードにも
+  集計にも入らない（C1）。この規律はテストで固定した
+
+契約検証: `python3 -m unittest discover -s tools/agent-audit/tests`
+
+計画: `docs/plans/2026-08-15-agent-tools-cross-agent-knowledge-operation-plan.md`（K0）、
+設計: `docs/designs/agent-audit-design.md` §4.1・§5.5
+
 ### ワークフロー機能: 水平分割・無検証終端・文言だけの契約を仕組みで塞いだ
 
 12 並列タスクとレビューラウンドで作った成果が、CI 赤・画面間のダイアログ差異・冗長な説明文・

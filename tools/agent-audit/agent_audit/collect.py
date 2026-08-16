@@ -24,7 +24,7 @@ from .util import append_jsonl, elog, epoch_to_iso, iter_jsonl, log, now_iso, pa
 ERROR_TAG_RE = re.compile(r"\[agent-error:([a-z]+)\]")
 
 KNOWN_SOURCES = ("budget-ledger", "cli-native", "cli-quota", "flow-bus", "project-root",
-                 "amigos-bus", "loop-log")
+                 "amigos-bus", "loop-log", "memory-store")
 SESSION_PARSER_REVISION = 2
 
 
@@ -65,6 +65,8 @@ def cmd_collect(args) -> int:
             added += collect_amigos_buses(args, store)
         if on("loop-log"):
             added += collect_loop_logs(args, store)
+        if on("memory-store"):
+            added += collect_memory_stores(args, store)
     except SourceError as e:
         store.save_state()
         elog(f"collect: {e}")
@@ -1004,6 +1006,23 @@ def collect_loop_logs(args, store: Store) -> int:
                     added += 1
             store.set_cursor(key, f.tell())
     return added
+
+
+# -- memory-store ------------------------------------------------------------
+
+def collect_memory_stores(args, store: Store) -> int:
+    """記憶 3 層 + 共有路のメタデータ snapshot（実装は memory.py。LLM 不使用）。
+
+    設定されたストアが読めないときは他の源泉と同じく fail-close（exit 2）。
+    未設定のストアは黙って飛ばす——「未収集」は report / doctor が明示する。
+    """
+    import time as _time
+
+    from .memory import MemoryStoreError, collect_memory_stores as _collect
+    try:
+        return _collect(args, store, now=_time.time())
+    except MemoryStoreError as e:
+        raise SourceError(str(e)) from e
 
 
 # -- 相関（読み出し時・決定的。設計 §4.3） -----------------------------------

@@ -171,6 +171,7 @@ usage・品質・洞察を 1 枚の Markdown にして stdout へ出し、
 
 ```bash
 agent-audit report --kind usage          # usage だけ
+agent-audit report --kind knowledge      # 記憶 3 層 + 共有路の健全性（§4.4）
 agent-audit report --out ./weekly.md     # 保存先を指定
 ```
 
@@ -290,6 +291,33 @@ agent-audit collect --since 2026-08-01T00:00:00Z    # この時刻以降のセ�
 
 > **同梱定義（`~/.agents/agents/`）はインストーラの更新で上書きされます。**
 > 独自の宣言はプロジェクトの `agents/` に置くと消えません。
+
+### 4.4 記憶ストアを測る（`memory-store`）
+
+ltm-use / wiki-use / persona-use と moltbook-use のローカル状態を読ませると、
+「保存したのに共有されていない」「引かれないまま眠っている」を機械的に出せます。
+
+```yaml
+memory_stores:
+  ltm_dirs: [~/.claude/memory/home]     # ltm-use の home スコープ（複数可）
+  wiki_root: ~/notes/llm-wiki           # wiki-use の wiki_root
+  persona_home: ~/.claude/persona       # persona-use の persona_home
+  moltbook_home: ~/.claude/.moltbook    # moltbook-use のローカル状態
+```
+
+```bash
+agent-audit collect --source memory-store   # メタデータの snapshot を増分収集
+agent-audit report --kind knowledge          # 1 画面で健全性を見る
+agent-audit report --kind knowledge --json   # dashboard・当番プロンプトが読む形
+```
+
+読むのは**メタデータだけ**（frontmatter・件数・mtime・索引・ログ）で、記憶の本文は
+読みません。persona は**件数と滞留日数だけ**を記録し、本文もタイトルもファイル名も
+audit へ入りません。`agent-audit` は記憶ファイルへ書きません——整理の実行は
+ltm-use / wiki-use / persona-use のスクリプト側の仕事です。
+
+未設定のストアは「未収集」と明示され、0 件とは区別されます。moltbook の未回答メンション・
+goods は GitLab を引かないと測れないので、集計では `uncollected` として名指しで残ります。
 
 ---
 
