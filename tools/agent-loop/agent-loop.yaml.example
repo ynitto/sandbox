@@ -212,6 +212,38 @@ prompts:
     interval_minutes: 60
     enabled: false
 
+  # 記憶の整理のうち LLM が要らない分（索引再構築・忘却曲線の更新・wiki lint・
+  # memory-store の収集）を人手ゼロで回す。削除は絶対に走らせない。
+  - name: "記憶メンテナンス"
+    hooks: memory-maintenance-hook
+    hook_config:
+      skill_home: ~/.claude/skills   # ltm-use / wiki-use のスクリプトを探す親
+      ltm_scopes: [home]
+    interval_minutes: 360
+    enabled: false
+
+  # 判断の要る整理（consolidate の実行判断・persona 観察ログの反映・wiki の重複統合）を
+  # 当番として回す。材料は knowledge 集計で、**dry-run を先に見てから適用**する。
+  # 削除（cleanup_memory.py）は自律実行せず、dry-run の結果を要対応として投函し、
+  # 承認された分だけを次回の当番が実行する。
+  - name: "記憶メンテナンス当番"
+    prompt: |
+      `agent-audit report --kind knowledge` を実行し、出力を材料に記憶層を整えてください。
+      1. 類似クラスタが出ている ltm のカテゴリは `consolidate_memory.py --category <名> --dry-run`
+         を先に実行し、結果が妥当なら `--yes` で適用する（consolidate は非破壊）。
+      2. persona の未反映の観察ログがあれば `batch_update_persona.py` で管理ファイルへ反映する。
+      3. wiki の index 乖離・リンク切れは wiki-use の手順で統合・alias 付与を行う。
+      4. 退役候補は `cleanup_memory.py --dry-run` の出力を要対応として投函するだけにし、
+         **削除は実行しない**。承認済みのものだけを実行する。
+      レイヤ取り違えが疑わしいものは移送せず、根拠とともに報告する。
+    acceptance:
+      - "`agent-audit report --kind knowledge` の出力を材料にしている"
+      - 削除（cleanup_memory.py の実行）を行っていない
+      - consolidate は dry-run の確認後にだけ適用している
+    tuning_profile: default
+    interval_minutes: 1440
+    enabled: false
+
   # ---- webhook: GitLab の MR webhook を受けてこのセッションに送る ----
   # 上部の webhook: セクションを有効化した上で、GitLab のプロジェクト設定で
   #   URL      = http://<host>:<port>/hooks/mr-reviewer

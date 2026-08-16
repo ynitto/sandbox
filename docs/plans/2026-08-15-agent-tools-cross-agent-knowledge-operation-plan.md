@@ -7,7 +7,9 @@
 > LLM・人に回さない）・C4（人には材料を揃えて 1 回で）・C7（記憶ストアの書き手を増やさない・
 > 必ず止まる）・C8（配布で終えず適用・検証・蒸留・退役まで閉じる）・C9（整理・返信の LLM 段は
 > 最小のモデルで）
-> 状態: 計画（**新ツール・新スキル・新ストアを作らない**。既存ツールの接続と additive な拡張だけで構成する）
+> 状態: 実装中（**新ツール・新スキル・新ストアを作らない**。既存ツールの接続と additive な拡張だけで構成する）
+> — K0 実装済み（2026-08-16: agent-audit `memory-store` 源泉 + `report --kind knowledge` + doctor）、
+> K1 実装済み（同: `memory-maintenance-hook.py` + 「記憶メンテナンス当番」エントリ）。K2〜K4 は未着手
 
 ## 0. 一文で
 
@@ -208,8 +210,8 @@ drafts として置くだけ**にし、dashboard の知識面で人が確定（�
 
 | 段 | 内容 | 完了条件 |
 |---|---|---|
-| K0 | agent-audit に `memory-store` 収集器 + `report --kind knowledge` + doctor 拡張（決定的集計のみ・LLM なし） | 単独ノードで 3 層 + moltbook の健全性が 1 コマンドで出る。未設定ストアが「未収集」と明示される |
-| K1 | agent-loop に memory-maintenance フック（LLM なし）+「記憶メンテナンス当番」エントリ。削除の needs 経路 | retention 更新・索引・lint が人手ゼロで回る。consolidate が dry-run → 適用で自走し、削除は承認なしに実行されない |
+| K0 ✅ | agent-audit に `memory-store` 収集器 + `report --kind knowledge` + doctor 拡張（決定的集計のみ・LLM なし） | 単独ノードで 3 層 + moltbook の健全性が 1 コマンドで出る。未設定ストアが「未収集」と明示される |
+| K1 ✅ | agent-loop に memory-maintenance フック（LLM なし）+「記憶メンテナンス当番」エントリ。削除の needs 経路 | retention 更新・索引・lint が人手ゼロで回る。consolidate が dry-run → 適用で自走し、削除は承認なしに実行されない |
 | K2 | 「Moltbook 当番」エントリ（timeline / 根拠つき reply / outbox sweep / good）+ quiet 運転の drafts | 空き時間に publish 待ちが減る。reply がガバナ予算を超えない。privacy gate の flagged が人へ回る |
 | K3 | dashboard の知識面（ポータルカード + 全体設定パネル + 承認キュー） | publish 待ち・忘却リスク・未回答が開いて 10 秒で見え、quiet の確定が 1 ボタンで済む |
 | K4 | 活用の実測（利用指標の knowledge 集計・退役候補・rules 昇格 tasks）+ retrieval_eval 回帰ゲート + 埋め込み recall / wiki 検索強化の投入 | 「保存 → 再利用 → 成果」が数字で追え、未使用知見の退役と有効知見の昇格が実測から駆動される。整理後の hit@5 / MRR が基準線を割らない |

@@ -29,9 +29,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 - **persona は件数と滞留日数だけ**: 本文・タイトル・ファイル名は audit のレコードにも
   集計にも入らない（C1）。この規律はテストで固定した
 
-契約検証: `python3 -m unittest discover -s tools/agent-audit/tests`
+- **記憶メンテナンスの定期駆動**（agent-loop, K1）: `memory-maintenance-hook.py` が
+  索引再構築・忘却曲線の一括更新・wiki lint・`collect --source memory-store` を LLM ゼロで
+  回す（`check()` は常に None）。**削除は実行しない**——判断の要る整理と削除の承認は
+  定期プロンプト「記憶メンテナンス当番」に置き、dry-run を先に見てから適用し、
+  `cleanup_memory.py` の結果は要対応として投函するだけにする（C4・C5）
 
-計画: `docs/plans/2026-08-15-agent-tools-cross-agent-knowledge-operation-plan.md`（K0）、
+契約検証: `python3 -m unittest discover -s tools/agent-audit/tests` /
+`python3 -m unittest discover -s tools/agent-loop/test`
+
+計画: `docs/plans/2026-08-15-agent-tools-cross-agent-knowledge-operation-plan.md`（K0・K1）、
 設計: `docs/designs/agent-audit-design.md` §4.1・§5.5
 
 ### ワークフロー機能: 水平分割・無検証終端・文言だけの契約を仕組みで塞いだ
