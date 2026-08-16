@@ -163,6 +163,13 @@ const workflowRunHtmlSource = workflowFeature.slice(
   workflowFeature.indexOf('function runHtml('),
   workflowFeature.indexOf('\n  function executionPreviewDialogHtml(', workflowFeature.indexOf('function runHtml('))
 );
+assert.ok(workflowFeature.includes('item.design.runIds')
+  && workflowFeature.includes('item.handoff.implementationRunIds')
+  && workflowFeature.includes('group.attempts.length > 1'),
+'左メニューは設計・実装・やり直しを一つのタスクにまとめます');
+assert.ok(workflowFeature.includes("[['overview', '概要'], ['graph', '工程'], ['history', '履歴']]")
+  && workflowFeature.includes('id="flow-view-body"'),
+'プロジェクトとワークフローの実行詳細は同じタブ名・表示領域を使います');
 const wireRunSource = workflowFeature.slice(
   workflowFeature.indexOf('function wireRun('),
   workflowFeature.indexOf('\n  function wireSettings(', workflowFeature.indexOf('function wireRun('))
