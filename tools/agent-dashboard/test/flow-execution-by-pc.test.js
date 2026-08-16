@@ -101,5 +101,28 @@ test('端末の記録がまったく無い実行では端末行そのものを�
   assert.strictEqual(runByPcHtml({}), '');
 });
 
+// run の完了条件（終端の検証）と公開後の CI は agent-flow が final.json へ書く。
+// 画面がそこから読めるよう、バスパーサはこの 2 つを解釈せずそのまま運ぶ。
+// 設計: docs/plans/2026-08-15-workflow-feature-improvement-proposals.md P1・P6
+test('final の検証結果と CI 結果はそのまま run へ運ぶ', () => {
+  const runDir = makeRun(bus, 'run-d', ['t1']);
+  writeJson(path.join(runDir, 'final.json'), {
+    finished_at: '2026-08-16T00:00:00Z', summary: 'まとめ',
+    verification: { state: 'failed', nodes: ['t1'], failed: ['t1'] },
+    ci: { state: 'failed', url: 'https://ci.example/1' },
+  });
+  const run = flow.readRun(runDir);
+  assert.deepStrictEqual(run.final.verification, { state: 'failed', nodes: ['t1'], failed: ['t1'] });
+  assert.deepStrictEqual(run.final.ci, { state: 'failed', url: 'https://ci.example/1' });
+});
+
+test('古い final には検証・CI の記録が無い（null で運ぶ）', () => {
+  const runDir = makeRun(bus, 'run-e', ['t1']);
+  writeJson(path.join(runDir, 'final.json'), { finished_at: 'x', summary: 'まとめ' });
+  const run = flow.readRun(runDir);
+  assert.strictEqual(run.final.verification, null);
+  assert.strictEqual(run.final.ci, null);
+});
+
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(`\n${passed} passed`);

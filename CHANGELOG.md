@@ -7,6 +7,30 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### ワークフロー機能: 完了条件と CI 結果をエンジン側でも扱えるようにした
+
+改善提案（P1・P6）のうち、前段では表示側だけを変えていた 2 点を実装した。
+
+- **run の完了条件を agent-flow 本体へ**: 他ノードから依存されていない `verify` ノード（並列の
+  変更をまとめた後の統合検証）の判定を run の完了条件にした。全ノードが done でも終端の検証が
+  赤なら run は failed で終端し、`meta.failure_reason` に `[verification]` タグ、`final.json` の
+  `verification` に判定を残す。判定は verify の構造化成果（曖昧な出力は fail へ倒す既存の 1 実装）で
+  読み、本文の文字列を二重に解釈しない。終端に検証を持たない run の振る舞いは変わらない
+- **公開後の CI 結果の取り込み**（`ci_status_command`・既定 off）: 公開に成功した commit の CI 状態を
+  run の終端で問い合わせ、結果ノードの公開レコードへ書き戻す。CI ごとのクライアントは持たず、
+  宣言されたコマンドの標準出力 JSON を正典にし、実行時に対象の URL・ブランチ・コミット・ローカル
+  リポジトリを環境変数で渡す。状態は passed / failed / running / unknown の 4 値で、読めなければ
+  unknown（緑には倒さない）。`ci_wait_seconds` で終端まで有界に待てる
+- **dashboard は記録を読むだけに**: 統合検証と CI の判定を実行結果の記録から読み、記録の無い
+  旧 run だけ工程の構造から読む。赤い検証で終端した実行は、環境要因の失敗と分けて要対応として出す
+
+契約検証: `cd tools/agent-flow && python3 -m unittest discover -s tests` /
+`cd tools/agent-dashboard && npm test`
+
+設計: `docs/plans/2026-08-15-workflow-feature-improvement-proposals.md`、
+実装記録: `docs/plans/2026-08-15-workflow-feature-improvement-implementation.md`
+
+
 ### ワークフロー機能: 水平分割・無検証終端・文言だけの契約を仕組みで塞いだ
 
 12 並列タスクとレビューラウンドで作った成果が、CI 赤・画面間のダイアログ差異・冗長な説明文・

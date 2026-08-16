@@ -888,3 +888,60 @@ class ReviewLensTests(unittest.TestCase):
         with mock.patch.object(kf, "run_agent", side_effect=fake_run):
             kf.continue_agent("req", nodes, results, 0)
         self.assertIn(kf.review_lens_directive(), seen["p"])
+
+
+class TerminalVerificationTests(unittest.TestCase):
+    """run の完了条件 — 終端 verify が緑であること。
+
+    設計: docs/plans/2026-08-15-workflow-feature-improvement-proposals.md P1
+    """
+
+    NODES = {
+        "work": {"id": "work", "kind": "work", "deps": []},
+        "check": {"id": "check", "kind": "verify", "deps": ["work"]},
+    }
+
+    def _verdict(self, verify_result):
+        results = {"work": {"status": "done", "output": "作った"}, "check": verify_result}
+        return kf.terminal_verification(self.NODES, results)
+
+    def test_structured_ok_decides_the_run(self):
+        self.assertEqual(self._verdict({"status": "done", "output": "verify=pass",
+                                        "data": {"ok": True}})["state"], "passed")
+        red = self._verdict({"status": "done", "output": "verify=fail", "data": {"ok": False}})
+        self.assertEqual(red["state"], "failed")
+        self.assertEqual(red["failed"], ["check"])
+
+    def test_missing_verdict_falls_back_to_the_one_normalizer(self):
+        # data が無い成果は _normalize_verify の 1 実装で読む（曖昧な出力は fail へ倒す）
+        self.assertEqual(self._verdict({"status": "done", "output": "verify=pass"})["state"], "passed")
+        self.assertEqual(self._verdict({"status": "done", "output": "LGTM"})["state"], "failed")
+        # 本文の素朴な文字列一致では判定しない（"no failures" を赤と読まない）
+        self.assertEqual(
+            self._verdict({"status": "done", "output": "verify=pass — no failures"})["state"],
+            "passed")
+
+    def test_failed_and_unfinished_verify_nodes(self):
+        self.assertEqual(self._verdict({"status": "failed", "output": "落ちた"})["state"], "failed")
+        pending = self._verdict({"status": "pending"})
+        self.assertEqual(pending["state"], "pending")
+        self.assertEqual(pending["pending"], ["check"])
+
+    def test_only_terminal_verify_nodes_count(self):
+        # 統合前 gate（後段が依存する verify）は終端ではないので完了条件に使わない
+        nodes = {
+            "t1": {"id": "t1", "kind": "work", "deps": []},
+            "gate": {"id": "gate", "kind": "verify", "deps": ["t1"]},
+            "synth": {"id": "synth", "kind": "synthesize", "deps": ["t1", "gate"]},
+        }
+        results = {"t1": {"status": "done"},
+                   "gate": {"status": "done", "output": "verify=fail", "data": {"ok": False}},
+                   "synth": {"status": "done", "output": "統合"}}
+        self.assertEqual(kf.terminal_verification(nodes, results), {"state": "none", "nodes": []})
+
+    def test_failure_reason_is_tagged_for_triage(self):
+        self.assertIsNone(kf._verification_failure({"state": "passed", "nodes": ["check"]}))
+        self.assertIsNone(kf._verification_failure({"state": "none", "nodes": []}))
+        self.assertIn("[verification]",
+                      kf._verification_failure({"state": "failed", "failed": ["check"]}))
+        self.assertIn("check", kf._verification_failure({"state": "failed", "failed": ["check"]}))

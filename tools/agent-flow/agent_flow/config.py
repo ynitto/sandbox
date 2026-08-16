@@ -108,6 +108,14 @@ CONFIG_DEFAULTS = {
     # 普段は任せない役割へ低能力ワーカーを投入するときの人による担保に使う。
     "plan_gate": False,
     "plan_gate_timeout": 0.0,  # plan-gate の応答期限秒（0 = interaction 既定の 7 日）
+    # 公開（ブランチ push）後の CI 結果の取り込み（既定 off）。標準出力へ
+    # {"state": "...", "url": "...", "checks": [...]} を出すコマンドを宣言すると、run の終端で
+    # 公開済み commit の CI 状態を問い合わせ、結果ノードの publication へ書き戻す。
+    # 実行時に AGENT_CI_URL / AGENT_CI_BRANCH / AGENT_CI_COMMIT / AGENT_CI_REPOSITORY を渡す。
+    # 設計: docs/plans/2026-08-15-workflow-feature-improvement-proposals.md P6
+    "ci_status_command": "",
+    "ci_wait_seconds": 0.0,    # 終端（passed/failed）まで待つ上限秒（0 = 1 回だけ問い合わせる）
+    "ci_poll_seconds": 30.0,   # 待つときの問い合わせ間隔
     "exemplar_first": False,   # map-reduce で「1件先行→検証ゲート→残り展開」の見本先行分解にする
     # doctor が LLM へ渡す稼働シグナル（recent/stuck/failed/errors 等）と worker プロンプトの
     # deps 構造化 data のうち、均質な dict 配列を表形式へ畳んでトークンを削る（案 K-2・内容は
