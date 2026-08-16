@@ -72,6 +72,16 @@ function registerBaseIpcHandlers() {
       .then((issues) => ({ enabled: true, issues }));
   });
 
+  handle('gitlab:mrDiscussions', async ({ urls }) => {
+    const gl = client();
+    if (!gl.enabled) return { enabled: false, comments: [] };
+    const comments = [];
+    for (const url of (urls || []).slice(0, 10)) {
+      comments.push(...await gl.getMrDiscussionsByUrl(url));
+    }
+    return { enabled: true, comments };
+  });
+
   handle('shell:openExternal', ({ url }) => {
     if (!/^https?:\/\//.test(url)) throw new Error(`外部で開けない URL です: ${url}`);
     return shell.openExternal(url);

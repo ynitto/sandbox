@@ -258,10 +258,15 @@ LLM が 1 回で合成し、その exit 0 を done の唯一の根拠にして�
 ### 成果物レビューは MR/PR が正（remote_review）
 
 **MR は人が明示的に作る**（自動作成はしない）。`agent-project mr-create <task-id> --root <ROOT>`、
-または agent-dashboard の検収カードの「MRを作る」で冪等に作成できる（GitLab のみ。トークンは
-環境変数 `GITLAB_TOKEN` / `GL_TOKEN`。既存の open MR があれば再利用する）。旧名 `retry-mr` も
+または agent-dashboard の検収カードの「MRを作る」で冪等に作成できる（GitLab と GitHub に対応。
+トークンは GitLab が `GITLAB_TOKEN` / `GL_TOKEN`、GitHub が `GITHUB_TOKEN` / `GH_TOKEN`。
+既存の open MR/PR があれば再利用する）。旧名 `retry-mr` も
 同じ動作で受け付ける。MR を作れば検収の正は MR 一本になり、dashboard の検収カードは
 「受入基準 × 証跡 + MR リンク」になる。
+
+GitHub PR も `remote_review` の対象で、マージ済みは承認、未マージクローズは却下、
+`CHANGES_REQUESTED` レビューは差し戻しとして取り込む。インラインコメントを差し戻しへ
+運ぶときは `ファイル名:行番号: コメント` の形式にする。
 
 一方、**成果ブランチの統合は機械の仕事**で、検収承認（done 確定）の瞬間に自動で行う。MR が
 あればクリーンな場合だけ API でマージし、MR が無ければ作業ブランチを target へ

@@ -284,11 +284,15 @@ function needActionsHtml(n) {
     buttons.push(`<button class="danger" data-act="reject" data-id="${esc(n.id)}" data-require="1" title="このタスクを廃止します。似た内容のタスクは次の分解でも提案されなくなります">却下</button>`);
   } else if (kind === 'review') {
     const hasMr = Boolean((n.mrUrls && n.mrUrls.length) || n.mrUrl);
+    const gitlabMrs = [...new Set([...(n.mrUrls || []), n.mrUrl].filter((u) => /\/-\/merge_requests\/\d+/.test(u || '')))];
     if (!hasMr) {
       buttons.push(`<button class="primary-inline" data-act="retry-mr" data-id="${esc(n.id)}" title="この成果のレビュー用に MR を作ります（何度押しても増えません）">MRを作る</button>`);
     }
     buttons.push(`<button class="primary-inline" data-act="approve" data-id="${esc(n.id)}" title="成果を承認してこのタスクを完了します">完了にする</button>`);
     buttons.push(`<button data-act="feedback" data-id="${esc(n.id)}" data-require="1" title="修正方針を記入してやり直させます">差し戻す</button>`);
+    if (gitlabMrs.length) {
+      buttons.push(`<button data-fill-mr-discussions="${esc(gitlabMrs.join('\n'))}" title="GitLab MR の未解決ディスカッションを修正方針へ入力します">MR指摘を入力</button>`);
+    }
     buttons.push(`<button class="danger" data-act="reject" data-id="${esc(n.id)}" data-require="1" title="この成果を採用せず廃止します。似た内容のタスクは次の分解でも提案されなくなります">却下</button>`);
   } else if (kind === 'milestone') {
     const status = milestoneStatusFor(state.project, n.id);
@@ -349,6 +353,29 @@ function needActionsHtml(n) {
       <button data-open="${esc(n.file)}" title="エディタで直接編集">ファイルを開く</button>
     </div>
   </div>`;
+}
+
+async function fillMrDiscussions(btn, root) {
+  const urls = String(btn.dataset.fillMrDiscussions || '').split('\n').filter(Boolean);
+  if (!urls.length) return;
+  await guard('GitLab MR ディスカッション取得', async () => {
+    btn.disabled = true;
+    try {
+      const result = await api.glMrDiscussions(urls);
+      if (!result.enabled) throw new Error('設定で GitLab の URL とトークンを指定してください');
+      const text = (result.comments || []).map((comment) => `- ${comment.text}`).join('\n');
+      if (!text) return toast('未解決の MR ディスカッションはありません', true);
+      const actions = btn.closest('.need-actions') || root.querySelector('.need-actions');
+      const input = actions && actions.querySelector('.need-input');
+      if (!input) throw new Error('差し戻しコメント欄が見つかりません');
+      input.value = input.value.trim() ? `${input.value.trim()}\n${text}` : text;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.focus();
+      toast(`${result.comments.length} 件の MR 指摘を入力しました。内容を確認して差し戻してください`, true);
+    } finally {
+      btn.disabled = false;
+    }
+  });
 }
 
 // 種別ごとの「何を確認するか」。カードの先頭で確認の目的を一文で示す
@@ -783,6 +810,7 @@ function renderDeliveryRepo(entry, idx) {
   const role = deliveryRoleLabel(entry.role);
   const files = entry.files || [];
   const mr = entry.mr_url || '';
+  const reviewName = /github(?:usercontent)?\.com/i.test(mr) ? 'GitHub PR' : 'GitLab MR';
   // 解決済み ref、または branch 指定のない現在の作業ツリーだけをローカル表示する。
   // branch 名だけでは fetch 失敗時に誤誘導するため表示しない。
   const canDiff = Boolean(
@@ -805,7 +833,7 @@ function renderDeliveryRepo(entry, idx) {
     <header class="delivery-repo-head">
       <h3>${esc(entry.name || 'repo')} <span class="muted">（${esc(role)}）</span></h3>
       <div class="row">
-        ${mr ? `<button class="primary-inline" data-delivery-mr="${esc(mr)}">GitLab MR を開く</button>` : ''}
+        ${mr ? `<button class="primary-inline" data-delivery-mr="${esc(mr)}">${reviewName} を開く</button>` : ''}
         ${canDiff ? `<button data-delivery-diff="${esc(idx)}" data-file="">リポジトリ全体</button>` : ''}
       </div>
     </header>
@@ -889,7 +917,7 @@ async function openDeliveryArtifactsModel(need, title) {
         <div class="row">${mrs
           .map(
             (u, i) =>
-              `<button class="primary-inline" data-delivery-mr="${esc(u)}">GitLab MR を開く${
+              `<button class="primary-inline" data-delivery-mr="${esc(u)}">${/github(?:usercontent)?\.com/i.test(u) ? 'GitHub PR' : 'GitLab MR'} を開く${
                 mrs.length > 1 ? ` #${i + 1}` : ''
               }</button>`
           )
@@ -1270,7 +1298,7 @@ function wireDeliveryReview(root, need) {
   for (const btn of root.querySelectorAll('[data-delivery-mr]')) {
     btn.addEventListener('click', () => {
       const url = btn.getAttribute('data-delivery-mr');
-      guard('GitLab MR を開く', () => api.openExternal(url));
+      guard('MR/PR を開く', () => api.openExternal(url));
     });
   }
   for (const btn of root.querySelectorAll('[data-open]')) {
@@ -1281,6 +1309,9 @@ function wireDeliveryReview(root, need) {
       const ok = await handleNeedAction(btn);
       if (ok) $('dlg-delivery-review').close();
     });
+  }
+  for (const btn of root.querySelectorAll('[data-fill-mr-discussions]')) {
+    btn.addEventListener('click', () => fillMrDiscussions(btn, root));
   }
   // 検収経路の WSL ヘッドレス AI（変更理由の説明・フォローアップ案）は撤去した（案3）。
   const allDiffs = root.querySelector('[data-delivery-all-diff]');
@@ -1999,6 +2030,9 @@ function bindNeedDetail(root) {
   }
   for (const btn of root.querySelectorAll('button[data-act]')) {
     btn.addEventListener('click', () => handleNeedAction(btn));
+  }
+  for (const btn of root.querySelectorAll('[data-fill-mr-discussions]')) {
+    btn.addEventListener('click', () => fillMrDiscussions(btn, root));
   }
   for (const btn of root.querySelectorAll('button[data-settle]')) {
     btn.addEventListener('click', () => handleSettlement(btn));
