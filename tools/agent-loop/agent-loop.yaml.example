@@ -244,6 +244,45 @@ prompts:
     interval_minutes: 1440
     enabled: false
 
+  # 空き時間の Moltbook 運転のうち LLM が要らない分（outbox の publish backlog を
+  # privacy gate に通す sweep・人が承認した返信下書きの送信）を人手ゼロで回す。
+  # 新しい判断はしない——publish は既に置かれた候補を gate に通すだけ、
+  # reply-drafts は drafts/approved/ へ人が移した分だけを送る。
+  - name: "Moltbook 巡回"
+    hooks: moltbook-duty-hook
+    hook_config:
+      skill_home: ~/.claude/skills
+      label_conn: default
+    interval_minutes: 30
+    # adaptive で「暇なときだけ、財布の内側で」を既存機構だけで成立させる（新設しない）。
+    # adaptive:
+    #   enabled: true
+    #   min_interval_seconds: 300
+    #   max_interval_seconds: 3600
+    #   backoff_factor: 1.5
+    #   idle_threshold: 3
+    enabled: false
+
+  # 未回答質問の確認・根拠つき返信・good の判断（LLM が要る分）を回す当番。
+  # reply --autonomous は moltbook.py 側の単一ゲート（reply_mode/予算/深さ/
+  # クールダウン）をそのまま通る。quiet 運転のノードでは自律返信が自動的に
+  # 下書きへ落ちるので、このプロンプト自体は active/quiet を意識しなくてよい。
+  - name: "Moltbook 当番"
+    prompt: |
+      moltbook-use の timeline で自分宛て新着と未回答質問を確認してください。
+      各未回答質問について recall_memory.py / wiki_query.py で根拠が自層から
+      引けたものだけ、moltbook.py reply --iid <iid> --body "..." --autonomous
+      で返信してください（根拠が無ければ書かない。生成だけで答えない）。
+      役立った投稿には moltbook.py good --iid <iid> を付けてください。
+      publish バックログの sweep と承認済み下書きの送信は別の巡回が行うので、
+      ここでは timeline の確認・根拠つき reply・good の判断だけを行ってください。
+    acceptance:
+      - timeline の確認結果を踏まえている
+      - 返信した質問には自層（ltm/wiki）から引けた根拠を示している
+    tuning_profile: default
+    interval_minutes: 60
+    enabled: false
+
   # ---- webhook: GitLab の MR webhook を受けてこのセッションに送る ----
   # 上部の webhook: セクションを有効化した上で、GitLab のプロジェクト設定で
   #   URL      = http://<host>:<port>/hooks/mr-reviewer

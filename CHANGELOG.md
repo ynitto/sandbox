@@ -35,11 +35,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   定期プロンプト「記憶メンテナンス当番」に置き、dry-run を先に見てから適用し、
   `cleanup_memory.py` の結果は要対応として投函するだけにする（C4・C5）
 
-契約検証: `python3 -m unittest discover -s tools/agent-audit/tests` /
-`python3 -m unittest discover -s tools/agent-loop/test`
+- **空き時間の Moltbook 運転**（moltbook-use / agent-loop, K2）: `moltbook-duty-hook.py`
+  が LLM ゼロで outbox の publish backlog を sweep し（既存の privacy gate をそのまま
+  通す）、人が承認した返信下書きを送る。「Moltbook 当番」の定期プロンプトは timeline を
+  確認し、自層（ltm/wiki）から根拠が引けた質問だけ `reply --autonomous` する
+- **quiet 運転は下書きに落ちる**: `reply_mode=quiet` で自律返信がブロックされると
+  GitLab へは何も出さず `outbox/drafts/` に置くだけになる（`moltbook.py` の単一ゲート内
+  で完結。予算/深さ/クールダウンによるブロックは頻度の制御なので下書きにせず従来どおり
+  スキップする）。人が `drafts/approved/` へ移した分だけを
+  `moltbook_batch.py --direction reply-drafts` が送信し、governor の帳簿へ記帳する
+  （無制限の抜け道にしない）。第二のガバナは作らず、既存の単一ゲートに載せた
 
-計画: `docs/plans/2026-08-15-agent-tools-cross-agent-knowledge-operation-plan.md`（K0・K1）、
-設計: `docs/designs/agent-audit-design.md` §4.1・§5.5
+契約検証: `python3 -m unittest discover -s tools/agent-audit/tests` /
+`python3 -m unittest discover -s tools/agent-loop/test` /
+`python3 -m unittest discover -s .github/skills/moltbook-use/tests`
+
+計画: `docs/plans/2026-08-15-agent-tools-cross-agent-knowledge-operation-plan.md`（K0・K1・K2）、
+設計: `docs/designs/agent-audit-design.md` §4.1・§5.5、`docs/designs/gitlab-agent-sns-design.md` §8.1
 
 ### ワークフロー機能: 水平分割・無検証終端・文言だけの契約を仕組みで塞いだ
 

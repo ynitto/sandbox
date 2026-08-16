@@ -32,6 +32,9 @@ calibrate_hook = _load(
 memory_hook = _load(
     "memory_maintenance_hook_test", HERE.parent / "hooks" / "memory-maintenance-hook.py"
 )
+moltbook_duty_hook = _load(
+    "moltbook_duty_hook_test", HERE.parent / "hooks" / "moltbook-duty-hook.py"
+)
 
 
 def _scheduler(entries):
@@ -396,6 +399,58 @@ class MemoryMaintenanceHookTests(unittest.TestCase):
                 memory_hook.check({"hook_config": {"skill_home": str(root)}})
         self.assertIn("build_index.py", str(caught.exception))
         self.assertEqual(run.call_count, 4, "1 つ失敗しても残りの整理は回す")
+
+
+class MoltbookDutyHookTests(unittest.TestCase):
+    """空き時間の Moltbook 巡回（計画 K2）。新しい判断はしない——sweep と承認済み送信だけ。"""
+
+    def _skill_home(self):
+        root = pathlib.Path(tempfile.mkdtemp(prefix="agent-loop-moltbook-skill-"))
+        scripts = root / "moltbook-use" / "scripts"
+        scripts.mkdir(parents=True)
+        (scripts / "moltbook_batch.py").write_text("", encoding="utf-8")
+        return root
+
+    def test_sweeps_outbox_and_sends_approved_drafts_without_prompt(self):
+        root = self._skill_home()
+        completed = types.SimpleNamespace(returncode=0, stdout="", stderr="")
+        cfg = {"hook_config": {"skill_home": str(root), "python": "python3",
+                               "label_conn": "work"}}
+        with mock.patch.object(moltbook_duty_hook.subprocess, "run",
+                               return_value=completed) as run:
+            self.assertIsNone(moltbook_duty_hook.check(cfg))
+        script = str(root / "moltbook-use" / "scripts" / "moltbook_batch.py")
+        self.assertEqual([c.args[0] for c in run.call_args_list], [
+            ["python3", script, "--label-conn", "work", "--direction", "publish"],
+            ["python3", script, "--label-conn", "work", "--direction", "reply-drafts"],
+        ])
+
+    def test_missing_skill_is_a_noop_not_an_error(self):
+        with mock.patch.object(moltbook_duty_hook.subprocess, "run") as run:
+            self.assertIsNone(moltbook_duty_hook.check({"hook_config": {}}))
+        run.assert_not_called()
+
+    def test_never_runs_a_new_reply_decision(self):
+        root = self._skill_home()
+        completed = types.SimpleNamespace(returncode=0, stdout="", stderr="")
+        with mock.patch.object(moltbook_duty_hook.subprocess, "run",
+                               return_value=completed) as run:
+            moltbook_duty_hook.check({"hook_config": {"skill_home": str(root)}})
+        flat = " ".join(" ".join(c.args[0]) for c in run.call_args_list)
+        self.assertNotIn("timeline", flat)
+        self.assertNotIn(" reply ", flat, "根拠つきの新規 reply は当番の定期プロンプト側")
+        self.assertNotIn("good", flat)
+
+    def test_one_failure_does_not_block_the_other_direction_and_is_reported(self):
+        root = self._skill_home()
+        failed = types.SimpleNamespace(returncode=2, stdout="", stderr="privacy gate blocked")
+        completed = types.SimpleNamespace(returncode=0, stdout="", stderr="")
+        with mock.patch.object(moltbook_duty_hook.subprocess, "run",
+                               side_effect=[failed, completed]) as run:
+            with self.assertRaises(RuntimeError) as caught:
+                moltbook_duty_hook.check({"hook_config": {"skill_home": str(root)}})
+        self.assertEqual(run.call_count, 2)
+        self.assertIn("publish", str(caught.exception))
 
 
 if __name__ == "__main__":

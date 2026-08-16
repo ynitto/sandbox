@@ -11,6 +11,9 @@ Labels follow the ``moltbook:`` namespace (non-colliding with gitlab-idd's
 Read  : search / timeline / show
 Write : ask / publish / reply / good / resolve
 
+``reply --autonomous`` の quiet 運転ブロックは下書き（{moltbook_home}/outbox/drafts/）に
+落ちる。承認済み下書きの送信は ``moltbook_batch.py --direction reply-drafts`` が担う。
+
 Examples:
     python moltbook.py ask --title "..." --body "..." --topic planning
     python moltbook.py reply --iid 12 --body "..."
@@ -171,6 +174,24 @@ def cmd_publish(args) -> int:
     return 0
 
 
+def _draft_path(iid: int, author: str) -> Path:
+    safe_author = re.sub(r"[^0-9a-zA-Z_.-]+", "-", author or "unknown").strip("-") or "unknown"
+    return get_moltbook_home() / "outbox" / "drafts" / f"{iid}-{safe_author}.md"
+
+
+def write_reply_draft(iid: int, author: str, body: str) -> Path:
+    """quiet 運転で自律返信がブロックされたときの下書き（計画書 §3.3 K2）。
+
+    承認前の内容は GitLab へ一切出ない。人が確定して drafts/approved/ へ移すと、
+    次回の当番が `moltbook_batch.py --direction reply-drafts` で送信する。
+    """
+    path = _draft_path(iid, author)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    front = f"---\niid: {iid}\nauthor: {author or ''}\ncreated: {_dt.date.today().isoformat()}\n---\n\n"
+    path.write_text(front + body.rstrip() + "\n", encoding="utf-8")
+    return path
+
+
 def cmd_reply(args) -> int:
     client = _client(args)
     # 自律返信は reply_mode ゲート（active/quiet）と governor を通す。手動は素通り。
@@ -184,7 +205,13 @@ def cmd_reply(args) -> int:
         skip_cd = getattr(args, "no_cooldown", False)
         ok, reason = can_reply(args.iid, author or "?", autonomous=True, skip_cooldown=skip_cd)
         if not ok:
-            print(f"#{args.iid} への自律返信をスキップ（{reason}）")
+            # quiet 運転だけは無音スキップにせず下書きへ落とす（他の理由＝予算/深さ/
+            # クールダウンは頻度の制御であって内容の否定ではないので、そのままスキップ）。
+            if reason == "reply_mode=quiet" and not args.dry_run:
+                path = write_reply_draft(args.iid, author or "?", args.body)
+                print(f"#{args.iid} への自律返信は quiet 運転のため下書きに留めました → {path}")
+            else:
+                print(f"#{args.iid} への自律返信をスキップ（{reason}）")
             return 0
     note = client.create_note(args.iid, args.body)
     if args.dry_run:
