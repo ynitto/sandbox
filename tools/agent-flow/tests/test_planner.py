@@ -812,3 +812,79 @@ class FinalResultNodeTests(unittest.TestCase):
             kf._final_result_nodes({"t1": {"kind": "work", "deps": []}},
                                    {"t1": {"status": "pending"}}), [])
         self.assertEqual(kf._final_result_nodes({}, {}), [])
+
+
+class SplitPolicyTests(unittest.TestCase):
+    """分割の単位（split_policy）— 粒度とは独立の「どこで切るか」を planner へ渡すこと。
+
+    設計: docs/plans/2026-08-15-workflow-feature-improvement-proposals.md P2
+    """
+
+    def test_default_policy_is_behavior(self):
+        self.assertEqual(kf.split_policy(None), "behavior")
+        self.assertEqual(kf.split_policy(""), "behavior")
+        self.assertEqual(kf.split_policy("unknown"), "behavior")
+        self.assertEqual(kf.split_policy("file"), "file")
+
+    def test_behavior_directive_forbids_file_split(self):
+        note = kf.split_policy_directive("behavior")
+        self.assertIn("利用者から見える 1 つの振る舞いを 1 ノード", note)
+        self.assertIn("共有部品", note)
+        self.assertIn("水平分割", note)
+
+    def test_file_policy_is_opt_in_and_asks_for_alignment(self):
+        note = kf.split_policy_directive("file")
+        self.assertIn("ファイル境界で水平に分割してよい", note)
+        self.assertIn("揃えるべき点", note)
+
+    def test_planner_prompt_carries_split_directive(self):
+        seen = {}
+
+        def fake_run(prompt, model, purpose=""):
+            seen["p"] = prompt
+            return '{"patterns":["fan-out-and-synthesize"],"parallelism":2,"tasks":[' \
+                   '{"id":"t1","goal":"g","deps":[],"kind":"work"}]}'
+
+        with mock.patch.object(kf, "run_agent", side_effect=fake_run):
+            kf.plan_strategy_agent("req", None)
+        self.assertIn(kf.split_policy_directive("behavior"), seen["p"])
+
+        with mock.patch.object(kf, "run_agent", side_effect=fake_run):
+            kf.plan_strategy_agent("req", None, policy="file")
+        self.assertIn(kf.split_policy_directive("file"), seen["p"])
+
+    def test_config_default_reaches_args(self):
+        args = types.SimpleNamespace(config=None, split_policy=None)
+        kf.resolve_config(args)
+        self.assertEqual(args.split_policy, "behavior")
+
+
+class ReviewLensTests(unittest.TestCase):
+    """レビューラウンドの観点（レンズ）— 契約整合の 1 本槍にしないこと。
+
+    設計: docs/plans/2026-08-15-workflow-feature-improvement-proposals.md P4
+    """
+
+    def test_lenses_cover_duplication_divergence_and_verbosity(self):
+        self.assertEqual([key for key, _label, _detail in kf.REVIEW_LENSES],
+                         ["duplication", "divergence", "verbosity"])
+
+    def test_directive_requires_reason_even_when_nothing_found(self):
+        note = kf.review_lens_directive()
+        self.assertIn("二重実装", note)
+        self.assertIn("画面間・用途間の表現差異", note)
+        self.assertIn("文言量", note)
+        self.assertIn("decision=done", note)
+
+    def test_evaluator_prompt_carries_lenses(self):
+        seen = {}
+
+        def fake_run(prompt, model, purpose=""):
+            seen["p"] = prompt
+            return '{"decision":"done","new_tasks":[]}'
+
+        nodes = {"t1": {"id": "t1", "goal": "g", "deps": [], "kind": "work"}}
+        results = {"t1": {"status": "done", "output": "ok"}}
+        with mock.patch.object(kf, "run_agent", side_effect=fake_run):
+            kf.continue_agent("req", nodes, results, 0)
+        self.assertIn(kf.review_lens_directive(), seen["p"])

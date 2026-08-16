@@ -444,6 +444,10 @@ def continue_agent(request: str, nodes: dict, results: dict, iteration: int,
         "既存 id と重複しない id を使うこと。done のとき new_tasks は空配列。\n\n"
         f"元の要求: {request}{hf_block}\n\n現在の結果:\n{summary}"
     )
+    # レビュー観点（レンズ）はスキル/組み込みのどちらの prompt にも一律に後置する
+    # （スキルは観点を知らないため二重注入にならない）。契約整合の 1 本槍を避け、
+    # 観点ごとの所見を reason に残させる。
+    prompt = f"{prompt}\n\n{review_lens_directive()}"
     # 実行 tier（basic）の評価指示も同じ流儀でスキル/組み込みの両経路へ一律に後置する
     # （スキルは tier を知らないため二重注入しない）。
     tier_note = tier_evaluator_directive(tier)

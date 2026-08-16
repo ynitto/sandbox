@@ -7,28 +7,22 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { agentHomeSubdir } = require('../../../base/main/agent-home');
+// 「実行できる設計書か」の判定は design-contract が唯一の実装（設計セッションと同じ判定を使う）。
+const designContract = require('../../../base/main/design-contract');
 
-const REQUIRED_SECTIONS = [
-  ['目的', '狙い'],
-  ['変更対象', '対象', 'スコープ'],
-  ['受入基準', '完了条件'],
-  ['検証方法', '検証', 'テスト方法'],
-];
-const DESIGN_RESULT_SECTIONS = ['目的', '変更対象', '受入基準', '検証方法'];
-
-function hasHeading(text, names) {
-  return String(text || '').split(/\r?\n/).some((line) => {
-    const heading = line.match(/^#{1,6}\s*(.+?)\s*$/);
-    return heading && names.some((name) => heading[1] === name);
-  });
-}
-
+// 持ち込みの Markdown は言い換え見出し（狙い・スコープ・完了条件…）も同じ節として数える。
 function isCompleteDocument(text) {
-  return REQUIRED_SECTIONS.every((names) => hasHeading(text, names));
+  return !designContract.missingSections(text, true).length;
 }
 
+// 設計 run の成果はこちらの判定を通す。必須4節に加えて「変更対象の強制レイヤー」まで
+// 揃っていないと実装へは渡さない（文言でしか守られていない契約を実装 run へ流さない）。
 function isCompleteDesignDocument(text) {
-  return DESIGN_RESULT_SECTIONS.every((name) => hasHeading(text, [name]));
+  return !designContract.documentIssues(text).length;
+}
+
+function designDocumentIssues(text) {
+  return designContract.documentIssues(text);
 }
 
 function recommendRoute({ goal, materials } = {}) {
@@ -281,7 +275,7 @@ function completeDesign(item, result = {}) {
   const document = String(result.document || '').trim();
   if (!document) throw new Error('設計結果は必須です');
   if (!isCompleteDesignDocument(document)) {
-    throw new Error('設計結果には必須4節（目的・変更対象・受入基準・検証方法）が必要です');
+    throw new Error(`設計結果に必須項目が不足しています: ${designDocumentIssues(document).join('、')}`);
   }
   const currentDesign = normalizeDesign(item.design);
   const resultMaterialId = `design-result:${item.id}`;
@@ -440,7 +434,7 @@ function implementationRequest(item) {
 
 module.exports = {
   recommendRoute, normalizeMaterials, normalizeDesignAssignments, normalizeDesignFlow,
-  isCompleteDesignDocument,
+  isCompleteDesignDocument, designDocumentIssues,
   createItem, createPackage,
   canHandoff, startDesign, completeDesign,
   recordHandoff,

@@ -20,6 +20,7 @@
 const fs = require('fs');
 const path = require('path');
 const { agentHomeSubdir } = require('../../../base/main/agent-home');
+const designContract = require('../../../base/main/design-contract');
 const adhoc = require('./adhoc');
 
 // 手法（mode）と同梱フローの対応。フロー本体は workflows/<id>.json（読み取り専用）。
@@ -27,7 +28,9 @@ const MODE_FLOWS = { interactive: 'design-interactive', auto: 'design-auto' };
 
 // 「## 質問」節の見出し。レベルは問わない（生成側が h2 で書く前提だが、h3 でも拾う）。
 const QUESTION_HEADING = /^#{1,6}[ \t]*質問[ \t]*$/;
-const REQUIRED_DESIGN_SECTIONS = ['目的', '変更対象', '受入基準', '検証方法'];
+// 必須節と、節の中に要る項目（強制レイヤー）の判定は design-contract が唯一の実装。
+const REQUIRED_DESIGN_SECTIONS = designContract.REQUIRED_SECTIONS;
+const REQUIRED_DESIGN_ITEMS = designContract.REQUIRED_ITEMS;
 const SNAPSHOT_DIR = '.snapshots';
 const TARGETS = new Set(['workflow', 'project']);
 const SOURCE_MODES = new Set(['new', 'continue', 'use-as-is']);
@@ -172,11 +175,18 @@ function resolveFlowSnapshot(config, { selection, designFlow, mode, cwd } = {}) 
 }
 
 function requiredDesignSections(document) {
-  const text = String(document || '');
-  return REQUIRED_DESIGN_SECTIONS.filter((section) => {
-    const escaped = section.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    return !new RegExp(`^#{1,6}[ \\t]*${escaped}[ \\t]*$`, 'm').test(text);
-  });
+  return designContract.missingSections(document);
+}
+
+// 節はあるが、中の必須項目（変更対象の強制レイヤー）が無いもの。節の不足と同じ扱いで
+// 実装準備完了にしない——文言でしか守られていない契約を実装 run へ流さないため。
+function requiredDesignItems(document) {
+  return designContract.missingItems(document);
+}
+
+// 設計成果が実装へ渡せる形かどうか（節の不足＋節内の項目の不足）。
+function designDocumentIssues(document) {
+  return designContract.documentIssues(document);
 }
 
 // 設計フローのノードへ人が固定したエージェント・モデル（{ nodeId: {tier, agent_cli, model} }）。
@@ -354,12 +364,12 @@ function harvest(config, session) {
     return saveSession(config, { ...session, runStatus: status, error: '設計 run の成果が空でした' });
   }
   const { document, questions } = splitDesignOutput(output);
-  const missing = requiredDesignSections(document);
+  const missing = designDocumentIssues(document);
   if (missing.length) {
     return saveSession(config, {
       ...session,
       runStatus: status,
-      error: `設計成果に必須節が不足しています: ${missing.join('、')}`,
+      error: `設計成果に必須項目が不足しています: ${missing.join('、')}`,
     });
   }
   const rounds = [...(session.rounds || [])];
@@ -490,6 +500,9 @@ function startRound(config, {
 module.exports = {
   MODE_FLOWS,
   REQUIRED_DESIGN_SECTIONS,
+  REQUIRED_DESIGN_ITEMS,
+  requiredDesignItems,
+  designDocumentIssues,
   normalizeSession,
   normalizeFlowSnapshot,
   resolveFlowSnapshot,

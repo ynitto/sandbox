@@ -96,6 +96,10 @@ CONFIG_DEFAULTS = {
     # フォールバックする。上位に同名スキルを置けば全面差し替えできる（yaml 専用）。
     "planner_skill": "flow-planner",
     "granularity": "auto",     # 分解の細かさ: auto(complexity導出・既定)/coarse/fine/finest(明示)
+    # 分割の単位（粒度とは独立の「どこで切るか」）。behavior=利用者から見える振る舞いを
+    # 1 ノードが縦に持つ（既定）/ file=ファイル境界の水平分割（衝突回避が要る大規模変更の
+    # 明示オプション）。設計: docs/plans/2026-08-15-workflow-feature-improvement-proposals.md P2
+    "split_policy": "behavior",
     # 計画承認ゲート（オプトイン・既定 off）。true で planner が作った計画の実行前に human
     # 承認ノード（plan-gate）を挿し、人の承認（approved）まで何も実行しない。差し戻し
     # （rejected＋コメント）は指摘を planner へ渡して再計画する（max_retries で有界）。

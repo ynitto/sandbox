@@ -255,6 +255,46 @@ def granularity_directive(level: "str | None") -> str:
     return GRANULARITY_SCOPE_DIRECTIVES.get(lv, "")
 
 
+# --------------------------------------------------------------------------
+# 分割の単位（split_policy）— 粒度（どれだけ細かく）とは独立の「どこで切るか」。
+#   behavior（既定）… 利用者から見える 1 つの振る舞いを 1 ノードが縦に持つ
+#   file            … ファイル境界での水平分割（衝突回避が要る大規模変更の明示オプション）
+# 既定を behavior にする理由: 1 ファイル = 1 ノードの水平分割は並列化しやすい反面、
+# 利用者から見える 1 つの振る舞いが複数エージェントへ裂け、同じ用途の UI が画面ごとに
+# 食い違う・マークアップとスタイルの担当が別れて見た目の意味がずれる、といった
+# 「各ノードは成功したのに成果物が食い違う」失敗を生む。
+# 設計: docs/plans/2026-08-15-workflow-feature-improvement-proposals.md P2
+# --------------------------------------------------------------------------
+SPLIT_POLICIES = ("behavior", "file")
+_DEFAULT_SPLIT_POLICY = "behavior"
+SPLIT_POLICY_DIRECTIVES = {
+    "behavior": (
+        "分割の単位: 利用者から見える 1 つの振る舞いを 1 ノードにすること。UI を持つ"
+        "振る舞いは、マークアップ・スタイル・呼び出し側（同じ用途の UI が複数画面に現れる"
+        "ならその全画面）を 1 ノードが縦に持つ。複数のノードが同じ用途の UI を要するときは、"
+        "先に共有部品（共有ビルダー・共有スタイル）を切り出すノードを 1 つ置き、各画面の"
+        "ノードはそれに deps で連なって消費すること。ファイル境界での水平分割"
+        "（1 ファイル = 1 ノード）はしないこと。"
+    ),
+    "file": (
+        "分割の単位: 衝突回避を優先し、ファイル境界で水平に分割してよい（大規模変更向けの"
+        "明示指定）。同じ振る舞いが複数ノードへ裂けるときは、揃えるべき点（構造・文言・"
+        "状態表現）と対応する他ノードの id を各 goal に明記すること。"
+    ),
+}
+
+
+def split_policy(policy: "str | None") -> str:
+    """分割単位の解決。未知値・未指定は既定（behavior）。"""
+    value = str(policy or "").strip().lower()
+    return value if value in SPLIT_POLICIES else _DEFAULT_SPLIT_POLICY
+
+
+def split_policy_directive(policy: "str | None") -> str:
+    """プランナーへ渡す分割単位の指示。"""
+    return SPLIT_POLICY_DIRECTIVES[split_policy(policy)]
+
+
 # auto は「flow-planner が complexity から導出する」という意味なので、flow-planner を通らない
 # 経路（スキル未導入・スキル失敗のフォールバック）では導出者が居ない。そのまま渡すと粒度指示も
 # 並列数倍率も効かず、設定を何も変えていない利用者の計画だけが黙って粗くなる（auto 導入前の
@@ -330,6 +370,39 @@ def tier_planner_directive(tier: "str | None") -> str:
 
 def tier_evaluator_directive(tier: "str | None") -> str:
     return TIER_EVALUATOR_DIRECTIVES.get(str(tier or ""), "")
+
+
+# --------------------------------------------------------------------------
+# レビューの観点（レンズ）— 評価役の 1 本槍化を防ぐ。
+# 「契約整合」だけを見るラウンドを何周しても、二重実装・画面間の表現差異・冗長な説明文は
+# 出てこない（どのノードも単体では契約を満たしているため）。観点を明示し、当てた結果を
+# 必ず reason に残させることで、成果ゼロのラウンドも「何を見て何が出なかったか」が
+# run 履歴に残る（無言の欠番を作らない）。
+# 設計: docs/plans/2026-08-15-workflow-feature-improvement-proposals.md P4
+# --------------------------------------------------------------------------
+REVIEW_LENSES = (
+    ("duplication", "二重実装",
+     "同じ用途の UI・同型のロジックが複数ノードの成果に重複していないか。"
+     "重複していれば共有部品へ寄せる作り直しタスクを足す。"),
+    ("divergence", "画面間・用途間の表現差異",
+     "同じ用途の機能が、画面や用途をまたいで構造・既定の選択・エラー文言・状態表現で"
+     "食い違っていないか。食い違っていれば揃える作り直しタスクを足す。"),
+    ("verbosity", "文言量",
+     "禁止事項を選択肢の制限で守れているのに常設の説明文でも重ねて守っていないか。"
+     "内部語彙（保存先・ダイジェスト・可視性などの実装語）を画面へ出していないか。"),
+)
+
+
+def review_lens_directive() -> str:
+    """評価役へ渡すレビュー観点の指示。観点ごとの所見を reason に残させる。"""
+    lenses = "\n".join(f"{i + 1}. {label} — {detail}"
+                       for i, (_key, label, detail) in enumerate(REVIEW_LENSES))
+    return ("レビューの観点（レンズ）: 契約や完了条件の充足だけで判定せず、次の観点も順に"
+            f"当てること。\n{lenses}\n"
+            "reason には観点ごとに「何を見て、何が出たか（出なかったか）」を 1 行ずつ書くこと。"
+            "追加タスクが無い（decision=done）ときも省略しないこと——"
+            "見た結果として何も出なかったことが記録に残らないと、そのラウンドは"
+            "「やらなかった」と区別できなくなる。")
 
 
 def tier_split_directive(tier: "str | None") -> str:
@@ -596,11 +669,12 @@ def _record_rule_agreement(strategy: dict, request: str, granularity: str) -> di
 
 
 def plan_strategy_agent(request: str, model: str | None, review="auto", granularity="auto",
-                        context: str = "", tier=""):
+                        context: str = "", tier="", policy="behavior"):
     """kiro-cli にパターン選択・並列数・初期グラフを決めさせる。
     review は 'auto'（既定）/True/False の三値。auto は集約パターンで自動有効
     （tier=basic では常時有効へ倒す）。
     granularity で分解の細かさを指示し、返ってきた並列数も粒度倍率でスケールする。
+    policy で分割の単位（behavior=振る舞い縦割り・既定 / file=ファイル水平分割）を指示する。
     tier=basic では basic ワーカー向けの分解指示（1 ノード = 1 短手順・具体的な goal）を足す。
     ワークスペース（唯一の書込先）は run 単位なので、ノードへの repo 割当はしない。
 
@@ -616,6 +690,7 @@ def plan_strategy_agent(request: str, model: str | None, review="auto", granular
     review_note = ("統合（synthesize/reduce）を伴うパターンでは、集約の前に verify ノードを 1 つ挟み、"
                    "事前チェック・敵対的レビューを行ってください。" if review is not False else "")
     gran_note = granularity_directive(granularity)
+    split_note = split_policy_directive(policy)
     tier_note = tier_planner_directive(tier)
     prompt = (
         "あなたは分散 Dynamic Workflow の計画役です。以下のワークフローパターンを知っています:\n"
@@ -624,6 +699,7 @@ def plan_strategy_agent(request: str, model: str | None, review="auto", granular
         "近いものは必ず上記の正規名へ読み替えてください（例: 'panel of verifiers'→adversarial-verification）。\n"
         + (tier_note + "\n" if tier_note else "")
         + (gran_note + "\n" if gran_note else "")
+        + (split_note + "\n" if split_note else "")
         + f"要求に最も適したパターンと並列数を選び、{compose}{review_note}"
         "それを反映した初期タスクグラフを作ってください。各タスクには kind を付けます"
         "（kind はノード種別であってパターン名ではありません。patterns には書かないこと）: "

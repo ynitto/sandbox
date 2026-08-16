@@ -4161,6 +4161,12 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
 .wf-publication-details dt { color: var(--muted); }
 .wf-publication-details dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
 .wf-publication-details pre { max-height: 120px; overflow: auto; }
+/* 終端の統合検証（run の完了条件）と、公開後の CI 結果。実行状態と同じ器で出す。 */
+.status-chip.wf-verify-passed { color: var(--green); border-color: var(--green); }
+.status-chip.wf-verify-failed { color: var(--red); border-color: var(--red); }
+.status-chip.wf-verify-pending { color: var(--muted); }
+.wf-ci-failed { color: var(--red); }
+.wf-ci-passed { color: var(--green); }
 .wf-run-folder code { min-width: 0; max-width: 70%; overflow: hidden; color: var(--fg);
   text-overflow: ellipsis; white-space: nowrap; }
 .wf-run-result { margin: 4px 0 18px; }

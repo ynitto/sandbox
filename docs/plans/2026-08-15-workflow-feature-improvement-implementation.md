@@ -1,0 +1,66 @@
+# ワークフロー機能の改善 — 実装記録（提案 P1〜P6）
+
+対象の提案書: [`2026-08-15-workflow-feature-improvement-proposals.md`](./2026-08-15-workflow-feature-improvement-proposals.md)。
+本書は、その 6 提案をどのレイヤーへどう落としたかと、文言でしか守られていない契約が残っていないか
+（＝各契約の強制レイヤー）を記録する。
+
+## 目的
+
+`af/adhoc-20260815-235229-7532` の後追い修正を生んだ 4 つの構造要因（水平分割・完了条件・表現の契約・
+強制レイヤーの取り逃し）に対して、次の run から効く仕組みを入れる。個別バグの再修正は対象外。
+
+## 変更対象
+
+| 提案 | 変更対象 | 強制レイヤー（実行時に効く場所） |
+|------|---------|--------------------------------|
+| P1 統合検証の標準装備 | `agent-dashboard` renderer の雛形生成（`templateWorkflow` / `withIntegrationVerify`）、run 表示（`integrationVerifyPresentation`） | 雛形が持つ `kind: verify` + `continuation: retry` のノード。plan 生成が `evaluate: true` を立て、agent-flow の評価役が verify の fail を作り直しへ回す。完了表示は run の終端検証ノードの結果で決まる（文言ではない） |
+| P1 テスト追加ノードの証跡 | `methods/test-green-evidence.json`、ノードの `surface: test` | plan 生成（`planFromWorkflow`）が goal へルール本文を複製する。カタログから引けなければ run を起動しない（フェイルクローズ） |
+| P2 分割単位 | `agent-flow` の `split_policy` / `split_policy_directive` | planner プロンプトへ必ず後置する。既定 `behavior`、ファイル水平分割は `--split-policy file`（設定 `split_policy`）の明示オプト |
+| P3 UI 一貫性の作業ルール | `methods/ui-consistency.json`、ノードの `surface: ui` | P1 と同じ plan 生成の複製経路。画面（編集キャンバス）は面の選択肢を main の `NODE_SURFACES` から受け取るだけ |
+| P4 レビュー観点 | `agent-flow` の `REVIEW_LENSES` / `review_lens_directive`、`orchestrate` の `evaluate` イベント | 評価役プロンプトへ一律後置（スキル経路・組み込み経路の両方）。ラウンドの記録は bus のイベント（成果ゼロでも必ず 1 件） |
+| P5 強制レイヤー | `agent-dashboard` の `tools/agent-dashboard/src/base/main/design-contract.js`、同梱設計フローの goal | 設計成果の検査。`変更対象` 節に強制レイヤーが無い成果は `implementation-ready` にしない（設計セッションの取り込みと作業準備の handoff の両方で同じ 1 実装を通る） |
+| P6 公開後の CI | `publicationPresentation` / `ciPresentation` と実行の助言 | 公開レコード（`publication` / `delivery`）に載った `ci` を読むだけ。dashboard から CI へ問い合わせはしない |
+
+### 分割単位（P2）の既定
+
+- `behavior`（既定）… 利用者から見える 1 つの振る舞いを 1 ノードが縦に持つ。UI を持つ振る舞いは
+  マークアップ・スタイル・呼び出し側（同じ用途の UI が複数画面に出るならその全画面）を 1 ノードに含める。
+  複数ノードが同じ用途の UI を要するときは、共有部品を切り出すノードを先に置いて後続が消費する。
+- `file`… ファイル境界の水平分割。衝突回避が要る大規模変更のための明示オプションで、
+  裂けたノードには「揃えるべき点と対応ノード id」を goal に書かせる。
+
+### ノードが作るもの（surface）
+
+`ui` / `test` の 2 値。plan 生成が対応する作業ルール（`methods/ui-consistency.json` /
+`methods/test-green-evidence.json`）の本文をノードの goal へ複製する。**複製**なので、後からカタログを
+編集しても実行済み・保存済みの run の振る舞いは変わらない（既存の手法スナップショットと同じ規約）。
+
+### 実装しなかった範囲
+
+- **P6 の CI 結果の書き手**。dashboard は公開レコードに `ci` があれば表示・要対応化するが、
+  CI の結果を取りに行って書く側（agent-flow の公開後処理 or 外部の取り込み）は本変更に含まない。
+  記録が無い run は従来どおり「CI 記録なし」で、赤と誤認させない。
+- **P1 の run 状態そのもの**。agent-flow の run status（done/failed）の意味は変えていない。
+  dashboard の完了表示と助言だけが「終端検証が緑か」を条件にする。engine の終端条件まで変えると
+  既存 run の互換と復旧導線に波及するため、まず表示側で分ける。
+
+## 受入基準
+
+- [x] 実装フローの雛形（標準パターン・作業ルール雛形）の終端に、再検証つきの統合検証が既定で付く。
+      分割（split）が終端のフローと設計フローには付かない。
+- [x] 終端の統合検証が赤のまま終端した run は「完了」ではなく「要対応」として表示される。
+- [x] planner プロンプトに分割単位の指示が必ず入り、既定は振る舞い単位。ファイル単位は明示指定でだけ選べる。
+- [x] 評価役プロンプトに 3 観点（二重実装・画面間の表現差異・文言量）が入り、成果ゼロのラウンドも
+      run 履歴へ観点と所見が残る。
+- [x] `surface` を宣言したノードの goal に、対応する作業ルールが複製される。ルールが引けなければ起動しない。
+- [x] 設計成果は必須4節に加えて「変更対象の強制レイヤー」が無いと実装へ渡せない。設計セッションと
+      作業準備が同じ判定を通る。
+- [x] 公開レコードに CI 結果があれば公開状態と同じ場所に出し、赤なら要対応にする。
+
+## 検証方法
+
+```
+cd tools/agent-dashboard && npm test          # 雛形・完了条件・作業ルール・設計契約・CI 表示
+cd tools/agent-flow && python3 -m unittest discover -s tests   # 分割単位・レビュー観点・評価イベント
+python3 -m unittest discover -s tools/agent-loop/test          # 同梱カタログの golden
+```

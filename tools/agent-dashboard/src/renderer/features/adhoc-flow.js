@@ -79,8 +79,25 @@
     ['受入基準', ['受入基準', '受け入れ基準', '完了条件']],
     ['検証方法', ['検証方法', '検証', 'テスト方法', '確認方法']],
   ];
-  const REQUEST_TEMPLATE = ['## 目的', '', '', '## 変更対象', '', '', '## 受入基準', '', '- [ ] ',
-    '', '## 検証方法', '', ''].join('\n');
+  // 節はあるのに中身が足りず、契約が文言だけで守られたまま実装へ渡る失敗を防ぐ助言。
+  // 節と同じく実行はブロックしない（弾くと外部で書いた設計書の取り込みが止まるため）。
+  const REQUEST_ITEMS = [['変更対象の強制レイヤー', /強制(?:レイヤー?|する層|箇所|ポイント)/]];
+  const REQUEST_TEMPLATE = ['## 目的', '', '', '## 変更対象', '', '- 強制レイヤー: ', '',
+    '## 受入基準', '', '- [ ] ', '', '## 検証方法', '', ''].join('\n');
+  // 実装フローの終端へ既定で付ける統合検証。並列で作った変更をマージした状態で、対象
+  // パッケージのテストスイート全体を CI と同じ系統で回す。ここが緑にならない run は
+  // 「全ノード done」でも完了として扱わない。
+  // 設計: docs/plans/2026-08-15-workflow-feature-improvement-proposals.md P1
+  const INTEGRATION_VERIFY = {
+    id: 'integration-verify',
+    label: '統合検証',
+    kind: 'verify',
+    continuation: 'retry',
+    goal: ['前工程の変更をすべて取り込んだ状態で、対象パッケージのテストスイート全体を',
+      'CI と同じ系統（このリポジトリなら該当パッケージの一括実行）で実行する。',
+      '実行したコマンドと結果の全文を成果に含め、赤があれば原因を直してから通るまで繰り返す。',
+      'テストを間引いたり、無効化して緑にしないこと。'].join(''),
+  };
   const DESIGN_SOURCE_MODES = [
     ['new', '一から設計する', '対話しながら要件と設計を詰めます。'],
     ['continue', '続きから設計する', '設計途中の Markdown を読み、対話を続けます。'],
@@ -293,19 +310,25 @@
 
   function readinessCheck(text) {
     const titles = sectionTitles(text);
+    const body = String(text || '');
     return {
-      empty: !String(text || '').trim(),
+      empty: !body.trim(),
       missing: REQUEST_SECTIONS
         .filter(([, words]) => !titles.some((title) => words.some((word) => title.includes(word))))
         .map(([label]) => label),
+      missingItems: REQUEST_ITEMS.filter(([, pattern]) => !pattern.test(body)).map(([label]) => label),
     };
   }
 
   function readinessHtml(text) {
-    const { empty, missing } = readinessCheck(text);
+    const { empty, missing, missingItems } = readinessCheck(text);
     if (empty) return '<span class="muted">やりたいことを書くか、設計書を読み込みます。</span>';
-    if (!missing.length) return '<span class="wf-readiness-ok">実行できる設計書の形になっています。</span>';
-    return `<span class="wf-readiness-warn">足りない節: ${esc(missing.join('・'))}</span>`
+    const gaps = [
+      missing.length ? `足りない節: ${missing.join('・')}` : '',
+      missingItems.length ? `足りない項目: ${missingItems.join('・')}` : '',
+    ].filter(Boolean);
+    if (!gaps.length) return '<span class="wf-readiness-ok">実行できる設計書の形になっています。</span>';
+    return `<span class="wf-readiness-warn">${esc(gaps.join(' / '))}</span>`
       + '<span class="muted">このままでも実行できます。工程の解釈は agent-flow に委ねられます。</span>';
   }
 
@@ -320,14 +343,27 @@
   }
 
   function publicationPresentation(run) {
+    // 公開レコードに添えられた CI 結果（P6）。公開の器（publication / delivery）へ
+    // 載った記録だけを読む——公開が成功した後で赤になった CI も、同じ復旧の入口で見せる。
+    const ciOf = (record, delivery) => {
+      const raw = (record && record.ci) || (delivery && delivery.ci);
+      if (!raw || typeof raw !== 'object' || !raw.state) return null;
+      return {
+        state: String(raw.state),
+        url: String(raw.url || ''),
+        checks: Array.isArray(raw.checks) ? raw.checks : [],
+      };
+    };
     const records = Object.values((run && run.nodes) || {}).flatMap((node) => {
       const data = node && node.data && typeof node.data === 'object' ? node.data : {};
       const direct = data.publication && typeof data.publication === 'object' ? data.publication : null;
       const delivery = data.delivery && typeof data.delivery === 'object' ? data.delivery : null;
       const nested = delivery && delivery.publication && typeof delivery.publication === 'object'
         ? delivery.publication : null;
-      return direct || nested ? [direct || nested] : [];
+      const record = direct || nested;
+      return record ? [{ ...record, ci: ciOf(record, delivery) }] : [];
     });
+    const ci = records.map((record) => record.ci).find(Boolean) || null;
     const failed = records.find((record) => record.state === 'failed');
     if (failed) {
       const recovery = failed.recovery && typeof failed.recovery === 'object' ? failed.recovery : {};
@@ -338,6 +374,7 @@
         branch: String(failed.branch || ''), commit: String(failed.commit || ''),
         recoveryRef: String(recovery.ref || ''),
         canForceComplete: Boolean(recovery.repository && recovery.ref && failed.branch && failed.commit),
+        ci,
       };
     }
     const manual = records.find((record) => record.state === 'published-manually');
@@ -347,7 +384,7 @@
         url: String(manual.url || (run.workspace && run.workspace.url) || ''),
         local: String((run.workspace && run.workspace.local) || ''),
         branch: String(manual.branch || ''), commit: String(manual.commit || ''),
-        recoveryRef: '', reason: String(manual.reason || ''), canForceComplete: false,
+        recoveryRef: '', reason: String(manual.reason || ''), canForceComplete: false, ci,
       };
     }
     const published = records.find((record) => record.state === 'published');
@@ -357,7 +394,7 @@
         url: String(published.url || (run.workspace && run.workspace.url) || ''),
         local: String((run.workspace && run.workspace.local) || ''),
         branch: String(published.branch || ''), commit: String(published.commit || ''),
-        recoveryRef: '', canForceComplete: false,
+        recoveryRef: '', canForceComplete: false, ci,
       };
     }
     const noChange = records.find((record) => record.state === 'not-required');
@@ -367,11 +404,66 @@
         url: String(noChange.url || (run.workspace && run.workspace.url) || ''),
         local: String((run.workspace && run.workspace.local) || ''),
         branch: String(noChange.branch || ''), commit: '', recoveryRef: '',
-        canForceComplete: false,
+        canForceComplete: false, ci,
       };
     }
     return { state: 'unknown', label: '公開状態を確認できません', tone: 'muted',
-      url: '', local: '', branch: '', commit: '', recoveryRef: '', canForceComplete: false };
+      url: '', local: '', branch: '', commit: '', recoveryRef: '', canForceComplete: false, ci };
+  }
+
+  // 終端の統合検証（P1）。run の完了条件は「全ノード done」ではなく「終端の検証が緑」。
+  // 判定は構造（末端の検証工程）で行い、文言や id には依存しない——利用者が名前を
+  // 変えても、雛形以外の実装フローでも同じ器で読めるようにする。
+  // 失敗の判定は agent-flow の評価役と同じ規則（結果に fail が出ていれば赤）に揃える。
+  function integrationVerifyPresentation(run) {
+    const nodes = Object.values((run && run.nodes) || {});
+    const referenced = new Set(nodes.flatMap((node) => node.deps || []));
+    const terminals = nodes.filter((node) => node.kind === 'verify' && !referenced.has(node.id));
+    if (!terminals.length) {
+      return { state: 'none', label: '統合検証なし', tone: 'muted', nodeId: '', text: '' };
+    }
+    const verdictOf = (node) => {
+      const declared = node.verification && typeof node.verification === 'object'
+        ? String(node.verification.verdict || '') : '';
+      if (declared === 'fail' || node.state === 'failed') return 'fail';
+      if (declared === 'pass') return 'pass';
+      if (node.state !== 'done') return 'pending';
+      return String(node.output || '').toLowerCase().includes('fail') ? 'fail' : 'pass';
+    };
+    const failed = terminals.find((node) => verdictOf(node) === 'fail');
+    if (failed) {
+      return {
+        state: 'failed', label: '検証が赤', tone: 'warn', nodeId: failed.id,
+        text: '終端の統合検証が緑になっていません。失敗した検証の出力を確認し、直してから再実行してください。',
+      };
+    }
+    const pending = terminals.find((node) => verdictOf(node) === 'pending');
+    if (pending) {
+      return {
+        state: 'pending', label: '検証中', tone: 'muted', nodeId: pending.id,
+        text: '終端の統合検証はまだ終わっていません。',
+      };
+    }
+    return {
+      state: 'passed', label: '検証が緑', tone: 'ok', nodeId: terminals[0].id,
+      text: '終端の統合検証が緑になりました。',
+    };
+  }
+
+  // 公開（ブランチ push）後の CI 結果（P6）。公開レコードと同じ器（結果ノードの
+  // publication / delivery）に載った記録だけを読む——dashboard から CI へは問い合わせない。
+  function ciPresentation(run) {
+    const view = publicationPresentation(run || {});
+    const ci = view.ci;
+    if (!ci || !ci.state) return { state: 'none', label: 'CI 記録なし', tone: 'muted', url: '', checks: [] };
+    const checks = (Array.isArray(ci.checks) ? ci.checks : []).map((check) => ({
+      name: String((check && check.name) || ''),
+      state: String((check && check.state) || ''),
+      url: String((check && check.url) || ''),
+    })).filter((check) => check.name);
+    const label = { passed: 'CI 緑', failed: 'CI 赤', running: 'CI 実行中' }[ci.state] || 'CI 状態不明';
+    const tone = ci.state === 'failed' ? 'warn' : ci.state === 'passed' ? 'ok' : 'muted';
+    return { state: ci.state, label, tone, url: String(ci.url || ''), checks };
   }
 
   function publicationHtml(run) {
@@ -387,15 +479,23 @@
       view.recoveryRef ? ['復旧 ref', view.recoveryRef] : null,
       view.reason ? ['手動復旧理由', view.reason] : null,
     ].filter(Boolean).map(([key, value]) => `<div><dt>${esc(key)}</dt><dd><code>${esc(value)}</code></dd></div>`).join('');
+    const ci = ciPresentation(run || {});
+    const ciRows = ci.checks.map((check) =>
+      `<div><dt>${esc(check.name)}</dt><dd><code>${esc(check.state || '不明')}</code>${
+        check.url ? ` <code>${esc(check.url)}</code>` : ''}</dd></div>`).join('');
     const quote = (value) => `'${String(value || '').replaceAll("'", `'"'"'`)}'`;
     const manual = view.canForceComplete
       ? `git -C ${quote(view.local)} push ${quote(view.url)} ${quote(`${view.recoveryRef}:refs/heads/${view.branch}`)}`
       : '';
     return `<div class="wf-publication ${esc(view.tone)}">
       <p class="wf-publication-meta" role="status"><span>保存: ${view.local ? 'ローカル' : '記録なし'}</span>
-        <span>公開: ${esc(view.label)}${esc(branch)}${esc(commit)}</span></p>
+        <span>公開: ${esc(view.label)}${esc(branch)}${esc(commit)}</span>
+        ${ci.state === 'none' ? '' : `<span class="wf-ci-state wf-ci-${esc(ci.state)}">${esc(ci.label)}</span>`}</p>
       <details class="wf-publication-details"><summary>保存と公開の詳細</summary>
         ${rows ? `<dl>${rows}</dl>` : '<p class="muted">この run には公開記録がありません。</p>'}
+        ${ci.state === 'none' ? '' : `<dl class="wf-ci-checks">
+          <div><dt>CI</dt><dd><code>${esc(ci.label)}</code>${ci.url ? ` <code>${esc(ci.url)}</code>` : ''}</dd></div>
+          ${ciRows}</dl>`}
         ${manual ? `<p>次の commit を手動で公開した後、remote 検証付きで run を復旧できます。</p>
           <pre><code>${esc(manual)}</code></pre>
           <button type="button" data-force-complete>手動 push を確認して復旧</button>` : ''}
@@ -527,8 +627,11 @@
       const row = rows.get(depth) || 0;
       const kind = String(node.kind || 'work');
       const goal = String(node.goal || '').trim();
-      const continuation = pattern.id === 'classify-and-act' && kind === 'classify' ? 'route'
-        : ['adversarial-verification', 'loop-until-done'].includes(pattern.id) && kind === 'verify' ? 'retry' : '';
+      // 雛形が継続オプションを宣言していればそれを使う（宣言が無い標準パターンだけ、
+      // 従来どおりパターン名から補う）。
+      const continuation = String(node.continuation || '')
+        || (pattern.id === 'classify-and-act' && kind === 'classify' ? 'route'
+          : ['adversarial-verification', 'loop-until-done'].includes(pattern.id) && kind === 'verify' ? 'retry' : '');
       rows.set(depth, row + 1);
       return {
         id: String(node.id),
@@ -553,6 +656,47 @@
       exit: nodes.filter((node) => !used.has(node.id)).map((node) => node.id),
       nodes,
     };
+  }
+
+  // 実装フローの終端へ統合検証を 1 つ足す。既に終端が「未完了なら修正して再検証」する
+  // 検証工程ならそのままにする（同じ役目の工程を二重に置かない）。
+  function withIntegrationVerify(workflow) {
+    if (workflowPurpose(workflow && workflow.purpose) !== 'implementation') return workflow;
+    const nodes = Array.isArray(workflow.nodes) ? workflow.nodes : [];
+    if (!nodes.length) return workflow;
+    const used = new Set(nodes.flatMap((node) => node.deps || []));
+    const leaves = nodes.filter((node) => !used.has(node.id));
+    if (!leaves.length) return workflow;
+    // 分割（split）の後段は実行時に展開されるため、静的な終端が無い。ここへ検証を
+    // つなぐと「分割の直後に検証」という別の意味のフローになるので足さない。
+    if (leaves.some((node) => node.kind === 'split')) return workflow;
+    if (leaves.every((node) => node.kind === 'verify' && node.continuation === 'retry')) return workflow;
+    const ids = new Set(nodes.map((node) => String(node.id)));
+    let id = INTEGRATION_VERIFY.id;
+    for (let suffix = 2; ids.has(id); suffix += 1) id = `${INTEGRATION_VERIFY.id}-${suffix}`;
+    // 分類の後段（実行時に増える専門工程）より右へ置く——図の並びが実行順と食い違わないように。
+    const rightmost = Math.max(...nodes.map((node) =>
+      (Number(node.x) || 0) + (node.continuation === 'route' ? 270 : 0)));
+    const verify = {
+      ...INTEGRATION_VERIFY,
+      id,
+      tier: leaves[0].tier || 'auto',
+      deps: leaves.map((node) => String(node.id)),
+      x: rightmost + 270,
+      y: 70,
+    };
+    return {
+      ...workflow,
+      nodes: [...nodes, verify],
+      entry: (workflow.entry || []).slice(),
+      exit: [id],
+    };
+  }
+
+  // 「新しく作る」の雛形（＝これから編集する実装フロー）。標準装備の統合検証まで含めた
+  // 形をカードの図と編集キャンバスの両方で見せる。
+  function templateWorkflow(pattern, tier, purpose) {
+    return withIntegrationVerify(workflowFromPattern(pattern, tier, purpose));
   }
 
   function insertPattern(workflow, pattern, tier, from, position) {
@@ -584,7 +728,7 @@
   }
 
   function patternColumns(pattern) {
-    return workflowColumns(visualWorkflow(workflowFromPattern(pattern, '')));
+    return workflowColumns(visualWorkflow(templateWorkflow(pattern, '')));
   }
 
   function workflowColumns(workflow) {
@@ -878,8 +1022,18 @@
       case 'claimed':
       case 'working':
         return { cls: 'ok', label: '操作不要', text: 'エージェントが作業中です。完了または確認待ちになるまで操作は不要です。' };
-      case 'done':
+      case 'done': {
+        // 完了条件は「全ノード done」ではなく「終端の統合検証が緑」。赤のまま終端した run は
+        // 公開失敗と同じ「復旧できる要対応」として出す（黙って完了と言わない）。
+        const verify = integrationVerifyPresentation(run);
+        if (verify.state === 'failed') return { cls: 'act', label: '要対応', text: verify.text };
+        const ci = ciPresentation(run);
+        if (ci.state === 'failed') {
+          return { cls: 'act', label: '要対応',
+            text: '公開は成功しましたが、公開先の CI が赤です。失敗した検査を直して再実行してください。' };
+        }
         return { cls: 'ok', label: '完了', text: '実行は完了しました。実行結果と工程ごとの成果を確認できます。' };
+      }
       case 'failed':
         return { cls: 'act', label: '要確認', text: '実行が失敗しました。失敗理由を確認し、必要なら再実行してください。' };
       case 'cancelled':
@@ -929,6 +1083,7 @@
     const terminal = ['done', 'failed', 'cancelled', 'canceled'].includes(String(run.status));
     const folder = runFolder(detail);
     const advice = workflowRunAdvice(detail);
+    const verify = integrationVerifyPresentation(run);
     const publication = publicationPresentation(run);
     const publicationBlock = publicationHtml(run);
     const finalSummary = String((run.final && run.final.summary) || '').trim();
@@ -937,6 +1092,8 @@
         <p class="wf-run-meta">${esc(flowName)}${publication.branch ? ` · ${esc(publication.branch)}` : ''}</p></div></div>
       <section class="flow-outcome-status" aria-label="実行の状態と作業フォルダ">
         <div><span>実行</span><strong class="status-chip st-${esc(run.status || 'inbox')}">${esc(statusLabel(run.status))}</strong></div>
+        ${verify.state === 'none' ? '' : `<div><span>統合検証</span>
+          <strong class="status-chip wf-verify-${esc(verify.state)}">${esc(verify.label)}</strong></div>`}
         <div class="wf-run-folder"><span>作業フォルダ</span>${folder
     ? `<code title="${esc(folder)}">${esc(folder)}</code>`
     : '<strong class="muted">記録なし</strong>'}</div>
@@ -1453,6 +1610,13 @@
         ${endIssue ? '<span class="wf-node-issue">末端を接続してください</span>' : ''}</div></article>`;
   }
 
+  // ノードが作るもの（面）の選択肢。語彙の正典は main の NODE_SURFACES で、
+  // 読めないときは選択肢を出さない（画面側で面の一覧を作り直さない）。
+  function surfaceOptions(ov) {
+    const surfaces = (ov && ov.nodeSurfaces) || {};
+    return Object.entries(surfaces).map(([value, spec]) => [value, String((spec && spec.label) || value)]);
+  }
+
   function inspectorHtml(ov, workflow) {
     if (st.selectedNode === START) {
       return '<div class="wf-inspector"><strong>開始</strong><p class="muted">ここから接続された工程を実行します。</p></div>';
@@ -1508,6 +1672,11 @@
         ${tierHelp ? `<small class="wf-tier-help">${esc(tierHelp)}</small>` : ''}</label>`}
       <label>この工程の目的<textarea id="wf-node-goal" rows="6">${esc(node.goal)}</textarea>
         <small class="wf-goal-help">この工程で達成したいことを自然文で書きます。依頼全文・前工程の成果・出力形式は agent-flow が実行時に補います。</small></label>
+      ${node.kind === 'human' ? '' : `<label>作るもの<select id="wf-node-surface">
+        <option value="">選ばない</option>
+        ${surfaceOptions(ov).map(([value, label]) =>
+    `<option value="${esc(value)}" ${node.surface === value ? 'selected' : ''}>${esc(label)}</option>`).join('')}
+      </select><small>選ぶと、その作業ルール（画面は既存 UI へ揃える／テストは単独実行の緑を成果に添える）が実行時に付きます。</small></label>`}
       ${interactionHtml}
       <details class="wf-runtime-context"><summary>agent-flow が自動で追加</summary>
         <p>${esc((KIND_META[node.kind] || [node.kind])[0])}としての役割、依頼全文、前工程の成果、作業規律、出力形式。</p></details>
@@ -1524,7 +1693,7 @@
     const repeat = pattern && ['loop-until-done', 'adversarial-verification'].includes(pattern.id);
     const repeatLabel = pattern && pattern.id === 'adversarial-verification'
       ? '問題があれば生成へ戻る' : '未完了なら作業へ戻る';
-    const columns = workflowNodeColumns(visualWorkflow(workflowFromPattern(pattern, '')));
+    const columns = workflowNodeColumns(visualWorkflow(templateWorkflow(pattern, '')));
     const flow = [[{ boundary: '開始' }], ...columns, [{ boundary: '終了' }]];
     return `<div class="wf-mini-flow${repeat ? ' loop' : ''}"
       aria-label="雛形の接続例${repeat ? `。${repeatLabel}` : ''}">${flow.map((column, index) =>
@@ -1561,7 +1730,7 @@
 
   function designTemplateCardHtml(workflow) {
     const nodes = Array.isArray(workflow.nodes) ? workflow.nodes : [];
-    const pattern = { id: workflow.id, label: workflow.name, template: { nodes } };
+    const pattern = { id: workflow.id, label: workflow.name, purpose: 'design', template: { nodes } };
     return `<button type="button" class="wf-template-card" data-design-template-id="${esc(workflow.id)}">
       <strong>${esc(workflow.name || workflow.id)}</strong>
       <small>${esc(workflow.description || `${nodes.length}工程の設計フロー`)}</small>
@@ -2548,6 +2717,9 @@
         delete node.interaction;
       }
       node.goal = $id('wf-node-goal').value.trim();
+      const surface = $id('wf-node-surface')?.value || '';
+      if (node.kind !== 'human' && surface) node.surface = surface;
+      else delete node.surface;
       const continuation = $id('wf-node-continuation');
       const selected = continuation && continuation.checked ? continuation.value : '';
       if ((node.kind === 'classify' && selected === 'route') || (node.kind === 'verify' && selected === 'retry')) {
@@ -2695,14 +2867,14 @@
       const found = (ov.patterns || []).find((item) => item.id === button.dataset.patternId);
       if (!found || !canLeave()) return;
       st.workflowPurpose = 'implementation';
-      st.editor = workflowFromPattern(found, ov.tiers?.[0]?.id || '', 'implementation');
+      st.editor = templateWorkflow(found, ov.tiers?.[0]?.id || '', 'implementation');
       st.selectedNode = START; st.dirty = true; st.notice = '雛形を複製しました'; renderSettings();
     }));
     pane.querySelectorAll('[data-method-pattern-id]').forEach((button) => button.addEventListener('click', () => {
       const found = methodWorkflowPatterns(ov.methods).find((item) => item.methodId === button.dataset.methodPatternId);
       if (!found || !canLeave()) return;
       st.workflowPurpose = 'implementation';
-      st.editor = workflowFromPattern(found, ov.tiers?.[0]?.id || '', 'implementation');
+      st.editor = templateWorkflow(found, ov.tiers?.[0]?.id || '', 'implementation');
       st.selectedNode = START; st.dirty = true; st.notice = '作業ルールを工程へ展開しました'; renderSettings();
     }));
     $id('wf-fit')?.addEventListener('click', () => {
@@ -2899,7 +3071,7 @@
       workflow.exit = (workflow.exit || []).filter((nodeId) => nodeId !== id);
       st.selectedNode = ''; st.selectedEdge = null; st.dirty = true; renderSettings();
     });
-    ['wf-node-label', 'wf-node-id', 'wf-node-kind', 'wf-node-tier', 'wf-node-goal', 'wf-node-continuation',
+    ['wf-node-label', 'wf-node-id', 'wf-node-kind', 'wf-node-tier', 'wf-node-goal', 'wf-node-surface', 'wf-node-continuation',
       'wf-human-mode', 'wf-human-prompt', 'wf-human-options', 'wf-human-default', 'wf-human-audience', 'wf-human-timeout'].forEach((id) =>
       $id(id)?.addEventListener('change', () => { collectWorkflow(); st.dirty = true; renderSettings(); }));
     ['wf-name', 'wf-description'].forEach((id) => $id(id)?.addEventListener('input', () => {
@@ -2948,6 +3120,12 @@
     statusLabel,
     publicationPresentation,
     publicationHtml,
+    integrationVerifyPresentation,
+    ciPresentation,
+    withIntegrationVerify,
+    templateWorkflow,
+    workflowRunAdvice,
+    INTEGRATION_VERIFY,
     flowOptions,
     selectionFrom,
     selectedFlowSummaryHtml,
