@@ -20,6 +20,7 @@ function buildBaseApi() {
 
     glEnrich: (urls) => invoke('gitlab:enrich', { urls }),
     glProjectIssues: (args) => invoke('gitlab:projectIssues', args),
+    glMrDiscussions: (urls) => invoke('gitlab:mrDiscussions', { urls }),
 
     openExternal: (url) => invoke('shell:openExternal', { url }),
     openPath: (target) => invoke('shell:openPath', { target }),

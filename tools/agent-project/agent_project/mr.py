@@ -8,6 +8,7 @@ from __future__ import annotations
 # ---------------------------------------------------------------------------
 _GL_TOKEN_ENVS = ("GITLAB_TOKEN", "GL_TOKEN")
 _GL_RC_FILES = ("~/.bashrc", "~/.bash_profile", "~/.profile", "~/.zshrc")
+_GH_TOKEN_ENVS = ("GITHUB_TOKEN", "GH_TOKEN")
 
 
 def _find_gitlab_idd_scripts_dir() -> "str | None":
@@ -126,18 +127,61 @@ def _gl_quote(project: str) -> str:
     return urllib.parse.quote(project, safe="")
 
 
+def _gh_token() -> str:
+    """GitHub CLI と同じ代表的な環境変数から API トークンを解決する。"""
+    for key in _GH_TOKEN_ENVS:
+        value = os.environ.get(key, "").strip()
+        if value:
+            return value
+    pat = re.compile(r"^\s*(?:export\s+)?(?:GITHUB_TOKEN|GH_TOKEN)=[\"\']?([^\"\'\s]+)")
+    for rc in _GL_RC_FILES:
+        try:
+            for line in Path(rc).expanduser().read_text(encoding="utf-8", errors="ignore").splitlines():
+                found = pat.match(line)
+                if found:
+                    return found.group(1)
+        except OSError:
+            continue
+    return ""
+
+
+def _gh_api(scheme: str, host: str, token: str, method: str, path: str,
+            data: "dict | None" = None, params: "dict | None" = None):
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+    api_host = "api.github.com" if host.lower() == "github.com" else host
+    prefix = "" if host.lower() == "github.com" else "/api/v3"
+    url = f"{scheme}://{api_host}{prefix}{path}"
+    if params:
+        url += "?" + urllib.parse.urlencode({k: v for k, v in params.items() if v is not None})
+    body = json.dumps(data).encode("utf-8") if data is not None else None
+    req = urllib.request.Request(url, data=body, method=method, headers={
+        "Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28", "Content-Type": "application/json",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            content = resp.read()
+            return json.loads(content) if content.strip() else {}
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"GitHub API {method} {path} 失敗: HTTP {e.code}")
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"GitHub API {method} {path} へ接続できません: {e.reason}")
+
+
 # ---------------------------------------------------------------------------
 # フォージ境界（S4-1.7）
 # ---------------------------------------------------------------------------
 # 成果物レビューの正は MR/PR 一本にする、という仕様（S4）は「どのフォージか」に依存しない。
-# 実装は **GitLab のみ**で、GitHub / Gitea は境界だけ切って未対応にしてある——動作確認できる
-# 環境が無いまま書いた API クライアントは「動くかどうか分からないコード」が増えるだけだから。
+# GitLab と GitHub を実装し、Gitea は境界だけ切って未対応にしてある。
 # 未対応フォージは「フォージ無し」として扱い、従来の dashboard ボタン決着へ倒す（S4-6）。
 #
 # 認証情報は **設定 2 層のどちらにも置かない**（host.yaml は共有しないが平文で PC に残り、
 # プロジェクト yaml は state repo 経由で全 PC へ配られる）。connections.yaml / 環境変数 / rc ファイルのまま。
 _FORGE_UNSUPPORTED_WARNED: "set[str]" = set()
 _GITLAB_NO_TOKEN_WARNED = False
+_GITHUB_NO_TOKEN_WARNED = False
 
 
 def _forge_kind(url: str) -> str:
@@ -166,7 +210,7 @@ def forge_available(cfg: "Config", url: str) -> str:
     未対応フォージ・トークン欠落はそれぞれ 1 回だけ警告して "" を返す——黙って無視すると
     「MR ができない理由」がどこにも出ず、検収カードに MR が載らない原因を人が追えない。
     """
-    global _GITLAB_NO_TOKEN_WARNED
+    global _GITLAB_NO_TOKEN_WARNED, _GITHUB_NO_TOKEN_WARNED
     kind = _forge_kind(url)
     if kind == "gitlab":
         if _gl_token():
@@ -177,6 +221,14 @@ def forge_available(cfg: "Config", url: str) -> str:
                   "（connections.yaml の gitlab/default、環境変数 GITLAB_TOKEN/GL_TOKEN、"
                   "または ~/.bashrc 等のいずれにも無し）。タスク MR の自動作成・決着は行いません。"
                   "検収は dashboard のボタンで行ってください", file=sys.stderr)
+        return ""
+    if kind == "github":
+        if _gh_token():
+            return "github"
+        if not _GITHUB_NO_TOKEN_WARNED:
+            _GITHUB_NO_TOKEN_WARNED = True
+            print(">>> 注意: GitHub トークンが見つかりません（GITHUB_TOKEN/GH_TOKEN）。"
+                  "タスク PR の自動作成・決着は行いません。", file=sys.stderr)
         return ""
     if kind and kind not in _FORGE_UNSUPPORTED_WARNED:
         _FORGE_UNSUPPORTED_WARNED.add(kind)
@@ -200,8 +252,7 @@ def _task_mr_coords(task: "Task") -> "tuple[str, str, str, str] | None":
 
 
 def ensure_task_mr(cfg: "Config", task: "Task") -> str:
-    """review 到達時に ap/<task-id> → target の MR を用意する（冪等）。
-    GitLab 未設定・非 GitLab リポジトリ・API 失敗は ""（記録のみで続行＝done の確定は従来どおり）。"""
+    """review 到達時に ap/<task-id> → target の MR/PR を用意する（冪等）。"""
     if not getattr(cfg, "task_branch", False):
         return ""
     if task.get("mr_url"):
@@ -210,13 +261,31 @@ def ensure_task_mr(cfg: "Config", task: "Task") -> str:
     if not spec or not spec.get("url"):
         return ""
     parsed = _gl_parse_repo(spec["url"])
-    if not parsed or not forge_available(cfg, spec["url"]):
+    forge = forge_available(cfg, spec["url"])
+    if not parsed or not forge:
         return ""                       # フォージ無し運用（S4-6）＝従来どおり記録のみで続行
-    token = _gl_token()
     scheme, host, proj = parsed
     source = task_branch_name(cfg, task)
     target = spec.get("target") or spec.get("base") or "main"
     try:
+        if forge == "github":
+            token = _gh_token()
+            found = _gh_api(scheme, host, token, "GET", f"/repos/{proj}/pulls",
+                            params={"head": f"{proj.split('/', 1)[0]}:{source}", "state": "open"})
+            mr = found[0] if isinstance(found, list) and found else None
+            if mr is None:
+                mr = _gh_api(scheme, host, token, "POST", f"/repos/{proj}/pulls", data={
+                    "head": source, "base": target,
+                    "title": f"[agent-project] {task.id}: {task.title[:80]}",
+                    "body": f"agent-project タスク {task.id} の成果物（ブランチ {source}）。",
+                })
+            task.drop("mr_url", "mr_iid", "mr_project")
+            task.extra += [("mr_url", str(mr.get("html_url") or "")),
+                           ("mr_iid", str(mr.get("number") or "")),
+                           ("mr_project", f"{scheme}://{host}|{proj}")]
+            append_journal(cfg.journal, f"タスク PR 用意: {task.id} → {mr.get('html_url', '')}")
+            return str(mr.get("html_url") or "")
+        token = _gl_token()
         ep = _gl_quote(proj)
         found = _gl_api(scheme, host, token, "GET", f"/projects/{ep}/merge_requests",
                         params={"source_branch": source, "state": "opened"})
@@ -247,10 +316,12 @@ def finalize_task_mr(cfg: "Config", task: "Task") -> "tuple[bool, str]":
     coords = _task_mr_coords(task)
     if coords is None:
         return True, ""
+    scheme, host, proj, iid = coords
+    if _forge_kind(f"{scheme}://{host}/{proj}") == "github":
+        return _finalize_github_pr(cfg, task, scheme, host, proj, iid)
     token = _gl_token()
     if not token:
         return True, "GitLab トークン無し（MR は手動で決着してください）"
-    scheme, host, proj, iid = coords
     ep = _gl_quote(proj)
     try:
         mr = _gl_api(scheme, host, token, "GET", f"/projects/{ep}/merge_requests/{iid}")
@@ -296,6 +367,37 @@ def finalize_task_mr(cfg: "Config", task: "Task") -> "tuple[bool, str]":
         return True, "MR を自動マージ"
     except RuntimeError as e:
         return False, f"MR の決着に失敗（解消/再試行してください）: {e}"
+
+
+def _finalize_github_pr(cfg: "Config", task: "Task", scheme: str, host: str,
+                        proj: str, iid: str) -> "tuple[bool, str]":
+    token = _gh_token()
+    if not token:
+        return True, "GitHub トークン無し（PR は手動で決着してください）"
+    try:
+        pr = _gh_api(scheme, host, token, "GET", f"/repos/{proj}/pulls/{iid}")
+        if pr.get("merged"):
+            return True, "PR はマージ済み（人が画面でマージした場合を含む）"
+        if str(pr.get("state")) == "closed":
+            integrated = _integrated_externally(cfg, task)
+            return (True, integrated) if integrated else (False, "PR が未マージでクローズされています")
+        reviews = _gh_api(scheme, host, token, "GET", f"/repos/{proj}/pulls/{iid}/reviews",
+                          params={"per_page": 100})
+        if any(str(r.get("state") or "").upper() == "CHANGES_REQUESTED" for r in reviews or []):
+            return False, "GitHub レビューで変更が要求されています"
+        if pr.get("mergeable") is False or str(pr.get("mergeable_state") or "") in ("dirty", "blocked"):
+            return False, f"PR をマージできません（mergeable_state={pr.get('mergeable_state')}）"
+        if int(pr.get("changed_files") or 0) == 0:
+            _gh_api(scheme, host, token, "PATCH", f"/repos/{proj}/pulls/{iid}", data={"state": "closed"})
+            return True, "差分なし PR＝クローズで決着"
+        merged = _gh_api(scheme, host, token, "PUT", f"/repos/{proj}/pulls/{iid}/merge",
+                         data={"merge_method": "merge"})
+        if merged.get("merged") is not True:
+            detail = str(merged.get("message") or "マージ完了を確認できませんでした")
+            return False, f"GitHub PR をマージできません: {detail}"
+        return True, "PR を自動マージ"
+    except RuntimeError as e:
+        return False, f"PR の決着に失敗（解消/再試行してください）: {e}"
 
 
 def _integrated_externally(cfg: "Config", task: "Task") -> str:
@@ -498,8 +600,45 @@ def _unresolved_notes(scheme: str, host: str, token: str, ep: str, iid: str) -> 
                 continue
             body = str(n.get("body") or "").strip()
             if body and not body.startswith("agent-project:"):   # 自分が書いたコメントは拾わない
-                out.append(body)
+                pos = n.get("position") or {}
+                file = str(pos.get("new_path") or pos.get("old_path") or "").strip()
+                line = pos.get("new_line") or pos.get("old_line") or ""
+                out.append(f"{file}{f':{line}' if line else ''}: {body}" if file else body)
     return out
+
+
+def _settle_from_github(scheme: str, host: str, proj: str, iid: str) -> "tuple[str, str]":
+    """GitHub の決定的シグナルを GitLab と同じ approve/reject/revise 契約へ寄せる。"""
+    token = _gh_token()
+    if not token:
+        return "", ""
+    try:
+        pr = _gh_api(scheme, host, token, "GET", f"/repos/{proj}/pulls/{iid}")
+        if pr.get("merged"):
+            return "approve", "PR がマージされた"
+        if str(pr.get("state") or "") == "closed":
+            return "reject", "PR が未マージでクローズされた"
+        reviews = _gh_api(scheme, host, token, "GET", f"/repos/{proj}/pulls/{iid}/reviews",
+                          params={"per_page": 100})
+        requested = [r for r in (reviews if isinstance(reviews, list) else [])
+                     if str((r or {}).get("state") or "").upper() == "CHANGES_REQUESTED"]
+        if not requested:
+            return "", ""
+        guidance = [str(r.get("body") or "").strip() for r in requested
+                    if str(r.get("body") or "").strip()]
+        comments = _gh_api(scheme, host, token, "GET",
+                           f"/repos/{proj}/pulls/{iid}/comments", params={"per_page": 100})
+        for note in (comments if isinstance(comments, list) else []):
+            body = str((note or {}).get("body") or "").strip()
+            if not body or body.startswith("agent-project:"):
+                continue
+            file = str(note.get("path") or "").strip()
+            line = note.get("line") or note.get("original_line") or ""
+            guidance.append(f"{file}{f':{line}' if line else ''}: {body}" if file else body)
+        return "revise", ("\n".join(dict.fromkeys(guidance))[:1500]
+                          or "GitHub レビューで変更が要求されました（コメント無し）")
+    except RuntimeError:
+        return "", ""
 
 
 def _settle_from_forge(cfg: "Config", task: "Task") -> "tuple[str, str]":
@@ -507,10 +646,14 @@ def _settle_from_forge(cfg: "Config", task: "Task") -> "tuple[str, str]":
     approve / reject / revise / ""（何もしない）。到達不能も ""——フォージが見えないことを
     「未マージ＝reject」と読むと、回線が切れただけで成果が却下される。"""
     coords = _task_mr_coords(task)
-    token = _gl_token()
-    if coords is None or not token:
+    if coords is None:
         return "", ""
     scheme, host, proj, iid = coords
+    if _forge_kind(f"{scheme}://{host}/{proj}") == "github":
+        return _settle_from_github(scheme, host, proj, iid)
+    token = _gl_token()
+    if not token:
+        return "", ""
     ep = _gl_quote(proj)
     try:
         mr = _gl_api(scheme, host, token, "GET", f"/projects/{ep}/merge_requests/{iid}")
@@ -590,10 +733,24 @@ def close_task_mr(cfg: "Config", task: "Task", reason: str) -> None:
     push する不変条件を 1 か所に閉じ込めるためで、ここでも消せるようにすると「タグ無しで
     消える経路」が復活する。"""
     coords = _task_mr_coords(task)
-    token = _gl_token()
-    if coords is None or not token:
+    if coords is None:
         return
     scheme, host, proj, iid = coords
+    if _forge_kind(f"{scheme}://{host}/{proj}") == "github":
+        token = _gh_token()
+        if not token:
+            return
+        try:
+            _gh_api(scheme, host, token, "POST", f"/repos/{proj}/issues/{iid}/comments",
+                    data={"body": f"agent-project: タスク {task.id} は却下されました（{reason}）。"})
+            _gh_api(scheme, host, token, "PATCH", f"/repos/{proj}/pulls/{iid}",
+                    data={"state": "closed"})
+        except RuntimeError as e:
+            append_journal(cfg.journal, f"却下 PR の後始末に失敗（無視）: {task.id}: {e}")
+        return
+    token = _gl_token()
+    if not token:
+        return
     ep = _gl_quote(proj)
     try:
         _gl_api(scheme, host, token, "POST", f"/projects/{ep}/merge_requests/{iid}/notes",

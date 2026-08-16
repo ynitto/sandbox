@@ -111,6 +111,40 @@ class GitLabClient {
     });
   }
 
+  // MR の未解決ディスカッションを差し戻し文面へ変換する。コード上の指摘は、
+  // dashboard だけを見ても修正箇所へ到達できるよう必ずファイル名と行番号を添える。
+  async getMrDiscussionsByUrl(webUrl) {
+    const parsed = GitLabClient.parseUrl(webUrl);
+    if (!parsed || parsed.type !== 'mr') throw new Error(`MR URL を解釈できません: ${webUrl}`);
+    const enc = encodeURIComponent(parsed.projectPath);
+    const discussions = await this.api(`/projects/${enc}/merge_requests/${parsed.iid}/discussions`, {
+      query: { per_page: 100 },
+    });
+    return GitLabClient.formatUnresolvedDiscussions(discussions);
+  }
+
+  static formatUnresolvedDiscussions(discussions) {
+    const comments = [];
+    for (const discussion of Array.isArray(discussions) ? discussions : []) {
+      for (const note of discussion.notes || []) {
+        if (note.system || note.resolved || !note.resolvable) continue;
+        const body = String(note.body || '').trim();
+        if (!body) continue;
+        const pos = note.position || {};
+        const file = pos.new_path || pos.old_path || '';
+        const line = pos.new_line || pos.old_line || '';
+        comments.push({
+          body,
+          author: note.author && note.author.username ? note.author.username : '',
+          file,
+          line,
+          text: `${file ? `${file}${line ? `:${line}` : ''}: ` : ''}${body}`,
+        });
+      }
+    }
+    return comments;
+  }
+
   // リポジトリ URL（https://host/group/proj(.git)）→ "group/proj" パス。
   // agent-flow の run meta にはワークスペースのリポジトリ URL しか無いため、
   // イシュー検索はこれで起票先プロジェクトを解決する（gitlab executor と同じ考え方）。

@@ -687,7 +687,8 @@ class TestTaskBranchAndDeliveryReview(unittest.TestCase):
             cfg = cfg_for(d)
             t = self._review_task_with_mr(cfg, d)
             discussions = [{"notes": [
-                {"body": "ここは null チェックが要ります", "resolvable": True, "resolved": False},
+                {"body": "ここは null チェックが要ります", "resolvable": True, "resolved": False,
+                 "position": {"new_path": "src/app.py", "new_line": 18}},
                 {"body": "解決済みの指摘", "resolvable": True, "resolved": True},
                 {"body": "システム通知", "system": True, "resolvable": False},
                 {"body": "agent-project: 自動コメント", "resolvable": True, "resolved": False},
@@ -699,6 +700,7 @@ class TestTaskBranchAndDeliveryReview(unittest.TestCase):
             fresh = km._load_task_file(cfg, t.id)
             fb = fresh.get("feedback")
             self.assertIn("null チェック", fb)
+            self.assertIn("src/app.py:18", fb)
             # 解決済み・system・自分のコメントは注入しない（毎回積み直して収束しなくなる）
             self.assertNotIn("解決済みの指摘", fb)
             self.assertNotIn("システム通知", fb)
@@ -765,7 +767,7 @@ class TestTaskBranchAndDeliveryReview(unittest.TestCase):
 
     # --- フォージ境界（S4-1.7） ---------------------------------------------------------
 
-    def test_forge_available_only_gitlab(self):
+    def test_forge_available_gitlab_and_github(self):
         with tempfile.TemporaryDirectory() as d:
             cfg = cfg_for(Path(d))
             with mock.patch.object(km, "_gl_token", return_value="tok"):
@@ -774,22 +776,66 @@ class TestTaskBranchAndDeliveryReview(unittest.TestCase):
                 # 自己ホスト GitLab（ホスト名で判別できない）はトークンの有無で決める
                 self.assertEqual(km.forge_available(cfg, "https://git.example.com/g/a.git"),
                                  "gitlab")
-                # GitHub / Gitea は境界だけ切って未対応 → フォージ無し運用へ倒す
-                self.assertEqual(km.forge_available(cfg, "https://github.com/o/r.git"), "")
+                with mock.patch.object(km, "_gh_token", return_value="ghtok"):
+                    self.assertEqual(km.forge_available(cfg, "https://github.com/o/r.git"), "github")
                 self.assertEqual(km.forge_available(cfg, "https://gitea.example.com/o/r.git"), "")
             with mock.patch.object(km, "_gl_token", return_value=""):
                 self.assertEqual(km.forge_available(cfg, "https://git.example.com/g/a.git"), "")
 
-    def test_ensure_task_mr_skips_unsupported_forge(self):
+    def test_ensure_task_mr_creates_github_pr(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
             cfg = cfg_for(d, task_branch=True)
             t = self._mr_task(cfg, d)
             t.drop("workspace")
             t.extra.append(("workspace", "https://github.com/o/r.git"))
-            with mock.patch.object(km, "_gl_token", return_value="tok"), \
-                 mock.patch.object(km, "_gl_api", side_effect=AssertionError("叩かない")):
-                self.assertEqual(km.ensure_task_mr(cfg, t), "")
+            calls = []
+            def gh_api(scheme, host, token, method, path, data=None, params=None):
+                calls.append((method, path, data, params))
+                if method == "GET":
+                    return []
+                return {"number": 9, "html_url": "https://github.com/o/r/pull/9"}
+            with mock.patch.object(km, "_gh_token", return_value="ghtok"), \
+                 mock.patch.object(km, "_gh_api", side_effect=gh_api):
+                self.assertEqual(km.ensure_task_mr(cfg, t), "https://github.com/o/r/pull/9")
+            self.assertEqual(t.get("mr_iid"), "9")
+            self.assertTrue(any(call[0] == "POST" and call[1] == "/repos/o/r/pulls" for call in calls))
+
+    def test_github_merge_requires_positive_api_confirmation(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d))
+            t = self._mr_task(cfg, Path(d))
+
+            def api(scheme, host, token, method, path, data=None, params=None):
+                if method == "GET" and path.endswith("/reviews"):
+                    return []
+                if method == "GET":
+                    return {"state": "open", "merged": False, "mergeable": True,
+                            "mergeable_state": "clean", "changed_files": 1}
+                return {"merged": False, "message": "Required status check is pending"}
+
+            with mock.patch.object(km, "_gh_token", return_value="ghtok"), \
+                 mock.patch.object(km, "_gh_api", side_effect=api):
+                ok, why = km._finalize_github_pr(cfg, t, "https", "github.com", "o/r", "9")
+            self.assertFalse(ok)
+            self.assertIn("Required status check", why)
+
+    def test_github_changes_requested_injects_file_and_line(self):
+        calls = []
+
+        def api(scheme, host, token, method, path, data=None, params=None):
+            calls.append(path)
+            if path.endswith("/reviews"):
+                return [{"state": "CHANGES_REQUESTED", "body": "境界値も確認してください"}]
+            if path.endswith("/comments"):
+                return [{"path": "src/range.py", "line": 42, "body": "off-by-one です"}]
+            return {"state": "open", "merged": False}
+
+        with mock.patch.object(km, "_gh_token", return_value="ghtok"), \
+             mock.patch.object(km, "_gh_api", side_effect=api):
+            decision, why = km._settle_from_github("https", "github.com", "o/r", "9")
+        self.assertEqual(decision, "revise")
+        self.assertIn("src/range.py:42: off-by-one", why)
 
     def test_approve_merges_clean_mr_and_finalizes(self):
         with tempfile.TemporaryDirectory() as d:
