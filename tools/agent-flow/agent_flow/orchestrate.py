@@ -650,7 +650,7 @@ def cmd_orchestrate(args) -> int:
         # 区別できず、無言の欠番になる（P4）。reason には観点ごとの所見が入る。
         bus.event(who, "evaluate", iteration=iteration, decision=decision,
                   reason=(reason or "所見なし")[:2000],
-                  lenses=[key for key, _label, _detail in REVIEW_LENSES],
+                  lenses=[key for key, _label, _detail in review_lenses()],
                   added=[t["id"] for t in new_tasks])
 
         if decision == "replan" and new_tasks:

@@ -84,20 +84,11 @@
   const REQUEST_ITEMS = [['変更対象の強制レイヤー', /強制(?:レイヤー?|する層|箇所|ポイント)/]];
   const REQUEST_TEMPLATE = ['## 目的', '', '', '## 変更対象', '', '- 強制レイヤー: ', '',
     '## 受入基準', '', '- [ ] ', '', '## 検証方法', '', ''].join('\n');
-  // 実装フローの終端へ既定で付ける統合検証。並列で作った変更をマージした状態で、対象
-  // パッケージのテストスイート全体を CI と同じ系統で回す。ここが緑にならない run は
-  // 「全ノード done」でも完了として扱わない。
+  // 実装フローの終端へ既定で付ける統合検証。ノードの形（verify + retry）と付け方は
+  // withIntegrationVerify（エンジンの規則）が決め、検証の内容（goal）は main がカタログ
+  // （methods/integration-verify.json、リポジトリの同 id 上書きを含む）から解決して
+  // overview の integrationVerify で渡す。ここに固定文言は持たない。
   // 設計: docs/plans/2026-08-15-workflow-feature-improvement-proposals.md P1
-  const INTEGRATION_VERIFY = {
-    id: 'integration-verify',
-    label: '統合検証',
-    kind: 'verify',
-    continuation: 'retry',
-    goal: ['前工程の変更をすべて取り込んだ状態で、対象パッケージのテストスイート全体を',
-      'CI と同じ系統（このリポジトリなら該当パッケージの一括実行）で実行する。',
-      '実行したコマンドと結果の全文を成果に含め、赤があれば原因を直してから通るまで繰り返す。',
-      'テストを間引いたり、無効化して緑にしないこと。'].join(''),
-  };
   const DESIGN_SOURCE_MODES = [
     ['new', '一から設計する', '対話しながら要件と設計を詰めます。'],
     ['continue', '続きから設計する', '設計途中の Markdown を読み、対話を続けます。'],
@@ -689,7 +680,10 @@
 
   // 実装フローの終端へ統合検証を 1 つ足す。既に終端が「未完了なら修正して再検証」する
   // 検証工程ならそのままにする（同じ役目の工程を二重に置かない）。
-  function withIntegrationVerify(workflow) {
+  // spec（id/label/kind/continuation/goal）は overview の integrationVerify——main が
+  // カタログから解決した内容。spec が無い（カタログから引けない）ときは足さない。
+  function withIntegrationVerify(workflow, spec) {
+    if (!spec || !spec.goal) return workflow;
     if (workflowPurpose(workflow && workflow.purpose) !== 'implementation') return workflow;
     const nodes = Array.isArray(workflow.nodes) ? workflow.nodes : [];
     if (!nodes.length) return workflow;
@@ -701,13 +695,13 @@
     if (leaves.some((node) => node.kind === 'split')) return workflow;
     if (leaves.every((node) => node.kind === 'verify' && node.continuation === 'retry')) return workflow;
     const ids = new Set(nodes.map((node) => String(node.id)));
-    let id = INTEGRATION_VERIFY.id;
-    for (let suffix = 2; ids.has(id); suffix += 1) id = `${INTEGRATION_VERIFY.id}-${suffix}`;
+    let id = String(spec.id || 'integration-verify');
+    for (let suffix = 2; ids.has(id); suffix += 1) id = `${spec.id || 'integration-verify'}-${suffix}`;
     // 分類の後段（実行時に増える専門工程）より右へ置く——図の並びが実行順と食い違わないように。
     const rightmost = Math.max(...nodes.map((node) =>
       (Number(node.x) || 0) + (node.continuation === 'route' ? 270 : 0)));
     const verify = {
-      ...INTEGRATION_VERIFY,
+      ...spec,
       id,
       tier: leaves[0].tier || 'auto',
       deps: leaves.map((node) => String(node.id)),
@@ -725,7 +719,8 @@
   // 「新しく作る」の雛形（＝これから編集する実装フロー）。標準装備の統合検証まで含めた
   // 形をカードの図と編集キャンバスの両方で見せる。
   function templateWorkflow(pattern, tier, purpose) {
-    return withIntegrationVerify(workflowFromPattern(pattern, tier, purpose));
+    return withIntegrationVerify(workflowFromPattern(pattern, tier, purpose),
+      st.overview && st.overview.integrationVerify);
   }
 
   function insertPattern(workflow, pattern, tier, from, position) {
@@ -3203,7 +3198,6 @@
     withIntegrationVerify,
     templateWorkflow,
     workflowRunAdvice,
-    INTEGRATION_VERIFY,
     flowOptions,
     selectionFrom,
     selectedFlowSummaryHtml,

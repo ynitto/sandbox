@@ -105,9 +105,9 @@ test('同梱の手法カタログが extraResources でパッケージへ入る'
   const entry = (pkg.build.extraResources || []).find((e) => String(e && e.to) === 'methods');
   assert.ok(entry, 'build.extraResources に methods/ の同梱指定が必要です');
   const dir = path.resolve(ROOT, entry.from);
-  assert.strictEqual(fs.readdirSync(dir).filter((name) => name.endsWith('.json')).length, 23);
-  // 面（surface）ごとに自動付与する作業ルールも同梱カタログから引く
-  for (const name of ['ui-consistency.json', 'test-green-evidence.json']) {
+  assert.strictEqual(fs.readdirSync(dir).filter((name) => name.endsWith('.json')).length, 24);
+  // 面（surface）ごとに自動付与する作業ルールと、統合検証の内容も同梱カタログから引く
+  for (const name of ['ui-consistency.json', 'test-green-evidence.json', 'integration-verify.json']) {
     assert.ok(fs.existsSync(path.join(dir, name)), `同梱元に ${name} がありません: ${dir}`);
   }
 });

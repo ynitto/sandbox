@@ -84,3 +84,30 @@ cd tools/agent-dashboard && npm test          # 雛形・完了条件・作業�
 cd tools/agent-flow && python3 -m unittest discover -s tests   # 分割単位・レビュー観点・評価イベント・CI 取り込み・完了条件
 python3 -m unittest discover -s tools/agent-loop/test          # 同梱カタログの golden
 ```
+
+## 第 3 段 — エンジンの汎用インターフェースと、カスタマイズできる振る舞いの分離
+
+第 1・2 段の実装は、統合検証の文言・面の語彙と対応・レビュー観点・分割単位の指示文・設計成果の
+必須節をエンジン側の固定値として持っていた。第 3 段では「エンジンは共通性の高いインターフェース
+（宣言の置き場と解決規則）だけを持ち、具体的な振る舞いはカスタマイズで差し替えられる」形へ分けた。
+
+| 仕組み | エンジン（共通インターフェース） | カスタマイズ（振る舞いの置き場） |
+|--------|--------------------------------|--------------------------------|
+| 面（surface）と作業ルール | 手法の `when.surfaces` 宣言を集めて語彙とルール束を導出し、plan 生成で goal へ複製（フェイルクローズ）。正規化は面 id の形式だけを見る | 同梱 `methods/ui-consistency.json`（`ui`）・`methods/test-green-evidence.json`（`test`）。リポジトリの `.agents/methods/` は同じ宣言で**面の追加**と**同 id 上書き**ができる |
+| 統合検証 | 終端へ verify + 再検証を付ける規則と、カタログから内容を解決する `terminalVerification`（引けなければ標準装備を諦める——固定文言のフォールバックで正典を二重化しない） | 同梱 `methods/integration-verify.json` が検証内容の正典。リポジトリ同 id 上書きで「この repo の検証手順」へ差し替え |
+| 設計成果の契約 | `contract: { sections, items }` の正規化（`normalizeContract`）と解決（`resolveContract`）。終端 goal の指示文と、設計セッション・作業準備の取り込み判定が**同じ解決結果**を使う | 既定契約（必須4節＋変更対象の強制レイヤー）は `design-contract.js` の同梱定義。カスタム設計フローは定義の `contract` で節・項目を宣言できる（digest 対象・snapshot に固定） |
+| 分割単位（P2） | 「名前で選び、指示文を planner へ後置する」規則（`split_policy` / `split_policy_directive`） | 同梱 `behavior` / `file`。設定 `split_policies`（`{名前: 指示文}`）で追加・同名上書き |
+| レビュー観点（P4） | 「観点を評価役プロンプトへ後置し、観点 key を evaluate イベントへ残す」規則（`review_lenses` / `review_lens_directive`） | 同梱 3 観点（二重実装・表現差異・文言量）。設定 `review_lenses`（`[{key, label, detail}]`）で構成ごと差し替え |
+| 公開後の CI（P6） | 第 2 段の `ci_status_command` 契約のまま（宣言コマンドの JSON 出力が正典）——既に分離済み | 利用者の宣言コマンド |
+
+分離の共通規則:
+
+- **正典は 1 箇所**。エンジンはフォールバック文言を持たない（カタログから引けない統合検証は
+  null、面は起動失敗）。固定値の複製が残ると、カスタマイズしたのに古い文言が出る事故になる。
+- **複製で固定**。面のルール・統合検証・設計契約はいずれも plan / snapshot へ複製されるので、
+  カスタマイズを後から変えても保存済み run・準備項目の振る舞いは変わらない。
+- **壊れた宣言の扱いは置き場で変える**。保存時に検査できるもの（フロー定義の contract）は弾き、
+  保存済み状態から読むもの（session / 準備項目の snapshot）は黙って既定へ落とす（開けなくしない）。
+
+検証は本書末尾のコマンドに含まれる（dashboard: 面のカタログ導出・リポジトリ上書き・契約宣言、
+agent-flow: `split_policies` / `review_lenses` の追加・上書き・不正値の既定回帰）。

@@ -15,14 +15,21 @@ function isCompleteDocument(text) {
   return !designContract.missingSections(text, true).length;
 }
 
-// 設計 run の成果はこちらの判定を通す。必須4節に加えて「変更対象の強制レイヤー」まで
-// 揃っていないと実装へは渡さない（文言でしか守られていない契約を実装 run へ流さない）。
-function isCompleteDesignDocument(text) {
-  return !designContract.documentIssues(text).length;
+// 設計 run の成果はこちらの判定を通す。必須節に加えて節内の必須項目（既定契約なら
+// 「変更対象の強制レイヤー」）まで揃っていないと実装へは渡さない（文言でしか守られて
+// いない契約を実装 run へ流さない）。契約は項目が固定した設計フロー snapshot の宣言
+// （design.flow.definition.contract）を使い、無ければ既定契約で判定する。
+function designFlowContract(design) {
+  const definition = design && design.flow && design.flow.definition;
+  return (definition && definition.contract) || null;
 }
 
-function designDocumentIssues(text) {
-  return designContract.documentIssues(text);
+function isCompleteDesignDocument(text, contract = null) {
+  return !designContract.documentIssues(text, false, contract).length;
+}
+
+function designDocumentIssues(text, contract = null) {
+  return designContract.documentIssues(text, false, contract);
 }
 
 function recommendRoute({ goal, materials } = {}) {
@@ -96,10 +103,18 @@ function normalizeDesignDefinition(raw) {
   if (!raw || typeof raw !== 'object' || !Array.isArray(raw.nodes)) return null;
   const nodes = raw.nodes.map(normalizeDefinitionNode);
   if (!nodes.length || nodes.some((node) => !node)) return null;
+  // 設計契約の宣言は snapshot の一部として保持する。壊れた宣言は捨てて既定契約へ落とす。
+  let contract = null;
+  if (raw.contract) {
+    try {
+      contract = designContract.normalizeContract(raw.contract);
+    } catch { contract = null; }
+  }
   return {
     version: Number(raw.version) || 2,
     purpose: String(raw.purpose || 'implementation').trim() || 'implementation',
     libraryVisibility: String(raw.libraryVisibility || 'library').trim() || 'library',
+    ...(contract ? { contract } : {}),
     entry: (Array.isArray(raw.entry) ? raw.entry : []).map(String),
     exit: (Array.isArray(raw.exit) ? raw.exit : []).map(String),
     nodes,
@@ -267,15 +282,17 @@ function createPackage(raw = {}) {
 function canHandoff(item) {
   if (!item || item.phase !== 'implementation-ready') return false;
   return item.route !== 'agent-design'
-    || isCompleteDesignDocument(item.design && item.design.document);
+    || isCompleteDesignDocument(item.design && item.design.document,
+      designFlowContract(item.design));
 }
 
 function completeDesign(item, result = {}) {
   if (!item || item.route !== 'agent-design') throw new Error('エージェント設計の項目ではありません');
   const document = String(result.document || '').trim();
   if (!document) throw new Error('設計結果は必須です');
-  if (!isCompleteDesignDocument(document)) {
-    throw new Error(`設計結果に必須項目が不足しています: ${designDocumentIssues(document).join('、')}`);
+  const contract = designFlowContract(item.design);
+  if (!isCompleteDesignDocument(document, contract)) {
+    throw new Error(`設計結果に必須項目が不足しています: ${designDocumentIssues(document, contract).join('、')}`);
   }
   const currentDesign = normalizeDesign(item.design);
   const resultMaterialId = `design-result:${item.id}`;
@@ -434,7 +451,7 @@ function implementationRequest(item) {
 
 module.exports = {
   recommendRoute, normalizeMaterials, normalizeDesignAssignments, normalizeDesignFlow,
-  isCompleteDesignDocument, designDocumentIssues,
+  isCompleteDesignDocument, designDocumentIssues, designFlowContract,
   createItem, createPackage,
   canHandoff, startDesign, completeDesign,
   recordHandoff,

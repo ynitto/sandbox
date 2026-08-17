@@ -107,6 +107,17 @@ granularity: auto          # タスク分解の細かさ: auto(complexity導出�
                            # 1 ノードが縦に持つ（既定。UI はマークアップ・スタイル・呼び出し側を同じ
                            # ノードへ、複数画面で同じ用途なら共有部品ノードを先に置く）。
                            # file=ファイル境界の水平分割（衝突回避が要る大規模変更の明示オプション）。
+                           # split_policies で宣言したカスタム名も選べる。
+# split_policies: {}       # 追加の分割単位（名前 → planner へ渡す指示文）。同名（behavior / file）は
+                           # 同梱の指示文を上書きする。エンジンは「名前で選び指示文を後置する」だけで、
+                           # 指示の内容はここで差し替えられる。例:
+                           #   split_policies:
+                           #     module: "モジュール境界で分割し、公開 API を跨ぐ変更は 1 ノードへまとめること。"
+# review_lenses: []        # レビューラウンドの観点（レンズ）の差し替え。宣言すると同梱 3 観点
+                           # （二重実装・画面間の表現差異・文言量）を**置き換える**。空は同梱のまま。例:
+                           #   review_lenses:
+                           #     - {key: security, label: 秘密情報, detail: 秘密情報が成果に混ざっていないか。}
+                           #     - {key: perf, label: 性能, detail: 明らかな計算量の悪化が無いか。}
 # ci_status_command: ""    # 公開（ブランチ push）後の CI 結果の取り込み（既定 off = 取り込まない）。
                            # 標準出力へ {"state","url","checks"} の JSON を出すコマンドを書く。
                            # 実行時に AGENT_CI_URL / AGENT_CI_BRANCH / AGENT_CI_COMMIT /

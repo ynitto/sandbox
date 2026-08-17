@@ -29,7 +29,68 @@ const REQUIRED_ITEMS = [{
   label: '強制レイヤー',
   // 「どの層で強制するか」を書いていれば通す。言い回しは縛らない（強制レイヤー/強制する層/強制箇所）。
   pattern: /強制(?:レイヤー?|する層|箇所|ポイント)/,
+  // 終端 goal（設計 run への指示文）に添える補足。判定には使わない。
+  hint: '（例: 読み取り専用は agent-flow の起動引数で強制、dashboard は表示のみ）。'
+    + '文言でしか守られていない契約が残っていないか自己点検し、残るなら強制する層を決めてください。',
 }];
+
+// --- 契約の宣言（カスタム設計フロー向けの汎用インターフェース） -------------------
+//
+// 設計フロー定義は contract: { sections: [...], items: [{ section, label, pattern, hint? }] }
+// を宣言でき、無指定はこのファイルの既定（必須4節＋変更対象の強制レイヤー）になる。
+// pattern は JSON で運べるよう正規表現の**文字列**で宣言する。判定（documentIssues）と
+// 設計 run への指示文（adhoc-flow の designOutputContract）は同じ解決結果を見る。
+
+function defaultContract() {
+  return {
+    sections: [...REQUIRED_SECTIONS],
+    items: REQUIRED_ITEMS.map((item) => ({
+      section: item.section,
+      label: item.label,
+      pattern: item.pattern.source,
+      ...(item.hint ? { hint: item.hint } : {}),
+    })),
+  };
+}
+
+// フロー定義が宣言した contract の正規化。壊れた宣言は黙って既定へ落とさず弾く
+// （宣言したつもりの契約が無検査で走るのを防ぐ）。
+function normalizeContract(raw) {
+  if (!raw || typeof raw !== 'object') throw new Error('設計契約が不正です');
+  const sections = (Array.isArray(raw.sections) ? raw.sections : [])
+    .map((section) => String(section || '').trim()).filter(Boolean);
+  if (!sections.length) throw new Error('設計契約には必須節を1つ以上宣言してください');
+  if (new Set(sections).size !== sections.length) throw new Error('設計契約の必須節が重複しています');
+  const items = (Array.isArray(raw.items) ? raw.items : []).map((item) => {
+    const section = String((item && item.section) || '').trim();
+    const label = String((item && item.label) || '').trim();
+    const pattern = String((item && item.pattern) || '').trim();
+    const hint = String((item && item.hint) || '').trim();
+    if (!section || !label || !pattern) {
+      throw new Error('設計契約の必須項目には section・label・pattern が必要です');
+    }
+    if (!sections.includes(section)) {
+      throw new Error(`設計契約の必須項目が宣言していない節を指しています: ${section}`);
+    }
+    try {
+      RegExp(pattern);
+    } catch {
+      throw new Error(`設計契約の必須項目の pattern が正規表現として不正です: ${pattern}`);
+    }
+    return { section, label, pattern, ...(hint ? { hint } : {}) };
+  });
+  return { sections, items };
+}
+
+// 判定・指示文の生成が使う解決済み契約。宣言（正規化済み or 生）が無ければ既定。
+function resolveContract(contract) {
+  if (!contract) return defaultContract();
+  return normalizeContract(contract);
+}
+
+function itemPattern(item) {
+  return item.pattern instanceof RegExp ? item.pattern : new RegExp(String(item.pattern));
+}
 
 function headingNames(section, alias) {
   return alias ? (SECTION_ALIASES[section] || [section]) : [section];
@@ -64,27 +125,31 @@ function sectionBody(document, section, alias = false) {
   return body.join('\n');
 }
 
-function missingSections(document, alias = false) {
-  return REQUIRED_SECTIONS.filter((section) => sectionIndex(document, section, alias) < 0);
+function missingSections(document, alias = false, contract = null) {
+  return resolveContract(contract).sections
+    .filter((section) => sectionIndex(document, section, alias) < 0);
 }
 
 // 節はあるのに中の必須項目が無いもの。節が無い場合はここでは数えない（節の不足として出る）。
-function missingItems(document, alias = false) {
-  return REQUIRED_ITEMS
+function missingItems(document, alias = false, contract = null) {
+  return resolveContract(contract).items
     .filter((item) => sectionIndex(document, item.section, alias) >= 0
-      && !item.pattern.test(sectionBody(document, item.section, alias)))
+      && !itemPattern(item).test(sectionBody(document, item.section, alias)))
     .map((item) => `${item.section}の${item.label}`);
 }
 
-// 実装へ渡せる設計書かどうか。空配列 = 渡せる。
-function documentIssues(document, alias = false) {
-  return [...missingSections(document, alias), ...missingItems(document, alias)];
+// 実装へ渡せる設計書かどうか。空配列 = 渡せる。contract 無指定は既定契約で判定する。
+function documentIssues(document, alias = false, contract = null) {
+  return [...missingSections(document, alias, contract), ...missingItems(document, alias, contract)];
 }
 
 module.exports = {
   REQUIRED_SECTIONS,
   SECTION_ALIASES,
   REQUIRED_ITEMS,
+  defaultContract,
+  normalizeContract,
+  resolveContract,
   sectionBody,
   missingSections,
   missingItems,

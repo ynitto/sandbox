@@ -343,7 +343,11 @@ function registerIpc(ctx) {
       // 機能（ノード kind）・役割ごとの実行可能レベルと、オプションが宣言する下限
       kindTiers: flowTiers.catalog(),
       // ノードが作るもの（面）と、面ごとに自動付与する作業ルールの対応
-      nodeSurfaces: adhoc.NODE_SURFACES,
+      // 面の語彙はカタログ（同梱手法＋登録リポジトリの手法の when.surfaces 宣言）から導出する。
+      nodeSurfaces: adhoc.surfaceCatalog(cfg, { cwd }),
+      // 実装フローの終端へ標準装備する統合検証。内容（goal）はカタログが正典で、
+      // 引けない端末では null（renderer は標準装備を諦めるだけで固定文言へ落ちない）。
+      integrationVerify: adhoc.terminalVerification(cfg, { cwd }),
       cwdHistory: (cfg.adhocFlow && cfg.adhocFlow.cwdHistory) || [],
       methods,
       tuning: tuning.load(cfg),

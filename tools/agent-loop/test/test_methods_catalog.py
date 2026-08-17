@@ -5,7 +5,7 @@ import unittest
 
 
 class MethodCatalogTests(unittest.TestCase):
-    def test_golden_catalog_has_exactly_twenty_three_valid_presets(self):
+    def test_golden_catalog_has_exactly_twenty_four_valid_presets(self):
         root = pathlib.Path(__file__).resolve().parents[3]
         paths = sorted((root / "methods").glob("*.json"))
         expected = {
@@ -18,10 +18,12 @@ class MethodCatalogTests(unittest.TestCase):
             # 面（surface）ごとに plan 生成が自動付与する作業ルール
             # （docs/plans/2026-08-15-workflow-feature-improvement-proposals.md P1・P3）
             "ui-consistency", "test-green-evidence",
+            # 実装フローの終端へ標準装備する統合検証の内容（同上 P1）
+            "integration-verify",
         }
         methods = [json.loads(path.read_text(encoding="utf-8")) for path in paths]
         self.assertEqual({method["id"] for method in methods}, expected)
-        self.assertEqual(len(paths), 23)
+        self.assertEqual(len(paths), 24)
         self.assertTrue(all(method.get("origin") and method.get("fragments")
                             and method.get("enabled") is False for method in methods))
 

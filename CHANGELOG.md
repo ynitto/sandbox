@@ -7,6 +7,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### ワークフロー機能: エンジンの共通インターフェースと、カスタマイズできる振る舞いを分離した
+
+改善提案（P1〜P6）の実装が固定値として持っていた振る舞いを、エンジンの汎用インターフェース
+（宣言の置き場と解決規則）と、カスタマイズ（カタログ・設定・フロー定義）へ分けた。
+
+- **面（surface）**: 語彙と作業ルールの対応は手法カタログの `when.surfaces` 宣言から導出する。
+  リポジトリの `.agents/methods/` は同じ宣言で面の追加・同 id 上書きができ、対象フォルダの
+  plan 生成へそのまま効く。宣言の無い面はフェイルクローズ（保存は通し、実行前に弾く）
+- **統合検証**: 終端へ verify + 再検証を付ける規則はエンジン、検証の内容は手法カタログ
+  `integration-verify` が正典。リポジトリ同 id 上書きで検証手順を差し替えられる。
+  カタログから引けない環境では固定文言へ落ちず、標準装備を諦める
+- **設計成果の契約**: カスタム設計フローが定義の `contract: { sections, items }` で必須節・
+  必須項目を宣言できる。終端工程への指示文と、設計セッション・作業準備の取り込み判定が
+  同じ解決結果を使う（無指定は従来の必須4節＋変更対象の強制レイヤー）
+- **分割単位・レビュー観点（agent-flow）**: 設定 `split_policies` で分割単位の追加・同名上書き、
+  `review_lenses` で評価役の観点の差し替えができる。エンジンは「名前で選ぶ・指示文を後置する・
+  観点を run 履歴へ残す」規則だけを持つ。未知・不正な宣言は同梱の既定へ落ちる
+
+契約検証: `cd tools/agent-dashboard && npm test` / `cd tools/agent-flow && python3 -m unittest discover -s tests` / `python3 -m unittest discover -s tools/agent-loop/test`
+
+設計: `docs/plans/2026-08-15-workflow-feature-improvement-implementation.md`（第 3 段）
+
 ### ワークフロー機能: 完了条件と CI 結果をエンジン側でも扱えるようにした
 
 改善提案（P1・P6）のうち、前段では表示側だけを変えていた 2 点を実装した。
