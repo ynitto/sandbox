@@ -1,0 +1,280 @@
+# agent-aider 改良余地の評価
+
+- 日付: 2026-08-18
+- 状態: Assessment
+- 対象: `agent-aider` / `ollama_chat/gemma4:e4b`
+- 前提: CPU only / RAM 32 GB
+
+## 1. 結論
+
+`agent-aider` には改良余地がある。ただし、Aider を汎用の自律エージェントへ拡張するのではなく、
+**既知の局所修正を、固定 policy・明示ファイル・決定的検査・限定再試行の下で確実に実行する worker**
+として完成度を上げるべきである。
+
+優先順位は次のとおり。
+
+1. 承認済みだが未実装の Gemma 4 reliability policy を、A/B gate を含めて実装する。
+2. 決定的な検査結果を受けて同じ局所 task を再投入する運用を標準化する。
+3. `aider / gemma4:e4b` の適格範囲を局所修正へ厳密に限定する。
+4. adapter と評価台帳の観測性・契約テストを強化する。
+5. sampling は一律の既定変更ではなく、独立した評価条件として扱う。
+6. repo map、bash tool-loop、自由なファイル探索を `agent-aider` に重複実装しない。
+
+## 2. 現在地
+
+現在の `aider_adapter.py` は薄い wrapper であり、主な責務は次の二つである。
+
+- 非ログインシェルで欠落する `OLLAMA_HOST` / `OLLAMA_API_BASE` / `NO_PROXY` の補完。
+- Aider analytics JSONL の token count を `@agent-usage` 契約へ変換すること。
+
+Aider の起動自体は analytics 用一時ファイルを追加して argv を透過し、終了後に usage を集計するだけである。
+現在の adapter には model 固有 policy、managed model settings、policy marker、停止分類、checker、再投入はない。
+
+本番定義 `agents/aider.json` は `gemma4:e4b` を既定とし、次の性格を持つ。
+
+- `headless_autonomy: single-shot`
+- Aider の Git / auto commit を無効化
+- `--map-tokens 0`
+- `--file` / `--read` による明示的なファイル受け渡し
+- 外側の実行系が timeout とエラー分類を所有
+
+これは汎用エージェントではなく、対象ファイルが決まった編集器として妥当な境界である。
+
+## 3. 最優先候補: Gemma 4 reliability policy
+
+### 3.1 既存設計
+
+`2026-08-13-agent-aider-gemma4-system-policy-design.md` では、
+`gemma4-e4b-reliability-v1` を Aider の `system_prompt_prefix` へ注入する設計が承認済みである。
+
+背景試験では、短い constraint-following system instruction により、成功対照を維持したまま
+J1 が `0/3` から `3/3`、総合が `6/12` から `9/12` へ改善した。ただし、全候補の走査を要求する
+F2 は `0/3` のままだった。このため policy は有望だが、決定的 checker の代替にはならない。
+
+policy は次を固定規則として要求する。
+
+- 明示された要件・禁止・受入条件・出力制約をすべて必須として扱う。
+- リスト、候補、ファイル、基準を途中で打ち切らず全件確認する。
+- 観測していないファイル、API、依存、編集、テスト結果を捏造しない。
+- task を満たす最小変更に留める。
+- 完了前に全成果物と受入条件を確認する。
+- Aider 本来の編集 protocol を置換しない。
+
+### 3.2 未実装部分
+
+設計と実装計画は存在するが、現行コードには次がない。
+
+- `--agent-policy gemma4-e4b-reliability-v1`
+- `--agent-num-ctx` / `--agent-num-predict`
+- 一時 managed model-settings の生成
+- `system_prompt_prefix` の注入
+- `@agent-policy id=... sha256=...`
+- 未知 policy、対象外 model、外部 settings 競合の fail closed
+- adapter 専用の契約テスト
+- worker eval の policy off / on arm
+
+### 3.3 実装条件
+
+既定化の前に、既存設計の Gate 0〜2 を維持する。
+
+1. **Gate 0: 注入契約**
+   - wrapper option が Aider argv へ漏れない。
+   - policy が system prompt の先頭へ一度だけ入る。
+   - Aider の edit prompt と reminder が後続に残る。
+   - usage marker と policy marker が共存する。
+   - 正常終了・異常終了の双方で一時ファイルを削除する。
+2. **Gate 1: 意味 A/B**
+   - deterministic judge で baseline / policy を比較する。
+   - J1 / F2 の改善と J2 / R1 の無退行を確認する。
+3. **Gate 2: Aider worker A/B**
+   - まず T2 / T1min、通過後だけ T1 / T3 を比較する。
+   - pass/fail だけでなく wall time、token、偽完了、test tampering を記録する。
+
+policy は task 別の自由文にせず、adapter が所有する版管理済み ID に限定する。二つ目の実在 profile が
+反復評価で必要になるまでは、可変 profile interface を先行実装しない。
+
+## 4. 最も実績がある改善: 決定的検査と再投入
+
+T1 の過去評価は次の結果だった。
+
+| arm | 受入 | 壁時計中央値 | 読み |
+|---|---:|---:|---|
+| 一発で実装 + テスト | 1/3 | 446s | 不安定 |
+| 実装 / テストへ分解するだけ | 0/3 | 237s | 分解自体には効果なし |
+| 分解 + 決定的 gate + 再投入 | 3/3 | 952s | 合格するが高コスト |
+
+この実測から、効いているのは次の二点である。
+
+1. ハーネスが成果物の失敗を決定的に検知する。
+2. 失敗した局所 step を再投入する。
+
+診断の詳細を渡さず「仕様を満たしていない」とだけ返した arm も 3/3 だったが、具体的な不一致を渡すと
+再試行が約 28% 速かった。したがって、検査の真偽は前提、診断 stdout の受け渡しは速度最適化である。
+
+checker と retry loop を `aider_adapter.py` 自身へ抱え込ませるべきではない。責務は次のように分ける。
+
+| 層 | 責務 |
+|---|---|
+| `agent-aider` | Aider 起動、model 固有変換、usage / policy /終了様式の観測 |
+| engine / statemachine | checker 実行、遷移、限定 retry、候補昇格 |
+| deterministic checker | 成果物の振る舞いと受入条件の判定 |
+
+## 5. 適格範囲
+
+既存評価から確定している範囲は次のとおり。
+
+| task | `aider / gemma4:e4b` の結果 | 判断 |
+|---|---:|---|
+| 1 関数 + 決定的 probe | 3 方式合計 9/9 | 適格 |
+| 既存 failing test の修正 | 3 方式合計 9/9 | 適格 |
+| 実装とテスト追加を一括 | 通算 1/12 | 自動選択では不適格 |
+| 分解 + 決定的 gate | 3/3、中央値 952s | 定型化済みの場合だけ候補 |
+| 複数成果物 + 契約テスト | 0/3 | 不適格 |
+| `aider / gemma4:12b` code worker | wall 600 / 1800 とも収束せず | 不適格 |
+
+自動選択する局所修正は、少なくとも次を満たすこと。
+
+- 既存コード 1 ファイル、1 symbol 程度。
+- 成果物が一つ。
+- 既存テストまたは決定的 probe がある。
+- テスト、schema、文書の新規作成を要求しない。
+- acceptance と verification command が機械可読である。
+
+一つでも欠く場合は `agent-aider` を適格扱いせず、別候補を選ぶか保留する。checker のない
+single-shot 実行を自己申告だけで合格させない。
+
+## 6. Sampling の扱い
+
+2026-08-15 の実測で、Aider 経路の実効 temperature は 0 であり、同じ入力に同じ失敗が続いた一因が
+greedy decoding であることが確認された。推奨寄り sampling（temperature 1.0 / top-p 0.95 /
+top-k 64）の arm では T1 が `0/3` から `1/3` へ動き、T2 は `3/3` を維持した。
+
+ただし、これは一律の既定変更を支持するほど強くない。
+
+- T1 は依然 1/3 である。
+- JSON、編集形式、停止性への退行を別途確認する必要がある。
+- n=3 中心の結果であり、率の精密な推定ではない。
+- 決定的 gate の必要性は変わらない。
+
+policy、model、sampling を同時に変更せず、それぞれを独立した arm として比較する。sampling 条件は
+ledger / manifest に必ず記録し、「未指定」と「既定値を明示」を区別する。
+
+## 7. 観測性とテスト
+
+### 7.1 Adapter 契約テスト
+
+`test_aider_adapter.py` を追加し、少なくとも次を公開挙動として検査する。
+
+- policy 未指定時の argv 透過と既存 usage 変換。
+- `--agent-policy` が Aider argv へ漏れないこと。
+- 対象 model の完全一致。
+- 未知 policy と model 不一致の fail closed。
+- managed settings と外部 `--model-settings-file` の競合拒否。
+- `num_ctx` / `num_predict` の正整数検証と同一 entry への合成。
+- policy marker と usage marker の共存。
+- 正常終了、Aider error、`FileNotFoundError` 時の一時ファイル cleanup。
+
+### 7.2 評価台帳
+
+worker evaluation の各 record には次を残す。
+
+- agent CLI と model
+- Aider version
+- policy ID / SHA-256
+- effective model settings
+- sampling 条件
+- map token と auto-test の有無
+- wall limit と実時間
+- token usage
+- checker の pass/fail と診断
+- timeout、CLI error、empty、returned などの終了様式
+- retry 回数
+
+`worker_eval.py` には現在の `agents/aider.json` と一致しない古い説明が残っているため、実装時に起動条件の
+表示とコメントを正典に合わせる。
+
+## 8. 維持すべき境界
+
+### 8.1 明示的なファイル受け渡し
+
+Aider は chat に入っているファイルしか編集しない。`file_flag: --file` と `read_flag: --read` を維持し、
+engine が編集対象と参照対象を明示する。自由探索を前提にしない。
+
+### 8.2 repo map は既定 0
+
+このリポジトリでは Aider の実効 context が狭く、常設材料を削る運用を既に採っている。repo map は
+既定 0 のままとし、探索が必要な評価 task だけ明示的に予算を与える。通常運用では read-only agent が
+候補ファイルを絞り、その結果を `--read` / `--file` で Aider へ渡す。
+
+### 8.3 tool-loop を重複実装しない
+
+bash 付き反復は既存の `agent-ollama` が所有している。Aider の reflection / auto-test、外側 engine の
+retry、独自 bash loop を三重化すると CPU only 環境で停止性が悪化する。
+
+| 処理 | 経路 |
+|---|---|
+| 対象ファイルが決まった局所編集 | `agent-aider` |
+| 探索・調査・command 反復 | `agent-ollama` 等の tool-loop |
+| 決定的検査 | engine / checker |
+| 失敗時の再投入 | statemachine / execution policy |
+| 厳密 JSON | `ollama-json` |
+| 網羅的レビュー | 検証専用候補 + timeout / retry |
+
+## 9. 実施ロードマップ
+
+### Phase 1: 低リスク整備
+
+1. adapter の現行挙動を契約テストで固定する。
+2. `worker_eval.py` の古い条件表示を修正する。
+3. Aider version と実効条件を台帳へ記録する。
+
+### Phase 2: Reliability policy
+
+1. wrapper option と managed settings を実装する。
+2. policy marker、競合検出、cleanup を実装する。
+3. unit test と `--show-prompts` smoke を通す。
+
+### Phase 3: A/B gate
+
+1. deterministic judge baseline / policy。
+2. T2 / T1min baseline / policy。
+3. 短い gate を通過した場合のみ T1 / T3。
+4. 成功対照に退行がなければ本番既定化する。
+
+### Phase 4: 運用側
+
+1. execution resolver で局所修正の適格条件を判定する。
+2. checker がない場合は自動選択しない。
+3. checker fail 時は同じ局所 step を限定回数だけ再投入する。
+4. retry exhaustion 後のみ別候補へ昇格する。
+
+### Phase 5: モデル / ハーネス比較
+
+上記条件を固定した後で、`gemma4:e4b` と別の coding model を比較する。Pi 等との比較は同一モデルを
+使ったハーネス比較として分離し、model 差と agent 差を同時に変更しない。
+
+## 10. 採用しない方向
+
+- adapter 内部への汎用 bash tool-loop。
+- engine やユーザーからの自由な system prompt 注入。
+- 実在する第二 profile がない段階での可変 policy framework。
+- repo map の常時有効化。
+- checker のない自己申告完了。
+- 複数成果物、schema、契約変更、曖昧な設計への自動投入。
+- `gemma4:12b` の code worker 昇格。
+
+## 11. 参照
+
+- `agents/aider.json`
+- `agents/ollama.json`
+- `agents/ollama-verify.json`
+- `tools/agent-tools/agentcore/agentcore/aider_adapter.py`
+- `tools/agent-tools/agentcore/agentcore/agentcli.py`
+- `tools/agent-tools/eval/worker_eval.py`
+- `tools/agent-tools/eval/test_worker_eval.py`
+- `tools/agent-tools/eval/results/archive/2026-08-13-t1-decomposition-report.md`
+- `tools/agent-tools/eval/results/archive/2026-08-14-text-eval-report.md`
+- `docs/plans/2026-08-13-agent-aider-gemma4-system-policy-design.md`
+- `docs/plans/2026-08-13-agent-aider-gemma4-system-policy-implementation-plan.md`
+- `docs/plans/2026-08-14-agent-tools-local-first-operation-plan.md`
+- `docs/plans/2026-08-15-agent-tools-candidate-execution-policy-dashboard-design.md`
