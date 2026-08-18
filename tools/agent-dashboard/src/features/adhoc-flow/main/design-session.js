@@ -28,9 +28,8 @@ const MODE_FLOWS = { interactive: 'design-interactive', auto: 'design-auto' };
 
 // 「## 質問」節の見出し。レベルは問わない（生成側が h2 で書く前提だが、h3 でも拾う）。
 const QUESTION_HEADING = /^#{1,6}[ \t]*質問[ \t]*$/;
-// 必須節と、節の中に要る項目（強制レイヤー）の判定は design-contract が唯一の実装。
-const REQUIRED_DESIGN_SECTIONS = designContract.REQUIRED_SECTIONS;
-const REQUIRED_DESIGN_ITEMS = designContract.REQUIRED_ITEMS;
+// 書式（必須節と節内の必須項目）の正典は手法カタログ `design-document-format`。
+// 数え方は design-contract が唯一の実装で、書式は adhoc が引いて渡す。
 const SNAPSHOT_DIR = '.snapshots';
 const TARGETS = new Set(['workflow', 'project']);
 const SOURCE_MODES = new Set(['new', 'continue', 'use-as-is']);
@@ -78,19 +77,10 @@ function normalizeFlowSnapshot(raw) {
     return out.id && out.goal ? out : null;
   }).filter(Boolean) : [];
   if (!nodes.length) return null;
-  // 設計契約の宣言は snapshot の定義ごと固定する（後からカタログを変えても run は変わらない）。
-  // 壊れた宣言は捨てて既定契約へ落とす——保存済みセッションを契約の破損で開けなくしない。
-  let contract = null;
-  if (source.contract) {
-    try {
-      contract = designContract.normalizeContract(source.contract);
-    } catch { contract = null; }
-  }
   const definition = {
     version: Number(source.version) || 2,
     purpose: String(source.purpose || 'design'),
     libraryVisibility: String(source.libraryVisibility || 'internal'),
-    ...(contract ? { contract } : {}),
     entry: Array.isArray(source.entry) ? source.entry.map(String) : [],
     exit: Array.isArray(source.exit) ? source.exit.map(String) : [],
     nodes,
@@ -183,26 +173,19 @@ function resolveFlowSnapshot(config, { selection, designFlow, mode, cwd } = {}) 
   });
 }
 
-function requiredDesignSections(document, contract = null) {
-  return designContract.missingSections(document, false, contract);
-}
-
-// セッションが固定した設計フローの契約（無ければ null = 既定契約で判定）。
-function sessionContract(session) {
-  const definition = session && session.flowSnapshot && session.flowSnapshot.definition;
-  return (definition && definition.contract) || null;
+function requiredDesignSections(config, document) {
+  return designContract.missingSections(document, adhoc.designDocumentFormat(config));
 }
 
 // 節はあるが、中の必須項目（変更対象の強制レイヤー）が無いもの。節の不足と同じ扱いで
 // 実装準備完了にしない——文言でしか守られていない契約を実装 run へ流さないため。
-function requiredDesignItems(document, contract = null) {
-  return designContract.missingItems(document, false, contract);
+function requiredDesignItems(config, document) {
+  return designContract.missingItems(document, adhoc.designDocumentFormat(config));
 }
 
-// 設計成果が実装へ渡せる形かどうか（節の不足＋節内の項目の不足）。契約はセッションが
-// 固定した設計フローの宣言（flowSnapshot.definition.contract）を使い、無ければ既定。
-function designDocumentIssues(document, contract = null) {
-  return designContract.documentIssues(document, false, contract);
+// 設計成果が実装へ渡せる形かどうか（節の不足＋節内の項目の不足）。
+function designDocumentIssues(config, document) {
+  return designContract.documentIssues(document, adhoc.designDocumentFormat(config));
 }
 
 // 設計フローのノードへ人が固定したエージェント・モデル（{ nodeId: {tier, agent_cli, model} }）。
@@ -380,7 +363,7 @@ function harvest(config, session) {
     return saveSession(config, { ...session, runStatus: status, error: '設計 run の成果が空でした' });
   }
   const { document, questions } = splitDesignOutput(output);
-  const missing = designDocumentIssues(document, sessionContract(session));
+  const missing = designDocumentIssues(config, document);
   if (missing.length) {
     return saveSession(config, {
       ...session,
@@ -515,11 +498,8 @@ function startRound(config, {
 
 module.exports = {
   MODE_FLOWS,
-  REQUIRED_DESIGN_SECTIONS,
-  REQUIRED_DESIGN_ITEMS,
   requiredDesignItems,
   designDocumentIssues,
-  sessionContract,
   normalizeSession,
   normalizeFlowSnapshot,
   resolveFlowSnapshot,

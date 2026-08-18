@@ -342,12 +342,6 @@ function registerIpc(ctx) {
       tiers: [{ id: 'auto', label: '自動（実行方針を継承）' }, ...tierNames],
       // 機能（ノード kind）・役割ごとの実行可能レベルと、オプションが宣言する下限
       kindTiers: flowTiers.catalog(),
-      // ノードが作るもの（面）と、面ごとに自動付与する作業ルールの対応
-      // 面の語彙はカタログ（同梱手法＋登録リポジトリの手法の when.surfaces 宣言）から導出する。
-      nodeSurfaces: adhoc.surfaceCatalog(cfg, { cwd }),
-      // 実装フローの終端へ標準装備する統合検証。内容（goal）はカタログが正典で、
-      // 引けない端末では null（renderer は標準装備を諦めるだけで固定文言へ落ちない）。
-      integrationVerify: adhoc.terminalVerification(cfg, { cwd }),
       cwdHistory: (cfg.adhocFlow && cfg.adhocFlow.cwdHistory) || [],
       methods,
       tuning: tuning.load(cfg),
@@ -578,12 +572,21 @@ function registerIpc(ctx) {
   handle('preparation:create', (payload) => {
     const cfg = loadConfig();
     const prepared = prepareDesignInput(cfg, payload || {});
-    const item = attachDesignSnapshot(preparation.createItem(prepared.input), prepared.snapshot);
+    const item = attachDesignSnapshot(preparation.createItem({
+      ...prepared.input, format: adhoc.designDocumentFormat(cfg, { cwd: prepared.input.cwd }),
+    }), prepared.snapshot);
     return { item: preparation.saveItem(cfg, item) };
   });
-  handle('preparation:recommend', (payload) => ({
-    recommendation: preparation.recommendRoute(payload || {}),
-  }));
+  handle('preparation:recommend', (payload) => {
+    const cfg = loadConfig();
+    const raw = payload && typeof payload === 'object' ? payload : {};
+    // 「実行できる設計書か」の書式は手法カタログが正典（対象フォルダの上書きも効く）。
+    return {
+      recommendation: preparation.recommendRoute({
+        ...raw, format: adhoc.designDocumentFormat(cfg, { cwd: raw.cwd }),
+      }),
+    };
+  });
   handle('preparation:get', ({ id } = {}) => ({
     item: preparation.getItem(loadConfig(), String(id || '')),
   }));
@@ -601,6 +604,7 @@ function registerIpc(ctx) {
       }) : [];
     const packageInput = {
       ...packageDefault.input,
+      format: adhoc.designDocumentFormat(cfg, { cwd: packageDefault.input.projectDir }),
       candidates: candidates.map((candidate) => candidate.input),
     };
     const package_ = preparation.createPackage(packageInput);
@@ -654,7 +658,8 @@ function registerIpc(ctx) {
     if (!item || !item.design || !item.design.sessionId) throw new Error('設計セッションがありません');
     const session = designSession.getSession(cfg, item.design.sessionId);
     const sessionDocument = String(session.document || '').trim();
-    const complete = preparation.isCompleteDesignDocument(sessionDocument);
+    const complete = preparation.isCompleteDesignDocument(sessionDocument,
+      adhoc.designDocumentFormat(cfg, { cwd: item.cwd }));
     const previousDocument = String(item.design.document || '').trim();
     const successful = session.runStatus === 'done' && !String(session.error || '').trim() && complete;
     const next = {
@@ -681,13 +686,16 @@ function registerIpc(ctx) {
       sessionId: session.id,
       document: session.document,
       runIds: (session.rounds || []).map((round) => round.runId),
-    });
+    }, adhoc.designDocumentFormat(cfg, { cwd: item.cwd }));
     return { item: preparation.saveItem(cfg, next), session };
   });
   handle('preparation:handoff', ({ id, executionOverrides } = {}) => {
     const cfg = loadConfig();
     const item = preparation.getItem(cfg, String(id || ''));
-    if (!item || !preparation.canHandoff(item)) throw new Error('実装準備が完了していません');
+    const designFormat = adhoc.designDocumentFormat(cfg, { cwd: item && item.cwd });
+    if (!item || !preparation.canHandoff(item, designFormat)) {
+      throw new Error('実装準備が完了していません');
+    }
     if (item.target === 'project') {
       const taskSpec = item.taskSpec || {};
       const spec = {
@@ -697,7 +705,8 @@ function registerIpc(ctx) {
         task_acceptance_criteria: taskSpec.task_acceptance_criteria || taskSpec.acceptance,
       };
       const result = adhoc.promote(cfg, { projectDir: item.projectDir, spec });
-      const next = preparation.recordHandoff(item, { taskId: String(result && result.id || spec.id || item.id) });
+      const next = preparation.recordHandoff(item,
+        { taskId: String(result && result.id || spec.id || item.id) }, designFormat);
       return { item: preparation.saveItem(cfg, next), result };
     }
     const result = adhoc.submit(cfg, {
@@ -707,7 +716,7 @@ function registerIpc(ctx) {
       selection: { type: 'auto' },
       ...(executionOverrides ? { executionOverrides } : {}),
     });
-    const next = preparation.recordHandoff(item, { runId: result.runId });
+    const next = preparation.recordHandoff(item, { runId: result.runId }, designFormat);
     return { item: preparation.saveItem(cfg, next), result };
   });
 

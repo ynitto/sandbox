@@ -267,9 +267,6 @@ def granularity_directive(level: "str | None") -> str:
 # --------------------------------------------------------------------------
 SPLIT_POLICIES = ("behavior", "file")
 _DEFAULT_SPLIT_POLICY = "behavior"
-# 同梱の分割単位（エンジンの既定）。設定 split_policies が名前→指示文を追加でき、
-# 同名（behavior / file）はプロジェクト側の指示文で上書きできる。エンジンが持つのは
-# 「名前で選び、指示文を planner へ後置する」という規則だけで、指示の内容は差し替え可能。
 SPLIT_POLICY_DIRECTIVES = {
     "behavior": (
         "分割の単位: 利用者から見える 1 つの振る舞いを 1 ノードにすること。UI を持つ"
@@ -287,44 +284,15 @@ SPLIT_POLICY_DIRECTIVES = {
 }
 
 
-_CUSTOM_SPLIT_POLICIES: "dict[str, str]" = {}
-
-
-def _normalize_split_policies(raw) -> "dict[str, str]":
-    """設定 split_policies（{名前: planner 指示文}）の正規化。壊れた項目は黙って捨てる。"""
-    out: "dict[str, str]" = {}
-    if not isinstance(raw, dict):
-        return out
-    for key, value in raw.items():
-        name = str(key or "").strip().lower()
-        directive = str(value or "").strip()
-        if name and directive:
-            out[name] = directive
-    return out
-
-
-def configure_split_policies(raw) -> None:
-    """設定（resolve_config 済み）のカスタム分割単位をモジュール変数へ確定させる。
-    split_policy / split_policy_directive は args を受け取らないため、_configure_thresholds と
-    同じ流儀でプロセス起動時に一度だけ固定する。"""
-    global _CUSTOM_SPLIT_POLICIES
-    _CUSTOM_SPLIT_POLICIES = _normalize_split_policies(raw)
-
-
-def split_policy_directives() -> "dict[str, str]":
-    """選べる分割単位（同梱＋設定宣言。同名は設定が勝つ）。"""
-    return {**SPLIT_POLICY_DIRECTIVES, **_CUSTOM_SPLIT_POLICIES}
-
-
 def split_policy(policy: "str | None") -> str:
     """分割単位の解決。未知値・未指定は既定（behavior）。"""
     value = str(policy or "").strip().lower()
-    return value if value in split_policy_directives() else _DEFAULT_SPLIT_POLICY
+    return value if value in SPLIT_POLICIES else _DEFAULT_SPLIT_POLICY
 
 
 def split_policy_directive(policy: "str | None") -> str:
     """プランナーへ渡す分割単位の指示。"""
-    return split_policy_directives()[split_policy(policy)]
+    return SPLIT_POLICY_DIRECTIVES[split_policy(policy)]
 
 
 # auto は「flow-planner が complexity から導出する」という意味なので、flow-planner を通らない
@@ -425,40 +393,10 @@ REVIEW_LENSES = (
 )
 
 
-_CUSTOM_REVIEW_LENSES: "tuple[tuple[str, str, str], ...]" = ()
-
-
-def _normalize_review_lenses(raw) -> "tuple[tuple[str, str, str], ...]":
-    """設定 review_lenses（[{key, label, detail}]）の正規化。壊れた項目は黙って捨てる。"""
-    lenses = []
-    for entry in raw if isinstance(raw, (list, tuple)) else []:
-        if not isinstance(entry, dict):
-            continue
-        key = str(entry.get("key", "")).strip()
-        label = str(entry.get("label", "")).strip()
-        detail = str(entry.get("detail", "")).strip()
-        if key and label:
-            lenses.append((key, label, detail or label))
-    return tuple(lenses)
-
-
-def configure_review_lenses(raw) -> None:
-    """設定（resolve_config 済み）のレビュー観点をモジュール変数へ確定させる。
-    宣言があれば同梱 3 観点を**置き換える**（足すのではない——観点の総量は評価役の
-    プロンプト品質に効くため、構成はプロジェクトが決める）。空・不正は同梱のまま。"""
-    global _CUSTOM_REVIEW_LENSES
-    _CUSTOM_REVIEW_LENSES = _normalize_review_lenses(raw)
-
-
-def review_lenses() -> "tuple[tuple[str, str, str], ...]":
-    """評価役が使うレビュー観点（設定宣言があればそれ、無ければ同梱）。"""
-    return _CUSTOM_REVIEW_LENSES or REVIEW_LENSES
-
-
 def review_lens_directive() -> str:
     """評価役へ渡すレビュー観点の指示。観点ごとの所見を reason に残させる。"""
     lenses = "\n".join(f"{i + 1}. {label} — {detail}"
-                       for i, (_key, label, detail) in enumerate(review_lenses()))
+                       for i, (_key, label, detail) in enumerate(REVIEW_LENSES))
     return ("レビューの観点（レンズ）: 契約や完了条件の充足だけで判定せず、次の観点も順に"
             f"当てること。\n{lenses}\n"
             "reason には観点ごとに「何を見て、何が出たか（出なかったか）」を 1 行ずつ書くこと。"

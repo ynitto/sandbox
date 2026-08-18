@@ -33,13 +33,6 @@ const designContract = require('../../../base/main/design-contract');
 const SUBMITTER = 'agent-dashboard-adhoc';
 const NODE_KINDS = ['work', 'generate', 'classify', 'synthesize', 'verify', 'filter', 'judge',
   'reduce', 'split', 'map', 'human', 'extract', 'retrieve'];
-// ノードが触る面（surface）— 「何を作るか」ではなく「どの種類の成果物を触るか」の宣言。
-// 面ごとの作業ルールを plan 生成で自動付与する。エンジンが持つのは「手法が when.surfaces で
-// 面を宣言し、宣言された面がそのまま語彙になる」という規則だけで、面の一覧も面 → 手法の
-// 対応も固定で持たない。同梱の ui / test はカタログ（methods/）側の宣言で登録され、
-// リポジトリ（.agents/methods/）の手法は同じ宣言で面の追加・上書きができる。
-// 設計: docs/plans/2026-08-15-workflow-feature-improvement-proposals.md P1・P3
-const SURFACE_ID = /^[a-z0-9][a-z0-9_-]{0,39}$/;
 const EXECUTION_ROLES = ['planner', 'evaluator', 'worker', 'verify'];
 const WORKFLOW_PURPOSES = ['implementation', 'design'];
 const DESIGN_TERMINAL_KINDS = new Set(['work', 'synthesize']);
@@ -194,12 +187,6 @@ function normalizeWorkflow(raw, options = {}) {
     if (!id || !goal || (kind !== 'human' && !tier)) throw new Error('ノードには id・内容・tier が必要です');
     if (seen.has(id)) throw new Error(`ノード id が重複しています: ${id}`);
     seen.add(id);
-    // 面の語彙はカタログ由来で端末ごとに変わりうるため、ここでは形式だけを検査する。
-    // 実在（＝対応する作業ルールが引けること）は plan 生成がフェイルクローズで確かめる。
-    const surface = String((n && n.surface) || '').trim();
-    if (surface && !SURFACE_ID.test(surface)) {
-      throw new Error(`ノードが触る面が不正です: ${surface}`);
-    }
     const rawMethod = n.method && typeof n.method === 'object' ? n.method : null;
     const method = rawMethod && String(rawMethod.id || '').trim() && String(rawMethod.text || '').trim()
       ? {
@@ -219,7 +206,6 @@ function normalizeWorkflow(raw, options = {}) {
       x: Number.isFinite(Number(n.x)) ? Number(n.x) : 40,
       y: Number.isFinite(Number(n.y)) ? Number(n.y) : 40,
       ...(method && kind !== 'human' ? { method } : {}),
-      ...(surface && kind !== 'human' ? { surface } : {}),
       ...((kind === 'classify' && n.continuation === 'route')
         || (kind === 'verify' && n.continuation === 'retry')
         ? { continuation: n.continuation } : {}),
@@ -288,10 +274,6 @@ function normalizeWorkflow(raw, options = {}) {
       throw new Error('設計フローの全ノードが終了へ到達可能である必要があります');
     }
   }
-  // 設計フローは成果（設計書）の契約を定義側で宣言できる。無指定は既定契約
-  // （design-contract の必須節と必須項目）で、宣言があれば正規化して定義の一部として運ぶ。
-  const contract = purpose === 'design' && raw.contract
-    ? designContract.normalizeContract(raw.contract) : null;
   const now = new Date().toISOString();
   return {
     version: 2,
@@ -303,7 +285,6 @@ function normalizeWorkflow(raw, options = {}) {
     entry,
     exit,
     nodes,
-    ...(contract ? { contract } : {}),
     createdAt: String(raw.createdAt || now),
     updatedAt: String(raw.updatedAt || now),
   };
@@ -317,8 +298,6 @@ function workflowDefinition(raw) {
     version: workflow.version,
     purpose: workflow.purpose,
     libraryVisibility: workflow.libraryVisibility,
-    // 設計契約は成果（終端 goal と取り込み判定）を変えるため、定義＝digest の対象に含める。
-    ...(workflow.contract ? { contract: workflow.contract } : {}),
     entry: workflow.entry.map(String),
     exit: workflow.exit.map(String),
     nodes: workflow.nodes.map((node) => {
@@ -331,7 +310,6 @@ function workflowDefinition(raw) {
       if (node.tier) out.tier = String(node.tier);
       if (node.interaction && typeof node.interaction === 'object') out.interaction = node.interaction;
       if (node.method && typeof node.method === 'object') out.method = node.method;
-      if (node.surface) out.surface = String(node.surface);
       if (node.continuation) out.continuation = String(node.continuation);
       return out;
     }),
@@ -558,22 +536,28 @@ function normalizeNodeAssignments(config, clean, raw) {
 
 const DESIGN_NODE_CONTRACT = '設計runとして実行します。リポジトリは読み取り専用です。ファイルの変更、commit、pushは禁止です。';
 
-// 設計成果の指示文。既定契約（必須4節＋変更対象の強制レイヤー）はプロンプト上の約束と
-// 実行時に効く強制（CLI 引数・スキーマ検査・ゲート）を書き分けさせる（P5）。カスタム設計
-// フローが contract を宣言した場合は、その節・項目から同じ形の指示文を組む——指示（goal）と
-// 取り込み判定（design-contract）が常に同じ契約を見るように、契約から導出する。
-function designOutputContract(contract) {
-  const resolved = designContract.resolveContract(contract);
-  const items = resolved.items.map((item) => [
-    `「## ${item.section}」には「${item.label}」を明記してください。`,
-    item.hint ? `${item.hint}` : '',
-  ].filter(Boolean).join(''));
-  return [
-    `最終成果は設計書の全文です。次の${resolved.sections.length}節を必ず含めてください。`,
-    ...resolved.sections.map((section) => `## ${section}`),
-    ...items,
-    '未決事項があれば「## 質問」節を作り、推奨する答えとその理由を添えてください。',
-  ].join('\n');
+// 設計成果の書式は手法カタログ `design-document-format` が正典。設計 run への指示
+// （fragments の worker 本文）と、実装へ渡す前のゲートが数える構造（format）を同じ 1 件から
+// 引く——指示と判定が別々に育つと「指示どおり書いたのに弾かれる」が起きる。
+function designDocumentMethod(config, options = {}) {
+  return availableMethods(config, options)
+    .find((item) => String(item && item.id) === designContract.FORMAT_METHOD_ID) || null;
+}
+
+// ゲートが数える構造。宣言が無ければ null（呼び手はフェイルクローズで不足として扱う）。
+function designDocumentFormat(config, options = {}) {
+  try {
+    return designContract.readFormat(designDocumentMethod(config, options));
+  } catch {
+    // 壊れた宣言は「書式が無い」と同じ扱い。黙って既定へ落とすと、直したつもりの書式で
+    // 走り続けることになる。
+    return null;
+  }
+}
+
+// 設計 run の終端 goal へ複製する指示文。
+function designDocumentInstruction(config, options = {}) {
+  return methodWorkerText(designDocumentMethod(config, options));
 }
 
 // 手法の worker 向け本文（ルールとして goal へ複製できるテキスト）。
@@ -584,80 +568,15 @@ function methodWorkerText(method) {
     .map((fragment) => String(fragment.text).trim()).join('\n');
 }
 
-// 手法が宣言する面（when.surfaces）。"ui" のような id だけの宣言と、
-// { id, label } の表示名つき宣言の両方を受ける。
-function methodSurfaceEntries(method) {
-  const raw = method && method.when && Array.isArray(method.when.surfaces) ? method.when.surfaces : [];
-  return raw.map((entry) => {
-    if (typeof entry === 'string') return { id: entry.trim(), label: '' };
-    if (entry && typeof entry === 'object') {
-      return { id: String(entry.id || '').trim(), label: String(entry.label || '').trim() };
-    }
-    return { id: '', label: '' };
-  }).filter((entry) => SURFACE_ID.test(entry.id));
-}
-
-// 面の語彙: カタログ・端末共通設定・登録リポジトリの手法が宣言した面を集めたもの。
-// { <surface>: { label, methods: [<method id>...] } }
-function surfaceCatalog(config, options = {}) {
-  const out = {};
-  for (const method of availableMethods(config, options)) {
-    if (!method || !method.id) continue;
-    for (const { id, label } of methodSurfaceEntries(method)) {
-      const entry = out[id] || (out[id] = { label: '', methods: [] });
-      if (!entry.methods.includes(String(method.id))) entry.methods.push(String(method.id));
-      if (label && !entry.label) entry.label = label;
-    }
-  }
-  for (const [id, entry] of Object.entries(out)) if (!entry.label) entry.label = id;
-  return out;
-}
-
-// 面（surface）ごとの作業ルール。面の語彙と対応はカタログの宣言（when.surfaces）が正典で、
-// ここでは引くだけ。カタログに無い＝ルールを黙って外して走らせない（フェイルクローズ）。
-function surfaceRules(config, surface, options = {}) {
-  const id = String(surface || '').trim();
-  const spec = surfaceCatalog(config, options)[id];
-  if (!spec) throw new Error(`ノードが触る面が不正です: ${id}（作業ルールの宣言がありません）`);
-  // 複製の作法（source に取得元と hash を残す）は手法スナップショットと同じ 1 実装を通す。
-  const rules = (methodsSnapshot(config, spec.methods, options) || [])
-    .map((method) => ({ method, text: methodWorkerText(method) }))
-    .filter((item) => item.text)
-    .map(({ method, text }) => ({
-      id: String(method.id),
-      description: String(method.description || method.id),
-      role: 'worker',
-      text,
-      source: String(method.source || `methods/${method.id}`),
-    }));
-  if (!rules.length) throw new Error(`作業ルールが見つかりません: ${spec.methods.join('、')}（${spec.label}）`);
-  return rules;
-}
-
-// 実装フローの終端に置く統合検証の内容。ノードの形（verify + retry）はエンジンの規則、
-// 検証の振る舞い（goal 本文）はカタログ（methods/integration-verify.json）が正典で、
-// リポジトリの .agents/methods/ が同 id で上書きできる。カタログから引けなければ null
-// （呼び手は標準装備を諦める——固定文言のフォールバックで正典を二重化しない）。
-const TERMINAL_VERIFICATION_METHOD = 'integration-verify';
-function terminalVerification(config, options = {}) {
-  const method = availableMethods(config, options)
-    .find((item) => String(item && item.id) === TERMINAL_VERIFICATION_METHOD);
-  const text = methodWorkerText(method);
-  if (!text) return null;
-  return {
-    id: TERMINAL_VERIFICATION_METHOD,
-    label: String((method && method.description) || '統合検証'),
-    kind: 'verify',
-    continuation: 'retry',
-    goal: text,
-  };
-}
-
 function planFromWorkflow(config, workflow, options = {}) {
   const clean = normalizeWorkflow(workflow, { purpose: options.purpose });
   const purpose = options.purpose || clean.purpose;
   const executionContract = purpose === 'design' ? { readonly: true } : {};
   const assignments = normalizeNodeAssignments(config, clean, options.nodeAssignments);
+  // 設計 run の終端へ複製する書式の指示。カタログに宣言が無ければ足さない
+  // （固定文言のフォールバックを置くと、書式を差し替えても古い指示が残る）。
+  const designInstruction = purpose === 'design'
+    ? designDocumentInstruction(config, { cwd: options.cwd }) : '';
   const candidates = new Map();
   const strategy = flowStrategy(config);
   const resolveCandidate = (tier) => {
@@ -668,19 +587,15 @@ function planFromWorkflow(config, workflow, options = {}) {
     if (n.kind === 'human') {
       return { id: n.id, goal: n.goal, kind: n.kind, deps: n.deps, interaction: n.interaction };
     }
-    // 面（surface）の作業ルールは、人が選んだ実行手法と同じ形で goal へ複製する
-    // （実行時にカタログを読み直さない＝保存済み run の振る舞いが後から変わらない）。
-    const rules = n.surface ? surfaceRules(config, n.surface, { cwd: options.cwd }) : [];
     const baseGoal = [
       n.goal,
       n.method ? `実行手法「${n.method.description || n.method.id}」:\n${n.method.text}` : '',
-      ...rules.map((rule) => `作業ルール「${rule.description}」:\n${rule.text}`),
     ].filter(Boolean).join('\n\n');
     const goal = purpose === 'design'
       ? `${baseGoal}\n\n${DESIGN_NODE_CONTRACT}`
       : baseGoal;
-    const terminalGoal = purpose === 'design' && clean.exit.includes(n.id)
-      ? `${goal}\n\n${designOutputContract(clean.contract)}`
+    const terminalGoal = purpose === 'design' && clean.exit.includes(n.id) && designInstruction
+      ? `${goal}\n\n${designInstruction}`
       : goal;
     const assigned = assignments[n.id];
     if (assigned) {
@@ -1305,10 +1220,8 @@ module.exports = {
   planFromPreset,
   availableMethods,
   methodsSnapshot,
-  surfaceCatalog,
-  surfaceRules,
-  terminalVerification,
-  designOutputContract,
+  designDocumentFormat,
+  designDocumentInstruction,
   writeRunTuning,
   runTuningDir,
   buildLaunchLine,

@@ -10,6 +10,10 @@ const adhoc = require('../src/features/adhoc-flow/main/adhoc');
 const designSession = require('../src/features/adhoc-flow/main/design-session');
 const preparationIpc = require('../src/features/adhoc-flow/main/ipc');
 
+// 設計書の書式は手法カタログ（design-document-format）が正典。アプリでは ipc が引いて
+// 渡すので、テストも同じ同梱書式を使う。
+const designFormat = adhoc.designDocumentFormat({});
+
 // 設計 run の成果は必須4節に加えて「変更対象の強制レイヤー」まで要る
 // （文言でしか守られていない契約を実装 run へ渡さないため）。
 const completeDesignDocument = [
@@ -42,7 +46,7 @@ function designFlowSnapshot(overrides = {}) {
 }
 
 test('情報が不足した要望にはエージェント設計を推奨する', () => {
-  const recommendation = preparation.recommendRoute({ goal: 'CSV対応を改善したい' });
+  const recommendation = preparation.recommendRoute({ goal: 'CSV対応を改善したい', format: designFormat });
   assert.strictEqual(recommendation.route, 'agent-design');
 });
 
@@ -52,13 +56,14 @@ test('実装に必要な節が揃った要望は直接実装を推奨する', ()
     '## 変更対象\nsrc/csv.js',
     '## 受入基準\nUTF-8とShift_JISを読める',
     '## 検証方法\nnpm test',
-  ].join('\n\n') });
+  ].join('\n\n'), format: designFormat });
   assert.strictEqual(recommendation.route, 'direct');
 });
 
 test('完成済み設計書が材料にあれば外部設計の利用を推奨する', () => {
   const recommendation = preparation.recommendRoute({
     goal: 'CSV対応を改善したい',
+    format: designFormat,
     materials: [{ kind: 'document', name: 'design.md', content: [
       '# 設計', '## 目的\nCSV対応', '## 対象\nsrc/csv.js',
       '## 完了条件\n2種類の文字コードを読める', '## テスト方法\nnpm test',
@@ -274,7 +279,7 @@ test('不完全な再設計成果は旧成果を保持するがhandoffへ進め�
   const originalGetSession = designSession.getSession;
   const valid = preparation.completeDesign(preparation.createItem({
     id: 'prep-retain', title: '旧成果を保持', goal: '設計する', route: 'agent-design',
-  }), { sessionId: 'ds-old', document: completeDesignDocument, runIds: ['run-old'] });
+  }), { sessionId: 'ds-old', document: completeDesignDocument, runIds: ['run-old'] }, designFormat);
   const designing = preparation.startDesign(valid, { sessionId: 'ds-new', runId: 'run-new' });
   preparation.saveItem(config, designing);
   designSession.getSession = () => ({
@@ -291,7 +296,7 @@ test('不完全な再設計成果は旧成果を保持するがhandoffへ進め�
     const synced = handlers['preparation:syncDesign']({ id: designing.id }).item;
     assert.strictEqual(synced.design.document, completeDesignDocument);
     assert.strictEqual(synced.phase, 'designing');
-    assert.strictEqual(preparation.canHandoff(synced), false);
+    assert.strictEqual(preparation.canHandoff(synced, designFormat), false);
     assert.throws(() => handlers['preparation:completeDesign']({ id: designing.id }), /完了できません/);
   } finally {
     designSession.getSession = originalGetSession;
@@ -312,7 +317,7 @@ test('推奨が設計でも利用者は直接実装を選べる', () => {
 
 test('プロジェクト分解は候補ごとに準備経路を判定する', () => {
   const package_ = preparation.createPackage({
-    projectDir: '/projects/csv', goal: 'CSV改善を分解する',
+    projectDir: '/projects/csv', goal: 'CSV改善を分解する', format: designFormat,
     materials: [{ id: 'master', kind: 'master', name: 'charter.md', content: '共通制約' }],
     candidates: [
       { title: '文字コード対応', goal: '文字コード対応を改善する' },
@@ -337,10 +342,10 @@ test('エージェント設計の成果を実装材料へ追加して実装可�
   });
   const completed = preparation.completeDesign(item, {
     sessionId: 'ds-1', document: completeDesignDocument, runIds: ['design-run-1'],
-  });
+  }, designFormat);
   assert.deepStrictEqual({
     phase: completed.phase,
-    canHandoff: preparation.canHandoff(completed),
+    canHandoff: preparation.canHandoff(completed, designFormat),
     design: completed.design,
     material: completed.materials.at(-1),
   }, {
@@ -414,8 +419,8 @@ test('別々の設計runと実装runを同じ仕事の履歴として保持す�
   const designing = preparation.startDesign(draft, { sessionId: 'ds-1', runId: 'design-run-1' });
   const ready = preparation.completeDesign(designing, {
     sessionId: 'ds-1', document: completeDesignDocument, runIds: ['design-run-1'],
-  });
-  const implementing = preparation.recordHandoff(ready, { runId: 'implementation-run-1' });
+  }, designFormat);
+  const implementing = preparation.recordHandoff(ready, { runId: 'implementation-run-1' }, designFormat);
   assert.deepStrictEqual({ phase: implementing.phase, design: implementing.design.runIds,
     implementation: implementing.handoff.implementationRunIds }, {
     phase: 'implementing', design: ['design-run-1'], implementation: ['implementation-run-1'],
@@ -445,7 +450,7 @@ test('不正な準備・遷移・保存入力は境界で拒否する', () => {
   assert.throws(() => preparation.createPackage({ goal: 'x', candidates: [{}] }), /プロジェクト/);
   assert.throws(() => preparation.createPackage({ projectDir: '/p', candidates: [{}] }), /やりたいこと/);
   assert.throws(() => preparation.createPackage({ projectDir: '/p', goal: 'x' }), /候補/);
-  assert.strictEqual(preparation.canHandoff(null), false);
+  assert.strictEqual(preparation.canHandoff(null, designFormat), false);
   assert.throws(() => preparation.completeDesign(null, {}), /エージェント設計/);
   assert.throws(() => preparation.completeDesign(preparation.createItem({
     title: '直接', goal: 'x', route: 'direct',
@@ -455,9 +460,9 @@ test('不正な準備・遷移・保存入力は境界で拒否する', () => {
   assert.throws(() => preparation.startDesign(null, {}), /設計run/);
   assert.throws(() => preparation.startDesign(designItem, {}), /セッションとrun ID/);
   assert.throws(() => preparation.recordHandoff(designItem, {}), /実装準備/);
-  const ready = preparation.completeDesign(designItem, { document: completeDesignDocument });
-  assert.throws(() => preparation.recordHandoff(ready, {}), /実装先のID/);
-  const queued = preparation.recordHandoff(ready, { taskId: 'task-1' });
+  const ready = preparation.completeDesign(designItem, { document: completeDesignDocument }, designFormat);
+  assert.throws(() => preparation.recordHandoff(ready, {}, designFormat), /実装先のID/);
+  const queued = preparation.recordHandoff(ready, { taskId: 'task-1' }, designFormat);
   assert.deepStrictEqual({ phase: queued.phase, taskId: queued.handoff.taskId },
     { phase: 'queued', taskId: 'task-1' });
   assert.throws(() => preparation.saveItem({ preparationDir: '/tmp' }, null), /項目が不正/);
@@ -470,17 +475,17 @@ test('不完全な設計結果はcompleteDesignで拒否し、実装待ちへ移
   const before = JSON.parse(JSON.stringify(item));
   assert.throws(() => preparation.completeDesign(item, {
     sessionId: 'ds-incomplete', document: '## 目的\n目的だけです', runIds: ['run-incomplete'],
-  }), /必須|検証方法/);
+  }, designFormat), /必須|検証方法/);
   assert.deepStrictEqual(item, before);
   assert.strictEqual(item.phase, 'design-ready');
-  assert.strictEqual(preparation.canHandoff(item), false);
+  assert.strictEqual(preparation.canHandoff(item, designFormat), false);
   const forgedReady = {
     ...item,
     phase: 'implementation-ready',
     design: { ...item.design, document: '## 目的\n目的だけです' },
   };
-  assert.strictEqual(preparation.canHandoff(forgedReady), false);
-  assert.throws(() => preparation.recordHandoff(forgedReady, { runId: 'run-forged' }), /実装準備/);
+  assert.strictEqual(preparation.canHandoff(forgedReady, designFormat), false);
+  assert.throws(() => preparation.recordHandoff(forgedReady, { runId: 'run-forged' }, designFormat), /実装準備/);
 });
 
 test('保存一覧は未作成・欠損・壊れたファイルを安全に扱う', () => {

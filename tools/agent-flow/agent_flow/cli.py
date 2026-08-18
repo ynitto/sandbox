@@ -65,10 +65,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="タスク分解の細かさ（設定 granularity と同義）。auto=complexityから導出（既定）/ "
                         "coarse|fine|finest=明示優先。細かいほど小さなタスクに多く分解する")
     p.add_argument("--split-policy", dest="split_policy", default=None,
+                   choices=["behavior", "file"],
                    help="タスク分割の単位（設定 split_policy と同義）。behavior=利用者から見える"
                         "振る舞いを 1 ノードが縦に持つ（既定）/ file=ファイル境界で水平に分割する"
-                        "（衝突回避が要る大規模変更向け）。設定 split_policies で宣言した"
-                        "カスタム名も選べる（未知の名前は既定 behavior に落ちる）")
+                        "（衝突回避が要る大規模変更向け）")
     p.add_argument("--exemplar-first", dest="exemplar_first", action="store_const", const=True,
                    default=None,
                    help="map-reduce の fan-out を見本先行にする（設定 exemplar_first と同義）。"
@@ -292,9 +292,6 @@ def main() -> int:
     resolve_config(args)
     # args を持たない free 関数（run_agent 等）が読む閾値をモジュール変数へ確定させる
     _configure_thresholds(args)
-    # 計画・評価のカスタマイズ（分割単位の追加・レビュー観点の差し替え）も同じ流儀で固定する
-    configure_split_policies(getattr(args, "split_policies", None))
-    configure_review_lenses(getattr(args, "review_lenses", None))
     # ワークスペース clone の削除を二重化（main の finally に加え、想定外の早期 exit でも回収）
     atexit.register(cleanup_workspace)
     # 子プロセスから渡る空文字の --model_opt は「モデル指定なし」を意味する

@@ -100,13 +100,6 @@ CONFIG_DEFAULTS = {
     # 1 ノードが縦に持つ（既定）/ file=ファイル境界の水平分割（衝突回避が要る大規模変更の
     # 明示オプション）。設計: docs/plans/2026-08-15-workflow-feature-improvement-proposals.md P2
     "split_policy": "behavior",
-    # 追加の分割単位（yaml 専用）。{名前: planner へ渡す指示文} を宣言すると --split-policy /
-    # split_policy でその名前を選べる。同名（behavior / file）は同梱の指示文を上書きする。
-    "split_policies": {},
-    # レビュー観点の差し替え（yaml 専用）。[{key, label, detail}] を宣言すると評価役の
-    # 観点（同梱: 二重実装・表現差異・文言量）を置き換える。空・不正は同梱のまま。
-    # 設計: docs/plans/2026-08-15-workflow-feature-improvement-proposals.md P4
-    "review_lenses": [],
     # 計画承認ゲート（オプトイン・既定 off）。true で planner が作った計画の実行前に human
     # 承認ノード（plan-gate）を挿し、人の承認（approved）まで何も実行しない。差し戻し
     # （rejected＋コメント）は指摘を planner へ渡して再計画する（max_retries で有界）。

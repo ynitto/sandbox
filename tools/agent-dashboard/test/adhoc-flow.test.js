@@ -29,13 +29,6 @@ const actions = require('../src/features/agent-project/main/actions');
 const projectEngine = require('../src/features/agent-project/main/engine');
 const workflowUi = require('../src/renderer/features/adhoc-flow');
 
-// 統合検証の内容は main がカタログ（methods/integration-verify.json）から解決し、
-// renderer は overview 経由で受け取る。テストもアプリと同じ経路（実カタログ→spec→表示）を通す。
-workflowUi._state.overview = {
-  ...(workflowUi._state.overview || {}),
-  integrationVerify: adhoc.terminalVerification({}),
-};
-
 function tmpdir(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 }
@@ -1064,14 +1057,14 @@ test('複数工程の雛形を既存ノードの後へ接続済みで追加す�
   assert.deepStrictEqual(workflow.exit, [], '追加した末端を明示的に終了へつなぐまで未完了にする');
 });
 
-test('雛形カードは分岐を含む接続例を左から表す（終端の統合検証まで含む）', () => {
+test('雛形カードは分岐を含む接続例を左から表す', () => {
   const columns = workflowUi.patternColumns({ template: { nodes: [
     { id: 'draft-a', kind: 'generate', deps: [] },
     { id: 'draft-b', kind: 'generate', deps: [] },
     { id: 'pick', kind: 'judge', deps: ['draft-a', 'draft-b'] },
   ] } });
   assert.deepStrictEqual(columns, [
-    ['開始'], ['生成', '生成'], ['判定'], ['検証'], ['終了'],
+    ['開始'], ['生成', '生成'], ['判定'], ['終了'],
   ]);
 });
 
@@ -1161,19 +1154,18 @@ test('雛形カードと編集開始時は同じノード構成を使う', () =>
     { id: 'c', kind: 'work', deps: [] }, { id: 'd', kind: 'work', deps: [] },
     { id: 'join', kind: 'synthesize', deps: ['a', 'b', 'c', 'd'] },
   ] } };
-  const workflow = workflowUi.templateWorkflow(pattern, 'small');
+  const workflow = workflowUi.workflowFromPattern(pattern, 'small');
   assert.strictEqual(workflow.nodes.filter((node) => node.kind === 'work').length, 3,
     'カードに表示する三並列と編集開始時の実ノード数を揃える');
   assert.deepStrictEqual(workflowUi.patternColumns(pattern),
     workflowUi.workflowColumns(workflowUi.visualWorkflow(workflow)));
   assert.deepStrictEqual(workflowUi.patternColumns(pattern),
-    [['開始'], ['作業', '作業', '作業'], ['統合'], ['検証'], ['終了']]);
+    [['開始'], ['作業', '作業', '作業'], ['統合'], ['終了']]);
 });
 
 test('実行時に増える工程もカードと編集画面の両方へ同じ読み取り専用ノードで示す', () => {
   const mapPattern = { id: 'map-reduce', template: { nodes: [{ id: 'split', kind: 'split', deps: [] }] } };
-  const mapVisual = workflowUi.visualWorkflow(workflowUi.templateWorkflow(mapPattern, 'small'));
-  // 分割の後段は実行時に展開されるため、統合検証は静的には足さない
+  const mapVisual = workflowUi.visualWorkflow(workflowUi.workflowFromPattern(mapPattern, 'small'));
   assert.deepStrictEqual(workflowUi.patternColumns(mapPattern),
     [['開始'], ['分割'], ['個別処理', '個別処理', '個別処理'], ['集約'], ['終了']]);
   assert.strictEqual(mapVisual.nodes.filter((node) => node.runtime).length, 4);
@@ -1182,9 +1174,9 @@ test('実行時に増える工程もカードと編集画面の両方へ同じ�
   const routePattern = {
     id: 'classify-and-act', template: { nodes: [{ id: 'classify', kind: 'classify', deps: [] }] },
   };
-  const routeVisual = workflowUi.visualWorkflow(workflowUi.templateWorkflow(routePattern, 'small'));
+  const routeVisual = workflowUi.visualWorkflow(workflowUi.workflowFromPattern(routePattern, 'small'));
   assert.deepStrictEqual(workflowUi.patternColumns(routePattern),
-    [['開始'], ['分類'], ['作業'], ['検証'], ['終了']]);
+    [['開始'], ['分類'], ['作業'], ['終了']]);
   assert.strictEqual(routeVisual.nodes.find((node) => node.runtime).label, '専門作業');
 });
 
@@ -2367,8 +2359,11 @@ test('promote はエンジンが担当していないフォルダを拒否する
 // --- ワークフロー機能の改善（2026-08-15 改善提案 P1・P3・P5・P6） ---------------
 // 設計: docs/plans/2026-08-15-workflow-feature-improvement-proposals.md
 
-test('実装フローの雛形は終端へ統合検証（未完了なら修正して再検証）を既定で備える', () => {
-  const template = workflowUi.templateWorkflow({
+test('雛形は標準パターンの工程だけを複製し、検証工程を勝手に足さない', () => {
+  // ワークフローは作業フローの型。成果物に特化した工程（統合検証）を画面が足すと、
+  // 型が特定の作り方へ寄る。終端検証の中身は作業ルール（methods/integration-verify）が
+  // 実行時に verify ノードへ足し、完了条件は agent-flow の終端検証が決める。
+  const template = workflowUi.workflowFromPattern({
     id: 'fan-out-and-synthesize',
     template: { nodes: [
       { id: 'a', kind: 'work', deps: [] },
@@ -2376,53 +2371,8 @@ test('実装フローの雛形は終端へ統合検証（未完了なら修正�
       { id: 'join', kind: 'synthesize', deps: ['a', 'b'] },
     ] },
   }, 'medium', 'implementation');
-  const verify = template.nodes[template.nodes.length - 1];
-  assert.strictEqual(verify.kind, 'verify');
-  assert.strictEqual(verify.continuation, 'retry');
-  assert.deepStrictEqual(verify.deps, ['join'], '並列作業をまとめた後の終端へ付く');
-  assert.deepStrictEqual(template.exit, [verify.id]);
-  assert.match(verify.goal, /テストスイート全体/);
-  assert.match(verify.goal, /CI と同じ系統/);
-  // 雛形は main の契約（正規化・plan 生成）をそのまま通る形であること
-  const plan = (() => {
-    const original = profiles.resolveTier;
-    profiles.resolveTier = () => ({ agent_cli: 'claude', model: '' });
-    try {
-      return adhoc.planFromWorkflow({}, adhoc.normalizeWorkflow({ ...template, name: '雛形' }));
-    } finally {
-      profiles.resolveTier = original;
-    }
-  })();
-  assert.strictEqual(plan.evaluate, true, '再検証は評価役の継続判断で回る');
-});
-
-test('設計フローと分割フローには統合検証を足さない', () => {
-  const design = workflowUi.templateWorkflow({
-    id: 'design-interactive', purpose: 'design',
-    template: { nodes: [{ id: 'draft', kind: 'work', deps: [] }] },
-  }, 'medium', 'design');
-  assert.deepStrictEqual(design.nodes.map((node) => node.kind), ['work']);
-  const split = workflowUi.templateWorkflow({
-    id: 'map-reduce', template: { nodes: [{ id: 'split1', kind: 'split', deps: [] }] },
-  }, 'medium', 'implementation');
-  assert.deepStrictEqual(split.nodes.map((node) => node.kind), ['split']);
-});
-
-test('既に終端が再検証つき検証の実装フローへは統合検証を重ねない', () => {
-  const workflow = {
-    version: 2, purpose: 'implementation', entry: ['work'], exit: ['check'],
-    nodes: [
-      { id: 'work', kind: 'work', tier: 'medium', deps: [], x: 300, y: 70 },
-      { id: 'check', kind: 'verify', continuation: 'retry', tier: 'medium', deps: ['work'], x: 570, y: 70 },
-    ],
-  };
-  assert.strictEqual(workflowUi.withIntegrationVerify(workflow, adhoc.terminalVerification({})), workflow);
-  // spec（カタログの内容）が無い端末では固定文言へ落ちず、標準装備を諦める
-  const bare = {
-    version: 2, purpose: 'implementation', entry: ['work'], exit: ['work'],
-    nodes: [{ id: 'work', kind: 'work', tier: 'medium', deps: [], x: 300, y: 70 }],
-  };
-  assert.strictEqual(workflowUi.withIntegrationVerify(bare, null), bare);
+  assert.deepStrictEqual(template.nodes.map((node) => node.kind), ['work', 'work', 'synthesize']);
+  assert.deepStrictEqual(template.exit, ['join']);
 });
 
 test('run の完了条件は全ノード done ではなく終端の統合検証が緑であること', () => {
@@ -2476,153 +2426,29 @@ test('公開後の CI 結果は公開レコードと同じ器から読み、赤�
   assert.strictEqual(workflowUi.ciPresentation({ status: 'done', nodes: {} }).state, 'none');
 });
 
-test('ノードが作るものを宣言すると、その作業ルールが plan の goal へ複製される', () => {
-  const original = profiles.resolveTier;
-  profiles.resolveTier = () => ({ agent_cli: 'claude', model: '' });
-  try {
-    const plan = adhoc.planFromWorkflow({}, adhoc.normalizeWorkflow({
-      name: '面つき',
-      nodes: [
-        { id: 'screen', goal: '一覧画面を追加する', tier: 'medium', surface: 'ui' },
-        { id: 'test', goal: 'テストを足す', tier: 'medium', deps: ['screen'], surface: 'test' },
-        { id: 'other', goal: '設定を書く', tier: 'medium', deps: ['test'] },
-      ],
-    }));
-    assert.match(plan.nodes[0].goal, /同じ用途の既存 UI/);
-    assert.match(plan.nodes[0].goal, /内部語彙/);
-    assert.match(plan.nodes[1].goal, /単独で実行/);
-    assert.doesNotMatch(plan.nodes[2].goal, /作業ルール/, '宣言していないノードへは付けない');
-    // 面はフロー定義（digest 対象）にも残り、後から解釈が変わらない
-    const definition = adhoc.workflowDefinition({
-      name: '面つき', nodes: [{ id: 'screen', goal: '一覧画面', tier: 'medium', surface: 'ui' }],
-    });
-    assert.strictEqual(definition.nodes[0].surface, 'ui');
-    // 語彙はカタログ由来で端末ごとに変わるため、正規化は形式だけを見る。
-    // カタログに宣言の無い面は plan 生成が弾く（フェイルクローズ）。
-    assert.throws(() => adhoc.normalizeWorkflow({
-      name: '不正な面', nodes: [{ id: 'x', goal: 'y', tier: 'medium', surface: '日本語の面' }],
-    }), /触る面が不正/);
-    const undeclared = adhoc.normalizeWorkflow({
-      name: '未宣言の面', nodes: [{ id: 'x', goal: 'y', tier: 'medium', surface: 'backend' }],
-    });
-    assert.strictEqual(undeclared.nodes[0].surface, 'backend', '保存は通す（別の端末の面かもしれない）');
-    assert.throws(() => adhoc.planFromWorkflow({}, undeclared), /触る面が不正/);
-  } finally {
-    profiles.resolveTier = original;
-  }
-});
-
-test('面の語彙と作業ルールの対応はカタログの宣言（when.surfaces）から導出する', () => {
-  const catalog = adhoc.surfaceCatalog({});
-  assert.deepStrictEqual(Object.keys(catalog).sort(), ['test', 'ui']);
-  assert.strictEqual(catalog.ui.label, '画面（UI）');
-  assert.deepStrictEqual(catalog.ui.methods, ['ui-consistency']);
-  assert.strictEqual(catalog.test.label, 'テスト');
-  const rules = adhoc.surfaceRules({}, 'ui');
-  assert.strictEqual(rules.length, 1);
-  assert.strictEqual(rules[0].id, 'ui-consistency');
-  assert.match(rules[0].source, /ui-consistency/);
-  // カタログに宣言が無ければ黙って外さず失敗する（フェイルクローズ）
-  assert.throws(() => adhoc.surfaceRules({ orchestration: { methodsDir: tmpdir('no-methods-') } }, 'ui'),
-    /触る面が不正/);
-});
-
-test('登録リポジトリの手法は面の追加と同 id 上書きができ、plan の goal へ効く', () => {
-  const repo = tmpdir('surface-repo-');
-  fs.mkdirSync(path.join(repo, '.git'));
-  const methodsDir = path.join(repo, '.agents', 'methods');
-  fs.mkdirSync(methodsDir, { recursive: true });
-  // 新しい面（docs）の宣言と、同梱 ui-consistency の同 id 上書き
-  fs.writeFileSync(path.join(methodsDir, 'docs-style.json'), `${JSON.stringify({
-    id: 'docs-style', description: '文書の書き方', enabled: false,
-    fragments: [{ role: 'worker', text: 'この文書は利用者の言葉で書き、内部名を出さないこと。' }],
-    when: { roles: ['worker'], surfaces: [{ id: 'docs', label: '文書' }] },
-  })}\n`);
-  fs.writeFileSync(path.join(methodsDir, 'ui-consistency.json'), `${JSON.stringify({
-    id: 'ui-consistency', description: 'このリポジトリの画面規約', enabled: false,
-    fragments: [{ role: 'worker', text: 'このリポジトリでは共有部品 ui-kit を必ず使うこと。' }],
-    when: { roles: ['worker'], surfaces: ['ui'] },
-  })}\n`);
-  const originalRoots = projectEngine.projectRoots;
-  const originalTier = profiles.resolveTier;
-  projectEngine.projectRoots = () => [repo];
-  profiles.resolveTier = () => ({ agent_cli: 'claude', model: '' });
-  try {
-    const catalog = adhoc.surfaceCatalog({}, { cwd: repo });
-    assert.deepStrictEqual(Object.keys(catalog).sort(), ['docs', 'test', 'ui']);
-    assert.strictEqual(catalog.docs.label, '文書');
-    const plan = adhoc.planFromWorkflow({}, adhoc.normalizeWorkflow({
-      name: 'リポジトリの面',
-      nodes: [
-        { id: 'doc', goal: 'READMEを直す', tier: 'medium', surface: 'docs' },
-        { id: 'screen', goal: '画面を直す', tier: 'medium', deps: ['doc'], surface: 'ui' },
-      ],
-    }), { cwd: repo });
-    assert.match(plan.nodes[0].goal, /内部名を出さない/);
-    assert.match(plan.nodes[1].goal, /ui-kit を必ず使う/, '同 id はリポジトリ宣言が勝つ');
-    // 未登録リポジトリの面は使えない（探索しない既存規則のまま）
-    projectEngine.projectRoots = () => [];
-    assert.throws(() => adhoc.surfaceRules({}, 'docs', { cwd: repo }), /触る面が不正/);
-  } finally {
-    projectEngine.projectRoots = originalRoots;
-    profiles.resolveTier = originalTier;
-    fs.rmSync(repo, { recursive: true, force: true });
-  }
-});
-
-test('統合検証の内容はカタログが正典で、リポジトリの同 id 上書きが効く', () => {
-  const spec = adhoc.terminalVerification({});
-  assert.strictEqual(spec.id, 'integration-verify');
-  assert.strictEqual(spec.kind, 'verify');
-  assert.strictEqual(spec.continuation, 'retry');
-  assert.match(spec.goal, /テストスイート全体/);
-  // カタログが無い端末では null（固定文言のフォールバックで正典を二重化しない）
-  assert.strictEqual(adhoc.terminalVerification({ orchestration: { methodsDir: tmpdir('no-iv-') } }), null);
-  // リポジトリ上書き
-  const repo = tmpdir('iv-repo-');
-  fs.mkdirSync(path.join(repo, '.git'));
-  const methodsDir = path.join(repo, '.agents', 'methods');
-  fs.mkdirSync(methodsDir, { recursive: true });
-  fs.writeFileSync(path.join(methodsDir, 'integration-verify.json'), `${JSON.stringify({
-    id: 'integration-verify', description: 'この repo の統合検証', enabled: false,
-    fragments: [{ role: 'worker', text: 'make check-all を実行して全部緑にすること。' }],
-    when: { roles: ['verify'] },
-  })}\n`);
-  const originalRoots = projectEngine.projectRoots;
-  projectEngine.projectRoots = () => [repo];
-  try {
-    const overridden = adhoc.terminalVerification({}, { cwd: repo });
-    assert.match(overridden.goal, /make check-all/);
-    assert.strictEqual(overridden.label, 'この repo の統合検証');
-  } finally {
-    projectEngine.projectRoots = originalRoots;
-    fs.rmSync(repo, { recursive: true, force: true });
-  }
-});
-
-test('設計成果の必須項目は節と節内の強制レイヤーの両方を数える', () => {
+test('設計書の書式は同梱手法が正典で、節と節内の必須項目を数える', () => {
+  const cfg = {};
   const complete = ['## 目的\nx', '## 変更対象\ny\n- 強制レイヤー: CLI 引数で強制',
     '## 受入基準\nz', '## 検証方法\nw'].join('\n\n');
-  assert.deepStrictEqual(design.designDocumentIssues(complete), []);
+  assert.deepStrictEqual(design.designDocumentIssues(cfg, complete), []);
   assert.deepStrictEqual(
-    design.designDocumentIssues(['## 目的\nx', '## 変更対象\ny', '## 受入基準\nz', '## 検証方法\nw'].join('\n\n')),
+    design.designDocumentIssues(cfg,
+      ['## 目的\nx', '## 変更対象\ny', '## 受入基準\nz', '## 検証方法\nw'].join('\n\n')),
     ['変更対象の強制レイヤー']);
-  assert.deepStrictEqual(design.designDocumentIssues('## 目的\nx'),
+  assert.deepStrictEqual(design.designDocumentIssues(cfg, '## 目的\nx'),
     ['変更対象', '受入基準', '検証方法']);
   // 節の切れ目を見る: 別の節に強制レイヤーがあっても変更対象の不足は消えない
-  assert.deepStrictEqual(design.designDocumentIssues(
+  assert.deepStrictEqual(design.designDocumentIssues(cfg,
     ['## 目的\nx', '## 変更対象\ny', '## 受入基準\n強制レイヤーを検査する', '## 検証方法\nw'].join('\n\n')),
   ['変更対象の強制レイヤー']);
+  // 書式が引けない端末は「書式が無い」を不足として見せる（黙って全部通さない）
+  assert.deepStrictEqual(
+    design.designDocumentIssues({ orchestration: { methodsDir: tmpdir('no-format-') } }, complete),
+    ['設計書の書式（design-document-format）が見つかりません']);
 });
 
-test('設計フローは強制レイヤーを設計書へ書かせる', () => {
+test('設計 run への指示は書式の手法から複製する', () => {
   const cfg = {};
-  for (const id of ['design-interactive', 'design-auto']) {
-    const workflow = adhoc.loadWorkflow(cfg, id, { purpose: 'design' });
-    assert.ok(workflow, `${id} を読めること`);
-    assert.ok(workflow.nodes.some((node) => node.goal.includes('強制レイヤー')),
-      `${id} のどこかで強制レイヤーを要求すること`);
-  }
   const plan = (() => {
     const original = profiles.resolveTier;
     profiles.resolveTier = () => ({ agent_cli: 'claude', model: '' });
@@ -2634,66 +2460,59 @@ test('設計フローは強制レイヤーを設計書へ書かせる', () => {
     }
   })();
   const terminal = plan.nodes[plan.nodes.length - 1];
-  assert.match(terminal.goal, /強制レイヤー/, '終端の出力契約でも強制レイヤーを要求する');
+  assert.match(terminal.goal, /## 受入基準/, '終端へ書式の指示を複製する');
+  assert.match(terminal.goal, /強制レイヤー/);
+  assert.ok(terminal.goal.includes(adhoc.designDocumentInstruction(cfg)));
 });
 
-test('カスタム設計フローは成果の契約（必須節・必須項目）を宣言でき、指示と判定が同じ契約を見る', () => {
-  const workflowDir = tmpdir('contract-flow-');
-  const cfg = { adhocFlow: { workflowDir, designSessionDir: tmpdir('contract-session-') } };
-  const contract = {
-    sections: ['背景', '移行手順', '切り戻し'],
-    items: [{ section: '移行手順', label: '停止時間', pattern: '停止時間', hint: '（例: 停止時間: なし）' }],
-  };
-  const saved = adhoc.saveWorkflow(cfg, {
-    version: 2, id: 'migration-design', name: '移行設計', purpose: 'design', contract,
-    entry: ['draft'], exit: ['draft'],
-    nodes: [{ id: 'draft', goal: '移行設計を書く', kind: 'work', tier: 'auto' }],
-  });
-  assert.deepStrictEqual(saved.contract.sections, ['背景', '移行手順', '切り戻し']);
-  // 終端 goal の指示文は宣言した契約から組む（既定4節ではない）
-  const original = profiles.resolveTier;
-  profiles.resolveTier = () => ({ agent_cli: 'claude', model: '' });
-  let plan;
-  try {
-    plan = adhoc.planFromWorkflow(cfg, adhoc.loadWorkflow(cfg, 'migration-design', { purpose: 'design' }),
-      { purpose: 'design' });
-  } finally {
-    profiles.resolveTier = original;
-  }
-  const goal = plan.nodes[plan.nodes.length - 1].goal;
-  assert.match(goal, /## 移行手順/);
-  assert.match(goal, /「停止時間」を明記/);
-  assert.doesNotMatch(goal, /## 受入基準/, '既定契約の節を混ぜない');
-  // 判定も同じ契約: 既定4節が揃っていても宣言した節が無ければ弾く
+test('リポジトリの手法は設計書の書式を丸ごと差し替える（指示と判定が同じ 1 件から決まる）', () => {
+  const repo = tmpdir('design-format-repo-');
+  fs.mkdirSync(path.join(repo, '.git'));
+  const methodsDir = path.join(repo, '.agents', 'methods');
+  fs.mkdirSync(methodsDir, { recursive: true });
+  fs.writeFileSync(path.join(methodsDir, 'design-document-format.json'), `${JSON.stringify({
+    id: 'design-document-format', description: 'この repo の設計書', enabled: false,
+    fragments: [{ role: 'worker', text: '## 背景 / ## 移行手順 / ## 切り戻し を書くこと。移行手順には停止時間を書く。' }],
+    when: { roles: ['worker'] },
+    format: {
+      sections: ['背景', '移行手順', '切り戻し'],
+      items: [{ section: '移行手順', label: '停止時間', pattern: '停止時間' }],
+    },
+  })}\n`);
   const designContract = require('../src/base/main/design-contract');
-  const defaultComplete = ['## 目的\nx', '## 変更対象\ny\n強制レイヤー: CLI', '## 受入基準\nz', '## 検証方法\nw'].join('\n\n');
-  assert.deepStrictEqual(designContract.documentIssues(defaultComplete, false, saved.contract),
-    ['背景', '移行手順', '切り戻し']);
-  const custom = ['## 背景\nx', '## 移行手順\n停止時間: なし', '## 切り戻し\nz'].join('\n\n');
-  assert.deepStrictEqual(designContract.documentIssues(custom, false, saved.contract), []);
-  assert.deepStrictEqual(designContract.documentIssues(
-    ['## 背景\nx', '## 移行手順\ny', '## 切り戻し\nz'].join('\n\n'), false, saved.contract),
-  ['移行手順の停止時間']);
-  // 壊れた宣言は保存時に弾く（宣言したつもりの契約が無検査で走らない）
-  assert.throws(() => adhoc.saveWorkflow(cfg, {
-    version: 2, id: 'broken-contract', name: '壊れた契約', purpose: 'design',
-    contract: { sections: ['a'], items: [{ section: 'b', label: 'x', pattern: '(' }] },
-    entry: ['draft'], exit: ['draft'],
-    nodes: [{ id: 'draft', goal: 'z', kind: 'work', tier: 'auto' }],
-  }), /設計契約/);
-  // 設計セッションの取り込みと作業準備の判定も snapshot の契約を使う
-  const snapshot = design.sessionContract({ flowSnapshot: { definition: { contract: saved.contract } } });
-  assert.deepStrictEqual(design.designDocumentIssues(custom, snapshot), []);
-  assert.deepStrictEqual(design.designDocumentIssues(defaultComplete, snapshot),
-    ['背景', '移行手順', '切り戻し']);
-  const preparation = require('../src/features/preparation/main/preparation');
-  const flowRef = { flow: { definition: { contract: saved.contract } } };
-  assert.strictEqual(preparation.isCompleteDesignDocument(custom, preparation.designFlowContract(flowRef)), true);
-  assert.strictEqual(preparation.isCompleteDesignDocument(defaultComplete, preparation.designFlowContract(flowRef)), false);
-  assert.strictEqual(preparation.isCompleteDesignDocument(defaultComplete, preparation.designFlowContract(null)), true,
-    '契約の宣言が無い項目は従来どおり既定契約で判定する');
+  const originalRoots = projectEngine.projectRoots;
+  const originalTier = profiles.resolveTier;
+  projectEngine.projectRoots = () => [repo];
+  profiles.resolveTier = () => ({ agent_cli: 'claude', model: '' });
+  try {
+    const format = adhoc.designDocumentFormat({}, { cwd: repo });
+    assert.deepStrictEqual(format.sections, ['背景', '移行手順', '切り戻し']);
+    // 判定: 同梱書式で完全な設計書でも、この repo では弾かれる
+    const defaultComplete = ['## 目的\nx', '## 変更対象\ny\n強制レイヤー: CLI',
+      '## 受入基準\nz', '## 検証方法\nw'].join('\n\n');
+    assert.deepStrictEqual(designContract.documentIssues(defaultComplete, format),
+      ['背景', '移行手順', '切り戻し']);
+    assert.deepStrictEqual(designContract.documentIssues(
+      ['## 背景\nx', '## 移行手順\n停止時間: なし', '## 切り戻し\nz'].join('\n\n'), format), []);
+    assert.deepStrictEqual(designContract.documentIssues(
+      ['## 背景\nx', '## 移行手順\ny', '## 切り戻し\nz'].join('\n\n'), format), ['移行手順の停止時間']);
+    // 指示: 設計 run の終端 goal も同じ 1 件から複製される
+    const plan = adhoc.planFromWorkflow({}, adhoc.loadWorkflow({}, 'design-auto', { purpose: 'design' }),
+      { purpose: 'design', cwd: repo });
+    assert.match(plan.nodes[plan.nodes.length - 1].goal, /## 切り戻し/);
+    // 壊れた宣言は「書式が無い」と同じ扱い（直したつもりの書式で走り続けない）
+    fs.writeFileSync(path.join(methodsDir, 'design-document-format.json'), `${JSON.stringify({
+      id: 'design-document-format', description: '壊れた書式', enabled: false,
+      fragments: [{ role: 'worker', text: 'x' }], when: { roles: ['worker'] },
+      format: { sections: ['a'], items: [{ section: 'b', label: 'x', pattern: '(' }] },
+    })}\n`);
+    assert.strictEqual(adhoc.designDocumentFormat({}, { cwd: repo }), null);
+  } finally {
+    projectEngine.projectRoots = originalRoots;
+    profiles.resolveTier = originalTier;
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
 });
-
 
 test('統合検証の判定は agent-flow が final へ書いた記録を正典にする', () => {
   const run = (verification) => ({
