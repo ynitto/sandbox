@@ -926,6 +926,47 @@ class PerTaskRuleTests(unittest.TestCase):
             self.assertNotIn("ui-consistency", note)
             self.assertIn('"methods":', note)
 
+    def test_catalog_excludes_rules_whose_tier_the_run_does_not_use(self):
+        # when.tiers を宣言した per-task ルールは、いま走っている実行 tier と合わなければ
+        # planner へ提示しない（合わない候補を見せてもどのみち選べないので、素直に落とす）。
+        d = self._tuning_dir_with([
+            {"id": "large-only", "description": "高性能限定の確認", "selection": "per-task",
+             "when": {"tiers": ["large"]}, "fragments": [{"role": "verify", "text": "x"}]},
+            {"id": "any-tier", "description": "tier を選ばない確認", "selection": "per-task",
+             "fragments": [{"role": "verify", "text": "y"}]},
+        ])
+        control_dir = tempfile.mkdtemp(prefix="kf-per-task-tier-")
+        self.addCleanup(shutil.rmtree, control_dir, True)
+        with open(os.path.join(control_dir, "control.json"), "w", encoding="utf-8") as f:
+            json.dump({"workloads": {"flow": {"tier": "basic"}}}, f)
+        with mock.patch.dict(os.environ, {"AGENT_TUNING_DIR": d, "AGENT_CONTROL_DIR": control_dir}):
+            catalog = kf._per_task_rule_catalog()
+            self.assertEqual(list(catalog.keys()), ["any-tier"])
+
+    def test_catalog_keeps_tier_scoped_rules_when_the_control_tier_is_unknown(self):
+        # agent-control 未導入（tier 宣言なし）の実行では、どの段が走るか判定材料が無い。
+        # 判定できないことを理由に候補を消さない（フェイルオープン）。
+        d = self._tuning_dir_with([
+            {"id": "large-only", "description": "高性能限定の確認", "selection": "per-task",
+             "when": {"tiers": ["large"]}, "fragments": [{"role": "verify", "text": "x"}]},
+        ])
+        with mock.patch.dict(os.environ, {"AGENT_TUNING_DIR": d,
+                                          "AGENT_CONTROL_DIR": os.path.join(tempfile.mkdtemp(), "no-such")}):
+            self.assertEqual(list(kf._per_task_rule_catalog().keys()), ["large-only"])
+
+    def test_catalog_does_not_reject_on_unknown_role_or_purpose_fields(self):
+        # roles/purposes/agent_cli/relative_cost は「どのノードが選ぶか」に依存するため、
+        # planner へ提示するこの時点では判定しない（node が確定してから role で絞る）。
+        # agentcore.methods.matches() をそのまま使うと when.roles 宣言だけで全滅するので、
+        # そうなっていないことを確認する。
+        d = self._tuning_dir_with([
+            {"id": "integration-verify", "description": "統合検証", "selection": "per-task",
+             "when": {"roles": ["verify"], "purposes": ["verify"], "max_relative_cost": 0},
+             "fragments": [{"role": "verify", "text": "x"}]},
+        ])
+        with mock.patch.dict(os.environ, {"AGENT_TUNING_DIR": d}):
+            self.assertEqual(list(kf._per_task_rule_catalog().keys()), ["integration-verify"])
+
     def test_coerce_tasks_duplicates_text_only_for_chosen_ids_and_matching_role(self):
         d = self._tuning_dir_with([
             {"id": "integration-verify", "description": "統合検証", "selection": "per-task",

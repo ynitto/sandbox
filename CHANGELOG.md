@@ -7,6 +7,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### ワークフロー機能: per-task カタログに tier の適格性フィルタを追加した
+
+`_per_task_rule_catalog()`（planner へ提示する per-task ルールの一覧）が `selection`
+だけで絞り込み、各ルールの `when.tiers` 等を見ていなかった不整合を直した。auto ルールは
+Python 側の注入時に必ず `when` を評価するのに、per-task はその評価を素通りしていた。
+新設した `_per_task_rule_eligible()` は run 全体の条件（engine/workload/現在の実行
+tier）だけを見る（role/purpose/agent_cli はどのノードが選ぶか次第なので、計画時点では
+判定せず選ばれた後の role 判定に委ねる）。
+
+契約検証: `tools/agent-flow/tests/test_planner.py::PerTaskRuleTests`
+
 ### ワークフロー機能: 工程ごとに選ぶルールを planner・評価役へ渡す配線を追加した
 
 「工程ごとに選ぶルール」（per-task）は、これまでダッシュボードの編集画面で人がノードを選んで

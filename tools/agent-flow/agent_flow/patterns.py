@@ -425,8 +425,33 @@ def review_lens_directive() -> str:
 # 空のまま——新しい設定キーは増やさない。
 # 設計: docs/plans/2026-08-15-workflow-feature-improvement-implementation.md 第 5 段
 # --------------------------------------------------------------------------
+def _per_task_rule_eligible(when) -> bool:
+    """カタログとして planner へ提示する前の絞り込み。ここで判定できるのは run 全体に
+    共通する条件（engine / workload / いま走っている実行 tier）だけ——role・purpose・
+    agent_cli・relative_cost は、どのノードが選ぶか分からない計画時点では判定できない
+    （それらは実際のノードが確定してから _per_task_rule_blocks が role で判定する）。
+    agentcore.methods.matches() をそのまま流用しない理由: あちらは未知のフィールドを
+    「文脈に無い＝空文字」として扱うため、when.roles を宣言した per-task ルール
+    （大半がそう）が role 不明のこの時点で誤って全滅する。"""
+    if not isinstance(when, dict):
+        return True
+    for field, allowed in (("engines", "agent-flow"), ("workloads", "flow")):
+        values = when.get(field)
+        if isinstance(values, list) and values and allowed not in {str(v) for v in values}:
+            return False
+    tiers = when.get("tiers")
+    if isinstance(tiers, list) and tiers:
+        current = flow_tier()
+        # tier 未宣言（agent-control 未導入）の実行では、どの段が走るか分からないので
+        # 落とさない（フェイルオープン: 判定材料が無い方が「候補から消える」より安全）。
+        if current and current not in {str(v) for v in tiers}:
+            return False
+    return True
+
+
 def _per_task_rule_catalog() -> dict:
-    """run tuning.json から selection: per-task の定義を id で引けるようにしたもの。"""
+    """run tuning.json から selection: per-task の定義を id で引けるようにしたもの。
+    この run では成立し得ない条件（tier 等）を宣言した項目は候補にも含めない。"""
     try:
         with open(_method_tuning_file(), encoding="utf-8") as f:
             data = json.load(f)
@@ -438,6 +463,7 @@ def _per_task_rule_catalog() -> dict:
     return {
         str(m["id"]): m for m in methods
         if isinstance(m, dict) and m.get("selection") == "per-task" and m.get("id")
+        and _per_task_rule_eligible(m.get("when"))
     }
 
 

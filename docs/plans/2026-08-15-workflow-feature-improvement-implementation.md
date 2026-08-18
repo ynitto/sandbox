@@ -235,3 +235,25 @@ CLI 単体利用（多くのテスト・多くの実運用）はこれまでど�
 カタログ無しでの no-op）。dashboard 側は `perTaskMethodsSnapshot` が `enabled: false` を
 強制することと、`submit()` が自動適用ルールと同じ tuning.json へ複製することを
 `tools/agent-dashboard/test/adhoc-flow.test.js` で確認する。
+
+## 補足 — per-task カタログの適格性フィルタ
+
+第 5 段の直後に見つかった不整合を直した。`_per_task_rule_catalog()` は
+`selection: "per-task"` だけで絞り込み、各ルールが宣言する `when`（tiers 等）を
+一切見ていなかった。auto ルールは Python 側の注入時（`agentcore.methods.select` →
+`matches()`）で必ず `when` を評価するのに、per-task はその評価を素通りしていた。
+
+`agentcore.methods.matches()` をそのまま流用しなかった理由: あの関数は「宣言された
+フィールドに対応する文脈が無ければ空文字列として扱う」ため、`when.roles` を宣言した
+per-task ルール（`integration-verify` を含め大半がそう）を role 不明のこの時点で
+評価すると誤って全滅する。per-task ルールが判定するのは「planner が選んでよいか」で
+あって「このノードへ適用してよいか」ではなく、後者は選ばれた後に `_per_task_rule_blocks`
+が実ノードの role で判定する2段構えになっている。
+
+新設した `_per_task_rule_eligible()` は、計画時点で分かる run 全体の条件
+（`engines` / `workloads` / いま走っている実行 tier）だけを見る。`roles` /
+`purposes` / `agent_cli` / `relative_cost` はどのノードが選ぶか次第なので判定しない
+（フェイルオープン: 判定材料が無い方が「候補から消える」より安全）。
+
+検証: `PerTaskRuleTests` に3件追加（tier 不一致で除外・tier 未宣言では除外しない・
+roles/purposes 宣言があっても catalog レベルでは全滅しない）。
