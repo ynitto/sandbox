@@ -19,7 +19,9 @@
 | P3 UI 一貫性の作業ルール | `methods/ui-consistency.json`、ノードの `surface: ui` | P1 と同じ plan 生成の複製経路。画面（編集キャンバス）は面の選択肢を main の `NODE_SURFACES` から受け取るだけ |
 | P4 レビュー観点 | `agent-flow` の `REVIEW_LENSES` / `review_lens_directive`、`orchestrate` の `evaluate` イベント | 評価役プロンプトへ一律後置（スキル経路・組み込み経路の両方）。ラウンドの記録は bus のイベント（成果ゼロでも必ず 1 件） |
 | P5 強制レイヤー | `agent-dashboard` の `tools/agent-dashboard/src/base/main/design-contract.js`、同梱設計フローの goal | 設計成果の検査。`変更対象` 節に強制レイヤーが無い成果は `implementation-ready` にしない（設計セッションの取り込みと作業準備の handoff の両方で同じ 1 実装を通る） |
-| P6 公開後の CI | `publicationPresentation` / `ciPresentation` と実行の助言 | 公開レコード（`publication` / `delivery`）に載った `ci` を読むだけ。dashboard から CI へ問い合わせはしない |
+| P6 公開後の CI（読み手） | `publicationPresentation` / `ciPresentation` と実行の助言 | 公開レコード（`publication` / `delivery`）に載った `ci` を読むだけ。dashboard から CI へ問い合わせはしない |
+| P6 公開後の CI（書き手） | `agent-flow` の `ci.py`（`ci_status_command` / `ci_wait_seconds` / `ci_poll_seconds`） | run の終端で公開済み commit の CI 状態を宣言コマンドへ問い合わせ、結果ノードの `publication.ci` と `final.ci` へ書き戻す。読めない・壊れた出力は `unknown`（緑へ倒さない） |
+| P1 run の完了条件（エンジン） | `agent-flow` の `terminal_verification` / `_finalize_run` | 終端 verify の判定（`data.ok` → `_normalize_verify` の 1 実装）で run を終端する。赤なら `failed` + `[verification]` タグ付き理由 + `final.verification` の記録 |
 
 ### 分割単位（P2）の既定
 
@@ -35,14 +37,28 @@
 `methods/test-green-evidence.json`）の本文をノードの goal へ複製する。**複製**なので、後からカタログを
 編集しても実行済み・保存済みの run の振る舞いは変わらない（既存の手法スナップショットと同じ規約）。
 
-### 実装しなかった範囲
+### 積み残しの解消（第 2 段）
 
-- **P6 の CI 結果の書き手**。dashboard は公開レコードに `ci` があれば表示・要対応化するが、
-  CI の結果を取りに行って書く側（agent-flow の公開後処理 or 外部の取り込み）は本変更に含まない。
-  記録が無い run は従来どおり「CI 記録なし」で、赤と誤認させない。
-- **P1 の run 状態そのもの**。agent-flow の run status（done/failed）の意味は変えていない。
-  dashboard の完了表示と助言だけが「終端検証が緑か」を条件にする。engine の終端条件まで変えると
-  既存 run の互換と復旧導線に波及するため、まず表示側で分ける。
+第 1 段では表示側だけを変え、次の 2 つを残していた。第 2 段で実装した。
+
+- **P6 の CI 結果の書き手**（`tools/agent-flow/agent_flow/ci.py`）。CI ごとのクライアントは持たず、
+  利用者が宣言したコマンドの JSON 出力を正典にする（統一 verify の固定コマンドと同じ作法）。
+  既定は off で、宣言が無い run の振る舞いは 1 バイトも変わらない。状態は
+  passed / failed / running / unknown の 4 値で、**読めないときは unknown**——黙って緑へ倒すと
+  赤い CI の成果が「完了」として下流へ流れるため。`ci_wait_seconds` で終端まで有界に待てる
+  （既定 0 = 1 回だけ問い合わせる。上限 1800 秒 = orchestrator の lease 内）。
+- **P1 の run 状態そのもの**（`terminal_verification` / `_finalize_run`）。終端 verify の判定を
+  run の完了条件にし、赤なら `failed` で終端する。判定の読み方は `_normalize_verify` の 1 実装に
+  委ね、orchestrator 側で本文を再解釈しない（"no failures" を赤と読むような二重解釈を作らない）。
+  終端に verify が無い run の見え方は変わらない。dashboard は判定を読むだけになり、成果テキストからの
+  読み直しは記録の無い旧 run に限る。
+
+#### この 2 つで変わる運用
+
+- 終端の検証が赤い run は `agent-flow run` の終了コードが 1 になり、`meta.failure_reason` に
+  `[verification]` タグが付く。agent-project / 板の消費者は既存の失敗トリアージでそのまま拾える。
+- CI の取り込みを宣言していない環境では CI 記録は作られず、画面は従来どおり「CI 記録なし」と出す
+  （赤とは区別する）。
 
 ## 受入基準
 
@@ -56,11 +72,15 @@
 - [x] 設計成果は必須4節に加えて「変更対象の強制レイヤー」が無いと実装へ渡せない。設計セッションと
       作業準備が同じ判定を通る。
 - [x] 公開レコードに CI 結果があれば公開状態と同じ場所に出し、赤なら要対応にする。
+- [x] 取り込みを宣言した run は、公開済み commit の CI 状態を公開レコードへ書き戻す。読めない
+      結果は unknown で記録し、緑にはしない。宣言が無い run では何も記録しない。
+- [x] 終端の検証が赤い run は agent-flow 自身が failed で終端し、判定を `final.verification` へ残す。
+      終端に verify が無い run の終端条件は変わらない。
 
 ## 検証方法
 
 ```
 cd tools/agent-dashboard && npm test          # 雛形・完了条件・作業ルール・設計契約・CI 表示
-cd tools/agent-flow && python3 -m unittest discover -s tests   # 分割単位・レビュー観点・評価イベント
+cd tools/agent-flow && python3 -m unittest discover -s tests   # 分割単位・レビュー観点・評価イベント・CI 取り込み・完了条件
 python3 -m unittest discover -s tools/agent-loop/test          # 同梱カタログの golden
 ```

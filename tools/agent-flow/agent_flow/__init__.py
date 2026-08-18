@@ -51,6 +51,7 @@ _FRAGMENTS = (
     "waits",         # park & poll / service_waits
     "continuation",  # Continuation（再計画）
     "verifyplan",    # 統一 verify の専用 runner（verification_plan → receipt）
+    "ci",            # 公開後の CI 結果の取り込み（publication へ書き戻す）
     "orchestrate",   # cmd_orchestrate
     "work",          # cmd_work
     "run",           # cmd_run + child spawn

@@ -745,6 +745,10 @@ assert.ok(!html.match(/data-tab="workflow-run"[^>]*>[\s\S]{0,40}実行履歴/), 
 for (const label of ['概要', '工程', '履歴']) {
   assert.ok(renderer.includes(`'${label}'`), `実行詳細に「${label}」ビューが必要です`);
 }
+assert.ok(renderer.includes('function executionDetailShellHtml('), '実行詳細の共通レイアウトが必要です');
+assert.ok(renderer.includes('return executionDetailShellHtml({'),
+  'プロジェクト実行詳細は共通レイアウトを使います');
+assert.ok(renderer.includes('class="flow-view-body"'), '共通の実行詳細本文クラスが必要です');
 assert.ok(renderer.includes('<span>工程完了</span>'), '工程数をタスク完了と区別する');
 assert.match(renderer, /class="master-detail/);
 assert.match(renderer, /class="flow-detail-shell/);

@@ -2000,7 +2000,8 @@ table.list tr.clickable:hover { background: var(--bg2); }
 }
 .flow-view-tab { flex: 1; min-height: 40px; background: transparent; border-color: transparent; color: var(--muted); }
 .flow-view-tab.active { color: var(--fg); background: var(--bg3); border-color: var(--accent); }
-#flow-view-body {
+#flow-view-body,
+.flow-view-body {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
@@ -2012,6 +2013,7 @@ table.list tr.clickable:hover { background: var(--bg2); }
 .flow-history-view { padding: 20px; }
 .flow-run-heading,
 .flow-section-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+.flow-heading-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
 .flow-run-heading h2,
 .flow-section-heading h2 { margin: 4px 0 14px; font-size: 20px; }
 .flow-outcome-status {

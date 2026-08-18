@@ -415,7 +415,36 @@
   // 判定は構造（末端の検証工程）で行い、文言や id には依存しない——利用者が名前を
   // 変えても、雛形以外の実装フローでも同じ器で読めるようにする。
   // 失敗の判定は agent-flow の評価役と同じ規則（結果に fail が出ていれば赤）に揃える。
+  const VERIFY_VIEWS = {
+    failed: {
+      state: 'failed', label: '検証が赤', tone: 'warn',
+      text: '終端の統合検証が緑になっていません。失敗した検証の出力を確認し、直してから再実行してください。',
+    },
+    pending: {
+      state: 'pending', label: '検証中', tone: 'muted',
+      text: '終端の統合検証はまだ終わっていません。',
+    },
+    passed: {
+      state: 'passed', label: '検証が緑', tone: 'ok',
+      text: '終端の統合検証が緑になりました。',
+    },
+  };
+
   function integrationVerifyPresentation(run) {
+    // 判定の正典は agent-flow が final へ書いた記録（run の完了条件そのもの）。
+    // 記録を持たない古い run だけ、工程の並びと成果から画面側で読み取る。
+    const recorded = (run && run.final && run.final.verification) || null;
+    if (recorded && VERIFY_VIEWS[String(recorded.state || '')]) {
+      const failed = Array.isArray(recorded.failed) ? recorded.failed : [];
+      const pending = Array.isArray(recorded.pending) ? recorded.pending : [];
+      return {
+        ...VERIFY_VIEWS[String(recorded.state)],
+        nodeId: String(failed[0] || pending[0] || (Array.isArray(recorded.nodes) ? recorded.nodes[0] : '') || ''),
+      };
+    }
+    if (recorded && String(recorded.state || '') === 'none') {
+      return { state: 'none', label: '統合検証なし', tone: 'muted', nodeId: '', text: '' };
+    }
     const nodes = Object.values((run && run.nodes) || {});
     const referenced = new Set(nodes.flatMap((node) => node.deps || []));
     const terminals = nodes.filter((node) => node.kind === 'verify' && !referenced.has(node.id));
@@ -423,38 +452,38 @@
       return { state: 'none', label: '統合検証なし', tone: 'muted', nodeId: '', text: '' };
     }
     const verdictOf = (node) => {
+      // 構造化された判定（verify の成果 data.ok / 決定的ゲートの verdict）を優先し、
+      // 本文の文字列は最後の手掛かりにする。
       const declared = node.verification && typeof node.verification === 'object'
         ? String(node.verification.verdict || '') : '';
       if (declared === 'fail' || node.state === 'failed') return 'fail';
       if (declared === 'pass') return 'pass';
       if (node.state !== 'done') return 'pending';
-      return String(node.output || '').toLowerCase().includes('fail') ? 'fail' : 'pass';
+      const data = node.data && typeof node.data === 'object' ? node.data : null;
+      if (data && typeof data.ok === 'boolean') return data.ok ? 'pass' : 'fail';
+      const output = String(node.output || '').toLowerCase();
+      if (output.includes('verify=fail')) return 'fail';
+      if (output.includes('verify=pass')) return 'pass';
+      return output.includes('fail') ? 'fail' : 'pass';
     };
     const failed = terminals.find((node) => verdictOf(node) === 'fail');
     if (failed) {
-      return {
-        state: 'failed', label: '検証が赤', tone: 'warn', nodeId: failed.id,
-        text: '終端の統合検証が緑になっていません。失敗した検証の出力を確認し、直してから再実行してください。',
-      };
+      return { ...VERIFY_VIEWS.failed, nodeId: failed.id };
     }
     const pending = terminals.find((node) => verdictOf(node) === 'pending');
     if (pending) {
-      return {
-        state: 'pending', label: '検証中', tone: 'muted', nodeId: pending.id,
-        text: '終端の統合検証はまだ終わっていません。',
-      };
+      return { ...VERIFY_VIEWS.pending, nodeId: pending.id };
     }
-    return {
-      state: 'passed', label: '検証が緑', tone: 'ok', nodeId: terminals[0].id,
-      text: '終端の統合検証が緑になりました。',
-    };
+    return { ...VERIFY_VIEWS.passed, nodeId: terminals[0].id };
   }
 
   // 公開（ブランチ push）後の CI 結果（P6）。公開レコードと同じ器（結果ノードの
   // publication / delivery）に載った記録だけを読む——dashboard から CI へは問い合わせない。
   function ciPresentation(run) {
     const view = publicationPresentation(run || {});
-    const ci = view.ci;
+    // 公開レコードの記録が主。run 全体の集計しか無い場合（公開ノードを読めない古い run）は
+    // agent-flow が final へ書いた集計を使う。
+    const ci = view.ci || (run && run.final && run.final.ci) || null;
     if (!ci || !ci.state) return { state: 'none', label: 'CI 記録なし', tone: 'muted', url: '', checks: [] };
     const checks = (Array.isArray(ci.checks) ? ci.checks : []).map((check) => ({
       name: String((check && check.name) || ''),
@@ -950,9 +979,47 @@
   function sidebarRunsHtml(ov) {
     const rows = ov.runs || [];
     if (!rows.length) return '<div class="empty">実行履歴はありません</div>';
-    return `<div class="wf-sidebar-runs">${rows.map((r) => `<button type="button" class="nav-item wf-sidebar-run ${st.selectedRun === r.runId ? 'selected' : ''}"
-      data-workflow-run-id="${esc(r.runId)}"><span>${esc(String(r.request || r.runId).slice(0, 42))}</span>
-      <small>${esc(statusLabel(r.status))} · ${esc(r.updatedAt || r.createdAt || '')}</small></button>`).join('')}</div>`;
+    const inboxByRun = new Map((ov.runInbox || []).map((item) => [String(item.id), item]));
+    const assigned = new Set();
+    const groups = [];
+    // 作業準備は、設計・実装を別々に起動しても利用者にとっては一つのタスク。
+    // preparation が保持する正規の関連 ID を使い、推測で似た依頼を束ねない。
+    for (const item of st.preparationItems || []) {
+      const ids = [...(item.design && item.design.runIds || []),
+        ...(item.handoff && item.handoff.implementationRunIds || [])].map(String);
+      const attempts = rows.filter((run) => ids.includes(String(run.runId)));
+      if (!attempts.length) continue;
+      attempts.forEach((run) => assigned.add(String(run.runId)));
+      groups.push({ key: `preparation:${item.id}`, title: item.title, attempts });
+    }
+    // preparation 導入前の run と再実行も、inbox の明示的な lineage だけで一つにする。
+    for (const run of rows) {
+      if (assigned.has(String(run.runId))) continue;
+      const inbox = inboxByRun.get(String(run.runId)) || {};
+      const rootId = String(inbox.root_run_id || run.runId);
+      const attempts = rows.filter((candidate) => {
+        if (assigned.has(String(candidate.runId))) return false;
+        const candidateInbox = inboxByRun.get(String(candidate.runId)) || {};
+        return String(candidateInbox.root_run_id || candidate.runId) === rootId;
+      });
+      attempts.forEach((candidate) => assigned.add(String(candidate.runId)));
+      groups.push({ key: `run:${rootId}`, title: inbox.title || run.request || run.runId, attempts });
+    }
+    groups.sort((a, b) => String(b.attempts[0]?.updatedAt || b.attempts[0]?.createdAt || '')
+      .localeCompare(String(a.attempts[0]?.updatedAt || a.attempts[0]?.createdAt || '')));
+    return `<div class="wf-sidebar-runs">${groups.map((group) => {
+      const latest = group.attempts[0];
+      const selected = group.attempts.some((run) => String(run.runId) === String(st.selectedRun));
+      const inboxes = group.attempts.map((run) => inboxByRun.get(String(run.runId)) || {});
+      const hasDesign = inboxes.some((item) => item.purpose === 'design');
+      const hasImplementation = inboxes.some((item) => item.purpose !== 'design');
+      const stages = [hasDesign ? '設計' : '', hasImplementation ? '実装' : '',
+        group.attempts.length > 1 ? `試行 ${group.attempts.length}回` : ''].filter(Boolean).join(' → ');
+      return `<button type="button" class="nav-item wf-sidebar-run ${selected ? 'selected' : ''}"
+        data-workflow-run-id="${esc(latest.runId)}" data-workflow-group="${esc(group.key)}">
+        <span>${esc(String(group.title || latest.runId).slice(0, 42))}</span>
+        <small>${esc(statusLabel(latest.status))}${stages ? ` · ${esc(stages)}` : ''}</small></button>`;
+    }).join('')}</div>`;
   }
 
   function renderSidebar() {
@@ -1034,8 +1101,13 @@
         }
         return { cls: 'ok', label: '完了', text: '実行は完了しました。実行結果と工程ごとの成果を確認できます。' };
       }
-      case 'failed':
+      case 'failed': {
+        // 終端の検証が赤で終わった実行は、環境要因の失敗と混ぜずに検証の話として出す
+        // （直す場所が「実行環境」ではなく「成果」なので、次の操作が変わる）。
+        const verify = integrationVerifyPresentation(run);
+        if (verify.state === 'failed') return { cls: 'act', label: '要対応', text: verify.text };
         return { cls: 'act', label: '要確認', text: '実行が失敗しました。失敗理由を確認し、必要なら再実行してください。' };
+      }
       case 'cancelled':
       case 'canceled':
         return { cls: 'muted', label: '中止済み', text: '実行は中止されています。必要なら再実行できます。' };
@@ -1089,7 +1161,9 @@
     const finalSummary = String((run.final && run.final.summary) || '').trim();
     const overviewView = `<section class="flow-overview-view">
       <div class="flow-run-heading"><div><span class="summary-kicker">選択中の作業</span><h2>${esc(title)}</h2>
-        <p class="wf-run-meta">${esc(flowName)}${publication.branch ? ` · ${esc(publication.branch)}` : ''}</p></div></div>
+        <p class="wf-run-meta">${esc(flowName)}${publication.branch ? ` · ${esc(publication.branch)}` : ''}</p></div>
+        <div class="flow-heading-actions"><button type="button" id="wf-new-run">実行待ちへ戻る</button>
+          ${folder ? consultControlHtml('workflows') : ''}</div></div>
       <section class="flow-outcome-status" aria-label="実行の状態と作業フォルダ">
         <div><span>実行</span><strong class="status-chip st-${esc(run.status || 'inbox')}">${esc(statusLabel(run.status))}</strong></div>
         ${verify.state === 'none' ? '' : `<div><span>統合検証</span>
@@ -1115,7 +1189,7 @@
     : '<button type="button" class="danger" id="wf-cancel">中止</button>'}</div>
       ${request ? `<details class="flow-request-details"><summary>依頼内容を表示</summary><pre class="qf-output">${esc(request)}</pre></details>` : ''}
     </section>`;
-    const processView = `<div class="flow-graph-workspace"><section class="flow-graph-surface">
+    const graphView = `<div class="flow-graph-workspace"><section class="flow-graph-surface">
       <div class="flow-section-heading"><div><span class="summary-kicker">作業の流れ</span><h2>工程</h2></div>
         <span class="muted">工程と依存関係を確認できます</span></div><div class="qf-graph">${graph}</div></section>
       <aside class="flow-node-detail"><span class="summary-kicker">工程の成果</span>
@@ -1124,12 +1198,12 @@
       <div><span class="summary-kicker">これまでの動き</span><h2>更新履歴</h2></div></div>
       <div class="events flow-events">${events || '<span class="muted">イベントはありません</span>'}</div>
       <details class="flow-technical"><summary>実行時のエージェント指定</summary>${overrideHtml}</details></section>`;
-    const view = st.runView === 'process' ? processView : st.runView === 'history' ? historyView : overviewView;
-    return `<div class="flow-detail-shell"><div class="flow-view-tabs" role="tablist" aria-label="実行の詳細">
-      ${[['overview', '概要'], ['process', '工程'], ['history', '履歴']].map(([key, label]) =>
-        `<button type="button" role="tab" data-run-view="${key}" class="flow-view-tab ${st.runView === key ? 'active' : ''}"
-          aria-selected="${st.runView === key}">${label}</button>`).join('')}</div>
-      <div class="wf-flow-view-body">${view}</div></div>`;
+    const view = st.runView === 'graph' ? graphView : st.runView === 'history' ? historyView : overviewView;
+    const shell = root.executionDetailShellHtml || ((options) => `<div class="flow-detail-shell">
+      <div class="flow-view-tabs">${[['overview', '概要'], ['graph', '工程'], ['history', '履歴']].map(([key, label]) =>
+    `<button data-run-view="${key}" class="flow-view-tab ${options.active === key ? 'active' : ''}">${label}</button>`).join('')}</div>
+      <div class="flow-view-body">${options.body}</div></div>`);
+    return shell({ active: st.runView, tabAttribute: 'data-run-view', backAttribute: 'data-flow-back', body: view });
   }
 
   function overrideRowsHtml(ov, group, labels) {
@@ -1255,10 +1329,7 @@
 
   function runHtml(ov) {
     if (st.selectedRun && st.runDetail) {
-      const folder = runFolder(st.runDetail);
       return `<section class="wf-page wf-run-detail-page" aria-label="ワークフロー実行詳細">
-        <div class="wf-detail-toolbar"><button type="button" id="wf-new-run">← 実行待ちへ戻る</button>
-          ${folder ? consultControlHtml('workflows') : ''}</div>
         <p class="qf-notice" role="status"${st.notice ? '' : ' hidden'}>${esc(st.notice)}</p>
         ${runDetailHtml(st.runDetail)}</section>`;
     }
@@ -2568,6 +2639,13 @@
       }
     }));
     $id('wf-new-run')?.addEventListener('click', () => {
+      st.selectedRun = '';
+      st.runDetail = null;
+      st.notice = '';
+      renderSidebar();
+      renderRun();
+    });
+    pane.querySelector('[data-flow-back]')?.addEventListener('click', () => {
       st.selectedRun = '';
       st.runDetail = null;
       st.notice = '';

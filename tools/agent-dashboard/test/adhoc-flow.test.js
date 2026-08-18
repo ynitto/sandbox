@@ -1974,6 +1974,12 @@ test('resubmit が inbox 記録（plan 込み）と手法スナップショッ�
     const rec = JSON.parse(fs.readFileSync(
       path.join(cfg.adhocFlow.busDir, 'inbox', `${second.runId}.json`), 'utf8'));
     assert.strictEqual(rec.plan.name, 'F');
+    assert.strictEqual(rec.root_run_id, first.runId, '再実行は最初の run を同じタスクの起点として残す');
+    assert.strictEqual(rec.previous_run_id, first.runId, '再実行は直前の試行を辿れる');
+    const third = adhoc.resubmit(cfg, second.runId);
+    const thirdRec = adhoc.readInbox(cfg.adhocFlow.busDir, third.runId);
+    assert.strictEqual(thirdRec.root_run_id, first.runId, '複数回やり直してもタスクの起点を変えない');
+    assert.strictEqual(thirdRec.previous_run_id, second.runId);
     const tuningFile = path.join(adhoc.runTuningDir(cfg, second.runId), 'tuning.json');
     assert.ok(fs.existsSync(tuningFile), '手法スナップショットも新 run へ写る');
     assert.throws(() => adhoc.resubmit(cfg, 'no-such-run'), /inbox 記録/);
@@ -2531,5 +2537,52 @@ test('設計フローは強制レイヤーを設計書へ書かせる', () => {
   assert.match(terminal.goal, /強制レイヤー/, '終端の出力契約でも強制レイヤーを要求する');
 });
 
+
+test('統合検証の判定は agent-flow が final へ書いた記録を正典にする', () => {
+  const run = (verification) => ({
+    status: verification.state === 'failed' ? 'failed' : 'done',
+    final: { summary: '', verification },
+    // 記録と食い違う成果をわざと置く（画面側で読み直していないことを確かめる）
+    nodes: { check: { id: 'check', kind: 'verify', deps: [], state: 'done', output: 'verify=pass' } },
+  });
+
+  const red = workflowUi.integrationVerifyPresentation(run({ state: 'failed', nodes: ['check'], failed: ['check'] }));
+  assert.strictEqual(red.state, 'failed');
+  assert.strictEqual(red.nodeId, 'check');
+  assert.strictEqual(workflowUi.workflowRunAdvice({ run: run({ state: 'failed', failed: ['check'] }) }).label, '要対応');
+
+  assert.strictEqual(workflowUi.integrationVerifyPresentation(
+    run({ state: 'passed', nodes: ['check'] })).state, 'passed');
+  assert.strictEqual(workflowUi.integrationVerifyPresentation(
+    run({ state: 'none', nodes: [] })).state, 'none');
+});
+
+test('記録を持たない古い run は工程の構造と判定データから読む', () => {
+  const legacy = (result) => ({
+    status: 'done', final: { summary: '' },
+    nodes: {
+      work: { id: 'work', kind: 'work', deps: [], state: 'done', output: 'ok' },
+      check: { id: 'check', kind: 'verify', deps: ['work'], ...result },
+    },
+  });
+  assert.strictEqual(workflowUi.integrationVerifyPresentation(
+    legacy({ state: 'done', output: 'verify=fail', data: { ok: false } })).state, 'failed');
+  assert.strictEqual(workflowUi.integrationVerifyPresentation(
+    legacy({ state: 'done', output: 'verify=pass — no failures', data: { ok: true } })).state, 'passed');
+  // 構造化された判定が無い成果は本文の verify= 宣言を優先して読む
+  assert.strictEqual(workflowUi.integrationVerifyPresentation(
+    legacy({ state: 'done', output: 'verify=pass。no failures found' })).state, 'passed');
+});
+
+test('CI は公開レコードの記録を優先し、run 全体の集計へ縮退する', () => {
+  const aggregateOnly = {
+    status: 'done', final: { summary: '', ci: { state: 'failed', url: 'https://ci.example/7' } },
+    nodes: { work: { id: 'work', kind: 'work', deps: [], state: 'done' } },
+  };
+  const view = workflowUi.ciPresentation(aggregateOnly);
+  assert.strictEqual(view.state, 'failed');
+  assert.strictEqual(view.url, 'https://ci.example/7');
+  assert.strictEqual(workflowUi.workflowRunAdvice({ run: aggregateOnly }).label, '要対応');
+});
 
 console.log(`\n${passed} tests passed`);

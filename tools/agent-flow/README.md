@@ -125,6 +125,20 @@
   `file` はファイル境界での水平分割で、衝突回避が要る大規模変更のための明示オプション
   （裂けたノードには揃えるべき点と対応ノード id を goal へ書かせる）。1 ファイル = 1 ノードの水平分割を
   既定にすると、各ノードは成功したのに成果物どうしが食い違う（同じ用途の画面が別物になる）ため。
+- **run の完了条件は「終端の検証が緑」**：他ノードから依存されていない `verify` ノード（＝並列で
+  作った変更をまとめた後の統合検証）の判定を run の完了条件にする。全ノードが done でも終端の
+  検証が赤なら run は failed で終端し、`meta.failure_reason` に `[verification]` タグ付きの理由、
+  `final.json` の `verification` に判定（`state` / `nodes` / `failed`）を残す。判定は verify の
+  構造化成果（`data.ok`。本文の `verify=pass` / `verify=fail` からも導き、曖昧な出力は fail へ倒す）
+  を読むので、orchestrator 側で本文を再解釈しない。終端に verify が無い run の見え方は変わらない。
+- **公開後の CI 結果の取り込み（`ci_status_command`・既定 off）**：公開（ブランチ push）に成功した
+  commit の CI 状態を run の終端で問い合わせ、結果ノードの公開レコードへ `ci` として書き戻す
+  （`final.json` にも run 全体の状態を残す）。CI ごとのクライアントは持たず、宣言された
+  コマンドの標準出力 JSON `{"state","url","checks"}` を正典にする——実行時に `AGENT_CI_URL` /
+  `AGENT_CI_BRANCH` / `AGENT_CI_COMMIT` / `AGENT_CI_REPOSITORY` を環境変数で渡すので、
+  `gh`・`glab`・社内 CI のどれでも同じ契約で書ける。状態は passed / failed / running / unknown の
+  4 値で、**読めなければ unknown**（緑には倒さない）。`ci_wait_seconds`（既定 0 = 1 回だけ問い合わせ）
+  で終端まで有界に待てる。
 - **レビューの観点（レンズ）**：評価役には契約整合だけでなく、二重実装・画面間/用途間の表現差異・
   文言量の 3 観点を必ず当てさせ、観点ごとの所見を `reason` に残させる。評価ラウンドは
   成果ゼロでも `evaluate` イベントとして run 履歴へ残る（「回して何も出なかった」と「回していない」を
