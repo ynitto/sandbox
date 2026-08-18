@@ -552,11 +552,13 @@
   }
 
   function nodeMethodChoices(methods, node) {
+    // 候補は作業ルールだけ。成果物の契約（設計書の書式など）は工程へ足すものではない。
+    const rules = (methods || []).filter((method) => String((method && method.kind) || 'rule') === 'rule');
     const role = roleForKind(node && node.kind);
     const purpose = String((node && node.kind) || 'work');
     const includes = (values, value) => !Array.isArray(values) || !values.length
       || values.map(String).includes(String(value));
-    return (methods || []).flatMap((method) => {
+    return rules.flatMap((method) => {
       const roles = methodRoles(method).filter((item) => item !== 'session');
       const sharedGraphOption = String(method.id || '') === 'failure-modes-first';
       if (sharedGraphOption ? !roles.includes(role) : roles.length !== 1 || roles[0] !== role) return [];
@@ -657,7 +659,7 @@
         deps: Array.isArray(node.deps) ? node.deps.map(String) : [],
         x: 300 + depth * 270,
         y: 70 + row * 140,
-        ...(node.method ? { method: clone(node.method) } : {}),
+        ...(node.methods && node.methods.length ? { methods: clone(node.methods) } : {}),
         ...(continuation ? { continuation } : {}),
       };
     });
@@ -757,14 +759,12 @@
 
   function nodeMethodOptionsHtml(methods, node) {
     const choices = nodeMethodChoices(methods, node);
-    const current = String((node.method && node.method.id) || '');
-    const role = roleForKind(node.kind);
+    const current = new Set((node.methods || []).map((rule) => String(rule.id)));
+    if (!choices.length) return '';
     return `<section class="wf-node-method-options"><div><strong>この工程の追加ルール</strong>
       <small>この工程への依頼文だけに短い指示を追加します。エージェントや実行レベルは変わりません。</small></div>
-      <div><label class="wf-method-option"><input type="radio" name="wf-node-method" data-node-method=""
-        ${current ? '' : 'checked'}><span><strong>標準</strong><small>追加の指示なし</small></span></label>
-      ${choices.map((choice) => `<label class="wf-method-option"><input type="radio" name="wf-node-method"
-        data-node-method="${esc(choice.id)}" ${current === choice.id ? 'checked' : ''}><span>
+      <div>${choices.map((choice) => `<label class="wf-method-option"><input type="checkbox"
+        data-node-method="${esc(choice.id)}" ${current.has(choice.id) ? 'checked' : ''}><span>
         <strong>${esc(choice.description)}</strong>${choice.condition ? `<small>${esc(choice.condition)}</small>` : ''}
         <p tabindex="0">${esc(choice.text)}</p></span></label>`).join('')}</div></section>`;
   }
@@ -1573,7 +1573,8 @@
     const selected = st.selectedNode === node.id ? ' selected' : '';
     const issue = nodeIssue(workflow, node);
     const { role, name } = nodePresentation(node);
-    const method = node.method ? `<span class="wf-method">${esc(node.method.description || node.method.id)}</span>` : '';
+    const method = (node.methods || [])
+      .map((rule) => `<span class="wf-method">${esc(rule.description || rule.id)}</span>`).join('');
     const continuation = ({ route: '分類後に専門工程を追加', retry: '未完了なら再作業・再検証' })[node.continuation] || '';
     const inputError = st.connectFrom ? connectionError(workflow, st.connectFrom, node.id) : '';
     if (readonly) return `<article class="wf-node" style="left:${Number(node.x)}px;top:${Number(node.y)}px">
@@ -2709,7 +2710,7 @@
       }
       if (node.kind === 'human') {
         delete node.tier;
-        delete node.method;
+        delete node.methods;
         const previous = node.interaction || {};
         const mode = $id('wf-human-mode')?.value || previous.mode || 'approval';
         const options = ($id('wf-human-options')?.value || '').split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
@@ -3027,16 +3028,19 @@
       const workflow = collectWorkflow();
       const node = workflow.nodes.find((item) => item.id === st.selectedNode);
       if (!node) return;
-      const id = input.dataset.nodeMethod;
-      if (!id) delete node.method;
-      else {
-        const choice = nodeMethodChoices(ov.methods, node).find((item) => item.id === id);
-        if (!choice) return;
-        node.method = {
+      const choices = nodeMethodChoices(ov.methods, node);
+      // 選択は複数。チェックされた候補の本文を選択時点で複製して持つ（後からカタログが
+      // 変わっても保存済みフローの振る舞いは変わらない）。
+      const selected = [...pane.querySelectorAll('[data-node-method]')]
+        .filter((box) => box.checked)
+        .map((box) => choices.find((choice) => choice.id === box.dataset.nodeMethod))
+        .filter(Boolean)
+        .map((choice) => ({
           id: choice.id, description: choice.description, role: choice.role,
           text: choice.text, source: choice.source,
-        };
-      }
+        }));
+      if (selected.length) node.methods = selected;
+      else delete node.methods;
       st.dirty = true;
       renderSettings();
     }));

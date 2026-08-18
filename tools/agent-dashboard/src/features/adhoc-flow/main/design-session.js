@@ -71,7 +71,9 @@ function normalizeFlowSnapshot(raw) {
       deps: Array.isArray(node.deps) ? node.deps.map(String) : [],
     };
     if (node.tier) out.tier = String(node.tier);
-    if (node.method && typeof node.method === 'object') out.method = { ...node.method };
+    if (Array.isArray(node.methods) && node.methods.length) {
+      out.methods = node.methods.map((rule) => ({ ...rule }));
+    } else if (node.method && typeof node.method === 'object') out.methods = [{ ...node.method }];
     if (node.interaction && typeof node.interaction === 'object') out.interaction = { ...node.interaction };
     if (node.continuation) out.continuation = String(node.continuation);
     return out.id && out.goal ? out : null;

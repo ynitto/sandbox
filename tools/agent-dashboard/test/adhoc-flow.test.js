@@ -881,11 +881,12 @@ test('旧全体ルールは捨て、工程の実行手法だけを指示へ反�
       }],
     });
     assert.strictEqual(workflow.methods, undefined);
-    assert.strictEqual(workflow.nodes[0].method.id, 'test-first');
+    // 旧定義の単数 method は配列として読む（互換）
+    assert.deepStrictEqual(workflow.nodes[0].methods.map((rule) => rule.id), ['test-first']);
     const plan = adhoc.planFromWorkflow({}, workflow);
     assert.strictEqual(plan.methods, undefined);
     assert.match(plan.nodes[0].goal, /失敗する最小テスト/);
-    assert.strictEqual(plan.nodes[0].method, undefined, '実行エンジンへは通常の goal として渡す');
+    assert.strictEqual(plan.nodes[0].methods, undefined, '実行エンジンへは通常の goal として渡す');
   } finally {
     profiles.resolveTier = original;
   }
@@ -1870,8 +1871,8 @@ test('一貫性ゲート: フェイルクローズ（組み立て失敗・リポ
   }
 });
 
-test('submit はプリセット無しでも投入できる（planner に任せる）', () => {
-  const cfg = { adhocFlow: { busDir: tmpdir('adhoc-bus2-') } };
+test('submit はプリセット無しでも投入でき、既定 ON の作業ルールを run へ複製する', () => {
+  const cfg = { adhocFlow: { busDir: tmpdir('adhoc-bus2-'), tuningRoot: tmpdir('adhoc-tuning2-') } };
   const orig = exec.shInWsl;
   exec.shInWsl = () => ({ ok: true, status: 0, stdout: '', stderr: '', error: '' });
   try {
@@ -1879,7 +1880,34 @@ test('submit はプリセット無しでも投入できる（planner に任せ�
     const rec = JSON.parse(fs.readFileSync(
       path.join(cfg.adhocFlow.busDir, 'inbox', `${res.runId}.json`), 'utf8'));
     assert.strictEqual(rec.plan, undefined);
-    assert.strictEqual(res.tuningDir, null);
+    // 同梱カタログの既定 ON（自己条件づけの規律ルール）は run 専用 tuning へ複製される。
+    // 複製なので、後からカタログを変えても走り出した run の振る舞いは変わらない。
+    const runTuning = JSON.parse(fs.readFileSync(path.join(res.tuningDir, 'tuning.json'), 'utf8'));
+    assert.deepStrictEqual(runTuning.methods.map((method) => method.id).sort(),
+      ['test-green-evidence', 'ui-consistency']);
+    assert.ok(runTuning.methods.every((method) => method.enabled === true));
+  } finally {
+    exec.shInWsl = orig;
+  }
+});
+
+test('既定 ON は端末設定の宣言で上書きでき、無効化すれば run へ複製しない', () => {
+  const tuningDir = tmpdir('adhoc-tuning-off-');
+  fs.writeFileSync(path.join(tuningDir, 'tuning.json'), JSON.stringify({
+    version: 1, revision: 1, enabled: true, trials: [],
+    methods: [{ id: 'ui-consistency', description: '画面の一貫性', enabled: false, fragments: [] }],
+  }));
+  const cfg = {
+    adhocFlow: { busDir: tmpdir('adhoc-bus-off-'), tuningRoot: tmpdir('adhoc-runtuning-off-') },
+    orchestration: { tuningDir },
+  };
+  const orig = exec.shInWsl;
+  exec.shInWsl = () => ({ ok: true, status: 0, stdout: '', stderr: '', error: '' });
+  try {
+    const res = adhoc.submit(cfg, { request: '軽い調べ物' });
+    const runTuning = JSON.parse(fs.readFileSync(path.join(res.tuningDir, 'tuning.json'), 'utf8'));
+    assert.deepStrictEqual(runTuning.methods.map((method) => method.id), ['test-green-evidence'],
+      '端末設定で無効化した既定 ON は複製しない');
   } finally {
     exec.shInWsl = orig;
   }
@@ -2471,7 +2499,7 @@ test('リポジトリの手法は設計書の書式を丸ごと差し替える�
   const methodsDir = path.join(repo, '.agents', 'methods');
   fs.mkdirSync(methodsDir, { recursive: true });
   fs.writeFileSync(path.join(methodsDir, 'design-document-format.json'), `${JSON.stringify({
-    id: 'design-document-format', description: 'この repo の設計書', enabled: false,
+    id: 'design-document-format', description: 'この repo の設計書', kind: 'contract', enabled: false,
     fragments: [{ role: 'worker', text: '## 背景 / ## 移行手順 / ## 切り戻し を書くこと。移行手順には停止時間を書く。' }],
     when: { roles: ['worker'] },
     format: {
@@ -2502,7 +2530,7 @@ test('リポジトリの手法は設計書の書式を丸ごと差し替える�
     assert.match(plan.nodes[plan.nodes.length - 1].goal, /## 切り戻し/);
     // 壊れた宣言は「書式が無い」と同じ扱い（直したつもりの書式で走り続けない）
     fs.writeFileSync(path.join(methodsDir, 'design-document-format.json'), `${JSON.stringify({
-      id: 'design-document-format', description: '壊れた書式', enabled: false,
+      id: 'design-document-format', description: '壊れた書式', kind: 'contract', enabled: false,
       fragments: [{ role: 'worker', text: 'x' }], when: { roles: ['worker'] },
       format: { sections: ['a'], items: [{ section: 'b', label: 'x', pattern: '(' }] },
     })}\n`);

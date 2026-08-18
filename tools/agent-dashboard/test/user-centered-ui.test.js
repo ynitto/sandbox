@@ -1059,6 +1059,36 @@ async function verifyDesignFlowCatalogBehavior() {
   assert.strictEqual(previewWizard.designFlow.cwd, '/project-a');
 }
 
+// --- 作業ルールと成果物の契約は、モデルごとに別の見せ方をする -------------------
+// 設計: docs/plans/2026-08-15-workflow-feature-improvement-implementation.md 第 4 段
+const orchestrationSource = fs.readFileSync(path.join(root, 'sections', 'orchestration.js'), 'utf8');
+const orchMethodsPanel = grabFrom(orchestrationSource, 'orchMethodsPanelHtml');
+assert.ok(orchMethodsPanel.includes("orchRuleSelection(method) === 'auto'")
+  && orchMethodsPanel.includes("orchRuleSelection(method) === 'per-task'")
+  && orchMethodsPanel.includes("orchMethodKind(method) === 'contract'"),
+  '設定画面は自動適用ルール・工程ごとに選ぶルール・成果物の契約を分けて扱います');
+assert.ok(orchMethodsPanel.includes('const cards = methods.map')
+  && orchMethodsPanel.includes("const methods = all.filter((method) => orchRuleSelection(method) === 'auto')"),
+  'トグル一覧へ出すのは自動適用ルールだけです');
+const orchPerTaskPanel = grabFrom(orchestrationSource, 'orchPerTaskRulesHtml');
+assert.ok(!orchPerTaskPanel.includes('orch-method-toggle'),
+  '工程ごとに選ぶルールは設定画面でトグルしません（どの工程へ足すかは編集画面で決めます）');
+const orchContracts = grabFrom(orchestrationSource, 'orchContractsHtml');
+assert.ok(!orchContracts.includes('orch-method-toggle') && orchContracts.includes('成果物の書式'),
+  '成果物の契約は ON/OFF ではなく、いま有効な書式として示します');
+assert.match(orchestrationSource,
+  /const enabled = current \? current\.enabled !== false : method\.enabled === true;/,
+  '端末設定に宣言が無いルールは、同梱カタログの既定（推奨 ON）を状態として読みます');
+
+// 工程の追加ルールは複数選べ、契約は候補に出さない
+const nodeMethodChoicesSource = grabFrom(workflowFeature, 'nodeMethodChoices');
+assert.ok(nodeMethodChoicesSource.includes("=== 'rule'"),
+  '工程の追加ルール候補は作業ルールだけで、成果物の契約を混ぜません');
+const nodeMethodOptionsSource = grabFrom(workflowFeature, 'nodeMethodOptionsHtml');
+assert.ok(nodeMethodOptionsSource.includes('type="checkbox"')
+  && !nodeMethodOptionsSource.includes('type="radio"'),
+  '工程の追加ルールは複数選べます');
+
 verifyDesignFlowCatalogBehavior().then(
   () => console.log('user-centered-ui: all tests passed'),
   (error) => {

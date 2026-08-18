@@ -163,6 +163,28 @@ function normalizeInteraction(raw) {
   return interaction;
 }
 
+// 工程ごとに選んだ作業ルールの正規化。旧定義の単数 `method` も受ける。
+// 本文（text）は選択時に複製したもので、ここでは形だけを整える。
+function normalizeNodeMethods(node) {
+  const raw = Array.isArray(node && node.methods) ? node.methods
+    : (node && node.method ? [node.method] : []);
+  const seen = new Set();
+  return raw.map((item) => {
+    if (!item || typeof item !== 'object') return null;
+    const id = String(item.id || '').trim();
+    const text = String(item.text || '').trim();
+    if (!id || !text || seen.has(id)) return null;
+    seen.add(id);
+    return {
+      id,
+      description: String(item.description || '').trim(),
+      role: String(item.role || 'worker').trim() || 'worker',
+      text,
+      source: String(item.source || '').trim(),
+    };
+  }).filter(Boolean);
+}
+
 function normalizeWorkflow(raw, options = {}) {
   if (!raw || typeof raw !== 'object') throw new Error('フローが不正です');
   const name = String(raw.name || '').trim();
@@ -187,15 +209,8 @@ function normalizeWorkflow(raw, options = {}) {
     if (!id || !goal || (kind !== 'human' && !tier)) throw new Error('ノードには id・内容・tier が必要です');
     if (seen.has(id)) throw new Error(`ノード id が重複しています: ${id}`);
     seen.add(id);
-    const rawMethod = n.method && typeof n.method === 'object' ? n.method : null;
-    const method = rawMethod && String(rawMethod.id || '').trim() && String(rawMethod.text || '').trim()
-      ? {
-        id: String(rawMethod.id).trim(),
-        description: String(rawMethod.description || '').trim(),
-        role: String(rawMethod.role || 'worker').trim() || 'worker',
-        text: String(rawMethod.text).trim(),
-        source: String(rawMethod.source || '').trim(),
-      } : null;
+    // 工程ごとに選んだ作業ルール。旧定義の単数 `method` も配列として読む（互換）。
+    const methods = normalizeNodeMethods(n);
     return {
       id,
       label: String(n.label || id).trim() || id,
@@ -205,7 +220,7 @@ function normalizeWorkflow(raw, options = {}) {
       deps: (Array.isArray(n.deps) ? n.deps : []).map((d) => String(d).trim()).filter(Boolean),
       x: Number.isFinite(Number(n.x)) ? Number(n.x) : 40,
       y: Number.isFinite(Number(n.y)) ? Number(n.y) : 40,
-      ...(method && kind !== 'human' ? { method } : {}),
+      ...(methods.length && kind !== 'human' ? { methods } : {}),
       ...((kind === 'classify' && n.continuation === 'route')
         || (kind === 'verify' && n.continuation === 'retry')
         ? { continuation: n.continuation } : {}),
@@ -309,7 +324,7 @@ function workflowDefinition(raw) {
       };
       if (node.tier) out.tier = String(node.tier);
       if (node.interaction && typeof node.interaction === 'object') out.interaction = node.interaction;
-      if (node.method && typeof node.method === 'object') out.method = node.method;
+      if (node.methods && node.methods.length) out.methods = node.methods;
       if (node.continuation) out.continuation = String(node.continuation);
       return out;
     }),
@@ -540,8 +555,10 @@ const DESIGN_NODE_CONTRACT = '設計runとして実行します。リポジト�
 // （fragments の worker 本文）と、実装へ渡す前のゲートが数える構造（format）を同じ 1 件から
 // 引く——指示と判定が別々に育つと「指示どおり書いたのに弾かれる」が起きる。
 function designDocumentMethod(config, options = {}) {
-  return availableMethods(config, options)
+  const found = availableMethods(config, options)
     .find((item) => String(item && item.id) === designContract.FORMAT_METHOD_ID) || null;
+  // 契約として宣言されていないものは書式として使わない（ルールを誤って契約に据えない）。
+  return found && methodKind(found) === 'contract' ? found : null;
 }
 
 // ゲートが数える構造。宣言が無ければ null（呼び手はフェイルクローズで不足として扱う）。
@@ -558,6 +575,49 @@ function designDocumentFormat(config, options = {}) {
 // 設計 run の終端 goal へ複製する指示文。
 function designDocumentInstruction(config, options = {}) {
   return methodWorkerText(designDocumentMethod(config, options));
+}
+
+// --- カタログのモデル宣言 -----------------------------------------------------
+// 手法カタログには 2 つのモデルが入る。
+//   rule     … プロンプトへ足す指示。さらに選ばれ方で 2 つに分かれる:
+//              auto     = 実行条件（役割・工程種別・実行レベル・料金区分）だけで決まる。
+//                         設定画面のトグルで自動適用する。
+//              per-task = 実行時にも機械判定できない「その工程への指示」。工程ごとに
+//                         人（または planner）が選ぶ。トグルの対象にしない。
+//   contract … 成果物の形式そのもの。指示（fragments）と機械で数える構造（format）を
+//              持ち、ON/OFF しない（成果物の種類ごとに 1 つ決まる）。
+// 無指定は rule / auto（既存定義の互換）。
+// 設計: docs/plans/2026-08-15-workflow-feature-improvement-implementation.md 第 4 段
+const METHOD_KINDS = ['rule', 'contract'];
+const RULE_SELECTIONS = ['auto', 'per-task'];
+
+function methodKind(method) {
+  const kind = String((method && method.kind) || '').trim();
+  return METHOD_KINDS.includes(kind) ? kind : 'rule';
+}
+
+function ruleSelection(method) {
+  if (methodKind(method) !== 'rule') return '';
+  const selection = String((method && method.selection) || '').trim();
+  return RULE_SELECTIONS.includes(selection) ? selection : 'auto';
+}
+
+// 設定画面のトグル一覧へ出す作業ルール（実行条件だけで選べるもの）。
+function autoRules(config, options = {}) {
+  return availableMethods(config, options).filter((method) => ruleSelection(method) === 'auto');
+}
+
+// 工程ごとに選ぶ作業ルール。契約は含めない。
+function perTaskRules(config, options = {}) {
+  return availableMethods(config, options).filter((method) => ruleSelection(method) === 'per-task');
+}
+
+// この run で実際に効く自動適用ルール。同梱カタログの既定 ON と、利用者が設定画面で
+// 有効化したものの和で、利用者が明示的に無効化したものは外れる（availableMethods が
+// 端末設定の宣言でカタログ項目を上書きするので、ここは enabled を読むだけでよい）。
+function enabledAutoRuleIds(config, options = {}) {
+  return autoRules(config, options).filter((method) => method.enabled === true)
+    .map((method) => String(method.id));
 }
 
 // 手法の worker 向け本文（ルールとして goal へ複製できるテキスト）。
@@ -589,7 +649,7 @@ function planFromWorkflow(config, workflow, options = {}) {
     }
     const baseGoal = [
       n.goal,
-      n.method ? `実行手法「${n.method.description || n.method.id}」:\n${n.method.text}` : '',
+      ...(n.methods || []).map((rule) => `実行手法「${rule.description || rule.id}」:\n${rule.text}`),
     ].filter(Boolean).join('\n\n');
     const goal = purpose === 'design'
       ? `${baseGoal}\n\n${DESIGN_NODE_CONTRACT}`
@@ -942,12 +1002,15 @@ function runTuningDir(config, runId) {
 function writeRunTuning(config, runId, methods) {
   const dir = runTuningDir(config, runId);
   fs.mkdirSync(dir, { recursive: true });
+  // A/B 試行（trials）は端末設定の宣言をそのまま運ぶ。run 専用 tuning は端末設定の
+  // **置換**なので、ここで落とすと宣言した試行が dashboard 経由の run では一度も走らない。
+  const state = tuning.load(config);
   const data = {
     version: 1,
     revision: 1,
     enabled: true,
     methods,
-    trials: [],
+    trials: Array.isArray(state.trials) ? state.trials : [],
     profiles: { default: {}, 'external-facing': { injections: [] } },
     updated_at: new Date().toISOString(),
     updated_by: 'agent-dashboard adhoc-flow',
@@ -1064,7 +1127,15 @@ function submit(config, {
   if (execution) rec.execution_overrides = execution;
   writeJsonAtomic(path.join(busDir, 'inbox', `${runId}.json`), rec);
 
-  const methods = methodsSnapshot(config, p ? p.methods : snapshot.methods);
+  // この run へ複製する手法。自動適用ルール（同梱の既定 ON ＋ 利用者が有効化したもの）と、
+  // プリセットが名指しした手法の和。run 単位で複製するので、後からカタログや端末設定を
+  // 変えても走り出した run の振る舞いは変わらない。
+  const picked = (p ? p.methods : snapshot.methods) || [];
+  const methodIds = [...new Set([
+    ...picked.map(String),
+    ...enabledAutoRuleIds(config, { cwd }),
+  ])];
+  const methods = methodsSnapshot(config, methodIds, { cwd });
   const tuningDir = methods && methods.length ? writeRunTuning(config, runId, methods) : null;
 
   const line = buildLaunchLine(config, {
@@ -1219,6 +1290,11 @@ module.exports = {
   normalizePreset,
   planFromPreset,
   availableMethods,
+  methodKind,
+  ruleSelection,
+  autoRules,
+  perTaskRules,
+  enabledAutoRuleIds,
   methodsSnapshot,
   designDocumentFormat,
   designDocumentInstruction,

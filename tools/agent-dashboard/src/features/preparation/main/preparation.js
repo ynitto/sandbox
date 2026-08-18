@@ -89,7 +89,8 @@ function normalizeDefinitionNode(raw) {
   };
   if (raw.tier) node.tier = String(raw.tier).trim();
   if (raw.interaction && typeof raw.interaction === 'object') node.interaction = cloneValue(raw.interaction);
-  if (raw.method && typeof raw.method === 'object') node.method = cloneValue(raw.method);
+  if (Array.isArray(raw.methods) && raw.methods.length) node.methods = cloneValue(raw.methods);
+  else if (raw.method && typeof raw.method === 'object') node.methods = [cloneValue(raw.method)];
   if (raw.continuation) node.continuation = String(raw.continuation).trim();
   return node;
 }

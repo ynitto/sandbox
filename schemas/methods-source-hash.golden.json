@@ -15,11 +15,11 @@
     "consistency-sweep": "841f3e5e2cde",
     "council-review": "66abf1f63bfc",
     "derive-twice": "bb0b07018e36",
-    "design-document-format": "27846b5013cc",
+    "design-document-format": "fd74e539e8d8",
     "doc-follow-through": "08c9b64ac18e",
     "evidence-or-fail": "9553ab93006e",
     "failure-modes-first": "3b1189b9f9be",
-    "integration-verify": "8fc212ef4dcc",
+    "integration-verify": "083e24e6ddc4",
     "no-self-approval": "09b28cd1a98d",
     "one-change-per-step": "ddc6cb3c9a57",
     "output-contract-strict": "32342163cbeb",
@@ -33,7 +33,7 @@
     "self-consistency": "af0e1368a407",
     "spec-first": "85a6736bbedb",
     "test-first": "07ffff0e5346",
-    "test-green-evidence": "24a58f1ccb52",
-    "ui-consistency": "0e3e127ae356"
+    "test-green-evidence": "1128d91d2f06",
+    "ui-consistency": "531a037dcb9b"
   }
 }

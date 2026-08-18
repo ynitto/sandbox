@@ -76,7 +76,7 @@ function definitionNodeSnapshot(node) {
   };
   if (node.tier) out.tier = String(node.tier);
   if (node.interaction && typeof node.interaction === 'object') out.interaction = node.interaction;
-  if (node.method && typeof node.method === 'object') out.method = node.method;
+  if (Array.isArray(node.methods) && node.methods.length) out.methods = node.methods;
   if (node.continuation) out.continuation = String(node.continuation);
   return out;
 }

@@ -23,8 +23,35 @@ class MethodCatalogTests(unittest.TestCase):
         methods = [json.loads(path.read_text(encoding="utf-8")) for path in paths]
         self.assertEqual({method["id"] for method in methods}, expected)
         self.assertEqual(len(paths), 25)
-        self.assertTrue(all(method.get("origin") and method.get("fragments")
-                            and method.get("enabled") is False for method in methods))
+        self.assertTrue(all(method.get("origin") and method.get("fragments") for method in methods))
+        # 既定 ON は「触らない工程では無害な文面」に限る（自己条件づけの規律ルール）。
+        default_on = {method["id"] for method in methods if method.get("enabled") is True}
+        self.assertEqual(default_on, {"ui-consistency", "test-green-evidence"})
+
+    def test_catalog_declares_the_model_of_each_entry(self):
+        """作業ルール（rule）と成果物の契約（contract）を宣言で分ける。
+
+        rule はさらに、実行条件で自動選択する auto と、工程ごとに人／planner が選ぶ
+        per-task に分かれる。無指定は rule / auto として読む（既存定義の互換）。
+        設計: docs/plans/2026-08-15-workflow-feature-improvement-implementation.md 第 4 段
+        """
+        root = pathlib.Path(__file__).resolve().parents[3]
+        methods = {
+            json.loads(path.read_text(encoding="utf-8"))["id"]:
+                json.loads(path.read_text(encoding="utf-8"))
+            for path in sorted((root / "methods").glob("*.json"))
+        }
+        kinds = {mid: m.get("kind", "rule") for mid, m in methods.items()}
+        self.assertEqual({mid for mid, kind in kinds.items() if kind == "contract"},
+                         {"design-document-format"})
+        selections = {mid: m.get("selection", "auto") for mid, m in methods.items()
+                      if kinds[mid] == "rule"}
+        self.assertEqual({mid for mid, sel in selections.items() if sel == "per-task"},
+                         {"integration-verify"})
+        # 契約は書式（機械で数える構造）を持ち、ルールは持たない
+        self.assertIn("format", methods["design-document-format"])
+        self.assertTrue(all("format" not in m for mid, m in methods.items()
+                            if kinds[mid] == "rule"))
 
     def test_multi_step_planning_presets_do_not_target_lightweight_runs(self):
         root = pathlib.Path(__file__).resolve().parents[3]
