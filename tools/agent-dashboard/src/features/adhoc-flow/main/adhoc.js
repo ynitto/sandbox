@@ -994,6 +994,15 @@ function methodsSnapshot(config, ids, options = {}) {
   return out;
 }
 
+// 工程ごとに選ぶルールのカタログを run tuning へ複製する形にする。enabled は必ず
+// false へ落とす——「run へ複製したか」と「実行時に自動注入するか（agentcore.methods.select
+// の対象か）」は別で、per-task ルールは後者ではない。agent-flow の planner がこの複製から
+// 選び、選んだタスクの goal へだけ本文を複製する（_coerce_tasks の methods フィールド）。
+function perTaskMethodsSnapshot(config, options = {}) {
+  const ids = perTaskRules(config, options).map((method) => String(method.id));
+  return (methodsSnapshot(config, ids, options) || []).map((snap) => ({ ...snap, enabled: false }));
+}
+
 function runTuningDir(config, runId) {
   const root = String(cfgOf(config).tuningRoot || '').trim();
   return root ? path.join(root, runId) : agentHomeSubdir('flow', 'tuning', runId);
@@ -1135,8 +1144,15 @@ function submit(config, {
     ...picked.map(String),
     ...enabledAutoRuleIds(config, { cwd }),
   ])];
-  const methods = methodsSnapshot(config, methodIds, { cwd });
-  const tuningDir = methods && methods.length ? writeRunTuning(config, runId, methods) : null;
+  const methods = methodsSnapshot(config, methodIds, { cwd }) || [];
+  // 工程ごとに選ぶルールのカタログも run tuning へ複製する（enabled: false のまま＝
+  // agentcore の自動注入対象にはしない）。agent-flow の planner／評価役はこの複製から
+  // 選び、選んだタスクだけへ実行時に本文を複製する。UI から工程を選べない planner 生成
+  // ノード（type: auto・パターン）へも per-task ルールを届けるための唯一の口。
+  const perTaskCatalog = perTaskMethodsSnapshot(config, { cwd })
+    .filter((method) => !methodIds.includes(String(method.id)));
+  const allMethods = [...methods, ...perTaskCatalog];
+  const tuningDir = allMethods.length ? writeRunTuning(config, runId, allMethods) : null;
 
   const line = buildLaunchLine(config, {
     runId,
@@ -1296,6 +1312,7 @@ module.exports = {
   perTaskRules,
   enabledAutoRuleIds,
   methodsSnapshot,
+  perTaskMethodsSnapshot,
   designDocumentFormat,
   designDocumentInstruction,
   writeRunTuning,

@@ -890,6 +890,132 @@ class ReviewLensTests(unittest.TestCase):
         self.assertIn(kf.review_lens_directive(), seen["p"])
 
 
+class PerTaskRuleTests(unittest.TestCase):
+    """工程ごとに選ぶ作業ルール（per-task rule）を planner・評価役へ渡す配線。
+
+    カタログの正典は run 専用 tuning.json（dashboard が selection: "per-task" の定義を
+    enabled: false のまま複製する）。エンジンは「その一覧を prompt へ載せ、選ばれたタスク
+    だけへ role の合う本文を複製する」規則だけを持つ。
+
+    設計: docs/plans/2026-08-15-workflow-feature-improvement-implementation.md 第 5 段
+    """
+
+    def _tuning_dir_with(self, methods):
+        d = tempfile.mkdtemp()
+        with open(os.path.join(d, "tuning.json"), "w", encoding="utf-8") as f:
+            json.dump({"version": 1, "enabled": True, "methods": methods, "trials": []}, f)
+        return d
+
+    def test_catalog_is_empty_without_a_tuning_file(self):
+        with mock.patch.dict(os.environ, {"AGENT_TUNING_DIR": os.path.join(tempfile.mkdtemp(), "no-such-dir")}):
+            self.assertEqual(kf._per_task_rule_catalog(), {})
+            self.assertEqual(kf.per_task_rule_directive(), "")
+
+    def test_catalog_reads_only_selection_per_task(self):
+        d = self._tuning_dir_with([
+            {"id": "integration-verify", "description": "統合検証", "selection": "per-task",
+             "fragments": [{"role": "verify", "text": "全体を回す"}]},
+            {"id": "ui-consistency", "description": "画面の一貫性", "selection": "auto", "enabled": True,
+             "fragments": [{"role": "worker", "text": "既存 UI に揃える"}]},
+        ])
+        with mock.patch.dict(os.environ, {"AGENT_TUNING_DIR": d}):
+            catalog = kf._per_task_rule_catalog()
+            self.assertEqual(list(catalog.keys()), ["integration-verify"])
+            note = kf.per_task_rule_directive()
+            self.assertIn("integration-verify: 統合検証", note)
+            self.assertNotIn("ui-consistency", note)
+            self.assertIn('"methods":', note)
+
+    def test_coerce_tasks_duplicates_text_only_for_chosen_ids_and_matching_role(self):
+        d = self._tuning_dir_with([
+            {"id": "integration-verify", "description": "統合検証", "selection": "per-task",
+             "fragments": [{"role": "verify", "text": "パッケージ全体を回す。"}]},
+        ])
+        with mock.patch.dict(os.environ, {"AGENT_TUNING_DIR": d}):
+            tasks = kf._coerce_tasks([
+                {"id": "check", "goal": "確認する", "deps": [], "kind": "verify",
+                 "methods": ["integration-verify"]},
+                {"id": "build", "goal": "実装する", "deps": [], "kind": "work",
+                 "methods": ["integration-verify"]},  # role が worker なので本文は付かない
+                {"id": "plain", "goal": "何もしない", "deps": [], "kind": "work"},
+            ])
+        by_id = {t["id"]: t for t in tasks}
+        self.assertIn("パッケージ全体を回す。", by_id["check"]["goal"])
+        self.assertIn("作業ルール「統合検証」", by_id["check"]["goal"])
+        self.assertEqual(by_id["build"]["goal"], "実装する", "role が合わない選択は本文を足さない")
+        self.assertEqual(by_id["plain"]["goal"], "何もしない")
+        # goal 以外の構造化フィールドへは methods を残さない（実行エンジンへ生の選択を渡さない）
+        self.assertNotIn("methods", by_id["check"])
+
+    def test_coerce_tasks_ignores_unknown_ids_and_dedupes(self):
+        d = self._tuning_dir_with([
+            {"id": "integration-verify", "description": "統合検証", "selection": "per-task",
+             "fragments": [{"role": "verify", "text": "全体を回す。"}]},
+        ])
+        with mock.patch.dict(os.environ, {"AGENT_TUNING_DIR": d}):
+            tasks = kf._coerce_tasks([
+                {"id": "check", "goal": "確認する", "deps": [], "kind": "verify",
+                 "methods": ["integration-verify", "no-such-id", "integration-verify"]},
+            ])
+        self.assertEqual(tasks[0]["goal"].count("全体を回す。"), 1, "同じ id の重複複製はしない")
+
+    def test_coerce_tasks_is_a_no_op_without_a_tuning_file(self):
+        with mock.patch.dict(os.environ, {"AGENT_TUNING_DIR": os.path.join(tempfile.mkdtemp(), "no-such-dir")}):
+            tasks = kf._coerce_tasks([
+                {"id": "check", "goal": "確認する", "deps": [], "kind": "verify",
+                 "methods": ["integration-verify"]},
+            ])
+        self.assertEqual(tasks[0]["goal"], "確認する")
+
+    def test_planner_prompt_carries_the_catalog_when_present(self):
+        d = self._tuning_dir_with([
+            {"id": "integration-verify", "description": "統合検証", "selection": "per-task",
+             "fragments": [{"role": "verify", "text": "全体を回す。"}]},
+        ])
+        seen = {}
+
+        def fake_run(prompt, model, purpose=""):
+            seen["p"] = prompt
+            return '{"patterns":["fan-out-and-synthesize"],"parallelism":2,"tasks":[' \
+                   '{"id":"t1","goal":"g","deps":[],"kind":"work"}]}'
+
+        with mock.patch.dict(os.environ, {"AGENT_TUNING_DIR": d}), \
+             mock.patch.object(kf, "run_agent", side_effect=fake_run):
+            kf.plan_strategy_agent("req", None)
+        self.assertIn(kf.per_task_rule_directive(), seen["p"])
+
+    def test_planner_prompt_unchanged_without_a_catalog(self):
+        seen = {}
+
+        def fake_run(prompt, model, purpose=""):
+            seen["p"] = prompt
+            return '{"patterns":["fan-out-and-synthesize"],"parallelism":2,"tasks":[' \
+                   '{"id":"t1","goal":"g","deps":[],"kind":"work"}]}'
+
+        with mock.patch.dict(os.environ, {"AGENT_TUNING_DIR": os.path.join(tempfile.mkdtemp(), "no-such-dir")}), \
+             mock.patch.object(kf, "run_agent", side_effect=fake_run):
+            kf.plan_strategy_agent("req", None)
+        self.assertNotIn("工程ごとに選べる追加ルール", seen["p"])
+
+    def test_evaluator_prompt_carries_the_catalog(self):
+        d = self._tuning_dir_with([
+            {"id": "integration-verify", "description": "統合検証", "selection": "per-task",
+             "fragments": [{"role": "verify", "text": "全体を回す。"}]},
+        ])
+        seen = {}
+
+        def fake_run(prompt, model, purpose=""):
+            seen["p"] = prompt
+            return '{"decision":"done","new_tasks":[]}'
+
+        nodes = {"t1": {"id": "t1", "goal": "g", "deps": [], "kind": "work"}}
+        results = {"t1": {"status": "done", "output": "ok"}}
+        with mock.patch.dict(os.environ, {"AGENT_TUNING_DIR": d}), \
+             mock.patch.object(kf, "run_agent", side_effect=fake_run):
+            kf.continue_agent("req", nodes, results, 0)
+        self.assertIn(kf.per_task_rule_directive(), seen["p"])
+
+
 class TerminalVerificationTests(unittest.TestCase):
     """run の完了条件 — 終端 verify が緑であること。
 

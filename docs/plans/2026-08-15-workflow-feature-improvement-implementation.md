@@ -182,3 +182,56 @@ phase だけを信じて不完全な設計書を実装 run へ流さない。
 3. 工程の追加ルールが 1 件しか選べなかった（ラジオ） → 複数選択にし、ノード定義は
    `method`（単数）から `methods`（配列）へ。旧定義は読み込み時に配列化して互換を保つ
 4. 同梱の既定 ON が状態表示に反映されなかった → 端末設定の宣言が無ければカタログ自身の既定を読む
+
+## 第 5 段 — per-task ルールを planner・評価役へ渡す
+
+第 4 段の時点で「工程ごとに選ぶルール」は、ダッシュボードの編集画面で人がノードを選んで
+初めて効く仕組みだった。`type: auto`（planner がグラフ自体を組み立てる、最も一般的な使い方）
+や、評価役が実行時に足すタスク（検証 fail の作り直し・データ駆動 fan-out の map）には、
+per-task ルールを選ぶ手段が無かった。第 5 段はこの手段を、既存の複製の枠組みのまま追加する。
+
+### 設計
+
+カタログの正典は変えない。run 専用 tuning.json（dashboard が `selection: "per-task"` の
+定義を `enabled: false` のまま複製する）を、agent-flow（Python）が **直接読む**——
+`agentcore.methods.select()` を経由しない別経路にする。理由は、`select()` は `enabled: true`
+の項目を `when` 条件だけで全ノードへ一律に自動注入する仕組みで、「このタスクだけに」という
+per-task の選択とは意味が違うため。同じファイルに両方を混ぜても、`enabled` と `selection`
+というフィールドの意味を分けておけば安全に共存する。
+
+1. **dashボード**: `perTaskMethodsSnapshot()` が per-task ルールの完全な定義（`fragments` 込み）を
+   `enabled: false` で複製し、`submit()` が自動適用ルールと同じ tuning.json へ書き込む。
+2. **agent-flow**: `patterns.py` の `_per_task_rule_catalog()` が同じ tuning.json を
+   `selection == "per-task"` で絞って読む（`AGENT_TUNING_DIR` は methods.py の
+   `_method_tuning_file()` と同じ解決）。`per_task_rule_directive()` が一覧（id + 説明）を
+   planner／評価役のプロンプトへ後置する。
+3. **選択の反映**: planner・評価役が返すタスク JSON に `"methods": ["<id>"]` を含められる。
+   `_coerce_tasks`（3 つの生成経路すべての単一チョークポイント）が、選ばれた id のうち
+   **そのノードの role に合う本文を持つもの**だけを `goal` へ複製する。role は
+   `kind == "verify"` なら `"verify"`、それ以外は `"worker"`（`agentcore.methods.role_for` と
+   同じ既定）。未知の id・role 不一致は黙って外す（フェイルオープン——LLM の書式ミスで
+   run を止めない。カタログ側の壊れた宣言をフェイルクローズにする第 3・4 段とは対照的で、
+   ここは「実行時に LLM が書く自由記述に近いフィールド」なので寛容にする）。
+
+### 配線した場所
+
+- `plan_strategy_agent`（組み込みエージェント planner）: `split_note`/`tier_note` と同じ
+  「非空なら後置」の流儀。
+- `continue_agent`（評価役。`continuation.py`）: `review_lens_directive()`/`tier_evaluator_directive()`
+  と同じ「スキル/組み込み両経路への一律後置」の流儀（評価役プロンプトは外部スキルに委譲しない）。
+- `plan_strategy_flow_planner`（flow-planner スキル）: 意図的に**配線しない**。スキルは
+  リポジトリ外の独立プロセスで、この機能を知らない。既存の `split_policy` も同じ理由でこの
+  経路には渡していない（既知の制約で、今回新たに広げるものではない）。
+
+### tuning.json が無い環境
+
+新しい設定キーは増やさない。`AGENT_TUNING_DIR` にファイルが無ければ
+`_per_task_rule_catalog()` は空を返し、`per_task_rule_directive()` は空文字列——プロンプトは
+1 バイトも変わらず、`_coerce_tasks` の `methods` 処理も no-op になる。dashboard を経由しない
+CLI 単体利用（多くのテスト・多くの実運用）はこれまでどおり動く。
+
+検証: `tools/agent-flow/tests/test_planner.py` の `PerTaskRuleTests`
+（カタログの絞り込み・複製の役割一致・未知 id の無視・重複排除・両プロンプトへの後置・
+カタログ無しでの no-op）。dashboard 側は `perTaskMethodsSnapshot` が `enabled: false` を
+強制することと、`submit()` が自動適用ルールと同じ tuning.json へ複製することを
+`tools/agent-dashboard/test/adhoc-flow.test.js` で確認する。

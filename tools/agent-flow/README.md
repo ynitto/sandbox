@@ -388,6 +388,13 @@ orchestrator は要求を見て、以下の 7 パターン（最初の 6 つは
   最終プロンプトへ追補する。`when` は engine / workload / CLI / model / role / purpose / 実行段 /
   相対コストで決定的に評価し、基礎スキルの本文は変更しない。run / result / node-budget 台帳には
   適用手法セットと trial variant を残す。
+- **工程ごとに選ぶルール（per-task）**: `tuning.json` の `methods` のうち `selection: "per-task"`
+  の項目（`enabled` の値によらず存在すれば対象）は上の追補（`enabled: true` の一律注入）とは別に
+  扱う。一覧を planner（組み込みエージェント planner）・評価役のプロンプトへ後置し、返るタスクが
+  `"methods": ["<id>"]` を含めれば、そのタスクの role（work 系は worker、verify は verify）に
+  合う本文だけを goal へ複製する。未知の id・role 不一致は黙って外す（フェイルオープン）。
+  flow-planner スキル（外部プロセス）には渡さない。tuning.json が無い環境ではプロンプトも
+  タスクの扱いも 1 バイトも変わらない。
 - **構造化成果（structured results）**: 各ノードの結果はテキスト `output` に加え、任意の **`data`（JSON）**
   を持てる。依存先へは既定で要約・成果物参照・省略量だけの digest を渡し、完全な構造化データが
   必須のノードだけ `dependency_input: full` を宣言する。`reduce` kind は依存の `data`（リスト等）を

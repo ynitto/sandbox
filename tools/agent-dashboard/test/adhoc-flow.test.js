@@ -1871,7 +1871,7 @@ test('一貫性ゲート: フェイルクローズ（組み立て失敗・リポ
   }
 });
 
-test('submit はプリセット無しでも投入でき、既定 ON の作業ルールを run へ複製する', () => {
+test('submit はプリセット無しでも投入でき、既定 ON の作業ルールと per-task カタログを run へ複製する', () => {
   const cfg = { adhocFlow: { busDir: tmpdir('adhoc-bus2-'), tuningRoot: tmpdir('adhoc-tuning2-') } };
   const orig = exec.shInWsl;
   exec.shInWsl = () => ({ ok: true, status: 0, stdout: '', stderr: '', error: '' });
@@ -1880,12 +1880,19 @@ test('submit はプリセット無しでも投入でき、既定 ON の作業ル
     const rec = JSON.parse(fs.readFileSync(
       path.join(cfg.adhocFlow.busDir, 'inbox', `${res.runId}.json`), 'utf8'));
     assert.strictEqual(rec.plan, undefined);
-    // 同梱カタログの既定 ON（自己条件づけの規律ルール）は run 専用 tuning へ複製される。
-    // 複製なので、後からカタログを変えても走り出した run の振る舞いは変わらない。
+    // 同梱カタログの既定 ON（自己条件づけの規律ルール）は enabled: true で run 専用 tuning へ
+    // 複製される。複製なので、後からカタログを変えても走り出した run の振る舞いは変わらない。
     const runTuning = JSON.parse(fs.readFileSync(path.join(res.tuningDir, 'tuning.json'), 'utf8'));
-    assert.deepStrictEqual(runTuning.methods.map((method) => method.id).sort(),
-      ['test-green-evidence', 'ui-consistency']);
-    assert.ok(runTuning.methods.every((method) => method.enabled === true));
+    const byId = new Map(runTuning.methods.map((method) => [method.id, method]));
+    assert.deepStrictEqual([...byId.keys()].sort(),
+      ['integration-verify', 'test-green-evidence', 'ui-consistency']);
+    assert.strictEqual(byId.get('test-green-evidence').enabled, true);
+    assert.strictEqual(byId.get('ui-consistency').enabled, true);
+    // per-task ルールのカタログ（integration-verify）は enabled: false のまま複製される
+    // ——agentcore.methods.select の自動注入対象にはせず、agent-flow の planner がここから
+    // 選び、選んだタスクだけへ本文を複製する。
+    assert.strictEqual(byId.get('integration-verify').enabled, false);
+    assert.strictEqual(byId.get('integration-verify').selection, 'per-task');
   } finally {
     exec.shInWsl = orig;
   }
@@ -1906,11 +1913,37 @@ test('既定 ON は端末設定の宣言で上書きでき、無効化すれば 
   try {
     const res = adhoc.submit(cfg, { request: '軽い調べ物' });
     const runTuning = JSON.parse(fs.readFileSync(path.join(res.tuningDir, 'tuning.json'), 'utf8'));
-    assert.deepStrictEqual(runTuning.methods.map((method) => method.id), ['test-green-evidence'],
-      '端末設定で無効化した既定 ON は複製しない');
+    assert.deepStrictEqual(runTuning.methods.filter((method) => method.enabled === true)
+      .map((method) => method.id), ['test-green-evidence'],
+    '端末設定で無効化した既定 ON は enabled:true では複製しない');
   } finally {
     exec.shInWsl = orig;
   }
+});
+
+test('perTaskMethodsSnapshot は enabled を必ず false へ落とす（自動注入の対象にしない）', () => {
+  const controlDir = tmpdir('per-task-snapshot-');
+  fs.writeFileSync(path.join(controlDir, 'tuning.json'), JSON.stringify({
+    version: 1, enabled: true, trials: [],
+    // 端末設定で誤って enabled: true を宣言していても、複製時に false へ丸める。
+    methods: [{ id: 'integration-verify', description: '上書き', enabled: true,
+      selection: 'per-task', fragments: [{ role: 'verify', text: 'x' }] }],
+  }));
+  const cfg = { orchestration: { tuningDir: controlDir } };
+  const snap = adhoc.perTaskMethodsSnapshot(cfg);
+  assert.deepStrictEqual(snap.map((m) => [m.id, m.enabled, m.selection]),
+    [['integration-verify', false, 'per-task']]);
+});
+
+test('run tuning に複製した per-task カタログを agent-flow の planner が使い、選んだタスクだけへ本文を複製する（Python 側）', () => {
+  // JS 側の責務はカタログを run tuning へ複製するところまで。実際に planner プロンプトへ
+  // 一覧を渡し、選ばれたタスクの goal へ本文を複製するのは agent-flow（Python）の責務で、
+  // そちらの契約テストは tools/agent-flow/tests/test_planner.py にある
+  // （PerTaskRuleTests）。ここでは複製した run tuning が Python 側の想定する形
+  // （selection: 'per-task' な methods 配列項目）であることだけを確認する。
+  const cfg = {};
+  const snap = adhoc.perTaskMethodsSnapshot(cfg);
+  assert.ok(snap.every((m) => m.selection === 'per-task' && Array.isArray(m.fragments)));
 });
 
 test('実行時指定は tier を候補へ解決して inbox に固定し、再実行にも引き継ぐ', () => {

@@ -7,6 +7,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### ワークフロー機能: 工程ごとに選ぶルールを planner・評価役へ渡す配線を追加した
+
+「工程ごとに選ぶルール」（per-task）は、これまでダッシュボードの編集画面で人がノードを選んで
+初めて効いていた。`type: auto`（planner がグラフを組み立てる、最も一般的な使い方）や、評価役が
+実行時に足すタスクには選ぶ手段が無かったので、既存の複製の枠組みのまま手段を追加した。
+
+- dashboard は per-task ルールの完全な定義を `enabled: false` のまま run 専用 tuning.json へ
+  複製する（自動適用ルールと同じ器。`enabled` と `selection` の意味を分けて共存させる）
+- agent-flow（Python）が同じ tuning.json を直接読み、`selection: "per-task"` の一覧を
+  planner・評価役のプロンプトへ後置する（`per_task_rule_directive`）
+- planner・評価役が返すタスクへ `"methods": ["<id>"]` を含められる。`_coerce_tasks`
+  （3 経路共通の単一チョークポイント）が、そのノードの role に合う本文だけを goal へ複製する。
+  未知の id・role 不一致は黙って外す（フェイルオープン）
+- flow-planner スキル（外部プロセス）には配線しない。既存の `split_policy` と同じ既知の制約
+
+契約検証: `tools/agent-flow/tests/test_planner.py::PerTaskRuleTests` / `tools/agent-dashboard npm test`
+
+設計: `docs/plans/2026-08-15-workflow-feature-improvement-implementation.md`（第 5 段）
+
 ### ワークフロー機能: 手法カタログのモデルを作業ルールと成果物の契約に分けた
 
 カスタマイズ口を作業ルール 1 本へ寄せた結果、カタログの中に性質の違うものが同居していることが
