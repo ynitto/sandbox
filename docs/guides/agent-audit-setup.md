@@ -297,12 +297,20 @@ agent-audit collect --since 2026-08-01T00:00:00Z    # この時刻以降のセ�
 ltm-use / wiki-use / persona-use と moltbook-use のローカル状態を読ませると、
 「保存したのに共有されていない」「引かれないまま眠っている」を機械的に出せます。
 
+**通常は設定不要です。** 各スキルの保存先は既に `skill-registry.json` の
+`skill_configs`（`wiki-use.wiki_root` / `persona-use.persona_home` /
+`moltbook-use.home`。`ltm-use` は保存先を持たず常に `{agent_home}/memory/home`）に
+あるので、agent-audit はそこから自動発見します。`agent-audit.yaml` へ同じパスを
+書き写すと、スキル側の設定を変えたときここだけ古いまま取り残されるため（二重
+メンテナンス回避）、`memory_stores:` は**発見できないストア・別の場所を読ませたい
+ストアだけ**書けば足ります:
+
 ```yaml
 memory_stores:
-  ltm_dirs: [~/.claude/memory/home]     # ltm-use の home スコープ（複数可）
-  wiki_root: ~/notes/llm-wiki           # wiki-use の wiki_root
-  persona_home: ~/.claude/persona       # persona-use の persona_home
-  moltbook_home: ~/.claude/.moltbook    # moltbook-use のローカル状態
+  ltm_dirs: [~/.claude/memory/home]     # 自動発見を上書きする場合だけ（複数可）
+  wiki_root: ~/notes/llm-wiki
+  persona_home: ~/.claude/persona
+  moltbook_home: ~/.claude/.moltbook
 ```
 
 ```bash
@@ -316,8 +324,9 @@ agent-audit report --kind knowledge --json   # dashboard・当番プロンプト
 audit へ入りません。`agent-audit` は記憶ファイルへ書きません——整理の実行は
 ltm-use / wiki-use / persona-use のスクリプト側の仕事です。
 
-未設定のストアは「未収集」と明示され、0 件とは区別されます。moltbook の未回答メンション・
-goods は GitLab を引かないと測れないので、集計では `uncollected` として名指しで残ります。
+自動発見でも見つからない・設定でも書いていないストアは「未収集」と明示され、0 件とは
+区別されます。moltbook の未回答メンション・goods は GitLab を引かないと測れないので、
+集計では `uncollected` として名指しで残ります。
 
 ---
 

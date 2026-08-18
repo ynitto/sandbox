@@ -105,17 +105,6 @@ function parseJson(stdout) {
   return JSON.parse(s.slice(start, end + 1));
 }
 
-// `tasks` は配列を返す（--json フラグを持たず常に JSON）。同じ理由で '[' … ']' を拾う。
-function parseJsonArray(stdout) {
-  const s = String(stdout || '');
-  const start = s.indexOf('[');
-  const end = s.lastIndexOf(']');
-  if (start < 0 || end <= start) {
-    throw new Error('agent-audit の応答に JSON 配列がありません');
-  }
-  return JSON.parse(s.slice(start, end + 1));
-}
-
 function collect(cfg, runShell = defaultRunShell) {
   if (collectInFlight) {
     return { ok: false, busy: true, error: '収集を実行中です', lastCollect };
@@ -184,23 +173,16 @@ async function summary(cfg, period, runShell = defaultRunShell) {
 }
 
 // 記憶 3 層 + moltbook の健全性（計画: docs/plans/2026-08-15-agent-tools-cross-agent-knowledge-operation-plan.md
-// §3.4・K3）。LLM は使わない決定的集計で、agent-audit 側で既にスクラブ済み（設計の
-// export 系不変条件）。集計ロジックはこちらへ複製しない。
+// §3.4）。LLM は使わない決定的集計で、agent-audit 側で既にスクラブ済み（設計の
+// export 系不変条件）。集計ロジックはこちらへ複製しない。中身（記憶の本文）は
+// この画面では見せない——確認は Obsidian など既存の閲覧手段に任せ、ここでは
+// 「利用状況」に載せる程度の要約点数だけを返す。
 async function knowledge(cfg, runShell = defaultRunShell) {
   const settings = auditSettings(cfg);
   const r = await runShell(
     buildScript(settings, ['report', '--kind', 'knowledge', '--json']), 60000, settings.distro);
   if (!r.ok) throw new Error(failureMessage(r, '記憶層の集計を取得できませんでした'));
   return parseJson(r.stdout);
-}
-
-// 洞察 → 改善タスク（task.schema.json 形。読み取りのみで、agent-project への
-// 取り込みはこの画面からは行わない——投入は agent-project 側の既存 intake の仕事）。
-async function tasks(cfg, runShell = defaultRunShell) {
-  const settings = auditSettings(cfg);
-  const r = await runShell(buildScript(settings, ['tasks']), 30000, settings.distro);
-  if (!r.ok) throw new Error(failureMessage(r, '改善タスクを取得できませんでした'));
-  return parseJsonArray(r.stdout);
 }
 
 async function stats(cfg, period, runShell = defaultRunShell) {
@@ -238,6 +220,6 @@ async function doctor(cfg, runShell = defaultRunShell) {
 }
 
 module.exports = {
-  auditSettings, buildScript, parseJson, parseJsonArray,
-  collect, usage, summary, stats, sessions, doctor, knowledge, tasks,
+  auditSettings, buildScript, parseJson,
+  collect, usage, summary, stats, sessions, doctor, knowledge,
 };

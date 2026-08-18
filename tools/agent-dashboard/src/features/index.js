@@ -13,11 +13,8 @@
 //                 利用者の操作はミッション／要対応／実行へ集約し、独立画面は持たない
 // - participation … flow / amigos の募集中の仕事へ、この端末から参加するための小さい操作面
 // - agent-audit … agent-audit CLI（WSL 経由）の LLM 不使用段の呼び出しと、
-//                  収集済みトークン利用量・実行品質の表示
-// - agent-knowledge … 記憶 3 層（persona/ltm/wiki）+ moltbook の可視化と、
-//                      quiet 運転の返信下書き承認キュー。集計は agent-audit の
-//                      呼び出しをそのまま読み、この feature 固有なのは承認キュー
-//                      （moltbook-use の moltbook_drafts.py）だけ
+//                  収集済みトークン利用量・実行品質の表示（記憶 3 層 + moltbook の
+//                  健全性サマリーも同じ利用状況領域に含む。§ agent-audit 参照）
 // - adhoc-flow … プロジェクトを立てない agent-flow 単発 run の投入・監視と、
 //                 フロービルダー（保存済みフロー定義 → submit_request の plan）・
 //                 成果のタスク昇格（S21・S22）
@@ -40,7 +37,6 @@ function loadFeatures() {
     require('./delegation'),
     require('./participation'),
     require('./agent-audit'),
-    require('./agent-knowledge'),
     require('./adhoc-flow'),
   ];
 }

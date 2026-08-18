@@ -1,6 +1,10 @@
-"""moltbook 当番（K2）の回帰テスト — quiet 運転の下書きと reply-drafts 送信。
+"""moltbook 当番（K2）の回帰テスト — 自律返信のゲートは常に無音スキップする。
 
 計画: docs/plans/2026-08-15-agent-tools-cross-agent-knowledge-operation-plan.md §3.3
+
+Moltbook は各ノードの AI（当番）だけが操作する前提で、人の承認・差し戻しの経路は
+持たない。reply_mode/予算/深さ/クールダウンいずれの理由でゲートがブロックしても、
+下書きを残さずその場でスキップする（送信は行わない）。
 
 CI には未接続（このリポジトリの `.github/skills/*` は現状テスト対象外）だが、
 GitLab へは一切繋がず（GitLabClient をスタブに差し替え）ローカルで完結する。
@@ -9,7 +13,6 @@ GitLab へは一切繋がず（GitLabClient をスタブに差し替え）ロー
 from __future__ import annotations
 
 import importlib.util
-import json
 import sys
 import tempfile
 import unittest
@@ -43,8 +46,8 @@ class _StubClient:
         return {"id": len(self.notes)}
 
 
-class MoltbookReplyDraftTests(unittest.TestCase):
-    """quiet 運転で自律返信がブロックされたときの下書き化（moltbook.py）。"""
+class MoltbookAutonomousReplyGateTests(unittest.TestCase):
+    """自律返信のゲート（moltbook.py cmd_reply）。人の承認経路は無い。"""
 
     def setUp(self):
         self.home = Path(tempfile.mkdtemp(prefix="moltbook-test-home-"))
@@ -59,30 +62,25 @@ class MoltbookReplyDraftTests(unittest.TestCase):
         base.update(over)
         return Namespace(**base)
 
-    def test_quiet_mode_writes_draft_instead_of_posting(self):
+    def test_quiet_mode_block_is_a_silent_skip_no_draft_is_written(self):
         client = _StubClient({"author": {"username": "alice"}})
         with mock.patch.object(self.mb, "_client", return_value=client), \
              mock.patch.object(self.mb, "can_reply", return_value=(False, "reply_mode=quiet")):
             rc = self.mb.cmd_reply(self._args())
         self.assertEqual(rc, 0)
         self.assertEqual(client.notes, [], "quiet 中は GitLab へ何も送らない")
-        drafts = list((self.home / "outbox" / "drafts").glob("*.md"))
-        self.assertEqual(len(drafts), 1)
-        text = drafts[0].read_text(encoding="utf-8")
-        self.assertIn("iid: 12", text)
-        self.assertIn("author: alice", text)
-        self.assertIn("根拠: mem-1 を参照。", text)
+        self.assertFalse((self.home / "outbox").exists(),
+                         "下書き・承認キューは持たない——moltbook は AI だけが操作する")
 
-    def test_budget_or_cooldown_block_stays_silent_skip_not_a_draft(self):
-        """予算・深さ・クールダウンは頻度の制御であって内容の否定ではない——下書きにしない。"""
+    def test_budget_or_cooldown_block_is_also_a_silent_skip(self):
         client = _StubClient({"author": {"username": "alice"}})
         with mock.patch.object(self.mb, "_client", return_value=client), \
              mock.patch.object(self.mb, "can_reply", return_value=(False, "reply_budget(3)")):
             self.mb.cmd_reply(self._args())
         self.assertEqual(client.notes, [])
-        self.assertFalse((self.home / "outbox" / "drafts").exists())
+        self.assertFalse((self.home / "outbox").exists())
 
-    def test_active_mode_posts_normally_and_never_drafts(self):
+    def test_allowed_autonomous_reply_posts_and_records(self):
         client = _StubClient({"author": {"username": "alice"}})
         with mock.patch.object(self.mb, "_client", return_value=client), \
              mock.patch.object(self.mb, "can_reply", return_value=(True, "ok")), \
@@ -91,91 +89,15 @@ class MoltbookReplyDraftTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(client.notes, [(12, "根拠: mem-1 を参照。")])
         record.assert_called_once()
-        self.assertFalse((self.home / "outbox" / "drafts").exists())
 
-    def test_dry_run_never_touches_the_filesystem(self):
-        client = _StubClient({"author": {"username": "alice"}})
+    def test_manual_reply_bypasses_the_gate_entirely(self):
+        client = _StubClient()
         with mock.patch.object(self.mb, "_client", return_value=client), \
-             mock.patch.object(self.mb, "can_reply", return_value=(False, "reply_mode=quiet")):
-            self.mb.cmd_reply(self._args(dry_run=True))
-        self.assertFalse((self.home / "outbox").exists())
-
-
-class MoltbookSendDraftsTests(unittest.TestCase):
-    """人が承認した下書き（drafts/approved/）の送信（moltbook_batch.py）。"""
-
-    def setUp(self):
-        self.home = Path(tempfile.mkdtemp(prefix="moltbook-test-home-"))
-        self.env = mock.patch.dict("os.environ", {"MOLTBOOK_HOME": str(self.home)})
-        self.env.start()
-        self.addCleanup(self.env.stop)
-        self.batch = _load("moltbook_batch_duty_test", "moltbook_batch.py")
-        self.approved = self.home / "outbox" / "drafts" / "approved"
-        self.approved.mkdir(parents=True)
-
-    def _write(self, name: str, *, iid="42", author="bob", body="根拠つき回答です。"):
-        (self.approved / name).write_text(
-            f"---\niid: {iid}\nauthor: {author}\ncreated: 2026-08-16\n---\n\n{body}\n",
-            encoding="utf-8")
-
-    def _args(self, dry_run=False):
-        return Namespace(drafts_dir=str(self.approved), dry_run=dry_run)
-
-    def test_approved_draft_is_sent_and_moved_to_sent(self):
-        self._write("42-bob.md")
-        client = _StubClient()
-        with mock.patch.object(self.batch, "record_reply") as record:
-            tally = self.batch.run_send_drafts(client, self._args())
-        self.assertEqual(tally, {"sent": 1, "blocked": 0, "skipped": 0})
-        self.assertEqual(client.notes, [(42, "根拠つき回答です。")])
-        record.assert_called_once_with(42, "bob")
-        self.assertEqual(list(self.approved.glob("*.md")), [], "送信済みは approved から消える")
-        sent = list((self.approved.parent / "sent").glob("*.md"))
-        self.assertEqual(len(sent), 1)
-
-    def test_approved_draft_still_goes_through_privacy_gate(self):
-        """人の承認は gate の代わりにならない——最後の砦は必ず通す（K3）。"""
-        self._write("42-bob.md", body="このトークン glpat-abcdefghijklmnopqrst を使う")
-        client = _StubClient()
-        with mock.patch.object(self.batch, "record_reply") as record:
-            tally = self.batch.run_send_drafts(client, self._args())
-        self.assertEqual(tally, {"sent": 0, "blocked": 1, "skipped": 0})
-        self.assertEqual(client.notes, [], "gate を通らない下書きは GitLab へ送らない")
-        record.assert_not_called()
-        self.assertEqual(len(list(self.approved.glob("*.md"))), 1,
-                         "blocked は approved に残す——人が見直せるように黙って消さない")
-
-    def test_gate_redactions_are_applied_before_sending(self):
-        self._write("42-bob.md", body="連絡先は user@example.com です。")
-        client = _StubClient()
-        with mock.patch.object(self.batch, "record_reply"):
-            self.batch.run_send_drafts(client, self._args())
-        self.assertEqual(len(client.notes), 1)
-        self.assertNotIn("user@example.com", client.notes[0][1], "PII はスクラブしてから送る")
-
-    def test_missing_iid_is_skipped_without_posting(self):
-        self._write("bad.md", iid="")
-        client = _StubClient()
-        tally = self.batch.run_send_drafts(client, self._args())
-        self.assertEqual(tally, {"sent": 0, "blocked": 0, "skipped": 1})
-        self.assertEqual(client.notes, [])
-        self.assertEqual(len(list(self.approved.glob("*.md"))), 1,
-                         "読めなかった下書きは approved に残す（黙って消さない）")
-
-    def test_dry_run_does_not_move_or_record(self):
-        self._write("42-bob.md")
-        client = _StubClient()
-        with mock.patch.object(self.batch, "record_reply") as record:
-            tally = self.batch.run_send_drafts(client, self._args(dry_run=True))
-        self.assertEqual(tally["sent"], 1)
-        record.assert_not_called()
-        self.assertEqual(len(list(self.approved.glob("*.md"))), 1, "dry-run はファイルを動かさない")
-
-    def test_no_approved_drafts_is_a_noop(self):
-        client = _StubClient()
-        tally = self.batch.run_send_drafts(client, self._args())
-        self.assertEqual(tally, {"sent": 0, "blocked": 0, "skipped": 0})
-        self.assertEqual(client.notes, [])
+             mock.patch.object(self.mb, "can_reply") as can_reply:
+            rc = self.mb.cmd_reply(self._args(autonomous=False))
+        self.assertEqual(rc, 0)
+        can_reply.assert_not_called()
+        self.assertEqual(client.notes, [(12, "根拠: mem-1 を参照。")])
 
 
 if __name__ == "__main__":

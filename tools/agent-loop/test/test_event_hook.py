@@ -402,7 +402,8 @@ class MemoryMaintenanceHookTests(unittest.TestCase):
 
 
 class MoltbookDutyHookTests(unittest.TestCase):
-    """空き時間の Moltbook 巡回（計画 K2）。新しい判断はしない——sweep と承認済み送信だけ。"""
+    """空き時間の Moltbook 巡回（計画 K2）。新しい判断はしない——outbox sweep だけ。
+    人の承認・差し戻しの経路は持たない（moltbook は各ノードの AI だけが操作する）。"""
 
     def _skill_home(self):
         root = pathlib.Path(tempfile.mkdtemp(prefix="agent-loop-moltbook-skill-"))
@@ -411,7 +412,7 @@ class MoltbookDutyHookTests(unittest.TestCase):
         (scripts / "moltbook_batch.py").write_text("", encoding="utf-8")
         return root
 
-    def test_sweeps_outbox_and_sends_approved_drafts_without_prompt(self):
+    def test_sweeps_outbox_without_prompt(self):
         root = self._skill_home()
         completed = types.SimpleNamespace(returncode=0, stdout="", stderr="")
         cfg = {"hook_config": {"skill_home": str(root), "python": "python3",
@@ -422,7 +423,6 @@ class MoltbookDutyHookTests(unittest.TestCase):
         script = str(root / "moltbook-use" / "scripts" / "moltbook_batch.py")
         self.assertEqual([c.args[0] for c in run.call_args_list], [
             ["python3", script, "--label-conn", "work", "--direction", "publish"],
-            ["python3", script, "--label-conn", "work", "--direction", "reply-drafts"],
         ])
 
     def test_missing_skill_is_a_noop_not_an_error(self):
@@ -440,16 +440,16 @@ class MoltbookDutyHookTests(unittest.TestCase):
         self.assertNotIn("timeline", flat)
         self.assertNotIn(" reply ", flat, "根拠つきの新規 reply は当番の定期プロンプト側")
         self.assertNotIn("good", flat)
+        self.assertNotIn("reply-drafts", flat, "承認キューは持たない")
 
-    def test_one_failure_does_not_block_the_other_direction_and_is_reported(self):
+    def test_publish_failure_is_reported_not_swallowed(self):
         root = self._skill_home()
         failed = types.SimpleNamespace(returncode=2, stdout="", stderr="privacy gate blocked")
-        completed = types.SimpleNamespace(returncode=0, stdout="", stderr="")
         with mock.patch.object(moltbook_duty_hook.subprocess, "run",
-                               side_effect=[failed, completed]) as run:
+                               return_value=failed) as run:
             with self.assertRaises(RuntimeError) as caught:
                 moltbook_duty_hook.check({"hook_config": {"skill_home": str(root)}})
-        self.assertEqual(run.call_count, 2)
+        self.assertEqual(run.call_count, 1)
         self.assertIn("publish", str(caught.exception))
 
 

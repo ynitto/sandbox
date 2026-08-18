@@ -22,7 +22,7 @@ test('features に各制御面が並ぶ', () => {
   const ids = features.map((f) => f.id);
   assert.deepStrictEqual(ids,
     ['agent-project', 'routines', 'cowork', 'amigos', 'orchestration', 'delegation', 'participation',
-     'agent-audit', 'agent-knowledge', 'adhoc-flow']);
+     'agent-audit', 'adhoc-flow']);
 });
 
 test('各 feature が registerIpc / preloadApi / configDefaults を持つ', () => {
@@ -454,7 +454,7 @@ test('agent-audit は LLM 不使用段（収集・集計・点検）の API だ�
   });
   assert.deepStrictEqual(registered.sort(),
     ['agentAudit:collect', 'agentAudit:doctor', 'agentAudit:sessions', 'agentAudit:stats',
-     'agentAudit:usage', 'agentAudit:summary', 'agentAudit:knowledge', 'agentAudit:tasks'].sort());
+     'agentAudit:usage', 'agentAudit:summary', 'agentAudit:knowledge'].sort());
   const api = auditFeature.preloadApi();
   const calls = [];
   const usage = api.agentAuditUsage((channel, args) => {
@@ -464,31 +464,7 @@ test('agent-audit は LLM 不使用段（収集・集計・点検）の API だ�
   assert.strictEqual(usage({ period: 'month', by: 'agent_cli' }), 'ok');
   assert.deepStrictEqual(calls, [['agentAudit:usage', { period: 'month', by: 'agent_cli' }]]);
   for (const name of ['agentAuditCollect', 'agentAuditUsage', 'agentAuditSummary',
-    'agentAuditStats', 'agentAuditDoctor', 'agentAuditKnowledge', 'agentAuditTasks']) {
-    assert.strictEqual(typeof api[name], 'function', name);
-  }
-});
-
-test('agent-knowledge は quiet 運転の承認キュー API だけを登録する（K3）', () => {
-  const feature = loadFeatures().find((f) => f.id === 'agent-knowledge');
-  assert.ok(feature.configDefaults.agentKnowledge);
-  assert.strictEqual(feature.configDefaults.agentKnowledge.draftsCommand, '');
-  const registered = [];
-  feature.registerIpc({
-    handle: (channel) => registered.push(channel),
-    loadConfig: () => ({}),
-  });
-  assert.deepStrictEqual(registered.sort(),
-    ['agentKnowledge:draftsApprove', 'agentKnowledge:draftsDiscard', 'agentKnowledge:draftsList'].sort());
-  const api = feature.preloadApi();
-  const calls = [];
-  const approve = api.agentKnowledgeDraftsApprove((channel, args) => {
-    calls.push([channel, args]);
-    return 'ok';
-  });
-  assert.strictEqual(approve({ file: '12-alice.md' }), 'ok');
-  assert.deepStrictEqual(calls, [['agentKnowledge:draftsApprove', { file: '12-alice.md' }]]);
-  for (const name of ['agentKnowledgeDraftsList', 'agentKnowledgeDraftsApprove', 'agentKnowledgeDraftsDiscard']) {
+    'agentAuditStats', 'agentAuditDoctor', 'agentAuditKnowledge']) {
     assert.strictEqual(typeof api[name], 'function', name);
   }
 });

@@ -11,7 +11,6 @@ function registerIpc(ctx) {
   handle('agentAudit:sessions', (payload) => audit.sessions(loadConfig(), payload || {}));
   handle('agentAudit:doctor', () => audit.doctor(loadConfig()));
   handle('agentAudit:knowledge', () => audit.knowledge(loadConfig()));
-  handle('agentAudit:tasks', () => audit.tasks(loadConfig()));
 }
 
 module.exports = { registerIpc };

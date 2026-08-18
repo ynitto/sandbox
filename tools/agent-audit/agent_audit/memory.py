@@ -39,21 +39,92 @@ class MemoryStoreError(RuntimeError):
     """設定された記憶ストアが読めない（collect の SourceError へ変換して exit 2）。"""
 
 
+# -- skill-registry.json からの既定解決（agent-audit.yaml との二重メンテナンス回避） -----
+#
+# 各スキルは自分の保存先を既に skill-registry.json の skill_configs に持っている
+# （wiki-use.wiki_root / persona-use.persona_home / moltbook-use.home。ltm-use は
+# 保存先を持たず常に `{agent_home}/memory/home`）。agent-audit.yaml の `memory_stores:`
+# へ同じパスを再度書かせると、スキル側の設定を変えたときここだけ古いまま取り残される
+# （agent-audit の自己更新（update.py の find_skill_registry）が既に踏んでいる同じ探索
+# 契約——KIRO_SKILL_REGISTRY を尊重し、無ければ既知のエージェントホームを順に見る）。
+_KNOWN_AGENT_HOME_DIRS = (".agents", ".kiro", ".claude", ".copilot", ".codex")
+
+
+def _agent_home_candidates() -> "list[str]":
+    """skill-registry.json を持つエージェントホームを列挙する。
+
+    `KIRO_SKILL_REGISTRY` が設定されていればそこだけ（複数ホームの探索はしない——
+    明示指定は 1 か所を指す契約）。無指定なら `~/.claude` 等を全部調べ、複数の
+    エージェント CLI を並行運用している構成（ltm_dirs が複数になる想定）に対応する。
+    """
+    env = os.environ.get("KIRO_SKILL_REGISTRY")
+    if env:
+        p = os.path.abspath(os.path.expanduser(env))
+        base = p if os.path.isdir(p) else os.path.dirname(p)
+        return [base] if os.path.isfile(os.path.join(base, "skill-registry.json")) else []
+    homes = []
+    for d in _KNOWN_AGENT_HOME_DIRS:
+        base = os.path.join(os.path.expanduser("~"), d)
+        if os.path.isfile(os.path.join(base, "skill-registry.json")):
+            homes.append(base)
+    return homes
+
+
+def discover_memory_stores() -> dict:
+    """`memory_stores:` の既定値を skill-registry.json から解決する。
+
+    agent-audit.yaml で明示された値が常に優先される（この関数の戻り値は
+    未設定のキーを埋める既定値としてのみ使う）。読めない・壊れた registry は
+    黙って無視する——測定のために他ツールの設定ファイルを検証しに行かない。
+    """
+    ltm_dirs: "list[str]" = []
+    wiki_root = persona_home = moltbook_home = ""
+    for home in _agent_home_candidates():
+        reg = _read_json(os.path.join(home, "skill-registry.json"))
+        cfgs = (reg or {}).get("skill_configs")
+        cfgs = cfgs if isinstance(cfgs, dict) else {}
+
+        ltm_home = os.path.join(home, "memory", "home")   # ltm-use は保存先を持たず固定
+        if os.path.isdir(ltm_home):
+            ltm_dirs.append(ltm_home)
+
+        if not wiki_root:
+            wr = (cfgs.get("wiki-use") or {}).get("wiki_root")
+            if wr:
+                wiki_root = os.path.abspath(os.path.expanduser(str(wr)))
+        if not persona_home:
+            ph = (cfgs.get("persona-use") or {}).get("persona_home")
+            if ph:
+                persona_home = os.path.abspath(os.path.expanduser(str(ph)))
+        if not moltbook_home:
+            mh = (cfgs.get("moltbook-use") or {}).get("home")
+            candidate = (os.path.abspath(os.path.expanduser(str(mh))) if mh
+                        else os.path.join(home, ".moltbook"))
+            if os.path.isdir(candidate):
+                moltbook_home = candidate
+    return {"ltm_dirs": ltm_dirs, "wiki_root": wiki_root,
+            "persona_home": persona_home, "moltbook_home": moltbook_home}
+
+
 # -- 設定の解決 ---------------------------------------------------------------
 
 def memory_stores_config(args) -> dict:
-    """`memory_stores:` を正規化する。未設定のキーは空のまま返す（= 未収集）。"""
+    """`memory_stores:` を正規化する。未設定のキーは skill-registry.json からの
+    自動発見で埋める（二重メンテナンス回避）。発見も無ければ空のまま返す（= 未収集）。
+    """
     cfg = getattr(args, "memory_stores", None) or {}
-    if not isinstance(cfg, dict):
-        return {"ltm_dirs": [], "wiki_root": "", "persona_home": "", "moltbook_home": ""}
+    cfg = cfg if isinstance(cfg, dict) else {}
+    discovered = discover_memory_stores()
+
     dirs = cfg.get("ltm_dirs") or []
     if isinstance(dirs, str):
         dirs = [dirs]
+    ltm_dirs = [str(d) for d in dirs if str(d)] or discovered["ltm_dirs"]
     return {
-        "ltm_dirs": [str(d) for d in dirs if str(d)],
-        "wiki_root": str(cfg.get("wiki_root") or ""),
-        "persona_home": str(cfg.get("persona_home") or ""),
-        "moltbook_home": str(cfg.get("moltbook_home") or ""),
+        "ltm_dirs": ltm_dirs,
+        "wiki_root": str(cfg.get("wiki_root") or discovered["wiki_root"] or ""),
+        "persona_home": str(cfg.get("persona_home") or discovered["persona_home"] or ""),
+        "moltbook_home": str(cfg.get("moltbook_home") or discovered["moltbook_home"] or ""),
     }
 
 

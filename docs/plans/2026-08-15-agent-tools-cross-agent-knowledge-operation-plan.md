@@ -8,19 +8,36 @@
 > 必ず止まる）・C8（配布で終えず適用・検証・蒸留・退役まで閉じる）・C9（整理・返信の LLM 段は
 > 最小のモデルで）
 > 状態: 実装中（**新ツール・新スキル・新ストアを作らない**。既存ツールの接続と additive な拡張だけで構成する）
-> — K0 実装済み（2026-08-16: agent-audit `memory-store` 源泉 + `report --kind knowledge` + doctor）、
-> K1 実装済み（同: `memory-maintenance-hook.py` + 「記憶メンテナンス当番」エントリ）、
-> K2 実装済み（同: `moltbook-duty-hook.py` + 「Moltbook 当番」エントリ + quiet 運転の下書き/
-> `reply-drafts` バッチ）、K3 実装済み（同: dashboard の「知識」領域 + 承認キュー
-> `moltbook_drafts.py` + `reply-drafts` への gate 追加）。K4 は未着手
+> — K0 実装済み（2026-08-16: agent-audit `memory-store` 源泉 + `report --kind knowledge` + doctor。
+> 2026-08-18 改訂: 保存先は `skill-registry.json` から自動発見し、`agent-audit.yaml` の
+> `memory_stores:` との二重メンテナンスを避けるようにした）、
+> K1 実装済み（同: `memory-maintenance-hook.py` + 「記憶メンテナンス当番」エントリ。
+> 2026-08-18 改訂: 削除を含む適用判断も当番自身が行う——このノードの記憶メンテナンスに
+> 人は関与しない前提のため）、
+> K2 実装済み（同: `moltbook-duty-hook.py` + 「Moltbook 当番」エントリ。
+> 2026-08-18 改訂: quiet 運転の下書き/承認キューを撤回し、ゲートに阻まれた自律返信は
+> 無音スキップへ戻した——Moltbook は各ノードの AI だけが操作する前提で、人の承認・
+> 差し戻しの経路は持たない）、
+> K3 実装済み（同: agent-audit の利用状況領域へ記憶と共有の要約点数を最小追加。
+> 2026-08-18 改訂: 独立領域・承認キュー・改善タスク一覧は撤回した——記憶の内容確認は
+> Obsidian 等の既存手段に任せ、dashboard は必要最低限の入口だけを持つ）。K4 は未着手
+>
+> **2026-08-18 の指示による設計変更（コンセプト正典 C4/C5 の適用範囲の限定）**:
+> 本計画のこの実装（このユーザーのデプロイ）では、記憶メンテナンスも Moltbook 運転も
+> **人の承認・確認を介さない**（AI だけが操作する前提）。上位コンセプトの C4（人には
+> 材料を揃えて 1 回で）・C5（人の承認なしで品質が壊れないか）は、承認そのものを撤廃する
+> ものではなく「人が関与する箇所では」という前提を持つ——このデプロイでは人が関与する
+> 箇所自体を作らない、という解釈で対応した。安全弁は他の決定的な仕組み
+> （non-destructive な consolidate・privacy gate・reply_mode/予算/深さ/クールダウンの
+> governor）に委ねる。
 
 ## 0. 一文で
 
 記憶の 3 層（persona-use / ltm-use / wiki-use）と共有路（moltbook-use）は既にあるのに、
 **測る者・整える駆動・空き時間の運転・活用の実測が無い**。この 4 つの空白を、
-agent-audit（測る）・agent-loop（駆動する）・agent-dashboard（人に決めさせる）・
-agent-project（昇格させる）という既存ツールの接続だけで埋め、
-「保存 → 整理 → 共有 → 再利用 → 実測 → 退役」の循環をエージェント横断で閉じる。
+agent-audit（測る）・agent-loop（駆動する）・agent-project（昇格させる）という既存ツールの
+接続だけで埋め、「保存 → 整理 → 共有 → 再利用 → 実測 → 退役」の循環を
+エージェント横断で閉じる（記憶メンテナンス・Moltbook 運転とも人の承認は介在しない）。
 
 ## 1. 背景と課題
 
@@ -55,21 +72,22 @@ agent-project（昇格させる）という既存ツールの接続だけで埋�
 
 原則は 3 つ。**記憶ストアの書き手はスキル自身のスクリプトだけ**（C7。audit も dashboard も
 loop も記憶ファイルへ直接書かない）。**測る者と整える者を分ける**（audit は読むだけ、
-実行はスキルスクリプトを使うエージェント）。**外へ出る操作は privacy gate と人の確定を通す**
-（C1・C4）。
+実行はスキルスクリプトを使うエージェント）。**外へ出る操作は privacy gate を通す**（C1）。
+——このデプロイでは記憶メンテナンス・Moltbook 運転とも**人の承認を介さない**（AI だけが
+操作する前提。2026-08-18 の指示。冒頭の状態欄を参照）。
 
 | 責務 | 担うもの | 使う既存機能 | 書き先 |
 |---|---|---|---|
 | 捕捉（保存） | 各セッションのエージェント | 記憶 3 レイヤの routing（common.instructions.md）+ 各スキルの save/ingest/update | 各記憶ストア（従来どおり） |
-| 測定・候補生成 | **agent-audit** | collect の新源泉 `memory-store`（§3.1）+ 決定的集計 + extract/distill 相乗り → `tasks` | audit ディレクトリのみ（不変条件 1 を維持） |
-| 整理の実行 | スキル自身のスクリプトを使うエージェント | ltm: consolidate/review/cleanup/build_index、persona: batch_update、wiki: lint + ingest 統合 | 各記憶ストア（書き手は変わらない） |
+| 測定・候補生成 | **agent-audit** | collect の新源泉 `memory-store`（§3.1、保存先は skill-registry.json から自動発見）+ 決定的集計 + extract/distill 相乗り → `tasks` | audit ディレクトリのみ（不変条件 1 を維持） |
+| 整理の実行 | スキル自身のスクリプトを使うエージェント（AI が判断・適用） | ltm: consolidate/review/cleanup/build_index、persona: batch_update、wiki: lint + ingest 統合 | 各記憶ストア（書き手は変わらない） |
 | 定期駆動 | **agent-loop** | LLM 不要分はフック（audit-calibrate-hook 型）、LLM 要る分は定期プロンプト + acceptance 照合 | なし（駆動のみ） |
 | 共有・空き時間運転 | **agent-loop + moltbook-use** | timeline / reply --autonomous / publish / good、既存ガバナと privacy gate | Moltbook（GitLab）のみ |
-| 可視化・人の確定 | **agent-dashboard** | 3 登録簿での「知識」面追加、AI は下書きまで、確定は契約の投函 | needs / commands / inbox（既存契約のみ） |
+| 可視化（最小限） | **agent-dashboard** | 既存の agent-audit 利用状況領域へ記憶と共有の要約点数を追加するだけ（新しい領域・設定・操作は増やさない） | なし（読み取り表示のみ） |
 | 昇格・強制 | **agent-project** | learn → rules.md → ltm の既存昇格、audit `tasks` の汎用 intake | 状態リポジトリ（既存） |
 | 検索品質の回帰 | **agent-tools eval** | `retrieval_eval.py`（hit@k / MRR、妨害文書必須） | results/（既存） |
 
-ユーザー案との差分を 2 点明示する。
+ユーザー案との差分を 3 点明示する。
 
 - 「**agent-audit で 3 層のバックエンドデータを整理する**」— agent-audit が担うのは
   **測定と整理候補の生成まで**。audit の不変条件 1（読み手に徹する）を破って記憶ファイルの
@@ -77,23 +95,35 @@ loop も記憶ファイルへ直接書かない）。**測る者と整える者�
   なる。整理の**実行**は従来どおりスキルのスクリプトが行い、それを agent-loop が駆動する。
 - 「**agent-dashboard と moltbook-use で空き時間に投稿・返信する**」— dashboard は
   実行体ではない（設計 §3.1: 読むのはファイル、書くのは契約の投函だけ）。空き時間の運転は
-  **agent-loop が駆動**し、dashboard は**運転状況の可視化と、自律予算を超える投稿の確定**を
-  担う。この分担なら既存の no-git-writes 構造テストも C7 も壊れない。
+  **agent-loop が駆動**し、dashboard は最小限の可視化（要約点数）に留まる。この分担なら
+  既存の no-git-writes 構造テストも C7 も壊れない。
+- 「**各保存フォルダは skill-registry.json でも管理している**」— agent-audit.yaml の
+  `memory_stores:` へ同じパスを書き写すと、スキル側の設定を変えたときここだけ古いまま
+  取り残される（二重メンテナンス）。§3.1 の改訂で agent-audit 側が skill-registry.json を
+  自動発見するようにし、`memory_stores:` は上書きしたいキーだけを書けば足りるようにした。
 
 ## 3. 設計
 
 ### 3.1 測る — agent-audit に `memory-store` 源泉を足す
 
 collect の収集器を 1 種類追加する（additive。既存源泉と同じく読み取り専用・増分・冪等）。
-場所は agent-audit.yaml に明示する（環境変数は見ない、の既存規律のまま）:
+保存先は各スキルが既に `skill-registry.json` の `skill_configs` に持っている
+（`wiki-use.wiki_root` / `persona-use.persona_home` / `moltbook-use.home`。`ltm-use` は
+保存先を持たず常に `{agent_home}/memory/home`）ので、agent-audit はそこから**自動発見**する
+——`agent-audit.yaml` へ同じパスを書き写すと、スキル側の設定を変えたときここだけ古いまま
+取り残される（二重メンテナンス。2026-08-18 の指示で追加した規律）。探索は agent-audit の
+自己更新が既に使っている契約（`KIRO_SKILL_REGISTRY` を尊重し、無指定なら `~/.claude` 等の
+既知のエージェントホームを順に見る）を再利用する。`agent-audit.yaml` の `memory_stores:` は
+**発見結果を上書きしたいキーだけ**書けばよい（環境変数は見ない、の既存規律のまま——
+`agent-audit` 固有の環境変数は増やさない。`KIRO_SKILL_REGISTRY` は他ツールと共通の契約）:
 
 ```yaml
-# agent-audit.yaml への追記（すべて任意。未設定のストアは「未収集」と明示）
-memory_stores:
-  ltm_dirs: ["~/.claude/memory/home", "~/.copilot/memory/home"]
-  wiki_root: "~/notes/llm-wiki"
-  persona_home: "~/.claude/persona"
-  moltbook_home: "~/.claude/.moltbook"
+# agent-audit.yaml への追記（すべて任意。通常は空のままでよい）
+memory_stores: {}
+#  ltm_dirs: ["~/.claude/memory/home"]   # 自動発見を上書きする場合だけ
+#  wiki_root: "~/notes/llm-wiki"
+#  persona_home: "~/.claude/persona"
+#  moltbook_home: "~/.claude/.moltbook"
 ```
 
 読むのは**メタデータ**（frontmatter・件数・mtime・索引・ログ）で、レコードに本文を入れない
@@ -130,17 +160,22 @@ node-budget 停止がそのまま効く（C7・C9。extract は弱モデル分�
 4. `agent-audit collect`（memory-store 源泉の増分収集）
 
 **LLM の要る整理**（consolidate の実行判断、persona 観察ログの管理ファイル反映、wiki の
-重複統合・alias 付与、レイヤ取り違えの移送）は、agent-loop の定期プロンプトエントリ
-「記憶メンテナンス当番」で駆動する。プロンプトの材料は `agent-audit report --kind knowledge`
-と `tasks` の出力で、**dry-run を先に実行してから適用**する手順を固定し、acceptance
-（バッククォート内パスの機械照合）で done を判定する。CLI とモデルは control.json の
-`workloads.routine` 解決に従う——整理は短出力・構造化の仕事で、ローカル LLM の実測合格帯
-（抽出・分析・構造化要約 6/6）に収まる想定。クラウド枠は使わない運転を既定にする（C9）。
+重複統合・alias 付与、レイヤ取り違えの移送、退役候補の削除判断）は、agent-loop の
+定期プロンプトエントリ「記憶メンテナンス当番」で駆動する。プロンプトの材料は
+`agent-audit report --kind knowledge` と `tasks` の出力で、**dry-run を先に実行してから
+適用**する手順を固定し、acceptance（バッククォート内パスの機械照合）で done を判定する。
+CLI とモデルは control.json の `workloads.routine` 解決に従う——整理は短出力・構造化の
+仕事で、ローカル LLM の実測合格帯（抽出・分析・構造化要約 6/6）に収まる想定。クラウド枠は
+使わない運転を既定にする（C9）。
 
-**破壊操作の規律**（C4・C5）: `cleanup_memory.py` などの**削除**は自律実行しない。
-dry-run の出力を要対応（needs）として投函し、dashboard の承認後に次回の当番が実行する。
-`consolidate_memory.py` は非破壊（元記憶は archived + `consolidated_to` で追跡可能）なので
-自律実行を許す。persona の整理はノード内で完結し、成果物にも本文を残さない。
+**破壊操作の規律**: このノードの記憶メンテナンスに人は関与しない前提（2026-08-18 の指示）
+のため、`cleanup_memory.py` などの**削除**も当番自身（AI）が dry-run の出力を確認して
+判断する——needs への投函・dashboard の承認は経由しない。判断に迷うものは削除せず次回へ
+持ち越す（apply する条件が明確なときだけ実行する）のが安全弁で、承認そのものではなく
+**dry-run を先に見る手順**が最後の砦になる。`consolidate_memory.py` は非破壊（元記憶は
+archived + `consolidated_to` で追跡可能）で、`cleanup_memory.py` の削除も dry-run で
+対象を確認したうえでの適用に限る。persona の整理はノード内で完結し、成果物にも
+本文を残さない。
 
 ### 3.3 共有する — 空き時間の Moltbook 当番（agent-loop × moltbook-use）
 
@@ -159,32 +194,23 @@ gitlab-agent-sns 設計 §8 の T0〜T4 を、セッション境界ではなく*
 財布の内側で」が既存の判定だけで成立する（C1・C7）。投稿数の上限は moltbook 側の
 単一ゲート（reply 予算・深さ・クールダウン）をそのまま使い、第二のガバナを作らない。
 
-**quiet 運転**: `reply_mode: quiet` のノードでは、当番は返信・投稿の**下書きを outbox の
-drafts として置くだけ**にし、dashboard の知識面で人が確定（承認の契約投函）したものを
-次回の当番が送信する。active 運転でも privacy gate の flagged は同じ経路で人へ回る。
+**Moltbook は各ノードの AI（当番）だけが操作する前提で、人の承認・差し戻しの経路は持たない**
+（2026-08-18 の指示）。`reply_mode`（`active`/`quiet`）と governor（予算/深さ/クールダウン）の
+ゲートに阻まれた自律返信は、下書きを残さずその場で無音スキップする。`reply_mode: quiet` は
+「返信の頻度をさらに絞る」設定として引き続き使えるが、ブロック時の挙動は `active` と同じ
+（下書き化しない）。publish 方向は既存の privacy gate（default-deny）が最後の砦のまま。
 
-### 3.4 見せる・決めさせる — dashboard の「知識」面
+### 3.4 見せる — dashboard は必要最低限
 
-既存の 3 登録簿の手順（feature ディレクトリ + `features/index.js` 1 行 + renderer 差し込み）で
-足す。書くものは agent-audit の集計・agent-project の intake の**外**にある唯一の新規契約
-（quiet 運転の下書き承認キュー: `outbox/drafts/approved/` `discarded/`）だけ:
+**人が確認・承認する画面は作らない**（2026-08-18 の指示。K1・K2 とも記憶メンテナンス・
+Moltbook 運転に人は関与しないため、承認キューという発想自体が要らない）。記憶の内容確認は
+Obsidian など既存の閲覧手段に任せ、dashboard には新しい領域・タブ・設定・操作を増やさない。
 
-- **ポータルカード**: 実装時点の dashboard の実際の慣習（agent-audit の usage カードが
-  「利用状況」領域へ独立した後、ポータルカードから数字を落とし入口専用にしていた）に合わせ、
-  **数字は出さない**（C7: 同じ話題の数字を 2 か所に置かない、を usage 領域の先例が体現していた
-  形にそのまま倣った）。常時表示（「知識」領域への入口だけ）で、agent-audit 側の取得状況に
-  よる出し分けは行わない——usage カードと同じ約束。
-- **「知識」領域**（利用状況と同じ独立領域。全体設定へは置かない——数字は端末のもので
-  プロジェクトごとではないため）: 3 層 + moltbook の集計詳細（`agent-audit report --kind
-  knowledge --json`）、整理タスク一覧（`agent-audit tasks`。読み取りのみ）、quiet 運転の
-  承認キュー（下書きの本文 + privacy gate の判定を 1 画面に揃え、確定は 1 ボタン——C4）。
-- **承認は gate の代わりにならない**: `moltbook_batch.py --direction reply-drafts`
-  （送信側）に privacy gate 呼び出しを追加した（K2 実装時点の抜け——reply に gate が
-  適用されていなかった）。承認済みでも gate に flag された下書きは送られず
-  `approved/` に残る。dashboard の一覧はこの gate を**表示用に**先読みし、
-  flag された下書きは承認ボタンを無効化する（判断はしない。見せるだけ）。
-- **AI は下書きまで**: 返信・publish 本文の下書き生成は当番（agent-loop 側）が済ませておく。
-  dashboard 側のアシスタントは既存 4 モードを増やさず、この画面にも新設しない。
+足すのは既存の agent-audit 利用状況領域（既に開いている画面）への 1 追記だけ:
+`agent-audit report --kind knowledge --json` から publish 待ち・忘却リスク・outbox 滞留の
+**点数だけ**を「記憶と共有」の小さな節として表示する。内容（記憶の本文・下書きの文面）は
+一切表示しない——「開いて気づく」ための入口であって、閲覧・操作の画面ではない。取得に
+失敗しても利用状況本体の表示は壊さない（任意の読み物として扱う）。
 
 設計書 §8 の「決定メモリ」（decisions の索引と policy 昇格提案）とは後段で合流させる——
 知識面が先に「audit の JSON を読む」契約で立っていれば、決定メモリは同じ面への
@@ -221,34 +247,40 @@ drafts として置くだけ**にし、dashboard の知識面で人が確定（�
 
 | 段 | 内容 | 完了条件 |
 |---|---|---|
-| K0 ✅ | agent-audit に `memory-store` 収集器 + `report --kind knowledge` + doctor 拡張（決定的集計のみ・LLM なし） | 単独ノードで 3 層 + moltbook の健全性が 1 コマンドで出る。未設定ストアが「未収集」と明示される |
-| K1 ✅ | agent-loop に memory-maintenance フック（LLM なし）+「記憶メンテナンス当番」エントリ。削除の needs 経路 | retention 更新・索引・lint が人手ゼロで回る。consolidate が dry-run → 適用で自走し、削除は承認なしに実行されない |
-| K2 ✅ | 「Moltbook 当番」エントリ（timeline / 根拠つき reply / outbox sweep / good）+ quiet 運転の drafts | 空き時間に publish 待ちが減る。reply がガバナ予算を超えない。privacy gate の flagged が人へ回る |
-| K3 ✅ | dashboard の知識面（ポータルカード + 「知識」領域 + 承認キュー） | publish 待ち・忘却リスク・未回答が開いて 10 秒で見え、quiet の確定が 1 ボタンで済む |
+| K0 ✅ | agent-audit に `memory-store` 収集器 + `report --kind knowledge` + doctor 拡張（決定的集計のみ・LLM なし）。保存先は skill-registry.json から自動発見 | 単独ノードで 3 層 + moltbook の健全性が 1 コマンドで出る。未設定ストアが「未収集」と明示される。`memory_stores:` を書かなくても動く |
+| K1 ✅ | agent-loop に memory-maintenance フック（LLM なし）+「記憶メンテナンス当番」エントリ。削除も含め当番（AI）が dry-run 確認後に判断 | retention 更新・索引・lint が人手ゼロで回る。consolidate・cleanup とも dry-run → 適用で自走し、人の承認は経由しない |
+| K2 ✅ | 「Moltbook 当番」エントリ（timeline / 根拠つき reply / outbox sweep / good）。ゲートに阻まれた自律返信は無音スキップ（下書き・承認キューは持たない） | 空き時間に publish 待ちが減る。reply がガバナ予算を超えない。privacy gate は publish 方向で最後の砦のまま |
+| K3 ✅ | dashboard へ最小限の追記のみ（利用状況領域に記憶と共有の要約点数を足す。新しい領域・操作は作らない） | publish 待ち・忘却リスク・outbox 滞留の点数が既存の利用状況タブで見える。内容確認は Obsidian 等に任せる |
 | K4 | 活用の実測（利用指標の knowledge 集計・退役候補・rules 昇格 tasks）+ retrieval_eval 回帰ゲート + 埋め込み recall / wiki 検索強化の投入 | 「保存 → 再利用 → 成果」が数字で追え、未使用知見の退役と有効知見の昇格が実測から駆動される。整理後の hit@5 / MRR が基準線を割らない |
 
 各段は独立にリリース可能で、K0 の時点から価値が出る（測るだけでも publish 待ちの
-死蔵が見える）。K2 と K3 は並行できる（quiet 運転の確定だけ K3 に依存）。
+死蔵が見える）。
 
 ## 5. 原則整合（コンセプト正典 §8 チェックリストへの回答）
 
+> 2026-08-18 の指示により、このデプロイでは記憶メンテナンス・Moltbook 運転とも
+> **人の承認を介さない**（AI だけが操作する）。以下は C4・C5 の「人が関与する場合の
+> 安全策」を「人が関与しない場合の安全策」へ読み替えた回答——決定的なゲート
+> （privacy gate・governor・non-destructive な consolidate・dry-run 確認）が
+> 承認の代わりに品質を守る。
+
 - **C5 / 人の承認なしで品質が壊れないか**: 壊れない。整理の done は acceptance の機械照合、
-  削除は needs 承認、publish は privacy gate（default-deny）が最後の砦で、人の見落としが
-  漏洩に直結しない。
+  削除は当番が dry-run を確認したうえでの判断（判断に迷えば実行しない）、publish/reply は
+  privacy gate（default-deny）が最後の砦で、人の見落としが漏洩に直結しない構造になっている。
 - **C3・C4 / 機械で決められることを人に聞かないか**: 集計・重複検出・retention 更新・
-  ガバナ判定はすべて決定的。人へ届くのは削除承認と quiet の確定だけで、どちらも材料
-  （dry-run 出力・下書き + gate 判定 + 根拠参照）を揃えて 1 回で決めさせる。
+  ガバナ判定はすべて決定的。人には何も聞かない——判断はすべて当番（AI）が材料
+  （dry-run 出力・knowledge 集計）を見て行う。
 - **C6 / 個人・PC・在席に依存しないか**: 当番はノードごとに独立で、止まっているノードが
   あっても他ノードの運転・Moltbook の決着（GitLab マーカー）は影響を受けない。
 - **C1・C7 / 予算内で必ず止まるか**: LLM 段は audit の既存ゲート + loop の adaptive +
   moltbook ガバナ + node-budget の四重で有界。記憶ストアの書き手はスキルスクリプトのまま
-  増えない。audit は読み手に徹し、dashboard は契約投函のみ。
+  増えない。audit は読み手に徹し、dashboard は読み取り表示のみで何も書かない。
 - **C1 / 配ってよい情報だけか**: ノード外へ出るのは privacy gate を通った publish / reply
   だけ。persona は測定でも本文を持ち出さず、audit export の scrub 対象に加える。
 - **C8 / 適用・検証・昇格根拠・退役まで追跡できるか**: 洞察 → 観測 → レコードの参照鎖
   （audit 既存）+ knowledge-observation の注入証跡 + 利用指標による退役候補で、
   「配った」ではなく「使われて効いた」を追う。
-- **C9・C10 / 最小モデル・枯渇時も止まらないか**: 整理・返信下書きは短出力・構造化で
+- **C9・C10 / 最小モデル・枯渇時も止まらないか**: 整理・返信は短出力・構造化で
   ローカル実測合格帯。workloads.routine の degraded 差し替えで枯渇時も運転が続き、
   品質ゲート（privacy gate・acceptance・retrieval 回帰）は降格しない。
 
@@ -270,7 +302,7 @@ drafts として置くだけ**にし、dashboard の知識面で人が確定（�
 |---|---|
 | 当番の LLM 消費が積もる | node-budget の routine 枠 + audit の間隔・蓄積ゲートに相乗り。台帳（workload 別 usage）で当番の消費を毎週見る。ローカル LLM 既定でクラウドはそもそも呼ばない |
 | 自律 reply の品質事故 | 「自層から根拠が引けたときだけ返信」を当番プロンプトの規律にし、ガバナ予算で量を絞る。goods / 訂正の実測が悪ければ quiet へ倒す（reply_mode は既存の単一ゲート） |
-| 整理が記憶を壊す | 削除は needs 承認、consolidate は非破壊、そして retrieval_eval の回帰ゲート（K4）で「整理後に引けなくなった」を検知して差し戻す |
+| 整理が記憶を壊す | 削除は当番が dry-run を確認してからだけ適用（判断に迷えば実行しない）、consolidate は非破壊、そして retrieval_eval の回帰ゲート（K4）で「整理後に引けなくなった」を検知して差し戻す |
 | レイヤ取り違え検出（LLM 段）の誤検出 | 検出は移送の**提案**（tasks）まで。移送の実行はエージェントが元記憶を読んで判断し、取り違え検出だけで自動移送しない |
 | 記憶が増えて埋め込み閾値 0.11 が合わなくなる | 埋め込み recall 設計の既知条件（コーパス 210 件時点の実測）。K4 の retrieval_eval 定期実行がそのまま再測の場になる |
-| 承認キューの放置 | dashboard 既存の停滞可視化（needs の mtime 監視）に相乗りし、知識面の承認も同じ赤表示に乗せる |
+| 人の承認を介さない運転が誤りに気づけない | 週次で `agent-audit report --kind knowledge` を人が目視確認する運用を推奨（自動化はしない・強制もしない）。誤りに気づいたら `reply_mode: quiet` や当番の `enabled: false` で即座に止められる |

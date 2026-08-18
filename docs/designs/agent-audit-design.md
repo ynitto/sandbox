@@ -222,7 +222,7 @@ updated_at。`kiro-log-exporter` の `.kiro_export_state.json` と同じ規律�
 | `amigos-bus` | 設定 `amigos_buses:` | 終端 mission の `events/*.jsonl` → `kind:run`。turn 数と `cli_seconds` を抽出 |
 | `loop-log` | 設定 `loop_logs:` のファイル | ERROR / WARNING 行の粗い run 化（loop は計測点が薄い現実をそのまま記録） |
 | `cli-native` | `agents/<name>.json` の `session_log` 宣言（§4.2） | CLI 自身のセッション → `kind:session`。**実測トークン・turn 数・transcript** |
-| `memory-store` | 設定 `memory_stores:`（`ltm_dirs` / `wiki_root` / `persona_home` / `moltbook_home`） | 記憶 3 層 + 共有路の**メタデータ**（frontmatter・件数・mtime・索引・ログ）→ `kind:memory` の snapshot。内容が変わったときだけ 1 行増える（cli-quota と同じ署名カーソル）。persona は**件数と滞留日数だけ**でファイル名も本文も持たない（C1）。集計は §5.5 |
+| `memory-store` | `skill-registry.json` の `skill_configs`（wiki-use/persona-use/moltbook-use の保存先。ltm-use は常に `{agent_home}/memory/home`）から自動発見。`memory_stores:`（`ltm_dirs` / `wiki_root` / `persona_home` / `moltbook_home`）は発見結果を上書きしたいキーだけ書けばよい（二重メンテナンス回避） | 記憶 3 層 + 共有路の**メタデータ**（frontmatter・件数・mtime・索引・ログ）→ `kind:memory` の snapshot。内容が変わったときだけ 1 行増える（cli-quota と同じ署名カーソル）。persona は**件数と滞留日数だけ**でファイル名も本文も持たない（C1）。集計は §5.5 |
 
 ### 4.2 CLI ネイティブストアの汎用化 — `session_log` 契約（additive）
 

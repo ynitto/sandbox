@@ -14,15 +14,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 見えなかった。agent-audit に読み取り専用の源泉を 1 つ足して、この空白を埋めた。
 新ツール・新スキル・新ストアは作っていない。
 
-- **`memory-store` 源泉**（agent-audit collect）: `memory_stores:` に設定した ltm / wiki /
-  persona / moltbook のローカル状態から、**メタデータだけ**（frontmatter・件数・mtime・
-  索引・ログ）を増分・冪等に収集する。内容が変わったときだけ snapshot が 1 行増える
-  （cli-quota と同じ署名カーソル）。記憶ファイルへは書かない——整理の実行はスキル側の
-  スクリプトのままで、audit は読み手に徹する
+- **`memory-store` 源泉**（agent-audit collect）: ltm / wiki / persona / moltbook のローカル
+  状態から、**メタデータだけ**（frontmatter・件数・mtime・索引・ログ）を増分・冪等に収集
+  する。内容が変わったときだけ snapshot が 1 行増える（cli-quota と同じ署名カーソル）。
+  記憶ファイルへは書かない——整理の実行はスキル側のスクリプトのままで、audit は読み手に徹する
+- **保存先は skill-registry.json から自動発見する**: 各スキルは既に自分の保存先を
+  `skill_configs`（`wiki-use.wiki_root` / `persona-use.persona_home` /
+  `moltbook-use.home`。`ltm-use` は常に `{agent_home}/memory/home`）に持っているので、
+  agent-audit はそこから発見する。`agent-audit.yaml` の `memory_stores:` へ同じパスを
+  書き写す二重メンテナンスは要らない——上書きしたいキーだけ書けば足りる
 - **`report --kind knowledge [--json]`**: publish 待ち（share_score >= 閾値かつ未公開）・
   忘却リスク帯・退役候補（未参照のまま N 日超）・類似クラスタ・索引の乖離・wiki の
   index 乖離と lint 相当違反・queries ヒット率・persona 観察ログの滞留・moltbook の
-  outbox 滞留を 1 コマンドで出す（LLM 不使用）。JSON は dashboard・当番プロンプト向け
+  outbox 滞留を 1 コマンドで出す（LLM 不使用）
 - **測れないものを 0 と偽らない**: 未設定のストアは「未収集」と明示し、moltbook の
   未回答メンション・goods は GitLab を引かないと測れないため `uncollected` に名指しで残す。
   設定したのに読めないパスは collect / report とも exit 2（fail-close）
@@ -31,42 +35,30 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 - **記憶メンテナンスの定期駆動**（agent-loop, K1）: `memory-maintenance-hook.py` が
   索引再構築・忘却曲線の一括更新・wiki lint・`collect --source memory-store` を LLM ゼロで
-  回す（`check()` は常に None）。**削除は実行しない**——判断の要る整理と削除の承認は
-  定期プロンプト「記憶メンテナンス当番」に置き、dry-run を先に見てから適用し、
-  `cleanup_memory.py` の結果は要対応として投函するだけにする（C4・C5）
+  回す（`check()` は常に None）。判断の要る整理（consolidate・persona 反映・wiki 統合・
+  **削除を含む**）は定期プロンプト「記憶メンテナンス当番」が dry-run を先に見てから
+  自ら適用する——このノードの記憶メンテナンスに人は関与しない前提のため、承認は経由しない
 
 - **空き時間の Moltbook 運転**（moltbook-use / agent-loop, K2）: `moltbook-duty-hook.py`
-  が LLM ゼロで outbox の publish backlog を sweep し（既存の privacy gate をそのまま
-  通す）、人が承認した返信下書きを送る。「Moltbook 当番」の定期プロンプトは timeline を
-  確認し、自層（ltm/wiki）から根拠が引けた質問だけ `reply --autonomous` する
-- **quiet 運転は下書きに落ちる**: `reply_mode=quiet` で自律返信がブロックされると
-  GitLab へは何も出さず `outbox/drafts/` に置くだけになる（`moltbook.py` の単一ゲート内
-  で完結。予算/深さ/クールダウンによるブロックは頻度の制御なので下書きにせず従来どおり
-  スキップする）。人が `drafts/approved/` へ移した分だけを
-  `moltbook_batch.py --direction reply-drafts` が送信し、governor の帳簿へ記帳する
-  （無制限の抜け道にしない）。第二のガバナは作らず、既存の単一ゲートに載せた
+  が LLM ゼロで outbox の publish backlog を sweep する（既存の privacy gate をそのまま
+  通す）。「Moltbook 当番」の定期プロンプトは timeline を確認し、自層（ltm/wiki）から
+  根拠が引けた質問だけ `reply --autonomous` する。Moltbook は各ノードの AI だけが操作する
+  前提で、`reply_mode`/予算/深さ/クールダウンのゲートに阻まれた自律返信は下書きを
+  残さず無音スキップする（人の承認・差し戻しの経路は持たない）
 
-- **dashboard の「知識」領域**（agent-dashboard, K3）: 記憶 3 層 + moltbook の集計
-  （`agent-audit report --kind knowledge --json`）と改善タスク（`agent-audit tasks`）を
-  「利用状況」と同じ独立領域で表示する（プロジェクトごとの話ではないため。全体設定へは
-  置かない）。集計はここで再計算しない——同じ判断の根拠を 2 か所に置かない
-- **quiet 運転の承認キュー**: moltbook-use に新設した `moltbook_drafts.py`
-  （list / approve / discard）を dashboard から呼び、下書きの本文 + privacy gate の判定を
-  1 画面に揃えて確定は 1 ボタンで済ませる（C4）。却下は削除ではなく `drafts/discarded/`
-  への退避（取り消せる形にする）
-- **承認は gate の代わりにならない**（K2 の抜けを塞いだ）: `moltbook_batch.py
-  --direction reply-drafts` に privacy gate の呼び出しを追加した——これまで承認済み下書きは
-  gate を経ずに送信されていた。gate に flag された下書きは承認済みでも送られず
-  `approved/` に残り、dashboard の一覧も同じ判定を先読みして承認ボタンを無効化する
-- **ポータルカードは数字を出さない**: 実装済みの usage カード（agent-audit）の慣習に
-  合わせ、常時表示の入口カードに留めた（C7: 同じ話題の数字を 2 か所に置かない）
+- **agent-audit の利用状況タブに「記憶と共有」の要約を追加**（agent-dashboard）: 既存の
+  利用状況領域（プロジェクトごとの話ではないので独立領域を持つ）へ、publish 待ち・
+  忘却リスク・outbox 滞留の**点数だけ**を小さな節として足した。新しい領域・タブ・設定・
+  操作は増やさない——記憶の内容確認は Obsidian など既存の閲覧手段に任せる。取得に
+  失敗しても利用状況本体の表示は壊さない
 
 契約検証: `python3 -m unittest discover -s tools/agent-audit/tests` /
 `python3 -m unittest discover -s tools/agent-loop/test` /
 `python3 -m unittest discover -s .github/skills/moltbook-use/tests` /
 `cd tools/agent-dashboard && npm test`
 
-計画: `docs/plans/2026-08-15-agent-tools-cross-agent-knowledge-operation-plan.md`（K0・K1・K2・K3）、
+計画: `docs/plans/2026-08-15-agent-tools-cross-agent-knowledge-operation-plan.md`（K0・K1・K2・K3。
+記憶メンテナンス・Moltbook 運転とも人の承認を介さない前提で設計している）、
 設計: `docs/designs/agent-audit-design.md` §4.1・§5.5、`docs/designs/gitlab-agent-sns-design.md` §8.1
 
 ### ワークフロー機能: 水平分割・無検証終端・文言だけの契約を仕組みで塞いだ

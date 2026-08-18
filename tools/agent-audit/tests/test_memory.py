@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import time
 import unittest
+from unittest import mock
 
 from _shared import AuditTestCase, collect, store as store_mod
 
@@ -231,6 +233,97 @@ class KnowledgeReportTests(_StoresMixin, AuditTestCase):
         bad = self.make_args(memory_stores={"persona_home": os.path.join(self.tmp, "nope")})
         bad.kind, bad.json, bad.out = "knowledge", True, None
         self.assertEqual(report.cmd_report(bad), 2)
+
+
+class SkillRegistryDiscoveryTests(AuditTestCase):
+    """memory_stores を書かなくても skill-registry.json から既定値が引ける（二重メンテナンス回避）。
+
+    HOME はテストプロセス全体で 1 つの一時ディレクトリを共有する（_shared.py）ため、
+    `~/.claude` を作ったら必ず片付ける——他のテストへ漏らさない。
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.home = os.path.expanduser("~")
+        self.agent_home = os.path.join(self.home, ".claude")
+        self.addCleanup(shutil.rmtree, self.agent_home, True)
+        self.registry_env = mock.patch.dict("os.environ", {}, clear=False)
+        self.registry_env.start()
+        os.environ.pop("KIRO_SKILL_REGISTRY", None)
+        self.addCleanup(self.registry_env.stop)
+
+    def _write_registry(self, skill_configs):
+        os.makedirs(self.agent_home, exist_ok=True)
+        with open(os.path.join(self.agent_home, "skill-registry.json"), "w", encoding="utf-8") as f:
+            json.dump({"skill_configs": skill_configs}, f)
+
+    def test_discovers_wiki_persona_moltbook_paths_from_skill_registry(self):
+        wiki_root = os.path.join(self.tmp, "wiki-root")
+        persona_home = os.path.join(self.tmp, "persona")
+        os.makedirs(wiki_root)
+        os.makedirs(persona_home)
+        os.makedirs(os.path.join(self.agent_home, ".moltbook"))
+        self._write_registry({
+            "wiki-use": {"wiki_root": wiki_root},
+            "persona-use": {"persona_home": persona_home},
+            "moltbook-use": {},   # home 省略 → 既定 {agent_home}/.moltbook
+        })
+        from agent_audit import memory
+        discovered = memory.discover_memory_stores()
+        self.assertEqual(discovered["wiki_root"], wiki_root)
+        self.assertEqual(discovered["persona_home"], persona_home)
+        self.assertEqual(discovered["moltbook_home"], os.path.join(self.agent_home, ".moltbook"))
+
+    def test_ltm_home_is_always_agent_home_memory_home_not_configurable(self):
+        os.makedirs(os.path.join(self.agent_home, "memory", "home"))
+        self._write_registry({})
+        from agent_audit import memory
+        discovered = memory.discover_memory_stores()
+        self.assertEqual(discovered["ltm_dirs"], [os.path.join(self.agent_home, "memory", "home")])
+
+    def test_missing_directories_are_silently_skipped_not_invented(self):
+        # registry あり・moltbook home 未作成 → 発見しない（存在チェックを通さない）
+        self._write_registry({"moltbook-use": {}})
+        from agent_audit import memory
+        discovered = memory.discover_memory_stores()
+        self.assertEqual(discovered, {"ltm_dirs": [], "wiki_root": "", "persona_home": "",
+                                      "moltbook_home": ""})
+
+    def test_explicit_memory_stores_in_agent_audit_yaml_overrides_discovery(self):
+        os.makedirs(os.path.join(self.agent_home, "memory", "home"))
+        self._write_registry({"wiki-use": {"wiki_root": os.path.join(self.tmp, "auto-wiki")}})
+        os.makedirs(os.path.join(self.tmp, "auto-wiki"))
+        explicit_wiki = os.path.join(self.tmp, "explicit-wiki")
+        os.makedirs(explicit_wiki)
+        from agent_audit import memory
+        args = self.make_args(memory_stores={"wiki_root": explicit_wiki})
+        cfg = memory.memory_stores_config(args)
+        self.assertEqual(cfg["wiki_root"], explicit_wiki, "明示設定が発見結果より優先される")
+        self.assertEqual(cfg["ltm_dirs"], [os.path.join(self.agent_home, "memory", "home")],
+                         "ltm_dirs は未設定なら発見結果で埋まる")
+
+    def test_knowledge_summary_works_with_zero_yaml_configuration(self):
+        """agent-audit.yaml に memory_stores を一切書かなくても集計できる。"""
+        os.makedirs(os.path.join(self.agent_home, "memory", "home"))
+        _write(os.path.join(self.agent_home, "memory", "home", "auth", "a.md"), memory_md())
+        self._write_registry({})
+        from agent_audit import memory
+        summary = memory.knowledge_summary(self.make_args(), now=time.time())
+        self.assertTrue(summary["layers"]["ltm"]["configured"])
+        self.assertEqual(summary["layers"]["ltm"]["stores"][0]["total"], 1)
+
+    def test_kiro_skill_registry_env_narrows_to_one_home(self):
+        other_home = os.path.join(self.tmp, "other-agent-home")
+        os.makedirs(os.path.join(other_home, "memory", "home"))
+        with open(os.path.join(other_home, "skill-registry.json"), "w", encoding="utf-8") as f:
+            json.dump({"skill_configs": {}}, f)
+        os.makedirs(os.path.join(self.agent_home, "memory", "home"))
+        self._write_registry({})
+        with mock.patch.dict("os.environ", {"KIRO_SKILL_REGISTRY": other_home}):
+            from agent_audit import memory
+            discovered = memory.discover_memory_stores()
+        self.assertEqual(discovered["ltm_dirs"], [os.path.join(other_home, "memory", "home")],
+                         "KIRO_SKILL_REGISTRY 指定時は探索を 1 か所へ絞る")
 
 
 if __name__ == "__main__":
