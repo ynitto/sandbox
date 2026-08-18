@@ -109,6 +109,7 @@ class MemoryStoreScanTests(_StoresMixin, AuditTestCase):
         self.assertEqual(ltm["similar_clusters"], 1, "jwt 2 件だけが重複候補")
         self.assertEqual(ltm["similar_clustered"], 2)
         self.assertEqual(ltm["categories"], {"auth": 2, "general": 1})
+        self.assertEqual(ltm["access_total"], 8, "0 + 3 + 5（recall による access_count の総和）")
         self.assertIsNone(ltm["index_entries"], "索引が無いことは None（0 件と区別する）")
 
     def test_ltm_index_drift_is_reported_against_actual_files(self):
@@ -208,6 +209,25 @@ class MemoryStoreCollectTests(_StoresMixin, AuditTestCase):
         st2 = store_mod.Store(self.audit_dir)
         summary = memory.knowledge_summary(args, now=time.time(), store=st2)
         self.assertEqual(summary["layers"]["ltm"]["stores"][0]["growth_7d"], 1)
+
+    def test_weekly_access_growth_tracks_recall_volume(self):
+        """「使われたかを測る」（計画 §3.5-3）: 件数が増えなくても access_count の総和が
+        増えていれば、それが recall された量として週次で見える。"""
+        from agent_audit import memory
+        self.build_stores()
+        st = self.make_store()
+        args = self.args_with_stores()
+        old = time.time() - 10 * 86400
+        memory.collect_memory_stores(args, st, now=old)   # access_total=8（0+3+5）を記録
+        _write(os.path.join(self.ltm, "auth", "jwt-expiry-2.md"),
+               memory_md(id="mem-20260801-002", share_score=10, access_count=10,
+                         retention_score=0.2))              # 3 → 10（recall された）
+        st2 = store_mod.Store(self.audit_dir)
+        summary = memory.knowledge_summary(args, now=time.time(), store=st2)
+        ltm = summary["layers"]["ltm"]["stores"][0]
+        self.assertEqual(ltm["access_total"], 15)            # 0 + 10 + 5
+        self.assertEqual(ltm["access_growth_7d"], 7)          # 15 - 8
+        self.assertEqual(ltm["growth_7d"], 0, "件数は変わっていない")
 
 
 class KnowledgeReportTests(_StoresMixin, AuditTestCase):

@@ -66,6 +66,7 @@ ltm-use は **手続き的・エピソード的な運用知**（バグ修正手�
 | **share** | 「共有して」「チームに広める」／`importance: critical` を保存・`share_score >= 85` を検出したとき（自律） | `moltbook-use` の `publish` |
 | **cleanup** | 「記憶を整理して」「古い記憶を削除して」 | `cleanup_memory.py` |
 | **consolidate** 🧠 | 「固定化して」「記憶を蒸留して」「エピソードをまとめて」 | `consolidate_memory.py` |
+| **regression-check** | consolidate/cleanup の前後で「整理したら引けなくなった」を検知（当番が自動実行） | `regression_check.py` |
 | **review** 🧠 | 「記憶をレビューして」「記憶の棚卸し」「忘れかけてるものは？」 | `review_memory.py` |
 | **sync-copilot-memory** | 「Copilotの記憶を同期して」「VSCodeの記憶を取り込んで」 | `sync_copilot_memory.py` |
 | **sync-kiro-memory** | 「Kiroの記憶を同期して」「Kiroステアリングを取り込んで」 | `sync_kiro_memory.py` |
@@ -232,6 +233,25 @@ python scripts/consolidate_memory.py --category auth  # カテゴリ指定で固
 
 **自動提案トリガー**: 同一カテゴリに episodic 5件以上 / 類似度 0.5 以上のクラスタ 3件以上 /
 cleanup・review 実行時の検出。詳細は operations.md を参照。
+
+---
+
+## regression-check（整理で引けなくなっていないかを確認する）
+
+consolidate・cleanup の前後で「整理前に引けていた記憶が今も引けるか」を機械的に比較する
+（計画: `docs/plans/2026-08-15-agent-tools-cross-agent-knowledge-operation-plan.md` §3.5-4）。
+一度も引かれていない記憶（退役候補）は対象にしない。
+
+```bash
+python scripts/regression_check.py snapshot --out /tmp/ltm-baseline.json   # 整理の直前に
+# ... consolidate_memory.py / cleanup_memory.py を実行 ...
+python scripts/regression_check.py compare --baseline /tmp/ltm-baseline.json
+python scripts/regression_check.py revert --baseline /tmp/ltm-baseline.json  # 統合起因の回帰だけ差し戻す
+```
+
+`compare` は回帰があれば exit 2。統合（consolidate）が原因なら `revert` で archived を
+active へ戻すだけの非破壊操作で直せる。削除（cleanup）が原因の回帰は復元できないため
+報告のみ——次回の削除基準を見直す材料にする。
 
 ---
 

@@ -7,7 +7,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
-### 記憶層を測れるようにした（エージェント横断ナレッジ運転 K0）
+### 記憶層を測る・整える・共有する・使わせる（エージェント横断ナレッジ運転 K0〜K4）
 
 記憶の 3 層（persona-use / ltm-use / wiki-use）と共有路（moltbook-use）は揃っているのに、
 **誰も測っていない**ため「保存したのに共有されていない」「引かれないまま眠っている」が
@@ -52,12 +52,41 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   操作は増やさない——記憶の内容確認は Obsidian など既存の閲覧手段に任せる。取得に
   失敗しても利用状況本体の表示は壊さない
 
+- **知識を使わせる（K4）**: 蓄積した知識が実際に使われたかを実測し、整理（consolidate/
+  cleanup）で検索できなくなっていないかを検知するところまでを閉じた
+  - `agent-project stats --json` に `rule_worked` / `rule_misfire`（rules 昇格後の
+    learn-worked / learn-misfire の合算）を追加。既存の `list_rule_adjudication` を
+    再利用し、第二の集計系は作らない
+  - `agent-audit report --kind knowledge` の ltm 行に `access_growth_7d`（access_count
+    総和の週次差分・recall された量の近似）を追加。既存の週次成長（`growth_7d`）と同じ
+    snapshot 履歴から取るので二重の走査をしない
+  - `wiki_query.py search` は 0 件ヒット時、弱一致があればスコア順に・無ければタイトルの
+    アルファベット順に近傍候補をその場で提示する（採用戦略 Phase 1 の残項目。トークン化・
+    aliases・重み付け・日本語正規化は既に実装済みだった）
+  - **`regression_check.py`（ltm-use・新規）**: 整理の前後で「整理前に引けていた記憶
+    （access_count>=1）が今も（consolidate で統合されていれば統合先が）同じ問いで
+    引けるか」を snapshot/compare する。統合が原因の回帰は archived→active への
+    差し戻し（非破壊）だけで直せる。削除（cleanup）が原因の回帰は復元できないため
+    報告のみ。ノード固有の実記憶に依存する `retrieval_eval.py`（妨害文書入り・
+    hit@5/MRR）はノード横断の自動ゲートには使えないため、自動ゲートは決定的な
+    自己想起の一貫性チェックに置き換えた——`retrieval_eval.py` 自体は既存どおり手動の
+    定点観測（埋め込み recall の閾値再測など）として残す
+  - 「記憶メンテナンス当番」（agent-loop）の定期プロンプトに snapshot → 整理 →
+    compare → （統合起因の回帰だけ）revert の手順を追記
+  - **見送り**: ltm の段構え埋め込み recall（設計済み・paraphrase hit@5 35%→60% 実測済み）
+    はローカル ollama サーバへの新しい実行時依存を要るため、この計画の他項目
+    （既存依存のみで閉じる）と性質が違う。ollama 常設を前提にしてよいかの意思決定を
+    挟んでから後続で入れる
+
 契約検証: `python3 -m unittest discover -s tools/agent-audit/tests` /
 `python3 -m unittest discover -s tools/agent-loop/test` /
+`python3 -m unittest discover -s tools/agent-project/tests` /
 `python3 -m unittest discover -s .github/skills/moltbook-use/tests` /
+`python3 -m unittest discover -s .github/skills/wiki-use/tests` /
+`python3 -m unittest discover -s .github/skills/ltm-use/tests` /
 `cd tools/agent-dashboard && npm test`
 
-計画: `docs/plans/2026-08-15-agent-tools-cross-agent-knowledge-operation-plan.md`（K0・K1・K2・K3。
+計画: `docs/plans/2026-08-15-agent-tools-cross-agent-knowledge-operation-plan.md`（K0・K1・K2・K3・K4。
 記憶メンテナンス・Moltbook 運転とも人の承認を介さない前提で設計している）、
 設計: `docs/designs/agent-audit-design.md` §4.1・§5.5、`docs/designs/gitlab-agent-sns-design.md` §8.1
 

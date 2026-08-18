@@ -231,6 +231,7 @@ def scan_ltm(path: str, *, now: float, thresholds: dict) -> dict:
                                         recursive=True) if os.path.isfile(p))
     total = active = archived = deprecated = 0
     publish_waiting = dormant = never_accessed = risk = 0
+    access_total = 0
     categories: "dict[str, int]" = {}
     bands = {"0.0-0.3": 0, "0.3-0.6": 0, "0.6-0.85": 0, "0.85-1.0": 0, "未設定": 0}
     labels: "list[str]" = []
@@ -272,6 +273,7 @@ def scan_ltm(path: str, *, now: float, thresholds: dict) -> dict:
             publish_waiting += 1
 
         access = _num(fm.get("access_count"), 0.0)
+        access_total += access
         age = _age_days(fm.get("updated") or fm.get("created"), now)
         if age is None:
             try:
@@ -299,6 +301,7 @@ def scan_ltm(path: str, *, now: float, thresholds: dict) -> dict:
         "retention_bands": bands,
         "forgetting_risk": risk,
         "publish_waiting": publish_waiting,
+        "access_total": int(access_total),
         "never_accessed": never_accessed,
         "dormant": dormant,
         "dormant_oldest_days": round(stalest, 1),
@@ -533,13 +536,20 @@ def _attach_growth(store, summary: dict, *, now: float, days: float = 7.0) -> No
             before = (baseline.get("metrics") or {}).get("total")
             entry["growth_7d"] = (None if before is None or entry.get("total") is None
                                   else int(entry["total"]) - int(before))
+            # 「使われたかを測る」（計画 §3.5-3）: access_count の総和の週次変化 = 大まかな
+            # recall 回数。total と同じ baseline 行から取るので、二重の履歴走査をしない。
+            if layer == "ltm":
+                access_before = (baseline.get("metrics") or {}).get("access_total")
+                entry["access_growth_7d"] = (
+                    None if access_before is None or entry.get("access_total") is None
+                    else int(entry["access_total"]) - int(access_before))
 
 
 # -- collect（snapshot レコードの追記） ---------------------------------------
 
 _SNAPSHOT_KEYS = {
     "ltm": ("total", "active", "archived", "publish_waiting", "forgetting_risk",
-            "never_accessed", "dormant", "similar_clusters", "index_drift"),
+            "never_accessed", "dormant", "similar_clusters", "index_drift", "access_total"),
     "wiki": ("total", "atoms", "topics", "new_last_7d", "index_drift", "lint_violations",
              "queries_total", "queries_hit"),
     # persona は件数と滞留日数だけ（本文もタイトルもファイル名も持たない。C1）

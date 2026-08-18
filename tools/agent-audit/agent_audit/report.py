@@ -86,8 +86,10 @@ def knowledge_lines(args, store: Store) -> "list[str]":
         lines.append("- **ltm**: 未収集（`memory_stores.ltm_dirs` が未設定）")
     for s in layers["ltm"]["stores"]:
         growth = "" if s.get("growth_7d") is None else f" / 週次 {s['growth_7d']:+d}"
+        access_growth = ("" if s.get("access_growth_7d") is None
+                         else f" / 想起週次 {s['access_growth_7d']:+d}")
         lines.append(f"- **ltm** `{s['path']}`: {s['total']} 件"
-                     f"（active {s['active']} / archived {s['archived']}）{growth}")
+                     f"（active {s['active']} / archived {s['archived']}）{growth}{access_growth}")
         lines.append(f"  - publish 待ち（share_score >= "
                      f"{summary['thresholds']['share_threshold']} かつ未公開）: "
                      f"**{s['publish_waiting']}** 件")

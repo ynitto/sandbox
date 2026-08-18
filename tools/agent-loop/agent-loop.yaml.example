@@ -229,16 +229,24 @@ prompts:
   - name: "記憶メンテナンス当番"
     prompt: |
       `agent-audit report --kind knowledge` を実行し、出力を材料に記憶層を整えてください。
+      0. `regression_check.py snapshot --out /tmp/ltm-regression-baseline.json` で
+         「整理前に引けていた記憶」の基準線を記録する（回帰ゲート。計画 §3.5-4）。
       1. 類似クラスタが出ている ltm のカテゴリは `consolidate_memory.py --category <名> --dry-run`
          を先に実行し、結果が妥当なら `--yes` で適用する（consolidate は非破壊）。
       2. persona の未反映の観察ログがあれば `batch_update_persona.py` で管理ファイルへ反映する。
       3. wiki の index 乖離・リンク切れは wiki-use の手順で統合・alias 付与を行う。
       4. 退役候補は `cleanup_memory.py --dry-run` を先に実行し、削除してよいと判断できた
          ものだけ `--yes` で適用する。判断に迷うものは削除せず次回へ持ち越す。
+      5. `regression_check.py compare --baseline /tmp/ltm-regression-baseline.json` を実行する。
+         回帰が無ければ終了。回帰が出たら中身を見て、`consolidated_to`（統合）が原因の分は
+         `regression_check.py revert --baseline ...` で機械的に差し戻す（archived を active へ
+         戻すだけの非破壊操作）。削除（cleanup）が原因の分は復元できないため、結果を報告して
+         次回の cleanup の基準（`--inactive-days` 等）を見直す材料にする。
       レイヤ取り違えが疑わしいものは移送せず、根拠とともに報告する。
     acceptance:
       - "`agent-audit report --kind knowledge` の出力を材料にしている"
       - consolidate・cleanup とも dry-run の確認後にだけ適用している
+      - "整理後に `regression_check.py compare` を実行し、統合起因の回帰は revert している"
     tuning_profile: default
     interval_minutes: 1440
     enabled: false
