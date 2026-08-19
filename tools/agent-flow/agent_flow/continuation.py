@@ -453,6 +453,11 @@ def continue_agent(request: str, nodes: dict, results: dict, iteration: int,
     tier_note = tier_evaluator_directive(tier)
     if tier_note:
         prompt = f"{prompt}\n\n{tier_note}"
+    # 工程ごとに選べる追加ルールの一覧も同じ流儀で後置する。評価役が足す新タスク
+    # （検証 fail の作り直し・データ駆動 fan-out の map 等）にも選べるようにする。
+    per_task_note = per_task_rule_directive()
+    if per_task_note:
+        prompt = f"{prompt}\n\n{per_task_note}"
     # プロジェクト文脈（案 H・オプトイン）は、スキル/組み込みどちらが作った prompt にも
     # ここで一律に前置する——スキルは context を知らないので二重注入の心配がなく、
     # スキルを更新しなくても両経路が同じ規約（agentcore.promptcompose）を通る。

@@ -7,6 +7,82 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### ワークフロー機能: per-task カタログに tier の適格性フィルタを追加した
+
+`_per_task_rule_catalog()`（planner へ提示する per-task ルールの一覧）が `selection`
+だけで絞り込み、各ルールの `when.tiers` 等を見ていなかった不整合を直した。auto ルールは
+Python 側の注入時に必ず `when` を評価するのに、per-task はその評価を素通りしていた。
+新設した `_per_task_rule_eligible()` は run 全体の条件（engine/workload/現在の実行
+tier）だけを見る（role/purpose/agent_cli はどのノードが選ぶか次第なので、計画時点では
+判定せず選ばれた後の role 判定に委ねる）。
+
+契約検証: `tools/agent-flow/tests/test_planner.py::PerTaskRuleTests`
+
+### ワークフロー機能: 工程ごとに選ぶルールを planner・評価役へ渡す配線を追加した
+
+「工程ごとに選ぶルール」（per-task）は、これまでダッシュボードの編集画面で人がノードを選んで
+初めて効いていた。`type: auto`（planner がグラフを組み立てる、最も一般的な使い方）や、評価役が
+実行時に足すタスクには選ぶ手段が無かったので、既存の複製の枠組みのまま手段を追加した。
+
+- dashboard は per-task ルールの完全な定義を `enabled: false` のまま run 専用 tuning.json へ
+  複製する（自動適用ルールと同じ器。`enabled` と `selection` の意味を分けて共存させる）
+- agent-flow（Python）が同じ tuning.json を直接読み、`selection: "per-task"` の一覧を
+  planner・評価役のプロンプトへ後置する（`per_task_rule_directive`）
+- planner・評価役が返すタスクへ `"methods": ["<id>"]` を含められる。`_coerce_tasks`
+  （3 経路共通の単一チョークポイント）が、そのノードの role に合う本文だけを goal へ複製する。
+  未知の id・role 不一致は黙って外す（フェイルオープン）
+- flow-planner スキル（外部プロセス）には配線しない。既存の `split_policy` と同じ既知の制約
+
+契約検証: `tools/agent-flow/tests/test_planner.py::PerTaskRuleTests` / `tools/agent-dashboard npm test`
+
+設計: `docs/plans/2026-08-15-workflow-feature-improvement-implementation.md`（第 5 段）
+
+### ワークフロー機能: 手法カタログのモデルを作業ルールと成果物の契約に分けた
+
+カスタマイズ口を作業ルール 1 本へ寄せた結果、カタログの中に性質の違うものが同居していることが
+表に出たので、宣言でモデルを分けた。区別の軸は「成果物によるかどうか」ではなく、
+**選択条件を実行時に機械で判定できるか**と、**指示か契約か**。
+
+- **作業ルール（`kind: rule`・既定）**: 依頼文へ足す指示。`selection: auto`（既定）は実行条件
+  （役割・工程種別・実行レベル・料金区分）だけで決まり、設定画面のトグルで自動適用する。
+  `selection: per-task` は機械判定できない「その工程への指示」で、工程ごとに人が選ぶ
+  （同梱は `integration-verify`）。トグル一覧には出さない
+- **成果物の契約（`kind: contract`）**: 成果物の形式そのもの。指示と、機械で数える構造を同じ
+  1 ファイルに持つ。ON/OFF せず、設定画面には「いま有効な書式」として表示する
+- **既定 ON**: `ui-consistency` と `test-green-evidence` を同梱で有効にした。どちらも文面が
+  自己条件づけで、触らない工程では何も足さない。端末設定の宣言が常に優先する
+- **工程の追加ルールを複数選択可に**: ノード定義は `method`（単数）から `methods`（配列）へ。
+  旧定義は読み込み時に配列化して互換を保つ
+- run へ複製する手法は「既定 ON ＋ 利用者が有効化したもの ＋ プリセットが名指ししたもの」。
+  A/B 試行（trials）は端末設定の宣言をそのまま運ぶ
+
+契約検証: `cd tools/agent-dashboard && npm test` / `python3 -m unittest discover -s tools/agent-loop/test`
+
+設計: `docs/plans/2026-08-15-workflow-feature-improvement-implementation.md`（第 4 段）
+
+### ワークフロー機能: カスタマイズ口を作業ルール（手法カタログ）へ寄せた
+
+改善提案（P1〜P6）の実装で足した 4 つのカスタマイズ口を、既に在る仕組み——手法カタログと
+実行時の `when` 注入——へ寄せ、足した口を外した。
+
+- **ノードの面（`surface`）を廃止**: ワークフローは作業フローの型で、成果物に特化しない。
+  何を作るかは実行時にしか決まらず、実行時に増えるノード（分類・分割の後段、評価役が足す
+  作り直し）には定義側の宣言が届かない。画面の一貫性とテストの緑の証跡は、作業ルール
+  `ui-consistency` / `test-green-evidence` を実行時に worker ロールへ足すことで担保する
+- **統合検証の自動付与を廃止**: 雛形は標準パターンの工程だけを複製する。検証工程を置くのは
+  フローを作る人か planner で、検証のやり方は作業ルール `integration-verify`
+  （`when.roles: [verify]`）が実行時に足す。run の完了条件は従来どおり agent-flow の終端検証が決める
+- **設計書の書式を手法として定義**: フロー定義の `contract` 宣言をやめ、汎用の
+  `methods/design-document-format.json` を正典にした。設計 run への指示（`fragments`）と、
+  実装へ渡す前に数える構造（`format`）が同じ 1 ファイルに並ぶ。リポジトリの `.agents/methods/` に
+  同 id を置けば、そのリポジトリの書式へ丸ごと差し替えられる
+- **agent-flow の設定 `split_policies` / `review_lenses` を廃止**: プロンプトへ足す文言は作業ルールの
+  仕事で、`when.roles: [planner]` / `[evaluator]` を宣言したルールが実行時に足される。設定キーは増やさない
+
+契約検証: `cd tools/agent-dashboard && npm test` / `cd tools/agent-flow && python3 -m unittest discover -s tests` / `python3 -m unittest discover -s tools/agent-loop/test`
+
+設計: `docs/plans/2026-08-15-workflow-feature-improvement-implementation.md`（第 3 段）
+
 ### ワークフロー機能: 完了条件と CI 結果をエンジン側でも扱えるようにした
 
 改善提案（P1・P6）のうち、前段では表示側だけを変えていた 2 点を実装した。

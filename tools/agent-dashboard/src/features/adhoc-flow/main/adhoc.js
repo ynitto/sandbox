@@ -28,18 +28,11 @@ const profiles = require('../../orchestration/main/profiles');
 const agents = require('../../orchestration/main/agents');
 const control = require('../../orchestration/main/control');
 const flowTiers = require('../../orchestration/main/flow-tiers');
+const designContract = require('../../../base/main/design-contract');
 
 const SUBMITTER = 'agent-dashboard-adhoc';
 const NODE_KINDS = ['work', 'generate', 'classify', 'synthesize', 'verify', 'filter', 'judge',
   'reduce', 'split', 'map', 'human', 'extract', 'retrieve'];
-// ノードが触る面（surface）— 「何を作るか」ではなく「どの種類の成果物を触るか」の宣言。
-// 面ごとに決まった作業ルールを plan 生成で自動付与する。ルール本文はカタログ（methods/）が
-// 正典で、ここは面 → 手法 id の対応だけを持つ（本文を二重に持たない）。
-// 設計: docs/plans/2026-08-15-workflow-feature-improvement-proposals.md P1・P3
-const NODE_SURFACES = {
-  ui: { label: '画面（UI）', method: 'ui-consistency' },
-  test: { label: 'テスト', method: 'test-green-evidence' },
-};
 const EXECUTION_ROLES = ['planner', 'evaluator', 'worker', 'verify'];
 const WORKFLOW_PURPOSES = ['implementation', 'design'];
 const DESIGN_TERMINAL_KINDS = new Set(['work', 'synthesize']);
@@ -170,6 +163,28 @@ function normalizeInteraction(raw) {
   return interaction;
 }
 
+// 工程ごとに選んだ作業ルールの正規化。旧定義の単数 `method` も受ける。
+// 本文（text）は選択時に複製したもので、ここでは形だけを整える。
+function normalizeNodeMethods(node) {
+  const raw = Array.isArray(node && node.methods) ? node.methods
+    : (node && node.method ? [node.method] : []);
+  const seen = new Set();
+  return raw.map((item) => {
+    if (!item || typeof item !== 'object') return null;
+    const id = String(item.id || '').trim();
+    const text = String(item.text || '').trim();
+    if (!id || !text || seen.has(id)) return null;
+    seen.add(id);
+    return {
+      id,
+      description: String(item.description || '').trim(),
+      role: String(item.role || 'worker').trim() || 'worker',
+      text,
+      source: String(item.source || '').trim(),
+    };
+  }).filter(Boolean);
+}
+
 function normalizeWorkflow(raw, options = {}) {
   if (!raw || typeof raw !== 'object') throw new Error('フローが不正です');
   const name = String(raw.name || '').trim();
@@ -194,19 +209,8 @@ function normalizeWorkflow(raw, options = {}) {
     if (!id || !goal || (kind !== 'human' && !tier)) throw new Error('ノードには id・内容・tier が必要です');
     if (seen.has(id)) throw new Error(`ノード id が重複しています: ${id}`);
     seen.add(id);
-    const surface = String((n && n.surface) || '').trim();
-    if (surface && !Object.prototype.hasOwnProperty.call(NODE_SURFACES, surface)) {
-      throw new Error(`ノードが触る面が不正です: ${surface}`);
-    }
-    const rawMethod = n.method && typeof n.method === 'object' ? n.method : null;
-    const method = rawMethod && String(rawMethod.id || '').trim() && String(rawMethod.text || '').trim()
-      ? {
-        id: String(rawMethod.id).trim(),
-        description: String(rawMethod.description || '').trim(),
-        role: String(rawMethod.role || 'worker').trim() || 'worker',
-        text: String(rawMethod.text).trim(),
-        source: String(rawMethod.source || '').trim(),
-      } : null;
+    // 工程ごとに選んだ作業ルール。旧定義の単数 `method` も配列として読む（互換）。
+    const methods = normalizeNodeMethods(n);
     return {
       id,
       label: String(n.label || id).trim() || id,
@@ -216,8 +220,7 @@ function normalizeWorkflow(raw, options = {}) {
       deps: (Array.isArray(n.deps) ? n.deps : []).map((d) => String(d).trim()).filter(Boolean),
       x: Number.isFinite(Number(n.x)) ? Number(n.x) : 40,
       y: Number.isFinite(Number(n.y)) ? Number(n.y) : 40,
-      ...(method && kind !== 'human' ? { method } : {}),
-      ...(surface && kind !== 'human' ? { surface } : {}),
+      ...(methods.length && kind !== 'human' ? { methods } : {}),
       ...((kind === 'classify' && n.continuation === 'route')
         || (kind === 'verify' && n.continuation === 'retry')
         ? { continuation: n.continuation } : {}),
@@ -321,8 +324,7 @@ function workflowDefinition(raw) {
       };
       if (node.tier) out.tier = String(node.tier);
       if (node.interaction && typeof node.interaction === 'object') out.interaction = node.interaction;
-      if (node.method && typeof node.method === 'object') out.method = node.method;
-      if (node.surface) out.surface = String(node.surface);
+      if (node.methods && node.methods.length) out.methods = node.methods;
       if (node.continuation) out.continuation = String(node.continuation);
       return out;
     }),
@@ -548,44 +550,82 @@ function normalizeNodeAssignments(config, clean, raw) {
 }
 
 const DESIGN_NODE_CONTRACT = '設計runとして実行します。リポジトリは読み取り専用です。ファイルの変更、commit、pushは禁止です。';
-// 「## 変更対象」へ契約ごとの強制レイヤーを書かせる（P5）。プロンプト上の約束（文言）と、
-// 実行時に効く強制（CLI 引数・スキーマ検査・ゲート）を書き分けさせないと、契約が
-// 設計書の中だけで守られたまま実装レイヤーへ落ちない。
-const DESIGN_ENFORCEMENT_CONTRACT = [
-  '「## 変更対象」には、契約ごとの「強制レイヤー」を明記してください',
-  '（例: 読み取り専用は agent-flow の起動引数で強制、dashboard は表示のみ）。',
-  '文言でしか守られていない契約が残っていないか自己点検し、残るなら強制する層を決めてください。',
-].join('');
-const DESIGN_OUTPUT_CONTRACT = [
-  '最終成果は設計書の全文です。次の4節を必ず含めてください。',
-  '## 目的',
-  '## 変更対象',
-  '## 受入基準',
-  '## 検証方法',
-  DESIGN_ENFORCEMENT_CONTRACT,
-  '未決事項があれば「## 質問」節を作り、推奨する答えとその理由を添えてください。',
-].join('\n');
 
-// 面（surface）ごとの作業ルール。本文はカタログ（methods/<id>.json）が正典で、ここでは
-// 引くだけ。カタログに無い＝ルールを黙って外して走らせない（フェイルクローズ）。
-function surfaceRule(config, surface) {
-  const spec = NODE_SURFACES[String(surface || '')];
-  if (!spec) throw new Error(`ノードが触る面が不正です: ${surface}`);
-  const available = availableMethods(config).some((item) => String(item.id) === spec.method);
-  // 複製の作法（source に取得元と hash を残す）は手法スナップショットと同じ 1 実装を通す。
-  const method = available ? (methodsSnapshot(config, [spec.method]) || [])[0] : null;
+// 設計成果の書式は手法カタログ `design-document-format` が正典。設計 run への指示
+// （fragments の worker 本文）と、実装へ渡す前のゲートが数える構造（format）を同じ 1 件から
+// 引く——指示と判定が別々に育つと「指示どおり書いたのに弾かれる」が起きる。
+function designDocumentMethod(config, options = {}) {
+  const found = availableMethods(config, options)
+    .find((item) => String(item && item.id) === designContract.FORMAT_METHOD_ID) || null;
+  // 契約として宣言されていないものは書式として使わない（ルールを誤って契約に据えない）。
+  return found && methodKind(found) === 'contract' ? found : null;
+}
+
+// ゲートが数える構造。宣言が無ければ null（呼び手はフェイルクローズで不足として扱う）。
+function designDocumentFormat(config, options = {}) {
+  try {
+    return designContract.readFormat(designDocumentMethod(config, options));
+  } catch {
+    // 壊れた宣言は「書式が無い」と同じ扱い。黙って既定へ落とすと、直したつもりの書式で
+    // 走り続けることになる。
+    return null;
+  }
+}
+
+// 設計 run の終端 goal へ複製する指示文。
+function designDocumentInstruction(config, options = {}) {
+  return methodWorkerText(designDocumentMethod(config, options));
+}
+
+// --- カタログのモデル宣言 -----------------------------------------------------
+// 手法カタログには 2 つのモデルが入る。
+//   rule     … プロンプトへ足す指示。さらに選ばれ方で 2 つに分かれる:
+//              auto     = 実行条件（役割・工程種別・実行レベル・料金区分）だけで決まる。
+//                         設定画面のトグルで自動適用する。
+//              per-task = 実行時にも機械判定できない「その工程への指示」。工程ごとに
+//                         人（または planner）が選ぶ。トグルの対象にしない。
+//   contract … 成果物の形式そのもの。指示（fragments）と機械で数える構造（format）を
+//              持ち、ON/OFF しない（成果物の種類ごとに 1 つ決まる）。
+// 無指定は rule / auto（既存定義の互換）。
+// 設計: docs/plans/2026-08-15-workflow-feature-improvement-implementation.md 第 4 段
+const METHOD_KINDS = ['rule', 'contract'];
+const RULE_SELECTIONS = ['auto', 'per-task'];
+
+function methodKind(method) {
+  const kind = String((method && method.kind) || '').trim();
+  return METHOD_KINDS.includes(kind) ? kind : 'rule';
+}
+
+function ruleSelection(method) {
+  if (methodKind(method) !== 'rule') return '';
+  const selection = String((method && method.selection) || '').trim();
+  return RULE_SELECTIONS.includes(selection) ? selection : 'auto';
+}
+
+// 設定画面のトグル一覧へ出す作業ルール（実行条件だけで選べるもの）。
+function autoRules(config, options = {}) {
+  return availableMethods(config, options).filter((method) => ruleSelection(method) === 'auto');
+}
+
+// 工程ごとに選ぶ作業ルール。契約は含めない。
+function perTaskRules(config, options = {}) {
+  return availableMethods(config, options).filter((method) => ruleSelection(method) === 'per-task');
+}
+
+// この run で実際に効く自動適用ルール。同梱カタログの既定 ON と、利用者が設定画面で
+// 有効化したものの和で、利用者が明示的に無効化したものは外れる（availableMethods が
+// 端末設定の宣言でカタログ項目を上書きするので、ここは enabled を読むだけでよい）。
+function enabledAutoRuleIds(config, options = {}) {
+  return autoRules(config, options).filter((method) => method.enabled === true)
+    .map((method) => String(method.id));
+}
+
+// 手法の worker 向け本文（ルールとして goal へ複製できるテキスト）。
+function methodWorkerText(method) {
   const fragments = method && Array.isArray(method.fragments) ? method.fragments : [];
-  const text = fragments.filter((fragment) => fragment && String(fragment.role || '') === 'worker'
+  return fragments.filter((fragment) => fragment && String(fragment.role || '') === 'worker'
     && String(fragment.text || '').trim())
     .map((fragment) => String(fragment.text).trim()).join('\n');
-  if (!text) throw new Error(`作業ルールが見つかりません: ${spec.method}（${spec.label}）`);
-  return {
-    id: String(method.id),
-    description: String(method.description || method.id),
-    role: 'worker',
-    text,
-    source: String(method.source || `methods/${method.id}`),
-  };
 }
 
 function planFromWorkflow(config, workflow, options = {}) {
@@ -593,6 +633,10 @@ function planFromWorkflow(config, workflow, options = {}) {
   const purpose = options.purpose || clean.purpose;
   const executionContract = purpose === 'design' ? { readonly: true } : {};
   const assignments = normalizeNodeAssignments(config, clean, options.nodeAssignments);
+  // 設計 run の終端へ複製する書式の指示。カタログに宣言が無ければ足さない
+  // （固定文言のフォールバックを置くと、書式を差し替えても古い指示が残る）。
+  const designInstruction = purpose === 'design'
+    ? designDocumentInstruction(config, { cwd: options.cwd }) : '';
   const candidates = new Map();
   const strategy = flowStrategy(config);
   const resolveCandidate = (tier) => {
@@ -603,19 +647,15 @@ function planFromWorkflow(config, workflow, options = {}) {
     if (n.kind === 'human') {
       return { id: n.id, goal: n.goal, kind: n.kind, deps: n.deps, interaction: n.interaction };
     }
-    // 面（surface）の作業ルールは、人が選んだ実行手法と同じ形で goal へ複製する
-    // （実行時にカタログを読み直さない＝保存済み run の振る舞いが後から変わらない）。
-    const rule = n.surface ? surfaceRule(config, n.surface) : null;
     const baseGoal = [
       n.goal,
-      n.method ? `実行手法「${n.method.description || n.method.id}」:\n${n.method.text}` : '',
-      rule ? `作業ルール「${rule.description}」:\n${rule.text}` : '',
+      ...(n.methods || []).map((rule) => `実行手法「${rule.description || rule.id}」:\n${rule.text}`),
     ].filter(Boolean).join('\n\n');
     const goal = purpose === 'design'
       ? `${baseGoal}\n\n${DESIGN_NODE_CONTRACT}`
       : baseGoal;
-    const terminalGoal = purpose === 'design' && clean.exit.includes(n.id)
-      ? `${goal}\n\n${DESIGN_OUTPUT_CONTRACT}`
+    const terminalGoal = purpose === 'design' && clean.exit.includes(n.id) && designInstruction
+      ? `${goal}\n\n${designInstruction}`
       : goal;
     const assigned = assignments[n.id];
     if (assigned) {
@@ -704,6 +744,7 @@ function snapshotSelection(config, selection, options = {}) {
       ...planFromWorkflow(config, workflow, {
         nodeAssignments: selected.nodeAssignments,
         purpose: expectedPurpose || workflow.purpose,
+        cwd: options.cwd,
       }),
     };
   }
@@ -936,9 +977,9 @@ function availableMethods(config, options = {}) {
   return [...seen.values()];
 }
 
-function methodsSnapshot(config, ids) {
+function methodsSnapshot(config, ids, options = {}) {
   if (!ids || !ids.length) return null;
-  const avail = new Map(availableMethods(config).map((m) => [String(m.id), m]));
+  const avail = new Map(availableMethods(config, options).map((m) => [String(m.id), m]));
   const out = [];
   for (const id of ids) {
     const m = avail.get(String(id));
@@ -953,6 +994,15 @@ function methodsSnapshot(config, ids) {
   return out;
 }
 
+// 工程ごとに選ぶルールのカタログを run tuning へ複製する形にする。enabled は必ず
+// false へ落とす——「run へ複製したか」と「実行時に自動注入するか（agentcore.methods.select
+// の対象か）」は別で、per-task ルールは後者ではない。agent-flow の planner がこの複製から
+// 選び、選んだタスクの goal へだけ本文を複製する（_coerce_tasks の methods フィールド）。
+function perTaskMethodsSnapshot(config, options = {}) {
+  const ids = perTaskRules(config, options).map((method) => String(method.id));
+  return (methodsSnapshot(config, ids, options) || []).map((snap) => ({ ...snap, enabled: false }));
+}
+
 function runTuningDir(config, runId) {
   const root = String(cfgOf(config).tuningRoot || '').trim();
   return root ? path.join(root, runId) : agentHomeSubdir('flow', 'tuning', runId);
@@ -961,12 +1011,15 @@ function runTuningDir(config, runId) {
 function writeRunTuning(config, runId, methods) {
   const dir = runTuningDir(config, runId);
   fs.mkdirSync(dir, { recursive: true });
+  // A/B 試行（trials）は端末設定の宣言をそのまま運ぶ。run 専用 tuning は端末設定の
+  // **置換**なので、ここで落とすと宣言した試行が dashboard 経由の run では一度も走らない。
+  const state = tuning.load(config);
   const data = {
     version: 1,
     revision: 1,
     enabled: true,
     methods,
-    trials: [],
+    trials: Array.isArray(state.trials) ? state.trials : [],
     profiles: { default: {}, 'external-facing': { injections: [] } },
     updated_at: new Date().toISOString(),
     updated_by: 'agent-dashboard adhoc-flow',
@@ -1083,8 +1136,23 @@ function submit(config, {
   if (execution) rec.execution_overrides = execution;
   writeJsonAtomic(path.join(busDir, 'inbox', `${runId}.json`), rec);
 
-  const methods = methodsSnapshot(config, p ? p.methods : snapshot.methods);
-  const tuningDir = methods && methods.length ? writeRunTuning(config, runId, methods) : null;
+  // この run へ複製する手法。自動適用ルール（同梱の既定 ON ＋ 利用者が有効化したもの）と、
+  // プリセットが名指しした手法の和。run 単位で複製するので、後からカタログや端末設定を
+  // 変えても走り出した run の振る舞いは変わらない。
+  const picked = (p ? p.methods : snapshot.methods) || [];
+  const methodIds = [...new Set([
+    ...picked.map(String),
+    ...enabledAutoRuleIds(config, { cwd }),
+  ])];
+  const methods = methodsSnapshot(config, methodIds, { cwd }) || [];
+  // 工程ごとに選ぶルールのカタログも run tuning へ複製する（enabled: false のまま＝
+  // agentcore の自動注入対象にはしない）。agent-flow の planner／評価役はこの複製から
+  // 選び、選んだタスクだけへ実行時に本文を複製する。UI から工程を選べない planner 生成
+  // ノード（type: auto・パターン）へも per-task ルールを届けるための唯一の口。
+  const perTaskCatalog = perTaskMethodsSnapshot(config, { cwd })
+    .filter((method) => !methodIds.includes(String(method.id)));
+  const allMethods = [...methods, ...perTaskCatalog];
+  const tuningDir = allMethods.length ? writeRunTuning(config, runId, allMethods) : null;
 
   const line = buildLaunchLine(config, {
     runId,
@@ -1208,9 +1276,6 @@ function listProjects(config) {
 module.exports = {
   SUBMITTER,
   NODE_KINDS,
-  NODE_SURFACES,
-  DESIGN_ENFORCEMENT_CONTRACT,
-  surfaceRule,
   COHERENCE_COMMAND,
   buildVerificationPlan,
   resolveBusDir,
@@ -1241,7 +1306,15 @@ module.exports = {
   normalizePreset,
   planFromPreset,
   availableMethods,
+  methodKind,
+  ruleSelection,
+  autoRules,
+  perTaskRules,
+  enabledAutoRuleIds,
   methodsSnapshot,
+  perTaskMethodsSnapshot,
+  designDocumentFormat,
+  designDocumentInstruction,
   writeRunTuning,
   runTuningDir,
   buildLaunchLine,

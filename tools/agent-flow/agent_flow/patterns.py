@@ -108,6 +108,15 @@ def _coerce_tasks(raw, existing=()):
         operation = t.get("operation")
         if isinstance(operation, dict) and not _nodecontract.operation_contract_errors(operation):
             node["operation"] = operation
+        # 工程ごとの追加ルール（planner/評価役が選んだもの）。存在する id・role が合う
+        # ものだけを goal へ複製する（dashboard がノードへ複製するのと同じ作法。
+        # 実行時にカタログを読み直さないので、後から run tuning が変わっても効果は変わらない）。
+        rule_ids = t.get("methods")
+        if isinstance(rule_ids, list) and rule_ids:
+            role = "verify" if kind == "verify" else "worker"
+            blocks = _per_task_rule_blocks(rule_ids, role)
+            if blocks:
+                node["goal"] = "\n\n".join([node["goal"], *blocks])
         out.append(node)
     return out
 
@@ -405,6 +414,100 @@ def review_lens_directive() -> str:
             "「やらなかった」と区別できなくなる。")
 
 
+
+# --------------------------------------------------------------------------
+# 工程ごとに選ぶ作業ルール（per-task rule）— 実行条件（役割・工程種別・実行レベル・
+# 料金区分）だけでは決まらない「その工程への指示」。カタログの正典は run 専用
+# tuning.json（dashboard が selection: "per-task" の定義を enabled: false のまま
+# 複製する。false は「実行条件だけで自動注入しない」の意味で、ここでは複製されて
+# いるかどうかだけを見る）。planner はここから選び、選んだタスクだけへ実行時に
+# 本文を複製する（_coerce_tasks）。tuning.json が無い環境（CLI 単体利用など）では
+# 空のまま——新しい設定キーは増やさない。
+# 設計: docs/plans/2026-08-15-workflow-feature-improvement-implementation.md 第 5 段
+# --------------------------------------------------------------------------
+def _per_task_rule_eligible(when) -> bool:
+    """カタログとして planner へ提示する前の絞り込み。ここで判定できるのは run 全体に
+    共通する条件（engine / workload / いま走っている実行 tier）だけ——role・purpose・
+    agent_cli・relative_cost は、どのノードが選ぶか分からない計画時点では判定できない
+    （それらは実際のノードが確定してから _per_task_rule_blocks が role で判定する）。
+    agentcore.methods.matches() をそのまま流用しない理由: あちらは未知のフィールドを
+    「文脈に無い＝空文字」として扱うため、when.roles を宣言した per-task ルール
+    （大半がそう）が role 不明のこの時点で誤って全滅する。"""
+    if not isinstance(when, dict):
+        return True
+    for field, allowed in (("engines", "agent-flow"), ("workloads", "flow")):
+        values = when.get(field)
+        if isinstance(values, list) and values and allowed not in {str(v) for v in values}:
+            return False
+    tiers = when.get("tiers")
+    if isinstance(tiers, list) and tiers:
+        current = flow_tier()
+        # tier 未宣言（agent-control 未導入）の実行では、どの段が走るか分からないので
+        # 落とさない（フェイルオープン: 判定材料が無い方が「候補から消える」より安全）。
+        if current and current not in {str(v) for v in tiers}:
+            return False
+    return True
+
+
+def _per_task_rule_catalog() -> dict:
+    """run tuning.json から selection: per-task の定義を id で引けるようにしたもの。
+    この run では成立し得ない条件（tier 等）を宣言した項目は候補にも含めない。"""
+    try:
+        with open(_method_tuning_file(), encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    methods = data.get("methods") if isinstance(data, dict) else None
+    if not isinstance(methods, list):
+        return {}
+    return {
+        str(m["id"]): m for m in methods
+        if isinstance(m, dict) and m.get("selection") == "per-task" and m.get("id")
+        and _per_task_rule_eligible(m.get("when"))
+    }
+
+
+def per_task_rule_directive() -> str:
+    """planner へ渡す、工程ごとに選べるルールの一覧。カタログが空なら空文字
+    （tuning.json が無い環境ではプロンプトを 1 バイトも変えない）。"""
+    catalog = _per_task_rule_catalog()
+    if not catalog:
+        return ""
+    lines = "\n".join(f"- {mid}: {m.get('description', mid)}" for mid, m in sorted(catalog.items()))
+    return (
+        "工程ごとに選べる追加ルール（実行条件だけでは決まらない指示。要る工程だけに付けること）:\n"
+        f"{lines}\n"
+        '該当するタスクだけ "methods":["<上記の id>"] を付けてください'
+        "（複数可。不要なタスクには付けないこと）。"
+    )
+
+
+def _per_task_rule_blocks(rule_ids, role: str) -> list:
+    """選ばれた id のうち、role に本文があるものだけを goal へ足すブロックにする。
+    未知の id・role 不一致は黙って外す（フェイルオープン: 選択が無効でも goal はそのまま
+    動く——LLM が知らない id を書いた・書式を間違えたからといって run を止めない）。"""
+    if not rule_ids:
+        return []
+    catalog = _per_task_rule_catalog()
+    blocks = []
+    seen_ids = set()
+    for mid in rule_ids:
+        mid = str(mid or "").strip()
+        if not mid or mid in seen_ids:
+            continue
+        method = catalog.get(mid)
+        if not method:
+            continue
+        fragments = method.get("fragments") if isinstance(method.get("fragments"), list) else []
+        text = "\n".join(str(f.get("text", "")).strip() for f in fragments
+                         if isinstance(f, dict) and f.get("role") == role and str(f.get("text", "")).strip())
+        if not text:
+            continue
+        seen_ids.add(mid)
+        blocks.append(f"作業ルール「{method.get('description', mid)}」:\n{text}")
+    return blocks
+
+
 def tier_split_directive(tier: "str | None") -> str:
     return TIER_SPLIT_DIRECTIVES.get(str(tier or ""), "")
 
@@ -692,6 +795,7 @@ def plan_strategy_agent(request: str, model: str | None, review="auto", granular
     gran_note = granularity_directive(granularity)
     split_note = split_policy_directive(policy)
     tier_note = tier_planner_directive(tier)
+    per_task_note = per_task_rule_directive()
     prompt = (
         "あなたは分散 Dynamic Workflow の計画役です。以下のワークフローパターンを知っています:\n"
         f"{catalog}\n\n"
@@ -700,6 +804,7 @@ def plan_strategy_agent(request: str, model: str | None, review="auto", granular
         + (tier_note + "\n" if tier_note else "")
         + (gran_note + "\n" if gran_note else "")
         + (split_note + "\n" if split_note else "")
+        + (per_task_note + "\n" if per_task_note else "")
         + f"要求に最も適したパターンと並列数を選び、{compose}{review_note}"
         "それを反映した初期タスクグラフを作ってください。各タスクには kind を付けます"
         "（kind はノード種別であってパターン名ではありません。patterns には書かないこと）: "

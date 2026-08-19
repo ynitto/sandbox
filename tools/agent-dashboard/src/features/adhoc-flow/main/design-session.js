@@ -28,9 +28,8 @@ const MODE_FLOWS = { interactive: 'design-interactive', auto: 'design-auto' };
 
 // 「## 質問」節の見出し。レベルは問わない（生成側が h2 で書く前提だが、h3 でも拾う）。
 const QUESTION_HEADING = /^#{1,6}[ \t]*質問[ \t]*$/;
-// 必須節と、節の中に要る項目（強制レイヤー）の判定は design-contract が唯一の実装。
-const REQUIRED_DESIGN_SECTIONS = designContract.REQUIRED_SECTIONS;
-const REQUIRED_DESIGN_ITEMS = designContract.REQUIRED_ITEMS;
+// 書式（必須節と節内の必須項目）の正典は手法カタログ `design-document-format`。
+// 数え方は design-contract が唯一の実装で、書式は adhoc が引いて渡す。
 const SNAPSHOT_DIR = '.snapshots';
 const TARGETS = new Set(['workflow', 'project']);
 const SOURCE_MODES = new Set(['new', 'continue', 'use-as-is']);
@@ -72,7 +71,9 @@ function normalizeFlowSnapshot(raw) {
       deps: Array.isArray(node.deps) ? node.deps.map(String) : [],
     };
     if (node.tier) out.tier = String(node.tier);
-    if (node.method && typeof node.method === 'object') out.method = { ...node.method };
+    if (Array.isArray(node.methods) && node.methods.length) {
+      out.methods = node.methods.map((rule) => ({ ...rule }));
+    } else if (node.method && typeof node.method === 'object') out.methods = [{ ...node.method }];
     if (node.interaction && typeof node.interaction === 'object') out.interaction = { ...node.interaction };
     if (node.continuation) out.continuation = String(node.continuation);
     return out.id && out.goal ? out : null;
@@ -174,19 +175,19 @@ function resolveFlowSnapshot(config, { selection, designFlow, mode, cwd } = {}) 
   });
 }
 
-function requiredDesignSections(document) {
-  return designContract.missingSections(document);
+function requiredDesignSections(config, document) {
+  return designContract.missingSections(document, adhoc.designDocumentFormat(config));
 }
 
 // 節はあるが、中の必須項目（変更対象の強制レイヤー）が無いもの。節の不足と同じ扱いで
 // 実装準備完了にしない——文言でしか守られていない契約を実装 run へ流さないため。
-function requiredDesignItems(document) {
-  return designContract.missingItems(document);
+function requiredDesignItems(config, document) {
+  return designContract.missingItems(document, adhoc.designDocumentFormat(config));
 }
 
 // 設計成果が実装へ渡せる形かどうか（節の不足＋節内の項目の不足）。
-function designDocumentIssues(document) {
-  return designContract.documentIssues(document);
+function designDocumentIssues(config, document) {
+  return designContract.documentIssues(document, adhoc.designDocumentFormat(config));
 }
 
 // 設計フローのノードへ人が固定したエージェント・モデル（{ nodeId: {tier, agent_cli, model} }）。
@@ -364,7 +365,7 @@ function harvest(config, session) {
     return saveSession(config, { ...session, runStatus: status, error: '設計 run の成果が空でした' });
   }
   const { document, questions } = splitDesignOutput(output);
-  const missing = designDocumentIssues(document);
+  const missing = designDocumentIssues(config, document);
   if (missing.length) {
     return saveSession(config, {
       ...session,
@@ -499,8 +500,6 @@ function startRound(config, {
 
 module.exports = {
   MODE_FLOWS,
-  REQUIRED_DESIGN_SECTIONS,
-  REQUIRED_DESIGN_ITEMS,
   requiredDesignItems,
   designDocumentIssues,
   normalizeSession,

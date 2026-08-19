@@ -8,31 +8,33 @@ const path = require('path');
 const crypto = require('crypto');
 const { agentHomeSubdir } = require('../../../base/main/agent-home');
 // 「実行できる設計書か」の判定は design-contract が唯一の実装（設計セッションと同じ判定を使う）。
+// 書式（format）は手法カタログ `design-document-format` が正典で、呼び手（ipc）が引いて渡す。
 const designContract = require('../../../base/main/design-contract');
 
 // 持ち込みの Markdown は言い換え見出し（狙い・スコープ・完了条件…）も同じ節として数える。
-function isCompleteDocument(text) {
-  return !designContract.missingSections(text, true).length;
+function isCompleteDocument(text, format) {
+  return !designContract.missingSections(text, format, true).length;
 }
 
-// 設計 run の成果はこちらの判定を通す。必須4節に加えて「変更対象の強制レイヤー」まで
-// 揃っていないと実装へは渡さない（文言でしか守られていない契約を実装 run へ流さない）。
-function isCompleteDesignDocument(text) {
-  return !designContract.documentIssues(text).length;
+// 設計 run の成果はこちらの判定を通す。必須節に加えて節内の必須項目（同梱書式なら
+// 「変更対象の強制レイヤー」）まで揃っていないと実装へは渡さない（文言でしか守られて
+// いない契約を実装 run へ流さない）。
+function isCompleteDesignDocument(text, format) {
+  return !designContract.documentIssues(text, format).length;
 }
 
-function designDocumentIssues(text) {
-  return designContract.documentIssues(text);
+function designDocumentIssues(text, format) {
+  return designContract.documentIssues(text, format);
 }
 
-function recommendRoute({ goal, materials } = {}) {
+function recommendRoute({ goal, materials, format } = {}) {
   const external = (Array.isArray(materials) ? materials : [])
     .find((item) => item && ['document', 'design-result'].includes(item.kind)
-      && isCompleteDocument(item.content));
+      && isCompleteDocument(item.content, format));
   if (external) {
     return { route: 'external-design', reasons: [`${external.name || '設計書'}をそのまま利用できます`], warnings: [] };
   }
-  const complete = isCompleteDocument(goal);
+  const complete = isCompleteDocument(goal, format);
   if (complete) {
     return { route: 'direct', reasons: ['実装に必要な項目が揃っています'], warnings: [] };
   }
@@ -87,7 +89,8 @@ function normalizeDefinitionNode(raw) {
   };
   if (raw.tier) node.tier = String(raw.tier).trim();
   if (raw.interaction && typeof raw.interaction === 'object') node.interaction = cloneValue(raw.interaction);
-  if (raw.method && typeof raw.method === 'object') node.method = cloneValue(raw.method);
+  if (Array.isArray(raw.methods) && raw.methods.length) node.methods = cloneValue(raw.methods);
+  else if (raw.method && typeof raw.method === 'object') node.methods = [cloneValue(raw.method)];
   if (raw.continuation) node.continuation = String(raw.continuation).trim();
   return node;
 }
@@ -191,7 +194,7 @@ function createItem(raw = {}) {
   if (!goal) throw new Error('やりたいことは必須です');
   const target = TARGETS.has(raw.target) ? raw.target : 'workflow';
   const materials = normalizeMaterials(raw.materials);
-  const routeRecommendation = recommendRoute({ goal, materials });
+  const routeRecommendation = recommendRoute({ goal, materials, format: raw.format });
   const route = ROUTES.has(raw.route) ? raw.route : routeRecommendation.route;
   const now = new Date().toISOString();
   const design = route === 'agent-design' ? normalizeDesign(raw.design) : normalizeDesign();
@@ -232,13 +235,17 @@ function createPackage(raw = {}) {
   const makeCandidate = (rawCandidate) => {
     const candidate = rawCandidate && typeof rawCandidate === 'object' ? rawCandidate : {};
     const candidateMaterials = [...materials, ...(Array.isArray(candidate.materials) ? candidate.materials : [])];
-    const recommendation = recommendRoute({ goal: String(candidate.goal || ''), materials: candidateMaterials });
+    const recommendation = recommendRoute({
+      goal: String(candidate.goal || ''), materials: candidateMaterials, format: raw.format,
+    });
     const route = ROUTES.has(candidate.route) ? candidate.route : recommendation.route;
     const candidateFlow = route === 'agent-design'
       ? normalizeDesignFlow(candidate.design && candidate.design.flow) || packageFlow
       : null;
     return createItem({
       ...candidate,
+      route,
+      format: raw.format,
       target: 'project',
       projectDir,
       packageId: id,
@@ -264,18 +271,20 @@ function createPackage(raw = {}) {
   };
 }
 
-function canHandoff(item) {
+// 受け入れ時（completeDesign）だけでなく渡す直前にも数える。保存済み状態は手で編集も
+// 壊れもするので、phase だけを信じて不完全な設計書を実装 run へ流さない。
+function canHandoff(item, format) {
   if (!item || item.phase !== 'implementation-ready') return false;
   return item.route !== 'agent-design'
-    || isCompleteDesignDocument(item.design && item.design.document);
+    || isCompleteDesignDocument(item.design && item.design.document, format);
 }
 
-function completeDesign(item, result = {}) {
+function completeDesign(item, result = {}, format = null) {
   if (!item || item.route !== 'agent-design') throw new Error('エージェント設計の項目ではありません');
   const document = String(result.document || '').trim();
   if (!document) throw new Error('設計結果は必須です');
-  if (!isCompleteDesignDocument(document)) {
-    throw new Error(`設計結果に必須項目が不足しています: ${designDocumentIssues(document).join('、')}`);
+  if (!isCompleteDesignDocument(document, format)) {
+    throw new Error(`設計結果に必須項目が不足しています: ${designDocumentIssues(document, format).join('、')}`);
   }
   const currentDesign = normalizeDesign(item.design);
   const resultMaterialId = `design-result:${item.id}`;
@@ -328,8 +337,8 @@ function startDesign(item, result = {}) {
   };
 }
 
-function recordHandoff(item, result = {}) {
-  if (!canHandoff(item)) throw new Error('実装準備が完了していません');
+function recordHandoff(item, result = {}, format = null) {
+  if (!canHandoff(item, format)) throw new Error('実装準備が完了していません');
   const runId = String(result.runId || '').trim();
   const taskId = String(result.taskId || '').trim();
   if (!runId && !taskId) throw new Error('実装先のIDは必須です');
