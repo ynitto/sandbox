@@ -1162,7 +1162,8 @@ function orchMethodTechnicalHtml(method, source) {
 
 function orchMethodCardHtml(method, current) {
   const repository = method.storage === 'registered-folder';
-  const enabled = !!(current && current.enabled !== false);
+  // 端末設定（tuning）の宣言が優先。無ければカタログ自身の既定（同梱の推奨 ON）を読む。
+  const enabled = current ? current.enabled !== false : method.enabled === true;
   const effective = enabled ? current : method;
   const roles = orchMethodRoles(effective);
   const source = (current && current.source) || method.source || method.origin || '';
@@ -1247,14 +1248,60 @@ function orchMethodDialogHtml() {
   </dialog>`;
 }
 
+function orchMethodKind(method) {
+  return String((method && method.kind) || 'rule');
+}
+
+function orchRuleSelection(method) {
+  return orchMethodKind(method) === 'rule' ? String((method && method.selection) || 'auto') : '';
+}
+
+// 工程ごとに選ぶルールは、設定画面ではトグルしない（どの工程へ足すかはフローの編集で決める）。
+function orchPerTaskRulesHtml(rules) {
+  if (!rules.length) return '';
+  return `<details class="orch-method-library" data-ui-key="orch-method-per-task">
+    <summary>工程ごとに選ぶルール（${rules.length}件）</summary>
+    <p class="muted">どの工程へ足すかは、ワークフローの編集画面で工程を選んでから指定します。ここでは一覧だけを示します。</p>
+    <div class="orch-method-grid">${rules.map((rule) => `<article class="orch-method-card">
+      <header><div><strong>${esc(rule.description || rule.id)}</strong></div></header>
+      <p class="orch-method-effect">${esc((rule.fragments || []).map((fragment) =>
+    String(fragment.text || '').trim()).filter(Boolean).join(' '))}</p>
+      <div class="orch-method-conditions">${orchMethodConditionsHtml(rule)}</div>
+    </article>`).join('')}</div>
+  </details>`;
+}
+
+// 成果物の契約は ON/OFF ではなく「いま何が有効か」を示す（成果物の種類ごとに 1 つ決まる）。
+function orchContractsHtml(contracts) {
+  if (!contracts.length) return '';
+  return `<div class="orch-method-guidance" role="note">
+    <strong>成果物の書式</strong>
+    ${contracts.map((contract) => {
+    const sections = ((contract.format || {}).sections || []).map(String);
+    const where = contract.storage === 'registered-folder' ? '対象フォルダの定義' : '同梱の定義';
+    return `<p>${esc(contract.description || contract.id)}: ${sections.length
+      ? esc(sections.map((section) => `「${section}」`).join('・')) : '未宣言'}（${esc(where)}）</p>`;
+  }).join('')}
+    <p class="muted">書式は切り替えではなく差し替えです。対象フォルダの <code>.agents/methods/</code> に同じ名前の定義を置くと、そちらが使われます。</p>
+  </div>`;
+}
+
 function orchMethodsPanelHtml(overview) {
   const tuning = overview.tuning || { revision: 0, methods: [] };
   const active = new Map((tuning.methods || []).map((method) => [String(method.id), method]));
   const catalog = overview.methodsCatalog || [];
   const ids = new Set(catalog.map((method) => String(method.id)));
-  const methods = catalog.concat((tuning.methods || []).filter((method) => !ids.has(String(method.id))));
+  const all = catalog.concat((tuning.methods || []).filter((method) => !ids.has(String(method.id))));
+  // 自動適用する作業ルールだけをトグル一覧に出す。工程ごとに選ぶルールと成果物の契約は
+  // トグルの対象ではないので、別の見出しで示す。
+  const methods = all.filter((method) => orchRuleSelection(method) === 'auto');
+  const perTask = all.filter((method) => orchRuleSelection(method) === 'per-task');
+  const contracts = all.filter((method) => orchMethodKind(method) === 'contract');
   const cards = methods.map((method) => orchMethodCardHtml(method, active.get(String(method.id)))).join('');
-  const enabledCount = [...active.values()].filter((method) => method && method.enabled !== false).length;
+  const enabledCount = methods.filter((method) => {
+    const current = active.get(String(method.id));
+    return current ? current.enabled !== false : method.enabled === true;
+  }).length;
   return `<section class="orch-panel orch-method-market">
     <header><span class="summary-kicker">作業ルール</span><h3>短い追加指示を自動で適用</h3>
       <p class="muted">条件に合うエージェントへの依頼文に指示を追加します。使用するエージェントや実行レベルは変更しません。</p>
@@ -1263,6 +1310,7 @@ function orchMethodsPanelHtml(overview) {
       <strong>自動適用中: ${enabledCount}件</strong>
       <p>ローカル／クラウドは料金の区分、軽量／標準／高性能は能力と実行品質の区分です。複数工程・並列・合議が必要な進め方はワークフローで構成します。</p>
     </div>
+    ${orchContractsHtml(contracts)}
     <details class="orch-method-library" data-ui-key="orch-method-library">
       <summary>個別の作業ルールを設定</summary>
       <div class="row orch-method-library-heading"><p class="muted">工程と処理の種類は画面側でまとめて「適用先」として表示します。</p>
@@ -1283,6 +1331,7 @@ function orchMethodsPanelHtml(overview) {
       <div class="orch-method-grid" id="orch-method-grid">${cards}</div>
       <p id="orch-method-empty" class="empty compact" hidden>一致する作業ルールがありません。検索語や絞り込みを変更してください。</p>
     </details>
+    ${orchPerTaskRulesHtml(perTask)}
     ${orchMethodDialogHtml()}
     ${orchMethodCopyDialogHtml()}
   </section>`;

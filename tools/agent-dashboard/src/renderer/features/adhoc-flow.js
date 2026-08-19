@@ -84,20 +84,6 @@
   const REQUEST_ITEMS = [['変更対象の強制レイヤー', /強制(?:レイヤー?|する層|箇所|ポイント)/]];
   const REQUEST_TEMPLATE = ['## 目的', '', '', '## 変更対象', '', '- 強制レイヤー: ', '',
     '## 受入基準', '', '- [ ] ', '', '## 検証方法', '', ''].join('\n');
-  // 実装フローの終端へ既定で付ける統合検証。並列で作った変更をマージした状態で、対象
-  // パッケージのテストスイート全体を CI と同じ系統で回す。ここが緑にならない run は
-  // 「全ノード done」でも完了として扱わない。
-  // 設計: docs/plans/2026-08-15-workflow-feature-improvement-proposals.md P1
-  const INTEGRATION_VERIFY = {
-    id: 'integration-verify',
-    label: '統合検証',
-    kind: 'verify',
-    continuation: 'retry',
-    goal: ['前工程の変更をすべて取り込んだ状態で、対象パッケージのテストスイート全体を',
-      'CI と同じ系統（このリポジトリなら該当パッケージの一括実行）で実行する。',
-      '実行したコマンドと結果の全文を成果に含め、赤があれば原因を直してから通るまで繰り返す。',
-      'テストを間引いたり、無効化して緑にしないこと。'].join(''),
-  };
   const DESIGN_SOURCE_MODES = [
     ['new', '一から設計する', '対話しながら要件と設計を詰めます。'],
     ['continue', '続きから設計する', '設計途中の Markdown を読み、対話を続けます。'],
@@ -566,11 +552,13 @@
   }
 
   function nodeMethodChoices(methods, node) {
+    // 候補は作業ルールだけ。成果物の契約（設計書の書式など）は工程へ足すものではない。
+    const rules = (methods || []).filter((method) => String((method && method.kind) || 'rule') === 'rule');
     const role = roleForKind(node && node.kind);
     const purpose = String((node && node.kind) || 'work');
     const includes = (values, value) => !Array.isArray(values) || !values.length
       || values.map(String).includes(String(value));
-    return (methods || []).flatMap((method) => {
+    return rules.flatMap((method) => {
       const roles = methodRoles(method).filter((item) => item !== 'session');
       const sharedGraphOption = String(method.id || '') === 'failure-modes-first';
       if (sharedGraphOption ? !roles.includes(role) : roles.length !== 1 || roles[0] !== role) return [];
@@ -671,7 +659,7 @@
         deps: Array.isArray(node.deps) ? node.deps.map(String) : [],
         x: 300 + depth * 270,
         y: 70 + row * 140,
-        ...(node.method ? { method: clone(node.method) } : {}),
+        ...(node.methods && node.methods.length ? { methods: clone(node.methods) } : {}),
         ...(continuation ? { continuation } : {}),
       };
     });
@@ -685,47 +673,6 @@
       exit: nodes.filter((node) => !used.has(node.id)).map((node) => node.id),
       nodes,
     };
-  }
-
-  // 実装フローの終端へ統合検証を 1 つ足す。既に終端が「未完了なら修正して再検証」する
-  // 検証工程ならそのままにする（同じ役目の工程を二重に置かない）。
-  function withIntegrationVerify(workflow) {
-    if (workflowPurpose(workflow && workflow.purpose) !== 'implementation') return workflow;
-    const nodes = Array.isArray(workflow.nodes) ? workflow.nodes : [];
-    if (!nodes.length) return workflow;
-    const used = new Set(nodes.flatMap((node) => node.deps || []));
-    const leaves = nodes.filter((node) => !used.has(node.id));
-    if (!leaves.length) return workflow;
-    // 分割（split）の後段は実行時に展開されるため、静的な終端が無い。ここへ検証を
-    // つなぐと「分割の直後に検証」という別の意味のフローになるので足さない。
-    if (leaves.some((node) => node.kind === 'split')) return workflow;
-    if (leaves.every((node) => node.kind === 'verify' && node.continuation === 'retry')) return workflow;
-    const ids = new Set(nodes.map((node) => String(node.id)));
-    let id = INTEGRATION_VERIFY.id;
-    for (let suffix = 2; ids.has(id); suffix += 1) id = `${INTEGRATION_VERIFY.id}-${suffix}`;
-    // 分類の後段（実行時に増える専門工程）より右へ置く——図の並びが実行順と食い違わないように。
-    const rightmost = Math.max(...nodes.map((node) =>
-      (Number(node.x) || 0) + (node.continuation === 'route' ? 270 : 0)));
-    const verify = {
-      ...INTEGRATION_VERIFY,
-      id,
-      tier: leaves[0].tier || 'auto',
-      deps: leaves.map((node) => String(node.id)),
-      x: rightmost + 270,
-      y: 70,
-    };
-    return {
-      ...workflow,
-      nodes: [...nodes, verify],
-      entry: (workflow.entry || []).slice(),
-      exit: [id],
-    };
-  }
-
-  // 「新しく作る」の雛形（＝これから編集する実装フロー）。標準装備の統合検証まで含めた
-  // 形をカードの図と編集キャンバスの両方で見せる。
-  function templateWorkflow(pattern, tier, purpose) {
-    return withIntegrationVerify(workflowFromPattern(pattern, tier, purpose));
   }
 
   function insertPattern(workflow, pattern, tier, from, position) {
@@ -757,7 +704,7 @@
   }
 
   function patternColumns(pattern) {
-    return workflowColumns(visualWorkflow(templateWorkflow(pattern, '')));
+    return workflowColumns(visualWorkflow(workflowFromPattern(pattern, '')));
   }
 
   function workflowColumns(workflow) {
@@ -812,14 +759,12 @@
 
   function nodeMethodOptionsHtml(methods, node) {
     const choices = nodeMethodChoices(methods, node);
-    const current = String((node.method && node.method.id) || '');
-    const role = roleForKind(node.kind);
+    const current = new Set((node.methods || []).map((rule) => String(rule.id)));
+    if (!choices.length) return '';
     return `<section class="wf-node-method-options"><div><strong>この工程の追加ルール</strong>
       <small>この工程への依頼文だけに短い指示を追加します。エージェントや実行レベルは変わりません。</small></div>
-      <div><label class="wf-method-option"><input type="radio" name="wf-node-method" data-node-method=""
-        ${current ? '' : 'checked'}><span><strong>標準</strong><small>追加の指示なし</small></span></label>
-      ${choices.map((choice) => `<label class="wf-method-option"><input type="radio" name="wf-node-method"
-        data-node-method="${esc(choice.id)}" ${current === choice.id ? 'checked' : ''}><span>
+      <div>${choices.map((choice) => `<label class="wf-method-option"><input type="checkbox"
+        data-node-method="${esc(choice.id)}" ${current.has(choice.id) ? 'checked' : ''}><span>
         <strong>${esc(choice.description)}</strong>${choice.condition ? `<small>${esc(choice.condition)}</small>` : ''}
         <p tabindex="0">${esc(choice.text)}</p></span></label>`).join('')}</div></section>`;
   }
@@ -1628,7 +1573,8 @@
     const selected = st.selectedNode === node.id ? ' selected' : '';
     const issue = nodeIssue(workflow, node);
     const { role, name } = nodePresentation(node);
-    const method = node.method ? `<span class="wf-method">${esc(node.method.description || node.method.id)}</span>` : '';
+    const method = (node.methods || [])
+      .map((rule) => `<span class="wf-method">${esc(rule.description || rule.id)}</span>`).join('');
     const continuation = ({ route: '分類後に専門工程を追加', retry: '未完了なら再作業・再検証' })[node.continuation] || '';
     const inputError = st.connectFrom ? connectionError(workflow, st.connectFrom, node.id) : '';
     if (readonly) return `<article class="wf-node" style="left:${Number(node.x)}px;top:${Number(node.y)}px">
@@ -1681,12 +1627,6 @@
         ${endIssue ? '<span class="wf-node-issue">末端を接続してください</span>' : ''}</div></article>`;
   }
 
-  // ノードが作るもの（面）の選択肢。語彙の正典は main の NODE_SURFACES で、
-  // 読めないときは選択肢を出さない（画面側で面の一覧を作り直さない）。
-  function surfaceOptions(ov) {
-    const surfaces = (ov && ov.nodeSurfaces) || {};
-    return Object.entries(surfaces).map(([value, spec]) => [value, String((spec && spec.label) || value)]);
-  }
 
   function inspectorHtml(ov, workflow) {
     if (st.selectedNode === START) {
@@ -1743,11 +1683,6 @@
         ${tierHelp ? `<small class="wf-tier-help">${esc(tierHelp)}</small>` : ''}</label>`}
       <label>この工程の目的<textarea id="wf-node-goal" rows="6">${esc(node.goal)}</textarea>
         <small class="wf-goal-help">この工程で達成したいことを自然文で書きます。依頼全文・前工程の成果・出力形式は agent-flow が実行時に補います。</small></label>
-      ${node.kind === 'human' ? '' : `<label>作るもの<select id="wf-node-surface">
-        <option value="">選ばない</option>
-        ${surfaceOptions(ov).map(([value, label]) =>
-    `<option value="${esc(value)}" ${node.surface === value ? 'selected' : ''}>${esc(label)}</option>`).join('')}
-      </select><small>選ぶと、その作業ルール（画面は既存 UI へ揃える／テストは単独実行の緑を成果に添える）が実行時に付きます。</small></label>`}
       ${interactionHtml}
       <details class="wf-runtime-context"><summary>agent-flow が自動で追加</summary>
         <p>${esc((KIND_META[node.kind] || [node.kind])[0])}としての役割、依頼全文、前工程の成果、作業規律、出力形式。</p></details>
@@ -1764,7 +1699,7 @@
     const repeat = pattern && ['loop-until-done', 'adversarial-verification'].includes(pattern.id);
     const repeatLabel = pattern && pattern.id === 'adversarial-verification'
       ? '問題があれば生成へ戻る' : '未完了なら作業へ戻る';
-    const columns = workflowNodeColumns(visualWorkflow(templateWorkflow(pattern, '')));
+    const columns = workflowNodeColumns(visualWorkflow(workflowFromPattern(pattern, '')));
     const flow = [[{ boundary: '開始' }], ...columns, [{ boundary: '終了' }]];
     return `<div class="wf-mini-flow${repeat ? ' loop' : ''}"
       aria-label="雛形の接続例${repeat ? `。${repeatLabel}` : ''}">${flow.map((column, index) =>
@@ -2775,7 +2710,7 @@
       }
       if (node.kind === 'human') {
         delete node.tier;
-        delete node.method;
+        delete node.methods;
         const previous = node.interaction || {};
         const mode = $id('wf-human-mode')?.value || previous.mode || 'approval';
         const options = ($id('wf-human-options')?.value || '').split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
@@ -2795,9 +2730,6 @@
         delete node.interaction;
       }
       node.goal = $id('wf-node-goal').value.trim();
-      const surface = $id('wf-node-surface')?.value || '';
-      if (node.kind !== 'human' && surface) node.surface = surface;
-      else delete node.surface;
       const continuation = $id('wf-node-continuation');
       const selected = continuation && continuation.checked ? continuation.value : '';
       if ((node.kind === 'classify' && selected === 'route') || (node.kind === 'verify' && selected === 'retry')) {
@@ -2945,14 +2877,14 @@
       const found = (ov.patterns || []).find((item) => item.id === button.dataset.patternId);
       if (!found || !canLeave()) return;
       st.workflowPurpose = 'implementation';
-      st.editor = templateWorkflow(found, ov.tiers?.[0]?.id || '', 'implementation');
+      st.editor = workflowFromPattern(found, ov.tiers?.[0]?.id || '', 'implementation');
       st.selectedNode = START; st.dirty = true; st.notice = '雛形を複製しました'; renderSettings();
     }));
     pane.querySelectorAll('[data-method-pattern-id]').forEach((button) => button.addEventListener('click', () => {
       const found = methodWorkflowPatterns(ov.methods).find((item) => item.methodId === button.dataset.methodPatternId);
       if (!found || !canLeave()) return;
       st.workflowPurpose = 'implementation';
-      st.editor = templateWorkflow(found, ov.tiers?.[0]?.id || '', 'implementation');
+      st.editor = workflowFromPattern(found, ov.tiers?.[0]?.id || '', 'implementation');
       st.selectedNode = START; st.dirty = true; st.notice = '作業ルールを工程へ展開しました'; renderSettings();
     }));
     $id('wf-fit')?.addEventListener('click', () => {
@@ -3096,16 +3028,19 @@
       const workflow = collectWorkflow();
       const node = workflow.nodes.find((item) => item.id === st.selectedNode);
       if (!node) return;
-      const id = input.dataset.nodeMethod;
-      if (!id) delete node.method;
-      else {
-        const choice = nodeMethodChoices(ov.methods, node).find((item) => item.id === id);
-        if (!choice) return;
-        node.method = {
+      const choices = nodeMethodChoices(ov.methods, node);
+      // 選択は複数。チェックされた候補の本文を選択時点で複製して持つ（後からカタログが
+      // 変わっても保存済みフローの振る舞いは変わらない）。
+      const selected = [...pane.querySelectorAll('[data-node-method]')]
+        .filter((box) => box.checked)
+        .map((box) => choices.find((choice) => choice.id === box.dataset.nodeMethod))
+        .filter(Boolean)
+        .map((choice) => ({
           id: choice.id, description: choice.description, role: choice.role,
           text: choice.text, source: choice.source,
-        };
-      }
+        }));
+      if (selected.length) node.methods = selected;
+      else delete node.methods;
       st.dirty = true;
       renderSettings();
     }));
@@ -3149,7 +3084,7 @@
       workflow.exit = (workflow.exit || []).filter((nodeId) => nodeId !== id);
       st.selectedNode = ''; st.selectedEdge = null; st.dirty = true; renderSettings();
     });
-    ['wf-node-label', 'wf-node-id', 'wf-node-kind', 'wf-node-tier', 'wf-node-goal', 'wf-node-surface', 'wf-node-continuation',
+    ['wf-node-label', 'wf-node-id', 'wf-node-kind', 'wf-node-tier', 'wf-node-goal', 'wf-node-continuation',
       'wf-human-mode', 'wf-human-prompt', 'wf-human-options', 'wf-human-default', 'wf-human-audience', 'wf-human-timeout'].forEach((id) =>
       $id(id)?.addEventListener('change', () => { collectWorkflow(); st.dirty = true; renderSettings(); }));
     ['wf-name', 'wf-description'].forEach((id) => $id(id)?.addEventListener('input', () => {
@@ -3200,10 +3135,7 @@
     publicationHtml,
     integrationVerifyPresentation,
     ciPresentation,
-    withIntegrationVerify,
-    templateWorkflow,
     workflowRunAdvice,
-    INTEGRATION_VERIFY,
     flowOptions,
     selectionFrom,
     selectedFlowSummaryHtml,
