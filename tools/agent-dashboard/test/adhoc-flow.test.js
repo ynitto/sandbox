@@ -1966,6 +1966,71 @@ test('run tuning に複製した per-task カタログを agent-flow の planner
   assert.ok(snap.every((m) => m.selection === 'per-task' && Array.isArray(m.fragments)));
 });
 
+test('成果物の契約とエンジンが選ぶ指示文は、工程セットの雛形にもしない', () => {
+  // 工程セットは作業ルールを工程へ複製する雛形。engine の指示文を複製すると
+  // エンジンの注入と二重になり、契約は工程へ足すものではない。
+  const twoRole = (id, extra) => ({
+    id, description: id, ...extra,
+    fragments: [{ role: 'worker', text: '作る' }, { role: 'verify', text: '確かめる' }],
+  });
+  const ids = (methods) => workflowUi.methodWorkflowPatterns(methods).map((p) => p.methodId);
+  assert.deepStrictEqual(ids([twoRole('plain-rule')]), ['plain-rule']);
+  assert.deepStrictEqual(ids([twoRole('eng', { selection: 'engine' })]), []);
+  assert.deepStrictEqual(ids([twoRole('doc', { kind: 'contract' })]), []);
+  // 工程ごとに選ぶルールは従来どおり雛形にできる（人が工程を選ぶのと同じ複製）
+  assert.deepStrictEqual(ids([twoRole('per', { selection: 'per-task' })]), ['per']);
+});
+
+test('自動適用の対象でない作業ルールは、プリセットが名指ししても enabled にしない', () => {
+  // per-task / engine は選ばれ方が別系統。picked に混ざったまま enabled: true で複製すると、
+  // 選んでいない工程や矛盾する実行パラメータにも本文が効いてしまう（二重注入）。
+  const methodsDir = tmpdir('picked-nonauto-');
+  fs.writeFileSync(path.join(methodsDir, 'split-policy-file.json'), JSON.stringify({
+    id: 'split-policy-file', description: '分割の単位', selection: 'engine',
+    enabled: false, fragments: [{ role: 'planner', text: 'ファイル境界で切る' }],
+  }));
+  fs.writeFileSync(path.join(methodsDir, 'integration-verify.json'), JSON.stringify({
+    id: 'integration-verify', description: '統合検証', selection: 'per-task',
+    enabled: false, fragments: [{ role: 'verify', text: '全体を回す' }],
+  }));
+  const cfg = {
+    adhocFlow: { busDir: tmpdir('picked-bus-'), tuningRoot: tmpdir('picked-rt-') },
+    orchestration: { methodsDir, tuningDir: tmpdir('picked-tuning-') },
+  };
+  const orig = exec.shInWsl;
+  exec.shInWsl = () => ({ ok: true, status: 0, stdout: 'launched:1', stderr: '', error: '' });
+  try {
+    const res = adhoc.submit(cfg, {
+      request: '実装する',
+      preset: { name: 'p', nodes: [], methods: ['split-policy-file', 'integration-verify'] },
+    });
+    const runTuning = JSON.parse(fs.readFileSync(path.join(res.tuningDir, 'tuning.json'), 'utf8'));
+    const byId = new Map(runTuning.methods.map((method) => [method.id, method]));
+    assert.strictEqual(byId.get('split-policy-file').enabled, false);
+    assert.strictEqual(byId.get('integration-verify').enabled, false);
+    // 複製自体は 1 件ずつ（picked とカタログ複製で二重に入らない）
+    assert.strictEqual(runTuning.methods.filter((m) => m.id === 'split-policy-file').length, 1);
+  } finally {
+    exec.shInWsl = orig;
+  }
+});
+
+test('存在しない手法を名指ししたプリセットは、これまでどおり投入時に失敗する', () => {
+  const cfg = {
+    adhocFlow: { busDir: tmpdir('picked-unknown-bus-'), tuningRoot: tmpdir('picked-unknown-rt-') },
+    orchestration: { methodsDir: tmpdir('picked-unknown-'), tuningDir: tmpdir('picked-unknown-t-') },
+  };
+  const orig = exec.shInWsl;
+  exec.shInWsl = () => ({ ok: true, status: 0, stdout: 'launched:1', stderr: '', error: '' });
+  try {
+    assert.throws(() => adhoc.submit(cfg, {
+      request: '実装する', preset: { name: 'p', nodes: [], methods: ['no-such-rule'] },
+    }), /手法が見つかりません: no-such-rule/);
+  } finally {
+    exec.shInWsl = orig;
+  }
+});
+
 test('engine 選択の指示文はトグル一覧にも per-task 一覧にも載らない', () => {
   // selection: "engine" は第 3 の選ばれ方（エンジンが run パラメータから決定的に選ぶ）。
   // enabled/when による自動適用のトグルにも、工程ごとの選択にも出さない。

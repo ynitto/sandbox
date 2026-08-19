@@ -88,6 +88,14 @@ function write(cfg, data, updatedBy, baseRevision) {
   return data;
 }
 
+// 自動適用（enabled）の対象は `selection: auto` の作業ルールだけ。per-task は工程ごとに
+// 人・planner が選び、engine はエンジンが run パラメータから決定的に選ぶ。画面がトグルを
+// 出し分けているだけでは守れない（IPC は id を受け取るだけ）ので、書く層でも断る。
+// agentcore.methods.select 側も同じ規則で自動注入から外す（二重の強制）。
+function autoSelectable(method) {
+  return String((method && method.selection) || 'auto') === 'auto';
+}
+
 function setMethod(cfg, payload) {
   const id = String((payload && payload.id) || '').trim();
   if (!id) throw new Error('手法 id が必要です');
@@ -96,6 +104,10 @@ function setMethod(cfg, payload) {
   const methods = Array.isArray(data.methods) ? data.methods : [];
   if (payload.enabled !== false) {
     const item = catalog(cfg).find((method) => String(method.id) === id);
+    if (item && !autoSelectable(item)) {
+      throw new Error(`この作業ルールは自動適用の対象ではありません: ${id}`
+        + `（selection: ${item.selection}）`);
+    }
     if (item) {
       const snapshot = JSON.parse(JSON.stringify(item));
       snapshot.enabled = true;
@@ -164,4 +176,4 @@ function importMethod(cfg, source, newId) {
   return write(cfg, data, 'agent-dashboard methods copy', base);
 }
 
-module.exports = { resolveTuningDir, resolveMethodsDir, load, catalog, sourceHash, setMethod, addMethod, importMethod, revisionOf };
+module.exports = { resolveTuningDir, resolveMethodsDir, load, catalog, sourceHash, setMethod, addMethod, importMethod, revisionOf, autoSelectable };

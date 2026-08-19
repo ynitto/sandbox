@@ -7,6 +7,33 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### ワークフロー機能: 選ばれ方の違いを自動注入の層で強制した（監査の結果）
+
+カスタムワークフローと手法（methods）の実装を「意図どおりか」で見直し、**選ばれ方
+（auto / per-task / engine）の切り分けが画面の出し分けにしか支えられていない**穴を塞いだ。
+`enabled` は auto ルールのための宣言なのに、それを読む層が `selection` を見ていなかった。
+
+- `agentcore.methods.select` が `selection: auto` 以外を自動注入の候補から外すようにした
+  （`auto_selectable()`）。ここは agent-flow / agent-loop 双方の自動注入が通る唯一の
+  チョークポイント。塞ぐ前は `agent-loop methods enable split-policy-behavior` や
+  手書きの tuning.json で engine / per-task の指示文を `enabled: true` にでき、
+  **`--split-policy file` の run に behavior の指示も入る**（選択と矛盾する二重注入）
+  状態を作れた。trial の variant が非 auto を名指しした場合も同様に効かせず、
+  効かなかった variant はその実行を代表しないので trial としても記録しない
+- 書き込み口も同じ規則で断るようにした（効かない宣言を残さない）:
+  `agent-loop methods enable` は理由付きで拒否し、`methods list` は非 auto に選ばれ方を
+  表示する。dashboard の `tuning.setMethod` も拒否する
+- run 複製で、プリセットが名指しした id（`picked`）から非 auto を落とすようにした。
+  engine / per-task はこれまでどおりカタログ複製（`enabled: false`）で運ぶ。存在しない
+  id を名指ししたプリセットは、従来どおり投入時に明示的に失敗する
+- 工程セットの雛形（`methodWorkflowPattern`）も、工程の候補と同じ規則で作業ルールだけに
+  絞った。engine の指示文を工程へ複製できるとエンジンの注入と二重になる
+- `schemas/agent-tuning.schema.json` に `kind` / `selection` / `format` を宣言した。
+  3 ツールが読む契約なのに未宣言で、`selection: "engine"` の追加も文書化されていなかった
+
+契約検証: `tools/agent-tools/agentcore/tests/test_methods.py` /
+`tools/agent-loop/test/test_tuning.py` / `tools/agent-dashboard npm test`
+
 ### ワークフロー機能: エンジンが選ぶ指示文を手法カタログへ寄せた（selection: "engine"）
 
 split_policy の文面カタログ化（設計 2026-08-18・案 C）を実装する前に、「methods の JSON
@@ -36,7 +63,9 @@ planner/evaluator/split 指示・レビュー観点（レンズ）の 4 系統�
 - 工程の作業ルール候補（`nodeMethodChoices`）から engine 選択の指示文を除外した。
   あわせて overview の手法一覧が `kind` / `selection` を落としていたのを直した——
   ここが落ちていると「成果物の契約・engine 指示文を候補に混ぜない」フィルタが機能せず、
-  role が合う engine 指示文（`tier-basic-split`）が工程へ付けられて二重注入になる
+  role が合う engine 指示文（`tier-basic-split`）が工程へ付けられて二重注入になる。
+  この取りこぼしは既存の不具合でもあった: `kind` が届いていなかったため、成果物の契約
+  （`design-document-format`）が work 工程の追加ルール候補として出ていた
 
 契約検証: `tools/agent-flow/tests/test_engine_directives.py` /
 `tools/agent-loop/test/test_methods_catalog.py` / `tools/agent-dashboard npm test`

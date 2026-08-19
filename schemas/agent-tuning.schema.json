@@ -45,7 +45,19 @@
       "properties": {
         "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
         "description": {"type": "string", "minLength": 1},
-        "enabled": {"type": "boolean", "default": false, "description": "適用には明示 true が必要（省略・null は無効）。手法プリセットは既定 OFF で、有効化は書き手の明示的な選択に限る。"},
+        "enabled": {"type": "boolean", "default": false, "description": "適用には明示 true が必要（省略・null は無効）。手法プリセットは既定 OFF で、有効化は書き手の明示的な選択に限る。**selection が auto のときだけ意味を持つ** — per-task / engine は enabled が true でも自動注入されない。"},
+        "kind": {
+          "enum": ["rule", "contract"], "default": "rule",
+          "description": "定義のモデル。rule=プロンプトへ足す指示 / contract=成果物の形式そのもの（指示と、機械で数える構造 format を持つ）。省略は rule"
+        },
+        "selection": {
+          "enum": ["auto", "per-task", "engine"], "default": "auto",
+          "description": "rule の選ばれ方。auto=実行条件（when）と enabled で自動適用 / per-task=工程ごとに人・planner が選ぶ / engine=エンジンが run パラメータ（分割の単位・分解の粒度・実行ティア等）から決定的に選ぶ。**auto 以外は enabled / when を選択に使わない** — 自動注入の対象から外れ、それぞれの選び手だけが効かせる。省略は auto"
+        },
+        "format": {
+          "type": "object",
+          "description": "contract のみ。成果物を機械で数えるための構造（必須節と、節の中に要る項目）"
+        },
         "fragments": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/methodFragment"}},
         "when": {"$ref": "#/$defs/when"},
         "origin": {"type": "string", "minLength": 1},

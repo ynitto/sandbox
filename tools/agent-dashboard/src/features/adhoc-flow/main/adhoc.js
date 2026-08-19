@@ -1159,9 +1159,18 @@ function submit(config, {
   // この run へ複製する手法。自動適用ルール（同梱の既定 ON ＋ 利用者が有効化したもの）と、
   // プリセットが名指しした手法の和。run 単位で複製するので、後からカタログや端末設定を
   // 変えても走り出した run の振る舞いは変わらない。
-  const picked = (p ? p.methods : snapshot.methods) || [];
+  // プリセットが名指しした id のうち、自動適用の対象（selection: auto）だけを enabled: true で
+  // 複製する。per-task / engine の id が混ざっても enabled にはしない——それぞれ下の
+  // カタログ複製（enabled: false）で運ばれ、工程の選択・実行パラメータで効く。ここで
+  // enabled にすると、選んでいない工程や矛盾する実行パラメータにも本文が効いてしまう。
+  // 未知の id は落とさない——存在しない手法を名指ししたプリセットは、これまでどおり
+  // methodsSnapshot が明示的に失敗させる（黙って無視すると気付けない）。
+  const selectionById = new Map(availableMethods(config, { cwd })
+    .map((method) => [String(method.id), ruleSelection(method)]));
+  const picked = ((p ? p.methods : snapshot.methods) || []).map(String)
+    .filter((id) => !selectionById.has(id) || selectionById.get(id) === 'auto');
   const methodIds = [...new Set([
-    ...picked.map(String),
+    ...picked,
     ...enabledAutoRuleIds(config, { cwd }),
   ])];
   const methods = methodsSnapshot(config, methodIds, { cwd }) || [];

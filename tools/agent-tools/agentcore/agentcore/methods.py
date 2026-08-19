@@ -75,6 +75,23 @@ def matches(when, context: dict) -> bool:
     return True
 
 
+# 自動注入（`enabled: true` で全対象へ効く）に参加できる選ばれ方。
+# `per-task`（工程ごとに人・planner が選ぶ）と `engine`（エンジンが run パラメータから
+# 決定的に選ぶ）は、**enabled が true でも自動注入しない**。選ばれ方が別系統だからで、
+# ここを通すと「--split-policy file の run に behavior の指示も入る」ような、
+# 選択と矛盾する二重注入が起きる。UI が出し分けているだけでは守れない
+# （`agent-loop methods enable <id>`・手書きの tuning.json・run 複製が同じ穴を開ける）ので、
+# 自動注入の唯一のチョークポイントであるここで強制する。
+AUTO_SELECTION = "auto"
+
+
+def auto_selectable(method) -> bool:
+    """この定義が自動注入（enabled ベース）の対象か。無指定は auto（既存定義の互換）。"""
+    if not isinstance(method, dict):
+        return False
+    return str(method.get("selection") or AUTO_SELECTION) == AUTO_SELECTION
+
+
 def _variant_index(key: str, trial_id: str) -> int:
     # agent-project の同一タスク再試行は ...-rN なので、同じ仕事では厳密に交互になる。
     match = re.search(r"-r(\d+)(?:-|$)", str(key or ""))
@@ -95,7 +112,7 @@ def select(data: "dict | None", context: dict, assignment_key: str = "") -> dict
     if not isinstance(data, dict):
         return empty
     by_id = {str(m.get("id")): m for m in data.get("methods") or []
-             if isinstance(m, dict) and m.get("id")}
+             if isinstance(m, dict) and m.get("id") and auto_selectable(m)}
     chosen = {mid for mid, method in by_id.items() if method.get("enabled") is True}
     trials = sorted((t for t in data.get("trials") or []
                      if isinstance(t, dict) and t.get("id") and t.get("enabled") is not False

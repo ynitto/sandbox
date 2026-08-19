@@ -33,8 +33,13 @@ agent-flow には「run パラメータの値 → 固定プロンプト文面」
 カタログは文面だけを差し替える）。
 
 - 強制レイヤー: 選択の決定性はエンジン実装（`engine_directive` の呼び出し点が run
-  パラメータから id を組み立てる）で強制。dashboard はトグルに出さない（表示のみ）——
-  auto ルールの器（`agentcore.methods.select`）へは同梱定義の `enabled: false` が漏れを防ぐ。
+  パラメータから id を組み立てる）で強制。**自動注入からの除外は
+  `agentcore.methods.select` で強制する**——`selection` が `auto` 以外の定義は
+  `enabled: true` でも自動注入の候補にしない（`auto_selectable()`）。ここは flow / loop
+  双方の自動注入が通る唯一のチョークポイントなので、UI の出し分けや同梱定義の
+  `enabled: false` に頼らずに済む。書き込み口（`agent-loop methods enable` /
+  dashboard の `setMethod` / run 複製の `picked`）も同じ規則で断り、効かない宣言を
+  tuning.json に残さない。
 
 ### agent-flow: 単一の解決口 `engine_directive(id, role, fallback)`（`patterns.py`）
 
@@ -90,8 +95,12 @@ tier の語彙は agent-control の宣言で開いている（標準は basic/sm
   （`engineMethodsSnapshot`・enabled: false のまま）。`availableMethods` を通すので、
   登録フォルダの `.agents/methods/` 差し替えは複製時に解決済み。
 
-- 強制レイヤー: トグル対象外は renderer のフィルタ（表示のみ）と、同梱定義の
-  `enabled: false` の両方で守る。run への到達は main の複製実装で強制。
+- 強制レイヤー: トグル対象外は renderer のフィルタ（表示のみ）に加えて、書く層
+  （`tuning.setMethod`）と自動注入の層（`agentcore.methods.select`）で強制する。
+  run への到達は main の複製実装で強制し、`picked`（プリセットが名指しした id）からも
+  非 auto を落とす。工程の候補（`nodeMethodChoices`）と工程セットの雛形
+  （`methodWorkflowPattern`）も同じ規則で作業ルールだけに絞る——ここが緩いと、
+  エンジンが注入する文面を人が工程へも複製できてしまう（二重注入）。
 
 ## 受入基準
 
@@ -104,6 +113,9 @@ tier の語彙は agent-control の宣言で開いている（標準は basic/sm
   enabled: false で複製される。
 - 組み込みが知らない tier のカタログ定義（`tier-<名前>`）が、エンジン改修なしで
   planner / evaluator / split の指示文として効く。
+- engine / per-task の定義は、`enabled: true` を書かれても自動注入されない
+  （CLI の enable・dashboard の保存・手書きの tuning.json・run 複製のいずれの経路でも）。
+  選ばれ方の違いが `enabled` の書き換えで崩れない。
 
 ## 検証方法
 
@@ -111,7 +123,11 @@ tier の語彙は agent-control の宣言で開いている（標準は basic/sm
   壊れた JSON・role 不一致・tier 開語彙・同梱と組み込みの文面一致・engine 宣言の検査
 - `tools/agent-flow/tests/test_planner.py` ほか既存スイート — 無改変で緑（既定挙動不変の証明）
 - `tools/agent-loop/test/test_methods_catalog.py` — カタログ 33 件・selection モデル・golden hash
-- `tools/agent-dashboard` `npm test` — トグル/per-task 除外・run tuning 複製・golden hash（JS 側）
+- `tools/agent-tools/agentcore/tests/test_methods.py` — 非 auto の自動注入除外・trial
+  variant からの混入防止（`enabled: true` でも効かないことの証明）
+- `tools/agent-loop/test/test_tuning.py` — `methods enable` が非 auto を断ること
+- `tools/agent-dashboard` `npm test` — トグル/per-task 除外・run tuning 複製・golden hash（JS 側）・
+  `setMethod` の拒否・`picked` の絞り込み・工程セット雛形の除外
 
 ## 付録: 検討の経緯（2026-08-18 時点・当時の判断の記録）
 

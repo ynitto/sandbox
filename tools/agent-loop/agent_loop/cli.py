@@ -423,7 +423,13 @@ def main() -> None:
                     enabled = {str(m.get("id")) for m in inventory["methods"] if m.get("enabled") is True}
                     print(f"手法カタログ（revision={inventory['revision']}）")
                     for method in inventory["catalog"]:
-                        state = "ON" if str(method.get("id")) in enabled else "OFF"
+                        # 自動適用の対象でないもの（工程ごとに選ぶ / エンジンが選ぶ）は
+                        # ON/OFF の欄に選ばれ方を出す——ここで OFF とだけ出すと
+                        # 「enable すれば効く」と読めてしまう（enable は理由付きで断る）。
+                        if not _methodlib.auto_selectable(method):
+                            state = str(method.get("selection") or "")
+                        else:
+                            state = "ON" if str(method.get("id")) in enabled else "OFF"
                         print(f"  [{state}] {method.get('id')}: {method.get('description', '')}")
                 return
             if args.methods_action == "enable":

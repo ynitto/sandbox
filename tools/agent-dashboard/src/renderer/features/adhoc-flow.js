@@ -584,6 +584,11 @@
   function methodWorkflowPattern(method) {
     const methodId = String((method && method.id) || '').trim();
     if (!methodId || ['no-self-approval', 'failure-modes-first'].includes(methodId)) return null;
+    // 工程セットは「作業ルールを工程へ複製する」雛形なので、候補の規則は
+    // nodeMethodChoices と同じ——成果物の契約と、エンジンが選ぶ指示文は雛形にしない
+    // （後者を工程へ複製すると、エンジンの注入と二重になる）。
+    if (String((method && method.kind) || 'rule') !== 'rule'
+      || String((method && method.selection) || '') === 'engine') return null;
     const fragments = (method && Array.isArray(method.fragments) ? method.fragments : [])
       .filter((fragment) => fragment && ['worker', 'verify'].includes(String(fragment.role || ''))
         && String(fragment.role || '').trim() && String(fragment.text || '').trim());
@@ -3159,6 +3164,7 @@
     roleLabelForKind,
     nodePresentation,
     nodeMethodChoices,
+    methodWorkflowPatterns,
     methodWorkflowPattern,
     workflowFromPattern,
     visualWorkflow,

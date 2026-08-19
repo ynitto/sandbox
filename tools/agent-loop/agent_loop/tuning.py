@@ -222,6 +222,16 @@ def method_enable(method_id: str) -> dict:
     catalog = next((m for m in method_catalog() if str(m.get("id")) == mid), None)
     if not catalog:
         raise ValueError(f"カタログに無い手法です: {mid}")
+    # 自動適用（enabled）の対象は `selection: auto` の作業ルールだけ。per-task は工程ごとに
+    # 人・planner が選び、engine はエンジンが run パラメータから決定的に選ぶ——どちらも
+    # enabled で全対象へ効かせる種類ではない。書けてしまうと agentcore 側で無視される
+    # 「効かない宣言」が tuning.json に残るので、書く前に理由を言って断る。
+    if not _methodlib.auto_selectable(catalog):
+        raise ValueError(
+            f"この手法は自動適用の対象ではありません: {mid}"
+            f"（selection: {catalog.get('selection')}）。"
+            "工程ごとに選ぶルールはワークフローの工程で、"
+            "エンジンが選ぶ指示文は実行パラメータで決まります")
     snap = dict(catalog)
     digest = hashlib.sha256(json.dumps(catalog, ensure_ascii=False, sort_keys=True,
                                        separators=(",", ":")).encode()).hexdigest()[:12]
