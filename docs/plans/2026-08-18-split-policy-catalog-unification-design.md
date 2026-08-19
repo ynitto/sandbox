@@ -1,8 +1,10 @@
-# split_policy をカタログへ寄せる設計検討（未実装）
+# split_policy をカタログへ寄せる設計検討（実装済み・汎用化）
 
 対象の会話: `docs/plans/2026-08-15-workflow-feature-improvement-implementation.md` 第 1〜5 段の
 質疑から。「split_policy が methods と同じ統一を受けていないのは一貫性を欠くのでは」という
-指摘を受け、統合できるか・すべきかを検討した。本書は検討結果と推奨案のみで、**実装はしていない**。
+指摘を受け、統合できるか・すべきかを検討した。当初は検討結果と推奨案のみだったが、
+**2026-08-19 に案 C を汎用化した形で実装した**（末尾「実装記録」参照）。案 A/B/C の比較と
+案 C の骨子は当時の判断の記録としてそのまま残す。
 
 ## 現状の事実
 
@@ -77,3 +79,51 @@ CLI/config の面は今のまま——`--split-policy` / 設定 `split_policy` �
 判断するのがよい。実装する場合の見積り: `patterns.py` の `split_policy_directive` 変更、
 `methods/split-policy-*.json` 2 件の新設、golden 更新、`SplitPolicyTests` への
 カタログ優先・フォールバックのテスト追加——第 4・5 段と同程度の小さな変更。
+
+## 実装記録（2026-08-19・案 C を汎用化して実装）
+
+実装前の見直しで「split_policy 以外にも、methods の JSON 形式を通らずにワークフローの
+振る舞い（プロンプト文面）をカスタマイズする系が無いか」を全数確認した。結果:
+
+| 系 | 実体 | 性質 |
+| --- | --- | --- |
+| `SPLIT_POLICY_DIRECTIVES` | behavior / file → planner 文面 | 純粋な「値 → 文面」 |
+| `GRANULARITY_SCOPE_DIRECTIVES` | coarse / fine / finest → planner 文面 | 文面＋構造的効果（並列数倍率 `GRANULARITY_FACTORS`） |
+| `TIER_PLANNER/EVALUATOR/SPLIT_DIRECTIVES` | basic → planner / evaluator / split 文面 | 文面＋制御分岐（`tier_planning_granularity` の auto→finest 等） |
+| `REVIEW_LENSES` / `review_lens_directive` | 評価役のレビュー観点文面 | 文面＋構造（観点キーは run 履歴の記録名） |
+
+本書の当初案は granularity / tier 系を「構造的効果を持つ genuine なエンジンパラメータだから
+対象外」としたが、その論拠が縛るのは**値の選ばれ方**であって**文面の置き場所**ではない。
+構造的効果（倍率・分岐・観点キー）は Python 側に残したまま、文面だけを同じ器に寄せれば
+性質の違いは保たれる。そこで案 C を 1 機構へ汎用化した:
+
+- **選ばれ方の第 3 形態 `selection: "engine"`** を手法カタログに追加した。既存の
+  auto（実行条件で自動）/ per-task（工程ごとに人・planner が選ぶ）に対し、engine は
+  「エンジンが run パラメータ（CLI/config/agent-control の値）から決定的に選ぶ」。
+  enabled / when は選択に関与しない（トグルの対象にしない。dashboard は一覧表示のみ）。
+- **エンジン側は単一の口 `engine_directive(id, role, fallback)`**（`patterns.py`）。解決順:
+  1. run tuning.json の `methods[]`（dashboard が run 作成時に複製したスナップショット。
+     per-task と同じ run 単位の決定性。dashboard 経由の run は agent-flow の cwd が
+     リポジトリ外なので、`.agents/methods/` 差し替えをここが届ける）
+  2. 対象リポジトリの `.agents/methods/<id>.json`（cwd → git root。CLI 単体利用の差し替え口）
+  3. `$AGENT_METHODS_DIR/<id>.json`（同梱カタログの導入先）
+  4. 組み込み文言（従来の辞書）——カタログ不在・破損・role 不一致・空文字はすべてここへ
+     倒す（無指定の run が黙って無方針にならないフェイルセーフ。当初案のとおり）。
+- **同梱カタログ 8 件**: `split-policy-behavior` / `split-policy-file` /
+  `granularity-coarse|fine|finest` / `tier-basic`（planner + evaluator）/
+  `tier-basic-split`（split ノード専用）/ `review-lenses`。文面は組み込み文言と同一で、
+  乖離は `BundledEngineDirectiveCatalogTests` が検出する。
+- **将来の拡張**もこの口で受ける: 新しい run パラメータの文面は id を 1 つ足すだけで
+  カタログ化でき、tier のように語彙が開いているものは組み込みが知らない値
+  （例 `tier-small`）でもカタログ定義を置けば指示文を足せる（エンジン改修なし）。
+  一方、enum そのもの（split_policy の 2 値・granularity の倍率・auto の導出・観点キー）は
+  構造的なエンジンパラメータのままで、カタログでは変えられない。
+
+対象外と確認したもの: `PATTERNS`（ユーザー定義フロー / flow-planner スキルの
+patterns-catalog.yaml が既に customization の口）、agent-instructions / agent-tuning
+injections（別契約として既にカタログ化済み）、planner / evaluator / worker の地の文
+（run パラメータで選ばれる文面ではなくエンジン内部。足したい指示は既存の作業ルールで足せる）。
+
+検証: `tools/agent-flow/tests/test_engine_directives.py` /
+`tools/agent-flow/tests/test_planner.py`（既存の SplitPolicyTests 等は無改変で緑＝既定挙動不変）/
+`tools/agent-loop/test/test_methods_catalog.py` / `tools/agent-dashboard npm test`。

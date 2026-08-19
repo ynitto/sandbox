@@ -208,6 +208,11 @@ agent-loop methods add my-check --role session --text "完了前に証拠を確�
 `enable` はカタログを tuning.json へ複製して source hash を固定します。カタログの更新を
 稼働へ反映するには、明示的にもう一度 `enable` します。
 
+カタログのうち `selection: "per-task"`（工程ごとに planner・人が選ぶ）と
+`selection: "engine"`（agent-flow が run パラメータから決定的に選ぶ指示文。
+`split-policy-*` / `granularity-*` / `tier-*` / `review-lenses`）は enable の対象では
+ありません——選ばれ方が enabled/when と別系統で、agent-loop のセッションにも効きません。
+
 ## 設定ファイル形式 (YAML)
 
 ```yaml

@@ -1,0 +1,1 @@
+{"id": "tier-basic-split", "description": "実行ティア basic の split（分解役）指示", "selection": "engine", "enabled": false, "fragments": [{"role": "worker", "text": "実行ティア: basic（各要素は最小能力のワーカーが処理する）。各要素は 1 つの短い手順だけで完了できる大きさまで細かく分解し、判断・統合や複数手順を 1 要素に詰め込まないこと。出力契約は変わらない——説明文・前置きを付けず、JSON 配列だけを出力すること。"}], "origin": "design://2026-08-18-split-policy-catalog-unification-design"}

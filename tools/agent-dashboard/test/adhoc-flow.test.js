@@ -1884,8 +1884,11 @@ test('submit はプリセット無しでも投入でき、既定 ON の作業ル
     // 複製される。複製なので、後からカタログを変えても走り出した run の振る舞いは変わらない。
     const runTuning = JSON.parse(fs.readFileSync(path.join(res.tuningDir, 'tuning.json'), 'utf8'));
     const byId = new Map(runTuning.methods.map((method) => [method.id, method]));
-    assert.deepStrictEqual([...byId.keys()].sort(),
-      ['integration-verify', 'test-green-evidence', 'ui-consistency']);
+    assert.deepStrictEqual([...byId.keys()].sort(), [
+      'granularity-coarse', 'granularity-fine', 'granularity-finest',
+      'integration-verify', 'review-lenses', 'split-policy-behavior', 'split-policy-file',
+      'test-green-evidence', 'tier-basic', 'tier-basic-split', 'ui-consistency',
+    ]);
     assert.strictEqual(byId.get('test-green-evidence').enabled, true);
     assert.strictEqual(byId.get('ui-consistency').enabled, true);
     // per-task ルールのカタログ（integration-verify）は enabled: false のまま複製される
@@ -1893,6 +1896,14 @@ test('submit はプリセット無しでも投入でき、既定 ON の作業ル
     // 選び、選んだタスクだけへ本文を複製する。
     assert.strictEqual(byId.get('integration-verify').enabled, false);
     assert.strictEqual(byId.get('integration-verify').selection, 'per-task');
+    // エンジン選択の指示文（selection: "engine"）も同じ器で enabled: false のまま複製される
+    // ——agent-flow の engine_directive が run tuning を最優先で引く（run 単位の決定性）。
+    for (const mid of ['split-policy-behavior', 'split-policy-file', 'granularity-coarse',
+      'granularity-fine', 'granularity-finest', 'tier-basic', 'tier-basic-split',
+      'review-lenses']) {
+      assert.strictEqual(byId.get(mid).enabled, false, mid);
+      assert.strictEqual(byId.get(mid).selection, 'engine', mid);
+    }
   } finally {
     exec.shInWsl = orig;
   }
@@ -1944,6 +1955,50 @@ test('run tuning に複製した per-task カタログを agent-flow の planner
   const cfg = {};
   const snap = adhoc.perTaskMethodsSnapshot(cfg);
   assert.ok(snap.every((m) => m.selection === 'per-task' && Array.isArray(m.fragments)));
+});
+
+test('engine 選択の指示文はトグル一覧にも per-task 一覧にも載らない', () => {
+  // selection: "engine" は第 3 の選ばれ方（エンジンが run パラメータから決定的に選ぶ）。
+  // enabled/when による自動適用のトグルにも、工程ごとの選択にも出さない。
+  const methodsDir = tmpdir('engine-rules-');
+  fs.writeFileSync(path.join(methodsDir, 'split-policy-behavior.json'), JSON.stringify({
+    id: 'split-policy-behavior', description: '分割の単位', selection: 'engine',
+    enabled: false, fragments: [{ role: 'planner', text: 'x' }],
+  }));
+  const cfg = { orchestration: { methodsDir, tuningDir: tmpdir('engine-rules-tuning-') } };
+  assert.deepStrictEqual(adhoc.autoRules(cfg).map((m) => m.id), []);
+  assert.deepStrictEqual(adhoc.perTaskRules(cfg).map((m) => m.id), []);
+  assert.deepStrictEqual(adhoc.engineRules(cfg).map((m) => m.id), ['split-policy-behavior']);
+});
+
+test('engineMethodsSnapshot は enabled を必ず false へ落とし、run tuning へ複製される', () => {
+  const methodsDir = tmpdir('engine-snapshot-');
+  fs.writeFileSync(path.join(methodsDir, 'review-lenses.json'), JSON.stringify({
+    // 誤って enabled: true を宣言していても、複製時に false へ丸める（自動注入の対象にしない）
+    id: 'review-lenses', description: 'レビューの観点', selection: 'engine',
+    enabled: true, fragments: [{ role: 'evaluator', text: '観点の上書き' }],
+  }));
+  const cfg = {
+    adhocFlow: { busDir: tmpdir('engine-snapshot-bus-'), tuningRoot: tmpdir('engine-snapshot-rt-') },
+    orchestration: { methodsDir, tuningDir: tmpdir('engine-snapshot-tuning-') },
+  };
+  const snap = adhoc.engineMethodsSnapshot(cfg);
+  assert.deepStrictEqual(snap.map((m) => [m.id, m.enabled, m.selection]),
+    [['review-lenses', false, 'engine']]);
+  // submit 時に per-task と同じ器（run tuning）へ複製され、agent-flow の engine_directive が
+  // run tuning 最優先で引く（run 単位の決定性）。
+  const orig = exec.shInWsl;
+  exec.shInWsl = () => ({ ok: true, status: 0, stdout: 'launched:1', stderr: '', error: '' });
+  try {
+    const res = adhoc.submit(cfg, { request: '軽い調べ物' });
+    const runTuning = JSON.parse(fs.readFileSync(path.join(res.tuningDir, 'tuning.json'), 'utf8'));
+    const engine = runTuning.methods.find((m) => m.id === 'review-lenses');
+    assert.ok(engine, 'engine 指示文が run tuning へ複製されること');
+    assert.strictEqual(engine.enabled, false);
+    assert.strictEqual(engine.fragments[0].text, '観点の上書き');
+  } finally {
+    exec.shInWsl = orig;
+  }
 });
 
 test('実行時指定は tier を候補へ解決して inbox に固定し、再実行にも引き継ぐ', () => {

@@ -1271,6 +1271,21 @@ function orchPerTaskRulesHtml(rules) {
   </details>`;
 }
 
+// エンジンが run パラメータで選ぶ指示文（selection: "engine"）。トグルの対象にしない——
+// どれが効くかは実行時の split_policy / granularity / tier 等の値で決定的に決まる。
+function orchEngineRulesHtml(rules) {
+  if (!rules.length) return '';
+  return `<details class="orch-method-library" data-ui-key="orch-method-engine">
+    <summary>エンジンが選ぶ指示文（${rules.length}件）</summary>
+    <p class="muted">分割の単位・分解の粒度・実行ティアなどの実行パラメータに応じてエンジンが自動で選ぶ文面です。ON/OFF はできません。文面は差し替えです——対象フォルダの <code>.agents/methods/</code> に同じ id の定義を置くと、そちらが使われます。</p>
+    <div class="orch-method-grid">${rules.map((rule) => `<article class="orch-method-card">
+      <header><div><strong>${esc(rule.description || rule.id)}</strong></div></header>
+      <p class="orch-method-effect">${esc((rule.fragments || []).map((fragment) =>
+    String(fragment.text || '').trim()).filter(Boolean).join(' '))}</p>
+    </article>`).join('')}</div>
+  </details>`;
+}
+
 // 成果物の契約は ON/OFF ではなく「いま何が有効か」を示す（成果物の種類ごとに 1 つ決まる）。
 function orchContractsHtml(contracts) {
   if (!contracts.length) return '';
@@ -1296,6 +1311,7 @@ function orchMethodsPanelHtml(overview) {
   // トグルの対象ではないので、別の見出しで示す。
   const methods = all.filter((method) => orchRuleSelection(method) === 'auto');
   const perTask = all.filter((method) => orchRuleSelection(method) === 'per-task');
+  const engine = all.filter((method) => orchRuleSelection(method) === 'engine');
   const contracts = all.filter((method) => orchMethodKind(method) === 'contract');
   const cards = methods.map((method) => orchMethodCardHtml(method, active.get(String(method.id)))).join('');
   const enabledCount = methods.filter((method) => {
@@ -1332,6 +1348,7 @@ function orchMethodsPanelHtml(overview) {
       <p id="orch-method-empty" class="empty compact" hidden>一致する作業ルールがありません。検索語や絞り込みを変更してください。</p>
     </details>
     ${orchPerTaskRulesHtml(perTask)}
+    ${orchEngineRulesHtml(engine)}
     ${orchMethodDialogHtml()}
     ${orchMethodCopyDialogHtml()}
   </section>`;

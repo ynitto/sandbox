@@ -65,6 +65,15 @@ os.environ.setdefault("AGENT_PROJECT_AGENTS_HOME",
 os.environ.setdefault("AGENT_CONTROL_DIR",
                       os.path.join(tempfile.gettempdir(), "kf-tests-no-such-control"))
 
+# 開発者の実カタログ（~/.agents/methods）と実 tuning（~/.agents/tuning）がテストへ漏れるのを
+# 防ぐ。engine_directive はプロンプト組み立て時にこの 2 か所を直接読むため、隔離しないと
+# 「組み込み文言のはず」のテストが、導入済みカタログを書き換えた環境でだけ落ちる。
+# 個別に使うテストは各自 mock.patch.dict で上書きする（AGENT_CONTROL_DIR と同じ流儀）。
+os.environ.setdefault("AGENT_METHODS_DIR",
+                      os.path.join(tempfile.gettempdir(), "kf-tests-no-such-methods"))
+os.environ.setdefault("AGENT_TUNING_DIR",
+                      os.path.join(tempfile.gettempdir(), "kf-tests-no-such-tuning"))
+
 # 実体は agent_flow/ パッケージ（断片の共有名前空間合成）。単一ファイル時代と同じく
 # kf.<name> へのモンキーパッチがそのまま効く。
 _PKG = HERE.parent / "agent_flow"

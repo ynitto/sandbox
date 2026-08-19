@@ -7,6 +7,38 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### ワークフロー機能: エンジンが選ぶ指示文を手法カタログへ寄せた（selection: "engine"）
+
+split_policy の文面カタログ化（設計 2026-08-18・案 C）を実装する前に、「methods の JSON
+形式を通らずにワークフローの振る舞い（プロンプト文面）を決めている系」を全数確認した。
+該当したのは split_policy のほか、granularity のスコープ指示・実行 tier（basic）の
+planner/evaluator/split 指示・レビュー観点（レンズ）の 4 系統。いずれも「run パラメータの
+値 → 固定文面」の選択で、文面だけならひとつの器に寄せられる（並列数倍率・auto の導出・
+観点キーといった構造的効果は Python 側に残す）。案 C を 1 機構へ汎用化して実装した。
+
+- 手法カタログの選ばれ方に第 3 形態 `selection: "engine"` を追加した。auto（実行条件で
+  自動）/ per-task（工程ごとに人・planner が選ぶ）に対し、engine は**エンジンが
+  CLI/config/agent-control の値から決定的に選ぶ**——enabled / when は選択に関与しない
+  （dashboard はトグルに出さず一覧表示のみ）
+- agent-flow に単一の口 `engine_directive(id, role, fallback)` を新設した。解決順は
+  run 専用 tuning.json（dashboard が run 作成時に複製・run 単位の決定性）→ 対象リポジトリの
+  `.agents/methods/<id>.json`（cwd → git root）→ `$AGENT_METHODS_DIR` → 組み込み文言。
+  カタログ不在・破損・role 不一致・空文字はすべて組み込みへ倒すフェイルセーフ
+  （無指定の run が黙って無方針にならない）
+- 同梱カタログへ 8 件を新設した: `split-policy-behavior` / `split-policy-file` /
+  `granularity-coarse|fine|finest` / `tier-basic` / `tier-basic-split` / `review-lenses`。
+  文面は組み込み文言と同一で、乖離はテストが検出する。リポジトリに同 id を置けば
+  そのプロジェクトだけ文面を差し替えられ、tier のように語彙が開いているものは
+  組み込みが知らない値（例 `tier-small`）にも指示文を足せる（エンジン改修なし）
+- dashboard は engine ルールを run 専用 tuning.json へ複製する（enabled: false のまま。
+  dashboard 経由の run は agent-flow の cwd がリポジトリ外なので、`.agents/methods/` の
+  差し替えをこの複製が届ける）
+
+契約検証: `tools/agent-flow/tests/test_engine_directives.py` /
+`tools/agent-loop/test/test_methods_catalog.py` / `tools/agent-dashboard npm test`
+
+設計: `docs/plans/2026-08-18-split-policy-catalog-unification-design.md`（実装記録を追記）
+
 ### ワークフロー機能: per-task カタログに tier の適格性フィルタを追加した
 
 `_per_task_rule_catalog()`（planner へ提示する per-task ルールの一覧）が `selection`

@@ -1,0 +1,1 @@
+{"id": "split-policy-file", "description": "分割の単位: ファイル境界の水平分割", "selection": "engine", "enabled": false, "fragments": [{"role": "planner", "text": "分割の単位: 衝突回避を優先し、ファイル境界で水平に分割してよい（大規模変更向けの明示指定）。同じ振る舞いが複数ノードへ裂けるときは、揃えるべき点（構造・文言・状態表現）と対応する他ノードの id を各 goal に明記すること。"}], "origin": "design://2026-08-18-split-policy-catalog-unification-design"}
