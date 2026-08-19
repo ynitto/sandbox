@@ -454,7 +454,7 @@ test('agent-audit は LLM 不使用段（収集・集計・点検）の API だ�
   });
   assert.deepStrictEqual(registered.sort(),
     ['agentAudit:collect', 'agentAudit:doctor', 'agentAudit:sessions', 'agentAudit:stats',
-     'agentAudit:usage', 'agentAudit:summary'].sort());
+     'agentAudit:usage', 'agentAudit:summary', 'agentAudit:knowledge'].sort());
   const api = auditFeature.preloadApi();
   const calls = [];
   const usage = api.agentAuditUsage((channel, args) => {
@@ -464,7 +464,7 @@ test('agent-audit は LLM 不使用段（収集・集計・点検）の API だ�
   assert.strictEqual(usage({ period: 'month', by: 'agent_cli' }), 'ok');
   assert.deepStrictEqual(calls, [['agentAudit:usage', { period: 'month', by: 'agent_cli' }]]);
   for (const name of ['agentAuditCollect', 'agentAuditUsage', 'agentAuditSummary',
-    'agentAuditStats', 'agentAuditDoctor']) {
+    'agentAuditStats', 'agentAuditDoctor', 'agentAuditKnowledge']) {
     assert.strictEqual(typeof api[name], 'function', name);
   }
 });

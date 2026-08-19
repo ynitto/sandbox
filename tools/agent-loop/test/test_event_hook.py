@@ -29,6 +29,12 @@ resource_hook = _load(
 calibrate_hook = _load(
     "audit_calibrate_hook_test", HERE.parent / "hooks" / "audit-calibrate-hook.py"
 )
+memory_hook = _load(
+    "memory_maintenance_hook_test", HERE.parent / "hooks" / "memory-maintenance-hook.py"
+)
+moltbook_duty_hook = _load(
+    "moltbook_duty_hook_test", HERE.parent / "hooks" / "moltbook-duty-hook.py"
+)
 
 
 def _scheduler(entries):
@@ -336,6 +342,115 @@ class ResourceControlHookTests(unittest.TestCase):
             base + ["extract"], base + ["distill", "--review"],
             base + ["tune", "--apply"],
         ])
+
+
+class MemoryMaintenanceHookTests(unittest.TestCase):
+    """LLM を使わない記憶メンテナンス（計画 K1）。削除は絶対に走らせない。"""
+
+    def _skill_home(self):
+        root = pathlib.Path(tempfile.mkdtemp(prefix="agent-loop-skills-"))
+        for skill, names in (("ltm-use", ("build_index.py", "review_memory.py",
+                                          "cleanup_memory.py")),
+                             ("wiki-use", ("wiki_lint.py",))):
+            scripts = root / skill / "scripts"
+            scripts.mkdir(parents=True)
+            for name in names:
+                (scripts / name).write_text("", encoding="utf-8")
+        return root
+
+    def test_runs_non_destructive_maintenance_then_collects_without_prompt(self):
+        root = self._skill_home()
+        completed = types.SimpleNamespace(returncode=0, stdout="", stderr="")
+        cfg = {"hook_config": {"skill_home": str(root), "python": "python3",
+                               "agent_audit": "/tmp/agent-audit", "audit_dir": "/tmp/audit"}}
+        with mock.patch.object(memory_hook.subprocess, "run", return_value=completed) as run:
+            self.assertIsNone(memory_hook.check(cfg))
+        calls = [c.args[0] for c in run.call_args_list]
+        ltm = root / "ltm-use" / "scripts"
+        self.assertEqual(calls, [
+            ["python3", str(ltm / "build_index.py"), "--scope", "home", "--force"],
+            ["python3", str(ltm / "review_memory.py"), "--scope", "home", "--update-retention"],
+            ["python3", str(root / "wiki-use" / "scripts" / "wiki_lint.py")],
+            ["/tmp/agent-audit", "--audit-dir", "/tmp/audit",
+             "collect", "--source", "memory-store"],
+        ])
+
+    def test_never_runs_deletion(self):
+        root = self._skill_home()
+        completed = types.SimpleNamespace(returncode=0, stdout="", stderr="")
+        with mock.patch.object(memory_hook.subprocess, "run", return_value=completed) as run:
+            memory_hook.check({"hook_config": {"skill_home": str(root)}})
+        flat = " ".join(" ".join(c.args[0]) for c in run.call_args_list)
+        self.assertNotIn("cleanup_memory.py", flat, "削除は承認を経た当番だけが実行する")
+        self.assertNotIn("--fix", flat, "wiki lint は報告のみ")
+
+    def test_missing_skills_still_collect_and_failures_are_reported(self):
+        completed = types.SimpleNamespace(returncode=0, stdout="", stderr="")
+        with mock.patch.object(memory_hook.subprocess, "run", return_value=completed) as run:
+            memory_hook.check({"hook_config": {}})
+        self.assertEqual([c.args[0] for c in run.call_args_list],
+                         [["agent-audit", "collect", "--source", "memory-store"]])
+
+        root = self._skill_home()
+        failed = types.SimpleNamespace(returncode=1, stdout="", stderr="index broken")
+        with mock.patch.object(memory_hook.subprocess, "run",
+                               side_effect=[failed, completed, completed, completed]) as run:
+            with self.assertRaises(RuntimeError) as caught:
+                memory_hook.check({"hook_config": {"skill_home": str(root)}})
+        self.assertIn("build_index.py", str(caught.exception))
+        self.assertEqual(run.call_count, 4, "1 つ失敗しても残りの整理は回す")
+
+
+class MoltbookDutyHookTests(unittest.TestCase):
+    """空き時間の Moltbook 巡回（計画 K2）。新しい判断はしない——outbox sweep だけ。
+    人の承認・差し戻しの経路は持たない（moltbook は各ノードの AI だけが操作する）。"""
+
+    def _skill_home(self):
+        root = pathlib.Path(tempfile.mkdtemp(prefix="agent-loop-moltbook-skill-"))
+        scripts = root / "moltbook-use" / "scripts"
+        scripts.mkdir(parents=True)
+        (scripts / "moltbook_batch.py").write_text("", encoding="utf-8")
+        return root
+
+    def test_sweeps_outbox_without_prompt(self):
+        root = self._skill_home()
+        completed = types.SimpleNamespace(returncode=0, stdout="", stderr="")
+        cfg = {"hook_config": {"skill_home": str(root), "python": "python3",
+                               "label_conn": "work"}}
+        with mock.patch.object(moltbook_duty_hook.subprocess, "run",
+                               return_value=completed) as run:
+            self.assertIsNone(moltbook_duty_hook.check(cfg))
+        script = str(root / "moltbook-use" / "scripts" / "moltbook_batch.py")
+        self.assertEqual([c.args[0] for c in run.call_args_list], [
+            ["python3", script, "--label-conn", "work", "--direction", "publish"],
+        ])
+
+    def test_missing_skill_is_a_noop_not_an_error(self):
+        with mock.patch.object(moltbook_duty_hook.subprocess, "run") as run:
+            self.assertIsNone(moltbook_duty_hook.check({"hook_config": {}}))
+        run.assert_not_called()
+
+    def test_never_runs_a_new_reply_decision(self):
+        root = self._skill_home()
+        completed = types.SimpleNamespace(returncode=0, stdout="", stderr="")
+        with mock.patch.object(moltbook_duty_hook.subprocess, "run",
+                               return_value=completed) as run:
+            moltbook_duty_hook.check({"hook_config": {"skill_home": str(root)}})
+        flat = " ".join(" ".join(c.args[0]) for c in run.call_args_list)
+        self.assertNotIn("timeline", flat)
+        self.assertNotIn(" reply ", flat, "根拠つきの新規 reply は当番の定期プロンプト側")
+        self.assertNotIn("good", flat)
+        self.assertNotIn("reply-drafts", flat, "承認キューは持たない")
+
+    def test_publish_failure_is_reported_not_swallowed(self):
+        root = self._skill_home()
+        failed = types.SimpleNamespace(returncode=2, stdout="", stderr="privacy gate blocked")
+        with mock.patch.object(moltbook_duty_hook.subprocess, "run",
+                               return_value=failed) as run:
+            with self.assertRaises(RuntimeError) as caught:
+                moltbook_duty_hook.check({"hook_config": {"skill_home": str(root)}})
+        self.assertEqual(run.call_count, 1)
+        self.assertIn("publish", str(caught.exception))
 
 
 if __name__ == "__main__":

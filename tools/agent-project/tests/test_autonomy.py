@@ -451,9 +451,39 @@ class TestLoopEngineering(unittest.TestCase):
             self.assertEqual(s["first_pass_done"], 1)
             self.assertEqual(km.cmd_stats(cfg, as_json=True), 0)
             # 知識ループ指標は常にキーが在る（旧 decisions でも 0）
-            for k in ("rules_injected", "learn_hits", "promotions", "evidence_missing"):
+            for k in ("rules_injected", "learn_hits", "promotions", "evidence_missing",
+                      "rule_worked", "rule_misfire"):
                 self.assertIn(k, s)
                 self.assertEqual(s[k], 0)
+
+    def test_stats_rule_worked_and_misfire(self):
+        """rule 昇格後の使われ方（worked/misfire）を list_rule_adjudication から合算する
+        （計画 2026-08-15-agent-tools-cross-agent-knowledge-operation-plan.md §3.5-3。
+        集計ロジックは list_rule_adjudication のを再利用し複製しない）。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            (d / "backlog").mkdir()
+            dec = d / "decisions"
+            dec.mkdir()
+            rid = "obs-0123456789abcdef"
+            (dec / "SRC.md").write_text(
+                "## DR-1  2026-08-15  actor: auto\n- action  : auto-resolve\n"
+                f"- learn: fix flaky test :: retry once\n"
+                f"- rule-lifecycle: {rid} trial "
+                '{"actor":"auto","at":"2026-08-15T00:00:00.000000Z","why":"hits"}\n'
+                f"- rule-outcome: {rid} worked\n"
+                f"- rule-outcome: {rid} worked\n"
+                f"- rule-outcome: {rid} misfire\n",
+                encoding="utf-8")
+            cfg = cfg_for(d, learn=False)
+            s = km.compute_stats(cfg)
+            self.assertEqual(s["rule_worked"], 2)
+            self.assertEqual(s["rule_misfire"], 1)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                self.assertEqual(km.cmd_stats(cfg, as_json=False), 0)
+            self.assertIn("worked 2", buf.getvalue())
+            self.assertIn("misfire 1", buf.getvalue())
 
     def test_stats_knowledge_loop_baseline(self):
         """rules 注入・learn hit・昇格・根拠欠落を読み取り専用で数える（Phase 0 基準値）。"""

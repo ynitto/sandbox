@@ -41,6 +41,27 @@ def _print_clean_summary(name: str, slog: dict) -> None:
             print(f"        - {w}")
 
 
+def _print_memory_stores(args) -> None:
+    """記憶 3 層 + 共有路の到達性（計画 §3.1）。未設定は「未収集」と明示する——
+    黙って部分集計を全体と偽らないため、doctor で先に見えるようにしておく。"""
+    from .memory import memory_stores_config
+    cfg = memory_stores_config(args)
+    print("\n記憶ストア（memory-store 源泉）:")
+    entries = [("ltm_dirs", d) for d in cfg["ltm_dirs"]]
+    entries += [(key, cfg[key]) for key in ("wiki_root", "persona_home", "moltbook_home")]
+    if not any(v for _key, v in entries):
+        print("  未設定 — 3 層とも未収集です"
+              "（agent-audit.yaml の memory_stores: を設定すると集計できます）")
+        return
+    for key, value in entries:
+        if not value:
+            print(f"  {key}: 未設定（未収集）")
+            continue
+        p = os.path.expanduser(str(value))
+        print(f"  {key}: {home_relative(p)} — "
+              f"{'OK' if os.path.isdir(p) else '見つかりません（collect は exit 2 で止まります）'}")
+
+
 def cmd_doctor(args) -> int:
     store = Store(resolve_audit_dir(args))
     print(f"audit ディレクトリ: {home_relative(store.root)}"
@@ -84,6 +105,8 @@ def cmd_doctor(args) -> int:
             p = os.path.expanduser(str(v))
             state = "OK" if os.path.exists(p) else "見つかりません"
             print(f"{key}: {v} — {state}")
+
+    _print_memory_stores(args)
 
     n_rec = sum(1 for _ in store.iter_records())
     n_obs = sum(1 for _ in store.iter_observations())

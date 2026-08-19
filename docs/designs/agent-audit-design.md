@@ -222,6 +222,7 @@ updated_at。`kiro-log-exporter` の `.kiro_export_state.json` と同じ規律�
 | `amigos-bus` | 設定 `amigos_buses:` | 終端 mission の `events/*.jsonl` → `kind:run`。turn 数と `cli_seconds` を抽出 |
 | `loop-log` | 設定 `loop_logs:` のファイル | ERROR / WARNING 行の粗い run 化（loop は計測点が薄い現実をそのまま記録） |
 | `cli-native` | `agents/<name>.json` の `session_log` 宣言（§4.2） | CLI 自身のセッション → `kind:session`。**実測トークン・turn 数・transcript** |
+| `memory-store` | `skill-registry.json` の `skill_configs`（wiki-use/persona-use/moltbook-use の保存先。ltm-use は常に `{agent_home}/memory/home`）から自動発見。`memory_stores:`（`ltm_dirs` / `wiki_root` / `persona_home` / `moltbook_home`）は発見結果を上書きしたいキーだけ書けばよい（二重メンテナンス回避） | 記憶 3 層 + 共有路の**メタデータ**（frontmatter・件数・mtime・索引・ログ）→ `kind:memory` の snapshot。内容が変わったときだけ 1 行増える（cli-quota と同じ署名カーソル）。persona は**件数と滞留日数だけ**でファイル名も本文も持たない（C1）。集計は §5.5 |
 
 ### 4.2 CLI ネイティブストアの汎用化 — `session_log` 契約（additive）
 
@@ -479,6 +480,25 @@ LLM は使わない**——判断材料は洞察・格付け（§5.2.1）・時�
   **`profiles.external-facing.injections` に空でない値を置く候補は常に拒否する**——外向き
   成果物へ文体圧縮を漏らさない、という agent-tuning の不変条件を還流で破らないため。
 
+### 5.5 `agent-audit report --kind knowledge` — 記憶層の健全性（LLM 不使用）
+
+記憶 3 層（persona / ltm / wiki）と共有路（moltbook）を 1 コマンドで測る決定的集計。
+計画の正典は
+[`docs/plans/2026-08-15-agent-tools-cross-agent-knowledge-operation-plan.md`](../plans/2026-08-15-agent-tools-cross-agent-knowledge-operation-plan.md) §3.1。
+`--json` を付けると同じ内容をスクラバ済み JSON で出す（dashboard の知識面・当番プロンプトが読む口）。
+
+| 層 | 出す指標 |
+|---|---|
+| ltm | 件数・カテゴリ分布、retention_score の帯別件数と忘却リスク数、`share_score >= 閾値` かつ `moltbook_published` 無し（= publish 待ち）、`access_count = 0` のまま N 日超（= 退役候補）、title + summary への決定的クラスタで出た重複候補、`.memory-index.json` と実ファイルの乖離 |
+| wiki | atoms / topics 件数と直近 7 日の新規・更新、index.md との乖離（孤立 / 実体なし）、lint 相当の違反数（短小・リンク切れ）、queries.md のヒット率（`→ [[page]]` を伴わない記録が 0 件クエリ） |
+| persona | 未反映の観察ログ件数と滞留日数**だけ**（本文・タイトル・ファイル名は出さない。C1） |
+| moltbook | outbox 滞留件数と最古日齢、公開済み（ローカル）、inbox 未取込、当日の自律返信数。**未回答メンションと goods は `uncollected` として名指しで未収集**（GitLab を引かないと測れないため、0 と偽らない） |
+
+週次成長は snapshot レコードの履歴（7 日以上前の直近 snapshot との差）から出す。集計は
+**測るだけ**で、整理の実行はスキル側スクリプトが担う（不変条件 1 を破らない）。設定された
+ストアが読めなければ他の源泉と同じく fail-close（exit 2）、未設定のストアは「未収集」と
+明示する。
+
 ## 6. LLM 蒸留パイプライン（extract → cluster → distill［→ review］）
 
 ### 6.1 段の分割とモデル選択
@@ -593,12 +613,12 @@ LLM 段には停止条件を重ねる（C7): 段別上限（`extract_max_calls` 
 | `tune [--apply] [--period P] [--json]` | 不使用 | 洞察 → 型付き調整候補。--apply で許可パスだけ宣言へ昇格し、悪化すれば退役（§5.4） |
 | `extract [--limit N] [--force]` | map | レコード → 観測。間隔・蓄積ゲート（§6.4）を通ったときだけ LLM を呼ぶ |
 | `distill [--limit N] [--review] [--force]` | reduce | 観測クラスタ → 洞察。同上 |
-| `report [--kind K] [--out F]` | 不使用 | Markdown レポート |
+| `report [--kind K] [--out F] [--json]` | 不使用 | Markdown レポート（`--kind knowledge` は記憶層の健全性。§5.5。`--json` は knowledge 専用） |
 | `tasks [--mark-exported]` | 不使用 | 洞察 → 改善タスク（task.schema.json）。明示時だけ出力済み印を付ける |
 | `gc [--dry-run]` | 不使用 | 種別別保持日数での掃除（§3.3。`gc_auto` で collect へ相乗り） |
 | `reclean [--agent-cli N] [--dry-run]` | 不使用 | クリーニングルール改訂後の transcript 再生成（§4.4。records・処理済み管理は不変） |
 | `sessions [--cli N] [--since T] [--until T] [--cwd-contains S] [--limit N] [--messages ID]` | 不使用 | CLI ネイティブセッションの検索・本文取得（ノード内 JSON） |
-| `doctor` | 不使用 | 源泉の到達性・session_log 宣言の有無・未収集 CLI・clean ルールのスキップ（未知ルール名等）と未対応ログバージョンの一覧 |
+| `doctor` | 不使用 | 源泉の到達性・session_log 宣言の有無・未収集 CLI・clean ルールのスキップ（未知ルール名等）と未対応ログバージョンの一覧・記憶ストアの到達性と未設定 |
 | `update [--check] [--now]` | 不使用 | 自己更新（§9） |
 
 `run`（collect → extract → distill → report の一括）は**設けない**。定期駆動は agent-loop

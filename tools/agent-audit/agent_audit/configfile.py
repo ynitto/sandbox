@@ -32,6 +32,11 @@ CONFIG_DEFAULTS = {
     "project_roots": [],
     "amigos_buses": [],
     "loop_logs": [],
+    # 記憶 3 層 + 共有路（memory-store 源泉。未設定のストアは「未収集」と明示される）
+    "memory_stores": {},         # {ltm_dirs: [], wiki_root, persona_home, moltbook_home}
+    "memory_dormant_days": 30,   # access_count=0 のまま眠っている日数（= 退役候補）
+    "memory_share_threshold": 70,   # publish 待ちとみなす share_score
+    "memory_retention_risk": 0.3,   # 忘却リスク帯（retention_score がこれ未満）
     # LLM（agents/<name>.json 契約。purpose 別上書きは agents:）
     "agent_cli": "claude",
     "model": None,
