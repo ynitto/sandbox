@@ -48,7 +48,9 @@ python scripts/wiki_query.py hot
 
 - 日本語・英語・表記ゆれをまたいでヒットする（`aliases` frontmatter があればさらに精度が上がる）。
 - 全キーワードが揃う「完全一致」を優先し、一部だけ揃う「部分一致」も被覆率順に提示する。
-- ヒット 0 のときは `list-pages` への誘導が出る。**該当ページが無ければ、それは新規 ingest の好機**（`op-ingest.md`）。
+- ヒット 0 のときは近傍候補をその場に出す（弱一致があればスコア順、無ければタイトルの
+  アルファベット順）。`--json` では `neighbors` に同じ候補が入る。**近傍候補にも該当ページが
+  無ければ、それは新規 ingest の好機**（`op-ingest.md`）。
 - 単発検索で手がかりが弱いときは `--json` / `--suggest` で **agentic search（反復探索）** に切り替える。
   `next_action`（refine/expand/broaden/synthesize）に従い、`suggested_queries` で再検索したり
   `related_ids`（本文の `[[wikilink]]`）を辿ってマルチホップ展開する。ループの正典は共有スキル

@@ -8,8 +8,11 @@
   "properties": {
     "id": {"type": "string", "description": "冪等キー aud-<sha256(source,store,native_id) 先頭 16 桁>。同じ実体は何度収集しても同じ id"},
     "ts": {"type": "string", "description": "ISO8601 UTC（レコードの代表時刻。session は最終更新）"},
-    "kind": {"enum": ["ledger", "event", "run", "result", "session"], "description": "ledger=消費 / event=非消費の観測 / run=ツール実行 / result=flow ノード結果 / session=CLI セッション"},
-    "source": {"type": "string", "description": "源泉（budget-ledger / flow-bus / project-runlog / amigos-bus / loop-log / <cli>-native）"},
+    "kind": {"enum": ["ledger", "event", "run", "result", "session", "memory"], "description": "ledger=消費 / event=非消費の観測 / run=ツール実行 / result=flow ノード結果 / session=CLI セッション / memory=記憶ストアのメタデータ snapshot"},
+    "source": {"type": "string", "description": "源泉（budget-ledger / flow-bus / project-runlog / amigos-bus / loop-log / memory-store / <cli>-native）"},
+    "layer": {"type": "string", "enum": ["ltm", "wiki", "persona", "moltbook"], "description": "記憶レイヤ（kind=memory）"},
+    "metrics": {"type": "object", "description": "記憶ストアの決定的な計数（kind=memory）。件数・滞留日数などのメタデータだけで、記憶の本文・タイトル・persona のファイル名は入れない（C1）", "additionalProperties": {"type": ["number", "integer", "null"]}},
+    "notes": {"type": "array", "items": {"type": "string"}, "description": "測定できなかった事情の明示（索引未構築など。kind=memory）"},
     "node": {"type": "string", "description": "ノード ID（判る範囲で）"},
     "cwd": {"type": "string", "description": "セッションの作業ディレクトリ（ホーム相対へ正規化済み。絶対パスは書かない）"},
     "tool": {"type": "string", "description": "agent-flow / agent-project / agent-amigos / agent-loop"},

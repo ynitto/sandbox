@@ -29,7 +29,10 @@ bash tools/agent-tools/install.sh --only agent-audit
 agent-audit collect                  # 源泉 + 対応CLI quotaの増分収集（LLM不使用）
 agent-audit usage --period month --by agent_cli
 agent-audit stats                    # 実行品質 + LLM判断と決定的ルールの一致率
-agent-audit report                   # Markdown レポート（usage + quality + insights）
+agent-audit report                   # Markdown レポート（usage + quality + knowledge + insights）
+agent-audit report --kind knowledge [--json]
+                                     # 記憶 3 層 + 共有路の健全性（publish 待ち・忘却リスク・
+                                     # outbox 滞留・queries ヒット率。LLM 不使用）
 
 agent-audit extract                  # レコード → 観測（LLM map・弱モデル可）
 agent-audit distill                  # 観測クラスタ → 洞察（LLM reduce）
@@ -83,6 +86,10 @@ agents:
 | agent-project | 設定 `project_roots` の `run-log.jsonl` | run 単位の実績・コスト |
 | agent-amigos バス | 設定 `amigos_buses` | ターン数・実行秒 |
 | agent-loop ログ | 設定 `loop_logs` | エラー行 |
+| 記憶 3 層 + 共有路 | 設定 `memory_stores`（ltm / wiki / persona / moltbook） | frontmatter・件数・mtime・索引・ログの**メタデータだけ**（記憶の本文は読まない。persona は件数と滞留日数のみ） |
+
+記憶ストアに対しても **agent-audit は読み手に徹する**——整理（consolidate / batch-update /
+索引再構築 / lint）の実行はスキル自身のスクリプトが担い、audit は測って整理候補を出すまで。
 
 書くのは audit ディレクトリ（既定 `~/.agents/audit/`）と、quota観測を共有する
 node-budgetの追記専用台帳だけ。transcript 本文は

@@ -71,6 +71,7 @@
   let summaryData = null;
   let usageData = null;
   let statsData = null;
+  let knowledgeData = null;   // 記憶3層+moltbookの要約点数だけ（内容は Obsidian 等で見る前提）
   let loadedOnce = false;
   let loading = false;
   let loadError = '';
@@ -544,6 +545,34 @@
     <section class="orch-panel audit-stats">
       <header class="row"><h3>実行品質</h3></header>
       ${statsTableHtml(statsData)}
+    </section>
+    ${knowledgeSummaryHtml(knowledgeData)}`;
+  }
+
+  // 記憶3層（persona/ltm/wiki）+ moltbook の要約点数だけを出す最小限の面
+  // （計画: docs/plans/2026-08-15-agent-tools-cross-agent-knowledge-operation-plan.md §3.4）。
+  // 内容の閲覧は Obsidian など既存の手段に任せ、ここでは「開いて気づく」ための
+  // 数字だけを載せる——1 か所も点検ボタンも増やさない。未設定の層は集計に含めない
+  // （agent-audit 側が「未収集」を明示する。ここでは無いものを 0 として出さない）。
+  function knowledgeSummaryHtml(data) {
+    const layers = (data && data.layers) || null;
+    if (!layers) return '';
+    const ltmStores = (layers.ltm && layers.ltm.stores) || [];
+    const moltbookStores = (layers.moltbook && layers.moltbook.stores) || [];
+    if (!ltmStores.length && !moltbookStores.length) return '';
+    const sum = (rows, key) => rows.reduce((acc, row) => acc + (Number(row[key]) || 0), 0);
+    const items = [];
+    if (ltmStores.length) {
+      items.push(['publish 待ち', `${sum(ltmStores, 'publish_waiting')}件`]);
+      items.push(['忘却リスク', `${sum(ltmStores, 'forgetting_risk')}件`]);
+    }
+    if (moltbookStores.length) items.push(['outbox 滞留', `${sum(moltbookStores, 'outbox_pending')}件`]);
+    const body = items.map(([label, value]) =>
+      `<div><span>${escHtml(label)}</span><strong>${escHtml(value)}</strong></div>`).join('');
+    return `<section class="orch-panel audit-knowledge">
+      <header class="row"><h3>記憶と共有</h3></header>
+      <div class="orch-usage-summary">${body}</div>
+      <p class="muted">詳細は各記憶ストア（Obsidian 等）で確認してください。</p>
     </section>`;
   }
 
@@ -575,6 +604,15 @@
     } catch (error) {
       summaryData = null;
       loadError = error && error.message ? error.message : String(error);
+    }
+    // 記憶と共有の要約は任意の読み物なので、失敗しても利用状況の表示は壊さない
+    // （memory_stores 未設定・読めない端末では単にこの節が出ないだけにする）。
+    if (root.api.agentAuditKnowledge) {
+      try {
+        knowledgeData = await root.api.agentAuditKnowledge({});
+      } catch {
+        knowledgeData = null;
+      }
     }
     loading = false;
     render();
@@ -812,7 +850,7 @@
   return {
     escHtml, fmtTokens, fmtSeconds, fmtShortWhen, pairsText,
     usageTableHtml, statsTableHtml, settingsHtml, settingsPanelHtml, collectStatusHtml, panelHtml,
-    agentLimitSettingsHtml,
+    agentLimitSettingsHtml, knowledgeSummaryHtml,
     workloadTableHtml, agentTableHtml, gaugeHtml, ledgerFallbackHtml,
     render, refresh, wire, reveal, portalCardHtml,
   };

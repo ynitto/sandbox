@@ -73,6 +73,10 @@ _FIELD_WEIGHTS = {"title": 5, "aliases": 5, "tags": 3, "summary": 2, "body": 1}
 # 部分一致として採用する最小被覆率（これ未満は bigram の偶発一致とみなして捨てる）
 PARTIAL_COVERAGE_MIN = 0.5
 
+# 0 件ヒット時に近傍として提示する最大件数（採用ラインに届かなかった弱一致・
+# トークンが全く重ならなかった場合のアルファベット順フォールバックの両方に使う）
+NEIGHBOR_LIMIT = 5
+
 
 def tokenize(text: str) -> list:
     """テキストをトークン列に分解する。
@@ -271,6 +275,18 @@ def _normalize_search_results(primary: list, wiki_root: Path) -> list[dict]:
     return norm
 
 
+def _alphabetical_neighbors(pages: list, limit: int = NEIGHBOR_LIMIT) -> list:
+    """トークンが 1 つも重ならなかったときの近傍フォールバック（採用戦略 Phase1: RC5）。
+
+    重み付け一致が 1 件も無い＝手がかりが無いので、決定的に並べられる唯一の軸（タイトル）で
+    アルファベット順に示す。0 件を「list-pages を自分で叩け」で終わらせず、その場で
+    次の一手を提示する。
+    """
+    titled = [(get_page_title(p), cat, p) for cat, p in pages]
+    titled.sort(key=lambda x: x[0])
+    return titled[:limit]
+
+
 def cmd_search(args, wiki_root: Path) -> None:
     """キーワードで Wiki ページを検索する（トークン化＋フィールド重み付け）。
 
@@ -307,20 +323,45 @@ def cmd_search(args, wiki_root: Path) -> None:
     partial = [r for r in scored if PARTIAL_COVERAGE_MIN <= r[1] < 1.0]
     primary = full if full else partial
 
+    # 採用ラインに届かなかった弱一致（近傍候補。0 件時のみ使う。scored は既にスコア順）
+    weak = scored[:NEIGHBOR_LIMIT] if not primary else []
+
     # ── JSON 出力（agentic search のループ駆動用） ──
     if as_json:
         norm = _normalize_search_results(primary, wiki_root)
         out = {"query": args.keyword, "count": len(norm), "results": norm}
+        if not primary:
+            if weak:
+                out["neighbors"] = _normalize_search_results(weak, wiki_root)
+            else:
+                out["neighbors"] = [
+                    {"id": str(p.relative_to(wiki_root).with_suffix("")), "title": t}
+                    for t, _cat, p in _alphabetical_neighbors(pages)
+                ]
         if _SHARED_HINTS is not None:
             out["hints"] = _SHARED_HINTS.compute_hints(norm, keywords)
         print(json.dumps(out, ensure_ascii=False, indent=2))
         return
 
     if not primary:
-        # 近傍提示: 何もヒットしなければ全ページ一覧へ誘導する
+        # 近傍提示（採用戦略 Phase1: RC5）: 「list-pages を自分で叩け」で終わらせず、
+        # 弱一致（採用ラインに届かなかった一致）があればそれを近傍順に、
+        # 手がかりが全く無ければタイトルのアルファベット順で、その場に候補を出す。
         print(f"[INFO] '{args.keyword}' にマッチするページはありません")
-        print("       list-pages で全体を確認してください:")
-        print("       python scripts/wiki_query.py list-pages")
+        if weak:
+            print(f"       近傍候補（弱一致 {len(weak)} 件。採用ラインには届いていません）:")
+            for score, coverage, cat, page_path, _hit in weak:
+                title = get_page_title(page_path)
+                rel = page_path.relative_to(wiki_root)
+                print(f"         [{cat}] {title}  (一致={int(coverage * 100)}%)  {rel}")
+        else:
+            neighbors = _alphabetical_neighbors(pages)
+            if neighbors:
+                print(f"       近傍候補（手がかり無し・タイトル順 {len(neighbors)} 件）:")
+                for title, cat, page_path in neighbors:
+                    rel = page_path.relative_to(wiki_root)
+                    print(f"         [{cat}] {title}  {rel}")
+        print("       全体を確認するには: python scripts/wiki_query.py list-pages")
         if suggest and _SHARED_HINTS is not None:
             print()
             print(_SHARED_HINTS.format_hints(_SHARED_HINTS.compute_hints([], keywords)))

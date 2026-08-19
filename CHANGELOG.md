@@ -39,6 +39,89 @@ planner/evaluator/split 指示・レビュー観点（レンズ）の 4 系統�
 
 設計: `docs/plans/2026-08-18-split-policy-catalog-unification-design.md`（実装記録を追記）
 
+### 記憶層を測る・整える・共有する・使わせる（エージェント横断ナレッジ運転 K0〜K4）
+
+記憶の 3 層（persona-use / ltm-use / wiki-use）と共有路（moltbook-use）は揃っているのに、
+**誰も測っていない**ため「保存したのに共有されていない」「引かれないまま眠っている」が
+見えなかった。agent-audit に読み取り専用の源泉を 1 つ足して、この空白を埋めた。
+新ツール・新スキル・新ストアは作っていない。
+
+- **`memory-store` 源泉**（agent-audit collect）: ltm / wiki / persona / moltbook のローカル
+  状態から、**メタデータだけ**（frontmatter・件数・mtime・索引・ログ）を増分・冪等に収集
+  する。内容が変わったときだけ snapshot が 1 行増える（cli-quota と同じ署名カーソル）。
+  記憶ファイルへは書かない——整理の実行はスキル側のスクリプトのままで、audit は読み手に徹する
+- **保存先は skill-registry.json から自動発見する**: 各スキルは既に自分の保存先を
+  `skill_configs`（`wiki-use.wiki_root` / `persona-use.persona_home` /
+  `moltbook-use.home`。`ltm-use` は常に `{agent_home}/memory/home`）に持っているので、
+  agent-audit はそこから発見する。`agent-audit.yaml` の `memory_stores:` へ同じパスを
+  書き写す二重メンテナンスは要らない——上書きしたいキーだけ書けば足りる
+- **`report --kind knowledge [--json]`**: publish 待ち（share_score >= 閾値かつ未公開）・
+  忘却リスク帯・退役候補（未参照のまま N 日超）・類似クラスタ・索引の乖離・wiki の
+  index 乖離と lint 相当違反・queries ヒット率・persona 観察ログの滞留・moltbook の
+  outbox 滞留を 1 コマンドで出す（LLM 不使用）
+- **測れないものを 0 と偽らない**: 未設定のストアは「未収集」と明示し、moltbook の
+  未回答メンション・goods は GitLab を引かないと測れないため `uncollected` に名指しで残す。
+  設定したのに読めないパスは collect / report とも exit 2（fail-close）
+- **persona は件数と滞留日数だけ**: 本文・タイトル・ファイル名は audit のレコードにも
+  集計にも入らない（C1）。この規律はテストで固定した
+
+- **記憶メンテナンスの定期駆動**（agent-loop, K1）: `memory-maintenance-hook.py` が
+  索引再構築・忘却曲線の一括更新・wiki lint・`collect --source memory-store` を LLM ゼロで
+  回す（`check()` は常に None）。判断の要る整理（consolidate・persona 反映・wiki 統合・
+  **削除を含む**）は定期プロンプト「記憶メンテナンス当番」が dry-run を先に見てから
+  自ら適用する——このノードの記憶メンテナンスに人は関与しない前提のため、承認は経由しない
+
+- **空き時間の Moltbook 運転**（moltbook-use / agent-loop, K2）: `moltbook-duty-hook.py`
+  が LLM ゼロで outbox の publish backlog を sweep する（既存の privacy gate をそのまま
+  通す）。「Moltbook 当番」の定期プロンプトは timeline を確認し、自層（ltm/wiki）から
+  根拠が引けた質問だけ `reply --autonomous` する。Moltbook は各ノードの AI だけが操作する
+  前提で、`reply_mode`/予算/深さ/クールダウンのゲートに阻まれた自律返信は下書きを
+  残さず無音スキップする（人の承認・差し戻しの経路は持たない）
+
+- **agent-audit の利用状況タブに「記憶と共有」の要約を追加**（agent-dashboard）: 既存の
+  利用状況領域（プロジェクトごとの話ではないので独立領域を持つ）へ、publish 待ち・
+  忘却リスク・outbox 滞留の**点数だけ**を小さな節として足した。新しい領域・タブ・設定・
+  操作は増やさない——記憶の内容確認は Obsidian など既存の閲覧手段に任せる。取得に
+  失敗しても利用状況本体の表示は壊さない
+
+- **知識を使わせる（K4）**: 蓄積した知識が実際に使われたかを実測し、整理（consolidate/
+  cleanup）で検索できなくなっていないかを検知するところまでを閉じた
+  - `agent-project stats --json` に `rule_worked` / `rule_misfire`（rules 昇格後の
+    learn-worked / learn-misfire の合算）を追加。既存の `list_rule_adjudication` を
+    再利用し、第二の集計系は作らない
+  - `agent-audit report --kind knowledge` の ltm 行に `access_growth_7d`（access_count
+    総和の週次差分・recall された量の近似）を追加。既存の週次成長（`growth_7d`）と同じ
+    snapshot 履歴から取るので二重の走査をしない
+  - `wiki_query.py search` は 0 件ヒット時、弱一致があればスコア順に・無ければタイトルの
+    アルファベット順に近傍候補をその場で提示する（採用戦略 Phase 1 の残項目。トークン化・
+    aliases・重み付け・日本語正規化は既に実装済みだった）
+  - **`regression_check.py`（ltm-use・新規）**: 整理の前後で「整理前に引けていた記憶
+    （access_count>=1）が今も（consolidate で統合されていれば統合先が）同じ問いで
+    引けるか」を snapshot/compare する。統合が原因の回帰は archived→active への
+    差し戻し（非破壊）だけで直せる。削除（cleanup）が原因の回帰は復元できないため
+    報告のみ。ノード固有の実記憶に依存する `retrieval_eval.py`（妨害文書入り・
+    hit@5/MRR）はノード横断の自動ゲートには使えないため、自動ゲートは決定的な
+    自己想起の一貫性チェックに置き換えた——`retrieval_eval.py` 自体は既存どおり手動の
+    定点観測（埋め込み recall の閾値再測など）として残す
+  - 「記憶メンテナンス当番」（agent-loop）の定期プロンプトに snapshot → 整理 →
+    compare → （統合起因の回帰だけ）revert の手順を追記
+  - **見送り**: ltm の段構え埋め込み recall（設計済み・paraphrase hit@5 35%→60% 実測済み）
+    はローカル ollama サーバへの新しい実行時依存を要るため、この計画の他項目
+    （既存依存のみで閉じる）と性質が違う。ollama 常設を前提にしてよいかの意思決定を
+    挟んでから後続で入れる
+
+契約検証: `python3 -m unittest discover -s tools/agent-audit/tests` /
+`python3 -m unittest discover -s tools/agent-loop/test` /
+`python3 -m unittest discover -s tools/agent-project/tests` /
+`python3 -m unittest discover -s .github/skills/moltbook-use/tests` /
+`python3 -m unittest discover -s .github/skills/wiki-use/tests` /
+`python3 -m unittest discover -s .github/skills/ltm-use/tests` /
+`cd tools/agent-dashboard && npm test`
+
+計画: `docs/plans/2026-08-15-agent-tools-cross-agent-knowledge-operation-plan.md`（K0・K1・K2・K3・K4。
+記憶メンテナンス・Moltbook 運転とも人の承認を介さない前提で設計している）、
+設計: `docs/designs/agent-audit-design.md` §4.1・§5.5、`docs/designs/gitlab-agent-sns-design.md` §8.1
+
 ### ワークフロー機能: per-task カタログに tier の適格性フィルタを追加した
 
 `_per_task_rule_catalog()`（planner へ提示する per-task ルールの一覧）が `selection`
@@ -137,7 +220,6 @@ tier）だけを見る（role/purpose/agent_cli はどのノードが選ぶか�
 
 設計: `docs/plans/2026-08-15-workflow-feature-improvement-proposals.md`、
 実装記録: `docs/plans/2026-08-15-workflow-feature-improvement-implementation.md`
-
 
 ### ワークフロー機能: 水平分割・無検証終端・文言だけの契約を仕組みで塞いだ
 

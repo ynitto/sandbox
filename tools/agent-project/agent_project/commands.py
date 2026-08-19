@@ -1258,11 +1258,22 @@ def _knowledge_loop_stats(cfg: Config) -> dict:
         if hits.get(src, 0) <= 0:
             evidence_missing += 1
 
+    # 「使われたかを測る」の出口実測（計画: 2026-08-15-agent-tools-cross-agent-knowledge-operation-plan
+    # §3.5-3）。rule 単位の worked/misfire は list_rule_adjudication が決定的に持っているので、
+    # ここでは合計するだけ——集計ロジックを複製しない（第二系を作らない）。
+    rule_worked = rule_misfire = 0
+    for item in list_rule_adjudication(cfg):
+        outcomes = item.get("outcomes") or {}
+        rule_worked += int(outcomes.get("worked") or 0)
+        rule_misfire += int(outcomes.get("misfire") or 0)
+
     return {
         "rules_injected": rules_injected,
         "learn_hits": learn_hits,
         "promotions": promotions,
         "evidence_missing": evidence_missing,
+        "rule_worked": rule_worked,
+        "rule_misfire": rule_misfire,
     }
 
 

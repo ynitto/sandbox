@@ -50,6 +50,7 @@ agent-audit が集計した「実測のトークン利用量」である。台�
 | 利用状況の 1 枚 | `usage`（`--by workload` と `--by agent_cli`） | main 側の `summary()` が 2 軸を 1 往復で取り、合計を畳む |
 | 実行品質 | `stats --period … --json` | 同上 |
 | 設定を点検 | `doctor` | 非ゼロ終了でも本文を返す（点検結果そのものが見たい情報） |
+| 記憶と共有の要約点数 | `report --kind knowledge --json` | publish待ち・忘却リスク・outbox滞留の**点数だけ**を「記憶と共有」の小さな節へ足す。内容の閲覧は Obsidian など既存の手段に任せる（新しいタブ・設定・承認操作は増やさない） |
 
 `extract` / `distill` などの LLM 段はこの画面からは呼ばない。LLM の消費リズムは
 agent-audit 側の間隔・蓄積ゲート設定が正で、GUI から不用意に駆動しない。

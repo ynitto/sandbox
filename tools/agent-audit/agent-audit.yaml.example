@@ -16,6 +16,25 @@ project_roots: []             # agent-project の state clone ルート（bus/ �
 amigos_buses: []              # agent-amigos のバス
 loop_logs: []                 # agent-loop 本体ログ（例: [~/.agents/agent-loop.log]）
 
+# ---- 記憶 3 層 + 共有路（memory-store 源泉。通常は設定不要） -------------------
+# 既定では skill-registry.json（wiki-use.wiki_root / persona-use.persona_home /
+# moltbook-use.home。ltm-use は常に {agent_home}/memory/home）から自動発見します
+# ——ここへ同じパスを書き写すと、スキル側の設定を変えたときここだけ古いまま
+# 取り残されるため（二重メンテナンス回避）。ここで明示したキーだけが発見結果を
+# 上書きします（発見できないストア／別の場所を読ませたいストアだけ書けば十分）。
+# 未設定のストアは「未収集」と明示されます（0 件と区別する）。設定したのに存在しない
+# パスは collect / report が exit 2 で止まります（部分集計を全体と偽らないため）。
+# 読むのはメタデータだけ（frontmatter・件数・mtime・索引・ログ）で、記憶の本文は
+# 読みません。persona は件数と滞留日数だけを記録します。
+memory_stores: {}
+#  ltm_dirs: [~/.claude/memory/home, ~/.copilot/memory/home]   # 自動発見を上書きする場合だけ
+#  wiki_root: ~/notes/llm-wiki
+#  persona_home: ~/.claude/persona
+#  moltbook_home: ~/.claude/.moltbook
+memory_dormant_days: 30       # access_count=0 のままこの日数を超えたら退役候補
+memory_share_threshold: 70    # share_score がこれ以上で未公開なら publish 待ち
+memory_retention_risk: 0.3    # retention_score がこれ未満なら忘却リスク帯
+
 # ---- LLM（agents/<name>.json 契約。段別にエージェント・モデルを選択） ----------
 agent_cli: claude             # 既定の CLI
 # model: sonnet               # 既定のモデル（省略時は CLI 定義の default_model）

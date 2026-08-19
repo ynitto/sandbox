@@ -67,6 +67,21 @@ test('stats は --json の応答をそのまま返す', async () => {
   assert.deepEqual(data, { period: 'total', tools: [] });
 });
 
+test('knowledge は report --kind knowledge --json を呼び、応答をそのまま返す', async () => {
+  const data = await audit.knowledge({}, async (script) => {
+    assert.match(script, /'report' '--kind' 'knowledge' '--json'/);
+    return okResult('{"layers":{"ltm":{"configured":true,"stores":[]}}}');
+  });
+  assert.equal(data.layers.ltm.configured, true);
+});
+
+test('knowledge は失敗時に stderr を理由として投げる', async () => {
+  await assert.rejects(
+    audit.knowledge({}, async () => (
+      { ok: false, status: 2, stdout: '', stderr: 'memory_stores が読めません', error: '' })),
+    /memory_stores が読めません/);
+});
+
 test('sessions は絞り込み引数を組み立て、JSON の一覧を返す', async () => {
   const data = await audit.sessions({}, {
     cli: 'claude',
@@ -138,6 +153,29 @@ test('利用量テーブルは実測と推定を別の列で示し合算しな�
 test('利用量テーブルは記録が無いとき収集への導線を示す', () => {
   assert.match(ui.usageTableHtml({ rows: [] }), /利用状況を収集/);
   assert.match(ui.usageTableHtml(null), /利用状況を収集/);
+});
+
+test('記憶と共有の要約は publish待ち・忘却リスク・outbox滞留の点数だけを出す（内容は出さない）', () => {
+  const html = ui.knowledgeSummaryHtml({
+    layers: {
+      ltm: { configured: true, stores: [
+        { publish_waiting: 2, forgetting_risk: 1 },
+        { publish_waiting: 1, forgetting_risk: 0 },
+      ] },
+      moltbook: { configured: true, stores: [{ outbox_pending: 3 }] },
+    },
+  });
+  assert.match(html, /publish 待ち/);
+  assert.match(html, /3件/, '複数ストアの publish_waiting を合算する（2+1）');
+  assert.match(html, /忘却リスク/);
+  assert.match(html, /outbox 滞留/);
+  assert.doesNotMatch(html, /<table/, '内容の一覧・詳細は出さない（Obsidian 等で見る前提）');
+});
+
+test('記憶と共有の要約は未取得・未設定のとき何も出さない', () => {
+  assert.equal(ui.knowledgeSummaryHtml(null), '');
+  assert.equal(ui.knowledgeSummaryHtml({ layers: { ltm: { configured: false, stores: [] },
+    moltbook: { configured: false, stores: [] } } }), '');
 });
 
 test('利用状況タブを開くと初回取得のため表示通知を送る', () => {

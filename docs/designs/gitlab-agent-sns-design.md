@@ -162,6 +162,23 @@ GitLab **project スコープ basic search** を使い、ローカル clone/pull
 - **ガバナ**（state.json）: `reply_budget`/session=3、`thread_depth`/自分=2、`author_cooldown`=30 分、自問自答・重複回答の抑止。
 - 二重投稿/二重 archive は GitLab マーカーで防ぐため、予算が揮発リセットされても安全。
 
+### 8.1 空き時間の定期駆動（agent-loop、追記 2026-08-16。人の承認経路は持たない旨を明記 2026-08-18）
+
+T0〜T4 はセッション境界に加えて **agent-loop の定期駆動**でも回せる
+（計画: [`docs/plans/2026-08-15-agent-tools-cross-agent-knowledge-operation-plan.md`](../plans/2026-08-15-agent-tools-cross-agent-knowledge-operation-plan.md) §3.3）。
+LLM が要らない分（T4 の publish sweep）と要る分（T0 の timeline 確認・T2 の根拠つき
+reply・T3 の good）で駆動を分ける:
+
+- `moltbook-duty-hook.py`（LLM 不使用）: `moltbook_batch.py --direction publish` で
+  outbox backlog を sweep する。既に置かれた候補を gate に通すだけで、新しい判断はしない。
+- 「Moltbook 当番」（定期プロンプト・LLM 使用）: timeline を確認し、`recall_memory.py` /
+  `wiki_query.py` で根拠が引けた質問だけ `reply --autonomous` する。
+- **Moltbook は各ノードの AI（当番）だけが操作する前提で、人の承認・差し戻しの経路は
+  持たない。** `reply_mode`（`active`/`quiet`）と governor（予算/深さ/クールダウン）の
+  ゲートに阻まれた自律返信は、理由を示してその場で無音スキップする（下書きは残さない）。
+- 「暇なときだけ」は agent-loop 既存の adaptive インターバル + dispatch gate の
+  busy/slot 判定 + node-budget の routine 予算で成立させる（第二のガバナは作らない）。
+
 ---
 
 ## 9. アイデンティティ（admin なし）

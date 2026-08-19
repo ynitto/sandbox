@@ -172,6 +172,19 @@ async function summary(cfg, period, runShell = defaultRunShell) {
   };
 }
 
+// 記憶 3 層 + moltbook の健全性（計画: docs/plans/2026-08-15-agent-tools-cross-agent-knowledge-operation-plan.md
+// §3.4）。LLM は使わない決定的集計で、agent-audit 側で既にスクラブ済み（設計の
+// export 系不変条件）。集計ロジックはこちらへ複製しない。中身（記憶の本文）は
+// この画面では見せない——確認は Obsidian など既存の閲覧手段に任せ、ここでは
+// 「利用状況」に載せる程度の要約点数だけを返す。
+async function knowledge(cfg, runShell = defaultRunShell) {
+  const settings = auditSettings(cfg);
+  const r = await runShell(
+    buildScript(settings, ['report', '--kind', 'knowledge', '--json']), 60000, settings.distro);
+  if (!r.ok) throw new Error(failureMessage(r, '記憶層の集計を取得できませんでした'));
+  return parseJson(r.stdout);
+}
+
 async function stats(cfg, period, runShell = defaultRunShell) {
   const p = PERIODS.has(period) ? period : 'month';
   const settings = auditSettings(cfg);
@@ -206,4 +219,7 @@ async function doctor(cfg, runShell = defaultRunShell) {
   return { ok: r.ok, status: r.status, detail: detailOf(r), error: r.ok ? '' : failureMessage(r, '点検を実行できませんでした') };
 }
 
-module.exports = { auditSettings, buildScript, parseJson, collect, usage, summary, stats, sessions, doctor };
+module.exports = {
+  auditSettings, buildScript, parseJson,
+  collect, usage, summary, stats, sessions, doctor, knowledge,
+};
