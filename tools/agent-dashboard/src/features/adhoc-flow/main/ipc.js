@@ -275,6 +275,10 @@ function registerIpc(ctx) {
         description: String(m.description || ''),
         origin: String(m.origin || ''),
         source: String(m.source || ''),
+        // renderer の候補フィルタ（nodeMethodChoices）が読む宣言。落とすと
+        // 「成果物の契約・engine 選択の指示文を工程の候補に混ぜない」が機能しない。
+        kind: String(m.kind || 'rule'),
+        selection: String(m.selection || ''),
         fragments: (Array.isArray(m.fragments) ? m.fragments : []).map((fragment) => ({
           role: String((fragment && fragment.role) || ''),
           text: String((fragment && fragment.text) || ''),

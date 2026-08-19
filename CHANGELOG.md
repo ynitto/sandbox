@@ -33,6 +33,10 @@ planner/evaluator/split 指示・レビュー観点（レンズ）の 4 系統�
 - dashboard は engine ルールを run 専用 tuning.json へ複製する（enabled: false のまま。
   dashboard 経由の run は agent-flow の cwd がリポジトリ外なので、`.agents/methods/` の
   差し替えをこの複製が届ける）
+- 工程の作業ルール候補（`nodeMethodChoices`）から engine 選択の指示文を除外した。
+  あわせて overview の手法一覧が `kind` / `selection` を落としていたのを直した——
+  ここが落ちていると「成果物の契約・engine 指示文を候補に混ぜない」フィルタが機能せず、
+  role が合う engine 指示文（`tier-basic-split`）が工程へ付けられて二重注入になる
 
 契約検証: `tools/agent-flow/tests/test_engine_directives.py` /
 `tools/agent-loop/test/test_methods_catalog.py` / `tools/agent-dashboard npm test`

@@ -912,6 +912,15 @@ test('工程向け実行手法を、役割の合う工程だけのオプショ�
   }, {
     id: 'checklist-acceptance', description: '完了条件を照合する',
     fragments: [{ role: 'evaluator', text: '完了条件を確認する' }],
+  }, {
+    // selection: "engine"（エンジンが run パラメータで選ぶ指示文）は role が合っても
+    // 候補にしない——人が工程へ足すとエンジン注入と二重になる。
+    id: 'tier-basic-split', description: '実行ティア basic の split 指示', selection: 'engine',
+    fragments: [{ role: 'worker', text: '要素を短い一手順まで分解する' }],
+  }, {
+    // kind: contract（成果物の契約）も工程の候補に混ぜない。
+    id: 'design-document-format', description: '設計書の書式', kind: 'contract',
+    fragments: [{ role: 'worker', text: '4節を含めること' }],
   }];
   const choices = workflowUi.nodeMethodChoices(methods, { kind: 'verify', tier: 'small' });
   assert.deepStrictEqual(choices.map((choice) => choice.id), ['adversarial-verify']);

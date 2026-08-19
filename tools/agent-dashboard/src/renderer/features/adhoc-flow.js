@@ -553,7 +553,10 @@
 
   function nodeMethodChoices(methods, node) {
     // 候補は作業ルールだけ。成果物の契約（設計書の書式など）は工程へ足すものではない。
-    const rules = (methods || []).filter((method) => String((method && method.kind) || 'rule') === 'rule');
+    // selection: "engine"（エンジンが run パラメータで選ぶ指示文。tier-basic-split 等）も
+    // 候補にしない——選ばれ方がエンジン専用で、人が工程へ足すと二重注入になる。
+    const rules = (methods || []).filter((method) => String((method && method.kind) || 'rule') === 'rule'
+      && String((method && method.selection) || '') !== 'engine');
     const role = roleForKind(node && node.kind);
     const purpose = String((node && node.kind) || 'work');
     const includes = (values, value) => !Array.isArray(values) || !values.length
