@@ -1310,6 +1310,7 @@ function listProjects(config) {
 module.exports = {
   SUBMITTER,
   NODE_KINDS,
+  WORKFLOW_PURPOSES,
   COHERENCE_COMMAND,
   buildVerificationPlan,
   resolveBusDir,

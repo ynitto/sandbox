@@ -1,0 +1,162 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agent-workflow.schema.json",
+  "title": "ワークフロー定義 — 保存形（ライブラリ）と投入形（plan）",
+  "description": "人が描いた工程グラフの契約。**2 つの段で形が違う**: (1) ライブラリ定義（本スキーマのルート）は agent-dashboard が編集・保存する形で、`workflows/<id>.json`（同梱）/ 登録フォルダの `.agents/workflows/<id>.json` / ユーザー領域に置く。(2) 投入 plan（$defs.plan）は agent-flow へ渡す形で、inbox 要求の `plan` または `--plan-file`。ライブラリ定義 → plan の変換は agent-dashboard の planFromWorkflow が行い、そこで工程の作業ルール（nodes[].methods）は本文へ畳まれて goal へ入る（plan に methods フィールドは無い）。**グラフ不変条件（id 一意・deps の実在・循環なし・entry=ルート/exit=末端・split の後段を静的に張らない）は JSON Schema で表現できないため実装が正典**: 保存側は agent-dashboard の normalizeWorkflow、実行側は agent-flow の plan_strategy_user（不正な plan は planner へ縮退せず failed 終端）。",
+  "$defs": {
+    "nodeKind": {
+      "enum": ["work", "generate", "classify", "synthesize", "verify", "filter", "judge",
+               "reduce", "split", "map", "human", "extract", "retrieve"],
+      "description": "ノード種別。正典は agentcore.nodecontract.VALID_KINDS。human はユーザー定義フロー専用で planner は生成しない"
+    },
+    "purpose": {
+      "enum": ["implementation", "design"],
+      "default": "implementation",
+      "description": "フローの用途。design は成果物が設計書で、実行契約は読み取り専用・終了は 1 つ・human / split は使えない"
+    },
+    "nodeMethod": {
+      "type": "object",
+      "required": ["id", "role", "text"],
+      "description": "工程へ選んだ作業ルールの**複製**（参照ではない）。選択時に本文を複製するので、後からカタログを直しても保存済みフローの振る舞いは変わらない。候補は selection: auto / per-task の rule だけで、成果物の契約（kind: contract）とエンジンが選ぶ指示文（selection: engine）は候補にしない（agent-tuning.schema.json 参照）",
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "description": {"type": "string"},
+        "role": {"enum": ["planner", "worker", "verify", "evaluator", "session"]},
+        "text": {"type": "string", "minLength": 1},
+        "source": {"type": "string", "description": "複製元（methods/<id>@<hash> / repository:… / custom/<id>）"}
+      },
+      "additionalProperties": false
+    },
+    "libraryNode": {
+      "type": "object",
+      "required": ["id", "goal", "kind", "deps"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "label": {"type": "string", "description": "画面の表示名。省略時は id"},
+        "goal": {"type": "string", "minLength": 1},
+        "kind": {"$ref": "#/$defs/nodeKind"},
+        "tier": {
+          "type": "string",
+          "description": "実行レベル（auto ＋ agent-profiles の宣言）。**human 以外は必須**。auto は投入時に実行方針から決まる"
+        },
+        "interaction": {
+          "type": "object",
+          "description": "human ノードのみ・必須。形の正典は agent-interaction.schema.json"
+        },
+        "deps": {"type": "array", "items": {"type": "string"}},
+        "x": {"type": "number", "default": 40, "description": "編集画面の表示位置。実行には影響しない（digest の対象外）"},
+        "y": {"type": "number", "default": 40},
+        "methods": {"type": "array", "items": {"$ref": "#/$defs/nodeMethod"}},
+        "continuation": {
+          "enum": ["route", "retry"],
+          "description": "classify は route、verify は retry のみ受ける（kind と対応しない宣言は落とす）"
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {"properties": {"kind": {"const": "human"}}, "required": ["kind"]},
+          "then": {
+            "required": ["interaction"],
+            "not": {"anyOf": [{"required": ["tier"]}, {"required": ["methods"]}]},
+            "description": "human は人の確認だけを担うので、実行レベルも作業ルールも持たない"
+          },
+          "else": {"required": ["tier"]}
+        }
+      ]
+    },
+    "planNode": {
+      "type": "object",
+      "required": ["id", "goal"],
+      "description": "投入 plan のノード。ライブラリ定義の label / x / y / continuation は投入時に落ち、methods は goal へ畳まれる",
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "goal": {
+          "type": "string", "minLength": 1,
+          "description": "`{{request}}` は要求テキストへ置換される（置換はエンジンの 1 か所だけで行う）"
+        },
+        "kind": {"$ref": "#/$defs/nodeKind", "default": "work"},
+        "deps": {"type": "array", "items": {"type": "string"}},
+        "tier": {"type": "string", "description": "固定 tier。human には指定できない"},
+        "readonly": {"type": "boolean", "description": "書き込みを伴わない工程。human には指定できない"},
+        "agent": {
+          "type": "object",
+          "required": ["agent_cli"],
+          "description": "ノード固定の実行候補。**ユーザー定義フローでだけ受ける**（LLM planner の出力からは剥がす — モデル選定はルーティングの仕事）。human には指定できない",
+          "properties": {
+            "agent_cli": {"type": "string", "minLength": 1},
+            "model": {"type": "string"}
+          },
+          "additionalProperties": false
+        },
+        "interaction": {"type": "object", "description": "human ノードのみ・必須。正典は agent-interaction.schema.json"},
+        "read_allocation": {"type": "array", "items": {"type": "object"}, "description": "最初に読むべき path / range / reason"},
+        "dependency_input": {"enum": ["full", "digest"], "description": "依存成果の渡し方の明示宣言（既定は kind で決まる）"},
+        "retries": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": true
+    },
+    "plan": {
+      "type": "object",
+      "required": ["nodes"],
+      "description": "agent-flow へ渡す投入形（inbox 要求の `plan` / `--plan-file`）。planner を呼ばず、検証だけしてグラフを固定する第 3 の計画経路。**検証は厳格**で、丸めずに失敗させる（意図と違う形で走ったことに気付けなくなるため）",
+      "properties": {
+        "name": {"type": "string"},
+        "nodes": {
+          "type": "array", "minItems": 1, "maxItems": 64,
+          "items": {"$ref": "#/$defs/planNode"},
+          "description": "上限 64（agent_flow の _USER_PLAN_MAX_NODES）。planner 経路の max_fanout と同じ量級の暴走止め"
+        },
+        "review": {
+          "oneOf": [{"type": "boolean"}, {"const": "auto"}],
+          "default": "auto",
+          "description": "統合前レビューの三値。auto は tier=basic のときだけ有効へ倒れる（人が描いた静的な形は変えず、動的 fan-out の間にだけ verify gate が入る）"
+        },
+        "evaluate": {
+          "type": "boolean",
+          "default": false,
+          "description": "true で評価役の継続判断を有効化。既定は無効 — ユーザー定義フローは形が意図そのものなので、再計画でノードを足して形を変えない"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "type": "object",
+  "required": ["version", "id", "name", "purpose", "entry", "exit", "nodes"],
+  "properties": {
+    "version": {"const": 2, "description": "v2 で entry / exit を明示宣言にした。v1 はルート / 末端から導出する（読み込み時に v2 へ正規化される）"},
+    "id": {"type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$"},
+    "name": {"type": "string", "minLength": 1},
+    "description": {"type": "string"},
+    "purpose": {"$ref": "#/$defs/purpose"},
+    "libraryVisibility": {
+      "enum": ["library", "internal"],
+      "default": "library",
+      "description": "internal は「新しく作る」の雛形としてだけ出し、保存済み一覧には出さない（同梱の設計雛形が使う）"
+    },
+    "entry": {
+      "type": "array", "items": {"type": "string"}, "minItems": 1,
+      "description": "開始。**すべてのルートノード（deps 空）と一致していなければならない**（実装が検証）"
+    },
+    "exit": {
+      "type": "array", "items": {"type": "string"}, "minItems": 1,
+      "description": "終了。**すべての末端ノード（他から依存されない）と一致していなければならない**（実装が検証）。design は 1 つだけ"
+    },
+    "nodes": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/libraryNode"}},
+    "createdAt": {"type": "string"},
+    "updatedAt": {"type": "string"}
+  },
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {"properties": {"purpose": {"const": "design"}}, "required": ["purpose"]},
+      "then": {
+        "properties": {
+          "exit": {"maxItems": 1},
+          "nodes": {"items": {"properties": {"kind": {"not": {"enum": ["human", "split"]}}}}}
+        },
+        "description": "設計フローは終端 1 つ（kind は work か synthesize）で、human / split は使えない。全ノードが開始から到達可能かつ終了へ到達可能であることも実装が検証する"
+      }
+    }
+  ]
+}

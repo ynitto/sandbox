@@ -7,6 +7,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### ワークフロー定義のスキーマを登録した
+
+契約のうちワークフロー定義だけ `schemas/` に正典が無く、正典が 2 実装
+（agent-dashboard の `normalizeWorkflow` と agent-flow の `plan_strategy_user`）へ
+分かれていた。`schemas/agent-workflow.schema.json` を新設して登録する。
+
+- **2 段の形を 1 ファイルで宣言した**: ライブラリ定義（dashboard が編集・保存する
+  `workflows/<id>.json` / `.agents/workflows/` / ユーザー領域）と、投入 plan
+  （inbox 要求の `plan` / `--plan-file`）。変換は `planFromWorkflow` が行い、工程の
+  作業ルールは本文へ畳まれて goal へ入る（plan に methods フィールドは無い）
+- **表現できない不変条件を明記した**: id 一意・deps の実在・循環なし・entry=ルート /
+  exit=末端・split の後段を静的に張らない、は JSON Schema で書けないので実装が正典。
+  スキーマ検証だけでは足りないことを説明に残す
+- 表現できる制約は宣言した: kind / purpose の enum、human は tier・methods を持たず
+  interaction が要る、design は終端 1 つで human / split を使えない、plan のノード上限 64
+- 検証ライブラリはこのリポジトリでは使わない方針なので、**スキーマと実装の語彙一致を
+  両側のテストで担保**する（`mission.schema.json` と同じ流儀）
+
+契約検証: `tools/agent-flow/tests/test_workflow_schema.py`（新設 9 件: kind enum・
+ノード上限・既定値の一致、スキーマどおりの plan が実装に通ること、スキーマが禁じる形を
+実装も拒むこと、同梱フローが必須項目を満たすこと）/ `tools/agent-dashboard npm test`
+
 ### ワークフロー機能: 選ばれ方の違いを自動注入の層で強制した（監査の結果）
 
 カスタムワークフローと手法（methods）の実装を「意図どおりか」で見直し、**選ばれ方

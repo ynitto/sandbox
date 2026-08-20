@@ -1966,6 +1966,30 @@ test('run tuning に複製した per-task カタログを agent-flow の planner
   assert.ok(snap.every((m) => m.selection === 'per-task' && Array.isArray(m.fragments)));
 });
 
+test('ワークフロー定義スキーマと保存の正典（normalizeWorkflow）が同じ語彙を使う', () => {
+  // schemas/agent-workflow.schema.json は契約の正典（文書）。グラフ不変条件は実装が強制するが、
+  // 機械で突き合わせられる語彙（kind / purpose / version / 表示位置の既定）はここで固定する。
+  const schema = JSON.parse(fs.readFileSync(
+    path.join(__dirname, '..', '..', '..', 'schemas', 'agent-workflow.schema.json'), 'utf8'));
+  const saved = adhoc.saveWorkflow({ adhocFlow: { workflowDir: tmpdir('wf-schema-') } }, {
+    name: 'サンプル', purpose: 'implementation',
+    nodes: [{ id: 'a', goal: '作る', kind: 'work', tier: 'small', deps: [] }],
+  });
+  // 保存形はスキーマの必須項目をすべて備える
+  for (const key of schema.required) assert.ok(key in saved, `保存形に ${key} がありません`);
+  assert.strictEqual(saved.version, schema.properties.version.const);
+  assert.strictEqual(saved.nodes[0].x, schema.$defs.libraryNode.properties.x.default);
+  assert.strictEqual(saved.nodes[0].y, schema.$defs.libraryNode.properties.y.default);
+  assert.strictEqual(saved.libraryVisibility, schema.properties.libraryVisibility.default);
+  assert.strictEqual(saved.purpose, schema.$defs.purpose.default);
+  // kind と purpose の語彙が一致する（片方だけ増えると画面と契約が食い違う）
+  assert.deepStrictEqual([...schema.$defs.nodeKind.enum].sort(), [...adhoc.NODE_KINDS].sort());
+  assert.deepStrictEqual([...schema.$defs.purpose.enum].sort(), [...adhoc.WORKFLOW_PURPOSES].sort());
+  // 工程の作業ルール複製のキーもスキーマと同じ
+  assert.deepStrictEqual(Object.keys(schema.$defs.nodeMethod.properties).sort(),
+    ['description', 'id', 'role', 'source', 'text']);
+});
+
 test('成果物の契約とエンジンが選ぶ指示文は、工程セットの雛形にもしない', () => {
   // 工程セットは作業ルールを工程へ複製する雛形。engine の指示文を複製すると
   // エンジンの注入と二重になり、契約は工程へ足すものではない。
