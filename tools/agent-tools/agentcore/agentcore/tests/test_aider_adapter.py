@@ -155,6 +155,27 @@ class TestAiderAdapter(unittest.TestCase):
         self.assertTrue(seen)
         self.assertTrue(all(not path.exists() for path in seen))
 
+    def test_aider_error_keeps_policy_and_usage_markers_and_cleans_files(self):
+        seen = []
+
+        def fail(command):
+            analytics = Path(command[command.index("--analytics-log") + 1])
+            settings = Path(command[command.index("--model-settings-file") + 1])
+            seen.extend((analytics, settings))
+            analytics.write_text(json.dumps({
+                "event": "message_send",
+                "properties": {"prompt_tokens": 7, "completion_tokens": 3},
+            }) + "\n", encoding="utf-8")
+            return mock.Mock(returncode=1)
+
+        rc, stderr, _, _ = self.run_adapter([
+            "--agent-policy", aider_adapter.POLICY_ID,
+            "--model", aider_adapter.POLICY_MODEL], fail)
+        self.assertEqual(rc, 1)
+        self.assertEqual(stderr.count("@agent-policy "), 1)
+        self.assertIn("@agent-usage tokens_in=7 tokens_out=3", stderr)
+        self.assertTrue(all(not path.exists() for path in seen))
+
 
 if __name__ == "__main__":
     unittest.main()

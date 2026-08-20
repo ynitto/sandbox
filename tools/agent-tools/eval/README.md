@@ -230,8 +230,10 @@ python3 tools/agent-tools/eval/worker_eval.py --cli aider --model gemma4:e4b \
   --agent-policy gemma4-e4b-reliability-v1 --tasks T2,T1min --repeat 3
 ```
 
-台帳には `policy_id` と adapter の `@agent-policy` marker から取得した `policy_sha256` が残る。
-sampling は policy と同時に変えず、独立した `--agent-policy off` arm として測定する。
+台帳には `policy_id` と adapter の `@agent-policy` marker から取得した `policy_sha256` に加え、
+Aider version、実効 context / 生成上限、token usage、checker 診断、wall limit、retry 回数が残る。
+`--agent-policy` 未指定時は本番定義を継承する。sampling は policy と同時に変えず、独立した
+`--agent-policy off` arm として測定する。
 
 | 課題 | qwen + agent-ollama | qwen + aider | gemma4:e4b + aider |
 |---|---|---|---|

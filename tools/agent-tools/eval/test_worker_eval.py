@@ -81,6 +81,13 @@ class AiderPolicyArgvTest(unittest.TestCase):
         argv = w.aider_argv({"goal": "fix", "files": []})
         self.assertNotIn("--agent-policy", argv)
 
+    def test_unspecified_arm_inherits_shipped_policy(self):
+        w.AGENT_POLICY = None
+        argv = w.aider_argv({"goal": "fix", "files": []})
+        self.assertEqual(argv.count("--agent-policy"), 1)
+        index = argv.index("--agent-policy")
+        self.assertEqual(argv[index + 1], "gemma4-e4b-reliability-v1")
+
     def test_v1_arm_keeps_exactly_one_policy(self):
         w.AGENT_POLICY = "gemma4-e4b-reliability-v1"
         argv = w.aider_argv({"goal": "fix", "files": []})
@@ -94,6 +101,14 @@ class AiderPolicyArgvTest(unittest.TestCase):
         argv = w.aider_argv({"goal": "fix", "files": []})
         self.assertIn("--agent-num-predict", argv)
         self.assertNotIn("--model-settings-file", argv)
+
+    def test_adapter_markers_are_parsed_as_typed_ledger_values(self):
+        markers = w._agent_markers(
+            "@agent-policy id=gemma4-e4b-reliability-v1 sha256=abc123\n"
+            "@agent-usage tokens_in=12 tokens_out=4\n")
+        self.assertEqual(markers, {
+            "policy_id": "gemma4-e4b-reliability-v1", "policy_sha256": "abc123",
+            "tokens_in": 12, "tokens_out": 4})
 
 
 if __name__ == "__main__":
