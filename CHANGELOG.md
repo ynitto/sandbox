@@ -7,11 +7,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### 設定の要点を設計書へ転記し、カスタマイズ地図を作業記録へ移した
+
+`docs/designs/workflow-customization-map.md` は 2026-08-19 の調査で作った作業時点の地図で、
+恒久的な設計判断の置き場としては設計書索引に並ぶべきものではなかった。ここまでの整理
+（穴 3 件の解消・CLI の層別整理）を反映したうえで、要点を設計書へ引き上げる。
+
+- **`docs/designs/agent-flow-design.md` に判断 7「振る舞いを変える口を層で分け、層ごとに
+  1 つの名前で通す」を追加**。本書の書式（判断 / 文脈 / 選択肢と却下理由 / トレードオフ /
+  確信度）に合わせ、4 層（形・分け方・言い方・実行資源）、CLI オプション名と設定キーと
+  inbox キーを揃える取り決め、優先順位（CLI 引数 > inbox 要求 > 設定ファイル > 既定）、
+  効かない指定を受け取らない規律、`selection: "engine"` の役割分担を書いた
+- **地図を `docs/plans/2026-08-20-workflow-customization-map.md` へ移動**し、設計書索引から
+  外した。地図側には「設計の正典は設計書の判断 7」であることを明記し、見つかった穴 3 件の
+  決着を表にまとめた
+- コード内の参照（`cli.py` / `adhoc.js`）も設計書の判断 7 を指すよう付け替えた
+
 ### dashboard から分解の粒度・分割の単位を指定できるようにした
 
 dashboard が run へ渡せる実行時指定（`execution_overrides`）は tier / agent_cli / model
 ＝**L4 実行資源だけ**で、`granularity` も `split_policy` も画面からは設定できなかった
-（CLI と設定ファイル専用）。`docs/designs/workflow-customization-map.md` が挙げた最後の穴。
+（CLI と設定ファイル専用）。`docs/plans/2026-08-20-workflow-customization-map.md` が挙げた最後の穴。
 
 - **層ごとに別のキーで運ぶ**: `execution_overrides` へ相乗りさせず、inbox のトップレベルに
   `granularity` / `split_policy` を置いた。あちらは「役割・工程ごとに誰が実行するか」、

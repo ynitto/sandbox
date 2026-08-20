@@ -1,5 +1,10 @@
 # ワークフローのカスタマイズ地図 — 契約（スキーマ）とエンジン・UI の関係
 
+> 2026-08-19 の調査で作った地図に、2026-08-20 の整理（§0 の穴 3 件の解消と CLI の層別整理）を
+> 反映したもの。**設計の正典ではない**——恒久的な設計判断は
+> [agent-flow 設計書](../designs/agent-flow-design.md)「7. 振る舞いを変える口を層で分け、層ごとに 1 つの名前で通す」に
+> 転記済みで、ここはその周辺を 1 枚に広げた作業時点の案内として残す。
+
 「ワークフローの振る舞いを変えたい」ときに、**どこを触ればよいか / なぜその置き場所なのか**を
 1 枚にまとめた案内。個別の設計判断は各設計書（末尾の参照）に譲り、ここは**関係の地図**に徹する。
 
@@ -33,6 +38,11 @@ agent-flow と agent-loop が**同じ 1 ファイルを読む**。agent-loop の
 （**解決済みの文面**を渡す口。値名ではないので `.agents/methods/` の差し替えもこの経路へ届く）と
 `_planner_fallback` の引数渡しで、stub 以外の全経路に効く。
 
+同じ形の穴が CLI 全体にもあった。計画パラメータがグローバル引数だったため
+`agent-flow --granularity finest doctor` のように**計画しないサブコマンドでも受理して黙って
+捨てて**いた。agent-loop も同様で、tmux ペインの張り方（`--split-direction` など）が
+サブコマンドに効かないまま通っていた。どちらも「効かない指定は受け取らない」へ寄せた（§1）。
+
 ---
 
 ## 1. ワークフローの振る舞いを決める 4 層
@@ -42,16 +52,35 @@ agent-flow と agent-loop が**同じ 1 ファイルを読む**。agent-loop の
 | 層 | 何を決めるか | 実体 | 主な入口 |
 | --- | --- | --- | --- |
 | **L1 形** | 工程のグラフそのもの（何工程・依存・種別） | ワークフロー定義 / 標準パターン / planner の出力 | dashboard のフロー編集、`--pattern`、`--plan-file`、planner に任せる |
-| **L2 分け方** | 分解の粒度・分割の単位・レビューの有無・実行ティア | run パラメータ | `--granularity` / `--split-policy` / `--review` / agent-control の tier |
+| **L2 分け方** | 分解の粒度・分割の単位・レビューの有無・実行ティア | run パラメータ | `--granularity` / `--split-policy` / `--review` / dashboard の実行前の確認 / agent-control の tier |
 | **L3 言い方** | プロンプトへ足す文・差し替える文 | 手法カタログ（methods） | `.agents/methods/`、dashboard の作業ルール、工程ごとの選択 |
 | **L4 実行資源** | どの CLI / モデル / 予算で回すか | agent-control / agent-profiles / node-budget | dashboard の実行方針、`--agent-cli` など |
 
-計画に関わる run パラメータ（L1 の `--planner` / `--pattern` / `--plan-file` と L2 の `--granularity` /
-`--review` / `--plan-gate` 系、および動的 fan-out の `--split-policy` / `--max-fanout` /
-`--exemplar-first`）は、**実際に計画するサブコマンド（`run` / `orchestrate`）の引数**で、
-グローバル引数ではない。計画しないサブコマンドに書くと usage エラーで断る（2026-08-20 まではグローバルで、
-`agent-flow --granularity finest doctor` のような指定を受理して黙って捨てていた）。設定ファイルの
-同名キーとは 1 対 1 で、CLI 指定が優先する。
+### 層ごとに 1 つの名前で通す
+
+同じ設定は、**CLI オプション名・設定ファイルのキー・inbox 要求のキーで同じ名前**を使う
+（`--granularity` ↔ `granularity`、`--split-policy` ↔ `split_policy`）。層をまたいで呼び名を
+作り直さないので、「画面で言う分け方」「設定ファイルで言う granularity」を覚え直さずに済む。
+2026-08-20 に `--pattern` だけ設定キーが無かったのを埋めて、計画パラメータは全部 1 対 1 になった。
+
+### 計画パラメータは計画するサブコマンドの引数
+
+L1 の `--planner` / `--pattern` / `--plan-file` と L2 の `--granularity` / `--review` /
+`--plan-gate` 系、および動的 fan-out の `--split-policy` / `--max-fanout` / `--exemplar-first` は、
+**実際に計画するサブコマンド（`run` / `orchestrate`）の引数**でグローバル引数ではない。
+計画しないサブコマンドに書くと usage エラー（rc=2）で断る。`--help` は 2 群に分かれる:
+
+| 群 | 引数 | 決まるタイミング |
+| --- | --- | --- |
+| 計画（形と分け方） | `--planner` `--pattern` `--plan-file` `--granularity` `--review` / `--no-review` `--plan-gate` 系 | 計画時 |
+| 動的 fan-out（split → map → reduce） | `--split-policy` `--max-fanout` `--exemplar-first` | 実行中（split の出力で展開数が決まる） |
+
+### 同じ値を指定できる口が複数あるときの優先順位
+
+**CLI 引数 > inbox 要求 > 設定ファイル > 組み込み既定**。要求（dashboard の投入・板からの委譲）は
+run 単位の意思なので、そのノードの `agent-flow.yaml` より強い。一方で人がその場で打った CLI 引数は
+覆さない。キーが無い・空文字なら「指定しない」の意味で、下の層がそのまま効く
+（画面が対象フォルダの設定を黙って上書きしないため）。
 
 **L3 が本設計の中心**で、L1・L2・L4 は別契約。「文面を変えたい」なら L3、
 「形を変えたい」なら L1、「切り方を変えたい」なら L2。
@@ -147,7 +176,7 @@ tier の auto→finest 分岐、レビュー観点のキー）は**エンジン�
 
 | 契約 | 置き場所 | 読み手 | 書き手 |
 | --- | --- | --- | --- |
-| **ワークフロー定義**（スキーマ無し） | `workflows/` / `.agents/workflows/` / ユーザー領域 | agent-flow（実行）・dashboard（編集） | 人・dashboard |
+| **ワークフロー定義** `agent-workflow` | `workflows/` / `.agents/workflows/` / ユーザー領域 | agent-flow（実行）・dashboard（編集） | 人・dashboard |
 | `agent-tuning`（methods / trials / injections） | `$AGENT_TUNING_DIR/tuning.json` | **agent-flow・agent-loop** | 人・dashboard・`agent-loop methods`・`agent-audit tune --apply` |
 | 手法カタログ（tuning の材料） | `$AGENT_METHODS_DIR/` ＋ `.agents/methods/` | 同上＋dashboard | 人（同梱はリポジトリ） |
 | `agent-instructions` | `$AGENT_INSTRUCTIONS_DIR` | 各エンジン | dashboard |
@@ -160,13 +189,19 @@ tier の auto→finest 分岐、レビュー観点のキー）は**エンジン�
 
 ---
 
-## 5. 現状の穴（このまとめで見つかったもの）
+## 5. 見つかった穴と、その決着
 
-このまとめで挙げた 3 件（`--split-policy` が既定 planner で無視される / ワークフロー定義に
-JSON Schema が無い / dashboard から L2 を触れない）は 2026-08-20 にすべて解消した。
-最後の 1 件の顛末だけ、層の分け方の実例として残す。
+この地図を作る過程で 3 件の穴が見つかり、2026-08-20 にすべて塞いだ:
 
-### dashboard から L2 を触れない（解消済み）
+| 穴 | 決着 |
+| --- | --- |
+| `--split-policy` が既定 planner で黙って無視される | flow-planner スキルへ `--split-directive`（解決済みの文面）を新設して配線（§0-3） |
+| ワークフロー定義だけ JSON Schema が無い | `schemas/agent-workflow.schema.json` を登録（§2） |
+| dashboard から L2 を触れない | inbox のトップレベルへ `granularity` / `split_policy` を追加（下記） |
+
+最後の 1 件の顛末は、層の分け方の実例として残す。
+
+### dashboard から L2 を触れない（決着の記録）
 
 dashboard が run へ渡せる実行時指定（`executionOverrides`）は tier / agent_cli / model
 ＝**L4 実行資源だけ**で、`granularity` も `split_policy` も画面からは設定できなかった。
@@ -197,7 +232,9 @@ dashboard が run へ渡せる実行時指定（`executionOverrides`）は tier 
 
 ## 参照
 
+- `docs/designs/agent-flow-design.md`「7. 振る舞いを変える口を層で分け、層ごとに 1 つの名前で通す」 — 4 層と優先順位の設計判断（正典）
 - `docs/plans/2026-08-18-split-policy-catalog-unification-design.md` — `selection: "engine"` の設計（正典）
+- `schemas/agent-workflow.schema.json` — ワークフロー定義の契約
 - `docs/plans/2026-08-15-workflow-feature-improvement-implementation.md` — auto / per-task の導入
 - `schemas/README.md` — 契約の全カタログと所有者
 - `tools/agent-flow/README.md` — run パラメータの詳細
