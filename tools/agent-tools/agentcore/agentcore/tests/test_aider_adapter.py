@@ -16,6 +16,26 @@ from agentcore import aider_adapter  # noqa: E402
 
 
 class TestAiderAdapter(unittest.TestCase):
+    def run_adapter(self, argv, side_effect=None):
+        calls = []
+        settings = []
+
+        def run(command):
+            calls.append(command)
+            if "--model-settings-file" in command:
+                path = Path(command[command.index("--model-settings-file") + 1])
+                settings.append((path, json.loads(path.read_text(encoding="utf-8"))))
+            if side_effect:
+                return side_effect(command)
+            return mock.Mock(returncode=0)
+
+        stderr = io.StringIO()
+        with mock.patch.object(aider_adapter, "load_profile_env", return_value={}), \
+                mock.patch.object(aider_adapter.subprocess, "run", side_effect=run):
+            with contextlib.redirect_stderr(stderr):
+                rc = aider_adapter.main(argv)
+        return rc, stderr.getvalue(), calls, settings
+
     def test_sums_exact_message_usage(self):
         log_path = None
 
@@ -60,6 +80,80 @@ class TestAiderAdapter(unittest.TestCase):
             for var in ("NO_PROXY", "no_proxy"):
                 self.assertEqual(aider_adapter.os.environ[var], "10.0.0.5",
                                  "ollama のホストはプロキシ対象から外れる")
+
+    def test_applies_policy_and_removes_wrapper_option(self):
+        rc, stderr, calls, settings = self.run_adapter([
+            "--agent-policy", aider_adapter.POLICY_ID,
+            "--model", aider_adapter.POLICY_MODEL, "--message", "edit"])
+        self.assertEqual(rc, 0)
+        self.assertNotIn("--agent-policy", calls[0])
+        self.assertEqual(settings[0][1], [{
+            "name": aider_adapter.POLICY_MODEL,
+            "system_prompt_prefix": aider_adapter.POLICY_TEXT}])
+        self.assertIn(f"@agent-policy id={aider_adapter.POLICY_ID} ", stderr)
+        self.assertFalse(settings[0][0].exists())
+
+    def test_no_policy_preserves_forwarded_arguments(self):
+        rc, stderr, calls, settings = self.run_adapter(["--message", "edit"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(calls[0][3:], ["--message", "edit"])
+        self.assertEqual(settings, [])
+        self.assertNotIn("@agent-policy", stderr)
+
+    def test_unknown_policy_fails_before_aider_starts(self):
+        rc, stderr, calls, _ = self.run_adapter(["--agent-policy", "typo"])
+        self.assertEqual(rc, 2)
+        self.assertEqual(calls, [])
+        self.assertIn("unknown policy 'typo'", stderr)
+
+    def test_policy_requires_exact_model(self):
+        for model in ("ollama_chat/gemma4:12b", None):
+            argv = ["--agent-policy", aider_adapter.POLICY_ID]
+            if model:
+                argv += ["--model", model]
+            rc, stderr, calls, _ = self.run_adapter(argv)
+            self.assertEqual(rc, 2)
+            self.assertEqual(calls, [])
+            self.assertIn("requires model", stderr)
+
+    def test_managed_settings_reject_external_settings(self):
+        rc, stderr, calls, _ = self.run_adapter([
+            "--agent-num-ctx", "32768", "--model", aider_adapter.POLICY_MODEL,
+            "--model-settings-file", "external.yml"])
+        self.assertEqual(rc, 2)
+        self.assertEqual(calls, [])
+        self.assertIn("conflicts", stderr)
+
+    def test_numeric_options_are_composed_in_one_entry(self):
+        rc, _, calls, settings = self.run_adapter([
+            "--agent-num-ctx=32768", "--agent-num-predict", "2048",
+            "--model", aider_adapter.POLICY_MODEL])
+        self.assertEqual(rc, 0)
+        self.assertNotIn("--agent-num-predict", calls[0])
+        self.assertEqual(settings[0][1][0]["extra_params"],
+                         {"num_ctx": 32768, "num_predict": 2048})
+
+    def test_numeric_options_must_be_positive_integers(self):
+        for value in ("0", "-1", "many"):
+            rc, stderr, calls, _ = self.run_adapter([
+                "--agent-num-predict", value, "--model", aider_adapter.POLICY_MODEL])
+            self.assertEqual(rc, 2)
+            self.assertEqual(calls, [])
+            self.assertIn("positive integer", stderr)
+
+    def test_file_not_found_cleans_both_temporary_files(self):
+        seen = []
+        def missing(command):
+            seen.extend(Path(command[i + 1]) for i, value in enumerate(command)
+                        if value in ("--analytics-log", "--model-settings-file"))
+            raise FileNotFoundError
+        rc, stderr, _, _ = self.run_adapter([
+            "--agent-policy", aider_adapter.POLICY_ID,
+            "--model", aider_adapter.POLICY_MODEL], missing)
+        self.assertEqual(rc, 127)
+        self.assertIn("command not found", stderr)
+        self.assertTrue(seen)
+        self.assertTrue(all(not path.exists() for path in seen))
 
 
 if __name__ == "__main__":
