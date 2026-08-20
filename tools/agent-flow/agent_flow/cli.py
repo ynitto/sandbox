@@ -10,7 +10,7 @@ def _add_planning_args(sp) -> None:
     二重定義していたため、片方だけ help や choices が付く食い違いも起きていた。計画する 2 つの
     サブコマンドが**同じ定義**を共有する形へ寄せ、それ以外では usage エラーで断る。
 
-    `--help` での並びも 2 群に分ける（`docs/designs/agent-flow-design.md` の判断 7 が定める層に対応）:
+    `--help` での並びも 2 群に分ける（`docs/designs/agent-flow-design.md` の判断 5 が定める層に対応）:
 
     - **計画（L1 形 / L2 分け方）** — 計画時に決まるもの。誰が形を決めるか（planner / pattern /
       plan-file）と、どう分けるか（granularity / review / plan-gate）

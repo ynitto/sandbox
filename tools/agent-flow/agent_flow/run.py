@@ -336,10 +336,14 @@ def _spawn_orchestrator(base: list, args, req_id: str, req: dict):
 # `resolve_executor_config_json` に残っており、`make_executor` が同じ値を使う。
 
 
-# inbox 要求が名指しできる L2（分け方）の run パラメータ。値の語彙は CLI / 設定ファイルと
-# 同一で、キー名も設定キー（snake_case）と揃えてある——投入側が「どの名前で書けばいいか」を
-# 層ごとに覚え直さずに済むように。空/未指定なら従来どおりノード側の設定・既定に従う。
+# inbox 要求が名指しできる計画パラメータ（L1 形の `pattern` と L2 分け方の 2 つ）。値の語彙は
+# CLI / 設定ファイルと同一で、キー名も設定キー（snake_case）と揃えてある——投入側が「どの名前で
+# 書けばいいか」を層ごとに覚え直さずに済むように。空/未指定なら従来どおりノード側の設定・既定に従う。
+# `pattern` もここに置く。かつては専用分岐で「args.pattern が未設定なら載せる」形だったが、
+# resolve_config が先に設定ファイルの値を args へ埋めるため、`agent-flow.yaml` に pattern を
+# 書いたノードでは要求の名指しが黙って負けていた（優先順位 CLI > 要求 > 設定ファイルの破れ）。
 _INBOX_PLANNING_KEYS = {
+    "pattern": tuple(PATTERN_LIST),
     "granularity": ("auto", "coarse", "fine", "finest"),
     "split_policy": ("behavior", "file"),
 }
@@ -367,7 +371,7 @@ def _check_inbox_planning(rec: dict) -> None:
 
 
 def _apply_inbox_planning(rec: dict, args) -> None:
-    """要求が名指しした分け方（granularity / split_policy）を args へ載せる。
+    """要求が名指しした計画パラメータ（pattern / granularity / split_policy）を args へ載せる。
 
     優先順は **CLI > inbox 要求 > 設定ファイル > 既定**。要求は run 単位の意思なので、
     そのノードの `agent-flow.yaml`（マシンの既定）より強い。一方で人がその場で打った
@@ -409,9 +413,6 @@ def _apply_inbox_request(bus: Bus, args) -> None:
     vp = rec.get("verification_plan")
     if isinstance(vp, dict) and not getattr(args, "verification_plan", None):
         args.verification_plan = json.dumps(vp, ensure_ascii=False)
-    pattern = rec.get("pattern")
-    if pattern and not getattr(args, "pattern", None):
-        args.pattern = pattern
     _apply_inbox_planning(rec, args)
     execution_overrides = rec.get("execution_overrides")
     if isinstance(execution_overrides, dict) and not getattr(args, "execution_overrides", None):

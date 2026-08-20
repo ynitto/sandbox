@@ -651,6 +651,38 @@ class ArgvLimitTests(unittest.TestCase):
         kf._apply_inbox_request(bus, args)
         self.assertEqual((args.granularity, args.split_policy), ("auto", "behavior"))
 
+    def test_inbox_pattern_beats_the_config_file(self):
+        # pattern（L1 形）も granularity / split_policy と同じ優先順位に従う。以前は専用分岐が
+        # 「args.pattern が未設定なら載せる」形で、resolve_config が設定ファイルの値を先に
+        # 埋めるため、pattern を書いたノードでは要求の名指しが黙って負けていた。
+        cfg_dir = tempfile.mkdtemp(prefix="kf-cfg-pattern-")
+        self.addCleanup(shutil.rmtree, cfg_dir, ignore_errors=True)
+        with open(os.path.join(cfg_dir, "agent-flow.json"), "w") as f:
+            json.dump({"pattern": "tournament"}, f)
+        bus = self._inbox_bus({"pattern": "map-reduce"})
+        args = self._inbox_args(config=os.path.join(cfg_dir, "agent-flow.json"))
+        kf.resolve_config(args)
+        self.assertEqual(args.pattern, "tournament")
+        kf._apply_inbox_request(bus, args)
+        self.assertEqual(args.pattern, "map-reduce")
+
+    def test_cli_pattern_beats_the_inbox_request(self):
+        bus = self._inbox_bus({"pattern": "map-reduce"})
+        args = self._inbox_args(pattern="tournament")
+        kf.resolve_config(args)
+        kf._apply_inbox_request(bus, args)
+        self.assertEqual(args.pattern, "tournament")
+
+    def test_unknown_inbox_pattern_is_rejected(self):
+        # 未知のパターン名は plan_strategy_pattern が最後には断るが、そこまで行くと理由は
+        # 子プロセスの stderr にしか残らない。受理の時点で明示的に失敗させる。
+        bus = self._inbox_bus({"pattern": "map-reduce-v2"})
+        args = self._inbox_args()
+        kf.resolve_config(args)
+        with self.assertRaises(kf.InboxRequestError) as ctx:
+            kf._apply_inbox_request(bus, args)
+        self.assertIn("pattern", str(ctx.exception))
+
     def test_unknown_planning_value_is_rejected(self):
         # split_policy() は未知値を既定へ丸めるので、素通しすると「指定したのに効かない run」に
         # なる。誤記は明示的に失敗させる。

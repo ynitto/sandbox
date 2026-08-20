@@ -468,7 +468,7 @@ function tierNames(tiers) {
 }
 
 // 分け方（L2）の語彙。agent-flow の CLI オプション・設定キーと同じ名前・同じ値を使う——
-// 層ごとに呼び名を作らないための取り決め（docs/designs/agent-flow-design.md の判断 7）。
+// 層ごとに呼び名を作らないための取り決め（docs/designs/agent-flow-design.md の判断 5）。
 // 実行資源（L4）の executionOverrides とは別の層なので、同じ器へ混ぜない: あちらは
 // 役割・工程ごとの tier / agent_cli / model で、こちらは run 全体の分解方針。
 const PLANNING_GRANULARITIES = ['auto', 'coarse', 'fine', 'finest'];
