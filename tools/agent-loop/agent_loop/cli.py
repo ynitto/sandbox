@@ -75,6 +75,37 @@ def _cmd_lifecycle(args: argparse.Namespace, cwd: Path) -> None:
     sys.exit(1)
 
 
+# デーモンモード（サブコマンド無しの起動）でしか読まれないグローバルオプション。
+# tmux ペインの張り方とインスタンス識別で、`send` や `methods` のような単発コマンドには
+# 効きようがない。argparse のサブパーサへは移せない——効く先が「サブコマンド名を持たない
+# 起動」なので、置き場所ではなく parse 後の検査で断る。
+#
+# 値は「明示されたか」を偽値で判定できるよう、既定をすべて偽値にしてある
+# （`--split-direction` / `--instance-id` は None、残りは store_true の False）。
+_DAEMON_ONLY_OPTIONS = (
+    ("split_direction", "--split-direction"),
+    ("no_auto_attach", "--no-auto-attach"),
+    ("controller_mode", "--controller-mode"),
+    ("instance_id", "--instance-id"),
+)
+
+
+def _reject_daemon_only_options(parser: argparse.ArgumentParser,
+                                args: argparse.Namespace) -> None:
+    """サブコマンドに効かないグローバルオプションを usage エラー（rc=2）で断る。
+
+    以前は黙って受理して捨てていたので、`agent-loop --split-direction vertical methods list`
+    のような指定が「効いたつもり」のまま通っていた。効かない指定は通さないほうが親切。
+    """
+    if not getattr(args, "subcommand", None):
+        return   # デーモンモード（サブコマンド無し）— ここが本来の効き先
+    given = [flag for attr, flag in _DAEMON_ONLY_OPTIONS if getattr(args, attr, None)]
+    if given:
+        parser.error(
+            f"{' / '.join(given)} は {args.subcommand} には効きません"
+            "（サブコマンド無しのデーモン起動でだけ使えます）")
+
+
 def main() -> None:
     global _EFFECTIVE_AGENT_MODEL
     parser = argparse.ArgumentParser(
@@ -361,6 +392,7 @@ def main() -> None:
     subparsers.add_parser("update", help="zipapp インストールを git remote から更新する")
 
     args = parser.parse_args()
+    _reject_daemon_only_options(parser, args)
 
     logging.getLogger().setLevel(args.log_level)
 

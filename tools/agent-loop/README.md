@@ -95,6 +95,7 @@ agent-loop
 
 ```
 agent-loop [--log-level LEVEL] [--split-direction horizontal|vertical] [--no-auto-attach]
+                                  # ↑ ペイン指定はデーモン起動（サブコマンド無し）専用
 agent-loop ls
 agent-loop send [-s SESSION] [-d DIR] [--wait] [--priority high|normal|low]
                 [--model MODEL] [--sandbox] [--force]
@@ -153,6 +154,11 @@ agent-loop --version
 
 `--no-auto-attach` はtmux外で専用セッションへ自動接続しない場合に使います。多重起動は
 `~/.agents/loop-state/` にある生存プロセスのcwdで判定します。
+
+`--split-direction` / `--no-auto-attach` はtmuxペインの張り方の指定なので、**サブコマンド無しの
+デーモン起動でだけ**使えます（`--instance-id` / `--controller-mode` も同じ）。`agent-loop
+--split-direction vertical methods list` のようにサブコマンドへ付けると、効かない指定として
+usageエラー（rc=2）で断ります。全サブコマンドで意味がある `--log-level` は従来どおりどこでも使えます。
 
 ### environment handoff（opt-in）
 

@@ -7,6 +7,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-loop: サブコマンドに効かないオプションを断るようにした
+
+`--split-direction` / `--no-auto-attach` / `--controller-mode` / `--instance-id` は tmux ペインの
+張り方とインスタンス識別で、**サブコマンド無しのデーモン起動**でしか読まれない。グローバル引数
+として黙って受理していたため、`agent-loop --split-direction vertical methods list` が
+「効いたつもり」で通っていた（agent-flow の計画パラメータと同じ形の穴）。
+
+- サブコマンド指定時にこれらが明示されていたら usage エラー（rc=2）で断る
+- argparse のサブパーサへは移せない（効き先が「サブコマンド名を持たない起動」なので）ため、
+  parse 後の検査で行う。全サブコマンドで意味がある `--log-level` は対象外
+
+契約検証: `tools/agent-loop/test/test_cli_options.py`（新設 5 件: デーモンモードでは素通り・
+各オプションが rc=2 で断られる・未指定を誤検知しない・メッセージがフラグ名と
+サブコマンド名を出す・`--log-level` が対象外であること）
+
 ### CLI の計画パラメータを、計画するサブコマンドへ集約した
 
 `--granularity` / `--split-policy` / `--exemplar-first` / `--plan-gate` 系は**グローバル引数**
