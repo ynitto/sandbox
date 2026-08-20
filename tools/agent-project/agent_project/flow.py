@@ -209,12 +209,6 @@ def build_agent_flow_cmd(task: Task, cfg: "Config", use_git: bool = False,
     base = _kf_base(cfg, use_git)
     if run_id:
         base += ["--run-id", run_id]      # グローバル引数（サブコマンドより前）
-    # 内側（実行時タスクグラフ）の分解粒度は flow_granularity（既定 auto）を渡す。外側の
-    # granularity（バックログの INVEST 粒度・既定 coarse）を渡してはいけない——別のノブで、
-    # coarse を内側へ流すと agent-flow の complexity 導出が常に上書きされ、work ノードレンジが
-    # 1〜3 に固定される（複雑なタスクでも「まとめて 1〜3 ノード」に畳まれる）。
-    # agent-flow の `--granularity` はグローバル引数なので run より前に置く。
-    base += ["--granularity", str(getattr(cfg, "flow_granularity", "auto") or "auto")]
     # 統一 verify: 検証計画を構造化して渡す（planner の自由記述へ混ぜない）。agent-flow は
     # 成果 revision 確定後の専用 runner で一度だけ実行し、receipt を返す（settle が検算する）。
     # 受け渡しは argv `--verification-plan`（env 渡しは不安定として人が却下・2026-07-31）。
@@ -231,7 +225,15 @@ def build_agent_flow_cmd(task: Task, cfg: "Config", use_git: bool = False,
         base += ["--knowledge-file", kn_file]
     cmd = (base + _workspace_cmd_args(cfg, task)
            + _reference_cmd_args(cfg, task) + [
-        "run", build_request(task, cfg), *_task_flow_cmd_args(task, cfg), "--planner", cfg.flow_planner,
+        # 内側（実行時タスクグラフ）の分解粒度は flow_granularity（既定 auto）を渡す。外側の
+        # granularity（バックログの INVEST 粒度・既定 coarse）を渡してはいけない——別のノブで、
+        # coarse を内側へ流すと agent-flow の complexity 導出が常に上書きされ、work ノードレンジが
+        # 1〜3 に固定される（複雑なタスクでも「まとめて 1〜3 ノード」に畳まれる）。
+        # agent-flow の `--granularity` は run サブコマンドの引数なので run より**後ろ**に置く
+        # （計画しないサブコマンドでは受け付けないため、グローバルから移された）。
+        "run", build_request(task, cfg),
+        "--granularity", str(getattr(cfg, "flow_granularity", "auto") or "auto"),
+        *_task_flow_cmd_args(task, cfg), "--planner", cfg.flow_planner,
         "--executor", executor, "--max-iterations", str(cfg.max_iterations)])
     if inherit_from:
         cmd += ["--inherit-from", inherit_from]
@@ -325,10 +327,11 @@ def cmd_flow_run(cfg: "Config", run_id: str) -> int:
         print("エラー: --run-id が必要です", file=sys.stderr)
         return 2
     cmd = _kf_base(cfg, bool(cfg.git_bus)) + ["--run-id", rid,
-                                              # 内側の粒度は flow_granularity（build_agent_flow_cmd と同じ理由）
+                                              "run", "--from-inbox",
+                                              # 内側の粒度は flow_granularity（build_agent_flow_cmd と同じ理由）。
+                                              # run サブコマンドの引数なので run より後ろ。
                                               "--granularity",
                                               str(getattr(cfg, "flow_granularity", "auto") or "auto"),
-                                              "run", "--from-inbox",
                                               "--planner", cfg.flow_planner,
                                               "--executor", cfg.executor,
                                               "--max-iterations", str(cfg.max_iterations)]

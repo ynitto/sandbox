@@ -46,6 +46,13 @@ agent-flow と agent-loop が**同じ 1 ファイルを読む**。agent-loop の
 | **L3 言い方** | プロンプトへ足す文・差し替える文 | 手法カタログ（methods） | `.agents/methods/`、dashboard の作業ルール、工程ごとの選択 |
 | **L4 実行資源** | どの CLI / モデル / 予算で回すか | agent-control / agent-profiles / node-budget | dashboard の実行方針、`--agent-cli` など |
 
+計画に関わる run パラメータ（L1 の `--planner` / `--pattern` / `--plan-file` と L2 の `--granularity` /
+`--review` / `--plan-gate` 系、および動的 fan-out の `--split-policy` / `--max-fanout` /
+`--exemplar-first`）は、**実際に計画するサブコマンド（`run` / `orchestrate`）の引数**で、
+グローバル引数ではない。計画しないサブコマンドに書くと usage エラーで断る（2026-08-20 まではグローバルで、
+`agent-flow --granularity finest doctor` のような指定を受理して黙って捨てていた）。設定ファイルの
+同名キーとは 1 対 1 で、CLI 指定が優先する。
+
 **L3 が本設計の中心**で、L1・L2・L4 は別契約。「文面を変えたい」なら L3、
 「形を変えたい」なら L1、「切り方を変えたい」なら L2。
 

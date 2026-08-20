@@ -95,6 +95,11 @@ CONFIG_DEFAULTS = {
     # worker_skill と同じ検索順で自動発見し、見つからなければエージェント planner へ
     # フォールバックする。上位に同名スキルを置けば全面差し替えできる（yaml 専用）。
     "planner_skill": "flow-planner",
+    # 標準ワークフローパターンの明示選択（`--pattern` と同義）。空/None なら planner が選ぶ。
+    # 他の計画パラメータ（planner / granularity / split_policy / review / plan_gate）はすべて
+    # 設定キーを持つのに pattern だけ CLI 専用で、層ごとに同じ名前で扱えていなかった。
+    # 不正な名前は plan_strategy_pattern が UserPlanError で断る（フェイルクローズ）。
+    "pattern": None,
     "granularity": "auto",     # 分解の細かさ: auto(complexity導出・既定)/coarse/fine/finest(明示)
     # 分割の単位（粒度とは独立の「どこで切るか」）。behavior=利用者から見える振る舞いを
     # 1 ノードが縦に持つ（既定）/ file=ファイル境界の水平分割（衝突回避が要る大規模変更の

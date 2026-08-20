@@ -7,6 +7,34 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### CLI の計画パラメータを、計画するサブコマンドへ集約した
+
+`--granularity` / `--split-policy` / `--exemplar-first` / `--plan-gate` 系は**グローバル引数**
+だったため、計画しないサブコマンドでも受理されて黙って捨てられていた
+（`agent-flow --granularity finest doctor` が通り、何も起きない）。同時に `run` と
+`orchestrate` が同じ意味の引数を二重定義しており、片方にだけ help や設定キーの案内が付く
+食い違いも生んでいた。
+
+- 計画パラメータを `run` / `orchestrate` の引数へ移し、**両者が同じ定義を共有**するようにした
+  （`_add_planning_args`）。計画しないサブコマンド（`work` / `doctor` / `status` …）では
+  usage エラー（rc=2）で断る
+- `--help` を 2 群に分けた。**計画（形と分け方）** = `--planner` / `--pattern` / `--plan-file` /
+  `--granularity` / `--review` / `--plan-gate` 系（計画時に決まる）、**動的 fan-out
+  （split → map → reduce）** = `--split-policy` / `--max-fanout` / `--exemplar-first`
+  （計画時には数が決まらず、実行中の split の出力で展開数が決まる）
+- `--pattern` にだけ無かった設定キー `pattern` を足した。これで計画パラメータは
+  すべて「CLI オプション名 = 設定キー（snake_case）」で 1 対 1 に対応する。
+  不正な名前は `plan_strategy_pattern` が断る（フェイルクローズ）
+- 子プロセスの argv 組み立てを `_planning_args` へ 1 本化した。以前は orchestrator と
+  worker の共通部分（`base`）へ積んでいたため、**計画しない worker にも渡っていた**
+- agent-project 側の呼び出し（`build_agent_flow_cmd` / `--from-inbox` の起動）も
+  `--granularity` を `run` の後ろへ移した
+
+契約検証: `tools/agent-flow/tests/test_run.py`（`SpawnArgvTests` に 4 件追加: 計画引数が
+サブコマンド名の後ろに来ること・inbox の pattern が設定より優先されること・計画しない
+サブコマンドが usage エラーで断ること・`cmd_run` が orchestrator にだけ計画引数を渡し
+worker には渡さないこと）/ agent-flow 1018 件・agent-project 1298 件緑
+
 ### `--split-policy` を既定の planner でも効かせた
 
 分割の単位（`--split-policy` / 設定 `split_policy`）を planner へ渡していたのは
