@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""qwen3.5:9b を **worker 専任**で置いたときの受入率を測る。
+"""局所修正モデルを **worker 専任**で置いたときの受入率を測る。
 
 判定役は一切使わない（クラウドへ戻す決定に従い、測定対象から外す）。合否は決定的な
 チェッカーが出すので、実行のたびに揺れない。agent-project も agent-flow も bus も
@@ -38,8 +38,11 @@ WORK = Path(os.environ.get("WORKER_EVAL_DIR",
                            str(Path(tempfile.gettempdir()) / "agent-worker-eval")))
 MODEL = "qwen3.5:9b"        # --model で上書き
 CLI = "agent-ollama"        # --cli で上書き（agent-ollama | aider）
+AGENT_POLICY = None          # None = agents/aider.json の本番設定をそのまま継承
 NUM_PREDICT = 0             # --num-predict で上書き（0 = 上限なし。aider 経路のみ）
+NUM_CTX = 0                 # --num-ctx で上書き（0 = Aider / model の既定）
 SAMPLING: dict = {}         # --temperature / --top-p / --top-k で上書き（空 = 宣言しない）
+AIDER_VERSION = None
 OLLAMA_API_BASE = os.environ.get("OLLAMA_API_BASE", "http://127.0.0.1:11434")
 WALL_LIMIT = 600.0          # agent-flow の agent_timeout 既定
 # 本番の argv は agents/ollama.json の write_args。**書き写さずに読む**——初版は
@@ -514,11 +517,22 @@ def aider_argv(task: dict) -> "list[str]":
                                 read_files=task.get("read") or ())
     argv = built["argv"]
     extra = []
-    if NUM_PREDICT > 0 or SAMPLING:
+    policy_flag = "--agent-policy"
+    if AGENT_POLICY is not None:
+        while policy_flag in argv:
+            index = argv.index(policy_flag)
+            del argv[index:index + 2]
+        if AGENT_POLICY != "off":
+            extra += [policy_flag, AGENT_POLICY]
+    if NUM_PREDICT > 0:
+        extra += ["--agent-num-predict", str(NUM_PREDICT)]
+    if NUM_CTX > 0:
+        extra += ["--agent-num-ctx", str(NUM_CTX)]
+    if SAMPLING:
         # sampling だけの腕では base を書かない（上の docstring 参照——余計な差を
         # 一緒に入れると、測っているものが「温度の効果」でなくなる）。
         extra += ["--model-settings-file", str(aider_settings(
-            MODEL, num_predict=NUM_PREDICT, sampling=SAMPLING, base=NUM_PREDICT > 0))]
+            MODEL, sampling=SAMPLING, base=False))]
     if task.get("map_tokens"):
         # 定義の `--map-tokens 0` を**消してから**置き換える。同じフラグを 2 回並べて
         # 後勝ちに賭けると、定義側が並び順を変えた日に静かに 0 へ戻る。
@@ -566,6 +580,25 @@ def classify(rc: int, wall: float, out: str, err: str) -> str:
     return "returned"
 
 
+def _agent_markers(stderr: str) -> dict:
+    """Extract stable adapter markers without duplicating policy text in the harness."""
+    markers = {"policy_id": None, "policy_sha256": None,
+               "tokens_in": None, "tokens_out": None}
+    for line in stderr.splitlines():
+        if line.startswith("@agent-policy "):
+            fields = dict(field.split("=", 1) for field in line.split()[1:] if "=" in field)
+            markers["policy_id"] = fields.get("id")
+            markers["policy_sha256"] = fields.get("sha256")
+        elif line.startswith("@agent-usage "):
+            fields = dict(field.split("=", 1) for field in line.split()[1:] if "=" in field)
+            try:
+                markers["tokens_in"] = int(fields["tokens_in"])
+                markers["tokens_out"] = int(fields["tokens_out"])
+            except (KeyError, ValueError):
+                pass
+    return markers
+
+
 REPAIR_NOTE = ("\n\n【前回の実行を機械で検証した結果】次の不一致が残っている:\n{}\n"
                "この不一致だけを直すこと。他の振る舞いと他のファイルは変えない。")
 
@@ -580,8 +613,13 @@ def invoke(step: dict, wt: Path) -> "tuple[int, str, str, float]":
                            env={**os.environ, "OLLAMA_API_BASE": OLLAMA_API_BASE},
                            capture_output=True, text=True, timeout=WALL_LIMIT)
         rc, out, err = p.returncode, p.stdout, p.stderr
-    except subprocess.TimeoutExpired:
-        rc, out, err = -1, "", "TIMEOUT"
+    except subprocess.TimeoutExpired as exc:
+        def captured(value):
+            if isinstance(value, bytes):
+                return value.decode("utf-8", "replace")
+            return value or ""
+        rc, out, err = -1, captured(exc.stdout), captured(exc.stderr)
+        err = err + ("\n" if err else "") + "TIMEOUT"
     return rc, out, err, time.time() - started
 
 
@@ -602,7 +640,7 @@ def run_steps(task: dict, wt: Path) -> "tuple[list[dict], str, str]":
         for attempt in range(1 + int(step.get("max_retries") or 0)):
             rc, out, err, wall = invoke({**step, "goal": goal}, wt)
             rec = dict(step=n, attempt=attempt + 1, wall=round(wall, 1),
-                       mode=classify(rc, wall, out, err))
+                       mode=classify(rc, wall, out, err), **_agent_markers(err))
             if gate is None:
                 trace.append(rec)
                 break
@@ -639,23 +677,36 @@ def run_one(tid: str, i: int) -> dict:
     except Exception as e:  # noqa: BLE001 — チェッカーの事故は fail 扱いで記録
         ok, note = False, f"checker error: {e}"
     log = ""
+    policy_id = policy_sha256 = None
     for line in err.splitlines():
         if line.startswith("@agent-log"):
             log = line.split(None, 1)[-1]
-    rec = dict(task=tid, iter=i, cli=CLI, model=MODEL, num_predict=NUM_PREDICT, ok=ok, mode=mode,
+    for call in trace:
+        policy_id = call.get("policy_id") or policy_id
+        policy_sha256 = call.get("policy_sha256") or policy_sha256
+    token_calls = [call for call in trace if call.get("tokens_in") is not None]
+    tokens_in = sum(call["tokens_in"] for call in token_calls) if token_calls else None
+    tokens_out = sum(call["tokens_out"] for call in token_calls) if token_calls else None
+    rec = dict(task=tid, iter=i, cli=CLI, model=MODEL, aider_version=AIDER_VERSION,
+               num_ctx=NUM_CTX or None, num_predict=NUM_PREDICT or None,
+               policy_id=policy_id,
+               policy_sha256=policy_sha256, ok=ok, mode=mode,
                # sampling は台帳に必ず残す。null は「宣言しなかった」＝ aider / ollama の
                # 既定で走ったという意味で、**空欄と同義ではない**——腕の条件を後から
                # 台帳だけで復元できないと、条件の違う数字が同じ表に並ぶ。
                sampling=(SAMPLING or None),
-               wall=round(wall, 1), note=note, log=log, out_chars=len(out),
-               calls=len(trace), trace=trace)
+               wall_limit=WALL_LIMIT, wall=round(wall, 1), tokens_in=tokens_in,
+               tokens_out=tokens_out, checker_pass=ok, checker_diagnostic=note,
+               map_tokens=task.get("map_tokens", 0), auto_test=bool(task.get("test_cmd")),
+               note=note, log=log, out_chars=len(out), calls=len(trace),
+               retry_count=max(0, len(trace) - len(task.get("steps") or [task])), trace=trace)
     print(f"  {tid}#{i}: {'PASS' if ok else 'FAIL':4s} {mode:24s} "
           f"{wall:6.1f}s {len(trace)}call  {note[:66]}", flush=True)
     return rec
 
 
 def main() -> None:
-    global WALL_LIMIT, MODEL, CLI, NUM_PREDICT, SAMPLING
+    global WALL_LIMIT, MODEL, CLI, AGENT_POLICY, NUM_CTX, NUM_PREDICT, SAMPLING, AIDER_VERSION
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default=MODEL,
                     help="測るモデル。別モデルの判定はここだけ変えればよい")
@@ -665,9 +716,14 @@ def main() -> None:
                     help="1 run の壁時計上限（既定は agent_timeout の 600 秒）")
     ap.add_argument("--cli", default=CLI, choices=("agent-ollama", "aider"),
                     help="worker として回すエージェント層。道具の作法はそれぞれのものを使う")
+    ap.add_argument("--agent-policy", default=AGENT_POLICY,
+                    choices=("off", "gemma4-e4b-reliability-v1"),
+                    help="aider reliability policy の A/B arm（未指定は本番定義を継承）")
     ap.add_argument("--num-predict", type=int, default=NUM_PREDICT,
                     help="1 ターンの生成上限（aider 経路のみ・0 で無効）。"
                          "収束しない課題の壁時計を切るレバー")
+    ap.add_argument("--num-ctx", type=int, default=NUM_CTX,
+                    help="Aider managed model settings の context size（0 で未指定）")
     # sampling（aider 経路のみ）。**未指定なら 1 バイトも宣言しない**ので、
     # これまでの測定条件（aider / ollama の既定）がそのまま再現される。
     ap.add_argument("--temperature", type=float, default=None,
@@ -679,27 +735,41 @@ def main() -> None:
     WALL_LIMIT = args.wall
     MODEL = args.model
     CLI = args.cli
+    AGENT_POLICY = args.agent_policy
     NUM_PREDICT = args.num_predict
+    NUM_CTX = args.num_ctx
     SAMPLING = {k: v for k, v in (("temperature", args.temperature),
                                   ("top_p", args.top_p), ("top_k", args.top_k))
                 if v is not None}
     if SAMPLING and CLI != "aider":
         raise SystemExit("--temperature / --top-p / --top-k は aider 経路のみです"
                          "（agent-ollama は AGENT_OLLAMA_OPTIONS で渡してください）")
+    if SAMPLING and AGENT_POLICY != "off":
+        raise SystemExit("sampling arm は --agent-policy off と独立に評価してください")
+    if AGENT_POLICY is not None and CLI != "aider":
+        raise SystemExit("--agent-policy は aider 経路のみです")
+    if NUM_CTX < 0 or NUM_PREDICT < 0:
+        raise SystemExit("--num-ctx / --num-predict は 0 以上で指定してください")
 
     WORK.mkdir(parents=True, exist_ok=True)
     ledger = WORK / "ledger.jsonl"
     tids = [t.strip() for t in args.tasks.split(",") if t.strip()]
     if CLI == "aider":
-        # aider には本番の定義が無い（agents/aider.json は未作成）。写しではなく
-        # 「まだ正典が無い」ので、起動行に組み立てた argv をそのまま出して測定条件を残す。
+        try:
+            version = subprocess.run(["aider", "--version"], capture_output=True,
+                                     text=True, timeout=10)
+            AIDER_VERSION = ((version.stdout or version.stderr).strip() or None
+                             if version.returncode == 0 else None)
+        except (OSError, subprocess.SubprocessError):
+            AIDER_VERSION = None
         first = TASKS[tids[0]]
         sample = " ".join(aider_argv((first.get("steps") or [first])[0])[:-2])
-        print(f"model={MODEL} cli=aider argv={sample} …（出所: 定義ファイル未作成）")
+        print(f"model={MODEL} cli=aider argv={sample} …（出所: agents/aider.json）")
     else:
         print(f"model={MODEL} cli={CLI} argv={' '.join(WRITE_ARGS)} "
               f"（出所: {WRITE_ARGS_SOURCE}）")
     print(f"wall_limit={WALL_LIMIT:.0f}s tasks={tids} repeat={args.repeat}")
+    print(f"agent_policy={AGENT_POLICY or '本番定義を継承'}")
     # 腕の条件を起動行にも出す。「宣言しなかった」と「既定値を宣言した」は別物なので、
     # 前者は既定と明示する——実効値が不明なまま数字だけが残るのを避ける
     # （実効 sampling の未確認は計画 P10 が潰す当の交絡）。

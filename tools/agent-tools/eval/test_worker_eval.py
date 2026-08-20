@@ -64,5 +64,52 @@ class RunStepsTest(unittest.TestCase):
         self.assertEqual([s["step"] for s in trace], [1, 1, 2])
 
 
+class AiderPolicyArgvTest(unittest.TestCase):
+    def setUp(self):
+        self.old = (w.MODEL, w.AGENT_POLICY, w.NUM_CTX, w.NUM_PREDICT, w.SAMPLING)
+        w.MODEL = "gemma4:e4b"
+        w.NUM_CTX = 0
+        w.NUM_PREDICT = 0
+        w.SAMPLING = {}
+        self.addCleanup(self.restore)
+
+    def restore(self):
+        w.MODEL, w.AGENT_POLICY, w.NUM_CTX, w.NUM_PREDICT, w.SAMPLING = self.old
+
+    def test_off_arm_removes_shipped_policy(self):
+        w.AGENT_POLICY = "off"
+        argv = w.aider_argv({"goal": "fix", "files": []})
+        self.assertNotIn("--agent-policy", argv)
+
+    def test_unspecified_arm_inherits_shipped_policy(self):
+        w.AGENT_POLICY = None
+        argv = w.aider_argv({"goal": "fix", "files": []})
+        self.assertEqual(argv.count("--agent-policy"), 1)
+        index = argv.index("--agent-policy")
+        self.assertEqual(argv[index + 1], "gemma4-e4b-reliability-v1")
+
+    def test_v1_arm_keeps_exactly_one_policy(self):
+        w.AGENT_POLICY = "gemma4-e4b-reliability-v1"
+        argv = w.aider_argv({"goal": "fix", "files": []})
+        self.assertEqual(argv.count("--agent-policy"), 1)
+        index = argv.index("--agent-policy")
+        self.assertEqual(argv[index + 1], w.AGENT_POLICY)
+
+    def test_num_predict_uses_adapter_option(self):
+        w.AGENT_POLICY = "gemma4-e4b-reliability-v1"
+        w.NUM_PREDICT = 2048
+        argv = w.aider_argv({"goal": "fix", "files": []})
+        self.assertIn("--agent-num-predict", argv)
+        self.assertNotIn("--model-settings-file", argv)
+
+    def test_adapter_markers_are_parsed_as_typed_ledger_values(self):
+        markers = w._agent_markers(
+            "@agent-policy id=gemma4-e4b-reliability-v1 sha256=abc123\n"
+            "@agent-usage tokens_in=12 tokens_out=4\n")
+        self.assertEqual(markers, {
+            "policy_id": "gemma4-e4b-reliability-v1", "policy_sha256": "abc123",
+            "tokens_in": 12, "tokens_out": 4})
+
+
 if __name__ == "__main__":
     unittest.main()
