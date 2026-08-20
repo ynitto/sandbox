@@ -78,6 +78,11 @@ agent-ollama --replay --arm model=qwen3,think=off,format=json \
 | 既定 | `readonly: enforced` | text → text のみ。ファイルもコマンドも触れない |
 | `--tools`（= `--tools bash`） | `write_args` | bash 1 つを道具にした最小ループ。制限なし |
 | `--tools read` | `write_args` | 読み取り専用コマンドだけの探索ループ（下記） |
+
+`agent-aider` は `--agent-policy gemma4-e4b-reliability-v1` を wrapper option として受け取り、
+`ollama_chat/gemma4:e4b` の Aider system prompt 先頭へ固定 reliability policy を注入する。
+適用時は stderr の `@agent-policy id=... sha256=...` で実効 policy を観測できる。未知の ID、
+対象外 model、外部 `--model-settings-file` との競合は黙って無効化せず、起動前に失敗する。
 | `--tui` | `interactive` | 進捗を見ながら手で叩く（agent-dashboard の対話診断・agent-loop から） |
 | `--replay` | 観測（測定） | 記録済みプロンプトを再生する。**道具は持たない**（下記） |
 
