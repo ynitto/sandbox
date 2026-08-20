@@ -343,6 +343,22 @@ class SpawnArgvTests(unittest.TestCase):
                             {"request": "do it"})
         self.assertEqual(self._parse_child(cmd).pattern, "tournament")
 
+    def test_spawn_orchestrator_uses_the_request_planning(self):
+        # daemon のオンデマンド起動は daemon 自身の args ではなく要求の内容が正典
+        # （1 つの daemon が別々の分け方を名指しした複数の要求を受け持つ）。
+        args = self._args(granularity="coarse", split_policy="behavior")
+        cmd = self._capture(kf._spawn_orchestrator, self._base(), args, "run-50",
+                            {"request": "do it", "granularity": "finest", "split_policy": "file"})
+        parsed = self._parse_child(cmd)
+        self.assertEqual((parsed.granularity, parsed.split_policy), ("finest", "file"))
+
+    def test_spawn_orchestrator_rejects_a_broken_request(self):
+        # 手書きの inbox など語彙外の値は起動前に断る（誤った分け方で走らせない）。
+        args = self._args()
+        with self.assertRaises(kf.InboxRequestError):
+            self._capture(kf._spawn_orchestrator, self._base(), args, "run-51",
+                          {"request": "do it", "granularity": "medium"})
+
     def test_non_planning_subcommands_reject_planning_args(self):
         # 意味のないオプションを黙って受け取らない（usage エラー = rc 2 で断る）。
         parser = kf.build_parser()
@@ -584,6 +600,66 @@ class ArgvLimitTests(unittest.TestCase):
         kf._apply_inbox_request(bus, args)
         self.assertEqual(json.loads(args.execution_overrides), overrides)
         self.assertIn("--execution-overrides", kf._child_base(args, root))
+
+    # --- inbox 要求からの分け方（L2） --------------------------------------
+    # dashboard が画面から granularity / split_policy を指定できるようにした経路。
+    # 以前は inbox のキーではなく、画面からは分け方をまったく触れなかった。
+
+    def _inbox_args(self, **kw):
+        base = dict(run_id="run-1", request="", workspace=None, references=None,
+                    inherit_from=None, verification_plan=None, pattern=None,
+                    execution_overrides=None, lease=30, git=None, cleanup_clone=True,
+                    cleanup_per_node=False, agent_cli=None, config=None)
+        base.update(kw)
+        return argparse.Namespace(**base)
+
+    def _inbox_bus(self, rec):
+        root = tempfile.mkdtemp(prefix="kf-run-planning-")
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        bus = kf.Bus(root, "run-1")
+        kf.write_json_atomic(os.path.join(bus.inbox_dir, "run-1.json"),
+                             {"id": "run-1", "request": "request", **rec})
+        return bus
+
+    def test_inbox_planning_beats_the_config_file(self):
+        # 要求は run 単位の意思なので、そのノードの agent-flow.yaml より強い。
+        cfg_dir = tempfile.mkdtemp(prefix="kf-cfg-planning-")
+        self.addCleanup(shutil.rmtree, cfg_dir, ignore_errors=True)
+        with open(os.path.join(cfg_dir, "agent-flow.json"), "w") as f:
+            json.dump({"granularity": "coarse", "split_policy": "behavior"}, f)
+        bus = self._inbox_bus({"granularity": "finest", "split_policy": "file"})
+        args = self._inbox_args(config=os.path.join(cfg_dir, "agent-flow.json"),
+                                granularity=None, split_policy=None)
+        kf.resolve_config(args)
+        self.assertEqual((args.granularity, args.split_policy), ("coarse", "behavior"))
+        kf._apply_inbox_request(bus, args)
+        self.assertEqual((args.granularity, args.split_policy), ("finest", "file"))
+
+    def test_cli_beats_the_inbox_request(self):
+        # 人がその場で打った値は要求に覆されない（resolve_config が控える _cli_explicit）。
+        bus = self._inbox_bus({"granularity": "finest", "split_policy": "file"})
+        args = self._inbox_args(granularity="coarse", split_policy="behavior")
+        kf.resolve_config(args)
+        kf._apply_inbox_request(bus, args)
+        self.assertEqual((args.granularity, args.split_policy), ("coarse", "behavior"))
+
+    def test_absent_planning_keys_leave_the_resolved_values(self):
+        # 未指定の要求（従来の形）は既定挙動を 1 バイトも変えない。
+        bus = self._inbox_bus({})
+        args = self._inbox_args(granularity=None, split_policy=None)
+        kf.resolve_config(args)
+        kf._apply_inbox_request(bus, args)
+        self.assertEqual((args.granularity, args.split_policy), ("auto", "behavior"))
+
+    def test_unknown_planning_value_is_rejected(self):
+        # split_policy() は未知値を既定へ丸めるので、素通しすると「指定したのに効かない run」に
+        # なる。誤記は明示的に失敗させる。
+        bus = self._inbox_bus({"split_policy": "module"})
+        args = self._inbox_args(granularity=None, split_policy=None)
+        kf.resolve_config(args)
+        with self.assertRaises(kf.InboxRequestError) as ctx:
+            kf._apply_inbox_request(bus, args)
+        self.assertIn("split_policy", str(ctx.exception))
 
     def test_argv_limit_resolved_from_config_file(self):
         # 設定ファイルの argv_limit が resolve_config 経由で args に載る（env 非依存）

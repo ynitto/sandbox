@@ -322,6 +322,11 @@ def resolve_config(args):
     # 後方互換: 旧キー kiro_timeout は agent_timeout の別名として受理する（新キー未指定時のみ）。
     if "agent_timeout" not in cfg and "kiro_timeout" in cfg:
         cfg["agent_timeout"] = cfg["kiro_timeout"]
+    # CLI で明示された設定キー。resolve_config を通すと設定ファイル / 既定で埋まってしまい
+    # 「人が打った値」と「既定のまま」が区別できなくなる（granularity の既定 auto のように
+    # 偽値でない既定を持つキーは特に）。inbox 要求のような後段の入力を、CLI には負け
+    # 設定ファイルには勝つ、という順で載せるためにここで控えておく。
+    args._cli_explicit = {key for key in CONFIG_DEFAULTS if getattr(args, key, None) is not None}
     for key, dflt in CONFIG_DEFAULTS.items():
         if getattr(args, key, None) is None:
             setattr(args, key, cfg.get(key, dflt))

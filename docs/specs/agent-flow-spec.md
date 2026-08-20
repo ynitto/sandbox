@@ -200,9 +200,13 @@ tier（実行段）は `control.workloads.flow.tier` を読みます。`basic` �
 | `delegation` | dict | 委譲公示板由来の来歴 `{id, board}` |
 | `verification_plan` | dict | 検証計画（§3.3）。digest 付き・依頼側確定 |
 | `plan` | dict | ユーザー定義フロー（§3.2）。`plan.nodes` があるときだけ |
-| `pattern` | str | 標準パターン名の明示選択 |
+| `pattern` | str | 標準パターン名の明示選択（L1 形） |
+| `granularity` | str | 分解の粒度（`auto` / `coarse` / `fine` / `finest`）。L2 分け方 |
+| `split_policy` | str | 分割の単位（`behavior` / `file`）。L2 分け方 |
 
-`plan` と `verification_plan` は inbox が唯一の権威です。呼び出し側が argv へ転記する必要はなく、argv とバスの両方にあるときだけ CLI 引数が勝ちます。`granularity` と `tier` は inbox のキーではありません（前者は `run` / `orchestrate` の引数・設定、後者は agent-control）。
+`plan` と `verification_plan` は inbox が唯一の権威です。呼び出し側が argv へ転記する必要はなく、argv とバスの両方にあるときだけ CLI 引数が勝ちます。`tier` は inbox のキーではありません（agent-control の workload 宣言から読みます）。
+
+計画パラメータのうち `pattern` / `granularity` / `split_policy` は inbox のキーでもあります。キー名は設定ファイルのキー（snake_case）と同じで、値の語彙も CLI と同一です。優先順位は **CLI 引数 > inbox 要求 > 設定ファイル > 組み込み既定** — 要求は run 単位の意思なのでそのノードの `agent-flow.yaml` より強く、人がその場で打った CLI 引数には負けます。キーが無い・空文字なら従来どおり設定ファイルと既定に従います（投入側が「指定しない」を表現できます）。語彙外の値は起動前に断ります（rc=2）: `split_policy()` などの解決関数は未知値を既定へ丸めるため、素通しすると誤記が「指定したのに効かない run」として静かに走るからです。
 
 `workspace` に作業ブランチと別の `target` がある run は、system node `base-sync` が先頭に入り、全 root ノードはその完了後に開始します。target がすでに作業ブランチの祖先なら no-op、進んでいれば通常 merge、競合時だけ worker に競合ファイルの編集を任せます（履歴操作は渡さない）。競合解消に失敗した run は integration failure として終端し、fetch 失敗だけが transient です。
 
