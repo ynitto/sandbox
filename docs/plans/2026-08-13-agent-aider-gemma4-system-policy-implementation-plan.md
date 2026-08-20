@@ -1,27 +1,57 @@
 # agent-aider Gemma 4 system policy 実装計画
 
 - 日付: 2026-08-13
-- 状態: Ready for implementation
+- 状態: Implementation reviewed — adapter/eval実装済み、Gate 0〜2未完了
+- 最終レビュー: 2026-08-20（実装コミット `7ff8ebd`）
 - 設計正典: `docs/plans/2026-08-13-agent-aider-gemma4-system-policy-design.md`
 - 設計コミット: `f9a66ad`
 - 実装方式: Python `unittest` + pytest-cov、Red-Green-Refactor の垂直スライス
 
 ## 1. 完了条件
 
-実装完了はコードが書けた時点ではなく、次をすべて満たした時点とする。
+実装完了はコードが書けた時点ではなく、次をすべて満たした時点とする。2026-08-20レビューの
+凡例は `[x]` 完了、`[~]` 一部完了、`[ ]` 未完了。
 
-1. `agent-aider --agent-policy gemma4-e4b-reliability-v1 --model ollama_chat/gemma4:e4b ...`
+1. [~] `agent-aider --agent-policy gemma4-e4b-reliability-v1 --model ollama_chat/gemma4:e4b ...`
    が fixed policy を Aider の `system_prompt_prefix` へ一度だけ注入する。
-2. wrapper 専用 option は Aider argv へ漏れない。
-3. policy 未指定時の既存 usage 変換と argv 透過は変わらない。
-4. 未知 policy、model 不一致、外部 model-settings 競合を黙って無効化しない。
-5. analytics log と policy settings の一時ファイルが全終了経路で削除される。
-6. `agents/aider.json` が Gemma 4 policy を本番既定として宣言する。
-7. `worker_eval` が off / v1 を同じ条件で比較し、policy ID/hash を ledger に残す。
-8. 変更した adapter の C1 分岐カバレッジが 100%である。
-9. deterministic judge A/B と Aider worker A/B の採用ゲートを満たす。
+   managed settingsへのprefix設定はunit test済みだが、実Aider promptでの一度だけの注入は未確認。
+2. [x] wrapper 専用 option は Aider argv へ漏れない。
+3. [x] policy 未指定時の既存 usage 変換と argv 透過は変わらない。
+4. [x] 未知 policy、model 不一致、外部 model-settings 競合を黙って無効化しない。
+5. [~] analytics log と policy settings の一時ファイルを通常終了と `FileNotFoundError` で削除する。
+   Aider非ゼロ終了と一時settings作成・書込失敗を含む全終了経路の契約確認は未完了。
+6. [~] `agents/aider.json` は Gemma 4 policy を宣言済み。ただしGate 0〜2未通過のため、
+   本番既定としての採用完了とは判定しない。
+7. [~] `worker_eval` は off / v1 armとpolicy ID/hashのledger項目を実装済みだが、同条件A/Bの実測は未実施。
+8. [ ] 変更した adapter の C1 分岐カバレッジ100%は未測定。
+9. [ ] deterministic judge A/B と Aider worker A/B の採用ゲートは未実施。
 
-## 2. 現在地と前提
+### 1.1 2026-08-20レビュー時点の結論
+
+adapterとevaluation seamのコード実装は完了に近いが、この文書が定義する「実装完了」には達していない。
+本番定義のflag追加だけを採用証拠にせず、Gate 0〜2とcoverageを完了するまで状態を`Complete`へ変更しない。
+
+完了済みの縦スライス:
+
+- [x] Cycle 1〜8相当: policy注入用settings、透過、marker、model完全一致、未知ID、競合拒否、数値合成・検証。
+- [~] Cycle 9相当: 通常終了と`FileNotFoundError` cleanupは確認済み。残る異常終了契約は未確認。
+- [~] Cycle 10相当: shipped definitionと定義テストは実装済み。採用gateは未通過。
+- [~] Cycle 11相当: off/v1 argv、adapter数値option、ledger metadataは実装済み。A/B実測とtoken台帳は未完了。
+- [~] Cycle 12相当: policyとworker A/Bは文書化済み。Gate 0〜2全体の実行例・結果記録とinstall smokeは未完了。
+
+次に行うアクション（順序を固定する）:
+
+1. policy markerとusage markerの同一run、Aider非ゼロ終了、settings作成・書込失敗の契約テストを追加する。
+2. `pytest-cov`を利用可能な環境でbranch coverageを測り、adapter C1 100%まで不足分岐を埋める。
+3. 実Aider `--show-prompts` smokeを行い、policyの一度だけの先頭注入とedit prompt/reminder維持を記録する。
+4. worker ledgerへtokens in/out、完全なagent CLI、map token、auto-test、実効settingsを追加する。
+5. Gate 1のdeterministic judge baseline/v1を実行し、J1/F2改善とJ2/R1無退行を判定する。
+6. Gate 1通過後だけGate 2のT2/T1minを実行し、通過後だけT1/T3へ進む。
+7. Gate 0〜2不通過なら`agents/aider.json`から既定policy flagを外し、adapter/eval armのみ残す。
+
+## 2. 実装開始時点の前提（履歴）
+
+以下は2026-08-13の実装開始前に記録した値であり、2026-08-20の現状を表すものではない。
 
 - 言語: Python 3、標準ライブラリ中心。
 - 既存テスト: `unittest`。pytest 8.4.2 から実行できる。
@@ -298,6 +328,9 @@ rtk python3 -m pytest -q \
 
 ## 6. Gate 0: 実 Aider prompt smoke
 
+**状態: [ ] 未実施。** 対象環境で`aider` / `agent-aider`実行ファイルを確認できず、unit testだけでは
+promptの連結順序を証明できないため、完了扱いにしない。
+
 unit test 後、install 前の adapter script または一時 install prefix を使って実 Aider 0.86.2 を起動する。
 Ollama へ生成要求を送らない `--show-prompts` を使う。
 
@@ -317,6 +350,8 @@ rtk agent-aider \
 - 終了後に `agent-aider-policy-*` 一時ファイルが残らない。
 
 ## 7. Gate 1: judge semantic A/B
+
+**状態: [ ] 未実施。** baseline / v1の結果台帳と採用条件の判定記録はまだない。
 
 既存 `judge_eval.py` の native Ollama system prompt seam を使い、policy 文面そのものを安価に検証する。
 実行順による warm-cache bias を減らすため、baseline / v1 の順を反転した二ブロックで実施する。
@@ -341,6 +376,8 @@ policy arm は `AGENT_OLLAMA_SYSTEM_PROMPT` に設計正典の固定文を渡す
 
 ## 8. Gate 2: Aider worker A/B
 
+**状態: [ ] 未実施。** off / v1を生成する評価interfaceは実装済みだが、T2 / T1minの比較結果はまだない。
+
 時間の短い成功対照から段階的に回す。
 
 ```bash
@@ -364,6 +401,9 @@ rtk python3 tools/agent-tools/eval/worker_eval.py \
 T2 3/3 維持を必須とし、T1min が baseline 1/3 より改善することを主改善指標とする。
 
 ## 9. 全回帰テスト
+
+**状態: [~] 一部完了。** adapter、shipped definition、worker evalの関連unit testは33件通過した。
+以下の全discover、E2E、関連engine起動形を同一revisionで完走した記録はないため、全回帰完了とはしない。
 
 ```bash
 rtk python3 -m unittest discover -s tools/agent-tools/agentcore/agentcore/tests

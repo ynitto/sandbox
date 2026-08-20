@@ -110,6 +110,13 @@ class ShippedDefinitionTests(unittest.TestCase):
         self.assertNotIn("--format", cmd)
         self.assertEqual(json.loads(spec["env"]["AGENT_OLLAMA_OPTIONS"])["temperature"], 0)
 
+    def test_aider_enables_the_fixed_reliability_policy_once(self):
+        spec = agentcli.load_cli("aider", project_dir=self.repo)
+        command = spec["command"]
+        self.assertEqual(command.count("--agent-policy"), 1)
+        index = command.index("--agent-policy")
+        self.assertEqual(command[index + 1], "gemma4-e4b-reliability-v1")
+
     def test_ollama_declares_the_json_variant_for_json_contract_roles(self):
         spec = json.loads((self.repo / "agents" / "ollama.json").read_text(encoding="utf-8"))
         for role in ("planner", "evaluator", "filter", "judge", "reduce", "extract"):
