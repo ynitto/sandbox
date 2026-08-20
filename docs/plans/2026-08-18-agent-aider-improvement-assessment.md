@@ -1,7 +1,7 @@
 # agent-aider 改良余地の評価
 
 - 日付: 2026-08-18
-- 状態: Assessment
+- 状態: Implementation reviewed — Phase 1/2 partially complete; Gate 0〜2 pending
 - 対象: `agent-aider` / `ollama_chat/gemma4:e4b`
 - 前提: CPU only / RAM 32 GB
 
@@ -222,35 +222,85 @@ retry、独自 bash loop を三重化すると CPU only 環境で停止性が悪
 
 ## 9. 実施ロードマップ
 
+### 9.0 2026-08-20 実装レビュー
+
+レビュー対象は実装コミット `e21634c`。設計正典
+`2026-08-13-agent-aider-gemma4-system-policy-design.md` と実装計画
+`2026-08-13-agent-aider-gemma4-system-policy-implementation-plan.md` に照らし、状態を次のように判定した。
+
+凡例: `[x]` 完了、`[~]` 一部完了、`[ ]` 未完了。
+
+#### 完了した実装
+
+- [x] adapter 専用 option `--agent-policy` / `--agent-num-ctx` / `--agent-num-predict` を
+  Aider argv から除去する。
+- [x] 固定 ID `gemma4-e4b-reliability-v1` と固定 policy 本文を adapter が所有し、対象 model
+  `ollama_chat/gemma4:e4b` を完全一致で検証する。
+- [x] policy と `num_ctx` / `num_predict` を単一の一時 model-settings entry に合成し、
+  `system_prompt_prefix` と `extra_params` を JSON で渡す。
+- [x] 未知 policy、policy の model 不一致、managed settings と外部 `--model-settings-file` の競合、
+  非正整数を起動前に fail closed とする。
+- [x] `@agent-policy id=... sha256=...` marker を出力し、既存の `@agent-usage` 変換を維持する。
+- [x] analytics log と managed settings を通常終了および `FileNotFoundError` 後に削除する契約テストを持つ。
+- [x] worker eval で policy off / v1 を token 単位で切り替え、`num_ctx` / `num_predict` を adapter
+  option で渡す。
+- [x] worker eval の古い「`agents/aider.json` は未作成」という表示を正典参照へ修正する。
+- [x] ledger に Aider version、policy ID / hash、sampling、`num_ctx` / `num_predict`、wall time、
+  checker 結果、終了様式、呼出回数と retry trace を記録する。
+
+#### レビューで確認した未完了・不足
+
+- [ ] **本番既定化の前提 gate が未通過。** `agents/aider.json` では policy が既定化済みだが、
+  Gate 0 の実 Aider prompt smoke、Gate 1 の deterministic judge A/B、Gate 2 の worker A/B は
+  実施記録がない。設計上は gate 通過前の本番既定化を完了扱いにしない。
+- [~] Gate 0 の unit contract は argv除去、settings内容、fail closed、cleanupを確認するが、policy marker と
+  usage marker の**同一 run での共存**、Aider非ゼロ終了時のcleanup、実 prompt 内での一度だけの先頭注入、
+  edit prompt / reminder の維持は未確認である。
+- [ ] adapter の変更分岐 C1 100%を測定していない。現環境には `pytest-cov` / `coverage` がなく、
+  coverage gate は未完了である。
+- [~] ledger の観測性は拡張されたが、token usage、実効 map token、auto-test有無、完全な agent CLI、
+  Aiderの実効 model settings全体は record に入っていない。
+- [ ] Gate 1 の採用条件（J1 / F2改善、J2 / R1無退行、総合改善、parse / repair率無悪化）を未評価。
+- [ ] Gate 2 の T2 / T1min baseline-policy比較と、通過後の T1 / T3 比較を未評価。
+- [ ] execution resolver の局所修正適格条件、checker必須化、限定retry、retry exhaustion後の候補昇格は
+  未実装。`worker_eval.py` の retry は評価ハーネス内の既存挙動であり、本番運用側の完了証拠ではない。
+- [ ] sampling、policy、modelを分離した ledger / manifest による比較試験と、別 coding model 比較を未実施。
+
+#### レビュー判断
+
+adapter と eval seam の実装は **A/B評価を開始できる段階**まで進んだ。一方で、採用 gate と運用側は
+未完了であるため、計画全体の状態は `Complete` ではない。特に本番定義の policy flag は「採用済み」の
+証拠として扱わず、Gate 0〜2 を通過できない場合は設計の中止条件に従って外す。
+
 ### Phase 1: 低リスク整備
 
-1. adapter の現行挙動を契約テストで固定する。
-2. `worker_eval.py` の古い条件表示を修正する。
-3. Aider version と実効条件を台帳へ記録する。
+1. [x] adapter の現行挙動を契約テストで固定する。
+2. [x] `worker_eval.py` の古い条件表示を修正する。
+3. [~] Aider version と実効条件を台帳へ記録する（versionと主要optionは完了、上記の不足項目は未完了）。
 
 ### Phase 2: Reliability policy
 
-1. wrapper option と managed settings を実装する。
-2. policy marker、競合検出、cleanup を実装する。
-3. unit test と `--show-prompts` smoke を通す。
+1. [x] wrapper option と managed settings を実装する。
+2. [x] policy marker、競合検出、cleanup を実装する。
+3. [~] unit test は通過。`--show-prompts` smoke と残るGate 0 contractは未完了。
 
 ### Phase 3: A/B gate
 
-1. deterministic judge baseline / policy。
-2. T2 / T1min baseline / policy。
-3. 短い gate を通過した場合のみ T1 / T3。
-4. 成功対照に退行がなければ本番既定化する。
+1. [ ] deterministic judge baseline / policy。
+2. [ ] T2 / T1min baseline / policy。
+3. [ ] 短い gate を通過した場合のみ T1 / T3。
+4. [ ] 成功対照に退行がなければ本番既定化する（設定変更は先行しているが、採用判定は未完了）。
 
 ### Phase 4: 運用側
 
-1. execution resolver で局所修正の適格条件を判定する。
-2. checker がない場合は自動選択しない。
-3. checker fail 時は同じ局所 step を限定回数だけ再投入する。
-4. retry exhaustion 後のみ別候補へ昇格する。
+1. [ ] execution resolver で局所修正の適格条件を判定する。
+2. [ ] checker がない場合は自動選択しない。
+3. [ ] checker fail 時は同じ局所 step を限定回数だけ再投入する。
+4. [ ] retry exhaustion 後のみ別候補へ昇格する。
 
 ### Phase 5: モデル / ハーネス比較
 
-上記条件を固定した後で、`gemma4:e4b` と別の coding model を比較する。Pi 等との比較は同一モデルを
+- [ ] 上記条件を固定した後で、`gemma4:e4b` と別の coding model を比較する。Pi 等との比較は同一モデルを
 使ったハーネス比較として分離し、model 差と agent 差を同時に変更しない。
 
 ## 10. 採用しない方向
