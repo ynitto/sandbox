@@ -88,7 +88,7 @@ kind は 13 種で、正典は `agentcore.nodecontract.VALID_KINDS` です。
 
 サブコマンドを省略すると案内を出して rc=2 で終了します。裸起動を黙って常駐にすると、常駐体（`agent-project serve`）と二重に回って inbox の要求を奪い合うためです。未知の executor 名も起動前に rc=2 で断ります。
 
-グローバル引数は `--config` `--bus` `--run-id` `--git` `--git-branch` `--git-subdir` `--board` `--node-declaration` `--state-git`（`-branch` / `-subdir` / `-interval`）`--executor-dir` `--workspace` `--verification-plan` `--reference`（繰り返し可）`--agent-cli` `--granularity` `--exemplar-first` `--plan-gate` / `--no-plan-gate` / `--plan-gate-timeout` `--lease` `--argv-limit` `--keep-clone` `--cleanup-per-node` `--no-global-instructions` `--context-file` `--no-session-commands` です。`--tier` はありません。tier は agent-control の workload 宣言から読みます（§2.3）。
+グローバル引数は `--config` `--bus` `--run-id` `--git` `--git-branch` `--git-subdir` `--board` `--node-declaration` `--state-git`（`-branch` / `-subdir` / `-interval`）`--executor-dir` `--workspace` `--verification-plan` `--reference`（繰り返し可）`--agent-cli` `--granularity` `--split-policy` `--exemplar-first` `--plan-gate` / `--no-plan-gate` / `--plan-gate-timeout` `--lease` `--argv-limit` `--keep-clone` `--cleanup-per-node` `--no-global-instructions` `--context-file` `--no-session-commands` です。`--tier` はありません。tier は agent-control の workload 宣言から読みます（§2.3）。
 
 ---
 

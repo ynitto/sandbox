@@ -858,6 +858,110 @@ class SplitPolicyTests(unittest.TestCase):
         kf.resolve_config(args)
         self.assertEqual(args.split_policy, "behavior")
 
+    # --- 既定 planner（flow-planner）への配線 --------------------------------
+    # `--split-policy` は長らく agent planner でしか効かず、既定の flow-planner 経路では
+    # 黙って捨てられていた（指定しても分解方針が変わらない）。以下はその再発防止。
+
+    def _fake_skill_run(self, seen):
+        def fake_run(cmd, **kw):
+            seen["cmd"] = cmd
+            out = json.dumps({"strategy": {"patterns": ["fan-out-and-synthesize"],
+                                           "parallelism": 2, "review": True,
+                                           "reason": "r", "granularity": "finest"},
+                              "tasks": [{"id": "t1", "goal": "g", "deps": [], "kind": "work"}]})
+            return mock.Mock(returncode=0, stdout=out, stderr="")
+        return fake_run
+
+    def test_flow_planner_passes_resolved_directive_text(self):
+        # スキルへ渡すのは値名ではなく**解決済みの文面**（文面の正典は手法カタログ側にあり、
+        # リポジトリの .agents/methods/ による差し替えをこの経路にも届けるため）。
+        d = tempfile.mkdtemp(prefix="kf-fp-split-")
+        self.addCleanup(shutil.rmtree, d, True)
+        script = pathlib.Path(d, "plan.py")
+        script.write_text('parser.add_argument("--split-directive", default="")\n')
+        seen = {}
+        with mock.patch.object(kf, "_find_flow_planner_script", return_value=str(script)), \
+             mock.patch.object(kf.subprocess, "run", side_effect=self._fake_skill_run(seen)):
+            kf.plan_strategy_flow_planner("req", None, policy="file")
+        self.assertIn("--split-directive", seen["cmd"])
+        self.assertEqual(seen["cmd"][seen["cmd"].index("--split-directive") + 1],
+                         kf.split_policy_directive("file"))
+
+        with mock.patch.object(kf, "_find_flow_planner_script", return_value=str(script)), \
+             mock.patch.object(kf.subprocess, "run", side_effect=self._fake_skill_run(seen)):
+            kf.plan_strategy_flow_planner("req", None)
+        self.assertEqual(seen["cmd"][seen["cmd"].index("--split-directive") + 1],
+                         kf.split_policy_directive("behavior"))
+
+    def test_flow_planner_omits_directive_on_old_skill(self):
+        # 版ずれ（フラグを知らないスキル）へ渡すと argparse で落ちるので渡さない。
+        d = tempfile.mkdtemp(prefix="kf-fp-split-old-")
+        self.addCleanup(shutil.rmtree, d, True)
+        script = pathlib.Path(d, "plan.py")
+        script.write_text("# old skill without the flag\n")
+        seen = {}
+        with mock.patch.object(kf, "_find_flow_planner_script", return_value=str(script)), \
+             mock.patch.object(kf.subprocess, "run", side_effect=self._fake_skill_run(seen)):
+            kf.plan_strategy_flow_planner("req", None, policy="file")
+        self.assertNotIn("--split-directive", seen["cmd"])
+
+    def test_repo_override_reaches_the_skill(self):
+        # 受入基準: リポジトリ側の差し替えが既定 planner の文面まで届くこと。
+        d = tempfile.mkdtemp(prefix="kf-fp-split-repo-")
+        self.addCleanup(shutil.rmtree, d, True)
+        script = pathlib.Path(d, "plan.py")
+        script.write_text('parser.add_argument("--split-directive", default="")\n')
+        methods = pathlib.Path(d, "methods")
+        methods.mkdir()
+        pathlib.Path(methods, "split-policy-file.json").write_text(json.dumps(
+            {"id": "split-policy-file", "description": "split-policy-file",
+             "selection": "engine", "enabled": False,
+             "fragments": [{"role": "planner", "text": "この repo だけの分割方針"}]}))
+        seen = {}
+        with mock.patch.dict(os.environ, {"AGENT_METHODS_DIR": str(methods)}), \
+             mock.patch.object(kf, "_find_flow_planner_script", return_value=str(script)), \
+             mock.patch.object(kf.subprocess, "run", side_effect=self._fake_skill_run(seen)):
+            kf.plan_strategy_flow_planner("req", None, policy="file")
+        self.assertEqual(seen["cmd"][seen["cmd"].index("--split-directive") + 1],
+                         "この repo だけの分割方針")
+
+    def test_fallback_keeps_the_policy(self):
+        # flow-planner → agent の縮退でも指定は生き残る（縮退したら behavior に戻る、はバグ）。
+        seen = {}
+
+        def fake_agent(prompt, model, purpose="planner"):
+            seen["prompt"] = prompt
+            return json.dumps({"patterns": ["fan-out-and-synthesize"], "parallelism": 2,
+                               "reason": "r",
+                               "tasks": [{"id": "t1", "goal": "g", "deps": [], "kind": "work"}]})
+
+        with mock.patch.object(kf, "_find_flow_planner_script", return_value=""), \
+             mock.patch.object(kf, "run_agent", fake_agent):
+            kf.plan_strategy_flow_planner("req", None, policy="file")
+        self.assertIn(kf.split_policy_directive("file"), seen["prompt"])
+
+    def test_plan_strategy_passes_policy_on_every_planner_path(self):
+        # 入口（_plan_strategy）が planner ごとに渡し忘れないこと。
+        root = tempfile.mkdtemp(prefix="kf-split-plan-")
+        self.addCleanup(shutil.rmtree, root, True)
+        bus = kf.Bus(root, "run-sp")
+        for planner, fn in (("flow-planner", "plan_strategy_flow_planner"),
+                            ("agent", "plan_strategy_agent")):
+            seen = {}
+
+            def spy(*a, **kw):
+                seen["args"] = a
+                seen["kw"] = kw
+                return {"patterns": [], "parallelism": 1, "reason": ""}, []
+
+            args = types.SimpleNamespace(request="A; B", planner=planner, model=None,
+                                         review=None, granularity=None, split_policy="file")
+            kf.resolve_config(args)
+            args.split_policy = "file"
+            with mock.patch.object(kf, fn, side_effect=spy):
+                kf._plan_strategy(args, bus)
+            self.assertEqual(seen["args"][-1], "file", planner)
+
 
 class ReviewLensTests(unittest.TestCase):
     """レビューラウンドの観点（レンズ）— 契約整合の 1 本槍にしないこと。

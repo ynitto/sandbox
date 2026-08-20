@@ -25,9 +25,13 @@ agent-flow と agent-loop が**同じ 1 ファイルを読む**。agent-loop の
 **選択の口（CLI / 設定ファイル）ではない**。設計書にも「CLI/config の面は今のまま（enum を
 広げない）」と明記してある。`--split-policy` が残っているのは設計どおり。
 
-**(3) ただし `--split-policy` には実際の欠陥がある（下記 §5）。**
-「おかしい」という違和感自体は当たっている。理由が「廃止したのに残っている」ではなく
-「**既定の planner では黙って無視される**」という別のもの。
+**(3) ただし「おかしい」という違和感自体は当たっていた（2026-08-20 に解消）。**
+理由は「廃止したのに残っている」ではなく「**既定の planner では黙って無視されていた**」。
+`split_policy` を planner へ渡していたのは `--planner agent` の分岐だけで、既定の
+`flow-planner`（と、そこからの縮退経路）は指定を捨てていた——`--granularity` は 3 経路すべてへ
+渡っていたので、この 2 つは対称でなかった。現在は flow-planner スキルの `--split-directive`
+（**解決済みの文面**を渡す口。値名ではないので `.agents/methods/` の差し替えもこの経路へ届く）と
+`_planner_fallback` の引数渡しで、stub 以外の全経路に効く。
 
 ---
 
@@ -65,15 +69,21 @@ agent-flow と agent-loop が**同じ 1 ファイルを読む**。agent-loop の
 | **標準パターン** | 人がパターンを選び、エンジンが正準グラフへ展開 | `--pattern`、dashboard の「標準フロー」 |
 | **planner** | LLM（flow-planner スキル / agent / stub） | 既定。`--planner` で切替 |
 
-### ⚠ ここだけ JSON Schema が無い
+### スキーマと 2 つの実装の関係
 
-`schemas/` にワークフロー定義のスキーマは**存在しない**。正典は 2 つの実装:
+契約は `schemas/agent-workflow.schema.json`（2026-08-20 登録。それまでワークフロー定義だけが
+`schemas/` に正典を持たない例外だった）。ルートが**ライブラリ定義**（dashboard が保存する形）、
+`$defs.plan` が**投入 plan**（agent-flow へ渡す形）で、`planFromWorkflow()` が前者から後者へ変換する。
+
+検証そのものは今も 2 つの実装が行う（リポジトリに JSON Schema バリデータは無い）:
 
 - `normalizeWorkflow()`（agent-dashboard・保存時の検証）
 - `plan_strategy_user()`（agent-flow・実行時の検証。**厳格に失敗させる**＝丸めない）
 
-他の契約（agent-tuning / agent-control / agent-instructions …）は `schemas/` に正典があるので、
-ワークフロー定義だけが例外。2 実装の乖離はテストでしか止まらない。
+スキーマは語彙と制約の正典（人と外部ツール向けの文書）で、グラフ不変条件（id の一意性・
+deps の実在・循環の禁止・entry=根 / exit=葉・split の静的な後続禁止）は JSON Schema で
+表現できないため実装が正典のまま。乖離はクロスチェックのテストで止める
+（`tools/agent-flow/tests/test_workflow_schema.py` / dashboard の `adhoc-flow.test.js`）。
 
 ---
 
@@ -145,33 +155,11 @@ tier の auto→finest 分岐、レビュー観点のキー）は**エンジン�
 
 ## 5. 現状の穴（このまとめで見つかったもの・未修正）
 
-### `--split-policy` は既定の planner では無視される
-
-`split_policy` を planner へ渡しているのは `--planner agent` の分岐**だけ**:
-
-| planner | split_policy | 備考 |
-| --- | --- | --- |
-| `flow-planner` | **無視** | **これが既定**（`CONFIG_DEFAULTS["planner"]`） |
-| flow-planner → agent フォールバック | **無視** | `_planner_fallback` が引数を渡していない |
-| `agent` | 効く | 明示指定したときだけ |
-| `stub` | 無視 | LLM を使わないので当然 |
-
-つまり**既定設定のまま `--split-policy file` と打っても何も起きない**。
-CLI ヘルプにも README にも「planner を選ばないと効かない」とは書かれていない。
-`--granularity` は 3 経路すべてに渡っているので、この 2 つは対称でない。
-
-考えられる直し方（どれも未実施・要判断）:
-1. flow-planner スキルへ `--split-policy` を渡す（スキル側の改修が要る）
-2. せめてフォールバック経路には渡す（1 行）＋ヘルプと README に制約を明記
-3. 効く条件を満たさない指定を警告する（黙って無視しない）
-
 ### dashboard から L2 を触れない
 
 dashboard が run へ渡せる実行時指定（`executionOverrides`）は tier / agent_cli / model だけ。
 `granularity` も `split_policy` も**画面からは設定できない**（CLI と設定ファイル専用）。
 「分解の粒度を画面で変えたい」という要望が出たらここが対象になる。
-
-### ワークフロー定義に JSON Schema が無い（§2 参照）
 
 ---
 
@@ -183,7 +171,7 @@ dashboard が run へ渡せる実行時指定（`executionOverrides`）は tier 
 | いつも同じ追加指示を効かせたい | 手法カタログ（`selection: auto`）＋ dashboard でトグル ON |
 | 特定の工程にだけ指示を足したい | 手法カタログ（`selection: per-task`）＋ 工程で選ぶ |
 | 分割方針の**文面**をプロジェクト用に書き換えたい | `<repo>/.agents/methods/split-policy-file.json` |
-| 分割方針そのもの（behavior/file）を切り替えたい | `--split-policy` / 設定 `split_policy`（※ §5 の制約に注意） |
+| 分割方針そのもの（behavior/file）を切り替えたい | `--split-policy` / 設定 `split_policy` |
 | 分解の粒度を変えたい | `--granularity` / 設定 `granularity` |
 | 実行する CLI・モデル・予算を変えたい | dashboard の実行方針（agent-control / agent-profiles / node-budget） |
 | 全ノード共通の指示を配りたい | agent-instructions（dashboard の共通指示） |

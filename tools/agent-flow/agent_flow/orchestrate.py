@@ -14,11 +14,13 @@ def _plan_strategy(args, bus, request=None):
     # プロジェクト文脈（案 H・オプトイン）。run 作成時に snapshot_context() が meta へ固定済み
     # なので、ここではその結果を読むだけ（描画・マーカー付与は snapshot 側の責務）。
     ctx = run_context_text(bus)
+    # 分割の単位はどの planner 経路でも同じ値を渡す（既定 flow-planner でだけ黙って
+    # 無視される、という非対称を作らない）。stub は LLM を通らないので対象外。
+    policy = split_policy(getattr(args, "split_policy", None))
     if args.planner == "flow-planner":
-        return plan_strategy_flow_planner(req, args.model, review, gran, ctx, tier)
+        return plan_strategy_flow_planner(req, args.model, review, gran, ctx, tier, policy)
     if args.planner == "agent":
-        return plan_strategy_agent(req, args.model, review, gran, ctx, tier,
-                                   split_policy(getattr(args, "split_policy", None)))
+        return plan_strategy_agent(req, args.model, review, gran, ctx, tier, policy)
     return plan_strategy_stub(req, review, gran, tier)
 
 

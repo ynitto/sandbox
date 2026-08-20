@@ -191,7 +191,7 @@ BUILD_PROMPT = """\
 テンプレート: {composite_template}
 検証gate: {review}
 
-{enumeration_note}{tier_note}
+{enumeration_note}{tier_note}{split_note}
 ## 粒度（厳守）
 
 目標粒度: {granularity_target}
@@ -830,9 +830,15 @@ def gate_tasks(tasks: list[dict], target: str, require_split: bool = False) -> l
 
 def phase3_build(request: str, analysis: dict, strategy: dict,
                  model: str | None, granularity_target: str, context: str = "",
-                 tier: str = "") -> list[dict]:
+                 tier: str = "", split_directive: str = "") -> list[dict]:
     """Phase 3: グラフ生成。ゲート不合格なら指示を強めて最大1回再生成。
-    tier=basic では basic ワーカー向けの分解指示（tier_build_note）を差し込む。"""
+    tier=basic では basic ワーカー向けの分解指示（tier_build_note）を差し込む。
+
+    `split_directive`（分割の単位）は**呼び出し側が解決済みのテキスト**を渡す。
+    tier の指示文（TIER_BUILD_NOTES）と違ってスキル側に複製を置かないのは、この文面の
+    正典が手法カタログ（`split-policy-<policy>`）にあり、対象リポジトリの
+    `.agents/methods/` による差し替えを効かせたいため——スキルが自前の文面を持つと
+    差し替えがこの経路にだけ届かなくなる。"""
     subtasks = "\n".join(
         f"- {s}" for s in analysis.get("subtasks", [])
     )
@@ -853,6 +859,7 @@ def phase3_build(request: str, analysis: dict, strategy: dict,
             review=strategy.get("review", False),
             enumeration_note=enumeration_note(analysis, "build"),
             tier_note=tier_build_note(tier),
+            split_note=(f"{split_directive}\n\n" if split_directive else ""),
             granularity_target=granularity_target,
             work_lo=lo,
             work_hi=hi,
@@ -944,7 +951,8 @@ def resolve_enumeration(analysis: dict, probe_root: str = ".") -> dict:
 
 def plan(request: str, model: str | None = None, review="auto",
          granularity: str = "auto", probe_root: str = ".",
-         context: str = "", tier: str = "") -> tuple[dict, list[dict]]:
+         context: str = "", tier: str = "",
+         split_directive: str = "") -> tuple[dict, list[dict]]:
     """3段パイプラインを実行し (strategy, tasks) を返す。
 
     `context`（案 H・オプトイン）: agent-flow が run の meta へ固定したプロジェクト文脈
@@ -962,7 +970,8 @@ def plan(request: str, model: str | None = None, review="auto",
     decision = resolve_enumeration(analysis, probe_root)
 
     strategy = phase2_select(request, analysis, catalog, model, review, tier)
-    tasks = phase3_build(request, analysis, strategy, model, target, context, tier)
+    tasks = phase3_build(request, analysis, strategy, model, target, context, tier,
+                         split_directive)
     normalized = normalize_tasks(tasks)
 
     final_strategy = {
@@ -1006,6 +1015,11 @@ def main():
                         help="プロジェクト文脈（案 H・オプトイン）。agent-flow が run の meta から"
                              "渡す charter/rules.md/リポジトリ理解のスナップショット。"
                              "Phase 1 / Phase 3 のプロンプト先頭へ前置する")
+    parser.add_argument("--split-directive", dest="split_directive", default="",
+                        help="分割の単位（どこで切るか）の指示文。**解決済みのテキスト**を"
+                             "agent-flow が渡す（値名ではない）——文面の正典は手法カタログの"
+                             " split-policy-<policy> で、対象リポジトリの .agents/methods/ に"
+                             "同 id を置いた差し替えもこの経路へ届く。空なら従来どおり")
     parser.add_argument("--tier", default="",
                         help="実行ティア（agent-control の workloads.flow.tier。agent-flow が渡す）。"
                              "basic なら auto 粒度を finest へ倒し、Phase 3 へ basic 向けの分解指示を"
@@ -1023,7 +1037,8 @@ def main():
 
     try:
         strategy, tasks = plan(args.request, args.model, review, args.granularity,
-                               args.probe_root, args.context, args.tier)
+                               args.probe_root, args.context, args.tier,
+                               args.split_directive)
         result = {"strategy": strategy, "tasks": tasks}
         print(json.dumps(result, ensure_ascii=False, indent=2))
     except Exception as e:

@@ -7,6 +7,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### `--split-policy` を既定の planner でも効かせた
+
+分割の単位（`--split-policy` / 設定 `split_policy`）を planner へ渡していたのは
+`--planner agent` の分岐だけで、**既定の `flow-planner` 経路では指定が黙って捨てられていた**。
+`--granularity` は 3 経路すべてへ渡っていたので、この 2 つは対称でなかった
+（既定設定のまま `--split-policy file` と打っても何も起きない状態）。
+
+- flow-planner スキルへ `--split-directive` を新設し、Phase 3（グラフ生成）のプロンプトへ
+  分割の単位の指示文を差し込むようにした。スキルが受け取るのは値名ではなく
+  **解決済みのテキスト**——文面の正典は手法カタログ（`split-policy-<policy>`）にあり、
+  対象リポジトリの `.agents/methods/` による差し替えをこの経路にも届けるため。
+  `--tier` のようにスキル側へ文面を複製すると、差し替えがこの経路にだけ効かなくなる
+- 版ずれ（フラグを知らない古いスキル）へは従来どおり渡さない（`_skill_flag_supported`）
+- `_planner_fallback` が引数を落としていたのを直した。flow-planner → agent の縮退でも
+  指定が生き残る（縮退したら behavior に戻る、が起きない）
+- `_plan_strategy` が planner 分岐ごとに同じ値を渡すようにした（stub は LLM を通らず対象外）
+- `docs/specs/agent-flow-spec.md` のグローバル引数一覧に `--split-policy` が抜けていたのを補った
+
+契約検証: `tools/agent-flow/tests/test_planner.py`（`SplitPolicyTests` に 5 件追加: 解決済み
+文面での受け渡し・版ずれ時の非送出・リポジトリ差し替えがスキル引数まで届くこと・縮退での
+指定の生存・入口が全 planner 経路へ渡すこと）/ `test_flow_planner_granularity.py`
+（スキル側 3 件: プロンプトへの到達・空文字なら従来と 1 バイトも変わらないこと・CLI の配線）
+
 ### ワークフロー定義のスキーマを登録した
 
 契約のうちワークフロー定義だけ `schemas/` に正典が無く、正典が 2 実装

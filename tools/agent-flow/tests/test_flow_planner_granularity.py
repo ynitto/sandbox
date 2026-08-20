@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import os
 import unittest
@@ -299,6 +300,53 @@ class ContextPrefixTests(unittest.TestCase):
         with mock.patch.object(plan, "run_agent", fake_agent):
             plan.phase3_build("要求本文", analysis, {"patterns": []}, None, "coarse", context="")
         self.assertEqual(without_context, seen["prompt"])
+
+
+class Phase3SplitDirectiveTests(unittest.TestCase):
+    """分割の単位（split_policy）の指示文。
+
+    tier の指示文（TIER_BUILD_NOTES）と違い、スキルは文面を持たず**呼び出し側が解決済みの
+    テキスト**を渡す——文面の正典は手法カタログ（split-policy-<policy>）にあり、対象
+    リポジトリの `.agents/methods/` による差し替えをこの経路にも届けるため。
+    """
+
+    def _build(self, **kw):
+        seen = {}
+
+        def fake_agent(prompt, model=None):
+            seen["prompt"] = prompt
+            return json.dumps([
+                {"id": "t1", "goal": "[scope] a.py\n実装", "deps": [], "kind": "work"}])
+
+        analysis = {"subtasks": ["a"], "complexity": "moderate"}
+        with mock.patch.object(plan, "run_agent", fake_agent):
+            plan.phase3_build("req", analysis, {"patterns": []}, None, "finest", **kw)
+        return seen["prompt"]
+
+    def test_directive_text_reaches_the_build_prompt(self):
+        prompt = self._build(split_directive="分割の単位: TEST-SPLIT-DIRECTIVE")
+        self.assertIn("分割の単位: TEST-SPLIT-DIRECTIVE", prompt)
+
+    def test_empty_directive_is_byte_identical_to_before(self):
+        # 既定挙動不変: 渡さない場合と空文字を渡した場合でプロンプトが 1 バイトも変わらない
+        self.assertEqual(self._build(), self._build(split_directive=""))
+
+    def test_cli_accepts_the_flag_and_forwards_it(self):
+        # agent-flow はスキルのソースに `--split-directive` があるかで版ずれを判定するため、
+        # フラグ名そのものと plan() への配線を固定する。
+        seen = {}
+
+        def fake_plan(request, model, review, granularity, probe_root, context, tier,
+                      split_directive=""):
+            seen["split_directive"] = split_directive
+            return {"patterns": []}, []
+
+        argv = ["plan.py", "req", "--split-directive", "SD"]
+        with mock.patch.object(plan, "plan", fake_plan), \
+             mock.patch.object(plan.sys, "argv", argv), \
+             mock.patch.object(plan.sys, "stdout", io.StringIO()):
+            plan.main()
+        self.assertEqual(seen["split_directive"], "SD")
 
 
 if __name__ == "__main__":

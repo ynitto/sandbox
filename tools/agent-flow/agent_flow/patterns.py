@@ -1060,7 +1060,7 @@ def _skill_env() -> dict:
 
 
 def _planner_fallback(request: str, model: "str | None", review, granularity: "str | None",
-                      context: str, why: str, tier=""):
+                      context: str, why: str, tier="", policy="behavior"):
     """計画スキルを使えなかったときの縮退。**必ず記録を残す**。
 
     以前はここが黙って落ちていたため、スキルが一度も起動していないのに「計画できた」ように
@@ -1068,7 +1068,8 @@ def _planner_fallback(request: str, model: "str | None", review, granularity: "s
     選び続けても気づけない）。ログと strategy.reason の両方へ理由を残す。"""
     log("planner", f"flow-planner を使えませんでした → エージェント planner へ縮退: {why[:200]}")
     strategy, tasks = plan_strategy_agent(request, model, review,
-                                          fallback_granularity(granularity), context, tier)
+                                          fallback_granularity(granularity), context, tier,
+                                          split_policy(policy))
     strategy["reason"] = f"[flow-planner 不使用: {why[:120]}] {strategy.get('reason', '')}".strip()
     return strategy, tasks
 
@@ -1085,7 +1086,7 @@ def _skill_flag_supported(script: str, flag: str) -> bool:
 
 
 def plan_strategy_flow_planner(request: str, model: str | None, review="auto", granularity="auto",
-                               context: str = "", tier=""):
+                               context: str = "", tier="", policy="behavior"):
     """flow-planner スキルの3段パイプラインを呼び出す。
     スキルが見つからない / 失敗した場合は plan_strategy_agent にフォールバック。
     granularity はスキルへ `--granularity` で渡す（auto=complexity 導出 / 明示は優先）。
@@ -1100,7 +1101,7 @@ def plan_strategy_flow_planner(request: str, model: str | None, review="auto", g
         # flow-planner スキル未インストール → エージェント planner にフォールバック
         return _planner_fallback(request, model, review, granularity, context,
                                  f"{_PLANNER_SKILL or 'flow-planner'} スキルが見つかりません",
-                                 tier)
+                                 tier, policy)
     # 計画に使う CLI/モデルは planner の設定（agents: planner: {agent_cli, model}）に従わせる。
     # スキル側の既定は kiro-cli だが、それを黙って使うと agent_cli を claude/codex にしていても
     # 計画だけ kiro-cli で走り、kiro-cli が使えない環境では毎回失敗して stub へ落ちていた。
@@ -1109,6 +1110,13 @@ def plan_strategy_flow_planner(request: str, model: str | None, review="auto", g
            "--agent-cli", cli]
     if tier and _skill_flag_supported(script, "--tier"):
         cmd += ["--tier", str(tier)]
+    # 分割の単位は**解決済みのテキスト**で渡す（値名ではない）。文面の正典は手法カタログ
+    # （split-policy-<policy>）なので、エンジンが引いてから渡せば対象リポジトリの
+    # .agents/methods/ による差し替えもこの経路へ届く——スキルに複製を置くとそこだけ古くなる。
+    if _skill_flag_supported(script, "--split-directive"):
+        directive = split_policy_directive(policy)
+        if directive:
+            cmd += ["--split-directive", directive]
     model = model_ov or model
     if model:
         cmd += ["--model", model]
@@ -1151,7 +1159,7 @@ def plan_strategy_flow_planner(request: str, model: str | None, review="auto", g
         # ルール側の入力は `resolved`（LLM 由来）ではなく呼び出し引数の granularity。
         return _record_rule_agreement(final_strategy, request, granularity), tasks
     except Exception as e:  # noqa: BLE001 — flow-planner 失敗時はエージェント planner にフォールバック
-        return _planner_fallback(request, model, review, granularity, context, str(e), tier)
+        return _planner_fallback(request, model, review, granularity, context, str(e), tier, policy)
 
 
 # --------------------------------------------------------------------------
