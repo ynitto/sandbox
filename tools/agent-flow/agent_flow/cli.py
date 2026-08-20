@@ -1,6 +1,75 @@
 from __future__ import annotations
 # cli.py — 元 agent-flow.py の 6577-6832 行目（機械分割・内容無改変）。
 # 単体 import しない。agent_flow/__init__.py が共有名前空間へ順に exec 合成する。
+def _add_planning_args(sp) -> None:
+    """計画に関わる run パラメータを、実際に計画するサブコマンド（run / orchestrate）へ付ける。
+
+    以前はグローバル引数だったため `agent-flow --granularity finest doctor` のように**計画しない
+    サブコマンドでも受理**され、指定が黙って捨てられていた（`--granularity` / `--split-policy` /
+    `--exemplar-first` / `--plan-gate` 系）。同時に run と orchestrate で同じ意味の引数を
+    二重定義していたため、片方だけ help や choices が付く食い違いも起きていた。計画する 2 つの
+    サブコマンドが**同じ定義**を共有する形へ寄せ、それ以外では usage エラーで断る。
+
+    `--help` での並びも 2 群に分ける（`docs/designs/workflow-customization-map.md` の層に対応）:
+
+    - **計画（L1 形 / L2 分け方）** — 計画時に決まるもの。誰が形を決めるか（planner / pattern /
+      plan-file）と、どう分けるか（granularity / review / plan-gate）
+    - **動的 fan-out（split → map → reduce）** — 計画時には数が決まらず、**実行中の split の
+      出力で展開数が決まる**区間の設定。ここだけ「グラフが実行時に伸びる」ので 1 群に集約する
+
+    どちらも設定ファイル（`agent-flow.yaml`）の同名キーと同義で、CLI 指定が優先する
+    （`resolve_config` が CLI 未指定＝None のものだけを設定ファイル → 既定で埋める）。
+    """
+    plan = sp.add_argument_group(
+        "計画（形と分け方）",
+        "planner が計画を作る run にだけ効く。設定ファイルの同名キーと同義で、CLI 指定が優先する")
+    plan.add_argument("--planner", choices=["agent", "stub", "flow-planner"], default=None,
+                      help="計画役（設定 planner と同義）。flow-planner=3 段パイプラインのスキル"
+                           "（既定）/ agent=LLM を直接呼ぶ / stub=LLM を使わない決定的分解")
+    plan.add_argument("--pattern", choices=PATTERN_LIST, default=None,
+                      help="標準ワークフローパターンを明示選択（設定 pattern と同義。"
+                           "省略時は planner が選ぶ）")
+    plan.add_argument("--plan-file", dest="plan_file", default=None,
+                      help="ユーザー定義フロー（plan JSON: {name?, evaluate?, nodes:[{id,goal,deps,"
+                           "kind,agent?,...}]}）を読むファイル。指定すると planner を通さず検証だけで"
+                           "このグラフを実行する。inbox 要求の plan フィールドと同じ契約"
+                           "（goal 中の {{request}} は要求テキストへ置換）")
+    plan.add_argument("--granularity", default=None,
+                      choices=["auto", "coarse", "fine", "finest"],
+                      help="タスク分解の細かさ（設定 granularity と同義）。auto=complexityから導出（既定）/ "
+                           "coarse|fine|finest=明示優先。細かいほど小さなタスクに多く分解する")
+    plan.add_argument("--review", dest="review", action="store_const", const=True, default=None,
+                      help="統合（synthesize/reduce）の前に検証 gate を必ず挟む"
+                           "（設定 review と同義。既定: 集約パターンで自動）")
+    plan.add_argument("--no-review", dest="review", action="store_const", const=False,
+                      help="自動の検証 gate を無効化する")
+    plan.add_argument("--plan-gate", dest="plan_gate", action="store_const", const=True,
+                      default=None,
+                      help="計画承認ゲート（設定 plan_gate と同義・既定 off）。planner の計画の実行前に"
+                           " human 承認ノードを挟み、承認で実行開始・差し戻し（コメント付き rejected）で"
+                           "指摘を反映して再計画する（max_retries で有界）。期限切れは failed 終端")
+    plan.add_argument("--no-plan-gate", dest="plan_gate", action="store_const", const=False,
+                      help="計画承認ゲートを無効化する（設定 plan_gate: true の上書き）")
+    plan.add_argument("--plan-gate-timeout", dest="plan_gate_timeout", type=float, default=None,
+                      help="plan-gate の応答期限秒（設定 plan_gate_timeout と同義。"
+                           "0 = interaction 既定の 7 日）")
+
+    fanout = sp.add_argument_group(
+        "動的 fan-out（split → map → reduce）",
+        "計画時には数が決まらず、実行中の split の出力で展開数が決まる区間の設定")
+    fanout.add_argument("--split-policy", dest="split_policy", default=None,
+                        choices=["behavior", "file"],
+                        help="タスク分割の単位（設定 split_policy と同義）。behavior=利用者から見える"
+                             "振る舞いを 1 ノードが縦に持つ（既定）/ file=ファイル境界で水平に分割する"
+                             "（衝突回避が要る大規模変更向け）")
+    fanout.add_argument("--max-fanout", type=int, default=None,
+                        help="データ駆動 fan-out の最大展開数（設定 max_fanout と同義・既定 50）")
+    fanout.add_argument("--exemplar-first", dest="exemplar_first", action="store_const",
+                        const=True, default=None,
+                        help="map-reduce の fan-out を見本先行にする（設定 exemplar_first と同義）。"
+                             "先頭1件を検証ゲートに通してから残りを展開し、同様手順を1件で固めてから流す")
+
+
 def build_parser() -> argparse.ArgumentParser:
     """CLI パーサを構築して返す。main と、子プロセス起動 argv の妥当性を検証する
     テスト（_spawn_orchestrator が組み立てた argv を parse できるか）で共有する。
@@ -61,26 +130,6 @@ def build_parser() -> argparse.ArgumentParser:
                         "codex=OpenAI Codex CLI（codex exec）。プラグイン CLI 名も指定可")
     p.add_argument("--execution-overrides", dest="execution_overrides", default=None,
                    help=argparse.SUPPRESS)
-    p.add_argument("--granularity", default=None, choices=["auto", "coarse", "fine", "finest"],
-                   help="タスク分解の細かさ（設定 granularity と同義）。auto=complexityから導出（既定）/ "
-                        "coarse|fine|finest=明示優先。細かいほど小さなタスクに多く分解する")
-    p.add_argument("--split-policy", dest="split_policy", default=None,
-                   choices=["behavior", "file"],
-                   help="タスク分割の単位（設定 split_policy と同義）。behavior=利用者から見える"
-                        "振る舞いを 1 ノードが縦に持つ（既定）/ file=ファイル境界で水平に分割する"
-                        "（衝突回避が要る大規模変更向け）")
-    p.add_argument("--exemplar-first", dest="exemplar_first", action="store_const", const=True,
-                   default=None,
-                   help="map-reduce の fan-out を見本先行にする（設定 exemplar_first と同義）。"
-                        "先頭1件を検証ゲートに通してから残りを展開し、同様手順を1件で固めてから流す")
-    p.add_argument("--plan-gate", dest="plan_gate", action="store_const", const=True, default=None,
-                   help="計画承認ゲート（設定 plan_gate と同義・既定 off）。planner の計画の実行前に"
-                        " human 承認ノードを挟み、承認で実行開始・差し戻し（コメント付き rejected）で"
-                        "指摘を反映して再計画する（max_retries で有界）。期限切れは failed 終端")
-    p.add_argument("--no-plan-gate", dest="plan_gate", action="store_const", const=False,
-                   help="計画承認ゲートを無効化する（設定 plan_gate: true の上書き）")
-    p.add_argument("--plan-gate-timeout", dest="plan_gate_timeout", type=float, default=None,
-                   help="plan-gate の応答期限秒（設定 plan_gate_timeout と同義。0 = interaction 既定の 7 日）")
     p.add_argument("--lease", type=float, default=None,
                    help="claim のリース秒数（超過すると他ノードが再 claim 可能。既定 1800）")
     p.add_argument("--argv-limit", dest="argv_limit", type=int, default=None,
@@ -117,23 +166,15 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("request", nargs="?", default=None,
                      help="ワークフローへの要求（再開時は省略可）")
     run.add_argument("--workers", type=int, default=None)
-    run.add_argument("--planner", choices=["agent", "stub", "flow-planner"], default=None)
-    run.add_argument("--pattern", choices=PATTERN_LIST, default=None,
-                     help="標準ワークフローパターンを明示選択（省略時は自動）")
+    _add_planning_args(run)
     run.add_argument("--executor", default=None,
                      help="ワーカーバス: 組み込み agent / stub、または executor プラグイン名"
                           "（例 gitlab）/ .py パス（opt-in。gitlab はタスクを GitLab イシューに"
                           "して委譲し approved まで待つ）")
     run.add_argument("--max-iterations", type=int, default=None,
                      help="再計画（evaluator-optimizer）の最大反復回数")
-    run.add_argument("--max-fanout", type=int, default=None,
-                     help="データ駆動 fan-out の最大展開数（既定 50）")
     run.add_argument("--max-retries", type=int, default=None,
                      help="同一系統の作り直し打ち切り回数（サーキットブレーカー, 既定 3）")
-    run.add_argument("--review", dest="review", action="store_const", const=True, default=None,
-                     help="統合（synthesize/reduce）の前に検証 gate を必ず挟む（既定: 集約パターンで自動）")
-    run.add_argument("--no-review", dest="review", action="store_const", const=False,
-                     help="自動の検証 gate を無効化する")
     run.add_argument("--model", default=None)
     run.add_argument("--poll", type=float, default=None)
     run.add_argument("--inherit-from", dest="inherit_from", default=None,
@@ -143,11 +184,6 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--from-inbox", dest="from_inbox", action="store_true",
                      help="要求文・書込先ワークスペース・参照リポジトリ・引き継ぎ元を "
                           "inbox/<run-id>.json から読む（participate が受理した要求を実行するとき）")
-    run.add_argument("--plan-file", dest="plan_file", default=None,
-                     help="ユーザー定義フロー（plan JSON: {name?, evaluate?, nodes:[{id,goal,deps,"
-                          "kind,agent?,...}]}）を読むファイル。指定すると planner を通さず検証だけで"
-                          "このグラフを実行する。inbox 要求の plan フィールドと同じ契約"
-                          "（goal 中の {{request}} は要求テキストへ置換）")
     run.set_defaults(func=cmd_run)
 
     pats = sub.add_parser("patterns", help="標準ワークフローパターンを一覧表示")
@@ -170,16 +206,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     orch = sub.add_parser("orchestrate", help="計画役")
     orch.add_argument("--request", required=True)
-    orch.add_argument("--planner", choices=["agent", "stub", "flow-planner"], default=None)
-    orch.add_argument("--pattern", choices=PATTERN_LIST, default=None)
+    _add_planning_args(orch)
     orch.add_argument("--executor", default=None,
                       help="ワーカーバス（agent/stub/プラグイン名/.py パス）。"
                            "評価役（evaluator）は stub 以外ならローカルのエージェント CLI で判断")
     orch.add_argument("--max-iterations", type=int, default=None)
-    orch.add_argument("--max-fanout", type=int, default=None)
     orch.add_argument("--max-retries", type=int, default=None)
-    orch.add_argument("--review", dest="review", action="store_const", const=True, default=None)
-    orch.add_argument("--no-review", dest="review", action="store_const", const=False)
     orch.add_argument("--node-id", default="orchestrator")
     orch.add_argument("--model_opt", dest="model", default=None)
     orch.add_argument("--poll", type=float, default=None)
@@ -187,8 +219,6 @@ def build_parser() -> argparse.ArgumentParser:
                       help="リトライ: 先行 run-id から確定済みノードを引き継ぎ先行 run を掃除する")
     orch.add_argument("--delegation", default=None,
                       help="委譲公示板（agent-board）由来の来歴 JSON（{id, board}）を run meta へ記録する")
-    orch.add_argument("--plan-file", dest="plan_file", default=None,
-                      help="ユーザー定義フロー（plan JSON）のファイル。inbox 要求の plan と同じ契約")
     orch.set_defaults(func=cmd_orchestrate)
 
     work = sub.add_parser("work", help="ワーカー役")

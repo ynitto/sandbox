@@ -5,7 +5,7 @@ import unittest
 
 
 class MethodCatalogTests(unittest.TestCase):
-    def test_golden_catalog_has_exactly_twenty_five_valid_presets(self):
+    def test_golden_catalog_has_exactly_thirty_three_valid_presets(self):
         root = pathlib.Path(__file__).resolve().parents[3]
         paths = sorted((root / "methods").glob("*.json"))
         expected = {
@@ -19,10 +19,16 @@ class MethodCatalogTests(unittest.TestCase):
             # （docs/plans/2026-08-15-workflow-feature-improvement-proposals.md P1・P3・P5）
             "ui-consistency", "test-green-evidence", "integration-verify",
             "design-document-format",
+            # エンジンが run パラメータで選ぶ指示文（selection: "engine"）。文面の正典を
+            # カタログへ寄せたもので、選択は agent-flow が CLI/config/agent-control の値から行う
+            # （docs/plans/2026-08-18-split-policy-catalog-unification-design.md）
+            "split-policy-behavior", "split-policy-file",
+            "granularity-coarse", "granularity-fine", "granularity-finest",
+            "tier-basic", "tier-basic-split", "review-lenses",
         }
         methods = [json.loads(path.read_text(encoding="utf-8")) for path in paths]
         self.assertEqual({method["id"] for method in methods}, expected)
-        self.assertEqual(len(paths), 25)
+        self.assertEqual(len(paths), 33)
         self.assertTrue(all(method.get("origin") and method.get("fragments") for method in methods))
         # 既定 ON は「触らない工程では無害な文面」に限る（自己条件づけの規律ルール）。
         default_on = {method["id"] for method in methods if method.get("enabled") is True}
@@ -31,9 +37,11 @@ class MethodCatalogTests(unittest.TestCase):
     def test_catalog_declares_the_model_of_each_entry(self):
         """作業ルール（rule）と成果物の契約（contract）を宣言で分ける。
 
-        rule はさらに、実行条件で自動選択する auto と、工程ごとに人／planner が選ぶ
-        per-task に分かれる。無指定は rule / auto として読む（既存定義の互換）。
-        設計: docs/plans/2026-08-15-workflow-feature-improvement-implementation.md 第 4 段
+        rule はさらに選ばれ方で 3 つに分かれる: 実行条件で自動選択する auto、工程ごとに
+        人／planner が選ぶ per-task、エンジンが run パラメータから決定的に選ぶ engine。
+        無指定は rule / auto として読む（既存定義の互換）。
+        設計: docs/plans/2026-08-15-workflow-feature-improvement-implementation.md 第 4 段 /
+              docs/plans/2026-08-18-split-policy-catalog-unification-design.md
         """
         root = pathlib.Path(__file__).resolve().parents[3]
         methods = {
@@ -48,6 +56,16 @@ class MethodCatalogTests(unittest.TestCase):
                       if kinds[mid] == "rule"}
         self.assertEqual({mid for mid, sel in selections.items() if sel == "per-task"},
                          {"integration-verify"})
+        # engine 選択の指示文は enabled/when の自動注入にも per-task の選択にも載らない
+        # （エンジンが id+role で直接引く。既定 OFF のままであることも確認する）
+        engine_ids = {mid for mid, sel in selections.items() if sel == "engine"}
+        self.assertEqual(engine_ids, {
+            "split-policy-behavior", "split-policy-file",
+            "granularity-coarse", "granularity-fine", "granularity-finest",
+            "tier-basic", "tier-basic-split", "review-lenses",
+        })
+        self.assertTrue(all(methods[mid].get("enabled") is False for mid in engine_ids))
+        self.assertTrue(all("when" not in methods[mid] for mid in engine_ids))
         # 契約は書式（機械で数える構造）を持ち、ルールは持たない
         self.assertIn("format", methods["design-document-format"])
         self.assertTrue(all("format" not in m for mid, m in methods.items()

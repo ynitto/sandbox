@@ -248,6 +248,37 @@ def _heal_failed_runs(bus: Bus, daemon_id: str, owned: set, lease_window: float,
     return healed
 
 
+def _planning_args(args, pattern: "str | None" = None) -> list:
+    """orchestrator の argv へ足す計画パラメータ（run / orchestrate サブコマンドの引数）。
+
+    グローバル引数だった頃は `base`（worker の起動にも使う共通部分）へ積んでいたため、計画を
+    しないワーカーにも黙って渡っていた。サブコマンドへ移した今は置き場所を間違えると子が
+    usage エラーで即死するので、組み立てを 1 か所に集めて両方の起動経路で共有する。
+
+    値は `resolve_config` が確定済み（CLI > 設定ファイル > 既定）。既定と同じ値でも明示して
+    渡すのは、子プロセスの cwd が親と違い**同じ設定ファイルを見つけられるとは限らない**ため
+    （親が解決した値を argv で運ぶのが唯一の確実な伝達路）。`pattern` は inbox 要求が
+    名指しする場合があるので引数で上書きできる。
+    """
+    pat = pattern if pattern is not None else getattr(args, "pattern", None)
+    out = ["--granularity", str(getattr(args, "granularity", "auto") or "auto"),
+           "--split-policy", str(getattr(args, "split_policy", "behavior") or "behavior")]
+    if pat:
+        out += ["--pattern", str(pat)]
+    # ユーザー定義フロー（--plan-file 明示指定）を orchestrator へ伝搬する。
+    # inbox 経由（--from-inbox）の plan は orchestrator 自身が inbox を読むので転記不要。
+    if getattr(args, "plan_file", None):
+        out += ["--plan-file", str(args.plan_file)]
+    if getattr(args, "exemplar_first", False):
+        out += ["--exemplar-first"]    # 見本先行分解
+    if getattr(args, "plan_gate", False):
+        out += ["--plan-gate"]         # 計画承認ゲート
+        timeout = float(getattr(args, "plan_gate_timeout", 0) or 0)
+        if timeout > 0:
+            out += ["--plan-gate-timeout", str(timeout)]
+    return out
+
+
 def _spawn_orchestrator(base: list, args, req_id: str, req: dict):
     """要求 req を担当する orchestrator を base argv から起動する（daemon のオンデマンド起動）。"""
     ws = req.get("workspace")   # 要求に紐づく唯一の書込先ワークスペースを run meta へ載せる
@@ -262,20 +293,16 @@ def _spawn_orchestrator(base: list, args, req_id: str, req: dict):
     execution_args = (["--execution-overrides", json.dumps(req["execution_overrides"], ensure_ascii=False)]
                       if isinstance(req.get("execution_overrides"), dict) else [])
     return subprocess.Popen(base + ws_args + execution_args + [
-        "--granularity", str(getattr(args, "granularity", "auto") or "auto"),
-        *(["--exemplar-first"] if getattr(args, "exemplar_first", False) else []),
-        *((["--plan-gate"]
-           + (["--plan-gate-timeout", str(float(getattr(args, "plan_gate_timeout", 0) or 0))]
-              if float(getattr(args, "plan_gate_timeout", 0) or 0) > 0 else []))
-          if getattr(args, "plan_gate", False) else []),
         "--run-id", req_id, "orchestrate", "--request", req["request"],
-        # --inherit-from は orchestrate サブコマンドの引数（グローバルではない）。
-        # サブコマンド名より前に置くと親 parser に拾われ usage エラーで即死するため、
-        # 必ず "orchestrate" の後ろに付ける（cmd_run の起動と同じ並び）。
+        # 以下はすべて orchestrate サブコマンドの引数（グローバルではない）。サブコマンド名より
+        # 前に置くと親 parser に拾われ usage エラーで即死するため、必ず "orchestrate" の後ろへ
+        # 付ける（cmd_run の起動と同じ並び）。計画パラメータもここに含む——計画しない
+        # サブコマンド（work/doctor 等）が受け取っても意味が無いため、グローバルから移した。
+        # パターンは inbox 要求の名指しが最優先（無ければ設定ファイルの pattern）。
+        *_planning_args(args, req.get("pattern") or None),
         *(["--inherit-from", inh] if inh else []),
         *(["--delegation", json.dumps(deleg, ensure_ascii=False)]
           if isinstance(deleg, dict) and deleg.get("id") else []),
-        *(["--pattern", req["pattern"]] if req.get("pattern") else []),
         "--planner", args.planner, "--executor", args.executor,
         "--max-iterations", str(args.max_iterations),
         "--max-fanout", str(args.max_fanout),
@@ -376,19 +403,16 @@ def cmd_run(args) -> int:
         base += ["--reference", r]                # 参照リポジトリを orchestrator/worker へ伝搬
     if getattr(args, "verification_plan", None):
         base += ["--verification-plan", args.verification_plan]  # 統一 verify の計画を orchestrator へ
-    base += ["--granularity", str(getattr(args, "granularity", "auto") or "auto")]  # 分解粒度
-    if getattr(args, "exemplar_first", False):
-        base += ["--exemplar-first"]   # 見本先行分解を orchestrator へ伝搬
-    if getattr(args, "plan_gate", False):
-        base += ["--plan-gate"]        # 計画承認ゲートを orchestrator へ伝搬
-        _pg_to = float(getattr(args, "plan_gate_timeout", 0) or 0)
-        if _pg_to > 0:
-            base += ["--plan-gate-timeout", str(_pg_to)]
+    # 計画パラメータ（分解粒度・分割の単位・見本先行・計画承認ゲート）は base へ入れない。
+    # base は worker（`work`）の起動にも使い回すため、ここへ足すと計画しないワーカーにも
+    # 渡ってしまう（サブコマンドの引数へ移した今は usage エラーになる）。orchestrator の
+    # argv にだけ `_planning_args` で足す。
     mode = _mode_string(args, bus_root)
 
     procs = []
     orch = subprocess.Popen(base + [
         "orchestrate", "--request", args.request,
+        *_planning_args(args),
         *(["--inherit-from", args.inherit_from] if getattr(args, "inherit_from", None)
           and not resuming else []),   # 新規時のみ: 先行 run から引き継ぐ（再開時は不要）
         "--planner", args.planner, "--executor", args.executor,
@@ -399,10 +423,6 @@ def cmd_run(args) -> int:
           else ["--no-review"] if args.review is False else []),
         "--model_opt", args.model or "",
         "--poll", str(args.poll), "--node-id", "orchestrator",
-        *(["--pattern", args.pattern] if getattr(args, "pattern", None) else []),
-        # ユーザー定義フロー（--plan-file 明示指定）を orchestrator へ伝搬する。
-        # inbox 経由（--from-inbox）の plan は orchestrator 自身が inbox を読むので転記不要。
-        *(["--plan-file", args.plan_file] if getattr(args, "plan_file", None) else []),
     ])
     procs.append(("orchestrator", orch))
 

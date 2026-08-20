@@ -829,6 +829,28 @@ test('手法: 読み取り専用の定義は別IDでユーザーホームへコ�
 // `source: methods/<id>@<hash>` はどちらが書いても同じでなければ「同じカタログ由来か」を
 // 突き合わせられないので、両側が同じ golden を読む。片方の正規化（キー順・区切り・数値
 // 表記）が変わればここが落ちる。
+test('手法: 自動適用の対象でない作業ルールは有効化を断る', () => {
+  // 画面はトグルを出し分けているが、IPC は id を受け取るだけ。書く層でも断らないと
+  // 「効かない宣言」が tuning.json に残る（agentcore 側は自動注入から外す）。
+  const methodsDir = tmpdir('nonauto-enable-');
+  fs.writeFileSync(path.join(methodsDir, 'review-lenses.json'), JSON.stringify({
+    id: 'review-lenses', description: 'レビューの観点', selection: 'engine',
+    enabled: false, fragments: [{ role: 'evaluator', text: '観点を当てる' }],
+  }));
+  fs.writeFileSync(path.join(methodsDir, 'integration-verify.json'), JSON.stringify({
+    id: 'integration-verify', description: '統合検証', selection: 'per-task',
+    enabled: false, fragments: [{ role: 'verify', text: '全体を回す' }],
+  }));
+  const cfg = tuningCfg(tmpdir('nonauto-enable-tuning-'), methodsDir);
+  for (const id of ['review-lenses', 'integration-verify']) {
+    assert.throws(() => tuning.setMethod(cfg, { id, enabled: true }),
+      /自動適用の対象ではありません/, id);
+  }
+  assert.strictEqual(tuning.autoSelectable({ id: 'x' }), true);
+  assert.strictEqual(tuning.autoSelectable({ id: 'x', selection: 'auto' }), true);
+  assert.strictEqual(tuning.autoSelectable({ id: 'x', selection: 'engine' }), false);
+});
+
 test('手法: 同梱カタログの source ダイジェストが共有 golden と一致する', () => {
   const root = path.resolve(__dirname, '../../..');
   const golden = JSON.parse(fs.readFileSync(

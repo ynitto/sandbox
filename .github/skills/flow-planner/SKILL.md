@@ -55,7 +55,7 @@ agent-flow run "<要求>" --planner flow-planner
 # 全段パイプライン（agent-flow が内部で呼ぶ）
 python3 .github/skills/flow-planner/scripts/plan.py "<要求>" \
   [--model <model>] [--review auto|true|false] [--granularity auto|coarse|fine|finest] \
-  [--context <text>] [--tier <tier>]
+  [--context <text>] [--tier <tier>] [--split-directive <text>]
 ```
 
 `--context`（案 H・オプトイン）: agent-flow が渡すプロジェクト文脈（charter/rules.md/
@@ -68,6 +68,12 @@ python3 .github/skills/flow-planner/scripts/plan.py "<要求>" \
 (2) Phase 3 へ「1 ノード = 1 短手順・goal に対象/成果/確認方法を明記」の分解指示を足す、
 (3) `review: auto` を常時有効へ倒す（basic の成果を無検証で集約しない）。予算逼迫の緊急時に
 普段は任せない役割へ basic ワーカーを投入するときの、計画側のお膳立て。空なら従来どおり。
+
+`--split-directive`（オプトイン）: 分割の単位（どこで切るか）の指示文。**値名ではなく解決済みの
+テキスト**を agent-flow が渡し、Phase 3 のプロンプトへそのまま差し込む。`--tier` の指示文と違って
+スキル側に文面の複製を置かないのは、正典が agent-tuning の手法カタログ（`split-policy-<policy>`）に
+あり、対象リポジトリの `.agents/methods/` による差し替えをこの経路にも届けるため——スキルが
+自前の文面を持つと、差し替えがこの経路にだけ効かなくなる。空なら従来どおり。
 
 ## 3段階パイプライン
 

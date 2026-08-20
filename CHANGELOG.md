@@ -7,6 +7,159 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-loop: サブコマンドに効かないオプションを断るようにした
+
+`--split-direction` / `--no-auto-attach` / `--controller-mode` / `--instance-id` は tmux ペインの
+張り方とインスタンス識別で、**サブコマンド無しのデーモン起動**でしか読まれない。グローバル引数
+として黙って受理していたため、`agent-loop --split-direction vertical methods list` が
+「効いたつもり」で通っていた（agent-flow の計画パラメータと同じ形の穴）。
+
+- サブコマンド指定時にこれらが明示されていたら usage エラー（rc=2）で断る
+- argparse のサブパーサへは移せない（効き先が「サブコマンド名を持たない起動」なので）ため、
+  parse 後の検査で行う。全サブコマンドで意味がある `--log-level` は対象外
+
+契約検証: `tools/agent-loop/test/test_cli_options.py`（新設 5 件: デーモンモードでは素通り・
+各オプションが rc=2 で断られる・未指定を誤検知しない・メッセージがフラグ名と
+サブコマンド名を出す・`--log-level` が対象外であること）
+
+### CLI の計画パラメータを、計画するサブコマンドへ集約した
+
+`--granularity` / `--split-policy` / `--exemplar-first` / `--plan-gate` 系は**グローバル引数**
+だったため、計画しないサブコマンドでも受理されて黙って捨てられていた
+（`agent-flow --granularity finest doctor` が通り、何も起きない）。同時に `run` と
+`orchestrate` が同じ意味の引数を二重定義しており、片方にだけ help や設定キーの案内が付く
+食い違いも生んでいた。
+
+- 計画パラメータを `run` / `orchestrate` の引数へ移し、**両者が同じ定義を共有**するようにした
+  （`_add_planning_args`）。計画しないサブコマンド（`work` / `doctor` / `status` …）では
+  usage エラー（rc=2）で断る
+- `--help` を 2 群に分けた。**計画（形と分け方）** = `--planner` / `--pattern` / `--plan-file` /
+  `--granularity` / `--review` / `--plan-gate` 系（計画時に決まる）、**動的 fan-out
+  （split → map → reduce）** = `--split-policy` / `--max-fanout` / `--exemplar-first`
+  （計画時には数が決まらず、実行中の split の出力で展開数が決まる）
+- `--pattern` にだけ無かった設定キー `pattern` を足した。これで計画パラメータは
+  すべて「CLI オプション名 = 設定キー（snake_case）」で 1 対 1 に対応する。
+  不正な名前は `plan_strategy_pattern` が断る（フェイルクローズ）
+- 子プロセスの argv 組み立てを `_planning_args` へ 1 本化した。以前は orchestrator と
+  worker の共通部分（`base`）へ積んでいたため、**計画しない worker にも渡っていた**
+- agent-project 側の呼び出し（`build_agent_flow_cmd` / `--from-inbox` の起動）も
+  `--granularity` を `run` の後ろへ移した
+
+契約検証: `tools/agent-flow/tests/test_run.py`（`SpawnArgvTests` に 4 件追加: 計画引数が
+サブコマンド名の後ろに来ること・inbox の pattern が設定より優先されること・計画しない
+サブコマンドが usage エラーで断ること・`cmd_run` が orchestrator にだけ計画引数を渡し
+worker には渡さないこと）/ agent-flow 1018 件・agent-project 1298 件緑
+
+### `--split-policy` を既定の planner でも効かせた
+
+分割の単位（`--split-policy` / 設定 `split_policy`）を planner へ渡していたのは
+`--planner agent` の分岐だけで、**既定の `flow-planner` 経路では指定が黙って捨てられていた**。
+`--granularity` は 3 経路すべてへ渡っていたので、この 2 つは対称でなかった
+（既定設定のまま `--split-policy file` と打っても何も起きない状態）。
+
+- flow-planner スキルへ `--split-directive` を新設し、Phase 3（グラフ生成）のプロンプトへ
+  分割の単位の指示文を差し込むようにした。スキルが受け取るのは値名ではなく
+  **解決済みのテキスト**——文面の正典は手法カタログ（`split-policy-<policy>`）にあり、
+  対象リポジトリの `.agents/methods/` による差し替えをこの経路にも届けるため。
+  `--tier` のようにスキル側へ文面を複製すると、差し替えがこの経路にだけ効かなくなる
+- 版ずれ（フラグを知らない古いスキル）へは従来どおり渡さない（`_skill_flag_supported`）
+- `_planner_fallback` が引数を落としていたのを直した。flow-planner → agent の縮退でも
+  指定が生き残る（縮退したら behavior に戻る、が起きない）
+- `_plan_strategy` が planner 分岐ごとに同じ値を渡すようにした（stub は LLM を通らず対象外）
+- `docs/specs/agent-flow-spec.md` のグローバル引数一覧に `--split-policy` が抜けていたのを補った
+
+契約検証: `tools/agent-flow/tests/test_planner.py`（`SplitPolicyTests` に 5 件追加: 解決済み
+文面での受け渡し・版ずれ時の非送出・リポジトリ差し替えがスキル引数まで届くこと・縮退での
+指定の生存・入口が全 planner 経路へ渡すこと）/ `test_flow_planner_granularity.py`
+（スキル側 3 件: プロンプトへの到達・空文字なら従来と 1 バイトも変わらないこと・CLI の配線）
+
+### ワークフロー定義のスキーマを登録した
+
+契約のうちワークフロー定義だけ `schemas/` に正典が無く、正典が 2 実装
+（agent-dashboard の `normalizeWorkflow` と agent-flow の `plan_strategy_user`）へ
+分かれていた。`schemas/agent-workflow.schema.json` を新設して登録する。
+
+- **2 段の形を 1 ファイルで宣言した**: ライブラリ定義（dashboard が編集・保存する
+  `workflows/<id>.json` / `.agents/workflows/` / ユーザー領域）と、投入 plan
+  （inbox 要求の `plan` / `--plan-file`）。変換は `planFromWorkflow` が行い、工程の
+  作業ルールは本文へ畳まれて goal へ入る（plan に methods フィールドは無い）
+- **表現できない不変条件を明記した**: id 一意・deps の実在・循環なし・entry=ルート /
+  exit=末端・split の後段を静的に張らない、は JSON Schema で書けないので実装が正典。
+  スキーマ検証だけでは足りないことを説明に残す
+- 表現できる制約は宣言した: kind / purpose の enum、human は tier・methods を持たず
+  interaction が要る、design は終端 1 つで human / split を使えない、plan のノード上限 64
+- 検証ライブラリはこのリポジトリでは使わない方針なので、**スキーマと実装の語彙一致を
+  両側のテストで担保**する（`mission.schema.json` と同じ流儀）
+
+契約検証: `tools/agent-flow/tests/test_workflow_schema.py`（新設 9 件: kind enum・
+ノード上限・既定値の一致、スキーマどおりの plan が実装に通ること、スキーマが禁じる形を
+実装も拒むこと、同梱フローが必須項目を満たすこと）/ `tools/agent-dashboard npm test`
+
+### ワークフロー機能: 選ばれ方の違いを自動注入の層で強制した（監査の結果）
+
+カスタムワークフローと手法（methods）の実装を「意図どおりか」で見直し、**選ばれ方
+（auto / per-task / engine）の切り分けが画面の出し分けにしか支えられていない**穴を塞いだ。
+`enabled` は auto ルールのための宣言なのに、それを読む層が `selection` を見ていなかった。
+
+- `agentcore.methods.select` が `selection: auto` 以外を自動注入の候補から外すようにした
+  （`auto_selectable()`）。ここは agent-flow / agent-loop 双方の自動注入が通る唯一の
+  チョークポイント。塞ぐ前は `agent-loop methods enable split-policy-behavior` や
+  手書きの tuning.json で engine / per-task の指示文を `enabled: true` にでき、
+  **`--split-policy file` の run に behavior の指示も入る**（選択と矛盾する二重注入）
+  状態を作れた。trial の variant が非 auto を名指しした場合も同様に効かせず、
+  効かなかった variant はその実行を代表しないので trial としても記録しない
+- 書き込み口も同じ規則で断るようにした（効かない宣言を残さない）:
+  `agent-loop methods enable` は理由付きで拒否し、`methods list` は非 auto に選ばれ方を
+  表示する。dashboard の `tuning.setMethod` も拒否する
+- run 複製で、プリセットが名指しした id（`picked`）から非 auto を落とすようにした。
+  engine / per-task はこれまでどおりカタログ複製（`enabled: false`）で運ぶ。存在しない
+  id を名指ししたプリセットは、従来どおり投入時に明示的に失敗する
+- 工程セットの雛形（`methodWorkflowPattern`）も、工程の候補と同じ規則で作業ルールだけに
+  絞った。engine の指示文を工程へ複製できるとエンジンの注入と二重になる
+- `schemas/agent-tuning.schema.json` に `kind` / `selection` / `format` を宣言した。
+  3 ツールが読む契約なのに未宣言で、`selection: "engine"` の追加も文書化されていなかった
+
+契約検証: `tools/agent-tools/agentcore/tests/test_methods.py` /
+`tools/agent-loop/test/test_tuning.py` / `tools/agent-dashboard npm test`
+
+### ワークフロー機能: エンジンが選ぶ指示文を手法カタログへ寄せた（selection: "engine"）
+
+split_policy の文面カタログ化（設計 2026-08-18・案 C）を実装する前に、「methods の JSON
+形式を通らずにワークフローの振る舞い（プロンプト文面）を決めている系」を全数確認した。
+該当したのは split_policy のほか、granularity のスコープ指示・実行 tier（basic）の
+planner/evaluator/split 指示・レビュー観点（レンズ）の 4 系統。いずれも「run パラメータの
+値 → 固定文面」の選択で、文面だけならひとつの器に寄せられる（並列数倍率・auto の導出・
+観点キーといった構造的効果は Python 側に残す）。案 C を 1 機構へ汎用化して実装した。
+
+- 手法カタログの選ばれ方に第 3 形態 `selection: "engine"` を追加した。auto（実行条件で
+  自動）/ per-task（工程ごとに人・planner が選ぶ）に対し、engine は**エンジンが
+  CLI/config/agent-control の値から決定的に選ぶ**——enabled / when は選択に関与しない
+  （dashboard はトグルに出さず一覧表示のみ）
+- agent-flow に単一の口 `engine_directive(id, role, fallback)` を新設した。解決順は
+  run 専用 tuning.json（dashboard が run 作成時に複製・run 単位の決定性）→ 対象リポジトリの
+  `.agents/methods/<id>.json`（cwd → git root）→ `$AGENT_METHODS_DIR` → 組み込み文言。
+  カタログ不在・破損・role 不一致・空文字はすべて組み込みへ倒すフェイルセーフ
+  （無指定の run が黙って無方針にならない）
+- 同梱カタログへ 8 件を新設した: `split-policy-behavior` / `split-policy-file` /
+  `granularity-coarse|fine|finest` / `tier-basic` / `tier-basic-split` / `review-lenses`。
+  文面は組み込み文言と同一で、乖離はテストが検出する。リポジトリに同 id を置けば
+  そのプロジェクトだけ文面を差し替えられ、tier のように語彙が開いているものは
+  組み込みが知らない値（例 `tier-small`）にも指示文を足せる（エンジン改修なし）
+- dashboard は engine ルールを run 専用 tuning.json へ複製する（enabled: false のまま。
+  dashboard 経由の run は agent-flow の cwd がリポジトリ外なので、`.agents/methods/` の
+  差し替えをこの複製が届ける）
+- 工程の作業ルール候補（`nodeMethodChoices`）から engine 選択の指示文を除外した。
+  あわせて overview の手法一覧が `kind` / `selection` を落としていたのを直した——
+  ここが落ちていると「成果物の契約・engine 指示文を候補に混ぜない」フィルタが機能せず、
+  role が合う engine 指示文（`tier-basic-split`）が工程へ付けられて二重注入になる。
+  この取りこぼしは既存の不具合でもあった: `kind` が届いていなかったため、成果物の契約
+  （`design-document-format`）が work 工程の追加ルール候補として出ていた
+
+契約検証: `tools/agent-flow/tests/test_engine_directives.py` /
+`tools/agent-loop/test/test_methods_catalog.py` / `tools/agent-dashboard npm test`
+
+設計: `docs/plans/2026-08-18-split-policy-catalog-unification-design.md`（実装記録を追記）
+
 ### 記憶層を測る・整える・共有する・使わせる（エージェント横断ナレッジ運転 K0〜K4）
 
 記憶の 3 層（persona-use / ltm-use / wiki-use）と共有路（moltbook-use）は揃っているのに、

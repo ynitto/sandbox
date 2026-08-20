@@ -259,9 +259,113 @@ def maybe_scale_parallelism(request: str, par: int, level: "str | None") -> int:
 
 
 def granularity_directive(level: "str | None") -> str:
-    """プランナーへ渡す分解の細かさ指示。auto は空（flow-planner が導出）。"""
+    """プランナーへ渡す分解の細かさ指示。auto は空（flow-planner が導出）。
+    文面の正典はカタログ（`granularity-<level>`）で、無ければ組み込み文言。倍率
+    （GRANULARITY_FACTORS）と auto の意味は構造的なエンジンパラメータのままで、
+    カタログでは変えられない——差し替わるのは文面だけ。"""
     lv = (level or "auto").lower()
-    return GRANULARITY_SCOPE_DIRECTIVES.get(lv, "")
+    fallback = GRANULARITY_SCOPE_DIRECTIVES.get(lv, "")
+    if not fallback:
+        return ""
+    return engine_directive(f"granularity-{lv}", "planner", fallback)
+
+
+# --------------------------------------------------------------------------
+# エンジン選択の指示文（selection: "engine"）— run パラメータが選ぶ「値 → プロンプト文面」の
+# 汎用インターフェース。手法カタログには既に 2 つの選ばれ方（auto=実行条件で自動 /
+# per-task=工程ごとに人・planner が選ぶ）があり、これはその第 3: **エンジンが CLI/config/
+# agent-control の値から決定的に選ぶ**。文面の正典は同 id のカタログ定義
+# （`methods/<id>.json`）で、エンジンは id と role で引くだけ——enabled / when は見ない
+# （選択はエンジンの仕事で、カタログは文面だけを差し替える）。
+#
+# 解決順（見つかった最初の role 一致テキストを使う）:
+#   1. run tuning.json の methods[]（dashboard が run 作成時に複製したスナップショット。
+#      run 途中でカタログが変わっても振る舞いが変わらない、per-task と同じ器）
+#   2. 対象リポジトリの .agents/methods/<id>.json（cwd → git root。CLI 単体利用で
+#      プロジェクト固有の文面へ差し替える口。ファイル名は <id>.json 固定——エンジンは
+#      ディレクトリを走査しない）
+#   3. $AGENT_METHODS_DIR（既定 ~/.agents/methods/）の <id>.json（同梱カタログの導入先）
+#   4. 組み込み文言（このファイルの辞書）へフォールバック——カタログが無い・壊れている
+#      環境でも指示が消えない（split_policy はエンジンの分解方針そのもので、無指定の run が
+#      黙って無方針になってよい機能ではない。role 不一致・空文字も同じ理由で組み込みへ倒す
+#      ＝空文字の上書きによる「指示の抑止」はできない仕様）
+# 設計: docs/plans/2026-08-18-split-policy-catalog-unification-design.md
+# --------------------------------------------------------------------------
+ENGINE_RULE_SELECTION = "engine"
+_ENGINE_DIRECTIVE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+# cwd → git root の解決はプロセス内で安定なのでメモ化する（split ノードの実行など、
+# 計画後にも引くため。テストは _engine_method_dirs ごと差し替えられる）。
+_ENGINE_METHOD_DIRS_CACHE: dict = {}
+
+
+def _engine_method_dirs() -> list:
+    """repo（cwd → git root）の .agents/methods と $AGENT_METHODS_DIR の探索順リスト。"""
+    cwd = os.getcwd()
+    cached = _ENGINE_METHOD_DIRS_CACHE.get(cwd)
+    if cached is None:
+        dirs = [os.path.join(cwd, ".agents", "methods")]
+        try:
+            root = subprocess.run(
+                ["git", "rev-parse", "--show-toplevel"],
+                capture_output=True, text=True, encoding="utf-8", errors="replace"
+            ).stdout.strip()
+        except Exception:  # noqa: BLE001 — git 不在でも指示文の解決は止めない
+            root = ""
+        if root:
+            d = os.path.join(root, ".agents", "methods")
+            if d not in dirs:
+                dirs.append(d)
+        cached = _ENGINE_METHOD_DIRS_CACHE[cwd] = dirs
+    return [*cached, agent_home_subdir("AGENT_METHODS_DIR", "methods")]
+
+
+def _engine_tuning_method(directive_id: str) -> "dict | None":
+    """run tuning.json の methods[] から id で引く（dashboard の run 複製。無ければ None）。"""
+    try:
+        with open(_method_tuning_file(), encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return None
+    methods = data.get("methods") if isinstance(data, dict) else None
+    for m in methods if isinstance(methods, list) else []:
+        if isinstance(m, dict) and str(m.get("id")) == directive_id:
+            return m
+    return None
+
+
+def _engine_catalog_method(directive_id: str) -> "dict | None":
+    """カタログディレクトリ群から <id>.json を引く（最初に解釈できたものが勝つ）。"""
+    for d in _engine_method_dirs():
+        try:
+            with open(os.path.join(d, f"{directive_id}.json"), encoding="utf-8") as f:
+                method = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if isinstance(method, dict) and str(method.get("id")) == directive_id:
+            return method
+    return None
+
+
+def _method_role_text(method: "dict | None", role: str) -> str:
+    """手法定義から role の本文を取り出す（per-task の複製と同じ読み方）。"""
+    if not isinstance(method, dict):
+        return ""
+    fragments = method.get("fragments") if isinstance(method.get("fragments"), list) else []
+    return "\n".join(str(f.get("text", "")).strip() for f in fragments
+                     if isinstance(f, dict) and f.get("role") == role
+                     and str(f.get("text", "")).strip())
+
+
+def engine_directive(directive_id: str, role: str, fallback: str = "") -> str:
+    """エンジンが選んだ指示文をカタログから引く。無ければ組み込み文言（fallback）。"""
+    did = str(directive_id or "").strip()
+    if not _ENGINE_DIRECTIVE_ID_RE.match(did):
+        return fallback
+    for method in (_engine_tuning_method(did), _engine_catalog_method(did)):
+        text = _method_role_text(method, role)
+        if text:
+            return text
+    return fallback
 
 
 # --------------------------------------------------------------------------
@@ -300,8 +404,11 @@ def split_policy(policy: "str | None") -> str:
 
 
 def split_policy_directive(policy: "str | None") -> str:
-    """プランナーへ渡す分割単位の指示。"""
-    return SPLIT_POLICY_DIRECTIVES[split_policy(policy)]
+    """プランナーへ渡す分割単位の指示。文面の正典はカタログ（`split-policy-<policy>`）で、
+    無ければ同梱の組み込み文言。選択そのものは従来どおり CLI/config の 2 値だけ。"""
+    resolved = split_policy(policy)
+    return engine_directive(f"split-policy-{resolved}", "planner",
+                            SPLIT_POLICY_DIRECTIVES[resolved])
 
 
 # auto は「flow-planner が complexity から導出する」という意味なので、flow-planner を通らない
@@ -373,12 +480,23 @@ def tier_planning_granularity(level: "str | None", tier: str) -> str:
     return lv
 
 
+def _tier_directive(tier: "str | None", suffix: str, role: str, fallbacks: dict) -> str:
+    """tier ごとの指示文をカタログ（`tier-<tier>{suffix}`）から引く。無ければ組み込み辞書。
+    tier の語彙は agent-control の宣言で開いている（標準は basic/small/medium/large）ので、
+    組み込みが知らない tier でもカタログ定義を置けば指示文を足せる——auto→finest 等の
+    制御分岐は構造的なエンジンパラメータのままで、カタログでは変えられない。"""
+    t = str(tier or "")
+    if not t:
+        return ""
+    return engine_directive(f"tier-{t}{suffix}", role, fallbacks.get(t, ""))
+
+
 def tier_planner_directive(tier: "str | None") -> str:
-    return TIER_PLANNER_DIRECTIVES.get(str(tier or ""), "")
+    return _tier_directive(tier, "", "planner", TIER_PLANNER_DIRECTIVES)
 
 
 def tier_evaluator_directive(tier: "str | None") -> str:
-    return TIER_EVALUATOR_DIRECTIVES.get(str(tier or ""), "")
+    return _tier_directive(tier, "", "evaluator", TIER_EVALUATOR_DIRECTIVES)
 
 
 # --------------------------------------------------------------------------
@@ -402,8 +520,8 @@ REVIEW_LENSES = (
 )
 
 
-def review_lens_directive() -> str:
-    """評価役へ渡すレビュー観点の指示。観点ごとの所見を reason に残させる。"""
+def builtin_review_lens_directive() -> str:
+    """組み込みのレビュー観点指示（REVIEW_LENSES から決定的に描画）。"""
     lenses = "\n".join(f"{i + 1}. {label} — {detail}"
                        for i, (_key, label, detail) in enumerate(REVIEW_LENSES))
     return ("レビューの観点（レンズ）: 契約や完了条件の充足だけで判定せず、次の観点も順に"
@@ -412,6 +530,13 @@ def review_lens_directive() -> str:
             "追加タスクが無い（decision=done）ときも省略しないこと——"
             "見た結果として何も出なかったことが記録に残らないと、そのラウンドは"
             "「やらなかった」と区別できなくなる。")
+
+
+def review_lens_directive() -> str:
+    """評価役へ渡すレビュー観点の指示。観点ごとの所見を reason に残させる。
+    文面の正典はカタログ（`review-lenses`）で、無ければ組み込み描画。REVIEW_LENSES の
+    キー（run 履歴への記録名）は構造的なエンジンパラメータのまま変わらない。"""
+    return engine_directive("review-lenses", "evaluator", builtin_review_lens_directive())
 
 
 
@@ -509,7 +634,9 @@ def _per_task_rule_blocks(rule_ids, role: str) -> list:
 
 
 def tier_split_directive(tier: "str | None") -> str:
-    return TIER_SPLIT_DIRECTIVES.get(str(tier or ""), "")
+    # split ノード専用なので id を分ける（`tier-<tier>-split`）。role は worker（split の
+    # 実行プロンプトへ後置される）だが、全 worker に効くわけではない——注入点が split だけ。
+    return _tier_directive(tier, "-split", "worker", TIER_SPLIT_DIRECTIVES)
 
 
 def tier_review_decision(review_setting, patterns, tier: "str | None") -> bool:
@@ -933,7 +1060,7 @@ def _skill_env() -> dict:
 
 
 def _planner_fallback(request: str, model: "str | None", review, granularity: "str | None",
-                      context: str, why: str, tier=""):
+                      context: str, why: str, tier="", policy="behavior"):
     """計画スキルを使えなかったときの縮退。**必ず記録を残す**。
 
     以前はここが黙って落ちていたため、スキルが一度も起動していないのに「計画できた」ように
@@ -941,7 +1068,8 @@ def _planner_fallback(request: str, model: "str | None", review, granularity: "s
     選び続けても気づけない）。ログと strategy.reason の両方へ理由を残す。"""
     log("planner", f"flow-planner を使えませんでした → エージェント planner へ縮退: {why[:200]}")
     strategy, tasks = plan_strategy_agent(request, model, review,
-                                          fallback_granularity(granularity), context, tier)
+                                          fallback_granularity(granularity), context, tier,
+                                          split_policy(policy))
     strategy["reason"] = f"[flow-planner 不使用: {why[:120]}] {strategy.get('reason', '')}".strip()
     return strategy, tasks
 
@@ -958,7 +1086,7 @@ def _skill_flag_supported(script: str, flag: str) -> bool:
 
 
 def plan_strategy_flow_planner(request: str, model: str | None, review="auto", granularity="auto",
-                               context: str = "", tier=""):
+                               context: str = "", tier="", policy="behavior"):
     """flow-planner スキルの3段パイプラインを呼び出す。
     スキルが見つからない / 失敗した場合は plan_strategy_agent にフォールバック。
     granularity はスキルへ `--granularity` で渡す（auto=complexity 導出 / 明示は優先）。
@@ -973,7 +1101,7 @@ def plan_strategy_flow_planner(request: str, model: str | None, review="auto", g
         # flow-planner スキル未インストール → エージェント planner にフォールバック
         return _planner_fallback(request, model, review, granularity, context,
                                  f"{_PLANNER_SKILL or 'flow-planner'} スキルが見つかりません",
-                                 tier)
+                                 tier, policy)
     # 計画に使う CLI/モデルは planner の設定（agents: planner: {agent_cli, model}）に従わせる。
     # スキル側の既定は kiro-cli だが、それを黙って使うと agent_cli を claude/codex にしていても
     # 計画だけ kiro-cli で走り、kiro-cli が使えない環境では毎回失敗して stub へ落ちていた。
@@ -982,6 +1110,13 @@ def plan_strategy_flow_planner(request: str, model: str | None, review="auto", g
            "--agent-cli", cli]
     if tier and _skill_flag_supported(script, "--tier"):
         cmd += ["--tier", str(tier)]
+    # 分割の単位は**解決済みのテキスト**で渡す（値名ではない）。文面の正典は手法カタログ
+    # （split-policy-<policy>）なので、エンジンが引いてから渡せば対象リポジトリの
+    # .agents/methods/ による差し替えもこの経路へ届く——スキルに複製を置くとそこだけ古くなる。
+    if _skill_flag_supported(script, "--split-directive"):
+        directive = split_policy_directive(policy)
+        if directive:
+            cmd += ["--split-directive", directive]
     model = model_ov or model
     if model:
         cmd += ["--model", model]
@@ -1024,7 +1159,7 @@ def plan_strategy_flow_planner(request: str, model: str | None, review="auto", g
         # ルール側の入力は `resolved`（LLM 由来）ではなく呼び出し引数の granularity。
         return _record_rule_agreement(final_strategy, request, granularity), tasks
     except Exception as e:  # noqa: BLE001 — flow-planner 失敗時はエージェント planner にフォールバック
-        return _planner_fallback(request, model, review, granularity, context, str(e), tier)
+        return _planner_fallback(request, model, review, granularity, context, str(e), tier, policy)
 
 
 # --------------------------------------------------------------------------

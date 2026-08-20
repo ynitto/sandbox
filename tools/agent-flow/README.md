@@ -125,9 +125,24 @@
   `file` はファイル境界での水平分割で、衝突回避が要る大規模変更のための明示オプション
   （裂けたノードには揃えるべき点と対応ノード id を goal へ書かせる）。1 ファイル = 1 ノードの水平分割を
   既定にすると、各ノードは成功したのに成果物どうしが食い違う（同じ用途の画面が別物になる）ため。
+  指定は planner の選び方によらず効く（既定の flow-planner へはスキルの `--split-directive` で
+  渡り、flow-planner → agent の縮退でも生き残る。LLM を通らない stub だけが対象外）。
   計画・評価へ渡す指示をプロジェクトごとに足したいときは、設定を増やさず**作業ルール**
   （`agent-tuning` の手法カタログ）を使う——`when.roles: [planner]` / `[evaluator]` を宣言した
   ルールは、そのプロンプトへ実行時に足される（run 単位のスナップショットで固定される）。
+- **エンジンが選ぶ指示文の差し替え（`selection: "engine"`）**：split_policy・granularity・
+  実行 tier・レビュー観点が選ぶプロンプト文面の正典は手法カタログにある
+  （`split-policy-<policy>` / `granularity-<level>` / `tier-<tier>`（+`-split`）/
+  `review-lenses`）。**どれが効くかはエンジンが run パラメータから決定的に選ぶ**
+  （enabled / when は関与しない。auto ルールとも per-task ルールとも違う第 3 の選ばれ方）。
+  解決順は run 専用 tuning.json（dashboard の run 複製）→ 対象リポジトリの
+  `.agents/methods/<id>.json`（cwd → git root）→ `$AGENT_METHODS_DIR` → 組み込み文言
+  ——カタログが無い・壊れている・role 不一致の環境でも指示は組み込み文言へ倒れて消えない。
+  リポジトリに同 id を置けばそのプロジェクトだけ文面を差し替えられ、tier のように語彙が
+  開いているものは組み込みが知らない値（例 `tier-small`）にも指示文を足せる。値の意味
+  そのもの（enum・並列数倍率・auto の導出・観点キー）は構造的なエンジンパラメータのままで、
+  カタログでは変えられない。
+  設計: `docs/plans/2026-08-18-split-policy-catalog-unification-design.md`
 - **run の完了条件は「終端の検証が緑」**：他ノードから依存されていない `verify` ノード（＝並列で
   作った変更をまとめた後の統合検証）の判定を run の完了条件にする。全ノードが done でも終端の
   検証が赤なら run は failed で終端し、`meta.failure_reason` に `[verification]` タグ付きの理由、

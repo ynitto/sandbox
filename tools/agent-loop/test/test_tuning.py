@@ -116,6 +116,27 @@ class TuningTests(unittest.TestCase):
             self.assertEqual(custom["revision"], 3)
             self.assertEqual(custom["methods"][-1]["source"], "custom/custom-check")
 
+    def test_enable_refuses_rules_that_are_not_selected_automatically(self):
+        """自動適用の対象は selection: auto だけ。per-task / engine は enable させない。
+
+        書けてしまうと tuning.json に「効かない宣言」が残る（agentcore 側は自動注入から
+        外す）ばかりか、選ばれ方が別系統のルールを全対象へ効かせたつもりにさせる。
+        """
+        with tempfile.TemporaryDirectory() as tuning, tempfile.TemporaryDirectory() as catalog, \
+             mock.patch.dict(os.environ, {"AGENT_TUNING_DIR": tuning,
+                                          "AGENT_METHODS_DIR": catalog}):
+            for mid, selection in (("split-policy-behavior", "engine"),
+                                   ("integration-verify", "per-task")):
+                pathlib.Path(catalog, f"{mid}.json").write_text(json.dumps({
+                    "id": mid, "description": "d", "enabled": False, "selection": selection,
+                    "fragments": [{"role": "worker", "text": "t"}], "origin": "built-in"}),
+                    encoding="utf-8")
+                with self.assertRaises(ValueError) as caught:
+                    al.method_enable(mid)
+                self.assertIn("自動適用の対象ではありません", str(caught.exception))
+            # 断ったのだから tuning.json は作られない（revision も進めない）
+            self.assertEqual(al._read_tuning_raw(), {})
+
 
 
 

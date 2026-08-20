@@ -1028,9 +1028,10 @@ class FlowGranularityTests(unittest.TestCase):
             cmd = self._cmd(Path(d))
             i = cmd.index("--granularity")
             self.assertEqual(cmd[i + 1], "auto")
-            # agent-flow の --granularity は**グローバル引数**（run より前）。
-            # run の後ろに置くと `unrecognized arguments` で毎回失敗する。
-            self.assertLess(i, cmd.index("run"), "サブコマンドより前に置く")
+            # agent-flow の --granularity は **run サブコマンドの引数**（run より後ろ）。
+            # 計画しないサブコマンドで受け付けないようグローバルから移されたので、run より
+            # 前に置くと `unrecognized arguments` で毎回失敗する。
+            self.assertGreater(i, cmd.index("run"), "サブコマンド名より後ろに置く")
 
     def test_outer_granularity_does_not_leak_into_the_inner_graph(self):
         """外側を fine/coarse にしても内側は auto のまま（ノブの独立）。"""

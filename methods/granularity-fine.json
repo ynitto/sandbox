@@ -1,0 +1,1 @@
+{"id": "granularity-fine", "description": "分解の粒度: fine（単機能・単モジュール）", "selection": "engine", "enabled": false, "fragments": [{"role": "planner", "text": "分解の粒度: 各成果ノードは単機能・単モジュール（想定変更は約30行以内）。個数の目安は3–8。goal 先頭に [scope] と [out_of_scope] を付けること。"}], "origin": "design://2026-08-18-split-policy-catalog-unification-design"}

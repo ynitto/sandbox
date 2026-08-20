@@ -579,17 +579,22 @@ function designDocumentInstruction(config, options = {}) {
 
 // --- カタログのモデル宣言 -----------------------------------------------------
 // 手法カタログには 2 つのモデルが入る。
-//   rule     … プロンプトへ足す指示。さらに選ばれ方で 2 つに分かれる:
+//   rule     … プロンプトへ足す指示。さらに選ばれ方で 3 つに分かれる:
 //              auto     = 実行条件（役割・工程種別・実行レベル・料金区分）だけで決まる。
 //                         設定画面のトグルで自動適用する。
 //              per-task = 実行時にも機械判定できない「その工程への指示」。工程ごとに
 //                         人（または planner）が選ぶ。トグルの対象にしない。
+//              engine   = エンジンが run パラメータ（split_policy・granularity・tier 等）から
+//                         決定的に選ぶ指示文。文面の正典をカタログへ置いたもので、
+//                         トグルの対象にしない（enabled/when は選択に関与しない。
+//                         差し替えは同 id を .agents/methods/ に置く）。
 //   contract … 成果物の形式そのもの。指示（fragments）と機械で数える構造（format）を
 //              持ち、ON/OFF しない（成果物の種類ごとに 1 つ決まる）。
 // 無指定は rule / auto（既存定義の互換）。
-// 設計: docs/plans/2026-08-15-workflow-feature-improvement-implementation.md 第 4 段
+// 設計: docs/plans/2026-08-15-workflow-feature-improvement-implementation.md 第 4 段 /
+//       docs/plans/2026-08-18-split-policy-catalog-unification-design.md
 const METHOD_KINDS = ['rule', 'contract'];
-const RULE_SELECTIONS = ['auto', 'per-task'];
+const RULE_SELECTIONS = ['auto', 'per-task', 'engine'];
 
 function methodKind(method) {
   const kind = String((method && method.kind) || '').trim();
@@ -610,6 +615,12 @@ function autoRules(config, options = {}) {
 // 工程ごとに選ぶ作業ルール。契約は含めない。
 function perTaskRules(config, options = {}) {
   return availableMethods(config, options).filter((method) => ruleSelection(method) === 'per-task');
+}
+
+// エンジンが run パラメータで選ぶ指示文。availableMethods を通すので、対象リポジトリの
+// .agents/methods/ に同 id を置いた差し替えもここで解決済み。
+function engineRules(config, options = {}) {
+  return availableMethods(config, options).filter((method) => ruleSelection(method) === 'engine');
 }
 
 // この run で実際に効く自動適用ルール。同梱カタログの既定 ON と、利用者が設定画面で
@@ -1003,6 +1014,15 @@ function perTaskMethodsSnapshot(config, options = {}) {
   return (methodsSnapshot(config, ids, options) || []).map((snap) => ({ ...snap, enabled: false }));
 }
 
+// エンジン選択（selection: "engine"）の指示文も run tuning へ複製する（enabled: false のまま
+// ＝agentcore の自動注入対象にはしない）。agent-flow の engine_directive は run tuning を
+// 最優先で引くので、run 途中でカタログや対象リポジトリの .agents/methods/ が変わっても
+// 走り出した run の指示文は変わらない（per-task と同じ run 単位の決定性）。
+function engineMethodsSnapshot(config, options = {}) {
+  const ids = engineRules(config, options).map((method) => String(method.id));
+  return (methodsSnapshot(config, ids, options) || []).map((snap) => ({ ...snap, enabled: false }));
+}
+
 function runTuningDir(config, runId) {
   const root = String(cfgOf(config).tuningRoot || '').trim();
   return root ? path.join(root, runId) : agentHomeSubdir('flow', 'tuning', runId);
@@ -1139,9 +1159,18 @@ function submit(config, {
   // この run へ複製する手法。自動適用ルール（同梱の既定 ON ＋ 利用者が有効化したもの）と、
   // プリセットが名指しした手法の和。run 単位で複製するので、後からカタログや端末設定を
   // 変えても走り出した run の振る舞いは変わらない。
-  const picked = (p ? p.methods : snapshot.methods) || [];
+  // プリセットが名指しした id のうち、自動適用の対象（selection: auto）だけを enabled: true で
+  // 複製する。per-task / engine の id が混ざっても enabled にはしない——それぞれ下の
+  // カタログ複製（enabled: false）で運ばれ、工程の選択・実行パラメータで効く。ここで
+  // enabled にすると、選んでいない工程や矛盾する実行パラメータにも本文が効いてしまう。
+  // 未知の id は落とさない——存在しない手法を名指ししたプリセットは、これまでどおり
+  // methodsSnapshot が明示的に失敗させる（黙って無視すると気付けない）。
+  const selectionById = new Map(availableMethods(config, { cwd })
+    .map((method) => [String(method.id), ruleSelection(method)]));
+  const picked = ((p ? p.methods : snapshot.methods) || []).map(String)
+    .filter((id) => !selectionById.has(id) || selectionById.get(id) === 'auto');
   const methodIds = [...new Set([
-    ...picked.map(String),
+    ...picked,
     ...enabledAutoRuleIds(config, { cwd }),
   ])];
   const methods = methodsSnapshot(config, methodIds, { cwd }) || [];
@@ -1151,7 +1180,12 @@ function submit(config, {
   // ノード（type: auto・パターン）へも per-task ルールを届けるための唯一の口。
   const perTaskCatalog = perTaskMethodsSnapshot(config, { cwd })
     .filter((method) => !methodIds.includes(String(method.id)));
-  const allMethods = [...methods, ...perTaskCatalog];
+  // エンジン選択の指示文も同じ器で複製する。agent-flow の engine_directive は run tuning を
+  // 最優先で引くため、対象リポジトリの .agents/methods/ 差し替えが dashboard 経由の run
+  // （agent-flow の cwd がリポジトリ外）にも run 単位の決定性つきで届く唯一の口。
+  const engineCatalog = engineMethodsSnapshot(config, { cwd })
+    .filter((method) => !methodIds.includes(String(method.id)));
+  const allMethods = [...methods, ...perTaskCatalog, ...engineCatalog];
   const tuningDir = allMethods.length ? writeRunTuning(config, runId, allMethods) : null;
 
   const line = buildLaunchLine(config, {
@@ -1276,6 +1310,7 @@ function listProjects(config) {
 module.exports = {
   SUBMITTER,
   NODE_KINDS,
+  WORKFLOW_PURPOSES,
   COHERENCE_COMMAND,
   buildVerificationPlan,
   resolveBusDir,
@@ -1310,9 +1345,11 @@ module.exports = {
   ruleSelection,
   autoRules,
   perTaskRules,
+  engineRules,
   enabledAutoRuleIds,
   methodsSnapshot,
   perTaskMethodsSnapshot,
+  engineMethodsSnapshot,
   designDocumentFormat,
   designDocumentInstruction,
   writeRunTuning,

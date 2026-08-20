@@ -311,6 +311,98 @@ class SpawnArgvTests(unittest.TestCase):
         self.assertEqual(parsed.inherit_from, "run-prev")
         self.assertEqual(parsed.run_id, "run-43")
 
+    # --- 計画パラメータの置き場（グローバル → サブコマンド） -----------------
+    # `--granularity` / `--split-policy` / `--exemplar-first` / `--plan-gate` 系は計画する
+    # サブコマンド（run / orchestrate）だけの引数へ移した。以前はグローバルだったため
+    # `agent-flow --granularity finest doctor` のように計画しないサブコマンドでも受理され、
+    # 指定が黙って捨てられていた。置き場を戻すと子が usage エラーで即死する。
+
+    def test_planning_args_land_after_the_subcommand_name(self):
+        args = self._args(granularity="coarse", split_policy="file", exemplar_first=True,
+                          plan_gate=True, plan_gate_timeout=120.0)
+        cmd = self._capture(kf._spawn_orchestrator, self._base(), args, "run-44",
+                            {"request": "do it"})
+        after = cmd[cmd.index("orchestrate"):]
+        for flag in ("--granularity", "--split-policy", "--exemplar-first", "--plan-gate",
+                     "--plan-gate-timeout"):
+            self.assertIn(flag, after, flag)
+        parsed = self._parse_child(cmd)
+        self.assertEqual(parsed.granularity, "coarse")
+        self.assertEqual(parsed.split_policy, "file")
+        self.assertTrue(parsed.exemplar_first)
+        self.assertTrue(parsed.plan_gate)
+        self.assertEqual(parsed.plan_gate_timeout, 120.0)
+
+    def test_inbox_pattern_wins_over_the_configured_one(self):
+        # 要求が名指しした標準パターンが、設定ファイル由来の pattern より優先される。
+        args = self._args(pattern="tournament")
+        cmd = self._capture(kf._spawn_orchestrator, self._base(), args, "run-45",
+                            {"request": "do it", "pattern": "map-reduce"})
+        self.assertEqual(self._parse_child(cmd).pattern, "map-reduce")
+        cmd = self._capture(kf._spawn_orchestrator, self._base(), args, "run-46",
+                            {"request": "do it"})
+        self.assertEqual(self._parse_child(cmd).pattern, "tournament")
+
+    def test_non_planning_subcommands_reject_planning_args(self):
+        # 意味のないオプションを黙って受け取らない（usage エラー = rc 2 で断る）。
+        parser = kf.build_parser()
+        for argv in (["--granularity", "finest", "doctor"],
+                     ["--split-policy", "file", "status"],
+                     ["--exemplar-first", "work"],
+                     ["--plan-gate", "participate"]):
+            with self.assertRaises(SystemExit, msg=argv), \
+                 contextlib.redirect_stderr(io.StringIO()):
+                parser.parse_args(argv)
+
+    def test_cmd_run_gives_planning_args_to_the_orchestrator_only(self):
+        # worker（`work`）は計画しない。計画パラメータを base（orchestrator と worker の共通
+        # 部分）へ積んでいた頃は、意味の無いまま worker にも渡っていた。サブコマンドの引数へ
+        # 移した今は worker の argv に混ざると usage エラーで即死するので、両方を実パーサで見る。
+        bus = tempfile.mkdtemp(prefix="kf-bus-planning-")
+        self.addCleanup(shutil.rmtree, bus, ignore_errors=True)
+        spawned = []
+
+        class _FakePopen:
+            def __init__(self, cmd, *a, **k):
+                spawned.append(cmd)
+            def poll(self): return 0
+            def wait(self, *a, **k): return 0
+            def terminate(self): pass
+
+        args = argparse.Namespace(
+            config=None, bus=bus, git=None, git_branch="main", git_subdir=None, lease=30.0,
+            run_id="run-planning", workers=1, request="x", planner="stub", executor=None,
+            model=None, poll=0.01, max_iterations=1, max_fanout=4, max_retries=1, review=None,
+            granularity="coarse", split_policy="file", exemplar_first=True, plan_gate=True,
+            plan_gate_timeout=90.0, cleanup_clone=True, repos=None, keep_clone=False)
+        kf.resolve_config(args)
+        fake_bus = mock.Mock()
+        fake_bus.run_exists.return_value = False   # 新規 run（再開だと request が Mock になる）
+        fake_bus.run_is_orphaned.return_value = False
+        fake_bus.retry_failed.return_value = []
+        with mock.patch.object(kf.subprocess, "Popen", _FakePopen), \
+             mock.patch.object(kf, "make_bus", lambda *a, **k: fake_bus):
+            try:
+                kf.cmd_run(args)
+            except Exception:
+                pass   # bus/poll をモックしているので途中で抜けてよい（argv だけ検証する）
+        # bus をモックしているので Mock 値を含む argv が混ざりうる。実パーサに掛けられる
+        # （全要素が文字列の）agent-flow の子だけを見る。
+        argvs = [c for c in spawned
+                 if c and c[0] == sys.executable and all(isinstance(x, str) for x in c)]
+        children = [self._parse_child(c) for c in argvs]
+        by_cmd = {c.cmd: c for c in children}
+        self.assertIn("orchestrate", by_cmd, "orchestrator が起動されていない")
+        self.assertIn("work", by_cmd, "worker が起動されていない")
+        orch = by_cmd["orchestrate"]
+        self.assertEqual((orch.granularity, orch.split_policy), ("coarse", "file"))
+        self.assertTrue(orch.exemplar_first)
+        self.assertTrue(orch.plan_gate)
+        self.assertEqual(orch.plan_gate_timeout, 90.0)
+        worker_argv = [c for c in argvs if "work" in c][0]
+        for flag in ("--granularity", "--split-policy", "--exemplar-first", "--plan-gate"):
+            self.assertNotIn(flag, worker_argv, flag)
+
 
 class WorkerWhoTests(unittest.TestCase):
     """worker の名義（バス上の `who`）に PC 名が入ること。

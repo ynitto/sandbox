@@ -75,7 +75,7 @@ kind は 13 種で、正典は `agentcore.nodecontract.VALID_KINDS` です。
 
 | コマンド | 用途 |
 |---|---|
-| `run [要求]` | 単発実行。既存 run-id なら再開、なければ新規。`--from-inbox` で要求を inbox から読む。`--plan-file` / `--pattern` / `--workers` / `--review` / `--no-review` |
+| `run [要求]` | 単発実行。既存 run-id なら再開、なければ新規。`--from-inbox` で要求を inbox から読む。`--workers` のほか計画パラメータ（下記）を受ける |
 | `participate` | 受理と回収の 1 巡（cancel 受理・park 再確認・孤児 run の引き継ぎ判断・板巡回・inbox 受理）。実行はせず、実行すべき run-id を返す。`--running` に自分が走らせている run-id を必ず渡す |
 | `orchestrate` / `work` | 内部コマンド。`run` が起こす |
 | `cancel <run-id>` | 恒久停止。`--close-issues` で起票済みイシューも後始末 |
@@ -88,7 +88,16 @@ kind は 13 種で、正典は `agentcore.nodecontract.VALID_KINDS` です。
 
 サブコマンドを省略すると案内を出して rc=2 で終了します。裸起動を黙って常駐にすると、常駐体（`agent-project serve`）と二重に回って inbox の要求を奪い合うためです。未知の executor 名も起動前に rc=2 で断ります。
 
-グローバル引数は `--config` `--bus` `--run-id` `--git` `--git-branch` `--git-subdir` `--board` `--node-declaration` `--state-git`（`-branch` / `-subdir` / `-interval`）`--executor-dir` `--workspace` `--verification-plan` `--reference`（繰り返し可）`--agent-cli` `--granularity` `--exemplar-first` `--plan-gate` / `--no-plan-gate` / `--plan-gate-timeout` `--lease` `--argv-limit` `--keep-clone` `--cleanup-per-node` `--no-global-instructions` `--context-file` `--no-session-commands` です。`--tier` はありません。tier は agent-control の workload 宣言から読みます（§2.3）。
+グローバル引数は run 全体の器（バス・転送・実行資源）に関わるものだけです: `--config` `--bus` `--run-id` `--git` `--git-branch` `--git-subdir` `--board` `--node-declaration` `--state-git`（`-branch` / `-subdir` / `-interval`）`--executor-dir` `--workspace` `--verification-plan` `--reference`（繰り返し可）`--agent-cli` `--lease` `--argv-limit` `--keep-clone` `--cleanup-per-node` `--no-global-instructions` `--context-file` `--knowledge-file` `--no-session-commands`。`--tier` はありません。tier は agent-control の workload 宣言から読みます（§2.3）。
+
+**計画パラメータは `run` / `orchestrate`（＝実際に計画するサブコマンド）の引数**で、グローバルではありません。計画しないサブコマンドに書くと usage エラー（rc=2）で断ります——グローバルに置いていた頃は `agent-flow --granularity finest doctor` のような指定を受理して黙って捨てていました。`run` と `orchestrate` は同じ定義を共有するので、同じ名前・同じ既定・同じ choices です。`--help` では 2 群に分かれます:
+
+| 群 | 引数 | 決まるタイミング |
+|---|---|---|
+| 計画（形と分け方） | `--planner` `--pattern` `--plan-file` `--granularity` `--review` / `--no-review` `--plan-gate` / `--no-plan-gate` / `--plan-gate-timeout` | 計画時 |
+| 動的 fan-out（split → map → reduce） | `--split-policy` `--max-fanout` `--exemplar-first` | 実行中（split の出力で展開数が決まる） |
+
+いずれも設定ファイルの同名キー（snake_case）と同義で、CLI 指定が優先します（§2.2）。子プロセス（orchestrator）へは親が解決済みの値を argv で運びます——子の cwd が親と同じ設定ファイルを見つけられるとは限らないためです。ワーカー（`work`）には渡しません（計画しないので意味がない）。
 
 ---
 
@@ -193,7 +202,7 @@ tier（実行段）は `control.workloads.flow.tier` を読みます。`basic` �
 | `plan` | dict | ユーザー定義フロー（§3.2）。`plan.nodes` があるときだけ |
 | `pattern` | str | 標準パターン名の明示選択 |
 
-`plan` と `verification_plan` は inbox が唯一の権威です。呼び出し側が argv へ転記する必要はなく、argv とバスの両方にあるときだけ CLI 引数が勝ちます。`granularity` と `tier` は inbox のキーではありません（前者はグローバル引数・設定、後者は agent-control）。
+`plan` と `verification_plan` は inbox が唯一の権威です。呼び出し側が argv へ転記する必要はなく、argv とバスの両方にあるときだけ CLI 引数が勝ちます。`granularity` と `tier` は inbox のキーではありません（前者は `run` / `orchestrate` の引数・設定、後者は agent-control）。
 
 `workspace` に作業ブランチと別の `target` がある run は、system node `base-sync` が先頭に入り、全 root ノードはその完了後に開始します。target がすでに作業ブランチの祖先なら no-op、進んでいれば通常 merge、競合時だけ worker に競合ファイルの編集を任せます（履歴操作は渡さない）。競合解消に失敗した run は integration failure として終端し、fetch 失敗だけが transient です。
 

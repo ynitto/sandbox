@@ -19,6 +19,9 @@
     "doc-follow-through": "08c9b64ac18e",
     "evidence-or-fail": "9553ab93006e",
     "failure-modes-first": "3b1189b9f9be",
+    "granularity-coarse": "10f1e1451cb5",
+    "granularity-fine": "00044f9cad78",
+    "granularity-finest": "968ddeb04dfb",
     "integration-verify": "083e24e6ddc4",
     "no-self-approval": "09b28cd1a98d",
     "one-change-per-step": "ddc6cb3c9a57",
@@ -29,11 +32,16 @@
     "plan-first": "20eab525b157",
     "plan-reflect-each-tool": "226d2a02bd72",
     "restate-task": "8c090c87dd8a",
+    "review-lenses": "e6b5b291e712",
     "scope-guard": "89e5d3a1e73d",
     "self-consistency": "af0e1368a407",
     "spec-first": "85a6736bbedb",
+    "split-policy-behavior": "59aad532cfef",
+    "split-policy-file": "7f59ecb099c5",
     "test-first": "07ffff0e5346",
     "test-green-evidence": "1128d91d2f06",
+    "tier-basic-split": "9b3b78ef5fde",
+    "tier-basic": "64cb8ba7616e",
     "ui-consistency": "531a037dcb9b"
   }
 }

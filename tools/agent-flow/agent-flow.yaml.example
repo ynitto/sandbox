@@ -98,6 +98,9 @@ executor: agent            # ワーカーバス: 組み込み agent（エージ�
 #     agent_cli: ollama-json#  2026-08-08-agent-ollama-expansion-design.md §3・§4）。JSON 契約の役割は
 #     model: qwen3         #   ollama-json（--format json で文法から強制）を使う。
 #     readonly: true       #   壁時計は伸びるので agent_timeout も併せて上げる（例 3600）。
+# pattern: map-reduce      # 標準ワークフローパターンの明示選択（--pattern と同義）。既定は未指定＝
+                           # planner が選ぶ。名前は `agent-flow patterns` で一覧できる。
+                           # 不正な名前は run の開始時に断る（黙って自動選択へ倒さない）。
 granularity: auto          # タスク分解の細かさ: auto(complexity導出・既定)/coarse/fine/finest(明示優先)。
                            # flow-planner は絶対レンジ＋スコープ契約。stub/agent は明示時のみ並列倍率。
                            # 要求に "x3"/"並列3" の明示があればそれを尊重（倍率を効かせない）。
