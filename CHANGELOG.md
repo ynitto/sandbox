@@ -7,6 +7,42 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-flow の設計書・仕様書を実装と突き合わせて全面改訂した
+
+機能拡張のたびに節を足していたため、両書ともパッチワークになっていた。実装（`tools/agent-flow/`
+31 断片・約 12,400 行）と `docs/plans/` の設計と全件照合し、`slop-police` の設計書規約
+（結論先出し・却下案つきの判断・強弱・省略）で組み直す。
+
+- **設計書の判断を 7 個から 5 個へ**。「通信はファイルだけ」と「状態はファイルの存在から導く」は
+  同じ公理の表裏なので 1 判断に統合し、park & poll は判断ではなく実行の流れの一節へ落とした。
+  判断の番号が変わったので、参照側（`cli.py` / `adhoc.js` / カスタマイズ地図）も付け替えた
+  ——**旧「判断 7」は新「判断 5」**（振る舞いを変える口の 4 層）
+- **文書に無かった実装を追記**。run の完了条件（終端 `verify` が緑・赤なら `[verification]` で
+  failed 終端）、公開レコードと復旧 ref・`force-complete`、公開後の CI 取り込み
+  （`ci_status_command` ほか・既定 off・読めない出力は `unknown`）、`repair_retry` /
+  `prompt_table` などのオプトイン、inbox の `execution_overrides`
+- **GitLab を中心から外した**。park & poll も `--close-issues` も executor 非依存の機構なのに、
+  両書とも GitLab 委譲を前提に説明していた。承認待ちは `human` ノードと `plan_gate` で足りる
+  ことを主経路として書き、同梱の `gitlab` プラグインは「推奨しないオプション」と明記した。
+  `watch_interval` も `gitlab.` 固定ではなく `<executor>.` として書き直した
+- **数値と一覧を実装に合わせた**。テストは 26 ファイル・約 900 件 → 30 ファイル・1,027 件、
+  実行コマンドは pytest → CI・README と同じ `unittest discover`。`force-complete` を
+  コマンド表へ、`pattern` / `split_policy` / `stub_sleep_max` を設定キー表へ、
+  `AGENT_CI_*` を環境変数表へ追加した
+
+### agent-flow: inbox 要求の `pattern` が設定ファイルに黙って負けていた
+
+計画パラメータの優先順位は **CLI 引数 > inbox 要求 > 設定ファイル > 既定** と決めてあるのに、
+`pattern` だけが専用分岐で「`args.pattern` が未設定なら要求の値を載せる」形だった。
+`resolve_config` が先に設定ファイルの値を `args` へ埋めるため、`agent-flow.yaml` に `pattern` を
+書いたノードでは dashboard が指定した標準フローが黙って無視されていた（`granularity` /
+`split_policy` は `_cli_explicit` で正しく見分けていたので、`pattern` だけが取り残されていた）。
+
+- `pattern` を `_INBOX_PLANNING_KEYS` へ移し、他の計画パラメータと同じ経路で解決する。
+  ついでに語彙検査も効くようになり、未知のパターン名は受理の時点で `InboxRequestError`
+  （従来は子プロセスの argparse が usage エラーで落ち、理由が子の stderr にしか残らなかった）
+- 回帰テストを 3 件追加（設定ファイルに勝つ / CLI に負ける / 未知の名前を断る）
+
 ### 設定の要点を設計書へ転記し、カスタマイズ地図を作業記録へ移した
 
 `docs/designs/workflow-customization-map.md` は 2026-08-19 の調査で作った作業時点の地図で、

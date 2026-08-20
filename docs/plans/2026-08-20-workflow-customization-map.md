@@ -2,7 +2,7 @@
 
 > 2026-08-19 の調査で作った地図に、2026-08-20 の整理（§0 の穴 3 件の解消と CLI の層別整理）を
 > 反映したもの。**設計の正典ではない**——恒久的な設計判断は
-> [agent-flow 設計書](../designs/agent-flow-design.md)「7. 振る舞いを変える口を層で分け、層ごとに 1 つの名前で通す」に
+> [agent-flow 設計書](../designs/agent-flow-design.md)「5. 振る舞いを変える口を層で分け、層ごとに 1 つの名前で通す」に
 > 転記済みで、ここはその周辺を 1 枚に広げた作業時点の案内として残す。
 
 「ワークフローの振る舞いを変えたい」ときに、**どこを触ればよいか / なぜその置き場所なのか**を
@@ -232,7 +232,7 @@ dashboard が run へ渡せる実行時指定（`executionOverrides`）は tier 
 
 ## 参照
 
-- `docs/designs/agent-flow-design.md`「7. 振る舞いを変える口を層で分け、層ごとに 1 つの名前で通す」 — 4 層と優先順位の設計判断（正典）
+- `docs/designs/agent-flow-design.md`「5. 振る舞いを変える口を層で分け、層ごとに 1 つの名前で通す」 — 4 層と優先順位の設計判断（正典）
 - `docs/plans/2026-08-18-split-policy-catalog-unification-design.md` — `selection: "engine"` の設計（正典）
 - `schemas/agent-workflow.schema.json` — ワークフロー定義の契約
 - `docs/plans/2026-08-15-workflow-feature-improvement-implementation.md` — auto / per-task の導入
