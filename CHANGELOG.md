@@ -7,6 +7,34 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### dashboard から分解の粒度・分割の単位を指定できるようにした
+
+dashboard が run へ渡せる実行時指定（`execution_overrides`）は tier / agent_cli / model
+＝**L4 実行資源だけ**で、`granularity` も `split_policy` も画面からは設定できなかった
+（CLI と設定ファイル専用）。`docs/designs/workflow-customization-map.md` が挙げた最後の穴。
+
+- **層ごとに別のキーで運ぶ**: `execution_overrides` へ相乗りさせず、inbox のトップレベルに
+  `granularity` / `split_policy` を置いた。あちらは「役割・工程ごとに誰が実行するか」、
+  こちらは「run 全体をどう分けるか」で、適用単位が違う。キー名は agent-flow の設定キーと、
+  値の語彙は CLI の `--granularity` / `--split-policy` とそのまま同じ
+- **優先順位は CLI 引数 > inbox 要求 > 設定ファイル > 既定**。要求は run 単位の意思なので
+  そのノードの `agent-flow.yaml` より強く、人がその場で打った CLI 引数には負ける。
+  `resolve_config` が「CLI で明示されたキー」を控えるようにして両者を見分ける——既定が
+  偽値でない（`granularity: auto` など）キーは、これが無いと区別できなかった
+- **未指定はキーを書かない**。画面が対象フォルダの設定を黙って上書きしないため、投入側が
+  「指定しない」を表現できる。`auto` は「complexity から導出する」という明示の選択として通す
+- **語彙外の値は起動前に断る**（`InboxRequestError`）。`split_policy()` などの解決関数は未知値を
+  既定へ丸めるので、素通しすると誤記が「指定したのに効かない run」として静かに走る。
+  daemon のオンデマンド起動もフェイルクローズで、要求を残したまま理由をログへ出す
+- 画面の入口は実行前の確認ダイアログの「分け方を指定する」。選べる値は main（agent-flow と
+  同じ語彙）が実行前プレビューで配り、画面側は持たない
+
+契約検証: `tools/agent-flow/tests/test_run.py`（6 件追加: 要求が設定ファイルに勝つこと・CLI が
+要求に勝つこと・キーが無ければ既定挙動が変わらないこと・語彙外の拒否・daemon 起動が要求の値を
+使うこと・壊れた要求の拒否）/ `tools/agent-dashboard/test/adhoc-flow.test.js`（4 件追加:
+inbox への書き込みと再実行への引き継ぎ・未指定でキーを書かないこと・語彙外の拒否・画面の
+ラベルが語彙を網羅すること）
+
 ### agent-loop: サブコマンドに効かないオプションを断るようにした
 
 `--split-direction` / `--no-auto-attach` / `--controller-mode` / `--instance-id` は tmux ペインの

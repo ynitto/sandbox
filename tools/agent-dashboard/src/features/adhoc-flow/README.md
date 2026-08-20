@@ -31,6 +31,13 @@
   `.agents/methods/*.json` を読み取り専用で探索する。同じ id はリポジトリ版を優先する。
   選択時に本文と source hash をワークフローのノードへ複製するため、後から手法ファイルが
   変わっても保存済みワークフローの振る舞いが暗黙に変わることはない。
+- 実行前の確認ダイアログでは「誰が実行するか」（役割・工程ごとの tier / エージェント / モデル）に
+  加えて、「どう分けるか」を **分け方** の節で指定できる: 分解の粒度（`granularity`）と分割の単位
+  （`split_policy`）。この 2 つは実行資源とは別の層なので、`execution_overrides` に相乗りさせず
+  inbox のトップレベルへ別キーで載せる。キー名は agent-flow の設定キーと、値の語彙は CLI の
+  `--granularity` / `--split-policy` とそのまま同じ。未指定なら**キーを書かない**——画面が対象
+  フォルダの `agent-flow.yaml` を黙って上書きしないため。優先順位は CLI 引数 > inbox 要求 >
+  設定ファイル > 既定で、語彙外の値は投入前に断る。
 - 実装 run は inbox の `workspace` に cwd のリポジトリと現在の branch/HEAD を固定し、成果は `af/<run-id>` branch に保存する。
 - 設計 run は `workspace: null` の短命な読み取り専用 run とする。対象 cwd を参照してもファイルを変更せず、
   commit / push / ブランチ作成を禁止し、`af/` ブランチを作らない。agent-flow の run / plan / workspace 契約は

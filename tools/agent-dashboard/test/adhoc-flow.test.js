@@ -2099,6 +2099,77 @@ test('engineMethodsSnapshot は enabled を必ず false へ落とし、run tunin
   }
 });
 
+// 分け方（L2）は画面から触れなかった穴。実行資源（L4）の executionOverrides とは
+// 別の層なので、別キーで inbox のトップレベルへ載せる。キー名は agent-flow の設定キーと同じ。
+test('分け方（granularity / split_policy）を inbox のトップレベルへ載せ、再実行にも引き継ぐ', () => {
+  const cfg = { adhocFlow: { busDir: tmpdir('adhoc-run-planning-') } };
+  const originalExec = exec.shInWsl;
+  exec.shInWsl = () => ({ status: 0, stdout: 'launched:1', stderr: '' });
+  try {
+    const first = adhoc.submit(cfg, {
+      request: '実装する', granularity: 'finest', splitPolicy: 'file',
+    });
+    const inbox = adhoc.readInbox(cfg.adhocFlow.busDir, first.runId);
+    assert.strictEqual(inbox.granularity, 'finest');
+    assert.strictEqual(inbox.split_policy, 'file');
+    // 実行資源の器へ混ざっていないこと（層を分けたままにする）
+    assert.strictEqual(inbox.execution_overrides, undefined);
+    const second = adhoc.resubmit(cfg, first.runId);
+    const again = adhoc.readInbox(cfg.adhocFlow.busDir, second.runId);
+    assert.strictEqual(again.granularity, 'finest');
+    assert.strictEqual(again.split_policy, 'file');
+  } finally {
+    exec.shInWsl = originalExec;
+  }
+});
+
+test('分け方は未指定ならキーを書かない（画面が設定ファイルの値を上書きしない）', () => {
+  const cfg = { adhocFlow: { busDir: tmpdir('adhoc-run-planning-none-') } };
+  const originalExec = exec.shInWsl;
+  exec.shInWsl = () => ({ status: 0, stdout: 'launched:1', stderr: '' });
+  try {
+    const result = adhoc.submit(cfg, { request: '実装する' });
+    const inbox = adhoc.readInbox(cfg.adhocFlow.busDir, result.runId);
+    assert.ok(!('granularity' in inbox), 'granularity を書かない');
+    assert.ok(!('split_policy' in inbox), 'split_policy を書かない');
+    // 空文字も「未指定」として扱う（select の先頭が空値のため）
+    const blank = adhoc.submit(cfg, { request: '実装する', granularity: '', splitPolicy: '' });
+    assert.ok(!('granularity' in adhoc.readInbox(cfg.adhocFlow.busDir, blank.runId)));
+  } finally {
+    exec.shInWsl = originalExec;
+  }
+});
+
+test('分け方の語彙外の値は投入前に断る', () => {
+  assert.throws(() => adhoc.normalizePlanning({ granularity: 'medium' }), /分解の粒度/);
+  assert.throws(() => adhoc.normalizePlanning({ splitPolicy: 'module' }), /分割の単位/);
+  // auto は「complexity から導出する」という明示の選択なので値として通る
+  assert.deepStrictEqual(adhoc.normalizePlanning({ granularity: 'auto' }), { granularity: 'auto' });
+});
+
+test('分け方の語彙は画面が持たず、実行前プレビューが配る', () => {
+  const preview = adhoc.executionAssignmentPreview({});
+  assert.deepStrictEqual(preview.planning.granularity, adhoc.PLANNING_GRANULARITIES);
+  assert.deepStrictEqual(preview.planning.splitPolicy, adhoc.PLANNING_SPLIT_POLICIES);
+  // 画面側のラベルが語彙を網羅していること（値を足したのに選べない、を防ぐ）
+  for (const field of workflowUi.PLANNING_FIELDS) {
+    for (const value of preview.planning[field.vocabulary]) {
+      assert.ok(field.labels[value], `${field.key} のラベルが無い: ${value}`);
+    }
+  }
+  const previousEsc = global.esc;
+  global.esc = (value) => String(value);
+  try {
+    const html = workflowUi.planningFieldsHtml(preview, { granularity: 'finest' });
+    assert.match(html, /data-exec-planning="granularity"/);
+    assert.match(html, /data-exec-planning="splitPolicy"/);
+    assert.match(html, /value="finest" selected/);
+    assert.match(html, /未指定（設定に従う）/);
+  } finally {
+    global.esc = previousEsc;
+  }
+});
+
 test('実行時指定は tier を候補へ解決して inbox に固定し、再実行にも引き継ぐ', () => {
   const cfg = { adhocFlow: { busDir: tmpdir('adhoc-run-overrides-') } };
   const originalExec = exec.shInWsl;

@@ -693,7 +693,7 @@ function registerIpc(ctx) {
     }, adhoc.designDocumentFormat(cfg, { cwd: item.cwd }));
     return { item: preparation.saveItem(cfg, next), session };
   });
-  handle('preparation:handoff', ({ id, executionOverrides } = {}) => {
+  handle('preparation:handoff', ({ id, executionOverrides, granularity, splitPolicy } = {}) => {
     const cfg = loadConfig();
     const item = preparation.getItem(cfg, String(id || ''));
     const designFormat = adhoc.designDocumentFormat(cfg, { cwd: item && item.cwd });
@@ -719,6 +719,10 @@ function registerIpc(ctx) {
       request: preparation.implementationRequest(item),
       selection: { type: 'auto' },
       ...(executionOverrides ? { executionOverrides } : {}),
+      // 分け方（L2）は実行前の確認で人が選べる。未指定なら渡さない
+      // ＝ノード側の agent-flow.yaml / 既定に従う（画面が既定を上書きしない）。
+      ...(granularity ? { granularity } : {}),
+      ...(splitPolicy ? { splitPolicy } : {}),
     });
     const next = preparation.recordHandoff(item, { runId: result.runId }, designFormat);
     return { item: preparation.saveItem(cfg, next), result };

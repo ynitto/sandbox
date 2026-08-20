@@ -160,13 +160,23 @@ tier の auto→finest 分岐、レビュー観点のキー）は**エンジン�
 
 ---
 
-## 5. 現状の穴（このまとめで見つかったもの・未修正）
+## 5. 現状の穴（このまとめで見つかったもの）
 
-### dashboard から L2 を触れない
+このまとめで挙げた 3 件（`--split-policy` が既定 planner で無視される / ワークフロー定義に
+JSON Schema が無い / dashboard から L2 を触れない）は 2026-08-20 にすべて解消した。
+最後の 1 件の顛末だけ、層の分け方の実例として残す。
 
-dashboard が run へ渡せる実行時指定（`executionOverrides`）は tier / agent_cli / model だけ。
-`granularity` も `split_policy` も**画面からは設定できない**（CLI と設定ファイル専用）。
-「分解の粒度を画面で変えたい」という要望が出たらここが対象になる。
+### dashboard から L2 を触れない（解消済み）
+
+dashboard が run へ渡せる実行時指定（`executionOverrides`）は tier / agent_cli / model
+＝**L4 実行資源だけ**で、`granularity` も `split_policy` も画面からは設定できなかった。
+
+直し方として `executionOverrides` に相乗りさせる手もあったが、**別の層は別のキーで運ぶ**
+方針を採った。あちらは「役割・工程ごとに誰が実行するか」、こちらは「run 全体をどう分けるか」で、
+粒度も適用単位も違う。inbox のトップレベルへ `granularity` / `split_policy` を置き、キー名は
+設定ファイルのキーと、値の語彙は CLI とそのまま揃えてある（§1 の「同じオプション名で扱う」）。
+画面の入口は実行前の確認ダイアログの「分け方を指定する」で、未指定なら値を書かない
+——画面が対象フォルダの `agent-flow.yaml` を黙って上書きしないため。
 
 ---
 
@@ -178,8 +188,8 @@ dashboard が run へ渡せる実行時指定（`executionOverrides`）は tier 
 | いつも同じ追加指示を効かせたい | 手法カタログ（`selection: auto`）＋ dashboard でトグル ON |
 | 特定の工程にだけ指示を足したい | 手法カタログ（`selection: per-task`）＋ 工程で選ぶ |
 | 分割方針の**文面**をプロジェクト用に書き換えたい | `<repo>/.agents/methods/split-policy-file.json` |
-| 分割方針そのもの（behavior/file）を切り替えたい | `--split-policy` / 設定 `split_policy` |
-| 分解の粒度を変えたい | `--granularity` / 設定 `granularity` |
+| 分割方針そのもの（behavior/file）を切り替えたい | `--split-policy` / 設定 `split_policy` / dashboard の実行前の確認 |
+| 分解の粒度を変えたい | `--granularity` / 設定 `granularity` / dashboard の実行前の確認 |
 | 実行する CLI・モデル・予算を変えたい | dashboard の実行方針（agent-control / agent-profiles / node-budget） |
 | 全ノード共通の指示を配りたい | agent-instructions（dashboard の共通指示） |
 

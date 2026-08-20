@@ -74,7 +74,13 @@ def _resume_run(bus: Bus, daemon_id: str, args, base: list, req_id: str, req: di
     max_r = int(getattr(args, "max_resumes", 3) or 0)
     if n > max_r:
         return None
-    p = (spawn or _spawn_orchestrator)(base, args, req_id, req)
+    try:
+        p = (spawn or _spawn_orchestrator)(base, args, req_id, req)
+    except InboxRequestError as e:
+        # 要求の内容が契約に合わない（手書きの inbox など）。起動せず理由を残す——
+        # 誤った分け方で走らせるより、要求を残して人が直せる状態にする（フェイルクローズ）。
+        log(daemon_id, f"run {req_id} を再開できません: {e}")
+        return None
     view = bus.run_view(req_id)
     view.set_phase("executing" if view.read_graph() else "planning", daemon_id)
     bus.touch_run(req_id, lease_window)   # 引き継ぎ直後に生存リースを張る（孤児の再判定を防ぐ）
@@ -239,7 +245,12 @@ def _heal_failed_runs(bus: Bus, daemon_id: str, owned: set, lease_window: float,
             log(daemon_id, f"auto-heal 打ち切り: {rid}（進捗なし {n - 1} 回）→ failed のまま人/消費者へ")
             continue
         reset = bus.run_view(rid).retry_failed(clear_heal=False)
-        p = (spawn or _spawn_orchestrator)(base, args, rid, req)
+        try:
+            p = (spawn or _spawn_orchestrator)(base, args, rid, req)
+        except InboxRequestError as e:
+            log(daemon_id, f"run {rid} を heal できません: {e}")
+            continue
+
         bus.touch_run(rid, lease_window)
         bus.run_view(rid).event(daemon_id, "run-healed", run=rid, heal=n,
                                 cls=cls, reset=len(reset))
@@ -248,7 +259,7 @@ def _heal_failed_runs(bus: Bus, daemon_id: str, owned: set, lease_window: float,
     return healed
 
 
-def _planning_args(args, pattern: "str | None" = None) -> list:
+def _planning_args(args, request: "dict | None" = None) -> list:
     """orchestrator の argv へ足す計画パラメータ（run / orchestrate サブコマンドの引数）。
 
     グローバル引数だった頃は `base`（worker の起動にも使う共通部分）へ積んでいたため、計画を
@@ -257,12 +268,19 @@ def _planning_args(args, pattern: "str | None" = None) -> list:
 
     値は `resolve_config` が確定済み（CLI > 設定ファイル > 既定）。既定と同じ値でも明示して
     渡すのは、子プロセスの cwd が親と違い**同じ設定ファイルを見つけられるとは限らない**ため
-    （親が解決した値を argv で運ぶのが唯一の確実な伝達路）。`pattern` は inbox 要求が
-    名指しする場合があるので引数で上書きできる。
+    （親が解決した値を argv で運ぶのが唯一の確実な伝達路）。
+
+    `request`（inbox 要求のレコード）を渡すと、そこで名指しされた形・分け方が優先される。
+    daemon のオンデマンド起動（`_spawn_orchestrator`）は要求ごとに別の run を起こすので、
+    daemon 自身の args ではなく要求の内容が正典になる。`cmd_run` の経路では
+    `_apply_inbox_request` が先に args へ載せているため、ここでは渡さない。
     """
-    pat = pattern if pattern is not None else getattr(args, "pattern", None)
-    out = ["--granularity", str(getattr(args, "granularity", "auto") or "auto"),
-           "--split-policy", str(getattr(args, "split_policy", "behavior") or "behavior")]
+    named = request if isinstance(request, dict) else {}
+    _check_inbox_planning(named)
+    pat = named.get("pattern") or getattr(args, "pattern", None)
+    granularity = named.get("granularity") or getattr(args, "granularity", "auto") or "auto"
+    policy = named.get("split_policy") or getattr(args, "split_policy", "behavior") or "behavior"
+    out = ["--granularity", str(granularity), "--split-policy", str(policy)]
     if pat:
         out += ["--pattern", str(pat)]
     # ユーザー定義フロー（--plan-file 明示指定）を orchestrator へ伝搬する。
@@ -298,8 +316,8 @@ def _spawn_orchestrator(base: list, args, req_id: str, req: dict):
         # 前に置くと親 parser に拾われ usage エラーで即死するため、必ず "orchestrate" の後ろへ
         # 付ける（cmd_run の起動と同じ並び）。計画パラメータもここに含む——計画しない
         # サブコマンド（work/doctor 等）が受け取っても意味が無いため、グローバルから移した。
-        # パターンは inbox 要求の名指しが最優先（無ければ設定ファイルの pattern）。
-        *_planning_args(args, req.get("pattern") or None),
+        # 形と分け方は inbox 要求の名指しが最優先（無ければ daemon 側の設定・既定）。
+        *_planning_args(args, req),
         *(["--inherit-from", inh] if inh else []),
         *(["--delegation", json.dumps(deleg, ensure_ascii=False)]
           if isinstance(deleg, dict) and deleg.get("id") else []),
@@ -316,6 +334,53 @@ def _spawn_orchestrator(base: list, args, req_id: str, req: dict):
 # ここにあったが、常駐一本化で呼び手（daemon ループ）が無くなったため削除した。ワーカーは
 # `cmd_run` が run ごとに `--workers` 個だけ起こす。executor 設定の子への伝搬は
 # `resolve_executor_config_json` に残っており、`make_executor` が同じ値を使う。
+
+
+# inbox 要求が名指しできる L2（分け方）の run パラメータ。値の語彙は CLI / 設定ファイルと
+# 同一で、キー名も設定キー（snake_case）と揃えてある——投入側が「どの名前で書けばいいか」を
+# 層ごとに覚え直さずに済むように。空/未指定なら従来どおりノード側の設定・既定に従う。
+_INBOX_PLANNING_KEYS = {
+    "granularity": ("auto", "coarse", "fine", "finest"),
+    "split_policy": ("behavior", "file"),
+}
+
+
+class InboxRequestError(ValueError):
+    """inbox 要求の内容が契約に合わない。planner へ倒さず run を失敗させる
+    （黙って既定へ丸めると、投入側が指定したつもりの分け方と実際の run が食い違う）。"""
+
+
+def _check_inbox_planning(rec: dict) -> None:
+    """要求が名指しした分け方が語彙に収まっているか。外れていれば明示的に失敗させる。
+
+    `split_policy()` などの解決関数は未知値を既定へ丸めるので、素通しすると誤記が
+    「指定したのに効かない run」として静かに走る。子プロセスの argparse も choices で
+    弾くが、それでは usage エラーだけが子の stderr に出て理由が残らない。
+    """
+    for key, allowed in _INBOX_PLANNING_KEYS.items():
+        raw = rec.get(key)
+        if raw is None or str(raw).strip() == "":
+            continue
+        if str(raw).strip() not in allowed:
+            raise InboxRequestError(
+                f"inbox 要求の {key} が不正です: {str(raw).strip()}（許可: {' / '.join(allowed)}）")
+
+
+def _apply_inbox_planning(rec: dict, args) -> None:
+    """要求が名指しした分け方（granularity / split_policy）を args へ載せる。
+
+    優先順は **CLI > inbox 要求 > 設定ファイル > 既定**。要求は run 単位の意思なので、
+    そのノードの `agent-flow.yaml`（マシンの既定）より強い。一方で人がその場で打った
+    CLI 引数は覆さない（`resolve_config` が控えた `_cli_explicit` で見分ける）。
+    語彙外の値は**明示的に失敗させる**——`split_policy()` などの解決関数は未知値を既定へ
+    丸めるので、ここで通すと誤記が「指定したのに効かない run」として静かに走る。
+    """
+    _check_inbox_planning(rec)
+    explicit = getattr(args, "_cli_explicit", None) or set()
+    for key in _INBOX_PLANNING_KEYS:
+        value = str(rec.get(key) or "").strip()
+        if value and key not in explicit:
+            setattr(args, key, value)
 
 
 def _apply_inbox_request(bus: Bus, args) -> None:
@@ -347,6 +412,7 @@ def _apply_inbox_request(bus: Bus, args) -> None:
     pattern = rec.get("pattern")
     if pattern and not getattr(args, "pattern", None):
         args.pattern = pattern
+    _apply_inbox_planning(rec, args)
     execution_overrides = rec.get("execution_overrides")
     if isinstance(execution_overrides, dict) and not getattr(args, "execution_overrides", None):
         args.execution_overrides = json.dumps(execution_overrides, ensure_ascii=False)
@@ -363,7 +429,11 @@ def cmd_run(args) -> int:
     probe = make_bus(args, "run")
     probe.sync_pull()
     if getattr(args, "from_inbox", False):
-        _apply_inbox_request(probe, args)
+        try:
+            _apply_inbox_request(probe, args)
+        except InboxRequestError as e:
+            print(f"エラー: {e}", file=sys.stderr)
+            return 2
     resuming = bool(args.run_id) and probe.run_exists(args.run_id)
     if resuming:
         meta = probe.run_meta(args.run_id)

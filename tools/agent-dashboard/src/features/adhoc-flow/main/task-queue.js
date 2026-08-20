@@ -46,6 +46,10 @@ function normalize(raw) {
     selection: value.selection && typeof value.selection === 'object' ? value.selection : { type: 'auto' },
     executionOverrides: value.executionOverrides && typeof value.executionOverrides === 'object'
       ? value.executionOverrides : null,
+    // 分け方（L2）。実行資源（L4）の executionOverrides とは別の層なので別キーで持つ。
+    // 空文字は「未指定＝ノード側の設定に従う」で、submit 側が値を書かない。
+    granularity: String(value.granularity || '').trim(),
+    splitPolicy: String(value.splitPolicy || '').trim(),
     sourceMode: String(value.sourceMode || 'new'),
     sources: Array.isArray(value.sources) ? value.sources : [],
     warnings: Array.isArray(value.warnings) ? value.warnings.map(String) : [],
@@ -90,6 +94,8 @@ function execute(config, id, submit) {
     request: task.request,
     selection: task.selection,
     executionOverrides: task.executionOverrides,
+    granularity: task.granularity,
+    splitPolicy: task.splitPolicy,
   });
   remove(config, id);
   return { ...result, task };

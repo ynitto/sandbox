@@ -467,6 +467,32 @@ function tierNames(tiers) {
   return tiers.map((tier) => flowTiers.TIER_LABELS[tier] || tier).join('・');
 }
 
+// 分け方（L2）の語彙。agent-flow の CLI オプション・設定キーと同じ名前・同じ値を使う——
+// 層ごとに呼び名を作らないための取り決め（docs/designs/workflow-customization-map.md）。
+// 実行資源（L4）の executionOverrides とは別の層なので、同じ器へ混ぜない: あちらは
+// 役割・工程ごとの tier / agent_cli / model で、こちらは run 全体の分解方針。
+const PLANNING_GRANULARITIES = ['auto', 'coarse', 'fine', 'finest'];
+const PLANNING_SPLIT_POLICIES = ['behavior', 'file'];
+
+// 未指定（空文字・undefined）は「ノード側の設定・既定に従う」の意味で、値を書かない。
+// `auto` は「complexity から導出する」という**明示的な選択**で、設定ファイルの granularity を
+// 上書きする（CLI の --granularity auto と同じ扱い）。この 2 つを潰さないこと。
+function normalizePlanning({ granularity, splitPolicy } = {}) {
+  const out = {};
+  const pick = (raw, allowed, label, key) => {
+    const value = String(raw == null ? '' : raw).trim();
+    if (!value) return;
+    if (!allowed.includes(value)) {
+      throw new Error(`${label}の指定が不正です: ${value}（${allowed.join(' / ')}）`);
+    }
+    out[key] = value;
+  };
+  pick(granularity, PLANNING_GRANULARITIES, '分解の粒度', 'granularity');
+  pick(splitPolicy, PLANNING_SPLIT_POLICIES, '分割の単位', 'split_policy');
+  return Object.keys(out).length ? out : null;
+}
+
+
 function normalizeExecutionOverrides(config, raw) {
   if (!raw || typeof raw !== 'object' || Number(raw.version) !== 1) return null;
   const mode = ['saving', 'quality', 'cost', 'custom'].includes(String(raw.mode || ''))
@@ -850,6 +876,12 @@ function executionAssignmentPreview(config) {
     tierCandidates: tierCandidateCatalog(config),
     roles,
     kinds,
+    // 分け方（L2）の選べる値。語彙の正典は agent-flow なので画面側では持たず、
+    // ここから配って選択肢を作る（画面と受け側で語彙がずれない）。
+    planning: {
+      granularity: PLANNING_GRANULARITIES.slice(),
+      splitPolicy: PLANNING_SPLIT_POLICIES.slice(),
+    },
   };
 }
 
@@ -1104,6 +1136,7 @@ function forceComplete(config, { runId, reason } = {}) {
 
 function submit(config, {
   title, request, preset, cwd, selection, purpose, executionOverrides, coherenceGate,
+  granularity, splitPolicy,
 } = {}) {
   const req = String(request || '').trim();
   if (!req) throw new Error('要求テキストは必須です');
@@ -1154,6 +1187,9 @@ function submit(config, {
   if (plan) rec.plan = plan;
   const execution = normalizeExecutionOverrides(config, executionOverrides);
   if (execution) rec.execution_overrides = execution;
+  // 分け方（L2）は inbox のトップレベルキーへ。キー名は agent-flow の設定キーと同じで、
+  // 受け側（_apply_inbox_planning）が CLI > 要求 > 設定ファイル > 既定 の順で解決する。
+  Object.assign(rec, normalizePlanning({ granularity, splitPolicy }) || {});
   writeJsonAtomic(path.join(busDir, 'inbox', `${runId}.json`), rec);
 
   // この run へ複製する手法。自動適用ルール（同梱の既定 ON ＋ 利用者が有効化したもの）と、
@@ -1332,6 +1368,9 @@ module.exports = {
   deleteWorkflow,
   patternCatalog,
   normalizeExecutionOverrides,
+  PLANNING_GRANULARITIES,
+  PLANNING_SPLIT_POLICIES,
+  normalizePlanning,
   normalizeNodeAssignments,
   planFromWorkflow,
   flowAssignmentPreview,

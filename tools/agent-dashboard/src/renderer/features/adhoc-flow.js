@@ -1362,11 +1362,49 @@
         <fieldset class="design-assignments"><legend>役割ごとの割り当て</legend>${roleRows}</fieldset>
         <details><summary>工程の種類ごとの割り当て</summary>
           <fieldset class="design-assignments">${kindRows}</fieldset></details>
+        ${planningFieldsHtml(preview, dialogState.planning || {})}
       </div>
       <div class="dialog-actions"><button type="button" data-wf-execute-close>キャンセル</button>
         <span class="spacer"></span>
         <button type="button" class="primary-inline" data-wf-execute-run>実装を開始</button></div>
     </dialog>`;
+  }
+
+  // 分け方（どう分解するか）は「誰が実行するか」とは別の層なので、割り当てとは別の節にする。
+  // 語彙は main（agent-flow の CLI/設定と同じ値）から配られたものだけを出す。
+  const PLANNING_FIELDS = [
+    {
+      key: 'granularity', vocabulary: 'granularity', label: '分解の粒度',
+      help: '1 つの要求を何工程へ分けるか。細かいほど小さな工程に多く分かれます。',
+      labels: {
+        auto: '自動（要求の複雑さから決める）',
+        coarse: '粗い（少ない工程にまとめる）',
+        fine: '標準',
+        finest: '細かい（小さな工程に多く分ける）',
+      },
+    },
+    {
+      key: 'splitPolicy', vocabulary: 'splitPolicy', label: '分割の単位',
+      help: '粒度とは別に「どこで切るか」。既定は 1 工程が 1 つの振る舞いを縦に持ちます。',
+      labels: {
+        behavior: '振る舞いごと（既定）',
+        file: 'ファイルごと（衝突を避けたい大きな変更向け）',
+      },
+    },
+  ];
+
+  function planningFieldsHtml(preview, current) {
+    const vocabulary = preview.planning || {};
+    const fields = PLANNING_FIELDS.filter((field) => (vocabulary[field.vocabulary] || []).length);
+    if (!fields.length) return '';
+    return `<details class="wf-planning"><summary>分け方を指定する</summary>
+      <p class="field-help">未指定のままなら、対象フォルダの設定と agent-flow の既定に従います。</p>
+      <fieldset class="design-assignments">${fields.map((field) => `<label class="field">${esc(field.label)}
+        <select data-exec-planning="${esc(field.key)}">
+          <option value="">未指定（設定に従う）</option>
+          ${(vocabulary[field.vocabulary] || []).map((value) => `<option value="${esc(value)}"${
+  current[field.key] === value ? ' selected' : ''}>${esc(field.labels[value] || value)}</option>`).join('')}
+        </select><small>${esc(field.help)}</small></label>`).join('')}</fieldset></details>`;
   }
 
   const PREPARATION_ROUTES = [
@@ -2516,7 +2554,7 @@
       const item = (st.preparationItems || []).find((row) => row.id === id) || {};
       try {
         const result = await api().adhocFlowExecutionPreview({});
-        st.executionDialog = { id, title: item.title || '', preview: result.preview, overrides: {} };
+        st.executionDialog = { id, title: item.title || '', preview: result.preview, overrides: {}, planning: {} };
       } catch (err) {
         st.notice = `モデル候補を読み込めませんでした: ${String(err.message || err)}`;
       }
@@ -2538,6 +2576,13 @@
       });
       if (st.executionDialog) st.executionDialog.overrides = overrides;
     }));
+    executeDialog?.querySelectorAll('[data-exec-planning]').forEach((select) => select.addEventListener('change', () => {
+      const planning = {};
+      executeDialog.querySelectorAll('[data-exec-planning]').forEach((row) => {
+        if (row.value) planning[row.dataset.execPlanning] = row.value;
+      });
+      if (st.executionDialog) st.executionDialog.planning = planning;
+    }));
     executeDialog?.querySelector('[data-wf-execute-run]')?.addEventListener('click', async (event) => {
       const dialogState = st.executionDialog;
       if (!dialogState) return;
@@ -2546,10 +2591,14 @@
       const overrides = dialogState.overrides || {};
       const hasOverrides = Object.keys(overrides.roles || {}).length
         || Object.keys(overrides.kinds || {}).length;
+      // 分け方は選ばれた項目だけ送る。未指定を送ると画面が設定ファイルの値を上書きしてしまう。
+      const planning = dialogState.planning || {};
       try {
         const handed = await api().preparationHandoff({
           id: dialogState.id,
           ...(hasOverrides ? { executionOverrides: { version: 1, roles: overrides.roles || {}, kinds: overrides.kinds || {} } } : {}),
+          ...(planning.granularity ? { granularity: planning.granularity } : {}),
+          ...(planning.splitPolicy ? { splitPolicy: planning.splitPolicy } : {}),
         });
         st.executionDialog = null;
         st.selectedRun = handed.result.runId;
@@ -3178,6 +3227,8 @@
     readinessCheck,
     REQUEST_TEMPLATE,
     executionOverridesForMode,
+    planningFieldsHtml,
+    PLANNING_FIELDS,
     edgePath,
     workflowLibraryHtml,
     patternChoices,
