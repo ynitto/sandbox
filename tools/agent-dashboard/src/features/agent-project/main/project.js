@@ -3,7 +3,7 @@
 // agent-project のプロジェクトデータ（プロジェクトルート直下）を
 // 読み取り専用で解析するデータ層。書式の正典は
 // tools/agent-project/backlog.md.example / charter.md.example と
-// docs/designs/agent-project-design.md §3。パース規則は agent-project.py の
+// docs/specs/agent-project-spec.md §3.1（タスク）。パース規則は agent-project.py の
 // HEAD_RE / FIELD_RE / parse_charter / parse_policy に合わせている。
 // 登録パス 1 件 = 1 プロジェクトルート（1 プロジェクト = 1 ディレクトリ = 1 プロセス）。
 

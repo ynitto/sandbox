@@ -23,10 +23,15 @@ def _acceptance_cwd(cfg: "Config", charter: "Charter") -> "tuple[Path, str | Non
     return cfg.workdir, None
 
 
-def _charter_criteria_prompt(charter: "Charter", criteria: "list[str]", wd: "Path",
-                             rev: str) -> str:
+def _charter_criteria_prompt(cfg: "Config", charter: "Charter", criteria: "list[str]",
+                             wd: "Path", rev: str) -> str:
     """charter 達成条件（project_acceptance_criteria）の verifier プロンプト。
-    task と同じ criterion 契約: 証跡付きで判定し、基準の変更・緩和と成果物の修正を禁じる。"""
+    task と同じ criterion 契約: 証跡付きで判定し、基準の変更・緩和と成果物の修正を禁じる。
+
+    副作用の許容範囲は設定 `verify_side_effects` から解決する。以前は `charter.side_effects`
+    という **存在しない属性**を getattr で読んでいたため、`network` を宣言しても常に既定
+    （workspace）の制約文が渡っていた——設定が届かないまま静かに動く、`remote_review` と
+    同じ形の欠落（tests/test_config_keys.py の冒頭に列挙した 2 件と同種）。"""
     numbered = "\n".join(f"{i + 1}. {c}" for i, c in enumerate(criteria))
     return (
         "あなたはプロジェクト成果の検証エージェントです。下の達成条件それぞれについて、"
@@ -35,7 +40,7 @@ def _charter_criteria_prompt(charter: "Charter", criteria: "list[str]", wd: "Pat
         "- 判定の根拠は実行・確認した結果です。印象や「妥当に見える」は根拠になりません。\n"
         "- 条件を言い換えたり緩めたりしないでください。\n"
         "- 成果物を修正しないでください（作業ツリーへの変更は破棄されます）。\n"
-        f"- {verify_side_effect_rule(getattr(charter, 'side_effects', None))}\n\n"
+        f"- {verify_side_effect_rule(getattr(cfg, 'verify_side_effects', None))}\n\n"
         f"## プロジェクト\n- 名前: {charter.name}\n- 目標: {str(charter.goal or '')[:800]}\n\n"
         f"## 検証する場所\n- 作業ディレクトリ: {wd}\n- revision: {rev or '(不明)'}\n\n"
         f"## 達成条件（この順に判定する）\n{numbered}\n\n"
@@ -58,7 +63,7 @@ def _evaluate_charter_criteria(cfg: "Config", charter: "Charter", criteria: "lis
     rev = _git_out(wd, "rev-parse", "HEAD").strip() if (wd / ".git").exists() else ""
     run = agent_run or (lambda p, m: _run_agent_cli(p, m, purpose="verify"))
     try:
-        body = run(_charter_criteria_prompt(charter, criteria, wd, rev), cfg.model)
+        body = run(_charter_criteria_prompt(cfg, charter, criteria, wd, rev), cfg.model)
     except Exception as e:  # noqa: BLE001 — CLI 不在・上限等の環境要因。未達（要人手）として返す
         note = f"検証エージェントを実行できませんでした: {str(e)[:200]}"
         return [(c, False, note) for c in criteria]

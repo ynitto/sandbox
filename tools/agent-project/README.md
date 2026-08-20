@@ -7,11 +7,13 @@
 **単一プロジェクトのバックログを自律的に優先順位付け・実行・検証・収束させ、人の判断が要る分だけ差し戻す制御層。**
 カレントディレクトリ（または `--root`）をプロジェクトルートとし、`charter.md` / `repos.json` を入力に
 成果物（`archive/`・`DELIVERY.md`・`needs/`・`decisions/`）を出力する。
-最優先タスクを agent-flow に実行させ、**`verify` をローカルで実行して PASS したものだけ done に確定**
-（`archive/` へ退避）、NG なら積み直す。backlog が尽きるか予算が尽きるまで繰り返し、人の判断は案件毎の
+最優先タスクを agent-flow に実行させ、**返ってきた receipt を検算して PASS したものだけ done に確定**
+（`archive/` へ退避）、NG なら積み直す。受入基準の判定は agent-flow の専用 verifier が行い、
+agent-project は検証計画（`verification_plan`）を作って receipt を検算する側に徹する。backlog が尽きるか予算が尽きるまで繰り返し、人の判断は案件毎の
 `needs/<id>.md`（フィードバック欄つき）で差し出し、判断は `decisions/<id>.md` に残す。
 
-> - 設計の正典: [`docs/designs/agent-project-design.md`](../../docs/designs/agent-project-design.md)（統合設計書。本書は運用リファレンス）
+> - 設計の正典（なぜこの形か）: [`docs/designs/agent-project-design.md`](../../docs/designs/agent-project-design.md)
+> - 仕様の正典（何ができて何を設定できるか）: [`docs/specs/agent-project-spec.md`](../../docs/specs/agent-project-spec.md)
 > - 熟練度別の導入手順: [`GUIDE.md`](GUIDE.md)（L0 下見 → L1 試運転 → L2 日常運用 → L3 無人運用 → L4 スケール）
 > - タスク書式の正典: [`backlog.md.example`](backlog.md.example) ／ プロジェクト憲章: [`charter.md.example`](charter.md.example)
 > - 実行（コード変更・検証）は agent-flow（＝エージェント CLI）へ委譲する。

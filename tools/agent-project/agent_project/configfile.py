@@ -212,8 +212,10 @@ CONFIG_DEFAULTS = {
     "task_branch": True,
     "task_branch_prefix": "ap/",
     # 成果物レビュー: verify PASS 後、常に review（検収待ち）→ 人の承認で done 確定。
-    # review 到達時に GitLab 設定（GITLAB_TOKEN/GL_TOKEN）があれば ap/<task-id> → target の MR を
-    # 自動作成し、承認時にクリーン（コンフリクト無し・未解決ディスカッション無し）なら自動マージする。
+    # **MR/PR は自動作成しない**——作るのは人が `mr-create`（dashboard の「MRを作る」）を押した
+    # ときだけで、レビューの器をいつ誰に見せるかは人の判断だから（設計書「MR は人が作り、統合は
+    # 機械が行う」）。承認時の target への統合は機械が行い、MR があってクリーン（コンフリクト
+    # 無し・未解決ディスカッション無し）なら API マージ、無ければ Git の fast-forward。
     # false で従来の unattended 自動 done。
     "delivery_review": True,
     # フォージ（MR/PR）側の決定的シグナルからの決着（S4）。
@@ -222,13 +224,14 @@ CONFIG_DEFAULTS = {
     # コメント本文のキーワード推定は使わない——書き手の言い回し 1 つで判定が変わり、
     # 変わったことに気づけない。差し戻しは「人がラベル／レビュー状態を明示したとき」。
     "remote_review": "settle",
-    # 証跡ベースの検証（S5）。受入基準チェックリスト（`- acceptance:` 複数行）に対して
-    # 検証エージェントが実行時にコマンドを試行錯誤し、基準ごとの判定＋証跡を返す。
-    #   verifier          … false で従来どおり決定的 verify のみ（acceptance は表示だけ・移行用）
-    #   verifier_skill    … プロンプト・出力契約を供給するスキル名（上位に置けば差し替え可）
+    # 証跡ベースの検証（S5）。受入基準の判定は agent-flow の専用 verifier が行い、
+    # agent-project は verification_plan を作って receipt を検算する側に徹する。
     #   verify_side_effects … workspace=作業ツリー内のみ / network=読み取りの HTTP 到達まで許す
     #     （DB・外部サービスへの書き込みはどちらでも不可。検証は失敗するとリトライで何度も
-    #      走るので副作用が累積する。そこまで要る検証は人が verify: に明示的に書く）
+    #      走るので副作用が累積する。そこまで要る検証は固定検証コマンドに人が明示的に書く）
+    #   verifier / verifier_skill … **もう効かない**（`_INERT_PROJECT_KEYS` で警告して無視）。
+    #     agent-project 内蔵の LLM verifier は撤去済み（P1-A8）で、読み手がどこにも無い。
+    #     残骸を黙って受理すると「false にしたのに検証が走る」ように見えるので、書いたら言う。
     "verifier": True,
     "verifier_skill": "backlog-verifier",
     "verify_side_effects": "workspace",
@@ -307,6 +310,10 @@ _INERT_PROJECT_KEYS = {
     "state_repo_dir": "clone 先は host.yaml の projects[].root で宣言してください",
     "state_git": "状態 clone の origin が同期先です（設定は不要になりました）",
     "state_commit_interval": "state_git_interval に一本化しました",
+    "verifier": "内蔵 LLM verifier は撤去済み（P1-A8）。受入基準の判定は agent-flow の"
+                "専用 verifier が行い、有無は基準・固定コマンドの有無で決まります",
+    "verifier_skill": "検証プロンプトの供給は agent-flow 側の責務になりました"
+                      "（分解側のスキル差し替えは planner_skill が担当します）",
 }
 
 # 廃止した状態 worktree 方式のキー（検出したら fail-fast）。値 = 移行の案内。

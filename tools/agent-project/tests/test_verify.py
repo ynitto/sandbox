@@ -701,3 +701,28 @@ class TestVerifyFailingStep(unittest.TestCase):
             ok, msg = km.run_verify("false", Path(d), 30)
         self.assertFalse(ok)
         self.assertIn("失敗した工程: `false`", msg)
+
+
+class TestVerifySideEffectsSetting(unittest.TestCase):
+    """`verify_side_effects` が実際に検証エージェントへ届く（設定が死んでいない）。
+
+    回帰: charter 達成条件の verifier プロンプトは `charter.side_effects` という **存在しない
+    属性**を getattr で読んでいた。`Charter` にそのフィールドは無いので常に None → 既定
+    （workspace）へ落ち、プロジェクト yaml に `network` と書いても制約文は 1 文字も変わらな
+    かった。`remote_review` と同じ「読み手が getattr の既定で庇うので静かに効かない」形で、
+    `test_config_keys.py` の到達検査（CONFIG_DEFAULTS → Config）では捕まえられない。
+    """
+
+    def _prompt(self, side_effects: str) -> str:
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d), verify_side_effects=side_effects)
+            return km._charter_criteria_prompt(
+                cfg, km.Charter(name="p", goal="やる"), ["A が成り立つ"], Path(d), "abc123")
+
+    def test_network_setting_reaches_the_prompt(self):
+        prompt = self._prompt("network")
+        self.assertIn(km.VERIFY_SIDE_EFFECT_RULES["network"], prompt)
+        self.assertNotIn(km.VERIFY_SIDE_EFFECT_RULES["workspace"], prompt)
+
+    def test_default_is_workspace(self):
+        self.assertIn(km.VERIFY_SIDE_EFFECT_RULES["workspace"], self._prompt("workspace"))

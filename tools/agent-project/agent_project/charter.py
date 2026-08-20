@@ -2,7 +2,7 @@ from __future__ import annotations
 # charter.py — 元 agent-project.py の 8426-9289 行目（機械分割・内容無改変）。
 # 単体 import しない。agent_project/__init__.py が共有名前空間へ順に exec 合成する。
 # プロジェクト層（charter 駆動の plan→execute→evaluate ループ）
-#   設計: docs/designs/agent-project-design.md §6（プロジェクト層）
+#   設計: docs/designs/agent-project-design.md「プロジェクト層（charter からバックログを作る）」
 #   backlog の上に「目標→分解→消化→評価→改善」のもう一段を載せる。内側の正準ループ（run_loop）は
 #   無改造で呼ぶ。done は acceptance(=verify) 全 PASS のみが根拠。知能（分解・敵対的レビュー）は
 #   エージェントへ委譲し、本体は決定的なファイル操作（charter 解釈・enqueue・acceptance 実行・収束計算）
