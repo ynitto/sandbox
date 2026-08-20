@@ -2,7 +2,7 @@
 
 - 日付: 2026-08-13
 - 状態: Implementation reviewed — adapter/eval実装済み、Gate 0〜2未完了
-- 最終レビュー: 2026-08-20（実装コミット `7ff8ebd`）
+- 最終レビュー: 2026-08-20（実装コミット `9dc9ef8` / `784e0ea`）
 - 設計正典: `docs/plans/2026-08-13-agent-aider-gemma4-system-policy-design.md`
 - 設計コミット: `f9a66ad`
 - 実装方式: Python `unittest` + pytest-cov、Red-Green-Refactor の垂直スライス
@@ -18,11 +18,12 @@
 2. [x] wrapper 専用 option は Aider argv へ漏れない。
 3. [x] policy 未指定時の既存 usage 変換と argv 透過は変わらない。
 4. [x] 未知 policy、model 不一致、外部 model-settings 競合を黙って無効化しない。
-5. [~] analytics log と policy settings の一時ファイルを通常終了と `FileNotFoundError` で削除する。
-   Aider非ゼロ終了と一時settings作成・書込失敗を含む全終了経路の契約確認は未完了。
+5. [~] analytics log と policy settings の一時ファイルを通常終了、`FileNotFoundError`、Aider非ゼロ終了で
+   削除する。残るのは一時settings作成・書込失敗の経路で、ここだけ契約確認が未完了。
 6. [~] `agents/aider.json` は Gemma 4 policy を宣言済み。ただしGate 0〜2未通過のため、
    本番既定としての採用完了とは判定しない。
-7. [~] `worker_eval` は off / v1 armとpolicy ID/hashのledger項目を実装済みだが、同条件A/Bの実測は未実施。
+7. [~] `worker_eval` は off / v1 / 未指定（本番定義を継承）のarmと、policy ID/hash・token usageを含む
+   ledger項目を実装済みだが、同条件A/Bの実測は未実施。
 8. [ ] 変更した adapter の C1 分岐カバレッジ100%は未測定。
 9. [ ] deterministic judge A/B と Aider worker A/B の採用ゲートは未実施。
 
@@ -34,17 +35,19 @@ adapterとevaluation seamのコード実装は完了に近いが、この文書�
 完了済みの縦スライス:
 
 - [x] Cycle 1〜8相当: policy注入用settings、透過、marker、model完全一致、未知ID、競合拒否、数値合成・検証。
-- [~] Cycle 9相当: 通常終了と`FileNotFoundError` cleanupは確認済み。残る異常終了契約は未確認。
+- [~] Cycle 9相当: 通常終了、`FileNotFoundError`、Aider非ゼロ終了のcleanupと、非ゼロ終了時の
+  policy/usage marker共存は確認済み。残るのは一時settings作成・書込失敗の契約。
 - [~] Cycle 10相当: shipped definitionと定義テストは実装済み。採用gateは未通過。
-- [~] Cycle 11相当: off/v1 argv、adapter数値option、ledger metadataは実装済み。A/B実測とtoken台帳は未完了。
+- [~] Cycle 11相当: off/v1/未指定のargv、adapter数値option、token台帳を含むledger metadataは実装済み。
+  A/B実測は未完了。
 - [~] Cycle 12相当: policyとworker A/Bは文書化済み。Gate 0〜2全体の実行例・結果記録とinstall smokeは未完了。
 
 次に行うアクション（順序を固定する）:
 
-1. policy markerとusage markerの同一run、Aider非ゼロ終了、settings作成・書込失敗の契約テストを追加する。
+1. 一時settings作成・書込失敗の契約テストを追加する（同一runでのmarker共存とAider非ゼロ終了は済）。
 2. `pytest-cov`を利用可能な環境でbranch coverageを測り、adapter C1 100%まで不足分岐を埋める。
 3. 実Aider `--show-prompts` smokeを行い、policyの一度だけの先頭注入とedit prompt/reminder維持を記録する。
-4. worker ledgerへtokens in/out、完全なagent CLI、map token、auto-test、実効settingsを追加する。
+4. worker ledgerへ完全なagent CLIと実効settingsを追加する（tokens in/out、map token、auto-testは済）。
 5. Gate 1のdeterministic judge baseline/v1を実行し、J1/F2改善とJ2/R1無退行を判定する。
 6. Gate 1通過後だけGate 2のT2/T1minを実行し、通過後だけT1/T3へ進む。
 7. Gate 0〜2不通過なら`agents/aider.json`から既定policy flagを外し、adapter/eval armのみ残す。
@@ -378,6 +381,9 @@ policy arm は `AGENT_OLLAMA_SYSTEM_PROMPT` に設計正典の固定文を渡す
 
 **状態: [ ] 未実施。** off / v1を生成する評価interfaceは実装済みだが、T2 / T1minの比較結果はまだない。
 
+A/B の両腕は `--agent-policy` を必ず明示する。未指定は本番定義を継承する第三の腕になり、
+どちらの対照にもならない。
+
 時間の短い成功対照から段階的に回す。
 
 ```bash
@@ -402,7 +408,8 @@ T2 3/3 維持を必須とし、T1min が baseline 1/3 より改善すること�
 
 ## 9. 全回帰テスト
 
-**状態: [~] 一部完了。** adapter、shipped definition、worker evalの関連unit testは33件通過した。
+**状態: [~] 一部完了。** adapter 11件、shipped definition 16件、worker eval 9件の関連unit testは
+計36件が通過した（内訳は `test_aider_adapter` / `test_agentcli_jsonvariant` / `test_worker_eval`）。
 以下の全discover、E2E、関連engine起動形を同一revisionで完走した記録はないため、全回帰完了とはしない。
 
 ```bash

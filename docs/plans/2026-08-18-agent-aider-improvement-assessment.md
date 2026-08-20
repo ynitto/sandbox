@@ -224,7 +224,7 @@ retry、独自 bash loop を三重化すると CPU only 環境で停止性が悪
 
 ### 9.0 2026-08-20 実装レビュー
 
-レビュー対象は実装コミット `e21634c`。設計正典
+レビュー対象は main へ入った実装コミット `9dc9ef8`（policy 本体）と `784e0ea`（eval 条件の保存）。設計正典
 `2026-08-13-agent-aider-gemma4-system-policy-design.md` と実装計画
 `2026-08-13-agent-aider-gemma4-system-policy-implementation-plan.md` に照らし、状態を次のように判定した。
 
@@ -241,25 +241,30 @@ retry、独自 bash loop を三重化すると CPU only 環境で停止性が悪
 - [x] 未知 policy、policy の model 不一致、managed settings と外部 `--model-settings-file` の競合、
   非正整数を起動前に fail closed とする。
 - [x] `@agent-policy id=... sha256=...` marker を出力し、既存の `@agent-usage` 変換を維持する。
-- [x] analytics log と managed settings を通常終了および `FileNotFoundError` 後に削除する契約テストを持つ。
+- [x] analytics log と managed settings を通常終了、`FileNotFoundError`、および Aider 非ゼロ終了の後に
+  削除する契約テストを持つ。非ゼロ終了のケースでは `@agent-policy` と `@agent-usage` が同一 run に
+  一度ずつ共存することも同じテストで固定した。
 - [x] worker eval で policy off / v1 を token 単位で切り替え、`num_ctx` / `num_predict` を adapter
-  option で渡す。
+  option で渡す。`--agent-policy` 未指定は「本番定義をそのまま継承する」第三の腕として区別する。
 - [x] worker eval の古い「`agents/aider.json` は未作成」という表示を正典参照へ修正する。
-- [x] ledger に Aider version、policy ID / hash、sampling、`num_ctx` / `num_predict`、wall time、
-  checker 結果、終了様式、呼出回数と retry trace を記録する。
+- [x] ledger に Aider version、policy ID / hash、sampling、`num_ctx` / `num_predict`、wall limit と wall time、
+  token usage、map token、auto-test の有無、checker の pass/fail と診断、終了様式、呼出回数、retry 回数と
+  retry trace を記録する。policy ID / hash と token usage は adapter marker から call 単位で読み、
+  eval 側で条件を複製しない。
 
 #### レビューで確認した未完了・不足
 
 - [ ] **本番既定化の前提 gate が未通過。** `agents/aider.json` では policy が既定化済みだが、
   Gate 0 の実 Aider prompt smoke、Gate 1 の deterministic judge A/B、Gate 2 の worker A/B は
   実施記録がない。設計上は gate 通過前の本番既定化を完了扱いにしない。
-- [~] Gate 0 の unit contract は argv除去、settings内容、fail closed、cleanupを確認するが、policy marker と
-  usage marker の**同一 run での共存**、Aider非ゼロ終了時のcleanup、実 prompt 内での一度だけの先頭注入、
-  edit prompt / reminder の維持は未確認である。
+- [~] Gate 0 の unit contract は argv除去、settings内容、fail closed、cleanup、および非ゼロ終了時の
+  marker 共存を確認する。残るのは unit test では届かない範囲——実 prompt 内での一度だけの先頭注入、
+  edit prompt / reminder の維持、一時 settings の作成・書込失敗時の cleanup が未確認である。
 - [ ] adapter の変更分岐 C1 100%を測定していない。現環境には `pytest-cov` / `coverage` がなく、
   coverage gate は未完了である。
-- [~] ledger の観測性は拡張されたが、token usage、実効 map token、auto-test有無、完全な agent CLI、
-  Aiderの実効 model settings全体は record に入っていない。
+- [~] ledger の観測性は token usage、map token、auto-test 有無、checker 診断、wall limit、retry 回数まで
+  拡張された。残るのは完全な agent CLI（実行 argv 全体）と Aider の実効 model settings 全体で、
+  これらは record に入っていない。
 - [ ] Gate 1 の採用条件（J1 / F2改善、J2 / R1無退行、総合改善、parse / repair率無悪化）を未評価。
 - [ ] Gate 2 の T2 / T1min baseline-policy比較と、通過後の T1 / T3 比較を未評価。
 - [ ] execution resolver の局所修正適格条件、checker必須化、限定retry、retry exhaustion後の候補昇格は
@@ -276,13 +281,15 @@ adapter と eval seam の実装は **A/B評価を開始できる段階**まで�
 
 1. [x] adapter の現行挙動を契約テストで固定する。
 2. [x] `worker_eval.py` の古い条件表示を修正する。
-3. [~] Aider version と実効条件を台帳へ記録する（versionと主要optionは完了、上記の不足項目は未完了）。
+3. [~] Aider version と実効条件を台帳へ記録する（version、policy、sampling、token usage、map token、
+   auto-test、checker 診断は完了。完全な agent CLI と実効 model settings 全体は未完了）。
 
 ### Phase 2: Reliability policy
 
 1. [x] wrapper option と managed settings を実装する。
 2. [x] policy marker、競合検出、cleanup を実装する。
-3. [~] unit test は通過。`--show-prompts` smoke と残るGate 0 contractは未完了。
+3. [~] unit test は通過（非ゼロ終了時の marker 共存と cleanup を含む）。`--show-prompts` smoke と
+   一時 settings の作成・書込失敗 contract は未完了。
 
 ### Phase 3: A/B gate
 
