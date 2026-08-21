@@ -4,7 +4,7 @@
 （`agent-project serve`）だが、常駐体を置いていない PC からでも人が明示的に手を挙げられるようにする。
 
 設計: [`docs/plans/2026-07-20-agent-dashboard-participation-ui-design.md`](../../../../../docs/plans/2026-07-20-agent-dashboard-participation-ui-design.md)。
-骨格は [`docs/designs/agent-dashboard-design.md`](../../../../../docs/designs/agent-dashboard-design.md) §5。
+骨格は [`docs/designs/agent-dashboard-design.md`](../../../../../docs/designs/agent-dashboard-design.md) §4。
 
 ## 唯一のプロセス起動経路
 

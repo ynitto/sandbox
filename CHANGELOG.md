@@ -7,6 +7,53 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-dashboard の設計書を改訂し、仕様書を分離した
+
+agent-flow・agent-project・agent-loop と同じ扱いを agent-dashboard にも通す。792 行の設計書に
+判断 6 個と、合成契約・設定キー・IPC 一覧・画面ごとの表示規則（ダイアログの伸縮まで）が同居し、
+「なぜそう決めたか」と「今どういう契約か」が同じ場所で混ざっていた。実装（制御面 9 つ・
+`src/` 135 ファイル・約 43,600 行）と `docs/plans/` の 56 本に照合し、`slop-police` の設計書規約で
+組み直したうえで、契約を新設の仕様書へ移す。
+
+- **`docs/specs/agent-dashboard-spec.md` を新設**。feature 記述子と載せる順番、IPC 161 本の内訳、
+  renderer の読み込み順契約と登録簿 3 つ、設定キー表（base ＋ 制御面 9 つ）、読むファイルと
+  書くファイルの一覧、設計 run / 実装 run の契約、正典の写し 4 つとそれを縛るゴールデンテスト、
+  構造を固定しているテスト、配布（`build.files` / `extraResources`）を収めた
+- **設計書を 792 行から 387 行へ、判断を 6 個から 5 個へ**。3.1（git 書き込み撤去）と
+  3.4（AI は下書きまで）と §5.2 の板への書き込み規則は**同じ判断の 3 つの適用**なので、
+  「dashboard は状態の書き手にならない」1 個へ畳んだ。§5 の制御面ごとの長い散文と §6 の UI 表示
+  規則は仕様書と README へ振り分け、設計 run と実装 run の分離は判断ではなく 1 節へ落とした
+- **付録を整理**。「画面ごとの設計判断の要点」は却下案を伴うものだけに絞り、更新対象の文書
+  （仕様書を先頭に）を付録 A として独立させた
+
+### agent-dashboard: テスト 3 ファイルが `npm test` から漏れ、一度も実行されていなかった
+
+`tools/agent-dashboard/test/` に置かれているのに `package.json` の `scripts.test` へ登録されておらず、
+CI を含めてどこでも走っていないテストが 3 つあった。`npm test` は個々のファイルを直列に並べた
+1 本のコマンドで、ディレクトリを走査しない——置いただけでは実行されない。
+
+- `budget-summary-parity.test.js`（3 件・2026-08-14 追加）… status 射影の reason_codes と
+  contract_version を schema 正本と突き合わせる。ファイル自身のコメントに「`node test/...` で走る」と
+  書きながら、走らせる側へ足されていなかった
+- `flow-interaction.test.js`（6 件・2026-08-12 追加）
+- `note-tasking.test.js`（4 件・2026-08-12 追加）
+
+3 つとも現状のコードで通ることを確認したうえで `scripts.test` へ登録した。あわせて仕様書の付録に
+「テストファイルを足したら `scripts.test` へも足す」ことを明記した。
+
+### agent-dashboard: 実装と食い違っていた記述
+
+- **`src/features/agent-loop/` は存在しない**。README がループの端末ビューをこのパスで説明していたが、
+  実体は `src/features/routines/` である
+- **routines の IPC は 4 本ではなく 6 本**。設計書は `listSessions` / `capture` / `state` / `send` の
+  4 本と書いていたが、`queue` / `queueMessage` が増えている
+- **制御面は 8 つではなく 9 つ**。設計書の全体像は `adhoc-flow` を落としており、`preparation` は
+  `src/features/` 配下にありながら feature 記述子を持たない共有モジュールで制御面ではない、という
+  区別も書かれていなかった。ディレクトリ数 10・制御面 9 として仕様書に明記した
+- **テストは 84 ファイルではなく 98 ファイル**
+- `test/no-git-writes.test.js` の由来コメント「制御面が 2 つから 7 つへ増えた」を 9 へ更新した
+- 制御面の README 4 本が参照していた設計書 §5 / §5.1 は改訂で移動したため、§4 と仕様書へ張り直した
+
 ### agent-loop の設計書を改訂し、仕様書を実装に追いつかせた
 
 agent-flow・agent-project と同じ扱いを agent-loop にも通す。517 行の設計書に判断 5 個と機能 7 件の

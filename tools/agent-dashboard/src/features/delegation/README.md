@@ -5,7 +5,7 @@
 進捗は実行画面から操作する。
 
 設計: [`docs/plans/2026-07-19-delegation-contract-design.md`](../../../../../docs/plans/2026-07-19-delegation-contract-design.md)。
-骨格は [`docs/designs/agent-dashboard-design.md`](../../../../../docs/designs/agent-dashboard-design.md) §5。
+骨格は [`docs/designs/agent-dashboard-design.md`](../../../../../docs/designs/agent-dashboard-design.md) §4。
 
 ## 方針
 
