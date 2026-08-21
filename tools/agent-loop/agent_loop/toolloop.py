@@ -660,6 +660,165 @@ def acceptance_stamps(acceptance: "list[str]", cwd: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# 判定層: パスを含まない自然文基準を、読み取り専用の検証エージェントに判定させる
+# ---------------------------------------------------------------------------
+#
+# 機械層（上）が照合できるのはバッククォートのプロジェクト内パスだけで、「レポートに
+# 前週比が含まれている」のような基準は誰も見ていなかった。実行は `verified: false` で
+# 記録されるが `ok: true` にはなるので、**書いた本人は検証されているつもり**でいる。
+#
+# 判定は既定で走らせない（opt-in）。判定のためにもう 1 回 CLI を起こすので、黙って
+# 有効にするとトークン費用が倍増する経路が増える。有効にしたときは fail-closed——
+# 判定できなかった基準は「満たしていない」として扱う。
+#
+# 判定役は `agents/<name>.json` の変種（`variants` の "verify"）へ振り替える。作業した
+# 当人に自分の仕事を採点させるのが最も弱い構成で、どのモデルに検証させるかを決めるのは
+# 定義側の責務だからだ（agent-flow / agent-project と同じ口を使い、新しい設定面を人に
+# 書かせない）。振り替え先が無ければ元のエージェントのまま動く。
+
+_JUDGE_TIMEOUT_SEC = 180.0
+
+
+def acceptance_prose(acceptance: "list[str]", cwd: str) -> "list[str]":
+    """機械層が触れない基準（プロジェクト内パスを含まない自然文）を返す。"""
+    machine = set(acceptance_paths(list(acceptance or []), cwd))
+    out: list[str] = []
+    for text in acceptance or []:
+        one = str(text or "").strip()
+        if one and not set(acceptance_paths([one], cwd)) & machine:
+            out.append(one)
+    return out
+
+
+def _tl_judge_agent(agent: dict, cwd: str) -> dict:
+    """検証専用の変種（用途キー `verify`）へ振り替える。無ければ元のまま。"""
+    mod = agent.get("agentcli")
+    name = str(agent.get("cli") or "")
+    if mod is None or not name:
+        return agent
+    try:
+        variant = mod.resolve_variant(name, "verify", cwd)
+        if not variant:
+            return agent
+        # 変種は検証用に調整された自分の既定モデルを持つことが多いので、呼び出し元が
+        # 明示していない限りそちらを使う（resolve_variant が返す model をそのまま渡す）。
+        return _tl_resolve_agent(variant["agent_cli"], variant.get("model") or "", cwd)
+    except (ToolLoopError, AttributeError, KeyError):
+        return agent
+
+
+def _tl_verified_by(acceptance: "list[str]", cwd: str, judged: bool) -> str:
+    """この実行を実際に検証したのは誰か。`verified` の真偽だけでは足りない。
+
+    機械照合と自然文の判定は確かさが違う。同じ `verified: true` に潰すと、後から
+    「これはファイル指紋で見たのか、モデルが読んで良しと言ったのか」が分からない。
+    """
+    machine = _tl_verified(acceptance, cwd)
+    if machine and judged:
+        return "machine+judge"
+    if machine:
+        return "machine"
+    return "judge" if judged else ""
+
+
+def _tl_apply_judge(acceptance: "list[str]", *, cwd: str, agent: dict, log_file: str,
+                    output: str, files: "list[str]", judge: bool) -> dict:
+    """判定層を通す（opt-in）。返り値 {"errors": [...], "judged": bool}。
+
+    judged は「判定層が実際に何かを判定したか」。基準が全部パス付きなら判定する対象が
+    無いので False——何もしていないことを「判定した」と記録しない。
+    """
+    if not judge:
+        return {"errors": [], "judged": False}
+    prose = acceptance_prose(list(acceptance or []), cwd)
+    if not prose:
+        return {"errors": [], "judged": False}
+    errors = judge_acceptance(prose, cwd=cwd, agent=agent, log_file=log_file,
+                              output=output, files=list(files or []))
+    return {"errors": errors, "judged": True}
+
+
+def _tl_judge_prompt(criteria: "list[str]", *, cwd: str, output: str,
+                     files: "list[str]") -> str:
+    """判定の 1 回分。判定材料は「観測できたもの」だけを渡す。"""
+    numbered = "\n".join(f"{i}. {c}" for i, c in enumerate(criteria, 1))
+    listed = "\n".join(f"- {f}" for f in files) or "- none"
+    return (
+        "You judge whether each acceptance criterion is satisfied. You are a reviewer, "
+        "not the author. Do not modify anything.\n"
+        f"Working folder: {cwd}\n"
+        f"Files changed by the run:\n{listed}\n"
+        f"What the agent reported:\n---\n{output[:4000]}\n---\n"
+        f"Criteria:\n{numbered}\n"
+        "Read the files if you need to check a claim. Judge only what you can observe; "
+        "the agent's report alone is not evidence. If you cannot verify a criterion, "
+        'answer "fail" and say what is missing.\n'
+        "Return exactly one JSON object and no markdown:\n"
+        '{"verdicts":[{"n":1,"pass":true,"reason":"one short sentence"}]}\n'
+        "Include one entry for every criterion number."
+    )
+
+
+def judge_acceptance(criteria: "list[str]", *, cwd: str, agent: dict, log_file: str,
+                     output: str, files: "list[str]") -> "list[str]":
+    """自然文基準を読み取り専用で判定し、満たしていない理由を並べて返す。
+
+    空リスト = 判定層 pass。**fail-closed**——判定役を起こせない・出力を読めない・
+    基準に対する判定が返ってこない、はすべて「満たしていない」に倒す。判定を頼まれて
+    判定できなかったことを pass として記録すると、機械層を入れる前より悪くなる。
+    """
+    items = [str(c).strip() for c in (criteria or []) if str(c).strip()]
+    if not items:
+        return []
+    judge = _tl_judge_agent(agent, cwd)
+    mod = judge["agentcli"]
+    prompt = _tl_judge_prompt(items, cwd=cwd, output=str(output or ""), files=list(files or []))
+    try:
+        built = mod.headless_cmd(judge["spec"], judge["model"], prompt,
+                                 readonly=True, no_session=True)
+    except Exception as exc:
+        return [f"受入条件の判定を起動できませんでした（{judge['cli']}）: {exc}"]
+
+    argv = built["argv"]
+    timeout_sec = float(built.get("timeout") or 0) or _JUDGE_TIMEOUT_SEC
+    _tl_append_log(log_file, {"event": "judge_start", "cli": judge["cli"],
+                              "model": judge["model"] or "", "criteria": len(items)})
+    result = _tl_exec_argv(argv[0], argv[1:], cwd=cwd, timeout_sec=timeout_sec,
+                           env=built.get("env") or {}, stdin=built.get("stdin"),
+                           output_file=built.get("output_file"), log_file=log_file)
+    if result["status"] != 0 or result["error"]:
+        detail = (result["error"] or result["stderr"] or "").strip()[:300]
+        return [f"受入条件を判定できませんでした（{judge['cli']}）: {detail or '実行に失敗しました'}"]
+
+    parsed = _tl_parse_json_object(result["stdout"])
+    verdicts = (parsed or {}).get("verdicts")
+    if not isinstance(verdicts, list):
+        return [f"受入条件の判定結果を読めませんでした（{judge['cli']} が JSON を返しませんでした）"]
+
+    by_number: dict[int, dict] = {}
+    for v in verdicts:
+        if not isinstance(v, dict):
+            continue
+        try:
+            by_number[int(v.get("n"))] = v
+        except (TypeError, ValueError):
+            continue
+
+    errors: list[str] = []
+    for i, text in enumerate(items, 1):
+        v = by_number.get(i)
+        if v is None:
+            errors.append(f"判定されなかった受入条件です: {text}")
+            continue
+        if not bool(v.get("pass")):
+            reason = str(v.get("reason") or "").strip() or "理由の記載がありません"
+            errors.append(f"受入条件を満たしていません: {text}（{reason}）")
+    _tl_append_log(log_file, {"event": "judge_done", "cli": judge["cli"],
+                              "criteria": len(items), "errors": errors})
+    return errors
+
+
+# ---------------------------------------------------------------------------
 # ゴール単位のツールループ
 # ---------------------------------------------------------------------------
 
@@ -715,7 +874,7 @@ def _tl_goal_prompt(*, goal: str, cwd: str, skills: "list[dict]", reads: "list[s
 
 def run_goal(*, goal: str, cwd: str, agent: dict, log_file: str,
              acceptance: "list[str] | None" = None, max_rounds: int = 0,
-             tag: str = "toolloop") -> dict:
+             tag: str = "toolloop", judge: bool = False) -> dict:
     """ツールループ非内蔵の CLI に、ゴール 1 件を限定ツール契約で実行させる。
 
     戻り値: {ok, output, files, evidenceErrors, logFile}。
@@ -871,16 +1030,22 @@ def run_goal(*, goal: str, cwd: str, agent: dict, log_file: str,
         criteria, cwd=root, touched=touched, stamps_before=stamps_before)
     if pending_run_error:
         evidence_errors.append(pending_run_error)
+    judged = _tl_apply_judge(criteria, cwd=root, agent=agent, log_file=log_file,
+                             output=output, files=sorted(touched), judge=judge)
+    evidence_errors.extend(judged["errors"])
     ok = bool(output) and not evidence_errors
-    verified = _tl_verified(criteria, root)
+    verified = _tl_verified(criteria, root) or judged["judged"]
     _tl_append_log(log_file, {"event": "goal_done", "ok": ok, "verified": verified,
+                              "verifiedBy": _tl_verified_by(criteria, root, judged["judged"]),
                               "files": sorted(touched), "evidenceErrors": evidence_errors})
     return {"ok": ok, "output": output, "files": sorted(touched),
-            "evidenceErrors": evidence_errors, "verified": verified, "logFile": log_file}
+            "evidenceErrors": evidence_errors, "verified": verified,
+            "verifiedBy": _tl_verified_by(criteria, root, judged["judged"]),
+            "logFile": log_file}
 
 
 def run_cli_loop(*, goal: str, cwd: str, agent: dict, log_file: str,
-                 acceptance: "list[str] | None" = None) -> dict:
+                 acceptance: "list[str] | None" = None, judge: bool = False) -> dict:
     """層2（tool-loop）: CLI 内部のループに任せて headless を 1 回呼ぶ。
 
     触ったファイルを外から観測できないので、証跡は受入条件が名指ししたファイルの
@@ -909,16 +1074,23 @@ def run_cli_loop(*, goal: str, cwd: str, agent: dict, log_file: str,
                if _tl_file_stamp(f) != stamps_before.get(f, "")}
     errors = acceptance_evidence_errors(criteria, cwd=cwd, touched=touched,
                                         stamps_before=stamps_before)
-    verified = _tl_verified(criteria, cwd)
+    judged = _tl_apply_judge(criteria, cwd=cwd, agent=agent, log_file=log_file,
+                             output=output, files=sorted(touched), judge=judge)
+    errors.extend(judged["errors"])
+    verified = _tl_verified(criteria, cwd) or judged["judged"]
     _tl_append_log(log_file, {"event": "goal_done", "ok": not errors,
                               "verified": verified,
+                              "verifiedBy": _tl_verified_by(criteria, cwd, judged["judged"]),
                               "files": sorted(touched), "evidenceErrors": errors})
     return {"ok": not errors, "output": output, "files": sorted(touched),
-            "evidenceErrors": errors, "verified": verified, "logFile": log_file}
+            "evidenceErrors": errors, "verified": verified,
+            "verifiedBy": _tl_verified_by(criteria, cwd, judged["judged"]),
+            "logFile": log_file}
 
 
 def run_prompt(*, goal: str, cwd: str, agent: dict, log_file: str,
-               acceptance: "list[str] | None" = None, tag: str = "toolloop") -> dict:
+               acceptance: "list[str] | None" = None, tag: str = "toolloop",
+               judge: bool = False) -> dict:
     """ゴール 1 件を、CLI の層（`headless_autonomy`）に応じた経路で 1 回実行する。
 
     層の判定と分岐をここ 1 か所に置く（C7）。デーモンの headless 枝も `run` サブコマンドも
@@ -928,9 +1100,9 @@ def run_prompt(*, goal: str, cwd: str, agent: dict, log_file: str,
     """
     if str(agent["spec"].get("headless_autonomy") or "single-shot") == "tool-loop":
         return run_cli_loop(goal=goal, cwd=cwd, agent=agent, log_file=log_file,
-                            acceptance=acceptance)
+                            acceptance=acceptance, judge=judge)
     return run_goal(goal=goal, cwd=cwd, agent=agent, log_file=log_file,
-                    acceptance=acceptance, tag=tag)
+                    acceptance=acceptance, tag=tag, judge=judge)
 
 
 def _tl_run_log_file(tag: str = "run") -> str:
@@ -967,7 +1139,9 @@ def cmd_run(args: argparse.Namespace, cwd: Path) -> None:
         _tl_progress(f"agent: {agent['cli']}"
                      + (f" / model: {agent['model']}" if agent["model"] else " (default model)")
                      + f" / log: {log_file}", "run")
-        if not _tl_verified(acceptance, str(work_dir)):
+        judge = bool(getattr(args, "judge", False))
+        if not _tl_verified(acceptance, str(work_dir)) and not (
+                judge and acceptance_prose(acceptance, str(work_dir))):
             # 「条件が無い」と「条件はあるが機械で照合できない」を区別して伝える。
             # 後者は書いた本人が検証されているつもりでいる分、黙って通す害が大きい。
             _tl_progress(
@@ -976,10 +1150,11 @@ def cmd_run(args: argparse.Namespace, cwd: Path) -> None:
                  if not acceptance else
                  "受入条件にバッククォートで囲んだファイルパスがありません"
                  "（例: `reports/digest.md` が更新されている）。"
-                 "機械が照合できるのはこの表記だけで、グロブや文章だけの条件は判定されません。")
+                 "機械が照合できるのはこの表記だけで、グロブや文章だけの条件は判定されません"
+                 "（--judge で検証エージェントに判定させられます）。")
                 + "実行はしますが結果は「検証なし」として記録します。", "run")
         result = run_prompt(goal=goal, cwd=str(work_dir), agent=agent, log_file=log_file,
-                            acceptance=acceptance, tag="run")
+                            acceptance=acceptance, tag="run", judge=judge)
         print("RESULT " + json.dumps(result, ensure_ascii=False))
         sys.exit(0 if result.get("ok") else 1)
     except ToolLoopError as exc:

@@ -103,7 +103,8 @@ agent-loop ls
 agent-loop send [-s SESSION] [-d DIR] [--wait] [--priority high|normal|low]
                 [--model MODEL] [--sandbox] [--force]
                 [--ralph --max-iterations N] PROMPT
-agent-loop run [--agent-cli NAME] [--model MODEL] [--acceptance TEXT ...] [-d DIR] PROMPT
+agent-loop run [--agent-cli NAME] [--model MODEL] [--acceptance TEXT ...] [--judge]
+               [-d DIR] PROMPT
 agent-loop statemachine --workflow PATH [--agent-cli NAME] [--model MODEL]
                         [--param KEY=VALUE ...] [--input TEXT] [-d DIR]
 agent-loop pause | resume | cancel TARGET | drain | reload
@@ -128,6 +129,13 @@ agent-loop --version
   が無ければ結果は「検証なし」になります。終了時に `RESULT {json}` を 1 行出力します。
   機械が照合するのは受入条件のバッククォート内にある**パスの形をした表記**だけです
   （区切り `/` か拡張子を持つもの。`agent-audit` のようなコマンド名は照合対象外）。
+  パスを含まない自然文の基準は、既定では誰も判定しません。`--judge` を付けると、
+  読み取り専用の検証エージェントに判定させます（もう 1 回 CLI を起こします）。
+  判定は fail-closed で、判定役を起こせない・JSON を読めない・一部の基準について
+  判定が返ってこない、はすべて「満たしていない」に倒します。判定役は
+  `agents/<name>.json` の `variants.verify` へ振り替わります——申告が無ければ作業した
+  当人が自分を採点することになるので、判定を本気で使うなら変種を置いてください。
+  結果の `verifiedBy` が `machine` / `judge` / `machine+judge` のどれかを示します。
   ツール契約の制御応答（次の一手の JSON）は、定義が用途別の変種（`variants.planner`）を
   申告していればその起動形へ振り替えます（編集は元の CLI のまま）。編集用 CLI に制御を兼ねさせると、
   材料が揃った時点でモデルが本文を書き始め、その周が捨てられます。
@@ -245,6 +253,11 @@ kiro_options:
 
 # タイムアウト（秒）
 startup_timeout: 60      # kiro-cli 起動待ち
+
+# headless 実行（session: per-run のエントリ）。どちらも既定 false。
+# acceptance_judge: true   # パスを含まない受入条件を検証エージェントに判定させる
+#                          # （CLI をもう 1 回起こす。エントリ側で上書き可能）
+# headless_window: true    # 実行ログを追う tmux ウィンドウを開く（エントリごとに 1 枚）
 
 # 設定内の文字列から参照できる値
 mapping:

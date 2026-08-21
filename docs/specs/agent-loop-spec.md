@@ -58,7 +58,7 @@ tmux を使うかどうかはこの層とは独立です。tmux は送る手段�
 | `agent-loop` | デーモンを起動する（tmux 外なら専用セッションを作って自動アタッチ） | — |
 | `ls` | 管理下の tmux セッションとペインを一覧する | 任意 |
 | `send PROMPT` | 常駐セッションへ送る。`--wait` `--priority` `--model` `--sandbox` `--force` `--ralph` | 推奨 |
-| `run PROMPT` | その場で 1 回実行する。`--agent-cli` `--model` `--acceptance` `--dir` | 不要 |
+| `run PROMPT` | その場で 1 回実行する。`--agent-cli` `--model` `--acceptance` `--judge` `--dir` | 不要 |
 | `statemachine --workflow PATH` | ワークフローを headless CLI で完走させる | 不要 |
 | `msg --to AGENT [BODY]` | 相手の inbox へメッセージを投函する | 受信側に必要 |
 | `agents` | 登録済みエージェントと inbox の状態を出す | 不要 |
@@ -119,6 +119,8 @@ tmux を使うかどうかはこの層とは独立です。tmux は送る手段�
 | `cooldown_seconds` | int 秒 | 0 | 解放後に同じペインが再取得できない時間。0 は無効 |
 | `response_timeout` | int 秒 | 600 | `send --wait` の既定待ち時間 |
 | `split_direction` | str | horizontal | tmux の分割方向。不正値は警告して horizontal |
+| `acceptance_judge` | bool | false | 受入条件の判定層を全エントリで有効にする（エントリ側で上書き可能・§3.4） |
+| `headless_window` | bool | false | headless 実行のログを `tail -F` で追う tmux ウィンドウを開く（エントリごとに 1 枚を使い回す） |
 | `health.check_interval_seconds` | int 秒 | 10 | ヘルス監視の間隔 |
 | `health.freeze_timeout_seconds` | int 秒 | 0 | busy 中に画面が変わらない時間の上限。0 は無効 |
 | `health.max_pane_rss_mb` | int MB | 0 | ready なペインの RSS 上限。0 は無効 |
@@ -182,6 +184,7 @@ tmux を使うかどうかはこの層とは独立です。tmux は送る手段�
 | `model` | str | グローバル値 | このエントリだけモデルを替える |
 | `session` | `keep` \| `per-run` | keep | それ以外は起動エラー |
 | `acceptance` | str \| list[str] | `[]` | 受入条件。文字列 1 本は 1 項目として扱う |
+| `acceptance_judge` | bool | 未指定 | パスを含まない受入条件を検証エージェントに判定させる（§3.4）。トップレベルの既定を上書きする |
 
 `cron` は「分 時 日 月 曜日」の 5 フィールドで、判定はデーモンが動いている端末のローカル時刻です。曜日の `7` は日曜として扱い、日と曜日を両方指定したときは Vixie cron と同じ OR になります（どちらかに当たれば発火）。
 
@@ -204,7 +207,7 @@ CLI とモデルの解決順は、control.json の `workloads.routine`（予算�
 | `oneshot` と `clean_session` | pane の寿命の決め方が二重になる |
 | `target` と `oneshot` / `clean_session` | 外部 pane の生死は agent-loop が持たない |
 | `mode: ralph` で `max_iterations` 未指定、または 1〜100 の外 | 反復の上限が決まらない |
-| `mode` / `session` / `oneshot` / `clean_session` / `acceptance` / `hooks` / `hook_config` の型違反 | 静かに既定へ倒すと意図しない挙動になる |
+| `mode` / `session` / `oneshot` / `clean_session` / `acceptance` / `acceptance_judge` / `hooks` / `hook_config` の型違反 | 静かに既定へ倒すと意図しない挙動になる |
 
 headless（`session: per-run`）では、Ralph 多段と external target を組み合わせた時点で起動を明示エラーで断ります。
 
@@ -220,7 +223,20 @@ headless（`session: per-run`）では、Ralph 多段と external target を組�
 
 更新値は `max_interval_seconds` で頭打ちにし、`jitter` でばらつかせます。状態は `~/.agents/loop-adaptive/<entry-id>.json` へ原子的に書き、再起動をまたいで続きます。
 
-**error 遷移は関数だけがあり、scheduler へ接続していません。** フックの例外・timeout・`None` はすべて idle として扱われます（scheduler が渡すのは `activity` と `idle` の 2 値だけ）。
+**error は「壊れている」であって「無風」ではありません。** フックが 1 つも仕事を返さなかったとき、その理由が正常な無風（`check()` が `None` を返した）なら idle、次のどれかなら error です。
+
+| error になる | idle になる |
+|---|---|
+| `check()` が例外を投げた | `check()` が `None` / 空文字を返した |
+| `check()` が timeout して隔離された（隔離中のスキップも含む） | |
+| フックファイルが読めない・`check()` が定義されていない | |
+| 戻り値が契約違反（prompt が無い・`cwd` が実在しない・`vars` の format 失敗・型違い） | |
+
+分けているのは、壊れたフックを無風と同じ経路で後退させると `max_interval_seconds` まで滑っていき、症状が「なんだか静かだ」としか見えなくなるからです。error は最小間隔付近を保って叩き続け、`~/.agents/loop-adaptive/<entry-id>.json` の `last_outcome` に残ります。ログにも `event=hook_check_error` が出ます。
+
+複数フックのうち一部だけが壊れていて、他が仕事を返した場合は activity です（仕事があるほうを優先する）。
+
+**入れていないもの**: フックが次回間隔を明示指定する口と、EWMA などによる予測。
 
 ### 2.6 CLI とモデルの差し替えが効く境界
 
@@ -322,11 +338,45 @@ HTTP の応答は次のとおりです。
 
 ```yaml
 acceptance:
-  - "`reports/audit-digest.md` が今回の実行で更新されている"   # 機械が照合する
-  - 直近 24 時間のエラーが発生元ごとに件数付きで列挙されている   # 誰も判定しない（判定層は未実装）
+  - "`reports/audit-digest.md` が今回の実行で更新されている"   # 機械層が照合する
+  - 直近 24 時間のエラーが発生元ごとに件数付きで列挙されている   # 判定層（opt-in）へ回る
 ```
 
-パスの形をした表記を 1 つも含まない受入条件しか無いエントリは、「検証なし」として記録されます。条件が書いてあることと、機械で照合できることは別です。
+パスの形をした表記を 1 つも含まない受入条件しか無いエントリは、判定層を有効にしていなければ「検証なし」として記録されます。条件が書いてあることと、機械で照合できることは別です。
+
+#### 判定層（`acceptance_judge`。既定 off）
+
+機械層が触れない基準——パスの形をした表記を含まない自然文——を、**読み取り専用の検証エージェント**に判定させます。
+
+| 設定 | 場所 | 既定 |
+|---|---|---|
+| `acceptance_judge` | トップレベル | `false` |
+| `acceptance_judge` | エントリ（トップレベルより優先。未指定なら継承） | 未指定 |
+| `--judge` | `agent-loop run` | off |
+
+既定を off にしてあるのは、判定のために CLI をもう 1 回起こすからです。「ファイルが更新されたか」だけの定期プロンプトに毎回もう 1 回分のトークンを払う理由はありません。
+
+**判定役は定義側が決めます。** `agents/<name>.json` の `variants` に `verify` の申告があればそちらへ振り替え、変種自身の既定モデルを使います（呼び出し元が明示指定していない場合）。申告が無ければ作業した CLI がそのまま判定します——これは**最も弱い構成**です。自分の仕事を自分で採点することになるので、判定を本気で使うなら定義に `verify` 変種を置いてください。
+
+**fail-closed です。** 次はすべて「満たしていない」に倒します。判定を頼まれて判定できなかったことを pass として記録すると、機械層を入れる前より悪くなるからです。
+
+- 判定役を起動できない（定義が壊れている・CLI が無い）
+- 判定の実行が非ゼロ終了 / timeout した
+- 出力から JSON を読めない
+- 基準の一部について判定が返ってこない
+
+判定に渡すのは、基準・エージェントの報告本文（先頭 4,000 字）・この実行で変わったファイルの一覧だけです。判定役は読み取り専用で起動するので、必要ならファイルを自分で読みます。プロンプトには「報告だけでは証拠にならない」「確かめられないものは fail」と明記します。
+
+**限界**: 判定は実行が終わってから 1 回だけ走ります。ラウンドの途中では判定しないので、判定層が落とした基準をエージェントがその場で直す機会はありません（次の実行で作り直します）。ラウンドごとに判定させるとコストが基準の数だけ増えるため、この形にしています。
+
+結果の `verifiedBy` で、どの層が検証したかを区別します。
+
+| `verifiedBy` | 意味 |
+|---|---|
+| `machine` | ファイル指紋で照合した |
+| `judge` | 検証エージェントが判定した |
+| `machine+judge` | 両方 |
+| `""`（空） | 誰も検証していない（`verified: false`） |
 
 ### 3.5 結果契約（`run` / `statemachine`）
 
@@ -417,6 +467,7 @@ hook は `agent-loop hook-event` を呼び、`~/.agents/loop-hooks/<instance-id>
 | ツール `run` の timeout | 既定 60 秒、上限 300 秒 | 呼び出しの `timeout_sec`（上限まで） |
 | ツール結果の自動読み戻し | 32KB まで | 不可 |
 | headless CLI の 1 回の実行 | 既定 180 秒 | CLI 定義 |
+| 受入条件の判定（`acceptance_judge`） | 既定 180 秒 | CLI 定義（変種側） |
 | スロットの強制解放 | 7200 秒 | `slot_timeout_seconds` |
 | 処理開始待ち（SlotMonitor） | 60 秒 | 不可 |
 | ペインの起動待ち | 60 秒 | `startup_timeout` |
@@ -463,9 +514,8 @@ headless 経路では次が変わります。黙って劣化させず、警告�
 
 - ターン完了 hook を注入するのは agent-loop が起動した対話 pane だけ。headless、external pane、手動起動の CLI、Cursor、Kiro v3 は対象外で、画面監視か終了コードで判定する
 - CLI とモデルの差し替えはセッション境界でだけ効く。無限キープのペインはデーモンを再起動するまで替わらない（`status` の `restart_required` で境界待ちが分かる）
-- 動的インターバルの error 遷移は関数だけがあり、scheduler へ接続していない。フックの例外・timeout・`None` はすべて idle として扱う
-- 受入条件のうち、パスを含まない自然文を証跡付きで判定する層は未実装
-- headless の実行ログは `~/.agents/runs/headless/` の JSONL に出るが、それを追う tmux ウィンドウの自動起動は無い
+- headless の実行ログは `~/.agents/runs/headless/` の JSONL に出る。追う tmux ウィンドウは `headless_window: true` のときだけ自動で開く（既定 false）
+- 受入条件の判定層（`acceptance_judge`）は実行が終わってから 1 回だけ走る。ラウンドの途中では判定しないので、判定で落ちた基準をその実行のうちに直す機会は無い
 - Ralph は daemon 再起動をまたいで途中再開しない。dirty な sandbox は自動削除しない
 - `update` は zipapp インストール専用。source / pip / symlink は理由付きで非 0 を返し、daemon 稼働中は update lock で断る
 - `statemachine` が受理するのは `statemachine-use` の 1 経路だけ。OS レベルの副作用隔離は持たず、境界は argv・cwd・実行ファイル・パスの検証と監査ログ
@@ -498,7 +548,7 @@ headless 経路では次が変わります。黙って劣化させず、警告�
 
 ## 付録: テスト
 
-`tools/agent-loop/test/` に 44 ファイル・444 件。tmux とエージェント CLI はスタブへ差し替えるので、どちらも無い環境で全件が通ります（webhook だけは実 HTTP の E2E です）。
+`tools/agent-loop/test/` に 46 ファイル・497 件。tmux とエージェント CLI はスタブへ差し替えるので、どちらも無い環境で全件が通ります（webhook だけは実 HTTP の E2E です）。
 
 ```bash
 python3 -m unittest discover -s tools/agent-loop/test

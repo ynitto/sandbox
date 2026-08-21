@@ -280,6 +280,11 @@ def main() -> None:
         help="受入条件（自然文）。繰り返し指定可。省略すると done を機械検証できない",
     )
     run_parser.add_argument(
+        "--judge", action="store_true",
+        help="パスを含まない受入条件を検証エージェントに判定させる"
+             "（もう 1 回 CLI を起こす。判定できなければ不合格）",
+    )
+    run_parser.add_argument(
         "--dir", "-d", default=None, metavar="DIR",
         help="作業ディレクトリ（省略時: カレントディレクトリ）",
     )

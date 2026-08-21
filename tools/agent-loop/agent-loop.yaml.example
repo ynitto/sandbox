@@ -107,6 +107,19 @@ cooldown_seconds: 30          # セマフォ解放後の再取得待機時間（
                               # 他のペインに実行機会が回るようになる（公平性の確保）。
 
 # ---------------------------------------------------------------------------
+# headless 実行（session: per-run のエントリ）
+# ---------------------------------------------------------------------------
+# acceptance_judge: false     # 受入条件のうち、バッククォートのパスを含まない自然文を
+#                             # 読み取り専用の検証エージェントに判定させる。既定 false
+#                             # （判定のために CLI をもう 1 回起こすため）。エントリ側の
+#                             # acceptance_judge で上書きできる。有効にしたときは
+#                             # fail-closed——判定できなかった基準は「満たしていない」。
+#                             # 判定役は agents/<name>.json の variants.verify へ振り替わる。
+# headless_window: false      # headless 実行のログ（~/.agents/runs/headless/*.jsonl）を
+#                             # tail -F で追う tmux ウィンドウを開く。エントリごとに 1 枚を
+#                             # 使い回す（実行ごとに増やすと 5 分間隔で 1 日 288 枚になる）。
+
+# ---------------------------------------------------------------------------
 # Phase 2A: external pane（既存 tmux へ送る。起動・cleanup・cancel しない）
 # ---------------------------------------------------------------------------
 # external_panes:
@@ -283,8 +296,11 @@ prompts:
       publish バックログの sweep は別の巡回が行うので、ここでは timeline の確認・
       根拠つき reply・good の判断だけを行ってください。
     acceptance:
+      # パスを含まない自然文なので、機械層は照合しない。判定させたいときだけ
+      # acceptance_judge: true（もう 1 回 CLI を起こす）。
       - timeline の確認結果を踏まえている
       - 返信した質問には自層（ltm/wiki）から引けた根拠を示している
+    # acceptance_judge: true
     tuning_profile: default
     interval_minutes: 60
     enabled: false

@@ -71,3 +71,51 @@ def _tmux_cmd_or_raise(*args: str, error_label: str) -> str:
     if not output:
         raise RuntimeError(f"{error_label}に失敗しました: 空の結果")
     return output
+
+
+# ---------------------------------------------------------------------------
+# headless 実行ログを追うウィンドウ
+# ---------------------------------------------------------------------------
+
+def _log_window_name(label: str) -> str:
+    """tmux ウィンドウ名。`.` と `:` は tmux のターゲット構文に食われるので落とす。"""
+    safe = re.sub(r"[^A-Za-z0-9_-]+", "-", str(label or "run")).strip("-")
+    return f"log-{(safe or 'run')[:20]}"
+
+
+def open_log_window(session_name: str, label: str, log_file: str) -> bool:
+    """headless 実行の JSONL を `tail -F` で追うウィンドウを開く（開けたら True）。
+
+    headless 経路は tmux ペインを使わないので、実行の様子はログファイルにしか出ない。
+    人が置き場を知って自分で開くまで何も見えないのは、対話経路との落差が大きい。
+
+    **ウィンドウは entry ごとに 1 枚**を使い回す。実行ごとに増やすと、5 分間隔の
+    定期プロンプトが 1 日で 288 枚のウィンドウを作る。同じ entry の次の実行では
+    `respawn-window -k` で新しいログへ張り替える。
+
+    失敗は握りつぶす。ログを覗く窓が開かないことは実行の失敗ではないので、tmux が
+    無い環境（CI・コンテナ）やサーバ運用で実行そのものを止めない。
+    """
+    if not log_file:
+        return False
+    try:
+        if shutil.which("tmux") is None:
+            return False
+        window = _log_window_name(label)
+        target = f"{session_name}:{window}"
+        # tail -F は「まだ存在しないファイル」も待てる（-f と違い作成を待つ）。
+        cmd = f"tail -n +1 -F {shlex.quote(str(log_file))}"
+        if _tmux_cmd("has-session", "-t", session_name).returncode != 0:
+            if _tmux_cmd("new-session", "-d", "-s", session_name,
+                         "-n", window, cmd).returncode != 0:
+                return False
+            log.info("headless ログ用に tmux セッション '%s' を作成しました。", session_name)
+            return True
+        if _tmux_cmd("has-session", "-t", target).returncode == 0:
+            # 既にある窓は張り替える（-k で中の tail を落としてから起こし直す）
+            return _tmux_cmd("respawn-window", "-k", "-t", target, cmd).returncode == 0
+        return _tmux_cmd("new-window", "-d", "-t", session_name,
+                         "-n", window, cmd).returncode == 0
+    except Exception:   # tmux の不在・権限・競合はすべて「窓が開かない」で足りる
+        log.debug("headless ログ用ウィンドウを開けませんでした: %s", log_file, exc_info=True)
+        return False
