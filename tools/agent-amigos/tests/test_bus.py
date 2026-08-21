@@ -310,7 +310,7 @@ class BoardParticipationTests(AmigosTestCase):
 
 @unittest.skipUnless(shutil.which("git"), "git が必要")
 class GitBusTests(unittest.TestCase):
-    """GitBus（P1、設計書 §4.4）: 専用バスリポジトリ + ミッション別ブランチ。"""
+    """GitBus（P1、仕様書 §2.3）: 専用バスリポジトリ + ミッション別ブランチ。"""
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="amigos-git-")

@@ -1,4 +1,4 @@
-"""LLM 呼び出し — agents/<name>.json 契約 + node-budget ゲート + 記帳（設計 §6.1）。
+"""LLM 呼び出し — agents/<name>.json 契約 + node-budget ゲート + 記帳（仕様書 §6）。
 
 呼び出しの型は 3 エンジンと同一（agentcore.agentcli の load_cli / headless_cmd /
 spill_prompt / parse_usage）。agent-audit 自身の消費も workload=audit として台帳へ
@@ -224,7 +224,7 @@ def record_ledger(args, seconds: float, *, ref: str, agent_cli: str, model: str,
 
 def run_llm(args, purpose: str, prompt: str) -> str:
     """purpose（extract / distill / review）の CLI・モデルで 1 回実行して本文を返す。
-    優先順位: agent-control > agents[purpose] > グローバル設定（設計 §6.1）。"""
+    優先順位: agent-control > agents[purpose] > グローバル設定（仕様書 §6）。"""
     from agentcore import agentcli as _agentcli
     try:
         ctl_cli, ctl_model = control_overrides(args, purpose)

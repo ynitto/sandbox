@@ -1,4 +1,4 @@
-"""設定 — 引数 > 設定ファイル > 組み込み既定（設計 §9・不変条件 5）。
+"""設定 — 引数 > 設定ファイル > 組み込み既定（仕様書 §7・§9・不変条件 5）。
 
 **agent-audit 固有の環境変数は導入しない・見ない。** 書き先（audit_dir）も源泉の場所
 （budget_dir / flow_buses / …）も、この 3 段だけで決まる——cron・agent-loop・手動と
@@ -81,7 +81,17 @@ CONFIG_DEFAULTS = {
     "update_branch": "main",
     "update_subdir": TOOL_SUBDIR,
     "update_installer": "install.sh",
-    "update_check_interval": 21600.0,
+}
+
+# 受け付けるが**効かない**キー。読み手がいないので、置いても何も起きない。
+#
+# 黙って無視すると「設定したのに効かない」が原因不明の不具合になる（家族の他ツールで
+# 2 度踏んだ）。消さずにここへ載せ、`doctor` が設定ファイル内の存在を報告する。
+INERT_KEYS = {
+    "update_check_interval":
+        "agent-audit は単発・有界で、更新を定期チェックする常駐経路を持ちません"
+        "（間隔で律速する相手がいない）。更新は `agent-audit update` を叩いたときだけ"
+        "調べます。定期実行したいときは agent-loop / cron の側で間隔を決めてください",
 }
 
 

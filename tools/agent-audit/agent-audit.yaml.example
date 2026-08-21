@@ -85,6 +85,9 @@ gc_keep_days:                 # 種別ごとに調整可（0 = その種別を�
 # insights と state.json は gc 対象外（洞察を消すと同じクラスタを再蒸留して二重に払う）
 
 # ---- 自己更新 -----------------------------------------------------------------
+update_enabled: true          # false で自己更新を止める（`update` は何もせず 0 で終わる）
 update_repo: ""               # 空 = skill-registry.json から解決
 update_branch: main
-update_check_interval: 21600
+# update_check_interval は**効きません**。agent-audit は単発・有界で、更新を定期チェック
+# する常駐経路を持たないためです（`doctor` が置いてあることを報告します）。定期実行は
+# agent-loop / cron の側で間隔を決めてください。

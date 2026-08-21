@@ -20,7 +20,7 @@ class StoreTests(AuditTestCase):
         self.assertTrue(st.append_record(dict(rec)))
         self.assertFalse(st.append_record(dict(rec)))     # 収集済みは追記しない
         st.save_state()
-        # records を消しても seen は残る＝再収集で LLM 段へ再投入されない（設計 §3.3）
+        # records を消しても seen は残る＝再収集で LLM 段へ再投入されない（仕様書 §7）
         st2 = self.make_store()
         self.assertTrue(st2.has_record("aud-x"))
 

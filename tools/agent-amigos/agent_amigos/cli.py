@@ -443,7 +443,7 @@ def cmd_reject(args) -> int:
 
 
 def cmd_assign(args) -> int:
-    """owner-picks: 応募者をロールへ確定する（オーナー。設計書 §5.1）。"""
+    """owner-picks: 応募者をロールへ確定する（オーナー。仕様書 §3.3）。"""
     from .assign import applicants, confirm_assignment
     bus, node = _resolve(args)
     mp, mission, roles = _mission(bus, args.mission)

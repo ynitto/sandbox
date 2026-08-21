@@ -1,9 +1,9 @@
-"""CLI ネイティブセッションストアのリーダ — format ごとに 1 実装(設計 §4.2・C7)。
+"""CLI ネイティブセッションストアのリーダ — format ごとに 1 実装(仕様書 §3・C7)。
 
 どこに・どの形式であるかは `agents/<name>.json` の `session_log` ブロックが宣言する
 (契約: schemas/agent-cli.schema.json)。ここは format の閉じた enum だけを実装し、
 新 CLI が既存 format なら JSON 追記だけで収集できる。本文のノイズ除去(clean)も同じ
-`session_log` に additive に載る宣言で、実装は `cleaning.py` に 1 つ(設計 §4.4)。
+`session_log` に additive に載る宣言で、実装は `cleaning.py` に 1 つ(仕様書 §3)。
 
 セッションの正規形(このモジュールの戻り値):
   {"native_id", "store", "cwd", "created_at", "updated_at",  # epoch 秒

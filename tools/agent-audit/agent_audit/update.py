@@ -1,4 +1,4 @@
-"""自己更新 — agent-flow / agent-project の update.py と同型（設計 §9）。
+"""自己更新 — agent-flow / agent-project の update.py と同型（仕様書 §7・§9）。
 
 1. git ls-remote でスキルリポジトリ branch の最新コミットを得る
 2. 適用済み SHA（state ファイル）と違えば「更新あり」
@@ -107,10 +107,18 @@ def resolve_update_target(args) -> "tuple[str, str]":
 
 
 def check_update(args, runner=None) -> dict:
+    """更新の有無を調べる。`enabled` が False なら以降は何もしない。
+
+    無効の理由は 2 つあり、区別して返す。`update_enabled: false` は**人が明示的に切った**
+    キルスイッチで、`update_repo` 未設定は**そもそも設定していない**状態だ。前者を後者と
+    同じ「未設定です」で片づけると、切ったつもりの人に理由が届かない。
+    """
     repo, branch = resolve_update_target(args)
-    info = {"enabled": bool(repo), "repo": repo, "branch": branch, "remote_sha": None,
+    disabled = not bool(getattr(args, "update_enabled", True))
+    info = {"enabled": bool(repo) and not disabled, "disabled_by_config": disabled,
+            "repo": repo, "branch": branch, "remote_sha": None,
             "applied_sha": None, "available": False, "baseline": False}
-    if not repo:
+    if not repo or disabled:
         return info
     state = read_update_state()
     info["applied_sha"] = state.get("applied_sha")
@@ -232,6 +240,9 @@ def apply_update(args, info: dict, runner=None) -> bool:
 
 def cmd_update(args) -> int:
     info = check_update(args)
+    if info.get("disabled_by_config"):
+        print("[agent-audit] update: 設定 update_enabled が false のため何もしません。")
+        return 0
     if not info["enabled"]:
         print("[agent-audit] update: update_repo が未設定です（設定ファイルで指定してください）。",
               file=sys.stderr)

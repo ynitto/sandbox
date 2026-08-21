@@ -1,4 +1,4 @@
-"""アサインプロトコル — claim → 決定的勝者 → roster 確定 → 自己補充（設計書 §5.1）。
+"""アサインプロトコル — claim → 決定的勝者 → roster 確定 → 自己補充（仕様書 §3.3）。
 
 各ノードは自分名義ファイル `assignments/<role>/<node>.json` を書くだけ（add/add
 コンフリクトなし）。勝者は lease 内の全 claim のうち (ts, node) 昇順の先頭 seats 件に
@@ -51,7 +51,7 @@ def claim_role(bus: Bus, mp: MissionPaths, role_id: str, node_id: str,
 def apply_role(bus: Bus, mp: MissionPaths, role_id: str, node_id: str,
                agent_cli: "str | None" = None, lease: "float | None" = None) -> None:
     """owner-picks 用の応募: 自分名義の claim を書くだけで勝者判定はしない
-    （確定はオーナーの roster 書き込み。設計書 §5.1）。既に応募済みなら lease を延長する
+    （確定はオーナーの roster 書き込み。仕様書 §3.3）。既に応募済みなら lease を延長する
     （renew_lease に委ね、再応募時の agent_cli 変更は無視 — 既存応募を尊重する）。"""
     existing = read_json(mp.assignment(role_id, node_id))
     if isinstance(existing, dict) and existing.get("node") == node_id:
@@ -133,7 +133,7 @@ def _declared_repos(node_repos) -> "set[str]":
 
 def matches_role(role: dict, node_tags: "list[str]", node_clis: "list[str]",
                  node_repos=None) -> bool:
-    """ロール要件とノード能力のマッチング（設計書 §5.1）。
+    """ロール要件とノード能力のマッチング（仕様書 §3.3）。
     requires.repos はノードが担当するリポジトリ（agent-amigos.yaml の repos:）で選別する
     — 成果物リポジトリに応じて入札するノードを絞る機構（board.schema.json の node と同語彙）。"""
     req = role.get("requires") or {}
@@ -156,7 +156,7 @@ DEFAULT_AWAY_GRACE = 7200.0
 
 
 def away_grace() -> float:
-    """away の resume_at からの猶予秒（設計書 §5.3。既定 2 時間）。"""
+    """away の resume_at からの猶予秒（仕様書 §3.3。既定 2 時間）。"""
     try:
         return float(os.environ.get("AGENT_AMIGOS_AWAY_GRACE", DEFAULT_AWAY_GRACE))
     except ValueError:
@@ -164,7 +164,7 @@ def away_grace() -> float:
 
 
 def is_away_within_grace(mp: MissionPaths, role_id: str, node_id: str) -> bool:
-    """担当が計画停止（away）中で、まだ待つべきか（設計書 §5.3:
+    """担当が計画停止（away）中で、まだ待つべきか（仕様書 §3.3:
     計画停止ではロールを奪わない。resume_at + grace までは本人の復帰を待つ）。"""
     st = read_json(mp.status(f"{node_id}--{role_id}")) or {}
     if st.get("state") != "away":
@@ -175,7 +175,7 @@ def is_away_within_grace(mp: MissionPaths, role_id: str, node_id: str) -> bool:
 
 def mirror_roster(bus: Bus, mp: MissionPaths, roles: "dict[str, dict]",
                   owner_node: str, policy: str = "first-come") -> dict:
-    """roster の維持（オーナーのみ書く。設計書 §5.1）。
+    """roster の維持（オーナーのみ書く。仕様書 §3.3）。
 
     - first-come: claim 勝者＝確定。導出結果を roster.json に鏡写しする（表示・監査用）。
     - owner-picks: claim は「応募」。自動確定はせず、オーナーの明示アサイン
@@ -212,7 +212,7 @@ def mirror_roster(bus: Bus, mp: MissionPaths, roles: "dict[str, dict]",
 
 
 def confirm_assignment(bus: Bus, mp: MissionPaths, role_id: str, node_id: str) -> dict:
-    """owner-picks: オーナーが応募者を確定する（roster への明示書き込み。設計書 §5.1）。
+    """owner-picks: オーナーが応募者を確定する（roster への明示書き込み。仕様書 §3.3）。
     応募（claim）が実在することを検証する。"""
     claim = read_json(mp.assignment(role_id, node_id))
     if not isinstance(claim, dict) or claim.get("node") != node_id:
@@ -238,7 +238,7 @@ def unfilled_required(roles: "dict[str, dict]", roster: dict) -> list:
 
 
 def staffing_expired(mission: dict) -> bool:
-    """公示から staffing_timeout 経過したか（自己補充の発動条件、設計書 §5.2）。"""
+    """公示から staffing_timeout 経過したか（自己補充の発動条件、仕様書 §7.1）。"""
     posted = mission.get("posted_at") or ""
     try:
         import calendar

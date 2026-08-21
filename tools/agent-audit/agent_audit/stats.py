@@ -1,4 +1,4 @@
-"""stats — 実行品質の決定的集計（設計 §5.2。LLM 不使用）。"""
+"""stats — 実行品質の決定的集計（仕様書 §5。LLM 不使用）。"""
 from __future__ import annotations
 
 import json

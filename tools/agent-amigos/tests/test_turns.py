@@ -101,7 +101,7 @@ class EscalationTests(AmigosTestCase):
 
 
 class AcceptanceAgentTests(AmigosTestCase):
-    """acceptance: agent（P2、設計書 §5.8）: オーナーノードの自動受入判定。
+    """acceptance: agent（P2、仕様書 §9）: オーナーノードの自動受入判定。
     stub 判定は決定的（partial → 差し戻し、完全 → 受入）。"""
 
     def test_auto_accept_full_delivery(self):
@@ -571,7 +571,7 @@ class ConductorTests(AmigosTestCase):
 
 
 class AgentCliResolutionTests(AmigosTestCase):
-    """使う agent CLI が決まらないときは stub へ落とさず paused にする（設計書 §5.5）。
+    """使う agent CLI が決まらないときは stub へ落とさず paused にする（仕様書 §8）。
 
     stub は LLM なしのダミー応答なので、黙って既定にすると「# ANSWER.md / role: … 」
     のようなダミー成果物が統合・納品まで進む。壊れるなら観測できる形で壊す。
@@ -620,7 +620,7 @@ class AgentCliResolutionTests(AmigosTestCase):
 
 
 class AwayQuestionTimeoutTests(AmigosTestCase):
-    """宛先が計画停止（away）中は question_timeout の時計を止める（設計書 §5.3・§5.4）。
+    """宛先が計画停止（away）中は question_timeout の時計を止める（仕様書 §3.3・§4）。
 
     止めないと、相手の PC が夜に落ちているだけで質問が期限切れになり、翌朝の owner の
     inbox が裁定要求で埋まる。相手は戻ると分かっているので待つのが正しい。
