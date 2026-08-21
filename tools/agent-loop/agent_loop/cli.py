@@ -109,12 +109,12 @@ def _reject_daemon_only_options(parser: argparse.ArgumentParser,
 def main() -> None:
     global _EFFECTIVE_AGENT_MODEL
     parser = argparse.ArgumentParser(
-        description="kiro-cli を定期プロンプトで自動操作するスクリプト",
+        description="エージェント CLI を定期プロンプトで自動操作するデーモン",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 使い方:
   agent-loop                              # デーモンモードで起動
-  agent-loop ls                           # kiro 関連セッションを一覧表示
+  agent-loop ls                           # 管理下のセッションを一覧表示
   agent-loop send "プロンプト"             # セッションにプロンプトを送信
   agent-loop send task.md                 # ファイル内容を読んで実行
   agent-loop send "MR コメント返答"        # agent-loop.yaml の定期プロンプト名で送信
@@ -154,7 +154,7 @@ def main() -> None:
 
     subparsers = parser.add_subparsers(dest="subcommand")
 
-    subparsers.add_parser("ls", help="kiro 関連の tmux セッションを一覧表示する")
+    subparsers.add_parser("ls", help="管理下の tmux セッションを一覧表示する")
 
     subparsers.add_parser(
         "slot-release",
@@ -171,9 +171,9 @@ def main() -> None:
 
     send_parser = subparsers.add_parser(
         "send",
-        help="tmux セッションの kiro-cli にプロンプトを送信する",
+        help="tmux セッションのエージェント CLI にプロンプトを送信する",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        description="プロンプトを kiro-cli tmux セッションに送信する",
+        description="プロンプトを管理下の tmux セッションへ送信する",
         epilog=f"""
 プロンプトの種類:
   自然文:                agent-loop send "コードをレビューしてください"

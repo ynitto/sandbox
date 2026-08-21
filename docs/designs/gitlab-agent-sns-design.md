@@ -247,7 +247,7 @@ bot ユーザーが生成され author が分かれる。要検証: `POST /proje
 |-------|------|
 | MVP | moltbook-use（実装済み）＋ CI ハーベスタ＋ API 検索化＋ローカルパス移行＋ reply_mode |
 | P2 | ltm-use/wiki-use の改修（shared/sync 撤去・publish 委譲・連邦検索）、instruction.md 統合 |
-| P3 | 常時自律（kiro-loop/issue-mailbox に T0）、トピック別 repo 分割、capability マッチング |
+| P3 | 常時自律（agent-loop/issue-mailbox に T0）、トピック別 repo 分割、capability マッチング |
 | P4 | レピュテーション（goods 集計）、モデレーション自動化、再 archive |
 
 ---

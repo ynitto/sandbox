@@ -6,7 +6,7 @@ from __future__ import annotations
 # （既定 ~/.agents/instructions/）の instructions.json（管理面＝agent-dashboard が原子書換）。
 # agent-loop は長寿命の kiro-cli ペインへ、revision 差分があるときだけ送信プロンプト先頭へ前置する。
 # レンダラは dashboard（JS）・agent-flow / agent-loop（Python）と同一出力になるよう決定的に保つ。
-# 由来: tools/agent-loop の同名実装をクローンし改称（agent-loop は agent-loop の後継クローン）。
+# 由来: 旧 tools/kiro-loop の同名実装をクローンし改称した（agent-loop は kiro-loop の後継）。
 
 AGENT_INSTRUCTIONS_MARKER = "<!-- agent-instructions"
 _AGENT_INSTRUCTIONS_HEADING = "## 共通指示（agent-dashboard 管理・全ノード共通）"

@@ -7,6 +7,44 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-loop の設計書を改訂し、仕様書を実装に追いつかせた
+
+agent-flow・agent-project と同じ扱いを agent-loop にも通す。517 行の設計書に判断 5 個と機能 7 件の
+節が並び、各機能の節が設定キー表・スキーマ・CLI 引数まで抱えて仕様書と二重化していた。実装
+（`agent_loop` 27 モジュール・約 12,700 行）と `docs/plans/` に照合し、`slop-police` の設計書規約で
+組み直したうえで、契約は仕様書へ寄せる。
+
+- **設計書を 517 行から 291 行へ**。判断 5 個は維持し、機能 1〜7 の節は「機能ごとの『なぜ』」
+  1 節へ畳んだ——各機能に残すのは採用理由だけで、キー表と契約は仕様書に一本化した。
+  「未実装として残っているもの」を新設し、置いたが繋いでいない箇所を明示した
+- **仕様書に、実装にあって文書に無かったものを追記**。動的インターバルの遷移表（activity /
+  idle / error の 3 状態と、error 状態が現状どこからも遷移してこないこと）、レイヤ 2
+  （`tool-loop`）とレイヤ 3（`single-shot`）を `headless_autonomy` で分ける表、CLI とモデルの
+  差し替えが効く境界、グローバル指示（agent-instructions）の pull 注入契約、statemachine の
+  50 ステップ上限と `health.check_interval_seconds`、テスト付録（44 ファイル・444 件）
+- **`node.id` の既定を実装どおりに直した**。仕様書は連番と読める書き方だったが、実装は
+  `uuid5(index, name)` で、ホストをまたいでも衝突せず同じ設定なら同じ値になる
+- **対話コンソールとサブコマンドの区別を書いた**。`prompt-add` / `prompt-remove` は stdin
+  コンソールのコマンドであってサブコマンドではなく、`slot-release` / `hook-event` は内部用
+
+### agent-loop: 退役した kiro-loop 由来の名前が 5 か所残っていた
+
+`kiro-loop` から `agent-loop` への改称は完了扱いだったが、利用者から見える文字列と内部識別子に
+取りこぼしがあった。意図的に残す 2 種類（`session.json` の engine 値 `kiro-loop`＝読取互換のみ、
+`~/.kiro/` のスロットとエージェント inbox の置き場＝稼働中の移設に実利が無い）以外はすべて処置した。
+
+- `agent_loop/cli.py` のヘルプ 5 か所が「kiro-cli を定期プロンプトで自動操作する」と、特定 CLI
+  専用のように読める文言だった。既定が kiro-cli なだけで `agent_cli` で差し替えられるため、
+  「エージェント CLI」へ一般化した
+- `agent_loop/scheduler.py` の動的ロード合成モジュール名 `kiro_loop_hook_*` /
+  `kiro_loop_preflight` を `agent_loop_*` へ改名した
+- `agent_loop/instructions.py` の由来コメントが一括置換で「旧 tools/agent-loop の同名実装を
+  クローン」という自己言及になっていた（正しくは旧 `tools/kiro-loop`）
+- `tools/agent-loop/README.md` の冒頭が kiro-cli 専用ツールのように読める書き出しだったのを
+  一般化し、設計書・仕様書への導線を足した。移行の節は退役済みであることを見出しに書いた
+- `docs/designs/gitlab-agent-sns-design.md` のロードマップが常時自律の担い手を `kiro-loop` と
+  書いていたのを `agent-loop` へ直した
+
 ### agent-project の設計書を改訂し、仕様書を分離した
 
 agent-flow と同じ扱いを agent-project にも通す。446 行の設計書に判断 9 個と仕様（CLI 表・設定・

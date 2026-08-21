@@ -1,7 +1,7 @@
 # agent-loop 仕様書
 
-> 最終更新: 2026-08-12（`hooks` の複数指定、`mapping`、ターン完了 hook を反映）
-> 対象: `tools/agent-loop/`（`agent_loop` パッケージ）
+> 最終更新: 2026-08-21（実装と全件照合。CLI の層と適応遷移の表、グローバル指示、対話コンソールを追記）
+> 対象: `tools/agent-loop/`（`agent_loop` パッケージ・27 モジュール・約 12,700 行）
 >
 > 本書は「**何ができて、何を設定でき、どんな規約と制約があるか**」を書きます。
 > なぜそう決めたかは[設計書](../designs/agent-loop-design.md)、クラス構成と処理フローは
@@ -42,6 +42,15 @@ agent-loop は、YAML に書いたプロンプトを tmux 上のエージェン�
 | 単発実行 | `agent-loop run` | daemon 不要。その場で 1 回 | アドホック実行、dashboard からの呼び出し |
 | ステートマシン | `agent-loop statemachine` | daemon 不要。ワークフローを完走 | `statemachine-use` の定型業務 |
 
+どのかたちを選べるかは、CLI 定義が申告する `headless_autonomy` で決まります。
+
+| 層 | 定義の申告 | 例 | agent-loop の扱い |
+|---|---|---|---|
+| 層 2 | `tool-loop` | claude / codex / copilot / cursor / kiro / opencode / ollama | ヘッドレス argv を 1 回実行し、終了コードで完了を検知する |
+| 層 3 | `single-shot` | aider / ollama-json / ollama-list | 限定ツール契約（§3.4）でツール実行を供給しながら完遂させる |
+
+tmux を使うかどうかはこの層とは独立です。tmux は送る手段と見る手段で、headless でも見せ方は変わりません。`interactive` 節を持たない定義は対話キープを保てないので、`keep` 指定でも per-run へ倒して警告します。
+
 ### 1.3 操作コマンド
 
 | コマンド | 何をする | daemon |
@@ -62,6 +71,10 @@ agent-loop は、YAML に書いたプロンプトを tmux 上のエージェン�
 | `update` | zipapp インストールを更新する | 停止中のみ |
 
 `send` は「常駐セッションへ送る」、`run` は「今ここで実行して結果を返す」、`msg` は「相手の inbox へ置いて非同期に処理させる」です。宛先も完了の分かり方も違うので、用途で選んでください。
+
+デーモンの stdin は**対話コンソール**になっていて、`status` / `ls` / `send <target> <text>` / `prompt-add` / `prompt-list` / `prompt-remove` / `help` / `quit` を受け付けます。`prompt-add` と `prompt-remove` は設定ファイルを直接書き換えるので、PyYAML が要ります（サブコマンドではなくこのコンソールの機能です）。
+
+`slot-release` と `hook-event` は CLI 定義側の hook が呼ぶ内部コマンドで、`--help` には出ません。
 
 ### 1.4 完了の見分け方
 
@@ -136,7 +149,7 @@ agent-loop は、YAML に書いたプロンプトを tmux 上のエージェン�
 | キー | 型 | 既定 | 意味 |
 |---|---|---|---|
 | `name` | str | 本文の先頭 40 文字 | 表示名。webhook のルート名にもなる |
-| `id` | str | 自動採番（UUID） | 明示すると reload をまたいで同一視される |
+| `id` | str | `uuid5(index, name)` | 省略しても**決定的**に採番するので、位置と名前が変わらない限り reload をまたいで同一視される（毎回 uuid4 にすると、起動直後の reload が `run_immediately_on_startup` の予定時刻を上書きしてしまう） |
 | `enabled` | bool | true | false のエントリは読み込み時に落とす |
 | `prompt` | str | — | 送る本文。`hooks` か `slash` があれば省略可 |
 | `slash` | str \| list[str] | なし | 本文の前に独立送信する CLI コマンド |
@@ -194,6 +207,30 @@ CLI とモデルの解決順は、control.json の `workloads.routine`（予算�
 | `mode` / `session` / `oneshot` / `clean_session` / `acceptance` / `hooks` / `hook_config` の型違反 | 静かに既定へ倒すと意図しない挙動になる |
 
 headless（`session: per-run`）では、Ralph 多段と external target を組み合わせた時点で起動を明示エラーで断ります。
+
+### 2.5 動的インターバルの遷移
+
+`adaptive.enabled: true` のエントリだけが対象です（`cron` エントリには効きません）。発火の結果から次回時刻を決めます。
+
+| 結果 | インターバルの更新 | idle 回数 |
+|---|---|---|
+| activity（送信した） | `min_interval_seconds` へ即リセット | 0 に戻す |
+| idle（送らなかった） | `idle_threshold` 回続いたら `× backoff_factor` | +1 |
+| error | `min × backoff_factor` の短時間 retry | 増やさない |
+
+更新値は `max_interval_seconds` で頭打ちにし、`jitter` でばらつかせます。状態は `~/.agents/loop-adaptive/<entry-id>.json` へ原子的に書き、再起動をまたいで続きます。
+
+**error 遷移は関数だけがあり、scheduler へ接続していません。** フックの例外・timeout・`None` はすべて idle として扱われます（scheduler が渡すのは `activity` と `idle` の 2 値だけ）。
+
+### 2.6 CLI とモデルの差し替えが効く境界
+
+| セッション設定 | 境界 | 差し替えが効くタイミング |
+|---|---|---|
+| `oneshot` / `session: per-run`（headless） | 毎回 | 次の実行 |
+| `clean_session: N` | N 回成功ごと | 次の建て直し |
+| 無限キープ（既定・`clean_session` 無し） | デーモン再起動のみ | 再起動後 |
+
+既存ペインと要求内容が食い違っても実行は捨てません。判定は `launch_fingerprint`（CLI 名 + argv + cwd）で行い、食い違いは警告（セッションごとに 1 回）と status の `restart_required` で境界待ちとして伝えます。`revision_applied` は実際に解決へ使った revision を報告します（ファイルの最新値ではありません）。
 
 ---
 
@@ -337,6 +374,16 @@ hook は `agent-loop hook-event` を呼び、`~/.agents/loop-hooks/<instance-id>
 
 `doctor` は adapter の資産と runtime ディレクトリを点検します。利用者の global / project 設定、手動で起動した CLI、外部 pane には触りません。
 
+### 3.7 グローバル指示（agent-instructions）
+
+管理面（agent-dashboard）が原子的に書き換える `$AGENT_INSTRUCTIONS_DIR`（既定 `~/.agents/instructions/`）の `instructions.json` を pull 型で読み、**送信プロンプトの先頭へ前置**します。正典は `schemas/agent-instructions.schema.json` で、agent-loop 側に設定キーはありません。
+
+- 前置するのは、**そのペインへまだ注入していないか、`revision` が変わったとき**だけです。同じ revision を同じペインへ二度は入れません
+- レンダリングは決定的で、dashboard（JS）・agent-flow・agent-loop が同一出力になります
+- 長さは既定 2,000 文字で丸め、宣言できる上限は 8,000 文字です（0 以下は既定へ）
+- 実際に適用した revision は agent-control の status へ `instructions_revision_applied` として載せます
+- **フェイルセーフ**: 不在・破損・`enabled: false`・本文が空・既にマーカーが混入済みは、すべて no-op です。注入の失敗で送信を止めません
+
 ---
 
 ## 4. 規約
@@ -374,7 +421,8 @@ hook は `agent-loop hook-event` を呼び、`~/.agents/loop-hooks/<instance-id>
 | 処理開始待ち（SlotMonitor） | 60 秒 | 不可 |
 | ペインの起動待ち | 60 秒 | `startup_timeout` |
 | `send --wait` | 600 秒 | `--response-timeout` |
-| ポーリング間隔 | scheduler 1 秒 / SlotMonitor 2 秒 / inbox 5 秒 / session-monitor 10 秒 | inbox のみ `inbox_poll_seconds` |
+| ステートマシンの遷移回数 | 50 ステップ | ワークフローの `config.max_steps` |
+| ポーリング間隔 | scheduler 1 秒 / SlotMonitor 2 秒 / inbox 5 秒 / session-monitor 10 秒 | inbox のみ `inbox_poll_seconds`、session-monitor は `health.check_interval_seconds` |
 
 `send --wait` の終了コードは、完了が 0、失敗（ペインやプロセスの終了、`failure_pattern` 一致）が 1、タイムアウトが 2 です。
 
@@ -442,5 +490,16 @@ headless 経路では次が変わります。黙って劣化させず、警告�
 | `~/.kiro/slots/` | 同時実行スロットとクールダウン（`.lock` は fcntl のミューテックス） |
 | `~/.kiro/agents/<name>/inbox/` | エージェント間メッセージ（`.processed/` は処理済み） |
 | `<project>/.agents/agent-loop.yml` | プロジェクトの定期プロンプト |
+| `~/.agents/instructions/instructions.json` | グローバル指示（`$AGENT_INSTRUCTIONS_DIR` で変更可。§3.7） |
 | `<install prefix>/hooks/` | `hooks` から名前で引ける同梱スクリプト（`install.sh` が配置） |
 | `<install prefix>/agent-hooks/` | ターン完了 hook の CLI 別資産（同上） |
+
+`~/.kiro/` 配下の 2 つ（スロットとエージェント inbox）は旧 kiro-loop 系統と共有していた置き場です。旧系統は退役済みですが、稼働中の inbox とスロットを移設する実利が無いのでパスはそのままにしています。
+
+## 付録: テスト
+
+`tools/agent-loop/test/` に 44 ファイル・444 件。tmux とエージェント CLI はスタブへ差し替えるので、どちらも無い環境で全件が通ります（webhook だけは実 HTTP の E2E です）。
+
+```bash
+python3 -m unittest discover -s tools/agent-loop/test
+```

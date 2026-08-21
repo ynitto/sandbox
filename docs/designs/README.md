@@ -10,7 +10,7 @@
 1. [`agent-project-design.md`](./agent-project-design.md) — 単一プロジェクトのバックログを自律的に優先順位付け・実行・検証・収束させる制御層の設計正典。done を receipt の検算だけで確定する不変条件、常駐体と子プロセスの分担、複数 PC を git の CAS で調停する方式を扱う（旧 multi-node daemon 設計を統合済み）。設定キー・契約・制約の一覧は[仕様書](../specs/agent-project-spec.md)に分離した（2026-08-20）。
 2. [`agent-flow-design.md`](./agent-flow-design.md) — git 共有バス上でタスクグラフを動的生成し複数ワーカーへ分散実行する Dynamic Workflow 基盤の設計書。自己回復リトライ（4 層）とリトライ時の世代交代（`inherit_from`）も統合済み。設定キー・契約・制約の一覧は[仕様書](../specs/agent-flow-spec.md)に分離した（2026-08-12）。
 3. [`codd-gate-design.md`](./codd-gate-design.md) — ドキュメント・コード・テストの一貫性を「受け入れ前ゲート」と「負債棚卸し→タスク化」で維持する決定的ツールの設計正典。agent-project 本体は無改造のまま、`schemas/` の共通データ契約と agent-project 側の汎用フック契約（E1〜E3）の2点で連携する独立ツール。
-4. [`agent-tools-rename-design.md`](./agent-tools-rename-design.md) — 旧 `kiro-*` 系統を `agent-*` へクローン移行・改称する方針と新旧名称対応表。agent-project/agent-flow/agent-dashboard の移行は完了。`kiro-loop → agent-loop` もクローン移行済みで、ループ系の設計書は [`agent-loop-design.md`](./agent-loop-design.md) に統合済み。2026-08-08 に旧 `tools/kiro-loop/` の残置方針を撤回し、退役へ切り替えた（手順は [資源効率計画](../plans/2026-08-08-agent-tools-resource-efficiency-plan.md) の F13）。
+4. [`agent-tools-rename-design.md`](./agent-tools-rename-design.md) — 旧 `kiro-*` 系統を `agent-*` へクローン移行・改称する方針と新旧名称対応表。agent-project/agent-flow/agent-dashboard/agent-loop の移行と旧実装の退役はすべて完了しており、ループ系の設計書は [`agent-loop-design.md`](./agent-loop-design.md) に統合済み。2026-08-08 に旧 `tools/kiro-loop/` の残置方針を撤回し、退役へ切り替えた（手順は [資源効率計画](../plans/2026-08-08-agent-tools-resource-efficiency-plan.md) の F13）。
 
 > **補足**: agent-dashboard の画面ごとの詳細設計は `docs/plans/2026-07-1x-agent-dashboard-*-design.md` に日付つきで分散している。本ディレクトリには骨格の正典 [`agent-dashboard-design.md`](./agent-dashboard-design.md) を置く。
 
@@ -22,13 +22,13 @@
 
 詳細な要旨は前掲「まず読むもの」を参照。[`agent-tools-concept.md`](./agent-tools-concept.md) ・ [`agent-project-design.md`](./agent-project-design.md) ・ [`agent-flow-design.md`](./agent-flow-design.md) ・ [`codd-gate-design.md`](./codd-gate-design.md) ・ [`agent-tools-rename-design.md`](./agent-tools-rename-design.md)
 
-### 2. ループ拡張（agent-loop / kiro-loop）
+### 2. ループ拡張（agent-loop）
 
-> かつて adaptive-interval・agent-messaging・event-hook・gitlab-webhook の 4 件は kiro-loop 系と agent-loop 系で同名の設計が並存していたが、2026-08-06 に 8 文書すべてを [`agent-loop-design.md`](./agent-loop-design.md) へ統合し削除した。2026-08-09 には `slash` プロパティ設計も同書の機能 6 へ統合した。名称は移行先の `agent-loop` に統一、kiro-loop 系統との差分は同書の付録 B にある。
+> かつて adaptive-interval・agent-messaging・event-hook・gitlab-webhook の 4 件は旧 kiro-loop 系と agent-loop 系で同名の設計が並存していたが、2026-08-06 に 8 文書すべてを [`agent-loop-design.md`](./agent-loop-design.md) へ統合し削除した。2026-08-09 には `slash` プロパティ設計も同書へ統合した。旧系統は退役済みで、名称は `agent-loop` に統一。移行の記録は同書の付録 B にある。
 
 | ファイル | 要旨 |
 |---|---|
-| [`agent-loop-design.md`](./agent-loop-design.md) | agent-loop（旧 kiro-loop）の設計正典。イベントフック・Webhook・メッセージング・動的インターバル・CLI 差し替え・`slash` と、共通 dispatch gate 上の Phase 1 / Phase 2 実行基盤を扱う。旧ループ拡張 8 文書と `slash` 設計を統合済み。 |
+| [`agent-loop-design.md`](./agent-loop-design.md) | agent-loop の設計正典。イベントフック・Webhook・メッセージング・動的インターバル・CLI 差し替え・`slash`・ステートマシンハーネスと、共通 dispatch gate 上の Phase 1 / Phase 2 実行基盤を扱う。設定キー・契約・制約の一覧は[仕様書](../specs/agent-loop-spec.md)に分離してある。 |
 | [`statemachine-deterministic-check-design.md`](./statemachine-deterministic-check-design.md) | statemachine-use のステートに「ハーネスが実行する検査コマンド」（`check`）を宣言でき、その終了コードを遷移の材料にする設計。`output_validator` が見るのはモデルが書いた第1行の書式だけで偽 done を止められない、という実測（初回 13/13 が同形で壊れ、機械層を全部素通り）への回答。落ちたら同じステートへ再投入し、上限到達は `escalate`（実行レベル昇格のシグナル）として失敗一般と区別する。**fork 先への移植を主目的に、スキル側の契約と 2 段階の移植手順を仕様として書いてある**。 |
 
 ### 3. 実装・運用設計（外部連携・インフラ・実行基盤）

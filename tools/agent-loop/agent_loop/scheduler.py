@@ -1349,7 +1349,7 @@ class PeriodicScheduler:
                 return cached[1]
 
             try:
-                module_name = "kiro_loop_hook_" + hashlib.sha256(
+                module_name = "agent_loop_hook_" + hashlib.sha256(
                     f"{key[0]}\0{key[1]}".encode()
                 ).hexdigest()[:16]
                 spec = importlib.util.spec_from_file_location(module_name, hook_path)
@@ -1510,7 +1510,7 @@ class PeriodicScheduler:
             if cached and cached[0] == mtime:
                 module = cached[1]
             else:
-                spec = importlib.util.spec_from_file_location("kiro_loop_preflight", path)
+                spec = importlib.util.spec_from_file_location("agent_loop_preflight", path)
                 if spec is None or spec.loader is None:
                     log.warning("preflight のロードに失敗（fail-open）: %s", path)
                     return True

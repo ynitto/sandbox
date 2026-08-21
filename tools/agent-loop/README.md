@@ -1,19 +1,22 @@
 # agent-loop
 
-> 2026-08-09 に定期駆動ループを agent-loop へ一本化。経緯と移行方針は
+> 2026-08-09 に定期駆動ループを agent-loop へ一本化（旧 kiro-loop は退役済み）。経緯と移行方針は
 > [`docs/designs/agent-tools-rename-design.md`](../../docs/designs/agent-tools-rename-design.md) を参照。
+>
+> - 設計の正典（なぜこの形か）: [`docs/designs/agent-loop-design.md`](../../docs/designs/agent-loop-design.md)
+> - 仕様の正典（何ができて何を設定できるか）: [`docs/specs/agent-loop-spec.md`](../../docs/specs/agent-loop-spec.md)
+> - クラス構成と処理フロー: [`DESIGN.md`](DESIGN.md)
 
-
-kiro-cli を **tmux セッション**上で起動し、設定ファイルに定義したプロンプトを定期的に自動送信するツールです。
+エージェント CLI を **tmux セッション**上で起動し、設定ファイルに定義したプロンプトを定期的に自動送信するツールです。既定は kiro-cli で、設定 `agent_cli` で claude / codex / aider 等へ差し替えられます。
 
 ## 特徴
 
-- **tmux ベース**: `kiro-cli chat` を tmux セッション内で実行し、`send-keys` / `capture-pane` で制御
+- **tmux ベース**: エージェント CLI を tmux セッション内で実行し、`send-keys` / `capture-pane` で制御
 - **出力の視認**: tmux 外から起動すると自動でセッションへアタッチ。`agent-loop ls` でも対象を確認可能
 - **簡単な終了**: controller画面で `quit`、または Ctrl+C
 - **ディレクトリ単位**: 起動したカレントディレクトリを対象に、プロンプトごとのペインを管理
 - **設定ファイル自動生成**: `prompt-add` で定期プロンプトを追加すると `<project>/.agents/agent-loop.yml` に保存
-- **自動再起動**: kiro-cli が予期せず終了した場合に自動で再起動
+- **自動再起動**: エージェント CLI が予期せず終了した場合に自動で再起動
 - **エージェント CLI の差し替え**: 設定 `agent_cli` で kiro-cli 以外（claude / codex 等）を `agents/<name>.json` 契約で駆動（待機判定・クリアコマンド・スキル起動記号も定義に従う）
 
 ## 依存
@@ -37,10 +40,10 @@ bash install.sh
 YAMLから呼ぶ同梱スクリプトは実行ファイルと同じprefixの `hooks/`、CLI lifecycle用assetは
 `agent-hooks/` へ配置されます。installerは各CLIを起動せず、global/project設定も変更しません。
 
-### 旧設定の移行
+### 旧設定の移行（退役した kiro-loop から）
 
-旧ツールの設定はファイル名と置き場を変更し、`event_hook` は `hooks`、
-`event_hook_config` は `hook_config` へ改名する。移行先が既にある場合は上書きせず、内容を統合する。
+旧ツール（kiro-loop）は退役済みで、この節はその設定を引き継ぐ人向けの手順です。ファイル名と置き場を変更し、
+`event_hook` は `hooks`、`event_hook_config` は `hook_config` へ改名する。移行先が既にある場合は上書きせず、内容を統合する。
 
 ```bash
 mkdir -p ~/.agents
