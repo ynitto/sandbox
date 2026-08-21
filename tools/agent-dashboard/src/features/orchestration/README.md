@@ -4,7 +4,7 @@
 扱う。amigos に間借りしていたノード予算の実装はここへ移管して v2 対応した
 （`amigos:budgetSave` は互換のため残してある）。
 
-設計: [`docs/designs/agent-dashboard-design.md`](../../../../../docs/designs/agent-dashboard-design.md) §5。
+設計: [`docs/designs/agent-dashboard-design.md`](../../../../../docs/designs/agent-dashboard-design.md) §4。
 画面: [`docs/plans/2026-07-19-agent-dashboard-orchestration-token-budget-design.md`](../../../../../docs/plans/2026-07-19-agent-dashboard-orchestration-token-budget-design.md)。
 
 ## 扱う契約（すべてツール横断のデータ契約。コードは共有しない）

@@ -8,7 +8,8 @@ Windows の agent-dashboard から、WSL 上の agent-loop **tmux セッショ�
 - Phase C の構造化状態（最終実行時刻・alive/busy）と `agent-loop send` 経由の復旧送信は実装済み
   （busy 拒否は renderer が「送信待機」に変換して自動再送する）
 
-設計: [`docs/designs/agent-dashboard-design.md`](../../../../../docs/designs/agent-dashboard-design.md) §5.1
+設計: [`docs/designs/agent-dashboard-design.md`](../../../../../docs/designs/agent-dashboard-design.md) §4、
+IPC と設定キーは [`docs/specs/agent-dashboard-spec.md`](../../../../../docs/specs/agent-dashboard-spec.md) §2.3・§4.3
 
 ## セッションの発見
 

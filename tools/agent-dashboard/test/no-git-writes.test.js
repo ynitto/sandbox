@@ -20,7 +20,7 @@ function test(name, fn) {
 const SRC = path.join(__dirname, '..', 'src');
 
 // 検査対象は `src/` 全体。以前は「プロジェクトの状態を扱う層」（base/main・
-// features/agent-project・renderer）だけを見ていたが、制御面が 2 つから 7 つへ増えた結果、
+// features/agent-project・renderer）だけを見ていたが、制御面が 2 つから 9 つへ増えた結果、
 // **後から足した feature には護りが掛かっていない**状態になっていた。どの feature も
 // 規律自体は守っているものの、それを保証しているのが人の目だけ、という穴を塞ぐ。
 //

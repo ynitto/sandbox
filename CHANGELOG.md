@@ -7,6 +7,146 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-loop: 設計書に残していた未実装 3 件を実装した
+
+改訂（前項）で「未実装として残っているもの」に整理した 3 件を実装する。2 件は opt-in で、
+既定の設定ファイルの挙動は変わらない。
+
+#### 1. 動的インターバルの error 遷移を scheduler へ接続した
+
+遷移関数には `activity` / `idle` / `error` の 3 値があり、テストもあったのに、scheduler が渡すのは
+2 値だけだった。`_call_hook_check()` が「やることが無い」も「フックが壊れている」も同じ `None` を
+返していたためで、**毎回例外を投げるフックが無風とまったく同じ経路で `max_interval_seconds` まで
+後退する**。症状は「なんだか静かだ」としか見えない。
+
+異常のときだけ印を付けるようにし（`_note_hook_check_error`）、仕事が 1 件も出なかった発火では
+印の有無で `error` と `idle` を分ける。error になるのは、例外・timeout（隔離中のスキップを含む）・
+フックが読めない・`check()` が無い・戻り値の契約違反（prompt が無い / `cwd` が実在しない /
+`vars` の format 失敗 / 型違い）。正常な無風（`None` や空文字）だけが idle のまま。error は最小
+間隔付近を保って叩き続け、状態ファイルの `last_outcome` とログの `event=hook_check_error` に残る。
+
+フックによる次回間隔の明示指定と EWMA などの予測は、非目標のまま入れていない。
+
+#### 2. 自然文の受入条件を判定する層を足した（`acceptance_judge`・既定 off）
+
+機械層が照合できるのはバッククォート内のプロジェクト内パスだけで、「レポートに前週比が含まれて
+いる」のような基準は誰も判定していなかった。実行は `verified: false` で記録されるが `ok: true` には
+なるので、**書いた本人は検証されているつもり**でいる。
+
+パスを含まない基準を、読み取り専用の検証エージェントに判定させる層を足した。
+
+- **既定 off**。判定のために CLI をもう 1 回起こすので、「ファイルが更新されたか」だけの定期
+  プロンプトに毎回もう 1 回分のトークンを払う理由はない。トップレベル `acceptance_judge` と
+  エントリ側の同名キー（エントリ優先）、`agent-loop run --judge` で有効にする
+- **判定役は定義側が決める**。`agents/<name>.json` の `variants.verify` へ振り替え、変種自身の
+  既定モデルを使う。申告が無ければ作業した CLI がそのまま判定する——最も弱い構成なので、
+  README と仕様書に明記した
+- **fail-closed**。判定役を起動できない・非ゼロ終了・JSON を読めない・一部の基準について判定が
+  返ってこない、はすべて「満たしていない」に倒す。判定を頼まれて判定できなかったことを pass と
+  記録すると、機械層を入れる前より悪くなる
+- 結果に `verifiedBy`（`machine` / `judge` / `machine+judge` / 空）を足した。確かさの違う 2 つを
+  同じ `verified: true` へ潰すと、後から「ファイル指紋で見たのか、モデルが読んで良しと言ったのか」が
+  分からない
+
+判定は実行の終了後に 1 回だけ走る。ラウンドごとに判定させるとコストが基準の数だけ増えるためで、
+この限界は仕様書に書いた。
+
+#### 3. headless 実行ログを追う tmux ウィンドウ（`headless_window`・既定 off）
+
+headless 経路は tmux ペインを使わないので、実行の様子は `~/.agents/runs/headless/` の JSONL に
+しか出ず、人が置き場を知って自分で開くまで何も見えなかった。`tail -F` で追うウィンドウを開く。
+
+**ウィンドウはエントリごとに 1 枚**を使い回し、次の実行では `respawn-window -k` で張り替える
+（実行ごとに増やすと 5 分間隔の定期プロンプトが 1 日で 288 枚作る）。tmux が無い環境・権限が
+無い環境では黙って開かず、実行そのものは止めない——ログを覗く窓が開かないことは実行の失敗ではない。
+
+テストは 44 ファイル・444 件から 46 ファイル・497 件へ。
+
+### agent-dashboard の設計書を改訂し、仕様書を分離した
+
+agent-flow・agent-project・agent-loop と同じ扱いを agent-dashboard にも通す。792 行の設計書に
+判断 6 個と、合成契約・設定キー・IPC 一覧・画面ごとの表示規則（ダイアログの伸縮まで）が同居し、
+「なぜそう決めたか」と「今どういう契約か」が同じ場所で混ざっていた。実装（制御面 9 つ・
+`src/` 135 ファイル・約 43,600 行）と `docs/plans/` の 56 本に照合し、`slop-police` の設計書規約で
+組み直したうえで、契約を新設の仕様書へ移す。
+
+- **`docs/specs/agent-dashboard-spec.md` を新設**。feature 記述子と載せる順番、IPC 161 本の内訳、
+  renderer の読み込み順契約と登録簿 3 つ、設定キー表（base ＋ 制御面 9 つ）、読むファイルと
+  書くファイルの一覧、設計 run / 実装 run の契約、正典の写し 4 つとそれを縛るゴールデンテスト、
+  構造を固定しているテスト、配布（`build.files` / `extraResources`）を収めた
+- **設計書を 792 行から 387 行へ、判断を 6 個から 5 個へ**。3.1（git 書き込み撤去）と
+  3.4（AI は下書きまで）と §5.2 の板への書き込み規則は**同じ判断の 3 つの適用**なので、
+  「dashboard は状態の書き手にならない」1 個へ畳んだ。§5 の制御面ごとの長い散文と §6 の UI 表示
+  規則は仕様書と README へ振り分け、設計 run と実装 run の分離は判断ではなく 1 節へ落とした
+- **付録を整理**。「画面ごとの設計判断の要点」は却下案を伴うものだけに絞り、更新対象の文書
+  （仕様書を先頭に）を付録 A として独立させた
+
+### agent-dashboard: テスト 3 ファイルが `npm test` から漏れ、一度も実行されていなかった
+
+`tools/agent-dashboard/test/` に置かれているのに `package.json` の `scripts.test` へ登録されておらず、
+CI を含めてどこでも走っていないテストが 3 つあった。`npm test` は個々のファイルを直列に並べた
+1 本のコマンドで、ディレクトリを走査しない——置いただけでは実行されない。
+
+- `budget-summary-parity.test.js`（3 件・2026-08-14 追加）… status 射影の reason_codes と
+  contract_version を schema 正本と突き合わせる。ファイル自身のコメントに「`node test/...` で走る」と
+  書きながら、走らせる側へ足されていなかった
+- `flow-interaction.test.js`（6 件・2026-08-12 追加）
+- `note-tasking.test.js`（4 件・2026-08-12 追加）
+
+3 つとも現状のコードで通ることを確認したうえで `scripts.test` へ登録した。あわせて仕様書の付録に
+「テストファイルを足したら `scripts.test` へも足す」ことを明記した。
+
+### agent-dashboard: 実装と食い違っていた記述
+
+- **`src/features/agent-loop/` は存在しない**。README がループの端末ビューをこのパスで説明していたが、
+  実体は `src/features/routines/` である
+- **routines の IPC は 4 本ではなく 6 本**。設計書は `listSessions` / `capture` / `state` / `send` の
+  4 本と書いていたが、`queue` / `queueMessage` が増えている
+- **制御面は 8 つではなく 9 つ**。設計書の全体像は `adhoc-flow` を落としており、`preparation` は
+  `src/features/` 配下にありながら feature 記述子を持たない共有モジュールで制御面ではない、という
+  区別も書かれていなかった。ディレクトリ数 10・制御面 9 として仕様書に明記した
+- **テストは 84 ファイルではなく 98 ファイル**
+- `test/no-git-writes.test.js` の由来コメント「制御面が 2 つから 7 つへ増えた」を 9 へ更新した
+- 制御面の README 4 本が参照していた設計書 §5 / §5.1 は改訂で移動したため、§4 と仕様書へ張り直した
+
+### agent-loop の設計書を改訂し、仕様書を実装に追いつかせた
+
+agent-flow・agent-project と同じ扱いを agent-loop にも通す。517 行の設計書に判断 5 個と機能 7 件の
+節が並び、各機能の節が設定キー表・スキーマ・CLI 引数まで抱えて仕様書と二重化していた。実装
+（`agent_loop` 27 モジュール・約 12,700 行）と `docs/plans/` に照合し、`slop-police` の設計書規約で
+組み直したうえで、契約は仕様書へ寄せる。
+
+- **設計書を 517 行から 291 行へ**。判断 5 個は維持し、機能 1〜7 の節は「機能ごとの『なぜ』」
+  1 節へ畳んだ——各機能に残すのは採用理由だけで、キー表と契約は仕様書に一本化した。
+  「未実装として残っているもの」を新設し、置いたが繋いでいない箇所を明示した
+- **仕様書に、実装にあって文書に無かったものを追記**。動的インターバルの遷移表（activity /
+  idle / error の 3 状態と、error 状態が現状どこからも遷移してこないこと）、レイヤ 2
+  （`tool-loop`）とレイヤ 3（`single-shot`）を `headless_autonomy` で分ける表、CLI とモデルの
+  差し替えが効く境界、グローバル指示（agent-instructions）の pull 注入契約、statemachine の
+  50 ステップ上限と `health.check_interval_seconds`、テスト付録（44 ファイル・444 件）
+- **`node.id` の既定を実装どおりに直した**。仕様書は連番と読める書き方だったが、実装は
+  `uuid5(index, name)` で、ホストをまたいでも衝突せず同じ設定なら同じ値になる
+- **対話コンソールとサブコマンドの区別を書いた**。`prompt-add` / `prompt-remove` は stdin
+  コンソールのコマンドであってサブコマンドではなく、`slot-release` / `hook-event` は内部用
+
+### agent-loop: 退役した kiro-loop 由来の名前が 5 か所残っていた
+
+`kiro-loop` から `agent-loop` への改称は完了扱いだったが、利用者から見える文字列と内部識別子に
+取りこぼしがあった。意図的に残す 2 種類（`session.json` の engine 値 `kiro-loop`＝読取互換のみ、
+`~/.kiro/` のスロットとエージェント inbox の置き場＝稼働中の移設に実利が無い）以外はすべて処置した。
+
+- `agent_loop/cli.py` のヘルプ 5 か所が「kiro-cli を定期プロンプトで自動操作する」と、特定 CLI
+  専用のように読める文言だった。既定が kiro-cli なだけで `agent_cli` で差し替えられるため、
+  「エージェント CLI」へ一般化した
+- `agent_loop/scheduler.py` の動的ロード合成モジュール名 `kiro_loop_hook_*` /
+  `kiro_loop_preflight` を `agent_loop_*` へ改名した
+- `agent_loop/instructions.py` の由来コメントが一括置換で「旧 tools/agent-loop の同名実装を
+  クローン」という自己言及になっていた（正しくは旧 `tools/kiro-loop`）
+- `tools/agent-loop/README.md` の冒頭が kiro-cli 専用ツールのように読める書き出しだったのを
+  一般化し、設計書・仕様書への導線を足した。移行の節は退役済みであることを見出しに書いた
+- `docs/designs/gitlab-agent-sns-design.md` のロードマップが常時自律の担い手を `kiro-loop` と
+  書いていたのを `agent-loop` へ直した
+
 ### agent-project の設計書を改訂し、仕様書を分離した
 
 agent-flow と同じ扱いを agent-project にも通す。446 行の設計書に判断 9 個と仕様（CLI 表・設定・

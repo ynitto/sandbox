@@ -245,6 +245,11 @@ def validate_entries(
         else:
             raise ValueError(f"entry {name!r}: acceptance は文字列配列です")
 
+        # 判定層の on/off。未指定はトップレベルの既定に従う（ここでは None のまま残す）。
+        judge_raw = entry.get("acceptance_judge")
+        if judge_raw is not None and not isinstance(judge_raw, bool):
+            raise ValueError(f"entry {name!r}: acceptance_judge は true / false です")
+
         # 処理契約（設計 2026-08-15 §3.4）。自由文 prompt だけで候補を決めないための
         # 構造化条件。形の検査は agentcore.nodecontract の 1 実装（壊れた宣言は起動で落とす
         # ——他の entry 検証と同じ fail fast）。
@@ -297,6 +302,7 @@ def validate_entries(
             "model": entry_model,
             "session": session,
             "acceptance": acceptance,
+            "acceptance_judge": judge_raw,
             "operation": dict(operation) if isinstance(operation, dict) else None,
             # oneshot runtime（process-local）
             "overlap_pending": None,
@@ -344,6 +350,8 @@ class PeriodicScheduler:
         self._reload_external_panes: tuple[dict[str, dict[str, Any]], dict[str, Any]] | None = None
         self._reload_environment_handoff: dict[str, Any] | None = None
         self._hook_quarantine: set[tuple[str, str]] = set()
+        # 直近の check() 呼び出しで「異常」だったフック（_poll_schedule が entry ごとに空にする）
+        self._hook_check_errors: set[str] = set()
         self._active_count = 0
         self._active_ids: set[str] = set()
         self._inflight_ack_paths: set[str] = set()
@@ -1076,6 +1084,44 @@ class PeriodicScheduler:
         directory.mkdir(parents=True, exist_ok=True)
         return str(directory / f"{int(time.time() * 1000)}-{root_id[:8]}.jsonl")
 
+    def _acceptance_judge_enabled(self, entry: dict[str, Any]) -> bool:
+        """`acceptance_judge`（トップレベル既定・entry で上書き可能。既定 false）。
+
+        entry 側を優先するのは、判定に見合う prompt とそうでない prompt が同じ
+        デーモンに同居するからだ（「レポートの中身が条件を満たすか」は判定させたいが、
+        「ファイルが更新されたか」だけの prompt に毎回 CLI をもう 1 回起こす理由は無い）。
+        """
+        override = entry.get("acceptance_judge")
+        if override is not None:
+            return bool(override)
+        return bool((self._tool_config or {}).get("acceptance_judge"))
+
+    def _headless_window_enabled(self) -> bool:
+        """`headless_window`（トップレベル設定・既定 false）。"""
+        return bool((self._tool_config or {}).get("headless_window"))
+
+    def _open_headless_log_window(self, entry: dict[str, Any], log_file: str) -> None:
+        """opt-in のときだけ、この実行のログを追う tmux ウィンドウを開く。
+
+        既定を off にしてあるのは、headless 経路を選ぶ理由が「tmux を使いたくない」
+        側にもあるからだ（CI・コンテナ・サーバ常駐）。窓が開かなくても実行は進む。
+        """
+        if not self._headless_window_enabled():
+            return
+        session_name = ""
+        getter = getattr(self._session_mgr, "get_attach_session_name", None)
+        if callable(getter):
+            try:
+                session_name = str(getter() or "")
+            except Exception:
+                session_name = ""
+        if not session_name:
+            return
+        label = str(entry.get("name") or entry.get("id") or "run")
+        if open_log_window(session_name, label, log_file):
+            log.info("[%s] headless ログを tmux で追えます: tmux attach -t %s",
+                     label, session_name)
+
     def _dispatch_headless(self, req: dict[str, Any], *, entry: dict[str, Any],
                            dispatch_entry: dict[str, Any], exec_meta: dict[str, Any],
                            profile: Any, cwd: str, root_id: str) -> str:
@@ -1111,13 +1157,15 @@ class PeriodicScheduler:
         acceptance = list(entry.get("acceptance") or [])
         work_dir = cwd or self._workspace or os.getcwd()
         log_file = self._headless_log_file(root_id)
+        self._open_headless_log_window(entry, log_file)
         try:
             agent = _tl_resolve_agent(profile.name, profile.model or "", work_dir)
             log.info("[%s] headless 実行: cli=%s model=%s autonomy=%s log=%s",
                      name, profile.name, profile.model or "(定義の既定)",
                      profile.autonomy, log_file)
             result = run_prompt(goal=prompt, cwd=work_dir, agent=agent, log_file=log_file,
-                                acceptance=acceptance, tag="agent-loop")
+                                acceptance=acceptance, tag="agent-loop",
+                                judge=self._acceptance_judge_enabled(entry))
         except ToolLoopError as exc:
             log.error("[%s] headless 実行に失敗しました: %s", name, exc)
             self._fail_execution(req, slot_key, reason="headless_failed")
@@ -1128,9 +1176,11 @@ class PeriodicScheduler:
             return
 
         if not result.get("verified"):
-            # 受入条件が無い＝機械層が何も検証していない。実行は通すが done の根拠にしない
+            # 受入条件が無い＝どの層も検証していない。実行は通すが done の根拠にしない
             # （C5）。層3 では起動時に既に警告済みなので、ここは記録だけ。
             log.info("[%s] 受入条件が無いため「検証なし」として記録します。", name)
+        else:
+            log.info("[%s] 検証: %s", name, result.get("verifiedBy") or "machine")
         if not result.get("ok"):
             for reason in result.get("evidenceErrors") or []:
                 log.warning("[%s] 受入条件を満たしていません: %s", name, reason)
@@ -1349,7 +1399,7 @@ class PeriodicScheduler:
                 return cached[1]
 
             try:
-                module_name = "kiro_loop_hook_" + hashlib.sha256(
+                module_name = "agent_loop_hook_" + hashlib.sha256(
                     f"{key[0]}\0{key[1]}".encode()
                 ).hexdigest()[:16]
                 spec = importlib.util.spec_from_file_location(module_name, hook_path)
@@ -1364,6 +1414,21 @@ class PeriodicScheduler:
                 log.error("hook のロードに失敗しました (%s): %s", hook_path, exc, exc_info=True)
                 return None
 
+    def _note_hook_check_error(self, hook_path: "Path | str") -> None:
+        """check() が「やることが無い」ではなく「異常」で None を返したことを記録する。
+
+        `_call_hook_check` は正常な無風（check() が None を返した）も、例外・timeout・
+        契約違反も、区別せず None を返す。adaptive interval がこの 2 つを分けないと、
+        毎回例外を投げるフックが無風とまったく同じ経路で `max_interval_seconds` まで
+        後退し、症状が「なんだか静かだ」としか見えなくなる。異常は idle ではなく error
+        として扱い、最小間隔付近で叩き続けて状態ファイルの `last_outcome` に残す。
+        """
+        errors = getattr(self, "_hook_check_errors", None)
+        if errors is None:
+            errors = set()
+            self._hook_check_errors = errors
+        errors.add(str(hook_path))
+
     def _call_hook_check(self, entry: dict[str, Any], hook: str) -> dict[str, Any] | None:
         """hook の check() を呼び、正規化済み dict（prompt/cwd/vars）または None を返す。"""
         hook_path = _resolve_hook_path(hook)
@@ -1372,15 +1437,18 @@ class PeriodicScheduler:
         hook_key = (str(hook_path), entry_id)
         if hook_key in self._hook_quarantine:
             log.warning("[%s] hook は timeout 隔離中のためスキップします: %s", name, hook_path)
+            self._note_hook_check_error(hook_path)
             return None
 
         module = self._load_hook_module(hook_path, entry_id)
         if module is None:
+            self._note_hook_check_error(hook_path)
             return None
 
         check_fn = getattr(module, "check", None)
         if not callable(check_fn):
             log.warning("[%s] hook に check() 関数が定義されていません: %s", name, hook_path)
+            self._note_hook_check_error(hook_path)
             return None
 
         hook_config = {
@@ -1438,6 +1506,7 @@ class PeriodicScheduler:
                     log.info("[%s] hook の隔離を解除しました: %s", name, hook_path)
 
                 threading.Thread(target=_clear_quarantine, daemon=True).start()
+                self._note_hook_check_error(hook_path)
                 return None
         finally:
             for k, prev in previous.items():
@@ -1448,11 +1517,24 @@ class PeriodicScheduler:
 
         if result_box["error"] is not None:
             log.error("[%s] check() でエラーが発生しました: %s", name, result_box["error"], exc_info=True)
+            self._note_hook_check_error(hook_path)
             return None
 
-        return self._normalize_hook_result(result_box["value"], name)
+        return self._normalize_hook_result(result_box["value"], name, hook_path=hook_path)
 
-    def _normalize_hook_result(self, result: Any, name: str) -> dict[str, Any] | None:
+    def _normalize_hook_result(self, result: Any, name: str,
+                               *, hook_path: "Path | str | None" = None) -> dict[str, Any] | None:
+        """check() の戻り値を正規化する。
+
+        None を返す理由は 2 種類ある。**正常な無風**（result が None / 空文字）と、
+        **契約違反**（prompt が無い・cwd が実在しない・vars の format に失敗した・型が違う）だ。
+        後者は `_note_hook_check_error` で印を付ける——設定を間違えたフックが「やることが
+        無いだけ」として静かに後退していくのを避けるため。
+        """
+        def _broken() -> None:
+            if hook_path is not None:
+                self._note_hook_check_error(hook_path)
+
         if result is None:
             return None
         if isinstance(result, str):
@@ -1462,6 +1544,7 @@ class PeriodicScheduler:
             prompt = result.get("prompt")
             if not isinstance(prompt, str) or not prompt.strip():
                 log.warning("[%s] check() dict に有効な prompt がありません: %r", name, result)
+                _broken()
                 return None
             out: dict[str, Any] = {"prompt": prompt}
             cwd = result.get("cwd")
@@ -1469,6 +1552,7 @@ class PeriodicScheduler:
                 cwd_path = Path(os.path.expanduser(str(cwd)))
                 if not cwd_path.is_dir():
                     log.warning("[%s] check() の cwd が存在しないため却下します: %s", name, cwd)
+                    _broken()
                     return None
                 out["cwd"] = str(cwd_path)
             vars_map = result.get("vars")
@@ -1477,9 +1561,11 @@ class PeriodicScheduler:
                     out["prompt"] = prompt.format_map(_SafeDict(vars_map))
                 except Exception as exc:
                     log.warning("[%s] check() vars の format に失敗しました: %s", name, exc)
+                    _broken()
                     return None
             return out
         log.warning("[%s] check() の戻り値が不正です: %r", name, result)
+        _broken()
         return None
 
     def _call_hook_ack(self, entry: dict[str, Any], hook: str) -> None:
@@ -1510,7 +1596,7 @@ class PeriodicScheduler:
             if cached and cached[0] == mtime:
                 module = cached[1]
             else:
-                spec = importlib.util.spec_from_file_location("kiro_loop_preflight", path)
+                spec = importlib.util.spec_from_file_location("agent_loop_preflight", path)
                 if spec is None or spec.loader is None:
                     log.warning("preflight のロードに失敗（fail-open）: %s", path)
                     return True
@@ -2399,15 +2485,24 @@ class PeriodicScheduler:
                     should_clear = True
 
             hooks = entry.get("hooks") or []
+            # フックの異常はこの entry のぶんだけ集める（`_call_hook_check` が印を付ける）。
+            self._hook_check_errors = set()
             hook_results = [
                 (hook, result)
                 for hook in hooks
                 if (result := self._call_hook_check(entry, hook)) is not None
             ]
             if hooks and not hook_results:
+                # 1 つでも壊れていたら error。無風（全フックが正常に「やることなし」）とは
+                # 次回間隔の決め方が変わる（error は最小間隔付近を保ち、idle は後退する）。
+                broken = sorted(getattr(self, "_hook_check_errors", None) or ())
+                if broken:
+                    _log_dispatch("hook_check_error", None,
+                                  entry_id=prompt_id, hook=",".join(broken))
                 self._update_entry(
                     prompt_id,
-                    next_run_at=self._next_run_at_for_entry(entry, outcome="idle"),
+                    next_run_at=self._next_run_at_for_entry(
+                        entry, outcome="error" if broken else "idle"),
                 )
                 continue
 

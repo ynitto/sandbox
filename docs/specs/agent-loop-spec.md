@@ -1,7 +1,7 @@
 # agent-loop 仕様書
 
-> 最終更新: 2026-08-12（`hooks` の複数指定、`mapping`、ターン完了 hook を反映）
-> 対象: `tools/agent-loop/`（`agent_loop` パッケージ）
+> 最終更新: 2026-08-21（実装と全件照合。CLI の層と適応遷移の表、グローバル指示、対話コンソールを追記）
+> 対象: `tools/agent-loop/`（`agent_loop` パッケージ・27 モジュール・約 12,700 行）
 >
 > 本書は「**何ができて、何を設定でき、どんな規約と制約があるか**」を書きます。
 > なぜそう決めたかは[設計書](../designs/agent-loop-design.md)、クラス構成と処理フローは
@@ -42,6 +42,15 @@ agent-loop は、YAML に書いたプロンプトを tmux 上のエージェン�
 | 単発実行 | `agent-loop run` | daemon 不要。その場で 1 回 | アドホック実行、dashboard からの呼び出し |
 | ステートマシン | `agent-loop statemachine` | daemon 不要。ワークフローを完走 | `statemachine-use` の定型業務 |
 
+どのかたちを選べるかは、CLI 定義が申告する `headless_autonomy` で決まります。
+
+| 層 | 定義の申告 | 例 | agent-loop の扱い |
+|---|---|---|---|
+| 層 2 | `tool-loop` | claude / codex / copilot / cursor / kiro / opencode / ollama | ヘッドレス argv を 1 回実行し、終了コードで完了を検知する |
+| 層 3 | `single-shot` | aider / ollama-json / ollama-list | 限定ツール契約（§3.4）でツール実行を供給しながら完遂させる |
+
+tmux を使うかどうかはこの層とは独立です。tmux は送る手段と見る手段で、headless でも見せ方は変わりません。`interactive` 節を持たない定義は対話キープを保てないので、`keep` 指定でも per-run へ倒して警告します。
+
 ### 1.3 操作コマンド
 
 | コマンド | 何をする | daemon |
@@ -49,7 +58,7 @@ agent-loop は、YAML に書いたプロンプトを tmux 上のエージェン�
 | `agent-loop` | デーモンを起動する（tmux 外なら専用セッションを作って自動アタッチ） | — |
 | `ls` | 管理下の tmux セッションとペインを一覧する | 任意 |
 | `send PROMPT` | 常駐セッションへ送る。`--wait` `--priority` `--model` `--sandbox` `--force` `--ralph` | 推奨 |
-| `run PROMPT` | その場で 1 回実行する。`--agent-cli` `--model` `--acceptance` `--dir` | 不要 |
+| `run PROMPT` | その場で 1 回実行する。`--agent-cli` `--model` `--acceptance` `--judge` `--dir` | 不要 |
 | `statemachine --workflow PATH` | ワークフローを headless CLI で完走させる | 不要 |
 | `msg --to AGENT [BODY]` | 相手の inbox へメッセージを投函する | 受信側に必要 |
 | `agents` | 登録済みエージェントと inbox の状態を出す | 不要 |
@@ -62,6 +71,10 @@ agent-loop は、YAML に書いたプロンプトを tmux 上のエージェン�
 | `update` | zipapp インストールを更新する | 停止中のみ |
 
 `send` は「常駐セッションへ送る」、`run` は「今ここで実行して結果を返す」、`msg` は「相手の inbox へ置いて非同期に処理させる」です。宛先も完了の分かり方も違うので、用途で選んでください。
+
+デーモンの stdin は**対話コンソール**になっていて、`status` / `ls` / `send <target> <text>` / `prompt-add` / `prompt-list` / `prompt-remove` / `help` / `quit` を受け付けます。`prompt-add` と `prompt-remove` は設定ファイルを直接書き換えるので、PyYAML が要ります（サブコマンドではなくこのコンソールの機能です）。
+
+`slot-release` と `hook-event` は CLI 定義側の hook が呼ぶ内部コマンドで、`--help` には出ません。
 
 ### 1.4 完了の見分け方
 
@@ -106,6 +119,8 @@ agent-loop は、YAML に書いたプロンプトを tmux 上のエージェン�
 | `cooldown_seconds` | int 秒 | 0 | 解放後に同じペインが再取得できない時間。0 は無効 |
 | `response_timeout` | int 秒 | 600 | `send --wait` の既定待ち時間 |
 | `split_direction` | str | horizontal | tmux の分割方向。不正値は警告して horizontal |
+| `acceptance_judge` | bool | false | 受入条件の判定層を全エントリで有効にする（エントリ側で上書き可能・§3.4） |
+| `headless_window` | bool | false | headless 実行のログを `tail -F` で追う tmux ウィンドウを開く（エントリごとに 1 枚を使い回す） |
 | `health.check_interval_seconds` | int 秒 | 10 | ヘルス監視の間隔 |
 | `health.freeze_timeout_seconds` | int 秒 | 0 | busy 中に画面が変わらない時間の上限。0 は無効 |
 | `health.max_pane_rss_mb` | int MB | 0 | ready なペインの RSS 上限。0 は無効 |
@@ -136,7 +151,7 @@ agent-loop は、YAML に書いたプロンプトを tmux 上のエージェン�
 | キー | 型 | 既定 | 意味 |
 |---|---|---|---|
 | `name` | str | 本文の先頭 40 文字 | 表示名。webhook のルート名にもなる |
-| `id` | str | 自動採番（UUID） | 明示すると reload をまたいで同一視される |
+| `id` | str | `uuid5(index, name)` | 省略しても**決定的**に採番するので、位置と名前が変わらない限り reload をまたいで同一視される（毎回 uuid4 にすると、起動直後の reload が `run_immediately_on_startup` の予定時刻を上書きしてしまう） |
 | `enabled` | bool | true | false のエントリは読み込み時に落とす |
 | `prompt` | str | — | 送る本文。`hooks` か `slash` があれば省略可 |
 | `slash` | str \| list[str] | なし | 本文の前に独立送信する CLI コマンド |
@@ -169,6 +184,7 @@ agent-loop は、YAML に書いたプロンプトを tmux 上のエージェン�
 | `model` | str | グローバル値 | このエントリだけモデルを替える |
 | `session` | `keep` \| `per-run` | keep | それ以外は起動エラー |
 | `acceptance` | str \| list[str] | `[]` | 受入条件。文字列 1 本は 1 項目として扱う |
+| `acceptance_judge` | bool | 未指定 | パスを含まない受入条件を検証エージェントに判定させる（§3.4）。トップレベルの既定を上書きする |
 
 `cron` は「分 時 日 月 曜日」の 5 フィールドで、判定はデーモンが動いている端末のローカル時刻です。曜日の `7` は日曜として扱い、日と曜日を両方指定したときは Vixie cron と同じ OR になります（どちらかに当たれば発火）。
 
@@ -191,9 +207,46 @@ CLI とモデルの解決順は、control.json の `workloads.routine`（予算�
 | `oneshot` と `clean_session` | pane の寿命の決め方が二重になる |
 | `target` と `oneshot` / `clean_session` | 外部 pane の生死は agent-loop が持たない |
 | `mode: ralph` で `max_iterations` 未指定、または 1〜100 の外 | 反復の上限が決まらない |
-| `mode` / `session` / `oneshot` / `clean_session` / `acceptance` / `hooks` / `hook_config` の型違反 | 静かに既定へ倒すと意図しない挙動になる |
+| `mode` / `session` / `oneshot` / `clean_session` / `acceptance` / `acceptance_judge` / `hooks` / `hook_config` の型違反 | 静かに既定へ倒すと意図しない挙動になる |
 
 headless（`session: per-run`）では、Ralph 多段と external target を組み合わせた時点で起動を明示エラーで断ります。
+
+### 2.5 動的インターバルの遷移
+
+`adaptive.enabled: true` のエントリだけが対象です（`cron` エントリには効きません）。発火の結果から次回時刻を決めます。
+
+| 結果 | インターバルの更新 | idle 回数 |
+|---|---|---|
+| activity（送信した） | `min_interval_seconds` へ即リセット | 0 に戻す |
+| idle（送らなかった） | `idle_threshold` 回続いたら `× backoff_factor` | +1 |
+| error | `min × backoff_factor` の短時間 retry | 増やさない |
+
+更新値は `max_interval_seconds` で頭打ちにし、`jitter` でばらつかせます。状態は `~/.agents/loop-adaptive/<entry-id>.json` へ原子的に書き、再起動をまたいで続きます。
+
+**error は「壊れている」であって「無風」ではありません。** フックが 1 つも仕事を返さなかったとき、その理由が正常な無風（`check()` が `None` を返した）なら idle、次のどれかなら error です。
+
+| error になる | idle になる |
+|---|---|
+| `check()` が例外を投げた | `check()` が `None` / 空文字を返した |
+| `check()` が timeout して隔離された（隔離中のスキップも含む） | |
+| フックファイルが読めない・`check()` が定義されていない | |
+| 戻り値が契約違反（prompt が無い・`cwd` が実在しない・`vars` の format 失敗・型違い） | |
+
+分けているのは、壊れたフックを無風と同じ経路で後退させると `max_interval_seconds` まで滑っていき、症状が「なんだか静かだ」としか見えなくなるからです。error は最小間隔付近を保って叩き続け、`~/.agents/loop-adaptive/<entry-id>.json` の `last_outcome` に残ります。ログにも `event=hook_check_error` が出ます。
+
+複数フックのうち一部だけが壊れていて、他が仕事を返した場合は activity です（仕事があるほうを優先する）。
+
+**入れていないもの**: フックが次回間隔を明示指定する口と、EWMA などによる予測。
+
+### 2.6 CLI とモデルの差し替えが効く境界
+
+| セッション設定 | 境界 | 差し替えが効くタイミング |
+|---|---|---|
+| `oneshot` / `session: per-run`（headless） | 毎回 | 次の実行 |
+| `clean_session: N` | N 回成功ごと | 次の建て直し |
+| 無限キープ（既定・`clean_session` 無し） | デーモン再起動のみ | 再起動後 |
+
+既存ペインと要求内容が食い違っても実行は捨てません。判定は `launch_fingerprint`（CLI 名 + argv + cwd）で行い、食い違いは警告（セッションごとに 1 回）と status の `restart_required` で境界待ちとして伝えます。`revision_applied` は実際に解決へ使った revision を報告します（ファイルの最新値ではありません）。
 
 ---
 
@@ -285,11 +338,45 @@ HTTP の応答は次のとおりです。
 
 ```yaml
 acceptance:
-  - "`reports/audit-digest.md` が今回の実行で更新されている"   # 機械が照合する
-  - 直近 24 時間のエラーが発生元ごとに件数付きで列挙されている   # 誰も判定しない（判定層は未実装）
+  - "`reports/audit-digest.md` が今回の実行で更新されている"   # 機械層が照合する
+  - 直近 24 時間のエラーが発生元ごとに件数付きで列挙されている   # 判定層（opt-in）へ回る
 ```
 
-パスの形をした表記を 1 つも含まない受入条件しか無いエントリは、「検証なし」として記録されます。条件が書いてあることと、機械で照合できることは別です。
+パスの形をした表記を 1 つも含まない受入条件しか無いエントリは、判定層を有効にしていなければ「検証なし」として記録されます。条件が書いてあることと、機械で照合できることは別です。
+
+#### 判定層（`acceptance_judge`。既定 off）
+
+機械層が触れない基準——パスの形をした表記を含まない自然文——を、**読み取り専用の検証エージェント**に判定させます。
+
+| 設定 | 場所 | 既定 |
+|---|---|---|
+| `acceptance_judge` | トップレベル | `false` |
+| `acceptance_judge` | エントリ（トップレベルより優先。未指定なら継承） | 未指定 |
+| `--judge` | `agent-loop run` | off |
+
+既定を off にしてあるのは、判定のために CLI をもう 1 回起こすからです。「ファイルが更新されたか」だけの定期プロンプトに毎回もう 1 回分のトークンを払う理由はありません。
+
+**判定役は定義側が決めます。** `agents/<name>.json` の `variants` に `verify` の申告があればそちらへ振り替え、変種自身の既定モデルを使います（呼び出し元が明示指定していない場合）。申告が無ければ作業した CLI がそのまま判定します——これは**最も弱い構成**です。自分の仕事を自分で採点することになるので、判定を本気で使うなら定義に `verify` 変種を置いてください。
+
+**fail-closed です。** 次はすべて「満たしていない」に倒します。判定を頼まれて判定できなかったことを pass として記録すると、機械層を入れる前より悪くなるからです。
+
+- 判定役を起動できない（定義が壊れている・CLI が無い）
+- 判定の実行が非ゼロ終了 / timeout した
+- 出力から JSON を読めない
+- 基準の一部について判定が返ってこない
+
+判定に渡すのは、基準・エージェントの報告本文（先頭 4,000 字）・この実行で変わったファイルの一覧だけです。判定役は読み取り専用で起動するので、必要ならファイルを自分で読みます。プロンプトには「報告だけでは証拠にならない」「確かめられないものは fail」と明記します。
+
+**限界**: 判定は実行が終わってから 1 回だけ走ります。ラウンドの途中では判定しないので、判定層が落とした基準をエージェントがその場で直す機会はありません（次の実行で作り直します）。ラウンドごとに判定させるとコストが基準の数だけ増えるため、この形にしています。
+
+結果の `verifiedBy` で、どの層が検証したかを区別します。
+
+| `verifiedBy` | 意味 |
+|---|---|
+| `machine` | ファイル指紋で照合した |
+| `judge` | 検証エージェントが判定した |
+| `machine+judge` | 両方 |
+| `""`（空） | 誰も検証していない（`verified: false`） |
 
 ### 3.5 結果契約（`run` / `statemachine`）
 
@@ -337,6 +424,16 @@ hook は `agent-loop hook-event` を呼び、`~/.agents/loop-hooks/<instance-id>
 
 `doctor` は adapter の資産と runtime ディレクトリを点検します。利用者の global / project 設定、手動で起動した CLI、外部 pane には触りません。
 
+### 3.7 グローバル指示（agent-instructions）
+
+管理面（agent-dashboard）が原子的に書き換える `$AGENT_INSTRUCTIONS_DIR`（既定 `~/.agents/instructions/`）の `instructions.json` を pull 型で読み、**送信プロンプトの先頭へ前置**します。正典は `schemas/agent-instructions.schema.json` で、agent-loop 側に設定キーはありません。
+
+- 前置するのは、**そのペインへまだ注入していないか、`revision` が変わったとき**だけです。同じ revision を同じペインへ二度は入れません
+- レンダリングは決定的で、dashboard（JS）・agent-flow・agent-loop が同一出力になります
+- 長さは既定 2,000 文字で丸め、宣言できる上限は 8,000 文字です（0 以下は既定へ）
+- 実際に適用した revision は agent-control の status へ `instructions_revision_applied` として載せます
+- **フェイルセーフ**: 不在・破損・`enabled: false`・本文が空・既にマーカーが混入済みは、すべて no-op です。注入の失敗で送信を止めません
+
 ---
 
 ## 4. 規約
@@ -370,11 +467,13 @@ hook は `agent-loop hook-event` を呼び、`~/.agents/loop-hooks/<instance-id>
 | ツール `run` の timeout | 既定 60 秒、上限 300 秒 | 呼び出しの `timeout_sec`（上限まで） |
 | ツール結果の自動読み戻し | 32KB まで | 不可 |
 | headless CLI の 1 回の実行 | 既定 180 秒 | CLI 定義 |
+| 受入条件の判定（`acceptance_judge`） | 既定 180 秒 | CLI 定義（変種側） |
 | スロットの強制解放 | 7200 秒 | `slot_timeout_seconds` |
 | 処理開始待ち（SlotMonitor） | 60 秒 | 不可 |
 | ペインの起動待ち | 60 秒 | `startup_timeout` |
 | `send --wait` | 600 秒 | `--response-timeout` |
-| ポーリング間隔 | scheduler 1 秒 / SlotMonitor 2 秒 / inbox 5 秒 / session-monitor 10 秒 | inbox のみ `inbox_poll_seconds` |
+| ステートマシンの遷移回数 | 50 ステップ | ワークフローの `config.max_steps` |
+| ポーリング間隔 | scheduler 1 秒 / SlotMonitor 2 秒 / inbox 5 秒 / session-monitor 10 秒 | inbox のみ `inbox_poll_seconds`、session-monitor は `health.check_interval_seconds` |
 
 `send --wait` の終了コードは、完了が 0、失敗（ペインやプロセスの終了、`failure_pattern` 一致）が 1、タイムアウトが 2 です。
 
@@ -415,9 +514,8 @@ headless 経路では次が変わります。黙って劣化させず、警告�
 
 - ターン完了 hook を注入するのは agent-loop が起動した対話 pane だけ。headless、external pane、手動起動の CLI、Cursor、Kiro v3 は対象外で、画面監視か終了コードで判定する
 - CLI とモデルの差し替えはセッション境界でだけ効く。無限キープのペインはデーモンを再起動するまで替わらない（`status` の `restart_required` で境界待ちが分かる）
-- 動的インターバルの error 遷移は関数だけがあり、scheduler へ接続していない。フックの例外・timeout・`None` はすべて idle として扱う
-- 受入条件のうち、パスを含まない自然文を証跡付きで判定する層は未実装
-- headless の実行ログは `~/.agents/runs/headless/` の JSONL に出るが、それを追う tmux ウィンドウの自動起動は無い
+- headless の実行ログは `~/.agents/runs/headless/` の JSONL に出る。追う tmux ウィンドウは `headless_window: true` のときだけ自動で開く（既定 false）
+- 受入条件の判定層（`acceptance_judge`）は実行が終わってから 1 回だけ走る。ラウンドの途中では判定しないので、判定で落ちた基準をその実行のうちに直す機会は無い
 - Ralph は daemon 再起動をまたいで途中再開しない。dirty な sandbox は自動削除しない
 - `update` は zipapp インストール専用。source / pip / symlink は理由付きで非 0 を返し、daemon 稼働中は update lock で断る
 - `statemachine` が受理するのは `statemachine-use` の 1 経路だけ。OS レベルの副作用隔離は持たず、境界は argv・cwd・実行ファイル・パスの検証と監査ログ
@@ -442,5 +540,16 @@ headless 経路では次が変わります。黙って劣化させず、警告�
 | `~/.kiro/slots/` | 同時実行スロットとクールダウン（`.lock` は fcntl のミューテックス） |
 | `~/.kiro/agents/<name>/inbox/` | エージェント間メッセージ（`.processed/` は処理済み） |
 | `<project>/.agents/agent-loop.yml` | プロジェクトの定期プロンプト |
+| `~/.agents/instructions/instructions.json` | グローバル指示（`$AGENT_INSTRUCTIONS_DIR` で変更可。§3.7） |
 | `<install prefix>/hooks/` | `hooks` から名前で引ける同梱スクリプト（`install.sh` が配置） |
 | `<install prefix>/agent-hooks/` | ターン完了 hook の CLI 別資産（同上） |
+
+`~/.kiro/` 配下の 2 つ（スロットとエージェント inbox）は旧 kiro-loop 系統と共有していた置き場です。旧系統は退役済みですが、稼働中の inbox とスロットを移設する実利が無いのでパスはそのままにしています。
+
+## 付録: テスト
+
+`tools/agent-loop/test/` に 46 ファイル・497 件。tmux とエージェント CLI はスタブへ差し替えるので、どちらも無い環境で全件が通ります（webhook だけは実 HTTP の E2E です）。
+
+```bash
+python3 -m unittest discover -s tools/agent-loop/test
+```

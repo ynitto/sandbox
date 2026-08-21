@@ -57,11 +57,12 @@
 
 **ソース構成（制御面分離）**: Electron シェル等の共通部は `src/base/`、
 agent-project / agent-flow の制御は `src/features/agent-project/` に置き、
-agent-loop 制御（`src/features/agent-loop/`）・定常業務（`src/features/cowork/`）・
+agent-loop の端末ビュー（`src/features/routines/`）・定常業務（`src/features/cowork/`）・
 agent-amigos ミッションとノード予算（`src/features/amigos/`）・
 agent-audit の呼び出しと閲覧（`src/features/agent-audit/`）を同じ形で差し込んでいる
 （動的プラグインではない。列挙合成のみ。詳細は
-[`docs/designs/agent-dashboard-design.md`](../../docs/designs/agent-dashboard-design.md) §3.2・§4）。
+[`docs/designs/agent-dashboard-design.md`](../../docs/designs/agent-dashboard-design.md) §3.2、
+合成契約は [`docs/specs/agent-dashboard-spec.md`](../../docs/specs/agent-dashboard-spec.md) §2）。
 
 **renderer の構成（機能分割）**: 画面側（`src/renderer/`）は保守性のため 1 本の
 巨大 `renderer.js` を機能ごとのファイルへ分割している。すべて**クラシックスクリプト**で、

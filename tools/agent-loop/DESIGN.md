@@ -352,11 +352,15 @@ managed Kiro complete eventへの互換変換だけを行い、SlotMonitorの既
 `main()` の `subparsers.add_parser()` でパーサーを定義し、`args.subcommand` の分岐を追加する。サブコマンドは `SessionManager` を生成しないため、tmux セッションを触る場合は `_tmux_cmd()` を直接使用する。
 
 ### 新しいプロンプトオプションを追加する
-`PeriodicScheduler._set_entries()` の `normalized` 辞書にフィールドを追加し、`_run_loop()` で参照する。`agent-loop.yaml.example` にもドキュメントを追記すること。
+`PeriodicScheduler._set_entries()` の `normalized` 辞書にフィールドを追加し、`_run_loop()` で参照する。`agent-loop.yaml.example` にもドキュメントを追記すること。型違反は既定へ倒さず `ValueError` で起動を止める（他の entry 検証と同じ fail fast）。トップレベル設定の既定をエントリで上書きさせたい場合は、未指定を `None` のまま残して `false` と区別する（`acceptance_judge` がこの形）。
+
+### 受入条件の層を触る
+機械層（`acceptance_paths` / `acceptance_evidence_errors`）と判定層（`judge_acceptance`）は `toolloop.py` にある。機械層はバッククォート内のプロジェクト内パスだけを LLM を介さず照合し、判定層はそれ以外の自然文を読み取り専用の検証エージェントへ回す。判定層は opt-in（`acceptance_judge` / `run --judge`）で、**判定できなかったものは fail** に倒す規約。どちらの層が検証したかは結果の `verifiedBy` に出す——`verified: true` へ潰すと、ファイル指紋で見たのかモデルが読んで良しと言ったのかが後から分からなくなる。
 
 ### hooks を追加・変更する
 - フックは `check() -> str | None` を実装する。`check()` は scheduler スレッド内で同期実行されるため、ネットワーク呼び出しには短い timeout を設定しブロックを避けること。
 - フックのロードは `_load_hook_module()`（`mtime` キャッシュ付き）、呼び出しは `_call_hook_check()`。`importlib.util.exec_module` はトップレベルコードを実行するため、副作用は `check()` 内に閉じること。
+- `_call_hook_check()` は「やることが無い」も「壊れている」も `None` を返すが、後者では `_note_hook_check_error()` で印を付ける。adaptive interval がこの 2 つを分けるためで、`None` を返す枝を足すときはどちらなのかを決めること（正常な無風だけが印を付けない）。
 - フォールバック有無は YAML の `event_hook_fallback` で制御し、環境変数 `AGENT_LOOP_EVENT_HOOK_FALLBACK`（`1`/`0`）でフックへ渡す。新しいフックでもこの規約に従う。
 
 ### webhook フックを追加・変更する

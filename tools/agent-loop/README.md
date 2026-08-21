@@ -1,19 +1,22 @@
 # agent-loop
 
-> 2026-08-09 に定期駆動ループを agent-loop へ一本化。経緯と移行方針は
+> 2026-08-09 に定期駆動ループを agent-loop へ一本化（旧 kiro-loop は退役済み）。経緯と移行方針は
 > [`docs/designs/agent-tools-rename-design.md`](../../docs/designs/agent-tools-rename-design.md) を参照。
+>
+> - 設計の正典（なぜこの形か）: [`docs/designs/agent-loop-design.md`](../../docs/designs/agent-loop-design.md)
+> - 仕様の正典（何ができて何を設定できるか）: [`docs/specs/agent-loop-spec.md`](../../docs/specs/agent-loop-spec.md)
+> - クラス構成と処理フロー: [`DESIGN.md`](DESIGN.md)
 
-
-kiro-cli を **tmux セッション**上で起動し、設定ファイルに定義したプロンプトを定期的に自動送信するツールです。
+エージェント CLI を **tmux セッション**上で起動し、設定ファイルに定義したプロンプトを定期的に自動送信するツールです。既定は kiro-cli で、設定 `agent_cli` で claude / codex / aider 等へ差し替えられます。
 
 ## 特徴
 
-- **tmux ベース**: `kiro-cli chat` を tmux セッション内で実行し、`send-keys` / `capture-pane` で制御
+- **tmux ベース**: エージェント CLI を tmux セッション内で実行し、`send-keys` / `capture-pane` で制御
 - **出力の視認**: tmux 外から起動すると自動でセッションへアタッチ。`agent-loop ls` でも対象を確認可能
 - **簡単な終了**: controller画面で `quit`、または Ctrl+C
 - **ディレクトリ単位**: 起動したカレントディレクトリを対象に、プロンプトごとのペインを管理
 - **設定ファイル自動生成**: `prompt-add` で定期プロンプトを追加すると `<project>/.agents/agent-loop.yml` に保存
-- **自動再起動**: kiro-cli が予期せず終了した場合に自動で再起動
+- **自動再起動**: エージェント CLI が予期せず終了した場合に自動で再起動
 - **エージェント CLI の差し替え**: 設定 `agent_cli` で kiro-cli 以外（claude / codex 等）を `agents/<name>.json` 契約で駆動（待機判定・クリアコマンド・スキル起動記号も定義に従う）
 
 ## 依存
@@ -37,10 +40,10 @@ bash install.sh
 YAMLから呼ぶ同梱スクリプトは実行ファイルと同じprefixの `hooks/`、CLI lifecycle用assetは
 `agent-hooks/` へ配置されます。installerは各CLIを起動せず、global/project設定も変更しません。
 
-### 旧設定の移行
+### 旧設定の移行（退役した kiro-loop から）
 
-旧ツールの設定はファイル名と置き場を変更し、`event_hook` は `hooks`、
-`event_hook_config` は `hook_config` へ改名する。移行先が既にある場合は上書きせず、内容を統合する。
+旧ツール（kiro-loop）は退役済みで、この節はその設定を引き継ぐ人向けの手順です。ファイル名と置き場を変更し、
+`event_hook` は `hooks`、`event_hook_config` は `hook_config` へ改名する。移行先が既にある場合は上書きせず、内容を統合する。
 
 ```bash
 mkdir -p ~/.agents
@@ -100,7 +103,8 @@ agent-loop ls
 agent-loop send [-s SESSION] [-d DIR] [--wait] [--priority high|normal|low]
                 [--model MODEL] [--sandbox] [--force]
                 [--ralph --max-iterations N] PROMPT
-agent-loop run [--agent-cli NAME] [--model MODEL] [--acceptance TEXT ...] [-d DIR] PROMPT
+agent-loop run [--agent-cli NAME] [--model MODEL] [--acceptance TEXT ...] [--judge]
+               [-d DIR] PROMPT
 agent-loop statemachine --workflow PATH [--agent-cli NAME] [--model MODEL]
                         [--param KEY=VALUE ...] [--input TEXT] [-d DIR]
 agent-loop pause | resume | cancel TARGET | drain | reload
@@ -125,6 +129,13 @@ agent-loop --version
   が無ければ結果は「検証なし」になります。終了時に `RESULT {json}` を 1 行出力します。
   機械が照合するのは受入条件のバッククォート内にある**パスの形をした表記**だけです
   （区切り `/` か拡張子を持つもの。`agent-audit` のようなコマンド名は照合対象外）。
+  パスを含まない自然文の基準は、既定では誰も判定しません。`--judge` を付けると、
+  読み取り専用の検証エージェントに判定させます（もう 1 回 CLI を起こします）。
+  判定は fail-closed で、判定役を起こせない・JSON を読めない・一部の基準について
+  判定が返ってこない、はすべて「満たしていない」に倒します。判定役は
+  `agents/<name>.json` の `variants.verify` へ振り替わります——申告が無ければ作業した
+  当人が自分を採点することになるので、判定を本気で使うなら変種を置いてください。
+  結果の `verifiedBy` が `machine` / `judge` / `machine+judge` のどれかを示します。
   ツール契約の制御応答（次の一手の JSON）は、定義が用途別の変種（`variants.planner`）を
   申告していればその起動形へ振り替えます（編集は元の CLI のまま）。編集用 CLI に制御を兼ねさせると、
   材料が揃った時点でモデルが本文を書き始め、その周が捨てられます。
@@ -242,6 +253,11 @@ kiro_options:
 
 # タイムアウト（秒）
 startup_timeout: 60      # kiro-cli 起動待ち
+
+# headless 実行（session: per-run のエントリ）。どちらも既定 false。
+# acceptance_judge: true   # パスを含まない受入条件を検証エージェントに判定させる
+#                          # （CLI をもう 1 回起こす。エントリ側で上書き可能）
+# headless_window: true    # 実行ログを追う tmux ウィンドウを開く（エントリごとに 1 枚）
 
 # 設定内の文字列から参照できる値
 mapping:
