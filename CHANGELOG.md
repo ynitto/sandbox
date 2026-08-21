@@ -7,6 +7,51 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-project の設計書を改訂し、仕様書を分離した
+
+agent-flow と同じ扱いを agent-project にも通す。446 行の設計書に判断 9 個と仕様（CLI 表・設定・
+ファイル構成・タスク書式）が同居し、日付つきの棚卸し記録まで挟まっていた。実装
+（33 断片 + `resident/` 5 モジュール・約 24,400 行）と `docs/plans/` に照合し、`slop-police` の
+設計書規約で組み直したうえで、仕様にあたる内容を新設の仕様書へ移す。
+
+- **`docs/specs/agent-project-spec.md` を新設**。正準ループと停止理由の語彙、status の 10 値、
+  コマンド表、設定の 2 ファイルと 4 群の層契約、タスク／要対応カード／検証計画と receipt／
+  Execution Envelope／決定記録／委譲公示板／状態リポジトリのレイアウト／`engine/status.json`／
+  知識観測の契約、予算と上限の表、効かない組合せを収めた
+- **設計書の判断を 9 個から 5 個へ**。5・5-b・5-c・5-d（三段の自動解決・要対応カードの投影・
+  削除と却下・強制完了）は判断ではなく「人との往復」の一節へ落とし、6（agent-flow への委譲）を
+  判断 5 に繰り上げた。日付つきの 2 節（常駐一本化の棚卸し・板の請負）は、教訓を
+  「決着済みの判断」へ、契約を該当節と仕様書へ振り分けて畳んだ
+- **文書に無かった実装を追記**。Execution Envelope（実行前レビューの凍結点）、知識観測
+  envelope、`verify_side_effects`、`force-complete` のコマンド表への掲載、断片表に抜けていた
+  `knowledge` / `envelope`
+- **数値を実装に合わせた**。断片 31 → 33、行数 約 21,800 → 約 24,400、テスト 1,219 → 1,300 件、
+  実行コマンドを pytest → CI・README と同じ `unittest discover`
+
+### agent-project: フォージは GitLab 専用ではなくなっていた
+
+`mr.py` は GitLab と GitHub の両方で MR/PR の作成・決着まで扱い、gitea / codeberg は検出して
+1 回警告する形になっているのに、設計書は非目標に「GitLab 以外のフォージ実装」と書き、本文でも
+「フォージ実装は GitLab のみ」と説明していた。実装に合わせて GitLab / GitHub の 2 つとし、
+フォージ無し運用（dashboard のボタン決着が正式な契約）を一級市民として書き直した。
+`tools/agent-project/README.md` の「`verify` をローカルで実行して PASS したものだけ done に確定」も
+実装（receipt の検算）へ直した——内蔵の verify 直実行は P1-A8 で撤去済み。
+
+### agent-project: `verify_side_effects` が設定しても効いていなかった
+
+charter 達成条件の verifier プロンプトが `charter.side_effects` という**存在しない属性**を
+`getattr` で読んでいた。`Charter` にそのフィールドは無いので常に None → 既定（workspace）へ落ち、
+プロジェクト yaml に `network` と書いても制約文は 1 文字も変わらなかった。`remote_review` と同じ
+「読み手が `getattr` の既定で庇うので静かに効かない」形で、`test_config_keys.py` の到達検査
+（`CONFIG_DEFAULTS` → `Config`）は Config までしか見ないため捕まえられていない。
+
+- 設定 `verify_side_effects` から解決するよう直し、回帰テストを 2 件追加した
+- 撤去済み機能の残骸キー `verifier` / `verifier_skill` を `_INERT_PROJECT_KEYS`（警告して無視）へ
+  移した。内蔵 LLM verifier は撤去済み（P1-A8）で読み手がどこにも無く、黙って受理すると
+  「false にしたのに検証が走る」ように見える
+- `delivery_review` の注釈が「review 到達時に MR を自動作成する」と書いたままだったのを直した
+  （実装も設計も、MR/PR を作るのは人が `mr-create` を押したときだけ）
+
 ### agent-flow の設計書・仕様書を実装と突き合わせて全面改訂した
 
 機能拡張のたびに節を足していたため、両書ともパッチワークになっていた。実装（`tools/agent-flow/`
