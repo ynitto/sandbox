@@ -94,7 +94,7 @@ chat モードのように、人が `/skill-name` と書いたテキストを送
 判定の優先順位: `busy_pattern` マッチ → 処理中 ＞ `ready_pattern` マッチ → 待機 ＞
 `idle_quiet_sec` 静穏 → 待機 ＞ それ以外 → 処理中。
 
-## 同梱の定義
+## 同梱の定義（13 件）
 
 | ファイル | CLI | 読み取り専用の強制力 |
 |---|---|---|
@@ -106,8 +106,10 @@ chat モードのように、人が `/skill-name` と書いたテキストを送
 | `ollama.json` | `agent-ollama <model>` | enforced（readonly はツールを持たない） |
 | `ollama-json.json` | 同上 + `--format json` | enforced（道具なし。JSON 契約の役割用） |
 | `ollama-list.json` | 同上 + `--format array` | enforced（道具なし。配列契約＝split 用） |
+| `ollama-list-thinking.json` | 同上 + `--think on`（`--format` なし） | enforced（道具なし。gemma4:e4b の split 用——文法制約を外して Thinking を使い、`temperature=0` で意味的な完全被覆を安定させる） |
 | `ollama-read.json` | 同上 + `--tools read` | enforced（write でも読み取り専用コマンドだけ） |
 | `ollama-verify.json` | 同上 + `--format json --stall-timeout 180` | enforced（道具なし。テキスト検証役。既定 gemma4:12b——負けは全部タイムアウトなので stall + transient 分類の再投入で受け、コード worker の候補には入れない） |
+| `aider.json` | `agent-aider`（aider + ollama_chat） | enforced（`--dry-run`）。single-shot——渡されたファイルを編集するだけでツールループを持たない |
 | `opencode.json` | `opencode run`（`agent-opencode` 経由） | best-effort（`--agent plan` は edit を拒むが bash は拒まない） |
 
 `opencode.json` だけは本体（`opencode`）を直接呼ばず `agent-opencode`（tools/opencode）を
@@ -123,6 +125,16 @@ stdout に本文だけを返す薄い CLI を用意すれば同じ契約で差�
 
 ## ローダ
 
-- **Python**: `agentcore.agentcli` の 1 実装を agent-project / agent-flow / agent-amigos が共有する
+- **Python**: `agentcore.agentcli` の 1 実装を agent-project / agent-flow / agent-amigos / agent-loop が共有する
 - **agent-dashboard**: UI の応答性のため JS の自前ローダ（Python プロセスを起こさない）。
   Python 実装とはゴールデンテストで揃える（同じ定義から同じ argv が出ることを固定する）
+
+## 関連文書
+
+- **契約の正典**: [`schemas/agent-cli.schema.json`](../schemas/agent-cli.schema.json)
+- **仕様書**（探索順・全フィールド・ローダ API・エラークラス・同梱定義の一覧）:
+  [`docs/specs/agent-cli-spec.md`](../docs/specs/agent-cli-spec.md)
+- **設計書**（なぜこの形にしたか）:
+  [`docs/designs/agent-cli-plugin-design.md`](../docs/designs/agent-cli-plugin-design.md)
+- **ollama 系の定義**: [`docs/specs/agent-ollama-spec.md`](../docs/specs/agent-ollama-spec.md) /
+  [`docs/designs/agent-ollama-design.md`](../docs/designs/agent-ollama-design.md)

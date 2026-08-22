@@ -94,7 +94,7 @@ kind は 13 種で、正典は `agentcore.nodecontract.VALID_KINDS` です。
 
 サブコマンドを省略すると案内を出して rc=2 で終了します。裸起動を黙って常駐にすると、常駐体（`agent-project serve`）と二重に回って inbox の要求を奪い合うためです。未知の executor 名も起動前に rc=2 で断ります。
 
-グローバル引数は run 全体の器（バス・転送・実行資源）に関わるものだけです: `--config` `--bus` `--run-id` `--git` `--git-branch` `--git-subdir` `--board` `--node-declaration` `--state-git`（`-branch` / `-subdir` / `-interval`）`--executor-dir` `--workspace` `--verification-plan` `--reference`（繰り返し可）`--agent-cli` `--lease` `--argv-limit` `--keep-clone` `--cleanup-per-node` `--no-global-instructions` `--context-file` `--knowledge-file` `--no-session-commands`。`--tier` はありません。tier は agent-control の workload 宣言から読みます（§2.5）。
+グローバル引数は run 全体の器（バス・転送・実行資源）に関わるものだけです: `--config` `--bus` `--run-id` `--git` `--git-branch` `--git-subdir` `--board` `--node-declaration` `--state-git`（`-branch` / `-subdir` / `-interval`）`--executor-dir` `--workspace` `--verification-plan` `--reference`（繰り返し可）`--agent-cli` `--lease` `--argv-limit` `--keep-clone` `--cleanup-per-node` `--no-global-instructions` `--context-file` `--knowledge-file` `--no-session-commands`。`--tier` はありません。tier は agent-control の workload 宣言から読みます（§2.5）。これに加えて `--execution-overrides` が 1 つありますが `--help` には出しません——親（`run`）が解決済みの L4 固定を子（`orchestrate`）へ argv で運ぶための内部の口で、人が書く引数ではありません（人が渡す経路は inbox 要求の `execution_overrides`＝§3.1）。
 
 **計画パラメータは `run` / `orchestrate`（＝実際に計画するサブコマンド）の引数**で、グローバルではありません。計画しないサブコマンドに書くと usage エラー（rc=2）で断ります。グローバルに置いていた頃は `agent-flow --granularity finest doctor` のような指定を受理して黙って捨てていました。`run` と `orchestrate` は同じ定義を共有するので、同じ名前・同じ既定・同じ choices です。`--help` では 2 群に分かれます:
 
@@ -170,7 +170,9 @@ kind は 13 種で、正典は `agentcore.nodecontract.VALID_KINDS` です。
 
 ### 2.5 役割別エージェントと agent-control の上書き
 
-`agents:` のキーは役割（`planner` / `evaluator` / `worker`）と個別の kind で、値は `{agent_cli, model, readonly, fallbacks}` です。解決順は agent-control の上書き、`agents[役割]`、kind なら `agents.worker`、グローバル `agent_cli` の順。planner と evaluator は明示しない限り readonly で起動します。`fallbacks` は内容失敗の初回だけ、`relative_cost` が厳密に大きい最初の候補へ昇格する宣言です。
+CLI 定義そのものの契約（探索順・フィールド・`variants` / `relative_cost` / `readonly` の意味・失敗トリアージのクラス）は [`docs/specs/agent-cli-spec.md`](./agent-cli-spec.md) が正典です。ここではエンジン側の割り当てだけを定めます。
+
+`agents:` のキーは役割（`planner` / `evaluator` / `worker`）と個別の kind で、値は `{agent_cli, model, readonly, fallbacks}` です。解決順は agent-control の上書き、`agents[役割]`、kind なら `agents.worker`、グローバル `agent_cli` の順。planner と evaluator は明示しない限り readonly で起動します。`fallbacks` は内容失敗の初回だけ、`relative_cost` が厳密に大きい最初の候補へ昇格する宣言です（**定義ファイル側のフィールドではなくエンジン側の設定**です。CLI 定義が持つのは `relative_cost` だけ）。
 
 JSON 契約の役割（planner / evaluator / filter / judge / reduce / extract）・配列契約の split・根拠を読む retrieve・検証専用チューニングを使う verify は、CLI 定義の用途別の変種（`variants`。用途キー→振り替え先の agent_cli 名）へそれぞれ起動形を振り替えます。variant は「1 つのエージェント（例 ollama）を用途で使い分ける」実体で、振り替え後のモデルも明示指定が無ければ変種自身の既定モデルへ寄せます（例: `verify` → `ollama-verify`・`gemma4:12b`）。
 
@@ -472,8 +474,11 @@ done は温存されます。確定済みノードの result・成果物・作�
 | `AGENT_CI_URL` / `AGENT_CI_BRANCH` / `AGENT_CI_COMMIT` / `AGENT_CI_REPOSITORY` | `ci_status_command` へ渡す公開先の座標 |
 | `AGENT_CONTROL_DIR` / `AGENT_BUDGET_DIR` / `AGENT_TUNING_DIR` / `AGENT_INSTRUCTIONS_DIR` / `AGENT_SESSION_DIR` | `~/.agents/` 配下の置き場の上書き |
 | `KIRO_GIT_CACHE_DIR` | 共有 git キャッシュ（bare ミラー）の置き場 |
+| `KIRO_SKILLS_HOME` / `KIRO_SKILL_REGISTRY` / `KIRO_STATE_HOME` | スキルの探索先・スキルレジストリ・自己更新の適用済み SHA の置き場 |
+| `AGENT_RESERVATION_ID` | node-budget の枠予約 ID（呼び出し元が渡すと run のレコードより優先する） |
+| `GITLAB_TOKEN` / `GL_TOKEN` / `GITLAB_NODE_ID` | 同梱 `gitlab` プラグインのトークンとノード名義（既定構成では使いません） |
 
-テストは `tools/agent-flow/tests/` に 30 ファイル・1,027 件（unittest 形式）。エージェント CLI なしで全件が通ります。
+テストは `tools/agent-flow/tests/` に 30 ファイル・1,029 件（unittest 形式）。エージェント CLI なしで全件が通ります。設定キーの消費検査（`test_config.py` の `ConfigKeyConsumptionTests`）は、`CONFIG_DEFAULTS` にあるのに `config.py` 以外の誰も読まないキーが増えたら落ちます。
 
 ```bash
 AGENT_FLOW_STUB_SLEEP_MAX=0 python3 -m unittest discover -s tools/agent-flow/tests

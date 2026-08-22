@@ -36,6 +36,19 @@ REACH_EXEMPT = {
     "state_repo_branch": "同上（projects[].branch が唯一の置き場）",
 }
 
+# (3) 消費検査の除外: `Config` へは届くが、**その先で誰も読まない**キー。
+# 到達検査（2）は必要条件でしかない——`verify_side_effects` は Config まで届いていたのに
+# 存在しない charter 属性から読まれており、`network` と宣言しても制約文は 1 文字も
+# 変わらなかった（2026-08-20）。読み手が `getattr` の既定で庇うと例外も出ないので、
+# 「誰かが実際に読むか」を別の検査で見る。
+CONSUME_EXEMPT = {
+    "verifier": "撤去済み機能の残骸（`_INERT_PROJECT_KEYS`）。読み手が無いのが正しい状態で、"
+                "CONFIG_DEFAULTS と Config に残しているのは (1)(2) の契約を一様に保つため",
+    "verifier_skill": "同上（検証プロンプトの供給は agent-flow 側の責務）",
+    "spec_threshold": "`spec_threshold_full` の旧名。`_spec_thresholds` が configfile.py の中で"
+                      "新名へ畳むので、消費側は新名しか知らない",
+}
+
 # 型から作った番兵では値が変わらないキー（値域・クランプ・正規化があるもの）。
 # 「番兵も除外理由も無いキーはテストが落ちる」ので、ここに足すか除外に足すかを必ず選ばせる。
 SENTINELS = {
@@ -147,6 +160,41 @@ class ConfigKeyReachabilityTests(unittest.TestCase):
                          "設定しても Config へ届かないキー:\n  " + "\n  ".join(stuck)
                          + "\nbuild_config で配線するか、SENTINELS へ有効な別値を、"
                            "経路が無いなら REACH_EXEMPT へ理由付きで登録すること")
+
+    def test_every_config_default_is_read_by_someone(self):
+        """消費検査: `Config` へ届いた先で、**誰かが実際にそのキーを読む**こと。
+
+        (2) の到達検査は `Config` までしか見ない。届いた値を誰も読まなければ設定は
+        黙って無効のままで、しかも読み手が `getattr(x, key, 既定)` で庇うので例外も
+        出ない（`verify_side_effects` はこの隙間に落ちた。2026-08-20）。
+
+        判定は `configfile.py` **以外**のパッケージ内ソースにキー名が現れるかどうか。
+        文字列リテラル（`"key"` / `'key'`）と属性アクセス（`.key`）の両方を見る。
+        名前を動的に組み立てて読むキーは検出できない（偽陰性）が、それは
+        「読み手がいるのに落ちる」側ではないので、検査としては安全側に倒れている。"""
+        root = Path(__file__).resolve().parents[1] / "agent_project"
+        sources = [p.read_text(encoding="utf-8") for p in sorted(root.rglob("*.py"))
+                   if p.name != "configfile.py" and "__pycache__" not in p.parts]
+        self.assertTrue(sources, "パッケージのソースを 1 つも読めていない（テストの前提が壊れている）")
+        unread = []
+        for key in km.CONFIG_DEFAULTS:
+            if key in CONSUME_EXEMPT:
+                continue
+            quoted = "['\"]" + re.escape(key) + "['\"]"
+            attr = r"\." + re.escape(key) + r"\b"
+            pattern = re.compile(quoted + "|" + attr)
+            if not any(pattern.search(text) for text in sources):
+                unread.append(key)
+        self.assertEqual(sorted(unread), [],
+                         "Config へ届くのに誰も読まないキー:\n  " + "\n  ".join(sorted(unread))
+                         + "\n読み手を配線するか、意図的に読まないなら CONSUME_EXEMPT へ"
+                           "理由付きで登録すること")
+
+    def test_consume_exemptions_carry_a_reason(self):
+        for key, why in CONSUME_EXEMPT.items():
+            self.assertTrue(str(why).strip(), f"CONSUME_EXEMPT[{key}] に理由がありません")
+            self.assertIn(key, km.CONFIG_DEFAULTS,
+                          f"CONSUME_EXEMPT[{key}] は CONFIG_DEFAULTS に無い（消し忘れ）")
 
 
 class NodeNameNormalizationTests(unittest.TestCase):

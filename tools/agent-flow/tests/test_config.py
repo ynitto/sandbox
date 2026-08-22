@@ -8,6 +8,7 @@ import os as _os, sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
 from _shared import *  # noqa: E402,F401,F403 — 共有の前置き（環境隔離・km ロード・共通ヘルパ）
 from _shared import _Args, _commit_change, _make_skill_repo  # noqa: E402,F401 — `import *` は _ 始まりを持ってこない
+import re  # noqa: E402 — 設定キーの消費検査（下記）で使う
 
 
 class ConfigHomeTests(unittest.TestCase):
@@ -27,6 +28,57 @@ class ConfigHomeTests(unittest.TestCase):
                 self.assertEqual(os.path.realpath(kf._find_config(None)), os.path.realpath(expected))
         finally:
             os.chdir(old_cwd)
+
+
+# 消費検査の除外（値 = 理由）。理由の無い除外は書けない——空文字はテストが落とす。
+CONSUME_EXEMPT: "dict[str, str]" = {}
+
+
+class ConfigKeyConsumptionTests(unittest.TestCase):
+    """`CONFIG_DEFAULTS` のキーを**誰かが実際に読む**こと（agent-project P0-4 と対）。
+
+    agent-project では「キーはあるのに誰も読まない」欠落を 3 度踏んだ（`verifier` /
+    `remote_review` / `verify_side_effects`）。読み手が `getattr(args, key, 既定)` で
+    庇うので例外も出ず、設定が黙って無効のまま動き続ける。agent-flow は同じ形の
+    `CONFIG_DEFAULTS` + argparse namespace を持つので、同じ検査をここでも掛ける。
+
+    判定は `config.py` **以外**のソース（パッケージ本体と同梱 executor プラグイン）に
+    キー名が現れるかどうか。文字列リテラルと属性アクセス（`args.key` / `cfg.key`）の
+    両方を見る。名前を動的に組み立てて読むキーは検出できない（偽陰性）が、それは
+    「読み手がいるのに落ちる」側ではないので、検査としては安全側に倒れている。
+    """
+
+    def _sources(self):
+        root = pathlib.Path(__file__).resolve().parents[1]
+        out = []
+        for sub in ("agent_flow", "executors"):
+            for path in sorted((root / sub).rglob("*.py")):
+                if path.name == "config.py" or "__pycache__" in path.parts:
+                    continue
+                out.append(path.read_text(encoding="utf-8"))
+        return out
+
+    def test_exemptions_carry_a_reason(self):
+        for key, why in CONSUME_EXEMPT.items():
+            self.assertTrue(str(why).strip(), f"CONSUME_EXEMPT[{key}] に理由がありません")
+            self.assertIn(key, kf.CONFIG_DEFAULTS,
+                          f"CONSUME_EXEMPT[{key}] は CONFIG_DEFAULTS に無い（消し忘れ）")
+
+    def test_every_config_default_is_read_by_someone(self):
+        sources = self._sources()
+        self.assertTrue(sources, "ソースを 1 つも読めていない（テストの前提が壊れている）")
+        unread = []
+        for key in kf.CONFIG_DEFAULTS:
+            if key in CONSUME_EXEMPT:
+                continue
+            quoted = "['\"]" + re.escape(key) + "['\"]"
+            attr = r"\." + re.escape(key) + r"\b"
+            if not any(re.search(quoted + "|" + attr, text) for text in sources):
+                unread.append(key)
+        self.assertEqual(sorted(unread), [],
+                         "設定できるのに誰も読まないキー:\n  " + "\n  ".join(sorted(unread))
+                         + "\n読み手を配線するか、意図的に読まないなら CONSUME_EXEMPT へ"
+                           "理由付きで登録すること")
 
 
 class ProtocolTests(unittest.TestCase):

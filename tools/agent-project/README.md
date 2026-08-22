@@ -250,7 +250,8 @@ LLM が 1 回で合成し、その exit 0 を done の唯一の根拠にして�
 - **「検証不能」はリトライを焼かない** — 環境にツールが無い等は失敗ではなく、理由付きで人へ回す
 
 検証プロンプトと出力契約はスキル `.github/skills/backlog-verifier/` にあり、上位（プロジェクトの
-`.github/skills/`）へ置けば全面的に差し替えられる（設定 `verifier_skill` で名前も変えられる）。
+`.github/skills/`）へ置けば全面的に差し替えられる（**スキル名は固定**。旧設定 `verifier_skill` は
+撤去済みで、書いても警告して無視される）。
 検証レポートは `verifications/<task-id>/<rev>.md` に残る。副作用の範囲は `verify_side_effects`
 （既定 `workspace`＝作業ツリー内のみ。DB・外部サービスへの書き込みはどの設定でも不可）。
 
