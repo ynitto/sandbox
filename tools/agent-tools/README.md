@@ -16,14 +16,15 @@ tools/agent-tools/
 ## install.sh
 
 ```bash
-bash tools/agent-tools/install.sh                       # 3 本すべて（推奨）
+bash tools/agent-tools/install.sh                       # 4 エンジン + agent-ollama（推奨）
 bash tools/agent-tools/install.sh --only agent-project  # 1 本だけ
 bash tools/agent-tools/install.sh --prefix /usr/local/bin
 bash tools/agent-tools/install.sh --service             # 常駐化（systemd user unit）も構成
 ```
 
-**3 本を別々に入れない。** 同じ `agentcore` と契約バージョンを共有しているので、片方だけ
-古いと状態の読み書きや仕事の受け渡しが噛み合わなくなる。更新もまとめて
+エンジンは 4 本（`agent-project` / `agent-flow` / `agent-amigos` / `agent-audit`）で、
+ほかに `agent-ollama` も置く。**別々に入れない。** 同じ `agentcore` と契約バージョンを
+共有しているので、片方だけ古いと状態の読み書きや仕事の受け渡しが噛み合わなくなる。更新もまとめて
 （`git pull && bash tools/agent-tools/install.sh`）。
 
 各エンジンの `install.sh` は、ここへ `--only <engine>` で委譲する薄いシム
@@ -37,8 +38,10 @@ bash tools/agent-tools/install.sh --service             # 常駐化（systemd us
 `promptcompose`（プロンプトキャッシュに適合する注入順の正規化・案 H）も agent-project /
 agent-flow で共有する（設計: docs/plans/2026-08-05-phase1-token-efficiency-detailed-design.md §3）。
 
-**独立配布しない内部モジュール**（設計 R10）。3 本はそれぞれ別の実行ファイルなので、
-`install.sh` が**各 zipapp へ同梱する**——1 本だけ入れ直しても自己完結して動く。
+**独立配布しない内部モジュール**（設計 R10）。各ツールはそれぞれ別の実行ファイルなので、
+`install.sh` が**各 zipapp へ同梱する**——1 本だけ入れ直しても自己完結して動く。同梱先は
+このインストーラが作る 5 本（4 エンジン + `agent-ollama`）に、自前の installer を持つ
+`agent-loop` を加えた 6 本。
 
 開発木から直接実行するときは、各エンジンの `__init__.py` がこのディレクトリを `sys.path` へ
 足して解決する（`tools/<engine>/<package>/__init__.py` から見て `../../agent-tools/agentcore`）。
@@ -51,14 +54,22 @@ zipapp では同梱物が先に解決されるので、その追加パスは存�
 cd tools/agent-tools/agentcore && python3 -m unittest discover -s tests && python3 -m unittest discover -s agentcore/tests
 ```
 
-## agent-ollama — クラウド CLI が使えないときのバックアップ実行系
+設計判断は [`docs/designs/agentcore-design.md`](../../docs/designs/agentcore-design.md)、
+モジュール一覧・公開 API・写しを縛るテストは
+[`docs/specs/agentcore-spec.md`](../../docs/specs/agentcore-spec.md)。
 
-`install.sh` は 4 エンジンのほかに `agent-ollama`（zipapp・1 ファイル）も置く。**クラウドの
-エージェント CLI がガバナンスや予算の事情で使えなくなったときに、agent-tools の作業を
-止めないため**の実行系である（設計:
-[2026-08-06 の対策案](../../docs/plans/2026-08-06-opencode-ollama-cpu-inference-proposals.md) §0.1・案 F-2）。
-**速度と品質は犠牲にしてよい。その代わり「契約に完全適合すること」と「止まっていないことを
-示せること」を要件にしている。**
+## agent-ollama — コスト 0 のローカル実行系
+
+`install.sh` は 4 エンジンのほかに `agent-ollama`（zipapp・1 ファイル）も置く。出発点は
+「クラウドの CLI がガバナンスや予算の事情で使えなくなったときに作業を止めないため」の
+バックアップだったが（[2026-08-06 の対策案](../../docs/plans/2026-08-06-opencode-ollama-cpu-inference-proposals.md) §0.1・案 F-2）、
+現在は**品質が成立する役割を恒常的に引き受けるコスト 0 の常備戦力**として位置づけている。
+**犠牲にするのは壁時計時間だけで、「契約に完全適合すること」と「止まっていないことを
+示せること」は要件のまま。**
+
+設計判断は [`docs/designs/agent-ollama-design.md`](../../docs/designs/agent-ollama-design.md)、
+定義の割当・フラグ・環境変数・上限・終了状態は
+[`docs/specs/agent-ollama-spec.md`](../../docs/specs/agent-ollama-spec.md)。
 
 ```bash
 echo '要件を3行で要約して' | agent-ollama qwen3                      # 単発（ツールなし）
@@ -78,16 +89,16 @@ agent-ollama --replay --arm model=qwen3,think=off,format=json \
 | 既定 | `readonly: enforced` | text → text のみ。ファイルもコマンドも触れない |
 | `--tools`（= `--tools bash`） | `write_args` | bash 1 つを道具にした最小ループ。制限なし |
 | `--tools read` | `write_args` | 読み取り専用コマンドだけの探索ループ（下記） |
-
-`agent-aider` は `--agent-policy gemma4-e4b-reliability-v1` を wrapper option として受け取り、
-`ollama_chat/gemma4:e4b` の Aider system prompt 先頭へ固定 reliability policy を注入する。
-適用時は stderr の `@agent-policy id=... sha256=...` で実効 policy を観測できる。未知の ID、
-対象外 model、外部 `--model-settings-file` との競合は黙って無効化せず、起動前に失敗する。
 | `--tui` | `interactive` | 進捗を見ながら手で叩く（agent-dashboard の対話診断・agent-loop から） |
 | `--replay` | 観測（測定） | 記録済みプロンプトを再生する。**道具は持たない**（下記） |
 
 ツールとループが `--tools`（書き込みモード）でだけ生えるのが要点。読み取り専用モードには
 道具が 1 つも無いので、`readonly: enforced` の宣言が嘘にならない。
+
+`agent-aider` は `--agent-policy gemma4-e4b-reliability-v1` を wrapper option として受け取り、
+`ollama_chat/gemma4:e4b` の Aider system prompt 先頭へ固定 reliability policy を注入する。
+適用時は stderr の `@agent-policy id=... sha256=...` で実効 policy を観測できる。未知の ID、
+対象外 model、外部 `--model-settings-file` との競合は黙って無効化せず、起動前に失敗する。
 
 ### ツールセット — 「道具ゼロ」と「無制限のシェル」の間の段
 

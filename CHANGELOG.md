@@ -7,6 +7,85 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agentcore と CLI プラグイン契約の設計書を改訂し、仕様書 3 本を新設した
+
+agent-flow・agent-project・agent-loop・agent-dashboard・agent-amigos・agent-audit に続き、
+ファミリー全体が共有する土台（agentcore・CLI プラグイン契約・ローカル推論）へ同じ扱いを通す。
+実装と `docs/plans/` に照合し、`slop-police` の設計書規約で組み直したうえで、契約を仕様書へ移す。
+
+#### 新設した仕様書 3 本
+
+- [`docs/specs/agent-cli-spec.md`](docs/specs/agent-cli-spec.md)（248 行） — 探索順、トップレベル
+  26 フィールドと `interactive` 13 フィールド、ローダ API、`variants` の全体像、退避 2 種、
+  エラークラス、用途とフラグの対応、同梱 13 定義の一覧、不変条件 6 件。
+  設計書 §2 に埋もれていた巨大なフィールド列挙をここへ出した
+- [`docs/specs/agent-ollama-spec.md`](docs/specs/agent-ollama-spec.md)（263 行） — ollama 系
+  6 定義の割当、CLI フラグ、環境変数 14 個、上限、終了状態 6 種、stderr 契約、
+  ツール・スキル・再生、`agent-aider` のラッパ専用オプション、配布、未実装
+- [`docs/specs/agentcore-spec.md`](docs/specs/agentcore-spec.md)（132 行） — 27 モジュールの
+  一覧（共通契約 18・ローカル推論 9）、公開 API、配布、写しと縛るテスト、テストルート 2 つ
+
+#### 新設した設計書
+
+- [`docs/designs/agentcore-design.md`](docs/designs/agentcore-design.md)（191 行） — これまで
+  `tools/agent-tools/README.md` の数段落と各設計書の言及にしか無かった判断を 1 本にした。
+  ADR 5 件（共有されるものは 1 実装だけ置く／独立配布せず各 zipapp へ同梱する／依存は一方向で
+  状態を持たない／ローカル推論も同じ CLI 契約の下に置く／写しは禁じず機械に突き合わせさせる）
+
+#### 改訂した設計書
+
+- **`agent-cli-plugin-design.md`（268 → 276 行）** — 契約の列挙を仕様書へ出し、ADR 5 件
+  （JSON へ畳む／組み込み名を予約しない／ローダは言語ごとに 1 実装／用途別の振り替えは
+  定義とエンジンで知識を割る／トリアージは LLM を使わない）へ組み直した。
+  §2.1 の判断記録 12 件は、理由が残っているものだけを散文へ畳んだ（§5）
+- **`agent-ollama-design.md`（206 → 239 行）** — 同じくテーブル・環境変数・上限を仕様書へ出し、
+  ADR 5 件（CLI にした／失敗検知の主役を無進捗へ／think は実測で off へ戻した／done は外側の
+  機械検証だけが決める／`--replay` に道具を持たせない）へ組み直した
+
+#### 直した齟齬
+
+- **同梱定義の数が古かった**。設計書は 11 件、`docs/designs/README.md` は 9 件と書いていたが
+  実際は 13 件（`aider` と `ollama-list-thinking` が漏れていた）。`agents/README.md` の
+  同梱定義表にも同じ 2 件が無かったので足した
+- **think の設定が実装と逆だった**。設計書は「`ollama` だけ役割で分ける（readonly = `on`、
+  write = `off`）」と書いていたが、2026-08-12 以降ヘッドレスは両モードとも `off` で、
+  `--think on` を持つのは対話（`--tui`）と `ollama-list-thinking` だけ
+- **ollama 系の定義が 3 → 4 → 6 に増えたのに表が 4 のままだった**。`ollama-list-thinking`
+  （gemma4:e4b の split・文法制約を外して Thinking）と `ollama-verify`（gemma4:12b の検証役・
+  `--stall-timeout 180`）が未記載で、既定モデルも「4 定義とも `qwen3`」と誤っていた。
+  `session_log` も「3 定義」ではなく 6 定義すべてが持つ
+- **`kiro-*` 旧系統の残置**という記述が残っていた。2026-08-08 に退役へ切り替わって完了済み
+- **「旧 `agent-loop.py:_start_pane` だけが対象外」**も古い。現在の
+  `agent_loop/session.py:_start_pane` は `launch_spec` で CLI 契約に載っており、
+  `agent_cli` 未指定のときだけ従来の kiro-cli 固定経路を使う
+- **`fallbacks` を定義のフィールドのように書いていた**。実体はエンジン側の設定で、定義が持つのは
+  `relative_cost` だけ。仕様書 §4.1 に切り分けを明記した
+- **エンジンが 3 本という記述**が `tools/agent-tools/README.md` に残っていた。実際は 4 本
+  （agent-project / agent-flow / agent-amigos / agent-audit）＋ `agent-ollama`。
+  agentcore を同梱する zipapp は `agent-loop` を含めて 6 本
+- **`agent-ollama` の位置づけ**が「クラウド CLI が使えないときのバックアップ」のままだった。
+  現在は品質が成立する役割を恒常的に引き受けるコスト 0 の常備戦力。README の見出しと
+  導入文を現状に合わせた（モード表の途中に `agent-aider` の段落が挟まって表が割れていたのも直した）
+
+#### 見つけた構造上の欠落を塞いだ
+
+`~/.profile` からの環境解決ブロックは **3 か所に同一の複製**がある（`ollama_adapter.py` が正典、
+`aider_adapter.py` と `tools/opencode/agent-opencode.py` が複製）。単体ファイルで配る 2 つは
+agentcore を import できないので写しは必然だが、**一致を縛るものが何も無かった**——
+dashboard（JS）側の 4 本のゴールデンテストと同じ問題が、こちらには存在していなかった。
+
+`tools/agent-tools/agentcore/agentcore/tests/test_adapter_env_parity.py`（5 件）を追加し、
+`_complete_ollama_env` / `_import_profile_env` / `load_profile_env` の関数本体と
+`_PROFILE_ENV_PREFIXES` / `_PROFILE_ENV_EXACT` を **AST 比較**で突き合わせる。
+比較が AST なのは、説明は各ファイルの文脈で違ってよく、揃っていなければならないのは
+振る舞いだけだから（docstring とコメントは無視する）。片方へ意図的にずれを入れて
+検知することを確認済み。
+
+**`variants` の用途語彙については、あえてテストを足さなかった。**定義が申告する 15 用途と
+エンジンが問い合わせる 15 用途は現在ちょうど一致しているが、定義が先に申告してエンジンが
+後で採用する順序も、その逆も正当なので、不一致を失敗に倒すと正当な作業を止める。
+仕様書に一覧を載せて人が見比べられる形に留めた（設計書 §5 に理由を明記）。
+
 ### agent-amigos / agent-audit の設計書を改訂し、仕様書を分離した
 
 agent-flow・agent-project・agent-loop・agent-dashboard と同じ扱いを残る 2 ツールへ通す。
