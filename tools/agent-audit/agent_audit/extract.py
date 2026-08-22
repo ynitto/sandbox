@@ -1,4 +1,4 @@
-"""extract — レコード → 観測（map・弱モデル可。設計 §6.2）。
+"""extract — レコード → 観測（map・弱モデル可。仕様書 §6）。
 
 対象の選抜・入力の切り詰め・ゲート判定はすべて決定的。LLM は 1 レコードにつき
 最大 2 回（本試行 + JSON 修復 1 回）。ゲートを通らない実行は LLM を呼ばずに終わる。
@@ -84,7 +84,7 @@ def record_digest(store: Store, rec: dict, limit_chars: int) -> str:
 
 
 def gate_reason(args, store: Store, candidates: "list[dict]") -> "str | None":
-    """間隔・蓄積ゲート（設計 §6.4）。通らない理由を返す（None = 通過）。"""
+    """間隔・蓄積ゲート（仕様書 §6）。通らない理由を返す（None = 通過）。"""
     if getattr(args, "force", False):
         return None
     interval_h = float(getattr(args, "extract_min_interval_hours", 6.0) or 0.0)

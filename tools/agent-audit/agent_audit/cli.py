@@ -1,4 +1,4 @@
-"""CLI — サブコマンドのディスパッチ（すべて単発・有界。設計 §8）。
+"""CLI — サブコマンドのディスパッチ（すべて単発・有界。仕様書 §5）。
 
 終了コード: 0=成功 / 1=検出あり・LLM 段の停止 / 2=源泉が読めない・使い方の誤り。
 """
@@ -13,7 +13,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="agent-audit",
         description="実行証跡・エージェント CLI セッションログの収集と知見蒸留"
-                    "（設計: docs/designs/agent-audit-design.md）")
+                    "（設計: docs/designs/agent-audit-design.md ／ 仕様: docs/specs/agent-audit-spec.md）")
     p.add_argument("--config", help="設定ファイル（既定は agent-audit.yaml を探索）")
     p.add_argument("--audit-dir", dest="audit_dir",
                    help="書き先（既定 ~/.agents/audit。引数 > 設定 > 既定）")

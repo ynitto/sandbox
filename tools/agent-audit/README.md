@@ -8,8 +8,10 @@ agent-project / agent-flow / agent-amigos / agent-loop の実行証跡、エー�
 - **知見・スキル改善点の蒸留**（LLM は extract / distill の 2 段だけ）
 
 を行う独立 CLI。どのツールにも依存せず、エージェント CLI 単独利用の環境でも
-セッションログの集計だけで完結する。設計の正典は
+セッションログの集計だけで完結する。設計の「なぜ」は
 [`docs/designs/agent-audit-design.md`](../../docs/designs/agent-audit-design.md)、
+契約・設定キー・上限は
+[`docs/specs/agent-audit-spec.md`](../../docs/specs/agent-audit-spec.md)、
 導入から定期実行までの手順は
 [`docs/guides/agent-audit-setup.md`](../../docs/guides/agent-audit-setup.md)。
 

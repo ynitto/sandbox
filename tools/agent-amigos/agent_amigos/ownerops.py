@@ -1,4 +1,4 @@
-"""オーナー操作 — 受入・差し戻しと、acceptance: agent の自動判定（設計書 §5.8、P2）。
+"""オーナー操作 — 受入・差し戻しと、acceptance: agent の自動判定（仕様書 §9、P2）。
 
 不変条件「done を作れるのはオーナーの accept のみ」は維持する: acceptance: agent は
 **オーナーノード上で**オーナーの権限として動く自動判定であり、final.json を書けるのは
@@ -68,7 +68,7 @@ def _notify_owner_once(bus: Bus, mp: MissionPaths, subject: str, body: str) -> b
 
 
 def owner_notices(bus: Bus, mp: MissionPaths, mission: dict, phase: str) -> "list[str]":
-    """オーナーが気づくべき事象を `inbox/owner` へ 1 度だけ届ける（設計書 §8.2）。
+    """オーナーが気づくべき事象を `inbox/owner` へ 1 度だけ届ける（設計書 §6.3）。
 
     どちらも**判断はオーナーに残す**通知で、ツールが勝手に終端させたり予算を伸ばしたり
     はしない。届いた通知の一覧（種別）を返す。

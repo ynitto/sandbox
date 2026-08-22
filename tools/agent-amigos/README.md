@@ -19,8 +19,9 @@
   `agentcore.agentcli`）。上位ディレクトリに置けば同梱定義を上書きできる。
   `stub` は LLM なしのプロトコル検証用（runner が横取りするのでこの層には来ない）。
 
-設計正典: [`docs/designs/agent-amigos-design.md`](../../docs/designs/agent-amigos-design.md)
-（実装済みの範囲と既知の欠落は同書 §9。hub 中継サーバは常駐一本化で廃止。
+設計の「なぜ」: [`docs/designs/agent-amigos-design.md`](../../docs/designs/agent-amigos-design.md)
+／ 契約・設定キー・上限: [`docs/specs/agent-amigos-spec.md`](../../docs/specs/agent-amigos-spec.md)
+（実装済みの範囲と既知の欠落は設計書 §7。hub 中継サーバは常駐一本化で廃止。
 agent-dashboard 連携は `tools/agent-dashboard/src/features/amigos/`）。
 
 ## インストール
@@ -153,7 +154,7 @@ agent-amigos build-team --goal "..." --agent-cli claude --pattern metagpt-sop   
   `"pattern"` で明示指定したときだけ使う。
 - カタログ 37 種と、カタログを持たず自律コンダクタで表現する 3 種（DyLAN / AgentVerse /
   meta-prompting）で論文由来 40 パターンを覆う。写像の方針は
-  [`docs/designs/agent-amigos-design.md`](../../docs/designs/agent-amigos-design.md) §7。
+  [`docs/specs/agent-amigos-spec.md`](../../docs/specs/agent-amigos-spec.md) §11。
 
 ## 参加ノード
 
@@ -268,7 +269,7 @@ roles:
   **agent-flow へ委譲**する。team-builder は探索が本質のミッションを見分けて `target: agent-flow` の
   委譲封筒（`delegation.schema.json` の workload=flow）を出力する（`build-team` が表示・保存し
   `agent-flow submit` を提示）。詳細:
-  [`docs/designs/agent-amigos-design.md`](../../docs/designs/agent-amigos-design.md) §7.2。
+  [`docs/specs/agent-amigos-spec.md`](../../docs/specs/agent-amigos-spec.md) §11。
 
 ## acceptance: agent（受入の自動判定）
 

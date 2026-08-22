@@ -1,4 +1,4 @@
-"""collect — 源泉の増分収集と正規化（LLM 不使用。設計 §4）。
+"""collect — 源泉の増分収集と正規化（LLM 不使用。仕様書 §2）。
 
 源泉は読み取り専用・増分・冪等。CLI quota snapshot だけは候補切替へ共有するため
 node-budget の追記専用台帳へ観測行として写す。カーソルと収集済み管理は store.state.json。
@@ -74,7 +74,7 @@ def cmd_collect(args) -> int:
     store.save_state()
     log("collect", f"新規レコード {added} 件（store: {home_relative(store.root)}）")
 
-    # 定期クリーンアップの相乗り（設計 §3.3）。定期に走る唯一のコマンドが collect なので、
+    # 定期クリーンアップの相乗り（仕様書 §7）。定期に走る唯一のコマンドが collect なので、
     # ここに乗せる——新しい常駐や書き手を増やさない（C7）。
     if getattr(args, "gc_auto", True):
         from .gccmd import auto_gc
@@ -1025,7 +1025,7 @@ def collect_memory_stores(args, store: Store) -> int:
         raise SourceError(str(e)) from e
 
 
-# -- 相関（読み出し時・決定的。設計 §4.3） -----------------------------------
+# -- 相関（読み出し時・決定的。設計書 §4.1） -----------------------------------
 
 def correlation_candidates(led: dict, session_recs: "list[dict]", slack_sec: float = 120.0,
                            used: "set[str] | None" = None) -> "list[dict]":

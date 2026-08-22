@@ -1,8 +1,8 @@
 """ミッション — 公示（post）・正規化・状態導出・収束条件と予算会計。
 
-状態は専用フィールドを持たず**ファイルの存在から導出**する（設計書 §4.1 の継承）。
+状態は専用フィールドを持たず**ファイルの存在から導出**する（仕様書 §3.1 の継承）。
 予算は wall-clock でなく**実質実行時間**（events の cli_seconds 総和）で、
-どのノードが計算しても同じ値になる（設計書 §5.6）。
+どのノードが計算しても同じ値になる（仕様書 §3.2）。
 """
 from __future__ import annotations
 
@@ -275,7 +275,7 @@ def normalize_mission(spec: dict) -> "tuple[dict, list]":
                          f"不正です（{' | '.join(STAFFING_POLICIES)}）")
     if mission["acceptance"] not in ("manual", "agent"):
         raise SystemExit(f"[agent-amigos] acceptance={mission['acceptance']!r} は未対応です"
-                         "（manual | agent。codd-gate は将来拡張 — 設計書 §5.8）")
+                         "（manual | agent。codd-gate は将来拡張 — 仕様書 §9）")
     convergence = dict(m.get("convergence") or {})
     unknown = sorted(set(convergence) - set(CONVERGENCE_DEFAULTS))
     if unknown:
@@ -375,7 +375,7 @@ def is_owner(mission: dict, node_id: str) -> bool:
 # --- 予算会計（決定的） ------------------------------------------------------
 
 def budget_spent_seconds(mp: MissionPaths) -> float:
-    """消費 = バス上の全 events の cli_seconds 総和（設計書 §5.6）。"""
+    """消費 = バス上の全 events の cli_seconds 総和（仕様書 §3.2）。"""
     total = 0.0
     try:
         names = sorted(os.listdir(mp.events_dir()))
@@ -481,7 +481,7 @@ def active_roles(roles: "dict[str, dict]", mp: MissionPaths) -> "dict[str, dict]
     return {rid: r for rid, r in roles.items() if rid not in pruned}
 
 
-# --- 収束判定（設計書 §5.6） -------------------------------------------------
+# --- 収束判定（仕様書 §3.2） -------------------------------------------------
 
 def convergence_state(mission: dict, roles: "dict[str, dict]", mp: MissionPaths) -> dict:
     """収束状況を導出する。returns:
@@ -562,7 +562,7 @@ def _work_started(mp: MissionPaths) -> bool:
 
 
 def derive_phase(mission: dict, roles: "dict[str, dict]", mp: MissionPaths) -> str:
-    """ミッションの状態をファイルの存在から導出する（設計書 §4.1）。"""
+    """ミッションの状態をファイルの存在から導出する（仕様書 §3.1）。"""
     if os.path.isfile(mp.cancelled()):
         return "cancelled"
     final = read_json(mp.final())

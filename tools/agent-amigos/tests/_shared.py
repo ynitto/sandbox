@@ -7,7 +7,7 @@
 #   python3 -m unittest discover -s tools/agent-amigos/tests   # 全部
 #   python3 -m unittest tests.test_turns                       # 1 機能だけ
 #
-# 検証対象（設計書 §9 P0 のコアテスト）:
+# 検証対象（設計書 §7 P0 のコアテスト）:
 #   - 役割ミッション表の正規化・検証
 #   - claim の決定的タイブレーク（二重アサインなし）・lease 失効 → 再募集
 #   - 1 ノード self-staff での E2E（質問/回答 → 成果物 → 承認 → 統合 → 受入）

@@ -268,7 +268,7 @@ class TopologyTests(AmigosTestCase):
 
 
 class StaffingPolicyTests(AmigosTestCase):
-    """staffing_policy の検証と `fail` の終端（設計書 §5.2・§8.2）。
+    """staffing_policy の検証と `fail` の終端（仕様書 §7.1・設計書 §6.3）。
 
     以前は値が素通しで、`fail` を指定しても誰も見ていなかった（`wait` と同じく open の
     まま滞留）。タイポも黙って通り、指定した意味が無かった。
@@ -322,7 +322,7 @@ class StaffingPolicyTests(AmigosTestCase):
 
 
 class DeadlineNoticeTests(AmigosTestCase):
-    """wall-clock の締切超過はオーナーへ通知するだけ（自動 fail はしない、設計書 §8.2）。"""
+    """wall-clock の締切超過はオーナーへ通知するだけ（自動 fail はしない、設計書 §6.3）。"""
 
     def test_overrun_notifies_owner_once_without_failing(self):
         past = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 60))

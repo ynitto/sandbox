@@ -1,4 +1,4 @@
-"""usage / calibrate — トークン・コスト集計と rates 較正（決定的。設計 §5.1・§5.3）。
+"""usage / calibrate — トークン・コスト集計と rates 較正（決定的。仕様書 §5・§5）。
 
 measured（実測: セッションログ由来 or 台帳の実測行）と estimated（rates 推定）を
 **別々の列で数える**——混ぜた単一の数字は出さない（不変条件 3）。
@@ -308,7 +308,7 @@ def cmd_usage(args) -> int:
     return 0
 
 
-# -- calibrate（rates 較正の管理面実装。設計 §5.3） ---------------------------
+# -- calibrate（rates 較正の管理面実装。仕様書 §5） ---------------------------
 
 def calibration_rates(args, store: Store) -> "dict[str, float]":
     """実測（tokens と seconds が揃った）行から tokens/秒 の中央値を <cli>:<model> と

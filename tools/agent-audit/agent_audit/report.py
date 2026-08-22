@@ -1,4 +1,4 @@
-"""report — Markdown レポート（決定的。設計 §7）。export はスクラバを必ず通す。"""
+"""report — Markdown レポート（決定的。仕様書 §5）。export はスクラバを必ず通す。"""
 from __future__ import annotations
 
 import datetime as _dt
@@ -140,7 +140,7 @@ def knowledge_lines(args, store: Store) -> "list[str]":
 
 
 def knowledge_json(args, store: Store) -> dict:
-    """dashboard・当番プロンプトが読む JSON（スクラバを通す。設計 §7）。"""
+    """dashboard・当番プロンプトが読む JSON（スクラバを通す。仕様書 §5）。"""
     import time as _time
 
     from .memory import MemoryStoreError, knowledge_summary

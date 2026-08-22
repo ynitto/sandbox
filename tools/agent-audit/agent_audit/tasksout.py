@@ -1,4 +1,4 @@
-"""tasks — 洞察 → 改善タスク（schemas/task.schema.json 形。設計 §7）。
+"""tasks — 洞察 → 改善タスク（schemas/task.schema.json 形。仕様書 §5）。
 
 agent-project の汎用 intake（intake_cmd / enqueue --json）が読める JSON を stdout へ
 出すだけで、state repo へは書かない（C7）。洞察 id を task id に含め冪等にする

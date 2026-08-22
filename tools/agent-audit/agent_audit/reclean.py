@@ -1,4 +1,4 @@
-"""reclean — クリーニングルール改訂後の transcript 再生成（設計 §4.4）。
+"""reclean — クリーニングルール改訂後の transcript 再生成（仕様書 §3）。
 
 源泉（CLI ネイティブストア）は読み取り専用のまま残る前提を使い、既存の
 transcript だけを現行の `session_log.clean` ルールで再生成する。records・

@@ -1,6 +1,6 @@
 """agent-audit — 実行証跡・エージェント CLI セッションログの収集と知見蒸留の独立 CLI。
 
-設計書: docs/designs/agent-audit-design.md（唯一の正典）。
+設計の「なぜ」: docs/designs/agent-audit-design.md ／ 契約・設定キー・上限: docs/specs/agent-audit-spec.md。
 4 ツール（agent-project / agent-flow / agent-amigos / agent-loop）と CLI ネイティブの
 セッションストアを読み取り専用で収集・正規化し、トークン使用量の実測集計と
 知見・スキル改善点の蒸留を行う。集計・相関・レポートは決定的（LLM 不使用）、

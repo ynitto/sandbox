@@ -86,7 +86,7 @@ class Store:
     def append_record(self, rec: dict) -> bool:
         """新規レコードだけ追記する。既収集（seen）なら False。
         seen は records の gc 後も残る——消したレコードを再収集して LLM 段へ
-        再投入しないため（設計 §3.3）。"""
+        再投入しないため（仕様書 §7）。"""
         rid = rec["id"]
         if self.has_record(rid):
             return False

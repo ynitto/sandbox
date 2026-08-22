@@ -158,7 +158,7 @@ class DeliveryTests(AmigosTestCase):
 
 
 class NodeBudgetTests(AmigosTestCase):
-    """ノード予算（P1 拡張、設計書 §6.2）: 請負側の上限。共有台帳で全ワークロード合計を管理。"""
+    """ノード予算（P1 拡張、仕様書 §5.2）: 請負側の上限。共有台帳で全ワークロード合計を管理。"""
 
     def test_zero_config_is_unlimited(self):
         from agent_amigos import nodebudget

@@ -32,7 +32,8 @@ agent-amigos の従来入力（design doc ＋ ロールミッション表）は�
   に投げ、下記「出力契約」の JSON を受け取ってロールミッション表として公示する。
   正典実装は [`agent_amigos/teambuilding.py`](../../../tools/agent-amigos/agent_amigos/teambuilding.py)。
 
-設計正典: [`docs/designs/agent-amigos-design.md`](../../../docs/designs/agent-amigos-design.md) §10（ロールミッション表）。
+ロールミッション表の契約: [`docs/specs/agent-amigos-spec.md`](../../../docs/specs/agent-amigos-spec.md) §7。
+設計の「なぜ」: [`docs/designs/agent-amigos-design.md`](../../../docs/designs/agent-amigos-design.md)。
 
 ---
 
@@ -101,7 +102,7 @@ agent-amigos の従来入力（design doc ＋ ロールミッション表）は�
 > **探索木・動的分解（Tree/Graph-of-Thoughts・LATS・G4）は agent-flow へ委譲**する
 > （target=agent-flow）。まだ無いのは pairwise-rank（ranker ロールで代替）等。各 JSON の
 > `feasibility_note` と、全体の対応状況は
-> [`docs/designs/agent-amigos-design.md`](../../../docs/designs/agent-amigos-design.md) §7。
+> [`docs/specs/agent-amigos-spec.md`](../../../docs/specs/agent-amigos-spec.md) §11。
 
 ---
 

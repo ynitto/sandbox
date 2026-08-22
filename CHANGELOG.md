@@ -7,6 +7,76 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-amigos / agent-audit の設計書を改訂し、仕様書を分離した
+
+agent-flow・agent-project・agent-loop・agent-dashboard と同じ扱いを残る 2 ツールへ通す。
+どちらも設計書 1 本に「なぜ」と契約が同居していた（agent-amigos 876 行・agent-audit 742 行）。
+実装と `docs/plans/` に照合し、`slop-police` の設計書規約で組み直したうえで、契約を仕様書へ移す。
+
+#### agent-amigos（設計書 876 → 383 行）
+
+判断 5 件の ADR は既に整っていたので数は変えず、**契約を仕様書へ出すことに絞った**。
+バスのレイアウトと書き込み所有権、収束条件、メッセージ型 10 種とアクション封筒 4 種、
+設定キー 14 個と環境変数 7 個、役割ミッション表の全キー、CLI 18 個、上限と間隔、
+パターンカタログを [`docs/specs/agent-amigos-spec.md`](docs/specs/agent-amigos-spec.md) へ新設した。
+
+- **旧 § 番号の対応表を落とした**。2026-07-26 の再構成時に外部文書のリダイレクトとして
+  置いたものだが、参照元は本文の見出しか仕様書を見ればよい
+- **同梱 CLI 定義の数が古かった**。設計書は「kiro / claude / copilot / codex / cursor /
+  ollama の 6 定義」と書いていたが、実際は base 8 種（＋ aider / opencode）と用途別変種 5 種の
+  計 13 ファイルある
+- **テスト数を実装に合わせた**（180 → 197 件）
+- **`.github/skills/team-builder/SKILL.md` が参照していた設計書 §10 は、改訂前から存在しない
+  節だった**（旧設計書は §1〜§9 ＋ 付録 A〜C）。ロールミッション表の契約は仕様書 §7 にある
+
+コード・テストのドキュメンテーション文字列にあった設計書 § 参照 40 か所も、契約が移った先
+（仕様書）へ張り替えた。
+
+#### agent-audit（設計書 742 → 252 行、仕様書 257 行を新設）
+
+こちらは **ADR 形式の判断が 1 つも無く**、背景 → アーキテクチャ → データモデル → コマンドごとの
+仕様 → 不変条件 → 段階導入、という「仕様書に前書きが付いた」形だった。判断を 5 件抽出して
+ADR へ組み直し、残りを [`docs/specs/agent-audit-spec.md`](docs/specs/agent-audit-spec.md) へ移した。
+
+抽出した 5 件は、読み手に徹する（エンジン改造を却下）／決定的にできる処理に LLM を使わない／
+LLM は map と reduce の 2 段に分けて段ごとにモデルを選ぶ／CLI の作法は `session_log` 宣言で
+吸収する／環境変数を導入しない・見ない。
+
+- **`cli-quota` 源泉が §4.1 の源泉表に載っていなかった**。実装は `KNOWN_SOURCES` に 8 種を
+  持ち、`claude` / `codex` / `copilot` / `kiro-cli` が PATH にあるとき各 CLI の残枠を
+  モデル実行なしで収集する。仕様書の源泉表に加えた
+- **`cluster` はサブコマンドではない**ことを明記した。パイプライン図に段として出るので
+  サブコマンドと読めたが、実体は `distill` の内部段（`distill.cluster_observations`）
+- レコードの `kind` を実装どおり 7 種に直した（`calibration` と `memory` が漏れていた）
+- 誤字（`fail-close の报告` の簡体字）を直した
+- **テスト数を実装に合わせた**（記載なし → 16 ファイル・164 件）
+
+### agent-audit: `update_enabled: false` が完全に無視されていた
+
+設定 `update_enabled`（既定 true）に読み手がなく、**自己更新のキルスイッチとして機能して
+いなかった**。`check_update` は `enabled` を `bool(update_repo)` だけから決めていたので、
+`update_enabled: false` を書いても `agent-audit update --now` は普通に更新を取り込む。
+兄弟ツール（agent-flow / agent-project）は同名キーを尊重しており、agent-audit だけが
+落としていた。
+
+- `check_update` が `update_enabled` を見るようにした。**切ってあるときは `ls-remote` すら
+  打たない**（ネットワークへ出ない）
+- 「人が明示的に切った」と「`update_repo` が未設定」を区別する（`disabled_by_config`）。
+  前者を後者と同じ「未設定です」で片づけると、切ったつもりの人に理由が届かない。
+  前者は終了コード 0、後者は従来どおり 2
+
+### agent-audit: `update_check_interval` は効かないので、効かないと言うようにした
+
+agent-audit は単発・有界で、更新を定期チェックする常駐経路を持たない（間隔で律速する相手が
+いない）。兄弟ツールの設定ブロックから写した際に一緒に来たキーで、読み手が最初から無かった。
+
+`CONFIG_DEFAULTS` から外し、新設の `INERT_KEYS` へ理由つきで載せた。**`doctor` が設定ファイルに
+書かれているこれらのキーを報告する**——黙って無視すると「設定したのに効かない」が原因不明の
+不具合になるためで、agent-project の `_INERT_PROJECT_KEYS` と同じ扱いに揃えた。
+`agent-audit.yaml.example` からも外し、代わりに効かない理由をコメントで残した。
+
+テストは 154 → 164 件（うち 9 件が修正前のコードで落ちることを確認済み）。
+
 ### agent-loop: 設計書に残していた未実装 3 件を実装した
 
 改訂（前項）で「未実装として残っているもの」に整理した 3 件を実装する。2 件は opt-in で、

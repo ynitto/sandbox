@@ -1,18 +1,18 @@
 """doctor — 源泉の到達性・session_log 宣言の有無・未収集 CLI・clean ルールの
-スキップと未対応ログバージョンの一覧（設計 §8）。"""
+スキップと未対応ログバージョンの一覧（仕様書 §5）。"""
 from __future__ import annotations
 
 import os
 
 from .collect import agent_defs_with_session_log
-from .configfile import resolve_audit_dir, resolve_budget_dir
+from .configfile import INERT_KEYS, resolve_audit_dir, resolve_budget_dir
 from .store import Store, home_relative
 
 _CLEAN_SAMPLE_LIMIT = 20
 
 
 def _print_clean_summary(name: str, slog: dict) -> None:
-    """clean 宣言の棚卸し（設計 §4.4）。直近セッションを間引いてサンプルし、
+    """clean 宣言の棚卸し（仕様書 §3）。直近セッションを間引いてサンプルし、
     検出できたログバージョンの分布と、clean 適用中に出た警告（未知ルール名・
     不正な正規表現など）をまとめて表示する。宣言が無ければその旨だけ出す。"""
     clean = slog.get("clean")
@@ -60,6 +60,20 @@ def _print_memory_stores(args) -> None:
         p = os.path.expanduser(str(value))
         print(f"  {key}: {home_relative(p)} — "
               f"{'OK' if os.path.isdir(p) else '見つかりません（collect は exit 2 で止まります）'}")
+
+
+def _print_inert_keys(cfg: dict) -> None:
+    """設定ファイルに書かれているが効かないキーを報告する。
+
+    黙って無視すると「設定したのに効かない」が原因不明の不具合になる。書いた本人は
+    効いているつもりでいるぶん、静かに落とすほうが害が大きい。
+    """
+    found = [k for k in INERT_KEYS if k in (cfg or {})]
+    if not found:
+        return
+    print("\n効かない設定キー:")
+    for key in found:
+        print(f"  {key}: {INERT_KEYS[key]}")
 
 
 def cmd_doctor(args) -> int:
@@ -116,4 +130,5 @@ def cmd_doctor(args) -> int:
         print(f"設定: {home_relative(args._config_path)}")
     else:
         print("設定: なし（組み込み既定で動作。雛形: agent-audit.yaml.example）")
+    _print_inert_keys(getattr(args, "_config", None) or {})
     return 0
