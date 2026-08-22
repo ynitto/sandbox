@@ -42,6 +42,7 @@ AGENT_POLICY = None          # None = agents/aider.json の本番設定をその
 NUM_PREDICT = 0             # --num-predict で上書き（0 = 上限なし。aider 経路のみ）
 NUM_CTX = 0                 # --num-ctx で上書き（0 = Aider / model の既定）
 SAMPLING: dict = {}         # --temperature / --top-p / --top-k で上書き（空 = 宣言しない）
+RESAMPLE = 1                # --resample で上書き（1 = 引き直さない＝従来と同一の道）
 AIDER_VERSION = None
 OLLAMA_API_BASE = os.environ.get("OLLAMA_API_BASE", "http://127.0.0.1:11434")
 WALL_LIMIT = 600.0          # agent-flow の agent_timeout 既定
@@ -623,32 +624,98 @@ def invoke(step: dict, wt: Path) -> "tuple[int, str, str, float]":
     return rc, out, err, time.time() - started
 
 
+def snapshot_worktree(wt: Path) -> dict:
+    """手順を始める前の作業ツリーを控える（引き直しで戻すため）。
+
+    追跡済みファイルは git が戻せるので控えない。控えるのは**未追跡**——課題の仕込み
+    （`seed`）が置くのがまさにそれで、`git clean` だけで戻すと仕込みごと消える。
+    """
+    def ls(*flags: str) -> "list[str]":
+        r = subprocess.run(["git", "ls-files", "--others", "--exclude-standard",
+                            *flags, "-z"], cwd=wt, capture_output=True, check=True)
+        return [p for p in r.stdout.decode("utf-8", "surrogateescape").split("\0") if p]
+    # `--directory` は中身のないディレクトリも返す。seed_t1 が作る eval/ がこれ。
+    return {"files": {p: (wt / p).read_bytes() for p in ls() if (wt / p).is_file()},
+            "dirs": [p for p in ls("--directory") if (wt / p).is_dir()]}
+
+
+def restore_worktree(wt: Path, snapshot: dict) -> None:
+    """作業ツリーを控えた時点へ戻す。抽選と抽選のあいだで呼ぶ。
+
+    引き直しは**独立な抽選**なので、前の抽選が書いた成果は残さない——残すと
+    「診断を渡さない再投入」（既存の blind 腕）と同じものを測ることになる。
+    """
+    if wt.resolve() == REPO.resolve():
+        # リポジトリ本体で clean を回すと作業中の変更ごと消える。呼び出し側の事故
+        # （worktree ではなくリポジトリを渡す）は、実行する前にここで落とす。
+        raise SystemExit("restore_worktree はリポジトリ本体に対しては実行しません")
+    subprocess.run(["git", "checkout", "--", "."], cwd=wt, capture_output=True)
+    subprocess.run(["git", "clean", "-fdq"], cwd=wt, capture_output=True)
+    for rel in snapshot["dirs"]:
+        (wt / rel).mkdir(parents=True, exist_ok=True)
+    for rel, blob in snapshot["files"].items():
+        path = wt / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(blob)
+
+
+def escalated(trace: "list[dict]") -> bool:
+    """ゲート付き手順が、再投入も引き直しも使い切って通らなかったか。
+
+    statemachine の `escalate`（「この段では無理」を機械が宣告する口）に対応する。
+    受入率とは別に数える——上限到達の頻度がそのままクラウド昇格の頻度になるので、
+    引き直しの採否はここが下がるかどうかで決まる。
+    """
+    last: "dict[int, bool]" = {}
+    for rec in trace:
+        if "gate" in rec:
+            last[rec["step"]] = rec["gate"]
+    return any(value is False for value in last.values())
+
+
 def run_steps(task: dict, wt: Path) -> "tuple[list[dict], str, str]":
     """タスクの手順を順に回す。一発版は「手順が 1 つ」として同じ道を通る。
 
-    ゲートを持つ手順は、**機械が出した不一致**を課題文へ足して同じ手順をやり直す。
-    ここが agent-loop の statemachine（`condition_rule` の決定的遷移 + 再試行）に
-    対応する部分で、遷移判断に LLM を使わないことを写している。ハーネス本体では
-    なくここに置いているのは、測りたいのが「分解と決定的ゲートが効くか」であって
+    ゲートを持つ手順は 2 段で受ける。
+
+    1. **診断つき再投入**（`max_retries`）——機械が出した不一致を課題文へ足して直させる。
+    2. **引き直し**（`--resample`）——再投入を使い切っても通らなければ、作業ツリーを
+       手順開始時点へ戻して独立に抽選し直す。温度 0 では同じ出力が返るだけなので
+       （実測 P10・2026-08-15）、効くのは sampling を宣言した腕だけである。
+
+    どちらの段でも**採択するのは決定的ゲートだけ**で、モデルの自己申告は見ない。
+    ここが agent-loop の statemachine（決定的遷移 + 限定 retry + 上限到達で escalate）に
+    対応する部分で、遷移判断に LLM を使わないことを写している。ハーネス本体ではなく
+    ここに置いているのは、測りたいのが「分解と決定的ゲートが効くか」であって
     statemachine 実装の出来ではないため（1 回の呼び出しの argv は本番と同一）。
     """
     steps = task.get("steps") or [task]
     trace: "list[dict]" = []
     out = err = ""
     for n, step in enumerate(steps, 1):
-        goal, gate = step["goal"], step.get("gate")
-        for attempt in range(1 + int(step.get("max_retries") or 0)):
-            rc, out, err, wall = invoke({**step, "goal": goal}, wt)
-            rec = dict(step=n, attempt=attempt + 1, wall=round(wall, 1),
-                       mode=classify(rc, wall, out, err), **_agent_markers(err))
-            if gate is None:
-                trace.append(rec)
-                break
-            ok, feedback = gate(wt)
-            trace.append({**rec, "gate": ok, "gate_note": feedback[:160]})
+        gate = step.get("gate")
+        # 引き直すのはゲートのある手順だけ。採択する機械がいなければ、引き直しは
+        # 「同じ課題を何度も呼んだ」だけになる（自己申告での採択は P1 が外した道）。
+        draws = RESAMPLE if gate is not None else 1
+        snapshot = snapshot_worktree(wt) if draws > 1 else None
+        for draw in range(1, draws + 1):
+            if draw > 1:
+                restore_worktree(wt, snapshot)
+            goal, ok = step["goal"], False
+            for attempt in range(1 + int(step.get("max_retries") or 0)):
+                rc, out, err, wall = invoke({**step, "goal": goal}, wt)
+                rec = dict(step=n, draw=draw, attempt=attempt + 1, wall=round(wall, 1),
+                           mode=classify(rc, wall, out, err), **_agent_markers(err))
+                if gate is None:
+                    trace.append(rec)
+                    break
+                ok, feedback = gate(wt)
+                trace.append({**rec, "gate": ok, "gate_note": feedback[:160]})
+                if ok:
+                    break
+                goal = step["goal"] + REPAIR_NOTE.format(feedback)
             if ok:
                 break
-            goal = step["goal"] + REPAIR_NOTE.format(feedback)
     return trace, out, err
 
 
@@ -695,18 +762,31 @@ def run_one(tid: str, i: int) -> dict:
                # 既定で走ったという意味で、**空欄と同義ではない**——腕の条件を後から
                # 台帳だけで復元できないと、条件の違う数字が同じ表に並ぶ。
                sampling=(SAMPLING or None),
+               # 引き直しの条件も同じ理由で必ず残す。`resample` は宣言した上限、
+               # `draws` は実際に使った本数——上限を上げても使われていないなら、
+               # 受入の差は引き直し以外の何かで説明しないといけない。
+               resample=RESAMPLE,
+               draws=max((call.get("draw", 1) for call in trace), default=1),
+               escalate=escalated(trace),
                wall_limit=WALL_LIMIT, wall=round(wall, 1), tokens_in=tokens_in,
                tokens_out=tokens_out, checker_pass=ok, checker_diagnostic=note,
                map_tokens=task.get("map_tokens", 0), auto_test=bool(task.get("test_cmd")),
                note=note, log=log, out_chars=len(out), calls=len(trace),
-               retry_count=max(0, len(trace) - len(task.get("steps") or [task])), trace=trace)
+               # 診断つき再投入の回数。引き直し（draw）は初回投入なので数に入れない
+               # ——`len(trace) - 手順数` で数えると両者が混ざる。引き直しの無い
+               # 既存の腕では、この式は従来と同じ値を返す。
+               retry_count=sum(1 for call in trace if call.get("attempt", 1) > 1),
+               trace=trace)
+    draws = rec["draws"]
     print(f"  {tid}#{i}: {'PASS' if ok else 'FAIL':4s} {mode:24s} "
-          f"{wall:6.1f}s {len(trace)}call  {note[:66]}", flush=True)
+          f"{wall:6.1f}s {len(trace)}call{f' {draws}draw' if draws > 1 else ''}  "
+          f"{note[:66]}", flush=True)
     return rec
 
 
 def main() -> None:
-    global WALL_LIMIT, MODEL, CLI, AGENT_POLICY, NUM_CTX, NUM_PREDICT, SAMPLING, AIDER_VERSION
+    global WALL_LIMIT, MODEL, CLI, AGENT_POLICY, NUM_CTX, NUM_PREDICT, SAMPLING
+    global RESAMPLE, AIDER_VERSION
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default=MODEL,
                     help="測るモデル。別モデルの判定はここだけ変えればよい")
@@ -731,6 +811,10 @@ def main() -> None:
                          "Gemma 系は低温が推奨されない可能性がある（要実測・計画 P10）")
     ap.add_argument("--top-p", type=float, default=None, help="nucleus sampling。同上")
     ap.add_argument("--top-k", type=int, default=None, help="top-k sampling。同上")
+    # 引き直し（best-of-N）。採択は決定的ゲートだけが行い、全滅したときだけ escalate。
+    ap.add_argument("--resample", type=int, default=RESAMPLE, metavar="N",
+                    help="ゲート付き手順を最大 N 回まで引き直す（既定 1 = 引き直さない）。"
+                         "再投入を使い切ってから作業ツリーを戻して独立に抽選し直す")
     args = ap.parse_args()
     WALL_LIMIT = args.wall
     MODEL = args.model
@@ -750,6 +834,17 @@ def main() -> None:
         raise SystemExit("--agent-policy は aider 経路のみです")
     if NUM_CTX < 0 or NUM_PREDICT < 0:
         raise SystemExit("--num-ctx / --num-predict は 0 以上で指定してください")
+    RESAMPLE = args.resample
+    if RESAMPLE < 1:
+        raise SystemExit("--resample は 1 以上で指定してください")
+    if RESAMPLE > 1 and CLI == "aider" and not SAMPLING:
+        # 貪欲デコードでの引き直しは、同じ壁時計を払って同じ出力を受け取るだけ。
+        # 「引き直しても揺れない」を対照として測りたいなら --temperature 0 と明示する
+        # ——このハーネスは「未宣言」と「既定値を明示」を別物として扱う。
+        raise SystemExit(
+            "--resample > 1 は sampling を宣言してから使ってください。aider 経路の実効 "
+            "temperature は 0（貪欲デコード）で、引き直しても同じ出力が返ります"
+            "（実測 P10・2026-08-15）。対照として測るなら --temperature 0 と明示してください")
 
     WORK.mkdir(parents=True, exist_ok=True)
     ledger = WORK / "ledger.jsonl"
@@ -774,7 +869,9 @@ def main() -> None:
     # 前者は既定と明示する——実効値が不明なまま数字だけが残るのを避ける
     # （実効 sampling の未確認は計画 P10 が潰す当の交絡）。
     print("sampling=" + (", ".join(f"{k}={v}" for k, v in SAMPLING.items())
-                         if SAMPLING else "未宣言（aider / ollama の既定のまま）") + "\n")
+                         if SAMPLING else "未宣言（aider / ollama の既定のまま）"))
+    print(f"resample={RESAMPLE}" + ("（引き直さない）" if RESAMPLE == 1 else
+                                    "（ゲート付き手順を最大 N 回・採択は決定的ゲート）") + "\n")
 
     rows = []
     for tid in tids:
@@ -787,11 +884,17 @@ def main() -> None:
     print("\n=== 受入率（決定的チェッカー）")
     for tid in tids:
         r = [x for x in rows if x["task"] == tid]
+        if not r:
+            continue        # --repeat 0（条件だけ見たいとき）で集計へ落ちない
         n = len(r); ok = sum(1 for x in r if x["ok"])
         walls = sorted(x["wall"] for x in r)
         calls = sum(x["calls"] for x in r)
+        # escalate は受入と別に出す。引き直しの採否はここが下がるかで決まるので、
+        # 「受入は同じだが escalate だけ減った」を読み落とさない形にしておく。
+        esc = sum(1 for x in r if x.get("escalate"))
         print(f"  {tid}: {ok}/{n}  中央値 {walls[len(walls)//2]:.0f}s  "
-              f"呼び出し {calls}回  様式 {sorted(set(x['mode'] for x in r))}")
+              f"呼び出し {calls}回  escalate {esc}/{n}  "
+              f"様式 {sorted(set(x['mode'] for x in r))}")
     ok = sum(1 for x in rows if x["ok"])
     print(f"  合計: {ok}/{len(rows)}")
     print(f"\n台帳: {ledger}")
