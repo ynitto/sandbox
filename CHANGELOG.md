@@ -7,6 +7,69 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-flow / agent-project を再点検し、設定キーの「消費検査」を足した
+
+土台（agentcore / CLI 契約 / ローカル推論）の整理が終わったので、最初に扱った 2 ツールを
+実装と突き合わせ直す。設計書・仕様書の骨格は前回のままで妥当だったので、**齟齬の修正と
+新しい仕様書への相互参照、および 1 つの構造的な欠落**に絞った。
+
+#### 塞いだ欠落 — 設定キーの 3 段目
+
+agent-project の `tests/test_config_keys.py` は「`CONFIG_DEFAULTS` にキーがあるのに `Config` へ
+渡していない」欠落を 2 度踏んだ末に書かれたもので、存在検査と到達検査の 2 段を持っている。
+ところが 2026-08-20 に**3 度目**が出た——`verify_side_effects` は `Config` までは届いていたのに
+存在しない charter 属性から読まれており、`network` と宣言しても制約文は 1 文字も変わらなかった。
+読み手が `getattr(x, key, 既定)` で庇うので例外も出ない。当時は個別に直し、設計書に
+「到達検査は必要条件であって十分条件ではない」と書き残していた。
+
+3 度同じ形が来た以上、機械へ渡す。**消費検査**（`Config` へ届いた先で `configfile.py` 以外の
+誰かがそのキーを読むか）を 3 段目として足した。
+
+- `tools/agent-project/tests/test_config_keys.py` — `test_every_config_default_is_read_by_someone`
+  と除外表 `CONSUME_EXEMPT`（理由の記述を強制。現在 3 件＝`verifier` / `verifier_skill` の
+  撤去済み残骸と、`configfile.py` 内で新名へ畳まれる旧名 `spec_threshold`）
+- `tools/agent-flow/tests/test_config.py` — `ConfigKeyConsumptionTests`（同梱 executor
+  プラグインも走査対象）。**除外は 0 件**で、除外表が空であること自体がこの検査の価値になる
+
+キー名の文字列リテラルと属性アクセスをソースから探す静的検査で、名前を動的に組み立てて読む
+キーは見逃す。ただし 3 度の欠落はどれも「読み手がどこにも無い」形でキー名が 1 か所にも
+現れておらず、見逃す側は偽陰性なので「読み手がいるのに落ちる」方へは倒れない。
+両方とも、読み手のいないキーを注入して落ちることを確認済み。
+
+#### 直した齟齬
+
+- **`tools/agent-project/README.md` が撤去済みの設定を案内していた**。「検証プロンプトは
+  設定 `verifier_skill` で名前も変えられる」と書いてあったが、このキーは `_INERT_PROJECT_KEYS`
+  で警告して無視される側にあり、スキル名は `backlog-verifier` 固定。仕様書と設計書は
+  正しかったので、README だけが取り残されていた
+- **`agent-project` 仕様書のコマンド表に `worker init` が無かった**。プロジェクトを持たない
+  ワーカーノードの `host.yaml` を生成する、PC を 1 台足すときの入口
+- **`agent-flow` 仕様書のグローバル引数の列挙が網羅に見えて 1 つ足りなかった**。
+  `--execution-overrides` は `--help` に出さない内部の口（親が解決済みの L4 固定を子へ argv で
+  運ぶ）で、人が渡す経路は inbox 要求の `execution_overrides`。そう書き足した
+- **`agent-flow` 仕様書の環境変数表に 7 個の漏れ**（`KIRO_SKILLS_HOME` /
+  `KIRO_SKILL_REGISTRY` / `KIRO_STATE_HOME` / `AGENT_RESERVATION_ID` と、同梱 gitlab
+  プラグインの `GITLAB_TOKEN` / `GL_TOKEN` / `GITLAB_NODE_ID`）
+- **`fallbacks` の所在**を agent-flow 仕様書でも明示した（定義ファイルのフィールドではなく
+  エンジン側の設定。CLI 定義が持つのは `relative_cost` だけ）
+- テスト件数を実測へ更新（agent-flow 1,027 → 1,029 件、agent-project 1,300 → 1,302 件）
+
+#### 相互参照
+
+新設した [`docs/specs/agent-cli-spec.md`](docs/specs/agent-cli-spec.md) が CLI 定義の正典に
+なったので、両仕様書の該当節からそこへ繋いだ。あわせて、それぞれのエンジンが `variants` へ
+問い合わせる用途を明記した（agent-flow は 9 用途＝`VARIANT_ELIGIBLE_ROLES`、agent-project は
+6 用途＝`JSON_CONTRACT_PURPOSES`。合わせて 15 で、CLI 定義が申告する 15 用途と一致する）。
+
+#### 確認したが変えなかったこと
+
+- 両ツールの上限・既定値（agent-flow 22 項目・agent-project 15 項目）は仕様書の記載と
+  実装が完全一致。パターン 7 種・kind 13 種・status 10 種も一致
+- GitLab の非強調（当初の依頼）は前回で完了済み。設計書の言及は agent-flow が 2 か所、
+  agent-project が 2 か所で、いずれも「推奨しない同梱プラグインの 1 実装」という扱い
+- 断片数（agent-flow 31・agent-project 本体 33 + `resident/` 5）は正しかった。
+  `__init__.py` / `__main__.py` は exec 合成の対象外
+
 ### agentcore と CLI プラグイン契約の設計書を改訂し、仕様書 3 本を新設した
 
 agent-flow・agent-project・agent-loop・agent-dashboard・agent-amigos・agent-audit に続き、

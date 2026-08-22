@@ -69,6 +69,7 @@ S3 のゲート順と失敗時の行き先は verify → 回帰 → パス保護
 | コマンド | 用途 |
 |---|---|
 | `serve` / `status` / `worker` | 常駐体の起動・状態表示・ワーカーノード（サブコマンド省略時は `serve`） |
+| `worker init` | プロジェクトを持たないワーカーノード用の `host.yaml` を生成する（`--node-id` / `--tags` / `--agent-cli` / `--board` / `--max-concurrent` / `--out` / `--force`）。PC を 1 台足すときの入口 |
 | `run` | 正準ループ。charter があれば目標駆動へ入る。`--watch` で常駐 |
 | `enqueue` / `triage` / `needs` / `impact` | 投入、優先順位付けのみ、判断待ちの表示、依存の影響範囲 |
 | `approve` / `hold` / `reprioritize` / `revise` / `reject` / `revive` / `resume-run` | 人の操作（すべて決定記録に残る） |
@@ -133,11 +134,13 @@ host.yaml の**トップレベル**の綻び（未知キー・層違い・型違
 | `max_retries` | 2 | 内容の失敗で積み直す上限。超えたら人へ |
 | `env_resume_limit` | 2 | 同じ環境要因が連続した上限。超えたら `policy.deny` へ入れて自動再開を止める |
 | `act_timeout` | 0 | agent-flow run 1 本の壁時計上限（0 = 無制限） |
-| `agent_escalation_max` | 3 | 分類不能な内容失敗を上位候補へ昇格させる回数（プロセス単位） |
+| `agent_escalation_max` | 3 | 分類不能な内容失敗を上位候補へ昇格させる回数（プロセス単位）。候補は設定の `fallbacks` 宣言のうち `relative_cost` が厳密に大きい最初の 1 件 |
 | `poll` / `debounce` / `pace` | 5 / 3 / 0 秒 | `--watch` の FS ポーリング間隔・入力の落ち着き待ち・パス間の間合い |
 | `max_project_cycles` / `max_project_cost` / `project_stall` | 5 / 0 / 2 | charter 駆動の有限停止 |
 
 予算の単位は**支払い元と進行状況のどちらに属するか**で分かれます。トークン・コスト・実時間・`budget.max_concurrent` はノードの財布なので host.yaml が正で、ノード間では合算しません。改善サイクル数・停滞の連続回数・acceptance の PASS 数はプロジェクトの進行なので `project.json` で共有します。財布の上限に達したノードだけが throttle → report へ降格し、他ノードは走り続けます。
+
+エージェント CLI そのものの契約（`agents/<name>.json` の探索順・全フィールド・用途別の変種 `variants`・`relative_cost`・失敗トリアージのクラス）は [`docs/specs/agent-cli-spec.md`](./agent-cli-spec.md) が正典です。agent-project が `variants` へ問い合わせる用途は `plan` / `review` / `prioritize` / `route` / `adjudicate` / `assess` の 6 つで（`JSON_CONTRACT_PURPOSES`）、`verify` は寛容パーサ + 証跡の本文を伴うため対象外です。
 
 ### 2.3 検証
 
@@ -190,11 +193,19 @@ host.yaml の**トップレベル**の綻び（未知キー・層違い・型違
 | キー | 案内 |
 |---|---|
 | `root` / `state_repo` / `state_repo_branch` / `state_repo_dir` / `state_git` / `state_commit_interval` | 置き場が host.yaml か、同期先が状態 clone の origin に一本化された |
-| `verifier` / `verifier_skill` | 内蔵の LLM verifier は撤去済み。受入基準の判定は agent-flow の専用 verifier が行う |
+| `verifier` / `verifier_skill` | 内蔵の LLM verifier は撤去済み。受入基準の判定は agent-flow の専用 verifier が行い、検証スキル名は `backlog-verifier` 固定（差し替えは上位 `.github/skills/` へ同名で置く） |
 
 一方、**従うと挙動が誤って変わる**廃止キー（旧 worktree 方式の `state_worktree_dir` / `state_branch` / `state_commit` / `state_push` / `state_backup_branch`）は fail-fast で止めます。黙って無視すると「バックアップされているつもりの未バックアップ状態」が続くためです。
 
-宣言したキーが実際に効くことは構造テストで固定します（`tests/test_config_keys.py`）。`CONFIG_DEFAULTS` の全キーが `Config` のフィールドとして存在することと、各キーを設定ファイルに書いたとき値が実際に届くことの 2 段で、除外には理由の記述を強制します。ただしこのテストは `Config` への到達までしか見ないので、**そこから先で誰も読まないキー**は捕まえられません（`verify_side_effects` が存在しない属性から読まれていた欠落は、この隙間に落ちていました。2026-08-20 修正）。
+宣言したキーが実際に効くことは構造テストで固定します（`tests/test_config_keys.py`）。3 段あり、除外にはいずれも理由の記述を強制します。
+
+| 段 | 見るもの | 捕まえた欠落 |
+|---|---|---|
+| 存在検査 | `CONFIG_DEFAULTS` の全キーが `Config` のフィールドとして存在する | `remote_review`（フィールドが無く、読み手の `getattr` 既定に落ちて常に settle だった） |
+| 到達検査 | 各キーを設定ファイルに書くと `Config` の値が実際に**変わる** | `verifier` / `verifier_skill` / `verify_side_effects`（`CONFIG_DEFAULTS` にあるだけで `Config` へ渡っていなかった） |
+| 消費検査 | `Config` へ届いた先で、`configfile.py` 以外の誰かがそのキーを**読む** | `verify_side_effects`（存在しない charter 属性から読まれており、`network` と宣言しても制約文は 1 文字も変わらなかった。2026-08-20） |
+
+到達検査は必要条件でしかなく、**届いた値を誰も読まなければ設定は黙って無効のまま**です。3 段目の消費検査はその隙間を塞ぐために足しました（キー名の文字列リテラルと属性アクセスをソースから探す静的検査で、名前を動的に組み立てて読むキーは検出できません＝安全側の偽陰性）。agent-flow にも同じ検査があります（`tests/test_config.py` の `ConfigKeyConsumptionTests`）。
 
 ---
 
@@ -497,7 +508,7 @@ tick 内で周期を超えうる仕事（run の実行、amigos の手番）は*
 
 ### B. テスト
 
-`tools/agent-project/tests/` に 32 ファイル・1,300 件（機能別に分割済み）。共有の前置きは `_shared.py` にあり、エージェント CLI なしで全件が通ります。
+`tools/agent-project/tests/` に 32 ファイル・1,302 件（機能別に分割済み）。共有の前置きは `_shared.py` にあり、エージェント CLI なしで全件が通ります。設定キーの 3 段検査（存在・到達・消費）は `test_config_keys.py`（§2.6）にあります。
 
 ```bash
 python3 -m unittest discover -s tools/agent-project/tests
