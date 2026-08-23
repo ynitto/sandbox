@@ -25,6 +25,10 @@
   **最も安い検証ビークル**として（Vulkan 同梱・単一バイナリ）、(2) `--format json` より
   強い**任意文法（GBNF）制約**の効果測定として。どちらも「ランタイム差し替え」ではなく
   **独立した評価 arm** として扱い、基準線なしの載せ替えはしない（既存の規律のまま）。
+- **追記（2026-08-23）: 新しい案より先に閉じるべきものがあった。** §4.2 の棚卸しで、
+  (1) 本書の案 1 の効果範囲を決める前提が未測定であること、(2) 独立レバー 4 本
+  （P7 / P8 / P9 / P11）が宣言されたまま着手記録を持たないこと、(3) 呼び出し面 42 のうち
+  **34 が能力未測定**であることが分かった。実行順序は §4.2 末尾で改訂した。
 
 ## 1. 前提 — 実測で確定していることの再掲（判断の土台）
 
@@ -315,6 +319,100 @@ escalate になる。戻すのが要点で、前の抽選の成果を残した�
 python3 -m agentcore.context_slice eval/billing.py --symbol prorate -o /tmp/excerpt.py
 ```
 
+## 4.2 未検討項目の棚卸し（2026-08-23）
+
+`docs/plans/` と `tools/agent-tools/eval/` を横断し、**どの計画にも入っていない項目**と
+**入っているのに着手記録が無い項目**を洗い出した。本書の 6 案は「新しいレバーを足す」側に
+寄っていて、**既に決まっているのに閉じていないもの**を数えていなかった。
+
+分類は 3 つ。**A は本書の案の前提**（先に潰さないと案 1・案 2 の測定が運用へ移らない）、
+**B は独立レバーの放置**、**C は「測っていない」と明示されている面**である。
+
+### A. 本書の案の前提（最優先）
+
+#### A1. (b) 族に引き直しが効くかは未測定 — 案 1 の効果範囲そのもの
+
+失敗には 2 族ある（[gate-generality](../../tools/agent-tools/eval/results/archive/2026-08-14-gate-generality-report.md)）。
+**(a) 仕様の読み違い族**は真偽ゲート + 再投入で直る。**(b) 作業の丸ごと欠落族**は直らない
+——T3gate は全 9 attempt が同一の `C3 fail: 契約テストが追加されていない` で 0/3。診断文が
+毎回「何が欠けているか」を明示しているのに、モデルは一度もテストを書かない。
+
+**P10 の sampling 実測が動かしたのは T1（a 族）だけで、(b) 族を推奨 sampling で引き直した
+記録は無い**——台帳 `ledger-2026-08-15-p10-worker-sampling.jsonl` の 12 行は T1 と T2 だけで、
+T3 / T3gate の行は 1 本も無い。ここが案 1 の採用条件に直撃する——採用条件は「escalate 率が下がること」だが、
+escalate の主因が (b) 族なら、引き直しは同じ壁時計を払って同じ欠落を受け取るだけになる。
+
+したがって案 1 の腕は **T1gate（a 族）と T3gate（b 族）を必ず分けて読む**。(b) が動かない
+場合の答えは引き直しではなく、**成果物を 1 つに割る**（＝ A2 の適格条件を満たす形へ分解する）
+である。この切り分けを腕の設計へ足す。
+
+#### A2. 局所修正の適格判定が「記録」止まりで、「拒否」へ配線されていない
+
+`agentcore.nodecontract.local_patch_blockers()` は適格条件を機械判定する（書込 1 ファイル・
+成果物 1 つ・`verification.commands` あり・テスト / schema / 文書の新規作成でない・protected 外）。
+だが**呼び出しは `agent_flow/work.py` の 1 か所だけで、claim / result のメタへ理由を残すだけ**
+である（コード上のコメントも「事実として残す」）。`executionresolver.py` は blockers を読まない。
+
+つまり [2026-08-18 assessment](2026-08-18-agent-aider-improvement-assessment.md) の Phase 4-1 /
+4-2（「checker が無い場合は自動選択しない」）は**観測までしか入っていない**。同 assessment の
+`[ ]` 表記も現状と合っていない——1・2 は半分入り、3・4（限定 retry と上限到達での昇格）は
+statemachine 側に入っている。**assessment の Phase 4 チェックリストは実装と突き合わせ直す。**
+
+効き方: 案 1 も案 2 も「適格な局所修正」を前提にした腕である。本番が不適格タスクへ aider を
+割り当てられる限り、ハーネスで測った escalate 率はそのまま運用へは移らない。**拒否を配線するか、
+配線しないなら「測定値は上限であって運用値ではない」と明記するか、どちらかを決める。**
+
+#### A3. `run_suite.py` が腕の条件を通さず、manifest にも残さない
+
+`run_suite.py` が `worker_eval.py` へ渡すのは `--model` / `--cli` / `--repeat` / `--wall` の
+4 つだけである。`--tasks` / `--agent-policy` / `--num-ctx` / `--num-predict` / sampling、
+そして新設の `--resample` はいずれも渡らず、`manifest.json` にも載らない。
+
+README は manifest を「比較条件」と説明しているが、**腕を変える軸がそこに無い**。標準測定の
+経路から腕を回すと、条件が manifest と食い違ったまま結果だけが `results/` に残る——本書が
+案 1 で守った「条件を台帳へ必ず残す」規律が、1 階層上で破れている。引数の透過と manifest への
+追記だけの小さい修正なので、案 1 の A/B を回す前に塞ぐ。
+
+### B. 独立レバーの放置（P7 / P8 / P9 / P11）
+
+[候補ベース実行計画](2026-08-15-candidate-execution-parallel-implementation-plan.md)は
+「旧計画側に残るのは独立レバー（P7 / P8 / P9 / P11）だけ」と宣言して閉じたが、**4 本とも
+着手記録が無い**。本書もこの 4 本を引き継いでいなかった。
+
+| # | 項目 | 現状 | なぜ今か |
+|---|---|---|---|
+| B1 | **P9 未測定面** | `coverage.json` の **42 面中 34 面が missing**（direct は 6 面のみ）。agent-project 10 面・agent-dashboard 12 面・agent-amigos 5 面は**全面 missing**。flow も planner / classify / synthesize / verify / map / extract / retrieve が missing | ローカル主体運転は「役割ごとに割り当てる」設計なのに、**割り当て先の 8 割は能力を測っていない**。案 4（e2b 級）の適用先を決める材料も、ここが埋まらないと出ない |
+| B2 | **P11 MoE の RAM 実測** | 「数分で終わる」と書かれたまま未実施 | 本書の案 4（e2b 級へ**下げる**）と方向が逆で、上下どちらに振るかの材料が両方無い。RAM に入らなければその場で閉じられる——**最も安く 1 件減らせる** |
+| B3 | **P8 12b の停止性** | **12b は既に本番の検証役**（`agents/ollama-verify.json` の `default_model`） | text-eval は「暴走 2/27 は存在の証明であって発生率の推定ではない」と明記。**再投入の頻度＝壁時計コストが見積もれないまま運用に入っている**。errors には transient 分類と「e4b への縮退を検討」まで書いてあるが、**縮退の判断基準（何回続いたら）が無い** |
+| B4 | **P7 bge-m3 recall** | 設計書は **Draft（実測済み・未実装）** | 受入基準（paraphrase hit@5 ≥ 55% / lexical ≥ 95% を同時に満たす）もハーネス（`retrieval_eval.py --model bge-m3`）も揃っている。生成品質と独立で、クラウド枠にも一切依存しない |
+
+### C. 「測っていない」と明示されている面
+
+| # | 項目 | 出典と含意 |
+|---|---|---|
+| C1 | **リランカー** | ltm-use の「やらないこと」。理由は *ollama に rerank の口が無い / 生成モデル代用は 1 クエリ数十秒*。**本書の案 B（ランタイム）が通ればこの制約自体が動く**（llama.cpp 系は rerank の口を持つ）。案 B の副次的な判定材料として並べる |
+| C2 | **候補生成 + 決定的検算の未投入面** | next-eval-plan §2 の順 4（grep パターン・パス候補・テスト名）は「未投入」のまま。E6 が決定化したのは filter / judge の**判定**側で、こちらは**生成**側。案 1 と同じ「モデルは候補だけ・機械が検算」の形で、しかも誤りが存在チェックで無害化される |
+| C3 | **read 調査 → 材料生成** | next-eval-plan §2 の順 5。**案 2（スライシング）はこの下流にあたる**——上流が未評価のまま下流だけ作った形なので、案 2 の A/B では「read 調査でファイルを絞る段」を固定条件として明記する |
+| C4 | **ltm-use の未決 3 点** | しきい値のコーパスサイズ依存（210 件で 0.11）・クエリ埋め込みのキャッシュ・全文 vs 要約（先頭 4000 字で長い記憶が不利か未測定） |
+| C5 | **自由記述の質** | text-eval は「ケースは構成的正解に寄せた。読みやすさ・網羅性は測っていない」。**レビュー役を 12b に置く判断はこの軸を見ずに下している** |
+| C6 | **n の小ささ** | 主要な結論はほぼ n=3。t1-decomposition も「対象は humansize 1 課題のみ」。限界は各レポートに書かれているが、**どの結論を率として読んでよいかの線引きが無い**（「3/3」を 100% と読む誤りは、まだ機械では止まらない） |
+
+### 棚卸しを踏まえた実行順序の改訂
+
+§4 の順序に**段 0 を足し、B2 / B4 を独立の当日枠へ出す**。
+
+| 段 | 内容 | コスト |
+|---:|---|---|
+| **0** | **A1**（案 1 の腕を a 族 / b 族で分ける）+ **A3**（`run_suite` の条件透過）。**A2** は「拒否を配線するか / 測定値の位置づけを明記するか」の判断だけ先に決める | 数時間 |
+| 1 | 案 1 の A/B（段 0 の切り分けを入れた形で） | 半日 + 壁時計 |
+| 2 | 案 B 検証（iGPU prefill）。効けば **C1（リランカー）** の可否も同時に判明する | 半日 |
+| 3 | 案 2（決定的スライシング）。**C3** を固定条件として宣言してから測る | 2〜3 日 |
+| 独立 | **B2**（MoE の RAM 実測・数分）→ **B4**（bge-m3 の実装・受入基準は既定） | 各当日 |
+| 後続 | **B1**（P9 の最小 eval。planner → project:verify → dashboard doctor の順）・**B3**（12b の暴走率と縮退基準）・**C2** | — |
+
+段 0 を段 1 の前へ置く理由は P10 のときと同じである——**切り分けを入れないまま腕を引くと、
+「escalate が下がらなかった」の原因が引き直しなのか (b) 族なのか分離できない数字が 1 本増える**。
+
 ## 5. やらないこと
 
 - ローカルでの fine-tuning（QLoRA / 蒸留）。§2 案 6 のとおり。
@@ -333,3 +431,14 @@ python3 -m agentcore.context_slice eval/billing.py --symbol prorate -o /tmp/exce
 - [2026-08-13 gemma4 system policy 設計](2026-08-13-agent-aider-gemma4-system-policy-design.md)
 - [eval/README](../../tools/agent-tools/eval/README.md)（P10 段 0 / 段 1 実機再測 / E6・E7）
 - `agents/aider.json` / `agents/ollama.json` / `agents/ollama-json.json`
+
+§4.2 の棚卸しで参照したもの:
+
+- [2026-08-15 候補ベース実行の実装計画](2026-08-15-candidate-execution-parallel-implementation-plan.md)（独立レバー P7 / P8 / P9 / P11 の宣言）
+- [2026-08-11 次期評価計画](2026-08-11-agent-ollama-next-eval-plan.md)（§2 の未投入面・§7 やらないこと）
+- [ltm-use 埋め込み recall 設計](../designs/ltm-use-embedding-recall-design.md)（Draft・実測済み未実装・未決 3 点・リランカー）
+- [gate-generality レポート](../../tools/agent-tools/eval/results/archive/2026-08-14-gate-generality-report.md)（失敗の 2 族）
+- [text-eval レポート](../../tools/agent-tools/eval/results/archive/2026-08-14-text-eval-report.md)（12b の暴走は存在の証明のみ・限界節）
+- `tools/agent-tools/eval/coverage.json` / `coverage_eval.py` / `run_suite.py`
+- `agentcore/nodecontract.py`（`local_patch_blockers`）/ `agent_flow/work.py` / `agentcore/executionresolver.py`
+- `agents/ollama-verify.json`（12b の本番検証役）
