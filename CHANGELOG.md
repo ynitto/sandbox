@@ -7,6 +7,61 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### ローカル LLM の追加活用 — 引き直しの腕と、決定的コンテキスト・スライシング
+
+[2026-08-22 の検討](docs/plans/2026-08-22-local-llm-further-utilization-and-runtime-tuning-assessment.md)
+のうち、**実測を待たずに作れる 2 つ**を実装した。どちらも「モデルを強くする」側ではなく、
+**決定的な機構で gemma4:e4b の弱点を迂回する**側にある。実装したのは腕であって結論ではない
+——採否は実測が決める。
+
+#### 案 1: `worker_eval --resample N`（best-of-N + 決定的ゲート採択）
+
+段 0（P10）の実測「実効 temperature は 0 で、推奨 sampling では失敗が揺れる」の帰結を
+運用形にした。順序は **診断つき再投入 → 引き直し → escalate**。手順ごとに `max_retries` を
+使い切ってなお通らなければ、作業ツリーを**手順開始時点へ戻して**独立に引き直す。
+
+多数決ではない。プロンプト・多数決の 4 レバーが全滅したのは filter / judge の**判定**領域で、
+あちらは判定をモデルに訊いた。ここでモデルに任せるのは生成だけで、採択は決定的ゲートだけが
+行う——候補生成 + 決定的検算（P4 の標準形）の worker 版である。
+
+- `tools/agent-tools/eval/worker_eval.py` — `--resample`、`snapshot_worktree` /
+  `restore_worktree`（未追跡＝課題の仕込みを控えて戻す）、`escalated()`。
+  台帳へ `resample` / `draws` / `escalate` を追加し、`retry_count` は**診断つき再投入の
+  回数**を数える定義へ直した（引き直しは初回投入なので数に入れない。引き直しの無い
+  既存の腕では従来と同じ値）。
+- **既定（`--resample 1`）は従来と 1 バイトも変わらない**（控えも戻しも走らない）。
+  既存台帳との比較可能性はここで守る。契約テストで固定した。
+- **`--resample > 1` は sampling の宣言を要求する**（aider 経路）。貪欲デコードの引き直しは
+  同じ壁時計を払って同じ出力を受け取るだけなので、起動前に落とす。対照として測るなら
+  `--temperature 0` と明示する——「未宣言」と「既定値を明示」を別物として扱う既存の規律に乗せた。
+- 戻しは**リポジトリ本体に対しては実行しない**（worktree を渡し間違えると作業中の変更ごと
+  消えるため、実行前に落とす）。
+
+#### 案 2: `agentcore.context_slice`（決定的コンテキスト・スライシング）
+
+E4B は長い文脈を**持てても引けない**（MRCR 128K 25.4）ので、見る範囲は機械が先に確定させる。
+read-only agent が候補**ファイル**を絞る運用の内側——ファイルの中で範囲を決める道具である。
+対象シンボルとその依存を `ast` で決定的に辿る（LLM は使わない）。
+
+- `tools/agent-tools/agentcore/agentcore/context_slice.py` — `slice_source()` /
+  `slice_file()` と CLI（`python3 -m agentcore.context_slice FILE --symbol NAME`）。
+- **tree-sitter ではなく標準ライブラリの `ast`**。対象は Python に限られるが、install.sh の
+  オフライン完結（外部依存なし）という不変条件を壊さない。
+- **切れないときは切らない**（構文が壊れている・対象が無ければ `None` を返し、呼び出し側は
+  原本へ倒す）。CLI も原本へ倒すが、倒したことを stderr へ必ず出す——静かに倒れると、
+  抜粋が効いていない条件で測ってしまう。
+- **省いたシンボルを見出しへ書く。** 抜粋が「これで全部です」と読まれるのが、切り詰めで
+  一番高くつく事故になる。
+- 実寸: `worker_eval.py` の `check_t1` を対象に **802 行 → 83 行**（依存は自動で追従）。
+- **本番配線は保留。** `--read` の材料をこれへ差し替えるのは `agents/aider.json` 経路の入力を
+  変える行為なので、T1 / T3 の比較を通す前に既定へ入れない。
+
+#### 評価ハーネスを CI に載せた
+
+`tools/agent-tools/eval` の単体テスト（LLM もエージェント CLI も呼ばない部分）が CI で
+一度も走っていなかった。**測定の道具が壊れていると、壊れたことがモデルの数字として台帳へ
+残る**ので、`.github/workflows/ci.yml` の python マトリクスへ `eval` を足した。
+
 ### agent-flow / agent-project を再点検し、設定キーの「消費検査」を足した
 
 土台（agentcore / CLI 契約 / ローカル推論）の整理が終わったので、最初に扱った 2 ツールを

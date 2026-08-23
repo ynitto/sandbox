@@ -58,6 +58,11 @@ jobs:
           # （実プロセスは起こさない）。
           - package: agent-loop
             suites: tools/agent-loop/test
+          # 評価ハーネス（worker_eval の手順制御・engine の解決）。LLM もエージェント
+          # CLI も呼ばない部分だけを見る。**測定の道具が壊れていると、壊れたことが
+          # モデルの数字として台帳へ残る**ので、ここも CI で押さえる。
+          - package: eval
+            suites: tools/agent-tools/eval
     env:
       # エージェント CLI のスタブが実時間 sleep しないようにする（README のテスト手順と同じ）。
       AGENT_FLOW_STUB_SLEEP_MAX: "0"
