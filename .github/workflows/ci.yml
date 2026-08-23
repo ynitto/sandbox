@@ -73,6 +73,12 @@ jobs:
           python-version: "3.11"
       - name: 依存（yaml 設定の読み書きに要る）
         run: python -m pip install --upgrade pip pyyaml
+      # eval の決定的チェッカー（T4 の probe・T5/T6 の pytest）はハーネス自身が回す。
+      # 実機ではリポジトリの .venv を使うが、CI のクリーンな木には .venv が無いので
+      # 走っているインタプリタ側へ pytest を入れる（worker_eval.CHECK_PY が倒れる先）。
+      - name: 依存（eval の決定的チェッカーが回す pytest）
+        if: matrix.package == 'eval'
+        run: python -m pip install pytest
       - name: git の実行者情報（テストが作るリポジトリのコミットに要る）
         run: |
           git config --global user.email "ci@example.com"

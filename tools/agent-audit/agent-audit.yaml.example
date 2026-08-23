@@ -39,7 +39,7 @@ memory_retention_risk: 0.3    # retention_score がこれ未満なら忘却リ�
 agent_cli: claude             # 既定の CLI
 # model: sonnet               # 既定のモデル（省略時は CLI 定義の default_model）
 agents:
-  extract: {agent_cli: ollama, model: qwen3}   # map: 局所要約。弱モデル・ローカルで十分
+  extract: {agent_cli: ollama}                 # map: 局所要約。モデルは定義の既定（gemma4:e4b）
   distill: {}                                  # reduce: 一般化。既定 CLI を使う
   review: {}                                   # 任意の検証段（distill --review 時のみ）
 agent_timeout: 300

@@ -7,7 +7,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
-### ローカル LLM の追加活用 — 案 2 の能力側検証を閉じ、本番配線の方針を書いた
+### ローカル LLM の役割別既定を実測へ揃えた（配線の食い違いの修正）
+
+- `agents/ollama.json` / `ollama-json.json` / `ollama-list.json` / `ollama-read.json` の
+  `default_model` を **qwen3 → gemma4:e4b**。gemma4 導入前（2026-08-10 以前）の既定が
+  残っていた。`agent_flow.agent._agent_for` は変種対象の役割で**自動選択層のモデルを変種の
+  `default_model` で上書きする**ため、tier 候補に `ollama / gemma4:e4b` を置いても
+  判定系役割（planner / filter / judge / reduce / split / retrieve）は qwen3 で走っていた
+  ——実測（抽出・分析 6/6 ほか）と本番のモデルが黙って食い違う形だった。
+- 同梱の設定例も揃えた: `agent-audit.yaml.example` の extract は**モデル指定を落として
+  定義の既定を継がせ**（明示の qwen3 が定義の既定を上書きしていた）、flow / project の
+  コメント例は `gemma4:e4b` へ。
+- 設定提案を [docs/plans/2026-08-23](docs/plans/2026-08-23-agent-dashboard-local-llm-configuration-proposal.md)
+  に追加。dashboard から宣言するのは 4 点（tier 候補表・実行方針・適格性・実行制御）で、
+  **人の手が要るのは `qualifications.json` の seed だけ**（`eval/qualification_seed.py`）。
+  コンパイルは Resource Controller が 5 分ごとに回す。継続更新の `agent-audit qualify` は
+  GUI から呼べない（監査タブが持つのは collect / usage / stats / sessions / doctor / knowledge）。
+
+### 評価ハーネスの決定的チェッカーが CI で回るようにした
+
+- `worker_eval.py` に `CHECK_PY`——リポジトリの `.venv` が無い木（CI のクリーンな
+  チェックアウト）では**走っているインタプリタで代替**する。T5/T6 の pytest と T4 の probe が
+  `.venv/bin/python` 決め打ちで、main の CI が `FileNotFoundError` で赤かった
+  （同じ受けは `project_verify_eval.py` に既にあった）。CI の eval ジョブへ pytest を追加。
 
 - `worker_eval.py` に T6noat / T6slicenoat（auto-test を切った一発）。実測（e4b・sampling・各 3）:
   **両腕 3/3**（noat 中央値 63s・tokens_in 20.6k ⇔ slice 70s・2.6k）。テストの失敗出力の助け無しでも

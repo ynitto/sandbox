@@ -21,12 +21,16 @@
   （gemma4:12b・stall-timeout・縮退基準つき）、aider 経路の split → `ollama-list-thinking`
   （gemma4:e4b・temperature 0）。tier 候補には base 定義だけを置けばよく、12b を tier
   候補に**入れない**（コード worker への流出を構成で塞ぐ）。
-- **ただし配線上の食い違いが 1 つある。** JSON 系変種（`ollama-json` / `ollama-list` /
-  `ollama-read`）と base `ollama` の `default_model` が **`qwen3` のまま**である。
-  `agent_flow.agent._agent_for` は「自動選択層のモデルを変種既定で上書きする」ため、
-  tier 候補に `ollama / gemma4:e4b` を置いても、**判定系役割は qwen3 で走る**。
-  実測（e4b 6/6 等）と本番のモデルが食い違うので、これだけは agents/ 定義の更新
-  （または各ツール設定での役割別モデル明示）が要る（§4.1）。本提案で唯一のコード変更である。
+- **配線上の食い違いが 1 つあり、本書と同じ変更で直した。** JSON 系変種（`ollama-json` /
+  `ollama-list` / `ollama-read`）と base `ollama` の `default_model` が **`qwen3` のまま**
+  だった。`agent_flow.agent._agent_for` は「自動選択層のモデルを変種既定で上書きする」ため、
+  tier 候補に `ollama / gemma4:e4b` を置いても**判定系役割は qwen3 で走る**——実測
+  （e4b 6/6 等）と本番のモデルが黙って食い違う。4 定義を `gemma4:e4b` へ揃えた（§4.1）。
+- **人の手が要るのは「qualifications.json を 1 回置く」ことだけである**（§2.3）。
+  tier 表・実行方針・同時実行数・機能別上限は**すべて dashboard の GUI にあり**、
+  qualifications → `selection_policy` のコンパイルは dashboard 起動中に
+  Resource Controller が 5 分ごとに回す。生成（seed）と継続更新（`qualify`）だけが
+  CLI で、インストーラにも GUI にも口が無い（§2.5 に一覧）。
 - **B1 の実測で dashboard 自身（doctor 4 モード）が初の「ローカル全面委譲」面になった**
   （e4b 12/12）。逆に project の局所 verify 変種は不成立が確定しており、ローカルへ降ろさない。
 
@@ -84,24 +88,92 @@ local-first 計画 §2 の「クラウドに残るのは 3 つ」をプリセッ
 `profiles.apply()` は **`qualifications.json` が存在するときだけ** `selection_policy` を
 control へコンパイルする。無い端末では legacy の単一候補 fallback（workload 直下の
 agent_cli / model）だけで動き、処理契約による適格判定・fallback 候補・park が全部消える。
-設定手順に必ず入れる:
+**ここだけは GUI にもインストーラにも口が無い**ので、手順を明示する。
 
-1. eval archive を初期適格性へ seed する（候補ベース実行計画の U1。実測の出典つき）。
-2. 以後は `agent-audit qualify --apply` を収集サイクルへ入れ、本番 receipt で昇格・降格・
-   期限切れを回す（agent-audit が唯一の writer。dashboard は読み取り専用）。
-3. **クラウド候補にも qualification が要る**——`unknown` は自動選択されないので、
-   seed か receipt 実績が無いクラウド候補は昇格受けにならず park する。medium に置く
-   候補が `qualified` になっていることを「候補の使い分け」画面で確認する。
+**(1) 初期 seed（1 回・CLI）。** eval archive の台帳から決定的に生成する（候補ベース
+実行計画の U1。実測の出典つき・同じ archive と revision なら出力も同じ）。
 
-### 2.4 実行制御 — 直列運転とクラウド枠の温存
+```bash
+python3 tools/agent-tools/eval/qualification_seed.py \
+  --archive tools/agent-tools/eval/results/archive \
+  --output ~/.agents/control/qualifications.json --revision 1
+```
 
-- **`workloads.flow.concurrency = 1`**（全体設定 → 実行制御）。ローカル LLM は
-  `resource_group=local-llm` 同時 1 が前提で、e4b と 12b を同時常駐させない。
-  verify のたびにモデルが入れ替わるコストは許容する（同役割の直列バッチ化=案 3 は
-  未着手・未測定。設定でどうにかする段ではない）。
-- node-budget の機能別上限で、metered なクラウド CLI（claude / codex / copilot / kiro）の
-  消費を「planner + 昇格」想定の小さい枠に絞る（P6 の規律を予算で表現する。
-  worker 系へクラウドが流れた run は agent-audit の役割別集計で事後検知できる）。
+実行すると 4 候補が出る（この提案の tier 表と対応する）:
+
+| 候補 | qualified | trial | blocked |
+|---|---|---|---|
+| `aider / gemma4:e4b` | single-symbol-edit・existing-test-repair | — | multi-artifact-contract-change |
+| `aider / gemma4:12b` | — | — | code-worker |
+| `ollama / gemma4:e4b` | extract・bounded-analysis | constrained-summary・bounded-proposal | bounded-review |
+| `ollama-verify / gemma4:12b` | bounded-analysis・bounded-review | extract・constrained-summary・bounded-proposal | — |
+
+**(2) 継続更新（定期・CLI）。** 本番 receipt から昇格・降格・期限切れを回す。
+
+```bash
+agent-audit collect && agent-audit qualify --apply
+```
+
+`collect` は dashboard の監査タブからも起こせる（間隔設定つき）が、**`qualify` は GUI から
+呼べない**（dashboard が持つのは collect / usage / stats / sessions / doctor / knowledge）。
+cron か定常業務（agent-loop）へ載せるのが現実的で、載せない場合は seed のまま運用し、
+`valid_until` 切れで `unknown` へ落ちる（＝自動選択が止まる）ことを承知しておく。
+
+**(3) コンパイルは自動。** 置いたあとに人が押す操作は要らない——dashboard 起動中は
+Resource Controller（`src/base/main/main.js` が `scripts/resource-control.js` を起動）が
+**5 分ごとに `profiles.apply` を回し**、qualifications と tier 表から `selection_policy` を
+コンパイルして control.json へ投函する。dashboard を開かない端末では
+`npm run resources`（`tools/agent-dashboard/`）を同じ間隔で回せば同じ結果になる。
+
+**(4) クラウド候補にも qualification が要る。** `unknown` は自動選択されないので、
+seed か receipt 実績が無いクラウド候補は昇格受けにならず park する。medium に置いた候補が
+「候補の使い分け」画面で `確認済み` になっていることを見る（seed の 4 候補はいずれも
+ローカルなので、**クラウド候補は receipt が貯まるまで park する**——これは仕様どおりの
+挙動で、park した run は「要対応」に出る）。
+
+### 2.4 実行制御 — 直列運転とクラウド枠の温存（すべて GUI で足りる）
+
+- **同時実行数（`workloads.flow.concurrency`）。** 全体設定 → 実行制御 → 同時実行数の
+  `max_runs` / `workers` を **1** にする（空欄 = 宣言なしで、CLI 引数 → 設定ファイル →
+  既定の解決へ戻る）。ローカル LLM は `resource_group=local-llm` 同時 1 が前提で、
+  e4b と 12b を同時常駐させない。verify のたびにモデルが入れ替わるコストは許容する
+  （同役割の直列バッチ化＝案 3 は未着手・未測定で、設定でどうにかする段ではない）。
+- **機能（workload）別の枠。** 実行方針 → カスタム → 「機能ごとに上書き」で、
+  workload ごとに優先度・個別上限（token）・上限到達時の動作を宣言できる。
+  flow / project へ大きめ、amigos / audit へ小さめ、という配分はここで足りる。
+- **CLI 単位（claude / codex / copilot / kiro）の枠だけは GUI に無い。** 契約
+  （`~/.agents/budget/config.json` の `allocation.agents.<cli>.max_tokens`）と IPC
+  （`orchestration:budgetSave`）はあり、`profiles.js` の `agentHasRoom` が候補選択で
+  実際に見ているが、**編集する画面が無い**。P6 の「クラウドは planner + 昇格だけ」を
+  枠で固めたい場合は当面 config.json を直接書く（§5 に UI 追加の是非を残す）。
+  なお枠を宣言しなくても、metered CLI の quota 帯（緑/橙/赤/枯渇）は agent-audit が
+  収集し、赤・枯渇の候補は自動で外れる（`quotaBand` / `agentHasRoom`）。
+
+### 2.5 設定経路の一覧 — インストーラ / dashboard / CLI の分担
+
+**インストーラ（`install.py` / `setup.sh`）は制御面を一切触らない。** 配るのは
+skills / agents 定義 / MCP 設定で、`~/.agents/control/`（profiles・control・qualifications）と
+`~/.agents/budget/` は dashboard と各 CLI が所有する。したがって「インストール直後に
+ローカル主体で動く」状態にはならず、下表の 2 行（seed と実行レベルの構成）を人が 1 回やる。
+
+| 設定項目 | 置き場（契約） | インストーラ | dashboard GUI | CLI |
+|---|---|---|---|---|
+| 実行レベルの構成（tier 候補表） | `profiles.json` | × | **○** 全体設定 → エージェント | （IPC 経由のみ） |
+| 実行方針プリセット | `profiles.json` / budget `config.json` | × | **○** 全体設定 → 実行制御 | — |
+| 同時実行数 | `control.json` `workloads.flow.concurrency` | × | **○** 全体設定 → 実行制御 | — |
+| 機能（workload）別の上限・優先度 | budget `config.json` `allocation.workloads` | × | **○** 実行方針 → カスタム | — |
+| CLI 単位の枠 | budget `config.json` `allocation.agents` | × | **×**（契約と IPC はある） | ファイル直接編集 |
+| **適格性の初期 seed** | `qualifications.json` | × | **×** | `eval/qualification_seed.py` |
+| **適格性の継続更新** | 同上 | × | **×**（collect のみ可） | `agent-audit qualify --apply` |
+| 適格性の閲覧 | 同上 | — | **○** 実行方針 → 候補の使い分け（読み取り専用） | — |
+| selection_policy のコンパイル | `control.json` | × | **○ 自動**（5 分ごと） | `npm run resources` |
+| モデルの取得 | ollama | × | × | `ollama pull gemma4:e4b gemma4:12b` |
+
+**GUI へ足すなら候補は 2 つだけ**（どちらも本提案の範囲外・未実装）:
+(a) 監査タブへ `qualify` の起動口を足す（collect と同じ形で、LLM を使わない決定的集計なので
+危険は低い）、(b) 適格性が空のときに「eval archive から seed する」ボタンを出す。
+どちらも「dashboard は根拠面を書かない（writer は agent-audit だけ）」という設計の
+不変条件に触るので、入れるなら**起動口だけ**（生成は agent-audit / eval 側の 1 実装のまま）にする。
 
 ## 3. workload ごとの期待動作と個別設定
 
@@ -116,30 +188,31 @@ agent_cli / model）だけで動き、処理契約による適格判定・fallba
 
 ## 4. 設定が効くための配線上の注意（今回のコード確認で判明した分）
 
-### 4.1 JSON 系変種の `default_model` が qwen3 のまま — 唯一のコード変更提案
+### 4.1 JSON 系変種の `default_model` が qwen3 のままだった（修正済み）
 
 `agent_flow.agent._agent_for` は、変種対象の役割（JSON 契約・split・retrieve・verify）で
 **人が明示していないモデルを変種自身の `default_model` で上書きする**（用途専用
 チューニングを tier / control の自動選択で無効化しないための正しい仕様）。ところが:
 
-| 定義 | default_model | 実測済みの正 |
-|---|---|---|
-| `agents/ollama.json` | qwen3 | gemma4:e4b |
-| `agents/ollama-json.json` | qwen3 | gemma4:e4b |
-| `agents/ollama-list.json` | qwen3 | gemma4:e4b |
-| `agents/ollama-read.json` | qwen3 | gemma4:e4b |
-| `agents/ollama-verify.json` | gemma4:12b | （正しい） |
-| `agents/ollama-list-thinking.json` | gemma4:e4b | （正しい） |
+| 定義 | 修正前 | 修正後 | 根拠 |
+|---|---|---|---|
+| `agents/ollama.json` | qwen3 | **gemma4:e4b** | 抽出・分析 6/6（text-eval） |
+| `agents/ollama-json.json` | qwen3 | **gemma4:e4b** | evaluator 5/6・reduce 6/6 |
+| `agents/ollama-list.json` | qwen3 | **gemma4:e4b** | split 4/6（`--format array`） |
+| `agents/ollama-read.json` | qwen3 | **gemma4:e4b** | retrieve は e4b 圏（tools=read） |
+| `agents/ollama-verify.json` | gemma4:12b | 変更なし | レビュー 6/6 |
+| `agents/ollama-list-thinking.json` | gemma4:e4b | 変更なし | split 用チューニング |
 
 qwen3 系は gemma4 導入前（2026-08-10 以前）の既定の残りで、**tier 候補に
-`ollama / gemma4:e4b` を置いても、判定系役割は qwen3 で走る**（qwen3 未 pull の端末は
-env エラーで気づけるが、pull 済みの端末は黙って別モデルで劣化する）。受けは 2 択:
+`ollama / gemma4:e4b` を置いても判定系役割は qwen3 で走っていた**（qwen3 未 pull の端末は
+env エラーで気づけるが、pull 済みの端末は黙って別モデルで劣化する）。実測済み割り当て
+（§1）の正典化であり、「model / harness / sampling を同時に変えない」規律にも反しない
+——harness は不変で、モデルを実測した側へ寄せるだけである。
 
-- **（推奨）** 上 4 定義の `default_model` を `gemma4:e4b` へ更新する。実測済み割り当て
-  （§1）の正典化であり、「model / harness / sampling を同時に変えない」規律にも反しない
-  （harness は不変・モデルは実測済みの側へ寄せるだけ）。
-- 当面の回避: 各ツール設定（`agents:` の役割別 model）で e4b を明示する。ただし端末ごとの
-  設定散在に戻るので恒久策にしない。
+同じ食い違いは**同梱の設定例**にもあった（`agent-audit.yaml.example` の
+`extract: {agent_cli: ollama, model: qwen3}` は定義の既定を明示で上書きしていた）。
+active な 1 件は**モデル指定を落として定義の既定を継がせ**、コメントアウトされた
+flow / project の例は `gemma4:e4b` へ直した。
 
 ### 4.2 その他
 
@@ -160,7 +233,10 @@ env エラーで気づけるが、pull 済みの端末は黙って別モデル�
 - 決定的コンテキスト・スライシングの本番配線（採用根拠は経済に一本化済みだが、
   `read_files=` の区別導入とセットの設計が先。CLI 明示利用のみ）。
 - fine-tuning・ランタイム乗り換え（koboldcpp 等は独立 arm の測定待ち）。
-- 適格性の手編集を通常 UI に出すこと（読み取り専用のまま）。
+- 適格性の手編集を通常 UI に出すこと（読み取り専用のまま）。§2.5 の GUI 追加案 2 つも
+  「起動口だけ」に限る——**dashboard を根拠面の writer にしない**（設計 §4.2 の不変条件）。
+- インストーラで制御面（profiles / control / qualifications / budget）を書くこと。
+  端末ごとの実測と枠に依存する値であり、配布物に焼くと端末差を踏み潰す。
 
 ## 6. 再評価条件
 
