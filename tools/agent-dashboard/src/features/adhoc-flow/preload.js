@@ -97,6 +97,7 @@ module.exports = {
     id: payload && payload.id,
   }),
   preparationSyncDesign: (invoke) => (payload) => invoke('preparation:syncDesign', payload || {}),
+  preparationReviseDesign: (invoke) => (payload) => invoke('preparation:reviseDesign', payload || {}),
   preparationCompleteDesign: (invoke) => (payload) => invoke('preparation:completeDesign', payload || {}),
   preparationHandoff: (invoke) => (payload) => invoke('preparation:handoff', payload || {}),
 };

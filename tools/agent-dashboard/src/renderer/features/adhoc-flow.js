@@ -31,6 +31,9 @@
   const DESIGN_FORBIDDEN_KINDS = new Set(['human', 'split']);
   const START = '__start__';
   const END = '__end__';
+  const DESIGN_USER_REVIEW = '__design-user-review__';
+  const DESIGN_COMPLETE = '__design-complete__';
+  const DESIGN_REVISE = '__design-revise__';
   const KIND_META = {
     work: ['作業', '依頼に対して成果を作る'],
     generate: ['生成', '異なる候補を作る'],
@@ -1262,9 +1265,12 @@
         <summary>設計書（${document_.length} 文字）</summary>
         <pre class="qf-output">${esc(document_.slice(0, 12000))}</pre></details>` : ''}
       ${running ? '' : designQuestionsHtml(session)}
+      ${running || !document_ ? '' : `<label class="wf-design-feedback"><span>変更してほしいこと</span>
+        <textarea data-design-feedback rows="3" placeholder="差し戻す理由と、直してほしい内容を入力してください"></textarea>
+        <small>差し戻すと、この内容と現在の設計書を使って同じ設計フローをやり直します。</small></label>`}
       ${running ? '' : `<div class="qf-row wf-design-actions">
-        <button type="button" data-design-next ${st.design.busy ? 'disabled' : ''}>${
-          questions.length ? '回答して次のラウンド' : 'もう一周して詰める'}</button>
+        ${questions.length ? `<button type="button" data-design-next ${st.design.busy ? 'disabled' : ''}>回答して次のラウンド</button>` : ''}
+        ${document_ ? `<button type="button" data-design-revise ${st.design.busy ? 'disabled' : ''}>差し戻してやり直す</button>` : ''}
         <button type="button" class="primary-inline" data-design-use ${document_ ? '' : 'disabled'}>この設計で実行</button>
       </div>`}</div>`;
   }
@@ -1494,6 +1500,35 @@
         if (exit.delete(node.id)) exit.add(reduce.id);
       }
     }
+    // 設計runのDAGは短命なまま保ち、その外側をDashboardが管理する承認ライフサイクルを
+    // 読み取り専用の工程として合成する。保存定義へ混ぜないため、実行エンジンのplanは変わらない。
+    if (workflowIsDesign(workflow) && exit.size === 1) {
+      const terminalId = [...exit][0];
+      const terminal = nodes.find((node) => node.id === terminalId);
+      if (terminal) {
+        const nextX = Math.max(...nodes.map((node) => Number(node.x) || 0)) + 270;
+        const roots = (workflow.entry || []).filter((id) => nodes.some((node) => node.id === id));
+        nodes.push(
+          {
+            id: DESIGN_USER_REVIEW, label: 'ユーザー確認', goal: '設計書を確認し、承認または理由付きで差し戻す',
+            kind: 'human', deps: [terminalId], x: nextX, y: Number(terminal.y), runtime: true,
+            lifecycle: true, runtimeRole: '人間', runtimeLabel: 'Dashboardで確認',
+          },
+          {
+            id: DESIGN_COMPLETE, label: '設計完了', goal: '承認済みの設計書を実装待ちへ進める',
+            kind: 'work', deps: [DESIGN_USER_REVIEW], x: nextX + 270, y: Number(terminal.y), runtime: true,
+            lifecycle: true, runtimeRole: '状態', runtimeLabel: '承認時',
+          },
+          {
+            id: DESIGN_REVISE, label: '差し戻して再設計', goal: '差し戻し理由を反映して同じ設計フローをやり直す',
+            kind: 'work', deps: [DESIGN_USER_REVIEW], x: nextX, y: Number(terminal.y) + 180, runtime: true,
+            lifecycle: true, runtimeRole: '再設計', runtimeLabel: '差し戻し時', runtimeReturns: roots,
+          },
+        );
+        exit.clear();
+        exit.add(DESIGN_COMPLETE);
+      }
+    }
     return { ...workflow, nodes, exit: [...exit] };
   }
 
@@ -1548,6 +1583,14 @@
         const target = byId.get(id);
         return target ? edgeMarkup(node.id, id, { ...node, runtime: true }, target, true) : '';
       })).join('');
+  }
+
+  function runtimeReturnEdgesHtml(workflow) {
+    const byId = new Map((workflow.nodes || []).map((node) => [node.id, node]));
+    return (workflow.nodes || []).flatMap((node) => (node.runtimeReturns || []).map((id) => {
+      const target = byId.get(id);
+      return target ? edgeMarkup(node.id, id, { ...node, runtime: true }, target, true) : '';
+    })).join('');
   }
 
   function updateEdgePaths(workflow, pane) {
@@ -1643,10 +1686,12 @@
 
   function runtimeNodeHtml(node) {
     const { role, name } = nodePresentation(node);
-    return `<article class="wf-node wf-runtime-node" data-runtime-node-id="${esc(node.id)}"
-      aria-label="実行時に追加される${esc(role)}ロール、${esc(name)}"
+    const runtimeRole = String(node.runtimeRole || role);
+    const runtimeLabel = String(node.runtimeLabel || '実行時に追加');
+    return `<article class="wf-node wf-runtime-node${node.lifecycle ? ' wf-lifecycle-node' : ''}" data-runtime-node-id="${esc(node.id)}"
+      aria-label="${esc(runtimeRole)}、${esc(name)}"
       style="left:${Number(node.x)}px;top:${Number(node.y)}px">
-      <div class="wf-node-drag"><span>${esc(role)}ロール</span><span class="wf-tier">実行時に追加</span></div>
+      <div class="wf-node-drag"><span>${esc(runtimeRole)}</span><span class="wf-tier">${esc(runtimeLabel)}</span></div>
       <div class="wf-node-body"><strong>${esc(name)}</strong><p>${esc(node.goal)}</p></div></article>`;
   }
 
@@ -1857,7 +1902,7 @@
     return `<div class="wf-canvas${readonly ? ' readonly' : ''}" id="wf-canvas" tabindex="0" aria-label="フローキャンバス">
       <div class="wf-stage" style="--wf-zoom:${st.zoom};width:${width}px;height:${height}px">
         <svg aria-label="ノード間の接続"><defs><marker id="wf-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4"
-          orient="auto"><path d="M 0 0 L 8 4 L 0 8 z"></path></marker></defs><g>${edgesHtml(visual, readonly)}${retryEdgesHtml(workflow)}</g></svg>
+          orient="auto"><path d="M 0 0 L 8 4 L 0 8 z"></path></marker></defs><g>${edgesHtml(visual, readonly)}${retryEdgesHtml(visual)}${runtimeReturnEdgesHtml(visual)}</g></svg>
         ${boundaryNodesHtml(visual, readonly)}${visual.nodes.map((node) =>
     node.runtime ? runtimeNodeHtml(node) : nodeHtml(node, workflow, readonly)).join('')}
       </div></div>`;
@@ -1936,6 +1981,11 @@
         const result = await api().designSessionGet({ id });
         if (result.session.runStatus === 'running') return;
         st.design.current = result.session;
+        if (st.selectedPreparation && api().preparationSyncDesign) {
+          const synced = await api().preparationSyncDesign({ id: st.selectedPreparation });
+          st.preparationItems = st.preparationItems.map((item) =>
+            item.id === synced.item.id ? synced.item : item);
+        }
         await loadDesign({ includeCurrent: false });
         clearInterval(st.design.timer);
         st.design.timer = null;
@@ -2036,6 +2086,32 @@
           renderDesign();
         }
       }
+    });
+    host.querySelector('[data-design-revise]')?.addEventListener('click', async () => {
+      const feedback = String(host.querySelector('[data-design-feedback]')?.value || '').trim();
+      if (!feedback) {
+        st.design.notice = '差し戻し理由を入力してください';
+        renderDesign();
+        return;
+      }
+      if (!st.selectedPreparation) {
+        await startDesignRound({ id: st.design.current.id, feedback });
+        return;
+      }
+      st.design.busy = '設計中…';
+      st.design.notice = '';
+      renderDesign();
+      try {
+        const revised = await api().preparationReviseDesign({ id: st.selectedPreparation, feedback });
+        st.design.current = revised.session;
+        st.preparationItems = st.preparationItems.map((item) =>
+          item.id === revised.item.id ? revised.item : item);
+      } catch (err) {
+        st.design.notice = String((err && err.message) || err);
+      }
+      st.design.busy = '';
+      renderDesign();
+      watchDesign();
     });
     host.querySelector('[data-design-use]')?.addEventListener('click', async () => {
       if (st.selectedPreparation && api().preparationCompleteDesign) {

@@ -266,7 +266,7 @@ function sinkOutput(run) {
 
 // --- ラウンドへの入力 ----------------------------------------------------------
 
-function buildRoundRequest({ goal, document, answers, sources } = {}) {
+function buildRoundRequest({ goal, document, answers, feedback, sources } = {}) {
   const answered = (Array.isArray(answers) ? answers : [])
     .map((item) => ({
       question: String((item && item.question) || '').trim(),
@@ -284,6 +284,10 @@ function buildRoundRequest({ goal, document, answers, sources } = {}) {
   if (answered.length) {
     parts.push(`## 前回の質問と回答\n${answered
       .map((item, index) => `${index + 1}. ${item.question}\n   → ${item.answer}`).join('\n')}`);
+  }
+  const revision = String(feedback || '').trim();
+  if (revision) {
+    parts.push(`## ユーザーからの差し戻し\n${revision}`);
   }
   return parts.join('\n\n');
 }
@@ -414,7 +418,7 @@ function getSession(config, id) {
 
 // セッションを作る（id 省略時）か、回答を添えて次のラウンドを投げる。
 function startRound(config, {
-  id, cwd, goal, mode, answers, target, sourceMode, sources, document, nodeAssignments,
+  id, cwd, goal, mode, answers, feedback, target, sourceMode, sources, document, nodeAssignments,
   selection, designFlow, resolvedFlowSnapshot,
 } = {}) {
   const existing = id ? getSession(config, id) : null;
@@ -462,6 +466,7 @@ function startRound(config, {
       goal: request,
       document: existing ? existing.document : initialDocument,
       answers: paired,
+      feedback,
       sources: nextSources,
     }),
     cwd: folder,
@@ -493,6 +498,7 @@ function startRound(config, {
       runId: result.runId,
       startedAt: now,
       answers: paired.filter((item) => item.answer),
+      ...(String(feedback || '').trim() ? { feedback: String(feedback).trim() } : {}),
       questions: [],
     }],
   });

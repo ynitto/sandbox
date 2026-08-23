@@ -193,6 +193,14 @@ assert.ok(workflowFeature.includes('id="wf-new-run">実行待ちへ戻る'),
   '実行詳細から新規タスクと実行待ちへ戻れます');
 assert.ok(workflowFeature.includes('preparationCreate') && workflowFeature.includes('preparationHandoff'),
   '作成時は作業準備へ保存し、準備完了後の明示操作で実装します');
+assert.ok(workflowFeature.includes('data-design-feedback')
+  && workflowFeature.includes('data-design-revise')
+  && workflowFeature.includes('preparationReviseDesign'),
+  'ワークフローの設計確認は理由付きで差し戻して次ラウンドへ戻せます');
+assert.ok(backlogFeature.includes('data-project-design-feedback')
+  && backlogFeature.includes('data-project-design-revise')
+  && backlogFeature.includes('preparationReviseDesign'),
+  'プロジェクトの全自動設計も質問の有無に関係なく理由付きで差し戻せます');
 assert.ok(workflowFeature.includes('task-create-steps') && workflowFeature.includes('エージェントと設計する')
   && workflowFeature.includes('外部の設計結果を使う') && workflowFeature.includes('そのまま実装する'),
   '作成ダイアログは共通の段階表示と三つの準備経路を持ちます');

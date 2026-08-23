@@ -337,6 +337,31 @@ function startDesign(item, result = {}) {
   };
 }
 
+// 設計確認で人が差し戻したときだけ、同じセッションの次ラウンドへ戻す。
+// feedback の内容は設計セッションの round 履歴が保持し、ここでは状態遷移と run 履歴を管理する。
+function reviseDesign(item, result = {}) {
+  if (!item || item.route !== 'agent-design') throw new Error('エージェント設計の項目ではありません');
+  if (item.phase !== 'design-review') throw new Error('設計確認中の項目だけ差し戻せます');
+  if (!String(result.feedback || '').trim()) throw new Error('差し戻し理由は必須です');
+  const sessionId = String(result.sessionId || '').trim();
+  const runId = String(result.runId || '').trim();
+  if (!sessionId || !runId) throw new Error('設計セッションとrun IDは必須です');
+  const current = normalizeDesign(item.design);
+  if (current.sessionId && current.sessionId !== sessionId) {
+    throw new Error('差し戻し先の設計セッションが一致しません');
+  }
+  return {
+    ...item,
+    phase: 'designing',
+    design: {
+      ...current,
+      sessionId,
+      runIds: [...new Set([...current.runIds, runId])],
+    },
+    updatedAt: new Date().toISOString(),
+  };
+}
+
 function recordHandoff(item, result = {}, format = null) {
   if (!canHandoff(item, format)) throw new Error('実装準備が完了していません');
   const runId = String(result.runId || '').trim();
@@ -445,7 +470,7 @@ module.exports = {
   recommendRoute, normalizeMaterials, normalizeDesignAssignments, normalizeDesignFlow,
   isCompleteDesignDocument, designDocumentIssues,
   createItem, createPackage,
-  canHandoff, startDesign, completeDesign,
+  canHandoff, startDesign, reviseDesign, completeDesign,
   recordHandoff,
   implementationRequest, resolveDir, saveItem, getItem, removeItem, listItems, savePackage,
 };

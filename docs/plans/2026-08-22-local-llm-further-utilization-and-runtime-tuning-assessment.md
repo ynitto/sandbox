@@ -14,7 +14,10 @@
   迂回する」側に残っている。** 実測で確定した E4B の性格——短い・局所的・構造化は強く、
   長い・横断的・メタ認知は弱い——を前提に、本書は 6 案を提案する。うち先行 2 案
   （**N 回抽選 + 決定的ゲート採択**、**決定的コンテキスト・スライシング**）は
-  既存ハーネスでそのまま測れる。
+  既存ハーネスでそのまま測れる。（2026-08-24 追記: 案 1 は測って**不採用**——(a) 族は
+  ゲート + 再投入で escalate 0 に達しており、(b) 族には効かない。案 2 は受入同等のまま
+  tokens_in −72%（570 行）〜 −87%（2,020 行・壁時計 −83%）——prefill / 壁時計の節約として成立、
+  見落とし縮小は測れず。詳細 §4.3。）
 - **koboldcpp は「モデルのチューニングツール」ではない**（llama.cpp 系の推論ランタイム
   であり、fine-tuning はできない）。得られるのは推論条件の追加レバーである。
   全面乗り換えの価値は**現時点では薄い**——decode 速度は同系エンジンでほぼ同等、
@@ -262,8 +265,8 @@ koboldcpp は llama.cpp のフォーク（単一バイナリの推論サーバ +
 
 | 案 | 状態 | 置き場 |
 |---|---|---|
-| 1 N 回抽選 + 決定的ゲート採択 | **[x] 腕を実装**（実測は 3 巡目で投入。結果は eval README） | `eval/worker_eval.py` の `--resample` |
-| 2 決定的コンテキスト・スライシング | **[~] 中核 + 測定の腕（T5）を実装**（本番配線は保留） | `agentcore/context_slice.py` / `eval/worker_eval.py` T5* |
+| 1 N 回抽選 + 決定的ゲート採択 | **[x] 腕を実装・実測済み・不採用**（(a) は基準線で escalate 0、(b) は動かず壁時計 3 倍） | `eval/worker_eval.py` の `--resample` / eval README |
+| 2 決定的コンテキスト・スライシング | **[x] 中核 + 腕を実装・実測済み**（受入同等・tokens_in −72%。見落とし効果は未証明。本番配線は選択肢） | `agentcore/context_slice.py` / `eval/worker_eval.py` T5* |
 | 3 同役割の直列バッチ化 | [ ] 未着手 | — |
 | 4 e2b 級サブモデル | [ ] 未着手（モデル取得と実測が要る） | — |
 | 5 台帳の few-shot 資産化 | [ ] 未着手 | — |
@@ -317,9 +320,13 @@ escalate になる。戻すのが要点で、前の抽選の成果を残した�
 
 **段 3 の腕は T5 として足した（2026-08-23）。** 既存の T1 / T3 は参照材料が小さく、切っても差が
 出ないので、570 行の `bigmod.py` の真ん中に埋めた単位（ベーシスポイント）を読み当てないと直せない
-課題を作った。腕は `--read` の渡し方だけ（T5noread / T5 全文 / T5slice 抜粋）。コマンドと読み方は
-eval README「決定的コンテキスト・スライシングの腕」。実測は本書の 3 巡目で投入した
-（段 1 の後に直列で走る。結果は README へ転記する）。
+課題を作った。腕は `--read` の渡し方だけ（T5noread / T5 全文 / T5slice 抜粋）。実測（e4b・sampling・
+各 3）: T5noread 0/3・T5 3/3（tokens_in 13k）・T5slice 3/3（tokens_in 3.6k・壁時計 −33%）。
+採用条件（受入で下回らず tokens_in が減る）は満たした。材料を 2,020 行へ上げた T6 でも受入は
+崩れず（3/3 vs 3/3）、経済の差だけが開いた——tokens_in −87%・壁時計 −83%（1 呼び出し 10 分 → 1.6 分。
+編集ループが毎ターン材料を再送するため、材料サイズは壁時計へ倍々で効く）。見落とし面積の縮小
+（主目的）は auto-test 付きのこの課題では出ない。本番配線は **prefill / 壁時計の節約**として価値が
+規模とともに増す。詳細は eval README「決定的コンテキスト・スライシングの腕」。
 
 ```bash
 python3 -m agentcore.context_slice eval/billing.py --symbol prorate -o /tmp/excerpt.py
@@ -437,7 +444,7 @@ dashboard doctor）・C1・C5 が残る。`[x]` は「閉じた」、`[~]` は�
 | A2 | [~] | **拒否は当面配線しない**と決めた。Resolver が拒否するには候補側に「局所修正専用」の能力属性が要り、selection_policy の schema・Compiler・dashboard へ波及する。代わりに claim メタの `local_patch_blockers`（観測）で不適格割り当ての頻度を数え、ハーネスの escalate 率は**運用値でなく上限**として読む。再評価条件: escalate した aider ノードの 1/3 以上が blockers 付きになったとき。assessment の Phase 4 チェックリストは実装と突き合わせ直した（1・2 は観測まで、3・4 は入っている） | [2026-08-18 assessment §9 Phase 4](2026-08-18-agent-aider-improvement-assessment.md) |
 | A3 | [x] | `run_suite.py` が `--tasks / --agent-policy / --num-ctx / --num-predict / --temperature / --top-p / --top-k / --resample` を worker_eval へ透過し、**指定したものだけ**を manifest の `worker_arm` に flag 名のまま残す。未指定は 1 バイトも渡さない | `eval/run_suite.py` / `test_run_suite.py` |
 | B1 | [x] | **3 面とも最小セルを足した（coverage: planner・project:verify・dashboard doctor/* を direct。missing 34 → 28）。** (1) `planner_eval.py`: flow-planner `plan.py` を本番引数で呼ぶ構造チェッカー 4 ケース。最初の 1 本で**経路不通**を発見——Phase 3 の「JSON 配列のみ」契約は ollama の JSON モードで満たせず、agent-ollama 経路の flow-planner は必ず落ちて stub へ黙って縮退していた。`{"tasks": [...]}` へ改め（flow-planner v1.0.1）、実測 e4b: 鎖 2/3・fan-out 3/3・列挙 1/3・単一 0/3。列挙の外れ方（split の後ろの静的 map/reduce）は engine の約束違反なので `gate_tasks` に決定的検査を足した（再測は次の腕）。(2) `project_verify_eval.py`: 本番の charter 達成条件プロンプト + 本番の正規化。**本番の局所 verify 変種（ollama-verify・道具なし・JSON のみ）では成立しない**——12b は criteria を返さず散文 JSON（contract 3/3）、e4b は捏造 pass 12/12 条件、道具を持たせた e4b でも 0/3（字面 grep の偽陰性）。局所で成立する verify は決定的コマンドだけで、自然文の達成条件は道具を持つ候補か人へ。(3) `doctor_eval.py`: 本番 `doctorPrompt` を node で呼ぶ 4 モード、見出し契約 + 構成的言及で e4b **12/12**——材料が全部スナップショットにある「読んで指す」役割は e4b で足りる | `eval/planner_eval.py` / `project_verify_eval.py` / `doctor_eval.py` / eval README |
-| B2 | [~] | **机上は出た**: ollama registry の manifest で `gemma4:26b`（26B A4B）の重みは **16.75 GiB**（e4b 8.95 / 12b 7.04）。**16 GB 機では重みだけで物理 RAM を超えるので不成立で閉じる**（この Mac は 16 GB——pull しても載らないので実ロードはしない）。32 GB 機では単独常駐なら入る見込み（+KV）だが、e4b（8.95）と同居すると 25.7 GiB + KV で際どい——`keep_alive` で両方残す運用は前提にできない。32 GB 機での実ロード（KV 込み・スワップ有無）だけが残り、16.75 GiB の pull をその機で行う承認が要る | 本節 |
+| B2 | [~] | **机上 + 道具まで**: 重みは registry manifest で **16.75 GiB**（e4b 8.95 / 12b 7.04）。**16 GB 機は重みだけで不成立で閉じた**（この Mac では pull しない）。32 GB 機の成立判定は `eval/moe_ram_probe.py` を書いた——ollama API と OS の数字で num_ctx ごとの常駐・load・prefill/decode を測り、「常駐 > 物理 − 余白 3 GiB」で機械判定する（pull はしない設計。人が承認してから対象機で `ollama pull gemma4:26b` → probe 実行、数分）。残るのは対象機での実行だけ | `eval/moe_ram_probe.py` / eval README |
 | B3 | [x] | **暴走率**: 12b 単発 JSON 呼び出しの停止は 2/27 → 95% 区間 **2.1〜23.4%**（Wilson）。`--stall-timeout 180` なら 1 呼び出しの期待コストは 13 s（区間 4〜42 s）で、「再投入 1 回で回収」の形は保てる。**縮退基準を決めた**: 同じ呼び出しで再投入後も続いたら e4b へ縮退。verify CLI 定義の hint に書いた。**機械配線も入れた**（同日）: flow の `run_agent` が transient 上限に達したら候補ごとの失敗回数（`_CANDIDATE_ATTEMPTS`）を Resolver へ渡して再解決し、別候補が返れば attempt 1 から 1 段だけ下りる。policy の `retry_limit` と候補順（12b → e4b）がこの基準の表現で、判断は Resolver の 1 実装のまま。縮退は result の `execution_decision.fallback_from` と実効 `agent_cli` に写る。明示指定（per-call `agent`・run 固定）は対象外。登録簿の寿命は run × control revision（別 run のノードを claim するか revision が上がれば消える） | `agent_flow/agent.py` / `work.py` / `agents/ollama-verify.json` |
 | B4 | [x] | **実装し、受け入れ基準を両空間で満たした。** ltm-use v5.5.0: `embeddings.py`（索引 `.memory-embeddings.json`・`build_index --embeddings`・save 時 1 件追加）、`recall_memory` の段構え（TF-IDF 最上位 < 0.11 のときだけ bge-m3・合成なし・失敗しない）。ハーネス（261 件・妨害込み）: paraphrase hit@5 35% → 60%、lexical 100% 維持。本番経路（実記憶 75 件）: lexical 80% → 95%、paraphrase 25% → 85%。本番の TF-IDF は title / summary / tags だけで作るので、ハーネスより弱く、しきい値未満へ落ちる lexical が 6/20 あったが埋め込みで拾えた | [設計書](../designs/ltm-use-embedding-recall-design.md) / `.github/skills/ltm-use` / `eval/retrieval_eval.py`（`cascade_ranker`） |
 | C1 | [ ] | 案 B（段 2）待ち。変更なし | — |
@@ -447,9 +454,12 @@ dashboard doctor）・C1・C5 が残る。`[x]` は「閉じた」、`[~]` は�
 | C5 | [~] | 自由記述の質は LLM 判定なしでは測れないので**測らないと決めた**（判定役を使わない規律を優先）。代わりに doctor_eval が自由記述に対して決定的に測れる 2 点（見出し契約・構成的な言及）を置き、それ以上（読みやすさ・網羅性）は人の検収に残る事実を明記した。レビュー役を 12b に置く判断は構成的正解だけで下している | eval README「Doctor」 |
 | C6 | [x] | 読み方の線引きを README に置いた: `3/3` は存在の証明、n = 3 同士は「全滅 ⇔ 全通」だけを差として読む、率として比較するなら n ≥ 10 | eval README「n の読み方」 |
 
-**段 1（案 1 の A/B）は 3 巡目で引いた。** 基準線（`--agent-policy off` + 推奨 sampling）と
-`--resample 3` を T1gate / T2gate / T3gate × 3 で、この Mac（16 GB・e4b・aider）で回した。結果は
-eval README「引き直しの腕」の実測節へ（壁時計が長く、本書執筆時点で走行中なら次の改訂で転記する）。
+**段 1（案 1 の A/B）を引き、採用しないと決めた。** 基準線（`--agent-policy off` + 推奨 sampling）と
+`--resample 3` を T1gate / T2gate / T3gate × 3 で回した（この Mac・e4b・aider）。(a) 族は基準線で
+既に escalate 0/6 で下げようが無く、(b) 族（T3gate）は両腕 0/3・27 attempt 同文の欠落——引き直しは
+(b) に同じ壁時計を 3 倍払って同じ欠落を受け取る（T3gate 中央値 1257s → 3452s）。機構は設計どおり
+動いた（T1gate の 1 本で再投入 2 回の後に引き直しの 1 本目で通った）が数字を動かさない。
+`check_on_exhausted` の既定は escalate のまま。詳細は eval README「引き直しの腕」の実測節。
 
 消化の途中で見つけたこと。**この Mac の `~/.agents/agents/aider.json` は 2026-08-15 の配布のままで、
 `--agent-policy gemma4-e4b-reliability-v1`（2026-08-19 に定義へ入れた）を持たない。** eval の契約テスト

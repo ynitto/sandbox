@@ -2249,8 +2249,12 @@ function openProjectPreparationDesign(item, session) {
       ${questions.length ? `<section class="wf-design-questions"><h3>確認したいこと</h3>${questions.map((question, index) =>
         `<label><span>${index + 1}. ${esc(question)}</span><textarea data-project-design-answer="${index}" rows="2"></textarea></label>`).join('')}</section>`
     : '<p class="qf-notice">質問はありません。この設計で実装準備へ進めます。</p>'}
+      <label class="field"><span>変更してほしいこと</span>
+        <textarea data-project-design-feedback rows="3" placeholder="差し戻す理由と、直してほしい内容を入力してください"></textarea>
+        <small>差し戻すと、この内容と現在の設計書を使って同じ設計フローをやり直します。</small></label>
     </div><div class="dialog-actions"><button data-project-design-close>閉じる</button><span class="spacer"></span>
       ${questions.length ? '<button data-project-design-next>回答して設計を続ける</button>' : ''}
+      <button data-project-design-revise>差し戻してやり直す</button>
       <button class="primary-inline" data-project-design-complete>この設計で実装待ちへ進む</button></div>`;
   dialog.querySelectorAll('[data-project-design-close]').forEach((button) => button.addEventListener('click', () => dialog.close()));
   dialog.querySelector('[data-project-design-next]')?.addEventListener('click', async () => {
@@ -2265,6 +2269,18 @@ function openProjectPreparationDesign(item, session) {
       toast('次の設計runを開始しました', true);
       renderBacklog();
     } catch (err) { toast(`設計を続けられませんでした: ${err.message || err}`); }
+  });
+  dialog.querySelector('[data-project-design-revise]')?.addEventListener('click', async () => {
+    const feedback = String(dialog.querySelector('[data-project-design-feedback]')?.value || '').trim();
+    if (!feedback) return toast('差し戻し理由を入力してください');
+    try {
+      const revised = await api.preparationReviseDesign({ id: item.id, feedback });
+      state.projectPreparations = state.projectPreparations.map((row) =>
+        row.id === item.id ? revised.item : row);
+      dialog.close();
+      toast('差し戻して次の設計runを開始しました', true);
+      renderBacklog();
+    } catch (err) { toast(`設計を差し戻せませんでした: ${err.message || err}`); }
   });
   dialog.querySelector('[data-project-design-complete]')?.addEventListener('click', async () => {
     try {

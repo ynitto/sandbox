@@ -11,6 +11,7 @@ Ollama のモデルを交換するときに、**モデルの実力**と**エー�
 | planner | `planner_eval.py` | 要求 → タスクグラフ（flow-planner の `plan.py` を本番引数で呼ぶ） | 構造チェッカーの正解率、契約違反、過分解 |
 | candidate | `candidate_eval.py` | 候補生成 + 決定的検算（grep パターン・パス・テスト名） | 機械が落とした後に正解が残るか |
 | project-verify | `project_verify_eval.py` | agent-project の charter 達成条件 verifier（本番プロンプト + 本番正規化） | 捏造 pass 率（道具なし）・判定の正しさ（道具あり） |
+| moe-ram | `moe_ram_probe.py` | P11: MoE 候補が物理 RAM に収まるか（対象マシンで数分） | num_ctx ごとの常駐・load・prefill/decode・成立判定 |
 | doctor | `doctor_eval.py` | agent-dashboard の Doctor 4 モード（本番 `doctorPrompt` を node で呼ぶ） | 見出し契約 + 構成的な言及 |
 | observation | `log_stats.py` | 既存の agent-ollama ログ | prompt/output 寸法、TTFT、decode 速度 |
 | coverage | `coverage_eval.py` | flow/project/dashboard/amigos の呼び出し面 | direct/indirect/missing の棚卸し |
@@ -930,13 +931,28 @@ python3 worker_eval.py --model gemma4:e4b --cli aider --tasks T1gate,T2gate,T3ga
 `draws` が伸びていないなら、受入の差は引き直し以外の何かで説明しないといけない。(b) 族
 （T3gate）は同じ腕で必ず一緒に引き、動かなければ「引き直しの適用範囲外」として記録する。
 
-**実測（2026-08-23 投入・この Mac 16 GB・gemma4:e4b × aider）。** 基準線と `--resample 3` を
-上のコマンドそのままで直列に回した。台帳は `results/archive/ledger-2026-08-23-stage1-baseline-gemma4-e4b.jsonl`
-と `…-stage1-resample3-gemma4-e4b.jsonl`（走行中は 1 分ごとに写す。console は `results/stage1-2026-08-23.log`）。
-1 run が 5〜10 分・T3gate は再投入込みで最大 30 分なので、本書の改訂時点で揃っていなければ
-台帳を直接読む（`family` で a / b を分け、`escalate` と `draws` を見る）。途中経過:
-T1gate 基準線 2/2（564s・274s。P10 の 1/3 から上がっているのは sampling 下の揺れの範囲で、
-n が揃うまで率として読まない）。
+### 実測 2026-08-23/24 — 段 1（基準線 vs `--resample 3`・gemma4:e4b × aider・各 3 回）
+
+上のコマンドそのままで直列に回した（この Mac 16 GB・`--agent-policy off`・推奨 sampling）。
+台帳: `results/archive/ledger-2026-08-23-stage1-baseline-gemma4-e4b.jsonl` /
+`…-stage1-resample3-gemma4-e4b.jsonl`。
+
+| 腕 | T1gate（a） | T2gate（a・対照） | T3gate（b） | 族別 escalate | 壁時計 中央値（T1 / T2 / T3） |
+|---|---:|---:|---:|---|---|
+| 基準線（resample 1） | 3/3・esc 0 | 3/3・esc 0 | 0/3・esc 3 | (a) 0/6・(b) 3/3 | 564s / 135s / 1257s |
+| `--resample 3` | 3/3・esc 0（1 本が draw 2） | 3/3・esc 0 | 0/3・esc 3（全部 3 draw・9 call） | (a) 0/6・(b) 3/3 | 1040s / 144s / 3452s |
+
+**採否: 採用しない（`check_on_exhausted` の既定は escalate のまま）。** 採用条件「(a) 族の escalate
+率が下がる」は、基準線の (a) が既に 0/6 で下げようが無かった。引き直しが働いた唯一の場面
+（T1gate#2: テスト手順が再投入 2 回で通らず、作業ツリーを戻して引き直した 1 本目で通った）は
+機構が設計どおり動いた証拠だが、受入・escalate の数字は動かさず、壁時計だけが中央値で 2 倍になった。
+(b) 族は予告どおり動かない——T3gate は両腕とも 0/3、27 attempt がすべて同文
+`C3 fail: 契約テストが追加されていない`。引き直しは (b) に対して同じ壁時計を 3 倍払って同じ欠落を
+受け取るだけで、T3gate 1 run が 1 時間を超えた（4124s）。(b) の答えは引き直しではなく成果物を
+割ること（§4.2 A1 / A2）。n = 3 なので率ではなく「動かなかった」の証拠として読む。
+
+付記: 基準線の T1gate 3/3 は P10 の T1（一発）1/3 より高いが、腕が違う（ゲート + 再投入あり）。
+同条件の過去値は T1gate 3/3（2026-08-13・温度 0）で、sampling を宣言しても退行していない。
 
 ---
 
@@ -961,15 +977,51 @@ n が揃うまで率として読まない）。
 `read_mode` に whole / slice / none を残す。切れなければ原本へ倒し、倒したことも台帳に残す
 （静かに倒れると、抜粋が効いていない条件で測ってしまう）。契約テスト `SliceArmTest`。
 
+チェッカーは **apply_tax 経由の修正**だけを受ける。最初の版はテスト通過だけを見ていて、read なしの
+腕が `int(net * (1 + tax_rate))` と自前で税を掛けて 3 件通した（2026-08-24・2 本とも同じ修正＝温度 0）。
+それではテストは通っても「参照材料を読んだか」が測れない。課題文に「税は bigmod.apply_tax を
+呼んで計算する」を足し、`ast` で apply_tax の呼び出しが無い修正を落とす。
+
 ```bash
 python3 tools/agent-tools/eval/worker_eval.py --model gemma4:e4b --cli aider \
-  --tasks T5noread,T5,T5slice --repeat 3 --agent-policy off
+  --tasks T5noread,T5,T5slice --repeat 3 --agent-policy off \
+  --temperature 1.0 --top-p 0.95 --top-k 64     # 温度 0 だと 3 回が同一出力になる
 ```
 
 読むのは受入率と `tokens_in`、それに失敗の形（bp を読み当てたか）。採用条件は「T5slice が T5 を
 受入で下回らず、tokens_in が減ること」。T5 が T5noread と同じなら「入れても読めていない」の証拠で、
-それ自体が案 2 の前提（事実 7）を支える。実測は 2026-08-23 に段 1 の後へ直列で投入した
-（台帳 `results/archive/ledger-2026-08-23-stage3-t5-gemma4-e4b.jsonl`・console `results/stage3-2026-08-23.log`）。
+それ自体が案 2 の前提（事実 7）を支える。
+
+### 実測 2026-08-24 — gemma4:e4b × aider・推奨 sampling・各 3 回
+
+台帳: `results/archive/ledger-2026-08-23-stage3-t5-gemma4-e4b.jsonl`。
+
+| 腕 | 受入 | 壁時計 中央値 | tokens_in | 失敗の形 |
+|---|---:|---:|---|---|
+| T5noread | 0/3 | 216s | 5.0k〜8.0k | `apply_tax(int(net), tax_rate)` のまま——bp に辿り着かない |
+| T5（570 行を全文） | 3/3 | 214s | 13.0k〜13.1k | — |
+| T5slice（15 行の抜粋・56 シンボル省略） | 3/3 | 144s | 3.6k〜3.7k | — |
+
+**採用条件は満たした**（受入で下回らず、tokens_in −72%・壁時計 −33%）。
+
+### 実測 2026-08-24 — T6（同じ課題で材料を 2,020 行へ・`--num-ctx 32768`・各 3 回）
+
+「入れれば読める」が規模で崩れるかを、材料だけ 3.5 倍にして測った（`BIGMOD_XL`。
+台帳 `results/archive/ledger-2026-08-24-stage3-t6-gemma4-e4b.jsonl`）。
+
+| 腕 | 受入 | 壁時計 中央値 | tokens_in |
+|---|---:|---:|---|
+| T6（2,020 行を全文） | 3/3 | **579s** | 41.5k〜62.9k |
+| T6slice（15 行の抜粋・201 シンボル省略） | 3/3 | **99s** | 5.5k〜5.6k |
+
+読み方。(1) **受入は 2,020 行（1 ファイル約 21k token）でもまだ崩れない**——「入れれば読める」の
+限界はこの課題では出なかった（auto-test の失敗出力が探索を助ける形なので、MRCR のような素の
+検索より易しい。見落とし面積の縮小という主目的は依然未証明）。(2) **経済は規模で開く**——570 行で
+tokens_in −72% / 壁時計 −33% だった差が、2,020 行では **−87% / −83%**（1 呼び出し 10 分 → 1.6 分）。
+全文の腕は編集ループの毎ターンに材料を再送するので、材料サイズが壁時計へ倍々で効く。
+(3) 材料が無いと 0/3（T5noread）なので、read 調査がファイルを正しく当てることが前提で、抜粋は
+その**内側**の節約である（§4.1 C3 の固定条件）。結論: 本番配線（`--read` 材料の自動抜粋）は
+**prefill / 壁時計の節約として入れる価値が規模とともに増す**。見落とし族への効果は根拠にしない。
 
 ## planner の最小 eval — P9 の最初の 1 セル（2026-08-23・計画 2026-08-22 §4.2 B1）
 
@@ -1130,3 +1182,22 @@ python3 tools/agent-tools/eval/doctor_eval.py --model gemma4:e4b --repeat 3
 DR2 14s・DR3 40s・DR4 25s）。見出し契約の違反 0、正解トークンの欠落 0。材料が全部スナップショットに
 あり、答えが「読んで指す」形の役割は e4b で足りる——text-eval の抽出・分析 6/6 と同じ帯。
 この帯を 12b や クラウドへ回す理由は無い。
+
+
+## P11（B2）— MoE の RAM 実測プローブ（2026-08-24・実行は 32 GB 機で）
+
+`gemma4:26b`（26B A4B・重み 16.75 GiB）は **16 GB 機では重みだけで不成立**（registry manifest の
+机上で確定）。32 GB 機での成立判定を数分で出す道具が `moe_ram_probe.py`——ollama の API と OS の
+数字だけで、num_ctx ごとの常駐サイズ・load・prefill / decode を測り、「常駐が 物理 − 余白 3 GiB を
+超えたら不成立」を機械で判定する。**pull はしない**（16.75 GiB のダウンロードは人が承認してから）。
+
+```bash
+# 対象マシン（RAM 32 GB の推論機）で。pull は人の承認の後
+ollama pull gemma4:26b
+python3 tools/agent-tools/eval/moe_ram_probe.py --model gemma4:26b --output /tmp/moe-ram.json
+```
+
+成立なら次は計画 P11 の手順 2——`judge_eval` / `text_eval` / `worker_eval` の既存セルへ
+`--model gemma4:26b` を差し替え、基準線（e4b・12b）と並べる。e4b（8.95 GiB）との同居は
+25.7 GiB + KV で際どいので、`keep_alive` で両方常駐させる運用は前提にしない（probe の判定は
+単独常駐の話である）。

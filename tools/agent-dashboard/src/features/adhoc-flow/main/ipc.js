@@ -678,6 +678,26 @@ function registerIpc(ctx) {
     };
     return { item: preparation.saveItem(cfg, next), session };
   });
+  handle('preparation:reviseDesign', ({ id, feedback } = {}) => {
+    const cfg = loadConfig();
+    const item = preparation.getItem(cfg, String(id || ''));
+    if (!item || item.route !== 'agent-design' || !item.design || !item.design.sessionId) {
+      throw new Error('設計確認中の作業準備項目が見つかりません');
+    }
+    if (item.phase !== 'design-review') throw new Error('設計確認中の項目だけ差し戻せます');
+    const revision = String(feedback || '').trim();
+    if (!revision) throw new Error('差し戻し理由は必須です');
+    const session = designSession.startRound(cfg, {
+      id: item.design.sessionId,
+      feedback: revision,
+    });
+    const next = preparation.reviseDesign(item, {
+      sessionId: session.id,
+      runId: session.runId,
+      feedback: revision,
+    });
+    return { item: preparation.saveItem(cfg, next), session };
+  });
   handle('preparation:completeDesign', ({ id } = {}) => {
     const cfg = loadConfig();
     const item = preparation.getItem(cfg, String(id || ''));

@@ -4031,8 +4031,8 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
 .wf-design-body { display: grid; gap: 14px; padding-top: 14px; }
 .wf-design-sessions { display: grid; gap: 4px; max-height: 160px; overflow-y: auto; }
 .wf-design-start, .wf-design-current { display: grid; gap: 12px; }
-.wf-design-start label, .wf-design-question { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
-.wf-design-start textarea, .wf-design-question textarea { width: 100%; box-sizing: border-box; }
+.wf-design-start label, .wf-design-question, .wf-design-feedback { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
+.wf-design-start textarea, .wf-design-question textarea, .wf-design-feedback textarea { width: 100%; box-sizing: border-box; }
 .wf-design-modes { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px;
   border: 0; padding: 0; margin: 0; }
 .wf-design-modes .orch-policy-card { display: flex; align-items: flex-start; color: inherit; font-size: inherit; }
@@ -4291,6 +4291,7 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
 .wf-node.invalid { border-style: dashed; }
 .wf-runtime-node { border-style: dashed; opacity: .78; pointer-events: none; }
 .wf-runtime-node .wf-node-drag { cursor: default; }
+.wf-lifecycle-node { border-color: var(--blue); opacity: .9; }
 .wf-boundary { width: 220px; background: color-mix(in srgb, var(--bg2) 88%, var(--blue)); }
 .wf-boundary .wf-node-body { padding-top: 17px; }
 .wf-node-drag { display: flex; justify-content: space-between; gap: 8px; padding: 8px 10px;

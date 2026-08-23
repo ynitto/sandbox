@@ -2368,16 +2368,19 @@ test('ラウンド成果は「## 質問」節で設計書と質問へ分ける�
   assert.deepStrictEqual(design.splitDesignOutput(''), { document: '', questions: [] });
 });
 
-test('ラウンドへの入力は元の要望・現在の設計書・回答済みの質問だけを運ぶ', () => {
+test('ラウンドへの入力は元の要望・現在の設計書・回答・差し戻し理由を運ぶ', () => {
   const request = design.buildRoundRequest({
     goal: '依頼欄に設計書を読み込めるようにする',
     document: '## 目的\n既存の設計',
     answers: [{ question: '対象は', answer: 'A' }, { question: '期限は', answer: '  ' }],
+    feedback: '受入基準を観測可能な表現に直してください',
   });
   assert.ok(request.includes('## 元の要望\n依頼欄に設計書を読み込めるようにする'));
   assert.ok(request.includes('## 現在の設計書\n## 目的\n既存の設計'));
   assert.ok(request.includes('1. 対象は\n   → A'));
   assert.ok(!request.includes('期限は'), '未回答の質問は運ばない');
+  assert.ok(request.includes('ユーザーからの差し戻し'));
+  assert.ok(request.includes('受入基準を観測可能な表現に直してください'));
   // 初回は設計書も回答も無い
   assert.strictEqual(design.buildRoundRequest({ goal: 'やりたいこと' }), '## 元の要望\nやりたいこと');
 });
@@ -2467,12 +2470,16 @@ test('設計セッションはラウンドごとに設計 run を投げ、成果
     assert.deepStrictEqual(harvested.rounds[0].questions, ['対象は A と B のどちらか']);
 
     // 次のラウンドは回答を運び、直前の設計書を入力に載せる
-    const next = design.startRound(cfg, { id: started.id, answers: ['A'] });
+    const next = design.startRound(cfg, {
+      id: started.id, answers: ['A'], feedback: '検証方法をコマンドまで具体化する',
+    });
     assert.strictEqual(next.rounds.length, 2);
+    assert.strictEqual(next.rounds[1].feedback, '検証方法をコマンドまで具体化する');
     assert.deepStrictEqual(next.questions, [], '新しいラウンドの開始で古い質問は消える');
     const nextInbox = adhoc.readInbox(busDir, next.runId);
     assert.ok(nextInbox.request.includes('## 現在の設計書\n## 目的\nやること'));
     assert.ok(nextInbox.request.includes('1. 対象は A と B のどちらか\n   → A'));
+    assert.ok(nextInbox.request.includes('## ユーザーからの差し戻し\n検証方法をコマンドまで具体化する'));
 
     assert.strictEqual(design.listSessions(cfg).length, 1);
     assert.strictEqual(design.listSessions(cfg)[0].document, undefined, '一覧は本文を運ばない');

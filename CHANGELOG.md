@@ -50,13 +50,24 @@ pin は Resolver 側で retry-exhausted → park になる。12b 検証役の停
 - flow-planner `gate_tasks` に「split の後ろの静的 map / reduce を落とす」決定的検査を追加
   （engine は split 完了後に map / reduce を動的生成する。planner_eval で e4b が 2/3 この形を書いた）。
 
+#### 案 1（引き直し）を測って不採用にした（段 1）
+
+基準線と `--resample 3` を T1gate / T2gate / T3gate × 3 で直列に回した（gemma4:e4b × aider・
+推奨 sampling）。(a) 族は基準線で escalate 0/6（下げようが無い）、(b) 族 T3gate は両腕 0/3・
+27 attempt すべて同文の欠落で、壁時計だけ中央値 1257s → 3452s。`check_on_exhausted` の既定は
+escalate のまま。台帳 `results/archive/ledger-2026-08-23-stage1-{baseline,resample3}-gemma4-e4b.jsonl`。
+
 #### 案 2（スライシング）の測定の腕 — T5
 
 `worker_eval.py` に T5 / T5slice / T5noread を足した。570 行の合成モジュールの真ん中に埋めた
 単位（ベーシスポイント）を読み当てないと直せない課題で、腕は `--read` の渡し方だけ
 （全文 / `context_slice` の抜粋 / 渡さない）。抜粋は `slice_reads` が作業ツリーへ書き、
-台帳に `read_mode` と `slice`（kept / total 行・省略数・原本へ倒したか）を残す。
-契約テスト `SliceArmTest`。
+台帳に `read_mode` と `slice`（kept / total 行・省略数・原本へ倒したか）を残す。チェッカーは
+apply_tax 経由の修正だけを受ける（自前で税を掛けてテストだけ通す逃げを落とす）。
+契約テスト `SliceArmTest`。実測（e4b・sampling・各 3）: noread 0/3・全文 3/3（tokens_in 13k）・
+抜粋 3/3（3.6k・壁時計 −33%）——採用条件は満たす。材料を 2,020 行にした T6/T6slice でも受入は
+3/3 vs 3/3 のまま差は経済だけ（tokens_in −87%・壁時計 579s → 99s）。見落とし縮小は測れていない。
+あわせて `moe_ram_probe.py`（P11 の RAM 実測。対象機で数分・pull は人の承認後）を追加。
 
 #### 候補生成 + 決定的検算の最小 eval（C2）
 

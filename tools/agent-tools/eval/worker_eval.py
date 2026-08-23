@@ -270,18 +270,20 @@ def gate_billing(wt: Path) -> tuple[bool, str]:
 # 測るのは「見るべき範囲を機械が先に確定してやると、見落としが減るか」。腕は read の渡し方だけ
 # が違う: T5（bigmod 全文を --read）/ T5slice（関係シンボルの抜粋を --read）/ T5noread（渡さない）。
 
-def _bigmod_source() -> str:
-    """決定的に生成する 600 行級のモジュール。関係する 2 関数は真ん中あたりに埋める。"""
+def _bigmod_source(pre: int = 27, post: int = 28) -> str:
+    """決定的に生成するモジュール。関係する 2 関数は pre 個の詰め物の後（＝真ん中）に埋める。
+    pre=27/post=28 で 570 行（T5）。pre=post=100 で 2 千行級（T6。約 2 万 token——
+    「入れれば読める」が崩れるかを規模で測る腕）。"""
     lines = ['"""課金まわりの共通モジュール（合成）。', "",
              "多数のユーティリティが並ぶ。金額は円（int）。税率はベーシスポイント（bp）で扱う。",
              '"""', "", "TAX_BP_DEFAULT = 1000   # 10% = 1000 bp", ""]
     def filler(n: int) -> list:
-        return [f"def util_{n:02d}(value: int, scale: int = {n + 1}) -> int:",
+        return [f"def util_{n:03d}(value: int, scale: int = {n + 1}) -> int:",
                 f'    """合成ユーティリティ {n}。value を scale 倍して {n} を足す。',
                 "", "    互換のため残している。呼び出し側は少ない。", '    """',
-                f"    if value < 0:", f"        return -util_{n:02d}(-value, scale)",
+                f"    if value < 0:", f"        return -util_{n:03d}(-value, scale)",
                 f"    return value * scale + {n}", "", ""]
-    for n in range(1, 28):
+    for n in range(1, pre + 1):
         lines += filler(n)
     lines += ["def prorate(monthly_fee: int, days_used: int, days_in_month: int) -> int:",
               '    """月額を日割りする。端数は切り上げ（円）。"""',
@@ -292,12 +294,13 @@ def _bigmod_source() -> str:
               "    小数の税率（0.10 など）を渡すと 0 bp 扱いになり、税が付かない。",
               '    """',
               "    return amount + amount * int(rate_bp) // 10000", "", ""]
-    for n in range(28, 56):
+    for n in range(pre + 1, pre + post + 1):
         lines += filler(n)
     return "\n".join(lines) + "\n"
 
 
 BIGMOD = _bigmod_source()
+BIGMOD_XL = _bigmod_source(100, 100)
 REPORT_BUGGY = (
     "from bigmod import prorate, apply_tax\n\n\n"
     "def invoice(monthly_fee: int, days_used: int, days_in_month: int, tax_rate: float = 0.10) -> int:\n"
@@ -312,28 +315,59 @@ REPORT_TEST = (
 T5_REQUEST = "請求額の計算がおかしい"
 T5_GOAL = ("eval/test_report.py が失敗している。eval/report.py の invoice を直して 3 件すべて通るように"
            "する。invoice の引数 tax_rate は小数（0.10 = 10%）のまま変えない（テストが仕様の正）。"
+           "税の計算は bigmod.apply_tax を呼んで行うこと（自前で税を掛けない。apply_tax の引数の"
+           "仕様は bigmod.py を読んで確かめる）。"
            "**eval/bigmod.py と eval/test_report.py は変更しないこと**。eval/ 以外も変更しない。")
 
 
-def seed_t5(wt: Path) -> None:
+def seed_t5(wt: Path, bigmod: str = BIGMOD) -> None:
     d = wt / "eval"
     d.mkdir(exist_ok=True)
-    (d / "bigmod.py").write_text(BIGMOD, encoding="utf-8")
+    (d / "bigmod.py").write_text(bigmod, encoding="utf-8")
     (d / "report.py").write_text(REPORT_BUGGY, encoding="utf-8")
     (d / "test_report.py").write_text(REPORT_TEST, encoding="utf-8")
 
 
-def check_t5(wt: Path) -> tuple[bool, str]:
-    """テストを通したか。bigmod / テストを書き換えて通したらズル。"""
-    for name, body in (("bigmod.py", BIGMOD), ("test_report.py", REPORT_TEST)):
+def seed_t6(wt: Path) -> None:
+    seed_t5(wt, bigmod=BIGMOD_XL)
+
+
+def _calls_apply_tax(source: str) -> bool:
+    """report.py の invoice が apply_tax を呼んでいるか（ast）。自前で税を掛けて逃げる修正を落とす。"""
+    import ast as _ast  # noqa: PLC0415
+    try:
+        tree = _ast.parse(source)
+    except SyntaxError:
+        return False
+    for node in _ast.walk(tree):
+        if isinstance(node, _ast.Call):
+            fn = node.func
+            name = fn.id if isinstance(fn, _ast.Name) else getattr(fn, "attr", "")
+            if name == "apply_tax":
+                return True
+    return False
+
+
+def check_t6(wt: Path) -> tuple[bool, str]:
+    return check_t5(wt, bigmod=BIGMOD_XL)
+
+
+def check_t5(wt: Path, bigmod: str = BIGMOD) -> tuple[bool, str]:
+    """テストを通したか。bigmod / テストを書き換えて通したらズル。apply_tax を使わずに自前で税を
+    掛けた修正も落とす——それでもテストは通るが、参照材料（apply_tax の単位）を読んだかを測れなくなる
+    （実測 2026-08-24: read なしの腕が `int(net * (1 + tax_rate))` で逃げて 3 件通した）。"""
+    for name, body in (("bigmod.py", bigmod), ("test_report.py", REPORT_TEST)):
         f = wt / "eval" / name
         if not f.exists() or f.read_text(encoding="utf-8") != body:
             return False, f"{name} を書き換えた（ズル・対象外の変更）"
+    report = wt / "eval" / "report.py"
+    if not report.exists() or not _calls_apply_tax(report.read_text(encoding="utf-8")):
+        return False, "apply_tax を呼ばずに税を自前計算した（参照材料を読まない逃げ）"
     r = _pytest(wt / "eval", "test_report.py")
     if r.returncode != 0:
         tail = [l for l in r.stdout.splitlines() if l.strip()][-1:]
         return False, f"テストが落ちたまま: {tail}"
-    return True, "bigmod / テスト無改変で 3 件 pass"
+    return True, "bigmod / テスト無改変・apply_tax 経由で 3 件 pass"
 
 
 def seed_t3(wt: Path) -> None:
@@ -551,6 +585,23 @@ TASKS = {
         test_cmd=f"{VENV_PY} -m pytest -q eval/test_report.py",
         request=T5_REQUEST, goal=T5_GOAL,
     ),
+    # T6: T5 と同じ課題・材料だけ 2 千行級（約 2 万 token）。「入れれば読める」が規模で
+    # 崩れるか（MRCR の帯へ近づける）。--num-ctx 32768 を宣言して回す。
+    "T6": dict(
+        family="a",
+        seed=seed_t6, check=check_t6, read_mode="whole",
+        files=("eval/report.py",), read=("eval/bigmod.py",),
+        test_cmd=f"{VENV_PY} -m pytest -q eval/test_report.py",
+        request=T5_REQUEST, goal=T5_GOAL,
+    ),
+    "T6slice": dict(
+        family="a",
+        seed=seed_t6, check=check_t6, read_mode="slice",
+        files=("eval/report.py",), read=("eval/bigmod.py",),
+        slice={"eval/bigmod.py": ("apply_tax", "prorate")},
+        test_cmd=f"{VENV_PY} -m pytest -q eval/test_report.py",
+        request=T5_REQUEST, goal=T5_GOAL,
+    ),
     "T5noread": dict(
         family="a",
         seed=seed_t5, check=check_t5, read_mode="none",
@@ -587,7 +638,7 @@ def build_prompt(task: dict) -> str:
     return r.stdout.strip()
 
 
-def aider_settings(model: str, num_ctx: int = 32768, num_predict: int = 0,
+def aider_settings(model: str, num_ctx: "int | None" = None, num_predict: int = 0,
                    sampling: "dict | None" = None, base: bool = True) -> Path:
     """aider へ渡すモデル設定（文脈・1 ターンの生成上限・sampling）。
 
@@ -607,7 +658,11 @@ def aider_settings(model: str, num_ctx: int = 32768, num_predict: int = 0,
     if base:
         lines += ["  edit_format: diff", "  use_repo_map: false"]
     params = []
+    # num_ctx は base では既定 32768、base=False では**明示されたときだけ**書く
+    # （「指定されたものだけを書く」の規律のまま、sampling 腕でも文脈長を宣言できる口）。
     if base:
+        params.append(f"    num_ctx: {num_ctx if num_ctx else 32768}")
+    elif num_ctx:
         params.append(f"    num_ctx: {num_ctx}")
     if num_predict > 0:
         params.append(f"    num_predict: {num_predict}")
@@ -646,13 +701,15 @@ def aider_argv(task: dict) -> "list[str]":
             extra += [policy_flag, AGENT_POLICY]
     if NUM_PREDICT > 0:
         extra += ["--agent-num-predict", str(NUM_PREDICT)]
-    if NUM_CTX > 0:
+    if NUM_CTX > 0 and not SAMPLING:
         extra += ["--agent-num-ctx", str(NUM_CTX)]
     if SAMPLING:
         # sampling だけの腕では base を書かない（上の docstring 参照——余計な差を
-        # 一緒に入れると、測っているものが「温度の効果」でなくなる）。
+        # 一緒に入れると、測っているものが「温度の効果」でなくなる）。--num-ctx を併用する
+        # 腕では同じ settings ファイルへ寄せる（adapter の managed settings と
+        # --model-settings-file が二重になるのを避ける。宣言はどちらも台帳に残る）。
         extra += ["--model-settings-file", str(aider_settings(
-            MODEL, sampling=SAMPLING, base=False))]
+            MODEL, num_ctx=NUM_CTX or None, sampling=SAMPLING, base=False))]
     if task.get("map_tokens"):
         # 定義の `--map-tokens 0` を**消してから**置き換える。同じフラグを 2 回並べて
         # 後勝ちに賭けると、定義側が並び順を変えた日に静かに 0 へ戻る。

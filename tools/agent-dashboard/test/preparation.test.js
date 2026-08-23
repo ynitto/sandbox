@@ -359,6 +359,65 @@ test('エージェント設計の成果を実装材料へ追加して実装可�
   });
 });
 
+test('設計確認の差し戻しは理由を必須にして次の設計runへ戻す', () => {
+  const started = preparation.startDesign(preparation.createItem({
+    title: '差し戻す設計', goal: 'CSV対応を改善する', route: 'agent-design',
+  }), { sessionId: 'ds-review', runId: 'run-first' });
+  const review = {
+    ...started,
+    phase: 'design-review',
+    design: { ...started.design, document: completeDesignDocument },
+  };
+
+  assert.throws(() => preparation.reviseDesign(review, {
+    sessionId: 'ds-review', runId: 'run-second', feedback: '  ',
+  }), /差し戻し理由/);
+  assert.throws(() => preparation.reviseDesign({ ...review, phase: 'designing' }, {
+    sessionId: 'ds-review', runId: 'run-second', feedback: '受入基準を直す',
+  }), /設計確認/);
+
+  const revised = preparation.reviseDesign(review, {
+    sessionId: 'ds-review', runId: 'run-second', feedback: '受入基準を直す',
+  });
+  assert.deepStrictEqual({ phase: revised.phase, sessionId: revised.design.sessionId, runIds: revised.design.runIds }, {
+    phase: 'designing', sessionId: 'ds-review', runIds: ['run-first', 'run-second'],
+  });
+  assert.strictEqual(revised.design.document, completeDesignDocument);
+});
+
+test('設計差し戻しAPIは理由を同じセッションの次ラウンドへ渡して状態を保存する', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'preparation-revise-'));
+  const config = { preparationDir: dir };
+  const originalStartRound = designSession.startRound;
+  let received = null;
+  try {
+    const started = preparation.startDesign(preparation.createItem({
+      id: 'prep-revise', title: '差し戻しAPI', goal: '設計する', route: 'agent-design',
+    }), { sessionId: 'ds-revise', runId: 'run-first' });
+    preparation.saveItem(config, { ...started, phase: 'design-review' });
+    designSession.startRound = (_config, input) => {
+      received = input;
+      return { id: 'ds-revise', runId: 'run-second', runStatus: 'running' };
+    };
+    const handlers = {};
+    preparationIpc.registerIpc({
+      handle: (name, handler) => { handlers[name] = handler; },
+      loadConfig: () => config,
+      saveConfig: () => {},
+    });
+
+    const result = handlers['preparation:reviseDesign']({
+      id: 'prep-revise', feedback: '差し戻し内容を反映する',
+    });
+    assert.deepStrictEqual(received, { id: 'ds-revise', feedback: '差し戻し内容を反映する' });
+    assert.strictEqual(result.item.phase, 'designing');
+    assert.deepStrictEqual(result.item.design.runIds, ['run-first', 'run-second']);
+  } finally {
+    designSession.startRound = originalStartRound;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('作業準備項目を対象プロジェクトごとに保存して再開できる', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'preparation-store-'));
   try {
