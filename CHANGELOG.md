@@ -7,6 +7,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### ローカル LLM の追加活用 — 案 2 の能力側検証を閉じ、本番配線の方針を書いた
+
+- `worker_eval.py` に T6noat / T6slicenoat（auto-test を切った一発）。実測（e4b・sampling・各 3）:
+  **両腕 3/3**（noat 中央値 63s・tokens_in 20.6k ⇔ slice 70s・2.6k）。テストの失敗出力の助け無しでも
+  21k token の材料から単一シンボルの仕様を読み当てる——**見落とし縮小を案 2 の根拠にする道は閉じ、
+  根拠は経済（prefill −72〜87%・壁時計 −83%）に一本化**。
+- 本番配線の設計方針を計画 §4.1 案 2 に追記（未実装）。前提の発見: agent-flow は read_allocation の
+  path を `files=`（aider の `--file` ＝編集可能）で渡しており、「読むだけの材料」の区別が CLI 呼び出しで
+  失われている——配線は `read_files=` の導入とセット。
+
 ### ローカル LLM の追加活用 — 未検討項目の消化（後続分: B3 配線・B1・C2・C4）
 
 [2026-08-22 の検討 §4.3](docs/plans/2026-08-22-local-llm-further-utilization-and-runtime-tuning-assessment.md)

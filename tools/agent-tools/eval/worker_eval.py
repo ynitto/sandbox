@@ -602,6 +602,22 @@ TASKS = {
         test_cmd=f"{VENV_PY} -m pytest -q eval/test_report.py",
         request=T5_REQUEST, goal=T5_GOAL,
     ),
+    # T6noat / T6slicenoat: auto-test（失敗出力の往復）を切った一発。T6 が 3/3 なのは
+    # 「入れれば読めた」のか「テストの失敗出力が探索を代行した」のかを切り分ける——
+    # 見落とし面積の縮小（案 2 の主目的）は、フィードバック無しの一発でしか測れない。
+    "T6noat": dict(
+        family="a",
+        seed=seed_t6, check=check_t6, read_mode="whole",
+        files=("eval/report.py",), read=("eval/bigmod.py",),
+        request=T5_REQUEST, goal=T5_GOAL,
+    ),
+    "T6slicenoat": dict(
+        family="a",
+        seed=seed_t6, check=check_t6, read_mode="slice",
+        files=("eval/report.py",), read=("eval/bigmod.py",),
+        slice={"eval/bigmod.py": ("apply_tax", "prorate")},
+        request=T5_REQUEST, goal=T5_GOAL,
+    ),
     "T5noread": dict(
         family="a",
         seed=seed_t5, check=check_t5, read_mode="none",
