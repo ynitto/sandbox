@@ -2,7 +2,7 @@
 name: ltm-use
 description: セッションをまたいで知識・決定事項を継続させたいときのスキル。「覚えておいて」でsave、「思い出して」でrecall、「記憶一覧」でlist、「忘れて」でarchive、「共有して」でshare、「整理して」でcleanup、「役立った／間違ってた」でrate、「固定化して」でconsolidate。重要な知見を発見したら自律的にsaveを実行すること。
 metadata:
-  version: 5.4.0
+  version: 5.5.0
   tier: core
   category: meta
   tags:
@@ -285,9 +285,16 @@ sync が使う skill-registry.json のリポジトリ設定は [`references/conf
 インデックスは recall/save/rate 時に自動更新される。統計確認や破損時の再構築に使う。
 
 ```bash
-python scripts/build_index.py --stats   # 統計表示
-python scripts/build_index.py --force   # 強制完全再構築
+python scripts/build_index.py --stats        # 統計表示
+python scripts/build_index.py --force        # 強制完全再構築
+python scripts/build_index.py --embeddings   # 埋め込み索引（bge-m3）を作る / 補修する
 ```
+
+埋め込み索引（`.memory-embeddings.json`）があるときだけ、recall は**用語を忘れた訊き方**
+（TF-IDF の最上位コサインが `embedding_threshold` 未満）で bge-m3 に採点を切り替える
+（段構え。合成はしない）。索引が無い・ollama が落ちている・用語が重なる訊き方では従来どおり。
+save 時に 1 件ずつ足されるので、作るのは最初の 1 回でよい（75 件で 13 秒）。
+設計と実測は [ltm-use-embedding-recall-design](../../../docs/designs/ltm-use-embedding-recall-design.md)。
 
 ---
 

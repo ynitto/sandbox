@@ -57,7 +57,7 @@
 |---|---|
 | [`ltm-use-v4-design.md`](./ltm-use-v4-design.md) | 類似記憶検知・ハイブリッド recall・自動タグ付けの提案設計（Draft のまま）。後継 `ltm-use-v5-brain-design.md` に前提として引き継がれた。 |
 | [`ltm-use-v5-brain-design.md`](./ltm-use-v5-brain-design.md) | 脳構造になぞらえた記憶固定化・context-aware recall の提案設計（Draft のまま、前提: ltm-use v4.0.0）。 |
-| [`ltm-use-embedding-recall-design.md`](./ltm-use-embedding-recall-design.md) | 埋め込み（bge-m3）を recall へ足す設計（Draft・実測済み）。合成ではなく段構え——TF-IDF が自信を持てないときだけ落とす。用語を忘れた検索で hit@5 35% → 60%、用語が出るケースは経路が変わらない。 |
+| [`ltm-use-embedding-recall-design.md`](./ltm-use-embedding-recall-design.md) | 埋め込み（bge-m3）を recall へ足す設計（実装済み 2026-08-23）。合成ではなく段構え——TF-IDF が自信を持てないときだけ落とす。用語を忘れた検索で hit@5 35% → 60%（ハーネス）・25% → 85%（本番経路）、用語が出るケースは経路が変わらない。 |
 | [`selfhost-forge-comparison.md`](./selfhost-forge-comparison.md) | セルフホスト構成 5 案（A〜E）を比較した資料。主推奨は案C（コードのみローカル、issues/MR は上流のまま）、issues/MR を必ずローカルに置く要件がある場合の代替は案A。実採用は案A（`plan-a-local-gitlab-design.md`）で、本書はその意思決定に至った経緯記録。 |
 | [`gitea-gitlab-sync-design.md`](./gitea-gitlab-sync-design.md) | LAN 内 Gitea で Issue/MR 管理、コードは GitLab と双方向同期する設計正典（`selfhost-forge-comparison.md` の案Bに相当、実装は未着手と本文に明記）。比較の結果、実採用は案A（plan-a 側）で本案は不採用。 |
 

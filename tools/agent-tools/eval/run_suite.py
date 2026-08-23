@@ -16,6 +16,18 @@ from eval_io import new_run_dir, write_json
 HERE = Path(__file__).resolve().parent
 DEFAULT_RESULTS = HERE / "results"
 UNITS = ("coverage", "worker", "judge", "retrieval")
+# worker_eval へ透過する腕の条件（dest, flag）。ここに無い軸で腕を変えると、条件が
+# manifest に残らないまま結果だけが results/ に残る——計画 2026-08-22 §4.2 A3。
+WORKER_ARM = (("tasks", "--tasks"), ("agent_policy", "--agent-policy"),
+              ("num_ctx", "--num-ctx"), ("num_predict", "--num-predict"),
+              ("temperature", "--temperature"), ("top_p", "--top-p"),
+              ("top_k", "--top-k"), ("resample", "--resample"))
+
+
+def worker_arm(args: argparse.Namespace) -> dict:
+    """指定された腕の条件だけ（flag → 値）。未指定は含めない（worker_eval の既定に委ねる）。"""
+    return {flag: getattr(args, dest) for dest, flag in WORKER_ARM
+            if getattr(args, dest, None) is not None}
 
 
 def command_for(unit: str, args: argparse.Namespace, out: Path) -> tuple[list[str], dict[str, str]]:
@@ -27,6 +39,10 @@ def command_for(unit: str, args: argparse.Namespace, out: Path) -> tuple[list[st
         env["WORKER_EVAL_DIR"] = str(out)
         cmd = [sys.executable, str(HERE / "worker_eval.py"), "--model", args.model,
                "--cli", args.cli, "--repeat", str(args.repeat), "--wall", str(args.wall)]
+        # 腕の条件は**指定されたものだけ**を透過する。未指定を既定値で埋めて渡すと、
+        # worker_eval が区別している「未宣言」と「既定値を明示」が同じ argv になる。
+        for flag, value in worker_arm(args).items():
+            cmd += [flag, str(value)]
     elif unit == "judge":
         env["JUDGE_EVAL_DIR"] = str(out)
         base_cli = "ollama" if args.cli == "agent-ollama" else args.cli
@@ -50,6 +66,16 @@ def main() -> int:
     ap.add_argument("--repeat", type=int, default=3)
     ap.add_argument("--wall", type=float, default=600)
     ap.add_argument("--embedding-model", default="bge-m3")
+    # worker 単位の腕（未指定なら worker_eval の既定のまま。値の検証は worker_eval 側）。
+    ap.add_argument("--tasks", help="worker_eval --tasks（例: T1gate,T2gate,T3gate）")
+    ap.add_argument("--agent-policy", choices=("off", "gemma4-e4b-reliability-v1"))
+    ap.add_argument("--num-ctx", type=int)
+    ap.add_argument("--num-predict", type=int)
+    ap.add_argument("--temperature", type=float)
+    ap.add_argument("--top-p", type=float)
+    ap.add_argument("--top-k", type=int)
+    ap.add_argument("--resample", type=int, metavar="N",
+                    help="worker_eval --resample（引き直し腕。sampling の宣言が要る）")
     ap.add_argument("--tfidf-only", action="store_true")
     ap.add_argument("--label", default="", help="run 名へ加えるメモ（例: baseline）")
     ap.add_argument("--results-dir", type=Path, default=DEFAULT_RESULTS)
@@ -65,6 +91,9 @@ def main() -> int:
         "schema_version": 1, "started_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "model": args.model, "cli": args.cli, "repeat": args.repeat, "wall": args.wall,
         "embedding_model": args.embedding_model, "units": units, "status": "running",
+        # 腕の条件。キーは worker_eval の flag そのまま（command.txt と同じ語で引ける）。
+        # 空 dict は「どの軸も宣言していない＝worker_eval の既定」の意味で、null と同じではない。
+        "worker_arm": worker_arm(args),
     }
     write_json(run / "manifest.json", manifest)
     failed = False

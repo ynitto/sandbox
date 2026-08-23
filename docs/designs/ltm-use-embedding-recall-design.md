@@ -1,7 +1,7 @@
 # ltm-use 埋め込み recall — 用語を忘れた検索だけを救う
 
-> **ステータス**: Draft（実測済み・未実装）
-> **作成日**: 2026-08-11
+> **ステータス**: 実装済み（2026-08-23。`.github/skills/ltm-use/scripts/embeddings.py`・`recall_memory.py` v5.5.0）
+> **作成日**: 2026-08-11 / 実装 2026-08-23
 > **前提**: ltm-use v4 の TF-IDF ハイブリッド recall（`recall_memory.search_with_index`）が稼働中
 > **測定**: [`tools/agent-tools/eval/retrieval_eval.py`](../../tools/agent-tools/eval/retrieval_eval.py)
 
@@ -74,12 +74,13 @@ recall(query)
 
 ## 索引
 
-- **置き場**: `<memory_dir>/.embeddings.json`（TF-IDF コーパスの隣）。本文のハッシュを鍵に
-  ベクトルを持つので、記憶を書き換えれば自動で作り直される。
+- **置き場**: `<memory_dir>/.memory-embeddings.json`（TF-IDF コーパス `.memory-corpus.json` の隣。
+  命名は兄弟に揃えた）。本文のハッシュを鍵に持つので、記憶を書き換えれば古い行は補修対象になる。
 - **規模**: 1024 次元。実測で 210 件の索引付けに 130 秒（約 0.6 秒/件）。記憶 64 件なら 40 秒。
   ファイルは数 MB で、RAM もほぼ食わない（モデル常駐 1.2 GB）。
-- **作る契機**: `save_memory` の直後に 1 件だけ追加（0.6 秒）と、`build_index.py` の補修パス。
-  **recall では作らない**——検索が数十秒待つ設計にはしない。
+- **作る契機**: `save_memory` の直後に 1 件だけ追加（0.6 秒）と、`build_index.py --embeddings`
+  の補修パス（新規・本文が変わった行だけ埋め込む）。**recall では作らない**——検索が数十秒待つ
+  設計にはしない。索引が無い間は recall は従来どおりで、最初の 1 回だけ人が作る（opt-in）。
 - **索引が無い記憶**: 段構えが発火しても素通しする（その記憶は埋め込み側の候補から外れる）。
   黙って外すと「入れたのに効かない」になるので、補修が要る件数を `build_index` が出す。
 
@@ -113,6 +114,29 @@ recall(query)
 ```bash
 python3 tools/agent-tools/eval/retrieval_eval.py --model bge-m3 --k 5
 ```
+
+## 実装と受け入れの実測（2026-08-23）
+
+設計どおり段構えで入れた。`recall_memory.search_with_index` は TF-IDF の最上位コサインを
+見て、しきい値未満のときだけ `embeddings.query_scores` で採点し直す（合成なし・埋め込み段では
+body の語一致ブーストも足さない）。契約テストは `tests/test_embedding_cascade.py`（ollama 不要）。
+
+| 腕 | 空間 | lexical hit@1 / hit@5 / MRR | paraphrase hit@1 / hit@5 / MRR |
+|---|---|---|---|
+| TF-IDF 単独 | ハーネス（261 件・妨害込み） | 85% / 100% / 0.889 | 30% / 35% / 0.325 |
+| **段構え 0.11** | ハーネス（同上） | **90% / 100% / 0.950** | **50% / 60% / 0.560** |
+| 現行 recall | **本番経路**（実記憶 75 件・妨害なし） | 60% / 80% / 0.665 | 15% / 25% / 0.213 |
+| **段構え 0.11** | 本番経路（同上） | **85% / 95% / 0.886** | **55% / 85% / 0.682** |
+
+受け入れ基準（paraphrase hit@5 ≥ 55% かつ lexical hit@5 ≥ 95%）は**両方の空間で満たした**。
+ハーネスの腕は `retrieval_eval.py` に `cascade_ranker` として足し、`--cascade-threshold` で掃引できる。
+
+読み方で 1 つ補う。**本番の TF-IDF はハーネスと同じ空間ではない**——本番のコーパスは
+title / summary / tags だけで作る（本文は読まない）ので、ハーネス（本文全文）より最上位コサインが
+低く出る。本番の実測では lexical 20 問中 6 問がしきい値未満で埋め込みへ落ちたが、その 6 問は
+埋め込みでも当たり、lexical の hit@5 は 80% → 95% へ**上がった**（下がらないどころではない）。
+しきい値 0.11 はこの空間でも谷にあった（lexical の最上位は 0.047〜0.426・paraphrase は 0.018〜0.233）
+が、掃引し直したわけではない。記憶が数百件へ増えたら「未決」の 1 点目のとおり測り直す。
 
 ## 未決
 

@@ -51,6 +51,11 @@ DEFAULT_CONFIG = {
     "semi_auto_promote_threshold": 70,
     "cleanup_inactive_days": 30,
     "cleanup_archived_days": 60,
+    # 埋め込み段（embeddings.py）。索引（.memory-embeddings.json）があるときだけ働く。
+    # threshold は「TF-IDF の最上位コサインがこれ未満なら埋め込みで採点し直す」の境界。
+    # 設計書の掃引値 0.11（210 件コーパス）。記憶が数百件へ増えたら測り直す。
+    "embedding_model": "bge-m3",
+    "embedding_threshold": 0.11,
 }
 
 INDEX_FILENAME = ".memory-index.json"

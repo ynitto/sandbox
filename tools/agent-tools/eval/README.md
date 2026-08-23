@@ -39,7 +39,17 @@ manifest の更新を忘れると coverage 測定とテストが失敗する。`
 python3 tools/agent-tools/eval/run_suite.py --model qwen3.5:9b --dry-run
 python3 tools/agent-tools/eval/run_suite.py --model qwen3.5:9b --cli agent-ollama
 python3 tools/agent-tools/eval/run_suite.py --model qwen3.5:9b --cli aider --label aider
+# worker の腕（引き直し）を標準測定の経路で回す。条件は manifest の worker_arm に残る
+python3 tools/agent-tools/eval/run_suite.py --model gemma4:e4b --cli aider --units worker \
+  --tasks T1gate,T2gate,T3gate --agent-policy off \
+  --temperature 1.0 --top-p 0.95 --top-k 64 --resample 3 --label resample3
 ```
+
+worker の腕を変える軸（`--tasks` / `--agent-policy` / `--num-ctx` / `--num-predict` /
+`--temperature` / `--top-p` / `--top-k` / `--resample`）は `run_suite` を素通りして
+`worker_eval` へ届き、**指定したものだけ**が manifest の `worker_arm` に flag 名のまま残る。
+未指定は 1 バイトも渡さない——`worker_eval` が区別している「未宣言」と「既定値を明示」を
+run_suite が潰さないため（契約テスト `test_run_suite.py`）。
 
 結果は `results/<UTC時刻>-<model>-<label>/` の下へ保存する。run 直下の `manifest.json` が
 比較条件、単位ごとの `command.txt` が再現コマンド、`console.log` が生ログ、`ledger.jsonl`
@@ -178,6 +188,19 @@ qwen3.5:9b の品質劣化の真因は偽 done だった。自分の仕事を自
 
 `timeout` が多いなら予算か暴走、`returned` が多いなら能力。この 2 つを取り違えると
 打ち手を間違える。
+
+### n の読み方（2026-08-23・計画 2026-08-22 §4.2 C6）
+
+本書の結論はほぼ **n = 3** で、これは率ではなく**存在の証明**である。線引きを 3 つ置く。
+
+- **`3/3` は「起きる」、`0/3` は「起きない」の証拠としてだけ読む。** 100% / 0% とは書かない。
+  n = 3 の 95% 区間は 3/3 でも下端 44%、0/3 でも上端 56% である（Wilson）。
+- **n = 3 同士の差は「全滅 ⇔ 全通」だけを差として読む。** 1/3 と 2/3 の差は雑音で説明できる。
+  P10 の「T1 0/3 → 1/3」は「揺れた」の証拠であって改善率ではない——本文もそう書いてある。
+- **率として比較したいなら同じ腕で n ≥ 10 を引く**（区間幅が ±30% を切る）。12b の暴走 2/27 は
+  区間 2〜23% で、「発生率の推定」としてはまだ粗い（存在の証明 + 上限の目安）。
+
+台帳は常に `k/n` の形で残し、`n` を落とした要約を作らない。
 
 ## 2026-08-10 の実測 — qwen3.5:9b
 
@@ -603,6 +626,16 @@ hit@1 95%・hit@5 100% と天井に張り付き、どの腕も差が出なかっ
 artifacts の参照解決）と索引の持ち方は設計書に切る。リランカーは ollama に rerank の口が
 無いため、この測定には含めていない。
 
+**2026-08-23 追記 — 段構えを実装し、同じハーネスで受け入れた。** 設計書
+（[ltm-use-embedding-recall-design](../../../docs/designs/ltm-use-embedding-recall-design.md)）の
+腕「TF-IDF の最上位コサインが 0.11 未満のときだけ bge-m3」を `cascade_ranker` として足した
+（`--cascade-threshold` で掃引できる）。再測（261 件・妨害込み）: lexical 90% / 100% / 0.950、
+paraphrase 50% / 60% / 0.560——bge-m3 単独と同じ精度を、lexical 側の経路を 1 行も変えずに出す。
+本番経路（ltm-use の `recall_memory.search_with_index`・実記憶 75 件）でも lexical hit@5
+80% → 95%・paraphrase 25% → 85% で、受け入れ基準（paraphrase ≥ 55% かつ lexical ≥ 95%）を
+両空間で満たした。本番の TF-IDF は title / summary / tags だけで作るためハーネスより弱く、
+しきい値未満へ落ちる lexical 問が 6/20 あったが、埋め込みで拾えたので下がらない。
+
 ## 2026-08-13 の実測 — 事前分解は効くか（tier:basic / gemma4:e4b × aider）
 
 ```bash
@@ -846,13 +879,22 @@ c4 を選んだ——多基準の取り違えは本番経路でも再現する�
 
 ```bash
 # 基準線（引き直さない。従来の腕と同一条件）
-python3 worker_eval.py --model gemma4:e4b --cli aider --tasks T1gate,T2gate --repeat 3 \
+python3 worker_eval.py --model gemma4:e4b --cli aider --tasks T1gate,T2gate,T3gate --repeat 3 \
   --agent-policy off --temperature 1.0 --top-p 0.95 --top-k 64
 
 # 引き直し腕（他は基準線と同一。変えるのは --resample だけ）
-python3 worker_eval.py --model gemma4:e4b --cli aider --tasks T1gate,T2gate --repeat 3 \
+python3 worker_eval.py --model gemma4:e4b --cli aider --tasks T1gate,T2gate,T3gate --repeat 3 \
   --agent-policy off --temperature 1.0 --top-p 0.95 --top-k 64 --resample 3
 ```
+
+**族を分けて読む。** 失敗には 2 族ある（[gate-generality](results/archive/2026-08-14-gate-generality-report.md)）。
+(a) 仕様の読み違い族は真偽ゲート + 再投入で直り、P10 で sampling が失敗を揺らしたのもここ
+（T1）。(b) 作業の丸ごと欠落族（T3gate——9 attempt が同文 `C3 fail: 契約テストが追加されて
+いない`）を推奨 sampling で引き直した記録は**無い**。台帳の `family`（`a` / `b`）と集計末尾の
+「族別 escalate」で分けて読み、**引き直しの採否は (a) で決める**。(b) が動かないのは引き直しの
+失敗ではなく適用範囲の外で、答えは成果物を 1 つに割ること（`nodecontract.local_patch_blockers`
+の適格条件を満たす形へ分解する）。T1gate だけで測って「escalate が下がった」と読むと、
+運用で escalate を出している (b) 族に効かない腕を入れることになる。
 
 **多数決ではない。** プロンプト・多数決の 4 レバーが全滅したのは filter / judge の
 **判定**領域で、あちらは判定をモデルに訊いた。ここはモデルに任せるのは生成だけで、
@@ -874,9 +916,11 @@ python3 worker_eval.py --model gemma4:e4b --cli aider --tasks T1gate,T2gate --re
   契約テストで固定してある（`ResampleTest.test_default_arm_never_touches_the_worktree`）。
 
 読むのは受入率だけではない。台帳へ次が増えた: `resample`（宣言した上限）・
-`draws`（実際に使った本数）・`escalate`（ゲート付き手順が全部使い切って通らなかったか）。
+`draws`（実際に使った本数）・`escalate`（ゲート付き手順が全部使い切って通らなかったか）・
+`family`（失敗の族 a / b。課題ごとに宣言し、宣言漏れは契約テストで落とす）。
 `retry_count` は**診断つき再投入の回数**を数えるよう定義を直した（引き直しは初回投入なので
 数に入れない）。引き直しの無い既存の腕では従来と同じ値が出る。
 
-採用条件: **escalate 率が下がり、対照群（T2gate）に退行がないこと。** 上限を上げても
-`draws` が伸びていないなら、受入の差は引き直し以外の何かで説明しないといけない。
+採用条件: **(a) 族の escalate 率が下がり、対照群（T2gate）に退行がないこと。** 上限を上げても
+`draws` が伸びていないなら、受入の差は引き直し以外の何かで説明しないといけない。(b) 族
+（T3gate）は同じ腕で必ず一緒に引き、動かなければ「引き直しの適用範囲外」として記録する。

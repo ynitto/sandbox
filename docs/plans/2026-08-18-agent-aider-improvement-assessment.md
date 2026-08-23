@@ -300,10 +300,20 @@ adapter と eval seam の実装は **A/B評価を開始できる段階**まで�
 
 ### Phase 4: 運用側
 
-1. [ ] execution resolver で局所修正の適格条件を判定する。
-2. [ ] checker がない場合は自動選択しない。
-3. [ ] checker fail 時は同じ局所 step を限定回数だけ再投入する。
-4. [ ] retry exhaustion 後のみ別候補へ昇格する。
+実装と突き合わせ直した（2026-08-23。[2026-08-22 計画 §4.2 A2](2026-08-22-local-llm-further-utilization-and-runtime-tuning-assessment.md)）。
+
+1. [~] 局所修正の適格条件は `agentcore.nodecontract.local_patch_blockers()` が機械判定する。
+   ただし呼び出しは `agent_flow/work.py` の claim 時 1 か所で、**理由を claim / result のメタへ残すだけ**
+   ——`executionresolver` は blockers を読まない（観測まで。拒否には配線していない）。
+2. [ ] checker が無い場合の自動選択拒否は未配線。**当面は配線しない**と決めた——Resolver が拒否するには
+   候補側に「局所修正専用」という能力属性が要り、selection_policy の schema・Compiler（agent-audit）・
+   dashboard に波及する。代わりに (1) の観測値で不適格割り当ての頻度を数え、ハーネスの escalate 率は
+   **運用値ではなく上限**として読む。再評価条件: escalate した aider ノードのうち blockers 付きが
+   無視できない割合（目安 1/3）を占めたとき。
+3. [x] checker fail 時の限定再投入は agent-loop の statemachine（gate の `max_retries`・診断つき再投入）
+   と、worker_eval の `run_steps` に入っている。
+4. [x] 上限到達での昇格は statemachine の `check_on_exhausted`（既定 `escalate`）。
+   Resolver 側も `retry_limit` 到達で次候補へ回す（`fallback_candidates`）。
 
 ### Phase 5: モデル / ハーネス比較
 

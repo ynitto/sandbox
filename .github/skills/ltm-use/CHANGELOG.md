@@ -2,6 +2,7 @@
 
 ## 目次
 
+- [v5.5.0](#v550-2026-08-23)
 - [v5.4.0](#v540-2026-06-28)
 - [v5.3.3](#v533-2026-05-31)
 - [v5.3.2](#v532-2026-05-30)
@@ -13,6 +14,22 @@
 - [v4.0.0](#v400)
 - [v3.0.0](#v300)
 - [v2.0.0](#v200)
+
+## v5.5.0（2026-08-23）
+
+### Added
+
+- **`embeddings.py`**（新規）: ollama の埋め込みモデル（既定 bge-m3）で記憶を索引化し、
+  recall の**段構え**に使う。索引は `<memory_dir>/.memory-embeddings.json`（本文ハッシュ付き。
+  記憶を書き換えると古い行は補修対象になる）。`build_index.py --embeddings` で作る / 補修する。
+  save 時は 1 件だけ追加する（索引があるときだけ・ollama が落ちていれば黙ってスキップ）。
+- **`recall_memory.py`**: TF-IDF の最上位コサインが `embedding_threshold`（既定 0.11）未満
+  ＝用語が重ならない訊き方のときだけ、埋め込みのコサインで採点し直す。合成（RRF）はしない
+  ——対等に混ぜると paraphrase が 60% → 40% に悪化する実測による。索引が無い・ollama 停止・
+  しきい値以上なら従来と同じ経路。結果に `ranker`（`tfidf` / `embedding`）を持つ。
+  実測（本番経路・実記憶 75 件）: lexical hit@5 80% → 95%、paraphrase hit@5 25% → 85%。
+- **設定**: `embedding_model`（既定 `bge-m3`・空で無効）・`embedding_threshold`（既定 0.11）。
+- **`tests/test_embedding_cascade.py`**: 段構えの契約テスト（ollama を呼ばない）。
 
 ## v5.4.0（2026-06-28）
 

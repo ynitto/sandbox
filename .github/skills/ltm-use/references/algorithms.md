@@ -54,6 +54,15 @@ meta_boost = 0.25 * (access_count / 20 上限)
   - `freshness_decay`: 新しいほど高スコア（0日=1.0, 30日=0.5, 180日以上=0）
   - `active_status`: active=1.0, archived=0.3, deprecated=0
 
+### 段構え（v5.5.0・埋め込み）
+
+TF-IDF の**最上位コサインが `embedding_threshold`（既定 0.11）未満**のときだけ、上の式を捨てて
+埋め込み（bge-m3）のコサインで採点し直す。用語が重なる訊き方では式も経路も変わらない。
+合成はしない（対等な RRF は用語を忘れた訊き方を 60% → 40% に悪化させた）。埋め込み段では
+body の語一致ブーストも足さない（コサインの差は数百分の一で、上書きしてしまう）。
+索引が無い・ollama が落ちている・モデル未取得なら段ごと飛ばす——recall は失敗しない。
+設計: `docs/designs/ltm-use-embedding-recall-design.md`。
+
 ### 検索の仕組み（2段階）
 
 1. **インデックス検索**: `.memory-index.json` で title/summary/tags を高速スコアリング

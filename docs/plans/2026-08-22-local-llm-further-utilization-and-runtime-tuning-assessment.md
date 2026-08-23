@@ -319,6 +319,11 @@ escalate になる。戻すのが要点で、前の抽選の成果を残した�
 python3 -m agentcore.context_slice eval/billing.py --symbol prorate -o /tmp/excerpt.py
 ```
 
+段 3 の A/B で**固定する条件**（§4.2 C3）: 「read 調査でファイルを絞る段」は両腕とも同じに
+する——スライスあり / なしの差だけを測る。read 調査（next-eval-plan §2 順 5）は未評価のまま
+なので、上流を動かすと差の出所が分からなくなる。read 調査を測るのは別の腕で、先にやる必要は
+ない（スライスは「対象が計画時に決まっている」適格条件の中だけで効けばよい）。
+
 ## 4.2 未検討項目の棚卸し（2026-08-23）
 
 `docs/plans/` と `tools/agent-tools/eval/` を横断し、**どの計画にも入っていない項目**と
@@ -412,6 +417,34 @@ README は manifest を「比較条件」と説明しているが、**腕を変�
 
 段 0 を段 1 の前へ置く理由は P10 のときと同じである——**切り分けを入れないまま腕を引くと、
 「escalate が下がらなかった」の原因が引き直しなのか (b) 族なのか分離できない数字が 1 本増える**。
+
+## 4.3 消化の記録（2026-08-23）
+
+段 0 と独立枠を消化した。実測が要るもの（段 1〜3 の腕・B2 の実ロード）と後続（B1・C2）は
+残し、それぞれ入口を具体化した。`[x]` は「閉じた」、`[~]` は「決めた / 机上まで」、
+`[ ]` は「未着手（入口だけ書いた）」。
+
+| # | 状態 | 何をしたか | 置き場 |
+|---|---|---|---|
+| A1 | [x] | worker_eval の全課題に失敗の族 `family`（a / b）を宣言させ、台帳へ残し、集計末尾に族別 escalate を出す。引き直しの推奨コマンドへ T3gate を加え、採用条件を「**(a) 族**の escalate 率が下がること」に改めた。宣言漏れは契約テストで落ちる | `eval/worker_eval.py` / `test_worker_eval.py` / README「族を分けて読む」 |
+| A2 | [~] | **拒否は当面配線しない**と決めた。Resolver が拒否するには候補側に「局所修正専用」の能力属性が要り、selection_policy の schema・Compiler・dashboard へ波及する。代わりに claim メタの `local_patch_blockers`（観測）で不適格割り当ての頻度を数え、ハーネスの escalate 率は**運用値でなく上限**として読む。再評価条件: escalate した aider ノードの 1/3 以上が blockers 付きになったとき。assessment の Phase 4 チェックリストは実装と突き合わせ直した（1・2 は観測まで、3・4 は入っている） | [2026-08-18 assessment §9 Phase 4](2026-08-18-agent-aider-improvement-assessment.md) |
+| A3 | [x] | `run_suite.py` が `--tasks / --agent-policy / --num-ctx / --num-predict / --temperature / --top-p / --top-k / --resample` を worker_eval へ透過し、**指定したものだけ**を manifest の `worker_arm` に flag 名のまま残す。未指定は 1 バイトも渡さない | `eval/run_suite.py` / `test_run_suite.py` |
+| B1 | [ ] | 後続のまま。入口: `coverage.json` の missing を planner → project:verify → dashboard doctor の順に、text_eval の型（構成的正解・決定的チェッカー・本番プロンプトビルダーを呼ぶ）で 1 セルずつ | `eval/text_eval.py` を継ぐ |
+| B2 | [~] | **机上は出た**: ollama registry の manifest で `gemma4:26b`（26B A4B）の重みは **16.75 GiB**（e4b 8.95 / 12b 7.04）。**16 GB 機では重みだけで物理 RAM を超えるので不成立で閉じる。** 32 GB 機では単独常駐なら入る見込み（+KV）だが、e4b（8.95）と同居すると 25.7 GiB + KV で際どい——`keep_alive` で両方残す運用は前提にできない。実ロード（KV 込み・スワップ有無）は 16.75 GiB の pull が要るので、**ダウンロードの承認待ち** | 本節 |
+| B3 | [~] | **暴走率**: 12b 単発 JSON 呼び出しの停止は 2/27 → 95% 区間 **2.1〜23.4%**（Wilson）。`--stall-timeout 180` なら 1 呼び出しの期待コストは 13 s（区間 4〜42 s）で、「再投入 1 回で回収」の形は保てる。**縮退基準を決めた**: 同じ呼び出しで再投入後も続いたら（2 回連続）e4b へ縮退。verify CLI 定義の hint に書いた。**機械配線は未**——Resolver は `attempt_counts` を受けて retry_limit 到達で次候補（e4b）を選べるが、flow の `run_agent` は attempt_counts を渡していない（`agent_flow/agent.py` の `_control_policy_decision`）。transient を使い切った時点で再解決 → 次候補で 1 回だけ呼び直す配線が次の 1 手 | `agents/ollama-verify.json` |
+| B4 | [x] | **実装し、受け入れ基準を両空間で満たした。** ltm-use v5.5.0: `embeddings.py`（索引 `.memory-embeddings.json`・`build_index --embeddings`・save 時 1 件追加）、`recall_memory` の段構え（TF-IDF 最上位 < 0.11 のときだけ bge-m3・合成なし・失敗しない）。ハーネス（261 件・妨害込み）: paraphrase hit@5 35% → 60%、lexical 100% 維持。本番経路（実記憶 75 件）: lexical 80% → 95%、paraphrase 25% → 85%。本番の TF-IDF は title / summary / tags だけで作るので、ハーネスより弱く、しきい値未満へ落ちる lexical が 6/20 あったが埋め込みで拾えた | [設計書](../designs/ltm-use-embedding-recall-design.md) / `.github/skills/ltm-use` / `eval/retrieval_eval.py`（`cascade_ranker`） |
+| C1 | [ ] | 案 B（段 2）待ち。変更なし | — |
+| C2 | [ ] | 後続のまま。入口: 「モデルは候補だけ・機械が存在チェック」の腕を judge_eval の型で 1 本（grep パターン → `git grep` で当たるか、パス候補 → 存在、テスト名 → 収集できるか） | `eval/judge_eval.py` を継ぐ |
+| C3 | [x] | 案 2 の A/B で「read 調査でファイルを絞る段」を固定条件にすると §4.1 へ書いた | §4.1 案 2 |
+| C4 | [ ] | B4 を入れたので測れる状態にはなった。しきい値のコーパス依存は本番空間の値（lexical 最上位 0.047〜0.426・paraphrase 0.018〜0.233）を残したが、掃引し直してはいない。クエリ埋め込みのキャッシュ・全文 vs 要約は未測 | 設計書「未決」 |
+| C5 | [ ] | 未測のまま。レビュー役を 12b に置く判断は構成的正解だけで下している事実を変えない | — |
+| C6 | [x] | 読み方の線引きを README に置いた: `3/3` は存在の証明、n = 3 同士は「全滅 ⇔ 全通」だけを差として読む、率として比較するなら n ≥ 10 | eval README「n の読み方」 |
+
+消化の途中で見つけたこと。**この Mac の `~/.agents/agents/aider.json` は 2026-08-15 の配布のままで、
+`--agent-policy gemma4-e4b-reliability-v1`（2026-08-19 に定義へ入れた）を持たない。** eval の契約テスト
+`test_unspecified_arm_inherits_shipped_policy` がローカルで落ちるのはこのためで、CI（クリーンな
+木）では通る。この機で aider 経路を回すなら先に `install.sh` を再実行する（memory の
+「直したはずが直らないときは zipapp / 配布物の中身を疑え」と同じ族）。
 
 ## 5. やらないこと
 

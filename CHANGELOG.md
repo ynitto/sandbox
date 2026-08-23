@@ -7,6 +7,49 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### ローカル LLM の追加活用 — 未検討項目の消化（段 0 と独立枠）
+
+[2026-08-22 の検討 §4.2](docs/plans/2026-08-22-local-llm-further-utilization-and-runtime-tuning-assessment.md)
+で棚卸しした項目のうち、実測を待たずに閉じられるものを消化した（記録は同 §4.3）。
+
+#### ltm-use v5.5.0 — 埋め込みの段構え（bge-m3）を実装した（B4）
+
+[設計書](docs/designs/ltm-use-embedding-recall-design.md)（Draft・実測済み）どおりに入れ、
+受け入れ基準をハーネスと本番経路の両方で満たした。
+
+- `.github/skills/ltm-use/scripts/embeddings.py`（新規）— ollama `/api/embed` で記憶を索引化
+  （`<memory_dir>/.memory-embeddings.json`・本文ハッシュ付き）。`build_index.py --embeddings` で
+  作る / 補修する（新規・本文が変わった行だけ）。save 時は 1 件だけ追加する。
+- `recall_memory.search_with_index` — **TF-IDF の最上位コサインが `embedding_threshold`
+  （既定 0.11）未満のときだけ**埋め込みのコサインで採点し直す。合成（RRF）はしない。索引が
+  無い・ollama 停止・しきい値以上なら従来と同じ経路で、**recall は失敗しない**。
+  結果に `ranker`（`tfidf` / `embedding`）を持つ。
+- 実測。ハーネス（261 件・妨害込み）: paraphrase hit@5 35% → 60%、lexical 100% 維持。
+  本番経路（実記憶 75 件）: lexical hit@5 80% → 95%、paraphrase 25% → 85%。
+  `eval/retrieval_eval.py` に `cascade_ranker`（`--cascade-threshold`）を足した。
+- 契約テスト `tests/test_embedding_cascade.py`（ollama を呼ばない）。
+
+#### 評価ハーネス — 腕の条件を落とさない（A1 / A3 / C6）
+
+- `run_suite.py` が worker の腕の条件（`--tasks / --agent-policy / --num-ctx / --num-predict /
+  sampling / --resample`）を透過し、**指定したものだけ**を manifest の `worker_arm` に残す。
+  未指定は 1 バイトも渡さない（`test_run_suite.py`）。
+- `worker_eval.py` の全課題に失敗の族 `family`（a: 読み違い / b: 丸ごと欠落）を宣言させ、
+  台帳へ残し、集計末尾に族別 escalate を出す。引き直しの採用条件は **(a) 族**の escalate 率で
+  読む（(b) が動かないのは引き直しの適用範囲外で、答えは成果物を割ること）。
+- README に「n の読み方」を置いた（`3/3` は存在の証明、n = 3 同士は全滅 ⇔ 全通だけが差、
+  率なら n ≥ 10）。
+
+#### 判断と机上（A2 / B2 / B3）
+
+- 局所修正の適格判定は**当面、拒否へ配線しない**（観測のまま。escalate 率は上限として読む。
+  再評価条件つき）。[2026-08-18 assessment](docs/plans/2026-08-18-agent-aider-improvement-assessment.md)
+  の Phase 4 チェックリストを実装と突き合わせ直した。
+- `gemma4:26b`（MoE）の重みは registry manifest で 16.75 GiB。16 GB 機では不成立で閉じ、
+  32 GB 機の実ロードは pull の承認待ち。
+- 12b 検証役の停止は 2/27（95% 区間 2〜23%）。縮退基準「再投入後も続いたら e4b」を
+  `agents/ollama-verify.json` の hint に書いた（Resolver への機械配線は次の 1 手）。
+
 ### ローカル LLM の追加活用 — 引き直しの腕と、決定的コンテキスト・スライシング
 
 [2026-08-22 の検討](docs/plans/2026-08-22-local-llm-further-utilization-and-runtime-tuning-assessment.md)

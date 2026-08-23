@@ -129,6 +129,11 @@ def tfidf_ranker(docs):
         scores = [(similarity.cosine_similarity(qv, v), docs[i][0]) for i, v in enumerate(vectors)]
         return [name for _, name in sorted(scores, key=lambda s: -s[0])]
 
+    def top_score(query: str) -> float:
+        qv = similarity.compute_tfidf_vector(similarity.tokenize(query), idf)
+        return max((similarity.cosine_similarity(qv, v) for v in vectors), default=0.0)
+
+    rank.top_score = top_score      # 段構えの判定材料（最上位コサイン）
     return rank
 
 
@@ -176,6 +181,15 @@ def embed_ranker(docs, model: str, chars: int, cache: "pathlib.Path | None" = No
         qv = embed(model, [query])[0]
         scores = [(cosine(qv, v), docs[i][0]) for i, v in enumerate(vectors)]
         return [name for _, name in sorted(scores, key=lambda s: -s[0])]
+
+    return rank
+
+
+def cascade_ranker(tfidf, emb, threshold: float):
+    """段構え（設計 ltm-use-embedding-recall-design）— 合成せず、TF-IDF の最上位コサインが
+    しきい値未満のときだけ埋め込みへ落とす。本番 `recall_memory.search_with_index` と同じ規則。"""
+    def rank(query: str):
+        return emb(query) if tfidf.top_score(query) < threshold else tfidf(query)
 
     return rank
 
@@ -231,6 +245,8 @@ def main() -> int:
                     help="記憶だけを対象にする（妨害文書を混ぜない）")
     ap.add_argument("--rrf-weight", type=float, default=1.0,
                     help="RRF で埋め込み側に掛ける重み（1.0 = 対等）")
+    ap.add_argument("--cascade-threshold", type=float, default=0.11,
+                    help="段構えのしきい値（TF-IDF 最上位コサインがこれ未満なら埋め込み）")
     ap.add_argument("--cache", default="/tmp/agent-retrieval-eval-index.json",
                     help="埋め込み索引のキャッシュ先")
     ap.add_argument("--output", type=pathlib.Path,
@@ -260,6 +276,8 @@ def main() -> int:
             arms.append((f"埋め込み（{args.model}）", emb))
             arms.append((f"RRF 併用（TF-IDF 1 : {args.model} {args.rrf_weight:g}）",
                          hybrid_ranker([arms[0][1], emb], weights=(1.0, args.rrf_weight))))
+            arms.append((f"段構え（TF-IDF 最上位 < {args.cascade_threshold:g} で {args.model}）",
+                         cascade_ranker(arms[0][1], emb, args.cascade_threshold)))
 
     report = {"model": args.model, "k": args.k, "chars": args.chars,
               "documents": len(docs), "memories": memories, "styles": {}}

@@ -23,6 +23,7 @@ import re
 import subprocess
 import sys
 
+import embeddings
 import memory_utils
 import similarity
 
@@ -122,6 +123,11 @@ def search_with_index(memory_dir: str, keywords: list[str],
     3. v4（3軸）: 0.5*keyword + 0.35*tfidf + 0.15*meta_boost
        v5（4軸）: 0.4*keyword + 0.3*tfidf + 0.15*meta_boost + 0.15*context_boost
     4. 上位候補のみ実ファイルを読み込み body キーワードスコアを加算
+
+    段構え（設計 ltm-use-embedding-recall-design）: TF-IDF の最上位コサインが
+    しきい値未満＝用語が重ならない訊き方のときだけ、埋め込み（embeddings.py）で採点し直す。
+    合成はしない（対等な RRF は paraphrase を 60% → 40% に悪化させた実測）。
+    索引が無い・ollama が落ちている・しきい値以上なら、この関数は従来と 1 行も変わらない。
     """
     index = memory_utils.load_index(memory_dir)
     if not index.get("entries"):
@@ -147,6 +153,9 @@ def search_with_index(memory_dir: str, keywords: list[str],
 
     # ── ステップ1: インデックスでフィルタ＆スコアリング ──
     candidates = []
+    filtered = []            # フィルタを通った entry（埋め込み段の候補母集団）
+    top_tfidf = 0.0          # 段構えの判定材料（TF-IDF の最上位コサイン）
+    ranker = "tfidf"
     for entry in entries:
         if status_filter and entry.get("status", "active") != status_filter:
             continue
@@ -159,11 +168,13 @@ def search_with_index(memory_dir: str, keywords: list[str],
                 continue
 
         kw_score = _score_index_entry(entry, keywords)
+        filtered.append(entry)
 
         if query_vector and corpus:
             mem_id = entry.get("id", "")
             doc_vec = corpus.get("doc_vectors", {}).get(mem_id, {})
             tfidf_sim = similarity.cosine_similarity(query_vector, doc_vec) if doc_vec else 0.0
+            top_tfidf = max(top_tfidf, tfidf_sim)
             meta_boost = _compute_meta_boost(entry)
             kw_max = len(keywords) * 20
             kw_norm = min(kw_score / kw_max, 1.0) if kw_max > 0 else 0.0
@@ -184,6 +195,17 @@ def search_with_index(memory_dir: str, keywords: list[str],
             if kw_score > 0:
                 candidates.append((kw_score, entry, kw_score))
 
+    # ── 段構え: TF-IDF が自信を持てないときだけ埋め込みで採点し直す ──
+    if query_vector and corpus and embeddings.enabled(memory_dir):
+        threshold = float(memory_utils.load_config().get("embedding_threshold", 0.11))
+        if top_tfidf < threshold:
+            scores = embeddings.query_scores(memory_dir, " ".join(keywords))
+            if scores:
+                dense = [(scores[e.get("id", "")], e, _score_index_entry(e, keywords))
+                         for e in filtered if e.get("id", "") in scores]
+                if dense:
+                    candidates, ranker = dense, "embedding"
+
     if not candidates:
         return []
 
@@ -201,8 +223,10 @@ def search_with_index(memory_dir: str, keywords: list[str],
                 text = f.read()
             meta, body = memory_utils.parse_frontmatter(text)
             body_score = sum(min(body.lower().count(kw.lower()), 5) for kw in keywords)
-            # body_score を 0-1 スケールに正規化して軽い補正として加算（最大 +0.2）
-            body_boost = min(body_score / 50.0, 0.2)
+            # body_score を 0-1 スケールに正規化して軽い補正として加算（最大 +0.2）。
+            # 埋め込み段では足さない——コサインの差は数百分の一で、語の一致の補正が順位を
+            # 上書きしてしまう（用語を忘れた訊き方では一致自体がほぼ無い）。
+            body_boost = min(body_score / 50.0, 0.2) if ranker == "tfidf" else 0.0
             final_score = base_score + body_boost
             results.append({
                 "filepath": fpath,
@@ -212,6 +236,7 @@ def search_with_index(memory_dir: str, keywords: list[str],
                 "meta": meta,
                 "body": body,
                 "entry": entry,
+                "ranker": ranker,
             })
         except (OSError, IOError):
             pass

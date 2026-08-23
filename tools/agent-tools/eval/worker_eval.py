@@ -333,8 +333,17 @@ T3_GOAL = ("schemas/node-budget-summary.schema.json を追加し、status/<node>
            "壊れない互換性を担保する契約テストを tools/agent-project 配下に追加する。"
            "変更してよいのは tools/agent-project 配下とリポジトリルートの schemas/ のみ。")
 
+# 失敗の族（gate-generality 2026-08-14 / 計画 2026-08-22 §4.2 A1）。
+#   (a) 仕様の読み違い族 —— 真偽ゲート + 再投入で直る。T1* / T2* / T4*。
+#   (b) 作業の丸ごと欠落族 —— 成果物が 2 つ以上で、片方を一度も作らない。T3 / T3gate
+#       （9 attempt が同文 `C3 fail: 契約テストが追加されていない` で 0/3）。
+# 引き直し（--resample）が拾えるのは**揺れる**失敗で、(a) で観測された（P10）。(b) を
+# 引き直した記録は無い。escalate 率は族を分けて読む——混ぜると「下がらなかった」の原因が
+# 引き直しなのか (b) なのか分離できない。(b) が動かないときの答えは引き直しではなく、
+# 成果物を 1 つに割ること（nodecontract.local_patch_blockers の適格条件を満たす形へ）。
 TASKS = {
     "T1": dict(
+        family="a",
         seed=seed_t1, check=check_t1,
         files=("eval/humansize.py", "eval/test_humansize.py"),
         test_cmd=f"{VENV_PY} -m pytest -q eval",
@@ -346,6 +355,7 @@ TASKS = {
               "テストが通ることを確認する。eval/ 以外は変更しない。"),
     ),
     "T1min": dict(
+        family="a",
         seed=seed_t1, check=check_t1min,
         files=("eval/humansize.py",),
         request=T1_REQUEST, goal=T1_IMPL_GOAL,
@@ -355,11 +365,13 @@ TASKS = {
     # 実装ステップだけを使った対照 2 本。再試行の回数は同じ 1 回で、**渡す材料だけ**が違う。
     # 一発の T1min（再試行なし）が基準線。
     "T1impl_diag": dict(
+        family="a",
         seed=seed_t1, check=check_t1min, request=T1_REQUEST,
         steps=[dict(request=T1_REQUEST, goal=T1_IMPL_GOAL, files=("eval/humansize.py",),
                     gate=probe_humansize, max_retries=1)],
     ),
     "T1impl_blind": dict(
+        family="a",
         seed=seed_t1, check=check_t1min, request=T1_REQUEST,
         steps=[dict(request=T1_REQUEST, goal=T1_IMPL_GOAL, files=("eval/humansize.py",),
                     gate=gate_blind, max_retries=1)],
@@ -367,6 +379,7 @@ TASKS = {
     # ゲートは付くが `max_retries=0` なので**一度も作用しない**（呼び出し回数は T1seq と
     # 同じ 2 回）。合否を分けずに「どの手順で壊れたか」だけを台帳へ残すための観測。
     "T1seq": dict(
+        family="a",
         seed=seed_t1, check=check_t1, request=T1_REQUEST,
         steps=[dict(request=T1_REQUEST, goal=T1_IMPL_GOAL, files=("eval/humansize.py",),
                     gate=probe_humansize, max_retries=0),
@@ -376,6 +389,7 @@ TASKS = {
                     gate=gate_humansize_tests, max_retries=0)],
     ),
     "T1gate": dict(
+        family="a",
         seed=seed_t1, check=check_t1, request=T1_REQUEST,
         steps=[dict(request=T1_REQUEST, goal=T1_IMPL_GOAL, files=("eval/humansize.py",),
                     gate=probe_humansize, max_retries=2),
@@ -385,6 +399,7 @@ TASKS = {
                     gate=gate_humansize_tests, max_retries=1)],
     ),
     "T2": dict(
+        family="a",
         seed=seed_t2, check=check_t2,
         # テストは仕様の正なので読み取り専用で渡す（書き換えはチェッカーがズルとして落とす）。
         files=("eval/billing.py",), read=("eval/test_billing.py",),
@@ -394,6 +409,7 @@ TASKS = {
         request=T2_REQUEST, goal=T2_GOAL,
     ),
     "T3": dict(
+        family="b",
         seed=seed_t3, check=check_t3,
         # 実タスクなので置き場所の探索が要る。ここだけリポジトリマップに予算を与える。
         files=("schemas/node-budget-summary.schema.json",), map_tokens=1024,
@@ -407,33 +423,39 @@ TASKS = {
     # ゲート付き T2 アームは test_cmd を持たない（aider 内部のオラクルを切り、
     # ハーネスのゲートだけを検査に残す）。
     "T2noat": dict(
+        family="a",
         seed=seed_t2, check=check_t2,
         files=("eval/billing.py",), read=("eval/test_billing.py",),
         request=T2_REQUEST, goal=T2_GOAL,
     ),
     "T2gate": dict(
+        family="a",
         seed=seed_t2, check=check_t2, request=T2_REQUEST,
         steps=[dict(request=T2_REQUEST, goal=T2_GOAL,
                     files=("eval/billing.py",), read=("eval/test_billing.py",),
                     gate=gate_billing, max_retries=2)],
     ),
     "T2blind": dict(
+        family="a",
         seed=seed_t2, check=check_t2, request=T2_REQUEST,
         steps=[dict(request=T2_REQUEST, goal=T2_GOAL,
                     files=("eval/billing.py",), read=("eval/test_billing.py",),
                     gate=blind(gate_billing), max_retries=2)],
     ),
     "T4min": dict(
+        family="a",
         seed=seed_t1, check=probe_duration,
         files=("eval/duration.py",),
         request=T1_REQUEST, goal=T4_IMPL_GOAL,
     ),
     "T4gate": dict(
+        family="a",
         seed=seed_t1, check=probe_duration, request=T1_REQUEST,
         steps=[dict(request=T1_REQUEST, goal=T4_IMPL_GOAL, files=("eval/duration.py",),
                     gate=probe_duration, max_retries=2)],
     ),
     "T4blind": dict(
+        family="a",
         seed=seed_t1, check=probe_duration, request=T1_REQUEST,
         steps=[dict(request=T1_REQUEST, goal=T4_IMPL_GOAL, files=("eval/duration.py",),
                     gate=blind(probe_duration), max_retries=2)],
@@ -441,6 +463,7 @@ TASKS = {
     # 実課題でゲート + 再投入が効くか。argv は一発版 T3 と同一（auto-test 込み）で、
     # 差はゲートと再試行だけ。診断はチェッカーの C1/C3 fail 文そのもの。
     "T3gate": dict(
+        family="b",
         seed=seed_t3, check=check_t3, request=T3_REQUEST,
         steps=[dict(request=T3_REQUEST, goal=T3_GOAL,
                     files=("schemas/node-budget-summary.schema.json",), map_tokens=1024,
@@ -754,7 +777,8 @@ def run_one(tid: str, i: int) -> dict:
     token_calls = [call for call in trace if call.get("tokens_in") is not None]
     tokens_in = sum(call["tokens_in"] for call in token_calls) if token_calls else None
     tokens_out = sum(call["tokens_out"] for call in token_calls) if token_calls else None
-    rec = dict(task=tid, iter=i, cli=CLI, model=MODEL, aider_version=AIDER_VERSION,
+    rec = dict(task=tid, family=task["family"], iter=i, cli=CLI, model=MODEL,
+               aider_version=AIDER_VERSION,
                num_ctx=NUM_CTX or None, num_predict=NUM_PREDICT or None,
                policy_id=policy_id,
                policy_sha256=policy_sha256, ok=ok, mode=mode,
@@ -897,6 +921,14 @@ def main() -> None:
               f"様式 {sorted(set(x['mode'] for x in r))}")
     ok = sum(1 for x in rows if x["ok"])
     print(f"  合計: {ok}/{len(rows)}")
+    # 族別の escalate。引き直しの採否は (a) 族で読む。(b) 族が動かないのは引き直しの
+    # 失敗ではなく適用範囲の外（答えは成果物を 1 つに割ること）。
+    families = sorted({x["family"] for x in rows})
+    if len(families) > 1:
+        print("  族別 escalate:", "  ".join(
+            f"({fam}) {sum(1 for x in rows if x['family'] == fam and x.get('escalate'))}"
+            f"/{sum(1 for x in rows if x['family'] == fam)}" for fam in families),
+            "—— 引き直しの採否は (a) で読む。(b) は成果物を割る側の話")
     print(f"\n台帳: {ledger}")
 
 

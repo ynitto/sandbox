@@ -26,6 +26,7 @@ import sys
 import auto_tagger
 import memory_utils
 import similarity
+import embeddings
 
 
 TEMPLATE = """\
@@ -348,6 +349,14 @@ def main():
         mem_id = meta.get("id", "")
         if mem_id:
             similarity.update_corpus_entry(memory_dir, mem_id, title, summary, tags)
+    # 埋め込み索引へ 1 件追加（索引があるときだけ・0.6 秒見当）。recall では作らない設計なので
+    # ここで足す。ollama が落ちていれば黙ってスキップ（次の build_index --embeddings で補修）。
+    try:
+        _mem_dir = memory_utils.get_memory_dir(args.scope)
+        _meta, _ = memory_utils.parse_frontmatter(open(filepath, encoding="utf-8").read())
+        embeddings.update_entry(_mem_dir, _meta.get("id", ""), filepath)
+    except Exception:  # noqa: BLE001 — 保存の成否に索引を巻き込まない
+        pass
 
     # 結果出力
     print(f"✅ 保存しました [{args.scope}]: {filepath}")

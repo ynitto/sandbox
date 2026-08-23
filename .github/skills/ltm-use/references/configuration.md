@@ -120,6 +120,8 @@ git-skill-manager と共通のリポジトリ設定を使用する。
 | `context_aware_recall` | `true` | v5: recall で `--context` / `--auto-context` を有効化 |
 | `review_interval_days` | `14` | v5: review の推奨間隔（日数、通知用） |
 | `recall_hybrid_weights_v5` | `{...}` | v5: 4軸ランキングの重み（keyword/tfidf/meta/context） |
+| `embedding_model` | `"bge-m3"` | v5.5: 段構えに使う ollama 埋め込みモデル。空文字で無効。索引は `build_index --embeddings` |
+| `embedding_threshold` | `0.11` | v5.5: TF-IDF 最上位コサインがこれ未満なら埋め込みで採点し直す。コーパス規模で動くので数百件へ増えたら再測 |
 
 ### 昇格閾値のカスタマイズ
 

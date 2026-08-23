@@ -10,12 +10,14 @@ Usage:
   python build_index.py --scope all       # 全スコープを増分更新
   python build_index.py --force           # 完全再構築（既存インデックス破棄）
   python build_index.py --stats           # 統計表示のみ（再構築なし）
+  python build_index.py --embeddings      # 埋め込み索引を作る / 補修する（ollama が要る）
 """
 
 import argparse
 import os
 import time
 
+import embeddings
 import memory_utils
 import similarity
 
@@ -76,6 +78,13 @@ def print_stats(memory_dir: str) -> None:
         print(f"  コーパス    : {corpus_docs}件 / 語彙数={corpus_terms} / 更新={corpus_built}")
     else:
         print(f"  コーパス    : 未構築（build_index --force で構築）")
+    emb = embeddings.status(memory_dir)
+    if emb.get("enabled"):
+        print(f"  埋め込み    : {emb['indexed']}件 / model={emb['model']} / 更新={emb['built_at']}"
+              + (f" / 要補修 {emb['stale'] + emb['missing']}件（build_index --embeddings）"
+                 if emb["stale"] + emb["missing"] else ""))
+    else:
+        print(f"  埋め込み    : 未構築（build_index --embeddings で構築。無くても recall は従来どおり）")
     total_access = sum(e.get("access_count", 0) for e in entries)
     total_corrections = sum(e.get("correction_count", 0) for e in entries)
     rated_positive = sum(1 for e in entries if e.get("user_rating", 0) > 0)
@@ -101,6 +110,10 @@ def main():
                         help="既存インデックスを無視して完全再構築")
     parser.add_argument("--stats", action="store_true",
                         help="統計情報のみ表示（再構築しない）")
+    parser.add_argument("--embeddings", action="store_true",
+                        help="埋め込み索引を作る / 補修する（新規・本文が変わった記憶だけ埋め込む）")
+    parser.add_argument("--embedding-model", default=None,
+                        help="埋め込みモデル（既定は設定 embedding_model = bge-m3）")
     args = parser.parse_args()
 
     for memory_dir in memory_utils.get_memory_dirs(args.scope):
@@ -128,6 +141,18 @@ def main():
 
         count = len(index.get("entries", []))
         print(f"  完了: {count}件 ({elapsed*1000:.0f}ms)")
+        if args.embeddings or (args.force and embeddings.enabled(memory_dir)):
+            model = args.embedding_model or memory_utils.load_config().get("embedding_model", "bge-m3")
+            print(f"  埋め込み索引を更新中（{model}・新規と本文変更分だけ）...")
+            t0 = time.perf_counter()
+            try:
+                st = embeddings.build(memory_dir, model)
+            except Exception as e:  # noqa: BLE001 — ollama 停止 / モデル未取得 / タイムアウト
+                print(f"  警告: 埋め込み索引を作れません（{e}）。recall は従来どおり動きます。"
+                      " ollama serve と `ollama pull {model}` を確認してください")
+            else:
+                print(f"  完了: {st['embedded']}件を埋め込み / 索引 {st['indexed']}件 "
+                      f"({time.perf_counter() - t0:.1f}s)")
         print_stats(memory_dir)
 
 

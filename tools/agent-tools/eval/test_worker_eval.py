@@ -138,6 +138,19 @@ class ResampleTest(unittest.TestCase):
         self.assertEqual(self.restored, [])
 
 
+class FailureFamilyTest(unittest.TestCase):
+    """族（a / b）は台帳で escalate を分けて読むための軸。宣言漏れは黙って (a) にしない。"""
+
+    def test_every_task_declares_a_family(self):
+        for tid, task in w.TASKS.items():
+            self.assertIn(task.get("family"), ("a", "b"), tid)
+
+    def test_whole_work_omission_family_is_the_multi_deliverable_task(self):
+        # (b) は成果物が 2 つ以上の課題（schema + 契約テスト）。T3 系だけがそれに当たる。
+        self.assertEqual({tid for tid, t in w.TASKS.items() if t["family"] == "b"},
+                         {"T3", "T3gate"})
+
+
 class EscalateTest(unittest.TestCase):
     """上限到達の宣告。受入率とは別に数える（そのままクラウド昇格の頻度になる）。"""
 
