@@ -584,6 +584,34 @@ def _envelope_pin(purpose: str) -> "dict | None":
     return pin
 
 
+# 候補ごとの失敗 attempt（candidate_id → 回数）。transient を使い切った候補をここへ記録し、
+# Resolver が retry_limit 到達で次候補（縮退先）を選べるようにする（設計 §13「attempt は候補ごとに
+# 数え、fallback 先は attempt 1 から始める」）。12b 検証役の停止性（2/27・計画 2026-08-22 §4.3 B3）
+# の縮退基準「再投入後も続いたら e4b」は、policy の retry_limit と候補順がこの登録簿で効く形。
+# 登録簿の寿命は **run × control revision**（設計「その run では再選択しない」）。run が変わる
+# （worker が別 run のノードを claim する＝ _METHOD_RUN_ID が変わる）か control の revision が
+# 上がれば消える——長命 worker で「一度落ちた候補が回復しても二度と選ばれない」天井を作らない。
+# ponytail: run 単位の永続化はしない（同じ run を別 worker が拾えば登録簿は空から）。
+_CANDIDATE_ATTEMPTS: "dict[str, int]" = {}
+_CANDIDATE_ATTEMPTS_SCOPE = None
+_LAST_FALLBACK: "dict[str, dict]" = {}     # purpose → {"from": cid, "to": cid}（直近の縮退）
+
+
+def _attempt_counts_for(ctl: dict) -> dict:
+    global _CANDIDATE_ATTEMPTS_SCOPE
+    scope = (ctl.get("revision"), globals().get("_METHOD_RUN_ID", ""))
+    if scope != _CANDIDATE_ATTEMPTS_SCOPE:
+        _CANDIDATE_ATTEMPTS.clear()
+        _LAST_FALLBACK.clear()
+        _CANDIDATE_ATTEMPTS_SCOPE = scope
+    return dict(_CANDIDATE_ATTEMPTS)
+
+
+def last_execution_fallback(purpose: str) -> "dict | None":
+    """この purpose の直近の呼び出しで縮退が起きたか（{"from", "to"}）。result の記録用。"""
+    return _LAST_FALLBACK.get(purpose)
+
+
 def _control_policy_decision(purpose: str) -> "dict | None":
     """selection_policy（agent-control version 2）があるときの Resolver 決定。無ければ None。
 
@@ -602,7 +630,33 @@ def _control_policy_decision(purpose: str) -> "dict | None":
     return _executionresolver.resolve_execution(
         _NODE_BUDGET_WORKLOAD, purpose_or_role=purpose,
         explicit_pin=_envelope_pin(purpose), compiled_control=ctl,
+        attempt_counts=_attempt_counts_for(ctl),
         now=datetime.now(timezone.utc))
+
+
+def _candidate_fallback(purpose: str, decision: "dict | None") -> "dict | None":
+    """transient を使い切った候補を登録簿へ記し、Resolver が別候補を返すならそれを返す。
+
+    返り値は新しい decision（selected が前と違う）か None（縮退先なし＝そのまま失敗）。
+    判断は Resolver に任せる——ここで fallback_candidates を直接引くと順位・除外の規則が
+    2 実装になる。pin（Envelope の明示固定）は Resolver 側で retry-exhausted → park になる。
+    """
+    selected = (decision or {}).get("selected")
+    if not selected:
+        return None
+    cid = _executioncontract.candidate_id(str(selected["agent_cli"]), str(selected["model"]))
+    retry_limit = int((decision or {}).get("retry_limit") or 0)
+    _attempt_counts_for(_load_control())
+    _CANDIDATE_ATTEMPTS[cid] = max(_CANDIDATE_ATTEMPTS.get(cid, 0), retry_limit + 1)
+    again = _control_policy_decision(purpose)
+    nxt = (again or {}).get("selected")
+    if not nxt:
+        return None
+    nxt_id = _executioncontract.candidate_id(str(nxt["agent_cli"]), str(nxt["model"]))
+    if nxt_id == cid:
+        return None
+    _LAST_FALLBACK[purpose] = {"from": cid, "to": nxt_id}
+    return again
 
 
 def _control_concurrency() -> dict:
@@ -879,6 +933,11 @@ def run_agent(prompt: str, model: str | None, purpose: str = "", cwd: "str | Non
     _write_status(effective_cli=cli_used, effective_model=model_used or "",
                   lifecycle=lifecycle, budget=nb, purpose=purpose,
                   pinned=bool(agent), tier=str((agent or {}).get("tier") or ""))
+    # 候補ベースの呼び出し（明示指定も run 固定も無い）だけが縮退の対象。直近の縮退記録は
+    # 呼び出しごとに消す（前の呼び出しの縮退を今回の result に付けない）。
+    policy_driven = not (agent and (agent.get("agent_cli") or agent.get("model"))) \
+        and not _execution_override(purpose)
+    _LAST_FALLBACK.pop(purpose, None)
     last: "RuntimeError | None" = None
     empty_fixes = 0
     attempt = 0
@@ -920,6 +979,23 @@ def run_agent(prompt: str, model: str | None, purpose: str = "", cwd: "str | Non
             triage = classify_agent_failure(str(e))
             if triage and triage[0] == "quota":
                 _record_quota_observation(cli_used, str(e))
+            if triage is not None and triage[0] == "transient" and attempt >= _TRANSIENT_RETRIES \
+                    and policy_driven:
+                # レイヤ1 を使い切った。候補ベースなら Resolver に次候補（縮退先）を訊く。
+                # 停止性の問題（12b の生成暴走）は候補を替えれば止まる性質で、同じ候補を
+                # 叩き続けるより弱くて止まる候補へ下りる方が run 全体は前へ進む。
+                # 縮退先でも transient 上限は attempt 1 から数え直す（設計 §13）。
+                again = _candidate_fallback(purpose, _control_policy_decision(purpose))
+                if again is not None:
+                    cli_used, model_used = _effective_agent(purpose, model, agent)
+                    log("agent", f"候補を縮退: {_LAST_FALLBACK[purpose]['from']} → "
+                                 f"{_LAST_FALLBACK[purpose]['to']}（transient "
+                                 f"{attempt + 1} 回・purpose={purpose or 'worker'}）: {str(e)[:120]}")
+                    _write_status(effective_cli=cli_used, effective_model=model_used or "",
+                                  lifecycle=lifecycle, budget=nb, purpose=purpose)
+                    attempt = 0
+                    last = e
+                    continue
             if triage is None or triage[0] != "transient" or attempt >= _TRANSIENT_RETRIES:
                 if attempt > 0:  # レイヤ1 を経たことを上位・人が読めるようにする
                     e = RuntimeError(f"{e}（{attempt + 1} 回試行後）")

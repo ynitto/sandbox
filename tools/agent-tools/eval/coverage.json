@@ -2,7 +2,7 @@
   "schema_version": 1,
   "surfaces": {
     "agent-flow": {
-      "planner": "missing",
+      "planner": "direct",
       "evaluator": "direct",
       "work": "direct",
       "generate": "indirect",
@@ -19,7 +19,7 @@
       "human": "deterministic"
     },
     "agent-project": {
-      "verify": "missing",
+      "verify": "direct",
       "route": "missing",
       "plan": "missing",
       "doctor": "missing",
@@ -33,10 +33,10 @@
     "agent-dashboard": {
       "method-draft": "missing",
       "acceptance-draft": "missing",
-      "doctor/consultation": "missing",
-      "doctor/failure-diagnosis": "missing",
-      "doctor/plan-critique": "missing",
-      "doctor/delivery-rationale": "missing",
+      "doctor/consultation": "direct",
+      "doctor/failure-diagnosis": "direct",
+      "doctor/plan-critique": "direct",
+      "doctor/delivery-rationale": "direct",
       "followup-suggest": "missing",
       "enqueue-assist": "missing",
       "task-guide": "missing",

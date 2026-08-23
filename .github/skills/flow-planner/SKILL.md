@@ -2,7 +2,7 @@
 name: flow-planner
 description: agent-flow の orchestrator 向け高精度タスク分解・戦略選択スキル。要求を分析し、7パターン（map-reduce 含む）＋複合パターンから最適な戦略を選定し、実行可能なタスクグラフを生成する。decomposition スキルの分解能力を内包し、agent-flow の `--planner flow-planner` で利用する。
 metadata:
-  version: 1.0.0
+  version: 1.0.1
   tier: experimental
   category: planning
   tags:
@@ -180,7 +180,11 @@ LLMには各ノードの goal 具体化のみを依頼。
 **split の存在**も検査し、無ければ 1 回だけ作り直す——強制したのに split が出ないと、
 対象単位の展開が起きず「まとめて 1 ノード」へ戻ってしまう。
 
-**出力**: agent-flow 互換の `{strategy, tasks}` 形式。
+**出力**: agent-flow 互換の `{strategy, tasks}` 形式。Phase 3 が LLM へ求める出力契約は
+**JSON オブジェクト `{"tasks": [...]}`**（裸の配列も受ける）。オブジェクトで縛るのは、ollama の
+JSON モード（`--format json`）が配列を返せないため——配列契約のままだと agent-ollama 経路の
+Phase 3 は構造的に必ず落ち、agent-flow は黙って組み込み planner → stub へ縮退する
+（`planner_eval` 2026-08-23 で発見・修正）。
 
 ## パターンカタログ
 

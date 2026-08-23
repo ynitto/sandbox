@@ -264,6 +264,78 @@ def gate_billing(wt: Path) -> tuple[bool, str]:
     return True, "テスト 3 件 pass"
 
 
+# ---------------------------------------------------------------- T5: 大きい参照材料（案 2 スライシング）
+# 編集対象は小さい report.py だが、直すには 600 行級の bigmod.py の中に埋めた apply_tax の
+# 単位（ベーシスポイント）を読み当てる必要がある。案 2（決定的コンテキスト・スライシング）が
+# 測るのは「見るべき範囲を機械が先に確定してやると、見落としが減るか」。腕は read の渡し方だけ
+# が違う: T5（bigmod 全文を --read）/ T5slice（関係シンボルの抜粋を --read）/ T5noread（渡さない）。
+
+def _bigmod_source() -> str:
+    """決定的に生成する 600 行級のモジュール。関係する 2 関数は真ん中あたりに埋める。"""
+    lines = ['"""課金まわりの共通モジュール（合成）。', "",
+             "多数のユーティリティが並ぶ。金額は円（int）。税率はベーシスポイント（bp）で扱う。",
+             '"""', "", "TAX_BP_DEFAULT = 1000   # 10% = 1000 bp", ""]
+    def filler(n: int) -> list:
+        return [f"def util_{n:02d}(value: int, scale: int = {n + 1}) -> int:",
+                f'    """合成ユーティリティ {n}。value を scale 倍して {n} を足す。',
+                "", "    互換のため残している。呼び出し側は少ない。", '    """',
+                f"    if value < 0:", f"        return -util_{n:02d}(-value, scale)",
+                f"    return value * scale + {n}", "", ""]
+    for n in range(1, 28):
+        lines += filler(n)
+    lines += ["def prorate(monthly_fee: int, days_used: int, days_in_month: int) -> int:",
+              '    """月額を日割りする。端数は切り上げ（円）。"""',
+              "    return -(-monthly_fee * days_used // days_in_month)", "", "",
+              "def apply_tax(amount: int, rate_bp: int) -> int:",
+              '    """税込みにする。rate_bp は **ベーシスポイント**（1% = 100 bp、10% = 1000 bp）。',
+              "",
+              "    小数の税率（0.10 など）を渡すと 0 bp 扱いになり、税が付かない。",
+              '    """',
+              "    return amount + amount * int(rate_bp) // 10000", "", ""]
+    for n in range(28, 56):
+        lines += filler(n)
+    return "\n".join(lines) + "\n"
+
+
+BIGMOD = _bigmod_source()
+REPORT_BUGGY = (
+    "from bigmod import prorate, apply_tax\n\n\n"
+    "def invoice(monthly_fee: int, days_used: int, days_in_month: int, tax_rate: float = 0.10) -> int:\n"
+    '    """日割り額に税を乗せた請求額（円）。tax_rate は小数（0.10 = 10%）。"""\n'
+    "    net = prorate(monthly_fee, days_used, days_in_month)\n"
+    "    return apply_tax(net, tax_rate)\n")
+REPORT_TEST = (
+    "from report import invoice\n\n\n"
+    "def test_invoice_full_month_with_tax():\n    assert invoice(3000, 30, 30) == 3300\n\n\n"
+    "def test_invoice_partial_month_rounds_up_then_tax():\n    assert invoice(3000, 1, 30) == 110\n\n\n"
+    "def test_invoice_zero_tax():\n    assert invoice(3000, 30, 30, tax_rate=0) == 3000\n")
+T5_REQUEST = "請求額の計算がおかしい"
+T5_GOAL = ("eval/test_report.py が失敗している。eval/report.py の invoice を直して 3 件すべて通るように"
+           "する。invoice の引数 tax_rate は小数（0.10 = 10%）のまま変えない（テストが仕様の正）。"
+           "**eval/bigmod.py と eval/test_report.py は変更しないこと**。eval/ 以外も変更しない。")
+
+
+def seed_t5(wt: Path) -> None:
+    d = wt / "eval"
+    d.mkdir(exist_ok=True)
+    (d / "bigmod.py").write_text(BIGMOD, encoding="utf-8")
+    (d / "report.py").write_text(REPORT_BUGGY, encoding="utf-8")
+    (d / "test_report.py").write_text(REPORT_TEST, encoding="utf-8")
+
+
+def check_t5(wt: Path) -> tuple[bool, str]:
+    """テストを通したか。bigmod / テストを書き換えて通したらズル。"""
+    for name, body in (("bigmod.py", BIGMOD), ("test_report.py", REPORT_TEST)):
+        f = wt / "eval" / name
+        if not f.exists() or f.read_text(encoding="utf-8") != body:
+            return False, f"{name} を書き換えた（ズル・対象外の変更）"
+    r = _pytest(wt / "eval", "test_report.py")
+    if r.returncode != 0:
+        tail = [l for l in r.stdout.splitlines() if l.strip()][-1:]
+        return False, f"テストが落ちたまま: {tail}"
+    return True, "bigmod / テスト無改変で 3 件 pass"
+
+
 def seed_t3(wt: Path) -> None:
     pass
 
@@ -462,6 +534,30 @@ TASKS = {
     ),
     # 実課題でゲート + 再投入が効くか。argv は一発版 T3 と同一（auto-test 込み）で、
     # 差はゲートと再試行だけ。診断はチェッカーの C1/C3 fail 文そのもの。
+    # --- 案 2（決定的コンテキスト・スライシング）の A/B。差は --read の渡し方だけ。
+    "T5": dict(
+        family="a",
+        seed=seed_t5, check=check_t5, read_mode="whole",
+        files=("eval/report.py",), read=("eval/bigmod.py",),
+        test_cmd=f"{VENV_PY} -m pytest -q eval/test_report.py",
+        request=T5_REQUEST, goal=T5_GOAL,
+    ),
+    "T5slice": dict(
+        family="a",
+        seed=seed_t5, check=check_t5, read_mode="slice",
+        files=("eval/report.py",), read=("eval/bigmod.py",),
+        # 抜粋するシンボルは「編集対象が参照している名前」——計画時に機械で決まる（import 行）。
+        slice={"eval/bigmod.py": ("apply_tax", "prorate")},
+        test_cmd=f"{VENV_PY} -m pytest -q eval/test_report.py",
+        request=T5_REQUEST, goal=T5_GOAL,
+    ),
+    "T5noread": dict(
+        family="a",
+        seed=seed_t5, check=check_t5, read_mode="none",
+        files=("eval/report.py",),
+        test_cmd=f"{VENV_PY} -m pytest -q eval/test_report.py",
+        request=T5_REQUEST, goal=T5_GOAL,
+    ),
     "T3gate": dict(
         family="b",
         seed=seed_t3, check=check_t3, request=T3_REQUEST,
@@ -627,8 +723,40 @@ REPAIR_NOTE = ("\n\n【前回の実行を機械で検証した結果】次の不
                "この不一致だけを直すこと。他の振る舞いと他のファイルは変えない。")
 
 
+def slice_reads(step: dict, wt: Path) -> "tuple[dict, dict]":
+    """`slice` を持つ手順の --read 材料を、agentcore.context_slice の抜粋へ差し替える。
+
+    抜粋は作業ツリー内の `<path>.slice.py` に書く（編集対象ではないので追跡外でよい）。
+    切れなければ原本へ倒し、倒したことを台帳に残す（静かに倒れると、抜粋が効いていない条件で
+    測ってしまう——context_slice の CLI と同じ規律）。LLM は使わない。
+    """
+    spec = step.get("slice")
+    if not spec:
+        return step, {}
+    sys.path.insert(0, str(REPO / "tools/agent-tools/agentcore"))
+    from agentcore import context_slice  # noqa: PLC0415
+    reads, info = [], {}
+    for rel in step.get("read") or ():
+        symbols = spec.get(rel)
+        if not symbols:
+            reads.append(rel)
+            continue
+        result = context_slice.slice_file(wt / rel, symbols)
+        if result is None:
+            reads.append(rel)
+            info[rel] = {"sliced": False, "reason": "切れないので原本へ倒した"}
+            continue
+        out = Path(rel).with_suffix(".slice.py")
+        (wt / out).write_text(result.text, encoding="utf-8")
+        reads.append(str(out))
+        info[rel] = {"sliced": True, "kept_lines": result.kept_lines,
+                     "total_lines": result.total_lines, "omitted": len(result.omitted)}
+    return {**step, "read": tuple(reads)}, info
+
+
 def invoke(step: dict, wt: Path) -> "tuple[int, str, str, float]":
     """1 回だけエージェントを起こす。argv とプロンプトの作り方は経路ごとの正典に従う。"""
+    step, _slice_info = slice_reads(step, wt)
     prompt = "" if CLI == "aider" else build_prompt(step)
     argv = aider_argv(step) if CLI == "aider" else ["agent-ollama", MODEL, *WRITE_ARGS]
     started = time.time()
@@ -779,6 +907,9 @@ def run_one(tid: str, i: int) -> dict:
     tokens_out = sum(call["tokens_out"] for call in token_calls) if token_calls else None
     rec = dict(task=tid, family=task["family"], iter=i, cli=CLI, model=MODEL,
                aider_version=AIDER_VERSION,
+               # 参照材料の渡し方（案 2 の腕）。whole / slice / none。無指定の課題は null。
+               read_mode=task.get("read_mode"),
+               slice=(slice_reads(task, wt)[1] or None) if task.get("slice") else None,
                num_ctx=NUM_CTX or None, num_predict=NUM_PREDICT or None,
                policy_id=policy_id,
                policy_sha256=policy_sha256, ok=ok, mode=mode,

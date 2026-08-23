@@ -1265,6 +1265,65 @@ class AgentControlTests(unittest.TestCase):
                                agent={"agent_cli": "kiro", "model": "sonnet"})
         self.assertEqual(out, "ok")
 
+    # -- 縮退（transient を使い切った候補 → Resolver が次候補を選ぶ。計画 2026-08-22 §4.3 B3） --
+
+    def _transient_then_ok(self, failing_cli: str):
+        """failing_cli で解決された呼び出しは transient で落ち、別候補なら "ok" を返す偽物。"""
+        calls = []
+
+        def fake(prompt, model, purpose="", cwd=None, agent=None, files=None, readonly=None):
+            cli, _ = kf._effective_agent(purpose, model, agent)
+            calls.append(cli)
+            if cli == failing_cli:
+                raise RuntimeError("[agent-error:transient] 応答が停止しました")
+            return "ok"
+        return fake, calls
+
+    def test_transient_exhaustion_falls_back_to_next_candidate(self):
+        self._control(self._policy_control())
+        self.addCleanup(kf._CANDIDATE_ATTEMPTS.clear)
+        fake, calls = self._transient_then_ok("ollama")
+        with mock.patch.object(kf, "_run_agent_once", fake), \
+                mock.patch.object(kf, "_TRANSIENT_RETRIES", 1), \
+                mock.patch.object(kf, "backoff_sleep", lambda s: None):
+            out = kf.run_agent("x", None, purpose="work")
+        self.assertEqual(out, "ok")
+        # rank1（ollama）を transient 上限まで叩き、次候補（kiro）へ 1 回だけ下りる
+        self.assertEqual(calls, ["ollama", "ollama", "kiro"])
+        self.assertEqual(kf.last_execution_fallback("work"),
+                         {"from": "ollama/gemma4:e4b", "to": "kiro/sonnet"})
+        # 登録簿に残るので、同じプロセスの次の解決は最初から kiro
+        self.assertEqual(kf._agent_for("work")[0], "kiro")
+
+    def test_no_fallback_candidate_raises_after_transient_retries(self):
+        ctl = self._policy_control()
+        ctl["workloads"]["flow"]["selection_policy"]["candidates"] = [
+            {"agent_cli": "ollama", "model": "gemma4:e4b", "rank": 1}]
+        self._control(ctl)
+        self.addCleanup(kf._CANDIDATE_ATTEMPTS.clear)
+        fake, calls = self._transient_then_ok("ollama")
+        with mock.patch.object(kf, "_run_agent_once", fake), \
+                mock.patch.object(kf, "_TRANSIENT_RETRIES", 1), \
+                mock.patch.object(kf, "backoff_sleep", lambda s: None), \
+                self.assertRaises(RuntimeError) as ctx:
+            kf.run_agent("x", None, purpose="work")
+        self.assertIn("2 回試行後", str(ctx.exception))
+        self.assertEqual(calls, ["ollama", "ollama"])
+        self.assertIsNone(kf.last_execution_fallback("work"))
+
+    def test_percall_pin_never_falls_back(self):
+        # 呼び出し 1 回の明示指定は人の承認済み指定——候補ベースの縮退で別物へ替えない。
+        self._control(self._policy_control())
+        self.addCleanup(kf._CANDIDATE_ATTEMPTS.clear)
+        fake, calls = self._transient_then_ok("ollama")
+        with mock.patch.object(kf, "_run_agent_once", fake), \
+                mock.patch.object(kf, "_TRANSIENT_RETRIES", 0), \
+                mock.patch.object(kf, "backoff_sleep", lambda s: None), \
+                self.assertRaises(RuntimeError):
+            kf.run_agent("x", None, purpose="work",
+                         agent={"agent_cli": "ollama", "model": "gemma4:e4b"})
+        self.assertEqual(calls, ["ollama"])
+
     def test_selection_meta_carries_execution_decision(self):
         self._control(self._policy_control())
         meta = kf._selection_meta("work")

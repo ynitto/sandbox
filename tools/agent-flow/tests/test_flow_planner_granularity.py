@@ -56,6 +56,18 @@ class ScopeAndGateTests(unittest.TestCase):
         tasks = [{"id": "split1", "goal": "分解", "deps": [], "kind": "split"}]
         self.assertEqual(plan.gate_tasks(tasks, "fine"), [])
 
+    def test_gate_rejects_static_map_reduce_behind_split(self):
+        # engine は split 完了後に map / reduce を動的生成する。静的に書くと map が全件を
+        # 1 ノードで受ける（planner_eval 2026-08-23 で e4b が 2/3 この形を書いた）。
+        tasks = [{"id": "s", "goal": "[scope] notes/ 列挙", "deps": [], "kind": "split"},
+                 {"id": "m", "goal": "[scope] notes/ 各ファイル", "deps": ["s"], "kind": "map"},
+                 {"id": "r", "goal": "集約", "deps": ["m"], "kind": "reduce"}]
+        issues = plan.gate_tasks(tasks, "coarse")
+        self.assertTrue(any("静的 map" in x for x in issues), issues)
+        direct_reduce = [{"id": "s", "goal": "[scope] 列挙", "deps": [], "kind": "split"},
+                         {"id": "r", "goal": "集約", "deps": ["s"], "kind": "reduce"}]
+        self.assertTrue(any("静的 reduce" in x for x in plan.gate_tasks(direct_reduce, "coarse")))
+
     def test_gate_count_out_of_range(self):
         tasks = [
             {"id": "t1", "goal": "[scope] a.py\n[out_of_scope] x\none", "deps": [], "kind": "work"},

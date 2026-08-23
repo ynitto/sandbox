@@ -8,16 +8,21 @@ Ollama のモデルを交換するときに、**モデルの実力**と**エー�
 | worker | `worker_eval.py` | ファイル編集・修正・複数成果物 | 決定的チェッカーの受入率、壁時計、失敗様式 |
 | judge | `judge_eval.py` | split/filter/judge/reduce/evaluator | 正解一致率、自己一貫性、形式違反 |
 | retrieval | `retrieval_eval.py` | 記憶検索（生成モデルとは独立） | hit@k、MRR、検索時間 |
+| planner | `planner_eval.py` | 要求 → タスクグラフ（flow-planner の `plan.py` を本番引数で呼ぶ） | 構造チェッカーの正解率、契約違反、過分解 |
+| candidate | `candidate_eval.py` | 候補生成 + 決定的検算（grep パターン・パス・テスト名） | 機械が落とした後に正解が残るか |
+| project-verify | `project_verify_eval.py` | agent-project の charter 達成条件 verifier（本番プロンプト + 本番正規化） | 捏造 pass 率（道具なし）・判定の正しさ（道具あり） |
+| doctor | `doctor_eval.py` | agent-dashboard の Doctor 4 モード（本番 `doctorPrompt` を node で呼ぶ） | 見出し契約 + 構成的な言及 |
 | observation | `log_stats.py` | 既存の agent-ollama ログ | prompt/output 寸法、TTFT、decode 速度 |
 | coverage | `coverage_eval.py` | flow/project/dashboard/amigos の呼び出し面 | direct/indirect/missing の棚卸し |
 
 ### 網羅性（重要）
 
 **現時点では網羅していない。** `judge_eval.py` が直接測る agent-flow の処理は
-`split / filter / judge / reduce / evaluator`、`worker_eval.py` が直接測るのは `work` である。
-`generate` は work と同じ実装系契約を間接的に通すだけで、専用セルではない。planner を含む
-残りの flow 役割、および agent-project / agent-dashboard / agent-amigos 独自の LLM 呼び出しは
-まだ能力測定が無い。この状態を「suite に名前が無いから存在しない」ように見せないため、
+`split / filter / judge / reduce / evaluator`、`worker_eval.py` が直接測るのは `work`、
+`planner_eval.py` が直接測るのは `planner`、`project_verify_eval.py` が agent-project の `verify`、
+`doctor_eval.py` が agent-dashboard の `doctor/*` 4 モード（いずれも 2026-08-23 追加）である。
+`generate` は work と同じ実装系契約を間接的に通すだけで、専用セルではない。残りの flow 役割、
+agent-project の他 9 面・agent-dashboard の他 8 面・agent-amigos 全面はまだ能力測定が無い。この状態を「suite に名前が無いから存在しない」ように見せないため、
 `coverage.json` に全呼び出し面と `direct / indirect / missing / deterministic` を明記した。
 
 ```bash
@@ -924,3 +929,204 @@ python3 worker_eval.py --model gemma4:e4b --cli aider --tasks T1gate,T2gate,T3ga
 採用条件: **(a) 族の escalate 率が下がり、対照群（T2gate）に退行がないこと。** 上限を上げても
 `draws` が伸びていないなら、受入の差は引き直し以外の何かで説明しないといけない。(b) 族
 （T3gate）は同じ腕で必ず一緒に引き、動かなければ「引き直しの適用範囲外」として記録する。
+
+**実測（2026-08-23 投入・この Mac 16 GB・gemma4:e4b × aider）。** 基準線と `--resample 3` を
+上のコマンドそのままで直列に回した。台帳は `results/archive/ledger-2026-08-23-stage1-baseline-gemma4-e4b.jsonl`
+と `…-stage1-resample3-gemma4-e4b.jsonl`（走行中は 1 分ごとに写す。console は `results/stage1-2026-08-23.log`）。
+1 run が 5〜10 分・T3gate は再投入込みで最大 30 分なので、本書の改訂時点で揃っていなければ
+台帳を直接読む（`family` で a / b を分け、`escalate` と `draws` を見る）。途中経過:
+T1gate 基準線 2/2（564s・274s。P10 の 1/3 から上がっているのは sampling 下の揺れの範囲で、
+n が揃うまで率として読まない）。
+
+---
+
+## 決定的コンテキスト・スライシングの腕 — T5（計画 2026-08-22 案 2・段 3）
+
+案 2 は `agentcore.context_slice`（`ast` で対象シンボルと依存だけを抜く・LLM なし）を
+`--read` の材料に使うと**見落としが減るか**を問う。既存の T1 / T3 は参照材料が小さく
+（humansize.py は十数行）、切っても差が出ないので、材料が大きい課題を 1 つ足した。
+
+**T5**: 編集対象は小さい `eval/report.py`。バグは `apply_tax(net, tax_rate)` に小数を渡していること
+——`apply_tax` は **ベーシスポイント**（10% = 1000 bp）を取る。その事実は 570 行の `eval/bigmod.py`
+の真ん中に埋めた docstring にしか書いていない。テスト（3 件）が仕様の正で、bigmod とテストを
+書き換えたらズル。腕は `--read` の渡し方だけが違う:
+
+| 腕 | `--read` | 狙い |
+|---|---|---|
+| T5noread | 渡さない | 材料なしの対照（推測だけで当たるか） |
+| T5 | `eval/bigmod.py` 全文（570 行） | 「入れれば読める」が成り立つか（MRCR 25.4 の帯） |
+| T5slice | `context_slice` の抜粋（apply_tax / prorate と依存。数十行） | 見るべき範囲を機械が先に確定する |
+
+抜粋は `eval/bigmod.slice.py` へ書いて渡し、台帳の `slice` に kept / total 行数と省略数、
+`read_mode` に whole / slice / none を残す。切れなければ原本へ倒し、倒したことも台帳に残す
+（静かに倒れると、抜粋が効いていない条件で測ってしまう）。契約テスト `SliceArmTest`。
+
+```bash
+python3 tools/agent-tools/eval/worker_eval.py --model gemma4:e4b --cli aider \
+  --tasks T5noread,T5,T5slice --repeat 3 --agent-policy off
+```
+
+読むのは受入率と `tokens_in`、それに失敗の形（bp を読み当てたか）。採用条件は「T5slice が T5 を
+受入で下回らず、tokens_in が減ること」。T5 が T5noread と同じなら「入れても読めていない」の証拠で、
+それ自体が案 2 の前提（事実 7）を支える。実測は 2026-08-23 に段 1 の後へ直列で投入した
+（台帳 `results/archive/ledger-2026-08-23-stage3-t5-gemma4-e4b.jsonl`・console `results/stage3-2026-08-23.log`）。
+
+## planner の最小 eval — P9 の最初の 1 セル（2026-08-23・計画 2026-08-22 §4.2 B1）
+
+`coverage.json` で missing だった planner を direct にした。測るのは**本番の planner そのもの**
+——flow-planner スキルの `plan.py`（3 段パイプライン）を agent-flow と同じ引数
+（`--agent-cli ollama-json --model … --granularity auto --review false --probe-root …`）で子プロセス
+として呼び、返ったグラフを決定的チェッカーで判定する。正解は要求文を組んだ時点で決まる
+**構造**（構成的ラベル）で、判定役（LLM）は使わない。
+
+```bash
+python3 tools/agent-tools/eval/planner_eval.py --selfcheck          # チェッカーの自己検証（LLM 無し）
+python3 tools/agent-tools/eval/planner_eval.py --model gemma4:e4b --repeat 3
+```
+
+| ケース | 要求の形 | 正解の構造 |
+|---|---|---|
+| PL1 | ラベル付き 3 段（前段の成果が無いと着手できない） | 3 ラベルが別ノードにあり、鎖 A→B→C（推移的依存）。split 無し |
+| PL2 | 独立 3 件 + 最後に比較表 | 3 件は互いに依存しない・3 件すべてに依存する統合ノードがある・pattern に fan-out-and-synthesize |
+| PL3 | notes/ の ITEM-01〜12.md をファイルごとに処理し索引へ | split がちょうど 1 つ・split の後ろに静的チェーン無し（map/reduce は実行時展開）・pattern に map-reduce |
+| PL4 | README 1 行のタイポ修正 | 成果ノード（work/generate）≤ 2・verify 以外の余計な kind 無し・全体 ≤ 3（過分解の検出） |
+
+どのケースでも先に**契約**（id 一意・deps が実在・循環なし・kind が正典・pattern がカタログ内）を見る。
+契約違反は `contract`、構造外れは `wrong`、`plan.py` 自体の失敗は `cli_error` として台帳に残る。
+
+**最初の 1 本で本番の欠陥が出た。** flow-planner の Phase 3 は「JSON 配列のみ」を要求していたが、
+ollama の JSON モード（`--format json`）は配列を返せない（2026-08-11 split の実測と同じ穴）。
+つまり **agent-ollama 経路の flow-planner は Phase 3 で構造的に必ず落ち、agent-flow は黙って
+組み込み planner → stub へ縮退していた**（`Phase 3: tasks is not a list`）。出力契約を
+`{"tasks": [...]}` のオブジェクトへ改め（裸の配列も従来どおり受ける）、同じ腕で通るようになった。
+P9 が「測っていない面」と呼んだものの中身は、能力の未測定ではなく**経路の不通**だった。
+
+### 実測 2026-08-23 — gemma4:e4b（ollama-json・granularity auto・各 3 回）
+
+台帳: `results/archive/ledger-2026-08-23-p9-planner-gemma4-e4b.jsonl`（goal 全文つき。チェッカーを
+直したら台帳から再判定できる）。
+
+| ケース | 正解 | 中央値 | ノード数 | 外れ方 |
+|---|---:|---:|---|---|
+| PL1 鎖 | 2/3 | 67s | 3 / 7 / 3 | 1 本は 7 ノードに膨らみ、同じラベルを 2 ノードが名乗って同定不能 |
+| PL2 fan-out + 統合 | 3/3 | 85s | 6 / 5 / 8 | —（統合ノードは extract / synthesize / work と揺れるが構造は正しい） |
+| PL3 列挙 | 1/3 | 64s | 4 / 3 / 3 | 2 本は split → map → reduce を**静的に**書いた（engine は split 完了後に `-m*` / `-reduce` を動的生成するので、静的 map は全件を 1 ノードで受ける） |
+| PL4 単一 | 0/3 | 69s | 5 / 4 / 6 | 3 本とも「読む → 特定 → 直す → 検証（→ 適用）」に割る（coarse 解決でも成果ノード 3〜4） |
+
+読み方（n = 3）。**構造が要求文に書いてある（順序・独立 + 統合）ものは組める**。崩れるのは
+(1) **engine の約束を知らないと書けない形**（map-reduce の動的展開——Phase 3 の指示文にはあるが
+効いていない）と (2) **小さい仕事を小さいまま置けない**（過分解——1 行の修正に 4〜6 ノード。
+worker が e4b なら各ノードが 1 呼び出しなので、壁時計がそのまま 4〜6 倍になる）。(1) は
+プロンプトの問題ではなく決定的ゲートの問題で、flow-planner の `gate_tasks` に「split の後ろに
+静的 map/reduce があれば落として作り直す」を足した（同日。列挙駆動 force のときの split 存在検査と
+同じ置き場。engine の約束に反する形を機械で止めるので、モデルの数字を根拠にした判断ではない）。
+効いたかの再測（PL3）は次の腕で取る。(2) は granularity の下端（coarse = 1〜3 成果ノード）の中でも
+起きているので、レンジの問題ではなく「読む・特定する」を成果ノードにしてしまう癖——
+`[scope]` を持たない手順ノードを成果ノードに数えない、が次の一手。こちらは**本書の数字を
+採用根拠にして直す**段階で、まだ直していない（測定と修正を同じ PR に混ぜない）。
+
+## 候補生成 + 決定的検算 — 生成側の最小 eval（2026-08-23・計画 2026-08-22 §4.2 C2）
+
+next-eval-plan §2 の順 4。E6 が決定化したのは filter / judge の**判定**側で、こちらは**生成**側
+——モデルは候補を出すだけ、採否は機械が存在チェックで決める。候補の誤り（無いパス・当たらない
+regex・捏造したテスト名）は機械が落とすので、測るのは「**落とした後に正解が残るか**」。
+
+```bash
+python3 tools/agent-tools/eval/candidate_eval.py --selfcheck
+python3 tools/agent-tools/eval/candidate_eval.py --model gemma4:e4b --repeat 3
+```
+
+材料は全部プロンプト内（9 ファイルの合成リポジトリ）。正解は手書きせず**内容から決定的に導く**
+——grep は正規の regex をその場で掛けた行集合、パスは `TAX_RATE` を含む唯一のファイル、
+テスト名は `ast` で集めた `test_*` のうち丸めを確かめるもの。出力契約は `{"candidates": [...]}`
+（JSON オブジェクト。ollama の JSON モードは配列を返せない）。
+
+| ケース | 候補 | 機械の検算 | 正解 |
+|---|---|---|---|
+| CG1 | `prorate` の定義・呼び出し行に当たる Python regex（≤ 3） | コンパイル・合成リポジトリ全文へ適用 | 行集合が正規 regex の結果と一致する候補が 1 つでもある（余計な行があれば「絞れていない」） |
+| CG2 | 「税率 10% が 8%」を直すのに触るパス（≤ 3） | 存在チェック | 存在する候補に `billing.py` がある |
+| CG3 | 丸めを確かめる既存テスト関数名（≤ 3） | `ast` で集めた実在名 | 実在する候補に `test_prorate_rounds_up` がある |
+
+note には**機械が落とした候補数**を必ず出す——「無害化が働いた回数」がそのまま、この形を本番
+（read_allocation のパス・verify コマンドのテスト名・read-only agent の grep）へ入れる根拠になる。
+
+### 実測 2026-08-23 — gemma4:e4b（各 3 回）
+
+台帳: `results/archive/ledger-2026-08-23-c2-candidate-gemma4-e4b.jsonl`。
+
+| ケース | 正解 | 中央値 | 機械が落とした候補 | 外れ方 |
+|---|---:|---:|---|---|
+| CG1 grep パターン | 0/3 | 3s | 1 / 3（+ 1 本は JSON 崩れ） | regex を作らず、**当たる行そのもの**や `r"prorate(…)"` の生文字列を返した（読み違い族） |
+| CG2 パス候補 | 3/3 | 1s | 0 | —（候補 1〜3 件、全部実在） |
+| CG3 テスト名 | 3/3 | 1s | 0 | —（候補 1 件、実在） |
+
+読み方（n = 3）。**材料がプロンプト内にある「選ぶ」候補生成（パス・テスト名）は e4b で足りる**
+——捏造は 6 回で 0 回、無害化は一度も働かなかった。**「作る」候補生成（regex）は落ちる**が、
+落ち方は能力ではなく読み違い（regex の概念を取り違える）で、これは text-eval の (a) 族と同じ
+形——決定的検査（コンパイル + 行集合一致）を付けた再投入で拾える可能性が高い（未測）。
+本番へ入れる順は CG2 / CG3 の形（read_allocation のパス候補・verify のテスト名候補）から。
+
+
+## agent-project の verify — 達成条件 verifier の最小 eval（2026-08-23・計画 2026-08-22 §4.2 B1）
+
+`coverage.json` で missing だった agent-project の `verify` を direct にした。測るのは
+**本番のプロンプト**（`agent_project._charter_criteria_prompt`）と**本番の正規化**
+（`normalize_verification`——証跡の無い pass を fail へ落とすフェイルクローズ）。合成ワークスペース
+（git 初期化済み）に真 2 件・偽 2 件の達成条件を置く（偽の片方は「pytest が落ちる」）。
+
+```bash
+python3 tools/agent-tools/eval/project_verify_eval.py --selfcheck
+python3 tools/agent-tools/eval/project_verify_eval.py --model gemma4:12b --arm verify   # 本番の変種
+python3 tools/agent-tools/eval/project_verify_eval.py --model gemma4:e4b  --arm tools    # 道具あり
+```
+
+腕は 2 つ。`verify` は本番の verify 変種 `ollama-verify`（`--format json`・**道具なし**）で、道具が
+無い verifier は何も確かめられないので pass が 1 つでもあれば**捏造**（実行していない証跡を書いた）。
+`tools` は `ollama` の書込モード（`--tools bash`）で実際に確かめられる腕で、判定の正しさを見る。
+
+### 実測 2026-08-23（各 3 回）
+
+台帳: `results/archive/ledger-2026-08-23-p9-project-verify.jsonl`。
+
+| 腕 | モデル | 正解 | 中央値 | 様式 |
+|---|---|---:|---:|---|
+| verify（本番変種・道具なし） | gemma4:12b | 0/3 | 17s | `contract` 3（criteria の JSON を返さず `{"analysis": "…確認しました"}` の散文 JSON） |
+| verify（本番変種・道具なし） | gemma4:e4b | 0/3 | 24s | `wrong` 3（**捏造 pass 12/12 条件**。実行していない `grep` / `pytest` を証跡に書く） |
+| tools（`--tools bash`） | gemma4:e4b | 0/3 | 83s | `wrong` 2（`grep "税率 10%"` を字面で打って偽陰性・cwd を見失う）・`contract` 1（末尾 JSON 無し） |
+
+読み方（n = 3）。**本番の局所 verify 経路（ollama-verify）で charter 達成条件を判定させてはいけない。**
+(1) 道具が無いので確かめようがなく、e4b は 12/12 で pass を捏造する（本番の正規化は証跡の有無
+しか見ないので、書かれた証跡を信じて通す）。(2) 12b は `--format json` の下で「本文 + 末尾 JSON」の
+契約を満たせず散文 JSON を返し、正規化が全 fail に落とす——捏造はしないが検証にもならない。
+つまりプロンプト（本文 + JSON）と変種（JSON のみ・道具なし）が**最初から噛み合っていない**。
+道具を持たせた e4b でも 0/3 で、確かめ方が字面（`grep "税率 10%"` は「税率は 10%」に当たらない）。
+**局所で成立する verify は決定的コマンド（`verification.commands` / receipt）だけ**で、自然文の達成条件は
+道具を持つ候補（クラウド CLI）へ回すか人の検収へ——local-first 計画の「役割ごとに割り当てる」の
+割り当て表に、この 1 行を足すのが次の一手（測定と修正を混ぜないため、ここでは直していない）。
+
+## agent-dashboard の Doctor — 4 モードの最小 eval（2026-08-23・計画 2026-08-22 §4.2 B1）
+
+`coverage.json` で missing だった `doctor/*` 4 面を direct にした。プロンプトは**本番のビルダー**
+（`agent.js` の `doctorPrompt`）を node で呼んで組む。応答は Markdown の自由記述なので、決定的に
+測れる 2 点だけを見る——(1) 指示した N 見出しだけを使っているか（見出し契約）、(2) スナップショットを
+組んだ時点で決まる正解トークン（失敗ログのモジュール名・取りこぼした acceptance の id・差分の値）が
+**その見出しの節**に出ているか。読みやすさ・網羅性（C5）は測らない。
+
+```bash
+python3 tools/agent-tools/eval/doctor_eval.py --selfcheck
+python3 tools/agent-tools/eval/doctor_eval.py --model gemma4:e4b --repeat 3
+```
+
+| ケース | モード | 正解トークン |
+|---|---|---|
+| DR1 | failure-diagnosis | 結論 / 根本原因に `yaml`（ログの `ModuleNotFoundError`）・対処対象が実行環境 |
+| DR2 | consultation | 次にすること に承認待ち `N-12` |
+| DR3 | plan-critique | 取りこぼし に `A3`（不正行のスキップ） |
+| DR4 | delivery-rationale | 変更の意図に税率 `0.10`・acceptance 対応に `1100` |
+
+### 実測 2026-08-23 — gemma4:e4b（各 3 回）
+
+台帳: `results/archive/ledger-2026-08-23-p9-doctor-gemma4-e4b.jsonl`。**12/12**（DR1 中央値 18s・
+DR2 14s・DR3 40s・DR4 25s）。見出し契約の違反 0、正解トークンの欠落 0。材料が全部スナップショットに
+あり、答えが「読んで指す」形の役割は e4b で足りる——text-eval の抽出・分析 6/6 と同じ帯。
+この帯を 12b や クラウドへ回す理由は無い。

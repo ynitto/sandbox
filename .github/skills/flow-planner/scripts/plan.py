@@ -223,12 +223,12 @@ map-reduce は split を1つだけ（map は実行時展開）。classify-and-ac
 
 ## 出力
 
-JSON 配列のみ:
+JSON オブジェクトのみ（`tasks` 配列を 1 つ持つ。配列を裸で返さない）:
 ```json
-[
+{{"tasks": [
   {{"id": "t1", "goal": "[scope] path\\n[out_of_scope] ...\\n具体的な目標", "deps": [], "kind": "work", "read_allocation": [{{"path": "src/x.py", "range": "10-40", "reason": "変更箇所"}}], "dependency_input": "digest"}},
   ...
-]
+]}}
 ```
 
 goal は要求に対して具体的に書くこと（「サブタスク1」のような抽象的記述は不可）。
@@ -807,6 +807,16 @@ def gate_tasks(tasks: list[dict], target: str, require_split: bool = False) -> l
     if require_split and not any(isinstance(t, dict) and t.get("kind") == "split" for t in tasks):
         issues.append("列挙駆動と判定されたが split ノードが無い"
                       "（対象ごとの作業を静的ノードに展開せず、split 1 つへ集約すること）")
+    # split の後ろに静的な map / reduce を書いてはいけない。engine は split 完了後に要素ごとの
+    # `<split>-m*` と `<split>-reduce` を動的生成するので、静的に置いた map は全件を 1 ノードで
+    # 受け、reduce は展開結果を見ない（planner_eval 2026-08-23: e4b が 2/3 でこの形を書いた）。
+    split_ids = {str(t.get("id")) for t in tasks if isinstance(t, dict) and t.get("kind") == "split"}
+    for t in tasks:
+        if not isinstance(t, dict) or t.get("kind") not in ("map", "reduce"):
+            continue
+        if any(str(d) in split_ids for d in (t.get("deps") or [])):
+            issues.append(f"{t.get('id')}: split の後ろに静的 {t.get('kind')} ノードを置かない"
+                          "（map / reduce は split 完了後に実行時へ動的展開される。split 1 つに留めること）")
     work = [t for t in tasks if isinstance(t, dict) and t.get("kind") in WORK_KINDS]
     if not work:
         return issues
@@ -873,11 +883,14 @@ def phase3_build(request: str, analysis: dict, strategy: dict,
             prompt = f"{context}\n\n{prompt}"
         raw = run_agent(prompt, model)
         tasks = extract_json(raw)
+        # 契約は {"tasks": [...]}。裸の配列も受ける（配列で返す CLI の過去出力と互換）。
+        # オブジェクトで縛るのは、ollama の JSON モード（--format json）が配列を返せないため
+        # ——配列契約のままだと agent-ollama 経路の Phase 3 は構造的に必ず落ちる
+        # （planner_eval 2026-08-23 で発見。JSON モードの配列不能は eval README 参照）。
+        if isinstance(tasks, dict) and "tasks" in tasks:
+            tasks = tasks["tasks"]
         if not isinstance(tasks, list):
-            if isinstance(tasks, dict) and "tasks" in tasks:
-                tasks = tasks["tasks"]
-            else:
-                raise ValueError("Phase 3: tasks is not a list")
+            raise ValueError("Phase 3: tasks is not a list")
         return tasks
 
     # 列挙駆動を強制したときは split の存在も決定的に見る（強制の実効性はここで担保される）

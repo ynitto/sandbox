@@ -7,6 +7,70 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### ローカル LLM の追加活用 — 未検討項目の消化（後続分: B3 配線・B1・C2・C4）
+
+[2026-08-22 の検討 §4.3](docs/plans/2026-08-22-local-llm-further-utilization-and-runtime-tuning-assessment.md)
+の続き。
+
+#### 候補ベースの縮退を配線した（B3・柱3 資源効率 / C7・C9）
+
+設計 2026-08-15 §13「attempt は候補ごとに数え、fallback 先は attempt 1 から始める」を
+agent-flow の `run_agent` に入れた。transient を使い切った候補は run × control revision の
+登録簿（`_CANDIDATE_ATTEMPTS`）に記録され、Resolver へ `attempt_counts` として渡る。
+Resolver が別候補を返せば attempt 1 から 1 段だけ下りる（判断は Resolver の 1 実装のまま。
+`fallback_candidates` をここで引かない）。縮退は result の `execution_decision.fallback_from`
+と実効 `agent_cli` に写る（`work.py`）。明示指定（per-call `agent`・run 固定）は対象外で、
+pin は Resolver 側で retry-exhausted → park になる。12b 検証役の停止性（2/27）に対する
+縮退基準「再投入後も続いたら e4b」は、policy の `retry_limit` と候補順がこの形で効く。
+契約テスト 3 本（`tools/agent-flow/tests/test_agent_cli.py`）。
+
+#### planner の最小 eval と、それが見つけた経路不通（B1）
+
+- `tools/agent-tools/eval/planner_eval.py`（新規）— flow-planner の `plan.py` を agent-flow と
+  同じ引数で呼び、グラフの**構造**を決定的に判定する 4 ケース（鎖・fan-out + 統合・列挙・
+  単一＝過分解検出）。`coverage.json` の planner を missing → direct にした。
+- **最初の 1 本で本番の欠陥が出た。** flow-planner Phase 3 は「JSON 配列のみ」を要求していたが、
+  ollama の JSON モードは配列を返せない。agent-ollama 経路の flow-planner は Phase 3 で
+  構造的に必ず落ち、agent-flow は黙って組み込み planner → stub へ縮退していた。
+  出力契約を `{"tasks": [...]}` へ改めた（裸の配列も従来どおり受ける。flow-planner v1.0.1）。
+- 実測（gemma4:e4b・各 3 回）: 鎖 2/3・fan-out + 統合 3/3・列挙 1/3（split の後ろに静的
+  map/reduce を書く）・単一 0/3（1 行の修正を 4〜6 ノードに割る）。台帳は
+  `results/archive/ledger-2026-08-23-p9-planner-gemma4-e4b.jsonl`。
+
+#### agent-project verify / dashboard Doctor の最小 eval（B1 の残り 2 面）
+
+- `tools/agent-tools/eval/project_verify_eval.py`（新規）— 本番の charter 達成条件プロンプトと
+  本番の正規化（フェイルクローズ）で、合成ワークスペースの真偽 4 条件を判定させる。腕は本番の
+  verify 変種（`ollama-verify`・道具なし）と `--tools bash`。実測: 12b は criteria を返さず散文
+  JSON（contract 3/3）、e4b は **捏造 pass 12/12 条件**、道具ありの e4b でも 0/3。**局所 verify 変種で
+  自然文の達成条件を判定させる経路は成立しない**（決定的コマンドだけが局所で成立する）。
+- `tools/agent-tools/eval/doctor_eval.py`（新規）— 本番 `doctorPrompt`（agent.js）を node で呼び、
+  4 モードを見出し契約 + 構成的な言及で判定。実測 e4b **12/12**。
+- `coverage.json`: planner・project:verify・dashboard doctor/* を direct（missing 34 → 28）。
+- flow-planner `gate_tasks` に「split の後ろの静的 map / reduce を落とす」決定的検査を追加
+  （engine は split 完了後に map / reduce を動的生成する。planner_eval で e4b が 2/3 この形を書いた）。
+
+#### 案 2（スライシング）の測定の腕 — T5
+
+`worker_eval.py` に T5 / T5slice / T5noread を足した。570 行の合成モジュールの真ん中に埋めた
+単位（ベーシスポイント）を読み当てないと直せない課題で、腕は `--read` の渡し方だけ
+（全文 / `context_slice` の抜粋 / 渡さない）。抜粋は `slice_reads` が作業ツリーへ書き、
+台帳に `read_mode` と `slice`（kept / total 行・省略数・原本へ倒したか）を残す。
+契約テスト `SliceArmTest`。
+
+#### 候補生成 + 決定的検算の最小 eval（C2）
+
+`tools/agent-tools/eval/candidate_eval.py`（新規）— grep パターン・パス候補・テスト名の
+3 ケース。正解は合成リポジトリの内容から決定的に導き、候補の誤りは機械が落とす。
+実測（gemma4:e4b・各 3 回）: パス 3/3・テスト名 3/3（捏造 0）、regex 0/3（regex を作らず
+当たる行そのものを返す読み違い）。
+
+#### ltm-use 段構えの未決を 2 点測った（C4）
+
+本番空間でしきい値を掃引（0.11 で lexical 95% / paraphrase 85%、0.13〜0.15 で lexical 100%。
+差は 1 問なので既定 0.11 は据え置き）。全文と要約だけの埋め込みは差 1 問以内。
+[設計書「未決」](docs/designs/ltm-use-embedding-recall-design.md)に記録。
+
 ### ローカル LLM の追加活用 — 未検討項目の消化（段 0 と独立枠）
 
 [2026-08-22 の検討 §4.2](docs/plans/2026-08-22-local-llm-further-utilization-and-runtime-tuning-assessment.md)

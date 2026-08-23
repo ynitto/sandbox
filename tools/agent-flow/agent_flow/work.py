@@ -378,6 +378,16 @@ def cmd_work(args) -> int:
             }}
         output, context_allocation = extract_read_report(output, read_allocation)
         method_app = _last_methods(kind) if args.executor == "agent" else {"methods": [], "trial": None}
+        # 候補ベースの縮退（run_agent が transient 上限で Resolver の次候補へ下りた）を result へ写す。
+        # claim 時の解決のまま書くと「rank1 で実行した」と読める記録が残る。候補は receipt の
+        # execution_decision（fallback_from 付き）、実効 CLI は agent_cli（変種振替後）に分けて持つ。
+        fallback = last_execution_fallback(kind) if args.executor == "agent" else None
+        if fallback:
+            agent_cli, agent_model = _effective_agent(kind, getattr(args, "model", None), node_agent)
+            if isinstance(selection.get("execution_decision"), dict):
+                to_cli, to_model = fallback["to"].split("/", 1)
+                selection["execution_decision"].update(
+                    agent_cli=to_cli, model=to_model, fallback_from=fallback["from"])
         # 実行した PC を結果に残す（読み手が who の綴りを割って推測しないで済むように）
         bus.write_result(nid, who, rstatus, output, rdata, artifacts=artifacts,
                          node=this_pc(args), kind=kind,

@@ -151,6 +151,49 @@ class FailureFamilyTest(unittest.TestCase):
                          {"T3", "T3gate"})
 
 
+class SliceArmTest(unittest.TestCase):
+    """T5（案 2 スライシングの A/B）の仕込みと抜粋。LLM は呼ばない。"""
+
+    def _seeded(self):
+        tmp = pathlib.Path(tempfile.mkdtemp(prefix="t5-"))
+        self.addCleanup(lambda: subprocess.run(["rm", "-rf", str(tmp)]))
+        w.seed_t5(tmp)
+        return tmp
+
+    def test_seed_fails_and_the_intended_fix_passes(self):
+        wt = self._seeded()
+        ok, note = w.check_t5(wt)
+        self.assertFalse(ok, note)                       # 仕込みは落ちる（バグあり）
+        fixed = w.REPORT_BUGGY.replace("return apply_tax(net, tax_rate)",
+                                       "return apply_tax(net, int(round(tax_rate * 10000)))")
+        (wt / "eval" / "report.py").write_text(fixed, encoding="utf-8")
+        ok, note = w.check_t5(wt)
+        self.assertTrue(ok, note)
+
+    def test_editing_bigmod_or_tests_is_cheating(self):
+        wt = self._seeded()
+        (wt / "eval" / "bigmod.py").write_text(w.BIGMOD.replace("// 10000", "// 1"), encoding="utf-8")
+        ok, note = w.check_t5(wt)
+        self.assertFalse(ok)
+        self.assertIn("bigmod.py", note)
+
+    def test_slice_arm_passes_an_excerpt_that_keeps_the_unit_doc(self):
+        wt = self._seeded()
+        step, info = w.slice_reads(w.TASKS["T5slice"], wt)
+        self.assertEqual(step["read"], ("eval/bigmod.slice.py",))
+        meta = info["eval/bigmod.py"]
+        self.assertTrue(meta["sliced"])
+        self.assertLess(meta["kept_lines"], meta["total_lines"] // 5)   # 570 行 → 数十行
+        excerpt = (wt / "eval" / "bigmod.slice.py").read_text(encoding="utf-8")
+        self.assertIn("rate_bp", excerpt)
+        self.assertIn("ベーシスポイント", excerpt)
+        self.assertIn("def prorate", excerpt)
+        self.assertNotIn("def util_01", excerpt)
+        # 全文の腕・渡さない腕は抜粋を作らない
+        self.assertEqual(w.slice_reads(w.TASKS["T5"], wt)[1], {})
+        self.assertNotIn("read", w.TASKS["T5noread"])
+
+
 class EscalateTest(unittest.TestCase):
     """上限到達の宣告。受入率とは別に数える（そのままクラウド昇格の頻度になる）。"""
 
