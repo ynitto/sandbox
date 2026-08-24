@@ -37,6 +37,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 - フィード取得（ネットワーク）は評価に含めない——測るのはステップ2（テーマ分け・
   日本語要約・書式遵守）で、取得はスクリプトが担う。チェッカーの単体テストを
   `test_worker_eval.py` に追加（LLM は呼ばない）。
+- **手続最適化版（T7gate / T8gate）も対で追加**: ステートマシン化の前処理を写した
+  多段セル（狭い state への分解 + 決定的ゲート + 診断つき再投入。`run_steps` が
+  agent-loop の statemachine の写像）。T7gate はテーマ割当（themes.json、全記事
+  ちょうど 1 回・テーマ 2+ を機械採択）→ ダイジェスト生成、T8gate は起点 ERROR 行の
+  引用（波及の timeout を起点と誤認したらゲートで却下）→ 解析の 2 state。最終
+  チェッカーは一発版と同一なので、「一発では落ちるが分解すれば回る」かを直接比較できる。
 
 ### agent-dashboard: 共有状態のホームを WSL 側へ解決する（control.json 分裂の修正）
 

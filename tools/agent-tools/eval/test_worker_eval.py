@@ -402,6 +402,40 @@ class TextTaskCheckerTest(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("根本原因", note)
 
+    def test_t7gate_theme_gate_enforces_full_single_assignment(self):
+        import json
+        wt = self._wt(w.seed_t7)
+        f = wt / "eval" / "themes.json"
+        self.assertFalse(w.gate_t7_themes(wt)[0])                # ファイルが無い
+        links = [a["link"] for a in w.T7_ARTICLES]
+        f.write_text(json.dumps({"AI": links[:2], "セキュリティ": links[2:4],
+                                 "クラウド": links[4:]}, ensure_ascii=False), encoding="utf-8")
+        ok, note = w.gate_t7_themes(wt)
+        self.assertTrue(ok, note)
+        f.write_text(json.dumps({"AI": links[:5]}, ensure_ascii=False), encoding="utf-8")
+        ok, note = w.gate_t7_themes(wt)                          # テーマ 1 つ + 未割当
+        self.assertFalse(ok)
+        f.write_text(json.dumps({"AI": links, "セキュリティ": links[:1]},
+                                ensure_ascii=False), encoding="utf-8")
+        ok, note = w.gate_t7_themes(wt)                          # 重複割当
+        self.assertFalse(ok)
+        self.assertIn("重複", note)
+
+    def test_t8gate_evidence_gate_requires_root_cause_line(self):
+        wt = self._wt(w.seed_t8)
+        f = wt / "eval" / "evidence.md"
+        self.assertFalse(w.gate_t8_evidence(wt)[0])              # ファイルが無い
+        f.write_text("2026-08-24T09:14:15Z ERROR api-gateway: upstream timeout to "
+                     "payments-db:5432 after 5000ms\nこれが最初のエラー。\n", encoding="utf-8")
+        ok, note = w.gate_t8_evidence(wt)                        # 波及行を起点と誤認
+        self.assertFalse(ok)
+        self.assertIn("起点", note)
+        f.write_text("2026-08-24T09:14:10Z ERROR payments-db: write failed: No space left "
+                     "on device (/var/lib/postgresql, disk usage 100%)\n"
+                     "この書き込み失敗が後続のタイムアウトの起点。\n", encoding="utf-8")
+        ok, note = w.gate_t8_evidence(wt)
+        self.assertTrue(ok, note)
+
     def test_t8_log_fixture_contains_cause_before_cascade(self):
         # 材料そのものの健全性: 原因行（disk）が波及行（timeout）より前にあり、囮も 1 行ある
         lines = w.T8_LOG.splitlines()

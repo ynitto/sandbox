@@ -528,6 +528,71 @@ def check_t7(wt: Path) -> tuple[bool, str]:
     return True, f"全 {len(T7_ARTICLES)} 記事・テーマ {len(themes)} 件・日本語要約つき"
 
 
+# --- T7 / T8 の手続最適化版（ステートマシン化の前処理を写した多段セル）
+# 一発版（T7digest / T8log）が落ちても、agent-loop の statemachine と同じ
+# 「狭い state + 決定的ゲート + 限定 retry」へ分解すれば回るのかを測る対。
+# run_steps がその写像（決定的遷移・診断つき再投入・自己申告不採用）を担う。
+
+T7_THEMES_GOAL = ("eval/articles.json の全 6 記事を内容から 2 つ以上のテーマへ分類し、"
+                  'eval/themes.json に {"テーマ名": ["URL", ...]} の JSON で書く。'
+                  "URL は articles.json の link をそのまま使い、全記事をちょうど 1 回ずつ"
+                  "どこかのテーマへ入れる。テーマ名は日本語。JSON 以外は書かない。"
+                  "eval/ 以外は変更しない。")
+T7_RENDER_GOAL = ("eval/themes.json のテーマ分けに従い、"
+                  "`.github/skills/tech-harvester/SKILL.md` の「出力フォーマット」で "
+                  "eval/digest.md を生成する。テーマごとに `## テーマ名`、各記事は "
+                  "`### [記事タイトル](URL)` の見出しと日本語 1〜2 文の要約。"
+                  "URL は eval/articles.json のものをそのまま使い、全 6 記事を漏れなく載せる。"
+                  "eval/ 以外は変更しない。")
+
+
+def gate_t7_themes(wt: Path) -> tuple[bool, str]:
+    """step1 のゲート: themes.json が「全記事をちょうど 1 回・テーマ 2+」を満たすか。"""
+    f = wt / "eval" / "themes.json"
+    if not f.exists():
+        return False, "eval/themes.json が作られていない"
+    try:
+        data = json.loads(f.read_text(encoding="utf-8"))
+    except ValueError as e:
+        return False, f"JSON として読めない: {e}"
+    if not isinstance(data, dict) or len(data) < 2:
+        return False, "テーマが 2 つ未満（{テーマ名: [URL, ...]} の dict が必要）"
+    assigned: list = []
+    for theme, links in data.items():
+        if not isinstance(links, list):
+            return False, f"テーマ {theme!r} の値が配列ではない"
+        assigned += [str(u) for u in links]
+    expected = [a["link"] for a in T7_ARTICLES]
+    missing = [u for u in expected if u not in assigned]
+    if missing:
+        return False, f"未割当の記事 {len(missing)} 件（例: {missing[0]}）"
+    dupes = [u for u in expected if assigned.count(u) > 1]
+    if dupes:
+        return False, f"複数テーマへ重複割当（例: {dupes[0]}）"
+    extra = [u for u in assigned if u not in expected]
+    if extra:
+        return False, f"articles.json に無い URL（例: {extra[0]}）"
+    return True, f"テーマ {len(data)} 件・全 {len(expected)} 記事を 1 回ずつ割当"
+
+
+T8_EVIDENCE_GOAL = ("eval/service.log から、時系列で**最初に現れた ERROR 行**を探し、"
+                    "eval/evidence.md の 1 行目にその行を**そのまま**引用する。"
+                    "2 行目以降に「この行が後続のエラーの起点である理由」を日本語 1〜2 文で書く。"
+                    "eval/ 以外は変更しない。")
+
+
+def gate_t8_evidence(wt: Path) -> tuple[bool, str]:
+    """step1 のゲート: 起点の ERROR 行（ディスク枯渇）へ到達したか。"""
+    f = wt / "eval" / "evidence.md"
+    if not f.exists():
+        return False, "eval/evidence.md が作られていない"
+    text = f.read_text(encoding="utf-8")
+    if "No space left on device" not in text or "payments-db" not in text:
+        return False, ("起点の ERROR 行を引用していない"
+                       "（時系列で最初の ERROR を探す。timeout は後続の波及）")
+    return True, "起点 ERROR（payments-db のディスク枯渇）を引用"
+
+
 T8_LOG_LINES = []
 for _m in range(0, 12):
     T8_LOG_LINES.append(f"2026-08-24T09:{_m:02d}:10Z INFO  api-gateway: health check ok (upstreams: 4/4)")
@@ -796,6 +861,34 @@ TASKS = {
         files=("eval/analysis.md",),
         read=("eval/service.log",),
         request=T8_REQUEST, goal=T8_GOAL,
+    ),
+    # 手続最適化版（ステートマシン化の前処理を写した多段セル）。一発版との差は
+    # 「狭い state への分解 + 決定的ゲート + 診断つき再投入」だけで、最終チェッカーは同一。
+    # 一発が落ちてこちらが通るなら、agent-loop では statemachine 経由で使える。
+    "T7gate": dict(
+        family="a",
+        seed=seed_t7, check=check_t7, request=T7_REQUEST,
+        steps=[dict(request=T7_REQUEST, goal=T7_THEMES_GOAL,
+                    files=("eval/themes.json",), read=("eval/articles.json",),
+                    gate=gate_t7_themes, max_retries=2),
+               dict(request=T7_REQUEST, goal=T7_RENDER_GOAL,
+                    files=("eval/digest.md",),
+                    read=("eval/articles.json", "eval/themes.json",
+                          ".github/skills/tech-harvester/SKILL.md"),
+                    gate=check_t7, max_retries=2)],
+    ),
+    "T8gate": dict(
+        family="a",
+        seed=seed_t8, check=check_t8, request=T8_REQUEST,
+        steps=[dict(request=T8_REQUEST, goal=T8_EVIDENCE_GOAL,
+                    files=("eval/evidence.md",), read=("eval/service.log",),
+                    gate=gate_t8_evidence, max_retries=2),
+               dict(request=T8_REQUEST,
+                    goal=T8_GOAL + " eval/evidence.md に引用した起点の ERROR 行を"
+                         "根本原因の根拠として使う。",
+                    files=("eval/analysis.md",),
+                    read=("eval/service.log", "eval/evidence.md"),
+                    gate=check_t8, max_retries=2)],
     ),
 }
 
