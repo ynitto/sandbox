@@ -29,6 +29,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   `agent-loop doctor` も、設定が壊れていても doctor 自身は落とさず finding
   （`config.load`）で報告し、デーモンが実際に優先する `<cwd>/.agents/` の設定ファイルを
   診断対象に加えた。
+- **キーが実行時に決まる遅延 lookup を追加**: `{{lookup cwd_map {project}}}` のように
+  キーを `{変数}` と書くと、読み込み時は素通しし、webhook のパラメータ注入 / hook の
+  `vars` 注入のタイミングで解決する（`format_map` は `{{` を `{` に潰すため、注入より
+  先に解決する）。従来はキーが webhook payload 等で遅れて決まる構成を書く手段が無く、
+  静的なキーとして書くと「mapping lookup が見つかりません」で読み込みが失敗していた。
+  静的キーの解決失敗エラーにはこの書き方のヒントを添えた。
 
 ### ローカル LLM の役割別既定を実測へ揃えた（配線の食い違いの修正）
 

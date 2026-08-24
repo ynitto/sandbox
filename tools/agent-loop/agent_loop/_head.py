@@ -97,6 +97,23 @@ except ImportError:
             return json.load(f)
 
 
+def _global_config_mapping() -> dict[str, Any]:
+    """共通設定（~/.agents）の mapping セクションを返す（無ければ空）。"""
+    try:
+        global_path = find_default_config(agent_home_dir())  # noqa: F821 (前方参照)
+    except Exception:  # noqa: BLE001
+        return {}
+    if global_path is None:
+        return {}
+    try:
+        data = _read_config_file(global_path)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("共通設定 %s の mapping を読めません: %s", global_path, exc)
+        return {}
+    raw = data.get("mapping") if isinstance(data, dict) else None
+    return raw if isinstance(raw, dict) else {}
+
+
 def _global_mapping_fallback(path: Path) -> dict[str, Any]:
     """共通設定（~/.agents）の mapping を、他ファイルの lookup の fallback として返す。
 
@@ -106,19 +123,11 @@ def _global_mapping_fallback(path: Path) -> dict[str, Any]:
     """
     try:
         global_path = find_default_config(agent_home_dir())  # noqa: F821 (前方参照)
+        if global_path is not None and path.resolve() == global_path.resolve():
+            return {}
     except Exception:  # noqa: BLE001
         return {}
-    if global_path is None:
-        return {}
-    try:
-        if path.resolve() == global_path.resolve():
-            return {}
-        data = _read_config_file(global_path)
-    except Exception as exc:  # noqa: BLE001
-        log.warning("共通設定 %s の mapping を読めません: %s", global_path, exc)
-        return {}
-    raw = data.get("mapping") if isinstance(data, dict) else None
-    return raw if isinstance(raw, dict) else {}
+    return _global_config_mapping()
 
 
 def _load_config_file(path: Path) -> dict[str, Any]:

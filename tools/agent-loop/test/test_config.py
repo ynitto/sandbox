@@ -144,6 +144,41 @@ class PromptConfigTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 al.load_config(workspace)
 
+    def test_deferred_lookup_passes_through_config_load(self):
+        # キーが実行時に決まる遅延 lookup（{変数}）は読み込み時に触らない
+        config = {
+            "mapping": {"cwd_map": {"sandbox": "/home/u/sandbox"}},
+            "prompts": [{"prompt": "{{lookup cwd_map {project}}} で作業"}],
+        }
+        out = al._resolve_config_mappings(config)
+        self.assertEqual(out["prompts"][0]["prompt"], "{{lookup cwd_map {project}}} で作業")
+
+    def test_deferred_lookup_resolves_with_runtime_params(self):
+        mappings = al._normalized_mappings({"cwd_map": {"sandbox": "/home/u/sandbox"}})
+        text = al.resolve_deferred_lookups(
+            "{{lookup cwd_map {project}}} で作業", mappings, {"project": "sandbox"})
+        self.assertEqual(text, "/home/u/sandbox で作業")
+
+    def test_deferred_lookup_rejects_missing_var_and_key(self):
+        mappings = al._normalized_mappings({"cwd_map": {"sandbox": "/s"}})
+        with self.assertRaises(ValueError):
+            al.resolve_deferred_lookups("{{lookup cwd_map {project}}}", mappings, {})
+        with self.assertRaises(ValueError):
+            al.resolve_deferred_lookups(
+                "{{lookup cwd_map {project}}}", mappings, {"project": "unknown"})
+
+    def test_hook_vars_resolve_deferred_lookup_before_format(self):
+        s = al.PeriodicScheduler.__new__(al.PeriodicScheduler)
+        s._tool_config = {"mapping": {"cwd_map": {"sandbox": "/home/u/sandbox"}}}
+        s._hook_quarantine = set()
+        with mock.patch.object(al, "_global_config_mapping", return_value={}):
+            out = s._normalize_hook_result(
+                {"prompt": "MR {mr} を {{lookup cwd_map {project}}} でレビュー",
+                 "vars": {"mr": 7, "project": "sandbox"}},
+                "n",
+            )
+        self.assertEqual(out["prompt"], "MR 7 を /home/u/sandbox でレビュー")
+
     def test_user_home_does_not_read_dot_agent(self):
         with tempfile.TemporaryDirectory() as tmp:
             old = Path(tmp, ".agent", "agent-loop.json")

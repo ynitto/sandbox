@@ -365,6 +365,26 @@ GitLab 用の前二つは `gitlab-idd` スキルの `scripts/gl.py` を利用し
 `{{lookup ...}}` からも参照できます。同じラベル・キーを両方に書いた場合は
 ファイル側がキー単位で勝ちます。
 
+キーが実行時に決まる場合（webhook の payload や hook の `vars` の値でキーを
+選びたい場合）は、キーを `{変数}` と書きます:
+
+```yaml
+mapping:
+  cwd_map:
+    sandbox: /home/user/sandbox
+prompts:
+  - name: mr-reviewer
+    prompt: |
+      {project} の MR をレビューしてください。作業ディレクトリ: {{lookup cwd_map {project}}}
+    webhook:
+      hook: ~/sandbox/tools/agent-loop/hooks/gitlab-mr-webhook.py
+```
+
+遅延 lookup は設定の読み込みでは検証されず、webhook のパラメータ注入 / hook の
+`vars` 注入のタイミングで解決されます。変数が payload / vars に無い、または
+解決先のキーが mapping に無い場合は、その 1 件の注入だけがエラーになります
+（デーモンは落ちません）。
+
 ## tmux セッションの命名規則
 
 起動ディレクトリ、instance ID、用途から `agent-loop-<label>-<digest>-<instance>` 形式の
