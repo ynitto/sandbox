@@ -7,6 +7,79 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-loop: headless 実行のログをコントロールペインと分けたペインで表示する
+
+- headless（per-run。aider / gemma4:e4b 等）の実行はワーカーペインを持たないため、
+  実行の様子がコントロールペインのログに混ざって流れるだけだった。既定で、デーモンと
+  同じウィンドウ内に entry ごとの**ログペイン**（コントロールペインと分割・
+  `respawn-pane` で使い回し）を開き、同時実行数 1 でも「controller と実行の見え場所は
+  別ペイン」という対話経路の見え方を保つ。
+- `headless_pane: false` でペインも開かない（サーバ・CI 常駐）。`headless_window: true`
+  は従来どおり専用ウィンドウ（ペインより優先）。tmux の外では何も開かない。
+  どれも開けないことは実行の失敗にしない。
+
+### agent-loop: headless 実行で `slash` をスキルとして解決する（層3 のスキル対応）
+
+- headless（per-run）実行は entry の `slash` を**黙って捨てていた**（対話ペインへ
+  send-keys する前提の機能だったため）。aider / gemma4:e4b のような層3 構成で
+  「スキルを設定したのに効かない」「実体が無くても気づけない」になっていた。
+  `toolloop.run_prompt` が `slash` を受け、層2（tool-loop 内蔵 CLI）へはネイティブの
+  スラッシュ行として本文先頭へ前置、層3（single-shot）へはスキルとして解決して
+  SKILL.md をツールループの読み取り材料に渡す。
+- 明示指定（`slash` / `skills`）のスキルが解決できないときは黙って落とさず、探索先
+  一覧と配布コマンド付きの明示エラー（`agentcore.ollama_skills` と同じ原則）。層3
+  entry の `slash` は起動時点検（`check_headless_entries`）でも fail fast。
+  なお `install.py --agent aider` の既定インストールは `tier: core` のスキルだけ——
+  tech-harvester のような tier 無しスキルは `--all-skills` が必要（README に明記）。
+
+### eval: gemma4:e4b の定常業務適性を測るテキスト成果物タスク（T7digest / T8log）
+
+- `worker_eval.py` に、agent-loop でローカル LLM（aider / gemma4:e4b）を使えるかを
+  見極めるための 2 本を追加。走らせ方:
+  `python3 worker_eval.py --cli aider --model gemma4:e4b --tasks T7digest,T8log --repeat 3`
+  - **T7digest** — tech-harvester スキルの「出力フォーマット」に従い、取得済み
+    記事（fixture の articles.json、6 件・3 テーマ）から日本語要約付きダイジェスト
+    Markdown を生成する。チェッカーは決定的: 書式（`# Tech Digest` / テーマ `##` 2+）・
+    リンク全件掲載・各記事に日本語の要約文。
+  - **T8log** — 障害ログ（原因: payments-db のディスク枯渇 → 波及: api-gateway
+    タイムアウト → checkout 500。囮に auth-service の deprecated 警告）を解析して
+    `## 根本原因` / `## 波及` の書式で原因を書く。チェッカーは「症状で止まったか、
+    因果を 1 段遡れたか」を disk トークン到達で機械判定し、囮を原因にしたら落とす。
+- フィード取得（ネットワーク）は評価に含めない——測るのはステップ2（テーマ分け・
+  日本語要約・書式遵守）で、取得はスクリプトが担う。チェッカーの単体テストを
+  `test_worker_eval.py` に追加（LLM は呼ばない）。
+- **手続最適化版（T7gate / T8gate）も対で追加**: ステートマシン化の前処理を写した
+  多段セル（狭い state への分解 + 決定的ゲート + 診断つき再投入。`run_steps` が
+  agent-loop の statemachine の写像）。T7gate はテーマ割当（themes.json、全記事
+  ちょうど 1 回・テーマ 2+ を機械採択）→ ダイジェスト生成、T8gate は起点 ERROR 行の
+  引用（波及の timeout を起点と誤認したらゲートで却下）→ 解析の 2 state。最終
+  チェッカーは一発版と同一なので、「一発では落ちるが分解すれば回る」かを直接比較できる。
+
+### agent-dashboard: 共有状態のホームを WSL 側へ解決する（control.json 分裂の修正）
+
+- dashboard（Windows）とエンジン（agent-loop / agentcore の CLI 群、WSL）が
+  `~/.agents` 配下の共有状態を**別々のファイル**として読み書きしていた——dashboard は
+  `os.homedir()`（`C:\Users\…\.agents`）でパスを組むため、画面で保存した control.json が
+  WSL 側のエンジンに永久に見えない。node-budget・instructions・session・tuning・methods・
+  amigos・flow（adhoc）・preparation・agents 定義も同じ経路で分裂していた。
+- `agent-home.js` に `sharedHomeRoots()` を追加: Windows では WSL 既定ディストロの
+  ホーム（UNC・60 秒キャッシュ）を**正典**とし、このマシン（Windows 側）のホームも
+  候補に並べて**両方を扱う**。WSL が無ければこのマシンのホームだけ。
+  `AGENT_*_DIR` 環境変数と ⚙ 設定の明示指定はこれまでどおり優先。
+- contract 文書（control.json / profiles.json / qualifications.json / budget の
+  config.json / session.json / instructions.json / tuning.json）の読み書きを
+  両ホーム対応にした: **読み取りは両ホームの実在して新しい方**（旧配置＝Windows 側に
+  溜まった状態も見える）、**書き込みは正典（WSL 側）へ原子書換**し、`.agents` を既に
+  持つもう一方のホームへは同じ内容をミラーする（Windows ネイティブで動くツールにも
+  最新が見える。ミラーの失敗は保存の成否に含めない）。バス・キュー類（amigos bus /
+  flow bus / task-queue）は二重処理を避けるため正典のみ。
+- 探索系（agents 定義の `~/.agents/agents`・`~/.kiro/agents`、スキル棚卸し
+  `~/.kiro|.claude|.agents/skills`）は両ホームを正典優先で並べて統合する。
+- engine/status.json（agent-project）と node-commands（delegation）、tmux 経由の
+  `$HOME/.agents` 参照（routines）は既に WSL 側を向いており変更なし。ほかの
+  agent-tools ファミリー（Python 系 CLI は WSL 内で実行・VS Code / Obsidian 拡張は
+  WSL 変換済みまたは WSL 内シェルで解決）に同種の分裂は無いことを確認した。
+
 ### agent-loop: headless 設定でも起動時に kiro-cli を立ち上げない（起動クラッシュの修正）
 
 - 起動・リロード時のペイン事前作成が実行経路を見ていなかった——`agent_cli` に headless CLI

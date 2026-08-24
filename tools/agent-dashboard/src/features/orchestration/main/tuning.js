@@ -4,7 +4,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { agentHomeSubdir } = require('../../../base/main/agent-home');
+const { agentHomeSubdir, sharedHomeRoots, sharedStateReadPath, writeSharedStateJson } = require('../../../base/main/agent-home');
 
 function expandHome(p) {
   return p === '~' || String(p || '').startsWith('~/') ? path.join(os.homedir(), String(p).slice(1)) : p;
@@ -19,8 +19,10 @@ function resolveMethodsDir(cfg) {
   const c = (cfg && cfg.orchestration) || {};
   const explicit = c.methodsDir || process.env.AGENT_METHODS_DIR;
   if (explicit) return expandHome(explicit);
-  const home = agentHomeSubdir('methods');
-  if (fs.existsSync(home)) return home;
+  for (const root of sharedHomeRoots()) {
+    const home = path.join(root, '.agents', 'methods');
+    if (fs.existsSync(home)) return home;
+  }
   const packaged = process.resourcesPath && path.join(process.resourcesPath, 'methods');
   if (packaged && fs.existsSync(packaged)) return packaged;
   return path.resolve(__dirname, '../../../../../../methods');
@@ -36,7 +38,7 @@ function defaults() {
 }
 
 function load(cfg) {
-  const raw = readJson(path.join(resolveTuningDir(cfg), 'tuning.json'));
+  const raw = readJson(sharedStateReadPath(resolveTuningDir(cfg), 'tuning.json'));
   return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : defaults();
 }
 
@@ -70,8 +72,7 @@ function revisionOf(data) {
 // 置き換える。照合しないと後勝ちで前の変更が消え、revision は両者とも +1 するので
 // 消えたことにも気づけない。
 function write(cfg, data, updatedBy, baseRevision) {
-  const file = path.join(resolveTuningDir(cfg), 'tuning.json');
-  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const dir = resolveTuningDir(cfg);
   const current = revisionOf(load(cfg));
   if (current !== baseRevision) {
     throw new Error(`tuning.json が他の書き手に更新されています（revision ${baseRevision} → ${current}）。`
@@ -82,9 +83,7 @@ function write(cfg, data, updatedBy, baseRevision) {
   data.updated_at = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
   data.updated_by = updatedBy;
   if (!data.profiles) data.profiles = defaults().profiles;
-  const tmp = `${file}.tmp.${process.pid}`;
-  fs.writeFileSync(tmp, `${JSON.stringify(data, null, 2)}\n`);
-  fs.renameSync(tmp, file);
+  writeSharedStateJson(dir, 'tuning.json', data);
   return data;
 }
 

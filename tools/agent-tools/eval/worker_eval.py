@@ -444,6 +444,214 @@ T3_GOAL = ("schemas/node-budget-summary.schema.json を追加し、status/<node>
            "壊れない互換性を担保する契約テストを tools/agent-project 配下に追加する。"
            "変更してよいのは tools/agent-project 配下とリポジトリルートの schemas/ のみ。")
 
+# ---------------------------------------------------------------- T7 / T8（テキスト成果物）
+# ローカル LLM を agent-loop の定期プロンプトへ置けるかを、コード生成ではなく
+# 「スキルの書式に従う要約」（tech-harvester のダイジェスト生成）と「ログの因果を遡る解析」
+# で測る（2026-08-24 ユーザー要望）。フィード取得（ネットワーク）は評価に含めない——
+# 測りたいのはステップ2（テーマ分け・日本語要約・書式遵守）で、取得はスクリプトが担う。
+
+T7_ARTICLES = [
+    {"feed": "AI Weekly", "feed_tags": ["ai"], "title": "Meta releases Llama 5 with 1M context window",
+     "link": "https://example.com/ai/llama5-release",
+     "description": "Meta announced Llama 5, extending the context window to one million tokens "
+                    "and improving tool-use benchmarks by 18 percent.", "date": "Mon, 18 Aug 2026"},
+    {"feed": "AI Weekly", "feed_tags": ["ai"], "title": "Study finds RAG pipelines degrade beyond 100k documents",
+     "link": "https://example.com/ai/rag-degradation-study",
+     "description": "A new benchmark shows retrieval quality drops sharply as corpus size grows, "
+                    "unless hybrid rerankers are used.", "date": "Tue, 19 Aug 2026"},
+    {"feed": "Security Feed", "feed_tags": ["security"], "title": "Critical RCE in OpenSSH 10.2 patched",
+     "link": "https://example.com/sec/openssh-rce",
+     "description": "Maintainers released 10.2p1 fixing a pre-auth remote code execution reachable "
+                    "when GSSAPI is enabled.", "date": "Wed, 20 Aug 2026"},
+    {"feed": "Security Feed", "feed_tags": ["security"], "title": "npm supply-chain attack hits 40 packages",
+     "link": "https://example.com/sec/npm-supply-chain",
+     "description": "Attackers published typosquatted packages that exfiltrate CI environment "
+                    "variables during postinstall.", "date": "Wed, 20 Aug 2026"},
+    {"feed": "Cloud Blog", "feed_tags": ["cloud"], "title": "AWS cuts S3 Glacier retrieval pricing by 40%",
+     "link": "https://example.com/cloud/s3-glacier-pricing",
+     "description": "The price cut applies to bulk retrievals in all regions starting September.",
+     "date": "Thu, 21 Aug 2026"},
+    {"feed": "Cloud Blog", "feed_tags": ["cloud"], "title": "Kubernetes 1.34 promotes in-place pod resize to GA",
+     "link": "https://example.com/cloud/k8s-134-inplace-resize",
+     "description": "Pods can now change CPU and memory without restart, closing a long-standing "
+                    "gap for stateful workloads.", "date": "Fri, 22 Aug 2026"},
+]
+
+T7_REQUEST = ("tech-harvester スキルの出力フォーマットで、取得済み記事から日本語要約付きの"
+              "ダイジェスト Markdown を作る。定期プロンプト（ローカル LLM）で回せるかの適性測定。")
+T7_GOAL = ("`.github/skills/tech-harvester/SKILL.md` の「出力フォーマット」に従い、"
+           "eval/articles.json の記事から eval/digest.md を生成する。"
+           "フィード取得（ステップ1）は済んでいて eval/articles.json がその出力。"
+           "やることはステップ2だけ: 記事内容からテーマを 2 つ以上作って記事をグループ化し、"
+           "各記事を `### [記事タイトル](URL)` の見出しと日本語 1〜2 文の要約で載せる。"
+           "全 6 記事を漏れなく載せ、URL は articles.json のものをそのまま使う。"
+           "eval/ 以外は変更しない。")
+
+
+def seed_t7(wt: Path) -> None:
+    d = wt / "eval"
+    d.mkdir(exist_ok=True)
+    (d / "articles.json").write_text(json.dumps(
+        {"generated_at": "2026-08-24 09:00 UTC", "total": len(T7_ARTICLES),
+         "articles": T7_ARTICLES}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def check_t7(wt: Path) -> tuple[bool, str]:
+    """決定的チェッカー: 書式（# Tech Digest / テーマ ## が 2+）・リンク網羅・日本語要約。
+
+    要約の質は測らない（LLM 判定は置かない決定に従う）。「全記事に日本語の文が付いて
+    いるか」までを機械で見る——ここが落ちる=定期プロンプトの成果物として使えない。"""
+    import re as _re  # noqa: PLC0415
+    ja = _re.compile(r"[ぁ-ゖァ-ヶ]")
+    f = wt / "eval" / "digest.md"
+    if not f.exists():
+        return False, "eval/digest.md が作られていない"
+    text = f.read_text(encoding="utf-8")
+    if "# Tech Digest" not in text:
+        return False, "見出し '# Tech Digest' が無い（出力フォーマット不遵守）"
+    missing = [a["link"] for a in T7_ARTICLES if a["link"] not in text]
+    if missing:
+        return False, f"リンク未掲載 {len(missing)} 件（例: {missing[0]}）"
+    lines = text.splitlines()
+    themes = [ln for ln in lines if ln.startswith("## ") and "注目キーワード" not in ln]
+    if len(themes) < 2:
+        return False, f"テーマ見出し（##）が {len(themes)} 件（2 件以上必要）"
+    for a in T7_ARTICLES:
+        idx = next(i for i, ln in enumerate(lines) if a["link"] in ln)
+        seg: list[str] = [lines[idx]]
+        for ln in lines[idx + 1:]:
+            if ln.startswith("#"):
+                break
+            seg.append(ln)
+        if not ja.search(" ".join(seg)):
+            return False, f"日本語要約が無い: {a['title'][:40]}"
+    return True, f"全 {len(T7_ARTICLES)} 記事・テーマ {len(themes)} 件・日本語要約つき"
+
+
+# --- T7 / T8 の手続最適化版（ステートマシン化の前処理を写した多段セル）
+# 一発版（T7digest / T8log）が落ちても、agent-loop の statemachine と同じ
+# 「狭い state + 決定的ゲート + 限定 retry」へ分解すれば回るのかを測る対。
+# run_steps がその写像（決定的遷移・診断つき再投入・自己申告不採用）を担う。
+
+T7_THEMES_GOAL = ("eval/articles.json の全 6 記事を内容から 2 つ以上のテーマへ分類し、"
+                  'eval/themes.json に {"テーマ名": ["URL", ...]} の JSON で書く。'
+                  "URL は articles.json の link をそのまま使い、全記事をちょうど 1 回ずつ"
+                  "どこかのテーマへ入れる。テーマ名は日本語。JSON 以外は書かない。"
+                  "eval/ 以外は変更しない。")
+T7_RENDER_GOAL = ("eval/themes.json のテーマ分けに従い、"
+                  "`.github/skills/tech-harvester/SKILL.md` の「出力フォーマット」で "
+                  "eval/digest.md を生成する。テーマごとに `## テーマ名`、各記事は "
+                  "`### [記事タイトル](URL)` の見出しと日本語 1〜2 文の要約。"
+                  "URL は eval/articles.json のものをそのまま使い、全 6 記事を漏れなく載せる。"
+                  "eval/ 以外は変更しない。")
+
+
+def gate_t7_themes(wt: Path) -> tuple[bool, str]:
+    """step1 のゲート: themes.json が「全記事をちょうど 1 回・テーマ 2+」を満たすか。"""
+    f = wt / "eval" / "themes.json"
+    if not f.exists():
+        return False, "eval/themes.json が作られていない"
+    try:
+        data = json.loads(f.read_text(encoding="utf-8"))
+    except ValueError as e:
+        return False, f"JSON として読めない: {e}"
+    if not isinstance(data, dict) or len(data) < 2:
+        return False, "テーマが 2 つ未満（{テーマ名: [URL, ...]} の dict が必要）"
+    assigned: list = []
+    for theme, links in data.items():
+        if not isinstance(links, list):
+            return False, f"テーマ {theme!r} の値が配列ではない"
+        assigned += [str(u) for u in links]
+    expected = [a["link"] for a in T7_ARTICLES]
+    missing = [u for u in expected if u not in assigned]
+    if missing:
+        return False, f"未割当の記事 {len(missing)} 件（例: {missing[0]}）"
+    dupes = [u for u in expected if assigned.count(u) > 1]
+    if dupes:
+        return False, f"複数テーマへ重複割当（例: {dupes[0]}）"
+    extra = [u for u in assigned if u not in expected]
+    if extra:
+        return False, f"articles.json に無い URL（例: {extra[0]}）"
+    return True, f"テーマ {len(data)} 件・全 {len(expected)} 記事を 1 回ずつ割当"
+
+
+T8_EVIDENCE_GOAL = ("eval/service.log から、時系列で**最初に現れた ERROR 行**を探し、"
+                    "eval/evidence.md の 1 行目にその行を**そのまま**引用する。"
+                    "2 行目以降に「この行が後続のエラーの起点である理由」を日本語 1〜2 文で書く。"
+                    "eval/ 以外は変更しない。")
+
+
+def gate_t8_evidence(wt: Path) -> tuple[bool, str]:
+    """step1 のゲート: 起点の ERROR 行（ディスク枯渇）へ到達したか。"""
+    f = wt / "eval" / "evidence.md"
+    if not f.exists():
+        return False, "eval/evidence.md が作られていない"
+    text = f.read_text(encoding="utf-8")
+    if "No space left on device" not in text or "payments-db" not in text:
+        return False, ("起点の ERROR 行を引用していない"
+                       "（時系列で最初の ERROR を探す。timeout は後続の波及）")
+    return True, "起点 ERROR（payments-db のディスク枯渇）を引用"
+
+
+T8_LOG_LINES = []
+for _m in range(0, 12):
+    T8_LOG_LINES.append(f"2026-08-24T09:{_m:02d}:10Z INFO  api-gateway: health check ok (upstreams: 4/4)")
+    T8_LOG_LINES.append(f"2026-08-24T09:{_m:02d}:40Z INFO  checkout-service: processed 1{_m} orders")
+T8_LOG_LINES += [
+    "2026-08-24T09:12:03Z WARN  auth-service: config key 'session_ttl' is deprecated, use 'session_ttl_sec'",
+    "2026-08-24T09:14:10Z ERROR payments-db: write failed: No space left on device (/var/lib/postgresql, disk usage 100%)",
+    "2026-08-24T09:14:11Z ERROR payments-db: checkpoint failure, database is read-only until space is freed",
+]
+for _s in range(15, 55, 5):
+    T8_LOG_LINES += [
+        f"2026-08-24T09:14:{_s}Z ERROR api-gateway: upstream timeout to payments-db:5432 after 5000ms",
+        f"2026-08-24T09:14:{_s + 2}Z ERROR checkout-service: POST /orders -> 500 (payment persistence failed)",
+    ]
+T8_LOG_LINES.append("2026-08-24T09:15:20Z INFO  auth-service: login rate normal (42 rpm)")
+T8_LOG = "\n".join(T8_LOG_LINES) + "\n"
+
+T8_REQUEST = ("障害ログを解析して根本原因を報告する。定期プロンプト（ローカル LLM）で"
+              "ログ監視・一次切り分けを回せるかの適性測定。")
+T8_GOAL = ("eval/service.log を読み、障害の根本原因を特定して eval/analysis.md に日本語で"
+           "まとめる。書式: `## 根本原因` セクションに原因となったサービス名と直接原因を明記し、"
+           "`## 波及` セクションに他サービスへの影響を時系列で書く。症状（タイムアウトや 500）と"
+           "原因を取り違えないこと。eval/ 以外は変更しない。")
+
+
+def seed_t8(wt: Path) -> None:
+    d = wt / "eval"
+    d.mkdir(exist_ok=True)
+    (d / "service.log").write_text(T8_LOG, encoding="utf-8")
+
+
+def check_t8(wt: Path) -> tuple[bool, str]:
+    """決定的チェッカー: 根本原因（payments-db のディスク枯渇）へ到達したか。
+
+    タイムアウトだけを見た解析は disk のトークンへ到達できない——「症状で止まったか、
+    因果を 1 段遡れたか」がこの 1 点で機械判定できる。囮（auth-service の deprecated
+    警告）を根本原因にしたら落とす。"""
+    import re as _re  # noqa: PLC0415
+    f = wt / "eval" / "analysis.md"
+    if not f.exists():
+        return False, "eval/analysis.md が作られていない"
+    text = f.read_text(encoding="utf-8")
+    if not _re.search(r"[ぁ-ゖァ-ヶ]", text):
+        return False, "日本語で書かれていない"
+    m = _re.search(r"##\s*根本原因(.*?)(?=\n##\s|\Z)", text, _re.S)
+    if m is None:
+        return False, "`## 根本原因` セクションが無い（書式不遵守）"
+    cause = m.group(1)
+    if "payments-db" not in cause:
+        return False, "根本原因に payments-db が挙がっていない"
+    if not _re.search(r"No space left|disk|ディスク|空き容量|容量", cause, _re.I):
+        return False, "ディスク枯渇へ到達していない（症状で止まっている）"
+    if "auth-service" in cause:
+        return False, "囮（auth-service の deprecated 警告）を根本原因に含めている"
+    if "## 波及" not in text:
+        return False, "`## 波及` セクションが無い（書式不遵守）"
+    return True, "根本原因=payments-db のディスク枯渇へ到達・書式遵守"
+
+
 # 失敗の族（gate-generality 2026-08-14 / 計画 2026-08-22 §4.2 A1）。
 #   (a) 仕様の読み違い族 —— 真偽ゲート + 再投入で直る。T1* / T2* / T4*。
 #   (b) 作業の丸ごと欠落族 —— 成果物が 2 つ以上で、片方を一度も作らない。T3 / T3gate
@@ -637,6 +845,50 @@ TASKS = {
                     files=("schemas/node-budget-summary.schema.json",), map_tokens=1024,
                     test_cmd=f"{CHECK_PY} -m pytest -q tools/agent-project",
                     gate=check_t3, max_retries=2)],
+    ),
+    # --- ローカル LLM の定常業務適性（テキスト成果物 2 本。2026-08-24 ユーザー要望）
+    # 走らせ方: python3 worker_eval.py --cli aider --model gemma4:e4b --tasks T7digest,T8log --repeat 3
+    "T7digest": dict(
+        family="a",
+        seed=seed_t7, check=check_t7,
+        files=("eval/digest.md",),
+        read=("eval/articles.json", ".github/skills/tech-harvester/SKILL.md"),
+        request=T7_REQUEST, goal=T7_GOAL,
+    ),
+    "T8log": dict(
+        family="a",
+        seed=seed_t8, check=check_t8,
+        files=("eval/analysis.md",),
+        read=("eval/service.log",),
+        request=T8_REQUEST, goal=T8_GOAL,
+    ),
+    # 手続最適化版（ステートマシン化の前処理を写した多段セル）。一発版との差は
+    # 「狭い state への分解 + 決定的ゲート + 診断つき再投入」だけで、最終チェッカーは同一。
+    # 一発が落ちてこちらが通るなら、agent-loop では statemachine 経由で使える。
+    "T7gate": dict(
+        family="a",
+        seed=seed_t7, check=check_t7, request=T7_REQUEST,
+        steps=[dict(request=T7_REQUEST, goal=T7_THEMES_GOAL,
+                    files=("eval/themes.json",), read=("eval/articles.json",),
+                    gate=gate_t7_themes, max_retries=2),
+               dict(request=T7_REQUEST, goal=T7_RENDER_GOAL,
+                    files=("eval/digest.md",),
+                    read=("eval/articles.json", "eval/themes.json",
+                          ".github/skills/tech-harvester/SKILL.md"),
+                    gate=check_t7, max_retries=2)],
+    ),
+    "T8gate": dict(
+        family="a",
+        seed=seed_t8, check=check_t8, request=T8_REQUEST,
+        steps=[dict(request=T8_REQUEST, goal=T8_EVIDENCE_GOAL,
+                    files=("eval/evidence.md",), read=("eval/service.log",),
+                    gate=gate_t8_evidence, max_retries=2),
+               dict(request=T8_REQUEST,
+                    goal=T8_GOAL + " eval/evidence.md に引用した起点の ERROR 行を"
+                         "根本原因の根拠として使う。",
+                    files=("eval/analysis.md",),
+                    read=("eval/service.log", "eval/evidence.md"),
+                    gate=check_t8, max_retries=2)],
     ),
 }
 

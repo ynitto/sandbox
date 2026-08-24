@@ -1156,6 +1156,33 @@ class PeriodicScheduler:
             log.info("[%s] headless ログを tmux で追えます: tmux attach -t %s",
                      label, session_name)
 
+    def _open_headless_log_view(self, entry: dict[str, Any], log_file: str) -> None:
+        """headless 実行ログの見せ場所を開く。
+
+        既定はデーモンと同じウィンドウ内の entry ごとの**ペイン**（controller と分割。
+        同時実行数 1 でも controller ペインと実行の見え場所を分ける）。
+        `headless_window: true` は従来どおり専用ウィンドウ（opt-in）、
+        `headless_pane: false` はペインも開かない（サーバ・CI で tmux を使いたくない側）。
+        どれも開けないことは実行の失敗にしない。
+        """
+        if self._headless_window_enabled():
+            self._open_headless_log_window(entry, log_file)
+            return
+        if (self._tool_config or {}).get("headless_pane") is False:
+            return
+        opener = getattr(self._session_mgr, "open_headless_log_pane", None)
+        if not callable(opener):
+            return
+        try:
+            opened = opener(str(entry.get("id") or ""),
+                            str(entry.get("name") or entry.get("id") or "run"), log_file)
+        except Exception:
+            log.debug("headless ログペインを開けませんでした", exc_info=True)
+            return
+        if opened:
+            log.info("[%s] headless 実行のログをペインで表示します: %s",
+                     entry.get("name") or entry.get("id"), log_file)
+
     def _dispatch_headless(self, req: dict[str, Any], *, entry: dict[str, Any],
                            dispatch_entry: dict[str, Any], exec_meta: dict[str, Any],
                            profile: Any, cwd: str, root_id: str) -> str:
@@ -1191,7 +1218,7 @@ class PeriodicScheduler:
         acceptance = list(entry.get("acceptance") or [])
         work_dir = cwd or self._workspace or os.getcwd()
         log_file = self._headless_log_file(root_id)
-        self._open_headless_log_window(entry, log_file)
+        self._open_headless_log_view(entry, log_file)
         try:
             agent = _tl_resolve_agent(profile.name, profile.model or "", work_dir)
             log.info("[%s] headless 実行: cli=%s model=%s autonomy=%s log=%s",
@@ -1199,7 +1226,8 @@ class PeriodicScheduler:
                      profile.autonomy, log_file)
             result = run_prompt(goal=prompt, cwd=work_dir, agent=agent, log_file=log_file,
                                 acceptance=acceptance, tag="agent-loop",
-                                judge=self._acceptance_judge_enabled(entry))
+                                judge=self._acceptance_judge_enabled(entry),
+                                slash=list(entry.get("slash") or []))
         except ToolLoopError as exc:
             log.error("[%s] headless 実行に失敗しました: %s", name, exc)
             self._fail_execution(req, slot_key, reason="headless_failed")

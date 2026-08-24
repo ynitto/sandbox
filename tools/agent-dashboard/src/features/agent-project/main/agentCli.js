@@ -16,7 +16,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { agentHomeSubdir } = require('../../../base/main/agent-home');
+const { sharedHomeRoots } = require('../../../base/main/agent-home');
 
 class AgentCliError extends Error {}
 
@@ -43,8 +43,9 @@ function pluginDirs(projectDir) {
   const dirs = [];
   if (process.env.KIRO_AGENTS_DIR) dirs.push(String(process.env.KIRO_AGENTS_DIR));
   dirs.push(path.join(String(projectDir || process.cwd()), 'agents'));
-  dirs.push(agentHomeSubdir('agents'));
-  dirs.push(path.join(os.homedir(), '.kiro', 'agents'));
+  // Windows では WSL・Windows 両ホームを並べる（正典＝エンジン側が先）。
+  for (const root of sharedHomeRoots()) dirs.push(path.join(root, '.agents', 'agents'));
+  for (const root of sharedHomeRoots()) dirs.push(path.join(root, '.kiro', 'agents'));
   const bundled = bundledDir();
   if (bundled) dirs.push(bundled);
   return dirs;

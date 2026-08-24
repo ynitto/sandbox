@@ -11,7 +11,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { agentHomeSubdir } = require('../../../base/main/agent-home');
+const { agentHomeSubdir, sharedStateReadPath, writeSharedStateJson } = require('../../../base/main/agent-home');
 
 const LIFECYCLES = ['run', 'pause', 'stop'];
 const DELEGATION_PREFER = ['local', 'remote'];
@@ -50,16 +50,9 @@ function nowStamp() {
   return new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
 }
 
-function atomicWriteJson(target, obj) {
-  fs.mkdirSync(path.dirname(target), { recursive: true });
-  const tmp = `${target}.tmp.${process.pid}`;
-  fs.writeFileSync(tmp, `${JSON.stringify(obj, null, 2)}\n`);
-  fs.renameSync(tmp, target);
-}
-
 // control.json を読む。無ければ既定（version:1, revision:0, defaults:{}, workloads:{}）。
 function loadControl(dir) {
-  const raw = readJson(path.join(dir, 'control.json'));
+  const raw = readJson(sharedStateReadPath(dir, 'control.json'));
   if (!isPlainObject(raw)) {
     return { version: 1, revision: 0, defaults: {}, workloads: {} };
   }
@@ -243,7 +236,7 @@ function saveControl(cfg, patch) {
   next.revision = cur.revision + 1;
   next.updated_at = nowStamp();
   next.updated_by = 'dashboard';
-  atomicWriteJson(path.join(dir, 'control.json'), next);
+  writeSharedStateJson(dir, 'control.json', next);
   return loadControl(dir);
 }
 

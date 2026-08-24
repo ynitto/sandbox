@@ -13,12 +13,13 @@
 // 設計: docs/plans/2026-08-05-phase1-token-efficiency-detailed-design.md §1
 
 const fs = require('fs');
-const path = require('path');
 const budget = require('./budget');
 const control = require('./control');
 const agents = require('./agents');
 const qualifications = require('./qualifications');
 const policyCompiler = require('./execution-policy-compiler');
+
+const { sharedStateReadPath, writeSharedStateJson } = require('../../../base/main/agent-home');
 
 const PROFILES_FILE = 'profiles.json';
 const METERED_CLIS = new Set(['claude', 'codex', 'copilot', 'kiro']);
@@ -36,13 +37,6 @@ function readJson(p) {
   } catch {
     return null;
   }
-}
-
-function atomicWriteJson(target, obj) {
-  fs.mkdirSync(path.dirname(target), { recursive: true });
-  const tmp = `${target}.tmp.${process.pid}`;
-  fs.writeFileSync(tmp, `${JSON.stringify(obj, null, 2)}\n`);
-  fs.renameSync(tmp, target);
 }
 
 function nowStamp() {
@@ -164,7 +158,7 @@ function defaultProfiles() {
 }
 
 function loadProfiles(dir) {
-  const file = path.join(dir, PROFILES_FILE);
+  const file = sharedStateReadPath(dir, PROFILES_FILE);
   const raw = readJson(file);
   if (!isPlainObject(raw)) {
     return { ...defaultProfiles(), exists: false, raw: {} };
@@ -228,7 +222,7 @@ function save(cfg, patch) {
   }
   next.updated_at = nowStamp();
   next.updated_by = 'dashboard';
-  atomicWriteJson(path.join(dir, PROFILES_FILE), next);
+  writeSharedStateJson(dir, PROFILES_FILE, next);
   return load(cfg);
 }
 
@@ -631,7 +625,7 @@ function apply(cfg, options) {
     next.state = nextState;
     next.updated_at = nowStamp();
     next.updated_by = 'dashboard';
-    atomicWriteJson(path.join(dir, PROFILES_FILE), next);
+    writeSharedStateJson(dir, PROFILES_FILE, next);
   }
   return {
     decisions,
