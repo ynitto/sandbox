@@ -22,6 +22,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   空セクション（キーを全てコメントアウトした状態）は設定エラーにしない。
 - entry の `cwd` 未指定時に `str(None)` が `'None'` になり「cwd 'None' が存在しない」と
   毎回警告される取り違えも修正。
+- **mapping の参照を共通設定からも引けるようにした**: mapping の解決はファイル単位で、
+  共通設定（`~/.agents/agent-loop.yaml`）に定義した mapping をプロジェクト側ファイルの
+  `{{lookup ...}}` から参照すると「mapping lookup が見つかりません」になっていた。
+  共通設定の mapping を fallback として解決する（同名ラベル・キーはファイル側が勝つ）。
+  `agent-loop doctor` も、設定が壊れていても doctor 自身は落とさず finding
+  （`config.load`）で報告し、デーモンが実際に優先する `<cwd>/.agents/` の設定ファイルを
+  診断対象に加えた。
 
 ### ローカル LLM の役割別既定を実測へ揃えた（配線の食い違いの修正）
 

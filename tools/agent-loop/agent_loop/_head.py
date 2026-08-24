@@ -97,8 +97,34 @@ except ImportError:
             return json.load(f)
 
 
+def _global_mapping_fallback(path: Path) -> dict[str, Any]:
+    """共通設定（~/.agents）の mapping を、他ファイルの lookup の fallback として返す。
+
+    mapping の解決はファイル単位だが、共通設定に置いた mapping はプロジェクト側の
+    設定ファイルからも `{{lookup ...}}` で参照できる（同名ラベル・キーはファイル側が
+    勝つ）。path が共通設定そのものなら空を返す（自分自身を fallback にしない）。
+    """
+    try:
+        global_path = find_default_config(agent_home_dir())  # noqa: F821 (前方参照)
+    except Exception:  # noqa: BLE001
+        return {}
+    if global_path is None:
+        return {}
+    try:
+        if path.resolve() == global_path.resolve():
+            return {}
+        data = _read_config_file(global_path)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("共通設定 %s の mapping を読めません: %s", global_path, exc)
+        return {}
+    raw = data.get("mapping") if isinstance(data, dict) else None
+    return raw if isinstance(raw, dict) else {}
+
+
 def _load_config_file(path: Path) -> dict[str, Any]:
-    return _resolve_config_mappings(_read_config_file(path))
+    return _resolve_config_mappings(
+        _read_config_file(path), fallback=_global_mapping_fallback(path)
+    )
 
 
 # ---------------------------------------------------------------------------

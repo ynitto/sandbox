@@ -360,6 +360,11 @@ GitLab 用の前二つは `gitlab-idd` スキルの `scripts/gl.py` を利用し
 トップレベルの `mapping` にラベルごとの辞書を置くと、設定内の文字列で
 `{{lookup <ラベル> <キー>}}` として参照できます。存在しないラベルまたはキーは設定エラーです。
 
+共通設定（`~/.agents/agent-loop.yaml`）に置いた `mapping` は、プロジェクト側の
+設定ファイル（`<cwd>/agent-loop.yaml` や `<cwd>/.agents/agent-loop.yml`）の
+`{{lookup ...}}` からも参照できます。同じラベル・キーを両方に書いた場合は
+ファイル側がキー単位で勝ちます。
+
 ## tmux セッションの命名規則
 
 起動ディレクトリ、instance ID、用途から `agent-loop-<label>-<digest>-<instance>` 形式の

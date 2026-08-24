@@ -87,6 +87,49 @@ class PromptConfigTests(unittest.TestCase):
         config = {"mapping": {"workspace": None}, "prompts": []}
         self.assertEqual(al._resolve_config_mappings(config), config)
 
+    def test_mapping_lookup_falls_back_to_global_config(self):
+        # 共通設定（~/.agents）の mapping をプロジェクト側ファイルの lookup から参照できる
+        with tempfile.TemporaryDirectory() as tmp:
+            ghome = Path(tmp, "home", ".agents")
+            ghome.mkdir(parents=True)
+            (ghome / "agent-loop.yaml").write_text(
+                "mapping:\n  cwd_map:\n    project: /path/to/proj\n",
+                encoding="utf-8",
+            )
+            ws = Path(tmp, "ws")
+            (ws / al.AGENT_HOME).mkdir(parents=True)
+            (ws / al.AGENT_HOME / "agent-loop.yml").write_text(
+                "prompts:\n"
+                "  - name: n\n"
+                "    prompt: p\n"
+                "    cwd: '{{lookup cwd_map project}}'\n"
+                "    interval_minutes: 5\n",
+                encoding="utf-8",
+            )
+            with mock.patch.object(al, "agent_home_dir", return_value=ghome):
+                config, _, _ = al.load_config(ws)
+        self.assertEqual(config["prompts"][0]["cwd"], "/path/to/proj")
+
+    def test_mapping_local_key_overrides_global(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ghome = Path(tmp, "home", ".agents")
+            ghome.mkdir(parents=True)
+            (ghome / "agent-loop.yaml").write_text(
+                "mapping:\n  m:\n    a: global-a\n    b: global-b\n",
+                encoding="utf-8",
+            )
+            ws = Path(tmp, "ws")
+            ws.mkdir()
+            (ws / "agent-loop.yaml").write_text(
+                "mapping:\n  m:\n    a: local-a\n"
+                "x: '{{lookup m a}}'\ny: '{{lookup m b}}'\n",
+                encoding="utf-8",
+            )
+            with mock.patch.object(al, "agent_home_dir", return_value=ghome):
+                config, _, _ = al.load_config(ws)
+        self.assertEqual(config["x"], "local-a")   # ファイル側がキー単位で勝つ
+        self.assertEqual(config["y"], "global-b")  # 無いキーは共通設定から補完
+
     def test_mapping_unknown_lookup_raises_value_error(self):
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp, "workspace")

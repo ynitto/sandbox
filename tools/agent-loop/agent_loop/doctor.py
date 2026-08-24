@@ -36,10 +36,18 @@ def _finding(
 
 def _check_config_load(cwd: Path, agent_home: Path) -> list[dict[str, Any]]:
     findings: list[dict[str, Any]] = []
-    search_paths = [agent_home / name for name in DEFAULT_CONFIG_NAMES]
+    # load_config と同じ候補を見る: workspace 直下 → workspace/.agents → agent_home。
+    # 以前は workspace/.agents を見ておらず、デーモンが実際に読むファイルの
+    # 設定エラーを doctor が報告できなかった。
+    search_paths: list[Path] = []
     local = find_default_config(cwd)
     if local is not None:
-        search_paths.insert(0, local)
+        search_paths.append(local)
+    if cwd.resolve() != Path.home().resolve():
+        ws_agents = find_default_config(cwd / AGENT_HOME)
+        if ws_agents is not None:
+            search_paths.append(ws_agents)
+    search_paths.extend(agent_home / name for name in DEFAULT_CONFIG_NAMES)
 
     found_any = False
     for path in search_paths:
@@ -435,7 +443,13 @@ def _print_doctor_summary(findings: list[dict[str, Any]]) -> None:
 
 def cmd_doctor(args: argparse.Namespace) -> None:
     cwd = Path.cwd()
-    config, _, _ = load_config(cwd)
+    # 設定が壊れていても doctor 自身は落とさない——壊れていることの診断は
+    # _check_config_load が finding（config.load）として報告する。
+    try:
+        config, _, _ = load_config(cwd)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("設定ファイルを読み込めないため既定値で診断します: %s", exc)
+        config = {}
     slot_timeout = int(config.get("slot_timeout_seconds", _DEFAULT_SLOT_TIMEOUT))
 
     if getattr(args, "fix", False):

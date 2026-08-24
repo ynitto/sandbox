@@ -9,22 +9,37 @@ DEFAULT_CONFIG_NAMES = ["agent-loop.yaml", "agent-loop.yml", "agent-loop.json"]
 _LOOKUP_RE = re.compile(r"\{\{\s*lookup\s+([^\s{}]+)\s+([^\s{}]+)\s*\}\}")
 
 
-def _resolve_config_mappings(config: dict[str, Any]) -> dict[str, Any]:
+def _resolve_config_mappings(
+    config: dict[str, Any],
+    fallback: "dict[str, Any] | None" = None,
+) -> dict[str, Any]:
+    """設定内の `{{lookup <ラベル> <キー>}}` を mapping で解決する。
+
+    fallback は共通設定（~/.agents）側の mapping。ファイル自身の mapping が
+    ラベル・キー単位で勝つ。解決はどちらにも無いときだけ設定エラー。
+    """
     if not isinstance(config, dict):
         return config
     raw = config.get("mapping")
-    if raw is None:
+    if raw is None and not fallback:
         return config
+    if raw is None:
+        raw = {}
     if not isinstance(raw, dict):
         raise ValueError("mapping は dict です")
 
     mappings: dict[str, dict[str, Any]] = {}
+    for label, values in (fallback or {}).items():
+        if not isinstance(values, dict):
+            continue  # 共通設定側の形の問題は共通設定自身の読み込みで報告される
+        mappings[str(label)] = {str(key): value for key, value in values.items()}
     for label, values in raw.items():
         if values is None:
             values = {}  # 中身を全てコメントアウトした空セクションを許す
         if not isinstance(values, dict):
             raise ValueError(f"mapping {label!r} は dict です")
-        mappings[str(label)] = {str(key): value for key, value in values.items()}
+        merged = mappings.setdefault(str(label), {})
+        merged.update({str(key): value for key, value in values.items()})
 
     def resolve(value: Any) -> Any:
         if isinstance(value, dict):
