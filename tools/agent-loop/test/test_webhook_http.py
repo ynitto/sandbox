@@ -17,11 +17,15 @@ import agent_loop as al  # noqa: E402
 
 
 class _FakeScheduler:
-    def __init__(self, route=None):
+    def __init__(self, route=None, mappings=None):
         self.route = route
+        self.mappings = mappings or {}
         self.enqueued: list[tuple[str, str]] = []
         self._hook_cache = {}
         self._hook_cache_lock = threading.Lock()
+
+    def runtime_mappings(self):
+        return dict(self.mappings)
 
     def resolve_webhook_route(self, name: str):
         if self.route is None:
@@ -119,6 +123,28 @@ class WebhookHttpE2ETests(unittest.TestCase):
         self.assertEqual(code, 202)
         self.assertEqual(body, "accepted")
         self.assertEqual(self.scheduler.enqueued, [("demo", "got hi")])
+
+    def test_deferred_lookup_resolves_from_payload(self):
+        # {{lookup <ラベル> {<変数>}}} は payload の値で dispatch 時に解決される
+        self.scheduler.mappings = {"cwd_map": {"sandbox": "/home/u/sandbox"}}
+        self.scheduler.route = {
+            **self.scheduler.route,
+            "prompt_template": "{project} → {{lookup cwd_map {project}}}",
+        }
+        code, _ = self._post("/demo", b'{"project":"sandbox"}', headers={"X-Token": "s3cret"})
+        self.assertEqual(code, 202)
+        self.assertEqual(self.scheduler.enqueued,
+                         [("demo", "sandbox → /home/u/sandbox")])
+
+    def test_deferred_lookup_unknown_key_is_template_error(self):
+        self.scheduler.mappings = {"cwd_map": {"sandbox": "/home/u/sandbox"}}
+        self.scheduler.route = {
+            **self.scheduler.route,
+            "prompt_template": "{{lookup cwd_map {project}}}",
+        }
+        code, _ = self._post("/demo", b'{"project":"unknown"}', headers={"X-Token": "s3cret"})
+        self.assertEqual(code, 500)
+        self.assertEqual(self.scheduler.enqueued, [])
 
     def test_hook_ignore_200(self):
         with mock.patch.object(self.server, "_invoke_hook", return_value=None):

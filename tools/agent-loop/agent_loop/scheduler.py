@@ -435,6 +435,19 @@ class PeriodicScheduler:
                     return e.copy()
         return None
 
+    def runtime_mappings(self) -> dict[str, dict[str, Any]]:
+        """実行時（webhook 注入・hook vars 注入）に遅延 lookup を解決するための mapping。
+
+        entry 共通設定の mapping と共通設定（~/.agents）の mapping を、設定読み込みと
+        同じ優先（ファイル側がキー単位で勝つ）で合成する。
+        """
+        raw = (getattr(self, "_tool_config", None) or {}).get("mapping")
+        return _normalized_mappings(
+            raw if isinstance(raw, dict) else {},
+            fallback=_global_config_mapping(),
+            strict=False,
+        )
+
     def _annotate_pane_routes(self, normalized: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """ペイン事前作成の要否を entry へ記す（session.sync_entries が読む）。
 
@@ -1579,7 +1592,13 @@ class PeriodicScheduler:
             vars_map = result.get("vars")
             if isinstance(vars_map, dict):
                 try:
-                    out["prompt"] = prompt.format_map(_SafeDict(vars_map))
+                    # 遅延 lookup（{{lookup <ラベル> {<変数>}}}）を先に解決する。
+                    # format_map は `{{` を `{` に潰すため、後から解決はできない。
+                    text = prompt
+                    if _DEFERRED_LOOKUP_RE.search(prompt):
+                        text = resolve_deferred_lookups(
+                            prompt, self.runtime_mappings(), vars_map)
+                    out["prompt"] = text.format_map(_SafeDict(vars_map))
                 except Exception as exc:
                     log.warning("[%s] check() vars の format に失敗しました: %s", name, exc)
                     _broken()

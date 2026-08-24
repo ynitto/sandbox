@@ -5,6 +5,8 @@
 # 使う場合は <project>/.agents/agent-loop.yml へ置きます（旧 .agent は読み取り互換）。
 
 # 設定内の prompt / cwd などから `{{lookup <ラベル> <キー>}}` で参照できる。
+# キーが実行時に決まる場合（webhook payload / hook vars の値で選ぶ）は
+# `{{lookup <ラベル> {<変数>}}}` と書く（dispatch 時に解決される）。
 # mapping:
 #   workspace:
 #     main: /path/to/workspace

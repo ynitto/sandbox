@@ -112,7 +112,13 @@ class WebhookServer:
 
         inject = _SafeDict({"name": route["name"], **params})
         try:
-            prompt_text = route["prompt_template"].format_map(inject)
+            # 遅延 lookup（{{lookup <ラベル> {<変数>}}}）を format より先に解決する。
+            # format_map は `{{` を `{` に潰すため、後から解決はできない。
+            template = str(route["prompt_template"])
+            if _DEFERRED_LOOKUP_RE.search(template):
+                template = resolve_deferred_lookups(
+                    template, self._scheduler.runtime_mappings(), inject)
+            prompt_text = template.format_map(inject)
         except Exception as exc:
             log.error("[WebhookServer] テンプレート注入エラー (%s): %s", name, exc, exc_info=True)
             return 500, "template error"
