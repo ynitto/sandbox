@@ -1,6 +1,13 @@
 'use strict';
 
 // 共通ホームは `.agents`。プロジェクトローカル設定の読み取りだけ旧 `.agent` も候補に残す。
+//
+// **どのホームの `.agents` か**が肝心: 定常業務のエンジン（agent-loop / agentcore の
+// CLI 群）は WSL 側で動くので、control.json や node-budget などノード横断の共有状態の
+// 実体も WSL 側の `~/.agents` にある。dashboard（Windows）が os.homedir() だけで組むと
+// `C:\Users\…\.agents` を読み書きしてしまい、エンジンと**別々のファイル**になる——
+// 画面で保存した control.json がエンジンに永久に見えない。そこで Windows では
+// WSL ホーム（UNC）を優先する。WSL が無い環境ではこのマシンのホームに戻る。
 
 const os = require('os');
 const path = require('path');
@@ -8,15 +15,30 @@ const path = require('path');
 const AGENT_HOME = '.agents';
 const AGENT_HOME_LEGACY = '.agent';
 
+// 共有状態のルート（`.agents` や `.kiro` を置くホーム）。
+// Windows では WSL 既定ディストロのホーム（UNC・60 秒キャッシュ）を優先する。
+function sharedHomeRoot() {
+  if (process.platform === 'win32') {
+    let wslHome = '';
+    try {
+      wslHome = require('./wsl').wslHomeDir();
+    } catch {
+      /* WSL が無い環境では Windows 側のホームを使う */
+    }
+    if (wslHome) return wslHome;
+  }
+  return os.homedir();
+}
+
 // 共通ホームの実パス。
 function agentHomeDir(base) {
-  const root = base || os.homedir();
+  const root = base || sharedHomeRoot();
   return path.join(root, AGENT_HOME);
 }
 
 // 共通ホーム配下の状態ディレクトリ。
 function agentHomeSubdir(...parts) {
-  return path.join(os.homedir(), AGENT_HOME, ...parts);
+  return path.join(sharedHomeRoot(), AGENT_HOME, ...parts);
 }
 
 // 設定ファイルの探索候補（読み取り専用なので新旧どちらも並べる。新しい方を先に見る）。
@@ -53,5 +75,6 @@ module.exports = {
   agentHomeDir,
   agentHomeSubdir,
   agentDirCandidates,
+  sharedHomeRoot,
   userHomeRoots,
 };

@@ -7,6 +7,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-dashboard: 共有状態のホームを WSL 側へ解決する（control.json 分裂の修正）
+
+- dashboard（Windows）とエンジン（agent-loop / agentcore の CLI 群、WSL）が
+  `~/.agents` 配下の共有状態を**別々のファイル**として読み書きしていた——dashboard は
+  `os.homedir()`（`C:\Users\…\.agents`）でパスを組むため、画面で保存した control.json が
+  WSL 側のエンジンに永久に見えない。node-budget・instructions・session・tuning・methods・
+  amigos・flow（adhoc）・preparation・agents 定義も同じ経路で分裂していた。
+- `agent-home.js` に `sharedHomeRoot()` を追加: Windows では WSL 既定ディストロの
+  ホーム（UNC・60 秒キャッシュ）を優先し、WSL が無ければこのマシンのホームへ戻る。
+  `agentHomeDir` / `agentHomeSubdir` はこれを使うので、共有状態の既定パスは一括で
+  エンジン側へ揃う（`AGENT_*_DIR` 環境変数と ⚙ 設定の明示指定はこれまでどおり優先）。
+- 直接 `os.homedir()` で組んでいた `.kiro/agents`（kiro agent 定義の探索）と
+  スキル棚卸し（`~/.kiro|.claude|.agents/skills`）も `sharedHomeRoot()` 経由へ。
+- engine/status.json（agent-project）と node-commands（delegation）、tmux 経由の
+  `$HOME/.agents` 参照（routines）は既に WSL 側を向いており変更なし。ほかの
+  agent-tools ファミリー（Python 系 CLI は WSL 内で実行・VS Code / Obsidian 拡張は
+  WSL 変換済みまたは WSL 内シェルで解決）に同種の分裂は無いことを確認した。
+
 ### agent-loop: headless 設定でも起動時に kiro-cli を立ち上げない（起動クラッシュの修正）
 
 - 起動・リロード時のペイン事前作成が実行経路を見ていなかった——`agent_cli` に headless CLI

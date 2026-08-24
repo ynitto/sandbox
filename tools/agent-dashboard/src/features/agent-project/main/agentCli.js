@@ -16,7 +16,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { agentHomeSubdir } = require('../../../base/main/agent-home');
+const { agentHomeSubdir, sharedHomeRoot } = require('../../../base/main/agent-home');
 
 class AgentCliError extends Error {}
 
@@ -44,7 +44,8 @@ function pluginDirs(projectDir) {
   if (process.env.KIRO_AGENTS_DIR) dirs.push(String(process.env.KIRO_AGENTS_DIR));
   dirs.push(path.join(String(projectDir || process.cwd()), 'agents'));
   dirs.push(agentHomeSubdir('agents'));
-  dirs.push(path.join(os.homedir(), '.kiro', 'agents'));
+  // kiro-cli はエンジン側（Windows では WSL）で動くので、その定義もエンジン側のホームにある
+  dirs.push(path.join(sharedHomeRoot(), '.kiro', 'agents'));
   const bundled = bundledDir();
   if (bundled) dirs.push(bundled);
   return dirs;

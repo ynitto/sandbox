@@ -13,7 +13,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { agentHomeSubdir } = require('../../../base/main/agent-home');
+const { agentHomeSubdir, sharedHomeRoot } = require('../../../base/main/agent-home');
 
 const MARKER_PREFIX = '<!-- agent-instructions';
 const HEADING = '## 共通指示（agent-dashboard 管理・全ノード共通）';
@@ -272,7 +272,7 @@ function skillFilesUnder(root) {
 }
 
 // 主要 CLI と共通置き場にある全 SKILL.md を棚卸しする。同名は探索順の定義を使い、利用元だけ統合する。
-function skillsInventory(_cfg, homeDir = os.homedir()) {
+function skillsInventory(_cfg, homeDir = sharedHomeRoot()) {
   const roots = [
     ['kiro', path.join(homeDir, '.kiro', 'skills')],
     ['copilot', path.join(homeDir, '.copilot', 'skills')],

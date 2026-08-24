@@ -12,7 +12,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { agentHomeSubdir } = require('../../../base/main/agent-home');
+const { agentHomeSubdir, sharedHomeRoot } = require('../../../base/main/agent-home');
 
 const BUILTINS = ['kiro', 'claude', 'copilot', 'codex'];
 // schemas/agent-cli.schema.json の properties と 1:1（正典はスキーマ。ここは静的検証の複製）。
@@ -50,7 +50,8 @@ function searchDirs(cfg) {
     if (root) dirs.push(path.join(expandHome(String(root)), 'agents'));
   }
   dirs.push(agentHomeSubdir('agents'));
-  dirs.push(path.join(os.homedir(), '.kiro', 'agents'));
+  // kiro-cli はエンジン側（Windows では WSL）で動くので、その定義もエンジン側のホームにある
+  dirs.push(path.join(sharedHomeRoot(), '.kiro', 'agents'));
   // 重複は先勝ちで畳む
   const seen = new Set();
   const out = [];
