@@ -16,7 +16,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { agentHomeSubdir } = require('../../../base/main/agent-home');
+const { agentHomeSubdir, sharedStateReadPath, writeSharedStateJson } = require('../../../base/main/agent-home');
 
 const KNOWN_WORKLOADS = ['routine', 'project', 'flow', 'amigos', 'audit', 'dashboard'];
 const ON_EXHAUSTED = ['pause', 'stop', 'degrade'];
@@ -46,20 +46,12 @@ function isPlainObject(v) {
   return v !== null && typeof v === 'object' && !Array.isArray(v);
 }
 
-// 部分更新を config.json（契約形式）へ書く共通の原子書換（tmp → rename）。
-function atomicWriteJson(target, obj) {
-  fs.mkdirSync(path.dirname(target), { recursive: true });
-  const tmp = `${target}.tmp.${process.pid}`;
-  fs.writeFileSync(tmp, `${JSON.stringify(obj, null, 2)}\n`);
-  fs.renameSync(tmp, target);
-}
-
 function nowStamp() {
   return new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
 }
 
 function loadBudgetConfig(dir) {
-  const raw = readJson(path.join(dir, 'config.json')) || {};
+  const raw = readJson(sharedStateReadPath(dir, 'config.json')) || {};
   const workloads = {};
   for (const [k, v] of Object.entries(raw.workloads || {})) {
     const n = Number(v);
@@ -74,7 +66,7 @@ function loadBudgetConfig(dir) {
     allocation: isPlainObject(raw.allocation) ? raw.allocation : {},
     computed: isPlainObject(raw.computed) ? raw.computed : {},
     rates: isPlainObject(raw.rates) ? raw.rates : {},
-    exists: fs.existsSync(path.join(dir, 'config.json')),
+    exists: fs.existsSync(sharedStateReadPath(dir, 'config.json')),
     // additive evolution: 未知キーを落とさないよう原本を保持し、書換時にマージ土台にする。
     raw,
   };
@@ -477,7 +469,7 @@ function save(cfg, patch) {
   }
   next.updated_at = nowStamp();
   next.updated_by = 'dashboard';
-  atomicWriteJson(path.join(dir, 'config.json'), next);
+  writeSharedStateJson(dir, 'config.json', next);
   return usage(cfg);
 }
 
@@ -534,7 +526,7 @@ function rebalance(cfg) {
   };
   next.updated_at = nowStamp();
   next.updated_by = 'dashboard';
-  atomicWriteJson(path.join(dir, 'config.json'), next);
+  writeSharedStateJson(dir, 'config.json', next);
   return usage(cfg);
 }
 
@@ -574,7 +566,7 @@ function calibrateRates(cfg) {
   next.rates = nextRates;
   next.updated_at = nowStamp();
   next.updated_by = 'dashboard';
-  atomicWriteJson(path.join(dir, 'config.json'), next);
+  writeSharedStateJson(dir, 'config.json', next);
   return nextRates;
 }
 

@@ -14,12 +14,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   `os.homedir()`（`C:\Users\…\.agents`）でパスを組むため、画面で保存した control.json が
   WSL 側のエンジンに永久に見えない。node-budget・instructions・session・tuning・methods・
   amigos・flow（adhoc）・preparation・agents 定義も同じ経路で分裂していた。
-- `agent-home.js` に `sharedHomeRoot()` を追加: Windows では WSL 既定ディストロの
-  ホーム（UNC・60 秒キャッシュ）を優先し、WSL が無ければこのマシンのホームへ戻る。
-  `agentHomeDir` / `agentHomeSubdir` はこれを使うので、共有状態の既定パスは一括で
-  エンジン側へ揃う（`AGENT_*_DIR` 環境変数と ⚙ 設定の明示指定はこれまでどおり優先）。
-- 直接 `os.homedir()` で組んでいた `.kiro/agents`（kiro agent 定義の探索）と
-  スキル棚卸し（`~/.kiro|.claude|.agents/skills`）も `sharedHomeRoot()` 経由へ。
+- `agent-home.js` に `sharedHomeRoots()` を追加: Windows では WSL 既定ディストロの
+  ホーム（UNC・60 秒キャッシュ）を**正典**とし、このマシン（Windows 側）のホームも
+  候補に並べて**両方を扱う**。WSL が無ければこのマシンのホームだけ。
+  `AGENT_*_DIR` 環境変数と ⚙ 設定の明示指定はこれまでどおり優先。
+- contract 文書（control.json / profiles.json / qualifications.json / budget の
+  config.json / session.json / instructions.json / tuning.json）の読み書きを
+  両ホーム対応にした: **読み取りは両ホームの実在して新しい方**（旧配置＝Windows 側に
+  溜まった状態も見える）、**書き込みは正典（WSL 側）へ原子書換**し、`.agents` を既に
+  持つもう一方のホームへは同じ内容をミラーする（Windows ネイティブで動くツールにも
+  最新が見える。ミラーの失敗は保存の成否に含めない）。バス・キュー類（amigos bus /
+  flow bus / task-queue）は二重処理を避けるため正典のみ。
+- 探索系（agents 定義の `~/.agents/agents`・`~/.kiro/agents`、スキル棚卸し
+  `~/.kiro|.claude|.agents/skills`）は両ホームを正典優先で並べて統合する。
 - engine/status.json（agent-project）と node-commands（delegation）、tmux 経由の
   `$HOME/.agents` 参照（routines）は既に WSL 側を向いており変更なし。ほかの
   agent-tools ファミリー（Python 系 CLI は WSL 内で実行・VS Code / Obsidian 拡張は

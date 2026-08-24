@@ -13,7 +13,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { agentHomeSubdir, sharedHomeRoot } = require('../../../base/main/agent-home');
+const { agentHomeSubdir, sharedHomeRoots, sharedStateReadPath, writeSharedStateJson } = require('../../../base/main/agent-home');
 
 const MARKER_PREFIX = '<!-- agent-instructions';
 const HEADING = '## 共通指示（agent-dashboard 管理・全ノード共通）';
@@ -50,13 +50,6 @@ function nowStamp() {
   return new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
 }
 
-function atomicWriteJson(target, obj) {
-  fs.mkdirSync(path.dirname(target), { recursive: true });
-  const tmp = `${target}.tmp.${process.pid}`;
-  fs.writeFileSync(tmp, `${JSON.stringify(obj, null, 2)}\n`);
-  fs.renameSync(tmp, target);
-}
-
 function clampMaxChars(v) {
   const n = Number(v);
   if (!Number.isFinite(n) || n <= 0) return DEFAULT_MAX_CHARS;
@@ -65,7 +58,7 @@ function clampMaxChars(v) {
 
 // instructions.json を読む。無ければ既定（version:1, revision:0, enabled:true, 空）。
 function loadInstructions(dir) {
-  const raw = readJson(path.join(dir, 'instructions.json'));
+  const raw = readJson(sharedStateReadPath(dir, 'instructions.json'));
   if (!isPlainObject(raw)) {
     return { version: 1, revision: 0, enabled: true, text: '', skills: [], tools: {}, max_chars: DEFAULT_MAX_CHARS };
   }
@@ -189,7 +182,7 @@ function saveInstructions(cfg, patch) {
   next.revision = cur.revision + 1;
   next.updated_at = nowStamp();
   next.updated_by = 'dashboard';
-  atomicWriteJson(path.join(dir, 'instructions.json'), next);
+  writeSharedStateJson(dir, 'instructions.json', next);
   return loadInstructions(dir);
 }
 
@@ -272,14 +265,20 @@ function skillFilesUnder(root) {
 }
 
 // 主要 CLI と共通置き場にある全 SKILL.md を棚卸しする。同名は探索順の定義を使い、利用元だけ統合する。
-function skillsInventory(_cfg, homeDir = sharedHomeRoot()) {
-  const roots = [
-    ['kiro', path.join(homeDir, '.kiro', 'skills')],
-    ['copilot', path.join(homeDir, '.copilot', 'skills')],
-    ['claude', path.join(homeDir, '.claude', 'skills')],
-    ['codex', path.join(homeDir, '.codex', 'skills')],
-    ['agents', path.join(homeDir, '.agents', 'skills')],
-  ];
+function skillsInventory(_cfg, homeDir = null) {
+  // Windows では WSL・Windows 両ホームを走査する（正典＝エンジン側が先。
+  // 同名スキルは先勝ちで、利用元（sources）だけ統合される）。
+  const homes = homeDir ? [homeDir] : sharedHomeRoots();
+  const roots = [];
+  for (const home of homes) {
+    roots.push(
+      ['kiro', path.join(home, '.kiro', 'skills')],
+      ['copilot', path.join(home, '.copilot', 'skills')],
+      ['claude', path.join(home, '.claude', 'skills')],
+      ['codex', path.join(home, '.codex', 'skills')],
+      ['agents', path.join(home, '.agents', 'skills')],
+    );
+  }
   const byName = new Map();
   for (const [source, root] of roots) {
     for (const file of skillFilesUnder(root)) {

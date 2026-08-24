@@ -17,7 +17,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { agentHomeSubdir } = require('../../../base/main/agent-home');
+const { agentHomeSubdir, sharedStateReadPath, writeSharedStateJson } = require('../../../base/main/agent-home');
 const { rewriteSkillCommands } = require('../../agent-project/main/agentCli');
 
 const DEFAULT_TIMEOUT = 60;
@@ -62,13 +62,6 @@ function readJson(p) {
 
 function nowStamp() {
   return new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
-}
-
-function atomicWriteJson(target, obj) {
-  fs.mkdirSync(path.dirname(target), { recursive: true });
-  const tmp = `${target}.tmp.${process.pid}`;
-  fs.writeFileSync(tmp, `${JSON.stringify(obj, null, 2)}\n`);
-  fs.renameSync(tmp, target);
 }
 
 function clampMaxTotalTimeout(v) {
@@ -129,7 +122,7 @@ function normalizeCommand(c) {
 
 // session.json を読む。無ければ既定（version:1, revision:0, enabled:true, コマンドなし）。
 function loadSessionCommands(dir) {
-  const raw = readJson(path.join(dir, 'session.json'));
+  const raw = readJson(sharedStateReadPath(dir, 'session.json'));
   if (!isPlainObject(raw)) {
     return {
       version: 1,
@@ -304,7 +297,7 @@ function saveSessionCommands(cfg, patch) {
   next.revision = cur.revision + 1;
   next.updated_at = nowStamp();
   next.updated_by = 'dashboard';
-  atomicWriteJson(path.join(dir, 'session.json'), next);
+  writeSharedStateJson(dir, 'session.json', next);
   return loadSessionCommands(dir);
 }
 

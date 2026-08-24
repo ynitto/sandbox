@@ -23,11 +23,13 @@ function test(name, fn) {
 const AGENT_HOME_PATH = require.resolve('../src/base/main/agent-home');
 const WSL_PATH = require.resolve('../src/base/main/wsl');
 
-// platform と wsl.wslHomeDir を差し替えたまま fn を実行する（解決は呼び出し時なので、
-// require 後に戻すと素の環境で解決してしまう）。
-function withEnv({ platform, wslHome }, fn) {
+// platform と wsl.wslHomeDir（必要なら os.homedir も）を差し替えたまま fn を実行する
+// （解決は呼び出し時なので、require 後に戻すと素の環境で解決してしまう）。
+function withEnv({ platform, wslHome, homedir }, fn) {
   const realPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
   Object.defineProperty(process, 'platform', { value: platform });
+  const realHomedir = os.homedir;
+  if (homedir) os.homedir = () => homedir;
   const realWsl = require.cache[WSL_PATH];
   require.cache[WSL_PATH] = {
     id: WSL_PATH,
@@ -40,6 +42,7 @@ function withEnv({ platform, wslHome }, fn) {
     fn(require(AGENT_HOME_PATH));
   } finally {
     Object.defineProperty(process, 'platform', realPlatform);
+    os.homedir = realHomedir;
     if (realWsl) require.cache[WSL_PATH] = realWsl;
     else delete require.cache[WSL_PATH];
     delete require.cache[AGENT_HOME_PATH];
@@ -75,6 +78,76 @@ test('Linux / WSL 内: ホームはこのマシンのホームのまま（WSL �
 test('明示 base 付きの agentHomeDir は据え置き（プロジェクト配下の .agents）', () => {
   withEnv({ platform: 'win32', wslHome: '\\\\wsl.localhost\\Ubuntu\\home\\me' }, (ah) => {
     assert.strictEqual(ah.agentHomeDir('C:\\proj'), path.join('C:\\proj', '.agents'));
+  });
+});
+
+// --- 両ホームの読み書き（sharedHomeRoots / sharedStateReadPath / writeSharedStateJson） ---
+
+const fs = require('fs');
+
+function tmpHome(label) {
+  return fs.mkdtempSync(path.join(os.tmpdir(), `shared-home-${label}-`));
+}
+
+test('sharedHomeRoots は正典（WSL）→ このマシンの順に両ホームを返す', () => {
+  withEnv({ platform: 'win32', wslHome: '\\\\wsl.localhost\\U\\home\\me' }, (ah) => {
+    assert.deepStrictEqual(ah.sharedHomeRoots(),
+      ['\\\\wsl.localhost\\U\\home\\me', os.homedir()]);
+  });
+  withEnv({ platform: 'win32', wslHome: '' }, (ah) => {
+    assert.deepStrictEqual(ah.sharedHomeRoots(), [os.homedir()]);
+  });
+  withEnv({ platform: 'linux', wslHome: '\\\\ignored' }, (ah) => {
+    assert.deepStrictEqual(ah.sharedHomeRoots(), [os.homedir()]);
+  });
+});
+
+test('読み取りは両ホームから実在して新しい方を選ぶ（旧配置＝Windows 側だけの状態も見える）', () => {
+  const wsl = tmpHome('wsl');
+  const win = tmpHome('win');
+  withEnv({ platform: 'win32', wslHome: wsl, homedir: win }, (ah) => {
+    const dir = ah.agentHomeSubdir('control');           // 正典＝WSL 側
+    const winFile = path.join(win, '.agents', 'control', 'control.json');
+
+    // どこにも無い → 正典側のパス（これから作られる場所）
+    assert.strictEqual(ah.sharedStateReadPath(dir, 'control.json'),
+      path.join(dir, 'control.json'));
+
+    // Windows 側にだけ在る → そちらを読む
+    fs.mkdirSync(path.dirname(winFile), { recursive: true });
+    fs.writeFileSync(winFile, '{"revision":1}\n');
+    assert.strictEqual(ah.sharedStateReadPath(dir, 'control.json'), winFile);
+
+    // 両方に在る → 新しい方（正典側を後から書く）
+    const wslFile = path.join(dir, 'control.json');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(wslFile, '{"revision":2}\n');
+    fs.utimesSync(winFile, new Date(2000), new Date(2000));
+    assert.strictEqual(ah.sharedStateReadPath(dir, 'control.json'), wslFile);
+
+    // ホーム外の明示指定は単一（fallback しない）
+    const outside = tmpHome('explicit');
+    assert.strictEqual(ah.sharedStateReadPath(outside, 'control.json'),
+      path.join(outside, 'control.json'));
+  });
+});
+
+test('書き込みは正典へ、`.agents` を既に持つもう一方のホームへはミラーする', () => {
+  const wsl = tmpHome('wsl');
+  const win = tmpHome('win');
+  withEnv({ platform: 'win32', wslHome: wsl, homedir: win }, (ah) => {
+    const dir = ah.agentHomeSubdir('control');
+    // Windows 側に `.agents` が無い → ミラーせず正典だけ（無いホームを汚さない）
+    ah.writeSharedStateJson(dir, 'control.json', { revision: 1 });
+    assert.ok(fs.existsSync(path.join(wsl, '.agents', 'control', 'control.json')));
+    assert.ok(!fs.existsSync(path.join(win, '.agents')));
+
+    // Windows 側に `.agents` が在る → 同じ内容をミラー
+    fs.mkdirSync(path.join(win, '.agents'), { recursive: true });
+    ah.writeSharedStateJson(dir, 'control.json', { revision: 2 });
+    const mirrored = JSON.parse(
+      fs.readFileSync(path.join(win, '.agents', 'control', 'control.json'), 'utf8'));
+    assert.strictEqual(mirrored.revision, 2);
   });
 });
 
