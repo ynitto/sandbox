@@ -98,6 +98,25 @@ node-budgetの追記専用台帳だけ。transcript 本文は
 ローカルに留まり、report / tasks の出力は資格情報の伏せ字化とパスのホーム相対化を
 必ず通る。
 
+## セッションログの統一フォーマット保存（別モジュール向けの読み取り口）
+
+`collect --with-transcripts`（定期実行なら設定 `with_transcripts: true`）は、メトリクス
+収集が読んだセッションログを副作用として
+`<audit>/transcripts/<agent_cli>/<session_id>.jsonl` へ**統一フォーマット**で保存する
+（契約は [`schemas/audit-session-log.schema.json`](../../schemas/audit-session-log.schema.json)）。
+1 ファイル = 1 セッションで、先頭 1 行の `type: meta` がエージェント CLI・モデル・
+期間・実測トークン・`record_id`（records の kind:session と同じ冪等キー）を持ち、
+以降の `type: message` 行がクリーニング済みの会話本文。どの CLI（claude / codex /
+kiro / opencode / ollama …）のセッションも同じ形になるので、解析モジュールは CLI 差を
+知らずに読める。
+
+- **期間**: `collect --since <ISO8601>` で収集対象を絞れる。収集は増分・冪等なので、
+  定期実行では前回以降の更新分だけが書き換わる。
+- **ローテーション**: `gc_keep_days.transcripts`（既定 30 日）で collect 相乗りの gc が
+  自動で消す。一時保存の位置づけで、恒久保管したければ 0（消さない）にする。
+- **範囲**: 本文はローカル専用でノード外へ出さない（不変条件 6）。集計・観測・洞察の
+  共有可能な層とは物理的に分かれている。
+
 ## セッションログのクリーニング
 
 CLI ネイティブのセッションログにはシステムリマインダの注入・サイドチェーン・

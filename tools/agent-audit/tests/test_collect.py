@@ -343,6 +343,20 @@ class CliNativeCollectTests(AuditTestCase):
         self.assertTrue(rec["measured"])
         transcript = os.path.join(st.root, rec["excerpt_ref"])
         self.assertTrue(os.path.isfile(transcript))
+        # 統一セッションログ（audit-session-log 契約）: meta 1 行 + message 行。
+        # meta が agent/model を持ち、record_id で records と突き合わせられる。
+        self.assertTrue(rec["excerpt_ref"].endswith(".jsonl"))
+        with open(transcript, encoding="utf-8") as f:
+            rows = [json.loads(line) for line in f if line.strip()]
+        meta, messages = rows[0], rows[1:]
+        self.assertEqual(meta["type"], "meta")
+        self.assertEqual(meta["schema_version"], collect.TRANSCRIPT_SCHEMA_VERSION)
+        self.assertEqual(meta["record_id"], rec["id"])
+        self.assertEqual((meta["agent_cli"], meta["model"]), ("claude", "claude-sonnet-4"))
+        self.assertEqual((meta["tokens_in"], meta["tokens_out"]), (1000, 200))
+        self.assertEqual([(m["type"], m["role"]) for m in messages],
+                         [("message", "User"), ("message", "Assistant")])
+        self.assertEqual(messages[0]["text"], "直して")
 
     def test_existing_session_gets_usage_correction(self):
         agents_dir = os.path.join(self.tmp, "agents-correction")

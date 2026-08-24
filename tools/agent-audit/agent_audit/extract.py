@@ -72,10 +72,11 @@ def record_digest(store: Store, rec: dict, limit_chars: int) -> str:
     excerpt_ref = rec.get("excerpt_ref")
     if excerpt_ref:
         import os
+
+        from .collect import transcript_text
         path = os.path.join(store.root, excerpt_ref)
         try:
-            with open(path, encoding="utf-8") as f:
-                body = f.read()
+            body = transcript_text(path)
             tail = body[-max(limit_chars // 2, 500):]
             text += "\n\ntranscript（末尾抜粋）:\n" + tail
         except OSError:

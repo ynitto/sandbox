@@ -469,16 +469,22 @@ cron に `collect && extract && distill` を仕込む——これで運用に乗
 
 ## 8. 補足 — オプション的な使い方
 
-### 8.1 transcript も保存する（`--with-transcripts`）
+### 8.1 transcript も保存する（`--with-transcripts` / 設定 `with_transcripts`）
 
 ```bash
 agent-audit collect --with-transcripts
+# 定期実行（cron / agent-loop フック）で常時保存するなら agent-audit.yaml へ:
+#   with_transcripts: true
 ```
 
-会話本文を `~/.agents/audit/transcripts/<cli>/<session>.log` に保存します。効果は 2 つ。
+会話本文を `~/.agents/audit/transcripts/<cli>/<session>.jsonl` に**統一フォーマット**
+（`schemas/audit-session-log.schema.json`。先頭 1 行の meta がエージェント CLI・モデル・
+期間・実測トークン・`record_id` を持ち、以降が会話 message 行）で保存します。効果は 3 つ。
 
 - extract の入力に transcript の末尾抜粋が加わり、**観測の質が上がります**。
-- ディスクを食います（既定の保持は 30 日）。
+- どの CLI のセッションも同じ形になるので、**別モジュールがローカルで解析できます**
+  （`meta.record_id` で records の kind:session と突き合わせられる）。
+- ディスクを食います（既定の保持は 30 日 = `gc_keep_days.transcripts` でローテーション）。
 
 **共有可能な層の境界**は物理的に分かれています。ノード外へ出してよいのは
 集計値・観測・洞察・タスク（= report / tasks / `--json` の出力）だけで、
