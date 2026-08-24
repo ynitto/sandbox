@@ -7,6 +7,37 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-loop: headless 実行で `slash` をスキルとして解決する（層3 のスキル対応）
+
+- headless（per-run）実行は entry の `slash` を**黙って捨てていた**（対話ペインへ
+  send-keys する前提の機能だったため）。aider / gemma4:e4b のような層3 構成で
+  「スキルを設定したのに効かない」「実体が無くても気づけない」になっていた。
+  `toolloop.run_prompt` が `slash` を受け、層2（tool-loop 内蔵 CLI）へはネイティブの
+  スラッシュ行として本文先頭へ前置、層3（single-shot）へはスキルとして解決して
+  SKILL.md をツールループの読み取り材料に渡す。
+- 明示指定（`slash` / `skills`）のスキルが解決できないときは黙って落とさず、探索先
+  一覧と配布コマンド付きの明示エラー（`agentcore.ollama_skills` と同じ原則）。層3
+  entry の `slash` は起動時点検（`check_headless_entries`）でも fail fast。
+  なお `install.py --agent aider` の既定インストールは `tier: core` のスキルだけ——
+  tech-harvester のような tier 無しスキルは `--all-skills` が必要（README に明記）。
+
+### eval: gemma4:e4b の定常業務適性を測るテキスト成果物タスク（T7digest / T8log）
+
+- `worker_eval.py` に、agent-loop でローカル LLM（aider / gemma4:e4b）を使えるかを
+  見極めるための 2 本を追加。走らせ方:
+  `python3 worker_eval.py --cli aider --model gemma4:e4b --tasks T7digest,T8log --repeat 3`
+  - **T7digest** — tech-harvester スキルの「出力フォーマット」に従い、取得済み
+    記事（fixture の articles.json、6 件・3 テーマ）から日本語要約付きダイジェスト
+    Markdown を生成する。チェッカーは決定的: 書式（`# Tech Digest` / テーマ `##` 2+）・
+    リンク全件掲載・各記事に日本語の要約文。
+  - **T8log** — 障害ログ（原因: payments-db のディスク枯渇 → 波及: api-gateway
+    タイムアウト → checkout 500。囮に auth-service の deprecated 警告）を解析して
+    `## 根本原因` / `## 波及` の書式で原因を書く。チェッカーは「症状で止まったか、
+    因果を 1 段遡れたか」を disk トークン到達で機械判定し、囮を原因にしたら落とす。
+- フィード取得（ネットワーク）は評価に含めない——測るのはステップ2（テーマ分け・
+  日本語要約・書式遵守）で、取得はスクリプトが担う。チェッカーの単体テストを
+  `test_worker_eval.py` に追加（LLM は呼ばない）。
+
 ### agent-dashboard: 共有状態のホームを WSL 側へ解決する（control.json 分裂の修正）
 
 - dashboard（Windows）とエンジン（agent-loop / agentcore の CLI 群、WSL）が

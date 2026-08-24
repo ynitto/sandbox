@@ -1199,7 +1199,8 @@ class PeriodicScheduler:
                      profile.autonomy, log_file)
             result = run_prompt(goal=prompt, cwd=work_dir, agent=agent, log_file=log_file,
                                 acceptance=acceptance, tag="agent-loop",
-                                judge=self._acceptance_judge_enabled(entry))
+                                judge=self._acceptance_judge_enabled(entry),
+                                slash=list(entry.get("slash") or []))
         except ToolLoopError as exc:
             log.error("[%s] headless 実行に失敗しました: %s", name, exc)
             self._fail_execution(req, slot_key, reason="headless_failed")

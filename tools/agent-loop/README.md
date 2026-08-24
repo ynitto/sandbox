@@ -316,6 +316,13 @@ prompts:
   規約外の要素は**その要素だけ**捨てて警告します（タイポで定期駆動が止まらないように）。
 - `prompt` を省いて `slash` だけのエントリも有効です（コマンドだけ定期送信）。
 - スラッシュコマンドを解する対話 CLI なら何にでも使えます（特定の CLI 専用ではありません）。
+- **headless（per-run）実行でも効きます**: ツールループ内蔵の CLI（層2）へはネイティブの
+  スラッシュコマンドとして本文先頭へ前置し、非内蔵の CLI（aider 等の層3）へは**スキル**
+  として解決して SKILL.md をツールループの読み取り材料に渡します。層3 でスキルの実体が
+  無い場合は起動時・実行時に明示エラーになります（探索先: `<cwd>/.github/skills` →
+  リポジトリの `.github/skills` → `~/.agents/skills` → `~/.codex/skills`。配布は
+  `python install.py --agent aider --all-skills` 等。**既定インストールは `tier: core` の
+  スキルだけ**なので、tech-harvester のような tier 無しスキルは `--all-skills` が必要です）。
 
 詳細な仕様は
 [`docs/designs/agent-loop-design.md` の機能 6](../../docs/designs/agent-loop-design.md#機能-6-slash-プロパティ)。

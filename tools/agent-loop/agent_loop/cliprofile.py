@@ -325,6 +325,19 @@ def check_headless_entries(config: "dict[str, Any]", entries: "list[dict[str, An
         if str(entry.get("mode") or "normal") == "ralph":
             fatal.append(f"定期プロンプト「{name}」: mode=ralph は headless 実行に対応していません"
                          f"（agent_cli: {profile.name}）。")
+        # slash はスキルとして headless 実行へ渡る（toolloop.run_prompt）。層3 では
+        # dispatch 時に解決失敗で落ちるので、設定ミスは起動時に fail fast で知らせる。
+        if profile.needs_tool_loop:
+            for line in entry.get("slash") or []:
+                skill_name = str(line).split()[0] if str(line).strip() else ""
+                if skill_name and _tl_resolve_skill(  # noqa: F821 (toolloop 断片・前方参照)
+                        skill_name, str(project_dir or Path.cwd())) is None:
+                    dirs = ", ".join(_tl_skill_search_dirs(  # noqa: F821 (前方参照)
+                        str(project_dir or Path.cwd())))
+                    fatal.append(
+                        f"定期プロンプト「{name}」: スキルが見つかりません: {skill_name}"
+                        f"（探索先: {dirs}。配布は `python install.py --agent aider"
+                        " --all-skills` 等で行います）。")
         if entry.get("target"):
             fatal.append(f"定期プロンプト「{name}」: external target は headless 実行に"
                          f"対応していません（agent_cli: {profile.name}）。")
