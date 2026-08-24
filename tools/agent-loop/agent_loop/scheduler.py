@@ -435,9 +435,30 @@ class PeriodicScheduler:
                     return e.copy()
         return None
 
+    def _annotate_pane_routes(self, normalized: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """ペイン事前作成の要否を entry へ記す（session.sync_entries が読む）。
+
+        per-run（headless CLI / session: per-run）の entry は対話ペインを使わない。
+        無条件に全 entry ぶんを起こすと、headless の agent_cli を設定していても
+        既定 CLI（kiro-cli）が必ず立ち上がり、無い環境では起動が落ちる。
+        entry 固有の agent_cli を持つ対話 entry は「維持はするが事前作成しない」
+        （lazy）——ここで起こすと既定 CLI のペインができて、宣言した CLI への
+        差し替えがセッション境界まで保留される。最初の dispatch が launch_spec
+        付きで正しい CLI のペインを起こす。
+        """
+        for entry in normalized:
+            _, route = self._entry_route(entry)
+            if route == "per-run":
+                entry["_pane_route"] = "per-run"
+            elif str(entry.get("agent_cli") or "").strip():
+                entry["_pane_route"] = "lazy"
+            else:
+                entry.pop("_pane_route", None)
+        return normalized
+
     def _set_entries(self, entries: list[dict[str, Any]], allow_immediate_once: bool = False) -> None:
         normalized = validate_entries(entries, allow_immediate_once=allow_immediate_once)
-        self._session_mgr.sync_entries(normalized)
+        self._session_mgr.sync_entries(self._annotate_pane_routes(normalized))
         with self._lock:
             self._entries = normalized
 
@@ -533,7 +554,7 @@ class PeriodicScheduler:
             self._entries = normalized
             # ID 変更は delete+add。quarantine は reload で解除。
             self._hook_quarantine.clear()
-        self._session_mgr.sync_entries(normalized)
+        self._session_mgr.sync_entries(self._annotate_pane_routes(normalized))
         _log_dispatch("config_reloaded", None, entries=len(normalized))
         return True
 

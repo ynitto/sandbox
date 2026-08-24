@@ -82,6 +82,25 @@ class PromptConfigTests(unittest.TestCase):
                 "cwd": "/tmp/project",
             }])
 
+    def test_mapping_empty_section_is_allowed(self):
+        # 中身を全てコメントアウトした空セクション（YAML では None）で落ちない
+        config = {"mapping": {"workspace": None}, "prompts": []}
+        self.assertEqual(al._resolve_config_mappings(config), config)
+
+    def test_mapping_unknown_lookup_raises_value_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp, "workspace")
+            workspace.mkdir()
+            (workspace / "agent-loop.yaml").write_text(
+                'mapping:\n  m:\n    a: x\nprompts:\n'
+                '  - name: n\n    prompt: "{{lookup m typo}}"\n',
+                encoding="utf-8",
+            )
+            # デーモン起動側（cli.main）はこれを捕まえて traceback ではなく
+            # 1 行のエラーで終了する
+            with self.assertRaises(ValueError):
+                al.load_config(workspace)
+
     def test_user_home_does_not_read_dot_agent(self):
         with tempfile.TemporaryDirectory() as tmp:
             old = Path(tmp, ".agent", "agent-loop.json")

@@ -715,6 +715,7 @@ class SessionManager:
         desired: dict[str, str] = {}
         desired_cwd: dict[str, str | None] = {}
         desired_tuning: dict[str, str] = {}
+        lazy_ids: set[str] = set()
         for entry in entries:
             prompt_id = str(entry.get("id", "")).strip()
             if not prompt_id:
@@ -727,9 +728,14 @@ class SessionManager:
                 continue
             if entry.get("target"):
                 continue  # external pane — SessionManager に登録しない
+            if entry.get("_pane_route") == "per-run":
+                continue  # headless 経路 — 対話ペインを使わない（既存ペインは停止する）
             prompt_name = str(entry.get("name", prompt_id)).strip() or prompt_id
             desired[prompt_id] = prompt_name
-            desired_cwd[prompt_id] = str(entry.get("cwd", "")).strip() or None
+            desired_cwd[prompt_id] = str(entry.get("cwd") or "").strip() or None
+            if entry.get("_pane_route") == "lazy":
+                # 既存ペインは維持するが事前作成はしない（dispatch が launch_spec 付きで起こす）
+                lazy_ids.add(prompt_id)
 
         with self._lock:
             self._tuning_profiles = desired_tuning
@@ -740,7 +746,10 @@ class SessionManager:
             }
 
         remove_ids = current_ids - set(desired.keys())
-        add_ids = [pid for pid in desired.keys() if pid not in all_current_ids]
+        add_ids = [
+            pid for pid in desired.keys()
+            if pid not in all_current_ids and pid not in lazy_ids
+        ]
         keep_ids = current_ids & set(desired.keys())
 
         for prompt_id in remove_ids:

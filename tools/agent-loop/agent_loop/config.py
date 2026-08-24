@@ -10,6 +10,8 @@ _LOOKUP_RE = re.compile(r"\{\{\s*lookup\s+([^\s{}]+)\s+([^\s{}]+)\s*\}\}")
 
 
 def _resolve_config_mappings(config: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(config, dict):
+        return config
     raw = config.get("mapping")
     if raw is None:
         return config
@@ -18,6 +20,8 @@ def _resolve_config_mappings(config: dict[str, Any]) -> dict[str, Any]:
 
     mappings: dict[str, dict[str, Any]] = {}
     for label, values in raw.items():
+        if values is None:
+            values = {}  # 中身を全てコメントアウトした空セクションを許す
         if not isinstance(values, dict):
             raise ValueError(f"mapping {label!r} は dict です")
         mappings[str(label)] = {str(key): value for key, value in values.items()}

@@ -7,6 +7,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-loop: headless 設定でも起動時に kiro-cli を立ち上げない（起動クラッシュの修正）
+
+- 起動・リロード時のペイン事前作成が実行経路を見ていなかった——`agent_cli` に headless CLI
+  （aider / ollama 系）を設定していても、`session: per-run` でも、全 entry ぶんの対話ペインを
+  無条件に起こすため **kiro-cli（既定 CLI）が必ず立ち上がり**、無い環境では
+  `RuntimeError` の traceback で起動そのものが落ちていた。scheduler が entry ごとの経路を
+  ペイン同期へ渡すようにした: per-run は事前作成しない（既存ペインは停止）、entry 固有の
+  `agent_cli` を持つ対話 entry は維持するが事前作成せず、最初の dispatch が launch_spec 付きで
+  正しい CLI のペインを起こす（従来は既定 CLI のペインが先にできて、宣言した CLI への
+  差し替えがセッション境界まで保留されていた）。
+- 設定エラー（mapping lookup の解決失敗・YAML 構文エラー）とペイン起動失敗（CLI が PATH に
+  無い）はデーモン起動で traceback を吐かず、読める 1 行のエラーで終了する。`mapping` の
+  空セクション（キーを全てコメントアウトした状態）は設定エラーにしない。
+- entry の `cwd` 未指定時に `str(None)` が `'None'` になり「cwd 'None' が存在しない」と
+  毎回警告される取り違えも修正。
+
 ### ローカル LLM の役割別既定を実測へ揃えた（配線の食い違いの修正）
 
 - `agents/ollama.json` / `ollama-json.json` / `ollama-list.json` / `ollama-read.json` の

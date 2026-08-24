@@ -81,6 +81,97 @@ class EntryRouteTest(unittest.TestCase):
         self.assertEqual(profile.name, "loopy")     # 管理面の宣言を entry で上書きしない
 
 
+class PaneRouteSyncTest(unittest.TestCase):
+    """起動時のペイン事前作成が headless / entry 固有 CLI を考慮する回帰。
+
+    以前は全 entry ぶんの対話ペインを無条件に起こしていたため、headless の
+    agent_cli を設定していても kiro-cli が必ず立ち上がり、kiro-cli の無い環境では
+    起動が RuntimeError で落ちていた。
+    """
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        _write_cli(self.dir, "loopy", {
+            "command": ["loopy", "run"], "headless_autonomy": "tool-loop",
+            "interactive": {"command": ["loopy", "chat"]},
+        })
+        _write_cli(self.dir, "plain", {
+            "command": ["plain", "run"], "headless_autonomy": "single-shot",
+        })
+        self.ctl = tempfile.mkdtemp()
+        os.environ["AGENT_CONTROL_DIR"] = self.ctl
+        al._CONTROL_CACHE["mtime"] = None
+        al._CONTROL_CACHE["data"] = {}
+
+    def _sched(self, entries, tool_config=None):
+        mgr = mock.Mock()
+        sched = al.PeriodicScheduler(
+            mgr, entries, workspace=self.dir, tool_config=tool_config or {})
+        return sched, mgr
+
+    def _synced(self, mgr):
+        return mgr.sync_entries.call_args[0][0]
+
+    def test_headless_common_cli_marks_entries_per_run(self):
+        _, mgr = self._sched(
+            [{"name": "n", "prompt": "p", "interval_minutes": 10, "enabled": True}],
+            tool_config={"agent_cli": "plain"})
+        self.assertEqual(self._synced(mgr)[0].get("_pane_route"), "per-run")
+
+    def test_entry_agent_cli_marks_entry_lazy(self):
+        _, mgr = self._sched([{
+            "name": "n", "prompt": "p", "interval_minutes": 10, "enabled": True,
+            "agent_cli": "loopy",
+        }])
+        self.assertEqual(self._synced(mgr)[0].get("_pane_route"), "lazy")
+
+    def test_default_entry_has_no_pane_route(self):
+        _, mgr = self._sched(
+            [{"name": "n", "prompt": "p", "interval_minutes": 10, "enabled": True}])
+        self.assertNotIn("_pane_route", self._synced(mgr)[0])
+
+    def _session_mgr(self):
+        mgr = al.SessionManager.__new__(al.SessionManager)
+        mgr._lock = threading.Lock()
+        mgr._panes = {}
+        mgr._owners = {}
+        mgr._prompt_names = {}
+        mgr._tmux_names = {}
+        mgr._prompt_cwds = {}
+        mgr._tuning_profiles = {}
+        mgr._start_pane = mock.Mock()
+        mgr._stop_pane = mock.Mock()
+        mgr.write_state = mock.Mock()
+        return mgr
+
+    def test_sync_entries_skips_per_run_and_lazy_panes(self):
+        mgr = self._session_mgr()
+        mgr.sync_entries([
+            {"id": "a", "name": "a", "_pane_route": "per-run"},
+            {"id": "b", "name": "b", "_pane_route": "lazy"},
+            {"id": "c", "name": "c"},
+        ])
+        started = [call.args[0] for call in mgr._start_pane.call_args_list]
+        self.assertEqual(started, ["c"])
+
+    def test_sync_entries_keeps_existing_lazy_pane(self):
+        mgr = self._session_mgr()
+        mgr._panes = {"b": "%9"}
+        mgr._owners = {"b": "scheduled"}
+        mgr._prompt_names = {"b": "b"}
+        mgr.sync_entries([{"id": "b", "name": "b", "_pane_route": "lazy"}])
+        mgr._stop_pane.assert_not_called()
+        mgr._start_pane.assert_not_called()
+
+    def test_sync_entries_stops_pane_when_entry_turns_per_run(self):
+        mgr = self._session_mgr()
+        mgr._panes = {"a": "%9"}
+        mgr._owners = {"a": "scheduled"}
+        mgr._prompt_names = {"a": "a"}
+        mgr.sync_entries([{"id": "a", "name": "a", "_pane_route": "per-run"}])
+        mgr._stop_pane.assert_called_once_with("a")
+
+
 class EntryValidationTest(unittest.TestCase):
     """prompts entry の新フィールドの検証。"""
 
