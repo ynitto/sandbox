@@ -30,6 +30,11 @@ REPO = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import engine  # noqa: E402
 VENV_PY = REPO / ".venv/bin/python"
+# ハーネス自身が決定的チェッカー（pytest / probe）を回すときの実行系。実機（開発機）では
+# リポジトリの .venv を使い、それが無い木——CI のクリーンなチェックアウト——では走っている
+# インタプリタで代替する。**測定の道具が環境で落ちると、道具の壊れがモデルの数字として
+# 残る**ので、チェッカーは venv の有無に依存させない（同じ受けは project_verify_eval.py に既にある）。
+CHECK_PY = VENV_PY if VENV_PY.exists() else Path(sys.executable)
 PROMPT_BUILDER = Path(os.environ.get(
     "FLOW_WORKER_PROMPT",
     str(Path.home() / ".claude/skills/flow-worker/scripts/prompt.py")))
@@ -74,7 +79,7 @@ WRITE_ARGS, WRITE_ARGS_SOURCE = load_write_args()
 
 REPO_INSTRUCTION = (
     "作業ディレクトリはこのタスク専用の worktree。テストの実行には "
-    f"`{VENV_PY} -m pytest` を使うこと（この worktree に .venv は無い）。"
+    f"`{CHECK_PY} -m pytest` を使うこと（この worktree に .venv は無い）。"
 )
 
 # ---------------------------------------------------------------- タスク定義
@@ -83,7 +88,7 @@ REPO_INSTRUCTION = (
 
 
 def _pytest(cwd: Path, *targets: str) -> subprocess.CompletedProcess:
-    return subprocess.run([str(VENV_PY), "-m", "pytest", "-q", *targets],
+    return subprocess.run([str(CHECK_PY), "-m", "pytest", "-q", *targets],
                           cwd=cwd, capture_output=True, text=True, timeout=300)
 
 
@@ -117,7 +122,7 @@ def _probe_cases(wt: Path, module: str, func: str, cases: list) -> tuple[bool, s
         f"cases = {cases!r}\n"
         "bad = [(n, f(n), want) for n, want in cases if f(n) != want]\n"
         "print('BAD' if bad else 'OK', bad)\n", encoding="utf-8")
-    r = subprocess.run([str(VENV_PY), "_probe.py"], cwd=wt,
+    r = subprocess.run([str(CHECK_PY), "_probe.py"], cwd=wt,
                        capture_output=True, text=True, timeout=60)
     probe.unlink(missing_ok=True)
     if r.returncode != 0:
@@ -452,7 +457,7 @@ TASKS = {
         family="a",
         seed=seed_t1, check=check_t1,
         files=("eval/humansize.py", "eval/test_humansize.py"),
-        test_cmd=f"{VENV_PY} -m pytest -q eval",
+        test_cmd=f"{CHECK_PY} -m pytest -q eval",
         request=T1_REQUEST,
         goal=("eval/humansize.py に関数 human_bytes(n: int) -> str を実装する。"
               "1024 未満は '512 B' のようにバイト表記、以降は KiB / MiB / GiB へ丸め、"
@@ -491,7 +496,7 @@ TASKS = {
                     gate=probe_humansize, max_retries=0),
                dict(request=T1_REQUEST, goal=T1_TEST_GOAL,
                     files=("eval/test_humansize.py",), read=("eval/humansize.py",),
-                    test_cmd=f"{VENV_PY} -m pytest -q eval",
+                    test_cmd=f"{CHECK_PY} -m pytest -q eval",
                     gate=gate_humansize_tests, max_retries=0)],
     ),
     "T1gate": dict(
@@ -501,7 +506,7 @@ TASKS = {
                     gate=probe_humansize, max_retries=2),
                dict(request=T1_REQUEST, goal=T1_TEST_GOAL,
                     files=("eval/test_humansize.py",), read=("eval/humansize.py",),
-                    test_cmd=f"{VENV_PY} -m pytest -q eval",
+                    test_cmd=f"{CHECK_PY} -m pytest -q eval",
                     gate=gate_humansize_tests, max_retries=1)],
     ),
     "T2": dict(
@@ -511,7 +516,7 @@ TASKS = {
         files=("eval/billing.py",), read=("eval/test_billing.py",),
         # aider 経路でだけ使う（--test-cmd + --auto-test）。agent-ollama 経路は
         # プロンプトでテスト実行を指示しており、道具の作法がそれぞれ違う。
-        test_cmd=f"{VENV_PY} -m pytest -q eval/test_billing.py",
+        test_cmd=f"{CHECK_PY} -m pytest -q eval/test_billing.py",
         request=T2_REQUEST, goal=T2_GOAL,
     ),
     "T3": dict(
@@ -519,7 +524,7 @@ TASKS = {
         seed=seed_t3, check=check_t3,
         # 実タスクなので置き場所の探索が要る。ここだけリポジトリマップに予算を与える。
         files=("schemas/node-budget-summary.schema.json",), map_tokens=1024,
-        test_cmd=f"{VENV_PY} -m pytest -q tools/agent-project",
+        test_cmd=f"{CHECK_PY} -m pytest -q tools/agent-project",
         request=T3_REQUEST, goal=T3_GOAL,
     ),
     # --- 追試（分解レポート 2026-08-13 の未検証を潰すアーム群）
@@ -573,7 +578,7 @@ TASKS = {
         family="a",
         seed=seed_t5, check=check_t5, read_mode="whole",
         files=("eval/report.py",), read=("eval/bigmod.py",),
-        test_cmd=f"{VENV_PY} -m pytest -q eval/test_report.py",
+        test_cmd=f"{CHECK_PY} -m pytest -q eval/test_report.py",
         request=T5_REQUEST, goal=T5_GOAL,
     ),
     "T5slice": dict(
@@ -582,7 +587,7 @@ TASKS = {
         files=("eval/report.py",), read=("eval/bigmod.py",),
         # 抜粋するシンボルは「編集対象が参照している名前」——計画時に機械で決まる（import 行）。
         slice={"eval/bigmod.py": ("apply_tax", "prorate")},
-        test_cmd=f"{VENV_PY} -m pytest -q eval/test_report.py",
+        test_cmd=f"{CHECK_PY} -m pytest -q eval/test_report.py",
         request=T5_REQUEST, goal=T5_GOAL,
     ),
     # T6: T5 と同じ課題・材料だけ 2 千行級（約 2 万 token）。「入れれば読める」が規模で
@@ -591,7 +596,7 @@ TASKS = {
         family="a",
         seed=seed_t6, check=check_t6, read_mode="whole",
         files=("eval/report.py",), read=("eval/bigmod.py",),
-        test_cmd=f"{VENV_PY} -m pytest -q eval/test_report.py",
+        test_cmd=f"{CHECK_PY} -m pytest -q eval/test_report.py",
         request=T5_REQUEST, goal=T5_GOAL,
     ),
     "T6slice": dict(
@@ -599,7 +604,7 @@ TASKS = {
         seed=seed_t6, check=check_t6, read_mode="slice",
         files=("eval/report.py",), read=("eval/bigmod.py",),
         slice={"eval/bigmod.py": ("apply_tax", "prorate")},
-        test_cmd=f"{VENV_PY} -m pytest -q eval/test_report.py",
+        test_cmd=f"{CHECK_PY} -m pytest -q eval/test_report.py",
         request=T5_REQUEST, goal=T5_GOAL,
     ),
     # T6noat / T6slicenoat: auto-test（失敗出力の往復）を切った一発。T6 が 3/3 なのは
@@ -622,7 +627,7 @@ TASKS = {
         family="a",
         seed=seed_t5, check=check_t5, read_mode="none",
         files=("eval/report.py",),
-        test_cmd=f"{VENV_PY} -m pytest -q eval/test_report.py",
+        test_cmd=f"{CHECK_PY} -m pytest -q eval/test_report.py",
         request=T5_REQUEST, goal=T5_GOAL,
     ),
     "T3gate": dict(
@@ -630,7 +635,7 @@ TASKS = {
         seed=seed_t3, check=check_t3, request=T3_REQUEST,
         steps=[dict(request=T3_REQUEST, goal=T3_GOAL,
                     files=("schemas/node-budget-summary.schema.json",), map_tokens=1024,
-                    test_cmd=f"{VENV_PY} -m pytest -q tools/agent-project",
+                    test_cmd=f"{CHECK_PY} -m pytest -q tools/agent-project",
                     gate=check_t3, max_retries=2)],
     ),
 }

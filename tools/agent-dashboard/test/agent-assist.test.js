@@ -94,7 +94,7 @@ test('buildInteractiveCommand: 全体設定のCLI・モデルを対話コマン�
   // 移行前は対話だけがモデル必須で落ちていた＝同じ定義なのにモードで挙動が違った。
   // ollama の対話は素の `ollama run` ではなく agent-ollama のデバッグ TUI（進捗が見える）。
   assert.deepStrictEqual(of('ollama', ''),
-                         ['agent-ollama', '--tui', '--think', 'on', 'qwen3']);
+                         ['agent-ollama', '--tui', '--think', 'on', 'gemma4:e4b']);
   assert.deepStrictEqual(of('ollama', 'llama3'),
                          ['agent-ollama', '--tui', '--think', 'on', 'llama3']);
 });
