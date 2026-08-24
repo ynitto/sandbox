@@ -7,20 +7,87 @@ from __future__ import annotations
 
 DEFAULT_CONFIG_NAMES = ["agent-loop.yaml", "agent-loop.yml", "agent-loop.json"]
 _LOOKUP_RE = re.compile(r"\{\{\s*lookup\s+([^\s{}]+)\s+([^\s{}]+)\s*\}\}")
+# キーが実行時に決まる遅延 lookup: `{{lookup <ラベル> {<変数>}}}`。
+# 読み込み時は素通しし、webhook のパラメータ注入 / hook の vars 注入のタイミングで
+# resolve_deferred_lookups() が解決する（変数はそこで初めて値を持つ）。
+_DEFERRED_LOOKUP_RE = re.compile(r"\{\{\s*lookup\s+([^\s{}]+)\s+\{([^\s{}]+)\}\s*\}\}")
 
 
-def _resolve_config_mappings(config: dict[str, Any]) -> dict[str, Any]:
-    raw = config.get("mapping")
-    if raw is None:
+def _normalized_mappings(
+    raw: "dict[str, Any] | None",
+    fallback: "dict[str, Any] | None" = None,
+    *,
+    strict: bool = True,
+) -> dict[str, dict[str, Any]]:
+    """mapping セクションを {ラベル: {キー: 値}} に正規化する。
+
+    fallback は共通設定（~/.agents）側の mapping。raw（ファイル自身）が
+    ラベル・キー単位で勝つ。strict=False は実行時解決用——形の問題は設定の
+    読み込み時に既に報告済みなので、ここでは黙って読み飛ばす。
+    """
+    mappings: dict[str, dict[str, Any]] = {}
+    for label, values in (fallback or {}).items():
+        if not isinstance(values, dict):
+            continue  # 共通設定側の形の問題は共通設定自身の読み込みで報告される
+        mappings[str(label)] = {str(key): value for key, value in values.items()}
+    for label, values in (raw or {}).items():
+        if values is None:
+            values = {}  # 中身を全てコメントアウトした空セクションを許す
+        if not isinstance(values, dict):
+            if strict:
+                raise ValueError(f"mapping {label!r} は dict です")
+            continue
+        merged = mappings.setdefault(str(label), {})
+        merged.update({str(key): value for key, value in values.items()})
+    return mappings
+
+
+def resolve_deferred_lookups(
+    text: str,
+    mappings: dict[str, dict[str, Any]],
+    params: "dict[str, Any] | None",
+) -> str:
+    """`{{lookup <ラベル> {<変数>}}}` を実行時パラメータで解決する。
+
+    webhook の payload パラメータ / hook の vars が変数の値を持つ。変数が無い・
+    解決先が無いのは注入時の契約違反なので ValueError（呼び出し側がその 1 件を
+    落として報告する。デーモンは落とさない）。
+    """
+    values_by_var = params or {}
+
+    def replace(match: re.Match[str]) -> str:
+        label, var = match.groups()
+        if var not in values_by_var:
+            raise ValueError(f"lookup の変数が params にありません: {label} {{{var}}}")
+        key = str(values_by_var[var])
+        if label not in mappings or key not in mappings[label]:
+            raise ValueError(f"mapping lookup が見つかりません: {label} {key}")
+        return str(mappings[label][key])
+
+    return _DEFERRED_LOOKUP_RE.sub(replace, str(text))
+
+
+def _resolve_config_mappings(
+    config: dict[str, Any],
+    fallback: "dict[str, Any] | None" = None,
+) -> dict[str, Any]:
+    """設定内の `{{lookup <ラベル> <キー>}}` を mapping で解決する。
+
+    fallback は共通設定（~/.agents）側の mapping。ファイル自身の mapping が
+    ラベル・キー単位で勝つ。解決はどちらにも無いときだけ設定エラー。
+    キーを `{変数}` と書いた遅延 lookup はここでは触らない（実行時に解決）。
+    """
+    if not isinstance(config, dict):
         return config
+    raw = config.get("mapping")
+    if raw is None and not fallback:
+        return config
+    if raw is None:
+        raw = {}
     if not isinstance(raw, dict):
         raise ValueError("mapping は dict です")
 
-    mappings: dict[str, dict[str, Any]] = {}
-    for label, values in raw.items():
-        if not isinstance(values, dict):
-            raise ValueError(f"mapping {label!r} は dict です")
-        mappings[str(label)] = {str(key): value for key, value in values.items()}
+    mappings = _normalized_mappings(raw, fallback)
 
     def resolve(value: Any) -> Any:
         if isinstance(value, dict):
@@ -33,7 +100,10 @@ def _resolve_config_mappings(config: dict[str, Any]) -> dict[str, Any]:
         def replace(match: re.Match[str]) -> str:
             label, key = match.groups()
             if label not in mappings or key not in mappings[label]:
-                raise ValueError(f"mapping lookup が見つかりません: {label} {key}")
+                raise ValueError(
+                    f"mapping lookup が見つかりません: {label} {key}"
+                    f"（キーが実行時に決まる場合は {{{{lookup {label} {{{key}}}}}}} と"
+                    "書くと webhook / hook の値で dispatch 時に解決されます）")
             return str(mappings[label][key])
 
         return _LOOKUP_RE.sub(replace, value)

@@ -4,7 +4,7 @@
   "relative_cost": 0,
   "command": ["agent-ollama", "{model}"],
   "prompt_via": "stdin",
-  "default_model": "qwen3",
+  "default_model": "gemma4:e4b",
   "output": "stdout",
   "empty_output_is_error": true,
   "variants": {

@@ -27,7 +27,10 @@ def _build_parser() -> argparse.ArgumentParser:
                         "project-root / amigos-bus / loop-log / memory-store。複数可）")
     c.add_argument("--since", help="この時刻（ISO8601）以降のセッションだけ収集")
     c.add_argument("--with-transcripts", action="store_true", dest="with_transcripts",
-                   help="transcript 本文もローカル保存する（ノード外へは出さない）")
+                   default=None,
+                   help="セッション本文も統一フォーマット（JSONL・agent/model メタ付き）で"
+                        "ローカル保存する（設定 with_transcripts でも有効化可。"
+                        "ノード外へは出さない）")
 
     u = sub.add_parser("usage", help="トークン・コスト集計（measured / estimated 別掲）")
     u.add_argument("--period", choices=["day", "month", "total"], default=None)

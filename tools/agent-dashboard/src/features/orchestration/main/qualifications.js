@@ -4,6 +4,7 @@
 const fs = require('fs');
 const path = require('path');
 const control = require('./control');
+const { sharedStateReadPath } = require('../../../base/main/agent-home');
 
 const QUALIFICATIONS_FILE = 'qualifications.json';
 
@@ -18,7 +19,8 @@ function resolveFile(cfg) {
 }
 
 function load(cfg) {
-  const file = resolveFile(cfg);
+  const resolved = resolveFile(cfg);
+  const file = sharedStateReadPath(path.dirname(resolved), path.basename(resolved));
   try {
     const document = JSON.parse(fs.readFileSync(file, 'utf8'));
     if (!isObject(document) || document.version !== 1

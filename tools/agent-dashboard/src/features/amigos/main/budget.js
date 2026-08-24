@@ -10,7 +10,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { agentHomeSubdir } = require('../../../base/main/agent-home');
+const { agentHomeSubdir, sharedStateReadPath, writeSharedStateJson } = require('../../../base/main/agent-home');
 
 const KNOWN_WORKLOADS = ['routine', 'project', 'flow', 'amigos'];
 
@@ -35,7 +35,7 @@ function readJson(p) {
 }
 
 function loadBudgetConfig(dir) {
-  const raw = readJson(path.join(dir, 'config.json')) || {};
+  const raw = readJson(sharedStateReadPath(dir, 'config.json')) || {};
   const workloads = {};
   for (const [k, v] of Object.entries(raw.workloads || {})) {
     const n = Number(v);
@@ -45,7 +45,7 @@ function loadBudgetConfig(dir) {
     execution_minutes: Math.max(0, Number(raw.execution_minutes) || 0),
     period: ['day', 'month', 'total'].includes(raw.period) ? raw.period : 'day',
     workloads,
-    exists: fs.existsSync(path.join(dir, 'config.json')),
+    exists: fs.existsSync(sharedStateReadPath(dir, 'config.json')),
   };
 }
 
@@ -160,11 +160,7 @@ function save(cfg, patch) {
   }
   next.updated_at = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
   next.updated_by = 'dashboard';
-  fs.mkdirSync(dir, { recursive: true });
-  const target = path.join(dir, 'config.json');
-  const tmp = `${target}.tmp.${process.pid}`;
-  fs.writeFileSync(tmp, `${JSON.stringify(next, null, 2)}\n`);
-  fs.renameSync(tmp, target);
+  writeSharedStateJson(dir, 'config.json', next);
   return usage(cfg);
 }
 

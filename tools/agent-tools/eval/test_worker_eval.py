@@ -355,5 +355,131 @@ class AiderPolicyArgvTest(unittest.TestCase):
             "tokens_in": 12, "tokens_out": 4})
 
 
+class TextTaskCheckerTest(unittest.TestCase):
+    """T7digest / T8log の決定的チェッカー。LLM は呼ばない。"""
+
+    def _wt(self, seed):
+        tmp = pathlib.Path(tempfile.mkdtemp(prefix="t7t8-"))
+        self.addCleanup(lambda: subprocess.run(["rm", "-rf", str(tmp)]))
+        seed(tmp)
+        return tmp
+
+    def _good_digest(self):
+        parts = ["# Tech Digest", "", "_2026-08-24 09:30 UTC_", ""]
+        themes = {"AI・機械学習": w.T7_ARTICLES[:2],
+                  "セキュリティ": w.T7_ARTICLES[2:4],
+                  "クラウド・インフラ": w.T7_ARTICLES[4:]}
+        for theme, arts in themes.items():
+            parts += [f"## {theme}", ""]
+            for a in arts:
+                parts += [f"### [{a['title']}]({a['link']})", "",
+                          "重要な発表についての日本語要約です。", ""]
+        return "\n".join(parts) + "\n"
+
+    def test_t7_passes_on_conforming_digest(self):
+        wt = self._wt(w.seed_t7)
+        (wt / "eval" / "digest.md").write_text(self._good_digest(), encoding="utf-8")
+        ok, note = w.check_t7(wt)
+        self.assertTrue(ok, note)
+
+    def test_t7_fails_on_missing_file_link_theme_and_japanese(self):
+        wt = self._wt(w.seed_t7)
+        self.assertFalse(w.check_t7(wt)[0])                      # ファイルが無い
+        good = self._good_digest()
+        drop_link = good.replace(w.T7_ARTICLES[0]["link"], "https://example.com/other")
+        (wt / "eval" / "digest.md").write_text(drop_link, encoding="utf-8")
+        ok, note = w.check_t7(wt)
+        self.assertFalse(ok)
+        self.assertIn("リンク未掲載", note)
+        one_theme = good.replace("## セキュリティ", "AI 続き").replace("## クラウド・インフラ", "AI 続き2")
+        (wt / "eval" / "digest.md").write_text(one_theme, encoding="utf-8")
+        ok, note = w.check_t7(wt)
+        self.assertFalse(ok)
+        self.assertIn("テーマ見出し", note)
+        english_only = good.replace("重要な発表についての日本語要約です。", "An English-only summary.")
+        (wt / "eval" / "digest.md").write_text(english_only, encoding="utf-8")
+        ok, note = w.check_t7(wt)
+        self.assertFalse(ok)
+        self.assertIn("日本語要約", note)
+
+    def _good_analysis(self):
+        return ("# 障害解析\n\n## 根本原因\n\n"
+                "payments-db のディスク枯渇（No space left on device, /var/lib/postgresql 100%）。"
+                "09:14:10 に書き込みが失敗し、DB が read-only になった。\n\n"
+                "## 波及\n\n"
+                "1. api-gateway が payments-db:5432 へのタイムアウトを繰り返した\n"
+                "2. checkout-service の注文 POST が 500 になった\n")
+
+    def test_t8_passes_on_correct_root_cause(self):
+        wt = self._wt(w.seed_t8)
+        (wt / "eval" / "analysis.md").write_text(self._good_analysis(), encoding="utf-8")
+        ok, note = w.check_t8(wt)
+        self.assertTrue(ok, note)
+
+    def test_t8_fails_when_stuck_at_symptom_or_decoy(self):
+        wt = self._wt(w.seed_t8)
+        self.assertFalse(w.check_t8(wt)[0])                      # ファイルが無い
+        symptom = ("## 根本原因\n\napi-gateway のタイムアウトが多発。payments-db が応答しない。\n\n"
+                   "## 波及\n\nしわ寄せ。\n")
+        (wt / "eval" / "analysis.md").write_text(symptom, encoding="utf-8")
+        ok, note = w.check_t8(wt)
+        self.assertFalse(ok)
+        self.assertIn("症状で止まっている", note)
+        decoy = self._good_analysis().replace(
+            "## 根本原因\n\npayments-db",
+            "## 根本原因\n\nauth-service の deprecated 設定と payments-db")
+        (wt / "eval" / "analysis.md").write_text(decoy, encoding="utf-8")
+        ok, note = w.check_t8(wt)
+        self.assertFalse(ok)
+        self.assertIn("囮", note)
+        no_section = self._good_analysis().replace("## 根本原因", "## 原因")
+        (wt / "eval" / "analysis.md").write_text(no_section, encoding="utf-8")
+        ok, note = w.check_t8(wt)
+        self.assertFalse(ok)
+        self.assertIn("根本原因", note)
+
+    def test_t7gate_theme_gate_enforces_full_single_assignment(self):
+        import json
+        wt = self._wt(w.seed_t7)
+        f = wt / "eval" / "themes.json"
+        self.assertFalse(w.gate_t7_themes(wt)[0])                # ファイルが無い
+        links = [a["link"] for a in w.T7_ARTICLES]
+        f.write_text(json.dumps({"AI": links[:2], "セキュリティ": links[2:4],
+                                 "クラウド": links[4:]}, ensure_ascii=False), encoding="utf-8")
+        ok, note = w.gate_t7_themes(wt)
+        self.assertTrue(ok, note)
+        f.write_text(json.dumps({"AI": links[:5]}, ensure_ascii=False), encoding="utf-8")
+        ok, note = w.gate_t7_themes(wt)                          # テーマ 1 つ + 未割当
+        self.assertFalse(ok)
+        f.write_text(json.dumps({"AI": links, "セキュリティ": links[:1]},
+                                ensure_ascii=False), encoding="utf-8")
+        ok, note = w.gate_t7_themes(wt)                          # 重複割当
+        self.assertFalse(ok)
+        self.assertIn("重複", note)
+
+    def test_t8gate_evidence_gate_requires_root_cause_line(self):
+        wt = self._wt(w.seed_t8)
+        f = wt / "eval" / "evidence.md"
+        self.assertFalse(w.gate_t8_evidence(wt)[0])              # ファイルが無い
+        f.write_text("2026-08-24T09:14:15Z ERROR api-gateway: upstream timeout to "
+                     "payments-db:5432 after 5000ms\nこれが最初のエラー。\n", encoding="utf-8")
+        ok, note = w.gate_t8_evidence(wt)                        # 波及行を起点と誤認
+        self.assertFalse(ok)
+        self.assertIn("起点", note)
+        f.write_text("2026-08-24T09:14:10Z ERROR payments-db: write failed: No space left "
+                     "on device (/var/lib/postgresql, disk usage 100%)\n"
+                     "この書き込み失敗が後続のタイムアウトの起点。\n", encoding="utf-8")
+        ok, note = w.gate_t8_evidence(wt)
+        self.assertTrue(ok, note)
+
+    def test_t8_log_fixture_contains_cause_before_cascade(self):
+        # 材料そのものの健全性: 原因行（disk）が波及行（timeout）より前にあり、囮も 1 行ある
+        lines = w.T8_LOG.splitlines()
+        cause = next(i for i, ln in enumerate(lines) if "No space left" in ln)
+        first_timeout = next(i for i, ln in enumerate(lines) if "upstream timeout" in ln)
+        self.assertLess(cause, first_timeout)
+        self.assertTrue(any("deprecated" in ln for ln in lines))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -88,7 +88,7 @@ executor: agent            # ワーカーバス: 組み込み agent（エージ�
 #     model: haiku         #   worker）へは --config 伝搬で同じ設定が届く。
 #   classify:              #   readonly: true は「読み取り専用で呼ぶ」宣言。**planner /
 #     agent_cli: ollama    #   evaluator は宣言しなくても既定で readonly**（材料を全部プロンプトで
-#     model: qwen3         #   受け取る読まない役割。道具付きで呼ぶとツールループ型の CLI が
+#     model: gemma4:e4b    #   受け取る読まない役割。道具付きで呼ぶとツールループ型の CLI が
 #     fallbacks:           #   内容失敗時の1段昇格。relative_cost が現在以下の候補は無視する。
 #       - {agent_cli: claude, model: sonnet}
 #     readonly: true       #   JSON 応答を規約違反として蹴る）。他は既定 false。テキスト系 kind
@@ -96,7 +96,7 @@ executor: agent            # ワーカーバス: 組み込み agent（エージ�
                            #   work / verify はワークスペースを触るので付けない。
 #   planner:               #   ローカル推論へ振る例（設計 docs/designs/
 #     agent_cli: ollama-json#  2026-08-08-agent-ollama-expansion-design.md §3・§4）。JSON 契約の役割は
-#     model: qwen3         #   ollama-json（--format json で文法から強制）を使う。
+#     model: gemma4:e4b    #   ollama-json（--format json で文法から強制）を使う。
 #     readonly: true       #   壁時計は伸びるので agent_timeout も併せて上げる（例 3600）。
 # pattern: map-reduce      # 標準ワークフローパターンの明示選択（--pattern と同義）。既定は未指定＝
                            # planner が選ぶ。名前は `agent-flow patterns` で一覧できる。

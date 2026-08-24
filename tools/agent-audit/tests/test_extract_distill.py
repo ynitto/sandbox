@@ -56,6 +56,23 @@ class ExtractPipelineTests(AuditTestCase):
             extract.cmd_extract(args)
         self.assertEqual(m.call_count, 2)
 
+    def test_record_digest_renders_unified_transcript(self):
+        from _shared import collect
+        st = self.make_store()
+        rel = collect._write_transcript(st, "claude", {
+            "native_id": "sess-1", "store": "/tmp/s.jsonl", "cwd": "/home/u/repo",
+            "created_at": 1754200000.0, "updated_at": 1754200060.0,
+            "model": "claude-sonnet-4", "log_version": "", "turns": 2,
+            "tokens_in": 10, "tokens_out": 5,
+            "messages": [("User", "直して"), ("Assistant", "直しました")]})
+        rec = {"id": "aud-s1", "kind": "session", "source": "claude-native",
+               "agent_cli": "claude", "excerpt_ref": rel}
+        digest = extract.record_digest(st, rec, 8000)
+        # 統一 JSONL は生の JSON ではなく平文へ描画して LLM に渡す
+        self.assertIn("[User]\n直して", digest)
+        self.assertIn("Model: claude-sonnet-4", digest)
+        self.assertNotIn('"type": "message"', digest)
+
 
 class ClusterTests(unittest.TestCase):
     def _obs(self, oid, kind, text):

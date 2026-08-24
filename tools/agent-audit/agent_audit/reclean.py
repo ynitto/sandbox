@@ -34,7 +34,9 @@ def cmd_reclean(args) -> int:
         cli_dir = os.path.join(store.transcripts_dir, name)
         if not os.path.isdir(cli_dir):
             continue
-        existing = {os.path.splitext(n)[0] for n in os.listdir(cli_dir) if n.endswith(".log")}
+        # 旧 .log 形も対象にする——再生成は統一 JSONL で書かれ、旧ファイルは消える。
+        existing = {os.path.splitext(n)[0] for n in os.listdir(cli_dir)
+                    if n.endswith((".log", ".jsonl"))}
         if not existing:
             continue
         seen_here: "set[str]" = set()

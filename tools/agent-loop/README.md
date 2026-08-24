@@ -257,7 +257,10 @@ startup_timeout: 60      # kiro-cli 起動待ち
 # headless 実行（session: per-run のエントリ）。どちらも既定 false。
 # acceptance_judge: true   # パスを含まない受入条件を検証エージェントに判定させる
 #                          # （CLI をもう 1 回起こす。エントリ側で上書き可能）
-# headless_window: true    # 実行ログを追う tmux ウィンドウを開く（エントリごとに 1 枚）
+# headless_pane: true      # 既定 true。headless 実行のログをデーモンと同じウィンドウ内の
+#                           # ペイン（コントロールペインと分割・エントリごとに 1 枚）で表示する。
+#                           # false でペインも開かない（サーバ・CI 常駐）。tmux の外では何もしない
+# headless_window: true    # ペインの代わりに専用 tmux ウィンドウを開く（エントリごとに 1 枚）
 
 # 設定内の文字列から参照できる値
 mapping:
@@ -316,6 +319,13 @@ prompts:
   規約外の要素は**その要素だけ**捨てて警告します（タイポで定期駆動が止まらないように）。
 - `prompt` を省いて `slash` だけのエントリも有効です（コマンドだけ定期送信）。
 - スラッシュコマンドを解する対話 CLI なら何にでも使えます（特定の CLI 専用ではありません）。
+- **headless（per-run）実行でも効きます**: ツールループ内蔵の CLI（層2）へはネイティブの
+  スラッシュコマンドとして本文先頭へ前置し、非内蔵の CLI（aider 等の層3）へは**スキル**
+  として解決して SKILL.md をツールループの読み取り材料に渡します。層3 でスキルの実体が
+  無い場合は起動時・実行時に明示エラーになります（探索先: `<cwd>/.github/skills` →
+  リポジトリの `.github/skills` → `~/.agents/skills` → `~/.codex/skills`。配布は
+  `python install.py --agent aider --all-skills` 等。**既定インストールは `tier: core` の
+  スキルだけ**なので、tech-harvester のような tier 無しスキルは `--all-skills` が必要です）。
 
 詳細な仕様は
 [`docs/designs/agent-loop-design.md` の機能 6](../../docs/designs/agent-loop-design.md#機能-6-slash-プロパティ)。
@@ -359,6 +369,31 @@ GitLab 用の前二つは `gitlab-idd` スキルの `scripts/gl.py` を利用し
 
 トップレベルの `mapping` にラベルごとの辞書を置くと、設定内の文字列で
 `{{lookup <ラベル> <キー>}}` として参照できます。存在しないラベルまたはキーは設定エラーです。
+
+共通設定（`~/.agents/agent-loop.yaml`）に置いた `mapping` は、プロジェクト側の
+設定ファイル（`<cwd>/agent-loop.yaml` や `<cwd>/.agents/agent-loop.yml`）の
+`{{lookup ...}}` からも参照できます。同じラベル・キーを両方に書いた場合は
+ファイル側がキー単位で勝ちます。
+
+キーが実行時に決まる場合（webhook の payload や hook の `vars` の値でキーを
+選びたい場合）は、キーを `{変数}` と書きます:
+
+```yaml
+mapping:
+  cwd_map:
+    sandbox: /home/user/sandbox
+prompts:
+  - name: mr-reviewer
+    prompt: |
+      {project} の MR をレビューしてください。作業ディレクトリ: {{lookup cwd_map {project}}}
+    webhook:
+      hook: ~/sandbox/tools/agent-loop/hooks/gitlab-mr-webhook.py
+```
+
+遅延 lookup は設定の読み込みでは検証されず、webhook のパラメータ注入 / hook の
+`vars` 注入のタイミングで解決されます。変数が payload / vars に無い、または
+解決先のキーが mapping に無い場合は、その 1 件の注入だけがエラーになります
+（デーモンは落ちません）。
 
 ## tmux セッションの命名規則
 

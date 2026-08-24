@@ -110,5 +110,87 @@ class SchedulerHookupTests(unittest.TestCase):
         opener.assert_not_called()
 
 
+class LogViewRoutingTests(unittest.TestCase):
+    """headless 実行ログの見せ場所の既定はペイン（controller と分割）。
+
+    同時実行数 1 でも controller ペインの中に実行の様子が混ざらないようにする。
+    headless_window: true は従来どおり専用ウィンドウ、headless_pane: false は何も開かない。
+    """
+
+    def _scheduler(self, tool_config):
+        s = al.PeriodicScheduler.__new__(al.PeriodicScheduler)
+        s._tool_config = dict(tool_config)
+        s._session_mgr = types.SimpleNamespace(
+            get_attach_session_name=mock.Mock(return_value="agent-loop-x"),
+            open_headless_log_pane=mock.Mock(return_value=True))
+        return s
+
+    def test_default_opens_a_pane_per_entry(self):
+        s = self._scheduler({})
+        s._open_headless_log_view({"name": "issues", "id": "e1"}, "/tmp/a.jsonl")
+        s._session_mgr.open_headless_log_pane.assert_called_once_with(
+            "e1", "issues", "/tmp/a.jsonl")
+
+    def test_headless_window_takes_precedence(self):
+        s = self._scheduler({"headless_window": True})
+        with mock.patch.object(al, "open_log_window", return_value=True) as opener:
+            s._open_headless_log_view({"name": "issues", "id": "e1"}, "/tmp/a.jsonl")
+        opener.assert_called_once()
+        s._session_mgr.open_headless_log_pane.assert_not_called()
+
+    def test_headless_pane_false_opens_nothing(self):
+        s = self._scheduler({"headless_pane": False})
+        with mock.patch.object(al, "open_log_window") as opener:
+            s._open_headless_log_view({"name": "n", "id": "e1"}, "/tmp/a.jsonl")
+        opener.assert_not_called()
+        s._session_mgr.open_headless_log_pane.assert_not_called()
+
+    def test_pane_failure_does_not_propagate(self):
+        s = self._scheduler({})
+        s._session_mgr.open_headless_log_pane.side_effect = RuntimeError("boom")
+        s._open_headless_log_view({"name": "n", "id": "e1"}, "/tmp/a.jsonl")
+
+
+class OpenHeadlessLogPaneTests(unittest.TestCase):
+    def _mgr(self, layout=None):
+        mgr = al.SessionManager.__new__(al.SessionManager)
+        mgr._lock = al.threading.Lock()
+        mgr._headless_log_panes = {}
+        mgr._layout_window_target = layout
+        mgr._target_path = "/tmp"
+        return mgr
+
+    def test_outside_tmux_opens_nothing(self):
+        mgr = self._mgr(layout=None)
+        env = {k: v for k, v in os.environ.items() if k != "TMUX"}
+        with mock.patch.dict(os.environ, env, clear=True), \
+             mock.patch.object(al.shutil, "which", return_value="/usr/bin/tmux"), \
+             mock.patch.object(al, "_tmux_cmd") as tmux:
+            self.assertFalse(mgr.open_headless_log_pane("e1", "n", "/tmp/a.jsonl"))
+        tmux.assert_not_called()
+
+    def test_creates_then_reuses_one_pane_per_entry(self):
+        mgr = self._mgr(layout="sess:0")
+        create = mock.Mock(return_value="%7")
+        mgr._create_worker_pane = create
+        mgr._pane_exists = mock.Mock(return_value=True)
+        ok_cmd = types.SimpleNamespace(returncode=0, stdout="", stderr="")
+        with mock.patch.dict(os.environ, {"TMUX": "/tmp/tmux-1"}), \
+             mock.patch.object(al.shutil, "which", return_value="/usr/bin/tmux"), \
+             mock.patch.object(al, "_tmux_cmd", return_value=ok_cmd) as tmux:
+            self.assertTrue(mgr.open_headless_log_pane("e1", "issues", "/tmp/a.jsonl"))
+            create.assert_called_once()
+            self.assertEqual(mgr._headless_log_panes, {"e1": "%7"})
+            # 2 回目は respawn で張り替え（ペインを増やさない）
+            self.assertTrue(mgr.open_headless_log_pane("e1", "issues", "/tmp/b.jsonl"))
+            create.assert_called_once()
+        respawns = [c for c in tmux.call_args_list if c.args and c.args[0] == "respawn-pane"]
+        self.assertEqual(len(respawns), 1)
+        self.assertIn("/tmp/b.jsonl", respawns[0].args[-1])
+
+    def test_empty_log_file_is_refused(self):
+        self.assertFalse(self._mgr("sess:0").open_headless_log_pane("e1", "n", ""))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -508,7 +508,13 @@ def main() -> None:
     log_file = configure_file_logging()
     log.info("ファイルログを開始しました: %s", log_file)
 
-    config, config_path, has_local_config = load_config(cwd)
+    # 設定エラー（YAML 構文・mapping lookup の解決失敗など）は traceback ではなく
+    # 読める 1 行のエラーで終了する（対象ファイルは直前の INFO ログに出ている）。
+    try:
+        config, config_path, has_local_config = load_config(cwd)
+    except Exception as exc:
+        log.error("設定ファイルを読み込めません: %s", exc)
+        sys.exit(1)
     config = _apply_control_agent(config)
 
     ws_config = _load_prompt_file_data(str(cwd))
@@ -668,10 +674,17 @@ def main() -> None:
     slot_monitor_box[0] = slot_monitor
     _slot_monitor_ref = slot_monitor
 
-    scheduler = PeriodicScheduler(
-        session_mgr, entries, semaphore=semaphore, slot_monitor=slot_monitor,
-        workspace=str(cwd.resolve()), tool_config=config,
-    )
+    # 起動時のペイン事前作成の失敗（エージェント CLI が PATH に無い等）も
+    # fail fast だが、traceback ではなく読めるエラーで終了する。
+    try:
+        scheduler = PeriodicScheduler(
+            session_mgr, entries, semaphore=semaphore, slot_monitor=slot_monitor,
+            workspace=str(cwd.resolve()), tool_config=config,
+        )
+    except RuntimeError as exc:
+        log.error("エージェント CLI ペインを起動できないため終了します: %s", exc)
+        _cleanup()
+        sys.exit(1)
     scheduler.configure_runtime(
         workspace=str(cwd.resolve()),
         health=health_cfg,

@@ -112,13 +112,13 @@ concurrency: 1             # 板へ並行 post する独立タスク数（1=逐�
                             #   --dangerously-skip-permissions 等が外れる（安全側の副産物）。
 #   adjudicate:             #   ローカル推論へ振る例（クラウド枠の節約。設計 docs/designs/
 #     agent_cli: ollama     #   2026-08-08-agent-ollama-expansion-design.md §3・§5）。壁時計は伸びるので、
-#     model: qwen3          #   速度が要る処理はクラウドに残す。定義は 3 つある:
+#     model: gemma4:e4b     #   速度が要る処理はクラウドに残す。定義は 3 つある:
 #     readonly: true        #     ollama       … 単発 text→text（think 有効）
 #     fallbacks:            #   内容系の実行失敗時だけ、relative_cost が高い先頭候補で1回再試行。
 #       - {agent_cli: claude, model: sonnet}
 #   plan:                   #     ollama-json  … + JSON 文法強制（plan など JSON 契約の処理）
 #     agent_cli: ollama-json#     ollama-read  … + 読み取り専用コマンドの実行ループ（探索が要る処理）
-#     model: qwen3
+#     model: gemma4:e4b
 #     readonly: true
 # granularity: coarse       # バックログ分解の粒度: coarse（ストーリー相当・INVEST。既定）/
                             #   fine（単機能・単モジュール）/ finest（1ファイル/1関数の最小単位）

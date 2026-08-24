@@ -47,6 +47,16 @@ class ConfigTests(AuditTestCase):
                 json.dump({"agent_cli": "new"}, f)
             self.assertEqual(configfile.find_config(None, cwd=home), expected)
 
+    def test_with_transcripts_config_key_fills_unset_flag(self):
+        """--with-transcripts を渡さない定期実行でも、設定で副作用保存を有効化できる。"""
+        import argparse
+        cfg = os.path.join(self.tmp, "agent-audit.json")
+        with open(cfg, "w", encoding="utf-8") as f:
+            json.dump({"with_transcripts": True}, f)
+        args = argparse.Namespace(config=cfg, with_transcripts=None)
+        configfile.resolve_config(args)
+        self.assertTrue(args.with_transcripts)
+
     def test_explicit_config_missing_is_hard_error(self):
         with self.assertRaises(SystemExit):
             configfile.find_config(os.path.join(self.tmp, "nope.yaml"))

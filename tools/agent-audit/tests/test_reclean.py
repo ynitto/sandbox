@@ -72,6 +72,42 @@ class RecleanTests(AuditTestCase):
         finally:
             os.environ["KIRO_AGENTS_DIR"] = os.path.join(self.tmp, "no-agents")
 
+    def test_reclean_migrates_legacy_log_transcript_to_unified_jsonl(self):
+        agents_dir = os.path.join(self.tmp, "agents")
+        os.makedirs(agents_dir, exist_ok=True)
+        sess_root = os.path.join(self.tmp, "claude-projects")
+        path = os.path.join(sess_root, "p", "sess-legacy.jsonl")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"type": "user", "timestamp": "2026-08-04T09:00:00Z",
+                                "sessionId": "sess-legacy", "cwd": "/home/u/repo",
+                                "message": {"role": "user", "content": "直して"}},
+                               ensure_ascii=False) + "\n")
+
+        os.environ["KIRO_AGENTS_DIR"] = agents_dir
+        try:
+            self._declare_claude(agents_dir, {"format": "jsonl-dir", "paths": [sess_root],
+                                              "usage": True})
+            st = self.make_store()
+            # 旧形式（v1 以前の .log）だけがある状態を再現する
+            cli_dir = os.path.join(st.transcripts_dir, "claude")
+            os.makedirs(cli_dir, exist_ok=True)
+            legacy = os.path.join(cli_dir, "sess-legacy.log")
+            with open(legacy, "w", encoding="utf-8") as f:
+                f.write("Session: sess-legacy\n\n[User]\n直して\n")
+
+            self.assertEqual(reclean_mod.cmd_reclean(self.make_args()), 0)
+
+            unified = os.path.join(cli_dir, "sess-legacy.jsonl")
+            self.assertTrue(os.path.isfile(unified))
+            self.assertFalse(os.path.exists(legacy), "旧 .log は二重保存を残さない")
+            with open(unified, encoding="utf-8") as f:
+                meta = json.loads(f.readline())
+            self.assertEqual((meta["type"], meta["agent_cli"], meta["session_id"]),
+                             ("meta", "claude", "sess-legacy"))
+        finally:
+            os.environ["KIRO_AGENTS_DIR"] = os.path.join(self.tmp, "no-agents")
+
     def test_reclean_skips_sessions_without_existing_transcript(self):
         agents_dir = os.path.join(self.tmp, "agents")
         os.makedirs(agents_dir, exist_ok=True)

@@ -5,6 +5,8 @@
 # 使う場合は <project>/.agents/agent-loop.yml へ置きます（旧 .agent は読み取り互換）。
 
 # 設定内の prompt / cwd などから `{{lookup <ラベル> <キー>}}` で参照できる。
+# キーが実行時に決まる場合（webhook payload / hook vars の値で選ぶ）は
+# `{{lookup <ラベル> {<変数>}}}` と書く（dispatch 時に解決される）。
 # mapping:
 #   workspace:
 #     main: /path/to/workspace
@@ -115,8 +117,11 @@ cooldown_seconds: 30          # セマフォ解放後の再取得待機時間（
 #                             # acceptance_judge で上書きできる。有効にしたときは
 #                             # fail-closed——判定できなかった基準は「満たしていない」。
 #                             # 判定役は agents/<name>.json の variants.verify へ振り替わる。
-# headless_window: false      # headless 実行のログ（~/.agents/runs/headless/*.jsonl）を
-#                             # tail -F で追う tmux ウィンドウを開く。エントリごとに 1 枚を
+# headless_pane: true         # 既定 true。headless 実行のログ（~/.agents/runs/headless/*.jsonl）を
+#                             # デーモンと同じウィンドウ内のペイン（コントロールペインと分割・
+#                             # エントリごとに 1 枚を使い回し）で表示する。false でペインも
+#                             # 開かない（サーバ・CI 常駐）。tmux の外では何もしない。
+# headless_window: false      # ペインの代わりに専用 tmux ウィンドウで追う。エントリごとに 1 枚を
 #                             # 使い回す（実行ごとに増やすと 5 分間隔で 1 日 288 枚になる）。
 
 # ---------------------------------------------------------------------------

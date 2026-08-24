@@ -94,15 +94,20 @@ def _tl_source_root() -> str:
     return ""
 
 
+def _tl_skill_search_dirs(cwd: str) -> "list[str]":
+    """スキル探索ディレクトリ（優先順）。エラー表示にも同じ一覧を使う（2 実装にしない）。"""
+    return [d for d in [
+        os.path.join(cwd, ".github", "skills"),
+        os.path.join(_tl_source_root(), ".github", "skills") if _tl_source_root() else "",
+        os.path.join(os.path.expanduser("~"), ".agents", "skills"),
+        os.path.join(os.path.expanduser("~"), ".codex", "skills"),
+    ] if d]
+
+
 def _tl_resolve_skill(name: str, cwd: str) -> "dict | None":
-    roots = [
-        os.path.join(cwd, ".github", "skills", name),
-        os.path.join(_tl_source_root(), ".github", "skills", name) if _tl_source_root() else "",
-        os.path.join(os.path.expanduser("~"), ".agents", "skills", name),
-        os.path.join(os.path.expanduser("~"), ".codex", "skills", name),
-    ]
-    for root in roots:
-        if root and os.path.isfile(os.path.join(root, "SKILL.md")):
+    for base in _tl_skill_search_dirs(cwd):
+        root = os.path.join(base, name)
+        if os.path.isfile(os.path.join(root, "SKILL.md")):
             return {"name": name, "root": root, "skill_file": os.path.join(root, "SKILL.md")}
     return None
 
@@ -874,8 +879,14 @@ def _tl_goal_prompt(*, goal: str, cwd: str, skills: "list[dict]", reads: "list[s
 
 def run_goal(*, goal: str, cwd: str, agent: dict, log_file: str,
              acceptance: "list[str] | None" = None, max_rounds: int = 0,
-             tag: str = "toolloop", judge: bool = False) -> dict:
+             tag: str = "toolloop", judge: bool = False,
+             skills: "list[str] | None" = None) -> dict:
     """ツールループ非内蔵の CLI に、ゴール 1 件を限定ツール契約で実行させる。
+
+    `skills` は entry の `slash` などプログラム経路で**明示指定**されたスキル名。
+    解決できないときは黙って落とさず ToolLoopError（指定した手順が使われないまま
+    成功に見えるのが一番悪い——agentcore.ollama_skills と同じ原則）。ゴール本文の
+    `` `名前` スキル `` 表記から拾った名前は従来どおり、見つからなければ素通し。
 
     戻り値: {ok, output, files, evidenceErrors, logFile}。
     `ok` は「ツールループが final に到達し、機械層の証跡ゲートを通った」こと。
@@ -885,7 +896,26 @@ def run_goal(*, goal: str, cwd: str, agent: dict, log_file: str,
     root = os.path.realpath(str(cwd))
     criteria = list(acceptance or [])
     rounds = int(max_rounds or _TL_MAX_TOOL_ROUNDS)
-    skills = [s for s in (_tl_resolve_skill(n, root) for n in _tl_action_skill_names(goal)) if s]
+    declared = [str(n).strip() for n in (skills or []) if str(n).strip()]
+    names: list[str] = []
+    for n in declared + _tl_action_skill_names(goal):
+        if n not in names:
+            names.append(n)
+    resolved_skills: list[dict] = []
+    missing: list[str] = []
+    for n in names:
+        s = _tl_resolve_skill(n, root)
+        if s is not None:
+            resolved_skills.append(s)
+        elif n in declared:
+            missing.append(n)
+    if missing:
+        raise ToolLoopError(
+            f"スキルが見つかりません: {', '.join(missing)}\n"
+            f"  探索先: {', '.join(_tl_skill_search_dirs(root))}\n"
+            "  配布は `python install.py --agent aider --all-skills` 等で行います"
+            "（既定インストールは tier: core のスキルだけです）。")
+    skills = resolved_skills
     # 受入条件とゴール本文が名指しした実在ファイルは、最初から読める状態で渡す。
     # aider は「チャットに入っているファイル」しか触らないので、ここを渡さないと着手しない。
     reads: set = {f for f in (_tl_action_project_files(goal, root)
@@ -1090,19 +1120,36 @@ def run_cli_loop(*, goal: str, cwd: str, agent: dict, log_file: str,
 
 def run_prompt(*, goal: str, cwd: str, agent: dict, log_file: str,
                acceptance: "list[str] | None" = None, tag: str = "toolloop",
-               judge: bool = False) -> dict:
+               judge: bool = False, slash: "list[str] | None" = None) -> dict:
     """ゴール 1 件を、CLI の層（`headless_autonomy`）に応じた経路で 1 回実行する。
 
     層の判定と分岐をここ 1 か所に置く（C7）。デーモンの headless 枝も `run` サブコマンドも
     同じ関数を通るので、「デーモン経由なら証跡ゲートが効くが単発だと効かない」のような
     経路差が生まれない。**tmux を使うかどうかはこの関数の関知しないこと**——tmux は
     コマンドを送り結果を見せる手段であって、実行契約の一部ではない。
+
+    `slash` は entry の `slash` 行（`<名前> [引数]`。先頭の `/` は正規化済み）。
+    以前は headless 経路で黙って捨てていた（対話ペインへ send-keys する前提の機能
+    だったため）。層2（tool-loop 内蔵 CLI）へはネイティブのスラッシュコマンドとして
+    本文先頭へ前置し、層3（single-shot）へはスキルとして解決してツールループへ渡す。
     """
+    lines = [str(s).strip() for s in (slash or []) if str(s).strip()]
     if str(agent["spec"].get("headless_autonomy") or "single-shot") == "tool-loop":
+        if lines:
+            goal = "\n".join("/" + line for line in lines) + "\n\n" + goal
         return run_cli_loop(goal=goal, cwd=cwd, agent=agent, log_file=log_file,
                             acceptance=acceptance, judge=judge)
+    skill_names: list[str] = []
+    for line in lines:
+        name, _, args = line.partition(" ")
+        if name not in skill_names:
+            skill_names.append(name)
+        note = f"`{name}` スキルの手順に従って実行してください。"
+        if args.strip():
+            note += f"（引数: {args.strip()}）"
+        goal = note + "\n" + goal
     return run_goal(goal=goal, cwd=cwd, agent=agent, log_file=log_file,
-                    acceptance=acceptance, tag=tag, judge=judge)
+                    acceptance=acceptance, tag=tag, judge=judge, skills=skill_names)
 
 
 def _tl_run_log_file(tag: str = "run") -> str:

@@ -435,9 +435,43 @@ class PeriodicScheduler:
                     return e.copy()
         return None
 
+    def runtime_mappings(self) -> dict[str, dict[str, Any]]:
+        """実行時（webhook 注入・hook vars 注入）に遅延 lookup を解決するための mapping。
+
+        entry 共通設定の mapping と共通設定（~/.agents）の mapping を、設定読み込みと
+        同じ優先（ファイル側がキー単位で勝つ）で合成する。
+        """
+        raw = (getattr(self, "_tool_config", None) or {}).get("mapping")
+        return _normalized_mappings(
+            raw if isinstance(raw, dict) else {},
+            fallback=_global_config_mapping(),
+            strict=False,
+        )
+
+    def _annotate_pane_routes(self, normalized: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """ペイン事前作成の要否を entry へ記す（session.sync_entries が読む）。
+
+        per-run（headless CLI / session: per-run）の entry は対話ペインを使わない。
+        無条件に全 entry ぶんを起こすと、headless の agent_cli を設定していても
+        既定 CLI（kiro-cli）が必ず立ち上がり、無い環境では起動が落ちる。
+        entry 固有の agent_cli を持つ対話 entry は「維持はするが事前作成しない」
+        （lazy）——ここで起こすと既定 CLI のペインができて、宣言した CLI への
+        差し替えがセッション境界まで保留される。最初の dispatch が launch_spec
+        付きで正しい CLI のペインを起こす。
+        """
+        for entry in normalized:
+            _, route = self._entry_route(entry)
+            if route == "per-run":
+                entry["_pane_route"] = "per-run"
+            elif str(entry.get("agent_cli") or "").strip():
+                entry["_pane_route"] = "lazy"
+            else:
+                entry.pop("_pane_route", None)
+        return normalized
+
     def _set_entries(self, entries: list[dict[str, Any]], allow_immediate_once: bool = False) -> None:
         normalized = validate_entries(entries, allow_immediate_once=allow_immediate_once)
-        self._session_mgr.sync_entries(normalized)
+        self._session_mgr.sync_entries(self._annotate_pane_routes(normalized))
         with self._lock:
             self._entries = normalized
 
@@ -533,7 +567,7 @@ class PeriodicScheduler:
             self._entries = normalized
             # ID 変更は delete+add。quarantine は reload で解除。
             self._hook_quarantine.clear()
-        self._session_mgr.sync_entries(normalized)
+        self._session_mgr.sync_entries(self._annotate_pane_routes(normalized))
         _log_dispatch("config_reloaded", None, entries=len(normalized))
         return True
 
@@ -1122,6 +1156,33 @@ class PeriodicScheduler:
             log.info("[%s] headless ログを tmux で追えます: tmux attach -t %s",
                      label, session_name)
 
+    def _open_headless_log_view(self, entry: dict[str, Any], log_file: str) -> None:
+        """headless 実行ログの見せ場所を開く。
+
+        既定はデーモンと同じウィンドウ内の entry ごとの**ペイン**（controller と分割。
+        同時実行数 1 でも controller ペインと実行の見え場所を分ける）。
+        `headless_window: true` は従来どおり専用ウィンドウ（opt-in）、
+        `headless_pane: false` はペインも開かない（サーバ・CI で tmux を使いたくない側）。
+        どれも開けないことは実行の失敗にしない。
+        """
+        if self._headless_window_enabled():
+            self._open_headless_log_window(entry, log_file)
+            return
+        if (self._tool_config or {}).get("headless_pane") is False:
+            return
+        opener = getattr(self._session_mgr, "open_headless_log_pane", None)
+        if not callable(opener):
+            return
+        try:
+            opened = opener(str(entry.get("id") or ""),
+                            str(entry.get("name") or entry.get("id") or "run"), log_file)
+        except Exception:
+            log.debug("headless ログペインを開けませんでした", exc_info=True)
+            return
+        if opened:
+            log.info("[%s] headless 実行のログをペインで表示します: %s",
+                     entry.get("name") or entry.get("id"), log_file)
+
     def _dispatch_headless(self, req: dict[str, Any], *, entry: dict[str, Any],
                            dispatch_entry: dict[str, Any], exec_meta: dict[str, Any],
                            profile: Any, cwd: str, root_id: str) -> str:
@@ -1157,7 +1218,7 @@ class PeriodicScheduler:
         acceptance = list(entry.get("acceptance") or [])
         work_dir = cwd or self._workspace or os.getcwd()
         log_file = self._headless_log_file(root_id)
-        self._open_headless_log_window(entry, log_file)
+        self._open_headless_log_view(entry, log_file)
         try:
             agent = _tl_resolve_agent(profile.name, profile.model or "", work_dir)
             log.info("[%s] headless 実行: cli=%s model=%s autonomy=%s log=%s",
@@ -1165,7 +1226,8 @@ class PeriodicScheduler:
                      profile.autonomy, log_file)
             result = run_prompt(goal=prompt, cwd=work_dir, agent=agent, log_file=log_file,
                                 acceptance=acceptance, tag="agent-loop",
-                                judge=self._acceptance_judge_enabled(entry))
+                                judge=self._acceptance_judge_enabled(entry),
+                                slash=list(entry.get("slash") or []))
         except ToolLoopError as exc:
             log.error("[%s] headless 実行に失敗しました: %s", name, exc)
             self._fail_execution(req, slot_key, reason="headless_failed")
@@ -1558,7 +1620,13 @@ class PeriodicScheduler:
             vars_map = result.get("vars")
             if isinstance(vars_map, dict):
                 try:
-                    out["prompt"] = prompt.format_map(_SafeDict(vars_map))
+                    # 遅延 lookup（{{lookup <ラベル> {<変数>}}}）を先に解決する。
+                    # format_map は `{{` を `{` に潰すため、後から解決はできない。
+                    text = prompt
+                    if _DEFERRED_LOOKUP_RE.search(prompt):
+                        text = resolve_deferred_lookups(
+                            prompt, self.runtime_mappings(), vars_map)
+                    out["prompt"] = text.format_map(_SafeDict(vars_map))
                 except Exception as exc:
                     log.warning("[%s] check() vars の format に失敗しました: %s", name, exc)
                     _broken()

@@ -7,7 +7,145 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
-### ローカル LLM の追加活用 — 案 2 の能力側検証を閉じ、本番配線の方針を書いた
+### agent-audit: セッションログを統一フォーマットで副作用保存する（別モジュール向け読み取り口）
+
+- メトリクス収集（`collect` の cli-native）が読んでいるセッションログを、副作用として
+  `transcripts/<agent_cli>/<session_id>.jsonl` へ**統一フォーマット**で保存するようにした
+  （契約は新設の `schemas/audit-session-log.schema.json`）。先頭 1 行の `type: meta` が
+  エージェント CLI・モデル・期間・実測トークン・`record_id`（records の kind:session と
+  同じ冪等キー）を持ち、以降の `type: message` 行がクリーニング済み本文。どの CLI の
+  セッションも同じ形になるので、解析モジュールは CLI 差を知らずに読める。従来の
+  ad-hoc テキスト（`<sid>.log`）は置き換え——collect / reclean が旧ファイルを消して
+  移行する（extract のダイジェストは gc で消えるまでの旧 .log も読める）。
+- 有効化は従来の `collect --with-transcripts` に加えて設定キー `with_transcripts` でも
+  できるようにした。定期実行（cron / `audit-calibrate-hook.py`）はフラグを渡さないので、
+  常時集約したいノードは設定側で有効化する。期間は `collect --since`、ローテーションは
+  既存の gc（`gc_keep_days.transcripts`・既定 30 日）がそのまま担う。本文はローカル専用で
+  ノード外へ出さない（不変条件 6）のは従来どおり。
+
+- headless（per-run。aider / gemma4:e4b 等）の実行はワーカーペインを持たないため、
+  実行の様子がコントロールペインのログに混ざって流れるだけだった。既定で、デーモンと
+  同じウィンドウ内に entry ごとの**ログペイン**（コントロールペインと分割・
+  `respawn-pane` で使い回し）を開き、同時実行数 1 でも「controller と実行の見え場所は
+  別ペイン」という対話経路の見え方を保つ。
+- `headless_pane: false` でペインも開かない（サーバ・CI 常駐）。`headless_window: true`
+  は従来どおり専用ウィンドウ（ペインより優先）。tmux の外では何も開かない。
+  どれも開けないことは実行の失敗にしない。
+
+### agent-loop: headless 実行で `slash` をスキルとして解決する（層3 のスキル対応）
+
+- headless（per-run）実行は entry の `slash` を**黙って捨てていた**（対話ペインへ
+  send-keys する前提の機能だったため）。aider / gemma4:e4b のような層3 構成で
+  「スキルを設定したのに効かない」「実体が無くても気づけない」になっていた。
+  `toolloop.run_prompt` が `slash` を受け、層2（tool-loop 内蔵 CLI）へはネイティブの
+  スラッシュ行として本文先頭へ前置、層3（single-shot）へはスキルとして解決して
+  SKILL.md をツールループの読み取り材料に渡す。
+- 明示指定（`slash` / `skills`）のスキルが解決できないときは黙って落とさず、探索先
+  一覧と配布コマンド付きの明示エラー（`agentcore.ollama_skills` と同じ原則）。層3
+  entry の `slash` は起動時点検（`check_headless_entries`）でも fail fast。
+  なお `install.py --agent aider` の既定インストールは `tier: core` のスキルだけ——
+  tech-harvester のような tier 無しスキルは `--all-skills` が必要（README に明記）。
+
+### eval: gemma4:e4b の定常業務適性を測るテキスト成果物タスク（T7digest / T8log）
+
+- `worker_eval.py` に、agent-loop でローカル LLM（aider / gemma4:e4b）を使えるかを
+  見極めるための 2 本を追加。走らせ方:
+  `python3 worker_eval.py --cli aider --model gemma4:e4b --tasks T7digest,T8log --repeat 3`
+  - **T7digest** — tech-harvester スキルの「出力フォーマット」に従い、取得済み
+    記事（fixture の articles.json、6 件・3 テーマ）から日本語要約付きダイジェスト
+    Markdown を生成する。チェッカーは決定的: 書式（`# Tech Digest` / テーマ `##` 2+）・
+    リンク全件掲載・各記事に日本語の要約文。
+  - **T8log** — 障害ログ（原因: payments-db のディスク枯渇 → 波及: api-gateway
+    タイムアウト → checkout 500。囮に auth-service の deprecated 警告）を解析して
+    `## 根本原因` / `## 波及` の書式で原因を書く。チェッカーは「症状で止まったか、
+    因果を 1 段遡れたか」を disk トークン到達で機械判定し、囮を原因にしたら落とす。
+- フィード取得（ネットワーク）は評価に含めない——測るのはステップ2（テーマ分け・
+  日本語要約・書式遵守）で、取得はスクリプトが担う。チェッカーの単体テストを
+  `test_worker_eval.py` に追加（LLM は呼ばない）。
+- **手続最適化版（T7gate / T8gate）も対で追加**: ステートマシン化の前処理を写した
+  多段セル（狭い state への分解 + 決定的ゲート + 診断つき再投入。`run_steps` が
+  agent-loop の statemachine の写像）。T7gate はテーマ割当（themes.json、全記事
+  ちょうど 1 回・テーマ 2+ を機械採択）→ ダイジェスト生成、T8gate は起点 ERROR 行の
+  引用（波及の timeout を起点と誤認したらゲートで却下）→ 解析の 2 state。最終
+  チェッカーは一発版と同一なので、「一発では落ちるが分解すれば回る」かを直接比較できる。
+
+### agent-dashboard: 共有状態のホームを WSL 側へ解決する（control.json 分裂の修正）
+
+- dashboard（Windows）とエンジン（agent-loop / agentcore の CLI 群、WSL）が
+  `~/.agents` 配下の共有状態を**別々のファイル**として読み書きしていた——dashboard は
+  `os.homedir()`（`C:\Users\…\.agents`）でパスを組むため、画面で保存した control.json が
+  WSL 側のエンジンに永久に見えない。node-budget・instructions・session・tuning・methods・
+  amigos・flow（adhoc）・preparation・agents 定義も同じ経路で分裂していた。
+- `agent-home.js` に `sharedHomeRoots()` を追加: Windows では WSL 既定ディストロの
+  ホーム（UNC・60 秒キャッシュ）を**正典**とし、このマシン（Windows 側）のホームも
+  候補に並べて**両方を扱う**。WSL が無ければこのマシンのホームだけ。
+  `AGENT_*_DIR` 環境変数と ⚙ 設定の明示指定はこれまでどおり優先。
+- contract 文書（control.json / profiles.json / qualifications.json / budget の
+  config.json / session.json / instructions.json / tuning.json）の読み書きを
+  両ホーム対応にした: **読み取りは両ホームの実在して新しい方**（旧配置＝Windows 側に
+  溜まった状態も見える）、**書き込みは正典（WSL 側）へ原子書換**し、`.agents` を既に
+  持つもう一方のホームへは同じ内容をミラーする（Windows ネイティブで動くツールにも
+  最新が見える。ミラーの失敗は保存の成否に含めない）。バス・キュー類（amigos bus /
+  flow bus / task-queue）は二重処理を避けるため正典のみ。
+- 探索系（agents 定義の `~/.agents/agents`・`~/.kiro/agents`、スキル棚卸し
+  `~/.kiro|.claude|.agents/skills`）は両ホームを正典優先で並べて統合する。
+- engine/status.json（agent-project）と node-commands（delegation）、tmux 経由の
+  `$HOME/.agents` 参照（routines）は既に WSL 側を向いており変更なし。ほかの
+  agent-tools ファミリー（Python 系 CLI は WSL 内で実行・VS Code / Obsidian 拡張は
+  WSL 変換済みまたは WSL 内シェルで解決）に同種の分裂は無いことを確認した。
+
+### agent-loop: headless 設定でも起動時に kiro-cli を立ち上げない（起動クラッシュの修正）
+
+- 起動・リロード時のペイン事前作成が実行経路を見ていなかった——`agent_cli` に headless CLI
+  （aider / ollama 系）を設定していても、`session: per-run` でも、全 entry ぶんの対話ペインを
+  無条件に起こすため **kiro-cli（既定 CLI）が必ず立ち上がり**、無い環境では
+  `RuntimeError` の traceback で起動そのものが落ちていた。scheduler が entry ごとの経路を
+  ペイン同期へ渡すようにした: per-run は事前作成しない（既存ペインは停止）、entry 固有の
+  `agent_cli` を持つ対話 entry は維持するが事前作成せず、最初の dispatch が launch_spec 付きで
+  正しい CLI のペインを起こす（従来は既定 CLI のペインが先にできて、宣言した CLI への
+  差し替えがセッション境界まで保留されていた）。
+- 設定エラー（mapping lookup の解決失敗・YAML 構文エラー）とペイン起動失敗（CLI が PATH に
+  無い）はデーモン起動で traceback を吐かず、読める 1 行のエラーで終了する。`mapping` の
+  空セクション（キーを全てコメントアウトした状態）は設定エラーにしない。
+- entry の `cwd` 未指定時に `str(None)` が `'None'` になり「cwd 'None' が存在しない」と
+  毎回警告される取り違えも修正。
+- **mapping の参照を共通設定からも引けるようにした**: mapping の解決はファイル単位で、
+  共通設定（`~/.agents/agent-loop.yaml`）に定義した mapping をプロジェクト側ファイルの
+  `{{lookup ...}}` から参照すると「mapping lookup が見つかりません」になっていた。
+  共通設定の mapping を fallback として解決する（同名ラベル・キーはファイル側が勝つ）。
+  `agent-loop doctor` も、設定が壊れていても doctor 自身は落とさず finding
+  （`config.load`）で報告し、デーモンが実際に優先する `<cwd>/.agents/` の設定ファイルを
+  診断対象に加えた。
+- **キーが実行時に決まる遅延 lookup を追加**: `{{lookup cwd_map {project}}}` のように
+  キーを `{変数}` と書くと、読み込み時は素通しし、webhook のパラメータ注入 / hook の
+  `vars` 注入のタイミングで解決する（`format_map` は `{{` を `{` に潰すため、注入より
+  先に解決する）。従来はキーが webhook payload 等で遅れて決まる構成を書く手段が無く、
+  静的なキーとして書くと「mapping lookup が見つかりません」で読み込みが失敗していた。
+  静的キーの解決失敗エラーにはこの書き方のヒントを添えた。
+
+### ローカル LLM の役割別既定を実測へ揃えた（配線の食い違いの修正）
+
+- `agents/ollama.json` / `ollama-json.json` / `ollama-list.json` / `ollama-read.json` の
+  `default_model` を **qwen3 → gemma4:e4b**。gemma4 導入前（2026-08-10 以前）の既定が
+  残っていた。`agent_flow.agent._agent_for` は変種対象の役割で**自動選択層のモデルを変種の
+  `default_model` で上書きする**ため、tier 候補に `ollama / gemma4:e4b` を置いても
+  判定系役割（planner / filter / judge / reduce / split / retrieve）は qwen3 で走っていた
+  ——実測（抽出・分析 6/6 ほか）と本番のモデルが黙って食い違う形だった。
+- 同梱の設定例も揃えた: `agent-audit.yaml.example` の extract は**モデル指定を落として
+  定義の既定を継がせ**（明示の qwen3 が定義の既定を上書きしていた）、flow / project の
+  コメント例は `gemma4:e4b` へ。
+- 設定提案を [docs/plans/2026-08-23](docs/plans/2026-08-23-agent-dashboard-local-llm-configuration-proposal.md)
+  に追加。dashboard から宣言するのは 4 点（tier 候補表・実行方針・適格性・実行制御）で、
+  **人の手が要るのは `qualifications.json` の seed だけ**（`eval/qualification_seed.py`）。
+  コンパイルは Resource Controller が 5 分ごとに回す。継続更新の `agent-audit qualify` は
+  GUI から呼べない（監査タブが持つのは collect / usage / stats / sessions / doctor / knowledge）。
+
+### 評価ハーネスの決定的チェッカーが CI で回るようにした
+
+- `worker_eval.py` に `CHECK_PY`——リポジトリの `.venv` が無い木（CI のクリーンな
+  チェックアウト）では**走っているインタプリタで代替**する。T5/T6 の pytest と T4 の probe が
+  `.venv/bin/python` 決め打ちで、main の CI が `FileNotFoundError` で赤かった
+  （同じ受けは `project_verify_eval.py` に既にあった）。CI の eval ジョブへ pytest を追加。
 
 - `worker_eval.py` に T6noat / T6slicenoat（auto-test を切った一発）。実測（e4b・sampling・各 3）:
   **両腕 3/3**（noat 中央値 63s・tokens_in 20.6k ⇔ slice 70s・2.6k）。テストの失敗出力の助け無しでも

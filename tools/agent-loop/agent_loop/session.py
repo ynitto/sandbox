@@ -33,6 +33,8 @@ class SessionManager:
 
         # prompt_id → pane_id (str)
         self._panes: dict[str, str] = {}
+        # prompt_id → headless 実行ログを追うペイン（対話ペインとは別管理。entry ごとに 1 枚）
+        self._headless_log_panes: dict[str, str] = {}
         self._prompt_names: dict[str, str] = {}
         self._tmux_names: dict[str, str] = {}
         self._prompt_cwds: dict[str, str | None] = {}
@@ -187,6 +189,42 @@ class SessionManager:
                 _tmux_cmd("refresh-client", "-S", capture=False)
 
             return pane_target
+
+    def open_headless_log_pane(self, prompt_id: str, prompt_name: str, log_file: str) -> bool:
+        """headless 実行のログを追うペインを、controller と分割した同一ウィンドウに開く。
+
+        headless（per-run）実行はワーカーペインを持たないので、何も開かないと実行の
+        様子が controller ペインのログに混ざって流れるだけになる。同時実行数 1 でも
+        「controller と実行の見え場所は別ペイン」という対話経路の見え方を保つ。
+
+        ペインは prompt_id ごとに 1 枚を使い回し、次の実行では `respawn-pane -k` で
+        新しいログファイルの tail へ張り替える（実行ごとに増やすと 5 分間隔の entry が
+        1 日で 288 枚作る）。開けないことは実行の失敗にしない（tmux の外・サーバ運用では
+        黙って何もしない）。
+        """
+        if not log_file or shutil.which("tmux") is None:
+            return False
+        # tmux の外で headless だけを回している（サーバ・CI 常駐）。ログを見せるためだけに
+        # 誰も見ない detached セッションを作らない。
+        if not os.environ.get("TMUX") and self._layout_window_target is None:
+            return False
+        cmd = f"tail -n +1 -F {shlex.quote(str(log_file))}"
+        try:
+            with self._lock:
+                pane_target = self._headless_log_panes.get(prompt_id)
+            if pane_target and self._pane_exists(pane_target):
+                if _tmux_cmd("respawn-pane", "-k", "-t", pane_target, cmd).returncode == 0:
+                    return True
+            pane_target = self._create_worker_pane(cmd, self._target_path)
+            _tmux_cmd("select-pane", "-t", pane_target, "-T", f"log:{prompt_name}",
+                      capture=False)
+            with self._lock:
+                self._headless_log_panes[prompt_id] = pane_target
+            return True
+        except Exception:   # tmux の不在・権限・競合はすべて「ペインが開かない」で足りる
+            log.debug("headless ログ用ペインを開けませんでした (prompt_id=%s)",
+                      prompt_id, exc_info=True)
+            return False
 
     # ------------------------------------------------------------------
     # セッション識別ヘルパー
@@ -715,6 +753,7 @@ class SessionManager:
         desired: dict[str, str] = {}
         desired_cwd: dict[str, str | None] = {}
         desired_tuning: dict[str, str] = {}
+        lazy_ids: set[str] = set()
         for entry in entries:
             prompt_id = str(entry.get("id", "")).strip()
             if not prompt_id:
@@ -727,9 +766,14 @@ class SessionManager:
                 continue
             if entry.get("target"):
                 continue  # external pane — SessionManager に登録しない
+            if entry.get("_pane_route") == "per-run":
+                continue  # headless 経路 — 対話ペインを使わない（既存ペインは停止する）
             prompt_name = str(entry.get("name", prompt_id)).strip() or prompt_id
             desired[prompt_id] = prompt_name
-            desired_cwd[prompt_id] = str(entry.get("cwd", "")).strip() or None
+            desired_cwd[prompt_id] = str(entry.get("cwd") or "").strip() or None
+            if entry.get("_pane_route") == "lazy":
+                # 既存ペインは維持するが事前作成はしない（dispatch が launch_spec 付きで起こす）
+                lazy_ids.add(prompt_id)
 
         with self._lock:
             self._tuning_profiles = desired_tuning
@@ -740,7 +784,10 @@ class SessionManager:
             }
 
         remove_ids = current_ids - set(desired.keys())
-        add_ids = [pid for pid in desired.keys() if pid not in all_current_ids]
+        add_ids = [
+            pid for pid in desired.keys()
+            if pid not in all_current_ids and pid not in lazy_ids
+        ]
         keep_ids = current_ids & set(desired.keys())
 
         for prompt_id in remove_ids:

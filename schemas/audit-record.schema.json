@@ -42,7 +42,7 @@
       "description": "決定的に割り当てた 2 variant trial"
     },
     "links": {"type": "array", "items": {"type": "string"}, "description": "相関済みレコード id（現行実装は読み出し時相関のため通常空。予約）"},
-    "excerpt_ref": {"type": "string", "description": "transcript のストア相対パス（--with-transcripts 時のみ。実体はノード外へ出さない）"},
+    "excerpt_ref": {"type": "string", "description": "統一セッションログ（audit-session-log.schema.json。transcripts/<cli>/<sid>.jsonl）のストア相対パス（--with-transcripts / 設定 with_transcripts 時のみ。実体はノード外へ出さない）"},
     "note": {"type": "string", "description": "補足（loop-log のエラー行など・200 字まで）"}
   },
   "additionalProperties": true
