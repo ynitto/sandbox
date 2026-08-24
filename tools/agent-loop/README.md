@@ -257,7 +257,10 @@ startup_timeout: 60      # kiro-cli 起動待ち
 # headless 実行（session: per-run のエントリ）。どちらも既定 false。
 # acceptance_judge: true   # パスを含まない受入条件を検証エージェントに判定させる
 #                          # （CLI をもう 1 回起こす。エントリ側で上書き可能）
-# headless_window: true    # 実行ログを追う tmux ウィンドウを開く（エントリごとに 1 枚）
+# headless_pane: true      # 既定 true。headless 実行のログをデーモンと同じウィンドウ内の
+#                           # ペイン（コントロールペインと分割・エントリごとに 1 枚）で表示する。
+#                           # false でペインも開かない（サーバ・CI 常駐）。tmux の外では何もしない
+# headless_window: true    # ペインの代わりに専用 tmux ウィンドウを開く（エントリごとに 1 枚）
 
 # 設定内の文字列から参照できる値
 mapping:

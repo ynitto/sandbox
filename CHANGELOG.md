@@ -7,6 +7,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-loop: headless 実行のログをコントロールペインと分けたペインで表示する
+
+- headless（per-run。aider / gemma4:e4b 等）の実行はワーカーペインを持たないため、
+  実行の様子がコントロールペインのログに混ざって流れるだけだった。既定で、デーモンと
+  同じウィンドウ内に entry ごとの**ログペイン**（コントロールペインと分割・
+  `respawn-pane` で使い回し）を開き、同時実行数 1 でも「controller と実行の見え場所は
+  別ペイン」という対話経路の見え方を保つ。
+- `headless_pane: false` でペインも開かない（サーバ・CI 常駐）。`headless_window: true`
+  は従来どおり専用ウィンドウ（ペインより優先）。tmux の外では何も開かない。
+  どれも開けないことは実行の失敗にしない。
+
 ### agent-loop: headless 実行で `slash` をスキルとして解決する（層3 のスキル対応）
 
 - headless（per-run）実行は entry の `slash` を**黙って捨てていた**（対話ペインへ
