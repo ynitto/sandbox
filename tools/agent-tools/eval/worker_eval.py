@@ -374,8 +374,8 @@ def seed_t3(wt: Path) -> None:
     pass
 
 
-def check_t3(wt: Path) -> tuple[bool, str]:
-    """本番で 4/4 fail した実タスク。receipt の C1・C3 に対応する部分を機械判定する。"""
+def check_t3_schema(wt: Path) -> tuple[bool, str]:
+    """T3 の schema 成果物だけを判定する。一成果物/node arm の第1 gate。"""
     schema = wt / "schemas" / "node-budget-summary.schema.json"
     if not schema.exists():
         return False, "C1 fail: schemas/node-budget-summary.schema.json が無い"
@@ -385,6 +385,11 @@ def check_t3(wt: Path) -> tuple[bool, str]:
         return False, f"C1 fail: schema が JSON として壊れている ({e})"
     if not isinstance(doc, dict) or "properties" not in doc:
         return False, "C1 fail: properties を持たない（JSON Schema になっていない）"
+    return True, "C1 pass: node-budget-summary schema が有効"
+
+
+def check_t3_contract(wt: Path) -> tuple[bool, str]:
+    """T3 の新規契約テスト成果物だけを判定する。legacy T3/T3gate の C3 gate。"""
     tests = [p for p in (wt / "tools/agent-project").rglob("test_*.py")
              if _is_new(wt, p)]
     if not tests:
@@ -392,7 +397,32 @@ def check_t3(wt: Path) -> tuple[bool, str]:
     r = _pytest(wt / "tools/agent-project", *[str(p) for p in tests])
     if r.returncode != 0:
         return False, "C3 fail: 追加された契約テストが落ちる"
-    return True, f"C1 pass / C3 pass（テスト {len(tests)} ファイル）"
+    return True, f"C3 pass（テスト {len(tests)} ファイル）"
+
+
+T3_CONTRACT_TEST = "tools/agent-project/tests/test_node_budget_summary_compat_eval.py"
+
+
+def check_t3_split_contract(wt: Path) -> tuple[bool, str]:
+    """分解 arm の第2 gate。planner が指定した単一成果物だけを判定する。"""
+    test_file = wt / T3_CONTRACT_TEST
+    if not test_file.exists() or not _is_new(wt, test_file):
+        return False, f"C3 fail: {T3_CONTRACT_TEST} が追加されていない"
+    r = _pytest(wt / "tools/agent-project", str(test_file))
+    if r.returncode != 0:
+        return False, "C3 fail: 追加された契約テストが落ちる"
+    return True, "C3 pass（指定した契約テスト 1 ファイル）"
+
+
+def check_t3(wt: Path) -> tuple[bool, str]:
+    """本番で 4/4 fail した実タスク。receipt の C1・C3 を同じ順序で機械判定する。"""
+    ok, note = check_t3_schema(wt)
+    if not ok:
+        return ok, note
+    ok, note = check_t3_contract(wt)
+    if not ok:
+        return ok, note
+    return True, f"C1 pass / {note}"
 
 
 def _is_new(wt: Path, p: Path) -> bool:
@@ -438,6 +468,12 @@ T3_GOAL = ("schemas/node-budget-summary.schema.json を追加し、status/<node>
            "budget block に additive に埋める仕様を定義する。reader が optional で"
            "壊れない互換性を担保する契約テストを tools/agent-project 配下に追加する。"
            "変更してよいのは tools/agent-project 配下とリポジトリルートの schemas/ のみ。")
+T3_SCHEMA_GOAL = ("成果物は schemas/node-budget-summary.schema.json の 1 ファイルだけ。"
+                  "status/<node>.json の budget block に additive に埋める node-budget-summary "
+                  "JSON Schema を定義する。他のファイルやテストは変更しない。")
+T3_CONTRACT_GOAL = (f"成果物は {T3_CONTRACT_TEST} の 1ファイルだけ。既存の実装・schema・テストは"
+                    "変更せず、status/<node>.json の budget block が additive で、budget を持たない"
+                    "既存 reader も壊れないことを固定する契約テストを追加する。")
 
 # 失敗の族（gate-generality 2026-08-14 / 計画 2026-08-22 §4.2 A1）。
 #   (a) 仕様の読み違い族 —— 真偽ゲート + 再投入で直る。T1* / T2* / T4*。
@@ -632,6 +668,22 @@ TASKS = {
                     files=("schemas/node-budget-summary.schema.json",), map_tokens=1024,
                     test_cmd=f"{VENV_PY} -m pytest -q tools/agent-project",
                     gate=check_t3, max_retries=2)],
+    ),
+    # T3gate の同型欠落に対する分解 arm。編集成果物を schema / 契約テストの 1 つずつにし、
+    # C1 と C3 を各 node 直後に判定する。再投入数は T1gate と同じ 2 / 1 に制限する。
+    "T3splitgate": dict(
+        family="b",
+        seed=seed_t3, check=check_t3, request=T3_REQUEST,
+        steps=[dict(request=T3_REQUEST, goal=T3_SCHEMA_GOAL,
+                    files=("schemas/node-budget-summary.schema.json",),
+                    gate=check_t3_schema, max_retries=2),
+               dict(request=T3_REQUEST, goal=T3_CONTRACT_GOAL,
+                    files=(T3_CONTRACT_TEST,),
+                    read=("schemas/node-budget-summary.schema.json",
+                          "tools/agent-project/tests/test_node_budget_summary.py",
+                          "tools/agent-project/agent_project/loop.py"),
+                    test_cmd=f"{VENV_PY} -m pytest -q {T3_CONTRACT_TEST}",
+                    gate=check_t3_split_contract, max_retries=1)],
     ),
 }
 

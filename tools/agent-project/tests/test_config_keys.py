@@ -45,6 +45,8 @@ CONSUME_EXEMPT = {
     "verifier": "撤去済み機能の残骸（`_INERT_PROJECT_KEYS`）。読み手が無いのが正しい状態で、"
                 "CONFIG_DEFAULTS と Config に残しているのは (1)(2) の契約を一様に保つため",
     "verifier_skill": "同上（検証プロンプトの供給は agent-flow 側の責務）",
+    "verify_side_effects": "project 自然文 verifier を安全のため無効化したので現在は消費しない。"
+                           "設定と制約定義は互換性と安全境界の記録として保持する",
     "spec_threshold": "`spec_threshold_full` の旧名。`_spec_thresholds` が configfile.py の中で"
                       "新名へ畳むので、消費側は新名しか知らない",
 }

@@ -1,4 +1,6 @@
 from __future__ import annotations
+from pathlib import Path
+from agentcore import context_slice as _context_slice  # noqa: E402
 # context.py — 案 H: プロジェクト文脈スナップショット（安定プレフィックス化）。
 # 単体 import しない。agent_flow/__init__.py が共有名前空間へ順に exec 合成する。
 #
@@ -13,6 +15,7 @@ from __future__ import annotations
 
 AGENT_CONTEXT_MARKER = "<!-- agent-project-context"
 CONTEXT_READ_REPORT = "<!-- context-read-report "
+CONTEXT_SLICE_MIN_LINES = 400
 
 
 def render_context_block(text: str) -> str:
@@ -57,8 +60,71 @@ def normalize_read_allocation(raw) -> "list[dict]":
                "reason": str(item.get("reason") or "").strip()}
         if str(item.get("range") or "").strip():
             row["range"] = str(item["range"]).strip()
+        symbols = item.get("symbols")
+        if isinstance(symbols, str):
+            symbols = [symbols]
+        if isinstance(symbols, list):
+            clean = list(dict.fromkeys(str(s).strip() for s in symbols if str(s).strip()))
+            if clean:
+                row["symbols"] = clean[:16]
+        if item.get("slice") is True:
+            row["slice"] = True
         out.append(row)
     return out[:32]
+
+
+def prepare_read_allocation_files(raw, cwd: "str | None" = None
+                                  ) -> "tuple[list[str], list[dict], list[str]]":
+    """read_allocation を argv 用の参照ファイルへ解決する。
+
+    `slice: true` + `symbols` を明示した大きい Python ファイルだけ、一時抜粋へ差し替える。
+    それ以外と抽出失敗は原本へ戻し、判断を receipt に残す。一時ファイルの削除は呼び出し側が
+    `cleanup` を finally で行う（エージェント実行中まで参照できる必要があるため）。
+    """
+    files: "list[str]" = []
+    receipts: "list[dict]" = []
+    cleanup: "list[str]" = []
+    base = Path(cwd or os.getcwd())
+    for row in normalize_read_allocation(raw):
+        rel = row["path"]
+        if not row.get("slice"):
+            files.append(rel)
+            continue
+        receipt = {"path": rel, "state": "fallback", "reason": ""}
+        symbols = row.get("symbols") or []
+        source = Path(rel)
+        source = source if source.is_absolute() else base / source
+        if not symbols:
+            receipt["reason"] = "symbols-missing"
+        elif source.suffix.lower() != ".py":
+            receipt["reason"] = "unsupported-language"
+        else:
+            try:
+                total_lines = len(source.read_text(encoding="utf-8").splitlines())
+            except (OSError, UnicodeDecodeError):
+                receipt["reason"] = "unreadable"
+            else:
+                receipt["total_lines"] = total_lines
+                if total_lines < CONTEXT_SLICE_MIN_LINES:
+                    receipt.update(state="bypass-small", reason="below-line-threshold",
+                                   threshold=CONTEXT_SLICE_MIN_LINES)
+                else:
+                    result = _context_slice.slice_file(source, symbols)
+                    if result is None:
+                        receipt["reason"] = "slice-failed"
+                    else:
+                        fd, temp_path = tempfile.mkstemp(prefix="agent-flow-slice-", suffix=".py")
+                        with os.fdopen(fd, "w", encoding="utf-8") as f:
+                            f.write(result.text)
+                        files.append(temp_path)
+                        cleanup.append(temp_path)
+                        receipt.update(state="sliced", reason="", kept_lines=result.kept_lines,
+                                       total_lines=result.total_lines,
+                                       omitted_symbols=len(result.omitted))
+        if receipt["state"] != "sliced":
+            files.append(rel)
+        receipts.append(receipt)
+    return files, receipts, cleanup
 
 
 def render_read_allocation(raw) -> str:
@@ -68,6 +134,8 @@ def render_read_allocation(raw) -> str:
     lines = []
     for row in rows:
         where = row["path"] + (f" ({row['range']})" if row.get("range") else "")
+        if row.get("slice"):
+            where += " [symbol slice: " + ", ".join(row.get("symbols") or ["未指定"]) + "]"
         lines.append(f"- {where}: {row['reason'] or 'タスクに必要な文脈'}")
     return ("【読込割付】まず以下から読み、割付外の探索は不足時だけ追加してください。\n"
             + "\n".join(lines)

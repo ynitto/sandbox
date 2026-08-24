@@ -669,9 +669,9 @@ charter.md（goal / constraints / assumptions / deliverables / acceptance=受入
         全 PASS かつ改善ゼロ → milestone gate（needs/<project>.md）で人へ
 ```
 
-- **done の唯一の根拠は `acceptance`（=verify）全 PASS**（タスク verify と同じ鉄則）。acceptance 無しの charter は
-  done 判定不能＝必ず人へ。検証コマンドを書けない条件は **自然文でも可**（`- accept: …` か散文の箇条書き）。run 時に
-  エージェントが決定的なシェル verify へ合成し（結果は安定キャッシュ＝done 基準がブレない）、合成できなければ人へ。
+- **自動判定の根拠は、`acceptance` に明示した決定的コマンドの全 PASS だけ**（タスク verify と同じ鉄則）。
+  acceptance 無しの charter は done 判定不能＝必ず人へ。`- accept: …` や散文の自然文条件は LLM に自動判定させず、
+  milestone の検収チェックリストへ送る。機械条件が全 PASS した後も、人が自然文条件を確認して `approve` するまで done にしない。
 - **acceptance の実行先**: 既定は workdir だが、offload で worker が対象 repo を temp に clone・push して消すと workdir に
   成果が出ない。実行先は **明示 `--verify-cwd`（設定 `verify_cwd`）> 単一対象 repo の一時 clone（charter の非 readonly repo が
   1 つなら target ブランチを毎評価で `git clone --depth 1`）> workdir** の順で解決。clone 失敗は全 NG 扱い（成果の無い場所で

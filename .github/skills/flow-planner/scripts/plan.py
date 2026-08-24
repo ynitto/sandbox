@@ -214,7 +214,7 @@ map-reduce は split を1つだけ（map は実行時展開）。classify-and-ac
 5. review=true の場合、統合（synthesize/reduce）の前に verify gate を1つ挟む
 6. 依存は既存タスク id のみ、循環は作らない
 7. id は短く（t1, t2, ... / classify, filter, synth, gate 等）
-8. work/generate ノードには最初に読むべき範囲を read_allocation=[{{"path":"...","range":"任意","reason":"..."}}] で割り付ける
+8. work/generate ノードには最初に読むべき範囲を read_allocation=[{{"path":"...","range":"任意","reason":"..."}}] で割り付ける。大きい Python 参照で対象を正確に特定できる場合だけ slice=true, symbols=["Class.method"] を追加する
 9. 依存成果は既定 digest（要約・成果物参照のみ）。完全な構造化データが不可欠なノードだけ dependency_input="full" を宣言する
 
 ## サブタスク（Phase 1 で特定済み・骨格）
@@ -226,7 +226,7 @@ map-reduce は split を1つだけ（map は実行時展開）。classify-and-ac
 JSON オブジェクトのみ（`tasks` 配列を 1 つ持つ。配列を裸で返さない）:
 ```json
 {{"tasks": [
-  {{"id": "t1", "goal": "[scope] path\\n[out_of_scope] ...\\n具体的な目標", "deps": [], "kind": "work", "read_allocation": [{{"path": "src/x.py", "range": "10-40", "reason": "変更箇所"}}], "dependency_input": "digest"}},
+  {{"id": "t1", "goal": "[scope] path\\n[out_of_scope] ...\\n具体的な目標", "deps": [], "kind": "work", "read_allocation": [{{"path": "src/x.py", "range": "10-40", "reason": "変更箇所", "slice": true, "symbols": ["Class.method"]}}], "dependency_input": "digest"}},
   ...
 ]}}
 ```
@@ -932,8 +932,18 @@ def normalize_tasks(tasks: list) -> list[dict]:
         reads = []
         for r in t.get("read_allocation") if isinstance(t.get("read_allocation"), list) else []:
             if isinstance(r, dict) and str(r.get("path") or "").strip():
-                reads.append({k: str(r[k]).strip() for k in ("path", "range", "reason")
-                              if str(r.get(k) or "").strip()})
+                row = {k: str(r[k]).strip() for k in ("path", "range", "reason")
+                       if str(r.get(k) or "").strip()}
+                symbols = r.get("symbols")
+                if isinstance(symbols, str):
+                    symbols = [symbols]
+                if isinstance(symbols, list):
+                    clean = list(dict.fromkeys(str(s).strip() for s in symbols if str(s).strip()))
+                    if clean:
+                        row["symbols"] = clean[:16]
+                if r.get("slice") is True:
+                    row["slice"] = True
+                reads.append(row)
         if reads:
             node["read_allocation"] = reads[:32]
         if t.get("dependency_input") == "full":

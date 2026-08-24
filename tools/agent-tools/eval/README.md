@@ -10,7 +10,7 @@ Ollama のモデルを交換するときに、**モデルの実力**と**エー�
 | retrieval | `retrieval_eval.py` | 記憶検索（生成モデルとは独立） | hit@k、MRR、検索時間 |
 | planner | `planner_eval.py` | 要求 → タスクグラフ（flow-planner の `plan.py` を本番引数で呼ぶ） | 構造チェッカーの正解率、契約違反、過分解 |
 | candidate | `candidate_eval.py` | 候補生成 + 決定的検算（grep パターン・パス・テスト名） | 機械が落とした後に正解が残るか |
-| project-verify | `project_verify_eval.py` | agent-project の charter 達成条件 verifier（本番プロンプト + 本番正規化） | 捏造 pass 率（道具なし）・判定の正しさ（道具あり） |
+| project-verify（履歴） | `project_verify_eval.py` | 廃止した charter 自然文 verifier の反証を保存 | 捏造 pass 率（道具なし）・判定の正しさ（道具あり） |
 | moe-ram | `moe_ram_probe.py` | P11: MoE 候補が物理 RAM に収まるか（対象マシンで数分） | num_ctx ごとの常駐・load・prefill/decode・成立判定 |
 | doctor | `doctor_eval.py` | agent-dashboard の Doctor 4 モード（本番 `doctorPrompt` を node で呼ぶ） | 見出し契約 + 構成的な言及 |
 | observation | `log_stats.py` | 既存の agent-ollama ログ | prompt/output 寸法、TTFT、decode 速度 |
@@ -20,10 +20,10 @@ Ollama のモデルを交換するときに、**モデルの実力**と**エー�
 
 **現時点では網羅していない。** `judge_eval.py` が直接測る agent-flow の処理は
 `split / filter / judge / reduce / evaluator`、`worker_eval.py` が直接測るのは `work`、
-`planner_eval.py` が直接測るのは `planner`、`project_verify_eval.py` が agent-project の `verify`、
+`planner_eval.py` が直接測るのは `planner`、
 `doctor_eval.py` が agent-dashboard の `doctor/*` 4 モード（いずれも 2026-08-23 追加）である。
 `generate` は work と同じ実装系契約を間接的に通すだけで、専用セルではない。残りの flow 役割、
-agent-project の他 9 面・agent-dashboard の他 8 面・agent-amigos 全面はまだ能力測定が無い。この状態を「suite に名前が無いから存在しない」ように見せないため、
+agent-project の 9 面・agent-dashboard の他 8 面・agent-amigos 全面はまだ能力測定が無い。この状態を「suite に名前が無いから存在しない」ように見せないため、
 `coverage.json` に全呼び出し面と `direct / indirect / missing / deterministic` を明記した。
 
 ```bash
@@ -954,6 +954,20 @@ python3 worker_eval.py --model gemma4:e4b --cli aider --tasks T1gate,T2gate,T3ga
 付記: 基準線の T1gate 3/3 は P10 の T1（一発）1/3 より高いが、腕が違う（ゲート + 再投入あり）。
 同条件の過去値は T1gate 3/3（2026-08-13・温度 0）で、sampling を宣言しても退行していない。
 
+### 次の arm — `T3splitgate`（一成果物/node）
+
+T3gate の schema + 契約テストを、schema 1ファイルと契約テスト 1ファイルの2手順へ分けた。
+各手順の直後に C1 / C3 の決定的 checker を置き、失敗時はその手順だけを有界再投入する。
+最終 checker と seed は T3gate と共通なので、変えるのは成果物の粒度と gate の位置だけである。
+
+```bash
+python3 worker_eval.py --model gemma4:e4b --cli aider --tasks T3gate,T3splitgate --repeat 3 \
+  --agent-policy off --temperature 1.0 --top-p 0.95 --top-k 64
+```
+
+判定は合否だけでなく、T3splitgate が落ちた場合に `gate_note` が C1 と C3 のどちらへ移ったかを見る。
+分解しても C3 の「指定した契約テストが追加されていない」が全試行で不変なら rollout は増やさない。
+
 ---
 
 ## 決定的コンテキスト・スライシングの腕 — T5（計画 2026-08-22 案 2・段 3）
@@ -1124,12 +1138,17 @@ note には**機械が落とした候補数**を必ず出す——「無害化�
 本番へ入れる順は CG2 / CG3 の形（read_allocation のパス候補・verify のテスト名候補）から。
 
 
-## agent-project の verify — 達成条件 verifier の最小 eval（2026-08-23・計画 2026-08-22 §4.2 B1）
+## 廃止済み agent-project verify の評価記録（2026-08-23・計画 2026-08-22 §4.2 B1）
 
-`coverage.json` で missing だった agent-project の `verify` を direct にした。測るのは
-**本番のプロンプト**（`agent_project._charter_criteria_prompt`）と**本番の正規化**
+当時 `coverage.json` で missing だった agent-project の `verify` を direct にして測った記録。
+測ったのは当時の**本番プロンプト**（`agent_project._charter_criteria_prompt`）と**本番の正規化**
 （`normalize_verification`——証跡の無い pass を fail へ落とすフェイルクローズ）。合成ワークスペース
 （git 初期化済み）に真 2 件・偽 2 件の達成条件を置く（偽の片方は「pytest が落ちる」）。
+
+2026-08-24 に、この結果を routing へ反映して自然文 verifier を本番から撤去した。現在の project
+acceptance は charter に明記された deterministic command だけを機械評価し、自然文は人の検収へ
+送る。そのため `verify` は現行 surface でも coverage 対象でもなく、以下は再実行手順ではなく反証の
+来歴として残す。
 
 ```bash
 python3 tools/agent-tools/eval/project_verify_eval.py --selfcheck

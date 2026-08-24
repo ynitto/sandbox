@@ -244,7 +244,7 @@ cp tools/agent-project/charter.md.example ./charter.md   # プロジェクトル
 ## deliverables  # 成果物
 ## acceptance    # 受入 verify＝**プロジェクト done の唯一の根拠**（タスク verify と同じ鉄則）
 - `pytest -q tests/`
-- accept: README に使用例が載っている   # 自然文も可。run 時にエージェントが決定的 verify へ合成（不能なら人へ）
+- accept: README に使用例が載っている   # 自然文は検収チェックリストへ入り、approve 前に人が確認する
 ## links         # 任意。他プロジェクトの定義＋判断(learn)を横展開で取り込む
 - shared-conventions
 ```

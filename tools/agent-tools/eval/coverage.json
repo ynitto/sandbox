@@ -19,7 +19,6 @@
       "human": "deterministic"
     },
     "agent-project": {
-      "verify": "direct",
       "route": "missing",
       "plan": "missing",
       "doctor": "missing",

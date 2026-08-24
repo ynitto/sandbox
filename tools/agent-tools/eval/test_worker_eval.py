@@ -146,9 +146,45 @@ class FailureFamilyTest(unittest.TestCase):
             self.assertIn(task.get("family"), ("a", "b"), tid)
 
     def test_whole_work_omission_family_is_the_multi_deliverable_task(self):
-        # (b) は成果物が 2 つ以上の課題（schema + 契約テスト）。T3 系だけがそれに当たる。
+        # (b) は元が複数成果物の課題（schema + 契約テスト）。分解 arm も同じ族として比較する。
         self.assertEqual({tid for tid, t in w.TASKS.items() if t["family"] == "b"},
-                         {"T3", "T3gate"})
+                         {"T3", "T3gate", "T3splitgate"})
+
+
+class T3SplitArmTest(unittest.TestCase):
+    """丸ごと欠落族を、一成果物ずつの node + checker へ分けた比較 arm。"""
+
+    def test_each_step_has_one_edit_artifact_and_its_own_gate(self):
+        arm = w.TASKS["T3splitgate"]
+        self.assertEqual(len(arm["steps"]), 2)
+        self.assertEqual([step["files"] for step in arm["steps"]], [
+            ("schemas/node-budget-summary.schema.json",),
+            (w.T3_CONTRACT_TEST,),
+        ])
+        self.assertTrue(all(callable(step.get("gate")) for step in arm["steps"]))
+        self.assertTrue(all(step.get("max_retries", 0) > 0 for step in arm["steps"]))
+
+    def test_schema_gate_does_not_require_the_contract_test(self):
+        with tempfile.TemporaryDirectory() as d:
+            wt = pathlib.Path(d)
+            schema = wt / "schemas" / "node-budget-summary.schema.json"
+            schema.parent.mkdir()
+            schema.write_text('{"type":"object","properties":{"remaining":{"type":"number"}}}',
+                              encoding="utf-8")
+            ok, note = w.check_t3_schema(wt)
+        self.assertTrue(ok, note)
+
+    def test_contract_gate_requires_the_named_test_artifact(self):
+        with tempfile.TemporaryDirectory() as d:
+            wt = pathlib.Path(d)
+            test_file = wt / w.T3_CONTRACT_TEST
+            test_file.parent.mkdir(parents=True)
+            with mock.patch.object(w, "_pytest", return_value=mock.Mock(returncode=0)):
+                ok, _note = w.check_t3_split_contract(wt)
+                self.assertFalse(ok)
+                test_file.write_text("def test_contract():\n    assert True\n", encoding="utf-8")
+                ok, note = w.check_t3_split_contract(wt)
+        self.assertTrue(ok, note)
 
 
 class SliceArmTest(unittest.TestCase):

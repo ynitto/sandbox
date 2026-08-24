@@ -945,9 +945,12 @@ def plan_strategy_agent(request: str, model: str | None, review="auto", granular
         + "出力は JSON オブジェクトのみ:\n"
         '{"patterns": ["..."], "parallelism": N, "reason": "...", '
         '"tasks": [{"id": "t1", "goal": "...", "deps": [], "kind": "work", '
-        '"read_allocation": [{"path": "src/x.py", "range": "10-40", "reason": "変更点"}], '
+        '"read_allocation": [{"path": "src/x.py", "range": "10-40", "reason": "変更点", '
+        '"slice": true, "symbols": ["Class.method"]}], '
         '"dependency_input": "digest"}]}\n'
-        "work/generate ノードには、最初に読むべき path・任意の range・reason を read_allocation に割り付けてください。\n\n"
+        "work/generate ノードには、最初に読むべき path・任意の range・reason を read_allocation に割り付けてください。"
+        "大きい Python 参照で対象 symbol を正確に特定できる場合だけ、slice=true と symbols を追加できます。"
+        "小さいファイル、編集対象が曖昧な場合、Python 以外では slice を付けないでください。\n\n"
         "依存成果は work/generate では要約と成果物参照だけの digest です"
         "（verify/reduce/synthesize/judge/filter は判断対象そのものなので既定で全文）。"
         "work/generate でも完全な構造化データが不可欠なノードだけ dependency_input=full を宣言してください。\n\n"

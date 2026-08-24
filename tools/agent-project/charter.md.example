@@ -15,12 +15,11 @@ agent-project の charter.md 規約（プロジェクト憲章の正典）
 書式（`## <key>` セクション。key は goal/constraints/assumptions/deliverables/acceptance/repos/links）:
 
 鉄則:
-1. **プロジェクト done の唯一の根拠は `acceptance` 全 PASS**（各行＝終了コード0をPASSとみなすシェルコマンド）。
-   AI の自己申告や敵対的レビューだけでは done にしない（タスクの verify と同じ鉄則）。
-   検証コマンドを書けない人は **自然文でも書ける**（タスクの `accept:` と同じ）。`- accept: <自然言語の完了条件>`
-   と書くか、全角句読点を含む散文をそのまま箇条書きにすると、run 時にエージェントが**決定的なシェル
-   コマンドへ合成**する（合成結果は安定キャッシュされ done 基準がブレない）。合成できなければ done 判定
-   不能＝人へ回る（鉄則は保たれる）。英文など句読点で判別しにくい散文は `accept:` を明示すること。
+1. **プロジェクトの自動判定根拠は、`acceptance` に明示した決定的コマンドの全 PASSだけ**
+   （終了コード0をPASSとみなす）。AI の自己申告や自然文の判定だけでは done にしない。
+   検証コマンドを書けない条件は `- accept: <自然言語の完了条件>` と書けるが、自動判定せず
+   milestone の検収チェックリストへ送る。機械条件が全 PASS した後、人が内容を確認して approve する。
+   英文などシェルコマンドと紛らわしい散文は `accept:` を明示すること。
 2. acceptance は **「履歴」ではなく「望む最終状態/差分」を見る**こと（偽 done 対策。`$AGENT_BASE_REV` 利用可）。
    acceptance を書けないプロジェクトは done 判定不能 → 必ず人へ回る。
 3. plan（目標→backlog 分解）と evaluate の敵対的レビューの知能はエージェントへ委譲し、enqueue・acceptance 実行・
@@ -53,7 +52,7 @@ agent-project の charter.md 規約（プロジェクト憲章の正典）
 - `pytest -q tests/`
 - `python report.py sample.csv | grep -q "Summary"`
 - `grep -q "## Usage" README.md`
-# 検証コマンドを書けない条件は自然文でも可（run 時にエージェントが決定的 verify を合成する）:
+# 検証コマンドを書けない条件は自然文でも可（検収チェックリストへ入り、人が approve 前に確認する）:
 - accept: README に使用例（## Usage）が載っている
 - 不正な CSV を渡すとエラーメッセージを表示して異常終了する。
 

@@ -5,6 +5,7 @@
     python -m unittest discover -s tools/agent-flow/tests
 """
 import os as _os, sys as _sys
+from pathlib import Path
 _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
 from _shared import *  # noqa: E402,F401,F403 — 共有の前置き（環境隔離・km ロード・共通ヘルパ）
 
@@ -120,8 +121,31 @@ class ReadAllocationTests(unittest.TestCase):
 
     def test_planner_allocation_survives_normalization(self):
         node = kf._coerce_tasks([{"id": "t1", "read_allocation": [
-            {"path": "src/a.py", "reason": "entry"}]}])[0]
+            {"path": "src/a.py", "reason": "entry", "slice": True,
+             "symbols": ["Service.run"]}]}])[0]
         self.assertEqual(node["read_allocation"][0]["path"], "src/a.py")
+        self.assertIs(node["read_allocation"][0]["slice"], True)
+        self.assertEqual(node["read_allocation"][0]["symbols"], ["Service.run"])
+
+    def test_small_file_bypasses_slice_with_receipt(self):
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "small.py").write_text("def target():\n    return 1\n", encoding="utf-8")
+            files, receipts, cleanup = kf.prepare_read_allocation_files(
+                [{"path": "small.py", "slice": True, "symbols": ["target"]}], d)
+        self.assertEqual(files, ["small.py"])
+        self.assertEqual(receipts[0]["state"], "bypass-small")
+        self.assertEqual(cleanup, [])
+
+    def test_failed_slice_falls_back_to_original_with_reason(self):
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "big.py").write_text("\n".join(f"X{i} = {i}" for i in range(450)),
+                                         encoding="utf-8")
+            files, receipts, cleanup = kf.prepare_read_allocation_files(
+                [{"path": "big.py", "slice": True, "symbols": ["missing"]}], d)
+        self.assertEqual(files, ["big.py"])
+        self.assertEqual(receipts[0]["state"], "fallback")
+        self.assertEqual(receipts[0]["reason"], "slice-failed")
+        self.assertEqual(cleanup, [])
 
 
 class ContinueAgentContextTests(unittest.TestCase):

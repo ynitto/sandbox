@@ -532,14 +532,14 @@ class TestProjectLayer(unittest.TestCase):
         self.assertEqual(km._acceptance_kind("pytest -q tests/"), ("command", "pytest -q tests/"))
         self.assertEqual(km._acceptance_kind("test -f x && grep -q y z"),
                          ("command", "test -f x && grep -q y z"))
-        # 明示の accept: 接頭辞 → 自然言語（接頭辞を剥がす）
+        # 明示の accept: 接頭辞 → 自然言語（接頭辞を剥がし、人の検収へ）
         self.assertEqual(km._acceptance_kind("accept: README に概要がある"),
-                         ("accept", "README に概要がある"))
+                         ("human", "README に概要がある"))
         self.assertEqual(km._acceptance_kind("受入: 画面が表示される"),
-                         ("accept", "画面が表示される"))
-        # 接頭辞なしの散文（全角句読点）も自然言語に倒す
+                         ("human", "画面が表示される"))
+        # 接頭辞なしの散文（全角句読点）も人の検収に倒す
         self.assertEqual(km._acceptance_kind("レポートに要約が出力される。"),
-                         ("accept", "レポートに要約が出力される。"))
+                         ("human", "レポートに要約が出力される。"))
         # 明示の 検収:/human: 接頭辞 → 人の検収項目（機械検証しない）
         self.assertEqual(km._acceptance_kind("検収: UI が崩れていない"),
                          ("human", "UI が崩れていない"))
@@ -547,42 +547,39 @@ class TestProjectLayer(unittest.TestCase):
                          ("human", "docs are easy to read"))
 
     def test_classify_acceptance_splits_commands_criteria_human(self):
-        # 統一 verify（P1-A5）: 自然文は criterion（合成しない）、コマンドは固定検証、検収: は人へ。
+        # 自然文は人へ、コマンドだけを固定検証へ送る。LLM criterion は自動完了に使わない。
         ch = km.parse_charter("# Charter: x\n## goal\nやる\n## acceptance\n"
                               "- `test -f keep`\n- accept: README に概要がある\n"
                               "- 検収: UI が崩れていない\n")
         commands, criteria, human = km.classify_charter_acceptance(ch)
         self.assertEqual(commands, ["test -f keep"])
-        self.assertEqual(criteria, ["README に概要がある"])
-        self.assertEqual(human, ["UI が崩れていない"])
+        self.assertEqual(criteria, [])
+        self.assertEqual(human, ["README に概要がある", "UI が崩れていない"])
 
-    def test_evaluate_acceptance_judges_criteria_with_evidence(self):
-        # 自然文の達成条件は verifier が証跡付きで判定する（コマンドへの一発合成はしない）。
+    def test_evaluate_acceptance_runs_only_deterministic_commands(self):
+        # 自然文は人の検収へ送るため、ここでは明示された固定コマンドだけを実行・集計する。
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
             (d / "keep").write_text("x")
             cfg = cfg_for(d)
             ch = km.parse_charter("# Charter: x\n## goal\nやる\n## acceptance\n"
                                   "- `test -f keep`\n- accept: README に概要がある\n")
-            answer = json.dumps({"criteria": [
-                {"id": 1, "verdict": "pass",
-                 "evidence": {"commands": ["grep -q 概要 README.md"], "output": "", "files": []}}]})
             passed, total, results = km.evaluate_acceptance(cfg, ch,
-                                                            agent_run=lambda p, m: answer)
-            self.assertEqual((passed, total), (2, 2))
-            self.assertIn("証跡", results[1][2])
+                                                            agent_run=lambda p, m: self.fail(
+                                                                "自然文を LLM 判定へ送ってはいけない"))
+            self.assertEqual((passed, total), (1, 1))
+            self.assertEqual(results[0][0], "test -f keep")
 
-    def test_evaluate_acceptance_pass_without_evidence_fails_close(self):
-        # 証跡の無い pass は fail へ落ちる（normalize_verification の 1 実装がそのまま効く）。
+    def test_evaluate_acceptance_excludes_human_criteria_from_machine_total(self):
+        # 自然文だけなら機械評価は 0 件。LLM が pass を発明できる経路を持たない。
         with tempfile.TemporaryDirectory() as d:
             cfg = cfg_for(Path(d))
             ch = km.parse_charter("# Charter: x\n## goal\nやる\n## acceptance\n"
                                   "- accept: 曖昧で検証できない\n")
-            answer = json.dumps({"criteria": [{"id": 1, "verdict": "pass",
-                                               "evidence": {"commands": [], "files": []}}]})
             passed, total, _results = km.evaluate_acceptance(cfg, ch,
-                                                             agent_run=lambda p, m: answer)
-            self.assertEqual((passed, total), (0, 1))
+                                                             agent_run=lambda p, m: self.fail(
+                                                                 "自然文を LLM 判定へ送ってはいけない"))
+            self.assertEqual((passed, total), (0, 0))
 
     def test_human_acceptance_converges_with_checklist(self):
         # 機械 acceptance + 検収項目 → 収束し、milestone に検収チェックリストが載る。
@@ -616,48 +613,51 @@ class TestProjectLayer(unittest.TestCase):
             self.assertEqual(km.load_project_state(cfg_for(d))["status"],
                              km.REASON_PROJECT_CONVERGED)
 
-    def test_unverifiable_criterion_goes_to_milestone(self):
-        # 統一 verify: verifier が unverifiable と判定した達成条件は未達として milestone に載る
-        # （合成失敗という done 判定不能はもう存在しない。基準と判定が人へ届く）。
+    def test_natural_language_criterion_goes_to_human_checklist(self):
+        # 自然文の達成条件は verifier に判定させず、そのまま人の検収票へ残す。
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
             write_charter(d, "# Charter: un\n## goal\nやる\n## acceptance\n"
                              "- accept: 曖昧な完了条件\n")
-            answer = json.dumps({"criteria": [{"id": 1, "verdict": "unverifiable",
-                                               "note": "確認手段が環境に無い"}]})
             code = km.cmd_project(cfg_for(d), planner=lambda ch: [],
                                   runner=lambda c: _drained(),
-                                  agent_run=lambda p, m: answer)
+                                  agent_run=lambda p, m: self.fail(
+                                      "自然文を LLM 判定へ送ってはいけない"))
             self.assertEqual(code, 1)
             needs = (d / "needs" / "un.md").read_text(encoding="utf-8")
+            self.assertIn("検収チェックリスト", needs)
             self.assertIn("曖昧な完了条件", needs)
 
-    def test_natural_language_acceptance_converges(self):
+    def test_natural_language_acceptance_waits_for_human_without_agent_verdict(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
             flag = d / "flag"
             write_charter(d, "# Charter: nl\n## goal\nやる\n## acceptance\n"
                              f"- accept: flag ファイルが存在する\n")
-            answer = json.dumps({"criteria": [
-                {"id": 1, "verdict": "pass",
-                 "evidence": {"commands": [f"test -f {flag}"], "output": "", "files": []}}]})
             code = km.cmd_project(cfg_for(d), planner=lambda ch: [],
                                   runner=lambda c: (flag.write_text("x"), _drained())[1],
-                                  agent_run=lambda p, m: answer)
+                                  agent_run=lambda p, m: self.fail(
+                                      "自然文の完了条件を LLM 判定へ送ってはいけない"))
             self.assertEqual(code, 1)            # converged → 人の承認待ち
-            self.assertEqual(km.load_project_state(cfg_for(d))["status"],
-                             km.REASON_PROJECT_CONVERGED)
+            state = km.load_project_state(cfg_for(d))
+            self.assertEqual(state["status"], km.REASON_PROJECT_CONVERGED)
+            self.assertEqual(state["human_acceptance"], ["flag ファイルが存在する"])
+            needs = (d / "needs" / "nl.md").read_text(encoding="utf-8")
+            self.assertIn("検収チェックリスト", needs)
 
-    def test_unsynthesizable_acceptance_escalates(self):
+    def test_natural_language_acceptance_does_not_depend_on_agent_availability(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
             write_charter(d, "# Charter: nl\n## goal\nやる\n## acceptance\n"
                              "- accept: 曖昧な完了条件\n")
             code = km.cmd_project(cfg_for(d), planner=lambda ch: [],
                                   runner=lambda c: _drained(),
-                                  agent_run=lambda p, m: "")   # 合成不能
-            self.assertEqual(code, 1)            # done 判定不能 → 人へ
-            self.assertTrue((d / "needs" / "nl.md").exists())
+                                  agent_run=lambda p, m: self.fail(
+                                      "自然文を LLM 判定へ送ってはいけない"))
+            self.assertEqual(code, 1)
+            needs = (d / "needs" / "nl.md").read_text(encoding="utf-8")
+            self.assertIn("検収チェックリスト", needs)
+            self.assertIn("曖昧な完了条件", needs)
 
     def test_plan_enqueues_then_converges(self):
         with tempfile.TemporaryDirectory() as d:

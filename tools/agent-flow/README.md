@@ -416,7 +416,10 @@ orchestrator は要求を見て、以下の 7 パターン（最初の 6 つは
   畳み込んで集約する集約ノード。agent executor は出力を寛容パースして `data` に格納する。
 - **読込割付**: planner は work/generate ノードの `read_allocation` に、最初に読む path・任意の
   range・理由を割り付ける。worker は割付を先に読み、終了時の読込報告から的中・割付外読込数を
-  result と audit 台帳へ残す。
+  result と audit 台帳へ残す。割付は CLI の参照専用引数（aider の `--read`）へ渡し、編集許可の
+  `--file` にはしない。大きい Python 参照で `slice: true` と `symbols` を明示した場合だけ
+  symbol slice を一時生成する。小ファイル・非Python・抽出失敗は原本へ戻し、`data.context_slices`
+  に `sliced` / `bypass-small` / `fallback` と理由を記録する。
 - **失敗時の一段昇格**: `agents.<purpose>.fallbacks` に候補を宣言すると、内容失敗の最初の再試行だけ
   `agents/*.json` の `relative_cost` が厳密に大きい先へ昇格する。quota・認証・制御・一時障害は対象外で、
   以後の再試行は同じ先を使うため ladder は有界。
