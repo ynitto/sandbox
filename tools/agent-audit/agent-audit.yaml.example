@@ -11,6 +11,9 @@ budget_dir: ""                # node-budget の場所（既定 ~/.agents/budget�
 
 # ---- 源泉（空 = budget-ledger / cli-native の自動発見のみ） -------------------
 sources: []                   # 絞るとき: [budget-ledger, cli-native, flow-bus, ...]
+with_transcripts: false       # true でセッション本文を統一フォーマット（JSONL・agent/model
+                              # メタ付き。schemas/audit-session-log.schema.json）で副作用保存。
+                              # 保持は gc_keep_days.transcripts。本文はノード外へ出さない
 flow_buses: []                # 追加で読む agent-flow バスのパス（例: [~/proj/bus]）
 project_roots: []             # agent-project の state clone ルート（bus/ も自動で読む）
 amigos_buses: []              # agent-amigos のバス

@@ -40,7 +40,7 @@ LLM を使うのは **extract** と **distill**（と任意の review）だけ�
 | source | 読む場所 | 取るもの |
 |---|---|---|
 | `budget-ledger` | 設定 `budget_dir`（既定 `~/.agents/budget/`）の `ledger/*.jsonl` | ledger 行 → `kind: ledger`（消費の一次事実）。観測行（`quota` / `model_escalation`・消費 0）は `kind: event` へ分ける |
-| `cli-native` | `agents/<name>.json` の `session_log` 宣言（§3） | CLI 自身のセッション → `kind: session`。**実測トークン・turn 数・transcript** |
+| `cli-native` | `agents/<name>.json` の `session_log` 宣言（§3） | CLI 自身のセッション → `kind: session`。**実測トークン・turn 数・transcript**（`--with-transcripts` / 設定 `with_transcripts` で本文を統一セッションログ [`audit-session-log`](../../schemas/audit-session-log.schema.json) として副作用保存。保持は `gc_keep_days.transcripts`） |
 | `cli-quota` | 各 CLI が自分で表示する契約枠（`claude` / `codex` / `copilot` / `kiro-cli` が PATH にあるときだけ） | 残枠のスナップショット → `kind: event`。**モデル実行なし** |
 | `flow-bus` | 設定 `flow_buses` ＋ `project_roots` 配下の `bus/` | 終端 run の `meta.json` / `graph.json` / `events/*.jsonl` → `kind: run`、`results/*.json` → `kind: result` |
 | `project-root` | 設定 `project_roots` | `run-log.jsonl` → `kind: run` |
@@ -93,7 +93,9 @@ JSON への追記だけで収集できます。**
 ~/.agents/audit/
   state.json                     # 収集カーソル {"<source>::<store>::<sid>": {"cursor": …}}
   records/<YYYYMMDD>.jsonl       # 正規化レコード（追記専用・O_APPEND）
-  transcripts/<src>/<sid>.log    # 任意（--with-transcripts）。ノード外へ出さない
+  transcripts/<src>/<sid>.jsonl  # 任意（--with-transcripts / 設定 with_transcripts）。
+                                 # 統一セッションログ（audit-session-log.schema.json:
+                                 # meta 1 行 + message 行）。ノード外へ出さない
   observations/<YYYYMMDD>.jsonl  # extract の出力（追記専用）
   insights/<id>.json             # distill の出力（1 洞察 1 ファイル）
   decisions/<id>.json            # tune の型付き調整候補・適用と退役の記録
@@ -170,6 +172,7 @@ node-budget を読み、超過中は LLM 段を実行しません。
 | `audit_dir` | `~/.agents/audit` | 書き先 |
 | `budget_dir` | `~/.agents/budget` | node-budget の場所 |
 | `sources` | `[]` | 空 = 全種を有効。絞りたいときだけ列挙 |
+| `with_transcripts` | `false` | collect の副作用でセッション本文を統一セッションログ（`transcripts/<cli>/<sid>.jsonl`）として保存。`--with-transcripts` と同じ（定期実行の有効化はこちらで） |
 | `flow_buses` / `project_roots` / `amigos_buses` / `loop_logs` | `[]` | 明示指定が要る源泉の場所 |
 | `memory_stores` | `{}` | `ltm_dirs` / `wiki_root` / `persona_home` / `moltbook_home`。自動発見の上書きだけ書けばよい |
 | `memory_dormant_days` | `30` | `access_count=0` のまま眠っている日数（＝退役候補） |
@@ -245,7 +248,7 @@ node-budget を読み、超過中は LLM 段を実行しません。
 
 ## 付録. テスト
 
-`tools/agent-audit/tests/` に 16 ファイル・164 件。LLM 段は差し替えで決定的にテストします。
+`tools/agent-audit/tests/` に 16 ファイル・167 件。LLM 段は差し替えで決定的にテストします。
 
 ```bash
 cd tools/agent-audit && python3 -m unittest discover -s tests

@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "audit-session-log.schema.json",
+  "title": "agent-audit 統一セッションログ（データ契約）",
+  "description": "agent-audit collect が --with-transcripts / 設定 with_transcripts のとき、CLI ネイティブセッションを正規化して audit ストアの transcripts/<agent_cli>/<session_id>.jsonl へ書く 1 行。1 ファイル = 1 セッションで、先頭 1 行が type:meta（エージェント・モデル・期間・実測トークン）、以降が type:message（クリーニング済み会話本文）。meta.record_id で records（audit-record.schema.json の kind:session）と突き合わせる。書き手は agent-audit のみ（collect / reclean が全体書換）。読み手はローカルの解析モジュールに限る——会話本文はノード外へ出さない（設計 docs/designs/agent-audit-design.md 不変条件 6）。保持・ローテーションは gc_keep_days.transcripts（既定 30 日・mtime）",
+  "type": "object",
+  "required": ["type"],
+  "oneOf": [
+    {
+      "properties": {
+        "type": {"const": "meta"},
+        "schema_version": {"type": "integer", "description": "この契約の版（現行 1）"},
+        "record_id": {"type": "string", "description": "対応する records の kind:session レコード id（aud-…。冪等キーなので再収集しても変わらない）"},
+        "agent_cli": {"type": "string", "description": "エージェント CLI 名（agents/<name>.json の name）"},
+        "model": {"type": "string", "description": "モデル名（セッションログから判る範囲で。未検出は空文字列）"},
+        "session_id": {"type": "string", "description": "CLI ネイティブのセッション ID"},
+        "cwd": {"type": "string", "description": "作業ディレクトリ（ホーム相対へ正規化済み。絶対パスは書かない）"},
+        "started_at": {"type": "string", "description": "セッション開始（ISO8601 UTC）"},
+        "updated_at": {"type": "string", "description": "セッション最終更新（ISO8601 UTC）"},
+        "turns": {"type": ["integer", "null"], "description": "クリーニング後のメッセージ数"},
+        "tokens_in": {"type": ["number", "null"], "description": "入力トークン（実測できたときだけ）"},
+        "tokens_out": {"type": ["number", "null"], "description": "出力トークン（同上）"},
+        "log_version": {"type": "string", "description": "セッションログから検出した CLI バージョン（未検出は空文字列）"}
+      },
+      "required": ["type", "schema_version", "record_id", "agent_cli", "session_id"]
+    },
+    {
+      "properties": {
+        "type": {"const": "message"},
+        "role": {"type": "string", "enum": ["User", "Assistant"], "description": "発話者（readers の正規形のまま）"},
+        "text": {"type": "string", "description": "クリーニング済み本文（session_log.clean 適用後）"}
+      },
+      "required": ["type", "role", "text"]
+    }
+  ],
+  "additionalProperties": true
+}

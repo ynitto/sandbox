@@ -28,6 +28,11 @@ CONFIG_DEFAULTS = {
     "budget_dir": None,              # 既定 ~/.agents/budget（node-budget 契約の既定位置）
     # 源泉（空 = budget-ledger / cli-native / 対応CLI quota。他は宣言時だけ読む）
     "sources": [],
+    # collect の副作用でセッション本文を統一フォーマット（transcripts/<cli>/<sid>.jsonl。
+    # 契約は schemas/audit-session-log.schema.json）で保存する。定期実行（cron /
+    # agent-loop フック）はフラグを渡さないので、常時集約したいノードはここで有効化する。
+    # 保持は gc_keep_days.transcripts、本文はノード外へ出さない（不変条件 6）。
+    "with_transcripts": False,
     "flow_buses": [],
     "project_roots": [],
     "amigos_buses": [],

@@ -7,7 +7,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
-### agent-loop: headless 実行のログをコントロールペインと分けたペインで表示する
+### agent-audit: セッションログを統一フォーマットで副作用保存する（別モジュール向け読み取り口）
+
+- メトリクス収集（`collect` の cli-native）が読んでいるセッションログを、副作用として
+  `transcripts/<agent_cli>/<session_id>.jsonl` へ**統一フォーマット**で保存するようにした
+  （契約は新設の `schemas/audit-session-log.schema.json`）。先頭 1 行の `type: meta` が
+  エージェント CLI・モデル・期間・実測トークン・`record_id`（records の kind:session と
+  同じ冪等キー）を持ち、以降の `type: message` 行がクリーニング済み本文。どの CLI の
+  セッションも同じ形になるので、解析モジュールは CLI 差を知らずに読める。従来の
+  ad-hoc テキスト（`<sid>.log`）は置き換え——collect / reclean が旧ファイルを消して
+  移行する（extract のダイジェストは gc で消えるまでの旧 .log も読める）。
+- 有効化は従来の `collect --with-transcripts` に加えて設定キー `with_transcripts` でも
+  できるようにした。定期実行（cron / `audit-calibrate-hook.py`）はフラグを渡さないので、
+  常時集約したいノードは設定側で有効化する。期間は `collect --since`、ローテーションは
+  既存の gc（`gc_keep_days.transcripts`・既定 30 日）がそのまま担う。本文はローカル専用で
+  ノード外へ出さない（不変条件 6）のは従来どおり。
 
 - headless（per-run。aider / gemma4:e4b 等）の実行はワーカーペインを持たないため、
   実行の様子がコントロールペインのログに混ざって流れるだけだった。既定で、デーモンと

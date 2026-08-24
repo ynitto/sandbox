@@ -253,17 +253,68 @@ def collect_cli_native(args, store: Store, *, with_transcripts: bool, since: flo
     return added
 
 
+TRANSCRIPT_SCHEMA_VERSION = 1
+
+
 def _write_transcript(store: Store, cli_name: str, sess: dict) -> str:
+    """セッション 1 件を統一フォーマット（JSONL: meta 1 行 + message 行。契約は
+    schemas/audit-session-log.schema.json）で保存する。
+
+    どの CLI のセッションも同じ形で書くので、別モジュールは CLI 差を知らずに解析できる。
+    エージェント・モデルは meta 行が持ち、meta.record_id で records の kind:session
+    レコードと突き合わせられる。保持は gc（gc_keep_days.transcripts）が担い、本文は
+    ノード外へ出さない（不変条件 6）。
+    """
     safe_sid = re.sub(r"[^A-Za-z0-9._-]", "_", sess["native_id"])[:64]
-    rel = os.path.join("transcripts", cli_name, f"{safe_sid}.log")
+    rel = os.path.join("transcripts", cli_name, f"{safe_sid}.jsonl")
     path = os.path.join(store.root, rel)
     os.makedirs(os.path.dirname(path), exist_ok=True)
+    meta = {
+        "type": "meta", "schema_version": TRANSCRIPT_SCHEMA_VERSION,
+        "record_id": record_id(f"cli-native:{cli_name}", sess["store"], sess["native_id"]),
+        "agent_cli": cli_name,
+        "model": sess.get("model") or "",
+        "session_id": sess["native_id"],
+        "cwd": home_relative(sess["cwd"]),
+        "started_at": _iso(sess["created_at"]),
+        "updated_at": _iso(sess["updated_at"]),
+        "turns": sess["turns"],
+        "tokens_in": sess["tokens_in"],
+        "tokens_out": sess["tokens_out"],
+        "log_version": sess.get("log_version") or "",
+    }
     with open(path, "w", encoding="utf-8") as f:
-        f.write(f"Session: {sess['native_id']}\nSource: {cli_name}\n"
-                f"Path: {home_relative(sess['cwd'])}\n\n")
+        f.write(json.dumps(meta, ensure_ascii=False) + "\n")
         for role, text in sess["messages"]:
-            f.write(f"[{role}]\n{text}\n\n")
+            f.write(json.dumps({"type": "message", "role": role, "text": text},
+                               ensure_ascii=False) + "\n")
+    legacy = os.path.join(store.root, "transcripts", cli_name, f"{safe_sid}.log")
+    if os.path.isfile(legacy):
+        try:
+            os.unlink(legacy)       # 旧 .log 形。同じ会話の二重保存を残さない
+        except OSError:
+            pass
     return rel
+
+
+def transcript_text(path: str) -> str:
+    """transcript を表示・LLM ダイジェスト用の平文へ描画する。
+    統一 JSONL と、gc で消えるまで残りうる旧 .log の両方を読む（読み手は 1 実装。C7）。"""
+    if path.endswith(".log"):
+        with open(path, encoding="utf-8") as f:
+            return f.read()
+    meta: dict = {}
+    parts: "list[str]" = []
+    for row in iter_jsonl(path):
+        if row.get("type") == "meta":
+            meta = row
+        elif row.get("type") == "message":
+            parts.append(f"[{row.get('role')}]\n{row.get('text')}\n")
+    if not meta and not parts:
+        raise OSError(f"transcript が読めません: {path}")
+    head = (f"Session: {meta.get('session_id', '')}\nSource: {meta.get('agent_cli', '')}\n"
+            f"Model: {meta.get('model', '')}\nPath: {meta.get('cwd', '')}\n")
+    return head + "\n" + "\n".join(parts)
 
 
 def _iso(sec) -> str:
