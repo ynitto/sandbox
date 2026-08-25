@@ -10,7 +10,7 @@
 > **綴りの正典**: [agent-herd 仕様書](../specs/agent-herd-spec.md)
 > （本書は「なぜそうするか」、仕様書は「打つと何が起きるか」。実装状況は §8 を見よ）
 > 関連: [agent-aider 改良余地の評価](./2026-08-18-agent-aider-improvement-assessment.md) §8.3、
-> [agent-ollama 設計](../designs/agent-ollama-design.md)、
+> [agent-herd 設計](../designs/agent-herd-design.md)、
 > [agent-loop DESIGN](../../tools/agent-loop/DESIGN.md)
 
 ---

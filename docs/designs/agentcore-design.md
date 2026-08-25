@@ -3,7 +3,7 @@
 > 作成 2026-08-22 ／ 実装: `tools/agent-tools/agentcore/agentcore/`（27 モジュール・約 7,970 行）
 > **モジュール一覧・公開 API・配布・写しの一覧は [`docs/specs/agentcore-spec.md`](../specs/agentcore-spec.md) にあります。**
 > 関連: [`agent-cli-plugin-design.md`](./agent-cli-plugin-design.md)（CLI 定義の契約）/
-> [`agent-ollama-design.md`](./agent-ollama-design.md)（ローカル推論）/
+> [`agent-herd-design.md`](./agent-herd-design.md)（ローカル実行系の入口）/
 > [`agent-tools-concept.md`](./agent-tools-concept.md)（上位文書）
 
 ---
@@ -186,6 +186,6 @@ git URL の同一性、CLI の argv、検証 receipt の digest、予算の判�
 |---|---|
 | [`docs/specs/agentcore-spec.md`](../specs/agentcore-spec.md) | モジュール一覧・公開 API・配布・写しとテスト |
 | [`docs/specs/agent-cli-spec.md`](../specs/agent-cli-spec.md) | CLI 定義の全フィールドとローダ API |
-| [`docs/specs/agent-ollama-spec.md`](../specs/agent-ollama-spec.md) | ローカル推論の割当・フラグ・環境変数・上限 |
+| [`docs/specs/agent-herd-spec.md`](../specs/agent-herd-spec.md) | 入口の綴り・profile の割当・フラグ・環境変数・上限 |
 | `tools/agent-tools/README.md` | 利用手順 |
 | `tools/agent-tools/install.sh` | 同梱の実装 |

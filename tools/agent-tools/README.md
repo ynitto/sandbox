@@ -58,18 +58,20 @@ cd tools/agent-tools/agentcore && python3 -m unittest discover -s tests && pytho
 モジュール一覧・公開 API・写しを縛るテストは
 [`docs/specs/agentcore-spec.md`](../../docs/specs/agentcore-spec.md)。
 
-## agent-ollama — コスト 0 のローカル実行系
+## agent-herd — コスト 0 のローカル実行系
 
-`install.sh` は 4 エンジンのほかに `agent-ollama`（zipapp・1 ファイル）も置く。出発点は
+`install.sh` は 4 エンジンのほかに `agent-herd`（zipapp・1 ファイル）と、その別名として
+`agent-aider` / `agent-ollama` / `agent-opencode`（同一ファイルへのハードリンク）を置く。
+別名は互換シムではなく本体そのものなので、打ち方も出力も従来どおりである。出発点は
 「クラウドの CLI がガバナンスや予算の事情で使えなくなったときに作業を止めないため」の
 バックアップだったが（[2026-08-06 の対策案](../../docs/plans/2026-08-06-opencode-ollama-cpu-inference-proposals.md) §0.1・案 F-2）、
 現在は**品質が成立する役割を恒常的に引き受けるコスト 0 の常備戦力**として位置づけている。
 **犠牲にするのは壁時計時間だけで、「契約に完全適合すること」と「止まっていないことを
 示せること」は要件のまま。**
 
-設計判断は [`docs/designs/agent-ollama-design.md`](../../docs/designs/agent-ollama-design.md)、
-定義の割当・フラグ・環境変数・上限・終了状態は
-[`docs/specs/agent-ollama-spec.md`](../../docs/specs/agent-ollama-spec.md)。
+設計判断は [`docs/designs/agent-herd-design.md`](../../docs/designs/agent-herd-design.md)、
+サブコマンドの綴り・profile の割当・フラグ・環境変数・上限・終了状態は
+[`docs/specs/agent-herd-spec.md`](../../docs/specs/agent-herd-spec.md)。
 
 ```bash
 echo '要件を3行で要約して' | agent-ollama qwen3                      # 単発（ツールなし）

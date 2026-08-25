@@ -230,7 +230,7 @@ agent-audit が CLI 自身の transcript を収集するための宣言です。
 | `ollama-verify` | 0 | enforced | `gemma4:12b` | single-shot | — | ✓ |
 
 `relative_cost: 0` はローカル実行（ollama 系 6 種・`aider`・`opencode`）です。ollama 系の詳細は
-[`docs/specs/agent-ollama-spec.md`](./agent-ollama-spec.md)。
+[`docs/specs/agent-herd-spec.md`](./agent-herd-spec.md)。
 
 `variants` を申告しているのは `ollama`（15 用途）・`aider`（13 用途）・`ollama-json`
 （`split` / `retrieve`）・`ollama-verify`（`split`）の 4 定義です。

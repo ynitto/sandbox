@@ -1,7 +1,7 @@
 # agent-ollama — ツールの開示と権限の昇格の設計
 
 > **統合済み**: 現行の責務・実装状態・未実装範囲は
-> [`agent-ollama-design.md`](../designs/agent-ollama-design.md) へ統合した。本書はツール権限の詳細検討記録として残す。
+> [`agent-herd-design.md`](../designs/agent-herd-design.md) へ統合した。本書はツール権限の詳細検討記録として残す。
 
 > 作成 2026-08-07
 > 対象: `tools/agent-tools/agentcore/agentcore/{ollama_loop,ollama_adapter,ollama_skills}.py` /
