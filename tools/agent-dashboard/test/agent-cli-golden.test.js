@@ -15,6 +15,7 @@ const fs = require('fs');
 const path = require('path');
 process.env.KIRO_AGENTS_DIR = path.resolve(__dirname, '..', '..', '..', 'agents');
 const agentCli = require('../src/features/agent-project/main/agentCli');
+const agent = require('../src/features/agent-project/main/agent');
 
 let passed = 0;
 function test(name, fn) {
@@ -115,7 +116,11 @@ test('aider は参照ファイルと編集ファイルを宣言どおり argv �
   assert.deepStrictEqual(built.argv.slice(-6), [
     '--file', 'delivery.md', '--read', 'reference.md', '--message', 'P',
   ]);
-  assert.strictEqual(built.timeoutMs, 600000, 'ローカル推論はCLI定義の長いtimeoutを使う');
+  // 既定で足りる CLI は定義に timeout を書かない（書くと呼び出し側が fallback を変えても
+  // その CLI だけ古い上限のまま取り残される）。上限は実行側の共通 fallback が決める。
+  assert.strictEqual(built.timeoutMs, null, '定義は上限を固定しない');
+  assert.strictEqual(agent.resolveAgent({}, process.cwd()).timeoutMs, 600000,
+    'ローカル推論は共通 fallback の長い timeout を使う');
 });
 
 test('codex は {output_file} を伏せれば一致する（実行毎にパスが変わる）', () => {

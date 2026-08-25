@@ -189,6 +189,17 @@ HTML の `data-area` 属性が正で、`AREAS` は列挙と表示名だけを持
 | `cowork.runWindow` | `true` | 実行を tmux ウィンドウで見せる |
 | `cowork.chatCommand` | `''` | 明示上書き。空なら CLI 定義の対話モードから argv を組む |
 | `cowork.items` / `cowork.roots` | `[]` | 定型業務の項目と、定常業務専用フォルダの登録簿 |
+
+**定型業務の必須入力（`stateMachineInputSpec`）。** `action` / `condition` / `on_enter` / `on_exit`（`action_file` / `condition_file` と自動探索ファイルを含む）と `condition_rule` から参照される変数のうち、**人しか渡せないものだけ**を入力として要求します。実行器が自分で作る次の変数は、`workflow.yaml` の `context:` に値が無くても要求しません（分類の正典は statemachine-use の `references/schema.md`「Context Variable Reference」）。
+
+| 分類 | 変数 | 供給元 |
+|---|---|---|
+| 組み込み（実行開始時） | `today` / `now` / `history` / `step_count` / `last_output` / `current_state` / `context` | 実行器が生成（`today` / `now` は `context:` で上書き可） |
+| ステート実行中 | `check_status` / `check_ok` / `check_output` | 決定的検査（`check`）の実測結果 |
+| 履歴 | `history.<state_id>` | 通過したステートの出力 |
+| ステート出力 | `output_key` で宣言した名前 | そのステートの出力 |
+
+残るのは `input`（`--input` で人が渡す）と、`context:` に宣言が無いか値が空の自由変数だけです。`context:` に値がある変数は既定値として提示し、必須にはしません。
 | `amigos.refreshSec` | `15` | ポーリング間隔 |
 | `amigos.busDirs` / `homeDirs` | `[]` | バスとオーナーホームの明示指定（空なら自動発見） |
 | `amigos.budgetDir` | `''` | ノード予算の置き場 |

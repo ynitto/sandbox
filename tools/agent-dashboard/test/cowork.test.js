@@ -627,6 +627,90 @@ test('stateMachineInputSpec は外部ファイルを含む実参照だけを入�
   assert.match(cowork.stateMachineInputSpec(path.join(repo, 'none.yaml')).error, /読めません|ENOENT/);
 });
 
+test('stateMachineInputSpec は実行器が注入する変数を必須入力にしない', () => {
+  // 分類の正典: statemachine-use の references/schema.md「Context Variable Reference」。
+  // 実行器が実行開始時／ステート実行中に自分で作る値は、workflow の context: に無くても
+  // 人に入力させない。人しか渡せない外部入力（input と未宣言の自由変数）だけを残す。
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'cowork-sm-runtime-'));
+  const wf = writeMachine(repo, 'digest', [
+    'name: ダイジェスト',
+    'initial_state: fetch',
+    'context:',
+    '  source: ""',
+    'states:',
+    '  fetch:',
+    '    action: "{{today}} 時点の {{source}} を {{now}} に取得（{{current_state}} / {{step_count}}）"',
+    '    output_key: fetch_result',
+    '    check: "pytest -q"',
+    '  write:',
+    '    action: "{{last_output}} と {{history.fetch}} と {{fetch_result}} から {{audience}} 向けに書く"',
+    '    on_enter: "{{check_output}} を確認"',
+    '    on_exit: "{{history}} を保存"',
+    'transitions:',
+    '  - from: fetch',
+    '    to: write',
+    '    condition_rule: "equals:check_ok:true"',
+    '  - from: write',
+    '    to: done',
+    '    condition_rule: "startswith:check_status:0;equals:fetch_result:OK"',
+    '',
+  ].join('\n'));
+  const spec = cowork.stateMachineInputSpec(wf);
+
+  // 外部入力だけが必須になる: 宣言済みだが空の context（source）と、どこにも無い自由変数（audience）。
+  assert.deepStrictEqual(spec.keys, ['source', 'audience']);
+
+  // 組み込み変数（実行開始時に注入）
+  for (const key of ['today', 'now', 'current_state', 'step_count', 'last_output', 'history', 'context']) {
+    assert.ok(!spec.keys.includes(key), `組み込み変数を入力にしない: ${key}`);
+  }
+  // ステート実行中に注入される決定的検査の結果（condition_rule / on_enter からの参照を含む）
+  for (const key of ['check_ok', 'check_status', 'check_output']) {
+    assert.ok(!spec.keys.includes(key), `検査結果を入力にしない: ${key}`);
+  }
+  // 履歴変数とステート出力変数
+  assert.ok(!spec.keys.includes('history.fetch'), '履歴変数を入力にしない');
+  assert.ok(!spec.keys.includes('fetch_result'), 'ステート出力変数を入力にしない');
+  // 実行器が注入する値は既定値としても出さない（人が上書きする面ではない）
+  assert.deepStrictEqual(spec.defaults, {});
+});
+
+test('stateMachineInputSpec は context: で上書きされた組み込み変数も入力にしない', () => {
+  // today / now は「組み込みだが context: で上書き可」。宣言されていても実行器が値を
+  // 用意するので、人への要求にも既定値の提示にも出さない。
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'cowork-sm-builtin-override-'));
+  const wf = writeMachine(repo, 'fixed-date', [
+    'name: 固定日',
+    'initial_state: work',
+    'context:',
+    '  today: "2000-01-01"',
+    'states:',
+    '  work:',
+    '    action: "{{today}} の分を {{topic}} で書く"',
+    '',
+  ].join('\n'));
+  const spec = cowork.stateMachineInputSpec(wf);
+
+  assert.deepStrictEqual(spec.keys, ['topic']);
+  assert.ok(!Object.prototype.hasOwnProperty.call(spec.defaults, 'today'),
+    '組み込み変数は既定値として提示しない');
+});
+
+test('stateMachineInputSpec は input を実行器の注入と混同しない', () => {
+  // input だけは実行器ではなく人が渡す（--input）。組み込み扱いで落としてはいけない。
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'cowork-sm-input-'));
+  const wf = writeMachine(repo, 'ask', [
+    'name: 依頼',
+    'initial_state: work',
+    'states:',
+    '  work:',
+    '    action: "{{input}} を {{last_output}} と突き合わせる"',
+    '',
+  ].join('\n'));
+
+  assert.deepStrictEqual(cowork.stateMachineInputSpec(wf).keys, ['input']);
+});
+
 test('入力値は不足・未知キーを拒否し、宣言済みキーだけを置換する', () => {
   const spec = { keys: ['target'], defaults: {}, error: '' };
   assert.throws(() => cowork.validateParameters(spec, {}), /target/);

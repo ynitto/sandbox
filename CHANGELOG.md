@@ -7,6 +7,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-dashboard: 定型業務の必須入力から、実行器が注入する変数を外す
+
+- `stateMachineInputSpec` が、statemachine 実行器の生成する変数まで「ユーザー入力」として
+  要求していた。除外していたのは `last_output` / `current_state` / `step_count` /
+  `history.<state>` / `output_key` だけで、**組み込みの `today` / `now` / `history` /
+  `context` と、決定的検査（`check`）がステート実行中に注入する `check_status` /
+  `check_ok` / `check_output` が漏れていた**。日付を使う定型業務（日報・ダイジェスト）は
+  `{{today}}` を、検査を宣言した定型業務は `condition_rule: "equals:check_ok:true"` を
+  普通に持つので、「今すぐ実行」のたびに人が値を打つよう求められていた。
+- 分類の正典（statemachine-use の `references/schema.md`「Context Variable Reference」と、
+  それを実装する engine.py / agent-loop ハーネスの `_sm_initial_context`）に合わせて
+  実行器が供給する変数を 1 か所（`RUNTIME_CONTEXT_KEYS`）へ集約し、必須入力から外した。
+  `input` は実行器ではなく人が渡す値（`--input`）なので従来どおり必須のまま。
+- 組み込み変数は `context:` で上書きされていても既定値として提示しない（実行器が値を
+  用意するので、人が触る面ではない）。
+
+### agent-dashboard: ローカル推論の既定タイムアウトを 600 秒へ揃える
+
+- `agents/aider.json` から固定 `timeout: 600` を外した（前項の agent-loop の変更）ことで、
+  dashboard の agent-project ランナーが自前の既定 180 秒へ落ちていた。共通 fallback を
+  agent-loop（`_TL_DEFAULT_AGENT_TIMEOUT_SEC`）と同じ 600 秒へ揃える。`agent.timeoutSec`
+  の明示指定は従来どおり優先。
+
 ### agent-loop: statemachine ハーネスが配布のズレを起動時に名指しする
 
 - dashboard の定常業務を「今すぐ実行」したとき、`[agent-loop] ERROR: argument --auto-eval:

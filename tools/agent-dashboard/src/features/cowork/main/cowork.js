@@ -691,6 +691,20 @@ function contextValue(context, key) {
   return value;
 }
 
+// statemachine 実行器が自分で作って注入する変数。workflow の `context:` に値が無く、
+// action / condition / on_enter / on_exit から参照されていても**ユーザー入力として要求しない**
+// ——人が入れる値ではなく、実行器が実行開始時とステート実行中に生成するため。
+// 正典は statemachine-use の references/schema.md「Context Variable Reference」と、
+// それを実装する engine.py / agent-loop の statemachine ハーネス（_sm_initial_context）。
+//   実行開始時に注入: today / now / history / step_count / last_output / current_state / context
+//   ステート実行中に注入: 決定的検査（check）の check_status / check_ok / check_output
+// 履歴変数（history.<state_id>）とステート出力変数（output_key）は参照側で別に除く。
+// `input` はここへ入れない——実行器ではなく人が渡す値（`--input`）なので必須入力のまま。
+const RUNTIME_CONTEXT_KEYS = new Set([
+  'today', 'now', 'history', 'step_count', 'last_output', 'current_state', 'context',
+  'check_status', 'check_ok', 'check_output',
+]);
+
 // statemachine-use の正式なテンプレート面だけを読む。action_file / condition_file と
 // 自動探索ファイルもエンジンと同じ優先順で解決し、実行中に生成される変数は入力にしない。
 function stateMachineInputSpec(wfPath) {
@@ -739,13 +753,12 @@ function stateMachineInputSpec(wfPath) {
     const context = isPlainObject(workflow.context) ? workflow.context : {};
     const keys = [];
     const defaults = {};
-    const runtime = new Set(['last_output', 'current_state', 'step_count']);
     for (const ref of [...new Set(refs)]) {
       if (ref === 'input') {
         keys.push(ref);
         continue;
       }
-      if (runtime.has(ref) || ref.startsWith('history.') || outputKeys.has(ref)) continue;
+      if (RUNTIME_CONTEXT_KEYS.has(ref) || ref.startsWith('history.') || outputKeys.has(ref)) continue;
       const contextKey = ref.startsWith('context.') ? ref.slice('context.'.length) : ref;
       const value = contextValue(context, contextKey);
       if (value === undefined || value === null || String(value).trim() === '') keys.push(ref);

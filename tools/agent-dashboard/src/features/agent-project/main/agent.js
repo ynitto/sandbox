@@ -85,7 +85,10 @@ function readControlAgent(cfg, workload, purpose = '') {
 // （黙って別 CLI で走らせない — source で由来を返し、表示側が判断できる）。
 function resolveAgent(cfg, projectDir, { workload = '', purpose = '' } = {}) {
   const ac = (cfg && cfg.agent) || {};
-  const timeoutMs = Math.max(30, Number(ac.timeoutSec) || 180) * 1000;
+  // CLI 定義（agents/<name>.json の timeout）が黙っているときの共通上限。ローカル推論の
+  // 実測に合わせて 600 秒（agent-loop の _TL_DEFAULT_AGENT_TIMEOUT_SEC と同じ値）。
+  // 180 秒では gemma4:e4b の 1 周（50〜90 秒）や検査の再投入で正常な実行を切っていた。
+  const timeoutMs = Math.max(30, Number(ac.timeoutSec) || 600) * 1000;
   const ctl = readControlAgent(cfg, workload, purpose);
   const candidates = [];
   if (ctl.cli) {
