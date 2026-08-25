@@ -142,32 +142,28 @@ agent-herd chat <cli> [--model M]
 向き合う起動なので待機判定が要らない）。それらは `interactive.command` を tmux から叩く
 消費者（agent-loop / agent-dashboard）のためにある。
 
-### 4.4 `aider` の対話はまだ無い（先に直すものがある）
+### 4.4 `aider` の対話
 
-`agents/aider.json` には `interactive` ブロックが**無い**ので、`agent-herd chat aider` は
-終了コード 1 で「対話起動に対応していません」と言う。足せば動くが、**足す前に
-agent-dashboard を直す必要がある。**
+`agents/aider.json` は `interactive` ブロックを持つ。ヘッドレスとの差は**引き算だけ**:
 
-agent-dashboard の定型業務は `spec.interactive` の**有無**を「対話ペインで駆動できる CLI か」
-の代理として読み、無い CLI（aider・素の ollama）を agent-loop の statemachine ハーネスへ
-回している（`src/features/cowork/main/cowork.js` の `if (!selected.spec.interactive)`）。
+| ヘッドレスにあり対話に無い | なぜ落とすか |
+|---|---|
+| `--message`（`prompt_flag`） | 対話は本文を argv で渡さない |
+| `--yes-always` | 人が確認する場で押し切らない |
+| `--no-stream` / `--no-pretty` | 対話では出力を殺さない |
 
-したがって `aider.json` に `interactive` を足すと、`chat aider` が使えるようになる代わりに
-**定型業務の実行経路が黙ってハーネスから対話送信へ切り替わる**。これは実装中に実際に踏み、
-CI の `dashboard (npm test)` が検出した（`state-machine-window.test.js`:
-「単発実行サブコマンドへ渡す（send ではない）」）。
+**残すもの**: `--agent-policy gemma4-e4b-reliability-v1`・`--model ollama_chat/{model}`・
+`--no-git` / `--no-auto-commits` / `--no-check-update` / `--no-show-model-warnings` /
+`--no-analytics` / `--no-gitignore` / `--map-tokens 0`。
 
-正しい弁別子は `headless_autonomy` である——`single-shot` はハーネスが要り、`tool-loop` は
-自分で回せる（設計 §5.3 の層判定と同じ）。`interactive` の有無は「対話面を提供するか」で
-あって「ハーネスが要るか」ではない。この 2 つを同じフラグで表しているのが現状の負債で、
-分離は agent-dashboard の実行経路を変える独立した変更として扱う。
+policy と接続補完（§6）が**ヘッドレスと同じ経路**で仕込まれることをテストが縛る
+（`test_herdcli.ChatTests`）。これが崩れると「対話で試したことがヘッドレスで再現しない」に
+なる。
 
-この依存関係は `test_herdcli.ChatTests.test_aider_has_no_interactive_block_yet` が固定して
-いる。dashboard の弁別子を直した人がこのテストを消して `chat aider` の起動テストへ
-置き換える、という順序で解ける。
-
-**`chat` 自体は ollama 専用ではない。** `interactive` を宣言している定義（`ollama` /
-`opencode` / `claude` / `codex` / `kiro` / `copilot` / `cursor`）はどれも起動できる。
+**`interactive` を持つことと、ハーネスが要ることは別である。** aider は対話面を持ちながら
+`headless_autonomy: single-shot` なので、定型業務は従来どおり限定ツール契約のハーネスで
+回る。agent-dashboard はこれを `headlessAutonomy` で弁別する
+（`cowork.needsHeadlessHarness`）——`interactive` の有無で代理してはいけない。
 
 ### 4.5 `harness`
 
@@ -267,8 +263,10 @@ agent-herd harness run PROMPT… [--agent-cli NAME] [--model M]
 
 | 項目 | 状態 | いまの経路 |
 |---|---|---|
-| `agents/*.json` の `command` を `["agent-herd", …]` へ正典化 | **未着手（P3）** | 従来の綴り（`agent-aider` / `agent-ollama` / `agent-opencode`）。argv[0] 分岐で動く |
-| `chat aider`（`aider.json` の `interactive`） | **保留**（§4.4） | 素の `aider` を手で起動。先に agent-dashboard の弁別子を `headless_autonomy` へ直す |
+| `agent_loop` の断片を消して `agentcore.harness` への委譲へ | **未着手（P2 段2）** | 移植先と元の 2 つが並存（AST パリティテストが一致を縛る） |
+
+`agents/*.json` のローカル 8 定義は `["agent-herd", "<sub>", …]` へ正典化済み（P3）。
+クラウド 5 件は §1 のとおり素の CLI を指したまま。
 
 `harness` は **P2 段1（ポーティング）で実装済**。`agent_loop` 側の断片は消していないので、
 同じハーネスに 2 つの入口がある状態である（一致は AST パリティテストが縛る）。

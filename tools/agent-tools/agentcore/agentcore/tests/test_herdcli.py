@@ -121,7 +121,7 @@ class DefsTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         payload = json.loads(out.getvalue())
         self.assertEqual(payload["name"], "aider")
-        self.assertEqual(payload["argv_write"][0], "agent-aider")
+        self.assertEqual(payload["argv_write"][:2], ["agent-herd", "aider"])
         self.assertIn("ollama_chat/gemma4:e4b", payload["argv_write"])
         self.assertEqual(payload["headless_autonomy"], "single-shot")
 
@@ -171,7 +171,7 @@ class ChatTests(unittest.TestCase):
         launched = []
         rc = herdcli.cmd_chat([], launcher=lambda argv: launched.append(argv) or 0)
         self.assertEqual(rc, 0)
-        self.assertEqual(launched[0][:2], ["agent-ollama", "--tui"])
+        self.assertEqual(launched[0][:3], ["agent-herd", "ollama", "--tui"])
 
     def test_a_cloud_cli_with_an_interactive_block_launches(self):
         """chat は ollama 専用ではない——interactive を宣言した定義はどれでも起動できる。"""
@@ -180,44 +180,37 @@ class ChatTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertTrue(launched[0], "対話 argv が空です")
 
-    def test_aider_has_no_interactive_block_yet(self):
-        """aider の対話面はまだ無い。**足す前に agent-dashboard を直す必要がある**。
+    def test_aider_gets_the_policy_but_not_the_headless_only_flags(self):
+        """対話で試したことがヘッドレスで再現しないのを防ぐ: policy は同じ経路で付く。
 
-        agent-dashboard の定型業務は `spec.interactive` の**有無**を
-        「対話ペインで駆動できる CLI か」の代理として読み、無い CLI（aider・素の ollama）を
-        agent-loop の statemachine ハーネスへ回している
-        （cowork.js の `if (!selected.spec.interactive)`）。
+        逆に、人が確認する場でヘッドレス専用の押し切り（--yes-always）や表示を殺すフラグ
+        （--no-stream / --no-pretty）は引き継がない。
 
-        つまり aider.json に interactive を足すと、chat が使えるようになる代わりに
-        **定型業務の実行経路が黙ってハーネスから対話送信へ切り替わる**。実際 CI の
-        `dashboard (npm test)` がこれを検出した（state-machine-window.test.js:
-        「単発実行サブコマンドへ渡す（send ではない）」）。
+        この対話面を開通させるには先に agent-dashboard の弁別子を直す必要があった——
+        あちらは `spec.interactive` の有無を「対話ペインで駆動できるか」の代理として読んで
+        いたので、interactive を足すと aider の定型業務が黙ってハーネスから対話送信へ
+        切り替わっていた。いまは `headlessAutonomy` で弁別する
+        （`cowork.needsHeadlessHarness`。固定は dashboard の state-machine-window.test.js）。
+        """
+        launched = []
+        rc = herdcli.cmd_chat(["aider", "--model", "gemma4:e4b"],
+                              launcher=lambda argv: launched.append(argv) or 0)
+        self.assertEqual(rc, 0)
+        argv = launched[0]
+        self.assertIn("--agent-policy", argv)
+        self.assertIn("gemma4-e4b-reliability-v1", argv)
+        self.assertIn("ollama_chat/gemma4:e4b", argv)
+        for headless_only in ("--yes-always", "--no-stream", "--no-pretty", "--message"):
+            self.assertNotIn(headless_only, argv)
 
-        正しい弁別子は `headless_autonomy`（single-shot はハーネスが要る / tool-loop は
-        自分で回せる）だが、それは dashboard 側の実行経路を変える独立した変更である。
-        ここではその依存関係を固定しておく——このテストが落ちたら、aider.json に
-        interactive を足した誰かが dashboard の弁別子も直したということなので、
-        本テストを消して chat の起動テストへ置き換えてよい。
+    def test_aider_stays_single_shot_so_the_harness_still_owns_its_routines(self):
+        """対話面が付いても `headless_autonomy` は single-shot のまま。
+
+        この 2 つは別の宣言である。混ぜると定型業務の実行経路が変わる。
         """
         spec = agentcli.load_cli("aider", project_dir=_REPO)
-        self.assertIsNone(spec.get("interactive"),
-                          "aider.json に interactive を足すなら、先に agent-dashboard の "
-                          "cowork.js が headless_autonomy で弁別するよう直すこと")
-        err = io.StringIO()
-        rc = herdcli.cmd_chat(["aider"], err=err, launcher=lambda argv: 0)
-        self.assertEqual(rc, 1)
-
-    def test_a_definition_without_an_interactive_block_fails_loudly(self):
-        """黙ってヘッドレスへ倒さない（追加したければ定義に書く）。
-
-        variant 定義（ollama-json 等）は役割専用のヘッドレス設定なので対話面を持たない。
-        ここでヘッドレスへ倒すと、人は「対話に入ったつもり」で 1 往復だけの実行を眺める
-        ことになる。
-        """
-        err = io.StringIO()
-        rc = herdcli.cmd_chat(["ollama-json"], err=err, launcher=lambda argv: 0)
-        self.assertEqual(rc, 1)
-        self.assertIn("対話起動に対応していません", err.getvalue())
+        self.assertTrue(spec.get("interactive"), "chat aider のための interactive が無い")
+        self.assertEqual(spec.get("headless_autonomy"), "single-shot")
 
     def test_launching_our_own_name_stays_in_process(self):
         """interactive.command が配布名を指していても、開発木で PATH に無くて構わない。"""
@@ -256,7 +249,7 @@ class ExecTests(unittest.TestCase):
                               runner=lambda b: built.append(b) or 0)
         self.assertEqual(rc, 0)
         argv = built[0]["argv"]
-        self.assertEqual(argv[0], "agent-ollama")
+        self.assertEqual(argv[:2], ["agent-herd", "ollama"])
         self.assertIn("--format", argv)
         self.assertIn("json", argv)
 

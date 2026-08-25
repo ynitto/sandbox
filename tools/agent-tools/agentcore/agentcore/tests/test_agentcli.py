@@ -345,26 +345,26 @@ class TestBundledGolden(_Isolated):
             # 12 分（p90 942 秒 > agent_timeout 600 秒）、readonly は中央値 1000 秒、
             # --format 併用は本文が空になる（文法が thinking から掛かる。39/39 件）。
             # 人が待てる TUI だけ on を残す。
-            "write": ["agent-ollama", "M", "--think", "off", "--tools", "bash",
+            "write": ["agent-herd", "ollama", "M", "--think", "off", "--tools", "bash",
                       "--max-rounds", "12", "--command-timeout", "900"],
-            "readonly": ["agent-ollama", "M", "--think", "off"],
-            "interactive": ["agent-ollama", "--tui", "--think", "on", "M"],
+            "readonly": ["agent-herd", "ollama", "M", "--think", "off"],
+            "interactive": ["agent-herd", "ollama", "--tui", "--think", "on", "M"],
         },
         "ollama-json": {
             # JSON 契約の役割用。--format json は文法レベルの強制で、道具は持たせない
             # （JSON しか出せない状態でツールループの規約は成立しない）。
-            "write": ["agent-ollama", "--think", "off", "--format", "json", "M"],
-            "readonly": ["agent-ollama", "--think", "off", "--format", "json", "M"],
+            "write": ["agent-herd", "ollama", "--think", "off", "--format", "json", "M"],
+            "readonly": ["agent-herd", "ollama", "--think", "off", "--format", "json", "M"],
         },
         "ollama-read": {
             # 探索が要る readonly 役割用。write 経路に read セットを載せ、権限はゲートが絞る。
-            "write": ["agent-ollama", "--think", "off", "M", "--tools", "read",
+            "write": ["agent-herd", "ollama", "--think", "off", "M", "--tools", "read",
                       "--max-rounds", "30", "--command-timeout", "900"],
-            "readonly": ["agent-ollama", "--think", "off", "M"],
+            "readonly": ["agent-herd", "ollama", "--think", "off", "M"],
         },
         "opencode": {
-            "write": ["agent-opencode", "--auto", "--model", "M"],
-            "readonly": ["agent-opencode", "--agent", "plan", "--model", "M"],
+            "write": ["agent-herd", "opencode", "--auto", "--model", "M"],
+            "readonly": ["agent-herd", "opencode", "--agent", "plan", "--model", "M"],
             "interactive": ["opencode", "--model", "M"],
         },
     }

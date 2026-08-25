@@ -126,8 +126,7 @@ agent-opencode）を揃えること」と注記している——C7（写しを�
   `agent-opencode` は同一 zipapp への別名（argv[0] ディスパッチ）となり、単独でも従来どおり
   **argv・stdout/stderr 契約完全互換**で使える。
 - **G2**: 対話型の統一コマンド `agent-herd chat [<cli>] [--model M]`。定義の `interactive`
-  ブロックを解決して起動する（ollama は内蔵 TUI）。**aider の対話は保留**——`interactive` の
-  有無が agent-dashboard で別の意味に使われているため（§8.2）。
+  ブロックを解決して起動する（ollama は内蔵 TUI、aider は policy つき対話起動）。
 - **G3**: `toolloop` / `statemachine` を `agentcore.harness` へ移設し、
   `agent-herd harness …` から単独実行できる。agent-loop は薄い委譲で従来コマンドを維持。
 - **G4**: 環境補完・adapter 共通処理を `agentcore.hostenv`（仮称）1 実装へ集約。
@@ -535,6 +534,26 @@ agent-audit が両経路のセッションを同じ読み方で読めるよう�
 4. agent-dashboard の JS ローダのゴールデンテスト（同じ定義から同じ argv）は、定義変更と
    同じ PR で期待値を更新する。
 
+### 7.0 実施した書き替え（P3・実装済）
+
+ローカル実行系の 8 定義が統合入口を指すようになった。クラウド 5 件は N2 のとおり素のまま:
+
+| 定義 | 旧 | 新 |
+|---|---|---|
+| `aider`（`command` と `interactive.command`） | `agent-aider …` | `agent-herd aider …` |
+| `ollama`（同上）/ `ollama-json` / `ollama-list` / `ollama-list-thinking` / `ollama-read` / `ollama-verify` | `agent-ollama …` | `agent-herd ollama …` |
+| `opencode` | `agent-opencode` | `agent-herd opencode` |
+| `claude` / `codex` / `kiro` / `copilot` / `cursor` | 素の CLI | **変更なし**（§9.3） |
+
+これで agent-project / agent-flow / agent-amigos / agent-audit / agent-loop /
+agent-dashboard の全経路が同じ 1 バイナリを踏む。ゴールデンテストは Python
+（`test_agentcli` / `test_ollama_adapter`）と dashboard（`agent-cli-golden` /
+`agent-assist` / `routine-agent-cli`）の両方を同じ変更で更新した。
+
+テストが自作する**合成定義**（`execution-policy` / `orchestration` の fixture）は
+旧綴りのまま残してある——ローダが入口の綴りに依存しないことの証拠になるからで、
+書き替える必要は無い。
+
 ### 7.1 variant は入口を増やさない
 
 variant を「入口の分岐」と読むと設計を誤る。`resolve_variant()` が返すのは**別の定義名**で
@@ -570,7 +589,8 @@ variant を「入口の分岐」と読むと設計を誤る。`resolve_variant()
 | **P1 入口面** ✅ **実装済** | `agent-herd` サブコマンド面（aider/ollama/opencode/defs/exec/chat/観測）・aider.json の interactive ブロック | `agent-herd aider …` と `agent-aider …` が同一結果。`chat aider` の環境仕込みがヘッドレスと同一実装を通ることをテストで縛る |
 | **P2 ハーネス移植** ✅ **実装済**（段1） | toolloop/statemachine を `agentcore.harness` へ**コピー**・`agent-herd harness …`・AST パリティテスト。**agent_loop は無改変** | agent-loop の既存テストが無改変で通る（触っていないので当然通る）。移植先が単体 import でき、zipapp から回る |
 | **P2 段2 移行** ⬜ 未着手 | agent_loop の断片を消して `agentcore.harness` への委譲へ | `test_statemachine.py` 等 agent-loop の 554 テストが無改変で通る |
-| **P3 正典化** ⬜ 未着手 | `agents/*.json` の command 書き替え + dashboard ゴールデン更新・（任意）stub の取り込み | 全エンジンの結合テスト・dashboard ゴールデンが green。旧綴り定義でも動作（互換テスト） |
+| **P1.5 弁別子の是正** ✅ **実装済** | dashboard の `!spec.interactive` を `needsHeadlessHarness`（`headless_autonomy` で判定）へ・`aider.json` に `interactive` を追加 | 既存全定義で判定が従来と同じ。`chat aider` が policy つきで起動し、aider の定型業務はハーネスのまま |
+| **P3 正典化** ✅ **実装済** | `agents/*.json` 8 件の `command` / `interactive.command` を `["agent-herd", "<sub>", …]` へ・Python と dashboard のゴールデン更新 | 全エンジンの結合テスト・dashboard ゴールデンが green。旧綴りの別名も argv[0] 分岐で従来どおり動く |
 
 各フェーズは独立に取り込め、どのフェーズで止めても不整合が残らない（P0 だけでも
 3 重複製の解消と配布統合という C7 の主目的は達成される）。
@@ -592,29 +612,35 @@ variant を「入口の分岐」と読むと設計を誤る。`resolve_variant()
 `agent-loop statemachine` を案内する——設計書を読んで打った人に「未知のサブコマンド」と
 返すのは不親切なので、所在だけは答える。中身は P2 で入る。
 
-### 8.2 実装中に見つけた制約 — `interactive` の有無が二重の意味を持っている
+### 8.2 `interactive` の二重の意味を解いた（P1.5・実装済）
 
-`agents/aider.json` に `interactive` を足す（G2 の aider 分）と、**定型業務の実行経路が
-黙って切り替わる**ことが分かった。agent-dashboard は `spec.interactive` の**有無**を
+`agents/aider.json` に `interactive` を足すと、**定型業務の実行経路が黙って切り替わる**
+という制約に最初の実装で当たった。agent-dashboard が `spec.interactive` の**有無**を
 「対話ペインで駆動できる CLI か」の代理として読み、無い CLI（aider・素の ollama）を
-agent-loop の statemachine ハーネスへ回しているためである
-（`cowork.js` の `if (!selected.spec.interactive)`）。
+agent-loop の statemachine ハーネスへ回していたためである。CI の `dashboard (npm test)` が
+検出し、一度は aider の `interactive` を戻した。
 
-CI の `dashboard (npm test)` がこれを検出した（`state-machine-window.test.js`:
-「単発実行サブコマンドへ渡す（send ではない）」）。ゴールデン値の更新では済まない実挙動の
-回帰なので、**aider の `interactive` は入れずに戻した**。
+**P1.5 で正しい弁別子へ直した。** `cowork.js` に `needsHeadlessHarness(spec)` を置き、
+3 箇所の `!selected.spec.interactive` をそれへ置き換えた:
 
-正しい弁別子は `headless_autonomy` である——`single-shot` はハーネスが要り、`tool-loop` は
-自分で回せる（§5.3 の層判定と同じ）。`interactive` の有無は「対話面を提供するか」であって
-「ハーネスが要るか」ではない。この 2 つを同じフラグで表しているのが現状の負債で、分離は
-**agent-dashboard の実行経路を変える独立した変更**として扱う（配布統合と入口面に混ぜると、
-定型業務が壊れたときにどの変更が原因か切り分けられない）。
+```js
+function needsHeadlessHarness(spec) {
+  if (!spec || !spec.interactive) return true;            // 対話面が無ければ駆動しようが無い
+  return String(spec.headlessAutonomy || 'single-shot') === 'single-shot';
+}
+```
 
-依存関係は `test_herdcli.ChatTests.test_aider_has_no_interactive_block_yet` が固定して
-いる。dashboard の弁別子を直した人がそのテストを消して `chat aider` の起動テストへ
-置き換える、という順序で解ける。
+2 つの宣言は別物である——`interactive` は「対話面を提供するか」、`headless_autonomy` は
+「自分で探索・実行まで回せるか」。aider は**両方が真になりうる唯一の CLI**（対話もできるが
+ヘッドレスでは single-shot）で、そこで代理が壊れた。
 
-**P2 を分けた理由**: `toolloop.py`（1,275 行）と `statemachine.py`（866 行）は
+この述語は既存の全定義に対して**従来と同じ判定を返す**（`interactive` を持ちかつ
+`single-shot` なのは aider だけで、それは足す前は前段の条件で拾われていた）。つまり挙動が
+変わるのは aider に対話面が付いたときだけで、そのとき「定型業務はハーネスのまま」という
+正しい側へ倒れる。固定は dashboard の `state-machine-window.test.js` と、Python 側の
+`test_herdcli.ChatTests`。
+
+**P2 を分けた理由****P2 を分けた理由**: `toolloop.py`（1,275 行）と `statemachine.py`（866 行）は
 agent_loop の **exec 合成断片**で、暗黙の共有グローバル（`_tl_*` / `_sm_*`）に依存している。
 通常モジュールへ書き直すのは 2,100 行規模の振る舞い保存リファクタで、`test_statemachine.py`
 を含む agent-loop の 554 テストを合格ゲートにした独立の変更として扱うべきである。配布統合

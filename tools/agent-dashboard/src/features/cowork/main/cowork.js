@@ -978,7 +978,7 @@ function runLoop(config, itemIdValue, parameters, tier = '') {
   );
   const prompt = Array.isArray(item.args) ? undefined : withGlobalInstructions(config, resolvedPrompt);
   const selected = resolveRoutineAgent(config, cwd, tier);
-  if (prompt && !selected.spec.interactive) {
+  if (prompt && needsHeadlessHarness(selected.spec)) {
     // 対話ペインを持たない CLI（aider・素の ollama）。**tmux とは無関係**——tmux は
     // コマンドを送り結果を見せる手段なので、ここも定型業務と同じウィンドウ経路で見せる。
     // 変わるのは中で走らせるものだけで、対話 CLI の代わりに agent-loop の単発実行
@@ -1069,7 +1069,7 @@ function runStateMachine(config, itemIdValue, parameters, tier = '') {
     args = ['send', legacy];
   }
   const selected = resolveRoutineAgent(config, cwd, tier);
-  if (!selected.spec.interactive) {
+  if (needsHeadlessHarness(selected.spec)) {
     if (Array.isArray(item.args)) throw new Error('明示 args の定型業務は headless 実行に対応していません');
     const workflowPath = stateMachineFilePath(item, item.repo || item.cwd || cwd, config);
     if (!workflowPath) throw new Error('workflow.yaml の場所を特定できません');
@@ -1184,7 +1184,7 @@ function runAdhoc(config, payload = {}) {
   });
   // 対話ペインを持たない CLI（段の降格で aider へ落ちた場合など）も同じウィンドウで見せる。
   // 起動するものが対話セッションか単発実行かの違いだけで、経路は分けない。
-  if (!selected.spec.interactive) {
+  if (needsHeadlessHarness(selected.spec)) {
     return runHeadlessRoutine(config, {
       cwd: registered, prompt, acceptance: [], selected, title: 'アドホック起動', record,
     });
@@ -1215,6 +1215,23 @@ const ROUTINE_WORKLOAD = 'routine';
 // 既定は空文字へ改めたが、既存の config.json には値が残るので、この文字列に限っては
 // 「人が選んだ上書き」ではなく既定の残骸とみなして無視する。
 const LEGACY_CHAT_COMMAND = 'kiro-cli chat --trust-all-tools';
+
+// ツールループを内蔵しない CLI は、対話ペインではなく限定ツール契約のハーネス
+// （agent-loop の run / statemachine）で回す。
+//
+// **判定は定義の headless_autonomy で行う。interactive の有無で代理してはいけない。**
+// 対話面を提供するか（interactive）と、自分で探索・実行まで回せるか（headless_autonomy）は
+// 別の宣言である。両者を同じフラグで表すと、aider のように「対話もできるが
+// ヘッドレスでは single-shot」の CLI を取り違え、定型業務が黙ってハーネスから対話送信へ
+// 切り替わる（実際 2026-08-25 に aider.json へ interactive を足して踏んだ）。
+//
+// interactive を持たない CLI はそもそもペインで駆動しようが無いので、こちらもハーネスへ。
+function needsHeadlessHarness(spec) {
+  if (!spec || !spec.interactive) return true;
+  // JS ローダ（agentCli.js）は camelCase へ正規化する。定義ファイルの綴りは
+  // headless_autonomy だが、ここへ来る spec は正規化済みなので headlessAutonomy。
+  return String(spec.headlessAutonomy || 'single-shot') === 'single-shot';
+}
 
 // 定常業務の tmux 実行で使う対話 CLI の一式（S9-3）。
 //
@@ -1637,6 +1654,7 @@ module.exports = {
   applyManagedItems, stateMachineCreationPrompt,
   inspectCoworkRoot, setCoworkRoot,
   templateParameterKeys, stateMachineInputSpec, stateMachineFilePath, resolveLoopAcceptance,
+  needsHeadlessHarness,
   routineParameterSpec, validateParameters, applyParameters, stateMachineParameterBlock,
   stateMachineHarnessArgs, harnessWorkflowArg,
 };
