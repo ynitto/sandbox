@@ -321,7 +321,8 @@ agent-ollama --replay --arm model=qwen3.5:9b,think=off,repeat=3
 リクエスト単位で足す）/ `AGENT_OLLAMA_KEEP_ALIVE` / `AGENT_OLLAMA_LOG_DIR` /
 `AGENT_OLLAMA_SYSTEM_PROMPT`（追加の system instruction。未指定なら送らない）/
 `AGENT_OLLAMA_SKILLS_DIR` / `AGENT_OLLAMA_STALL_TIMEOUT` / `AGENT_OLLAMA_FIRST_TOKEN_TIMEOUT` /
-`AGENT_OLLAMA_CONNECT_TIMEOUT`（接続の上限秒・既定 120）/
+`AGENT_OLLAMA_CONNECT_TIMEOUT`（接続の上限秒・既定 120。到達時に生存確認が通れば
+順番待ちとして待ち続け、サーバに届かないときだけ打ち切る）/
 `AGENT_OLLAMA_META_TIMEOUT`（文脈上限の問い合わせに許す秒数・既定 3）/
 `AGENT_OLLAMA_HISTORY` / `AGENT_OLLAMA_NO_READLINE`（TUI の行編集を切る）。
 

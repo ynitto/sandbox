@@ -117,10 +117,12 @@ cooldown_seconds: 30          # セマフォ解放後の再取得待機時間（
 #                             # acceptance_judge で上書きできる。有効にしたときは
 #                             # fail-closed——判定できなかった基準は「満たしていない」。
 #                             # 判定役は agents/<name>.json の variants.verify へ振り替わる。
-# headless_pane: true         # 既定 true。headless 実行のログ（~/.agents/runs/headless/*.jsonl）を
-#                             # デーモンと同じウィンドウ内のペイン（コントロールペインと分割・
-#                             # エントリごとに 1 枚を使い回し）で表示する。false でペインも
-#                             # 開かない（サーバ・CI 常駐）。tmux の外では何もしない。
+# headless_pane: true         # 既定 true。headless 実行の進行表示（~/.agents/runs/headless/*.log。
+#                             # `[agent-loop] …` のテキストで、dashboard 定常業務の実行ペインと
+#                             # 同じ見え方。機械記録は同名 .jsonl）をデーモンと同じウィンドウ内の
+#                             # ペイン（コントロールペインと分割・エントリごとに 1 枚を使い回し）で
+#                             # 表示する。false でペインも開かない（サーバ・CI 常駐）。
+#                             # tmux の外では何もしない。ペインは quit で一緒に閉じる。
 # headless_window: false      # ペインの代わりに専用 tmux ウィンドウで追う。エントリごとに 1 枚を
 #                             # 使い回す（実行ごとに増やすと 5 分間隔で 1 日 288 枚になる）。
 

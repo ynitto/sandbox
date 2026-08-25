@@ -193,34 +193,55 @@ class OpenHeadlessLogPaneTests(unittest.TestCase):
 
 
 class ProgressRedirectTests(unittest.TestCase):
-    """デーモンの headless スレッドでは進行表示を実行ログへ振り向ける。
+    """デーモンの headless スレッドでは進行表示をテキスト版ログへ振り向ける。
 
     デーモンの stdout はコントロールペインなので、print のままだと実行の様子
     （ラウンド・run・write_files・却下）が controller のログに混ざって流れる。
+    ログペインが tail するのは `[tag] message` のテキスト版で、dashboard 定常業務の
+    実行ペイン（`[run] …`）と同じ見え方にする（生 jsonl は見せない）。
     """
 
     def tearDown(self):
-        al._TL_PROGRESS_LOCAL.log_file = None
+        al._TL_PROGRESS_LOCAL.view_file = None
 
-    def test_redirects_to_the_log_file_when_set(self):
+    def test_redirects_to_the_view_file_when_set(self):
         import io
-        import json
         import tempfile
-        with tempfile.NamedTemporaryFile("r", suffix=".jsonl") as f:
-            al._TL_PROGRESS_LOCAL.log_file = f.name
+        with tempfile.NamedTemporaryFile("r", suffix=".log") as f:
+            al._TL_PROGRESS_LOCAL.view_file = f.name
             with mock.patch.object(al.sys, "stdout", io.StringIO()) as out:
                 al._tl_progress("ラウンド 1/8", "agent-loop")
             self.assertEqual(out.getvalue(), "")
-            event = json.loads(f.read())
-            self.assertEqual(event["event"], "progress")
-            self.assertEqual(event["message"], "ラウンド 1/8")
-            self.assertEqual(event["tag"], "agent-loop")
+            self.assertEqual(f.read(), "[agent-loop] ラウンド 1/8\n")
 
     def test_prints_to_stdout_without_a_sink(self):
         import io
         with mock.patch.object(al.sys, "stdout", io.StringIO()) as out:
             al._tl_progress("state: fetch", "statemachine")
         self.assertEqual(out.getvalue(), "[statemachine] state: fetch\n")
+
+    def test_view_file_sits_next_to_the_jsonl(self):
+        self.assertEqual(al._tl_progress_view_file("/tmp/runs/headless/123-ab.jsonl"),
+                         "/tmp/runs/headless/123-ab.log")
+
+
+class StopKillsLogPanesTests(unittest.TestCase):
+    def test_stop_kills_headless_log_panes(self):
+        """quit 後に tail -F だけのペインを残さない。"""
+        mgr = al.SessionManager.__new__(al.SessionManager)
+        mgr._lock = al.threading.Lock()
+        mgr._panes = {}
+        mgr._headless_log_panes = {"e1": "%9"}
+        mgr._prompt_names = {}
+        mgr._tmux_names = {}
+        mgr._prompt_cwds = {}
+        mgr._owners = {}
+        mgr.remove_state = mock.Mock()
+        with mock.patch.object(al, "_tmux_cmd") as tmux:
+            mgr.stop()
+        kills = [c.args for c in tmux.call_args_list if c.args and c.args[0] == "kill-pane"]
+        self.assertEqual(kills, [("kill-pane", "-t", "%9")])
+        self.assertEqual(mgr._headless_log_panes, {})
 
 
 if __name__ == "__main__":

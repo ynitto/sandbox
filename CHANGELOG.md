@@ -7,15 +7,42 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agentcore/agent-loop: ollama が塞がっていると connect 120 秒で誤って停止する
+
+- agent-loop を aider+gemma4:e4b で回すと、ollama-json（制御役）が `connect のまま
+  120 秒無進捗` の StallError で実行ごと落ちることがあった。原因は 2 層:
+  1. ollama は他のリクエストを処理中（`OLLAMA_NUM_PARALLEL` の空き待ち・モデル
+     ロード中）、後続リクエストへ**応答ヘッダすら返さない**。agent-ollama の connect
+     局面はそれを「接続不能」と区別できず、直前のリクエスト（aider の周・タイムアウト
+     後もサーバ側で走り続けるツール実行の LLM 呼び出し等）が残っていると 120 秒で
+     誤って打ち切っていた。打ち切って再投入しても列の最後尾へ戻るだけで解決しない。
+     connect 上限到達時に `/api/version` で生存確認し、生きていれば `queue` 局面
+     （上限なし・heartbeat 継続・`queued` イベントで証跡）として待ち続けるようにした。
+     生存確認に失敗したときだけ従来どおり打ち切る。全体の上限は呼び出し側
+     （agent-loop の subprocess タイムアウト等）が従来どおり持つ。
+  2. agent-loop 側は StallError が定義（errors[]）で transient 分類されていても
+     再試行しなかった。hint が本文を差し替えると `_TL_TRANSIENT_RE` に掛かる語が
+     消えるため。分類結果を `ToolLoopError.transient` として持ち越し、制御応答の
+     再試行判定は定義の分類を第一にした（正規表現は補助に降格）。
+- 実測: ollama を長文生成で塞いだ状態で agent-ollama（connect 上限 10 秒）を実行し、
+  修正前は 10 秒で停止、修正後は queue 局面で約 50 秒待って正常応答を確認。
+
 ### agent-loop: headless 実行の進行表示をコントロールペインへ流さない・本文名指しのスキルを解決する
 
 - デーモンの headless 実行（aider / gemma4:e4b 等の per-run）で、ツールループの進行表示
   （`ラウンド N/M` / `run:` / `write_files:` / `却下:`）がデーモンの stdout ＝コントロール
   ペインへ print されていた。専用ログペイン（前日の変更で追加）は jsonl を tail するだけ
   だったので、「実行の様子はペインへ・controller は管理ログだけ」という分離が実態と
-  逆になっていた。進行表示をスレッドごとに実行ログ（jsonl の `event: progress`）へ
-  振り向け、ログペイン側に集約した。単発の `run` / `statemachine` サブコマンドは従来
-  どおり stdout（＝その実行を見せているペイン）へ出す。
+  逆になっていた。進行表示をスレッドごとに実行ログ側へ振り向け、ログペインに集約した。
+  単発の `run` / `statemachine` サブコマンドは従来どおり stdout（＝その実行を見せている
+  ペイン）へ出す。
+- ログペインが tail するのは進行表示のテキスト版（jsonl と同名の `.log`。`[agent-loop] …`
+  行）にした。生の jsonl を見せると argv 全文入りの JSON が流れて、dashboard 定常業務の
+  「今すぐ実行」ペイン（`[run] …`）と見え方が揃わない。機械記録の jsonl は従来どおり
+  同名 `.jsonl` に残る。
+- `quit`（および SIGHUP/SIGTERM）でデーモンを終えたとき、headless ログペイン
+  （`tail -F`）を残さず一緒に閉じるようにした。従来はワーカーペインだけ閉じて、
+  ログペインはデーモンのいないウィンドウで生き続けていた。
 - 層3（single-shot）のツールループで、本文が「wiki-useスキルを使って」のようにスキルを
   素の表記で名指ししても解決されず、モデルがスキル名をそのままコマンドとして実行して
   「PATH 上に実行ファイルがありません: wiki-use」の却下を繰り返していた（実測）。

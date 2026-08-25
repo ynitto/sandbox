@@ -82,7 +82,7 @@ structured outputs のスキーマ `{"type":"array","items":{"type":"string"}}` 
 | `OLLAMA_HOST` / `OLLAMA_API_BASE` | — | 接続先。**片方だけでも相互に補完**する |
 | `NO_PROXY` / `no_proxy` | — | ollama のホストを常に両表記へ追記する |
 | `OLLAMA_TIMEOUT` | `600` 秒 | HTTP 全体の上限 |
-| `AGENT_OLLAMA_CONNECT_TIMEOUT` | `120` 秒 | 応答ヘッダを得るまで |
+| `AGENT_OLLAMA_CONNECT_TIMEOUT` | `120` 秒 | 応答ヘッダを得るまで。到達時に `/api/version` で生存確認し、サーバが生きていれば順番待ち（queue 局面・上限なし）として待ち続ける。失敗したときだけ打ち切り |
 | `AGENT_OLLAMA_FIRST_TOKEN_TIMEOUT` | `0`（無制限） | prefill |
 | `AGENT_OLLAMA_STALL_TIMEOUT` | `180` 秒 | decode の無進捗 |
 | `AGENT_OLLAMA_META_TIMEOUT` | `3` 秒 | `/api/ps` `/api/show` の問い合わせ |

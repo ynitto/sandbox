@@ -119,6 +119,41 @@ class TestStreamCall(unittest.TestCase):
                 ollama_loop.run_plain("qwen3", "hello", heartbeat=0.05)
         self.assertIn("接続できません", str(caught.exception))
 
+    def test_connect_timeout_with_live_server_waits_in_queue(self):
+        """サーバが生きているのに応答ヘッダが遅い＝順番待ち。打ち切らず待つ。
+
+        ollama は他リクエストの処理中（OLLAMA_NUM_PARALLEL 埋まり・モデルロード中）、
+        応答ヘッダすら返さない。打ち切って再投入しても列の最後尾へ戻るだけなので、
+        /api/version の生存確認が通る限り queue 局面として待ち続ける
+        （実測: agent-loop で aider の直前リクエストが残ると connect が 120 秒で誤停止）。
+        """
+        events = []
+
+        def slow_open(_req, timeout=None):
+            time.sleep(0.4)   # connect_timeout=0.1 を超えてからヘッダが返る
+            return _FakeResponse(_gen_lines("あ"))
+
+        with mock.patch.object(ollama_loop.urllib.request, "urlopen", slow_open), \
+             mock.patch.object(ollama_loop, "_server_alive", return_value=True):
+            result = ollama_loop.run_plain(
+                "qwen3", "hello", connect_timeout=0.1, heartbeat=0.05,
+                emit=lambda kind, **f: events.append((kind, f)))
+        self.assertEqual(result["text"], "あ")
+        self.assertIn("queued", [k for k, _f in events])
+        self.assertNotIn("stall", [k for k, _f in events])
+
+    def test_connect_timeout_with_dead_server_still_raises(self):
+        def never_open(_req, timeout=None):
+            time.sleep(2.0)
+            return _FakeResponse(_gen_lines("あ"))
+
+        with mock.patch.object(ollama_loop.urllib.request, "urlopen", never_open), \
+             mock.patch.object(ollama_loop, "_server_alive", return_value=False):
+            with self.assertRaises(ollama_loop.StallError) as caught:
+                ollama_loop.run_plain("qwen3", "hello", connect_timeout=0.1,
+                                      heartbeat=0.05)
+        self.assertIn("connect", str(caught.exception))
+
     def test_error_chunk_is_reported(self):
         with _patch_urlopen(_FakeResponse([{"error": "model not found"}])):
             with self.assertRaises(ollama_loop.OllamaError) as caught:

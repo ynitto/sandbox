@@ -43,6 +43,7 @@ from agentcore.ollama_events import HEARTBEAT_INTERVAL_SEC, PROGRESS_INTERVAL_SE
 DEFAULT_STALL_TIMEOUT_SEC = 180.0     # decode 中の無進捗の上限。これだけが失敗検知の主役
 DEFAULT_FIRST_TOKEN_TIMEOUT_SEC = 0.0  # prefill の上限。既定 0 = 無制限（遅さは異常ではない）
 DEFAULT_CONNECT_TIMEOUT_SEC = 120.0   # 混雑時はモデルロード中に応答ヘッダすら遅れる
+LIVENESS_PROBE_TIMEOUT_SEC = 5.0      # connect 上限到達時の生存確認（/api/version）の上限
 DEFAULT_MAX_ROUNDS = 12
 DEFAULT_COMMAND_TIMEOUT_SEC = 300.0
 DEFAULT_MAX_OUTPUT_CHARS = 4000
@@ -299,6 +300,22 @@ def _abort_response(res) -> None:
         pass
 
 
+def _server_alive(timeout: float = LIVENESS_PROBE_TIMEOUT_SEC) -> bool:
+    """ollama サーバが応答するか（/api/version）。
+
+    connect 局面が上限に達したとき、「サーバが死んでいる・届かない」と「生きているが
+    他のリクエストで塞がっている（OLLAMA_NUM_PARALLEL の空き待ち・モデルロード中）」を
+    分けるための軽い問い合わせ。後者を打ち切って再投入しても列の最後尾へ戻るだけで、
+    待ち時間は増える一方になる（実測: aider と ollama-json が同じサーバを使う agent-loop
+    で、直前のリクエストが残っていると次の connect が 120 秒で誤って落ちた）。
+    """
+    try:
+        with urllib.request.urlopen(f"{host_url()}/api/version", timeout=timeout) as res:
+            return 200 <= int(getattr(res, "status", 200) or 200) < 500
+    except Exception:
+        return False
+
+
 def _reader(req, holder: dict, mailbox: "queue.Queue") -> None:
     """接続と行読みを別スレッドで行う。
 
@@ -340,11 +357,19 @@ def stream_call(endpoint: str, body: dict, *, delta_of, emit=None, round_no: int
     | 局面      | 上限                        | 既定           |
     |-----------|-----------------------------|----------------|
     | connect   | connect_timeout             | 120s           |
+    | queue     | なし（呼び出し側が持つ）    | —              |
     | prefill   | first_token_timeout         | 0（無制限）    |
     | decode    | stall_timeout               | 180s           |
 
     prefill を無制限にしてあるのが要点。CPU 推論では「最初のトークンまで 10 分」が
     正常なので、ここに上限を置くと正常な実行を殺す（§0.1 R2）。
+
+    connect が上限に達したときは `/api/version` で生存確認し、サーバが生きていれば
+    「queue」局面（他リクエストの完了・モデルロード待ち）として待ち続ける。ollama は
+    塞がっている間、応答ヘッダすら返さないため、接続不能と順番待ちが connect では
+    区別できない——打ち切って再投入しても列の最後尾へ戻るだけなので、生存確認できる
+    限り待つ（証跡は heartbeat が出続け、全体の上限は呼び出し側のタイムアウトが持つ）。
+    生存確認に失敗したときだけ従来どおり打ち切る。
 
     上限の判定は heartbeat の刻みで行うため、検知は最大 `heartbeat` 秒だけ遅れる
     （既定 5 秒。分単位の上限に対して十分な粒度で、待ち受けを 1 か所に保てる）。
@@ -379,6 +404,8 @@ def stream_call(endpoint: str, body: dict, *, delta_of, emit=None, round_no: int
     def limit_for(current_phase: str) -> float:
         if current_phase == "connect":
             return connect_timeout
+        if current_phase == "queue":
+            return 0.0   # 生存確認済みの順番待ち。上限は呼び出し側が持つ
         if current_phase == "prefill":
             return first_token_timeout
         return stall_timeout
@@ -403,6 +430,14 @@ def stream_call(endpoint: str, body: dict, *, delta_of, emit=None, round_no: int
                          waiting_sec=round(waited, 1), tokens_out=tokens_out,
                          limit_sec=round(limit, 1))
                 if limit > 0 and waited >= limit:
+                    if phase == "connect" and _server_alive():
+                        # サーバは生きている＝接続不能ではなく順番待ち（他リクエストの
+                        # 完了・モデルロード待ち）。打ち切ると列の最後尾へ戻るだけ。
+                        phase = "queue"
+                        phase_started = time.monotonic()
+                        if emit is not None:
+                            emit("queued", round=round_no, waited_sec=round(waited, 1))
+                        continue
                     if emit is not None:
                         emit("stall", round=round_no, phase=phase, waiting_sec=round(waited, 1),
                              limit_sec=round(limit, 1))

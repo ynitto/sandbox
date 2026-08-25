@@ -1051,6 +1051,8 @@ class SessionManager:
     def stop(self) -> None:
         with self._lock:
             prompt_ids = list(self._panes.keys())
+            log_panes = list(self._headless_log_panes.values())
+            self._headless_log_panes.clear()
             self._prompt_names.clear()
             self._tmux_names.clear()
             self._prompt_cwds.clear()
@@ -1058,4 +1060,11 @@ class SessionManager:
 
         for prompt_id in prompt_ids:
             self._stop_pane(prompt_id)
+        # headless 実行ログを追う tail ペインも道連れにする。残すと quit 後も
+        # デーモンのいないウィンドウで tail -F だけが生き続ける。
+        for pane_target in log_panes:
+            try:
+                _tmux_cmd("kill-pane", "-t", pane_target, capture=False)
+            except Exception:   # tmux が先に死んでいても quit は続行
+                pass
         self.remove_state()

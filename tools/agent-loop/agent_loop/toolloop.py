@@ -50,7 +50,16 @@ _TL_SKILL_PYTHON = ""
 
 
 class ToolLoopError(RuntimeError):
-    """ツールループの実行失敗（検証違反・契約不成立・環境不足）。"""
+    """ツールループの実行失敗（検証違反・契約不成立・環境不足）。
+
+    `transient` は agents/<name>.json の errors[] 分類（class: transient）の持ち越し。
+    定義が hint で本文を差し替えると、メッセージ文字列から一時障害と読めなくなる
+    ——分類は定義が正典なので、文字列の再推測ではなくフラグで運ぶ。
+    """
+
+    def __init__(self, message: str = "", *, transient: bool = False):
+        super().__init__(message)
+        self.transient = transient
 
 
 def _tl_inside(root: str, file: str) -> bool:
@@ -322,18 +331,32 @@ def _tl_append_log(log_file: str, event: dict) -> None:
                            ensure_ascii=False) + "\n")
 
 
-# デーモンの headless 実行スレッドが設定する進行表示の振り向け先（log_file パス）。
+# デーモンの headless 実行スレッドが設定する進行表示の振り向け先（テキストファイルのパス）。
 # 単発コマンド（run / statemachine）は stdout が実行ペインそのものなので print が正しいが、
 # デーモン内スレッドの stdout はコントロールペイン——そこへ流すと実行の様子が
 # controller のログに混ざる。スレッドごとに向き先を切り替える。
 _TL_PROGRESS_LOCAL = threading.local()
 
 
+def _tl_progress_view_file(log_file: str) -> str:
+    """進行表示のテキスト版のパス（jsonl と同名で拡張子だけ .log）。
+
+    ログペインはこちらを tail する。jsonl を直接見せると argv 全文入りの生 JSON が
+    流れて、dashboard 定常業務の「今すぐ実行」ペイン（`[run] …` の進行表示）と
+    見え方が揃わない。中身は print と同じ `[tag] message` 行。
+    """
+    return os.path.splitext(str(log_file))[0] + ".log"
+
+
 def _tl_progress(message: str, tag: str = "statemachine") -> None:
     """tmux ウィンドウ（人が見る画面）への進行表示。ログとは別に短く出す。"""
-    log_file = getattr(_TL_PROGRESS_LOCAL, "log_file", None)
-    if log_file:
-        _tl_append_log(log_file, {"event": "progress", "tag": tag, "message": message})
+    view_file = getattr(_TL_PROGRESS_LOCAL, "view_file", None)
+    if view_file:
+        try:
+            with open(view_file, "a", encoding="utf-8") as f:
+                f.write(f"[{tag}] {message}\n")
+        except OSError:
+            pass   # 進行表示が書けなくても実行は落とさない
         return
     print(f"[{tag}] {message}", flush=True)
 
@@ -404,12 +427,16 @@ def _tl_record_usage(agent: dict, result: dict, log_file: str) -> None:
                         tokens_in=tokens_in, tokens_out=tokens_out)
 
 
-def _tl_failure_hint(agent: dict, detail: str) -> str:
-    """失敗分類を利用者向け文言とquota観測の両方へ一度だけ使う。"""
+def _tl_failure_hint(agent: dict, detail: str) -> "tuple[str, bool]":
+    """失敗分類 → (利用者向け文言, 一時障害か)。quota 観測もここで一度だけ行う。
+
+    class は定義（errors[]）が正典。hint が本文を差し替えるとメッセージ文字列から
+    transient と読めなくなるので、分類結果をフラグでも返して呼び出し側の再試行判定に使う。
+    """
     classified = agent["agentcli"].classify_error(
         agent["spec"], detail, detailed=True, now=time.time())
     if not classified:
-        return ""
+        return "", False
     quota_kind = classified.get("quota_kind")
     if quota_kind:
         extra = {"event": "quota", "quota_kind": quota_kind}
@@ -417,7 +444,7 @@ def _tl_failure_hint(agent: dict, detail: str) -> str:
             extra["reset_at"] = classified["reset_at"]
         _node_budget_record(0, agent_cli=str(agent["cli"] or ""),
                             model=str(agent["model"] or ""), extra=extra)
-    return str(classified.get("hint") or "")
+    return str(classified.get("hint") or ""), str(classified.get("class") or "") == "transient"
 
 
 def _tl_run_agent(agent: dict, prompt: str, *, cwd: str, readonly: bool,
@@ -441,8 +468,9 @@ def _tl_run_agent(agent: dict, prompt: str, *, cwd: str, readonly: bool,
     _tl_record_usage(agent, result, log_file)
     if result["status"] != 0 or result["error"]:
         detail = "\n".join(x for x in (result["error"], result["stderr"], result["stdout"]) if x)
-        hint = _tl_failure_hint(agent, detail)
-        raise ToolLoopError(hint or detail or f"{argv[0]} が失敗しました")
+        hint, transient = _tl_failure_hint(agent, detail)
+        raise ToolLoopError(hint or detail or f"{argv[0]} が失敗しました",
+                            transient=transient)
     output = str(result["stdout"] or "").strip()
     if not output and not allow_empty:
         raise ToolLoopError("エージェントが空の応答を返しました")
@@ -462,7 +490,11 @@ def _tl_run_control(agent: dict, prompt: str, *, cwd: str, read_files: "list[str
             return _tl_run_agent(agent, prompt, cwd=cwd, readonly=True,
                                  read_files=read_files, files=[], log_file=log_file)
         except ToolLoopError as exc:
-            if attempt >= _TL_CONTROL_RETRIES or not _TL_TRANSIENT_RE.search(str(exc)):
+            # 定義の分類（class: transient）が第一。hint が本文を差し替えた後の文字列には
+            # 「タイムアウト」等が残らないことがあるので、正規表現は補助に落とす。
+            transient = getattr(exc, "transient", False) or bool(
+                _TL_TRANSIENT_RE.search(str(exc)))
+            if attempt >= _TL_CONTROL_RETRIES or not transient:
                 raise
             _tl_progress(f"制御応答の一時障害を再試行 "
                          f"({attempt + 1}/{_TL_CONTROL_RETRIES}): {exc}")
@@ -1119,8 +1151,9 @@ def run_cli_loop(*, goal: str, cwd: str, agent: dict, log_file: str,
     if result["status"] != 0 or result["error"]:
         detail = "\n".join(x for x in (result["error"], result["stderr"],
                                        result["stdout"]) if x)
-        raise ToolLoopError(_tl_failure_hint(agent, detail)
-                            or detail or f"{argv[0]} が失敗しました")
+        hint, transient = _tl_failure_hint(agent, detail)
+        raise ToolLoopError(hint or detail or f"{argv[0]} が失敗しました",
+                            transient=transient)
     output = str(result["stdout"] or "").strip()
     if not output and agent["spec"].get("empty_output_is_error", True):
         raise ToolLoopError("エージェントが空の応答を返しました")
