@@ -16,14 +16,16 @@ tools/agent-tools/
 ## install.sh
 
 ```bash
-bash tools/agent-tools/install.sh                       # 4 エンジン + agent-ollama（推奨）
+bash tools/agent-tools/install.sh                       # 4 エンジン + agent-herd（推奨）
 bash tools/agent-tools/install.sh --only agent-project  # 1 本だけ
+bash tools/agent-tools/install.sh --only agent-herd     # 実行系の入口だけ（推論担当の PC）
 bash tools/agent-tools/install.sh --prefix /usr/local/bin
 bash tools/agent-tools/install.sh --service             # 常駐化（systemd user unit）も構成
 ```
 
 エンジンは 4 本（`agent-project` / `agent-flow` / `agent-amigos` / `agent-audit`）で、
-ほかに `agent-ollama` も置く。**別々に入れない。** 同じ `agentcore` と契約バージョンを
+ほかに `agent-herd`（と別名の `agent-aider` / `agent-ollama` / `agent-opencode` = 同一
+ファイルへのハードリンク）も置く。**別々に入れない。** 同じ `agentcore` と契約バージョンを
 共有しているので、片方だけ古いと状態の読み書きや仕事の受け渡しが噛み合わなくなる。更新もまとめて
 （`git pull && bash tools/agent-tools/install.sh`）。
 
@@ -40,8 +42,9 @@ agent-flow で共有する（設計: docs/plans/2026-08-05-phase1-token-efficien
 
 **独立配布しない内部モジュール**（設計 R10）。各ツールはそれぞれ別の実行ファイルなので、
 `install.sh` が**各 zipapp へ同梱する**——1 本だけ入れ直しても自己完結して動く。同梱先は
-このインストーラが作る 5 本（4 エンジン + `agent-ollama`）に、自前の installer を持つ
-`agent-loop` を加えた 6 本。
+このインストーラが作る 5 本（4 エンジン + `agent-herd`）に、自前の installer を持つ
+`agent-loop` を加えた 6 本。実行系の 3 名（`agent-aider` / `agent-ollama` /
+`agent-opencode`）は `agent-herd` への別名なので、zipapp の数は増えない。
 
 開発木から直接実行するときは、各エンジンの `__init__.py` がこのディレクトリを `sys.path` へ
 足して解決する（`tools/<engine>/<package>/__init__.py` から見て `../../agent-tools/agentcore`）。
@@ -58,30 +61,53 @@ cd tools/agent-tools/agentcore && python3 -m unittest discover -s tests && pytho
 モジュール一覧・公開 API・写しを縛るテストは
 [`docs/specs/agentcore-spec.md`](../../docs/specs/agentcore-spec.md)。
 
-## agent-ollama — コスト 0 のローカル実行系
+## agent-herd — コスト 0 のローカル実行系
 
-`install.sh` は 4 エンジンのほかに `agent-ollama`（zipapp・1 ファイル）も置く。出発点は
+`install.sh` は 4 エンジンのほかに `agent-herd`（zipapp・1 ファイル）と、その別名として
+`agent-aider` / `agent-ollama` / `agent-opencode`（同一ファイルへのハードリンク）を置く。
+別名は互換シムではなく本体そのものなので、打ち方も出力も従来どおりである。出発点は
 「クラウドの CLI がガバナンスや予算の事情で使えなくなったときに作業を止めないため」の
 バックアップだったが（[2026-08-06 の対策案](../../docs/plans/2026-08-06-opencode-ollama-cpu-inference-proposals.md) §0.1・案 F-2）、
 現在は**品質が成立する役割を恒常的に引き受けるコスト 0 の常備戦力**として位置づけている。
 **犠牲にするのは壁時計時間だけで、「契約に完全適合すること」と「止まっていないことを
 示せること」は要件のまま。**
 
-設計判断は [`docs/designs/agent-ollama-design.md`](../../docs/designs/agent-ollama-design.md)、
-定義の割当・フラグ・環境変数・上限・終了状態は
-[`docs/specs/agent-ollama-spec.md`](../../docs/specs/agent-ollama-spec.md)。
+設計判断は [`docs/designs/agent-herd-design.md`](../../docs/designs/agent-herd-design.md)、
+サブコマンドの綴り・profile の割当・フラグ・環境変数・上限・終了状態は
+[`docs/specs/agent-herd-spec.md`](../../docs/specs/agent-herd-spec.md)。
+
+分岐は `basename(argv[0])` の 1 回だけで、あとはサブコマンドが決める:
 
 ```bash
-echo '要件を3行で要約して' | agent-ollama qwen3                      # 単発（ツールなし）
-echo 'この JSON 契約で答えて' | agent-ollama --format json qwen3      # 文法から JSON を強制
-echo 'README の誤字を直して' | agent-ollama qwen3 --tools             # 実行ループ（bash 1 つ）
-echo 'この repo の構成を調べて' | agent-ollama qwen3 --tools read      # 読み取り専用の探索ループ
-agent-ollama --tui qwen3            # デバッグ用の対話ビュー（tmux から操作できる）
-agent-ollama --follow               # 走っている実行のログへ後からアタッチする
-agent-ollama --status               # いまの進捗を 1 行 JSON で返す（外部監視向け）
-agent-ollama --context qwen3        # 文脈の上限だけを調べる（LLM を呼ばない）
-agent-ollama --replay --arm model=qwen3,think=off,format=json \
-             --arm model=qwen3,think=on          # 記録済みプロンプトを再生して品質を測る
+agent-herd aider …        # = agent-aider …     （Aider をヘッドレスで回す）
+agent-herd ollama …       # = agent-ollama …    （ollama を回す。--tools / --tui も）
+agent-herd opencode …     # = agent-opencode …  （opencode を回す）
+
+agent-herd chat [<cli>]   # 定義の interactive で対話起動する（既定は ollama の内蔵 TUI）
+agent-herd defs [<名前>]   # 定義の一覧と実効 argv（エンジンが組むのと同じもの）
+agent-herd exec <cli>     # 定義どおりにヘッドレス実行する（人のデバッグ用。本文は stdin）
+agent-herd harness …      # statemachine / run を tmux もデーモンも無しに回す
+agent-herd status|follow|replay   # 観測と測定（ollama の同名フラグの別名）
+```
+
+**サブコマンドは adapter の名前であって定義の名前ではない。** `ollama-json` のような定義を
+指して回すときは `agent-herd exec ollama-json` を使う（打ち間違えたら黙って別解釈せず、
+`exec` を案内して止まる）。
+
+ollama を直に叩く例（`agent-ollama …` の旧綴りも同じコードパスに落ちるので、既存の手順書は
+書き換え不要）:
+
+```bash
+echo '要件を3行で要約して' | agent-herd ollama gemma4:e4b                 # 単発（ツールなし）
+echo 'この JSON 契約で答えて' | agent-herd ollama --format json gemma4:e4b # 文法から JSON を強制
+echo 'README の誤字を直して' | agent-herd ollama gemma4:e4b --tools        # 実行ループ（bash 1 つ）
+echo 'この repo の構成を調べて' | agent-herd ollama gemma4:e4b --tools read # 読み取り専用の探索ループ
+agent-herd chat                          # 対話（= agent-herd ollama --tui。人の入口）
+agent-herd follow                        # 走っている実行のログへ後からアタッチする
+agent-herd status                        # いまの進捗を 1 行 JSON で返す（外部監視向け）
+agent-herd ollama --context gemma4:e4b   # 文脈の上限だけを調べる（LLM を呼ばない）
+agent-herd replay --arm model=gemma4:e4b,think=off,format=json \
+                  --arm model=gemma4:e4b,think=on   # 再生して品質を測る
 ```
 
 | モード | 契約上の位置 | 何ができるか |
@@ -89,7 +115,7 @@ agent-ollama --replay --arm model=qwen3,think=off,format=json \
 | 既定 | `readonly: enforced` | text → text のみ。ファイルもコマンドも触れない |
 | `--tools`（= `--tools bash`） | `write_args` | bash 1 つを道具にした最小ループ。制限なし |
 | `--tools read` | `write_args` | 読み取り専用コマンドだけの探索ループ（下記） |
-| `--tui` | `interactive` | 進捗を見ながら手で叩く（agent-dashboard の対話診断・agent-loop から） |
+| `--tui` | `interactive` | 進捗を見ながら手で叩く（agent-dashboard の対話診断・agent-loop から。人が直接入るなら `agent-herd chat`） |
 | `--replay` | 観測（測定） | 記録済みプロンプトを再生する。**道具は持たない**（下記） |
 
 ツールとループが `--tools`（書き込みモード）でだけ生えるのが要点。読み取り専用モードには
@@ -114,15 +140,22 @@ agent-ollama --replay --arm model=qwen3,think=off,format=json \
 - **同梱スクリプトを叩く前提のスキル**（本文に `{skill_dir}` を持つもの）は read セットで
   動かないので、黙って続けず env 分類で落とす
 
-役割別の割り当ては定義ファイルで行う（エンジン改修は不要）:
+役割別の割り当ては定義ファイルで行う（エンジン改修は不要）。**用途別の起動差は別ファイルでは
+なく `agents/ollama.json` の `profiles` にある**——分けると `agent_cli` が用途ごとに増え、
+1 実行系の実測が偽の候補へ割れるため:
 
-| 定義 | 使いどころ |
-|---|---|
-| `ollama` | 汎用。単発 text→text（readonly）/ bash ループ（write） |
-| `ollama-json` | JSON 契約の役割（planner / evaluator / plan など）。`--format json` で文法から強制 |
-| `ollama-list` | 配列契約の役割（split）。`--format json` はトップレベルをオブジェクトに固定して配列を表せないので、スキーマを渡す `--format array` で受ける |
-| `ollama-list-thinking` | Aider/Gemma 4 の split。文法制約を外して Thinking を使い、`temperature=0` で意味的な完全被覆を安定させる |
-| `ollama-read` | 探索が要る読み取り役割。write 経路に read セットを載せ、権限はゲートが絞る |
+| profile | 従来の綴り | 使いどころ |
+|---|---|---|
+| （base） | `ollama` | 汎用。単発 text→text（readonly）/ bash ループ（write） |
+| `json` | `ollama-json` | JSON 契約の役割（planner / evaluator / plan など）。`--format json` で文法から強制 |
+| `list` | `ollama-list` | 配列契約の役割（split）。`--format json` はトップレベルをオブジェクトに固定して配列を表せないので、スキーマを渡す `--format array` で受ける |
+| `list-thinking` | `ollama-list-thinking` | Aider/Gemma 4 の split。文法制約を外して Thinking を使い、`temperature=0` で意味的な完全被覆を安定させる |
+| `read` | `ollama-read` | 探索が要る読み取り役割。write 経路に read セットを載せ、権限はゲートが絞る |
+| `verify` | `ollama-verify` | 受入条件の判定層。既定モデルだけ `gemma4:12b` で、`--stall-timeout 180` を持つ |
+
+従来の綴りはそのまま解決でき（`ollama-list` → base=`ollama` / profile=`list`）、`variants` の
+指す先もこの綴りのままでよい。**台帳と格付けに残る `agent_cli` は正典名の `ollama`** に揃う
+（`agentcli.canonical_name()`）。実効 argv は `agent-herd defs ollama-list` で確認できる。
 
 ### 「遅い」と「死んだ」を区別する
 
@@ -154,7 +187,7 @@ agent-ollama --replay --arm model=qwen3,think=off,format=json \
 エンジン側は壁時計の上限を大きく取り（例 `agent_timeout: 3600`）、実質の検知器を
 `--stall-timeout` と `no_progress` に任せるとよい。壁時計は「無限ハング時の最後の砦」。
 
-write の `--max-rounds` は 12 に絞ってある（read セットの `ollama-read` は 30 のまま）。
+write の `--max-rounds` は 12 に絞ってある（read セットを載せる `read` profile は 30 のまま）。
 実測の空回り run に「もう少し回れば畳めた」形跡が無く、30 まで回せること自体が
 ターンの食いつぶしだったため。読取は 1 ラウンドが安く、打ち切りが成果の欠落に直結する。
 
@@ -232,12 +265,17 @@ export OLLAMA_NUM_PARALLEL=1                       # 先頭キャッシュが効
 
 ```bash
 # 直近 20 件を 2 つの設定へ当てて比べる（think の効きを見る）
-agent-ollama --replay --replay-limit 20 \
-  --arm model=qwen3.5:9b,think=off,format=json \
-  --arm model=qwen3.5:9b,think=on,format=json
+agent-herd replay --replay-limit 20 \
+  --arm model=gemma4:e4b,think=off,format=json \
+  --arm model=gemma4:e4b,think=on,format=json
+
+# モデルを跨いで比べる（verify profile の既定を上げる根拠が要るとき）
+agent-herd replay --replay-limit 20 \
+  --arm model=gemma4:e4b,think=off,format=json \
+  --arm model=gemma4:12b,think=off,format=json
 
 # 同じ設定を 3 回引いてばらつきを見る（自己一貫性）
-agent-ollama --replay --arm model=qwen3.5:9b,think=off,repeat=3
+agent-herd replay --arm model=gemma4:e4b,think=off,repeat=3
 ```
 
 - 入力はログの**最初の user メッセージ**。道具ありの実行ログも入力源にできる

@@ -55,7 +55,7 @@ usage() {
                           （WSL/Linux のみ。設計 §7 の常駐化 2 案のうち systemd 案。
                           Windows タスクスケジューラ案は docs/guides/ 参照 — 二重構成しない）
   --host-config <path>    --service と併用: unit の ExecStart へ渡す host.yaml
-  --with-rich             agent-ollama の zipapp へ rich を同梱する（TUI の色付けが有効に
+  --with-rich             agent-herd の zipapp へ rich を同梱する（TUI の色付けが有効に
                           なる。**pip とネットワークが要る**——このインストーラは既定では
                           標準ライブラリだけで完結するので、要るときだけ明示する。
                           取得に失敗しても中断せず、素の ANSI 表示のまま続ける）

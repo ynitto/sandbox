@@ -2,7 +2,7 @@
 
 > 作成 2026-08-10（同日改訂: worker のコード生成検証の打ち切り判断と、その波及を反映）
 > 対象: `agentcore/ollama_*.py`・`agents/ollama{,-json,-read}.json`・agent-flow / agent-project の役割割当
-> 関連: [`agent-ollama-design.md`](../designs/agent-ollama-design.md)（正典）/
+> 関連: [`agent-herd-design.md`](../designs/agent-herd-design.md)（正典）/
 > [`2026-08-08-agent-ollama-expansion-design.md`](./2026-08-08-agent-ollama-expansion-design.md) /
 > [`2026-08-09-verification-settlement-design.md`](./2026-08-09-verification-settlement-design.md) /
 > [`2026-08-08-agent-tools-resource-efficiency-plan.md`](./2026-08-08-agent-tools-resource-efficiency-plan.md)
