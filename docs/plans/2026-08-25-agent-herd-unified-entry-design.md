@@ -396,13 +396,44 @@ agent-herd replay --arm model=gemma4:e4b,format=json --replay-limit 20
         │
         │  写しが黙ってずれないよう AST パリティテストで縛る
         ▼
-段2 移行（未着手・別の判断）
-  agent_loop の断片を消し、agentcore.harness への委譲へ置き換える
+段2 移行（実施済）
+  本文を _toolloop_body.py / _statemachine_body.py の 1 か所へ畳み、
+  agentcore.harness と agent_loop の両方がそれを exec する
 ```
 
 段 1 で agent-loop を触らないので、**回帰の可能性がそもそも無い**（agent-loop から見ると
-何も変わっていない）。段 2 は agent-loop の 554 テストを合格ゲートにする独立の変更として
-行う。段 1 だけで「tmux もデーモンも無しにハーネスを回せる」という目的は達成される。
+何も変わっていない）。段 1 だけで「tmux もデーモンも無しにハーネスを回せる」という目的は
+達成される。
+
+### 5.1.1 段2 で分かったこと — import 委譲にはできない
+
+段2 の素直な形は「`agent_loop` の断片を消して `from agentcore.harness import …` へ
+置き換える」だが、**それはできない**。agent-loop のテストは
+`mock.patch.object(agent_loop, "_tl_run_agent")` のように**共有名前空間を差し替える**
+（実測 57 箇所・6 ファイル）。import で委譲すると関数の `__globals__` が agentcore 側に
+なるため、その差し替えが効かなくなる——しかも「パッチが当たらない」は静かな失敗で、
+テストが本物の CLI を起動しにいく形で出る。
+
+そこで**本文をデータとして共有する**形にした:
+
+```
+  agentcore/harness/_toolloop_body.py   ← 本文はここ 1 か所（直接 import しない）
+        │                    │
+        │ exec               │ exec
+        ▼                    ▼
+  agentcore.harness       agent_loop の共有名前空間
+  .toolloop（自分の         （従来どおりの合成。__globals__ は agent_loop のまま
+   名前空間へ）              なので 57 箇所の差し替えがそのまま効く）
+```
+
+exec による合成は agent_loop 自身の既存の作法（`__init__.py` が断片を順に exec する）なので、
+新しい仕組みを持ち込んではいない。2 つの実行系は本文を共有するが名前空間は別で、互いの
+モンキーパッチは干渉しない。継ぎ目（記帳と control 解決）は `harness.set_hooks` で
+agent-loop 側の実装を差し込む——差し込まないと台帳が静かに空になるので、これもテストで縛る。
+
+**結果: agent-loop の 554 テストが 1 行も変えずに通る。** 段1 で置いた AST パリティテストは
+役目を終え、「本文が 1 か所であること」「共有名前空間の意味論が保たれていること」を縛る
+`test_harness_shared_body.py` へ作り替えた。
 
 - exec 合成断片を**通常のモジュール**にする。ただし本文は**逐語コピー**で、変えたのは
   断片が共有名前空間から借りていた名前の供給だけ（借用は stdlib を除くと 4 つしか無かった:
@@ -470,6 +501,26 @@ exit code / 打ち切り封筒 / 証跡の形は agent-loop 経由と同一。�
 **限定 4 ツール契約を受け取る `single-shot` 定義は、現時点で 5 件とも cost 0 のローカル推論**
 である（雲の CLI は 5 件とも `tool-loop` なので層 2 を素通りし、引き具に触れない）。
 この事実が §9 の命名判断の根拠になる。
+
+### 5.5 エンジンに散っていたローカル LLM 応答の手当て（実施済）
+
+ハーネス以外にも、**ローカル LLM の応答を engine ごとに手当てしている実装**が散っていた。
+調査結果:
+
+| 実装 | 状態 | 対処 |
+|---|---|---|
+| `agent_flow/util.py` の `extract_json` / `unwrap_list` / `extract_list` | 実装本体 | `extract_json` / `unwrap_list` を `agentcore.llmjson` へ移し、委譲に |
+| `agent_amigos/util.py` の `extract_json` | **agent-flow の写し**（違いは例外文だけ） | 同上 |
+| `agent-tools/eval/engine.py` の 3 関数 | 既に agent-flow へ委譲する薄い層（写しではない） | **触らない** |
+| `agent-audit/readers.py` の ollama 言及 | ログの読み手であってハーネスではない | 触らない |
+
+`unwrap_list` が要るのは ollama の JSON モードが**トップレベルをオブジェクトに固定する**
+ためで、engine 側の仕様であってモデルの能力ではない。この手当てが engine ごとにずれると、
+**同じモデル応答が経路によって通ったり落ちたりする**——しかも落ちた側は「モデルが悪い」に
+見えるので原因が分からない。`hostenv` と同型なので同じように 1 実装へ畳んだ。
+
+`extract_list`（Thinking モデルが返す外側の配列なしの形を畳む）は agent-flow の split 契約に
+固有なので移していない。移すなら「配列契約を持つ engine が 2 つ目に現れたとき」。
 
 ### 5.4 2 つのツールループの役割固定（N1 の明文化）
 
