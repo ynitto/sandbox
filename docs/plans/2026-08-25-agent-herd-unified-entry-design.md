@@ -842,6 +842,77 @@ LAN の含意が消えるので採らない。リポジトリの命名は `agent
 agentcore に adapter を書き、同じ zipapp のサブコマンドへ載せる。基準は「adapter が要るか」
 であって「揃えたいか」ではない。
 
+### 9.4 variant を別の `agent_cli` にしているのは設計の誤り（訂正）
+
+**当初この節では「1 ファイルに畳んでも識別子は名前として残す必要がある」と書いたが、それは
+誤りだった。** 根拠として挙げたのは「`resolve_variant` が名前を返し、台帳にもその名前が
+残る」だが、それは現状の実装がそうなっているというだけで、**そうであるべき理由になって
+いない**。契約を読み直すと、むしろ現状のほうが契約と食い違っている。
+
+#### 用途の次元は、契約側に既にある
+
+候補の格付け契約（`schemas/agent-candidate-qualifications.schema.json`）はこう定義されている:
+
+```
+candidate = (agent_cli, model)
+     └─ qualifications: { operation_class → 格付け }
+```
+
+`agent-audit` の集計キーも `(agent_cli, model, operation_class)` である
+（`agent_audit/qualifications.py`）。usage の `GROUP_KEYS` にも `agent_cli` と `purpose` が
+**別の列として**並んでいる。
+
+つまり**「どの用途か」は候補の中の次元として既にモデル化されている**。それを
+`agent_cli` の値へ畳み込んでいるのが `ollama-json` / `ollama-list` / `ollama-read` /
+`ollama-verify` / `ollama-list-thinking` で、同じ次元を 2 か所で表している。
+
+#### 実害 1 — 証跡が割れる
+
+eval の記録を数えると、`agent_cli` として `ollama` と `ollama-json` が**別々に**現れる。
+1 つの実行系（`agent-herd ollama` × `gemma4:e4b`）の実測が、6 つの偽の候補へ分散している。
+格付けは `(agent_cli, model, operation_class)` で集計されるので、**本来 1 候補の
+operation_class 別の格付けとして積み上がるはずの証拠が、候補ごとに割れて薄くなる**。
+サンプル数が要る格付けにとってこれは直接の損失である。
+
+#### 実害 2 — 台帳と一覧で「別のエージェント」に見える
+
+（利用者からの指摘。こちらのほうが重い。）`ollama-*` が `claude` / `codex` / `kiro` と
+同じ列に並ぶと、運用者には「13 のエージェントがある」と見える。実際には
+**8 のエージェントがあり、そのうち 1 つに 5 つのモードがある**。クラウド CLI との差異が
+実体以上に大きく見え、候補の選択・予算配分・格付けの読みがすべてその歪んだ像の上で行われる。
+
+#### あるべき形 — 定義は「エージェント 1 つ」に対して 1 つ
+
+用途別の起動差は、定義の中の**プロファイル**にする。名前を残す必要はない
+（残すとしても JSON schema の中の話で、`agent_cli` の値空間を汚す理由にはならない）。
+
+```json
+{
+  "name": "ollama",
+  "command": ["agent-herd", "ollama", "{model}"],
+  "errors": [ … ],                        ← 35 規則 → 1 か所（§9.4 の測定）
+  "profiles": {
+    "json":  { "command": ["agent-herd","ollama","--think","off","--format","json","{model}"],
+               "headless_autonomy": "single-shot", "write_args": [] },
+    "list":  { … }, "read": { … }, "verify": { "default_model": "gemma4:12b", … }
+  },
+  "variants": { "planner": "json", "judge": "json", "split": "list", "verify": "verify" }
+}
+```
+
+- `resolve_variant("ollama", "split")` は `(agent_cli="ollama", profile="list")` を返す
+- 台帳は `agent_cli: ollama` に統一され、用途は既存の `operation_class` / `purpose` 列が持つ
+- クラウド CLI は `profiles` を持たない——**定義ファイル数が実際のエージェント数と一致する**
+
+#### 移行の重さ（これが唯一の反対理由）
+
+読み手が 5 つある: `agentcli`（Python）・dashboard の JS ローダ・`agent-audit` の格付けと
+usage・control の `selection_policy`・既存の eval アーカイブ（`ollama-json` の行が残っている）。
+データ契約の変更なので、旧綴りを読み替える移行期間と、両ローダのゴールデン更新が要る。
+
+**それでも畳むべきである。** 割れた証跡は時間とともに積み上がり、後から統合するほど
+読み替えの範囲が広がる。`errors` の 35 規則の重複はその副産物として一緒に消える。
+
 ---
 
 ## 10. テスト戦略
