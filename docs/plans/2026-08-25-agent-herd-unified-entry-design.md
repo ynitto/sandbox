@@ -13,6 +13,53 @@
 
 ---
 
+## 0. 全体像（先に 1 枚）
+
+やることは 1 行で言える。**バラバラに配っている 3 つの実行ファイルを 1 つの zipapp に畳み、
+agent-loop の中に閉じているハーネスを外へ出す。** 使う側から見た名前と打ち方は変わらない。
+
+```
+  いま — 配布物 4 つ                        これから — 配布物 2 つ、写しゼロ
+
+  ┌──────────────────────────────┐         今までどおりの名前（argv[0] の別名）
+  │ agent-ollama                  │         ┌───────────┬────────────┬──────────────┐
+  │   zipapp（agentcore 同梱）     │         │agent-aider│agent-ollama│agent-opencode│
+  ├──────────────────────────────┤         └─────┬─────┴──────┬─────┴──────┬───────┘
+  │ agent-aider                   │               ▼            ▼            ▼
+  │   単独ファイル                 │  畳む   ┌──────────────────────────────────────┐
+  │   ⚠ agentcore を import 不可   │  ───▶  │ agent-herd    zipapp 1 ファイル        │
+  ├──────────────────────────────┤         │   （上の 3 名はこれへの hardlink）      │
+  │ agent-opencode                │         │  ┌────────┬──────────┬─────────────┐  │
+  │   単独ファイル ⚠ 同上          │         │  │adapters│harness ★ │  agentcli   │  │
+  ├──────────────────────────────┤         │  ├────────┴──────────┴─────────────┤  │
+  │ agent-loop                    │         │  │ hostenv — 環境補完はここ 1 実装だけ│  │
+  │   zipapp                      │         │  └──────────────────────────────────┘  │
+  │   ▸ harness が中に閉じている    │         │  サブコマンド: aider · ollama ·        │
+  │     （外から呼べない）          │         │    opencode · chat · harness ·        │
+  └──────────────────────────────┘         │    defs · exec · 観測                 │
+                                            └──────────────────────────────────────┘
+  ⚠ 環境補完のコードが 3 か所に複製            ┌──────────────────────────────────────┐
+  ⚠ ハーネスは agent-loop 経由でしか呼べない   │ agent-loop  zipapp                    │
+  ⚠ 対話の入口が CLI ごとにばらばら            │   ★ harness を import して従来コマンド │
+  ⚠ 対話で試したことがヘッドレスで再現しない     │     を維持                            │
+                                            └──────────────────────────────────────┘
+                                            ✓ 写しゼロ・ハーネスは tmux 無しで単独実行
+                                            ✓ 対話も 1 本
+```
+
+**変わるのは配り方と置き場で、使い方ではない。** `agent-aider …` は今までと同じ argv・
+同じ stdout / stderr で動き続ける（別名は互換シムではなく本体そのものなので、
+「シムだけ古い」が構造的に起きない）。★ 印の harness が agent-loop から出てくるのが、
+この統合のもう半分である。
+
+| | |
+|---|---|
+| **畳む理由** | 環境補完（`OLLAMA_API_BASE` / `NO_PROXY`）が 3 ファイルに複製され、コード中に「直すときは 3 箇所を揃えること」と書いてある状態（§1.1） |
+| **出す理由** | ゴール非依存に書かれた harness が agent_loop の exec 合成断片で、デーモンと tmux 抜きには呼べない（§1.2） |
+| **壊さないもの** | 既存 3 名の argv・stdout / stderr 契約・ログ置き場、および `agent-loop` の全コマンドと既存テスト |
+
+---
+
 ## 1. 背景と課題
 
 ローカル実行系（コスト 0 の常備戦力）は現在、**入口・配布形態・ハーネスがそれぞれ分裂**している。
@@ -200,6 +247,9 @@ basename(argv[0])          解決されるサブコマンド
 `replay` / `status` / `follow` は**別名であって第 2 実装ではない**。`agent-ollama --replay`
 の綴りも残す（外部手順書を壊さない）。
 
+サブコマンド名の空間を何にするか（adapter 名だけか、定義名も載せるか）は §4.7 で決める。
+実際の綴りは §4.8、全サブコマンド共通の契約と境界事例の扱いは §4.9。
+
 ### 4.3 `defs` — 定義の観測
 
 エンジンと dashboard が読むのと同じ `agentcore.agentcli` で解決した結果を人に見せる:
@@ -255,6 +305,78 @@ echo '本文' | agent-herd exec aider --model gemma4:e4b --readonly --file src/a
 人が 1 コマンドで再現する口。**エンジンはこれを使わない**（N5）——用途はデバッグの
 再現性（「エンジンから呼ぶと落ちるが手で叩くと動く」を潰す）に限る。判断ロジックは
 agentcli の既存実装のみで、新しい分岐を持たないこと。
+
+### 4.7 呼び出しの 2 系統 — adapter 直と定義経由
+
+インターフェースの背骨は 1 本の線である: **サブコマンドは adapter の名前であって定義の名前ではない。**
+
+| | adapter サブコマンド | `exec`（定義経由） |
+|---|---|---|
+| 綴り | `agent-herd ollama --format json qwen3` | `agent-herd exec ollama-json --model qwen3` |
+| 引数 | adapter の生フラグをそのまま渡す | agentcli が定義から argv を組む |
+| 定義を読むか | 読まない（単体で完結する） | 読む（`variants` / `readonly` も効く） |
+| 使う場面 | 定義ファイルの `command`・既存手順書・人の直叩き | 人がエンジンの実行を手で再現する（デバッグ） |
+| 名前の空間 | `aider` / `ollama` / `opencode` の 3 つだけ | `agents/*.json` の全定義（13 件） |
+
+`ollama-json` / `ollama-list` / `ollama-verify` は**定義**であって adapter ではない
+（実体はどれも ollama adapter にフラグを足したもの）。だからサブコマンドには載せず、
+`exec` から引く。誤って `agent-herd ollama-json` と打った場合は、黙って別解釈せず
+`exec` を案内する明示エラーで止める（§4.9）。
+
+### 4.8 起動例（場面別）
+
+```bash
+# ── ヘッドレス（定義ファイルの command が組む形。エンジンが叩く）
+agent-herd ollama --think off --format json gemma4:e4b < prompt.txt
+agent-herd aider --agent-policy gemma4-e4b-reliability-v1 \
+                 --model ollama_chat/gemma4:e4b \
+                 --file src/a.py --read docs/spec.md --message "…"
+
+# ── 旧綴りは完全互換（別名なので同じコードパスに落ちる）
+agent-ollama --think off --format json gemma4:e4b < prompt.txt
+
+# ── 対話（人が向き合う）
+agent-herd chat                            # 既定は ollama の内蔵 TUI
+agent-herd chat ollama --model qwen3
+agent-herd chat aider  --model gemma4:e4b  # policy と接続補完はヘッドレスと同一経路
+
+# ── ハーネス（tmux もデーモンも要らない）
+agent-herd harness statemachine --cli aider --model gemma4:e4b \
+                                --workflow methods/review.machine.yaml \
+                                --var target=src/a.py
+agent-herd harness toolloop --cli aider --goal-file goal.md --max-rounds 8
+
+# ── 観測とデバッグ
+agent-herd status                          # 進捗を 1 行 JSON で（外部監視向け）
+agent-herd follow                          # 同じものを人が読む形で追尾
+agent-herd defs                            # 解決できる定義の一覧
+agent-herd defs aider --json               # 実効 argv（エンジンが組むのと同じもの）
+agent-herd exec ollama-json --model gemma4:e4b < prompt.txt
+agent-herd replay --arm model=gemma4:e4b,format=json --replay-limit 20
+```
+
+### 4.9 共通契約と、実装前に潰す穴
+
+**サブコマンドをまたいで同じもの**（既存 adapter の契約をそのまま入口の契約に昇格させる）:
+
+- **stdout は本文だけ。** 診断は 1 バイトも混ぜない
+- **stderr は診断と計測。** `@agent-usage tokens_in=… tokens_out=…`（その実行の累計）と
+  `@agent-context used=… limit=…`（いま文脈がどれだけ埋まっているか）は意味が違うので行を分ける
+- **完走しなかったら本文末尾に機械可読の封筒** `{"ok": false, "issues": [...]}`
+  （`--format json` のときは足さない）。判定に使うのは封筒であって人向けの注記ではない
+- **exit code は実体のものをそのまま返す。** 入口で丸めない
+- **ログは `~/.agents/logs/<adapter>/` へ JSONL 追記。** agent-audit がセッションとして
+  読める形を変えない
+
+**実装前に潰す穴**:
+
+| 穴 | 決め |
+|---|---|
+| 入口自身のフラグ | `agent-herd` は自分のフラグを持たない（`--help` / `--version` のみ）。サブコマンド以降は実体へ素通し。曖昧なときは `--` で区切る |
+| `--tui` と `chat` | 両方残す。`ollama --tui` は**機械契約**（`interactive.command` が tmux から ready/busy 判定つきで叩く）、`chat` は**人の口**。実体は同じ `ollama_tui` |
+| `--help` の階層 | `agent-herd --help` はサブコマンド一覧だけ。詳細は `agent-herd ollama --help`（= 既存 `agent-ollama --help` と同一本文） |
+| 未知のサブコマンド | 定義名（`ollama-json` 等）なら `exec` を案内して終了。それ以外は一覧を出して終了。**黙って別解釈しない** |
+| `chat` の対象が対話を持たない | 定義に `interactive` が無ければ明示エラー。黙ってヘッドレスへ倒さない（追加は定義に書く＝エンジン改修不要を保つ） |
 
 ---
 
