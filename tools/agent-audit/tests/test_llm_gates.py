@@ -4,11 +4,27 @@ import json
 import os
 import time
 import unittest
+from unittest import mock
 
 from _shared import AuditTestCase, extract, distill, llm, util
 
 
 class BudgetGateTests(AuditTestCase):
+    def test_audit_resolves_declared_variant_without_cli_specific_branch(self):
+        agentcli = mock.Mock()
+        agentcli.resolve_variant.return_value = {
+            "agent_cli": "base-json", "default_model": "structured-model"}
+
+        self.assertEqual(
+            llm._execution_cli("base", None, "extract", agentcli),
+            ("base-json", "structured-model"))
+        agentcli.resolve_variant.assert_called_once_with("base", "extract")
+
+        agentcli.reset_mock()
+        self.assertEqual(llm._execution_cli("base", "chosen", "distill", agentcli),
+                         ("base", "chosen"))
+        agentcli.resolve_variant.assert_not_called()
+
     def test_control_uses_shared_dir_and_purpose_precedence(self):
         control_dir = os.path.join(self.tmp, "control")
         os.makedirs(control_dir, exist_ok=True)
