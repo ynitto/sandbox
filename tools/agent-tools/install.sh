@@ -48,8 +48,9 @@ usage() {
 使い方: bash tools/agent-tools/install.sh [オプション]
 
   --prefix <dir>          インストール先（既定 ~/.local/bin）
-  --only <a>[,<b>]        入れるエンジンを絞る（agent-project / agent-flow / agent-amigos /
-                          agent-audit）
+  --only <a>[,<b>]        入れる対象を絞る（agent-project / agent-flow / agent-amigos /
+                          agent-audit / agent-herd）。`--only agent-herd` は
+                          エンジンを入れず実行系の入口だけを置く（推論だけ担当する PC 向け）
   --service               systemd --user unit（agent-project.service）を生成・有効化する
                           （WSL/Linux のみ。設計 §7 の常駐化 2 案のうち systemd 案。
                           Windows タスクスケジューラ案は docs/guides/ 参照 — 二重構成しない）
@@ -66,12 +67,16 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --prefix) INSTALL_PREFIX="$2"; shift 2 ;;
     --only)
-      IFS=', ' read -r -a ENGINES <<< "$2"
-      for e in "${ENGINES[@]}"; do
+      IFS=', ' read -r -a _ONLY <<< "$2"
+      ENGINES=()
+      for e in "${_ONLY[@]}"; do
         case " ${ALL_ENGINES[*]} " in
-          *" ${e} "*) : ;;
-          *) die "不明なエンジン: ${e}（指定できるのは ${ALL_ENGINES[*]}）" ;;
+          *" ${e} "*) ENGINES+=("${e}") ; continue ;;
         esac
+        # agent-herd はエンジンではなく実行系の入口。エンジンを 1 本も入れずに
+        # 実行系だけ置きたいノード（推論だけ担当する PC）のために単独指定を許す。
+        [[ "${e}" == "agent-herd" ]] \
+          || die "不明な対象: ${e}（指定できるのは ${ALL_ENGINES[*]} agent-herd）"
       done
       shift 2 ;;
     --service) WITH_SERVICE=1; shift ;;
@@ -237,17 +242,26 @@ pkg_of() {
   esac
 }
 
-for engine in "${ENGINES[@]}"; do
+for engine in "${ENGINES[@]+"${ENGINES[@]}"}"; do
   build_engine "${engine}" "$(pkg_of "${engine}")"
 done
 
-# Ollama は API 応答の token count を失わず台帳へ渡すため、共通の薄いアダプターを置く。
-# クラウド CLI が使えないときのバックアップ実行系でもあるので、ツールループ・進捗ログ・
-# デバッグ TUI も同じ 1 実行ファイルに入る（設計 2026-08-06 §0.1 / 案 F-2）。
-OLLAMA_BUILD="$(mktemp -d "${TMPDIR:-/tmp}/agent-ollama-build.XXXXXX")"
-copy_py_tree "${AGENTCORE_PKG}" "${OLLAMA_BUILD}/agentcore" -not -path './tests/*'
-cat > "${OLLAMA_BUILD}/__main__.py" <<'EOF'
-from agentcore.ollama_adapter import main
+# ---------------------------------------------------------------------------
+# agent-herd — LAN の ollama を動かす実行系の入口（busybox 型 1 zipapp）
+# ---------------------------------------------------------------------------
+# 3 adapter（aider / ollama / opencode）は同じ agentcore を使い、同じ環境補完
+# （agentcore.hostenv）を必要とする。以前は agent-ollama だけが zipapp で、agent-aider と
+# agent-opencode は**単体ファイルのコピー**だったため agentcore を import できず、環境補完
+# のコードを複製で持っていた（「直すときは 3 箇所を揃えること」）。
+#
+# ここでは 1 つの zipapp を作り、従来の 3 名をそれへの**ハードリンク**として置く。
+# basename(argv[0]) でサブコマンドへ振り分けるので、`agent-aider …` の打ち方も出力も
+# 従来どおりのまま、実装・版・配布は 1 つになる（「シムだけ古い」が構造的に起きない）。
+# 設計: docs/plans/2026-08-25-agent-herd-unified-entry-design.md §3 / §6。
+HERD_BUILD="$(mktemp -d "${TMPDIR:-/tmp}/agent-herd-build.XXXXXX")"
+copy_py_tree "${AGENTCORE_PKG}" "${HERD_BUILD}/agentcore" -not -path './tests/*'
+cat > "${HERD_BUILD}/__main__.py" <<'EOF'
+from agentcore.herdcli import main
 raise SystemExit(main())
 EOF
 RICH_NOTE=""
@@ -255,22 +269,41 @@ if [[ "${WITH_RICH}" -eq 1 ]]; then
   # 任意依存。zipimport で動く純 Python なので zipapp へそのまま同梱できる。
   # **失敗しても中断しない**——rich が無ければ TUI は素の ANSI 表示へ落ちるだけで、
   # 実行系としては何も欠けない（色が付かないことと動かないことを同じ重さで扱わない）。
-  if "$PYTHON_CMD" -m pip install --quiet --target "${OLLAMA_BUILD}" rich >/dev/null 2>&1; then
+  if "$PYTHON_CMD" -m pip install --quiet --target "${HERD_BUILD}" rich >/dev/null 2>&1; then
     RICH_NOTE="・rich 同梱"
   else
     warn "rich の取得に失敗しました。素の ANSI 表示のまま続けます（--with-rich は任意）"
   fi
 fi
-"$PYTHON_CMD" -m zipapp "${OLLAMA_BUILD}" -o "${INSTALL_PREFIX}/agent-ollama" \
+"$PYTHON_CMD" -m zipapp "${HERD_BUILD}" -o "${INSTALL_PREFIX}/agent-herd" \
   -p "/usr/bin/env ${PYTHON_CMD}"
-chmod +x "${INSTALL_PREFIX}/agent-ollama"
-rm -rf "${OLLAMA_BUILD}"
-ok "インストールしました: ${INSTALL_PREFIX}/agent-ollama（Ollama usage 対応${RICH_NOTE}）"
+chmod +x "${INSTALL_PREFIX}/agent-herd"
+rm -rf "${HERD_BUILD}"
+ok "インストールしました: ${INSTALL_PREFIX}/agent-herd（実行系の入口${RICH_NOTE}）"
 
-# Aider がローカル analytics JSONL へ出す実測値を、同じ usage 契約へ変換する。
-cp "${AGENTCORE_PKG}/aider_adapter.py" "${INSTALL_PREFIX}/agent-aider"
-chmod +x "${INSTALL_PREFIX}/agent-aider"
-ok "インストールしました: ${INSTALL_PREFIX}/agent-aider（Aider usage 対応）"
+# 従来の 3 名は同じ実体を指すハードリンク。**互換シムではなく本体そのもの**なので、
+# 片方だけ古いという状態が作れない。ハードリンクが張れない FS（一部の Windows 共有・
+# 別デバイス跨ぎ）ではコピーへ落とす——その場合だけは入れ直しで両方が更新される必要が
+# あるが、このインストーラは常に 4 つ全部を書き直すので実害は無い。
+for alias in agent-aider agent-ollama agent-opencode; do
+  rm -f "${INSTALL_PREFIX}/${alias}"
+  if ln "${INSTALL_PREFIX}/agent-herd" "${INSTALL_PREFIX}/${alias}" 2>/dev/null; then
+    ok "インストールしました: ${INSTALL_PREFIX}/${alias}（agent-herd への別名）"
+  else
+    cp "${INSTALL_PREFIX}/agent-herd" "${INSTALL_PREFIX}/${alias}"
+    chmod +x "${INSTALL_PREFIX}/${alias}"
+    warn "${alias} はハードリンクにできなかったのでコピーしました（実体は同じ版）"
+  fi
+done
+
+# 入口が起動することまで確かめる。ここで落ちるのは shebang / python の取り違えなので、
+# 「入った」と言い切る前に踏んでおく。別名の 1 つも叩いて argv[0] 分岐を通す。
+if "${INSTALL_PREFIX}/agent-herd" --help >/dev/null 2>&1 \
+   && "${INSTALL_PREFIX}/agent-ollama" --help >/dev/null 2>&1; then
+  ok "agent-herd --help と agent-ollama --help が正常に動作しました。"
+else
+  warn "agent-herd の起動確認に失敗しました。shebang / Python を確認してください。"
+fi
 
 # ---------------------------------------------------------------------------
 # 3. エンジン固有の付帯物
