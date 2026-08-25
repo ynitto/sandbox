@@ -882,6 +882,23 @@ TASKS = {
                     test_cmd=f"{CHECK_PY} -m pytest -q tools/agent-project",
                     gate=check_t3, max_retries=2)],
     ),
+    # 丸ごと欠落族（b）への答えは引き直しではなく成果物を割ること（README §「次の arm」）。
+    # T3gate の 1 手順を「schema 1ファイル」「契約テスト 1ファイル」の 2 手順へ分け、各手順の
+    # 直後に C1 / C3 の決定的 checker を置いて、落ちた手順だけを有界再投入する。
+    # **seed と最終 checker は T3gate と共通**——変えるのは成果物の粒度と gate の位置だけで、
+    # ほかを動かすと T3gate との同条件比較にならない（それが測りたい唯一の差である）。
+    "T3splitgate": dict(
+        family="b",
+        seed=seed_t3, check=check_t3, request=T3_REQUEST,
+        steps=[dict(request=T3_REQUEST, goal=T3_SCHEMA_GOAL,
+                    files=("schemas/node-budget-summary.schema.json",), map_tokens=1024,
+                    test_cmd=f"{CHECK_PY} -m pytest -q tools/agent-project",
+                    gate=check_t3_schema, max_retries=2),
+               dict(request=T3_REQUEST, goal=T3_CONTRACT_GOAL,
+                    files=(T3_CONTRACT_TEST,), map_tokens=1024,
+                    test_cmd=f"{CHECK_PY} -m pytest -q tools/agent-project",
+                    gate=check_t3_split_contract, max_retries=2)],
+    ),
     # --- ローカル LLM の定常業務適性（テキスト成果物 2 本。2026-08-24 ユーザー要望）
     # 走らせ方: python3 worker_eval.py --cli aider --model gemma4:e4b --tasks T7digest,T8log --repeat 3
     "T7digest": dict(
