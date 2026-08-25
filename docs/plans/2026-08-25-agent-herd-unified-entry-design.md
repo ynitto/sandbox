@@ -7,6 +7,8 @@
 > 効く柱・原則: **柱3 / C7 — 実行入口とハーネスの 1 実装化**（同じ契約の写しが 3 か所に
 > 分散している状態を正典 1 つへ畳む）。C9（仕事の格付けに応じた振り分け）の入口も 1 本になる。
 > 上位文書: [agent-tools コンセプト正典](../designs/agent-tools-concept.md) §7・§8
+> **綴りの正典**: [agent-herd 仕様書](../specs/agent-herd-spec.md)
+> （本書は「なぜそうするか」、仕様書は「打つと何が起きるか」。実装状況は §8 を見よ）
 > 関連: [agent-aider 改良余地の評価](./2026-08-18-agent-aider-improvement-assessment.md) §8.3、
 > [agent-ollama 設計](../designs/agent-ollama-design.md)、
 > [agent-loop DESIGN](../../tools/agent-loop/DESIGN.md)
@@ -544,13 +546,38 @@ variant を「入口の分岐」と読むと設計を誤る。`resolve_variant()
 
 | フェーズ | 内容 | 受入条件 |
 |---|---|---|
-| **P0 配布統合** | `hostenv` 抽出・opencode/aider adapter の agentcore 移設・busybox zipapp・install.sh 変更 | 既存 3 名の argv/出力契約のゴールデンが不変で通る。env parity テストが「1 実装参照」を縛る形へ置換される |
-| **P1 入口面** | `agent-herd` サブコマンド面（aider/ollama/opencode/defs/chat）・aider.json の interactive ブロック | `agent-herd aider …` と `agent-aider …` が同一結果。`chat aider` の環境仕込みがヘッドレスと同一実装を通ることをテストで縛る |
-| **P2 ハーネス移設** | toolloop/statemachine → `agentcore.harness`・agent-loop 委譲・`agent-herd harness …` | `test_statemachine.py` 等 agent-loop の既存テストが無改変で通る。tmux なし単独実行の証跡形が agent-loop 経由と一致 |
-| **P3 正典化・任意** | `agents/*.json` の command 書き替え + dashboard ゴールデン更新・`exec`・（任意）stub の取り込み | 全エンジンの結合テスト・dashboard ゴールデンが green。旧綴り定義でも動作（互換テスト） |
+| **P0 配布統合** ✅ **実装済** | `hostenv` 抽出・opencode/aider adapter の agentcore 移設・busybox zipapp・install.sh 変更 | 既存 3 名の argv/出力契約のゴールデンが不変で通る。env parity テストが「1 実装参照」を縛る形へ置換される |
+| **P1 入口面** ✅ **実装済** | `agent-herd` サブコマンド面（aider/ollama/opencode/defs/exec/chat/観測）・aider.json の interactive ブロック | `agent-herd aider …` と `agent-aider …` が同一結果。`chat aider` の環境仕込みがヘッドレスと同一実装を通ることをテストで縛る |
+| **P2 ハーネス移設** ⬜ 未着手 | toolloop/statemachine → `agentcore.harness`・agent-loop 委譲・`agent-herd harness …` | `test_statemachine.py` 等 agent-loop の既存テストが無改変で通る。tmux なし単独実行の証跡形が agent-loop 経由と一致 |
+| **P3 正典化** ⬜ 未着手 | `agents/*.json` の command 書き替え + dashboard ゴールデン更新・（任意）stub の取り込み | 全エンジンの結合テスト・dashboard ゴールデンが green。旧綴り定義でも動作（互換テスト） |
 
 各フェーズは独立に取り込め、どのフェーズで止めても不整合が残らない（P0 だけでも
 3 重複製の解消と配布統合という C7 の主目的は達成される）。
+
+### 8.1 P0 / P1 の実装（2026-08-25）
+
+入っているもの:
+
+- `agentcore/hostenv.py` — 環境補完の唯一の実装。`ollama_adapter` / `aider_adapter` /
+  `opencode_adapter` は再輸出するだけになり、3 重複製が消えた
+- `agentcore/opencode_adapter.py` — `tools/opencode/agent-opencode.py` から移設。
+  元の場所は開発木用の委譲シム（既存テストはこのシム経由で無改変のまま通る）
+- `agentcore/herdcli.py` — argv[0] ディスパッチと `aider` / `ollama` / `opencode` /
+  `chat` / `defs` / `exec` / `status` / `follow` / `replay` / `harness`（§9 参照）
+- `agents/aider.json` に `interactive` ブロック（ヘッドレスから `--message` /
+  `--yes-always` / `--no-stream` / `--no-pretty` を引いただけ。policy は同じ経路で付く）
+- `install.sh` — `agent-herd` zipapp と 3 名のハードリンク、`--only agent-herd`
+- `tools/opencode/install.sh` — 単体ファイルのコピーから自己完結 zipapp へ
+
+`harness` は**サブコマンドとして存在するが実行しない**。呼ぶと終了コード 2 で
+`agent-loop statemachine` を案内する——設計書を読んで打った人に「未知のサブコマンド」と
+返すのは不親切なので、所在だけは答える。中身は P2 で入る。
+
+**P2 を分けた理由**: `toolloop.py`（1,275 行）と `statemachine.py`（866 行）は
+agent_loop の **exec 合成断片**で、暗黙の共有グローバル（`_tl_*` / `_sm_*`）に依存している。
+通常モジュールへ書き直すのは 2,100 行規模の振る舞い保存リファクタで、`test_statemachine.py`
+を含む agent-loop の 554 テストを合格ゲートにした独立の変更として扱うべきである。配布統合
+（P0）と入口面（P1）に混ぜると、回帰が出たときにどちらの変更が原因か切り分けられない。
 
 ---
 

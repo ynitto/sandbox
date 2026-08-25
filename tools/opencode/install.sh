@@ -342,11 +342,29 @@ ok "設定を書きました: ${CONFIG_PATH}（provider ${PROVIDER_ID} → ${BAS
 # ---------------------------------------------------------------------------
 # 4. agent-opencode（アダプター）
 # ---------------------------------------------------------------------------
-SRC="${SCRIPT_DIR}/agent-opencode.py"
-[[ -f "${SRC}" ]] || die "agent-opencode.py が見つかりません: ${SRC}"
+# 実装は agentcore.opencode_adapter にある（環境補完 agentcore.hostenv を 3 adapter で
+# 共有するため、単体ファイルのコピー配布はやめた）。ここは agentcore を同梱した zipapp を
+# 組む——このインストーラは agent-tools 一式とは独立に走るので、自己完結していないと
+# 「opencode だけ入れた PC で agentcore が無い」が起きる。
+# agent-tools 側の install.sh は同じ実体を agent-herd の別名として置く。どちらを走らせても
+# 同じ実装が入り、後から走らせた方が上書きする。
+AGENTCORE_PKG="${REPO_ROOT}/tools/agent-tools/agentcore/agentcore"
+[[ -d "${AGENTCORE_PKG}" ]] || die "agentcore パッケージが見つかりません: ${AGENTCORE_PKG}"
 mkdir -p "${INSTALL_PREFIX}"
-cp "${SRC}" "${INSTALL_PREFIX}/agent-opencode"
+OPENCODE_BUILD="$(mktemp -d "${TMPDIR:-/tmp}/agent-opencode-build.XXXXXX")"
+( cd "${AGENTCORE_PKG}" && find . -name '*.py' -not -path './tests/*' -print0 \
+    | while IFS= read -r -d '' f; do
+        mkdir -p "${OPENCODE_BUILD}/agentcore/$(dirname "$f")"
+        cp "$f" "${OPENCODE_BUILD}/agentcore/$f"
+      done )
+cat > "${OPENCODE_BUILD}/__main__.py" <<'PYMAIN'
+from agentcore.opencode_adapter import main
+raise SystemExit(main())
+PYMAIN
+python3 -m zipapp "${OPENCODE_BUILD}" -o "${INSTALL_PREFIX}/agent-opencode" \
+  -p "/usr/bin/env python3"
 chmod +x "${INSTALL_PREFIX}/agent-opencode"
+rm -rf "${OPENCODE_BUILD}"
 ok "インストールしました: ${INSTALL_PREFIX}/agent-opencode（実測 usage・事前到達性チェック）"
 
 # ---------------------------------------------------------------------------
