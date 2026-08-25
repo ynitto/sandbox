@@ -31,7 +31,13 @@ _TL_MAX_TOOL_ROUNDS = 8
 _TL_MAX_TOOL_TIMEOUT_SEC = 300
 _TL_MAX_AUTO_READ_BYTES = 32768
 _TL_HARNESS_TIMEOUT_SEC = 30
-_TL_DEFAULT_AIDER_TIMEOUT_SEC = 180
+# CLI 定義（agents/<name>.json の timeout）が黙っているときの共通上限。ローカル推論の
+# 実測に合わせて 600 秒——gemma4:e4b は 1 周 50〜90 秒、判定役の gemma4:12b はさらに遅く、
+# サーバが他リクエストで塞がっていれば queue 待ちがそこへ積み上がる（ollama は塞がっている
+# 間、応答ヘッダすら返さない）。180 秒では正常に進んでいる実行を切っていた。
+# **この 1 個だけが fallback**。周ごと・変種ごとに別の既定を置くと、どの上限で切られたのかを
+# 読む側が追えなくなる。個別に伸ばしたい CLI は定義の `timeout` で宣言する（C7）。
+_TL_DEFAULT_AGENT_TIMEOUT_SEC = 600
 # ponytail: 上限は固定値。経路ごとに変えたくなるまで設定にしない。
 _TL_SHELLS = {"sh", "bash", "zsh", "fish", "cmd", "cmd.exe",
               "powershell", "powershell.exe", "pwsh"}
@@ -461,7 +467,7 @@ def _tl_run_agent(agent: dict, prompt: str, *, cwd: str, readonly: bool,
                              readonly=readonly, no_session=True,
                              read_files=read_files, files=files)
     argv = built["argv"]
-    timeout_sec = float(built.get("timeout") or 0) or _TL_DEFAULT_AIDER_TIMEOUT_SEC
+    timeout_sec = float(built.get("timeout") or 0) or _TL_DEFAULT_AGENT_TIMEOUT_SEC
     result = _tl_exec_argv(argv[0], argv[1:], cwd=cwd, timeout_sec=timeout_sec,
                            env=built.get("env") or {}, stdin=built.get("stdin"),
                            output_file=built.get("output_file"), log_file=log_file)
@@ -736,8 +742,9 @@ def acceptance_stamps(acceptance: "list[str]", cwd: str) -> dict:
 # 当人に自分の仕事を採点させるのが最も弱い構成で、どのモデルに検証させるかを決めるのは
 # 定義側の責務だからだ（agent-flow / agent-project と同じ口を使い、新しい設定面を人に
 # 書かせない）。振り替え先が無ければ元のエージェントのまま動く。
-
-_JUDGE_TIMEOUT_SEC = 180.0
+# 判定の実行上限も共通 fallback（_TL_DEFAULT_AGENT_TIMEOUT_SEC）に従う。判定役は変種
+# （ollama-verify = gemma4:12b）で本体より遅いことが多く、ここだけ短い既定を持たせると
+# 「本体は通るのに判定だけ切れる」になる。
 
 
 def acceptance_prose(acceptance: "list[str]", cwd: str) -> "list[str]":
@@ -841,7 +848,7 @@ def judge_acceptance(criteria: "list[str]", *, cwd: str, agent: dict, log_file: 
         return [f"受入条件の判定を起動できませんでした（{judge['cli']}）: {exc}"]
 
     argv = built["argv"]
-    timeout_sec = float(built.get("timeout") or 0) or _JUDGE_TIMEOUT_SEC
+    timeout_sec = float(built.get("timeout") or 0) or _TL_DEFAULT_AGENT_TIMEOUT_SEC
     _tl_append_log(log_file, {"event": "judge_start", "cli": judge["cli"],
                               "model": judge["model"] or "", "criteria": len(items)})
     result = _tl_exec_argv(argv[0], argv[1:], cwd=cwd, timeout_sec=timeout_sec,
@@ -1143,7 +1150,7 @@ def run_cli_loop(*, goal: str, cwd: str, agent: dict, log_file: str,
     built = mod.headless_cmd(agent["spec"], agent["model"], goal,
                              readonly=False, no_session=True)
     argv = built["argv"]
-    timeout_sec = float(built.get("timeout") or 0) or _TL_DEFAULT_AIDER_TIMEOUT_SEC
+    timeout_sec = float(built.get("timeout") or 0) or _TL_DEFAULT_AGENT_TIMEOUT_SEC
     result = _tl_exec_argv(argv[0], argv[1:], cwd=cwd, timeout_sec=timeout_sec,
                            env=built.get("env") or {}, stdin=built.get("stdin"),
                            output_file=built.get("output_file"), log_file=log_file)

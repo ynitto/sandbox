@@ -48,7 +48,7 @@ cowork の定常業務 tmux 実行だけで、定義解決に失敗しても `ki
 | `file_flag` | str \| null | `null` | 編集対象ファイルを渡すフラグ |
 | `read_flag` | str \| null | `null` | 読み取り専用で渡すファイルのフラグ |
 | `env` | object | — | 追加環境変数 |
-| `timeout` | num \| null | `null` | 1 回の実行上限（秒） |
+| `timeout` | num \| null | `null` | 1 回の実行上限（秒）。`null` / `0` は呼び出し側の fallback（agent-loop は 600 秒、agent-audit は `--agent-timeout`・既定 300 秒）。**既定で足りる CLI は宣言しない**——宣言すると呼び出し側が fallback を変えてもその CLI だけ古い上限のまま残る |
 | `empty_output_is_error` | bool | `true` | 空応答を失敗とみなすか |
 | `write_args` | array | `[]` | 既定（書き込み可）モードのフラグ |
 | `readonly_args` | array | `[]` | 読み取り専用モードのフラグ。`write_args` と**排他**（追加ではない） |

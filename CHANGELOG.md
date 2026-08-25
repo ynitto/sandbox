@@ -7,6 +7,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-loop: headless CLI 実行の共通タイムアウト fallback を 180 → 600 秒へ
+
+- CLI 定義（`agents/<name>.json` の `timeout`）が黙っているときの上限を 600 秒にした。
+  180 秒は**正常に進んでいるローカル推論を切る**値だった——gemma4:e4b は 1 周 50〜90 秒、
+  判定役の gemma4:12b はさらに遅く、ollama が他リクエストで塞がっていれば queue 待ち
+  （同 Unreleased の connect 修正）がそこへ積み上がる。宣言の無い全 ollama 変種
+  （`ollama` / `ollama-json` / `ollama-list` / `ollama-list-thinking` / `ollama-read` /
+  `ollama-verify`）にそのまま効く。
+- fallback を toolloop の 1 か所に集約した。判定層（`acceptance_judge`）が別に持っていた
+  180 秒の既定（`_JUDGE_TIMEOUT_SEC`）を廃し、本体と同じ定数に従わせる——判定役は本体より
+  遅い変種のことが多く、ここだけ短いと「本体は通るのに判定だけ切れる」になる。定数名も
+  実態に合わせて `_TL_DEFAULT_AIDER_TIMEOUT_SEC` → `_TL_DEFAULT_AGENT_TIMEOUT_SEC`。
+- `agents/aider.json` の固定 `timeout: 600` を削除した。同じ値を定義側にも持つと、以後
+  fallback を変えても aider だけ古い上限のまま取り残される。**agent-audit への影響**:
+  同ツールは `built.timeout` が無ければ `--agent-timeout`（既定 300 秒）を使うため、
+  agent-audit 経由の aider 実行は 600 → 300 秒になる（他の CLI と同じ扱いに揃う）。
+  長い実行が要るなら `--agent-timeout` で指定する。
+
 ### agentcore/agent-loop: ollama が塞がっていると connect 120 秒で誤って停止する
 
 - agent-loop を aider+gemma4:e4b で回すと、ollama-json（制御役）が `connect のまま

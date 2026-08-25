@@ -466,8 +466,8 @@ hook は `agent-loop hook-event` を呼び、`~/.agents/loop-hooks/<instance-id>
 | ツールループの往復 | 8 往復 | 不可 |
 | ツール `run` の timeout | 既定 60 秒、上限 300 秒 | 呼び出しの `timeout_sec`（上限まで） |
 | ツール結果の自動読み戻し | 32KB まで | 不可 |
-| headless CLI の 1 回の実行 | 既定 180 秒 | CLI 定義 |
-| 受入条件の判定（`acceptance_judge`） | 既定 180 秒 | CLI 定義（変種側） |
+| headless CLI の 1 回の実行 | 既定 600 秒 | CLI 定義の `timeout` |
+| 受入条件の判定（`acceptance_judge`） | 既定 600 秒（本体と同じ fallback） | CLI 定義の `timeout`（変種側） |
 | スロットの強制解放 | 7200 秒 | `slot_timeout_seconds` |
 | 処理開始待ち（SlotMonitor） | 60 秒 | 不可 |
 | ペインの起動待ち | 60 秒 | `startup_timeout` |

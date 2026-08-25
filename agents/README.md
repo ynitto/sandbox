@@ -75,6 +75,9 @@ chat モードのように、人が `/skill-name` と書いたテキストを送
   候補から外す。auth・env=人が環境を直す、transient=自動リトライ。agent-project は
   リトライを無駄に焼かず・viewer は「誰が何を直せばよいか」を表示できる。
 - `interactive` が無い定義は対話起動（CLIチャット・定常業務の tmux 実行）を提供しない。
+- `timeout` は**その CLI だけ既定と違う上限が要るとき**にだけ書く。省略すると呼び出し側の
+  fallback（agent-loop は 600 秒、agent-audit は `--agent-timeout`）に従う。既定で足りるのに
+  書くと、呼び出し側が fallback を変えてもその定義だけ古い上限のまま取り残される。
 
 ## 待機判定（interactive の検出フィールド）
 
