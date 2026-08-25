@@ -135,21 +135,28 @@ class DefsTests(unittest.TestCase):
         self.assertEqual(payload["argv_write"], expected)
 
     def test_a_purpose_resolves_through_the_variant(self):
-        """variant は入口を増やさず定義を付け替えるだけ、が defs から見えること。"""
+        """variant は入口も agent_cli も増やさず、profile を付け替えるだけ。"""
         out = io.StringIO()
         herdcli.cmd_defs(["ollama", "--json", "--purpose", "split"], out=out)
         payload = json.loads(out.getvalue())
         self.assertTrue(payload["resolved_via_variant"])
-        self.assertEqual(payload["name"], "ollama-list")
+        self.assertEqual(payload["name"], "ollama", "用途で agent_cli を増やさない")
+        self.assertEqual(payload["profile"], "list")
         self.assertEqual(payload["requested"], "ollama")
+        self.assertIn("--format", payload["argv_write"])
+        self.assertIn("array", payload["argv_write"])
 
     def test_listing_names_every_bundled_definition(self):
         out = io.StringIO()
         rc = herdcli.cmd_defs(["--json"], out=out)
         self.assertEqual(rc, 0)
         names = json.loads(out.getvalue())["definitions"]
-        for expected in ("aider", "ollama", "ollama-json", "claude"):
+        for expected in ("aider", "ollama", "claude", "opencode"):
             self.assertIn(expected, names)
+        # 用途別の起動形は profile なので、一覧は**実エージェント数**になる。
+        # ここが増えると、運用者にはクラウド CLI と並ぶ別エージェントに見える。
+        self.assertNotIn("ollama-json", names)
+        self.assertNotIn("ollama-list", names)
 
     def test_an_unknown_definition_fails_instead_of_guessing(self):
         err = io.StringIO()

@@ -149,6 +149,10 @@ def _defs_payload(name: str, *, model: "str | None", purpose: "str | None") -> d
         "name": spec["name"],
         "path": str(spec["path"]),
         "requested": name,
+        # 用途別の起動形（profile）は同じエージェントの中にある。台帳と格付けのキーは
+        # `name` のほうで、profile は起動差でしかない。
+        "profile": spec.get("profile") or "",
+        "profiles": sorted(spec.get("profiles") or {}),
         "resolved_via_variant": bool(variant),
         "headless_autonomy": spec.get("headless_autonomy"),
         "readonly": spec.get("readonly"),
@@ -204,7 +208,12 @@ def cmd_defs(argv, *, out=None, err=None) -> int:
             return 1
         print("解決できる定義:", file=out)
         for item in names:
-            print(f"  {item}", file=out)
+            try:
+                profiles = sorted(agentcli.load_cli(item).get("profiles") or {})
+            except agentcli.AgentCliError:
+                profiles = []
+            suffix = f"    profiles: {', '.join(profiles)}" if profiles else ""
+            print(f"  {item}{suffix}", file=out)
         print(f"\n1 件の中身と実効 argv: {PROG} defs <名前>", file=out)
         return 0
 
@@ -217,8 +226,13 @@ def cmd_defs(argv, *, out=None, err=None) -> int:
         print(json.dumps(payload, ensure_ascii=False), file=out)
         return 0
     print(f"{payload['name']}  ({payload['path']})", file=out)
-    if payload["resolved_via_variant"]:
+    if payload["profile"]:
+        print(f"  ← {payload['requested']} = {payload['name']} の profile "
+              f"{payload['profile']!r}", file=out)
+    elif payload["resolved_via_variant"]:
         print(f"  ← {payload['requested']} の variant として解決", file=out)
+    if payload["profiles"]:
+        print(f"  profiles : {', '.join(payload['profiles'])}", file=out)
     print(f"  autonomy={payload['headless_autonomy']}  readonly={payload['readonly']}"
           f"  cost={payload['relative_cost']}  model={payload['model']}", file=out)
     print(f"  write    : {' '.join(payload['argv_write'])}", file=out)

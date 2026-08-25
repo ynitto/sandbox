@@ -84,6 +84,28 @@ basename(argv[0])       解決されるサブコマンド        残りの引数
 | 定義を読むか | 読まない | 読む（`variants` / `readonly` が効く） |
 | 名前の空間 | `aider` / `ollama` / `opencode` | `agents/*.json` の全定義 |
 
+### 4.0 用途別の起動形は profile であって別エージェントではない
+
+`agents/*.json` は **1 ファイル = 1 エージェント**である。用途で使い分ける起動差は定義の中の
+`profiles` に置く:
+
+```
+agent-herd defs
+  …
+  ollama    profiles: json, list, list-thinking, read, verify
+  opencode
+```
+
+`ollama-list` のような従来の綴りはそのまま解決でき（`base=ollama / profile=list`）、
+返る spec の `name` は正典の `"ollama"`、起動差は `profile` が持つ。**台帳と格付けへ書く
+`agent_cli` は常に正典名**——用途の次元は `operation_class` / `purpose` の列が持っており、
+`agent_cli` へ畳み込むと同じ次元の二重表現になって 1 実行系の実測が偽の候補へ割れる。
+
+profile は base を継ぐが、**`interactive` と `variants` は継承しない**（継承すると対話面を
+持たない役割に base の TUI が生え、agent-dashboard の実行経路が変わる）。`env` は base へ
+重ね、他は宣言があれば置き換える。実ファイルが profile より優先されるので、独立させたく
+なったら `ollama-list.json` を置けばよい。
+
 ### 4.1 `defs`
 
 ```

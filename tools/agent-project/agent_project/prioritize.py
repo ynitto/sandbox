@@ -446,6 +446,18 @@ def _node_budget_record(seconds: float, ref: str = "", agent_cli: str = "",
         pass    # 記帳失敗で実行を止めない（台帳は best-effort、上限は次の実行前チェックで効く）
 
 
+def _canonical_cli(cli: str) -> str:
+    """台帳・格付けへ書く agent_cli を正典名へ寄せる（`ollama-json` → `ollama`）。
+
+    用途は台帳の別列（purpose / operation_class）が持っているので、agent_cli 側へ
+    畳み込むと同じ次元を 2 か所で表すことになり、1 実行系の実測が割れる。
+    """
+    try:
+        return _agentcli.canonical_name(cli)
+    except Exception:                       # noqa: BLE001  観測の失敗で実行を止めない
+        return str(cli or "")
+
+
 def _record_quota_observation(cli: str, blob: str) -> None:
     """quota で落ちた CLI を台帳へ**観測**として残す（消費 0 行）。
 
@@ -464,7 +476,7 @@ def _record_quota_observation(cli: str, blob: str) -> None:
     extra = {"event": "quota", "quota_kind": detail["quota_kind"]}
     if detail.get("reset_at"):
         extra["reset_at"] = detail["reset_at"]
-    _node_budget_record(0.0, ref="", agent_cli=cli, extra=extra)
+    _node_budget_record(0.0, ref="", agent_cli=_canonical_cli(cli), extra=extra)
 
 
 # --- agent-control（管理面→エンジンの宣言的オーケストレーション契約） ----------------------
@@ -541,7 +553,8 @@ def _write_status(effective_cli: str = "", effective_model: str = "", lifecycle:
                   ("control-workload" if wl.get("agent_cli") or wl.get("model") else "tool-config"))
         rec = {"tool": _NODE_BUDGET_TOOL, "workload": _NODE_BUDGET_WORKLOAD,
                "pid": os.getpid(), "lifecycle": lifecycle,
-               "effective": {"agent_cli": effective_cli or None, "model": effective_model or None,
+               "effective": {"agent_cli": _canonical_cli(effective_cli) or None,
+                             "model": effective_model or None,
                              "tier": wl.get("tier"), "selection_source": source,
                              "selection_reason": wl.get("selection_reason") or "",
                              "pinned": pinned},

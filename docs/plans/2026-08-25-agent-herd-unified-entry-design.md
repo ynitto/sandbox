@@ -842,7 +842,7 @@ LAN の含意が消えるので採らない。リポジトリの命名は `agent
 agentcore に adapter を書き、同じ zipapp のサブコマンドへ載せる。基準は「adapter が要るか」
 であって「揃えたいか」ではない。
 
-### 9.4 variant を別の `agent_cli` にしているのは設計の誤り（訂正）
+### 9.4 variant を別の `agent_cli` にしているのは設計の誤り（訂正・実装済）
 
 **当初この節では「1 ファイルに畳んでも識別子は名前として残す必要がある」と書いたが、それは
 誤りだった。** 根拠として挙げたのは「`resolve_variant` が名前を返し、台帳にもその名前が
@@ -912,6 +912,24 @@ usage・control の `selection_policy`・既存の eval アーカイブ（`ollam
 
 **それでも畳むべきである。** 割れた証跡は時間とともに積み上がり、後から統合するほど
 読み替えの範囲が広がる。`errors` の 35 規則の重複はその副産物として一緒に消える。
+
+#### 実装（2026-08-25）
+
+綴りは変えずに解決の側を変えた——**移行期間も読み替え表も要らない**:
+
+- `agents/ollama.json` に `profiles`（json / list / list-thinking / read / verify）を置き、
+  用途別の 5 ファイルを削除した。定義ファイル数 13 → 8 で、**実エージェント数と一致**する
+- `load_cli("ollama-list")` は実ファイルが無ければ `base=ollama / profile=list` として解く。
+  **実ファイルが優先**なので、独立させたくなったら `ollama-list.json` を置けばよい
+- 返る spec の `name` は正典の `"ollama"`、起動差は `profile` が持つ。台帳・格付けへ書く
+  agent_cli は `canonical_name()` を通す（agent-flow の 2 か所と agent-project の 2 か所）
+- 継承しないのは `interactive` と `variants` の 2 つだけ。継承すると対話面を持たない役割に
+  base の TUI が生えて、agent-dashboard の実行経路が変わる（P1.5 で踏んだのと同じ形）
+- JS ローダ・orchestration の allowlist・JSON schema も同じ規則で揃えた
+
+統合前後の等価性は機械で確かめた: 旧 6 定義を git から取り出し、**argv（write / readonly）・
+全宣言（autonomy / readonly / cost / default_model / env / variants / timeout / errors /
+interactive）・対話面・variant 解決のすべてが一致**（不一致 0 件）。
 
 ---
 
