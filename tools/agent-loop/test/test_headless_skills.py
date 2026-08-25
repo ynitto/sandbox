@@ -82,6 +82,36 @@ class RunGoalSkillResolutionTests(unittest.TestCase):
                                 for f in read_files))
 
 
+class ActionSkillNameTests(unittest.TestCase):
+    def test_bare_mention_without_backticks_is_picked_up(self):
+        # 「wiki-useスキルを使って」の素の表記。拾わないとモデルはスキル名を
+        # コマンドとして実行し「PATH 上に実行ファイルがありません」の却下を繰り返す（実測）。
+        self.assertEqual(al._tl_action_skill_names("wiki-useスキルを使って取り込んで"),
+                         ["wiki-use"])
+
+    def test_backticked_mention_still_works(self):
+        self.assertEqual(al._tl_action_skill_names("`tech-harvester` スキルの手順で"),
+                         ["tech-harvester"])
+
+
+class SkillNameAsCommandTests(unittest.TestCase):
+    def test_reject_names_the_skill_and_its_scripts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp, "wiki-use")
+            (root / "scripts").mkdir(parents=True)
+            (root / "scripts" / "ingest.py").write_text("", encoding="utf-8")
+            with self.assertRaises(al.ToolLoopError) as ctx:
+                al._tl_validate_command("wiki-use", tmp, [str(root)])
+        message = str(ctx.exception)
+        self.assertIn("wiki-use はスキル名であり実行ファイルではありません", message)
+        self.assertIn("ingest.py", message)
+
+    def test_unknown_command_keeps_the_path_error(self):
+        with self.assertRaises(al.ToolLoopError) as ctx:
+            al._tl_validate_command("no-such-cmd", "/tmp", [])
+        self.assertIn("PATH 上に実行ファイルがありません", str(ctx.exception))
+
+
 class StartupSlashSkillCheckTests(unittest.TestCase):
     """層3 entry の slash スキルは起動時に fail fast（設定ミスを初回 dispatch まで隠さない）。"""
 

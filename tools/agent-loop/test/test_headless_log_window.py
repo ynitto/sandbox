@@ -192,5 +192,36 @@ class OpenHeadlessLogPaneTests(unittest.TestCase):
         self.assertFalse(self._mgr("sess:0").open_headless_log_pane("e1", "n", ""))
 
 
+class ProgressRedirectTests(unittest.TestCase):
+    """デーモンの headless スレッドでは進行表示を実行ログへ振り向ける。
+
+    デーモンの stdout はコントロールペインなので、print のままだと実行の様子
+    （ラウンド・run・write_files・却下）が controller のログに混ざって流れる。
+    """
+
+    def tearDown(self):
+        al._TL_PROGRESS_LOCAL.log_file = None
+
+    def test_redirects_to_the_log_file_when_set(self):
+        import io
+        import json
+        import tempfile
+        with tempfile.NamedTemporaryFile("r", suffix=".jsonl") as f:
+            al._TL_PROGRESS_LOCAL.log_file = f.name
+            with mock.patch.object(al.sys, "stdout", io.StringIO()) as out:
+                al._tl_progress("ラウンド 1/8", "agent-loop")
+            self.assertEqual(out.getvalue(), "")
+            event = json.loads(f.read())
+            self.assertEqual(event["event"], "progress")
+            self.assertEqual(event["message"], "ラウンド 1/8")
+            self.assertEqual(event["tag"], "agent-loop")
+
+    def test_prints_to_stdout_without_a_sink(self):
+        import io
+        with mock.patch.object(al.sys, "stdout", io.StringIO()) as out:
+            al._tl_progress("state: fetch", "statemachine")
+        self.assertEqual(out.getvalue(), "[statemachine] state: fetch\n")
+
+
 if __name__ == "__main__":
     unittest.main()

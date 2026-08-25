@@ -1219,6 +1219,9 @@ class PeriodicScheduler:
         work_dir = cwd or self._workspace or os.getcwd()
         log_file = self._headless_log_file(root_id)
         self._open_headless_log_view(entry, log_file)
+        # このスレッドの進行表示（_tl_progress）を実行ログへ振り向ける。デーモンの stdout は
+        # コントロールペインなので、そのまま print させると実行の様子が controller に混ざる。
+        _TL_PROGRESS_LOCAL.log_file = log_file
         try:
             agent = _tl_resolve_agent(profile.name, profile.model or "", work_dir)
             log.info("[%s] headless 実行: cli=%s model=%s autonomy=%s log=%s",
@@ -1236,6 +1239,8 @@ class PeriodicScheduler:
             log.exception("[%s] headless 実行が例外で終了しました", name)
             self._fail_execution(req, slot_key, reason="headless_crashed")
             return
+        finally:
+            _TL_PROGRESS_LOCAL.log_file = None
 
         if not result.get("verified"):
             # 受入条件が無い＝どの層も検証していない。実行は通すが done の根拠にしない

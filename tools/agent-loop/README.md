@@ -326,6 +326,9 @@ prompts:
   リポジトリの `.github/skills` → `~/.agents/skills` → `~/.codex/skills`。配布は
   `python install.py --agent aider --all-skills` 等。**既定インストールは `tier: core` の
   スキルだけ**なので、tech-harvester のような tier 無しスキルは `--all-skills` が必要です）。
+- 層3 では `slash` 宣言のほか、本文が「`` `wiki-use` `` スキル」「wiki-useスキル」のように
+  スキルを名指ししている場合も、実体があれば同じように解決して読み取り材料に渡します
+  （実体が無ければ素通し。`slash` と違い明示宣言ではないのでエラーにしません）。
 
 詳細な仕様は
 [`docs/designs/agent-loop-design.md` の機能 6](../../docs/designs/agent-loop-design.md#機能-6-slash-プロパティ)。

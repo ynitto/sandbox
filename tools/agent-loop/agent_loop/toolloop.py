@@ -113,8 +113,12 @@ def _tl_resolve_skill(name: str, cwd: str) -> "dict | None":
 
 
 def _tl_action_skill_names(text: str) -> "list[str]":
+    # backtick は任意。「wiki-useスキルを使って」のような素の表記も定期プロンプトの
+    # 実態として普通にあり、拾わないとモデルはスキル名をコマンドとして実行しようとする
+    # （実測: run wiki-use → 「PATH 上に実行ファイルがありません」の却下ループ）。
+    # 誤検出しても、ここ由来の名前は実在するスキルだけが解決される（無ければ素通し）。
     out: list[str] = []
-    for m in re.finditer(r"`([A-Za-z0-9_.-]+)`\s*スキル", str(text or "")):
+    for m in re.finditer(r"`?([A-Za-z0-9_.-]+)`?\s*スキル", str(text or "")):
         if m.group(1) not in out:
             out.append(m.group(1))
     return out
@@ -170,6 +174,15 @@ def _tl_validate_command(command, cwd: str, skill_dirs: "list[str]") -> str:
         raise ToolLoopError(f"シェルの実行は許可されていません: {raw}")
     if not os.path.isabs(raw) and "/" not in raw and "\\" not in raw:
         if not _tl_executable_on_path(raw):
+            # スキル名をコマンドとして実行しようとする失敗は実測で頻出。汎用の
+            # 「PATH にない」だけ返すと同じ要求を繰り返すので、次の一手を教える。
+            roots = {os.path.basename(d): d for d in skill_dirs}
+            if raw in roots:
+                scripts = _tl_skill_scripts({"root": roots[raw]})
+                raise ToolLoopError(
+                    f"{raw} はスキル名であり実行ファイルではありません。"
+                    + (f"スキルのスクリプトを実行してください: {', '.join(scripts)}"
+                       if scripts else "SKILL.md の手順に従ってください。"))
             raise ToolLoopError(f"PATH 上に実行ファイルがありません: {raw}")
         return raw
     for root in [cwd, *skill_dirs]:
@@ -309,8 +322,19 @@ def _tl_append_log(log_file: str, event: dict) -> None:
                            ensure_ascii=False) + "\n")
 
 
+# デーモンの headless 実行スレッドが設定する進行表示の振り向け先（log_file パス）。
+# 単発コマンド（run / statemachine）は stdout が実行ペインそのものなので print が正しいが、
+# デーモン内スレッドの stdout はコントロールペイン——そこへ流すと実行の様子が
+# controller のログに混ざる。スレッドごとに向き先を切り替える。
+_TL_PROGRESS_LOCAL = threading.local()
+
+
 def _tl_progress(message: str, tag: str = "statemachine") -> None:
     """tmux ウィンドウ（人が見る画面）への進行表示。ログとは別に短く出す。"""
+    log_file = getattr(_TL_PROGRESS_LOCAL, "log_file", None)
+    if log_file:
+        _tl_append_log(log_file, {"event": "progress", "tag": tag, "message": message})
+        return
     print(f"[{tag}] {message}", flush=True)
 
 
