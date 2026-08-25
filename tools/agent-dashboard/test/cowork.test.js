@@ -90,6 +90,52 @@ test('overview は statusFile を作らず既存ログとプロセス由来の s
   assert.ok(!fs.existsSync(path.join(repo, 'status.json')));
 });
 
+test('同じリポジトリの状態とログは選択した定常業務だけに絞る', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'cowork-scoped-logs-'));
+  const logDir = path.join(repo, '.agent-loop', 'logs');
+  fs.mkdirSync(logDir, { recursive: true });
+  const dailyLog = path.join(logDir, 'daily-review.log');
+  const weeklyLog = path.join(logDir, 'weekly-report.log');
+  const ambiguousLog = path.join(logDir, 'latest-run.log');
+  fs.writeFileSync(dailyLog, 'finished successfully\n');
+  fs.writeFileSync(weeklyLog, 'failed with error\n');
+  fs.writeFileSync(ambiguousLog, 'failed without a routine identifier\n');
+  fs.utimesSync(dailyLog, new Date('2026-08-24T00:00:00Z'), new Date('2026-08-24T00:00:00Z'));
+  fs.utimesSync(weeklyLog, new Date('2026-08-25T00:00:00Z'), new Date('2026-08-25T00:00:00Z'));
+  fs.utimesSync(ambiguousLog, new Date('2026-08-26T00:00:00Z'), new Date('2026-08-26T00:00:00Z'));
+  const config = { cowork: { items: [
+    { id: 'daily-review', type: 'loop', name: '日次レビュー', repo },
+    { id: 'weekly-report', type: 'loop', name: '週次レポート', repo },
+  ] } };
+
+  const overview = cowork.overview(config);
+  assert.strictEqual(overview.items[0].state.status, 'done', '日次レビューは日次ログの状態を使う');
+  assert.strictEqual(overview.items[1].state.status, 'failed', '週次レポートは週次ログの状態を使う');
+  assert.deepStrictEqual(cowork.itemLogs(config, 'daily-review').logs.map((log) => log.file), [dailyLog]);
+  assert.deepStrictEqual(cowork.itemLogs(config, 'weekly-report').logs.map((log) => log.file), [weeklyLog]);
+  assert.throws(() => cowork.readLog(config, 'daily-review', weeklyLog), /この作業のログではありません/);
+});
+
+test('定型業務の汎用ログ名はログ本文の workflow から対応付ける', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'cowork-scoped-sm-logs-'));
+  const logDir = path.join(repo, '.statemachine-use', 'logs');
+  fs.mkdirSync(logDir, { recursive: true });
+  const releaseLog = path.join(logDir, 'agent-loop-1000-1.jsonl');
+  const deployLog = path.join(logDir, 'agent-loop-2000-1.jsonl');
+  fs.writeFileSync(releaseLog, `${JSON.stringify({ event: 'start', argv: [path.join(repo, '.statemachine', 'release', 'workflow.yaml')] })}\nfinished successfully\n`);
+  fs.writeFileSync(deployLog, `${JSON.stringify({ event: 'start', argv: [path.join(repo, '.statemachine', 'deploy', 'workflow.yaml')] })}\nfailed with error\n`);
+  const config = { cowork: { items: [
+    { id: 'release', type: 'state-machine', name: 'リリース', workflow: 'release', repo },
+    { id: 'deploy', type: 'state-machine', name: 'デプロイ', workflow: 'deploy', repo },
+  ] } };
+
+  const overview = cowork.overview(config);
+  assert.strictEqual(overview.items[0].state.status, 'done');
+  assert.strictEqual(overview.items[1].state.status, 'failed');
+  assert.deepStrictEqual(cowork.itemLogs(config, 'release').logs.map((log) => log.file), [releaseLog]);
+  assert.deepStrictEqual(cowork.itemLogs(config, 'deploy').logs.map((log) => log.file), [deployLog]);
+});
+
 test('saveWork は複数リポジトリそれぞれに git 保存処理を試みる', () => {
   const repoA = tmpRepo();
   const repoB = tmpRepo();

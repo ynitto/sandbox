@@ -99,12 +99,151 @@ function listLogCandidates(repo, type, config) {
         if (/\.(log|jsonl|txt)$/i.test(f) || f.includes('kiro') || f.includes('agent-loop') || f.includes('statemachine')) {
           const file = path.join(dir, f);
           const st = fs.statSync(file);
-          if (st.isFile()) out.push({ file, mtimeMs: st.mtimeMs });
+          if (st.isFile()) out.push({ file, mtimeMs: st.mtimeMs, size: st.size });
         }
       }
     } catch { /* optional logs */ }
   }
   return out.sort((a, b) => b.mtimeMs - a.mtimeMs);
+}
+
+// 同じリポジトリ・同じ種類のログを、定常業務ごとに分離する。
+//
+// 旧実装は repo と type だけで候補を集めていたため、同じ repo に loop が 2 件あると
+// 2 件とも「repo 内の最新ログ」を自分の状態として使い、履歴にも全ログを並べていた。
+// ログの保存形式は世代ごとに異なるので、ファイル名を第一候補、ログ内の prompt 名 / workflow
+// 名を第二候補として、同居する業務のうち一意に特定できたときだけ所属させる。識別不能な
+// ログを全業務へ混ぜるより、表示しない方が正しい。業務が 1 件だけなら従来ログも曖昧でない。
+const LOG_OWNER_CACHE_LIMIT = 1000;
+const _logOwnerCache = new Map();
+
+function compactLogIdentity(value) {
+  return String(value == null ? '' : value)
+    .normalize('NFKC')
+    .toLocaleLowerCase('ja-JP')
+    .replace(/[^\p{L}\p{N}]+/gu, '');
+}
+
+function itemLogIdentities(item) {
+  const src = (item && item._src) || {};
+  const values = [
+    item && !String(item.id || '').startsWith('disc:') ? item.id : '',
+    item && item.name,
+    item && item.workflow,
+    item && item.file,
+    src.promptName,
+    src.workflowName,
+    src.loop && src.loop.promptName,
+  ];
+  const out = new Set();
+  for (const value of values) {
+    const raw = String(value || '');
+    if (!raw) continue;
+    const base = path.basename(raw).replace(/\.(?:ya?ml|json)$/i, '');
+    for (const token of [compactLogIdentity(raw), compactLogIdentity(base)]) {
+      if (token.length >= 2) out.add(token);
+    }
+  }
+  return [...out];
+}
+
+function peerLogItems(config, item) {
+  if (!config) return [item];
+  const cfg = config.cowork || {};
+  const configured = itemsOf(cfg).map((candidate, index) => ({
+    ...candidate,
+    id: itemId(candidate, index),
+    source: 'config',
+  }));
+  let discovered = [];
+  try { discovered = rawDiscovered(config); } catch { /* 発見失敗時は設定項目だけで判定 */ }
+  const type = item.type === 'state-machine' ? 'state-machine' : 'loop';
+  const repoKey = _pathKey(item.repo || item.cwd || '');
+  return dedupeItems([...configured, ...discovered, item]).filter((candidate) => (
+    (candidate.type === 'state-machine' ? 'state-machine' : 'loop') === type
+    && _pathKey(candidate.repo || candidate.cwd || '') === repoKey
+  ));
+}
+
+function logIdentitySample(candidate, maxBytes = 65536) {
+  let fd;
+  try {
+    const size = Number(candidate.size) || fs.statSync(candidate.file).size;
+    const chunkSize = Math.min(Math.ceil(maxBytes / 2), size);
+    if (!chunkSize) return '';
+    fd = fs.openSync(candidate.file, 'r');
+    const first = Buffer.alloc(chunkSize);
+    const firstRead = fs.readSync(fd, first, 0, chunkSize, 0);
+    if (size <= chunkSize) return first.subarray(0, firstRead).toString('utf8');
+    const last = Buffer.alloc(Math.min(chunkSize, size - chunkSize));
+    const lastRead = fs.readSync(fd, last, 0, last.length, size - last.length);
+    return `${first.subarray(0, firstRead).toString('utf8')}\n${last.subarray(0, lastRead).toString('utf8')}`;
+  } catch {
+    return '';
+  } finally {
+    if (fd !== undefined) {
+      try { fs.closeSync(fd); } catch { /* 読み取り失敗後の close は無視 */ }
+    }
+  }
+}
+
+function highestUniqueOwner(peers, score) {
+  let best = 0;
+  let owner = '';
+  let tied = false;
+  for (const peer of peers) {
+    const value = score(peer);
+    if (value > best) {
+      best = value;
+      owner = jobKey(peer);
+      tied = false;
+    } else if (value > 0 && value === best && jobKey(peer) !== owner) {
+      tied = true;
+    }
+  }
+  return best > 0 && !tied ? owner : '';
+}
+
+function logCandidateOwner(candidate, peers) {
+  const peerSignature = peers.map((peer) => `${jobKey(peer)}:${itemLogIdentities(peer).join(',')}`)
+    .sort().join('|');
+  const cacheKey = `${candidate.file}\0${candidate.mtimeMs}\0${candidate.size}\0${peerSignature}`;
+  if (_logOwnerCache.has(cacheKey)) return _logOwnerCache.get(cacheKey);
+
+  const basename = compactLogIdentity(path.basename(candidate.file, path.extname(candidate.file)));
+  let owner = highestUniqueOwner(peers, (peer) => {
+    let best = 0;
+    for (const token of itemLogIdentities(peer)) {
+      if (basename === token) best = Math.max(best, 2000 + token.length);
+      else if (basename.includes(token)) best = Math.max(best, 1000 + token.length);
+    }
+    return best;
+  });
+  if (!owner) {
+    const sample = compactLogIdentity(logIdentitySample(candidate));
+    owner = highestUniqueOwner(peers, (peer) => {
+      let best = 0;
+      for (const token of itemLogIdentities(peer)) {
+        if (sample.includes(token)) best = Math.max(best, 100 + token.length);
+      }
+      return best;
+    });
+  }
+
+  if (_logOwnerCache.size >= LOG_OWNER_CACHE_LIMIT) {
+    _logOwnerCache.delete(_logOwnerCache.keys().next().value);
+  }
+  _logOwnerCache.set(cacheKey, owner);
+  return owner;
+}
+
+function listItemLogCandidates(item, config) {
+  const type = item.type === 'state-machine' ? 'state-machine' : 'loop';
+  const candidates = listLogCandidates(item.repo || item.cwd || '', type, config);
+  const peers = peerLogItems(config, { ...item, type });
+  if (peers.length <= 1) return candidates;
+  const target = jobKey({ ...item, type });
+  return candidates.filter((candidate) => logCandidateOwner(candidate, peers) === target);
 }
 
 function tail(file, max = 1200) {
@@ -176,11 +315,12 @@ function itemLogs(config, itemIdValue, { historyLimit = 50 } = {}) {
   if (!item) throw new Error(`Cowork 作業が見つかりません: ${itemIdValue}`);
   const type = item.type === 'state-machine' ? 'state-machine' : 'loop';
   const repo = item.repo || item.cwd || '';
-  const logs = listLogCandidates(repo, type, config).map((l) => {
-    let size = 0;
-    try { size = fs.statSync(l.file).size; } catch { /* 消えた候補 */ }
-    return { file: l.file, name: path.basename(l.file), mtimeMs: l.mtimeMs, size };
-  });
+  const logs = listItemLogCandidates({ ...item, type }, config).map((l) => ({
+    file: l.file,
+    name: path.basename(l.file),
+    mtimeMs: l.mtimeMs,
+    size: l.size,
+  }));
   return {
     id: String(item.id || itemIdValue),
     name: String(item.name || item.id || ''),
@@ -197,7 +337,7 @@ function readLog(config, itemIdValue, file, maxBytes = 16000) {
   const item = resolveItem(config, itemIdValue);
   if (!item) throw new Error(`Cowork 作業が見つかりません: ${itemIdValue}`);
   const type = item.type === 'state-machine' ? 'state-machine' : 'loop';
-  const candidates = listLogCandidates(item.repo || item.cwd || '', type, config);
+  const candidates = listItemLogCandidates({ ...item, type }, config);
   const hit = candidates.find((l) => l.file === String(file || ''));
   if (!hit) throw new Error('この作業のログではありません');
   const limit = Math.max(1000, Math.min(Number(maxBytes) || 16000, 200000));
@@ -232,7 +372,7 @@ function processStatus(item, cfg) {
 function dynamicState(item, cfg, { probeProcess = false } = {}, config = null) {
   const repo = item.repo || item.cwd || '';
   const proc = probeProcess ? processStatus(item, cfg) : { running: false, detail: '' };
-  const logs = repo ? listLogCandidates(repo, item.type, config) : [];
+  const logs = repo ? listItemLogCandidates(item, config) : [];
   const latest = logs[0] || null;
   const text = latest ? tail(latest.file) : '';
   let status = proc.running ? 'running' : latest ? 'idle' : 'unknown';
