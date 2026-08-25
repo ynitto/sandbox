@@ -33,38 +33,24 @@ def write_json_atomic(path: str, data) -> None:
     os.replace(tmp, path)
 
 
+from agentcore import llmjson as _llmjson
+
 def extract_json(text: str):
-    """LLM 出力から JSON を寛容に取り出す（hermes-kiro-acp の作法）。"""
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
-    for opn, cls in (("[", "]"), ("{", "}")):
-        i, j = text.find(opn), text.rfind(cls)
-        if i != -1 and j > i:
-            try:
-                return json.loads(text[i:j + 1])
-            except json.JSONDecodeError:
-                continue
-    raise ValueError("planner 出力から JSON を抽出できませんでした")
+    """LLM 出力から JSON を寛容に取り出す。実装は :mod:`agentcore.llmjson`（1 実装）。
+
+    寛容さの規則が engine ごとにずれると、同じモデル応答が経路によって通ったり落ちたり
+    する——しかも落ちた側は「モデルが悪い」に見えるので原因が分からない。だから写しを
+    持たない（C7）。メッセージだけ planner 文脈のものにする。
+    """
+    return _llmjson.extract_json(text, what="planner 出力")
 
 
 def unwrap_list(data):
-    """配列を求める契約で、配列 1 本を包んだオブジェクトを配列として受ける。
+    """配列を包んだ器を剥がす。実装は :mod:`agentcore.llmjson`（1 実装）。
 
-    ollama の JSON モード（`--format json`）は**トップレベルを必ずオブジェクトにする**ため、
-    プロンプトで「配列だけを返せ」と書いても `{"data": [...]}` で返る（engine 側の仕様で
-    モデルの能力ではない）。受け側が厳密なままだと split は原理的に契約を満たせず、形式修復
-    リトライも必ず空振りして 1 回分の呼び出しを捨てる（C9・C10 — ローカルモデルを実用域に
-    残し、無駄な再呼び出しを焼かない）。JSON モードを持つ他 CLI にも同じ形で効く。
-
-    剥がすのは**配列値がちょうど 1 つ**のときだけ——2 つ以上あるとどれが答えか決まらず、
-    黙って別のリストを採ると分解対象を取り違える。それ以外は素通しする。"""
-    if isinstance(data, dict):
-        lists = [v for v in data.values() if isinstance(v, list)]
-        if len(lists) == 1:
-            return lists[0]
-    return data
+    ollama の JSON モードがトップレベルをオブジェクトに固定するため必要になる手当て。
+    """
+    return _llmjson.unwrap_list(data)
 
 
 def extract_list(text: str):

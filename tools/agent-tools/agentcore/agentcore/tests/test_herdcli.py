@@ -9,10 +9,13 @@
 """
 from __future__ import annotations
 
+import argparse
 import io
 import json
 import os
+import pathlib
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -118,7 +121,7 @@ class DefsTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         payload = json.loads(out.getvalue())
         self.assertEqual(payload["name"], "aider")
-        self.assertEqual(payload["argv_write"][0], "agent-aider")
+        self.assertEqual(payload["argv_write"][:2], ["agent-herd", "aider"])
         self.assertIn("ollama_chat/gemma4:e4b", payload["argv_write"])
         self.assertEqual(payload["headless_autonomy"], "single-shot")
 
@@ -132,21 +135,28 @@ class DefsTests(unittest.TestCase):
         self.assertEqual(payload["argv_write"], expected)
 
     def test_a_purpose_resolves_through_the_variant(self):
-        """variant は入口を増やさず定義を付け替えるだけ、が defs から見えること。"""
+        """variant は入口も agent_cli も増やさず、profile を付け替えるだけ。"""
         out = io.StringIO()
         herdcli.cmd_defs(["ollama", "--json", "--purpose", "split"], out=out)
         payload = json.loads(out.getvalue())
         self.assertTrue(payload["resolved_via_variant"])
-        self.assertEqual(payload["name"], "ollama-list")
+        self.assertEqual(payload["name"], "ollama", "用途で agent_cli を増やさない")
+        self.assertEqual(payload["profile"], "list")
         self.assertEqual(payload["requested"], "ollama")
+        self.assertIn("--format", payload["argv_write"])
+        self.assertIn("array", payload["argv_write"])
 
     def test_listing_names_every_bundled_definition(self):
         out = io.StringIO()
         rc = herdcli.cmd_defs(["--json"], out=out)
         self.assertEqual(rc, 0)
         names = json.loads(out.getvalue())["definitions"]
-        for expected in ("aider", "ollama", "ollama-json", "claude"):
+        for expected in ("aider", "ollama", "claude", "opencode"):
             self.assertIn(expected, names)
+        # 用途別の起動形は profile なので、一覧は**実エージェント数**になる。
+        # ここが増えると、運用者にはクラウド CLI と並ぶ別エージェントに見える。
+        self.assertNotIn("ollama-json", names)
+        self.assertNotIn("ollama-list", names)
 
     def test_an_unknown_definition_fails_instead_of_guessing(self):
         err = io.StringIO()
@@ -168,7 +178,7 @@ class ChatTests(unittest.TestCase):
         launched = []
         rc = herdcli.cmd_chat([], launcher=lambda argv: launched.append(argv) or 0)
         self.assertEqual(rc, 0)
-        self.assertEqual(launched[0][:2], ["agent-ollama", "--tui"])
+        self.assertEqual(launched[0][:3], ["agent-herd", "ollama", "--tui"])
 
     def test_a_cloud_cli_with_an_interactive_block_launches(self):
         """chat は ollama 専用ではない——interactive を宣言した定義はどれでも起動できる。"""
@@ -177,44 +187,37 @@ class ChatTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertTrue(launched[0], "対話 argv が空です")
 
-    def test_aider_has_no_interactive_block_yet(self):
-        """aider の対話面はまだ無い。**足す前に agent-dashboard を直す必要がある**。
+    def test_aider_gets_the_policy_but_not_the_headless_only_flags(self):
+        """対話で試したことがヘッドレスで再現しないのを防ぐ: policy は同じ経路で付く。
 
-        agent-dashboard の定型業務は `spec.interactive` の**有無**を
-        「対話ペインで駆動できる CLI か」の代理として読み、無い CLI（aider・素の ollama）を
-        agent-loop の statemachine ハーネスへ回している
-        （cowork.js の `if (!selected.spec.interactive)`）。
+        逆に、人が確認する場でヘッドレス専用の押し切り（--yes-always）や表示を殺すフラグ
+        （--no-stream / --no-pretty）は引き継がない。
 
-        つまり aider.json に interactive を足すと、chat が使えるようになる代わりに
-        **定型業務の実行経路が黙ってハーネスから対話送信へ切り替わる**。実際 CI の
-        `dashboard (npm test)` がこれを検出した（state-machine-window.test.js:
-        「単発実行サブコマンドへ渡す（send ではない）」）。
+        この対話面を開通させるには先に agent-dashboard の弁別子を直す必要があった——
+        あちらは `spec.interactive` の有無を「対話ペインで駆動できるか」の代理として読んで
+        いたので、interactive を足すと aider の定型業務が黙ってハーネスから対話送信へ
+        切り替わっていた。いまは `headlessAutonomy` で弁別する
+        （`cowork.needsHeadlessHarness`。固定は dashboard の state-machine-window.test.js）。
+        """
+        launched = []
+        rc = herdcli.cmd_chat(["aider", "--model", "gemma4:e4b"],
+                              launcher=lambda argv: launched.append(argv) or 0)
+        self.assertEqual(rc, 0)
+        argv = launched[0]
+        self.assertIn("--agent-policy", argv)
+        self.assertIn("gemma4-e4b-reliability-v1", argv)
+        self.assertIn("ollama_chat/gemma4:e4b", argv)
+        for headless_only in ("--yes-always", "--no-stream", "--no-pretty", "--message"):
+            self.assertNotIn(headless_only, argv)
 
-        正しい弁別子は `headless_autonomy`（single-shot はハーネスが要る / tool-loop は
-        自分で回せる）だが、それは dashboard 側の実行経路を変える独立した変更である。
-        ここではその依存関係を固定しておく——このテストが落ちたら、aider.json に
-        interactive を足した誰かが dashboard の弁別子も直したということなので、
-        本テストを消して chat の起動テストへ置き換えてよい。
+    def test_aider_stays_single_shot_so_the_harness_still_owns_its_routines(self):
+        """対話面が付いても `headless_autonomy` は single-shot のまま。
+
+        この 2 つは別の宣言である。混ぜると定型業務の実行経路が変わる。
         """
         spec = agentcli.load_cli("aider", project_dir=_REPO)
-        self.assertIsNone(spec.get("interactive"),
-                          "aider.json に interactive を足すなら、先に agent-dashboard の "
-                          "cowork.js が headless_autonomy で弁別するよう直すこと")
-        err = io.StringIO()
-        rc = herdcli.cmd_chat(["aider"], err=err, launcher=lambda argv: 0)
-        self.assertEqual(rc, 1)
-
-    def test_a_definition_without_an_interactive_block_fails_loudly(self):
-        """黙ってヘッドレスへ倒さない（追加したければ定義に書く）。
-
-        variant 定義（ollama-json 等）は役割専用のヘッドレス設定なので対話面を持たない。
-        ここでヘッドレスへ倒すと、人は「対話に入ったつもり」で 1 往復だけの実行を眺める
-        ことになる。
-        """
-        err = io.StringIO()
-        rc = herdcli.cmd_chat(["ollama-json"], err=err, launcher=lambda argv: 0)
-        self.assertEqual(rc, 1)
-        self.assertIn("対話起動に対応していません", err.getvalue())
+        self.assertTrue(spec.get("interactive"), "chat aider のための interactive が無い")
+        self.assertEqual(spec.get("headless_autonomy"), "single-shot")
 
     def test_launching_our_own_name_stays_in_process(self):
         """interactive.command が配布名を指していても、開発木で PATH に無くて構わない。"""
@@ -253,7 +256,7 @@ class ExecTests(unittest.TestCase):
                               runner=lambda b: built.append(b) or 0)
         self.assertEqual(rc, 0)
         argv = built[0]["argv"]
-        self.assertEqual(argv[0], "agent-ollama")
+        self.assertEqual(argv[:2], ["agent-herd", "ollama"])
         self.assertIn("--format", argv)
         self.assertIn("json", argv)
 
@@ -271,12 +274,90 @@ class ExecTests(unittest.TestCase):
 
 
 class HarnessTests(unittest.TestCase):
-    def test_harness_says_where_it_currently_lives(self):
-        """P2 まではここに無い。黙って失敗せず、いま動く経路を指す。"""
+    """引数の綴りは `agent-loop statemachine` / `agent-loop run` と揃える。
+
+    同じハーネスの 2 つの入口なので、片方だけ違う名前を人に覚えさせない。
+    """
+
+    def test_statemachine_takes_the_same_flags_as_agent_loop(self):
+        seen = []
+        rc = herdcli.cmd_harness(
+            ["statemachine", "--workflow", "wf.yaml", "--agent-cli", "aider",
+             "--model", "gemma4:e4b", "--param", "topic=llm", "--input", "本文"],
+            runner=lambda kind, args, cwd: seen.append((kind, args)) or 0)
+        self.assertEqual(rc, 0)
+        kind, args = seen[0]
+        self.assertEqual(kind, "statemachine")
+        self.assertEqual(args.workflow, "wf.yaml")
+        self.assertEqual(args.agent_cli, "aider")
+        self.assertEqual(args.model, "gemma4:e4b")
+        self.assertEqual(args.param, ["topic=llm"])
+        self.assertEqual(args.input, "本文")
+
+    def test_run_takes_the_same_flags_as_agent_loop(self):
+        seen = []
+        rc = herdcli.cmd_harness(
+            ["run", "タスク本文", "--acceptance", "X がある", "--judge"],
+            runner=lambda kind, args, cwd: seen.append((kind, args)) or 0)
+        self.assertEqual(rc, 0)
+        kind, args = seen[0]
+        self.assertEqual(kind, "run")
+        self.assertEqual(args.prompt, ["タスク本文"])
+        self.assertEqual(args.acceptance, ["X がある"])
+        self.assertTrue(args.judge)
+
+    def test_a_missing_required_flag_fails_instead_of_running(self):
+        """--workflow 無しで走り出さない（argparse の 2 を入口の 2 へ揃える）。"""
         err = io.StringIO()
-        rc = herdcli.cmd_harness(["statemachine"], err=err)
+        saved, sys.stderr = sys.stderr, err
+        try:
+            rc = herdcli.cmd_harness(["statemachine"], runner=lambda *a: 0)
+        finally:
+            sys.stderr = saved
         self.assertEqual(rc, 2)
-        self.assertIn("agent-loop statemachine", err.getvalue())
+
+    def test_an_unknown_kind_lists_what_exists(self):
+        err = io.StringIO()
+        rc = herdcli.cmd_harness(["nonsense"], err=err)
+        self.assertEqual(rc, 2)
+        self.assertIn("statemachine", err.getvalue())
+
+    def test_the_dir_flag_decides_the_working_directory(self):
+        seen = []
+        with tempfile.TemporaryDirectory() as d:
+            herdcli.cmd_harness(["run", "X", "--dir", d],
+                                runner=lambda kind, args, cwd: seen.append(cwd) or 0)
+            self.assertEqual(seen[0], pathlib.Path(d).resolve())
+
+    def test_it_calls_the_ported_harness_not_agent_loop(self):
+        """実体は agentcore.harness（移植先）。agent-loop のデーモンを介さない。"""
+        from agentcore.harness import statemachine as ported
+        called = []
+        original = ported.cmd_statemachine
+        ported.cmd_statemachine = lambda args, cwd: called.append((args, cwd))
+        try:
+            args = argparse.Namespace(workflow="wf.yaml", agent_cli="aider", model=None,
+                                      param=[], input=None, dir=None)
+            rc = herdcli._run_harness("statemachine", args, pathlib.Path("."))
+        finally:
+            ported.cmd_statemachine = original
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(called), 1)
+
+    def test_sys_exit_from_the_harness_becomes_the_exit_code(self):
+        """移植元は終了を sys.exit で表す。入口はそれを終了コードへ戻す。"""
+        from agentcore.harness import toolloop as ported
+        original = ported.cmd_run
+
+        def _boom(args, cwd):
+            raise SystemExit(3)
+
+        ported.cmd_run = _boom
+        try:
+            rc = herdcli._run_harness("run", argparse.Namespace(), pathlib.Path("."))
+        finally:
+            ported.cmd_run = original
+        self.assertEqual(rc, 3)
 
 
 if __name__ == "__main__":

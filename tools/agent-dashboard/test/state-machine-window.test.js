@@ -229,6 +229,37 @@ async function main() {
       '受入条件は設定から解決して 1 件ずつ渡す');
   });
 
+  test('ハーネスへ回すかは headless_autonomy で決める（interactive の有無で代理しない）', () => {
+    // 対話面を提供するか（interactive）と、自分で探索・実行まで回せるか（headless_autonomy）は
+    // 別の宣言である。両者を同じフラグで表すと、aider のように「対話もできるが
+    // ヘッドレスでは single-shot」の CLI を取り違え、定型業務が黙ってハーネスから
+    // 対話送信へ切り替わる（2026-08-25 に実際に踏んだ）。
+    const f = cowork.needsHeadlessHarness;
+    // 対話面があっても single-shot ならハーネス（aider）
+    assert.strictEqual(f({ interactive: { command: ['x'] }, headlessAutonomy: 'single-shot' }), true,
+      'single-shot は対話面があってもハーネスで回す');
+    // 対話面があって tool-loop ならペイン（kiro / claude / ollama / opencode）
+    assert.strictEqual(f({ interactive: { command: ['x'] }, headlessAutonomy: 'tool-loop' }), false,
+      'tool-loop は対話ペインで駆動できる');
+    // 対話面が無ければ、駆動しようが無いのでハーネス（tool-loop でも）
+    assert.strictEqual(f({ headlessAutonomy: 'tool-loop' }), true,
+      'interactive を持たない CLI はペインで駆動できない');
+    assert.strictEqual(f({ headlessAutonomy: 'single-shot' }), true);
+    // 未宣言は安全側（＝従来どおりハーネス）
+    assert.strictEqual(f({ interactive: { command: ['x'] } }), true, '未宣言は single-shot 扱い');
+    assert.strictEqual(f(null), true, 'spec が無ければハーネス');
+  });
+
+  test('aider は interactive を持っていてもハーネス経路のまま（回帰の固定）', () => {
+    // aider.json に interactive を足したとき、定型業務の実行経路が変わっていないこと。
+    const { loadCli } = require('../src/features/agent-project/main/agentCli.js');
+    const spec = loadCli('aider', path.join(__dirname, '..', '..', '..'));
+    assert.ok(spec.interactive, 'aider.json に interactive がある（chat aider のため）');
+    assert.strictEqual(spec.headlessAutonomy, 'single-shot');
+    assert.strictEqual(cowork.needsHeadlessHarness(spec), true,
+      'aider の定型業務は対話送信ではなくハーネスで回す');
+  });
+
   console.log(`\n${passed} tests passed`);
 }
 

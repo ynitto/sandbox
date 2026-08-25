@@ -450,6 +450,19 @@ class TestSkillToolsetGuard(_NoServerMixin, unittest.TestCase):
         self.assertEqual(self._run("read", "手順の説明だけ")["text"], "ok")
 
 
+def _adapter_args(argv, expect="ollama"):
+    """定義の argv から、入口が adapter へ実際に渡す部分だけを取り出す。
+
+    定義の `command` は `agent-herd ollama …` の綴りなので、素の添字で剥がすと
+    綴りが変わるたびにテストが嘘になる。入口（`herdcli.resolve`）と同じ規則で剥がして、
+    「エンジンが組んだ argv を adapter がそのまま解釈できる」ことだけを見る。
+    """
+    from agentcore import herdcli
+    sub, rest = herdcli.resolve(argv[0], argv[1:])
+    assert sub == expect, f"想定と違うサブコマンドへ落ちている: {sub}"
+    return rest
+
+
 class TestContractDefinition(unittest.TestCase):
     """`agents/ollama*.json` の宣言と実装の対応（契約が嘘をつかないこと）。
 
@@ -498,18 +511,18 @@ class TestContractDefinition(unittest.TestCase):
         readonly = agentcli.headless_cmd(spec, "M", "P", readonly=True)["argv"]
         self.assertEqual(write[write.index("--think") + 1], "off")
         self.assertEqual(readonly[readonly.index("--think") + 1], "off")
-        opts = ollama_adapter.parse_args(write[1:])
+        opts = ollama_adapter.parse_args(_adapter_args(write))
         self.assertIs(opts["think"], False, "定義の argv がそのまま解釈できる")
         self.assertEqual(opts["toolset"], "bash")
         self.assertEqual(opts["max_rounds"], 12, "write の予算は絞ってある（read は 30）")
-        self.assertIs(ollama_adapter.parse_args(readonly[1:])["think"], False)
+        self.assertIs(ollama_adapter.parse_args(_adapter_args(readonly))["think"], False)
         self.assertEqual(agentcli.interactive_cmd(spec, "M")[
             agentcli.interactive_cmd(spec, "M").index("--think") + 1], "on")
 
     def test_json_variant_forces_the_grammar_and_carries_no_tools(self):
         spec = agentcli.load_cli("ollama-json")
         argv = agentcli.headless_cmd(spec, "M", "P")["argv"]
-        opts = ollama_adapter.parse_args(argv[1:])
+        opts = ollama_adapter.parse_args(_adapter_args(argv))
         self.assertEqual(opts["format"], "json")
         self.assertFalse(opts["tools"], "JSON しか出せない状態でツールループの規約は成立しない")
         self.assertEqual(spec["readonly"], "enforced")
@@ -518,7 +531,7 @@ class TestContractDefinition(unittest.TestCase):
         # `--format json` はトップレベルをオブジェクトに固定するので、配列契約（split）は
         # スキーマを渡す起動形で受ける。
         spec = agentcli.load_cli("ollama-list")
-        opts = ollama_adapter.parse_args(agentcli.headless_cmd(spec, "M", "P")["argv"][1:])
+        opts = ollama_adapter.parse_args(_adapter_args(agentcli.headless_cmd(spec, "M", "P")["argv"]))
         self.assertEqual(opts["format"], "array")
         self.assertFalse(opts["tools"])
         self.assertEqual(ollama_loop.format_value("array"),
@@ -527,14 +540,14 @@ class TestContractDefinition(unittest.TestCase):
     def test_thinking_list_variant_leaves_the_grammar_unconstrained(self):
         """Gemma split は意味的な完全被覆を考えられるよう、thinking と grammar を両立させない。"""
         spec = agentcli.load_cli("ollama-list-thinking")
-        opts = ollama_adapter.parse_args(agentcli.headless_cmd(spec, "M", "P")["argv"][1:])
+        opts = ollama_adapter.parse_args(_adapter_args(agentcli.headless_cmd(spec, "M", "P")["argv"]))
         self.assertIs(opts["think"], True)
         self.assertIsNone(opts["format"])
         self.assertFalse(opts["tools"])
 
     def test_read_variant_carries_the_read_toolset(self):
         spec = agentcli.load_cli("ollama-read")
-        opts = ollama_adapter.parse_args(agentcli.headless_cmd(spec, "M", "P")["argv"][1:])
+        opts = ollama_adapter.parse_args(_adapter_args(agentcli.headless_cmd(spec, "M", "P")["argv"]))
         self.assertTrue(opts["tools"])
         self.assertEqual(opts["toolset"], "read")
         readonly = agentcli.headless_cmd(spec, "M", "P", readonly=True)["argv"]
@@ -553,7 +566,7 @@ class TestContractDefinition(unittest.TestCase):
     def test_interactive_launches_the_tui(self):
         spec = agentcli.load_cli("ollama")
         argv = agentcli.interactive_cmd(spec, "M")
-        self.assertEqual(argv[:2], ["agent-ollama", "--tui"])
+        self.assertEqual(argv[:3], ["agent-herd", "ollama", "--tui"])
         self.assertNotIn("--tools", argv, "対話は安全側で始め、/tools on で人が開ける")
 
 

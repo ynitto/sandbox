@@ -949,7 +949,10 @@ def run_agent(prompt: str, model: str | None, purpose: str = "", cwd: "str | Non
             text = _run_agent_once(prompt, model, purpose, cwd, agent=agent, files=files,
                                    readonly=readonly, **file_args)
             _node_budget_record(time.monotonic() - t0, ref=purpose or "worker",
-                                agent_cli=cli_used, model=model_used or "",
+                                # 台帳と格付けのキーは正典名。`ollama-json` のような
+                                # 用途別の綴りで記録すると、1 実行系の実測が偽の候補へ
+                                # 割れる（用途の次元は operation_class が持っている）。
+                                agent_cli=_canonical_cli(cli_used), model=model_used or "",
                                 tokens_in=getattr(text, "tokens_in", None),
                                 tokens_out=getattr(text, "tokens_out", None),
                                 extra=_method_ledger_fields(purpose))
@@ -1010,6 +1013,19 @@ def run_agent(prompt: str, model: str | None, purpose: str = "", cwd: "str | Non
             last = e
             attempt += 1
     raise last if last else RuntimeError("run_agent: unreachable")  # pragma: no cover
+
+
+def _canonical_cli(cli: str) -> str:
+    """台帳・格付けへ書く agent_cli を正典名へ寄せる（`ollama-json` → `ollama`）。
+
+    用途は台帳の別列（purpose / operation_class）が持っているので、agent_cli 側へ
+    畳み込むと同じ次元を 2 か所で表すことになり、1 実行系の実測が割れる。
+    解決できない名前は素通しする（未知の名前で記録を落とさない）。
+    """
+    try:
+        return _agentcli.canonical_name(cli)
+    except Exception:                       # noqa: BLE001  記録は落とさない
+        return str(cli or "")
 
 
 def _effective_agent(purpose: str, model: "str | None",

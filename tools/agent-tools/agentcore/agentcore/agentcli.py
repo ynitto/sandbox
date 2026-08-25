@@ -55,6 +55,92 @@ def _bundled_dir() -> "Path | None":
     return None
 
 
+# ---------------------------------------------------------------------------
+# プロファイル（1 つのエージェントを用途で使い分ける起動差）
+#
+# 以前は用途ごとに別の定義ファイル（ollama-json / ollama-list / …）を置き、それぞれが
+# 独立した `agent_cli` として台帳と格付けに現れていた。しかし「どの用途か」は候補契約が
+# 既に持っている次元である（agent-candidate-qualifications の
+# candidate=(agent_cli, model) → qualifications: {operation_class → 格付け}、
+# agent-audit の集計キーも (agent_cli, model, operation_class)）。同じ次元を agent_cli の
+# 値へ畳み込むと、1 実行系の実測が複数の偽候補へ割れ、運用者には別エージェントに見える。
+#
+# そこで用途別の起動差は**定義の中の profiles** にする。`ollama-json` のような従来の綴りは
+# そのまま解決できる（base=ollama / profile=json）が、spec["name"] は正典の "ollama" になる
+# ——台帳と格付けのキーはこれを使う。
+#
+# 継承の規則（今日の挙動をそのまま再現するために、こう分けてある）:
+#
+# - **引き継ぐ**（エージェント単位の性質）… relative_cost / prompt_via / prompt_flag /
+#   file_flag / read_flag / model_flag / output / command_suffix / skill_command_prefix /
+#   empty_output_is_error / readonly / spill / errors / session_log / default_model /
+#   timeout / headless_autonomy / write_args / readonly_args / no_session_args / env
+#   （profile が宣言すれば上書き。`[]` の宣言も「上書き」として扱う）
+# - **引き継がない**（起動の形ごとに決まるもの）… interactive / variants
+#   引き継ぐと、対話面を持たない役割に base の TUI が生えて実行経路が変わる
+#   （agent-dashboard は interactive の有無を見る）。variants も同様に、役割へ base の
+#   振り替え表が生えると振り替え先が変わる。
+# ---------------------------------------------------------------------------
+_PROFILE_NOT_INHERITED = ("interactive", "variants")
+_PROFILE_FIELDS = (
+    "command", "command_suffix", "write_args", "readonly_args", "no_session_args",
+    "headless_autonomy", "default_model", "timeout", "env", "readonly", "prompt_via",
+    "prompt_flag", "file_flag", "read_flag", "model_flag", "empty_output_is_error",
+    "output", "skill_command_prefix", "relative_cost", "interactive", "variants",
+    # errors は本来エージェント単位の性質だが、実際には役割ごとに調整されている
+    # （read は同じ match に別の hint、verify は自前の timeout 規則）。分類の挙動を
+    # 変えないことを優先して上書きを許す。宣言しない profile は base をそのまま継ぐ。
+    "errors",
+)
+
+
+def canonical_name(name: str, project_dir=None) -> str:
+    """台帳・格付けのキーに使う正典の agent_cli 名。
+
+    `ollama-json` のような従来の綴りで呼ばれても、記録に残すのは `ollama` である。
+    ここを通さないと、1 実行系の実測が用途ごとの偽候補へ割れる
+    （agent-audit の集計キーは (agent_cli, model, operation_class) で、用途の次元は
+    そちらが持っている）。
+
+    **綴りでは判定しない**——`ollama-json` という名前の定義ファイルが実在するなら、それは
+    profile ではなく独立したエージェントである。定義に問い合わせて答える。解決できない
+    名前は素通しする（未知の名前で記録を落とさない）。
+    """
+    key = str(name or "").strip().lower()
+    if not key:
+        return ""
+    try:
+        return str(load_cli(key, project_dir).get("name") or key)
+    except AgentCliError:
+        return key
+
+
+def _apply_profile(base: dict, profile: str, path) -> dict:
+    """base の spec へ profile を重ねた spec を返す（`name` は正典のまま）。
+
+    合成は**生の定義（raw）の段で行い、そのあと normalize を通す**。正規化を 2 通り
+    持たない（profile 経由でだけ検証が緩い、が起きない）ためである。
+    継承の規則は上の注記のとおりで、`interactive` と `variants` は引き継がない。
+    """
+    profiles = base.get("profiles") or {}
+    body = profiles.get(profile)
+    if not isinstance(body, dict):
+        raise AgentCliError(
+            f"エージェント定義 {path}: profile {profile!r} がありません"
+            f"（あるのは {', '.join(sorted(profiles)) or 'なし'}）")
+    raw = {k: v for k, v in (base.get("_raw") or {}).items() if k != "profiles"}
+    for field in _PROFILE_NOT_INHERITED:
+        raw.pop(field, None)
+    body = dict(body)
+    if "env" in body:                      # env だけは base へ重ねる（profile の宣言が勝つ）
+        body["env"] = {**(raw.get("env") or {}), **(body.get("env") or {})}
+    raw.update(body)
+    spec = normalize(base["name"], raw, path)
+    spec["profile"] = profile
+    spec["profiles"] = profiles
+    return spec
+
+
 class AgentCliError(RuntimeError):
     """定義が見つからない / 壊れている。黙って別 CLI へ倒さないための明示エラー。"""
 
@@ -176,6 +262,23 @@ def normalize(name: str, raw: dict, path) -> dict:
         if not isinstance(variants_raw, dict) or not all(
                 isinstance(k, str) and isinstance(v, str) for k, v in variants_raw.items()):
             raise AgentCliError(f"エージェント定義 {path}: variants は文字列→文字列のオブジェクトです")
+
+    profiles_raw = raw.get("profiles") or {}
+    if not isinstance(profiles_raw, dict):
+        raise AgentCliError(f"エージェント定義 {path}: profiles はオブジェクトです")
+    for pname, pbody in profiles_raw.items():
+        if not isinstance(pname, str) or not re.fullmatch(r"[\w.-]+", pname):
+            raise AgentCliError(f"エージェント定義 {path}: profile 名が不正です: {pname!r}")
+        if not isinstance(pbody, dict):
+            raise AgentCliError(f"エージェント定義 {path}: profiles.{pname} はオブジェクトです")
+        unknown = sorted(set(pbody) - set(_PROFILE_FIELDS))
+        if unknown:
+            raise AgentCliError(
+                f"エージェント定義 {path}: profiles.{pname} が上書きできない項目を含みます: "
+                f"{', '.join(unknown)}（上書きできるのは {', '.join(_PROFILE_FIELDS)}）")
+        if not _strs(pbody.get("command"), f"profiles.{pname}.command", path):
+            raise AgentCliError(
+                f"エージェント定義 {path}: profiles.{pname}.command は 1 要素以上必要です")
     readonly = str(raw.get("readonly", "best-effort"))
     if readonly not in ("enforced", "best-effort"):
         raise AgentCliError(f"エージェント定義 {path}: readonly は enforced か best-effort です")
@@ -232,6 +335,12 @@ def normalize(name: str, raw: dict, path) -> dict:
         },
         "errors": errors,
         "error_details": error_details,
+        # 用途別の起動差（生のまま持つ。合成は _apply_profile が行う）。
+        "profiles": profiles_raw,
+        # この spec がどの profile で組まれたか（base のときは ""）。
+        "profile": "",
+        # profile 合成の入力（正規化を 2 通り持たないための保持。公開 API ではない）。
+        "_raw": raw,
     }
     if inter_raw:
         icmd = _strs(inter_raw.get("command"), "interactive.command", path)
@@ -310,11 +419,38 @@ def load_cli(name: str, project_dir=None, *, use_cache: bool = True) -> dict:
         if use_cache:
             _CACHE[cache_key] = spec
         return spec
+    # 定義ファイルが無ければ profile 名として解く（`ollama-list` → base=ollama / profile=list）。
+    # 用途別の定義を 1 つへ畳んだので、従来の綴りはここを通る。**実ファイルが優先**なので、
+    # `ollama-json.json` を置けばそれは独立したエージェントとして扱われる（後方互換）。
+    resolved = _resolve_profile_name(key, project_dir)
+    if resolved is not None:
+        if use_cache:
+            _CACHE[cache_key] = resolved
+        return resolved
     raise AgentCliError(
         f"未知の agent_cli です: {key!r}（agents/{key}.json が見つかりません）\n"
         f"  探索順: {' → '.join(str(d) for d in dirs)}\n"
         "  組み込み CLI もこの定義ファイルで動きます。インストールが壊れている可能性が"
         "あります（install.sh の再実行を検討してください）。")
+
+
+def _resolve_profile_name(key: str, project_dir) -> "dict | None":
+    """`<base>-<profile>` を base 定義の profile として解く。該当が無ければ None。
+
+    区切りは `-` で、**長い base から順に**試す（`ollama-list-thinking` は
+    base=`ollama-list` の profile=`thinking` ではなく base=`ollama` の
+    profile=`list-thinking` として解けるが、前者の定義が実在するならそちらが勝つ）。
+    """
+    parts = key.split("-")
+    for cut in range(len(parts) - 1, 0, -1):
+        base_name, profile = "-".join(parts[:cut]), "-".join(parts[cut:])
+        try:
+            base = load_cli(base_name, project_dir)
+        except AgentCliError:
+            continue
+        if profile in (base.get("profiles") or {}):
+            return _apply_profile(base, profile, base["path"])
+    return None
 
 
 def clear_cache() -> None:

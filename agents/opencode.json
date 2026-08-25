@@ -2,16 +2,26 @@
   "name": "opencode",
   "headless_autonomy": "tool-loop",
   "relative_cost": 0,
-  "command": ["agent-opencode"],
+  "command": [
+    "agent-herd",
+    "opencode"
+  ],
   "prompt_via": "stdin",
   "model_flag": "--model",
   "output": "stdout",
   "empty_output_is_error": true,
-  "write_args": ["--auto"],
-  "readonly_args": ["--agent", "plan"],
+  "write_args": [
+    "--auto"
+  ],
+  "readonly_args": [
+    "--agent",
+    "plan"
+  ],
   "readonly": "best-effort",
   "interactive": {
-    "command": ["opencode"],
+    "command": [
+      "opencode"
+    ],
     "turn_completion": "opencode",
     "prompt_inject": "send-keys"
   },
@@ -25,32 +35,55 @@
     "clean": {
       "version_key": "version",
       "rules": [
-        {"rule": "truncate-message", "max_chars": 4000}
+        {
+          "rule": "truncate-message",
+          "max_chars": 4000
+        }
       ]
     }
   },
   "errors": [
-    { "match": "推論サーバに接続できません|could not connect|connection refused|ECONNREFUSED",
+    {
+      "match": "推論サーバに接続できません|could not connect|connection refused|ECONNREFUSED",
       "class": "env",
-      "hint": "推論サーバ（別 PC の ollama）に届いていません。向こうで OLLAMA_HOST=0.0.0.0 ollama serve が動いているか、11434 が開いているかを確認してください" },
-    { "match": "opencode が見つかりません|opencode: (command )?not found",
+      "hint": "推論サーバ（別 PC の ollama）に届いていません。向こうで OLLAMA_HOST=0.0.0.0 ollama serve が動いているか、11434 が開いているかを確認してください"
+    },
+    {
+      "match": "opencode が見つかりません|opencode: (command )?not found",
       "class": "env",
-      "hint": "opencode が未インストールです（bash tools/opencode/install.sh）" },
-    { "match": "Configuration is invalid|Unrecognized key",
+      "hint": "opencode が未インストールです（bash tools/opencode/install.sh）"
+    },
+    {
+      "match": "Configuration is invalid|Unrecognized key",
       "class": "env",
-      "hint": "opencode の設定が壊れています（~/.config/opencode/opencode.json を修正するか install.sh を再実行してください）" },
-    { "match": "provider .{0,40}not found|model .{0,60}not found|no such model",
+      "hint": "opencode の設定が壊れています（~/.config/opencode/opencode.json を修正するか install.sh を再実行してください）"
+    },
+    {
+      "match": "provider .{0,40}not found|model .{0,60}not found|no such model",
       "class": "env",
-      "hint": "モデル名は provider/model 形式です（例 ollama/qwen3）。ollama 側に pull 済みか、設定の provider.<id>.models に載っているかを確認してください" },
-    { "match": "unauthorized|invalid api key|authentication failed",
+      "hint": "モデル名は provider/model 形式です（例 ollama/qwen3）。ollama 側に pull 済みか、設定の provider.<id>.models に載っているかを確認してください"
+    },
+    {
+      "match": "unauthorized|invalid api key|authentication failed",
       "class": "auth",
-      "hint": "opencode のプロバイダ認証が切れています（opencode providers で入れ直してください）" },
-    { "match": "quota exceeded|usage limit", "class": "quota", "quota_kind": "exhausted",
-      "hint": "利用枠が枯渇しています" },
-    { "match": "rate limit|too many requests", "class": "quota", "quota_kind": "rate_limit",
-      "hint": "時限レート制限です" },
-    { "match": "fetch failed|socket hang up|ECONNRESET|ETIMEDOUT",
+      "hint": "opencode のプロバイダ認証が切れています（opencode providers で入れ直してください）"
+    },
+    {
+      "match": "quota exceeded|usage limit",
+      "class": "quota",
+      "quota_kind": "exhausted",
+      "hint": "利用枠が枯渇しています"
+    },
+    {
+      "match": "rate limit|too many requests",
+      "class": "quota",
+      "quota_kind": "rate_limit",
+      "hint": "時限レート制限です"
+    },
+    {
+      "match": "fetch failed|socket hang up|ECONNRESET|ETIMEDOUT",
       "class": "transient",
-      "hint": "推論サーバとの通信が切れました（リトライで解けることが多い）" }
+      "hint": "推論サーバとの通信が切れました（リトライで解けることが多い）"
+    }
   ]
 }

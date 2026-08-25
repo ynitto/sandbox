@@ -85,8 +85,9 @@ HELP = f"""使い方: {PROG} <サブコマンド> [オプション]
   対話:
     chat [<cli>]          定義の interactive で対話起動する（--model）
 
-  工程:
-    harness <種別> …       限定ツール契約のハーネスを単独で回す
+  工程（tmux もデーモンも要らない）:
+    harness statemachine … ステートマシンを完走させる
+    harness run PROMPT…    プロンプト 1 件を 1 回実行する
 
   観測（LLM を呼ばない）:
     status [LOG]          いまの進捗を 1 行 JSON で返す
@@ -148,6 +149,10 @@ def _defs_payload(name: str, *, model: "str | None", purpose: "str | None") -> d
         "name": spec["name"],
         "path": str(spec["path"]),
         "requested": name,
+        # 用途別の起動形（profile）は同じエージェントの中にある。台帳と格付けのキーは
+        # `name` のほうで、profile は起動差でしかない。
+        "profile": spec.get("profile") or "",
+        "profiles": sorted(spec.get("profiles") or {}),
         "resolved_via_variant": bool(variant),
         "headless_autonomy": spec.get("headless_autonomy"),
         "readonly": spec.get("readonly"),
@@ -203,7 +208,12 @@ def cmd_defs(argv, *, out=None, err=None) -> int:
             return 1
         print("解決できる定義:", file=out)
         for item in names:
-            print(f"  {item}", file=out)
+            try:
+                profiles = sorted(agentcli.load_cli(item).get("profiles") or {})
+            except agentcli.AgentCliError:
+                profiles = []
+            suffix = f"    profiles: {', '.join(profiles)}" if profiles else ""
+            print(f"  {item}{suffix}", file=out)
         print(f"\n1 件の中身と実効 argv: {PROG} defs <名前>", file=out)
         return 0
 
@@ -216,8 +226,13 @@ def cmd_defs(argv, *, out=None, err=None) -> int:
         print(json.dumps(payload, ensure_ascii=False), file=out)
         return 0
     print(f"{payload['name']}  ({payload['path']})", file=out)
-    if payload["resolved_via_variant"]:
+    if payload["profile"]:
+        print(f"  ← {payload['requested']} = {payload['name']} の profile "
+              f"{payload['profile']!r}", file=out)
+    elif payload["resolved_via_variant"]:
         print(f"  ← {payload['requested']} の variant として解決", file=out)
+    if payload["profiles"]:
+        print(f"  profiles : {', '.join(payload['profiles'])}", file=out)
     print(f"  autonomy={payload['headless_autonomy']}  readonly={payload['readonly']}"
           f"  cost={payload['relative_cost']}  model={payload['model']}", file=out)
     print(f"  write    : {' '.join(payload['argv_write'])}", file=out)
@@ -381,13 +396,85 @@ def _launch(argv: "list[str]") -> int:
 
 
 # ---------------------------------------------------------------------------
-# harness — P2 で agentcore へ移設する（いまは所在を答えるだけ）
+# harness — 限定ツール契約のハーネスを tmux もデーモンも無しに回す
 # ---------------------------------------------------------------------------
-def cmd_harness(argv, *, err=None) -> int:
-    _err("harness はまだこの入口にありません（移行フェーズ P2）。"
-         "いまは agent-loop 側の実装を使ってください: "
-         "agent-loop statemachine --workflow <定義> --cli <名前>", err=err)
-    return 2
+HARNESS_KINDS = ("statemachine", "run")
+
+HARNESS_HELP = f"""使い方: {PROG} harness <種別> [オプション]
+
+  種別:
+    statemachine --workflow PATH   ステートマシンを完走させる
+    run PROMPT…                    プロンプト 1 件を 1 回実行する
+
+  共通:
+    --agent-cli NAME   agents/<名前>.json の CLI 名（既定: aider）
+    --model MODEL      実行モデル（省略時は定義の default_model）
+    --dir DIR          作業ディレクトリ（省略時: カレント）
+
+  statemachine のみ:
+    --param KEY=VALUE  実行パラメータ（繰り返し可）
+    --input TEXT       input パラメータ
+
+  run のみ:
+    --acceptance TEXT  受入条件（繰り返し可。省略すると done を機械検証できない）
+    --judge            パスを含まない受入条件を検証エージェントに判定させる
+
+  実体は agentcore.harness（agent_loop からの移植）。agent-loop 経由と同じ契約で、
+  終了時に `RESULT {{json}}` を 1 行出す。tmux で様子を見せたいときは、このコマンドを
+  tmux ウィンドウの中で起動する（tmux は送る手段・見る手段であって実行契約ではない）。"""
+
+
+def cmd_harness(argv, *, err=None, runner=None) -> int:
+    """種別ごとの引数を組み立てて、移植した harness の cmd_* へそのまま渡す。
+
+    引数の綴りは `agent-loop statemachine` / `agent-loop run` と同じにしてある——
+    同じハーネスの 2 つの入口なので、片方だけ違う名前で覚えることを人に強いない。
+    """
+    err = err or sys.stderr
+    tokens = list(argv)
+    if not tokens or tokens[0] in ("-h", "--help", "help"):
+        print(HARNESS_HELP)
+        return 0 if tokens else 2
+    kind, tokens = tokens[0], tokens[1:]
+    if kind not in HARNESS_KINDS:
+        _err(f"未知のハーネス種別: {kind!r}（使えるのは {', '.join(HARNESS_KINDS)}）", err=err)
+        return 2
+
+    import argparse
+
+    parser = argparse.ArgumentParser(prog=f"{PROG} harness {kind}", add_help=False)
+    parser.add_argument("--agent-cli", default="aider")
+    parser.add_argument("--model", default=None)
+    parser.add_argument("--dir", "-d", default=None)
+    if kind == "statemachine":
+        parser.add_argument("--workflow", required=True)
+        parser.add_argument("--param", action="append", default=[])
+        parser.add_argument("--input", default=None)
+    else:
+        parser.add_argument("prompt", nargs="+")
+        parser.add_argument("--acceptance", action="append", default=[])
+        parser.add_argument("--judge", action="store_true")
+    try:
+        args = parser.parse_args(tokens)
+    except SystemExit as exc:               # argparse は 2 で落ちる。入口の綴りへ揃える
+        return int(exc.code or 2)
+
+    cwd = Path(args.dir).expanduser().resolve() if args.dir else Path.cwd()
+    if runner is not None:
+        return runner(kind, args, cwd)
+    return _run_harness(kind, args, cwd)
+
+
+def _run_harness(kind: str, args, cwd: "Path") -> int:
+    """移植した cmd_* を呼ぶ。あちらは終了を sys.exit で表すので、それを終了コードへ戻す。"""
+    from agentcore.harness import statemachine, toolloop
+
+    entry = statemachine.cmd_statemachine if kind == "statemachine" else toolloop.cmd_run
+    try:
+        entry(args, cwd)
+    except SystemExit as exc:
+        return int(exc.code or 0)
+    return 0
 
 
 # ---------------------------------------------------------------------------

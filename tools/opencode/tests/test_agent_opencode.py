@@ -235,7 +235,7 @@ class TestBundledDefinition(unittest.TestCase):
         self.definition = json.loads((root / "agents" / "opencode.json").read_text(encoding="utf-8"))
 
     def test_definition_calls_the_adapter_over_stdin(self):
-        self.assertEqual(self.definition["command"], ["agent-opencode"])
+        self.assertEqual(self.definition["command"], ["agent-herd", "opencode"])
         self.assertEqual(self.definition["prompt_via"], "stdin")
         self.assertEqual(self.definition["output"], "stdout")
 

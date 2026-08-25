@@ -126,8 +126,7 @@ agent-opencode）を揃えること」と注記している——C7（写しを�
   `agent-opencode` は同一 zipapp への別名（argv[0] ディスパッチ）となり、単独でも従来どおり
   **argv・stdout/stderr 契約完全互換**で使える。
 - **G2**: 対話型の統一コマンド `agent-herd chat [<cli>] [--model M]`。定義の `interactive`
-  ブロックを解決して起動する（ollama は内蔵 TUI）。**aider の対話は保留**——`interactive` の
-  有無が agent-dashboard で別の意味に使われているため（§8.2）。
+  ブロックを解決して起動する（ollama は内蔵 TUI、aider は policy つき対話起動）。
 - **G3**: `toolloop` / `statemachine` を `agentcore.harness` へ移設し、
   `agent-herd harness …` から単独実行できる。agent-loop は薄い委譲で従来コマンドを維持。
 - **G4**: 環境補完・adapter 共通処理を `agentcore.hostenv`（仮称）1 実装へ集約。
@@ -385,16 +384,66 @@ agent-herd replay --arm model=gemma4:e4b,format=json --replay-limit 20
 
 ## 5. ハーネス統合 — `agentcore.harness`
 
-### 5.1 移設
+### 5.1 移植（移行ではない）
+
+**まず移植する。元は消さない。** 段取りを 2 つに割る:
 
 ```
-tools/agent-loop/agent_loop/toolloop.py      → tools/agent-tools/agentcore/agentcore/harness/toolloop.py
-tools/agent-loop/agent_loop/statemachine.py  → tools/agent-tools/agentcore/agentcore/harness/statemachine.py
-                                               （ゴール非依存部分のみ。tmux 表示・pane 配線は agent-loop に残す）
+段1 ポーティング（実施済）
+  agent_loop/toolloop.py      ──コピー──▶ agentcore/harness/toolloop.py
+  agent_loop/statemachine.py  ──コピー──▶ agentcore/harness/statemachine.py
+  agent_loop は自分の断片を持ち続ける（コマンドも証跡も 1 バイトも変わらない）
+        │
+        │  写しが黙ってずれないよう AST パリティテストで縛る
+        ▼
+段2 移行（実施済）
+  本文を _toolloop_body.py / _statemachine_body.py の 1 か所へ畳み、
+  agentcore.harness と agent_loop の両方がそれを exec する
 ```
 
-- exec 合成断片を**通常のモジュール**へ書き直す（`from agentcore.harness import toolloop`）。
-  断片間の暗黙共有名（`_tl_*` グローバル）は明示 import / 関数引数へ畳む。
+段 1 で agent-loop を触らないので、**回帰の可能性がそもそも無い**（agent-loop から見ると
+何も変わっていない）。段 1 だけで「tmux もデーモンも無しにハーネスを回せる」という目的は
+達成される。
+
+### 5.1.1 段2 で分かったこと — import 委譲にはできない
+
+段2 の素直な形は「`agent_loop` の断片を消して `from agentcore.harness import …` へ
+置き換える」だが、**それはできない**。agent-loop のテストは
+`mock.patch.object(agent_loop, "_tl_run_agent")` のように**共有名前空間を差し替える**
+（実測 57 箇所・6 ファイル）。import で委譲すると関数の `__globals__` が agentcore 側に
+なるため、その差し替えが効かなくなる——しかも「パッチが当たらない」は静かな失敗で、
+テストが本物の CLI を起動しにいく形で出る。
+
+そこで**本文をデータとして共有する**形にした:
+
+```
+  agentcore/harness/_toolloop_body.py   ← 本文はここ 1 か所（直接 import しない）
+        │                    │
+        │ exec               │ exec
+        ▼                    ▼
+  agentcore.harness       agent_loop の共有名前空間
+  .toolloop（自分の         （従来どおりの合成。__globals__ は agent_loop のまま
+   名前空間へ）              なので 57 箇所の差し替えがそのまま効く）
+```
+
+exec による合成は agent_loop 自身の既存の作法（`__init__.py` が断片を順に exec する）なので、
+新しい仕組みを持ち込んではいない。2 つの実行系は本文を共有するが名前空間は別で、互いの
+モンキーパッチは干渉しない。継ぎ目（記帳と control 解決）は `harness.set_hooks` で
+agent-loop 側の実装を差し込む——差し込まないと台帳が静かに空になるので、これもテストで縛る。
+
+**結果: agent-loop の 554 テストが 1 行も変えずに通る。** 段1 で置いた AST パリティテストは
+役目を終え、「本文が 1 か所であること」「共有名前空間の意味論が保たれていること」を縛る
+`test_harness_shared_body.py` へ作り替えた。
+
+- exec 合成断片を**通常のモジュール**にする。ただし本文は**逐語コピー**で、変えたのは
+  断片が共有名前空間から借りていた名前の供給だけ（借用は stdlib を除くと 4 つしか無かった:
+  `agent_home_subdir` / `_import_agentcli` / `_node_budget_record` /
+  `_control_policy_decision`）。逐語コピーにしておくと、元との一致を AST で機械的に
+  突き合わせられる——書き直すと写しがずれても誰も気づけない。
+- 借用のうち記帳（`_node_budget_record`）と control 解決（`_control_policy_decision`）は
+  agent-loop 固有の状態を触るので、**既定を「何もしない / None」にした差し込み口**
+  （`agentcore.harness.set_hooks`）にした。移植先が黙って agent-loop の台帳へ書くより、
+  書かないほうを既定にする。
 - `statemachine` の検証・遷移の正典は従来どおり **statemachine-use スキルのスクリプト**
   （`run_machine.py` / `next_state.py`）。移設で正典は動かさない。
 - CLI・モデルの解決は従来どおり `agentcore.agentcli` へ委譲（同一パッケージ内になるので
@@ -452,6 +501,26 @@ exit code / 打ち切り封筒 / 証跡の形は agent-loop 経由と同一。�
 **限定 4 ツール契約を受け取る `single-shot` 定義は、現時点で 5 件とも cost 0 のローカル推論**
 である（雲の CLI は 5 件とも `tool-loop` なので層 2 を素通りし、引き具に触れない）。
 この事実が §9 の命名判断の根拠になる。
+
+### 5.5 エンジンに散っていたローカル LLM 応答の手当て（実施済）
+
+ハーネス以外にも、**ローカル LLM の応答を engine ごとに手当てしている実装**が散っていた。
+調査結果:
+
+| 実装 | 状態 | 対処 |
+|---|---|---|
+| `agent_flow/util.py` の `extract_json` / `unwrap_list` / `extract_list` | 実装本体 | `extract_json` / `unwrap_list` を `agentcore.llmjson` へ移し、委譲に |
+| `agent_amigos/util.py` の `extract_json` | **agent-flow の写し**（違いは例外文だけ） | 同上 |
+| `agent-tools/eval/engine.py` の 3 関数 | 既に agent-flow へ委譲する薄い層（写しではない） | **触らない** |
+| `agent-audit/readers.py` の ollama 言及 | ログの読み手であってハーネスではない | 触らない |
+
+`unwrap_list` が要るのは ollama の JSON モードが**トップレベルをオブジェクトに固定する**
+ためで、engine 側の仕様であってモデルの能力ではない。この手当てが engine ごとにずれると、
+**同じモデル応答が経路によって通ったり落ちたりする**——しかも落ちた側は「モデルが悪い」に
+見えるので原因が分からない。`hostenv` と同型なので同じように 1 実装へ畳んだ。
+
+`extract_list`（Thinking モデルが返す外側の配列なしの形を畳む）は agent-flow の split 契約に
+固有なので移していない。移すなら「配列契約を持つ engine が 2 つ目に現れたとき」。
 
 ### 5.4 2 つのツールループの役割固定（N1 の明文化）
 
@@ -516,6 +585,26 @@ agent-audit が両経路のセッションを同じ読み方で読めるよう�
 4. agent-dashboard の JS ローダのゴールデンテスト（同じ定義から同じ argv）は、定義変更と
    同じ PR で期待値を更新する。
 
+### 7.0 実施した書き替え（P3・実装済）
+
+ローカル実行系の 8 定義が統合入口を指すようになった。クラウド 5 件は N2 のとおり素のまま:
+
+| 定義 | 旧 | 新 |
+|---|---|---|
+| `aider`（`command` と `interactive.command`） | `agent-aider …` | `agent-herd aider …` |
+| `ollama`（同上）/ `ollama-json` / `ollama-list` / `ollama-list-thinking` / `ollama-read` / `ollama-verify` | `agent-ollama …` | `agent-herd ollama …` |
+| `opencode` | `agent-opencode` | `agent-herd opencode` |
+| `claude` / `codex` / `kiro` / `copilot` / `cursor` | 素の CLI | **変更なし**（§9.3） |
+
+これで agent-project / agent-flow / agent-amigos / agent-audit / agent-loop /
+agent-dashboard の全経路が同じ 1 バイナリを踏む。ゴールデンテストは Python
+（`test_agentcli` / `test_ollama_adapter`）と dashboard（`agent-cli-golden` /
+`agent-assist` / `routine-agent-cli`）の両方を同じ変更で更新した。
+
+テストが自作する**合成定義**（`execution-policy` / `orchestration` の fixture）は
+旧綴りのまま残してある——ローダが入口の綴りに依存しないことの証拠になるからで、
+書き替える必要は無い。
+
 ### 7.1 variant は入口を増やさない
 
 variant を「入口の分岐」と読むと設計を誤る。`resolve_variant()` が返すのは**別の定義名**で
@@ -549,8 +638,10 @@ variant を「入口の分岐」と読むと設計を誤る。`resolve_variant()
 |---|---|---|
 | **P0 配布統合** ✅ **実装済** | `hostenv` 抽出・opencode/aider adapter の agentcore 移設・busybox zipapp・install.sh 変更 | 既存 3 名の argv/出力契約のゴールデンが不変で通る。env parity テストが「1 実装参照」を縛る形へ置換される |
 | **P1 入口面** ✅ **実装済** | `agent-herd` サブコマンド面（aider/ollama/opencode/defs/exec/chat/観測）・aider.json の interactive ブロック | `agent-herd aider …` と `agent-aider …` が同一結果。`chat aider` の環境仕込みがヘッドレスと同一実装を通ることをテストで縛る |
-| **P2 ハーネス移設** ⬜ 未着手 | toolloop/statemachine → `agentcore.harness`・agent-loop 委譲・`agent-herd harness …` | `test_statemachine.py` 等 agent-loop の既存テストが無改変で通る。tmux なし単独実行の証跡形が agent-loop 経由と一致 |
-| **P3 正典化** ⬜ 未着手 | `agents/*.json` の command 書き替え + dashboard ゴールデン更新・（任意）stub の取り込み | 全エンジンの結合テスト・dashboard ゴールデンが green。旧綴り定義でも動作（互換テスト） |
+| **P2 ハーネス移植** ✅ **実装済**（段1） | toolloop/statemachine を `agentcore.harness` へ**コピー**・`agent-herd harness …`・AST パリティテスト。**agent_loop は無改変** | agent-loop の既存テストが無改変で通る（触っていないので当然通る）。移植先が単体 import でき、zipapp から回る |
+| **P2 段2 移行** ⬜ 未着手 | agent_loop の断片を消して `agentcore.harness` への委譲へ | `test_statemachine.py` 等 agent-loop の 554 テストが無改変で通る |
+| **P1.5 弁別子の是正** ✅ **実装済** | dashboard の `!spec.interactive` を `needsHeadlessHarness`（`headless_autonomy` で判定）へ・`aider.json` に `interactive` を追加 | 既存全定義で判定が従来と同じ。`chat aider` が policy つきで起動し、aider の定型業務はハーネスのまま |
+| **P3 正典化** ✅ **実装済** | `agents/*.json` 8 件の `command` / `interactive.command` を `["agent-herd", "<sub>", …]` へ・Python と dashboard のゴールデン更新 | 全エンジンの結合テスト・dashboard ゴールデンが green。旧綴りの別名も argv[0] 分岐で従来どおり動く |
 
 各フェーズは独立に取り込め、どのフェーズで止めても不整合が残らない（P0 だけでも
 3 重複製の解消と配布統合という C7 の主目的は達成される）。
@@ -572,29 +663,35 @@ variant を「入口の分岐」と読むと設計を誤る。`resolve_variant()
 `agent-loop statemachine` を案内する——設計書を読んで打った人に「未知のサブコマンド」と
 返すのは不親切なので、所在だけは答える。中身は P2 で入る。
 
-### 8.2 実装中に見つけた制約 — `interactive` の有無が二重の意味を持っている
+### 8.2 `interactive` の二重の意味を解いた（P1.5・実装済）
 
-`agents/aider.json` に `interactive` を足す（G2 の aider 分）と、**定型業務の実行経路が
-黙って切り替わる**ことが分かった。agent-dashboard は `spec.interactive` の**有無**を
+`agents/aider.json` に `interactive` を足すと、**定型業務の実行経路が黙って切り替わる**
+という制約に最初の実装で当たった。agent-dashboard が `spec.interactive` の**有無**を
 「対話ペインで駆動できる CLI か」の代理として読み、無い CLI（aider・素の ollama）を
-agent-loop の statemachine ハーネスへ回しているためである
-（`cowork.js` の `if (!selected.spec.interactive)`）。
+agent-loop の statemachine ハーネスへ回していたためである。CI の `dashboard (npm test)` が
+検出し、一度は aider の `interactive` を戻した。
 
-CI の `dashboard (npm test)` がこれを検出した（`state-machine-window.test.js`:
-「単発実行サブコマンドへ渡す（send ではない）」）。ゴールデン値の更新では済まない実挙動の
-回帰なので、**aider の `interactive` は入れずに戻した**。
+**P1.5 で正しい弁別子へ直した。** `cowork.js` に `needsHeadlessHarness(spec)` を置き、
+3 箇所の `!selected.spec.interactive` をそれへ置き換えた:
 
-正しい弁別子は `headless_autonomy` である——`single-shot` はハーネスが要り、`tool-loop` は
-自分で回せる（§5.3 の層判定と同じ）。`interactive` の有無は「対話面を提供するか」であって
-「ハーネスが要るか」ではない。この 2 つを同じフラグで表しているのが現状の負債で、分離は
-**agent-dashboard の実行経路を変える独立した変更**として扱う（配布統合と入口面に混ぜると、
-定型業務が壊れたときにどの変更が原因か切り分けられない）。
+```js
+function needsHeadlessHarness(spec) {
+  if (!spec || !spec.interactive) return true;            // 対話面が無ければ駆動しようが無い
+  return String(spec.headlessAutonomy || 'single-shot') === 'single-shot';
+}
+```
 
-依存関係は `test_herdcli.ChatTests.test_aider_has_no_interactive_block_yet` が固定して
-いる。dashboard の弁別子を直した人がそのテストを消して `chat aider` の起動テストへ
-置き換える、という順序で解ける。
+2 つの宣言は別物である——`interactive` は「対話面を提供するか」、`headless_autonomy` は
+「自分で探索・実行まで回せるか」。aider は**両方が真になりうる唯一の CLI**（対話もできるが
+ヘッドレスでは single-shot）で、そこで代理が壊れた。
 
-**P2 を分けた理由**: `toolloop.py`（1,275 行）と `statemachine.py`（866 行）は
+この述語は既存の全定義に対して**従来と同じ判定を返す**（`interactive` を持ちかつ
+`single-shot` なのは aider だけで、それは足す前は前段の条件で拾われていた）。つまり挙動が
+変わるのは aider に対話面が付いたときだけで、そのとき「定型業務はハーネスのまま」という
+正しい側へ倒れる。固定は dashboard の `state-machine-window.test.js` と、Python 側の
+`test_herdcli.ChatTests`。
+
+**P2 を分けた理由****P2 を分けた理由**: `toolloop.py`（1,275 行）と `statemachine.py`（866 行）は
 agent_loop の **exec 合成断片**で、暗黙の共有グローバル（`_tl_*` / `_sm_*`）に依存している。
 通常モジュールへ書き直すのは 2,100 行規模の振る舞い保存リファクタで、`test_statemachine.py`
 を含む agent-loop の 554 テストを合格ゲートにした独立の変更として扱うべきである。配布統合
@@ -744,6 +841,95 @@ LAN の含意が消えるので採らない。リポジトリの命名は `agent
 落ちない失敗を落とす、生イベントから本文を抽出する——で adapter を必要とした時点で、
 agentcore に adapter を書き、同じ zipapp のサブコマンドへ載せる。基準は「adapter が要るか」
 であって「揃えたいか」ではない。
+
+### 9.4 variant を別の `agent_cli` にしているのは設計の誤り（訂正・実装済）
+
+**当初この節では「1 ファイルに畳んでも識別子は名前として残す必要がある」と書いたが、それは
+誤りだった。** 根拠として挙げたのは「`resolve_variant` が名前を返し、台帳にもその名前が
+残る」だが、それは現状の実装がそうなっているというだけで、**そうであるべき理由になって
+いない**。契約を読み直すと、むしろ現状のほうが契約と食い違っている。
+
+#### 用途の次元は、契約側に既にある
+
+候補の格付け契約（`schemas/agent-candidate-qualifications.schema.json`）はこう定義されている:
+
+```
+candidate = (agent_cli, model)
+     └─ qualifications: { operation_class → 格付け }
+```
+
+`agent-audit` の集計キーも `(agent_cli, model, operation_class)` である
+（`agent_audit/qualifications.py`）。usage の `GROUP_KEYS` にも `agent_cli` と `purpose` が
+**別の列として**並んでいる。
+
+つまり**「どの用途か」は候補の中の次元として既にモデル化されている**。それを
+`agent_cli` の値へ畳み込んでいるのが `ollama-json` / `ollama-list` / `ollama-read` /
+`ollama-verify` / `ollama-list-thinking` で、同じ次元を 2 か所で表している。
+
+#### 実害 1 — 証跡が割れる
+
+eval の記録を数えると、`agent_cli` として `ollama` と `ollama-json` が**別々に**現れる。
+1 つの実行系（`agent-herd ollama` × `gemma4:e4b`）の実測が、6 つの偽の候補へ分散している。
+格付けは `(agent_cli, model, operation_class)` で集計されるので、**本来 1 候補の
+operation_class 別の格付けとして積み上がるはずの証拠が、候補ごとに割れて薄くなる**。
+サンプル数が要る格付けにとってこれは直接の損失である。
+
+#### 実害 2 — 台帳と一覧で「別のエージェント」に見える
+
+（利用者からの指摘。こちらのほうが重い。）`ollama-*` が `claude` / `codex` / `kiro` と
+同じ列に並ぶと、運用者には「13 のエージェントがある」と見える。実際には
+**8 のエージェントがあり、そのうち 1 つに 5 つのモードがある**。クラウド CLI との差異が
+実体以上に大きく見え、候補の選択・予算配分・格付けの読みがすべてその歪んだ像の上で行われる。
+
+#### あるべき形 — 定義は「エージェント 1 つ」に対して 1 つ
+
+用途別の起動差は、定義の中の**プロファイル**にする。名前を残す必要はない
+（残すとしても JSON schema の中の話で、`agent_cli` の値空間を汚す理由にはならない）。
+
+```json
+{
+  "name": "ollama",
+  "command": ["agent-herd", "ollama", "{model}"],
+  "errors": [ … ],                        ← 35 規則 → 1 か所（§9.4 の測定）
+  "profiles": {
+    "json":  { "command": ["agent-herd","ollama","--think","off","--format","json","{model}"],
+               "headless_autonomy": "single-shot", "write_args": [] },
+    "list":  { … }, "read": { … }, "verify": { "default_model": "gemma4:12b", … }
+  },
+  "variants": { "planner": "json", "judge": "json", "split": "list", "verify": "verify" }
+}
+```
+
+- `resolve_variant("ollama", "split")` は `(agent_cli="ollama", profile="list")` を返す
+- 台帳は `agent_cli: ollama` に統一され、用途は既存の `operation_class` / `purpose` 列が持つ
+- クラウド CLI は `profiles` を持たない——**定義ファイル数が実際のエージェント数と一致する**
+
+#### 移行の重さ（これが唯一の反対理由）
+
+読み手が 5 つある: `agentcli`（Python）・dashboard の JS ローダ・`agent-audit` の格付けと
+usage・control の `selection_policy`・既存の eval アーカイブ（`ollama-json` の行が残っている）。
+データ契約の変更なので、旧綴りを読み替える移行期間と、両ローダのゴールデン更新が要る。
+
+**それでも畳むべきである。** 割れた証跡は時間とともに積み上がり、後から統合するほど
+読み替えの範囲が広がる。`errors` の 35 規則の重複はその副産物として一緒に消える。
+
+#### 実装（2026-08-25）
+
+綴りは変えずに解決の側を変えた——**移行期間も読み替え表も要らない**:
+
+- `agents/ollama.json` に `profiles`（json / list / list-thinking / read / verify）を置き、
+  用途別の 5 ファイルを削除した。定義ファイル数 13 → 8 で、**実エージェント数と一致**する
+- `load_cli("ollama-list")` は実ファイルが無ければ `base=ollama / profile=list` として解く。
+  **実ファイルが優先**なので、独立させたくなったら `ollama-list.json` を置けばよい
+- 返る spec の `name` は正典の `"ollama"`、起動差は `profile` が持つ。台帳・格付けへ書く
+  agent_cli は `canonical_name()` を通す（agent-flow の 2 か所と agent-project の 2 か所）
+- 継承しないのは `interactive` と `variants` の 2 つだけ。継承すると対話面を持たない役割に
+  base の TUI が生えて、agent-dashboard の実行経路が変わる（P1.5 で踏んだのと同じ形）
+- JS ローダ・orchestration の allowlist・JSON schema も同じ規則で揃えた
+
+統合前後の等価性は機械で確かめた: 旧 6 定義を git から取り出し、**argv（write / readonly）・
+全宣言（autonomy / readonly / cost / default_model / env / variants / timeout / errors /
+interactive）・対話面・variant 解決のすべてが一致**（不一致 0 件）。
 
 ---
 

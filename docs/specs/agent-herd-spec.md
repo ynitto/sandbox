@@ -47,7 +47,8 @@ basename(argv[0])       解決されるサブコマンド        残りの引数
 | `chat [<cli>] [--model M]` | `herdcli.cmd_chat` | 閉じている（下記以外は拒否） |
 | `defs [<名前>] [--json] [--model M] [--purpose P]` | `herdcli.cmd_defs` | 同上 |
 | `exec <cli> [オプション]` | `herdcli.cmd_exec` | 同上 |
-| `harness <種別> …` | `herdcli.cmd_harness` | **P2 まで未実装**（§9） |
+| `harness statemachine --workflow PATH` | `agentcore.harness.statemachine.cmd_statemachine` | 閉じている |
+| `harness run PROMPT…` | `agentcore.harness.toolloop.cmd_run` | 閉じている |
 | `status [LOG]` | `ollama --status` の別名 | 素通し |
 | `follow [LOG]` | `ollama --follow` の別名 | 素通し |
 | `replay [PATH] …` | `ollama --replay` の別名 | 素通し |
@@ -82,6 +83,28 @@ basename(argv[0])       解決されるサブコマンド        残りの引数
 | argv を決めるもの | 打った人 | `agentcore.agentcli`（定義） |
 | 定義を読むか | 読まない | 読む（`variants` / `readonly` が効く） |
 | 名前の空間 | `aider` / `ollama` / `opencode` | `agents/*.json` の全定義 |
+
+### 4.0 用途別の起動形は profile であって別エージェントではない
+
+`agents/*.json` は **1 ファイル = 1 エージェント**である。用途で使い分ける起動差は定義の中の
+`profiles` に置く:
+
+```
+agent-herd defs
+  …
+  ollama    profiles: json, list, list-thinking, read, verify
+  opencode
+```
+
+`ollama-list` のような従来の綴りはそのまま解決でき（`base=ollama / profile=list`）、
+返る spec の `name` は正典の `"ollama"`、起動差は `profile` が持つ。**台帳と格付けへ書く
+`agent_cli` は常に正典名**——用途の次元は `operation_class` / `purpose` の列が持っており、
+`agent_cli` へ畳み込むと同じ次元の二重表現になって 1 実行系の実測が偽の候補へ割れる。
+
+profile は base を継ぐが、**`interactive` と `variants` は継承しない**（継承すると対話面を
+持たない役割に base の TUI が生え、agent-dashboard の実行経路が変わる）。`env` は base へ
+重ね、他は宣言があれば置き換える。実ファイルが profile より優先されるので、独立させたく
+なったら `ollama-list.json` を置けばよい。
 
 ### 4.1 `defs`
 
@@ -141,32 +164,54 @@ agent-herd chat <cli> [--model M]
 向き合う起動なので待機判定が要らない）。それらは `interactive.command` を tmux から叩く
 消費者（agent-loop / agent-dashboard）のためにある。
 
-### 4.4 `aider` の対話はまだ無い（先に直すものがある）
+### 4.4 `aider` の対話
 
-`agents/aider.json` には `interactive` ブロックが**無い**ので、`agent-herd chat aider` は
-終了コード 1 で「対話起動に対応していません」と言う。足せば動くが、**足す前に
-agent-dashboard を直す必要がある。**
+`agents/aider.json` は `interactive` ブロックを持つ。ヘッドレスとの差は**引き算だけ**:
 
-agent-dashboard の定型業務は `spec.interactive` の**有無**を「対話ペインで駆動できる CLI か」
-の代理として読み、無い CLI（aider・素の ollama）を agent-loop の statemachine ハーネスへ
-回している（`src/features/cowork/main/cowork.js` の `if (!selected.spec.interactive)`）。
+| ヘッドレスにあり対話に無い | なぜ落とすか |
+|---|---|
+| `--message`（`prompt_flag`） | 対話は本文を argv で渡さない |
+| `--yes-always` | 人が確認する場で押し切らない |
+| `--no-stream` / `--no-pretty` | 対話では出力を殺さない |
 
-したがって `aider.json` に `interactive` を足すと、`chat aider` が使えるようになる代わりに
-**定型業務の実行経路が黙ってハーネスから対話送信へ切り替わる**。これは実装中に実際に踏み、
-CI の `dashboard (npm test)` が検出した（`state-machine-window.test.js`:
-「単発実行サブコマンドへ渡す（send ではない）」）。
+**残すもの**: `--agent-policy gemma4-e4b-reliability-v1`・`--model ollama_chat/{model}`・
+`--no-git` / `--no-auto-commits` / `--no-check-update` / `--no-show-model-warnings` /
+`--no-analytics` / `--no-gitignore` / `--map-tokens 0`。
 
-正しい弁別子は `headless_autonomy` である——`single-shot` はハーネスが要り、`tool-loop` は
-自分で回せる（設計 §5.3 の層判定と同じ）。`interactive` の有無は「対話面を提供するか」で
-あって「ハーネスが要るか」ではない。この 2 つを同じフラグで表しているのが現状の負債で、
-分離は agent-dashboard の実行経路を変える独立した変更として扱う。
+policy と接続補完（§6）が**ヘッドレスと同じ経路**で仕込まれることをテストが縛る
+（`test_herdcli.ChatTests`）。これが崩れると「対話で試したことがヘッドレスで再現しない」に
+なる。
 
-この依存関係は `test_herdcli.ChatTests.test_aider_has_no_interactive_block_yet` が固定して
-いる。dashboard の弁別子を直した人がこのテストを消して `chat aider` の起動テストへ
-置き換える、という順序で解ける。
+**`interactive` を持つことと、ハーネスが要ることは別である。** aider は対話面を持ちながら
+`headless_autonomy: single-shot` なので、定型業務は従来どおり限定ツール契約のハーネスで
+回る。agent-dashboard はこれを `headlessAutonomy` で弁別する
+（`cowork.needsHeadlessHarness`）——`interactive` の有無で代理してはいけない。
 
-**`chat` 自体は ollama 専用ではない。** `interactive` を宣言している定義（`ollama` /
-`opencode` / `claude` / `codex` / `kiro` / `copilot` / `cursor`）はどれも起動できる。
+### 4.5 `harness`
+
+```
+agent-herd harness statemachine --workflow PATH [--agent-cli NAME] [--model M]
+                                [--param KEY=VALUE]… [--input TEXT] [--dir DIR]
+agent-herd harness run PROMPT… [--agent-cli NAME] [--model M]
+                               [--acceptance TEXT]… [--judge] [--dir DIR]
+```
+
+フラグの綴りは `agent-loop statemachine` / `agent-loop run` と**同じ**にしてある。同じ
+ハーネスの 2 つの入口なので、片方だけ違う名前を人に覚えさせない。終了時に `RESULT {json}`
+を 1 行出すのも同じで、それが呼び出し側との結果契約になる。
+
+実体は `agentcore.harness`（`agent_loop` からの移植）。**tmux もデーモンも設定ファイルも
+要らない**——tmux はコマンドを走らせて様子を見せる手段であって実行契約の一部ではない、
+という元の設計注記がそのまま効く。
+
+移植先の既定は agent-loop と 2 点だけ違う（§6 と同じく「黙って書かない」を既定にした）:
+
+| | agent-loop 経由 | `agent-herd harness` |
+|---|---|---|
+| 台帳への記帳 | 自分の ledger へ追記 | **しない**（`harness.set_hooks` で差し込める） |
+| `selection_policy` の解決 | control.json v2 を読む | **しない**（None = 従来の pin / 既定候補で走る） |
+
+終了コード: 移植元が `sys.exit` で表すものをそのまま返す / 2 = 引数の誤り・未知の種別。
 
 ## 5. 未知のサブコマンド
 
@@ -240,13 +285,14 @@ CI の `dashboard (npm test)` が検出した（`state-machine-window.test.js`:
 
 | 項目 | 状態 | いまの経路 |
 |---|---|---|
-| `harness toolloop` / `harness statemachine` | **未実装（P2）** | `agent-loop statemachine --workflow <定義> --cli <名前>` |
-| `agents/*.json` の `command` を `["agent-herd", …]` へ正典化 | **未着手（P3）** | 従来の綴り（`agent-aider` / `agent-ollama` / `agent-opencode`）。argv[0] 分岐で動く |
-| `chat aider`（`aider.json` の `interactive`） | **保留**（§4.4） | 素の `aider` を手で起動。先に agent-dashboard の弁別子を `headless_autonomy` へ直す |
+| `agent_loop` の断片を消して `agentcore.harness` への委譲へ | **未着手（P2 段2）** | 移植先と元の 2 つが並存（AST パリティテストが一致を縛る） |
 
-`harness` サブコマンドは**存在するが実行しない**。呼ぶと終了コード 2 で、いま動く経路
-（`agent-loop statemachine`）を案内する。設計書を読んで打った人に「未知のサブコマンド」と
-返すのは不親切なので、所在だけは答える。
+`agents/*.json` のローカル 8 定義は `["agent-herd", "<sub>", …]` へ正典化済み（P3）。
+クラウド 5 件は §1 のとおり素の CLI を指したまま。
+
+`harness` は **P2 段1（ポーティング）で実装済**。`agent_loop` 側の断片は消していないので、
+同じハーネスに 2 つの入口がある状態である（一致は AST パリティテストが縛る）。
+段2（agent_loop を委譲へ寄せる）は未着手。
 
 ## 10. テスト
 

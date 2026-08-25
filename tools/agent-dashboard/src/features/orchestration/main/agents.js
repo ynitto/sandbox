@@ -22,6 +22,8 @@ const ALLOWED_KEYS = [
   'variants', 'command_suffix', 'skill_command_prefix',
   'write_args', 'readonly_args', 'readonly', 'headless_autonomy', 'no_session_args', 'spill',
   'interactive', 'errors', 'session_log',
+  // 用途別の起動差（1 エージェント = 1 定義にするための入れ物）。
+  'profiles',
 ];
 const OUTPUT_ENUM = ['stdout', 'file'];
 const PROMPT_VIA_ENUM = ['stdin', 'argv'];

@@ -101,6 +101,11 @@ function normalize(spec, name, file) {
   }
   const sp = (spec.spill && typeof spec.spill === 'object') ? spec.spill : {};
   const out = {
+    // 用途別の起動差。Python 側（agentcore.agentcli）と同じ規則で保持する。
+    // 継承しないのは interactive / variants の 2 つだけ（applyProfile を見よ）。
+    profiles: (spec.profiles && typeof spec.profiles === 'object') ? spec.profiles : {},
+    profile: '',
+    _raw: spec,
     name: String(spec.name || name),
     relativeCost,
     file,
@@ -157,6 +162,59 @@ const cache = new Map();
 
 // agents/<name>.json を探索順に読む。見つからない・壊れているは AgentCliError
 // （黙って別 CLI へ倒さない。組み込み名も定義ファイル化した今、失敗はほぼインストール破損）。
+// 継承しない項目。引き継ぐと、対話面を持たない役割に base の TUI が生えて実行経路が
+// 変わる（cowork の needsHeadlessHarness は interactive の有無を見る）。variants も同様。
+const PROFILE_NOT_INHERITED = ['interactive', 'variants'];
+
+function applyProfile(base, profileName, file) {
+  const body = (base.profiles || {})[profileName];
+  if (!body || typeof body !== 'object') {
+    throw new AgentCliError(`エージェント定義 ${file}: profile ${profileName} がありません`);
+  }
+  // 合成は生の定義の段で行い、そのあと normalize を通す（正規化を 2 通り持たない）。
+  const raw = { ...(base._raw || {}) };
+  delete raw.profiles;
+  for (const f of PROFILE_NOT_INHERITED) delete raw[f];
+  const merged = { ...body };
+  if (merged.env) merged.env = { ...(raw.env || {}), ...merged.env };
+  Object.assign(raw, merged);
+  const spec = normalize(raw, base.name, file);
+  spec.profile = profileName;
+  spec.profiles = base.profiles || {};
+  return spec;
+}
+
+// `<base>-<profile>` を base 定義の profile として解く。長い base から順に試す。
+function resolveProfileName(key, projectDir) {
+  const parts = key.split('-');
+  for (let cut = parts.length - 1; cut >= 1; cut -= 1) {
+    const baseName = parts.slice(0, cut).join('-');
+    const profileName = parts.slice(cut).join('-');
+    let base;
+    try {
+      base = loadCli(baseName, projectDir);
+    } catch {
+      continue;
+    }
+    if (base.profiles && Object.prototype.hasOwnProperty.call(base.profiles, profileName)) {
+      return applyProfile(base, profileName, base.file);
+    }
+  }
+  return null;
+}
+
+// 台帳・格付けへ書く agent_cli を正典名へ寄せる（`ollama-json` → `ollama`）。
+// 綴りでは判定しない——同名の定義ファイルが実在するならそれは独立したエージェント。
+function canonicalName(name, projectDir) {
+  const key = String(name || '').trim().toLowerCase();
+  if (!key) return '';
+  try {
+    return String(loadCli(key, projectDir).name || key);
+  } catch {
+    return key;
+  }
+}
+
 function loadCli(name, projectDir, { useCache = true } = {}) {
   const key = String(name || '').trim().toLowerCase();
   if (!key || !/^[\w.-]+$/.test(key)) {
@@ -185,6 +243,13 @@ function loadCli(name, projectDir, { useCache = true } = {}) {
     const spec = normalize(parsed, key, file);
     if (useCache) cache.set(cacheKey, spec);
     return spec;
+  }
+  // 定義ファイルが無ければ profile 名として解く（`ollama-list` → base=ollama / profile=list）。
+  // 実ファイルが優先なので、`ollama-json.json` を置けば独立エージェントとして扱われる。
+  const viaProfile = resolveProfileName(key, projectDir);
+  if (viaProfile) {
+    if (useCache) cache.set(cacheKey, viaProfile);
+    return viaProfile;
   }
   throw new AgentCliError(
     `未知の agent_cli です: ${key}（agents/${key}.json が見つかりません）\n`
@@ -352,6 +417,7 @@ function classifyError(spec, blob) {
 
 module.exports = {
   AgentCliError,
+  canonicalName,
   pluginDirs,
   bundledDir,
   normalize,

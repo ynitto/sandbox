@@ -2,17 +2,38 @@
   "name": "aider",
   "headless_autonomy": "single-shot",
   "relative_cost": 0,
-  "command": ["agent-aider", "--agent-policy", "gemma4-e4b-reliability-v1",
-              "--model", "ollama_chat/{model}",
-              "--no-git", "--no-auto-commits", "--yes-always", "--no-check-update",
-              "--no-show-model-warnings",
-              "--no-analytics", "--no-stream", "--no-pretty", "--no-gitignore",
-              "--map-tokens", "0"],
+  "command": [
+    "agent-herd",
+    "aider",
+    "--agent-policy",
+    "gemma4-e4b-reliability-v1",
+    "--model",
+    "ollama_chat/{model}",
+    "--no-git",
+    "--no-auto-commits",
+    "--yes-always",
+    "--no-check-update",
+    "--no-show-model-warnings",
+    "--no-analytics",
+    "--no-stream",
+    "--no-pretty",
+    "--no-gitignore",
+    "--map-tokens",
+    "0"
+  ],
   "variants": {
-    "planner": "ollama-json", "evaluator": "ollama-json", "filter": "ollama-json",
-    "judge": "ollama-json", "reduce": "ollama-json", "extract": "ollama-json",
-    "plan": "ollama-json", "review": "ollama-json", "prioritize": "ollama-json",
-    "route": "ollama-json", "adjudicate": "ollama-json", "assess": "ollama-json",
+    "planner": "ollama-json",
+    "evaluator": "ollama-json",
+    "filter": "ollama-json",
+    "judge": "ollama-json",
+    "reduce": "ollama-json",
+    "extract": "ollama-json",
+    "plan": "ollama-json",
+    "review": "ollama-json",
+    "prioritize": "ollama-json",
+    "route": "ollama-json",
+    "adjudicate": "ollama-json",
+    "assess": "ollama-json",
     "split": "ollama-list-thinking"
   },
   "prompt_via": "argv",
@@ -23,24 +44,58 @@
   "output": "stdout",
   "empty_output_is_error": true,
   "write_args": [],
-  "readonly_args": ["--dry-run"],
+  "readonly_args": [
+    "--dry-run"
+  ],
   "readonly": "enforced",
+  "interactive": {
+    "command": [
+      "agent-herd",
+      "aider",
+      "--agent-policy",
+      "gemma4-e4b-reliability-v1",
+      "--model",
+      "ollama_chat/{model}",
+      "--no-git",
+      "--no-auto-commits",
+      "--no-check-update",
+      "--no-show-model-warnings",
+      "--no-analytics",
+      "--no-gitignore",
+      "--map-tokens",
+      "0"
+    ]
+  },
   "errors": [
-    { "match": "could not connect|connection refused|APIConnectionError",
-      "class": "env", "hint": "ollama サーバが起動していません（ollama serve を起動してください）" },
-    { "match": "model .{0,60}not found|NotFoundError",
-      "class": "env", "hint": "モデルが未取得です（ollama pull <model> を実行してください）" },
-    { "match": "add .{0,40}to the chat|Please add these files",
+    {
+      "match": "could not connect|connection refused|APIConnectionError",
       "class": "env",
-      "hint": "編集対象のファイルが渡っていません（aider はチャットに入っているファイルしか編集しません）。タスクの読込割付にパスを載せてください" },
-    { "match": "ContextWindowExceededError|context.{0,20}exceeded",
+      "hint": "ollama サーバが起動していません（ollama serve を起動してください）"
+    },
+    {
+      "match": "model .{0,60}not found|NotFoundError",
       "class": "env",
-      "hint": "文脈が足りません。ファイルの割付を減らすか、モデル設定の num_ctx を上げてください（aider の ollama 既定は 8k）" },
-    { "match": "litellm.Timeout|Read timed out",
+      "hint": "モデルが未取得です（ollama pull <model> を実行してください）"
+    },
+    {
+      "match": "add .{0,40}to the chat|Please add these files",
+      "class": "env",
+      "hint": "編集対象のファイルが渡っていません（aider はチャットに入っているファイルしか編集しません）。タスクの読込割付にパスを載せてください"
+    },
+    {
+      "match": "ContextWindowExceededError|context.{0,20}exceeded",
+      "class": "env",
+      "hint": "文脈が足りません。ファイルの割付を減らすか、モデル設定の num_ctx を上げてください（aider の ollama 既定は 8k）"
+    },
+    {
+      "match": "litellm.Timeout|Read timed out",
       "class": "transient",
-      "hint": "推論がタイムアウトしました。リトライで解けることが多いですが、続くなら ollama の負荷とメモリを確認してください" },
-    { "match": "504|Gateway Time.?out|ProxyError",
+      "hint": "推論がタイムアウトしました。リトライで解けることが多いですが、続くなら ollama の負荷とメモリを確認してください"
+    },
+    {
+      "match": "504|Gateway Time.?out|ProxyError",
       "class": "env",
-      "hint": "接続がプロキシへ流れています。NO_PROXY/no_proxy に ollama のホストが入っているか、OLLAMA_API_BASE が正しいかを確認してください（agent-aider は ~/.profile から補完します）" }
+      "hint": "接続がプロキシへ流れています。NO_PROXY/no_proxy に ollama のホストが入っているか、OLLAMA_API_BASE が正しいかを確認してください（agent-aider は ~/.profile から補完します）"
+    }
   ]
 }

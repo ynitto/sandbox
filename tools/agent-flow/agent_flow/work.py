@@ -384,6 +384,8 @@ def cmd_work(args) -> int:
         fallback = last_execution_fallback(kind) if args.executor == "agent" else None
         if fallback:
             agent_cli, agent_model = _effective_agent(kind, getattr(args, "model", None), node_agent)
+            # 結果と台帳へ残すのは正典名（用途は kind / operation_class 側が持つ）。
+            agent_cli = _canonical_cli(agent_cli)
             if isinstance(selection.get("execution_decision"), dict):
                 to_cli, to_model = fallback["to"].split("/", 1)
                 selection["execution_decision"].update(
