@@ -7,6 +7,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-loop: statemachine ハーネスが配布のズレを起動時に名指しする
+
+- dashboard の定常業務を「今すぐ実行」したとき、`[agent-loop] ERROR: argument --auto-eval:
+  expected one argument` だけが表示され、**どの `next_state.py` が使われたのか分からない**
+  という報告。ハーネスは `--auto-eval` を値の無いフラグとして渡すので、このエラーは解決
+  された `statemachine-use` が現行契約でない（古い配布 = 旧 `--list-conditions`、または
+  `--auto-eval` が値を取る変種）ことを意味する。スキルの探索先は 4 つあり
+  （`<cwd>/.github/skills` → リポジトリ → `~/.agents/skills` → `~/.codex/skills`）、
+  argparse の生エラーだけではどれが当たったのか特定できない。
+- 実行の最初に `next_state.py --help` で契約を確かめ、噛み合わないときは **LLM を 1 回も
+  呼ばずに**落とすようにした。メッセージには使用中の実体のフルパス・探索順・再配布
+  コマンドを載せる。従来はアクションを 1 つ実行して時間と予算を使ってから、遷移の段で
+  生エラーになっていた。
+- 呼び出し側（`_sm_next_state`）の argv 自体は現行契約どおりで変更なし
+  （`--context` JSON → `needs_llm_eval` 解釈 → 単一 `auto_advance` / `resolved` の直接遷移）。
+
 ### agent-loop: headless CLI 実行の共通タイムアウト fallback を 180 → 600 秒へ
 
 - CLI 定義（`agents/<name>.json` の `timeout`）が黙っているときの上限を 600 秒にした。

@@ -1029,6 +1029,90 @@ class NextStateContractTest(unittest.TestCase):
             self.assertNotIn("--list-conditions", call)
 
 
+class NextStateContractGateTest(unittest.TestCase):
+    """配布された statemachine-use がハーネスの契約と噛み合うかを起動時に確かめる。
+
+    ハーネスは `--auto-eval` を値の無いフラグとして渡す。解決された実体が古い配布
+    （旧 `--list-conditions`）や `--auto-eval` が値を取る変種だと、実行の途中で
+    argparse の生エラーだけが上がり、どの実体が使われたのかも分からない
+    （実測: 定常業務の実行が `argument --auto-eval: expected one argument` を残して落ちた）。
+    """
+
+    def test_current_contract_passes(self):
+        self.assertEqual(al._sm_next_state_contract_error(
+            "usage: next_state.py [-h] [--state STATE] [--auto-eval] [--context JSON]"), "")
+
+    def test_old_distribution_is_named(self):
+        problem = al._sm_next_state_contract_error(
+            "usage: next_state.py [-h] [--state STATE] [--list-conditions]")
+        self.assertIn("古い配布", problem)
+
+    def test_value_taking_variant_is_named(self):
+        problem = al._sm_next_state_contract_error(
+            "usage: next_state.py [-h] [--auto-eval AUTO_EVAL] [--context JSON]")
+        self.assertIn("値を取る変種", problem)
+
+    def test_usage_wrapped_across_lines_is_normalized(self):
+        self.assertEqual(al._sm_next_state_contract_error(
+            "usage: next_state.py [-h] [--state STATE]\n"
+            "                     [--auto-eval] [--context JSON]"), "")
+
+    def _repo_with_skill(self, next_state_body):
+        tmp = tempfile.TemporaryDirectory(prefix="agent-loop-sm-gate-")
+        self.addCleanup(tmp.cleanup)
+        repo = os.path.realpath(tmp.name)
+        skill = pathlib.Path(repo, ".github", "skills", "statemachine-use")
+        (skill / "scripts").mkdir(parents=True)
+        (skill / "SKILL.md").write_text("# statemachine-use\n", encoding="utf-8")
+        (skill / "scripts" / "next_state.py").write_text(next_state_body, encoding="utf-8")
+        (skill / "scripts" / "run_machine.py").write_text("print('ok')\n", encoding="utf-8")
+        pathlib.Path(repo, "workflow.yaml").write_text("\n".join([
+            "initial_state: work",
+            "states:",
+            "  work:",
+            "    terminal: true",
+            "",
+        ]), encoding="utf-8")
+        return repo
+
+    # `--auto-eval` が値を取る変種（利用者の環境で実際に起きた形）。
+    _VARIANT = (
+        "import argparse\n"
+        "p = argparse.ArgumentParser()\n"
+        "p.add_argument('workflow', nargs='?')\n"
+        "p.add_argument('--state')\n"
+        "p.add_argument('--context')\n"
+        "p.add_argument('--auto-eval')\n"
+        "p.parse_args()\n"
+    )
+
+    def test_variant_stops_before_any_agent_call(self):
+        repo = self._repo_with_skill(self._VARIANT)
+        calls = []
+
+        with mock.patch.object(al, "_tl_run_agent", side_effect=lambda *a, **k: calls.append(a)):
+            with self.assertRaises(al.StateMachineHarnessError) as ctx:
+                al.run_statemachine(workflow_path="workflow.yaml", cwd=repo, agent={})
+
+        message = str(ctx.exception)
+        self.assertIn("値を取る変種", message)
+        # どの実体が使われたのかを必ず名指しする（探索先が複数あり、人が直せるのはここだけ）。
+        self.assertIn(os.path.join(".github", "skills", "statemachine-use"), message)
+        self.assertIn("install.py", message)
+        self.assertEqual(calls, [], "契約が噛み合わないときは LLM を 1 回も呼ばない")
+
+    def test_real_distribution_passes_the_gate(self):
+        """実物のスキルで誤検知しないこと（ゲートが正常な実行を止めない）。"""
+        tmp = tempfile.TemporaryDirectory(prefix="agent-loop-sm-gate-ok-")
+        self.addCleanup(tmp.cleanup)
+        repo = os.path.realpath(tmp.name)
+        skill = al._sm_resolve_skill("statemachine-use", repo)
+        self.assertIsNotNone(skill, "statemachine-use スキルの実体が必要")
+        al._sm_require_next_state_contract(
+            os.path.join(skill["root"], "scripts", "next_state.py"),
+            cwd=repo, log_file=os.path.join(repo, "run.jsonl"))
+
+
 class CheckGateTest(unittest.TestCase):
     """決定的検査（check）— 遷移の材料を自己申告からハーネスの実測へ移す。
 

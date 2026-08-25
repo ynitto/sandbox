@@ -585,6 +585,41 @@ def _sm_check_note(result: dict, attempt: int, attempts: int, *, feedback: bool)
             + tail)
 
 
+def _sm_next_state_contract_error(help_text: str) -> str:
+    """`next_state.py --help` の usage から契約の食い違いを読む（空文字 = 現行契約）。
+
+    ハーネスは `--auto-eval` を**値を取らないフラグ**として、`--context` の後ろに置いて
+    渡す。解決された実体がこの形でないと argparse の生エラーだけが上がってきて、
+    どの実体が使われたのかも分からない（実測: 定常業務の実行が
+    `argument --auto-eval: expected one argument` だけを残して落ちた）。
+    usage は store_true なら `[--auto-eval]`、値を取るなら `[--auto-eval AUTO_EVAL]`。
+    """
+    usage = " ".join(str(help_text or "").split())
+    if "[--auto-eval]" in usage:
+        return ""
+    if "--auto-eval" not in usage:
+        return "--auto-eval を解さない古い配布です（旧 --list-conditions 契約）"
+    return "--auto-eval が値を取る変種です（ハーネスはフラグとして渡します）"
+
+
+def _sm_require_next_state_contract(script: str, *, cwd: str, log_file: str) -> None:
+    """解決した next_state.py が現行契約かを、最初の LLM 実行より前に確かめる。
+
+    食い違いは配布のズレでしか起きない——直せるのは人だけなので、実体のパスと再配布の
+    コマンドを添えて即座に落とす。ここで止めないと、アクションを 1 つ実行して課金と
+    時間を使ってから遷移で落ちる。
+    """
+    problem = _sm_next_state_contract_error(
+        _sm_harness_script(script, ["--help"], cwd=cwd, log_file=log_file))
+    if not problem:
+        return
+    raise StateMachineHarnessError(
+        f"statemachine-use が現行契約と噛み合いません: {problem}\n"
+        f"  使用中の実体: {script}\n"
+        f"  探索先（この順に解決）: {', '.join(_tl_skill_search_dirs(cwd))}\n"
+        "  再配布: `python install.py --agent <エージェント> --all-skills`")
+
+
 def _sm_next_state(*, scripts: dict, workflow_path: str, state_id: str, output: str,
                    outputs: dict, agent: dict, cwd: str, log_file: str,
                    extra: "dict | None" = None) -> str:
@@ -673,6 +708,7 @@ def run_statemachine(*, workflow_path: str, cwd: str, parameters: "dict | None" 
         _sm_append_log(log_file, {"event": "execution_decision",
                                   **executionresolver.receipt_execution_decision(decision)})
     _sm_progress(f"workflow: {os.path.relpath(workflow_file, root)} (log: {log_file})")
+    _sm_require_next_state_contract(scripts["next"], cwd=root, log_file=log_file)
     _sm_harness_script(scripts["dry"], [workflow_file, "--dry-run"], cwd=root, log_file=log_file)
     current = _sm_harness_script(scripts["next"], [workflow_file, "--initial-state"],
                                  cwd=root, log_file=log_file)

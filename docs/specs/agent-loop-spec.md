@@ -382,6 +382,8 @@ acceptance:
 
 どちらも終了時に `RESULT {json}` を 1 行出力します。呼び出し側（dashboard など）はこの行を読みます。`statemachine` が返すのは `ok` / `stdout` / `finalState` / `logFile` / `files` です。
 
+**配布の契約検査（起動時）。** 実行の最初に、解決した `statemachine-use` の `next_state.py` が現行契約かを `--help` で確かめます。ハーネスは `--auto-eval` を**値の無いフラグ**として `--context` の後ろに渡すので、古い配布（旧 `--list-conditions`）や `--auto-eval` が値を取る変種だと噛み合いません。噛み合わないときは **LLM を 1 回も呼ばずに** 終了コード 1 で落とし、使用中の実体のパス・探索順・再配布コマンドを返します（argparse の生エラーだけが残ると、複数ある探索先のどれが使われたのか人が特定できないため）。
+
 **決定的検査に達したときの追加フィールド。** ステートが `check`（`statemachine-use` の決定的検査コマンド）を宣言していて、再投入を使い切っても通らなかった場合、結果に `escalate: true` と `check`（`state` / `attempts` / `argv` / `check_status` / `check_output`）が加わり、**終了コードは 3** になります。これは「失敗した」ではなく「**この実行レベルでは解けない**」の宣告で、呼び出し側は上位の段（より能力の高いモデル）へ回す判断に使えます。
 
 意味の切り分けは次のとおりです。
