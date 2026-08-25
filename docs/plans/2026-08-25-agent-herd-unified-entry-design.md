@@ -126,7 +126,8 @@ agent-opencode）を揃えること」と注記している——C7（写しを�
   `agent-opencode` は同一 zipapp への別名（argv[0] ディスパッチ）となり、単独でも従来どおり
   **argv・stdout/stderr 契約完全互換**で使える。
 - **G2**: 対話型の統一コマンド `agent-herd chat [<cli>] [--model M]`。定義の `interactive`
-  ブロックを解決して起動する（ollama は内蔵 TUI、aider は policy つき対話起動）。
+  ブロックを解決して起動する（ollama は内蔵 TUI）。**aider の対話は保留**——`interactive` の
+  有無が agent-dashboard で別の意味に使われているため（§8.2）。
 - **G3**: `toolloop` / `statemachine` を `agentcore.harness` へ移設し、
   `agent-herd harness …` から単独実行できる。agent-loop は薄い委譲で従来コマンドを維持。
 - **G4**: 環境補完・adapter 共通処理を `agentcore.hostenv`（仮称）1 実装へ集約。
@@ -564,14 +565,34 @@ variant を「入口の分岐」と読むと設計を誤る。`resolve_variant()
   元の場所は開発木用の委譲シム（既存テストはこのシム経由で無改変のまま通る）
 - `agentcore/herdcli.py` — argv[0] ディスパッチと `aider` / `ollama` / `opencode` /
   `chat` / `defs` / `exec` / `status` / `follow` / `replay` / `harness`（§9 参照）
-- `agents/aider.json` に `interactive` ブロック（ヘッドレスから `--message` /
-  `--yes-always` / `--no-stream` / `--no-pretty` を引いただけ。policy は同じ経路で付く）
 - `install.sh` — `agent-herd` zipapp と 3 名のハードリンク、`--only agent-herd`
 - `tools/opencode/install.sh` — 単体ファイルのコピーから自己完結 zipapp へ
 
 `harness` は**サブコマンドとして存在するが実行しない**。呼ぶと終了コード 2 で
 `agent-loop statemachine` を案内する——設計書を読んで打った人に「未知のサブコマンド」と
 返すのは不親切なので、所在だけは答える。中身は P2 で入る。
+
+### 8.2 実装中に見つけた制約 — `interactive` の有無が二重の意味を持っている
+
+`agents/aider.json` に `interactive` を足す（G2 の aider 分）と、**定型業務の実行経路が
+黙って切り替わる**ことが分かった。agent-dashboard は `spec.interactive` の**有無**を
+「対話ペインで駆動できる CLI か」の代理として読み、無い CLI（aider・素の ollama）を
+agent-loop の statemachine ハーネスへ回しているためである
+（`cowork.js` の `if (!selected.spec.interactive)`）。
+
+CI の `dashboard (npm test)` がこれを検出した（`state-machine-window.test.js`:
+「単発実行サブコマンドへ渡す（send ではない）」）。ゴールデン値の更新では済まない実挙動の
+回帰なので、**aider の `interactive` は入れずに戻した**。
+
+正しい弁別子は `headless_autonomy` である——`single-shot` はハーネスが要り、`tool-loop` は
+自分で回せる（§5.3 の層判定と同じ）。`interactive` の有無は「対話面を提供するか」であって
+「ハーネスが要るか」ではない。この 2 つを同じフラグで表しているのが現状の負債で、分離は
+**agent-dashboard の実行経路を変える独立した変更**として扱う（配布統合と入口面に混ぜると、
+定型業務が壊れたときにどの変更が原因か切り分けられない）。
+
+依存関係は `test_herdcli.ChatTests.test_aider_has_no_interactive_block_yet` が固定して
+いる。dashboard の弁別子を直した人がそのテストを消して `chat aider` の起動テストへ
+置き換える、という順序で解ける。
 
 **P2 を分けた理由**: `toolloop.py`（1,275 行）と `statemachine.py`（866 行）は
 agent_loop の **exec 合成断片**で、暗黙の共有グローバル（`_tl_*` / `_sm_*`）に依存している。

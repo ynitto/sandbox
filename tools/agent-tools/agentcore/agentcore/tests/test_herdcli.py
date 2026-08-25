@@ -170,22 +170,39 @@ class ChatTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(launched[0][:2], ["agent-ollama", "--tui"])
 
-    def test_aider_gets_the_policy_but_not_the_headless_only_flags(self):
-        """対話で試したことがヘッドレスで再現しないのを防ぐ: policy は同じ経路で付く。
-
-        逆に、人が確認する場でヘッドレス専用の押し切り（--yes-always）や
-        表示を殺すフラグ（--no-stream / --no-pretty）を引き継がない。
-        """
+    def test_a_cloud_cli_with_an_interactive_block_launches(self):
+        """chat は ollama 専用ではない——interactive を宣言した定義はどれでも起動できる。"""
         launched = []
-        rc = herdcli.cmd_chat(["aider", "--model", "gemma4:e4b"],
-                              launcher=lambda argv: launched.append(argv) or 0)
+        rc = herdcli.cmd_chat(["claude"], launcher=lambda argv: launched.append(argv) or 0)
         self.assertEqual(rc, 0)
-        argv = launched[0]
-        self.assertIn("--agent-policy", argv)
-        self.assertIn("gemma4-e4b-reliability-v1", argv)
-        self.assertIn("ollama_chat/gemma4:e4b", argv)
-        for headless_only in ("--yes-always", "--no-stream", "--no-pretty", "--message"):
-            self.assertNotIn(headless_only, argv)
+        self.assertTrue(launched[0], "対話 argv が空です")
+
+    def test_aider_has_no_interactive_block_yet(self):
+        """aider の対話面はまだ無い。**足す前に agent-dashboard を直す必要がある**。
+
+        agent-dashboard の定型業務は `spec.interactive` の**有無**を
+        「対話ペインで駆動できる CLI か」の代理として読み、無い CLI（aider・素の ollama）を
+        agent-loop の statemachine ハーネスへ回している
+        （cowork.js の `if (!selected.spec.interactive)`）。
+
+        つまり aider.json に interactive を足すと、chat が使えるようになる代わりに
+        **定型業務の実行経路が黙ってハーネスから対話送信へ切り替わる**。実際 CI の
+        `dashboard (npm test)` がこれを検出した（state-machine-window.test.js:
+        「単発実行サブコマンドへ渡す（send ではない）」）。
+
+        正しい弁別子は `headless_autonomy`（single-shot はハーネスが要る / tool-loop は
+        自分で回せる）だが、それは dashboard 側の実行経路を変える独立した変更である。
+        ここではその依存関係を固定しておく——このテストが落ちたら、aider.json に
+        interactive を足した誰かが dashboard の弁別子も直したということなので、
+        本テストを消して chat の起動テストへ置き換えてよい。
+        """
+        spec = agentcli.load_cli("aider", project_dir=_REPO)
+        self.assertIsNone(spec.get("interactive"),
+                          "aider.json に interactive を足すなら、先に agent-dashboard の "
+                          "cowork.js が headless_autonomy で弁別するよう直すこと")
+        err = io.StringIO()
+        rc = herdcli.cmd_chat(["aider"], err=err, launcher=lambda argv: 0)
+        self.assertEqual(rc, 1)
 
     def test_a_definition_without_an_interactive_block_fails_loudly(self):
         """黙ってヘッドレスへ倒さない（追加したければ定義に書く）。
