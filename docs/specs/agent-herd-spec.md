@@ -47,7 +47,8 @@ basename(argv[0])       解決されるサブコマンド        残りの引数
 | `chat [<cli>] [--model M]` | `herdcli.cmd_chat` | 閉じている（下記以外は拒否） |
 | `defs [<名前>] [--json] [--model M] [--purpose P]` | `herdcli.cmd_defs` | 同上 |
 | `exec <cli> [オプション]` | `herdcli.cmd_exec` | 同上 |
-| `harness <種別> …` | `herdcli.cmd_harness` | **P2 まで未実装**（§9） |
+| `harness statemachine --workflow PATH` | `agentcore.harness.statemachine.cmd_statemachine` | 閉じている |
+| `harness run PROMPT…` | `agentcore.harness.toolloop.cmd_run` | 閉じている |
 | `status [LOG]` | `ollama --status` の別名 | 素通し |
 | `follow [LOG]` | `ollama --follow` の別名 | 素通し |
 | `replay [PATH] …` | `ollama --replay` の別名 | 素通し |
@@ -168,6 +169,32 @@ CI の `dashboard (npm test)` が検出した（`state-machine-window.test.js`:
 **`chat` 自体は ollama 専用ではない。** `interactive` を宣言している定義（`ollama` /
 `opencode` / `claude` / `codex` / `kiro` / `copilot` / `cursor`）はどれも起動できる。
 
+### 4.5 `harness`
+
+```
+agent-herd harness statemachine --workflow PATH [--agent-cli NAME] [--model M]
+                                [--param KEY=VALUE]… [--input TEXT] [--dir DIR]
+agent-herd harness run PROMPT… [--agent-cli NAME] [--model M]
+                               [--acceptance TEXT]… [--judge] [--dir DIR]
+```
+
+フラグの綴りは `agent-loop statemachine` / `agent-loop run` と**同じ**にしてある。同じ
+ハーネスの 2 つの入口なので、片方だけ違う名前を人に覚えさせない。終了時に `RESULT {json}`
+を 1 行出すのも同じで、それが呼び出し側との結果契約になる。
+
+実体は `agentcore.harness`（`agent_loop` からの移植）。**tmux もデーモンも設定ファイルも
+要らない**——tmux はコマンドを走らせて様子を見せる手段であって実行契約の一部ではない、
+という元の設計注記がそのまま効く。
+
+移植先の既定は agent-loop と 2 点だけ違う（§6 と同じく「黙って書かない」を既定にした）:
+
+| | agent-loop 経由 | `agent-herd harness` |
+|---|---|---|
+| 台帳への記帳 | 自分の ledger へ追記 | **しない**（`harness.set_hooks` で差し込める） |
+| `selection_policy` の解決 | control.json v2 を読む | **しない**（None = 従来の pin / 既定候補で走る） |
+
+終了コード: 移植元が `sys.exit` で表すものをそのまま返す / 2 = 引数の誤り・未知の種別。
+
 ## 5. 未知のサブコマンド
 
 黙って別解釈しない。2 通りに分ける:
@@ -240,13 +267,12 @@ CI の `dashboard (npm test)` が検出した（`state-machine-window.test.js`:
 
 | 項目 | 状態 | いまの経路 |
 |---|---|---|
-| `harness toolloop` / `harness statemachine` | **未実装（P2）** | `agent-loop statemachine --workflow <定義> --cli <名前>` |
 | `agents/*.json` の `command` を `["agent-herd", …]` へ正典化 | **未着手（P3）** | 従来の綴り（`agent-aider` / `agent-ollama` / `agent-opencode`）。argv[0] 分岐で動く |
 | `chat aider`（`aider.json` の `interactive`） | **保留**（§4.4） | 素の `aider` を手で起動。先に agent-dashboard の弁別子を `headless_autonomy` へ直す |
 
-`harness` サブコマンドは**存在するが実行しない**。呼ぶと終了コード 2 で、いま動く経路
-（`agent-loop statemachine`）を案内する。設計書を読んで打った人に「未知のサブコマンド」と
-返すのは不親切なので、所在だけは答える。
+`harness` は **P2 段1（ポーティング）で実装済**。`agent_loop` 側の断片は消していないので、
+同じハーネスに 2 つの入口がある状態である（一致は AST パリティテストが縛る）。
+段2（agent_loop を委譲へ寄せる）は未着手。
 
 ## 10. テスト
 

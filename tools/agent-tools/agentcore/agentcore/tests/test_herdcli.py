@@ -9,10 +9,13 @@
 """
 from __future__ import annotations
 
+import argparse
 import io
 import json
 import os
+import pathlib
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -271,12 +274,90 @@ class ExecTests(unittest.TestCase):
 
 
 class HarnessTests(unittest.TestCase):
-    def test_harness_says_where_it_currently_lives(self):
-        """P2 まではここに無い。黙って失敗せず、いま動く経路を指す。"""
+    """引数の綴りは `agent-loop statemachine` / `agent-loop run` と揃える。
+
+    同じハーネスの 2 つの入口なので、片方だけ違う名前を人に覚えさせない。
+    """
+
+    def test_statemachine_takes_the_same_flags_as_agent_loop(self):
+        seen = []
+        rc = herdcli.cmd_harness(
+            ["statemachine", "--workflow", "wf.yaml", "--agent-cli", "aider",
+             "--model", "gemma4:e4b", "--param", "topic=llm", "--input", "本文"],
+            runner=lambda kind, args, cwd: seen.append((kind, args)) or 0)
+        self.assertEqual(rc, 0)
+        kind, args = seen[0]
+        self.assertEqual(kind, "statemachine")
+        self.assertEqual(args.workflow, "wf.yaml")
+        self.assertEqual(args.agent_cli, "aider")
+        self.assertEqual(args.model, "gemma4:e4b")
+        self.assertEqual(args.param, ["topic=llm"])
+        self.assertEqual(args.input, "本文")
+
+    def test_run_takes_the_same_flags_as_agent_loop(self):
+        seen = []
+        rc = herdcli.cmd_harness(
+            ["run", "タスク本文", "--acceptance", "X がある", "--judge"],
+            runner=lambda kind, args, cwd: seen.append((kind, args)) or 0)
+        self.assertEqual(rc, 0)
+        kind, args = seen[0]
+        self.assertEqual(kind, "run")
+        self.assertEqual(args.prompt, ["タスク本文"])
+        self.assertEqual(args.acceptance, ["X がある"])
+        self.assertTrue(args.judge)
+
+    def test_a_missing_required_flag_fails_instead_of_running(self):
+        """--workflow 無しで走り出さない（argparse の 2 を入口の 2 へ揃える）。"""
         err = io.StringIO()
-        rc = herdcli.cmd_harness(["statemachine"], err=err)
+        saved, sys.stderr = sys.stderr, err
+        try:
+            rc = herdcli.cmd_harness(["statemachine"], runner=lambda *a: 0)
+        finally:
+            sys.stderr = saved
         self.assertEqual(rc, 2)
-        self.assertIn("agent-loop statemachine", err.getvalue())
+
+    def test_an_unknown_kind_lists_what_exists(self):
+        err = io.StringIO()
+        rc = herdcli.cmd_harness(["nonsense"], err=err)
+        self.assertEqual(rc, 2)
+        self.assertIn("statemachine", err.getvalue())
+
+    def test_the_dir_flag_decides_the_working_directory(self):
+        seen = []
+        with tempfile.TemporaryDirectory() as d:
+            herdcli.cmd_harness(["run", "X", "--dir", d],
+                                runner=lambda kind, args, cwd: seen.append(cwd) or 0)
+            self.assertEqual(seen[0], pathlib.Path(d).resolve())
+
+    def test_it_calls_the_ported_harness_not_agent_loop(self):
+        """実体は agentcore.harness（移植先）。agent-loop のデーモンを介さない。"""
+        from agentcore.harness import statemachine as ported
+        called = []
+        original = ported.cmd_statemachine
+        ported.cmd_statemachine = lambda args, cwd: called.append((args, cwd))
+        try:
+            args = argparse.Namespace(workflow="wf.yaml", agent_cli="aider", model=None,
+                                      param=[], input=None, dir=None)
+            rc = herdcli._run_harness("statemachine", args, pathlib.Path("."))
+        finally:
+            ported.cmd_statemachine = original
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(called), 1)
+
+    def test_sys_exit_from_the_harness_becomes_the_exit_code(self):
+        """移植元は終了を sys.exit で表す。入口はそれを終了コードへ戻す。"""
+        from agentcore.harness import toolloop as ported
+        original = ported.cmd_run
+
+        def _boom(args, cwd):
+            raise SystemExit(3)
+
+        ported.cmd_run = _boom
+        try:
+            rc = herdcli._run_harness("run", argparse.Namespace(), pathlib.Path("."))
+        finally:
+            ported.cmd_run = original
+        self.assertEqual(rc, 3)
 
 
 if __name__ == "__main__":

@@ -385,16 +385,35 @@ agent-herd replay --arm model=gemma4:e4b,format=json --replay-limit 20
 
 ## 5. ハーネス統合 — `agentcore.harness`
 
-### 5.1 移設
+### 5.1 移植（移行ではない）
+
+**まず移植する。元は消さない。** 段取りを 2 つに割る:
 
 ```
-tools/agent-loop/agent_loop/toolloop.py      → tools/agent-tools/agentcore/agentcore/harness/toolloop.py
-tools/agent-loop/agent_loop/statemachine.py  → tools/agent-tools/agentcore/agentcore/harness/statemachine.py
-                                               （ゴール非依存部分のみ。tmux 表示・pane 配線は agent-loop に残す）
+段1 ポーティング（実施済）
+  agent_loop/toolloop.py      ──コピー──▶ agentcore/harness/toolloop.py
+  agent_loop/statemachine.py  ──コピー──▶ agentcore/harness/statemachine.py
+  agent_loop は自分の断片を持ち続ける（コマンドも証跡も 1 バイトも変わらない）
+        │
+        │  写しが黙ってずれないよう AST パリティテストで縛る
+        ▼
+段2 移行（未着手・別の判断）
+  agent_loop の断片を消し、agentcore.harness への委譲へ置き換える
 ```
 
-- exec 合成断片を**通常のモジュール**へ書き直す（`from agentcore.harness import toolloop`）。
-  断片間の暗黙共有名（`_tl_*` グローバル）は明示 import / 関数引数へ畳む。
+段 1 で agent-loop を触らないので、**回帰の可能性がそもそも無い**（agent-loop から見ると
+何も変わっていない）。段 2 は agent-loop の 554 テストを合格ゲートにする独立の変更として
+行う。段 1 だけで「tmux もデーモンも無しにハーネスを回せる」という目的は達成される。
+
+- exec 合成断片を**通常のモジュール**にする。ただし本文は**逐語コピー**で、変えたのは
+  断片が共有名前空間から借りていた名前の供給だけ（借用は stdlib を除くと 4 つしか無かった:
+  `agent_home_subdir` / `_import_agentcli` / `_node_budget_record` /
+  `_control_policy_decision`）。逐語コピーにしておくと、元との一致を AST で機械的に
+  突き合わせられる——書き直すと写しがずれても誰も気づけない。
+- 借用のうち記帳（`_node_budget_record`）と control 解決（`_control_policy_decision`）は
+  agent-loop 固有の状態を触るので、**既定を「何もしない / None」にした差し込み口**
+  （`agentcore.harness.set_hooks`）にした。移植先が黙って agent-loop の台帳へ書くより、
+  書かないほうを既定にする。
 - `statemachine` の検証・遷移の正典は従来どおり **statemachine-use スキルのスクリプト**
   （`run_machine.py` / `next_state.py`）。移設で正典は動かさない。
 - CLI・モデルの解決は従来どおり `agentcore.agentcli` へ委譲（同一パッケージ内になるので
@@ -549,7 +568,8 @@ variant を「入口の分岐」と読むと設計を誤る。`resolve_variant()
 |---|---|---|
 | **P0 配布統合** ✅ **実装済** | `hostenv` 抽出・opencode/aider adapter の agentcore 移設・busybox zipapp・install.sh 変更 | 既存 3 名の argv/出力契約のゴールデンが不変で通る。env parity テストが「1 実装参照」を縛る形へ置換される |
 | **P1 入口面** ✅ **実装済** | `agent-herd` サブコマンド面（aider/ollama/opencode/defs/exec/chat/観測）・aider.json の interactive ブロック | `agent-herd aider …` と `agent-aider …` が同一結果。`chat aider` の環境仕込みがヘッドレスと同一実装を通ることをテストで縛る |
-| **P2 ハーネス移設** ⬜ 未着手 | toolloop/statemachine → `agentcore.harness`・agent-loop 委譲・`agent-herd harness …` | `test_statemachine.py` 等 agent-loop の既存テストが無改変で通る。tmux なし単独実行の証跡形が agent-loop 経由と一致 |
+| **P2 ハーネス移植** ✅ **実装済**（段1） | toolloop/statemachine を `agentcore.harness` へ**コピー**・`agent-herd harness …`・AST パリティテスト。**agent_loop は無改変** | agent-loop の既存テストが無改変で通る（触っていないので当然通る）。移植先が単体 import でき、zipapp から回る |
+| **P2 段2 移行** ⬜ 未着手 | agent_loop の断片を消して `agentcore.harness` への委譲へ | `test_statemachine.py` 等 agent-loop の 554 テストが無改変で通る |
 | **P3 正典化** ⬜ 未着手 | `agents/*.json` の command 書き替え + dashboard ゴールデン更新・（任意）stub の取り込み | 全エンジンの結合テスト・dashboard ゴールデンが green。旧綴り定義でも動作（互換テスト） |
 
 各フェーズは独立に取り込め、どのフェーズで止めても不整合が残らない（P0 だけでも
