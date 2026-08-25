@@ -227,35 +227,52 @@ read の保証を prompt のお願いへ戻してまで編集能力を足さな�
 
 **確信度**: 高。
 
-### 3.6 ハーネスは外へ出す。ただし import 委譲ではなく本文の共有で
+### 3.6 ハーネスは外へ出す。行き着いた形は import 委譲
 
 **判断**: `toolloop`（限定 4 ツール契約）と `statemachine`（状態遷移 + 出力契約）を
 `agentcore.harness` へ移し、`agent-herd harness …` から tmux もデーモンも無しに回せるようにする。
-`agent-loop` の従来コマンドは 1 バイトも変えない。**両者は本文を `_toolloop_body.py` /
-`_statemachine_body.py` の 1 か所で共有し、それぞれの名前空間へ exec する。**
+**本文の置き場はこの 2 モジュールだけ**で、`agent_loop/{toolloop,statemachine}.py` は
+そこへ委譲するだけの層になった。`agent-loop` の argv・出力・証跡は変えない。
 
 **文脈**: 2 つのハーネスはゴール非依存の汎用実装として書かれているのに、agent_loop の
 exec 合成断片（単体 import 不可）だったので、agent-loop のデーモン一式を介さないと使えなかった。
 「aider を statemachine で 1 回だけ回したい」が表せない。
 
+**たどった順（3 段。各段が次の段の前提を作った）**:
+
+| 段 | 形 | 解けたこと | 残ったこと |
+|---|---|---|---|
+| 1 移植 | 逐語コピー 2 つ + AST パリティテスト | tmux 無しで回る（目的の達成）。agent-loop を 1 バイトも触らない | 写しが 2 つ |
+| 2 本文の共有 | `_toolloop_body.py` をデータとして両者が exec | 写しが消えた。agent-loop のテストは 1 行も変えずに通る | exec という遠回り |
+| 3 委譲 | agent_loop は `import` するだけ | 遠回りも消えた。traceback と `inspect.getsource` が本文を直に指す | テストの綴りを書き替えた |
+
+**段 2 から段 3 へ動かせた理由**は 1 つ。段 2 の時点で「import 委譲にできない」と書いた根拠は
+**テストだけ**だった——agent-loop のテストが `mock.patch.object(agent_loop, "_tl_run_agent")` と
+共有名前空間を差し替えており（実測 63 箇所・6 ファイル）、import 委譲すると関数の
+`__globals__` が agentcore 側になってその差し替えが効かなくなる。本文が共有名前空間から
+借りていた名前は stdlib を除くと 4 つだけで、そのうち host 固有の 2 つは既に
+`set_hooks` の継ぎ目になっていた。つまり残っていたのは**テストの引っ越し**であり、
+それを済ませれば委譲できる。
+
 **却下した選択肢**:
-- *`agent_loop` から `agentcore.harness` を import して委譲する* — **これはできない。**
-  agent-loop のテストは `mock.patch.object(agent_loop, "_tl_run_agent")` のように
-  **共有名前空間を差し替える**（実測 57 箇所・6 ファイル）。import 委譲すると関数の
-  `__globals__` が agentcore 側になり、その差し替えが効かなくなる。しかも「パッチが当たらない」
-  は静かな失敗で、テストが本物の CLI を起動しにいく形で出る。
-- *逐語コピーを 2 つ持ち、AST パリティテストで縛る* — 移植の段（段 1）ではこれを採り、
-  agent-loop を 1 バイトも触らずに目的（tmux 無しで回る）を先に達成した。ただし写しは
-  写しなので、段 2 で本文 1 か所へ畳んだ。パリティテストは「本文が 1 か所であること」を
-  縛る `test_harness_shared_body.py` へ作り替えた。
+- *委譲層で `_tl_*` / `_sm_*` を共有名前空間へ張り直す（互換層）* — **却下**。張ると古い
+  `mock.patch.object(agent_loop, "_tl_run_agent")` が**成功したのに効かない**——本物の CLI を
+  起動しにいく静かな失敗——になる。張らなければ `AttributeError` で大声で落ちる。移行の
+  危険を「静か」から「うるさい」へ倒すのが、この 1 行の設計判断である。
+- *ハーネスの単体テストを agent-loop 側に残す* — 却下。本文が agentcore にあるのにテストが
+  agent-loop にあると、agentcore を単体で回したときハーネスの振る舞いが誰にも見られない。
+  純粋なハーネスのテスト（94 件）は `agentcore/tests/` へ移し、agent-loop に残したのは
+  **継ぎ目のテスト**（委譲が繋がっているか・記帳が台帳へ着くか）だけにした。
 - *移植先が agent-loop の台帳へも書く* — 既定を「何もしない / None」にした。移植先が黙って
   他人の台帳へ書くより、書かないほうを既定にする。記帳と control 解決は
   `harness.set_hooks` で agent-loop 側が差し込む（差し込み忘れると台帳が静かに空になるので、
   これもテストで縛る）。
 
-**トレードオフ**: exec による本文共有は「普通の import」より読みにくい。ただし exec 合成は
-agent_loop 自身の既存の作法（`__init__.py` が断片を順に exec する）なので、新しい仕組みを
-持ち込んではいない。結果として agent-loop の 554 テストが 1 行も変えずに通った。
+**トレードオフ**: 本文が `toolloop` / `statemachine` の 2 モジュールに分かれ、後者は前者の
+名前を import して使う。そのため「どちらの名前空間を差し替えれば効くか」は綴りでは決まらず、
+**その名前を読む関数がどちらにあるか**で決まる（`_sm_run_control` の実体は toolloop の関数）。
+間違えても mock は成功するので、判断をテストのたびにやらせない——`patch_harness` が
+「その名前を持つモジュール全部」を差し替える形で 1 か所に閉じている。
 
 `ollama_loop`（`--tools`）と `harness.toolloop` は**統合しない**。前者は ollama 素体に bash 1 つを
 与える自由反復、後者は single-shot CLI へ read_files / write_files / run / final の 4 つだけを

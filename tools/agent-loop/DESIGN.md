@@ -355,7 +355,7 @@ managed Kiro complete eventへの互換変換だけを行い、SlotMonitorの既
 `PeriodicScheduler._set_entries()` の `normalized` 辞書にフィールドを追加し、`_run_loop()` で参照する。`agent-loop.yaml.example` にもドキュメントを追記すること。型違反は既定へ倒さず `ValueError` で起動を止める（他の entry 検証と同じ fail fast）。トップレベル設定の既定をエントリで上書きさせたい場合は、未指定を `None` のまま残して `false` と区別する（`acceptance_judge` がこの形）。
 
 ### 受入条件の層を触る
-機械層（`acceptance_paths` / `acceptance_evidence_errors`）と判定層（`judge_acceptance`）は `toolloop.py` にある。機械層はバッククォート内のプロジェクト内パスだけを LLM を介さず照合し、判定層はそれ以外の自然文を読み取り専用の検証エージェントへ回す。判定層は opt-in（`acceptance_judge` / `run --judge`）で、**判定できなかったものは fail** に倒す規約。どちらの層が検証したかは結果の `verifiedBy` に出す——`verified: true` へ潰すと、ファイル指紋で見たのかモデルが読んで良しと言ったのかが後から分からなくなる。
+機械層（`acceptance_paths` / `acceptance_evidence_errors`）と判定層（`judge_acceptance`）は **agent-loop には無い**。実装は `agentcore/harness/toolloop.py`（agent-herd と共有する 1 実装）で、`agent_loop/toolloop.py` はそこへ委譲するだけの層である——直すのも、テストで差し替えるのも agentcore 側。機械層はバッククォート内のプロジェクト内パスだけを LLM を介さず照合し、判定層はそれ以外の自然文を読み取り専用の検証エージェントへ回す。判定層は opt-in（`acceptance_judge` / `run --judge`）で、**判定できなかったものは fail** に倒す規約。どちらの層が検証したかは結果の `verifiedBy` に出す——`verified: true` へ潰すと、ファイル指紋で見たのかモデルが読んで良しと言ったのかが後から分からなくなる。
 
 ### hooks を追加・変更する
 - フックは `check() -> str | None` を実装する。`check()` は scheduler スレッド内で同期実行されるため、ネットワーク呼び出しには短い timeout を設定しブロックを避けること。

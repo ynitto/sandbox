@@ -253,10 +253,11 @@ agent-herd harness run PROMPT… [--agent-cli NAME] [--model M]
 実体は `agentcore.harness`。**tmux もデーモンも設定ファイルも要らない**——tmux はコマンドを
 走らせて様子を見せる手段であって実行契約の一部ではない、という元の設計注記がそのまま効く。
 
-**本文は 1 か所にしかない。** `agentcore/harness/_toolloop_body.py` と
-`_statemachine_body.py` が正典で、`agentcore.harness.toolloop` / `.statemachine` と
-`agent_loop` の合成断片が**同じ本文をそれぞれの名前空間へ exec する**（import 委譲にしない
-理由と、それを縛るテストは §12）。
+**本文は 1 か所にしかない。** `agentcore/harness/toolloop.py` と
+`agentcore/harness/statemachine.py` が正典で、`agent_loop/{toolloop,statemachine}.py` は
+そこへ**委譲するだけの層**である（写しも、かつての共有データファイルも無い。経緯と
+それを縛るテストは §12）。agent-loop 側は `_tl_*` / `_sm_*` を張り直さないので、
+ハーネスの名前を差し替えたいテストは `agentcore.harness.*` へ当てる。
 
 移植先の既定は agent-loop 経由と 2 点だけ違う（§6 と同じく「黙って書かない」を既定にした）:
 
@@ -570,8 +571,8 @@ readline の行指向表示へ戻る。全画面の alternate screen は使わ�
 
 `agents/*.json` のローカル定義（`aider` / `ollama` の 6 起動形 / `opencode`）は
 `["agent-herd", "<sub>", …]` へ正典化済み。クラウド 5 件は §1 のとおり素の CLI を指したまま。
-ハーネスの本文統合（agent_loop の断片を `agentcore.harness` と共有する形へ）も実装済みで、
-写しは残っていない。
+ハーネスは `agentcore.harness` が唯一の実装で、agent-loop はそこへ委譲する（写しも共有
+データファイルも残っていない）。
 
 ---
 
@@ -587,12 +588,13 @@ readline の行指向表示へ戻る。全画面の alternate screen は使わ�
 | `harness` の引数解釈と種別の弁別 | 同 `HarnessTests` |
 | 環境補完が 1 実装であること（`is` で同一性） | `agentcore/tests/test_hostenv.py` |
 | 環境補完の振る舞い（相互補完・プロキシ迂回・両表記の一致） | 同 `CompleteOllamaEnvTests` |
-| ハーネスの本文が 1 か所であること・共有名前空間の意味論 | `agentcore/tests/test_harness_shared_body.py` |
+| ハーネスが単独で立つこと・本文が 1 か所であること・継ぎ目の既定 | `agentcore/tests/test_harness_standalone.py` |
+| ハーネスの振る舞い（ステートマシン完走・限定ツール契約・一時障害リトライ・timeout fallback） | `agentcore/tests/test_harness_{statemachine,control_retry,agent_timeout}.py` |
 | 同梱定義の実効 argv（旧綴りが profile として解けることを含む） | `agentcore/tests/test_agentcli.py::TestBundledGolden` |
 | 用途別の起動形が 1 エージェントの profile であること | `tests/test_agentcli_jsonvariant.py` |
 | ollama の引数解釈・ループ・文脈・スキル・再生・TUI | `agentcore/tests/test_ollama_*.py` |
 | aider の policy 合成と usage 抽出 | `agentcore/tests/test_aider_adapter.py` |
-| ハーネス移設が挙動を変えていないこと | agent-loop の `test_statemachine.py`（無改変で通る） |
+| agent-loop → ハーネスの委譲（別名を張らない・サブコマンドが落ちる・記帳が台帳へ着く） | agent-loop の `test/test_harness_delegation.py` |
 
 テストルートは 2 つある（`agentcore/tests/` と `agentcore/agentcore/tests/`）。CI は両方を
 明示して回す:

@@ -7,6 +7,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-loop / agent-herd: ハーネスを agentcore へ委譲し、本文の共有（exec）をやめる
+
+- `toolloop` / `statemachine` の本文は `agentcore/harness/{toolloop,statemachine}.py`
+  だけに置き、`agent_loop/{toolloop,statemachine}.py` は**そこへ委譲するだけの層**にした。
+  これまでは本文をデータファイル（`_toolloop_body.py` / `_statemachine_body.py`）にして
+  agent_loop と agentcore の両方が exec しており、その遠回りが要ったのは agent-loop の
+  テストが共有名前空間を差し替えていたからだった。テストを移したので import で足りる。
+- 委譲層は `_tl_*` / `_sm_*` を**張り直さない**。張ると古い
+  `mock.patch.object(agent_loop, "_tl_run_agent")` が「成功したのに効かない」静かな失敗に
+  なる（本物の CLI を起動しにいく）。張らないので `AttributeError` で大声で落ちる。
+- 純粋なハーネスのテスト 94 件を `agentcore/tests/test_harness_{statemachine,control_retry,
+  agent_timeout}.py` へ移設。差し替えの作法は `agentcore/tests/harnesspatch.py` の
+  `patch_harness` に閉じた（本文は 2 モジュールに分かれ、どちらを差し替えれば効くかは
+  綴りではなく「その名前を読む関数がどちらにあるか」で決まるため）。agent-loop 側には
+  継ぎ目のテスト（`test/test_harness_delegation.py`）だけを残した——委譲が繋がっているか、
+  記帳フックが呼び出し時に引かれるか、実測トークンが台帳へ着くか。
+- `agent-loop run` / `agent-loop statemachine` / `agent-herd harness …` の argv・出力・
+  証跡は不変。traceback と `inspect.getsource` は本文のファイルを直に指すようになった。
+- `tools/agent-loop/install.sh` は agentcore の同梱を**必須**にした（欠けると zipapp は
+  起動時点で `ModuleNotFoundError` になるのに「任意」と書いてあり、実態と食い違っていた）。
+
 ### agent-dashboard: 定型業務の必須入力から、実行器が注入する変数を外す
 
 - `stateMachineInputSpec` が、statemachine 実行器の生成する変数まで「ユーザー入力」として

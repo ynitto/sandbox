@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """判定層: パスを含まない受入条件を検証エージェントに判定させる（opt-in・fail-closed）。"""
+import contextlib
 import json
 import os
 import sys
@@ -11,6 +12,11 @@ from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import agent_loop as al  # noqa: E402
+# ハーネスの実装は agentcore（agent-herd と共有する 1 実装）。agent_loop は
+# 委譲するだけなので、差し替えも参照もそちらへ向ける。sys.path は
+# agent_loop の import が通してくれる。
+from agentcore.harness import toolloop as tl  # noqa: E402
+from agentcore.tests.harnesspatch import patch_harness  # noqa: E402
 
 
 class AcceptanceProseTests(unittest.TestCase):
@@ -19,26 +25,26 @@ class AcceptanceProseTests(unittest.TestCase):
     def test_path_criteria_are_left_to_the_machine_layer(self):
         with tempfile.TemporaryDirectory() as tmp:
             self.assertEqual(
-                al.acceptance_prose(["`reports/digest.md` が更新されている"], tmp), [])
+                tl.acceptance_prose(["`reports/digest.md` が更新されている"], tmp), [])
 
     def test_prose_criteria_are_collected(self):
         with tempfile.TemporaryDirectory() as tmp:
             self.assertEqual(
-                al.acceptance_prose(["レポートに前週比が含まれている"], tmp),
+                tl.acceptance_prose(["レポートに前週比が含まれている"], tmp),
                 ["レポートに前週比が含まれている"])
 
     def test_command_names_are_not_paths(self):
         """地の文のコマンド名（`agent-audit`）はパスではないので判定層へ回る。"""
         with tempfile.TemporaryDirectory() as tmp:
             self.assertEqual(
-                al.acceptance_prose(["`agent-audit` の出力に警告が無い"], tmp),
+                tl.acceptance_prose(["`agent-audit` の出力に警告が無い"], tmp),
                 ["`agent-audit` の出力に警告が無い"])
 
     def test_mixed_criteria_split_by_layer(self):
         with tempfile.TemporaryDirectory() as tmp:
             criteria = ["`a/b.md` がある", "文章が日本語である"]
-            self.assertEqual(al.acceptance_prose(criteria, tmp), ["文章が日本語である"])
-            self.assertEqual(len(al.acceptance_paths(criteria, tmp)), 1)
+            self.assertEqual(tl.acceptance_prose(criteria, tmp), ["文章が日本語である"])
+            self.assertEqual(len(tl.acceptance_paths(criteria, tmp)), 1)
 
 
 def _agent(stdout="", status=0, error="", variant=None):
@@ -59,8 +65,8 @@ class JudgeAcceptanceTests(unittest.TestCase):
         self.log = str(Path(self.tmp) / "log.jsonl")
 
     def _run(self, criteria, exec_result, variant=None):
-        with mock.patch.object(al, "_tl_exec_argv", return_value=exec_result):
-            return al.judge_acceptance(criteria, cwd=self.tmp, agent=_agent(variant=variant),
+        with patch_harness("_tl_exec_argv", return_value=exec_result):
+            return tl.judge_acceptance(criteria, cwd=self.tmp, agent=_agent(variant=variant),
                                        log_file=self.log, output="やりました", files=[])
 
     def _ok(self, stdout):
@@ -95,8 +101,8 @@ class JudgeAcceptanceTests(unittest.TestCase):
         self.assertIn("判定できませんでした", errors[0])
 
     def test_no_criteria_is_a_noop(self):
-        with mock.patch.object(al, "_tl_exec_argv") as ex:
-            self.assertEqual(al.judge_acceptance([], cwd=self.tmp, agent=_agent(),
+        with patch_harness("_tl_exec_argv") as ex:
+            self.assertEqual(tl.judge_acceptance([], cwd=self.tmp, agent=_agent(),
                                                  log_file=self.log, output="", files=[]), [])
         ex.assert_not_called()
 
@@ -107,7 +113,7 @@ class JudgeAcceptanceTests(unittest.TestCase):
             raise RuntimeError("定義が壊れています")
 
         agent["agentcli"].headless_cmd = _boom
-        errors = al.judge_acceptance(["A である"], cwd=self.tmp, agent=agent,
+        errors = tl.judge_acceptance(["A である"], cwd=self.tmp, agent=agent,
                                      log_file=self.log, output="", files=[])
         self.assertEqual(len(errors), 1)
         self.assertIn("起動できませんでした", errors[0])
@@ -117,20 +123,20 @@ class JudgeAgentSelectionTests(unittest.TestCase):
     def test_verify_variant_is_used_when_declared(self):
         """作業した当人に採点させない。どのモデルで検証するかは定義側が決める。"""
         agent = _agent(variant={"agent_cli": "ollama-verify", "model": "gemma4:12b"})
-        with mock.patch.object(al, "_tl_resolve_agent",
-                               return_value={"cli": "ollama-verify"}) as resolve:
-            judge = al._tl_judge_agent(agent, "/tmp")
+        with patch_harness("_tl_resolve_agent",
+                           return_value={"cli": "ollama-verify"}) as resolve:
+            judge = tl._tl_judge_agent(agent, "/tmp")
         self.assertEqual(judge["cli"], "ollama-verify")
         resolve.assert_called_once_with("ollama-verify", "gemma4:12b", "/tmp")
 
     def test_no_variant_keeps_the_worker(self):
         agent = _agent(variant=None)
-        self.assertIs(al._tl_judge_agent(agent, "/tmp"), agent)
+        self.assertIs(tl._tl_judge_agent(agent, "/tmp"), agent)
 
     def test_broken_variant_declaration_does_not_kill_the_run(self):
         agent = _agent()
         agent["agentcli"].resolve_variant = mock.Mock(side_effect=AttributeError("x"))
-        self.assertIs(al._tl_judge_agent(agent, "/tmp"), agent)
+        self.assertIs(tl._tl_judge_agent(agent, "/tmp"), agent)
 
 
 class ApplyJudgeTests(unittest.TestCase):
@@ -140,8 +146,8 @@ class ApplyJudgeTests(unittest.TestCase):
         self.tmp = tempfile.mkdtemp()
 
     def _apply(self, criteria, judge, errors=()):
-        with mock.patch.object(al, "judge_acceptance", return_value=list(errors)) as j:
-            out = al._tl_apply_judge(criteria, cwd=self.tmp, agent=_agent(),
+        with patch_harness("judge_acceptance", return_value=list(errors)) as j:
+            out = tl._tl_apply_judge(criteria, cwd=self.tmp, agent=_agent(),
                                      log_file="/dev/null", output="", files=[], judge=judge)
         return out, j
 
@@ -173,18 +179,18 @@ class VerifiedByTests(unittest.TestCase):
         self.tmp = tempfile.mkdtemp()
 
     def test_machine_only(self):
-        self.assertEqual(al._tl_verified_by(["`a/b.md` がある"], self.tmp, False), "machine")
+        self.assertEqual(tl._tl_verified_by(["`a/b.md` がある"], self.tmp, False), "machine")
 
     def test_judge_only(self):
-        self.assertEqual(al._tl_verified_by(["前週比がある"], self.tmp, True), "judge")
+        self.assertEqual(tl._tl_verified_by(["前週比がある"], self.tmp, True), "judge")
 
     def test_both(self):
         self.assertEqual(
-            al._tl_verified_by(["`a/b.md` がある", "前週比がある"], self.tmp, True),
+            tl._tl_verified_by(["`a/b.md` がある", "前週比がある"], self.tmp, True),
             "machine+judge")
 
     def test_neither(self):
-        self.assertEqual(al._tl_verified_by(["前週比がある"], self.tmp, False), "")
+        self.assertEqual(tl._tl_verified_by(["前週比がある"], self.tmp, False), "")
 
 
 class SchedulerOptInTests(unittest.TestCase):
@@ -233,8 +239,10 @@ class RunGoalIntegrationTests(unittest.TestCase):
     def setUp(self):
         self.dir = os.path.realpath(tempfile.mkdtemp())
         self.log = os.path.join(self.dir, "log.jsonl")
-        self.real_run_agent = al._tl_run_agent
-        self.addCleanup(setattr, al, "_tl_run_agent", self.real_run_agent)
+        # ハーネスの差し替えは agentcore 側のモジュールへ当てる（agent_loop は委譲層で、
+        # そこへ setattr しても本文には届かない）。後始末は ExitStack に任せる。
+        self._harness = contextlib.ExitStack()
+        self.addCleanup(self._harness.close)
 
         def fake(agent, prompt, *, cwd, readonly, read_files, files, log_file):
             if not readonly and files:
@@ -243,11 +251,11 @@ class RunGoalIntegrationTests(unittest.TestCase):
                 return "wrote"
             return '{"type":"write_files","paths":["out.md"]}'
 
-        al._tl_run_agent = fake
+        self._harness.enter_context(patch_harness("_tl_run_agent", side_effect=fake))
 
     def _run(self, *, judge, judge_errors=()):
-        with mock.patch.object(al, "judge_acceptance", return_value=list(judge_errors)):
-            return al.run_goal(
+        with patch_harness("judge_acceptance", return_value=list(judge_errors)):
+            return tl.run_goal(
                 goal="out.md を書く", cwd=self.dir, agent={}, log_file=self.log,
                 acceptance=["`out.md` が更新されている", "本文が日本語である"],
                 judge=judge)
