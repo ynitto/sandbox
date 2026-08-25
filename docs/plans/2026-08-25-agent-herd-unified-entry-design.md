@@ -1,4 +1,4 @@
-# agent-run — ローカル実行系の統合入口とハーネス統合の設計
+# agent-herd — LAN の ollama を動かす統合入口とハーネス統合の設計
 
 > 作成 2026-08-25
 > 対象: `tools/agent-tools/agentcore`（aider_adapter / ollama_adapter / ollama_loop / ollama_tui /
@@ -72,13 +72,14 @@ agent-opencode）を揃えること」と注記している——C7（写しを�
 
 ### ゴール
 
-- **G1**: 統合入口 `agent-run`（新 CLI・zipapp 1 本）。`agent-aider` / `agent-ollama` /
+- **G1**: 統合入口 `agent-herd`（新 CLI・zipapp 1 本。命名の根拠は §9.1 — LAN に飼った
+  ollama の群れを 1 つの入口から束ねて動かす）。`agent-aider` / `agent-ollama` /
   `agent-opencode` は同一 zipapp への別名（argv[0] ディスパッチ）となり、単独でも従来どおり
   **argv・stdout/stderr 契約完全互換**で使える。
-- **G2**: 対話型の統一コマンド `agent-run chat [<cli>] [--model M]`。定義の `interactive`
+- **G2**: 対話型の統一コマンド `agent-herd chat [<cli>] [--model M]`。定義の `interactive`
   ブロックを解決して起動する（ollama は内蔵 TUI、aider は policy つき対話起動）。
 - **G3**: `toolloop` / `statemachine` を `agentcore.harness` へ移設し、
-  `agent-run harness …` から単独実行できる。agent-loop は薄い委譲で従来コマンドを維持。
+  `agent-herd harness …` から単独実行できる。agent-loop は薄い委譲で従来コマンドを維持。
 - **G4**: 環境補完・adapter 共通処理を `agentcore.hostenv`（仮称）1 実装へ集約。
 - **G5**: `agents/*.json` の `command` を統合入口経由の綴りへ正典化し、ファミリーの全経路
   （エンジン・dashboard・loop）が同じ 1 バイナリを踏む。
@@ -90,7 +91,7 @@ agent-opencode）を揃えること」と注記している——C7（写しを�
   評価 §8.3 の境界（tool-loop を三重化しない——bash 付き反復の所有者は agent-ollama）を
   維持する。統合するのは**置き場と入口**だけ。
 - **N2**: クラウド CLI（claude / codex / kiro / copilot / cursor）の adapter 化はしない。
-  それらは定義ファイルだけで足りており、`agent-run exec`（§4.6）が定義経由で呼べれば十分。
+  それらは定義ファイルだけで足りており、`agent-herd exec`（§4.6）が定義経由で呼べれば十分。
 - **N3**: 新しい汎用 REPL は作らない。`chat` は既存の対話面（ollama_tui / aider 対話 /
   interactive ブロック）への**ルーティング**であり、対話 UI の新実装ではない。
 - **N4**: `eval/` / `e2e/` の測定基盤の再編はしない（replay の入口統合のみ行う）。
@@ -103,7 +104,7 @@ agent-opencode）を揃えること」と注記している——C7（写しを�
 
 ```
                  ~/.local/bin/
-                   agent-run      ┐
+                   agent-herd     ┐
                    agent-aider    ├─ 同一 zipapp（hardlink / コピー）
                    agent-ollama   │
                    agent-opencode ┘
@@ -111,7 +112,7 @@ agent-opencode）を揃えること」と注記している——C7（写しを�
                         ▼  __main__.py: basename(argv[0]) でディスパッチ
         ┌───────────────┼──────────────────────────────┐
         ▼               ▼                              ▼
-  agentcore.runcli   adapters                      harness
+  agentcore.herdcli  adapters                      harness
   （サブコマンド面）   aider_adapter / ollama_adapter   toolloop / statemachine
         │            / opencode_adapter               （agent_loop から移設）
         └────────── agentcore 共通層 ──────────────────┘
@@ -120,11 +121,39 @@ agent-opencode）を揃えること」と注記している——C7（写しを�
              ollama_loop / ollama_tui / ollama_replay / ollama_context …
 ```
 
+入口から実行先までを 1 枚で見ると、**分岐は `argv[0]` の 1 回だけ**で、あとは定義が決める:
+
+```
+  agent-herd    agent-aider   agent-ollama   agent-opencode
+      └─────────────┴──────┬──────┴───────────────┘
+                           ▼  basename(argv[0]) — 実体は 1 ファイル
+      ┌────────────────────────────────────────────────┐
+      │ サブコマンド面                                    │
+      │  aider │ ollama │ opencode │ chat │ harness │ defs │ status/follow
+      └────────────────────┬───────────────────────────┘
+                           ▼  CLI 名と用途を渡す
+      ┌────────────────────────────────────────────────┐
+      │ agentcore.agentcli — 定義の唯一のローダ            │
+      │  load_cli() │ resolve_variant(cli, purpose) │ headless_cmd() → argv
+      └──────────┬─────────────────────────┬───────────┘
+                 ▼ argv を組む              ▼
+      ┌──────────────────────────┐  ┌──────────────────┐
+      │ cost 0 — LAN の ollama    │  │ cost 1 — 雲の CLI │
+      │  aider / ollama /         │  │  claude / codex /│
+      │  ollama-json / -list /    │  │  kiro / copilot /│
+      │  -list-thinking / -read / │  │  cursor          │
+      │  -verify / opencode       │  │                  │
+      └──────────┬───────────────┘  └────────┬─────────┘
+                 ▼                            ▼
+      LAN 上の ollama サーバ（別 PC 可）      各社の API
+      OLLAMA_API_BASE / NO_PROXY を補完       個人の資格情報のまま
+```
+
 決定は 3 つ:
 
-1. **入口は新名 `agent-run`**（名前の検討は §9）。busybox と同じく、1 つの zipapp を
+1. **入口は新名 `agent-herd`**（名前の検討は §9）。busybox と同じく、1 つの zipapp を
    複数の名前で置き、`Path(sys.argv[0]).name` でサブコマンドへディスパッチする。
-   `agent-aider …` と `agent-run aider …` は完全に同じコードパスに落ちる。
+   `agent-aider …` と `agent-herd aider …` は完全に同じコードパスに落ちる。
 2. **既存名は互換シムではなく本体そのもの**。別ファイルのラッパを挟まないので、
    「シムだけ古い」という状態が構造的に起きない。argv 契約・stdout/stderr 契約
    （`@agent-usage` / `@agent-context` / 打ち切り封筒）・ログ置き場（`~/.agents/logs/`）は
@@ -147,7 +176,7 @@ basename(argv[0])          解決されるサブコマンド
   agent-aider          →   aider
   agent-ollama         →   ollama
   agent-opencode       →   opencode
-  agent-run            →   argv[1] をサブコマンドとして解釈
+  agent-herd           →   argv[1] をサブコマンドとして解釈
   それ以外（開発時等）   →   argv[1] をサブコマンドとして解釈
 ```
 
@@ -174,9 +203,9 @@ basename(argv[0])          解決されるサブコマンド
 エンジンと dashboard が読むのと同じ `agentcore.agentcli` で解決した結果を人に見せる:
 
 ```bash
-agent-run defs                 # 解決可能な定義の一覧（探索順・variants 込み）
-agent-run defs aider           # aider.json の実効内容と、write/readonly の実効 argv
-agent-run defs --json ollama   # 機械可読
+agent-herd defs                 # 解決可能な定義の一覧（探索順・variants 込み）
+agent-herd defs aider           # aider.json の実効内容と、write/readonly の実効 argv
+agent-herd defs --json ollama   # 機械可読
 ```
 
 「同じ定義ファイルがツールによって別の argv になる」事故（agentcli の存在理由）を、
@@ -185,9 +214,9 @@ agent-run defs --json ollama   # 機械可読
 ### 4.4 `chat` — 対話型の統合入口
 
 ```bash
-agent-run chat                       # 既定: ollama 定義の interactive（内蔵 TUI）
-agent-run chat ollama --model qwen3  # 同上・モデル指定
-agent-run chat aider [--model M]     # aider を対話起動（下記）
+agent-herd chat                       # 既定: ollama 定義の interactive（内蔵 TUI）
+agent-herd chat ollama --model qwen3  # 同上・モデル指定
+agent-herd chat aider [--model M]     # aider を対話起動（下記）
 ```
 
 動作は `agents/<cli>.json` の `interactive` ブロックの解決に一本化する:
@@ -212,12 +241,12 @@ agent-run chat aider [--model M]     # aider を対話起動（下記）
 `agent-aider` / `agent-ollama` は今後も**単体で完結**する: 定義解決は従来どおり
 （aider adapter は定義を読まず argv をそのまま aider へ渡す、ollama adapter は
 `AGENT_OLLAMA_*` と引数だけで動く）。エンジン・ボード・板の存在を前提にしない。
-install も `install.sh --only agent-run` で実行系だけ入れられるようにする（§6）。
+install も `install.sh --only agent-herd` で実行系だけ入れられるようにする（§6）。
 
 ### 4.6 `exec` — 定義経由のヘッドレス実行（P3・任意）
 
 ```bash
-echo '本文' | agent-run exec aider --model gemma4:e4b --readonly --file src/a.py
+echo '本文' | agent-herd exec aider --model gemma4:e4b --readonly --file src/a.py
 ```
 
 エンジンが in-process でやっている「定義 → argv 組み立て → 実行 → usage/エラー分類」を
@@ -255,20 +284,47 @@ tools/agent-loop/agent_loop/statemachine.py  → tools/agent-tools/agentcore/age
 無改修で動く。
 
 tmux の中で「動いている様子が見える」性質は agent-loop の価値なので agent-loop に残る。
-`agent-run harness …` は **tmux なしの素の実行**（stdout/stderr + 証跡ファイル）であり、
+`agent-herd harness …` は **tmux なしの素の実行**（stdout/stderr + 証跡ファイル）であり、
 同じハーネスの 2 つの見せ方であって 2 実装ではない。
 
 ### 5.3 単独実行の口
 
 ```bash
-agent-run harness statemachine --workflow path/to/machine.yaml \
+agent-herd harness statemachine --workflow path/to/machine.yaml \
     --cli aider --model gemma4:e4b [--var k=v …]
-agent-run harness toolloop --cli aider --model gemma4:e4b \
+agent-herd harness toolloop --cli aider --model gemma4:e4b \
     --goal-file goal.md [--max-rounds 8]
 ```
 
 exit code / 打ち切り封筒 / 証跡の形は agent-loop 経由と同一。これにより
 「statemachine を回すためだけに agent-loop のデーモン・tmux・設定ファイルが要る」が消える。
+
+移設しても**判定は 1 か所のまま**である。`run_prompt()`（現 `toolloop.py:1188`）が見るのは
+定義の `headless_autonomy` ただ 1 つで、そこから 2 経路に分かれる:
+
+```
+        agent-herd harness …（agent-loop 経由でも同じ関数を通る）
+                          │
+                          ▼
+            run_prompt() — headless_autonomy を見る【唯一の分岐点】
+                 ┌────────┴────────┐
+       single-shot│                 │tool-loop
+                 ▼                 ▼
+   層3 run_goal()              層2 run_cli_loop()
+   引き具を付ける                引き具を付けない（1 回呼ぶだけ）
+   ┌─────────────────────┐     ┌──────────────────────────┐
+   │ read_files │ write_files │  │ CLI 内部のツールループへ素通し │
+   │ run        │ final       │  └──────────────────────────┘
+   └─────────────────────┘     ollama / ollama-read / opencode  (cost 0)
+   aider / ollama-json /         claude / codex / kiro /
+   ollama-list / -list-thinking  copilot / cursor            (cost 1)
+   / ollama-verify
+   ── 5 件すべて cost 0（LAN の ollama）  ── 雲が通るのはこの経路だけ
+```
+
+**限定 4 ツール契約を受け取る `single-shot` 定義は、現時点で 5 件とも cost 0 のローカル推論**
+である（雲の CLI は 5 件とも `tool-loop` なので層 2 を素通りし、引き具に触れない）。
+この事実が §9 の命名判断の根拠になる。
 
 ### 5.4 2 つのツールループの役割固定（N1 の明文化）
 
@@ -289,7 +345,7 @@ agent-audit が両経路のセッションを同じ読み方で読めるよう�
 
 ## 6. 配布 — install.sh の変更
 
-1. **zipapp を 1 本追加**: `agent-run`（agentcore 全体 + `__main__.py` のディスパッチャ。
+1. **zipapp を 1 本追加**: `agent-herd`（agentcore 全体 + `__main__.py` のディスパッチャ。
    `--with-rich` は従来どおりこの zipapp への同梱に変わる）。
 2. **既存 3 名は同一 zipapp の hardlink**（hardlink 不可の FS ではコピー）で置く:
    `agent-aider` / `agent-ollama` / `agent-opencode`。
@@ -297,7 +353,7 @@ agent-audit が両経路のセッションを同じ読み方で読めるよう�
      できるようになり、環境補完 3 重複製を `agentcore.hostenv` 1 実装へ畳める。
    - `tools/opencode/agent-opencode.py` は `agentcore/opencode_adapter.py` へ移設し、
      `tools/opencode/` には委譲シム（既存 install.sh の呼び出しパス維持）とテストを残す。
-3. `install.sh --only agent-run` を追加（実行系だけ入れる。エンジン不要のノード向け）。
+3. `install.sh --only agent-herd` を追加（実行系だけ入れる。エンジン不要のノード向け）。
 4. agent-loop zipapp は従来どおり別 build だが、同梱する agentcore に harness が含まれる
    （§5）。**同時に入れ直す**運用は不変。
 5. 環境補完の正典 `agentcore/hostenv.py`（`_complete_ollama_env` + profile 取り込み）を
@@ -314,11 +370,11 @@ agent-audit が両経路のセッションを同じ読み方で読めるよう�
 1. `agents/*.json` の `command` 先頭を統合入口の綴りへ正典化する:
 
    ```
-   aider.json:        ["agent-aider", …]      → ["agent-run", "aider", …]
-   ollama*.json:      ["agent-ollama", …]     → ["agent-run", "ollama", …]
-   opencode.json:     ["agent-opencode"]      → ["agent-run", "opencode"]
-   ollama.json interactive: ["agent-ollama", "--tui", …] → ["agent-run", "chat" 相当の綴りにはしない。
-                            実行契約は従来どおり adapter 直（"agent-run", "ollama", "--tui", …）]
+   aider.json:        ["agent-aider", …]      → ["agent-herd", "aider", …]
+   ollama*.json:      ["agent-ollama", …]     → ["agent-herd", "ollama", …]
+   opencode.json:     ["agent-opencode"]      → ["agent-herd", "opencode"]
+   ollama.json interactive: ["agent-ollama", "--tui", …] → ["agent-herd", "chat" 相当の綴りにはしない。
+                            実行契約は従来どおり adapter 直（"agent-herd", "ollama", "--tui", …）]
    ```
 
    `interactive.command` は tmux から叩かれる契約（ready/busy 判定つき）なので、
@@ -327,11 +383,36 @@ agent-audit が両経路のセッションを同じ読み方で読めるよう�
 
 2. これにより **agent-project / agent-flow / agent-amigos / agent-audit / agent-loop /
    agent-dashboard の全経路が同じ 1 バイナリを踏む**。process listing・版の突き合わせ・
-   更新漏れの検出が「agent-run 1 本の版を見る」に単純化される。
+   更新漏れの検出が「agent-herd 1 本の版を見る」に単純化される。
 3. argv0 ディスパッチにより**旧綴りの定義も動き続ける**ので、定義の書き替えは互換リスク
    ゼロの正典化であり、ロールバックは定義を戻すだけ。
 4. agent-dashboard の JS ローダのゴールデンテスト（同じ定義から同じ argv）は、定義変更と
    同じ PR で期待値を更新する。
+
+### 7.1 variant は入口を増やさない
+
+variant を「入口の分岐」と読むと設計を誤る。`resolve_variant()` が返すのは**別の定義名**で
+あって別の実行系ではない。返された定義は同じローダを通り、同じ zipapp を指す argv になる:
+
+```
+  agent-herd ──▶ resolve_variant(ollama, split) ──▶ ollama-list.json ──▶ --format array
+      ▲                variants["split"] を引くだけ      別の定義名が返る          │
+      └──────────────────────────────────────────────────────────────────────┘
+         組み上がった argv は同じ zipapp を指す — 入口は増えず、定義だけが増える
+```
+
+だから役割をいくら増やしても入口は 1 本のままで、増えるのは `agents/*.json` だけ
+（エンジンの改修は要らない）。同じことが aider 側でも既に起きている:
+
+```
+  aider.json（single-shot・variants 13 役割）
+      ├─ planner / judge / review / plan / …  ──▶ ollama-json
+      └─ split                                ──▶ ollama-list-thinking
+```
+
+**「aider を入口にして variant を統合する」は定義層で既に済んでいる**——これを adapter 層へ
+複製すると振り分けの判断が定義と実装の 2 か所に割れる（§9 案 A の不採用理由）。統合すべきは
+入口と配布であって、振り分けの判断ではない。
 
 ---
 
@@ -340,8 +421,8 @@ agent-audit が両経路のセッションを同じ読み方で読めるよう�
 | フェーズ | 内容 | 受入条件 |
 |---|---|---|
 | **P0 配布統合** | `hostenv` 抽出・opencode/aider adapter の agentcore 移設・busybox zipapp・install.sh 変更 | 既存 3 名の argv/出力契約のゴールデンが不変で通る。env parity テストが「1 実装参照」を縛る形へ置換される |
-| **P1 入口面** | `agent-run` サブコマンド面（aider/ollama/opencode/defs/chat）・aider.json の interactive ブロック | `agent-run aider …` と `agent-aider …` が同一結果。`chat aider` の環境仕込みがヘッドレスと同一実装を通ることをテストで縛る |
-| **P2 ハーネス移設** | toolloop/statemachine → `agentcore.harness`・agent-loop 委譲・`agent-run harness …` | `test_statemachine.py` 等 agent-loop の既存テストが無改変で通る。tmux なし単独実行の証跡形が agent-loop 経由と一致 |
+| **P1 入口面** | `agent-herd` サブコマンド面（aider/ollama/opencode/defs/chat）・aider.json の interactive ブロック | `agent-herd aider …` と `agent-aider …` が同一結果。`chat aider` の環境仕込みがヘッドレスと同一実装を通ることをテストで縛る |
+| **P2 ハーネス移設** | toolloop/statemachine → `agentcore.harness`・agent-loop 委譲・`agent-herd harness …` | `test_statemachine.py` 等 agent-loop の既存テストが無改変で通る。tmux なし単独実行の証跡形が agent-loop 経由と一致 |
 | **P3 正典化・任意** | `agents/*.json` の command 書き替え + dashboard ゴールデン更新・`exec`・（任意）stub の取り込み | 全エンジンの結合テスト・dashboard ゴールデンが green。旧綴り定義でも動作（互換テスト） |
 
 各フェーズは独立に取り込め、どのフェーズで止めても不整合が残らない（P0 だけでも
@@ -372,17 +453,56 @@ agent-audit が両経路のセッションを同じ読み方で読めるよう�
 配布を per-CLI zipapp × 4 に増やす案。「片方だけ古い」不整合クラスが残り、install.sh の
 build 行列が増えるだけなので採らない。busybox 型なら版は構造的に 1 つ。
 
-### 案 D（採用）: 新名 `agent-run` の busybox 型統合
+### 案 D（採用）: 新名 `agent-herd` の busybox 型統合
 
-名前は `agent-run` とする。`agent`（裸）は衝突・検索性が悪く、`agent-local` は
-statemachine ハーネスが定義経由で任意 CLI（クラウド含む）を回せるため嘘になる。
-`agent-run` はリポジトリ内で未使用（grep 確認済み）で、「実行系の入口」を過不足なく言う。
+busybox 型そのものは案 A〜C の弱点を構造的に消す。残るのは名前で、これは §9.1 で決める。
+
+### 9.1 入口の名前 — 何を言うべきか
+
+この入口が抱える 3 つの adapter は**すべて LAN 上の ollama を叩く**——`agent-aider` は
+`ollama_chat/gemma4:e4b` へ、`agent-opencode` は「別 PC の ollama」へ（同ファイルの docstring）、
+`agent-ollama` は言うまでもない。名前はここを言うべきである。
+
+しかも「localhost」ではなく「LAN」であることが実装に効いている。3 adapter がそろって
+`OLLAMA_API_BASE` / `NO_PROXY` の補完を持つのは、推論サーバが別マシンに居て、補完を怠ると
+プロキシへ流れて 504 になるからだ（この補完の 3 重複製こそ §1.1 で畳もうとしているもの）。
+名前が**ネットワークの向こう側**を含意できると、この性質と噛み合う。
+
+| 候補 | 由来 | 長所 | 弱点 |
+|---|---|---|---|
+| **`agent-herd`（採用）** | 群れ／群れを御す | 名詞と動詞を兼ね「動かす」が名前に入る。**引き具（ハーネス）と喩えが繋がる**。短く、リポジトリ内で未使用 | 「LAN」を字面では言わない |
+| `agent-farm` | 農場 ＋ server farm | 「LAN 上の計算機群」が技術語としてそのまま通る二重の意味 | 規模が大きく響く（実体は 1〜2 台） |
+| `agent-pasture` | 放牧地 | 「手元に放してある群れ」の情景が最も明確 | 7 文字。毎日打つ名前としては長い |
+| `agent-lan` | そのまま LAN | 最も直接的で誤読の余地がない | ollama も「動かす」も言わない。汎用インフラ語と紛れる |
+| `agent-rig` | 推論リグ | 手元のハードウェアで回している感触。短い | llama の含意なし。mining rig を連想させる |
+| `agent-barn` | 納屋 | 短く記憶に残る | 「仕舞う場所」であって「動かす」ではない |
+| `agent-onprem` | オンプレミス | 意味は正確 | 企業 SaaS の語。個人 PC で回す実態と語感が合わない |
+| `agent-run`（前案） | 実行系の入口 | 中立で、どの経路にも嘘にならない | 「LAN の ollama を動かす」という一番言うべきことを言わない |
+
+`agent-herd` を採る決め手は、**喩えが実装の分岐と一致していること**である。力の弱い群れには
+引き具を付けて荷を引かせ、自力で走れる個体には付けない——これは比喩ではなく、`run_prompt()`
+が `headless_autonomy` で実際に行っている分岐そのもの（§5.3 の図）。名前とコードが同じ
+モデルを指しているので、読む側の頭の中の像が実装からずれない。
+
+なお `agent`（裸）は衝突・検索性が悪く、`agent-local` は「localhost」と読まれるうえ
+LAN の含意が消えるので採らない。リポジトリの命名は `agent-amigos` /
+`multi-agent-shogun-kiro` / `codd-gate` と比喩を許す家風があり、`agent-herd` はその流儀に収まる。
+
+### 9.2 名前が背負えない唯一の経路
+
+層 2（`run_cli_loop`）は雲の CLI へ素通しするので、ollama 由来の名前は**この 1 経路だけ**を
+言い落とす。取れる道は 2 つで、**(a) を採る**。
+
+- **(a) 重心で名づけ、素通しを明記する。** 引き具を必要とするのはローカル群だけで、層 2 は
+  「引き具を付けない」経路だと本設計に書く（§5.3）。喩えとしても正しく、実装の分岐とも
+  一致する。層 3 を通る 5 定義が全て cost 0 であることがこの命名を支える。
+- (b) ハーネスだけ別の入口に置く。正確だが、いま畳もうとしている分裂を作り直すことになる。
 
 ---
 
 ## 10. テスト戦略
 
-1. **argv0 ディスパッチ**: 各 basename → サブコマンドの対応表テスト（`agent-run` 明示形と
+1. **argv0 ディスパッチ**: 各 basename → サブコマンドの対応表テスト（`agent-herd` 明示形と
    同一の main に落ちること）。
 2. **契約ゴールデン**: 既存 3 名の代表 argv → 実行 argv / stdout / stderr（`@agent-usage`
    行・打ち切り封筒）を移行前後で固定。既存 `test_agentcli_*` / adapter テストに追加。
@@ -400,7 +520,7 @@ statemachine ハーネスが定義経由で任意 CLI（クラウド含む）を
 
 ## 11. 未解決事項
 
-1. **stub の取り込み**: `tools/agent-loop/stub/kiro-cli-stub.py` を `agent-run stub` として
+1. **stub の取り込み**: `tools/agent-loop/stub/kiro-cli-stub.py` を `agent-herd stub` として
    同梱するか。プロトコル試験には便利だが、配布物に試験具を混ぜる是非があるので P3 で判断。
 2. **Windows（WSL 外）**: hardlink 不可環境はコピーで代替する方針だが、wsl-launcher 経由の
    導線で問題が出ないか P0 実装時に確認。
