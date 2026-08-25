@@ -142,6 +142,63 @@ class TestStreamCall(unittest.TestCase):
         self.assertIn("queued", [k for k, _f in events])
         self.assertNotIn("stall", [k for k, _f in events])
 
+    def test_queue_keeps_probing_and_gives_up_when_the_server_disappears(self):
+        """順番待ちの相手が消えたら打ち切る。
+
+        queue には上限が無い（列の最後尾へ戻る損を避けるため）。その代わり「サーバが
+        生きている限り」という前提を待っている間ずっと確かめる。確かめないと、LAN の
+        向こうが黙って消えた場合に TCP の keepalive まで待ち続けることになる。
+        """
+        events = []
+        alive = [True]      # 1 回目（queue へ入る判定）だけ生きている
+
+        def never_open(_req, timeout=None):
+            time.sleep(5.0)
+            return _FakeResponse(_gen_lines("あ"))
+
+        def probe(timeout=None):
+            was, alive[0] = alive[0], False
+            return was
+
+        with mock.patch.object(ollama_loop.urllib.request, "urlopen", never_open), \
+             mock.patch.object(ollama_loop, "_server_alive", probe), \
+             mock.patch.object(ollama_loop, "QUEUE_PROBE_INTERVAL_SEC", 0.0), \
+             mock.patch.object(ollama_loop, "QUEUE_PROBE_FAILURES", 2):
+            with self.assertRaises(ollama_loop.StallError) as caught:
+                ollama_loop.run_plain("qwen3", "hello", connect_timeout=0.1,
+                                      heartbeat=0.05,
+                                      emit=lambda kind, **f: events.append((kind, f)))
+        self.assertIn("生存確認", str(caught.exception))
+        kinds = [k for k, _f in events]
+        self.assertIn("queued", kinds)      # いったんは順番待ちとして待った
+        stall = [f for k, f in events if k == "stall"][0]
+        self.assertEqual(stall["phase"], "queue")
+        self.assertEqual(stall["probe_failures"], 2)
+
+    def test_queue_waits_while_the_server_keeps_answering(self):
+        """生存確認が通り続ける限り、順番待ちは何度確かめても打ち切らない。"""
+        events = []
+        probes = []
+
+        def slow_open(_req, timeout=None):
+            time.sleep(0.5)
+            return _FakeResponse(_gen_lines("あ"))
+
+        def probe(timeout=None):
+            probes.append(time.monotonic())
+            return True
+
+        with mock.patch.object(ollama_loop.urllib.request, "urlopen", slow_open), \
+             mock.patch.object(ollama_loop, "_server_alive", probe), \
+             mock.patch.object(ollama_loop, "QUEUE_PROBE_INTERVAL_SEC", 0.0):
+            result = ollama_loop.run_plain(
+                "qwen3", "hello", connect_timeout=0.1, heartbeat=0.05,
+                emit=lambda kind, **f: events.append((kind, f)))
+        self.assertEqual(result["text"], "あ")
+        self.assertNotIn("stall", [k for k, _f in events])
+        # 入るときの 1 回だけでなく、待っている間も打ち直している。
+        self.assertGreater(len(probes), 1)
+
     def test_connect_timeout_with_dead_server_still_raises(self):
         def never_open(_req, timeout=None):
             time.sleep(2.0)

@@ -151,8 +151,27 @@ agent-ollama --replay --arm model=qwen3,think=off,format=json \
    と見る）なので、テスト再実行のような繰り返す意味のある仕事は殺さない。
    分類は `env`——同じ入力を再試行しても同じ空回りに同じ時間を焼くだけで、解けない。
 
-エンジン側は壁時計の上限を大きく取り（例 `agent_timeout: 3600`）、実質の検知器を
-`--stall-timeout` と `no_progress` に任せるとよい。壁時計は「無限ハング時の最後の砦」。
+5. **順番待ち（queue）はそもそも打ち切らない**。ollama は他リクエストで塞がっている間、
+   応答ヘッダすら返さない——接続不能と順番待ちが接続の時点では区別できない。そこで
+   `--connect-timeout`（既定 120 秒）に達したら `/api/version` で生存確認し、生きていれば
+   `queue` 局面として**上限なしで待つ**（打ち切って再投入しても列の最後尾へ戻るだけ）。
+   待っている間も 30 秒ごとに生存確認を打ち直し、3 回続けて落ちたときだけ打ち切る
+   ——「生きている限り待つ」は待ち続ける間ずっと確かめて初めて成立する（相手は LAN の
+   向こうのホストなので、スリープや NW 分断で黙って消えうる）。
+
+エンジン側の壁時計は**無進捗の上限へ寄せる**。`agent-herd harness` はそうしてあり、
+`agents/<名前>.json` の `timeout`（未宣言なら 600 秒）を「壁時計」ではなく
+**「何も起きていない時間の上限」**として使う。順番待ちも長考も、進んでいる限り切られない。
+ヘッドレスの `agent-ollama` は終わるまで stdout に 1 バイトも出さないので、見張りへは
+別経路で生存を伝える: ハーネスが `AGENT_PROGRESS_BEACON` に灯台の置き場を渡し、子は
+イベントを出すたびにそこを刻む（記録＝会話の JSONL の置き場は動かない。`--status` /
+`--follow` / `--replay` は従来どおり `~/.agents/logs/ollama/` を見る）。灯台を刻まない
+CLI（aider 等）は出力そのものが生存の証拠になる。壁時計は 4 時間の天井だけが残る
+——出力を出しながら回り続ける病理を止めるためのもので、正常な 1 呼び出しは届かない。
+
+自前で `agent-ollama` を subprocess として起動するエンジン（`agent-project` の
+`agent_timeout`・既定 300 秒）は、まだ素の壁時計である。順番待ちはこの上限に数えられて
+しまうので、上限を大きく取る（例 `agent_timeout: 3600`）か 0 で無効化しておく。
 
 write の `--max-rounds` は 12 に絞ってある（read セットの `ollama-read` は 30 のまま）。
 実測の空回り run に「もう少し回れば畳めた」形跡が無く、30 まで回せること自体が
@@ -322,8 +341,10 @@ agent-ollama --replay --arm model=qwen3.5:9b,think=off,repeat=3
 `AGENT_OLLAMA_SYSTEM_PROMPT`（追加の system instruction。未指定なら送らない）/
 `AGENT_OLLAMA_SKILLS_DIR` / `AGENT_OLLAMA_STALL_TIMEOUT` / `AGENT_OLLAMA_FIRST_TOKEN_TIMEOUT` /
 `AGENT_OLLAMA_CONNECT_TIMEOUT`（接続の上限秒・既定 120。到達時に生存確認が通れば
-順番待ちとして待ち続け、サーバに届かないときだけ打ち切る）/
-`AGENT_OLLAMA_META_TIMEOUT`（文脈上限の問い合わせに許す秒数・既定 3）/
+順番待ちとして待ち続け、待っている間も 30 秒ごとに確かめ直して 3 回続けて落ちたときだけ
+打ち切る）/ `AGENT_OLLAMA_META_TIMEOUT`（文脈上限の問い合わせに許す秒数・既定 3）/
+`AGENT_PROGRESS_BEACON`（外側の見張りが渡す灯台の置き場。イベントを出すたびに刻む。
+**記録の置き場ではない**——会話の JSONL は `AGENT_OLLAMA_LOG_DIR` のまま）/
 `AGENT_OLLAMA_HISTORY` / `AGENT_OLLAMA_NO_READLINE`（TUI の行編集を切る）。
 
 `OLLAMA_HOST` が未設定のときは `~/.profile` を評価して `OLLAMA_*` / `AGENT_OLLAMA_*` を
