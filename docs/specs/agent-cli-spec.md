@@ -166,6 +166,7 @@ CLI 名で分岐する必要がなくなります。
 | agent-flow（`VARIANT_ELIGIBLE_ROLES`） | `evaluator` / `extract` / `filter` / `judge` / `planner` / `reduce` / `retrieve` / `split` / `verify` |
 | agent-project（`JSON_CONTRACT_PURPOSES`） | `adjudicate` / `assess` / `plan` / `prioritize` / `review` / `route` |
 | agent-loop | `planner`（ツール契約の制御応答）/ `verify`（受入条件の判定層） |
+| agent-audit（`VARIANT_PURPOSES`） | `extract` / `review` |
 
 キーが存在するからといって、どの呼び出し元でも無条件に振り替わるわけではありません。
 
