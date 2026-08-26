@@ -369,6 +369,9 @@ test('orchestration はノード予算 v2 / 制御 / ドロップイン API を�
      'orchestration:lifecycle', 'orchestration:methodAdd', 'orchestration:methodSet',
      'orchestration:overview', 'orchestration:profilesApply',
      'orchestration:profilesEvaluate', 'orchestration:profilesSave', 'orchestration:rebalance',
+     // おすすめ構成は**読むだけの面と適用の起動口**。推奨の生成（eval の recommend.py）と
+     // 適格性の書き込み（agent-audit）は dashboard が持たない。
+     'orchestration:recommendation', 'orchestration:recommendationApply',
      'orchestration:sessionCommandsSave',
      'orchestration:skillsInventory'].sort());
   const api = orch.preloadApi();

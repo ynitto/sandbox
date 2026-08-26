@@ -4,7 +4,7 @@
 // Linux ではローカルの bash で実行する（agent-loop の exec と同じ流儀）。
 //
 // ダッシュボードから呼ぶのは LLM を使わない決定的なサブコマンドだけ
-// （collect / usage / stats / doctor）。extract / distill などの LLM 段は呼ばない —
+// （collect / usage / stats / doctor / seed）。extract / distill などの LLM 段は呼ばない —
 // LLM の消費リズムは agent-audit 側の間隔・蓄積ゲート設定が正で、GUI から
 // 不用意に駆動しない。usage / stats は --json の出力をそのまま契約として読む
 // （集計ロジックをこちらへ複製しない）。
@@ -219,7 +219,28 @@ async function doctor(cfg, runShell = defaultRunShell) {
   return { ok: r.ok, status: r.status, detail: detailOf(r), error: r.ok ? '' : failureMessage(r, '点検を実行できませんでした') };
 }
 
+// おすすめ構成の適格性を qualifications.json へ置く（agent-audit seed）。
+//
+// **dashboard は根拠面を書かない。** ここは起動口であって、生成も書き込みもしない
+// ——writer は agent-audit の 1 つのままである（設計 §4.2 の不変条件）。
+// LLM を使わない決定的な段なので collect と同じ扱いで GUI から呼んでよい。
+async function seed(cfg, recommendationFile, runShell = defaultRunShell) {
+  const settings = auditSettings(cfg);
+  const file = String(recommendationFile || '').trim();
+  if (!file) return { ok: false, error: 'おすすめ構成のパスが空です' };
+  const r = await runShell(
+    buildScript(settings, ['seed', '--from-recommendation', file, '--apply', '--json']),
+    60000, settings.distro);
+  if (!r.ok) return { ok: false, error: failureMessage(r, '適格性の設定に失敗しました'), detail: detailOf(r) };
+  const parsed = parseJson(r.stdout);
+  if (!parsed) return { ok: false, error: 'agent-audit seed の出力を読めませんでした', detail: detailOf(r) };
+  // seed 自身が拒否した場合（未知 version・契約違反・実測の非上書き）は rc!=0 になるが、
+  // --json は理由を返すので、そちらを人へ見せる。
+  if (parsed.error) return { ok: false, error: parsed.error, summary: parsed };
+  return { ok: Boolean(parsed.applied), summary: parsed };
+}
+
 module.exports = {
   auditSettings, buildScript, parseJson,
-  collect, usage, summary, stats, sessions, doctor, knowledge,
+  collect, usage, summary, stats, sessions, doctor, knowledge, seed,
 };

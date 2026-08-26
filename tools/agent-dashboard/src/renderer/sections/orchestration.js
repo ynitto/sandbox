@@ -18,9 +18,24 @@ async function refreshOrchestration() {
       try { state.orchSkillsInventory = await api.orchestrationSkillsInventory(); }
       catch { state.orchSkillsInventory = []; }
     }
+    await refreshRecommendation();
   } catch (err) {
     state.orchestration = { error: err.message };
   }
+}
+
+// おすすめ構成の点検・差分は枠の選択で変わるので、選択が動くたびに取り直す。
+// **取得に失敗しても画面表示は続ける**——推奨が無い端末（配布前）でも設定面は使える。
+async function refreshRecommendation() {
+  if (!api.orchestrationRecommendation) return;
+  try {
+    state.orchRecommendation = await api.orchestrationRecommendation({
+      slotChoices: state.orchSlotChoices || {},
+    });
+  } catch {
+    state.orchRecommendation = { exists: false, file: '', preflight: [], diff: [], cloudChoices: [] };
+  }
+  renderOrchestration();
 }
 
 // AI 利用量を読みやすく（1.20M / 340k / 512）。
@@ -421,6 +436,80 @@ function orchTierEditorRowHtml(key, tier = {}) {
   </li>`;
 }
 
+// おすすめ構成（agent-recommendation）。**入力はクラウド枠だけ、ボタンは 1 つ。**
+//
+// 推奨そのものは eval が実測から生成した読み取り専用の配布物で、ここは点検・差分・
+// 適用の起動口しか持たない。適格性の書き込みも agent-audit へ委ねる。
+function orchRecommendationPanelHtml(state) {
+  const rec = state.orchRecommendation;
+  if (!rec) return '';
+  if (!rec.exists) {
+    return `<section class="orch-panel orch-recommend-panel">
+      <header><span class="summary-kicker">実測から決まる初期設定</span>
+        <h3>おすすめ構成</h3></header>
+      <p class="muted">おすすめ構成が見つかりません（${esc(rec.file || '')}）。
+        評価ハーネスで生成してください:</p>
+      <pre class="mono">python3 tools/agent-tools/eval/recommend.py --output ${esc(rec.file || '~/.agents/recommendation.json')}</pre>
+    </section>`;
+  }
+  const checks = (rec.preflight || []).map((row) => {
+    const mark = row.ok ? '✓' : (row.advisory ? '△' : '✗');
+    const remedy = row.remedy
+      ? `<div class="muted mono">${esc(row.remedy)}</div>` : '';
+    return `<li class="${row.ok ? 'ok' : (row.advisory ? 'warn' : 'ng')}">
+      <span class="orch-check-mark">${mark}</span>
+      <span class="orch-check-label">${esc(row.label)}</span>
+      <span class="orch-check-detail">${esc(row.detail || '')}</span>${remedy}</li>`;
+  }).join('');
+
+  const choices = rec.cloudChoices || [];
+  const slotRows = Object.entries(rec.document.tiers || {})
+    .filter(([, spec]) => (spec.slots || []).length)
+    .map(([tier, spec]) => {
+      const chosen = (state.orchSlotChoices || {})[tier] || {};
+      const options = ['<option value="">（選んでください）</option>']
+        .concat(choices.map((name) => `<option value="${esc(name)}"${chosen.agent_cli === name ? ' selected' : ''}>${esc(name)}</option>`))
+        .join('');
+      return `<label class="orch-slot" data-orch-slot="${esc(tier)}">
+        <span>${esc(ORCH_TIER_LABELS[tier] || tier)}
+          <small class="muted">${esc((spec.slots || []).map((x) => x.requires).join('・'))}</small></span>
+        <select class="orch-slot-cli">${options}</select>
+        <input type="text" class="orch-slot-model mono" placeholder="モデル（任意）"
+          value="${esc(chosen.model || '')}" />
+      </label>`;
+    }).join('');
+
+  const diffRows = (rec.diff || []).map((row) => `<tr class="${row.changed ? 'changed' : ''}">
+      <td>${esc(row.label)}</td><td class="mono">${esc(row.from)}</td>
+      <td class="mono">${esc(row.to)}</td></tr>`).join('');
+
+  const expansion = ((rec.document.herd || {}).expansion || []).map((row) => {
+    const state_ = row.usable
+      ? esc((row.qualified_for || []).join('・'))
+      : '<span class="muted">裏付けなし（選ばれません）</span>';
+    return `<li class="mono">${esc(row.agent_cli)}/${esc(row.model)}: ${state_}</li>`;
+  }).join('');
+
+  return `<section class="orch-panel orch-recommend-panel">
+    <header><span class="summary-kicker">実測から決まる初期設定</span>
+      <h3>おすすめ構成</h3>
+      <p class="muted">評価記録から生成した推奨です。ローカルは
+        <code>herd</code> の 1 語で、どのエージェント・どのモデルを使うかは役割ごとに
+        実測が決めます。選ぶのはクラウド枠だけです。</p></header>
+    <div class="orch-recommend-checks"><h4>点検</h4><ul>${checks}</ul></div>
+    <div class="orch-recommend-slots"><h4>クラウド枠</h4>${slotRows
+      || '<p class="muted">枠はありません。</p>'}</div>
+    <div class="orch-recommend-diff"><h4>適用されるもの</h4>
+      <table><thead><tr><th>項目</th><th>現在</th><th>推奨</th></tr></thead>
+      <tbody>${diffRows}</tbody></table></div>
+    <details class="orch-recommend-expansion"><summary>herd が何に広がるか</summary>
+      <ul>${expansion}</ul></details>
+    <div class="settings-save-actions">
+      <button type="button" id="btn-orch-recommend-apply" class="primary-inline"${state.orchSaving ? ' disabled' : ''}>適用</button>
+    </div>
+  </section>`;
+}
+
 function orchTiersPanelHtml(overview) {
   const profiles = overview.profiles || { enabled: true, tiers: {}, policy: {}, state: {} };
   const tiers = profiles.tiers || {};
@@ -435,7 +524,39 @@ function orchTiersPanelHtml(overview) {
     <div class="settings-save-actions">
       <button type="button" id="btn-orch-tiers-save" class="primary-inline"${state.orchSaving ? ' disabled' : ''}>保存</button>
     </div>
+    ${orchEffectiveAgentsHtml(overview)}
   </section>`;
+}
+
+// 役割別の実効起動形（読み取り専用）。実行レベルで選んだ候補は、実行直前に用途ごとの
+// 起動形へ振り替えられ、モデルまで変わることがある。それが画面に出ていなかったので
+// 「設定したのと違うものが動く」に見えていた。**書き換えの口は出さない**——変種は
+// 実測でチューニングされた既定で、画面から触らせると縮退基準が壊れる。
+function orchEffectiveAgentsHtml(overview) {
+  const table = Array.isArray(overview.effectiveAgents) ? overview.effectiveAgents : [];
+  if (!table.length) return '';
+  const blocks = table.map((entry) => {
+    const rows = (entry.rows || []).map((row) => {
+      const target = `${esc(row.agent_cli)}${row.profile ? `（${esc(row.profile)}）` : ''}`;
+      const model = row.model_swapped
+        ? `<strong>${esc(row.model)}</strong> <span class="muted">← モデルが変わります</span>`
+        : esc(row.model);
+      return `<tr><td class="mono">${esc(row.purpose)}</td>`
+        + `<td class="mono">${target}</td><td class="mono">${model}</td></tr>`;
+    }).join('');
+    return `<div class="orch-effective-agent">
+      <h4>${esc(entry.agent_cli)} <span class="muted">既定 ${esc(entry.model || '—')}</span></h4>
+      <table class="orch-effective-table"><thead><tr>
+        <th>役割</th><th>実際に使う起動形</th><th>モデル</th></tr></thead>
+        <tbody>${rows}</tbody></table>
+      <p class="muted">表に無い役割は ${esc(entry.fallback.agent_cli)} のまま実行します。</p>
+    </div>`;
+  }).join('');
+  return `<details class="orch-effective-agents"><summary>役割ごとに実際に使う起動形を見る</summary>
+    <p class="muted">実行レベルの選択より<strong>あと</strong>に効きます。エージェント定義
+      （agents/&lt;名前&gt;.json）の宣言で決まるため、ここでは変更できません。</p>
+    ${blocks}
+  </details>`;
 }
 
 // 3.5 同時実行数（agent-control の concurrency）。**この端末の資源の話**なので全体設定に置く。
@@ -1357,7 +1478,9 @@ function orchMethodsPanelHtml(overview) {
 function globalSettingsControlHtml(overview) {
   if (!overview) return '<div class="empty compact">実行制御を読み込んでいます。</div>';
   if (overview.error) return `<div class="empty compact"><strong>実行制御を読み込めませんでした</strong><span>${esc(overview.error)}</span></div>`;
-  return `${orchExecutionPolicyPanelHtml(overview)}${orchTiersPanelHtml(overview)}${orchConcurrencyPanelHtml(overview)}${orchStatusPanelHtml(overview)}`;
+  // おすすめ構成を先頭に置く。新品の端末で最初に目に入る場所が、**実行方針でも実行レベルでもなく 1 ボタンの適用**であるべきなので
+  // （実行方針から触ると候補未設定で保存できない、という順序の罠があった）。
+  return `${orchRecommendationPanelHtml(state)}${orchExecutionPolicyPanelHtml(overview)}${orchTiersPanelHtml(overview)}${orchConcurrencyPanelHtml(overview)}${orchStatusPanelHtml(overview)}`;
 }
 
 function renderOrchestration() {
@@ -1763,6 +1886,45 @@ function setupOrchestration(root, refreshView = async () => {
         if (!list.querySelector('.orch-tier-candidate')) list.innerHTML = orchTierCandidateRowHtml();
       }
     });
+  }
+
+  // おすすめ構成: 枠の選択は state に持つ（差分の再描画に使うため）。
+  root.querySelectorAll('[data-orch-slot]').forEach((slot) => {
+    const tier = slot.dataset.orchSlot;
+    const update = () => {
+      const cli = (slot.querySelector('.orch-slot-cli') || {}).value || '';
+      const model = ((slot.querySelector('.orch-slot-model') || {}).value || '').trim();
+      state.orchSlotChoices = { ...(state.orchSlotChoices || {}) };
+      if (cli) state.orchSlotChoices[tier] = { agent_cli: cli, ...(model ? { model } : {}) };
+      else delete state.orchSlotChoices[tier];
+      refreshRecommendation();
+    };
+    const cliSelect = slot.querySelector('.orch-slot-cli');
+    const modelInput = slot.querySelector('.orch-slot-model');
+    if (cliSelect) cliSelect.addEventListener('change', update);
+    if (modelInput) modelInput.addEventListener('change', update);
+  });
+
+  const recommendApply = root.querySelector('#btn-orch-recommend-apply');
+  if (recommendApply) {
+    recommendApply.addEventListener('click', () => guard('おすすめ構成の適用', async () => {
+      state.orchSaving = true;
+      try {
+        const result = await api.orchestrationRecommendationApply({
+          slotChoices: state.orchSlotChoices || {},
+        });
+        if (!result || !result.ok) {
+          const first = ((result || {}).errors || [])[0];
+          toast(first ? `適用できませんでした: ${first.message}` : '適用できませんでした', false);
+          return;
+        }
+        await refreshCowork();
+        toast('おすすめ構成を適用しました', true);
+      } finally {
+        state.orchSaving = false;
+        await refreshRecommendation();
+      }
+    }));
   }
 
   const tiersSave = root.querySelector('#btn-orch-tiers-save');
