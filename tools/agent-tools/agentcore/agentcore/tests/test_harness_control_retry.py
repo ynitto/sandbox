@@ -13,8 +13,9 @@ import types
 import unittest
 from unittest import mock
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-import agent_loop as al  # noqa: E402
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+from agentcore.harness import toolloop as tl  # noqa: E402
+from agentcore.tests.harnesspatch import patch_harness  # noqa: E402
 
 
 class ControlRetryTests(unittest.TestCase):
@@ -25,14 +26,14 @@ class ControlRetryTests(unittest.TestCase):
             calls.append(1)
             if len(calls) == 1:
                 # hint 置換後の文言（「タイムアウト」「接続」等を含まない）
-                raise al.ToolLoopError(
+                raise tl.ToolLoopError(
                     "無進捗で打ち切りました（生成が進まなくなった状態）。",
                     transient=True)
             return '{"type":"final","output":"done"}'
 
         with tempfile.TemporaryDirectory() as tmp, \
-                mock.patch.object(al, "_tl_run_agent", side_effect=flaky):
-            out = al._tl_run_control({"cli": "x"}, "p", cwd=tmp, read_files=[],
+                patch_harness("_tl_run_agent", side_effect=flaky):
+            out = tl._tl_run_control({"cli": "x"}, "p", cwd=tmp, read_files=[],
                                      log_file=os.path.join(tmp, "x.jsonl"))
         self.assertEqual(len(calls), 2)
         self.assertIn("final", out)
@@ -42,12 +43,12 @@ class ControlRetryTests(unittest.TestCase):
 
         def broken(agent, prompt, **kw):
             calls.append(1)
-            raise al.ToolLoopError("スキルが見つかりません: x")
+            raise tl.ToolLoopError("スキルが見つかりません: x")
 
         with tempfile.TemporaryDirectory() as tmp, \
-                mock.patch.object(al, "_tl_run_agent", side_effect=broken):
-            with self.assertRaises(al.ToolLoopError):
-                al._tl_run_control({"cli": "x"}, "p", cwd=tmp, read_files=[],
+                patch_harness("_tl_run_agent", side_effect=broken):
+            with self.assertRaises(tl.ToolLoopError):
+                tl._tl_run_control({"cli": "x"}, "p", cwd=tmp, read_files=[],
                                    log_file=os.path.join(tmp, "x.jsonl"))
         self.assertEqual(len(calls), 1)
 
@@ -62,10 +63,10 @@ class ControlRetryTests(unittest.TestCase):
         failed = {"status": 1, "stdout": "",
                   "stderr": "応答が停止しました: connect のまま 120 秒無進捗", "error": ""}
         with tempfile.TemporaryDirectory() as tmp, \
-                mock.patch.object(al, "_tl_exec_argv", return_value=failed), \
-                mock.patch.object(al, "_tl_record_usage"):
-            with self.assertRaises(al.ToolLoopError) as ctx:
-                al._tl_run_agent(agent, "p", cwd=tmp, readonly=True, read_files=[],
+                patch_harness("_tl_exec_argv", return_value=failed), \
+                patch_harness("_tl_record_usage"):
+            with self.assertRaises(tl.ToolLoopError) as ctx:
+                tl._tl_run_agent(agent, "p", cwd=tmp, readonly=True, read_files=[],
                                  files=[], log_file=os.path.join(tmp, "x.jsonl"))
         self.assertTrue(ctx.exception.transient)
         self.assertIn("リトライ", str(ctx.exception))

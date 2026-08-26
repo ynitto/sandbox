@@ -10,7 +10,8 @@
 
 ## 1. 置き場と探索順
 
-1 CLI = 1 ファイル `agents/<name>.json`。`agent_cli: <name>` で選びます。
+**1 ファイル = 1 エージェント**で、`agents/<name>.json` を `agent_cli: <name>` で選びます。
+用途で使い分ける起動差は別ファイルに分けず、定義の中の `profiles` に置きます（§2.3）。
 
 | 順 | 場所 |
 |---:|---|
@@ -24,7 +25,15 @@
 上書きできます。これが無いと受入条件（JSON 1 ファイルで完結）が成り立ちません。ユーザー共通の
 定義は `~/.agents/agents/` だけを読み、旧 `~/.agent` ホームへはフォールバックしません。
 
-未知の `agent_cli` で定義も無ければ**明示エラー**です（黙るフォールバックは廃止）。例外は
+実ファイルが見つからなかった名前は、最後に `<base>-<profile>` として解き直します
+（`ollama-list` → `base=ollama` / `profile=list`）。**実ファイルが常に優先**なので、
+profile を独立したエージェントにしたくなったら `ollama-list.json` を置けば勝ちます。
+区切りは `-` で、**長い base から順に**試します——`ollama-list-thinking` は
+`base=ollama-list` / `profile=thinking` を先に当たり、それが無いので `base=ollama` /
+`profile=list-thinking` に解けます（`ollama-list.json` が実在してそこに `thinking` profile が
+あれば、そちらが勝ちます）。
+
+未知の `agent_cli` で定義も profile も無ければ**明示エラー**です（黙るフォールバックは廃止）。例外は
 cowork の定常業務 tmux 実行だけで、定義解決に失敗しても `kiro-cli chat --trust-all-tools` へ
 落として定常業務を止めません。ただし黙らず `console.warn` で理由を残します。
 
@@ -57,6 +66,7 @@ cowork の定常業務 tmux 実行だけで、定義解決に失敗しても `ki
 | `relative_cost` | number | `1` | 同じ仕事 1 回の無次元コスト（ローカル 0 / 通常クラウド 1） |
 | `headless_autonomy` | `tool-loop` \| `single-shot` | `single-shot` | ヘッドレス 1 回で自分でツールを回して完遂できるか |
 | `variants` | object | — | 用途 → 代わりに使う定義名（§4） |
+| `profiles` | object | — | 用途別の起動差。`<name>-<profile>` の綴りと `variants` の値がここへ解決される（§2.3） |
 | `spill` | object | — | 長大プロンプトの退避（`instruction` / `args`。§5） |
 | `errors` | array | — | 失敗トリアージ規則（§6） |
 | `skill_command_prefix` | str | `/` | スキル起動コマンドの行頭記号（codex は `$`） |
@@ -83,6 +93,32 @@ cowork の定常業務 tmux 実行だけで、定義解決に失敗しても `ki
 
 **待機判定の優先順位**は busy ＞ ready ＞ 静穏 ＞ 既定 busy でコード側に固定してあります。
 
+### 2.3 `profiles`（用途別の起動差）
+
+同じエージェントを用途で使い分けるとき、**別定義ファイルへ分けずここへ置きます。** 分けると
+`agent_cli` が用途ごとに増え、台帳と格付けのキー `(agent_cli, model, operation_class)` のうち
+用途の次元を二重に持つことになり、1 実行系の実測が偽の候補へ割れます。
+
+```json
+"profiles": {
+  "list": { "command": ["agent-herd","ollama","--think","off","--format","array","{model}"],
+            "write_args": [], "readonly_args": [], "headless_autonomy": "single-shot" }
+}
+```
+
+| | |
+|---|---|
+| profile 名 | `[\w.-]+` |
+| 必須 | `command` だけ（トップレベルと同じ） |
+| 置けるキー | トップレベルのうち起動に関わるもの。`profiles` / `session_log` / `spill` / `name` は**置けません**（スキーマとローダの両方が拒否し、何が置けるかを名指しで返す） |
+| 継承 | 宣言があれば置き換え（`[]` の宣言も「置き換え」）。宣言しなければ base をそのまま継ぐ |
+| `env` | 例外的に base へ**重ねる**（profile の宣言が勝つ） |
+| 継承しないもの | `interactive` と `variants` の 2 つ。継承すると対話面を持たない役割に base の TUI が生え、消費側（agent-dashboard）の実行経路が変わる |
+
+**返る spec の `name` は正典（base の名前）のまま**で、どの profile で組まれたかは
+`spec["profile"]`、選べる一覧は `spec["profiles"]` が持ちます。台帳・格付けへ書く `agent_cli` は
+`canonical_name()`（§3）を通してください。
+
 ---
 
 ## 3. ローダ API（`agentcore.agentcli`）
@@ -95,6 +131,7 @@ cowork の定常業務 tmux 実行だけで、定義解決に失敗しても `ki
 | `clear_cache()` | 定義キャッシュの破棄 |
 | `headless_cmd(spec, model, prompt, *, readonly, no_session, spill_path, files, read_files)` | `{argv, stdin, output_file, env, empty_output_is_error, timeout, readonly_warning}` |
 | `interactive_cmd(spec, model, *, readonly, no_session)` | 対話起動の argv 一式 |
+| `canonical_name(name, project_dir=None)` | 台帳・格付けへ書く正典の `agent_cli` 名。`ollama-list` → `ollama`。**綴りでは判定せず定義に問い合わせる**ので、`ollama-list.json` が実在すればそのまま返す。解決できない名前は素通し |
 | `resolve_variant(name, purpose, project_dir=None)` | `{agent_cli, default_model}` or `None`（§4） |
 | `costlier_fallback(current, candidates, project_dir=None)` | 現在より高コストの最初の 1 件 or `None`（§4.1） |
 | `classify_error(spec, blob, *, detailed=False, now=None)` | `(class, hint)`、`detailed=True` なら quota 細分と `reset_at`（§6） |
@@ -118,6 +155,9 @@ CLI 名で分岐する必要がなくなります。
 - 指す先が存在しない・自分自身を指す申告は**無視して元の定義で走ります**（設定ミスで実行を殺さない）
 - 振り替えは **1 段だけ**で連鎖しません
 - 振り替え後のモデルは、呼び出し元が明示指定していなければ**変種自身の `default_model`** を使います
+- **指す先は定義名でも profile の綴りでもかまいません。** `variants: {"split": "ollama-list"}` は
+  `ollama` の `list` profile へ解決されます（§1）。返る `agent_cli` の綴りはそのままなので、
+  台帳へ書く前に `canonical_name()` を通します——**変種は入口を増やさず、定義を増やすだけ**です
 
 用途語彙は 15 個で、定義側の申告とエンジン側の問い合わせが一致しています。
 
@@ -126,6 +166,7 @@ CLI 名で分岐する必要がなくなります。
 | agent-flow（`VARIANT_ELIGIBLE_ROLES`） | `evaluator` / `extract` / `filter` / `judge` / `planner` / `reduce` / `retrieve` / `split` / `verify` |
 | agent-project（`JSON_CONTRACT_PURPOSES`） | `adjudicate` / `assess` / `plan` / `prioritize` / `review` / `route` |
 | agent-loop | `planner`（ツール契約の制御応答）/ `verify`（受入条件の判定層） |
+| agent-audit（`VARIANT_PURPOSES`） | `extract` / `review` |
 
 キーが存在するからといって、どの呼び出し元でも無条件に振り替わるわけではありません。
 
@@ -211,29 +252,42 @@ agent-audit が CLI 自身の transcript を収集するための宣言です。
 
 ## 9. 同梱定義
 
-リポジトリ直下 `agents/` に **13 ファイル**。base 8 種と、用途別変種 5 種です。
+リポジトリ直下 `agents/` に **8 ファイル**。**ファイル数は実エージェント数と一致します**——
+用途別の起動差は `ollama` の `profiles`（5 つ）が持ちます。
 
-| 定義 | cost | readonly | 既定モデル | autonomy | 対話 | session_log |
-|---|---:|---|---|---|:-:|:-:|
-| `claude` | 1 | enforced | 定義なし | tool-loop | ✓ | ✓ |
-| `codex` | 1 | enforced | 定義なし | tool-loop | ✓ | ✓ |
-| `copilot` | 1 | best-effort | 定義なし | tool-loop | ✓ | — |
-| `cursor` | 1 | best-effort | 定義なし | tool-loop | ✓ | — |
-| `kiro` | 1 | best-effort | 定義なし | tool-loop | ✓ | ✓ |
-| `opencode` | 0 | best-effort | 定義なし | tool-loop | ✓ | ✓ |
-| `aider` | 0 | enforced | `gemma4:e4b` | single-shot | — | — |
-| `ollama` | 0 | enforced | `qwen3` | tool-loop | ✓ | ✓ |
-| `ollama-json` | 0 | enforced | `qwen3` | single-shot | — | ✓ |
-| `ollama-list` | 0 | enforced | `qwen3` | single-shot | — | ✓ |
-| `ollama-list-thinking` | 0 | enforced | `gemma4:e4b` | single-shot | — | ✓ |
-| `ollama-read` | 0 | enforced | `qwen3` | tool-loop | — | ✓ |
-| `ollama-verify` | 0 | enforced | `gemma4:12b` | single-shot | — | ✓ |
+| 定義 | cost | readonly | 既定モデル | autonomy | 対話 | session_log | profiles |
+|---|---:|---|---|---|:-:|:-:|---|
+| `claude` | 1 | enforced | 定義なし | tool-loop | ✓ | ✓ | — |
+| `codex` | 1 | enforced | 定義なし | tool-loop | ✓ | ✓ | — |
+| `copilot` | 1 | best-effort | 定義なし | tool-loop | ✓ | — | — |
+| `cursor` | 1 | best-effort | 定義なし | tool-loop | ✓ | — | — |
+| `kiro` | 1 | best-effort | 定義なし | tool-loop | ✓ | ✓ | — |
+| `opencode` | 0 | best-effort | 定義なし | tool-loop | ✓ | ✓ | — |
+| `aider` | 0 | enforced | `gemma4:e4b` | single-shot | ✓ | — | — |
+| `ollama` | 0 | enforced | `gemma4:e4b` | tool-loop | ✓ | ✓ | `json` `list` `list-thinking` `read` `verify` |
 
-`relative_cost: 0` はローカル実行（ollama 系 6 種・`aider`・`opencode`）です。ollama 系の詳細は
-[`docs/specs/agent-ollama-spec.md`](./agent-ollama-spec.md)。
+`ollama` の profile は base を継ぐので、断りの無い列は base と同じです。違うところだけ:
 
-`variants` を申告しているのは `ollama`（15 用途）・`aider`（13 用途）・`ollama-json`
-（`split` / `retrieve`）・`ollama-verify`（`split`）の 4 定義です。
+| profile | 従来の綴り | 既定モデル | autonomy | 起動差 |
+|---|---|---|---|---|
+| `json` | `ollama-json` | 継承 | single-shot | `--format json`・道具なし |
+| `list` | `ollama-list` | 継承 | single-shot | `--format array`・道具なし |
+| `list-thinking` | `ollama-list-thinking` | 継承 | single-shot | `--think on` + `temperature 0`・`--format` なし |
+| `read` | `ollama-read` | 継承 | 継承（tool-loop） | `--tools read --max-rounds 30` |
+| `verify` | `ollama-verify` | `gemma4:12b` | single-shot | `--format json --stall-timeout 180` |
+
+`relative_cost: 0` はローカル実行（`ollama`（profile 含む）・`aider`・`opencode`）です。
+これらは `agent-herd` を入口に持ち、クラウド 5 種は素の CLI を指したままです。詳細は
+[`docs/specs/agent-herd-spec.md`](./agent-herd-spec.md)。
+
+`variants` を申告しているのは `ollama`（15 用途）・`aider`（13 用途）と、`ollama` の
+`json` profile（`split` / `retrieve`）・`verify` profile（`split`）です（`variants` は
+継承しないので、必要な profile だけが自分で宣言します）。
+
+`aider` は `interactive` を持ちながら `headless_autonomy: single-shot` である**唯一の定義**です。
+2 つの宣言は別物（前者は「対話面を提供するか」、後者は「自分で探索・実行まで回せるか」）なので、
+**`interactive` の有無を「ハーネスが要るか」の代理に使ってはいけません**——消費側は
+`headless_autonomy` で弁別します。
 
 ---
 
@@ -246,3 +300,5 @@ agent-audit が CLI 自身の transcript を収集するための宣言です。
 5. **読み取り専用の防御はこの層に持たない**——責務が「argv の組み立て」から「実行の隔離」へ
    膨らむと、いま畳んだ散らばりが別の場所に再発する。保証できないことは宣言して人に見せる
 6. コード側に CLI 名の分岐を書かない。フォールバックテーブルも持たない
+7. **1 ファイル = 1 エージェント。** 用途別の起動差は `profiles` に置き、`agent_cli` の値空間へ
+   畳み込まない（用途の次元は `operation_class` / `purpose` が持っている）

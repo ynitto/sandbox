@@ -1,37 +1,37 @@
-"""agentcore.harness — ツールを持たない CLI に実行能力を供給するハーネス（移植）。
+"""agentcore.harness — ツールを持たない CLI に実行能力を供給するハーネス（正典）。
 
 ## これは何か
 
-`agent_loop/toolloop.py` と `agent_loop/statemachine.py` の**移植**である。元は
-agent_loop の「単一名前空間フラグメント合成」断片（`__init__.py` が共有名前空間へ順に
-exec する方式）で、単体 import ができず、agent-loop のデーモン一式を介さないと使えなかった。
+限定ツール契約（:mod:`~agentcore.harness.toolloop`）と、その上のステートマシン実行
+（:mod:`~agentcore.harness.statemachine`）。**本文はこの 2 モジュールにしか無い。**
 
-ここに移植したことで、tmux もデーモンも無しに `agent-herd harness …` から直接回せる。
+入口は 2 つある:
 
-## 移植であって移行ではない — 元は消していない
+- `agent-herd harness …` … tmux もデーモンも設定ファイルも要らない素の実行
+- `agent-loop run / statemachine …` … tmux の中で「動いている様子が見える」実行
 
-`agent_loop/` の断片は**そのまま残っている**。agent-loop は従来どおり自分の断片を使い、
-コマンドも証跡も 1 バイトも変わらない。したがって現在この 2 つは**意図的な写し**である。
+`agent_loop/{toolloop,statemachine}.py` は**このモジュールへ委譲するだけの層**で、
+実装は持たない。同じハーネスの 2 つの見せ方であって 2 実装ではない。
 
-写しが黙ってずれるのが唯一の危険なので、`tests/test_harness_parity.py` が
-**全 top-level 定義の AST を突き合わせて**一致を縛る。片方だけ直せば必ず落ちる
-（agentcore が `hostenv` を 1 実装へ畳む前に `test_adapter_env_parity.py` がやっていたのと
-同じ流儀）。将来どちらか 1 つへ寄せるとき、そのテストが安全網になる。
+## ここへ来るまで（3 段）
 
-## 移植で変えたところ（3 点だけ）
-
-本体は**逐語コピー**で、変えたのは断片が共有名前空間から借りていた名前の供給だけである
-（借用は stdlib を除くと 4 つしか無かった）:
-
-- `agent_home_subdir` … `_borrowed` へ逐語移植（`AGENT_HOME = ".agents"` ごと）
-- `_import_agentcli` … agentcore の中にいるので `from agentcore import agentcli` に落ちる
-- `_node_budget_record` … 既定は**何もしない**（agentcore に agent-loop の台帳は無い）
-- `_control_policy_decision` … 既定は **None**（selection_policy 無し＝従来の pin/既定経路）
-
-後ろ 2 つは :func:`agentcore.harness.set_hooks` で host が差し込める。差し込まない限り
-記帳と control 解決は起こらない——「どこかの台帳へ黙って書く」より「書かない」を既定にする。
+1. **移植**（2026-08-25）… agent_loop の exec 合成断片を逐語コピーし、AST パリティ
+   テストで写しのずれを縛った。tmux 無しで回せるようになったのはこの段。
+2. **本文の共有** … 写しを畳み、本文を `_toolloop_body.py` というデータファイルにして
+   agent_loop と agentcore の**両方が exec** した。import 委譲にしなかったのは、
+   agent-loop のテストが共有名前空間を差し替えていたから（63 箇所）。
+3. **委譲**（この形）… そのテストを `agentcore/tests/` と `harnesspatch` へ移し、
+   agent_loop 側を**ただの import** にした。exec も写しもデータファイルも無くなり、
+   traceback も `inspect.getsource` も素直に本文を指す。
 
 設計: docs/plans/2026-08-25-agent-herd-unified-entry-design.md §5。
+
+## 継ぎ目 — 記帳と control 解決
+
+本文が host 固有の状態に触るのはこの 2 つだけで、既定は**何もしない / None** である。
+`agent-herd harness` は差し込まない（台帳も control も持たない単独実行）。agent-loop は
+合成時に :func:`set_hooks` で自分の実装を差し込む——「どこかの台帳へ黙って書く」より
+「書かない」を既定にする。
 """
 from __future__ import annotations
 

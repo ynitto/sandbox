@@ -139,5 +139,6 @@ stdout に本文だけを返す薄い CLI を用意すれば同じ契約で差�
   [`docs/specs/agent-cli-spec.md`](../docs/specs/agent-cli-spec.md)
 - **設計書**（なぜこの形にしたか）:
   [`docs/designs/agent-cli-plugin-design.md`](../docs/designs/agent-cli-plugin-design.md)
-- **ollama 系の定義**: [`docs/specs/agent-ollama-spec.md`](../docs/specs/agent-ollama-spec.md) /
-  [`docs/designs/agent-ollama-design.md`](../docs/designs/agent-ollama-design.md)
+- **ローカル実行系（`aider` / `ollama` の profile / `opencode`）**:
+  [`docs/specs/agent-herd-spec.md`](../docs/specs/agent-herd-spec.md) /
+  [`docs/designs/agent-herd-design.md`](../docs/designs/agent-herd-design.md)

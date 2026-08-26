@@ -16,6 +16,7 @@ from .configfile import agent_for, agent_home_dir, resolve_budget_dir
 from .util import iter_jsonl, now_iso, read_json, strip_ansi
 
 WORKLOAD = "audit"
+VARIANT_PURPOSES = frozenset({"extract", "review"})
 
 
 class LlmBlocked(RuntimeError):
@@ -24,6 +25,20 @@ class LlmBlocked(RuntimeError):
 
 class LlmError(RuntimeError):
     pass
+
+
+def _execution_cli(cli: str, model: "str | None", purpose: str, agentcli) -> tuple[str, "str | None"]:
+    """Resolve a purpose profile without teaching audit about any concrete CLI.
+
+    Attribution remains on the selected base agent; only the executable definition is
+    switched.  This is the same definition-driven boundary used by flow/project/loop.
+    """
+    if purpose not in VARIANT_PURPOSES:
+        return cli, model
+    variant = agentcli.resolve_variant(cli, purpose)
+    if not variant:
+        return cli, model
+    return variant["agent_cli"], model or variant.get("default_model")
 
 
 # -- agent-control（宣言的な一時停止・CLI/モデル上書き） ----------------------
@@ -243,7 +258,8 @@ def run_llm(args, purpose: str, prompt: str) -> str:
         cli = degraded_cli or cli
         model = degraded_model or model
     write_status(args, purpose, cli, model or "", budget=budget)
-    plug = _agentcli.load_cli(cli)
+    execution_cli, model = _execution_cli(cli, model, purpose, _agentcli)
+    plug = _agentcli.load_cli(execution_cli)
     spill, prompt = _agentcli.spill_prompt(
         prompt, int(getattr(args, "argv_limit", 100000) or 100000),
         prompt_via=plug.get("prompt_via", "stdin"),
