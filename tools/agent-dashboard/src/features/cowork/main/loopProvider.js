@@ -244,7 +244,10 @@ function supportsRunWindow(platform = process.platform, which = findExecutable) 
 
 function terminalLaunchSpec(platform, scriptFile, which = findExecutable) {
   if (platform === 'darwin') {
-    return { command: 'open', args: ['-a', 'Terminal', scriptFile], terminal: 'Terminal' };
+    // 起動済み Terminal へ .command を渡す `open -a` は、文書名だけを表示して新しい
+    // シェルへ戻り、スクリプトを実行しないことがある。新規インスタンスへ渡すと
+    // openDocument の処理が確実に走る（実機では `-a` が無実行、`-na` が実行）。
+    return { command: 'open', args: ['-na', 'Terminal', scriptFile], terminal: 'Terminal' };
   }
   if (platform !== 'linux') throw new Error(`未対応のOSです: ${platform}`);
   const candidates = [

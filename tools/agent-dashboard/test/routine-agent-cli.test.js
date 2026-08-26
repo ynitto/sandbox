@@ -204,6 +204,27 @@ test('今すぐ実行の段は候補を同じ段内で解決し、設定へ保�
   assert.throws(() => cowork.resolveRoutineAgent(config, emptyRepo(), 'missing'), /段.*missing/);
 });
 
+test('今すぐ実行のモデル空欄は選択した CLI の既定に任せる', () => {
+  const config = configWithControl({
+    workloads: { routine: { agent_cli: 'codex', model: 'gpt-5.6-luna' } },
+  });
+  writeProfiles(config, {
+    tiers: {
+      basic: { order: 10, label: '単純作業', candidates: [{ agent_cli: 'aider' }] },
+    },
+  });
+
+  const repo = emptyRepo();
+  const selected = cowork.resolveRoutineAgent(config, repo, {
+    tier: 'basic', agent_cli: 'aider', model: '',
+  });
+  assert.strictEqual(selected.cli, 'aider');
+  assert.strictEqual(selected.model, '',
+    '別 CLI の自動割り当てモデルを引き継がない');
+  assert.ok(!cowork.stateMachineHarnessArgs(repo, path.join(repo, 'workflow.yaml'), selected, {}, {})
+    .includes('--model'), '空欄なら agent-loop / CLI 定義の default_model に任せる');
+});
+
 test('今すぐ実行は全実行レベルの全候補を表示し、選んだ組み合わせをそのまま解決する', () => {
   const config = configWithControl({ workloads: { routine: {} } });
   writeProfiles(config, {

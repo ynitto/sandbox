@@ -836,7 +836,8 @@ function harnessWorkflowArg(cwd, workflowPath, config) {
 }
 
 // agent-loop statemachine ハーネス（限定ツールループ）の起動引数。
-// モデルは段解決の結果を --model で今回の実行にだけ明示する。
+// モデルは段に宣言されているときだけ --model で今回の実行に明示する。
+// 空欄なら agent-loop / CLI 定義の default_model に任せる。
 function stateMachineHarnessArgs(cwd, workflowPath, selected, values, config) {
   const args = ['statemachine', '--workflow', harnessWorkflowArg(cwd, workflowPath, config),
     '--agent-cli', selected.cli];
@@ -1076,7 +1077,8 @@ function runStateMachine(config, itemIdValue, parameters, tier = '') {
     // 対話セッションを持たない CLI（aider・素の ollama）は、agent-loop の statemachine
     // ハーネス（限定ツールループ）へ実行契約を渡す。**tmux ウィンドウで見せるのは変わらない**
     // ——tmux はコマンドを送り結果を見せる手段で、対話 CLI 専用の仕組みではない。
-    // 段解決したモデルは --model で今回の実行にだけ明示する。
+    // 段にモデルが宣言されているときだけ --model で今回の実行に明示する。
+    // 空欄なら agent-loop / CLI 定義の default_model に任せる。
     const smArgs = stateMachineHarnessArgs(cwd, workflowPath, selected, effectiveValues, config);
     const command = cfg.loopCommand || cfg.loopProvider || 'agent-loop';
     if (cfg.runWindow !== false && supportsRunWindow()) {
@@ -1268,7 +1270,9 @@ function resolveRoutineAgent(config, repo, executionChoice = '') {
   return {
     ...base,
     cli,
-    model: candidate.model || base.model,
+    // モデル空欄は「選択した CLI の既定」。base のモデルを補うと、
+    // codex / gpt-* から aider へ切り替えたときに aider / gpt-* という不正な組み合わせになる。
+    model: candidate.model || '',
     spec: agentCli.loadCli(cli, repo),
     source: `tier:${selectedTier}`,
     tier: selectedTier,

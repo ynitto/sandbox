@@ -458,7 +458,7 @@ test('エージェントコマンドと業務プロンプトは 1 送信ごと�
 test('terminalLaunchSpec は macOS のTerminalとLinuxの利用可能な端末を選ぶ', () => {
   const mac = cowork_loopProvider.terminalLaunchSpec('darwin', '/tmp/chat.command');
   assert.deepStrictEqual(mac, {
-    command: 'open', args: ['-a', 'Terminal', '/tmp/chat.command'], terminal: 'Terminal',
+    command: 'open', args: ['-na', 'Terminal', '/tmp/chat.command'], terminal: 'Terminal',
   });
   const linux = cowork_loopProvider.terminalLaunchSpec(
     'linux', '/tmp/chat.sh', (name) => name === 'gnome-terminal' ? '/usr/bin/gnome-terminal' : ''
