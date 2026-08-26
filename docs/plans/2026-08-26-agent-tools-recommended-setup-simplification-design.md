@@ -27,8 +27,17 @@
 - **調査中に配線の壊れが 3 件見つかった**（§2）。いずれも 2026-08-25 の profile 統一の
   取りこぼしか、その前からの残りである。とくに **B1（変種ガードが死んでいる）は
   「12b をコード worker へ流さない」という構成上の封じを無効化している**。
-- 自由入力（`agent_cli` / `model` をテキストで打つ）をやめて**実在する定義からの選択**に
-  変えると、B1 は禁止リストではなく**許可リストとして構成的に閉じる**（§3.4）。
+  **B2 だけは §3.5 を採っても必須**である（直さないと 12b の実測が永久に照合しない）。
+- **設定する人が打つのは `herd` の 1 語である**（§3.5）。`aider` / `ollama` / `opencode` も
+  `gemma4:e4b` / `gemma4:12b` も一度も打たない——正しい組み合わせは用途ごとに違い、
+  実測がそれを知っている。自由入力 10 欄が **4 行・実質 2 つの選択**（ローカルを使うか /
+  クラウドのどれを使うか）になる。
+- **いまの tier 軸は二重の仕事をしている**——①予算に応じた段（本来の仕事）と
+  ②どのエンジン・どのモデルか（実測が持つべき仕事）。**解決は用途軸を GUI へ足すことでは
+  なく、tier 軸から②を取り上げること**である（§3.5.4）。
+- **`by_purpose` の追加は純粋に additive で、呼び出し側の変更はゼロ**である
+  （3 アダプタとも既に `purpose_or_role` を Resolver へ渡している。Resolver 側は約 5 行）。
+  これで **B1 は直す必要そのものが消え、B3 は本当に表現できるようになる**（§3.5.6）。
 
 ---
 
@@ -282,10 +291,10 @@ CI で `recommend.py` の出力と `agents/*.json` の突き合わせをテス�
     高性能 (large) [ claude / opus       ▼ ]
 
   適用されるもの（現在 → 推奨）
-    実行レベル 単純作業   （未設定） → ollama / gemma4:e4b     根拠: extract 6/6
-    実行レベル 軽量       （未設定） → aider / gemma4:e4b …    根拠: 9/9
+    実行レベル 単純作業   （未設定） → herd                 展開: ollama/e4b
+    実行レベル 軽量       （未設定） → herd                 展開: aider/e4b・ollama/e4b・ollama/12b
     実行方針             （未設定） → おまかせ
-    同時実行数            2 → 1                                 理由: local-llm 同時 1
+    同時実行数            2 → 1                              理由: local-llm 同時 1
     適格性               （未設定） → 4 候補を seed
                                         [ 適用 ]
 ```
@@ -305,77 +314,215 @@ CI で `recommend.py` の出力と `agents/*.json` の突き合わせをテス�
 
 **自由テキストをやめる。** 既存の実行レベル画面の 2 個のテキスト入力は、
 
-- エージェント: `agents.list()` の**正典名だけ**を並べた `<select>`
-- モデル: 選んだエージェントの `default_model` ＋ 推奨と現行 qualifications に現れる model の
-  `<datalist>`（自由入力は残すが候補が出る）
+- エージェント: `herd`（ローカル実行系）＋ 検出したクラウド CLI を並べた `<select>`
+- モデル: **空欄が既定**（＝実測に任せる）。記入したときだけその 1 つに縛る（§3.5.1）
 
 に変える。これで **B1 は禁止リストを直さなくても構成的に閉じる**——選べないものは
 保存されない。`variantTargetNames()` は残すが、判定を「実在ファイル」から
 「`canonical_name()` と一致しない綴り」へ変える（旧 `profiles.json` の掃除にはまだ要る）。
 
-### 3.5 役割の次元をどう戻すか（§1.2・§1.3・B3 への回答）
+### 3.5 GUI は `herd` 1 語にする — 用途はエンジンが申告し、モデルは実測が決める
 
-3 案ある。**採るのは案 2 で、案 3 は前提が揃うまで着手しない。**
+**この節は 2026-08-26 の設計対話で全面的に書き直した。** 初稿は「案 2（`variants` を画面に
+読み取り専用で出す）を採り、案 3（`selection_policy` を operation 別にする）は前提が
+揃うまで着手しない」としていたが、**前提は既に揃っていた**（3 アダプタとも
+`purpose_or_role` を Resolver へ渡している）。初稿の見送り判断が誤りである。
 
-| | 案 1: 何もしない | **案 2: 経路 B を推奨が所有し、画面に出す** | 案 3: `selection_policy` を operation 別にする |
+#### 3.5.1 設定する人が打つもの
+
+```
+実行レベルの構成
+  単純作業  [ herd   ]  [        ]   ← モデル欄は空
+  軽量      [ herd   ]  [        ]   ← モデル欄は空
+  標準      [ claude ]  [ sonnet ]
+  高性能    [ claude ]  [ opus   ]
+```
+
+- **`agent_cli` は `herd` の 1 語。** `aider` / `ollama` / `opencode` を人が選び分けない。
+- **モデル欄は空でよい。** 空 = 実測が用途ごとに選ぶ。**記入 = その 1 つに縛る**
+  （12b を pull していない端末など、意図的に狭めたいとき）。正しいモデルは用途ごとに
+  違う（抽出は e4b・レビューは 12b・コード編集は aider の e4b）ので、1 つ書かせると
+  どれかの用途で必ず外れる。
+- **クラウドは従来どおり具体名。** herd を通らず（herd 設計 §1）、実測も無く、何を
+  契約しているかは人しか知らない。
+
+自由入力 10 欄が **4 行・実質 2 つの選択**（ローカルを使うか / クラウドのどれを使うか）になる。
+
+#### 3.5.2 `herd` 一族は機械的に導ける（新しい宣言を足さない）
+
+| 定義 | `command[0]` | `relative_cost` |
+|---|---|---:|
+| `aider` / `ollama` / `opencode` | **`agent-herd`** | 0 |
+| `claude` / `codex` / `copilot` / `cursor` / `kiro` | 素の CLI | 1 |
+
+`command[0] == "agent-herd"` が一族の定義で、`relative_cost: 0` と完全に一致する。
+`herd.json` を作る必要も、定義へ family フィールドを足す必要も無い。
+
+#### 3.5.3 誰がいつ決めるか — 3 層に割れる
+
+「実行直前で判断する」は 2 つの決定に割れ、片方は実行直前にできない。
+
+| 決定 | 判断に要るもの | 決める場所 | 現状 |
 |---|---|---|---|
-| 変えるもの | — | 推奨に `agents/*.json` の版を含め、画面へ「役割別の実効」を読み取り専用で出す | `agent-control` v2 → v3、compiler、Resolver、全 Adapter |
-| 役割の割当を決めるのは | `variants`（見えない） | `variants`（**見える**） | `selection_policy`（実測が直接効く） |
-| 画面と実行の食い違い | 残る | **消える**（画面が変種先とモデルを表示する） | 消える |
-| B3 の縮退順 | 表現できない | `errors[].class` と再投入が正典だと**文書を実装に合わせる** | `selection_policy` で本当に表現できる |
-| コスト | 0 | 小（表示と配布の版だけ） | 大 |
+| ① どのアダプタ・どのモデルか | **実測**（qualifications） | **compiler（管理面）** | 用途を捨てている（要修正） |
+| ② どの起動形（argv）か | `agents/*.json` だけ | **エンジン・実行直前** | `resolve_variant()` で**既に動いている** |
 
-案 2 の具体形: `orchestration:overview` に `agents.list()` から導いた
-**役割 → 実効 (agent_cli, profile, model)** の表を足し、実行レベル画面の下に出す。
+①を実行直前へ持っていけないのは、`executionresolver` が
+「**エンジンは agent-candidate-qualifications を読まない**」不変条件を持つためである
+（docstring に明記。読ませると管理面と実行面の分離が壊れる）。したがって:
 
 ```
-役割別の実効起動形（agents/*.json の宣言。実行レベルの選択より後に効きます）
-  verify    → ollama (verify)        gemma4:12b   ← 段の選択に関わらずこれで走ります
-  split     → ollama (list)          gemma4:e4b
-  extract   → ollama (json)          gemma4:e4b
-  retrieve  → ollama (read)          gemma4:e4b
-  work      → 段の候補そのまま
+GUI          : 一律 herd（モデル欄は空）
+コンパイル時  : herd 一族を用途別に展開 →（agent_cli, model）のランキングを control へ焼く
+実行直前     : resolve_variant が profile（argv の形）を決める   ← 既存のまま・変更なし
 ```
 
-これだけで「設定したのと違うものが動く」は消える。**書き換えの口は出さない**
-（変種は実測でチューニングされた既定で、GUI から触らせると 2026-08-23 §5 の
-「12b の縮退基準を設定でいじらない」が破れる）。
+#### 3.5.4 用途の軸は既に管理面にある
 
-B3 は**文書側を直す**: `agents/ollama.json` verify profile の hint から
-「selection_policy では retry_limit=1 と候補順 12b → e4b がこの基準の表現です」を削り、
-実際の表現である「`class: transient` による再投入 1 回 ＋ 2 回連続で e4b へ」に書き換える。
+`flow-tiers.js` の `KIND_MIN_TIER`（kind → 最低段）が、まさに用途軸のカタログである。
+GUI に出していないだけで、概念は既にある。ここへ **用途 → 必要な `operation_class`** を
+1 表足せば、利用者からは見えないまま用途軸が使える。
 
-なお `compileSelectionPolicy` には**独立に必要な誠実さの修正**がある: 現状は
-「どれか 1 つでも qualified なら rank に載る」ので、`ollama/gemma4:e4b` が
-`bounded-review` blocked のまま rank 1 位になる。最小の直しは
-**候補行に qualified な operation_class の一覧を残し、画面に出す**こと（選択の挙動は
-変えない。変えるのは案 3 の仕事）。
+**つまり解決は「用途軸を GUI へ足すこと」ではなく「tier 軸から候補選択の仕事を取り上げる」
+ことである。** いまの tier 軸は ①予算に応じた段（本来の仕事）と ②どのエンジン・どの
+モデルか（実測が持つべき仕事）を二重に担っている。②を外せば tier は予算の軸に戻る。
 
----
+#### 3.5.5 実測プロトタイプ（2026-08-26 実行）
+
+GUI は上の 4 行、`qualifications.json` は現 archive の seed（B2 修正後）、用途 →
+operation_class は仮カタログ。**12b を軽量段へ入れてよくなった**点だけが従来と違う。
+
+```
+purpose    必要な用途                内部で選ばれる順                            上位段へ昇格
+─────────────────────────────────────────────────────────────────────────────────────
+work       single-symbol-edit,…      aider/gemma4:e4b
+generate   single-symbol-edit        aider/gemma4:e4b
+verify     bounded-review            ollama/gemma4:12b
+judge      bounded-review            ollama/gemma4:12b
+extract    extract                   ollama/gemma4:e4b → ollama/gemma4:12b(trial)
+evaluator  bounded-analysis          ollama/gemma4:e4b → ollama/gemma4:12b
+reduce     constrained-summary       ollama/gemma4:e4b(trial) → …
+planner    planner                   —                                        はい（claude/sonnet）
+split      bounded-proposal          ollama/gemma4:e4b(trial) → …
+```
+
+これは 2026-08-23 提案 §1 の「実測で確定している役割×モデル」と**一致する**。人が暗記して
+打ち込んでいた対応表が、`herd` の 1 語から機械的に出る。`planner` がクラウドに残るのも、
+ローカル候補に planner の裏付けが無いから**自動でそうなる**だけである。
+
+#### 3.5.6 B1 と B3 が消える
+
+- **12b を tier から締め出す必要がなくなる。** `work` / `generate` は
+  `single-symbol-edit` の裏付けが無いので**構成ではなく実測で**選ばれない。死んでいた
+  ガード（B1）を直す必要そのものが消える（それでも B2 は必須——直さないと 12b の実測が
+  永久に照合しない）。
+- **「12b → e4b の縮退順」が本当に書ける**（B3）。`bounded-analysis` の列がそれである。
+
+#### 3.5.7 変更点（GUI 変更は tier 行の入力欄だけ・契約バージョン据え置き）
+
+| # | ファイル | 内容 | 規模 |
+|---|---|---|---|
+| 1 | `execution-policy-compiler.js` | `herd` 一族の展開 ＋ `by_purpose` を**追加で**出す（`candidates` は残す） | 中 |
+| 2 | `executionresolver.py` | 自動選択で `by_purpose[purpose_or_role]` を優先、無ければ従来の `candidates` | **約 5 行** |
+| 3 | `executioncontract.py` | `by_purpose` の任意フィールド検証 | 約 10 行 |
+| 4 | `flow-tiers.js` の隣 | 用途 → `operation_class` カタログ | 小 |
+| 5 | `qualification_seed.py` | B2 修正（必須） | 1 行 |
+
+`selection_policy_errors()` は未知キーを弾かないので**純粋に additive**である。version 2 の
+まま、古い読み手は無視し、新しい読み手だけが使う。**呼び出し側の変更はゼロ**
+（3 アダプタとも既に `purpose_or_role` を渡している）。
+
+#### 3.5.8 踏む地雷（判明している 4 つ）
+
+1. **`control.json` の legacy 欄へ `herd` と書いてはいけない。** `load_cli("herd")` は
+   `AgentCliError: agents/herd.json が見つかりません` で落ちる。`selection_policy` を
+   読まない version 1 経路がそこを見るので、**legacy 欄には展開後の rank 1 を書く**。
+2. **`candidatesWithinCeiling()` は `agent_cli` と `model` の両方を必須にしている**
+   （片方欠けで候補を捨てる）。`herd` 行は family として**先に展開**してから渡す。
+3. **未 pull のモデルが選ばれ得る。** `resolve_execution` の `unavailable` 引数
+   （実行時 availability の除外）は**あるが誰も埋めていない**。`ollama list` を流し込む
+   口が要る（§3.2 の `requires.models` 点検と対になる）。
+4. **未登録の用途は従来の挙動のまま**にする（`by_purpose` に無ければ `candidates` へ
+   フォールバック）。そうしないと実測の無い用途が一斉に park する。カタログが埋まった
+   用途から順に効く opt-in 展開になる。
+
+#### 3.5.9 台帳と格付けの中では区別を残す
+
+**人・GUI・エンジンからは `herd` 1 つ。台帳と格付けの中では `aider` / `ollama` /
+`opencode` の区別を残す。** `qualifications` の鍵は `(agent_cli, model)` で、
+`(herd, gemma4:e4b)` へ畳むと aider のコード編集 9/9 と ollama のテキスト抽出 6/6 が
+同じ候補に混ざる。しかも **aider と ollama の差は用途の次元ではなくハーネスの次元**
+（single-shot ＋ 4 ツール契約 / tool-loop ＋ bash 無制限）なので、`operation_class` では
+分離できない。2026-08-25 の「用途を `agent_cli` へ畳むな」は正しいが、**この 2 つは
+用途違いではない**ので同じ理屈で畳めない。
+
+本当に 1 定義（`herd.json` ＋ profiles: aider / ollama / opencode）にしたければ、
+`agent-candidate-qualifications` の鍵へ profile 次元を足す契約変更が要る。**いまは不要**。
+
+#### 3.5.10 後片付け（この変更が開けるもの）
+
+`by_purpose` が入ると、compiler と `variants` はほぼ同じモデルを言うようになる。
+そうなれば **`resolve_variant` のモデル上書きは外せる**——変種の役目は
+「起動形（argv）の振替」だけで足りる。それが §1.2 で見つけた「画面と実行が食い違う」の
+根本的な後片付けである。移行中は**両者が一致することをテストで縛る**。
+
+#### 3.5.11 外から見た agent-herd（コンセプト 3 行）
+
+1. **agent-herd は人・GUI・エンジンから見て 1 つの実行系**である。中の aider / ollama /
+   opencode と起動形は意識しない（記録の中だけ区別が残る）。
+2. 外部が渡せるのは **対話/非対話・処理種別・ポリシー**の 3 軸で、すべて既定を持つ。
+   既定は人が定義に焼いた値ではなく**実測から決まる**。
+3. GUI はどれも指定しない。**用途は呼び出し側が申告し、モデルとアダプタは実測から
+   管理面が決め、起動形は実行直前に定義が決める。**
+
+3 軸のうち **2 つは既に実装済み**である（実測 2026-08-26）:
+
+| 軸 | 現状 | 既定 |
+|---|---|---|
+| 対話 / 非対話 | **あり**（`agent-herd chat` / 定義の `interactive`） | 非対話 |
+| **処理種別** | **あり**（`--purpose`）→ 実行直前に variant を解決 | base 起動形 |
+| ポリシー | **aider adapter 専用**（`--agent-policy`・ID は現在 1 つ） | 定義の `write_args` |
+
+```
+$ agent-herd defs ollama                    → profile=(base)  model=gemma4:e4b
+$ agent-herd defs ollama --purpose verify   → profile=verify  model=gemma4:12b
+$ agent-herd defs ollama --purpose split    → profile=list    model=gemma4:e4b
+$ agent-herd defs ollama --purpose extract  → profile=json    model=gemma4:e4b
+```
+
+残るギャップは 2 つ: (a) `--purpose` は `defs` / `exec` にしかなく、**エンジンは `exec` を
+使わない**（仕様 §4.2）ため、エンジン経路では agent-flow 側の `resolve_variant` が同じ
+ことを別の場所でしている——1 実装へ寄せる。(b) ポリシーが herd レベルでなく aider 専用
+なので、`--purpose` と同じ層へ上げる。
+
 
 ## 4. 段階
 
 | 段 | 内容 | 依存 | 大きさ |
 |---|---|---|---|
-| **P0** | B1・B2 の修正と回帰テスト（`variantTargetNames` の判定を正典名基準へ / seed の `agent_cli` を `ollama` へ / CI で「推奨の agent_cli が全部正典名」を縛る） | なし | 小 |
-| **P1** | `recommend.py` と `agent-recommendation` スキーマ。CLI だけで完結（`--print-diff` で現状との差分を出す） | P0 | 中 |
-| **P2** | `agent-audit seed --from-recommendation`（writer を 1 つに保ったまま GUI から呼べるようにする） | P1 | 小 |
-| **P3** | dashboard「おすすめ構成」画面（点検・slots・差分・適用）＋ 実行レベル入力の select 化 ＋ 役割別の実効表（案 2） | P1・P2 | 中 |
-| **P4** | B3 の文書修正と、`selection_policy` 候補行への operation_class 一覧 | P0 | 小 |
+| **P0** | **B2 の修正**（seed の `agent_cli` を正典名へ）と回帰テスト（CI で「推奨・seed の `agent_cli` が全部正典名」を縛る）。B1 は §3.5 を採るなら消えるので、採らない場合だけ直す | なし | 小 |
+| **P1** | **用途別コンパイル**: `by_purpose` の追加（compiler・Resolver 約 5 行・契約検証）＋ 用途 → `operation_class` カタログ。**GUI 変更なし**で先に効かせられる | P0 | 中 |
+| **P2** | **`herd` family の展開**（GUI の tier 行に `herd` の 1 語を書けるようにする。legacy 欄には展開後の rank 1 を書く——§3.5.8-1） | P1 | 中 |
+| **P3** | `recommend.py` と `agent-recommendation` スキーマ（CLI だけで完結・`--print-diff`） | P1 | 中 |
+| **P4** | `agent-audit seed --from-recommendation`（writer を 1 つに保ったまま GUI から呼べる） | P3 | 小 |
+| **P5** | dashboard「おすすめ構成」画面（点検・slots・差分・適用）＋ 役割別の実効表 | P2・P4 | 中 |
+| **P6** | 後片付け: `resolve_variant` のモデル上書きを外す（§3.5.10）／B3 の文書修正 | P1 | 小 |
 
-P0〜P2 だけでも手順は 8 → 3 に減る（`ollama pull` / `install.sh` / `recommend → seed`）。
-P3 で 8 → **1 画面 ＋ 2 個のプルダウン**になる。
+**P1 は単独で価値が出る**（GUI を触らずに、いまの設定のまま用途別の割当が実測どおりになる）。
+P2 まで進むと、人が打つのは `herd` の 1 語になる。
 
 ## 5. before / after
 
-| | いま | P3 後 |
-|---|---|---|
-| 触る面 | CLI・dashboard・テキストエディタの 3 面 | dashboard 1 面（点検が CLI 実行を案内する） |
-| 自由入力 | `agent_cli` / `model` を 10 欄 | クラウド枠 2 個の選択 |
-| 正解の出どころ | 設計文書を読んで暗記 | `recommendation.json`（実測 archive から生成） |
-| 順序 | 実行レベル → 実行方針（逆にすると保存できない） | 1 ボタン（順序は実装が持つ） |
-| 12b がコード worker へ流れない保証 | **無い**（B1 で封じが外れている） | 候補が選択式なので構成的に不可能 ＋ 適格性が `blocked` |
-| 画面と実行の一致 | verify は画面と別モデルで走る | 役割別の実効表に出る |
+| | いま | P2 後（GUI） | P5 後（全部） |
+|---|---|---|---|
+| 打つもの | `agent_cli` / `model` を自由入力 10 欄 | **`herd` 1 語 ＋ クラウド 2 行** | 同左（点検と差分つき） |
+| 触る面 | CLI・dashboard・テキストエディタの 3 面 | 同左 | dashboard 1 面 |
+| 正解の出どころ | 設計文書を読んで暗記 | 実測（qualifications） | `recommendation.json` |
+| 順序 | 実行レベル → 実行方針（逆にすると保存できない） | 同左 | 1 ボタン（順序は実装が持つ） |
+| 役割ごとの割当 | workload 単位（rank 1 位が全役割を取る） | **用途ごとに実測で決まる** | 同左 |
+| 12b がコード worker へ流れない保証 | **無い**（B1 で封じが外れている） | **実測で不可能**（裏付けが無い） | 同左 |
+| 画面と実行の一致 | verify は画面と別モデルで走る | 画面がモデルを名指ししないので食い違い自体が消える | 役割別の実効表で確認できる |
+
 
 ## 6. しないこと
 
@@ -385,9 +532,12 @@ P3 で 8 → **1 画面 ＋ 2 個のプルダウン**になる。
 - **`variants` を GUI から編集させること。** 実測チューニングを画面から壊せるようにしない。
 - **推奨に「未測定の面」を入れること。** `coverage.json` が `missing` の面
   （amigos 全面・project 9 面・dashboard の残り 8 面）は推奨に登場させない。
-- **`selection_policy` を operation 別にすること（案 3）を今やること。** 前提は
-  「purpose → operation_class の対応が 1 実装で決まっていること」で、いまそれは
-  `nodecontract` の機械判定に部分的にしかない。
+- **`agent-candidate-qualifications` の鍵へ profile 次元を足すこと。** `herd` を台帳の中でも
+  1 つに畳みたくなったときだけ必要で、いまは不要（§3.5.9）。
+- **`by_purpose` を未登録の用途へ強制すること。** カタログに無い用途は従来の
+  `candidates` へフォールバックする（§3.5.8-4）。実測が無い用途を一斉に park させない。
+- **`resolve_variant` のモデル上書きを P1 と同時に外すこと。** 一致をテストで縛ってから、
+  別段（P6）で外す（§3.5.10）。
 
 ## 7. 再評価条件
 
