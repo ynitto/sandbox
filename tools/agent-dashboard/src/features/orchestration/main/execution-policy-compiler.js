@@ -142,6 +142,13 @@ function candidatesWithinCeiling(tiers, ceiling) {
   }
   const seen = new Set();
   return rows.filter(({ candidate }) => {
+    // `herd` は管理面の入力ラベルであって候補ではない。展開は呼び出し側
+    // （profiles.expandedProfiles）の仕事で、ここまで残っていたら**落とす**——
+    // 候補として通すと `(herd, ...)` が selection_policy に載り、エンジンが
+    // load_cli("herd") で落ちる。
+    if (isObject(candidate) && String(candidate.agent_cli || '').trim().toLowerCase() === 'herd') {
+      return false;
+    }
     if (!isObject(candidate) || !candidate.agent_cli || !candidate.model) return false;
     const id = candidateId(candidate);
     if (seen.has(id)) return false;

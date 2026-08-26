@@ -18,6 +18,7 @@ const control = require('./control');
 const agents = require('./agents');
 const qualifications = require('./qualifications');
 const policyCompiler = require('./execution-policy-compiler');
+const herdFamily = require('./herd-family');
 
 const { sharedStateReadPath, writeSharedStateJson } = require('../../../base/main/agent-home');
 
@@ -76,6 +77,9 @@ function normalizeTiers(raw) {
   return out;
 }
 
+// 変種先（`ollama-json` 等の profile の綴り）を候補から外す。
+// `herd` は変種先ではなくローカル実行系の一族ラベルなので、ここは通り抜ける
+// （展開は profiles.expandedProfiles が担う）。
 function withoutVariantTargets(tiers, targets) {
   const removed = [];
   const sanitized = {};
@@ -504,12 +508,30 @@ function decide(profiles, usage, nowMs) {
 
 // --- 適用（副作用はここに閉じる） -------------------------------------------
 
+// `herd` 行を実測由来の具体候補へ展開した profiles を返す（決定・コンパイル用）。
+//
+// **保存されている宣言（`herd` の 1 語）はそのまま残す。** 展開は派生の話なので、
+// profiles.json へ書き戻さない——書き戻すと人の意図（ローカルにおまかせ）が
+// その時点の実測へ固定され、qualifications が更新されても追従しなくなる。
+function expandedProfiles(cfg, profiles, qualificationDoc) {
+  const hasHerd = Object.values(profiles.tiers || {})
+    .some((spec) => (spec.candidates || []).some(herdFamily.isHerdCandidate));
+  if (!hasHerd) return { ...profiles, herdUnresolved: [] };
+  const { tiers, unresolved } = herdFamily.expandTiers(profiles.tiers, {
+    memberNames: herdFamily.members(cfg),
+    qualifications: qualificationDoc,
+  });
+  return { ...profiles, tiers, herdUnresolved: unresolved };
+}
+
 // 書かずに決定だけ見せる（画面の dry-run ボタン用）。
 function evaluate(cfg, { force = false, nowMs = Date.now() } = {}) {
-  const profiles = load(cfg);
+  const declared = load(cfg);
+  const qualificationDoc = qualifications.load(cfg);
+  const profiles = expandedProfiles(cfg, declared, qualificationDoc);
   const usage = budget.usage(cfg);
   const decisions = decide(force ? { ...profiles, state: {} } : profiles, usage, nowMs);
-  return { profiles, usage, decisions, nowMs };
+  return { profiles, declared, qualificationDoc, usage, decisions, nowMs };
 }
 
 function strategyOf(executionPolicy) {
@@ -528,18 +550,25 @@ function strategyOf(executionPolicy) {
 // revision_applied 突き合わせを無意味にする）。
 function apply(cfg, options) {
   const dir = resolveProfilesDir(cfg);
-  const { profiles, decisions, nowMs } = evaluate(cfg, options);
+  const { profiles, declared, qualificationDoc, decisions, nowMs } = evaluate(cfg, options);
   const controlDir = control.resolveControlDir(cfg);
   const curControl = control.loadControl(controlDir);
-  const qualificationDoc = qualifications.load(cfg);
+  // `herd` 行を展開できなかった（実測がまだ無い・一族の定義が入っていない）ときは、
+  // 推測で 1 つ選ばずに理由を残す。推測すると「設定したのと違うものが動く」を
+  // 新しく作ることになる。
+  const herdUnresolved = profiles.herdUnresolved || [];
 
   const controlPatch = {};
-  const nextState = { ...profiles.state };
+  const nextState = { ...declared.state };
   let stateDirty = false;
   let compiledAny = false;
 
   for (const [wl, decision] of Object.entries(decisions)) {
     const curWl = curControl.workloads[wl] || {};
+    if (!decision.candidate && herdUnresolved.length) {
+      decision.reason = `${decision.reason}（herd を展開できません: 適格性`
+        + `（qualifications.json）に一族の候補がありません）`;
+    }
     if (!decision.candidate) {
       const lifecycleOwnedByQuota = !curWl.lifecycle || curWl.lifecycle === 'run'
         || curWl.lifecycle_source === 'quota';
@@ -617,11 +646,13 @@ function apply(cfg, options) {
       workloads: controlPatch,
     });
   }
-  const tiersDirty = profiles.removedVariantCandidates.length > 0;
+  // 書き戻すのは**宣言**のほう（`herd` の 1 語を保つ）。展開結果を書くと、人の意図が
+  // その時点の実測へ固定され、qualifications が更新されても追従しなくなる。
+  const tiersDirty = declared.removedVariantCandidates.length > 0;
   if (stateDirty || tiersDirty) {
-    const next = { ...(profiles.raw || {}) };
+    const next = { ...(declared.raw || {}) };
     next.version = 1;
-    if (tiersDirty) next.tiers = profiles.tiers;
+    if (tiersDirty) next.tiers = declared.tiers;
     next.state = nextState;
     next.updated_at = nowStamp();
     next.updated_by = 'dashboard';
