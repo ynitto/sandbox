@@ -49,15 +49,17 @@ test('参加候補は選択中だけでなく発見済みの全プロジェク�
   ]);
 });
 
-test('参加候補は初回描画前に取得し、説明全文は固定高カード内でスクロールできる', () => {
+test('参加候補はホーム描画後に温め、説明全文は固定高カード内でスクロールできる', () => {
   const bootstrap = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'bootstrap.js'), 'utf8');
   const css = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'styles.css'), 'utf8');
   const feature = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'features', 'participation.js'), 'utf8');
 
   assert.ok(
-    bootstrap.indexOf('await refreshFeatureTabs()') < bootstrap.indexOf('await selectProject(target.dir)'),
-    '初回のプロジェクト描画より先にフィーチャー候補を取得する'
+    bootstrap.indexOf("await switchArea('home')") < bootstrap.indexOf('refreshFeatureTabs(),'),
+    '参加候補の全プロジェクト走査はホームの初期描画を塞がず、その直後に温める'
   );
+  assert.ok(!bootstrap.includes('await selectProject(target.dir)'),
+    'ホーム表示のために前回プロジェクトの詳細を先読みしない');
   const descriptionRule = css.match(/\.participation-description\s*\{[^}]*\}/s)[0];
   const cardRule = css.match(/\.participation-card\s*\{[^}]*\}/s)[0];
   assert.match(cardRule, /height:\s*300px/);

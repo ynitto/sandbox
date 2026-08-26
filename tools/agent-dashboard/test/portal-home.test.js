@@ -135,11 +135,18 @@ const agentAudit = fs.readFileSync(path.join(RENDERER_DIR, 'features', 'agent-au
   );
   assert.ok(!selectSrc.includes('switchArea('), '対象の選択で領域を横取りしない');
   assert.ok(!selectSrc.includes('switchTab('), '対象の選択でタブを横取りしない');
-  // 起動時はホームへ着地する（前回の対象は裏で復元するだけ）
+  // 起動時はホームへ着地する。重い各領域と前回プロジェクトの詳細は初期描画を塞がない。
   const bootstrap = fs.readFileSync(path.join(RENDERER_DIR, 'bootstrap.js'), 'utf8');
   assert.ok(bootstrap.includes("switchArea('home')"), '起動時の着地点はホーム');
-  // 左メニューの出し分けは各取得結果に依存する。起動時に全部そろえないと、その領域は
-  // 最初の巡回まで（自動更新を切っていれば永久に）左メニューから消えたままになる。
+  const beforeHome = bootstrap.slice(0, bootstrap.indexOf("await switchArea('home')"));
+  assert.ok(beforeHome.includes('await refreshDiscovery()'), 'ホームの横断表示に必要な発見だけは先に待つ');
+  assert.ok(!beforeHome.includes('await refreshCowork()'), '全フォルダ走査はホームの初期描画を塞がない');
+  assert.ok(!beforeHome.includes('await selectProject('), '前回プロジェクトの詳細をホームのために先読みしない');
+  assert.ok(bootstrap.includes('requestAnimationFrame(') && bootstrap.includes('warmStartupData()'),
+    '初期描画をブラウザへ渡した後に残りの領域を温める');
+  assert.match(bootstrap, /async function warmStartupData\(\)[\s\S]*Promise\.all\(\[/,
+    '独立した制御面は直列待ちせず並行して取得する');
+  // 左メニューの出し分けに必要な取得はバックグラウンドでも必ず実行し、完了時に描き直す。
   for (const refresh of ['refreshDiscovery()', 'refreshCowork()', 'refreshAmigos()', 'refreshOrchestration()']) {
     assert.ok(bootstrap.includes(refresh), `起動時に ${refresh} を呼ぶ（領域の出し分けの材料）`);
   }
