@@ -41,6 +41,16 @@ agent-audit distill                  # 観測クラスタ → 洞察（LLM reduc
 agent-audit tasks                    # 洞察 → 改善タスク（JSON を stdout へ）
 agent-audit tune [--apply]           # 型付き調整候補 → 宣言へ昇格、悪化・期限で自動退役
 
+agent-audit seed --from-recommendation ~/.agents/recommendation.json [--apply] [--force]
+                                     # おすすめ構成（agent-recommendation）の適格性を
+                                     # qualifications.json へ置く。**生成はしない**——
+                                     # 中身を検証して置くだけの口で、writer を agent-audit の
+                                     # 1 つに保ったまま GUI から起動できるようにするためのもの。
+                                     # 既定は dry-run。本番 receipt 由来の実績がある置き場は
+                                     # --force なしでは上書きしない（seed は初期値であって、
+                                     # 運用開始後の観測より新しい根拠ではない）
+agent-audit qualify [--apply]        # 本番 receipt から適格性を昇格・降格・期限切れ
+
 agent-audit calibrate [--write]      # rates 較正の提案（--write で budget config へ）
 agent-audit ratings --period month [--methods] # 仕事種別×モデル（任意で手法セット軸）の格付け
 agent-audit trials --period month    # 2 variant trial の PASS 率・平均消費・差分判定
