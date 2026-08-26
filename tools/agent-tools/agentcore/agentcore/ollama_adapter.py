@@ -130,100 +130,18 @@ _INCOMPLETE_REASONS = {
 # ---------------------------------------------------------------------------
 # 環境の補完（非ログインシェル対策）
 #
-# 正典はこのブロック。agent-aider（aider_adapter.py）と agent-opencode
-# （tools/opencode/agent-opencode.py）は単体ファイルで配布され agentcore を
-# import できないため、同一の複製を持つ。直すときは 3 箇所を揃えること。
+# 実装は agentcore.hostenv が唯一持つ（複製しない — C7）。エンジンは agent CLI を
+# 非ログインシェルの subprocess として起動するので、~/.profile の OLLAMA_* / NO_PROXY は
+# 届かない。届かないと既定の localhost へ向かうか、接続がプロキシへ流れて 504 になる。
+# 以下は呼び出し側の綴りを変えないための再輸出。
 # ---------------------------------------------------------------------------
-_PROFILE_ENV_PREFIXES = ("OLLAMA_", "AGENT_OLLAMA_")
-_PROFILE_ENV_EXACT = ("NO_PROXY", "no_proxy")
-
-
-def _complete_ollama_env() -> None:
-    """OLLAMA_HOST / OLLAMA_API_BASE を相互に補い、ollama をプロキシ対象から外す。
-
-    片方しか export していない環境でも、両方の読み手（ollama 系 CLI は OLLAMA_HOST、
-    aider/litellm は OLLAMA_API_BASE）が同じサーバへ向くようにする。プロキシ迂回は
-    NO_PROXY の取り込みだけに頼らない——親環境が不完全な NO_PROXY を持っていると
-    profile の値は取り込まれず（環境が勝つ規則）、接続がプロキシへ流れて
-    504 Gateway Timeout で落ちるため、ollama のホストを常に両表記へ追記する。
-    NO_PROXY と no_proxy は読み手によって参照順が違う（urllib は小文字が勝つ）ので、
-    両者の和集合を作って同じ値に揃える。
-    """
-    host = os.environ.get("OLLAMA_HOST", "")
-    base = os.environ.get("OLLAMA_API_BASE", "")
-    if host and not base:
-        os.environ["OLLAMA_API_BASE"] = host if "://" in host else f"http://{host}"
-    elif base and not host:
-        os.environ["OLLAMA_HOST"] = base
-    target = os.environ.get("OLLAMA_API_BASE") or os.environ.get("OLLAMA_HOST") or ""
-    try:
-        hostname = urllib.parse.urlsplit(
-            target if "://" in target else f"//{target}").hostname
-    except ValueError:
-        hostname = None
-    hosts = [hostname] if hostname else ["localhost", "127.0.0.1"]
-    entries: "list[str]" = []
-    for var in ("NO_PROXY", "no_proxy"):
-        for item in os.environ.get(var, "").split(","):
-            item = item.strip()
-            if item and item not in entries:
-                entries.append(item)
-    entries.extend(h for h in hosts if h not in entries)
-    os.environ["NO_PROXY"] = os.environ["no_proxy"] = ",".join(entries)
-
-
-def _import_profile_env(path: str) -> dict:
-    profile = os.path.expanduser(path)
-    if not os.path.isfile(profile):
-        return {}
-    # profile を source した後の環境を JSON で受け取る。stdin は閉じる——
-    # このプロセスの stdin はプロンプト本文なので、profile に読ませてはいけない。
-    dump = "import json, os; print(json.dumps(dict(os.environ)))"
-    try:
-        proc = subprocess.run(
-            ["sh", "-c", '. "$1" >/dev/null 2>&1; exec "$2" -c "$3"',
-             "sh", profile, sys.executable, dump],
-            stdin=subprocess.DEVNULL, capture_output=True, timeout=10)
-        data = json.loads(proc.stdout.decode("utf-8", "replace"))
-    except (OSError, subprocess.SubprocessError, ValueError):
-        return {}
-    if not isinstance(data, dict):
-        return {}
-    imported: dict = {}
-    for name, value in data.items():
-        if ((name.startswith(_PROFILE_ENV_PREFIXES) or name in _PROFILE_ENV_EXACT)
-                and name not in os.environ and isinstance(value, str)):
-            os.environ[name] = value
-            imported[name] = value
-    return imported
-
-
-def load_profile_env(path: str = "~/.profile") -> dict:
-    """~/.profile の OLLAMA_* / NO_PROXY を補完し、プロキシ迂回を確実にする。
-
-    エンジン（agent-project / agent-flow / agent-amigos）は agent CLI を
-    **非ログインシェルの subprocess** として起動するため、~/.profile に書いた
-    `export OLLAMA_HOST=...` / `export NO_PROXY=...` は届かない。届かないと
-    既定の 127.0.0.1 へ向かって「接続できません」で env 落ちするか、接続が
-    社内プロキシへ流れて 504 Gateway Timeout になる——設定はしてあるのに
-    動かない、という一番説明しづらい失敗になるので、CLI の入口で 1 回だけ自力で読む。
-
-    - 環境に既にある変数が常に勝つ（呼び出し側の明示指定を profile で潰さない）
-    - OLLAMA_HOST / OLLAMA_API_BASE / NO_PROXY（か no_proxy）が全部そろっていれば
-      profile は読まない（構成済みの環境へ余計な subprocess を足さない）
-    - profile の評価は sh の子プロセスに閉じ込め、失敗は黙って無視する
-      （profile が壊れていても推論を止める理由にはしない）
-    - 最後に OLLAMA_HOST ⇄ OLLAMA_API_BASE を相互補完し、ollama のホストを
-      NO_PROXY / no_proxy へ追記する（この段は profile の有無と無関係に必ず行う）
-
-    戻り値: profile から実際に取り込んだ変数（テストと診断のため）。
-    """
-    imported: dict = {}
-    if not (os.environ.get("OLLAMA_HOST") and os.environ.get("OLLAMA_API_BASE")
-            and (os.environ.get("NO_PROXY") or os.environ.get("no_proxy"))):
-        imported = _import_profile_env(path)
-    _complete_ollama_env()
-    return imported
+from agentcore.hostenv import (  # noqa: F401  (再輸出)
+    _PROFILE_ENV_EXACT,
+    _PROFILE_ENV_PREFIXES,
+    _complete_ollama_env,
+    _import_profile_env,
+    load_profile_env,
+)
 
 
 def _as_bool(text: str, name: str) -> bool:

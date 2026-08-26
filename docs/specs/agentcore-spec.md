@@ -61,7 +61,7 @@ agentcore が import する側
 | `ollama_replay` | 記録済みプロンプトのオフライン再生（測定の口） |
 | `aider_adapter` | Aider の実測トークンを共通 usage 契約へ渡す。`agent-aider` の実体 |
 
-詳細は [`docs/specs/agent-ollama-spec.md`](./agent-ollama-spec.md)。
+詳細は [`docs/specs/agent-herd-spec.md`](./agent-herd-spec.md)。
 
 ---
 

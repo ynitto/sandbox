@@ -39,7 +39,8 @@ class AgentCmdTests(unittest.TestCase):
 
     def test_definition_only_cli_is_supported(self):
         argv, stdin, out_file = plan._agent_cmd("ollama", "qwen3.5:9b", "PROMPT")
-        self.assertEqual(argv[0], "agent-ollama")
+        # 定義の command は統合入口（agent-herd）経由の綴り。adapter 名はサブコマンド側。
+        self.assertEqual(argv[:2], ["agent-herd", "ollama"])
         self.assertIn("qwen3.5:9b", argv)
         self.assertEqual(stdin, "PROMPT")     # ollama は stdin 渡し
         self.assertIsNone(out_file)

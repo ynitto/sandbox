@@ -249,6 +249,22 @@ class TestMainModes(_NoServerMixin, unittest.TestCase):
         spec = agentcli.load_cli("ollama")
         self.assertEqual(agentcli.classify_error(spec, message)[0], "transient")
 
+    def test_queue_peer_vanished_classifies_as_env(self):
+        """順番待ちの相手が消えたのは一時障害ではない。
+
+        再投入しても待つ先が居ないので、`transient` として黙って回すと同じ待ちを
+        繰り返すだけになる。人がサーバを見に行くべき形＝`env` として出す。
+        """
+        err = io.StringIO()
+        with mock.patch.object(ollama_adapter.ollama_loop, "run_plain",
+                               side_effect=ollama_loop.StallError(
+                                   "順番待ちの相手が居なくなりました: queue のまま 300 秒…")), \
+                mock.patch.object(ollama_adapter.sys, "stdin", io.StringIO("hi")), \
+                redirect_stderr(err):
+            self.assertEqual(ollama_adapter.main(["qwen3", "--no-log"]), 1)
+        spec = agentcli.load_cli("ollama")
+        self.assertEqual(agentcli.classify_error(spec, err.getvalue())[0], "env")
+
     def test_connection_failure_classifies_as_env(self):
         err = io.StringIO()
         with mock.patch.object(ollama_adapter.ollama_loop, "run_plain",
@@ -450,6 +466,47 @@ class TestSkillToolsetGuard(_NoServerMixin, unittest.TestCase):
         self.assertEqual(self._run("read", "手順の説明だけ")["text"], "ok")
 
 
+class TestProgressBeaconReachesTheAdapter(_NoServerMixin, unittest.TestCase):
+    """ハーネスが置いた灯台を、ヘッドレス実行が実際に刻むこと（継ぎ目の疎通）。
+
+    見張り（`_tl_run_watched`）と刻む側（`EventLog`）は別々に縛ってあるが、両者を結ぶのは
+    環境変数 1 本なので、`run_request` まで通しておかないと「どちらも正しいのに繋がって
+    いない」を取り逃がす。ヘッドレスは終わるまで stdout に何も出さないので、この 1 本が
+    切れると外側からは無進捗と見分けが付かない。
+    """
+
+    def test_headless_run_marks_the_beacon_named_by_the_environment(self):
+        import json as _json
+        import tempfile as _tempfile
+        from pathlib import Path as _Path
+
+        with _tempfile.TemporaryDirectory() as tmp:
+            beacon = _Path(tmp) / "beacon"
+            with mock.patch.dict(ollama_adapter.os.environ,
+                                 {"AGENT_PROGRESS_BEACON": str(beacon)}), \
+                    mock.patch.object(ollama_adapter.ollama_loop, "run_plain",
+                                      return_value={"text": "ok", "tokens_in": 1,
+                                                    "tokens_out": 1}):
+                ollama_adapter.run_request(
+                    "依頼", {**ollama_adapter.parse_args(["m"]), "no_log": True})
+            marked = _json.loads(beacon.read_text(encoding="utf-8"))
+        # 最後に刻まれるのは run_end（＝実行の終わりまで刻み続けている）。
+        self.assertEqual(marked["kind"], "run_end")
+
+
+def _adapter_args(argv, expect="ollama"):
+    """定義の argv から、入口が adapter へ実際に渡す部分だけを取り出す。
+
+    定義の `command` は `agent-herd ollama …` の綴りなので、素の添字で剥がすと
+    綴りが変わるたびにテストが嘘になる。入口（`herdcli.resolve`）と同じ規則で剥がして、
+    「エンジンが組んだ argv を adapter がそのまま解釈できる」ことだけを見る。
+    """
+    from agentcore import herdcli
+    sub, rest = herdcli.resolve(argv[0], argv[1:])
+    assert sub == expect, f"想定と違うサブコマンドへ落ちている: {sub}"
+    return rest
+
+
 class TestContractDefinition(unittest.TestCase):
     """`agents/ollama*.json` の宣言と実装の対応（契約が嘘をつかないこと）。
 
@@ -498,18 +555,18 @@ class TestContractDefinition(unittest.TestCase):
         readonly = agentcli.headless_cmd(spec, "M", "P", readonly=True)["argv"]
         self.assertEqual(write[write.index("--think") + 1], "off")
         self.assertEqual(readonly[readonly.index("--think") + 1], "off")
-        opts = ollama_adapter.parse_args(write[1:])
+        opts = ollama_adapter.parse_args(_adapter_args(write))
         self.assertIs(opts["think"], False, "定義の argv がそのまま解釈できる")
         self.assertEqual(opts["toolset"], "bash")
         self.assertEqual(opts["max_rounds"], 12, "write の予算は絞ってある（read は 30）")
-        self.assertIs(ollama_adapter.parse_args(readonly[1:])["think"], False)
+        self.assertIs(ollama_adapter.parse_args(_adapter_args(readonly))["think"], False)
         self.assertEqual(agentcli.interactive_cmd(spec, "M")[
             agentcli.interactive_cmd(spec, "M").index("--think") + 1], "on")
 
     def test_json_variant_forces_the_grammar_and_carries_no_tools(self):
         spec = agentcli.load_cli("ollama-json")
         argv = agentcli.headless_cmd(spec, "M", "P")["argv"]
-        opts = ollama_adapter.parse_args(argv[1:])
+        opts = ollama_adapter.parse_args(_adapter_args(argv))
         self.assertEqual(opts["format"], "json")
         self.assertFalse(opts["tools"], "JSON しか出せない状態でツールループの規約は成立しない")
         self.assertEqual(spec["readonly"], "enforced")
@@ -518,7 +575,7 @@ class TestContractDefinition(unittest.TestCase):
         # `--format json` はトップレベルをオブジェクトに固定するので、配列契約（split）は
         # スキーマを渡す起動形で受ける。
         spec = agentcli.load_cli("ollama-list")
-        opts = ollama_adapter.parse_args(agentcli.headless_cmd(spec, "M", "P")["argv"][1:])
+        opts = ollama_adapter.parse_args(_adapter_args(agentcli.headless_cmd(spec, "M", "P")["argv"]))
         self.assertEqual(opts["format"], "array")
         self.assertFalse(opts["tools"])
         self.assertEqual(ollama_loop.format_value("array"),
@@ -527,14 +584,14 @@ class TestContractDefinition(unittest.TestCase):
     def test_thinking_list_variant_leaves_the_grammar_unconstrained(self):
         """Gemma split は意味的な完全被覆を考えられるよう、thinking と grammar を両立させない。"""
         spec = agentcli.load_cli("ollama-list-thinking")
-        opts = ollama_adapter.parse_args(agentcli.headless_cmd(spec, "M", "P")["argv"][1:])
+        opts = ollama_adapter.parse_args(_adapter_args(agentcli.headless_cmd(spec, "M", "P")["argv"]))
         self.assertIs(opts["think"], True)
         self.assertIsNone(opts["format"])
         self.assertFalse(opts["tools"])
 
     def test_read_variant_carries_the_read_toolset(self):
         spec = agentcli.load_cli("ollama-read")
-        opts = ollama_adapter.parse_args(agentcli.headless_cmd(spec, "M", "P")["argv"][1:])
+        opts = ollama_adapter.parse_args(_adapter_args(agentcli.headless_cmd(spec, "M", "P")["argv"]))
         self.assertTrue(opts["tools"])
         self.assertEqual(opts["toolset"], "read")
         readonly = agentcli.headless_cmd(spec, "M", "P", readonly=True)["argv"]
@@ -553,7 +610,7 @@ class TestContractDefinition(unittest.TestCase):
     def test_interactive_launches_the_tui(self):
         spec = agentcli.load_cli("ollama")
         argv = agentcli.interactive_cmd(spec, "M")
-        self.assertEqual(argv[:2], ["agent-ollama", "--tui"])
+        self.assertEqual(argv[:3], ["agent-herd", "ollama", "--tui"])
         self.assertNotIn("--tools", argv, "対話は安全側で始め、/tools on で人が開ける")
 
 

@@ -83,20 +83,16 @@ def read_jsonl(path: str) -> list:
     return out
 
 
+from agentcore import llmjson as _llmjson
+
+
 def extract_json(text: str):
-    """LLM 出力から JSON を寛容に取り出す（agent-flow / hermes-kiro-acp の作法）。"""
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
-    for opn, cls in (("{", "}"), ("[", "]")):
-        i, j = text.find(opn), text.rfind(cls)
-        if i != -1 and j > i:
-            try:
-                return json.loads(text[i:j + 1])
-            except json.JSONDecodeError:
-                continue
-    raise ValueError("エージェント出力から JSON を抽出できませんでした")
+    """LLM 出力から JSON を寛容に取り出す。実装は :mod:`agentcore.llmjson`（1 実装）。
+
+    以前は agent-flow の同名関数の写しを持っていた（違いは例外文だけ）。寛容さの規則が
+    engine ごとにずれると、同じモデル応答が経路によって通ったり落ちたりするので畳んだ（C7）。
+    """
+    return _llmjson.extract_json(text)
 
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")

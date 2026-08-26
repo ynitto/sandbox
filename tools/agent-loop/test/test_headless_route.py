@@ -2,6 +2,7 @@
 
 設計: docs/plans/2026-08-11-agent-loop-headless-agent-cli-design.md
 """
+import contextlib
 import io
 import json
 import os
@@ -15,6 +16,11 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import agent_loop as al  # noqa: E402
+# ハーネスの実装は agentcore（agent-herd と共有する 1 実装）。agent_loop は
+# 委譲するだけなので、差し替えも参照もそちらへ向ける。sys.path は
+# agent_loop の import が通してくれる。
+from agentcore.harness import toolloop as tl  # noqa: E402
+from agentcore.tests.harnesspatch import patch_harness  # noqa: E402
 
 
 def _write_cli(directory, name, spec):
@@ -209,29 +215,29 @@ class AcceptanceGateTest(unittest.TestCase):
         self.target = os.path.join(self.dir, "out", "report.md")
 
     def _errors(self, touched, before):
-        return al.acceptance_evidence_errors(self.acc, cwd=self.dir, touched=touched,
+        return tl.acceptance_evidence_errors(self.acc, cwd=self.dir, touched=touched,
                                              stamps_before=before)
 
     def test_only_backquoted_project_paths_are_extracted(self):
-        found = al.acceptance_paths(self.acc, self.dir)
+        found = tl.acceptance_paths(self.acc, self.dir)
         self.assertEqual(found, [self.target])      # 散文の語をパスと誤認しない
 
     def test_backquoted_command_names_are_not_paths(self):
         # 受入条件の地の文にはコマンド名も同じ記法で出る。パスとして拾うと永久に
         # 満たせない条件になり、成果物を書き終えた実行まで fail する。
-        self.assertEqual(al.acceptance_paths(
+        self.assertEqual(tl.acceptance_paths(
             ["`agent-audit` の出力に無い件数を書いていない",
              "`agent-audit usage --period day` を実行した"], self.dir), [])
 
     def test_paths_outside_the_workspace_are_ignored(self):
-        self.assertEqual(al.acceptance_paths(["`../../etc/passwd` を読む"], self.dir), [])
+        self.assertEqual(tl.acceptance_paths(["`../../etc/passwd` を読む"], self.dir), [])
 
     def test_missing_file_fails(self):
-        before = al.acceptance_stamps(self.acc, self.dir)
+        before = tl.acceptance_stamps(self.acc, self.dir)
         self.assertTrue(self._errors(set(), before))
 
     def test_self_reported_but_untouched_file_fails(self):
-        before = al.acceptance_stamps(self.acc, self.dir)
+        before = tl.acceptance_stamps(self.acc, self.dir)
         os.makedirs(os.path.dirname(self.target))
         Path(self.target).write_text("x", encoding="utf-8")
         self.assertTrue(self._errors(set(), before))   # 偽 done を止める
@@ -239,34 +245,34 @@ class AcceptanceGateTest(unittest.TestCase):
     def test_unchanged_file_fails(self):
         os.makedirs(os.path.dirname(self.target))
         Path(self.target).write_text("x", encoding="utf-8")
-        before = al.acceptance_stamps(self.acc, self.dir)
+        before = tl.acceptance_stamps(self.acc, self.dir)
         self.assertTrue(self._errors({self.target}, before))
 
     def test_timestamp_only_touch_does_not_count_as_change(self):
         os.makedirs(os.path.dirname(self.target))
         Path(self.target).write_text("x", encoding="utf-8")
-        before = al.acceptance_stamps(self.acc, self.dir)
+        before = tl.acceptance_stamps(self.acc, self.dir)
         stat = os.stat(self.target)
         os.utime(self.target, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
         self.assertTrue(self._errors({self.target}, before),
                         "内容が同じなら更新時刻だけ変わっても受入条件を満たさない")
 
     def test_touched_and_changed_passes(self):
-        before = al.acceptance_stamps(self.acc, self.dir)
+        before = tl.acceptance_stamps(self.acc, self.dir)
         os.makedirs(os.path.dirname(self.target))
         Path(self.target).write_text("x", encoding="utf-8")
         self.assertEqual(self._errors({self.target}, before), [])
 
     def test_no_acceptance_means_nothing_is_verified(self):
-        self.assertEqual(al.acceptance_evidence_errors([], cwd=self.dir, touched=set(),
+        self.assertEqual(tl.acceptance_evidence_errors([], cwd=self.dir, touched=set(),
                                                        stamps_before={}), [])
 
     def test_criteria_without_a_quoted_path_are_not_verified(self):
         # 「書いてある」と「機械で照合できる」は別。グロブや文章だけの条件は判定層待ちで、
         # ここを検証済みにすると何も照合していない実行が done の根拠になる。
-        self.assertFalse(al._tl_verified(["要約ファイルが *.md 形式で作成されていること"], self.dir))
-        self.assertFalse(al._tl_verified([], self.dir))
-        self.assertTrue(al._tl_verified(["`out/report.md` が更新されている"], self.dir))
+        self.assertFalse(tl._tl_verified(["要約ファイルが *.md 形式で作成されていること"], self.dir))
+        self.assertFalse(tl._tl_verified([], self.dir))
+        self.assertTrue(tl._tl_verified(["`out/report.md` が更新されている"], self.dir))
 
 
 class GoalToolLoopTest(unittest.TestCase):
@@ -275,8 +281,10 @@ class GoalToolLoopTest(unittest.TestCase):
     def setUp(self):
         self.dir = os.path.realpath(tempfile.mkdtemp())
         self.log = os.path.join(self.dir, "log.jsonl")
-        self.real_run_agent = al._tl_run_agent
-        self.addCleanup(setattr, al, "_tl_run_agent", self.real_run_agent)
+        # ハーネスの差し替えは agentcore 側のモジュールへ当てる（agent_loop は委譲層で、
+        # そこへ setattr しても本文には届かない）。後始末は ExitStack に任せる。
+        self._harness = contextlib.ExitStack()
+        self.addCleanup(self._harness.close)
 
     def _script(self, steps):
         it = iter(steps)
@@ -287,12 +295,12 @@ class GoalToolLoopTest(unittest.TestCase):
                 for f in files:
                     Path(f).write_text("generated\n", encoding="utf-8")
             return out
-        al._tl_run_agent = fake
+        self._harness.enter_context(patch_harness("_tl_run_agent", side_effect=fake))
 
     def test_write_files_then_final_passes_the_gate(self):
         self._script(['{"type":"write_files","paths":["out.md"]}', "wrote",
                       '{"type":"final","output":"done"}'])
-        result = al.run_goal(goal="out.md を書く", cwd=self.dir, agent={}, log_file=self.log,
+        result = tl.run_goal(goal="out.md を書く", cwd=self.dir, agent={}, log_file=self.log,
                              acceptance=["`out.md` が更新されている"])
         self.assertTrue(result["ok"])
         self.assertTrue(result["verified"])
@@ -310,9 +318,9 @@ class GoalToolLoopTest(unittest.TestCase):
                     Path(f).write_text("generated\n", encoding="utf-8")
                 return "wrote"
             return '{"type":"write_files","paths":["out.md"]}'
-        al._tl_run_agent = fake
+        self._harness.enter_context(patch_harness("_tl_run_agent", side_effect=fake))
 
-        result = al.run_goal(goal="out.md を書く", cwd=self.dir, agent={}, log_file=self.log,
+        result = tl.run_goal(goal="out.md を書く", cwd=self.dir, agent={}, log_file=self.log,
                              acceptance=["`out.md` が更新されている"])
         self.assertTrue(result["ok"])
         self.assertEqual(len(calls), 2, "1 ラウンド（要求 + 書き込み）で止まる")
@@ -321,20 +329,20 @@ class GoalToolLoopTest(unittest.TestCase):
         # 照合できる条件が無ければ止める根拠も無いので、従来どおり final を待つ。
         self._script(['{"type":"write_files","paths":["out.md"]}', "wrote",
                       '{"type":"final","output":"done"}'])
-        result = al.run_goal(goal="out.md を書く", cwd=self.dir, agent={}, log_file=self.log,
+        result = tl.run_goal(goal="out.md を書く", cwd=self.dir, agent={}, log_file=self.log,
                              acceptance=[])
         self.assertEqual(result["output"], "done")
 
     def test_final_without_any_work_is_rejected(self):
         self._script(['{"type":"final","output":"done"}'])
-        result = al.run_goal(goal="out2.md を作る", cwd=self.dir, agent={}, log_file=self.log,
+        result = tl.run_goal(goal="out2.md を作る", cwd=self.dir, agent={}, log_file=self.log,
                              acceptance=["`out2.md` を作る"])
         self.assertFalse(result["ok"])
         self.assertTrue(result["evidenceErrors"])
 
     def test_without_acceptance_the_machine_layer_verifies_nothing(self):
         self._script(['{"type":"final","output":"done"}'])
-        result = al.run_goal(goal="なにかする", cwd=self.dir, agent={}, log_file=self.log,
+        result = tl.run_goal(goal="なにかする", cwd=self.dir, agent={}, log_file=self.log,
                              acceptance=[])
         self.assertTrue(result["ok"])
         self.assertFalse(result["verified"])    # done の根拠にしない
@@ -346,7 +354,7 @@ class GoalToolLoopTest(unittest.TestCase):
                       '{"type":"final","output":"done"}'])
         out = io.StringIO()
         with mock.patch("sys.stdout", out):
-            al.run_goal(goal="何かする", cwd=self.dir, agent={}, log_file=self.log,
+            tl.run_goal(goal="何かする", cwd=self.dir, agent={}, log_file=self.log,
                         acceptance=[], tag="run")
         printed = out.getvalue()
         self.assertIn("ラウンド 1/", printed)
@@ -367,9 +375,9 @@ class GoalToolLoopTest(unittest.TestCase):
             if len(prompts) == 1:
                 return '{"type":"run","command":"echo","args":["hi"],"timeout_sec":10}'
             return '{"type":"final","output":"done"}'
-        al._tl_run_agent = fake
+        self._harness.enter_context(patch_harness("_tl_run_agent", side_effect=fake))
 
-        al.run_goal(goal="echo する", cwd=self.dir, agent={}, log_file=self.log, acceptance=[])
+        tl.run_goal(goal="echo する", cwd=self.dir, agent={}, log_file=self.log, acceptance=[])
         self.assertNotIn("already completed", prompts[0])
         self.assertIn("already completed", prompts[1])
 
@@ -387,9 +395,9 @@ class GoalToolLoopTest(unittest.TestCase):
             if len(prompts) == 1:
                 return '{"type":"run","command":"echo","args":["FACT-42"],"timeout_sec":10}'
             return '{"type":"write_files","paths":["out.md"]}'
-        al._tl_run_agent = fake
+        self._harness.enter_context(patch_harness("_tl_run_agent", side_effect=fake))
 
-        al.run_goal(goal="out.md に書く", cwd=self.dir, agent={}, log_file=self.log,
+        tl.run_goal(goal="out.md に書く", cwd=self.dir, agent={}, log_file=self.log,
                     acceptance=["`out.md` が更新されている"])
         self.assertIn("FACT-42", prompts[-1])
 
@@ -401,10 +409,10 @@ class GoalToolLoopTest(unittest.TestCase):
             "wrote",
         ])
         failed = {"status": 2, "error": "", "stdout": "", "stderr": "invalid command"}
-        with (mock.patch.object(al, "_tl_executable_on_path",
-                                return_value="/usr/bin/agent-audit"),
-              mock.patch.object(al, "_tl_exec_argv", return_value=failed)):
-            result = al.run_goal(
+        with (patch_harness("_tl_executable_on_path",
+                            return_value="/usr/bin/agent-audit"),
+              patch_harness("_tl_exec_argv", return_value=failed)):
+            result = tl.run_goal(
                 goal="agent-audit の結果を out.md に書く", cwd=self.dir,
                 agent={}, log_file=self.log,
                 acceptance=["`out.md` が更新されている"], max_rounds=2)
@@ -421,10 +429,10 @@ class GoalToolLoopTest(unittest.TestCase):
         ])
         failed = {"status": 2, "error": "", "stdout": "", "stderr": "invalid command"}
         passed = {"status": 0, "error": "", "stdout": "no records", "stderr": ""}
-        with (mock.patch.object(al, "_tl_executable_on_path",
-                                return_value="/usr/bin/agent-audit"),
-              mock.patch.object(al, "_tl_exec_argv", side_effect=[failed, passed])):
-            result = al.run_goal(
+        with (patch_harness("_tl_executable_on_path",
+                            return_value="/usr/bin/agent-audit"),
+              patch_harness("_tl_exec_argv", side_effect=[failed, passed])):
+            result = tl.run_goal(
                 goal="agent-audit の結果を out.md に書く", cwd=self.dir,
                 agent={}, log_file=self.log,
                 acceptance=["`out.md` が更新されている"], max_rounds=3)
@@ -449,10 +457,10 @@ class GoalToolLoopTest(unittest.TestCase):
             for f in files:
                 Path(f).write_text("generated\n", encoding="utf-8")
             return "wrote" if files else '{"type":"write_files","paths":["out.md"]}'
-        al._tl_run_agent = fake
+        self._harness.enter_context(patch_harness("_tl_run_agent", side_effect=fake))
 
-        agent = al._tl_resolve_agent("editor", "", self.dir)
-        al.run_goal(goal="out.md を書く", cwd=self.dir, agent=agent, log_file=self.log,
+        agent = tl._tl_resolve_agent("editor", "", self.dir)
+        tl.run_goal(goal="out.md を書く", cwd=self.dir, agent=agent, log_file=self.log,
                     acceptance=["`out.md` が更新されている"])
         self.assertEqual(seen, ["jsonner", "editor"])
 
@@ -461,14 +469,14 @@ class GoalToolLoopTest(unittest.TestCase):
             "command": ["editor2"], "prompt_via": "argv", "prompt_flag": "--message",
             "variants": {"planner": "nonexistent"}, "headless_autonomy": "single-shot",
         })
-        agent = al._tl_resolve_agent("editor2", "", self.dir)
-        self.assertIs(al._tl_control_agent(agent, self.dir), agent)
+        agent = tl._tl_resolve_agent("editor2", "", self.dir)
+        self.assertIs(tl._tl_control_agent(agent, self.dir), agent)
 
     def test_off_contract_reply_writes_the_declared_deliverable(self):
         # 小型モデルは材料が揃うと JSON をやめて本文を書き始める。宣言済みの成果物が
         # 未着手なら、そのラウンドを捨てずに write へ回す。
         self._script(["ここに要約を書きました（JSON ではない）", "wrote"])
-        result = al.run_goal(goal="out.md に書く", cwd=self.dir, agent={}, log_file=self.log,
+        result = tl.run_goal(goal="out.md に書く", cwd=self.dir, agent={}, log_file=self.log,
                              acceptance=["`out.md` が更新されている"])
         self.assertTrue(result["ok"])
         events = [json.loads(line) for line in
@@ -477,7 +485,7 @@ class GoalToolLoopTest(unittest.TestCase):
 
     def test_off_contract_reply_without_a_deliverable_is_still_rejected(self):
         self._script(["JSON ではない", '{"type":"final","output":"done"}'])
-        al.run_goal(goal="何かする", cwd=self.dir, agent={}, log_file=self.log, acceptance=[])
+        tl.run_goal(goal="何かする", cwd=self.dir, agent={}, log_file=self.log, acceptance=[])
         events = [json.loads(line) for line in
                   Path(self.log).read_text(encoding="utf-8").splitlines()]
         self.assertTrue(any(e.get("event") == "rejected" for e in events))
@@ -485,7 +493,7 @@ class GoalToolLoopTest(unittest.TestCase):
     def test_shell_requests_are_refused_and_reported_back(self):
         self._script(['{"type":"run","command":"bash","args":["-c","rm -rf /"]}',
                       '{"type":"final","output":"done"}'])
-        result = al.run_goal(goal="何かする", cwd=self.dir, agent={}, log_file=self.log,
+        result = tl.run_goal(goal="何かする", cwd=self.dir, agent={}, log_file=self.log,
                              acceptance=[])
         events = [json.loads(line) for line in
                   Path(self.log).read_text(encoding="utf-8").splitlines()]
@@ -506,8 +514,10 @@ class HeadlessDispatchTest(unittest.TestCase):
         os.environ["AGENT_CONTROL_DIR"] = tempfile.mkdtemp()
         al._CONTROL_CACHE["mtime"] = None
         al._CONTROL_CACHE["data"] = {}
-        self.real_run_agent = al._tl_run_agent
-        self.addCleanup(setattr, al, "_tl_run_agent", self.real_run_agent)
+        # ハーネスの差し替えは agentcore 側のモジュールへ当てる（agent_loop は委譲層で、
+        # そこへ setattr しても本文には届かない）。後始末は ExitStack に任せる。
+        self._harness = contextlib.ExitStack()
+        self.addCleanup(self._harness.close)
 
     def _scheduler(self, entry):
         mgr = al.SessionManager.__new__(al.SessionManager)
@@ -529,7 +539,7 @@ class HeadlessDispatchTest(unittest.TestCase):
                 for f in files:
                     Path(f).write_text("summary\n", encoding="utf-8")
             return out
-        al._tl_run_agent = fake
+        self._harness.enter_context(patch_harness("_tl_run_agent", side_effect=fake))
 
         entry = {"id": "e1", "name": "要約", "prompt": "`out.md` に要約を書く",
                  "interval_minutes": 10, "enabled": True, "agent_cli": "plain",
@@ -557,8 +567,10 @@ class RunSubcommandTest(unittest.TestCase):
             "headless_autonomy": "single-shot",
         })
         os.environ["AGENT_LOOP_RUN_DIR"] = tempfile.mkdtemp()
-        self.real_run_agent = al._tl_run_agent
-        self.addCleanup(setattr, al, "_tl_run_agent", self.real_run_agent)
+        # ハーネスの差し替えは agentcore 側のモジュールへ当てる（agent_loop は委譲層で、
+        # そこへ setattr しても本文には届かない）。後始末は ExitStack に任せる。
+        self._harness = contextlib.ExitStack()
+        self.addCleanup(self._harness.close)
 
     def _args(self, prompt, **kw):
         return al.argparse.Namespace(prompt=[prompt], agent_cli="plain", model=None,
@@ -568,7 +580,7 @@ class RunSubcommandTest(unittest.TestCase):
         """cmd_run を走らせ、(exit code, RESULT の JSON) を返す。"""
         out = io.StringIO()
         with mock.patch("sys.stdout", out), self.assertRaises(SystemExit) as exit_info:
-            al.cmd_run(args, Path(self.dir))
+            tl.cmd_run(args, Path(self.dir))
         line = [x for x in out.getvalue().splitlines() if x.startswith("RESULT ")][-1]
         return exit_info.exception.code, json.loads(line[len("RESULT "):])
 
@@ -582,7 +594,7 @@ class RunSubcommandTest(unittest.TestCase):
                 for f in files:
                     Path(f).write_text("summary\n", encoding="utf-8")
             return out
-        al._tl_run_agent = fake
+        self._harness.enter_context(patch_harness("_tl_run_agent", side_effect=fake))
 
         code, result = self._run(self._args("`out.md` に要約を書く",
                                             acceptance=["`out.md` が更新されている"]))
@@ -592,13 +604,15 @@ class RunSubcommandTest(unittest.TestCase):
         self.assertEqual(Path(self.dir, "out.md").read_text(encoding="utf-8").strip(), "summary")
 
     def test_without_acceptance_the_run_is_recorded_as_unverified(self):
-        al._tl_run_agent = lambda *a, **kw: '{"type":"final","output":"done"}'
+        self._harness.enter_context(patch_harness(
+            "_tl_run_agent", side_effect=lambda *a, **kw: '{"type":"final","output":"done"}'))
         code, result = self._run(self._args("何かする"))
         self.assertEqual(code, 0)
         self.assertFalse(result["verified"])      # done の根拠にしない
 
     def test_acceptance_without_a_quoted_path_is_also_unverified(self):
-        al._tl_run_agent = lambda *a, **kw: '{"type":"final","output":"done"}'
+        self._harness.enter_context(patch_harness(
+            "_tl_run_agent", side_effect=lambda *a, **kw: '{"type":"final","output":"done"}'))
         code, result = self._run(self._args(
             "何かする", acceptance=["要約ファイルが *.md 形式で作成されていること"]))
         self.assertEqual(code, 0)
@@ -607,7 +621,7 @@ class RunSubcommandTest(unittest.TestCase):
 
     def test_empty_prompt_is_rejected(self):
         with mock.patch("sys.stderr", io.StringIO()), self.assertRaises(SystemExit) as exit_info:
-            al.cmd_run(self._args("   "), Path(self.dir))
+            tl.cmd_run(self._args("   "), Path(self.dir))
         self.assertEqual(exit_info.exception.code, 2)
 
     def test_prompt_can_be_a_file_in_the_working_directory(self):
@@ -617,7 +631,7 @@ class RunSubcommandTest(unittest.TestCase):
         def fake(agent, prompt, *, cwd, readonly, read_files, files, log_file):
             seen["prompt"] = prompt
             return '{"type":"final","output":"done"}'
-        al._tl_run_agent = fake
+        self._harness.enter_context(patch_harness("_tl_run_agent", side_effect=fake))
         self._run(self._args("task.md"))
         self.assertIn("ファイルに書いた指示", seen["prompt"])
 
@@ -630,7 +644,7 @@ class RunSubcommandTest(unittest.TestCase):
         def fake_exec(command, args, **kw):
             calls.append(command)
             return {"status": 0, "error": "", "stdout": "done", "stderr": ""}
-        with mock.patch.object(al, "_tl_exec_argv", fake_exec):
+        with patch_harness("_tl_exec_argv", fake_exec):
             args = self._args("何かする")
             args.agent_cli = "loopy"
             code, result = self._run(args)

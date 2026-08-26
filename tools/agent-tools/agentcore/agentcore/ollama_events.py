@@ -34,6 +34,21 @@ PROGRESS_INTERVAL_SEC = 1.0
 # read_status() が末尾から読む量。ログ全体を読まないための上限。
 _TAIL_BYTES = 65536
 
+# 外側（ハーネス）が「この子は生きているか」を見張るための灯台の置き場。外側がこの
+# 環境変数を置いたときだけ、emit のたびにその場所を刻む。
+#
+# なぜ JSONL とは別のファイルなのか。記録（会話の JSONL）の置き場は**子が決める**もので、
+# `--status` / `--follow` / `--replay` / ダッシュボードがそこを見る。外側の都合で移すと
+# それらが揃って見失う。見張りに要るのは「いつ最後に動いたか」だけなので、中身を持たない
+# 小さなファイルを別に置き、実行が終われば外側が捨てる。
+#
+# 見張りが心拍まで進捗として数えるのは意図どおり。ここが判じるのは「子が生きているか」で、
+# 「推論が前に進んでいるか」（decode stall・順番待ちの相手の生死）は子自身が持っている
+# ——二重に判定すると、子が待つと決めた実行を外側が理由も残さず殺すことになる。
+PROGRESS_BEACON_ENV = "AGENT_PROGRESS_BEACON"
+# 灯台に残す 1 フィールドの長さの上限（これを超える文字列は落とす）。
+_BEACON_MAX_FIELD_CHARS = 200
+
 _TERMINAL_KINDS = {"run_end"}
 
 
@@ -71,9 +86,12 @@ class EventLog:
     書き込みに失敗しても推論は続ける（証跡はあくまで観測手段で、実行の条件ではない）。
     """
 
-    def __init__(self, path: "str | Path | None" = None, sink=None) -> None:
+    def __init__(self, path: "str | Path | None" = None, sink=None,
+                 beacon: "str | Path | None" = None) -> None:
         self.path = Path(path).expanduser() if path else None
         self.sink = sink
+        raw_beacon = beacon if beacon is not None else os.environ.get(PROGRESS_BEACON_ENV, "")
+        self.beacon = Path(str(raw_beacon)).expanduser() if str(raw_beacon).strip() else None
         self._fh = None
         if self.path is not None:
             try:
@@ -81,6 +99,24 @@ class EventLog:
                 self._fh = self.path.open("a", encoding="utf-8")
             except OSError:
                 self._fh = None
+
+    def _mark_beacon(self, event: dict) -> None:
+        """灯台を刻む。見張りが見るのは mtime/size だけだが、人が覗いたときに「何を待って
+        いるのか」が読めるほうがよいので、最後のイベントの**要約**を書く。
+
+        長い文字列は落とす。`message` イベントは会話の本文（プロンプト全文・応答全文）を
+        持っており、それを毎回書き直すのは灯台の仕事ではない——本文の置き場は JSONL。
+        """
+        if self.beacon is None:
+            return
+        summary = {k: v for k, v in event.items()
+                   if not isinstance(v, str) or len(v) <= _BEACON_MAX_FIELD_CHARS}
+        try:
+            self.beacon.parent.mkdir(parents=True, exist_ok=True)
+            self.beacon.write_text(json.dumps(summary, ensure_ascii=False) + "\n",
+                                   encoding="utf-8")
+        except (OSError, ValueError):
+            self.beacon = None   # 一度書けない場所は以後試さない（毎 emit で無駄に踏まない）
 
     def emit(self, kind: str, **fields) -> dict:
         event = {"ts": round(time.time(), 3), "kind": str(kind)}
@@ -91,6 +127,7 @@ class EventLog:
                 self._fh.flush()
             except (OSError, ValueError):
                 pass
+        self._mark_beacon(event)
         if self.sink is not None:
             try:
                 self.sink(event)

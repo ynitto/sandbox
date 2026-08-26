@@ -427,11 +427,11 @@ def main() -> None:
         return
 
     if args.subcommand == "run":
-        cmd_run(args, cwd)
+        _harness_toolloop.cmd_run(args, cwd)
         return
 
     if args.subcommand == "statemachine":
-        cmd_statemachine(args, cwd)
+        _harness_statemachine.cmd_statemachine(args, cwd)
         return
 
     if args.subcommand == "msg":

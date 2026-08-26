@@ -7,6 +7,53 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-tools: ollama の順番待ちを、外側のタイムアウトに殺されずに待てるようにする
+
+- **queue 局面が生存確認を打ち直すようになった**（`ollama_loop.stream_call`）。connect の
+  上限に達したとき `/api/version` が通れば「順番待ち」として上限なしで待つ設計だったが、
+  確かめるのは**待ちに入る瞬間の 1 回だけ**だった。相手は LAN の向こうのホストなので、
+  スリープ・NW 分断・電源断で黙って消えると誰も気付かず、TCP の keepalive（既定 2 時間級）
+  まで待ち続ける——外側に上限が無い経路（`agent-herd exec` 直叩き）では事実上の永久ハング。
+  30 秒ごと（`QUEUE_PROBE_INTERVAL_SEC`）に確かめ直し、3 回続けて落ちたときだけ
+  `stall` として打ち切る。1 回で諦めないのは、混雑時はプローブ自身も落ちうるため
+  ——そこで待ちを捨てると「混雑しているときほど待てない」という逆立ちになる。
+- **ハーネスのエージェント CLI 上限が、壁時計から「無進捗の上限」になった**
+  （`_tl_exec_argv(idle=True)`）。`agents/<名前>.json` の `timeout`（未宣言なら 600 秒）は
+  これまで素の `subprocess.run(timeout=…)` で、順番待ちの時間がそこへ積み上がって
+  正常な実行を SIGKILL していた（しかも殺された側は理由を残せない）。進捗＝
+  「stdout/stderr に 1 バイト来た」か「子が灯台を刻んだ」。壁時計は 4 時間の天井だけが
+  残る（出力を出しながら回り続ける病理を止めるため）。モデルが要求した `run` は宣言どおり
+  壁時計のまま——`sleep 9999` は宣言した秒で切られるのが正しい。
+- **灯台（`AGENT_PROGRESS_BEACON`）**。ヘッドレスの `agent-ollama` は終わるまで stdout に
+  1 バイトも出さないので、出力だけを見ていると正常な長考も順番待ちも無進捗に見える。
+  ハーネスが置き場を渡し、`ollama_events.EventLog` がイベントを出すたびにそこを刻む。
+  記録（会話の JSONL）の置き場は動かさない——`--status` / `--follow` / `--replay` と
+  ダッシュボードがそこを見ているため。灯台は実行が終わればハーネスが捨てる。
+- 残る素の壁時計: `agent-project` の `agent_timeout`（既定 300 秒）は自前で
+  `agent-ollama` を起動しており未対応。順番待ちがこの上限に数えられるので、
+  大きく取る（例 3600）か 0 で無効化する。
+
+### agent-loop / agent-herd: ハーネスを agentcore へ委譲し、本文の共有（exec）をやめる
+
+- `toolloop` / `statemachine` の本文は `agentcore/harness/{toolloop,statemachine}.py`
+  だけに置き、`agent_loop/{toolloop,statemachine}.py` は**そこへ委譲するだけの層**にした。
+  これまでは本文をデータファイル（`_toolloop_body.py` / `_statemachine_body.py`）にして
+  agent_loop と agentcore の両方が exec しており、その遠回りが要ったのは agent-loop の
+  テストが共有名前空間を差し替えていたからだった。テストを移したので import で足りる。
+- 委譲層は `_tl_*` / `_sm_*` を**張り直さない**。張ると古い
+  `mock.patch.object(agent_loop, "_tl_run_agent")` が「成功したのに効かない」静かな失敗に
+  なる（本物の CLI を起動しにいく）。張らないので `AttributeError` で大声で落ちる。
+- 純粋なハーネスのテスト 94 件を `agentcore/tests/test_harness_{statemachine,control_retry,
+  agent_timeout}.py` へ移設。差し替えの作法は `agentcore/tests/harnesspatch.py` の
+  `patch_harness` に閉じた（本文は 2 モジュールに分かれ、どちらを差し替えれば効くかは
+  綴りではなく「その名前を読む関数がどちらにあるか」で決まるため）。agent-loop 側には
+  継ぎ目のテスト（`test/test_harness_delegation.py`）だけを残した——委譲が繋がっているか、
+  記帳フックが呼び出し時に引かれるか、実測トークンが台帳へ着くか。
+- `agent-loop run` / `agent-loop statemachine` / `agent-herd harness …` の argv・出力・
+  証跡は不変。traceback と `inspect.getsource` は本文のファイルを直に指すようになった。
+- `tools/agent-loop/install.sh` は agentcore の同梱を**必須**にした（欠けると zipapp は
+  起動時点で `ModuleNotFoundError` になるのに「任意」と書いてあり、実態と食い違っていた）。
+
 ### agent-dashboard: 定型業務の必須入力から、実行器が注入する変数を外す
 
 - `stateMachineInputSpec` が、statemachine 実行器の生成する変数まで「ユーザー入力」として

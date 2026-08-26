@@ -17,6 +17,10 @@ from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import agent_loop as al  # noqa: E402
+# ハーネスの実装は agentcore（agent-herd と共有する 1 実装）。agent_loop は
+# 委譲するだけなので、差し替えも参照もそちらへ向ける。sys.path は
+# agent_loop の import が通してくれる。
+from agentcore.harness import statemachine as sm  # noqa: E402
 
 
 class NodeBudgetTests(unittest.TestCase):
@@ -280,8 +284,8 @@ class StatemachinePolicyGateTests(unittest.TestCase):
     def test_write_without_check_is_rejected(self):
         decision = {"selected": {"agent_cli": "aider", "model": "gemma4:e4b"}}
         path = self._workflow({"action": "edit", "write": "a.py"})
-        with self.assertRaisesRegex(al.StateMachineHarnessError, "check が必須"):
-            al.run_statemachine(workflow_path=path, cwd=self.dir,
+        with self.assertRaisesRegex(sm.StateMachineHarnessError, "check が必須"):
+            sm.run_statemachine(workflow_path=path, cwd=self.dir,
                                 agent={"cli": "aider", "spec": {}, "model": None,
                                        "agentcli": None}, decision=decision)
 
@@ -291,8 +295,8 @@ class StatemachinePolicyGateTests(unittest.TestCase):
         decision = {"selected": {"agent_cli": "aider", "model": "gemma4:e4b"}}
         path = self._workflow({"action": "edit", "write": "a.py",
                                "check": "python3 -m pytest -q"})
-        with self.assertRaises(al.StateMachineHarnessError) as ctx:
-            al.run_statemachine(workflow_path=path, cwd=self.dir,
+        with self.assertRaises(sm.StateMachineHarnessError) as ctx:
+            sm.run_statemachine(workflow_path=path, cwd=self.dir,
                                 agent={"cli": "aider", "spec": {}, "model": None,
                                        "agentcli": None}, decision=decision)
         self.assertNotIn("check が必須", str(ctx.exception))

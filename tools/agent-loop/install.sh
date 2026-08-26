@@ -186,17 +186,18 @@ mkdir -p "${BUILD_DIR}/agent_loop"
     cp "$f" "${BUILD_DIR}/agent_loop/$f"
   done )
 
-# agent_cli 差し替え（agents/<name>.json 契約）用に agentcore（定義ローダ）を同梱する。
-# 無くても既定 CLI の組み込み経路は動くため任意（その場合 agent_cli 指定は使えない）。
+# agentcore を同梱する。**任意ではなく必須**——定義ローダ（agent_cli 差し替え）に加えて、
+# ハーネス本体（agentcore.harness）と方式カタログ（agentcore.methods）がここにあり、
+# agent_loop はそれらを import する。無いと zipapp は起動時点で ModuleNotFoundError になる。
 AGENTCORE_SRC="${SCRIPT_DIR}/../agent-tools/agentcore/agentcore"
 if [[ -d "$AGENTCORE_SRC" ]]; then
   ( cd "$AGENTCORE_SRC" && find . -name '*.py' -not -path './tests/*' -print0 | while IFS= read -r -d '' f; do
       mkdir -p "${BUILD_DIR}/agentcore/$(dirname "$f")"
       cp "$f" "${BUILD_DIR}/agentcore/$f"
     done )
-  ok "agentcore を同梱しました（agent_cli 差し替え用）。"
+  ok "agentcore を同梱しました（定義ローダ・ハーネス・方式カタログ）。"
 else
-  warn "agentcore が見つからないため同梱しません（agent_cli 指定は使えません）: ${AGENTCORE_SRC}"
+  die "agentcore が見つかりません: ${AGENTCORE_SRC}（agent-loop はこれを import します）"
 fi
 cat > "${BUILD_DIR}/__main__.py" <<'EOF'
 from agent_loop import main

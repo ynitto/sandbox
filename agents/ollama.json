@@ -2,26 +2,56 @@
   "name": "ollama",
   "headless_autonomy": "tool-loop",
   "relative_cost": 0,
-  "command": ["agent-ollama", "{model}"],
+  "command": [
+    "agent-herd",
+    "ollama",
+    "{model}"
+  ],
   "prompt_via": "stdin",
   "default_model": "gemma4:e4b",
   "output": "stdout",
   "empty_output_is_error": true,
   "variants": {
-    "planner": "ollama-json", "evaluator": "ollama-json", "filter": "ollama-json",
-    "judge": "ollama-json", "reduce": "ollama-json", "extract": "ollama-json",
-    "plan": "ollama-json", "review": "ollama-json", "prioritize": "ollama-json",
-    "route": "ollama-json", "adjudicate": "ollama-json", "assess": "ollama-json",
+    "planner": "ollama-json",
+    "evaluator": "ollama-json",
+    "filter": "ollama-json",
+    "judge": "ollama-json",
+    "reduce": "ollama-json",
+    "extract": "ollama-json",
+    "plan": "ollama-json",
+    "review": "ollama-json",
+    "prioritize": "ollama-json",
+    "route": "ollama-json",
+    "adjudicate": "ollama-json",
+    "assess": "ollama-json",
     "split": "ollama-list",
     "retrieve": "ollama-read",
     "verify": "ollama-verify"
   },
-  "write_args": ["--think", "off", "--tools", "bash",
-                 "--max-rounds", "12", "--command-timeout", "900"],
-  "readonly_args": ["--think", "off"],
+  "write_args": [
+    "--think",
+    "off",
+    "--tools",
+    "bash",
+    "--max-rounds",
+    "12",
+    "--command-timeout",
+    "900"
+  ],
+  "readonly_args": [
+    "--think",
+    "off"
+  ],
   "readonly": "enforced",
   "interactive": {
-    "command": ["agent-ollama", "--tui", "--think", "on", "{model}"],
+    "command": [
+      "agent-herd",
+      "ollama",
+      "--tui",
+      "--think",
+      "on",
+      "{model}"
+    ],
     "ready_pattern": "^[[:space:]]*>[[:space:]]*$",
     "busy_pattern": "経過 [0-9]",
     "clear_command": "",
@@ -29,28 +59,313 @@
   },
   "session_log": {
     "format": "jsonl-dir",
-    "paths": ["~/.agents/logs/ollama"],
+    "paths": [
+      "~/.agents/logs/ollama"
+    ],
     "usage": false
   },
+  "profiles": {
+    "json": {
+      "command": [
+        "agent-herd",
+        "ollama",
+        "--think",
+        "off",
+        "--format",
+        "json",
+        "{model}"
+      ],
+      "write_args": [],
+      "readonly_args": [],
+      "headless_autonomy": "single-shot",
+      "variants": {
+        "split": "ollama-list",
+        "retrieve": "ollama-read"
+      },
+      "errors": [
+        {
+          "match": "could not connect|connection refused|ollama に接続できません",
+          "class": "env",
+          "hint": "ollama サーバが起動していません（ollama serve を起動してください）"
+        },
+        {
+          "match": "pull the model|model .{0,60}not found",
+          "class": "env",
+          "hint": "モデルが未取得です（ollama pull <model> を実行してください）"
+        },
+        {
+          "match": "スキルが見つかりません",
+          "class": "env",
+          "hint": "スキルが配布されていません（python install.py --agent claude --all-skills 等で配布してください）"
+        },
+        {
+          "match": "context_exhausted|文脈が不足",
+          "class": "env",
+          "hint": "文脈上限に達しました。タスクを小さく割るか、AGENT_OLLAMA_OPTIONS の num_ctx を引き上げてください"
+        },
+        {
+          "match": "順番待ちの相手が居なくなりました",
+          "class": "env",
+          "hint": "順番待ちの間に ollama サーバが応答しなくなりました（落ちた・スリープした・ネットワークが切れた）。サーバの状態と OLLAMA_HOST を確認してください"
+        },
+        {
+          "match": "応答が停止しました|通信が切れました",
+          "class": "transient",
+          "hint": "無進捗で打ち切りました（生成が進まなくなった状態）。リトライで解けることが多いですが、続くなら ollama サーバの負荷とメモリを確認してください"
+        }
+      ]
+    },
+    "list": {
+      "command": [
+        "agent-herd",
+        "ollama",
+        "--think",
+        "off",
+        "--format",
+        "array",
+        "{model}"
+      ],
+      "write_args": [],
+      "readonly_args": [],
+      "headless_autonomy": "single-shot",
+      "errors": [
+        {
+          "match": "could not connect|connection refused|ollama に接続できません",
+          "class": "env",
+          "hint": "ollama サーバが起動していません（ollama serve を起動してください）"
+        },
+        {
+          "match": "pull the model|model .{0,60}not found",
+          "class": "env",
+          "hint": "モデルが未取得です（ollama pull <model> を実行してください）"
+        },
+        {
+          "match": "スキルが見つかりません",
+          "class": "env",
+          "hint": "スキルが配布されていません（python install.py --agent claude --all-skills 等で配布してください）"
+        },
+        {
+          "match": "context_exhausted|文脈が不足",
+          "class": "env",
+          "hint": "文脈上限に達しました。タスクを小さく割るか、AGENT_OLLAMA_OPTIONS の num_ctx を引き上げてください"
+        },
+        {
+          "match": "順番待ちの相手が居なくなりました",
+          "class": "env",
+          "hint": "順番待ちの間に ollama サーバが応答しなくなりました（落ちた・スリープした・ネットワークが切れた）。サーバの状態と OLLAMA_HOST を確認してください"
+        },
+        {
+          "match": "応答が停止しました|通信が切れました",
+          "class": "transient",
+          "hint": "無進捗で打ち切りました（生成が進まなくなった状態）。リトライで解けることが多いですが、続くなら ollama サーバの負荷とメモリを確認してください"
+        }
+      ]
+    },
+    "list-thinking": {
+      "command": [
+        "agent-herd",
+        "ollama",
+        "--think",
+        "on",
+        "{model}"
+      ],
+      "write_args": [],
+      "readonly_args": [],
+      "headless_autonomy": "single-shot",
+      "env": {
+        "AGENT_OLLAMA_OPTIONS": "{\"temperature\":0}"
+      },
+      "errors": [
+        {
+          "match": "could not connect|connection refused|ollama に接続できません",
+          "class": "env",
+          "hint": "ollama サーバが起動していません（ollama serve を起動してください）"
+        },
+        {
+          "match": "pull the model|model .{0,60}not found",
+          "class": "env",
+          "hint": "モデルが未取得です（ollama pull <model> を実行してください）"
+        },
+        {
+          "match": "スキルが見つかりません",
+          "class": "env",
+          "hint": "スキルが配布されていません（python install.py --agent claude --all-skills 等で配布してください）"
+        },
+        {
+          "match": "context_exhausted|文脈が不足",
+          "class": "env",
+          "hint": "文脈上限に達しました。タスクを小さく割るか、AGENT_OLLAMA_OPTIONS の num_ctx を引き上げてください"
+        },
+        {
+          "match": "順番待ちの相手が居なくなりました",
+          "class": "env",
+          "hint": "順番待ちの間に ollama サーバが応答しなくなりました（落ちた・スリープした・ネットワークが切れた）。サーバの状態と OLLAMA_HOST を確認してください"
+        },
+        {
+          "match": "応答が停止しました|通信が切れました",
+          "class": "transient",
+          "hint": "無進捗で打ち切りました（生成が進まなくなった状態）。リトライで解けることが多いですが、続くなら ollama サーバの負荷とメモリを確認してください"
+        }
+      ]
+    },
+    "read": {
+      "command": [
+        "agent-herd",
+        "ollama",
+        "--think",
+        "off",
+        "{model}"
+      ],
+      "write_args": [
+        "--tools",
+        "read",
+        "--max-rounds",
+        "30",
+        "--command-timeout",
+        "900"
+      ],
+      "readonly_args": [],
+      "errors": [
+        {
+          "match": "could not connect|connection refused|ollama に接続できません",
+          "class": "env",
+          "hint": "ollama サーバが起動していません（ollama serve を起動してください）"
+        },
+        {
+          "match": "pull the model|model .{0,60}not found",
+          "class": "env",
+          "hint": "モデルが未取得です（ollama pull <model> を実行してください）"
+        },
+        {
+          "match": "スキルが見つかりません",
+          "class": "env",
+          "hint": "スキルが配布されていません（python install.py --agent claude --all-skills 等で配布してください）"
+        },
+        {
+          "match": "スキルと --tools セットが噛み合いません",
+          "class": "env",
+          "hint": "同梱スクリプトを使うスキルは read セットでは動きません（agent_cli: ollama で振るか、スキル指定を外してください）"
+        },
+        {
+          "match": "context_exhausted|文脈が不足",
+          "class": "env",
+          "hint": "文脈上限に達しました。タスクを小さく割るか、AGENT_OLLAMA_OPTIONS の num_ctx を引き上げてください"
+        },
+        {
+          "match": "no_progress|進んでいないので打ち切り",
+          "class": "env",
+          "hint": "同じコマンドを同じ結果で繰り返して止まりました。タスクを小さく割るか、手順を具体化してください（同一入力の再試行では解けません）"
+        },
+        {
+          "match": "順番待ちの相手が居なくなりました",
+          "class": "env",
+          "hint": "順番待ちの間に ollama サーバが応答しなくなりました（落ちた・スリープした・ネットワークが切れた）。サーバの状態と OLLAMA_HOST を確認してください"
+        },
+        {
+          "match": "応答が停止しました|通信が切れました",
+          "class": "transient",
+          "hint": "無進捗で打ち切りました（生成が進まなくなった状態）。リトライで解けることが多いですが、続くなら ollama サーバの負荷とメモリを確認してください"
+        }
+      ]
+    },
+    "verify": {
+      "command": [
+        "agent-herd",
+        "ollama",
+        "--think",
+        "off",
+        "--format",
+        "json",
+        "--stall-timeout",
+        "180",
+        "{model}"
+      ],
+      "write_args": [],
+      "readonly_args": [],
+      "headless_autonomy": "single-shot",
+      "default_model": "gemma4:12b",
+      "variants": {
+        "split": "ollama-list"
+      },
+      "errors": [
+        {
+          "match": "could not connect|connection refused|ollama に接続できません",
+          "class": "env",
+          "hint": "ollama サーバが起動していません（ollama serve を起動してください）"
+        },
+        {
+          "match": "pull the model|model .{0,60}not found",
+          "class": "env",
+          "hint": "モデルが未取得です（ollama pull <model> を実行してください）"
+        },
+        {
+          "match": "スキルが見つかりません",
+          "class": "env",
+          "hint": "スキルが配布されていません（python install.py --agent claude --all-skills 等で配布してください）"
+        },
+        {
+          "match": "context_exhausted|文脈が不足",
+          "class": "env",
+          "hint": "文脈上限に達しました。タスクを小さく割るか、AGENT_OLLAMA_OPTIONS の num_ctx を引き上げてください"
+        },
+        {
+          "match": "順番待ちの相手が居なくなりました",
+          "class": "env",
+          "hint": "順番待ちの間に ollama サーバが応答しなくなりました（落ちた・スリープした・ネットワークが切れた）。サーバの状態と OLLAMA_HOST を確認してください"
+        },
+        {
+          "match": "応答が停止しました|通信が切れました",
+          "class": "transient",
+          "hint": "無進捗で打ち切りました（gemma4:12b の生成暴走は確率的で、再投入 1 回で回収できる頻度——text-eval 2026-08-14）。続くなら ollama サーバの負荷とメモリを確認してください"
+        },
+        {
+          "match": "タイムアウトしました",
+          "class": "transient",
+          "hint": "時間内に応答が返りませんでした。gemma4:12b の停止性の問題（text-eval 2026-08-14: 27 呼び出し中 2 回・95% 区間 2〜23%）で、再投入 1 回で回収できる形です。縮退基準: 同じ呼び出しで再投入後も続いたら（2 回連続）e4b へ縮退する（レビュー網羅性は落ちるが停止性は保つ）。selection_policy では retry_limit=1 と候補順 12b → e4b がこの基準の表現です"
+        }
+      ]
+    }
+  },
   "errors": [
-    { "match": "could not connect|connection refused|ollama に接続できません",
-      "class": "env", "hint": "ollama サーバが起動していません（ollama serve を起動してください）" },
-    { "match": "pull the model|model .{0,60}not found",
-      "class": "env", "hint": "モデルが未取得です（ollama pull <model> を実行してください）" },
-    { "match": "スキルが見つかりません",
+    {
+      "match": "could not connect|connection refused|ollama に接続できません",
       "class": "env",
-      "hint": "スキルが配布されていません（python install.py --agent claude --all-skills 等で配布してください）" },
-    { "match": "スキルと --tools セットが噛み合いません",
+      "hint": "ollama サーバが起動していません（ollama serve を起動してください）"
+    },
+    {
+      "match": "pull the model|model .{0,60}not found",
       "class": "env",
-      "hint": "同梱スクリプトを使うスキルは read セットでは動きません（--tools bash の定義で振るか、スキル指定を外してください）" },
-    { "match": "context_exhausted|文脈が不足",
+      "hint": "モデルが未取得です（ollama pull <model> を実行してください）"
+    },
+    {
+      "match": "スキルが見つかりません",
       "class": "env",
-      "hint": "文脈上限に達しました。タスクを小さく割るか、AGENT_OLLAMA_OPTIONS の num_ctx を引き上げてください" },
-    { "match": "no_progress|進んでいないので打ち切り",
+      "hint": "スキルが配布されていません（python install.py --agent claude --all-skills 等で配布してください）"
+    },
+    {
+      "match": "スキルと --tools セットが噛み合いません",
       "class": "env",
-      "hint": "同じコマンドを同じ結果で繰り返して止まりました。タスクを小さく割るか、手順を具体化してください（同一入力の再試行では解けません）" },
-    { "match": "応答が停止しました|通信が切れました",
+      "hint": "同梱スクリプトを使うスキルは read セットでは動きません（--tools bash の定義で振るか、スキル指定を外してください）"
+    },
+    {
+      "match": "context_exhausted|文脈が不足",
+      "class": "env",
+      "hint": "文脈上限に達しました。タスクを小さく割るか、AGENT_OLLAMA_OPTIONS の num_ctx を引き上げてください"
+    },
+    {
+      "match": "no_progress|進んでいないので打ち切り",
+      "class": "env",
+      "hint": "同じコマンドを同じ結果で繰り返して止まりました。タスクを小さく割るか、手順を具体化してください（同一入力の再試行では解けません）"
+    },
+    {
+      "match": "順番待ちの相手が居なくなりました",
+      "class": "env",
+      "hint": "順番待ちの間に ollama サーバが応答しなくなりました（落ちた・スリープした・ネットワークが切れた）。サーバの状態と OLLAMA_HOST を確認してください"
+    },
+    {
+      "match": "応答が停止しました|通信が切れました",
       "class": "transient",
-      "hint": "無進捗で打ち切りました（生成が進まなくなった状態）。リトライで解けることが多いですが、続くなら ollama サーバの負荷とメモリを確認してください" }
+      "hint": "無進捗で打ち切りました（生成が進まなくなった状態）。リトライで解けることが多いですが、続くなら ollama サーバの負荷とメモリを確認してください"
+    }
   ]
 }
