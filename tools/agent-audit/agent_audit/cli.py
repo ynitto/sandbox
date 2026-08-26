@@ -92,6 +92,18 @@ def _build_parser() -> argparse.ArgumentParser:
     qualify.add_argument("--qualifications-file", default="",
                          help="出力先の上書き（既定 ~/.agents/control/qualifications.json）")
 
+    seed = sub.add_parser(
+        "seed", help="おすすめ構成（agent-recommendation）の適格性を qualifications.json へ置く")
+    seed.add_argument("--from-recommendation", dest="from_recommendation", required=True,
+                      help="推奨の JSON（既定の置き場は ~/.agents/recommendation.json）")
+    seed.add_argument("--apply", action="store_true",
+                      help="qualifications.json へ原子書換（既定は dry-run）")
+    seed.add_argument("--force", action="store_true",
+                      help="本番 receipt 由来の適格性があっても上書きする")
+    seed.add_argument("--qualifications-file", default="",
+                      help="出力先の上書き（既定 ~/.agents/control/qualifications.json）")
+    seed.add_argument("--json", action="store_true")
+
     g = sub.add_parser("gc", help="種別別保持日数での掃除（insights は対象外）")
     g.add_argument("--dry-run", action="store_true", dest="dry_run")
 
@@ -160,6 +172,20 @@ def main(argv=None) -> int:
     if args.command == "tune":
         from .tuning import cmd_tune
         return cmd_tune(args)
+    if args.command == "seed":
+        from .qualifications import cmd_seed
+        summary = cmd_seed(args)
+        if getattr(args, "json", False):
+            import json as _json
+            print(_json.dumps(summary, ensure_ascii=False))
+        elif summary.get("error"):
+            print(f"[seed] {summary['error']}")
+        else:
+            state = "適用しました" if summary.get("applied") else "dry-run（--apply で書き込み）"
+            print(f"[seed] {summary['candidates']} 候補 / revision {summary['revision']} "
+                  f"→ {summary['file']}: {state}")
+        return 1 if summary.get("error") else 0
+
     if args.command == "qualify":
         import json as _json
         from .configfile import resolve_audit_dir

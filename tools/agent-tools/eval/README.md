@@ -80,6 +80,30 @@ python3 tools/agent-tools/eval/qualification_seed.py \
 `valid_for_days`から計算した `valid_until` が入る。入力archive、revision、生成時刻が同じなら
 出力も同じになるため、レビューや再生成では`--generated-at`を固定する。
 
+### 評価archiveからおすすめ構成を生成する
+
+`recommend.py` は、同じ archive から **`agent-recommendation`**（読み取り専用のおすすめ構成）を
+出す。適格性の生成は `qualification_seed.build_seed()` の 1 実装をそのまま使い、そこへ
+「実行レベルの構成・実行方針・同時実行数・必要なモデル・1 行ずつの根拠」を添えるだけである。
+
+```bash
+# 生成（配布物として置く。制御面ではないのでインストーラが配ってよい）
+python3 tools/agent-tools/eval/recommend.py \
+  --generated-at 2026-08-26T00:00:00Z --output ~/.agents/recommendation.json
+
+# 現在の制御面との差分を見る（書き込みはしない）
+python3 tools/agent-tools/eval/recommend.py --print-diff --control-dir ~/.agents/control
+```
+
+**実行レベルのローカル候補は `herd` の 1 語である。** `aider` / `ollama` / `opencode` の
+どれをどのモデルで使うかは用途ごとに違い（抽出は e4b・レビューは 12b・コード編集は aider の
+e4b）、それを知っているのは実測なので、推奨も具体名を書かない。一族は
+`agents/<name>.json` の `command[0] == "agent-herd"` で機械的に決まる。クラウドは実測できない
+ので `slots`（枠）として宣言し、値は適用時に人が選ぶ。
+
+出力は決定的で、同じ archive・revision・生成時刻なら同じ JSON になる。正典は
+`schemas/agent-recommendation.schema.json`。
+
 生成モデルだけを比べる基準線は `--cli agent-ollama` のまま `--model` だけ変える。
 ハーネスを調整する実験ではモデルを固定し、`--cli`、`--wall`、個別スクリプトの
 `--methods` / `--num-predict` を **1 度に 1 つだけ**変える。worker の aider 経路は比較用に

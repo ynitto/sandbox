@@ -2,6 +2,10 @@
 
 module.exports = {
   orchestrationOverview: (invoke) => () => invoke('orchestration:overview', {}),
+  orchestrationRecommendation: (invoke) => (payload) =>
+    invoke('orchestration:recommendation', payload || {}),
+  orchestrationRecommendationApply: (invoke) => (payload) =>
+    invoke('orchestration:recommendationApply', payload || {}),
   orchestrationBudgetSave: (invoke) => (payload) => invoke('orchestration:budgetSave', payload || {}),
   orchestrationRebalance: (invoke) => () => invoke('orchestration:rebalance', {}),
   orchestrationCalibrate: (invoke) => () => invoke('orchestration:calibrate', {}),

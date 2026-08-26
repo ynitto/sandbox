@@ -203,7 +203,12 @@ def build_seed(archive: Path, *, generated_at: dt.datetime, revision: int = 1) -
     candidates = _code_candidates(archive, generated_at, profiles)
     candidates.extend([
         _text_candidate(archive, "gemma4:e4b", "ollama", generated_at, profiles),
-        _text_candidate(archive, "gemma4:12b", "ollama-verify", generated_at, profiles),
+        # 12b のレビュー役は `ollama` の verify profile として走る。候補の agent_cli は
+        # **正典名**でなければならない（agent-herd 仕様 §4.0）——profile 名（ollama-verify）で
+        # 書くと tier 候補と照合せず selection_policy に一度も載らない一方、本番 receipt は
+        # 正典名で記録されるので、同じ実行系の実測が偽候補へ割れる。用途の次元は
+        # qualifications のキー（operation_class）が持っている。
+        _text_candidate(archive, "gemma4:12b", "ollama", generated_at, profiles),
     ])
     return {
         "version": 1,

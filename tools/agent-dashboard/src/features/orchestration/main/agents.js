@@ -212,11 +212,26 @@ function list(cfg) {
 // variant 先は base エージェントの用途別実体であり、tier や workload の
 // 汎用候補として直接選ばない。判定を renderer と profiles で複製しないよう、
 // first-wins で有効な定義だけから対象名を返す。
+//
+// **実ファイルの有無で判定しない。** 以前はここが `isVariantTarget`（＝同名の
+// ドロップインが実在するか）を見ていたため、2026-08-25 の profile 統一で
+// `ollama-json.json` 等 5 ファイルを消した瞬間に**空集合を返すようになり、
+// 「変種先を tier 候補にできない」保存時ガードが黙って無効化していた**
+// （12b をコード worker へ流さない構成上の封じが外れていた）。
+// variants の値はいまや「base 名 + profile 名」の綴りなので、宣言そのものを見る。
 function variantTargetNames(cfg) {
-  return new Set(list(cfg).dropins
-    .filter((item) => !item.shadowed && !(item.errors || []).length && item.isVariantTarget)
-    .map((item) => String(item.name || '').trim().toLowerCase())
-    .filter(Boolean));
+  const targets = new Set();
+  for (const dropin of list(cfg).dropins) {
+    if (dropin.shadowed || (dropin.errors || []).length) continue;
+    const spec = dropin.spec;
+    if (!isPlainObject(spec) || !isPlainObject(spec.variants)) continue;
+    for (const target of Object.values(spec.variants)) {
+      const name = String(target || '').trim().toLowerCase();
+      // 自分自身を指す宣言は振り替えにならない（resolve_variant も無視する）。
+      if (name && name !== String(dropin.name || '').trim().toLowerCase()) targets.add(name);
+    }
+  }
+  return targets;
 }
 
 // ドロップイン定義の作成・編集。既定の書込先は ~/.agents/agents/。検証を通ってから原子書換。

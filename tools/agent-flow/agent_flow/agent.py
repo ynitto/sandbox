@@ -225,9 +225,13 @@ def _agent_for(purpose: str) -> "tuple[str, str | None]":
     起動形の違いなので、どの層で CLI が決まっても同じ規則が効く。モデルは、人が明示した
     層（設定 `agents:` の役割別モデル・run 単位の実行時指定）が無ければ変種自身の既定
     モデルへ寄せる——変種は用途専用にチューニングされていることが多く（例:
-    ollama-verify の gemma4:12b）、tier/agent-control が自動選択したモデルをそのまま
-    持ち込むと調整が無効化される。人が明示した層は最優先のまま変更しない（自動選択層
-    だけを変種の既定で上書きする）。"""
+    ollama の verify profile の gemma4:12b）、用途を知らない層が自動選択したモデルを
+    そのまま持ち込むと調整が無効化される。
+
+    **例外は用途別の順位表（`selection_policy.by_purpose`）由来の決定である。** そちらは
+    その用途の実測（operation_class 別の格付け）で選ばれているので、変種の既定より
+    強い根拠を持つ。上書きすると、judge のように「Compiler が bounded-review の裏付けを
+    持つモデルを選んだのに、変種の既定で blocked と実測されたモデルへ戻る」が起きる。"""
     ov = _AGENT_OVERRIDES.get(purpose)
     if ov is None and purpose in VALID_KINDS:
         ov = _AGENT_OVERRIDES.get("worker")
@@ -244,6 +248,16 @@ def _agent_for(purpose: str) -> "tuple[str, str | None]":
         if selected:
             cli = str(selected["agent_cli"]).lower()
             model = selected.get("model") or model
+            # **用途別の順位表（selection_policy.by_purpose）から来た決定は、その用途の
+            # 実測に基づく選択である。** 変種の `default_model` で上書きしてはならない
+            # ——上書きすると、例えば judge で Compiler が bounded-review の裏付けを持つ
+            # gemma4:12b を選んだのに、`variants.judge → ollama-json` の既定（base の
+            # e4b）へ黙って戻り、**その用途では blocked と実測されているモデルで走る**。
+            # 用途を知らない共通の順位表（flat な candidates）由来のときは従来どおり
+            # ——そちらの model は用途を見ていないので、変種の用途専用チューニングの
+            # ほうが良い推定である。
+            if decision.get("purpose"):
+                configured_model = True
         # 縮退（degraded）は legacy の口。候補ベースでは Compiler の strategy が消費を
         # 織り込んで rank を出すので、二重に重ねない。
     else:

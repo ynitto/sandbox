@@ -162,6 +162,82 @@ def build_qualifications(existing: dict, stats: dict, *, now: dt.datetime) -> di
     }
 
 
+def _recommendation_qualifications(document) -> "tuple[dict | None, str]":
+    """推奨（agent-recommendation）から適格性ブロックを取り出す。
+
+    推奨は**読み取り専用の配布物**で制御面ではない。ここは「その中身を検証して
+    control へ置く」だけの入口であり、**生成はしない**——writer を agent-audit の
+    1 つに保ったまま、GUI（agent-dashboard）から起動できるようにするための口である
+    （2026-08-23 提案 §2.5 が「入れるなら起動口だけ」と残していた案）。
+    """
+    if not isinstance(document, dict):
+        return None, "推奨がオブジェクトではありません"
+    if document.get("version") != 1:
+        return None, f"未知の推奨 version です: {document.get('version')!r}（推測で適用しない）"
+    block = document.get("qualifications")
+    if not isinstance(block, dict):
+        return None, "推奨に qualifications ブロックがありません"
+    return block, ""
+
+
+def cmd_seed(args, store=None) -> dict:
+    """seed サブコマンド本体。推奨の適格性ブロックを qualifications.json へ置く。
+
+    dry-run 既定・``--apply`` で原子書換。qualify と同じ規律を通す:
+    契約検査 → revision の楽観検査 → 原子書換。
+
+    **既存を黙って踏み潰さない。** 置き場所に既に適格性があるときは、本番 receipt 由来の
+    実績（source が eval-archive でないもの）を上書きしないよう ``--force`` を要求する
+    ——seed は初期値であって、運用開始後の観測より新しい根拠ではない。
+    """
+    path = qualifications_file(args)
+    # **空文字を abspath へ通さない。** `os.path.abspath("")` は現在地になるので、
+    # 指定なしが「現在地の推奨を読む」に化けて、意図しないファイルを根拠にしうる。
+    raw = str(getattr(args, "from_recommendation", "") or "").strip()
+    if not raw:
+        return {"applied": False, "error": "--from-recommendation が必要です", "file": path}
+    source = os.path.abspath(os.path.expanduser(raw))
+    document = read_json(source)
+    if document is None:
+        return {"applied": False, "error": f"推奨を読めません: {source}", "file": path}
+    block, error = _recommendation_qualifications(document)
+    if error:
+        return {"applied": False, "error": error, "file": path, "source": source}
+
+    from agentcore import executioncontract
+    errors = executioncontract.qualifications_errors(block)
+    if errors:
+        return {"applied": False, "error": "; ".join(errors[:3]), "file": path, "source": source}
+
+    existing = read_json(path) or {}
+    measured = [
+        {"agent_cli": cand.get("agent_cli"), "model": cand.get("model"),
+         "operation_class": op}
+        for cand in (existing.get("candidates") or []) if isinstance(cand, dict)
+        for op, qual in (cand.get("qualifications") or {}).items()
+        if isinstance(qual, dict) and qual.get("source") and qual.get("source") != "eval-archive"
+    ]
+    summary = {
+        "file": path, "source": source,
+        "revision": block.get("revision"),
+        "candidates": len(block.get("candidates") or []),
+        "replaces_measured": measured,
+        "applied": False,
+    }
+    if measured and not getattr(args, "force", False):
+        return {**summary,
+                "error": "本番 receipt 由来の適格性があります（seed は初期値なので "
+                         "--force なしでは上書きしません）"}
+    if not getattr(args, "apply", False):
+        return summary
+    # 楽観的並行性: 書く直前に revision を読み直す（qualify / tune --apply と同じ規律）。
+    current = read_json(path) or {}
+    if int(current.get("revision") or 0) != int(existing.get("revision") or 0):
+        return {**summary, "error": "target-changed-concurrently"}
+    write_json_atomic(path, block)
+    return {**summary, "applied": True}
+
+
 def cmd_qualify(args, store) -> dict:
     """qualify サブコマンド本体。dry-run 既定・--apply で原子書換（revision 楽観検査）。"""
     now = dt.datetime.now(dt.timezone.utc)

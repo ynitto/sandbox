@@ -9,6 +9,9 @@ const profiles = require('./profiles');
 const tuning = require('./tuning');
 const executionPolicy = require('./execution-policy');
 const qualifications = require('./qualifications');
+const recommendation = require('./recommendation');
+const effectiveAgents = require('./effective-agents');
+const herdFamily = require('./herd-family');
 
 function registerIpc(ctx) {
   const { handle, loadConfig } = ctx;
@@ -38,6 +41,11 @@ function registerIpc(ctx) {
       controlDir,
       profiles: profiles.load(cfg),
       qualifications: qualifications.load(cfg),
+      // 役割別の実効起動形（読み取り専用）。実行レベルで選んだ候補は、実行直前に
+      // variants で用途ごとに振り替えられ、モデルまで変わることがある。その事実が
+      // 画面のどこにも出ていなかったので「設定したのと違うものが動く」に見えていた。
+      effectiveAgents: effectiveAgents.effectiveTable(cfg, profiles.load(cfg).tiers,
+        { herdMembers: herdFamily.members(cfg) }),
       tuning: tuning.load(cfg),
       methodsCatalog: methodsCatalog.map((method) => ({
         ...method,
@@ -59,6 +67,24 @@ function registerIpc(ctx) {
   handle('orchestration:executionPolicySave', (payload) =>
     executionPolicy.save(loadConfig(), payload || {})
   );
+
+  // おすすめ構成（agent-recommendation）。読むだけの面と、適用の起動口。
+  // **dashboard は推奨を生成しないし、適格性も書かない**——生成は eval の
+  // recommend.py、適格性の writer は agent-audit だけ（設計 §4.2 の不変条件）。
+  handle('orchestration:recommendation', (payload) => {
+    const cfg = loadConfig();
+    const loaded = recommendation.load(cfg);
+    if (!loaded.exists) return { ...loaded, preflight: [], diff: [], cloudChoices: [] };
+    const slotChoices = (payload && payload.slotChoices) || {};
+    return {
+      ...loaded,
+      preflight: recommendation.preflight(cfg, loaded.document),
+      cloudChoices: recommendation.cloudChoices(cfg, loaded.document),
+      diff: recommendation.diff(cfg, loaded.document, slotChoices),
+    };
+  });
+  handle('orchestration:recommendationApply', (payload) =>
+    recommendation.apply(loadConfig(), payload || {}));
 
   // 予算: 上限・期間・allocation（weight/min/max/on_exhausted/soft_ratio）
   handle('orchestration:budgetSave', (payload) => budget.save(loadConfig(), payload || {}));
