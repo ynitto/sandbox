@@ -122,23 +122,40 @@ async function init() {
   }
   api.onOpenTarget(handleOpenTarget);
 
-  // 左メニューに並ぶ領域は、それぞれの取得結果から出し分ける。**起動時に全部そろえる**
-  // ——1 つでも取り忘れると、その領域は最初の巡回まで（自動更新を切っていれば永久に）
-  // 左メニューから消えたままになる。
+  // ホームの正本であるプロジェクト発見だけを初期表示の前に待つ。定常業務の発見は全登録
+  // フォルダを深さ scanDepth まで同期走査し、ほかの制御面もそれぞれファイルを読むため、
+  // ここで全部を直列 await すると「件数が多いほどウィンドウが固まる」起動経路になる。
   await refreshDiscovery();
-  await refreshCowork();
-  await refreshAmigos();
-  await refreshOrchestration();
-  await refreshFeatureTabs();
-  // 前回の対象を裏で復元しておく（右ペインの中身が温まる）。**領域は復元しない**——
-  // 起動の着地点はホーム（横断ビュー）で、そこから人がどこへ行くかを選ぶ。
+  // 前回の対象は領域を開いたときの候補としてだけ復元する。ホームへ着地するのに、その対象の
+  // readProject + flowRuns + flowRun を先読みする必要はない（大きい run 履歴ほど起動を遅くする）。
   const last = localStorage.getItem('kpv:selected');
   const all = state.discovery.projects;
   const target = all.find((p) => p.dir === last) || all[0];
-  if (target) await selectProject(target.dir);
-  else renderAllTabs();
-  switchArea('home');
+  if (target) {
+    state.areaSelection.projects = target.dir;
+    state.areaSelection.routines = target.dir;
+  }
+  renderAllTabs();
+  await switchArea('home');
   setupPolling();
+
+  // 最初のホームをブラウザへ描画させてから、領域の表示材料を並行して温める。取得完了時に
+  // ナビとホームを描き直すので、自動更新を無効にしていても領域が消えたままにはならない。
+  requestAnimationFrame(() => setTimeout(() => {
+    void warmStartupData().catch((err) => uiLog('startup warmup failed', String(err && err.message || err)));
+  }, 0));
+}
+
+async function warmStartupData() {
+  await Promise.all([
+    refreshCowork(),
+    refreshAmigos(),
+    refreshOrchestration(),
+    refreshFeatureTabs(),
+  ]);
+  renderAreaNav();
+  renderAreaLists();
+  renderHome();
 }
 
 init();
