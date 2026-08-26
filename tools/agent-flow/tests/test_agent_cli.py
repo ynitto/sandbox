@@ -1190,6 +1190,45 @@ class AgentControlTests(unittest.TestCase):
         cli, model = kf._agent_for("verify")
         self.assertEqual(model, "opus")                 # control が最優先（kiro は変種を持たない）
 
+    def test_by_purpose_model_is_not_overridden_by_the_variant_default(self):
+        """用途別の順位表から来たモデルは、変種の既定で上書きしない。
+
+        judge の実効: `variants.judge → ollama-json` は base の既定（e4b）を継ぐので、
+        上書きを許すと **Compiler が bounded-review の裏付けを持つ 12b を選んだのに、
+        その用途では blocked と実測されている e4b で走る**。起動形（argv）は変種の
+        ものを使い、モデルだけは実測の選択を残す。
+        """
+        self._control({
+            "version": 2,
+            "workloads": {"flow": {"selection_policy": {
+                "strategy": "balanced", "retry_limit": 1, "no_candidate": "park",
+                "candidates": [{"agent_cli": "ollama", "model": "gemma4:e4b", "rank": 1}],
+                "by_purpose": {
+                    "judge": {"operations": ["bounded-review"],
+                              "candidates": [{"agent_cli": "ollama", "model": "gemma4:12b",
+                                              "rank": 1}]},
+                },
+            }}},
+        })
+        cli, model = kf._agent_for("judge")
+        self.assertEqual(cli, "ollama-json", "起動形は変種のもの（JSON 契約）")
+        self.assertEqual(model, "gemma4:12b", "モデルは用途別の実測が選んだもの")
+
+    def test_flat_policy_model_still_defers_to_the_variant_default(self):
+        """用途を知らない共通の順位表由来なら従来どおり変種の既定へ寄せる。
+
+        flat な candidates の model は用途を見ていないので、変種の用途専用チューニングの
+        ほうが良い推定である（by_purpose が無い端末の挙動を変えない）。
+        """
+        self._control({
+            "version": 2,
+            "workloads": {"flow": {"selection_policy": {
+                "strategy": "balanced", "retry_limit": 1, "no_candidate": "park",
+                "candidates": [{"agent_cli": "ollama", "model": "gemma4:e4b", "rank": 1}],
+            }}},
+        })
+        self.assertEqual(kf._agent_for("verify"), ("ollama-verify", "gemma4:12b"))
+
     def test_variant_default_model_overrides_a_tier_selected_model(self):
         # tier/agent-control（dashboard の自動割り当て）が選んだ agent_cli + model は
         # 「その CLI を用途を問わずそのまま使う」という明示ではない——用途が variant を

@@ -225,7 +225,8 @@ flow / project の例は `gemma4:e4b` へ直した。
 3. **ハーネスの escalate 率は上限として読む**（A2）。本番は不適格タスクを aider へ
    割り当てうるので、dashboard の実績表示で escalate が実測より高くても設定の失敗ではない。
 4. **12b の縮退基準を設定でいじらない**: retry_limit=1・候補順 12b → e4b は B3 で決めた
-   縮退基準の表現そのものであり、qualifications / 候補順の手編集で壊さない。
+   縮退基準の表現そのものであり、qualifications / 候補順の手編集で壊さない
+   （**2026-08-26 訂正**: `retry_limit=1` は実在するが、「候補順 12b → e4b」は実体が無かった。e4b は `bounded-review` が blocked（6 中 2）なのでレビュー役の候補に載らず、縮退先が存在しない。再投入を使い切れば park する——弱い候補へ黙って降格しないのが設計の不変条件で、実測で不適格と分かっているモデルへ落とすのはその違反にあたる。縮退が効くのは e4b も裏付けを持つ処理種別（bounded-analysis 等）である。詳細は [2026-08-26 提案](2026-08-26-agent-tools-recommended-setup-simplification-design.md) §2 B3）。
 
 ## 5. 設定しないこと（既決の再掲）
 
