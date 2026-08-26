@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ynitto/sandbox/schemas/agent-recommendation.schema.json",
+  "title": "agent-recommendation",
+  "description": "評価 archive から決定的に生成する**読み取り専用のおすすめ構成**。ローカル主体で回すために人が踏む手順のうち、端末に依存しない定数（実行レベルの構成・実行方針・同時実行数・適格性 seed・必要なモデル）を 1 個のデータ資産へ畳む。**制御面ではない**——`profiles.json` / `control.json` / `qualifications.json` は端末ごとの実測と枠に依存するので、この文書は「何が推奨か」だけを言い、適用は agent-dashboard（実行レベル・方針・同時実行数）と agent-audit（適格性）が行う。したがってインストーラが配ってよい（agents/*.json と同じ経路）。置き場所: `~/.agents/recommendation.json`。生成は `tools/agent-tools/eval/recommend.py`（同じ archive・revision・生成時刻なら同じ出力）。設計: docs/plans/2026-08-26-agent-tools-recommended-setup-simplification-design.md §3.2 / §3.3",
+  "type": "object",
+  "required": ["version", "revision", "generated_at", "source", "tiers", "execution_policy", "qualifications"],
+  "properties": {
+    "version": {"const": 1},
+    "revision": {"type": "integer", "minimum": 0, "description": "推奨そのものの版。同じ archive でも導出規則が変われば上がる"},
+    "generated_at": {"type": "string", "format": "date-time"},
+    "source": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": {"const": "eval-archive", "description": "根拠の出どころ。本番 receipt 由来の更新は agent-audit qualify が担当し、この文書は初期値だけを持つ"},
+        "archive": {"type": "string"},
+        "qualification_revision": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": true
+    },
+    "tiers": {
+      "type": "object",
+      "description": "実行レベル（単純作業 / 軽量 / 標準 / 高性能）の推奨。**ローカルは `herd` の 1 語**——どの (agent_cli, model) を使うかは用途ごとに違い、それを知っているのは実測なので、推奨も具体名を書かない。クラウドは実測できないので `slots`（枠）として宣言し、値は適用時に人が選ぶ",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["order"],
+        "properties": {
+          "order": {"type": "integer", "minimum": 0},
+          "label": {"type": "string", "description": "UI 表示名"},
+          "candidates": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["agent_cli"],
+              "properties": {
+                "agent_cli": {"type": "string", "description": "`herd`（ローカル実行系の一族）か、実在する定義名"},
+                "model": {"type": "string", "description": "省略＝実測に任せる。書くとその 1 つに縛る"}
+              },
+              "additionalProperties": true
+            }
+          },
+          "slots": {
+            "type": "array",
+            "description": "**人が決める場所**。実測が無い面（クラウド CLI の契約状況は端末ごとに違う）を、値ではなく要求として宣言する。既に候補が入っていれば充足",
+            "items": {
+              "type": "object",
+              "required": ["requires"],
+              "properties": {
+                "requires": {"type": "string", "description": "枠の種類（例 cloud-standard / cloud-premium）"}
+              },
+              "additionalProperties": true
+            }
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "execution_policy": {
+      "type": "object",
+      "required": ["mode"],
+      "properties": {
+        "mode": {"enum": ["auto", "saving", "quality", "custom"], "description": "推奨は `auto`（おまかせ）。ローカル主体の実体は方針プリセットではなく tiers 構成が作る——`saving` にすると常時 small 上限になり、昇格受け（標準のクラウド候補）が tier 検査で常に落ちて park し続ける"}
+      },
+      "additionalProperties": true
+    },
+    "control": {
+      "type": "object",
+      "description": "agent-control へ推奨する宣言（現状は `workloads.flow.concurrency` だけ）。ローカル LLM は resource_group=local-llm 同時 1 が前提なので、herd 一族に実測がある端末でだけ宣言する",
+      "additionalProperties": true
+    },
+    "qualifications": {
+      "$comment": "形は schemas/agent-candidate-qualifications.schema.json。生成は eval/qualification_seed.py の 1 実装のまま（第 2 実装を作らない）",
+      "type": "object",
+      "required": ["version", "revision", "candidates"],
+      "additionalProperties": true
+    },
+    "herd": {
+      "type": "object",
+      "description": "`herd` がこの端末で何に広がるかの説明（画面用。選択の順位ではない——順位は用途ごとに Execution Policy Compiler が決める）",
+      "properties": {
+        "members": {
+          "type": "array", "items": {"type": "string"},
+          "description": "一族の定義名。`agents/<name>.json` の `command[0]` が `agent-herd` のもの（綴りでは判定しない）"
+        },
+        "expansion": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["agent_cli", "model", "usable"],
+            "properties": {
+              "agent_cli": {"type": "string"},
+              "model": {"type": "string"},
+              "qualified_for": {"type": "array", "items": {"type": "string"}},
+              "usable": {"type": "boolean", "description": "false は「一族だが裏付けが無いので選ばれない」。**黙って消さない**——入っているのに使われない理由が画面で分かるようにする"}
+            },
+            "additionalProperties": true
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "requires": {
+      "type": "object",
+      "description": "適用前の点検に使う前提条件",
+      "properties": {
+        "entrypoint": {"type": "string", "description": "実行系の入口（`agent-herd`）"},
+        "models": {"type": "array", "items": {"type": "string"}, "description": "`ollama pull` が要るモデル"}
+      },
+      "additionalProperties": true
+    },
+    "evidence": {
+      "type": "array",
+      "description": "1 行ずつの根拠。**推奨の値と同じ文書に置く**——「なぜこの値か」を別の場所へ探しに行かせない",
+      "items": {
+        "type": "object",
+        "required": ["agent_cli", "model", "operation_class", "status"],
+        "properties": {
+          "scope": {"enum": ["herd", "cloud"]},
+          "agent_cli": {"type": "string"},
+          "model": {"type": "string"},
+          "operation_class": {"type": "string"},
+          "status": {"enum": ["qualified", "trial", "blocked", "unknown"]},
+          "why": {"type": "string", "description": "実測の要約（例 `9/9`）"},
+          "qualification_id": {"type": "string"},
+          "ledger": {"type": ["string", "null"], "description": "archive 内の台帳パス"}
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}
