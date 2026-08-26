@@ -240,7 +240,8 @@ policy と接続補完（§6）が**ヘッドレスと同じ経路**で仕込ま
 ### 4.5 `harness`
 
 ```
-agent-herd harness statemachine --workflow PATH [--agent-cli NAME] [--model M]
+agent-herd harness statemachine (--workflow PATH | --entry NAME [--config PATH])
+                                [--agent-cli NAME] [--model M]
                                 [--param KEY=VALUE]… [--input TEXT] [--dir DIR]
 agent-herd harness run PROMPT… [--agent-cli NAME] [--model M]
                                [--acceptance TEXT]… [--judge] [--dir DIR]
@@ -249,6 +250,21 @@ agent-herd harness run PROMPT… [--agent-cli NAME] [--model M]
 `--agent-cli` の既定は `aider`。フラグの綴りは `agent-loop statemachine` / `agent-loop run` と
 **同じ**にしてある。同じハーネスの 2 つの入口なので、片方だけ違う名前を人に覚えさせない。
 終了時に `RESULT {json}` を 1 行出すのも同じで、それが呼び出し側との結果契約になる。
+
+`statemachine` は `--workflow` か `--entry` の**どちらか一方**を取る（両方・どちらも無しは 2）。
+`--entry` は `agent-loop.yaml` の `prompts[]` のエントリ名で、ワークフローの位置と
+**実行条件**（`input:` のマップと、自由文としての `prompt`）をその宣言から引く
+（正典は agent-loop 仕様 §2.3.1、実装は `agentcore.loopentry` の 1 か所）。設定ファイルの
+探索順は agent-loop と同じで、`--config` で直接指すこともできる。
+
+| 打ったもの | 効くもの |
+|---|---|
+| `--param` / `--input` | エントリの宣言より**優先**（後から来た判断を勝たせる） |
+| `--agent-cli` / `--model` | 打たなければエントリの `agent_cli` / `model`、それも無ければ既定 |
+| `--dir` | 打たなければエントリの `cwd`、それも無ければカレント |
+
+デーモンを持たない `agent-herd` からでも、常駐している定常業務と**同じ条件**で 1 回だけ
+回せる——条件の解釈が入口ごとに違うと、「手で回すと通るのに定期実行だけ落ちる」が起きる。
 
 実体は `agentcore.harness`。**tmux もデーモンも設定ファイルも要らない**——tmux はコマンドを
 走らせて様子を見せる手段であって実行契約の一部ではない、という元の設計注記がそのまま効く。

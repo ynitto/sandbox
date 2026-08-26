@@ -860,6 +860,40 @@ def run_statemachine(*, workflow_path: str, cwd: str, parameters: "dict | None" 
     raise StateMachineHarnessError(f"最大ステップ数 ({max_steps}) に到達しました")
 
 
+DEFAULT_HARNESS_CLI = "aider"
+
+
+def _sm_entry_plan(args, work_dir: "Path") -> "tuple[dict | None, Path]":
+    """`--entry` を agent-loop の設定から解いて、実行条件と作業ディレクトリを返す。
+
+    entry を指すのはワークフローの位置と**実行条件**（`input:` のマップと、自由文と
+    しての `prompt`）を設定ファイルから引くため。読み方はデーモン・dashboard と同じ
+    1 実装（:mod:`agentcore.loopentry`）で、ここに 2 つ目の解釈を作らない。
+
+    entry が `cwd` を宣言していて `--dir` が無いときは、そちらを作業ディレクトリに
+    する——ワークフローの相対パスも実行条件もその位置を前提に書かれている。
+    """
+    from agentcore import loopentry
+
+    name = getattr(args, "entry", None)
+    if not name:
+        return None, work_dir
+    if getattr(args, "workflow", None):
+        raise StateMachineHarnessError("--entry と --workflow は同時に指定できません")
+    try:
+        plan = loopentry.resolve_entry(name, cwd=str(work_dir),
+                                       config=getattr(args, "config", None))
+    except loopentry.LoopEntryError as exc:
+        raise StateMachineHarnessError(str(exc)) from exc
+    if plan["cwd"] and not getattr(args, "dir", None):
+        resolved = Path(plan["cwd"]).expanduser()
+        if not resolved.is_dir():
+            raise StateMachineHarnessError(
+                f"entry の cwd が存在しません: {resolved}（{plan['config']}）")
+        work_dir = resolved.resolve()
+    return plan, work_dir
+
+
 def _sm_parse_params(pairs: "list[str]", input_value: "str | None") -> dict:
     params: dict = {}
     for pair in pairs or []:
@@ -881,12 +915,20 @@ def cmd_statemachine(args: argparse.Namespace, cwd: Path) -> None:
         print(f"[agent-loop] ERROR: ディレクトリが存在しません: {work_dir}", file=sys.stderr)
         sys.exit(1)
     try:
-        params = _sm_parse_params(getattr(args, "param", None) or [],
-                                  getattr(args, "input", None))
+        plan, work_dir = _sm_entry_plan(args, work_dir)
+        if not plan and not getattr(args, "workflow", None):
+            raise StateMachineHarnessError("--workflow か --entry のどちらかが必要です")
+        # 実行条件の優先順: いま打った --param / --input ＞ entry の宣言。
+        # 打った値のほうが後から来た判断なので勝たせる（entry は既定として残る）。
+        params = dict(plan["parameters"]) if plan else {}
+        params.update(_sm_parse_params(getattr(args, "param", None) or [],
+                                       getattr(args, "input", None)))
+        workflow_path = getattr(args, "workflow", None) or plan["workflow"]
         # 候補ベース（agent-control v2 selection_policy）: 人が --agent-cli を明示したら
-        # それが pin（従来どおり最優先）。指定が無いときだけ Resolver の決定を使う。
+        # それが pin（従来どおり最優先）。次に entry の宣言。どちらも無いときだけ
+        # Resolver の決定を使う。
         # park は lifecycle と同じ環境要因として実行前に止める（3 = escalate と別の 1）。
-        pin_cli = getattr(args, "agent_cli", None)
+        pin_cli = getattr(args, "agent_cli", None) or (plan["agent_cli"] if plan else "")
         decision = None if pin_cli else _control_policy_decision("statemachine")
         if decision is not None and decision.get("parked"):
             raise StateMachineHarnessError(
@@ -894,12 +936,16 @@ def cmd_statemachine(args: argparse.Namespace, cwd: Path) -> None:
                 f"（{decision.get('park_reason')}）: {decision.get('reason')}。"
                 f"再開条件: {decision.get('resume_condition')}")
         selected = (decision or {}).get("selected") or {}
-        agent = _sm_resolve_agent(pin_cli or selected.get("agent_cli") or "aider",
-                                  getattr(args, "model", None) or selected.get("model") or "",
-                                  str(work_dir))
+        agent = _sm_resolve_agent(
+            pin_cli or selected.get("agent_cli") or DEFAULT_HARNESS_CLI,
+            (getattr(args, "model", None) or (plan["model"] if plan else "")
+             or selected.get("model") or ""),
+            str(work_dir))
         _sm_progress(f"agent: {agent['cli']}"
                      + (f" / model: {agent['model']}" if agent["model"] else " (default model)"))
-        result = run_statemachine(workflow_path=args.workflow, cwd=str(work_dir),
+        if plan:
+            _sm_progress(f"entry: {getattr(args, 'entry', '')}（{plan['config']}）")
+        result = run_statemachine(workflow_path=workflow_path, cwd=str(work_dir),
                                   parameters=params, agent=agent, decision=decision)
         print("RESULT " + json.dumps(result, ensure_ascii=False))
         # 3 = 検査の再投入上限に達した（この段では解けない）。呼び出し側が RESULT を

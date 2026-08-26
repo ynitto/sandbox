@@ -777,10 +777,48 @@ function loopPrompt(item, config) {
   return String(item.prompt || resolveLoopPromptText(item.repo || item.cwd, name, config) || '');
 }
 
+// 定常業務エントリが宣言した実行条件を、入力欄の既定値へ畳む。
+//
+// 宣言の読み方は agent-loop / agent-herd と同じ規則（agentcore/loopentry.py が正典）:
+//   ・`input:` のマップ … 名前のある条件。そのままパラメータになる
+//   ・`prompt` の自由文 … 名前の無い条件。ワークフローの `input` パラメータ 1 個ぶん
+// どちらも**宣言済み＝人にもう一度訊かない**ので、入力欄（keys）からは外して
+// 既定値（defaults）へ移す。「今すぐ実行」がデーモンと同じ条件で回るのはこの畳み込みによる。
+function applyEntryConditions(spec, item, pairedBody) {
+  const loop = (item._src && item._src.loop) || {};
+  const declared = isPlainObject(loop.input) ? loop.input : {};
+  const entryInput = {};
+  for (const [key, value] of Object.entries(declared)) {
+    if (value == null || typeof value === 'object') continue;
+    entryInput[key] = String(value);
+  }
+  Object.assign(spec.defaults, entryInput);
+  // 自由文を `input` に載せるのは **`statemachine:` を宣言した entry のときだけ**。
+  // 宣言の無い対（本文の言い回しで推測した従来の組）では、prompt は対話 CLI へ送る
+  // 指示文であって実行条件ではない——黙って意味を変えない。
+  if (loop.declared && pairedBody
+      && !Object.prototype.hasOwnProperty.call(entryInput, 'input')) {
+    spec.defaults.input = pairedBody;
+  }
+  spec.keys = spec.keys.filter((key) => !Object.prototype.hasOwnProperty.call(spec.defaults, key));
+  // entry が宣言した条件だけの写し。ハーネス経路は defaults ごと --param へ渡すが、
+  // 対話 CLI 経路（statemachine-use スキルを発動する）はワークフローの context: を
+  // 自分で読むので、**entry 側にしか無い条件**をプロンプトへ書き出す必要がある。
+  spec.entryInput = { ...entryInput };
+  if (Object.prototype.hasOwnProperty.call(spec.defaults, 'input') && loop.declared) {
+    spec.entryInput.input = spec.defaults.input;
+  }
+  spec.entryDeclared = !!loop.declared;
+  return spec;
+}
+
 function routineParameterSpec(config, item) {
-  if (Array.isArray(item.args)) return { keys: [], defaults: {}, error: '' };
+  if (Array.isArray(item.args)) {
+    return { keys: [], defaults: {}, entryInput: {}, entryDeclared: false, error: '' };
+  }
   if (item.type !== 'state-machine') {
-    return { keys: loopParameterKeys(loopPrompt(item, config)), defaults: {}, error: '' };
+    return { keys: loopParameterKeys(loopPrompt(item, config)), defaults: {},
+             entryInput: {}, entryDeclared: false, error: '' };
   }
   const cwd = launchCwd(item, config) || process.cwd();
   const spec = stateMachineInputSpec(stateMachineFilePath(item, cwd, config));
@@ -790,7 +828,7 @@ function routineParameterSpec(config, item) {
   for (const key of loopParameterKeys(pairedBody)) {
     if (!Object.prototype.hasOwnProperty.call(spec.defaults, key) && !spec.keys.includes(key)) spec.keys.push(key);
   }
-  return spec;
+  return applyEntryConditions(spec, item, pairedBody);
 }
 
 function validateParameters(spec, raw) {
@@ -1058,13 +1096,17 @@ function runStateMachine(config, itemIdValue, parameters, tier = '') {
   } else {
     const smName = item.workflow || item.file || item.name;
     const pairedBody = pairedName ? resolveLoopPromptText(item.repo || item.cwd, pairedName, config) : '';
-    const smPrompt = applyParameters(
-      pairedBody || `statemachine-use スキルで${smName}ステートマシンを実行して`,
-      effectiveValues
-    ) + stateMachineParameterBlock(values);
+    // `statemachine:` を宣言した entry の prompt は**実行条件（自由文）であって指示文では
+    // ない**ので、対話 CLI へはスキル発動文を送り、本文は条件として下のパラメータ節へ回す。
+    // 宣言の無い（本文の言い回しで推測した）対では、従来どおり本文がそのまま指示文になる。
+    const instruction = (!spec.entryDeclared && pairedBody)
+      ? pairedBody
+      : `statemachine-use スキルで${smName}ステートマシンを実行して`;
+    const smPrompt = applyParameters(instruction, effectiveValues)
+      + stateMachineParameterBlock({ ...(spec.entryInput || {}), ...values });
     prompt = withGlobalInstructions(config, smPrompt);
     // 非ウィンドウ実行（非 win32 / runWindow:false）用の従来 send 引数も併せて用意する
-    const legacy = !Object.keys(values).length
+    const legacy = (!Object.keys(values).length && !spec.entryDeclared)
       ? (pairedName || `${smName} ステートマシンを実行して`)
       : smPrompt;
     args = ['send', legacy];

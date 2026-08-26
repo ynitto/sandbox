@@ -105,7 +105,8 @@ agent-loop send [-s SESSION] [-d DIR] [--wait] [--priority high|normal|low]
                 [--ralph --max-iterations N] PROMPT
 agent-loop run [--agent-cli NAME] [--model MODEL] [--acceptance TEXT ...] [--judge]
                [-d DIR] PROMPT
-agent-loop statemachine --workflow PATH [--agent-cli NAME] [--model MODEL]
+agent-loop statemachine (--workflow PATH | --entry NAME [--config PATH])
+                        [--agent-cli NAME] [--model MODEL]
                         [--param KEY=VALUE ...] [--input TEXT] [-d DIR]
 agent-loop pause | resume | cancel TARGET | drain | reload
 agent-loop doctor [--json] [--fix]
@@ -157,6 +158,14 @@ agent-loop --version
   （「失敗した」ではなく「この段では解けない」の宣告。上位の段へ回すシグナルとして使います）。
   宣言の書式は statemachine-use の `references/schema.md`、作例は
   `examples/gated_implement.yaml`。宣言が無いステートは従来どおり素通りします。
+- **`--entry NAME`** は `agent-loop.yaml` の定期プロンプトを名前で引き、その
+  `statemachine:` と実行条件（`input:` のマップ / `prompt` の自由文）で回します
+  （`--workflow` とは排他）。定期実行と同じ条件で 1 回だけ手で回したいときに使います
+  ——条件を打ち直すと、そこで写し間違えたぶんだけ定期実行と違うものを見ることになります。
+  その場で打った `--param` / `--input` は宣言より優先します。CLI とモデルの解決順は
+  `--agent-cli` / `--model` ＞ エントリの `agent_cli` / `model` ＞ control.json の
+  `selection_policy`（version 2 以上で宣言があるときだけ）＞ 既定（`aider`）です。
+  `agent-herd harness statemachine --entry` も同じ綴りで同じものを回します。
 - `pause` / `resume` は local pause（`resume` は agent-control / budget の pause を迂回しません）。
 - `cancel` は managed な entry / pane だけを停止・slot 解放します（external pane は拒否）。
 - `drain` は新規受付を止め、実行中完了後に daemon を終了します。
@@ -299,7 +308,65 @@ prompts:
     event_hook_fallback: true   # 更新が無くてもランダムに 1 件送る
     interval_minutes: 5
     enabled: true
+
+  # statemachine: ステートマシンを実行する（下記）
+  - name: "日次ダイジェスト"
+    statemachine: digest        # .statemachine/digest/workflow.yaml
+    input:                      # 名前のある実行条件（推奨）
+      topic: llm
+    prompt: 今日のぶんの要約を書いて   # 名前の無い自由文 → input パラメータ
+    cron: "0 7 * * *"
+    enabled: true
 ```
+
+### statemachine（ステートマシンを実行する）
+
+`statemachine` を書いたエントリは、対話ペインへ本文を送るのではなく、
+**ハーネスのステートマシン実行**（`agent-loop statemachine` と同じ実体）へ回ります。
+値は `.statemachine/<名前>/workflow.yaml` の名前か、作業ディレクトリからの相対パスです。
+
+```yaml
+prompts:
+  - name: "日次ダイジェスト"
+    statemachine: digest
+    input:
+      topic: llm
+      context.channel: stable   # 入れ子はキー側にドットで書く
+    prompt: 今日のぶんの要約を書いて
+    cron: "0 7 * * *"
+```
+
+**実行条件の書き方は 2 つあり、正典は `input:` です。**
+
+| 書き方 | 何になるか | いつ使うか |
+|---|---|---|
+| `input:` のマップ | 宣言したキーがそのまま実行パラメータになる | **名前のある条件はすべてこちら（推奨）** |
+| `prompt` の自由文 | ワークフローの `input` パラメータ 1 個ぶんになる | 名前の無い自由文だけ |
+
+`input:` を正典にしたのは、ワークフローが自分のパラメータ面（`{{topic}}` と `context:`）を
+宣言しているからです。マップはその面と 1:1 なので、キーの過不足を**実行前に**——設定の
+読み込み時と agent-dashboard の入力欄で——突き合わせられます。自由文が確実に届く先は
+`input` の 1 スロットだけで、条件が 2 つ以上あるものを自由文で書くと割り付けはモデルの
+推測になり、外した実行は `check:` まで進んでから落ちます。実行ログにも
+`--param topic=llm` の形で残るので、後から同じ条件で引き直せます。
+
+両方書けます（自由文 + 名前つき条件）。衝突するのは `input` キーだけで、`prompt` と
+`input.input` の併記は読み込みで落とします。フックが本文を返した実行では、
+`prompt` ではなく**届いた本文**が `input` になります。
+
+- `session` は `per-run` に固定されます（ハーネスは対話ペインを持ちません）。
+  `oneshot` / `clean_session` / `target` / `slash` / `mode: ralph` との併用は起動エラーです。
+- 受入条件はワークフローの `check:` で宣言します（`acceptance` との併用は起動エラー。
+  同じ検証を 2 か所に置かないためです）。
+- 宣言先のワークフローが見つからなければ**起動時**に止めます。
+- agent-dashboard の一覧では、対になる定型業務と 1 つの項目に統合されます。
+  「今すぐ実行」は宣言した条件をそのまま使うので、画面から回してもデーモンと同じ条件で動きます。
+- 同じエントリを tmux もデーモンも無しに回す:
+  `agent-loop statemachine --entry "日次ダイジェスト"` /
+  `agent-herd harness statemachine --entry "日次ダイジェスト"`
+
+詳細な仕様は
+[`docs/specs/agent-loop-spec.md` §2.3.1](../../docs/specs/agent-loop-spec.md)。
 
 ### slash（本文の前にスラッシュコマンドを送る）
 

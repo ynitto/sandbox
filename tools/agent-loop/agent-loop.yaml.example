@@ -347,6 +347,42 @@ prompts:
                                      # 軽量な確認タスクや緊急タスクに有用
     enabled: false                   # 一時的に無効化する
 
+  # ---- ステートマシンを実行する（statemachine + input）----
+  # 設計: docs/designs/agent-loop-design.md（機能 8）／仕様: agent-loop-spec.md §2.3
+  #
+  # `statemachine:` を書いた entry は、対話ペインへ本文を送るのではなく、ハーネスの
+  # ステートマシン実行（`agent-loop statemachine` と同じもの）へ回る。値は
+  # `.statemachine/<名前>/workflow.yaml` の名前か、作業ディレクトリからの相対パス。
+  #
+  # 実行条件（ワークフローが `{{...}}` で参照する値）の書き方は 2 つある。
+  #
+  #   ★ 推奨: `input:` のマップ。**名前のある条件はこちらに書く。**
+  #      ワークフローは自分のパラメータ面（`{{topic}}` / `context:`）を宣言しているので、
+  #      マップはその面と 1:1 になる。キーの過不足は設定を読んだ時点・dashboard の
+  #      入力欄で分かり、実行ログにも `--param topic=llm` としてそのまま残る。
+  #
+  #     `prompt:` の自由文。**名前の無い自由文だけをこちらに書く。**
+  #      本文はワークフローの `input` パラメータ 1 個ぶんとして渡る。確実に届く先は
+  #      その 1 スロットだけなので、条件が 2 つ以上あるものを自由文で書くと割り付けは
+  #      モデルの推測になり、外した実行は `check:` まで進んでから落ちる。
+  #
+  # 両方書いてよい（自由文 + 名前つき条件）。衝突するのは `input` キーだけで、
+  # `prompt` と `input.input` を同時に書いた設定は読み込みで落とす。
+  #
+  # 受入条件はワークフローの `check:` で宣言する（entry の acceptance とは併用不可）。
+  # 同じ entry を tmux もデーモンも無しに回す:
+  #   agent-loop statemachine --entry "日次ダイジェスト"
+  #   agent-herd  harness statemachine --entry "日次ダイジェスト"
+  # - name: "日次ダイジェスト"
+  #   statemachine: digest          # .statemachine/digest/workflow.yaml
+  #   input:                        # 名前のある実行条件（推奨）
+  #     topic: llm
+  #     context.channel: stable     # 入れ子はキー側にドットで書く
+  #   prompt: 今日のぶんの要約を書いて   # 名前の無い自由文 → input パラメータ
+  #   agent_cli: aider
+  #   cron: "0 7 * * *"
+  #   enabled: false
+
   # ---- Phase 2A: Ralph（N 回の work iteration。最終回に要約指示）----
   # - name: "Nightly refactor"
   #   mode: ralph

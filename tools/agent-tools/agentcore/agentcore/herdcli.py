@@ -404,6 +404,7 @@ HARNESS_HELP = f"""使い方: {PROG} harness <種別> [オプション]
 
   種別:
     statemachine --workflow PATH   ステートマシンを完走させる
+    statemachine --entry NAME      agent-loop.yaml の entry の宣言どおりに回す
     run PROMPT…                    プロンプト 1 件を 1 回実行する
 
   共通:
@@ -414,6 +415,9 @@ HARNESS_HELP = f"""使い方: {PROG} harness <種別> [オプション]
   statemachine のみ:
     --param KEY=VALUE  実行パラメータ（繰り返し可）
     --input TEXT       input パラメータ
+    --entry NAME       agent-loop.yaml の prompts エントリ名。そのエントリの
+                       statemachine と実行条件（input: のマップ / prompt の自由文）で回す
+    --config PATH      --entry を引く設定ファイル（省略時は agent-loop と同じ順で探す）
 
   run のみ:
     --acceptance TEXT  受入条件（繰り返し可。省略すると done を機械検証できない）
@@ -443,11 +447,18 @@ def cmd_harness(argv, *, err=None, runner=None) -> int:
     import argparse
 
     parser = argparse.ArgumentParser(prog=f"{PROG} harness {kind}", add_help=False)
-    parser.add_argument("--agent-cli", default="aider")
+    # `--agent-cli` の既定は None。打たなかったことを **打った "aider" と区別する**ため
+    # で、解決の既定そのものは従来どおり aider（statemachine.DEFAULT_HARNESS_CLI）。
+    # 区別が要るのは `--entry` が entry の宣言した CLI を使うから。
+    parser.add_argument("--agent-cli", default=None)
     parser.add_argument("--model", default=None)
     parser.add_argument("--dir", "-d", default=None)
     if kind == "statemachine":
-        parser.add_argument("--workflow", required=True)
+        # どちらか一方が要る（両方は明示エラー）。required にしないのは、
+        # 「--workflow が無い」ではなく「--entry でもよい」と伝えるため。
+        parser.add_argument("--workflow", default=None)
+        parser.add_argument("--entry", default=None)
+        parser.add_argument("--config", default=None)
         parser.add_argument("--param", action="append", default=[])
         parser.add_argument("--input", default=None)
     else:
@@ -458,6 +469,12 @@ def cmd_harness(argv, *, err=None, runner=None) -> int:
         args = parser.parse_args(tokens)
     except SystemExit as exc:               # argparse は 2 で落ちる。入口の綴りへ揃える
         return int(exc.code or 2)
+
+    if kind == "statemachine" and bool(args.workflow) == bool(args.entry):
+        # 「無い」と「両方ある」を同じ 2 で断る。どちらもハーネスを起こす前に分かる
+        # 入力の問題で、走り出してから落とす理由が無い。
+        _err("--workflow か --entry のどちらか一方が必要です", err=err)
+        return 2
 
     cwd = Path(args.dir).expanduser().resolve() if args.dir else Path.cwd()
     if runner is not None:

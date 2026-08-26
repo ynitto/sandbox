@@ -300,15 +300,29 @@ def main() -> None:
   agent-loop statemachine --workflow .statemachine/digest/workflow.yaml
   agent-loop statemachine --workflow .statemachine/digest/workflow.yaml \\
       --agent-cli aider --model gemma4:e4b --param topic=llm --input "今日の要約"
+
+  agent-loop.yaml の entry をそのまま回す（実行条件も entry の宣言から引く）:
+  agent-loop statemachine --entry "日次ダイジェスト"
 """,
     )
     sm_parser.add_argument(
-        "--workflow", required=True, metavar="PATH",
-        help="workflow.yaml のパス（作業ディレクトリからの相対または配下の絶対パス）",
+        "--workflow", default=None, metavar="PATH",
+        help="workflow.yaml のパス（作業ディレクトリからの相対または配下の絶対パス）。"
+             "--entry と同時には指定できない",
     )
     sm_parser.add_argument(
-        "--agent-cli", default="aider", metavar="NAME",
-        help="agents/<name>.json の headless CLI 名（既定: aider）",
+        "--entry", default=None, metavar="NAME",
+        help="agent-loop.yaml の prompts エントリ名。そのエントリの statemachine と"
+             "実行条件（input / prompt）で回す",
+    )
+    sm_parser.add_argument(
+        "--config", default=None, metavar="PATH",
+        help="--entry を引く設定ファイル（省略時は agent-loop と同じ順で探す）",
+    )
+    sm_parser.add_argument(
+        "--agent-cli", default=None, metavar="NAME",
+        help="agents/<name>.json の headless CLI 名（既定: aider。entry が宣言していれば"
+             "そちら、control.json の selection_policy があればその決定）",
     )
     sm_parser.add_argument(
         "--model", default=None, metavar="MODEL",
