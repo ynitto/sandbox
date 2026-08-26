@@ -15,10 +15,11 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-import agent_loop as al  # noqa: E402
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+from agentcore.harness import toolloop as tl  # noqa: E402
+from agentcore.tests.harnesspatch import patch_harness  # noqa: E402
 
-_AGENTS_DIR = Path(__file__).resolve().parents[3] / "agents"
+_AGENTS_DIR = Path(__file__).resolve().parents[5] / "agents"
 
 
 def _agent(timeout=None):
@@ -36,11 +37,11 @@ def _agent(timeout=None):
 
 class FallbackValueTests(unittest.TestCase):
     def test_common_fallback_is_600_seconds(self):
-        self.assertEqual(al._TL_DEFAULT_AGENT_TIMEOUT_SEC, 600)
+        self.assertEqual(tl._TL_DEFAULT_AGENT_TIMEOUT_SEC, 600)
 
     def test_no_second_fallback_constant_remains(self):
         """判定（judge）だけ別の既定を持たない。持たせると本体は通るのに判定だけ切れる。"""
-        self.assertFalse(hasattr(al, "_JUDGE_TIMEOUT_SEC"))
+        self.assertFalse(hasattr(tl, "_JUDGE_TIMEOUT_SEC"))
 
 
 class RunAgentTimeoutTests(unittest.TestCase):
@@ -52,9 +53,9 @@ class RunAgentTimeoutTests(unittest.TestCase):
             return {"status": 0, "stdout": "ok", "stderr": "", "error": ""}
 
         with tempfile.TemporaryDirectory() as tmp, \
-                mock.patch.object(al, "_tl_exec_argv", side_effect=exec_argv), \
-                mock.patch.object(al, "_tl_record_usage"):
-            al._tl_run_agent(agent, "p", cwd=tmp, readonly=True, read_files=[],
+                patch_harness("_tl_exec_argv", side_effect=exec_argv), \
+                patch_harness("_tl_record_usage"):
+            tl._tl_run_agent(agent, "p", cwd=tmp, readonly=True, read_files=[],
                              files=[], log_file=os.path.join(tmp, "x.jsonl"), **kw)
         return seen["timeout"]
 
@@ -81,8 +82,8 @@ class JudgeTimeoutTests(unittest.TestCase):
                     "stdout": json.dumps({"results": [{"ok": True, "reason": ""}]})}
 
         with tempfile.TemporaryDirectory() as tmp, \
-                mock.patch.object(al, "_tl_exec_argv", side_effect=exec_argv):
-            al.judge_acceptance(["文章が日本語である"], cwd=tmp, agent=_agent(timeout),
+                patch_harness("_tl_exec_argv", side_effect=exec_argv):
+            tl.judge_acceptance(["文章が日本語である"], cwd=tmp, agent=_agent(timeout),
                                 log_file=os.path.join(tmp, "x.jsonl"),
                                 output="done", files=[])
         return seen["timeout"]

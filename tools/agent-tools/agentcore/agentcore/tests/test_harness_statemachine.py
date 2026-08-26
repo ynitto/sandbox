@@ -17,11 +17,11 @@ import unittest
 from unittest import mock
 
 HERE = pathlib.Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE.parent))
-import agent_loop as al  # noqa: E402
-
-sys.path.insert(0, str(HERE.parent.parent / "agent-tools" / "agentcore"))
+sys.path.insert(0, str(HERE.parent.parent))
 from agentcore import agentcli  # noqa: E402
+from agentcore.harness import statemachine as sm  # noqa: E402
+from agentcore.harness import toolloop as tl  # noqa: E402
+from agentcore.tests.harnesspatch import patch_harness  # noqa: E402
 
 
 class ProjectPathTest(unittest.TestCase):
@@ -31,18 +31,18 @@ class ProjectPathTest(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
 
     def test_rejects_parent_escape(self):
-        with self.assertRaisesRegex(al.StateMachineHarnessError, "作業フォルダ外"):
-            al._sm_project_path(self.repo, "../outside")
+        with self.assertRaisesRegex(sm.StateMachineHarnessError, "作業フォルダ外"):
+            sm._sm_project_path(self.repo, "../outside")
 
     def test_rejects_symlink_escape(self):
         outside = tempfile.mkdtemp(prefix="agent-loop-sm-outside-")
         self.addCleanup(lambda: os.rmdir(outside))
         os.symlink(outside, os.path.join(self.repo, "escape"))
-        with self.assertRaisesRegex(al.StateMachineHarnessError, "作業フォルダ外"):
-            al._sm_project_path(self.repo, "escape/secret.txt")
+        with self.assertRaisesRegex(sm.StateMachineHarnessError, "作業フォルダ外"):
+            sm._sm_project_path(self.repo, "escape/secret.txt")
 
     def test_accepts_nested_new_path(self):
-        target = al._sm_project_path(self.repo, "a/b/new.txt")
+        target = sm._sm_project_path(self.repo, "a/b/new.txt")
         self.assertTrue(target.startswith(self.repo))
 
 
@@ -53,14 +53,14 @@ class ToolRequestTest(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
 
     def test_rejects_shell(self):
-        with self.assertRaisesRegex(al.StateMachineHarnessError, "シェル"):
-            al._sm_validate_tool_request(
+        with self.assertRaisesRegex(sm.StateMachineHarnessError, "シェル"):
+            sm._sm_validate_tool_request(
                 {"type": "run", "command": "bash", "args": []}, self.repo, [])
 
     def test_python_script_runs_via_python(self):
         script = os.path.join(self.repo, "tool.py")
         pathlib.Path(script).write_text('print("ok")\n', encoding="utf-8")
-        request = al._sm_validate_tool_request(
+        request = sm._sm_validate_tool_request(
             {"type": "run", "command": script, "args": ["x"]}, self.repo, [])
         self.assertRegex(os.path.basename(request["command"]), r"^python")
         self.assertEqual(request["args"][0], os.path.realpath(script),
@@ -72,19 +72,19 @@ class ToolRequestTest(unittest.TestCase):
         script = os.path.join(skill_dir, "tool.py")
         pathlib.Path(script).write_text('print("ok")\n', encoding="utf-8")
         rel = os.path.relpath(script, self.repo)
-        al._sm_validate_tool_request(
+        sm._sm_validate_tool_request(
             {"type": "run", "command": os.path.basename(sys.executable), "args": [rel]},
             self.repo, [{"name": "s", "root": skill_dir}])
 
     def test_unknown_type_rejected(self):
-        with self.assertRaisesRegex(al.StateMachineHarnessError, "許可されていない"):
-            al._sm_validate_tool_request({"type": "spawn"}, self.repo, [])
+        with self.assertRaisesRegex(sm.StateMachineHarnessError, "許可されていない"):
+            sm._sm_validate_tool_request({"type": "spawn"}, self.repo, [])
 
     def test_shell_script_runs_via_fixed_interpreter(self):
         # shebang に従うと「どのシェルが走るか」をスクリプト側が決められてしまう。
         script = os.path.join(self.repo, "tool.sh")
         pathlib.Path(script).write_text("#!/usr/bin/env zsh\necho ok\n", encoding="utf-8")
-        request = al._sm_validate_tool_request(
+        request = sm._sm_validate_tool_request(
             {"type": "run", "command": script, "args": []}, self.repo, [])
         self.assertIn(os.path.basename(request["command"]), ("bash", "sh"))
         self.assertEqual(request["args"][0], os.path.realpath(script))
@@ -93,7 +93,7 @@ class ToolRequestTest(unittest.TestCase):
     def test_js_script_runs_via_node(self):
         script = os.path.join(self.repo, "tool.js")
         pathlib.Path(script).write_text("console.log('ok')\n", encoding="utf-8")
-        request = al._sm_validate_tool_request(
+        request = sm._sm_validate_tool_request(
             {"type": "run", "command": script, "args": []}, self.repo, [])
         self.assertEqual(os.path.basename(request["command"]), "node")
         self.assertEqual(request["args"][0], os.path.realpath(script))
@@ -101,27 +101,27 @@ class ToolRequestTest(unittest.TestCase):
     def test_missing_interpreter_is_rejected(self):
         script = os.path.join(self.repo, "tool.js")
         pathlib.Path(script).write_text("console.log('ok')\n", encoding="utf-8")
-        with mock.patch.object(al, "_tl_executable_on_path",
-                               side_effect=lambda name: "" if name == "node" else "/bin/" + name):
-            with self.assertRaisesRegex(al.StateMachineHarnessError, "インタプリタ"):
-                al._sm_validate_tool_request(
+        with patch_harness("_tl_executable_on_path",
+                           side_effect=lambda name: "" if name == "node" else "/bin/" + name):
+            with self.assertRaisesRegex(sm.StateMachineHarnessError, "インタプリタ"):
+                sm._sm_validate_tool_request(
                     {"type": "run", "command": script, "args": []}, self.repo, [])
 
 
 class ParseAndStatusTest(unittest.TestCase):
     def test_terminal_status(self):
-        self.assertTrue(al._sm_terminal_status("complete", "OK")["ok"])
-        self.assertFalse(al._sm_terminal_status("failed", "FETCH_FAILED")["ok"])
-        self.assertFalse(al._sm_terminal_status("complete", "FETCH_FAILED")["ok"])
+        self.assertTrue(sm._sm_terminal_status("complete", "OK")["ok"])
+        self.assertFalse(sm._sm_terminal_status("failed", "FETCH_FAILED")["ok"])
+        self.assertFalse(sm._sm_terminal_status("complete", "FETCH_FAILED")["ok"])
 
     def test_parse_tool_request_in_markdown(self):
         self.assertEqual(
-            al._sm_parse_tool_request('warning\n```json\n{"type":"final","output":"OK"}\n```\n'),
+            sm._sm_parse_tool_request('warning\n```json\n{"type":"final","output":"OK"}\n```\n'),
             {"type": "final", "output": "OK"})
 
     def test_parse_tool_request_picks_last_object(self):
         self.assertEqual(
-            al._sm_parse_tool_request(
+            sm._sm_parse_tool_request(
                 'example {"type":"read_files","paths":["x"]}\n'
                 'answer {"type":"final","output":"OK"}'),
             {"type": "final", "output": "OK"},
@@ -129,11 +129,11 @@ class ParseAndStatusTest(unittest.TestCase):
 
     def test_validated_output_recovers_contract_tail(self):
         self.assertEqual(
-            al._sm_validated_output("aider warning\nOK\n\npath: out.txt", "startswith:OK"),
+            sm._sm_validated_output("aider warning\nOK\n\npath: out.txt", "startswith:OK"),
             "OK\npath: out.txt")
 
     def test_planner_prompt_has_no_copyable_path_placeholder(self):
-        prompt = al._sm_planner_prompt(
+        prompt = sm._sm_planner_prompt(
             action="input.json を読む", cwd="/repo", skills=[], reads=[], history=[], retry="")
         self.assertNotIn("relative/path", prompt)
         self.assertIn(
@@ -141,9 +141,9 @@ class ParseAndStatusTest(unittest.TestCase):
             prompt)
 
     def test_planner_prompt_only_claims_run_after_success(self):
-        initial = al._sm_planner_prompt(
+        initial = sm._sm_planner_prompt(
             action="tool.py を実行", cwd="/repo", skills=[], reads=[], history=[], retry="")
-        completed = al._sm_planner_prompt(
+        completed = sm._sm_planner_prompt(
             action="tool.py を実行", cwd="/repo", skills=[], reads=[],
             history=['TOOL_RESULT {"type":"run","status":0}'], retry="")
         self.assertNotIn("already completed", initial)
@@ -208,7 +208,7 @@ class RunStatemachineTest(unittest.TestCase):
         }, pathlib.Path(self.repo, "fake-aider.json"))
 
     def test_completes_to_terminal_state(self):
-        result = al.run_statemachine(
+        result = sm.run_statemachine(
             workflow_path=os.path.join(self.repo, ".statemachine", "one-step", "workflow.yaml"),
             cwd=self.repo,
             parameters={},
@@ -258,7 +258,7 @@ class RunStatemachineTest(unittest.TestCase):
                     "timeout": 10,
                 }, pathlib.Path(self.repo, f"fake-{name}-read.json"))
 
-                result = al.run_statemachine(
+                result = sm.run_statemachine(
                     workflow_path=os.path.join(
                         self.repo, ".statemachine", "one-step", "workflow.yaml"),
                     cwd=self.repo,
@@ -313,14 +313,14 @@ class RunStatemachineTest(unittest.TestCase):
         }), encoding="utf-8")
 
         stdout = io.StringIO()
-        args = al.argparse.Namespace(
+        args = argparse.Namespace(
             workflow=".statemachine/one-step/workflow.yaml",
             agent_cli="fake-aider", model="gemma4:e4b", param=[], input=None,
             dir=self.repo,
         )
         with mock.patch("sys.stdout", stdout), mock.patch("sys.stderr", io.StringIO()), \
                 self.assertRaises(SystemExit) as exit_info:
-            al.cmd_statemachine(args, pathlib.Path(self.repo))
+            sm.cmd_statemachine(args, pathlib.Path(self.repo))
 
         line = [line for line in stdout.getvalue().splitlines()
                 if line.startswith("RESULT ")][-1]
@@ -364,7 +364,7 @@ class RunStatemachineTest(unittest.TestCase):
             "timeout": 10,
         }, pathlib.Path(self.repo, "silent.json"))
 
-        result = al.run_statemachine(
+        result = sm.run_statemachine(
             workflow_path=os.path.join(
                 self.repo, ".statemachine", "one-step", "workflow.yaml"),
             cwd=self.repo, parameters={},
@@ -405,7 +405,7 @@ class RunStatemachineTest(unittest.TestCase):
             "timeout": 10,
         }, pathlib.Path(self.repo, "fake-replace.json"))
 
-        result = al.run_statemachine(
+        result = sm.run_statemachine(
             workflow_path=os.path.join(
                 self.repo, ".statemachine", "one-step", "workflow.yaml"),
             cwd=self.repo,
@@ -428,12 +428,12 @@ class RunStatemachineTest(unittest.TestCase):
         }
         responses = [
             '{"type":"final","output":"OK\\npath: out.txt"}',
-            al.StateMachineHarnessError("editor failed"),
+            sm.StateMachineHarnessError("editor failed"),
         ]
 
-        with mock.patch.object(al, "_tl_run_agent", side_effect=responses):
-            with self.assertRaisesRegex(al.StateMachineHarnessError, "editor failed"):
-                al._sm_execute_action(
+        with patch_harness("_tl_run_agent", side_effect=responses):
+            with self.assertRaisesRegex(sm.StateMachineHarnessError, "editor failed"):
+                sm._sm_execute_action(
                     workflow_path=workflow, state_id="make", state=state, context={},
                     cwd=self.repo, agent={}, log_file=os.path.join(self.repo, "run.jsonl"),
                     touched=set())
@@ -449,10 +449,10 @@ class RunStatemachineTest(unittest.TestCase):
             "OK\npath: out.txt",
         ]
 
-        with mock.patch.object(al, "_SM_MAX_TOOL_ROUNDS", 1), \
-                mock.patch.object(al, "_tl_run_agent", side_effect=responses):
-            with self.assertRaisesRegex(al.StateMachineHarnessError, "Output Contract"):
-                al._sm_execute_action(
+        with patch_harness("_SM_MAX_TOOL_ROUNDS", 1), \
+                patch_harness("_tl_run_agent", side_effect=responses):
+            with self.assertRaisesRegex(sm.StateMachineHarnessError, "Output Contract"):
+                sm._sm_execute_action(
                     workflow_path=os.path.join(
                         self.repo, ".statemachine", "one-step", "workflow.yaml"),
                     state_id="make",
@@ -478,9 +478,9 @@ class RunStatemachineTest(unittest.TestCase):
                 pathlib.Path(files[0]).write_text("fresh\n", encoding="utf-8")
             return response
 
-        with mock.patch.object(al, "_tl_run_agent", side_effect=fake_agent):
-            with self.assertRaisesRegex(al.StateMachineHarnessError, "Output Contract"):
-                al._sm_execute_action(
+        with patch_harness("_tl_run_agent", side_effect=fake_agent):
+            with self.assertRaisesRegex(sm.StateMachineHarnessError, "Output Contract"):
+                sm._sm_execute_action(
                     workflow_path=os.path.join(
                         self.repo, ".statemachine", "one-step", "workflow.yaml"),
                     state_id="make",
@@ -508,8 +508,8 @@ class RunStatemachineTest(unittest.TestCase):
                 pathlib.Path(files[0]).write_text("fresh\n", encoding="utf-8")
             return response
 
-        with mock.patch.object(al, "_tl_run_agent", side_effect=fake_agent):
-            result = al._sm_execute_action(
+        with patch_harness("_tl_run_agent", side_effect=fake_agent):
+            result = sm._sm_execute_action(
                 workflow_path=os.path.join(
                     self.repo, ".statemachine", "one-step", "workflow.yaml"),
                 state_id="make",
@@ -547,7 +547,7 @@ class RunStatemachineTest(unittest.TestCase):
             "",
         ]), encoding="utf-8")
 
-        result = al._sm_write_success_output(
+        result = sm._sm_write_success_output(
             workflow_path=str(workflow), state_id="make",
             state={"output_key": "result"}, validator="startswith:BUG,FEATURE",
             files={os.path.join(self.repo, "out.txt")}, cwd=self.repo)
@@ -572,7 +572,7 @@ class RunStatemachineTest(unittest.TestCase):
             "",
         ]), encoding="utf-8")
 
-        result = al._sm_write_success_output(
+        result = sm._sm_write_success_output(
             workflow_path=str(workflow), state_id="write_digest", state={},
             validator="startswith:DIGEST_OK,DIGEST_FAILED",
             files={os.path.join(self.repo, "deliveries", "tech-digest.md")}, cwd=self.repo)
@@ -588,8 +588,8 @@ class RunStatemachineTest(unittest.TestCase):
                 return '{"type":"final","output":"OK"}'
             return '{"type":"read_files","paths":["input.txt"]}'
 
-        with mock.patch.object(al, "_tl_run_agent", side_effect=fake_agent):
-            output = al._sm_execute_action(
+        with patch_harness("_tl_run_agent", side_effect=fake_agent):
+            output = sm._sm_execute_action(
                 workflow_path=os.path.join(
                     self.repo, ".statemachine", "one-step", "workflow.yaml"),
                 state_id="make",
@@ -621,9 +621,9 @@ class RunStatemachineTest(unittest.TestCase):
             pathlib.Path(files[0]).write_text("fresh\n", encoding="utf-8")
             return "OK\npath: out.txt"
 
-        with mock.patch.object(al, "_tl_run_agent", side_effect=fake_agent), \
-                mock.patch.object(al, "_sm_exec_argv") as execute:
-            output = al._sm_execute_action(
+        with patch_harness("_tl_run_agent", side_effect=fake_agent), \
+                patch_harness("_sm_exec_argv") as execute:
+            output = sm._sm_execute_action(
                 workflow_path=os.path.join(
                     self.repo, ".statemachine", "one-step", "workflow.yaml"),
                 state_id="make",
@@ -647,11 +647,11 @@ class RunStatemachineTest(unittest.TestCase):
         run = json.dumps({"type": "run", "command": str(script), "args": []})
         responses = iter([run, run, '{"type":"final","output":"OK"}'])
 
-        with mock.patch.object(al, "_tl_run_agent", side_effect=lambda *_a, **_k: next(responses)), \
-                mock.patch.object(al, "_sm_exec_argv", return_value={
+        with patch_harness("_tl_run_agent", side_effect=lambda *_a, **_k: next(responses)), \
+                patch_harness("_sm_exec_argv", return_value={
                     "status": 0, "error": "", "stdout": "done\n", "stderr": "",
                 }) as execute:
-            output = al._sm_execute_action(
+            output = sm._sm_execute_action(
                 workflow_path=os.path.join(
                     self.repo, ".statemachine", "one-step", "workflow.yaml"),
                 state_id="make",
@@ -679,11 +679,11 @@ class RunStatemachineTest(unittest.TestCase):
             for script in scripts
         ] + ['{"type":"final","output":"OK"}'])
 
-        with mock.patch.object(al, "_tl_run_agent", side_effect=lambda *_a, **_k: next(responses)), \
-                mock.patch.object(al, "_sm_exec_argv", return_value={
+        with patch_harness("_tl_run_agent", side_effect=lambda *_a, **_k: next(responses)), \
+                patch_harness("_sm_exec_argv", return_value={
                     "status": 0, "error": "", "stdout": "done\n", "stderr": "",
                 }) as execute:
-            output = al._sm_execute_action(
+            output = sm._sm_execute_action(
                 workflow_path=os.path.join(
                     self.repo, ".statemachine", "one-step", "workflow.yaml"),
                 state_id="make",
@@ -710,22 +710,22 @@ class ActionContractTest(unittest.TestCase):
         self.state = {"action_file": "actions/make.md", "output_validator": "startswith:OK"}
 
     def _execute(self):
-        return al._sm_execute_action(
+        return sm._sm_execute_action(
             workflow_path=self.workflow, state_id="make", state=self.state, context={},
             cwd=self.repo, agent={}, log_file=os.path.join(self.repo, "run.jsonl"),
             touched=set())
 
     def test_rejected_tool_request_is_not_accepted_as_output(self):
         # 契約文の形をした行を添えた不正なツール要求。拒否 = やっていない。
-        with mock.patch.object(al, "_SM_MAX_TOOL_ROUNDS", 1), \
-                mock.patch.object(al, "_tl_run_agent",
-                                  return_value='OK\n{"type":"spawn","output":"OK"}'):
-            with self.assertRaisesRegex(al.StateMachineHarnessError, "Output Contract"):
+        with patch_harness("_SM_MAX_TOOL_ROUNDS", 1), \
+                patch_harness("_tl_run_agent",
+                              return_value='OK\n{"type":"spawn","output":"OK"}'):
+            with self.assertRaisesRegex(sm.StateMachineHarnessError, "Output Contract"):
                 self._execute()
 
     def test_plain_text_contract_is_still_accepted(self):
         # ツール要求ですらない素の本文は、従来どおり契約文として拾う。
-        with mock.patch.object(al, "_tl_run_agent", return_value="OK"):
+        with patch_harness("_tl_run_agent", return_value="OK"):
             self.assertEqual(self._execute(), "OK")
 
 
@@ -754,14 +754,14 @@ class SkillScriptPolicyTest(unittest.TestCase):
         script = str(self.skill / "scripts" / script_name)
         responses = iter([json.dumps({"type": "run", "command": script, "args": []}),
                           '{"type":"final","output":"OK"}'])
-        with mock.patch.object(al, "_SM_MAX_TOOL_ROUNDS", 2), \
-                mock.patch.object(al, "_tl_run_agent",
-                                  side_effect=lambda *_a, **_k: next(responses)), \
-                mock.patch.object(al, "_sm_exec_argv", return_value={
+        with patch_harness("_SM_MAX_TOOL_ROUNDS", 2), \
+                patch_harness("_tl_run_agent",
+                              side_effect=lambda *_a, **_k: next(responses)), \
+                patch_harness("_sm_exec_argv", return_value={
                     "status": 0, "error": "", "stdout": "done\n", "stderr": "",
                 }) as execute:
             try:
-                output = al._sm_execute_action(
+                output = sm._sm_execute_action(
                     workflow_path=self.workflow, state_id="make",
                     state={"action_file": "actions/make.md",
                            "output_validator": "startswith:OK"},
@@ -795,11 +795,11 @@ class SkillScriptPolicyTest(unittest.TestCase):
             prompts.append(prompt)
             return next(responses)
 
-        with mock.patch.object(al, "_tl_run_agent", side_effect=fake_agent), \
-                mock.patch.object(al, "_sm_exec_argv", return_value={
+        with patch_harness("_tl_run_agent", side_effect=fake_agent), \
+                patch_harness("_sm_exec_argv", return_value={
                     "status": 0, "error": "", "stdout": "", "stderr": "",
                 }):
-            output = al._sm_execute_action(
+            output = sm._sm_execute_action(
                 workflow_path=self.workflow, state_id="make",
                 state={"action_file": "actions/make.md", "output_validator": "startswith:OK"},
                 context={}, cwd=self.repo, agent={},
@@ -837,13 +837,13 @@ class AutoAdvanceExecutionTest(unittest.TestCase):
         self.workflow = str(machine / "workflow.yaml")
 
     def _run(self, response):
-        with mock.patch.object(al, "_SM_MAX_TOOL_ROUNDS", 1), \
-                mock.patch.object(al, "_tl_run_agent", return_value=response):
-            return al.run_statemachine(workflow_path=self.workflow, cwd=self.repo,
+        with patch_harness("_SM_MAX_TOOL_ROUNDS", 1), \
+                patch_harness("_tl_run_agent", return_value=response):
+            return sm.run_statemachine(workflow_path=self.workflow, cwd=self.repo,
                                        parameters={}, agent={})
 
     def test_failed_action_does_not_advance(self):
-        with self.assertRaisesRegex(al.StateMachineHarnessError, "Output Contract"):
+        with self.assertRaisesRegex(sm.StateMachineHarnessError, "Output Contract"):
             self._run("BROKEN")
 
     def test_successful_action_advances_without_condition_eval(self):
@@ -863,41 +863,41 @@ class ControlRetryTest(unittest.TestCase):
         self.log_file = os.path.join(self.repo, "run.jsonl")
 
     def _run(self, side_effect):
-        with mock.patch.object(al, "_tl_run_agent", side_effect=side_effect) as agent:
+        with patch_harness("_tl_run_agent", side_effect=side_effect) as agent:
             try:
-                return al._tl_run_control({}, "prompt", cwd=self.repo, read_files=[],
+                return tl._tl_run_control({}, "prompt", cwd=self.repo, read_files=[],
                                           log_file=self.log_file), agent
-            except al.ToolLoopError as exc:
+            except tl.ToolLoopError as exc:
                 return exc, agent
 
     def test_transient_failure_is_retried(self):
-        result, agent = self._run([al.ToolLoopError("fake-cli がタイムアウトしました"), "OK"])
+        result, agent = self._run([tl.ToolLoopError("fake-cli がタイムアウトしました"), "OK"])
 
         self.assertEqual(result, "OK")
         self.assertEqual(agent.call_count, 2)
 
     def test_permanent_failure_is_not_retried(self):
-        result, agent = self._run(al.ToolLoopError("許可されていないツール要求です: spawn"))
+        result, agent = self._run(tl.ToolLoopError("許可されていないツール要求です: spawn"))
 
-        self.assertIsInstance(result, al.ToolLoopError)
+        self.assertIsInstance(result, tl.ToolLoopError)
         self.assertEqual(agent.call_count, 1, "恒久的な失敗をクレジット分だけ繰り返さない")
 
     def test_retry_count_is_bounded(self):
-        result, agent = self._run(al.ToolLoopError("rate limit"))
+        result, agent = self._run(tl.ToolLoopError("rate limit"))
 
-        self.assertIsInstance(result, al.ToolLoopError)
-        self.assertEqual(agent.call_count, al._TL_CONTROL_RETRIES + 1)
+        self.assertIsInstance(result, tl.ToolLoopError)
+        self.assertEqual(agent.call_count, tl._TL_CONTROL_RETRIES + 1)
 
 
 class RuntimeContextTest(unittest.TestCase):
     def test_today_and_now_are_provided(self):
-        context = al._sm_initial_context({}, {})
+        context = sm._sm_initial_context({}, {})
 
         self.assertRegex(context["today"], r"^\d{4}-\d{2}-\d{2}$")
         self.assertTrue(context["now"].startswith(context["today"]), context["now"])
 
     def test_parameters_still_win(self):
-        context = al._sm_initial_context({}, {"today": "2000-01-01"})
+        context = sm._sm_initial_context({}, {"today": "2000-01-01"})
 
         self.assertEqual(context["today"], "2000-01-01")
 
@@ -934,7 +934,7 @@ class NextStateContractTest(unittest.TestCase):
             "    priority: 2",
             "",
         ]), encoding="utf-8")
-        skill = al._sm_resolve_skill("statemachine-use", self.repo)
+        skill = sm._sm_resolve_skill("statemachine-use", self.repo)
         self.assertIsNotNone(skill, "statemachine-use スキルの実体が必要")
         self.scripts = {"next": os.path.join(skill["root"], "scripts", "next_state.py")}
         self.log_file = os.path.join(self.repo, "run.jsonl")
@@ -946,8 +946,8 @@ class NextStateContractTest(unittest.TestCase):
             calls.append(_args)
             return agent_response
 
-        with mock.patch.object(al, "_tl_run_agent", side_effect=fake_agent):
-            state = al._sm_next_state(
+        with patch_harness("_tl_run_agent", side_effect=fake_agent):
+            state = sm._sm_next_state(
                 scripts=self.scripts, workflow_path=self.workflow, state_id="classify",
                 output=output, outputs=outputs, agent={}, cwd=self.repo,
                 log_file=self.log_file)
@@ -1017,7 +1017,7 @@ class NextStateContractTest(unittest.TestCase):
     def test_response_without_conditions_or_next_state_is_rejected(self):
         self._fake_next_state({"state": "classify"})
 
-        with self.assertRaisesRegex(al.StateMachineHarnessError, "条件リストを解析できません"):
+        with self.assertRaisesRegex(sm.StateMachineHarnessError, "条件リストを解析できません"):
             self._next("何でもよい", {})
 
     def test_deprecated_flags_are_gone(self):
@@ -1039,21 +1039,21 @@ class NextStateContractGateTest(unittest.TestCase):
     """
 
     def test_current_contract_passes(self):
-        self.assertEqual(al._sm_next_state_contract_error(
+        self.assertEqual(sm._sm_next_state_contract_error(
             "usage: next_state.py [-h] [--state STATE] [--auto-eval] [--context JSON]"), "")
 
     def test_old_distribution_is_named(self):
-        problem = al._sm_next_state_contract_error(
+        problem = sm._sm_next_state_contract_error(
             "usage: next_state.py [-h] [--state STATE] [--list-conditions]")
         self.assertIn("古い配布", problem)
 
     def test_value_taking_variant_is_named(self):
-        problem = al._sm_next_state_contract_error(
+        problem = sm._sm_next_state_contract_error(
             "usage: next_state.py [-h] [--auto-eval AUTO_EVAL] [--context JSON]")
         self.assertIn("値を取る変種", problem)
 
     def test_usage_wrapped_across_lines_is_normalized(self):
-        self.assertEqual(al._sm_next_state_contract_error(
+        self.assertEqual(sm._sm_next_state_contract_error(
             "usage: next_state.py [-h] [--state STATE]\n"
             "                     [--auto-eval] [--context JSON]"), "")
 
@@ -1090,9 +1090,9 @@ class NextStateContractGateTest(unittest.TestCase):
         repo = self._repo_with_skill(self._VARIANT)
         calls = []
 
-        with mock.patch.object(al, "_tl_run_agent", side_effect=lambda *a, **k: calls.append(a)):
-            with self.assertRaises(al.StateMachineHarnessError) as ctx:
-                al.run_statemachine(workflow_path="workflow.yaml", cwd=repo, agent={})
+        with patch_harness("_tl_run_agent", side_effect=lambda *a, **k: calls.append(a)):
+            with self.assertRaises(sm.StateMachineHarnessError) as ctx:
+                sm.run_statemachine(workflow_path="workflow.yaml", cwd=repo, agent={})
 
         message = str(ctx.exception)
         self.assertIn("値を取る変種", message)
@@ -1106,9 +1106,9 @@ class NextStateContractGateTest(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory(prefix="agent-loop-sm-gate-ok-")
         self.addCleanup(tmp.cleanup)
         repo = os.path.realpath(tmp.name)
-        skill = al._sm_resolve_skill("statemachine-use", repo)
+        skill = sm._sm_resolve_skill("statemachine-use", repo)
         self.assertIsNotNone(skill, "statemachine-use スキルの実体が必要")
-        al._sm_require_next_state_contract(
+        sm._sm_require_next_state_contract(
             os.path.join(skill["root"], "scripts", "next_state.py"),
             cwd=repo, log_file=os.path.join(repo, "run.jsonl"))
 
@@ -1176,12 +1176,12 @@ class CheckGateTest(unittest.TestCase):
             pathlib.Path(self.counter).write_text(str(len(calls)), encoding="utf-8")
             return response
 
-        with mock.patch.object(al, "_SM_MAX_TOOL_ROUNDS", 1), \
-                mock.patch.object(al, "_tl_run_agent", side_effect=fake_agent):
+        with patch_harness("_SM_MAX_TOOL_ROUNDS", 1), \
+                patch_harness("_tl_run_agent", side_effect=fake_agent):
             try:
-                return al.run_statemachine(workflow_path=workflow, cwd=self.repo,
+                return sm.run_statemachine(workflow_path=workflow, cwd=self.repo,
                                            parameters={}, agent={}), calls
-            except al.StateMachineHarnessError as exc:
+            except sm.StateMachineHarnessError as exc:
                 return exc, calls
 
     def test_passing_check_advances_and_costs_no_extra_call(self):
@@ -1243,10 +1243,10 @@ class CheckGateTest(unittest.TestCase):
             pathlib.Path(out).write_text("done\n", encoding="utf-8")
             return ""
 
-        with mock.patch.object(al, "_SM_MAX_TOOL_ROUNDS", 1), \
-                mock.patch.object(al, "_sm_run_control", side_effect=control), \
-                mock.patch.object(al, "_tl_run_agent", side_effect=editor):
-            result = al.run_statemachine(workflow_path=workflow, cwd=self.repo,
+        with patch_harness("_SM_MAX_TOOL_ROUNDS", 1), \
+                patch_harness("_sm_run_control", side_effect=control), \
+                patch_harness("_tl_run_agent", side_effect=editor):
+            result = sm.run_statemachine(workflow_path=workflow, cwd=self.repo,
                                          parameters={}, agent={})
 
         self.assertTrue(result["ok"], result.get("error"))
@@ -1303,10 +1303,10 @@ class CheckGateTest(unittest.TestCase):
                                          encoding="utf-8")
             return ""
 
-        with mock.patch.object(al, "_SM_MAX_TOOL_ROUNDS", 2), \
-                mock.patch.object(al, "_sm_run_control", side_effect=control), \
-                mock.patch.object(al, "_tl_run_agent", side_effect=editor):
-            result = al.run_statemachine(
+        with patch_harness("_SM_MAX_TOOL_ROUNDS", 2), \
+                patch_harness("_sm_run_control", side_effect=control), \
+                patch_harness("_tl_run_agent", side_effect=editor):
+            result = sm.run_statemachine(
                 workflow_path=str(self.machine / "workflow.yaml"),
                 cwd=self.repo, parameters={}, agent={})
 
@@ -1356,10 +1356,10 @@ class CheckGateTest(unittest.TestCase):
             pathlib.Path(out).write_text("done\n", encoding="utf-8")
             return ""
 
-        with mock.patch.object(al, "_SM_MAX_TOOL_ROUNDS", 2), \
-                mock.patch.object(al, "_sm_run_control", side_effect=control), \
-                mock.patch.object(al, "_tl_run_agent", side_effect=editor):
-            result = al.run_statemachine(
+        with patch_harness("_SM_MAX_TOOL_ROUNDS", 2), \
+                patch_harness("_sm_run_control", side_effect=control), \
+                patch_harness("_tl_run_agent", side_effect=editor):
+            result = sm.run_statemachine(
                 workflow_path=str(self.machine / "workflow.yaml"),
                 cwd=self.repo, parameters={}, agent={})
 
@@ -1377,9 +1377,9 @@ class CheckGateTest(unittest.TestCase):
             pathlib.Path(self.counter).write_text("1", encoding="utf-8")
             return next(responses, "garbage")
 
-        with mock.patch.object(al, "_SM_MAX_TOOL_ROUNDS", 1), \
-                mock.patch.object(al, "_tl_run_agent", side_effect=fake_agent):
-            result = al.run_statemachine(workflow_path=workflow, cwd=self.repo,
+        with patch_harness("_SM_MAX_TOOL_ROUNDS", 1), \
+                patch_harness("_tl_run_agent", side_effect=fake_agent):
+            result = sm.run_statemachine(workflow_path=workflow, cwd=self.repo,
                                          parameters={}, agent={})
 
         self.assertFalse(result["ok"])
@@ -1416,7 +1416,7 @@ class CheckGateTest(unittest.TestCase):
         result, _calls = self._run(
             self._workflow(passes_on=99, retries=0, extra="check_on_exhausted: error"))
 
-        self.assertIsInstance(result, al.StateMachineHarnessError)
+        self.assertIsInstance(result, sm.StateMachineHarnessError)
         self.assertIn("検査", str(result))
 
     def test_continue_mode_hands_the_failure_to_the_transitions(self):
@@ -1424,7 +1424,7 @@ class CheckGateTest(unittest.TestCase):
             self._workflow(passes_on=99, retries=0, extra="check_on_exhausted: continue"))
 
         # 成功経路（equals:check_ok:true）は成立せず、他に経路が無いので遷移不一致で止まる。
-        self.assertIsInstance(result, al.StateMachineHarnessError)
+        self.assertIsInstance(result, sm.StateMachineHarnessError)
         self.assertIn("一致する遷移がありません", str(result))
 
     def test_ungated_state_is_untouched(self):
@@ -1456,7 +1456,7 @@ class CheckGateTest(unittest.TestCase):
 
         result, calls = self._run(str(self.machine / "workflow.yaml"))
 
-        self.assertIsInstance(result, al.StateMachineHarnessError)
+        self.assertIsInstance(result, sm.StateMachineHarnessError)
         self.assertEqual(calls, [], "壊れた宣言は投入前に落ちる（クレジットを焼かない）")
 
 
@@ -1464,31 +1464,31 @@ class CheckContextContractTest(unittest.TestCase):
     """検査結果 → コンテキストの書式。正典は statemachine-use の engine.check_context。"""
 
     def test_success(self):
-        self.assertEqual(al._sm_check_context(0, "all good\n", "", ""),
+        self.assertEqual(sm._sm_check_context(0, "all good\n", "", ""),
                          {"check_status": "0", "check_ok": "true",
                           "check_output": "all good"})
 
     def test_failure_keeps_first_diagnostic_line(self):
-        self.assertEqual(al._sm_check_context(1, "", "E assert 1 == 2\nmore", ""),
+        self.assertEqual(sm._sm_check_context(1, "", "E assert 1 == 2\nmore", ""),
                          {"check_status": "1", "check_ok": "false",
                           "check_output": "E assert 1 == 2"})
 
     def test_unrunnable_check_is_not_a_pass(self):
-        context = al._sm_check_context(None, "", "", "コマンドがありません")
+        context = sm._sm_check_context(None, "", "", "コマンドがありません")
 
         self.assertEqual(context["check_status"], "error")
         self.assertEqual(context["check_ok"], "false")
 
     def test_matches_the_skill_implementation(self):
         # 2 実装が同じ答えを返すことを固定する（キー名と書式の契約は schema.md）。
-        skill = al._sm_resolve_skill("statemachine-use", os.getcwd())
+        skill = sm._sm_resolve_skill("statemachine-use", os.getcwd())
         self.assertIsNotNone(skill, "statemachine-use スキルの実体が必要")
         sys.path.insert(0, skill["root"])
         self.addCleanup(lambda: sys.path.remove(skill["root"]))
         from scripts.engine import check_context  # noqa: E402
 
         for args in [(0, "ok", "", ""), (1, "", "boom", ""), (None, "", "", "no such file")]:
-            self.assertEqual(al._sm_check_context(*args), check_context(*args), args)
+            self.assertEqual(sm._sm_check_context(*args), check_context(*args), args)
 
 
 class EscalationExitCodeTest(unittest.TestCase):
@@ -1497,11 +1497,11 @@ class EscalationExitCodeTest(unittest.TestCase):
     def _exit_code(self, result: dict) -> int:
         args = argparse.Namespace(workflow="w.yaml", dir=None, param=[], input=None,
                                   agent_cli="aider", model="")
-        with mock.patch.object(al, "_sm_resolve_agent", return_value={"cli": "x", "model": ""}), \
-                mock.patch.object(al, "run_statemachine", return_value=result), \
+        with patch_harness("_sm_resolve_agent", return_value={"cli": "x", "model": ""}), \
+                patch_harness("run_statemachine", return_value=result), \
                 mock.patch("sys.stdout", new=io.StringIO()):
             with self.assertRaises(SystemExit) as caught:
-                al.cmd_statemachine(args, pathlib.Path(os.getcwd()))
+                sm.cmd_statemachine(args, pathlib.Path(os.getcwd()))
         return caught.exception.code
 
     def test_success_is_zero(self):
@@ -1516,12 +1516,12 @@ class EscalationExitCodeTest(unittest.TestCase):
 
 class ParamParsingTest(unittest.TestCase):
     def test_param_pairs_and_input(self):
-        params = al._sm_parse_params(["topic=llm", "context.depth=2"], "本文")
+        params = sm._sm_parse_params(["topic=llm", "context.depth=2"], "本文")
         self.assertEqual(params, {"topic": "llm", "context.depth": "2", "input": "本文"})
 
     def test_param_requires_key_value(self):
-        with self.assertRaisesRegex(al.StateMachineHarnessError, "KEY=VALUE"):
-            al._sm_parse_params(["broken"], None)
+        with self.assertRaisesRegex(sm.StateMachineHarnessError, "KEY=VALUE"):
+            sm._sm_parse_params(["broken"], None)
 
 
 class SkillPythonTest(unittest.TestCase):
@@ -1529,108 +1529,21 @@ class SkillPythonTest(unittest.TestCase):
 
     def setUp(self):
         os.environ.pop("PYTHON", None)
-        al._SM_SKILL_PYTHON = ""
-        self.addCleanup(setattr, al, "_SM_SKILL_PYTHON", "")
+        # 選んだインタプリタは本文が覚える（`_TL_SKILL_PYTHON`）。前のテストの記憶を
+        # 持ち越すと、何を試したのか分からなくなるので毎回まっさらにする。
+        memo = patch_harness("_TL_SKILL_PYTHON", "")
+        memo.__enter__()
+        self.addCleanup(memo.__exit__, None, None, None)
 
     def test_uses_own_interpreter_when_new_enough(self):
-        self.assertEqual(al._sm_python_command(), sys.executable)
+        self.assertEqual(sm._sm_python_command(), sys.executable)
 
     def test_falls_back_when_own_interpreter_is_too_old(self):
         # macOS の /usr/bin/python3（3.9）で zipapp が動いている状況を模す。
-        real = al.sys
-        al.sys = types.SimpleNamespace(
+        fake = types.SimpleNamespace(
             version_info=(3, 9, 6), executable="/usr/bin/python3", version="3.9.6 (fake)")
-        self.addCleanup(setattr, al, "sys", real)
-        self.assertTrue(al._sm_python_ok(al._sm_python_command()))
-
-
-class UsageLedgerTest(unittest.TestCase):
-    """headless で呼んだ CLI の実測トークン（`@agent-usage`）をノード予算の台帳へ記帳する。
-
-    ここが抜けると、aider / ollama のように実測を出す CLI を回しても台帳は空のままで、
-    モデルの格付け（C9）を推定でしか語れなくなる。
-    """
-
-    def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory(prefix="agent-loop-usage-")
-        self.repo = os.path.realpath(self._tmp.name)
-        self.addCleanup(self._tmp.cleanup)
-        self._budget = tempfile.TemporaryDirectory(prefix="agent-loop-budget-")
-        self.addCleanup(self._budget.cleanup)
-        os.environ["AGENT_BUDGET_DIR"] = self._budget.name
-        self.addCleanup(os.environ.pop, "AGENT_BUDGET_DIR", None)
-        self.log_file = os.path.join(self.repo, "run.jsonl")
-
-    def _agent(self, stderr_text):
-        fake = pathlib.Path(self.repo, "fake-cli.py")
-        fake.write_text("import sys\nprint('OK')\nsys.stderr.write({!r})\n".format(stderr_text),
-                        encoding="utf-8")
-        spec = agentcli.normalize("fake-usage", {
-            "name": "fake-usage",
-            "command": [sys.executable, str(fake)],
-            "prompt_via": "argv",
-            "prompt_flag": "--message",
-            "timeout": 10,
-        }, pathlib.Path(self.repo, "fake-usage.json"))
-        return {"cli": "fake-usage", "spec": spec, "model": "m", "agentcli": agentcli}
-
-    def _run(self, stderr_text):
-        return al._tl_run_agent(self._agent(stderr_text), "やって", cwd=self.repo,
-                                readonly=False, read_files=[], files=[], log_file=self.log_file)
-
-    def _ledger_rows(self):
-        led = pathlib.Path(self._budget.name, "ledger")
-        return [json.loads(line) for path in sorted(led.glob("*.jsonl"))
-                for line in path.read_text(encoding="utf-8").splitlines() if line.strip()
-                ] if led.is_dir() else []
-
-    def test_measured_usage_is_recorded_with_cli_attribution(self):
-        self.assertEqual(self._run("@agent-usage tokens_in=12 tokens_out=34\n"), "OK")
-        rows = self._ledger_rows()
-        self.assertEqual(len(rows), 1, rows)
-        self.assertEqual((rows[0]["tokens_in"], rows[0]["tokens_out"]), (12.0, 34.0))
-        self.assertEqual((rows[0]["agent_cli"], rows[0]["model"]), ("fake-usage", "m"))
-        self.assertEqual(rows[0]["seconds"], 0,
-                         "実行時間はスロット側で記帳済み——ここで足すと二重計上になる")
-        events = [json.loads(line) for line
-                  in pathlib.Path(self.log_file).read_text(encoding="utf-8").splitlines()]
-        self.assertIn({"cli": "fake-usage", "tokensIn": 12, "tokensOut": 34},
-                      [{k: e[k] for k in ("cli", "tokensIn", "tokensOut")}
-                       for e in events if e.get("event") == "usage"])
-
-    def test_silent_cli_is_not_filled_with_an_estimate(self):
-        self.assertEqual(self._run("aider warning\n"), "OK")
-        self.assertEqual(self._ledger_rows(), [])
-
-    def test_quota_failure_is_recorded_for_collection(self):
-        fake = pathlib.Path(self.repo, "fake-quota.py")
-        fake.write_text(
-            "import sys\nsys.stderr.write('too many requests; retry after 5 minutes\\n')\n"
-            "raise SystemExit(1)\n", encoding="utf-8")
-        spec = agentcli.normalize("fake-quota", {
-            "name": "fake-quota",
-            "command": [sys.executable, str(fake)],
-            "prompt_via": "argv",
-            "prompt_flag": "--message",
-            "timeout": 10,
-            "errors": [{
-                "match": "too many requests", "class": "quota",
-                "quota_kind": "rate_limit", "hint": "一時制限です",
-            }],
-        }, pathlib.Path(self.repo, "fake-quota.json"))
-        agent = {"cli": "fake-quota", "spec": spec, "model": "m", "agentcli": agentcli}
-
-        with self.assertRaisesRegex(al.ToolLoopError, "一時制限です"):
-            al._tl_run_agent(agent, "やって", cwd=self.repo, readonly=False,
-                             read_files=[], files=[], log_file=self.log_file)
-
-        rows = self._ledger_rows()
-        self.assertEqual(len(rows), 1, rows)
-        self.assertEqual(rows[0]["event"], "quota")
-        self.assertEqual(rows[0]["quota_kind"], "rate_limit")
-        self.assertEqual(rows[0]["agent_cli"], "fake-quota")
-        self.assertGreater(__import__("datetime").datetime.fromisoformat(
-            rows[0]["reset_at"].replace("Z", "+00:00")).timestamp(), __import__("time").time())
+        with patch_harness("sys", fake):
+            self.assertTrue(sm._sm_python_ok(sm._sm_python_command()))
 
 
 if __name__ == "__main__":

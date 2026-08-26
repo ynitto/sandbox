@@ -8,6 +8,10 @@ from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import agent_loop as al  # noqa: E402
+# ハーネスの実装は agentcore（agent-herd と共有する 1 実装）。agent_loop は
+# 委譲するだけなので、差し替えも参照もそちらへ向ける。sys.path は
+# agent_loop の import が通してくれる。
+from agentcore.harness import toolloop as tl  # noqa: E402
 
 
 class LogWindowNameTests(unittest.TestCase):
@@ -202,26 +206,26 @@ class ProgressRedirectTests(unittest.TestCase):
     """
 
     def tearDown(self):
-        al._TL_PROGRESS_LOCAL.view_file = None
+        tl._TL_PROGRESS_LOCAL.view_file = None
 
     def test_redirects_to_the_view_file_when_set(self):
         import io
         import tempfile
         with tempfile.NamedTemporaryFile("r", suffix=".log") as f:
-            al._TL_PROGRESS_LOCAL.view_file = f.name
+            tl._TL_PROGRESS_LOCAL.view_file = f.name
             with mock.patch.object(al.sys, "stdout", io.StringIO()) as out:
-                al._tl_progress("ラウンド 1/8", "agent-loop")
+                tl._tl_progress("ラウンド 1/8", "agent-loop")
             self.assertEqual(out.getvalue(), "")
             self.assertEqual(f.read(), "[agent-loop] ラウンド 1/8\n")
 
     def test_prints_to_stdout_without_a_sink(self):
         import io
         with mock.patch.object(al.sys, "stdout", io.StringIO()) as out:
-            al._tl_progress("state: fetch", "statemachine")
+            tl._tl_progress("state: fetch", "statemachine")
         self.assertEqual(out.getvalue(), "[statemachine] state: fetch\n")
 
     def test_view_file_sits_next_to_the_jsonl(self):
-        self.assertEqual(al._tl_progress_view_file("/tmp/runs/headless/123-ab.jsonl"),
+        self.assertEqual(tl._tl_progress_view_file("/tmp/runs/headless/123-ab.jsonl"),
                          "/tmp/runs/headless/123-ab.log")
 
 

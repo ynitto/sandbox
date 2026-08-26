@@ -13,6 +13,11 @@ from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import agent_loop as al  # noqa: E402
+# ハーネスの実装は agentcore（agent-herd と共有する 1 実装）。agent_loop は
+# 委譲するだけなので、差し替えも参照もそちらへ向ける。sys.path は
+# agent_loop の import が通してくれる。
+from agentcore.harness import toolloop as tl  # noqa: E402
+from agentcore.tests.harnesspatch import patch_harness  # noqa: E402
 
 
 def _agent(autonomy):
@@ -21,15 +26,15 @@ def _agent(autonomy):
 
 class RunPromptSlashTests(unittest.TestCase):
     def test_tool_loop_cli_gets_native_slash_lines(self):
-        with mock.patch.object(al, "run_cli_loop", return_value={"ok": True}) as run:
-            al.run_prompt(goal="本文", cwd="/tmp", agent=_agent("tool-loop"),
+        with patch_harness("run_cli_loop", return_value={"ok": True}) as run:
+            tl.run_prompt(goal="本文", cwd="/tmp", agent=_agent("tool-loop"),
                           log_file="/tmp/x.jsonl", slash=["summarize-logs", "report --lang ja"])
         goal = run.call_args.kwargs["goal"]
         self.assertTrue(goal.startswith("/summarize-logs\n/report --lang ja\n\n本文"))
 
     def test_single_shot_cli_gets_skills_and_note(self):
-        with mock.patch.object(al, "run_goal", return_value={"ok": True}) as run:
-            al.run_prompt(goal="本文", cwd="/tmp", agent=_agent("single-shot"),
+        with patch_harness("run_goal", return_value={"ok": True}) as run:
+            tl.run_prompt(goal="本文", cwd="/tmp", agent=_agent("single-shot"),
                           log_file="/tmp/x.jsonl", slash=["tech-harvester ニュースをまとめて"])
         kwargs = run.call_args.kwargs
         self.assertEqual(kwargs["skills"], ["tech-harvester"])
@@ -38,8 +43,8 @@ class RunPromptSlashTests(unittest.TestCase):
         self.assertIn("本文", kwargs["goal"])
 
     def test_no_slash_keeps_goal_unchanged(self):
-        with mock.patch.object(al, "run_goal", return_value={"ok": True}) as run:
-            al.run_prompt(goal="本文", cwd="/tmp", agent=_agent("single-shot"),
+        with patch_harness("run_goal", return_value={"ok": True}) as run:
+            tl.run_prompt(goal="本文", cwd="/tmp", agent=_agent("single-shot"),
                           log_file="/tmp/x.jsonl")
         self.assertEqual(run.call_args.kwargs["goal"], "本文")
         self.assertEqual(run.call_args.kwargs["skills"], [])
@@ -48,8 +53,8 @@ class RunPromptSlashTests(unittest.TestCase):
 class RunGoalSkillResolutionTests(unittest.TestCase):
     def test_declared_missing_skill_fails_with_search_dirs(self):
         with tempfile.TemporaryDirectory() as tmp:
-            with self.assertRaises(al.ToolLoopError) as ctx:
-                al.run_goal(goal="g", cwd=tmp, agent=_agent("single-shot"),
+            with self.assertRaises(tl.ToolLoopError) as ctx:
+                tl.run_goal(goal="g", cwd=tmp, agent=_agent("single-shot"),
                             log_file=os.path.join(tmp, "x.jsonl"),
                             skills=["no-such-skill"])
         message = str(ctx.exception)
@@ -60,9 +65,9 @@ class RunGoalSkillResolutionTests(unittest.TestCase):
     def test_goal_mentioned_missing_skill_stays_lenient(self):
         # 本文の `名前` スキル表記は推測なので、見つからなくても実行は続ける（従来どおり）。
         with tempfile.TemporaryDirectory() as tmp:
-            with mock.patch.object(al, "_tl_run_control",
-                                   return_value='{"type":"final","output":"done"}'):
-                result = al.run_goal(goal="`no-such-skill` スキルで処理して", cwd=tmp,
+            with patch_harness("_tl_run_control",
+                               return_value='{"type":"final","output":"done"}'):
+                result = tl.run_goal(goal="`no-such-skill` スキルで処理して", cwd=tmp,
                                      agent=_agent("single-shot"),
                                      log_file=os.path.join(tmp, "x.jsonl"))
         self.assertTrue(result["ok"] or "output" in result)
@@ -72,9 +77,9 @@ class RunGoalSkillResolutionTests(unittest.TestCase):
             skill = Path(tmp, ".github", "skills", "myskill")
             skill.mkdir(parents=True)
             (skill / "SKILL.md").write_text("# myskill\n手順。\n", encoding="utf-8")
-            with mock.patch.object(al, "_tl_run_control",
-                                   return_value='{"type":"final","output":"done"}') as run:
-                al.run_goal(goal="g", cwd=tmp, agent=_agent("single-shot"),
+            with patch_harness("_tl_run_control",
+                               return_value='{"type":"final","output":"done"}') as run:
+                tl.run_goal(goal="g", cwd=tmp, agent=_agent("single-shot"),
                             log_file=os.path.join(tmp, "x.jsonl"), skills=["myskill"])
             # 解決した SKILL.md は読み取り材料としてモデルへ渡る
             read_files = run.call_args.kwargs["read_files"]
@@ -86,11 +91,11 @@ class ActionSkillNameTests(unittest.TestCase):
     def test_bare_mention_without_backticks_is_picked_up(self):
         # 「wiki-useスキルを使って」の素の表記。拾わないとモデルはスキル名を
         # コマンドとして実行し「PATH 上に実行ファイルがありません」の却下を繰り返す（実測）。
-        self.assertEqual(al._tl_action_skill_names("wiki-useスキルを使って取り込んで"),
+        self.assertEqual(tl._tl_action_skill_names("wiki-useスキルを使って取り込んで"),
                          ["wiki-use"])
 
     def test_backticked_mention_still_works(self):
-        self.assertEqual(al._tl_action_skill_names("`tech-harvester` スキルの手順で"),
+        self.assertEqual(tl._tl_action_skill_names("`tech-harvester` スキルの手順で"),
                          ["tech-harvester"])
 
 
@@ -100,15 +105,15 @@ class SkillNameAsCommandTests(unittest.TestCase):
             root = Path(tmp, "wiki-use")
             (root / "scripts").mkdir(parents=True)
             (root / "scripts" / "ingest.py").write_text("", encoding="utf-8")
-            with self.assertRaises(al.ToolLoopError) as ctx:
-                al._tl_validate_command("wiki-use", tmp, [str(root)])
+            with self.assertRaises(tl.ToolLoopError) as ctx:
+                tl._tl_validate_command("wiki-use", tmp, [str(root)])
         message = str(ctx.exception)
         self.assertIn("wiki-use はスキル名であり実行ファイルではありません", message)
         self.assertIn("ingest.py", message)
 
     def test_unknown_command_keeps_the_path_error(self):
-        with self.assertRaises(al.ToolLoopError) as ctx:
-            al._tl_validate_command("no-such-cmd", "/tmp", [])
+        with self.assertRaises(tl.ToolLoopError) as ctx:
+            tl._tl_validate_command("no-such-cmd", "/tmp", [])
         self.assertIn("PATH 上に実行ファイルがありません", str(ctx.exception))
 
 

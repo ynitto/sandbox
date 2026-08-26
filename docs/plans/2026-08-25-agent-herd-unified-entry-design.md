@@ -384,9 +384,9 @@ agent-herd replay --arm model=gemma4:e4b,format=json --replay-limit 20
 
 ## 5. ハーネス統合 — `agentcore.harness`
 
-### 5.1 移植（移行ではない）
+### 5.1 3 段で動かした — 移植 → 本文の共有 → 委譲
 
-**まず移植する。元は消さない。** 段取りを 2 つに割る:
+**元をいきなり消さない。**段を分けたので、どの段でも agent-loop は動いたままだった:
 
 ```
 段1 ポーティング（実施済）
@@ -396,72 +396,94 @@ agent-herd replay --arm model=gemma4:e4b,format=json --replay-limit 20
         │
         │  写しが黙ってずれないよう AST パリティテストで縛る
         ▼
-段2 移行（実施済）
+段2 本文の共有（実施済）
   本文を _toolloop_body.py / _statemachine_body.py の 1 か所へ畳み、
   agentcore.harness と agent_loop の両方がそれを exec する
+        │
+        │  「import 委譲にできない」根拠はテストだけだった（5.1.1）→ テストを移す
+        ▼
+段3 委譲（実施済・現在の形）
+  本文は agentcore/harness/{toolloop,statemachine}.py だけ。データファイルも exec も無い。
+  agent_loop/{toolloop,statemachine}.py は import して継ぎ目を差し込むだけの層
 ```
 
 段 1 で agent-loop を触らないので、**回帰の可能性がそもそも無い**（agent-loop から見ると
 何も変わっていない）。段 1 だけで「tmux もデーモンも無しにハーネスを回せる」という目的は
-達成される。
+達成される。段 2 で写しが消え、段 3 で exec という遠回りが消えた。
 
-### 5.1.1 段2 で分かったこと — import 委譲にはできない
+### 5.1.1 段2 で「できない」と書いた理由と、段3 で解けた理由
 
-段2 の素直な形は「`agent_loop` の断片を消して `from agentcore.harness import …` へ
-置き換える」だが、**それはできない**。agent-loop のテストは
-`mock.patch.object(agent_loop, "_tl_run_agent")` のように**共有名前空間を差し替える**
-（実測 57 箇所・6 ファイル）。import で委譲すると関数の `__globals__` が agentcore 側に
-なるため、その差し替えが効かなくなる——しかも「パッチが当たらない」は静かな失敗で、
-テストが本物の CLI を起動しにいく形で出る。
+段 2 の時点では、素直な形（`agent_loop` の断片を消して `from agentcore.harness import …`）は
+**できない**と判断した。agent-loop のテストが
+`mock.patch.object(agent_loop, "_tl_run_agent")` のように**共有名前空間を差し替える**からで
+（実測 63 箇所・6 ファイル、参照まで数えると 190 箇所・8 ファイル）、import で委譲すると
+関数の `__globals__` が agentcore 側になってその差し替えが効かなくなる——しかも「パッチが
+当たらない」は静かな失敗で、テストが本物の CLI を起動しにいく形で出る。
 
-そこで**本文をデータとして共有する**形にした:
+そこで段 2 では**本文をデータとして共有する**形にした。写しは消えたが、exec という遠回りは
+残った（traceback と `inspect.getsource` が本文を指すために、開発木では実パスで compile し、
+zipapp では `pkgutil` で読む——2 経路を持つ羽目になった）。
 
-```
-  agentcore/harness/_toolloop_body.py   ← 本文はここ 1 か所（直接 import しない）
-        │                    │
-        │ exec               │ exec
-        ▼                    ▼
-  agentcore.harness       agent_loop の共有名前空間
-  .toolloop（自分の         （従来どおりの合成。__globals__ は agent_loop のまま
-   名前空間へ）              なので 57 箇所の差し替えがそのまま効く）
-```
+**段 3 で解けたのは、「できない」の根拠がテストだけだったからである。** 実装側の結合を
+数え直すと、残っていたのは次だけだった:
 
-exec による合成は agent_loop 自身の既存の作法（`__init__.py` が断片を順に exec する）なので、
-新しい仕組みを持ち込んではいない。2 つの実行系は本文を共有するが名前空間は別で、互いの
-モンキーパッチは干渉しない。継ぎ目（記帳と control 解決）は `harness.set_hooks` で
-agent-loop 側の実装を差し込む——差し込まないと台帳が静かに空になるので、これもテストで縛る。
+| 向き | 実測 | 段3 での扱い |
+|---|---|---|
+| 本文 → agent-loop | stdlib 以外の借用は 4 つ（`agent_home_subdir` / `_import_agentcli` / `_node_budget_record` / `_control_policy_decision`） | 前 2 つは `_borrowed` で解決済み、後ろ 2 つは既に `set_hooks` の継ぎ目 |
+| agent-loop → 本文 | 12 箇所・4 ファイル（`cli` / `cliprofile` / `scheduler`） | モジュール越しの呼び出しへ（`_harness_toolloop.run_prompt(…)`） |
+| 名前の衝突 | 0 件（本文の top-level 96 名 vs 他断片） | — |
+| 実行時の名前空間書き替え | 0 件（production コードに `globals()[…]` は無い） | — |
 
-**結果: agent-loop の 554 テストが 1 行も変えずに通る。** 段1 で置いた AST パリティテストは
-役目を終え、「本文が 1 か所であること」「共有名前空間の意味論が保たれていること」を縛る
-`test_harness_shared_body.py` へ作り替えた。
+つまり残作業は**テストの引っ越し**だけで、それを済ませれば委譲できる。段 3 でやったのは
+この 3 つ:
 
-- exec 合成断片を**通常のモジュール**にする。ただし本文は**逐語コピー**で、変えたのは
-  断片が共有名前空間から借りていた名前の供給だけ（借用は stdlib を除くと 4 つしか無かった:
-  `agent_home_subdir` / `_import_agentcli` / `_node_budget_record` /
-  `_control_policy_decision`）。逐語コピーにしておくと、元との一致を AST で機械的に
-  突き合わせられる——書き直すと写しがずれても誰も気づけない。
-- 借用のうち記帳（`_node_budget_record`）と control 解決（`_control_policy_decision`）は
-  agent-loop 固有の状態を触るので、**既定を「何もしない / None」にした差し込み口**
-  （`agentcore.harness.set_hooks`）にした。移植先が黙って agent-loop の台帳へ書くより、
-  書かないほうを既定にする。
+1. **純粋なハーネスのテスト 94 件を `agentcore/tests/` へ移した**（`test_harness_statemachine.py`
+   / `test_harness_control_retry.py` / `test_harness_agent_timeout.py`）。本文が agentcore に
+   あるのにテストが agent-loop にあると、agentcore を単体で回したときハーネスの振る舞いが
+   誰にも見られない。
+2. **差し替えの作法を `agentcore/tests/harnesspatch.py` の `patch_harness` 1 か所へ閉じた。**
+   本文は 2 モジュールに分かれ、`statemachine` は `toolloop` の名前を import して使う。
+   どちらを差し替えれば効くかは綴りでは決まらず、**その名前を読む関数がどちらの本文にあるか**
+   で決まる（`_sm_run_control` の実体は toolloop の関数なので、その中が読む
+   `_TL_CONTROL_RETRIES` は toolloop 側）。間違えても mock は成功するので、この判断を
+   テストのたびにやらせない——`patch_harness` は「その名前を持つモジュール全部」を同じ値へ
+   向ける。agent_loop の単一名前空間だった頃と同じ意味になる。
+3. **agent-loop に残したのは継ぎ目のテストだけ**にした（`test_harness_delegation.py`）。
+   委譲が繋がっているか、`run` / `statemachine` がハーネスへ落ちるか、記帳フックが
+   呼び出し時に引かれるか、その結果として実測トークンが agent-loop の台帳へ着くか。
+
+- 本文は**逐語**のまま動かしていない（段 1 で借用名の供給だけを変えた形が、そのまま段 3 の
+  本文である）。限定ツール契約（read_files / write_files / run / final・パス検証・
+  コマンド検証・証跡）も変えていない。移設 PR に機能変更を混ぜない。
 - `statemachine` の検証・遷移の正典は従来どおり **statemachine-use スキルのスクリプト**
   （`run_machine.py` / `next_state.py`）。移設で正典は動かさない。
 - CLI・モデルの解決は従来どおり `agentcore.agentcli` へ委譲（同一パッケージ内になるので
   むしろ自然になる）。
-- 限定ツール契約（read_files / write_files / run / final・パス検証・コマンド検証・証跡）は
-  **変更しない**。移設 PR に機能変更を混ぜない。
 
-### 5.2 agent-loop 側の残し方
+### 5.2 agent-loop 側の残し方 — 張り直さない委譲層
 
-`agent_loop/toolloop.py` / `statemachine.py` は削除し、`agent_loop/__init__.py` の合成順で
-`agentcore.harness` から import して既存の `_tl_*` / `_sm_*` 別名を張る互換層に置き換える。
-`agent-loop statemachine …` の argv・出力・証跡は不変（既存 `test_statemachine.py` を
-そのまま通すことが受入条件）。dashboard のルーチン（`agent-loop statemachine` を叩く経路）も
-無改修で動く。
+`agent_loop/{toolloop,statemachine}.py` は**本文を持たない**。やるのは 2 つだけ:
 
-tmux の中で「動いている様子が見える」性質は agent-loop の価値なので agent-loop に残る。
-`agent-herd harness …` は **tmux なしの素の実行**（stdout/stderr + 証跡ファイル）であり、
-同じハーネスの 2 つの見せ方であって 2 実装ではない。
+```python
+from agentcore.harness import toolloop as _harness_toolloop
+_harness.set_hooks(node_budget_record=lambda *a, **kw: _node_budget_record(*a, **kw), …)
+```
+
+**`_tl_*` / `_sm_*` を共有名前空間へ張り直さない。** 張れば古い
+`mock.patch.object(agent_loop, "_tl_run_agent")` は通ってしまい、**成功したのに効かない**——
+本物の CLI を起動しにいく——という静かな失敗になる。張らなければ `AttributeError` で
+大声で落ちる。移行の危険を「静か」から「うるさい」へ倒すのが、この 1 行の設計判断である。
+ハーネスの名前を使う agent-loop 側（`scheduler` / `cliprofile` / `cli` の 12 箇所）は
+モジュール越しに呼ぶ——別名で受けると同じ罠に戻る。
+
+継ぎ目のフックは**関数オブジェクトではなくラムダ**で渡す。直に渡すと
+`agent_loop._node_budget_record` を差し替えても届かない（呼び出し時に共有名前空間を引く）。
+
+`agent-loop run` / `agent-loop statemachine …` の argv・出力・証跡は不変。dashboard の
+ルーチン（`agent-loop statemachine` を叩く経路）も無改修で動く。tmux の中で「動いている
+様子が見える」性質は agent-loop の価値なので agent-loop に残る。`agent-herd harness …` は
+**tmux なしの素の実行**（stdout/stderr + 証跡ファイル）であり、同じハーネスの 2 つの
+見せ方であって 2 実装ではない。
 
 ### 5.3 単独実行の口
 
@@ -475,7 +497,7 @@ agent-herd harness toolloop --cli aider --model gemma4:e4b \
 exit code / 打ち切り封筒 / 証跡の形は agent-loop 経由と同一。これにより
 「statemachine を回すためだけに agent-loop のデーモン・tmux・設定ファイルが要る」が消える。
 
-移設しても**判定は 1 か所のまま**である。`run_prompt()`（現 `toolloop.py:1188`）が見るのは
+移設しても**判定は 1 か所のまま**である。`run_prompt()`（`agentcore/harness/toolloop.py`）が見るのは
 定義の `headless_autonomy` ただ 1 つで、そこから 2 経路に分かれる:
 
 ```
@@ -639,7 +661,8 @@ variant を「入口の分岐」と読むと設計を誤る。`resolve_variant()
 | **P0 配布統合** ✅ **実装済** | `hostenv` 抽出・opencode/aider adapter の agentcore 移設・busybox zipapp・install.sh 変更 | 既存 3 名の argv/出力契約のゴールデンが不変で通る。env parity テストが「1 実装参照」を縛る形へ置換される |
 | **P1 入口面** ✅ **実装済** | `agent-herd` サブコマンド面（aider/ollama/opencode/defs/exec/chat/観測）・aider.json の interactive ブロック | `agent-herd aider …` と `agent-aider …` が同一結果。`chat aider` の環境仕込みがヘッドレスと同一実装を通ることをテストで縛る |
 | **P2 ハーネス移植** ✅ **実装済**（段1） | toolloop/statemachine を `agentcore.harness` へ**コピー**・`agent-herd harness …`・AST パリティテスト。**agent_loop は無改変** | agent-loop の既存テストが無改変で通る（触っていないので当然通る）。移植先が単体 import でき、zipapp から回る |
-| **P2 段2 移行** ⬜ 未着手 | agent_loop の断片を消して `agentcore.harness` への委譲へ | `test_statemachine.py` 等 agent-loop の 554 テストが無改変で通る |
+| **P2 段2 本文の共有** ✅ **実装済** | 写しを畳み、本文（`_*_body.py`）を agent_loop と agentcore の両方が exec | agent-loop の 554 テストが**無改変**で通る |
+| **P2 段3 委譲** ✅ **実装済** | agent_loop の断片を `agentcore.harness` への委譲層へ。データファイルと exec を廃止。純粋なハーネスのテスト 94 件を `agentcore/tests/` へ移設 | agent-loop の `run` / `statemachine` の argv・出力・証跡が不変。agent-loop 側に残った継ぎ目のテスト（`test_harness_delegation.py`）が通り、agentcore の 2 テストルートが通る |
 | **P1.5 弁別子の是正** ✅ **実装済** | dashboard の `!spec.interactive` を `needsHeadlessHarness`（`headless_autonomy` で判定）へ・`aider.json` に `interactive` を追加 | 既存全定義で判定が従来と同じ。`chat aider` が policy つきで起動し、aider の定型業務はハーネスのまま |
 | **P3 正典化** ✅ **実装済** | `agents/*.json` 8 件の `command` / `interactive.command` を `["agent-herd", "<sub>", …]` へ・Python と dashboard のゴールデン更新 | 全エンジンの結合テスト・dashboard ゴールデンが green。旧綴りの別名も argv[0] 分岐で従来どおり動く |
 
@@ -941,9 +964,12 @@ interactive）・対話面・variant 解決のすべてが一致**（不一致 0
    行・打ち切り封筒）を移行前後で固定。既存 `test_agentcli_*` / adapter テストに追加。
 3. **hostenv 1 実装**: 3 adapter が `agentcore.hostenv` を参照することを import 検査で縛る
    （旧 env parity テストの置換）。
-4. **ハーネス移設**: agent-loop の `test_statemachine.py` を無改変で通す（移設が挙動を
-   変えていない証明）。`agentcore/tests/` へ harness の単体テストを移し、**両テストルートで
-   discover する**既存規約（README）に従う。
+4. **ハーネス移設**: 段 2 までは agent-loop の `test_statemachine.py` を無改変で通すことが
+   受入条件だった（移設が挙動を変えていない証明）。段 3 で純粋なハーネスのテストは
+   `agentcore/tests/` へ移し、**両テストルートで discover する**既存規約（README）に従う。
+   agent-loop 側には継ぎ目のテスト（`test_harness_delegation.py`）だけを残す——委譲が
+   繋がっているか、記帳フックが呼び出し時に引かれるか、実測トークンが台帳へ着くか。
+   差し替えの作法は `agentcore/tests/harnesspatch.py` に閉じる（§5.1.1）。
 5. **chat の環境同一性**: aider 対話起動が組む env / model-settings がヘッドレス経路と同一
    関数から出ることをテストで縛る。
 6. **定義正典化**（P3）: 新旧両綴りの定義で同じ argv に解決されること。dashboard JS

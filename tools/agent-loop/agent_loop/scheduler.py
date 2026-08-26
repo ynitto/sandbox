@@ -1220,7 +1220,7 @@ class PeriodicScheduler:
         log_file = self._headless_log_file(root_id)
         # ログペインが tail するのは人が読むテキスト版（`[tag] message` 行）。
         # jsonl は機械記録のまま残し、見せ方は dashboard 定常業務の実行ペインに揃える。
-        view_file = _tl_progress_view_file(log_file)
+        view_file = _harness_toolloop._tl_progress_view_file(log_file)
         try:
             with open(view_file, "a", encoding="utf-8") as f:
                 f.write(f"[agent-loop] entry: {name} / cli: {profile.name}"
@@ -1231,24 +1231,26 @@ class PeriodicScheduler:
         self._open_headless_log_view(entry, view_file)
         # このスレッドの進行表示（_tl_progress）を実行ログへ振り向ける。デーモンの stdout は
         # コントロールペインなので、そのまま print させると実行の様子が controller に混ざる。
-        _TL_PROGRESS_LOCAL.view_file = view_file
+        _harness_toolloop._TL_PROGRESS_LOCAL.view_file = view_file
         try:
-            agent = _tl_resolve_agent(profile.name, profile.model or "", work_dir)
+            agent = _harness_toolloop._tl_resolve_agent(
+                profile.name, profile.model or "", work_dir)
             log.info("[%s] headless 実行: cli=%s model=%s autonomy=%s log=%s",
                      name, profile.name, profile.model or "(定義の既定)",
                      profile.autonomy, log_file)
-            result = run_prompt(goal=prompt, cwd=work_dir, agent=agent, log_file=log_file,
-                                acceptance=acceptance, tag="agent-loop",
-                                judge=self._acceptance_judge_enabled(entry),
-                                slash=list(entry.get("slash") or []))
-        except ToolLoopError as exc:
-            _tl_progress(f"ERROR: {exc}", "agent-loop")
+            result = _harness_toolloop.run_prompt(
+                goal=prompt, cwd=work_dir, agent=agent, log_file=log_file,
+                acceptance=acceptance, tag="agent-loop",
+                judge=self._acceptance_judge_enabled(entry),
+                slash=list(entry.get("slash") or []))
+        except _harness_toolloop.ToolLoopError as exc:
+            _harness_toolloop._tl_progress(f"ERROR: {exc}", "agent-loop")
             log.error("[%s] headless 実行に失敗しました: %s", name, exc)
             self._fail_execution(req, slot_key, reason="headless_failed")
             return
         except Exception:
-            _tl_progress("ERROR: 予期しない例外で終了しました（詳細はデーモンのログ）",
-                         "agent-loop")
+            _harness_toolloop._tl_progress(
+                "ERROR: 予期しない例外で終了しました（詳細はデーモンのログ）", "agent-loop")
             log.exception("[%s] headless 実行が例外で終了しました", name)
             self._fail_execution(req, slot_key, reason="headless_crashed")
             return
@@ -1256,12 +1258,12 @@ class PeriodicScheduler:
             # 実行ペインの結果契約は statemachine / run の `RESULT {json}` と同じ形にする
             # （dashboard 定常業務の「今すぐ実行」ペインと読み方を揃える。output は長い
             # ので落とし、判定に要る要素だけ）。
-            _tl_progress("RESULT " + json.dumps(
+            _harness_toolloop._tl_progress("RESULT " + json.dumps(
                 {k: result.get(k) for k in
                  ("ok", "verified", "verifiedBy", "files", "evidenceErrors")},
                 ensure_ascii=False), "agent-loop")
         finally:
-            _TL_PROGRESS_LOCAL.view_file = None
+            _harness_toolloop._TL_PROGRESS_LOCAL.view_file = None
 
         if not result.get("verified"):
             # 受入条件が無い＝どの層も検証していない。実行は通すが done の根拠にしない
