@@ -44,6 +44,19 @@ DEFAULT_STALL_TIMEOUT_SEC = 180.0     # decode 中の無進捗の上限。これ
 DEFAULT_FIRST_TOKEN_TIMEOUT_SEC = 0.0  # prefill の上限。既定 0 = 無制限（遅さは異常ではない）
 DEFAULT_CONNECT_TIMEOUT_SEC = 120.0   # 混雑時はモデルロード中に応答ヘッダすら遅れる
 LIVENESS_PROBE_TIMEOUT_SEC = 5.0      # connect 上限到達時の生存確認（/api/version）の上限
+# queue 局面（順番待ち）で生存確認を打ち直す間隔と、打ち切るまでの連続失敗回数。
+# queue に上限を置かない前提は「サーバが生きている限り待つ」なので、生きていることを
+# **待っている間ずっと**確かめ続けないと前提が成立しない。入った瞬間の 1 回だけでは、
+# LAN の向こうのホストが黙って消えた場合（スリープ・NW 分断・電源断）に誰も気付かず、
+# TCP の keepalive（既定 2 時間級）まで待ち続ける——外側に上限が無い経路（`agent-herd
+# exec` 直叩き）では事実上の永久ハングになる。
+# 間隔を heartbeat（5 秒）より粗くするのは、プローブが最大 5 秒ブロックするため。
+# 順番が来たことに気付くのが最悪 1 回分遅れるので、その遅れを 30 秒に 1 回へ抑える。
+QUEUE_PROBE_INTERVAL_SEC = 30.0
+# 1 回の失敗では打ち切らない。プローブ自身が混雑で落ちることがあり（ollama が全スロットを
+# 推論に使っている間は /api/version の応答も遅れる）、そこで待ちを捨てると「混雑している
+# ときほど待てない」という逆立ちになる。連続で落ちたときだけ「消えた」と読む。
+QUEUE_PROBE_FAILURES = 3
 DEFAULT_MAX_ROUNDS = 12
 DEFAULT_COMMAND_TIMEOUT_SEC = 300.0
 DEFAULT_MAX_OUTPUT_CHARS = 4000
@@ -371,6 +384,11 @@ def stream_call(endpoint: str, body: dict, *, delta_of, emit=None, round_no: int
     限り待つ（証跡は heartbeat が出続け、全体の上限は呼び出し側のタイムアウトが持つ）。
     生存確認に失敗したときだけ従来どおり打ち切る。
 
+    queue に入った**後も** `QUEUE_PROBE_INTERVAL_SEC` ごとに生存確認を打ち直し、
+    `QUEUE_PROBE_FAILURES` 回続けて落ちたら打ち切る。「生きている限り待つ」という
+    前提は、待っている間ずっと確かめて初めて成立する（入った瞬間の 1 回だけでは、
+    相手が黙って消えた場合に永久に待つ）。
+
     上限の判定は heartbeat の刻みで行うため、検知は最大 `heartbeat` 秒だけ遅れる
     （既定 5 秒。分単位の上限に対して十分な粒度で、待ち受けを 1 か所に保てる）。
     """
@@ -396,6 +414,8 @@ def stream_call(endpoint: str, body: dict, *, delta_of, emit=None, round_no: int
     phase_started = started
     last_progress = started
     last_emit = 0.0
+    last_queue_probe = 0.0
+    queue_probe_failures = 0
     text_parts: "list[str]" = []
     thinking_chars = 0
     tokens_out = 0
@@ -426,15 +446,42 @@ def stream_call(endpoint: str, body: dict, *, delta_of, emit=None, round_no: int
                 # heartbeat = 「生きているが進んでいない」の定期証跡。進捗ではないので
                 # last_progress は動かさない（動かすと stall を永遠に検知できない）。
                 if emit is not None:
-                    emit("llm_heartbeat", round=round_no, phase=phase,
-                         waiting_sec=round(waited, 1), tokens_out=tokens_out,
-                         limit_sec=round(limit, 1))
+                    fields = {"round": round_no, "phase": phase,
+                              "waiting_sec": round(waited, 1), "tokens_out": tokens_out,
+                              "limit_sec": round(limit, 1)}
+                    if queue_probe_failures:
+                        fields["probe_failures"] = queue_probe_failures
+                    emit("llm_heartbeat", **fields)
+                if phase == "queue":
+                    # 上限が無い局面なので、待ち続けてよい根拠（サーバの生存）を
+                    # 定期的に取り直す。ここが queue 唯一の打ち切り経路。
+                    now = time.monotonic()
+                    if (now - last_queue_probe) >= QUEUE_PROBE_INTERVAL_SEC:
+                        last_queue_probe = now
+                        if _server_alive():
+                            queue_probe_failures = 0
+                        else:
+                            queue_probe_failures += 1
+                            if queue_probe_failures >= QUEUE_PROBE_FAILURES:
+                                if emit is not None:
+                                    emit("stall", round=round_no, phase=phase,
+                                         waiting_sec=round(waited, 1), limit_sec=0.0,
+                                         probe_failures=queue_probe_failures)
+                                abort()
+                                raise StallError(
+                                    f"順番待ちの相手が居なくなりました: queue のまま "
+                                    f"{waited:.0f} 秒待つ間に生存確認（/api/version）が "
+                                    f"{queue_probe_failures} 回続けて失敗しました。"
+                                    "ollama サーバの状態を確認してください。")
+                    continue
                 if limit > 0 and waited >= limit:
                     if phase == "connect" and _server_alive():
                         # サーバは生きている＝接続不能ではなく順番待ち（他リクエストの
                         # 完了・モデルロード待ち）。打ち切ると列の最後尾へ戻るだけ。
                         phase = "queue"
                         phase_started = time.monotonic()
+                        last_queue_probe = phase_started   # いま確かめた分を数える
+                        queue_probe_failures = 0
                         if emit is not None:
                             emit("queued", round=round_no, waited_sec=round(waited, 1))
                         continue

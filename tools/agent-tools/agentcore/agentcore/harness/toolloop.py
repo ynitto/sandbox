@@ -57,7 +57,24 @@ _TL_HARNESS_TIMEOUT_SEC = 30
 # 間、応答ヘッダすら返さない）。180 秒では正常に進んでいる実行を切っていた。
 # **この 1 個だけが fallback**。周ごと・変種ごとに別の既定を置くと、どの上限で切られたのかを
 # 読む側が追えなくなる。個別に伸ばしたい CLI は定義の `timeout` で宣言する（C7）。
+#
+# **これは無進捗（idle）の上限であって壁時計ではない**（`_tl_run_watched`）。エージェント
+# CLI の 1 呼び出しは、ローカル推論では数十分かかることが正常で、順番待ちならさらに伸びる
+# ——壁時計で切ると正常な実行を殺す。切ってよいのは「進んでいない」ときだけ。
 _TL_DEFAULT_AGENT_TIMEOUT_SEC = 600
+# 子が「自分は生きている」と刻み続ける**灯台**の置き場を、この環境変数で子へ渡す。
+# ヘッドレスのローカル推論は**終わるまで stdout に 1 バイトも出さない**ので、出力だけを
+# 見ていると正常な長考も順番待ちも無進捗に見える。知っている子（agent-ollama）は進捗
+# イベントを出すたびにここを叩き、知らない子は無視する（その場合は出力だけが進捗の証拠に
+# なる＝従来どおり）。子の**記録**（会話の JSONL）ではないので、実行が終わったら捨てる
+# ——記録の置き場は子が決める（`--status` / `--replay` はそちらを見る）。
+_TL_PROGRESS_BEACON_ENV = "AGENT_PROGRESS_BEACON"
+# 無進捗の見張りが様子を見る間隔。
+_TL_WATCH_TICK_SEC = 2.0
+# 病理を止めるためだけの天井（4 時間）。無進捗の上限だけだと、内部で回り続けて出力を
+# 出し続ける子（リトライループに落ちた CLI）を誰も止められない。正常な 1 呼び出しが
+# ここへ届くことは無い——届くならそれは待ち方の問題ではなく設計の問題として見る。
+_TL_AGENT_WALL_CEILING_SEC = 4 * 60 * 60
 # ponytail: 上限は固定値。経路ごとに変えたくなるまで設定にしない。
 _TL_SHELLS = {"sh", "bash", "zsh", "fish", "cmd", "cmd.exe",
               "powershell", "powershell.exe", "pwsh"}
@@ -387,24 +404,186 @@ def _tl_progress(message: str, tag: str = "statemachine") -> None:
     print(f"[{tag}] {message}", flush=True)
 
 
+def _tl_decode(data: bytes) -> str:
+    """子の出力をテキストにする。改行の扱いを `text=True`（universal newlines）に揃える
+    ——`@agent-usage` の拾い出しなど、読む側はどれも行単位で見ている。"""
+    return data.decode("utf-8", "replace").replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _tl_beacon_stamp(path: str) -> "tuple | None":
+    """灯台の (mtime, size)。刻まれたかどうかだけを見るので中身は読まない。"""
+    if not path:
+        return None
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_mtime, st.st_size)
+
+
+def _tl_run_watched(argv: "list[str]", *, cwd: str, env: dict, stdin: "str | None",
+                    idle_sec: float, beacon_path: str) -> dict:
+    """子を回し、**無進捗**でだけ打ち切る（壁時計では切らない）。
+
+    `subprocess.run(timeout=…)` との違いはそこだけで、戻り値の形は同じ。ローカル推論の
+    1 呼び出しは数十分かかることが正常で、サーバが他リクエストで塞がっていれば順番待ちが
+    そこへ積み上がる——壁時計で切ると、正常に進んでいる実行と、順番を待っているだけの
+    実行を、ハングと同じ扱いで殺す。しかも殺した側は理由を残せない（子は SIGKILL される
+    ので「queue で待っていた」という証跡はどこにも出ない）。
+
+    進捗＝次のどちらか。
+      (a) stdout / stderr に 1 バイトでも来た。
+      (b) 子が `AGENT_PROGRESS_BEACON` の灯台を刻んだ（心拍を含む）。
+    (b) が要るのは、ヘッドレスのローカル推論が**終わるまで何も出力しない**ため。
+    (b) では心拍も進捗として数える——ここが見張るのは「子が生きているか」で、
+    「推論が前に進んでいるか」は子自身が持つ（decode stall / queue の生存確認）。
+    二重に判定すると、内側が待つと決めた実行を外側が理由も残さず殺すことになる。
+
+    天井（`_TL_AGENT_WALL_CEILING_SEC`）だけは壁時計で見る。出力を出し続けたまま
+    回り続ける病理（リトライループ）は、無進捗では捕まえられないため。
+    """
+    result = {"status": None, "stdout": "", "stderr": "", "error": ""}
+    try:
+        proc = subprocess.Popen(
+            argv, cwd=cwd, env=env,
+            stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except OSError as exc:
+        result["error"] = str(exc)
+        return result
+
+    chunks: "dict[str, list]" = {"stdout": [], "stderr": []}
+    activity = {"at": time.monotonic()}
+    lock = threading.Lock()
+
+    def drain(stream, name: str) -> None:
+        # os.read を使う（BufferedReader.read(n) は n バイト揃うまで返らないので、
+        # 「1 バイト来た」を活動として拾えない）。
+        try:
+            fd = stream.fileno()
+        except (OSError, ValueError):
+            return
+        while True:
+            try:
+                chunk = os.read(fd, 65536)
+            except OSError:
+                break
+            if not chunk:
+                break
+            chunks[name].append(chunk)
+            with lock:
+                activity["at"] = time.monotonic()
+        try:
+            stream.close()
+        except (OSError, ValueError):
+            pass
+
+    def feed() -> None:
+        try:
+            proc.stdin.write(stdin.encode("utf-8"))
+        except (OSError, ValueError, AttributeError):
+            pass
+        try:
+            proc.stdin.close()
+        except (OSError, ValueError, AttributeError):
+            pass
+
+    threads = [threading.Thread(target=drain, args=(proc.stdout, "stdout"), daemon=True),
+               threading.Thread(target=drain, args=(proc.stderr, "stderr"), daemon=True)]
+    if stdin is not None:
+        threads.append(threading.Thread(target=feed, daemon=True))
+    for t in threads:
+        t.start()
+
+    started = time.monotonic()
+    stamp = _tl_beacon_stamp(beacon_path)
+    tick = max(0.1, min(_TL_WATCH_TICK_SEC, idle_sec / 10.0))
+    while True:
+        try:
+            result["status"] = proc.wait(timeout=tick)
+            break
+        except subprocess.TimeoutExpired:
+            pass
+        now = time.monotonic()
+        current = _tl_beacon_stamp(beacon_path)
+        if current != stamp:
+            stamp = current
+            with lock:
+                activity["at"] = now
+        with lock:
+            idle = now - activity["at"]
+        if idle >= idle_sec:
+            # 文言に「タイムアウト」を残す。制御応答の再試行判定（_TL_TRANSIENT_RE）が
+            # ここを読むので、無進捗の打ち切りは従来の壁時計打ち切りと同じく一時障害として
+            # 拾われる必要がある（出力も心拍も無いまま固まった＝再試行に意味がある形）。
+            result["error"] = (f"{argv[0]} が {idle:.0f} 秒進まないため打ち切りました"
+                               f"（無進捗タイムアウト・上限 {idle_sec:.0f} 秒）")
+        elif (now - started) >= _TL_AGENT_WALL_CEILING_SEC:
+            # こちらは意図的に一時障害と読ませない。天井に当たる子は「動いてはいるが
+            # 終わらない」ので、同じ入力で再試行すればもう 4 時間焼くだけになる。
+            result["error"] = (f"{argv[0]} が {(now - started) / 3600:.1f} 時間続いたため"
+                               f"打ち切りました（天井 "
+                               f"{_TL_AGENT_WALL_CEILING_SEC / 3600:.0f} 時間）")
+        else:
+            continue
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+        break
+
+    for t in threads:
+        t.join(timeout=5)
+    result["stdout"] = _tl_decode(b"".join(chunks["stdout"]))
+    result["stderr"] = _tl_decode(b"".join(chunks["stderr"]))
+    return result
+
+
 def _tl_exec_argv(command: str, args: "list[str]", *, cwd: str, timeout_sec: float,
                   env: "dict | None" = None, stdin: "str | None" = None,
-                  output_file: "str | None" = None, log_file: str) -> dict:
+                  output_file: "str | None" = None, log_file: str,
+                  idle: bool = False) -> dict:
+    """子を 1 つ回す。
+
+    `idle=False`（既定）は `timeout_sec` を**壁時計**として使う。モデルが要求した
+    `run` のような「宣言した時間で終わるべきもの」はこちら——`sleep 9999` は宣言どおり
+    切られるべきで、出力が無いことは正しく失敗である。
+
+    `idle=True` は `timeout_sec` を**無進捗の上限**として使う（エージェント CLI の
+    呼び出し）。理由は `_tl_run_watched` に書いた。
+    """
     started = time.time()
     argv = [command, *args]
     _tl_append_log(log_file, {"event": "start", "argv": argv, "cwd": cwd,
-                              "timeoutMs": int(timeout_sec * 1000)})
+                              "timeoutMs": int(timeout_sec * 1000),
+                              **({"idleTimeout": True} if idle else {})})
     merged_env = {**os.environ, "NO_COLOR": "1", "TERM": "dumb", "COLUMNS": "1000",
                   **(env or {})}
     result = {"status": None, "stdout": "", "stderr": "", "error": ""}
+    beacon_path = ""
+    if idle and log_file:
+        # ハーネスのログの隣に置く。log_file が無い経路では作らない——置き場を発明する
+        # より、出力だけを進捗として見る（＝従来どおり）方が正しい。
+        beacon_path = f"{log_file}.beacon-{os.getpid()}-{time.monotonic_ns()}"
+        merged_env[_TL_PROGRESS_BEACON_ENV] = beacon_path
     try:
-        proc = subprocess.run(
-            argv, cwd=cwd, input=stdin, env=merged_env,
-            capture_output=True, text=True, errors="replace",
-            timeout=max(1.0, float(timeout_sec)))
-        result["status"] = proc.returncode
-        result["stdout"] = proc.stdout or ""
-        result["stderr"] = proc.stderr or ""
+        if idle:
+            result = _tl_run_watched(argv, cwd=cwd, env=merged_env, stdin=stdin,
+                                     idle_sec=max(1.0, float(timeout_sec)),
+                                     beacon_path=beacon_path)
+        else:
+            proc = subprocess.run(
+                argv, cwd=cwd, input=stdin, env=merged_env,
+                capture_output=True, text=True, errors="replace",
+                timeout=max(1.0, float(timeout_sec)))
+            result["status"] = proc.returncode
+            result["stdout"] = proc.stdout or ""
+            result["stderr"] = proc.stderr or ""
     except subprocess.TimeoutExpired as exc:
         result["stdout"] = (exc.stdout.decode("utf-8", "replace")
                             if isinstance(exc.stdout, bytes) else (exc.stdout or ""))
@@ -413,6 +592,11 @@ def _tl_exec_argv(command: str, args: "list[str]", *, cwd: str, timeout_sec: flo
         result["error"] = f"{command} がタイムアウトしました"
     except OSError as exc:
         result["error"] = str(exc)
+    if beacon_path:
+        try:
+            os.unlink(beacon_path)
+        except OSError:
+            pass
     if output_file:
         try:
             with open(output_file, "r", encoding="utf-8", errors="replace") as f:
@@ -490,7 +674,8 @@ def _tl_run_agent(agent: dict, prompt: str, *, cwd: str, readonly: bool,
     timeout_sec = float(built.get("timeout") or 0) or _TL_DEFAULT_AGENT_TIMEOUT_SEC
     result = _tl_exec_argv(argv[0], argv[1:], cwd=cwd, timeout_sec=timeout_sec,
                            env=built.get("env") or {}, stdin=built.get("stdin"),
-                           output_file=built.get("output_file"), log_file=log_file)
+                           output_file=built.get("output_file"), log_file=log_file,
+                           idle=True)
     _tl_record_usage(agent, result, log_file)
     if result["status"] != 0 or result["error"]:
         detail = "\n".join(x for x in (result["error"], result["stderr"], result["stdout"]) if x)
@@ -873,7 +1058,8 @@ def judge_acceptance(criteria: "list[str]", *, cwd: str, agent: dict, log_file: 
                               "model": judge["model"] or "", "criteria": len(items)})
     result = _tl_exec_argv(argv[0], argv[1:], cwd=cwd, timeout_sec=timeout_sec,
                            env=built.get("env") or {}, stdin=built.get("stdin"),
-                           output_file=built.get("output_file"), log_file=log_file)
+                           output_file=built.get("output_file"), log_file=log_file,
+                           idle=True)
     if result["status"] != 0 or result["error"]:
         detail = (result["error"] or result["stderr"] or "").strip()[:300]
         return [f"受入条件を判定できませんでした（{judge['cli']}）: {detail or '実行に失敗しました'}"]
@@ -1173,7 +1359,8 @@ def run_cli_loop(*, goal: str, cwd: str, agent: dict, log_file: str,
     timeout_sec = float(built.get("timeout") or 0) or _TL_DEFAULT_AGENT_TIMEOUT_SEC
     result = _tl_exec_argv(argv[0], argv[1:], cwd=cwd, timeout_sec=timeout_sec,
                            env=built.get("env") or {}, stdin=built.get("stdin"),
-                           output_file=built.get("output_file"), log_file=log_file)
+                           output_file=built.get("output_file"), log_file=log_file,
+                           idle=True)
     _tl_record_usage(agent, result, log_file)
     if result["status"] != 0 or result["error"]:
         detail = "\n".join(x for x in (result["error"], result["stderr"],

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from agentcore import ollama_events
 
@@ -30,6 +32,56 @@ class TestEventLog(unittest.TestCase):
     def test_no_path_writes_nothing(self):
         with ollama_events.EventLog(None) as log:
             self.assertEqual(log.emit("x")["kind"], "x")
+
+
+class TestProgressBeacon(unittest.TestCase):
+    """外側（ハーネス）の見張り向けの灯台。記録の置き場は動かさない。"""
+
+    def test_beacon_is_marked_on_every_emit_and_carries_the_last_event(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            beacon = Path(tmp) / "sub" / "beacon"
+            path = Path(tmp) / "run.jsonl"
+            with ollama_events.EventLog(path, beacon=beacon) as log:
+                log.emit("llm_heartbeat", phase="queue", waiting_sec=42.0)
+                first = beacon.read_text(encoding="utf-8")
+                log.emit("llm_heartbeat", phase="queue", waiting_sec=47.0)
+                second = beacon.read_text(encoding="utf-8")
+            # 記録はいつもの場所に、そのまま残る（`--status` / `--replay` が見る先）。
+            self.assertEqual(len(path.read_text(encoding="utf-8").splitlines()), 2)
+            self.assertEqual(json.loads(first)["waiting_sec"], 42.0)
+            self.assertEqual(json.loads(second)["waiting_sec"], 47.0)
+
+    def test_env_var_places_the_beacon_when_the_caller_does_not(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            beacon = Path(tmp) / "beacon"
+            with mock.patch.dict(os.environ,
+                                 {ollama_events.PROGRESS_BEACON_ENV: str(beacon)}):
+                with ollama_events.EventLog(None) as log:
+                    log.emit("run_start", model="qwen3")
+            self.assertEqual(json.loads(beacon.read_text(encoding="utf-8"))["kind"],
+                             "run_start")
+
+    def test_long_fields_are_left_in_the_log_not_copied_to_the_beacon(self):
+        """会話の本文まで毎回書き直すのは灯台の仕事ではない（本文の置き場は JSONL）。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            beacon = Path(tmp) / "beacon"
+            path = Path(tmp) / "run.jsonl"
+            with ollama_events.EventLog(path, beacon=beacon) as log:
+                log.emit("message", role="user", content="あ" * 5000)
+            marked = json.loads(beacon.read_text(encoding="utf-8"))
+            logged = path.read_text(encoding="utf-8")
+        self.assertEqual(marked["kind"], "message")
+        self.assertEqual(marked["role"], "user")       # 短い値は残る
+        self.assertNotIn("content", marked)
+        self.assertIn("あ" * 5000, logged)
+
+    def test_an_unwritable_beacon_does_not_break_the_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            blocker = Path(tmp) / "file"
+            blocker.write_text("", encoding="utf-8")
+            with ollama_events.EventLog(None, beacon=blocker / "beacon") as log:
+                log.emit("run_start")      # 例外が漏れないこと
+                self.assertIsNone(log.beacon)   # 以後は試さない
 
 
 class TestReadStatus(unittest.TestCase):
