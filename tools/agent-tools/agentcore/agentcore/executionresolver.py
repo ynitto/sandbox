@@ -118,6 +118,32 @@ def _auto_selectable(candidate: dict) -> bool:
     return status is None or status in AUTO_SELECTABLE_STATUSES
 
 
+def _purpose_scope(policy, purpose_or_role):
+    """用途別の順位表を引く。戻り値は (候補列, 要求した処理種別, 用途名) か None。
+
+    実測は最初から `候補 × operation_class` の形を持っており、Compiler はそれを
+    ``selection_policy.by_purpose`` へ焼く。ここを引かないと自動選択は
+    ``remaining[0]``——**workload ごとに 1 位が全ノードを取る**——になり、抽出の
+    実績しかない候補がレビューにも 1 位で選ばれる。
+
+    None（＝カタログに宣言が無い用途）のときだけ、workload 共通の ``candidates`` へ
+    落ちる。宣言があって候補が空なら park である——落とすと、局所不成立が実測で
+    確定している用途が別の実測の候補へ黙って流れる。
+    """
+    if not isinstance(policy, dict):
+        return None
+    by_purpose = policy.get("by_purpose")
+    if not isinstance(by_purpose, dict):
+        return None
+    key = str(purpose_or_role or "").strip().lower()
+    if not key:
+        return None
+    entry = by_purpose.get(key)
+    if not isinstance(entry, dict) or not isinstance(entry.get("candidates"), list):
+        return None
+    operations = [str(op) for op in (entry.get("operations") or []) if str(op)]
+    return list(entry["candidates"]), operations, key
+
 def resolve_execution(workload: str, *, purpose_or_role=None, execution_contract=None,
                       explicit_pin=None, budget_state=None, compiled_control=None,
                       profiles_default=None, unavailable=(), attempt_counts=None,
@@ -173,6 +199,7 @@ def resolve_execution(workload: str, *, purpose_or_role=None, execution_contract
     # --- selection_policy（version 2）の読み取り ---
     policy = wl.get("selection_policy") if isinstance(version, int) and version >= 2 else None
     ordered: "list[dict]" = []
+    purpose_scope = None
     if policy is not None:
         errors = selection_policy_errors(policy)
         if errors:
@@ -184,7 +211,14 @@ def resolve_execution(workload: str, *, purpose_or_role=None, execution_contract
         base["strategy"] = policy.get("strategy")
         base["qualification_revision"] = policy.get("qualification_revision")
         base["retry_limit"] = int(policy.get("retry_limit", DEFAULT_RETRY_LIMIT))
-        ordered = _policy_order(list(policy.get("candidates") or []))
+        # 用途別の順位表があればそちらが正。無い用途だけ workload 共通の candidates
+        # へ落ちる（カタログが埋まった用途から順に効く additive な展開）。
+        scope = _purpose_scope(policy, purpose_or_role)
+        purpose_scope = scope
+        ordered = _policy_order(scope[0] if scope else list(policy.get("candidates") or []))
+        if scope:
+            base["purpose"] = scope[2]
+            base["purpose_operations"] = list(scope[1])
         base["eligible_candidate_ids"] = [
             candidate_id(str(c.get("agent_cli")), str(c.get("model"))) for c in ordered]
 
@@ -260,6 +294,14 @@ def resolve_execution(workload: str, *, purpose_or_role=None, execution_contract
                 base=base, fallback=fallback, rank=chosen.get("rank"),
                 refs=chosen.get("qualification_refs") or [])
         # --- 手順8: 候補枯渇。legacy fallback を再解釈せず park ---
+        if purpose_scope is not None and not purpose_scope[0]:
+            wanted = "・".join(purpose_scope[1]) or "（宣言なし）"
+            return _park(
+                "no-qualified-candidate-for-purpose",
+                f"用途 {purpose_scope[2]} が要る処理種別（{wanted}）を裏付ける候補が"
+                "ありません（別用途の実測へ黙って倒さない）",
+                "その処理種別で候補を適格化する（agent-audit の評価）か、"
+                "上位段へ適格なクラウド候補を用意する", base=base)
         return _park("no-eligible-candidate",
                      "selection_policy の適格候補がすべて利用不可です（降格しない）",
                      "候補の回復・qualifications の更新・方針の変更のいずれか", base=base)

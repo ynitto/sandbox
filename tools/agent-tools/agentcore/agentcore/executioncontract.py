@@ -167,8 +167,16 @@ def selection_policy_errors(policy) -> "list[str]":
     if not isinstance(candidates, list) or not candidates:
         errors.append("candidates は 1 件以上の配列である必要があります")
         return errors
+    errors.extend(_policy_candidate_errors(candidates, "candidates"))
+    errors.extend(_by_purpose_errors(policy.get("by_purpose")))
+    return errors
+
+
+def _policy_candidate_errors(candidates, prefix: str) -> "list[str]":
+    """順位表 1 本ぶんの候補検査。candidates と by_purpose の両方から使う。"""
+    errors: list[str] = []
     for index, candidate in enumerate(candidates):
-        label = f"candidates[{index}]"
+        label = f"{prefix}[{index}]"
         if not isinstance(candidate, dict):
             errors.append(f"{label} はオブジェクトである必要があります")
             continue
@@ -183,6 +191,41 @@ def selection_policy_errors(policy) -> "list[str]":
         if "status" in candidate and candidate.get("status") not in POLICY_CANDIDATE_STATUSES:
             errors.append(f"{label}.status が不正です: {candidate.get('status')}"
                           "（policy に載せてよいのは qualified / trial）")
+    return errors
+
+
+def _by_purpose_errors(by_purpose) -> "list[str]":
+    """`selection_policy.by_purpose` の形式検査（任意フィールド・additive）。
+
+    用途（purpose / role / kind）ごとの順位表。実測（agent-candidate-qualifications）は
+    最初から `候補 × operation_class` の形を持っているので、Compiler はその次元を
+    捨てずにここへ焼く。宣言が無ければ従来どおり `candidates` だけで動く。
+
+    `candidates` が**空**の用途は「要求する処理種別を裏付ける候補が 1 つも無い」という
+    宣言であり、Resolver は park する（`candidates` へ落とさない——落とすと、局所
+    不成立が実測で確定している用途が別の実測の候補へ黙って流れる）。したがって
+    空配列は正当な値である。
+    """
+    if by_purpose is None:
+        return []
+    if not isinstance(by_purpose, dict):
+        return ["by_purpose はオブジェクトである必要があります"]
+    errors: list[str] = []
+    for purpose, entry in by_purpose.items():
+        label = f"by_purpose[{purpose!r}]"
+        if not _str(purpose):
+            errors.append(f"{label} の用途名が空です")
+            continue
+        if not isinstance(entry, dict):
+            errors.append(f"{label} はオブジェクトである必要があります")
+            continue
+        if not _str_list(entry.get("operations")):
+            errors.append(f"{label}.operations は 1 件以上の文字列配列である必要があります")
+        entry_candidates = entry.get("candidates")
+        if not isinstance(entry_candidates, list):
+            errors.append(f"{label}.candidates は配列である必要があります（空は park の宣言）")
+            continue
+        errors.extend(_policy_candidate_errors(entry_candidates, f"{label}.candidates"))
     return errors
 
 

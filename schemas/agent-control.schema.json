@@ -36,7 +36,26 @@
         "qualification_revision": {"type": "integer", "minimum": 0, "description": "コンパイルに使った agent-candidate-qualifications の revision"},
         "retry_limit": {"type": "integer", "minimum": 0, "description": "同一候補への検査失敗再投入の上限。実効値は Compiler / qualification / Execution Envelope の最小値"},
         "no_candidate": {"enum": ["park"], "default": "park", "description": "適格候補ゼロ時の動作。弱い候補へ黙って降格しない"},
-        "candidates": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/policy_candidate"}}
+        "candidates": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/policy_candidate"}},
+        "by_purpose": {
+          "type": "object",
+          "description": "用途（purpose / role / ノード kind）別の順位表（任意・additive）。実測（agent-candidate-qualifications）は最初から `候補 × operation_class` の形を持っているので、Compiler はその次元を捨てずにここへ焼く。これが無いと自動選択は `candidates` の 1 位が workload の全ノードを取る形になり、抽出の実績しかない候補がレビューにも 1 位で選ばれる。**宣言が無い用途だけ** `candidates` へ落ちる（カタログが埋まった用途から順に効く opt-in の展開）。宣言があって `candidates` が空なら park である——落とすと、局所不成立が実測で確定している用途（例 planner）が別の実測の候補へ黙って流れる。用途 → 要求する処理種別の対応表は管理面のカタログ（agent-dashboard の purpose-operations.js）が持ち、エンジンは読まない。検証の 1 実装は agentcore/executioncontract.py（selection_policy_errors）。設計: docs/plans/2026-08-26-agent-tools-recommended-setup-simplification-design.md §3.5",
+          "additionalProperties": {
+            "type": "object",
+            "required": ["operations", "candidates"],
+            "properties": {
+              "operations": {
+                "type": "array", "minItems": 1, "items": {"type": "string"},
+                "description": "この用途を任せてよいと言うために要る処理種別（operation_class）。値は **OR**——どれか 1 つでも qualified / trial なら候補になれる"
+              },
+              "candidates": {
+                "type": "array", "items": {"$ref": "#/$defs/policy_candidate"},
+                "description": "その処理種別を裏付ける候補だけを順位付けしたもの。**空は「裏付ける候補が 1 つも無い」の宣言**（park の材料）であり、共通の candidates へフォールバックしてはならない"
+              }
+            },
+            "additionalProperties": true
+          }
+        }
       },
       "additionalProperties": true
     },

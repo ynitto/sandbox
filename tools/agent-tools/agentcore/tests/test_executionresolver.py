@@ -15,7 +15,7 @@ import json
 import pathlib
 import unittest
 
-from agentcore.executioncontract import execution_receipt_errors
+from agentcore.executioncontract import candidate_id, execution_receipt_errors
 from agentcore.executionresolver import receipt_execution_decision, resolve_execution
 
 CONTROL_SCHEMA = pathlib.Path(__file__).parents[4] / "schemas" / "agent-control.schema.json"
@@ -222,6 +222,87 @@ class LegacyFallbackTests(ResolverTestCase):
 
 
 # --- receipt への写像 -----------------------------------------------------------------
+
+
+# --- 用途別の順位表（by_purpose）-------------------------------------------------------
+
+
+class ByPurposeTests(ResolverTestCase):
+    """`selection_policy.by_purpose` がある用途は、そちらの順位表で決まる。
+
+    実測は最初から `候補 × operation_class` の形を持っている。それを捨てて workload
+    ごとに 1 本の順位表しか持たないと、自動選択は `remaining[0]`——1 位が全ノードを
+    取る——になり、抽出の実績しかない候補がレビューにも 1 位で選ばれる。
+    """
+
+    def _policy(self, by_purpose):
+        policy = self.control["workloads"]["flow"]["selection_policy"]
+        flat = policy["candidates"]
+        # 共通の順位表には無い候補を用途別へ置き、どちらが効いたか区別できるようにする。
+        policy["by_purpose"] = by_purpose
+        return flat
+
+    def test_purpose_entry_wins_over_the_flat_list(self):
+        flat = self._policy({
+            "verify": {"operations": ["bounded-review"],
+                       "candidates": [{"agent_cli": "ollama", "model": "gemma4:12b", "rank": 1}]},
+        })
+        decision = self.resolve(purpose_or_role="verify")
+        self.assertEqual(decision["selected"],
+                         {"agent_cli": "ollama", "model": "gemma4:12b"})
+        self.assertEqual(decision["purpose"], "verify")
+        self.assertEqual(decision["purpose_operations"], ["bounded-review"])
+        # 共通の順位表の 1 位は選ばれていない。
+        self.assertNotEqual(decision["selected"]["model"], flat[0]["model"])
+
+    def test_unknown_purpose_falls_back_to_the_flat_list(self):
+        """カタログに宣言が無い用途は従来どおり——実測の無い用途を一斉に park させない。"""
+        flat = self._policy({
+            "verify": {"operations": ["bounded-review"],
+                       "candidates": [{"agent_cli": "ollama", "model": "gemma4:12b", "rank": 1}]},
+        })
+        decision = self.resolve(purpose_or_role="work")
+        self.assertEqual(decision["selected"]["agent_cli"], flat[0]["agent_cli"])
+        self.assertEqual(decision["selected"]["model"], flat[0]["model"])
+        self.assertNotIn("purpose_operations", decision)
+
+    def test_declared_but_empty_purpose_parks_instead_of_falling_back(self):
+        """宣言があって候補ゼロは park。落とすと別用途の実測へ黙って倒れる。"""
+        self._policy({
+            "planner": {"operations": ["planner"], "candidates": []},
+        })
+        decision = self.resolve(purpose_or_role="planner")
+        self.assertIsNone(decision["selected"])
+        self.assertTrue(decision["parked"])
+        self.assertEqual(decision["park_reason"], "no-qualified-candidate-for-purpose")
+        self.assertIn("planner", decision["reason"])
+
+    def test_purpose_lookup_is_case_and_space_insensitive(self):
+        self._policy({
+            "verify": {"operations": ["bounded-review"],
+                       "candidates": [{"agent_cli": "ollama", "model": "gemma4:12b", "rank": 1}]},
+        })
+        self.assertEqual(self.resolve(purpose_or_role=" VERIFY ")["selected"]["model"],
+                         "gemma4:12b")
+
+    def test_no_by_purpose_block_keeps_the_previous_behaviour(self):
+        """by_purpose が無い control は 1 バイトも挙動が変わらない（additive）。"""
+        policy = self.control["workloads"]["flow"]["selection_policy"]
+        self.assertNotIn("by_purpose", policy)
+        before = self.resolve(purpose_or_role="verify")["selected"]
+        after = self.resolve(purpose_or_role="work")["selected"]
+        self.assertEqual(before, after)
+
+    def test_purpose_candidates_still_obey_retry_and_availability(self):
+        """用途別でも retry_limit と availability の除外は迂回できない。"""
+        self._policy({
+            "verify": {"operations": ["bounded-review"],
+                       "candidates": [{"agent_cli": "ollama", "model": "gemma4:12b", "rank": 1}]},
+        })
+        decision = self.resolve(purpose_or_role="verify",
+                                unavailable={candidate_id("ollama", "gemma4:12b")})
+        self.assertIsNone(decision["selected"])
+        self.assertTrue(decision["parked"])
 
 
 class ReceiptMappingTests(ResolverTestCase):
