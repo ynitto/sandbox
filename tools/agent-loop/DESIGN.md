@@ -354,6 +354,13 @@ managed Kiro complete eventへの互換変換だけを行い、SlotMonitorの既
 ### 新しいプロンプトオプションを追加する
 `PeriodicScheduler._set_entries()` の `normalized` 辞書にフィールドを追加し、`_run_loop()` で参照する。`agent-loop.yaml.example` にもドキュメントを追記すること。型違反は既定へ倒さず `ValueError` で起動を止める（他の entry 検証と同じ fail fast）。トップレベル設定の既定をエントリで上書きさせたい場合は、未指定を `None` のまま残して `false` と区別する（`acceptance_judge` がこの形）。
 
+### ステートマシン実行（`statemachine` エントリ）を触る
+entry の `statemachine:` / `input:` の**読み方は agent-loop に無い**。実装は `agentcore/loopentry.py` の 1 か所で、常駐デーモン（`_run_headless` の分岐）・`agent-herd harness statemachine --entry`・agent-dashboard の「今すぐ実行」がそこを引く。写しを増やすと「入口によって実行条件が違う」が起き、しかも実行はできてしまうので気づくのが遅れる（dashboard 側の JS は同じ規則の実装を持つが、正典は `loopentry` と仕様書 §2.3.1）。
+
+実行条件の正典は `input:` のマップで、`prompt` の自由文はワークフローの `input` パラメータ 1 個ぶんの糖衣に限る。条件を増やす口を足すときは、**実行前に突き合わせられるか**を基準にすること——ワークフローが宣言しているパラメータ面と 1:1 でないものは、外したときに `check:` まで進んでから落ちる。
+
+宣言のあるエントリは対話ペインを使わないので `session: per-run` に固定し、ペイン前提の機能・反復・`acceptance` との併用は `validate_entries` で断る。ワークフローの実在は `check_headless_entries`（起動時）で確かめる。
+
 ### 受入条件の層を触る
 機械層（`acceptance_paths` / `acceptance_evidence_errors`）と判定層（`judge_acceptance`）は **agent-loop には無い**。実装は `agentcore/harness/toolloop.py`（agent-herd と共有する 1 実装）で、`agent_loop/toolloop.py` はそこへ委譲するだけの層である——直すのも、テストで差し替えるのも agentcore 側。機械層はバッククォート内のプロジェクト内パスだけを LLM を介さず照合し、判定層はそれ以外の自然文を読み取り専用の検証エージェントへ回す。判定層は opt-in（`acceptance_judge` / `run --judge`）で、**判定できなかったものは fail** に倒す規約。どちらの層が検証したかは結果の `verifiedBy` に出す——`verified: true` へ潰すと、ファイル指紋で見たのかモデルが読んで良しと言ったのかが後から分からなくなる。
 

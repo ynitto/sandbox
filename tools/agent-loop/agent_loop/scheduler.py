@@ -103,11 +103,22 @@ def validate_entries(
         event_hook_fallback = bool(entry.get("event_hook_fallback", False))
         webhook = PeriodicScheduler._normalize_webhook(entry.get("webhook"))
         slash = _normalize_slash(entry.get("slash"), str(entry.get("name", "")))
-        if not prompt and not hooks and not slash:
+
+        # ステートマシン実行の宣言（`statemachine:` と `input:`）。読み方は agent-herd・
+        # dashboard と共有する 1 実装（agentcore.loopentry）。宣言があれば prompt /
+        # hooks / slash が無くても採用する——実行条件は `input:` のマップで足りる。
+        try:
+            statemachine = _loopentry.statemachine_spec(entry)
+        except _loopentry.LoopEntryError as exc:
+            raise ValueError(
+                f"entry {str(entry.get('name', '')) or '(名前なし)'!r}: {exc}") from exc
+
+        if not prompt and not hooks and not slash and statemachine is None:
             continue
 
         name = str(entry.get("name", prompt[:40] or (hooks[0] if hooks else "")[:40]
-                              or (slash[0] if slash else "")))
+                              or (slash[0] if slash else "")
+                              or (statemachine["name"] if statemachine else "")))
 
         cron_str = str(entry.get("cron", "")).strip()
         cron_expr: CronExpression | None = None
@@ -261,6 +272,32 @@ def validate_entries(
             if errors:
                 raise ValueError(f"entry {name!r}: operation が不正です: {'; '.join(errors[:2])}")
 
+        # ステートマシンはハーネス（headless）専用の実行形。対話ペインを前提にした機能と
+        # 反復・受入条件は、噛み合わないまま黙って無視すると「設定したのに効かない」に
+        # なるので、読み込みで断る。受入の宣言先はワークフローの `check:`。
+        if statemachine is not None:
+            if mode == "ralph":
+                raise ValueError(
+                    f"entry {name!r}: statemachine と mode=ralph は併用できません"
+                    "（反復はワークフローの遷移で書きます）")
+            if oneshot or clean_session is not None or target:
+                raise ValueError(
+                    f"entry {name!r}: statemachine と oneshot / clean_session / target は"
+                    "併用できません（ハーネスは対話ペインを持ちません）")
+            if slash:
+                raise ValueError(
+                    f"entry {name!r}: statemachine と slash は併用できません"
+                    "（スキルの呼び出しはワークフローの action に書きます）")
+            if acceptance or judge_raw is not None:
+                raise ValueError(
+                    f"entry {name!r}: statemachine と acceptance は併用できません"
+                    "（受入はワークフローの `check:` で宣言します）")
+            if str(entry.get("session") or "").strip().lower() == "keep":
+                raise ValueError(
+                    f"entry {name!r}: statemachine は session: per-run です"
+                    "（実行のたびにハーネスを起こすので keep は保てません）")
+            session = "per-run"
+
         if mode == "ralph" and oneshot:
             raise ValueError(f"entry {name!r}: mode=ralph と oneshot は併用できません")
         if oneshot and clean_session is not None:
@@ -303,6 +340,8 @@ def validate_entries(
             "session": session,
             "acceptance": acceptance,
             "acceptance_judge": judge_raw,
+            "statemachine": statemachine["workflow"] if statemachine else None,
+            "input": dict(statemachine["input"]) if statemachine else None,
             "operation": dict(operation) if isinstance(operation, dict) else None,
             # oneshot runtime（process-local）
             "overlap_pending": None,
@@ -1088,8 +1127,12 @@ class PeriodicScheduler:
         oneshot / デーモン再起動）で入れ替わる。
         解決に失敗したら黙って別 CLI で走らせず、プロセス全体のプロファイルへ倒す。
         """
+        # `statemachine:` はハーネス（headless）でしか回らない。CLI を解決できなくても
+        # 対話ペインへ倒さない——倒すと本文だけがペインへ流れ、ワークフローは
+        # 一度も実行されないまま「送った」ことになる。
+        forced = bool((entry or {}).get("statemachine"))
         fallback = (_CLI_PROFILE,
-                    "per-run" if getattr(_CLI_PROFILE, "is_headless", False) is True
+                    "per-run" if (forced or getattr(_CLI_PROFILE, "is_headless", False) is True)
                     else "interactive")
         try:
             profile, route = resolve_entry_profile(
@@ -1217,6 +1260,20 @@ class PeriodicScheduler:
         prompt = str(dispatch_entry.get("prompt", ""))
         acceptance = list(entry.get("acceptance") or [])
         work_dir = cwd or self._workspace or os.getcwd()
+        # `statemachine:` を宣言した entry はハーネスのステートマシン実行へ回す。
+        # 実行条件（`input:` のマップと、自由文としての prompt）の組み立ては
+        # agent-herd・dashboard と共有する 1 実装（agentcore.loopentry）。
+        workflow = ""
+        parameters: dict[str, str] = {}
+        if entry.get("statemachine"):
+            try:
+                spec = _loopentry.statemachine_spec(entry, prompt=prompt)
+            except _loopentry.LoopEntryError as exc:
+                log.error("[%s] ステートマシンの宣言が不正です: %s", name, exc)
+                self._fail_execution(req, slot_key, reason="statemachine_invalid")
+                return
+            workflow = str(spec["workflow"])
+            parameters = dict(spec["parameters"])
         log_file = self._headless_log_file(root_id)
         # ログペインが tail するのは人が読むテキスト版（`[tag] message` 行）。
         # jsonl は機械記録のまま残し、見せ方は dashboard 定常業務の実行ペインに揃える。
@@ -1238,15 +1295,26 @@ class PeriodicScheduler:
             log.info("[%s] headless 実行: cli=%s model=%s autonomy=%s log=%s",
                      name, profile.name, profile.model or "(定義の既定)",
                      profile.autonomy, log_file)
-            result = _harness_toolloop.run_prompt(
-                goal=prompt, cwd=work_dir, agent=agent, log_file=log_file,
-                acceptance=acceptance, tag="agent-loop",
-                judge=self._acceptance_judge_enabled(entry),
-                slash=list(entry.get("slash") or []))
+            if workflow:
+                # ステートマシン実行。ハーネスは自分のログ（.statemachine-use/logs）へ
+                # 記録するので、こちらの jsonl は使わない——進行表示だけ同じペインへ流す。
+                log.info("[%s] ステートマシン: %s（条件: %s）", name, workflow,
+                         ", ".join(sorted(parameters)) or "なし")
+                result = _harness_statemachine.run_statemachine(
+                    workflow_path=workflow, cwd=work_dir, parameters=parameters,
+                    agent=agent)
+            else:
+                result = _harness_toolloop.run_prompt(
+                    goal=prompt, cwd=work_dir, agent=agent, log_file=log_file,
+                    acceptance=acceptance, tag="agent-loop",
+                    judge=self._acceptance_judge_enabled(entry),
+                    slash=list(entry.get("slash") or []))
         except _harness_toolloop.ToolLoopError as exc:
             _harness_toolloop._tl_progress(f"ERROR: {exc}", "agent-loop")
             log.error("[%s] headless 実行に失敗しました: %s", name, exc)
-            self._fail_execution(req, slot_key, reason="headless_failed")
+            self._fail_execution(
+                req, slot_key,
+                reason="statemachine_failed" if workflow else "headless_failed")
             return
         except Exception:
             _harness_toolloop._tl_progress(
@@ -1258,12 +1326,32 @@ class PeriodicScheduler:
             # 実行ペインの結果契約は statemachine / run の `RESULT {json}` と同じ形にする
             # （dashboard 定常業務の「今すぐ実行」ペインと読み方を揃える。output は長い
             # ので落とし、判定に要る要素だけ）。
+            keys = (("ok", "escalate", "finalState", "logFile", "files") if workflow
+                    else ("ok", "verified", "verifiedBy", "files", "evidenceErrors"))
             _harness_toolloop._tl_progress("RESULT " + json.dumps(
-                {k: result.get(k) for k in
-                 ("ok", "verified", "verifiedBy", "files", "evidenceErrors")},
+                {k: result.get(k) for k in keys if k in result},
                 ensure_ascii=False), "agent-loop")
         finally:
             _harness_toolloop._TL_PROGRESS_LOCAL.view_file = None
+
+        if workflow:
+            # ステートマシンの検証はワークフローの `check:`（ハーネスが実測する）。
+            # 受入条件（acceptance）の証跡ゲートはここでは走らない——同じ検証を
+            # 2 か所に置かないため、entry での併記は読み込みで断ってある。
+            if result.get("escalate"):
+                log.warning("[%s] ステート %s の検査が上限に達しました（上位の段へ）: %s",
+                            name, result.get("finalState"), result.get("error"))
+            if not result.get("ok"):
+                self._fail_execution(req, slot_key, reason="statemachine_failed")
+                return
+            log.info("[%s] ステートマシン完走: 終端=%s log=%s",
+                     name, result.get("finalState"), result.get("logFile"))
+            self._release_slot(slot_key)
+            self._upsert_execution(root_id, state="DONE", pane_id=None, step=1)
+            self._end_active(req, "completed", None)
+            self._pop_execution(root_id)
+            _log_dispatch("execution_terminal", req, state="DONE")
+            return
 
         if not result.get("verified"):
             # 受入条件が無い＝どの層も検証していない。実行は通すが done の根拠にしない

@@ -185,6 +185,40 @@ tmux を使うかどうかはこの層とは独立です。tmux は送る手段�
 | `session` | `keep` \| `per-run` | keep | それ以外は起動エラー |
 | `acceptance` | str \| list[str] | `[]` | 受入条件。文字列 1 本は 1 項目として扱う |
 | `acceptance_judge` | bool | 未指定 | パスを含まない受入条件を検証エージェントに判定させる（§3.4）。トップレベルの既定を上書きする |
+| `statemachine` | str | なし | 実行するステートマシン。`.statemachine/<名前>/workflow.yaml` の名前か、作業ディレクトリからの相対パス（§2.3.1） |
+| `input` | dict | なし | ステートマシンの実行条件。値はスカラのみ。dict 以外・入れ子・空値は起動エラー |
+
+#### 2.3.1 ステートマシン実行（`statemachine`）
+
+`statemachine` を書いたエントリは、対話ペインへ本文を送るのではなく、**ハーネスのステートマシン実行**（`agent-loop statemachine` と同じ実体）へ回ります。`session` は `per-run` に固定され、CLI とモデルの差し替えは実行のたびに効きます。
+
+値の正規化は次のとおりです。区切りを含まない名前は規約の場所へ展開し、パスは末尾が `.yaml` / `.yml` でなければ `workflow.yaml` を足します。絶対パス・`..`・`~` は**読み込みで断ります**（ハーネスも作業ディレクトリの外は読みませんが、設定を読んだ時点のほうが直しやすいため）。
+
+| 書いた値 | 実行するファイル |
+|---|---|
+| `digest` | `.statemachine/digest/workflow.yaml` |
+| `.statemachine/digest` | `.statemachine/digest/workflow.yaml` |
+| `flows/digest/machine.yml` | `flows/digest/machine.yml` |
+
+**実行条件の書き方は 2 つで、正典は `input:` です。**
+
+| 書き方 | 何になるか | いつ使うか |
+|---|---|---|
+| `input:` のマップ | 宣言したキーがそのまま実行パラメータになる | **名前のある条件はすべてこちら（推奨）** |
+| `prompt` の自由文 | ワークフローの `input` パラメータ 1 個ぶんになる | 名前の無い自由文だけ |
+
+`input:` を正典に置く理由は、ワークフローが自分のパラメータ面（`{{topic}}` と `context:`）を宣言しているからです。マップはその面と 1:1 に対応するので、キーの過不足を**実行前に**——設定の読み込み時、および agent-dashboard の入力欄——突き合わせられます。自由文が確実に届く先は `input` の 1 スロットだけで、2 つ以上の条件を自由文で書くと割り付けはモデルの推測になり、外した実行は `check:` まで進んでから落ちます（1 回ぶんの課金と時間を捨てます）。実行ログにも `--param topic=llm` の形でそのまま残るので、後から同じ条件で引き直せます。
+
+両方を書くことはできます（自由文 + 名前つき条件）。衝突するのは `input` キーだけで、`prompt` と `input.input` を同時に書いた設定は**片方を勝たせず落とします**。フックが本文を返した実行では、`prompt` ではなく**届いた本文**が `input` になります。
+
+同じエントリは、tmux もデーモンも無しに次のどちらでも回せます（宣言の読み方は 1 実装を共有します）。
+
+```
+agent-loop statemachine --entry "日次ダイジェスト"
+agent-herd  harness statemachine --entry "日次ダイジェスト"
+```
+
+`--param` / `--input` をその場で打った値は、エントリの宣言より**優先**します（後から来た判断を勝たせる）。CLI とモデルの解決順は `--agent-cli` / `--model`、エントリの `agent_cli` / `model`、control.json の `selection_policy`（version 2 以上で宣言があるときだけ）、既定（`aider`）の順です。
 
 `cron` は「分 時 日 月 曜日」の 5 フィールドで、判定はデーモンが動いている端末のローカル時刻です。曜日の `7` は日曜として扱い、日と曜日を両方指定したときは Vixie cron と同じ OR になります（どちらかに当たれば発火）。
 
@@ -195,7 +229,7 @@ CLI とモデルの解決順は、control.json の `workloads.routine`（予算�
 読み込み時に次を満たさないエントリは、そのエントリだけが落ちます。
 
 - `enabled: false` ではない
-- `prompt` / `hooks` / `slash` のうち少なくとも 1 つがある
+- `prompt` / `hooks` / `slash` / `statemachine` のうち少なくとも 1 つがある（`statemachine` は `input:` だけで実行条件が足りるので、本文が無くても採用します）
 - `cron` が妥当（不正な式は WARNING を出してスキップ）、または `interval_minutes >= 1`
 - `interval_minutes` が無い場合は `webhook` ブロックがある（push 駆動専用として残り、自動発火はしない）
 
@@ -208,6 +242,14 @@ CLI とモデルの解決順は、control.json の `workloads.routine`（予算�
 | `target` と `oneshot` / `clean_session` | 外部 pane の生死は agent-loop が持たない |
 | `mode: ralph` で `max_iterations` 未指定、または 1〜100 の外 | 反復の上限が決まらない |
 | `mode` / `session` / `oneshot` / `clean_session` / `acceptance` / `acceptance_judge` / `hooks` / `hook_config` の型違反 | 静かに既定へ倒すと意図しない挙動になる |
+| `statemachine` と `mode: ralph` | 反復はワークフローの遷移で書く |
+| `statemachine` と `oneshot` / `clean_session` / `target` / `session: keep` | ハーネスは対話ペインを持たない |
+| `statemachine` と `slash` | スキルの呼び出しはワークフローの `action` に書く |
+| `statemachine` と `acceptance` / `acceptance_judge` | 受入はワークフローの `check:` で宣言する（同じ検証を 2 か所に置かない） |
+| `statemachine` の値が絶対パス・`..`・`~`、または `input` が dict でない・入れ子・空値 | 作業ディレクトリの外は読まない。実行条件は文字列としてテンプレートへ展開される |
+| `prompt` と `input.input` の併記 | どちらも `input` パラメータを指している |
+
+`statemachine` を宣言したエントリは、起動時に**ワークフローの実在**も確かめます。見つからなければ起動を止めます（dispatch のたびに CLI を 1 回起こしてから落ちるのを避けるため）。
 
 headless（`session: per-run`）では、Ralph 多段と external target を組み合わせた時点で起動を明示エラーで断ります。
 
@@ -381,6 +423,8 @@ acceptance:
 ### 3.5 結果契約（`run` / `statemachine`）
 
 どちらも終了時に `RESULT {json}` を 1 行出力します。呼び出し側（dashboard など）はこの行を読みます。`statemachine` が返すのは `ok` / `stdout` / `finalState` / `logFile` / `files` です。
+
+`statemachine` は `--workflow` か `--entry` のどちらか一方を取ります（両方・どちらも無しは終了コード 2）。`--entry` はエントリ名で、ワークフローの位置と実行条件を `agent-loop.yaml` から引きます（§2.3.1）。エントリが `cwd` を宣言していて `--dir` が無ければ、そちらを作業ディレクトリにします。
 
 **配布の契約検査（起動時）。** 実行の最初に、解決した `statemachine-use` の `next_state.py` が現行契約かを `--help` で確かめます。ハーネスは `--auto-eval` を**値の無いフラグ**として `--context` の後ろに渡すので、古い配布（旧 `--list-conditions`）や `--auto-eval` が値を取る変種だと噛み合いません。噛み合わないときは **LLM を 1 回も呼ばずに** 終了コード 1 で落とし、使用中の実体のパス・探索順・再配布コマンドを返します（argparse の生エラーだけが残ると、複数ある探索先のどれが使われたのか人が特定できないため）。
 

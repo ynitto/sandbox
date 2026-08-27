@@ -163,7 +163,51 @@ function agentLoopPromptTexts(text) {
   });
 }
 
-// 書き戻し不要な読み取り用: {name, interval_minutes, cron, enabled} の素の値。
+// ステートマシン置き場と定義ファイル名（agent-loop 側の規約。正典は
+// agentcore/loopentry.py の workflow_reference と docs/specs/agent-loop-spec.md §2.3）。
+const STATEMACHINE_DIR = '.statemachine';
+const WORKFLOW_FILE = 'workflow.yaml';
+const SM_NAME_RE = /^[A-Za-z0-9_.-]+$/;
+
+// entry の `statemachine:` を {ref, name} へ正規化する。**規則は agent-loop と同じ**:
+//   ・区切りを含まない名前 → `.statemachine/<名前>/workflow.yaml`
+//   ・`.yaml` / `.yml` で終わるパス → そのまま
+//   ・それ以外のパス → 末尾に `workflow.yaml` を足す
+// 絶対パス・`..`・ホーム展開は受けない（agent-loop 側も読み込みで断る）。
+// 読めない宣言は null——画面側はそのとき従来の自然文ヒューリスティックへ戻す。
+function statemachineRef(value) {
+  const raw = String(value == null ? '' : value).trim();
+  if (!raw || raw.startsWith('~')) return null;
+  const normalized = raw.replace(/\\/g, '/');
+  if (!normalized.includes('/')) {
+    if (!SM_NAME_RE.test(normalized) || normalized === '.' || normalized === '..') return null;
+    return { ref: `${STATEMACHINE_DIR}/${normalized}/${WORKFLOW_FILE}`, name: normalized };
+  }
+  if (normalized.startsWith('/') || /^[A-Za-z]:/.test(normalized)) return null;
+  const parts = normalized.split('/').filter((x) => x !== '' && x !== '.');
+  if (!parts.length || parts.some((x) => x === '..')) return null;
+  if (!/\.(ya?ml)$/i.test(parts[parts.length - 1])) parts.push(WORKFLOW_FILE);
+  const dir = parts.length >= 2 ? parts[parts.length - 2] : '';
+  const name = parts.length >= 3 && parts[parts.length - 3] === STATEMACHINE_DIR ? dir : dir;
+  return { ref: parts.join('/'), name: name || '' };
+}
+
+// entry の `input:` を {キー: 文字列} へ正規化する。スカラ以外の値は落とす——
+// 実行条件はテンプレートへ文字列として展開されるので、入れ子は表現できない
+// （agent-loop 側は読み込みで断る。画面は残りの条件で入力欄を出せるほうを採る）。
+function loopEntryInput(value) {
+  if (!isPlainObject(value)) return {};
+  const out = {};
+  for (const [key, raw] of Object.entries(value)) {
+    const name = String(key || '').trim();
+    if (!name || raw == null) continue;
+    if (typeof raw === 'object') continue;
+    out[name] = typeof raw === 'boolean' ? String(raw) : String(raw);
+  }
+  return out;
+}
+
+// 書き戻し不要な読み取り用: {name, interval_minutes, cron, enabled, statemachine, input}。
 function parseAgentLoopPrompts(text) {
   return agentLoopEntries(text).map((e) => {
     const out = {};
@@ -174,6 +218,10 @@ function parseAgentLoopPrompts(text) {
     const n = parseInt(scalarString(e.interval_minutes), 10);
     if (!Number.isNaN(n)) out.interval_minutes = n;
     if (typeof e.enabled === 'boolean') out.enabled = e.enabled;
+    const sm = scalarString(e.statemachine);
+    if (sm) out.statemachine = sm;
+    const input = loopEntryInput(e.input);
+    if (Object.keys(input).length) out.input = input;
     return out;
   });
 }
@@ -198,16 +246,33 @@ function readAgentPrompts(file, format) {
 // agent-loop の prompt 本文がステートマシン実行の対エントリ（「xxx ステートマシンを実行して」等）
 // かどうかを判定する。フォルダ名（.statemachine/<name>）か表示名（workflow.yaml の name）が
 // 本文に現れ、かつ「ステートマシン」への言及があれば対とみなす。
+//
+// **これは `statemachine:` が無い設定のための後方互換の推測である。** 宣言があるときは
+// 推測せず宣言に従う（entryStateMachineOf）——本文の言い回しを変えただけで対が外れる
+// （＝画面から「今すぐ実行」しても別のものが動く）のを避けるため。
 function pairedStateMachineOf(promptText, smInfos) {
   const t = String(promptText == null ? '' : promptText);
   if (!t) return null;
   for (const sm of smInfos || []) {
-    if (t.includes(`.statemachine/${sm.smName}`)) return sm;
+    if (t.includes(`${STATEMACHINE_DIR}/${sm.smName}`)) return sm;
     if (!/ステートマシン|state\s*machine/i.test(t)) continue;
     const names = [sm.smName, sm.meta && sm.meta.name].filter(Boolean);
     if (names.some((n) => t.includes(n))) return sm;
   }
   return null;
+}
+
+// entry の `statemachine:` 宣言から対象を決める。発見済みの定義に無い参照でも
+// **項目は作る**——宣言があるのに一覧から消えると、設定を直す取っかかりが無くなる。
+// 定義が実在しないことは実行時（ハーネス）が実体パス付きで報告する。
+function entryStateMachineOf(entry, smInfos, folder) {
+  const ref = statemachineRef(entry && entry.statemachine);
+  if (!ref) return null;
+  const found = (smInfos || []).find((sm) => sm.smName === ref.name
+    && _pathKey(sm.wf) === _pathKey(path.join(folder, ref.ref)));
+  if (found) return found;
+  const wf = path.join(folder, ...ref.ref.split('/'));
+  return { smName: ref.name || ref.ref, wf, meta: parseFlatYaml(readText(wf) || ''), declared: true };
 }
 
 function scheduleOf(entry) {
@@ -340,8 +405,19 @@ function discoverCoworkItems(config) {
       let kiro = { format: mk.kiroFormat, entries: [], texts: [] };
       if (mk.kiroFile) {
         kiro = readAgentPrompts(mk.kiroFile, mk.kiroFormat);
+        // 宣言（`statemachine:`）が先。推測（本文の言い回し）は宣言の無い entry だけ。
+        kiro.entries.forEach((e, idx) => {
+          const sm = entryStateMachineOf(e, smInfos, folder);
+          if (!sm) return;
+          if (!smInfos.some((x) => x.smName === sm.smName)) smInfos.push(sm);
+          if (!pairBySm.has(sm.smName)) {
+            pairBySm.set(sm.smName, { entry: e, idx });
+            pairedIdx.add(idx);
+          }
+        });
         if (smInfos.length) {
           kiro.entries.forEach((e, idx) => {
+            if (pairedIdx.has(idx) || e.statemachine) return;
             const sm = pairedStateMachineOf(kiro.texts[idx], smInfos);
             if (sm && !pairBySm.has(sm.smName)) {
               pairBySm.set(sm.smName, { entry: e, idx });
@@ -391,6 +467,10 @@ function discoverCoworkItems(config) {
               loop: {
                 file: mk.kiroFile, format: kiro.format,
                 promptIndex: pair.idx, promptName: pair.entry.name || '', scheduleKey,
+                // 実行条件の宣言。「今すぐ実行」はこれを既定値にして、entry と同じ
+                // 条件で回す（画面から回したときだけ条件が違う、を作らない）。
+                declared: !!pair.entry.statemachine,
+                input: loopEntryInput(pair.entry.input),
               },
             } : {}),
           },
@@ -408,6 +488,9 @@ module.exports = {
   scanForCoworkConfigs,
   detectMarkers,
   loopConfigFile,
+  loopEntryInput,
+  statemachineRef,
+  entryStateMachineOf,
   parseAgentLoopPrompts,
   parseAgentLoopPromptsWithLines,
   agentLoopPromptTexts,

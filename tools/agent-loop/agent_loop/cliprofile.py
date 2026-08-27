@@ -294,6 +294,10 @@ def resolve_entry_profile(config: "dict[str, Any]", entry: "dict[str, Any] | Non
     profile = _resolve_cli_profile(merged, project_dir=project_dir)
     if profile is not None and profile.is_headless:
         return profile, "per-run"
+    if e.get("statemachine"):
+        # ステートマシンはハーネス（限定ツールループ）で回す実行形。対話 CLI を指定して
+        # いても対話ペインへは送らない——送っても workflow.yaml は実行されない。
+        return profile, "per-run"
     if str(e.get("session") or "keep") == "per-run":
         return profile, "per-run"
     return profile, "interactive"
@@ -320,7 +324,18 @@ def check_headless_entries(config: "dict[str, Any]", entries: "list[dict[str, An
         except CliProfileError as exc:
             fatal.append(f"定期プロンプト「{name}」のエージェントを解決できません: {exc}")
             continue
-        if profile is None or route != "per-run":
+        if route != "per-run":
+            continue
+        if entry.get("statemachine"):
+            # 宣言したワークフローが実在するかは、最初の LLM 実行より前に知りたい
+            # （無ければ dispatch のたびに 1 回ぶん起こして落ちる）。
+            base = Path(entry.get("cwd") or project_dir or Path.cwd()).expanduser()
+            workflow = base / str(entry.get("statemachine"))
+            if not workflow.is_file():
+                fatal.append(f"定期プロンプト「{name}」: ステートマシン定義が見つかりません: "
+                             f"{workflow}")
+            continue
+        if profile is None:
             continue
         if str(entry.get("mode") or "normal") == "ralph":
             fatal.append(f"定期プロンプト「{name}」: mode=ralph は headless 実行に対応していません"
