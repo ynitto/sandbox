@@ -34,7 +34,9 @@
     "route": "ollama-json",
     "adjudicate": "ollama-json",
     "assess": "ollama-json",
-    "split": "ollama-list-thinking"
+    "split": "ollama-list-thinking",
+    "retrieve": "ollama-read",
+    "verify": "ollama-verify"
   },
   "prompt_via": "argv",
   "prompt_flag": "--message",
