@@ -30,7 +30,7 @@ agentcore が import する側
 | モジュール | 何の単一定義か | 主な公開 API |
 |---|---|---|
 | `agentcli` | エージェント CLI 定義（`agents/<name>.json`）の唯一のローダ | `load_cli` / `headless_cmd` / `interactive_cmd` / `classify_error` / `resolve_variant` / `costlier_fallback` / `parse_usage` / `spill_prompt` / `plugin_dirs`（[仕様書](./agent-cli-spec.md)） |
-| `slashroute` | スラッシュ行のルート表と解釈、用途 → 起動形の調停 | `lookup` / `commands` / `spellings` / `onoff_spellings` / `render_help` / `parse_line` / `split_leading` / `normalize_line` / `apply_to_goal` / `resolve` |
+| `slashroute` | コマンド面（スラッシュ）の 1 実装。ルート表・用途の宣言・起動形の調停 | `plan` / `resolve` / `classify` / `lookup` / `declaration` / `declarations` / `command_dirs` / `commands` / `spellings` / `render_help` / `parse_line` / `split_leading` / `apply_to_goal`（[仕様書](./agent-herd-spec.md) §13） |
 | `protocol` | claim / lease | `list_claims` / `winner` / `write_claim` / `try_claim` / `extend_claim` / `renew_lease` / `release_claim` / `unique_ts` / `write_json_atomic` |
 | `transport` | git 転送層 | `git_timeout_for` / `harden_git_env` / `timed_out_result` / `is_lock_error` / `is_corrupt_error` / `backoff_sleep` |
 | `board` | 委譲公示板の入札選別とノード契約バージョン | `eligible` / `contract_compatible` / `declared_repo_ids` / `declared_workloads` / `holds_delegation` / `node_inflight` / `status_budget_gate` |

@@ -7,6 +7,35 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-tools: コマンド面（スラッシュ）を 4 種そろえ、用途を宣言 1 枚で書けるようにする
+
+設計: [2026-08-27 クラウド CLI を正とした入口の再構成](./docs/plans/2026-08-27-agent-herd-cloud-cli-parity-slash-dispatch-design.md)
+§3.2・§3.3・§3.6（実装計画 段 3・段 4）。仕様は
+[agent-herd 仕様書](./docs/specs/agent-herd-spec.md) §13 に正典を置いた。
+
+- **実行形が 1 語で固定できるようになった**（種別 B）。`/ask`（道具なし）・`/find`（read
+  セット）・`/edit`（編集ハーネス）・`/sm <名前>`（ステートマシン）をルート表へ載せた。
+  いままで「ツールを使うかはモデルが決める」（bash ループが自分でコマンドを選ぶ）だった
+  ものが、人か engine の 1 語へ移る。**弱いモデル向けの自由度削減はこの構造の副産物**で、
+  新しい機構は足していない——当て先はすべて実装済みのものである。
+- **`/sm <名前>` の 1 語でステートマシンが起きる**。以前は agent-loop の設定でしか起動
+  できなかった。名前が実在するファイルならワークフロー、そうでなければ entry として
+  `cmd_statemachine` へ渡す（`cmd_run` が「実在するパスなら中身を本文にする」のと同じ流儀）。
+- **用途を宣言 1 枚で書けるようになった**（種別 C）。`~/.agents/commands/<name>.md` の
+  frontmatter に `agent` / `model` / `tools` / `output` / `argument-hint` を、本文に
+  システムプロンプトを書く。規約は `llm`（simonw/llm）の Template から借りた——コードは
+  持ち込まない。`variants` は移行期のみ併読し、宣言が `agent` を言えばそちらが勝つ。
+  用途専用の既定モデルは、人の明示と用途別順位表（実測）には負ける（既存の調停規則と同じ）。
+- **aider の名前が出る場所を宣言 1 行に閉じた**。同梱するのは `commands/edit.md` の
+  1 枚だけで、`agent: aider` がそこにある。編集適用の実装を差し替える変更は将来この
+  1 行で済む。`harness run` は打った `--agent-cli` ＞ 宣言 ＞ 従来の既定の順で解決する。
+- **知らない `/名前` は明示エラーで止まる**。以前は警告して本文として推論へ流していたので、
+  打ち間違えた `/verfy` が「なぜか普通の依頼として実行された」になっていた。規約が先頭
+  ブロックしか見ない以上 `/tmp を消して` も巻き込むため、**エラー文は逃げ道まで書く**
+  （本文として送るには先頭に空行を 1 つ）。1 回実行はこの空行を落とさなくなった。
+- `/help` と Tab 補完は 4 種を同じ表から引く（用途の宣言も補完に出る）。全角の引数
+  ヒントでも列が崩れないようにした——`/help` は tmux の `capture-pane` からも読まれる。
+
 ### agent-tools: スラッシュ行の解釈と用途の調停を 1 実装（`agentcore.slashroute`）へ畳む
 
 設計: [2026-08-27 クラウド CLI を正とした入口の再構成](./docs/plans/2026-08-27-agent-herd-cloud-cli-parity-slash-dispatch-design.md)

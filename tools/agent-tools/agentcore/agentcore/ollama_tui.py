@@ -290,12 +290,24 @@ def follow(path: "str | None" = None, out=None, from_start: bool = True) -> int:
     return 0
 
 
-# 一覧も候補も判定も、正典は `slashroute` の種別 A の表 1 枚（設計 2026-08-27 §3.2）。
-# ここに綴りを 2 度書かない——「/help に出るのに効かない」「補完に出ない」が静かに
-# 起きるのは、同じ表を 3 か所に書いていたからである。
-_HELP = ("ローカルコマンド（LLM へは送りません）:\n"
-         + slashroute.render_help() + "\n"
-         "それ以外の行はプロンプトとして送ります（先頭の /<スキル名> は展開されます）。")
+# 一覧も候補も判定も、正典は `slashroute` の表（設計 2026-08-27 §3.2）。ここに綴りを
+# 2 度書かない——「/help に出るのに効かない」「補完に出ない」が静かに起きるのは、
+# 同じ表を 3 か所に書いていたからである。
+#
+# 種別 A（ローカル）はこの面が実体を持ち、種別 B（実行形）はそのまま実行側へ流れて
+# **その 1 回の道具立てを決める**。人から見れば同じコマンド面で、実体だけが違う。
+def _help_text() -> str:
+    """`/help` の本文。用途の宣言は環境で変わるので、表示のたびに組む。"""
+    parts = ["ローカルコマンド（LLM へは送りません）:",
+             slashroute.render_help(slashroute.KIND_SESSION),
+             "実行形（そのプロンプト 1 回に効きます）:",
+             slashroute.render_help(slashroute.KIND_SHAPE)]
+    purposes = slashroute.render_help(slashroute.KIND_PURPOSE)
+    if purposes:
+        parts += ["用途（~/.agents/commands/ の宣言）:", purposes]
+    parts.append("それ以外の行はプロンプトとして送ります（先頭の /<スキル名> は展開されます）。\n"
+                 "知らない /名前 は明示エラーで止まります（本文として送るなら先頭に空行を 1 つ）。")
+    return "\n".join(parts)
 
 _KEYS = """\
 キー操作（本物の端末で対話しているときだけ効きます）:
@@ -311,6 +323,7 @@ AGENT_OLLAMA_NO_READLINE=1 で行編集を切れます（素の 1 行読みに�
 
 # ローカルコマンド（Tab 補完の候補）。表から引くので `/help` と必ず揃う。
 _LOCAL_COMMANDS = slashroute.spellings(slashroute.KIND_SESSION)
+_SHAPE_COMMANDS = slashroute.spellings(slashroute.KIND_SHAPE)
 _ONOFF_COMMANDS = slashroute.onoff_spellings(slashroute.KIND_SESSION)
 _HISTORY_LIMIT = 1000
 
@@ -341,12 +354,14 @@ def completions(buffer: str, text: str) -> "list[str]":
             return [value for value in ("on", "off") if value.startswith(text)]
     if not text.startswith("/") or head[:len(text)] != text:
         return []
-    names = set(_LOCAL_COMMANDS)
+    names = set(_LOCAL_COMMANDS) | set(_SHAPE_COMMANDS)
     try:
-        # スキルは `/<名前>` で展開されるので、ローカルコマンドと同じ土俵で補完できる。
+        # スキルも用途の宣言も `/<名前>` で起動するので、ローカルコマンドと同じ土俵で
+        # 補完できる（名前空間は 1 つ。設計 2026-08-27 §3.3）。
         names.update("/" + name for name, _path in ollama_skills.list_skills())
+        names.update("/" + decl.name for decl in slashroute.declarations())
     except Exception:
-        pass  # スキルが読めなくても補完自体は動かす
+        pass  # スキル・宣言が読めなくても補完自体は動かす
     return sorted(name for name in names if name.startswith(text))
 
 
@@ -494,7 +509,7 @@ def _loop(reader, runner, *, model: str, tools: bool, think: "bool | None", out)
             if command.name == "quit":
                 return 0
             if command.name == "help":
-                print(_HELP, file=out)
+                print(_help_text(), file=out)
             elif command.name == "keys":
                 print(_KEYS.format(history=history_path()), file=out)
                 if not reader.enabled:

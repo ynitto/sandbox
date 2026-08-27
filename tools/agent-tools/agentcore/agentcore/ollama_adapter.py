@@ -38,7 +38,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from agentcore import ollama_context, ollama_events, ollama_loop, ollama_skills
+from agentcore import ollama_context, ollama_events, ollama_loop, ollama_skills, slashroute
 
 USAGE = """使い方: agent-ollama [オプション] <model>
 
@@ -358,8 +358,34 @@ def run_request(prompt: str, opts: dict, *, model: str = "", tools: "bool | None
     fmt = opts.get("format")
     warn = warn or (lambda message: print(message, file=sys.stderr))
 
+    # **起動形は argv / opts を組む前に決まる**（設計 2026-08-27 §3.2）。先頭のコマンド行を
+    # ルータが 1 回だけ読み、道具立て（`/ask` は道具なし・`/find` は read セット）を確定
+    # させてから実行へ入る。判定は文字列マッチだけで LLM は 1 回も呼ばれない。以前は
+    # 「ツールを使うかはモデルが決める」で、人から固定する口が `--tools` しか無かった。
+    skills_enabled = opts.get("skills_enabled", True)
+    launch = (slashroute.plan(prompt, skill_exists=ollama_skills.skill_exists, warn=warn)
+              if skills_enabled else slashroute.Plan(body=prompt))
+    if launch.session:
+        raise slashroute.CommandNotSupportedHere(
+            "セッション操作のコマンドはヘッドレス実行では使えません: "
+            + ", ".join("/" + name for name, _args in launch.session)
+            + "（対話（--tui）で使ってください）")
+    if launch.harness:
+        raise slashroute.CommandNotSupportedHere(
+            f"/{launch.commands[0][0]} はハーネス側の実行形です: "
+            "`agent-herd harness run` / `agent-loop run` から起動してください"
+            "（agent-ollama 単体はツールループの供給側を持ちません）")
+    if launch.tools is not None:
+        use_tools = launch.tools
+    if launch.toolset:
+        toolset = launch.toolset
+    if launch.model and not model:
+        model = launch.model
+    if launch.output == "json" and not fmt:
+        fmt = "json"
+
     prompt, loaded = ollama_skills.expand(
-        prompt, opts.get("skills") or (), enabled=opts.get("skills_enabled", True), warn=warn)
+        prompt, opts.get("skills") or (), enabled=skills_enabled, warn=warn, plan=launch)
     # スキルとツールセットは暗黙に結合している（ツール開示設計 §6.1）: 同梱スクリプトを
     # 叩く前提のスキルは、汎用シェルを含まないセットでは動かない。黙って無視すると
     # 「スキルは読まれたのに手順が実行されない」成功に見える失敗になるので、ここで落とす。
@@ -550,7 +576,10 @@ def main(argv=None) -> int:
 
     try:
         result = run_request(sys.stdin.read(), opts)
-    except (ollama_skills.SkillNotFound, ollama_skills.SkillToolsetMismatch) as exc:
+    except (ollama_skills.SkillNotFound, ollama_skills.SkillToolsetMismatch,
+            slashroute.UnknownCommand, slashroute.CommandNotSupportedHere,
+            slashroute.DeclarationError) as exc:
+        # どれも「人が直せる入力の問題」で、traceback を見せる理由が無い。
         print(str(exc), file=sys.stderr)
         return 1
     except ollama_loop.StallError as exc:

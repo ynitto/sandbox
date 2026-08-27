@@ -1451,6 +1451,51 @@ def _tl_run_log_file(tag: str = "run") -> str:
     return str(directory / f"{int(time.time() * 1000)}-{tag}.jsonl")
 
 
+def _tl_skill_exists(cwd: str):
+    """ルータへ渡すスキル解決器（探索先も言える）。ハーネスの探索順をそのまま使う。"""
+    def exists(name: str) -> bool:
+        return _tl_resolve_skill(name, cwd) is not None
+    exists.search_dirs = lambda: _tl_skill_search_dirs(cwd)
+    return exists
+
+
+def _tl_statemachine_args(args: argparse.Namespace, spec: str, work_dir: Path):
+    """`/sm <名前> [--param k=v]` → `cmd_statemachine` が読む Namespace。
+
+    `<名前>` は**実在するワークフローファイルなら `--workflow`、そうでなければ
+    `--entry`** として扱う。`cmd_run` が「実在するパスを渡したら中身を本文にする」のと
+    同じ流儀で、人に 2 つの綴りを覚えさせない。どちらとして読んだかは進捗行に出す。
+    """
+    try:
+        tokens = shlex.split(spec)
+    except ValueError as exc:               # 引用符が閉じていない等
+        raise ToolLoopError(f"/sm の引数を読めません: {exc}") from exc
+    if not tokens:
+        raise ToolLoopError(
+            "/sm にはワークフロー名が要ります: /sm <名前> [--param k=v]")
+    name, rest = tokens[0], tokens[1:]
+    params: "list[str]" = []
+    index = 0
+    while index < len(rest):
+        token = rest[index]
+        index += 1
+        if token == "--param":
+            if index >= len(rest):
+                raise ToolLoopError("/sm: --param には k=v が要ります")
+            params.append(rest[index])
+            index += 1
+        elif token.startswith("--param="):
+            params.append(token.split("=", 1)[1])
+        else:
+            raise ToolLoopError(f"/sm は {token} を受け取りません（--param k=v だけです）")
+    candidate = Path(name) if os.path.isabs(name) else (work_dir / name)
+    workflow = str(candidate) if candidate.is_file() else None
+    return argparse.Namespace(
+        workflow=workflow, entry=(None if workflow else name), config=None,
+        param=params, input=None, dir=str(work_dir),
+        agent_cli=getattr(args, "agent_cli", None), model=getattr(args, "model", None))
+
+
 def cmd_run(args: argparse.Namespace, cwd: Path) -> None:
     """run サブコマンド: プロンプト 1 件をその場で 1 回実行する（デーモン不要）。
 
@@ -1463,19 +1508,63 @@ def cmd_run(args: argparse.Namespace, cwd: Path) -> None:
     if not work_dir.is_dir():
         print(f"[agent-loop] ERROR: ディレクトリが存在しません: {work_dir}", file=sys.stderr)
         sys.exit(1)
-    goal = " ".join(getattr(args, "prompt", None) or []).strip()
+    # **末尾だけ落として先頭は残す。** 先頭の空行は「この行はコマンドではなく本文」を
+    # 示す唯一の逃げ道で（設計 §3.2 の規約が先頭ブロックしか見ないため）、ここで
+    # strip すると逃げ道が塞がる。
+    goal = " ".join(getattr(args, "prompt", None) or []).rstrip()
     # send と同じ流儀: 実在するファイルパスを渡したらその中身を本文にする。
-    candidate = (work_dir / goal) if goal and not os.path.isabs(goal) else Path(goal or ".")
-    if goal and candidate.is_file():
-        goal = candidate.read_text(encoding="utf-8").strip()
-    if not goal:
+    stripped = goal.strip()
+    candidate = ((work_dir / stripped) if stripped and not os.path.isabs(stripped)
+                 else Path(stripped or "."))
+    if stripped and candidate.is_file():
+        goal = candidate.read_text(encoding="utf-8").rstrip()
+    if not goal.strip():
         print("[agent-loop] ERROR: プロンプトが空です。", file=sys.stderr)
+        sys.exit(2)
+    # **起動形は argv を組む前に決まる**（設計 2026-08-27 §3.2）。ここはランチャなので、
+    # 本文の先頭コマンド行をルータへ 1 回だけ読ませ、決めてから実行へ入る。
+    try:
+        launch = slashroute.plan(goal, project_dir=str(work_dir),
+                                 skill_exists=_tl_skill_exists(str(work_dir)))
+    except slashroute.UnknownCommand as exc:
+        print(f"[agent-loop] ERROR: {exc}", file=sys.stderr)
+        sys.exit(2)
+    if launch.session:
+        print("[agent-loop] ERROR: セッション操作のコマンドは 1 回実行では使えません: "
+              + ", ".join("/" + name for name, _a in launch.session), file=sys.stderr)
+        sys.exit(2)
+    if launch.harness == slashroute.HARNESS_STATEMACHINE:
+        # `/sm` の 1 語でステートマシンを起こす。以前は agent-loop の設定でしか起動でき
+        # なかった（設計 §3.4）。当て先は既存の `cmd_statemachine` そのままで、新しい
+        # 実行経路は足していない。
+        from agentcore.harness import statemachine as _statemachine   # 循環 import を避ける
+        spec = next((a for n, a in launch.commands if n == "sm"), "")
+        sm_args = _tl_statemachine_args(args, spec, work_dir)
+        _tl_progress("statemachine: "
+                     + (f"workflow={sm_args.workflow}" if sm_args.workflow
+                        else f"entry={sm_args.entry}"), "run")
+        _statemachine.cmd_statemachine(sm_args, work_dir)
+        return
+    if launch.tools is not None or launch.toolset:
+        # **黙って無視しない。** この経路のツール契約はハーネスが供給する read/write/run/final
+        # で、agent-ollama の `--tools` セットとは別物である。効かないものを効いたように
+        # 見せると、この設計がまさに潰そうとしている「宣言したのに効かない」を作る。
+        _tl_progress("道具立ての指定（/ask・/find）はこの経路では効きません"
+                     "——限定ツール契約はハーネスが供給します。", "run")
+    goal = launch.body
+    if not goal.strip():
+        print("[agent-loop] ERROR: プロンプトが空です（コマンド行だけでした）。", file=sys.stderr)
         sys.exit(2)
     acceptance = [str(a).strip() for a in (getattr(args, "acceptance", None) or []) if str(a).strip()]
     log_file = _tl_run_log_file()
     try:
-        agent = _tl_resolve_agent(getattr(args, "agent_cli", None) or "aider",
-                                  getattr(args, "model", None) or "", str(work_dir))
+        # 打った `--agent-cli` ＞ 宣言（`/edit` の `agent:`）＞ 従来の既定。
+        # **aider の名前が出るのは宣言 1 行だけ**にする（設計 §3.6）——実行レベルに書く
+        # のは用途の 1 語で、どの編集適用エンジンかは宣言が決める。ここに残る "aider" は
+        # 宣言も指定も無いときの従来どおりの既定で、`/edit` を通ればそちらが勝つ。
+        agent = _tl_resolve_agent(
+            getattr(args, "agent_cli", None) or launch.agent or "aider",
+            getattr(args, "model", None) or launch.model or "", str(work_dir))
         _tl_progress(f"agent: {agent['cli']}"
                      + (f" / model: {agent['model']}" if agent["model"] else " (default model)")
                      + f" / log: {log_file}", "run")

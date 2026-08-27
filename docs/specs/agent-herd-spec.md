@@ -470,8 +470,8 @@ stall・通信断は `transient` として定義する。
 
 **明示・遅延読み込みだけ**である。`--skill <name>` またはプロンプト先頭の連続 slash 行を検出し、
 `~/.agents/skills` → `AGENT_OLLAMA_SKILLS_DIR` の追加先 → `~/.claude/skills` の順に `SKILL.md` を
-探す。frontmatter は除き、同じスキルは 1 回だけ注入する。明示指定が見つからなければ env
-失敗、未知の slash 行は通常文かもしれないため警告して本文へ残す。
+探す。frontmatter は除き、同じスキルは 1 回だけ注入する。明示指定が見つからなければ env 失敗。
+**先頭の slash 行がルート表にも宣言にもスキルにも無ければ明示エラー**で止める（§13）。
 
 `{skill_dir}` を使うスキルは同梱 script の実行を前提にするため、`read` と組み合わせた時点で env
 失敗にする（スキルを読めたのに手順だけ実行できない「成功に見える失敗」を作らない）。
@@ -611,6 +611,8 @@ readline の行指向表示へ戻る。全画面の alternate screen は使わ�
 | ollama の引数解釈・ループ・文脈・スキル・再生・TUI | `agentcore/tests/test_ollama_*.py` |
 | aider の policy 合成と usage 抽出 | `agentcore/tests/test_aider_adapter.py` |
 | agent-loop → ハーネスの委譲（別名を張らない・サブコマンドが落ちる・記帳が台帳へ着く） | agent-loop の `test/test_harness_delegation.py` |
+| コマンド面の規約・4 種の表・用途の宣言・未知コマンドの明示エラー（§13） | `agentcore/tests/test_slashroute.py` |
+| ランチャが argv を組む前に読むこと（`/sm` の起動・`/edit` の宣言・逃げ道） | `agentcore/tests/test_harness_slash_dispatch.py` |
 
 テストルートは 2 つある（`agentcore/tests/` と `agentcore/agentcore/tests/`）。CI は両方を
 明示して回す:
@@ -620,3 +622,79 @@ cd tools/agent-tools/agentcore \
   && python3 -m unittest discover -s tests \
   && python3 -m unittest discover -s agentcore/tests
 ```
+
+---
+
+## 13. コマンド面（スラッシュ）
+
+設計: [2026-08-27 クラウド CLI を正とした入口の再構成](../plans/2026-08-27-agent-herd-cloud-cli-parity-slash-dispatch-design.md) §3.2・§3.3。
+実装は `agentcore.slashroute` の 1 か所（人が打つ面も engine が組む面も同じものを引く）。
+
+### 13.1 規約
+
+本文の**先頭から連続する** `/name [args]` の行がコマンド行である。名前は
+`^[a-z0-9][a-z0-9._-]*$`。空行でブロックが終わる（空行より後ろは本文）。
+
+**ランチャは argv を組む前にこの行を読む。** 起動形（どのハーネス・どの toolset・どの
+profile・どの候補）は argv を組む前に決まらなければならないからで、判定は文字列マッチ
+だけ——**LLM は 1 回も呼ばれない**。
+
+読んだあと、その行を CLI へ渡すか消費するかは**定義が宣言する**（`slash_native`。
+[agent-cli 仕様書](./agent-cli-spec.md) §2.4）。
+
+### 13.2 4 種類
+
+綴りの見え方は 1 つで、実体だけが違う。
+
+| 種別 | 例 | 実体 | 誰が用意するか |
+|---|---|---|---|
+| A. セッション操作 | `/model` `/tools` `/think` `/ctx` `/status` `/skills` `/keys` `/help` `/quit` | コード内の関数（面が持つ） | agentcore |
+| B. 実行形 | `/ask` `/find` `/edit` `/sm <名前> [--param k=v]` | ハーネスと toolset の切替 | agentcore |
+| C. 用途 | `/verify` `/judge` … | 宣言 1 枚（§13.3） | 人・配布物 |
+| D. スキル | `/wiki-use` … | `SKILL.md` を材料へ載せる | 既存のスキル配布 |
+
+A と B は**コード内の定数**で、設定ファイルにしない。人が書くのは C だけである。
+D は表に載らない——`SKILL.md` の実在がそのまま答えだから。
+
+種別 B が決めるのは道具立てとハーネスである。**ツールセットの選択がモデルの判断から
+1 語へ移る**のがこの表の要点で、弱いモデル向けの自由度削減はその副産物にすぎない。
+
+| 綴り | 決めるもの |
+|---|---|
+| `/ask` | 道具なし（推論だけ） |
+| `/find` | `read` セット |
+| `/edit [指示]` | 編集ハーネス（`toolloop`）。どの編集適用エンジンかは §13.3 の宣言が決める |
+| `/sm <名前> [--param k=v]` | ステートマシン。名前が実在するファイルならワークフロー、そうでなければ entry |
+
+引数はルータが食べず**本文の頭へ戻る**（`/ask 富士山の高さは?` の 1 行で送れる）。
+例外は `/sm` で、引数が起動形そのものを名指しするため食べる。
+
+### 13.3 用途の宣言 1 枚（種別 C）
+
+置き場と探索順は**先勝ち**で、`$AGENT_COMMANDS_DIR` →
+`<プロジェクト>/.agents/commands/` → `~/.agents/commands/` → 同梱。frontmatter は
+**平らな `key: value` だけ**（agentcore は stdlib だけで動く必要があり、PyYAML は前提に
+できない）。本文はそのままシステムプロンプトになる。
+
+| キー | 意味 |
+|---|---|
+| `description` | `/help` と補完に出る 1 行 |
+| `agent` | 起動形。宣言した定義の `variants` はさらに引かれる（`agent: ollama` ＋ 用途 verify → `ollama-verify`） |
+| `model` | 用途専用の既定。**人の明示と用途別順位表（実測）には負ける**（[agent-cli 仕様書](./agent-cli-spec.md) §4.1 と同じ規則） |
+| `tools` | ツールセットを 1 つだけ。`[]`＝道具なし / `[read]` / `[bash]` |
+| `output` | 出力契約（`json` 等） |
+| `argument-hint` | `/help` の左列に出る引数の型 |
+
+**名前空間はスキル・種別 A / B と 1 つ**である。同名を両方置かない（先勝ちで、もう片方が
+黙って効かなくなる）。同梱しているのは `edit.md` の 1 枚だけで、**aider の名前が出るのは
+そこだけ**である——編集適用の実装を差し替える変更は将来この 1 行で済む。
+
+### 13.4 知らない名前は止まる
+
+ルート表にも宣言にもスキルにも無い先頭コマンド行は**明示エラー**で止める。黙って本文
+として推論へ流さない——打ち間違えた `/verfy` が「なぜか普通の依頼として実行された」に
+なるのを防ぐ（層3 でスキルが解決できないときに起動時 fail fast にしているのと同じ方針）。
+
+規約が先頭ブロックしか見ない以上、`/tmp を消して` のような普通の依頼も先頭に来れば
+コマンド行に見える。エラー文は**逃げ道まで書く**——本文として送るには先頭に空行を
+1 つ入れる。1 回実行（`harness run` / `agent-loop run`）はこの空行を落とさない。

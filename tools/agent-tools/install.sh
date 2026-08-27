@@ -336,6 +336,28 @@ else
   自己更新の sparse-checkout なら update_subdir に agents が含まれているか確認してください。"
 fi
 
+# 用途コマンドの宣言（commands/<name>.md）をユーザー共通の置き場へ配る。定義（agents/）と
+# 同じ理由——zipapp はリポジトリの commands/ を持ち出せないので、配布インストールでは
+# ここで配らないと同梱の宣言（/edit）が効かない。探索順（agentcore.slashroute.command_dirs）
+# の 3 番目に置くので、$AGENT_COMMANDS_DIR とプロジェクトの .agents/commands/ が優先される。
+COMMANDS_SRC_DIR="$(cd "${TOOLS_DIR}/.." && pwd)/commands"
+if [[ -d "${COMMANDS_SRC_DIR}" ]]; then
+  COMMANDS_HOME="${AGENT_PROJECT_AGENTS_HOME:-${HOME}/.agents}"
+  COMMANDS_DEST_DIR="${COMMANDS_HOME}/commands"
+  mkdir -p "${COMMANDS_DEST_DIR}"
+  n=0
+  for f in "${COMMANDS_SRC_DIR}"/*.md; do
+    [[ -e "$f" ]] || continue
+    # README.md は説明書で宣言ではない（ルータも大文字を含む md を読まない）。
+    [[ "$(basename "$f")" == "$(basename "$f" | tr 'A-Z' 'a-z')" ]] || continue
+    cp "$f" "${COMMANDS_DEST_DIR}/"; n=$((n + 1))
+  done
+  if [[ "$n" -gt 0 ]]; then
+    ok "用途コマンドの宣言を ${n} 件配置しました: ${COMMANDS_DEST_DIR}"
+    info "  独自の宣言はプロジェクトの .agents/commands/ か \$AGENT_COMMANDS_DIR へ置いてください。"
+  fi
+fi
+
 # agent-flow の executor プラグイン: 本体は zipapp 単一ファイルなので、同梱プラグインは
 # 「本体と同じフォルダ」（<prefix>/executors/）に置く。agent-flow の検索順 #1
 # 「スクリプト同階層の executors/」がインストール後も名前で解決できるようにするため。
