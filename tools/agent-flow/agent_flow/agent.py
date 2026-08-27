@@ -1046,6 +1046,9 @@ def _effective_agent(purpose: str, model: "str | None",
                      agent: "dict | None" = None) -> "tuple[str, str | None]":
     """この呼び出しで実際に使う (agent_cli, model)。呼び出し 1 回の明示指定が最優先。
 
+    dashboard の指定実行は ``execution_overrides`` として run 固定へ入り、保存済み node の
+    ``agent``、control の tier 候補、agent-flow.yaml の順序に関係なく最優先になる。
+
     解決の実装を 1 か所に置く——run_agent（台帳と status に何を記録するか）と
     _run_agent_once（実際に何を起動するか）が別々に解くと、記録と実行がずれる。"""
     cli, model_ov = _agent_for(purpose)

@@ -9,8 +9,9 @@
 // ---------------------------------------------------------------------------
 
 // ノードのタイムライン（events の claimed / result。新しい順で届く）
-function nodeTimeline(nodeId) {
-  return ((state.flowRun && state.flowRun.nodeEvents) || {})[nodeId] || [];
+function nodeTimeline(nodeId, nodeEvents = null) {
+  const events = nodeEvents || ((state.flowRun && state.flowRun.nodeEvents) || {});
+  return events[nodeId] || [];
 }
 
 function shortClock(value) {
@@ -20,14 +21,14 @@ function shortClock(value) {
   return date.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit', hour12: false });
 }
 
-function nodeStartedAt(node) {
-  const claim = nodeTimeline(node.id).find((event) => event.kind === 'claimed');
+function nodeStartedAt(node, nodeEvents = null) {
+  const claim = nodeTimeline(node.id, nodeEvents).find((event) => event.kind === 'claimed');
   return claim ? claim.ts : null;
 }
 
-function nodeTimingLabel(node) {
+function nodeTimingLabel(node, nodeEvents = null) {
   if (node.finishedAt) return `${node.state === 'failed' ? '失敗' : '完了'} ${shortClock(node.finishedAt)}`;
-  const startedAt = nodeStartedAt(node);
+  const startedAt = nodeStartedAt(node, nodeEvents);
   return startedAt ? `開始 ${shortClock(startedAt)}` : '';
 }
 
@@ -139,8 +140,8 @@ function nodeParkLine(node) {
 }
 
 // ノードの進捗行: 実行中は 開始/経過/heartbeat/lease、終端は 所要/完了時刻 を出す
-function nodeProgressLine(node) {
-  const evs = nodeTimeline(node.id);
+function nodeProgressLine(node, nodeEvents = null) {
+  const evs = nodeTimeline(node.id, nodeEvents);
   const claims = evs.filter((e) => e.kind === 'claimed');
   const lastClaimTs = claims.length ? claims[0].ts : null; // 直近の claim（この試行の開始）
   const bits = [];
@@ -166,20 +167,20 @@ function nodeProgressLine(node) {
 // ノードの実効エージェント（CLI / モデル）。書き手は agent-flow——確定済みは result、
 // 実行中は直近の claimed イベントに記録がある（設定からの再解決はしない）。
 // 旧い run や stub/gitlab executor の run には記録が無い＝null（行ごと出さない）。
-function nodeAgentInfo(node) {
+function nodeAgentInfo(node, nodeEvents = null) {
   if (node.agentCli) return { cli: node.agentCli, model: node.agentModel || null };
-  const ev = nodeTimeline(node.id).find((e) => e.kind === 'claimed' && e.agentCli);
+  const ev = nodeTimeline(node.id, nodeEvents).find((e) => e.kind === 'claimed' && e.agentCli);
   return ev ? { cli: ev.agentCli, model: ev.agentModel || null } : null;
 }
 
 // 実行エージェントの行: どの CLI・モデルがこの工程を実行した（している）かと、
 // その会話（CLI のネイティブセッション記録）を開くボタン。
-function nodeAgentLine(node) {
-  const info = nodeAgentInfo(node);
+function nodeAgentLine(node, nodeEvents = null, standalone = false) {
+  const info = nodeAgentInfo(node, nodeEvents);
   if (!info) return '';
   return `<div class="muted" style="margin-top:4px">実行エージェント:
     <strong>${esc(info.cli)}</strong>（${info.model ? `モデル ${esc(info.model)}` : 'CLI 既定モデル'}）
-    <button type="button" class="subtle-action" data-node-chat="${esc(node.id)}"
+    <button type="button" class="subtle-action" ${standalone ? 'data-workflow-node-chat' : 'data-node-chat'}="${esc(node.id)}"
       title="この工程を実行したエージェントの会話記録（この端末の CLI セッション）を開きます">会話を見る</button>
   </div>`;
 }
@@ -211,15 +212,16 @@ function nodeExecutionReceiptHtml(node) {
 // この工程のエージェント会話を開く。会話は CLI のネイティブセッション記録（ローカル）に
 // しかないので、読みは agent-audit の 1 実装（sessions サブコマンド）へ委ね、ここは
 // 「この試行の時間帯 × その CLI」で絞って人に見せるだけ。複数候補は人が選ぶ（C4）。
-async function openNodeChat(nodeId) {
-  const run = state.flowRun && state.flowRun.run;
+async function openNodeChat(nodeId, runDetail = null) {
+  const detail = runDetail || state.flowRun;
+  const run = detail && detail.run;
   const node = run && (run.nodes || {})[nodeId];
   if (!node) return;
-  const info = nodeAgentInfo(node);
+  const info = nodeAgentInfo(node, detail.nodeEvents);
   if (!info) return;
   // 時間窓: この試行の開始（直近 claimed）〜終了（実行中は今）。前後 2 分の余白で
   // クローン準備・ストア書き込みの遅延を吸収する。
-  const claims = nodeTimeline(nodeId).filter((e) => e.kind === 'claimed');
+  const claims = nodeTimeline(nodeId, detail.nodeEvents).filter((e) => e.kind === 'claimed');
   const startedAt = claims.length ? Date.parse(claims[0].ts) : NaN;
   const endedAt = node.finishedAt ? Date.parse(node.finishedAt) : Date.now();
   const PAD_MS = 2 * 60 * 1000;
@@ -374,8 +376,10 @@ function nodeIssueBlock(run, node) {
   return `<div class="section-title">関連する GitLab イシュー</div>${rows.join('\n')}`;
 }
 
-function renderFlowNode(run, node, retryUi, advice) {
-  const evs = nodeTimeline(node.id);
+function renderFlowNode(run, node, retryUi, advice, context = {}) {
+  const standalone = Boolean(context.standalone);
+  const nodeEvents = context.nodeEvents || null;
+  const evs = nodeTimeline(node.id, nodeEvents);
   const timeline = evs.length
     ? `<div class="section-title">タイムライン</div><div class="events">${evs
         .map(
@@ -384,7 +388,7 @@ function renderFlowNode(run, node, retryUi, advice) {
         )
         .join('')}</div>`
     : '';
-  const reconciled = reconciledStateFor(run, node.id);
+  const reconciled = standalone ? null : reconciledStateFor(run, node.id);
   const effState = reconciled || node.state;
   const stateLabel =
     esc(FLOW_STATE_LABEL[effState] || effState) +
@@ -398,11 +402,11 @@ function renderFlowNode(run, node, retryUi, advice) {
       ${node.deps.length ? `<div class="muted" style="margin-top:4px">依存: ${node.deps.map(esc).join(', ')}</div>` : ''}
       ${nodeFateLine(run, effState, retryUi, advice)}
       ${nodeParkLine(node)}
-      ${nodeProgressLine(node)}
-      ${nodeAgentLine(node)}
+      ${nodeProgressLine(node, nodeEvents)}
+      ${nodeAgentLine(node, nodeEvents, standalone)}
       ${nodeExecutionReceiptHtml(node)}
-      ${nodeIssueBlock(run, node)}
-      ${node.output || node.data ? '<button type="button" class="subtle-action" data-open-technical-info>出力の詳細を開く</button>' : ''}
+      ${standalone ? '' : nodeIssueBlock(run, node)}
+      ${node.output || node.data ? `<button type="button" class="subtle-action" ${standalone ? `data-workflow-node-output="${esc(node.id)}"` : 'data-open-technical-info'}>出力の詳細を開く</button>` : ''}
       ${timeline}
     </div>`;
 }
@@ -768,8 +772,8 @@ function renderPlanTimeline(run) {
   return `<ol class="plan-timeline" aria-label="計画の変遷">${items}</ol>`;
 }
 
-function renderTaskFlow(run) {
-  if ((run.planRevisions || []).length < 2) return renderGraphSvg(run);
+function renderTaskFlow(run, selectedNodeId = state.flowNodeId, nodeEvents = null, reconcile = true) {
+  if ((run.planRevisions || []).length < 2) return renderGraphSvg(run, selectedNodeId, nodeEvents, reconcile);
   const phases = planFlowPhases(run).map(({ revision, nodeIds, inheritedEdges }, index) => {
     const initial = index === 0;
     const nodes = Object.fromEntries(nodeIds.map((id) => [id, run.nodes[id]]));
@@ -792,14 +796,14 @@ function renderTaskFlow(run) {
         <span>${nodeIds.length} 工程</span>
       </div>
       ${inherited ? `<div class="task-flow-inherited"><span>前の計画からの依存</span>${inherited}${inheritedRest ? `<span>ほか ${inheritedRest} 件</span>` : ''}</div>` : ''}
-      <div class="task-flow-graph">${renderGraphSvg({ ...run, nodes })}</div>
+      <div class="task-flow-graph">${renderGraphSvg({ ...run, nodes }, selectedNodeId, nodeEvents, reconcile)}</div>
     </section>`;
   }).join('');
   return `<div class="task-flow" aria-label="再計画を含むタスクの流れ">${phases}</div>`;
 }
 
 // 最新の実在する依存関係だけを DAG として描く。
-function renderGraphSvg(run) {
+function renderGraphSvg(run, selectedNodeId = state.flowNodeId, nodeEvents = null, reconcile = true) {
   const nodes = Object.values(run.nodes);
   if (!nodes.length) return '<div class="empty">工程がありません</div>';
   const layout = flowGraphLayout(run);
@@ -809,7 +813,7 @@ function renderGraphSvg(run) {
   // GitLab 突き合わせの先読み反映（reconciled）があれば表示上の状態はそちらを優先する。
   const effStateOf = (id) => {
     const nd = run.nodes[id];
-    return (nd && (reconciledStateFor(run, id) || nd.state)) || '';
+    return (nd && ((reconcile && reconciledStateFor(run, id)) || nd.state)) || '';
   };
   const edges = [];
   for (const n of nodes) {
@@ -830,7 +834,7 @@ function renderGraphSvg(run) {
     const { x, y } = pos[n.id];
     // GitLab クローズ反映があれば表示上の状態はそちらを優先する（bus に result が届く前でも
     // 完了/失敗を映す）。反映で状態が変わったノードは reconciled クラスで区別できるようにする。
-    const reconciled = reconciledStateFor(run, n.id);
+    const reconciled = reconcile ? reconciledStateFor(run, n.id) : null;
     const effState = reconciled || n.state;
     const stateLabel = n.kind === 'verify' && effState === 'parked'
       ? '判断待ち'
@@ -839,9 +843,9 @@ function renderGraphSvg(run) {
     // gitlab executor で関連イシュー URL が確定済みのノード、または突き合わせで URL が判明した
     // ノード（クローズ済み/レビュー中どちらも）には、1 クリックでレビューを起動するイシュー
     // アイコンを右上に重ねる。レビュー中（オープン）は青系、却下は赤で色分けする。
-    const recEntry = reconcileEntry(run.runId);
+    const recEntry = reconcile ? reconcileEntry(run.runId) : null;
     const rec = recEntry && recEntry.byNode ? recEntry.byNode[n.id] : null;
-    const issueUrl = n.issueUrl || (rec && rec.url) || '';
+    const issueUrl = reconcile ? n.issueUrl || (rec && rec.url) || '' : '';
     // park 中（承認待ち）のノードは定義上オープンなイシューをレビュー待ちにしている＝突き合わせ前でも
     // レビュー中（青系）として表示する。throttled（起票見送り）はイシュー未作成なので対象外。
     const issueOpen =
@@ -861,14 +865,14 @@ function renderGraphSvg(run) {
           <text x="9" y="13" text-anchor="middle" class="node-issue-glyph">↗</text>
         </g>`
       : '';
-    return `<g class="node state-${effState}${recClass}${n.kind === 'verify' ? ' kind-verify' : ''} ${state.flowNodeId === n.id ? 'selected' : ''}" data-node="${esc(n.id)}"
+    return `<g class="node state-${effState}${recClass}${n.kind === 'verify' ? ' kind-verify' : ''} ${selectedNodeId === n.id ? 'selected' : ''}" data-node="${esc(n.id)}"
       role="button" tabindex="0" aria-label="${esc(`${n.id}、${flowNodeKindLabel(n.kind)}、${stateLabel}`)}"
       transform="translate(${x},${y})">
       <rect width="${NW}" height="${NH}" rx="6"></rect>
       <text x="8" y="17" class="mono">${esc(idLabel)}${n.who ? ` @${esc(n.who).slice(0, 8)}` : ''}</text>
       <text x="8" y="31">${esc(goal)}</text>
       <text x="8" y="42" class="kind">[${esc(flowNodeKindLabel(n.kind))}]${n.kind === 'verify' ? ` ${esc(stateLabel)}` : ''}</text>
-      <text x="8" y="53" class="timing">${esc(nodeTimingLabel(n))}</text>
+      <text x="8" y="53" class="timing">${esc(nodeTimingLabel(n, nodeEvents))}</text>
       ${issueIcon}
     </g>`;
   });

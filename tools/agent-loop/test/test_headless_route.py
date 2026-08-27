@@ -72,7 +72,7 @@ class EntryRouteTest(unittest.TestCase):
         _, route = self._resolve({"agent_cli": "loopy"}, {"name": "n", "session": "per-run"})
         self.assertEqual(route, "per-run")
 
-    def test_control_declaration_wins_over_entry(self):
+    def test_entry_declaration_wins_over_control_tier_candidate(self):
         Path(self.ctl, "control.json").write_text(json.dumps({
             "version": 1, "revision": 3,
             "workloads": {"routine": {"agent_cli": "loopy"}},
@@ -84,7 +84,31 @@ class EntryRouteTest(unittest.TestCase):
         self.addCleanup(setattr, al, "_REVISION_APPLIED", al._REVISION_APPLIED)
         config = al._apply_control_agent({"agent_cli": "plain"})
         profile, _ = self._resolve(config, {"name": "n", "agent_cli": "plain"})
-        self.assertEqual(profile.name, "loopy")     # 管理面の宣言を entry で上書きしない
+        self.assertEqual(profile.name, "plain")     # 実行設定の明示値を tier 候補で上書きしない
+
+    def test_control_declaration_fills_unspecified_common_route(self):
+        Path(self.ctl, "control.json").write_text(json.dumps({
+            "version": 1,
+            "workloads": {"routine": {"agent_cli": "loopy", "model": "tier-model"}},
+        }), encoding="utf-8")
+        al._CONTROL_CACHE["mtime"] = None
+        config = al._apply_control_agent({})
+        profile, _ = self._resolve(config, {"name": "n"})
+        self.assertEqual(profile.name, "loopy")
+        self.assertEqual(profile.model, "tier-model")
+
+    def test_yaml_model_wins_over_control_model(self):
+        Path(self.ctl, "control.json").write_text(json.dumps({
+            "version": 1,
+            "workloads": {"routine": {"agent_cli": "loopy", "model": "tier-model"}},
+        }), encoding="utf-8")
+        al._CONTROL_CACHE["mtime"] = None
+        config = al._apply_control_agent({
+            "agent_cli": "plain", "agent_cli_options": {"model": "yaml-model"},
+        })
+        profile, _ = self._resolve(config, {"name": "n"})
+        self.assertEqual(profile.name, "plain")
+        self.assertEqual(profile.model, "yaml-model")
 
 
 class PaneRouteSyncTest(unittest.TestCase):

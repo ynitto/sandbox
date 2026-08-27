@@ -135,10 +135,15 @@ function expandTiers(tiers, { memberNames, qualifications }) {
 function allowedAgentNames(cfg) {
   const names = new Set([HERD]);
   const inventory = agents.list(cfg);
-  for (const name of inventory.builtins) names.add(String(name).trim().toLowerCase());
+  const variants = agents.variantTargetNames(cfg);
+  for (const name of inventory.builtins) {
+    const normalized = String(name).trim().toLowerCase();
+    if (!variants.has(normalized)) names.add(normalized);
+  }
   for (const dropin of inventory.dropins) {
     if (dropin.shadowed || (dropin.errors || []).length) continue;
-    names.add(String(dropin.name || '').trim().toLowerCase());
+    const normalized = String(dropin.name || '').trim().toLowerCase();
+    if (!variants.has(normalized)) names.add(normalized);
   }
   return names;
 }

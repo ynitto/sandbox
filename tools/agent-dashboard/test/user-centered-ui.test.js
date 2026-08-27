@@ -84,6 +84,14 @@ for (const redraw of ['renderAllTabs(', 'renderCowork(', 'renderAmigos(', 'rende
 assert.ok(workflowFeature.includes('refreshNeeds: feature.refreshNeeds')
   && workflowFeature.includes('loadOverview({ includeRun: false })'),
   'ワークフローの定期更新は要対応だけを取得し、選択中runを更新しません');
+const workflowRefreshNeedsSource = grabFrom(workflowFeature, 'refreshNeeds');
+assert.ok(workflowRefreshNeedsSource.includes('workflowNeedsDraftActive')
+  && workflowRefreshNeedsSource.includes('if (!hasDraft) renderNeeds()'),
+  'ワークフロー要対応の定期更新は書きかけ回答を再描画しません');
+const workflowRenderDesignSource = grabFrom(workflowFeature, 'renderDesign');
+assert.ok(workflowRenderDesignSource.includes('captureWorkflowUiState')
+  && workflowRenderDesignSource.includes('restoreWorkflowUiState'),
+  '設計進捗の5秒更新は開閉状態と内部スクロールを復元します');
 assert.ok(!grab('renderNeeds').includes('queue-summary') && !workflowFeature.includes('queue-summary'),
   '要対応タブに状態別件数バーを表示しません');
 assert.ok(!workflowFeature.includes('<details class="wf-run-overrides">'),
@@ -159,10 +167,7 @@ assert.ok(projectTaskWizardSource.includes('designFlowChoicesHtml(wizard)')
   && renderer.includes('designMode: wizard.designMode')
   && !projectTaskWizardSource.includes('data-project-design-mode='),
   'プロジェクトのエージェント設計もワークフローと同じscope付きカタログから選び、準備パッケージへ保持します');
-const workflowRunHtmlSource = workflowFeature.slice(
-  workflowFeature.indexOf('function runHtml('),
-  workflowFeature.indexOf('\n  function executionPreviewDialogHtml(', workflowFeature.indexOf('function runHtml('))
-);
+const preparationActionsSource = grabFrom(workflowFeature, 'preparationActionsHtml');
 assert.ok(workflowFeature.includes('item.design.runIds')
   && workflowFeature.includes('item.handoff.implementationRunIds')
   && workflowFeature.includes('group.attempts.length > 1'),
@@ -179,9 +184,9 @@ const directStartSource = wireRunSource.slice(
   wireRunSource.indexOf("querySelectorAll('[data-preparation-execute]')"),
   wireRunSource.indexOf("querySelectorAll('[data-preparation-configure]')")
 );
-assert.ok(workflowRunHtmlSource.includes('data-preparation-execute=')
-  && workflowRunHtmlSource.includes('data-preparation-configure=')
-  && workflowRunHtmlSource.includes('モデルを選んで開始'),
+assert.ok(preparationActionsSource.includes('data-preparation-execute=')
+  && preparationActionsSource.includes('data-preparation-configure=')
+  && preparationActionsSource.includes('モデルを選んで開始'),
   '実装待ちは既定の開始と任意のモデル選択を別操作として表示します');
 assert.ok(directStartSource.includes('preparationHandoff')
   && !directStartSource.includes('adhocFlowExecutionPreview'),

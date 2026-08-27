@@ -37,6 +37,84 @@ test('実行時方針のおすすめは agent-control / agent-flow の自動決�
   assert.strictEqual(workflowUi.executionOverridesForMode('recommended', {}), null);
 });
 
+test('ワークフローの工程タブは選択ノードをプロジェクト実行と同じ詳細表示へ渡す', () => {
+  const previousEsc = global.esc;
+  const previousRenderTaskFlow = global.renderTaskFlow;
+  const previousRenderFlowNode = global.renderFlowNode;
+  let rendered = null;
+  global.esc = (value) => String(value);
+  global.renderTaskFlow = (_run, selectedNodeId) => `<svg data-selected="${selectedNodeId || ''}"></svg>`;
+  global.renderFlowNode = (_run, node, _retryUi, _advice, context) => {
+    rendered = { node, context };
+    return `<div data-shared-node-detail>${node.id}</div>`;
+  };
+  workflowUi._state.runView = 'graph';
+  workflowUi._state.selectedRunNode = 'work-2';
+  try {
+    const nodeEvents = { 'work-2': [{ kind: 'claimed', ts: '2026-08-27T00:00:00Z' }] };
+    const html = workflowUi.runDetailHtml({
+      run: {
+        runId: 'run-1', status: 'running', nodes: {
+          'work-1': { id: 'work-1', kind: 'work', state: 'done', deps: [], goal: '前工程', output: 'UNRELATED_OUTPUT' },
+          'work-2': { id: 'work-2', kind: 'verify', state: 'claimed', deps: ['work-1'], goal: '確認する', output: 'SELECTED_OUTPUT' },
+        },
+      },
+      inbox: { title: 'テスト実行' }, events: [], nodeEvents,
+    });
+
+    assert.match(html, /data-selected="work-2"/);
+    assert.match(html, /工程の内容/);
+    assert.match(html, /data-shared-node-detail>work-2/);
+    assert.doesNotMatch(html, /UNRELATED_OUTPUT/);
+    assert.strictEqual(rendered.node.id, 'work-2');
+    assert.strictEqual(rendered.context.nodeEvents, nodeEvents);
+  } finally {
+    workflowUi._state.runView = 'overview';
+    workflowUi._state.selectedRunNode = '';
+    global.esc = previousEsc;
+    global.renderTaskFlow = previousRenderTaskFlow;
+    global.renderFlowNode = previousRenderFlowNode;
+  }
+});
+
+test('5秒更新は要対応の書きかけ回答を検知して再描画を避ける', () => {
+  const pane = (controls) => ({
+    querySelectorAll: () => controls,
+  });
+  assert.strictEqual(workflowUi.workflowNeedsDraftActive(pane([
+    { value: '回答途中', dataset: {} },
+  ])), true);
+  assert.strictEqual(workflowUi.workflowNeedsDraftActive(pane([
+    { value: 'B', dataset: { initialValue: 'A' } },
+  ])), true);
+  assert.strictEqual(workflowUi.workflowNeedsDraftActive(pane([
+    { value: '', dataset: {} },
+    { value: 'A', dataset: { initialValue: 'A' } },
+  ])), false);
+});
+
+test('5秒更新の部分再描画は開閉状態と内部スクロールを復元する', () => {
+  const scroller = { dataset: { workflowScrollKey: 'document' }, scrollTop: 93, scrollLeft: 7 };
+  const details = { dataset: { workflowDetailsKey: 'document' }, open: false };
+  const root = {
+    scrollTop: 21,
+    scrollLeft: 3,
+    querySelectorAll: (selector) => selector.includes('scroll') ? [scroller] : [details],
+  };
+  const saved = workflowUi.captureWorkflowUiState(root);
+  root.scrollTop = 0;
+  root.scrollLeft = 0;
+  scroller.scrollTop = 0;
+  scroller.scrollLeft = 0;
+  details.open = true;
+
+  workflowUi.restoreWorkflowUiState(root, saved);
+
+  assert.deepStrictEqual([root.scrollTop, root.scrollLeft], [21, 3]);
+  assert.deepStrictEqual([scroller.scrollTop, scroller.scrollLeft], [93, 7]);
+  assert.strictEqual(details.open, false);
+});
+
 test('preload は force-complete を専用 IPC channel へ渡す', () => {
   const calls = [];
   const invoke = (...args) => { calls.push(args); return { ok: true }; };
@@ -1894,9 +1972,10 @@ test('submit はプリセット無しでも投入でき、既定 ON の作業ル
     const runTuning = JSON.parse(fs.readFileSync(path.join(res.tuningDir, 'tuning.json'), 'utf8'));
     const byId = new Map(runTuning.methods.map((method) => [method.id, method]));
     assert.deepStrictEqual([...byId.keys()].sort(), [
-      'granularity-coarse', 'granularity-fine', 'granularity-finest',
-      'integration-verify', 'review-lenses', 'split-policy-behavior', 'split-policy-file',
-      'test-green-evidence', 'tier-basic', 'tier-basic-split', 'ui-consistency',
+      'consistency-sweep', 'granularity-coarse', 'granularity-fine', 'granularity-finest',
+      'integration-verify', 'path-grounding', 'persist-until-done', 'restate-task',
+      'review-lenses', 'split-policy-behavior', 'split-policy-file', 'test-green-evidence',
+      'tier-basic', 'tier-basic-split', 'ui-consistency',
     ]);
     assert.strictEqual(byId.get('test-green-evidence').enabled, true);
     assert.strictEqual(byId.get('ui-consistency').enabled, true);

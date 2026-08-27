@@ -79,7 +79,7 @@ function registerIpc(ctx) {
     return {
       ...loaded,
       preflight: recommendation.preflight(cfg, loaded.document),
-      cloudChoices: recommendation.cloudChoices(cfg, loaded.document),
+      cloudChoices: recommendation.cloudChoices(cfg),
       diff: recommendation.diff(cfg, loaded.document, slotChoices),
     };
   });

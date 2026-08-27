@@ -98,9 +98,11 @@ Bearer token を提示します。リクエスト上限は 4 MiB です（会話
 エンドポイントファイルは両プロセスで `VSCODE_COPILOT_BRIDGE_FILE` を設定すれば変更でき
 ます。トークンを含むため、共有・コミットしないでください。
 
-API は `POST /v1/chat` です。**会話状態は CLI 側が持ち、拡張は毎回すべての手番を受け取る
-状態を持たない変換器**でいます。bridge を再起動しても会話が消えず、複数の CLI セッションが
-1 つの拡張を同時に使えます。
+API は `POST /v1/chat` と `GET /v1/tools` の 2 つです。どちらも Bearer token が要ります。
+
+**会話状態は CLI 側が持ち、拡張は毎回すべての手番を受け取る状態を持たない変換器**でいます。
+bridge を再起動しても会話が消えず、複数の CLI セッションが 1 つの拡張を同時に使えます。
+`POST /v1/chat` の本文は次のとおりです。
 
 ```json
 {"messages":[{"role":"user","content":"質問"},
@@ -127,8 +129,36 @@ HTTP status 付きの JSON エラーで返ります。書き始めた後の失�
 なります。
 
 これは **モデル呼び出し**であり、VS Code Agent mode の built-in tools、ファイル編集、
-ターミナル実行を自動的に利用するものではありません。それらが必要なら、bridge 側で
-明示的にツールと承認フローを設計してください。
+ターミナル実行を自動的に利用するものではありません。ただしツール自体は借りられます
+——次節を参照。
+
+## VS Code のツールを見る
+
+`GET /v1/tools` は `vscode.lm.tools`（VS Code に今そのとき登録されているツール）を
+そのまま返します。CLI からは `--tools` です。
+
+```bash
+vscode-copilot-chat --tools          # 名前・タグ・説明の 1 行目
+vscode-copilot-chat --tools --json   # inputSchema を含む全文
+```
+
+並ぶのは 3 種類です。
+
+| 出どころ | 例 |
+|---|---|
+| VS Code 本体 | `run_in_terminal` `get_terminal_output` `runTests` `manage_todo_list` |
+| Copilot Chat 拡張 | `copilot_readFile` `copilot_applyPatch` `copilot_replaceString` `copilot_searchCodebase` |
+| VS Code に設定した MCP サーバ | 設定しだい |
+
+**中身は VS Code のバージョン・設定・入れている MCP サーバで変わります。**
+どのツールが使えるかを手元の一覧で決め打ちせず、この口で実測してください。
+
+`vscode.lm.invokeTool` は「any extension in any custom flow」で呼べる公開 API なので、
+ツールの実装と承認フローを自作する必要はありません（承認ダイアログは VS Code 側が
+出します）。借りられないのは**エージェントループ本体**（どのツールを呼ぶか決める部分・
+システムプロンプト・要約）と **agent skills**（`chatSkills` は package.json の
+contribution point で、列挙・実行の API は無い）です。skill・instructions は素の
+Markdown なので、必要なら自分で読んでプロンプトへ入れます。
 
 ## テスト
 

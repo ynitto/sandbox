@@ -237,14 +237,20 @@ class PlanGateOrchestrateTests(unittest.TestCase):
         # 差し戻し #1 → 指摘を反映して再計画（plan-gate-2）。旧 gate はグラフから消える
         bus.write_result("plan-gate", "human", "failed", "human interaction: rejected",
                          _reject_data("粒度が粗い。もっと分割して"), kind="human")
-        graph = self._wait(lambda: "plan-gate-2" in (bus.read_graph() or {}).get("nodes", {})
-                           and bus.read_graph(), msg="差し戻し後に再計画されない")
+        # graph と plan-gate-replan イベントの両方を待つ（graph だけ見ると、event 書き込み前に
+        # 進んで空振りするレースがある）。
+        def _replan_ready():
+            g = bus.read_graph() or {}
+            if "plan-gate-2" not in g.get("nodes", {}):
+                return None
+            evs = [e for e in bus.recent_events(50) if e.get("kind") == "plan-gate-replan"]
+            return (g, evs) if evs else None
+        graph, events = self._wait(_replan_ready, msg="差し戻し後に再計画されない")
         self.assertNotIn("plan-gate", graph["nodes"])
         for nid, n in graph["nodes"].items():
             if nid != "plan-gate-2":
                 self.assertTrue(n["deps"], f"{nid} が新 gate を経ずに root のまま")
-        events = [e for e in bus.recent_events(50) if e.get("kind") == "plan-gate-replan"]
-        self.assertTrue(events and events[-1]["attempt"] == 1)
+        self.assertEqual(events[-1]["attempt"], 1)
 
         # 差し戻し #2 は max_retries=1 を超過 → [plan-gate] で failed 終端
         bus.write_result("plan-gate-2", "human", "failed", "human interaction: rejected",

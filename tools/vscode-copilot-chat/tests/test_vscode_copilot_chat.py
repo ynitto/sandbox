@@ -328,3 +328,69 @@ def test_wait_for_bridge_polls_tcp_without_calling_the_model():
          mock.patch.object(client, "request", side_effect=AssertionError("model must not be called")):
         client.wait_for_bridge({"url": "http://127.0.0.1:32190/v1/chat"}, 30, sleep=lambda _: None)
     assert calls == [("127.0.0.1", 32190)] * 3
+
+
+# --- ツール一覧（案3 の下見） ---------------------------------------------------
+
+
+def test_tools_url_is_derived_from_the_chat_endpoint():
+    assert client.tools_url({"url": "http://127.0.0.1:32190/v1/chat"}) == \
+        "http://127.0.0.1:32190/v1/tools"
+
+
+def test_fetch_tools_uses_get_with_bearer():
+    captured = {}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            captured["path"] = self.path
+            captured["authorization"] = self.headers["Authorization"]
+            payload = json.dumps({"tools": [{"name": "run_in_terminal", "description": "run",
+                                             "tags": [], "inputSchema": {}}]}).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *_):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.handle_request)
+    thread.start()
+    result = client.fetch_tools({"url": f"http://127.0.0.1:{server.server_port}/v1/chat",
+                                 "token": "secret"}, 2)
+    thread.join()
+    server.server_close()
+    assert captured == {"path": "/v1/tools", "authorization": "Bearer secret"}
+    assert result["tools"][0]["name"] == "run_in_terminal"
+
+
+def test_format_tools_lists_names_tags_and_first_description_line():
+    text = client.format_tools({"tools": [
+        {"name": "copilot_readFile", "description": "Read a file.\n（2 行目は出さない）",
+         "tags": ["vscode_codesearch"]},
+        {"name": "run_in_terminal", "description": "Run a command.", "tags": []},
+    ]})
+    assert "2 個のツール" in text
+    assert "copilot_readFile  [vscode_codesearch]" in text
+    assert "Read a file." in text
+    assert "2 行目は出さない" not in text
+    # 名前順に並ぶ。
+    assert text.index("copilot_readFile") < text.index("run_in_terminal")
+
+
+def test_format_tools_says_so_when_empty():
+    assert "ツールはありません" in client.format_tools({"tools": []})
+
+
+def test_tools_flag_does_not_enter_the_repl_on_a_tty():
+    stdin = mock.Mock()
+    stdin.isatty.return_value = True
+    with mock.patch.object(client.sys, "argv", ["vscode-copilot-chat", "--tools"]), \
+         mock.patch.object(client.sys, "stdin", stdin), \
+         mock.patch.object(client, "read_endpoint", return_value={"url": "u", "token": "t"}), \
+         mock.patch.object(client, "repl", return_value=0) as repl, \
+         mock.patch.object(client, "fetch_tools", return_value={"tools": []}) as fetch:
+        code = client.main()
+    assert code == 0 and fetch.called and not repl.called

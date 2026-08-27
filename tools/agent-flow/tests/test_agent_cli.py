@@ -837,6 +837,18 @@ class AgentOverrideTests(unittest.TestCase):
             "pinned": True,
         })
 
+    def test_dashboard_run_override_beats_control_policy_candidate(self):
+        kf._AGENT_CLI = "kiro"
+        kf._EXECUTION_OVERRIDES = kf._normalize_execution_overrides({
+            "version": 1,
+            "kinds": {"verify": {
+                "agent_cli": "codex", "model": "dashboard-model", "tier": "large",
+            }},
+        })
+        decision = {"selected": {"agent_cli": "ollama", "model": "tier-model"}}
+        with mock.patch.object(kf, "_control_policy_decision", return_value=decision):
+            self.assertEqual(kf._effective_agent("verify", None), ("codex", "dashboard-model"))
+
     def test_normalize_accepts_roles_and_kinds_only(self):
         raw = {"planner": {"agent_cli": "Claude", "model": "opus"},
                "verify": {"model": "haiku"},

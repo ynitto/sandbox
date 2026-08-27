@@ -18,7 +18,6 @@ function test(name, fn) {
   console.log(`ok - ${name}`);
 }
 
-const REPO = path.join(__dirname, '..', '..', '..');
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'herd-family-'));
 const agentsDir = path.join(tmp, 'agents');
 fs.mkdirSync(agentsDir, { recursive: true });
@@ -28,7 +27,14 @@ function writeAgent(name, spec) {
   fs.writeFileSync(path.join(agentsDir, `${name}.json`), JSON.stringify(spec, null, 2));
 }
 writeAgent('aider', { name: 'aider', command: ['agent-herd', 'aider'], default_model: 'gemma4:e4b' });
-writeAgent('ollama', { name: 'ollama', command: ['agent-herd', 'ollama', '{model}'], default_model: 'gemma4:e4b' });
+writeAgent('ollama', {
+  name: 'ollama', command: ['agent-herd', 'ollama', '{model}'], default_model: 'gemma4:e4b',
+  variants: { verify: 'ollama-verify' },
+});
+writeAgent('ollama-verify', {
+  name: 'ollama-verify', command: ['agent-ollama', '--format', 'json', '{model}'],
+  default_model: 'gemma4:12b',
+});
 writeAgent('opencode', { name: 'opencode', command: ['agent-herd', 'opencode'] });
 writeAgent('nova', { name: 'nova', command: ['nova-cli'], default_model: 'nova-1' });
 
@@ -113,7 +119,7 @@ test('許可リストは実在する定義と herd だけを通す（禁止リ�
   assert.ok(allowed.has('herd'));
   assert.ok(allowed.has('ollama'));
   assert.ok(allowed.has('claude'), '組み込みも通る');
-  assert.ok(!allowed.has('ollama-verify'), 'profile の綴りは定義ではないので通らない');
+  assert.ok(!allowed.has('ollama-verify'), '旧実体が残っていても variant 先は通らない');
   assert.ok(!allowed.has('typo-cli'));
 });
 
