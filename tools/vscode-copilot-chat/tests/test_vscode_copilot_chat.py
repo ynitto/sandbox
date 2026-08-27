@@ -394,3 +394,84 @@ def test_tools_flag_does_not_enter_the_repl_on_a_tty():
          mock.patch.object(client, "fetch_tools", return_value={"tools": []}) as fetch:
         code = client.main()
     assert code == 0 and fetch.called and not repl.called
+
+
+# --- ツールを呼ぶ（案3: ループを VS Code に投げる） -----------------------------
+
+
+def test_call_tool_posts_name_and_input():
+    captured = {}
+    payload = json.dumps({"content": [{"type": "text", "value": "done"}], "text": "done"}).encode()
+    server, thread = _serve_once(payload, "application/json", captured)
+    result = client.call_tool({"url": f"http://127.0.0.1:{server.server_port}/v1/chat",
+                               "token": "secret"}, "runSubagent", {"prompt": "やって"}, 2)
+    thread.join()
+    server.server_close()
+    assert captured["authorization"] == "Bearer secret"
+    assert captured["body"] == {"name": "runSubagent", "input": {"prompt": "やって"}}
+    assert result["text"] == "done"
+
+
+def test_find_tool_returns_none_when_absent():
+    payload = {"tools": [{"name": "run_in_terminal"}]}
+    assert client.find_tool(payload, "run_in_terminal")["name"] == "run_in_terminal"
+    assert client.find_tool(payload, "runSubagent") is None
+    assert client.find_tool({}, "anything") is None
+
+
+def test_format_tool_schema_shows_the_schema_verbatim():
+    text = client.format_tool_schema({
+        "name": "runSubagent",
+        "description": "Run a subagent.",
+        "inputSchema": {"type": "object", "properties": {"prompt": {"type": "string"}}},
+    })
+    assert text.startswith("runSubagent")
+    assert "Run a subagent." in text
+    assert '"prompt"' in text and "inputSchema:" in text
+
+
+def test_parse_tool_input_rejects_non_objects():
+    assert client.parse_tool_input('{"a": 1}') == {"a": 1}
+    for bad in ("[1,2]", '"text"', "{", "null"):
+        try:
+            client.parse_tool_input(bad)
+            assert False, f"must reject {bad}"
+        except RuntimeError as exc:
+            assert "JSON オブジェクト" in str(exc)
+
+
+def _main_call(argv, *, tools=None, call_result=None):
+    stdin = mock.Mock()
+    stdin.isatty.return_value = True
+    stdin.read.return_value = '{"prompt": "stdin から"}'
+    with mock.patch.object(client.sys, "argv", ["vscode-copilot-chat", *argv]), \
+         mock.patch.object(client.sys, "stdin", stdin), \
+         mock.patch.object(client, "read_endpoint", return_value={"url": "u", "token": "t"}), \
+         mock.patch.object(client, "repl", return_value=0) as repl, \
+         mock.patch.object(client, "fetch_tools", return_value=tools or {"tools": []}) as fetch, \
+         mock.patch.object(client, "call_tool", return_value=call_result or {"text": "ok"}) as call:
+        code = client.main()
+    return code, repl, fetch, call
+
+
+def test_call_without_input_shows_the_schema_and_does_not_invoke():
+    tools = {"tools": [{"name": "runSubagent", "description": "d", "inputSchema": {"type": "object"}}]}
+    code, repl, fetch, call = _main_call(["--call", "runSubagent"], tools=tools)
+    assert code == 0 and fetch.called and not call.called and not repl.called
+
+
+def test_call_with_input_invokes_the_tool():
+    code, repl, fetch, call = _main_call(["--call", "runSubagent", "--input", '{"prompt": "x"}'])
+    assert code == 0 and call.called and not repl.called
+    assert call.call_args.args[1:3] == ("runSubagent", {"prompt": "x"})
+
+
+def test_call_reads_input_from_stdin_with_a_dash():
+    code, _, _, call = _main_call(["--call", "runSubagent", "--input", "-"])
+    assert code == 0
+    assert call.call_args.args[2] == {"prompt": "stdin から"}
+
+
+def test_call_on_an_unregistered_tool_fails_with_a_hint():
+    code, _, _, call = _main_call(["--call", "nope"])
+    assert code == 1 and not call.called

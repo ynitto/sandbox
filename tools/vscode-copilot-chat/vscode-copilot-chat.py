@@ -148,9 +148,13 @@ def request(endpoint: dict[str, object], messages: list[dict[str, str]], family:
         return _consume_stream(response, on_delta) if on_delta is not None else json.load(response)
 
 
-def tools_url(endpoint: dict[str, object]) -> str:
+def _path_url(endpoint: dict[str, object], path: str) -> str:
     parsed = urllib.parse.urlparse(str(endpoint["url"]))
-    return urllib.parse.urlunparse(parsed._replace(path="/v1/tools"))
+    return urllib.parse.urlunparse(parsed._replace(path=path))
+
+
+def tools_url(endpoint: dict[str, object]) -> str:
+    return _path_url(endpoint, "/v1/tools")
 
 
 def fetch_tools(endpoint: dict[str, object], timeout: float) -> dict:
@@ -166,6 +170,50 @@ def fetch_tools(endpoint: dict[str, object], timeout: float) -> dict:
     )
     with _urlopen(req, timeout) as response:
         return json.load(response)
+
+
+def call_tool(endpoint: dict[str, object], name: str, tool_input: dict,
+              timeout: float) -> dict:
+    """ツールを 1 つ呼ぶ（vscode.lm.invokeTool）。
+
+    入力の検証は VS Code 側のスキーマが行う。ここはツールごとの知識を持たない——
+    持つと環境差で必ず古くなる。
+    """
+    req = urllib.request.Request(
+        _path_url(endpoint, "/v1/tool"),
+        data=json.dumps({"name": name, "input": tool_input}).encode(),
+        headers={"Authorization": f"Bearer {endpoint['token']}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    with _urlopen(req, timeout) as response:
+        return json.load(response)
+
+
+def find_tool(payload: dict, name: str) -> dict | None:
+    for tool in payload.get("tools") or []:
+        if tool.get("name") == name:
+            return tool
+    return None
+
+
+def format_tool_schema(tool: dict) -> str:
+    lines = [str(tool.get("name"))]
+    description = (tool.get("description") or "").strip()
+    if description:
+        lines += ["", description]
+    lines += ["", "inputSchema:",
+              json.dumps(tool.get("inputSchema"), ensure_ascii=False, indent=2)]
+    return "\n".join(lines)
+
+
+def parse_tool_input(raw: str) -> dict:
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"--input は JSON オブジェクトで渡してください: {exc}") from exc
+    if not isinstance(value, dict):
+        raise RuntimeError("--input は JSON オブジェクトで渡してください")
+    return value
 
 
 def format_tools(payload: dict) -> str:
@@ -279,6 +327,10 @@ def main() -> int:
     parser.add_argument("--json", action="store_true", help="モデル情報を含む JSON を出力")
     parser.add_argument("--tools", action="store_true",
                         help="VS Code に登録されているツールの一覧を出す（vscode.lm.tools）")
+    parser.add_argument("--call", metavar="TOOL",
+                        help="ツールを 1 つ呼ぶ。--input を省くと inputSchema を表示する")
+    parser.add_argument("--input", metavar="JSON",
+                        help="--call へ渡す JSON オブジェクト（- で標準入力から読む）")
     parser.add_argument("-i", "--interactive", action="store_true",
                         help="対話モード（端末から起動し prompt を省略したときの既定）")
     parser.add_argument("--start", action="store_true",
@@ -288,7 +340,8 @@ def main() -> int:
     parser.add_argument("--code-bin", default="code", help="Windows側のcode command（既定: code）")
     args = parser.parse_args()
     # 端末から引数なしで起動したら対話。パイプ入力は従来どおり片道実行のまま。
-    interactive = args.interactive or (args.prompt is None and not args.tools and sys.stdin.isatty())
+    one_off = args.tools or args.call
+    interactive = args.interactive or (args.prompt is None and not one_off and sys.stdin.isatty())
     if interactive and args.json:
         parser.error("--json は対話モードでは使えません")
     try:
@@ -297,11 +350,24 @@ def main() -> int:
         if args.start_only:
             print(f"bridge starting: {endpoint['url']}")
             return 0
+        if one_off and args.start:
+            wait_for_bridge(endpoint, args.timeout)
         if args.tools:
-            if args.start:
-                wait_for_bridge(endpoint, args.timeout)
             payload = fetch_tools(endpoint, args.timeout)
             print(json.dumps(payload, ensure_ascii=False) if args.json else format_tools(payload))
+            return 0
+        if args.call:
+            if args.input is None:
+                # 何を渡せばよいかは VS Code が持つスキーマが正。まずそれを見せる。
+                tool = find_tool(fetch_tools(endpoint, args.timeout), args.call)
+                if tool is None:
+                    raise RuntimeError(
+                        f"VS Code に登録されていないツールです: {args.call}（--tools で一覧）")
+                print(json.dumps(tool, ensure_ascii=False) if args.json else format_tool_schema(tool))
+                return 0
+            tool_input = parse_tool_input(sys.stdin.read() if args.input == "-" else args.input)
+            result = call_tool(endpoint, args.call, tool_input, args.timeout)
+            print(json.dumps(result, ensure_ascii=False) if args.json else result["text"])
             return 0
         session = Session(args.family)
         if interactive:
