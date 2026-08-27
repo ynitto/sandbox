@@ -110,14 +110,38 @@ async function streamChat(response, body, cancellationToken) {
   }
 }
 
+// VS Code に今そのとき登録されているツールをそのまま返す。中身は VS Code の
+// バージョン・設定・入れている MCP サーバで変わるので、こちらで持つ一覧は正にならない。
+// Copilot Chat 拡張自身も自分のツール一覧をこの `vscode.lm.tools` から取っている。
+function listTools() {
+  return {
+    tools: vscode.lm.tools.map(tool => ({
+      name: tool.name,
+      description: tool.description,
+      tags: [...(tool.tags || [])],
+      inputSchema: tool.inputSchema,
+    })),
+  };
+}
+
 function createServer(token) {
   return http.createServer(async (request, response) => {
-    if (request.method !== 'POST' || request.url !== '/v1/chat') {
+    const route = `${request.method} ${request.url}`;
+    if (route !== 'POST /v1/chat' && route !== 'GET /v1/tools') {
       json(response, 404, { error: 'not found' });
       return;
     }
     if (request.headers.authorization !== `Bearer ${token}`) {
       json(response, 401, { error: 'unauthorized' });
+      return;
+    }
+    if (route === 'GET /v1/tools') {
+      try {
+        json(response, 200, listTools());
+      } catch (error) {
+        console.error('[vscode-copilot-bridge]', error);
+        json(response, 500, { error: error.message || String(error) });
+      }
       return;
     }
     const source = new vscode.CancellationTokenSource();
