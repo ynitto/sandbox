@@ -368,7 +368,8 @@ class PeriodicScheduler:
         self._slot_monitor = slot_monitor
         self._workspace = workspace or getattr(session_mgr, "_target_path", "") or ""
         # entry 共通設定（agent-loop.yaml トップレベル）。entry が agent_cli / model を
-        # 省略したときのフォールバック元。control.json の宣言は起動時に重ねてある。
+        # 省略したときのフォールバック元。control.json の宣言は起動時に空欄だけへ
+        # 補われている（agent-loop.yaml と entry の明示値が管理面の tier より優先）。
         self._tool_config: dict[str, Any] = dict(tool_config or {})
         # prompt_id → セッション境界待ちの起動指紋（差し替えの保留。警告の重複も抑える）
         self._launch_drift: dict[str, str] = {}

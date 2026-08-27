@@ -152,15 +152,15 @@ class ControlLifecycleTests(unittest.TestCase):
         self._control({"workloads": {"flow": {"lifecycle": "stop"}}})
         self.assertEqual(al._control_lifecycle(), "run")
 
-    def test_routine_agent_and_model_override_tool_config(self):
+    def test_routine_agent_and_model_do_not_override_tool_config(self):
         self._control({"workloads": {"routine": {
             "agent_cli": "claude", "model": "sonnet", "tier": "medium",
         }}})
         resolved = al._apply_control_agent({
             "agent_cli": "kiro", "agent_cli_options": {"model": "auto"},
         })
-        self.assertEqual(resolved["agent_cli"], "claude")
-        self.assertEqual(resolved["agent_cli_options"]["model"], "sonnet")
+        self.assertEqual(resolved["agent_cli"], "kiro")
+        self.assertEqual(resolved["agent_cli_options"]["model"], "auto")
 
     def test_broken_control_falls_back_to_run(self):
         with open(os.path.join(self.dir, "control.json"), "w", encoding="utf-8") as f:
@@ -238,11 +238,19 @@ class SelectionPolicyTests(unittest.TestCase):
         self._control({"version": 1, "workloads": {"routine": {"selection_policy": self.POLICY}}})
         self.assertIsNone(al._control_policy_decision())
 
-    def test_policy_replaces_legacy_in_apply_control_agent(self):
+    def test_policy_fills_unspecified_config_in_apply_control_agent(self):
         self._control(self._v2())
-        resolved = al._apply_control_agent({"agent_cli": "kiro"})
+        resolved = al._apply_control_agent({})
         self.assertEqual(resolved["agent_cli"], "aider")       # legacy の claude ではない
         self.assertEqual(resolved["agent_cli_options"]["model"], "gemma4:e4b")
+
+    def test_policy_does_not_replace_explicit_config(self):
+        self._control(self._v2())
+        resolved = al._apply_control_agent({
+            "agent_cli": "kiro", "agent_cli_options": {"model": "yaml-model"},
+        })
+        self.assertEqual(resolved["agent_cli"], "kiro")
+        self.assertEqual(resolved["agent_cli_options"]["model"], "yaml-model")
 
     def test_park_detected_and_config_untouched(self):
         ctl = self._v2()

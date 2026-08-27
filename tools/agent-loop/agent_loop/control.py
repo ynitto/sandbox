@@ -103,7 +103,12 @@ def _control_policy_park() -> "dict | None":
 
 
 def _apply_control_agent(config: dict) -> dict:
-    """起動時に desired agent/model をツール設定へ重ねる。
+    """起動時に未指定の agent/model を管理面の候補で補う。
+
+    ``agent-loop.yaml`` はそのデーモンを所有する実行設定であり、dashboard の tier は
+    明示指定のない実行へ候補を割り当てる管理面である。したがって設定ファイルに書かれた
+    ``agent_cli`` / model は control.json より優先し、control は空欄だけを補う。entry
+    固有値は scheduler がこの共通設定より後で重ねるため、同じ規則で最優先になる。
 
     稼働中の差し替えは**セッション境界**で効く（headless 経路は実行ごとが境界なので次の
     実行から、対話経路は clean_session の建て直し・oneshot・デーモン再起動で）。
@@ -112,6 +117,8 @@ def _apply_control_agent(config: dict) -> dict:
     """
     global _REVISION_APPLIED
     out = dict(config or {})
+    configured_model = ((out.get("agent_cli_options") or {}).get("model")
+                        or (out.get("kiro_options") or {}).get("model"))
     _REVISION_APPLIED = _load_control().get("revision")
     decision = _control_policy_decision()
     if decision is not None:
@@ -128,13 +135,14 @@ def _apply_control_agent(config: dict) -> dict:
             degraded = _control_workload().get("degraded") or {}
             cli = degraded.get("agent_cli") or cli
             model = degraded.get("model") or model
-    if cli:
+    if cli and not out.get("agent_cli"):
         out["agent_cli"] = str(cli)
-    if model:
-        key = "agent_cli_options" if out.get("agent_cli") else "kiro_options"
-        options = dict(out.get(key) or {})
-        options["model"] = str(model)
-        out[key] = options
+    model_key = "agent_cli_options" if out.get("agent_cli") else "kiro_options"
+    selected_model = configured_model or model
+    if selected_model and not (out.get(model_key) or {}).get("model"):
+        options = dict(out.get(model_key) or {})
+        options["model"] = str(selected_model)
+        out[model_key] = options
     return out
 
 

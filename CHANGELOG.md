@@ -7,6 +7,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-loop: agent-loop.yaml の明示エージェントを dashboard の tier 候補より優先する
+
+- dashboard の Resource Controller が `control.json` に選んだ tier 候補を、起動時に
+  `agent-loop.yaml` へ無条件で上書きしていた。管理面の tier は未指定時の自動割り当てであり、
+  実行設定そのものではないため、優先順位を **entry の `agent_cli` / `model` >
+  agent-loop.yaml トップレベル > dashboard の tier 候補 > CLI 定義の既定**へ直した。
+  control の lifecycle・予算ゲートは安全制御なので、この変更の対象外。
+- agent-tools ファミリーも再調査した。agent-flow / agent-project / agent-amigos / agent-audit
+  は現状、control の agent/model を設定ファイルより優先する実装である。一方、run/node/role
+  単位の明示固定は既に control より上（または別の固定経路）で、今回の「定常業務 YAML が
+  dashboard の tier に負ける」問題と同じ設定境界を持つのは agent-loop だけだった。
+
 ### agent-tools: ollama の順番待ちを、外側のタイムアウトに殺されずに待てるようにする
 
 - **queue 局面が生存確認を打ち直すようになった**（`ollama_loop.stream_call`）。connect の
