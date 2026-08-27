@@ -50,6 +50,16 @@
 - **トランスポートは一本化しない。揃えるのは契約とコマンド面である**（§7.5）。
   2 面（対話ペイン / ヘッドレス）は残し、同じ宣言・同じ受入ゲート・同じ台帳がどちらでも
   効くようにする。`/sm` `/edit` を対話で打った場合はルータがヘッドレスへ回す。
+- **aider はエージェントではなく編集適用エンジンで、利用者は `aider` を打たない**（§3.6）。
+  実行レベルに書くのは `herd` の 1 語で、`(aider, gemma4:e4b)` への展開は Compiler が
+  実測から埋める。再構成では **aider の名前を種別 C の宣言 1 行（`/edit` の `agent:`）に
+  閉じる**。外すかどうかは実測待ち（§11-5）——移植対象は 657 行だが、9/9 を支えている
+  曖昧一致の寛容さを実測前に捨てない。
+- **git は aider に渡さず engine が使う**（§7.3 B 末尾）。`--no-git` は維持し、
+  `git status --porcelain` の差分で「この実行が触ったファイルの全体」を観測する。
+  ハーネスはいま git を 1 か所も使っておらず、**受入条件に書いていないファイルを勝手に
+  触ったこと**を検知できない——これは対話ペインだけでなく層2 のヘッドレスにも効く制約で、
+  git 差分は両方を同時に直す。
 - **opencode は同梱から外す**（§6）。**aider の対話は共通 TUI のバックエンドとして実装する**
   （§7）。どちらも新機構ではなく、既にあるものの置き場を変える話である。
 
@@ -233,6 +243,50 @@ argument-hint: "[基準ファイル]"
 
 置き場は種別 C の宣言と同じ frontmatter に載せる——コマンドごとにプロンプトを変えられる
 ことが、`/verify` と `/edit` で別の規律を課す唯一の手段になる。
+
+### 3.6 aider の位置付け — 宣言 1 行の裏に隠す
+
+**aider はエージェントではなく編集適用エンジンである。** 正典は
+[2026-08-18 評価](./2026-08-18-agent-aider-improvement-assessment.md) §8.3 の分担表で、
+aider が持つのは「対象ファイルが決まった局所編集」だけ。探索は agent-ollama、決定的検査は
+engine、再投入は statemachine、厳密 JSON は `ollama-json` が持つ。実測の 9/9（T2/T4）は
+この狭い役割での数字である。
+
+**利用者は `aider` を打たない。** 実行レベルの構成に書くのは `herd` の 1 語で、
+`(aider, gemma4:e4b)` / `(ollama, gemma4:e4b)` への展開は Compiler が実測から埋める
+（`herd-family.js` 冒頭。「1 つ書かせるとどれかの用途で必ず外れる」）。台帳の鍵は
+`(agent_cli, model)` のままなので、記録上の区別は残る。**agent-loop の entry へ
+`agent_cli: aider` と書くのは逃げ道であって既定ではない**——この綴りを既定として紹介すると、
+用途ごとの正解を人が暗記する形へ逆戻りする。
+
+したがって本書の再構成では、**aider の名前が出る場所を種別 C の宣言 1 行に閉じる**。
+
+```markdown
+<!-- ~/.agents/commands/edit.md -->
+---
+agent: aider           # ここだけが aider を名指しする
+---
+```
+
+将来ここを差し替えれば、編集適用の実装を変える変更は 1 行で済む。
+
+**いま aider を外さない理由。** 移植対象の実体は `coders/editblock_coder.py` の 657 行
+だけで（`search_replace.py` 757 行は `udiff_coder` 専用）、規模の問題ではない。外すと失う
+ものが具体的である。
+
+| 得る | 失う |
+|---|---|
+| 依存が減る（litellm 経由が消える） | **曖昧一致の階段**（`perfect_replace` → `replace_most_similar_chunk` → difflib）。弱いモデルほど効き、**9/9 はこの寛容さ込みの数字** |
+| プロンプトを自分で持てる | `--dry-run`（`readonly: enforced` の根拠） |
+| | analytics-log からの usage 実測 |
+| | `--model-settings-file` による policy 注入（sha 固定・モデル pin） |
+
+**プロンプトの実測**（aider 0.86.2 を計測）: `main_system` 1,056 文字 + `system_reminder`
+2,165 + few-shot `example_messages` 1,658 + 我々の `POLICY_TEXT` 1,375 ＝ **約 6.3 KB
+≒ 1.6k トークン**。編集ループの毎ターン再送される（F4）。smolagents の 17 KB ほどでは
+ないが、mini-swe-agent の「system 1 行 + instance 2.5 KB」より重いのは事実である。
+
+去就の判断材料は §11 未決 5 に置く。
 
 ---
 
@@ -426,6 +480,31 @@ turn 完了時   acceptance_evidence_errors(...)         ← 既存関数
 リーダを持っている。最後の assistant メッセージを取れば judge へ渡せる。
 定義の `{output_file}`（`output: "file"` 用）を対話でも使う手もある。
 
+##### git 差分で「触ったファイル」を観測する
+
+**ハーネスは git を 1 か所も使っていない**（`harness/*.py` に git の呼び出しなし）。そのため
+証跡は「受入条件が名指ししたパスの指紋」だけで、**受入条件に書いていないファイルを勝手に
+触ったこと**は検知できない。これは対話ペインの制約ではなく、層2 のヘッドレスにも同じく
+効いている制約である。
+
+git 管理下なら解ける。
+
+```
+dispatch 前   git status --porcelain のスナップショット
+   ↓ 実行（ペイン / ヘッドレスどちらでも）
+完了時        差分 = この実行が触ったファイルの全体
+```
+
+- 受入条件のパス指紋は**そのまま残す**（git 管理外・未追跡ファイルのために要る）
+- git 管理下では差分を上乗せし、`touched` を正確にする
+- 非 git の作業ディレクトリでは現行どおり指紋のみへフォールバックする（後方互換）
+- 失敗ラウンドの巻き戻し（`git checkout -- <paths>`）も同じ観測の上に載る。現在は戻していない
+
+**aider に git を渡すのではない。** `agents/aider.json` は `--no-git --no-auto-commits` の
+ままにする——コミットの主体が aider になると、agent-loop の worktree サンドボックス
+（`sandbox.py`・`send --sandbox`）や agent-project のブランチ運用と二重になる。
+**git を使うのは engine 側**で、隔離はサンドボックス、観測はこの差分が担う。
+
 #### C. usage 実測 — `session_log` を正典にする
 
 `agent_audit/readers.py` の jsonl-dir リーダは**既に usage を抽出している**
@@ -545,12 +624,13 @@ mini-swe-agent は `pip install` すると litellm・textual・datasets・typer 
 | 1 | `agentcore/slashroute.py` を新設し、3 か所の解釈（`run_prompt` の層別分岐・`ollama_tui._LOCAL_COMMANDS`・`ollama_skills` の切り出し）をそこへ畳む。**振る舞い不変** | agent-loop の `slash` 既存テストが無改変で green |
 | 2 | 用途の解決をルータへ集約（G2・G4）。engine の 3 つの許可リストと harness の直引きを削除し、調停 1 実装へ | flow / project / audit の既存テスト green。`by_purpose` 由来の決定が変種既定で上書きされないことを 4 経路すべてで検証 |
 | 3 | `slash_native` を定義へ足し、コマンド行の渡す/消費するを宣言で決める。種別 B（`/sm` `/edit` `/ask` `/find`）をルート表へ | 未知コマンドが明示エラーで止まる。層3 でスキル未解決が起動時 fail fast のまま |
-| 4 | 種別 C の宣言 1 枚（§3.3）を導入。`~/.agents/commands/*.md` を配り、`variants` は移行期のみ併読 | `/verify` が宣言どおりの起動形になる。`by_purpose` があるときは実測が勝つ |
+| 4 | 種別 C の宣言 1 枚（§3.3）を導入。`~/.agents/commands/*.md` を配り、`variants` は移行期のみ併読。**`/edit` の宣言に aider を閉じ込める**（§3.6） | `/verify` が宣言どおりの起動形になる。`by_purpose` があるときは実測が勝つ。`aider` を名指しする箇所が宣言 1 行だけになる |
 | 5 | `agent-herd` のトップレベルフラグ（§3.1）。既存サブコマンドは別名で温存 | `agent-aider X` と `agent-herd aider X` の同一性テスト（`test_herdcli.Argv0DispatchTests`）が green |
 | 6 | opencode の同梱解除（§6） | 削除後に `agent-herd defs` が 8 件（現行 9 件から opencode を除いた数）を返す。dashboard の golden テスト更新 |
 | 7 | **ペインに失敗トリアージと quota 観測を付ける**（§7.4-1） | ペインで quota エラーが出たとき、node-budget 台帳に `quota` 観測行が入る。`errors[]` の `class` が `send --wait` 以外でも効く |
 | 8 | **`session_log` を「報告本文と usage」の 1 実装にする**（§7.3 B・C） | ペイン実行の usage が推定ではなく実測で台帳へ入る。`ollama.json` の `session_log.usage` を実測確認のうえ `true` にする |
 | 9 | **ペインに受入条件・証跡ゲートを付ける**（§7.3 B） | dispatch とターン完了で `acceptance_stamps` / `acceptance_evidence_errors` が回り、`verifiedBy` がヘッドレスと同じ語彙で記録される |
+| 9b | **証跡ゲートへ git 差分を足す**（§7.3 B の末尾）。ペイン・ヘッドレスの両方に効く | git 管理下では `touched` が受入条件のパスに限られず、宣言外のファイル変更を検知できる。非 git では現行の指紋のみへフォールバックする |
 | 10 | **自前 CLI にも turn hook を出させる**（§7.3 A） | `ollama` のターン完了がネイティブイベントで届き、`busy_pattern` は fallback に降りる |
 | 11 | freeze 検知の既定と出力契約（§7.4-2・3） | 止まったペインが `slot_timeout_seconds` を待たずに検知される |
 | 12 | 共通 TUI のバックエンド分離 + aider バックエンド（§7.1・§7.3 D） | tmux `capture-pane` から見た画面が ollama バックエンドと同じ規約（`ready_pattern` 共有）。層3 の限定ツール契約が対話でも供給される |
@@ -596,5 +676,12 @@ rate を残すと二重に載る（`toolloop._tl_record_usage:628-630` の注記
 4. **仕様書の drift が 1 件ある**（本書の調査で判明・提案とは独立）。
    `docs/specs/agent-herd-spec.md` §4.0 は「同梱定義は **8 件**」と書いているが、実際は
    `vscode-copilot.json` が加わって **9 件**である。仕様書は「実装と食い違ったら、
-   どちらかが間違っているので直すまで作業を止める」と宣言しているので、段 5 を待たずに
+   どちらかが間違っているので直すまで作業を止める」と宣言しているので、段 6 を待たずに
    直す。
+5. **aider の去就**（§3.6）。判断材料は「編集適用を自前実装（`editblock_coder` 相当の
+   657 行）にしても T2/T4 が退行しないか」の 1 点で、段 12 と同じ `harness` 軸の ledger で
+   測れる。退行しなければ依存とプロンプト 1.6k トークンを落とせる。**実測前に外さない**
+   ——9/9 を支えているのは曖昧一致の寛容さで、それを捨てる賭けになる。
+6. **`herd` の綴りの徹底**。本書の §3.6 は「利用者は `aider` を打たない」を前提にするが、
+   README と設定サンプルには entry 単位の `agent_cli: aider` を紹介している箇所が残る。
+   段 14 の文書更新で「実行レベルは `herd`、entry の `agent_cli` は逃げ道」と書き分ける。
