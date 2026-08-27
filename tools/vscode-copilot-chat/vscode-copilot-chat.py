@@ -9,12 +9,23 @@ import json
 import os
 import secrets
 import shutil
+import socket
 import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
+
+# 対話モードの入力プロンプト。agents/vscode-copilot.json の interactive.ready_pattern が
+# この文字列を待機判定に使うので、変えるときは定義も一緒に直す（golden test が守る）。
+PROMPT = "copilot> "
+HELP = """\
+/help            このヘルプ
+/clear           会話履歴を捨てて新しい会話を始める
+/model [family]  モデル family を表示・変更（例: /model gpt-4o、引数なしで解除）
+/exit            終了（Ctrl-D でも同じ）"""
 
 
 def endpoint_path() -> Path:
@@ -40,13 +51,17 @@ def launch_windows_vscode(port: int, token: str, cwd: Path, code_bin: str) -> No
     if not 1 <= port <= 65535:
         raise RuntimeError("port は1から65535で指定してください")
     win_cwd = windows_path(cwd)
+    # PowerShell の単一引用符文字列は '' でエスケープする。f-string の中で quote を
+    # 入れ子にすると Python 3.12 未満で構文エラーになるので、先に組み立てておく。
+    quoted_bin = code_bin.replace("'", "''")
+    quoted_cwd = win_cwd.replace("'", "''")
     # --user-data-dirにより既存VS Codeプロセスへのenv引き渡し消失を避ける。
     script = (
         f"$env:VSCODE_COPILOT_BRIDGE_PORT='{port}';"
         f"$env:VSCODE_COPILOT_BRIDGE_TOKEN='{token}';"
         "$data=Join-Path $env:LOCALAPPDATA 'vscode-copilot-bridge';"
-        f"& '{code_bin.replace("'", "''")}' --user-data-dir $data --new-window "
-        f"'{win_cwd.replace("'", "''")}'"
+        f"& '{quoted_bin}' --user-data-dir $data --new-window "
+        f"'{quoted_cwd}'"
     )
     encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
     subprocess.Popen([powershell_executable(), "-NoProfile", "-NonInteractive",
@@ -74,10 +89,41 @@ def read_endpoint(path: Path) -> dict[str, object]:
         raise RuntimeError(f"bridge endpoint を読めません: {path}: {exc}") from exc
 
 
-def request(endpoint: dict[str, object], prompt: str, family: str | None, timeout: float) -> dict:
-    body = {"prompt": prompt}
+def _consume_stream(response, on_delta) -> dict:
+    """NDJSON の {"delta"} / {"done","model"} / {"error"} を読み、全文とモデル情報を返す。"""
+    chunks: list[str] = []
+    model = None
+    finished = False
+    for line in response:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"bridge の応答を解釈できません: {exc}") from exc
+        if "error" in event:
+            raise RuntimeError(f"bridge error: {event['error']}")
+        if "delta" in event:
+            chunks.append(event["delta"])
+            on_delta(event["delta"])
+        if event.get("done"):
+            finished = True
+            model = event.get("model")
+    # done も error も来ずに切れたのは途中終了。成功として履歴へ残さない。
+    if not finished:
+        raise RuntimeError("応答が途中で切れました（VS Code 側の bridge を確認してください）")
+    return {"text": "".join(chunks), "model": model}
+
+
+def request(endpoint: dict[str, object], messages: list[dict[str, str]], family: str | None,
+            timeout: float, on_delta=None) -> dict:
+    """会話全体を投げて応答を得る。on_delta を渡すと NDJSON ストリームで受け取る。"""
+    body: dict[str, object] = {"messages": messages}
     if family:
         body["family"] = family
+    if on_delta is not None:
+        body["stream"] = True
     req = urllib.request.Request(
         str(endpoint["url"]),
         data=json.dumps(body).encode(),
@@ -86,7 +132,7 @@ def request(endpoint: dict[str, object], prompt: str, family: str | None, timeou
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as response:
-            return json.load(response)
+            return _consume_stream(response, on_delta) if on_delta is not None else json.load(response)
     except urllib.error.HTTPError as exc:
         try:
             message = json.load(exc).get("error", exc.reason)
@@ -97,24 +143,124 @@ def request(endpoint: dict[str, object], prompt: str, family: str | None, timeou
         raise RuntimeError(f"bridge に接続できません: {exc.reason}") from exc
 
 
+def is_command(line: str) -> bool:
+    """行頭 `/` + スラッシュを含まない 1 トークンだけをコマンドとみなす。
+
+    `/home/user/... を説明して` のようなパス始まりの依頼をコマンドと誤認しないため
+    （エージェント CLI 契約の skill_command_prefix と同じ見分け方）。
+    """
+    head = line.strip().split(maxsplit=1)[0]
+    return head.startswith("/") and "/" not in head[1:]
+
+
+class Session:
+    """1 つの対話。履歴は拡張ではなく手元に持つ（bridge を再起動しても会話が続く）。"""
+
+    def __init__(self, family: str | None = None):
+        self.messages: list[dict[str, str]] = []
+        self.family = family
+
+    def command(self, line: str) -> tuple[str, str]:
+        """スラッシュコマンドを処理して (action, 表示テキスト) を返す。action は continue|exit。"""
+        parts = line.strip().split(maxsplit=1)
+        name = parts[0]
+        argument = parts[1].strip() if len(parts) > 1 else ""
+        if name in ("/exit", "/quit"):
+            return "exit", ""
+        if name == "/help":
+            return "continue", HELP
+        if name == "/clear":
+            self.messages = []
+            return "continue", "会話履歴を消しました。"
+        if name == "/model":
+            self.family = argument or None
+            return "continue", f"model family: {self.family or '(既定)'}"
+        return "continue", f"未知のコマンドです: {name}（/help でコマンド一覧）"
+
+    def ask(self, endpoint: dict[str, object], text: str, timeout: float, on_delta) -> dict:
+        """1 手番。失敗したターンは履歴に残さない（次の質問が壊れた文脈を引きずらない）。"""
+        self.messages.append({"role": "user", "content": text})
+        try:
+            result = request(endpoint, self.messages, self.family, timeout, on_delta)
+            # 空の応答を履歴へ入れると、次の手番が「本文が空の assistant」を送って
+            # 400 で弾かれ続ける。失敗として扱い、会話を汚さずに終わらせる。
+            if not result["text"].strip():
+                raise RuntimeError("モデルが空の応答を返しました")
+        except BaseException:
+            self.messages.pop()
+            raise
+        self.messages.append({"role": "assistant", "content": result["text"]})
+        return result
+
+
+def repl(endpoint: dict[str, object], session: Session, timeout: float, stream=sys.stdout) -> int:
+    try:
+        import readline  # noqa: F401  行編集と履歴のために import するだけ
+    except ImportError:
+        pass
+
+    def emit(text: str) -> None:
+        stream.write(text)
+        stream.flush()
+
+    emit("vscode-copilot-chat 対話モード。/help でコマンド一覧、Ctrl-D で終了。\n")
+    while True:
+        try:
+            line = input(PROMPT)
+        except EOFError:
+            emit("\n")
+            return 0
+        except KeyboardInterrupt:
+            emit("\n")
+            continue
+        if not line.strip():
+            continue
+        if is_command(line):
+            action, message = session.command(line)
+            if action == "exit":
+                return 0
+            if message:
+                emit(f"{message}\n")
+            continue
+        try:
+            session.ask(endpoint, line, timeout, emit)
+            emit("\n")
+        except KeyboardInterrupt:
+            # 接続が切れると拡張側が CancellationToken を落とすので、モデルも止まる。
+            emit("\n中断しました。\n")
+        except RuntimeError as exc:
+            emit(f"\nvscode-copilot-chat: {exc}\n")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="VS Code の Copilot Language Model へ問い合わせます")
     parser.add_argument("prompt", nargs="?", help="依頼。省略時は標準入力から読む")
     parser.add_argument("--family", help="モデル family の選択条件（例: gpt-4o）")
     parser.add_argument("--timeout", type=float, default=300, help="応答待ち秒数（既定: 300）")
     parser.add_argument("--json", action="store_true", help="モデル情報を含む JSON を出力")
+    parser.add_argument("-i", "--interactive", action="store_true",
+                        help="対話モード（端末から起動し prompt を省略したときの既定）")
     parser.add_argument("--start", action="store_true",
                         help="PowerShellから専用Windows VS Codeを現在のディレクトリで起動")
     parser.add_argument("--start-only", action="store_true", help="起動だけ行い問い合わせない")
     parser.add_argument("--port", type=int, default=32190, help="Windows bridge port（既定: 32190）")
     parser.add_argument("--code-bin", default="code", help="Windows側のcode command（既定: code）")
     args = parser.parse_args()
+    # 端末から引数なしで起動したら対話。パイプ入力は従来どおり片道実行のまま。
+    interactive = args.interactive or (args.prompt is None and sys.stdin.isatty())
+    if interactive and args.json:
+        parser.error("--json は対話モードでは使えません")
     try:
         path = endpoint_path()
         endpoint = start_bridge(path, args.port, Path.cwd(), args.code_bin) if args.start else read_endpoint(path)
         if args.start_only:
             print(f"bridge starting: {endpoint['url']}")
             return 0
+        session = Session(args.family)
+        if interactive:
+            if args.start:
+                wait_for_bridge(endpoint, args.timeout)
+            return repl(endpoint, session, args.timeout)
         prompt = args.prompt if args.prompt is not None else sys.stdin.read()
         if not prompt.strip():
             parser.error("prompt が空です")
@@ -122,7 +268,7 @@ def main() -> int:
         deadline = time.monotonic() + min(args.timeout, 30) if args.start else 0
         while True:
             try:
-                result = request(endpoint, prompt, args.family, args.timeout)
+                result = session.ask(endpoint, prompt, args.timeout, None)
                 break
             except RuntimeError as exc:
                 if not args.start or "接続できません" not in str(exc) or time.monotonic() >= deadline:
@@ -133,6 +279,25 @@ def main() -> int:
         return 1
     print(json.dumps(result, ensure_ascii=False) if args.json else result["text"])
     return 0
+
+
+def wait_for_bridge(endpoint: dict[str, object], timeout: float, sleep=time.sleep) -> None:
+    """--start 直後の対話起動で、VS Code が listen するまで待つ。
+
+    モデルは呼ばない（起動待ちのために課金枠を焼かない）。TCP が繋がった時点で
+    拡張は activate 済みなので、以降の失敗は対話の中で見せれば足りる。
+    """
+    parsed = urllib.parse.urlparse(str(endpoint["url"]))
+    address = (parsed.hostname or "127.0.0.1", parsed.port or 80)
+    deadline = time.monotonic() + min(timeout, 30)
+    while True:
+        try:
+            with socket.create_connection(address, timeout=2):
+                return
+        except OSError:
+            if time.monotonic() >= deadline:
+                return
+            sleep(0.5)
 
 
 if __name__ == "__main__":

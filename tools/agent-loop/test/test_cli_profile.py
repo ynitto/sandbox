@@ -7,6 +7,7 @@ slash 行の起動記号差し替え、agents/<name>.json 契約からのプロ�
 import json
 import os
 import pathlib
+import re
 import sys
 import tempfile
 import unittest
@@ -125,6 +126,45 @@ class CopilotProfileTest(unittest.TestCase):
             " Auto\n"
         )
         self.assertTrue(profile.is_ready(content))
+
+
+class VscodeCopilotProfileTest(unittest.TestCase):
+    """自作 REPL（tools/vscode-copilot-chat）の待機判定。
+
+    プロンプト文字列は CLI 側の定数 PROMPT が正で、定義の ready_pattern はそれを追う。
+    片方だけ変えると tmux 自動運転が黙って「常に処理中」になるので、ここで固定する。
+    """
+
+    def setUp(self):
+        spec_path = HERE.parents[2] / "agents" / "vscode-copilot.json"
+        with spec_path.open(encoding="utf-8") as stream:
+            self.profile = al.CliProfile("vscode-copilot", json.load(stream))
+
+    def test_prompt_after_answer_is_ready(self):
+        content = (
+            "copilot> このリポジトリを要約して\n"
+            "モデルの応答の最終行です。\n"
+            "\n"
+            "copilot> "
+        )
+        self.assertTrue(self.profile.is_ready(content))
+
+    def test_streaming_answer_is_not_ready(self):
+        content = (
+            "copilot> このリポジトリを要約して\n"
+            "まだ書いている途中のテキスト"
+        )
+        self.assertFalse(self.profile.is_ready(content))
+
+    def test_typed_line_is_not_ready(self):
+        """send-keys で入力した直後（Enter 前）を待機と誤判定しない。"""
+        self.assertFalse(self.profile.is_ready("copilot> 次の質問"))
+
+    def test_ready_pattern_matches_the_cli_prompt_constant(self):
+        source = (HERE.parents[1] / "vscode-copilot-chat" / "vscode-copilot-chat.py").read_text(
+            encoding="utf-8")
+        prompt = re.search(r'^PROMPT = "(.*)"$', source, re.MULTILINE).group(1)
+        self.assertTrue(self.profile.is_ready(f"answer\n{prompt}"))
 
 
 class QuietDetectionTest(unittest.TestCase):

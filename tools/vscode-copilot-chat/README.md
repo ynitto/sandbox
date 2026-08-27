@@ -2,12 +2,12 @@
 
 WSL上の自作 CLI から、Windows VS Codeにログイン済みのCopilotモデルを公式のLanguage Model API
 （`vscode.lm`）経由で呼ぶ最小構成です。`code chat` の UI 起動ではなく、回答を stdout に
-返します。
+返します。**片道実行と対話（REPL）の両方**に対応します。
 
 ```text
-vscode-copilot-chat (Python CLI)
+vscode-copilot-chat (Python CLI)   ← 会話履歴はここが持つ
   └─ HTTP + Bearer token / 127.0.0.1
-      └─ VS Code Extension
+      └─ VS Code Extension        ← 状態を持たない変換器
           └─ vscode.lm.selectChatModels({ vendor: "copilot" })
               └─ model.sendRequest(...) → stdout
 ```
@@ -27,6 +27,9 @@ vscode-copilot-chat --start "このリポジトリを要約して"
 のを防ぐためです。CLI自身が既定port `32190`と生成したtokenを保持するため、Windows側の
 ホームディレクトリから接続情報を探す必要はありません。portは`--port`で固定できます。
 
+専用プロファイルなので、ふだん使っている VS Code の拡張（MCP など）はこのウィンドウには
+載りません。モデルを呼ぶだけならそれで足ります。
+
 起動だけを行う場合と、同じbridgeへ続けて問い合わせる場合:
 
 ```bash
@@ -38,7 +41,32 @@ vscode-copilot-chat "次の質問"
 見つからない場合は、Copilot Chat がインストール済み・サインイン済み・組織ポリシーで
 許可済みか確認します。
 
-標準入力と JSON 出力にも対応します。
+## 対話モード
+
+端末から引数なしで起動すると対話モードに入ります（`--interactive` / `-i` で明示指定も可）。
+応答は届いた端から流れます。
+
+```console
+$ vscode-copilot-chat
+vscode-copilot-chat 対話モード。/help でコマンド一覧、Ctrl-D で終了。
+copilot> このリポジトリを要約して
+（応答が逐次流れる）
+copilot> さっきの要約を3行にして
+```
+
+| コマンド | 動作 |
+|---|---|
+| `/help` | コマンド一覧 |
+| `/clear` | 会話履歴を捨てて新しい会話を始める |
+| `/model [family]` | モデル family を表示・変更（引数なしで既定へ戻す） |
+| `/exit` `/quit` | 終了（Ctrl-D も同じ） |
+
+応答の途中で Ctrl-C を押すと、その手番を中断します（接続が切れると拡張側が
+`CancellationToken` を落とすので、モデルも止まります）。プロンプトで押した場合は入力を
+捨てるだけで、対話は続きます。**失敗・中断した手番は履歴に残しません**——壊れた文脈を
+次の質問が引きずらないためです。
+
+**パイプ入力は従来どおり片道実行のまま**です（標準入力が端末でなければ対話に入りません）。
 
 ```bash
 vscode-copilot-chat < error.log
@@ -46,22 +74,65 @@ printf 'このエラーを説明して' | vscode-copilot-chat
 vscode-copilot-chat --family gpt-4o --json "短く挨拶して"
 ```
 
+## tmux から自動運転する
+
+`agents/vscode-copilot.json` がこの CLI を[エージェント CLI プラグイン契約](../../agents/README.md)
+へ載せているので、`agent_cli: vscode-copilot` と書けば agent-loop などが tmux 経由で
+この対話モードを駆動できます。待機判定はプロンプト `copilot> ` を見ます。
+
+```yaml
+agent_cli: vscode-copilot
+```
+
+CLI 側の定数 `PROMPT` と定義の `interactive.ready_pattern` は対で、片方だけ変えると自動運転が
+黙って「常に処理中」になります。`tools/agent-loop/test/test_cli_profile.py` の
+`VscodeCopilotProfileTest` が両者の一致を固定しています。
+
 ## IPC 契約と安全性
 
 拡張は `127.0.0.1` の OS 割り当てポートだけで待ち受け、起動ごとに 256-bit token を生成
 します。接続情報は `~/.vscode-copilot-bridge.json` に mode `0600` で atomic に書き、CLI は
-Bearer token を提示します。リクエスト上限は 1 MiB です。外部ホストには公開しません。
+Bearer token を提示します。リクエスト上限は 4 MiB です（会話履歴を丸ごと送るため）。
+外部ホストには公開しません。
 
 エンドポイントファイルは両プロセスで `VSCODE_COPILOT_BRIDGE_FILE` を設定すれば変更でき
 ます。トークンを含むため、共有・コミットしないでください。
 
-API は `POST /v1/chat` です。
+API は `POST /v1/chat` です。**会話状態は CLI 側が持ち、拡張は毎回すべての手番を受け取る
+状態を持たない変換器**でいます。bridge を再起動しても会話が消えず、複数の CLI セッションが
+1 つの拡張を同時に使えます。
 
 ```json
-{"prompt":"質問", "family":"任意のモデル family"}
+{"messages":[{"role":"user","content":"質問"},
+             {"role":"assistant","content":"前の回答"},
+             {"role":"user","content":"続き"}],
+ "family":"任意のモデル family",
+ "stream":false}
 ```
 
-成功時は `{"text":"回答", "model":{"id":"...","family":"...","name":"..."}}` を
-返します。これは **単発のモデル呼び出し**であり、VS Code Agent mode の built-in tools、
-ファイル編集、ターミナル実行を自動的に利用するものではありません。それらが必要なら、
-bridge 側で明示的にツールと承認フローを設計してください。
+`role` は `user` か `assistant` だけです。単発の `{"prompt":"質問"}` も受け付けます
+（旧 CLI との互換）。
+
+`stream` を省略すると `{"text":"回答", "model":{"id":"...","family":"...","name":"..."}}` を
+返します。`stream: true` のときは `application/x-ndjson` で 1 行 1 イベントを流します。
+
+```text
+{"delta":"回"}
+{"delta":"答"}
+{"done":true,"model":{"id":"...","family":"...","name":"..."}}
+```
+
+最初の 1 片を書くまではヘッダを送らないので、モデル不在などの失敗は非ストリームと同じく
+HTTP status 付きの JSON エラーで返ります。書き始めた後の失敗だけが `{"error":"..."}` 行に
+なります。
+
+これは **モデル呼び出し**であり、VS Code Agent mode の built-in tools、ファイル編集、
+ターミナル実行を自動的に利用するものではありません。それらが必要なら、bridge 側で
+明示的にツールと承認フローを設計してください。
+
+## テスト
+
+```bash
+python3 -m pytest tools/vscode-copilot-chat/tests            # CLI
+python3 -m unittest discover -s test                          # tmux 待機判定（tools/agent-loop で実行）
+```

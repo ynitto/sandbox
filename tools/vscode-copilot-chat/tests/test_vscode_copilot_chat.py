@@ -1,4 +1,5 @@
 import importlib.util
+import io
 import json
 import threading
 from unittest import mock
@@ -21,34 +22,6 @@ def test_read_endpoint_validates_protocol(tmp_path):
         assert "endpoint" in str(exc)
 
 
-def test_request_uses_bearer_and_returns_response():
-    received = {}
-
-    class Handler(BaseHTTPRequestHandler):
-        def do_POST(self):
-            received["authorization"] = self.headers["Authorization"]
-            received["body"] = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-            payload = json.dumps({"text": "回答", "model": {"id": "test"}}).encode()
-            self.send_response(200)
-            self.send_header("Content-Length", str(len(payload)))
-            self.end_headers()
-            self.wfile.write(payload)
-
-        def log_message(self, *_):
-            pass
-
-    server = HTTPServer(("127.0.0.1", 0), Handler)
-    thread = threading.Thread(target=server.handle_request)
-    thread.start()
-    result = client.request({"url": f"http://127.0.0.1:{server.server_port}/v1/chat", "token": "secret"},
-                            "質問", "gpt-test", 2)
-    thread.join()
-    server.server_close()
-    assert result["text"] == "回答"
-    assert received == {"authorization": "Bearer secret",
-                        "body": {"prompt": "質問", "family": "gpt-test"}}
-
-
 def test_start_bridge_knows_port_and_launches_current_windows_directory(tmp_path):
     endpoint_file = tmp_path / "endpoint.json"
     with mock.patch.object(client, "windows_path", return_value="C:\\work\\repo"), \
@@ -63,3 +36,295 @@ def test_start_bridge_knows_port_and_launches_current_windows_directory(tmp_path
     assert "VSCODE_COPILOT_BRIDGE_PORT='32191'" in command
     assert "code' --user-data-dir" in command
     assert "C:\\work\\repo" in command
+
+
+# --- 会話（案1: multi-turn） ---------------------------------------------------
+
+
+def _serve_once(payload: bytes, content_type: str, captured: dict):
+    """1 リクエストだけ受ける HTTP サーバを起こし、(port, join) を返す。"""
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            captured["authorization"] = self.headers["Authorization"]
+            captured["body"] = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *_):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.handle_request)
+    thread.start()
+    return server, thread
+
+
+def test_request_sends_full_history_and_returns_response():
+    captured = {}
+    payload = json.dumps({"text": "回答", "model": {"id": "test"}}).encode()
+    server, thread = _serve_once(payload, "application/json", captured)
+    messages = [{"role": "user", "content": "質問"},
+                {"role": "assistant", "content": "前の回答"},
+                {"role": "user", "content": "続き"}]
+    result = client.request({"url": f"http://127.0.0.1:{server.server_port}/v1/chat", "token": "secret"},
+                            messages, "gpt-test", 2)
+    thread.join()
+    server.server_close()
+    assert result["text"] == "回答"
+    assert captured["authorization"] == "Bearer secret"
+    # 履歴は丸ごと送る。拡張側に状態を持たせない設計の要。
+    assert captured["body"] == {"messages": messages, "family": "gpt-test"}
+    assert "stream" not in captured["body"]
+
+
+def test_request_streams_ndjson_and_reports_deltas():
+    captured = {}
+    payload = (b'{"delta":"\xe3\x81\x93"}\n'
+               b'{"delta":"\xe3\x82\x93"}\n'
+               b'{"done":true,"model":{"id":"test"}}\n')
+    server, thread = _serve_once(payload, "application/x-ndjson", captured)
+    seen = []
+    result = client.request({"url": f"http://127.0.0.1:{server.server_port}/v1/chat", "token": "s"},
+                            [{"role": "user", "content": "q"}], None, 2, seen.append)
+    thread.join()
+    server.server_close()
+    assert captured["body"]["stream"] is True
+    assert seen == ["こ", "ん"]
+    assert result == {"text": "こん", "model": {"id": "test"}}
+
+
+def test_stream_error_event_becomes_a_runtime_error():
+    captured = {}
+    payload = b'{"delta":"partial"}\n{"error":"model exploded"}\n'
+    server, thread = _serve_once(payload, "application/x-ndjson", captured)
+    try:
+        client.request({"url": f"http://127.0.0.1:{server.server_port}/v1/chat", "token": "s"},
+                       [{"role": "user", "content": "q"}], None, 2, lambda _: None)
+        assert False, "stream error must raise"
+    except RuntimeError as exc:
+        assert "model exploded" in str(exc)
+    finally:
+        thread.join()
+        server.server_close()
+
+
+class _FakeAsk:
+    """request の代役。呼ばれた messages を記録し、決めた応答か例外を返す。"""
+
+    def __init__(self, *replies):
+        self.replies = list(replies)
+        self.calls = []
+
+    def __call__(self, endpoint, messages, family, timeout, on_delta=None):
+        self.calls.append({"messages": [dict(m) for m in messages], "family": family})
+        reply = self.replies.pop(0)
+        if isinstance(reply, BaseException):
+            raise reply
+        if on_delta:
+            on_delta(reply)
+        return {"text": reply, "model": {"id": "test"}}
+
+
+def test_session_accumulates_both_roles():
+    session = client.Session()
+    ask = _FakeAsk("A1", "A2")
+    with mock.patch.object(client, "request", ask):
+        session.ask({}, "Q1", 1, None)
+        session.ask({}, "Q2", 1, None)
+    assert ask.calls[1]["messages"] == [
+        {"role": "user", "content": "Q1"},
+        {"role": "assistant", "content": "A1"},
+        {"role": "user", "content": "Q2"},
+    ]
+    assert len(session.messages) == 4
+
+
+def test_failed_turn_is_not_kept_in_history():
+    session = client.Session()
+    ask = _FakeAsk(RuntimeError("bridge に接続できません"), "A1")
+    with mock.patch.object(client, "request", ask):
+        try:
+            session.ask({}, "Q1", 1, None)
+            assert False, "failure must propagate"
+        except RuntimeError:
+            pass
+        session.ask({}, "Q2", 1, None)
+    # 壊れたターンを引きずらない: 2 回目は Q2 だけを送る。
+    assert ask.calls[1]["messages"] == [{"role": "user", "content": "Q2"}]
+
+
+def test_paths_are_not_mistaken_for_commands():
+    assert client.is_command("/clear")
+    assert client.is_command("/model gpt-4o")
+    assert client.is_command("/nope")
+    # パス始まりの依頼はモデルへ送る。
+    assert not client.is_command("/home/user/sandbox を説明して")
+    assert not client.is_command("/etc/hosts")
+    assert not client.is_command("要約して")
+
+
+def test_truncated_stream_is_an_error():
+    captured = {}
+    payload = b'{"delta":"partial"}\n'  # done も error も来ないまま切れる
+    server, thread = _serve_once(payload, "application/x-ndjson", captured)
+    try:
+        client.request({"url": f"http://127.0.0.1:{server.server_port}/v1/chat", "token": "s"},
+                       [{"role": "user", "content": "q"}], None, 2, lambda _: None)
+        assert False, "truncated stream must raise"
+    except RuntimeError as exc:
+        assert "途中で切れました" in str(exc)
+    finally:
+        thread.join()
+        server.server_close()
+
+
+def test_repl_sends_path_like_input_to_the_model():
+    code, _, _, ask = _run_repl(["/home/user/sandbox を説明して", EOFError()], ["A1"])
+    assert code == 0
+    assert ask.calls[0]["messages"][-1]["content"] == "/home/user/sandbox を説明して"
+
+
+def test_empty_answer_does_not_poison_the_history():
+    session = client.Session()
+    ask = _FakeAsk("", "A1")
+    with mock.patch.object(client, "request", ask):
+        try:
+            session.ask({}, "Q1", 1, None)
+            assert False, "empty answer must fail the turn"
+        except RuntimeError as exc:
+            assert "空の応答" in str(exc)
+        session.ask({}, "Q2", 1, None)
+    assert ask.calls[1]["messages"] == [{"role": "user", "content": "Q2"}]
+
+
+def test_slash_command_accepts_tab_separated_argument():
+    session = client.Session()
+    session.command("/model\tgpt-4o")
+    assert session.family == "gpt-4o"
+
+
+def test_slash_commands_clear_switch_model_and_exit():
+    session = client.Session()
+    session.messages = [{"role": "user", "content": "old"}]
+    assert session.command("/clear")[0] == "continue"
+    assert session.messages == []
+    assert session.command("/model gpt-4o")[0] == "continue"
+    assert session.family == "gpt-4o"
+    assert session.command("/model")[0] == "continue"
+    assert session.family is None
+    assert session.command("/exit")[0] == "exit"
+    assert session.command("/quit")[0] == "exit"
+    action, message = session.command("/nope")
+    assert action == "continue" and "未知のコマンド" in message
+
+
+# --- 対話ループ（案1: REPL） ---------------------------------------------------
+
+
+def _run_repl(lines, replies):
+    session = client.Session()
+    ask = _FakeAsk(*replies)
+    out = io.StringIO()
+    with mock.patch.object(client, "request", ask), \
+         mock.patch.object(client, "input", create=True, side_effect=lines):
+        code = client.repl({}, session, 1, out)
+    return code, out.getvalue(), session, ask
+
+
+def test_repl_streams_answers_and_keeps_context():
+    code, output, session, ask = _run_repl(["Q1", "Q2", EOFError()], ["A1", "A2"])
+    assert code == 0
+    assert "A1" in output and "A2" in output
+    assert [m["content"] for m in session.messages] == ["Q1", "A1", "Q2", "A2"]
+
+
+def test_repl_clear_starts_a_new_conversation():
+    code, _, session, ask = _run_repl(["Q1", "/clear", "Q2", EOFError()], ["A1", "A2"])
+    assert code == 0
+    assert ask.calls[1]["messages"] == [{"role": "user", "content": "Q2"}]
+
+
+def test_repl_exit_command_stops_the_loop():
+    code, _, _, ask = _run_repl(["/exit", "never asked"], ["A1"])
+    assert code == 0
+    assert ask.calls == []
+
+
+def test_repl_skips_blank_lines():
+    code, _, _, ask = _run_repl(["", "   ", EOFError()], [])
+    assert code == 0 and ask.calls == []
+
+
+def test_repl_survives_bridge_errors_and_interrupts():
+    code, output, session, _ = _run_repl(
+        ["Q1", "Q2", EOFError()],
+        [RuntimeError("bridge に接続できません"), KeyboardInterrupt()])
+    assert code == 0
+    assert "bridge に接続できません" in output
+    assert "中断しました" in output
+    # どちらの失敗も履歴を汚さない。
+    assert session.messages == []
+
+
+def test_repl_ctrl_c_at_the_prompt_does_not_exit():
+    code, _, _, ask = _run_repl([KeyboardInterrupt(), "Q1", EOFError()], ["A1"])
+    assert code == 0
+    assert [c["messages"][-1]["content"] for c in ask.calls] == ["Q1"]
+
+
+# --- 起動モードの選択 ----------------------------------------------------------
+
+
+def _main_with(argv, isatty):
+    stdin = mock.Mock()
+    stdin.isatty.return_value = isatty
+    stdin.read.return_value = "piped prompt"
+    with mock.patch.object(client.sys, "argv", ["vscode-copilot-chat", *argv]), \
+         mock.patch.object(client.sys, "stdin", stdin), \
+         mock.patch.object(client, "read_endpoint", return_value={"url": "u", "token": "t"}), \
+         mock.patch.object(client, "repl", return_value=0) as repl, \
+         mock.patch.object(client, "request", _FakeAsk("A1")) as request:
+        code = client.main()
+    return code, repl, request
+
+
+def test_tty_without_prompt_enters_the_repl():
+    code, repl, _ = _main_with([], isatty=True)
+    assert code == 0 and repl.called
+
+
+def test_piped_stdin_stays_one_shot():
+    code, repl, _ = _main_with([], isatty=False)
+    assert code == 0 and not repl.called
+
+
+def test_prompt_argument_stays_one_shot_even_on_a_tty():
+    code, repl, _ = _main_with(["質問"], isatty=True)
+    assert code == 0 and not repl.called
+
+
+def test_interactive_flag_forces_the_repl_even_when_piped():
+    code, repl, _ = _main_with(["--interactive"], isatty=False)
+    assert code == 0 and repl.called
+
+
+# --- 起動待ち ------------------------------------------------------------------
+
+
+def test_wait_for_bridge_polls_tcp_without_calling_the_model():
+    calls = []
+
+    def create_connection(address, timeout=None):
+        calls.append(address)
+        if len(calls) < 3:
+            raise OSError("refused")
+        return mock.MagicMock(__enter__=lambda s: s, __exit__=lambda *a: False)
+
+    with mock.patch.object(client.socket, "create_connection", create_connection), \
+         mock.patch.object(client, "request", side_effect=AssertionError("model must not be called")):
+        client.wait_for_bridge({"url": "http://127.0.0.1:32190/v1/chat"}, 30, sleep=lambda _: None)
+    assert calls == [("127.0.0.1", 32190)] * 3

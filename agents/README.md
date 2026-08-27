@@ -97,7 +97,7 @@ chat モードのように、人が `/skill-name` と書いたテキストを送
 判定の優先順位: `busy_pattern` マッチ → 処理中 ＞ `ready_pattern` マッチ → 待機 ＞
 `idle_quiet_sec` 静穏 → 待機 ＞ それ以外 → 処理中。
 
-## 同梱の定義（13 件）
+## 同梱の定義（14 件）
 
 | ファイル | CLI | 読み取り専用の強制力 |
 |---|---|---|
@@ -114,6 +114,7 @@ chat モードのように、人が `/skill-name` と書いたテキストを送
 | `ollama-verify.json` | 同上 + `--format json --stall-timeout 180` | enforced（道具なし。テキスト検証役。既定 gemma4:12b——負けは全部タイムアウトなので stall + transient 分類の再投入で受け、コード worker の候補には入れない） |
 | `aider.json` | `agent-aider`（aider + ollama_chat） | enforced（`--dry-run`）。single-shot——渡されたファイルを編集するだけでツールループを持たない |
 | `opencode.json` | `opencode run`（`agent-opencode` 経由） | best-effort（`--agent plan` は edit を拒むが bash は拒まない） |
+| `vscode-copilot.json` | `vscode-copilot-chat`（VS Code の Language Model API へ橋渡し） | enforced（モデルを呼ぶだけでファイルもコマンドも触らない）。single-shot——ツールを持たないので呼び出し側がループを供給する |
 
 `opencode.json` だけは本体（`opencode`）を直接呼ばず `agent-opencode`（tools/opencode）を
 経由する。素の argv では表せないものが 2 つあるため——`--format json` のイベントから実測
@@ -122,6 +123,12 @@ usage を取り出して stderr の `@agent-usage` に載せることと、推�
 即座に env 失敗へ倒すこと。導入は独立のインストーラ（`bash tools/opencode/install.sh`）で、
 推論エンジンの住所もそちらの設定（`~/.config/opencode/opencode.json`）に置く——この定義は
 どの PC でも同じで良いようにホスト依存の値を持たない。
+
+`vscode-copilot.json` も本体を直接呼ばない。VS Code の Language Model API は
+**編集中の VS Code プロセスの中にしか無い**ので、拡張が localhost に立てた認証付きの口へ
+CLI から問い合わせる（`tools/vscode-copilot-chat`）。Copilot の枠でモデルと会話できるが、
+VS Code の Agent mode が持つ built-in tools・ファイル編集・ターミナル実行は**含まない**
+——`headless_autonomy: single-shot` はそのことの申告でもある。
 
 hermes（tools/hermes-kiro-acp）のような自作ブリッジも、stdin でプロンプトを受けて
 stdout に本文だけを返す薄い CLI を用意すれば同じ契約で差し込める。
