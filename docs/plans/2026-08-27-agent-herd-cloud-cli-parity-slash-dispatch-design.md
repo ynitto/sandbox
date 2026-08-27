@@ -41,9 +41,15 @@
   pi は却下、smolagents はプロンプト 17 KB で却下。借りるのは `llm` の Template
   （コマンド名 → system / model / tools / 出力契約の束縛。§3.3）と、mini-swe-agent の
   プロンプト外出し（`system_template` は 1 行。§3.5）の 2 つだけ。どちらも依存を増やさない。
-- **tmux + send-keys への一本化はできない**（§7.2）。対話ペインでは受入条件・証跡ゲート・
-  usage 実測・層3 の限定ツール契約の 4 つが供給できない。**統一するのはトランスポート
-  ではなくコマンド面**で、同じ宣言が対話でもヘッドレスでも効くようにする（§7.3）。
+- **対話ペインにもヘッドレスと同じ契約を付ける**（§7.2〜7.5）。いまペインに無い 4 契約の
+  うち、**完了検知・受入条件・usage 実測の 3 つは「原理的に無理」ではなく配線の不在**で、
+  既存の関数（`acceptance_stamps` / `acceptance_evidence_errors` / `session_log` リーダ）を
+  ターン境界で回すだけで埋まる。層3 の限定ツール契約だけが設計変更で、それは §7.1 の
+  共通 TUI が解く。加えてペイン経路には**失敗トリアージと quota 観測が無く**（§7.4-1）、
+  quota が枯れても管理面の段判定に届いていない——これが実害としては最大である。
+- **トランスポートは一本化しない。揃えるのは契約とコマンド面である**（§7.5）。
+  2 面（対話ペイン / ヘッドレス）は残し、同じ宣言・同じ受入ゲート・同じ台帳がどちらでも
+  効くようにする。`/sm` `/edit` を対話で打った場合はルータがヘッドレスへ回す。
 - **opencode は同梱から外す**（§6）。**aider の対話は共通 TUI のバックエンドとして実装する**
   （§7）。どちらも新機構ではなく、既にあるものの置き場を変える話である。
 
@@ -370,41 +376,116 @@ agent-herd --agent aider      # 前面は同じ TUI、1 入力 = aider 1 回（-
 ②aider バックエンド（`aider_adapter` を `--message` で 1 回呼ぶ薄い層）
 ③`agents/aider.json` の `interactive.command` を共通 TUI 起動へ差し替える。
 
-### 7.2 tmux + send-keys へ一本化できるか — できない
+### 7.2 いまペインに無い契約 — 3 つは配線の不在、1 つは設計変更
 
-「クラウド CLI と同じく、全部を tmux ペインで対話起動して send-keys で送る」に統一する案は
-成立しない。**対話ペインでは供給できない契約が 4 つある**（すべて実装から確認）。
+ヘッドレスにあってペインに無い契約は 4 つある（すべて実装から確認）。**うち 3 つは
+「原理的に無理」ではなく、既にある機構が繋がっていないだけである。**
 
-| 契約 | ヘッドレス | 対話ペイン | 根拠 |
+| 契約 | ヘッドレス | 対話ペイン | 種別 |
 |---|---|---|---|
-| 完了検知 | subprocess の終了コード（正確） | 画面監視 or `turn_completion` hook | spec §1.4 |
-| 受入条件・証跡ゲート | `run_prompt` が実行 | **走らない**（`acceptance` は headless 枝でしか消費されない） | `scheduler._run_headless` のみが `run_prompt(acceptance=…)` を呼ぶ |
-| usage 実測 | `@agent-usage` を stderr から回収 | **取れない**（スロット保持秒からの推定） | `toolloop._tl_record_usage:619-624` の注記 |
-| 層3 の限定ツール契約 | ハーネスが read/write/run/final を供給 | 供給先が無い（aider は対話セッションを持たない） | spec §3.4 |
+| 完了検知 | 終了コード | 画面監視 or `turn_completion` hook | 配線（A） |
+| 受入条件・証跡ゲート | `run_prompt` が実行 | 走らない（`acceptance` は headless 枝でしか消費されない） | 配線（B） |
+| usage 実測 | `@agent-usage` を stderr から回収 | 取れない（スロット保持秒からの推定） | 配線（C） |
+| 層3 の限定ツール契約 | ハーネスが read/write/run/final を供給 | 供給先が無い | **設計（D）** |
 
-加えて `statemachine` は state ごとに argv と検査コマンドを決めるので、1 枚のペインでは
-表現できない。tmux 必須にすると `headless_pane: false` のサーバ・CI 運用も消える。
+根拠: `scheduler._run_headless` だけが `run_prompt(acceptance=…)` を呼ぶ。
+`toolloop._tl_record_usage:619-624` は「headless 経路は自分で subprocess を回すので、
+tmux 経路と違って実測が取れる」と注記している。
 
-**逆に、ローカル側が対話できないわけではない。** `ollama` は既に `interactive` を宣言して
-おり（`ready_pattern` / `busy_pattern` / `prompt_inject: send-keys`）、tmux + send-keys で
-クラウド CLI と同じように動く。足りないのは aider で、それは §7 の共通 TUI で埋まる。
+`statemachine` は state ごとに argv と検査コマンドを決めるので 1 枚のペインでは表現
+できない。また tmux 必須にすると `headless_pane: false` のサーバ・CI 運用が消える。
+**したがってトランスポートの一本化はしない**——が、**契約は両経路で揃える**（§7.3）。
 
-### 7.3 統一するのはトランスポートではなくコマンド面
+### 7.3 契約を両経路で揃える
 
-したがって 2 面（対話ペイン / ヘッドレス）は**残す**。統一するのは送り方ではなく、
-**同じコマンド語彙・同じ宣言がどちらでも効くこと**である。
+#### A. 完了検知 — 自前 CLI にも turn hook を出させる
 
-| | 対話ペイン（tmux + send-keys） | ヘッドレス（subprocess） |
-|---|---|---|
-| 使いどころ | 人が見る・会話文脈を積む | 定常業務・ステートマシン・受入ゲートが要る実行 |
-| A セッション操作 | ○ | —（意味を成さない） |
-| B 実行形 | `/ask` `/find` は効く。`/sm` `/edit` は**ヘッドレスへ回す** | ○ |
-| C 用途 | ○（宣言は同じ 1 枚） | ○ |
-| D スキル | ○ | ○ |
-| 受入条件・usage 実測 | 付かない | 付く |
+turn hook の封筒は既に `dispatch_id` / `generation` / `status` を HMAC 検証つきで運んで
+いる（`turnhooks.record_turn_hook_event:336-375`、`version: 1`）。`ollama` の TUI は自前
+なので、ターン終了時に `agent-loop hook-event --adapter ollama --status complete` を
+呼べばよい（`cli.py:165` の `choices` に `ollama` を足す）。`busy_pattern` への依存が消え、
+画面監視は fallback に降りる。
 
-`/sm` と `/edit` を対話で打った場合は、ルータが**ヘッドレス実行へ回して結果をペインに出す**
-（`headless_pane` の既存の見せ方をそのまま使う）。人から見れば 1 つのコマンド面で、
+#### B. 受入条件・証跡ゲート — ターン境界で既存関数を回す
+
+**ペインが劣るわけではない。** 層2 のヘッドレス（`run_cli_loop`）も「触ったファイルを
+外から観測できない」ので、受入条件が名指ししたパスの指紋変化だけで判定している
+（`toolloop.py:1350,1374-1377`）。**層2 は元から同じ精度**である。
+
+```
+dispatch 時   acceptance_stamps(criteria, cwd)        ← 既存関数
+   ↓ send-keys
+turn 完了時   acceptance_evidence_errors(...)         ← 既存関数
+```
+
+挿す場所は dispatch とターン完了の 2 点だけで、新しい判定ロジックは要らない。
+
+残るのは判定層（judge）で、これはエージェントの**報告本文**を要する。`capture-pane` は
+装飾込みで壊れやすいので、正典は `session_log` に置く——定義に既に
+`session_log`（`jsonl-dir` / `kiro-sqlite` / `opencode-sqlite`）があり、agent-audit が
+リーダを持っている。最後の assistant メッセージを取れば judge へ渡せる。
+定義の `{output_file}`（`output: "file"` 用）を対話でも使う手もある。
+
+#### C. usage 実測 — `session_log` を正典にする
+
+`agent_audit/readers.py` の jsonl-dir リーダは**既に usage を抽出している**
+（`usage_by_message` / `tokens_in` / `tokens_out` / `usage_measured`）。`ollama.json` は
+`session_log.usage: false` と**宣言しているだけ**なので、JSONL の `llm_end` の形を確かめて
+`true` にすれば実測が入り、ペイン経路の推定（保持秒 × rates）を外せる。
+
+**B と C は 1 実装に寄せる。** 「ターン境界で `session_log` の差分を読み、この実行の
+**報告本文と usage** を返す」関数を agentcore に置き、ペインとヘッドレスの両方が同じ
+ものを使う。turn hook の封筒へ `tokens_in/out` を足す案（`version: 2`）もあるが、
+クラウド CLI のネイティブ hook は payload が違うので `session_log` のほうが汎用である。
+
+#### D. 層3 の限定ツール契約 — ペインの中身を我々のものにする
+
+2 案あるが、**D-2 が既に §7.1 にあるので D-1 は要らない。**
+
+- **D-1**: aider 自身のコマンド語彙で縮小版を張る（`/add` `/read-only` で割付、`/run` で
+  検査）。round 単位の制御は諦める
+- **D-2**: 共通 TUI（§7.1）。前面が我々のものなら round 制御を我々が持てるので、契約を
+  そのまま供給できる
+
+つまり D は「ペインで供給する」のではなく「**ペインの中身を我々のものにする**」で解ける。
+
+### 7.4 ペイン経路のその他の穴
+
+§7.2 の 4 つ以外に、実装を洗って見つかったもの。
+
+| # | 穴 | 実害 | 根拠 |
+|---|---|---|---|
+| 1 | **失敗トリアージと quota 観測が無い** | **大**。ペインで quota が枯れても node-budget 台帳に観測行が入らず、管理面の段判定が知らない＝ degrade が効かない | `classify_error` は harness だけ（`toolloop._tl_failure_hint:640-657`）。`failure_pattern` は `send --wait` だけ（`sendcmd.py:386,424`） |
+| 2 | 出力契約が無い | dashboard が読む `RESULT {json}` も `empty_output_is_error` もペインには無い | spec §3.5 |
+| 3 | freeze 検知が既定 off | ヘッドレスは無進捗上限が既定で効く（定義 `timeout` / 600 秒、天井 4 時間）のに、ペインは `slot_timeout_seconds: 7200` だけ。**止まったペインが 2 時間居座る** | `health.freeze_timeout_seconds` の既定 0 |
+| 4 | purpose が Resolver に渡らない | §5 G3 と同根。ペイン経路も同じ | `control.py:101,116,239` |
+| 5 | `no_session_args` が効かない | 使い捨て起動の宣言が対話では無視される | `agentcli._mode_args` |
+
+**穴ではなかったもの**: `spill`（長大プロンプトの退避）。ペインは `set-buffer` +
+`paste-buffer` で送るので argv 長制限を受けない（`tmux_util.py:23-34`）。
+
+逆向きの非対称（`mode: ralph` / `external target` / `fresh_context` がペイン専用）は既知で、
+ヘッドレスでは明示エラーになっている。
+
+### 7.5 統一するのはトランスポートではなく契約とコマンド面
+
+2 面（対話ペイン / ヘッドレス）は**残す**。揃えるのは送り方ではなく、**同じ契約・同じ
+コマンド語彙・同じ宣言がどちらでも効くこと**である。
+
+| | 対話ペイン | ヘッドレス | 揃え方 |
+|---|---|---|---|
+| A セッション操作 | ○ | —（意味を成さない） | — |
+| B 実行形 | `/ask` `/find` は効く。`/sm` `/edit` はヘッドレスへ回す | ○ | ルータが経路を選ぶ |
+| C 用途 | ○ | ○ | 宣言 1 枚を共有 |
+| D スキル | ○ | ○ | 探索規約を共有 |
+| 完了検知 | turn hook（→ 全 CLI へ） | 終了コード | §7.3 A |
+| 受入条件・証跡ゲート | → 付ける | ○ | §7.3 B |
+| usage 実測 | → 付ける | ○ | §7.3 C |
+| 失敗分類・quota 観測 | → 付ける | ○ | §7.4-1 |
+| 限定ツール契約 | 共通 TUI で供給 | ○ | §7.3 D |
+
+`/sm` と `/edit` を対話で打った場合は、ルータが**ヘッドレス実行へ回して結果をペインに
+出す**（`headless_pane` の既存の見せ方をそのまま使う）。人から見れば 1 つのコマンド面で、
 裏で経路が分かれているだけになる。
 
 ---
@@ -467,15 +548,28 @@ mini-swe-agent は `pip install` すると litellm・textual・datasets・typer 
 | 4 | 種別 C の宣言 1 枚（§3.3）を導入。`~/.agents/commands/*.md` を配り、`variants` は移行期のみ併読 | `/verify` が宣言どおりの起動形になる。`by_purpose` があるときは実測が勝つ |
 | 5 | `agent-herd` のトップレベルフラグ（§3.1）。既存サブコマンドは別名で温存 | `agent-aider X` と `agent-herd aider X` の同一性テスト（`test_herdcli.Argv0DispatchTests`）が green |
 | 6 | opencode の同梱解除（§6） | 削除後に `agent-herd defs` が 8 件（現行 9 件から opencode を除いた数）を返す。dashboard の golden テスト更新 |
-| 7 | 共通 TUI のバックエンド分離 + aider バックエンド（§7） | tmux `capture-pane` から見た画面が ollama バックエンドと同じ規約（`ready_pattern` 共有） |
-| 8 | プロンプトの外出し（§3.5） | 現行のプロンプトを宣言へ移して**出力が変わらない**ことを確認してから、調整を始める |
-| 9 | 仕様書・README・`eval/recommend.py` の更新 | 仕様と実装の突き合わせ |
+| 7 | **ペインに失敗トリアージと quota 観測を付ける**（§7.4-1） | ペインで quota エラーが出たとき、node-budget 台帳に `quota` 観測行が入る。`errors[]` の `class` が `send --wait` 以外でも効く |
+| 8 | **`session_log` を「報告本文と usage」の 1 実装にする**（§7.3 B・C） | ペイン実行の usage が推定ではなく実測で台帳へ入る。`ollama.json` の `session_log.usage` を実測確認のうえ `true` にする |
+| 9 | **ペインに受入条件・証跡ゲートを付ける**（§7.3 B） | dispatch とターン完了で `acceptance_stamps` / `acceptance_evidence_errors` が回り、`verifiedBy` がヘッドレスと同じ語彙で記録される |
+| 10 | **自前 CLI にも turn hook を出させる**（§7.3 A） | `ollama` のターン完了がネイティブイベントで届き、`busy_pattern` は fallback に降りる |
+| 11 | freeze 検知の既定と出力契約（§7.4-2・3） | 止まったペインが `slot_timeout_seconds` を待たずに検知される |
+| 12 | 共通 TUI のバックエンド分離 + aider バックエンド（§7.1・§7.3 D） | tmux `capture-pane` から見た画面が ollama バックエンドと同じ規約（`ready_pattern` 共有）。層3 の限定ツール契約が対話でも供給される |
+| 13 | プロンプトの外出し（§3.5） | 現行のプロンプトを宣言へ移して**出力が変わらない**ことを確認してから、調整を始める |
+| 14 | 仕様書・README・`eval/recommend.py` の更新 | 仕様と実装の突き合わせ |
 
-**段 7 と 8 は実測の扱いが変わる。** 呼び出しの形（7）とプロンプト（8）が変わるので、
+**段 7〜11 は対話ペインの契約を揃える塊**で、スラッシュ再構成（段 1〜6）とは独立に進む。
+実害の大きい順に 7 → 8 → 9 → 10 → 11 で、7 だけは他のどれとも依存が無いので単独で出せる。
+
+**段 12 と 13 は実測の扱いが変わる。** 呼び出しの形（12）とプロンプト（13）が変わるので、
 `ledger` に `harness` 軸を足して T2 対照を 1 本取る
 （[radical ideas 案 I](./2026-08-24-aider-gemma4-generalization-radical-ideas.md) の採用条件と
-同じ規律。同時に model / policy / sampling を変えない）。段 0〜6 は
+同じ規律。同時に model / policy / sampling を変えない）。段 0〜11 は
 `(agent_cli, model)` の意味を変えないので、既存の格付けはそのまま有効である。
+
+**段 8 は台帳の中身を変えるが、候補の同一性は変えない。** ペイン実行の usage が推定から
+実測へ切り替わるので、切替の前後で同じ実行の記帳が食い違う。切替日を `ledger` に記録し、
+`rates.per_cli`（時間からのトークン推定）はその CLI について外す——実測が出る CLI に
+rate を残すと二重に載る（`toolloop._tl_record_usage:628-630` の注記と同じ理由）。
 
 ---
 
