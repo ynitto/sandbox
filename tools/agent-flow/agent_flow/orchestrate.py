@@ -613,13 +613,15 @@ def cmd_orchestrate(args) -> int:
                 gate = _insert_plan_gate(graph, tasks, args, attempt=gs["attempt"] + 1)
                 _sanitize_graph(graph["nodes"])
                 bus.write_graph(graph)
-                for t in tasks:
-                    bus.write_task(t)
-                bus.set_status("running")
+                # イベントは graph の直後に書く。write_task / set_status のあとにすると、
+                # テストや監視が新 gate を見てから plan-gate-replan を探すレースで空振りする。
                 bus.event(who, "plan-gate-replan", attempt=gs["attempt"], gate=gate["id"],
                           reason=(feedback or "コメント無し")[:200],
                           changes={"added": [t["id"] for t in tasks], "replaced": [],
                                    "updated": [], "removed": []})
+                for t in tasks:
+                    bus.write_task(t)
+                bus.set_status("running")
                 bus.sync_push(f"plan-gate replan #{gs['attempt']} run {args.run_id}")
                 log(who, f"再計画（plan-gate）: {[(t['id'], t.get('kind', 'work')) for t in tasks]}")
                 phase("executing")
