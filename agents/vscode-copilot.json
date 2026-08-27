@@ -1,0 +1,33 @@
+{
+  "name": "vscode-copilot",
+  "headless_autonomy": "single-shot",
+  "relative_cost": 1,
+  "command": ["vscode-copilot-chat"],
+  "prompt_via": "stdin",
+  "model_flag": "--family",
+  "output": "stdout",
+  "empty_output_is_error": true,
+  "readonly": "enforced",
+  "readonly_args": [],
+  "interactive": {
+    "command": ["vscode-copilot-chat", "--interactive"],
+    "ready_pattern": "^copilot> ?$",
+    "ready_tail_lines": 2,
+    "clear_command": "/clear",
+    "prompt_inject": "send-keys"
+  },
+  "errors": [
+    {"match": "bridge に接続できません|bridge endpoint を読めません", "class": "env",
+     "hint": "VS Code 側の bridge が起動していません（vscode-copilot-chat --start で起動）"},
+    {"match": "no Copilot chat model is available", "class": "env",
+     "hint": "VS Code の Copilot Chat がサインイン済みか、組織ポリシーで許可されているか確認してください"},
+    {"match": "bridge error \\(401\\)|unauthorized", "class": "auth",
+     "hint": "bridge の token が食い違っています（VS Code を再起動して --start し直してください）"},
+    {"match": "NoPermissions|consent", "class": "auth",
+     "hint": "VS Code のモデル利用同意ダイアログを許可してください"},
+    {"match": "rate limit|too many requests", "class": "quota", "quota_kind": "rate_limit",
+     "hint": "Copilot の時限レート制限です"},
+    {"match": "usage limit|quota exceeded", "class": "quota", "quota_kind": "exhausted",
+     "hint": "Copilot の利用枠が枯渇しています"}
+  ]
+}

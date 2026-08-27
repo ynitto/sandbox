@@ -252,7 +252,7 @@ agent-audit が CLI 自身の transcript を収集するための宣言です。
 
 ## 9. 同梱定義
 
-リポジトリ直下 `agents/` に **8 ファイル**。**ファイル数は実エージェント数と一致します**——
+リポジトリ直下 `agents/` に **9 ファイル**。**ファイル数は実エージェント数と一致します**——
 用途別の起動差は `ollama` の `profiles`（5 つ）が持ちます。
 
 | 定義 | cost | readonly | 既定モデル | autonomy | 対話 | session_log | profiles |
@@ -265,6 +265,7 @@ agent-audit が CLI 自身の transcript を収集するための宣言です。
 | `opencode` | 0 | best-effort | 定義なし | tool-loop | ✓ | ✓ | — |
 | `aider` | 0 | enforced | `gemma4:e4b` | single-shot | ✓ | — | — |
 | `ollama` | 0 | enforced | `gemma4:e4b` | tool-loop | ✓ | ✓ | `json` `list` `list-thinking` `read` `verify` |
+| `vscode-copilot` | 1 | enforced | 定義なし | single-shot | ✓ | — | — |
 
 `ollama` の profile は base を継ぐので、断りの無い列は base と同じです。違うところだけ:
 
@@ -277,14 +278,16 @@ agent-audit が CLI 自身の transcript を収集するための宣言です。
 | `verify` | `ollama-verify` | `gemma4:12b` | single-shot | `--format json --stall-timeout 180` |
 
 `relative_cost: 0` はローカル実行（`ollama`（profile 含む）・`aider`・`opencode`）です。
-これらは `agent-herd` を入口に持ち、クラウド 5 種は素の CLI を指したままです。詳細は
+これらは `agent-herd` を入口に持ち、クラウド 6 種は素の CLI を指したままです（`vscode-copilot`
+だけは素の CLI ではなく自作ブリッジ `vscode-copilot-chat` を指します——VS Code の
+Language Model API は編集中の VS Code プロセスの中にしか無く、argv から直接は呼べないため）。詳細は
 [`docs/specs/agent-herd-spec.md`](./agent-herd-spec.md)。
 
 `variants` を申告しているのは `ollama`（15 用途）・`aider`（13 用途）と、`ollama` の
 `json` profile（`split` / `retrieve`）・`verify` profile（`split`）です（`variants` は
 継承しないので、必要な profile だけが自分で宣言します）。
 
-`aider` は `interactive` を持ちながら `headless_autonomy: single-shot` である**唯一の定義**です。
+`aider` と `vscode-copilot` は `interactive` を持ちながら `headless_autonomy: single-shot` です。
 2 つの宣言は別物（前者は「対話面を提供するか」、後者は「自分で探索・実行まで回せるか」）なので、
 **`interactive` の有無を「ハーネスが要るか」の代理に使ってはいけません**——消費側は
 `headless_autonomy` で弁別します。
