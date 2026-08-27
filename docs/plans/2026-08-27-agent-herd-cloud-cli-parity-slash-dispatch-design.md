@@ -34,6 +34,16 @@
 - **弱いモデル向けの自由度削減はこの構造の副産物である。** 先頭が `/` ならルール、そうで
   なければ推論。ツールセットの選択がモデルの判断から 1 語へ移り、未知の `/x` は明示エラーで
   止まる（黙って本文として推論へ流さない）。
+- **最終的にスラッシュコマンドになるのは 4 種**（§3.2）。A セッション操作・B 実行形・
+  C 用途（**宣言 1 枚**）・D スキル。利用者から見た綴りは 1 つで、実体だけが違う。
+  新設はルータ 1 本と宣言ディレクトリ 1 つで、行き先はすべて実装済みである。
+- **外部エージェントは実装を持ち込まず、規約だけ借りる**（§8.1）。Python 統一のため
+  pi は却下、smolagents はプロンプト 17 KB で却下。借りるのは `llm` の Template
+  （コマンド名 → system / model / tools / 出力契約の束縛。§3.3）と、mini-swe-agent の
+  プロンプト外出し（`system_template` は 1 行。§3.5）の 2 つだけ。どちらも依存を増やさない。
+- **tmux + send-keys への一本化はできない**（§7.2）。対話ペインでは受入条件・証跡ゲート・
+  usage 実測・層3 の限定ツール契約の 4 つが供給できない。**統一するのはトランスポート
+  ではなくコマンド面**で、同じ宣言が対話でもヘッドレスでも効くようにする（§7.3）。
 - **opencode は同梱から外す**（§6）。**aider の対話は共通 TUI のバックエンドとして実装する**
   （§7）。どちらも新機構ではなく、既にあるものの置き場を変える話である。
 
@@ -123,22 +133,46 @@ agent-herd --continue / --resume ID # セッション継続（§4）
 `slash_native` は `agents/*.json` の新フィールド 1 つ（既定 false。`skill_command_prefix` が
 既に「その CLI のスキル起動記号」を宣言しているので、その隣に置く）。
 
-**ルート表**（`agentcore/slashroute.py` 1 実装。行き先はすべて実装済み）:
+**ルート表**（`agentcore/slashroute.py` 1 実装）。**最終的にスラッシュコマンドになるものは
+次の 4 種で、綴りの見え方は 1 つ・実体だけが違う。**
 
-| 綴り | 決まるもの | 当て先 |
-|---|---|---|
-| `/sm <名前> [--param k=v]` | ステートマシン実行 | `harness/statemachine.cmd_statemachine` |
-| `/edit <指示>` | 編集ハーネス（read/write/run/final + 受入ゲート） | `harness/toolloop.run_goal` |
-| `/ask` `/find` | toolset（無し / read セット） | `ollama_loop.TOOLSETS` |
-| `/verify` `/judge` `/review` `/split` `/extract` `/retrieve` `/plan` … | 用途 → profile と候補 | `agentcli.resolve_variant` + `executionresolver`（§3.3） |
-| `/model` `/tools` `/think` `/ctx` `/status` | セッション操作 | `ollama_tui._LOCAL_COMMANDS` |
-| その他 | スキル | `ollama_skills.find_skill` / `harness/toolloop._tl_resolve_skill` |
+| 種別 | 例 | 実体 | 当て先（すべて実装済み） | 誰が用意するか |
+|---|---|---|---|---|
+| **A. セッション操作** | `/model` `/tools` `/think` `/ctx` `/status` `/skills` | コード内の関数 | `ollama_tui._LOCAL_COMMANDS:319` | agentcore |
+| **B. 実行形** | `/sm <名前> [--param k=v]`・`/edit`・`/ask`・`/find` | ハーネスと toolset の切替 | `harness/statemachine.cmd_statemachine`・`harness/toolloop.run_goal`・`ollama_loop.TOOLSETS` | agentcore |
+| **C. 用途（purpose）** | `/verify` `/judge` `/review` `/split` `/extract` `/retrieve` `/plan` … | **宣言 1 枚**（§3.3） | `slashroute` + `executionresolver` | 人・配布物 |
+| **D. スキル** | `/wiki-use` `/ltm-use` … | `SKILL.md` を材料へ載せる | `ollama_skills.find_skill` / `toolloop._tl_resolve_skill` | 既存のスキル配布 |
 
-**新設は表と `slash_native` の宣言だけ**である。3 か所に分かれている解釈
-（`run_prompt` の層別分岐・TUI のローカルコマンド・skills の切り出し）はこの表を引く形へ
-畳み、層別分岐は `slash_native` の宣言 1 つに置き換わる。
+**新設はルータ本体と `slash_native` の宣言、そして C の宣言ディレクトリだけ**である。
+3 か所に分かれている解釈（`run_prompt` の層別分岐・TUI のローカルコマンド・skills の
+切り出し）はこの表を引く形へ畳み、層別分岐は `slash_native` の宣言 1 つに置き換わる。
 
-### 3.3 語彙の一本化 — purpose はコマンド名である
+### 3.3 用途コマンドの宣言 1 枚（種別 C）
+
+**規約は `llm`（simonw/llm 0.33）の Template から借りる。コードは持ち込まない。**
+`llm/templates.py` の `Template` は `name` / `prompt` / `system` / `model` / `options` /
+`tools` / `fragments` / `schema_object` / `extract` を 1 枚に束ねており、これは
+「**コマンド名 → システムプロンプト・モデル・ツール集合・出力契約の束縛**」そのものである。
+いま `agents/*.json` の `variants` と engine 側 5 か所の許可リスト（§5 G2）へ散っているものが、
+この 1 枚に畳める。
+
+```markdown
+<!-- ~/.agents/commands/verify.md -->
+---
+description: 受入条件を読み取り専用で判定する
+agent: ollama          # 起動形（旧 variants.verify の宛先）
+model: gemma4:12b      # 用途専用の既定（実測があればそちらが勝つ。下記）
+tools: []              # 道具なし = 判定だけ
+output: json           # 出力契約
+argument-hint: "[基準ファイル]"
+---
+あなたは判定役です。作業した本人ではありません。
+観測できたものだけで判定し、確かめられないものは fail としてください。
+```
+
+置き場は `~/.agents/commands/*.md` と `<project>/.agents/commands/*.md`。**スキル
+（`~/.agents/skills/`）と同じ探索規約に揃える**——名前空間が 1 つなので、同名は
+先勝ちで、`/verify` が宣言にも スキルにもある状態を作らない。
 
 `variants` のキー・`by_purpose` のキー・スキル名・スラッシュ名を**同じ名前空間**に置く。
 
@@ -171,6 +205,28 @@ agent-herd --continue / --resume ID # セッション継続（§4）
 | ステートマシンは agent-loop の設定でしか起動できない | `/sm <名前>` の 1 語で、対話でもヘッドレスでも同じに起動する |
 | 未知のスラッシュは本文として推論へ流れる | 明示エラーで止まる（層3 のスキル未解決を fail fast にしている現行方針と同じ） |
 | 用途の宣言が engine の内部変数 | 実行ログに `/verify` の 1 行として残る（後から同じ条件で引き直せる） |
+
+### 3.5 プロンプトをコードから外へ出す
+
+規約は **mini-swe-agent 2.4.6** から借りる（こちらもコードは持ち込まない。効果を実測して
+から vendoring を検討する）。同梱の `config/mini.yaml` は **`system_template` が 1 行**
+（"You are a helpful assistant that can interact with a computer."）で、手順・規約・観測の
+詰め方・書式エラー時の言い直しはすべて設定側にある。テキストベースのアクション解析
+（`models/utils/actions_text.py`、70 行）は「応答にフェンスブロックを 1 つだけ出す」を
+正規表現で拾う方式で、`ollama_loop._FENCE_RE` と構造が同じである。
+
+いまの `ollama_loop.system_prompt()` はコード内の文字列なので、弱いモデル向けの調整を
+実測で回せない。次の 4 つを宣言へ出す:
+
+| 出すもの | 相当 |
+|---|---|
+| `system_template` | 役割 1 行 |
+| `instance_template` | 手順・規約（最初の user メッセージ） |
+| `observation_template` | ツール出力の詰め方（現行の `_clip` 相当） |
+| `format_error_template` | 規約から外れたときの言い直し（現行の nudge） |
+
+置き場は種別 C の宣言と同じ frontmatter に載せる——コマンドごとにプロンプトを変えられる
+ことが、`/verify` と `/edit` で別の規律を課す唯一の手段になる。
 
 ---
 
@@ -286,7 +342,9 @@ opencode がエージェントハーネスとして毎リクエスト注入す�
 
 ---
 
-## 7. aider の対話 — 共通 TUI のバックエンドとして実装する
+## 7. 対話（インタラクティブ）の扱い
+
+### 7.1 aider の対話 — 共通 TUI のバックエンドとして実装する
 
 `aider.json` の `interactive` は `command` しか宣言しておらず、`ready_pattern` /
 `busy_pattern` / `turn_completion` / `clear_command` が無い。このまま tmux から自動運転すると
@@ -312,6 +370,43 @@ agent-herd --agent aider      # 前面は同じ TUI、1 入力 = aider 1 回（-
 ②aider バックエンド（`aider_adapter` を `--message` で 1 回呼ぶ薄い層）
 ③`agents/aider.json` の `interactive.command` を共通 TUI 起動へ差し替える。
 
+### 7.2 tmux + send-keys へ一本化できるか — できない
+
+「クラウド CLI と同じく、全部を tmux ペインで対話起動して send-keys で送る」に統一する案は
+成立しない。**対話ペインでは供給できない契約が 4 つある**（すべて実装から確認）。
+
+| 契約 | ヘッドレス | 対話ペイン | 根拠 |
+|---|---|---|---|
+| 完了検知 | subprocess の終了コード（正確） | 画面監視 or `turn_completion` hook | spec §1.4 |
+| 受入条件・証跡ゲート | `run_prompt` が実行 | **走らない**（`acceptance` は headless 枝でしか消費されない） | `scheduler._run_headless` のみが `run_prompt(acceptance=…)` を呼ぶ |
+| usage 実測 | `@agent-usage` を stderr から回収 | **取れない**（スロット保持秒からの推定） | `toolloop._tl_record_usage:619-624` の注記 |
+| 層3 の限定ツール契約 | ハーネスが read/write/run/final を供給 | 供給先が無い（aider は対話セッションを持たない） | spec §3.4 |
+
+加えて `statemachine` は state ごとに argv と検査コマンドを決めるので、1 枚のペインでは
+表現できない。tmux 必須にすると `headless_pane: false` のサーバ・CI 運用も消える。
+
+**逆に、ローカル側が対話できないわけではない。** `ollama` は既に `interactive` を宣言して
+おり（`ready_pattern` / `busy_pattern` / `prompt_inject: send-keys`）、tmux + send-keys で
+クラウド CLI と同じように動く。足りないのは aider で、それは §7 の共通 TUI で埋まる。
+
+### 7.3 統一するのはトランスポートではなくコマンド面
+
+したがって 2 面（対話ペイン / ヘッドレス）は**残す**。統一するのは送り方ではなく、
+**同じコマンド語彙・同じ宣言がどちらでも効くこと**である。
+
+| | 対話ペイン（tmux + send-keys） | ヘッドレス（subprocess） |
+|---|---|---|
+| 使いどころ | 人が見る・会話文脈を積む | 定常業務・ステートマシン・受入ゲートが要る実行 |
+| A セッション操作 | ○ | —（意味を成さない） |
+| B 実行形 | `/ask` `/find` は効く。`/sm` `/edit` は**ヘッドレスへ回す** | ○ |
+| C 用途 | ○（宣言は同じ 1 枚） | ○ |
+| D スキル | ○ | ○ |
+| 受入条件・usage 実測 | 付かない | 付く |
+
+`/sm` と `/edit` を対話で打った場合は、ルータが**ヘッドレス実行へ回して結果をペインに出す**
+（`headless_pane` の既存の見せ方をそのまま使う）。人から見れば 1 つのコマンド面で、
+裏で経路が分かれているだけになる。
+
 ---
 
 ## 8. 非目標
@@ -324,12 +419,37 @@ agent-herd --agent aider      # 前面は同じ TUI、1 入力 = aider 1 回（-
   [2026-08-24 radical ideas](./2026-08-24-aider-gemma4-generalization-radical-ideas.md) の
   教義 D1 が避けた形であり、`write_files` の内容指紋照合（`toolloop.py:1251-1279`）という
   受入ゲートの土台も失う。
-- **新しい設定ファイル面を作ること。** ルート表はコード内の定数 1 つ。人に書かせない。
+- **ルート表（A / B）を設定ファイルにすること。** コード内の定数 1 つに保つ。人が書くのは
+  種別 C の宣言だけ。
 - **MCP 対応。** ローカル側は持たない。要るならクラウド CLI を使う。
 - **`edit` toolset の新設**（`ollama_loop.py:90` の `PLANNED_TOOLSETS`）。§7 で足りるうちは
   着手しない。
+- **tmux + send-keys への一本化**（§7.2）。契約 4 つが供給できないため成立しない。
 - **実測の候補同一性を変えること。** 段階 0〜2 では `(agent_cli, model)` の意味を変えない
   （§9 の受入条件）。
+- **エージェント実装そのものを外から持ち込むこと（§8.1）。** 借りるのは規約だけにする。
+
+### 8.1 外部エージェントの評価と却下理由
+
+Python 統一の制約下で 4 本を実パッケージから確認した（2026-08-27 時点）。
+
+| | 依存 | システムプロンプト | コア | 判定 |
+|---|---|---|---|---|
+| **mini-swe-agent 2.4.6** | コアのみなら jinja2 + pydantic | `system_template` **1 行**、残りは YAML | `agents/default.py` 190 行 + `environments/local.py` 92 行 + `actions_text.py` 70 行 | **規約を借りる**（§3.5） |
+| **llm 0.33** | click・pluggy・pydantic 他 | **組み込みなし** | — | **規約を借りる**（§3.3） |
+| smolagents 1.26.0 | 多数 | `code_agent.yaml` **17 KB** / `toolcalling_agent.yaml` 10 KB | — | **却下**。opencode を退けたのと同じ prefill 問題（§6） |
+| pocketflow 0.0.3 | **なし** | 無し（フレームワーク） | `__init__.py` 99 行 | 却下。agentcore が既に持つ層と重複 |
+| pi（`@mariozechner/pi-coding-agent`） | Node/TypeScript | 短い | — | **却下**。Python 統一の方針に反する |
+
+mini-swe-agent は `pip install` すると litellm・textual・datasets・typer まで引き、
+`__init__.py` が import 時にバナーを print して設定ディレクトリを作る。採るとしても
+**パッケージ依存ではなく約 350 行の vendoring**で、追加依存は jinja2 + pydantic に収まる。
+`Model` / `Environment` は Protocol の duck typing（`Model` は 5 メソッド）なので、
+`agent-ollama` をそのまま Model として差せる。
+
+**mini-swe-agent の完了判定は `echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT` の自己申告**で、
+受入条件の証跡ゲートを持たない。C5（done の根拠は機械検証）は agentcore 側が持ち続ける
+——ここは借りられない。
 
 ---
 
@@ -343,15 +463,18 @@ agent-herd --agent aider      # 前面は同じ TUI、1 入力 = aider 1 回（-
 | 0 | `aider.json` に `verify` / `retrieve` を足す（G1） | `resolve_variant("aider","verify")` が `ollama-verify` を返す。既存テスト green |
 | 1 | `agentcore/slashroute.py` を新設し、3 か所の解釈（`run_prompt` の層別分岐・`ollama_tui._LOCAL_COMMANDS`・`ollama_skills` の切り出し）をそこへ畳む。**振る舞い不変** | agent-loop の `slash` 既存テストが無改変で green |
 | 2 | 用途の解決をルータへ集約（G2・G4）。engine の 3 つの許可リストと harness の直引きを削除し、調停 1 実装へ | flow / project / audit の既存テスト green。`by_purpose` 由来の決定が変種既定で上書きされないことを 4 経路すべてで検証 |
-| 3 | `slash_native` を定義へ足し、コマンド行の渡す/消費するを宣言で決める。`/sm` `/edit` `/ask` `/find` をルート表へ | 未知コマンドが明示エラーで止まる。層3 でスキル未解決が起動時 fail fast のまま |
-| 4 | `agent-herd` のトップレベルフラグ（§3.1）。既存サブコマンドは別名で温存 | `agent-aider X` と `agent-herd aider X` の同一性テスト（`test_herdcli.Argv0DispatchTests`）が green |
-| 5 | opencode の同梱解除（§6） | 削除後に `agent-herd defs` が 8 件（現行 9 件から opencode を除いた数）を返す。dashboard の golden テスト更新 |
-| 6 | 共通 TUI のバックエンド分離 + aider バックエンド（§7） | tmux `capture-pane` から見た画面が ollama バックエンドと同じ規約（`ready_pattern` 共有） |
-| 7 | 仕様書・README・`eval/recommend.py` の更新 | 仕様と実装の突き合わせ |
+| 3 | `slash_native` を定義へ足し、コマンド行の渡す/消費するを宣言で決める。種別 B（`/sm` `/edit` `/ask` `/find`）をルート表へ | 未知コマンドが明示エラーで止まる。層3 でスキル未解決が起動時 fail fast のまま |
+| 4 | 種別 C の宣言 1 枚（§3.3）を導入。`~/.agents/commands/*.md` を配り、`variants` は移行期のみ併読 | `/verify` が宣言どおりの起動形になる。`by_purpose` があるときは実測が勝つ |
+| 5 | `agent-herd` のトップレベルフラグ（§3.1）。既存サブコマンドは別名で温存 | `agent-aider X` と `agent-herd aider X` の同一性テスト（`test_herdcli.Argv0DispatchTests`）が green |
+| 6 | opencode の同梱解除（§6） | 削除後に `agent-herd defs` が 8 件（現行 9 件から opencode を除いた数）を返す。dashboard の golden テスト更新 |
+| 7 | 共通 TUI のバックエンド分離 + aider バックエンド（§7） | tmux `capture-pane` から見た画面が ollama バックエンドと同じ規約（`ready_pattern` 共有） |
+| 8 | プロンプトの外出し（§3.5） | 現行のプロンプトを宣言へ移して**出力が変わらない**ことを確認してから、調整を始める |
+| 9 | 仕様書・README・`eval/recommend.py` の更新 | 仕様と実装の突き合わせ |
 
-**段 6 だけは実測の扱いが変わる。** 呼び出しの形が変わるので、`ledger` に `harness` 軸を
-足して T2 対照を 1 本取る（[radical ideas 案 I](./2026-08-24-aider-gemma4-generalization-radical-ideas.md)
-の採用条件と同じ規律。同時に model / policy / sampling を変えない）。段 0〜5 は
+**段 7 と 8 は実測の扱いが変わる。** 呼び出しの形（7）とプロンプト（8）が変わるので、
+`ledger` に `harness` 軸を足して T2 対照を 1 本取る
+（[radical ideas 案 I](./2026-08-24-aider-gemma4-generalization-radical-ideas.md) の採用条件と
+同じ規律。同時に model / policy / sampling を変えない）。段 0〜6 は
 `(agent_cli, model)` の意味を変えないので、既存の格付けはそのまま有効である。
 
 ---
