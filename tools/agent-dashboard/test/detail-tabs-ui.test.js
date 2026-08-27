@@ -204,7 +204,8 @@ assert.match(renderer, /flowGraphMode: 'dependencies'/, '工程はタスクの�
 assert.match(renderer, /state\.flowGraphMode = 'dependencies'/, 'run を切り替えてもタスクの流れを既定表示にする');
 assert.match(renderer, /kind-verify/, '工程内チェックをグラフ上で識別できる');
 assert.match(renderer, /n\.kind === 'verify'.*stateLabel/s, '工程内チェックは状態を文字でも表示する');
-assert.match(renderer, /nodeTimingLabel\(n\)/, '工程カードに実行タイミングを表示する');
+// 引数（nodeEvents）が増えても意図は変わらないので、呼び出しの区切りまでを見る。
+assert.match(renderer, /nodeTimingLabel\(n[,)]/, '工程カードに実行タイミングを表示する');
 assert.match(css, /\.node\.kind-verify/, '工程内チェック専用の強調表示が必要');
 assert.match(css, /\.project-acceptance-attention/, '判断待ち専用の見た目が必要');
 

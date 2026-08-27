@@ -1971,11 +1971,15 @@ test('submit はプリセット無しでも投入でき、既定 ON の作業ル
     // 複製される。複製なので、後からカタログを変えても走り出した run の振る舞いは変わらない。
     const runTuning = JSON.parse(fs.readFileSync(path.join(res.tuningDir, 'tuning.json'), 'utf8'));
     const byId = new Map(runTuning.methods.map((method) => [method.id, method]));
+    // 同梱カタログのうち **enabled: true の自動適用ルール**（test-green-evidence /
+    // ui-consistency）と、**per-task / engine のカタログ**が複製される。
+    // `selection` を宣言せず `enabled: false` の同梱ルール（consistency-sweep /
+    // path-grounding / persist-until-done / restate-task）は、利用者が有効化しない限り
+    // `enabledAutoRuleIds` に入らないので、ここには出ない。
     assert.deepStrictEqual([...byId.keys()].sort(), [
-      'consistency-sweep', 'granularity-coarse', 'granularity-fine', 'granularity-finest',
-      'integration-verify', 'path-grounding', 'persist-until-done', 'restate-task',
-      'review-lenses', 'split-policy-behavior', 'split-policy-file', 'test-green-evidence',
-      'tier-basic', 'tier-basic-split', 'ui-consistency',
+      'granularity-coarse', 'granularity-fine', 'granularity-finest',
+      'integration-verify', 'review-lenses', 'split-policy-behavior', 'split-policy-file',
+      'test-green-evidence', 'tier-basic', 'tier-basic-split', 'ui-consistency',
     ]);
     assert.strictEqual(byId.get('test-green-evidence').enabled, true);
     assert.strictEqual(byId.get('ui-consistency').enabled, true);
