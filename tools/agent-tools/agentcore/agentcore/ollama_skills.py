@@ -20,10 +20,11 @@ import os
 import re
 from pathlib import Path
 
+from agentcore import slashroute
+
 # スキル名の規約（install.py が配布するディレクトリ名と同じ字種）。
-NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
-# 先頭ブロックのスラッシュ行。引数は自由文字列。
-_SLASH_LINE_RE = re.compile(r"^/([a-z0-9][a-z0-9._-]*)(?:[ \t]+(.*))?$")
+# 綴りの正典は slashroute——スキル名とスラッシュコマンド名は同じ名前空間にある。
+NAME_RE = slashroute.NAME_RE
 
 _FRONTMATTER_RE = re.compile(r"\A---\r?\n.*?\r?\n---[ \t]*\r?\n?", re.S)
 
@@ -96,19 +97,10 @@ def strip_frontmatter(text: str) -> str:
 def split_leading_slashes(prompt: str) -> "tuple[list[tuple[str, str]], str]":
     """先頭ブロックのスラッシュ行を取り出す → ([(name, args), …], 残りの本文)。
 
-    空行はブロックの終わりとみなす（空行の後ろは本文）。
+    切り出しの実装は `slashroute`（ルータが argv より先に読む行と同じもの）。ここは
+    既存の呼び出し元のための綴りとして残す。
     """
-    lines = (prompt or "").splitlines()
-    calls: "list[tuple[str, str]]" = []
-    index = 0
-    for index, line in enumerate(lines):
-        match = _SLASH_LINE_RE.match(line.strip())
-        if match is None:
-            break
-        calls.append((match.group(1), (match.group(2) or "").strip()))
-    else:
-        index = len(lines)
-    return calls, "\n".join(lines[index:]).lstrip("\n")
+    return slashroute.split_leading(prompt)
 
 
 def _render(name: str, path: Path, args: str) -> "tuple[str, bool]":

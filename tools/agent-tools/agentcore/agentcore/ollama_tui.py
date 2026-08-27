@@ -38,7 +38,7 @@ import sys
 import time
 from pathlib import Path
 
-from agentcore import ollama_events, ollama_skills
+from agentcore import ollama_events, ollama_skills, slashroute
 
 try:  # 環境によっては欠ける（readline 無しでビルドされた python 等）。
     import readline as _readline
@@ -290,18 +290,12 @@ def follow(path: "str | None" = None, out=None, from_start: bool = True) -> int:
     return 0
 
 
-_HELP = """\
-ローカルコマンド（LLM へは送りません）:
-  /skills          読めるスキルの一覧
-  /tools on|off    ツール実行ループの切り替え
-  /think on|off    思考モードの切り替え
-  /model <name>    モデルの切り替え
-  /ctx             直近の文脈使用量（使用トークン / 上限 / 割合）
-  /status          いまの進捗（JSON）
-  /keys            使えるキー操作の一覧
-  /help            この一覧
-  /quit            終了
-それ以外の行はプロンプトとして送ります（先頭の /<スキル名> は展開されます）。"""
+# 一覧も候補も判定も、正典は `slashroute` の種別 A の表 1 枚（設計 2026-08-27 §3.2）。
+# ここに綴りを 2 度書かない——「/help に出るのに効かない」「補完に出ない」が静かに
+# 起きるのは、同じ表を 3 か所に書いていたからである。
+_HELP = ("ローカルコマンド（LLM へは送りません）:\n"
+         + slashroute.render_help() + "\n"
+         "それ以外の行はプロンプトとして送ります（先頭の /<スキル名> は展開されます）。")
 
 _KEYS = """\
 キー操作（本物の端末で対話しているときだけ効きます）:
@@ -315,10 +309,9 @@ _KEYS = """\
 キー割り当ては ~/.inputrc で変えられます（readline の設定がそのまま効きます）。
 AGENT_OLLAMA_NO_READLINE=1 で行編集を切れます（素の 1 行読みに戻ります）。"""
 
-# ローカルコマンド（Tab 補完の候補。`/help` の一覧と揃える）。
-_LOCAL_COMMANDS = ("/ctx", "/exit", "/help", "/keys", "/model", "/quit", "/skills",
-                   "/status", "/think", "/tools")
-_ONOFF_COMMANDS = ("/tools", "/think")
+# ローカルコマンド（Tab 補完の候補）。表から引くので `/help` と必ず揃う。
+_LOCAL_COMMANDS = slashroute.spellings(slashroute.KIND_SESSION)
+_ONOFF_COMMANDS = slashroute.onoff_spellings(slashroute.KIND_SESSION)
 _HISTORY_LIMIT = 1000
 
 
@@ -490,54 +483,53 @@ def _loop(reader, runner, *, model: str, tools: bool, think: "bool | None", out)
         text = line.strip()
         if not text:
             continue
-        lowered = text.lower()
-        if lowered in ("/quit", "/exit"):
-            return 0
-        if lowered == "/help":
-            print(_HELP, file=out)
-            continue
-        if lowered == "/keys":
-            print(_KEYS.format(history=history_path()), file=out)
-            if not reader.enabled:
-                print("（いまは行編集が無効です: 端末ではないか、"
-                      "AGENT_OLLAMA_NO_READLINE=1 が効いています）", file=out)
-            continue
-        if lowered == "/skills":
-            found = ollama_skills.list_skills()
-            if not found:
-                print("スキルが見つかりません（探索先: "
-                      + ", ".join(str(d) for d in ollama_skills.skill_dirs()) + "）", file=out)
-            for name, path in found:
-                print(f"  /{name}  {path}", file=out)
-            continue
-        if lowered.startswith("/tools"):
-            arg = lowered.replace("/tools", "").strip()
-            tools = arg in ("on", "true", "1", "yes") if arg else not tools
-            print(f"tools={'on' if tools else 'off'}", file=out)
-            continue
-        if lowered.startswith("/think"):
-            arg = lowered.replace("/think", "").strip()
-            think = True if arg in ("on", "true", "1", "yes") else (
-                False if arg in ("off", "false", "0", "no") else None)
-            print(f"think={'既定' if think is None else ('on' if think else 'off')}", file=out)
-            continue
-        if lowered.startswith("/model"):
-            arg = text[len("/model"):].strip()
-            if arg:
-                model = arg
-            print(f"model={model}", file=out)
-            continue
-        if lowered == "/ctx":
-            snap = ollama_events.read_status()
-            if not snap.get("context_used"):
-                print("まだ文脈使用量を観測していません（1 回実行すると出ます）。", file=out)
-            else:
-                print(f"  {context_text(snap.get('context_used'), snap.get('context_limit'), snap.get('context_pct'))}"
-                      f"  実測元={snap.get('context_source', '')}", file=out)
-            continue
-        if lowered == "/status":
-            import json as _json
-            print(_json.dumps(ollama_events.read_status(), ensure_ascii=False), file=out)
+        # 先頭 1 行をルータへ渡す（設計 2026-08-27 §3.2）。表に載っていれば種別 A の
+        # セッション操作、載っていなければ本文——`/<スキル名>` の展開は本文側の仕事で、
+        # ここでは触らない。人が打つ面なので大小文字は無視する。
+        parsed = slashroute.parse_line(text, casefold=True)
+        command = slashroute.resolve(parsed[0]) if parsed else None
+        if command is not None and command.kind == slashroute.KIND_SESSION and (
+                command.takes_args or not parsed[1]):
+            arg = parsed[1]
+            if command.name == "quit":
+                return 0
+            if command.name == "help":
+                print(_HELP, file=out)
+            elif command.name == "keys":
+                print(_KEYS.format(history=history_path()), file=out)
+                if not reader.enabled:
+                    print("（いまは行編集が無効です: 端末ではないか、"
+                          "AGENT_OLLAMA_NO_READLINE=1 が効いています）", file=out)
+            elif command.name == "skills":
+                found = ollama_skills.list_skills()
+                if not found:
+                    print("スキルが見つかりません（探索先: "
+                          + ", ".join(str(d) for d in ollama_skills.skill_dirs()) + "）", file=out)
+                for name, path in found:
+                    print(f"  /{name}  {path}", file=out)
+            elif command.name == "tools":
+                low = arg.lower()
+                tools = low in ("on", "true", "1", "yes") if low else not tools
+                print(f"tools={'on' if tools else 'off'}", file=out)
+            elif command.name == "think":
+                low = arg.lower()
+                think = True if low in ("on", "true", "1", "yes") else (
+                    False if low in ("off", "false", "0", "no") else None)
+                print(f"think={'既定' if think is None else ('on' if think else 'off')}", file=out)
+            elif command.name == "model":
+                if arg:
+                    model = arg
+                print(f"model={model}", file=out)
+            elif command.name == "ctx":
+                snap = ollama_events.read_status()
+                if not snap.get("context_used"):
+                    print("まだ文脈使用量を観測していません（1 回実行すると出ます）。", file=out)
+                else:
+                    print(f"  {context_text(snap.get('context_used'), snap.get('context_limit'), snap.get('context_pct'))}"
+                          f"  実測元={snap.get('context_source', '')}", file=out)
+            elif command.name == "status":
+                import json as _json
+                print(_json.dumps(ollama_events.read_status(), ensure_ascii=False), file=out)
             continue
 
         renderer = Renderer(out=out)

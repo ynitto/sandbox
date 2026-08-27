@@ -94,9 +94,9 @@ basename(argv[0])       解決されるサブコマンド        残りの引数
 
 ### 4.0 用途別の起動形は profile であって別エージェントではない
 
-`agents/*.json` は **1 ファイル = 1 エージェント**である。同梱定義は **8 件**
-（`aider` / `ollama` / `opencode` / `claude` / `codex` / `kiro` / `copilot` / `cursor`）で、
-用途で使い分ける起動差は定義の中の `profiles` に置く:
+`agents/*.json` は **1 ファイル = 1 エージェント**である。同梱定義は **9 件**
+（`aider` / `ollama` / `opencode` / `claude` / `codex` / `kiro` / `copilot` / `cursor` /
+`vscode-copilot`）で、用途で使い分ける起動差は定義の中の `profiles` に置く:
 
 ```
 $ agent-herd defs

@@ -34,9 +34,13 @@ import threading
 import time
 from pathlib import Path
 
+from agentcore import slashroute
 from agentcore.harness import _borrowed
 
-# 本文が stdlib 以外に借りる名前はこの 3 つだけ（agent-loop の断片だった頃から不変）。
+# `slashroute` は host の事情を持たない（stdlib の re だけ）ルート表なので、継ぎ目を
+# 通さず直に借りる——スラッシュ行の解釈は agent-loop / TUI / ここで 1 つでなければ
+# ならないもので、host ごとに差し替わってはいけない（設計 2026-08-27 §3.2）。
+# 本文が host から借りる名前は下の 3 つだけ（agent-loop の断片だった頃から不変）。
 # ここで同じ綴りへ束ねるので、本文は host の事情を知らないまま書ける。
 agent_home_subdir = _borrowed.agent_home_subdir
 _import_agentcli = _borrowed.import_agentcli
@@ -1403,22 +1407,16 @@ def run_prompt(*, goal: str, cwd: str, agent: dict, log_file: str,
     以前は headless 経路で黙って捨てていた（対話ペインへ send-keys する前提の機能
     だったため）。層2（tool-loop 内蔵 CLI）へはネイティブのスラッシュコマンドとして
     本文先頭へ前置し、層3（single-shot）へはスキルとして解決してツールループへ渡す。
+
+    **行の解釈そのものは `slashroute` が持つ**（設計 2026-08-27 §3.2）。ここに残るのは
+    「この CLI にネイティブのスラッシュがあるか」の 1 判定だけで、その判定はいま層
+    （`headless_autonomy`）から引いている。
     """
-    lines = [str(s).strip() for s in (slash or []) if str(s).strip()]
-    if str(agent["spec"].get("headless_autonomy") or "single-shot") == "tool-loop":
-        if lines:
-            goal = "\n".join("/" + line for line in lines) + "\n\n" + goal
+    native = str(agent["spec"].get("headless_autonomy") or "single-shot") == "tool-loop"
+    goal, skill_names = slashroute.apply_to_goal(goal, slash or [], native=native)
+    if native:
         return run_cli_loop(goal=goal, cwd=cwd, agent=agent, log_file=log_file,
                             acceptance=acceptance, judge=judge)
-    skill_names: list[str] = []
-    for line in lines:
-        name, _, args = line.partition(" ")
-        if name not in skill_names:
-            skill_names.append(name)
-        note = f"`{name}` スキルの手順に従って実行してください。"
-        if args.strip():
-            note += f"（引数: {args.strip()}）"
-        goal = note + "\n" + goal
     return run_goal(goal=goal, cwd=cwd, agent=agent, log_file=log_file,
                     acceptance=acceptance, tag=tag, judge=judge, skills=skill_names)
 
