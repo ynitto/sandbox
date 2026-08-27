@@ -8,6 +8,7 @@ const vscode = require('vscode');
 const MAX_BODY = 1024 * 1024;
 const endpointFile = () => process.env.VSCODE_COPILOT_BRIDGE_FILE ||
   path.join(os.homedir(), '.vscode-copilot-bridge.json');
+const configuredPort = () => Number.parseInt(process.env.VSCODE_COPILOT_BRIDGE_PORT || '0', 10);
 
 function json(response, status, body) {
   const payload = Buffer.from(JSON.stringify(body));
@@ -95,16 +96,24 @@ function activate(context) {
   let server;
   const start = () => {
     if (server) server.close();
-    const token = crypto.randomBytes(32).toString('hex');
+    const token = process.env.VSCODE_COPILOT_BRIDGE_TOKEN || crypto.randomBytes(32).toString('hex');
     server = createServer(token);
-    server.listen(0, '127.0.0.1', () => writeEndpoint(server, token));
+    server.listen(configuredPort(), '127.0.0.1', () => {
+      // WSL launcher modeではCLIがport/tokenを既に保持しているので、Windows側へ
+      // discovery fileを重複して書かない。
+      if (!process.env.VSCODE_COPILOT_BRIDGE_TOKEN) writeEndpoint(server, token);
+    });
     server.on('error', error => vscode.window.showErrorMessage(`Copilot Bridge: ${error.message}`));
   };
   start();
   context.subscriptions.push(
     vscode.commands.registerCommand('vscodeCopilotBridge.restart', start),
     { dispose: () => server && server.close() },
-    { dispose: () => { try { fs.unlinkSync(endpointFile()); } catch (_) {} } },
+    { dispose: () => {
+      if (!process.env.VSCODE_COPILOT_BRIDGE_TOKEN) {
+        try { fs.unlinkSync(endpointFile()); } catch (_) {}
+      }
+    } },
   );
 }
 

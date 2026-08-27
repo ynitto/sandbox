@@ -1,6 +1,6 @@
 # VS Code Copilot Language Model Bridge
 
-自作 CLI から、VS Code にログイン済みの Copilot モデルを公式の Language Model API
+WSL上の自作 CLI から、Windows VS Codeにログイン済みのCopilotモデルを公式のLanguage Model API
 （`vscode.lm`）経由で呼ぶ最小構成です。`code chat` の UI 起動ではなく、回答を stdout に
 返します。
 
@@ -18,8 +18,20 @@ vscode-copilot-chat (Python CLI)
 
 ```bash
 bash tools/vscode-copilot-chat/install.sh
-# VS Code を完全に再起動
-vscode-copilot-chat "このリポジトリを要約して"
+vscode-copilot-chat --start "このリポジトリを要約して"
+```
+
+`--start`はWSLのカレントディレクトリを`wslpath -w`でWindows pathへ変換し、PowerShell
+から`code --user-data-dir ... --new-window <current-directory>`を実行します。専用
+`--user-data-dir`を使うのは、既に起動中のVS Codeへ接続してport/tokenの環境変数が失われる
+のを防ぐためです。CLI自身が既定port `32190`と生成したtokenを保持するため、Windows側の
+ホームディレクトリから接続情報を探す必要はありません。portは`--port`で固定できます。
+
+起動だけを行う場合と、同じbridgeへ続けて問い合わせる場合:
+
+```bash
+vscode-copilot-chat --start-only --start --port 32191
+vscode-copilot-chat "次の質問"
 ```
 
 初回リクエスト時に VS Code がモデル利用の同意を求める場合は許可してください。モデルが
