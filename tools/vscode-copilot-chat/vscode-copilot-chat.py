@@ -116,6 +116,20 @@ def _consume_stream(response, on_delta) -> dict:
     return {"text": "".join(chunks), "model": model}
 
 
+def _urlopen(req: urllib.request.Request, timeout: float):
+    """bridge へのリクエストを投げ、失敗を利用者向けの RuntimeError へ翻訳する。"""
+    try:
+        return urllib.request.urlopen(req, timeout=timeout)
+    except urllib.error.HTTPError as exc:
+        try:
+            message = json.load(exc).get("error", exc.reason)
+        except Exception:
+            message = exc.reason
+        raise RuntimeError(f"bridge error ({exc.code}): {message}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"bridge に接続できません: {exc.reason}") from exc
+
+
 def request(endpoint: dict[str, object], messages: list[dict[str, str]], family: str | None,
             timeout: float, on_delta=None) -> dict:
     """会話全体を投げて応答を得る。on_delta を渡すと NDJSON ストリームで受け取る。"""
@@ -130,17 +144,42 @@ def request(endpoint: dict[str, object], messages: list[dict[str, str]], family:
         headers={"Authorization": f"Bearer {endpoint['token']}", "Content-Type": "application/json"},
         method="POST",
     )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as response:
-            return _consume_stream(response, on_delta) if on_delta is not None else json.load(response)
-    except urllib.error.HTTPError as exc:
-        try:
-            message = json.load(exc).get("error", exc.reason)
-        except Exception:
-            message = exc.reason
-        raise RuntimeError(f"bridge error ({exc.code}): {message}") from exc
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"bridge に接続できません: {exc.reason}") from exc
+    with _urlopen(req, timeout) as response:
+        return _consume_stream(response, on_delta) if on_delta is not None else json.load(response)
+
+
+def tools_url(endpoint: dict[str, object]) -> str:
+    parsed = urllib.parse.urlparse(str(endpoint["url"]))
+    return urllib.parse.urlunparse(parsed._replace(path="/v1/tools"))
+
+
+def fetch_tools(endpoint: dict[str, object], timeout: float) -> dict:
+    """VS Code に今そのとき登録されているツールを取る（vscode.lm.tools）。
+
+    中身は VS Code のバージョン・設定・入れている MCP サーバで変わるので、
+    どのツールを使えるかは推測せずここで実測する。
+    """
+    req = urllib.request.Request(
+        tools_url(endpoint),
+        headers={"Authorization": f"Bearer {endpoint['token']}"},
+        method="GET",
+    )
+    with _urlopen(req, timeout) as response:
+        return json.load(response)
+
+
+def format_tools(payload: dict) -> str:
+    tools = payload.get("tools") or []
+    if not tools:
+        return "VS Code に登録されているツールはありません。"
+    lines = [f"{len(tools)} 個のツールが VS Code に登録されています。"]
+    for tool in sorted(tools, key=lambda t: t.get("name", "")):
+        tags = f"  [{' '.join(tool['tags'])}]" if tool.get("tags") else ""
+        lines.append(f"  {tool.get('name')}{tags}")
+        summary = (tool.get("description") or "").strip().splitlines()
+        if summary:
+            lines.append(f"      {summary[0]}")
+    return "\n".join(lines)
 
 
 def is_command(line: str) -> bool:
@@ -238,6 +277,8 @@ def main() -> int:
     parser.add_argument("--family", help="モデル family の選択条件（例: gpt-4o）")
     parser.add_argument("--timeout", type=float, default=300, help="応答待ち秒数（既定: 300）")
     parser.add_argument("--json", action="store_true", help="モデル情報を含む JSON を出力")
+    parser.add_argument("--tools", action="store_true",
+                        help="VS Code に登録されているツールの一覧を出す（vscode.lm.tools）")
     parser.add_argument("-i", "--interactive", action="store_true",
                         help="対話モード（端末から起動し prompt を省略したときの既定）")
     parser.add_argument("--start", action="store_true",
@@ -247,7 +288,7 @@ def main() -> int:
     parser.add_argument("--code-bin", default="code", help="Windows側のcode command（既定: code）")
     args = parser.parse_args()
     # 端末から引数なしで起動したら対話。パイプ入力は従来どおり片道実行のまま。
-    interactive = args.interactive or (args.prompt is None and sys.stdin.isatty())
+    interactive = args.interactive or (args.prompt is None and not args.tools and sys.stdin.isatty())
     if interactive and args.json:
         parser.error("--json は対話モードでは使えません")
     try:
@@ -255,6 +296,12 @@ def main() -> int:
         endpoint = start_bridge(path, args.port, Path.cwd(), args.code_bin) if args.start else read_endpoint(path)
         if args.start_only:
             print(f"bridge starting: {endpoint['url']}")
+            return 0
+        if args.tools:
+            if args.start:
+                wait_for_bridge(endpoint, args.timeout)
+            payload = fetch_tools(endpoint, args.timeout)
+            print(json.dumps(payload, ensure_ascii=False) if args.json else format_tools(payload))
             return 0
         session = Session(args.family)
         if interactive:
