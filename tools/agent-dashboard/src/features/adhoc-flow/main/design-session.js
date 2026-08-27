@@ -346,6 +346,34 @@ function deleteSession(config, id) {
 
 // --- ラウンドの実行と回収 ------------------------------------------------------
 
+// agent-flow の詳細形式を、そのまま renderer へ漏らさず設計ペイン用の小さな進捗へ畳む。
+// 完了率だけでは単一工程が長く 0% に見えるため、実行中・待機中の工程数も運ぶ。
+function runProgress(run) {
+  const counts = (run && run.counts) || {};
+  const total = Math.max(0, Number(run && run.total) || 0);
+  const completed = Math.max(0, Number(counts.done || 0) + Number(counts.failed || 0));
+  const active = Math.max(0, Number(counts.claimed || 0) + Number(counts.parked || 0));
+  const hasPendingCounts = Object.prototype.hasOwnProperty.call(counts, 'pending')
+    || Object.prototype.hasOwnProperty.call(counts, 'waiting');
+  const pendingFromCounts = Number(counts.pending || 0) + Number(counts.waiting || 0);
+  const pending = Math.max(0, hasPendingCounts && Number.isFinite(pendingFromCounts)
+    ? pendingFromCounts : total - completed - active);
+  const rawPercent = Number(run && run.progress);
+  const percent = Math.max(0, Math.min(100, Math.round(
+    Number.isFinite(rawPercent) ? rawPercent * 100 : (total ? completed / total * 100 : 0)
+  )));
+  return {
+    phase: String((run && run.phase) || ''),
+    alive: run && typeof run.alive === 'boolean' ? run.alive : null,
+    heartbeatAt: (run && run.heartbeatAt) || null,
+    total,
+    completed,
+    active,
+    pending,
+    percent,
+  };
+}
+
 // run が終端していれば成果を取り込む。done は設計書と質問へ分けて保存し、失敗・中止は
 // 理由を残してラウンドを閉じる（セッションは消さない——同じ回答のまま再試行できる）。
 function harvest(config, session) {
@@ -353,29 +381,34 @@ function harvest(config, session) {
   const runDir = path.join(adhoc.resolveBusDir(config), 'runs', session.runId);
   if (!fs.existsSync(runDir)) return session;
   const run = adhoc.flow.readRun(runDir);
+  const progress = runProgress(run);
+  const withProgress = (next) => ({ ...next, runProgress: progress });
   const status = String(run.status || '');
   if (!['done', 'failed', 'cancelled', 'canceled'].includes(status)) {
-    return session.runStatus === status ? session : saveSession(config, { ...session, runStatus: status });
+    return withProgress(session.runStatus === status
+      ? session : saveSession(config, { ...session, runStatus: status }));
   }
   if (status !== 'done') {
-    return saveSession(config, {
+    return withProgress(saveSession(config, {
       ...session,
       runStatus: status,
       error: run.failureReason || `設計 run が ${status} で終わりました`,
-    });
+    }));
   }
   const output = sinkOutput(run);
   if (!output) {
-    return saveSession(config, { ...session, runStatus: status, error: '設計 run の成果が空でした' });
+    return withProgress(saveSession(config, {
+      ...session, runStatus: status, error: '設計 run の成果が空でした',
+    }));
   }
   const { document, questions } = splitDesignOutput(output);
   const missing = designDocumentIssues(config, document);
   if (missing.length) {
-    return saveSession(config, {
+    return withProgress(saveSession(config, {
       ...session,
       runStatus: status,
       error: `設計成果に必須項目が不足しています: ${missing.join('、')}`,
-    });
+    }));
   }
   const rounds = [...(session.rounds || [])];
   const last = rounds[rounds.length - 1];
@@ -383,7 +416,9 @@ function harvest(config, session) {
     last.questions = questions;
     last.finishedAt = new Date().toISOString();
   }
-  return saveSession(config, { ...session, runStatus: status, error: '', document, questions, rounds });
+  return withProgress(saveSession(config, {
+    ...session, runStatus: status, error: '', document, questions, rounds,
+  }));
 }
 
 function summarize(session) {
@@ -516,6 +551,7 @@ module.exports = {
   splitDesignOutput,
   sinkOutput,
   buildRoundRequest,
+  runProgress,
   normalizeSources,
   listSessions,
   getSession,

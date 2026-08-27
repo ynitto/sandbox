@@ -23,7 +23,7 @@ process.env.KIRO_AGENTS_DIR = path.join(REPO, 'agents');
 const recommendation = require('../src/features/orchestration/main/recommendation');
 const effectiveAgents = require('../src/features/orchestration/main/effective-agents');
 const herdFamily = require('../src/features/orchestration/main/herd-family');
-const profiles = require('../src/features/orchestration/main/profiles');
+const agents = require('../src/features/orchestration/main/agents');
 
 function qualification(id, status = 'qualified') {
   return {
@@ -96,6 +96,14 @@ function setup() {
   return { dir, cfg, file };
 }
 
+function assertVariantResolution(row, { base, profile }) {
+  const legacyName = `${base}-${profile}`;
+  const profileResolved = row.agent_cli === base && row.profile === profile;
+  const legacyResolved = row.agent_cli === legacyName && !row.profile;
+  assert.ok(profileResolved || legacyResolved,
+    `${legacyName} は ${base} + profile または後方互換の実体定義として解決します`);
+}
+
 test('推奨を読む（version が違えば読まない）', () => {
   const { cfg, file } = setup();
   assert.strictEqual(recommendation.load(cfg).exists, true);
@@ -117,10 +125,13 @@ test('点検は足りないものを言うだけで、埋めない', () => {
 
 test('クラウド枠の選択肢に一族は出ない', () => {
   const { cfg } = setup();
-  const choices = recommendation.cloudChoices(cfg, document());
+  const choices = recommendation.cloudChoices(cfg);
   assert.ok(choices.includes('claude'));
   for (const member of herdFamily.members(cfg)) {
     assert.ok(!choices.includes(member), `${member} は枠の選択肢ではない`);
+  }
+  for (const variant of agents.variantTargetNames(cfg)) {
+    assert.ok(!choices.includes(variant), `${variant} は内部 variant なので枠の選択肢ではない`);
   }
   assert.ok(!choices.includes('herd'));
 });
@@ -216,8 +227,7 @@ test('verify が 12b に化けることが表に出る（画面と実行の食�
   const entry = effectiveAgents.effectiveFor({}, 'ollama');
   assert.strictEqual(entry.model, 'gemma4:e4b');
   const verify = entry.rows.find((r) => r.purpose === 'verify');
-  assert.strictEqual(verify.agent_cli, 'ollama');
-  assert.strictEqual(verify.profile, 'verify');
+  assertVariantResolution(verify, { base: 'ollama', profile: 'verify' });
   assert.strictEqual(verify.model, 'gemma4:12b');
   assert.strictEqual(verify.model_swapped, true, 'モデルが変わることを明示する');
 });
@@ -232,8 +242,7 @@ test('人が明示したモデルは変種の既定より優先される（エ�
 test('aider は split だけ別の起動形へ振り替わる', () => {
   const entry = effectiveAgents.effectiveFor({}, 'aider');
   const split = entry.rows.find((r) => r.purpose === 'split');
-  assert.strictEqual(split.agent_cli, 'ollama');
-  assert.strictEqual(split.profile, 'list-thinking');
+  assertVariantResolution(split, { base: 'ollama', profile: 'list-thinking' });
   assert.ok(!entry.rows.some((r) => r.purpose === 'verify'),
     'aider は verify の振り替えを宣言していない（base のまま走る）');
 });

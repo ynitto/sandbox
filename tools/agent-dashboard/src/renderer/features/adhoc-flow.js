@@ -100,6 +100,7 @@
     designPreviewBusy: false,
     design: { sessions: [], current: null, busy: '', notice: '', timer: null, open: false },
     selectedRun: '',
+    selectedRunNode: '',
     selectedPreparation: '',
     runDetail: null,
     editor: null,
@@ -124,6 +125,44 @@
     executionDialog: null,
   };
   const esc = (s) => root.esc(String(s == null ? '' : s));
+
+  function captureWorkflowUiState(container) {
+    if (!container) return null;
+    const scroll = {};
+    const scrollers = [container, ...container.querySelectorAll('[data-workflow-scroll-key]')];
+    scrollers.forEach((element, index) => {
+      const key = index === 0 ? '__root__' : element.dataset.workflowScrollKey;
+      if (key) scroll[key] = { top: element.scrollTop, left: element.scrollLeft };
+    });
+    const details = {};
+    container.querySelectorAll('[data-workflow-details-key]').forEach((element) => {
+      details[element.dataset.workflowDetailsKey] = element.open;
+    });
+    return { scroll, details };
+  }
+
+  function restoreWorkflowUiState(container, ui) {
+    if (!container || !ui) return;
+    container.querySelectorAll('[data-workflow-details-key]').forEach((element) => {
+      const key = element.dataset.workflowDetailsKey;
+      if (Object.prototype.hasOwnProperty.call(ui.details || {}, key)) element.open = ui.details[key];
+    });
+    const scrollers = [container, ...container.querySelectorAll('[data-workflow-scroll-key]')];
+    scrollers.forEach((element, index) => {
+      const key = index === 0 ? '__root__' : element.dataset.workflowScrollKey;
+      const pos = ui.scroll && ui.scroll[key];
+      if (pos) {
+        element.scrollTop = pos.top;
+        element.scrollLeft = pos.left;
+      }
+    });
+  }
+
+  function setSelectedRun(runId) {
+    const next = String(runId || '');
+    if (next !== st.selectedRun) st.selectedRunNode = '';
+    st.selectedRun = next;
+  }
 
   function workflowPurpose(value) {
     return String(value || '').trim() === 'design' ? 'design' : 'implementation';
@@ -886,10 +925,14 @@
   }
 
   async function refreshNeeds() {
+    const pane = $id('tab-workflow-needs');
+    const active = pane && pane.classList.contains('active');
+    const hasDraft = active && workflowNeedsDraftActive(pane);
     await loadOverview({ includeRun: false });
     renderWorkflowNeedsBadge();
-    const pane = $id('tab-workflow-needs');
-    if (pane && pane.classList.contains('active')) renderNeeds();
+    if (active) {
+      if (!hasDraft) renderNeeds();
+    }
   }
 
   function flowOptions(ov) {
@@ -983,7 +1026,7 @@
     if (!target) return;
     target.innerHTML = sidebarRunsHtml(st.overview || {});
     target.querySelectorAll('[data-workflow-run-id]').forEach((button) => button.addEventListener('click', async () => {
-      st.selectedRun = button.dataset.workflowRunId;
+      setSelectedRun(button.dataset.workflowRunId);
       st.runView = 'overview';
       try { st.runDetail = await api().adhocFlowRun({ runId: st.selectedRun }); }
       catch (err) { st.notice = String((err && err.message) || err); }
@@ -1008,6 +1051,7 @@
     return (interactions || []).map((item) => {
       const disabled = item.resolution || item.expired || item.responded;
       const state = item.resolution ? '回答済み' : item.expired ? '期限切れ' : item.responded ? '回答送信済み' : '回答待ち';
+      const options = item.options || [];
       const comment = item.mode === 'input' ? ''
         : '<label>コメント（任意）<textarea data-interaction-comment rows="2"></textarea></label>';
       let control;
@@ -1015,7 +1059,7 @@
         control = `<div class="qf-row"><button type="button" class="primary" data-interaction-submit="approved" ${disabled ? 'disabled' : ''}>承認</button>
           <button type="button" data-interaction-submit="rejected" ${disabled ? 'disabled' : ''}>却下</button></div>`;
       } else if (item.mode === 'choice') {
-        control = `<label>回答<select data-interaction-option ${disabled ? 'disabled' : ''}>${(item.options || []).map((option) =>
+        control = `<label>回答<select data-interaction-option data-initial-value="${esc(options[0] || '')}" ${disabled ? 'disabled' : ''}>${options.map((option) =>
     `<option value="${esc(option)}">${esc(option)}</option>`).join('')}</select></label>
           <button type="button" class="primary" data-interaction-submit="choice" ${disabled ? 'disabled' : ''}>回答する</button>`;
       } else {
@@ -1076,10 +1120,13 @@
     if (!detail || !detail.run) return '';
     const run = detail.run;
     const inbox = detail.inbox || {};
+    const selectedNode = st.selectedRunNode && (run.nodes || {})[st.selectedRunNode];
     let graph = '';
-    try { graph = root.renderTaskFlow ? root.renderTaskFlow(run) : ''; } catch { /* 結果表示は続ける */ }
-    const outputs = Object.values(run.nodes || {}).filter((n) => n.output || n.data).map((n) =>
-      `<details><summary>${esc(n.id)} · ${esc(statusLabel(n.state))}</summary><pre class="qf-output">${esc(String(n.output || JSON.stringify(n.data || '', null, 2)).slice(0, 4000))}</pre></details>`).join('');
+    try {
+      graph = root.renderTaskFlow
+        ? root.renderTaskFlow(run, selectedNode ? selectedNode.id : '', detail.nodeEvents || {}, false)
+        : '';
+    } catch { /* 結果表示は続ける */ }
     const flowName = inbox.plan ? inbox.plan.name : inbox.pattern || '自動';
     const overrides = inbox.execution_overrides || {};
     const overrideRows = [...Object.entries(overrides.roles || {}).map(([key, value]) => ['役割', key, value]),
@@ -1111,6 +1158,14 @@
     const terminal = ['done', 'failed', 'cancelled', 'canceled'].includes(String(run.status));
     const folder = runFolder(detail);
     const advice = workflowRunAdvice(detail);
+    let nodeDetail = '';
+    try {
+      nodeDetail = selectedNode && root.renderFlowNode
+        ? root.renderFlowNode(run, selectedNode, null, advice, {
+          nodeEvents: detail.nodeEvents || {}, standalone: true,
+        })
+        : '';
+    } catch { /* グラフ本体と他の実行情報は表示し続ける */ }
     const verify = integrationVerifyPresentation(run);
     const publication = publicationPresentation(run);
     const publicationBlock = publicationHtml(run);
@@ -1148,8 +1203,8 @@
     const graphView = `<div class="flow-graph-workspace"><section class="flow-graph-surface">
       <div class="flow-section-heading"><div><span class="summary-kicker">作業の流れ</span><h2>工程</h2></div>
         <span class="muted">工程と依存関係を確認できます</span></div><div class="qf-graph">${graph}</div></section>
-      <aside class="flow-node-detail"><span class="summary-kicker">工程の成果</span>
-        ${outputs || '<div class="empty">工程出力はまだありません。</div>'}</aside></div>`;
+      <aside class="flow-node-detail"><span class="summary-kicker">工程の内容</span>
+        ${nodeDetail || '<div class="empty">グラフの工程を選択してください</div>'}</aside></div>`;
     const historyView = `<section class="flow-history-view"><div class="flow-section-heading">
       <div><span class="summary-kicker">これまでの動き</span><h2>更新履歴</h2></div></div>
       <div class="events flow-events">${events || '<span class="muted">イベントはありません</span>'}</div>
@@ -1160,6 +1215,20 @@
     `<button data-run-view="${key}" class="flow-view-tab ${options.active === key ? 'active' : ''}">${label}</button>`).join('')}</div>
       <div class="flow-view-body">${options.body}</div></div>`);
     return shell({ active: st.runView, tabAttribute: 'data-run-view', backAttribute: 'data-flow-back', body: view });
+  }
+
+  function openWorkflowNodeOutput(detail, nodeId) {
+    const node = detail && detail.run && (detail.run.nodes || {})[nodeId];
+    const dialog = $id('dlg-technical-info');
+    const body = $id('technical-project-info');
+    if (!node || !dialog || !body) return;
+    $id('technical-info-kicker').textContent = '工程';
+    $id('technical-info-title').textContent = `${node.id} の出力`;
+    body.innerHTML = `<section class="developer-summary">
+      ${node.output ? `<h3>output</h3><pre class="mono developer-output">${esc(node.output)}</pre>` : '<p class="muted">テキスト出力はありません。</p>'}
+      ${node.data ? `<h3>data</h3><pre class="mono developer-output">${esc(JSON.stringify(node.data, null, 2))}</pre>` : ''}
+    </section>`;
+    dialog.showModal();
   }
 
   function overrideRowsHtml(ov, group, labels) {
@@ -1213,8 +1282,8 @@
 
   function designSessionListHtml() {
     const rows = st.design.sessions || [];
-    if (!rows.length) return '';
-    return `<div class="wf-design-sessions">${rows.map((item) => `<button type="button"
+    if (!rows.length) return '<p class="wf-design-empty-history">まだありません</p>';
+    return `<div class="wf-design-sessions" data-workflow-scroll-key="design-sessions">${rows.map((item) => `<button type="button"
       class="nav-item ${st.design.current && st.design.current.id === item.id ? 'selected' : ''}"
       data-design-open="${esc(item.id)}"><span>${esc(String(item.goal || item.id).slice(0, 48))}</span>
       <small>${esc(designStatusText(item))}</small></button>`).join('')}</div>`;
@@ -1241,12 +1310,47 @@
         ${st.design.busy ? 'disabled' : ''}>${esc(st.design.busy || '設計を開始')}</button></div></div>`;
   }
 
+  function designMarkdownHtml(value) {
+    if (typeof root.proseHtml === 'function') return root.proseHtml(value);
+    return `<div class="md"><p>${esc(value).replace(/\n/g, '<br>')}</p></div>`;
+  }
+
+  function designProgressHtml(session) {
+    const progress = session.runProgress || {};
+    const total = Math.max(0, Number(progress.total) || 0);
+    const completed = Math.max(0, Number(progress.completed) || 0);
+    const active = Math.max(0, Number(progress.active) || 0);
+    const pending = Math.max(0, Number(progress.pending) || 0);
+    const percent = Math.max(0, Math.min(100, Number(progress.percent) || 0));
+    const phase = String(progress.phase || '');
+    const phaseLabel = progress.alive === false ? '応答を待っています'
+      : ({ planning: '工程を準備しています', executing: '設計を作成しています',
+        evaluating: '内容を評価しています', verifying: '設計を検証しています',
+        finalizing: '成果をまとめています' }[phase] || '設計を作成しています');
+    const countLabel = total ? `${completed}/${total} 工程` : '工程を準備中';
+    return `<section class="wf-design-progress${progress.alive === false ? ' is-stalled' : ''}"
+      aria-label="設計の進捗" aria-live="polite">
+      <div class="wf-design-progress-heading"><div><span class="summary-kicker">現在の工程</span>
+        <strong>${esc(phaseLabel)}</strong></div><span>${esc(countLabel)}</span></div>
+      <div class="progress wf-design-progress-bar" role="progressbar" aria-label="設計の完了率"
+        aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent}">
+        <div style="width:${percent}%"></div></div>
+      <div class="wf-design-progress-meta"><span>完了 ${completed}</span><span>実行中 ${active}</span>
+        <span>待機 ${pending}</span></div>
+    </section>`;
+  }
+
   function designQuestionsHtml(session) {
     const questions = session.questions || [];
     if (!questions.length) return '';
-    return `<div class="wf-design-questions"><h4>質問</h4>${questions.map((question, index) =>
-      `<label class="wf-design-question"><span>${index + 1}. ${esc(question)}</span>
-        <textarea data-design-answer="${index}" rows="2"></textarea></label>`).join('')}</div>`;
+    return `<section class="wf-design-questions" aria-labelledby="wf-design-questions-title">
+      <div class="wf-design-pane-heading"><span class="summary-kicker">あなたの対応</span>
+        <h4 id="wf-design-questions-title">確認したいこと <small>${questions.length}件</small></h4></div>
+      ${questions.map((question, index) => `<label class="wf-design-question">
+        <span class="wf-design-question-number" aria-hidden="true">${index + 1}</span>
+        <span class="wf-design-question-copy">${designMarkdownHtml(question)}</span>
+        <textarea data-design-answer="${index}" rows="3" aria-label="質問 ${index + 1} への回答"
+          placeholder="回答を入力"></textarea></label>`).join('')}</section>`;
   }
 
   function designSessionHtml(session) {
@@ -1254,18 +1358,21 @@
     const document_ = String(session.document || '');
     const questions = session.questions || [];
     const rounds = (session.rounds || []).length;
+    const statusClass = running ? 'st-running' : questions.length ? 'st-review' : 'st-done';
     return `<div class="wf-design-current" data-design-id="${esc(session.id)}">
-      <div class="wf-section-head"><div><strong>${esc(String(session.goal || '').slice(0, 60))}</strong>
-        <span class="muted">ラウンド ${rounds} · ${esc(designStatusText(session))}</span></div>
+      <header class="wf-design-current-header"><div class="wf-design-current-title">
+        <span class="status-chip ${statusClass}">${esc(designStatusText(session))}</span>
+        <h3>${esc(String(session.goal || '').slice(0, 80))}</h3>
+        <span class="muted">ラウンド ${rounds}</span></div>
         <div class="qf-row"><button type="button" data-design-new>別の設計を始める</button>
-          <button type="button" data-design-delete>破棄</button></div></div>
+          <button type="button" data-design-delete>破棄</button></div></header>
       ${session.error ? `<p class="qf-failure">${esc(session.error)}</p>` : ''}
-      ${running ? '<p class="muted">設計 run の完了を待っています。閉じても進みます。</p>' : ''}
-      ${document_ ? `<details class="wf-design-doc"${questions.length ? '' : ' open'}>
-        <summary>設計書（${document_.length} 文字）</summary>
-        <pre class="qf-output">${esc(document_.slice(0, 12000))}</pre></details>` : ''}
+      ${running ? `${designProgressHtml(session)}<p class="wf-design-background-note">この画面を閉じても設計は続きます。</p>` : ''}
+      ${document_ ? `<details class="wf-design-doc" data-workflow-details-key="design-document"${questions.length ? '' : ' open'}>
+        <summary><span>現在の設計書</span><small>${document_.length}文字</small></summary>
+        <div class="wf-design-document" data-workflow-scroll-key="design-document">${designMarkdownHtml(document_.slice(0, 12000))}</div></details>` : ''}
       ${running ? '' : designQuestionsHtml(session)}
-      ${running || !document_ ? '' : `<label class="wf-design-feedback"><span>変更してほしいこと</span>
+      ${running || !document_ ? '' : `<label class="wf-design-feedback"><strong>変更してほしいこと</strong>
         <textarea data-design-feedback rows="3" placeholder="差し戻す理由と、直してほしい内容を入力してください"></textarea>
         <small>差し戻すと、この内容と現在の設計書を使って同じ設計フローをやり直します。</small></label>`}
       ${running ? '' : `<div class="qf-row wf-design-actions">
@@ -1277,13 +1384,35 @@
 
   function designCardHtml() {
     const current = st.design.current;
-    return `<details class="wf-design-card" id="wf-design"${st.design.open ? ' open' : ''}>
-      <summary>設計を練る<small>短いやりたいことから、実行できる設計書まで詰めます。</small></summary>
+    return `<details class="wf-design-card" id="wf-design" data-workflow-details-key="design-card"${st.design.open ? ' open' : ''}>
+      <summary><span>設計を練る</span><small>短いやりたいことから、実行できる設計書まで詰めます。</small></summary>
       <div class="wf-design-body">
         ${st.design.notice ? `<p class="qf-notice" role="status">${esc(st.design.notice)}</p>` : ''}
-        ${designSessionListHtml()}
-        ${current ? designSessionHtml(current) : designStartFormHtml()}
+        <div class="wf-design-workspace">
+          <aside class="wf-design-sidebar" aria-label="設計セッション">
+            <div class="wf-design-pane-heading"><span class="summary-kicker">履歴</span><strong>設計セッション</strong></div>
+            ${designSessionListHtml()}
+          </aside>
+          <main class="wf-design-main">${current ? designSessionHtml(current) : designStartFormHtml()}</main>
+        </div>
       </div></details>`;
+  }
+
+  function preparationPhaseTone(phase) {
+    if (phase === 'designing' || phase === 'implementing') return 'running';
+    if (phase === 'completed') return 'done';
+    if (phase === 'implementation-ready') return 'ready';
+    return 'review';
+  }
+
+  function preparationActionsHtml(item) {
+    const id = esc(item.id);
+    return `<button type="button" data-preparation-delete="${id}">削除</button>
+      ${item.phase === 'design-ready' ? `<button type="button" class="primary-inline" data-preparation-design="${id}">設計を開始</button>` : ''}
+      ${item.phase === 'designing' ? '<button type="button" class="primary-inline" disabled aria-disabled="true" title="設計が完了すると確認できます">設計を確認</button>' : ''}
+      ${item.phase === 'design-review' ? `<button type="button" class="primary-inline" data-preparation-open="${id}">設計を確認</button>` : ''}
+      ${item.phase === 'implementation-ready' ? `<button type="button" data-preparation-configure="${id}">モデルを選んで開始</button>
+        <button type="button" class="primary-inline" data-preparation-execute="${id}">実装を開始</button>` : ''}`;
   }
 
   function runHtml(ov) {
@@ -1305,13 +1434,9 @@
       <section class="wf-queue" aria-labelledby="wf-queue-title"><div class="wf-section-head"><div>
         <h3 id="wf-queue-title">作業準備</h3><span class="muted">${prepared.length}件</span></div></div>
         ${prepared.length ? prepared.map((item) => `<article class="wf-queue-item" data-preparation-id="${esc(item.id)}">
-          <div><span class="status-chip st-review">${esc(phaseLabel(item.phase))}</span><strong>${esc(item.title)}</strong>
+          <div><span class="status-chip wf-preparation-phase st-${preparationPhaseTone(item.phase)}">${esc(phaseLabel(item.phase))}</span><strong>${esc(item.title)}</strong>
             <small>${esc(routeLabel(item.route))} · ${esc(item.cwd || '対象フォルダ未指定')}</small></div>
-          <div class="qf-row"><button type="button" data-preparation-delete="${esc(item.id)}">削除</button>
-            ${item.phase === 'design-ready' ? `<button type="button" class="primary-inline" data-preparation-design="${esc(item.id)}">設計を開始</button>` : ''}
-            ${['designing', 'design-review'].includes(item.phase) ? `<button type="button" class="primary-inline" data-preparation-open="${esc(item.id)}">設計を確認</button>` : ''}
-            ${item.phase === 'implementation-ready' ? `<button type="button" data-preparation-configure="${esc(item.id)}">モデルを選んで開始</button>
-              <button type="button" class="primary-inline" data-preparation-execute="${esc(item.id)}">実装を開始</button>` : ''}</div></article>`).join('')
+          <div class="qf-row">${preparationActionsHtml(item)}</div></article>`).join('')
           : '<div class="empty">準備中のタスクはありません。「タスクを作成」から追加できます。</div>'}
       </section>
       ${queued.length ? `<details class="wf-legacy-queue"><summary>以前の実行待ち ${queued.length}件</summary>${queued.map((task) => `<article class="wf-queue-item" data-wf-task="${esc(task.id)}">
@@ -1948,8 +2073,10 @@
   function renderDesign() {
     const host = $id('wf-design-host');
     if (!host) return;
+    const ui = captureWorkflowUiState(host);
     host.innerHTML = designCardHtml();
     wireDesign(host);
+    restoreWorkflowUiState(host, ui);
   }
 
   async function loadDesign({ includeCurrent = true } = {}) {
@@ -1979,7 +2106,11 @@
       if (!id) { clearInterval(st.design.timer); st.design.timer = null; return; }
       try {
         const result = await api().designSessionGet({ id });
-        if (result.session.runStatus === 'running') return;
+        if (result.session.runStatus === 'running') {
+          st.design.current = result.session;
+          renderDesign();
+          return;
+        }
         st.design.current = result.session;
         if (st.selectedPreparation && api().preparationSyncDesign) {
           const synced = await api().preparationSyncDesign({ id: st.selectedPreparation });
@@ -1989,7 +2120,8 @@
         await loadDesign({ includeCurrent: false });
         clearInterval(st.design.timer);
         st.design.timer = null;
-        renderDesign();
+        if (st.selectedPreparation) renderRun();
+        else renderDesign();
       } catch { /* 次の周回で拾う */ }
     }, 5000);
   }
@@ -2170,19 +2302,33 @@
         <strong>${esc(item.prompt || '人の確認')}</strong><small>${esc(item.runId)}</small></button>`;
     }).join('');
     return `<section class="wf-page">
-      <div class="master-detail needs-layout"><aside class="master-list">${list || '<div class="empty">要対応はありません</div>'}</aside>
-        <main class="detail-panel">${selected ? interactionCardsHtml([selected]) : '<div class="empty">要対応はありません</div>'}</main></div></section>`;
+      <div class="master-detail needs-layout"><aside class="master-list" data-workflow-scroll-key="needs-list">${list || '<div class="empty">要対応はありません</div>'}</aside>
+        <main class="detail-panel" data-workflow-scroll-key="needs-detail">${selected ? interactionCardsHtml([selected]) : '<div class="empty">要対応はありません</div>'}</main></div></section>`;
+  }
+
+  function workflowNeedsDraftActive(pane) {
+    if (!pane) return false;
+    return [...pane.querySelectorAll('[data-interaction-text], [data-interaction-comment], [data-interaction-option]')]
+      .some((control) => {
+        const value = String(control.value || '');
+        if (Object.prototype.hasOwnProperty.call(control.dataset || {}, 'initialValue')) {
+          return value !== String(control.dataset.initialValue || '');
+        }
+        return Boolean(value.trim());
+      });
   }
 
   function renderNeeds() {
     const pane = $id('tab-workflow-needs');
     if (!pane) return;
+    const ui = captureWorkflowUiState(pane);
     pane.innerHTML = needsHtml(st.overview || {});
     pane.querySelectorAll('[data-workflow-need]').forEach((button) => button.addEventListener('click', () => {
       st.selectedNeed = button.dataset.workflowNeed;
       renderNeeds();
     }));
     wireInteractionResponses(pane, async () => { await loadOverview(); renderNeeds(); });
+    restoreWorkflowUiState(pane, ui);
   }
 
   async function loadDesignAssignmentPreview(workflow, sourceId = workflow && workflow.id) {
@@ -2617,7 +2763,7 @@
       const id = button.dataset.preparationExecute;
       try {
         const handed = await api().preparationHandoff({ id });
-        st.selectedRun = handed.result.runId;
+        setSelectedRun(handed.result.runId);
         st.notice = `実装を開始しました · ${handed.result.branch || handed.result.runId}`;
         await loadOverview();
       } catch (err) { st.notice = String(err.message || err); }
@@ -2677,7 +2823,7 @@
           ...(planning.splitPolicy ? { splitPolicy: planning.splitPolicy } : {}),
         });
         st.executionDialog = null;
-        st.selectedRun = handed.result.runId;
+        setSelectedRun(handed.result.runId);
         st.notice = `実装を開始しました · ${handed.result.runId}`;
         await loadOverview();
       } catch (err) {
@@ -2697,7 +2843,7 @@
       button.disabled = true;
       try {
         const result = await api().workflowTaskExecute({ id: button.dataset.wfTaskExecute });
-        st.selectedRun = result.runId;
+        setSelectedRun(result.runId);
         st.notice = `実行を開始しました · ${result.runId}`;
         await refresh();
       } catch (err) {
@@ -2707,14 +2853,14 @@
       }
     }));
     $id('wf-new-run')?.addEventListener('click', () => {
-      st.selectedRun = '';
+      setSelectedRun('');
       st.runDetail = null;
       st.notice = '';
       renderSidebar();
       renderRun();
     });
     pane.querySelector('[data-flow-back]')?.addEventListener('click', () => {
-      st.selectedRun = '';
+      setSelectedRun('');
       st.runDetail = null;
       st.notice = '';
       renderSidebar();
@@ -2771,7 +2917,7 @@
       renderRun();
       try {
         const result = await api().adhocFlowSubmit(payload);
-        st.selectedRun = result.runId;
+        setSelectedRun(result.runId);
         st.notice = `実行を開始しました · ${result.runId}`;
       } catch (err) {
         st.notice = String((err && err.message) || err);
@@ -2780,7 +2926,7 @@
       await refresh();
     });
     pane.querySelectorAll('[data-run-id]').forEach((row) => row.addEventListener('click', async () => {
-      st.selectedRun = row.dataset.runId;
+      setSelectedRun(row.dataset.runId);
       try { st.runDetail = await api().adhocFlowRun({ runId: st.selectedRun }); }
       catch (err) { st.notice = String((err && err.message) || err); }
       renderRun();
@@ -2790,10 +2936,30 @@
       st.runView = button.dataset.runView;
       renderRun();
     }));
+    pane.querySelectorAll('.qf-graph g.node[data-node]').forEach((node) => {
+      const select = () => {
+        st.selectedRunNode = node.dataset.node;
+        st.runView = 'graph';
+        renderRun();
+      };
+      node.addEventListener('click', select);
+      node.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          select();
+        }
+      });
+    });
+    pane.querySelectorAll('[data-workflow-node-output]').forEach((button) => button.addEventListener('click', () => {
+      openWorkflowNodeOutput(st.runDetail, button.dataset.workflowNodeOutput);
+    }));
+    pane.querySelectorAll('[data-workflow-node-chat]').forEach((button) => button.addEventListener('click', () => {
+      if (typeof root.openNodeChat === 'function') root.openNodeChat(button.dataset.workflowNodeChat, st.runDetail);
+    }));
     $id('wf-resubmit')?.addEventListener('click', async () => {
       try {
         const result = await api().adhocFlowResubmit({ runId: st.selectedRun });
-        st.selectedRun = result.runId;
+        setSelectedRun(result.runId);
         st.notice = `再実行しました · ${result.runId}`;
       } catch (err) { st.notice = String((err && err.message) || err); }
       await refresh();
@@ -2816,7 +2982,7 @@
     $id('wf-delete-run')?.addEventListener('click', async () => {
       try {
         await api().adhocFlowDeleteRun({ runId: st.selectedRun });
-        st.selectedRun = '';
+        setSelectedRun('');
         st.runDetail = null;
       } catch (err) { st.notice = String((err && err.message) || err); }
       await refresh();
@@ -3269,6 +3435,10 @@
     integrationVerifyPresentation,
     ciPresentation,
     workflowRunAdvice,
+    runDetailHtml,
+    workflowNeedsDraftActive,
+    captureWorkflowUiState,
+    restoreWorkflowUiState,
     flowOptions,
     selectionFrom,
     selectedFlowSummaryHtml,
@@ -3303,6 +3473,11 @@
     readinessCheck,
     REQUEST_TEMPLATE,
     executionOverridesForMode,
+    designProgressHtml,
+    designQuestionsHtml,
+    designSessionHtml,
+    designCardHtml,
+    preparationActionsHtml,
     planningFieldsHtml,
     PLANNING_FIELDS,
     edgePath,

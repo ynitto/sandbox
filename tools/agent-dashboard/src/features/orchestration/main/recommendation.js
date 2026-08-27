@@ -108,7 +108,7 @@ function preflight(cfg, document) {
   });
 
   // (4) クラウド枠を埋められるか（検出できた CLI）。
-  const cloud = cloudChoices(cfg, document);
+  const cloud = cloudChoices(cfg);
   rows.push({
     id: 'cloud',
     ok: cloud.length > 0,
@@ -122,7 +122,7 @@ function preflight(cfg, document) {
 
 // 枠へ入れられる候補（一族の外＝クラウド側の定義名）。**値は推奨が決めない**ので、
 // ここは選択肢を並べるだけ。
-function cloudChoices(cfg, document) {
+function cloudChoices(cfg) {
   const family = new Set(herdFamily.members(cfg));
   const inventory = agents.list(cfg);
   const names = new Set(inventory.builtins);
@@ -131,6 +131,7 @@ function cloudChoices(cfg, document) {
     names.add(dropin.name);
   }
   for (const name of family) names.delete(name);
+  for (const name of agents.variantTargetNames(cfg)) names.delete(name);
   names.delete(herdFamily.HERD);
   return [...names].sort();
 }
