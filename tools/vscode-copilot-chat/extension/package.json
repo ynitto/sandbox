@@ -1,0 +1,17 @@
+{
+  "name": "vscode-copilot-bridge",
+  "displayName": "Local Copilot Language Model Bridge",
+  "description": "Expose VS Code's Language Model API to an authenticated localhost CLI.",
+  "version": "0.1.0",
+  "publisher": "local",
+  "engines": { "vscode": "^1.90.0" },
+  "categories": ["Other"],
+  "main": "./extension.js",
+  "activationEvents": ["onStartupFinished"],
+  "contributes": {
+    "commands": [{
+      "command": "vscodeCopilotBridge.restart",
+      "title": "Copilot Bridge: Restart Local Server"
+    }]
+  }
+}
