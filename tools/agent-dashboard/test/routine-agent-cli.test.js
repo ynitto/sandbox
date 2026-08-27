@@ -307,6 +307,30 @@ test('業務ごとの実行エージェント設定は自動割り当てより�
   assert.deepStrictEqual(autoRow.execution, { agent_cli: 'ollama', model: 'base-model' });
 });
 
+test('今すぐ実行の明示選択は project YAML と control の候補より優先する', () => {
+  const repo = emptyRepo();
+  fs.writeFileSync(path.join(repo, 'agent-project.yaml'),
+    'agent_cli: claude\nmodel: yaml-model\n');
+  const config = configWithControl({
+    workloads: { routine: { agent_cli: 'ollama', model: 'control-model' } },
+  });
+  writeProfiles(config, {
+    tiers: {
+      large: {
+        order: 30,
+        label: '高性能',
+        candidates: [{ agent_cli: 'codex', model: 'dashboard-model' }],
+      },
+    },
+  });
+  const selected = cowork.resolveRoutineAgent(config, repo, {
+    tier: 'large', agent_cli: 'codex', model: 'dashboard-model',
+  });
+  assert.strictEqual(selected.cli, 'codex');
+  assert.strictEqual(selected.model, 'dashboard-model');
+  assert.strictEqual(selected.source, 'tier:large');
+});
+
 test('発見項目の実行エージェント設定は対応表で持ち、実体ファイルを変更しない', () => {
   const config = configWithControl({ workloads: { routine: { agent_cli: 'ollama' } } }, {
     cowork: {

@@ -390,8 +390,9 @@ function dynamicState(item, cfg, { probeProcess = false } = {}, config = null) {
 }
 
 // 業務ごとの実行エージェント設定（{ tier, agent_cli, model } | null）。
-// 自動割り当て（resolveAgent / profiles）より優先する人の選択で、「今すぐ実行」の
-// 一回限りの選択とは別物——ここに書かれた値だけが毎回の実行に効く。
+// 自動割り当て（resolveAgent / profiles）より優先する人の選択。「今すぐ実行」で今回だけ
+// 渡された選択も、保存済みの業務設定も、起動 argv / interactive launch spec へ直接固定する。
+// したがって agent-loop.yaml・project/flow 設定・control の tier 候補より強い。
 function normalizeExecutionChoice(raw) {
   if (!raw || typeof raw !== 'object') return null;
   const tier = String(raw.tier || '').trim();
@@ -997,7 +998,9 @@ function runLoop(config, itemIdValue, parameters, tier = '') {
   const cfg = config.cowork || {};
   const item = resolveItem(config, itemIdValue);
   if (!item) throw new Error(`Cowork 作業が見つかりません: ${itemIdValue}`);
-  // 優先順: 今回だけの選択（今すぐ実行）＞業務の設定＞自動割り当て。
+  // 優先順: 今回だけの選択（今すぐ実行）＞業務の設定＞ YAML ＞自動割り当て。
+  // 選択結果は下で --agent-cli/--model または launch spec に固定するため、daemon 起動時の
+  // control/YAML 解決へ戻してはならない。
   tier = tier || storedExecutionChoice(config, item) || '';
   const spec = routineParameterSpec(config, item);
   const values = validateParameters(spec, parameters);
@@ -1076,7 +1079,7 @@ function runStateMachine(config, itemIdValue, parameters, tier = '') {
   const cfg = config.cowork || {};
   const item = resolveItem(config, itemIdValue);
   if (!item) throw new Error(`Cowork 定型業務が見つかりません: ${itemIdValue}`);
-  // 優先順: 今回だけの選択（今すぐ実行）＞業務の設定＞自動割り当て。
+  // 優先順: 今回だけの選択（今すぐ実行）＞業務の設定＞ YAML ＞自動割り当て。
   tier = tier || storedExecutionChoice(config, item) || '';
   const cwd = launchCwd(item, config) || process.cwd();
   const spec = routineParameterSpec(config, item);
