@@ -5,10 +5,15 @@ const os = require('os');
 const path = require('path');
 const vscode = require('vscode');
 
-const MAX_BODY = 1024 * 1024;
+// 会話履歴を丸ごと受けるので、単発 prompt 時代の 1 MiB では長い対話が入らない。
+const MAX_BODY = 4 * 1024 * 1024;
 const endpointFile = () => process.env.VSCODE_COPILOT_BRIDGE_FILE ||
   path.join(os.homedir(), '.vscode-copilot-bridge.json');
 const configuredPort = () => Number.parseInt(process.env.VSCODE_COPILOT_BRIDGE_PORT || '0', 10);
+
+function badRequest(message) {
+  return Object.assign(new Error(message), { status: 400 });
+}
 
 function json(response, status, body) {
   const payload = Buffer.from(JSON.stringify(body));
@@ -35,16 +40,35 @@ function readBody(request) {
     });
     request.on('end', () => {
       try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); }
-      catch (_) { reject(Object.assign(new Error('body must be valid JSON'), { status: 400 })); }
+      catch (_) { reject(badRequest('body must be valid JSON')); }
     });
     request.on('error', reject);
   });
 }
 
-async function askCopilot(body, cancellationToken) {
-  if (!body || typeof body.prompt !== 'string' || !body.prompt.trim()) {
-    throw Object.assign(new Error('prompt must be a non-empty string'), { status: 400 });
+// 会話状態は CLI 側が持ち、拡張は毎回すべての手番を受け取る stateless な変換器でいる。
+// bridge を再起動しても会話が消えず、複数の CLI セッションが 1 つの拡張を同時に使える。
+function toMessages(body) {
+  if (body && Array.isArray(body.messages)) {
+    if (!body.messages.length) throw badRequest('messages must not be empty');
+    return body.messages.map((message, index) => {
+      const content = message && typeof message.content === 'string' ? message.content : '';
+      if (!content.trim()) throw badRequest(`messages[${index}].content must be a non-empty string`);
+      const role = message.role;
+      if (role === 'assistant') return vscode.LanguageModelChatMessage.Assistant(content);
+      if (role === 'user') return vscode.LanguageModelChatMessage.User(content);
+      throw badRequest(`messages[${index}].role must be "user" or "assistant"`);
+    });
   }
+  // 単発 prompt は旧 CLI との互換のために残す。
+  if (body && typeof body.prompt === 'string' && body.prompt.trim()) {
+    return [vscode.LanguageModelChatMessage.User(body.prompt)];
+  }
+  throw badRequest('messages[] or a non-empty prompt is required');
+}
+
+async function askCopilot(body, cancellationToken, onDelta) {
+  const messages = toMessages(body);
   const selector = { vendor: 'copilot' };
   if (body.family) selector.family = body.family;
   const models = await vscode.lm.selectChatModels(selector);
@@ -52,11 +76,38 @@ async function askCopilot(body, cancellationToken) {
     throw Object.assign(new Error('no Copilot chat model is available in VS Code'), { status: 503 });
   }
   const model = models[0];
-  const messages = [vscode.LanguageModelChatMessage.User(body.prompt)];
   const response = await model.sendRequest(messages, {}, cancellationToken);
   let text = '';
-  for await (const fragment of response.text) text += fragment;
+  for await (const fragment of response.text) {
+    text += fragment;
+    if (onDelta) onDelta(fragment);
+  }
   return { text, model: { id: model.id, family: model.family, name: model.name } };
+}
+
+// NDJSON: {"delta":"..."} を流し、最後に {"done":true,"model":{...}}。最初の 1 片を書くまでは
+// ヘッダを送らないので、モデル不在などの失敗は従来どおり HTTP status 付きの JSON で返る。
+async function streamChat(response, body, cancellationToken) {
+  let started = false;
+  const start = () => {
+    if (started) return;
+    started = true;
+    response.writeHead(200, {
+      'Content-Type': 'application/x-ndjson; charset=utf-8',
+      'Cache-Control': 'no-store',
+    });
+  };
+  const write = event => response.write(`${JSON.stringify(event)}\n`);
+  try {
+    const result = await askCopilot(body, cancellationToken, delta => { start(); write({ delta }); });
+    start();
+    write({ done: true, model: result.model });
+    response.end();
+  } catch (error) {
+    if (!started) throw error;
+    write({ error: error.message || String(error) });
+    response.end();
+  }
 }
 
 function createServer(token) {
@@ -69,12 +120,21 @@ function createServer(token) {
       json(response, 401, { error: 'unauthorized' });
       return;
     }
+    const source = new vscode.CancellationTokenSource();
+    // 対話 CLI で Ctrl-C を押すと接続が切れる。モデルを回し続けない。監視するのは
+    // request ではなく response——request の 'close' は「本文を読み終えた」でも発火するため、
+    // そちらを見ると毎回そのままキャンセルしてしまう。
+    response.on('close', () => { if (!response.writableFinished) source.cancel(); });
     try {
       const body = await readBody(request);
-      json(response, 200, await askCopilot(body, new vscode.CancellationTokenSource().token));
+      if (body && body.stream) await streamChat(response, body, source.token);
+      else json(response, 200, await askCopilot(body, source.token));
     } catch (error) {
       console.error('[vscode-copilot-bridge]', error);
-      json(response, error.status || 500, { error: error.message || String(error) });
+      if (!response.headersSent) json(response, error.status || 500, { error: error.message || String(error) });
+      else response.end();
+    } finally {
+      source.dispose();
     }
   });
 }
