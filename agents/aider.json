@@ -1,6 +1,7 @@
 {
   "name": "aider",
   "headless_autonomy": "single-shot",
+  "slash_native": false,
   "relative_cost": 0,
   "command": [
     "agent-herd",

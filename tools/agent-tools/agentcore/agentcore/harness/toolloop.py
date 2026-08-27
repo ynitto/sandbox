@@ -1407,23 +1407,38 @@ def run_prompt(*, goal: str, cwd: str, agent: dict, log_file: str,
                judge: bool = False, slash: "list[str] | None" = None) -> dict:
     """ゴール 1 件を、CLI の層（`headless_autonomy`）に応じた経路で 1 回実行する。
 
-    層の判定と分岐をここ 1 か所に置く（C7）。デーモンの headless 枝も `run` サブコマンドも
-    同じ関数を通るので、「デーモン経由なら証跡ゲートが効くが単発だと効かない」のような
-    経路差が生まれない。**tmux を使うかどうかはこの関数の関知しないこと**——tmux は
+    層の判定と分岐をここ 1 か所に置く（C7。コマンド行の解釈は `slashroute` が持つ）。
+    デーモンの headless 枝も `run` サブコマンドも同じ関数を通るので、「デーモン経由なら
+    証跡ゲートが効くが単発だと効かない」のような経路差が生まれない。**tmux を使うかどうかはこの関数の関知しないこと**——tmux は
     コマンドを送り結果を見せる手段であって、実行契約の一部ではない。
 
     `slash` は entry の `slash` 行（`<名前> [引数]`。先頭の `/` は正規化済み）。
     以前は headless 経路で黙って捨てていた（対話ペインへ send-keys する前提の機能
-    だったため）。層2（tool-loop 内蔵 CLI）へはネイティブのスラッシュコマンドとして
-    本文先頭へ前置し、層3（single-shot）へはスキルとして解決してツールループへ渡す。
+    だったため）。ネイティブのスラッシュを持つ CLI へは**行を残して渡し**、持たない CLI
+    へはスキルとして解決してツールループへ渡す。
 
-    **行の解釈そのものは `slashroute` が持つ**（設計 2026-08-27 §3.2）。ここに残るのは
-    「この CLI にネイティブのスラッシュがあるか」の 1 判定だけで、その判定はいま層
-    （`headless_autonomy`）から引いている。
+    **判断は 2 つあり、別々の宣言が決める**（設計 2026-08-27 §3.2）。
+
+    - どの runner か … `headless_autonomy`。tool-loop なら CLI が自分で回すので
+      `run_cli_loop`、single-shot ならハーネスがツールループを供給する `run_goal`。
+    - コマンド行を渡すか消費するか … `slash_native`。以前はここも層を代理に使っていたが、
+      「自分でツールを回せるか」と「スラッシュを自分で解釈するか」は別の性質である。
+      未宣言の定義はローダが同じ代理で埋めるので、宣言していない定義の振る舞いは変わらない。
+
+    行頭記号も定義のもの（`skill_command_prefix`。codex は `$`）を使う——対話へ送るときは
+    既に差し替えていたのに、ヘッドレスだけ `/` 固定だった。
+
+    同梱定義では 2 つの宣言が一致している（tool-loop はすべて `slash_native: true`）。
+    食い違う組み合わせのうち **tool-loop かつ `slash_native: false`** では、コマンド行は
+    消費されて手順の 1 行になるが、`run_cli_loop` はスキル本文を材料へ載せる口を持たない
+    ——載せられるのは `run_goal` の側だけである。CLI 自身がスキルを読める前提の組み合わせ
+    なのでいまは足りているが、足りなくなったらここが直す場所である。
     """
-    native = str(agent["spec"].get("headless_autonomy") or "single-shot") == "tool-loop"
-    goal, skill_names = slashroute.apply_to_goal(goal, slash or [], native=native)
-    if native:
+    spec = agent["spec"]
+    goal, skill_names = slashroute.apply_to_goal(
+        goal, slash or [], native=bool(spec.get("slash_native")),
+        prefix=str(spec.get("skill_command_prefix") or "/"))
+    if str(spec.get("headless_autonomy") or "single-shot") == "tool-loop":
         return run_cli_loop(goal=goal, cwd=cwd, agent=agent, log_file=log_file,
                             acceptance=acceptance, judge=judge)
     return run_goal(goal=goal, cwd=cwd, agent=agent, log_file=log_file,

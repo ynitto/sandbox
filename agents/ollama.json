@@ -1,6 +1,7 @@
 {
   "name": "ollama",
   "headless_autonomy": "tool-loop",
+  "slash_native": true,
   "relative_cost": 0,
   "command": [
     "agent-herd",

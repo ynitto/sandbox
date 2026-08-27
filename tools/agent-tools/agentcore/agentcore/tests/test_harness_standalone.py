@@ -64,11 +64,20 @@ class TheHarnessStandsAloneTests(unittest.TestCase):
         self.assertGreater(line, 1)
 
     def test_the_layer_switch_is_the_single_branch_point(self):
-        """層 2 / 層 3 の分岐が `headless_autonomy` の 1 点であること（設計 §5.3）。"""
+        """層 2 / 層 3 の分岐が `headless_autonomy` の 1 点であること（設計 §5.3）。
+
+        コマンド行を渡すか消費するかは**別の宣言**（`slash_native`）で、以前はこの層を
+        代理に使っていた（設計 2026-08-27 §3.2）。2 つが同じ 1 行に乗っていないことを見る。
+        """
         from agentcore.harness import toolloop
         source = inspect.getsource(toolloop.run_prompt)
-        for token in ("headless_autonomy", "tool-loop", "run_cli_loop", "run_goal"):
+        for token in ("headless_autonomy", "tool-loop", "run_cli_loop", "run_goal",
+                      "slash_native"):
             self.assertIn(token, source)
+        runner_branch = [line for line in source.splitlines()
+                         if "headless_autonomy" in line and line.strip().startswith("if ")]
+        self.assertEqual(len(runner_branch), 1, "runner の分岐は 1 点")
+        self.assertNotIn("slash_native", runner_branch[0], "スラッシュの宣言を層に相乗りさせない")
 
 
 class TheSeamsAreOffByDefaultTests(unittest.TestCase):

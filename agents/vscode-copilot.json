@@ -1,6 +1,7 @@
 {
   "name": "vscode-copilot",
   "headless_autonomy": "single-shot",
+  "slash_native": false,
   "relative_cost": 1,
   "command": ["vscode-copilot-chat"],
   "prompt_via": "stdin",

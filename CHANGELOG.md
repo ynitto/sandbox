@@ -38,6 +38,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   ルータへ寄せたのでキー名の食い違いは構造的に起きず、判定に使ったモデルが台帳へ残る。
 - 仕様書 `docs/specs/agent-herd-spec.md` §4.0 の「同梱定義は 8 件」を **9 件**へ直した
   （`vscode-copilot` が加わった後の drift。設計 §11 未決 4）。
+- **コマンド行を渡すか消費するかを定義が宣言するようになった**（`slash_native`。段 3 の一部）。
+  以前この判定は `headless_autonomy == "tool-loop"` という代理で書かれていたが、「自分で
+  ツールを回せるか」と「スラッシュを自分で解釈するか」は別の性質で、片方だけ真の CLI は
+  ありえる。同梱定義はすべて自分で宣言し、未宣言の定義（利用者が置いたものを含む）は
+  ローダが同じ代理で埋めるので振る舞いは変わらない。合わせて、ヘッドレスでも行頭記号に
+  定義の `skill_command_prefix` を使うようにした（codex は `$`。対話へ送るときは既に
+  差し替えていたのに、ヘッドレスだけ `/` 固定だった）。スキーマ・Python ローダ・
+  dashboard の JS ローダの 3 者を同じ規則で揃えている。
 
 ### agent-loop: agent-loop.yaml の明示エージェントを dashboard の tier 候補より優先する
 

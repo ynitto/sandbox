@@ -65,11 +65,12 @@ cowork の定常業務 tmux 実行だけで、定義解決に失敗しても `ki
 | `readonly` | `enforced` \| `best-effort` | `best-effort` | 読み取り専用の強制力の申告 |
 | `relative_cost` | number | `1` | 同じ仕事 1 回の無次元コスト（ローカル 0 / 通常クラウド 1） |
 | `headless_autonomy` | `tool-loop` \| `single-shot` | `single-shot` | ヘッドレス 1 回で自分でツールを回して完遂できるか |
+| `slash_native` | bool | `headless_autonomy` から導く | 本文先頭のコマンド行（`/name [args]`）をこの CLI へ**残して渡す**か、ランチャが**消費する**か（§2.4） |
 | `variants` | object | — | 用途 → 代わりに使う定義名（§4） |
 | `profiles` | object | — | 用途別の起動差。`<name>-<profile>` の綴りと `variants` の値がここへ解決される（§2.3） |
 | `spill` | object | — | 長大プロンプトの退避（`instruction` / `args`。§5） |
 | `errors` | array | — | 失敗トリアージ規則（§6） |
-| `skill_command_prefix` | str | `/` | スキル起動コマンドの行頭記号（codex は `$`） |
+| `skill_command_prefix` | str | `/` | スキル起動コマンドの行頭記号（codex は `$`。§2.4） |
 | `session_log` | object | — | agent-audit が読む transcript の所在（§7） |
 | `interactive` | object | — | 対話モード（§2.2） |
 | `name` | str | ファイル名 | 表示名 |
@@ -113,11 +114,28 @@ cowork の定常業務 tmux 実行だけで、定義解決に失敗しても `ki
 | 置けるキー | トップレベルのうち起動に関わるもの。`profiles` / `session_log` / `spill` / `name` は**置けません**（スキーマとローダの両方が拒否し、何が置けるかを名指しで返す） |
 | 継承 | 宣言があれば置き換え（`[]` の宣言も「置き換え」）。宣言しなければ base をそのまま継ぐ |
 | `env` | 例外的に base へ**重ねる**（profile の宣言が勝つ） |
-| 継承しないもの | `interactive` と `variants` の 2 つ。継承すると対話面を持たない役割に base の TUI が生え、消費側（agent-dashboard）の実行経路が変わる |
+| 継承しないもの | `interactive` / `variants` / `slash_native` の 3 つ。継承すると対話面を持たない役割に base の TUI が生え、消費側（agent-dashboard）の実行経路が変わる。`slash_native` は profile 自身の `headless_autonomy` から導く |
 
 **返る spec の `name` は正典（base の名前）のまま**で、どの profile で組まれたかは
 `spec["profile"]`、選べる一覧は `spec["profiles"]` が持ちます。台帳・格付けへ書く `agent_cli` は
 `canonical_name()`（§3）を通してください。
+
+### 2.4 `slash_native`（コマンド行を渡すか消費するか）
+
+本文の**先頭から連続する** `/name [args]` の行はコマンド行です（規約は
+[agentcore の `slashroute`](./agentcore-spec.md)）。ランチャは argv を組む前にこの行を読み、
+起動形を決めます。そのうえで**行を CLI へ渡すか消費するかは定義が宣言します**。
+
+| 宣言 | 意味 | 例 |
+|---|---|---|
+| `true` | ネイティブのスラッシュコマンドを持つので**残して渡す**。行頭記号は `skill_command_prefix`（codex は `$`） | claude / codex / kiro / copilot / cursor / agent-ollama / opencode |
+| `false` | 持たないので**ランチャが消費する**。スキルとして解決して材料へ載せる | aider / vscode-copilot |
+
+**未宣言のときは `headless_autonomy` から導きます**（`tool-loop` なら `true`）。以前この判定は
+その代理で書かれていたので、宣言していない定義（利用者が置いたものを含む）は今日と同じに
+振る舞います。**ただし 2 つは別の性質です**——`headless_autonomy` は「自分でツールを回せるか」、
+`slash_native` は「スラッシュを自分で解釈するか」で、片方だけ真の CLI はありえます。
+同梱定義はすべて自分で宣言しています。
 
 ---
 
