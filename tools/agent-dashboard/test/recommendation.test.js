@@ -229,13 +229,24 @@ test('人が明示したモデルは変種の既定より優先される（エ�
   assert.strictEqual(verify.model_swapped, false);
 });
 
-test('aider は split だけ別の起動形へ振り替わる', () => {
+test('aider の split / retrieve / verify はそれぞれ別の起動形へ振り替わる', () => {
   const entry = effectiveAgents.effectiveFor({}, 'aider');
   const split = entry.rows.find((r) => r.purpose === 'split');
   assert.strictEqual(split.agent_cli, 'ollama');
   assert.strictEqual(split.profile, 'list-thinking');
-  assert.ok(!entry.rows.some((r) => r.purpose === 'verify'),
-    'aider は verify の振り替えを宣言していない（base のまま走る）');
+
+  // retrieve を base のまま走らせると read tool を失う（ollama 側と同じ事情）。
+  const retrieve = entry.rows.find((r) => r.purpose === 'retrieve');
+  assert.strictEqual(retrieve.agent_cli, 'ollama');
+  assert.strictEqual(retrieve.profile, 'read');
+
+  // verify を宣言しないと、作業した aider 自身が自分を採点する（仕様 §3.4 の
+  // 「最も弱い構成」）。ollama と同じく 12b の検証専用変種へ振り替える。
+  const verify = entry.rows.find((r) => r.purpose === 'verify');
+  assert.strictEqual(verify.agent_cli, 'ollama');
+  assert.strictEqual(verify.profile, 'verify');
+  assert.strictEqual(verify.model, 'gemma4:12b');
+  assert.strictEqual(verify.model_swapped, true, 'モデルが変わることを明示する');
 });
 
 test('herd は一族へ展開してから表を作る', () => {
