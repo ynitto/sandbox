@@ -26,7 +26,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from agentcore import agentcli
+from agentcore import agentcli, slashroute
 
 PROG = "agent-herd"
 
@@ -132,13 +132,16 @@ def _definition_names() -> "list[str]":
 def _defs_payload(name: str, *, model: "str | None", purpose: "str | None") -> dict:
     spec = agentcli.load_cli(name)
     resolved_name, resolved_model = name, model
-    variant = None
+    via_variant = False
     if purpose:
-        variant = agentcli.resolve_variant(name, purpose)
-        if variant:
-            resolved_name = variant["agent_cli"]
+        # 用途 → 起動形の調停は slashroute の 1 実装（設計 2026-08-27 §3.3）。
+        routed = slashroute.resolve(command=purpose, cli=name, model=model,
+                                    explicit_model=bool(model))
+        via_variant = routed["variant"]
+        if via_variant:
+            resolved_name = routed["agent_cli"]
             spec = agentcli.load_cli(resolved_name)
-            resolved_model = model or variant.get("default_model")
+            resolved_model = routed["model"]
     built_write = agentcli.headless_cmd(spec, resolved_model, "<PROMPT>", readonly=False)
     built_read = agentcli.headless_cmd(spec, resolved_model, "<PROMPT>", readonly=True)
     try:
@@ -153,7 +156,7 @@ def _defs_payload(name: str, *, model: "str | None", purpose: "str | None") -> d
         # `name` のほうで、profile は起動差でしかない。
         "profile": spec.get("profile") or "",
         "profiles": sorted(spec.get("profiles") or {}),
-        "resolved_via_variant": bool(variant),
+        "resolved_via_variant": via_variant,
         "headless_autonomy": spec.get("headless_autonomy"),
         "readonly": spec.get("readonly"),
         "relative_cost": spec.get("relative_cost"),
@@ -286,10 +289,11 @@ def cmd_exec(argv, *, err=None, runner=None, stdin=None) -> int:
     try:
         spec = agentcli.load_cli(name)
         if purpose:
-            variant = agentcli.resolve_variant(name, purpose)
-            if variant:
-                spec = agentcli.load_cli(variant["agent_cli"])
-                model = model or variant.get("default_model")
+            routed = slashroute.resolve(command=purpose, cli=name, model=model,
+                                        explicit_model=bool(model))
+            if routed["variant"]:
+                spec = agentcli.load_cli(routed["agent_cli"])
+                model = routed["model"]
         prompt = _read_prompt(stdin)
         built = agentcli.headless_cmd(spec, model, prompt, readonly=readonly,
                                       files=files or None, read_files=read_files or None)

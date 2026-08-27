@@ -487,7 +487,7 @@ def _loop(reader, runner, *, model: str, tools: bool, think: "bool | None", out)
         # セッション操作、載っていなければ本文——`/<スキル名>` の展開は本文側の仕事で、
         # ここでは触らない。人が打つ面なので大小文字は無視する。
         parsed = slashroute.parse_line(text, casefold=True)
-        command = slashroute.resolve(parsed[0]) if parsed else None
+        command = slashroute.lookup(parsed[0]) if parsed else None
         if command is not None and command.kind == slashroute.KIND_SESSION and (
                 command.takes_args or not parsed[1]):
             arg = parsed[1]

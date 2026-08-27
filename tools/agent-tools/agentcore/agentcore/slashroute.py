@@ -21,7 +21,7 @@ toolset・どの候補）は argv を組む前に決まらなければならな�
 
 種別は 4 つ（設計 §3.2 の表）。この段で表を持つのは **A（セッション操作）だけ**で、
 B（実行形）・C（用途）・D（スキル）は後段で載る。D は探索が要る（`SKILL.md` の実在）ので
-表には載らず、`resolve()` が None を返したときに呼び出し側がスキルとして解決する
+表には載らず、`lookup()` が None を返したときに呼び出し側がスキルとして解決する
 ——いまの `ollama_skills.expand` / `toolloop._tl_resolve_skill` の分担をそのまま残す。
 """
 from __future__ import annotations
@@ -94,7 +94,7 @@ del _cmd
 
 # -- 表を引く ---------------------------------------------------------------
 
-def resolve(name: str) -> "Command | None":
+def lookup(name: str) -> "Command | None":
     """コマンド名 → ルート表の行。載っていなければ None（呼び出し側がスキルを探す）。
 
     名前は大小文字を区別しない（TUI が `/HELP` を受けていた挙動をそのまま持つ）。
@@ -169,6 +169,65 @@ def normalize_line(line: str) -> str:
     """
     text = str(line or "").strip()
     return text[1:].strip() if text.startswith("/") else text
+
+
+# -- 用途 → 起動形の調停（種別 C。engine の許可リストをここへ畳む） ---------
+
+def _agentcli_module(module=None):
+    """CLI 定義のローダ。渡されなければ agentcore のものを遅延 import する。
+
+    引数で受けられるようにしてあるのはハーネスのため——`agent["agentcli"]` として
+    host から渡ってきたモジュールをそのまま使う（継ぎ目を 1 か所に保つ）。
+    """
+    if module is not None:
+        return module
+    from agentcore import agentcli  # 遅延: 表を引くだけの利用者に定義ローダを背負わせない
+    return agentcli
+
+
+def resolve(*, command: str, cli: str, model: "str | None" = None,
+            explicit_model: bool = False, by_purpose: bool = False,
+            project_dir=None, agentcli=None) -> dict:
+    """用途の 1 語 → 起動形。`{"agent_cli", "model", "variant"}` を返す。
+
+    設計 2026-08-27 §3.3。**engine は許可リストを持たない**——用途の 1 語を渡すだけで、
+    振り替えるかどうかは定義側（`agents/<name>.json` の `variants`）の宣言が決める。
+    以前は flow / project / audit が各々の許可リストを持ち、harness は許可リスト無しで
+    直に引いていた（G2）。同じ 15 キーを 3 通りに書いていたので、「宣言したのに効かない」
+    が静かに起きていた。宣言が唯一の許可リストになれば、その事故は起こりようがない。
+
+    モデルの調停規則は agent-flow が持っていたものを正典に昇格させる（G4）:
+
+    - `explicit_model` … 呼び出し元（人の設定・control の上書き・run 単位の固定）が
+      モデルを名指ししている。**変種の既定で上書きしない。**
+    - `by_purpose` … `selection_policy.by_purpose` 由来の決定である。これはその用途の
+      **実測に基づく選択**なので、変種の既定で上書きしない——上書きすると、例えば judge で
+      bounded-review の裏付けを持つモデルが選ばれたのに変種の既定（base の弱いモデル）へ
+      黙って戻り、その用途では blocked と実測されているモデルで走る。
+    - どちらでもないとき（用途を知らない共通の順位表・既定）だけ、変種の用途専用
+      チューニング（`default_model`）を採る——そちらの方が良い推定だから。
+
+    **種別 A / B の綴りは用途ではない**ので振り替えない。名前空間は 1 つで、`/model` が
+    用途としても解釈される状態を作らない。
+    """
+    name = str(command or "").strip().lower()
+    result = {"agent_cli": str(cli or "").strip().lower(), "model": model, "variant": False}
+    if not name or lookup(name) is not None:
+        return result
+    try:
+        variant = _agentcli_module(agentcli).resolve_variant(
+            result["agent_cli"], name, project_dir)
+    except Exception:
+        # 定義が読めない・壊れているのは設定の問題で、実行を殺す理由にはしない
+        # （agentcli.resolve_variant 自身が None を返す方針と揃える）。
+        return result
+    if not variant:
+        return result
+    result["agent_cli"] = variant["agent_cli"]
+    result["variant"] = True
+    if not (explicit_model or by_purpose) and variant.get("default_model"):
+        result["model"] = variant["default_model"]
+    return result
 
 
 # -- 本文への適用（層2 / 層3 の分岐をここへ畳む） ---------------------------

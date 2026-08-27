@@ -16,7 +16,6 @@ from .configfile import agent_for, agent_home_dir, resolve_budget_dir
 from .util import iter_jsonl, now_iso, read_json, strip_ansi
 
 WORKLOAD = "audit"
-VARIANT_PURPOSES = frozenset({"extract", "review"})
 
 
 class LlmBlocked(RuntimeError):
@@ -32,13 +31,15 @@ def _execution_cli(cli: str, model: "str | None", purpose: str, agentcli) -> tup
 
     Attribution remains on the selected base agent; only the executable definition is
     switched.  This is the same definition-driven boundary used by flow/project/loop.
+
+    audit holds no allow-list of eligible purposes: the declaration
+    (``agents/<name>.json`` ``variants``) is the only allow-list, and the arbitration
+    lives in ``agentcore.slashroute`` (design 2026-08-27 §3.3 / G2).
     """
-    if purpose not in VARIANT_PURPOSES:
-        return cli, model
-    variant = agentcli.resolve_variant(cli, purpose)
-    if not variant:
-        return cli, model
-    return variant["agent_cli"], model or variant.get("default_model")
+    from agentcore import slashroute
+    routed = slashroute.resolve(command=purpose, cli=cli, model=model,
+                                explicit_model=bool(model), agentcli=agentcli)
+    return routed["agent_cli"], routed["model"]
 
 
 # -- agent-control（宣言的な一時停止・CLI/モデル上書き） ----------------------

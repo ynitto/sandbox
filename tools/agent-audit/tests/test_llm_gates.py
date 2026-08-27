@@ -18,12 +18,20 @@ class BudgetGateTests(AuditTestCase):
         self.assertEqual(
             llm._execution_cli("base", None, "extract", agentcli),
             ("base-json", "structured-model"))
-        agentcli.resolve_variant.assert_called_once_with("base", "extract")
+        agentcli.resolve_variant.assert_called_once_with("base", "extract", None)
 
+        # 明示モデルは変種の既定で上書きしない（設計 2026-08-27 G4）。
         agentcli.reset_mock()
+        self.assertEqual(llm._execution_cli("base", "chosen", "extract", agentcli),
+                         ("base-json", "chosen"))
+
+        # 申告が無い用途は元のまま。**audit は許可リストを持たない**——引くかどうかでは
+        # なく、申告があるかどうかで決まる（設計 2026-08-27 §3.3 / G2）。
+        agentcli.reset_mock()
+        agentcli.resolve_variant.return_value = None
         self.assertEqual(llm._execution_cli("base", "chosen", "distill", agentcli),
                          ("base", "chosen"))
-        agentcli.resolve_variant.assert_not_called()
+        agentcli.resolve_variant.assert_called_once_with("base", "distill", None)
 
     def test_control_uses_shared_dir_and_purpose_precedence(self):
         control_dir = os.path.join(self.tmp, "control")

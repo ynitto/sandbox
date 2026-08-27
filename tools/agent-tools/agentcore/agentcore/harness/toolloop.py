@@ -834,9 +834,14 @@ def _tl_control_agent(agent: dict, cwd: str) -> dict:
     if mod is None or not name:
         return agent
     try:
-        variant = mod.resolve_variant(name, "planner", cwd)
-        return agent if not variant else _tl_resolve_agent(
-            variant["agent_cli"], agent.get("model") or "", cwd)
+        # 許可リストは持たない。申告（`variants`）が唯一の許可リストで、調停は
+        # slashroute の 1 実装（設計 2026-08-27 §3.3 / G2）。
+        routed = slashroute.resolve(command="planner", cli=name,
+                                    model=agent.get("model") or None,
+                                    explicit_model=bool(agent.get("model")),
+                                    project_dir=cwd, agentcli=mod)
+        return agent if not routed["variant"] else _tl_resolve_agent(
+            routed["agent_cli"], routed["model"] or "", cwd)
     except (ToolLoopError, AttributeError):
         return agent
 
@@ -974,12 +979,16 @@ def _tl_judge_agent(agent: dict, cwd: str) -> dict:
     if mod is None or not name:
         return agent
     try:
-        variant = mod.resolve_variant(name, "verify", cwd)
-        if not variant:
-            return agent
         # 変種は検証用に調整された自分の既定モデルを持つことが多いので、呼び出し元が
-        # 明示していない限りそちらを使う（resolve_variant が返す model をそのまま渡す）。
-        return _tl_resolve_agent(variant["agent_cli"], variant.get("model") or "", cwd)
+        # 明示していない限りそちらを使う。以前はここが `variant["model"]` を読んでいたが
+        # `resolve_variant` の返却キーは `default_model` なので**常に None** だった
+        # （結果は変種 spec の既定に落ちるので実害は無かったが、キー名が食い違っていた）。
+        # 調停ごと slashroute へ寄せたので、この食い違いは構造的に起きない（G4）。
+        routed = slashroute.resolve(command="verify", cli=name, project_dir=cwd,
+                                    agentcli=mod)
+        if not routed["variant"]:
+            return agent
+        return _tl_resolve_agent(routed["agent_cli"], routed["model"] or "", cwd)
     except (ToolLoopError, AttributeError, KeyError):
         return agent
 

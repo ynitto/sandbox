@@ -35,26 +35,28 @@ class MissingEngineTests(unittest.TestCase):
             def json_variant(name):  # 旧シンボルだけが残る木を模す
                 return f"{name}-json"
 
-        stub = mock.Mock(spec=["_agentcli", "LIST_CONTRACT_ROLES"])
+        stub = mock.Mock(spec=["_agentcli"])
         stub._agentcli = _Cli
-        stub.LIST_CONTRACT_ROLES = frozenset({"split"})
         with mock.patch.object(engine, "_FLOW", stub):
             self.assertEqual(engine.cli_name_for("split"), "ollama")
         self.assertTrue(any("resolve_variant" in gap for gap in engine.missing()))
 
     def test_cli_name_uses_resolve_variant_when_present(self):
-        """resolve_variant を持つ木は本番の解決器をそのまま呼ぶ。"""
+        """resolve_variant を持つ木は本番の解決器をそのまま呼ぶ。
+
+        測る側は役割の許可リストを持たない——振り替えるかどうかは定義側の申告が決める
+        （設計 2026-08-27 §3.3 / G2）。申告が無い役割は解決器が None を返して素通りする。
+        """
         class _Cli:
             @staticmethod
             def resolve_variant(name, purpose):
                 return {"agent_cli": f"{name}-{purpose}", "default_model": None} if purpose == "split" else None
 
-        stub = mock.Mock(spec=["_agentcli", "VARIANT_ELIGIBLE_ROLES"])
+        stub = mock.Mock(spec=["_agentcli"])
         stub._agentcli = _Cli
-        stub.VARIANT_ELIGIBLE_ROLES = frozenset({"split", "verify"})
         with mock.patch.object(engine, "_FLOW", stub):
             self.assertEqual(engine.cli_name_for("split"), "ollama-split")
-            self.assertEqual(engine.cli_name_for("planner"), "ollama")  # 対象外の役割は素通り
+            self.assertEqual(engine.cli_name_for("planner"), "ollama")  # 申告の無い役割
         self.assertEqual(engine.missing(), [])
 
     def test_missing_is_empty_when_the_engine_is_complete(self):

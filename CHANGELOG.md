@@ -7,6 +7,38 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-tools: スラッシュ行の解釈と用途の調停を 1 実装（`agentcore.slashroute`）へ畳む
+
+設計: [2026-08-27 クラウド CLI を正とした入口の再構成](./docs/plans/2026-08-27-agent-herd-cloud-cli-parity-slash-dispatch-design.md)
+§3.2・§3.3（実装計画 段 1・段 2）。
+
+- **スラッシュ行の解釈が 3 か所にあった**。`harness.toolloop.run_prompt` の層別分岐・
+  `ollama_tui` のローカルコマンド表・`ollama_skills` の先頭スラッシュ切り出しが、同じ
+  「先頭の `/name` をどう読むか」を別々に書いていたので、片方だけ直る／片方だけ知らない
+  が静かに起きていた。名前の規約・切り出し・種別 A（セッション操作）の表・本文への適用を
+  `agentcore/slashroute.py` の 1 枚へ寄せた。TUI の `/help`・Tab 補完・判定はすべて同じ表を
+  引くので、「一覧に出るのに効かない」が構造的に起きない。判定は文字列マッチだけで、
+  LLM は 1 回も呼ばれない（起動形は argv を組む前に決まる必要があるため）。
+- **用途（purpose）→ 起動形の許可リストが 4 か所にあった**。`ollama.json` は `variants` に
+  15 キーを宣言しているのに、agent-flow は 9・agent-project は 6・agent-audit は 2 しか
+  引かず、ハーネスは許可リスト無しで直に引いていた（測定側の `eval/engine.py` も
+  agent-flow の集合を覗いていた）。**申告が唯一の許可リストである**——engine は用途の
+  1 語を渡すだけになり、`VARIANT_ELIGIBLE_ROLES` / `JSON_CONTRACT_PURPOSES` /
+  `VARIANT_PURPOSES` は削除した。同梱定義の申告は消した集合の和集合を覆っているので、
+  効く範囲は狭まらない（`test_slashroute` が突き合わせる）。
+- **変種の既定モデルが人の明示を上書きしていた（agent-project）**。`agents:` に書いた
+  処理別モデルまで変種の `default_model` へ戻していた。調停規則を agent-flow が持っていた
+  ものへ統一し、**人が設定へ明示した層と用途別順位表（`selection_policy.by_purpose`）
+  由来の決定は変種の既定で上書きしない**ようにした。agent-control / 縮退が選んだモデルは
+  従来どおり変種の用途専用チューニングへ譲る（「その CLI を用途を問わず使う」という
+  明示ではないため）。
+- **判定役の変種モデルが台帳に残っていなかった（ハーネス）**。`_tl_judge_agent` は
+  `variant["model"]` を読んでいたが `resolve_variant` の返却キーは `default_model` なので
+  常に None で、argv は変種 spec の既定に落ちる一方、記帳のモデル欄は空だった。調停ごと
+  ルータへ寄せたのでキー名の食い違いは構造的に起きず、判定に使ったモデルが台帳へ残る。
+- 仕様書 `docs/specs/agent-herd-spec.md` §4.0 の「同梱定義は 8 件」を **9 件**へ直した
+  （`vscode-copilot` が加わった後の drift。設計 §11 未決 4）。
+
 ### agent-loop: agent-loop.yaml の明示エージェントを dashboard の tier 候補より優先する
 
 - dashboard の Resource Controller が `control.json` に選んだ tier 候補を、起動時に

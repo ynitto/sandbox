@@ -121,8 +121,13 @@ class JudgeAcceptanceTests(unittest.TestCase):
 
 class JudgeAgentSelectionTests(unittest.TestCase):
     def test_verify_variant_is_used_when_declared(self):
-        """作業した当人に採点させない。どのモデルで検証するかは定義側が決める。"""
-        agent = _agent(variant={"agent_cli": "ollama-verify", "model": "gemma4:12b"})
+        """作業した当人に採点させない。どのモデルで検証するかは定義側が決める。
+
+        変種の既定モデルのキーは `default_model`（`resolve_variant` の返却契約）。以前は
+        ここも実装も `model` を読んでいたので**常に None** が渡り、結果として変種 spec の
+        既定へ落ちていた（実害は無いがキー名が食い違ったまま。設計 2026-08-27 G4）。
+        """
+        agent = _agent(variant={"agent_cli": "ollama-verify", "default_model": "gemma4:12b"})
         with patch_harness("_tl_resolve_agent",
                            return_value={"cli": "ollama-verify"}) as resolve:
             judge = tl._tl_judge_agent(agent, "/tmp")

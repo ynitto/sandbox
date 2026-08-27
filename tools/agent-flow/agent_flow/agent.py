@@ -94,12 +94,12 @@ JSON_CONTRACT_ROLES = frozenset({"planner", "evaluator", "split", "filter", "jud
 # ないと `_expand_splits` が展開されず run が空振りする（申告が無い CLI へは振り替わらない
 # ——variants に該当キーが無ければ resolve_variant が None を返すだけ）。
 LIST_CONTRACT_ROLES = frozenset({"split"})
-# variant 振り替えの対象となる用途の全体集合。JSON/配列契約に加え、根拠を実際に読む
-# 必要がある retrieve（ollama-json へ寄せると read tool を失う）と、検証専用チューニング
-# を持つ verify（ollama-verify の gemma4:12b 等）も含む——いずれも「この用途では base
-# 定義のままでは要件を満たせない」という同種の事情なので、同じ口（agents/<name>.json の
-# `variants`）で申告させる。
-VARIANT_ELIGIBLE_ROLES = JSON_CONTRACT_ROLES | LIST_CONTRACT_ROLES | frozenset({"retrieve", "verify"})
+# 変種（variants）振り替えの許可リストはここに持たない。**申告が唯一の許可リストである**
+# ——どの用途で振り替えるかは定義側（agents/<name>.json の `variants`）が言い、調停は
+# agentcore.slashroute が 1 か所でやる（設計 2026-08-27 §3.3 / G2）。以前はここに
+# VARIANT_ELIGIBLE_ROLES があり、project・audit・harness にも各々の許可リストがあった。
+# 同じことを 4 通りに書いていたので「宣言したのに効かない」が静かに起きていた。
+#
 # 本文の末尾に完了可否の封筒 `{"ok": ...}` を置くよう指示している kind（実行系のうち
 # JSON 抽出をしないもの）。プロンプトの指示とここが食い違うと、自己申告した未完了が
 # 黙って done になる——一致は tests/test_agent_cli.py が prompt 側の EXEC_KINDS と突き合わせる。
@@ -220,9 +220,10 @@ def _agent_for(purpose: str) -> "tuple[str, str | None]":
     agent-control（管理面の横断上書き）＞ agents[purpose] ＞（purpose がノード kind なら）
     agents["worker"] ＞ グローバル agent_cli。soft/縮退中は control の degraded を重ねる。
 
-    解決した CLI が用途別の変種（`variants`）を申告していれば、対象の用途
-    （VARIANT_ELIGIBLE_ROLES）だけ最後にそちらへ振り替える。振り替えは同じエンジンでの
-    起動形の違いなので、どの層で CLI が決まっても同じ規則が効く。モデルは、人が明示した
+    解決した CLI が用途別の変種（`variants`）を申告していれば、最後にそちらへ振り替える
+    （調停は `slashroute.resolve`。許可リストは持たない——申告が唯一の許可リストである）。
+    振り替えは同じエンジンでの起動形の違いなので、どの層で CLI が決まっても同じ規則が
+    効く。モデルは、人が明示した
     層（設定 `agents:` の役割別モデル・run 単位の実行時指定）が無ければ変種自身の既定
     モデルへ寄せる——変種は用途専用にチューニングされていることが多く（例:
     ollama の verify profile の gemma4:12b）、用途を知らない層が自動選択したモデルを
@@ -283,13 +284,9 @@ def _agent_for(purpose: str) -> "tuple[str, str | None]":
         cli = str(run_ov["agent_cli"]).lower()
     if run_ov.get("model"):
         model = str(run_ov["model"])
-    if purpose in VARIANT_ELIGIBLE_ROLES:
-        variant = _agentcli.resolve_variant(cli, purpose)
-        if variant:
-            cli = variant["agent_cli"]
-            if not explicit_model and variant["default_model"]:
-                model = variant["default_model"]
-    return cli, model
+    routed = _slashroute.resolve(command=purpose, cli=cli, model=model,
+                                 explicit_model=explicit_model)
+    return routed["agent_cli"], routed["model"]
 
 
 def retry_agent_for(purpose: str) -> "dict | None":

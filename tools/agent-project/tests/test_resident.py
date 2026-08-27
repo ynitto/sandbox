@@ -42,6 +42,31 @@ class AgentOverrideTests(unittest.TestCase):
         self.assertEqual(km._agent_for("verify"), ("kiro", None))     # 未指定 → グローバル
         self.assertEqual(km._agent_for(""), ("kiro", None))
 
+    def test_configured_model_survives_the_variant_default(self):
+        """人が設定に書いたモデルは、変種の既定で上書きしない（設計 2026-08-27 G4）。
+
+        以前はここが無条件に上書きしていて、`agents.plan.model` を書いても
+        `variants.plan → ollama-json` の既定へ黙って戻っていた。起動形（argv）は変種の
+        ものを使い、モデルだけは人の明示を残す——agent-flow が既に持っていた規則。
+        """
+        km._RUNTIME_CONFIG.agents = {"plan": {"agent_cli": "ollama", "model": "qwen3:8b"},
+                                     "review": {"agent_cli": "ollama"}}
+        self.assertEqual(km._agent_for("plan"), ("ollama-json", "qwen3:8b"))
+        # 明示が無ければ従来どおり変種の用途専用チューニングへ寄せる。
+        self.assertEqual(km._agent_for("review"), ("ollama-json", "gemma4:e4b"))
+
+    def test_variant_routing_has_no_engine_allow_list(self):
+        """振り替えの可否は定義側の申告だけが決める（設計 2026-08-27 §3.3 / G2）。
+
+        以前は JSON_CONTRACT_PURPOSES という許可リストがここにあり、`ollama.json` が
+        宣言していても引かない用途があった。申告が無い用途は元のままなので、許可リストを
+        消しても「宣言していないのに振り替わる」は起きない。
+        """
+        km._RUNTIME_CONFIG.agents = {"doctor": {"agent_cli": "ollama"},
+                                     "repo_map": {"agent_cli": "ollama"}}
+        self.assertEqual(km._agent_for("doctor")[0], "ollama")
+        self.assertEqual(km._agent_for("repo_map")[0], "ollama")
+
     def test_readonly_is_declared_per_purpose(self):
         """権限は役割の性質で決まる。既定は現状のまま write（黙って挙動を変えない）。"""
         km._RUNTIME_CONFIG.agents = km._normalize_agent_overrides({
