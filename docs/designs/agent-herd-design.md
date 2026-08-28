@@ -1,8 +1,11 @@
 # agent-herd — LAN の ollama を動かす実行系の設計書
 
-> **対象系統**: `agents/{ollama,aider,opencode}.json`（3 定義。ollama は 5 profile を内包）/
-> `agentcore/{herdcli,hostenv}.py` / `agentcore/{ollama_*,aider_adapter,opencode_adapter}.py` /
+> **対象系統**: `agents/{ollama,aider}.json`（2 定義。ollama は 5 profile を内包）/
+> `agentcore/{herdcli,hostenv}.py` / `agentcore/{ollama_*,aider_adapter}.py` /
 > `agentcore/harness/`（toolloop / statemachine）/ `tools/agent-tools/install.sh`。
+> opencode（定義・adapter・`tools/opencode/`）は 2026-08-29 に同梱を外した
+> （[2026-08-27 設計](../plans/2026-08-27-agent-herd-cloud-cli-parity-slash-dispatch-design.md) §6。
+> 本文の opencode への言及は判断当時の経緯として残す）。
 > 消費側は agent-project / agent-flow / agent-amigos / agent-audit / agent-loop / agent-dashboard。
 
 > 契約（綴り・サブコマンド・定義の割当・フラグ・環境変数・上限・終了状態）は
