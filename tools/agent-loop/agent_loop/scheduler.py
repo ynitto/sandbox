@@ -700,6 +700,12 @@ class PeriodicScheduler:
             log.warning("[%s] 受入条件の照合に失敗しました（検証なしとして通します）",
                         name, exc_info=True)
             return True
+        # 判定の結果は配送ログへも残す（人向けの 1 行だけだと、後から機械で追えない）。
+        # 器は既存の dispatch イベントで、別系統は作らない。
+        _log_dispatch("acceptance_checked", req, ok=outcome["ok"],
+                      verifiedBy=outcome["verifiedBy"] or "none",
+                      files=len(outcome["files"]),
+                      errors=len(outcome["evidenceErrors"]))
         if outcome["ok"]:
             log.info("[%s] 検証: %s（%s）", name, outcome["verifiedBy"] or "なし",
                      ", ".join(outcome["files"]) or "変更なし")
@@ -2878,7 +2884,11 @@ class PeriodicScheduler:
             "health": {
                 "mem_paused": self._mem_paused,
                 "input_recovery": self._input_recovery,
-                "freeze_timeout_seconds": int(self._health.get("freeze_timeout_seconds", 0) or 0),
+                # 未設定は 0（止めない）ではなく「定義から採る」。管理面が読む数字なので、
+                # 実際に効いている上限と食い違わせない（設計 2026-08-27 §7.4-3）。
+                "freeze_timeout_seconds": (
+                    int(self._health.get("freeze_timeout_seconds") or 0)
+                    if "freeze_timeout_seconds" in (self._health or {}) else None),
             },
         }
         writer = getattr(self._session_mgr, "set_state_extras", None)

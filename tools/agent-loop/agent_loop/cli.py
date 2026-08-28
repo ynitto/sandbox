@@ -629,7 +629,11 @@ def main() -> None:
         log.warning("stale sandbox クリーンアップに失敗しました: %s", exc)
 
     health_cfg = config.get("health") if isinstance(config.get("health"), dict) else {}
-    freeze_timeout = int(health_cfg.get("freeze_timeout_seconds", 0) or 0)
+    # **書いていないことと 0 を区別する。** 以前はどちらも 0 で、未設定が「止めない」を
+    # 意味していた——止まったペインが slot_timeout_seconds（既定 7200）まで居座る。
+    # 未設定なら定義の無進捗上限（ヘッドレスと同じ源）を使う（設計 2026-08-27 §7.4-3）。
+    freeze_timeout = (int(health_cfg.get("freeze_timeout_seconds") or 0)
+                      if "freeze_timeout_seconds" in health_cfg else None)
 
     # グローバル参照（cleanup / シグナルハンドラ用）
     global _session_mgr_ref, _scheduler_ref, _slot_monitor_ref, _stop_event_ref

@@ -7,6 +7,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-loop: 止まったペインが 2 時間居座らなくなった
+
+設計: [2026-08-27 クラウド CLI を正とした入口の再構成](./docs/plans/2026-08-27-agent-herd-cloud-cli-parity-slash-dispatch-design.md)
+§7.4-2・3（実装計画 段 11）。仕様は [agent-loop 仕様書](./docs/specs/agent-loop-spec.md) §3.8。
+
+- **freeze 検知の既定が off だった。** ヘッドレスは同じ意味の無進捗上限を既定で持っている
+  （定義の `timeout`、無ければ共通 fallback の 600 秒）のに、ペインは
+  `health.freeze_timeout_seconds` を書かない限り何も止めず、`slot_timeout_seconds`
+  （既定 7200 秒）まで**止まったペインがスロットを 1 枚占有したまま居座っていた**。
+- **同じ性質の上限は同じ源から採る。** 設定を書かなければ定義の無進捗上限を使う
+  ——ここで別の数字を置くと、どちらの上限で切られたのかを読む側が追えなくなる。
+- **「書いていない」と「0」を区別するようにした。** 以前はどちらも 0 で、未設定が
+  「止めない」を意味していた。`0` と**書けば**従来どおり無効（明示の意図は守る）。
+- 判定するのは壁時計ではなく無進捗（画面の hash が変わっていれば進んでいる）。
+  `slot_timeout_seconds`（居座り全体の上限）とは別の軸である。
+- 受入条件の判定結果を配送ログへ機械が読める形で残すようにした
+  （`event=acceptance_checked`）。人向けの 1 行だけだと後から追えないため。器は既存の
+  dispatch イベントで、別系統は作らない。`RESULT {json}` の出力契約はペインにはまだ
+  無い——前面がエージェント自身の端末で、結果行を書き込む場所が無いためである。
+
 ### agent-herd / agent-loop: 自前 CLI のターン完了がネイティブイベントで届く
 
 設計: [2026-08-27 クラウド CLI を正とした入口の再構成](./docs/plans/2026-08-27-agent-herd-cloud-cli-parity-slash-dispatch-design.md)

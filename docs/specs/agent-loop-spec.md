@@ -143,7 +143,7 @@ tmux を使うかどうかはこの層とは独立です。tmux は送る手段�
 | `acceptance_judge` | bool | false | 受入条件の判定層を全エントリで有効にする（エントリ側で上書き可能・§3.4） |
 | `headless_window` | bool | false | headless 実行のログを `tail -F` で追う tmux ウィンドウを開く（エントリごとに 1 枚を使い回す） |
 | `health.check_interval_seconds` | int 秒 | 10 | ヘルス監視の間隔 |
-| `health.freeze_timeout_seconds` | int 秒 | 0 | busy 中に画面が変わらない時間の上限。0 は無効 |
+| `health.freeze_timeout_seconds` | int 秒 | **定義の無進捗上限** | busy 中に画面が変わらない時間の上限。**書かなければ**定義の `timeout`（無ければ共通 fallback の 600 秒）を使います——ヘッドレスと同じ源です。`0` と**書けば**無効（§3.8） |
 | `health.max_pane_rss_mb` | int MB | 0 | ready なペインの RSS 上限。0 は無効 |
 | `health.min_free_memory_mb` | int MB | 0 | 空きメモリ下限。下回ると local pause（2 回連続 OK で自動 resume） |
 | `health.input_recovery` | bool | false | ready かつ入力が残っているとき 1 回だけ再送する |
@@ -527,6 +527,31 @@ hook は `agent-loop hook-event` を呼び、`~/.agents/loop-hooks/<instance-id>
 - 実際に適用した revision は agent-control の status へ `instructions_revision_applied` として載せます
 - **フェイルセーフ**: 不在・破損・`enabled: false`・本文が空・既にマーカーが混入済みは、すべて no-op です。注入の失敗で送信を止めません
 
+### 3.8 止まったペインの検知（freeze）
+
+**無進捗の上限は、ペインでもヘッドレスでも同じ源から採ります。** ヘッドレスは定義の
+`timeout`（無ければ共通 fallback の 600 秒）を「進んでいないと判断するまでの秒数」として
+既定で使っています。ペインの freeze 検知は**同じ性質の上限**なので、同じ源から採ります。
+
+以前ペイン側の既定は 0（無効）でした。`health.freeze_timeout_seconds` を書かない限り
+何も止めず、`slot_timeout_seconds`（既定 7200 秒）まで**止まったペインが居座り**、
+その間スロットを 1 枚占有していました。
+
+| `health.freeze_timeout_seconds` | 効く上限 |
+|---|---|
+| 書かない | 定義の `timeout`、無ければ 600 秒 |
+| `0` と書く | 無効（「止めない」という明示。**未設定とは区別します**） |
+| 正の整数 | その値（定義より優先） |
+
+判定するのは**壁時計ではなく無進捗**です。画面の hash が変わっていれば進んでいるとみなし、
+変わらないまま上限を超えたときだけ freeze として扱ってペインを再起動します。ここは
+`slot_timeout_seconds`（居座り全体の上限）とは別の軸です。
+
+**`RESULT {json}` の出力契約はペインにはまだありません。** ペインの前面はエージェント
+自身の端末なので、我々が結果行を書き込む場所がありません（共通 TUI に置き換われば供給
+できます）。いまは受入条件の判定結果を配送ログの `event=acceptance_checked` として
+機械が読める形で残しています——別系統は作りません。
+
 ---
 
 ## 4. 規約
@@ -591,6 +616,7 @@ hook は `agent-loop hook-event` を呼び、`~/.agents/loop-hooks/<instance-id>
 | `agent_cli` の定義が未知・壊れている | デーモンは起動エラー。`send` などの補助コマンドは WARNING を出して従来判定で続行 |
 | ペインが死んだ | session-monitor が再起動する |
 | ペインの画面が `errors[]` の `quota` / `auth` / `env` に一致した | そのターンを失敗として扱い、理由に分類名を残す。`quota` は台帳へ観測行（§1.5） |
+| ペインの画面が無進捗上限のあいだ変わらない | freeze として扱いペインを再起動する。**`slot_timeout_seconds` は待たない**（§3.8） |
 | busy・スロット上限・cooldown | 要求を保留して次 tick で再試行（スケジュールは 1 件へ coalesce） |
 | セマフォのファイル I/O エラー | 安全側（実行許可）へ倒す |
 | 受入条件のファイルが無い・触っていない・変わっていない | 機械層は fail。done の根拠にしない（**対話ペインでも同じ**。理由は `acceptance_failed`） |
@@ -642,7 +668,7 @@ headless 経路では次が変わります。黙って劣化させず、警告�
 
 ## 付録: テスト
 
-`tools/agent-loop/test/` に 51 ファイル・523 件。tmux とエージェント CLI はスタブへ差し替えるので、どちらも無い環境で全件が通ります（webhook だけは実 HTTP の E2E です）。
+`tools/agent-loop/test/` に 51 ファイル・528 件。tmux とエージェント CLI はスタブへ差し替えるので、どちらも無い環境で全件が通ります（webhook だけは実 HTTP の E2E です）。
 
 ```bash
 python3 -m unittest discover -s tools/agent-loop/test

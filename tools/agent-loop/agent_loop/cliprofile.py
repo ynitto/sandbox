@@ -200,6 +200,27 @@ class CliProfile:
 
     # -- 送信テキストの作法 --------------------------------------------------
 
+    @property
+    def freeze_timeout(self) -> float:
+        """このペインを「止まった」とみなすまでの無進捗秒数（設計 2026-08-27 §7.4-3）。
+
+        ヘッドレスは**同じ意味の上限を既定で持っている**——定義の `timeout`、無ければ
+        共通 fallback（`toolloop._TL_DEFAULT_AGENT_TIMEOUT_SEC` = 600 秒）。ペインだけが
+        既定 off で、`slot_timeout_seconds`（既定 7200）まで居座っていた。**同じ性質の
+        上限なので同じ源から採る**——ここで別の数字を置くと、どちらの上限で切られたのかを
+        読む側が追えなくなる。
+
+        壁時計ではなく無進捗である点も同じ。画面の hash が変わっていれば進んでいる。
+        """
+        declared = (self.spec or {}).get("timeout")
+        try:
+            value = float(declared or 0)
+        except (TypeError, ValueError):
+            value = 0.0
+        if value > 0:
+            return value
+        return float(_harness_toolloop._TL_DEFAULT_AGENT_TIMEOUT_SEC)
+
     def classify_failure(self, content: str, *, now=None) -> "dict | None":
         """ペインの画面を定義の `errors[]` で分類する（設計 2026-08-27 §7.4-1）。
 

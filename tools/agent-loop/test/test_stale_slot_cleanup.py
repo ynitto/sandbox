@@ -112,6 +112,58 @@ class SlotMonitorFreezeTests(unittest.TestCase):
 
         self.assertEqual(called, ["%1"])
 
+    def test_an_unset_config_takes_the_limit_from_the_definition(self):
+        """未設定は「止めない」ではない（設計 2026-08-27 §7.4-3 / 実装計画 段 11）。
+
+        ヘッドレスは同じ意味の無進捗上限を既定で持っている（定義の `timeout`、無ければ
+        共通 fallback の 600 秒）のに、ペインだけ既定 off で `slot_timeout_seconds`
+        （既定 7200）まで居座っていた。**同じ性質の上限は同じ源から採る**。
+        """
+        monitor = al.SlotMonitor(al.GlobalSemaphore(0))
+        self.assertIsNone(monitor._freeze_timeout, "書いていないことを覚えておく")
+        declared = al.CliProfile("x", {"command": ["x"], "timeout": 42,
+                                       "interactive": {"command": ["x"]}})
+        self.assertEqual(monitor._freeze_limit(declared), 42.0)
+        bare = al.CliProfile("x", {"command": ["x"], "interactive": {"command": ["x"]}})
+        self.assertEqual(monitor._freeze_limit(bare),
+                         float(al._harness_toolloop._TL_DEFAULT_AGENT_TIMEOUT_SEC),
+                         "宣言が無ければヘッドレスと同じ共通 fallback")
+
+    def test_an_explicit_zero_still_means_do_not_stop(self):
+        """`0` と書いた人の意図（止めない）は守る。未設定と同じにしない。"""
+        monitor = al.SlotMonitor(al.GlobalSemaphore(0), freeze_timeout_seconds=0)
+        declared = al.CliProfile("x", {"command": ["x"], "timeout": 42,
+                                       "interactive": {"command": ["x"]}})
+        self.assertEqual(monitor._freeze_limit(declared), 0.0)
+
+    def test_an_explicit_value_wins_over_the_definition(self):
+        monitor = al.SlotMonitor(al.GlobalSemaphore(0), freeze_timeout_seconds=5)
+        declared = al.CliProfile("x", {"command": ["x"], "timeout": 42,
+                                       "interactive": {"command": ["x"]}})
+        self.assertEqual(monitor._freeze_limit(declared), 5.0)
+
+    def test_a_stuck_pane_is_caught_without_waiting_for_the_slot_timeout(self):
+        """受入条件。止まったペインが `slot_timeout_seconds` を待たずに検知される。"""
+        called: list[str] = []
+        # スロット上限は 2 時間、定義の無進捗上限は 1 秒。設定は書かない（未設定）。
+        monitor = al.SlotMonitor(al.GlobalSemaphore(0), slot_timeout_seconds=7200,
+                                 on_freeze=lambda p: called.append(p))
+        profile = al.CliProfile("x", {"command": ["x"], "timeout": 1,
+                                      "interactive": {"command": ["x"]}})
+        monitor.track("%1", profile=profile)
+        with monitor._lock:
+            monitor._pending["%1"].update(state="processing", content_hash="abc",
+                                          hash_unchanged_since=al.time.time() - 5)
+        with mock.patch.object(al.subprocess, "run",
+                               return_value=mock.Mock(returncode=0, stdout="%0")), \
+                mock.patch.object(al, "_capture_pane", return_value="止まった画面"), \
+                mock.patch.object(type(profile), "is_idle", lambda *_a, **_k: False):
+            digest = mock.Mock()
+            digest.hexdigest.return_value = "abc"
+            with mock.patch.object(al.hashlib, "sha256", return_value=digest):
+                monitor._check_pane("%1")
+        self.assertEqual(called, ["%1"])
+
     def test_ready_pane_not_freeze_checked(self):
         sem = al.GlobalSemaphore(0)
         called: list[str] = []

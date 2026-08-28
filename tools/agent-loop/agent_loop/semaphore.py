@@ -275,12 +275,17 @@ class SlotMonitor:
         self,
         semaphore: GlobalSemaphore,
         slot_timeout_seconds: int = _DEFAULT_SLOT_TIMEOUT,
-        freeze_timeout_seconds: int = 0,
+        freeze_timeout_seconds: "int | None" = None,
         on_freeze: Any = None,
     ) -> None:
         self._semaphore = semaphore
         self._slot_timeout = slot_timeout_seconds
-        self._freeze_timeout = max(int(freeze_timeout_seconds), 0)
+        # **None は「宣言なし」で、0 は「止めない」である。** 以前はどちらも 0 で、
+        # 未設定が off を意味していた——止まったペインが slot_timeout（既定 7200 秒）
+        # まで居座る（設計 2026-08-27 §7.4-3）。未設定のときは定義の無進捗上限を使う。
+        self._freeze_timeout = (
+            None if freeze_timeout_seconds is None
+            else max(int(freeze_timeout_seconds), 0))
         self._on_freeze = on_freeze
         self._lock = threading.Lock()
         # pane_id → state / acquired_at / optional callbacks / freeze hash
@@ -439,8 +444,9 @@ class SlotMonitor:
                     notify_failure=failure_pending,
                 )
             else:
-                if self._freeze_timeout > 0:
-                    self._check_freeze(pane_id, content, entry, now)
+                limit = self._freeze_limit(idle_profile)
+                if limit > 0:
+                    self._check_freeze(pane_id, content, entry, now, limit)
                 if now - acquired_at > self._slot_timeout:
                     log.warning("SlotMonitor: ペイン %s がタイムアウト。スロットを強制解放します。", pane_id)
                     if entry.get("hold_slot"):
@@ -524,14 +530,30 @@ class SlotMonitor:
                       notify_failure=notify_failure,
                       keep_for_completion=keep_for_completion)
 
+    def _freeze_limit(self, profile: Any) -> float:
+        """このペインの無進捗上限。設定が言っていればそれ、無ければ定義から採る。
+
+        `health.freeze_timeout_seconds` を**書いていれば**その値（`0` は「止めない」と
+        いう明示）。書いていなければ定義の無進捗上限（ヘッドレスと同じ源）を使う
+        ——ペインだけ既定 off だったので、止まったペインが `slot_timeout_seconds` まで
+        居座っていた（設計 2026-08-27 §7.4-3）。
+        """
+        if self._freeze_timeout is not None:
+            return float(self._freeze_timeout)
+        try:
+            return float(profile.freeze_timeout)
+        except (AttributeError, TypeError, ValueError):
+            return 0.0
+
     def _check_freeze(
         self,
         pane_id: str,
         content: str,
         entry: dict[str, Any],
         now: float,
+        limit: float,
     ) -> None:
-        """busy 中の画面 hash が freeze_timeout 変化しない場合に on_freeze を呼ぶ。"""
+        """busy 中の画面 hash が `limit` 秒変化しない場合に on_freeze を呼ぶ。"""
         content_hash = hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()
         with self._lock:
             current = self._pending.get(pane_id)
@@ -543,7 +565,7 @@ class SlotMonitor:
                 current["hash_unchanged_since"] = now
                 return
             unchanged_since = float(current.get("hash_unchanged_since") or now)
-            if now - unchanged_since < self._freeze_timeout:
+            if now - unchanged_since < limit:
                 return
             callback = current.get("on_freeze") or self._on_freeze
             current["hash_unchanged_since"] = now  # 連続発火を防ぐ

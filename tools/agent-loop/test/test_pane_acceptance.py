@@ -124,6 +124,19 @@ class PaneAcceptanceGateTests(unittest.TestCase):
         self.assertTrue(self.sched._acceptance_gate(self.req, "%1"),
                         "指紋を消費済みなので再判定しない")
 
+    def test_the_outcome_is_recorded_in_the_dispatch_log(self):
+        """人向けの 1 行だけだと後から機械で追えない（設計 §7.4-2 / 段 11）。"""
+        self.report.write_text("前\n", encoding="utf-8")
+        self._stamp()
+        self.report.write_text("後\n", encoding="utf-8")
+        with self.assertLogs("agent-loop", level="INFO") as logs:
+            self.sched._acceptance_gate(self.req, "%1")
+        line = next(l for l in logs.output if "event=acceptance_checked" in l)
+        self.assertIn("ok=True", line)
+        self.assertIn("verifiedBy=machine", line)
+        self.assertIn("files=1", line)
+        self.assertIn("errors=0", line)
+
     def test_a_broken_gate_does_not_hang_the_turn(self):
         """照合が落ちてもターンを宙吊りにしない（落ちるとスロットが返らない）。"""
         self._stamp()
