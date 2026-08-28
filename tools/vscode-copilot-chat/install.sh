@@ -17,4 +17,8 @@ else
   cp "${ROOT}/extension/package.json" "${ROOT}/extension/extension.js" "${EXT_DIR}/"
   printf 'Installed extension: %s\nInstalled CLI: %s\n' "${EXT_DIR}" "${BIN_DIR}/vscode-copilot-chat"
 fi
+case ":${PATH}:" in
+  *":${BIN_DIR}:"*) ;;
+  *) printf 'Note: %s is not on PATH. Add it to your shell profile.\n' "${BIN_DIR}" ;;
+esac
 printf 'Run: vscode-copilot-chat --start "hello"\n'

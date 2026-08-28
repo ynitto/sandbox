@@ -1,8 +1,11 @@
 # VS Code Copilot Language Model Bridge
 
-WSL上の自作 CLI から、Windows VS Codeにログイン済みのCopilotモデルを公式のLanguage Model API
+自作 CLI から、VS Code にログイン済みの Copilot モデルを公式の Language Model API
 （`vscode.lm`）経由で呼ぶ最小構成です。`code chat` の UI 起動ではなく、回答を stdout に
 返します。**片道実行と対話（REPL）の両方**に対応します。
+
+**macOS・Linux・WSL** で動きます。WSL のときだけ Windows 側の VS Code を起こし、
+それ以外は同じ OS 上の VS Code を起こします。
 
 ```text
 vscode-copilot-chat (Python CLI)   ← 会話履歴はここが持つ
@@ -21,14 +24,38 @@ bash tools/vscode-copilot-chat/install.sh
 vscode-copilot-chat --start "このリポジトリを要約して"
 ```
 
-`--start`はWSLのカレントディレクトリを`wslpath -w`でWindows pathへ変換し、PowerShell
-から`code --user-data-dir ... --new-window <current-directory>`を実行します。専用
-`--user-data-dir`を使うのは、既に起動中のVS Codeへ接続してport/tokenの環境変数が失われる
-のを防ぐためです。CLI自身が既定port `32190`と生成したtokenを保持するため、Windows側の
-ホームディレクトリから接続情報を探す必要はありません。portは`--port`で固定できます。
+`--start` はカレントディレクトリを開く VS Code を起こします。**どちらの経路を使うかは
+OS 名ではなく道具の有無で決めます**——`powershell.exe` と `wslpath` が両方あれば WSL、
+無ければ同じ OS 上の VS Code です（WSL は Linux を名乗るので platform 名では分かれません）。
+
+| | 起こし方 | `--user-data-dir` |
+|---|---|---|
+| macOS / Linux | `code --new-window <cwd>` を env 付きで直接実行 | `~/.vscode-copilot-bridge/user-data` |
+| WSL | `wslpath -w` で Windows path へ変換し、PowerShell から実行 | `%LOCALAPPDATA%\vscode-copilot-bridge` |
+
+どちらも**専用の `--user-data-dir`** を使います。既に起動中の VS Code へ接続してしまうと
+port/token の環境変数が拡張へ届かないためです。CLI 自身が既定 port `32190` と生成した
+token を保持するので、接続情報をどこかから探す必要はありません。port は `--port` で
+固定できます。
 
 専用プロファイルなので、ふだん使っている VS Code の拡張（MCP など）はこのウィンドウには
 載りません。モデルを呼ぶだけならそれで足ります。
+
+### macOS で `code` が見つからないとき
+
+VS Code の「Shell Command: Install 'code' command in PATH」を実行していないと `code` は
+PATH にありません。CLI は `/Applications/Visual Studio Code.app` と
+`~/Applications/Visual Studio Code.app` の中も見にいくので、通常はそのままで動きます。
+別の場所・Insiders などを使う場合は `--code-bin` で指定してください。
+
+```bash
+vscode-copilot-chat --code-bin '/path/to/code' --start "…"
+```
+
+`install.sh` が拡張を置くのは `~/.vscode/extensions` です。Insiders を使う場合は
+`~/.vscode-insiders/extensions` へ手で置く必要があります。
+
+インストーラが CLI を置く `~/.local/bin` が PATH に無ければその旨を表示します。
 
 起動だけを行う場合と、同じbridgeへ続けて問い合わせる場合:
 

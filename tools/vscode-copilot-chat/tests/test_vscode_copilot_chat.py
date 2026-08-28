@@ -24,7 +24,8 @@ def test_read_endpoint_validates_protocol(tmp_path):
 
 def test_start_bridge_knows_port_and_launches_current_windows_directory(tmp_path):
     endpoint_file = tmp_path / "endpoint.json"
-    with mock.patch.object(client, "windows_path", return_value="C:\\work\\repo"), \
+    with mock.patch.object(client, "is_wsl", return_value=True), \
+         mock.patch.object(client, "windows_path", return_value="C:\\work\\repo"), \
          mock.patch.object(client, "powershell_executable", return_value="powershell.exe"), \
          mock.patch.object(client.subprocess, "Popen") as popen:
         endpoint = client.start_bridge(endpoint_file, 32191, Path("/work/repo"), "code")
@@ -475,3 +476,82 @@ def test_call_reads_input_from_stdin_with_a_dash():
 def test_call_on_an_unregistered_tool_fails_with_a_hint():
     code, _, _, call = _main_call(["--call", "nope"])
     assert code == 1 and not call.called
+
+
+# --- 起動先の切り替え（WSL / macOS・Linux） -------------------------------------
+
+
+def test_is_wsl_needs_both_windows_tools():
+    def which(name, table):
+        return table.get(name)
+
+    for table, expected in [
+        ({"powershell.exe": "/p", "wslpath": "/w"}, True),
+        ({"powershell.exe": "/p"}, False),   # wslpath が無い
+        ({"wslpath": "/w"}, False),          # PowerShell が無い（素の Linux）
+        ({}, False),                         # macOS
+    ]:
+        with mock.patch.object(client.shutil, "which", lambda n, t=table: which(n, t)):
+            assert client.is_wsl() is expected
+
+
+def test_start_bridge_launches_local_vscode_when_not_on_wsl(tmp_path):
+    endpoint_file = tmp_path / "endpoint.json"
+    with mock.patch.object(client, "is_wsl", return_value=False), \
+         mock.patch.object(client, "resolve_code_bin", return_value="/usr/local/bin/code"), \
+         mock.patch.object(client, "user_data_dir", return_value=tmp_path / "user-data"), \
+         mock.patch.object(client.subprocess, "Popen") as popen:
+        endpoint = client.start_bridge(endpoint_file, 32195, Path("/Users/me/repo"), "code")
+    assert endpoint["url"] == "http://127.0.0.1:32195/v1/chat"
+    argv, kwargs = popen.call_args.args[0], popen.call_args.kwargs
+    assert argv == ["/usr/local/bin/code", "--user-data-dir", str(tmp_path / "user-data"),
+                    "--new-window", "/Users/me/repo"]
+    # port/token は env で渡す。専用 user-data-dir なので既存ウィンドウに吸われない。
+    assert kwargs["env"]["VSCODE_COPILOT_BRIDGE_PORT"] == "32195"
+    assert kwargs["env"]["VSCODE_COPILOT_BRIDGE_TOKEN"] == endpoint["token"]
+    assert (tmp_path / "user-data").is_dir()
+
+
+def test_local_launch_rejects_a_bad_port(tmp_path):
+    with mock.patch.object(client, "resolve_code_bin", return_value="/bin/code"):
+        try:
+            client.launch_local_vscode(0, "t", tmp_path, "code")
+            assert False, "port 0 must be rejected"
+        except RuntimeError as exc:
+            assert "port" in str(exc)
+
+
+def test_resolve_code_bin_prefers_path():
+    with mock.patch.object(client.shutil, "which", return_value="/opt/bin/code"):
+        assert client.resolve_code_bin("code") == "/opt/bin/code"
+
+
+def test_resolve_code_bin_falls_back_to_the_mac_app_bundle(tmp_path):
+    bundle = tmp_path / "Visual Studio Code.app/Contents/Resources/app/bin/code"
+    bundle.parent.mkdir(parents=True)
+    bundle.write_text("#!/bin/sh\n")
+    bundle.chmod(0o755)
+    with mock.patch.object(client.shutil, "which", return_value=None), \
+         mock.patch.object(client, "MAC_CODE_PATHS", (str(bundle),)):
+        assert client.resolve_code_bin("code") == str(bundle)
+
+
+def test_resolve_code_bin_explains_how_to_fix_it():
+    with mock.patch.object(client.shutil, "which", return_value=None), \
+         mock.patch.object(client, "MAC_CODE_PATHS", ()):
+        try:
+            client.resolve_code_bin("code")
+            assert False, "missing code must fail"
+        except RuntimeError as exc:
+            assert "--code-bin" in str(exc)
+
+
+def test_explicit_code_bin_is_not_second_guessed(tmp_path):
+    """--code-bin を打った人には、当てずっぽうの候補ではなくその指定の失敗を返す。"""
+    with mock.patch.object(client.shutil, "which", return_value=None), \
+         mock.patch.object(client, "MAC_CODE_PATHS", ("/should/not/be/used",)):
+        try:
+            client.resolve_code_bin("/my/code")
+            assert False, "must fail"
+        except RuntimeError as exc:
+            assert "/my/code" in str(exc)

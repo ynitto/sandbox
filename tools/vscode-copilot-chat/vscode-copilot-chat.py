@@ -47,7 +47,69 @@ def windows_path(path: Path) -> str:
         raise RuntimeError(f"Windows pathへ変換できません: {path}") from exc
 
 
+def is_wsl() -> bool:
+    """WSL から Windows 側の VS Code を起こす経路が使えるか。
+
+    起動先の判定に platform 名は使わない——WSL は Linux を名乗るし、要るのは
+    「Windows 側へ渡す道具が揃っているか」だけ。
+    """
+    return bool(shutil.which("powershell.exe") and shutil.which("wslpath"))
+
+
+# macOS は `code` を PATH へ入れる操作（Shell Command: Install 'code' command in PATH）が
+# 任意なので、入れていない人のために既定の場所も見る。
+# 候補は安定版だけにする。install.sh が拡張を置くのは `~/.vscode/extensions` なので、
+# Insiders を起こしても拡張が載っておらず「接続できません」で終わる——見つからないと
+# 言われるほうが原因が分かる。Insiders を使う人は --code-bin と手動配置で。
+MAC_CODE_PATHS = (
+    "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code",
+    "~/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code",
+)
+
+
+def resolve_code_bin(code_bin: str) -> str:
+    found = shutil.which(code_bin)
+    if found:
+        return found
+    if code_bin == "code":
+        for candidate in MAC_CODE_PATHS:
+            path = Path(candidate).expanduser()
+            if path.is_file() and os.access(path, os.X_OK):
+                return str(path)
+    raise RuntimeError(
+        f"VS Code の起動コマンドが見つかりません: {code_bin}"
+        "（PATH へ通すか --code-bin で場所を指定してください）")
+
+
+def user_data_dir() -> Path:
+    return Path.home() / ".vscode-copilot-bridge" / "user-data"
+
+
+def launch_local_vscode(port: int, token: str, cwd: Path, code_bin: str) -> None:
+    """同じ OS 上の VS Code を起こす（macOS / Linux）。"""
+    if not 1 <= port <= 65535:
+        raise RuntimeError("port は1から65535で指定してください")
+    executable = resolve_code_bin(code_bin)
+    data_dir = user_data_dir()
+    data_dir.mkdir(parents=True, exist_ok=True)
+    # Windows 経路と同じ理由で専用 --user-data-dir を使う。既に起動している VS Code へ
+    # 接続してしまうと、この env が拡張へ届かない。
+    env = {**os.environ,
+           "VSCODE_COPILOT_BRIDGE_PORT": str(port),
+           "VSCODE_COPILOT_BRIDGE_TOKEN": token}
+    subprocess.Popen([executable, "--user-data-dir", str(data_dir), "--new-window", str(cwd)],
+                     env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def launch_vscode(port: int, token: str, cwd: Path, code_bin: str) -> None:
+    if is_wsl():
+        launch_windows_vscode(port, token, cwd, code_bin)
+    else:
+        launch_local_vscode(port, token, cwd, code_bin)
+
+
 def launch_windows_vscode(port: int, token: str, cwd: Path, code_bin: str) -> None:
+    """WSL から Windows 側の VS Code を起こす。"""
     if not 1 <= port <= 65535:
         raise RuntimeError("port は1から65535で指定してください")
     win_cwd = windows_path(cwd)
@@ -72,7 +134,7 @@ def launch_windows_vscode(port: int, token: str, cwd: Path, code_bin: str) -> No
 def start_bridge(path: Path, port: int, cwd: Path, code_bin: str) -> dict[str, object]:
     token = secrets.token_hex(32)
     endpoint = {"version": 1, "url": f"http://127.0.0.1:{port}/v1/chat", "token": token}
-    launch_windows_vscode(port, token, cwd, code_bin)
+    launch_vscode(port, token, cwd, code_bin)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(endpoint) + "\n", encoding="utf-8")
     path.chmod(0o600)
