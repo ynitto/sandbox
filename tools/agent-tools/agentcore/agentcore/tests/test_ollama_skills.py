@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from agentcore import ollama_skills
+from agentcore import ollama_skills, slashroute
 
 
 class _SkillHome:
@@ -111,14 +111,35 @@ class TestExpand(unittest.TestCase):
         self.assertNotIn("/summarize-logs", out, "スラッシュ行は本文から消える")
         self.assertEqual([s["name"] for s in loaded], ["summarize-logs"])
 
-    def test_unknown_slash_line_is_passed_through_with_a_warning(self):
-        """スキル名でない普通の行かもしれないので、偽陽性でプロンプトを壊さない。"""
+    def test_unknown_slash_line_stops_with_an_explicit_error(self):
+        """先頭が `/` ならルール。知らない名前は黙って推論へ流さない（設計 §3.2）。
+
+        止めるだけでは直し方が分からないので、エラー文は本文として送る書き方
+        （先頭に空行を 1 つ）まで示す。
+        """
+        with _SkillHome():
+            with self.assertRaises(slashroute.UnknownCommand) as ctx:
+                ollama_skills.expand("/tmp を消して\n")
+        message = str(ctx.exception)
+        self.assertIn("知らないコマンドです: /tmp", message)
+        self.assertIn("先頭に空行", message)
+
+    def test_a_leading_blank_line_sends_it_as_body(self):
+        """エラー文が示す逃げ道が実際に効くこと。"""
+        with _SkillHome():
+            out, loaded = ollama_skills.expand("\n/tmp を消して\n")
+        self.assertEqual(out, "\n/tmp を消して\n")
+        self.assertEqual(loaded, [])
+
+    def test_lenient_mode_still_passes_through_with_a_warning(self):
+        """`strict=False` は従来どおり——先頭ブロックを 1 行も消費せず警告で素通し。"""
         warnings = []
         with _SkillHome():
-            out, loaded = ollama_skills.expand("/tmp を消して\n", warn=warnings.append)
+            out, loaded = ollama_skills.expand("/tmp を消して\n", warn=warnings.append,
+                                               strict=False)
         self.assertEqual(out, "/tmp を消して\n")
         self.assertEqual(loaded, [])
-        self.assertTrue(any("見つかりません" in w for w in warnings))
+        self.assertTrue(any("知らないコマンド" in w for w in warnings))
 
     def test_explicit_missing_skill_raises(self):
         with _SkillHome():
@@ -153,11 +174,19 @@ class TestExpand(unittest.TestCase):
             _out, loaded = ollama_skills.expand("依頼", ["prose"])
         self.assertFalse(loaded[0]["scripts"])
 
-    def test_partially_resolvable_leading_block_is_left_alone(self):
-        """1 つでも解決できない行があれば「ただの本文」と見て触らない。"""
+    def test_a_partially_resolvable_block_names_the_unknown_one(self):
+        """1 つでも知らない名前があれば止まる。どれが知らないのかを名指しする。"""
         with _SkillHome() as home:
             home.add("known")
-            out, loaded = ollama_skills.expand("/known\n/unknown\n本文")
+            with self.assertRaises(slashroute.UnknownCommand) as ctx:
+                ollama_skills.expand("/known\n/unknown\n本文")
+        self.assertIn("/unknown", str(ctx.exception))
+
+    def test_lenient_partially_resolvable_block_is_left_alone(self):
+        """`strict=False` は all-or-nothing のまま——1 行も消費しない。"""
+        with _SkillHome() as home:
+            home.add("known")
+            out, loaded = ollama_skills.expand("/known\n/unknown\n本文", strict=False)
         self.assertEqual(out, "/known\n/unknown\n本文")
         self.assertEqual(loaded, [])
 

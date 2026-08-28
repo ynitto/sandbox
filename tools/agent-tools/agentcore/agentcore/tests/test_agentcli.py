@@ -49,6 +49,59 @@ class _Isolated(unittest.TestCase):
         return p
 
 
+class TestSlashNative(_Isolated):
+    """本文先頭のコマンド行を CLI へ残して渡すか、ランチャが消費するか（設計 2026-08-27 §3.2）。"""
+
+    def _spec(self, body):
+        path = self.write_def("agents", "x", {"command": ["x"], **body})
+        os.environ["KIRO_AGENTS_DIR"] = str(path.parent)
+        return agentcli.load_cli("x")
+
+    def test_declaration_wins(self):
+        self.assertFalse(self._spec({"headless_autonomy": "tool-loop",
+                                     "slash_native": False})["slash_native"])
+        agentcli.clear_cache()
+        self.assertTrue(self._spec({"headless_autonomy": "single-shot",
+                                    "slash_native": True})["slash_native"])
+
+    def test_undeclared_falls_back_to_the_layer(self):
+        """宣言していない定義（利用者が置いたものを含む）は今日と同じに振る舞う。
+
+        以前この判定は `headless_autonomy == "tool-loop"` という代理で書かれていた。
+        """
+        self.assertTrue(self._spec({"headless_autonomy": "tool-loop"})["slash_native"])
+        agentcli.clear_cache()
+        self.assertFalse(self._spec({"headless_autonomy": "single-shot"})["slash_native"])
+        agentcli.clear_cache()
+        self.assertFalse(self._spec({})["slash_native"])   # 未宣言 = 安全側の single-shot
+
+    def test_a_non_boolean_declaration_is_an_explicit_error(self):
+        with self.assertRaises(agentcli.AgentCliError) as ctx:
+            self._spec({"slash_native": "yes"})
+        self.assertIn("slash_native", str(ctx.exception))
+
+    def test_profiles_do_not_inherit_it(self):
+        """起動の形ごとに決まる性質なので、profile は自分の層から導く。
+
+        `ollama` は base が tool-loop（自分で先頭スラッシュを解釈する）だが、
+        `ollama-json` などの single-shot profile ではハーネスが解決する側になる。
+        """
+        spec = self._spec({
+            "headless_autonomy": "tool-loop", "slash_native": True,
+            "profiles": {"one": {"command": ["x"], "headless_autonomy": "single-shot"}}})
+        self.assertTrue(spec["slash_native"])
+        self.assertFalse(agentcli.load_cli("x-one")["slash_native"])
+
+    def test_bundled_definitions_declare_it(self):
+        """同梱定義は代理に頼らず自分で言う（ファイルが振る舞いを説明する）。"""
+        for name in ("claude", "codex", "kiro", "copilot", "cursor", "ollama", "opencode"):
+            self.assertIs(json.loads((BUNDLED / f"{name}.json").read_text(
+                encoding="utf-8")).get("slash_native"), True, name)
+        for name in ("aider", "vscode-copilot"):
+            self.assertIs(json.loads((BUNDLED / f"{name}.json").read_text(
+                encoding="utf-8")).get("slash_native"), False, name)
+
+
 class TestLoad(_Isolated):
     def test_common_home_does_not_fall_back_to_dot_agent(self):
         os.environ.pop("AGENT_PROJECT_AGENTS_HOME")

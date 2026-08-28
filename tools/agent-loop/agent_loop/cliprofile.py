@@ -200,6 +200,50 @@ class CliProfile:
 
     # -- 送信テキストの作法 --------------------------------------------------
 
+    @property
+    def freeze_timeout(self) -> float:
+        """このペインを「止まった」とみなすまでの無進捗秒数（設計 2026-08-27 §7.4-3）。
+
+        ヘッドレスは**同じ意味の上限を既定で持っている**——定義の `timeout`、無ければ
+        共通 fallback（`toolloop._TL_DEFAULT_AGENT_TIMEOUT_SEC` = 600 秒）。ペインだけが
+        既定 off で、`slot_timeout_seconds`（既定 7200）まで居座っていた。**同じ性質の
+        上限なので同じ源から採る**——ここで別の数字を置くと、どちらの上限で切られたのかを
+        読む側が追えなくなる。
+
+        壁時計ではなく無進捗である点も同じ。画面の hash が変わっていれば進んでいる。
+        """
+        declared = (self.spec or {}).get("timeout")
+        try:
+            value = float(declared or 0)
+        except (TypeError, ValueError):
+            value = 0.0
+        if value > 0:
+            return value
+        return float(_harness_toolloop._TL_DEFAULT_AGENT_TIMEOUT_SEC)
+
+    def classify_failure(self, content: str, *, now=None) -> "dict | None":
+        """ペインの画面を定義の `errors[]` で分類する（設計 2026-08-27 §7.4-1）。
+
+        **ヘッドレスと同じ 1 実装**（`agentcli.classify_error`）を引く。以前この経路には
+        分類が無く、効くのは `interactive.failure_pattern`（しかも `send --wait` だけ）
+        だった——定義が `errors[]` に quota や auth を宣言していても、ペインで起きた分は
+        誰も読まなかった。legacy（定義なし）は `errors[]` を持たないので None。
+        """
+        if self.spec is None:
+            return None
+        global _AGENTCLI_MOD
+        mod = _AGENTCLI_MOD
+        if mod is None:
+            mod = _import_agentcli()
+            _AGENTCLI_MOD = mod
+        if mod is None:
+            return None
+        try:
+            return mod.classify_error(self.spec, content, detailed=True,
+                                      now=time.time() if now is None else now)
+        except Exception:
+            return None      # 分類できないことを理由に実行を止めない
+
     def rewrite_slash(self, line: str) -> str:
         """行頭 `/` のスラッシュコマンドをこの CLI の起動記号へ差し替える（既定 `/` は素通し）。"""
         if self.skill_command_prefix == "/":
@@ -325,6 +369,14 @@ def check_headless_entries(config: "dict[str, Any]", entries: "list[dict[str, An
             fatal.append(f"定期プロンプト「{name}」のエージェントを解決できません: {exc}")
             continue
         if route != "per-run":
+            # 対話ペイン経路。受入条件の機械層はターン境界で回る（設計 2026-08-27 §7.3 B）
+            # が、判定層（judge）はエージェントの**報告本文**を要るのでまだ走らない。
+            # 黙って無視すると「判定させたつもり」が残るので、起動時に言う。
+            if entry.get("acceptance_judge") and (entry.get("acceptance") or []):
+                log.warning(
+                    "定期プロンプト「%s」: 対話ペイン経路では受入条件の判定層（acceptance_judge）は"
+                    "まだ走りません。機械層（ファイル指紋の照合）だけで検証し、`verifiedBy` には"
+                    "judge が出ません。", name)
             continue
         if entry.get("statemachine"):
             # 宣言したワークフローが実在するかは、最初の LLM 実行より前に知りたい

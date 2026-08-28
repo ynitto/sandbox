@@ -26,7 +26,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from agentcore import agentcli
+from agentcore import agentcli, slashroute
 
 PROG = "agent-herd"
 
@@ -68,10 +68,21 @@ OBSERVE_ALIASES = {
     "replay": "--replay",
 }
 
-HELP = f"""使い方: {PROG} <サブコマンド> [オプション]
+HELP = f"""使い方: {PROG} [オプション]              # クラウド CLI と同型の入口
+       {PROG} <サブコマンド> [オプション]  # 従来の綴り（すべて温存）
 
   LAN 上の ollama を動かす実行系の入口。`agent-aider` / `agent-ollama` /
   `agent-opencode` はこの実行ファイルへの別名で、打ち方も出力も従来どおり。
+
+  そのまま打つ（引数なし＝対話、-p ＝非対話 1 回）:
+    （引数なし）          対話（TUI）で開く
+    -p ["…"]              1 回だけ実行する（値を省くと本文は stdin）
+    --agent <名前>        バックエンド。agents/<名前>.json の**定義名**
+                          （ollama-json のような profile 綴りも解ける）
+    --model <モデル>      モデル
+    --purpose <用途>      用途の 1 語（宣言 / variants が起動形を決める）
+    --readonly            読み取り専用で走らせる
+    --dir <パス>          作業ディレクトリ
 
   実行（adapter を直に叩く。引数は adapter へ素通し）:
     aider …               Aider をヘッドレスで回す（= agent-aider …）
@@ -97,7 +108,10 @@ HELP = f"""使い方: {PROG} <サブコマンド> [オプション]
   各 adapter の詳しい使い方はその adapter に聞く: {PROG} ollama --help
 
 サブコマンドは **adapter の名前**であって定義の名前ではない。ollama-json のような
-定義を指定して回すときは `{PROG} exec ollama-json …` を使う。"""
+定義を指定して回すときは `{PROG} exec ollama-json …`（または `--agent ollama-json`）を使う。
+
+`--continue` / `--resume` はまだ受け取らない。ローカルの単発実行は毎回新しいプロセスで、
+「継続」の実体をどう宣言させるかが未決だから（設計 2026-08-27 §4・§11 未決 1）。"""
 
 
 def _err(message: str, *, err=None) -> None:
@@ -132,13 +146,16 @@ def _definition_names() -> "list[str]":
 def _defs_payload(name: str, *, model: "str | None", purpose: "str | None") -> dict:
     spec = agentcli.load_cli(name)
     resolved_name, resolved_model = name, model
-    variant = None
+    via_variant = False
     if purpose:
-        variant = agentcli.resolve_variant(name, purpose)
-        if variant:
-            resolved_name = variant["agent_cli"]
+        # 用途 → 起動形の調停は slashroute の 1 実装（設計 2026-08-27 §3.3）。
+        routed = slashroute.resolve(command=purpose, cli=name, model=model,
+                                    explicit_model=bool(model))
+        via_variant = routed["variant"]
+        if via_variant:
+            resolved_name = routed["agent_cli"]
             spec = agentcli.load_cli(resolved_name)
-            resolved_model = model or variant.get("default_model")
+            resolved_model = routed["model"]
     built_write = agentcli.headless_cmd(spec, resolved_model, "<PROMPT>", readonly=False)
     built_read = agentcli.headless_cmd(spec, resolved_model, "<PROMPT>", readonly=True)
     try:
@@ -153,7 +170,7 @@ def _defs_payload(name: str, *, model: "str | None", purpose: "str | None") -> d
         # `name` のほうで、profile は起動差でしかない。
         "profile": spec.get("profile") or "",
         "profiles": sorted(spec.get("profiles") or {}),
-        "resolved_via_variant": bool(variant),
+        "resolved_via_variant": via_variant,
         "headless_autonomy": spec.get("headless_autonomy"),
         "readonly": spec.get("readonly"),
         "relative_cost": spec.get("relative_cost"),
@@ -286,10 +303,11 @@ def cmd_exec(argv, *, err=None, runner=None, stdin=None) -> int:
     try:
         spec = agentcli.load_cli(name)
         if purpose:
-            variant = agentcli.resolve_variant(name, purpose)
-            if variant:
-                spec = agentcli.load_cli(variant["agent_cli"])
-                model = model or variant.get("default_model")
+            routed = slashroute.resolve(command=purpose, cli=name, model=model,
+                                        explicit_model=bool(model))
+            if routed["variant"]:
+                spec = agentcli.load_cli(routed["agent_cli"])
+                model = routed["model"]
         prompt = _read_prompt(stdin)
         built = agentcli.headless_cmd(spec, model, prompt, readonly=readonly,
                                       files=files or None, read_files=read_files or None)
@@ -393,6 +411,116 @@ def _launch(argv: "list[str]") -> int:
         _err(f"対話起動に失敗しました（{argv[0]}）: {exc}")
         return 127
     return 0  # pragma: no cover - execvp は戻らない
+
+
+# ---------------------------------------------------------------------------
+# トップレベルのフラグ — クラウド CLI と同型の入口
+# ---------------------------------------------------------------------------
+# 設計: docs/plans/2026-08-27-agent-herd-cloud-cli-parity-slash-dispatch-design.md §3.1。
+#
+# **正は「クラウド CLI がどう見えるか」である。** claude / codex では、引数なしが対話で
+# `-p` が非対話 1 回、モデルと権限と作業ディレクトリはフラグである。agent-herd もそう
+# 振る舞えばよい——**新しい実行経路は足さない**。ここがやるのは、既に `chat` と `exec` が
+# 持っている当て先へフラグを翻訳することだけである。
+#
+# 既存のサブコマンド（`aider` / `ollama` / `chat` / `exec` / `defs` / `harness` …）は
+# **別名として温存**する。仕様書 §3 の綴りを壊さない——help の下段へ降ろすだけ。
+TOPLEVEL_FLAGS = ("-p", "--prompt", "--agent", "--model", "--purpose",
+                  "--readonly", "--dir", "-d")
+# 綴りだけ先に決まっていて実体が未決のもの（設計 §4・§11 未決 1）。黙って無視すると
+# 「継続したつもりで毎回まっさらに走る」になるので、受け取った時点で明示エラーにする。
+UNDECIDED_FLAGS = ("--continue", "--resume")
+
+
+def _is_toplevel_invocation(sub: "str | None") -> bool:
+    """`agent-herd` 自身へのフラグとして読むべきか。
+
+    引数なし（＝対話）か、先頭がフラグのとき。`-h` / `--help` / `--version` は
+    サブコマンド側が先に拾うので、ここへは来ない。
+    """
+    return sub is None or sub.startswith("-")
+
+
+def cmd_toplevel(argv, *, err=None, runner=None, launcher=None, stdin=None) -> int:
+    """`agent-herd [フラグ]` を `chat` / `exec` と同じ当て先へ落とす。"""
+    err = err or sys.stderr
+    tokens = list(argv)
+    name = DEFAULT_CHAT_CLI
+    model = purpose = None
+    prompt: "str | None" = None
+    headless = False
+    readonly = False
+    work_dir: "str | None" = None
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        if token in UNDECIDED_FLAGS:
+            _err(f"{token} はまだ実装していません。ローカルの単発実行は毎回新しい"
+                 "プロセスなので、「継続」の実体（材料の再構築か CLI 側のセッション機能か）"
+                 "を定義がどう宣言するかが未決です", err=err)
+            return 2
+        if token in ("-p", "--prompt"):
+            headless = True
+            # 値は任意。次が値らしくなければ本文は stdin から読む（フィルタの作法）。
+            if i + 1 < len(tokens) and not tokens[i + 1].startswith("-"):
+                i += 1
+                prompt = tokens[i]
+        elif token == "--readonly":
+            readonly = True
+        elif token in ("--agent", "--model", "--purpose", "--dir", "-d"):
+            if i + 1 >= len(tokens):
+                _err(f"{token} には値が必要です", err=err)
+                return 2
+            i += 1
+            value = tokens[i]
+            if token == "--agent":
+                name = value
+            elif token == "--model":
+                model = value
+            elif token == "--purpose":
+                purpose = value
+            else:
+                work_dir = value
+        elif token.startswith("-"):
+            _err(f"{PROG} は {token} を受け取りません"
+                 f"（使えるのは {', '.join(TOPLEVEL_FLAGS)}。"
+                 f"サブコマンドの一覧は {PROG} --help）", err=err)
+            return 2
+        else:
+            _err(f"{PROG} は位置引数を受け取りません: {token!r}"
+                 f"（本文は -p か stdin、バックエンドは --agent で渡します）", err=err)
+            return 2
+        i += 1
+
+    if work_dir is not None:
+        # `--dir` は**このプロセスの作業ディレクトリ**そのものである。ヘッドレスは
+        # 子プロセスへ、対話は exec / in-process の adapter へ、同じ 1 回で効く。
+        target = Path(work_dir).expanduser()
+        if not target.is_dir():
+            _err(f"ディレクトリが存在しません: {target}", err=err)
+            return 2
+        os.chdir(target)
+
+    try:
+        spec = agentcli.load_cli(name)
+        if purpose:
+            routed = slashroute.resolve(command=purpose, cli=name, model=model,
+                                        explicit_model=bool(model))
+            if routed["variant"] or routed["declared"]:
+                spec = agentcli.load_cli(routed["agent_cli"])
+                model = routed["model"]
+        if not headless:
+            return (launcher or _launch)(
+                agentcli.interactive_cmd(spec, model, readonly=readonly))
+        body = _read_prompt(stdin) if prompt is None else prompt
+        built = agentcli.headless_cmd(spec, model, body, readonly=readonly)
+    except agentcli.AgentCliError as exc:
+        _err(str(exc), err=err)
+        return 1
+    warning = built.get("readonly_warning")
+    if warning:
+        print(f"@agent-note {warning}", file=err)
+    return (runner or _run_argv)(built)
 
 
 # ---------------------------------------------------------------------------
@@ -512,16 +640,21 @@ def main(argv=None, prog=None) -> int:
     tokens = list(sys.argv[1:] if argv is None else argv)
     sub, rest = resolve(prog if prog is not None else sys.argv[0], tokens)
 
-    if sub is None or sub in ("-h", "--help", "help"):
+    if sub in ("-h", "--help", "help"):
         print(HELP)
-        return 0 if sub else 2
+        return 0
     if sub in ("--version", "version"):
         from agentcore import __version__
         print(f"{PROG} {__version__}")
         return 0
 
+    # 別名（`agent-aider …`）は argv0 で決まっているので、フラグより先に拾う
+    # ——あちらの引数面は adapter への素通しで、ここが解釈してはいけない。
     if sub in ADAPTERS:
         return ADAPTERS[sub]()(rest)
+    # 引数なし＝対話、先頭がフラグ＝自分自身への指定（設計 §3.1）。
+    if _is_toplevel_invocation(sub):
+        return cmd_toplevel(tokens)
     if sub in OBSERVE_ALIASES:
         return ADAPTERS["ollama"]()([OBSERVE_ALIASES[sub], *rest])
     if sub == "defs":

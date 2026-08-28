@@ -88,6 +88,14 @@ function normalize(spec, name, file) {
   if (headlessAutonomy !== 'tool-loop' && headlessAutonomy !== 'single-shot') {
     throw new AgentCliError(`エージェント定義 ${file}: headless_autonomy は tool-loop か single-shot です`);
   }
+  // 本文先頭のコマンド行を CLI へ残して渡すか、ランチャが消費するか。未宣言のときは
+  // headless_autonomy から導く（以前この判定がその代理で書かれていたことの後方互換）。
+  // Python 側（agentcore.agentcli.normalize）と同じ規則。
+  if (spec.slash_native != null && typeof spec.slash_native !== 'boolean') {
+    throw new AgentCliError(`エージェント定義 ${file}: slash_native は true か false です`);
+  }
+  const slashNative = spec.slash_native == null
+    ? headlessAutonomy === 'tool-loop' : Boolean(spec.slash_native);
   const errors = [];
   for (const e of Array.isArray(spec.errors) ? spec.errors : []) {
     try {
@@ -102,7 +110,7 @@ function normalize(spec, name, file) {
   const sp = (spec.spill && typeof spec.spill === 'object') ? spec.spill : {};
   const out = {
     // 用途別の起動差。Python 側（agentcore.agentcli）と同じ規則で保持する。
-    // 継承しないのは interactive / variants の 2 つだけ（applyProfile を見よ）。
+    // 継承しないのは interactive / variants / slash_native の 3 つ（applyProfile を見よ）。
     profiles: (spec.profiles && typeof spec.profiles === 'object') ? spec.profiles : {},
     profile: '',
     _raw: spec,
@@ -112,6 +120,7 @@ function normalize(spec, name, file) {
     command,
     commandSuffix: strs(spec.command_suffix, 'command_suffix', file),
     skillCommandPrefix: spec.skill_command_prefix != null ? String(spec.skill_command_prefix) : '/',
+    slashNative,
     promptVia: spec.prompt_via === 'argv' ? 'argv' : 'stdin',
     promptFlag: spec.prompt_flag != null ? String(spec.prompt_flag) : null,
     fileFlag: spec.file_flag != null ? String(spec.file_flag) : null,
@@ -164,7 +173,7 @@ const cache = new Map();
 // （黙って別 CLI へ倒さない。組み込み名も定義ファイル化した今、失敗はほぼインストール破損）。
 // 継承しない項目。引き継ぐと、対話面を持たない役割に base の TUI が生えて実行経路が
 // 変わる（cowork の needsHeadlessHarness は interactive の有無を見る）。variants も同様。
-const PROFILE_NOT_INHERITED = ['interactive', 'variants'];
+const PROFILE_NOT_INHERITED = ['interactive', 'variants', 'slash_native'];
 
 function applyProfile(base, profileName, file) {
   const body = (base.profiles || {})[profileName];

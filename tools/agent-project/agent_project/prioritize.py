@@ -81,13 +81,10 @@ _RUNTIME_CONFIG = None
 # エージェントを使用する処理の一覧（設定 agents: のキー）。ここに無いキーは無視される。
 AGENT_PURPOSES = ("plan", "review", "prioritize", "route", "adjudicate", "verify",
                   "distill", "assess", "repo_map", "doctor")
-# 出力が JSON だけと決まっている処理（応答を JSON として解釈し、崩れたら既定へ倒す処理）。
-# CLI 定義が用途別の変種（`variants`）を申告していれば、この処理に限って自動で
-# そちらへ振り替える（適用拡大設計 §4.3・agent-flow の JSON_CONTRACT_ROLES と対）。
-# verify は寛容パーサ＋証跡の本文を伴い、distill は `条件 :: 指針` の行形式、
-# repo_map / doctor の出力は人が読む散文なので入れない。
-JSON_CONTRACT_PURPOSES = frozenset({"plan", "review", "prioritize", "route",
-                                    "adjudicate", "assess"})
+# 変種（variants）振り替えの許可リストはここに持たない。**申告が唯一の許可リストである**
+# ——どの用途で振り替えるかは定義側（agents/<name>.json の `variants`）が言い、調停は
+# agentcore.slashroute が 1 か所でやる（設計 2026-08-27 §3.3 / G2）。以前はここに
+# JSON_CONTRACT_PURPOSES があり、flow・audit・harness にも各々の許可リストがあった。
 
 
 def agent_cli_binary(cli: str) -> str:
@@ -152,14 +149,19 @@ def _agent_for(purpose: str) -> "tuple[str, str | None]":
     agent-control（管理面の横断上書き）＞ 設定 agents: の該当キー ＞ グローバル agent_cli。
     soft/縮退中は control の degraded を重ねる（model 上書きは無ければ None＝呼び出し値）。
 
-    解決した CLI が用途別の変種（`variants`）を申告していれば、JSON 契約の処理
-    （JSON_CONTRACT_PURPOSES）だけ最後にそちらへ振り替える。変種自身の既定モデルが
-    あればモデルもそちらへ寄せる（用途専用のチューニングを base のモデル指定で
-    上書きさせない）。"""
+    解決した CLI が用途別の変種（`variants`）を申告していれば、最後にそちらへ振り替える
+    （調停は `slashroute.resolve`。許可リストは持たない——申告が唯一の許可リストである）。
+    モデルは、**人が明示した層（設定 `agents:` の処理別モデル）が無いときだけ**変種自身の
+    既定へ寄せる。以前はここが無条件に上書きしていて、人が設定に書いたモデルまで変種の
+    既定へ戻していた（設計 2026-08-27 G4。この規則は agent-flow が既に持っていたもの）。"""
     cfg = _RUNTIME_CONFIG
     ov = ((cfg.agents if cfg is not None else {}) or {}).get(purpose) or {}
     cli = str(ov.get("agent_cli") or (cfg.agent_cli if cfg is not None else "kiro")).lower()
     model = ov.get("model") or None
+    # 人が設定（`agents:` の処理別モデル）へ書いた層だけを「明示」と数える。agent-control
+    # / 縮退が選んだモデルは「その CLI を用途を問わずそのまま使う」という明示ではないので、
+    # 用途が変種を要求すればそちらの調整済みモデルへ寄せる（agent-flow と同じ規則）。
+    configured_model = bool(model)
     c_cli, c_model = _control_override(purpose)
     if c_cli:
         cli = c_cli.lower()
@@ -172,13 +174,9 @@ def _agent_for(purpose: str) -> "tuple[str, str | None]":
             cli = d_cli.lower()
         if d_model:
             model = d_model
-    if purpose in JSON_CONTRACT_PURPOSES:
-        variant = _agentcli.resolve_variant(cli, purpose)
-        if variant:
-            cli = variant["agent_cli"]
-            if variant["default_model"]:
-                model = variant["default_model"]
-    return cli, model
+    routed = _slashroute.resolve(command=purpose, cli=cli, model=model,
+                                 explicit_model=configured_model)
+    return routed["agent_cli"], routed["model"]
 
 
 def _agent_argv_limit() -> int:

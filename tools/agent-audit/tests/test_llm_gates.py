@@ -18,12 +18,51 @@ class BudgetGateTests(AuditTestCase):
         self.assertEqual(
             llm._execution_cli("base", None, "extract", agentcli),
             ("base-json", "structured-model"))
-        agentcli.resolve_variant.assert_called_once_with("base", "extract")
+        agentcli.resolve_variant.assert_called_once_with("base", "extract", None)
 
+        # 明示モデルは変種の既定で上書きしない（設計 2026-08-27 G4）。
         agentcli.reset_mock()
+        self.assertEqual(llm._execution_cli("base", "chosen", "extract", agentcli),
+                         ("base-json", "chosen"))
+
+        # 申告が無い用途は元のまま。**audit は許可リストを持たない**——引くかどうかでは
+        # なく、申告があるかどうかで決まる（設計 2026-08-27 §3.3 / G2）。
+        agentcli.reset_mock()
+        agentcli.resolve_variant.return_value = None
         self.assertEqual(llm._execution_cli("base", "chosen", "distill", agentcli),
                          ("base", "chosen"))
-        agentcli.resolve_variant.assert_not_called()
+        agentcli.resolve_variant.assert_called_once_with("base", "distill", None)
+
+    def test_a_by_purpose_policy_never_reaches_audit(self):
+        """用途別の順位表（`selection_policy.by_purpose`）は audit へ届かない。
+
+        調停規則（設計 2026-08-27 G4）は「用途別の実測で選ばれたモデルを変種の既定で
+        上書きしない」だが、守れるのは**その決定を受け取る経路だけ**である。audit は
+        version 2 の `selection_policy` を読まず legacy の `agents:` しか見ないので、
+        by_purpose のモデルが「明示でないモデル」として紛れ込むことがない。
+
+        縛るのは、将来 audit へ `selection_policy` を教えるとき **`by_purpose=` を
+        一緒に渡さないと静かに壊れる**という一点である。
+        """
+        control_dir = os.path.join(self.tmp, "control")
+        os.makedirs(control_dir, exist_ok=True)
+        old = os.environ.get("AGENT_CONTROL_DIR")
+        os.environ["AGENT_CONTROL_DIR"] = control_dir
+        self.addCleanup(lambda: os.environ.__setitem__("AGENT_CONTROL_DIR", old)
+                        if old is not None else os.environ.pop("AGENT_CONTROL_DIR", None))
+        with open(os.path.join(control_dir, "control.json"), "w", encoding="utf-8") as f:
+            json.dump({
+                "version": 2,
+                "workloads": {"audit": {"selection_policy": {
+                    "strategy": "balanced", "retry_limit": 1, "no_candidate": "park",
+                    "candidates": [{"agent_cli": "ollama", "model": "gemma4:e4b", "rank": 1}],
+                    "by_purpose": {"extract": {"operations": ["bounded-review"],
+                                               "candidates": [{"agent_cli": "ollama",
+                                                               "model": "gemma4:12b",
+                                                               "rank": 1}]}},
+                }}},
+            }, f)
+        self.assertEqual(llm.control_overrides(self.make_args(), "extract"), (None, None))
 
     def test_control_uses_shared_dir_and_purpose_precedence(self):
         control_dir = os.path.join(self.tmp, "control")

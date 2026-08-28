@@ -55,6 +55,9 @@ from agentcore import executioncontract as _executioncontract  # noqa: E402
 # （kiro/claude/copilot/codex）を含む全 CLI がこの定義で動く。以前は同じ argv 知識が
 # agent-project / agent-flow / agent-amigos / dashboard に重複していた（repolocal と同型）。
 from agentcore import agentcli as _agentcli  # noqa: E402
+# 用途（purpose）→ 起動形の調停。engine 側に許可リストを持たないための 1 実装
+# （設計 2026-08-27 §3.3）。ここが `variants` の申告と by_purpose の決定を調停する。
+from agentcore import slashroute as _slashroute  # noqa: E402
 # プロンプトキャッシュに適合する注入順の正規化（案 H）。安定部（プロジェクト文脈）→
 # 可変部（タスク固有）の順に決定的な区切りで連結する 1 実装（agent-project と共有）。
 from agentcore import promptcompose as _promptcompose  # noqa: E402

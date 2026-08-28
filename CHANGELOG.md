@@ -7,6 +7,237 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-tools: 宣言外のファイル変更が観測できるようになった
+
+設計: [2026-08-27 クラウド CLI を正とした入口の再構成](./docs/plans/2026-08-27-agent-herd-cloud-cli-parity-slash-dispatch-design.md)
+§7.3 B 末尾（実装計画 段 9b）。仕様は [agent-loop 仕様書](./docs/specs/agent-loop-spec.md) §3.4。
+
+- **証跡が答えていたのは「名指ししたパスが変わったか」だけだった。** 宣言外のファイルを
+  勝手に触ったことに要るのは**その補集合**（名指ししていないのに変わったファイル）なので、
+  指紋からは原理的に出てこない。ペインにもヘッドレスにも同じく効いていた制約である。
+- git 管理下では `git status --porcelain` の前後差を上乗せするようにした。**受入条件の
+  指紋はそのまま残す**——git 管理外・未追跡のファイルはそちらでしか見えない。
+- **非 git の作業フォルダでは現行どおり指紋だけ**へ落ちる（後方互換）。スナップショットの
+  `None`（git ではない）と空辞書（git 管理下でいまきれい）を区別するので、黙って
+  「変更なし」にはならない。
+- 実行前から汚れていたファイルは、この実行が触った証拠にしない（前後の差で見る）。
+- 入れ場所は段 9 で 1 実装へ畳んだ `toolloop.acceptance_outcome` の 1 か所だけで、
+  **ペイン・層2・層3 の 3 経路に同時に効く**。判定が増えていない。
+- **git を使うのは engine 側で、エージェントには渡さない。** `agents/aider.json` は
+  `--no-git --no-auto-commits` のまま（コミットの主体がエージェントになると、worktree
+  サンドボックスや agent-project のブランチ運用と二重になる）。
+- この段は**観測だけ**で、「宣言外を触ったら止める」という方針は入れていない。
+
+### agent-loop: 止まったペインが 2 時間居座らなくなった
+
+設計: [2026-08-27 クラウド CLI を正とした入口の再構成](./docs/plans/2026-08-27-agent-herd-cloud-cli-parity-slash-dispatch-design.md)
+§7.4-2・3（実装計画 段 11）。仕様は [agent-loop 仕様書](./docs/specs/agent-loop-spec.md) §3.8。
+
+- **freeze 検知の既定が off だった。** ヘッドレスは同じ意味の無進捗上限を既定で持っている
+  （定義の `timeout`、無ければ共通 fallback の 600 秒）のに、ペインは
+  `health.freeze_timeout_seconds` を書かない限り何も止めず、`slot_timeout_seconds`
+  （既定 7200 秒）まで**止まったペインがスロットを 1 枚占有したまま居座っていた**。
+- **同じ性質の上限は同じ源から採る。** 設定を書かなければ定義の無進捗上限を使う
+  ——ここで別の数字を置くと、どちらの上限で切られたのかを読む側が追えなくなる。
+- **「書いていない」と「0」を区別するようにした。** 以前はどちらも 0 で、未設定が
+  「止めない」を意味していた。`0` と**書けば**従来どおり無効（明示の意図は守る）。
+- 判定するのは壁時計ではなく無進捗（画面の hash が変わっていれば進んでいる）。
+  `slot_timeout_seconds`（居座り全体の上限）とは別の軸である。
+- 受入条件の判定結果を配送ログへ機械が読める形で残すようにした
+  （`event=acceptance_checked`）。人向けの 1 行だけだと後から追えないため。器は既存の
+  dispatch イベントで、別系統は作らない。`RESULT {json}` の出力契約はペインにはまだ
+  無い——前面がエージェント自身の端末で、結果行を書き込む場所が無いためである。
+
+### agent-herd / agent-loop: 自前 CLI のターン完了がネイティブイベントで届く
+
+設計: [2026-08-27 クラウド CLI を正とした入口の再構成](./docs/plans/2026-08-27-agent-herd-cloud-cli-parity-slash-dispatch-design.md)
+§7.3 A（実装計画 段 10）。仕様は [agent-loop 仕様書](./docs/specs/agent-loop-spec.md) §3.6。
+
+- `ollama` のペインは完了を**画面から**読んでいた（`busy_pattern` の「経過 N 秒」）。
+  完了検知は「画面を見る」より「本人が言う」ほうが確かなので、ターンの終わりに
+  TUI 自身が `agent-loop hook-event` を呼ぶようにした。画面監視は fallback に降りる。
+- **`ollama` だけは hook 資産が要らない。** ほかの adapter は相手の CLI のプラグイン機構へ
+  hook を差し込む必要があるが、`ollama` の対話面は**我々の実装**なので、同じコマンドを
+  直接叩ける。argv の書き換えも一時ファイルのコピーも無く、env を渡すだけで成り立つ。
+- 封筒の検証（instance / pane / dispatch / generation / HMAC）は**既存の 1 実装**が
+  そのまま効く。新しい経路は作っていない。
+- 人が Ctrl-C で止めたターンと例外で落ちたターンは `failure` として通知する
+  ——成果の無い実行を完了として記帳しないため。
+- 管理下のペインでなければ何もせず（env が無い）、通知に失敗しても対話は続く。
+
+### agent-loop: 対話ペインでも受入条件が done の根拠になる
+
+設計: [2026-08-27 クラウド CLI を正とした入口の再構成](./docs/plans/2026-08-27-agent-herd-cloud-cli-parity-slash-dispatch-design.md)
+§7.3 B（実装計画 段 9）。仕様は [agent-loop 仕様書](./docs/specs/agent-loop-spec.md) §3.4。
+
+- **ペインは画面が idle に戻っただけで完了として返していた。** entry が `acceptance` を
+  宣言していても誰も見ておらず、宣言したつもりの検証が効かない。ヘッドレスには同じ判定が
+  既にあったので、**経路によって done の意味が違っていた**ことになる。
+- dispatch の直前に受入条件のファイル指紋を取り、ターン完了時に照合するようにした。
+  満たしていなければ完了として返さず、理由を並べて `acceptance_failed` で落とす。
+- 判定は**ヘッドレスと同じ 1 実装**（`toolloop.acceptance_outcome`）へ寄せた。層2 の
+  `run_cli_loop` が持っていた同じ手順をそこへ畳んだので、判定が 2 か所に増えていない。
+  `verifiedBy` も同じ語彙（`machine` / `judge` / `machine+judge`）で記録される。
+- **判定層（`acceptance_judge`）はペインではまだ走らない。** 判定にはエージェントの
+  報告本文が要り、`capture-pane` の画面は装飾込みで壊れやすい（正典は `session_log`）。
+  黙って無視はせず、ペイン経路の entry が宣言していたら起動時に警告する。`verifiedBy` に
+  `judge` が出ないので、機械層だけで通したことは後から区別できる。
+- 外部ターゲット（`target:`）でも同じゲートが効く——指紋の照合は誰が走らせたかを問わない。
+
+### agent-audit: ペイン実行の usage が推定から実測へ
+
+設計: [2026-08-27 クラウド CLI を正とした入口の再構成](./docs/plans/2026-08-27-agent-herd-cloud-cli-parity-slash-dispatch-design.md)
+§7.3 C（実装計画 段 8）。仕様は [agent-audit 仕様書](./docs/specs/agent-audit-spec.md) §3。
+
+- **書いている側と読んでいる側が食い違っていた。** `agent-ollama` は 1 ラウンドの実測を
+  `llm_end` の**トップレベル**（`tokens_in` / `tokens_out`）へ書くのに、リーダは入れ子の
+  `usage` しか見ていなかった。`session_log.usage` を true にしても 0 トークンで
+  「実測済み」と記帳され、秒からの推定より悪くなる形だったので、リーダに平らな形を
+  教えた。`llm_progress` は**途中経過**の `tokens_out` を載せるので `llm_end` だけを見る。
+- **`session_log.usage` の申告が効くようになった。** 以前この申告は誰も読んでおらず、
+  `measured` はパーサの戻り値だけで決まっていた——つまり申告は飾りで、実測を止める
+  手段が無かった。数字そのものは記録に残るので、後から true にすれば読み直せる。
+- `ollama.json` の `session_log.usage` を **true** にした。ペイン実行の usage が推定
+  （保持秒 × レート）ではなく実測で台帳へ入る。
+- **実測が入る CLI は秒レートを持たない。** `calibrate` はそれらを較正の対象から外し、
+  設定に残っている古い `rates.per_cli` を `--write` で落とす（推定と実測で同じ実行を
+  二度数えるため）。**切替日は台帳へ 1 行だけ残す**（`event: usage_switch`）——切替の
+  前後で記帳の意味が変わるので、後から数字を読む人が境目を知れる必要がある。器は
+  `quota_snapshot` と同じ台帳イベント行で、別系統は作らない。
+  この規則は `claude` / `codex` / `opencode` にも同じく効く（同じ二重計上を抱えていた）。
+- パーサ改版（`SESSION_PARSER_REVISION` 2 → 3）。既存セッションが 1 度だけ読み直される。
+
+### agent-tools: 用途別順位表の決定が届く経路を 4 つとも縛った
+
+設計: [2026-08-27 クラウド CLI を正とした入口の再構成](./docs/plans/2026-08-27-agent-herd-cloud-cli-parity-slash-dispatch-design.md)
+§3.3 / G4（実装計画 段 2 の追補）。仕様は [agent-cli 仕様書](./docs/specs/agent-cli-spec.md) §4.1。
+
+- agent-flow が `by_purpose` 由来の決定を `explicit_model` に畳んで渡していたのを、
+  ルータの `by_purpose` 引数で渡すようにした。**振る舞いは同じ**（どちらも変種の既定を
+  止める）だが、「人が明示した」と「用途別の実測が選んだ」が同じ 1 語に潰れていた。
+- **届かない経路をテストで縛った。** 用途別順位表を読む口を持つのは agent-flow だけで、
+  agent-project / agent-audit / ハーネスは legacy の `agents:` 層しか見ない。今は
+  `by_purpose` のモデルが「明示でないモデル」として紛れ込む余地が無いが、そこへ
+  `selection_policy` を教えるときに `by_purpose` を渡し忘れると静かに壊れる——
+  4 経路それぞれのテストがその一点を縛る。
+- 測る側（`eval/engine.py`）の許可リスト撤去を**外側の用途で**縛り直した。以前のテストは
+  `split` しか見ておらず、`LIST_CONTRACT_ROLES`（＝ `{"split"}`）と偶然一致していたので、
+  役割の集合を再導入しても緑のままだった。`verify` を足して、評価の地盤が黙って動く形を
+  塞いだ。
+
+### agent-loop: ペインで quota が枯れたことが管理面へ届くようになった
+
+設計: [2026-08-27 クラウド CLI を正とした入口の再構成](./docs/plans/2026-08-27-agent-herd-cloud-cli-parity-slash-dispatch-design.md)
+§7.4-1（実装計画 段 7）。仕様は [agent-loop 仕様書](./docs/specs/agent-loop-spec.md) §1.5。
+
+- **対話ペインには失敗トリアージが無かった。** ヘッドレスは定義の `errors[]` で分類し
+  （`classify_error`）、quota を見つけたら node-budget の台帳へ観測行を入れていたが、
+  ペイン経路にはどちらも無い。効くのは `interactive.failure_pattern` だけで、しかも
+  `send --wait` のときだけだった——**定義が `errors[]` に quota を宣言していても、
+  ペインで枯れた分は誰も読まなかった**。管理面の段判定に届かない＝ degrade が効かない、
+  というのがこの経路で実害の最大の穴である。
+- ターンの終わりに画面を分類するようにした。分類は**ヘッドレスと同じ 1 実装**を引く。
+  `quota` / `auth` / `env` はそのターンを失敗として扱い、`transient` は完了のまま
+  （再投入で解けるので上位の判断に任せる）。ハーネスの分け方に合わせてある。
+- **`quota` は台帳へ観測行が入る**（`event: quota` と `quota_kind`、画面から復帰時刻が
+  読めれば `reset_at` も）。ヘッドレスの `_tl_failure_hint` と同じ形である。
+- 失敗の理由に分類名が残るようになった。`pane_or_timeout` のままだと、画面には quota と
+  出ているのに台帳と needs には「ペインかタイムアウト」しか残らない。
+- 分類は 1 ターンに 1 回だけ（監視のポーリングは 2 秒おき）。分類器が落ちても監視
+  スレッドは止めない——止まるとスロットが解放されず、ペインが上限を食ったまま誰も
+  進めなくなる。
+
+### agent-herd: 引数なしなら対話、`-p` なら 1 回——クラウド CLI と同型の入口
+
+設計: [2026-08-27 クラウド CLI を正とした入口の再構成](./docs/plans/2026-08-27-agent-herd-cloud-cli-parity-slash-dispatch-design.md)
+§3.1（実装計画 段 5）。仕様は [agent-herd 仕様書](./docs/specs/agent-herd-spec.md) §3.3。
+
+- `agent-herd` を引数なしで打つと**対話（TUI）**、`-p` を付けると**非対話 1 回**になる。
+  モデル・バックエンド・権限・作業ディレクトリはフラグ（`--model` / `--agent` /
+  `--readonly` / `--dir`）。**新しい実行経路は足していない**——既に `chat` と `exec` が
+  持っている当て先（`interactive_cmd` / `headless_cmd`）へフラグを翻訳するだけである。
+- **`--agent` が取るのは定義名**（`agents/<名前>.json`。`ollama-json` のような profile
+  綴りも解ける）。これで「adapter 名」という概念が外から消える。
+- **既存のサブコマンドはすべて温存**した（`aider` / `ollama` / `opencode` / `chat` /
+  `exec` / `defs` / `harness` / `status` / `follow` / `replay`）。help の下段へ降ろしただけで、
+  綴りも出力も変えていない。別名（`agent-ollama …`）の引数面も素通しのまま——argv[0] の
+  判定をフラグより先に置いてあるので、adapter だけが知っているフラグを入口が奪わない。
+- `--continue` / `--resume` は**まだ受け取らない**。ローカルの単発実行は毎回新しい
+  プロセスで、「継続」の実体をどう宣言させるかが未決だから（設計 §4・§11 未決 1）。
+  綴りだけ通して黙って無視すると「継続したつもりで毎回まっさらに走る」になるので、
+  受け取った時点で明示エラーにする。
+- 引数なしの既定が「help を出して終了コード 2」から対話へ変わった。help は `--help` で
+  出る（対話に入ってからは `/help`）。
+
+### agent-tools: コマンド面（スラッシュ）を 4 種そろえ、用途を宣言 1 枚で書けるようにする
+
+設計: [2026-08-27 クラウド CLI を正とした入口の再構成](./docs/plans/2026-08-27-agent-herd-cloud-cli-parity-slash-dispatch-design.md)
+§3.2・§3.3・§3.6（実装計画 段 3・段 4）。仕様は
+[agent-herd 仕様書](./docs/specs/agent-herd-spec.md) §13 に正典を置いた。
+
+- **実行形が 1 語で固定できるようになった**（種別 B）。`/ask`（道具なし）・`/find`（read
+  セット）・`/edit`（編集ハーネス）・`/sm <名前>`（ステートマシン）をルート表へ載せた。
+  いままで「ツールを使うかはモデルが決める」（bash ループが自分でコマンドを選ぶ）だった
+  ものが、人か engine の 1 語へ移る。**弱いモデル向けの自由度削減はこの構造の副産物**で、
+  新しい機構は足していない——当て先はすべて実装済みのものである。
+- **`/sm <名前>` の 1 語でステートマシンが起きる**。以前は agent-loop の設定でしか起動
+  できなかった。名前が実在するファイルならワークフロー、そうでなければ entry として
+  `cmd_statemachine` へ渡す（`cmd_run` が「実在するパスなら中身を本文にする」のと同じ流儀）。
+- **用途を宣言 1 枚で書けるようになった**（種別 C）。`~/.agents/commands/<name>.md` の
+  frontmatter に `agent` / `model` / `tools` / `output` / `argument-hint` を、本文に
+  システムプロンプトを書く。規約は `llm`（simonw/llm）の Template から借りた——コードは
+  持ち込まない。`variants` は移行期のみ併読し、宣言が `agent` を言えばそちらが勝つ。
+  用途専用の既定モデルは、人の明示と用途別順位表（実測）には負ける（既存の調停規則と同じ）。
+- **aider の名前が出る場所を宣言 1 行に閉じた**。同梱するのは `commands/edit.md` の
+  1 枚だけで、`agent: aider` がそこにある。編集適用の実装を差し替える変更は将来この
+  1 行で済む。`harness run` は打った `--agent-cli` ＞ 宣言 ＞ 従来の既定の順で解決する。
+- **知らない `/名前` は明示エラーで止まる**。以前は警告して本文として推論へ流していたので、
+  打ち間違えた `/verfy` が「なぜか普通の依頼として実行された」になっていた。規約が先頭
+  ブロックしか見ない以上 `/tmp を消して` も巻き込むため、**エラー文は逃げ道まで書く**
+  （本文として送るには先頭に空行を 1 つ）。1 回実行はこの空行を落とさなくなった。
+- `/help` と Tab 補完は 4 種を同じ表から引く（用途の宣言も補完に出る）。全角の引数
+  ヒントでも列が崩れないようにした——`/help` は tmux の `capture-pane` からも読まれる。
+
+### agent-tools: スラッシュ行の解釈と用途の調停を 1 実装（`agentcore.slashroute`）へ畳む
+
+設計: [2026-08-27 クラウド CLI を正とした入口の再構成](./docs/plans/2026-08-27-agent-herd-cloud-cli-parity-slash-dispatch-design.md)
+§3.2・§3.3（実装計画 段 1・段 2）。
+
+- **スラッシュ行の解釈が 3 か所にあった**。`harness.toolloop.run_prompt` の層別分岐・
+  `ollama_tui` のローカルコマンド表・`ollama_skills` の先頭スラッシュ切り出しが、同じ
+  「先頭の `/name` をどう読むか」を別々に書いていたので、片方だけ直る／片方だけ知らない
+  が静かに起きていた。名前の規約・切り出し・種別 A（セッション操作）の表・本文への適用を
+  `agentcore/slashroute.py` の 1 枚へ寄せた。TUI の `/help`・Tab 補完・判定はすべて同じ表を
+  引くので、「一覧に出るのに効かない」が構造的に起きない。判定は文字列マッチだけで、
+  LLM は 1 回も呼ばれない（起動形は argv を組む前に決まる必要があるため）。
+- **用途（purpose）→ 起動形の許可リストが 4 か所にあった**。`ollama.json` は `variants` に
+  15 キーを宣言しているのに、agent-flow は 9・agent-project は 6・agent-audit は 2 しか
+  引かず、ハーネスは許可リスト無しで直に引いていた（測定側の `eval/engine.py` も
+  agent-flow の集合を覗いていた）。**申告が唯一の許可リストである**——engine は用途の
+  1 語を渡すだけになり、`VARIANT_ELIGIBLE_ROLES` / `JSON_CONTRACT_PURPOSES` /
+  `VARIANT_PURPOSES` は削除した。同梱定義の申告は消した集合の和集合を覆っているので、
+  効く範囲は狭まらない（`test_slashroute` が突き合わせる）。
+- **変種の既定モデルが人の明示を上書きしていた（agent-project）**。`agents:` に書いた
+  処理別モデルまで変種の `default_model` へ戻していた。調停規則を agent-flow が持っていた
+  ものへ統一し、**人が設定へ明示した層と用途別順位表（`selection_policy.by_purpose`）
+  由来の決定は変種の既定で上書きしない**ようにした。agent-control / 縮退が選んだモデルは
+  従来どおり変種の用途専用チューニングへ譲る（「その CLI を用途を問わず使う」という
+  明示ではないため）。
+- **判定役の変種モデルが台帳に残っていなかった（ハーネス）**。`_tl_judge_agent` は
+  `variant["model"]` を読んでいたが `resolve_variant` の返却キーは `default_model` なので
+  常に None で、argv は変種 spec の既定に落ちる一方、記帳のモデル欄は空だった。調停ごと
+  ルータへ寄せたのでキー名の食い違いは構造的に起きず、判定に使ったモデルが台帳へ残る。
+- 仕様書 `docs/specs/agent-herd-spec.md` §4.0 の「同梱定義は 8 件」を **9 件**へ直した
+  （`vscode-copilot` が加わった後の drift。設計 §11 未決 4）。
+- **コマンド行を渡すか消費するかを定義が宣言するようになった**（`slash_native`。段 3 の一部）。
+  以前この判定は `headless_autonomy == "tool-loop"` という代理で書かれていたが、「自分で
+  ツールを回せるか」と「スラッシュを自分で解釈するか」は別の性質で、片方だけ真の CLI は
+  ありえる。同梱定義はすべて自分で宣言し、未宣言の定義（利用者が置いたものを含む）は
+  ローダが同じ代理で埋めるので振る舞いは変わらない。合わせて、ヘッドレスでも行頭記号に
+  定義の `skill_command_prefix` を使うようにした（codex は `$`。対話へ送るときは既に
+  差し替えていたのに、ヘッドレスだけ `/` 固定だった）。スキーマ・Python ローダ・
+  dashboard の JS ローダの 3 者を同じ規則で揃えている。
+
 ### agent-loop: agent-loop.yaml の明示エージェントを dashboard の tier 候補より優先する
 
 - dashboard の Resource Controller が `control.json` に選んだ tier 候補を、起動時に

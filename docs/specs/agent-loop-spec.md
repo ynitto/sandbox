@@ -88,6 +88,27 @@ tmux を使うかどうかはこの層とは独立です。tmux は送る手段�
 
 どの経路でも、完了時にスロットを解放して次の dispatch を通すのはスケジューラ側の 1 か所です。
 
+### 1.5 失敗トリアージと quota の観測
+
+**ターンの終わりに、ペインの画面を定義の `errors[]` で分類します。** 分類の実装は
+ヘッドレスと同じ 1 つ（`agentcore.agentcli.classify_error`）で、`interactive` を持つ
+どの CLI でも同じ規則が効きます。以前この経路には分類が無く、効くのは
+`interactive.failure_pattern`（しかも `send --wait` のときだけ）でした。
+
+| 分類 | このターンの扱い |
+|---|---|
+| `quota` / `auth` / `env` | **失敗**（完了として返さない）。失敗の理由にはその分類名が残る |
+| `transient` | 完了のまま。再投入で解けるものなので、上位の判断に任せる |
+| 一致なし・定義が `errors[]` を持たない | 何も変わらない |
+
+**`quota` は node-budget の台帳へ観測行が入ります**（`event: quota` と `quota_kind`。
+画面から復帰時刻が読めれば `reset_at` も）。これが無いと、ペインで quota が枯れても
+管理面の段判定が知らず、degrade が効きません。
+
+分類は 1 ターンに 1 回だけ走ります（監視のポーリングは 2 秒おきなので、素で回すと
+同じ画面から同じ観測行を何本も生みます）。分類器が落ちても監視スレッドは止めません
+——止まるとスロットが解放されず、ペインが上限を食ったまま誰も進めなくなるためです。
+
 ---
 
 ## 2. 設定
@@ -122,7 +143,7 @@ tmux を使うかどうかはこの層とは独立です。tmux は送る手段�
 | `acceptance_judge` | bool | false | 受入条件の判定層を全エントリで有効にする（エントリ側で上書き可能・§3.4） |
 | `headless_window` | bool | false | headless 実行のログを `tail -F` で追う tmux ウィンドウを開く（エントリごとに 1 枚を使い回す） |
 | `health.check_interval_seconds` | int 秒 | 10 | ヘルス監視の間隔 |
-| `health.freeze_timeout_seconds` | int 秒 | 0 | busy 中に画面が変わらない時間の上限。0 は無効 |
+| `health.freeze_timeout_seconds` | int 秒 | **定義の無進捗上限** | busy 中に画面が変わらない時間の上限。**書かなければ**定義の `timeout`（無ければ共通 fallback の 600 秒）を使います——ヘッドレスと同じ源です。`0` と**書けば**無効（§3.8） |
 | `health.max_pane_rss_mb` | int MB | 0 | ready なペインの RSS 上限。0 は無効 |
 | `health.min_free_memory_mb` | int MB | 0 | 空きメモリ下限。下回ると local pause（2 回連続 OK で自動 resume） |
 | `health.input_recovery` | bool | false | ready かつ入力が残っているとき 1 回だけ再送する |
@@ -386,6 +407,43 @@ acceptance:
 
 パスの形をした表記を 1 つも含まない受入条件しか無いエントリは、判定層を有効にしていなければ「検証なし」として記録されます。条件が書いてあることと、機械で照合できることは別です。
 
+**この機械層は対話ペインでも同じように回ります。** dispatch の直前に指紋を取り、ターンの
+完了時に照合します。判定は**ヘッドレスと同じ 1 実装**（`toolloop.acceptance_outcome`）で、
+`verifiedBy` も同じ語彙（`machine` / `judge` / `machine+judge`）で記録します。以前ペインは
+**画面が idle に戻っただけで完了**として返しており、`acceptance` を宣言していても誰も
+見ていませんでした——経路によって done の意味が違っていたことになります。
+
+ペインもヘッドレスの層2（`headless_autonomy: tool-loop`）も、エージェントが触ったファイルを
+外から観測できません。だからどちらも「受入条件が名指ししたファイルの指紋が変わったか」で
+見ます——**この 2 つは元から同じ精度**です。
+
+**git 管理下では、そこへ差分の観測を上乗せします。** dispatch の直前に
+`git status --porcelain` を控え、ターン完了時の状態と突き合わせて「この実行で変わった
+ファイル」を出します。指紋が答えるのは「名指ししたパスが変わったか」だけで、**宣言外の
+ファイルを勝手に触ったか**に要るのはその補集合（名指ししていないのに変わったファイル）
+なので、指紋からは原理的に出てきません。
+
+| 作業フォルダ | 観測 |
+|---|---|
+| git 管理下 | 受入条件の指紋 **＋** git 差分（宣言外の変更も `touched` に出る） |
+| git 管理外 | 受入条件の指紋のみ（従来どおり。**黙って「変更なし」にはしません**） |
+
+受入条件の指紋は**そのまま残します**——git 管理外・未追跡のファイルはそちらでしか
+見えないためです。実行前から汚れていたファイルは、この実行が触った証拠になりません
+（前後の差で見ます）。
+
+**git を使うのは engine 側であって、エージェントに渡すのではありません。**
+`agents/aider.json` は `--no-git --no-auto-commits` のままです——コミットの主体が
+エージェントになると、worktree サンドボックスや agent-project のブランチ運用と二重に
+なります。観測だけがこの差分の役目で、**この段では「宣言外を触ったら止める」という
+方針は入れていません**（観測が先、方針は別提案）。
+
+**判定層（次項）は対話ペインではまだ走りません。** 判定にはエージェントの報告本文が要り、
+`capture-pane` の画面は装飾込みで壊れやすいためです（正典は `session_log` に置きます）。
+黙って無視はせず、ペイン経路のエントリが `acceptance_judge` を宣言していたら起動時に
+警告します。`verifiedBy` に `judge` が出ないので、機械層だけで通したことは後から
+区別できます。
+
 #### 判定層（`acceptance_judge`。既定 off）
 
 機械層が触れない基準——パスの形をした表記を含まない自然文——を、**読み取り専用の検証エージェント**に判定させます。
@@ -451,6 +509,15 @@ acceptance:
 | `codex` | 一度きりの `--config notify=…`（既存 notify は多重化） | `agent-turn-complete` | pane の死亡と timeout |
 | `copilot` | `--plugin-dir` | `agentStop` | `errorOccurred(recoverable=false)` を hint として記録 |
 | `opencode` | plugin だけを置いた `OPENCODE_CONFIG_DIR` | `session.idle` | `session.error` を hint として記録 |
+| `ollama` | **資産なし**（env だけ）。前面が我々の TUI なので、ターンの終わりに自分で `hook-event` を呼ぶ | `turn_end` | 例外と中断（Ctrl-C）を `failure` として通知 |
+
+**`ollama` だけは資産が要りません。** ほかの adapter は相手の CLI のプラグイン機構へ
+hook を差し込む必要がありますが、`ollama` の対話面（`agent-herd ollama --tui`）は
+**我々の実装**なので、ターンの終わりに同じコマンドを直接叩けます。管理下の pane で
+なければ（env が無ければ）何もせず、通知に失敗しても対話は続きます——知らせられ
+なかったときは画面監視（`busy_pattern`）が拾うので、そこで落ちる理由がありません。
+人が Ctrl-C で止めたターンは `failure` として通知します（成果の無い実行を完了として
+記帳しないため）。
 
 hook は `agent-loop hook-event` を呼び、`~/.agents/loop-hooks/<instance-id>/` の mailbox（`active/<pane-id>.json` と `events/<dispatch-id>.json`、ディレクトリ `0700` / ファイル `0600`）へ書きます。SlotMonitor が画面判定より先にこれを claim し、既存の完了・失敗コールバックへ渡します。hook 自身はセマフォを解放しません。
 
@@ -479,6 +546,31 @@ hook は `agent-loop hook-event` を呼び、`~/.agents/loop-hooks/<instance-id>
 - 長さは既定 2,000 文字で丸め、宣言できる上限は 8,000 文字です（0 以下は既定へ）
 - 実際に適用した revision は agent-control の status へ `instructions_revision_applied` として載せます
 - **フェイルセーフ**: 不在・破損・`enabled: false`・本文が空・既にマーカーが混入済みは、すべて no-op です。注入の失敗で送信を止めません
+
+### 3.8 止まったペインの検知（freeze）
+
+**無進捗の上限は、ペインでもヘッドレスでも同じ源から採ります。** ヘッドレスは定義の
+`timeout`（無ければ共通 fallback の 600 秒）を「進んでいないと判断するまでの秒数」として
+既定で使っています。ペインの freeze 検知は**同じ性質の上限**なので、同じ源から採ります。
+
+以前ペイン側の既定は 0（無効）でした。`health.freeze_timeout_seconds` を書かない限り
+何も止めず、`slot_timeout_seconds`（既定 7200 秒）まで**止まったペインが居座り**、
+その間スロットを 1 枚占有していました。
+
+| `health.freeze_timeout_seconds` | 効く上限 |
+|---|---|
+| 書かない | 定義の `timeout`、無ければ 600 秒 |
+| `0` と書く | 無効（「止めない」という明示。**未設定とは区別します**） |
+| 正の整数 | その値（定義より優先） |
+
+判定するのは**壁時計ではなく無進捗**です。画面の hash が変わっていれば進んでいるとみなし、
+変わらないまま上限を超えたときだけ freeze として扱ってペインを再起動します。ここは
+`slot_timeout_seconds`（居座り全体の上限）とは別の軸です。
+
+**`RESULT {json}` の出力契約はペインにはまだありません。** ペインの前面はエージェント
+自身の端末なので、我々が結果行を書き込む場所がありません（共通 TUI に置き換われば供給
+できます）。いまは受入条件の判定結果を配送ログの `event=acceptance_checked` として
+機械が読める形で残しています——別系統は作りません。
 
 ---
 
@@ -543,9 +635,11 @@ hook は `agent-loop hook-event` を呼び、`~/.agents/loop-hooks/<instance-id>
 | エントリの型・組合せ違反 | 起動は失敗、`reload` は現行設定と pane を維持 |
 | `agent_cli` の定義が未知・壊れている | デーモンは起動エラー。`send` などの補助コマンドは WARNING を出して従来判定で続行 |
 | ペインが死んだ | session-monitor が再起動する |
+| ペインの画面が `errors[]` の `quota` / `auth` / `env` に一致した | そのターンを失敗として扱い、理由に分類名を残す。`quota` は台帳へ観測行（§1.5） |
+| ペインの画面が無進捗上限のあいだ変わらない | freeze として扱いペインを再起動する。**`slot_timeout_seconds` は待たない**（§3.8） |
 | busy・スロット上限・cooldown | 要求を保留して次 tick で再試行（スケジュールは 1 件へ coalesce） |
 | セマフォのファイル I/O エラー | 安全側（実行許可）へ倒す |
-| 受入条件のファイルが無い・触っていない・変わっていない | 機械層は fail。done の根拠にしない |
+| 受入条件のファイルが無い・触っていない・変わっていない | 機械層は fail。done の根拠にしない（**対話ペインでも同じ**。理由は `acceptance_failed`） |
 
 ### 5.4 効かない組合せと未実装
 
@@ -594,7 +688,7 @@ headless 経路では次が変わります。黙って劣化させず、警告�
 
 ## 付録: テスト
 
-`tools/agent-loop/test/` に 46 ファイル・497 件。tmux とエージェント CLI はスタブへ差し替えるので、どちらも無い環境で全件が通ります（webhook だけは実 HTTP の E2E です）。
+`tools/agent-loop/test/` に 51 ファイル・530 件。tmux とエージェント CLI はスタブへ差し替えるので、どちらも無い環境で全件が通ります（webhook だけは実 HTTP の E2E です）。
 
 ```bash
 python3 -m unittest discover -s tools/agent-loop/test

@@ -20,7 +20,8 @@ const ALLOWED_KEYS = [
   'name', 'relative_cost', 'command', 'prompt_via', 'prompt_flag', 'file_flag', 'read_flag',
   'model_flag', 'default_model', 'output', 'env', 'timeout', 'empty_output_is_error',
   'variants', 'command_suffix', 'skill_command_prefix',
-  'write_args', 'readonly_args', 'readonly', 'headless_autonomy', 'no_session_args', 'spill',
+  'write_args', 'readonly_args', 'readonly', 'headless_autonomy', 'slash_native',
+  'no_session_args', 'spill',
   'interactive', 'errors', 'session_log',
   // 用途別の起動差（1 エージェント = 1 定義にするための入れ物）。
   'profiles',
@@ -124,6 +125,9 @@ function validateSpec(spec) {
   }
   if (spec.headless_autonomy !== undefined && !HEADLESS_AUTONOMY_ENUM.includes(spec.headless_autonomy)) {
     errors.push(`headless_autonomy が不正です: ${spec.headless_autonomy}（tool-loop / single-shot）`);
+  }
+  if (spec.slash_native !== undefined && typeof spec.slash_native !== 'boolean') {
+    errors.push(`slash_native が不正です: ${spec.slash_native}（true / false）`);
   }
   for (const field of STRING_ARRAY_FIELDS) {
     const value = spec[field];

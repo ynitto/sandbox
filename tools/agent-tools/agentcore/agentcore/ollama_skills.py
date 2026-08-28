@@ -20,10 +20,11 @@ import os
 import re
 from pathlib import Path
 
+from agentcore import slashroute
+
 # スキル名の規約（install.py が配布するディレクトリ名と同じ字種）。
-NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
-# 先頭ブロックのスラッシュ行。引数は自由文字列。
-_SLASH_LINE_RE = re.compile(r"^/([a-z0-9][a-z0-9._-]*)(?:[ \t]+(.*))?$")
+# 綴りの正典は slashroute——スキル名とスラッシュコマンド名は同じ名前空間にある。
+NAME_RE = slashroute.NAME_RE
 
 _FRONTMATTER_RE = re.compile(r"\A---\r?\n.*?\r?\n---[ \t]*\r?\n?", re.S)
 
@@ -96,19 +97,10 @@ def strip_frontmatter(text: str) -> str:
 def split_leading_slashes(prompt: str) -> "tuple[list[tuple[str, str]], str]":
     """先頭ブロックのスラッシュ行を取り出す → ([(name, args), …], 残りの本文)。
 
-    空行はブロックの終わりとみなす（空行の後ろは本文）。
+    切り出しの実装は `slashroute`（ルータが argv より先に読む行と同じもの）。ここは
+    既存の呼び出し元のための綴りとして残す。
     """
-    lines = (prompt or "").splitlines()
-    calls: "list[tuple[str, str]]" = []
-    index = 0
-    for index, line in enumerate(lines):
-        match = _SLASH_LINE_RE.match(line.strip())
-        if match is None:
-            break
-        calls.append((match.group(1), (match.group(2) or "").strip()))
-    else:
-        index = len(lines)
-    return calls, "\n".join(lines[index:]).lstrip("\n")
+    return slashroute.split_leading(prompt)
 
 
 def _render(name: str, path: Path, args: str) -> "tuple[str, bool]":
@@ -125,30 +117,37 @@ def _render(name: str, path: Path, args: str) -> "tuple[str, bool]":
     return f"{head}\n\n{body}", scripts
 
 
-def expand(prompt: str, explicit=(), *, enabled: bool = True, warn=None) -> "tuple[str, list[dict]]":
+def skill_exists(name: str) -> bool:
+    """ルータへ渡すスキル解決器。探索先も言えるようにしておく（エラー文へ載る）。"""
+    return find_skill(name) is not None
+
+
+skill_exists.search_dirs = skill_dirs
+
+
+def expand(prompt: str, explicit=(), *, enabled: bool = True, warn=None,
+           plan=None, strict: bool = True) -> "tuple[str, list[dict]]":
     """スキルを解決してプロンプトへ前置きし、(新しいプロンプト, 読んだスキル情報) を返す。
 
     - `explicit`（`--skill`）が見つからないときは `SkillNotFound`。プログラム経路の
       明示指定は黙って無視してはいけない（指定した処理が行われないまま成功に見える）。
-    - スラッシュ行が見つからないときは**警告して素通し**する。スキル名でない普通の行
-      （`/tmp を消して` 等）かもしれないので、偽陽性でプロンプトを壊さない。
+    - 先頭ブロックの読みは `slashroute.plan`（起動前に読む 1 実装）。既に読んである
+      ランチャは `plan=` で渡す——同じ行を 2 回解釈しないため。
+    - `strict=True`（既定）では、ルート表にも宣言にもスキルにも無い名前は
+      `slashroute.UnknownCommand` で止まる（設計 2026-08-27 §3.2）。`strict=False` は
+      従来の寛容な扱いで、警告して先頭ブロックを 1 行も消費しない。
     """
     prompt = prompt or ""
-    calls: "list[tuple[str, str]]" = [(str(name), "") for name in explicit]
+    calls: "list[tuple[str, str]]" = [
+        (str(name), "") if isinstance(name, str) else (str(name[0]), str(name[1]))
+        for name in explicit]
     body = prompt
     if enabled:
-        slash_calls, rest = split_leading_slashes(prompt)
-        if slash_calls:
-            resolved = [(name, args) for name, args in slash_calls if find_skill(name)]
-            if len(resolved) == len(slash_calls):
-                # 先頭ブロックが全部スキルとして解決できたときだけ本文から切り離す。
-                # 一部だけ解決できた場合は「ただの本文」の可能性が高いので触らない。
-                calls += slash_calls
-                body = rest
-            else:
-                for name, _args in slash_calls:
-                    if not find_skill(name) and warn is not None:
-                        warn(f"スキルが見つかりません: /{name}（本文として送ります）")
+        if plan is None:
+            plan = slashroute.plan(prompt, skill_exists=skill_exists, strict=strict,
+                                   warn=warn)
+        calls += list(plan.skills)
+        body = plan.body
 
     loaded: "list[dict]" = []
     blocks: "list[str]" = []
@@ -169,5 +168,8 @@ def expand(prompt: str, explicit=(), *, enabled: bool = True, warn=None) -> "tup
                        "scripts": scripts})
 
     if not blocks:
-        return prompt, []
+        # **`prompt` ではなく `body` を返す。** ルータが消費したコマンド行（`/find` など）は
+        # スキルが 1 枚も載らなくても本文から消えている。ここで元へ戻すと、実行形を決めた
+        # あとの行がそのままモデルへ流れる。
+        return body, []
     return "\n\n".join(blocks) + "\n\n---\n\n" + body, loaded

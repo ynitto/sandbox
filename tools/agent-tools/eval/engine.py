@@ -95,16 +95,17 @@ def cli_name_for(kind: str, base: str = "ollama") -> str:
     用途別の変種振り替え（`resolve_variant`）を持たない木では振り替え前の base のまま
     返す。倒したことは `missing()` に残るので、その木で取った split の数字は
     「振り替え前」と読める。
+
+    **役割の許可リストは引かない。** 振り替えるかどうかは定義側の申告（`variants`）が
+    決めるので、測る側が別の集合を持つと本番と食い違う（設計 2026-08-27 §3.3 / G2）。
+    以前はここが agent-flow の `VARIANT_ELIGIBLE_ROLES` を覗いていた。
     """
     cli = _agentcli()
     if cli is None:
         return base
-    eligible = getattr(_FLOW, "VARIANT_ELIGIBLE_ROLES", None) or getattr(_FLOW, "LIST_CONTRACT_ROLES", None)
     resolve_variant = getattr(cli, "resolve_variant", None)
-    if eligible is None or resolve_variant is None:
+    if resolve_variant is None:
         _need(None, "", "resolve_variant（用途別の変種振り替え）")
-        return base
-    if kind not in eligible:
         return base
     variant = resolve_variant(base, kind)
     return variant["agent_cli"] if variant else base

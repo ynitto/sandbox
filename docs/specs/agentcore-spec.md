@@ -2,7 +2,7 @@
 
 > 設計の「なぜ」は [`docs/designs/agentcore-design.md`](../designs/agentcore-design.md)。
 > 本書は**契約**（モジュール一覧・公開 API・配布・依存の向き）を引く場所です。
-> 実装: `tools/agent-tools/agentcore/agentcore/`（27 モジュール・約 7,970 行）／ テスト 29 ファイル・591 件（ルート 2 つ・§6）
+> 実装: `tools/agent-tools/agentcore/agentcore/`（33 モジュール・約 13,500 行）／ テスト 40 ファイル・915 件（ルート 2 つ・§6）
 
 ---
 
@@ -25,11 +25,12 @@ agentcore が import する側
 
 ## 2. モジュール
 
-### 2.1 共通契約の 1 実装（18 モジュール）
+### 2.1 共通契約の 1 実装（19 モジュール）
 
 | モジュール | 何の単一定義か | 主な公開 API |
 |---|---|---|
 | `agentcli` | エージェント CLI 定義（`agents/<name>.json`）の唯一のローダ | `load_cli` / `headless_cmd` / `interactive_cmd` / `classify_error` / `resolve_variant` / `costlier_fallback` / `parse_usage` / `spill_prompt` / `plugin_dirs`（[仕様書](./agent-cli-spec.md)） |
+| `slashroute` | コマンド面（スラッシュ）の 1 実装。ルート表・用途の宣言・起動形の調停 | `plan` / `resolve` / `classify` / `lookup` / `declaration` / `declarations` / `command_dirs` / `commands` / `spellings` / `render_help` / `parse_line` / `split_leading` / `apply_to_goal`（[仕様書](./agent-herd-spec.md) §13） |
 | `protocol` | claim / lease | `list_claims` / `winner` / `write_claim` / `try_claim` / `extend_claim` / `renew_lease` / `release_claim` / `unique_ts` / `write_json_atomic` |
 | `transport` | git 転送層 | `git_timeout_for` / `harden_git_env` / `timed_out_result` / `is_lock_error` / `is_corrupt_error` / `backoff_sleep` |
 | `board` | 委譲公示板の入札選別とノード契約バージョン | `eligible` / `contract_compatible` / `declared_repo_ids` / `declared_workloads` / `holds_delegation` / `node_inflight` / `status_budget_gate` |
@@ -119,8 +120,8 @@ agentcore の実装を**そのまま使えない場所**が 2 種類あり、ど
 
 ```bash
 cd tools/agent-tools/agentcore
-python3 -m unittest discover -s tests            # 16 ファイル・249 件
-python3 -m unittest discover -s agentcore/tests  # 13 ファイル・342 件
+python3 -m unittest discover -s tests            # 16 ファイル・261 件
+python3 -m unittest discover -s agentcore/tests  # 24 ファイル・654 件
 ```
 
 | ルート | 対象 | 主なファイル |

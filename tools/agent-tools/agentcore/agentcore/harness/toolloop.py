@@ -34,9 +34,13 @@ import threading
 import time
 from pathlib import Path
 
+from agentcore import slashroute
 from agentcore.harness import _borrowed
 
-# 本文が stdlib 以外に借りる名前はこの 3 つだけ（agent-loop の断片だった頃から不変）。
+# `slashroute` は host の事情を持たない（stdlib の re だけ）ルート表なので、継ぎ目を
+# 通さず直に借りる——スラッシュ行の解釈は agent-loop / TUI / ここで 1 つでなければ
+# ならないもので、host ごとに差し替わってはいけない（設計 2026-08-27 §3.2）。
+# 本文が host から借りる名前は下の 3 つだけ（agent-loop の断片だった頃から不変）。
 # ここで同じ綴りへ束ねるので、本文は host の事情を知らないまま書ける。
 agent_home_subdir = _borrowed.agent_home_subdir
 _import_agentcli = _borrowed.import_agentcli
@@ -830,9 +834,14 @@ def _tl_control_agent(agent: dict, cwd: str) -> dict:
     if mod is None or not name:
         return agent
     try:
-        variant = mod.resolve_variant(name, "planner", cwd)
-        return agent if not variant else _tl_resolve_agent(
-            variant["agent_cli"], agent.get("model") or "", cwd)
+        # 許可リストは持たない。申告（`variants`）が唯一の許可リストで、調停は
+        # slashroute の 1 実装（設計 2026-08-27 §3.3 / G2）。
+        routed = slashroute.resolve(command="planner", cli=name,
+                                    model=agent.get("model") or None,
+                                    explicit_model=bool(agent.get("model")),
+                                    project_dir=cwd, agentcli=mod)
+        return agent if not routed["variant"] else _tl_resolve_agent(
+            routed["agent_cli"], routed["model"] or "", cwd)
     except (ToolLoopError, AttributeError):
         return agent
 
@@ -926,6 +935,108 @@ def _tl_verified(acceptance: "list[str]", cwd: str) -> bool:
     return bool(acceptance_paths(list(acceptance or []), cwd))
 
 
+def acceptance_outcome(acceptance: "list[str]", *, cwd: str, stamps_before: dict,
+                       agent: "dict | None" = None, log_file: str = "",
+                       output: str = "", judge: bool = False,
+                       git_before: "dict | None" = None,
+                       touched: "set | None" = None) -> dict:
+    """指紋だけで見る証跡ゲート。**外からファイルを観測できない経路が共有する 1 実装**。
+
+    層2（`run_cli_loop`）と対話ペインは、どちらも「エージェントが何を触ったか」を
+    外から観測できない。だから証跡は**受入条件が名指ししたファイルの指紋変化**で見る
+    ——「この実行で変わったか」なら観測できる。**層2 とペインは元から同じ精度**である
+    （設計 2026-08-27 §7.3 B）。ここを 1 つにしておかないと、同じ判定が 2 か所に増える。
+
+    `agent` を渡さなければ判定層（judge）は走らない。判定層はエージェントの**報告本文**
+    を要るので、本文を取れない経路では機械層だけを回す（黙って pass にはしない——
+    `verifiedBy` に judge が出ないので、後から区別できる）。
+
+    返すのは `run_prompt` / `run_cli_loop` の結果契約と同じ鍵だけ。
+    """
+    criteria = list(acceptance or [])
+    touched = set(touched or ())
+    touched |= {f for f in acceptance_paths(criteria, cwd)
+                if _tl_file_stamp(f) != stamps_before.get(f, "")}
+    # git 管理下なら差分を上乗せして `touched` を正確にする。受入条件の指紋は**そのまま
+    # 残す**——git 管理外・未追跡のファイルはそちらでしか見えない（設計 段 9b）。
+    touched |= git_touched_since(cwd, git_before)
+    errors = acceptance_evidence_errors(criteria, cwd=cwd, touched=touched,
+                                        stamps_before=stamps_before)
+    if agent is not None:
+        judged = _tl_apply_judge(criteria, cwd=cwd, agent=agent, log_file=log_file,
+                                 output=output, files=sorted(touched), judge=judge)
+    else:
+        judged = {"errors": [], "judged": False}
+    errors.extend(judged["errors"])
+    return {"ok": not errors, "verified": _tl_verified(criteria, cwd) or judged["judged"],
+            "verifiedBy": _tl_verified_by(criteria, cwd, judged["judged"]),
+            "files": sorted(touched), "evidenceErrors": errors}
+
+
+# git 差分は「宣言外のファイルを触ったか」を答えられる唯一の観測である（設計 §7.3 B の
+# 末尾 / 実装計画 段 9b）。受入条件の指紋が答えるのは「名指ししたパスが変わったか」だけで、
+# 範囲外変更に要るのは**その補集合**——名指ししていないのに変わったファイル——なので、
+# 指紋からは原理的に出てこない。
+#
+# **git を使うのは engine 側であって、エージェントに渡すのではない。** `agents/aider.json` は
+# `--no-git --no-auto-commits` のままにする（コミットの主体が aider になると、agent-loop の
+# worktree サンドボックスや agent-project のブランチ運用と二重になる）。
+_TL_GIT_SNAPSHOT_TIMEOUT_SEC = 10
+
+
+def git_snapshot(cwd: str) -> "dict | None":
+    """`git status --porcelain` の現状。**git 管理外なら None**（＝観測できない）。
+
+    None と空辞書は違う。空辞書は「git 管理下で、いま汚れが無い」、None は「そもそも
+    git ではないので差分では見られない」——後者では受入条件の指紋だけへ落とす。
+    """
+    git = shutil.which("git")
+    if not git:
+        return None
+    try:
+        proc = subprocess.run([git, "status", "--porcelain", "-z", "--untracked-files=all"],
+                              cwd=cwd, capture_output=True, text=True, check=False,
+                              timeout=_TL_GIT_SNAPSHOT_TIMEOUT_SEC)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:            # 管理外・壊れたリポジトリ
+        return None
+    # `-z` の 1 件は `XY <path>\0`。ただし改名・複製（R / C）だけは
+    # `XY <新パス>\0<元パス>\0` の 2 欄になる。**元パスも触ったファイルである**
+    # （そこから消えている）ので、欄を読み飛ばさずに両方数える。
+    out: dict = {}
+    fields = [f for f in (proc.stdout or "").split("\0") if f]
+    i = 0
+    while i < len(fields):
+        field = fields[i]
+        i += 1
+        if len(field) < 4 or field[2] != " ":
+            continue                    # 想定外の欄は黙って捨てる（観測を止めない）
+        status, path = field[:2], field[3:]
+        out[path] = status
+        if ("R" in status or "C" in status) and i < len(fields):
+            out[fields[i]] = status     # 元パス
+            i += 1
+    return out
+
+
+def git_touched_since(cwd: str, before: "dict | None") -> "set[str]":
+    """スナップショット以降に状態が変わったファイル（絶対パス）。
+
+    `before` が None（git 管理外）なら空集合——**黙って「変更なし」にはしない**。
+    呼び出し側は指紋だけの観測へ落ちる（後方互換）。
+    """
+    if before is None:
+        return set()
+    after = git_snapshot(cwd)
+    if after is None:
+        return set()
+    changed = {path for path, status in after.items() if before.get(path) != status}
+    # 実行前に汚れていて実行後にきれいになったもの（巻き戻し・コミット）も「触った」。
+    changed |= {path for path in before if path not in after}
+    return {os.path.realpath(os.path.join(cwd, path)) for path in changed}
+
+
 def acceptance_stamps(acceptance: "list[str]", cwd: str) -> dict:
     """実行前のファイル指紋。実行後の照合で「変わっていない」を検出するために取る。"""
     return {f: _tl_file_stamp(f) for f in acceptance_paths(acceptance, cwd)}
@@ -970,12 +1081,16 @@ def _tl_judge_agent(agent: dict, cwd: str) -> dict:
     if mod is None or not name:
         return agent
     try:
-        variant = mod.resolve_variant(name, "verify", cwd)
-        if not variant:
-            return agent
         # 変種は検証用に調整された自分の既定モデルを持つことが多いので、呼び出し元が
-        # 明示していない限りそちらを使う（resolve_variant が返す model をそのまま渡す）。
-        return _tl_resolve_agent(variant["agent_cli"], variant.get("model") or "", cwd)
+        # 明示していない限りそちらを使う。以前はここが `variant["model"]` を読んでいたが
+        # `resolve_variant` の返却キーは `default_model` なので**常に None** だった
+        # （結果は変種 spec の既定に落ちるので実害は無かったが、キー名が食い違っていた）。
+        # 調停ごと slashroute へ寄せたので、この食い違いは構造的に起きない（G4）。
+        routed = slashroute.resolve(command="verify", cli=name, project_dir=cwd,
+                                    agentcli=mod)
+        if not routed["variant"]:
+            return agent
+        return _tl_resolve_agent(routed["agent_cli"], routed["model"] or "", cwd)
     except (ToolLoopError, AttributeError, KeyError):
         return agent
 
@@ -1191,6 +1306,7 @@ def run_goal(*, goal: str, cwd: str, agent: dict, log_file: str,
                               + acceptance_paths(criteria, root)) if os.path.isfile(f)}
     reads |= {s["skill_file"] for s in skills if s.get("skill_file")}
     stamps_before = acceptance_stamps(criteria, root)
+    git_before = git_snapshot(root)
     touched: set = set()
     history: list[str] = []
     output = ""
@@ -1325,22 +1441,16 @@ def run_goal(*, goal: str, cwd: str, agent: dict, log_file: str,
             "logFile": log_file,
         }, ensure_ascii=False))
 
-    evidence_errors = acceptance_evidence_errors(
-        criteria, cwd=root, touched=touched, stamps_before=stamps_before)
+    outcome = acceptance_outcome(criteria, cwd=root, stamps_before=stamps_before,
+                                 agent=agent, log_file=log_file, output=output,
+                                 judge=judge, git_before=git_before, touched=touched)
     if pending_run_error:
-        evidence_errors.append(pending_run_error)
-    judged = _tl_apply_judge(criteria, cwd=root, agent=agent, log_file=log_file,
-                             output=output, files=sorted(touched), judge=judge)
-    evidence_errors.extend(judged["errors"])
-    ok = bool(output) and not evidence_errors
-    verified = _tl_verified(criteria, root) or judged["judged"]
-    _tl_append_log(log_file, {"event": "goal_done", "ok": ok, "verified": verified,
-                              "verifiedBy": _tl_verified_by(criteria, root, judged["judged"]),
-                              "files": sorted(touched), "evidenceErrors": evidence_errors})
-    return {"ok": ok, "output": output, "files": sorted(touched),
-            "evidenceErrors": evidence_errors, "verified": verified,
-            "verifiedBy": _tl_verified_by(criteria, root, judged["judged"]),
-            "logFile": log_file}
+        outcome["evidenceErrors"].append(pending_run_error)
+        outcome["ok"] = False
+    # ここだけは本文の有無も見る（層3 は本文が成果物そのものであることがある）。
+    outcome["ok"] = bool(output) and outcome["ok"]
+    _tl_append_log(log_file, {"event": "goal_done", **outcome})
+    return {**outcome, "output": output, "logFile": log_file}
 
 
 def run_cli_loop(*, goal: str, cwd: str, agent: dict, log_file: str,
@@ -1353,6 +1463,7 @@ def run_cli_loop(*, goal: str, cwd: str, agent: dict, log_file: str,
     mod = agent["agentcli"]
     criteria = list(acceptance or [])
     stamps_before = acceptance_stamps(criteria, cwd)
+    git_before = git_snapshot(cwd)
     built = mod.headless_cmd(agent["spec"], agent["model"], goal,
                              readonly=False, no_session=True)
     argv = built["argv"]
@@ -1371,22 +1482,11 @@ def run_cli_loop(*, goal: str, cwd: str, agent: dict, log_file: str,
     output = str(result["stdout"] or "").strip()
     if not output and agent["spec"].get("empty_output_is_error", True):
         raise ToolLoopError("エージェントが空の応答を返しました")
-    touched = {f for f in acceptance_paths(criteria, cwd)
-               if _tl_file_stamp(f) != stamps_before.get(f, "")}
-    errors = acceptance_evidence_errors(criteria, cwd=cwd, touched=touched,
-                                        stamps_before=stamps_before)
-    judged = _tl_apply_judge(criteria, cwd=cwd, agent=agent, log_file=log_file,
-                             output=output, files=sorted(touched), judge=judge)
-    errors.extend(judged["errors"])
-    verified = _tl_verified(criteria, cwd) or judged["judged"]
-    _tl_append_log(log_file, {"event": "goal_done", "ok": not errors,
-                              "verified": verified,
-                              "verifiedBy": _tl_verified_by(criteria, cwd, judged["judged"]),
-                              "files": sorted(touched), "evidenceErrors": errors})
-    return {"ok": not errors, "output": output, "files": sorted(touched),
-            "evidenceErrors": errors, "verified": verified,
-            "verifiedBy": _tl_verified_by(criteria, cwd, judged["judged"]),
-            "logFile": log_file}
+    outcome = acceptance_outcome(criteria, cwd=cwd, stamps_before=stamps_before,
+                                 agent=agent, log_file=log_file, output=output,
+                                 judge=judge, git_before=git_before)
+    _tl_append_log(log_file, {"event": "goal_done", **outcome})
+    return {**outcome, "output": output, "logFile": log_file}
 
 
 def run_prompt(*, goal: str, cwd: str, agent: dict, log_file: str,
@@ -1394,31 +1494,40 @@ def run_prompt(*, goal: str, cwd: str, agent: dict, log_file: str,
                judge: bool = False, slash: "list[str] | None" = None) -> dict:
     """ゴール 1 件を、CLI の層（`headless_autonomy`）に応じた経路で 1 回実行する。
 
-    層の判定と分岐をここ 1 か所に置く（C7）。デーモンの headless 枝も `run` サブコマンドも
-    同じ関数を通るので、「デーモン経由なら証跡ゲートが効くが単発だと効かない」のような
-    経路差が生まれない。**tmux を使うかどうかはこの関数の関知しないこと**——tmux は
+    層の判定と分岐をここ 1 か所に置く（C7。コマンド行の解釈は `slashroute` が持つ）。
+    デーモンの headless 枝も `run` サブコマンドも同じ関数を通るので、「デーモン経由なら
+    証跡ゲートが効くが単発だと効かない」のような経路差が生まれない。**tmux を使うかどうかはこの関数の関知しないこと**——tmux は
     コマンドを送り結果を見せる手段であって、実行契約の一部ではない。
 
     `slash` は entry の `slash` 行（`<名前> [引数]`。先頭の `/` は正規化済み）。
     以前は headless 経路で黙って捨てていた（対話ペインへ send-keys する前提の機能
-    だったため）。層2（tool-loop 内蔵 CLI）へはネイティブのスラッシュコマンドとして
-    本文先頭へ前置し、層3（single-shot）へはスキルとして解決してツールループへ渡す。
+    だったため）。ネイティブのスラッシュを持つ CLI へは**行を残して渡し**、持たない CLI
+    へはスキルとして解決してツールループへ渡す。
+
+    **判断は 2 つあり、別々の宣言が決める**（設計 2026-08-27 §3.2）。
+
+    - どの runner か … `headless_autonomy`。tool-loop なら CLI が自分で回すので
+      `run_cli_loop`、single-shot ならハーネスがツールループを供給する `run_goal`。
+    - コマンド行を渡すか消費するか … `slash_native`。以前はここも層を代理に使っていたが、
+      「自分でツールを回せるか」と「スラッシュを自分で解釈するか」は別の性質である。
+      未宣言の定義はローダが同じ代理で埋めるので、宣言していない定義の振る舞いは変わらない。
+
+    行頭記号も定義のもの（`skill_command_prefix`。codex は `$`）を使う——対話へ送るときは
+    既に差し替えていたのに、ヘッドレスだけ `/` 固定だった。
+
+    同梱定義では 2 つの宣言が一致している（tool-loop はすべて `slash_native: true`）。
+    食い違う組み合わせのうち **tool-loop かつ `slash_native: false`** では、コマンド行は
+    消費されて手順の 1 行になるが、`run_cli_loop` はスキル本文を材料へ載せる口を持たない
+    ——載せられるのは `run_goal` の側だけである。CLI 自身がスキルを読める前提の組み合わせ
+    なのでいまは足りているが、足りなくなったらここが直す場所である。
     """
-    lines = [str(s).strip() for s in (slash or []) if str(s).strip()]
-    if str(agent["spec"].get("headless_autonomy") or "single-shot") == "tool-loop":
-        if lines:
-            goal = "\n".join("/" + line for line in lines) + "\n\n" + goal
+    spec = agent["spec"]
+    goal, skill_names = slashroute.apply_to_goal(
+        goal, slash or [], native=bool(spec.get("slash_native")),
+        prefix=str(spec.get("skill_command_prefix") or "/"))
+    if str(spec.get("headless_autonomy") or "single-shot") == "tool-loop":
         return run_cli_loop(goal=goal, cwd=cwd, agent=agent, log_file=log_file,
                             acceptance=acceptance, judge=judge)
-    skill_names: list[str] = []
-    for line in lines:
-        name, _, args = line.partition(" ")
-        if name not in skill_names:
-            skill_names.append(name)
-        note = f"`{name}` スキルの手順に従って実行してください。"
-        if args.strip():
-            note += f"（引数: {args.strip()}）"
-        goal = note + "\n" + goal
     return run_goal(goal=goal, cwd=cwd, agent=agent, log_file=log_file,
                     acceptance=acceptance, tag=tag, judge=judge, skills=skill_names)
 
@@ -1427,6 +1536,51 @@ def _tl_run_log_file(tag: str = "run") -> str:
     directory = agent_home_subdir("AGENT_LOOP_RUN_DIR", "runs") / "headless"
     directory.mkdir(parents=True, exist_ok=True)
     return str(directory / f"{int(time.time() * 1000)}-{tag}.jsonl")
+
+
+def _tl_skill_exists(cwd: str):
+    """ルータへ渡すスキル解決器（探索先も言える）。ハーネスの探索順をそのまま使う。"""
+    def exists(name: str) -> bool:
+        return _tl_resolve_skill(name, cwd) is not None
+    exists.search_dirs = lambda: _tl_skill_search_dirs(cwd)
+    return exists
+
+
+def _tl_statemachine_args(args: argparse.Namespace, spec: str, work_dir: Path):
+    """`/sm <名前> [--param k=v]` → `cmd_statemachine` が読む Namespace。
+
+    `<名前>` は**実在するワークフローファイルなら `--workflow`、そうでなければ
+    `--entry`** として扱う。`cmd_run` が「実在するパスを渡したら中身を本文にする」のと
+    同じ流儀で、人に 2 つの綴りを覚えさせない。どちらとして読んだかは進捗行に出す。
+    """
+    try:
+        tokens = shlex.split(spec)
+    except ValueError as exc:               # 引用符が閉じていない等
+        raise ToolLoopError(f"/sm の引数を読めません: {exc}") from exc
+    if not tokens:
+        raise ToolLoopError(
+            "/sm にはワークフロー名が要ります: /sm <名前> [--param k=v]")
+    name, rest = tokens[0], tokens[1:]
+    params: "list[str]" = []
+    index = 0
+    while index < len(rest):
+        token = rest[index]
+        index += 1
+        if token == "--param":
+            if index >= len(rest):
+                raise ToolLoopError("/sm: --param には k=v が要ります")
+            params.append(rest[index])
+            index += 1
+        elif token.startswith("--param="):
+            params.append(token.split("=", 1)[1])
+        else:
+            raise ToolLoopError(f"/sm は {token} を受け取りません（--param k=v だけです）")
+    candidate = Path(name) if os.path.isabs(name) else (work_dir / name)
+    workflow = str(candidate) if candidate.is_file() else None
+    return argparse.Namespace(
+        workflow=workflow, entry=(None if workflow else name), config=None,
+        param=params, input=None, dir=str(work_dir),
+        agent_cli=getattr(args, "agent_cli", None), model=getattr(args, "model", None))
 
 
 def cmd_run(args: argparse.Namespace, cwd: Path) -> None:
@@ -1441,19 +1595,63 @@ def cmd_run(args: argparse.Namespace, cwd: Path) -> None:
     if not work_dir.is_dir():
         print(f"[agent-loop] ERROR: ディレクトリが存在しません: {work_dir}", file=sys.stderr)
         sys.exit(1)
-    goal = " ".join(getattr(args, "prompt", None) or []).strip()
+    # **末尾だけ落として先頭は残す。** 先頭の空行は「この行はコマンドではなく本文」を
+    # 示す唯一の逃げ道で（設計 §3.2 の規約が先頭ブロックしか見ないため）、ここで
+    # strip すると逃げ道が塞がる。
+    goal = " ".join(getattr(args, "prompt", None) or []).rstrip()
     # send と同じ流儀: 実在するファイルパスを渡したらその中身を本文にする。
-    candidate = (work_dir / goal) if goal and not os.path.isabs(goal) else Path(goal or ".")
-    if goal and candidate.is_file():
-        goal = candidate.read_text(encoding="utf-8").strip()
-    if not goal:
+    stripped = goal.strip()
+    candidate = ((work_dir / stripped) if stripped and not os.path.isabs(stripped)
+                 else Path(stripped or "."))
+    if stripped and candidate.is_file():
+        goal = candidate.read_text(encoding="utf-8").rstrip()
+    if not goal.strip():
         print("[agent-loop] ERROR: プロンプトが空です。", file=sys.stderr)
+        sys.exit(2)
+    # **起動形は argv を組む前に決まる**（設計 2026-08-27 §3.2）。ここはランチャなので、
+    # 本文の先頭コマンド行をルータへ 1 回だけ読ませ、決めてから実行へ入る。
+    try:
+        launch = slashroute.plan(goal, project_dir=str(work_dir),
+                                 skill_exists=_tl_skill_exists(str(work_dir)))
+    except slashroute.UnknownCommand as exc:
+        print(f"[agent-loop] ERROR: {exc}", file=sys.stderr)
+        sys.exit(2)
+    if launch.session:
+        print("[agent-loop] ERROR: セッション操作のコマンドは 1 回実行では使えません: "
+              + ", ".join("/" + name for name, _a in launch.session), file=sys.stderr)
+        sys.exit(2)
+    if launch.harness == slashroute.HARNESS_STATEMACHINE:
+        # `/sm` の 1 語でステートマシンを起こす。以前は agent-loop の設定でしか起動でき
+        # なかった（設計 §3.4）。当て先は既存の `cmd_statemachine` そのままで、新しい
+        # 実行経路は足していない。
+        from agentcore.harness import statemachine as _statemachine   # 循環 import を避ける
+        spec = next((a for n, a in launch.commands if n == "sm"), "")
+        sm_args = _tl_statemachine_args(args, spec, work_dir)
+        _tl_progress("statemachine: "
+                     + (f"workflow={sm_args.workflow}" if sm_args.workflow
+                        else f"entry={sm_args.entry}"), "run")
+        _statemachine.cmd_statemachine(sm_args, work_dir)
+        return
+    if launch.tools is not None or launch.toolset:
+        # **黙って無視しない。** この経路のツール契約はハーネスが供給する read/write/run/final
+        # で、agent-ollama の `--tools` セットとは別物である。効かないものを効いたように
+        # 見せると、この設計がまさに潰そうとしている「宣言したのに効かない」を作る。
+        _tl_progress("道具立ての指定（/ask・/find）はこの経路では効きません"
+                     "——限定ツール契約はハーネスが供給します。", "run")
+    goal = launch.body
+    if not goal.strip():
+        print("[agent-loop] ERROR: プロンプトが空です（コマンド行だけでした）。", file=sys.stderr)
         sys.exit(2)
     acceptance = [str(a).strip() for a in (getattr(args, "acceptance", None) or []) if str(a).strip()]
     log_file = _tl_run_log_file()
     try:
-        agent = _tl_resolve_agent(getattr(args, "agent_cli", None) or "aider",
-                                  getattr(args, "model", None) or "", str(work_dir))
+        # 打った `--agent-cli` ＞ 宣言（`/edit` の `agent:`）＞ 従来の既定。
+        # **aider の名前が出るのは宣言 1 行だけ**にする（設計 §3.6）——実行レベルに書く
+        # のは用途の 1 語で、どの編集適用エンジンかは宣言が決める。ここに残る "aider" は
+        # 宣言も指定も無いときの従来どおりの既定で、`/edit` を通ればそちらが勝つ。
+        agent = _tl_resolve_agent(
+            getattr(args, "agent_cli", None) or launch.agent or "aider",
+            getattr(args, "model", None) or launch.model or "", str(work_dir))
         _tl_progress(f"agent: {agent['cli']}"
                      + (f" / model: {agent['model']}" if agent["model"] else " (default model)")
                      + f" / log: {log_file}", "run")

@@ -55,6 +55,9 @@ from agentcore import verifycontract as _verifycontract  # noqa: E402
 # agent-project / agent-flow / agent-amigos / dashboard の 4 か所に重複しており、
 # 同じ CLI でもツールによってフラグが違う状態になっていた（repolocal と同型の問題）。
 from agentcore import agentcli as _agentcli  # noqa: E402
+# 用途（purpose）→ 起動形の調停。engine 側に許可リストを持たないための 1 実装
+# （設計 2026-08-27 §3.3）。ここが `variants` の申告と明示モデルを調停する。
+from agentcore import slashroute as _slashroute  # noqa: E402
 # 指示ドロップ（commands/<name>.json ＋ processed/ ＋ .err）の取り込み規約。プロジェクト配下と
 # ノードスコープ（~/.agents/commands/・板の操作）で同じ形を使う——2 実装にすると、利用者から
 # 見える挙動（送信済み → 受理済み → 失敗バナー）が 2 種類になる。

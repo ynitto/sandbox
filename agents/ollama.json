@@ -1,6 +1,7 @@
 {
   "name": "ollama",
   "headless_autonomy": "tool-loop",
+  "slash_native": true,
   "relative_cost": 0,
   "command": [
     "agent-herd",
@@ -55,14 +56,15 @@
     "ready_pattern": "^[[:space:]]*>[[:space:]]*$",
     "busy_pattern": "経過 [0-9]",
     "clear_command": "",
-    "prompt_inject": "send-keys"
+    "prompt_inject": "send-keys",
+    "turn_completion": "ollama"
   },
   "session_log": {
     "format": "jsonl-dir",
     "paths": [
       "~/.agents/logs/ollama"
     ],
-    "usage": false
+    "usage": true
   },
   "profiles": {
     "json": {

@@ -157,6 +157,11 @@ def _parse_jsonl_session(path: str, *, want_messages: bool,
             if container and isinstance(container.get("usage"), dict):
                 usage = container["usage"]
                 break
+        if usage is None:
+            flat = _flat_usage(obj)
+            if flat is not None:
+                sum_in += flat[0]
+                sum_out += flat[1]
         if usage is not None:
             i, o = _usage_of(usage)
             # Claude は 1 API 応答の thinking / text を別行にし、同じ message.id と
@@ -236,6 +241,27 @@ def _usage_of(u: dict) -> "tuple[int, int]":
     return (num("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens",
                 "cached_input_tokens"),
             num("output_tokens"))
+
+
+def _flat_usage(obj: dict) -> "tuple[int, int] | None":
+    """平らな `tokens_in` / `tokens_out` を載せるログ形（agentcore が自分で書く形）。
+
+    `agent-ollama` は 1 ラウンドの実測を `llm_end` の**トップレベル**へ書く
+    （`ollama_loop.py` の `emit("llm_end", ..., tokens_in=, tokens_out=)`）。ここが
+    入れ子の `usage` しか見ていなかったので、**書いている側と読んでいる側が食い違って
+    いた**——`session_log.usage` を true にしても 0 トークンで「実測済み」と記帳され、
+    秒からの推定より悪くなる（設計 2026-08-27 §7.3 C / 実装計画 段 8）。
+
+    見るのは `llm_end` だけである。`llm_progress` は同じ綴りで**途中経過**の
+    `tokens_out` を載せるので、行を選ばずに足すと 1 ラウンドを何度も数える。
+    """
+    if obj.get("kind") != "llm_end":
+        return None
+    tin, tout = obj.get("tokens_in"), obj.get("tokens_out")
+    if not isinstance(tin, (int, float)) and not isinstance(tout, (int, float)):
+        return None
+    return (int(tin) if isinstance(tin, (int, float)) else 0,
+            int(tout) if isinstance(tout, (int, float)) else 0)
 
 
 def _find_total_usage(obj: dict, depth: int = 0) -> "tuple[int, int] | None":

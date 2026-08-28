@@ -65,11 +65,12 @@ cowork の定常業務 tmux 実行だけで、定義解決に失敗しても `ki
 | `readonly` | `enforced` \| `best-effort` | `best-effort` | 読み取り専用の強制力の申告 |
 | `relative_cost` | number | `1` | 同じ仕事 1 回の無次元コスト（ローカル 0 / 通常クラウド 1） |
 | `headless_autonomy` | `tool-loop` \| `single-shot` | `single-shot` | ヘッドレス 1 回で自分でツールを回して完遂できるか |
+| `slash_native` | bool | `headless_autonomy` から導く | 本文先頭のコマンド行（`/name [args]`）をこの CLI へ**残して渡す**か、ランチャが**消費する**か（§2.4） |
 | `variants` | object | — | 用途 → 代わりに使う定義名（§4） |
 | `profiles` | object | — | 用途別の起動差。`<name>-<profile>` の綴りと `variants` の値がここへ解決される（§2.3） |
 | `spill` | object | — | 長大プロンプトの退避（`instruction` / `args`。§5） |
 | `errors` | array | — | 失敗トリアージ規則（§6） |
-| `skill_command_prefix` | str | `/` | スキル起動コマンドの行頭記号（codex は `$`） |
+| `skill_command_prefix` | str | `/` | スキル起動コマンドの行頭記号（codex は `$`。§2.4） |
 | `session_log` | object | — | agent-audit が読む transcript の所在（§7） |
 | `interactive` | object | — | 対話モード（§2.2） |
 | `name` | str | ファイル名 | 表示名 |
@@ -89,7 +90,7 @@ cowork の定常業務 tmux 実行だけで、定義解決に失敗しても `ki
 | `failure_pattern` | — | `agent-loop send --wait` の明示的な失敗。未指定なら pane / process 終了以外を推測しない |
 | `clear_command` | `/clear` | コンテキスト破棄コマンド（codex は `/new`、無い CLI は空文字） |
 | `prompt_inject` | — | 初回プロンプトの注入方法（`send-keys` \| `file`） |
-| `turn_completion` | `""` | ターン完了 hook のアダプタ。`kiro` / `claude` / `codex` / `copilot` / `opencode` のいずれか。未知の値は**起動時エラー** |
+| `turn_completion` | `""` | ターン完了 hook のアダプタ。`kiro` / `claude` / `codex` / `copilot` / `opencode` / `ollama` のいずれか。未知の値は**起動時エラー**。`ollama` は対話面が我々の実装なので hook 資産が要らず、env だけで成り立ちます |
 
 **待機判定の優先順位**は busy ＞ ready ＞ 静穏 ＞ 既定 busy でコード側に固定してあります。
 
@@ -113,11 +114,28 @@ cowork の定常業務 tmux 実行だけで、定義解決に失敗しても `ki
 | 置けるキー | トップレベルのうち起動に関わるもの。`profiles` / `session_log` / `spill` / `name` は**置けません**（スキーマとローダの両方が拒否し、何が置けるかを名指しで返す） |
 | 継承 | 宣言があれば置き換え（`[]` の宣言も「置き換え」）。宣言しなければ base をそのまま継ぐ |
 | `env` | 例外的に base へ**重ねる**（profile の宣言が勝つ） |
-| 継承しないもの | `interactive` と `variants` の 2 つ。継承すると対話面を持たない役割に base の TUI が生え、消費側（agent-dashboard）の実行経路が変わる |
+| 継承しないもの | `interactive` / `variants` / `slash_native` の 3 つ。継承すると対話面を持たない役割に base の TUI が生え、消費側（agent-dashboard）の実行経路が変わる。`slash_native` は profile 自身の `headless_autonomy` から導く |
 
 **返る spec の `name` は正典（base の名前）のまま**で、どの profile で組まれたかは
 `spec["profile"]`、選べる一覧は `spec["profiles"]` が持ちます。台帳・格付けへ書く `agent_cli` は
 `canonical_name()`（§3）を通してください。
+
+### 2.4 `slash_native`（コマンド行を渡すか消費するか）
+
+本文の**先頭から連続する** `/name [args]` の行はコマンド行です（規約は
+[agentcore の `slashroute`](./agentcore-spec.md)）。ランチャは argv を組む前にこの行を読み、
+起動形を決めます。そのうえで**行を CLI へ渡すか消費するかは定義が宣言します**。
+
+| 宣言 | 意味 | 例 |
+|---|---|---|
+| `true` | ネイティブのスラッシュコマンドを持つので**残して渡す**。行頭記号は `skill_command_prefix`（codex は `$`） | claude / codex / kiro / copilot / cursor / agent-ollama / opencode |
+| `false` | 持たないので**ランチャが消費する**。スキルとして解決して材料へ載せる | aider / vscode-copilot |
+
+**未宣言のときは `headless_autonomy` から導きます**（`tool-loop` なら `true`）。以前この判定は
+その代理で書かれていたので、宣言していない定義（利用者が置いたものを含む）は今日と同じに
+振る舞います。**ただし 2 つは別の性質です**——`headless_autonomy` は「自分でツールを回せるか」、
+`slash_native` は「スラッシュを自分で解釈するか」で、片方だけ真の CLI はありえます。
+同梱定義はすべて自分で宣言しています。
 
 ---
 
@@ -133,7 +151,7 @@ cowork の定常業務 tmux 実行だけで、定義解決に失敗しても `ki
 | `interactive_cmd(spec, model, *, readonly, no_session)` | 対話起動の argv 一式 |
 | `canonical_name(name, project_dir=None)` | 台帳・格付けへ書く正典の `agent_cli` 名。`ollama-list` → `ollama`。**綴りでは判定せず定義に問い合わせる**ので、`ollama-list.json` が実在すればそのまま返す。解決できない名前は素通し |
 | `resolve_variant(name, purpose, project_dir=None)` | `{agent_cli, default_model}` or `None`（§4） |
-| `costlier_fallback(current, candidates, project_dir=None)` | 現在より高コストの最初の 1 件 or `None`（§4.1） |
+| `costlier_fallback(current, candidates, project_dir=None)` | 現在より高コストの最初の 1 件 or `None`（§4.2） |
 | `classify_error(spec, blob, *, detailed=False, now=None)` | `(class, hint)`、`detailed=True` なら quota 細分と `reset_at`（§6） |
 | `parse_usage(stderr)` | `(tokens_in, tokens_out)`。`@agent-usage` 行の**最後の一致**だけを読む |
 | `spill_prompt(prompt, limit, *, prompt_via, prefix)` | argv 長超過の退避（§5） |
@@ -148,29 +166,45 @@ cowork の定常業務 tmux 実行だけで、定義解決に失敗しても `ki
 
 ## 4. `variants`（用途別の振り替え）
 
-知識を 2 つに割ります。**「この用途にはこの変種を使うか」は定義が申告し、「どの用途が振り替え
-対象か」はエンジンが宣言します。** どちらも自分が知っていることしか言わないので、エンジンが
-CLI 名で分岐する必要がなくなります。
+**申告が唯一の許可リストです。** 「この用途にはこの変種を使うか」は定義が申告し、エンジンは
+**用途の 1 語を渡すだけ**です。調停（どの変種へ振り替え、どのモデルを使うか）は
+`agentcore.slashroute.resolve` の 1 実装が行います。エンジンが CLI 名で分岐する必要も、
+用途の許可リストを持つ必要もありません。
+
+以前はエンジンごとに許可リストがありました（agent-flow は 9 用途・agent-project は 6 用途・
+agent-audit は 2 用途）。定義が 15 用途を申告しても引かれない用途があり、**「宣言したのに
+効かない」が静かに起きていました**。許可リストは削除済みです
+（[2026-08-27 設計](../plans/2026-08-27-agent-herd-cloud-cli-parity-slash-dispatch-design.md) §3.3）。
 
 - 指す先が存在しない・自分自身を指す申告は**無視して元の定義で走ります**（設定ミスで実行を殺さない）
 - 振り替えは **1 段だけ**で連鎖しません
-- 振り替え後のモデルは、呼び出し元が明示指定していなければ**変種自身の `default_model`** を使います
 - **指す先は定義名でも profile の綴りでもかまいません。** `variants: {"split": "ollama-list"}` は
   `ollama` の `list` profile へ解決されます（§1）。返る `agent_cli` の綴りはそのままなので、
   台帳へ書く前に `canonical_name()` を通します——**変種は入口を増やさず、定義を増やすだけ**です
+- **セッション操作のコマンド名（`/help` `/model` `/tools` …）は用途ではありません。**
+  名前空間が 1 つなので、これらのキーを申告しても振り替えには使われません
 
-用途語彙は 15 個で、定義側の申告とエンジン側の問い合わせが一致しています。
+### 4.1 振り替え後のモデル
 
-| エンジン | 問い合わせる用途 |
-|---|---|
-| agent-flow（`VARIANT_ELIGIBLE_ROLES`） | `evaluator` / `extract` / `filter` / `judge` / `planner` / `reduce` / `retrieve` / `split` / `verify` |
-| agent-project（`JSON_CONTRACT_PURPOSES`） | `adjudicate` / `assess` / `plan` / `prioritize` / `review` / `route` |
-| agent-loop | `planner`（ツール契約の制御応答）/ `verify`（受入条件の判定層） |
-| agent-audit（`VARIANT_PURPOSES`） | `extract` / `review` |
+変種は用途専用にチューニングされた `default_model` を持つことが多いので（`ollama-verify` の
+`gemma4:12b` など）、**原則としてそちらを使います**。上書きしない層が 2 つあります。
 
-キーが存在するからといって、どの呼び出し元でも無条件に振り替わるわけではありません。
+| 層 | 変種の既定で上書きするか | 理由 |
+|---|---|---|
+| 人が設定へ明示したモデル（`agents:` の用途別 `model`・run 単位の固定） | **しない** | 用途を知ったうえでの明示だから |
+| 用途別順位表（`selection_policy.by_purpose`）由来の決定 | **しない** | その用途の実測（operation_class 別の格付け）で選ばれているから。上書きすると、judge で bounded-review の裏付けを持つモデルが選ばれたのに、変種の既定で **blocked と実測されているモデル**へ黙って戻る |
+| agent-control / tier の自動割り当て・縮退指定・用途を知らない共通候補列 | **する** | 「その CLI を用途を問わずそのまま使う」という明示ではないので、変種の用途専用チューニングのほうが良い推定 |
 
-### 4.1 `fallbacks` は定義ではなくエンジンの設定
+**この調停は 1 実装（`agentcore.slashroute.resolve`）で、engine は用途の 1 語と
+「どの層がモデルを決めたか」の 2 つを渡すだけです。** 用途別順位表を読む口を持つのは
+agent-flow だけで、agent-project / agent-audit / ハーネスは legacy の `agents:` 層しか
+見ません——`by_purpose` 由来の決定はそこへ届かないので、「明示でないモデル」として
+紛れ込んで変種の既定へ戻ることが起きません。**これらへ `selection_policy` を教えるときは、
+同じ呼び出しで `by_purpose` を渡さないと静かに壊れます**（4 経路それぞれのテストが縛ります）。
+
+用途語彙は 15 個で、同梱定義（`ollama` / `aider`）の申告がこれを覆っています。
+
+### 4.2 `fallbacks` は定義ではなくエンジンの設定
 
 `relative_cost` は**定義が申告**しますが、**`fallbacks` は定義のフィールドではありません**
 （スキーマにも無い）。エンジン側の役割別設定（agent-flow の `agents:` 上書き、agent-project の
@@ -283,7 +317,7 @@ agent-audit が CLI 自身の transcript を収集するための宣言です。
 Language Model API は編集中の VS Code プロセスの中にしか無く、argv から直接は呼べないため）。詳細は
 [`docs/specs/agent-herd-spec.md`](./agent-herd-spec.md)。
 
-`variants` を申告しているのは `ollama`（15 用途）・`aider`（13 用途）と、`ollama` の
+`variants` を申告しているのは `ollama`（15 用途）・`aider`（15 用途）と、`ollama` の
 `json` profile（`split` / `retrieve`）・`verify` profile（`split`）です（`variants` は
 継承しないので、必要な profile だけが自分で宣言します）。
 

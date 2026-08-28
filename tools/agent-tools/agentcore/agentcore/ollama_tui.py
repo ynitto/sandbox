@@ -34,11 +34,12 @@ sys.stdin/sys.stdout のとき）。パイプ入力・テスト・ログへの�
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
 
-from agentcore import ollama_events, ollama_skills
+from agentcore import ollama_events, ollama_skills, slashroute
 
 try:  # 環境によっては欠ける（readline 無しでビルドされた python 等）。
     import readline as _readline
@@ -290,18 +291,24 @@ def follow(path: "str | None" = None, out=None, from_start: bool = True) -> int:
     return 0
 
 
-_HELP = """\
-ローカルコマンド（LLM へは送りません）:
-  /skills          読めるスキルの一覧
-  /tools on|off    ツール実行ループの切り替え
-  /think on|off    思考モードの切り替え
-  /model <name>    モデルの切り替え
-  /ctx             直近の文脈使用量（使用トークン / 上限 / 割合）
-  /status          いまの進捗（JSON）
-  /keys            使えるキー操作の一覧
-  /help            この一覧
-  /quit            終了
-それ以外の行はプロンプトとして送ります（先頭の /<スキル名> は展開されます）。"""
+# 一覧も候補も判定も、正典は `slashroute` の表（設計 2026-08-27 §3.2）。ここに綴りを
+# 2 度書かない——「/help に出るのに効かない」「補完に出ない」が静かに起きるのは、
+# 同じ表を 3 か所に書いていたからである。
+#
+# 種別 A（ローカル）はこの面が実体を持ち、種別 B（実行形）はそのまま実行側へ流れて
+# **その 1 回の道具立てを決める**。人から見れば同じコマンド面で、実体だけが違う。
+def _help_text() -> str:
+    """`/help` の本文。用途の宣言は環境で変わるので、表示のたびに組む。"""
+    parts = ["ローカルコマンド（LLM へは送りません）:",
+             slashroute.render_help(slashroute.KIND_SESSION),
+             "実行形（そのプロンプト 1 回に効きます）:",
+             slashroute.render_help(slashroute.KIND_SHAPE)]
+    purposes = slashroute.render_help(slashroute.KIND_PURPOSE)
+    if purposes:
+        parts += ["用途（~/.agents/commands/ の宣言）:", purposes]
+    parts.append("それ以外の行はプロンプトとして送ります（先頭の /<スキル名> は展開されます）。\n"
+                 "知らない /名前 は明示エラーで止まります（本文として送るなら先頭に空行を 1 つ）。")
+    return "\n".join(parts)
 
 _KEYS = """\
 キー操作（本物の端末で対話しているときだけ効きます）:
@@ -315,10 +322,10 @@ _KEYS = """\
 キー割り当ては ~/.inputrc で変えられます（readline の設定がそのまま効きます）。
 AGENT_OLLAMA_NO_READLINE=1 で行編集を切れます（素の 1 行読みに戻ります）。"""
 
-# ローカルコマンド（Tab 補完の候補。`/help` の一覧と揃える）。
-_LOCAL_COMMANDS = ("/ctx", "/exit", "/help", "/keys", "/model", "/quit", "/skills",
-                   "/status", "/think", "/tools")
-_ONOFF_COMMANDS = ("/tools", "/think")
+# ローカルコマンド（Tab 補完の候補）。表から引くので `/help` と必ず揃う。
+_LOCAL_COMMANDS = slashroute.spellings(slashroute.KIND_SESSION)
+_SHAPE_COMMANDS = slashroute.spellings(slashroute.KIND_SHAPE)
+_ONOFF_COMMANDS = slashroute.onoff_spellings(slashroute.KIND_SESSION)
 _HISTORY_LIMIT = 1000
 
 
@@ -348,12 +355,14 @@ def completions(buffer: str, text: str) -> "list[str]":
             return [value for value in ("on", "off") if value.startswith(text)]
     if not text.startswith("/") or head[:len(text)] != text:
         return []
-    names = set(_LOCAL_COMMANDS)
+    names = set(_LOCAL_COMMANDS) | set(_SHAPE_COMMANDS)
     try:
-        # スキルは `/<名前>` で展開されるので、ローカルコマンドと同じ土俵で補完できる。
+        # スキルも用途の宣言も `/<名前>` で起動するので、ローカルコマンドと同じ土俵で
+        # 補完できる（名前空間は 1 つ。設計 2026-08-27 §3.3）。
         names.update("/" + name for name, _path in ollama_skills.list_skills())
+        names.update("/" + decl.name for decl in slashroute.declarations())
     except Exception:
-        pass  # スキルが読めなくても補完自体は動かす
+        pass  # スキル・宣言が読めなくても補完自体は動かす
     return sorted(name for name in names if name.startswith(text))
 
 
@@ -476,6 +485,33 @@ def repl(runner, *, model: str, tools: bool, think: "bool | None" = None,
         reader.close()
 
 
+# 完了検知は「画面を見る」より「本人が言う」ほうが確かである（設計 2026-08-27 §7.3 A）。
+# クラウド CLI は自分のプラグイン機構で `hook-event` を呼んでいるが、**この TUI は我々の
+# ものなので資産が要らない**——ターンの終わりに自分で同じコマンドを叩けばよい。これで
+# `busy_pattern`（「経過 N 秒」を画面から読む）は fallback に降りる。
+_TURN_HOOK_TIMEOUT_SEC = 5
+
+
+def _turn_hook(status: str) -> None:
+    """ターンの終わりを agent-loop の turn hook へ知らせる。
+
+    管理下のペインでなければ何もしない（env が無い）。**失敗しても対話は続ける**
+    ——知らせられなかったときは画面監視が拾うので、ここで落ちる理由が無い。
+    封筒の検証（instance / pane / generation / HMAC）は agent-loop 側が持つ。
+    """
+    executable = os.environ.get("AGENT_LOOP_EXECUTABLE") or ""
+    if not executable or not os.environ.get("AGENT_LOOP_INSTANCE_ID"):
+        return
+    try:
+        subprocess.run([executable, "hook-event", "--adapter", "ollama",
+                        "--status", status, "--native-event", "turn_end"],
+                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, check=False,
+                       timeout=_TURN_HOOK_TIMEOUT_SEC)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
 def _loop(reader, runner, *, model: str, tools: bool, think: "bool | None", out) -> int:
     while True:
         try:
@@ -490,54 +526,53 @@ def _loop(reader, runner, *, model: str, tools: bool, think: "bool | None", out)
         text = line.strip()
         if not text:
             continue
-        lowered = text.lower()
-        if lowered in ("/quit", "/exit"):
-            return 0
-        if lowered == "/help":
-            print(_HELP, file=out)
-            continue
-        if lowered == "/keys":
-            print(_KEYS.format(history=history_path()), file=out)
-            if not reader.enabled:
-                print("（いまは行編集が無効です: 端末ではないか、"
-                      "AGENT_OLLAMA_NO_READLINE=1 が効いています）", file=out)
-            continue
-        if lowered == "/skills":
-            found = ollama_skills.list_skills()
-            if not found:
-                print("スキルが見つかりません（探索先: "
-                      + ", ".join(str(d) for d in ollama_skills.skill_dirs()) + "）", file=out)
-            for name, path in found:
-                print(f"  /{name}  {path}", file=out)
-            continue
-        if lowered.startswith("/tools"):
-            arg = lowered.replace("/tools", "").strip()
-            tools = arg in ("on", "true", "1", "yes") if arg else not tools
-            print(f"tools={'on' if tools else 'off'}", file=out)
-            continue
-        if lowered.startswith("/think"):
-            arg = lowered.replace("/think", "").strip()
-            think = True if arg in ("on", "true", "1", "yes") else (
-                False if arg in ("off", "false", "0", "no") else None)
-            print(f"think={'既定' if think is None else ('on' if think else 'off')}", file=out)
-            continue
-        if lowered.startswith("/model"):
-            arg = text[len("/model"):].strip()
-            if arg:
-                model = arg
-            print(f"model={model}", file=out)
-            continue
-        if lowered == "/ctx":
-            snap = ollama_events.read_status()
-            if not snap.get("context_used"):
-                print("まだ文脈使用量を観測していません（1 回実行すると出ます）。", file=out)
-            else:
-                print(f"  {context_text(snap.get('context_used'), snap.get('context_limit'), snap.get('context_pct'))}"
-                      f"  実測元={snap.get('context_source', '')}", file=out)
-            continue
-        if lowered == "/status":
-            import json as _json
-            print(_json.dumps(ollama_events.read_status(), ensure_ascii=False), file=out)
+        # 先頭 1 行をルータへ渡す（設計 2026-08-27 §3.2）。表に載っていれば種別 A の
+        # セッション操作、載っていなければ本文——`/<スキル名>` の展開は本文側の仕事で、
+        # ここでは触らない。人が打つ面なので大小文字は無視する。
+        parsed = slashroute.parse_line(text, casefold=True)
+        command = slashroute.lookup(parsed[0]) if parsed else None
+        if command is not None and command.kind == slashroute.KIND_SESSION and (
+                command.takes_args or not parsed[1]):
+            arg = parsed[1]
+            if command.name == "quit":
+                return 0
+            if command.name == "help":
+                print(_help_text(), file=out)
+            elif command.name == "keys":
+                print(_KEYS.format(history=history_path()), file=out)
+                if not reader.enabled:
+                    print("（いまは行編集が無効です: 端末ではないか、"
+                          "AGENT_OLLAMA_NO_READLINE=1 が効いています）", file=out)
+            elif command.name == "skills":
+                found = ollama_skills.list_skills()
+                if not found:
+                    print("スキルが見つかりません（探索先: "
+                          + ", ".join(str(d) for d in ollama_skills.skill_dirs()) + "）", file=out)
+                for name, path in found:
+                    print(f"  /{name}  {path}", file=out)
+            elif command.name == "tools":
+                low = arg.lower()
+                tools = low in ("on", "true", "1", "yes") if low else not tools
+                print(f"tools={'on' if tools else 'off'}", file=out)
+            elif command.name == "think":
+                low = arg.lower()
+                think = True if low in ("on", "true", "1", "yes") else (
+                    False if low in ("off", "false", "0", "no") else None)
+                print(f"think={'既定' if think is None else ('on' if think else 'off')}", file=out)
+            elif command.name == "model":
+                if arg:
+                    model = arg
+                print(f"model={model}", file=out)
+            elif command.name == "ctx":
+                snap = ollama_events.read_status()
+                if not snap.get("context_used"):
+                    print("まだ文脈使用量を観測していません（1 回実行すると出ます）。", file=out)
+                else:
+                    print(f"  {context_text(snap.get('context_used'), snap.get('context_limit'), snap.get('context_pct'))}"
+                          f"  実測元={snap.get('context_source', '')}", file=out)
+            elif command.name == "status":
+                import json as _json
+                print(_json.dumps(ollama_events.read_status(), ensure_ascii=False), file=out)
             continue
 
         renderer = Renderer(out=out)
@@ -546,11 +581,18 @@ def _loop(reader, runner, *, model: str, tools: bool, think: "bool | None", out)
         except KeyboardInterrupt:
             renderer.finish()
             print("（中断しました）", file=out)
+            # 人が止めたターンは done ではない。complete と言うと、成果の無い実行が
+            # 完了として記帳される。
+            _turn_hook("failure")
             continue
         except Exception as exc:
             renderer.finish()
             print(f"✖ {exc}", file=out)
+            _turn_hook("failure")
             continue
         renderer.finish()
         if body:
             print(body.rstrip("\n"), file=out)
+        # 知らせるのは**書き終えてから**。先に完了と言うと、本文を書いている最中に
+        # 次の dispatch が send-keys してくる。
+        _turn_hook("complete")

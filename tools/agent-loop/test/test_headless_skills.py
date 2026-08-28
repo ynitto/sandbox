@@ -20,8 +20,17 @@ from agentcore.harness import toolloop as tl  # noqa: E402
 from agentcore.tests.harnesspatch import patch_harness  # noqa: E402
 
 
-def _agent(autonomy):
-    return {"cli": "x", "model": "", "spec": {"headless_autonomy": autonomy}}
+def _agent(autonomy, slash_native=None):
+    """ローダ（`agentcli.normalize`）が返すのと同じ形の spec を持つエージェント。
+
+    `slash_native` は未宣言なら `headless_autonomy` から導く——ローダと同じ規則で、
+    以前この判定がその代理で書かれていたことの後方互換（設計 2026-08-27 §3.2）。
+    """
+    if slash_native is None:
+        slash_native = autonomy == "tool-loop"
+    return {"cli": "x", "model": "",
+            "spec": {"headless_autonomy": autonomy, "slash_native": slash_native,
+                     "skill_command_prefix": "/"}}
 
 
 class RunPromptSlashTests(unittest.TestCase):
@@ -41,6 +50,39 @@ class RunPromptSlashTests(unittest.TestCase):
         self.assertIn("`tech-harvester` スキルの手順に従って実行してください。", kwargs["goal"])
         self.assertIn("引数: ニュースをまとめて", kwargs["goal"])
         self.assertIn("本文", kwargs["goal"])
+
+    def test_the_declaration_decides_the_line_not_the_layer(self):
+        """コマンド行を渡すか消費するかは `slash_native`、runner は `headless_autonomy`。
+
+        以前は `headless_autonomy == "tool-loop"` の 1 点が両方を決めていたので、
+        「自分でツールを回せるが、スラッシュは解釈しない」CLI を言い表せなかった
+        （設計 2026-08-27 §3.2）。runner の選択は層のまま、行の扱いだけが宣言で変わる。
+        """
+        with patch_harness("run_cli_loop", return_value={"ok": True}) as run:
+            tl.run_prompt(goal="本文", cwd="/tmp",
+                          agent=_agent("tool-loop", slash_native=False),
+                          log_file="/tmp/x.jsonl", slash=["tech-harvester ニュース"])
+        goal = run.call_args.kwargs["goal"]        # runner は層のとおり tool-loop 側
+        self.assertNotIn("/tech-harvester", goal)  # 行は消費された（残して渡していない）
+        self.assertIn("`tech-harvester` スキルの手順に従って実行してください。", goal)
+
+    def test_single_shot_with_a_native_slash_keeps_the_line(self):
+        """逆向きも言える: 層3 でもネイティブのスラッシュを持つなら行を残して渡す。"""
+        with patch_harness("run_goal", return_value={"ok": True}) as run:
+            tl.run_prompt(goal="本文", cwd="/tmp",
+                          agent=_agent("single-shot", slash_native=True),
+                          log_file="/tmp/x.jsonl", slash=["compact"])
+        self.assertTrue(run.call_args.kwargs["goal"].startswith("/compact\n\n本文"))
+        self.assertEqual(run.call_args.kwargs["skills"], [])
+
+    def test_native_prefix_comes_from_the_definition(self):
+        """行頭記号も定義のもの（codex は `$`）。ヘッドレスだけ `/` 固定だった。"""
+        agent = _agent("tool-loop")
+        agent["spec"]["skill_command_prefix"] = "$"
+        with patch_harness("run_cli_loop", return_value={"ok": True}) as run:
+            tl.run_prompt(goal="本文", cwd="/tmp", agent=agent,
+                          log_file="/tmp/x.jsonl", slash=["compact"])
+        self.assertTrue(run.call_args.kwargs["goal"].startswith("$compact\n\n本文"))
 
     def test_no_slash_keeps_goal_unchanged(self):
         with patch_harness("run_goal", return_value={"ok": True}) as run:

@@ -67,6 +67,49 @@ class JsonlDirReaderTests(AuditTestCase):
         self.assertEqual(len(sessions), 1)
         self.assertEqual((sessions[0]["tokens_in"], sessions[0]["tokens_out"]), (5000, 700))
 
+    def test_ollama_style_progress_log_reads_the_flat_usage(self):
+        """agent-ollama は 1 ラウンドの実測を `llm_end` の**トップレベル**へ書く。
+
+        ここが入れ子の `usage` しか見ていなかったので、**書いている側と読んでいる側が
+        食い違っていた**——`session_log.usage` を true にしても 0 トークンで「実測済み」と
+        記帳され、秒からの推定より悪くなる（設計 2026-08-27 §7.3 C / 実装計画 段 8）。
+
+        見るのは `llm_end` だけである。`llm_progress` は同じ綴りで**途中経過**の
+        `tokens_out` を載せるので、行を選ばずに足すと 1 ラウンドを何度も数える。
+        """
+        root = os.path.join(self.tmp, "ollama-usage")
+        os.makedirs(root, exist_ok=True)
+        lines = [
+            {"ts": 1786163370.2, "kind": "message", "role": "user", "content": "直して"},
+            {"ts": 1786163375.0, "kind": "llm_progress", "round": 1, "tokens_out": 100},
+            {"ts": 1786163380.0, "kind": "llm_end", "round": 1, "phase": "done",
+             "tokens_in": 1234, "tokens_out": 567, "duration_sec": 10.0},
+            {"ts": 1786163390.0, "kind": "llm_end", "round": 2, "phase": "done",
+             "tokens_in": 2000, "tokens_out": 33, "duration_sec": 10.0},
+            {"ts": 1786163400.0, "kind": "message", "role": "assistant", "content": "直しました"},
+        ]
+        with open(os.path.join(root, "s1.jsonl"), "w", encoding="utf-8") as f:
+            for line in lines:
+                f.write(json.dumps(line, ensure_ascii=False) + "\n")
+        got = readers.read_sessions({"format": "jsonl-dir", "paths": [root]})[0]
+        self.assertEqual((got["tokens_in"], got["tokens_out"]), (3234, 600))
+        self.assertTrue(got["usage_measured"])
+
+    def test_a_round_without_usage_is_not_counted_as_measured(self):
+        root = os.path.join(self.tmp, "ollama-nousage")
+        os.makedirs(root, exist_ok=True)
+        lines = [
+            {"ts": 1786163370.2, "kind": "message", "role": "user", "content": "直して"},
+            {"ts": 1786163380.0, "kind": "llm_end", "round": 1, "phase": "done",
+             "duration_sec": 10.0},
+        ]
+        with open(os.path.join(root, "s1.jsonl"), "w", encoding="utf-8") as f:
+            for line in lines:
+                f.write(json.dumps(line, ensure_ascii=False) + "\n")
+        got = readers.read_sessions({"format": "jsonl-dir", "paths": [root]})[0]
+        self.assertFalse(got["usage_measured"])
+        self.assertIsNone(got["tokens_in"])
+
     def test_ollama_style_progress_log_reads_message_events(self):
         # agent-ollama の進捗ログ（`~/.agents/logs/ollama/*.jsonl`）は 1 行 1 イベントで、
         # 会話の本文だけが行直下の role / content に載る（kind="message"）。ts は epoch 秒、

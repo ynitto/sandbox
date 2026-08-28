@@ -25,7 +25,9 @@ ERROR_TAG_RE = re.compile(r"\[agent-error:([a-z]+)\]")
 
 KNOWN_SOURCES = ("budget-ledger", "cli-native", "cli-quota", "flow-bus", "project-root",
                  "amigos-bus", "loop-log", "memory-store")
-SESSION_PARSER_REVISION = 2
+# 3: agent-ollama が書く平らな `tokens_in` / `tokens_out`（`llm_end`）を読むようにした。
+#    以前は入れ子の `usage` しか見ておらず、書いている側と読んでいる側が食い違っていた。
+SESSION_PARSER_REVISION = 3
 
 
 class SourceError(RuntimeError):
@@ -235,7 +237,11 @@ def collect_cli_native(args, store: Store, *, with_transcripts: bool, since: flo
                 "turns": sess["turns"],
                 "tokens_in": sess["tokens_in"],
                 "tokens_out": sess["tokens_out"],
-                "measured": bool(sess["usage_measured"]),
+                # **申告が決める。** パーサが数字を取れても、定義が
+                # `session_log.usage: false` と言っているなら実測として数えない
+                # ——そうしないと申告が飾りになり、実測を止める手段が無くなる
+                # （設計 2026-08-27 §7.3 C / 実装計画 段 8）。
+                "measured": bool(sess["usage_measured"]) and bool(slog.get("usage")),
                 "parser_revision": SESSION_PARSER_REVISION,
             }
             if with_transcripts and sess["messages"]:

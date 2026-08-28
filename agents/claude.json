@@ -1,6 +1,7 @@
 {
   "name": "claude",
   "headless_autonomy": "tool-loop",
+  "slash_native": true,
   "relative_cost": 1,
   "command": ["claude", "-p", "--output-format", "text"],
   "prompt_via": "stdin",

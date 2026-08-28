@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import io
 import json
 import tempfile
@@ -248,6 +249,66 @@ class TestLineReader(unittest.TestCase):
             # ログ（gc の対象）とは別の場所へ置く: 履歴は人の入力で、証跡ではない。
             self.assertNotIn(ollama_tui.ollama_events.log_dir(),
                              ollama_tui.history_path().parents)
+
+
+class TestTurnHook(unittest.TestCase):
+    """ターンの終わりを agent-loop へ知らせる（設計 2026-08-27 §7.3 A / 段 10）。
+
+    完了検知は「画面を見る」より「本人が言う」ほうが確かである。前面が我々のものなので、
+    クラウド CLI のようなプラグイン資産は要らず、TUI が自分で `hook-event` を叩く。
+    """
+
+    MANAGED = {"AGENT_LOOP_EXECUTABLE": "/opt/bin/agent-loop",
+               "AGENT_LOOP_INSTANCE_ID": "i1"}
+
+    def _run(self, script, runner, env):
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch.object(ollama_tui.subprocess, "run") as run:
+            ollama_tui.repl(runner, model="qwen3", tools=False, out=out,
+                            in_=io.StringIO(script))
+        return [c.args[0] for c in run.call_args_list]
+
+    def test_a_finished_turn_reports_complete(self):
+        argvs = self._run("やって\n/quit\n", lambda p, **k: "できました", self.MANAGED)
+        self.assertEqual(len(argvs), 1)
+        self.assertEqual(argvs[0][:5], ["/opt/bin/agent-loop", "hook-event",
+                                        "--adapter", "ollama", "--status"])
+        self.assertEqual(argvs[0][5], "complete")
+
+    def test_a_failed_turn_reports_failure(self):
+        def boom(_prompt, **_kw):
+            raise RuntimeError("推論に失敗")
+        argvs = self._run("やって\n/quit\n", boom, self.MANAGED)
+        self.assertEqual([a[5] for a in argvs], ["failure"],
+                         "落ちたターンを完了として記帳しない")
+
+    def test_an_interrupted_turn_reports_failure(self):
+        """人が止めたターンは done ではない。成果の無い実行を完了として記帳しない。"""
+        def stop(_prompt, **_kw):
+            raise KeyboardInterrupt
+        argvs = self._run("やって\n/quit\n", stop, self.MANAGED)
+        self.assertEqual([a[5] for a in argvs], ["failure"])
+
+    def test_local_commands_are_not_turns(self):
+        argvs = self._run("/help\n/tools on\n/quit\n", lambda p, **k: "x", self.MANAGED)
+        self.assertEqual(argvs, [], "セッション操作はターンではない")
+
+    def test_outside_a_managed_pane_nothing_is_called(self):
+        """素で打っているときに毎ターン subprocess を起こさない。"""
+        argvs = self._run("やって\n/quit\n", lambda p, **k: "できました", {})
+        self.assertEqual(argvs, [])
+
+    def test_a_missing_executable_does_not_break_the_session(self):
+        """知らせられなくても対話は続く（画面監視が fallback）。"""
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, self.MANAGED, clear=True), \
+                mock.patch.object(ollama_tui.subprocess, "run",
+                                  side_effect=OSError("no such file")):
+            rc = ollama_tui.repl(lambda p, **k: "できました", model="qwen3", tools=False,
+                                 out=out, in_=io.StringIO("やって\n/quit\n"))
+        self.assertEqual(rc, 0)
+        self.assertIn("できました", out.getvalue())
 
 
 class TestRepl(unittest.TestCase):

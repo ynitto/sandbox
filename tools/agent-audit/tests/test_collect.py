@@ -358,6 +358,33 @@ class CliNativeCollectTests(AuditTestCase):
                          [("message", "User"), ("message", "Assistant")])
         self.assertEqual(messages[0]["text"], "直して")
 
+    def test_the_declaration_decides_whether_usage_counts_as_measured(self):
+        """パーサが数字を取れても、`session_log.usage: false` なら実測として数えない。
+
+        以前この申告は誰も読んでおらず、`measured` はパーサの戻り値だけで決まっていた
+        ——つまり**申告は飾り**で、実測を止める手段が無かった。申告が唯一の許可リスト
+        である（設計 2026-08-27 §7.3 C / 実装計画 段 8）。
+        """
+        agents_dir = os.path.join(self.tmp, "agents-declared-false")
+        os.makedirs(agents_dir, exist_ok=True)
+        sess_root = os.path.join(self.tmp, "claude-declared-false")
+        claude_session_jsonl(os.path.join(sess_root, "p", "sess-d.jsonl"), sid="sess-d")
+        with open(os.path.join(agents_dir, "claude.json"), "w", encoding="utf-8") as f:
+            json.dump({"name": "claude", "command": ["claude"],
+                       "session_log": {"format": "jsonl-dir", "paths": [sess_root],
+                                       "usage": False}}, f)
+        os.environ["KIRO_AGENTS_DIR"] = agents_dir
+        try:
+            st = self.make_store()
+            self.assertEqual(collect.collect_cli_native(self.make_args(), st,
+                                                        with_transcripts=False), 1)
+        finally:
+            os.environ["KIRO_AGENTS_DIR"] = os.path.join(self.tmp, "no-agents")
+        rec = next(iter(st.iter_records()))
+        self.assertFalse(rec["measured"], "申告が false なら実測として数えない")
+        # 数字そのものは残す（後で申告を true にしたときに読み直せる）。
+        self.assertEqual((rec["tokens_in"], rec["tokens_out"]), (1000, 200))
+
     def test_existing_session_gets_usage_correction(self):
         agents_dir = os.path.join(self.tmp, "agents-correction")
         os.makedirs(agents_dir, exist_ok=True)

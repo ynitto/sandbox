@@ -466,6 +466,60 @@ class TestSkillToolsetGuard(_NoServerMixin, unittest.TestCase):
         self.assertEqual(self._run("read", "手順の説明だけ")["text"], "ok")
 
 
+class TestShapeCommandsDecideTheLaunch(_NoServerMixin, unittest.TestCase):
+    """先頭のコマンド行が**起動する前に**道具立てを決める（設計 2026-08-27 §3.2・§3.4）。
+
+    いままで「ツールを使うか」はモデルが決めていた（bash ループが自分でコマンドを選ぶ）。
+    人か engine が 1 語で固定できるようにしたので、固定が実行に届いていることを見る。
+    """
+
+    def _launch(self, prompt: str, argv=("m", "--tools", "bash")):
+        seen = {}
+
+        def _loop(model, prompt, **kwargs):
+            seen.update(kwargs, prompt=prompt)
+            return {"text": "ok", "tokens_in": 1, "tokens_out": 1,
+                    "rounds": 1, "status": "done"}
+
+        def _plain(model, prompt, **kwargs):
+            seen.update(kwargs, prompt=prompt, plain=True)
+            return {"text": "ok", "tokens_in": 1, "tokens_out": 1}
+
+        with mock.patch.object(ollama_adapter.ollama_loop, "run_loop", _loop), \
+                mock.patch.object(ollama_adapter.ollama_loop, "run_plain", _plain):
+            result = ollama_adapter.run_request(
+                prompt, {**ollama_adapter.parse_args(list(argv)), "no_log": True})
+        return seen, result
+
+    def test_find_switches_to_the_read_toolset(self):
+        seen, _ = self._launch("/find どこで定義されてる?")
+        self.assertEqual(seen.get("toolset"), "read")
+        self.assertNotIn("plain", seen, "道具は使う")
+
+    def test_ask_turns_the_tool_loop_off(self):
+        seen, _ = self._launch("/ask 富士山の高さは?")
+        self.assertTrue(seen.get("plain"), "道具なし＝推論だけの経路へ")
+
+    def test_the_command_line_does_not_reach_the_model(self):
+        seen, _ = self._launch("/find どこで定義されてる?")
+        self.assertNotIn("/find", seen.get("prompt", ""))
+        self.assertIn("どこで定義されてる?", seen.get("prompt", ""))
+
+    def test_an_unknown_command_stops_before_the_server(self):
+        with self.assertRaises(ollama_adapter.slashroute.UnknownCommand):
+            self._launch("/verfy 直して")
+
+    def test_a_leading_blank_line_sends_it_as_body(self):
+        seen, _ = self._launch("\n/tmp を消して")
+        self.assertIn("/tmp を消して", seen.get("prompt", ""))
+
+    def test_a_harness_shape_says_where_to_run_it(self):
+        """`/edit` `/sm` はハーネス側の実行形。agent-ollama 単体は供給側を持たない。"""
+        with self.assertRaises(ollama_adapter.slashroute.CommandNotSupportedHere) as ctx:
+            self._launch("/edit README を直して")
+        self.assertIn("harness", str(ctx.exception))
+
+
 class TestProgressBeaconReachesTheAdapter(_NoServerMixin, unittest.TestCase):
     """ハーネスが置いた灯台を、ヘッドレス実行が実際に刻むこと（継ぎ目の疎通）。
 

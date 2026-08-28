@@ -76,17 +76,19 @@ def _bundled_dir() -> "Path | None":
 #   empty_output_is_error / readonly / spill / errors / session_log / default_model /
 #   timeout / headless_autonomy / write_args / readonly_args / no_session_args / env
 #   （profile が宣言すれば上書き。`[]` の宣言も「上書き」として扱う）
-# - **引き継がない**（起動の形ごとに決まるもの）… interactive / variants
+# - **引き継がない**（起動の形ごとに決まるもの）… interactive / variants / slash_native
 #   引き継ぐと、対話面を持たない役割に base の TUI が生えて実行経路が変わる
 #   （agent-dashboard は interactive の有無を見る）。variants も同様に、役割へ base の
-#   振り替え表が生えると振り替え先が変わる。
+#   振り替え表が生えると振り替え先が変わる。slash_native も起動の形の性質で、既定は
+#   その profile 自身の headless_autonomy から導く（下の normalize を参照）。
 # ---------------------------------------------------------------------------
-_PROFILE_NOT_INHERITED = ("interactive", "variants")
+_PROFILE_NOT_INHERITED = ("interactive", "variants", "slash_native")
 _PROFILE_FIELDS = (
     "command", "command_suffix", "write_args", "readonly_args", "no_session_args",
     "headless_autonomy", "default_model", "timeout", "env", "readonly", "prompt_via",
     "prompt_flag", "file_flag", "read_flag", "model_flag", "empty_output_is_error",
     "output", "skill_command_prefix", "relative_cost", "interactive", "variants",
+    "slash_native",
     # errors は本来エージェント単位の性質だが、実際には役割ごとに調整されている
     # （read は同じ match に別の hint、verify は自前の timeout 規則）。分類の挙動を
     # 変えないことを優先して上書きを許す。宣言しない profile は base をそのまま継ぐ。
@@ -289,6 +291,20 @@ def normalize(name: str, raw: dict, path) -> dict:
     if headless_autonomy not in ("tool-loop", "single-shot"):
         raise AgentCliError(
             f"エージェント定義 {path}: headless_autonomy は tool-loop か single-shot です")
+    # 本文先頭のコマンド行（`/name [args]`）を、この CLI へ**残して渡す**か、ランチャが
+    # **消費する**か。ネイティブのスラッシュを持つ CLI（claude / codex / agent-ollama …）は
+    # 自分で解釈するので残して渡し、持たない CLI ではルータの解釈が実装そのものになる
+    # （設計 2026-08-27 §3.2）。
+    #
+    # 未宣言のときは `headless_autonomy` から導く。**これは移行のための橋ではなく後方
+    # 互換そのもの**——以前はこの判定が `headless_autonomy == "tool-loop"` という代理で
+    # 書かれていたので、宣言していない定義（利用者が置いた `agents/<name>.json` を含む）は
+    # 今日と同じに振る舞う。宣言があればそちらが勝つ。
+    slash_native_raw = raw.get("slash_native")
+    if slash_native_raw is not None and not isinstance(slash_native_raw, bool):
+        raise AgentCliError(f"エージェント定義 {path}: slash_native は true か false です")
+    slash_native = (bool(slash_native_raw) if slash_native_raw is not None
+                    else headless_autonomy == "tool-loop")
     relative_cost = raw.get("relative_cost", 1)
     if (not isinstance(relative_cost, (int, float)) or isinstance(relative_cost, bool)
             or not math.isfinite(relative_cost) or relative_cost < 0):
@@ -302,6 +318,7 @@ def normalize(name: str, raw: dict, path) -> dict:
         # スキル起動の行頭記号（既定 `/`。codex は `$skill-name`）。対話セッションへ
         # テキストを送る経路が skill_command_prefix() 経由で参照する。
         "skill_command_prefix": str(raw.get("skill_command_prefix") or "/"),
+        "slash_native": slash_native,
         "prompt_via": prompt_via,
         "prompt_flag": raw.get("prompt_flag"),
         # 編集対象・読み取り専用のファイルを argv で受け取る CLI（aider）の口。宣言しない
@@ -351,7 +368,7 @@ def normalize(name: str, raw: dict, path) -> dict:
             raise AgentCliError(
                 f"エージェント定義 {path}: interactive.prompt_inject は send-keys か file です")
         turn_completion = str(inter_raw.get("turn_completion") or "")
-        if turn_completion not in ("", "kiro", "claude", "codex", "copilot", "opencode"):
+        if turn_completion not in ("", "kiro", "claude", "codex", "copilot", "opencode", "ollama"):
             raise AgentCliError(
                 f"エージェント定義 {path}: interactive.turn_completion が未知です: "
                 f"{turn_completion!r}")

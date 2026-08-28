@@ -664,6 +664,60 @@ class PeriodicScheduler:
             except OSError as exc:
                 log.warning("send response の更新に失敗しました (%s): %s", root_id, exc)
 
+    def _stamp_acceptance(self, req: dict[str, Any], entry: dict[str, Any]) -> None:
+        """dispatch 直前に受入条件のファイル指紋を控える（証跡ゲートの前半）。"""
+        criteria = [c for c in (entry.get("acceptance") or []) if str(c).strip()]
+        if not criteria:
+            return
+        cwd = str(entry.get("cwd") or req.get("cwd") or self._workspace or os.getcwd())
+        try:
+            stamps = _harness_toolloop.acceptance_stamps(criteria, cwd)
+            # git 管理下なら差分も観測する。指紋が答えるのは「名指ししたパスが変わったか」
+            # だけで、**宣言外のファイルを触ったか**はこちらでしか見えない（設計 段 9b）。
+            git_before = _harness_toolloop.git_snapshot(cwd)
+        except Exception:      # noqa: BLE001 — 指紋が取れないことを理由に dispatch を止めない
+            log.warning("受入条件の指紋を取れませんでした（証跡ゲートは走りません）",
+                        exc_info=True)
+            return
+        req.setdefault("meta", {})["_acceptance"] = {
+            "criteria": criteria, "cwd": cwd, "stamps": stamps, "git": git_before}
+
+    def _acceptance_gate(self, req: dict[str, Any], pane_id: str) -> bool:
+        """ターン完了時の証跡ゲート（後半）。通ったら True、落としたら False。
+
+        判定は**ヘッドレスと同じ 1 実装**（`toolloop.acceptance_outcome`）で、
+        `verifiedBy` も同じ語彙で記録する。判定層（judge）はここでは走らない
+        ——エージェントの報告本文が要り、ペインではまだ取れないため（設計 §7.3 B の
+        後半）。**黙って pass にはしない**: `verifiedBy` に judge が出ないので、
+        機械層だけで通したことは後から区別できる。
+        """
+        pending = (req.get("meta") or {}).pop("_acceptance", None)
+        if not pending:
+            return True
+        name = str((req.get("meta") or {}).get("session_name") or req.get("entry_id") or "")
+        try:
+            outcome = _harness_toolloop.acceptance_outcome(
+                pending["criteria"], cwd=pending["cwd"],
+                stamps_before=pending["stamps"], git_before=pending.get("git"))
+        except Exception:      # noqa: BLE001 — ゲートの失敗でターンを宙吊りにしない
+            log.warning("[%s] 受入条件の照合に失敗しました（検証なしとして通します）",
+                        name, exc_info=True)
+            return True
+        # 判定の結果は配送ログへも残す（人向けの 1 行だけだと、後から機械で追えない）。
+        # 器は既存の dispatch イベントで、別系統は作らない。
+        _log_dispatch("acceptance_checked", req, ok=outcome["ok"],
+                      verifiedBy=outcome["verifiedBy"] or "none",
+                      files=len(outcome["files"]),
+                      errors=len(outcome["evidenceErrors"]))
+        if outcome["ok"]:
+            log.info("[%s] 検証: %s（%s）", name, outcome["verifiedBy"] or "なし",
+                     ", ".join(outcome["files"]) or "変更なし")
+            return True
+        for reason in outcome["evidenceErrors"]:
+            log.warning("[%s] 受入条件を満たしていません: %s", name, reason)
+        self._fail_execution(req, pane_id, reason="acceptance_failed")
+        return False
+
     def _track_active(
         self,
         req: dict[str, Any],
@@ -704,6 +758,11 @@ class PeriodicScheduler:
                         pane_id, expected_gen, current,
                     )
                     return
+            # ターン完了。**done の根拠は受入条件が決める**（設計 2026-08-27 §7.3 B）。
+            # 以前ペインは画面が idle に戻っただけで完了として返しており、entry が
+            # acceptance を宣言していても誰も見ていなかった。
+            if not self._acceptance_gate(req, pane_id):
+                return
             try:
                 if callable(on_complete):
                     on_complete()
@@ -714,7 +773,15 @@ class PeriodicScheduler:
                 self._fail_execution(req, pane_id, reason="callback_error")
 
         def fail() -> None:
-            self._fail_execution(req, pane_id, reason="pane_or_timeout")
+            # 画面を分類できていればその class を理由にする。`pane_or_timeout` のままだと、
+            # 画面には quota と出ているのに台帳と needs には「ペインかタイムアウト」しか
+            # 残らない（設計 2026-08-27 §7.4-1）。
+            reason = "pane_or_timeout"
+            if self._slot_monitor is not None:
+                classified = self._slot_monitor.failure_reason(pane_id)
+                if classified:
+                    reason = classified
+            self._fail_execution(req, pane_id, reason=reason)
 
         if self._slot_monitor is not None:
             turn_hook = None
@@ -1938,6 +2005,11 @@ class PeriodicScheduler:
                     return False
                 time.sleep(_SLASH_SEND_INTERVAL_SEC)
 
+            # **証跡ゲートの起点。** 送る前に受入条件のファイル指紋を取る（設計
+            # 2026-08-27 §7.3 B）。ここで取らないと「この実行で変わったか」が言えない
+            # ——ペインは触ったファイルを外から観測できないので、指紋変化だけが証跡になる。
+            if req is not None:
+                self._stamp_acceptance(req, entry)
             ok = self._session_mgr.send_prompt(prompt_id, prompt) if prompt else True
             if ok and prompt and self._input_recovery and pane_id:
                 ok = self._maybe_input_recovery(pane_id, prompt_id, prompt, req)
@@ -2298,6 +2370,9 @@ class PeriodicScheduler:
         ok = False
         try:
             if target_kind == "external":
+                # 外部ターゲットでも証跡ゲートは同じ（指紋の照合は誰が走らせたかを
+                # 問わない）。ここで指紋を取らないと、宣言だけあってゲートが効かない。
+                self._stamp_acceptance(req, dispatch_entry)
                 ok = send_prompt_to_session(pane_id, str(dispatch_entry.get("prompt", "")))
                 if ok:
                     self._track_active(
@@ -2812,7 +2887,11 @@ class PeriodicScheduler:
             "health": {
                 "mem_paused": self._mem_paused,
                 "input_recovery": self._input_recovery,
-                "freeze_timeout_seconds": int(self._health.get("freeze_timeout_seconds", 0) or 0),
+                # 未設定は 0（止めない）ではなく「定義から採る」。管理面が読む数字なので、
+                # 実際に効いている上限と食い違わせない（設計 2026-08-27 §7.4-3）。
+                "freeze_timeout_seconds": (
+                    int(self._health.get("freeze_timeout_seconds") or 0)
+                    if "freeze_timeout_seconds" in (self._health or {}) else None),
             },
         }
         writer = getattr(self._session_mgr, "set_state_extras", None)

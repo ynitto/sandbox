@@ -156,6 +156,10 @@
       "default": "single-shot",
       "description": "headless（command）で 1 回起動したとき、この CLI が自分でツールを回して仕事を完遂できるか。tool-loop=CLI 内部で探索・編集・コマンド実行のループを持つ（claude -p / codex exec / kiro-cli chat --no-interactive 等）ので、プロンプトを渡して 1 回呼べば終わる。single-shot=ループを持たない（aider は渡されたファイルを編集するだけ、素の ollama は純粋な推論）ので、呼び出し側がツールループを供給しないと着手すらしない。**推測しない**——interactive の有無や file_flag の有無から導出せず、定義が申告する。未宣言は安全側の single-shot（ツールループを供給する）。"
     },
+    "slash_native": {
+      "type": "boolean",
+      "description": "本文先頭のコマンド行（`/name [args]`）を、この CLI へ**残して渡す**か、ランチャが**消費する**か。true=ネイティブのスラッシュコマンドを持つので自分で解釈する（claude / codex / agent-ollama 等。行頭記号は skill_command_prefix が決める——codex は `$`）。false=持たないので、ランチャがスキルとして解決して材料へ載せる（aider 等）。**未宣言のときは headless_autonomy から導く**（tool-loop なら true）——以前この判定はその代理で書かれていたので、宣言していない定義は今日と同じに振る舞う。profile へは継承しない（起動の形ごとに決まるため。profile 自身の headless_autonomy から導く）。"
+    },
     "no_session_args": {
       "type": "array",
       "items": {
@@ -266,7 +270,8 @@
             "claude",
             "codex",
             "copilot",
-            "opencode"
+            "opencode",
+            "ollama"
           ],
           "description": "agent-loop が起動した対話プロセスへだけ注入するターン完了 hook adapter。省略時は画面監視だけを使う。"
         }
@@ -337,7 +342,7 @@
         "usage": {
           "type": "boolean",
           "default": false,
-          "description": "実測トークン（usage）を含むか。true のセッションは台帳の実測裏取り（measured 集計）に使われる"
+          "description": "実測トークン（usage）を含むか。true のセッションだけが台帳の実測裏取り（measured 集計）に使われる。**申告が決める**——パーサが数字を取れても false なら実測として数えない（数字自体は記録に残るので、後から true にすれば読み直される）。true の CLI は秒レート（budget rates.per_cli）を持たない: 推定と実測で同じ実行を二度数えるため"
         },
         "clean": {
           "type": "object",
@@ -441,6 +446,10 @@
             ],
             "default": "single-shot",
             "description": "headless（command）で 1 回起動したとき、この CLI が自分でツールを回して仕事を完遂できるか。tool-loop=CLI 内部で探索・編集・コマンド実行のループを持つ（claude -p / codex exec / kiro-cli chat --no-interactive 等）ので、プロンプトを渡して 1 回呼べば終わる。single-shot=ループを持たない（aider は渡されたファイルを編集するだけ、素の ollama は純粋な推論）ので、呼び出し側がツールループを供給しないと着手すらしない。**推測しない**——interactive の有無や file_flag の有無から導出せず、定義が申告する。未宣言は安全側の single-shot（ツールループを供給する）。"
+          },
+          "slash_native": {
+            "type": "boolean",
+            "description": "本文先頭のコマンド行（`/name [args]`）を、この CLI へ**残して渡す**か、ランチャが**消費する**か。true=ネイティブのスラッシュコマンドを持つので自分で解釈する（claude / codex / agent-ollama 等。行頭記号は skill_command_prefix が決める——codex は `$`）。false=持たないので、ランチャがスキルとして解決して材料へ載せる（aider 等）。**未宣言のときは headless_autonomy から導く**（tool-loop なら true）——以前この判定はその代理で書かれていたので、宣言していない定義は今日と同じに振る舞う。profile へは継承しない（起動の形ごとに決まるため。profile 自身の headless_autonomy から導く）。"
           },
           "default_model": {
             "type": [
@@ -619,7 +628,8 @@
                   "claude",
                   "codex",
                   "copilot",
-                  "opencode"
+                  "opencode",
+                  "ollama"
                 ],
                 "description": "agent-loop が起動した対話プロセスへだけ注入するターン完了 hook adapter。省略時は画面監視だけを使う。"
               }
