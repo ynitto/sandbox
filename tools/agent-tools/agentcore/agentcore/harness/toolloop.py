@@ -935,6 +935,38 @@ def _tl_verified(acceptance: "list[str]", cwd: str) -> bool:
     return bool(acceptance_paths(list(acceptance or []), cwd))
 
 
+def acceptance_outcome(acceptance: "list[str]", *, cwd: str, stamps_before: dict,
+                       agent: "dict | None" = None, log_file: str = "",
+                       output: str = "", judge: bool = False) -> dict:
+    """指紋だけで見る証跡ゲート。**外からファイルを観測できない経路が共有する 1 実装**。
+
+    層2（`run_cli_loop`）と対話ペインは、どちらも「エージェントが何を触ったか」を
+    外から観測できない。だから証跡は**受入条件が名指ししたファイルの指紋変化**で見る
+    ——「この実行で変わったか」なら観測できる。**層2 とペインは元から同じ精度**である
+    （設計 2026-08-27 §7.3 B）。ここを 1 つにしておかないと、同じ判定が 2 か所に増える。
+
+    `agent` を渡さなければ判定層（judge）は走らない。判定層はエージェントの**報告本文**
+    を要るので、本文を取れない経路では機械層だけを回す（黙って pass にはしない——
+    `verifiedBy` に judge が出ないので、後から区別できる）。
+
+    返すのは `run_prompt` / `run_cli_loop` の結果契約と同じ鍵だけ。
+    """
+    criteria = list(acceptance or [])
+    touched = {f for f in acceptance_paths(criteria, cwd)
+               if _tl_file_stamp(f) != stamps_before.get(f, "")}
+    errors = acceptance_evidence_errors(criteria, cwd=cwd, touched=touched,
+                                        stamps_before=stamps_before)
+    if agent is not None:
+        judged = _tl_apply_judge(criteria, cwd=cwd, agent=agent, log_file=log_file,
+                                 output=output, files=sorted(touched), judge=judge)
+    else:
+        judged = {"errors": [], "judged": False}
+    errors.extend(judged["errors"])
+    return {"ok": not errors, "verified": _tl_verified(criteria, cwd) or judged["judged"],
+            "verifiedBy": _tl_verified_by(criteria, cwd, judged["judged"]),
+            "files": sorted(touched), "evidenceErrors": errors}
+
+
 def acceptance_stamps(acceptance: "list[str]", cwd: str) -> dict:
     """実行前のファイル指紋。実行後の照合で「変わっていない」を検出するために取る。"""
     return {f: _tl_file_stamp(f) for f in acceptance_paths(acceptance, cwd)}
@@ -1384,22 +1416,11 @@ def run_cli_loop(*, goal: str, cwd: str, agent: dict, log_file: str,
     output = str(result["stdout"] or "").strip()
     if not output and agent["spec"].get("empty_output_is_error", True):
         raise ToolLoopError("エージェントが空の応答を返しました")
-    touched = {f for f in acceptance_paths(criteria, cwd)
-               if _tl_file_stamp(f) != stamps_before.get(f, "")}
-    errors = acceptance_evidence_errors(criteria, cwd=cwd, touched=touched,
-                                        stamps_before=stamps_before)
-    judged = _tl_apply_judge(criteria, cwd=cwd, agent=agent, log_file=log_file,
-                             output=output, files=sorted(touched), judge=judge)
-    errors.extend(judged["errors"])
-    verified = _tl_verified(criteria, cwd) or judged["judged"]
-    _tl_append_log(log_file, {"event": "goal_done", "ok": not errors,
-                              "verified": verified,
-                              "verifiedBy": _tl_verified_by(criteria, cwd, judged["judged"]),
-                              "files": sorted(touched), "evidenceErrors": errors})
-    return {"ok": not errors, "output": output, "files": sorted(touched),
-            "evidenceErrors": errors, "verified": verified,
-            "verifiedBy": _tl_verified_by(criteria, cwd, judged["judged"]),
-            "logFile": log_file}
+    outcome = acceptance_outcome(criteria, cwd=cwd, stamps_before=stamps_before,
+                                 agent=agent, log_file=log_file, output=output,
+                                 judge=judge)
+    _tl_append_log(log_file, {"event": "goal_done", **outcome})
+    return {**outcome, "output": output, "logFile": log_file}
 
 
 def run_prompt(*, goal: str, cwd: str, agent: dict, log_file: str,

@@ -7,6 +7,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-loop: 対話ペインでも受入条件が done の根拠になる
+
+設計: [2026-08-27 クラウド CLI を正とした入口の再構成](./docs/plans/2026-08-27-agent-herd-cloud-cli-parity-slash-dispatch-design.md)
+§7.3 B（実装計画 段 9）。仕様は [agent-loop 仕様書](./docs/specs/agent-loop-spec.md) §3.4。
+
+- **ペインは画面が idle に戻っただけで完了として返していた。** entry が `acceptance` を
+  宣言していても誰も見ておらず、宣言したつもりの検証が効かない。ヘッドレスには同じ判定が
+  既にあったので、**経路によって done の意味が違っていた**ことになる。
+- dispatch の直前に受入条件のファイル指紋を取り、ターン完了時に照合するようにした。
+  満たしていなければ完了として返さず、理由を並べて `acceptance_failed` で落とす。
+- 判定は**ヘッドレスと同じ 1 実装**（`toolloop.acceptance_outcome`）へ寄せた。層2 の
+  `run_cli_loop` が持っていた同じ手順をそこへ畳んだので、判定が 2 か所に増えていない。
+  `verifiedBy` も同じ語彙（`machine` / `judge` / `machine+judge`）で記録される。
+- **判定層（`acceptance_judge`）はペインではまだ走らない。** 判定にはエージェントの
+  報告本文が要り、`capture-pane` の画面は装飾込みで壊れやすい（正典は `session_log`）。
+  黙って無視はせず、ペイン経路の entry が宣言していたら起動時に警告する。`verifiedBy` に
+  `judge` が出ないので、機械層だけで通したことは後から区別できる。
+- 外部ターゲット（`target:`）でも同じゲートが効く——指紋の照合は誰が走らせたかを問わない。
+
 ### agent-audit: ペイン実行の usage が推定から実測へ
 
 設計: [2026-08-27 クラウド CLI を正とした入口の再構成](./docs/plans/2026-08-27-agent-herd-cloud-cli-parity-slash-dispatch-design.md)

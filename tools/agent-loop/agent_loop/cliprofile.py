@@ -348,6 +348,14 @@ def check_headless_entries(config: "dict[str, Any]", entries: "list[dict[str, An
             fatal.append(f"定期プロンプト「{name}」のエージェントを解決できません: {exc}")
             continue
         if route != "per-run":
+            # 対話ペイン経路。受入条件の機械層はターン境界で回る（設計 2026-08-27 §7.3 B）
+            # が、判定層（judge）はエージェントの**報告本文**を要るのでまだ走らない。
+            # 黙って無視すると「判定させたつもり」が残るので、起動時に言う。
+            if entry.get("acceptance_judge") and (entry.get("acceptance") or []):
+                log.warning(
+                    "定期プロンプト「%s」: 対話ペイン経路では受入条件の判定層（acceptance_judge）は"
+                    "まだ走りません。機械層（ファイル指紋の照合）だけで検証し、`verifiedBy` には"
+                    "judge が出ません。", name)
             continue
         if entry.get("statemachine"):
             # 宣言したワークフローが実在するかは、最初の LLM 実行より前に知りたい

@@ -664,6 +664,51 @@ class PeriodicScheduler:
             except OSError as exc:
                 log.warning("send response の更新に失敗しました (%s): %s", root_id, exc)
 
+    def _stamp_acceptance(self, req: dict[str, Any], entry: dict[str, Any]) -> None:
+        """dispatch 直前に受入条件のファイル指紋を控える（証跡ゲートの前半）。"""
+        criteria = [c for c in (entry.get("acceptance") or []) if str(c).strip()]
+        if not criteria:
+            return
+        cwd = str(entry.get("cwd") or req.get("cwd") or self._workspace or os.getcwd())
+        try:
+            stamps = _harness_toolloop.acceptance_stamps(criteria, cwd)
+        except Exception:      # noqa: BLE001 — 指紋が取れないことを理由に dispatch を止めない
+            log.warning("受入条件の指紋を取れませんでした（証跡ゲートは走りません）",
+                        exc_info=True)
+            return
+        req.setdefault("meta", {})["_acceptance"] = {
+            "criteria": criteria, "cwd": cwd, "stamps": stamps}
+
+    def _acceptance_gate(self, req: dict[str, Any], pane_id: str) -> bool:
+        """ターン完了時の証跡ゲート（後半）。通ったら True、落としたら False。
+
+        判定は**ヘッドレスと同じ 1 実装**（`toolloop.acceptance_outcome`）で、
+        `verifiedBy` も同じ語彙で記録する。判定層（judge）はここでは走らない
+        ——エージェントの報告本文が要り、ペインではまだ取れないため（設計 §7.3 B の
+        後半）。**黙って pass にはしない**: `verifiedBy` に judge が出ないので、
+        機械層だけで通したことは後から区別できる。
+        """
+        pending = (req.get("meta") or {}).pop("_acceptance", None)
+        if not pending:
+            return True
+        name = str((req.get("meta") or {}).get("session_name") or req.get("entry_id") or "")
+        try:
+            outcome = _harness_toolloop.acceptance_outcome(
+                pending["criteria"], cwd=pending["cwd"],
+                stamps_before=pending["stamps"])
+        except Exception:      # noqa: BLE001 — ゲートの失敗でターンを宙吊りにしない
+            log.warning("[%s] 受入条件の照合に失敗しました（検証なしとして通します）",
+                        name, exc_info=True)
+            return True
+        if outcome["ok"]:
+            log.info("[%s] 検証: %s（%s）", name, outcome["verifiedBy"] or "なし",
+                     ", ".join(outcome["files"]) or "変更なし")
+            return True
+        for reason in outcome["evidenceErrors"]:
+            log.warning("[%s] 受入条件を満たしていません: %s", name, reason)
+        self._fail_execution(req, pane_id, reason="acceptance_failed")
+        return False
+
     def _track_active(
         self,
         req: dict[str, Any],
@@ -704,6 +749,11 @@ class PeriodicScheduler:
                         pane_id, expected_gen, current,
                     )
                     return
+            # ターン完了。**done の根拠は受入条件が決める**（設計 2026-08-27 §7.3 B）。
+            # 以前ペインは画面が idle に戻っただけで完了として返しており、entry が
+            # acceptance を宣言していても誰も見ていなかった。
+            if not self._acceptance_gate(req, pane_id):
+                return
             try:
                 if callable(on_complete):
                     on_complete()
@@ -1946,6 +1996,11 @@ class PeriodicScheduler:
                     return False
                 time.sleep(_SLASH_SEND_INTERVAL_SEC)
 
+            # **証跡ゲートの起点。** 送る前に受入条件のファイル指紋を取る（設計
+            # 2026-08-27 §7.3 B）。ここで取らないと「この実行で変わったか」が言えない
+            # ——ペインは触ったファイルを外から観測できないので、指紋変化だけが証跡になる。
+            if req is not None:
+                self._stamp_acceptance(req, entry)
             ok = self._session_mgr.send_prompt(prompt_id, prompt) if prompt else True
             if ok and prompt and self._input_recovery and pane_id:
                 ok = self._maybe_input_recovery(pane_id, prompt_id, prompt, req)
@@ -2306,6 +2361,9 @@ class PeriodicScheduler:
         ok = False
         try:
             if target_kind == "external":
+                # 外部ターゲットでも証跡ゲートは同じ（指紋の照合は誰が走らせたかを
+                # 問わない）。ここで指紋を取らないと、宣言だけあってゲートが効かない。
+                self._stamp_acceptance(req, dispatch_entry)
                 ok = send_prompt_to_session(pane_id, str(dispatch_entry.get("prompt", "")))
                 if ok:
                     self._track_active(
