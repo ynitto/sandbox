@@ -696,3 +696,57 @@ def test_connect_timeout_is_reported_as_a_timeout_too():
             assert False, "timeout must raise"
         except RuntimeError as exc:
             assert "タイムアウト" in str(exc)
+
+
+# --- chat の外から呼べないツール ------------------------------------------------
+
+
+def _serve_error(status: int, message: str, captured: dict):
+    payload = json.dumps({"error": message}).encode()
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            captured["body"] = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *_):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.handle_request)
+    thread.start()
+    return server, thread
+
+
+def test_gated_tool_gets_an_explanation_not_a_raw_500():
+    captured = {}
+    server, thread = _serve_error(500, "toolInvocationToken is required for this tool", captured)
+    try:
+        client.call_tool({"url": f"http://127.0.0.1:{server.server_port}/v1/chat", "token": "s"},
+                         "runSubagent", {"prompt": "p", "description": "d"}, 2)
+        assert False, "must raise"
+    except RuntimeError as exc:
+        assert "runSubagent" in str(exc)
+        assert "chat request の中からしか呼べません" in str(exc)
+    finally:
+        thread.join()
+        server.server_close()
+
+
+def test_other_tool_errors_are_passed_through_unchanged():
+    captured = {}
+    server, thread = _serve_error(500, "something else broke", captured)
+    try:
+        client.call_tool({"url": f"http://127.0.0.1:{server.server_port}/v1/chat", "token": "s"},
+                         "copilot_readFile", {}, 2)
+        assert False, "must raise"
+    except RuntimeError as exc:
+        assert "something else broke" in str(exc)
+        assert "chat request" not in str(exc)
+    finally:
+        thread.join()
+        server.server_close()

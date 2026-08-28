@@ -202,7 +202,21 @@ echo '{"prompt":"…"}' | vscode-copilot-chat --call runSubagent --input -
 呼び出しは chat request の外なので `toolInvocationToken` は `undefined` です。進捗 UI は
 出ませんが**承認ダイアログは出ます**——ターミナル実行などはそこで人が止められます。
 
-エージェント丸投げ（`runSubagent`）だけは `--agent` という入口を用意しています——次節。
+### 一覧に並んでいても呼べないツールがある
+
+**`toolInvocationToken` を必須にしているツールは、この bridge からは呼べません。**
+このトークンは「chat participant が chat request を処理している文脈」でしか手に入らず、
+チャットの外から呼ぶ経路には存在しないためです。実機で確認できているのは
+`runSubagent` がこれに当たることです。
+
+```console
+$ vscode-copilot-chat --call runSubagent --input '{"prompt":"…","description":"…"}'
+vscode-copilot-chat: runSubagent は chat request の中からしか呼べません（…）
+```
+
+`--tools` に並ぶことと呼べることは別です。他のツールが同じ制約を持つかは
+**1 つずつ試すしかありません**（一括で叩くのは危険です——`run_in_terminal` のように
+副作用のあるツールが混ざります）。
 
 応答は text part を連結した `text` と、種別を残した `content` です。
 
@@ -213,10 +227,14 @@ echo '{"prompt":"…"}' | vscode-copilot-chat --call runSubagent --input -
 `type: "other"` は prompt-tsx など文字列で受け取れない part です。黙って捨てると
 空応答に見えるので種別だけ残します。
 
-## エージェントへ丸投げする
+## エージェントへ丸投げする（現状は使えません）
 
-`runSubagent`（VS Code 本体側のツール）が一覧に居る環境では、**エージェントループごと
-VS Code へ投げられます**——どのツールを呼ぶか決める部分を自作せずに済みます。
+> **この入口は今のところ動きません。** `runSubagent` は `toolInvocationToken` を必須に
+> しており、チャットの外から呼ぶこの bridge には渡すものがありません。フラグと検査は
+> 残していますが、実行すると上記のエラーで止まります。
+>
+> 動かすには拡張側に chat participant を登録し、チャット経由で受け取った本物の
+> `toolInvocationToken` を使う必要があります（チャットパネルが経路に入ります）。
 
 ```bash
 vscode-copilot-chat --agent "テストが落ちているので直して"
@@ -230,9 +248,8 @@ vscode-copilot-chat --agent - < task.md
 | `--description TEXT` | `description`（必須）。省略時は依頼文の先頭 40 文字から作る |
 | `--agent-name NAME` | `agentName`。省略時は VS Code の既定エージェント |
 
-`--agent-name` には VS Code のカスタムエージェント名も渡せます。**agent skills を
-列挙する API は無いのに、エージェントは名前で選べる**——`.github/agents/` に置いた
-カスタムエージェントは、この経路なら中身ごと使えます。
+`--agent-name` には VS Code のカスタムエージェント名を渡す想定です（`.github/agents/`
+に置いたもの）。ただし上記のとおり、この経路自体が今は通りません。
 
 `model` を指定したいときは `--call runSubagent` で直接渡してください。
 

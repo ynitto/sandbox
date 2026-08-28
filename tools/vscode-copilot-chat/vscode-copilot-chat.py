@@ -253,8 +253,18 @@ def call_tool(endpoint: dict[str, object], name: str, tool_input: dict,
         headers={"Authorization": f"Bearer {endpoint['token']}", "Content-Type": "application/json"},
         method="POST",
     )
-    with _urlopen(req, timeout) as response:
-        return json.load(response)
+    try:
+        with _urlopen(req, timeout) as response:
+            return json.load(response)
+    except RuntimeError as exc:
+        if "toolInvocationToken" not in str(exc):
+            raise
+        raise RuntimeError(
+            f"{name} は chat request の中からしか呼べません（VS Code が"
+            " toolInvocationToken を要求します）。このツールは一覧に並んでいても、"
+            "チャットの外から呼ぶこの bridge では使えません。"
+            "`--tools` の他のツールが同じ制約を持つかは 1 つずつ試すしかありません。"
+        ) from exc
 
 
 def find_tool(payload: dict, name: str) -> dict | None:
