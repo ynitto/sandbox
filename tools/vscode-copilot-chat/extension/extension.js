@@ -124,10 +124,42 @@ function listTools() {
   };
 }
 
+// LanguageModelToolResult は text part と prompt-tsx part の配列。CLI へ渡せるのは
+// text だけなので、それ以外は種別だけ残して落とす（黙って消すと空応答に見える）。
+function toolResultToJson(result) {
+  const content = ((result && result.content) || []).map(part => (
+    typeof part.value === 'string' ? { type: 'text', value: part.value } : { type: 'other' }
+  ));
+  return {
+    content,
+    text: content.filter(part => part.type === 'text').map(part => part.value).join(''),
+  };
+}
+
+// 任意のツールを名前で呼ぶ。スキーマは VS Code が持っていて invokeTool が検証するので、
+// こちら側はツールごとの知識を持たない——持つと環境差で必ず古くなる。
+async function invokeToolByName(body, cancellationToken) {
+  if (!body || typeof body.name !== 'string' || !body.name.trim()) {
+    throw badRequest('name must be a non-empty string');
+  }
+  if (!vscode.lm.tools.some(tool => tool.name === body.name)) {
+    throw Object.assign(new Error(`tool not registered in vscode.lm.tools: ${body.name}`), { status: 404 });
+  }
+  const input = body.input === undefined ? {} : body.input;
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) {
+    throw badRequest('input must be a JSON object');
+  }
+  // toolInvocationToken を渡せるのは chat request の中だけ。外から呼ぶときは undefined で、
+  // 進捗 UI は出ないが承認ダイアログは出る（ターミナル実行などはここで人が止められる）。
+  const result = await vscode.lm.invokeTool(
+    body.name, { toolInvocationToken: undefined, input }, cancellationToken);
+  return toolResultToJson(result);
+}
+
 function createServer(token) {
   return http.createServer(async (request, response) => {
     const route = `${request.method} ${request.url}`;
-    if (route !== 'POST /v1/chat' && route !== 'GET /v1/tools') {
+    if (route !== 'POST /v1/chat' && route !== 'POST /v1/tool' && route !== 'GET /v1/tools') {
       json(response, 404, { error: 'not found' });
       return;
     }
@@ -151,7 +183,8 @@ function createServer(token) {
     response.on('close', () => { if (!response.writableFinished) source.cancel(); });
     try {
       const body = await readBody(request);
-      if (body && body.stream) await streamChat(response, body, source.token);
+      if (route === 'POST /v1/tool') json(response, 200, await invokeToolByName(body, source.token));
+      else if (body && body.stream) await streamChat(response, body, source.token);
       else json(response, 200, await askCopilot(body, source.token));
     } catch (error) {
       console.error('[vscode-copilot-bridge]', error);
