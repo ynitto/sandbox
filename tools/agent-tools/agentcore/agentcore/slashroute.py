@@ -447,6 +447,14 @@ def clear_cache() -> None:
     _DECL_CACHE.clear()
 
 
+def _name_on_disk(base: "Path", name: str) -> bool:
+    """`base` に **その綴りちょうど**のファイルが在るか（引くのは名前引きの経路だけ）。"""
+    try:
+        return name in os.listdir(base)
+    except OSError:
+        return False
+
+
 def declaration(name: str, project_dir=None) -> "Declaration | None":
     """名前 → 宣言。無ければ None。探索順で先に見つかったものが勝つ。"""
     key = str(name or "").strip().lower()
@@ -458,7 +466,11 @@ def declaration(name: str, project_dir=None) -> "Declaration | None":
     found = None
     for base in command_dirs(project_dir):
         candidate = base / f"{key}.md"
-        if candidate.is_file():
+        # **実在する綴りまで確かめる。** 大小文字を区別しないファイルシステム（macOS の
+        # 既定）では `README.md` が `readme.md` として当たるので、`is_file()` だけだと
+        # 置き場の説明書が `/readme` という用途コマンドになる——一覧側（`declarations`）は
+        # `_is_declaration_file` で弾いているのに、名前引きの経路だけ素通りしていた。
+        if candidate.is_file() and _name_on_disk(base, candidate.name):
             found = load_declaration(candidate)
             break
     _DECL_CACHE[cache_key] = found

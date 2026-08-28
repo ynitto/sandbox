@@ -32,7 +32,9 @@ class _Sandbox:
 
     def __enter__(self):
         self._tmp = tempfile.TemporaryDirectory()
-        self.dir = Path(self._tmp.name)
+        # 解決済みで持つ。`cmd_run` は作業ディレクトリを `.resolve()` してから渡すので、
+        # 素の一時パスと比べると macOS（`/var` → `/private/var`）でだけ食い違う。
+        self.dir = Path(self._tmp.name).resolve()
         self._prev = os.environ.get("AGENT_COMMANDS_DIR")
         self.commands = self.dir / "commands"
         self.commands.mkdir()

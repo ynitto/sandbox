@@ -33,6 +33,11 @@ function tmpdir(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 }
 
+// 手法の**端末設定**（どのルールを有効にしているか）は利用者ごとに違う。隔離しないと
+// 「同梱カタログの既定 ON はどれか」を見る表明が、開発者が設定画面で有効化したぶんだけ
+// 増えて落ちる——テストが読むのは同梱カタログであって、その PC の設定ではない。
+process.env.AGENT_TUNING_DIR = tmpdir('adhoc-tuning-isolated-');
+
 test('実行時方針のおすすめは agent-control / agent-flow の自動決定へ委ねる', () => {
   assert.strictEqual(workflowUi.executionOverridesForMode('recommended', {}), null);
 });
