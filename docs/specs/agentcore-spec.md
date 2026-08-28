@@ -2,7 +2,7 @@
 
 > 設計の「なぜ」は [`docs/designs/agentcore-design.md`](../designs/agentcore-design.md)。
 > 本書は**契約**（モジュール一覧・公開 API・配布・依存の向き）を引く場所です。
-> 実装: `tools/agent-tools/agentcore/agentcore/`（27 モジュール・約 7,970 行）／ テスト 29 ファイル・591 件（ルート 2 つ・§6）
+> 実装: `tools/agent-tools/agentcore/agentcore/`（33 モジュール・約 13,500 行）／ テスト 40 ファイル・915 件（ルート 2 つ・§6）
 
 ---
 
@@ -120,8 +120,8 @@ agentcore の実装を**そのまま使えない場所**が 2 種類あり、ど
 
 ```bash
 cd tools/agent-tools/agentcore
-python3 -m unittest discover -s tests            # 16 ファイル・249 件
-python3 -m unittest discover -s agentcore/tests  # 13 ファイル・342 件
+python3 -m unittest discover -s tests            # 16 ファイル・261 件
+python3 -m unittest discover -s agentcore/tests  # 24 ファイル・654 件
 ```
 
 | ルート | 対象 | 主なファイル |

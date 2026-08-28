@@ -7,6 +7,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-tools: 宣言外のファイル変更が観測できるようになった
+
+設計: [2026-08-27 クラウド CLI を正とした入口の再構成](./docs/plans/2026-08-27-agent-herd-cloud-cli-parity-slash-dispatch-design.md)
+§7.3 B 末尾（実装計画 段 9b）。仕様は [agent-loop 仕様書](./docs/specs/agent-loop-spec.md) §3.4。
+
+- **証跡が答えていたのは「名指ししたパスが変わったか」だけだった。** 宣言外のファイルを
+  勝手に触ったことに要るのは**その補集合**（名指ししていないのに変わったファイル）なので、
+  指紋からは原理的に出てこない。ペインにもヘッドレスにも同じく効いていた制約である。
+- git 管理下では `git status --porcelain` の前後差を上乗せするようにした。**受入条件の
+  指紋はそのまま残す**——git 管理外・未追跡のファイルはそちらでしか見えない。
+- **非 git の作業フォルダでは現行どおり指紋だけ**へ落ちる（後方互換）。スナップショットの
+  `None`（git ではない）と空辞書（git 管理下でいまきれい）を区別するので、黙って
+  「変更なし」にはならない。
+- 実行前から汚れていたファイルは、この実行が触った証拠にしない（前後の差で見る）。
+- 入れ場所は段 9 で 1 実装へ畳んだ `toolloop.acceptance_outcome` の 1 か所だけで、
+  **ペイン・層2・層3 の 3 経路に同時に効く**。判定が増えていない。
+- **git を使うのは engine 側で、エージェントには渡さない。** `agents/aider.json` は
+  `--no-git --no-auto-commits` のまま（コミットの主体がエージェントになると、worktree
+  サンドボックスや agent-project のブランチ運用と二重になる）。
+- この段は**観測だけ**で、「宣言外を触ったら止める」という方針は入れていない。
+
 ### agent-loop: 止まったペインが 2 時間居座らなくなった
 
 設計: [2026-08-27 クラウド CLI を正とした入口の再構成](./docs/plans/2026-08-27-agent-herd-cloud-cli-parity-slash-dispatch-design.md)

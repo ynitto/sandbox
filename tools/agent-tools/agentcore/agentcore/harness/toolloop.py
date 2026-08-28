@@ -937,7 +937,9 @@ def _tl_verified(acceptance: "list[str]", cwd: str) -> bool:
 
 def acceptance_outcome(acceptance: "list[str]", *, cwd: str, stamps_before: dict,
                        agent: "dict | None" = None, log_file: str = "",
-                       output: str = "", judge: bool = False) -> dict:
+                       output: str = "", judge: bool = False,
+                       git_before: "dict | None" = None,
+                       touched: "set | None" = None) -> dict:
     """指紋だけで見る証跡ゲート。**外からファイルを観測できない経路が共有する 1 実装**。
 
     層2（`run_cli_loop`）と対話ペインは、どちらも「エージェントが何を触ったか」を
@@ -952,8 +954,12 @@ def acceptance_outcome(acceptance: "list[str]", *, cwd: str, stamps_before: dict
     返すのは `run_prompt` / `run_cli_loop` の結果契約と同じ鍵だけ。
     """
     criteria = list(acceptance or [])
-    touched = {f for f in acceptance_paths(criteria, cwd)
-               if _tl_file_stamp(f) != stamps_before.get(f, "")}
+    touched = set(touched or ())
+    touched |= {f for f in acceptance_paths(criteria, cwd)
+                if _tl_file_stamp(f) != stamps_before.get(f, "")}
+    # git 管理下なら差分を上乗せして `touched` を正確にする。受入条件の指紋は**そのまま
+    # 残す**——git 管理外・未追跡のファイルはそちらでしか見えない（設計 段 9b）。
+    touched |= git_touched_since(cwd, git_before)
     errors = acceptance_evidence_errors(criteria, cwd=cwd, touched=touched,
                                         stamps_before=stamps_before)
     if agent is not None:
@@ -965,6 +971,70 @@ def acceptance_outcome(acceptance: "list[str]", *, cwd: str, stamps_before: dict
     return {"ok": not errors, "verified": _tl_verified(criteria, cwd) or judged["judged"],
             "verifiedBy": _tl_verified_by(criteria, cwd, judged["judged"]),
             "files": sorted(touched), "evidenceErrors": errors}
+
+
+# git 差分は「宣言外のファイルを触ったか」を答えられる唯一の観測である（設計 §7.3 B の
+# 末尾 / 実装計画 段 9b）。受入条件の指紋が答えるのは「名指ししたパスが変わったか」だけで、
+# 範囲外変更に要るのは**その補集合**——名指ししていないのに変わったファイル——なので、
+# 指紋からは原理的に出てこない。
+#
+# **git を使うのは engine 側であって、エージェントに渡すのではない。** `agents/aider.json` は
+# `--no-git --no-auto-commits` のままにする（コミットの主体が aider になると、agent-loop の
+# worktree サンドボックスや agent-project のブランチ運用と二重になる）。
+_TL_GIT_SNAPSHOT_TIMEOUT_SEC = 10
+
+
+def git_snapshot(cwd: str) -> "dict | None":
+    """`git status --porcelain` の現状。**git 管理外なら None**（＝観測できない）。
+
+    None と空辞書は違う。空辞書は「git 管理下で、いま汚れが無い」、None は「そもそも
+    git ではないので差分では見られない」——後者では受入条件の指紋だけへ落とす。
+    """
+    git = shutil.which("git")
+    if not git:
+        return None
+    try:
+        proc = subprocess.run([git, "status", "--porcelain", "-z", "--untracked-files=all"],
+                              cwd=cwd, capture_output=True, text=True, check=False,
+                              timeout=_TL_GIT_SNAPSHOT_TIMEOUT_SEC)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:            # 管理外・壊れたリポジトリ
+        return None
+    # `-z` の 1 件は `XY <path>\0`。ただし改名・複製（R / C）だけは
+    # `XY <新パス>\0<元パス>\0` の 2 欄になる。**元パスも触ったファイルである**
+    # （そこから消えている）ので、欄を読み飛ばさずに両方数える。
+    out: dict = {}
+    fields = [f for f in (proc.stdout or "").split("\0") if f]
+    i = 0
+    while i < len(fields):
+        field = fields[i]
+        i += 1
+        if len(field) < 4 or field[2] != " ":
+            continue                    # 想定外の欄は黙って捨てる（観測を止めない）
+        status, path = field[:2], field[3:]
+        out[path] = status
+        if ("R" in status or "C" in status) and i < len(fields):
+            out[fields[i]] = status     # 元パス
+            i += 1
+    return out
+
+
+def git_touched_since(cwd: str, before: "dict | None") -> "set[str]":
+    """スナップショット以降に状態が変わったファイル（絶対パス）。
+
+    `before` が None（git 管理外）なら空集合——**黙って「変更なし」にはしない**。
+    呼び出し側は指紋だけの観測へ落ちる（後方互換）。
+    """
+    if before is None:
+        return set()
+    after = git_snapshot(cwd)
+    if after is None:
+        return set()
+    changed = {path for path, status in after.items() if before.get(path) != status}
+    # 実行前に汚れていて実行後にきれいになったもの（巻き戻し・コミット）も「触った」。
+    changed |= {path for path in before if path not in after}
+    return {os.path.realpath(os.path.join(cwd, path)) for path in changed}
 
 
 def acceptance_stamps(acceptance: "list[str]", cwd: str) -> dict:
@@ -1236,6 +1306,7 @@ def run_goal(*, goal: str, cwd: str, agent: dict, log_file: str,
                               + acceptance_paths(criteria, root)) if os.path.isfile(f)}
     reads |= {s["skill_file"] for s in skills if s.get("skill_file")}
     stamps_before = acceptance_stamps(criteria, root)
+    git_before = git_snapshot(root)
     touched: set = set()
     history: list[str] = []
     output = ""
@@ -1370,22 +1441,16 @@ def run_goal(*, goal: str, cwd: str, agent: dict, log_file: str,
             "logFile": log_file,
         }, ensure_ascii=False))
 
-    evidence_errors = acceptance_evidence_errors(
-        criteria, cwd=root, touched=touched, stamps_before=stamps_before)
+    outcome = acceptance_outcome(criteria, cwd=root, stamps_before=stamps_before,
+                                 agent=agent, log_file=log_file, output=output,
+                                 judge=judge, git_before=git_before, touched=touched)
     if pending_run_error:
-        evidence_errors.append(pending_run_error)
-    judged = _tl_apply_judge(criteria, cwd=root, agent=agent, log_file=log_file,
-                             output=output, files=sorted(touched), judge=judge)
-    evidence_errors.extend(judged["errors"])
-    ok = bool(output) and not evidence_errors
-    verified = _tl_verified(criteria, root) or judged["judged"]
-    _tl_append_log(log_file, {"event": "goal_done", "ok": ok, "verified": verified,
-                              "verifiedBy": _tl_verified_by(criteria, root, judged["judged"]),
-                              "files": sorted(touched), "evidenceErrors": evidence_errors})
-    return {"ok": ok, "output": output, "files": sorted(touched),
-            "evidenceErrors": evidence_errors, "verified": verified,
-            "verifiedBy": _tl_verified_by(criteria, root, judged["judged"]),
-            "logFile": log_file}
+        outcome["evidenceErrors"].append(pending_run_error)
+        outcome["ok"] = False
+    # ここだけは本文の有無も見る（層3 は本文が成果物そのものであることがある）。
+    outcome["ok"] = bool(output) and outcome["ok"]
+    _tl_append_log(log_file, {"event": "goal_done", **outcome})
+    return {**outcome, "output": output, "logFile": log_file}
 
 
 def run_cli_loop(*, goal: str, cwd: str, agent: dict, log_file: str,
@@ -1398,6 +1463,7 @@ def run_cli_loop(*, goal: str, cwd: str, agent: dict, log_file: str,
     mod = agent["agentcli"]
     criteria = list(acceptance or [])
     stamps_before = acceptance_stamps(criteria, cwd)
+    git_before = git_snapshot(cwd)
     built = mod.headless_cmd(agent["spec"], agent["model"], goal,
                              readonly=False, no_session=True)
     argv = built["argv"]
@@ -1418,7 +1484,7 @@ def run_cli_loop(*, goal: str, cwd: str, agent: dict, log_file: str,
         raise ToolLoopError("エージェントが空の応答を返しました")
     outcome = acceptance_outcome(criteria, cwd=cwd, stamps_before=stamps_before,
                                  agent=agent, log_file=log_file, output=output,
-                                 judge=judge)
+                                 judge=judge, git_before=git_before)
     _tl_append_log(log_file, {"event": "goal_done", **outcome})
     return {**outcome, "output": output, "logFile": log_file}
 

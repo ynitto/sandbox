@@ -12,6 +12,7 @@
 tmux もエージェント CLI も起こさない。ファイルの中身と宣言だけで決まる判定である。
 """
 import os
+import subprocess
 import sys
 import tempfile
 import threading
@@ -123,6 +124,43 @@ class PaneAcceptanceGateTests(unittest.TestCase):
         self.report.write_text("前\n", encoding="utf-8")   # 元へ戻す = 未変更と同じ
         self.assertTrue(self.sched._acceptance_gate(self.req, "%1"),
                         "指紋を消費済みなので再判定しない")
+
+    def test_the_pane_gate_also_observes_the_git_diff(self):
+        """ペインでも宣言外のファイル変更が観測できる（設計 段 9b）。
+
+        指紋が答えるのは「名指ししたパスが変わったか」だけ。**宣言外を触ったか**は
+        git 差分でしか見えない——ペインにもヘッドレスにも同じく効いていた制約である。
+        """
+        subprocess.run(["git", "init", "-q"], cwd=self.dir, check=True)
+        for key, val in (("user.email", "t@example.com"), ("user.name", "t")):
+            subprocess.run(["git", "config", key, val], cwd=self.dir, check=True)
+        self.report.write_text("前\n", encoding="utf-8")
+        (Path(self.dir) / "other.md").write_text("触っていない\n", encoding="utf-8")
+        subprocess.run(["git", "add", "-A"], cwd=self.dir, check=True,
+                       stdout=subprocess.DEVNULL)
+        subprocess.run(["git", "commit", "-qm", "seed"], cwd=self.dir, check=True,
+                       stdout=subprocess.DEVNULL)
+        self._stamp()
+        self.assertEqual(self.req["meta"]["_acceptance"]["git"], {},
+                         "dispatch 前の git 状態も控える")
+        self.report.write_text("後\n", encoding="utf-8")
+        (Path(self.dir) / "other.md").write_text("勝手に触った\n", encoding="utf-8")
+        with self.assertLogs("agent-loop", level="INFO") as logs:
+            self.assertTrue(self.sched._acceptance_gate(self.req, "%1"))
+        line = next(l for l in logs.output if "event=acceptance_checked" in l)
+        self.assertIn("files=2", line, "宣言外の other.md も数える")
+
+    def test_outside_git_the_pane_gate_falls_back_to_fingerprints(self):
+        """非 git の作業フォルダでは現行どおり（後方互換）。"""
+        self.report.write_text("前\n", encoding="utf-8")
+        self._stamp()
+        self.assertIsNone(self.req["meta"]["_acceptance"]["git"])
+        self.report.write_text("後\n", encoding="utf-8")
+        (Path(self.dir) / "other.md").write_text("宣言外\n", encoding="utf-8")
+        with self.assertLogs("agent-loop", level="INFO") as logs:
+            self.assertTrue(self.sched._acceptance_gate(self.req, "%1"))
+        line = next(l for l in logs.output if "event=acceptance_checked" in l)
+        self.assertIn("files=1", line, "指紋だけなので名指しした 1 枚")
 
     def test_the_outcome_is_recorded_in_the_dispatch_log(self):
         """人向けの 1 行だけだと後から機械で追えない（設計 §7.4-2 / 段 11）。"""

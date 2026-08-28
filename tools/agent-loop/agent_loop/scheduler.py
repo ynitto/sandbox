@@ -672,12 +672,15 @@ class PeriodicScheduler:
         cwd = str(entry.get("cwd") or req.get("cwd") or self._workspace or os.getcwd())
         try:
             stamps = _harness_toolloop.acceptance_stamps(criteria, cwd)
+            # git 管理下なら差分も観測する。指紋が答えるのは「名指ししたパスが変わったか」
+            # だけで、**宣言外のファイルを触ったか**はこちらでしか見えない（設計 段 9b）。
+            git_before = _harness_toolloop.git_snapshot(cwd)
         except Exception:      # noqa: BLE001 — 指紋が取れないことを理由に dispatch を止めない
             log.warning("受入条件の指紋を取れませんでした（証跡ゲートは走りません）",
                         exc_info=True)
             return
         req.setdefault("meta", {})["_acceptance"] = {
-            "criteria": criteria, "cwd": cwd, "stamps": stamps}
+            "criteria": criteria, "cwd": cwd, "stamps": stamps, "git": git_before}
 
     def _acceptance_gate(self, req: dict[str, Any], pane_id: str) -> bool:
         """ターン完了時の証跡ゲート（後半）。通ったら True、落としたら False。
@@ -695,7 +698,7 @@ class PeriodicScheduler:
         try:
             outcome = _harness_toolloop.acceptance_outcome(
                 pending["criteria"], cwd=pending["cwd"],
-                stamps_before=pending["stamps"])
+                stamps_before=pending["stamps"], git_before=pending.get("git"))
         except Exception:      # noqa: BLE001 — ゲートの失敗でターンを宙吊りにしない
             log.warning("[%s] 受入条件の照合に失敗しました（検証なしとして通します）",
                         name, exc_info=True)
