@@ -63,7 +63,7 @@
     "paths": [
       "~/.agents/logs/ollama"
     ],
-    "usage": false
+    "usage": true
   },
   "profiles": {
     "json": {

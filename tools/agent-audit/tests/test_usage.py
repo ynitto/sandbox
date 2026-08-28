@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import glob
 import json
 import os
 import unittest
@@ -14,18 +15,18 @@ def _iso_now(offset_sec: float = 0.0) -> str:
 
 
 class UsageTests(AuditTestCase):
-    def _seed(self, *, with_session=False, rates=None):
+    def _seed(self, *, with_session=False, rates=None, cli="claude"):
         """当月内の時刻で台帳（+セッション）レコードを直接ストアへ入れる。"""
         st = self.make_store()
         ts = _iso_now(-60)
         st.append_record({"id": "aud-l1", "_epoch": util.parse_iso(ts), "ts": ts,
                           "kind": "ledger", "workload": "flow", "tool": "agent-flow",
-                          "agent_cli": "claude", "model": "sonnet", "seconds": 60.0,
+                          "agent_cli": cli, "model": "sonnet", "seconds": 60.0,
                           "measured": False})
         if with_session:
             st.append_record({"id": "aud-s1", "_epoch": util.parse_iso(ts),
                               "ts": ts, "started_at": _iso_now(-120),
-                              "kind": "session", "agent_cli": "claude",
+                              "kind": "session", "agent_cli": cli,
                               "model": "claude-sonnet-4", "tokens_in": 1000,
                               "tokens_out": 200, "measured": True})
         if rates is not None:
@@ -163,21 +164,51 @@ class UsageTests(AuditTestCase):
         self.assertFalse(limits["ollama"]["quota_supported"])
 
     def test_calibrate_median_and_write(self):
-        st = self._seed(with_session=True, rates={"per_cli": {"claude": 10.0}})
+        """秒レートの較正そのもの。実測を申告しない CLI（kiro）で見る。
+
+        `claude` は `session_log.usage: true` を申告しており、実測が入る CLI に秒レートを
+        残すと同じ実行が実測 + 推定で二重に載る——そちらの扱いは次のテストで見る
+        （設計 2026-08-27 §9 段 8）。
+        """
+        st = self._seed(with_session=True, cli="kiro", rates={"per_cli": {"kiro": 10.0}})
         args = self.make_args()
         rates = usage.calibration_rates(args, st)
-        self.assertAlmostEqual(rates["claude"], 20.0)       # (1000+200)/60
+        self.assertAlmostEqual(rates["kiro"], 20.0)         # (1000+200)/60
         args.write = True
         self.assertEqual(usage.cmd_calibrate(args), 0)
         cfg = util.read_json(os.path.join(self.budget_dir, "config.json"))
         self.assertEqual(cfg["updated_by"], "agent-audit")
-        self.assertAlmostEqual(cfg["rates"]["per_cli"]["claude"], 20.0)
+        self.assertAlmostEqual(cfg["rates"]["per_cli"]["kiro"], 20.0)
         drift = [r for r in st.iter_records() if r.get("kind") == "calibration"]
-        self.assertEqual(len(drift), 2)  # claude と claude:sonnet
+        self.assertEqual(len(drift), 2)  # kiro と kiro:sonnet
         cli = next(r for r in drift if r.get("model") == "")
         self.assertEqual(cli["estimated_tokens_per_second"], 10.0)
         self.assertEqual(cli["measured_tokens_per_second"], 20.0)
         self.assertEqual(cli["delta_ratio"], 1.0)
+
+    def test_a_measured_cli_loses_its_seconds_rate_and_the_switch_is_recorded(self):
+        """実測が入る CLI は秒レートを持たない。切替日は台帳へ 1 行だけ残る。
+
+        推定（保持秒 × rate）と実測は同じ実行を二度数える。切替の前後で記帳の意味が
+        変わるので、**後から数字を読む人が境目を知れる**ように台帳へ観測行を入れる
+        ——器は `quota_snapshot` と同じ台帳イベント行で、別系統は作らない。
+        """
+        st = self._seed(with_session=True, rates={"per_cli": {"claude": 10.0, "kiro": 7.0}})
+        args = self.make_args()
+        args.write = True
+        self.assertEqual(usage.cmd_calibrate(args), 0)
+        cfg = util.read_json(os.path.join(self.budget_dir, "config.json"))
+        self.assertNotIn("claude", cfg["rates"]["per_cli"], "実測が入る CLI は外す")
+        self.assertAlmostEqual(cfg["rates"]["per_cli"]["kiro"], 7.0, msg="申告しない CLI は残す")
+        rows = [r for path in sorted(glob.glob(os.path.join(self.budget_dir, "ledger", "*.jsonl")))
+                for r in util.iter_jsonl(path) if r.get("event") == "usage_switch"]
+        self.assertEqual([r["agent_cli"] for r in rows], ["claude"])
+        self.assertEqual((rows[0]["from"], rows[0]["to"]), ("estimated", "measured"))
+        # 二度目の較正では同じ切替行を重ねない。
+        usage.cmd_calibrate(args)
+        again = [r for path in sorted(glob.glob(os.path.join(self.budget_dir, "ledger", "*.jsonl")))
+                 for r in util.iter_jsonl(path) if r.get("event") == "usage_switch"]
+        self.assertEqual(len(again), 1)
 
     def test_calibrate_uses_linked_session_duration_with_session_tokens(self):
         st = self.make_store()

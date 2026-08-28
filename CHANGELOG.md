@@ -7,6 +7,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-audit: ペイン実行の usage が推定から実測へ
+
+設計: [2026-08-27 クラウド CLI を正とした入口の再構成](./docs/plans/2026-08-27-agent-herd-cloud-cli-parity-slash-dispatch-design.md)
+§7.3 C（実装計画 段 8）。仕様は [agent-audit 仕様書](./docs/specs/agent-audit-spec.md) §3。
+
+- **書いている側と読んでいる側が食い違っていた。** `agent-ollama` は 1 ラウンドの実測を
+  `llm_end` の**トップレベル**（`tokens_in` / `tokens_out`）へ書くのに、リーダは入れ子の
+  `usage` しか見ていなかった。`session_log.usage` を true にしても 0 トークンで
+  「実測済み」と記帳され、秒からの推定より悪くなる形だったので、リーダに平らな形を
+  教えた。`llm_progress` は**途中経過**の `tokens_out` を載せるので `llm_end` だけを見る。
+- **`session_log.usage` の申告が効くようになった。** 以前この申告は誰も読んでおらず、
+  `measured` はパーサの戻り値だけで決まっていた——つまり申告は飾りで、実測を止める
+  手段が無かった。数字そのものは記録に残るので、後から true にすれば読み直せる。
+- `ollama.json` の `session_log.usage` を **true** にした。ペイン実行の usage が推定
+  （保持秒 × レート）ではなく実測で台帳へ入る。
+- **実測が入る CLI は秒レートを持たない。** `calibrate` はそれらを較正の対象から外し、
+  設定に残っている古い `rates.per_cli` を `--write` で落とす（推定と実測で同じ実行を
+  二度数えるため）。**切替日は台帳へ 1 行だけ残す**（`event: usage_switch`）——切替の
+  前後で記帳の意味が変わるので、後から数字を読む人が境目を知れる必要がある。器は
+  `quota_snapshot` と同じ台帳イベント行で、別系統は作らない。
+  この規則は `claude` / `codex` / `opencode` にも同じく効く（同じ二重計上を抱えていた）。
+- パーサ改版（`SESSION_PARSER_REVISION` 2 → 3）。既存セッションが 1 度だけ読み直される。
+
 ### agent-tools: 用途別順位表の決定が届く経路を 4 つとも縛った
 
 設計: [2026-08-27 クラウド CLI を正とした入口の再構成](./docs/plans/2026-08-27-agent-herd-cloud-cli-parity-slash-dispatch-design.md)

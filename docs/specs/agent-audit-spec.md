@@ -78,6 +78,18 @@ LLM を使うのは **extract** と **distill**（と任意の review）だけ�
 パーサは `agent_audit/readers.py` に format ごと 1 実装です。**新しい CLI が既存 format なら
 JSON への追記だけで収集できます。**
 
+**`usage` は申告であり、飾りではありません。** パーサが数字を取れても、定義が
+`usage: false` と言っている CLI のセッションは実測（`measured`）として数えません
+——数字そのものは記録に残るので、後から `true` へ変えれば読み直せます
+（`SESSION_PARSER_REVISION` のカーソルが既存セッションを 1 度だけ読み直します）。
+
+**実測が入る CLI は秒レート（budget `rates.per_cli`）を持ちません。** 推定（保持秒 ×
+レート）と実測は同じ実行を二度数えるので、`calibrate` はそれらの CLI を較正の対象から
+外し、設定に残っている古いレートを `--write` で落とします。**切替日は台帳へ 1 行だけ
+残します**（`event: usage_switch`）——切替の前後で同じ実行の記帳の意味が変わるため、
+後から数字を読む人が境目を知れる必要があるからです。器は `quota_snapshot` と同じ
+台帳イベント行で、別系統は作りません。
+
 未知の format・`session_log` 未宣言の CLI は「未収集」と明示し、黙ってスキップしません。
 `agent-audit sessions --cli <名前>` は 0 件のとき `cli.declared` / `cli.supported` を返すので、
 読み手は「条件に当たらなかった」のか「その CLI は会話を残さない」のかを言い分けられます。

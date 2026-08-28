@@ -341,7 +341,7 @@
         "usage": {
           "type": "boolean",
           "default": false,
-          "description": "実測トークン（usage）を含むか。true のセッションは台帳の実測裏取り（measured 集計）に使われる"
+          "description": "実測トークン（usage）を含むか。true のセッションだけが台帳の実測裏取り（measured 集計）に使われる。**申告が決める**——パーサが数字を取れても false なら実測として数えない（数字自体は記録に残るので、後から true にすれば読み直される）。true の CLI は秒レート（budget rates.per_cli）を持たない: 推定と実測で同じ実行を二度数えるため"
         },
         "clean": {
           "type": "object",

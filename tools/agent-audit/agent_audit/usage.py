@@ -348,15 +348,44 @@ def calibration_rates(args, store: Store) -> "dict[str, float]":
     return {key: round(statistics.median(vals), 1) for key, vals in sorted(samples.items())}
 
 
+def measured_clis() -> "set[str]":
+    """`session_log.usage: true` を申告している CLI 名。
+
+    実測が入る CLI に秒レート（`rates.per_cli`）を残すと、同じ実行が実測と推定で
+    **二重に載る**。申告が実測へ切り替わった CLI はレートを持たせない
+    （設計 2026-08-27 §9 段 8 の注記 / `toolloop._tl_record_usage` の ponytail と同じ理由）。
+    """
+    from .collect import agent_defs_with_session_log
+    out = set()
+    try:
+        defs = agent_defs_with_session_log()
+    except Exception:      # noqa: BLE001 — 定義が引けないなら較正を止めない（従来どおり）
+        return out
+    for name, spec in defs:
+        slog = spec.get("session_log") or {}
+        if isinstance(slog, dict) and slog.get("usage"):
+            out.add(str(name))
+    return out
+
+
 def cmd_calibrate(args) -> int:
     store = Store(resolve_audit_dir(args))
-    rates = calibration_rates(args, store)
-    if not rates:
+    # 実測が入る CLI は較正の対象から外す。推定（保持秒 × rate）と実測は同じ実行を
+    # 二度数えるので、実測が出る CLI に秒レートを残すのが間違いである
+    # （`toolloop._tl_record_usage` の ponytail と同じ理由。設計 2026-08-27 §9 段 8）。
+    measured = measured_clis()
+    rates = {key: val for key, val in calibration_rates(args, store).items()
+             if key.partition(":")[0] not in measured}
+    stale = _stale_measured_rates(args, measured)
+    if not rates and not stale:
         print("[agent-audit] calibrate: 実測（tokens + seconds）の揃った行がまだありません。")
         return 0
-    print("rates 提案（tokens/秒 の中央値・実測行より）:")
-    for key, val in rates.items():
-        print(f"  {key}: {val}")
+    if rates:
+        print("rates 提案（tokens/秒 の中央値・実測行より）:")
+        for key, val in rates.items():
+            print(f"  {key}: {val}")
+    if stale:
+        print("実測へ切り替わったので外す rates（推定と二重に載ります）: " + ", ".join(stale))
     if not getattr(args, "write", False):
         print("反映するには --write を付けてください"
               "（budget config.json の rates.per_cli を更新します）。")
@@ -377,14 +406,46 @@ def cmd_calibrate(args) -> int:
             "delta_ratio": (round((measured_rate - prior_rate) / prior_rate, 4)
                             if prior_rate > 0 else None),
         })
-    store.save_state()
     cfg_path = os.path.join(resolve_budget_dir(args), "config.json")
     cfg = read_json(cfg_path) or {}
     r = cfg.setdefault("rates", {})
     per = r.setdefault("per_cli", {})
     per.update(rates)
+    for key in stale:
+        per.pop(key, None)
+    # **切替は台帳へ 1 度だけ残す。** 切替の前後で同じ実行の記帳の意味が変わるので、
+    # 後から数字を読む人が境目を知れる必要がある。器は `quota_snapshot` と同じ台帳
+    # イベント行で、別系統は作らない。
+    _record_usage_switch(args, store, stale, ts)
+    store.save_state()
     cfg["updated_at"] = now_iso()
     cfg["updated_by"] = "agent-audit"
     write_json_atomic(cfg_path, cfg)
-    log("calibrate", f"rates.per_cli を {len(rates)} 件更新しました: {cfg_path}")
+    if rates:
+        log("calibrate", f"rates.per_cli を {len(rates)} 件更新しました: {cfg_path}")
+    if stale:
+        log("calibrate", "実測へ切り替わった CLI のレートを外しました（二重計上を避けます）: "
+                         + ", ".join(stale))
     return 0
+
+
+def _stale_measured_rates(args, measured: "set[str]") -> "list[str]":
+    """設定に残っている、実測が入る CLI の秒レート鍵（`cli` と `cli:model` の両方）。"""
+    _default, per_cli = _rates(args)
+    return sorted(key for key in per_cli if key.partition(":")[0] in measured)
+
+
+def _record_usage_switch(args, store: Store, dropped: "list[str]", ts: str) -> None:
+    """推定 → 実測の切替日を台帳へ 1 行だけ残す（同じ CLI で二度は書かない）。"""
+    from .util import append_jsonl, utc_day
+    for cli in sorted({key.partition(":")[0] for key in dropped}):
+        cursor = f"usage-switch::{cli}"
+        if store.cursor(cursor):
+            continue
+        append_jsonl(os.path.join(resolve_budget_dir(args), "ledger",
+                                  f"{utc_day(parse_iso(ts) or 0.0)}.jsonl"),
+                     {"ts": ts, "workload": "audit", "tool": "agent-audit", "seconds": 0,
+                      "ref": "usage-switch", "purpose": "usage-switch",
+                      "event": "usage_switch", "agent_cli": cli,
+                      "from": "estimated", "to": "measured"})
+        store.set_cursor(cursor, ts)
