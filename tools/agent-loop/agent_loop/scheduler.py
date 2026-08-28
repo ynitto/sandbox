@@ -714,7 +714,15 @@ class PeriodicScheduler:
                 self._fail_execution(req, pane_id, reason="callback_error")
 
         def fail() -> None:
-            self._fail_execution(req, pane_id, reason="pane_or_timeout")
+            # 画面を分類できていればその class を理由にする。`pane_or_timeout` のままだと、
+            # 画面には quota と出ているのに台帳と needs には「ペインかタイムアウト」しか
+            # 残らない（設計 2026-08-27 §7.4-1）。
+            reason = "pane_or_timeout"
+            if self._slot_monitor is not None:
+                classified = self._slot_monitor.failure_reason(pane_id)
+                if classified:
+                    reason = classified
+            self._fail_execution(req, pane_id, reason=reason)
 
         if self._slot_monitor is not None:
             turn_hook = None

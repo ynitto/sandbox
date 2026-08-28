@@ -7,6 +7,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-loop: ペインで quota が枯れたことが管理面へ届くようになった
+
+設計: [2026-08-27 クラウド CLI を正とした入口の再構成](./docs/plans/2026-08-27-agent-herd-cloud-cli-parity-slash-dispatch-design.md)
+§7.4-1（実装計画 段 7）。仕様は [agent-loop 仕様書](./docs/specs/agent-loop-spec.md) §1.5。
+
+- **対話ペインには失敗トリアージが無かった。** ヘッドレスは定義の `errors[]` で分類し
+  （`classify_error`）、quota を見つけたら node-budget の台帳へ観測行を入れていたが、
+  ペイン経路にはどちらも無い。効くのは `interactive.failure_pattern` だけで、しかも
+  `send --wait` のときだけだった——**定義が `errors[]` に quota を宣言していても、
+  ペインで枯れた分は誰も読まなかった**。管理面の段判定に届かない＝ degrade が効かない、
+  というのがこの経路で実害の最大の穴である。
+- ターンの終わりに画面を分類するようにした。分類は**ヘッドレスと同じ 1 実装**を引く。
+  `quota` / `auth` / `env` はそのターンを失敗として扱い、`transient` は完了のまま
+  （再投入で解けるので上位の判断に任せる）。ハーネスの分け方に合わせてある。
+- **`quota` は台帳へ観測行が入る**（`event: quota` と `quota_kind`、画面から復帰時刻が
+  読めれば `reset_at` も）。ヘッドレスの `_tl_failure_hint` と同じ形である。
+- 失敗の理由に分類名が残るようになった。`pane_or_timeout` のままだと、画面には quota と
+  出ているのに台帳と needs には「ペインかタイムアウト」しか残らない。
+- 分類は 1 ターンに 1 回だけ（監視のポーリングは 2 秒おき）。分類器が落ちても監視
+  スレッドは止めない——止まるとスロットが解放されず、ペインが上限を食ったまま誰も
+  進めなくなる。
+
 ### agent-herd: 引数なしなら対話、`-p` なら 1 回——クラウド CLI と同型の入口
 
 設計: [2026-08-27 クラウド CLI を正とした入口の再構成](./docs/plans/2026-08-27-agent-herd-cloud-cli-parity-slash-dispatch-design.md)

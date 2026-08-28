@@ -285,6 +285,8 @@ class SlotMonitor:
         self._lock = threading.Lock()
         # pane_id → state / acquired_at / optional callbacks / freeze hash
         self._pending: dict[str, dict[str, Any]] = {}
+        # pane_id → 直近のターンを失敗と分類した class（失敗の理由に使う）
+        self._last_triage: dict[str, str] = {}
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
 
@@ -312,6 +314,8 @@ class SlotMonitor:
                 log.warning("turn-completion hook を開始できません。画面監視へ戻ります: %s", exc)
                 hook = None
         with self._lock:
+            # 前のターンの分類を持ち越さない（同じペインは使い回される）。
+            self._last_triage.pop(pane_id, None)
             self._pending[pane_id] = {
                 "state": "waiting_start",
                 "acquired_at": time.time(),
@@ -413,21 +417,24 @@ class SlotMonitor:
                         self._pending[pane_id]["state"] = "processing"
             elif entry.get("initial_content_hash") and hashlib.sha256(
                     content.encode("utf-8", errors="replace")).hexdigest() != entry["initial_content_hash"]:
-                self._release(
-                    pane_id,
+                self._release_after_triage(
+                    pane_id, idle_profile, content,
                     notify_complete=not failure_pending,
                     notify_failure=failure_pending,
                 )
             elif now - acquired_at > self._START_WAIT_TIMEOUT:
-                # エージェント CLI が処理を開始しないままタイムアウト
+                # エージェント CLI が処理を開始しないままタイムアウト。**始まらない理由が
+                # 画面に出ていることが多い**（認証切れ・quota・接続不能）ので、失敗にする
+                # 前に分類する。
                 log.warning("SlotMonitor: ペイン %s が処理を開始しないためスロットを解放します。", pane_id)
-                self._release(pane_id, notify_failure=True)
+                self._release_after_triage(pane_id, idle_profile, content,
+                                           notify_failure=True)
 
         elif state == "processing":
             if is_idle:
                 log.info("SlotMonitor: ペイン %s の処理完了を検知。スロットを解放します。", pane_id)
-                self._release(
-                    pane_id,
+                self._release_after_triage(
+                    pane_id, idle_profile, content,
                     notify_complete=not failure_pending,
                     notify_failure=failure_pending,
                 )
@@ -437,9 +444,85 @@ class SlotMonitor:
                 if now - acquired_at > self._slot_timeout:
                     log.warning("SlotMonitor: ペイン %s がタイムアウト。スロットを強制解放します。", pane_id)
                     if entry.get("hold_slot"):
-                        self._release(pane_id, notify_failure=True)
+                        self._release_after_triage(pane_id, idle_profile, content,
+                                                   notify_failure=True)
                     else:
+                        # ここはターンの終わりではない（スロットだけ返して完了は待ち続ける）。
+                        # 分類は 1 ターンに 1 回なので、ここで使うと本当の終わりの画面を
+                        # 読めなくなる。
                         self._release(pane_id, keep_for_completion=True)
+
+    # 定義の errors[] のうち、そのターンを失敗として扱う class。transient は「もう一度
+    # 投げれば解ける」なので完了のまま返し、再投入は上位の判断に任せる（ハーネスが
+    # `_tl_failure_hint` の戻り値で同じ分け方をしているのに合わせる）。
+    _TRIAGE_FAILURE_CLASSES = ("quota", "auth", "env")
+
+    def _triage(self, pane_id: str, profile: Any, content: str) -> bool:
+        """ターン終了時に画面を定義の `errors[]` で分類する（設計 2026-08-27 §7.4-1）。
+
+        戻り値は「このターンを失敗として扱うか」。**quota の観測はここで一度だけ台帳へ
+        入れる**——ペインで quota が枯れても node-budget の台帳に観測行が入らず、管理面の
+        段判定が知らない＝ degrade が効かない、というのがこの経路で実害の最大の穴だった。
+        ヘッドレスは `_tl_failure_hint` が同じことをしている。
+
+        1 ターンに 1 回だけ走る（ポーリングは 2 秒おきなので、素で呼ぶと同じ画面から
+        同じ観測行を何十本も生む）。
+        """
+        with self._lock:
+            entry = self._pending.get(pane_id)
+            if entry is None or entry.get("triaged"):
+                return False
+            entry["triaged"] = True
+        classify = getattr(profile, "classify_failure", None)
+        try:
+            classified = classify(content) if callable(classify) else None
+        except Exception:
+            log.warning("SlotMonitor: ペイン %s の失敗分類に失敗しました。", pane_id,
+                        exc_info=True)
+            return False
+        # 分類器は dict か None を返す契約（`agentcli.classify_error`）。**監視スレッドごと
+        # 落とさない**のがここの要件——落ちるとスロットが解放されず、ペインが上限を
+        # 食ったまま誰も進めなくなる。分類できないことは実行を止める理由にならない。
+        if not isinstance(classified, dict):
+            return False
+        kind = str(classified.get("class") or "")
+        quota_kind = classified.get("quota_kind")
+        if quota_kind:
+            extra = {"event": "quota", "quota_kind": str(quota_kind)}
+            reset_at = classified.get("reset_at")
+            if reset_at:
+                extra["reset_at"] = str(reset_at)
+            _node_budget_record(0, ref=pane_id, purpose=routine_purpose(pane_id),
+                                agent_cli=str(getattr(profile, "name", "") or ""),
+                                model=str(getattr(profile, "model", "") or ""),
+                                extra=extra)
+        hint = str(classified.get("hint") or "")
+        log.warning("SlotMonitor: ペイン %s の画面を %s と分類しました%s",
+                    pane_id, kind or "unknown", f": {hint}" if hint else "")
+        if kind in self._TRIAGE_FAILURE_CLASSES:
+            self._last_triage[pane_id] = kind
+            return True
+        return False
+
+    def failure_reason(self, pane_id: str) -> str:
+        """直近のターンを失敗と分類した class（無ければ空文字）。
+
+        失敗の記録に `pane_or_timeout` と書かれると、画面には quota と出ているのに
+        台帳と needs には「ペインかタイムアウト」しか残らない。呼び出し側がこれを読んで
+        理由を差し替える。
+        """
+        return self._last_triage.get(pane_id, "")
+
+    def _release_after_triage(self, pane_id: str, profile: Any, content: str, *,
+                              notify_complete: bool = False,
+                              notify_failure: bool = False,
+                              keep_for_completion: bool = False) -> None:
+        """ターンの終わりで分類してから解放する。分類が失敗なら完了を失敗へ倒す。"""
+        if self._triage(pane_id, profile, content) and notify_complete:
+            notify_complete, notify_failure = False, True
+        self._release(pane_id, notify_complete=notify_complete,
+                      notify_failure=notify_failure,
+                      keep_for_completion=keep_for_completion)
 
     def _check_freeze(
         self,

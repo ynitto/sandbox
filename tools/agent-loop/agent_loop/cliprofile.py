@@ -200,6 +200,29 @@ class CliProfile:
 
     # -- 送信テキストの作法 --------------------------------------------------
 
+    def classify_failure(self, content: str, *, now=None) -> "dict | None":
+        """ペインの画面を定義の `errors[]` で分類する（設計 2026-08-27 §7.4-1）。
+
+        **ヘッドレスと同じ 1 実装**（`agentcli.classify_error`）を引く。以前この経路には
+        分類が無く、効くのは `interactive.failure_pattern`（しかも `send --wait` だけ）
+        だった——定義が `errors[]` に quota や auth を宣言していても、ペインで起きた分は
+        誰も読まなかった。legacy（定義なし）は `errors[]` を持たないので None。
+        """
+        if self.spec is None:
+            return None
+        global _AGENTCLI_MOD
+        mod = _AGENTCLI_MOD
+        if mod is None:
+            mod = _import_agentcli()
+            _AGENTCLI_MOD = mod
+        if mod is None:
+            return None
+        try:
+            return mod.classify_error(self.spec, content, detailed=True,
+                                      now=time.time() if now is None else now)
+        except Exception:
+            return None      # 分類できないことを理由に実行を止めない
+
     def rewrite_slash(self, line: str) -> str:
         """行頭 `/` のスラッシュコマンドをこの CLI の起動記号へ差し替える（既定 `/` は素通し）。"""
         if self.skill_command_prefix == "/":
