@@ -696,3 +696,163 @@ def test_connect_timeout_is_reported_as_a_timeout_too():
             assert False, "timeout must raise"
         except RuntimeError as exc:
             assert "タイムアウト" in str(exc)
+
+
+# --- chat の外から呼べないツール ------------------------------------------------
+
+
+def _serve_error(status: int, message: str, captured: dict):
+    payload = json.dumps({"error": message}).encode()
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            captured["body"] = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *_):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.handle_request)
+    thread.start()
+    return server, thread
+
+
+def test_gated_tool_gets_an_explanation_not_a_raw_500():
+    captured = {}
+    server, thread = _serve_error(500, "toolInvocationToken is required for this tool", captured)
+    try:
+        client.call_tool({"url": f"http://127.0.0.1:{server.server_port}/v1/chat", "token": "s"},
+                         "runSubagent", {"prompt": "p", "description": "d"}, 2)
+        assert False, "must raise"
+    except RuntimeError as exc:
+        assert "runSubagent" in str(exc)
+        assert "chat request の中からしか呼べません" in str(exc)
+    finally:
+        thread.join()
+        server.server_close()
+
+
+def test_other_tool_errors_are_passed_through_unchanged():
+    captured = {}
+    server, thread = _serve_error(500, "something else broke", captured)
+    try:
+        client.call_tool({"url": f"http://127.0.0.1:{server.server_port}/v1/chat", "token": "s"},
+                         "copilot_readFile", {}, 2)
+        assert False, "must raise"
+    except RuntimeError as exc:
+        assert "something else broke" in str(exc)
+        assert "chat request" not in str(exc)
+    finally:
+        thread.join()
+        server.server_close()
+
+
+# --- 呼べるツールの調査（--probe） ---------------------------------------------
+
+
+PROBE_TOOLS = {"tools": [
+    {"name": "runSubagent", "inputSchema": {"required": ["prompt", "description"]}},
+    {"name": "copilot_readFile", "inputSchema": {"required": ["filePath"]}},
+    {"name": "manage_todo_list", "inputSchema": {"properties": {"items": {}}}},
+    {"name": "runTests", "inputSchema": {}},
+]}
+
+
+def _probe(side_effects):
+    calls = []
+
+    def fake_call_tool(endpoint, name, tool_input, timeout):
+        calls.append((name, tool_input))
+        outcome = side_effects[name]
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    with mock.patch.object(client, "call_tool", fake_call_tool):
+        results = client.probe_tools({}, PROBE_TOOLS, 5)
+    return results, calls
+
+
+def test_probe_never_touches_tools_that_accept_an_empty_input():
+    """required が無いツールは試さない——引数なしで走ってしまうものが混ざる。"""
+    results, calls = _probe({
+        "runSubagent": client.ToolNeedsChatContext("gated"),
+        "copilot_readFile": RuntimeError("bridge error (500): missing filePath"),
+    })
+    probed = [name for name, _ in calls]
+    assert "manage_todo_list" not in probed and "runTests" not in probed
+    verdicts = {r["name"]: r["verdict"] for r in results}
+    assert verdicts["manage_todo_list"] == "unknown"
+    assert verdicts["runTests"] == "unknown"
+
+
+def test_probe_only_ever_sends_an_empty_input():
+    """本体が動かないことの担保。required がある限り {} は必ず検証で落ちる。"""
+    _, calls = _probe({
+        "runSubagent": client.ToolNeedsChatContext("gated"),
+        "copilot_readFile": RuntimeError("missing filePath"),
+    })
+    assert all(tool_input == {} for _, tool_input in calls)
+
+
+def test_probe_separates_gated_from_callable():
+    results, _ = _probe({
+        "runSubagent": client.ToolNeedsChatContext("gated"),
+        "copilot_readFile": RuntimeError("bridge error (500): missing filePath"),
+    })
+    verdicts = {r["name"]: r["verdict"] for r in results}
+    assert verdicts["runSubagent"] == "gated"
+    assert verdicts["copilot_readFile"] == "callable"
+
+
+def test_probe_flags_a_tool_that_actually_ran():
+    results, _ = _probe({
+        "runSubagent": client.ToolNeedsChatContext("gated"),
+        "copilot_readFile": {"text": "surprise"},
+    })
+    verdicts = {r["name"]: r["verdict"] for r in results}
+    assert verdicts["copilot_readFile"] == "ran"
+
+
+def test_probe_is_calibrated_only_when_something_was_gated():
+    gated, _ = _probe({
+        "runSubagent": client.ToolNeedsChatContext("gated"),
+        "copilot_readFile": RuntimeError("missing filePath"),
+    })
+    assert client.probe_is_calibrated(gated)
+    assert "確認済み" in client.format_probe(gated)
+
+    none_gated, _ = _probe({
+        "runSubagent": RuntimeError("missing prompt"),
+        "copilot_readFile": RuntimeError("missing filePath"),
+    })
+    assert not client.probe_is_calibrated(none_gated)
+    # 順序を確かめられていないことを、結果と一緒に出す。
+    assert "以上の意味を持たない" in client.format_probe(none_gated)
+
+
+def test_probe_reports_progress_as_it_goes():
+    seen = []
+    with mock.patch.object(client, "call_tool",
+                           side_effect=client.ToolNeedsChatContext("gated")):
+        client.probe_tools({}, PROBE_TOOLS, 5, seen.append)
+    assert [r["name"] for r in seen] == ["copilot_readFile", "manage_todo_list",
+                                         "runSubagent", "runTests"]
+
+
+def test_probe_flag_does_not_enter_the_repl():
+    stdin = mock.Mock()
+    stdin.isatty.return_value = True
+    with mock.patch.object(client.sys, "argv", ["vscode-copilot-chat", "--probe"]), \
+         mock.patch.object(client.sys, "stdin", stdin), \
+         mock.patch.object(client, "read_endpoint", return_value={"url": "u", "token": "t"}), \
+         mock.patch.object(client, "repl", return_value=0) as repl, \
+         mock.patch.object(client, "fetch_tools", return_value={"tools": []}), \
+         mock.patch.object(client, "probe_tools", return_value=[]) as probe:
+        code = client.main()
+    assert code == 0 and probe.called and not repl.called

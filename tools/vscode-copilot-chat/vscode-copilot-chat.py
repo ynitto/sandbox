@@ -240,6 +240,10 @@ def fetch_tools(endpoint: dict[str, object], timeout: float) -> dict:
         return json.load(response)
 
 
+class ToolNeedsChatContext(RuntimeError):
+    """chat request の外からは呼べないツール（toolInvocationToken が要る）。"""
+
+
 def call_tool(endpoint: dict[str, object], name: str, tool_input: dict,
               timeout: float) -> dict:
     """ツールを 1 つ呼ぶ（vscode.lm.invokeTool）。
@@ -253,8 +257,18 @@ def call_tool(endpoint: dict[str, object], name: str, tool_input: dict,
         headers={"Authorization": f"Bearer {endpoint['token']}", "Content-Type": "application/json"},
         method="POST",
     )
-    with _urlopen(req, timeout) as response:
-        return json.load(response)
+    try:
+        with _urlopen(req, timeout) as response:
+            return json.load(response)
+    except RuntimeError as exc:
+        if "toolInvocationToken" not in str(exc):
+            raise
+        raise ToolNeedsChatContext(
+            f"{name} は chat request の中からしか呼べません（VS Code が"
+            " toolInvocationToken を要求します）。このツールは一覧に並んでいても、"
+            "チャットの外から呼ぶこの bridge では使えません。"
+            "どのツールが同じ制約を持つかは `--probe` で調べられます。"
+        ) from exc
 
 
 def find_tool(payload: dict, name: str) -> dict | None:
@@ -323,6 +337,71 @@ def check_agent_input(tool: dict, payload: dict) -> None:
         raise RuntimeError(
             f"{AGENT_TOOL} が受け取らない項目を --agent が渡そうとしています: "
             f"{', '.join(sorted(unknown))}（--call {AGENT_TOOL} で直接渡してください）")
+
+
+def probe_tools(endpoint: dict[str, object], payload: dict, timeout: float,
+                on_result=None) -> list[dict]:
+    """どのツールが chat の外から呼べるかを、副作用なしで調べる。
+
+    安全条件: `required` が空でないツールへ `{}` を渡すと**入力検証で必ず落ちる**ので、
+    ツール本体は動かない。それでも toolInvocationToken のエラーが返るなら、
+    VS Code は入力検証より先にトークンを見ている＝そのツールはゲートされている。
+
+    `required` が無い（空入力が有効になりうる）ツールは試さない——`runTests` のように
+    引数なしで走ってしまうものが混ざるため。
+    """
+    results = []
+    for tool in sorted(payload.get("tools") or [], key=lambda t: t.get("name", "")):
+        name = tool.get("name", "")
+        required = (tool.get("inputSchema") or {}).get("required") or []
+        if not required:
+            result = {"name": name, "verdict": "unknown",
+                      "detail": "必須項目が無く、空入力で動きうるので試さない"}
+        else:
+            try:
+                call_tool(endpoint, name, {}, timeout)
+                result = {"name": name, "verdict": "ran",
+                          "detail": "空入力で通ってしまった（このツールの結果は要確認）"}
+            except ToolNeedsChatContext:
+                result = {"name": name, "verdict": "gated",
+                          "detail": "toolInvocationToken が要る"}
+            except RuntimeError as exc:
+                result = {"name": name, "verdict": "callable",
+                          "detail": f"入力検証で止まった: {exc}"}
+        results.append(result)
+        if on_result:
+            on_result(result)
+    return results
+
+
+def probe_is_calibrated(results: list[dict]) -> bool:
+    """`callable` の判定を信用してよいか。
+
+    ゲートされたツールが 1 つでも見つかれば、「不正な入力を送ってもトークン検査が先に
+    出る」ことが実地で示せたことになる。1 つも無いときは検査の順序が分からないので、
+    `callable` は「トークンで止まらなかった」以上のことを言えない。
+    """
+    return any(r["verdict"] == "gated" for r in results)
+
+
+def format_probe(results: list[dict]) -> str:
+    labels = {"gated": "呼べない", "callable": "呼べそう", "ran": "実行された",
+              "unknown": "未確認"}
+    lines = []
+    for result in results:
+        lines.append(f"  {labels[result['verdict']]:6s} {result['name']}")
+        lines.append(f"      {result['detail']}")
+    counts = {key: sum(1 for r in results if r["verdict"] == key) for key in labels}
+    lines.append("")
+    lines.append(f"呼べない {counts['gated']} / 呼べそう {counts['callable']} / "
+                 f"実行された {counts['ran']} / 未確認 {counts['unknown']}")
+    if probe_is_calibrated(results):
+        lines.append("トークン検査は入力検証より先に出ることを確認済み。"
+                     "「呼べそう」はゲートされていないと読んでよい。")
+    else:
+        lines.append("ゲートされたツールが 1 つも無かったため、検査の順序を確かめられない。"
+                     "「呼べそう」は『トークンで止まらなかった』以上の意味を持たない。")
+    return "\n".join(lines)
 
 
 def format_tools(payload: dict) -> str:
@@ -443,6 +522,8 @@ def main() -> int:
                         help="呼ぶエージェント名（省略時は VS Code の既定エージェント）")
     parser.add_argument("--description", metavar="TEXT",
                         help="--agent の短い説明（省略時は依頼文から作る）")
+    parser.add_argument("--probe", action="store_true",
+                        help="どのツールが chat の外から呼べるかを副作用なしで調べる")
     parser.add_argument("--call", metavar="TOOL",
                         help="ツールを 1 つ呼ぶ。--input を省くと inputSchema を表示する")
     parser.add_argument("--input", metavar="JSON",
@@ -456,7 +537,7 @@ def main() -> int:
     parser.add_argument("--code-bin", default="code", help="Windows側のcode command（既定: code）")
     args = parser.parse_args()
     # 端末から引数なしで起動したら対話。パイプ入力は従来どおり片道実行のまま。
-    one_off = args.tools or args.call or args.agent
+    one_off = args.tools or args.call or args.agent or args.probe
     interactive = args.interactive or (args.prompt is None and not one_off and sys.stdin.isatty())
     if interactive and args.json:
         parser.error("--json は対話モードでは使えません")
@@ -471,6 +552,15 @@ def main() -> int:
         if args.tools:
             payload = fetch_tools(endpoint, args.timeout)
             print(json.dumps(payload, ensure_ascii=False) if args.json else format_tools(payload))
+            return 0
+        if args.probe:
+            payload = fetch_tools(endpoint, args.timeout)
+            # 1 つずつ時間がかかるので、終わった端から出す。
+            show = None if args.json else (
+                lambda r: print(f"  {r['verdict']:8s} {r['name']}", file=sys.stderr))
+            results = probe_tools(endpoint, payload, args.timeout, show)
+            print(json.dumps({"tools": results, "calibrated": probe_is_calibrated(results)},
+                             ensure_ascii=False) if args.json else format_probe(results))
             return 0
         if args.agent:
             prompt = sys.stdin.read() if args.agent == "-" else args.agent
