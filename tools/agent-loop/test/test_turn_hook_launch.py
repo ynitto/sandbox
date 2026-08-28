@@ -15,7 +15,7 @@ class TurnHookLaunchTest(unittest.TestCase):
     def test_additive_adapters_preserve_ambient_configuration(self):
         assets = Path(__file__).resolve().parents[1] / "agent-hooks"
         with tempfile.TemporaryDirectory() as tmp:
-            for adapter in ("claude", "copilot", "opencode"):
+            for adapter in ("claude", "copilot"):
                 with self.subTest(adapter=adapter):
                     argv, env, cleanup = al.prepare_turn_hook_launch(
                         adapter=adapter,
@@ -34,14 +34,8 @@ class TurnHookLaunchTest(unittest.TestCase):
                     self.assertEqual(env["AGENT_LOOP_AGENT_CLI"], adapter)
                     self.assertNotIn("COPILOT_HOME", env)
                     self.assertNotIn("CODEX_HOME", env)
-                    if adapter in ("claude", "copilot"):
-                        self.assertIn("--plugin-dir", argv)
-                        self.assertIsNone(cleanup)
-                    else:
-                        config_dir = Path(env["OPENCODE_CONFIG_DIR"])
-                        self.assertEqual(cleanup, config_dir)
-                        self.assertTrue((config_dir / "plugins" / "agent-loop.js").is_file())
-                        self.assertFalse((config_dir / "opencode.json").exists())
+                    self.assertIn("--plugin-dir", argv)
+                    self.assertIsNone(cleanup)
 
     def test_session_manager_registers_hook_only_for_managed_pane(self):
         profile = al.CliProfile("claude", {

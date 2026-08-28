@@ -24,7 +24,7 @@ bash tools/agent-tools/install.sh --service             # 常駐化（systemd us
 ```
 
 エンジンは 4 本（`agent-project` / `agent-flow` / `agent-amigos` / `agent-audit`）で、
-ほかに `agent-herd`（と別名の `agent-aider` / `agent-ollama` / `agent-opencode` = 同一
+ほかに `agent-herd`（と別名の `agent-aider` / `agent-ollama` = 同一
 ファイルへのハードリンク）も置く。**別々に入れない。** 同じ `agentcore` と契約バージョンを
 共有しているので、片方だけ古いと状態の読み書きや仕事の受け渡しが噛み合わなくなる。更新もまとめて
 （`git pull && bash tools/agent-tools/install.sh`）。
@@ -43,8 +43,8 @@ agent-flow で共有する（設計: docs/plans/2026-08-05-phase1-token-efficien
 **独立配布しない内部モジュール**（設計 R10）。各ツールはそれぞれ別の実行ファイルなので、
 `install.sh` が**各 zipapp へ同梱する**——1 本だけ入れ直しても自己完結して動く。同梱先は
 このインストーラが作る 5 本（4 エンジン + `agent-herd`）に、自前の installer を持つ
-`agent-loop` を加えた 6 本。実行系の 3 名（`agent-aider` / `agent-ollama` /
-`agent-opencode`）は `agent-herd` への別名なので、zipapp の数は増えない。
+`agent-loop` を加えた 6 本。実行系の別名（`agent-aider` / `agent-ollama`）は
+`agent-herd` への別名なので、zipapp の数は増えない。
 
 開発木から直接実行するときは、各エンジンの `__init__.py` がこのディレクトリを `sys.path` へ
 足して解決する（`tools/<engine>/<package>/__init__.py` から見て `../../agent-tools/agentcore`）。
@@ -64,7 +64,10 @@ cd tools/agent-tools/agentcore && python3 -m unittest discover -s tests && pytho
 ## agent-herd — コスト 0 のローカル実行系
 
 `install.sh` は 4 エンジンのほかに `agent-herd`（zipapp・1 ファイル）と、その別名として
-`agent-aider` / `agent-ollama` / `agent-opencode`（同一ファイルへのハードリンク）を置く。
+`agent-aider` / `agent-ollama`（同一ファイルへのハードリンク）を置く。
+opencode は同梱を外した（このハードでは成立しないことが実測済みで、usage 実測と
+preflight を失う。設計: docs/plans/2026-08-27 設計 §6。使う人は `agents/opencode.json`
+を自分で置けば従来どおり定義経由で呼べる）。
 別名は互換シムではなく本体そのものなので、打ち方も出力も従来どおりである。出発点は
 「クラウドの CLI がガバナンスや予算の事情で使えなくなったときに作業を止めないため」の
 バックアップだったが（[2026-08-06 の対策案](../../docs/plans/2026-08-06-opencode-ollama-cpu-inference-proposals.md) §0.1・案 F-2）、
@@ -81,7 +84,6 @@ cd tools/agent-tools/agentcore && python3 -m unittest discover -s tests && pytho
 ```bash
 agent-herd aider …        # = agent-aider …     （Aider をヘッドレスで回す）
 agent-herd ollama …       # = agent-ollama …    （ollama を回す。--tools / --tui も）
-agent-herd opencode …     # = agent-opencode …  （opencode を回す）
 
 agent-herd chat [<cli>]   # 定義の interactive で対話起動する（既定は ollama の内蔵 TUI）
 agent-herd defs [<名前>]   # 定義の一覧と実効 argv（エンジンが組むのと同じもの）

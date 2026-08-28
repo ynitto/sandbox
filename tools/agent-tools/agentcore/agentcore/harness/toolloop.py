@@ -624,7 +624,7 @@ def _tl_record_usage(agent: dict, result: dict, log_file: str) -> None:
     """CLI が stderr に出した実測 usage（`@agent-usage`）をログと台帳へ渡す。
 
     headless 経路は自分で subprocess を回すので、tmux 経路と違って**実測が取れる**
-    （agent-aider / agent-ollama / agent-opencode が出す）。出さない CLI は素通り——
+    （agent-aider / agent-ollama が出す）。出さない CLI は素通り——
     推定で埋めない。失敗した実行も記帳する（rc が非 0 でもトークンは焼けている）。
 
     記帳するのはトークンだけで、秒は入れない。実行時間はセマフォのスロット保持で既に

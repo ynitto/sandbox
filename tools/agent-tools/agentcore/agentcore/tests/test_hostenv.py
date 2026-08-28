@@ -1,10 +1,10 @@
 """環境補完が 1 実装であること、その振る舞いが複製時代の正典と同じであることを縛る。
 
-かつては `ollama_adapter.py` を正典とし、単体ファイルで配っていた 2 つ（`agent-aider` /
-`agent-opencode`）が同じコードを**複製**して持っていた。旧 `test_adapter_env_parity.py` は
-その 3 者を AST で突き合わせ、「片方だけ直しても両方のテストが緑」を防いでいた。
+かつては `ollama_adapter.py` を正典とし、単体ファイルで配っていた `agent-aider` が
+同じコードを**複製**して持っていた。旧 `test_adapter_env_parity.py` は
+両者を AST で突き合わせ、「片方だけ直しても両方のテストが緑」を防いでいた。
 
-agent-herd が 3 adapter を 1 つの zipapp に畳んだので複製の理由が消え、実装は
+agent-herd が adapter を 1 つの zipapp に畳んだので複製の理由が消え、実装は
 `agentcore.hostenv` 1 つになった。だから縛るものが変わる——**一致**ではなく
 **同一オブジェクトであること**（＝写しが復活していないこと）を縛る。
 """
@@ -16,11 +16,11 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from agentcore import aider_adapter, hostenv, ollama_adapter, opencode_adapter  # noqa: E402
+from agentcore import aider_adapter, hostenv, ollama_adapter  # noqa: E402
 
 SHARED = ("_complete_ollama_env", "_import_profile_env", "load_profile_env")
 CONSTANTS = ("_PROFILE_ENV_PREFIXES", "_PROFILE_ENV_EXACT")
-USERS = {"ollama": ollama_adapter, "aider": aider_adapter, "opencode": opencode_adapter}
+USERS = {"ollama": ollama_adapter, "aider": aider_adapter}
 
 
 class HostenvIsTheOnlyImplementationTests(unittest.TestCase):

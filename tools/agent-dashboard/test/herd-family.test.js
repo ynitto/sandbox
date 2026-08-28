@@ -35,7 +35,6 @@ writeAgent('ollama-verify', {
   name: 'ollama-verify', command: ['agent-ollama', '--format', 'json', '{model}'],
   default_model: 'gemma4:12b',
 });
-writeAgent('opencode', { name: 'opencode', command: ['agent-herd', 'opencode'] });
 writeAgent('nova', { name: 'nova', command: ['nova-cli'], default_model: 'nova-1' });
 
 process.env.KIRO_AGENTS_DIR = agentsDir;
@@ -54,7 +53,7 @@ const qualifications = {
 };
 
 test('一族は command[0] が agent-herd の定義から機械的に決まる', () => {
-  assert.deepStrictEqual(herdFamily.members(cfg), ['aider', 'ollama', 'opencode']);
+  assert.deepStrictEqual(herdFamily.members(cfg), ['aider', 'ollama']);
   assert.ok(!herdFamily.members(cfg).includes('nova'), 'クラウド CLI は入口を通らない');
 });
 

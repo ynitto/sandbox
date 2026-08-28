@@ -149,7 +149,7 @@ fi
 
 info "エージェント CLI を確認しています..."
 FOUND_CLI=""
-for cli in kiro-cli claude copilot codex cursor-agent opencode; do
+for cli in kiro-cli claude copilot codex cursor-agent; do
   if command -v "$cli" &>/dev/null; then
     FOUND_CLI="$cli"
     ok "エージェント CLI を検出: $cli ($(command -v "$cli"))"
@@ -160,9 +160,7 @@ if [[ -z "$FOUND_CLI" ]]; then
   warn "エージェント CLI が見つかりません。stub モードでのみ動作します
   （agent-flow: --planner stub --executor stub / agent-amigos: --agent-cli stub）。
   実運用には kiro / claude / copilot / codex のいずれかが必要です。
-  それ以外は agents/<name>.json 定義で追加できます（契約: schemas/agent-cli.schema.json）。
-  ローカル推論（別 PC の ollama）で回すなら opencode を独立インストーラで入れられます:
-    bash tools/opencode/install.sh --ollama-host http://<推論する PC>:11434"
+  それ以外は agents/<name>.json 定義で追加できます（契約: schemas/agent-cli.schema.json）。"
 fi
 
 info "PyYAML を確認しています（任意）..."
@@ -249,12 +247,12 @@ done
 # ---------------------------------------------------------------------------
 # agent-herd — LAN の ollama を動かす実行系の入口（busybox 型 1 zipapp）
 # ---------------------------------------------------------------------------
-# 3 adapter（aider / ollama / opencode）は同じ agentcore を使い、同じ環境補完
-# （agentcore.hostenv）を必要とする。以前は agent-ollama だけが zipapp で、agent-aider と
-# agent-opencode は**単体ファイルのコピー**だったため agentcore を import できず、環境補完
-# のコードを複製で持っていた（「直すときは 3 箇所を揃えること」）。
+# adapter（aider / ollama）は同じ agentcore を使い、同じ環境補完
+# （agentcore.hostenv）を必要とする。以前は agent-ollama だけが zipapp で、agent-aider は
+# **単体ファイルのコピー**だったため agentcore を import できず、環境補完
+# のコードを複製で持っていた（「直すときは複数箇所を揃えること」）。
 #
-# ここでは 1 つの zipapp を作り、従来の 3 名をそれへの**ハードリンク**として置く。
+# ここでは 1 つの zipapp を作り、従来の別名をそれへの**ハードリンク**として置く。
 # basename(argv[0]) でサブコマンドへ振り分けるので、`agent-aider …` の打ち方も出力も
 # 従来どおりのまま、実装・版・配布は 1 つになる（「シムだけ古い」が構造的に起きない）。
 # 設計: docs/plans/2026-08-25-agent-herd-unified-entry-design.md §3 / §6。
@@ -281,11 +279,14 @@ chmod +x "${INSTALL_PREFIX}/agent-herd"
 rm -rf "${HERD_BUILD}"
 ok "インストールしました: ${INSTALL_PREFIX}/agent-herd（実行系の入口${RICH_NOTE}）"
 
-# 従来の 3 名は同じ実体を指すハードリンク。**互換シムではなく本体そのもの**なので、
+# 従来の別名は同じ実体を指すハードリンク。**互換シムではなく本体そのもの**なので、
 # 片方だけ古いという状態が作れない。ハードリンクが張れない FS（一部の Windows 共有・
 # 別デバイス跨ぎ）ではコピーへ落とす——その場合だけは入れ直しで両方が更新される必要が
-# あるが、このインストーラは常に 4 つ全部を書き直すので実害は無い。
-for alias in agent-aider agent-ollama agent-opencode; do
+# あるが、このインストーラは常に全部を書き直すので実害は無い。
+# opencode は同梱を外した（設計 2026-08-27 §6）。過去の入れ直しで残った別名は
+# 古い zipapp を指し続ける罠になるので、ここで消す。
+rm -f "${INSTALL_PREFIX}/agent-opencode"
+for alias in agent-aider agent-ollama; do
   rm -f "${INSTALL_PREFIX}/${alias}"
   if ln "${INSTALL_PREFIX}/agent-herd" "${INSTALL_PREFIX}/${alias}" 2>/dev/null; then
     ok "インストールしました: ${INSTALL_PREFIX}/${alias}（agent-herd への別名）"

@@ -95,7 +95,7 @@ python3 tools/agent-tools/eval/recommend.py \
 python3 tools/agent-tools/eval/recommend.py --print-diff --control-dir ~/.agents/control
 ```
 
-**実行レベルのローカル候補は `herd` の 1 語である。** `aider` / `ollama` / `opencode` の
+**実行レベルのローカル候補は `herd` の 1 語である。** `aider` / `ollama` の
 どれをどのモデルで使うかは用途ごとに違い（抽出は e4b・レビューは 12b・コード編集は aider の
 e4b）、それを知っているのは実測なので、推奨も具体名を書かない。一族は
 `agents/<name>.json` の `command[0] == "agent-herd"` で機械的に決まる。クラウドは実測できない

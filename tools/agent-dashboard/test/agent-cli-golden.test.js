@@ -88,11 +88,6 @@ const GOLDEN = {
             '--max-rounds', '30', '--command-timeout', '900'],
     readonly: ['agent-herd', 'ollama', '--think', 'off', 'M'],
   },
-  opencode: {
-    write: ['agent-herd', 'opencode', '--auto', '--model', 'M'],
-    readonly: ['agent-herd', 'opencode', '--agent', 'plan', '--model', 'M'],
-    interactive: ['opencode', '--model', 'M'],
-  },
 };
 
 test('同梱定義から出る argv が Python ローダと一致する', () => {
@@ -146,7 +141,7 @@ test('同梱定義がすべて読める（壊れた定義を同梱しない）',
 // 個別の値をスナップショットしても不変条件は守れないので、全定義を読んで関係を確かめる。
 const LOCAL_ENGINES = new Set([
   'aider', 'ollama', 'ollama-json', 'ollama-list', 'ollama-list-thinking', 'ollama-read',
-  'ollama-verify', 'opencode',
+  'ollama-verify',
 ]);
 
 test('相対コストは全同梱定義で宣言され、ローカル < クラウドの関係を保つ', () => {

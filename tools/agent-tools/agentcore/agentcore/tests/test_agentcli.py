@@ -94,7 +94,7 @@ class TestSlashNative(_Isolated):
 
     def test_bundled_definitions_declare_it(self):
         """同梱定義は代理に頼らず自分で言う（ファイルが振る舞いを説明する）。"""
-        for name in ("claude", "codex", "kiro", "copilot", "cursor", "ollama", "opencode"):
+        for name in ("claude", "codex", "kiro", "copilot", "cursor", "ollama"):
             self.assertIs(json.loads((BUNDLED / f"{name}.json").read_text(
                 encoding="utf-8")).get("slash_native"), True, name)
         for name in ("aider", "vscode-copilot"):
@@ -340,8 +340,6 @@ class TestReadonlyWarningAndErrors(_Isolated):
             ("codex", "Too many requests; reset at 2026-08-09T03:00:00+09:00",
              "rate_limit", "2026-08-08T18:00:00Z"),
             ("cursor", "Usage limit reached", "exhausted", None),
-            ("opencode", "Rate limit, try again in 2 minutes", "rate_limit",
-             "1970-01-01T00:02:00Z"),
         ]
         for name, message, kind, reset_at in cases:
             result = agentcli.classify_error(
@@ -414,11 +412,6 @@ class TestBundledGolden(_Isolated):
             "write": ["agent-herd", "ollama", "--think", "off", "M", "--tools", "read",
                       "--max-rounds", "30", "--command-timeout", "900"],
             "readonly": ["agent-herd", "ollama", "--think", "off", "M"],
-        },
-        "opencode": {
-            "write": ["agent-herd", "opencode", "--auto", "--model", "M"],
-            "readonly": ["agent-herd", "opencode", "--agent", "plan", "--model", "M"],
-            "interactive": ["opencode", "--model", "M"],
         },
     }
 

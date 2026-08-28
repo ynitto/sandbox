@@ -15,7 +15,6 @@ _TURN_HOOK_ASSETS = {
     "kiro": ("kiro/agent-loop.json",),
     "claude": ("claude/.claude-plugin/plugin.json", "claude/hooks/hooks.json"),
     "copilot": ("copilot/plugin.json", "copilot/hooks.json"),
-    "opencode": ("opencode/plugins/agent-loop.js",),
 }
 
 

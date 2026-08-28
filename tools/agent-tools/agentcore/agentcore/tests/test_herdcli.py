@@ -28,8 +28,7 @@ _REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."
 class Argv0DispatchTests(unittest.TestCase):
     def test_each_distributed_name_resolves_to_its_adapter(self):
         for prog, expected in (("agent-aider", "aider"),
-                               ("agent-ollama", "ollama"),
-                               ("agent-opencode", "opencode")):
+                               ("agent-ollama", "ollama")):
             sub, rest = herdcli.resolve(f"/usr/local/bin/{prog}", ["--model", "m"])
             self.assertEqual((sub, rest), (expected, ["--model", "m"]), prog)
 
@@ -124,7 +123,7 @@ class SubcommandNamespaceTests(unittest.TestCase):
 
     def test_adapter_names_are_not_definition_names(self):
         """この分離が守られているか（ollama-json が adapter に化けていないか）。"""
-        self.assertEqual(set(herdcli.ADAPTERS), {"aider", "ollama", "opencode"})
+        self.assertEqual(set(herdcli.ADAPTERS), {"aider", "ollama"})
 
 
 class DefsTests(unittest.TestCase):
@@ -173,7 +172,7 @@ class DefsTests(unittest.TestCase):
         rc = herdcli.cmd_defs(["--json"], out=out)
         self.assertEqual(rc, 0)
         names = json.loads(out.getvalue())["definitions"]
-        for expected in ("aider", "ollama", "claude", "opencode"):
+        for expected in ("aider", "ollama", "claude"):
             self.assertIn(expected, names)
         # 用途別の起動形は profile なので、一覧は**実エージェント数**になる。
         # ここが増えると、運用者にはクラウド CLI と並ぶ別エージェントに見える。
@@ -477,7 +476,7 @@ class TopLevelFlagsTests(unittest.TestCase):
 
     def test_every_old_subcommand_is_still_reachable(self):
         """従来の綴りは別名として温存する（仕様書 §3 を壊さない）。"""
-        for sub in ("aider", "ollama", "opencode", "defs", "exec", "chat", "harness",
+        for sub in ("aider", "ollama", "defs", "exec", "chat", "harness",
                     "status", "follow", "replay"):
             self.assertFalse(herdcli._is_toplevel_invocation(sub), sub)
             self.assertIn(sub, herdcli.HELP, sub)

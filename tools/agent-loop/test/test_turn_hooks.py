@@ -84,13 +84,13 @@ class TurnHookMailboxTest(unittest.TestCase):
             "pane_id": "%7",
             "dispatch_id": "dispatch-1",
             "generation": 3,
-            "agent_cli": "opencode",
+            "agent_cli": "codex",
             "hook_token": "secret",
         }
         env = {
             "AGENT_LOOP_INSTANCE_ID": "instance-1",
             "AGENT_LOOP_HOOK_TOKEN": "secret",
-            "AGENT_LOOP_AGENT_CLI": "opencode",
+            "AGENT_LOOP_AGENT_CLI": "codex",
             "TMUX_PANE": "%7",
         }
         with tempfile.TemporaryDirectory() as tmp, \
@@ -98,14 +98,14 @@ class TurnHookMailboxTest(unittest.TestCase):
              mock.patch.dict(os.environ, env):
             al.write_turn_hook_active(**hook)
             self.assertTrue(al.record_turn_hook_event(
-                adapter="opencode", status="failure-hint",
+                adapter="codex", status="failure-hint",
                 native_event="session.error",
             ))
             self.assertIsNone(al.claim_turn_hook_event(
                 "instance-1", "%7", "dispatch-1", 3,
             ))
             self.assertTrue(al.record_turn_hook_event(
-                adapter="opencode", status="complete",
+                adapter="codex", status="complete",
                 native_event="session.idle",
             ))
             event = al.claim_turn_hook_event(
@@ -234,13 +234,13 @@ class TurnHookMailboxTest(unittest.TestCase):
             "instance_id": "instance-1",
             "dispatch_id": "dispatch-1",
             "generation": 3,
-            "agent_cli": "opencode",
+            "agent_cli": "codex",
             "hook_token": "secret",
         }
         env = {
             "AGENT_LOOP_INSTANCE_ID": "instance-1",
             "AGENT_LOOP_HOOK_TOKEN": "secret",
-            "AGENT_LOOP_AGENT_CLI": "opencode",
+            "AGENT_LOOP_AGENT_CLI": "codex",
             "TMUX_PANE": "%7",
         }
         with tempfile.TemporaryDirectory() as tmp, \
@@ -251,7 +251,7 @@ class TurnHookMailboxTest(unittest.TestCase):
                           profile=profile, turn_hook=hook)
             monitor._pending["%7"]["state"] = "processing"
             al.record_turn_hook_event(
-                adapter="opencode", status="failure-hint",
+                adapter="codex", status="failure-hint",
                 native_event="session.error",
             )
             with mock.patch.object(al.subprocess, "run", return_value=mock.Mock(returncode=0)), \

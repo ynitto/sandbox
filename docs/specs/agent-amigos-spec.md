@@ -326,9 +326,8 @@ LLM 実行は [`agent-cli`](../../schemas/agent-cli.schema.json) のプラグイ
 （amigos 側の `agentcli.py` は薄い再輸出）。amigos 側に CLI 分岐コードは書きません。
 
 同梱定義はリポジトリ直下 `agents/` にあり、**base 8 種**（`aider` / `claude` / `codex` /
-`copilot` / `cursor` / `kiro` / `ollama` / `opencode`）と、用途別変種 5 種
-（`ollama-json` / `ollama-list` / `ollama-list-thinking` / `ollama-read` / `ollama-verify`）の
-計 13 ファイルです。amigos は headless 呼び出し（1 ターン 1 回・封筒を返させる）なので、
+`copilot` / `cursor` / `kiro` / `ollama` / `vscode-copilot`）です。用途別の起動差は
+`ollama` の `profiles`（`json` / `list` / `list-thinking` / `read` / `verify`）が持ちます。amigos は headless 呼び出し（1 ターン 1 回・封筒を返させる）なので、
 `interactive` 節の有無は問いません。
 
 **CLI の解決順は 管理面 > ノード既定 > ロール指定** です。管理面は

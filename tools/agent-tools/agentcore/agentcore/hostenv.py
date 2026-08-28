@@ -3,7 +3,7 @@
 ## なぜ独立したモジュールなのか
 
 `~/.profile` からの `OLLAMA_*` 補完とプロキシ迂回は、**LAN 上の ollama を叩く 3 つの
-adapter すべて**（`ollama_adapter` / `aider_adapter` / `opencode_adapter`）が起動時に
+adapter すべて**（`ollama_adapter` / `aider_adapter`）が起動時に
 必要とする。以前は `ollama_adapter` を正典とし、単体ファイルで配っていた 2 つが同じ
 コードを複製して持ち、「直すときは 3 箇所を揃えること」という注記と AST 比較テストで
 ずれを検出していた。

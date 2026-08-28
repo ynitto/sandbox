@@ -117,7 +117,7 @@ node-budgetの追記専用台帳だけ。transcript 本文は
 1 ファイル = 1 セッションで、先頭 1 行の `type: meta` がエージェント CLI・モデル・
 期間・実測トークン・`record_id`（records の kind:session と同じ冪等キー）を持ち、
 以降の `type: message` 行がクリーニング済みの会話本文。どの CLI（claude / codex /
-kiro / opencode / ollama …）のセッションも同じ形になるので、解析モジュールは CLI 差を
+kiro / ollama …）のセッションも同じ形になるので、解析モジュールは CLI 差を
 知らずに読める。
 
 - **期間**: `collect --since <ISO8601>` で収集対象を絞れる。収集は増分・冪等なので、
