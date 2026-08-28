@@ -189,7 +189,13 @@ def _urlopen(req: urllib.request.Request, timeout: float):
             message = exc.reason
         raise RuntimeError(f"bridge error ({exc.code}): {message}") from exc
     except urllib.error.URLError as exc:
+        if isinstance(exc.reason, TimeoutError):
+            raise RuntimeError(f"bridge への接続がタイムアウトしました（--timeout {timeout:g}）") from exc
         raise RuntimeError(f"bridge に接続できません: {exc.reason}") from exc
+    except TimeoutError as exc:
+        # 応答待ちのタイムアウトは URLError に包まれず素で上がってくる。
+        raise RuntimeError(
+            f"応答が {timeout:g} 秒以内に返りませんでした（--timeout で伸ばせます）") from exc
 
 
 def request(endpoint: dict[str, object], messages: list[dict[str, str]], family: str | None,
@@ -276,6 +282,47 @@ def parse_tool_input(raw: str) -> dict:
     if not isinstance(value, dict):
         raise RuntimeError("--input は JSON オブジェクトで渡してください")
     return value
+
+
+# --agent が使うツール。ここだけは名前を知っている——だから使う前に実物のスキーマと
+# 突き合わせる（下の check_agent_input）。素の入口は --call で、そちらは何も知らない。
+AGENT_TOOL = "runSubagent"
+
+
+def derive_description(prompt: str) -> str:
+    """runSubagent が要求する短い説明を依頼文から作る。
+
+    人が読む見出しなので、モデルを呼んでまで作らない（1 手番ぶんの枠を使わない）。
+    """
+    text = " ".join(prompt.split())
+    return text[:40] if text else "task"
+
+
+def agent_input(prompt: str, description: str | None, agent_name: str | None) -> dict:
+    payload = {"prompt": prompt, "description": description or derive_description(prompt)}
+    if agent_name:
+        payload["agentName"] = agent_name
+    return payload
+
+
+def check_agent_input(tool: dict, payload: dict) -> None:
+    """--agent が組む形が実物のスキーマと合っているか確かめる。
+
+    スキーマは VS Code のものなので、こちらの都合で変わらない。合わなくなったら
+    黙って壊れた入力を送らず、素の --call へ案内する。
+    """
+    schema = tool.get("inputSchema") or {}
+    missing = set(schema.get("required") or []) - set(payload)
+    if missing:
+        raise RuntimeError(
+            f"{AGENT_TOOL} の必須項目を --agent が埋められません: {', '.join(sorted(missing))}"
+            f"（--call {AGENT_TOOL} で直接渡してください）")
+    properties = schema.get("properties")
+    unknown = set(payload) - set(properties) if properties else set()
+    if unknown:
+        raise RuntimeError(
+            f"{AGENT_TOOL} が受け取らない項目を --agent が渡そうとしています: "
+            f"{', '.join(sorted(unknown))}（--call {AGENT_TOOL} で直接渡してください）")
 
 
 def format_tools(payload: dict) -> str:
@@ -389,6 +436,13 @@ def main() -> int:
     parser.add_argument("--json", action="store_true", help="モデル情報を含む JSON を出力")
     parser.add_argument("--tools", action="store_true",
                         help="VS Code に登録されているツールの一覧を出す（vscode.lm.tools）")
+    parser.add_argument("--agent", metavar="TASK",
+                        help=f"タスクを VS Code のエージェント（{AGENT_TOOL}）へ丸ごと投げる"
+                             "（- で標準入力から読む）")
+    parser.add_argument("--agent-name", metavar="NAME",
+                        help="呼ぶエージェント名（省略時は VS Code の既定エージェント）")
+    parser.add_argument("--description", metavar="TEXT",
+                        help="--agent の短い説明（省略時は依頼文から作る）")
     parser.add_argument("--call", metavar="TOOL",
                         help="ツールを 1 つ呼ぶ。--input を省くと inputSchema を表示する")
     parser.add_argument("--input", metavar="JSON",
@@ -402,7 +456,7 @@ def main() -> int:
     parser.add_argument("--code-bin", default="code", help="Windows側のcode command（既定: code）")
     args = parser.parse_args()
     # 端末から引数なしで起動したら対話。パイプ入力は従来どおり片道実行のまま。
-    one_off = args.tools or args.call
+    one_off = args.tools or args.call or args.agent
     interactive = args.interactive or (args.prompt is None and not one_off and sys.stdin.isatty())
     if interactive and args.json:
         parser.error("--json は対話モードでは使えません")
@@ -417,6 +471,20 @@ def main() -> int:
         if args.tools:
             payload = fetch_tools(endpoint, args.timeout)
             print(json.dumps(payload, ensure_ascii=False) if args.json else format_tools(payload))
+            return 0
+        if args.agent:
+            prompt = sys.stdin.read() if args.agent == "-" else args.agent
+            if not prompt.strip():
+                raise RuntimeError("--agent の依頼文が空です")
+            payload = agent_input(prompt, args.description, args.agent_name)
+            tool = find_tool(fetch_tools(endpoint, args.timeout), AGENT_TOOL)
+            if tool is None:
+                raise RuntimeError(
+                    f"この VS Code には {AGENT_TOOL} がありません"
+                    "（--tools で一覧。無い環境ではエージェントを丸投げできません）")
+            check_agent_input(tool, payload)
+            result = call_tool(endpoint, AGENT_TOOL, payload, args.timeout)
+            print(json.dumps(result, ensure_ascii=False) if args.json else result["text"])
             return 0
         if args.call:
             if args.input is None:
