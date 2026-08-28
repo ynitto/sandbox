@@ -240,6 +240,7 @@ def _agent_for(purpose: str) -> "tuple[str, str | None]":
     cli = str(ov.get("agent_cli") or _AGENT_CLI).lower()
     model = ov.get("model") or None
     configured_model = bool(model)
+    by_purpose = False
     # 候補ベース（version 2）: selection_policy があれば Resolver の決定が control 層を
     # 置き換える。park のときは candidate を変えない——実行は run_agent の環境ガードが
     # 実行前に止めるので、ここで legacy / 縮退候補へ黙って降格しない（設計 §6.6 / §5.2）。
@@ -257,8 +258,7 @@ def _agent_for(purpose: str) -> "tuple[str, str | None]":
             # 用途を知らない共通の順位表（flat な candidates）由来のときは従来どおり
             # ——そちらの model は用途を見ていないので、変種の用途専用チューニングの
             # ほうが良い推定である。
-            if decision.get("purpose"):
-                configured_model = True
+            by_purpose = bool(decision.get("purpose"))
         # 縮退（degraded）は legacy の口。候補ベースでは Compiler の strategy が消費を
         # 織り込んで rank を出すので、二重に重ねない。
     else:
@@ -285,7 +285,7 @@ def _agent_for(purpose: str) -> "tuple[str, str | None]":
     if run_ov.get("model"):
         model = str(run_ov["model"])
     routed = _slashroute.resolve(command=purpose, cli=cli, model=model,
-                                 explicit_model=explicit_model)
+                                 explicit_model=explicit_model, by_purpose=by_purpose)
     return routed["agent_cli"], routed["model"]
 
 

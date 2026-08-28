@@ -488,6 +488,28 @@ class GoalToolLoopTest(unittest.TestCase):
                     acceptance=["`out.md` が更新されている"])
         self.assertEqual(seen, ["jsonner", "editor"])
 
+    def test_a_pinned_model_survives_the_control_variant_default(self):
+        """呼び出し元が名指ししたモデルは、変種の既定で上書きしない（設計 2026-08-27 G4）。
+
+        ハーネスには用途別の順位表（`selection_policy.by_purpose`）を読む口が無い
+        ——`by_purpose` 由来の決定はここへ届かないので、調停で守るべきなのは
+        「呼び出し元の明示」だけである。届く経路が増えたときに `by_purpose=` を
+        渡し忘れると静かに壊れる、という一点をここで縛る。
+        """
+        _write_cli(self.dir, "editor3", {
+            "command": ["editor3"], "prompt_via": "argv", "prompt_flag": "--message",
+            "variants": {"planner": "jsonner3"}, "headless_autonomy": "single-shot",
+        })
+        _write_cli(self.dir, "jsonner3", {
+            "command": ["jsonner3"], "prompt_via": "stdin", "model": "variant-default",
+            "headless_autonomy": "single-shot",
+        })
+        agent = tl._tl_resolve_agent("editor3", "pinned-model", self.dir)
+        self.assertEqual(tl._tl_control_agent(agent, self.dir)["model"], "pinned-model")
+        # 明示が無ければ従来どおり変種側の既定へ寄せる。
+        bare = tl._tl_resolve_agent("editor3", "", self.dir)
+        self.assertEqual(tl._tl_control_agent(bare, self.dir)["cli"], "jsonner3")
+
     def test_control_agent_falls_back_when_the_variant_is_missing(self):
         _write_cli(self.dir, "editor2", {
             "command": ["editor2"], "prompt_via": "argv", "prompt_flag": "--message",

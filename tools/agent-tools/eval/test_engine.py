@@ -50,12 +50,18 @@ class MissingEngineTests(unittest.TestCase):
         class _Cli:
             @staticmethod
             def resolve_variant(name, purpose):
-                return {"agent_cli": f"{name}-{purpose}", "default_model": None} if purpose == "split" else None
+                return ({"agent_cli": f"{name}-{purpose}", "default_model": None}
+                        if purpose in ("split", "verify") else None)
 
         stub = mock.Mock(spec=["_agentcli"])
         stub._agentcli = _Cli
         with mock.patch.object(engine, "_FLOW", stub):
             self.assertEqual(engine.cli_name_for("split"), "ollama-split")
+            # **`verify` は `LIST_CONTRACT_ROLES`（= {"split"}）の外側**である。ここを見ない
+            # と、役割の集合を再導入しても split だけで緑になってしまう——以前この関数は
+            # agent-flow の `VARIANT_ELIGIBLE_ROLES` を getattr で覗いており、消しただけでは
+            # 例外にならず手近な集合へ静かに落ちる形だった（測る側の地盤が黙って動く）。
+            self.assertEqual(engine.cli_name_for("verify"), "ollama-verify")
             self.assertEqual(engine.cli_name_for("planner"), "ollama")  # 申告の無い役割
         self.assertEqual(engine.missing(), [])
 

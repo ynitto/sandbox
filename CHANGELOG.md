@@ -7,6 +7,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-tools: 用途別順位表の決定が届く経路を 4 つとも縛った
+
+設計: [2026-08-27 クラウド CLI を正とした入口の再構成](./docs/plans/2026-08-27-agent-herd-cloud-cli-parity-slash-dispatch-design.md)
+§3.3 / G4（実装計画 段 2 の追補）。仕様は [agent-cli 仕様書](./docs/specs/agent-cli-spec.md) §4.1。
+
+- agent-flow が `by_purpose` 由来の決定を `explicit_model` に畳んで渡していたのを、
+  ルータの `by_purpose` 引数で渡すようにした。**振る舞いは同じ**（どちらも変種の既定を
+  止める）だが、「人が明示した」と「用途別の実測が選んだ」が同じ 1 語に潰れていた。
+- **届かない経路をテストで縛った。** 用途別順位表を読む口を持つのは agent-flow だけで、
+  agent-project / agent-audit / ハーネスは legacy の `agents:` 層しか見ない。今は
+  `by_purpose` のモデルが「明示でないモデル」として紛れ込む余地が無いが、そこへ
+  `selection_policy` を教えるときに `by_purpose` を渡し忘れると静かに壊れる——
+  4 経路それぞれのテストがその一点を縛る。
+- 測る側（`eval/engine.py`）の許可リスト撤去を**外側の用途で**縛り直した。以前のテストは
+  `split` しか見ておらず、`LIST_CONTRACT_ROLES`（＝ `{"split"}`）と偶然一致していたので、
+  役割の集合を再導入しても緑のままだった。`verify` を足して、評価の地盤が黙って動く形を
+  塞いだ。
+
 ### agent-loop: ペインで quota が枯れたことが管理面へ届くようになった
 
 設計: [2026-08-27 クラウド CLI を正とした入口の再構成](./docs/plans/2026-08-27-agent-herd-cloud-cli-parity-slash-dispatch-design.md)

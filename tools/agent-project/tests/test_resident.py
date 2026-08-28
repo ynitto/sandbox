@@ -298,6 +298,44 @@ class NodeBudgetV2AndControlTests(unittest.TestCase):
                        "tokens_out": 100}])                                          # +250 = 1050
         self.assertTrue(km._node_budget_state()["exceeded"])
 
+    def test_a_by_purpose_policy_never_reaches_project(self):
+        """用途別の順位表（`selection_policy.by_purpose`）は project へ届かない。
+
+        調停規則（設計 2026-08-27 G4）は「用途別の実測で選ばれたモデルを変種の既定で
+        上書きしない」だが、それを守れるのは**その決定を受け取る経路だけ**である。
+        project は version 2 の `selection_policy` を読まず、legacy の
+        `workloads[wl].agents` しか見ない——だから by_purpose のモデルが「明示ではない
+        モデル」として紛れ込み、変種の既定へ黙って戻ることが起きない。
+
+        ここが縛るのは、将来 project に `selection_policy` を教えるとき
+        **`by_purpose=` を一緒に渡さないと静かに壊れる**という一点である。
+        """
+        km._RUNTIME_CONFIG.agents = {}
+        self._control({
+            "version": 2,
+            "workloads": {"project": {"selection_policy": {
+                "strategy": "balanced", "retry_limit": 1, "no_candidate": "park",
+                "candidates": [{"agent_cli": "ollama", "model": "gemma4:e4b", "rank": 1}],
+                "by_purpose": {"plan": {"operations": ["bounded-review"],
+                                        "candidates": [{"agent_cli": "ollama",
+                                                        "model": "gemma4:12b",
+                                                        "rank": 1}]}},
+            }}},
+        })
+        # legacy の `agents:` が無いので上書きは 1 つも効かず、設定の既定のまま。
+        self.assertEqual(km._agent_for("plan"), ("kiro", None))
+
+    def test_a_control_selected_model_still_defers_to_the_variant_default(self):
+        """control が選んだモデルは「用途を問わずそのまま使う」という明示ではない。
+
+        by_purpose の実測と違い、こちらは用途を見ていないので変種の用途専用チューニング
+        のほうが良い推定である（agent-flow の flat candidates と同じ扱い）。
+        """
+        km._RUNTIME_CONFIG.agents = {}
+        self._control({"version": 1, "workloads": {"project": {"agents": {
+            "plan": {"agent_cli": "ollama", "model": "qwen3:8b"}}}}})
+        self.assertEqual(km._agent_for("plan"), ("ollama-json", "gemma4:e4b"))
+
     def test_control_override_and_lifecycle(self):
         self._control({"version": 1, "revision": 3,
                        "workloads": {"project": {"agents": {"plan": {"model": "opus"}}}}})

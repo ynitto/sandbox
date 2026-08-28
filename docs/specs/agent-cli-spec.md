@@ -195,6 +195,13 @@ agent-audit は 2 用途）。定義が 15 用途を申告しても引かれな�
 | 用途別順位表（`selection_policy.by_purpose`）由来の決定 | **しない** | その用途の実測（operation_class 別の格付け）で選ばれているから。上書きすると、judge で bounded-review の裏付けを持つモデルが選ばれたのに、変種の既定で **blocked と実測されているモデル**へ黙って戻る |
 | agent-control / tier の自動割り当て・縮退指定・用途を知らない共通候補列 | **する** | 「その CLI を用途を問わずそのまま使う」という明示ではないので、変種の用途専用チューニングのほうが良い推定 |
 
+**この調停は 1 実装（`agentcore.slashroute.resolve`）で、engine は用途の 1 語と
+「どの層がモデルを決めたか」の 2 つを渡すだけです。** 用途別順位表を読む口を持つのは
+agent-flow だけで、agent-project / agent-audit / ハーネスは legacy の `agents:` 層しか
+見ません——`by_purpose` 由来の決定はそこへ届かないので、「明示でないモデル」として
+紛れ込んで変種の既定へ戻ることが起きません。**これらへ `selection_policy` を教えるときは、
+同じ呼び出しで `by_purpose` を渡さないと静かに壊れます**（4 経路それぞれのテストが縛ります）。
+
 用途語彙は 15 個で、同梱定義（`ollama` / `aider`）の申告がこれを覆っています。
 
 ### 4.2 `fallbacks` は定義ではなくエンジンの設定
