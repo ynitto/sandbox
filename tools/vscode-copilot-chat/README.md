@@ -199,13 +199,10 @@ echo '{"prompt":"…"}' | vscode-copilot-chat --call runSubagent --input -
 `--input` を省くとそのツールの説明と `inputSchema` を表示します。まずこれを見てから
 渡す JSON を決めてください。
 
-`runSubagent`（VS Code 本体側のツール）が一覧に居る環境では、**エージェントループごと
-VS Code へ投げられます**——どのツールを呼ぶか決める部分を自作せずに済みます。居ない
-環境では `vscode.lm` の tool calling を自前で回すことになります。どちらになるかは
-`--tools` で確かめてください。
-
 呼び出しは chat request の外なので `toolInvocationToken` は `undefined` です。進捗 UI は
 出ませんが**承認ダイアログは出ます**——ターミナル実行などはそこで人が止められます。
+
+エージェント丸投げ（`runSubagent`）だけは `--agent` という入口を用意しています——次節。
 
 応答は text part を連結した `text` と、種別を残した `content` です。
 
@@ -215,6 +212,39 @@ VS Code へ投げられます**——どのツールを呼ぶか決める部分�
 
 `type: "other"` は prompt-tsx など文字列で受け取れない part です。黙って捨てると
 空応答に見えるので種別だけ残します。
+
+## エージェントへ丸投げする
+
+`runSubagent`（VS Code 本体側のツール）が一覧に居る環境では、**エージェントループごと
+VS Code へ投げられます**——どのツールを呼ぶか決める部分を自作せずに済みます。
+
+```bash
+vscode-copilot-chat --agent "テストが落ちているので直して"
+vscode-copilot-chat --agent "この repo の構造を調べて" --agent-name Explore
+vscode-copilot-chat --agent - < task.md
+```
+
+| フラグ | 対応する項目 |
+|---|---|
+| `--agent TASK` | `prompt`（必須）。`-` で標準入力から読む |
+| `--description TEXT` | `description`（必須）。省略時は依頼文の先頭 40 文字から作る |
+| `--agent-name NAME` | `agentName`。省略時は VS Code の既定エージェント |
+
+`--agent-name` には VS Code のカスタムエージェント名も渡せます。**agent skills を
+列挙する API は無いのに、エージェントは名前で選べる**——`.github/agents/` に置いた
+カスタムエージェントは、この経路なら中身ごと使えます。
+
+`model` を指定したいときは `--call runSubagent` で直接渡してください。
+
+### `--agent` だけはツールの名前を知っている
+
+このツールに限り、CLI が `runSubagent` という名前と 2 つの必須項目を知っています。
+`--call` の「何も知らない」方針の例外なので、**送る前に実物のスキーマと突き合わせます**
+（必須項目が増えた・名前が変わった、を検出したら送らずに `--call` を案内する）。
+決め打ちが静かに壊れるのを防ぐためです。
+
+エージェントの実行は長くかかります。既定の応答待ちは 300 秒なので、足りなければ
+`--timeout` を伸ばしてください（切れると接続が落ち、VS Code 側もそこで止まります）。
 
 ## テスト
 

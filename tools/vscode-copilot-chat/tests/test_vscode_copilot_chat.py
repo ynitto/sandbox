@@ -555,3 +555,144 @@ def test_explicit_code_bin_is_not_second_guessed(tmp_path):
             assert False, "must fail"
         except RuntimeError as exc:
             assert "/my/code" in str(exc)
+
+
+# --- エージェントへ丸投げする（案3 の入口） -------------------------------------
+
+
+REAL_SUBAGENT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "prompt": {"type": "string"},
+        "description": {"type": "string"},
+        "agentName": {"type": "string"},
+        "model": {"type": "string"},
+    },
+    "required": ["prompt", "description"],
+}
+REAL_SUBAGENT_TOOL = {"name": "runSubagent", "description": "Run a subagent.",
+                      "inputSchema": REAL_SUBAGENT_SCHEMA}
+
+
+def test_agent_input_fills_both_required_fields():
+    payload = client.agent_input("テストを直して", None, None)
+    assert payload == {"prompt": "テストを直して", "description": "テストを直して"}
+    client.check_agent_input(REAL_SUBAGENT_TOOL, payload)
+
+
+def test_description_is_derived_without_calling_the_model():
+    long = "一行目です。\n二行目です。" + "あ" * 100
+    payload = client.agent_input(long, None, None)
+    assert len(payload["description"]) == 40
+    assert "\n" not in payload["description"]
+    # 空白だけの依頼でも空の description は作らない（required を満たせなくなる）。
+    assert client.agent_input("   ", None, None)["description"] == "task"
+
+
+def test_explicit_description_and_agent_name_win():
+    payload = client.agent_input("やって", "fix the tests", "Explore")
+    assert payload == {"prompt": "やって", "description": "fix the tests", "agentName": "Explore"}
+    client.check_agent_input(REAL_SUBAGENT_TOOL, payload)
+
+
+def test_agent_name_is_omitted_when_not_given():
+    assert "agentName" not in client.agent_input("やって", None, None)
+
+
+def test_check_agent_input_catches_a_new_required_field():
+    """スキーマが増えたら黙って壊れた入力を送らず、--call へ案内する。"""
+    tool = {"inputSchema": {**REAL_SUBAGENT_SCHEMA, "required": ["prompt", "description", "cwd"]}}
+    try:
+        client.check_agent_input(tool, client.agent_input("やって", None, None))
+        assert False, "a new required field must be reported"
+    except RuntimeError as exc:
+        assert "cwd" in str(exc) and "--call" in str(exc)
+
+
+def test_check_agent_input_catches_a_renamed_field():
+    tool = {"inputSchema": {"properties": {"prompt": {}, "summary": {}},
+                            "required": ["prompt"]}}
+    try:
+        client.check_agent_input(tool, client.agent_input("やって", None, None))
+        assert False, "a renamed field must be reported"
+    except RuntimeError as exc:
+        assert "description" in str(exc) and "--call" in str(exc)
+
+
+def test_check_agent_input_accepts_a_schema_without_properties():
+    client.check_agent_input({"inputSchema": {}}, client.agent_input("やって", None, None))
+
+
+def _main_agent(argv, *, tools, stdin_text=""):
+    stdin = mock.Mock()
+    stdin.isatty.return_value = True
+    stdin.read.return_value = stdin_text
+    with mock.patch.object(client.sys, "argv", ["vscode-copilot-chat", *argv]), \
+         mock.patch.object(client.sys, "stdin", stdin), \
+         mock.patch.object(client, "read_endpoint", return_value={"url": "u", "token": "t"}), \
+         mock.patch.object(client, "repl", return_value=0) as repl, \
+         mock.patch.object(client, "fetch_tools", return_value=tools), \
+         mock.patch.object(client, "call_tool", return_value={"text": "done"}) as call:
+        code = client.main()
+    return code, repl, call
+
+
+def test_agent_invokes_run_subagent():
+    code, repl, call = _main_agent(["--agent", "テストを直して"],
+                                   tools={"tools": [REAL_SUBAGENT_TOOL]})
+    assert code == 0 and not repl.called
+    assert call.call_args.args[1] == "runSubagent"
+    assert call.call_args.args[2] == {"prompt": "テストを直して", "description": "テストを直して"}
+
+
+def test_agent_reads_the_task_from_stdin_with_a_dash():
+    code, _, call = _main_agent(["--agent", "-"], tools={"tools": [REAL_SUBAGENT_TOOL]},
+                                stdin_text="長い依頼文")
+    assert code == 0
+    assert call.call_args.args[2]["prompt"] == "長い依頼文"
+
+
+def test_agent_passes_the_agent_name_through():
+    code, _, call = _main_agent(["--agent", "調べて", "--agent-name", "Explore"],
+                                tools={"tools": [REAL_SUBAGENT_TOOL]})
+    assert code == 0
+    assert call.call_args.args[2]["agentName"] == "Explore"
+
+
+def test_agent_says_so_when_the_tool_is_absent():
+    code, _, call = _main_agent(["--agent", "やって"], tools={"tools": []})
+    assert code == 1 and not call.called
+
+
+def test_agent_refuses_an_empty_task():
+    code, _, call = _main_agent(["--agent", "   "], tools={"tools": [REAL_SUBAGENT_TOOL]})
+    assert code == 1 and not call.called
+
+
+def test_agent_does_not_invoke_when_the_schema_moved():
+    moved = {"name": "runSubagent",
+             "inputSchema": {"properties": {"prompt": {}}, "required": ["prompt", "cwd"]}}
+    code, _, call = _main_agent(["--agent", "やって"], tools={"tools": [moved]})
+    assert code == 1 and not call.called
+
+
+# --- タイムアウトの伝え方 -------------------------------------------------------
+
+
+def test_read_timeout_points_at_the_timeout_flag():
+    with mock.patch.object(client.urllib.request, "urlopen", side_effect=TimeoutError()):
+        try:
+            client._urlopen(mock.Mock(), 12)
+            assert False, "timeout must raise"
+        except RuntimeError as exc:
+            assert "12 秒" in str(exc) and "--timeout" in str(exc)
+
+
+def test_connect_timeout_is_reported_as_a_timeout_too():
+    error = client.urllib.error.URLError(TimeoutError())
+    with mock.patch.object(client.urllib.request, "urlopen", side_effect=error):
+        try:
+            client._urlopen(mock.Mock(), 5)
+            assert False, "timeout must raise"
+        except RuntimeError as exc:
+            assert "タイムアウト" in str(exc)
