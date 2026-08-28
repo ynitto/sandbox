@@ -368,7 +368,7 @@ def normalize(name: str, raw: dict, path) -> dict:
             raise AgentCliError(
                 f"エージェント定義 {path}: interactive.prompt_inject は send-keys か file です")
         turn_completion = str(inter_raw.get("turn_completion") or "")
-        if turn_completion not in ("", "kiro", "claude", "codex", "copilot", "opencode"):
+        if turn_completion not in ("", "kiro", "claude", "codex", "copilot", "opencode", "ollama"):
             raise AgentCliError(
                 f"エージェント定義 {path}: interactive.turn_completion が未知です: "
                 f"{turn_completion!r}")

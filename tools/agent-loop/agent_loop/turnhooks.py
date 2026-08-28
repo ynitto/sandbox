@@ -193,7 +193,9 @@ def prepare_turn_hook_launch(*, adapter: str, argv: list[str],
                              cwd: Path | None = None):
     """managed interactive CLIへsession-local hookだけを加算する。"""
     adapter = str(adapter)
-    if adapter not in {"kiro", "claude", "codex", "copilot", "opencode"}:
+    # ollama は**自前の TUI** なので hook 資産（プラグイン・設定ファイル）が要らない。
+    # 前面が我々のものなら、ターンの終わりに自分で `hook-event` を呼べる（設計 §7.3 A）。
+    if adapter not in {"kiro", "claude", "codex", "copilot", "opencode", "ollama"}:
         raise ValueError(f"unsupported turn-completion adapter: {adapter}")
     out_argv = list(argv)
     out_env = dict(env)

@@ -7,6 +7,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-herd / agent-loop: 自前 CLI のターン完了がネイティブイベントで届く
+
+設計: [2026-08-27 クラウド CLI を正とした入口の再構成](./docs/plans/2026-08-27-agent-herd-cloud-cli-parity-slash-dispatch-design.md)
+§7.3 A（実装計画 段 10）。仕様は [agent-loop 仕様書](./docs/specs/agent-loop-spec.md) §3.6。
+
+- `ollama` のペインは完了を**画面から**読んでいた（`busy_pattern` の「経過 N 秒」）。
+  完了検知は「画面を見る」より「本人が言う」ほうが確かなので、ターンの終わりに
+  TUI 自身が `agent-loop hook-event` を呼ぶようにした。画面監視は fallback に降りる。
+- **`ollama` だけは hook 資産が要らない。** ほかの adapter は相手の CLI のプラグイン機構へ
+  hook を差し込む必要があるが、`ollama` の対話面は**我々の実装**なので、同じコマンドを
+  直接叩ける。argv の書き換えも一時ファイルのコピーも無く、env を渡すだけで成り立つ。
+- 封筒の検証（instance / pane / dispatch / generation / HMAC）は**既存の 1 実装**が
+  そのまま効く。新しい経路は作っていない。
+- 人が Ctrl-C で止めたターンと例外で落ちたターンは `failure` として通知する
+  ——成果の無い実行を完了として記帳しないため。
+- 管理下のペインでなければ何もせず（env が無い）、通知に失敗しても対話は続く。
+
 ### agent-loop: 対話ペインでも受入条件が done の根拠になる
 
 設計: [2026-08-27 クラウド CLI を正とした入口の再構成](./docs/plans/2026-08-27-agent-herd-cloud-cli-parity-slash-dispatch-design.md)

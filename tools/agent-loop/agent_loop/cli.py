@@ -163,7 +163,7 @@ def main() -> None:
 
     hook_parser = subparsers.add_parser("hook-event", help=argparse.SUPPRESS)
     hook_parser.add_argument("--adapter", required=True,
-                             choices=["kiro", "claude", "codex", "copilot", "opencode"])
+                             choices=["kiro", "claude", "codex", "copilot", "opencode", "ollama"])
     hook_parser.add_argument("--status", required=True,
                              choices=["complete", "failure", "failure-hint"])
     hook_parser.add_argument("--native-event", default="")

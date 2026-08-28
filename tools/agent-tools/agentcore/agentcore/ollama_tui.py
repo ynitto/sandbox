@@ -34,6 +34,7 @@ sys.stdin/sys.stdout のとき）。パイプ入力・テスト・ログへの�
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -484,6 +485,33 @@ def repl(runner, *, model: str, tools: bool, think: "bool | None" = None,
         reader.close()
 
 
+# 完了検知は「画面を見る」より「本人が言う」ほうが確かである（設計 2026-08-27 §7.3 A）。
+# クラウド CLI は自分のプラグイン機構で `hook-event` を呼んでいるが、**この TUI は我々の
+# ものなので資産が要らない**——ターンの終わりに自分で同じコマンドを叩けばよい。これで
+# `busy_pattern`（「経過 N 秒」を画面から読む）は fallback に降りる。
+_TURN_HOOK_TIMEOUT_SEC = 5
+
+
+def _turn_hook(status: str) -> None:
+    """ターンの終わりを agent-loop の turn hook へ知らせる。
+
+    管理下のペインでなければ何もしない（env が無い）。**失敗しても対話は続ける**
+    ——知らせられなかったときは画面監視が拾うので、ここで落ちる理由が無い。
+    封筒の検証（instance / pane / generation / HMAC）は agent-loop 側が持つ。
+    """
+    executable = os.environ.get("AGENT_LOOP_EXECUTABLE") or ""
+    if not executable or not os.environ.get("AGENT_LOOP_INSTANCE_ID"):
+        return
+    try:
+        subprocess.run([executable, "hook-event", "--adapter", "ollama",
+                        "--status", status, "--native-event", "turn_end"],
+                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, check=False,
+                       timeout=_TURN_HOOK_TIMEOUT_SEC)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
 def _loop(reader, runner, *, model: str, tools: bool, think: "bool | None", out) -> int:
     while True:
         try:
@@ -553,11 +581,18 @@ def _loop(reader, runner, *, model: str, tools: bool, think: "bool | None", out)
         except KeyboardInterrupt:
             renderer.finish()
             print("（中断しました）", file=out)
+            # 人が止めたターンは done ではない。complete と言うと、成果の無い実行が
+            # 完了として記帳される。
+            _turn_hook("failure")
             continue
         except Exception as exc:
             renderer.finish()
             print(f"✖ {exc}", file=out)
+            _turn_hook("failure")
             continue
         renderer.finish()
         if body:
             print(body.rstrip("\n"), file=out)
+        # 知らせるのは**書き終えてから**。先に完了と言うと、本文を書いている最中に
+        # 次の dispatch が send-keys してくる。
+        _turn_hook("complete")

@@ -90,7 +90,7 @@ cowork の定常業務 tmux 実行だけで、定義解決に失敗しても `ki
 | `failure_pattern` | — | `agent-loop send --wait` の明示的な失敗。未指定なら pane / process 終了以外を推測しない |
 | `clear_command` | `/clear` | コンテキスト破棄コマンド（codex は `/new`、無い CLI は空文字） |
 | `prompt_inject` | — | 初回プロンプトの注入方法（`send-keys` \| `file`） |
-| `turn_completion` | `""` | ターン完了 hook のアダプタ。`kiro` / `claude` / `codex` / `copilot` / `opencode` のいずれか。未知の値は**起動時エラー** |
+| `turn_completion` | `""` | ターン完了 hook のアダプタ。`kiro` / `claude` / `codex` / `copilot` / `opencode` / `ollama` のいずれか。未知の値は**起動時エラー**。`ollama` は対話面が我々の実装なので hook 資産が要らず、env だけで成り立ちます |
 
 **待機判定の優先順位**は busy ＞ ready ＞ 静穏 ＞ 既定 busy でコード側に固定してあります。
 

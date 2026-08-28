@@ -56,7 +56,8 @@
     "ready_pattern": "^[[:space:]]*>[[:space:]]*$",
     "busy_pattern": "経過 [0-9]",
     "clear_command": "",
-    "prompt_inject": "send-keys"
+    "prompt_inject": "send-keys",
+    "turn_completion": "ollama"
   },
   "session_log": {
     "format": "jsonl-dir",

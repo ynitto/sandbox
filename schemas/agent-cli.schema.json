@@ -270,7 +270,8 @@
             "claude",
             "codex",
             "copilot",
-            "opencode"
+            "opencode",
+            "ollama"
           ],
           "description": "agent-loop が起動した対話プロセスへだけ注入するターン完了 hook adapter。省略時は画面監視だけを使う。"
         }
@@ -627,7 +628,8 @@
                   "claude",
                   "codex",
                   "copilot",
-                  "opencode"
+                  "opencode",
+                  "ollama"
                 ],
                 "description": "agent-loop が起動した対話プロセスへだけ注入するターン完了 hook adapter。省略時は画面監視だけを使う。"
               }

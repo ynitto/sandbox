@@ -489,6 +489,15 @@ acceptance:
 | `codex` | 一度きりの `--config notify=…`（既存 notify は多重化） | `agent-turn-complete` | pane の死亡と timeout |
 | `copilot` | `--plugin-dir` | `agentStop` | `errorOccurred(recoverable=false)` を hint として記録 |
 | `opencode` | plugin だけを置いた `OPENCODE_CONFIG_DIR` | `session.idle` | `session.error` を hint として記録 |
+| `ollama` | **資産なし**（env だけ）。前面が我々の TUI なので、ターンの終わりに自分で `hook-event` を呼ぶ | `turn_end` | 例外と中断（Ctrl-C）を `failure` として通知 |
+
+**`ollama` だけは資産が要りません。** ほかの adapter は相手の CLI のプラグイン機構へ
+hook を差し込む必要がありますが、`ollama` の対話面（`agent-herd ollama --tui`）は
+**我々の実装**なので、ターンの終わりに同じコマンドを直接叩けます。管理下の pane で
+なければ（env が無ければ）何もせず、通知に失敗しても対話は続きます——知らせられ
+なかったときは画面監視（`busy_pattern`）が拾うので、そこで落ちる理由がありません。
+人が Ctrl-C で止めたターンは `failure` として通知します（成果の無い実行を完了として
+記帳しないため）。
 
 hook は `agent-loop hook-event` を呼び、`~/.agents/loop-hooks/<instance-id>/` の mailbox（`active/<pane-id>.json` と `events/<dispatch-id>.json`、ディレクトリ `0700` / ファイル `0600`）へ書きます。SlotMonitor が画面判定より先にこれを claim し、既存の完了・失敗コールバックへ渡します。hook 自身はセマフォを解放しません。
 
@@ -633,7 +642,7 @@ headless 経路では次が変わります。黙って劣化させず、警告�
 
 ## 付録: テスト
 
-`tools/agent-loop/test/` に 50 ファイル・516 件。tmux とエージェント CLI はスタブへ差し替えるので、どちらも無い環境で全件が通ります（webhook だけは実 HTTP の E2E です）。
+`tools/agent-loop/test/` に 51 ファイル・523 件。tmux とエージェント CLI はスタブへ差し替えるので、どちらも無い環境で全件が通ります（webhook だけは実 HTTP の E2E です）。
 
 ```bash
 python3 -m unittest discover -s tools/agent-loop/test
