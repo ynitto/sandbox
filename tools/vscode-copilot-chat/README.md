@@ -214,6 +214,61 @@ $ vscode-copilot-chat --call runSubagent --input '{"prompt":"…","description":
 vscode-copilot-chat: runSubagent は chat request の中からしか呼べません（…）
 ```
 
+`--tools` に並ぶことと呼べることは別です。
+
+### 実測で分かっていること
+
+| ツール | chat の外から | 根拠 |
+|---|---|---|
+| `runSubagent` | **呼べない** | `toolInvocationToken is required for this tool` |
+| `copilot_applyPatch` `copilot_createFile` `copilot_createDirectory` `copilot_editNotebook` `copilot_createNewJupyterNotebook` `copilot_fetchWebPage` `copilot_createNewWorkspace` | 呼べる | トークンのエラーが返らず、ツール本体まで到達した |
+
+`copilot_*` 系の編集・読み取りツールはゲートされていません。**`vscode.lm` の tool calling を
+自前で回す形は成立します。**
+
+### 自動で総当たりしてはいけない
+
+**VS Code は入力をツールへ渡す前に検証しません。** `inputSchema` に `required` があっても、
+`{}` を渡すとそのままツール本体が動きます（多くは引数が `undefined` のまま自分のコードで
+落ちますが、**落ちる前に副作用を起こすものがあります**）。実際、`copilot_createNewWorkspace`
+に空入力を渡したところワークスペースが開き、拡張ホストごと bridge が落ちました。
+
+かつてここに `--probe`（空入力で総当たりして判定する）を置いていましたが、この前提が
+誤っていたため撤去しました。**安全な自動判定はありません。**
+
+調べるときは `--call` で **1 つずつ・有効な入力で・そのツールが実際に動くと理解した上で**
+呼んでください。読み取り専用のもの（`copilot_readFile` など）から試すのが安全です。
+
+## ツールを呼ぶ
+
+`POST /v1/tool` は `vscode.lm.invokeTool` をそのまま通します。CLI からは `--call` です。
+**何を渡すかはこちらでは決めません**——入力スキーマは VS Code が持っていて、検証も
+VS Code が行います。ツールごとの知識をこの repo に置くと、環境差で必ず古くなります。
+
+```bash
+vscode-copilot-chat --call runSubagent                        # inputSchema を見る
+vscode-copilot-chat --call runSubagent --input '{"prompt":"テストを直して"}'
+echo '{"prompt":"…"}' | vscode-copilot-chat --call runSubagent --input -
+```
+
+`--input` を省くとそのツールの説明と `inputSchema` を表示します。まずこれを見てから
+渡す JSON を決めてください。
+
+呼び出しは chat request の外なので `toolInvocationToken` は `undefined` です。進捗 UI は
+出ませんが**承認ダイアログは出ます**——ターミナル実行などはそこで人が止められます。
+
+### 一覧に並んでいても呼べないツールがある
+
+**`toolInvocationToken` を必須にしているツールは、この bridge からは呼べません。**
+このトークンは「chat participant が chat request を処理している文脈」でしか手に入らず、
+チャットの外から呼ぶ経路には存在しないためです。実機で確認できているのは
+`runSubagent` がこれに当たることです。
+
+```console
+$ vscode-copilot-chat --call runSubagent --input '{"prompt":"…","description":"…"}'
+vscode-copilot-chat: runSubagent は chat request の中からしか呼べません（…）
+```
+
 `--tools` に並ぶことと呼べることは別です。**どのツールがこの制約を持つかは `--probe`
 で調べられます。**
 
