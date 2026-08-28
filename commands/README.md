@@ -29,6 +29,7 @@ frontmatter は**平らな `key: value` だけ**です（agentcore は標準ラ�
 | `tools` | ツールセットを 1 つだけ。`[]`＝道具なし / `[read]` / `[bash]` |
 | `output` | 出力契約（`json` 等） |
 | `argument-hint` | `/help` の左列に出る引数の型 |
+| `system-template` / `instance-template` / `observation-template` / `format-error-template` | ツールループのプロンプト外出し（任意）。値はこの宣言ファイルからの**相対パス**で、テンプレート本文はそのファイルに書きます。未宣言ならコード内の既定のまま。使える置換キーは `{task}` `{cwd}` `{toolset}` `{done_marker}` `{exit_code}` `{output}` `{read_commands}` `{read_git_subcommands}`（未知の `{...}` はそのまま残ります） |
 
 ```markdown
 ---

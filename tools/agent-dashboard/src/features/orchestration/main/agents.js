@@ -31,7 +31,7 @@ const PROMPT_VIA_ENUM = ['stdin', 'argv'];
 const ERROR_CLASS_ENUM = ['quota', 'auth', 'env', 'transient'];
 const READONLY_ENUM = ['enforced', 'best-effort'];
 const HEADLESS_AUTONOMY_ENUM = ['tool-loop', 'single-shot'];
-const SESSION_LOG_FORMAT_ENUM = ['jsonl-dir', 'kiro-sqlite', 'opencode-sqlite'];
+const SESSION_LOG_FORMAT_ENUM = ['jsonl-dir', 'kiro-sqlite'];
 const STRING_ARRAY_FIELDS = ['command_suffix', 'write_args', 'readonly_args', 'no_session_args'];
 
 function expandHome(p) {

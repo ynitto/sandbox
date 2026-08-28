@@ -73,7 +73,7 @@ function document() {
       }],
     },
     herd: {
-      members: ['aider', 'ollama', 'opencode'],
+      members: ['aider', 'ollama'],
       expansion: [
         { agent_cli: 'ollama', model: 'gemma4:e4b', qualified_for: ['extract'], usable: true },
         { agent_cli: 'aider', model: 'gemma4:12b', qualified_for: [], usable: false },

@@ -420,7 +420,8 @@ def run_request(prompt: str, opts: dict, *, model: str = "", tools: "bool | None
                     model, prompt, cwd=opts.get("cwd"), emit=events.emit, think=think,
                     max_rounds=opts["max_rounds"], command_timeout=opts["command_timeout"],
                     tracker=tracker, toolset=toolset, fmt=fmt,
-                    think_prompt=think_prompt, **_limits(opts))
+                    think_prompt=think_prompt, templates=dict(launch.templates),
+                    **_limits(opts))
             else:
                 # 会話の本文を残す（tools 経路は run_loop が同じ `message` を出す）。
                 events.emit("message", role="user", content=prompt)

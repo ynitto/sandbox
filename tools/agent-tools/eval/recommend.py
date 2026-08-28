@@ -11,7 +11,7 @@
 **書かない**——配るのは読み取り専用の推奨までで、適用は管理面（agent-dashboard）と
 agent-audit が行う。
 
-**実行レベルの候補は `herd` の 1 語。** `aider` / `ollama` / `opencode` のどれを、
+**実行レベルの候補は `herd` の 1 語。** `aider` / `ollama` のどれを、
 どのモデルで使うかは用途ごとに違い、それを知っているのは実測である。人に 1 つ書かせると
 どれかの用途で必ず外れるので、推奨も具体名を書かない。クラウドだけは実測できないので
 **枠（slot）**として宣言し、値は適用時に人が選ぶ。
@@ -69,7 +69,7 @@ def _stamp(value: dt.datetime) -> str:
 def herd_members(project_dir=None) -> "list[str]":
     """この木で解決できる herd 一族の定義名。
 
-    綴りで判定せず、定義の `command[0]` を見る——一族に足された定義（opencode 等）が
+    綴りで判定せず、定義の `command[0]` を見る——一族に足された定義（ユーザー定義等）が
     自動で入り、クラウド CLI は自動で外れる。
     """
     from agentcore import agentcli

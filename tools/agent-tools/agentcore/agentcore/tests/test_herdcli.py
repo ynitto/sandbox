@@ -28,8 +28,7 @@ _REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."
 class Argv0DispatchTests(unittest.TestCase):
     def test_each_distributed_name_resolves_to_its_adapter(self):
         for prog, expected in (("agent-aider", "aider"),
-                               ("agent-ollama", "ollama"),
-                               ("agent-opencode", "opencode")):
+                               ("agent-ollama", "ollama")):
             sub, rest = herdcli.resolve(f"/usr/local/bin/{prog}", ["--model", "m"])
             self.assertEqual((sub, rest), (expected, ["--model", "m"]), prog)
 
@@ -124,7 +123,7 @@ class SubcommandNamespaceTests(unittest.TestCase):
 
     def test_adapter_names_are_not_definition_names(self):
         """この分離が守られているか（ollama-json が adapter に化けていないか）。"""
-        self.assertEqual(set(herdcli.ADAPTERS), {"aider", "ollama", "opencode"})
+        self.assertEqual(set(herdcli.ADAPTERS), {"aider", "ollama"})
 
 
 class DefsTests(unittest.TestCase):
@@ -173,7 +172,7 @@ class DefsTests(unittest.TestCase):
         rc = herdcli.cmd_defs(["--json"], out=out)
         self.assertEqual(rc, 0)
         names = json.loads(out.getvalue())["definitions"]
-        for expected in ("aider", "ollama", "claude", "opencode"):
+        for expected in ("aider", "ollama", "claude"):
             self.assertIn(expected, names)
         # 用途別の起動形は profile なので、一覧は**実エージェント数**になる。
         # ここが増えると、運用者にはクラウド CLI と並ぶ別エージェントに見える。
@@ -209,11 +208,13 @@ class ChatTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertTrue(launched[0], "対話 argv が空です")
 
-    def test_aider_gets_the_policy_but_not_the_headless_only_flags(self):
+    def test_aider_chat_opens_the_common_tui_with_the_policy(self):
         """対話で試したことがヘッドレスで再現しないのを防ぐ: policy は同じ経路で付く。
 
-        逆に、人が確認する場でヘッドレス専用の押し切り（--yes-always）や表示を殺すフラグ
-        （--no-stream / --no-pretty）は引き継がない。
+        段 12 で対話面は aider 素の TUI から**共通 TUI の aider バックエンド**になった
+        （設計 2026-08-27 §7.1）。1 入力 = aider 1 回のヘッドレス実行なので、ヘッドレスと
+        同じ押し切り（--yes-always）と表示制御（--no-stream / --no-pretty）を持つ。
+        `--message` だけは adapter がターンごとに付けるので、起動 argv には無い。
 
         この対話面を開通させるには先に agent-dashboard の弁別子を直す必要があった——
         あちらは `spec.interactive` の有無を「対話ペインで駆動できるか」の代理として読んで
@@ -226,11 +227,11 @@ class ChatTests(unittest.TestCase):
                               launcher=lambda argv: launched.append(argv) or 0)
         self.assertEqual(rc, 0)
         argv = launched[0]
+        self.assertIn("--tui", argv)
         self.assertIn("--agent-policy", argv)
         self.assertIn("gemma4-e4b-reliability-v1", argv)
         self.assertIn("ollama_chat/gemma4:e4b", argv)
-        for headless_only in ("--yes-always", "--no-stream", "--no-pretty", "--message"):
-            self.assertNotIn(headless_only, argv)
+        self.assertNotIn("--message", argv)
 
     def test_aider_stays_single_shot_so_the_harness_still_owns_its_routines(self):
         """対話面が付いても `headless_autonomy` は single-shot のまま。
@@ -477,7 +478,7 @@ class TopLevelFlagsTests(unittest.TestCase):
 
     def test_every_old_subcommand_is_still_reachable(self):
         """従来の綴りは別名として温存する（仕様書 §3 を壊さない）。"""
-        for sub in ("aider", "ollama", "opencode", "defs", "exec", "chat", "harness",
+        for sub in ("aider", "ollama", "defs", "exec", "chat", "harness",
                     "status", "follow", "replay"):
             self.assertFalse(herdcli._is_toplevel_invocation(sub), sub)
             self.assertIn(sub, herdcli.HELP, sub)

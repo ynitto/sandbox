@@ -73,7 +73,6 @@ LLM を使うのは **extract** と **distill**（と任意の review）だけ�
 |---|---|---|
 | `jsonl-dir` | 1 セッション = 1 `*.jsonl`（claude / codex / ollama 系） | 行直下に `role` / `content` を持つ行を会話として読む |
 | `kiro-sqlite` | `~/.kiro/store.db` | 1 行に会話配列が丸ごと入る |
-| `opencode-sqlite` | `~/.local/share/opencode/opencode.db` | session / message / part の 3 表。本文が part 行、役割が親の message 行、実測トークンが session 行の列 |
 
 パーサは `agent_audit/readers.py` に format ごと 1 実装です。**新しい CLI が既存 format なら
 JSON への追記だけで収集できます。**

@@ -23,8 +23,8 @@ os.environ["KIRO_SKILL_REGISTRY"] = os.path.join(tempfile.gettempdir(),
 os.environ["KIRO_AGENTS_DIR"] = os.path.join(tempfile.gettempdir(),
                                              "agent-audit-test-no-agents")
 # **同梱定義（リポジトリの agents/）は KIRO_AGENTS_DIR では消せない**——探索順の最後に
-# 必ず入るので、その `session_log.paths` の `~` が開発者の実ストア（~/.claude/projects や
-# ~/.local/share/opencode/opencode.db）を指す。実際にその CLI を使っている PC では
+# 必ず入るので、その `session_log.paths` の `~` が開発者の実ストア（~/.claude/projects など）
+# を指す。実際にその CLI を使っている PC では
 # 収集件数が環境依存になり、テストが落ちる。ホームごと一時ディレクトリへ逃がす。
 os.environ["HOME"] = tempfile.mkdtemp(prefix="agent-audit-test-home-")
 os.environ["USERPROFILE"] = os.environ["HOME"]

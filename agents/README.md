@@ -99,12 +99,12 @@ chat モードのように、人が `/skill-name` と書いたテキストを送
 | `failure_pattern` | `agent-loop send --wait`が明示的失敗とみなすERE。省略時はpane/process終了以外を推測しない |
 | `idle_quiet_sec` | どちらのパターンでも判定できない CLI 向けの静穏判定。画面が N 秒変化しなければ待機とみなす（0 = 無効） |
 | `clear_command` | コンテキスト破棄コマンド（既定 `/clear`、codex は `/new`）。空文字は「クリア手段なし」の宣言 |
-| `turn_completion` | agent-loop が管理する対話paneだけにCLI固有のsession-local完了hookを注入する。既知値は `kiro` / `claude` / `codex` / `copilot` / `opencode`。未指定時は画面監視のみ |
+| `turn_completion` | agent-loop が管理する対話paneだけにCLI固有のsession-local完了hookを注入する。既知値は `kiro` / `claude` / `codex` / `copilot` / `ollama`。未指定時は画面監視のみ |
 
 判定の優先順位: `busy_pattern` マッチ → 処理中 ＞ `ready_pattern` マッチ → 待機 ＞
 `idle_quiet_sec` 静穏 → 待機 ＞ それ以外 → 処理中。
 
-## 同梱の定義（14 件）
+## 同梱の定義（13 件）
 
 | ファイル | CLI | 読み取り専用の強制力 |
 |---|---|---|
@@ -120,16 +120,11 @@ chat モードのように、人が `/skill-name` と書いたテキストを送
 | `ollama-read.json` | 同上 + `--tools read` | enforced（write でも読み取り専用コマンドだけ） |
 | `ollama-verify.json` | 同上 + `--format json --stall-timeout 180` | enforced（道具なし。テキスト検証役。既定 gemma4:12b——負けは全部タイムアウトなので stall + transient 分類の再投入で受け、コード worker の候補には入れない） |
 | `aider.json` | `agent-aider`（aider + ollama_chat） | enforced（`--dry-run`）。single-shot——渡されたファイルを編集するだけでツールループを持たない |
-| `opencode.json` | `opencode run`（`agent-opencode` 経由） | best-effort（`--agent plan` は edit を拒むが bash は拒まない） |
 | `vscode-copilot.json` | `vscode-copilot-chat`（VS Code の Language Model API へ橋渡し） | enforced（モデルを呼ぶだけでファイルもコマンドも触らない）。single-shot——ツールを持たないので呼び出し側がループを供給する |
 
-`opencode.json` だけは本体（`opencode`）を直接呼ばず `agent-opencode`（tools/opencode）を
-経由する。素の argv では表せないものが 2 つあるため——`--format json` のイベントから実測
-usage を取り出して stderr の `@agent-usage` に載せることと、推論サーバ（別 PC の ollama）が
-落ちているときに **opencode が内部リトライで待ち続ける**のを実行前の到達性チェックで
-即座に env 失敗へ倒すこと。導入は独立のインストーラ（`bash tools/opencode/install.sh`）で、
-推論エンジンの住所もそちらの設定（`~/.config/opencode/opencode.json`）に置く——この定義は
-どの PC でも同じで良いようにホスト依存の値を持たない。
+opencode の定義は同梱を外した（このハードでは成立しないことが実測済み。設計:
+docs/plans/2026-08-27 設計 §6）。使う人は `agents/opencode.json` を自分で置けば
+従来どおり定義経由で呼べる（探索順 1・2 がユーザー定義を先勝ちにする）。
 
 `vscode-copilot.json` も本体を直接呼ばない。VS Code の Language Model API は
 **編集中の VS Code プロセスの中にしか無い**ので、拡張が localhost に立てた認証付きの口へ
@@ -153,6 +148,6 @@ stdout に本文だけを返す薄い CLI を用意すれば同じ契約で差�
   [`docs/specs/agent-cli-spec.md`](../docs/specs/agent-cli-spec.md)
 - **設計書**（なぜこの形にしたか）:
   [`docs/designs/agent-cli-plugin-design.md`](../docs/designs/agent-cli-plugin-design.md)
-- **ローカル実行系（`aider` / `ollama` の profile / `opencode`）**:
+- **ローカル実行系（`aider` / `ollama` の profile）**:
   [`docs/specs/agent-herd-spec.md`](../docs/specs/agent-herd-spec.md) /
   [`docs/designs/agent-herd-design.md`](../docs/designs/agent-herd-design.md)

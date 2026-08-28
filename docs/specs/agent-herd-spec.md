@@ -4,7 +4,7 @@
 > CLI 定義の共通契約は [`docs/specs/agent-cli-spec.md`](./agent-cli-spec.md)、
 > 利用手順は `tools/agent-tools/README.md`。
 > 対象実装: `tools/agent-tools/agentcore/agentcore/` の `herdcli.py` / `hostenv.py` /
-> `aider_adapter.py` / `ollama_adapter.py` / `opencode_adapter.py` /
+> `aider_adapter.py` / `ollama_adapter.py` /
 > `ollama_{loop,context,events,skills,tui,replay}.py` / `harness/` /
 > `tools/agent-tools/install.sh`。
 > 位置づけ: **本書が綴りの正典**。設計書は判断の理由を、本書は「打つと何が起きるか」を固定する。
@@ -15,8 +15,11 @@
 ## 1. 何であるか
 
 `agent-herd` は **LAN 上の ollama を動かす実行系の唯一の入口**である。実体は agentcore を
-同梱した zipapp 1 ファイルで、`agent-aider` / `agent-ollama` / `agent-opencode` は同じ
+同梱した zipapp 1 ファイルで、`agent-aider` / `agent-ollama` は同じ
 ファイルへのハードリンクとして置かれる。
+opencode は同梱を外した（このハードで成立しないことが実測済み。設計 2026-08-27 §6。
+使う人は `agents/opencode.json` を自分で置けば定義経由で呼べるが、adapter が持っていた
+usage 実測と preflight は付かない）。
 
 **クラウド CLI（claude / codex / kiro / copilot / cursor）はこの入口を通らない。**
 それらの `agents/*.json` の `command` は素の CLI を指したままである（設計 §3.8）。
@@ -29,7 +32,6 @@
 basename(argv[0])       解決されるサブコマンド        残りの引数
   agent-aider       →   aider                        argv 全部
   agent-ollama      →   ollama                       argv 全部
-  agent-opencode    →   opencode                     argv 全部
   agent-herd        →   argv[0] をサブコマンドとして  argv[1:]
   それ以外           →   argv[0] をサブコマンドとして  argv[1:]
 ```
@@ -54,7 +56,6 @@ basename(argv[0])       解決されるサブコマンド        残りの引数
 |---|---|---|
 | `aider …` | `aider_adapter.main` | adapter へ素通し |
 | `ollama …` | `ollama_adapter.main` | adapter へ素通し |
-| `opencode …` | `opencode_adapter.main` | adapter へ素通し |
 | `chat [<cli>] [--model M]` | `herdcli.cmd_chat` | 閉じている（下記以外は拒否） |
 | `defs [<名前>] [--json] [--model M] [--purpose P]` | `herdcli.cmd_defs` | 同上 |
 | `exec <cli> [オプション]` | `herdcli.cmd_exec` | 同上 |
@@ -69,7 +70,7 @@ basename(argv[0])       解決されるサブコマンド        残りの引数
 
 ### 3.1 引数面が「素通し」か「閉じている」か
 
-- **adapter サブコマンド**（`aider` / `ollama` / `opencode` / 観測別名）は引数を 1 つも解釈
+- **adapter サブコマンド**（`aider` / `ollama` / 観測別名）は引数を 1 つも解釈
   せず adapter へ渡す。adapter 側の `--help` がその面の正典。
 - **入口が持つサブコマンド**（`chat` / `defs` / `exec`）は引数面が閉じている。未知のオプションは
   終了コード 2 で拒否する（黙って下へ流さない——流すと「効いたつもり」が起きる）。
@@ -121,12 +122,12 @@ basename(argv[0])       解決されるサブコマンド        残りの引数
 | 綴り | `agent-herd ollama --format json gemma4:e4b` | `agent-herd exec ollama-json --model gemma4:e4b` |
 | argv を決めるもの | 打った人 | `agentcore.agentcli`（定義） |
 | 定義を読むか | 読まない | 読む（`variants` / `readonly` が効く） |
-| 名前の空間 | `aider` / `ollama` / `opencode` | `agents/*.json` の全定義 |
+| 名前の空間 | `aider` / `ollama` | `agents/*.json` の全定義 |
 
 ### 4.0 用途別の起動形は profile であって別エージェントではない
 
-`agents/*.json` は **1 ファイル = 1 エージェント**である。同梱定義は **9 件**
-（`aider` / `ollama` / `opencode` / `claude` / `codex` / `kiro` / `copilot` / `cursor` /
+`agents/*.json` は **1 ファイル = 1 エージェント**である。同梱定義は **8 件**
+（`aider` / `ollama` / `claude` / `codex` / `kiro` / `copilot` / `cursor` /
 `vscode-copilot`）で、用途で使い分ける起動差は定義の中の `profiles` に置く:
 
 ```
@@ -136,7 +137,6 @@ $ agent-herd defs
   claude
   …
   ollama    profiles: json, list, list-thinking, read, verify
-  opencode
 ```
 
 `ollama-list` のような従来の綴りはそのまま解決でき（`base=ollama / profile=list`）、
@@ -233,8 +233,8 @@ agent-herd chat <cli> [--model M]
 
 定義の `interactive` ブロックを `agentcli.interactive_cmd()` で解決して起動する。
 
-- 解決した argv の先頭が**自分自身の名前**（`agent-herd` / `agent-aider` / `agent-ollama` /
-  `agent-opencode`）なら **in-process** で入る。定義は配布名で書いてあるので、開発木のように
+- 解決した argv の先頭が**自分自身の名前**（`agent-herd` / `agent-aider` /
+  `agent-ollama`）なら **in-process** で入る。定義は配布名で書いてあるので、開発木のように
   PATH にそれが無い環境でも動く。
 - そうでなければ `os.execvp` で置き換える（余計なプロセスを挟まない）。
 - `interactive` を持たない定義は**明示エラーで止める**（終了コード 1）。黙ってヘッドレスへ
@@ -529,7 +529,7 @@ TUI は同じイベントを表示する。
 
 ---
 
-## 9. aider / opencode の adapter 契約
+## 9. aider の adapter 契約
 
 素の CLI を直接呼ばず 1 枚噛ませているのは、**素の argv では表せないものがある**からである。
 それが無いクラウド CLI に adapter は置かない（§1・設計 §3.8）。
@@ -544,6 +544,7 @@ Aider を CLI 契約の下に置く薄いラッパ（`agentcore/aider_adapter.py
 
 | ラッパ専用オプション | 意味 |
 |---|---|
+| `--tui` | 共通 TUI（`ollama_tui`）を aider バックエンドで開く（段 12。§9.2） |
 | `--agent-policy <id>` | Aider の system prompt 先頭へ固定の reliability policy を注入する。現在の唯一の ID は `gemma4-e4b-reliability-v1`（対象 model は `ollama_chat/gemma4:e4b`） |
 | `--agent-num-ctx <整数>` | model settings の `extra_params.num_ctx` |
 | `--agent-num-predict <整数>` | model settings の `extra_params.num_predict` |
@@ -561,20 +562,19 @@ stderr の `@agent-usage tokens_in=... tokens_out=...` へ載せる（共通の 
 （litellm）で読むので、補完が無いと既定の localhost へ向かうか、接続がプロキシへ流れて
 504 になる。
 
-### 9.2 `opencode`
+### 9.2 対話面 — 共通 TUI の aider バックエンド（段 12）
 
-`agentcore/opencode_adapter.py`。引数はそのまま `opencode run --format json <引数…>` へ渡し、
-プロンプトは stdin をそのまま流す。`readonly: best-effort`（`--agent plan`）で、`enforced` とは
-名乗らない。素の argv で表せないものは 3 つ:
+`agents/aider.json` の `interactive` は aider 素の TUI ではなく**共通 TUI**
+（`agent-herd aider --tui`）を起動する。前面の規約（`> ` プロンプト＝`ready_pattern`・
+turn hook・`/sm` `/edit` のハーネス回送）は ollama バックエンドと同一で、
+1 入力 = aider 1 回（`--message`）のヘッドレス実行になる。
 
-1. **実測 usage**。`step_finish` イベントの `tokens.{input,output}` を `@agent-usage` 1 行へ移す。
-2. **落ちない失敗を落とす**。推論サーバ（別 PC の ollama）が落ちていると opencode は即座に
-   失敗せず**内部リトライで待ち続ける**（実測: 接続不可のまま 120 秒待っても終了しない）。
-   実行前に到達性を 1 回だけ確かめ、駄目なら env 分類に乗るメッセージで即座に失敗する。
-   `--check` は到達性だけを確かめて終わり（LLM を呼ばない）、`--no-preflight` でこの前検査を
-   外せる。
-3. **本文だけを stdout へ**。`--format json` の生イベントは本文ではないので、text パートだけを
-   取り出して stdout に出す（イベントログは stderr へ素通し）。
+- 会話は積まない。継続に要る材料は毎回プロンプトへ書く（文脈を太らせない）
+- `--message` は adapter がターンごとに付けるので、起動 argv には現れない
+- モデル別設定（`--agent-policy` / `--agent-num-*`）があるとき `/model` での切り替えは
+  明示エラー——settings の entry は起動時のモデル名で束ねてあり、黙って外れることを許さない
+- 未知の `/x` と `/ask` `/find` は明示エラー（このバックエンドに toolset は無い）。
+  `/sm` `/edit` は TUI がヘッドレスのハーネスへ回す（§13.2 の表と同じ当て先）
 
 ---
 
@@ -584,18 +584,16 @@ stderr の `@agent-usage tokens_in=... tokens_out=...` へ載せる（共通の 
 
 ```
 ~/.local/bin/agent-herd        zipapp（agentcore 同梱・rich は --with-rich のとき）
-~/.local/bin/agent-aider   ─┐
-~/.local/bin/agent-ollama   ├─ agent-herd へのハードリンク（同一 inode）
-~/.local/bin/agent-opencode ┘
+~/.local/bin/agent-aider   ─┬─ agent-herd へのハードリンク（同一 inode）
+~/.local/bin/agent-ollama   ─┘
 ```
 
-- ハードリンクが張れない FS ではコピーへ落とし、`[WARN]` を出す。インストーラは常に 4 つ
-  全部を書き直すので、コピーでも版がずれることはない
+- ハードリンクが張れない FS ではコピーへ落とし、`[WARN]` を出す。インストーラは常に
+  全部を書き直すので、コピーでも版がずれることはない。過去の入れ直しで残った
+  `agent-opencode` は古い zipapp を指し続ける罠になるため、インストーラが消す
 - `--only agent-herd` でエンジンを 1 本も入れずに実行系だけ置ける（推論だけ担当する PC 向け）
 - インストール後、`agent-herd --help` と `agent-ollama --help` の両方を実行して
   argv[0] 分岐まで踏む（「入った」と言い切る前に shebang / Python の取り違えを潰す）
-- `tools/opencode/install.sh` は agent-tools 一式とは独立に走るので、同じ実装を**自前の
-  zipapp**として組む（agentcore 同梱）。どちらを走らせても同じ実装が入る
 - agent-loop は別 zipapp のまま（デーモンであり契約が別）だが、同梱する agentcore に
   `harness` が含まれる。**同時に入れ直す**運用は不変
 
@@ -616,7 +614,7 @@ readline の行指向表示へ戻る。全画面の alternate screen は使わ�
 | `ollama_loop` と `harness.toolloop` の統合 | しない（設計 §2.3）。台帳で「同じ役割を両経路で流した実測」が並ぶまで判断を保留する |
 | `agent-herd stub`（`kiro-cli-stub.py` の同梱） | 未決。配布物に試験具を混ぜる是非を先に決める |
 
-`agents/*.json` のローカル定義（`aider` / `ollama` の 6 起動形 / `opencode`）は
+`agents/*.json` のローカル定義（`aider` / `ollama` の 6 起動形）は
 `["agent-herd", "<sub>", …]` へ正典化済み。クラウド 5 件は §1 のとおり素の CLI を指したまま。
 ハーネスは `agentcore.harness` が唯一の実装で、agent-loop はそこへ委譲する（写しも共有
 データファイルも残っていない）。
@@ -642,6 +640,7 @@ readline の行指向表示へ戻る。全画面の alternate screen は使わ�
 | 用途別の起動形が 1 エージェントの profile であること | `tests/test_agentcli_jsonvariant.py` |
 | ollama の引数解釈・ループ・文脈・スキル・再生・TUI | `agentcore/tests/test_ollama_*.py` |
 | aider の policy 合成と usage 抽出 | `agentcore/tests/test_aider_adapter.py` |
+| 共通 TUI の aider バックエンド（前面規約の共有・1 入力 1 回・ハーネス回送） | `agentcore/tests/test_aider_tui.py` |
 | agent-loop → ハーネスの委譲（別名を張らない・サブコマンドが落ちる・記帳が台帳へ着く） | agent-loop の `test/test_harness_delegation.py` |
 | コマンド面の規約・4 種の表・用途の宣言・未知コマンドの明示エラー（§13） | `agentcore/tests/test_slashroute.py` |
 | ランチャが argv を組む前に読むこと（`/sm` の起動・`/edit` の宣言・逃げ道） | `agentcore/tests/test_harness_slash_dispatch.py` |
@@ -716,6 +715,13 @@ D は表に載らない——`SKILL.md` の実在がそのまま答えだから�
 | `tools` | ツールセットを 1 つだけ。`[]`＝道具なし / `[read]` / `[bash]` |
 | `output` | 出力契約（`json` 等） |
 | `argument-hint` | `/help` の左列に出る引数の型 |
+| `system-template` / `instance-template` / `observation-template` / `format-error-template` | ツールループのプロンプト外出し（設計 §3.5 / 段 13）。値は**宣言ファイルからの相対パス**で、テンプレート本文はそのファイルに置く（frontmatter は平らな 1 行値しか受けないため）。未宣言の枠は従来のコード内既定のまま——外出しは移行であって調整ではなく、既定の出力はゴールデン（`test_prompt_templates.py`）が 1 バイト単位で縛る |
+
+テンプレートの置換は**知っているキーだけ**（`{task}` `{cwd}` `{toolset}` `{done_marker}`
+`{exit_code}` `{output}` `{read_commands}` `{read_git_subcommands}`）。未知の `{...}` は
+そのまま残るので、本文に JSON の例を書ける。枠は 4 つ——`system`（役割と規約）・
+`instance`（最初の user メッセージ。既定は task そのまま）・`observation`（ツール出力の
+詰め方）・`format-error`（規約から外れたときの言い直し）。
 
 **名前空間はスキル・種別 A / B と 1 つ**である。同名を両方置かない（先勝ちで、もう片方が
 黙って効かなくなる）。同梱しているのは `edit.md` の 1 枚だけで、**aider の名前が出るのは

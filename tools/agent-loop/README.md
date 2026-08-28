@@ -7,7 +7,7 @@
 > - 仕様の正典（何ができて何を設定できるか）: [`docs/specs/agent-loop-spec.md`](../../docs/specs/agent-loop-spec.md)
 > - クラス構成と処理フロー: [`DESIGN.md`](DESIGN.md)
 
-エージェント CLI を **tmux セッション**上で起動し、設定ファイルに定義したプロンプトを定期的に自動送信するツールです。既定は kiro-cli で、設定 `agent_cli` で claude / codex / aider 等へ差し替えられます。
+エージェント CLI を **tmux セッション**上で起動し、設定ファイルに定義したプロンプトを定期的に自動送信するツールです。既定は kiro-cli で、設定 `agent_cli` で claude / codex 等へ差し替えられます。ローカル実行系を使うときの正は **dashboard の実行レベルに `herd` の 1 語**を書くことで、具体の (agent_cli, model) は実測から埋まります——entry 単位の `agent_cli: aider` 直指定は逃げ道であって既定ではありません（agent-herd 設計 2026-08-27 §3.6）。
 
 ## 特徴
 
@@ -164,7 +164,9 @@ agent-loop --version
   ——条件を打ち直すと、そこで写し間違えたぶんだけ定期実行と違うものを見ることになります。
   その場で打った `--param` / `--input` は宣言より優先します。CLI とモデルの解決順は
   `--agent-cli` / `--model` ＞ エントリの `agent_cli` / `model` ＞ control.json の
-  `selection_policy`（version 2 以上で宣言があるときだけ）＞ 既定（`aider`）です。
+  `selection_policy`（version 2 以上で宣言があるときだけ）＞ 既定（`aider`）です
+  ——末尾の `aider` は**宣言も指定も無いときの従来どおりの既定**で、`/edit` の宣言
+  （`commands/edit.md` の `agent:`）を通ればそちらが勝ちます。
   `agent-herd harness statemachine --entry` も同じ綴りで同じものを回します。
 - `pause` / `resume` は local pause（`resume` は agent-control / budget の pause を迂回しません）。
 - `cancel` は managed な entry / pane だけを停止・slot 解放します（external pane は拒否）。

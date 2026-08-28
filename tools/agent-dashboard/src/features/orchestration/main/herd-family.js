@@ -10,7 +10,7 @@
 // 具体の (agent_cli, model) は Compiler が実測から埋める。
 //
 // **一族は機械的に導ける。** `agents/<name>.json` の `command[0]` が `agent-herd` の
-// 定義（aider / ollama / opencode）が一族である。`herd.json` を作る必要も、定義へ
+// 定義（aider / ollama）が一族である。`herd.json` を作る必要も、定義へ
 // family フィールドを足す必要も無い。クラウド CLI はこの入口を通らない
 // （agent-herd 設計 §1）ので、自動的に一族から外れる。
 //

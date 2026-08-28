@@ -238,7 +238,7 @@ async function main() {
     // 対話面があっても single-shot ならハーネス（aider）
     assert.strictEqual(f({ interactive: { command: ['x'] }, headlessAutonomy: 'single-shot' }), true,
       'single-shot は対話面があってもハーネスで回す');
-    // 対話面があって tool-loop ならペイン（kiro / claude / ollama / opencode）
+    // 対話面があって tool-loop ならペイン（kiro / claude / ollama）
     assert.strictEqual(f({ interactive: { command: ['x'] }, headlessAutonomy: 'tool-loop' }), false,
       'tool-loop は対話ペインで駆動できる');
     // 対話面が無ければ、駆動しようが無いのでハーネス（tool-loop でも）

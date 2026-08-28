@@ -461,8 +461,8 @@ class LineReader:
 
 
 def repl(runner, *, model: str, tools: bool, think: "bool | None" = None,
-         out=None, in_=None) -> int:
-    """デバッグ用の対話ループ（`agent-ollama --tui`）。
+         out=None, in_=None, label: str = "agent-ollama") -> int:
+    """共通 TUI の対話ループ（`agent-ollama --tui` / `agent-aider --tui`）。
 
     行指向に徹する（1 行読んで 1 回実行）。tmux `send-keys` は「文字列 + Enter」を
     送るだけなので、この形なら agent-dashboard の対話診断・agent-loop の定期送信の
@@ -470,12 +470,14 @@ def repl(runner, *, model: str, tools: bool, think: "bool | None" = None,
     履歴・Tab 補完が効く（`LineReader`。非 tty では素の 1 行読みへ落ちる）。
 
     `runner(prompt, *, model, tools, think, renderer)` が 1 回の実行を担う
-    （実体は adapter 側。ここは描画と入力だけを持つ）。
+    （実体は adapter 側。ここは描画と入力だけを持つ）。バックエンドが違っても
+    前面の規約（`> ` プロンプト＝ready_pattern・turn hook）は同じになる
+    （設計 2026-08-27 §7.1: 判定がバックエンドによらず 1 つ）。
     """
     out = out or sys.stdout
     in_ = in_ or sys.stdin
     reader = LineReader(out, in_)
-    print(f"agent-ollama TUI — model={model} tools={'on' if tools else 'off'} "
+    print(f"{label} TUI — model={model} tools={'on' if tools else 'off'} "
           f"think={'既定' if think is None else ('on' if think else 'off')}", file=out)
     print("'/help' でローカルコマンド一覧"
           + ("、'/keys' でキー操作。" if reader.enabled else "。"), file=out)
@@ -512,6 +514,25 @@ def _turn_hook(status: str) -> None:
         pass
 
 
+def _run_harness_here(text: str, out) -> int:
+    """`/sm` `/edit` をヘッドレスのハーネスへ回す（設計 2026-08-27 §7.5）。
+
+    当て先は `agent-herd harness run` と同じ `toolloop.cmd_run`（/sm の振り分けも
+    あちらが持つ）。agent / model は渡さない——宣言（`/edit` の `agent:`）と既定に
+    任せ、`harness run` を打ったときと同じに振る舞わせる。TUI のモデルはバックエンド
+    のもので、編集ハーネスのエンジン選択とは別の層である。
+    """
+    import argparse
+    from agentcore import herdcli
+    ns = argparse.Namespace(prompt=[text], acceptance=[], judge=False,
+                            agent_cli=None, model=None, dir=None)
+    try:
+        return herdcli._run_harness("run", ns, Path.cwd())
+    except Exception as exc:      # ハーネスの失敗で対話を殺さない
+        print(f"✖ {exc}", file=out)
+        return 1
+
+
 def _loop(reader, runner, *, model: str, tools: bool, think: "bool | None", out) -> int:
     while True:
         try:
@@ -531,6 +552,13 @@ def _loop(reader, runner, *, model: str, tools: bool, think: "bool | None", out)
         # ここでは触らない。人が打つ面なので大小文字は無視する。
         parsed = slashroute.parse_line(text, casefold=True)
         command = slashroute.lookup(parsed[0]) if parsed else None
+        if command is not None and command.kind == slashroute.KIND_SHAPE and command.harness:
+            # `/sm` `/edit` はハーネス側の実行形。対話で打たれたらルータがヘッドレス実行へ
+            # 回し、結果（進捗と RESULT の 1 行）をこのペインへ出す（設計 2026-08-27 §7.5）。
+            # これで層3 の限定ツール契約（read/write/run/final）が対話からも使える。
+            rc = _run_harness_here(text, out)
+            _turn_hook("complete" if rc == 0 else "failure")
+            continue
         if command is not None and command.kind == slashroute.KIND_SESSION and (
                 command.takes_args or not parsed[1]):
             arg = parsed[1]

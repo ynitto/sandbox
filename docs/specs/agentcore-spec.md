@@ -100,16 +100,17 @@ subdir だけを取ると installer が agentcore を束ねられず、自己更
 
 ## 5. 写しと、それを縛るテスト
 
-agentcore の実装を**そのまま使えない場所**が 2 種類あり、どちらも写しを許したうえで機械に
+agentcore の実装を**そのまま使えない場所**があり、写しを許したうえで機械に
 突き合わせさせます。写しを置くこと自体は禁じません——禁じても消えず、見えなくなるだけです。
 
 | 写し | なぜ写すか | 縛るテスト |
 |---|---|---|
 | agent-dashboard（JS）の CLI 定義ローダ・契約バージョン・git URL 正規化・フォージ決着推定 | 候補を出すたびに Python を起動すると描画がプロセス起動待ちになる | `tools/agent-dashboard/test/*-golden.test.js`（4 本。Python の正典を実際に読んで突き合わせる） |
-| `agent-aider` / `agent-opencode` の `~/.profile` 環境解決 | 単体ファイルで配るので agentcore を import できない | `agentcore/agentcore/tests/test_adapter_env_parity.py`（AST 比較。docstring とコメントは無視） |
 
-比較が AST なのは、**説明は各ファイルの文脈で違ってよく、揃っていなければならないのは
-振る舞いだけ**だからです。
+かつては `agent-aider` 等の `~/.profile` 環境解決も単体ファイル配布の写しでしたが、
+agent-herd の zipapp 統合で `hostenv` 1 実装になり、いまは
+`agentcore/agentcore/tests/test_hostenv.py` が「同一オブジェクトであること」を縛ります
+（写しの AST 比較から、写しが復活していないことの検査へ変わりました）。
 
 ---
 

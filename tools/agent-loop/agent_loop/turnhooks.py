@@ -195,7 +195,7 @@ def prepare_turn_hook_launch(*, adapter: str, argv: list[str],
     adapter = str(adapter)
     # ollama は**自前の TUI** なので hook 資産（プラグイン・設定ファイル）が要らない。
     # 前面が我々のものなら、ターンの終わりに自分で `hook-event` を呼べる（設計 §7.3 A）。
-    if adapter not in {"kiro", "claude", "codex", "copilot", "opencode", "ollama"}:
+    if adapter not in {"kiro", "claude", "codex", "copilot", "ollama"}:
         raise ValueError(f"unsupported turn-completion adapter: {adapter}")
     out_argv = list(argv)
     out_env = dict(env)
@@ -237,16 +237,6 @@ def prepare_turn_hook_launch(*, adapter: str, argv: list[str],
         ):
             out_argv.extend(["--plugin-dir", str(plugin.resolve())])
         return out_argv, out_env, None
-
-    if adapter == "opencode":
-        source = assets / "opencode"
-        if not source.is_dir():
-            raise FileNotFoundError(source)
-        target = root / f"opencode-{uuid.uuid4().hex}"
-        shutil.copytree(source, target)
-        _private_tree(target)
-        out_env["OPENCODE_CONFIG_DIR"] = str(target)
-        return out_argv, out_env, target
 
     return out_argv, out_env, None
 

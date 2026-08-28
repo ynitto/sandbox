@@ -2,7 +2,7 @@
 
 ## 何をするモジュールか
 
-`agent-herd` / `agent-aider` / `agent-ollama` / `agent-opencode` は**同じ 1 つの zipapp**で、
+`agent-herd` / `agent-aider` / `agent-ollama` は**同じ 1 つの zipapp**で、
 `basename(argv[0])` を見てサブコマンドへ振り分ける。`agent-aider …` と
 `agent-herd aider …` は完全に同じコードパスに落ちる（別名は互換シムではなく本体そのもの
 なので、「シムだけ古い」という不整合が構造的に起きない）。
@@ -34,11 +34,10 @@ PROG = "agent-herd"
 ALIAS_BY_ARGV0 = {
     "agent-aider": "aider",
     "agent-ollama": "ollama",
-    "agent-opencode": "opencode",
 }
 
 # adapter サブコマンド → その実体を返す関数（import は呼ばれたときだけ行う。
-# 起動のたびに 3 adapter を読み込むと、observability だけの `defs` まで重くなる）。
+# 起動のたびに全 adapter を読み込むと、observability だけの `defs` まで重くなる）。
 def _aider_main():
     from agentcore import aider_adapter
     return aider_adapter.main
@@ -49,15 +48,9 @@ def _ollama_main():
     return ollama_adapter.main
 
 
-def _opencode_main():
-    from agentcore import opencode_adapter
-    return opencode_adapter.main
-
-
 ADAPTERS = {
     "aider": _aider_main,
     "ollama": _ollama_main,
-    "opencode": _opencode_main,
 }
 
 # 観測モードの別名。第 2 実装ではなく、ollama adapter の同名フラグへそのまま渡す
@@ -71,8 +64,8 @@ OBSERVE_ALIASES = {
 HELP = f"""使い方: {PROG} [オプション]              # クラウド CLI と同型の入口
        {PROG} <サブコマンド> [オプション]  # 従来の綴り（すべて温存）
 
-  LAN 上の ollama を動かす実行系の入口。`agent-aider` / `agent-ollama` /
-  `agent-opencode` はこの実行ファイルへの別名で、打ち方も出力も従来どおり。
+  LAN 上の ollama を動かす実行系の入口。`agent-aider` / `agent-ollama` は
+  この実行ファイルへの別名で、打ち方も出力も従来どおり。
 
   そのまま打つ（引数なし＝対話、-p ＝非対話 1 回）:
     （引数なし）          対話（TUI）で開く
@@ -87,7 +80,6 @@ HELP = f"""使い方: {PROG} [オプション]              # クラウド CLI �
   実行（adapter を直に叩く。引数は adapter へ素通し）:
     aider …               Aider をヘッドレスで回す（= agent-aider …）
     ollama …              ollama を回す（= agent-ollama …。--tools / --tui も含む）
-    opencode …            opencode を回す（= agent-opencode …）
 
   定義経由（agents/<名前>.json を読んで argv を組む）:
     exec <cli> [オプション]  定義どおりにヘッドレス実行する（本文は stdin）

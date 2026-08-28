@@ -90,7 +90,7 @@ cowork の定常業務 tmux 実行だけで、定義解決に失敗しても `ki
 | `failure_pattern` | — | `agent-loop send --wait` の明示的な失敗。未指定なら pane / process 終了以外を推測しない |
 | `clear_command` | `/clear` | コンテキスト破棄コマンド（codex は `/new`、無い CLI は空文字） |
 | `prompt_inject` | — | 初回プロンプトの注入方法（`send-keys` \| `file`） |
-| `turn_completion` | `""` | ターン完了 hook のアダプタ。`kiro` / `claude` / `codex` / `copilot` / `opencode` / `ollama` のいずれか。未知の値は**起動時エラー**。`ollama` は対話面が我々の実装なので hook 資産が要らず、env だけで成り立ちます |
+| `turn_completion` | `""` | ターン完了 hook のアダプタ。`kiro` / `claude` / `codex` / `copilot` / `ollama` のいずれか。未知の値は**起動時エラー**。`ollama` は対話面が我々の実装なので hook 資産が要らず、env だけで成り立ちます |
 
 **待機判定の優先順位**は busy ＞ ready ＞ 静穏 ＞ 既定 busy でコード側に固定してあります。
 
@@ -128,7 +128,7 @@ cowork の定常業務 tmux 実行だけで、定義解決に失敗しても `ki
 
 | 宣言 | 意味 | 例 |
 |---|---|---|
-| `true` | ネイティブのスラッシュコマンドを持つので**残して渡す**。行頭記号は `skill_command_prefix`（codex は `$`） | claude / codex / kiro / copilot / cursor / agent-ollama / opencode |
+| `true` | ネイティブのスラッシュコマンドを持つので**残して渡す**。行頭記号は `skill_command_prefix`（codex は `$`） | claude / codex / kiro / copilot / cursor / agent-ollama |
 | `false` | 持たないので**ランチャが消費する**。スキルとして解決して材料へ載せる | aider / vscode-copilot |
 
 **未宣言のときは `headless_autonomy` から導きます**（`tool-loop` なら `true`）。以前この判定は
@@ -286,7 +286,7 @@ agent-audit が CLI 自身の transcript を収集するための宣言です。
 
 ## 9. 同梱定義
 
-リポジトリ直下 `agents/` に **9 ファイル**。**ファイル数は実エージェント数と一致します**——
+リポジトリ直下 `agents/` に **8 ファイル**。**ファイル数は実エージェント数と一致します**——
 用途別の起動差は `ollama` の `profiles`（5 つ）が持ちます。
 
 | 定義 | cost | readonly | 既定モデル | autonomy | 対話 | session_log | profiles |
@@ -296,7 +296,6 @@ agent-audit が CLI 自身の transcript を収集するための宣言です。
 | `copilot` | 1 | best-effort | 定義なし | tool-loop | ✓ | — | — |
 | `cursor` | 1 | best-effort | 定義なし | tool-loop | ✓ | — | — |
 | `kiro` | 1 | best-effort | 定義なし | tool-loop | ✓ | ✓ | — |
-| `opencode` | 0 | best-effort | 定義なし | tool-loop | ✓ | ✓ | — |
 | `aider` | 0 | enforced | `gemma4:e4b` | single-shot | ✓ | — | — |
 | `ollama` | 0 | enforced | `gemma4:e4b` | tool-loop | ✓ | ✓ | `json` `list` `list-thinking` `read` `verify` |
 | `vscode-copilot` | 1 | enforced | 定義なし | single-shot | ✓ | — | — |
@@ -311,7 +310,7 @@ agent-audit が CLI 自身の transcript を収集するための宣言です。
 | `read` | `ollama-read` | 継承 | 継承（tool-loop） | `--tools read --max-rounds 30` |
 | `verify` | `ollama-verify` | `gemma4:12b` | single-shot | `--format json --stall-timeout 180` |
 
-`relative_cost: 0` はローカル実行（`ollama`（profile 含む）・`aider`・`opencode`）です。
+`relative_cost: 0` はローカル実行（`ollama`（profile 含む）・`aider`）です。
 これらは `agent-herd` を入口に持ち、クラウド 6 種は素の CLI を指したままです（`vscode-copilot`
 だけは素の CLI ではなく自作ブリッジ `vscode-copilot-chat` を指します——VS Code の
 Language Model API は編集中の VS Code プロセスの中にしか無く、argv から直接は呼べないため）。詳細は

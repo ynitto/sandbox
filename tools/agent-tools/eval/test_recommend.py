@@ -46,7 +46,7 @@ class RecommendationTests(unittest.TestCase):
     def test_herd_members_come_from_the_entrypoint_not_the_spelling(self):
         """一族は `command[0] == "agent-herd"` で決まる。クラウドは自動的に外れる。"""
         document = _build()
-        self.assertEqual(document["herd"]["members"], ["aider", "ollama", "opencode"])
+        self.assertEqual(document["herd"]["members"], ["aider", "ollama"])
         for cloud in ("claude", "codex", "copilot", "cursor", "kiro"):
             self.assertNotIn(cloud, document["herd"]["members"])
 

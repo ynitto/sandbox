@@ -46,7 +46,7 @@ agent-loop は、YAML に書いたプロンプトを tmux 上のエージェン�
 
 | 層 | 定義の申告 | 例 | agent-loop の扱い |
 |---|---|---|---|
-| 層 2 | `tool-loop` | claude / codex / copilot / cursor / kiro / opencode / ollama | ヘッドレス argv を 1 回実行し、終了コードで完了を検知する |
+| 層 2 | `tool-loop` | claude / codex / copilot / cursor / kiro / ollama | ヘッドレス argv を 1 回実行し、終了コードで完了を検知する |
 | 層 3 | `single-shot` | aider / ollama-json / ollama-list | 限定ツール契約（§3.4）でツール実行を供給しながら完遂させる |
 
 tmux を使うかどうかはこの層とは独立です。tmux は送る手段と見る手段で、headless でも見せ方は変わりません。`interactive` 節を持たない定義は対話キープを保てないので、`keep` 指定でも per-run へ倒して警告します。
@@ -508,12 +508,13 @@ acceptance:
 | `claude` | `--plugin-dir` で hook だけの plugin を追加 | `Stop` | `StopFailure` |
 | `codex` | 一度きりの `--config notify=…`（既存 notify は多重化） | `agent-turn-complete` | pane の死亡と timeout |
 | `copilot` | `--plugin-dir` | `agentStop` | `errorOccurred(recoverable=false)` を hint として記録 |
-| `opencode` | plugin だけを置いた `OPENCODE_CONFIG_DIR` | `session.idle` | `session.error` を hint として記録 |
 | `ollama` | **資産なし**（env だけ）。前面が我々の TUI なので、ターンの終わりに自分で `hook-event` を呼ぶ | `turn_end` | 例外と中断（Ctrl-C）を `failure` として通知 |
 
 **`ollama` だけは資産が要りません。** ほかの adapter は相手の CLI のプラグイン機構へ
 hook を差し込む必要がありますが、`ollama` の対話面（`agent-herd ollama --tui`）は
-**我々の実装**なので、ターンの終わりに同じコマンドを直接叩けます。管理下の pane で
+**我々の実装**なので、ターンの終わりに同じコマンドを直接叩けます。aider の対話面も
+同じ共通 TUI（`agent-herd aider --tui`。aider.json は `turn_completion: "ollama"` を
+宣言する）なので、この行がそのまま効きます。管理下の pane で
 なければ（env が無ければ）何もせず、通知に失敗しても対話は続きます——知らせられ
 なかったときは画面監視（`busy_pattern`）が拾うので、そこで落ちる理由がありません。
 人が Ctrl-C で止めたターンは `failure` として通知します（成果の無い実行を完了として
