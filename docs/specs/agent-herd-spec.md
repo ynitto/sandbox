@@ -715,6 +715,13 @@ D は表に載らない——`SKILL.md` の実在がそのまま答えだから�
 | `tools` | ツールセットを 1 つだけ。`[]`＝道具なし / `[read]` / `[bash]` |
 | `output` | 出力契約（`json` 等） |
 | `argument-hint` | `/help` の左列に出る引数の型 |
+| `system-template` / `instance-template` / `observation-template` / `format-error-template` | ツールループのプロンプト外出し（設計 §3.5 / 段 13）。値は**宣言ファイルからの相対パス**で、テンプレート本文はそのファイルに置く（frontmatter は平らな 1 行値しか受けないため）。未宣言の枠は従来のコード内既定のまま——外出しは移行であって調整ではなく、既定の出力はゴールデン（`test_prompt_templates.py`）が 1 バイト単位で縛る |
+
+テンプレートの置換は**知っているキーだけ**（`{task}` `{cwd}` `{toolset}` `{done_marker}`
+`{exit_code}` `{output}` `{read_commands}` `{read_git_subcommands}`）。未知の `{...}` は
+そのまま残るので、本文に JSON の例を書ける。枠は 4 つ——`system`（役割と規約）・
+`instance`（最初の user メッセージ。既定は task そのまま）・`observation`（ツール出力の
+詰め方）・`format-error`（規約から外れたときの言い直し）。
 
 **名前空間はスキル・種別 A / B と 1 つ**である。同名を両方置かない（先勝ちで、もう片方が
 黙って効かなくなる）。同梱しているのは `edit.md` の 1 枚だけで、**aider の名前が出るのは

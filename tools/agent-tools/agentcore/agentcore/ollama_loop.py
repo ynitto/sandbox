@@ -644,35 +644,72 @@ def check_command(command: str, toolset: str = DEFAULT_TOOLSET) -> str:
     return ""
 
 
-def system_prompt(cwd: str, toolset: str = DEFAULT_TOOLSET) -> str:
+# -- プロンプトの外出し（設計 2026-08-27 §3.5 / 段 13） ----------------------
+#
+# コード内の文字列だと弱いモデル向けの調整を実測で回せない。**既定は従来の文字列その
+# まま**（外出しは移行であって調整ではない——出力が変わらないことをテストが縛る）で、
+# 種別 C の宣言（`~/.agents/commands/<name>.md` の `*-template:` キー）が差し替える。
+#
+# 置換は**知っているキーだけ**を差し替える（str.format は本文中の `{}` で落ちる）。
+# 未知の `{...}` はそのまま残る——テンプレート本文に JSON の例を書ける。
+
+TEMPLATE_SLOTS = ("system", "instance", "observation", "format_error")
+_TEMPLATE_KEY_RE = re.compile(
+    r"\{(task|cwd|toolset|done_marker|exit_code|output|read_commands|read_git_subcommands)\}")
+
+SYSTEM_TEMPLATE_READ = (
+    "あなたはローカル調査エージェント。道具は**読み取り専用のコマンド**だけです。\n"
+    "\n"
+    "出力の規約（厳守）:\n"
+    "1. 調べるときはコードブロックを 1 つだけ出す。中身はコマンド 1 つ。\n"
+    "   実行結果は次のターンで渡されるので、結果を待たずに続きを書かない。\n"
+    "2. 使えるのは {read_commands} と git の {read_git_subcommands}。\n"
+    "3. パイプ・リダイレクト・変数展開・ワイルドカード（`|` `>` `$` `*` 等）は"
+    "使えません（`-name '*.py'` のように引用符で囲めば文字として渡せます）。"
+    "ファイルの作成・変更・削除もできません。\n"
+    "4. 完了したらコードブロックを出さず、成果を報告して最後の行に {done_marker} と書く。\n"
+    "5. 人へ質問はできない。曖昧なら最も妥当な前提を選び、採用した前提を報告に明記する。\n"
+    "6. 作業ディレクトリは {cwd}。\n"
+)
+SYSTEM_TEMPLATE_BASH = (
+    "あなたはローカル実行エージェント。道具はシェル（bash）1 つだけです。\n"
+    "\n"
+    "出力の規約（厳守）:\n"
+    "1. コマンドを実行するときは bash のコードブロックを 1 つだけ出す。\n"
+    "   実行結果は次のターンで渡されるので、結果を待たずに続きを書かない。\n"
+    "2. 結果を見てから次の 1 手を決める。1 ターンに 1 ブロック。\n"
+    "3. 完了したらコードブロックを出さず、成果を報告して最後の行に {done_marker} と書く。\n"
+    "4. 人へ質問はできない。曖昧なら最も妥当な前提を選び、採用した前提を報告に明記する。\n"
+    "5. 作業ディレクトリは {cwd}。この範囲の外を変更しない。\n"
+)
+INSTANCE_TEMPLATE = "{task}"
+OBSERVATION_TEMPLATE = (
+    "実行結果（終了コード {exit_code}）:\n"
+    "```\n{output}\n```\n"
+    "続けてください（完了なら報告と {done_marker}）。"
+)
+FORMAT_ERROR_TEMPLATE = (
+    "規約から外れています。次の 1 手を bash のコードブロック 1 つで示すか、"
+    "完了なら成果を報告して最後の行に {done_marker} と書いてください。"
+)
+
+
+def render_template(template: str, **values) -> str:
+    """知っているキーだけを差し替える決定的な描画。値は再走査しない。"""
+    return _TEMPLATE_KEY_RE.sub(
+        lambda m: str(values[m.group(1)]) if m.group(1) in values else m.group(0),
+        template or "")
+
+
+def system_prompt(cwd: str, toolset: str = DEFAULT_TOOLSET, template: str = "") -> str:
     """ツールループの規約。**短さが要件**（毎ラウンドの prefill に載る固定費）。"""
-    if (toolset or DEFAULT_TOOLSET) != "bash":
-        return (
-            "あなたはローカル調査エージェント。道具は**読み取り専用のコマンド**だけです。\n"
-            "\n"
-            "出力の規約（厳守）:\n"
-            "1. 調べるときはコードブロックを 1 つだけ出す。中身はコマンド 1 つ。\n"
-            "   実行結果は次のターンで渡されるので、結果を待たずに続きを書かない。\n"
-            f"2. 使えるのは {' '.join(sorted(_READ_COMMANDS))} と "
-            f"git の {' '.join(sorted(_READ_GIT_SUBCOMMANDS))}。\n"
-            "3. パイプ・リダイレクト・変数展開・ワイルドカード（`|` `>` `$` `*` 等）は"
-            "使えません（`-name '*.py'` のように引用符で囲めば文字として渡せます）。"
-            "ファイルの作成・変更・削除もできません。\n"
-            f"4. 完了したらコードブロックを出さず、成果を報告して最後の行に {_DONE_MARKER} と書く。\n"
-            "5. 人へ質問はできない。曖昧なら最も妥当な前提を選び、採用した前提を報告に明記する。\n"
-            f"6. 作業ディレクトリは {cwd}。\n"
-        )
-    return (
-        "あなたはローカル実行エージェント。道具はシェル（bash）1 つだけです。\n"
-        "\n"
-        "出力の規約（厳守）:\n"
-        "1. コマンドを実行するときは bash のコードブロックを 1 つだけ出す。\n"
-        "   実行結果は次のターンで渡されるので、結果を待たずに続きを書かない。\n"
-        "2. 結果を見てから次の 1 手を決める。1 ターンに 1 ブロック。\n"
-        f"3. 完了したらコードブロックを出さず、成果を報告して最後の行に {_DONE_MARKER} と書く。\n"
-        "4. 人へ質問はできない。曖昧なら最も妥当な前提を選び、採用した前提を報告に明記する。\n"
-        f"5. 作業ディレクトリは {cwd}。この範囲の外を変更しない。\n"
-    )
+    toolset = toolset or DEFAULT_TOOLSET
+    template = template or (SYSTEM_TEMPLATE_BASH if toolset == "bash"
+                            else SYSTEM_TEMPLATE_READ)
+    return render_template(
+        template, cwd=cwd, toolset=toolset, done_marker=_DONE_MARKER,
+        read_commands=" ".join(sorted(_READ_COMMANDS)),
+        read_git_subcommands=" ".join(sorted(_READ_GIT_SUBCOMMANDS)))
 
 
 def extract_command(text: str) -> str:
@@ -746,7 +783,8 @@ def run_loop(model: str, task: str, *, cwd: "str | None" = None, emit=None,
              max_output_chars: int = DEFAULT_MAX_OUTPUT_CHARS,
              options: "dict | None" = None, tracker=None,
              toolset: str = DEFAULT_TOOLSET, fmt: "str | None" = None,
-             think_prompt: bool = False, **limits) -> dict:
+             think_prompt: bool = False, templates: "dict | None" = None,
+             **limits) -> dict:
     """bash 1 ツールの最小エージェントループ。
 
     1 ラウンド = 「モデルに聞く → コードブロックがあれば実行して結果を返す」。
@@ -767,12 +805,18 @@ def run_loop(model: str, task: str, *, cwd: "str | None" = None, emit=None,
     ラウンド予算とコマンド上限の積（既定でも数時間）を空回りで焼き切らせない。
     """
     workdir = str(cwd or os.getcwd())
-    base_system = system_prompt(workdir, toolset)
+    templates = dict(templates or {})
+    base_system = system_prompt(workdir, toolset, template=templates.get("system", ""))
     extra_system = load_system_prompt()
+    # 最初の user メッセージ（instance）。既定は task そのまま——外出しは移行であって
+    # 調整ではない（設計 §3.5。出力が変わらないことをテストが縛る）。
+    instance = render_template(templates.get("instance") or INSTANCE_TEMPLATE,
+                               task=task, cwd=workdir, toolset=toolset,
+                               done_marker=_DONE_MARKER)
     messages = [
         {"role": "system",
          "content": think_system((base_system + "\n" + extra_system).strip(), think_prompt)},
-        {"role": "user", "content": task},
+        {"role": "user", "content": instance},
     ]
 
     # 会話の本文を進捗ログへ残す（`kind="message"`）。他の CLI（claude / codex）が
@@ -785,9 +829,9 @@ def run_loop(model: str, task: str, *, cwd: "str | None" = None, emit=None,
             emit("message", role=role, content=content)
 
     if emit is not None:
-        emit("message", role="user", content=task)
+        emit("message", role="user", content=instance)
     if tracker is not None:
-        tracker.add_text(messages[0]["content"] + task)
+        tracker.add_text(messages[0]["content"] + instance)
     tokens_in = tokens_out = 0
     nudges = 0
     denials = 0
@@ -819,8 +863,9 @@ def run_loop(model: str, task: str, *, cwd: "str | None" = None, emit=None,
                     emit("round_end", round=round_no, reason=status)
                 break
             nudges += 1
-            say("user", "規約から外れています。次の 1 手を bash のコードブロック 1 つで示すか、"
-                        f"完了なら成果を報告して最後の行に {_DONE_MARKER} と書いてください。")
+            say("user", render_template(
+                templates.get("format_error") or FORMAT_ERROR_TEMPLATE,
+                done_marker=_DONE_MARKER, cwd=workdir, toolset=toolset))
             if emit is not None:
                 emit("round_end", round=round_no, reason="nudge")
             continue
@@ -883,9 +928,10 @@ def run_loop(model: str, task: str, *, cwd: "str | None" = None, emit=None,
             status = "no_progress"
             break
 
-        feedback = (f"実行結果（終了コード {outcome['exit_code']}）:\n"
-                    f"```\n{outcome['output']}\n```\n"
-                    "続けてください（完了なら報告と TASK_COMPLETE）。")
+        feedback = render_template(
+            templates.get("observation") or OBSERVATION_TEMPLATE,
+            exit_code=outcome["exit_code"], output=outcome["output"],
+            done_marker=_DONE_MARKER, cwd=workdir, toolset=toolset)
         say("user", feedback)
         if tracker is not None:
             tracker.add_text(text + feedback)

@@ -266,6 +266,35 @@ class DeclarationError(RuntimeError):
     """宣言が壊れている。黙って無視せず明示エラー（設定ミスの静かな握り潰しを作らない）。"""
 
 
+# プロンプト外出しの frontmatter キー → slot 名（設計 §3.5 / 段 13）。frontmatter は
+# 平らな 1 行値しか受けないので、値は**宣言ファイルからの相対パス**にし、複数行の
+# テンプレート本文はそのファイルに置く（mini-swe-agent の「設定側に出す」と同じ形）。
+_TEMPLATE_KEYS = {
+    "system-template": "system",
+    "instance-template": "instance",
+    "observation-template": "observation",
+    "format-error-template": "format_error",
+}
+
+
+def _load_templates(fields: dict, path) -> "tuple[tuple[str, str], ...]":
+    out = []
+    for key, slot in sorted(_TEMPLATE_KEYS.items()):
+        if key not in fields:
+            continue
+        ref = fields[key].strip()
+        if not ref:
+            raise DeclarationError(f"用途の宣言 {path}: {key} が空です（テンプレートファイルのパスを書きます）")
+        target = Path(ref) if os.path.isabs(ref) else Path(path).parent / ref
+        try:
+            text = target.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise DeclarationError(
+                f"用途の宣言 {path}: {key} のファイルを読めません: {target}（{exc}）") from exc
+        out.append((slot, text))
+    return tuple(out)
+
+
 class Declaration(NamedTuple):
     """`~/.agents/commands/<name>.md` 1 枚。本文がそのままシステムプロンプトになる。"""
 
@@ -278,6 +307,10 @@ class Declaration(NamedTuple):
     output: str = ""                    # 出力契約（json 等）
     argument_hint: str = ""
     system: str = ""                    # 本文＝システムプロンプト
+    # ツールループのプロンプト外出し（設計 §3.5 / 段 13）。(slot, text) の組で、
+    # slot は ollama_loop.TEMPLATE_SLOTS のいずれか。frontmatter の値はファイルパス
+    # （宣言ファイルからの相対）で、中身をここへ読み込んで持つ。
+    templates: "tuple[tuple[str, str], ...]" = ()
 
     def as_command(self) -> Command:
         """`/help` と補完のためにルート表の 1 行として見せる。"""
@@ -379,11 +412,12 @@ def load_declaration(path) -> Declaration:
     fields, body = _parse_frontmatter(
         path.read_text(encoding="utf-8", errors="replace"), path)
     unknown = sorted(set(fields) - {"description", "agent", "model", "tools", "output",
-                                    "argument-hint", "name"})
+                                    "argument-hint", "name", *_TEMPLATE_KEYS})
     if unknown:
         raise DeclarationError(
             f"用途の宣言 {path}: 知らない項目です: {', '.join(unknown)}"
-            "（description / agent / model / tools / output / argument-hint）")
+            "（description / agent / model / tools / output / argument-hint / "
+            + " / ".join(sorted(_TEMPLATE_KEYS)) + "）")
     tools = (_parse_list(fields["tools"], "tools", path)
              if "tools" in fields else None)
     if tools is not None and len(tools) > 1:
@@ -398,7 +432,8 @@ def load_declaration(path) -> Declaration:
         name=name, path=str(path), description=fields.get("description", ""),
         agent=fields.get("agent", "").strip().lower(), model=fields.get("model", "").strip(),
         tools=tools, output=fields.get("output", "").strip().lower(),
-        argument_hint=fields.get("argument-hint", ""), system=body)
+        argument_hint=fields.get("argument-hint", ""), system=body,
+        templates=_load_templates(fields, path))
 
 
 # 解決結果のキャッシュ。`resolve()` は engine のホットパス（agent-flow はノードごとに
@@ -503,7 +538,8 @@ def resolve(*, command: str, cli: str, model: "str | None" = None,
     name = str(command or "").strip().lower()
     result = {"agent_cli": str(cli or "").strip().lower(), "model": model,
               "variant": False, "declared": False,
-              "tools": None, "toolset": None, "harness": "", "output": "", "system": ""}
+              "tools": None, "toolset": None, "harness": "", "output": "", "system": "",
+              "templates": {}}
     if not name:
         return result
 
@@ -523,6 +559,7 @@ def resolve(*, command: str, cli: str, model: "str | None" = None,
         result["declared"] = True
         result["output"] = decl.output
         result["system"] = decl.system
+        result["templates"] = dict(decl.templates)
         if decl.tools is not None:
             result["tools"] = bool(decl.tools)
             result["toolset"] = decl.tools[0] if decl.tools else TOOLSET_NONE
@@ -632,6 +669,7 @@ class Plan(NamedTuple):
     model: str = ""                             # 用途専用の既定
     output: str = ""                            # 出力契約
     system: str = ""                            # 宣言の本文＝システムプロンプト
+    templates: "tuple[tuple[str, str], ...]" = ()  # プロンプト外出し（§3.5 / 段 13）
     skills: "tuple[tuple[str, str], ...]" = ()  # 材料へ載せる (名前, 引数)
     session: "tuple[tuple[str, str], ...]" = () # 種別 A（実体は面が持つ）
     commands: "tuple[tuple[str, str], ...]" = ()  # 読み取った行の全体（観測用）
@@ -651,6 +689,7 @@ def plan(prompt: str, *, project_dir=None, skill_exists=None, strict: bool = Tru
 
     shape: "dict" = {"tools": None, "toolset": None, "harness": "",
                      "agent": "", "model": "", "output": "", "system": ""}
+    templates: "dict[str, str]" = {}
     skills: "list[tuple[str, str]]" = []
     session: "list[tuple[str, str]]" = []
     unknown: "list[str]" = []
@@ -678,6 +717,8 @@ def plan(prompt: str, *, project_dir=None, skill_exists=None, strict: bool = Tru
         for key in ("harness", "output", "system"):
             if routed[key]:
                 shape[key] = routed[key]
+        if routed["templates"]:
+            templates.update(routed["templates"])
         if routed["declared"]:
             if routed["agent_cli"]:
                 shape["agent"] = routed["agent_cli"]
@@ -702,7 +743,8 @@ def plan(prompt: str, *, project_dir=None, skill_exists=None, strict: bool = Tru
     if inline:
         body = "\n".join(inline + ([body] if body.strip() else []))
     return Plan(body=body, skills=tuple(skills), session=tuple(session),
-                commands=tuple(calls), **shape)
+                commands=tuple(calls), templates=tuple(sorted(templates.items())),
+                **shape)
 
 
 def _skill_dirs_hint(skill_exists) -> "tuple[str, ...]":
