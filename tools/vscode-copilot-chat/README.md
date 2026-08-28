@@ -1,8 +1,11 @@
 # VS Code Copilot Language Model Bridge
 
-WSL上の自作 CLI から、Windows VS Codeにログイン済みのCopilotモデルを公式のLanguage Model API
+自作 CLI から、VS Code にログイン済みの Copilot モデルを公式の Language Model API
 （`vscode.lm`）経由で呼ぶ最小構成です。`code chat` の UI 起動ではなく、回答を stdout に
 返します。**片道実行と対話（REPL）の両方**に対応します。
+
+**macOS・Linux・WSL** で動きます。WSL のときだけ Windows 側の VS Code を起こし、
+それ以外は同じ OS 上の VS Code を起こします。
 
 ```text
 vscode-copilot-chat (Python CLI)   ← 会話履歴はここが持つ
@@ -21,14 +24,38 @@ bash tools/vscode-copilot-chat/install.sh
 vscode-copilot-chat --start "このリポジトリを要約して"
 ```
 
-`--start`はWSLのカレントディレクトリを`wslpath -w`でWindows pathへ変換し、PowerShell
-から`code --user-data-dir ... --new-window <current-directory>`を実行します。専用
-`--user-data-dir`を使うのは、既に起動中のVS Codeへ接続してport/tokenの環境変数が失われる
-のを防ぐためです。CLI自身が既定port `32190`と生成したtokenを保持するため、Windows側の
-ホームディレクトリから接続情報を探す必要はありません。portは`--port`で固定できます。
+`--start` はカレントディレクトリを開く VS Code を起こします。**どちらの経路を使うかは
+OS 名ではなく道具の有無で決めます**——`powershell.exe` と `wslpath` が両方あれば WSL、
+無ければ同じ OS 上の VS Code です（WSL は Linux を名乗るので platform 名では分かれません）。
+
+| | 起こし方 | `--user-data-dir` |
+|---|---|---|
+| macOS / Linux | `code --new-window <cwd>` を env 付きで直接実行 | `~/.vscode-copilot-bridge/user-data` |
+| WSL | `wslpath -w` で Windows path へ変換し、PowerShell から実行 | `%LOCALAPPDATA%\vscode-copilot-bridge` |
+
+どちらも**専用の `--user-data-dir`** を使います。既に起動中の VS Code へ接続してしまうと
+port/token の環境変数が拡張へ届かないためです。CLI 自身が既定 port `32190` と生成した
+token を保持するので、接続情報をどこかから探す必要はありません。port は `--port` で
+固定できます。
 
 専用プロファイルなので、ふだん使っている VS Code の拡張（MCP など）はこのウィンドウには
 載りません。モデルを呼ぶだけならそれで足ります。
+
+### macOS で `code` が見つからないとき
+
+VS Code の「Shell Command: Install 'code' command in PATH」を実行していないと `code` は
+PATH にありません。CLI は `/Applications/Visual Studio Code.app` と
+`~/Applications/Visual Studio Code.app` の中も見にいくので、通常はそのままで動きます。
+別の場所・Insiders などを使う場合は `--code-bin` で指定してください。
+
+```bash
+vscode-copilot-chat --code-bin '/path/to/code' --start "…"
+```
+
+`install.sh` が拡張を置くのは `~/.vscode/extensions` です。Insiders を使う場合は
+`~/.vscode-insiders/extensions` へ手で置く必要があります。
+
+インストーラが CLI を置く `~/.local/bin` が PATH に無ければその旨を表示します。
 
 起動だけを行う場合と、同じbridgeへ続けて問い合わせる場合:
 
@@ -98,7 +125,7 @@ Bearer token を提示します。リクエスト上限は 4 MiB です（会話
 エンドポイントファイルは両プロセスで `VSCODE_COPILOT_BRIDGE_FILE` を設定すれば変更でき
 ます。トークンを含むため、共有・コミットしないでください。
 
-API は `POST /v1/chat` と `GET /v1/tools` の 2 つです。どちらも Bearer token が要ります。
+API は `POST /v1/chat`・`GET /v1/tools`・`POST /v1/tool` の 3 つです。いずれも Bearer token が要ります。
 
 **会話状態は CLI 側が持ち、拡張は毎回すべての手番を受け取る状態を持たない変換器**でいます。
 bridge を再起動しても会話が消えず、複数の CLI セッションが 1 つの拡張を同時に使えます。
@@ -146,19 +173,48 @@ vscode-copilot-chat --tools --json   # inputSchema を含む全文
 
 | 出どころ | 例 |
 |---|---|
-| VS Code 本体 | `run_in_terminal` `get_terminal_output` `runTests` `manage_todo_list` |
+| VS Code 本体 | `runSubagent` `run_in_terminal` `get_terminal_output` `runTests` `manage_todo_list` |
 | Copilot Chat 拡張 | `copilot_readFile` `copilot_applyPatch` `copilot_replaceString` `copilot_searchCodebase` |
 | VS Code に設定した MCP サーバ | 設定しだい |
 
 **中身は VS Code のバージョン・設定・入れている MCP サーバで変わります。**
 どのツールが使えるかを手元の一覧で決め打ちせず、この口で実測してください。
 
-`vscode.lm.invokeTool` は「any extension in any custom flow」で呼べる公開 API なので、
-ツールの実装と承認フローを自作する必要はありません（承認ダイアログは VS Code 側が
-出します）。借りられないのは**エージェントループ本体**（どのツールを呼ぶか決める部分・
-システムプロンプト・要約）と **agent skills**（`chatSkills` は package.json の
-contribution point で、列挙・実行の API は無い）です。skill・instructions は素の
-Markdown なので、必要なら自分で読んでプロンプトへ入れます。
+借りられないのは **agent skills** です（`chatSkills` は package.json の contribution point で、
+列挙・実行の API は無い）。skill・instructions は素の Markdown なので、必要なら自分で
+読んでプロンプトへ入れます。
+
+## ツールを呼ぶ
+
+`POST /v1/tool` は `vscode.lm.invokeTool` をそのまま通します。CLI からは `--call` です。
+**何を渡すかはこちらでは決めません**——入力スキーマは VS Code が持っていて、検証も
+VS Code が行います。ツールごとの知識をこの repo に置くと、環境差で必ず古くなります。
+
+```bash
+vscode-copilot-chat --call runSubagent                        # inputSchema を見る
+vscode-copilot-chat --call runSubagent --input '{"prompt":"テストを直して"}'
+echo '{"prompt":"…"}' | vscode-copilot-chat --call runSubagent --input -
+```
+
+`--input` を省くとそのツールの説明と `inputSchema` を表示します。まずこれを見てから
+渡す JSON を決めてください。
+
+`runSubagent`（VS Code 本体側のツール）が一覧に居る環境では、**エージェントループごと
+VS Code へ投げられます**——どのツールを呼ぶか決める部分を自作せずに済みます。居ない
+環境では `vscode.lm` の tool calling を自前で回すことになります。どちらになるかは
+`--tools` で確かめてください。
+
+呼び出しは chat request の外なので `toolInvocationToken` は `undefined` です。進捗 UI は
+出ませんが**承認ダイアログは出ます**——ターミナル実行などはそこで人が止められます。
+
+応答は text part を連結した `text` と、種別を残した `content` です。
+
+```json
+{"content":[{"type":"text","value":"…"},{"type":"other"}],"text":"…"}
+```
+
+`type: "other"` は prompt-tsx など文字列で受け取れない part です。黙って捨てると
+空応答に見えるので種別だけ残します。
 
 ## テスト
 
