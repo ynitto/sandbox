@@ -512,7 +512,9 @@ acceptance:
 
 **`ollama` だけは資産が要りません。** ほかの adapter は相手の CLI のプラグイン機構へ
 hook を差し込む必要がありますが、`ollama` の対話面（`agent-herd ollama --tui`）は
-**我々の実装**なので、ターンの終わりに同じコマンドを直接叩けます。管理下の pane で
+**我々の実装**なので、ターンの終わりに同じコマンドを直接叩けます。aider の対話面も
+同じ共通 TUI（`agent-herd aider --tui`。aider.json は `turn_completion: "ollama"` を
+宣言する）なので、この行がそのまま効きます。管理下の pane で
 なければ（env が無ければ）何もせず、通知に失敗しても対話は続きます——知らせられ
 なかったときは画面監視（`busy_pattern`）が拾うので、そこで落ちる理由がありません。
 人が Ctrl-C で止めたターンは `failure` として通知します（成果の無い実行を完了として

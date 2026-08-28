@@ -55,19 +55,27 @@
     "command": [
       "agent-herd",
       "aider",
+      "--tui",
       "--agent-policy",
       "gemma4-e4b-reliability-v1",
       "--model",
       "ollama_chat/{model}",
       "--no-git",
       "--no-auto-commits",
+      "--yes-always",
       "--no-check-update",
       "--no-show-model-warnings",
       "--no-analytics",
+      "--no-stream",
+      "--no-pretty",
       "--no-gitignore",
       "--map-tokens",
       "0"
-    ]
+    ],
+    "ready_pattern": "^[[:space:]]*>[[:space:]]*$",
+    "clear_command": "",
+    "prompt_inject": "send-keys",
+    "turn_completion": "ollama"
   },
   "errors": [
     {

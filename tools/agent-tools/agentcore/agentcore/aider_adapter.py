@@ -76,12 +76,17 @@ def _error(message: str) -> int:
 
 def _wrapper_args(argv):
     """Remove adapter-only options and return their validated values."""
-    forwarded, values = [], {"policy": None, "num_ctx": None, "num_predict": None}
+    forwarded, values = [], {"policy": None, "num_ctx": None, "num_predict": None,
+                             "tui": False}
     names = {"--agent-policy": "policy", "--agent-num-ctx": "num_ctx",
              "--agent-num-predict": "num_predict"}
     i = 0
     while i < len(argv):
         token = argv[i]
+        if token == "--tui":
+            values["tui"] = True
+            i += 1
+            continue
         option, separator, inline = token.partition("=")
         if option not in names:
             forwarded.append(token)
@@ -120,6 +125,84 @@ def _option_value(argv, name):
 
 def _has_option(argv, name):
     return any(token == name or token.startswith(name + "=") for token in argv)
+
+
+def _strip_option(argv, name):
+    """`name`（値つき。`name=value` 形も）を除いた argv を返す。"""
+    out, i = [], 0
+    while i < len(argv):
+        token = argv[i]
+        if token == name:
+            i += 2
+            continue
+        if token.startswith(name + "="):
+            i += 1
+            continue
+        out.append(token)
+        i += 1
+    return out
+
+
+def _run_once(args, prompt):
+    """aider を 1 回だけ回して本文（stdout）を返す。usage は 1 ターンぶんを stderr へ。"""
+    fd, name = tempfile.mkstemp(prefix="agent-aider-", suffix=".jsonl")
+    os.close(fd)
+    log_path = Path(name)
+    try:
+        try:
+            result = subprocess.run(
+                ["aider", "--analytics-log", name, *args, "--message", prompt],
+                stdout=subprocess.PIPE, text=True)
+        except FileNotFoundError:
+            raise RuntimeError("aider command not found") from None
+        usage = _read_usage(log_path)
+        if usage:
+            print(f"@agent-usage tokens_in={usage[0]} tokens_out={usage[1]}", file=sys.stderr)
+        body = result.stdout or ""
+        if result.returncode != 0:
+            raise RuntimeError(f"aider が rc={result.returncode} で終了しました\n{body.strip()}")
+        return body
+    finally:
+        log_path.unlink(missing_ok=True)
+
+
+def _tui_repl(forwarded, managed):
+    """共通 TUI の aider バックエンド（設計 2026-08-27 §7.1・段 12）。
+
+    前面は agent-ollama と同じ TUI（`> ` プロンプト・turn hook・/sm・/edit の
+    ハーネス回送）で、1 入力 = aider 1 回（`--message`）。会話は積まない——継続が
+    要る材料は毎回プロンプトへ書く（文脈を太らせない。F4）。
+    """
+    from agentcore import ollama_tui, slashroute
+    base_model = _option_value(forwarded, "--model") or ""
+    stripped = _strip_option(forwarded, "--model")
+
+    def runner(prompt, *, model, tools, think, renderer):
+        del tools, think, renderer      # aider は single-shot の編集役（toolset を持たない）
+        parsed = slashroute.parse_line(prompt, casefold=True)
+        command = slashroute.lookup(parsed[0]) if parsed else None
+        if parsed and command is None:
+            # 未知の /x を本文として aider へ流さない（設計 §3.2: 明示エラーで止まる）。
+            raise RuntimeError(f"未知のコマンドです: /{parsed[0]}（/help で一覧）")
+        if command is not None and command.kind == slashroute.KIND_SHAPE:
+            raise RuntimeError(
+                f"/{command.name} は aider バックエンドでは効きません"
+                "（編集は /edit でハーネスへ回るか、agent-ollama の TUI を使ってください）")
+        if model != base_model and (managed["policy"] is not None
+                                    or managed["num_ctx"] is not None
+                                    or managed["num_predict"] is not None):
+            # settings ファイルの entry は起動時のモデル名で束ねてある。別モデルへ
+            # 切り替えると policy / extra_params が黙って外れる——それを許さない。
+            raise RuntimeError(
+                "モデル別設定（--agent-policy / --agent-num-*）は起動時のモデル専用です"
+                f"（起動時 {base_model} / いま {model}）。/model で戻すか、起動し直してください")
+        return _run_once([*stripped, "--model", model] if model else list(stripped), prompt)
+
+    try:
+        return ollama_tui.repl(runner, model=base_model, tools=False, think=None,
+                               label="agent-aider")
+    except KeyboardInterrupt:
+        return 130
 
 
 def main(argv=None):
@@ -164,6 +247,10 @@ def main(argv=None):
             forwarded = ["--model-settings-file", settings_name, *forwarded]
         if policy:
             print(f"@agent-policy id={POLICY_ID} sha256={POLICY_SHA256}", file=sys.stderr)
+        if managed["tui"]:
+            # settings ファイルは repl が生きている間ずっと要る（finally が消すので
+            # ここで repl を回し切ってから抜ける）。
+            return _tui_repl(forwarded, managed)
         try:
             result = subprocess.run(["aider", "--analytics-log", name, *forwarded])
         except FileNotFoundError:

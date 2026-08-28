@@ -544,6 +544,7 @@ Aider を CLI 契約の下に置く薄いラッパ（`agentcore/aider_adapter.py
 
 | ラッパ専用オプション | 意味 |
 |---|---|
+| `--tui` | 共通 TUI（`ollama_tui`）を aider バックエンドで開く（段 12。§9.2） |
 | `--agent-policy <id>` | Aider の system prompt 先頭へ固定の reliability policy を注入する。現在の唯一の ID は `gemma4-e4b-reliability-v1`（対象 model は `ollama_chat/gemma4:e4b`） |
 | `--agent-num-ctx <整数>` | model settings の `extra_params.num_ctx` |
 | `--agent-num-predict <整数>` | model settings の `extra_params.num_predict` |
@@ -560,6 +561,20 @@ stderr の `@agent-usage tokens_in=... tokens_out=...` へ載せる（共通の 
 `~/.profile` からの環境補完（§6）も同じ理由で必要である——aider は接続先を `OLLAMA_API_BASE`
 （litellm）で読むので、補完が無いと既定の localhost へ向かうか、接続がプロキシへ流れて
 504 になる。
+
+### 9.2 対話面 — 共通 TUI の aider バックエンド（段 12）
+
+`agents/aider.json` の `interactive` は aider 素の TUI ではなく**共通 TUI**
+（`agent-herd aider --tui`）を起動する。前面の規約（`> ` プロンプト＝`ready_pattern`・
+turn hook・`/sm` `/edit` のハーネス回送）は ollama バックエンドと同一で、
+1 入力 = aider 1 回（`--message`）のヘッドレス実行になる。
+
+- 会話は積まない。継続に要る材料は毎回プロンプトへ書く（文脈を太らせない）
+- `--message` は adapter がターンごとに付けるので、起動 argv には現れない
+- モデル別設定（`--agent-policy` / `--agent-num-*`）があるとき `/model` での切り替えは
+  明示エラー——settings の entry は起動時のモデル名で束ねてあり、黙って外れることを許さない
+- 未知の `/x` と `/ask` `/find` は明示エラー（このバックエンドに toolset は無い）。
+  `/sm` `/edit` は TUI がヘッドレスのハーネスへ回す（§13.2 の表と同じ当て先）
 
 ---
 
@@ -625,6 +640,7 @@ readline の行指向表示へ戻る。全画面の alternate screen は使わ�
 | 用途別の起動形が 1 エージェントの profile であること | `tests/test_agentcli_jsonvariant.py` |
 | ollama の引数解釈・ループ・文脈・スキル・再生・TUI | `agentcore/tests/test_ollama_*.py` |
 | aider の policy 合成と usage 抽出 | `agentcore/tests/test_aider_adapter.py` |
+| 共通 TUI の aider バックエンド（前面規約の共有・1 入力 1 回・ハーネス回送） | `agentcore/tests/test_aider_tui.py` |
 | agent-loop → ハーネスの委譲（別名を張らない・サブコマンドが落ちる・記帳が台帳へ着く） | agent-loop の `test/test_harness_delegation.py` |
 | コマンド面の規約・4 種の表・用途の宣言・未知コマンドの明示エラー（§13） | `agentcore/tests/test_slashroute.py` |
 | ランチャが argv を組む前に読むこと（`/sm` の起動・`/edit` の宣言・逃げ道） | `agentcore/tests/test_harness_slash_dispatch.py` |
