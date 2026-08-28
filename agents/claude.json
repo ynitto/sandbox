@@ -10,6 +10,8 @@
   "empty_output_is_error": true,
   "write_args": ["--dangerously-skip-permissions"],
   "readonly_args": ["--permission-mode", "plan", "--tools", ""],
+  "continue_args": ["--continue"],
+  "resume_args": ["--resume", "{session}"],
   "readonly": "enforced",
   "no_session_args": ["--no-session-persistence"],
   "session_log": {

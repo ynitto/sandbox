@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import inspect
 import os
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -31,11 +32,24 @@ NAMES = ("toolloop", "statemachine")
 
 class TheHarnessStandsAloneTests(unittest.TestCase):
     def test_the_modules_import_without_agent_loop(self):
-        """agent-loop のデーモンも tmux も無しに呼べること（移植の目的）。"""
+        """agent-loop のデーモンも tmux も無しに呼べること（移植の目的）。
+
+        **別プロセスで測る。** 同じインタプリタの `sys.modules` を見ると、同じ実行で
+        先に走った別のテスト（`tests/test_nodebudget.py` は agent_loop を import する）の
+        後始末を見ているだけになり、収集順で結果が変わる——見たいのは「ハーネスが
+        引きずり込むか」であって「このプロセスで誰かが import したか」ではない。
+        """
         from agentcore.harness import statemachine, toolloop
         self.assertTrue(callable(toolloop.run_prompt))
         self.assertTrue(callable(statemachine.run_statemachine))
-        self.assertNotIn("agent_loop", sys.modules,
+        probe = subprocess.run(
+            [sys.executable, "-c",
+             "import sys; from agentcore.harness import statemachine, toolloop; "
+             "print('agent_loop' in sys.modules)"],
+            cwd=str(Path(__file__).resolve().parents[2]),
+            capture_output=True, text=True)
+        self.assertEqual(probe.returncode, 0, probe.stderr)
+        self.assertEqual(probe.stdout.strip(), "False",
                          "ハーネスが agent-loop を引きずり込んでいる")
 
     def test_the_body_lives_in_these_modules(self):

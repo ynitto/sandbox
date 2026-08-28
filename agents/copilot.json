@@ -11,6 +11,8 @@
   "empty_output_is_error": true,
   "write_args": ["--allow-all-paths"],
   "readonly_args": ["--available-tools=", "--disable-builtin-mcps", "--no-custom-instructions"],
+  "continue_args": ["--continue"],
+  "resume_args": ["--resume", "{session}"],
   "readonly": "best-effort",
   "no_session_args": [],
   "interactive": {

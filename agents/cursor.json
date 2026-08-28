@@ -9,6 +9,8 @@
   "output": "stdout",
   "empty_output_is_error": true,
   "readonly_args": ["--mode", "ask"],
+  "continue_args": ["--continue"],
+  "resume_args": ["--resume", "{session}"],
   "readonly": "best-effort",
   "interactive": {
     "command": ["cursor-agent"],

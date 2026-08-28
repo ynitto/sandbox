@@ -13,6 +13,8 @@
   "empty_output_is_error": true,
   "write_args": ["--dangerously-bypass-approvals-and-sandbox"],
   "readonly_args": ["--sandbox", "read-only"],
+  "continue_args": ["resume", "--last"],
+  "resume_args": ["resume", "{session}"],
   "readonly": "enforced",
   "no_session_args": ["--ephemeral"],
   "session_log": {

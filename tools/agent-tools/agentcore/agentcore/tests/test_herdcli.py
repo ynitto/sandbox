@@ -455,13 +455,17 @@ class TopLevelFlagsTests(unittest.TestCase):
         self.assertEqual(rc, 2)
         self.assertIn("ディレクトリが存在しません", err.getvalue())
 
-    def test_session_continuation_is_refused_until_its_meaning_is_settled(self):
-        """綴りだけ先に決まっているものは、黙って無視せず明示エラー（§11 未決 1）。"""
-        for flag in ("--continue", "--resume"):
-            err = io.StringIO()
-            rc = herdcli.cmd_toplevel([flag], err=err)
-            self.assertEqual(rc, 2, flag)
-            self.assertIn("未決", err.getvalue(), flag)
+    def test_session_continuation_without_material_or_declaration_stops(self):
+        """継続できない定義で黙って新規セッションを走らせない（§4・未決 1 の決着）。
+
+        実体は 2 つ——ネイティブの `continue_args` / `resume_args` か、自前 CLI の材料の
+        再構築か。どちらも無いなら明示エラーで止める。詳しい振る舞いは
+        `test_session_continue.py`。
+        """
+        err = io.StringIO()
+        rc = herdcli.cmd_toplevel(["--resume"], err=err)
+        self.assertEqual(rc, 2)
+        self.assertIn("セッション ID", err.getvalue())
 
     def test_an_unknown_flag_names_what_is_accepted(self):
         err = io.StringIO()

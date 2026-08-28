@@ -22,6 +22,10 @@ UI の応答性のため JS の自前ローダを持ち（Python を起こすと
     command + (write_args | readonly_args) + no_session_args? + spill.args?
             + model_flag model + command_suffix + argv 渡しのプロンプト
 
+`continue_args` / `resume_args` だけはこの順に載らず、**サブコマンドの直後**（先頭から
+連続する非オプションのトークンの後ろ）へ差し込む。codex の継続が `codex exec resume --last`
+というサブコマンドで、オプション列の後ろに置くと別の意味になるためである。
+
 `command` 内の `{model}` / `{output_file}` は置換され、`{model}` はモデル未指定ならトークンごと
 落ちる。`model_flag` は `command` に `{model}` が無くモデル指定があるときだけ付く。
 
@@ -85,6 +89,7 @@ def _bundled_dir() -> "Path | None":
 _PROFILE_NOT_INHERITED = ("interactive", "variants", "slash_native")
 _PROFILE_FIELDS = (
     "command", "command_suffix", "write_args", "readonly_args", "no_session_args",
+    "continue_args", "resume_args",
     "headless_autonomy", "default_model", "timeout", "env", "readonly", "prompt_via",
     "prompt_flag", "file_flag", "read_flag", "model_flag", "empty_output_is_error",
     "output", "skill_command_prefix", "relative_cost", "interactive", "variants",
@@ -345,6 +350,10 @@ def normalize(name: str, raw: dict, path) -> dict:
         "readonly_args": _strs(raw.get("readonly_args"), "readonly_args", path),
         "readonly": readonly,
         "no_session_args": _strs(raw.get("no_session_args"), "no_session_args", path),
+        # セッション継続。**ネイティブの機能を持つ CLI だけが宣言する**——持たない CLI の
+        # 継続は材料の再構築で、それは argv では表せない（仕様書 §3.3 / 設計 §4）。
+        "continue_args": _strs(raw.get("continue_args"), "continue_args", path),
+        "resume_args": _strs(raw.get("resume_args"), "resume_args", path),
         "headless_autonomy": headless_autonomy,
         "spill": {
             "args": _strs(spill_raw.get("args"), "spill.args", path),
@@ -383,6 +392,10 @@ def normalize(name: str, raw: dict, path) -> dict:
             "no_session_args": (_strs(inter_raw["no_session_args"],
                                       "interactive.no_session_args", path)
                                 if "no_session_args" in inter_raw else spec["no_session_args"]),
+            "continue_args": (_strs(inter_raw["continue_args"], "interactive.continue_args", path)
+                              if "continue_args" in inter_raw else spec["continue_args"]),
+            "resume_args": (_strs(inter_raw["resume_args"], "interactive.resume_args", path)
+                            if "resume_args" in inter_raw else spec["resume_args"]),
             "ready_pattern": str(inter_raw.get("ready_pattern") or ""),
             "ready_timeout_sec": float(inter_raw.get("ready_timeout_sec") or 60),
             "ready_tail_lines": max(1, int(inter_raw.get("ready_tail_lines") or 3)),
@@ -533,6 +546,35 @@ def costlier_fallback(current: str, candidates, project_dir=None) -> "dict | Non
     return None
 
 
+def session_args(spec: dict, *, interactive: bool = False, resume: str = "") -> "list[str]":
+    """セッション継続の argv 断片。宣言が無ければ空リスト（＝ネイティブ機能を持たない）。
+
+    `resume` を渡すと `resume_args` の `{session}` を埋める。continue（直近）と resume（ID
+    指定）で別の綴りを持つ CLI があるので、宣言も 2 つに分ける（claude の `--continue` と
+    `--resume <id>`）。
+    """
+    src = spec["interactive"] if interactive and spec.get("interactive") else spec
+    if resume:
+        return [tok.replace("{session}", resume) for tok in src.get("resume_args") or []]
+    return list(src.get("continue_args") or [])
+
+
+def _insert_session_args(argv: "list[str]", fragment: "list[str]") -> "list[str]":
+    """継続の断片を**サブコマンドの直後・オプションの前**へ差し込む。
+
+    末尾へ足せない CLI があるからである——codex の継続は `codex exec resume --last` という
+    サブコマンドで、`exec` のオプション列の後ろに置くと別の意味になる。一方フラグ形
+    （claude の `--continue`）はどこに置いても同じなので、この位置なら両方が成り立つ。
+    先頭から連続する非オプションのトークン（プログラム名とサブコマンド）が境界である。
+    """
+    if not fragment:
+        return argv
+    at = 0
+    while at < len(argv) and not argv[at].startswith("-"):
+        at += 1
+    return argv[:at] + list(fragment) + argv[at:]
+
+
 def _mode_args(spec: dict, *, interactive: bool, readonly: bool, no_session: bool) -> "list[str]":
     src = spec["interactive"] if interactive and spec.get("interactive") else spec
     args = list(src["readonly_args"]) if readonly else list(src["write_args"])
@@ -615,7 +657,8 @@ def headless_cmd(spec: dict, model: "str | None", prompt: str, *,
                  readonly: bool = False, no_session: bool = False,
                  spill_path: "str | None" = None,
                  files: "list[str] | tuple | None" = None,
-                 read_files: "list[str] | tuple | None" = None) -> dict:
+                 read_files: "list[str] | tuple | None" = None,
+                 session_continue: bool = False, session_id: str = "") -> dict:
     """ヘッドレス 1 回分を組み立てる（実行はしない・決定的）。
 
     戻り値: {argv, stdin, output_file, env, empty_output_is_error, timeout, readonly_warning}
@@ -642,6 +685,8 @@ def headless_cmd(spec: dict, model: "str | None", prompt: str, *,
     if m and spec["model_flag"] and not any("{model}" in t for t in spec["command"]):
         argv += [str(spec["model_flag"]), m]
     argv += _expand(spec["command_suffix"], m, holder)
+    if session_continue or session_id:
+        argv = _insert_session_args(argv, session_args(spec, resume=session_id))
     # ファイルの受け渡し。**宣言した CLI にだけ載る**——aider は「チャットに入っている
     # ファイルしか編集しない」ので、渡さないと本文で「追加してくれ」と要求して終わる
     # （1 発起動では答える人がいない＝着手すらしない）。実測でこの取りこぼしを
@@ -677,7 +722,8 @@ def headless_cmd(spec: dict, model: "str | None", prompt: str, *,
 
 
 def interactive_cmd(spec: dict, model: "str | None", *,
-                    readonly: bool = False, no_session: bool = False) -> "list[str]":
+                    readonly: bool = False, no_session: bool = False,
+                    session_continue: bool = False, session_id: str = "") -> "list[str]":
     """対話起動 argv を組み立てる。interactive セクションを持たない定義は AgentCliError。"""
     inter = spec.get("interactive")
     if not inter:
@@ -693,6 +739,9 @@ def interactive_cmd(spec: dict, model: "str | None", *,
                                no_session=no_session), m, holder)
     if m and spec["model_flag"] and not any("{model}" in t for t in inter["command"]):
         argv += [str(spec["model_flag"]), m]
+    if session_continue or session_id:
+        argv = _insert_session_args(
+            argv, session_args(spec, interactive=True, resume=session_id))
     if holder.get("path"):               # 対話起動でファイル出力は意味を成さない
         raise AgentCliError(f"{spec['name']} の interactive.command に {{output_file}} は使えません")
     return argv

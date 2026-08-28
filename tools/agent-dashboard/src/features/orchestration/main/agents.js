@@ -21,7 +21,7 @@ const ALLOWED_KEYS = [
   'model_flag', 'default_model', 'output', 'env', 'timeout', 'empty_output_is_error',
   'variants', 'command_suffix', 'skill_command_prefix',
   'write_args', 'readonly_args', 'readonly', 'headless_autonomy', 'slash_native',
-  'no_session_args', 'spill',
+  'no_session_args', 'continue_args', 'resume_args', 'spill',
   'interactive', 'errors', 'session_log',
   // 用途別の起動差（1 エージェント = 1 定義にするための入れ物）。
   'profiles',
@@ -32,7 +32,8 @@ const ERROR_CLASS_ENUM = ['quota', 'auth', 'env', 'transient'];
 const READONLY_ENUM = ['enforced', 'best-effort'];
 const HEADLESS_AUTONOMY_ENUM = ['tool-loop', 'single-shot'];
 const SESSION_LOG_FORMAT_ENUM = ['jsonl-dir', 'kiro-sqlite'];
-const STRING_ARRAY_FIELDS = ['command_suffix', 'write_args', 'readonly_args', 'no_session_args'];
+const STRING_ARRAY_FIELDS = ['command_suffix', 'write_args', 'readonly_args', 'no_session_args',
+  'continue_args', 'resume_args'];
 
 function expandHome(p) {
   if (!p) return p;

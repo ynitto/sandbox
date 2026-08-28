@@ -246,6 +246,49 @@ def read_status(path: "str | Path | None" = None, now: "float | None" = None) ->
     return status
 
 
+def read_messages(path: "str | Path", *, limit: int = 0) -> "list[tuple[str, str]]":
+    """ログ 1 本から会話（(role, content)）を古い順に返す。
+
+    セッション継続の材料はここから組む（設計 2026-08-27 §4 / 未決 1）。**自前のログだけを
+    読む**——他 CLI のネイティブストアを読むのは agent-audit の仕事で、そちらを agentcore へ
+    写すと同じパーサが 2 実装になる（C7）。`limit` を渡すと新しい方から N 件に絞る。
+    """
+    target = Path(path).expanduser()
+    out: "list[tuple[str, str]]" = []
+    try:
+        with target.open(encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(event, dict) or event.get("kind") != "message":
+                    continue
+                role = str(event.get("role") or "")
+                content = str(event.get("content") or "")
+                if role in ("user", "assistant") and content.strip():
+                    out.append((role, content))
+    except OSError:
+        return []
+    return out[-limit:] if limit and limit > 0 else out
+
+
+def log_path_for(session: str = "") -> "Path | None":
+    """セッション ID（ログのファイル名 stem）→ ログの所在。空なら直近のログ。
+
+    ID を stem にするのは、それが `--status` / `@agent-log` で既に人の目に見えている
+    識別子だからである。継続のために新しい ID 体系を作らない。
+    """
+    key = str(session or "").strip()
+    if not key:
+        return latest_log_path()
+    candidate = log_dir() / (key if key.endswith(".jsonl") else f"{key}.jsonl")
+    return candidate if candidate.is_file() else None
+
+
 def follow_events(path: "str | Path", *, from_start: bool = True, poll_sec: float = 0.3,
                   stop=None):
     """JSONL を追尾して 1 件ずつ yield する（`--follow` の土台）。

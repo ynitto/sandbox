@@ -76,6 +76,8 @@ HELP = f"""使い方: {PROG} [オプション]              # クラウド CLI �
     --purpose <用途>      用途の 1 語（宣言 / variants が起動形を決める）
     --readonly            読み取り専用で走らせる
     --dir <パス>          作業ディレクトリ
+    --continue            直前のセッションを続ける
+    --resume <ID>         ID を指定して再開する（ID はログの名前。status で見える）
 
   実行（adapter を直に叩く。引数は adapter へ素通し）:
     aider …               Aider をヘッドレスで回す（= agent-aider …）
@@ -102,8 +104,10 @@ HELP = f"""使い方: {PROG} [オプション]              # クラウド CLI �
 サブコマンドは **adapter の名前**であって定義の名前ではない。ollama-json のような
 定義を指定して回すときは `{PROG} exec ollama-json …`（または `--agent ollama-json`）を使う。
 
-`--continue` / `--resume` はまだ受け取らない。ローカルの単発実行は毎回新しいプロセスで、
-「継続」の実体をどう宣言させるかが未決だから（設計 2026-08-27 §4・§11 未決 1）。"""
+継続の実体はバックエンドで違う。ネイティブのセッション機能を持つ CLI は定義の
+`continue_args` / `resume_args` がそのまま argv へ載り、持たない自前 CLI
+（agent-ollama / agent-aider）は**前回の会話を材料として組み直す**。どちらも無い定義は
+明示エラーで止まる（黙って新規セッションとして走らせない）。"""
 
 
 def _err(message: str, *, err=None) -> None:
@@ -418,10 +422,21 @@ def _launch(argv: "list[str]") -> int:
 # 既存のサブコマンド（`aider` / `ollama` / `chat` / `exec` / `defs` / `harness` …）は
 # **別名として温存**する。仕様書 §3 の綴りを壊さない——help の下段へ降ろすだけ。
 TOPLEVEL_FLAGS = ("-p", "--prompt", "--agent", "--model", "--purpose",
-                  "--readonly", "--dir", "-d")
-# 綴りだけ先に決まっていて実体が未決のもの（設計 §4・§11 未決 1）。黙って無視すると
-# 「継続したつもりで毎回まっさらに走る」になるので、受け取った時点で明示エラーにする。
-UNDECIDED_FLAGS = ("--continue", "--resume")
+                  "--readonly", "--dir", "-d", "--continue", "--resume")
+# セッション継続の実体は 2 つある（設計 §4 未決 1 の決着・2026-08-29）。
+#
+# - **ネイティブのセッション機能を持つ CLI**（claude / codex / copilot / cursor）は
+#   定義が `continue_args` / `resume_args` を宣言し、入口はそれを argv へ差し込むだけ。
+#   文脈はその CLI の側に残るので、こちらは材料を組み直さない。
+# - **持たない自前 CLI**（agent-ollama / agent-aider）は**材料の再構築**である。前回の
+#   会話（自分の JSONL ログの `message` イベント）を読み、本文の頭へ載せて渡す。
+#   ローカルの単発実行は毎回新しいプロセスなので、これ以外の「継続」は存在しない。
+#
+# どちらも無い定義は明示エラーにする。黙って無視すると「継続したつもりで毎回まっさらに
+# 走る」になり、しかも出力からは見分けが付かない。
+_CONTINUE_HEADER = "（前回までのやり取り。続きとして扱ってください）"
+# 材料に載せる会話の上限。継続のたびに全履歴を積むと文脈が太る（F4）ので、直近だけを運ぶ。
+_CONTINUE_MAX_MESSAGES = 6
 
 
 def _is_toplevel_invocation(sub: "str | None") -> bool:
@@ -433,6 +448,26 @@ def _is_toplevel_invocation(sub: "str | None") -> bool:
     return sub is None or sub.startswith("-")
 
 
+def _continuation_material(session: str) -> str:
+    """自前 CLI の「継続」＝前回の会話を材料として組み直す（設計 §4 未決 1 の決着）。
+
+    読むのは**自分の JSONL ログだけ**。他 CLI のネイティブストアを読むのは agent-audit の
+    仕事で、そちらのパーサを agentcore へ写すと同じ形式に 2 実装ができる（C7）。
+    見つからなければ空文字を返し、呼び出し側が明示エラーにする。
+    """
+    from agentcore import ollama_events
+    path = ollama_events.log_path_for(session)
+    if path is None:
+        return ""
+    messages = ollama_events.read_messages(path, limit=_CONTINUE_MAX_MESSAGES)
+    if not messages:
+        return ""
+    lines = [_CONTINUE_HEADER]
+    for role, content in messages:
+        lines.append(f"[{'あなた' if role == 'assistant' else '依頼'}] {content.strip()}")
+    return "\n".join(lines)
+
+
 def cmd_toplevel(argv, *, err=None, runner=None, launcher=None, stdin=None) -> int:
     """`agent-herd [フラグ]` を `chat` / `exec` と同じ当て先へ落とす。"""
     err = err or sys.stderr
@@ -442,16 +477,22 @@ def cmd_toplevel(argv, *, err=None, runner=None, launcher=None, stdin=None) -> i
     prompt: "str | None" = None
     headless = False
     readonly = False
+    session_continue = False
+    session_id = ""
     work_dir: "str | None" = None
     i = 0
     while i < len(tokens):
         token = tokens[i]
-        if token in UNDECIDED_FLAGS:
-            _err(f"{token} はまだ実装していません。ローカルの単発実行は毎回新しい"
-                 "プロセスなので、「継続」の実体（材料の再構築か CLI 側のセッション機能か）"
-                 "を定義がどう宣言するかが未決です", err=err)
-            return 2
-        if token in ("-p", "--prompt"):
+        if token == "--continue":
+            session_continue = True
+        elif token == "--resume":
+            if i + 1 >= len(tokens):
+                _err("--resume にはセッション ID が必要です"
+                     f"（ID はログの名前。{PROG} status で見えます）", err=err)
+                return 2
+            i += 1
+            session_continue, session_id = True, tokens[i]
+        elif token in ("-p", "--prompt"):
             headless = True
             # 値は任意。次が値らしくなければ本文は stdin から読む（フィルタの作法）。
             if i + 1 < len(tokens) and not tokens[i + 1].startswith("-"):
@@ -501,11 +542,33 @@ def cmd_toplevel(argv, *, err=None, runner=None, launcher=None, stdin=None) -> i
             if routed["variant"] or routed["declared"]:
                 spec = agentcli.load_cli(routed["agent_cli"])
                 model = routed["model"]
+        native = bool(agentcli.session_args(spec, resume=session_id)) if session_continue else False
+        if session_continue and not native:
+            # ネイティブを持たない定義。ここで材料を組めなければ「継続したつもりで
+            # まっさらに走る」になるので、黙って続けない。
+            material = _continuation_material(session_id)
+            if not material:
+                _err(f"{spec['name']} は継続の材料を持っていません"
+                     + (f"（セッション {session_id} のログが見つかりません）" if session_id
+                        else "（前回の会話ログがありません）")
+                     + "。ネイティブのセッション機能を使う定義なら continue_args /"
+                     " resume_args を宣言してください", err=err)
+                return 2
         if not headless:
+            if session_continue and not native:
+                _err(f"{spec['name']} の継続は材料の再構築なので、本文と一緒に渡します"
+                     "（-p で実行してください）", err=err)
+                return 2
             return (launcher or _launch)(
-                agentcli.interactive_cmd(spec, model, readonly=readonly))
+                agentcli.interactive_cmd(spec, model, readonly=readonly,
+                                         session_continue=session_continue,
+                                         session_id=session_id))
         body = _read_prompt(stdin) if prompt is None else prompt
-        built = agentcli.headless_cmd(spec, model, body, readonly=readonly)
+        if session_continue and not native:
+            body = material + "\n\n" + body
+        built = agentcli.headless_cmd(spec, model, body, readonly=readonly,
+                                      session_continue=session_continue,
+                                      session_id=session_id)
     except agentcli.AgentCliError as exc:
         _err(str(exc), err=err)
         return 1

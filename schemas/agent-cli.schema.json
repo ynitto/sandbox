@@ -168,6 +168,22 @@
       "default": [],
       "description": "セッション永続化を切るフラグ（使い捨ての診断向け）。対話診断は readonly_args と併用して起動する。"
     },
+    "continue_args": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": [],
+      "description": "直前のセッションを続けるための argv 断片（`agent-herd --continue`）。**ネイティブのセッション機能を持つ CLI だけが宣言する**——持たない CLI（自前の agent-ollama / agent-aider）の継続は材料の再構築で、argv では表せない。差し込み位置はサブコマンドの直後・オプションの前（codex の継続は `codex exec resume --last` というサブコマンドで、末尾へ足すと別の意味になるため）。"
+    },
+    "resume_args": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": [],
+      "description": "ID を指定してセッションを再開する argv 断片（`agent-herd --resume <ID>`）。{session} が ID へ置換される。continue と綴りが違う CLI があるので別に宣言する（claude は --continue と --resume <id>）。"
+    },
     "spill": {
       "type": "object",
       "additionalProperties": false,
@@ -222,6 +238,20 @@
             "type": "string"
           },
           "description": "対話モードでのセッション永続化オフ。省略時はトップレベルの no_session_args を継承する。"
+        },
+        "continue_args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "対話起動での継続。省略時はトップレベルの continue_args を継承する。"
+        },
+        "resume_args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "対話起動での ID 指定の再開（{session} を置換）。省略時はトップレベルの resume_args を継承する。"
         },
         "ready_pattern": {
           "type": "string",
@@ -436,6 +466,22 @@
             },
             "default": [],
             "description": "セッション永続化を切るフラグ（使い捨ての診断向け）。対話診断は readonly_args と併用して起動する。"
+          },
+          "continue_args": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": [],
+            "description": "直前のセッションを続けるための argv 断片（トップレベルと同じ意味）。"
+          },
+          "resume_args": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": [],
+            "description": "ID を指定して再開する argv 断片（{session} を置換。トップレベルと同じ意味）。"
           },
           "headless_autonomy": {
             "enum": [

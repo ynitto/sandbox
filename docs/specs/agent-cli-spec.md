@@ -62,6 +62,8 @@ cowork の定常業務 tmux 実行だけで、定義解決に失敗しても `ki
 | `write_args` | array | `[]` | 既定（書き込み可）モードのフラグ |
 | `readonly_args` | array | `[]` | 読み取り専用モードのフラグ。`write_args` と**排他**（追加ではない） |
 | `no_session_args` | array | `[]` | セッション永続化を切るフラグ |
+| `continue_args` | array | `[]` | 直前のセッションを続ける argv 断片（`agent-herd --continue`）。**ネイティブのセッション機能を持つ CLI だけが宣言する**——持たない CLI の継続は材料の再構築で、argv では表せない（[agent-herd 仕様書](./agent-herd-spec.md) §3.4） |
+| `resume_args` | array | `[]` | ID 指定で再開する argv 断片（`{session}` が ID へ置換）。continue と綴りが違う CLI があるので別に宣言する |
 | `readonly` | `enforced` \| `best-effort` | `best-effort` | 読み取り専用の強制力の申告 |
 | `relative_cost` | number | `1` | 同じ仕事 1 回の無次元コスト（ローカル 0 / 通常クラウド 1） |
 | `headless_autonomy` | `tool-loop` \| `single-shot` | `single-shot` | ヘッドレス 1 回で自分でツールを回して完遂できるか |
@@ -81,7 +83,7 @@ cowork の定常業務 tmux 実行だけで、定義解決に失敗しても `ki
 |---|---|---|
 | `command` | — | 対話起動 argv |
 | `write_args` | — | 対話専用。**トップレベルから継承しない**（強い権限フラグを対話へ黙って持ち込まない） |
-| `readonly_args` / `no_session_args` | トップレベルを継承 | 対話側で上書き可 |
+| `readonly_args` / `no_session_args` / `continue_args` / `resume_args` | トップレベルを継承 | 対話側で上書き可 |
 | `ready_pattern` | 組み込み既定 | 入力受付を検出する正規表現 |
 | `ready_timeout_sec` | `60` | ready を待つ上限 |
 | `ready_tail_lines` | `3` | ready 判定で見る画面末尾の行数 |
