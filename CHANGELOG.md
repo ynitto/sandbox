@@ -7,6 +7,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-herd: 引数なしなら対話、`-p` なら 1 回——クラウド CLI と同型の入口
+
+設計: [2026-08-27 クラウド CLI を正とした入口の再構成](./docs/plans/2026-08-27-agent-herd-cloud-cli-parity-slash-dispatch-design.md)
+§3.1（実装計画 段 5）。仕様は [agent-herd 仕様書](./docs/specs/agent-herd-spec.md) §3.3。
+
+- `agent-herd` を引数なしで打つと**対話（TUI）**、`-p` を付けると**非対話 1 回**になる。
+  モデル・バックエンド・権限・作業ディレクトリはフラグ（`--model` / `--agent` /
+  `--readonly` / `--dir`）。**新しい実行経路は足していない**——既に `chat` と `exec` が
+  持っている当て先（`interactive_cmd` / `headless_cmd`）へフラグを翻訳するだけである。
+- **`--agent` が取るのは定義名**（`agents/<名前>.json`。`ollama-json` のような profile
+  綴りも解ける）。これで「adapter 名」という概念が外から消える。
+- **既存のサブコマンドはすべて温存**した（`aider` / `ollama` / `opencode` / `chat` /
+  `exec` / `defs` / `harness` / `status` / `follow` / `replay`）。help の下段へ降ろしただけで、
+  綴りも出力も変えていない。別名（`agent-ollama …`）の引数面も素通しのまま——argv[0] の
+  判定をフラグより先に置いてあるので、adapter だけが知っているフラグを入口が奪わない。
+- `--continue` / `--resume` は**まだ受け取らない**。ローカルの単発実行は毎回新しい
+  プロセスで、「継続」の実体をどう宣言させるかが未決だから（設計 §4・§11 未決 1）。
+  綴りだけ通して黙って無視すると「継続したつもりで毎回まっさらに走る」になるので、
+  受け取った時点で明示エラーにする。
+- 引数なしの既定が「help を出して終了コード 2」から対話へ変わった。help は `--help` で
+  出る（対話に入ってからは `/help`）。
+
 ### agent-tools: コマンド面（スラッシュ）を 4 種そろえ、用途を宣言 1 枚で書けるようにする
 
 設計: [2026-08-27 クラウド CLI を正とした入口の再構成](./docs/plans/2026-08-27-agent-herd-cloud-cli-parity-slash-dispatch-design.md)

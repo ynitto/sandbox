@@ -39,6 +39,11 @@ basename(argv[0])       解決されるサブコマンド        残りの引数
 
 「それ以外」があるのは、開発木から `python3 -m agentcore.herdcli defs` のように叩くため。
 
+**別名（argv[0]）はフラグより先に決まる。** `agent-ollama --tui` の `--tui` は adapter の
+ものであって入口のものではない——ここが逆転すると、adapter だけが知っているフラグを
+入口が「受け取りません」で落とす。入口自身のフラグ（§3.3）が効くのは
+`agent-herd` として呼ばれたときだけである。
+
 ---
 
 ## 3. サブコマンド
@@ -71,15 +76,41 @@ basename(argv[0])       解決されるサブコマンド        残りの引数
 
 ### 3.2 入口自身のオプション
 
-`agent-herd` は自分のフラグを持たない。受けるのは次の 3 つだけ:
-
 | 綴り | 動作 | 終了コード |
 |---|---|---|
-| `--help` / `-h` / `help` | サブコマンド一覧を stdout へ | 0 |
+| `--help` / `-h` / `help` | 一覧を stdout へ | 0 |
 | `--version` / `version` | `agent-herd <agentcore.__version__>` を stdout へ | 0 |
-| 引数なし | 一覧を stdout へ（使い方の誤りなので 0 では返さない） | 2 |
 
 各 adapter の詳細は `agent-herd ollama --help`（= `agent-ollama --help` と同一本文）。
+
+### 3.3 トップレベルのフラグ（クラウド CLI と同型の入口）
+
+設計: [2026-08-27 クラウド CLI を正とした入口の再構成](../plans/2026-08-27-agent-herd-cloud-cli-parity-slash-dispatch-design.md) §3.1。
+
+**引数なしなら対話、`-p` なら非対話 1 回。** claude / codex と同じ形である。先頭がフラグ
+（または引数なし）のとき、`agent-herd` は自分への指定として読む。
+
+| 綴り | 意味 | 落ちる先 |
+|---|---|---|
+| （引数なし） | 対話（TUI）で開く | `interactive_cmd` — `chat` と同じ |
+| `-p ["…"]` / `--prompt` | 1 回だけ実行する。値を省くと本文は stdin | `headless_cmd` — `exec` と同じ |
+| `--agent <名前>` | バックエンド。**`agents/<名前>.json` の定義名**（`ollama-json` のような profile 綴りも解ける） | `load_cli` |
+| `--model <モデル>` | モデル | 同上 |
+| `--purpose <用途>` | 用途の 1 語。起動形の調停は §13 のルータ | `slashroute.resolve` |
+| `--readonly` | 読み取り専用（対話でも効く） | `*_cmd(readonly=True)` |
+| `--dir <パス>` / `-d` | 作業ディレクトリ（このプロセスの cwd） | `os.chdir` |
+
+**新しい実行経路は足していない。** ここがやるのは、既に `chat` と `exec` が持っている
+当て先へフラグを翻訳することだけである。`--agent` が定義名を取ることで、「adapter 名」
+という概念が外から消える。
+
+位置引数は受け取らない（本文は `-p` か stdin）——受け取ると `agent-herd ollama` が
+「ollama という本文」と紛れる。未知のフラグは終了コード 2 で拒否する。
+
+**`--continue` / `--resume` はまだ受け取らない。** ローカルの単発実行は毎回新しい
+プロセスで、「継続」の実体（材料の再構築か CLI 側のセッション機能か）を定義がどう
+宣言するかが未決だから（設計 §4・§11 未決 1）。綴りだけ通して黙って無視すると
+「継続したつもりで毎回まっさらに走る」になるので、受け取った時点で明示エラーにする。
 
 ---
 
@@ -602,6 +633,7 @@ readline の行指向表示へ戻る。全画面の alternate screen は使わ�
 | `chat` の既定・policy の同一経路・対話面が無い定義の拒否・in-process 起動 | 同 `ChatTests` |
 | `exec` の argv 組み立て・引数面が閉じていること・tty を読まないこと | 同 `ExecTests` |
 | `harness` の引数解釈と種別の弁別 | 同 `HarnessTests` |
+| トップレベルのフラグ（§3.3）と、別名の引数面が素通しのままであること | 同 `TopLevelFlagsTests` / `Argv0DispatchTests` |
 | 環境補完が 1 実装であること（`is` で同一性） | `agentcore/tests/test_hostenv.py` |
 | 環境補完の振る舞い（相互補完・プロキシ迂回・両表記の一致） | 同 `CompleteOllamaEnvTests` |
 | ハーネスが単独で立つこと・本文が 1 か所であること・継ぎ目の既定 | `agentcore/tests/test_harness_standalone.py` |

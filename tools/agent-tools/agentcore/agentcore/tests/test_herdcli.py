@@ -53,6 +53,28 @@ class Argv0DispatchTests(unittest.TestCase):
             herdcli.ADAPTERS["ollama"] = original
         self.assertEqual(seen, [["--think", "off", "qwen3"]] * 2)
 
+    def test_a_flag_first_invocation_is_not_a_subcommand(self):
+        """先頭がフラグなら自分自身への指定（設計 2026-08-27 §3.1）。"""
+        self.assertTrue(herdcli._is_toplevel_invocation(None))
+        self.assertTrue(herdcli._is_toplevel_invocation("-p"))
+        self.assertTrue(herdcli._is_toplevel_invocation("--model"))
+        self.assertFalse(herdcli._is_toplevel_invocation("ollama"))
+
+    def test_the_alias_argument_face_stays_a_pass_through(self):
+        """別名（argv0）はフラグより先に拾う——あちらの引数面は adapter のものである。
+
+        これが崩れると `agent-ollama --model m` を herdcli が解釈しはじめ、adapter だけが
+        知っているフラグが「受け取りません」で落ちる。
+        """
+        seen = []
+        original = herdcli.ADAPTERS["ollama"]
+        herdcli.ADAPTERS["ollama"] = lambda: (lambda argv: seen.append(list(argv)) or 0)
+        try:
+            herdcli.main(["--tui", "--think", "off"], prog="/x/agent-ollama")
+        finally:
+            herdcli.ADAPTERS["ollama"] = original
+        self.assertEqual(seen, [["--tui", "--think", "off"]])
+
     def test_observation_aliases_are_not_a_second_implementation(self):
         """status / follow / replay は ollama adapter の同名フラグへそのまま渡すだけ。"""
         seen = []
@@ -358,6 +380,107 @@ class HarnessTests(unittest.TestCase):
         finally:
             ported.cmd_run = original
         self.assertEqual(rc, 3)
+
+
+class TopLevelFlagsTests(unittest.TestCase):
+    """`agent-herd [フラグ]` がクラウド CLI と同型であること（設計 2026-08-27 §3.1）。
+
+    **新しい実行経路は足していない。** ここが見るのは、フラグが既に `chat` / `exec` が
+    持っている当て先（`interactive_cmd` / `headless_cmd`）へ翻訳されることだけである。
+    """
+
+    def _headless(self, argv, stdin=None):
+        built = {}
+        rc = herdcli.cmd_toplevel(argv, runner=lambda b: built.update(b) or 0, stdin=stdin)
+        return rc, built
+
+    def _interactive(self, argv):
+        seen = {}
+        rc = herdcli.cmd_toplevel(argv, launcher=lambda a: seen.update(argv=a) or 0)
+        return rc, seen.get("argv")
+
+    def test_no_arguments_opens_the_interactive_face(self):
+        rc, argv = self._interactive([])
+        self.assertEqual(rc, 0)
+        self.assertIn("--tui", argv)
+
+    def test_dash_p_runs_once_with_the_body_on_stdin_of_the_child(self):
+        rc, built = self._headless(["-p", "こんにちは"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(built["stdin"], "こんにちは")
+        self.assertNotIn("--tui", built["argv"])
+
+    def test_dash_p_without_a_value_reads_stdin(self):
+        _rc, built = self._headless(["-p"], stdin=io.StringIO("パイプ本文"))
+        self.assertEqual(built["stdin"], "パイプ本文")
+
+    def test_dash_p_without_a_value_does_not_eat_the_next_flag(self):
+        _rc, built = self._headless(["-p", "--model", "qwen3:8b"],
+                                    stdin=io.StringIO("本文"))
+        self.assertIn("qwen3:8b", built["argv"])
+        self.assertEqual(built["stdin"], "本文")
+
+    def test_agent_takes_a_definition_name_including_a_profile_spelling(self):
+        """`--agent` が取るのは**定義名**。「adapter 名」という概念を外から消す。"""
+        _rc, built = self._headless(["--agent", "ollama-json", "-p", "x"])
+        self.assertIn("--format", built["argv"])
+        self.assertIn("json", built["argv"])
+
+    def test_model_and_readonly_reach_the_argv(self):
+        _rc, built = self._headless(["--model", "gemma4:12b", "--readonly", "-p", "x"])
+        self.assertIn("gemma4:12b", built["argv"])
+        _rc, plain = self._headless(["--model", "gemma4:12b", "-p", "x"])
+        self.assertNotEqual(built["argv"], plain["argv"], "readonly で argv が変わる")
+
+    def test_purpose_routes_through_the_router(self):
+        """用途の 1 語で起動形が決まる（宣言 → variants の調停は slashroute が持つ）。"""
+        _rc, built = self._headless(["--purpose", "verify", "-p", "x"])
+        self.assertIn("--format", built["argv"], "verify は JSON 契約の起動形へ落ちる")
+
+    def test_the_model_stays_a_flag_in_the_interactive_face_too(self):
+        _rc, argv = self._interactive(["--model", "qwen3:8b"])
+        self.assertIn("qwen3:8b", argv)
+
+    def test_dir_changes_the_working_directory(self):
+        here = os.getcwd()
+        self.addCleanup(os.chdir, here)
+        with tempfile.TemporaryDirectory() as tmp:
+            self._headless(["--dir", tmp, "-p", "x"])
+            self.assertEqual(os.path.realpath(os.getcwd()), os.path.realpath(tmp))
+
+    def test_a_missing_dir_is_an_explicit_error(self):
+        err = io.StringIO()
+        rc = herdcli.cmd_toplevel(["--dir", "/no/such/place", "-p", "x"], err=err)
+        self.assertEqual(rc, 2)
+        self.assertIn("ディレクトリが存在しません", err.getvalue())
+
+    def test_session_continuation_is_refused_until_its_meaning_is_settled(self):
+        """綴りだけ先に決まっているものは、黙って無視せず明示エラー（§11 未決 1）。"""
+        for flag in ("--continue", "--resume"):
+            err = io.StringIO()
+            rc = herdcli.cmd_toplevel([flag], err=err)
+            self.assertEqual(rc, 2, flag)
+            self.assertIn("未決", err.getvalue(), flag)
+
+    def test_an_unknown_flag_names_what_is_accepted(self):
+        err = io.StringIO()
+        rc = herdcli.cmd_toplevel(["--wat"], err=err)
+        self.assertEqual(rc, 2)
+        self.assertIn("--agent", err.getvalue())
+
+    def test_a_positional_argument_is_refused(self):
+        """本文は -p か stdin。位置引数を本文と読むと `agent-herd ollama` と紛れる。"""
+        err = io.StringIO()
+        rc = herdcli.cmd_toplevel(["おはよう"], err=err)
+        self.assertEqual(rc, 2)
+        self.assertIn("位置引数", err.getvalue())
+
+    def test_every_old_subcommand_is_still_reachable(self):
+        """従来の綴りは別名として温存する（仕様書 §3 を壊さない）。"""
+        for sub in ("aider", "ollama", "opencode", "defs", "exec", "chat", "harness",
+                    "status", "follow", "replay"):
+            self.assertFalse(herdcli._is_toplevel_invocation(sub), sub)
+            self.assertIn(sub, herdcli.HELP, sub)
 
 
 if __name__ == "__main__":
