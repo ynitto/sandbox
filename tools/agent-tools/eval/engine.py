@@ -173,6 +173,16 @@ def fact_extraction_directive(decision):
     return fn(decision) if fn is not None else None
 
 
+def split_by_deliverables(node):
+    """成果物スロットの機械分割。本番（agentcore.nodecontract）を呼ぶ（写さない）——
+    「機械が割った形」を測るのだから、割り方の実装は本番と同じでなければ意味がない。"""
+    nodecontract = _nodecontract()
+    if nodecontract is None:
+        return None
+    fn = _need(nodecontract, "split_by_deliverables", "split_by_deliverables（成果物スロット分割）")
+    return fn(node) if fn is not None else None
+
+
 def normalize_facts(decision, data):
     """モデル出力の事実を判定入力へ正規化する（本番と同じ寛容度・同じ欠測の扱い）。"""
     nodecontract = _nodecontract()

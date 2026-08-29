@@ -352,3 +352,70 @@ def fact_extraction_directive(decision) -> str:
             + "\n".join(lines)
             + "\n入力に現れた候補をすべて facts に含めること。"
               "本文から読み取れない項目は値を書かず、そのキーを省くこと（推測で埋めない）。")
+
+
+# --- 成果物スロット（deliverable slots）------------------------------------------------
+# 成果物が 2 つ以上ある仕事を丸ごと渡すと、小さいモデルは片方を丸ごと落とす（実測:
+# 丸ごと 0/3・人が 2 手順へ割ると 3/3・投げ直しは 0 回）。割り方を人に書かせず、
+# 処理契約の deliverables を「1 スロット = 1 回の呼び出し」として機械が割る。
+
+# 割る上限。これを超える宣言は割らずにそのまま渡す（暴走した分解を作らない——
+# 上限に当たった事実は呼び出し側がログへ出す）。
+MAX_DELIVERABLE_SLOTS = 4
+SPLITTABLE_KINDS = frozenset({"work", "generate"})
+
+
+def deliverable_slot_directive(target: str, others: "list[str]") -> str:
+    """1 スロットぶんの依頼文（本番と測定で同じ文面を使うための 1 実装）。"""
+    rest = "・".join(others)
+    return (f"この手順で作る成果物は `{target}` の 1 つだけ。"
+            + (f"ほかの成果物（{rest}）は別の手順で作るので、ここでは作らない・変更しない。"
+               if rest else "")
+            + "先の手順で作られた成果物があれば、読んで前提にしてよい。")
+
+
+def split_by_deliverables(node, *, max_slots: int = MAX_DELIVERABLE_SLOTS) -> "list[dict] | None":
+    """成果物が 2 つ以上ある work / generate ノードを、1 成果物 1 ノードの直列へ割る。
+
+    割った各ノードは処理契約も絞る（deliverables / scope.write を自分のスロットだけに
+    する）ので、局所修正の適格判定（:func:`local_patch_blockers`）とも整合する。
+    割れないときは None——呼び出し側は元のノードをそのまま使う。
+    """
+    if not isinstance(node, dict) or str(node.get("kind") or "work") not in SPLITTABLE_KINDS:
+        return None
+    contract = node.get("operation")
+    if not isinstance(contract, dict) or operation_contract_errors(contract):
+        return None
+    slots = [str(p) for p in (contract.get("deliverables") or [])]
+    if len(slots) < 2 or len(slots) > max(2, max_slots):
+        return None
+    base_id = str(node.get("id") or "").strip()
+    if not base_id:
+        return None
+    scope = contract.get("scope") or {}
+    writes = {_norm(p) for p in (scope.get("write") or [])}
+    goal = str(node.get("goal") or "")
+    out: list[dict] = []
+    for i, target in enumerate(slots):
+        others = [s for s in slots if s != target]
+        slot_scope = dict(scope)
+        # 書込 scope は自分のスロットだけに絞る。ただし宣言外のパスを勝手に足さない
+        # （元の宣言に無いなら書込宣言そのものを持たせない）。
+        if writes:
+            slot_scope["write"] = [target] if _norm(target) in writes else []
+            if not slot_scope["write"]:
+                del slot_scope["write"]
+        slot_contract = {**contract, "deliverables": [target]}
+        if slot_scope:
+            slot_contract["scope"] = slot_scope
+        elif "scope" in slot_contract:
+            del slot_contract["scope"]
+        out.append({
+            **{k: v for k, v in node.items() if k not in ("id", "goal", "deps", "operation")},
+            "id": f"{base_id}-d{i + 1}",
+            "goal": f"{goal}\n\n{deliverable_slot_directive(target, others)}",
+            "deps": [str(d) for d in (node.get("deps") or [])] if i == 0
+                    else [f"{base_id}-d{i}"],
+            "operation": slot_contract,
+        })
+    return out

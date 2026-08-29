@@ -708,6 +708,18 @@ def check_t8(wt: Path) -> tuple[bool, str]:
 # 引き直した記録は無い。escalate 率は族を分けて読む——混ぜると「下がらなかった」の原因が
 # 引き直しなのか (b) なのか分離できない。(b) が動かないときの答えは引き直しではなく、
 # 成果物を 1 つに割ること（nodecontract.local_patch_blockers の適格条件を満たす形へ）。
+# 機械分割 arm の入力: 人が書くのは「成果物のスロット」だけで、手順の文面は書かない。
+T3_OPERATION = {
+    "operation_class": "feature",
+    "scope": {"read": ["tools/agent-project", "schemas"],
+              "write": ["schemas/node-budget-summary.schema.json", T3_CONTRACT_TEST]},
+    "deliverables": ["schemas/node-budget-summary.schema.json", T3_CONTRACT_TEST],
+    "verification": {"commands": [[str(CHECK_PY), "-m", "pytest", "-q", "tools/agent-project"]]},
+}
+# 本番の分割器が返すスロット（agentcore が無い木では None → arm ごと出さない）。
+_T3_AUTOSPLIT = engine.split_by_deliverables(
+    {"id": "t3", "kind": "work", "goal": T3_GOAL, "operation": T3_OPERATION}) or []
+
 TASKS = {
     "T1": dict(
         family="a",
@@ -899,6 +911,20 @@ TASKS = {
     # 直後に C1 / C3 の決定的 checker を置いて、落ちた手順だけを有界再投入する。
     # **seed と最終 checker は T3gate と共通**——変えるのは成果物の粒度と gate の位置だけで、
     # ほかを動かすと T3gate との同条件比較にならない（それが測りたい唯一の差である）。
+    # 機械が割った arm（計画 2026-08-29 §2）。**人が書いた per-step goal を使わない**——
+    # 宣言するのは処理契約の deliverables（成果物スロット）だけで、割り方は本番の
+    # agentcore.nodecontract.split_by_deliverables に書かせる。seed・最終 checker・gate の
+    # 位置は T3splitgate と同一で、変えるのは「割り方を人が書いたか機械が書いたか」だけ。
+    **({"T3autosplit": dict(
+        family="b",
+        seed=seed_t3, check=check_t3, request=T3_REQUEST,
+        steps=[dict(request=T3_REQUEST, goal=slot["goal"],
+                    files=(slot["operation"]["deliverables"][0],), map_tokens=1024,
+                    test_cmd=f"{CHECK_PY} -m pytest -q tools/agent-project",
+                    gate=gate, max_retries=2)
+               for slot, gate in zip(_T3_AUTOSPLIT,
+                                     (check_t3_schema, check_t3_split_contract))])}
+       if len(_T3_AUTOSPLIT) == 2 else {}),
     "T3splitgate": dict(
         family="b",
         seed=seed_t3, check=check_t3, request=T3_REQUEST,

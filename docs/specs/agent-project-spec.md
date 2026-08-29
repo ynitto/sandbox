@@ -37,10 +37,10 @@ agent-project run \
   --executor stub \
   --no-delivery-review
 
-agent-project status --root .
+agent-project stats --root .
 ```
 
-`demo-task` が `done` になれば、投入、実行委譲、検証、完了記録まで動いています。
+`完了(archive): 1` と表示されれば、投入、実行委譲、検証、完了記録まで動いています。
 
 ### 実際のタスクを投入する
 
@@ -84,13 +84,13 @@ host 設定の作り方とサービス登録は[単一常駐体の導入ガイ�
 ### 状態を見る
 
 ```bash
-agent-project status
-agent-project status --json
+agent-project stats
 agent-project needs
 agent-project runlog
+agent-project status
 ```
 
-普段見るべきものは `status` と `needs` です。`needs` には、実行前レビュー、判断待ち、検収待ちなど、人の操作が必要な項目がまとまります。
+個別プロジェクトの日常確認には `stats`、`needs`、`runlog` を使います。`needs` には、実行前レビュー、判断待ち、検収待ちなど、人の操作が必要な項目がまとまります。`status` は個別タスクではなく、この PC で動く `agent-project serve` の生存状況と子プロセスを表示します。機械処理するときは各コマンドの `--json` を使います。
 
 ### 判断待ちを処理する
 
@@ -117,7 +117,7 @@ agent-project rot
 agent-project impact TASK_ID
 ```
 
-`doctor` は設定と実行環境、`audit` は自律運転の準備状況、`rot` は長期間動いていないタスク、`impact` は依存関係を調べます。`run` の終了理由は `status` または run log の `reason` で確認できます。
+`doctor` は設定と実行環境、`audit` は自律運転の準備状況、`rot` は長期間動いていないタスク、`impact` は依存関係を調べます。`run` の終了理由は `runlog` の `reason` で確認できます。
 
 ## タスク状態の読み方
 

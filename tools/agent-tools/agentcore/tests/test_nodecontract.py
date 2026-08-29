@@ -206,5 +206,62 @@ class DecisionContractTest(unittest.TestCase):
         self.assertNotIn("extra_deps が false", text)   # 条件そのものは載せない
 
 
+class DeliverableSlotTest(unittest.TestCase):
+    NODE = {
+        "id": "t1", "kind": "work", "deps": ["t0"], "goal": "スキーマを足し、契約テストも足す",
+        "operation": {
+            "operation_class": "feature",
+            "scope": {"read": ["tools/agent-project"],
+                      "write": ["schemas/s.json", "tests/test_s.py"]},
+            "deliverables": ["schemas/s.json", "tests/test_s.py"],
+            "verification": {"commands": [["python", "-m", "pytest", "-q", "tests"]]},
+        },
+    }
+
+    def test_two_deliverables_become_a_chain_of_one_slot_each(self):
+        slots = nodecontract.split_by_deliverables(self.NODE)
+        self.assertEqual([s["id"] for s in slots], ["t1-d1", "t1-d2"])
+        self.assertEqual(slots[0]["deps"], ["t0"])          # 先頭は元の依存を継ぐ
+        self.assertEqual(slots[1]["deps"], ["t1-d1"])       # 直列（同時に 2 つ渡さない）
+        for slot, want in zip(slots, self.NODE["operation"]["deliverables"]):
+            self.assertEqual(slot["operation"]["deliverables"], [want])
+            self.assertEqual(slot["operation"]["scope"]["write"], [want])
+            self.assertEqual(slot["operation"]["scope"]["read"], ["tools/agent-project"])
+            self.assertIn(want, slot["goal"])
+            self.assertIn("1 つだけ", slot["goal"])
+        self.assertIn("tests/test_s.py", slots[0]["goal"])  # 他スロットは触らないと明示する
+
+    def test_each_slot_passes_the_local_patch_gate(self):
+        """スロットは書込 1 ファイル・成果物 1 つになるので、局所修正の適格判定を通る
+        （テスト / schema / 文書は元々対象外なので、ここでは実装ファイルで測る）。"""
+        node = dict(self.NODE, operation=dict(
+            self.NODE["operation"], deliverables=["src/a.py", "src/b.py"],
+            scope={"read": ["src"], "write": ["src/a.py", "src/b.py"]}))
+        for slot in nodecontract.split_by_deliverables(node):
+            self.assertEqual(nodecontract.local_patch_blockers(
+                slot["operation"], existing_paths=["src/a.py", "src/b.py"]), [], slot["id"])
+
+    def test_not_split(self):
+        cases = {
+            "成果物 1 つ": dict(self.NODE, operation=dict(
+                self.NODE["operation"], deliverables=["schemas/s.json"])),
+            "処理契約なし": {k: v for k, v in self.NODE.items() if k != "operation"},
+            "壊れた契約": dict(self.NODE, operation={"scope": {"write": "x"}}),
+            "対象外の kind": dict(self.NODE, kind="verify"),
+            "上限超え": dict(self.NODE, operation=dict(
+                self.NODE["operation"], deliverables=[f"a{i}.py" for i in range(5)])),
+        }
+        for hint, node in cases.items():
+            with self.subTest(hint=hint):
+                self.assertIsNone(nodecontract.split_by_deliverables(node))
+
+    def test_write_scope_is_not_invented_when_the_slot_was_not_declared(self):
+        node = dict(self.NODE, operation=dict(
+            self.NODE["operation"], scope={"write": ["schemas/s.json"]}))
+        slots = nodecontract.split_by_deliverables(node)
+        self.assertEqual(slots[0]["operation"]["scope"]["write"], ["schemas/s.json"])
+        self.assertNotIn("scope", slots[1]["operation"])   # 宣言に無い書込先を作らない
+
+
 if __name__ == "__main__":
     unittest.main()

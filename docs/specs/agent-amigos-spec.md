@@ -506,7 +506,7 @@ LLM 実行は [`agent-cli`](../../schemas/agent-cli.schema.json) のプラグイ
 （`agents/<name>.json`）をそのまま使い、解釈は `agentcore.agentcli` の 1 実装です
 （amigos 側の `agentcli.py` は薄い再輸出）。amigos 側に CLI 分岐コードは書きません。
 
-同梱定義はリポジトリ直下 `agents/` にあり、base 8 種（`aider` / `claude` / `codex` /
+同梱定義はリポジトリ直下 `agents/` にあり、base 定義は `aider` / `claude` / `codex` /
 `copilot` / `cursor` / `kiro` / `ollama` / `vscode-copilot`）です。用途別の起動差は
 `ollama` の `profiles`（`json` / `list` / `list-thinking` / `read` / `verify`）が持ちます。amigos は headless 呼び出し（1 ターン 1 回・封筒を返させる）なので、
 `interactive` 節の有無は問いません。
@@ -608,22 +608,22 @@ agent-amigos cancel       <mid>  /  gc [--keep-days N] [--deliveries-keep-days N
 出力契約は `{"target": "amigos", "pattern": "<id|none>", "mission": {…}, "roles": [ … ]}` で、
 `normalize_mission` で検証してから post 経路へ合流します。
 
-カタログは [`patterns/<id>.json`](../../.github/skills/team-builder/patterns/) に 37 件
-（契約は同ディレクトリの `references/pattern.schema.json`）。
+カタログは [`patterns/<id>.json`](../../.github/skills/team-builder/patterns/) に置きます。
+契約は同ディレクトリの `references/pattern.schema.json` です。
 
-| tier | 件数 | 扱い |
-|---|---:|---|
-| `high` | 8 | `build-team` 実行時にカタログをプロンプトへ注入し、自動選択の対象にする |
-| `medium` | 29 | 自動選択に入れない。`--pattern <id>` で明示指定したときだけ使う |
+| tier | 扱い |
+|---|---|
+| `high` | `build-team` 実行時にカタログをプロンプトへ注入し、自動選択の対象にする |
+| `medium` | 自動選択に入れない。`--pattern <id>` で明示指定したときだけ使う |
 
-`high` の 8 件は `self-refine` / `metagpt-sop` / `agentcoder` / `multiagent-debate` /
+`high` のパターンは `self-refine` / `metagpt-sop` / `agentcoder` / `multiagent-debate` /
 `mixture-of-agents` / `chateval` / `self-consistency` / `least-to-most` です。
 
-うち 3 件（`tree-of-thoughts` / `graph-of-thoughts` / `lats`）は `target: agent-flow` で
+`tree-of-thoughts` / `graph-of-thoughts` / `lats` は `target: agent-flow` で
 登録されており、選ばれると roles ではなく agent-flow への委譲封筒
 （`schemas/delegation.schema.json` の op=post / workload=flow）を出力します。
 
-カタログを持たない 3 件（DyLAN / AgentVerse / meta-prompting）は自律コンダクタで表現します。
+カタログを持たない DyLAN / AgentVerse / meta-prompting は自律コンダクタで表現します。
 
 ---
 

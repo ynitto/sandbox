@@ -148,7 +148,26 @@ class FailureFamilyTest(unittest.TestCase):
     def test_whole_work_omission_family_is_the_multi_deliverable_task(self):
         # (b) は元が複数成果物の課題（schema + 契約テスト）。分解 arm も同じ族として比較する。
         self.assertEqual({tid for tid, t in w.TASKS.items() if t["family"] == "b"},
-                         {"T3", "T3gate", "T3splitgate"})
+                         {"T3", "T3gate", "T3splitgate", "T3autosplit"})
+
+
+class T3AutoSplitArmTest(unittest.TestCase):
+    """機械が割った arm。人が書くのは成果物スロットだけで、手順の文面は本番の分割器が書く。"""
+
+    def test_steps_come_from_the_production_splitter(self):
+        arm = w.TASKS["T3autosplit"]
+        self.assertEqual([step["files"] for step in arm["steps"]],
+                         [("schemas/node-budget-summary.schema.json",),
+                          (w.T3_CONTRACT_TEST,)])
+        # gate の位置・最終 checker・seed は人が割った arm と同一（差は割り方だけ）
+        hand = w.TASKS["T3splitgate"]
+        self.assertEqual([step["gate"] for step in arm["steps"]],
+                         [step["gate"] for step in hand["steps"]])
+        self.assertIs(arm["check"], hand["check"])
+        self.assertIs(arm["seed"], hand["seed"])
+        for step in arm["steps"]:
+            self.assertIn("1 つだけ", step["goal"])      # スロット指示が入っている
+            self.assertNotIn(w.T3_SCHEMA_GOAL, step["goal"])   # 人の手順文は使わない
 
 
 class T3SplitArmTest(unittest.TestCase):

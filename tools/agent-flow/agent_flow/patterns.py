@@ -124,6 +124,35 @@ def _coerce_tasks(raw, existing=()):
             if blocks:
                 node["goal"] = "\n\n".join([node["goal"], *blocks])
         out.append(node)
+    return _expand_deliverable_slots(out, seen)
+
+
+def _expand_deliverable_slots(tasks: "list[dict]", seen: set) -> "list[dict]":
+    """成果物が 2 つ以上ある work / generate を、1 成果物 1 ノードの直列へ機械が割る。
+
+    小さいモデルは成果物を 2 つ同時に渡されると片方を丸ごと落とす（実測: 丸ごと 0/3・
+    人が割ると 3/3）。割り方は planner の自由文でなく処理契約の deliverables から決める
+    ——分解は :func:`agentcore.nodecontract.split_by_deliverables`（1 実装）。
+    ユーザー定義フローには効かせない（人が描いた形は意図そのもの）。
+    """
+    out, remap = [], {}
+    for node in tasks:
+        slots = _nodecontract.split_by_deliverables(node)
+        if not slots or any(slot["id"] in seen for slot in slots):
+            out.append(node)
+            continue
+        seen.update(slot["id"] for slot in slots)
+        remap[node["id"]] = slots[-1]["id"]     # 後続は最後のスロットに依存させる
+        for slot in slots[:-1]:
+            # 差し替え宣言は最後のスロットだけに残す。全スロットが持つと、旧ノードの
+            # 後続が**最初のスロット**へ付け替えられ、成果物が 1 つ出来た時点で走り出す。
+            slot.pop("replaces", None)
+        out.extend(slots)
+        log("planner", f"成果物スロットで分割: {node['id']} → "
+                       f"{[slot['id'] for slot in slots]}（1 スロット = 1 回の呼び出し）")
+    if remap:
+        for node in out:
+            node["deps"] = [remap.get(d, d) for d in node.get("deps", [])]
     return out
 
 
@@ -963,6 +992,13 @@ def plan_strategy_agent(request: str, model: str | None, review="auto", granular
         '"read_allocation": [{"path": "src/x.py", "range": "10-40", "reason": "変更点", '
         '"slice": true, "symbols": ["Class.method"]}], '
         '"dependency_input": "digest"}]}\n'
+        "work / generate のノードには operation を付け、この工程で作る成果物のパスを "
+        'deliverables に列挙してください（例: {"operation": {"operation_class": "feature", '
+        '"scope": {"write": ["src/a.py", "tests/test_a.py"]}, '
+        '"deliverables": ["src/a.py", "tests/test_a.py"], '
+        '"verification": {"commands": [["python", "-m", "pytest", "-q", "tests"]]}}}）。'
+        "成果物が 2 つ以上あるノードは、エンジンが 1 成果物 1 手順の直列へ割ります"
+        "（自分で「実装とテストを分けた 2 ノード」を書く必要はありません）。\n"
         "filter / judge のノードには decision を必ず付けてください: "
         '{"facts": [{"name":"extra_deps","type":"bool","description":"追加依存が要るか"}], '
         '"criteria": [{"fact":"extra_deps","op":"eq","value":false}], '

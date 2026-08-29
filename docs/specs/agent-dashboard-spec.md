@@ -202,8 +202,8 @@ agent-project → routines → cowork → amigos → orchestration
 | 順 | 対象 | 制約 |
 |---|---|---|
 | 1 | `renderer.js`（core） | `state` と共有ユーティリティ、3 つの登録簿を定義する |
-| 2 | `sections/*.js`（15 本） | 関数宣言のみ。load 時実行を持たないので相互の順序は不問 |
-| 3 | `features/*.js`（3 本） | 自分のタブ／カード／設定面を登録する |
+| 2 | `sections/*.js` | 関数宣言のみ。load 時実行を持たないので相互の順序は不問 |
+| 3 | `features/*.js` | 自分のタブ／カード／設定面を登録する |
 | 4 | `bootstrap.js` | `init()` の定義と呼び出し。必ず最後 |
 
 テストは `test/helpers/renderer-src.js` がこの順で結合して「元の全文」を復元し、

@@ -16,6 +16,9 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+// 開発端末の ~/.agents/agents に依存させず、クリーンな CI でも同梱定義を読む。
+process.env.KIRO_AGENTS_DIR = path.resolve(__dirname, '..', '..', '..', 'agents');
+
 const cowork = require('../src/features/cowork/main/cowork');
 const loopProvider = require('../src/features/cowork/main/loopProvider');
 const agent = require('../src/features/agent-project/main/agent');

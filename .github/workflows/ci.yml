@@ -3,8 +3,8 @@ name: CI
 # このリポジトリ初の CI（修正計画 P3-1 / 実装計画 R4）。回すのは 3 系統:
 #
 #   1. python  … 各パッケージの単体テスト（agent-project / agent-flow / agent-amigos /
-#                agent-audit / agentcore / winauto / gitlab-repo-sync / opencode /
-#                agent-loop）。**agentcore はテストルートが 2 つある**ので両方を明示する
+#                agent-audit / agentcore / winauto / gitlab-repo-sync / agent-loop）。
+#                **agentcore はテストルートが 2 つある**ので両方を明示する
 #                （片方だけ discover すると残りが黙ってスキップされる）。
 #                設定キーの構造テスト（CONFIG_DEFAULTS → Config の到達性）は
 #                agent-project のスイートに含まれる。
@@ -50,10 +50,6 @@ jobs:
           # 見立てた end-to-end テストを含む。ネットワークには出ない）。
           - package: gitlab-repo-sync
             suites: tools/gitlab-repo-sync/tests
-          # opencode アダプター（agent-opencode）。偽の opencode を相手にするので
-          # 本体も推論サーバも要らない（ネットワークには出ない）。
-          - package: opencode
-            suites: tools/opencode/tests
           # agent-loop。tmux も kiro-cli も差し替えたうえで、設定解釈と送信順だけを見る
           # （実プロセスは起こさない）。
           - package: agent-loop

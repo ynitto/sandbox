@@ -463,5 +463,50 @@ class PlanDecisionContractTests(unittest.TestCase):
         self.assertNotIn("decision", tasks[2])   # filter / judge 以外へは運ばない
 
 
+class DeliverableSlotExpansionTests(unittest.TestCase):
+    """成果物スロットの機械分割: planner 経路では割り、ユーザー定義フローでは割らない。"""
+
+    OPERATION = {
+        "operation_class": "feature",
+        "scope": {"read": ["src"], "write": ["src/a.py", "tests/test_a.py"]},
+        "deliverables": ["src/a.py", "tests/test_a.py"],
+        "verification": {"commands": [["python", "-m", "pytest", "-q", "tests"]]},
+    }
+
+    def test_planner_task_with_two_deliverables_is_chained(self):
+        tasks = kf._coerce_tasks([
+            {"id": "t1", "goal": "実装してテストも足す", "kind": "work",
+             "operation": self.OPERATION},
+            {"id": "t2", "goal": "検証", "kind": "verify", "deps": ["t1"]},
+        ])
+        self.assertEqual([t["id"] for t in tasks], ["t1-d1", "t1-d2", "t2"])
+        self.assertEqual(tasks[1]["deps"], ["t1-d1"])
+        # 後続は最後のスロットに依存させる（片方だけ出来た状態で検証を走らせない）
+        self.assertEqual(tasks[2]["deps"], ["t1-d2"])
+        self.assertEqual(tasks[0]["operation"]["deliverables"], ["src/a.py"])
+
+    def test_single_deliverable_is_left_alone(self):
+        tasks = kf._coerce_tasks([
+            {"id": "t1", "goal": "実装", "kind": "work",
+             "operation": dict(self.OPERATION, deliverables=["src/a.py"],
+                               scope={"read": ["src"], "write": ["src/a.py"]})}])
+        self.assertEqual([t["id"] for t in tasks], ["t1"])
+
+    def test_replaces_stays_on_the_last_slot_only(self):
+        """差し替え宣言が全スロットに付くと、旧ノードの後続が最初のスロットへ繋がる
+        （成果物が 1 つ出来ただけで走り出す）。最後のスロットにだけ残す。"""
+        tasks = kf._coerce_tasks([
+            {"id": "r1", "goal": "作り直す", "kind": "work", "replaces": "t9",
+             "operation": self.OPERATION}])
+        self.assertEqual([t.get("replaces") for t in tasks], [None, "t9"])
+
+    def test_user_plan_is_not_split(self):
+        """人が描いた形は意図そのもの——投入した plan のノードを勝手に増やさない。"""
+        _strategy, tasks = kf.plan_strategy_user(_plan([
+            {"id": "a", "goal": "実装してテストも足す", "kind": "work",
+             "operation": self.OPERATION}]), "X")
+        self.assertEqual([t["id"] for t in tasks], ["a"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
