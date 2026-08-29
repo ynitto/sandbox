@@ -545,7 +545,9 @@ def main() -> int:
     parser.add_argument("-i", "--interactive", action="store_true",
                         help="対話モード（端末から起動し prompt を省略したときの既定）")
     parser.add_argument("--start", action="store_true",
-                        help="PowerShellから専用Windows VS Codeを現在のディレクトリで起動")
+                        help="（互換のため受け付ける。繋がらなければ既定で自動起動します）")
+    parser.add_argument("--no-start", dest="auto_start", action="store_false",
+                        help="VS Code を自動で起こさない（落ちていれば失敗させる）")
     parser.add_argument("--start-only", action="store_true", help="起動だけ行い問い合わせない")
     parser.add_argument("--port", type=int, default=32190, help="Windows bridge port（既定: 32190）")
     parser.add_argument("--code-bin", default="code", help="Windows側のcode command（既定: code）")
@@ -557,12 +559,12 @@ def main() -> int:
         parser.error("--json は対話モードでは使えません")
     try:
         path = endpoint_path()
-        endpoint = start_bridge(path, args.port, Path.cwd(), args.code_bin) if args.start else read_endpoint(path)
+        endpoint = ensure_bridge(
+            path, args.port, Path.cwd(), args.code_bin, args.timeout, args.auto_start,
+            notify=lambda: print("VS Code を起動しています…", file=sys.stderr))
         if args.start_only:
-            print(f"bridge starting: {endpoint['url']}")
+            print(f"bridge ready: {endpoint['url']}")
             return 0
-        if one_off and args.start:
-            wait_for_bridge(endpoint, args.timeout)
         if args.tools:
             payload = fetch_tools(endpoint, args.timeout)
             print(json.dumps(payload, ensure_ascii=False) if args.json else format_tools(payload))
@@ -618,22 +620,11 @@ def main() -> int:
             return 0
         session = Session(args.family)
         if interactive:
-            if args.start:
-                wait_for_bridge(endpoint, args.timeout)
             return repl(endpoint, session, args.timeout)
         prompt = args.prompt if args.prompt is not None else sys.stdin.read()
         if not prompt.strip():
             parser.error("prompt が空です")
-        # VS Codeの初回起動を待つ。接続拒否だけを短く再試行し、モデル/APIエラーは即時返す。
-        deadline = time.monotonic() + min(args.timeout, 30) if args.start else 0
-        while True:
-            try:
-                result = session.ask(endpoint, prompt, args.timeout, None)
-                break
-            except RuntimeError as exc:
-                if not args.start or "接続できません" not in str(exc) or time.monotonic() >= deadline:
-                    raise
-                time.sleep(0.5)
+        result = session.ask(endpoint, prompt, args.timeout, None)
     except RuntimeError as exc:
         print(f"vscode-copilot-chat: {exc}", file=sys.stderr)
         return 1
@@ -641,23 +632,59 @@ def main() -> int:
     return 0
 
 
+def bridge_address(endpoint: dict[str, object]) -> tuple[str, int]:
+    parsed = urllib.parse.urlparse(str(endpoint["url"]))
+    return parsed.hostname or "127.0.0.1", parsed.port or 80
+
+
+def bridge_is_listening(endpoint: dict[str, object], timeout: float = 2.0) -> bool:
+    try:
+        with socket.create_connection(bridge_address(endpoint), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
 def wait_for_bridge(endpoint: dict[str, object], timeout: float, sleep=time.sleep) -> None:
-    """--start 直後の対話起動で、VS Code が listen するまで待つ。
+    """VS Code が listen するまで待つ。
 
     モデルは呼ばない（起動待ちのために課金枠を焼かない）。TCP が繋がった時点で
-    拡張は activate 済みなので、以降の失敗は対話の中で見せれば足りる。
+    拡張は activate 済みなので、以降の失敗は本来の処理の中で見せれば足りる。
     """
-    parsed = urllib.parse.urlparse(str(endpoint["url"]))
-    address = (parsed.hostname or "127.0.0.1", parsed.port or 80)
     deadline = time.monotonic() + min(timeout, 30)
-    while True:
-        try:
-            with socket.create_connection(address, timeout=2):
-                return
-        except OSError:
-            if time.monotonic() >= deadline:
-                return
-            sleep(0.5)
+    while not bridge_is_listening(endpoint):
+        if time.monotonic() >= deadline:
+            return
+        sleep(0.5)
+
+
+def ensure_bridge(path: Path, port: int, cwd: Path, code_bin: str, timeout: float,
+                  auto_start: bool = True, notify=None) -> dict[str, object]:
+    """使える endpoint を返す。落ちていれば VS Code を起こして待つ。
+
+    **既に listen しているなら起こさない。** 同じ user-data-dir で二重に起こすと、
+    2 つ目の拡張ホストが同じ port を掴めずエラーになる。
+    """
+    endpoint = None
+    try:
+        endpoint = read_endpoint(path)
+    except RuntimeError:
+        if not auto_start:
+            raise
+    if endpoint and bridge_is_listening(endpoint):
+        return endpoint
+    if not auto_start:
+        raise RuntimeError(
+            "bridge が起動していません（--no-start を外すと自動で起こします）")
+    if notify:
+        notify()
+    endpoint = start_bridge(path, port, cwd, code_bin)
+    wait_for_bridge(endpoint, timeout)
+    if not bridge_is_listening(endpoint):
+        raise RuntimeError(
+            "VS Code を起こしましたが bridge へ接続できません。拡張が入っているか"
+            "（install.sh）と、port が空いているかを確認してください")
+    return endpoint
 
 
 if __name__ == "__main__":

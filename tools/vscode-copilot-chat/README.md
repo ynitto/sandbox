@@ -21,12 +21,17 @@ vscode-copilot-chat (Python CLI)   ← 会話履歴はここが持つ
 
 ```bash
 bash tools/vscode-copilot-chat/install.sh
-vscode-copilot-chat --start "このリポジトリを要約して"
+vscode-copilot-chat "このリポジトリを要約して"
 ```
 
-`--start` はカレントディレクトリを開く VS Code を起こします。**どちらの経路を使うかは
-OS 名ではなく道具の有無で決めます**——`powershell.exe` と `wslpath` が両方あれば WSL、
-無ければ同じ OS 上の VS Code です（WSL は Linux を名乗るので platform 名では分かれません）。
+**起動は要りません。** bridge へ繋がらなければ、カレントディレクトリを開く VS Code を
+自動で起こして待ちます。既に動いていれば起こしません——同じ `--user-data-dir` で二重に
+起こすと、2 つ目の拡張ホストが同じ port を掴めないためです。自動で起こしてほしくない
+ときは `--no-start` を付けます（落ちていればそのまま失敗します）。
+
+**どちらの経路で起こすかは OS 名ではなく道具の有無で決めます**——`powershell.exe` と
+`wslpath` が両方あれば WSL、無ければ同じ OS 上の VS Code です（WSL は Linux を名乗るので
+platform 名では分かれません）。
 
 | | 起こし方 | `--user-data-dir` |
 |---|---|---|
@@ -49,7 +54,7 @@ PATH にありません。CLI は `/Applications/Visual Studio Code.app` と
 別の場所・Insiders などを使う場合は `--code-bin` で指定してください。
 
 ```bash
-vscode-copilot-chat --code-bin '/path/to/code' --start "…"
+vscode-copilot-chat --code-bin '/path/to/code' "…"
 ```
 
 `install.sh` が拡張を置くのは `~/.vscode/extensions` です。Insiders を使う場合は
@@ -57,12 +62,15 @@ vscode-copilot-chat --code-bin '/path/to/code' --start "…"
 
 インストーラが CLI を置く `~/.local/bin` が PATH に無ければその旨を表示します。
 
-起動だけを行う場合と、同じbridgeへ続けて問い合わせる場合:
+先に立ち上げておきたい場合（初回の待ちを問い合わせから外したいとき）は `--start-only`
+です。使える状態になるまで待ってから終わります。
 
 ```bash
-vscode-copilot-chat --start-only --start --port 32191
-vscode-copilot-chat "次の質問"
+vscode-copilot-chat --start-only --port 32191
+vscode-copilot-chat --port 32191 "次の質問"
 ```
+
+`--start` は互換のために受け付けますが、自動起動が既定になったので要りません。
 
 初回リクエスト時に VS Code がモデル利用の同意を求める場合は許可してください。モデルが
 見つからない場合は、Copilot Chat がインストール済み・サインイン済み・組織ポリシーで
