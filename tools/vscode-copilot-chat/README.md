@@ -225,6 +225,7 @@ vscode-copilot-chat: runSubagent は chat request の中からしか呼べませ
 | ツール | chat の外から | 根拠 |
 |---|---|---|
 | `runSubagent` | **呼べない** | `toolInvocationToken is required for this tool` |
+| `copilot_readFile` | **呼べる** | 有効な入力で呼び、ファイルの中身が返った |
 | `copilot_applyPatch` `copilot_createFile` `copilot_createDirectory` `copilot_editNotebook` `copilot_createNewJupyterNotebook` `copilot_fetchWebPage` `copilot_createNewWorkspace` | 呼べる | トークンのエラーが返らず、ツール本体まで到達した |
 
 `copilot_*` 系の編集・読み取りツールはゲートされていません。**`vscode.lm` の tool calling を
@@ -312,19 +313,27 @@ $ vscode-copilot-chat --probe
 ```
 
 `type: "other"` は prompt-tsx など文字列で受け取れない部品です。**JSON にできる範囲で
-中身も返します**——種別だけ残して捨てると、成功したのに空という一番分かりにくい形に
-なるためです（循環参照などで JSON にできないときだけ `value` が落ちます）。
+中身も返します**（循環参照などで JSON にできないときだけ `value` が落ちます）。
 
-**テキストを 1 つも返さないツールがあります。** `copilot_readFile` のように結果を
-prompt-tsx で返すものがそれで、`text` は空になります。そのとき CLI は標準出力へ何も
-出さず、標準エラーへ理由を出します。
+**本文は prompt-tsx の中からも取り出します。** `copilot_readFile` のように結果を
+prompt-tsx で返すツールがあり、素朴に文字列部品だけを見ると「成功したのに空」に
+なります。木を辿ってテキストノードを出現順に連結し、`text` に載せます。
 
 ```console
 $ vscode-copilot-chat --call copilot_readFile --input '{"filePath":"…","startLine":1,"endLine":20}'
-テキストの部品がありません（1 個は prompt-tsx などの非テキスト）。--json で中身を見られます。
+# Agent Skills
+
+AIエージェント（GitHub Copilot / Claude Code）の能力を拡張するスキル集。
+…
 ```
 
-中身は `--json` で読めます。prompt-tsx の木の中に本文が入っています。
+各テキストノードは自分の改行を含むので、連結だけで元の本文が戻ります
+（`lineBreakBefore` を見て改行を足すと二重になります）。降りるのは `children` と
+`node` だけです——木を無差別に舐めると `references` の中など本文でない場所の
+`text` まで拾います。
+
+それでもテキストが 1 つも取れなければ、標準出力へは何も出さず、標準エラーへ理由と
+`--json` を案内します。空行を出すと「空文字が返った」と紛らわしいためです。
 
 ## エージェントへ丸投げする（現状は使えません）
 

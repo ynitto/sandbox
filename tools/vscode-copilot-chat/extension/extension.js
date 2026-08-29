@@ -134,18 +134,45 @@ function serializablePart(value) {
   }
 }
 
+// prompt-tsx の直列化形（PromptElementJSON）から本文を拾う。要素ノードは children を
+// 持ち、テキストノードは `text` を持つ。各 text は自分の改行を含むので、出現順に
+// 連結すれば元の本文が戻る（lineBreakBefore を見て改行を足すと二重になる）。
+//
+// 降りるのは children と node だけにする。木を無差別に舐めると references の中など
+// 本文でない場所の text まで拾いうる。
+function collectText(node, out) {
+  if (Array.isArray(node)) {
+    for (const child of node) collectText(child, out);
+    return;
+  }
+  if (!node || typeof node !== 'object') return;
+  if (typeof node.text === 'string') out.push(node.text);
+  if (node.children) collectText(node.children, out);
+  if (node.node) collectText(node.node, out);
+}
+
 function toolResultToJson(result) {
-  const content = ((result && result.content) || []).map(part => {
-    if (typeof part.value === 'string') return { type: 'text', value: part.value };
+  const content = [];
+  const texts = [];
+  for (const part of (result && result.content) || []) {
+    if (typeof part.value === 'string') {
+      content.push({ type: 'text', value: part.value });
+      texts.push(part.value);
+      continue;
+    }
     // prompt-tsx などの非テキスト部品。種別だけ残して捨てると「成功したのに空」と
     // 見分けが付かないので、JSON にできる範囲で中身も返す（--json で読める）。
     const value = serializablePart(part.value);
-    return value === undefined ? { type: 'other' } : { type: 'other', value };
-  });
-  return {
-    content,
-    text: content.filter(part => part.type === 'text').map(part => part.value).join(''),
-  };
+    if (value === undefined) {
+      content.push({ type: 'other' });
+      continue;
+    }
+    const collected = [];
+    collectText(value, collected);
+    if (collected.length) texts.push(collected.join(''));
+    content.push({ type: 'other', value });
+  }
+  return { content, text: texts.join('') };
 }
 
 // 任意のツールを名前で呼ぶ。スキーマは VS Code が持っていて invokeTool が検証するので、
