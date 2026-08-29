@@ -25,7 +25,14 @@ bash tools/agent-tools/install.sh --only agent-amigos
 
 ### 1 台でプロトコルを試す
 
-最初はローカルバスと `stub` を使います。`stub` は LLM を呼ばないため、役割の募集、進行、統合、受入の流れだけを確認できます。
+最初はローカルバスと `stub` を使います。`stub` は LLM を呼ばないため、役割の募集、進行、統合、受入の流れだけを確認できます。この動作確認では、ノード共通の CLI 選択ポリシーと予算台帳が混ざらないよう、保存先も作業ディレクトリ内へ切り替えます。
+
+```bash
+export AGENT_CONTROL_DIR="$PWD/.agents/amigos-control"
+export AGENT_BUDGET_DIR="$PWD/.agents/amigos-budget"
+```
+
+この設定は動作確認用です。本番では、チームで使っている `AGENT_CONTROL_DIR` と `AGENT_BUDGET_DIR` に合わせてください。特に `agent-control` の選択ポリシーがある環境では、コマンドの `--agent-cli` よりポリシー側の指定が優先されます。
 
 作業ディレクトリに、次のような `design-doc.md` を用意します。
 
@@ -184,7 +191,7 @@ agent-amigos post \
 
 ## CLI リファレンス
 
-## 1. 用語
+### 1. 用語
 
 | 語 | 意味 |
 |---|---|
@@ -198,9 +205,9 @@ agent-amigos post \
 
 ---
 
-## 2. バス
+### 2. バス
 
-### 2.1 レイアウト
+#### 2.1 レイアウト
 
 ```
 <bus>/missions/<mission-id>/
@@ -225,7 +232,7 @@ agent-amigos post \
 公示は正規化 JSON で置きます。オーナーの入力は YAML でよいが、post の時点で変換します
 （読み手に PyYAML を要求しないため）。
 
-### 2.2 書き込み所有権
+#### 2.2 書き込み所有権
 
 git バスでコンフリクトを起こさないよう、書き込み権をパス単位で分けます。この表が
 「3-way 裁定は不要」の根拠です。
@@ -242,7 +249,7 @@ git バスでコンフリクトを起こさないよう、書き込み権をパ�
 既読フラグはバスに書きません。各 amigo が自分の status にカーソル（最後に見た ulid）を
 持つだけです。
 
-### 2.3 転送層
+#### 2.3 転送層
 
 | 実装 | 転送 | 想定 |
 |---|---|---|
@@ -266,9 +273,9 @@ pull は間隔律速（既定 15 秒）。ただし claim の勝者確認だけ�
 
 ---
 
-## 3. 状態と収束
+### 3. 状態と収束
 
-### 3.1 ライフサイクル
+#### 3.1 ライフサイクル
 
 状態は専用フィールドを持たず、ファイルの存在から導出します（`derive_phase`）。
 
@@ -288,7 +295,7 @@ pull は間隔律速（既定 15 秒）。ただし claim の勝者確認だけ�
 差し戻しは `rejections/` にファイルを 1 つ増やし、その件数がそのままラウンド番号になります。
 旧ラウンドの完了宣言は自動的に無効になります。
 
-### 3.2 収束条件
+#### 3.2 収束条件
 
 次のいずれか早いほうで収束します。
 
@@ -303,7 +310,7 @@ pull は間隔律速（既定 15 秒）。ただし claim の勝者確認だけ�
 後ろの 2 つで収束した場合、`deliverable/MANIFEST.json` に `partial: true` が付きます。
 partial 統合の後で本来の完了へ到達した場合は完全版で統合し直します。
 
-### 3.3 claim と lease
+#### 3.3 claim と lease
 
 lease 内の全 claim のうち `(ts, node)` 昇順の先頭 1 件が勝者です。全ノードが同じ集合から
 同じ勝者を導くので、ローカルでも git でも二重アサインが起きません。実体は
@@ -322,9 +329,9 @@ grace（既定 7,200 秒）を超えたら通常の再募集へ戻ります。
 
 ---
 
-## 4. メッセージとアクション封筒
+### 4. メッセージとアクション封筒
 
-### 4.1 経路と型
+#### 4.1 経路と型
 
 経路は 3 つ。全体連絡は `channels/all/`、特定ロール宛は `inbox/<role-id>/`、オーナー宛の
 エスカレーションは `inbox/owner/` です。
@@ -336,7 +343,7 @@ grace（既定 7,200 秒）を超えたら通常の再募集へ戻ります。
 | amigo が使う | `question` / `answer` / `request` / `review` / `status` / `decision-request` / `info` |
 | システムが使う | `wrap-up` / `approve` / `feedback` |
 
-### 4.2 アクション封筒
+#### 4.2 アクション封筒
 
 エージェント CLI の出力は封筒として受け取り、ランナーが検証してからバスへ書きます
 （LLM にファイルを触らせない）。`kind` は 4 種だけです。
@@ -354,7 +361,7 @@ grace（既定 7,200 秒）を超えたら通常の再募集へ戻ります。
 （`..` は拒否）、`approve` を名乗れる `approver` ロールか。不正なアクションは棄却して
 events に残し、次ターンのプロンプトで LLM へ差し戻します。
 
-### 4.3 会話の規約
+#### 4.3 会話の規約
 
 - question には answer か owner へのエスカレーションで必ず応じる。`question_timeout`
   （既定 2 ターン）を過ぎた未回答はランナーが `decision-request` へ昇格します。ただし
@@ -364,9 +371,9 @@ events に残し、次ターンのプロンプトで LLM へ差し戻します�
 
 ---
 
-## 5. 予算
+### 5. 予算
 
-### 5.1 ミッション予算（依頼側・バスに宣言）
+#### 5.1 ミッション予算（依頼側・バスに宣言）
 
 ```yaml
 budget:
@@ -383,7 +390,7 @@ budget:
 進行中のターンは CLI 定義の timeout まで走り得るので、超過は最大〈ターン timeout × 同時実行
 amigo 数〉に収まります。追加はオーナーのみ（`budget add <mid> --minutes N`）。
 
-### 5.2 ノード予算（請負側・ノード横断の共有台帳）
+#### 5.2 ノード予算（請負側・ノード横断の共有台帳）
 
 正典は [`node-budget`](../../schemas/node-budget.schema.json)（v2）。
 
@@ -402,7 +409,7 @@ amigos は `workload: amigos`、`ref: <mission-id>/<role>` で記帳します。
 
 ---
 
-## 6. 設定ファイル
+### 6. 設定ファイル
 
 `agent-amigos.yaml`（PyYAML 無し環境は `agent-amigos.json`・同じキー）。優先順位は
 CLI > 設定ファイル > 組み込み既定。探索順は `--config` 明示 → `<cwd>/agent-amigos.*` →
@@ -431,7 +438,7 @@ CLI > 設定ファイル > 組み込み既定。探索順は `--config` 明示 �
 キーはここに無いものが黙って無視されます。設定に書いたのに効かないときは、まず綴りを
 確認してください。
 
-### 6.1 環境変数
+#### 6.1 環境変数
 
 | 変数 | 既定 | 効く先 |
 |---|---|---|
@@ -441,16 +448,17 @@ CLI > 設定ファイル > 組み込み既定。探索順は `--config` 明示 �
 | `AGENT_AMIGOS_AWAY_GRACE` | `7200` 秒 | away を再募集へ倒すまでの猶予 |
 | `AGENT_AMIGOS_PULL_INTERVAL` | `15` 秒 | GitBus の pull 間隔 |
 | `AGENT_AMIGOS_TURNS_DIR` | `~/.agents/amigos/turns` | 同時実行マーカーの置き場 |
+| `AGENT_CONTROL_DIR` | `~/.agents/control` | CLI・モデルの選択ポリシーと適用状況 |
 | `AGENT_BUDGET_DIR` | `~/.agents/budget` | ノード予算台帳 |
 
 ---
 
-## 7. 役割ミッション表
+### 7. 役割ミッション表
 
 正典は [`mission.schema.json`](../../schemas/mission.schema.json)、雛形は
 [`roles.yaml.example`](../../tools/agent-amigos/roles.yaml.example)。
 
-### 7.1 ミッション側
+#### 7.1 ミッション側
 
 | キー | 既定 | 意味 |
 |---|---|---|
@@ -469,7 +477,7 @@ CLI > 設定ファイル > 組み込み既定。探索順は `--config` 明示 �
 | `conductor.enabled` | `false` | 自律コンダクタ。`cli` / `max_ops`(3) / `max_total_ops`(12) / `interval_rounds`(1) |
 | `workspace.repo` | — | コード成果物用。opaque passthrough（§9） |
 
-### 7.2 ロール側
+#### 7.2 ロール側
 
 | キー | 意味 |
 |---|---|
@@ -492,7 +500,7 @@ CLI > 設定ファイル > 組み込み既定。探索順は `--config` 明示 �
 
 ---
 
-## 8. エージェント CLI
+### 8. エージェント CLI
 
 LLM 実行は [`agent-cli`](../../schemas/agent-cli.schema.json) のプラグイン契約
 （`agents/<name>.json`）をそのまま使い、解釈は `agentcore.agentcli` の 1 実装です
@@ -503,7 +511,8 @@ LLM 実行は [`agent-cli`](../../schemas/agent-cli.schema.json) のプラグイ
 `ollama` の `profiles`（`json` / `list` / `list-thinking` / `read` / `verify`）が持ちます。amigos は headless 呼び出し（1 ターン 1 回・封筒を返させる）なので、
 `interactive` 節の有無は問いません。
 
-CLI の解決順は 管理面 > ノード既定 > ロール指定 です。管理面は
+CLI の解決順は 管理面 > ノード既定 > ロール指定 です。コマンドで渡した `--agent-cli` も
+ノード既定に含まれるため、管理面の選択ポリシーがあればそちらが優先されます。管理面は
 [`agent-control`](../../schemas/agent-control.schema.json)（`~/.agents/control/control.json`）で、
 ロール別に CLI とモデルを横断上書きできます。
 
@@ -522,7 +531,7 @@ CLI の解決順は 管理面 > ノード既定 > ロール指定 です。管�
 
 ---
 
-## 9. 受入と納品
+### 9. 受入と納品
 
 integrator の完了で reviewing に入ります。integrator は LLM を使いません。`artifacts/*` を
 走査して `deliverable/` へコピーし、由来ロールと SHA-256 の先頭 16 桁を `MANIFEST.json` に
@@ -555,7 +564,7 @@ checkout・ブランチ作成・マージを行うコードはありません。
 
 ---
 
-## 10. CLI
+### 10. CLI
 
 ```
 agent-amigos init-bus     --bus <dir|git+url>
@@ -581,7 +590,7 @@ agent-amigos cancel       <mid>  /  gc [--keep-days N] [--deliveries-keep-days N
 サブコマンド無しの裸起動は案内を出して終わります。黙って常駐すると常駐体
 （`agent-project serve`）と二重に回って claim を奪い合うためです。
 
-### 10.1 外部からの指示
+#### 10.1 外部からの指示
 
 `<home>/.agents/agent-amigos/commands/*.json` に JSON を 1 ファイル置くだけです
 （正典: [`amigos-command.schema.json`](../../schemas/amigos-command.schema.json)）。
@@ -590,7 +599,7 @@ agent-amigos cancel       <mid>  /  gc [--keep-days N] [--deliveries-keep-days N
 
 ---
 
-## 11. パターンカタログ
+### 11. パターンカタログ
 
 役割設計の手順は [`.github/skills/team-builder/`](../../.github/skills/team-builder/) にあり、
 `build-team` はそれを呼び出します。設計には実際のエージェント CLI が要ります
@@ -618,7 +627,7 @@ agent-amigos cancel       <mid>  /  gc [--keep-days N] [--deliveries-keep-days N
 
 ---
 
-## 12. 上限と間隔
+### 12. 上限と間隔
 
 | 対象 | 値 | 変えられるか |
 |---|---|---|
@@ -638,7 +647,7 @@ status の書き込み自体も止めます（心拍の鮮度維持だけ 60 秒
 
 ---
 
-## 13. 未実装
+### 13. 未実装
 
 | 項目 | 状態 |
 |---|---|
@@ -650,9 +659,9 @@ status の書き込み自体も止めます（心拍の鮮度維持だけ 60 秒
 
 ---
 
-## 付録. テスト
+### 付録. テスト
 
-`tools/agent-amigos/tests/` に 12 ファイル・197 件。stub エージェント（LLM 不要）で回ります。
+テストは stub エージェントを使うため、外部のエージェント CLI なしで実行できます。
 
 ```bash
 cd tools/agent-amigos && python3 -m unittest discover -s tests

@@ -1283,7 +1283,13 @@ def execute_agent(kind: str, goal: str, dep_results: dict, model: str | None,
                  instructions: str = "", prompt_table: bool = False,
                  repair: "dict | None" = None, context: str = "",
                  read_allocation: "list[dict] | None" = None,
-                 agent: "dict | None" = None, readonly: bool = False):
+                 agent: "dict | None" = None, readonly: bool = False,
+                 decision: "dict | None" = None):
+    # 判定契約（node.decision）があり形が正しければ、filter / judge は「訊く」形をやめる:
+    # モデルは事実の抽出だけを行い、採否・最良案は agentcore の decide_candidates（機械）が
+    # 決める。宣言が壊れていれば無いものとして従来のモデル判定へ倒す。
+    pipe = (decision if kind in ("filter", "judge") and isinstance(decision, dict)
+            and not _nodecontract.decision_contract_errors(decision) else None)
     role = {
         "classify": "分類役。入力を適切なカテゴリへ分類し『class=<ラベル>』形式で出力。",
         "synthesize": "統合役。依存タスクの成果を統合して 1 つの成果物にまとめる。",
@@ -1312,6 +1318,13 @@ def execute_agent(kind: str, goal: str, dep_results: dict, model: str | None,
                   "具体的な該当箇所を出力し、末尾に JSON"
                   ' {"ok": true|false, "issues": ["..."]} を必ず添える。',
     }.get(kind, "ワーカー。次のタスクだけを完了し成果物を出力。")
+    if pipe:
+        # 役割行と依頼文を「抽出」へ差し替える。goal へ後置するので、組み込みプロンプトでも
+        # 同じ文面が効く（スキル経路は下で使わない——古い版が「選べ」の役割行を出すと
+        # 抽出契約と食い違うため、判定契約があるノードでは組み込みに固定する）。
+        role = ("抽出役。候補ごとの事実だけを機械可読な JSON で書き出す。"
+                "採否の判定・最良案の選択はしない。")
+        goal = goal + "\n\n" + _nodecontract.fact_extraction_directive(pipe)
     # 集約・選別系では gate（verify の判定）を入力から除く（成果物に紛れ込ませない）
     deps = dep_results
     if kind in ("reduce", "synthesize", "filter", "judge"):
@@ -1321,7 +1334,7 @@ def execute_agent(kind: str, goal: str, dep_results: dict, model: str | None,
     read_note = render_read_allocation(read_allocation)
     # flow-worker スキルがあれば実行規律入りプロンプトを使う（無ければ従来の組み込み）。
     # 出力契約（verify の JSON・split の配列等）はスキル側でも同一に保たれている。
-    prompt = _flow_worker_prompt({
+    prompt = None if pipe else _flow_worker_prompt({
         "role": "worker", "kind": kind, "goal": goal, "request": request,
         "deps": {d: {"output": _dep_text(r), "data": _dep_data(r)} for d, r in deps.items()},
         "repo_instruction": repo_instruction, "artifact_note": art_note,
@@ -1333,7 +1346,10 @@ def execute_agent(kind: str, goal: str, dep_results: dict, model: str | None,
         "read_note": read_note,
     })
     if not prompt:
-        prompt = f"あなたは分散 Dynamic Workflow の{role}\nタスク({kind}): {goal}\n"
+        # 判定契約があるノードは kind の表示も extract にする——見出しが filter / judge の
+        # ままだと、役割行を書き換えてもモデルが判定へ滑り戻る（eval F2P の実測）。
+        label = "extract" if pipe else kind
+        prompt = f"あなたは分散 Dynamic Workflow の{role}\nタスク({label}): {goal}\n"
         if request:
             prompt += f"元の依頼:\n{request}\n"
         if repo_instruction:  # 成果物リポジトリの clone 指示（ローカル実行のエージェントへ伝える）
@@ -1455,4 +1471,35 @@ def execute_agent(kind: str, goal: str, dep_results: dict, model: str | None,
         data = _reconcile_count(data)
     elif kind == "verify":
         data = _normalize_verify(text, data)
+    elif pipe:
+        text, data = _apply_decision(pipe, kind, text, data, prompt, model, agent)
     return text, data
+
+
+def _apply_decision(decision: dict, kind: str, text: str, data, prompt: str,
+                    model: "str | None", agent: "dict | None"):
+    """抽出された事実へ判定契約を機械適用し、(text, data) を決定的に作り直す。
+
+    未決（事実の欠測 / 抽出そのものの失敗）を黙って合否へ倒さない——ok:false を立てて
+    失敗終端させ、再試行・評価役・人へ返す。"""
+    facts = _nodecontract.normalize_facts(decision, data)
+    if not facts:
+        repaired = _repair_json_output(prompt, text, kind, "facts が空です", model, agent=agent)
+        facts = _nodecontract.normalize_facts(decision, repaired)
+    verdict = _nodecontract.decide_candidates(
+        decision.get("criteria"), facts, tie_break=decision.get("tie_break"))
+    out = {**verdict, "facts": facts, "decided_by": "machine"}
+    if not facts:
+        out["ok"] = False
+        head = f"[{kind}] 事実を抽出できませんでした（判定不能）"
+    elif verdict["undecided"]:
+        out["ok"] = False
+        head = f"[{kind}] 未決 {','.join(verdict['undecided'])}（事実が欠測。判定を確定しない）"
+    elif kind == "judge" and not verdict["winner"]:
+        out["ok"] = False
+        head = (f"[judge] 勝者を確定できませんでした（残り {len(verdict['kept'])} 件。"
+                "tie_break の宣言か条件の追加が要る）")
+    else:
+        head = (f"[judge] winner={verdict['winner']}" if kind == "judge"
+                else f"[filter] 採用={','.join(verdict['kept']) or '(なし)'}")
+    return f"{head}\n{text}", out

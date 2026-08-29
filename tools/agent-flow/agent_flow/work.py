@@ -322,7 +322,8 @@ def cmd_work(args) -> int:
                                               prompt_table=bool(getattr(args, "prompt_table", False)),
                                               repair=repair, context=run_context,
                                               read_allocation=read_allocation, agent=node_agent,
-                                              readonly=node_readonly)
+                                              readonly=node_readonly,
+                                              decision=node.get("decision"))
             if kind != "verify" and isinstance(rdata, dict) and rdata.get("ok") is False:
                 if kind == "base-sync":
                     failure_class = _work_failure_class(kind, output, rdata)

@@ -108,6 +108,12 @@ def _coerce_tasks(raw, existing=()):
         operation = t.get("operation")
         if isinstance(operation, dict) and not _nodecontract.operation_contract_errors(operation):
             node["operation"] = operation
+        # 判定契約（filter / judge）。宣言があればモデルには事実の抽出だけをさせ、採否は
+        # 機械（decide_candidates）が決める。形が崩れた宣言は運ばない＝従来のモデル判定のまま。
+        decision = t.get("decision")
+        if (kind in ("filter", "judge") and isinstance(decision, dict)
+                and not _nodecontract.decision_contract_errors(decision)):
+            node["decision"] = decision
         # 工程ごとの追加ルール（planner/評価役が選んだもの）。存在する id・role が合う
         # ものだけを goal へ複製する（dashboard がノードへ複製するのと同じ作法。
         # 実行時にカタログを読み直さないので、後から run tuning が変わっても効果は変わらない）。
@@ -807,6 +813,15 @@ def plan_strategy_user(plan: dict, request: str, tier: str = ""):
             if kind == "human":
                 raise UserPlanError(f"ノード {tid} の human には tier を指定できません")
             node["tier"] = node_tier
+        decision = t.get("decision")
+        if decision is not None:
+            if kind not in ("filter", "judge"):
+                raise UserPlanError(
+                    f"ノード {tid} の decision は filter / judge にだけ指定できます（kind={kind}）")
+            errs = _nodecontract.decision_contract_errors(decision)
+            if errs:
+                raise UserPlanError(f"ノード {tid} の decision が不正です: {'; '.join(errs[:3])}")
+            node["decision"] = decision
         reads = normalize_read_allocation(t.get("read_allocation"))
         if reads:
             node["read_allocation"] = reads
@@ -948,6 +963,15 @@ def plan_strategy_agent(request: str, model: str | None, review="auto", granular
         '"read_allocation": [{"path": "src/x.py", "range": "10-40", "reason": "変更点", '
         '"slice": true, "symbols": ["Class.method"]}], '
         '"dependency_input": "digest"}]}\n'
+        "filter / judge のノードには decision を必ず付けてください: "
+        '{"facts": [{"name":"extra_deps","type":"bool","description":"追加依存が要るか"}], '
+        '"criteria": [{"fact":"extra_deps","op":"eq","value":false}], '
+        '"tie_break": {"fact":"lines","op":"min"}}。'
+        "facts は候補の本文を読めばそのまま転記できる項目だけ（type は bool/int/string。"
+        "string は values で取りうる値を列挙）、criteria は残す条件（AND・op は eq/ne）、"
+        "tie_break は最良案を 1 つに絞る順位基準（judge で条件だけでは絞りきれないとき）。"
+        "goal には選別・比較の観点を自由文で書かず、decision の条件として宣言してください"
+        "（採否はモデルではなく機械が決めます）。\n"
         "work/generate ノードには、最初に読むべき path・任意の range・reason を read_allocation に割り付けてください。"
         "大きい Python 参照で対象 symbol を正確に特定できる場合だけ、slice=true と symbols を追加できます。"
         "小さいファイル、編集対象が曖昧な場合、Python 以外では slice を付けないでください。\n\n"

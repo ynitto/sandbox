@@ -66,7 +66,7 @@ B5 は他と性質が違う。08-07 の段 3 は 22 日前の提案で、その�
 | C1 | **B2 probe: MoE の RAM 実測** | 08-22 §4.2 B2 | 32 GB 機。道具（`moe_ram_probe.py`）は書いてある。人が `ollama pull gemma4:26b` を承認してから数分 |
 | C2 | **案 B: iGPU prefill の計測** | [08-06](2026-08-06-opencode-ollama-cpu-inference-proposals.md) 案 B | iGPU のある機。koboldcpp か llama.cpp の Vulkan ビルドで半日 |
 | C3 | **案 4: e2b 級サブモデルの arm** | 08-22 §2 案 4 | ~~モデル取得~~ **なし**。`gemma4:e2b` はこの機に pull 済みで、天井の役割（抽出・分類・split）へ `--model` 差し替えで乗る（2026-08-29 確認） |
-| C4 | **C4: クエリ埋め込みのキャッシュ** | [ltm-use 設計](../designs/ltm-use-embedding-recall-design.md) | なし。3 点のうち他 2 点は測って閉じた |
+| C4 | ~~**C4: クエリ埋め込みのキャッシュ**~~ | [ltm-use 設計](../designs/ltm-use-embedding-recall-design.md) | **不採用で閉じた（2026-08-29・§6）。** 節約は 145ms 中 35ms、しかも同一の問いの繰り返し時だけ |
 
 C2 は 23 日前から動いていない。しかも C1（リランカー、後述の穴 5）がこの結果にぶら下がっているので、放置すると 2 件が同時に凍る。
 
@@ -223,6 +223,9 @@ A5・B1・B4 と、別マシンの要る C2・C3・C4 である——いずれ�
 | B1 Gate 0 | [x] | **通過。** 実 Aider v0.86.2 の `--show-prompts` で、policy 全文が SYSTEM に **1 回だけ・先頭**に入り、**policy を外した SYSTEM は policy 無しと完全一致**することを確認（＝Aider 本来の編集プロンプトを 1 文字も変えていない）。USER / ASSISTANT の few-shot と reminder も同一、marker 1 行、一時ファイル残留なし。あわせて一時 settings の**書込失敗**を契約テストで閉じた——それまで例外が main を突き抜け、**中身の無い settings を指したまま aider が起動しうる**（policy が黙って外れる）形だった | `agentcore/aider_adapter.py` / `tests/test_aider_adapter.py` / `results/archive/worker/showprompts-2026-08-29-*` |
 | B1 Gate 0 の副産物 | [x] | **本番は `whole` 編集形式で走っていた**（`Model: ollama_chat/gemma4:e4b with whole edit format`）。本番定義も現行 eval も `--edit-format` を宣言していない（`edit_format: diff` を書くのは比較用の旧経路だけ）。eval README の「aider が効くのは……diff 形式で返させるので全文再生成の decode を払わない」は**現行構成の説明になっていない**ので訂正した。policy の判定には影響しない（両腕とも `whole` で揃っている） | eval README |
 | B1 Gate 1 | [~] | **実施した。5 条件のうち F2 だけ不通過。** 順を反転した 2 ブロックで一致——**J1 が 0/5 → 5/5**（baseline は 5 本とも同じ誤答 `c4`、v1 は 5 本とも正解 `c3`）、**F2 は 0/5 → 1/5**（4/5 の基準に届かない）、J2 / R1 は無退行、合計 25/40 → 30〜31/40、形式違反 0/40 のまま。**不通過の中身は「policy が悪くした」ではなく「baseline が 0/5 のセルを policy が直しきれなかった」**。flag の去就は人の判断へ | `eval/results/archive/judge/ledger-2026-08-29-gate1-*` |
+| C4 | [x] | **不採用。** 決め方に書いてあった「recall の台帳を見てから」は**実行できない**——どの記憶が引かれたか（`access_count`）はあるが、**どんな問いが来たかの台帳が無い**。台帳を待たず費用の内訳で決めた: recall 全体 145ms のうちクエリ埋め込みは 35ms で、しかも完全同一の問いの繰り返しでしか効かない。削る先はクエリではなく索引側（残り 110ms） | [ltm-use 設計「未決」](../designs/ltm-use-embedding-recall-design.md) |
+| ltm-use の索引 | [x] | **副産物が本体より大きい。この機では索引が両方とも未構築で、B4 の利得（paraphrase 25% → 85%）が実現していなかった。** 言い換えの問いは 0 件を返していた。`build_index --embeddings` と `--force` の両方で復旧し、語の重なりゼロの問い（「小さいモデルに編集をやらせる話」→「弱いモデルへ指示を足す口は tuning.json の methods」）が当たるのを確認した。見つけにくかった理由は 2 つ——(1) フェイルセーフが静かで、索引が無くても黙って TF-IDF へ倒れる、(2) **埋め込み段が TF-IDF コーパスに依存**していて、埋め込み索引だけ作っても発火しない（`query_vector` が None になる） | ltm-use 設計「実運用での落とし穴」 |
+| ltm-use のしきい値 | [~] | **この 61 件のコーパスでは段構えが働いていない。** 語彙が一致する問いでも `top_tfidf = 0.105` で 0.11 を下回り、**全問いが埋め込み段へ落ちる**＝実質「埋め込み単独」。設計の掃引は 75 件の別空間で 0.11 を選んだもの。害と決まったわけではない（同じ掃引で埋め込み単独は lexical 100%）が、**段構えとして機能していない事実**は残る。「数百件になったら測り直す」は「コーパスが変わったら」へ読み替えるべき | 同上 |
 | A4 | [x] | 検査が落ちた後の再投入を選別注入へ。失敗した行だけを決定的に選び、選別できなければ末尾を渡して**省略した事実を書く**。分類器は書いていない。2 実装（ハーネスとスキル）が同じ行を選ぶことを契約テストが縛る | `harness/statemachine.py` / statemachine-use `engine.py` |
 
 **穴の消化。** 6 件すべて決着した（2.1 集計・2.2 文書・2.3 文書・2.4 Python 限定確定・2.5 順序・2.6 C1 閉じ）。

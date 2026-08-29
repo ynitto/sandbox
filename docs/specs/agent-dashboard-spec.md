@@ -98,7 +98,7 @@ Windows 用の portable 版と NSIS インストーラが `release/` に作ら�
 
 ## 実装リファレンス
 
-## 1. 実行形態
+### 1. 実行形態
 
 Windows の Electron アプリとして動き、エンジン（agent-project / agent-flow / agent-loop）は
 WSL または別 PC に居ます。WSL 側へ触る経路はすべて `wsl.exe -e …` を通ります。
@@ -112,11 +112,11 @@ WSL または別 PC に居ます。WSL 側へ触る経路はすべて `wsl.exe -
 | カスタム URL スキーム | `agent-dashboard://`（ディープリンク。通知クリックの飛び先） |
 | 起動 | `npm start`（開発）／ `npm run dist`（配布ビルド） |
 
-### 1.1 ディレクトリ
+#### 1.1 ディレクトリ
 
 ```
 src/
-├── base/main/          Electron シェル・設定合成・git 読み取り・通知・共通 IPC（12 モジュール）
+├── base/main/          Electron シェル・設定合成・git 読み取り・通知・共通 IPC
 ├── features/
 │   ├── index.js        載せる制御面の列挙（唯一の合成点）
 │   ├── agent-project/  agent-project ＋ agent-flow
@@ -129,7 +129,7 @@ src/
 │   ├── agent-audit/    実測トークン利用量・実行品質・収集
 │   ├── adhoc-flow/     プロジェクトを立てない単発 run とフロービルダー
 │   └── preparation/    作業準備項目の保管庫（★制御面ではない。下記参照）
-├── main/               旧パス互換シム（7 ファイル。実体は base/ と features/agent-project/ へ再エクスポート）
+├── main/               旧パス互換シム（実体は base/ と features/agent-project/ へ再エクスポート）
 ├── preload.js          base API ＋ 各 feature の preloadApi を合成
 └── renderer/           画面（core → sections → features → bootstrap の順に読む）
 ```
@@ -142,9 +142,9 @@ adhoc-flow・renderer・`base/main/design-contract.js` から呼ばれる共有�
 
 ---
 
-## 2. 合成契約
+### 2. 合成契約
 
-### 2.1 feature 記述子
+#### 2.1 feature 記述子
 
 各制御面は `src/features/<id>/index.js` から次を export します。
 
@@ -162,7 +162,7 @@ adhoc-flow・renderer・`base/main/design-contract.js` から呼ばれる共有�
 `configDefaults` は必ずオブジェクト（持たない制御面は `{}`。participation がこれ）。
 `registerIpc` / `preloadApi` は必ず関数。この 3 点は `test/feature-split.test.js` が固定します。
 
-### 2.2 載せる順番
+#### 2.2 載せる順番
 
 `src/features/index.js` の `loadFeatures()` が返す配列そのものが登録順です。
 
@@ -175,33 +175,33 @@ agent-project → routines → cowork → amigos → orchestration
 この配列へ `require('./<id>')` を 1 行足し、必要なら renderer にタブを差し込みます。
 動的ロード・サンドボックス・版管理は持ちません。
 
-### 2.3 IPC
+#### 2.3 IPC
 
 全チャネルが `{ ok: true, data }` または `{ ok: false, error }` に揃います
-（`base/main/handle.js` が包む）。チャネル数は 161 本です。
+（`base/main/handle.js` が包む）。
 
-| 提供元 | チャネル数 | 主なチャネル |
-|---|---|---|
-| `base` | 9 | `config:get` / `config:save` / `git:diff` / `app:notify` / `shell:openExternal` / `shell:openPath` / `gitlab:enrich` / `gitlab:mrDiscussions` / `gitlab:projectIssues` |
-| `agent-project` | 56 | プロジェクト発見・要対応・実行・オーサリング・検収 |
-| `adhoc-flow` | 37 | 単発 run の投入と監視、フロービルダー、設計セッション |
-| `orchestration` | 17 | ノード予算・agent-control・CLI ドロップイン・手法 |
-| `cowork` | 11 | 定期実行と定型業務の一覧・実行 |
-| `amigos` | 9 | ミッションの読み取り |
-| `delegation` | 8 | 委譲封筒の読み取りとノード宛て指示の投函 |
-| `agent-audit` | 7 | `collect` / `usage` / `stats` / `doctor` / `sessions` / `summary` / `knowledge` |
-| `routines` | 6 | `listSessions` / `capture` / `state` / `send` / `queue` / `queueMessage` |
-| `participation` | 1 | `participation:flowJoin`（唯一のプロセス起動経路） |
+| 提供元 | 主なチャネル |
+|---|---|
+| `base` | `config:get` / `config:save` / `git:diff` / `app:notify` / `shell:openExternal` / `shell:openPath` / `gitlab:enrich` / `gitlab:mrDiscussions` / `gitlab:projectIssues` |
+| `agent-project` | プロジェクト発見・要対応・実行・オーサリング・検収 |
+| `adhoc-flow` | 単発 run の投入と監視、フロービルダー、設計セッション |
+| `orchestration` | ノード予算・agent-control・CLI ドロップイン・手法 |
+| `cowork` | 定期実行と定型業務の一覧・実行 |
+| `amigos` | ミッションの読み取り |
+| `delegation` | 委譲封筒の読み取りとノード宛て指示の投函 |
+| `agent-audit` | `collect` / `usage` / `stats` / `doctor` / `sessions` / `summary` / `knowledge` |
+| `routines` | `listSessions` / `capture` / `state` / `send` / `queue` / `queueMessage` |
+| `participation` | `participation:flowJoin`（人の操作からプロセスを起動する経路） |
 
 ---
 
-## 3. renderer の契約
+### 3. renderer の契約
 
-ビルド工程を持ちません。`index.html`（906 行）の `<script>` 読み込み順がそのまま契約です。
+ビルド工程を持ちません。`index.html` の `<script>` 読み込み順がそのまま契約です。
 
 | 順 | 対象 | 制約 |
 |---|---|---|
-| 1 | `renderer.js`（core、2,590 行） | `state` と共有ユーティリティ、3 つの登録簿を定義する |
+| 1 | `renderer.js`（core） | `state` と共有ユーティリティ、3 つの登録簿を定義する |
 | 2 | `sections/*.js`（15 本） | 関数宣言のみ。load 時実行を持たないので相互の順序は不問 |
 | 3 | `features/*.js`（3 本） | 自分のタブ／カード／設定面を登録する |
 | 4 | `bootstrap.js` | `init()` の定義と呼び出し。必ず最後 |
@@ -209,7 +209,7 @@ agent-project → routines → cowork → amigos → orchestration
 テストは `test/helpers/renderer-src.js` がこの順で結合して「元の全文」を復元し、
 文字列走査で検査します。モジュール境界（`import` / `export`）を入れると検査が全部壊れます。
 
-### 3.1 3 つの登録簿
+#### 3.1 3 つの登録簿
 
 core は差し込まれる中身を知りません。
 
@@ -226,7 +226,7 @@ core は差し込まれる中身を知りません。
 全体設定ごと描き直すと、他の節で入力中の欄が飛びます。`reveal` は節が開いたときに呼ばれ、
 重い取得（CLI 起動）はそこで初めて走らせます。
 
-### 3.2 領域とタブ
+#### 3.2 領域とタブ
 
 第一ナビは領域（ワークロード）で、タブはその領域の内部ナビです。どのタブがどの領域かは
 HTML の `data-area` 属性が正で、`AREAS` は列挙と表示名だけを持ちます。領域の絞り込み
@@ -235,13 +235,13 @@ HTML の `data-area` 属性が正で、`AREAS` は列挙と表示名だけを持
 
 ---
 
-## 4. 設定
+### 4. 設定
 
 `config.json` に保存し、欠けたキーは既定で補完します（バージョンアップで項目が増えても
 既存の設定ファイルはそのまま使えます）。既定は base の `BASE_DEFAULT_CONFIG` と
 各制御面の `configDefaults` を `deepMerge` した合成です。
 
-### 4.1 base
+#### 4.1 base
 
 | キー | 既定 | 意味 |
 |---|---|---|
@@ -253,7 +253,7 @@ HTML の `data-area` 属性が正で、`AREAS` は列挙と表示名だけを持
 | `reviewViewer.exePath` | `''` | `exe` モード。portable exe は URL スキームを OS 登録できないためこちらを使う |
 | `reviewViewer.command` | `''` | `command` モード。`{url}` `{projectPath}` `{type}` `{iid}` `{protocolUrl}` を置換 |
 
-### 4.2 agent-project
+#### 4.2 agent-project
 
 | キー | 既定 | 意味 |
 |---|---|---|
@@ -268,7 +268,7 @@ HTML の `data-area` 属性が正で、`AREAS` は列挙と表示名だけを持
 | `agent.model` | `''` | 空なら CLI の既定 |
 | `agent.timeoutSec` | `180` | 下限 30 秒でクランプ |
 
-### 4.3 その他の制御面
+#### 4.3 その他の制御面
 
 | キー | 既定 | 意味 |
 |---|---|---|
@@ -315,9 +315,9 @@ orchestration 15 秒、routines の生画面 2 秒、agent-audit の収集 5 分
 
 ---
 
-## 5. 読むファイルと書くファイル
+### 5. 読むファイルと書くファイル
 
-### 5.1 読む（すべて読み取り専用・本体の稼働を前提にしない）
+#### 5.1 読む（すべて読み取り専用・本体の稼働を前提にしない）
 
 | 見るもの | 読むファイル |
 |---|---|
@@ -331,7 +331,7 @@ orchestration 15 秒、routines の生画面 2 秒、agent-audit の収集 5 分
 | フロー定義・手法 | `~/.agents/workflows/`（ユーザー共通）・`.agents/workflows/`・`.agents/methods/`（リポジトリ共有・読み取り専用）・同梱版 |
 | レビュー待ち（任意） | GitLab API を設定したときだけ、`repos.json` のリポジトリのオープンイシュー |
 
-### 5.2 書く（公式契約への投函だけ）
+#### 5.2 書く（公式契約への投函だけ）
 
 | 書き先 | 誰が | 中身 |
 |---|---|---|
@@ -349,14 +349,14 @@ orchestration 15 秒、routines の生画面 2 秒、agent-audit の収集 5 分
 書かないもの: `backlog/*.md` の status、`archive/`、`project.json`、agent-flow の run 状態、
 リポジトリ共有版と同梱版のフロー定義・手法、フォージ（GitLab / GitHub）。
 
-### 5.3 プロセスを起動する唯一の経路
+#### 5.3 プロセスを起動する唯一の経路
 
 `participation:flowJoin` だけです。人が明示的に押したときに agent-flow のワーカーを 1 つ立てます。
 常駐体（`agent-project serve`）の起動・再起動の経路は持ちません（OS の起動系の担当）。
 
 ---
 
-## 6. 設計 run と実装 run
+### 6. 設計 run と実装 run
 
 フロー定義はドメイン属性を持ち、保存場所だけで用途を推測しません。
 
@@ -403,7 +403,7 @@ project の `inbox/` へ handoff されます。親の準備パッケージか�
 
 ---
 
-## 7. 正典の写しと、それを縛るゴールデンテスト
+### 7. 正典の写しと、それを縛るゴールデンテスト
 
 判断の根拠を 1 か所へ集める原則に、例外が 4 つあります。いずれも「候補を出すたびに Python を
 起動すると描画がプロセス起動待ちになる」という理由で JS 側に写しを置いており、その代償として
@@ -419,7 +419,7 @@ project の `inbox/` へ handoff されます。親の準備パッケージか�
 
 ---
 
-## 8. 構造を固定しているテスト
+### 8. 構造を固定しているテスト
 
 設計判断の実体はテストです。以下は「レビューではなくテストで縛る」と決めた箇所です。
 
@@ -438,7 +438,7 @@ project の `inbox/` へ handoff されます。親の準備パッケージか�
 
 ---
 
-## 9. 配布
+### 9. 配布
 
 `index.html` はバンドラを使わないので CSS / JS を相対パスで直接読み、一部は
 `node_modules/diff2html/…` を指します。開発起動では node_modules がそこに在るため気づけず、
@@ -456,14 +456,14 @@ electron-builder が本番依存を暗黙に含めるかどうかに配布物を
 
 ---
 
-## 付録. テスト
+### 付録. テスト
 
-`tools/agent-dashboard/test/` に 98 ファイル。実行は次のとおりです。
+テストと lint は次のコマンドで実行します。
 
 ```bash
 cd tools/agent-dashboard
-npm install      # 本番依存 2 つ + Electron / eslint
-npm test         # 98 ファイルすべて（pretest が 2 本を先に走らせる）
+npm install
+npm test
 npm run lint
 ```
 

@@ -141,9 +141,9 @@ inbox -> proposed -> ready -> doing -> done
 
 ## CLI リファレンス
 
-## 1. できること
+### 1. できること
 
-### 1.1 正準ループ（`run` の 1 サイクル）と停止
+#### 1.1 正準ループ（`run` の 1 サイクル）と停止
 
 ```
  ── サイクル予算が残る間くり返す ──────────────────────────────────
@@ -175,7 +175,7 @@ S3 のゲート順と失敗時の行き先は verify → 回帰 → パス保護
 
 `report` / `once` は予算トリガーではなく実行モードによる終了です。`--watch` はパス終了後もプロセスを残しますが、idle 中にエージェントは起動しません。消化できるタスク、新しい inbox、人の指示、確定したフィードバックのいずれかを FS ポーリングで検知したときだけ次のパスを起こします。
 
-### 1.2 タスクの status
+#### 1.2 タスクの status
 
 | status | 意味 |
 |---|---|
@@ -190,7 +190,7 @@ S3 のゲート順と失敗時の行き先は verify → 回帰 → パス保護
 | `done` | 確定。archive と納品書へ移る |
 | `rejected` | 却下。墓標が積まれ、再提案が抑止される |
 
-### 1.3 コマンド
+#### 1.3 コマンド
 
 | コマンド | 用途 |
 |---|---|
@@ -210,7 +210,7 @@ S3 のゲート順と失敗時の行き先は verify → 回帰 → パス保護
 
 `doctor --node-id-cutover <旧 node_id>` は node_id 切替の事前チェックで、板と amigos バスに加えて状態リポジトリ側の残骸（旧名義の `status/<旧>.json`、旧名義の `claim_owner` を持つ doing タスク、人が旧名義で割り当てた `- node:`）も検査します。
 
-### 1.4 プロジェクト層（charter 駆動）
+#### 1.4 プロジェクト層（charter 駆動）
 
 `<root>/charter.md` があると `run` は目標駆動のモードに入り、1 パスが分解（plan）→ 消化（execute = 正準ループ）→ 評価（evaluate）の 3 段になります。
 
@@ -222,9 +222,9 @@ S3 のゲート順と失敗時の行き先は verify → 回帰 → パス保護
 
 ---
 
-## 2. 設定
+### 2. 設定
 
-### 2.1 2 つのファイルと層の契約
+#### 2.1 2 つのファイルと層の契約
 
 | ファイル | 置き場 | 中身 |
 |---|---|---|
@@ -248,7 +248,7 @@ host.yaml のトップレベルの綻び（未知キー・層違い・型違い�
 
 どちらの設定ファイルも秘密の置き場ではありません。フォージのトークンは環境変数に置きます（付録）。
 
-### 2.2 ループと予算
+#### 2.2 ループと予算
 
 | キー | 既定 | 意味 |
 |---|---|---|
@@ -268,7 +268,7 @@ host.yaml のトップレベルの綻び（未知キー・層違い・型違い�
 
 エージェント CLI そのものの契約（`agents/<name>.json` の探索順・全フィールド・用途別の変種 `variants`・`relative_cost`・失敗トリアージのクラス）は [`docs/specs/agent-cli-spec.md`](./agent-cli-spec.md) が正典です。agent-project が `variants` へ問い合わせる用途は `plan` / `review` / `prioritize` / `route` / `adjudicate` / `assess` の 6 つで（`JSON_CONTRACT_PURPOSES`）、`verify` は寛容パーサ + 証跡の本文を伴うため対象外です。
 
-### 2.3 検証
+#### 2.3 検証
 
 | キー | 既定 | 意味 |
 |---|---|---|
@@ -282,7 +282,7 @@ host.yaml のトップレベルの綻び（未知キー・層違い・型違い�
 | `remote_review` | settle | フォージ側の決定的シグナルから決着する（`observe` は journal に残すだけ） |
 | `delivery_review` | true | verify PASS 後は常に review（検収待ち）→ 人の承認で done 確定 |
 
-### 2.4 計画と spec 前段
+#### 2.4 計画と spec 前段
 
 | キー | 既定 | 意味 |
 |---|---|---|
@@ -298,7 +298,7 @@ host.yaml のトップレベルの綻び（未知キー・層違い・型違い�
 | `auto_adjudicate` / `adjudicate_max` | — / 1 | 人へ送る前の裁定ゲート |
 | `agents` | なし | 処理ごとのエージェント上書き（YAML 専用）。キーは plan / review / prioritize / route / adjudicate / verify / distill / assess / repo_map / doctor |
 
-### 2.5 分散と同期
+#### 2.5 分散と同期
 
 | キー | 既定 | 意味 |
 |---|---|---|
@@ -312,7 +312,7 @@ host.yaml のトップレベルの綻び（未知キー・層違い・型違い�
 | `default_node` | — | 割当の既定ノード |
 | `gc_retention_days` | 30 | `journal.md` / `run-log.jsonl` の退避と不変コピーの保持期間 |
 
-### 2.6 効かないキー
+#### 2.6 効かないキー
 
 プロジェクト yaml に残っていても構造上ただの無効値になるキーは、警告して無視します（`_INERT_PROJECT_KEYS`）。エラーにしないのは、このファイルが状態リポジトリ経由で全 PC に配られるため、無害な残骸で全ノードを同時に落とすほうが害が大きいからです。
 
@@ -335,9 +335,9 @@ host.yaml のトップレベルの綻び（未知キー・層違い・型違い�
 
 ---
 
-## 3. 外部との契約
+### 3. 外部との契約
 
-### 3.1 タスク
+#### 3.1 タスク
 
 タスクは Markdown 1 ファイル（`backlog/<id>.md`）。id はファイル名が正です。
 
@@ -363,7 +363,7 @@ host.yaml のトップレベルの綻び（未知キー・層違い・型違い�
 
 `force-complete <id> --reason …` は「done は verify のみが根拠」の唯一の例外です。verify は実行せず、成果ブランチの自動統合もせず、委譲中の run を切り離してから done を確定します。未検証であることは 3 か所に残ります: 納品書（`archive/<id>.md` の `- 検収 : FORCED` と `verify … → 未実施`）、受領書（`DELIVERY.md` の検収欄）、決定記録（`action: force-complete`）。track の実績には手戻り（`clean=False`）として記録します。
 
-### 3.2 要対応カード（`needs/<id>.md`）
+#### 3.2 要対応カード（`needs/<id>.md`）
 
 `needs/<id>.md` は独立した真実ではなく、タスクの status（proposed / blocked / review）の投影です。毎パス `reconcile_needs` が両方向へ整合させます。票が失われていれば status から作り直し、投影元のタスクが消えていれば票も消します。マイルストーン票（`kind: milestone`）は `reconcile_milestones` が持ち、`project.json` の status を正とします。
 
@@ -380,7 +380,7 @@ host.yaml のトップレベルの綻び（未知キー・層違い・型違い�
 
 失敗の種類もエージェントの種類もこの語彙には出てきません。それらは*材料*であって*出口*ではなく、新しい失敗が出ても増えるのは材料だけです。カードには「どの基準が決着しなかったか」「何で・どれだけ待って確かめたか（receipt の `verified_with`）」「同じ理由が何回続いたか」が載ります。判定を緩めて通す設定はありません。
 
-### 3.3 検証計画と receipt
+#### 3.3 検証計画と receipt
 
 実装の正典は `agentcore.verifycontract` の 1 実装で、agent-flow と共有します。schema は `schemas/verification-plan.schema.json` と `schemas/verification-receipt.schema.json`、詳細な判定規則は[agent-flow 仕様書 §3.3](./agent-flow-spec.md) にあります。
 
@@ -399,7 +399,7 @@ receipt を採用できないタスク（receipt 欠落・検算不一致・dry-
 
 `inconclusive` は修正リトライを消費させず、まず別ノードへ検証だけを委譲し、それでも決着しなければ人へ回します。1 件だけ検証条件を変えるときはタスクの `verify_agent`（CLI・モデル・待ち時間）を `verification_plan.policy.agent` に載せます。条件は digest の一部なので古い receipt は採用されず、実際の条件と所要時間は receipt の `verified_with` に残ります。
 
-### 3.4 Execution Envelope（実行前レビューの凍結点）
+#### 3.4 Execution Envelope（実行前レビューの凍結点）
 
 `plan_review` が on のとき、タスクは `proposed` で入り、要対応カード（`kind: plan-review`）と一緒に Execution Envelope（`backlog/<id>.envelope.json`）が作られます。承認（`approve`）は状態遷移より先に同じ入力から `approved` 版へ置き換えます。ready になった後で組み立てると、実行開始との競合で「承認した契約」が run ごとに変わりうるためです。
 
@@ -425,7 +425,7 @@ receipt を採用できないタスク（receipt 欠落・検算不一致・dry-
 
 承認済み Envelope は run meta へ最初の一度だけ転記され、完了時には納品記録と同じ stem へ移して backlog 側の sidecar を退役させます。タスク側には `- execution_envelope:` と `- execution_envelope_digest:` が残ります。
 
-### 3.5 決定記録と learn
+#### 3.5 決定記録と learn
 
 `decisions/<id>.md` は append-only で、人の操作（approve / hold / revise / reject / revive / force-complete / plan-approve …）と機械の判断がすべて残ります。`- learn:` 行が横断学習の材料です。
 
@@ -435,7 +435,7 @@ receipt を採用できないタスク（receipt 欠落・検算不一致・dry-
 
 失効専用の台帳は持たず、append-only の記録を数えるだけです。
 
-### 3.6 委譲公示板（board）
+#### 3.6 委譲公示板（board）
 
 依頼側として板へ post し、請負ノードの agent-flow / agent-amigos が入札して実行します。板は「リポジトリ＋契約」だけで処理を持ちません（`schemas/board.schema.json`）。
 
@@ -451,7 +451,7 @@ receipt を採用できないタスク（receipt 欠落・検算不一致・dry-
 
 dashboard は板へ書きません。中止・落札・手動入札はノード宛て指示ドロップ（`~/.agents/commands/`・`schemas/agent-node-command.schema.json`）として投函し、板へ書いて push するのは常駐体だけです。ノードスコープの規約が 1 つあり、猶予に掛かったファイルより後ろは、その巡回では処理しません（指示はファイル名の時刻順が処理順で、同じ公示への「入札 → 中止」を飛び越えると中止済みの板へ入札を書くことになる）。
 
-### 3.7 状態リポジトリのレイアウトと同期
+#### 3.7 状態リポジトリのレイアウトと同期
 
 すべてプロジェクトルート直下に平たく置きます。
 
@@ -499,7 +499,7 @@ dashboard は板へ書きません。中止・落札・手動入札はノード�
 
 保持契約は `gc` が実行します。`archive/` は保持、`verifications/<id>/` は直近 `verifications_keep` 世代（settle が参照中の rev は世代の外でも残す）、`journal.md` と `run-log.jsonl` の退避・不変コピーは `gc_retention_days` で刈ります。契約はここが正で、`gc` はその実行者にすぎません。
 
-### 3.8 常駐体の状態（`engine/status.json`）
+#### 3.8 常駐体の状態（`engine/status.json`）
 
 `~/.agents/engine/status.json` は常駐体だけが書き、dashboard が読む唯一の入口です。dashboard のプロジェクト発見もここから行います。
 
@@ -515,7 +515,7 @@ dashboard は板へ書きません。中止・落札・手動入札はノード�
 
 doctor の所見も横断エラーとしてこの経路に載せます。取り込みに失敗したノード宛て指示は、理由付きの `.err` 退避に加えてここにも載ります。出ないと「押したのに効かない」の追跡が `.err` の直接閲覧に依存します。
 
-### 3.9 知識観測（knowledge-observation）
+#### 3.9 知識観測（knowledge-observation）
 
 新しい知識ストアは作らず、既存の brief / decisions 経路へ観測 ID と provenance を additive に載せます（`schemas/knowledge-observation.schema.json`）。`build_request` の `rules.md` content hash と skill 参照は run meta の `knowledge` キーへ渡り、agent-flow は解釈せず素通しします。
 
@@ -526,7 +526,7 @@ doctor の所見も横断エラーとしてこの経路に載せます。取り�
 
 ---
 
-## 4. 規約
+### 4. 規約
 
 id とファイル名: タスクの id はファイル名が正です。明示 id は冪等キーで、同じ id は同じタスクを指します。
 
@@ -556,9 +556,9 @@ tick 内で周期を超えうる仕事（run の実行、amigos の手番）は�
 
 ---
 
-## 5. 制約
+### 5. 制約
 
-### 5.1 予算と上限
+#### 5.1 予算と上限
 
 | 対象 | 値 | 変えられるか |
 |---|---|---|
@@ -579,7 +579,7 @@ tick 内で周期を超えうる仕事（run の実行、amigos の手番）は�
 | 委譲 run の失踪判定 | `expired` は 10 秒連続 / `unknown` は 600 秒継続 / `terminal` は auto-heal 待機でなければ 120 秒 | 不可 |
 | 板 tick の心拍 push | 内容が変われば都度、心拍だけなら 5 分に 1 回 | 不可 |
 
-### 5.2 保証
+#### 5.2 保証
 
 done は、対象 revision と検証計画に一致する receipt の PASS でしか確定しません。固定検証コマンドは終了コード 0、受入基準は証跡付き pass を要求します。投入経路もスキルも設定も敵対的レビューも、自己申告の done を作れません。唯一の例外は `force-complete` で、記録の残る明示操作 1 つに閉じています。
 
@@ -593,7 +593,7 @@ done は、対象 revision と検証計画に一致する receipt の PASS で�
 
 フォージへ到達できないとき（回線断・トークン失効）は決着しません。「見えない = 未マージ = reject」と読むと、回線が切れただけで成果が却下されます。fencing の `unknown` と同じ思想です。
 
-### 5.3 効かない組合せと未対応
+#### 5.3 効かない組合せと未対応
 
 - 検証環境の隔離はしません。証跡の再実行検算、外部検証ノードの allowlist、verifier のサンドボックスや許可コマンド列挙は持ちません。`verify_side_effects` は検証エージェントへ渡す指示で、機構では強制しません。担保は receipt の証拠確認による事後検知に置きます
 - フォージ実装は GitLab と GitHub だけです。gitea / codeberg は検出して 1 回警告し、MR/PR の自動作成と決着は行いません。未対応フォージとトークン欠落のどちらでも、検収は dashboard のボタン決着が正式な契約になります
@@ -609,9 +609,9 @@ done は、対象 revision と検証計画に一致する receipt の PASS で�
 
 ---
 
-## 付録
+### 付録
 
-### A. ディレクトリと環境変数
+#### A. ディレクトリと環境変数
 
 | パス | 中身 |
 |---|---|
@@ -632,12 +632,12 @@ done は、対象 revision と検証計画に一致する receipt の PASS で�
 | `GITLAB_TOKEN` / `GL_TOKEN` / `GITHUB_TOKEN` / `GH_TOKEN` | フォージのトークン（設定ファイルには置かない） |
 | `NOTIFY_SOCKET` / `WATCHDOG_USEC` | systemd 連携（心拍の通知先） |
 
-### B. テスト
+#### B. テスト
 
-`tools/agent-project/tests/` に 32 ファイル・1,302 件（機能別に分割済み）。共有の前置きは `_shared.py` にあり、エージェント CLI なしで全件が通ります。設定キーの 3 段検査（存在・到達・消費）は `test_config_keys.py`（§2.6）にあります。
+テストはエージェント CLI なしで実行できます。共有の前置きは `_shared.py`、設定キーの存在・到達・消費の検査は `test_config_keys.py` にあります。
 
 ```bash
 python3 -m unittest discover -s tools/agent-project/tests
 ```
 
-`resident/` は通常の Python パッケージなので単体 import でテストできます（`test_resident*.py`）。関数形式で書かれたテストは `load_tests` フックで discover に拾わせています。`unittest discover` は `TestCase` サブクラスしか集めないため、かつて resident 中核の関数形式テスト 31 件が緑とも赤とも報告されないまま素通りしていました。分散の検証（CAS transaction、controller リース、fencing の 3 値、割当）は `test_state_git.py` と `test_coordination.py` が実ローカルリポジトリを使って行います。
+`resident/` は通常の Python パッケージとして単体テストできます。分散処理は `test_state_git.py` と `test_coordination.py` がローカルの git リポジトリを作り、CAS、controller lease、fencing、割り当てを検証します。

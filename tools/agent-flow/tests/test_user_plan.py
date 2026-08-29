@@ -426,5 +426,42 @@ class UserPlanEndToEndTests(unittest.TestCase):
         self.assertIn("[user-plan]", str((final or {}).get("failure_reason", "")))
 
 
+class PlanDecisionContractTests(unittest.TestCase):
+    """判定契約（node.decision）: filter / judge だけ・壊れた宣言は投入時に弾く。"""
+
+    DECISION = {"facts": [{"name": "extra_deps", "type": "bool"}],
+                "criteria": [{"fact": "extra_deps", "op": "eq", "value": False}]}
+
+    def test_valid_decision_is_carried_verbatim(self):
+        _strategy, tasks = kf.plan_strategy_user(_plan([
+            {"id": "g", "goal": "候補を作る", "kind": "generate"},
+            {"id": "f", "goal": "選別", "kind": "filter", "deps": ["g"],
+             "decision": self.DECISION},
+        ]), "X")
+        self.assertEqual(tasks[1]["decision"], self.DECISION)
+
+    def test_decision_on_other_kinds_is_rejected(self):
+        with self.assertRaises(kf.UserPlanError):
+            kf.plan_strategy_user(_plan([
+                {"id": "a", "goal": "g", "kind": "work", "decision": self.DECISION}]), "X")
+
+    def test_broken_decision_is_rejected_not_ignored(self):
+        with self.assertRaises(kf.UserPlanError):
+            kf.plan_strategy_user(_plan([
+                {"id": "f", "goal": "選別", "kind": "filter",
+                 "decision": {"facts": [{"name": "x", "type": "bool"}],
+                              "criteria": [{"fact": "unknown", "op": "eq", "value": 1}]}}]), "X")
+
+    def test_planner_path_drops_broken_decision_and_keeps_valid_one(self):
+        tasks = kf._coerce_tasks([
+            {"id": "f1", "goal": "選別", "kind": "filter", "decision": self.DECISION},
+            {"id": "f2", "goal": "選別", "kind": "filter", "decision": {"criteria": []}},
+            {"id": "w", "goal": "実装", "kind": "work", "decision": self.DECISION},
+        ])
+        self.assertEqual(tasks[0]["decision"], self.DECISION)
+        self.assertNotIn("decision", tasks[1])
+        self.assertNotIn("decision", tasks[2])   # filter / judge 以外へは運ばない
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

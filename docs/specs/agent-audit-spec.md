@@ -112,7 +112,7 @@ loop_logs:
 
 ## CLI リファレンス
 
-## 1. パイプライン
+### 1. パイプライン
 
 ```
 collect ─┬─ 決定的（LLM 不使用）─ qualify / usage / stats / ratings / trials / report / calibrate
@@ -129,7 +129,7 @@ LLM を使うのは extract と distill（と任意の review）だけで、そ�
 
 ---
 
-## 2. 源泉（collect）
+### 2. 源泉（collect）
 
 `sources:` は有効にする収集器を絞る設定で、空なら全種が有効です。場所を自動発見するのは
 `budget-ledger` / `cli-native` / `cli-quota` だけで、`flow-bus` / `project-root` / `amigos-bus` /
@@ -158,7 +158,7 @@ LLM を使うのは extract と distill（と任意の review）だけで、そ�
 
 ---
 
-## 3. `session_log` 契約
+### 3. `session_log` 契約
 
 「CLI のセッションログがどこに・どの形式であるか」は CLI の作法なので、
 `agents/<name>.json` に additive な `session_log` ブロックとして宣言します。
@@ -197,7 +197,7 @@ JSON への追記だけで収集できます。
 
 ---
 
-## 4. ストア
+### 4. ストア
 
 書き先は audit ディレクトリ。解決は `--audit-dir` > 設定 `audit_dir` > 既定
 `~/.agents/audit/` の 3 段だけで、agent-audit 固有の環境変数は導入しないし、見ません。
@@ -215,7 +215,7 @@ JSON への追記だけで収集できます。
   reports/<ts>-<kind>.md         # report の出力
 ```
 
-### 4.1 audit ディレクトリの外へ書く 2 経路
+#### 4.1 audit ディレクトリの外へ書く 2 経路
 
 いずれも明示フラグが要ります。フラグ無しでは提案を表示するだけです。
 
@@ -228,7 +228,7 @@ JSON への追記だけで収集できます。
 
 ---
 
-## 5. CLI
+### 5. CLI
 
 すべて単発・有界。終了コードは 0 = 成功（ゲートによる見送りを含む）/ 1 = LLM 段の停止・
 更新の取り込み失敗 / 2 = 源泉が読めない・使い方の誤り。
@@ -260,7 +260,7 @@ JSON への追記だけで収集できます。
 
 ---
 
-## 6. LLM 段のゲートと上限
+### 6. LLM 段のゲートと上限
 
 extract / distill は、次を全部通ったときだけ LLM を呼びます。
 
@@ -277,7 +277,7 @@ node-budget を読み、超過中は LLM 段を実行しません。
 
 ---
 
-## 7. 設定ファイル
+### 7. 設定ファイル
 
 `agent-audit.yaml` / `.yml` / `.json`。探索順は `--config` → `<cwd>` → `<cwd>/.agents` →
 `<cwd>/.agent` → `<agent_home>`。優先順位は CLI > 設定 > 組み込み既定。
@@ -316,7 +316,7 @@ node-budget を読み、超過中は LLM 段を実行しません。
 
 `insights` と `state.json` は gc の対象外です（洞察を消すと同じクラスタを再蒸留して二重に払う）。
 
-### 7.1 受け付けるが効かないキー
+#### 7.1 受け付けるが効かないキー
 
 | キー | 理由 |
 |---|---|
@@ -328,7 +328,7 @@ node-budget を読み、超過中は LLM 段を実行しません。
 
 ---
 
-## 8. 不変条件
+### 8. 不変条件
 
 1. 読み手に徹する。他ツールのバス・状態リポジトリ・台帳・CLI ストアへ書かない。書くのは
    audit ディレクトリと、明示フラグを付けたときの型付き許可パスだけ（§4.1）。
@@ -349,7 +349,7 @@ node-budget を読み、超過中は LLM 段を実行しません。
 
 ---
 
-## 9. パッケージングと自己更新
+### 9. パッケージングと自己更新
 
 | 項目 | 値 |
 |---|---|
@@ -361,15 +361,12 @@ node-budget を読み、超過中は LLM 段を実行しません。
 
 ---
 
-## 付録. テスト
+### 付録. テスト
 
-`tools/agent-audit/tests/` に 16 ファイル・167 件。LLM 段は差し替えで決定的にテストします。
+LLM を使う段はテスト用実装へ差し替えるため、外部のエージェント CLI なしで実行できます。
 
 ```bash
 cd tools/agent-audit && python3 -m unittest discover -s tests
 ```
 
-`tests/_shared.py` が `KIRO_SKILL_REGISTRY` / `KIRO_AGENTS_DIR` / `HOME` を一時ディレクトリへ
-逃がします。同梱定義（リポジトリの `agents/`）は `KIRO_AGENTS_DIR` では消せない。探索順の
-最後に必ず入るので、その `session_log.paths` の `~` が開発者の実ストアを指し、収集件数が環境
-依存になります。ホームごと逃がすのはそのためです。
+`tests/_shared.py` は `KIRO_SKILL_REGISTRY`、`KIRO_AGENTS_DIR`、`HOME` を一時ディレクトリへ切り替え、開発者の実ストアを収集対象から外します。

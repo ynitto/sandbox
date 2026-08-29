@@ -144,17 +144,42 @@ def headless_cmd(name: str, model: str, prompt: str, **kwargs) -> dict:
 # ---------------------------------------------------------------- 決定化パイプ（P4 / E6）
 
 
-def decide_candidates(criteria, facts, tie_break=None):
-    """多基準判定の決定的部分。本番（agentcore.nodecontract）を呼ぶ（写さない）。
-    無い木では None——呼び出し側がその測定だけを落とす。"""
+def _nodecontract():
+    """本番の判定契約モジュール。無い木では None——呼び出し側がその測定だけを落とす。"""
     try:
         from agentcore import nodecontract  # noqa: PLC0415
     except Exception as e:  # noqa: BLE001
         if "agentcore.nodecontract" not in str(_MISSING):
             _MISSING.append(f"agentcore.nodecontract ({e})")
         return None
+    return nodecontract
+
+
+def decide_candidates(criteria, facts, tie_break=None):
+    """多基準判定の決定的部分。本番（agentcore.nodecontract）を呼ぶ（写さない）。"""
+    nodecontract = _nodecontract()
+    if nodecontract is None:
+        return None
     fn = _need(nodecontract, "decide_candidates", "decide_candidates（決定的判定）")
     return fn(criteria, facts, tie_break=tie_break) if fn is not None else None
+
+
+def fact_extraction_directive(decision):
+    """判定契約から抽出依頼文を作る。**本番が投げるのと同じ文面**を測るため写さない。"""
+    nodecontract = _nodecontract()
+    if nodecontract is None:
+        return None
+    fn = _need(nodecontract, "fact_extraction_directive", "fact_extraction_directive（抽出依頼文）")
+    return fn(decision) if fn is not None else None
+
+
+def normalize_facts(decision, data):
+    """モデル出力の事実を判定入力へ正規化する（本番と同じ寛容度・同じ欠測の扱い）。"""
+    nodecontract = _nodecontract()
+    if nodecontract is None:
+        return None
+    fn = _need(nodecontract, "normalize_facts", "normalize_facts（事実の正規化）")
+    return fn(decision, data) if fn is not None else None
 
 
 # ---------------------------------------------------------------- 手法パック

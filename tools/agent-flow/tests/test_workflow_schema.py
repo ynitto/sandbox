@@ -30,6 +30,21 @@ class WorkflowSchemaAgreementTests(unittest.TestCase):
         self.assertEqual(set(SCHEMA["$defs"]["planNode"]["properties"]["dependency_input"]["enum"]),
                          {"full", "digest"})
 
+    def test_decision_fact_types_match_the_engine_contract(self):
+        facts = SCHEMA["$defs"]["decision"]["properties"]["facts"]["items"]["properties"]
+        self.assertEqual(set(facts["type"]["enum"]), set(kf._nodecontract.FACT_TYPES))
+
+    def test_decision_ops_match_the_engine_contract(self):
+        """スキーマの op と decide_candidates が実際に解釈する op を揃える。"""
+        dec = SCHEMA["$defs"]["decision"]["properties"]
+        self.assertEqual(set(dec["criteria"]["items"]["properties"]["op"]["enum"]), {"eq", "ne"})
+        self.assertEqual(set(dec["tie_break"]["properties"]["op"]["enum"]), {"min", "max"})
+        facts = [{"id": "a", "n": 1}, {"id": "b", "n": 2}]
+        self.assertEqual(kf._nodecontract.decide_candidates(
+            [{"fact": "n", "op": "ne", "value": 1}], facts)["kept"], ["b"])
+        self.assertEqual(kf._nodecontract.decide_candidates(
+            [], facts, tie_break={"fact": "n", "op": "max"})["winner"], "b")
+
     def test_plan_defaults_match_the_engine(self):
         plan = SCHEMA["$defs"]["plan"]["properties"]
         self.assertEqual(plan["review"]["default"], "auto")

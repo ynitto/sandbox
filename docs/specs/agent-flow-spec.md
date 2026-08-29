@@ -149,9 +149,9 @@ agent-flow --bus .agents/flow-bus gc --dry-run
 
 ## CLI リファレンス
 
-## 1. できること
+### 1. できること
 
-### 1.1 run のライフサイクルと完了条件
+#### 1.1 run のライフサイクルと完了条件
 
 要求は `inbox/<run-id>.json` に置かれ、`participate` の 1 巡が受理します。受理された run は `run --from-inbox` の 1 プロセスが完走させます。`run` は orchestrator 1 本と worker を `workers` 個（既定 2）起こし、自分は生存リースの維持・park の再確認・キャンセル検知・終端確認の待機ループに入ります。
 
@@ -171,7 +171,7 @@ phase が無い古い run や未知の値は、status とグラフから汎用�
 
 書込先（workspace）のある run は、さらにリモートへ push できたことが完了条件に入ります（§3.8）。
 
-### 1.2 計画の 4 経路
+#### 1.2 計画の 4 経路
 
 | 経路 | 実体 | 使われる条件 |
 |---|---|---|
@@ -182,7 +182,7 @@ phase が無い古い run や未知の値は、status とグラフから汎用�
 
 縮退は必ずログと `strategy.reason` に理由が残ります。ユーザー定義フローだけは逆に厳格で、不正な plan は planner へフォールバックせず `[user-plan]` タグ付きで failed 終端します（§3.2）。
 
-### 1.3 パターンと kind
+#### 1.3 パターンと kind
 
 orchestrator は 7 つのパターンをカタログとして持ち、組み合わせて使います。`patterns --json` で一覧と初期グラフ形（Dashboard の選択 UI が読む正典）を出力します。
 
@@ -209,7 +209,7 @@ kind は 13 種で、正典は `agentcore.nodecontract.VALID_KINDS` です。
 
 `kind: verify` は run 内の反復と完了条件を制御する工程で、agent-project の verification plan を判定する専用 verifier（§3.3）とは別物です。前者が task の done を主張することはできません。
 
-### 1.4 操作コマンド
+#### 1.4 操作コマンド
 
 | コマンド | 用途 |
 |---|---|
@@ -240,15 +240,15 @@ kind は 13 種で、正典は `agentcore.nodecontract.VALID_KINDS` です。
 
 ---
 
-## 2. 設定
+### 2. 設定
 
-### 2.1 ファイルの場所と優先順位
+#### 2.1 ファイルの場所と優先順位
 
 ファイル名は `agent-flow.{yaml,yml,json}`。探索順は `--config` の明示指定、カレントディレクトリ直下、`./.agents/`、`./.agent/`（旧ホーム互換。cwd が `~` のときは見ない）、`~/.agents/` の順で、最初に見つかった 1 つだけを読みます。優先順位は CLI 引数 > inbox 要求（§3.1）> 設定ファイル > 組み込み既定。PyYAML がなければ JSON で同じキーが使えます。旧キー `kiro_timeout` は `agent_timeout` の別名として受理します。
 
 キーと既定値の正典は `CONFIG_DEFAULTS`（`agent_flow/config.py`）、注釈つきの実例は `tools/agent-flow/agent-flow.yaml.example` です。以下は主なキーです。
 
-### 2.2 バスと分散
+#### 2.2 バスと分散
 
 | キー | 既定 | 意味 |
 |---|---|---|
@@ -262,7 +262,7 @@ kind は 13 種で、正典は `agentcore.nodecontract.VALID_KINDS` です。
 | `board_repos` / `board_tags` / `board_agent_cli` | なし | 入札選別の宣言の明示上書き。正典は `agent-project.host.yaml` |
 | `node_declaration` | なし | 宣言ファイルの明示指定（プロジェクトを持たない PC 用） |
 
-### 2.3 計画と実行
+#### 2.3 計画と実行
 
 | キー | 既定 | 意味 |
 |---|---|---|
@@ -287,7 +287,7 @@ kind は 13 種で、正典は `agentcore.nodecontract.VALID_KINDS` です。
 | `argv_limit` | 100000 | argv に載せる文脈の上限バイト。超過分は一時ファイルへ退避して参照渡し |
 | `stub_sleep_max` | なし（5 秒） | stub executor の擬似実行時間の上限。テストでは 0 |
 
-### 2.4 失敗と回復・掃除・更新
+#### 2.4 失敗と回復・掃除・更新
 
 | キー | 既定 | 意味 |
 |---|---|---|
@@ -301,7 +301,7 @@ kind は 13 種で、正典は `agentcore.nodecontract.VALID_KINDS` です。
 | `cleanup_age` / `cleanup_clone` / `cleanup_per_node` | 24 時間 / true / false | 一時ファイルと clone の掃除 |
 | `update_enabled` / `update_check_interval` | true / 6 時間 | `participate` のアイドル巡回での更新確認。取り込みは切り離した子プロセス |
 
-### 2.5 役割別エージェントと agent-control の上書き
+#### 2.5 役割別エージェントと agent-control の上書き
 
 CLI 定義そのものの契約（探索順・フィールド・`variants` / `relative_cost` / `readonly` の意味・失敗トリアージのクラス）は [`docs/specs/agent-cli-spec.md`](./agent-cli-spec.md) が正典です。ここではエンジン側の割り当てだけを定めます。
 
@@ -322,7 +322,7 @@ flow-planner のスキル待ちだけは `max(300 秒, agent_timeout × 3)` で�
 
 tier（実行段）は `control.workloads.flow.tier` を読みます。`basic` のときは計画・評価・split のプロンプトへ細分化指示が入り、`granularity: auto` は finest へ、`review: auto` は常時有効へ倒れます。機能・役割ごとの実行可能 tier の検証は投入側（agent-dashboard の plan 生成）の仕事で、エンジンは plan の `tier` を保持・記録するだけです。
 
-### 2.6 オプトインの追加機能（すべて既定 off）
+#### 2.6 オプトインの追加機能（すべて既定 off）
 
 宣言しない環境では、これらの機能は 1 バイトもプロンプトや記録を変えません。
 
@@ -337,9 +337,9 @@ tier（実行段）は `control.workloads.flow.tier` を読みます。`basic` �
 
 ---
 
-## 3. 外部との契約
+### 3. 外部との契約
 
-### 3.1 inbox 要求
+#### 3.1 inbox 要求
 
 `inbox/<run-id>.json` の中核キーの書き手は `Bus.submit_request()` です。計画パラメータと `execution_overrides` は投入側（dashboard 等）が同じレコードへ足します。
 
@@ -371,7 +371,7 @@ tier（実行段）は `control.workloads.flow.tier` を読みます。`basic` �
 
 キャンセルは `inbox/cancels/<run-id>.json` にマーカー `{id, who, reason, close_issues, requested_at}` を置きます。マーカーは外部の適用側では消さず、実行所有者が停止を確認してから消します。
 
-### 3.2 ユーザー定義フロー（plan）
+#### 3.2 ユーザー定義フロー（plan）
 
 ```jsonc
 {
@@ -398,7 +398,7 @@ tier（実行段）は `control.workloads.flow.tier` を読みます。`basic` �
 
 `evaluate` が無効でも、データ駆動 fan-out（`split` の機械展開）だけは通ります。評価役を使わない契約は LLM 判断の話で、LLM を通らない展開は対象外だからです。`human` ノードの決着は park と `interactions/` の append-only response で行います。
 
-### 3.3 検証計画と receipt
+#### 3.3 検証計画と receipt
 
 実装の正典は `agentcore.verifycontract` の 1 実装で、agent-project の local runner と共有します。schema は `schemas/verification-plan.schema.json` と `schemas/verification-receipt.schema.json` です。
 
@@ -421,7 +421,7 @@ receipt の必須フィールドは `version` `task_id` `plan_digest` `result_re
 
 `fail` は同じ run の修正ループへ戻します。不合格点を列挙した `verify-fix-<n>` ノード（integration fail なら `base-sync-<n>`）を LLM なしで決定的に注入し、`max_iterations` で有界です。
 
-### 3.4 executor プラグイン
+#### 3.4 executor プラグイン
 
 組み込みは `agent`（エージェント CLI へ委譲）と `stub`（LLM なしの擬似実行）で、それ以外は `<name>.py` を動的ロードします。検索順は設定 `executor_dir`、本体隣の `executors/`、git toplevel の `tools/agent-flow/executors`、`~/.agents/agent-flow/executors` です。
 
@@ -435,7 +435,7 @@ def execute(kind, goal, dep_results, model, art_dir, dep_arts) -> (text, data)
 
 再計画の判断だけは executor に委譲しません。`stub` のときだけ stub の継続ルールを使い、それ以外はローカルのエージェント CLI で判断します。
 
-### 3.5 委譲公示板（board）
+#### 3.5 委譲公示板（board）
 
 `participate` の板巡回が読むのは `delegations/<id>/` の `post.json`（`workload == "flow"` かつ `op == "post"` のみ対象）、`bids/`、`award.json`、`status/`、終端の `result.json` / `cancelled.json` です。書くのは自分の入札、落札後の `status/<自分>.json`（dispatched・heartbeat・終端）、完了時の `result.json`（receipt をそのまま載せる）です。
 
@@ -447,13 +447,13 @@ def execute(kind, goal, dep_results, model, art_dir, dep_arts) -> (text, data)
 
 プロジェクトを 1 つも持たない PC でも形は同じで、巡回がプロジェクトではなくノードのスコープで回り、取り込み先が PC に 1 つのバス（`~/.agents/flow-node/bus`）になります。その PC には agent-flow の設定ファイルが無いので、板の所在と入札選別の宣言（`--node-declaration`）だけは常駐体が argv で渡します。
 
-### 3.6 状態の鏡（state_git）
+#### 3.6 状態の鏡（state_git）
 
 実行はローカルのまま、`runs/` と `inbox/` を共有リポジトリの自分の subdir へ双方向同期し、リモートの agent-dashboard が進捗を読めるようにします。run の実行と終端は state_git に依存せず、同期の失敗はログに残して続行します。
 
 同期は前回スナップショット（manifest）基準の 3-way で、同時に変わったファイルだけを裁定します。規則は決定的で、`inbox/`（`inbox/claims/` を除く）はリモート優先、それ以外（`runs/` と `inbox/claims/`）はローカル優先です。片側の削除も伝播します。`.` 始まりと `.tmp` 系の書きかけファイルは同期しません。force push はせず、rebase 競合も同じ裁定で決着します。間隔は `state_git_interval`（既定 300 秒）、run 終端時は間隔を待たず同期します。
 
-### 3.7 バスのレイアウトと書き込み所有権
+#### 3.7 バスのレイアウトと書き込み所有権
 
 ```
 <bus>/
@@ -491,7 +491,7 @@ def execute(kind, goal, dep_results, model, art_dir, dep_arts) -> (text, data)
 
 `results/<id>.json` の必須フィールドは `id` `who` `status` `output` `finished_at`。値があるときだけ `node`（実行した PC）、`kind`、`agent_cli` / `model`（実行に使ったエージェントの実効解決値）、`tier` / `pinned` / `selection_reason`、`data`、`artifacts`（run ディレクトリ相対パス）、`escalation`、`methods` / `trial`、`context_allocation` / `dependency_context` を書きます。読み手が `who` の綴りや設定から再解決しなくて済むように、書き手が事実を残す契約です。
 
-### 3.8 公開（push）と CI の記録
+#### 3.8 公開（push）と CI の記録
 
 書込先のある run は、リモートへの push 成功を完了条件に含めます。`workspace` は保存場所と公開先を別の値で受けます: `url` が公開先の canonical remote、`local` が worktree 作成と緊急復旧に使う手元の git top-level です。
 
@@ -511,7 +511,7 @@ commit 後・push 前に、agent-flow は復旧 ref `refs/agent-flow/recovery/<r
 
 ---
 
-## 4. 規約
+### 4. 規約
 
 名義の綴り: バスと板に書く名義は `agentcore.protocol.safe_name` の 1 規則で揃えます。読みも同じ規則です。claim の `<who>` は `<node_id>-w<i>`（auto-heal の世代は `<node_id>-h<n>w<i>`）で、PC 名が入ります。
 
@@ -529,9 +529,9 @@ park の順序: wait 記録を書いてから claim を解放します。逆に�
 
 ---
 
-## 5. 制約
+### 5. 制約
 
-### 5.1 予算と上限
+#### 5.1 予算と上限
 
 | 対象 | 値 | 変えられるか |
 |---|---|---|
@@ -555,7 +555,7 @@ park の順序: wait 記録を書いてから claim を解放します。逆に�
 | CI 状態の待機 / 1 回の問い合わせ | 上限 1800 秒 / 120 秒・checks は先頭 50 件 | `ci_wait_seconds`（上限は不可） |
 | state_git の同期間隔 | 300 秒 | `state_git_interval` |
 
-### 5.2 保証
+#### 5.2 保証
 
 done は温存されます。確定済みノードの result・成果物・作業ブランチの commit は、駆動プロセスが消えても、auto-heal でも、世代交代（`inherit_from`）でも失われません。push できなかった commit も復旧 ref として手元に残ります。auto-heal と消費者（agent-project）の引き継ぎはどちらも冪等な操作で、最悪でも重複実行であって破壊は起きません。
 
@@ -565,7 +565,7 @@ done は温存されます。確定済みノードの result・成果物・作�
 
 環境要因（認証切れ・利用上限・CLI 不在・管理面による停止）はどの層でも再試行せず、run を failed で終端します。利用上限だけは `heal_quota` を立てれば長い cooldown で回収されます。
 
-### 5.3 効かない組合せと未対応
+#### 5.3 効かない組合せと未対応
 
 - 定期実行はありません。周期駆動は `agent-project serve` が持ちます
 - run 内のステップは PC 間に分散しません。配る単位は run です
@@ -580,7 +580,7 @@ done は温存されます。確定済みノードの result・成果物・作�
 
 ---
 
-## 付録: ファイル・ディレクトリと環境変数
+### 付録: ファイル・ディレクトリと環境変数
 
 | パス | 中身 |
 |---|---|
@@ -611,7 +611,7 @@ done は温存されます。確定済みノードの result・成果物・作�
 | `AGENT_RESERVATION_ID` | node-budget の枠予約 ID（呼び出し元が渡すと run のレコードより優先する） |
 | `GITLAB_TOKEN` / `GL_TOKEN` / `GITLAB_NODE_ID` | 同梱 `gitlab` プラグインのトークンとノード名義（既定構成では使いません） |
 
-テストは `tools/agent-flow/tests/` に 30 ファイル・1,029 件（unittest 形式）。エージェント CLI なしで全件が通ります。設定キーの消費検査（`test_config.py` の `ConfigKeyConsumptionTests`）は、`CONFIG_DEFAULTS` にあるのに `config.py` 以外の誰も読まないキーが増えたら落ちます。
+テストはエージェント CLI なしで実行できます。`test_config.py` の `ConfigKeyConsumptionTests` は、宣言しただけで実装から参照されない設定キーを検出します。
 
 ```bash
 AGENT_FLOW_STUB_SLEEP_MAX=0 python3 -m unittest discover -s tools/agent-flow/tests

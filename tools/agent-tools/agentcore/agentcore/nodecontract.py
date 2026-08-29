@@ -172,6 +172,10 @@ def decide_candidates(criteria, facts, *, tie_break=None) -> dict:
             reverse = tie_break.get("op") == "max"
             ranked.sort(key=lambda f: (-f[key] if reverse else f[key], str(f["id"])))
             winner = str(ranked[0]["id"])
+    elif len(kept) == 1 and not undecided:
+        # 条件だけで 1 つに絞れたなら順位基準は要らない（judge が tie_break を宣言して
+        # いなくても winner を出す。欠測が残る間は従来どおり出さない）。
+        winner = str(kept[0]["id"])
     return {"kept": [str(f["id"]) for f in kept],
             "undecided": [str(f["id"]) for f in undecided],
             "winner": winner}
@@ -212,3 +216,139 @@ def local_patch_blockers(contract, *, existing_paths=None) -> "list[str]":
         if existing_paths is not None and path not in {_norm(p) for p in existing_paths}:
             blockers.append(f"新規ファイルの作成は局所修正の対象外です: {path}")
     return blockers
+
+
+# --- 判定契約（decision contract）------------------------------------------------------
+# filter / judge をモデルに訊かない形にするための宣言。ノード定義が持ち、
+# 「モデルは事実だけ抽出 → 機械が :func:`decide_candidates` で判定」の口になる。
+
+FACT_TYPES = ("bool", "int", "string")
+
+
+def decision_contract_errors(decision) -> "list[str]":
+    """判定契約の形式検査。エラーの文字列リスト（空 = 合格）。
+
+    形が崩れた宣言は「無い」のと同じ扱いにする（呼び出し側は従来のモデル判定へ倒す）
+    ——半端に効く宣言を作らないため、ここで一度だけ縛る。
+    """
+    if not isinstance(decision, dict):
+        return ["判定契約はオブジェクトである必要があります"]
+    errors: list[str] = []
+    facts = decision.get("facts")
+    names: set = set()
+    if not isinstance(facts, list) or not facts:
+        errors.append("facts は 1 件以上の配列である必要があります")
+    else:
+        for spec in facts:
+            if not isinstance(spec, dict):
+                errors.append("facts の要素はオブジェクトである必要があります")
+                continue
+            name = str(spec.get("name") or "").strip()
+            if not name:
+                errors.append("facts[].name は必須です")
+                continue
+            if name == "id":
+                errors.append("facts[].name に id は使えません（候補の識別子と衝突します）")
+            names.add(name)
+            if spec.get("type") not in FACT_TYPES:
+                errors.append(f"facts[{name}].type は {'/'.join(FACT_TYPES)} のいずれかです")
+            values = spec.get("values")
+            if values is not None and not _str_list(values):
+                errors.append(f"facts[{name}].values は空でない文字列の配列である必要があります")
+    criteria = decision.get("criteria")
+    if not isinstance(criteria, list):
+        errors.append("criteria は配列である必要があります")
+    else:
+        for criterion in criteria:
+            if not isinstance(criterion, dict):
+                errors.append("criteria の要素はオブジェクトである必要があります")
+                continue
+            fact = str(criterion.get("fact") or "")
+            if names and fact not in names:
+                errors.append(f"criteria の fact が facts にありません: {fact or '(空)'}")
+            if criterion.get("op") not in ("eq", "ne"):
+                errors.append("criteria[].op は eq / ne のいずれかです")
+            if "value" not in criterion:
+                errors.append(f"criteria[{fact}].value は必須です")
+    tie_break = decision.get("tie_break")
+    if tie_break is not None:
+        if not isinstance(tie_break, dict):
+            errors.append("tie_break はオブジェクトである必要があります")
+        else:
+            fact = str(tie_break.get("fact") or "")
+            if names and fact not in names:
+                errors.append(f"tie_break の fact が facts にありません: {fact or '(空)'}")
+            if tie_break.get("op") not in ("min", "max"):
+                errors.append("tie_break.op は min / max のいずれかです")
+    return errors
+
+
+def normalize_facts(decision, data) -> "list[dict]":
+    """モデルが返した事実を :func:`decide_candidates` の入力へ正規化する。
+
+    型が宣言と合わない値・宣言外の値は **None のまま渡す**（undecided として機械側が
+    扱う）。ここで推測して埋めると、欠測が静かに合否へ化ける。
+    """
+    facts = data.get("facts") if isinstance(data, dict) else data
+    specs = [s for s in (decision.get("facts") or []) if isinstance(s, dict)]
+    out: list[dict] = []
+    for raw in facts if isinstance(facts, list) else []:
+        if not isinstance(raw, dict):
+            continue
+        rid = str(raw.get("id") or "").strip()
+        if not rid:
+            continue
+        rec: dict = {"id": rid}
+        for spec in specs:
+            name = str(spec.get("name") or "").strip()
+            if not name:
+                continue
+            value = raw.get(name)
+            kind = spec.get("type")
+            if kind == "bool":
+                rec[name] = value if isinstance(value, bool) else None
+            elif kind == "int":
+                rec[name] = (value if isinstance(value, int) and not isinstance(value, bool)
+                             else None)
+            else:
+                text = str(value).strip().lower() if isinstance(value, str) else None
+                allowed = spec.get("values")
+                if text and _str_list(allowed) and text not in [v.lower() for v in allowed]:
+                    text = None
+                rec[name] = text or None
+        out.append(rec)
+    return out
+
+
+def fact_extraction_directive(decision) -> str:
+    """判定契約から「事実だけ抽出せよ」の依頼文を作る（filter / judge 共通の 1 実装）。
+
+    条件そのものは載せない——載せるとモデルが判定を始める。載せるのは
+    「どの項目を、どの型で書き出すか」だけ。
+    """
+    lines = []
+    for spec in decision.get("facts") or []:
+        if not isinstance(spec, dict):
+            continue
+        name = str(spec.get("name") or "").strip()
+        if not name:
+            continue
+        kind = spec.get("type")
+        if kind == "bool":
+            shape = "true / false"
+        elif kind == "int":
+            shape = "整数"
+        elif _str_list(spec.get("values")):
+            shape = " / ".join(f'"{v}"' for v in spec["values"])
+        else:
+            shape = "文字列"
+        note = str(spec.get("description") or "").strip()
+        lines.append(f"- {name}: {shape}" + (f"（{note}）" if note else ""))
+    example = ", ".join(f'"{str(s.get("name"))}": ...' for s in (decision.get("facts") or [])
+                        if isinstance(s, dict) and str(s.get("name") or "").strip())
+    return ("【出力契約】各候補について機械可読の事実だけを抽出する。"
+            "**採否の判定・最良案の選択はしない**（判定は機械が別に行う）。\n"
+            "出力は JSON " '{"facts":[{"id":"<候補 id>", ' + example + "}, ...]} だけ。\n"
+            + "\n".join(lines)
+            + "\n入力に現れた候補をすべて facts に含めること。"
+              "本文から読み取れない項目は値を書かず、そのキーを省くこと（推測で埋めない）。")

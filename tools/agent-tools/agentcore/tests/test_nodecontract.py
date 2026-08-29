@@ -145,6 +145,65 @@ class DecideCandidatesTest(unittest.TestCase):
         decision = nodecontract.decide_candidates(
             [], facts, tie_break={"fact": "score", "op": "max"})
         self.assertEqual(decision["winner"], "a")
+    def test_single_survivor_wins_without_tie_break(self):
+        decision = nodecontract.decide_candidates(
+            [{"fact": "tests", "op": "eq", "value": "pass"},
+             {"fact": "extra_deps", "op": "eq", "value": False}], self.FACTS)
+        self.assertEqual(decision["winner"], "c3", "条件だけで 1 つに絞れたら順位基準は要らない")
+
+
+class DecisionContractTest(unittest.TestCase):
+    DECISION = {
+        "facts": [{"name": "extra_deps", "type": "bool", "description": "追加依存が要るか"},
+                  {"name": "tests", "type": "string", "values": ["pass", "fail", "none"]},
+                  {"name": "lines", "type": "int"}],
+        "criteria": [{"fact": "extra_deps", "op": "eq", "value": False}],
+        "tie_break": {"fact": "lines", "op": "min"},
+    }
+
+    def test_valid_contract_has_no_errors(self):
+        self.assertEqual(nodecontract.decision_contract_errors(self.DECISION), [])
+
+    def test_unknown_fact_names_are_errors(self):
+        bad = dict(self.DECISION, criteria=[{"fact": "speed", "op": "eq", "value": 1}])
+        self.assertTrue(any("criteria の fact" in e
+                            for e in nodecontract.decision_contract_errors(bad)))
+        bad = dict(self.DECISION, tie_break={"fact": "speed", "op": "min"})
+        self.assertTrue(any("tie_break の fact" in e
+                            for e in nodecontract.decision_contract_errors(bad)))
+
+    def test_shape_errors(self):
+        for bad, hint in (
+                ({"facts": [], "criteria": []}, "facts"),
+                ({"facts": [{"name": "x", "type": "float"}], "criteria": []}, "type"),
+                ({"facts": [{"name": "id", "type": "bool"}], "criteria": []}, "id"),
+                ({"facts": [{"name": "x", "type": "bool"}],
+                  "criteria": [{"fact": "x", "op": "gt", "value": 1}]}, "op"),
+                ({"facts": [{"name": "x", "type": "bool"}], "criteria": "no"}, "criteria"),
+        ):
+            with self.subTest(hint=hint):
+                self.assertTrue(any(hint in e for e in nodecontract.decision_contract_errors(bad)))
+
+    def test_normalize_facts_keeps_missing_values_as_none(self):
+        facts = nodecontract.normalize_facts(self.DECISION, {"facts": [
+            {"id": "c1", "extra_deps": False, "tests": "PASS", "lines": 30},
+            {"id": "c2", "extra_deps": "no", "tests": "unknown", "lines": "48"},
+            {"id": "", "extra_deps": False},          # id 無しは候補にならない
+        ]})
+        self.assertEqual(facts[0], {"id": "c1", "extra_deps": False, "tests": "pass", "lines": 30})
+        self.assertEqual(facts[1], {"id": "c2", "extra_deps": None, "tests": None, "lines": None})
+        self.assertEqual(len(facts), 2)
+
+    def test_normalize_facts_accepts_a_bare_list(self):
+        facts = nodecontract.normalize_facts(self.DECISION, [{"id": "c1", "extra_deps": True}])
+        self.assertEqual(facts[0]["extra_deps"], True)
+
+    def test_directive_asks_for_facts_not_for_a_verdict(self):
+        text = nodecontract.fact_extraction_directive(self.DECISION)
+        self.assertIn('"facts"', text)
+        self.assertIn("判定・最良案の選択はしない", text)
+        self.assertIn("- tests: \"pass\" / \"fail\" / \"none\"", text)
+        self.assertNotIn("extra_deps が false", text)   # 条件そのものは載せない
 
 
 if __name__ == "__main__":

@@ -92,9 +92,57 @@
         "interaction": {"type": "object", "description": "human ノードのみ・必須。正典は agent-interaction.schema.json"},
         "read_allocation": {"type": "array", "items": {"type": "object"}, "description": "最初に読むべき path / range / reason"},
         "dependency_input": {"enum": ["full", "digest"], "description": "依存成果の渡し方の明示宣言（既定は kind で決まる）"},
-        "retries": {"type": "integer", "minimum": 0}
+        "retries": {"type": "integer", "minimum": 0},
+        "decision": {"$ref": "#/$defs/decision"}
       },
       "additionalProperties": true
+    },
+    "decision": {
+      "type": "object",
+      "required": ["facts", "criteria"],
+      "description": "filter / judge の判定契約。宣言するとモデルは候補ごとの**事実の抽出だけ**を行い、採否・最良案はエンジン（agentcore.nodecontract.decide_candidates）が機械的に決める。filter / judge 以外の kind には指定できない。事実が欠けた候補は落とさず undecided として残り、undecided がある間はノードを done にしない",
+      "properties": {
+        "facts": {
+          "type": "array", "minItems": 1,
+          "description": "候補の本文を読めばそのまま転記できる項目だけ（判断を含めない）",
+          "items": {
+            "type": "object",
+            "required": ["name", "type"],
+            "properties": {
+              "name": {"type": "string", "minLength": 1, "description": "id は候補の識別子なので使えない"},
+              "type": {"enum": ["bool", "int", "string"], "description": "正典は agentcore.nodecontract.FACT_TYPES"},
+              "values": {"type": "array", "items": {"type": "string"}, "description": "type=string で取りうる値。宣言外の値は欠測として扱う"},
+              "description": {"type": "string"}
+            },
+            "additionalProperties": false
+          }
+        },
+        "criteria": {
+          "type": "array",
+          "description": "残す条件（AND）。fact は facts で宣言した名前",
+          "items": {
+            "type": "object",
+            "required": ["fact", "op", "value"],
+            "properties": {
+              "fact": {"type": "string", "minLength": 1},
+              "op": {"enum": ["eq", "ne"]},
+              "value": {}
+            },
+            "additionalProperties": false
+          }
+        },
+        "tie_break": {
+          "type": "object",
+          "required": ["fact", "op"],
+          "description": "judge が条件だけで 1 つに絞れないときの順位基準（同値は id 昇順）",
+          "properties": {
+            "fact": {"type": "string", "minLength": 1},
+            "op": {"enum": ["min", "max"]}
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
     },
     "plan": {
       "type": "object",

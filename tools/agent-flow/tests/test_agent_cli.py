@@ -1629,3 +1629,85 @@ class GlobalInstructionsTests(unittest.TestCase):
         with open(os.path.join(status_dir, files[0]), encoding="utf-8") as f:
             rec = json.load(f)
         self.assertEqual(rec["instructions_revision_applied"], 3)
+
+
+class DecisionPipeTests(unittest.TestCase):
+    """filter / judge の決定化パイプ（node.decision）: モデルは事実だけ、判定は機械。"""
+
+    CANDIDATES = {"gen": {"output": (
+        "[c1] 案 A: pandas を追加して 30 行。テスト: pass\n"
+        "[c2] 案 B: 標準ライブラリのみで 48 行。テスト: fail\n"
+        "[c3] 案 C: 標準ライブラリのみで 41 行。テスト: pass")}}
+    DECISION = {
+        "facts": [
+            {"name": "extra_deps", "type": "bool", "description": "追加依存が要るか"},
+            {"name": "tests", "type": "string", "values": ["pass", "fail", "none"]},
+            {"name": "lines", "type": "int"},
+        ],
+        "criteria": [{"fact": "extra_deps", "op": "eq", "value": False}],
+    }
+    FACTS = json.dumps({"facts": [
+        {"id": "c1", "extra_deps": True, "tests": "pass", "lines": 30},
+        {"id": "c2", "extra_deps": False, "tests": "fail", "lines": 48},
+        {"id": "c3", "extra_deps": False, "tests": "pass", "lines": 41},
+    ]})
+
+    def _run(self, kind, decision, reply):
+        seen = {}
+
+        def fake_run(prompt, model, purpose="", **_kw):
+            seen["prompt"] = prompt
+            return reply
+
+        with mock.patch.object(kf, "run_agent", side_effect=fake_run):
+            text, data = kf.execute_agent(kind, "候補から選ぶ", self.CANDIDATES, None,
+                                          decision=decision)
+        return seen["prompt"], text, data
+
+    def test_filter_decides_by_machine_not_by_model(self):
+        prompt, text, data = self._run("filter", self.DECISION, self.FACTS)
+        self.assertIn("採否の判定・最良案の選択はしない", prompt)
+        self.assertNotIn("選別役", prompt)          # 「選べ」の役割行へは戻らない
+        self.assertEqual(data["kept"], ["c2", "c3"])
+        self.assertEqual(data["undecided"], [])
+        self.assertEqual(data["decided_by"], "machine")
+        self.assertNotIn("ok", data)                 # 未決なし＝done で通す
+        self.assertTrue(text.startswith("[filter] 採用=c2,c3"))
+
+    def test_judge_picks_winner_with_tie_break(self):
+        decision = dict(self.DECISION,
+                        criteria=[{"fact": "tests", "op": "eq", "value": "pass"},
+                                  {"fact": "extra_deps", "op": "eq", "value": False}],
+                        tie_break={"fact": "lines", "op": "min"})
+        _prompt, text, data = self._run("judge", decision, self.FACTS)
+        self.assertEqual(data["winner"], "c3")
+        self.assertTrue(text.startswith("[judge] winner=c3"))
+
+    def test_missing_fact_is_undecided_and_fails_the_node(self):
+        reply = json.dumps({"facts": [
+            {"id": "c1", "extra_deps": True, "tests": "pass", "lines": 30},
+            {"id": "c2", "tests": "fail", "lines": 48},          # extra_deps 欠測
+            {"id": "c3", "extra_deps": False, "tests": "pass", "lines": 41},
+        ]})
+        _prompt, _text, data = self._run("filter", self.DECISION, reply)
+        self.assertEqual(data["undecided"], ["c2"])
+        self.assertIs(data["ok"], False)   # 黙って合否へ倒さず失敗終端 → 人 / 上位へ返す
+
+    def test_judge_without_a_unique_winner_fails_instead_of_guessing(self):
+        _prompt, text, data = self._run("judge", self.DECISION, self.FACTS)
+        self.assertIsNone(data["winner"])
+        self.assertIs(data["ok"], False)
+        self.assertIn("勝者を確定できませんでした", text)
+
+    def test_unextractable_facts_fail_after_repair(self):
+        with mock.patch.object(kf, "_repair_json_output", return_value=None):
+            _prompt, _text, data = self._run("filter", self.DECISION, "採用は c3 です")
+        self.assertIs(data["ok"], False)
+        self.assertEqual(data["facts"], [])
+
+    def test_broken_decision_falls_back_to_model_judgement(self):
+        broken = {"facts": [], "criteria": "not-a-list"}
+        prompt, text, data = self._run("filter", broken, '{"kept": ["c3"]}')
+        self.assertIn("選別役", prompt)              # 従来のモデル判定のまま
+        self.assertEqual(data, {"kept": ["c3"]})
+        self.assertNotIn("[filter] 採用=", text)
