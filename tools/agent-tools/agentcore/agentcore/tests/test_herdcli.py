@@ -167,6 +167,26 @@ class DefsTests(unittest.TestCase):
         self.assertIn("--format", payload["argv_write"])
         self.assertIn("array", payload["argv_write"])
 
+    def test_the_listing_says_what_each_local_definition_is_for(self):
+        """一覧が名前だけだと「aider と ollama のどっちを選ぶのか」が読めない。
+
+        実際に選ぶ場面はほとんど無い（15 用途はどちらを base にしても同じ profile へ
+        行く）。**分かれるのは編集・実装をどちらでやるかの 1 点だけ**なので、そこが
+        読めるように「自分では何をするか」と「何を振り替えるか」を宣言から導いて出す。
+        """
+        out = io.StringIO()
+        herdcli.cmd_defs([], out=out)
+        text = out.getvalue()
+        self.assertIn("渡したファイルを直す編集役", text, "aider の役割")
+        self.assertIn("自分で調べて実行するツールループ", text, "ollama の役割")
+        self.assertIn("15 用途は", text, "用途の振り替え先")
+        # クラウド CLI はこの入口を通らないので役割行を持たない（仕様書 §1）。
+        cloud = [line for line in text.splitlines() if line.strip() == "claude"]
+        self.assertTrue(cloud)
+        index = text.splitlines().index(cloud[0])
+        self.assertFalse(text.splitlines()[index + 1].startswith("      "),
+                         "クラウド CLI に役割行を付けない")
+
     def test_listing_names_every_bundled_definition(self):
         out = io.StringIO()
         rc = herdcli.cmd_defs(["--json"], out=out)

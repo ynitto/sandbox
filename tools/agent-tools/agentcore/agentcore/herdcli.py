@@ -189,6 +189,27 @@ def _defs_payload(name: str, *, model: "str | None", purpose: "str | None") -> d
     }
 
 
+def _role_line(spec: dict) -> str:
+    """定義 1 件の役割を**宣言から導いて** 1 行にする（新しいフィールドは足さない）。
+
+    一覧が名前を並べるだけだと、ローカルに 2 つ（`aider` / `ollama`）並んだときに
+    「どっちを選ぶのか」が読み取れない。実際には選ぶ場面はほとんど無い——用途別の
+    振り替えは `variants` が宣言していて、15 用途はどちらを base にしても同じ profile へ
+    行く。**分かれるのは編集・実装をどちらでやるかの 1 点だけ**なので、それが読める
+    ように「自分で何をするか」と「何を振り替えるか」を出す。
+    """
+    if str((spec.get("command") or [""])[0]) != PROG:
+        return ""                      # クラウド CLI はこの入口を通らない（仕様書 §1）
+    own = ("渡したファイルを直す編集役（自分では探索しない）"
+           if spec.get("headless_autonomy") == "single-shot"
+           else "自分で調べて実行するツールループ")
+    variants = spec.get("variants") or {}
+    if not variants:
+        return own
+    targets = sorted(set(variants.values()))
+    return f"{own}。{len(variants)} 用途は {', '.join(targets)} へ振り替え"
+
+
 def cmd_defs(argv, *, out=None, err=None) -> int:
     out = out or sys.stdout
     as_json = False
@@ -230,11 +251,16 @@ def cmd_defs(argv, *, out=None, err=None) -> int:
         print("解決できる定義:", file=out)
         for item in names:
             try:
-                profiles = sorted(agentcli.load_cli(item).get("profiles") or {})
+                spec = agentcli.load_cli(item)
             except agentcli.AgentCliError:
-                profiles = []
+                print(f"  {item}", file=out)
+                continue
+            profiles = sorted(spec.get("profiles") or {})
             suffix = f"    profiles: {', '.join(profiles)}" if profiles else ""
             print(f"  {item}{suffix}", file=out)
+            role = _role_line(spec)
+            if role:
+                print(f"      {role}", file=out)
         print(f"\n1 件の中身と実効 argv: {PROG} defs <名前>", file=out)
         return 0
 

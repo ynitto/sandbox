@@ -1,295 +1,409 @@
 # agent-flow 設計書
 
-> 最終更新: 2026-08-20（実装と突き合わせて全面改訂。判断を 5 つに絞り、公開保証・終端検証・CI 取り込みを追記。
-> GitLab 委譲は中心から外してオプション扱いにした）
-> 実装: `tools/agent-flow/`（31 断片・約 12,350 行）／ テスト 30 ファイル・1,029 件
-> 本書は「なぜこう決めたか」だけを書きます。何ができて何を設定できるかは[仕様書](../specs/agent-flow-spec.md)、
-> 導入手順と操作は `tools/agent-flow/README.md` にあります。
-> 関連: [agent-project 設計書](./agent-project-design.md) ／ [git worktree キャッシュ](./git-worktree-cache-pattern.md)
+> 対象：`tools/agent-flow/`
 >
-> 旧 `agent-flow-self-healing-retry-design.md`（自己回復リトライ）と
-> `agent-flow-retry-inheritance-design.md`（リトライ引き継ぎ）は本書へ統合済みです。
+> 最終更新：2026-08-29
+>
+> 外部契約と設定値は[仕様書](../specs/agent-flow-spec.md)、導入と操作は
+> `tools/agent-flow/README.md` を参照してください。
+>
+> 関連：[agent-project 設計書](./agent-project-design.md) / [複数 PC 運用ガイド](../guides/multi-pc-operations.md) /
+> [git worktree キャッシュ](./git-worktree-cache-pattern.md)
 
 ## TL;DR
 
-agent-flow は、自然言語の要求をタスクグラフへ分解して実行し、結果を評価して作り直しまで回す分散ワークフローエンジンです。**PC 間に配る単位は 1 つの要求（run）**で、受理した 1 台がその run のワーカーを自 PC 内に起こして完走させます。グラフ内の個々のステップが PC 間に散らないのは仕様です（[運用ガイド §4.2](../guides/multi-pc-operations.md)）。
+agent-flow は、1 件の要求をタスクグラフへ分解し、実行結果を見ながらグラフを更新するワークフローエンジンです。1 回の実行を run と呼びます。run は親プロセス、orchestrator 1 本、複数の worker からなるプロセス群です。
 
-判断は 5 つ挙げますが、骨格を決めているのは次の 3 つです。第一に、プロセス間で交換する情報をバス上のファイルだけに限り、タスクの状態は専用フィールドではなくファイルの有無から導きます。第二に、二重実行を止めるロックを、書き込み先を名前で分けた claim と `(ts, who)` の決定的タイブレークで作ります。第三に、agent-flow 自身は常駐しません。受理と実行を別々の単発コマンドに割り、周期駆動は PC に 1 本の常駐体（`agent-project serve`）へ預けます。
+実行系は三つの規則に従います。
 
-却下した主要案は、中央のキューサーバ（分散の前提が崩れる）と、LLM に実行用スクリプトを書かせるコードハーネス（任意コード実行と分散の不整合）です。
+- run の共有状態はバス上のファイルに置く。node の状態は `result`、`claim`、`wait`、`task` の有無から導出する
+- graph と task は orchestrator が更新し、worker は claim に勝った node だけを実行して result を残す
+- 複数 PC へ配る単位は graph の node ではなく run とする。`participate` は受理だけを行い、周期駆動は `agent-project serve` が持つ
 
-読むべき人は、agent-flow の設計を変える人と、なぜこの形なのかを知りたい人です。設定キーやファイルレイアウトを調べたいだけなら[仕様書](../specs/agent-flow-spec.md)で足ります。
+中央キューを置く案は、agent-flow とは別に可用性と運用を背負うため採用していません。LLM が実行用スクリプトを生成する方式も、任意コードの検査と再開時の再現性を両立できないため採用していません。実行計画は宣言的な graph として保存します。
 
-## 背景と課題
+この文書は、agent-flow の実行系やバス契約を変更する人向けです。設定キー、JSON の全フィールド、上限値を調べる場合は仕様書を使ってください。
 
-Anthropic の *Building Effective Agents* は、経路が固定された Workflow と、LLM が実行時に経路を決める Orchestrator-Workers を区別しています。agent-flow は後者を狙います。
+## 1. 目的と範囲
 
-問題は、後者を素直に実装すると 1 プロセスの中に閉じてしまうことでした。手元には常時稼働の PC が複数あり、途中に人のレビューや承認を挟みたいタスクもあります。1 プロセスに閉じたオーケストレータは、PC をまたげず、夜間シャットダウンで作業が消え、人の承認待ちの間ワーカーを 1 枠占有し続けます。
+### 1.1 解く問題
 
-解くべき問いは「実行時にタスク構造が変わるワークフローを、複数マシンにまたがって、途中で電源が落ちても失わずに回すには、何を共有すればよいか」です。答えが上の TL;DR、つまり共有するのはファイルだけ、という設計です。
+要求の分解を実行前に固定できない仕事があります。途中の調査結果で後続作業が増えたり、検証結果を受けて一部を作り直したり、人の承認を数日待ったりする仕事です。これを 1 プロセスのメモリだけで管理すると、停止時に進捗を失い、承認待ちのあいだ実行枠を占有します。
 
-### 目標
+agent-flow は、計画と実行の途中状態をファイルへ確定し、プロセスを再起動しても続きから進められるようにします。共有 git をバスに使う場合も、同じファイル契約で動きます。
 
-- 要求から実行時にタスクグラフを生成し、結果を見て再計画できる
-- 同じ共有バスを見る N 台の PC が、同じタスクを二重に実行しない
-- 駆動プロセスが消えても、確定済みの工程を捨てずに続きから再開できる
-- 人の承認待ちが数日から数週間かかっても、その間ワーカー枠を占有しない
+### 1.2 目標
 
-### 非目標
+- 要求から graph を作り、結果に応じて node の追加や置換ができる
+- 完了済み node を残したまま、失敗箇所と未着手箇所だけを再開できる
+- claim の競合が起きても、同じ node の実行者が 1 名に収束する
+- 人や外部システムの応答待ちを worker から切り離せる
+- workspace への変更、検証結果、公開先 revision を run の記録へ結び付けられる
 
-- 汎用ジョブスケジューラであること。単位は 1 要求 = 1 run で、cron 的な定期実行は持ちません
-- 公平なタスク分配。負荷分散は起動位相のずらしとジッタだけの heuristic です
-- 成果物そのものの保管。実体は成果物リポジトリに置き、バスには要約とリンクだけを残します
-- 常駐管理。プロセスの起動・監視・再起動は agent-project の常駐体が担います
-- タスクの受入基準と done の決定。agent-flow は渡された検証計画を緩めずに実行し、採否は agent-project が決めます
-- モデル選定の知能。どの tier にどの候補がいるか、どの機能をどの tier に任せてよいかの宣言と検証は管理面（agent-dashboard）の仕事です
+### 1.3 非目標
 
-## 主要な設計判断
+- cron や常駐スケジューラの提供
+- graph 内の node を複数 PC へ公平に割り振ること
+- 成果物リポジトリの代替。バスには実行記録と参照先を置き、成果そのものは workspace に置く
+- モデルや CLI の能力評価。候補と予算は管理面から受け取り、agent-flow は解決済みの条件を実行する
+- verification plan による最終受入の決定。agent-flow は receipt を作り、不合格なら run 内で修正を試みるが、採否は依頼元が決める
 
-### 1. 共有するのはバス上のファイルだけ。状態はその有無から導く
+## 2. システム構成
 
-**判断**: プロセス間で交換する情報をすべて、バスのディレクトリ配下の JSON ファイルにする。RPC もソケットも共有メモリも使わない。さらに、タスクに `status` フィールドを持たせて更新するのをやめ、`node_state(id)` が result / claim / wait / task の各ファイルの有無から状態を毎回導出する。
+### 2.1 run のプロセス構成
 
-**文脈**: 分散の相手は同一 LAN 上の PC とは限らず、WSL とネイティブ Windows が混ざり、片方が落ちている時間帯もある。バスの実体はローカルディレクトリでも共有 git リポジトリでもよい必要があった。そして git バスでは複数ノードが同時に書く。1 つのファイルを皆で書き換えると内容が競合し、マージが要り、rebase が壊れる。
+通常の run は次のプロセスで動きます。
 
-**選択肢と却下理由**: 中央のキューサーバ（Redis / RabbitMQ）は、そのサーバ自身が単一障害点になり、家庭やチームの小規模構成には運用コストが見合わない。gRPC などの直接通信は、ノードが互いの生死とアドレスを知る必要があり、シャットダウン耐性の設計が別途要る。状態を専用フィールドに持って CAS 風に更新する案は、git に compare-and-swap がないため成立しない。イベントログを畳んで状態を作る案は、順序保証のないファイル同期の上では畳み込み結果がノードごとにずれる。ファイルの存在は同期しても曖昧にならず、名前を分ければ add/add コンフリクトも起きない。
-
-**トレードオフ**: 得たのは転送層の差し替え可能性と、状態が全部目で読めることです。失ったのは即時性で、git バスでは pull の間隔ぶんだけ他ノードの結果が遅れて見えます。状態を知るたびにディレクトリを読むので、ノード数に比例した stat も走ります。この判断を見直す引き金は、ノード数が 10 台を超えて git の往復が律速になったときです。
-
-**確信度**: 高い。実運用で 3 台構成まで問題なく回っています。派生した規律（誰がどのパスを書くか）は[仕様書 §3.7](../specs/agent-flow-spec.md) の書き込み所有権の表に落ちています。
-
-### 2. 二重実行は名前空間付き claim と決定的タイブレークで止める
-
-**判断**: claim を取りたいノードは `claims/<node-id>/<who>.json` という自分専用のファイルを書く。勝者は、リース内の全 claim のうち `(ts, who)` が最小の 1 件に決まる。実装は `agentcore.protocol` に置き、agent-amigos の役割 claim と委譲公示板の入札で共有する。
-
-**文脈**: 「先に書いた者が勝ち」を素朴にやると、git バスでは両者が別々のクローンで同時に書けてしまい、pull 後に 2 人とも自分が勝者だと思う。
-
-**選択肢と却下理由**: git の非 fast-forward push が失敗する性質を排他に使う案は、バス全体を 1 本の直列書き込みにしてしまい、ノードが増えるほど push 競合で遅くなる。ファイルロック（flock）は同一ホストでしか効かない。決定的タイブレークなら、同じ claim 集合を見た全ノードが必ず同じ勝者を選ぶので、同期が遅れても結論は 1 つに収束する。
-
-**トレードオフ**: 勝敗が決まるまでに pull を 1 往復挟むので、claim には数百ミリ秒かかります。同一ホスト内の並行 claim は flock で直列化して、読みと判定のずれを潰しています。
-
-**確信度**: 高い。ローカルのベアリポジトリを共有バスにした分散統合テストで、別クローンからの同時 claim でも勝者が 1 人になることを検証しています。
-
-### 3. 常駐デーモンを持たず、受理と実行を別プロセスに割る
-
-**判断**: `agent-flow daemon` を廃止し、参加 1 巡の `participate`（受理だけ・run は起こさない）と、run 1 本を完走させる `run --from-inbox` に分けた。周期駆動は PC に 1 本の `agent-project serve` が持つ。
-
-**文脈**: 以前は agent-flow・agent-project・agent-amigos がそれぞれ常駐しており、同じ PC に 3 つのループが回っていた。設定も生存監視も自動更新も三重で、どれが動いているのか運用者が把握できなくなっていた。
-
-**選択肢と却下理由**: デーモンを残したまま常駐体から起動する案は、三重ループの問題をそのまま残す。逆に、`run --watch` の待機ループへ周期駆動を差し込む案は計測で潰れた。1 パスの所要時間が二峰性で、中央値は 9 秒なのに 21% が 120 秒を超え、最大は 12,141 秒だった。run の生存リース窓は `max(poll×10, 120)` 秒なので、待機ループに tick を相乗りさせるとリースが切れて他ノードに run を奪われる。駆動と待機は同じ制御フローに置けない。
-
-**トレードオフ**: プロセス起動のオーバーヘッドが tick ごとに乗ります。代わりに agent-flow 側は状態を持たない単発 CLI になり、単体でも `agent-flow run "<要求>"` 1 本で完走できます。`participate` を呼ぶ側は、自分がすでに走らせている run-id を `--running` で渡す必要があります。渡さないと、起動待ちの run を孤児と誤判定して再開回数を焼き潰します。
-
-**確信度**: 高い。ただし移行のとき、旧デーモンのループにぶら下がっていた処理（生存信号の出力、自動アップデート、オンデマンド worker、定期掃除）が呼び出し元を失ったまま残りました。関数単体のテストは通り続けるので気づけません。2026-07-26 の棚卸しで全件処置済みです。この形の設計を採るなら、ループを消す作業は「ループから呼ばれていた関数の呼び出し元を数える」作業とセットにする必要があります。
-
-### 4. 失敗は種別で分け、回復する層を種別ごとに固定する
-
-**判断**: 失敗を transient（待てば直る）、内容（作り直しが要る）、環境（この実行場所では確かめられない）の 3 種に分け、種別ごとに回復する層を 1 つに決める。検証結果では `fail` が内容、`inconclusive` が環境に当たる。上の層で吸収した失敗は、下の層の予算（`max_retries` / `max_resumes`）を消費させない。
-
-**文脈**: 以前はすべての失敗が最上位の再計画まで持ち上がり、同じ扱いを受けていた。実際に codex の利用上限で 26 ノードが 1 つずつリトライ予算を焼き尽くし、理由不明の全滅に見えた。接続断も、JSON の書き損じも、成果物の不合格も、全部が「評価役を呼んでタスクを作り直す」経路を通っていた。一番安く直せる失敗に一番高い機構を使っていたことになる。
-
-**選択肢と却下理由**: worker と orchestrator の呼び出し点それぞれにリトライループを置く案は、`run_agent` という単一チョークポイントが既にあるので冗長で、二重ループが予算の掛け算を生む。transient のときに claim を手放して別ワーカーへ任せる案は、他ワーカーも同じ API 障害で落ちるだけで claim の往復コストが増える。環境の不調はノードを替えても直らないので、run 単位で cooldown する方が正しい。failed run を無差別に自動再開する案は、内容の失敗と環境の失敗で LLM を無駄に焼く。
-
-**トレードオフ**: 層が 4 つに増え、最悪時間の上界が伸びます。上界は 1 呼び出しあたり `(1 + transient_retries) × (1 + format_retries) × agent_timeout + Σbackoff` で有界にしてあります（既定で約 1 時間）。transient と `inconclusive` はレイヤ 3 に入らないので、成果修正の予算を減らしません。
-
-**確信度**: 高い。層ごとにテストがあります（`TransientRetryTests` / `FormatRepairTests` / `TransientRunBreakTests` / `AutoHealTests`）。
-
-### 5. 振る舞いを変える口を層で分け、層ごとに 1 つの名前で通す
-
-**判断**: 「ワークフローの振る舞いを変えたい」の入口を 4 層に分ける。**L1 形**（工程のグラフ: ワークフロー定義 / 標準パターン / planner の出力）、**L2 分け方**（分解の粒度・分割の単位・レビューの有無・実行 tier）、**L3 言い方**（プロンプトへ足す文・差し替える文＝手法カタログ）、**L4 実行資源**（どの CLI / モデル / 予算で回すか）。同じ設定は CLI オプション名・設定ファイルのキー・inbox 要求のキーで**同じ名前**を使い（`--granularity` ↔ `granularity`）、値が複数の口から来たときの優先順位を **CLI 引数 > inbox 要求 > 設定ファイル > 組み込み既定** に固定する。
-
-**文脈**: 入口が増えるたび個別に足していたため、同じ「振る舞いを変える」が層をまたいで別の顔をしていた。`split_policy` はプロンプト文面を選ぶだけの機能なのに専用の CLI オプションと専用の Python 辞書を持ち、リポジトリ側から文面を差し替えられない例外だった。逆に L4 の実行時指定（役割・工程ごとの tier / agent_cli / model）は dashboard から渡せるのに、L2 は画面からまったく触れなかった。
-
-**選択肢と却下理由**: 層を分けず 1 つの器（`execution_overrides`）に全部載せる案は、適用単位が違うものを混ぜる。あちらは「役割・工程ごとに誰が実行するか」で、L2 は「run 全体をどう分けるか」なので、同じ dict に入れると受け側が毎回どちらの意味か判定することになる。逆に層ごとに独立した設定機構を発明する案は、名前と優先順位が層の数だけ増える。層は分けるが**名前と優先順位の規則は 1 つ**、という形にした。優先順位で inbox 要求を設定ファイルより上に置いたのは、要求が run 単位の意思で設定ファイルはそのノードの既定だから。CLI 引数を最上位に置いたのは、人がその場で打った値を機械が覆さないためです。
-
-**トレードオフ**: 「CLI で明示された」と「既定のまま」を区別する必要が出ました。`granularity` の既定は `auto`、`split_policy` は `behavior` と**偽値ではない**ため、`if not args.granularity` では見分けられません。`resolve_config` が設定ファイルで埋める前に「CLI で値が来ていたキー」を控える形にしています（`_cli_explicit`）。この区別を持たない専用分岐を 1 つ残していたのが `pattern` で、設定ファイルに `pattern` を書いたノードでは要求の名指しが黙って負けていました（2026-08-20 に他の計画パラメータと同じ経路へ寄せて解消）。もう 1 つ、層の境界を守る作業が要ります。カタログ（L3）で差し替わるのは**文面だけ**で、値の意味（`split_policy` の 2 値、granularity の並列数倍率、tier の auto→finest 分岐、レビュー観点のキー）はエンジンパラメータのまま。ここが緩むと、文面の差し替えのつもりでエンジンの分岐が変わります。
-
-**確信度**: 中程度。層の切り方（特に L1 と L2 の境目）は、標準パターンのように「形を選ぶと分け方も決まる」ものがあるため完全には直交していません。見直す引き金は、どの層にも収まらない run パラメータが出てきたときです。
-
-**効かない指定は受け取らない。** 層で分けた帰結として、その口では意味を持たない指定は usage エラー（rc=2）で断ります。計画パラメータは長らくグローバル引数だったため `agent-flow --granularity finest doctor` が通り、指定が黙って捨てられていました。実際に計画する `run` / `orchestrate` の引数へ移し、両者が同じ定義を共有します。子プロセスへは親が解決済みの値を argv で運びます。子の cwd が親と同じ設定ファイルを見つけられるとは限らないためで、計画しないワーカーには渡しません。同じ規則を語彙にも適用し、inbox 要求が名指しした `pattern` / `granularity` / `split_policy` が語彙から外れていたら起動前に断ります。解決関数は未知値を既定へ丸めるので、素通しすると誤記が「指定したのに効かない run」として静かに走るためです。
-
-**L3 の文面はカタログへ寄せる（`selection: "engine"`）。** run パラメータの値からプロンプト文面を選ぶ系（`split_policy` / `granularity` / tier / レビュー観点）は、文面の正典を Python の辞書から手法カタログへ移しました。**選択はエンジン、文面はカタログ**という役割分担で、選ばれ方には `auto`（実行条件が自動で選ぶ）と `per-task`（人・planner が工程ごとに選ぶ）に続く第 3 形態 `engine` を与えています。解決順は run 専用 tuning.json → 対象リポジトリの `.agents/methods/<id>.json` → `$AGENT_METHODS_DIR` → 組み込み文言で、カタログが無い・壊れている環境でも指示は消えません。`auto` 以外は `enabled: true` を書かれても自動注入せず、これを `agentcore.methods.select`（agent-flow / agent-loop 双方の自動注入が通る唯一のチョークポイント）で強制します。ここが緩いと、`--split-policy file` の run に `behavior` の指示も入る、という選択と矛盾する二重注入を作れてしまいます。詳細は[カタログ統一設計](../plans/2026-08-18-split-policy-catalog-unification-design.md)と[カスタマイズ地図](../plans/2026-08-20-workflow-customization-map.md)にあります。
-
-## 実行の流れ
-
-この節の抽象度は概要です。ファイルとフィールドの契約は[仕様書](../specs/agent-flow-spec.md)にあります。
-
-```
-    要求 + 任意の verification plan（agent-project / 板 / 人）
-        │
-        ▼
-  inbox/<run-id>.json ──── participate が claim（分散時は 1 台に決まる）
-        │                        │
-        │                        └─▶ 実行すべき run-id を stdout に返す
-        ▼
-  run --from-inbox（1 run = 1 プロセス）
-        │
-        ├─▶ orchestrator … 戦略を選び graph.json を書く。以後は静止を待って評価と再計画
-        ├─▶ worker × N  … claim → 実行 → results/<id>.json
-        │                        │
-        │                        └─ 決着していなければ park して claim を解放
-        └─▶ verifier     … 同じ worktree / revision で基準を調べ、receipt を返す
+```text
+run 親プロセス
+├── orchestrator × 1
+├── worker × N
+└── 監視ループ
+    ├── park 済み node の再確認
+    ├── cancel と子プロセスの監視
+    ├── state_git の同期
+    └── transient failure の auto-heal
 ```
 
-`participate` は 1 巡のあいだに、キャンセル指示の受理、park 済みノードの再確認、駆動プロセスが消えた run の引き継ぎ判断、委譲公示板の巡回、新しい要求の受理を行い、実行すべき run-id を返します。実行はしません。呼び出し側（通常は `agent-project serve` のワーカープール）が run-id ごとに `run --from-inbox` を起こします。
+`run` は要求を子プロセスへ渡し、終了条件まで監視します。計画を作るのは orchestrator、node を実行するのは worker です。親プロセスは graph の内容を判断しません。
 
-要求文・書込先・検証計画・ユーザー定義フローは、呼び出し側が argv へ転記するのではなく、`run` が inbox 要求から自分で読みます。転記させると項目が増えるたびに常駐体側を直す必要が出て、抜けたぶんだけ静かに機能が落ちるからです（env 渡しは不安定として却下・2026-07-31）。
+`participate` は別の入口です。inbox や委譲公示板を 1 巡し、受理した run-id を返します。そこで run を実行しないため、呼び出し元は返された id ごとに `run --from-inbox` を起動します。この周期処理は `agent-project serve` が担当します。
 
-orchestrator は最初にパターンと並列数を選んでタスクグラフを書き、あとは run が静止する（実行中も park 中も claim 可能な pending も無い状態）のを待ちます。静止したら評価役の LLM に「この結果で要求を満たすか」を尋ね、足りなければタスクを追加してもう一周します。run の現在段階は終端 status ともグラフ進捗とも別に `phase` で持ちます。作業ノードが全件終わった後の検証や結果確定を「100%・実行中」に潰さないためです。
+### 2.2 コンポーネント
 
-計画の履歴は最終形の `graph.json` から推測させず、イベントへ差分（`planned` / `replan` / `inflight_amend`）として残します。`graph.json` の `deps` は実行上の依存関係、イベントの差分は計画が変わった時系列の境界で、同じ意味ではありません。依存のない追加工程へ再計画を理由に依存線を足さない、というのがこの分離の眼目です。
+| コンポーネント | 責務 | 主な実装 |
+|---|---|---|
+| CLI / launcher | 設定解決、子プロセス起動、run の監視 | `cli.py`, `run.py`, `daemon.py` |
+| orchestrator | 初期計画、graph 更新、静止判定後の評価、最終化 | `orchestrate.py`, `patterns.py`, `continuation.py` |
+| worker | node の選択、claim、executor 呼び出し、result の記録 | `work.py`, `agent.py`, `plugins.py` |
+| bus | run のファイル配置、状態導出、claim と lease | `bus.py` |
+| transport | ローカルバスまたは git バスの同期 | `gitbus.py`, `agentcore.transport` |
+| wait service | human node と外部 executor の park、再確認 | `waits.py` |
+| workspace | 作業用 clone、commit、push、復旧 ref | `workspace.py`, `gitcache.py` |
+| verification | verification plan の実行と receipt 作成 | `verifyplan.py` |
+| recovery | 世代交代、auto-heal、公開失敗の手動復旧 | `run.py`, `recovery.py`, `bus.py` |
 
-### 人が入る待ちは park してバッチ監視へ移す
+`state_git` は実行バスではありません。ローカルバスの `runs/` と `inbox/` を dashboard 用のリポジトリへ写す補助経路です。同期に失敗しても run は継続します。
 
-executor が「まだ決着していない」と判断したら `DeferDecision` を投げます。ワーカーは claim を解放し、`waits/<node>.json` に park 記録を書いて次のタスクへ回ります。決着の確認は監視主体（`run` か `participate`）の `service_waits` が `watch_interval`（既定 90 秒）ごとにまとめて行います。`human` ノード（承認・選択・記入）と計画承認ゲートがこの機構の主な利用者です。
+### 2.3 パッケージの組み立て
 
-ワーカーがブロックして待つ案を採らなかったのは、承認が数日から数週間かかりうるからです。待たせると worker 枠が全部承認待ちで埋まり、新しい仕事に着手できなくなります。承認待ち専用のワーカープールを別に持つ案は枠の割り当てを人が調整することになり、タイムアウトを短くして失敗させ上位にリトライさせる案は同じ依頼を二重に投げます。park なら待機はファイル 1 個になり、ワーカー枠も外部サービスへの多重ポーリングも同時に下がります。
+`agent_flow` は通常の Python モジュール群として import されません。`__init__.py` が `_FRAGMENTS` の順に各ファイルを同じ `globals()` へ `exec` し、単一の名前空間を作ります。旧単一ファイル版の monkey patch、global の再束縛、private symbol 参照を維持するための互換構造です。
 
-代償として、park 記録に生存リース（`wait_lease_until`）が要ります。監視主体が消えるとリースが切れ、`node_state` は `pending` へ縮退して通常のワーカーが同じトークンで再アタッチします。park を行き止まりにしない代わりに、状態が 1 つ増えました。
+このため、ファイル境界は実行時の名前空間境界ではありません。fragment の順序変更、同名 symbol の追加、通常 import への置換は広い変更になります。変更時は CLI の起動試験に加え、テストが `agent_flow.<symbol>` を直接差し替える経路も確認します。新しい設計上の依存は、可能なら `agentcore` の明示的なモジュールへ置き、共有名前空間への依存を増やしません。
 
-## 計画
+## 3. 状態モデル
 
-この節の抽象度はコンポーネントです。計画役の選び方と、計画の形を誰が決めるかを書きます。
+### 3.1 run、phase、node state を分ける
 
-### 計画役の 3 系統と、縮退の可視化
+agent-flow には意味の異なる 3 種類の状態があります。
 
-既定の `flow-planner` はスキル側の 3 段パイプライン（分析 → 戦略選定 → グラフ構築）を呼びます。スキルが見つからなければ `agent`（エージェント CLI に 1 回問い合わせ）へ、それも解釈できなければ `stub`（キーワード判定と正規表現）へ落ちます。落ちる先があるので、スキル未導入のノードが混ざっても run は成立します。
+| 種類 | 例 | 正典 |
+|---|---|---|
+| run status | `running`, `done`, `failed`, `cancelled` | `meta.json` |
+| run phase | `planning`, `executing`, `evaluating`, `verifying`, `finalizing` | `meta.json` |
+| node state | `pending`, `claimed`, `waiting`, `done`, `failed` | ファイルから導出 |
 
-縮退は静かに起きてはいけません。落ちた事実と理由はログと `strategy.reason` の両方に残します。以前はここが黙っていたため、planner の CLI を差し替えた環境でスキルが一度も起動していないのに「計画できた」ように見え、stub のキーワード判定が同じパターンを選び続けた run が 4 本続きました。スキルはエージェント CLI の argv を自前で組まず agentcore の定義へ委譲します。組み込みの白リストを持つと、定義を足しただけの CLI（`ollama` 等）で計画役だけが起動に失敗するためです。stub のキーワード判定は要求本体（先頭の段落）だけを見ます。agent-project 由来の要求には charter などの定型が付き、そこに含まれる語が要求の中身と無関係に同じパターンを選ばせるためです。
+phase は表示と診断のための進行段階です。終端判定には使いません。run status が終端でも、phase が古い値のまま残る可能性を読み手は許容します。
 
-LLM planner が選んだ主パターンと並列数は、同じ入力に対する stub 系の決定的ルールと照合し、`strategy.decision_comparisons` に記録します。ルール側へ渡すのは要求文と呼び出し時の granularity 引数だけで、分析段が導出した粒度は渡しません。LLM の出力をルールの入力に混ぜると一致率が上振れし、「LLM に聞くのをやめてよい判断」の選定が甘くなります。これは計測であり、実行する戦略には介入しません。
+node に可変の `status` フィールドはありません。`Bus.node_state(id)` は次の優先順位で状態を返します。
 
-### 粒度の決定的導出とスコープ契約
+1. `results/<id>.json` があれば、その `status`
+2. 生存中の勝者 claim があれば `claimed`
+3. 生存中の wait lease があれば `waiting`
+4. `tasks/<id>.json` があれば `pending`
+5. どれもなければ `unknown`
 
-ノードの粒度は運任せにしません。`granularity` の既定 `auto` は分析段の複雑さ判定から目標粒度を決定的に導出します（simple → coarse・work 系 1〜3 ノード / moderate → fine・3〜8 / complex → finest・6〜12、ハード上限 16）。明示指定だけが導出に勝ちます。成果を生むノードの goal にはスコープ契約（`[scope]` / `[out_of_scope]`）を課し、生成後は LLM を使わない決定的ゲートで検査して、レンジ外・スコープ欠落・goal の重複に当たれば指示を強めて 1 回だけ再生成します。
+この順序により、結果が確定した node は古い claim や wait が残っても終端として読まれます。wait lease が失効した node は `pending` に戻り、監視主体の消失で行き止まりになりません。
 
-この形にした経緯: 戦略選定とグラフ構造には満足できていて、粒度のばらつきの主因は「通常の約 N 倍に細分化」という相対指示と、既定が常に finest だったことにありました。だから直すのは指示の側です。別 LLM に分解を批評させる案はコストと出力の揺れで、初回は粗く作って失敗したら細分化する案は初手の失敗が増えるので、どちらも却下しました（ゲートの後段に足せる形は残しています）。ゲートが completion verifier の有無を検査しないのは意図的で、内側ノードの偽完了は flow-worker の規律と verification plan で検出します。
+### 3.2 バスの書き込み規律
 
-### ユーザー定義フロー: planner を通らない厳格な経路
+run の主な配置は次のとおりです。全フィールドと書き手の表は[仕様書 §3.7](../specs/agent-flow-spec.md#37-バスのレイアウトと書き込み所有権)を正典とします。
 
-inbox 要求の `plan` にノード列が載っていれば、orchestrator は planner を呼ばず、検証だけでそのグラフを固定します。検証は planner 出力の防御（未知 kind の丸め・循環の切断）とは逆に厳格に失敗させます。丸めて実行すると「意図と違う形で走った」ことに気付けないからです。不正な plan は planner へフォールバックせず、`[user-plan]` タグ付きで失敗終端します。
+```text
+<bus>/
+├── inbox/<run-id>.json
+├── inbox/claims/<run-id>/<who>.json
+└── runs/<run-id>/
+    ├── meta.json
+    ├── graph.json
+    ├── tasks/<node-id>.json
+    ├── claims/<node-id>/<who>.json
+    ├── waits/<node-id>.json
+    ├── interactions/<interaction-id>/...
+    ├── results/<node-id>.json
+    ├── artifacts/<node-id>/...
+    ├── events/<who>.jsonl
+    ├── final.json
+    └── receipt.json
+```
 
-per-node の `agent` と `tier` はこの経路でだけ受けます。LLM planner の出力からは従来どおり剥がします。モデル選定はルーティングと実測格付けの仕事だからです。既定では評価役の再計画も無効です。形が意図そのものなので、失敗ノードは正直に failed で返します。ただしデータ駆動 fan-out（`split` の機械展開）だけは評価役が無効でも通します。「評価役の再計画でノードを足さない」原則は LLM 判断の話で、LLM を通らない機械展開まで塞ぐと、split を含むフローが一度も map を生成せず空振りします（2026-08-12 に実際に起きて直した穴です）。
+競合を減らす原則は、同じ論理状態に複数の書き手を置かないことです。orchestrator が graph と task を更新し、worker は自分名義の claim と event を書きます。result は claim の勝者、または park を決着させた監視主体が書きます。回復や cancel の管理操作だけが、定められた経路で lifecycle の記録を更新します。
 
-### 計画承認ゲート（plan gate）
+event は履歴であり、現在状態の正典ではありません。`planned`、`evaluate`、`replan`、`inflight_amend` には理由と変更差分を残します。dashboard は最終 graph から計画変更の時系列を推測せず、event を読みます。
 
-計画の実行前に人の承認を挟むオプトインです（既定 off）。planner の計画を作ったあと `human` 承認ノードを 1 つ挿し、root タスクを全てゲート依存に付け替えます。縮退運転で basic に普段は任せない作業を渡すとき、予算を焼く前に人が分解を見る担保になります。
+### 3.3 claim と lease
 
-決着は前述の park と human interaction の機構そのもので、専用の待ち機構は増やしていません。差し戻しは評価役に渡さず orchestrator が決定的に処理します。コメントを元要求へ付けて planner を呼び直し、未確定ノードを新計画で置き換え、次のゲートを挿し直します。旧ゲートはグラフから外します。failed のまま残すと resume が人へ再質問し、stub 継続の判定にも誤検知するためです。差し戻しは `max_retries` で有界、期限切れは失敗終端です（フェイルクローズ。resume すれば人へ再質問）。
+worker は `claims/<node-id>/<who>.json` へ自分の claim を書きます。生存 lease 内の claim を集め、`(ts, who)` が最小のものを勝者とします。同じ集合を見た実行者は同じ勝者を選ぶため、git の同期に遅延があっても結論は収束します。同一ホスト内では file lock を併用します。
 
-ユーザー定義フローには挿しません。人が書いたグラフには必要な場所に自分で `human` ノードを書けます。評価役が反復で足す新タスクもゲートを通しません。実行中の反復まで人待ちにすると、park の利点を自分で潰すためです。
+lease は長い処理の timeout ではありません。実行中は heartbeat が claim を延長し、処理自体の打ち切りは agent timeout が担当します。両者を同じ値で扱うと、正常な長時間処理を横取りするか、停止した worker の回収が遅れます。
 
-### tier 補償: ワーカーの能力が計画の形を決める
+複数 PC で同じ run を能動的に分割実行する scheduler はありません。分散時の claim は、所有者交代や一時的な二重起動が起きても result が 1 つに収束するための安全策です。
 
-予算逼迫の縮退では、普段は任せない役割へ `workloads.flow.tier: basic`（最小能力）のワーカーを投入せざるを得ません。このとき計画と評価が普段どおりの粒度・検証で作られていると、basic は 1 ノードに積まれた複数手順で確実に転びます。ノードの大きさを律速するのは要求の複雑さではなくワーカーの能力なので、planner / evaluator / split が tier を読んで形を寄せます。具体的には、`granularity: auto` を finest へ解決し（明示指定は人の意思なので覆さない）、計画・評価・split のプロンプトへ「1 ノード = 1 短手順」の指示を注入し、`review: auto` を常時有効へ倒します（basic の成果を無検証で集約・終端しない）。採った tier は `strategy.tier` に記録し、後から「basic 前提の計画だった」ことを見分けられます。
+## 4. run のライフサイクル
 
-**選択の知能はエンジンに持たせません。** どの機能をどの tier に任せてよいか（実行可能 tier カタログ）は agent-dashboard の 1 実装（`flow-tiers.js`）で宣言し、plan 生成の時点で検証・固定します。エンジンは plan の `tier` を保持し、作り直しノードへ引き継ぎ、`pinned-tier` として記録するだけです。エンジン側でカタログを強制する案は、カタログの 2 実装と「エンジンは agent-profiles を読まない」分業の破壊を生むので却下しました（2026-08-12。[実行可能 tier 設計](../plans/2026-08-12-agent-flow-tier-eligibility-strategy-design.md)）。
+### 4.1 受理から起動まで
 
-ユーザー定義フローへの補償は、届く範囲を線引きしています。人が描いた静的な形には補償しません。形が意図そのものだからです。一方、実行時にエンジンが生成する動的部分（split の fan-out、review gate）には届かせます。この細分化で fan-out クランプ（`max_fanout`）に当たる確率が上がるため、切り捨てはログ・replan 理由・reduce の goal の 3 か所に明示し、黙って成果を欠落させません。クランプ自体を tier で自動的に上げることはしません。上限は「この PC が同時に抱えてよい量」の話で、分解の細かさとは別の軸だからです。残件は classify + route が機械生成する `-act` ノードの basic 向け具体化です（[補償の実装計画](../plans/2026-08-12-agent-flow-custom-flow-tier-compensation-implementation-plan.md)）。
+```text
+submit
+  │  inbox/<run-id>.json
+  ▼
+participate
+  │  inbox claim に勝った PC が run-id を返す
+  ▼
+run --from-inbox
+  ├── orchestrator
+  ├── worker × N
+  └── monitor
+```
 
-この先には持久運転の構想があります。予算が尽きてから basic へ切り替えるのでは、厚くすべき判断役を養う原資が残りません。残予算があるうちに作業系だけをローカルの basic へ移し、判断役（planner / evaluator / verify）の段は据え置く。段の決定関数は agentcore の 1 実装へ置き、各エンジンが自サイクル先頭で評価する形です。宣言の契約と決定関数までが設計済みで、エンジンへの組み込みは段階実装中です（[持久運転設計](../plans/2026-08-12-agent-flow-basic-tier-emergency-operation-design.md)）。
+inbox は要求文だけでなく、workspace、参照先、user plan、verification plan、run 単位の計画指定を運びます。`run --from-inbox` はこれらを読み、CLI で明示された値があればそちらを優先します。
 
-## 完了条件と検証
+`participate` の受理直後から `run` が生存 lease を張るまでには短い窓があります。この間に呼び出し元が停止すると、inbox claim の lease が失効するまで別の PC は拾い直しません。claim lease を短くしてこの窓だけを詰めると、起動が遅い正常な run を二重受理するため、現行設計では許容しています。
 
-run の完了条件は「全ノードが done」ではありません。**終端の `verify` ノードが緑であること**です。どこからも依存されていない `verify` ノードの判定を `_normalize_verify` の 1 実装で読み、赤なら `[verification]` タグ付きで failed 終端します。以前は全ノードが done なら run も done だったので、最後の検証ノードが不合格を書き残していても、run は成功として下流へ流れていました。判定の読み方をエンジン側で再解釈しないのが要点で、本文の文字列を orchestrator が読み直すと「no failures」を赤と読むような二重解釈が生まれます。曖昧な出力は fail へ倒します。
+### 4.2 初期計画
 
-verification plan を持つ run は、さらに成果 revision が確定したあと専用 verifier を 1 セッション起動します。設計の柱は 3 つです。
+orchestrator は既存の `graph.json` があれば再計画せずに再開します。新規 run では入力を次の順で解決します。
 
-**成果を作った場所で検証する。** push 後に別 checkout で再実行すると、cwd、依存物、成果 revision のいずれかがずれます。receipt には plan digest と result revision を必ず書き、agent-project が採用対象と照合できるようにします。
+1. user plan があれば、schema と graph の整合を検査して採用する
+2. `pattern` が明示されていれば、標準 pattern から graph を作る
+3. planner を使い、要求から strategy と task 列を作る
 
-**成果物の欠陥と環境の欠落を混同しない。** コマンドの終了コード非 0 は fail（内容の失敗。同じ run の修正ループへ戻す）、起動できない・実行場所が無いは inconclusive（環境。成果修正のリトライを消費せず receipt のまま上位へ返す）です。verifier は基準を緩めず、成果物も変更しません。
+user plan と pattern の同時指定はエラーです。user plan が不正な場合も planner へ切り替えません。別の計画で動かすより、指定した計画を修正できる形で返すためです。
 
-**fail-close に倒す。** 壊れた plan は実行せず receipt も書きません。receipt 欠落を採用側が done にしない向きです。証跡の無い pass は fail と読み、flaky な pass も全体判定で fail に落として人へ隔離します。integration 判定（target が成果の祖先か）は `agentcore.verifycontract` の 1 実装に置き、receipt を返せない run の受け皿である agent-project local runner も同じ実装を使います。検証経路が変わっても合否の意味を変えないためです。
+planner は `flow-planner`、`agent`、`stub` の経路を持ちます。自動縮退した場合は `strategy.reason` と event に理由を残します。planner の出力はそのまま実行せず、未知の依存、自己依存、循環を除去してから保存します。`split` の後続は実行時に展開するため、planner が静的に作った重複 successor も除きます。
 
-判定規則・digest・`$AGENT_BASE_REV`・confirm と flaky の扱いは[仕様書 §3.3](../specs/agent-flow-spec.md) にあります。
+workspace の target と作業 branch が異なる場合は、root の前に `base-sync` system node を入れます。plan gate が有効なら、その前に human node を挿入し、承認されるまで root を実行しません。
 
-### 公開できて初めて完了とする
+### 4.3 worker ループ
 
-書込先のある run は、リモートへ push できたことを完了条件に含めます。きっかけは実測です。`af/adhoc-20260814-092654-4851` はローカルに 11 commit を残していたのに、リモートにはブランチも PR も無く、それでも run は done でした。dashboard が `workspace.url` にローカルパスを渡し、agent-flow はその `origin` へ正常に push したためです。実装の push 失敗ではなく、保存先と公開先を同じ 1 つの値として扱った契約の欠陥でした。
+worker は graph を読み、次の条件を満たす node から候補を選びます。
 
-分けたのは値です。`url` を公開先の canonical remote、`local` を worktree 作成と緊急復旧に使う手元の git top-level にしました。dashboard が push を重ねて打つ案は却下しています。CLI・inbox・agent-project など dashboard を通らない経路と完了条件が分裂するからです。
+- node state が `pending`
+- すべての依存 node が `done`
+- run status が終端ではない
 
-commit 後・push 前には復旧 ref（`refs/agent-flow/recovery/<run-id>`）を `local` に張り、push が成功したら消します。押せなかった commit を一時 worktree に残す案は、janitor やプロセス終了で消えるので復旧元になりません。人が手で push したあとは `force-complete` が remote 上の commit を検証してから run を修復し、監査記録（理由・検証時刻・remote tip）を meta に残します。無検証で done にする口は作りません。
+候補の順序は worker 間の衝突を減らすためにランダム化します。claim の勝敗はランダムではなく、前節の規則で決まります。
 
-公開後の CI 結果は、宣言されたコマンドの JSON 出力を正典として取り込みます（既定 off）。CI の種類ごとのクライアントは持ちません。統一 verify の固定コマンドと同じ「決定的な外部コマンド + 受領証」の作法なら、gh でも glab でも社内 CI でも契約が 1 本で済みます。読めない出力・失敗は `unknown` で、緑には倒しません。黙って緑にすると、CI が赤い成果が完了として下流へ流れます。
+claim に勝った worker は executor を呼び、結果を `results/<id>.json` に書きます。実際に使った CLI、model、tier、選択理由、成果物、エラー分類もこの時点で記録します。読み手が後から設定を再解決して「何で実行したか」を推測してはいけません。
 
-## 失敗の扱い
+依存結果は既定で digest を渡します。`verify`、`reduce`、`synthesize`、`filter`、`judge` など、前段の詳細を読む必要がある node は full input を使います。どちらを使ったかと削減量は result に残します。
 
-### 失敗の 4 層と、それぞれが拾うもの
+### 4.4 静止、評価、再計画
 
-| 層 | 実体 | 拾う失敗 | 予算 |
+orchestrator は次のいずれかが存在する間、graph を評価しません。
+
+- 実行中の claim
+- 生存中の wait
+- 依存が解け、今すぐ claim できる pending node
+
+これらがなくなった状態を静止と呼びます。依存先が failed のため実行できない pending node は静止を妨げません。評価役が置換や追加を判断できるようにするためです。
+
+静止後、orchestrator は result を集めて `done`、`replan`、`failed` を決めます。`replan` では node を追加または置換し、graph の iteration を進めます。置換対象に依存していた後続 node の依存先も新 node へ付け替えます。iteration と同一系統の retry には上限があり、graph が無限に成長しないようにします。
+
+user plan は既定で評価役による形の変更を受けません。`plan.evaluate: true` のときだけ通常の再計画へ載せます。ただし、`split` の出力から `map` と `reduce` を作る機械的な fan-out は user plan でも動きます。
+
+### 4.5 park と再開
+
+human node や deferring executor は、未決着を失敗 result として書かず park します。worker は wait record を書いた後に claim を解放し、次の node を処理できる状態へ戻ります。
+
+親の監視ループが `service_waits` を一定間隔で呼び、外部の決着を確認します。決着すれば result を書き、未決着なら wait lease を延長します。監視主体が消えて lease が切れた場合、node state は `pending` に戻ります。再起動した監視主体や worker が再接続できます。
+
+plan gate の差し戻しは一般の評価役へ渡さず、指摘を加えた要求で計画を作り直します。人が書いたコメントを LLM の評価結果に埋めて意味を変えないためです。
+
+### 4.6 検証と最終化
+
+graph 内の終端 `verify` node と、依頼元が渡す verification plan は役割が異なります。
+
+| 検証 | 目的 | run への影響 |
+|---|---|---|
+| 終端 `verify` node | graph 自身の完了条件 | 1 件でも failed または判定不能なら run を failed にする |
+| verification plan | 確定 revision に対する外部受入条件の証跡 | receipt を作る。fail は予算内で修正 node を追加し、inconclusive は上位へ返す |
+
+終端 `verify` の判定は `_normalize_verify` に集約します。構造化された `data.ok` を優先し、本文から明示的な pass/fail を読めない場合は fail とします。orchestrator が別の文字列判定を持つことはできません。
+
+verification plan は成果 revision が確定してから、同じ workspace で実行します。receipt は plan digest と result revision を持ち、同じ組み合わせを再実行しません。command の非ゼロ終了や criterion の不合格は `fail`、CLI 不在や実行不能は `inconclusive` です。証跡のない pass は認めません。
+
+最終化では `final.json` を作り、run status を `done` または `failed` にします。workspace を持つ node は、commit だけでなく remote への push 成功までが delivery の完了条件です。
+
+## 5. workspace と公開
+
+### 5.1 書き込み先は run に 1 つ
+
+workspace を指定した run は、run 専用の作業 branch を使います。worker は同じ run の作業先を共有し、agent は編集だけを行います。commit と push は agent-flow が担当します。参照リポジトリは読み取り専用で、workspace と同じ扱いにしません。
+
+target が作業 branch より進んでいる場合、`base-sync` が先に統合します。競合がなければ機械的に merge し、競合したファイルの内容だけを executor に直させます。履歴操作を agent へ渡しません。target を含められなければ integration failure です。
+
+### 5.2 commit と push
+
+node 実行後に差分があれば、agent-flow は次を確認してから commit します。
+
+- 未解決 conflict がない
+- staged diff の品質検査が通る
+- conflict marker が残っていない
+
+commit が失敗した場合は node を失敗させます。古い HEAD を push して delivery 成功と記録することはありません。
+
+push 前には `refs/agent-flow/recovery/<run-id>` をローカルの元 repository に作ります。push 成功後に削除し、失敗時は残します。remote が進んだことによる non-fast-forward だけを fetch、rebase、再 push の対象にします。認証、権限、ネットワークの失敗を rebase で覆い隠しません。
+
+手動復旧は `force-complete` から行います。期待 commit が remote branch に含まれることを検証してから `published-manually` へ更新し、理由と remote tip を監査記録へ残します。検証なしで run を done に変える入口はありません。
+
+## 6. 失敗と回復
+
+### 6.1 回復する層を固定する
+
+同じ失敗を複数の層で無制限に再試行しないよう、回復場所を分けています。
+
+| 層 | 対象 | 動作 | 消費する予算 |
 |---|---|---|---|
-| 1. in-place 再試行 | `run_agent` の中 | transient（接続断・5xx・overloaded・タイムアウト） | `transient_retries`（既定 2・指数バックオフ） |
-| 2. 形式修復 | `_repair_json_output` / 空応答の再要求 | 出力契約違反（JSON の崩れ・JSON 契約の役割の空応答） | `format_retries`（既定 1） |
-| 3. 再計画 | 評価役の継続判断 | 内容の失敗（criterion=`fail`、成果物が要求を満たさない） | `max_retries`（既定 3・系統ごと） |
-| 4. auto-heal | `run` の待機ループと `participate` | transient 起因で failed 終端した run | `max_heals`（既定 2・進捗で数え直し） |
+| 呼び出し内 retry | 接続断、5xx、timeout などの transient | `run_agent` で指数 backoff | `transient_retries` |
+| format repair | 空応答、JSON 契約違反 | 契約を言い直して同じ役割へ再要求 | `format_retries` |
+| graph repair | 成果内容の不合格 | 評価して node を追加または置換 | `max_retries`, `max_iterations` |
+| run auto-heal | 呼び出し内 retry 後も続く transient | cooldown 後、failed node だけ pending に戻す | `max_heals` |
 
-層が分かれているのは、直し方が違うからです。接続が一瞬切れただけならその場でもう一度呼べば済み、グラフを触る必要はありません。LLM が JSON を書き損じたなら、契約違反を指摘して同じ役割で呼び直せばほぼ直ります。成果物が要求を満たさないなら、同じ入力の再実行では直らないので作り直しと付け替えが要ります。
+認証切れ、CLI 不在、管理面の停止は待っても直る保証がないため、自動再計画しません。run を理由付きで failed にします。quota は明示設定がある場合だけ、長い cooldown 後の auto-heal 対象にできます。
 
-不変条件は 2 つです。上の層で吸収した失敗は下の層の予算を消費しません。逆に、レイヤ 1 で回収し切れなかった transient はノード単位で粘らず、run 単位で打ち切ってレイヤ 4 へ渡します。環境がまだ不調なら他のノードも同じ理由で落ちるからです。
+回復後も `done` result は削除しません。修正対象と失敗箇所だけを動かし、同じ成果を再生成しないことが基本です。
 
-空応答はレイヤ 2 の契約違反に入れます。ローカルモデルやツールループ型の CLI は、本文の代わりに制御語だけを返して終わることがあり、これはパースの手前で落ちるので以前は 1 発で内容の失敗として扱われ、再計画の予算だけが焼けていました。JSON 契約の役割に限り契約を言い直して同じ予算枠で呼び直し、それでも空なら transient として run 単位で打ち切ります。同じプロンプトの即時再試行は、遅いローカル LLM の壁時計だけを焼くため行いません。
+### 6.2 orchestrator 消失と孤児 run
 
-環境要因（認証切れ、利用上限、CLI 不在、管理面による停止）はどの層でも再試行しません。1 ノードでタグが立った時点で run を failed で終端し、人が環境を直してから再開します。利用上限だけは時間が直すので、`heal_quota` を立てれば長い cooldown でレイヤ 4 が拾います。
+orchestrator は run の生存 lease を更新します。計画、評価、検証のような長い blocking 処理中は専用 heartbeat thread が lease を延長します。git バスでは heartbeat の更新も commit と push まで行い、dirty worktree のまま次の pull を妨げないようにします。
 
-レイヤ 3 の最初の内容再試行では、`fallbacks` 宣言のうち `relative_cost` が厳密に大きい最初の候補へだけ昇格できます。昇格は result と budget ledger に残し、最初から上位へ流した場合との実効単価を後から比較できるようにします。ledger 側は消費ではなく観測行として書きます。数えると、実効単価を測るために書いた行が実効単価を下げてしまうからです。
+lease が切れた非終端 run は孤児候補です。`participate` の回収処理は inbox claim に勝ってから同じ run-id の orchestrator を再起動します。既存 graph と done result を読み、未完了部分から再開します。進捗のない再開には上限があります。
 
-auto-heal の簿記は run の meta に閉じています。人の明示 retry は簿記を白紙に戻し、auto-heal は戻さずに「進捗なしの連続回数」を数えます。前回の heal 以降に done が増えていれば数え直すので、前進している run は何度でも回収され、進捗ゼロのまま失敗し続ける run だけが上限に達します。消費者（agent-project）の世代交代と二重に回復しうる関係は、既存の機構が裁定します。どちらの経路も done を温存する冪等な操作なので、最悪でも重複実行であって破壊は起きません。
+### 6.3 世代交代
 
-### リトライの世代交代（inherit_from）
+依頼元が新しい要求や指摘でやり直す場合は `inherit_from` を使います。新 run へ引き継ぐものは、graph、task、artifact、`done` result です。failed result、claim、event は引き継ぎません。旧 run には後継 run-id を示す墓標を残します。
 
-criterion の `fail` はまず同じ run の再計画で直します。計画を変えない失敗を別の run-id でやり直す場合は、先行 run の確定済み成果を引き継げます。素朴に新 run を作ると、確定済みのノード結果も計画も中間成果物も作業ブランチの commit も全部捨てることになり、承認待ちを挟むような長時間の run ではトークンと人手の空費だからです。
+先行 run が実行中なら安全のため引き継ぎません。先行 run が終端または孤児であることを確認してから世代交代します。新 run の request と verification plan を正典とし、古い受入条件を持ち込みません。
 
-`Bus.inherit_from(old_run_id)` が「引き継いでから掃除する」1 プリミティブです。引き継ぐのは計画、ノード仕様、中間成果物、done の結果だけで、failed はやり直させます。claim と events は引き継ぎません。wall-clock のリースや孤児判定を汚染するからです。作業ブランチは新 run の `base` を旧ブランチへ差し替えて連鎖させます。
+auto-heal は世代交代ではありません。同じ run-id の中で failed node を pending に戻します。利用者の要求が変わっていないためです。
 
-一方、人が基準や指示を変更した新 run は done を引き継ぎません。古い前提で完了した工程を新しい計画へ混ぜないためです。要求文も検証計画も新世代のものを正にします。以前は旧 run の request をコピーしていたため、リトライの引き金になった差し戻しの指摘が再実行ノードに届かず、同じ失敗を繰り返していました。
+## 7. 計画とカスタマイズの境界
 
-安全条件は、先行 run が終端しているか孤児のときだけ触る、です。実行中でリースが有効な run にも、人が cancel した run にも触りません。削除の前に墓標（`inherited/<旧run-id>.json`）を残します。これが無いと、完走後の criterion fail でリトライされた run の記録がバスから即座に消え、viewer が二度と見られません。
+振る舞いを変える入力は、適用先の違いで分けます。
 
-auto-heal はこの世代交代を使いません。知識の更新を伴わないやり直し（transient の回復）が heal、知識の更新を伴うやり直し（差し戻しや criterion fail）が世代交代、という分担です。
+| 層 | 決めるもの | 例 |
+|---|---|---|
+| L1 graph の形 | どの工程をどう接続するか | user plan, pattern, planner output |
+| L2 分け方 | run 全体をどう分解するか | granularity, split policy, review, plan gate |
+| L3 指示文 | 選ばれた方針をどう伝えるか | method catalog, planner/worker skill |
+| L4 実行資源 | どの CLI、model、tier、予算で動かすか | execution overrides, agent-control |
 
-## 分散の規律
+同じ設定は CLI、inbox、config で同じ名前を使います。解決順は `CLI > inbox > config > default` です。CLI の値はその場の明示指示、inbox は run 単位の指示、config は node の既定だからです。
 
-### バスと転送層
+計画にだけ効く引数は `run` と `orchestrate` に置き、`work` や `doctor` では受理しません。未知の値も既定へ丸めず起動前にエラーにします。指定が無視されたまま run が進む状態を許さないためです。
 
-`Bus` はローカルディレクトリ実装で、`GitBus` がこれを継承してノードごとの専用クローンで pull / push します。実際の git 転送（ロック残骸からの回復、中断 rebase の後始末、電源断で壊れたオブジェクトの検知と作り直し）は `agentcore.transport.GitTransport` の唯一の実装で、agent-project の板リポジトリ操作と共有します。
+L3 では、選択は engine、文面は catalog が担当します。catalog が壊れている場合は組み込み文面へ戻ります。catalog の変更だけで `split_policy` の値や graph の意味を変えてはいけません。
 
-バスとは別に、状態の鏡だけを共有する `state_git` があります。実行はローカルのまま、`runs/` と `inbox/` を共有リポジトリへ双方向同期し、リモートの dashboard が進捗を読めるようにします。裁定は決定的で、人の投入口である `inbox/` はリモート優先、機械が書く `runs/` はローカル優先。run の実行と終端は state_git に依存せず、同期の失敗はログに残して続行します。
+## 8. 分散と外部 executor
 
-心拍は push まで含めて 1 単位です。git バスで書き換えたまま未コミットに残すと、`pull --rebase` が dirty な作業ツリーで失敗し続け、他ノードの結果を永久に取り込めません。生存リースは orchestrator 自身が張り、計画・評価・検証のようにメインスレッドが長く塞がる区間も別スレッドが同じ間隔で更新します。計画だけを守ると、既定 120 秒のリースより長い評価・検証を孤児と誤認するためです。
+### 8.1 Bus、GitBus、state_git
 
-### 板の入札選別
+`Bus` はローカルディレクトリを正典とします。`GitBus` は同じ配置を node ごとの管理 clone に置き、pull と push で共有します。graph や result の意味は transport に依存しません。
 
-「この公示に入札してよいか」の規則は `agentcore.board.eligible` の 1 実装に置き、agent-amigos と共有します。以前は同じ仕様を両者が別々に実装しており、片方だけ育つと同じ公示が経路によって拾えたり拾えなかったりしました。判定材料の正典は各 PC の `agent-project.host.yaml` で、agent-flow 設定は明示上書きです。
+GitBus の書き込みは path を書き手ごとに分け、push 競合を pull --rebase と再 push で吸収します。transport の clone、lock 残骸、rebase 中断、object 破損への対処は `agentcore.transport` が持ちます。agent-flow 側で別の git retry を増やしません。
 
-判定の向きは項目によって逆に倒します。公示が「要る」と言う条件（タグ・CLI・契約バージョン）は宣言の欠落で入札しない側に（fail-close）、ノードが「これしかやらない」と言う条件（`workloads`）は欠落で制限しない側に（fail-open）。要求を無視すると拾えないノードが拾い、制限を強制すると宣言していないノードが全部止まる。安全な倒し方が逆だからです。契約バージョンは完全一致・未記載は不問とし、契約に項目を足しただけで板に残っている公示が一斉に入札不能になる事態を避けます。
+`state_git` はローカル実行の観測用 mirror です。`runs/` はローカル優先、inbox は remote 優先の規則で同期します。実行可否や終端判定を state_git の成功に依存させません。
 
-取り込み済みかどうかは自分のバスではなく板の `status/` で判断します。同じ PC で 2 つのプロジェクトが同じ板を巡回する構成があり、自分のバスだけを見ると片方が取り込んだ直後の公示をもう片方が取り込むためです。枠の自己抑制も同じ理由で板の上の自分名義を数えます。ただし、自分名義の有効な入札がある公示は選別を問わず取り込みます。人が dashboard から「この端末で引き受ける」を押した意思表示は、自動入札の自己抑制より強いからです。名義の綴りは書きも読みも claim プロトコルと同じサニタイザで揃えます。かつて書きと読みで規則が割れており、非正規形の名義が入ると手動入札の受け皿が「押しても何も起きない」形で永久に効かなくなっていました。終端の読みだけは寛容にし、旧綴りの `canceled` も終端として数えます。読みは寛容・書きは正典のみ、という向きです。
+### 8.2 executor plugin の境界
 
-### 実行の事実は書き手が残す
+executor plugin が担当するのは worker node の実行です。計画、graph の健全化、静止判定、評価、再計画、run の最終化は engine 内に残します。plugin の障害や外部サービスの都合で graph の意味が変わらないようにするためです。
 
-claim の `<who>` には PC 名が入ります。2026-07-27 までは `worker-<i>` 固定で、共有バスに 2 台が参加すると両者が同一パスへ書きました。「ファイル名が衝突しない」という不変条件そのものの破れです。あわせて result には実行した PC（`node`）と実際に使ったエージェント（`agent_cli` / `model`）を書きます。実効解決は実行時にしか分からず、読み手に `who` の綴りを割らせたり設定から再解決させたりすると、名義や選定の 2 実装目が生まれるためです。
+未決着を返す plugin は `DeferDecision` 相当の signal で park できます。秘密を wait record に書かず、再確認に必要な token と公開可能な情報だけを残します。
 
-## ワークスペースと executor
+同梱の GitLab executor は互換用途です。通常の承認は human node または plan gate を使います。GitLab の issue 状態を run の制御面として必須にしません。
 
-1 つの run が書き込んでよいリポジトリはちょうど 1 つです。書込先を決めるのは agent-project で、agent-flow は渡されたワークスペースを厳格に守る側に徹します。エージェントは編集だけを行い、commit と push は agent-flow が行います。変更がなければ push しません。調査だけのグラフにブランチを作らないためです。
+## 9. 変更時に守る条件
 
-作業ツリーは、URL 単位のホスト共有 bare ミラーから detached worktree を生やして用意します。手元に同じリポジトリのクローンがあればそこから worktree を切り、ネットワークすら使いません。「手元のクローン」の宣言は `agent-project.host.yaml` の `repos[]` が正典です。共有レジストリにホスト固有の絶対パスを書くと状態同期で全 PC へ配られてしまうため、そこには書けません。
+### 9.1 不変条件
 
-書込 workspace に作業ブランチと別の target がある場合は、system node `base-sync` を先頭へ置き、全 root をその完了後に開始します。競合時だけ worker に競合ファイルの編集を任せ、履歴操作は渡しません。競合解消に失敗した run は成果修正へ再計画せず、integration failure として終端します。ブランチ単体で良くできた成果でも、target を含まない形で直しようがないからです。
+- node state は `Bus.node_state()` だけで導出する。表示側や executor に別の状態機械を作らない
+- graph と task の更新は orchestrator の経路を通し、変更理由を event に残す
+- result は実行時に解決した事実を持つ。読み手に設定の再解決をさせない
+- `done` result と公開済み commit は retry、auto-heal、世代交代で失わない
+- すべての retry、replan、resume、heal、fan-out に停止条件を持たせる
+- cancel は `cancelled` で終端し、auto-heal や孤児回収で再開しない
 
-executor はタスクを実際に実行するバックエンドで、組み込み（agent / stub）以外は動的ロードします。再計画の判断だけは executor に委譲しません。プラグインに委ねるのはワーカータスクの実行だけで、メタ評価は手元に残す、という線引きです。worker の入力は契約で絞ります。依存成果は既定で要約 digest に畳みますが、依存成果そのものが判断の対象である役割（verify / reduce / synthesize / judge / filter）は既定で全文です。要約を渡すと判断の対象が消え、とりわけ verify が 600 字の要約で pass/fail を決める形は品質ゲートとして成立しません。
+### 9.2 変更箇所ごとの確認
 
-同梱の `gitlab` プラグインは、この executor 契約の最初の利用者でした。当時は「人へ委譲する」の主経路として設計しましたが、現在は推奨しません。承認を挟みたいだけなら `human` ノードと plan gate で足り、そちらは外部サービスもトークンも要らないからです。プラグインは互換のために残していて、リモートの他者へイシューとして作業を渡す構成でだけ選んでください。park & poll・`DeferDecision`・`on_cancel` フックといった機構自体は executor 非依存で、gitlab はその 1 実装にすぎません。
+| 変更 | 確認する範囲 |
+|---|---|
+| bus path / node state | `bus.py`, GitBus 同期、仕様書 §3.7、分散 claim test |
+| planner / pattern / graph | `patterns.py`, `orchestrate.py`, graph sanitize、user plan、event 差分 |
+| executor | `plugins.py`, `work.py`, park、failure class、result の実効値 |
+| workspace / publication | commit failure、non-fast-forward、recovery ref、manual recovery、terminal status |
+| verification | terminal verify と verification plan を混同していないか、receipt の再利用条件 |
+| recovery | done 温存、retry 予算の二重消費、cancel と superseded の除外 |
+| fragment 構成 | `_FRAGMENTS` 順、共有 global、CLI 起動、monkey patch を使う既存 test |
 
-## 決着済みの判断
+外部契約を変えた場合は、実装だけでなく[仕様書](../specs/agent-flow-spec.md)と `tools/agent-flow/tests/` の契約 test を同じ変更に含めます。
 
-**ハングは lease ではなく task timeout で守る**（2026-06-14 採用）。lease と心拍はプロセスの生存を伝える信号で、タスクの進捗を伝える信号ではありません。心拍は別スレッドで鳴るので、メインスレッドが `subprocess.run` でブロックしていても lease は延び続け、孤児回収は永久に発動しません。lease に上限を設ける案は正当に長いタスクを誤って横取りし、ハングしたプロセスを kill もしません。採ったのは `run_agent` の subprocess タイムアウトで、用途別の解決順は[仕様書 §2.5](../specs/agent-flow-spec.md) にあります。超過したタスクは transient タグ付きで失敗させ、レイヤ 1 に載せます。stdout のバイト流量で心拍をゲートする案（真の進捗連動）は筋が良いものの、タスクが元々 LLM 1 コールで有界な現状では複雑さに見合わないと判断しました。
+## 付録 A. ADR
 
-**run 内のステップは PC 間に分散させない**（2026-07-27 既定）。配る単位は run のままで、グラフの中のステップを他 PC が拾いに来る経路は持ちません。下地（ノード単位の claim と決定的タイブレーク）は実装済みですが、それを駆動する主体を置かない、という判断です。理由は 4 つ。実行はローカル・共有するのは状態の鏡だけ、という公理と正面から衝突すること。バスの claim には板の入札選別が一つも無いので、板を唯一の PC 間分配経路とする契約を迂回する第 2 の分配機構になること。公平なタスク分配がそもそも非目標であること。既定のエージェント CLI の月間上限は 1 台が踏んだ時点で run 全体を失敗終端させるので、同じアカウントを使う限り PC を増やしても実行総量が増えないことです。入れるなら、ステップを板の公示として出して入札選別を通す形なら契約は 1 本のまま保てます。契機は「1 台の `workers` × 枠では実際に足りない」実測で、実行した PC を結果に書くようになったので、この実測自体は取れます。
+### ADR-001 バス上のファイルを共有状態とし、node state を導出する
 
-**ワークフロースクリプトの動的生成は採用しない**（2026-06-13 採用）。公式の Dynamic Workflows は LLM がタスク専用のコードハーネスを生成して実行しますが、agent-flow は宣言的なタスクグラフと継続ルールとデータ駆動 fan-out で同等の動的性を、コードを実行せずに表現しています。LLM 生成コードの実行は任意コード実行そのものであること、プロセス内 spawn 型のハーネスは claim とリースと複数 PC に乗らないこと、走るスクリプトは中断再開と監査ができないことが理由です。表現力が足りなくなったら、まず宣言的語彙の拡張（条件付きエッジ、新しい kind）で対応します。実際、kind は当初の 10 種から `extract` / `retrieve` / `human` を足した 13 種へ、この方針のまま広がっています。
+- 状態：採用
+- 判断：プロセス間の情報はバス上のファイルで交換し、node state は result、claim、wait、task の存在から導出する
+- 文脈：実行 node は同時に書き込み、git 同期には CAS も全順序もない
+- 見送った案：中央 queue server、RPC、共有 status file、event replay による現在状態
+- 代償：git 同期ぶんの遅延と、node 数に比例する filesystem access が発生する
+- 見直し条件：実運用の node 数で stat または git 往復が支配的になり、file contract を保ったまま改善できない場合
+- 確信度：高い
 
-**tier ごとの実行可能性はエンジンで強制しない**（2026-08-12 採用）。前掲「tier 補償」のとおり、カタログは管理面の 1 実装に置き、エンジンは plan の tier を保持・引き継ぎ・記録するだけです。
+### ADR-002 claim は名義別ファイルと決定的 tie-break で決着する
 
-**設定キーが「効く」ことは機械に見張らせる**（2026-08-22 採用）。agent-project は「`CONFIG_DEFAULTS` にキーはあるのに誰も読まない」欠落を 3 度踏んでいます（[agent-project 設計書](./agent-project-design.md) の同名の項）。読み手が `getattr(args, key, 既定)` で庇うので例外も出ず、設定が黙って無効のまま動き続けます。agent-flow は同じ形の `CONFIG_DEFAULTS` + argparse namespace を持つので、踏んでいなくても同じ穴が空いています。予防として消費検査（`tests/test_config.py` の `ConfigKeyConsumptionTests`）を先に置きました。現時点で除外は 0 件です——**除外表が空であること自体がこの検査の価値**で、埋まり始めたら「設定できると書いてあるのに効かないもの」が増えている合図になります。
+- 状態：採用
+- 判断：claim は `<node-id>/<who>.json` に分け、lease 内の `(ts, who)` 最小を勝者とする
+- 文脈：別 clone からの同時書き込みでは、双方が一時的に自分を先着と観測できる
+- 見送った案：push の non-fast-forward を lock に使う、ホスト間 file lock、単一 claim file の上書き
+- 代償：勝敗確定まで同期を 1 往復待つ。同じ claim 集合を見るまでは一時的な見え方が異なる
+- 見直し条件：transport が分散 CAS を正式な契約として提供し、その障害時動作も file bus より単純になる場合
+- 確信度：高い
+
+### ADR-003 agent-flow は常駐せず、run を分散単位にする
+
+- 状態：採用
+- 判断：`participate` は受理 1 巡、`run` は 1 run の完走に限定する。周期駆動は `agent-project serve` が担当する
+- 文脈：各 engine が独自 daemon を持つと、生存監視、更新、掃除、実行枠が重複する
+- 見送った案：agent-flow 専用 daemon の維持、run の待機ループへの全体 tick の同居、graph node の複数 PC scheduler
+- 代償：呼び出し元が受理した run-id を起動し、実行中 id を次回の `participate` に渡す必要がある
+- 見直し条件：agent-project 以外の正式な supervisor が必要になり、共通 lifecycle 契約を先に定義できた場合
+- 確信度：高い
+
+### ADR-004 失敗種別ごとに回復層を 1 つ決める
+
+- 状態：採用
+- 判断：transient は呼び出し内、format は契約修復、content は graph、継続する transient は run auto-heal で扱う
+- 文脈：全失敗を再計画へ上げると、環境障害で node ごとの retry 予算と LLM 呼び出しを消費する
+- 見送った案：各呼び出し元に独立 retry loop を置く、failed run を分類せず再開する、別 worker への即時付け替え
+- 代償：failure class の誤判定が回復先を変える。各層の上限を合わせた最悪時間の確認が必要になる
+- 見直し条件：実測で failure class の誤判定が回復率を下げる、または層をまたぐ予算管理が必要になった場合
+- 確信度：高い
+
+### ADR-005 カスタマイズを graph、分け方、文面、実行資源に分ける
+
+- 状態：採用
+- 判断：L1 から L4 の適用先を分け、同じ設定名と `CLI > inbox > config > default` の解決順を使う
+- 文脈：形、分解、prompt、model を同じ override に入れると、どの段階で効く値かを各呼び出し元が再判定することになる
+- 見送った案：全指定を `execution_overrides` に集約する、層ごとに別の命名規則と優先順位を設ける
+- 代償：pattern のように L1 と L2 の両方へ影響する指定は完全には直交しない。CLI 明示値と default の区別も必要になる
+- 見直し条件：既存 4 層のどこにも置けない run parameter が現れ、例外規則が増え始めた場合
+- 確信度：中程度
+
+## 付録 B. 採用していない実行形
+
+- LLM が Python や shell の workflow script を生成し、そのまま実行する形は持たない
+- graph node を PC 間へ公平に配る scheduler は持たない。run 単位で受理する
+- CI の赤を自動で graph repair へ戻さない。CI は公開後の記録として取り込む
+- terminal verify がない run に暗黙の verify node を追加しない。必要な gate は plan または planner が明示する
+- state_git を実行バスや完了条件として使わない

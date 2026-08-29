@@ -20,6 +20,7 @@ const globalInstructions = require('../../orchestration/main/instructions');
 const sessionCommands = require('../../orchestration/main/sessionCommands');
 const profiles = require('../../orchestration/main/profiles');
 const agentCli = require('../../agent-project/main/agentCli');
+const herdFamily = require('../../orchestration/main/herd-family');
 
 // 設定に書かれたフォルダ表記を、このビュアーで開けるパスへ揃える（discover と同じ規則）。
 // WSL の Linux 絶対パスは Windows ビュアーでは UNC へ翻訳する（そうしないと C:\home\… に化ける）。
@@ -1115,7 +1116,7 @@ function runStateMachine(config, itemIdValue, parameters, tier = '') {
     args = ['send', legacy];
   }
   const selected = resolveRoutineAgent(config, cwd, tier);
-  if (needsHeadlessHarness(selected.spec)) {
+  if (needsStateMachineHarness(selected.spec)) {
     if (Array.isArray(item.args)) throw new Error('明示 args の定型業務は headless 実行に対応していません');
     const workflowPath = stateMachineFilePath(item, item.repo || item.cwd || cwd, config);
     if (!workflowPath) throw new Error('workflow.yaml の場所を特定できません');
@@ -1133,7 +1134,7 @@ function runStateMachine(config, itemIdValue, parameters, tier = '') {
         cwd,
         sessionKey: selected.cli,
         title: '定型業務を実行',
-        message: '別ウィンドウ（tmux）で Aider ステートマシン実行を開始しました',
+        message: `別ウィンドウ（tmux）で ${selected.cli} のステートマシン実行を開始しました`,
       });
       recordRun(cfg, { ...item, type: 'state-machine' }, res);
       return res;
@@ -1278,6 +1279,36 @@ function needsHeadlessHarness(spec) {
   // JS ローダ（agentCli.js）は camelCase へ正規化する。定義ファイルの綴りは
   // headless_autonomy だが、ここへ来る spec は正規化済みなので headlessAutonomy。
   return String(spec.headlessAutonomy || 'single-shot') === 'single-shot';
+}
+
+// 定型業務（ステートマシン）だけは、上の判定に **agent-herd 一族** を足す。
+//
+// ペインへ送る本文が違うからである。定期プロンプトとアドホックが送るのは人が書いた
+// 指示文そのもので、どの CLI でも「読んで答える」で意味を成す。対して定型業務が送るのは
+// 起動文——`statemachine-use スキルで◯◯ステートマシンを実行して`——で、これを実行に
+// 変えられるのは**自然文からスキルを見つけて自分で回すクラウド CLI だけ**である。
+// 一族（ollama / aider）の対話面は我々の共通 TUI で、そのコマンド語彙は agentcore の
+// ルート表（`/sm` `/edit` …）であり、スキルの解決は先頭の `/名前` しか見ない
+// （`ollama_skills`）。起動文は本文として推論へ流れ、モデルが「実行できません」と
+// 答えて終わる（2026-08-29 に踏んだ）。
+//
+// `headless_autonomy` では弁別できない。ollama の `tool-loop` はヘッドレスの argv
+// （`--tools bash`）についての申告で、TUI は道具なしで起きるからである。
+// ハーネスへ回した結果は `/sm` を対話で打ったときと同じ実行になる（agent-herd 設計
+// 2026-08-27 §7.5）。違うのは経路が 1 段短いことと、dashboard が読む RESULT 契約が
+// 残ることだけである。
+function needsStateMachineHarness(spec) {
+  return needsHeadlessHarness(spec) || isHerdFamily(spec);
+}
+
+// 一族の判定は herd-family.js と同じ機械的な規則——`command[0]` が `agent-herd` の定義が
+// 一族である（family フィールドを足さない）。対話の起動も同じ入口を踏むので、どちらの
+// 綴りで書かれていても拾う。
+function isHerdFamily(spec) {
+  if (!spec) return false;
+  const commands = [spec.command, spec.interactive && spec.interactive.command];
+  return commands.some((argv) => Array.isArray(argv)
+    && String(argv[0] || '').trim() === herdFamily.HERD_ENTRYPOINT);
 }
 
 // 定常業務の tmux 実行で使う対話 CLI の一式（S9-3）。
@@ -1704,6 +1735,8 @@ module.exports = {
   inspectCoworkRoot, setCoworkRoot,
   templateParameterKeys, stateMachineInputSpec, stateMachineFilePath, resolveLoopAcceptance,
   needsHeadlessHarness,
+  needsStateMachineHarness,
+  isHerdFamily,
   routineParameterSpec, validateParameters, applyParameters, stateMachineParameterBlock,
   stateMachineHarnessArgs, harnessWorkflowArg,
 };

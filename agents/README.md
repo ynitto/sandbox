@@ -122,6 +122,12 @@ chat モードのように、人が `/skill-name` と書いたテキストを送
 | `aider.json` | `agent-aider`（aider + ollama_chat） | enforced（`--dry-run`）。single-shot——渡されたファイルを編集するだけでツールループを持たない |
 | `vscode-copilot.json` | `vscode-copilot-chat`（VS Code の Language Model API へ橋渡し） | enforced（モデルを呼ぶだけでファイルもコマンドも触らない）。single-shot——ツールを持たないので呼び出し側がループを供給する |
 
+**ローカルが 2 つある理由（結論: 選ばなくてよい）。** `aider` と `ollama` は、15 用途
+（verify / judge / extract / retrieve / split …）についてはどちらを base にしても同じ
+`ollama` profile へ振り替わる。分かれるのは**編集・実装を誰がやるか**の 1 点だけで、
+そこは実測が `aider`（T2/T4 9/9）を選んでいる。よって **base は `aider` に置けばよく、
+用途別の振り替えは宣言が全部やる**。`agent-herd defs` がこの分担を 1 行で出す。
+
 opencode の定義は同梱を外した（このハードでは成立しないことが実測済み。設計:
 docs/plans/2026-08-27 設計 §6）。使う人は `agents/opencode.json` を自分で置けば
 従来どおり定義経由で呼べる（探索順 1・2 がユーザー定義を先勝ちにする）。

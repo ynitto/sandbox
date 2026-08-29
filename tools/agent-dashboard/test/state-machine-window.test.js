@@ -229,6 +229,46 @@ async function main() {
       '受入条件は設定から解決して 1 件ずつ渡す');
   });
 
+  await test('定型業務で ollama が選ばれたら、スキル発動文ではなくハーネスへ渡す', async () => {
+    // 2026-08-29 の回帰: 実行レベル「単純作業」（ollama / gemma4:e4b）で今すぐ実行すると、
+    // 共通 TUI のペインへ「statemachine-use スキルで…」が送られ、モデルが
+    // 「実行できません」と答えて終わっていた。TUI のコマンド語彙は `/sm` で、自然文の
+    // 起動文からスキルを解決する仕組みは持たない。
+    const smRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'dashboard-sm-herd-'));
+    fs.mkdirSync(path.join(smRepo, '.statemachine', 'digest'), { recursive: true });
+    fs.writeFileSync(path.join(smRepo, '.statemachine', 'digest', 'workflow.yaml'), [
+      'name: ダイジェスト',
+      'initial_state: start',
+      'states:',
+      '  start:',
+      '    action: 要約する',
+      '    terminal: true',
+      'transitions: []',
+      '',
+    ].join('\n'));
+    const controlDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dashboard-sm-herd-ctl-'));
+    fs.writeFileSync(path.join(controlDir, 'control.json'), `${JSON.stringify({
+      version: 1, revision: 1,
+      workloads: { routine: { agent_cli: 'ollama', model: 'gemma4:e4b' } },
+    })}\n`);
+    const config = {
+      orchestration: { controlDir },
+      cowork: {
+        loopCommand: 'echo',
+        runWindow: false,   // 引数の組み立てを見る（窓を開く経路は上のテスト）
+        items: [{ id: 'sm1', type: 'state-machine', name: 'ダイジェスト', workflow: 'digest', repo: smRepo }],
+      },
+    };
+    const res = await cowork.runStateMachine(config, 'sm1', {});
+    assert.strictEqual(res.ok, true, res.error || res.stderr);
+    assert.strictEqual(res.stdout.trim().split(' ')[0], 'statemachine',
+      'ハーネスのサブコマンドへ渡す（send ではない）');
+    assert.ok(res.stdout.includes('--workflow .statemachine/digest/workflow.yaml'));
+    assert.ok(res.stdout.includes('--agent-cli ollama'), '段で解決した CLI を明示する');
+    assert.ok(res.stdout.includes('--model gemma4:e4b'), 'モデルもその回だけ明示する');
+    assert.ok(!res.stdout.includes('スキル'), 'ペインへ送る発動文は組み立てない');
+  });
+
   test('ハーネスへ回すかは headless_autonomy で決める（interactive の有無で代理しない）', () => {
     // 対話面を提供するか（interactive）と、自分で探索・実行まで回せるか（headless_autonomy）は
     // 別の宣言である。両者を同じフラグで表すと、aider のように「対話もできるが
@@ -248,6 +288,32 @@ async function main() {
     // 未宣言は安全側（＝従来どおりハーネス）
     assert.strictEqual(f({ interactive: { command: ['x'] } }), true, '未宣言は single-shot 扱い');
     assert.strictEqual(f(null), true, 'spec が無ければハーネス');
+  });
+
+  test('定型業務は agent-herd 一族もハーネスへ回す（tool-loop の申告でも）', () => {
+    // 一族の対話面は共通 TUI で、コマンド語彙は agentcore のルート表（`/sm`）である。
+    // ここをペインへ倒すと、この画面が送る起動文「statemachine-use スキルで…」が本文と
+    // して推論へ流れ、モデルが「実行できません」と答えて終わる（2026-08-29 に踏んだ）。
+    const { loadCli } = require('../src/features/agent-project/main/agentCli.js');
+    const root = path.join(__dirname, '..', '..', '..');
+    const ollama = loadCli('ollama', root);
+    assert.strictEqual(ollama.headlessAutonomy, 'tool-loop', 'ヘッドレスは自分でツールを回す');
+    assert.ok(ollama.interactive, 'ollama.json に interactive がある（CLIチャットのため）');
+    assert.strictEqual(cowork.isHerdFamily(ollama), true, 'command[0] が agent-herd なら一族');
+    assert.strictEqual(cowork.needsStateMachineHarness(ollama), true,
+      '一族の定型業務は対話送信ではなくハーネスで回す');
+    // 送る本文が違うので、定期プロンプト・アドホックの経路は変えない（人が書いた指示文は
+    // どの CLI でも意味を成す）。
+    assert.strictEqual(cowork.needsHeadlessHarness(ollama), false,
+      '定期プロンプトは従来どおり対話ペインで起こす');
+    // クラウド CLI は巻き込まない（自然文からスキルを見つけて自分で回せる）。
+    const claude = loadCli('claude', root);
+    assert.strictEqual(cowork.isHerdFamily(claude), false);
+    assert.strictEqual(cowork.needsStateMachineHarness(claude), false);
+    // 綴りだけで判定する（宣言に family フィールドを足さない）。
+    assert.strictEqual(cowork.isHerdFamily({ command: ['agent-herd', 'ollama'] }), true);
+    assert.strictEqual(cowork.isHerdFamily({ command: ['claude'], interactive: { command: ['agent-herd', 'x'] } }), true);
+    assert.strictEqual(cowork.isHerdFamily({ command: ['kiro-cli'] }), false);
   });
 
   test('aider は interactive を持っていてもハーネス経路のまま（回帰の固定）', () => {
