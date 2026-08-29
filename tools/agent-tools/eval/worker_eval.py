@@ -48,6 +48,12 @@ NUM_PREDICT = 0             # --num-predict で上書き（0 = 上限なし。ai
 NUM_CTX = 0                 # --num-ctx で上書き（0 = Aider / model の既定）
 SAMPLING: dict = {}         # --temperature / --top-p / --top-k で上書き（空 = 宣言しない）
 RESAMPLE = 1                # --resample で上書き（1 = 引き直さない＝従来と同一の道）
+# 実行方針（ハーネス構成）の腕。**台帳の軸として必ず残す**——呼び出しの形やプロンプトを
+# 変えた測定を、変える前の数字と同じ表に並べないための識別子である（agent-herd 設計
+# 2026-08-27 §9 の段 12・13、制限付き実行案 §3.5 と同じ軸名）。
+# 値は「名前だけ」にしない: 名前ごとに**実際に効く設定**を持ち、名前が挙動を説明する。
+HARNESS = "default"
+HARNESS_COMMANDS_DIR = ""   # templates:<dir> の腕が使う宣言ディレクトリ
 AIDER_VERSION = None
 OLLAMA_API_BASE = os.environ.get("OLLAMA_API_BASE", "http://127.0.0.1:11434")
 WALL_LIMIT = 600.0          # agent-flow の agent_timeout 既定
@@ -1145,7 +1151,9 @@ def invoke(step: dict, wt: Path) -> "tuple[int, str, str, float]":
     started = time.time()
     try:
         p = subprocess.run(argv, input=prompt, cwd=wt,
-                           env={**os.environ, "OLLAMA_API_BASE": OLLAMA_API_BASE},
+                           env={**os.environ, "OLLAMA_API_BASE": OLLAMA_API_BASE,
+                                **({"AGENT_COMMANDS_DIR": HARNESS_COMMANDS_DIR}
+                                   if HARNESS_COMMANDS_DIR else {})},
                            capture_output=True, text=True, timeout=WALL_LIMIT)
         rc, out, err = p.returncode, p.stdout, p.stderr
     except subprocess.TimeoutExpired as exc:
@@ -1289,6 +1297,9 @@ def run_one(tid: str, i: int) -> dict:
     tokens_in = sum(call["tokens_in"] for call in token_calls) if token_calls else None
     tokens_out = sum(call["tokens_out"] for call in token_calls) if token_calls else None
     rec = dict(task=tid, family=task["family"], iter=i, cli=CLI, model=MODEL,
+               # 実行方針の腕。呼び出しの形（設計 段 12）とプロンプト（段 13）は
+               # ここが同じでなければ比べられない。既定は "default"。
+               harness=HARNESS,
                aider_version=AIDER_VERSION,
                # 参照材料の渡し方（案 2 の腕）。whole / slice / none。無指定の課題は null。
                read_mode=task.get("read_mode"),
@@ -1324,7 +1335,7 @@ def run_one(tid: str, i: int) -> dict:
 
 def main() -> None:
     global WALL_LIMIT, MODEL, CLI, AGENT_POLICY, NUM_CTX, NUM_PREDICT, SAMPLING
-    global RESAMPLE, AIDER_VERSION
+    global RESAMPLE, AIDER_VERSION, HARNESS, HARNESS_COMMANDS_DIR
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default=MODEL,
                     help="測るモデル。別モデルの判定はここだけ変えればよい")
@@ -1350,6 +1361,9 @@ def main() -> None:
     ap.add_argument("--top-p", type=float, default=None, help="nucleus sampling。同上")
     ap.add_argument("--top-k", type=int, default=None, help="top-k sampling。同上")
     # 引き直し（best-of-N）。採択は決定的ゲートだけが行い、全滅したときだけ escalate。
+    ap.add_argument("--harness", default=HARNESS, metavar="ARM",
+                    help="実行方針の腕。default（現行）| templates:<宣言ディレクトリ>"
+                         "（段 13 のプロンプト差し替え）。台帳の harness 軸に残る")
     ap.add_argument("--resample", type=int, default=RESAMPLE, metavar="N",
                     help="ゲート付き手順を最大 N 回まで引き直す（既定 1 = 引き直さない）。"
                          "再投入を使い切ってから作業ツリーを戻して独立に抽選し直す")
@@ -1372,6 +1386,24 @@ def main() -> None:
         raise SystemExit("--agent-policy は aider 経路のみです")
     if NUM_CTX < 0 or NUM_PREDICT < 0:
         raise SystemExit("--num-ctx / --num-predict は 0 以上で指定してください")
+    HARNESS = str(args.harness or "default").strip()
+    if HARNESS != "default":
+        # 腕は**名前だけにしない**。名前が実際の設定を指していないと、条件の違う数字が
+        # 同じ harness 値で台帳に並ぶ——軸を足した意味が消える。
+        if not HARNESS.startswith("templates:"):
+            raise SystemExit(f"知らない --harness です: {HARNESS}"
+                             "（default | templates:<宣言ディレクトリ>）")
+        HARNESS_COMMANDS_DIR = HARNESS.split(":", 1)[1].strip()
+        if not HARNESS_COMMANDS_DIR or not os.path.isdir(HARNESS_COMMANDS_DIR):
+            raise SystemExit(f"--harness templates: の宣言ディレクトリがありません: "
+                             f"{HARNESS_COMMANDS_DIR!r}")
+        HARNESS_COMMANDS_DIR = os.path.abspath(HARNESS_COMMANDS_DIR)
+        if CLI == "aider":
+            # aider は自前のシステムプロンプトで走るので、我々のテンプレート宣言は
+            # 1 バイトも効かない。効かない条件に別の腕名を付けると、同じ実行が 2 つの
+            # 腕として台帳に並ぶ。
+            raise SystemExit("--harness templates: は agent-ollama 経路のみです"
+                             "（aider は自前のシステムプロンプトで走ります）")
     RESAMPLE = args.resample
     if RESAMPLE < 1:
         raise SystemExit("--resample は 1 以上で指定してください")

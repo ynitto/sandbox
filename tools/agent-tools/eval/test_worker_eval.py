@@ -483,3 +483,34 @@ class TextTaskCheckerTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HarnessArmTests(unittest.TestCase):
+    """実行方針の腕は名前だけにしない（agent-herd 設計 2026-08-27 §9 段 12・13）。
+
+    名前が実際の設定を指していないと、条件の違う数字が同じ `harness` 値で台帳に並ぶ。
+    起動時に断るところまでが軸の一部である。
+    """
+
+    def _run(self, *args):
+        return subprocess.run(
+            [sys.executable, str(pathlib.Path(__file__).parent / "worker_eval.py"),
+             "--tasks", "T2gate", *args],
+            capture_output=True, text=True, timeout=60)
+
+    def test_an_unknown_arm_is_refused(self):
+        done = self._run("--harness", "nope")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("知らない --harness", done.stdout + done.stderr)
+
+    def test_a_templates_arm_needs_an_existing_directory(self):
+        done = self._run("--harness", "templates:/no/such/dir")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("宣言ディレクトリがありません", done.stdout + done.stderr)
+
+    def test_templates_do_not_apply_to_aider(self):
+        """aider は自前のシステムプロンプトで走る——効かない条件に腕名を付けない。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            done = self._run("--cli", "aider", "--harness", f"templates:{tmp}")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("agent-ollama 経路のみ", done.stdout + done.stderr)

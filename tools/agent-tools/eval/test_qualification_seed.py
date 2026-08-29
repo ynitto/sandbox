@@ -93,3 +93,43 @@ class SeedTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HarnessAxisTests(unittest.TestCase):
+    """格付けに使うのは現行の実行方針で取った行だけ（設計 2026-08-27 §9 段 12・13）。
+
+    呼び出しの形やプロンプトを変えた腕の行が同じ表へ混ざると、条件の違う数字が 1 つの
+    success_rate へ畳まれ、出力からは見分けが付かない。
+    """
+
+    def _ledger(self, rows):
+        import json
+        import tempfile
+        tmp = tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False,
+                                          encoding="utf-8")
+        self.addCleanup(os.unlink, tmp.name)
+        with tmp:
+            for row in rows:
+                tmp.write(json.dumps(row, ensure_ascii=False) + "\n")
+        return Path(tmp.name)
+
+    def test_rows_without_the_axis_are_the_current_arm(self):
+        """軸を足す前の記録は現行方針。後方互換で落とさない。"""
+        path = self._ledger([{"task": "T2gate", "ok": True}])
+        self.assertEqual(len(qualification_seed._records(path)), 1)
+
+    def test_other_arms_are_excluded_and_announced(self):
+        import contextlib
+        import io
+        path = self._ledger([
+            {"task": "T2gate", "ok": True},
+            {"task": "T2gate", "ok": False, "harness": "templates:/x"},
+            {"task": "T2gate", "ok": True, "harness": "default"},
+        ])
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            rows = qualification_seed._records(path)
+        self.assertEqual(len(rows), 2, "現行方針の 2 行だけを残す")
+        # 黙って間引かない——少ない samples の理由が読めなくなる。
+        self.assertIn("templates:/x", err.getvalue())
+        self.assertIn("1 行", err.getvalue())

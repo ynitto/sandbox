@@ -13,6 +13,7 @@ import datetime as dt
 import json
 import math
 import statistics
+import sys
 from pathlib import Path
 
 
@@ -47,6 +48,13 @@ def _stamp(value: dt.datetime) -> str:
     return _utc(value).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+# 格付けに使ってよいのは**現行の実行方針で取った行だけ**である（agent-herd 設計
+# 2026-08-27 §9 の段 12・13）。呼び出しの形やプロンプトを変えた腕の行が同じ表に混ざると、
+# 別条件の数字が 1 つの success_rate へ畳まれ、しかも出力からは見分けが付かない。
+# `harness` を持たない行は軸を足す前の記録＝現行方針なので、そのまま受ける（後方互換）。
+DEFAULT_HARNESS = "default"
+
+
 def _records(path: Path) -> list[dict]:
     rows = []
     with path.open(encoding="utf-8") as handle:
@@ -55,7 +63,17 @@ def _records(path: Path) -> list[dict]:
                 value = json.loads(line)
                 if isinstance(value, dict):
                     rows.append(value)
-    return rows
+    kept = [row for row in rows
+            if str(row.get("harness") or DEFAULT_HARNESS) == DEFAULT_HARNESS]
+    dropped = len(rows) - len(kept)
+    if dropped:
+        # 黙って間引かない。落とした数と腕を言わないと、少ない samples が
+        # 「そもそも測っていない」のか「別方針の行を外した」のか読めない。
+        arms = sorted({str(row.get("harness")) for row in rows
+                       if str(row.get("harness") or DEFAULT_HARNESS) != DEFAULT_HARNESS})
+        print(f"[qualification-seed] {path.name}: 実行方針が現行でない {dropped} 行を"
+              f"格付けから外しました（腕: {', '.join(arms)}）", file=sys.stderr)
+    return kept
 
 
 def _wilson_lower(passed: int, samples: int) -> float:
