@@ -37,7 +37,7 @@ argv = command + (write_args | readonly_args) + no_session_args? + spill.args?
 
 | フィールド | いつ付くか |
 |---|---|
-| `relative_cost` | 「より安い候補」を決める無次元値（ローカル=0、通常クラウド=1）。**定義単位なのでモデル単位の差は表せない**——`opencode` のようにプロバイダを `--model provider/model` で切り替える CLI では、その定義でふだん使う経路の値を書く（この repo ではローカル ollama 向けなので 0）。モデル別の実効単価が要るようになったら、実測（agent-audit の格付け）を根拠に別途足す |
+| `relative_cost` | 「より安い候補」を決める無次元値（ローカル=0、通常クラウド=1）。**定義単位なのでモデル単位の差は表せない**——`opencode` のようにプロバイダを `--model provider/model` で切り替える CLI では、その定義でふだん使う経路の値を書く。モデル別の実効単価が要るようになったら、実測（agent-audit の格付け）を根拠に別途足す |
 | `write_args` | 既定モード（act・plan・charter 生成など書き込みを伴う実行） |
 | `readonly_args` | 読み取り専用モード（Doctor・構造化 Assist・対話診断） |
 | `no_session_args` | 使い捨て実行（診断）。セッション永続化を切る |

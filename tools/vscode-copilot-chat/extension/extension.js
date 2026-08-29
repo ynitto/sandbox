@@ -82,7 +82,11 @@ async function askCopilot(body, cancellationToken, onDelta) {
     text += fragment;
     if (onDelta) onDelta(fragment);
   }
-  return { text, model: { id: model.id, family: model.family, name: model.name } };
+  return { text, model: describeModel(model) };
+}
+
+function describeModel(model) {
+  return { id: model.id, family: model.family, name: model.name };
 }
 
 // NDJSON: {"delta":"..."} を流し、最後に {"done":true,"model":{...}}。最初の 1 片を書くまでは
@@ -134,18 +138,45 @@ function serializablePart(value) {
   }
 }
 
+// prompt-tsx の直列化形（PromptElementJSON）から本文を拾う。要素ノードは children を
+// 持ち、テキストノードは `text` を持つ。各 text は自分の改行を含むので、出現順に
+// 連結すれば元の本文が戻る（lineBreakBefore を見て改行を足すと二重になる）。
+//
+// 降りるのは children と node だけにする。木を無差別に舐めると references の中など
+// 本文でない場所の text まで拾いうる。
+function collectText(node, out) {
+  if (Array.isArray(node)) {
+    for (const child of node) collectText(child, out);
+    return;
+  }
+  if (!node || typeof node !== 'object') return;
+  if (typeof node.text === 'string') out.push(node.text);
+  if (node.children) collectText(node.children, out);
+  if (node.node) collectText(node.node, out);
+}
+
 function toolResultToJson(result) {
-  const content = ((result && result.content) || []).map(part => {
-    if (typeof part.value === 'string') return { type: 'text', value: part.value };
+  const content = [];
+  const texts = [];
+  for (const part of (result && result.content) || []) {
+    if (typeof part.value === 'string') {
+      content.push({ type: 'text', value: part.value });
+      texts.push(part.value);
+      continue;
+    }
     // prompt-tsx などの非テキスト部品。種別だけ残して捨てると「成功したのに空」と
     // 見分けが付かないので、JSON にできる範囲で中身も返す（--json で読める）。
     const value = serializablePart(part.value);
-    return value === undefined ? { type: 'other' } : { type: 'other', value };
-  });
-  return {
-    content,
-    text: content.filter(part => part.type === 'text').map(part => part.value).join(''),
-  };
+    if (value === undefined) {
+      content.push({ type: 'other' });
+      continue;
+    }
+    const collected = [];
+    collectText(value, collected);
+    if (collected.length) texts.push(collected.join(''));
+    content.push({ type: 'other', value });
+  }
+  return { content, text: texts.join('') };
 }
 
 // 任意のツールを名前で呼ぶ。スキーマは VS Code が持っていて invokeTool が検証するので、
@@ -168,10 +199,106 @@ async function invokeToolByName(body, cancellationToken) {
   return toolResultToJson(result);
 }
 
+const DEFAULT_MAX_ROUNDS = 12;
+
+// 使うツールは呼び出し側が名前で指定する。ここは vscode.lm.tools に居るものだけを
+// 通す——居ない名前を黙って捨てると「頼んだ道具を使わないエージェント」になる。
+function resolveTools(names) {
+  return (names || []).map(name => {
+    const info = vscode.lm.tools.find(tool => tool.name === name);
+    if (!info) throw badRequest(`tool not registered in vscode.lm.tools: ${name}`);
+    return { name: info.name, description: info.description, inputSchema: info.inputSchema };
+  });
+}
+
+// モデルにツールを持たせて回す。ツール本体も承認も VS Code のものを使い、ここが持つのは
+// 「どのツールを呼ぶか決めさせて、結果を返して、また訊く」というループだけ。
+async function runAgent(body, cancellationToken, emit) {
+  const tools = resolveTools(body.tools);
+  const selector = { vendor: 'copilot' };
+  if (body.family) selector.family = body.family;
+  const models = await vscode.lm.selectChatModels(selector);
+  if (!models.length) {
+    throw Object.assign(new Error('no Copilot chat model is available in VS Code'), { status: 503 });
+  }
+  const model = models[0];
+  const messages = toMessages(body);
+  const maxRounds = Number.isInteger(body.maxRounds) && body.maxRounds > 0
+    ? body.maxRounds : DEFAULT_MAX_ROUNDS;
+
+  for (let round = 1; round <= maxRounds; round++) {
+    const response = await model.sendRequest(messages, { tools }, cancellationToken);
+    const parts = [];
+    const calls = [];
+    let text = '';
+    for await (const part of response.stream) {
+      if (part instanceof vscode.LanguageModelTextPart) {
+        text += part.value;
+        parts.push(part);
+        emit({ delta: part.value });
+      } else if (part instanceof vscode.LanguageModelToolCallPart) {
+        parts.push(part);
+        calls.push(part);
+      }
+    }
+    if (!calls.length) return { text, rounds: round, model: describeModel(model) };
+
+    // 手番を積み直す。呼び出しを Assistant 側へ、結果を User 側へ入れるのが契約で、
+    // callId で対応が付く。片方だけ積むと次の往復でモデルが文脈を失う。
+    messages.push(vscode.LanguageModelChatMessage.Assistant(parts));
+    const results = [];
+    for (const call of calls) {
+      emit({ tool: call.name, input: call.input });
+      try {
+        const result = await vscode.lm.invokeTool(
+          call.name, { toolInvocationToken: undefined, input: call.input }, cancellationToken);
+        results.push(new vscode.LanguageModelToolResultPart(call.callId, result.content));
+        emit({ tool: call.name, ok: true });
+      } catch (error) {
+        // 失敗もモデルへ返す。黙って落とすと同じ呼び出しを繰り返すだけになる。
+        const message = error && error.message ? error.message : String(error);
+        results.push(new vscode.LanguageModelToolResultPart(
+          call.callId, [new vscode.LanguageModelTextPart(`tool error: ${message}`)]));
+        emit({ tool: call.name, error: message });
+      }
+    }
+    messages.push(vscode.LanguageModelChatMessage.User(results));
+  }
+  throw Object.assign(
+    new Error(`gave up after ${maxRounds} rounds without a final answer`), { status: 409 });
+}
+
+// エージェントは何往復もするので常に NDJSON で流す。何をしているか見えないまま
+// 数分黙るのが一番困る。ヘッダは最初の 1 行を書くまで送らないので、モデル不在などの
+// 失敗は status 付きの JSON で返る（streamChat と同じ作法）。
+async function streamAgent(response, body, cancellationToken) {
+  let started = false;
+  const start = () => {
+    if (started) return;
+    started = true;
+    response.writeHead(200, {
+      'Content-Type': 'application/x-ndjson; charset=utf-8',
+      'Cache-Control': 'no-store',
+    });
+  };
+  const write = event => response.write(`${JSON.stringify(event)}\n`);
+  try {
+    const result = await runAgent(body, cancellationToken, event => { start(); write(event); });
+    start();
+    write({ done: true, text: result.text, rounds: result.rounds, model: result.model });
+    response.end();
+  } catch (error) {
+    if (!started) throw error;
+    write({ error: error.message || String(error) });
+    response.end();
+  }
+}
+
 function createServer(token) {
   return http.createServer(async (request, response) => {
     const route = `${request.method} ${request.url}`;
-    if (route !== 'POST /v1/chat' && route !== 'POST /v1/tool' && route !== 'GET /v1/tools') {
+    if (route !== 'POST /v1/chat' && route !== 'POST /v1/tool'
+        && route !== 'POST /v1/agent' && route !== 'GET /v1/tools') {
       json(response, 404, { error: 'not found' });
       return;
     }
@@ -196,6 +323,7 @@ function createServer(token) {
     try {
       const body = await readBody(request);
       if (route === 'POST /v1/tool') json(response, 200, await invokeToolByName(body, source.token));
+      else if (route === 'POST /v1/agent') await streamAgent(response, body, source.token);
       else if (body && body.stream) await streamChat(response, body, source.token);
       else json(response, 200, await askCopilot(body, source.token));
     } catch (error) {
