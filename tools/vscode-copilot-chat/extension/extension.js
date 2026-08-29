@@ -126,10 +126,22 @@ function listTools() {
 
 // LanguageModelToolResult は text part と prompt-tsx part の配列。CLI へ渡せるのは
 // text だけなので、それ以外は種別だけ残して落とす（黙って消すと空応答に見える）。
+function serializablePart(value) {
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch (_) {
+    return undefined;  // 循環参照など。中身は諦めるが種別だけは残す。
+  }
+}
+
 function toolResultToJson(result) {
-  const content = ((result && result.content) || []).map(part => (
-    typeof part.value === 'string' ? { type: 'text', value: part.value } : { type: 'other' }
-  ));
+  const content = ((result && result.content) || []).map(part => {
+    if (typeof part.value === 'string') return { type: 'text', value: part.value };
+    // prompt-tsx などの非テキスト部品。種別だけ残して捨てると「成功したのに空」と
+    // 見分けが付かないので、JSON にできる範囲で中身も返す（--json で読める）。
+    const value = serializablePart(part.value);
+    return value === undefined ? { type: 'other' } : { type: 'other', value };
+  });
   return {
     content,
     text: content.filter(part => part.type === 'text').map(part => part.value).join(''),

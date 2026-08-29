@@ -303,14 +303,28 @@ $ vscode-copilot-chat --probe
 確実なのは実際に有効な入力で 1 回呼んでみることです。`--probe` は当たりを付けるための
 道具で、証明ではありません。
 
-応答は text part を連結した `text` と、種別を残した `content` です。
+応答は text part を連結した `text` と、部品ごとの `content` です。
 
 ```json
-{"content":[{"type":"text","value":"…"},{"type":"other"}],"text":"…"}
+{"content":[{"type":"text","value":"…"},
+            {"type":"other","value":{"node":"…"}}],
+ "text":"…"}
 ```
 
-`type: "other"` は prompt-tsx など文字列で受け取れない part です。黙って捨てると
-空応答に見えるので種別だけ残します。
+`type: "other"` は prompt-tsx など文字列で受け取れない部品です。**JSON にできる範囲で
+中身も返します**——種別だけ残して捨てると、成功したのに空という一番分かりにくい形に
+なるためです（循環参照などで JSON にできないときだけ `value` が落ちます）。
+
+**テキストを 1 つも返さないツールがあります。** `copilot_readFile` のように結果を
+prompt-tsx で返すものがそれで、`text` は空になります。そのとき CLI は標準出力へ何も
+出さず、標準エラーへ理由を出します。
+
+```console
+$ vscode-copilot-chat --call copilot_readFile --input '{"filePath":"…","startLine":1,"endLine":20}'
+テキストの部品がありません（1 個は prompt-tsx などの非テキスト）。--json で中身を見られます。
+```
+
+中身は `--json` で読めます。prompt-tsx の木の中に本文が入っています。
 
 ## エージェントへ丸投げする（現状は使えません）
 

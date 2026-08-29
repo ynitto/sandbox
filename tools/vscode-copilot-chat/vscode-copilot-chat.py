@@ -286,6 +286,27 @@ def missing_required(tool: dict, tool_input: dict) -> list[str]:
     return [key for key in required if key not in tool_input]
 
 
+def describe_empty_result(result: dict) -> str:
+    """テキストが 1 文字も返らなかったときに、何が起きたのかを言う。"""
+    parts = result.get("content") or []
+    if not parts:
+        return "ツールは何も返しませんでした。"
+    return (f"テキストの部品がありません（{len(parts)} 個は prompt-tsx などの非テキスト）。"
+            "--json で中身を見られます。")
+
+
+def print_tool_result(result: dict, as_json: bool) -> None:
+    """ツールの結果を出す。空のまま黙って終わらない——失敗と見分けが付かないため。"""
+    if as_json:
+        print(json.dumps(result, ensure_ascii=False))
+        return
+    text = result.get("text") or ""
+    if text:
+        print(text)
+    else:
+        print(describe_empty_result(result), file=sys.stderr)
+
+
 def find_tool(payload: dict, name: str) -> dict | None:
     for tool in payload.get("tools") or []:
         if tool.get("name") == name:
@@ -513,7 +534,7 @@ def main() -> int:
                     "（--tools で一覧。無い環境ではエージェントを丸投げできません）")
             check_agent_input(tool, payload)
             result = call_tool(endpoint, AGENT_TOOL, payload, args.timeout)
-            print(json.dumps(result, ensure_ascii=False) if args.json else result["text"])
+            print_tool_result(result, args.json)
             return 0
         if args.call:
             if args.input is None:
@@ -536,7 +557,7 @@ def main() -> int:
                     f"（--call {args.call} でスキーマを見られます）。"
                     "VS Code は入力を検証せずツールへ渡すので、欠けたままでは送りません。")
             result = call_tool(endpoint, args.call, tool_input, args.timeout)
-            print(json.dumps(result, ensure_ascii=False) if args.json else result["text"])
+            print_tool_result(result, args.json)
             return 0
         session = Session(args.family)
         if interactive:

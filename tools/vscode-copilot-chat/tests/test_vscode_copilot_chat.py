@@ -790,3 +790,34 @@ def test_other_tool_errors_are_passed_through_unchanged():
     finally:
         thread.join()
         server.server_close()
+
+
+# --- テキストを返さないツール ---------------------------------------------------
+
+
+def test_empty_text_is_explained_instead_of_printing_nothing(capsys):
+    """成功したのに標準出力が空だと、失敗と見分けが付かない。"""
+    client.print_tool_result({"content": [{"type": "other"}, {"type": "other"}], "text": ""}, False)
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert "2 個" in err and "--json" in err
+
+
+def test_no_content_at_all_says_so(capsys):
+    client.print_tool_result({"content": [], "text": ""}, False)
+    out, err = capsys.readouterr()
+    assert out == "" and "何も返しませんでした" in err
+
+
+def test_text_is_printed_plainly_with_no_note(capsys):
+    client.print_tool_result({"content": [{"type": "text", "value": "本文"}], "text": "本文"}, False)
+    out, err = capsys.readouterr()
+    assert out == "本文\n" and err == ""
+
+
+def test_json_output_carries_the_non_text_parts(capsys):
+    result = {"content": [{"type": "other", "value": {"node": "prompt-tsx"}}], "text": ""}
+    client.print_tool_result(result, True)
+    out, err = capsys.readouterr()
+    assert json.loads(out) == result
+    assert err == ""
