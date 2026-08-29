@@ -191,7 +191,9 @@ def _urlopen(req: urllib.request.Request, timeout: float):
     except urllib.error.URLError as exc:
         if isinstance(exc.reason, TimeoutError):
             raise RuntimeError(f"bridge への接続がタイムアウトしました（--timeout {timeout:g}）") from exc
-        raise RuntimeError(f"bridge に接続できません: {exc.reason}") from exc
+        raise RuntimeError(
+            f"bridge に接続できません: {exc.reason}"
+            "（VS Code 側が落ちているかもしれません。--start で起こし直せます）") from exc
     except TimeoutError as exc:
         # 応答待ちのタイムアウトは URLError に包まれず素で上がってくる。
         raise RuntimeError(
@@ -270,6 +272,18 @@ def call_tool(endpoint: dict[str, object], name: str, tool_input: dict,
             "どのツールが同じ制約を持つかは、有効な入力で 1 つずつ呼んで確かめるしか"
             "ありません（空入力で試すのは危険です——VS Code は入力を検証せずツールへ渡します）。"
         ) from exc
+
+
+def missing_required(tool: dict, tool_input: dict) -> list[str]:
+    """スキーマの required のうち、渡していないものを返す。
+
+    **VS Code は入力を検証せずツールへ渡す。** 欠けたまま送るとツール本体が
+    `undefined` を掴んで動き、落ちる前に副作用を起こすものがある（実測で
+    `copilot_createNewWorkspace` が空入力で実行され、拡張ホストごと落ちた）。
+    ツールごとの知識は持たず、VS Code が配るスキーマだけを根拠に手前で止める。
+    """
+    required = (tool.get("inputSchema") or {}).get("required") or []
+    return [key for key in required if key not in tool_input]
 
 
 def find_tool(payload: dict, name: str) -> dict | None:
@@ -511,6 +525,16 @@ def main() -> int:
                 print(json.dumps(tool, ensure_ascii=False) if args.json else format_tool_schema(tool))
                 return 0
             tool_input = parse_tool_input(sys.stdin.read() if args.input == "-" else args.input)
+            tool = find_tool(fetch_tools(endpoint, args.timeout), args.call)
+            if tool is None:
+                raise RuntimeError(
+                    f"VS Code に登録されていないツールです: {args.call}（--tools で一覧）")
+            missing = missing_required(tool, tool_input)
+            if missing:
+                raise RuntimeError(
+                    f"{args.call} の必須項目が足りません: {', '.join(missing)}"
+                    f"（--call {args.call} でスキーマを見られます）。"
+                    "VS Code は入力を検証せずツールへ渡すので、欠けたままでは送りません。")
             result = call_tool(endpoint, args.call, tool_input, args.timeout)
             print(json.dumps(result, ensure_ascii=False) if args.json else result["text"])
             return 0

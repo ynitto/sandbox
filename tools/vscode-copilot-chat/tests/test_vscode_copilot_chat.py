@@ -461,16 +461,56 @@ def test_call_without_input_shows_the_schema_and_does_not_invoke():
     assert code == 0 and fetch.called and not call.called and not repl.called
 
 
+SUBAGENT_ONE_REQUIRED = {"tools": [
+    {"name": "runSubagent", "inputSchema": {"required": ["prompt"]}}]}
+
+
 def test_call_with_input_invokes_the_tool():
-    code, repl, fetch, call = _main_call(["--call", "runSubagent", "--input", '{"prompt": "x"}'])
+    code, repl, fetch, call = _main_call(["--call", "runSubagent", "--input", '{"prompt": "x"}'],
+                                         tools=SUBAGENT_ONE_REQUIRED)
     assert code == 0 and call.called and not repl.called
     assert call.call_args.args[1:3] == ("runSubagent", {"prompt": "x"})
 
 
 def test_call_reads_input_from_stdin_with_a_dash():
-    code, _, _, call = _main_call(["--call", "runSubagent", "--input", "-"])
+    code, _, _, call = _main_call(["--call", "runSubagent", "--input", "-"],
+                                  tools=SUBAGENT_ONE_REQUIRED)
     assert code == 0
     assert call.call_args.args[2] == {"prompt": "stdin から"}
+
+
+def test_call_refuses_to_send_an_input_missing_required_fields():
+    """VS Code は検証せずツールへ渡すので、欠けた入力は手前で止める。"""
+    tools = {"tools": [{"name": "copilot_readFile",
+                        "inputSchema": {"required": ["filePath", "startLine", "endLine"]}}]}
+    code, _, _, call = _main_call(
+        ["--call", "copilot_readFile", "--input", '{"filePath": "/tmp/x"}'], tools=tools)
+    assert code == 1
+    assert not call.called
+
+
+def test_call_on_an_unregistered_tool_with_input_does_not_send():
+    code, _, _, call = _main_call(["--call", "nope", "--input", "{}"], tools={"tools": []})
+    assert code == 1 and not call.called
+
+
+def test_missing_required_lists_only_what_is_absent():
+    tool = {"inputSchema": {"required": ["a", "b", "c"]}}
+    assert client.missing_required(tool, {"a": 1, "c": 3}) == ["b"]
+    assert client.missing_required(tool, {"a": 1, "b": 2, "c": 3}) == []
+    # required が無い・スキーマが無いツールは素通し（こちらで足さない）。
+    assert client.missing_required({"inputSchema": {}}, {}) == []
+    assert client.missing_required({}, {}) == []
+
+
+def test_connection_refused_points_at_start():
+    error = client.urllib.error.URLError(ConnectionRefusedError(61, "Connection refused"))
+    with mock.patch.object(client.urllib.request, "urlopen", side_effect=error):
+        try:
+            client._urlopen(mock.Mock(), 5)
+            assert False, "must raise"
+        except RuntimeError as exc:
+            assert "--start" in str(exc)
 
 
 def test_call_on_an_unregistered_tool_fails_with_a_hint():

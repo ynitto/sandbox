@@ -199,6 +199,10 @@ echo '{"prompt":"…"}' | vscode-copilot-chat --call runSubagent --input -
 `--input` を省くとそのツールの説明と `inputSchema` を表示します。まずこれを見てから
 渡す JSON を決めてください。
 
+**`required` が欠けている入力は送りません。** VS Code は入力を検証せずツールへ渡すので、
+欠けたまま送るとツール本体が `undefined` を掴んで動きます。判定に使うのは VS Code が
+配るスキーマだけで、ツールごとの知識は持ちません。
+
 呼び出しは chat request の外なので `toolInvocationToken` は `undefined` です。進捗 UI は
 出ませんが**承認ダイアログは出ます**——ターミナル実行などはそこで人が止められます。
 
