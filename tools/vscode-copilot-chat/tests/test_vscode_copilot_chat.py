@@ -461,16 +461,56 @@ def test_call_without_input_shows_the_schema_and_does_not_invoke():
     assert code == 0 and fetch.called and not call.called and not repl.called
 
 
+SUBAGENT_ONE_REQUIRED = {"tools": [
+    {"name": "runSubagent", "inputSchema": {"required": ["prompt"]}}]}
+
+
 def test_call_with_input_invokes_the_tool():
-    code, repl, fetch, call = _main_call(["--call", "runSubagent", "--input", '{"prompt": "x"}'])
+    code, repl, fetch, call = _main_call(["--call", "runSubagent", "--input", '{"prompt": "x"}'],
+                                         tools=SUBAGENT_ONE_REQUIRED)
     assert code == 0 and call.called and not repl.called
     assert call.call_args.args[1:3] == ("runSubagent", {"prompt": "x"})
 
 
 def test_call_reads_input_from_stdin_with_a_dash():
-    code, _, _, call = _main_call(["--call", "runSubagent", "--input", "-"])
+    code, _, _, call = _main_call(["--call", "runSubagent", "--input", "-"],
+                                  tools=SUBAGENT_ONE_REQUIRED)
     assert code == 0
     assert call.call_args.args[2] == {"prompt": "stdin から"}
+
+
+def test_call_refuses_to_send_an_input_missing_required_fields():
+    """VS Code は検証せずツールへ渡すので、欠けた入力は手前で止める。"""
+    tools = {"tools": [{"name": "copilot_readFile",
+                        "inputSchema": {"required": ["filePath", "startLine", "endLine"]}}]}
+    code, _, _, call = _main_call(
+        ["--call", "copilot_readFile", "--input", '{"filePath": "/tmp/x"}'], tools=tools)
+    assert code == 1
+    assert not call.called
+
+
+def test_call_on_an_unregistered_tool_with_input_does_not_send():
+    code, _, _, call = _main_call(["--call", "nope", "--input", "{}"], tools={"tools": []})
+    assert code == 1 and not call.called
+
+
+def test_missing_required_lists_only_what_is_absent():
+    tool = {"inputSchema": {"required": ["a", "b", "c"]}}
+    assert client.missing_required(tool, {"a": 1, "c": 3}) == ["b"]
+    assert client.missing_required(tool, {"a": 1, "b": 2, "c": 3}) == []
+    # required が無い・スキーマが無いツールは素通し（こちらで足さない）。
+    assert client.missing_required({"inputSchema": {}}, {}) == []
+    assert client.missing_required({}, {}) == []
+
+
+def test_connection_refused_points_at_start():
+    error = client.urllib.error.URLError(ConnectionRefusedError(61, "Connection refused"))
+    with mock.patch.object(client.urllib.request, "urlopen", side_effect=error):
+        try:
+            client._urlopen(mock.Mock(), 5)
+            assert False, "must raise"
+        except RuntimeError as exc:
+            assert "--start" in str(exc)
 
 
 def test_call_on_an_unregistered_tool_fails_with_a_hint():
@@ -750,3 +790,34 @@ def test_other_tool_errors_are_passed_through_unchanged():
     finally:
         thread.join()
         server.server_close()
+
+
+# --- テキストを返さないツール ---------------------------------------------------
+
+
+def test_empty_text_is_explained_instead_of_printing_nothing(capsys):
+    """成功したのに標準出力が空だと、失敗と見分けが付かない。"""
+    client.print_tool_result({"content": [{"type": "other"}, {"type": "other"}], "text": ""}, False)
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert "2 個" in err and "--json" in err
+
+
+def test_no_content_at_all_says_so(capsys):
+    client.print_tool_result({"content": [], "text": ""}, False)
+    out, err = capsys.readouterr()
+    assert out == "" and "何も返しませんでした" in err
+
+
+def test_text_is_printed_plainly_with_no_note(capsys):
+    client.print_tool_result({"content": [{"type": "text", "value": "本文"}], "text": "本文"}, False)
+    out, err = capsys.readouterr()
+    assert out == "本文\n" and err == ""
+
+
+def test_json_output_carries_the_non_text_parts(capsys):
+    result = {"content": [{"type": "other", "value": {"node": "prompt-tsx"}}], "text": ""}
+    client.print_tool_result(result, True)
+    out, err = capsys.readouterr()
+    assert json.loads(out) == result
+    assert err == ""
