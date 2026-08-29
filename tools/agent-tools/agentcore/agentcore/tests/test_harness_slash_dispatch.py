@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import argparse
+import io
 import os
 import sys
 import tempfile
@@ -182,3 +183,37 @@ class UnknownCommandTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ShapeIsNotAPurposeTests(unittest.TestCase):
+    """実行形（種別 B）の名前を用途（種別 C）の口へ渡さない（未決 2 の決着・2026-08-29）。
+
+    `statemachine` はハーネスであって用途ではない。用途別順位表に無い名前は必ず共通
+    candidates へ落ちるので、渡しても挙動は変わらず「用途を渡したのに効かない」という嘘が
+    1 つ増えるだけだった。ルータが 2 軸を分けている以上、口も分ける。
+    """
+
+    def test_the_statemachine_asks_for_a_decision_without_a_purpose(self):
+        from agentcore.harness import statemachine as sm
+        seen = []
+        with _Sandbox() as box:
+            (box.dir / "nightly.yaml").write_text("states: []\n", encoding="utf-8")
+            args = argparse.Namespace(
+                workflow=str(box.dir / "nightly.yaml"), entry=None, config=None,
+                param=[], input=None, dir=str(box.dir), agent_cli=None, model=None)
+            with mock.patch.object(sm, "_control_policy_decision",
+                                   side_effect=lambda *a, **k: seen.append((a, k))), \
+                    mock.patch.object(sm, "_sm_progress"), \
+                    mock.patch.object(sm, "run_statemachine",
+                                      return_value={"ok": True, "finalState": "complete"}), \
+                    mock.patch("sys.stdout", io.StringIO()), \
+                    self.assertRaises(SystemExit):
+                sm.cmd_statemachine(args, box.dir)
+        self.assertEqual(seen, [((), {})],
+                         "用途は渡さない（statemachine は実行形であって用途ではない）")
+
+    def test_the_catalog_does_not_claim_the_harness_as_a_purpose(self):
+        """管理面のカタログ側にも載せない（載せると同じ取り違えが逆から入る）。"""
+        catalog = (Path(__file__).resolve().parents[5] / "tools" / "agent-dashboard" / "src"
+                   / "features" / "orchestration" / "main" / "purpose-operations.js")
+        self.assertNotIn("statemachine:", catalog.read_text(encoding="utf-8"))

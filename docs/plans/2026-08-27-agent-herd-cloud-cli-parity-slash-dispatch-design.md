@@ -16,7 +16,7 @@
 > [2026-08-27 小型モデル制限付き実行案](./2026-08-27-agent-tools-small-model-harness-proposals.md)（以下「制限付き実行案」）
 > の依存先を 3 か所——段 7〜8（停止理由・失敗トリアージの観測の器）、段 9b（許可外ファイル
 > 変更の検知）、種別 C 宣言の frontmatter `options:`（回数上限の置き場）——で引き受ける。
-> **実装状況 2026-08-29: 全段（0〜14・9b）実装済み。** 残るのは実測系のみ——段 12〜13 の T2 対照（`harness` 軸）と、未決 2（statemachine の purpose）・5（aider の去就）。未決 1 は 2026-08-29 に決着。
+> **実装状況 2026-08-29: 全段（0〜14・9b）実装済み。** 残るのは実測系のみ——段 12〜13 の T2 対照（`harness` 軸）と、未決 5（aider の去就）。未決 1・2 は 2026-08-29 に決着。
 > どこまで進んでいるか・実装で何が分かったかは §9.1 を見る。綴りの正典は仕様書のほうで、
 > 本書は経緯の記録である。
 
@@ -406,10 +406,10 @@ engine が用途の 1 語を渡すだけになり、`VARIANT_ELIGIBLE_ROLES` / `
 purpose を既に持つ（node-budget の記帳に使用中）。コマンド行が正典になれば、entry の
 `slash:` がそのまま用途の宣言になり、渡し忘れが起こらない。
 
-harness の statemachine は `_control_policy_decision("statemachine")` を渡すが
+harness の statemachine は `_control_policy_decision("statemachine")` を渡していたが
 （`harness/statemachine.py:932`）、`PURPOSE_OPERATIONS` に `statemachine` が無いので必ず
-共通 candidates へフォールバックする。**`/sm` をルート表に載せる時点で、この用途を
-カタログへ載せるか渡すのをやめるかを決める。**
+共通 candidates へフォールバックしていた。**2026-08-29 に渡すのをやめた**——
+`statemachine` は実行形（種別 B）であって用途（種別 C）ではない（未決 2 の決着）。
 
 ### G4 — 変種の既定モデルが `by_purpose` の決定を上書きするガードが flow にしかない【§3.3 で消える】
 
@@ -787,8 +787,16 @@ rate を残すと二重に載る（`toolloop._tl_record_usage:628-630` の注記
    ②読むのは自分のログだけ（他 CLI のネイティブストアは agent-audit の担当で、写すと
    同じ形式に 2 実装ができる——C7）。③argv 断片はサブコマンドの直後へ差し込む
    （末尾だと codex が壊れ、フラグ形はどこでも同じなので、この位置なら両方成り立つ）。
-2. `statemachine` を用途カタログ（`PURPOSE_OPERATIONS`）へ載せるか、purpose を渡すのを
-   やめるか（G3 の後半）。
+2. ~~`statemachine` を用途カタログ（`PURPOSE_OPERATIONS`）へ載せるか、purpose を渡すのを
+   やめるか（G3 の後半）。~~ **閉じた（2026-08-29）: 渡すのをやめた。**
+   `statemachine` は実行形（種別 B）であって用途（種別 C）ではない——ルータがその 2 軸を
+   分けた以上、片方の値をもう片方の口へ入れない。カタログへ載せる案は採らなかった:
+   載せるとは「ワークフロー全体を任せてよいと言える operation_class」を選ぶことだが、
+   workflow の中身は state ごとに write / check / review が混ざって 1 語では表せず、
+   そういう実測も無い。**挙動は前後で同じ**（用途別順位表に無い名前は必ず共通 candidates
+   へ落ちていた）——消えるのは「用途を渡したのに効かない」という嘘 1 つである。
+   用途で候補を選ぶなら state 単位で決める話になり、それは実行前に 1 回だけ agent を
+   決めるいまの形とは別の設計なので、やるなら別提案として起こす。
 3. ~~opencode の transcript 収集（`opencode-sqlite`）を失うことが agent-audit の格付けに
    与える影響。~~ **閉じた（2026-08-29）**: 段 6 で同梱を外した。失う面が既に片肺
    （aider も transcript を持たない）だったことは変わらず、格付けの主データは

@@ -929,7 +929,18 @@ def cmd_statemachine(args: argparse.Namespace, cwd: Path) -> None:
         # Resolver の決定を使う。
         # park は lifecycle と同じ環境要因として実行前に止める（3 = escalate と別の 1）。
         pin_cli = getattr(args, "agent_cli", None) or (plan["agent_cli"] if plan else "")
-        decision = None if pin_cli else _control_policy_decision("statemachine")
+        # **用途は渡さない**（設計 2026-08-27 未決 2 の決着・2026-08-29）。`statemachine` は
+        # 実行形（コマンド面の種別 B）であって用途（種別 C）ではない。ルータがその 2 軸を
+        # 分けている以上、片方の値をもう片方の口へ入れない——用途別順位表に無い名前は
+        # 必ず共通 candidates へ落ちるので、渡しても「用途を渡したのに効かない」という
+        # 嘘が 1 つ増えるだけである（挙動は前後で同じ）。
+        #
+        # カタログ（`purpose-operations.js`）へ載せる選択も採らなかった。載せるとは
+        # 「ワークフロー全体を任せてよいと言える operation_class」を選ぶことだが、
+        # workflow の中身は state ごとに write / check / review が混ざり、1 語では表せない
+        # ——そういう実測も無い。用途で候補を選ぶなら state 単位で決める話になり、それは
+        # ここ（実行前に 1 回だけ agent を決める形）とは別の設計である。
+        decision = None if pin_cli else _control_policy_decision()
         if decision is not None and decision.get("parked"):
             raise StateMachineHarnessError(
                 f"[agent-error:control] [selection-policy] park"
