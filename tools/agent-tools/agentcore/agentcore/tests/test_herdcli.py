@@ -123,7 +123,7 @@ class SubcommandNamespaceTests(unittest.TestCase):
 
     def test_adapter_names_are_not_definition_names(self):
         """この分離が守られているか（ollama-json が adapter に化けていないか）。"""
-        self.assertEqual(set(herdcli.ADAPTERS), {"aider", "ollama"})
+        self.assertEqual(set(herdcli.ADAPTERS), {"aider", "ollama", "edit"})
 
 
 class DefsTests(unittest.TestCase):

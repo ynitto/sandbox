@@ -1,0 +1,39 @@
+{
+  "name": "selfedit",
+  "headless_autonomy": "single-shot",
+  "slash_native": false,
+  "relative_cost": 0,
+  "command": [
+    "agent-herd",
+    "edit",
+    "--model",
+    "{model}"
+  ],
+  "prompt_via": "argv",
+  "prompt_flag": "--message",
+  "file_flag": "--file",
+  "read_flag": "--read",
+  "default_model": "gemma4:e4b",
+  "output": "stdout",
+  "empty_output_is_error": true,
+  "write_args": [],
+  "readonly_args": ["--readonly"],
+  "readonly": "enforced",
+  "errors": [
+    {
+      "match": "could not connect|connection refused",
+      "class": "env",
+      "hint": "ollama サーバが起動していません（ollama serve を起動してください）"
+    },
+    {
+      "match": "--file がありません",
+      "class": "env",
+      "hint": "編集対象のファイルが渡っていません。タスクの読込割付にパスを載せてください"
+    }
+  ],
+  "session_log": {
+    "format": "jsonl-dir",
+    "paths": ["~/.agents/logs/ollama"],
+    "usage": true
+  }
+}

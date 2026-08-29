@@ -1,470 +1,442 @@
-# agent-herd — LAN の ollama を動かす実行系の設計書
-
-> **対象系統**: `agents/{ollama,aider}.json`（2 定義。ollama は 5 profile を内包）/
-> `agentcore/{herdcli,hostenv}.py` / `agentcore/{ollama_*,aider_adapter}.py` /
-> `agentcore/harness/`（toolloop / statemachine）/ `tools/agent-tools/install.sh`。
-> opencode（定義・adapter・`tools/opencode/`）は 2026-08-29 に同梱を外した
-> （[2026-08-27 設計](../plans/2026-08-27-agent-herd-cloud-cli-parity-slash-dispatch-design.md) §6。
-> 本文の opencode への言及は判断当時の経緯として残す）。
-> 消費側は agent-project / agent-flow / agent-amigos / agent-audit / agent-loop / agent-dashboard。
-
-> 契約（綴り・サブコマンド・定義の割当・フラグ・環境変数・上限・終了状態）は
-> [`docs/specs/agent-herd-spec.md`](../specs/agent-herd-spec.md)、
-> CLI 定義の共通契約は [`docs/specs/agent-cli-spec.md`](../specs/agent-cli-spec.md)、
-> 利用手順は `tools/agent-tools/README.md`。本書は**なぜそう決めたか**だけを書く。
-
----
-
-## 1. TL;DR
-
-Ollama のローカル推論を、クラウド枠が尽きたときの緊急避難ではなく、**品質が成立する役割を
-恒常的に引き受けるコスト 0 の常備戦力**として agent-* ファミリーへ接続した。犠牲にするのは
-壁時計時間だけで、完了判定・読み取り専用の強制力・失敗トリアージはクラウド経路と同じ契約を守る。
-そのうえで、ばらばらに配っていた実行系を **`agent-herd` という 1 本の入口**へ畳んだ。
-
-そのために決めたことは 8 つ:
-
-1. **入口は 1 実装で、名前だけが複数ある**——`agent-herd` は agentcore を同梱した zipapp 1 本で、
-   `agent-aider` / `agent-ollama` / `agent-opencode` はそれへのハードリンク。エンジンは
-   `agents/*.json` を見るだけで、`ollama` という名前を知らないまま使える。
-2. **失敗検知の主役を経過時間から無進捗へ移した**——遅いのは正常、進まないのが異常。
-3. **think は実測で off へ戻した**——「品質は時間で買える」は仮説であって、買えている証拠が
-   出た局面にだけ残っている。
-4. **done は外側の機械検証だけが決める**。道具は bash / read の 2 セットで止め、read は
-   prompt のお願いではなく実行直前の決定的ゲートで強制する。
-5. **`--replay` を測定の唯一の口にし、道具を持たせなかった**——測るたびにワークスペースが
-   変わってはならない。
-6. **ハーネス（toolloop / statemachine）を agent-loop の外へ出した**。ただし import 委譲では
-   なく**本文の共有**にした——共有名前空間への差し替えを壊さないため。
-7. **用途別の起動形は profile であって別エージェントではない**——`ollama-json` は
-   `agent_cli` の値ではなく `ollama` の中の起動差。定義ファイル数が実エージェント数と一致する。
-8. **クラウド CLI はこの入口を通さない**——adapter が要らないものにラッパを 1 hop 足しても、
-   統合が消す種類の重複は何も消えない。
-
----
-
-## 2. 背景と課題
-
-### 2.1 ローカル推論そのものが持ち込む 3 つの難しさ
-
-クラウド CLI は速くて賢いが、枠がある。利用上限に当たった瞬間、リトライ予算を焼いて
-「理由不明の全滅」になる（agent-flow で 26 ノードを失った実例が
-[`agent-cli-plugin-design.md`](./agent-cli-plugin-design.md) §1 にある）。手元の GPU なし CPU 機で
-ollama は動くが、そのままでは 3 つの理由で agent-* に載らなかった。
-
-**遅さが異常に見える。** 1 応答に 10 分かかる実行は、既存のタイムアウト設計では全部
-「ハングした」と判定される。かといって上限を外すと、本当に止まった実行を誰も検知できない。
-
-**完了をモデルの自己申告に頼りたくなる。** ローカルモデルは「できました」と言う頻度が高い。
-速さのために自己採点を許すと、done の意味が経路によって変わる。
-
-**文脈が黙って消える。** Ollama サーバは上限を超えた入力を暗黙に切り捨てる。クライアント側で
-自動要約すると、何が落ちたか誰にも分からないまま結果だけが返る。
-
-### 2.2 実行系そのものが 4 つに分裂していた
-
-上の 3 つを解いた実装は動いていたが、**入口・配布形態・ハーネス・対話面がそれぞれ分裂**した
-まま増えていた。
-
-| 分裂 | 症状 |
-|---|---|
-| 配布形態 | `agent-ollama` だけが zipapp で、`agent-aider` と `agent-opencode` は**単体ファイルのコピー**。agentcore を import できない |
-| 環境補完 | その帰結として `~/.profile` 取り込みと `NO_PROXY` 追記が**3 ファイルに複製**され、コード中に「直すときは 3 箇所を揃えること」と書いてあった |
-| ハーネス | ゴール非依存に書かれた `toolloop` / `statemachine` が agent_loop の **exec 合成断片**で、デーモンと tmux 抜きには呼べない |
-| 対話 | `agent-ollama --tui` は内蔵 TUI、aider は素の `aider` を手起動（policy も接続補完も無い）、opencode は導線なし |
-| 定義 | 用途別の起動差が `ollama-json` / `ollama-list` / … と**別ファイル・別 `agent_cli`** になり、1 実行系の実測が 6 つの偽の候補へ割れていた |
-
-複製は放置すると必ず片側だけ古くなる。実際 `aider` だけ `NO_PROXY` 補完が古いままになる事故が
-起きていた。そしてハーネスの閉じ込めは「aider を statemachine で 1 回だけ回したい」を
-agent-loop 一式の起動でしか表せなくしていた。
-
-### 2.3 非目標
-
-- クラウド CLI の置き換え。ローカルは**選べる経路**であって既定ではない。
-- クラウド CLI の**呼び出し経路**の統一（→ 3.8）。定義ファイルだけで契約に適合できている
-  ものに adapter は置かない。
-- `ollama_loop`（bash 付きの自由反復）と `harness.toolloop`（限定 4 ツール契約）の実装統合。
-  契約が違う 2 つの道具であり、統合したのは**置き場と入口だけ**（→ 3.6）。
-- 新しい汎用 REPL。`chat` は既存の対話面へのルーティングであって対話 UI の再実装ではない。
-- クライアント側の自動コンパクション、無制限の自動クラウド昇格、ツールカタログの常時注入。
-- サンドボックス。`bash` セットは OS ユーザー権限の範囲で無制限で、そのことを隠さない。
-
----
-
-## 3. 主要な設計判断
-
-### 3.1 入口は 1 実装で、名前だけが複数ある（busybox 型）
-
-**判断**: `agent-herd` を agentcore 同梱の zipapp 1 本として作り、`agent-aider` /
-`agent-ollama` / `agent-opencode` を**同じファイルへのハードリンク**として置く。
-`basename(argv[0])` を見てサブコマンドへ振り分け、分岐はその 1 回だけにする。
-エンジン側にはローカル用の分岐を一切置かない。
-
-**文脈**: 最初の案は「agentcore に `ollama_call()` を足して、各エンジンがローカルを使いたいときに
-呼ぶ」だった。これだと消費側 6 つに `if agent_cli == "ollama"` が生える。CLI 契約
-（`agents/*.json`）へ畳んだあとも、配布物が per-CLI に 3 つあるかぎり「片方だけ古い」は残った。
-
-**却下した選択肢**:
-- *agentcore の関数として公開する* — 呼び出し規約（timeout・空応答・usage の取り出し方）が
-  クラウド CLI と別物になり、`agents/*.json` が覆っていた 3 軸（CLI × モード × 権限）の外に
-  ローカルだけが落ちる。CLI 契約を作った意味が半分消える。
-- *ollama の OpenAI 互換エンドポイントを既存 CLI に食わせる* — think / structured outputs /
-  `num_ctx` / `keep_alive` が渡せず、下の判断 3.3・3.4 が全部成立しない。
-- *旧名を互換シムにする* — 別ファイルのラッパを挟むと「シムだけ古い」が起きる。別名を
-  **本体そのもの**にすれば、その不整合クラスが構造的に消える。
-- *`agent-aider` を入口へ拡張する / `agent-ollama` を入口へ拡張する* — 用途の振り分けは
-  定義層（`variants`）に既にある。adapter 層へ複製すると判断が 2 か所に割れる。加えて
-  aider は「対象ファイルが決まった局所編集」の担当なので、その役割名で探索も JSON 契約も
-  対話も呼ぶと台帳の `agent_cli` が濁る。
-
-**トレードオフ**: subprocess 起動 1 回分のオーバーヘッドと、非ログイン環境での環境変数解決という
-面倒（→ §4）を引き受けた。見返りに、ローカルの起動形が 8 通りに増えても消費側のコードは 1 行も
-増えていないし、配布物は 1 つなので版の突き合わせ面も 1 つで済む。
-
-**名前について**: この入口が抱える 3 adapter は**すべて LAN 上の ollama を叩く**。しかも
-「localhost」ではなく「LAN」であることが実装に効いている（別マシンに居るから §4 の補完が要る）。
-`agent-herd` を採る決め手は、**喩えが実装の分岐と一致していること**である——力の弱い群れには
-引き具（ハーネス）を付けて荷を引かせ、自力で走れる個体には付けない。これは比喩ではなく、
-`run_prompt()` が `headless_autonomy` で実際に行っている分岐そのもので、名前とコードが同じ
-モデルを指す。`agent-run`（前案）は中立で嘘にならないが、一番言うべきことを言わない。
-
-**確信度**: 高。定義の起動形を 3 → 8 に増やしたときエンジン側の変更が 0 だったこと、
-配布統合の前後で 3 名の argv・stdout / stderr ゴールデンが不変だったことで裏が取れた。
-
-### 3.2 失敗検知の主役は経過時間ではなく無進捗
-
-**判断**: 待ちの上限を局面ごとに分け、prefill は無制限、decode は「最後の生成進捗からの無進捗」
-180 秒、ツールループは「同じ `(コマンド, 終了コード, 出力)` の 3 連続」で打ち切る。
-
-**文脈**: CPU 推論では prefill に 10 分かかることが普通にある。全体の壁時計に上限を置くと、
-正常に働いている実行を殺す。一方、本当に止まった実行は「何も出てこない」で見分けが付く。
-
-**却下した選択肢**:
-- *全体タイムアウト 1 本* — 正常な長時間実行と停止を区別できない。R1（作業を止めない）に反する。
-- *類似度によるループ検出* — 「似た出力を繰り返している」判定は閾値が要り、テスト再実行のような
-  **繰り返す意味のある仕事**を誤爆する。完全一致（1 バイトも違わない）に限れば誤爆しない。
-
-**トレードオフ**: decode stall が見るのは「トークンが出るか」だけなので、**トークンは出続けて
-いるのに仕事が進まない**形は素通りしていた。ラウンド粒度の無進捗検出（`no_progress`）を後から
-足したのはこの穴を塞ぐため。同じ原則を 2 つの粒度で適用している。
-
-分類は `env`——同一入力の再試行では解けないから（`context_exhausted` を transient にしないのと
-同じ理由）。write のラウンド予算を 30 → 12 へ絞ったのも同じ判断で、実測の空回り run に
-「もう少し回れば畳めた」形跡が無い以上、30 まで回せること自体が食いつぶしだった。
-
-**確信度**: 高。
-
-### 3.3 「品質は時間で買う」は仮説として扱い、買えた証拠のある局面にだけ think を残す
-
-**判断**: think を既定 on にせず、局面ごとに実測してから決める。現在ヘッドレスで think が
-`on` なのは `ollama` の `list-thinking` profile（gemma4:e4b の split）だけで、base と他の
-4 profile はすべて `off`。対話（`--tui`）だけは on のまま——人が画面で思考を読める場面だから。
-
-**文脈**: 設計当初は「ローカルは遅いぶん深く考えさせれば品質で埋め合わせられる」と考え、
-判断役で think on を既定にした。ツールループの実行役でも同じにした。
-
-**却下した選択肢**:
-- *think を一律 on* — 実測 2026-08-10: bash ループで 1 ラウンドごとに長考し、思考 7,700 トークン・
-  12 分の末に構文エラーのコードが出た。ツールループは 1 ノードで最大 30 ラウンド回るので、
-  長考の固定費がラウンド数だけ乗る。1 ラウンドの長考は品質に変換されていなかった。
-- *think を一律 off* — split（`list-thinking`）では逆に、`--format` の文法制約を外して
-  think を on にし `temperature: 0` を添えたほうが意味的な完全被覆が安定した。一律にすると
-  この局面を落とす。
-- *モデルに自己採点させて速さを取り戻す* — done の意味が経路で変わる。3.4 で禁じる。
-
-**トレードオフ**: 「実測してから決める」は起動形が増えるたびに測る手間が要る。その手間を
-成立させるために `--replay`（3.5）を作った。**R3「品質は時間で買う」が買えている証拠は、
-`list-thinking` の 1 局面を除いてまだ無い。**そう書いておくことがこの設計の誠実さで、
-「think は品質を上げる」と書いて既定 on にすると誰も測り直さない。
-
-**確信度**: 中。局面が増えれば結論は動きうる。動かすときは実測を添えるのが条件。
-
-### 3.4 done は外側の機械検証だけが決める。読み取り専用は決定的ゲートで強制する
-
-**判断**: ループの終了状態を 6 つ（`done` / `no_command` / `max_rounds` / `no_progress` /
-`context_exhausted` / `tool_denied`）に固定し、`TASK_COMPLETE` を確認した `done` 以外は
-未完了として本文の末尾へ `{"ok": false, "issues": [...]}` を足す。`read` セットは
-prompt のお願いではなく**実行直前の決定的ゲート**で強制する。
-
-**文脈**: ローカルモデルは規約外の応答を返す頻度が高く、「完了しました」と書いて何もして
-いないことがある。ここでモデルの自己申告を信じると、クラウド経路と done の意味が変わる。
-
-**却下した選択肢**:
-- *未完了を rc≠0 で返す* — 未完了でも最後の本文には価値がある（途中まで進んだ調査結果など）。
-  rc≠0 にすると呼び出し側がそれを捨てる。rc=0 のまま本文の機械可読契約で判定させる。
-- *`--format json` にも封筒を足す* — 本文全体の契約を壊す。JSON モードでは封筒を足さず、
-  外側の形式修復・検証へ委ねる。
-- *read の安全性を system prompt で頼む* — 「変更しないでください」は保証ではない。
-  ファイルを変更できないコマンドと git の読取 subcommand だけを許可し、引用外のシェルメタ文字・
-  `find` の書込/実行述語・未知コマンドを拒否し、許可後もシェルを介さず argv で直接実行する。
-  判定できない形は安全側で拒否する。
-
-**トレードオフ**: 決定的ゲートは「本当は安全なのに拒否される」形を必ず生む。拒否を繰り返したら
-`tool_denied` で止め、人へ返す。`edit` セットを名前だけ認識して明示エラーにしているのも同じ線で、
-read の保証を prompt のお願いへ戻してまで編集能力を足さない。
-
-この契約は入口の統合で**サブコマンド全体の契約へ昇格**した。stdout は本文だけ・stderr は診断と
-計測・未完了は本文末尾の封筒・終了コードは実体のものをそのまま返す——入口で丸めない。
-
-**確信度**: 高。CLI 契約の `readonly: enforced` 宣言に嘘を入れないことが前提条件になっている。
-
-### 3.5 `--replay` は測定の口であって、副作用の再現ではない
-
-**判断**: 実行中のイベントを JSONL へ追記し、`--replay`（= `agent-herd replay`）がそのログから
-最初の user メッセージ（= その実行へ渡されたプロンプト）を取り出して、モデル・think・format を
-変えた腕へ同じ入力を当てる。**再生は道具を持たない。**記録されたコマンドは再実行しない。
-
-**文脈**: 3.3 の「実測してから決める」を成立させるには、ライブ実行を焼かずに設定差を比べる口が要る。
-一方で、道具ありの実行ログも入力源にできてしまう。
-
-**却下した選択肢**:
-- *腕にツールの口を作る* — 測るたびにワークスペースが変わる。同じ入力を当てているつもりで、
-  2 回目は 1 回目が書き換えたファイルを読むことになり、測定にならない。この不変条件は
-  腕の指定でも緩めない。
-- *正解ラベルとの一致率を出す* — ラベルは人が付けるもの。この口が引き受けるのは
-  「同じ入力に対する出力」を再現可能な形で並べるところまでで、腕ごとの空応答率・失敗率・
-  所要時間と腕をまたいだ一致率を出す。良し悪しの判断は人の側に置く。
-
-**トレードオフ**: ログが観測と測定の二役を負うので、ログ書式の変更が測定を壊しうる。
-代わりにログ書込みや表示 sink の失敗は推論本体を止めない（観測のために成果を落とさない）。
-
-**確信度**: 高。
-
-### 3.6 ハーネスは外へ出す。行き着いた形は import 委譲
-
-**判断**: `toolloop`（限定 4 ツール契約）と `statemachine`（状態遷移 + 出力契約）を
-`agentcore.harness` へ移し、`agent-herd harness …` から tmux もデーモンも無しに回せるようにする。
-**本文の置き場はこの 2 モジュールだけ**で、`agent_loop/{toolloop,statemachine}.py` は
-そこへ委譲するだけの層になった。`agent-loop` の argv・出力・証跡は変えない。
-
-**文脈**: 2 つのハーネスはゴール非依存の汎用実装として書かれているのに、agent_loop の
-exec 合成断片（単体 import 不可）だったので、agent-loop のデーモン一式を介さないと使えなかった。
-「aider を statemachine で 1 回だけ回したい」が表せない。
-
-**たどった順（3 段。各段が次の段の前提を作った）**:
-
-| 段 | 形 | 解けたこと | 残ったこと |
-|---|---|---|---|
-| 1 移植 | 逐語コピー 2 つ + AST パリティテスト | tmux 無しで回る（目的の達成）。agent-loop を 1 バイトも触らない | 写しが 2 つ |
-| 2 本文の共有 | `_toolloop_body.py` をデータとして両者が exec | 写しが消えた。agent-loop のテストは 1 行も変えずに通る | exec という遠回り |
-| 3 委譲 | agent_loop は `import` するだけ | 遠回りも消えた。traceback と `inspect.getsource` が本文を直に指す | テストの綴りを書き替えた |
-
-**段 2 から段 3 へ動かせた理由**は 1 つ。段 2 の時点で「import 委譲にできない」と書いた根拠は
-**テストだけ**だった——agent-loop のテストが `mock.patch.object(agent_loop, "_tl_run_agent")` と
-共有名前空間を差し替えており（実測 63 箇所・6 ファイル）、import 委譲すると関数の
-`__globals__` が agentcore 側になってその差し替えが効かなくなる。本文が共有名前空間から
-借りていた名前は stdlib を除くと 4 つだけで、そのうち host 固有の 2 つは既に
-`set_hooks` の継ぎ目になっていた。つまり残っていたのは**テストの引っ越し**であり、
-それを済ませれば委譲できる。
-
-**却下した選択肢**:
-- *委譲層で `_tl_*` / `_sm_*` を共有名前空間へ張り直す（互換層）* — **却下**。張ると古い
-  `mock.patch.object(agent_loop, "_tl_run_agent")` が**成功したのに効かない**——本物の CLI を
-  起動しにいく静かな失敗——になる。張らなければ `AttributeError` で大声で落ちる。移行の
-  危険を「静か」から「うるさい」へ倒すのが、この 1 行の設計判断である。
-- *ハーネスの単体テストを agent-loop 側に残す* — 却下。本文が agentcore にあるのにテストが
-  agent-loop にあると、agentcore を単体で回したときハーネスの振る舞いが誰にも見られない。
-  純粋なハーネスのテスト（94 件）は `agentcore/tests/` へ移し、agent-loop に残したのは
-  **継ぎ目のテスト**（委譲が繋がっているか・記帳が台帳へ着くか）だけにした。
-- *移植先が agent-loop の台帳へも書く* — 既定を「何もしない / None」にした。移植先が黙って
-  他人の台帳へ書くより、書かないほうを既定にする。記帳と control 解決は
-  `harness.set_hooks` で agent-loop 側が差し込む（差し込み忘れると台帳が静かに空になるので、
-  これもテストで縛る）。
-
-**トレードオフ**: 本文が `toolloop` / `statemachine` の 2 モジュールに分かれ、後者は前者の
-名前を import して使う。そのため「どちらの名前空間を差し替えれば効くか」は綴りでは決まらず、
-**その名前を読む関数がどちらにあるか**で決まる（`_sm_run_control` の実体は toolloop の関数）。
-間違えても mock は成功するので、判断をテストのたびにやらせない——`patch_harness` が
-「その名前を持つモジュール全部」を差し替える形で 1 か所に閉じている。
-
-`ollama_loop`（`--tools`）と `harness.toolloop` は**統合しない**。前者は ollama 素体に bash 1 つを
-与える自由反復、後者は single-shot CLI へ read_files / write_files / run / final の 4 つだけを
-与える限定契約で、停止性の作りも違う。統合したのは置き場と入口だけで、役割は固定した。
-両者の**語彙**（打ち切り分類・進捗イベント名）は agentcore の 1 か所へ揃え、agent-audit が
-両経路のセッションを同じ読み方で読めるようにする。
-
-**確信度**: 高。
-
-### 3.7 用途別の起動形は profile であって、別のエージェントではない
-
-**判断**: `agents/*.json` を **1 ファイル = 1 エージェント**にし、用途で使い分ける起動差は
-定義の中の `profiles`（`json` / `list` / `list-thinking` / `read` / `verify`）に置く。
-台帳・格付けへ書く `agent_cli` は常に正典名（`ollama`）にする。
-
-**文脈**: 当初は用途別に `ollama-json` / `ollama-list` / … と別ファイル・別 `agent_cli` にして
-いた。本設計の初版はそれを「1 ファイルに畳んでも識別子は名前として残す必要がある」と擁護して
-いたが、**それは誤りだった。**根拠に挙げたのは「`resolve_variant` が名前を返し、台帳にもその
-名前が残る」だけで、現状の実装がそうなっているという以上のことを言っていない。
-
-**却下した選択肢**（= 旧実装）:
-- *用途ごとに別定義・別 `agent_cli`* — 候補の格付け契約は
-  `candidate = (agent_cli, model)` に `operation_class → 格付け` をぶら下げる形で、
-  agent-audit の集計キーも `(agent_cli, model, operation_class)` である。つまり
-  **「どの用途か」は候補の中の次元として既にモデル化されている**。それを `agent_cli` の値へ
-  畳み込むと同じ次元を 2 か所で表すことになり、実害が 2 つ出る。
-  **(1) 証跡が割れる** — 1 実行系（`agent-herd ollama` × `gemma4:e4b`）の実測が 6 つの偽の
-  候補へ分散し、サンプル数が要る格付けの証拠が薄まる。
-  **(2) 別のエージェントに見える** — 台帳と一覧で `ollama-*` が `claude` / `codex` と同じ列に
-  並ぶと、運用者には「13 のエージェントがある」と見える。実際には 8 あり、そのうち 1 つに
-  5 つのモードがあるだけである。候補の選択・予算配分・格付けの読みがその歪んだ像の上で行われる。
-- *旧綴りを読み替え表で移行する* — 要らなかった。`load_cli("ollama-list")` は実ファイルが
-  無ければ `base=ollama / profile=list` として解く。**実ファイルが優先**なので、独立させたく
-  なったら `ollama-list.json` を置けばよい。移行期間も読み替え表も不要になった。
-
-**トレードオフ**: 読み手が 5 つある（`agentcli` / dashboard の JS ローダ / agent-audit の格付けと
-usage / control の `selection_policy` / 既存の eval アーカイブ）ので、両ローダのゴールデン更新が
-要った。継承しないのは `interactive` と `variants` の 2 つだけ——継承すると対話面を持たない
-役割に base の TUI が生え、agent-dashboard の実行経路が変わる（§5.2 の P1.5 で踏んだのと
-同じ形）。
-
-等価性は機械で確かめた: 旧 6 定義を git から取り出し、argv（write / readonly）・全宣言・
-対話面・variant 解決のすべてが一致（不一致 0 件）。
-
-**確信度**: 高。
-
-### 3.8 クラウド CLI の呼び出し口は統一しない
-
-**判断**: `claude` / `codex` / `kiro` / `copilot` / `cursor` の `command` は素の CLI を指した
-ままにする。統一するのは**「どう呼ぶか」を決めるところ**（`agentcore.agentcli` の定義解決）
-までで、**「その argv が何を指すか」**からは分かれる。
-
-**文脈**: `agent-herd` という名前を選ぶと「ではクラウドもこの入口から呼ぶべきか」という問いが
-立つ。答えは否である。
-
-**却下した選択肢**:
-- *全 CLI を agent-herd 経由にする* — 理由は 4 つ。
-  **(1)** このリポジトリの既存判断は「adapter は素の argv で表せないものがあるときだけ置く」。
-  クラウド CLI は定義ファイルだけで契約に適合できており、挟むと**判断ゼロの素通しラッパ**が
-  1 hop 増えるだけで、統合が消す種類の重複（写し）を何も消さない。
-  **(2) 耐障害の向きが逆転する。** ローカルは「クラウドが使えないときに作業を止めない」
-  バックアップである。クラウドを herd 経由にすると、バックアップ側のバイナリがクラウド実行の
-  必須依存になり、agent-herd の導入ミス 1 つで**全経路**が止まる。
-  **(3) 名前が嘘になる。** 「LAN に飼った群れを束ねて動かす」という一致を自分で壊す。
-  **(4) 版の突き合わせ面が増える。** クラウド CLI は各自の周期で自動更新されるので、
-  「CLI の版 × ラッパの版」が観測対象に加わる。
-
-**トレードオフ**: ollama 由来の名前は、ハーネスの層 2（`run_cli_loop` = 引き具を付けずに CLI 内部の
-ツールループへ素通しする経路）だけを言い落とす。取れる道は「重心で名づけて素通しを明記する」か
-「ハーネスだけ別の入口に置く」かで、前者を採った。**限定 4 ツール契約を受け取る `single-shot`
-定義は現時点で全て cost 0 のローカル推論**であり、雲の CLI は全て `tool-loop` で層 2 を素通る
-——喩えとしても正しく、実装の分岐とも一致する。
-
-**昇格基準**: クラウド CLI が opencode と同型の理由——実測 usage を `@agent-usage` へ移す・
-落ちない失敗を落とす・生イベントから本文を抽出する——で adapter を必要とした時点で、
-agentcore に adapter を書き、同じ zipapp のサブコマンドへ載せる。基準は「adapter が要るか」
-であって「揃えたいか」ではない。
-
-**確信度**: 高。
-
----
-
-## 4. 環境変数の補完 — CLI 化のツケが 1 実装になるまで
-
-3.1 で subprocess 起動を選んだ結果、**非ログイン subprocess は `~/.profile` を読まない**という
-問題を引き受けた。tmux ペインや systemd から起動されると `OLLAMA_HOST` が無く、接続先が
-分からない。さらにプロキシ環境では、`NO_PROXY` に ollama のホストが入っていないと接続が
-プロキシへ流れて 504 になる。
-
-そこで、環境に `OLLAMA_HOST` / `OLLAMA_API_BASE` / `NO_PROXY` が揃っていない場合だけ
-`~/.profile` から補完し、`OLLAMA_HOST` ⇄ `OLLAMA_API_BASE` を相互に補い、ollama のホストを
-`NO_PROXY` / `no_proxy` へ**常に**追記する。**呼び出し側の明示環境が常に勝つ。**
-
-この補完ブロックは、かつて **3 か所に同一の複製**を持っていた（`ollama_adapter.py` が正典で、
-単体ファイルで配る `agent-aider` と `agent-opencode` が写し）。複製が必要だったのは**配布形態**の
-都合であって設計上の必然ではない——単体ファイルは agentcore を import できない、それだけだった。
-当時は「写しは禁じず、機械に突き合わせさせる」（AST 比較テスト）で凌いでいた。判断の全文は
-[`agentcore-design.md`](./agentcore-design.md) §3.5。
-
-**3.1 で 3 adapter を 1 つの zipapp に畳んだ時点で、その制約が消えた。** 写しは
-`agentcore.hostenv` 1 実装へ畳み、AST 比較テストは「3 adapter がこの 1 実装を参照していること」を
-`is` で縛るテストへ置き換えた。写しが復活すれば必ず落ちる。
-
-**これは配布形態の統合が、写しを 1 つ減らすところまで届いた例**である。同型の手当てが engine 側にも
-散っていた（agent-flow と agent-amigos が持っていた `extract_json` / `unwrap_list` の写し）ので、
-同じように `agentcore.llmjson` へ畳んだ。`unwrap_list` が要るのは ollama の JSON モードが
-トップレベルをオブジェクトに固定するためで、engine 側の仕様であってモデルの能力ではない。
-この手当てが engine ごとにずれると、**同じモデル応答が経路によって通ったり落ちたりする**——
-しかも落ちた側は「モデルが悪い」に見えるので原因が分からない。
-
----
-
-## 5. 適用段階
-
-適用は独立した段で進め、前段の品質実測なしに編集権限へ広げない。どの段で止めても不整合が
-残らない形にしてある。
-
-### 5.1 ローカル推論の権限
-
-| 段 | 内容 | 状態 |
-|---:|---|---|
-| 0 | 役割別設定でローカルへ opt-in、クラウド CLI は既定のまま | 実装済み |
-| 1 | `--format json` / think の局面別設定 / `variants` による JSON 契約の振り替え | 実装済み |
-| 2 | エンジン側の役割別 readonly 宣言 | 実装済み |
-| 3 | `read` profile と決定的 read ゲート | 実装済み |
-| 4 | `edit` セットによる安全なファイル編集 | **未実装**。段 0〜3 の品質・節約実測が着手条件 |
-| 5 | `--patch` の決定的 SEARCH / REPLACE 適用 | **未実装**。段 4 より小さい必要性が確認できたとき再検討 |
-
-走行中の read → edit / bash 昇格を決定的に行う `ToolPolicy` も**未実装**。静的な定義で回る限り
-足さず、read の権限不足による人手介入が実測で一定数出たときだけ着手する。実装する場合も
-権限は単調増加、prompt の変更は追記だけとし、安定 prefix cache を壊さない。
-
-### 5.2 入口とハーネスの統合
-
-| フェーズ | 内容 | 状態 |
+# agent-herd 実行系設計
+
+対象は `tools/agent-tools/agentcore/agentcore/`、`agents/{ollama,aider}.json`、
+`commands/`、`tools/agent-tools/install.sh`。CLI の綴りと終了コードは
+[`agent-herd-spec.md`](../specs/agent-herd-spec.md)、定義ファイルの項目は
+[`agent-cli-spec.md`](../specs/agent-cli-spec.md)を正とする。この文書は、実装の分け方と
+実行時の流れを説明する。
+
+opencode adapter は 2026-08-29 に同梱を外した。経緯は
+[`2026-08-27-agent-herd-cloud-cli-parity-slash-dispatch-design.md`](../plans/2026-08-27-agent-herd-cloud-cli-parity-slash-dispatch-design.md)
+の §6 に残してある。
+
+## TL;DR
+
+`agent-herd` は、LAN 上の Ollama と Aider を agent-* 系から使うための実行系である。
+呼び出し側は `agents/*.json` を読み、用途と権限に合う argv を組み立てる。実行側は渡された
+argv を忠実に処理し、用途を推測し直さない。この分離により、agent-project や agent-flow は
+`ollama` 固有の分岐を持たずに済む。
+
+主要な決定は次の3点。
+
+1. 定義と明示用途は子プロセスを起こす前に解決する。プロンプト先頭のスラッシュ行も、
+   provider を呼ぶ前に決着させる。どちらの判断にも LLM は使わない。
+2. 自前のツールループを持つ CLI はそのまま1回呼ぶ。single-shot CLI に反復が必要な場合だけ、
+   `agentcore.harness` が限定ツール契約を付ける。
+3. 長時間実行は経過時間だけで殺さない。接続、順番待ち、prefill、decode を分けて観測し、
+   無進捗と文脈枯渇を明示的な終了状態にする。
+
+全クラウド CLI を `agent-herd` 経由にする案と、Ollama 内蔵ループと外付けハーネスを1本に
+まとめる案は採らなかった。どちらも責務の違うものを同じ入口へ押し込むだけで、故障点を増やす。
+
+読むべき人は、adapter、`agents/*.json`、ハーネス、実行ログのどれかを変更する人。
+CLI の使い方だけ知りたい場合は `tools/agent-tools/README.md` で足りる。
+
+## 範囲
+
+### 目標
+
+- agent-* の各エンジンが、共通の CLI 定義だけを見てローカル推論を選べること。
+- plain、ツール実行、対話、再生の各経路で、stdout、stderr、usage、ログの意味を揃えること。
+- CPU 推論の長い待ち時間を許しつつ、停止、空回り、文脈枯渇を検知できること。
+- 読み取り専用を宣言した経路では、モデルへの依頼文ではなく実行直前の検査で書き込みを止めること。
+- single-shot CLI を tmux や agent-loop デーモンなしでも工程実行に使えること。
+
+### 非目標
+
+- クラウド CLI の置き換え。claude、codex、kiro、copilot、cursor の定義は素の CLI を指す。
+- `bash` ツールセットのサンドボックス化。これは OS ユーザー権限で動く。
+- 実行中の read から edit や bash への自動昇格。
+- クライアント側の自動要約と、失敗時の無制限なクラウド再実行。
+- モデルの回答を正解と判定すること。実行完了と成果の受入は別に扱う。
+
+## 構成
+
+実行系は、起動方法を決める部分、実際にモデルや CLI を動かす部分、実行を観測する部分に分かれる。
+
+```mermaid
+flowchart LR
+    caller[agent-project / agent-flow / 人] --> resolve[agentcli + slashroute]
+    defs[agents/*.json\ncommands/*.md] --> resolve
+    resolve -->|argv・stdin・env・timeout| launch[プロセス起動]
+    alias[agent-aider / agent-ollama] --> dispatch[herdcli]
+    launch --> dispatch
+
+    dispatch --> ollama[ollama_adapter]
+    dispatch --> aider[aider_adapter]
+    dispatch --> harness[agentcore.harness]
+
+    ollama --> loop[ollama_loop]
+    loop --> server[Ollama API]
+    aider --> aidercli[Aider CLI]
+    aidercli --> server
+    harness -->|single-shot を反復| resolve
+
+    ollama --> events[JSONL events]
+    harness --> hlog[harness JSONL]
+    events --> observe[status / follow / replay / agent-audit]
+```
+
+### 部品の責務
+
+| 部品 | 担当 | 担当しないこと |
 |---|---|---|
-| P0 配布統合 | `hostenv` 抽出・opencode / aider adapter の agentcore 移設・busybox zipapp・install.sh | 実装済み |
-| P1 入口面 | `agent-herd` サブコマンド面（aider / ollama / opencode / defs / exec / chat / 観測） | 実装済み |
-| P1.5 弁別子の是正 | dashboard の `!spec.interactive` を `needsHeadlessHarness`（`headless_autonomy` で判定）へ・`aider.json` に `interactive` を追加 | 実装済み |
-| P2 段1 ハーネス移植 | toolloop / statemachine を `agentcore.harness` へコピー・`agent-herd harness …`・AST パリティ | 実装済み |
-| P2 段2 移行 | 本文を `_*_body.py` の 1 か所へ畳み、両者が exec する形へ | 実装済み |
-| P3 正典化 | ローカル 8 起動形の `command` / `interactive.command` を `["agent-herd", "<sub>", …]` へ・用途別定義の profile 化（定義 13 → 8） | 実装済み |
+| `herdcli.py` | `argv[0]` とサブコマンドの振り分け、トップレベル引数、`exec`、`chat`、`harness` | モデル呼び出し、定義項目の独自解釈 |
+| `agentcli.py` | 定義探索、profile 適用、variant 解決、argv と stdin の組み立て | プロセス実行、用途の意味づけ |
+| `slashroute.py` | 先頭のスラッシュ行と用途宣言の解決、実行形の選択 | LLM によるルーティング、ファイルやコマンドの実行 |
+| `ollama_adapter.py` | Ollama 用の引数、スキル展開、実行ログの開始、plain と内蔵ループの選択 | 定義ファイルの探索 |
+| `ollama_loop.py` | ストリーミング API、待ち状態、bash/read ループ、コマンド検査 | agent-* の台帳、profile の選択 |
+| `aider_adapter.py` | 接続環境、固定 policy、Aider の起動、実測 usage の抽出 | 反復制御、受入判定 |
+| `harness/toolloop.py` | single-shot CLI への限定ツール契約、受入条件の検査 | provider 固有 API、常駐処理 |
+| `harness/statemachine.py` | YAML の状態、アクション、検査、遷移の実行 | tmux、スケジュール管理 |
+| `hostenv.py` | Ollama 接続変数の補完とプロキシ迂回 | 利用者が明示した環境の上書き |
+| `ollama_context.py` | 文脈上限の解決と使用量の追跡 | 自動要約 |
+| `ollama_events.py` / `ollama_replay.py` | JSONL の記録、状態表示、同一入力の再生 | 実行結果の採点、副作用の再現 |
 
-**P1.5 の教訓を残しておく。** `agents/aider.json` に `interactive` を足すと、**定型業務の実行経路が
-黙って切り替わる**という制約に最初の実装で当たった。agent-dashboard が `spec.interactive` の
-**有無**を「対話ペインで駆動できる CLI か」の代理として読み、無い CLI を statemachine ハーネスへ
-回していたためである。2 つの宣言は別物で、`interactive` は「対話面を提供するか」、
-`headless_autonomy` は「自分で探索・実行まで回せるか」を言う。aider は**両方が真になりうる
-唯一の CLI**（対話もできるがヘッドレスでは single-shot）で、そこで代理が壊れた。
-代理をやめて `headlessAutonomy` で弁別する述語へ直したのが P1.5 である。
+`agentcore.harness` は agent-loop からも使う。本文は agentcore 側だけに置き、agent-loop 側は
+import してフックを差し込む。既定のフックは台帳へ書かず、selection policy も読まない。
 
-### 5.3 退避と昇格の担当
+## 起動形の決定
 
-予算・quota によるローカル退避は agent-profile / node-budget が担う。内容失敗に対しては、設定の
-`fallbacks` が宣言した現在より高コストの候補を 1 段だけ再試行できる（agent-flow は retry 深さ、
-agent-project は `agent_escalation_max` で有界にする）。**品質を採点して無条件にクラウドへ
-投げ直す仕組みではない。**仕事種別 × モデルの品質・消費は agent-audit で測り、設定変更の
-根拠として人の昇格経路へ返す。
+### 定義と profile
 
----
+`agents/*.json` は1ファイルを1エージェントとして扱う。`ollama-json` や `ollama-read` は
+独立したエージェントではなく、`ollama.json` 内の profile である。旧綴りで読み込んでも
+`spec["name"]` は `ollama` のままなので、台帳と格付けの実測が用途別の偽名へ分散しない。
 
-## 6. 不変条件
+profile は接続先、コスト、出力の取得方法など、エージェント単位の項目を base から引き継ぐ。
+`interactive`、`variants`、`slash_native` は引き継がない。これらは起動形ごとの性質であり、
+継承すると single-shot profile に TUI が生えたり、用途の振り替えが二重に掛かったりする。
 
-- 入口の実装は 1 つ。別名は互換シムではなく本体そのもので、旧綴りの argv・stdout / stderr 契約・
-  ログ置き場は変えない。分岐は `basename(argv[0])` の 1 回だけ。
-- サブコマンドは **adapter の名前**であって定義の名前ではない。定義を指して回すのは `exec`。
-  未知の綴りは黙って別解釈せず、明示エラーで止める。
-- 環境補完の実装は `agentcore.hostenv` だけ。3 adapter は再定義せず、同一オブジェクトである
-  ことをテストが縛る。
-- `agents/*.json` は 1 ファイル = 1 エージェント。用途別の起動差は `profiles` が持ち、台帳と
-  格付けへ書く `agent_cli` は常に正典名。
-- readonly は道具なし、read は実行直前の決定的ゲートで強制する。bash の無制限性は隠さない。
-- エンジンは `ollama` という名前で分岐せず、`agents/*.json` の共通契約だけを見る。
-- 推論・観測は Python 標準ライブラリだけで動き、ログや任意 UI（rich）の失敗を成果生成へ
-  波及させない。全画面の alternate screen は使わない——agent-loop の `capture-pane` /
-  `send-keys` から同じ対話面を駆動できる形を保つため。
-- `done` をモデルの自己申告だけで確定しない。外側の verify と受入条件を省略しない。
-- 再生は道具を持たない。測定がワークスペースを変えない。
-- ハーネスの本文は 1 か所。`agent-herd harness` と `agent-loop` は同じ本文をそれぞれの
-  名前空間へ exec する（写しを戻さない）。移植先は既定で他人の台帳へ書かない。
+### 解決順
 
----
+ヘッドレス実行では、次の順で起動形を決める。
 
-## 付録. 統合元の記録
+1. 呼び出し側が agent 名、モデル、用途、権限、対象ファイルを渡す。
+2. `agentcli.load_cli()` が定義を探索し、必要なら profile を適用する。
+3. `--purpose` など、呼び出し側が明示した用途を `slashroute` と `variants` で解決する。
+4. `agentcli.headless_cmd()` が command、mode args、session args、ファイル引数、プロンプト、環境、
+   timeout を1つの実行記述にまとめる。
+5. 呼び出し側がその記述どおりに子プロセスを起動する。
 
-- [`2026-08-25-agent-herd-unified-entry-design.md`](../plans/2026-08-25-agent-herd-unified-entry-design.md)
-  — 入口統合とハーネス移設の全文（代替案 A〜D の検討、命名の候補比較、フェーズ別の受入条件）
-- [`2026-08-08-agent-ollama-expansion-design.md`](../plans/2026-08-08-agent-ollama-expansion-design.md)
-- [`2026-08-07-agent-ollama-tool-disclosure-design.md`](../plans/2026-08-07-agent-ollama-tool-disclosure-design.md)
-- [`2026-08-14-agent-tools-local-first-operation-plan.md`](../plans/2026-08-14-agent-tools-local-first-operation-plan.md)
+プロンプト先頭のスラッシュ行は別の入口からも来るため、プロンプトを所有する launcher が読む。
+`agent-herd ollama` では子プロセス内の `ollama_adapter`、外付けハーネスでは `cmd_run()` などの
+入口が担当する。OS プロセスは既に起動している場合があるが、provider 呼び出しとツール実行より
+前には必ず決着する。
 
-詳細な検討記録として残すが、現行状態・責務境界・未実装範囲の判断は本書と仕様書を優先する。
+明示したモデルは用途別の既定より強い。selection policy が用途別の実測から選んだモデルも、
+用途宣言の既定で上書きしない。詳しい優先順位は
+[`agent-cli-spec.md`](../specs/agent-cli-spec.md)のモデル解決規則に置く。
+
+### スラッシュ行
+
+先頭から連続する `/name [args]` だけをコマンドとして読む。空行より後ろは本文である。
+`slashroute` が扱う名前は次の4種類だが、実装上の入口は1つ。
+
+| 種類 | 例 | 結果 |
+|---|---|---|
+| セッション操作 | `/model`、`/status` | TUI など、その操作を持つ面が処理する |
+| 実行形 | `/ask`、`/find`、`/edit`、`/sm` | ツールセットかハーネスを決める |
+| 用途 | `/verify`、`/judge` | `commands/*.md` と variant から起動形を決める |
+| スキル | `/wiki-use` など | `SKILL.md` を実行材料へ加える |
+
+未知の名前は本文へ流さず止める。`/verfy` のような打ち間違いを通常の依頼として実行すると、
+失敗理由がログから分からなくなるためである。先頭を `/` で始めたい通常文には、空行を1つ置く。
+
+## 実行経路
+
+### plain
+
+用途は JSON 生成、判定、要約などの1往復である。
+
+1. `ollama_adapter` が引数と接続環境を確定し、スラッシュ行と明示スキルを展開する。
+2. `ollama_context` が文脈上限を `--context-limit`、`num_ctx`、`/api/ps`、`/api/show` の順で探す。
+3. adapter が `run_start` を JSONL へ書き、`ollama_loop.run_plain()` を呼ぶ。
+4. `run_plain()` が `/api/generate` のストリームを読み、本文と実測トークン数を集約する。
+5. adapter が本文を stdout、usage と文脈使用量を stderr、`run_end` を JSONL へ出す。
+
+plain はツールを持たない。したがって、Ollama の readonly 宣言はモデルの自制ではなく、
+そもそも書き込み手段を渡さないことで成立する。
+
+### Ollama 内蔵ループ
+
+`ollama` base と `ollama-read` は `ollama_loop.run_loop()` を使う。1ラウンドは、モデル呼び出し、
+コマンド抽出、権限検査、コマンド実行、結果の追記で構成する。
+
+```mermaid
+sequenceDiagram
+    participant A as ollama_adapter
+    participant L as ollama_loop
+    participant O as Ollama API
+    participant T as tool gate / process
+    participant E as EventLog
+
+    A->>E: run_start
+    A->>L: task と toolset
+    loop 最大ラウンドまで
+        L->>O: /api/chat
+        O-->>L: thinking / text / usage
+        L->>E: llm_progress / llm_end
+        alt TASK_COMPLETE
+            L->>L: status=done
+        else コマンドあり
+            L->>T: 検査後に実行
+            T-->>L: exit code と出力
+            L->>E: tool_result
+        else 規約外
+            L->>L: 最大2回だけ言い直し
+        end
+    end
+    L-->>A: text / status / usage
+    A->>E: run_end
+```
+
+`bash` セットはシェルへ渡すため強い。`read` セットは許可コマンドと git の読取 subcommand を
+検査し、引用外のシェルメタ文字や書き込みを伴う `find` を拒否する。許可後もシェルを介さず
+argv で起動する。
+
+同じコマンド、終了コード、出力が3回続けば `no_progress` で止める。出力はダイジェストだけを
+比較し、長いツール結果を会話とは別に抱えない。残り文脈が少ない場合はツール出力を詰め、最低限の
+結果も入らなければ `context_exhausted` で止める。サーバ側の黙った切り捨てには任せない。
+
+### 外付けハーネス
+
+`agentcore.harness` は、Aider のような `headless_autonomy: single-shot` の CLI に反復を付ける。
+`run_prompt()` は定義の `headless_autonomy` だけを見て分岐する。
+
+- `tool-loop` なら CLI を1回呼ぶ。反復とツール実行は CLI の内側にある。
+- `single-shot` ならモデルに `read_files`、`write_files`、`run`、`final` の JSON を返させ、
+  ハーネスが検査して実行する。
+
+外付けハーネスでは、ファイルパスを作業ディレクトリ内へ正規化し、シンボリックリンク経由の逸脱も
+拒否する。`run` はシェルを受け付けず、作業ディレクトリかロード済みスキル内の実行ファイルだけを
+許す。スクリプトは拡張子ごとの固定インタプリタで起動し、shebang に実行方法を決めさせない。
+
+`statemachine` は workflow を検査してから初期状態へ入り、各状態でアクションを実行する。
+`check` がある状態では検査に通るまで同じ状態を再試行し、上限に達したら fail または escalate を
+返す。遷移はモデルの完了報告だけでは決めず、状態出力と検査結果を `next_state.py` に渡して決める。
+
+tmux はこの経路に含めない。agent-loop が tmux で見せる場合も、実行の本文は同じハーネスである。
+
+### Aider
+
+`aider_adapter` は Aider の手前で次の処理だけを行う。
+
+- `hostenv` で `OLLAMA_API_BASE` とプロキシ除外を補う。
+- 固定 policy と `num_ctx`、`num_predict` を一時的な model settings に変換する。
+- `--analytics-log` から実測トークン数を読み、`@agent-usage` に直す。
+- Aider の終了コードをそのまま返す。
+
+Aider 自体は single-shot の編集役である。複数ラウンドや受入検査が要る仕事では、外側のハーネスが
+Aider を呼び直す。対話時も前面は共通 TUI だが、1入力ごとに Aider を1回起動し、会話履歴を
+adapter 内には積まない。
+
+## データと出力
+
+### 標準入出力
+
+| チャネル | 内容 |
+|---|---|
+| stdin | プロンプト本文。定義が `prompt_via: argv` の場合は `agentcli` が argv へ移す |
+| stdout | 成果本文だけ |
+| stderr | 診断、`@agent-usage`、`@agent-context`、`@agent-note`、`@agent-log` |
+| 終了コード | 実行ファイルの値。`herdcli` は丸めない |
+
+Ollama 内蔵ループは `done`、`no_command`、`max_rounds`、`no_progress`、
+`context_exhausted`、`tool_denied` のいずれかで終わる。`done` 以外でも途中成果は捨てず、通常の
+text 出力では末尾に `{"ok": false, "issues": [...]}` を加える。`--format json` では本文契約を
+壊すので加えない。呼び出し側の形式検査と受入検査が未完了を拾う。
+
+`TASK_COMPLETE` はループ規約を終えた印であり、成果の受入判定ではない。エンジンまたはハーネスは
+テスト、ファイル検査、受入条件を別に実行する。ここを混ぜると、モデルが終了マーカーを書いただけで
+作業全体が完了扱いになる。
+
+### セッション継続
+
+継続には2種類ある。
+
+- ネイティブのセッション機能を持つ CLI では、定義の `continue_args` と `resume_args` を argv に
+  差し込む。履歴は各 CLI が保持する。
+- Ollama と Aider では、自分の JSONL から直近6メッセージを読み、次のプロンプトの前へ載せる。
+
+材料を再構築できない場合は新規実行へ黙って落とさない。継続したつもりで履歴なしの実行が走るため、
+起動前にエラーを返す。
+
+### 接続環境
+
+Ollama adapter と Aider adapter は、起動時に同じ `hostenv.load_profile_env()` を呼ぶ。
+呼び出し元が `OLLAMA_HOST`、`OLLAMA_API_BASE`、`NO_PROXY` を揃えていれば、それをそのまま使う。
+不足がある場合だけ `~/.profile` から `OLLAMA_*`、`AGENT_OLLAMA_*`、プロキシ設定を補う。
+既にある値は上書きしない。
+
+`OLLAMA_HOST` と `OLLAMA_API_BASE` は片方からもう片方を作る。Ollama のホストは `NO_PROXY` と
+`no_proxy` の両方へ常に加える。urllib と Aider/LiteLLM が別の変数を見るため、どちらか一方だけを
+設定すると、同じサーバを使うはずの2経路が別の接続先へ向かう。
+
+### ログ
+
+Ollama のログは `~/.agents/logs/ollama/` の JSONL で、run、message、skill、LLM、tool、context、
+error、end のイベントを追記する。`status` と `follow` はこのイベントを読む。書き込みや表示 sink の
+失敗で推論を落とさないため、ログは監査材料ではあるがトランザクション境界ではない。
+
+ハーネスは工程ごとに別の JSONL を持つ。子の stdout がまだ出ていなくても Ollama が生きていると
+分かるように、一時的な progress beacon を子へ渡す。beacon は会話記録ではなく、無進捗監視だけに
+使い、子の終了時に消す。
+
+### 再生
+
+`replay` は Ollama の JSONL から `run_start` と最初の user メッセージを読み、同じ入力を
+model、think、format の組み合わせへ渡す。各組み合わせの結果は別の JSONL に追記し、stdout には
+空応答率、失敗率、所要時間、一致率の集計だけを出す。
+
+元の実行がツールを使っていても、再生時はツールを渡さず、記録されたコマンドも実行しない。
+これは副作用込みのデバッガではなく、推論設定を比べるための入口である。正解ラベルは持たないので、
+一致率が高いことを品質が高いこととは扱わない。
+
+## 待ちと失敗
+
+### Ollama の待ち状態
+
+| 状態 | 進んだとみなす条件 | 既定の打ち切り |
+|---|---|---|
+| connect | HTTP 応答を開いた | 120秒。到達時に `/api/version` が通れば queue へ移る |
+| queue | サーバの生存確認が通る | 時間上限なし。生存確認が連続失敗したら止める |
+| prefill | 最初の thinking または本文が届く | なし |
+| decode | thinking または本文が増える | 180秒の無進捗 |
+
+CPU 推論では prefill に10分以上かかることがある。そこで一律の壁時計 timeout は置かない。
+ただし外付けハーネスには、出力も beacon も動かない子を止める idle timeout と、動き続ける異常系を
+止める4時間の天井がある。ツールコマンドの timeout は通常の壁時計であり、モデル呼び出しの
+無進捗 timeout とは別物である。
+
+### 失敗の伝え方
+
+| 失敗 | 返し方 | 再試行の扱い |
+|---|---|---|
+| 引数、定義、スキル、接続設定の不備 | stderr と非0終了 | 同じ入力のままでは直らない |
+| decode stall、通信断 | stderr と非0終了 | transient として有界に再試行できる |
+| ループの未完了 | 途中本文と未完了 envelope | 成果を読んだ上で上位が判断する |
+| 受入条件または state check の失敗 | harness の失敗か escalate | 同じ state の再試行回数を定義で制限する |
+| ログや任意 UI の失敗 | 実行を続ける | 観測だけが欠ける |
+
+エラー分類の文字列と hint は `agents/*.json` に置く。engine ごとに分類を持たせると、同じ失敗が
+経路によって transient と env に割れるためである。
+
+## 配布
+
+`install.sh` は agentcore を同梱した `agent-herd` zipapp を1つ作る。`agent-aider` と
+`agent-ollama` は同じファイルへのハードリンクで、ファイルシステムが対応しない場合だけコピーに
+落とす。インストーラはコピーも毎回更新する。
+
+`herdcli.resolve()` は `basename(argv[0])` を1回だけ見て別名を adapter に変換する。
+`agent-aider X` と `agent-herd aider X` は同じ関数へ同じ引数で届く。別名用のラッパは置かない。
+
+クラウド CLI の定義はこの zipapp を経由しない。人が `agent-herd exec codex` やトップレベルの
+`--agent codex` を使えば定義経由で起動できるが、エンジンが通常実行する command は素の CLI の
+ままである。adapter が必要になった場合だけ追加する。
+
+## 変更時の境界
+
+新しい用途を足す場合は `commands/<purpose>.md` と必要な `variants` を追加する。engine に
+用途名の許可リストを足さない。起動前の判断は `slashroute` に集める。
+
+新しいローカル adapter を足す場合は、provider 固有の差を adapter に閉じ、`herdcli.ADAPTERS` と
+定義を追加する。旧コマンドとの互換が必要な場合だけ install 時の別名を増やす。
+
+新しいツールセットを足す場合は、プロンプト上の説明だけでは済まない。実行直前の検査、拒否回数、
+ログイベント、未完了状態を実装し、仕様書と契約テストを更新する。安全性を説明できない段階では
+`edit` のように予定名だけ認識して明示エラーにする。
+
+新しいクラウド CLI は、定義の argv で契約を満たせる限り素の CLI を使う。生イベントから本文を
+抽出する、実測 usage を共通形式へ直す、終了コードに出ない失敗を補正するといった処理が必要に
+なった時点で adapter を検討する。
+
+## 付録A 判断記録
+
+### ADR-1 定義で起動し、adapter は必要な CLI だけに置く
+
+判断：engine は `agents/*.json` から argv を組み、ローカル固有の差は `agent-herd` の
+adapter に閉じる。クラウド CLI は直接起動する。
+
+理由：engine 側に `if agent_cli == "ollama"` を置くと、消費側ごとに timeout、usage、
+readonly の扱いが分かれる。反対に、定義だけで動くクラウド CLI へラッパを足しても消える重複はない。
+
+却下案：Ollama の OpenAI 互換 API を既存 CLI に渡す案は、think、structured output、
+`num_ctx`、`keep_alive` を十分に扱えない。全 CLI を `agent-herd` 経由にする案は、ローカル実行系の
+導入ミスでクラウド経路まで止める。
+
+代償と見直し：subprocess が1段増える。クラウド CLI にも argv では表せない補正が必要に
+なったら、その CLI だけ adapter へ昇格する。確信度は高い。
+
+### ADR-2 用途差は profile と起動前ルーティングで表す
+
+判断：`ollama-json` などの用途差は profile に置き、正典名は `ollama` のままにする。
+用途宣言は argv を組む前に、スラッシュ行は provider を呼ぶ前に解決する。
+
+理由：用途は台帳の `operation_class` が既に持っている。`agent_cli` 名にも埋め込むと、
+1つの実行系の証跡が複数候補へ割れる。また、起動後にツールセットを変えると、権限と timeout を
+確定した後に前提が変わってしまう。
+
+却下案：用途ごとに JSON ファイルを置く旧方式と、モデルにツール選択を任せる方式は採らない。
+
+代償と見直し：profile の継承規則が必要になる。独立したエージェントとして予算と格付けを
+分ける必要が出た場合は、同名 profile より実ファイルを優先する既存規則で切り離せる。確信度は高い。
+
+### ADR-3 内蔵ループと外付けハーネスを分ける
+
+判断：`headless_autonomy` を唯一の分岐にし、`tool-loop` は1回起動、`single-shot` は
+`agentcore.harness` で反復する。
+
+理由：Ollama の内蔵ループは bash/read と会話文脈を扱う。外付けハーネスは provider に依存せず、
+4種類の JSON ツールと受入検査を扱う。停止条件も権限も違う。
+
+却下案：2つのループを共通クラスへ畳む案は、違いを条件分岐として同じファイルへ移すだけになる。
+
+代償と見直し：ログ形式と未完了語彙を両方で保守する。両経路で同じ役割を十分に流し、実際の
+重複が確認できるまでは統合しない。確信度は高い。
+
+### ADR-4 権限と受入をモデルの外で判定する
+
+判断：readonly はツールを渡さないか、実行直前の決定的ゲートで強制する。モデルの終了マーカーと
+成果の受入を分ける。
+
+理由：小型モデルは、書き込み禁止や完了条件を文章だけでは守らないことがある。違反後にログで
+気づくのでは遅い。
+
+却下案：system prompt だけで read を保証する案と、モデルの自己採点で done を決める案は
+採らない。
+
+代償と見直し：安全なコマンドも拒否することがある。拒否を緩める場合は allowlist と契約テストを
+先に追加する。走行中の権限昇格は未実装のままにする。確信度は高い。
+
+### ADR-5 時間ではなく進捗を測り、設定変更は再生で確かめる
+
+判断：待ちを4状態に分け、decode と反復の無進捗を検知する。think と format は profile ごとに
+固定し、変更前後は道具なしの `replay` で比べる。
+
+理由：CPU 推論では遅さ自体は故障ではない。一方で、同じコマンドを同じ結果で繰り返す実行や、
+トークンが止まった decode は待っても改善しない。think を一律に有効にしても、長考時間が品質へ
+変わらない局面が実測で多かった。
+
+却下案：全体 timeout 1本、think の一律 on、一律 off、道具付き replay は採らない。
+
+代償と見直し：profile ごとの測定が要る。現在 think を有効にするヘッドレス profile は
+`list-thinking` だけで、他は off。再生結果で改善が確認できた場合に限り変える。確信度は中程度。
+
+## 付録B 未実装
+
+- `edit` ツールセットと決定的な SEARCH/REPLACE 適用。
+- read から edit または bash への実行中昇格。
+- replay 結果への正解ラベルと自動採点。
+- Ollama 内蔵ループと外付けハーネスの共通化。
+
+## 付録C 関連資料
+
+- [`agent-herd-spec.md`](../specs/agent-herd-spec.md)：CLI、環境変数、終了状態、ログイベント。
+- [`agent-cli-spec.md`](../specs/agent-cli-spec.md)：定義探索、profile、variant、argv 組み立て。
+- [`2026-08-25-agent-herd-unified-entry-design.md`](../plans/2026-08-25-agent-herd-unified-entry-design.md)：
+  zipapp 統合とハーネス移設の検討記録。
+- [`2026-08-27-agent-herd-cloud-cli-parity-slash-dispatch-design.md`](../plans/2026-08-27-agent-herd-cloud-cli-parity-slash-dispatch-design.md)：
+  トップレベル入口、スラッシュ行、用途宣言の検討記録。
+- [`2026-08-08-agent-ollama-expansion-design.md`](../plans/2026-08-08-agent-ollama-expansion-design.md)：
+  Ollama の待ち、ツール、文脈管理の検討記録。

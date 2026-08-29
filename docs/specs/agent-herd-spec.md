@@ -56,6 +56,7 @@ basename(argv[0])       解決されるサブコマンド        残りの引数
 |---|---|---|
 | `aider …` | `aider_adapter.main` | adapter へ素通し |
 | `ollama …` | `ollama_adapter.main` | adapter へ素通し |
+| `edit …` | `editagent.main` | adapter へ素通し |
 | `chat [<cli>] [--model M]` | `herdcli.cmd_chat` | 閉じている（下記以外は拒否） |
 | `defs [<名前>] [--json] [--model M] [--purpose P]` | `herdcli.cmd_defs` | 同上 |
 | `exec <cli> [オプション]` | `herdcli.cmd_exec` | 同上 |
@@ -70,7 +71,7 @@ basename(argv[0])       解決されるサブコマンド        残りの引数
 
 ### 3.1 引数面が「素通し」か「閉じている」か
 
-- **adapter サブコマンド**（`aider` / `ollama` / 観測別名）は引数を 1 つも解釈
+- **adapter サブコマンド**（`aider` / `ollama` / `edit` / 観測別名）は引数を 1 つも解釈
   せず adapter へ渡す。adapter 側の `--help` がその面の正典。
 - **入口が持つサブコマンド**（`chat` / `defs` / `exec`）は引数面が閉じている。未知のオプションは
   終了コード 2 で拒否する（黙って下へ流さない——流すと「効いたつもり」が起きる）。
@@ -586,7 +587,26 @@ stderr の `@agent-usage tokens_in=... tokens_out=...` へ載せる（共通の 
 （litellm）で読むので、補完が無いと既定の localhost へ向かうか、接続がプロキシへ流れて
 504 になる。
 
-### 9.2 対話面 — 共通 TUI の aider バックエンド（段 12）
+### 9.2 `edit` — aider を使わない編集適用（対照実装）
+
+`agentcore/editagent.py` + `agentcore/editblock.py`。SEARCH/REPLACE ブロックを受けて
+`editblock` が当てる single-shot のエージェントで、探索もシェルもテスト実行も持たない。
+`--file`（編集対象。無ければ新規作成）・`--read`（参照）・`--message`・`--readonly`
+（dry-run）・`--model` を取り、実測 usage を `@agent-usage` へ出す。
+
+**なぜ同梱するのに定義が無いのか。** これは aider の去就（設計 §11 未決 5）を測るための
+対照実装で、運用の候補ではない。定義（`selfedit.json`）は `tools/agent-tools/eval/agents/`
+に置いてあり、同梱定義は 8 件のまま——`agents/` へ置くと `agent-herd defs` にも
+おすすめ構成の一族にも現れ、実測の裏付けが無いものが運用の選択肢に見える。
+
+曖昧一致の階段は aider 0.86.2 と**同じ 3 段**（完全一致 → 先頭空白のずれ → `...` 中略）で、
+上流の 4 段目（difflib）は `replace_most_similar_chunk` の途中に無条件 `return` があって
+到達しないため写していない（`test_editblock.py` が上流と同じ答えを返すことを縛る）。
+
+2026-08-29 の実測では T2gate 3/3・T4gate 0/3（aider はどちらも 3/3）で、**aider は外さない**
+と決めた。差は階段ではなくプロンプトである（設計 §11 未決 5）。
+
+### 9.3 対話面 — 共通 TUI の aider バックエンド（段 12）
 
 `agents/aider.json` の `interactive` は aider 素の TUI ではなく**共通 TUI**
 （`agent-herd aider --tui`）を起動する。前面の規約（`> ` プロンプト＝`ready_pattern`・

@@ -48,9 +48,16 @@ def _ollama_main():
     return ollama_adapter.main
 
 
+def _edit_main():
+    from agentcore import editagent
+    return editagent.main
+
+
 ADAPTERS = {
     "aider": _aider_main,
     "ollama": _ollama_main,
+    # aider を使わない編集適用（去就を測るための対照実装。設計 §3.6・未決 5）。
+    "edit": _edit_main,
 }
 
 # 観測モードの別名。第 2 実装ではなく、ollama adapter の同名フラグへそのまま渡す
@@ -82,6 +89,7 @@ HELP = f"""使い方: {PROG} [オプション]              # クラウド CLI �
   実行（adapter を直に叩く。引数は adapter へ素通し）:
     aider …               Aider をヘッドレスで回す（= agent-aider …）
     ollama …              ollama を回す（= agent-ollama …。--tools / --tui も含む）
+    edit …                aider を使わない編集適用（SEARCH/REPLACE を自前で当てる）
 
   定義経由（agents/<名前>.json を読んで argv を組む）:
     exec <cli> [オプション]  定義どおりにヘッドレス実行する（本文は stdin）

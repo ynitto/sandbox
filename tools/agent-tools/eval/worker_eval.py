@@ -1146,8 +1146,18 @@ def slice_reads(step: dict, wt: Path) -> "tuple[dict, dict]":
 def invoke(step: dict, wt: Path) -> "tuple[int, str, str, float]":
     """1 回だけエージェントを起こす。argv とプロンプトの作り方は経路ごとの正典に従う。"""
     step, _slice_info = slice_reads(step, wt)
-    prompt = "" if CLI == "aider" else build_prompt(step)
-    argv = aider_argv(step) if CLI == "aider" else ["agent-ollama", MODEL, *WRITE_ARGS]
+    # selfedit は aider と同じ「対象ファイルが決まった single-shot の編集」なので、
+    # プロンプトも argv も aider 経路と同じ作り方にする——ここを変えると、測っているのが
+    # 「編集適用の実装差」ではなく「渡し方の差」になる（未決 5 の対照条件）。
+    prompt = "" if CLI in ("aider", "selfedit") else build_prompt(step)
+    if CLI == "aider":
+        argv = aider_argv(step)
+    elif CLI == "selfedit":
+        argv = engine.headless_cmd("selfedit", MODEL, step["goal"],
+                                   files=step.get("files") or (),
+                                   read_files=step.get("read") or ())["argv"]
+    else:
+        argv = ["agent-ollama", MODEL, *WRITE_ARGS]
     started = time.time()
     try:
         p = subprocess.run(argv, input=prompt, cwd=wt,
@@ -1343,7 +1353,7 @@ def main() -> None:
     ap.add_argument("--tasks", default="T1,T2,T3")
     ap.add_argument("--wall", type=float, default=WALL_LIMIT,
                     help="1 run の壁時計上限（既定は agent_timeout の 600 秒）")
-    ap.add_argument("--cli", default=CLI, choices=("agent-ollama", "aider"),
+    ap.add_argument("--cli", default=CLI, choices=("agent-ollama", "aider", "selfedit"),
                     help="worker として回すエージェント層。道具の作法はそれぞれのものを使う")
     ap.add_argument("--agent-policy", default=AGENT_POLICY,
                     choices=("off", "gemma4-e4b-reliability-v1"),
@@ -1384,6 +1394,14 @@ def main() -> None:
         raise SystemExit("sampling arm は --agent-policy off と独立に評価してください")
     if AGENT_POLICY is not None and CLI != "aider":
         raise SystemExit("--agent-policy は aider 経路のみです")
+    if CLI == "selfedit":
+        # 対照実装の定義は**同梱しない**（運用の候補に見せない）。探索順の先頭へ
+        # 評価専用の置き場を足すだけなので、同梱定義（aider 等）はそのまま解決できる。
+        os.environ.setdefault("KIRO_AGENTS_DIR",
+                              str(Path(__file__).resolve().parent / "agents"))
+    if CLI == "selfedit" and (SAMPLING or NUM_CTX or NUM_PREDICT):
+        raise SystemExit("selfedit 経路は aider 専用の腕（sampling / num-ctx / num-predict）"
+                         "と併用できません。編集適用の実装差だけを測ってください")
     if NUM_CTX < 0 or NUM_PREDICT < 0:
         raise SystemExit("--num-ctx / --num-predict は 0 以上で指定してください")
     HARNESS = str(args.harness or "default").strip()
