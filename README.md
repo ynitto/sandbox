@@ -361,8 +361,7 @@ verdict の種類:
 
 opencode だけホーム直下ではなく `~/.config/opencode`（opencode 自身の設定・スキルの置き場）。
 MCP と指示ファイルは独立した設定ファイルではなく `opencode.json` の中（`mcp` / `instructions`）へ
-マージされる。導入と推論エンジン（別 PC の ollama）の設定は
-[`tools/opencode/README.md`](tools/opencode/README.md) を参照。
+マージされる。
 
 aider はスキルの仕組みを持たない。`install.py --agent aider` は本体を導入したうえで、
 スキルを `~/.agents/skills/` へ置き、**索引だけ**を `~/.aider.conf.yml` の `read:` へ登録する。
