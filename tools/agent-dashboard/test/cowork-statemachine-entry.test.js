@@ -214,7 +214,7 @@ async function main() {
     assert.strictEqual(spec.defaults.topic, 'llm');
   });
 
-  await test('今すぐ実行はデーモンと同じ実行条件でハーネスを起こす', async () => {
+  await test('今すぐ実行はデーモンと同じ実行条件を `/sm` の 1 行でペインへ送る', async () => {
     const root = workspace([
       'prompts:',
       '  - name: 日次ダイジェスト',
@@ -234,11 +234,15 @@ async function main() {
     const res = await cowork.runStateMachine(config, item.id, {});
     assert.strictEqual(res.ok, true, res.error || res.stderr);
     const argv = res.stdout.trim().split(' ');
-    assert.strictEqual(argv[0], 'statemachine');
-    assert.ok(res.stdout.includes('--workflow .statemachine/digest/workflow.yaml'));
+    // 一族（aider / ollama）の共通 TUI は `/sm` を自分でヘッドレスのハーネスへ回す。
+    // dashboard はコマンド面の 1 行を送るだけで、state ごとの起動はしない。
+    assert.strictEqual(argv[0], 'send');
+    assert.ok(res.stdout.includes('/sm .statemachine/digest/workflow.yaml'), res.stdout);
     assert.ok(res.stdout.includes('--param topic=llm'), '宣言したマップが条件になる');
     assert.ok(res.stdout.includes('--param input=今日のぶんを書いて'),
       '自由文は input パラメータとして渡る');
+    assert.ok(!res.stdout.includes('statemachine-use スキルで'),
+      '一族へは発動文ではなくコマンド面の 1 行を送る');
   });
 
   console.log(`\n${passed} tests passed`);

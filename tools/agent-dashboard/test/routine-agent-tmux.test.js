@@ -225,21 +225,4 @@ test('feature preload が routineAgent API を出す', () => {
   assert.ok(loop.configDefaults.routines);
 });
 
-// 制御面を routines へ改称したとき、設定キーも変わった。既定で補完されるのは
-// 「欠けているキー」だけなので、付け替えないと利用者の設定は黙って既定へ戻る。
-test('旧 kiroLoop 設定キーは routines へ引き継がれ、旧キーは残らない', () => {
-  const { migrateLegacyKeys } = require('../src/base/main/config');
-  const migrated = migrateLegacyKeys({ role: 'engineer', kiroLoop: { captureSec: 9, sessionPrefix: 'x' } });
-  assert.deepStrictEqual(migrated.routines, { captureSec: 9, sessionPrefix: 'x' });
-  assert.ok(!('kiroLoop' in migrated), '旧キーは落とす（両方あるとどちらが効くか決まらない）');
-  assert.strictEqual(migrated.role, 'engineer', '他のキーは触らない');
-
-  // 新キーで設定済みなら、そちらが勝つ（付け替えで新しい設定を上書きしない）
-  assert.deepStrictEqual(
-    migrateLegacyKeys({ kiroLoop: { captureSec: 9 }, routines: { captureSec: 3 } }).routines,
-    { captureSec: 3 }
-  );
-  assert.deepStrictEqual(migrateLegacyKeys({ routines: { captureSec: 3 } }), { routines: { captureSec: 3 } });
-});
-
 console.log(`\n${passed} routine-agent-tmux tests passed`);

@@ -330,6 +330,26 @@ assert.match(renderer, /orchInstructionsDirty/, '共通指示の未保存入力�
   assert.ok(out.includes('端末全体で停止'));
   assert.ok(!out.includes('一時停止</button>'), '停止と同じ動作の一時停止ボタンを出さない');
 }
+{
+  const escStub = (s) => String(s == null ? '' : s);
+  const badgeStub = (kind, label) => `<span class="${kind}">${label}</span>`;
+  const labelStub = (w) => ({ dashboard: '画面内AI', flow: 'フロー' }[w] || w);
+  const lifecycleStub = (v) => ({ run: '稼働', pause: '一時停止', stop: '停止' }[v] || v);
+  // eslint-disable-next-line no-new-func
+  const panel = new Function('esc', 'orchBadge', 'amigosWorkloadLabel', 'orchLifecycleLabel',
+    `${grab('orchStatusPanelHtml')}; return orchStatusPanelHtml;`)(
+    escStub, badgeStub, labelStub, lifecycleStub);
+  const out = panel({
+    control: { revision: 1, workloads: { dashboard: { lifecycle: 'run' }, flow: { lifecycle: 'run' } } },
+    budget: { knownWorkloads: ['dashboard', 'flow'] },
+    status: [
+      { tool: 'agent-resource-controller', workload: 'dashboard', fresh: true, revision_applied: 1 },
+      { tool: 'agent-flow', workload: 'flow', fresh: true, revision_applied: 1 },
+    ],
+  });
+  assert.ok(!out.includes('agent-resource-controller'), '内部ハートビート名をサービス一覧に出さない');
+  assert.ok(out.includes('agent-flow'), '実行サービスの識別は残す');
+}
 assert.match(renderer, /個別のrunを止める操作ではありません/);
 
 // --- プロジェクト共通チェック: CLI名を解釈せず設定と意味だけを表示する ---

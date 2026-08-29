@@ -576,7 +576,9 @@ function overview(config, opts = {}) {
 
 function routineTierOverview(config) {
   try {
-    const profile = profiles.load(config);
+    // 一族の 1 語（`herd`）は実測で具体候補へ展開してから見せる。宣言のまま見せると、
+    // 人は `herd` を選べてしまい、起こす段になって「agents/herd.json が無い」で落ちる。
+    const profile = profiles.loadResolved(config);
     const routineTiers = Object.entries(profile.tiers || {})
       .sort((a, b) => b[1].order - a[1].order)
       // 「今すぐ実行」は自動選択の結果だけを見る画面ではなく、今回だけ使う組み合わせを
@@ -875,6 +877,50 @@ function harnessWorkflowArg(cwd, workflowPath, config) {
   return rel;
 }
 
+// 一族の共通 TUI へ送る実行形の 1 行（`/sm <名前> [--param k=v]`）。
+//
+// 名前の綴りは 2 つある。ハーネス側（`_tl_statemachine_args`）は**実在するファイルなら
+// `--workflow`、そうでなければ `--entry`** として読むので、こちらは位置が分かるなら
+// 作業フォルダ相対のパスを渡す（どのワークフローを回すかが 1 行を見れば分かる）。
+// 位置を特定できない項目だけ名前を渡し、entry 宣言からの解決に委ねる。
+//
+// 引数は `shlex.split` で読まれる。空白や引用符を含む条件をそのまま並べると別のトークンに
+// 割れるので、値ごと 1 引数として引用しておく。
+function stateMachineSlashCommand(item, cwd, config, values) {
+  let ref = '';
+  try {
+    const file = stateMachineFilePath(item, item.repo || item.cwd || cwd, config);
+    // **実在を確かめてから渡す。** ハーネスは「実在するファイルなら --workflow、
+    // でなければ --entry」で読み分けるので、実在しないパスを渡すと entry 名として
+    // 引かれて「そんな entry は無い」という的外れな失敗になる。
+    if (file && fs.existsSync(file)) ref = harnessWorkflowArg(cwd, file, config);
+  } catch {
+    ref = '';   // 作業フォルダの外・解決不能: 名前で渡す
+  }
+  if (!ref) {
+    ref = String((item._src && item._src.loop && item._src.loop.promptName)
+      || item.workflow || item.file || item.name || '').trim();
+  }
+  if (!ref) return '';
+  // 並びはキー順。デーモン（`loopentry.statemachine_command`）と**同じ 1 行**にする
+  // ——同じ項目を手動と定時で回したとき、ログに出る綴りまで一致させる。
+  const parts = [`/sm ${shlexQuote(ref)}`];
+  for (const key of Object.keys(values || {}).sort()) {
+    parts.push(`--param ${shlexQuote(`${key}=${values[key]}`)}`);
+  }
+  return parts.join(' ');
+}
+
+// `shlex.split` が 1 トークンとして読む綴りへ畳む。**引用は必要なときだけ**——値の大半は
+// 日本語なので、ASCII 以外を一律に引用すると画面に出る 1 行が引用符だらけになって読めない。
+// 空白と、シェル / shlex が特別扱いする記号を含むときだけ包む。
+function shlexQuote(text) {
+  const raw = String(text == null ? '' : text);
+  if (!raw) return "''";
+  // eslint-disable-next-line no-useless-escape
+  return /[\s'"\\$`|&;<>()\[\]{}*?!#~]/.test(raw) ? `'${raw.replace(/'/g, "'\\''")}'` : raw;
+}
+
 // agent-loop statemachine ハーネス（限定ツールループ）の起動引数。
 // モデルは段に宣言されているときだけ --model で今回の実行に明示する。
 // 空欄なら agent-loop / CLI 定義の default_model に任せる。
@@ -1022,7 +1068,7 @@ function runLoop(config, itemIdValue, parameters, tier = '') {
   const prompt = Array.isArray(item.args) ? undefined : withGlobalInstructions(config, resolvedPrompt);
   const selected = resolveRoutineAgent(config, cwd, tier);
   if (prompt && needsHeadlessHarness(selected.spec)) {
-    // 対話ペインを持たない CLI（aider・素の ollama）。**tmux とは無関係**——tmux は
+    // ペインで仕事にならない CLI（agent-herd 一族と single-shot）。**tmux とは無関係**——tmux は
     // コマンドを送り結果を見せる手段なので、ここも定型業務と同じウィンドウ経路で見せる。
     // 変わるのは中で走らせるものだけで、対話 CLI の代わりに agent-loop の単発実行
     // （`run`。ツールループ非内蔵の CLI には限定ツール契約でツール実行を供給する）を起こす。
@@ -1088,11 +1134,15 @@ function runStateMachine(config, itemIdValue, parameters, tier = '') {
   const raw = typeof parameters === 'string' ? (parameters ? { input: parameters } : {}) : parameters;
   const values = validateParameters(spec, raw);
   const effectiveValues = { ...spec.defaults, ...values };
-  // statemachine-use は CLI ではなくスキル。エージェントセッションへ
-  // 「statemachine-use スキルで xxx ステートマシンを実行して」を送って発動する。
+  // 送るのは**コマンド面の 1 行**である。一族（agent-herd の共通 TUI）は `/sm` を自分で
+  // 解釈してヘッドレスのハーネスへ回す（設計 2026-08-27 §7.5）ので、こちらは実行形を
+  // 名指すだけでよい。クラウド CLI は `/sm` を知らないので、自分でスキルを見つけて
+  // 1 セッションで通せるスキル発動文を送る——state ごとにヘッドレス起動するより、
+  // 起動と文脈再構築のぶんだけ安い。
   // ループ設定に対となる定期プロンプトがある統合項目はその本文を優先する。
   let args;
   let prompt;
+  const selected = resolveRoutineAgent(config, cwd, tier);
   const pairedName = item._src && item._src.loop && item._src.loop.promptName;
   if (Array.isArray(item.args)) {
     args = [...item.args];
@@ -1101,50 +1151,69 @@ function runStateMachine(config, itemIdValue, parameters, tier = '') {
     const smName = item.workflow || item.file || item.name;
     const pairedBody = pairedName ? resolveLoopPromptText(item.repo || item.cwd, pairedName, config) : '';
     // `statemachine:` を宣言した entry の prompt は**実行条件（自由文）であって指示文では
-    // ない**ので、対話 CLI へはスキル発動文を送り、本文は条件として下のパラメータ節へ回す。
+    // ない**ので、対話 CLI へは起動の 1 行を送り、本文は条件として下のパラメータ節へ回す。
     // 宣言の無い（本文の言い回しで推測した）対では、従来どおり本文がそのまま指示文になる。
-    const instruction = (!spec.entryDeclared && pairedBody)
-      ? pairedBody
-      : `statemachine-use スキルで${smName}ステートマシンを実行して`;
-    const smPrompt = applyParameters(instruction, effectiveValues)
-      + stateMachineParameterBlock({ ...(spec.entryInput || {}), ...values });
-    prompt = withGlobalInstructions(config, smPrompt);
-    // 非ウィンドウ実行（非 win32 / runWindow:false）用の従来 send 引数も併せて用意する
-    const legacy = (!Object.keys(values).length && !spec.entryDeclared)
-      ? (pairedName || `${smName} ステートマシンを実行して`)
-      : smPrompt;
-    args = ['send', legacy];
-  }
-  const selected = resolveRoutineAgent(config, cwd, tier);
-  if (needsStateMachineHarness(selected.spec)) {
-    if (Array.isArray(item.args)) throw new Error('明示 args の定型業務は headless 実行に対応していません');
-    const workflowPath = stateMachineFilePath(item, item.repo || item.cwd || cwd, config);
-    if (!workflowPath) throw new Error('workflow.yaml の場所を特定できません');
-    // 対話セッションを持たない CLI（aider・素の ollama）は、agent-loop の statemachine
-    // ハーネス（限定ツールループ）へ実行契約を渡す。**tmux ウィンドウで見せるのは変わらない**
-    // ——tmux はコマンドを送り結果を見せる手段で、対話 CLI 専用の仕組みではない。
-    // 段にモデルが宣言されているときだけ --model で今回の実行に明示する。
-    // 空欄なら agent-loop / CLI 定義の default_model に任せる。
-    const smArgs = stateMachineHarnessArgs(cwd, workflowPath, selected, effectiveValues, config);
-    const command = cfg.loopCommand || cfg.loopProvider || 'agent-loop';
-    if (cfg.runWindow !== false && supportsRunWindow()) {
-      const res = runCommandWindow({
-        command,
-        args: smArgs,
-        cwd,
-        sessionKey: selected.cli,
-        title: '定型業務を実行',
-        message: `別ウィンドウ（tmux）で ${selected.cli} のステートマシン実行を開始しました`,
-      });
-      recordRun(cfg, { ...item, type: 'state-machine' }, res);
-      return res;
+    const smCommand = isHerdFamily(selected.spec)
+      ? stateMachineSlashCommand(item, cwd, config, { ...(spec.entryInput || {}), ...effectiveValues })
+      : '';
+    if (smCommand && (spec.entryDeclared || !pairedBody)) {
+      // `/sm` は**先頭行でなければ効かない**（ルータは本文の先頭ブロックしか読まない）。
+      // 共通指示は前置しない——この行はハーネスへ回るので、ペイン向けの指示は読まれない。
+      // 効かないものを載せると「宣言したのに効かない」を新しく作る。
+      prompt = smCommand;
+      args = ['send', smCommand];
+    } else {
+      const instruction = (!spec.entryDeclared && pairedBody)
+        ? pairedBody
+        : `statemachine-use スキルで${smName}ステートマシンを実行して`;
+      const smPrompt = applyParameters(instruction, effectiveValues)
+        + stateMachineParameterBlock({ ...(spec.entryInput || {}), ...values });
+      prompt = withGlobalInstructions(config, smPrompt);
+      // 非ウィンドウ実行（非 win32 / runWindow:false）用の従来 send 引数も併せて用意する
+      const legacy = (!Object.keys(values).length && !spec.entryDeclared)
+        ? (pairedName || `${smName} ステートマシンを実行して`)
+        : smPrompt;
+      args = ['send', legacy];
     }
-    // ウィンドウを開けない環境（CI 等）: 非同期に完走させ、結果契約（RESULT 行）を返す。
-    return runCommandCapture(command, smArgs, { cwd, timeoutMs: item.timeoutMs || 1800000 })
-      .then((res) => {
+  }
+  if (needsHeadlessHarness(selected.spec)) {
+    // ペインを持たない定義（interactive 未宣言）だけがここへ来る。実行契約を組めるなら
+    // ハーネスへ、組めないなら本文のまま単発実行へ回す。
+    if (Array.isArray(item.args)) throw new Error('明示 args の定型業務は headless 実行に対応していません');
+    const inferredPair = !!(item._src && item._src.loop && !spec.entryDeclared);
+    const workflowPath = inferredPair
+      ? '' : stateMachineFilePath(item, item.repo || item.cwd || cwd, config);
+    if (workflowPath) {
+      const smArgs = stateMachineHarnessArgs(cwd, workflowPath, selected, effectiveValues, config);
+      const command = cfg.loopCommand || cfg.loopProvider || 'agent-loop';
+      if (cfg.runWindow !== false && supportsRunWindow()) {
+        const res = runCommandWindow({
+          command,
+          args: smArgs,
+          cwd,
+          sessionKey: selected.cli,
+          title: '定型業務を実行',
+          message: `別ウィンドウ（tmux）で ${selected.cli} のステートマシン実行を開始しました`,
+        });
         recordRun(cfg, { ...item, type: 'state-machine' }, res);
         return res;
-      });
+      }
+      // ウィンドウを開けない環境（CI 等）: 非同期に完走させ、結果契約（RESULT 行）を返す。
+      return runCommandCapture(command, smArgs, { cwd, timeoutMs: item.timeoutMs || 1800000 })
+        .then((res) => {
+          recordRun(cfg, { ...item, type: 'state-machine' }, res);
+          return res;
+        });
+    }
+    return runHeadlessRoutine(config, {
+      cwd,
+      prompt,
+      acceptance: [],
+      selected,
+      title: '定型業務を実行',
+      timeoutMs: item.timeoutMs,
+      record: (res) => recordRun(cfg, { ...item, type: 'state-machine' }, res),
+    });
   }
   const plan = routineLaunchPlan(config, cwd, tier, selected);
   const res = makeLoopProvider(cfg, config).run({
@@ -1230,7 +1299,7 @@ function runAdhoc(config, payload = {}) {
     ok: !!(res && res.ok),
     message: String((res && (res.error || res.message)) || '').trim().slice(0, 300),
   });
-  // 対話ペインを持たない CLI（段の降格で aider へ落ちた場合など）も同じウィンドウで見せる。
+  // ペインで仕事にならない CLI（一族・段の降格で aider へ落ちた場合など）も同じウィンドウで見せる。
   // 起動するものが対話セッションか単発実行かの違いだけで、経路は分けない。
   if (needsHeadlessHarness(selected.spec)) {
     return runHeadlessRoutine(config, {
@@ -1264,41 +1333,21 @@ const ROUTINE_WORKLOAD = 'routine';
 // 「人が選んだ上書き」ではなく既定の残骸とみなして無視する。
 const LEGACY_CHAT_COMMAND = 'kiro-cli chat --trust-all-tools';
 
-// ツールループを内蔵しない CLI は、対話ペインではなく限定ツール契約のハーネス
-// （agent-loop の run / statemachine）で回す。
+// 対話面を宣言していない CLI だけ、限定ツール契約のハーネス（agent-loop の run /
+// statemachine）で回す。**それ以外はすべて対話ペイン（tmux + send-keys）である。**
 //
-// **判定は定義の headless_autonomy で行う。interactive の有無で代理してはいけない。**
-// 対話面を提供するか（interactive）と、自分で探索・実行まで回せるか（headless_autonomy）は
-// 別の宣言である。両者を同じフラグで表すと、aider のように「対話もできるが
-// ヘッドレスでは single-shot」の CLI を取り違え、定型業務が黙ってハーネスから対話送信へ
-// 切り替わる（実際 2026-08-25 に aider.json へ interactive を足して踏んだ）。
+// 経路を 1 本にするのは効率のためである。ステートマシンを state ごとにヘッドレス起動
+// すると、CLI の起動・文脈の再構築・システムプロンプトの再送が state の数だけ掛かる
+// （クラウド CLI ではトークン消費が跳ねる）。ペインなら 1 セッションで通せる。
+// 実行形の違いは**送る本文**で表す——一族には `/sm`（TUI がヘッドレスのハーネスへ回す。
+// agent-herd 設計 2026-08-27 §7.5）、クラウド CLI にはスキル発動文。
 //
-// interactive を持たない CLI はそもそもペインで駆動しようが無いので、こちらもハーネスへ。
+// `headless_autonomy` はここでは見ない。あれはヘッドレス 1 回で自走できるかの申告で、
+// 「ペインで駆動できるか」とは別である（aider は single-shot だが TUI を持つ）。
+// ハーネスは**ペインを開けないときの逃げ道**として残る（CI・`runWindow: false`・
+// interactive を宣言していない定義）。RESULT 契約と受入条件ゲートもそちら側にある。
 function needsHeadlessHarness(spec) {
-  if (!spec || !spec.interactive) return true;
-  // JS ローダ（agentCli.js）は camelCase へ正規化する。定義ファイルの綴りは
-  // headless_autonomy だが、ここへ来る spec は正規化済みなので headlessAutonomy。
-  return String(spec.headlessAutonomy || 'single-shot') === 'single-shot';
-}
-
-// 定型業務（ステートマシン）だけは、上の判定に **agent-herd 一族** を足す。
-//
-// ペインへ送る本文が違うからである。定期プロンプトとアドホックが送るのは人が書いた
-// 指示文そのもので、どの CLI でも「読んで答える」で意味を成す。対して定型業務が送るのは
-// 起動文——`statemachine-use スキルで◯◯ステートマシンを実行して`——で、これを実行に
-// 変えられるのは**自然文からスキルを見つけて自分で回すクラウド CLI だけ**である。
-// 一族（ollama / aider）の対話面は我々の共通 TUI で、そのコマンド語彙は agentcore の
-// ルート表（`/sm` `/edit` …）であり、スキルの解決は先頭の `/名前` しか見ない
-// （`ollama_skills`）。起動文は本文として推論へ流れ、モデルが「実行できません」と
-// 答えて終わる（2026-08-29 に踏んだ）。
-//
-// `headless_autonomy` では弁別できない。ollama の `tool-loop` はヘッドレスの argv
-// （`--tools bash`）についての申告で、TUI は道具なしで起きるからである。
-// ハーネスへ回した結果は `/sm` を対話で打ったときと同じ実行になる（agent-herd 設計
-// 2026-08-27 §7.5）。違うのは経路が 1 段短いことと、dashboard が読む RESULT 契約が
-// 残ることだけである。
-function needsStateMachineHarness(spec) {
-  return needsHeadlessHarness(spec) || isHerdFamily(spec);
+  return !spec || !spec.interactive;
 }
 
 // 一族の判定は herd-family.js と同じ機械的な規則——`command[0]` が `agent-herd` の定義が
@@ -1327,10 +1376,19 @@ function resolveRoutineAgent(config, repo, executionChoice = '') {
     ? executionChoice : { tier: executionChoice };
   const selectedTier = String(requested.tier || '').trim();
   if (!selectedTier) return base;
-  const profile = profiles.load(config);
+  // 起こす側も展開後を読む（見せた候補と起こす候補を同じ表から引く）。
+  const profile = profiles.loadResolved(config);
   const tierSpec = (profile.tiers || {})[selectedTier];
   if (!tierSpec) {
     throw new Error(`段「${selectedTier}」は定義されていません`);
+  }
+  // `herd` を展開できなかった段は候補が空になる。理由を言わないと
+  // 「候補がありません」だけが返り、実測待ちなのか設定漏れなのか分からない。
+  const unresolved = (profile.herdUnresolved || []).filter((row) => row && row.tier === selectedTier);
+  if (unresolved.length && !(tierSpec.candidates || []).length) {
+    throw new Error(`段「${selectedTier}」の一族（herd）を展開できません。`
+      + '実測（qualifications.json）に候補がまだありません'
+      + '（agent-audit seed / qualify で作られます）');
   }
   const explicitlySelected = executionChoice && typeof executionChoice === 'object';
   const candidate = explicitlySelected
@@ -1601,8 +1659,10 @@ function applyManagedItems(items, config) {
     try { raw = fs.readFileSync(file, 'utf8'); } catch { raw = 'prompts:\n'; }
     let next = raw;
     for (const item of repoItems) {
+      // ステートマシンは `statemachine:` を宣言して書く（本文の言い回しに実行を託さない）。
+      // 自由文があれば条件として一緒に渡し、無ければ宣言だけの entry になる。
       const prompt = item.type === 'state-machine'
-        ? (item.schedule ? `statemachine-use スキルで${item.workflow || item.id}ステートマシンを実行して` : null)
+        ? (item.schedule ? String(item.prompt || '').trim() : null)
         : String(item.prompt || '').trim();
       next = upsertManagedAgentPrompt(next, item, prompt).text;
     }
@@ -1735,8 +1795,8 @@ module.exports = {
   inspectCoworkRoot, setCoworkRoot,
   templateParameterKeys, stateMachineInputSpec, stateMachineFilePath, resolveLoopAcceptance,
   needsHeadlessHarness,
-  needsStateMachineHarness,
   isHerdFamily,
+  stateMachineSlashCommand,
   routineParameterSpec, validateParameters, applyParameters, stateMachineParameterBlock,
   stateMachineHarnessArgs, harnessWorkflowArg,
 };

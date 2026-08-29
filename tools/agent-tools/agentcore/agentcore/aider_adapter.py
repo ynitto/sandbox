@@ -242,9 +242,23 @@ def main(argv=None):
             except OSError as exc:
                 return _error(f"could not create managed model settings: {exc}")
             settings_path = Path(settings_name)
-            with os.fdopen(fd, "w", encoding="utf-8") as stream:
-                json.dump([entry], stream)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                    json.dump([entry], stream)
+            except OSError as exc:
+                # 作成に成功して書込に失敗する経路（ディスク満杯など）。ここを素通しにすると
+                # 例外が main を突き抜け、**中身の無い settings ファイルを指したまま**
+                # aider が起動しうる——policy が黙って外れる形の失敗になる。
+                # 消すのは finally の仕事なので、ここは理由を出して閉じるだけ（fail closed）。
+                return _error(f"could not write managed model settings: {exc}")
             forwarded = ["--model-settings-file", settings_name, *forwarded]
+            # 実効 model settings を台帳が拾えるように 1 行で出す（08-18 §7.2 の残り 1 項目）。
+            # policy 本文は載せない——6.3 KB を毎回 stderr へ流す意味がなく、同一性は
+            # `@agent-policy` の sha256 が既に担保している。
+            print("@agent-settings " + json.dumps(
+                {**entry, **({"system_prompt_prefix": f"<policy {POLICY_ID}>"}
+                             if policy else {})},
+                ensure_ascii=False, sort_keys=True), file=sys.stderr)
         if policy:
             print(f"@agent-policy id={POLICY_ID} sha256={POLICY_SHA256}", file=sys.stderr)
         if managed["tui"]:

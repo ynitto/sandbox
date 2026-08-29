@@ -37,6 +37,7 @@ import time
 import urllib.error
 import urllib.request
 
+from agentcore import limits, stopreason
 from agentcore.ollama_events import HEARTBEAT_INTERVAL_SEC, PROGRESS_INTERVAL_SEC
 
 # 既定値。すべて環境変数で上書きできる（バックアップ運転の現場で調整する余地を残す）。
@@ -88,6 +89,14 @@ DEFAULT_TOOLSET = "bash"
 # `edit` セットは適用拡大設計 §7（段 4）。実装前に名前だけ受けて明示的に断る——
 # 黙ってモデル名として解釈されると、原因の分からない起動失敗になる。
 PLANNED_TOOLSETS = ("edit",)
+# 書き込める toolset。回数上限の「編集の周だけ締める」腕（`AGENT_MAX_TOOL_ROUNDS_WRITE`）が
+# どの実行に効くかは、statemachine の `write:` 宣言と**同じ意味**でここが決める。
+WRITE_TOOLSETS = ("bash",)
+
+
+def toolset_writes(toolset: "str | None") -> bool:
+    """その toolset で作業ツリーを変えられるか（read セットは変えられない）。"""
+    return (toolset or DEFAULT_TOOLSET) in WRITE_TOOLSETS
 
 # read セットの語彙。**ファイルを変えられないコマンドだけ**を置く。sed（-i）・awk
 # （print > file）・tee・xargs・シェル類は自前の書き込み手段を持つので入れない。
@@ -944,5 +953,8 @@ def run_loop(model: str, task: str, *, cwd: "str | None" = None, emit=None,
         "tokens_out": tokens_out,
         "rounds": round_no,
         "status": status,
+        # 層をまたいで同じ綴りで読める停止理由。**`status` は改名しない**——replay と
+        # イベントの契約になっていて、改名すると過去のログが読めなくなる。
+        "stop_reason": stopreason.normalize(status),
         "context": tracker.snapshot() if tracker is not None else {},
     }

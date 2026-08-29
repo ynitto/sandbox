@@ -20,6 +20,7 @@ UNITS = ("coverage", "worker", "judge", "retrieval")
 # manifest に残らないまま結果だけが results/ に残る——計画 2026-08-22 §4.2 A3。
 WORKER_ARM = (("tasks", "--tasks"), ("agent_policy", "--agent-policy"),
               ("num_ctx", "--num-ctx"), ("num_predict", "--num-predict"),
+              ("max_rounds", "--max-rounds"),
               ("temperature", "--temperature"), ("top_p", "--top-p"),
               ("top_k", "--top-k"), ("resample", "--resample"))
 
@@ -71,6 +72,8 @@ def main() -> int:
     ap.add_argument("--agent-policy", choices=("off", "gemma4-e4b-reliability-v1"))
     ap.add_argument("--num-ctx", type=int)
     ap.add_argument("--num-predict", type=int)
+    ap.add_argument("--max-rounds", type=int,
+                    help="ツールループの呼び出し回数上限（agent-ollama 経路のみ）")
     ap.add_argument("--temperature", type=float)
     ap.add_argument("--top-p", type=float)
     ap.add_argument("--top-k", type=int)

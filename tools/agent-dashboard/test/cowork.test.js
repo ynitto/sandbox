@@ -26,10 +26,15 @@ const realVerifyWslLaunch = wslMain.verifyWslLaunch;
 wslMain.verifyWslLaunch = () => ({ ok: true, error: '' });
 
 let passed = 0;
+// 実行経路の一部（ハーネスの結果契約を待つ runCommandCapture）は Promise を返す。
+// 宣言順のまま 1 本ずつ await する——同期のテストは従来どおりの書き味のままでよい。
+let queue = Promise.resolve();
 function test(name, fn) {
-  fn();
-  passed += 1;
-  console.log(`ok - ${name}`);
+  queue = queue.then(async () => {
+    await fn();
+    passed += 1;
+    console.log(`ok - ${name}`);
+  });
 }
 
 function tmpRepo() {
@@ -588,6 +593,8 @@ test('runStateMachine は入力値を構造化した実行指示へ組み込む'
     const r = cowork.runStateMachine(config, 'sm1', { input: 'app', 'context.version': 'v1.2' });
     assert.strictEqual(r.launched, true);
     const body = fs.readFileSync(r.scriptFile, 'utf8');
+    // 既定 CLI（クラウド）はスキル発動文を 1 セッションで通す。state ごとにヘッドレス
+    // 起動すると起動と文脈再構築が state の数だけ掛かる。
     assert.ok(body.includes('statemachine-use スキルでreleaseステートマシンを実行して'), 'スキル発動文を送る');
     assert.ok(body.includes('- input: "app"') && body.includes('- context.version: "v1.2"'),
       '入力値をキー付きで渡す');
@@ -807,7 +814,7 @@ test('windowScript は cd → send 実行 → 送信先ペインのセッショ�
   assert.ok(script.includes('read _'), '特定できないときはウィンドウを残して原因を読めるようにする');
 });
 
-test('state-machine 実行は statemachine-use スキルを発動するプロンプトを agent-loop send で送る', () => {
+test('state-machine 実行は対話 CLI へ agent-loop send で送る', async () => {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'cowork-sm-send-'));
   writeMachine(repo, 'release', [
     'name: リリース',
@@ -823,12 +830,12 @@ test('state-machine 実行は statemachine-use スキルを発動するプロン
     runWindow: false,   // 引数の組み立てを見るテスト（窓を開く経路は別テスト）
     items: [{ id: 'sm1', type: 'state-machine', name: 'リリース', workflow: 'release', repo }],
   } };
-  const r = cowork.runStateMachine(config, 'sm1');
+  const r = await cowork.runStateMachine(config, 'sm1');
   assert.ok(r.ok, `echo が成功する: ${r.error || r.stderr}`);
   assert.strictEqual(r.stdout, 'send release ステートマシンを実行して');
 });
 
-test('runLoop / runStateMachine は実行履歴（historyFile）へ記録し readHistory で新しい順に読める', () => {
+test('runLoop / runStateMachine は実行履歴（historyFile）へ記録し readHistory で新しい順に読める', async () => {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'cowork-hist-'));
   const historyFile = path.join(repo, 'history.jsonl');
   writeMachine(repo, 'release', [
@@ -850,7 +857,7 @@ test('runLoop / runStateMachine は実行履歴（historyFile）へ記録し rea
     ],
   } };
   assert.ok(cowork.runLoop(config, 'daily').ok);
-  assert.ok(cowork.runStateMachine(config, 'sm1').ok);
+  assert.ok((await cowork.runStateMachine(config, 'sm1')).ok);
   assert.ok(cowork.runLoop(config, 'daily').ok);
 
   const loopLogs = cowork.itemLogs(config, 'daily');
@@ -860,7 +867,7 @@ test('runLoop / runStateMachine は実行履歴（historyFile）へ記録し rea
   const smLogs = cowork.itemLogs(config, 'sm1');
   assert.strictEqual(smLogs.history.length, 1);
   assert.strictEqual(smLogs.history[0].type, 'state-machine');
-  assert.match(smLogs.history[0].message, /send release-runner|send release/);
+  assert.match(smLogs.history[0].message, /send release/);
 });
 
 test('itemLogs はリポジトリのログ候補を返し readLog は末尾を読む（候補外パスは拒否）', () => {
@@ -918,4 +925,9 @@ test('定型業務の作成指示は statemachine-use の作成モードと生�
   assert.match(prompt, /実行はしない/);
 });
 
-console.log(`\n${passed} cowork tests passed`);
+queue.then(() => {
+  console.log(`\n${passed} cowork tests passed`);
+}).catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

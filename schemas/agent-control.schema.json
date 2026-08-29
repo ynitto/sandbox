@@ -153,7 +153,7 @@
       "description": "status/<tool>-<pid>.json — 各エンジンの適用状況ハートビート（原子書換。ts + fresh_after_sec を過ぎた記録は stale として扱う）",
       "required": ["tool", "workload", "ts"],
       "properties": {
-        "tool": {"type": "string", "description": "エンジン名（agent-loop / agent-project / agent-flow / agent-amigos …）。旧値 kiro-loop は読取互換のみの非推奨値で、新規の status は agent-loop を書く"},
+        "tool": {"type": "string", "description": "エンジン名（agent-loop / agent-project / agent-flow / agent-amigos …）"},
         "workload": {"type": "string"},
         "node": {"type": "string", "description": "ノード ID"},
         "pid": {"type": "integer"},

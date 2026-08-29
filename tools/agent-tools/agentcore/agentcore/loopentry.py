@@ -161,6 +161,45 @@ def statemachine_spec(entry, *, prompt=None) -> "dict | None":
     }
 
 
+
+# `shlex.split` が 1 トークンとして読む綴り。**引用は必要なときだけ**——条件の値は
+# ほとんど日本語で、`shlex.quote` のように ASCII 以外を一律で包むと、ペインに出る 1 行が
+# 引用符だらけになって人が読めない。空白とシェルが特別扱いする記号だけを見る。
+# dashboard 側の写しは `cowork.js` の `shlexQuote`（同じ規則・同じ出力）。
+_UNSAFE_RE = re.compile(r"""[\s'"\\$`|&;<>()\[\]{}*?!#~]""")
+
+
+def _shell_token(text: str) -> str:
+    raw = str(text or "")
+    if not raw:
+        return "''"
+    return "'" + raw.replace("'", "'\\''") + "'" if _UNSAFE_RE.search(raw) else raw
+
+
+def statemachine_command(spec: "dict | None", *, slash: bool) -> str:
+    """対話ペインへ送る**実行形の 1 行**。宣言が無ければ空文字。
+
+    `slash=True`（agent-herd 一族）は共通 TUI のコマンド面へ `/sm <名前> [--param k=v]`。
+    TUI がそれを受けてヘッドレスのハーネスへ回す（agent-herd 設計 2026-08-27 §7.5）。
+    `slash=False`（クラウド CLI）はスキル発動文。あちらは自分でスキルを見つけて
+    1 セッションで通せるので、state ごとにヘッドレス起動するより起動と文脈再構築の
+    ぶんだけ安い。
+
+    **`/sm` は本文の先頭行でなければ効かない**（ルータは先頭ブロックしか読まない）。
+    呼び出し側はこの戻り値の前へ何も足さないこと——共通指示も含めて、足すと本文になる。
+    """
+    if not spec:
+        return ""
+    if not slash:
+        conditions = "".join(f"\n- {key}: {value}"
+                             for key, value in sorted((spec.get("parameters") or {}).items()))
+        return (f"statemachine-use スキルで{spec['name']}ステートマシンを実行して"
+                + (f"\n\n入力:{conditions}" if conditions else ""))
+    parts = ["/sm " + _shell_token(str(spec["workflow"]))]
+    for key, value in sorted((spec.get("parameters") or {}).items()):
+        parts.append("--param " + _shell_token(f"{key}={value}"))
+    return " ".join(parts)
+
 # ---------------------------------------------------------------------------
 # 設定ファイルから entry を引く（`--entry` の実体）
 # ---------------------------------------------------------------------------

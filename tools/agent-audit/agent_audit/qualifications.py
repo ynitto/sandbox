@@ -23,6 +23,8 @@ purpose（flow の node kind）へフォールバックし、それも無けれ�
   （``valid_for_days`` から ``valid_until`` を刻む）
 - 実測はあるが基準未達 → ``trial``（Envelope 明示承認 run でだけ選べる）
 - 期限切れ（``valid_until`` < now）で新実測なし → ``unknown`` へ降格
+- qualified の ``valid_until`` は昇格時（または期限後の再昇格時）だけ刻む。
+  定期 qualify のたびに延長しない（窓内の旧実測で永久に qualified が滑らない）
 
 既存 doc の eval-archive seed（U1）は保持し、同じ (候補, 処理種別) に receipt 実測が
 揃ったら receipt 側で置き換える（source フィールドで由来が追える）。
@@ -101,11 +103,32 @@ def _judge(entry: dict, profile: dict) -> str:
     return "trial"
 
 
+def _stable_payload(document) -> dict:
+    """revision / generated_at / updated_at を除いた比較用。無変化の書き込みを止める。"""
+    if not isinstance(document, dict):
+        return {}
+    candidates = []
+    for cand in document.get("candidates") or []:
+        if not isinstance(cand, dict):
+            continue
+        quals = {}
+        for op, qual in (cand.get("qualifications") or {}).items():
+            if not isinstance(qual, dict):
+                continue
+            quals[op] = {k: v for k, v in qual.items() if k != "updated_at"}
+        candidates.append({**{k: v for k, v in cand.items() if k != "qualifications"},
+                           "qualifications": quals})
+    return {
+        "version": document.get("version"),
+        "evaluation_profiles": document.get("evaluation_profiles") or {},
+        "candidates": candidates,
+    }
+
+
 def build_qualifications(existing: dict, stats: dict, *, now: dt.datetime) -> dict:
     """既存 doc + 実測 → 次の qualifications doc（revision +1・決定的）。"""
     existing = existing if isinstance(existing, dict) else {}
     profiles = dict(existing.get("evaluation_profiles") or {})
-    profiles.setdefault(DEFAULT_PROFILE_ID, dict(DEFAULT_PROFILE))
     by_candidate: dict = {}
     for cand in existing.get("candidates") or []:
         if isinstance(cand, dict) and cand.get("agent_cli") and cand.get("model"):
@@ -129,7 +152,10 @@ def build_qualifications(existing: dict, stats: dict, *, now: dt.datetime) -> di
         cand = by_candidate.setdefault((cli, model), {
             "meta": {"agent_cli": cli, "model": model}, "qualifications": {}})
         profile_id = op if op in profiles else DEFAULT_PROFILE_ID
+        if profile_id not in profiles:
+            profiles[profile_id] = dict(DEFAULT_PROFILE)
         profile = profiles[profile_id]
+        prev = cand["qualifications"].get(op) if isinstance(cand["qualifications"].get(op), dict) else {}
         status = _judge(entry, profile)
         qual = {
             "qualification_id": f"{_slug(cli)}-{_slug(model)}-{_slug(op)}-receipt",
@@ -144,9 +170,16 @@ def build_qualifications(existing: dict, stats: dict, *, now: dt.datetime) -> di
         if entry["failure_modes"]:
             qual["failure_modes"] = sorted(entry["failure_modes"])
         if status == "qualified":
-            valid_days = int(profile.get("valid_for_days", DEFAULT_PROFILE["valid_for_days"]))
-            qual["valid_until"] = (now + dt.timedelta(days=valid_days)).strftime(
-                "%Y-%m-%dT%H:%M:%SZ")
+            prev_until = parse_iso(str(prev.get("valid_until") or "")) or None
+            still_valid = (prev.get("status") == "qualified"
+                           and prev_until is not None
+                           and prev_until >= now.timestamp())
+            if still_valid:
+                qual["valid_until"] = prev["valid_until"]
+            else:
+                valid_days = int(profile.get("valid_for_days", DEFAULT_PROFILE["valid_for_days"]))
+                qual["valid_until"] = (now + dt.timedelta(days=valid_days)).strftime(
+                    "%Y-%m-%dT%H:%M:%SZ")
         cand["qualifications"][op] = qual
 
     candidates = []
@@ -272,6 +305,14 @@ def cmd_qualify(args, store) -> dict:
                "applied": False}
     if not getattr(args, "apply", False):
         return summary
+    exists = os.path.exists(path)
+    # 実測も既存文書も無い初回に空の qualifications.json を作ると、Compiler が
+    # 「根拠面がある」とみなして候補ゼロの selection_policy を焼く。
+    if not exists and not stats:
+        return {**summary, "revision": 0, "applied": False, "unchanged": True}
+    if exists and _stable_payload(document) == _stable_payload(existing):
+        return {**summary, "revision": int(existing.get("revision") or 0),
+                "applied": False, "unchanged": True}
     # 楽観的並行性: 書く直前に revision を読み直す（tune --apply と同じ規律）。
     current = read_json(path) or {}
     if int(current.get("revision") or 0) != int(existing.get("revision") or 0):

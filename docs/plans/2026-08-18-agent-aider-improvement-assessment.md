@@ -262,9 +262,11 @@ retry、独自 bash loop を三重化すると CPU only 環境で停止性が悪
   edit prompt / reminder の維持、一時 settings の作成・書込失敗時の cleanup が未確認である。
 - [ ] adapter の変更分岐 C1 100%を測定していない。現環境には `pytest-cov` / `coverage` がなく、
   coverage gate は未完了である。
-- [~] ledger の観測性は token usage、map token、auto-test 有無、checker 診断、wall limit、retry 回数まで
-  拡張された。残るのは完全な agent CLI（実行 argv 全体）と Aider の実効 model settings 全体で、
-  これらは record に入っていない。
+- [x] ledger の観測性は token usage、map token、auto-test 有無、checker 診断、wall limit、retry 回数まで
+  拡張された。**残っていた 2 項目も 2026-08-29 に入れた**——trace の各呼び出しが実行 argv 全体
+  （`argv`）と実効 model settings（`model_settings`）を持つ。settings は adapter が管理する腕では
+  `@agent-settings` marker が正、それが無い腕（`--agent-policy off` 等）は argv が名指しした
+  ファイルの中身が正。policy 本文は載せない（同一性は `policy_sha256` が担保する）。
 - [ ] Gate 1 の採用条件（J1 / F2改善、J2 / R1無退行、総合改善、parse / repair率無悪化）を未評価。
 - [ ] Gate 2 の T2 / T1min baseline-policy比較と、通過後の T1 / T3 比較を未評価。
 - [ ] execution resolver の局所修正適格条件、checker必須化、限定retry、retry exhaustion後の候補昇格は
@@ -281,8 +283,8 @@ adapter と eval seam の実装は **A/B評価を開始できる段階**まで�
 
 1. [x] adapter の現行挙動を契約テストで固定する。
 2. [x] `worker_eval.py` の古い条件表示を修正する。
-3. [~] Aider version と実効条件を台帳へ記録する（version、policy、sampling、token usage、map token、
-   auto-test、checker 診断は完了。完全な agent CLI と実効 model settings 全体は未完了）。
+3. [x] Aider version と実効条件を台帳へ記録する（2026-08-29 に完了。実行 argv 全体と実効
+   model settings が trace の各呼び出しに入る）。
 
 ### Phase 2: Reliability policy
 

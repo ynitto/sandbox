@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "agent-session-commands.schema.json",
   "title": "セッション開始コマンド — 管理面→各エンジンのセッション前準備（データ契約）",
-  "description": "agent-dashboard が編集し、各エンジン（agent-loop / agent-flow / agent-dashboard cowork）がエージェントのセッション開始時に 1 回だけ実行するコマンド列。process モードはホスト側のシェルで実行して完了を待ち（git fetch / docker compose up / 認証更新など、AI CLI が動き出す前に終わっていなければ意味がない前準備）、chat モードはセッションへ最初のプロンプトとして送る（CLI 内部のスラッシュコマンドやスキル起動はプロセス起動引数からは撃てない）。agent-instructions と同じ流儀（pull 型・原子書換・revision 単調増加・agent-control の status ハートビートへ相乗り）だが、**委譲先ノードへ伝播しない点だけが非対称**である。任意コマンド実行の到達範囲をその端末に置いた設定ファイルへ閉じ込めるため、agent-flow の meta.json にも GitBus にも載せない。「セッション」の実体はエンジンで異なる: 常駐系（agent-loop / cowork）は tmux ペイン 1 本、単発系（agent-flow）はワーカープロセス 1 つ。旧 engine 値 kiro-loop は読取時に警告して agent-loop へ正規化し、新規保存では書かない。単発系にセッションが無いため chat モードは適用されずスキップされる。フェイルセーフ: 不在 / 破損 / enabled=false はすべて『コマンドなし』＝エンジンを止めない。既定の on_error=warn では失敗しても続行し、fail を明示したときだけセッション開始を中止する。置き場所: $AGENT_SESSION_DIR（既定 ~/.agents/session/）の session.json（管理面が原子書換）。設計: docs/plans/2026-07-20-agent-dashboard-session-commands-design.md",
+  "description": "agent-dashboard が編集し、各エンジン（agent-loop / agent-flow / agent-dashboard cowork）がエージェントのセッション開始時に 1 回だけ実行するコマンド列。process モードはホスト側のシェルで実行して完了を待ち（git fetch / docker compose up / 認証更新など、AI CLI が動き出す前に終わっていなければ意味がない前準備）、chat モードはセッションへ最初のプロンプトとして送る（CLI 内部のスラッシュコマンドやスキル起動はプロセス起動引数からは撃てない）。agent-instructions と同じ流儀（pull 型・原子書換・revision 単調増加・agent-control の status ハートビートへ相乗り）だが、**委譲先ノードへ伝播しない点だけが非対称**である。任意コマンド実行の到達範囲をその端末に置いた設定ファイルへ閉じ込めるため、agent-flow の meta.json にも GitBus にも載せない。「セッション」の実体はエンジンで異なる: 常駐系（agent-loop / cowork）は tmux ペイン 1 本、単発系（agent-flow）はワーカープロセス 1 つ。単発系にセッションが無いため chat モードは適用されずスキップされる。フェイルセーフ: 不在 / 破損 / enabled=false はすべて『コマンドなし』＝エンジンを止めない。既定の on_error=warn では失敗しても続行し、fail を明示したときだけセッション開始を中止する。置き場所: $AGENT_SESSION_DIR（既定 ~/.agents/session/）の session.json（管理面が原子書換）。設計: docs/plans/2026-07-20-agent-dashboard-session-commands-design.md",
   "$defs": {
     "when": {
       "type": "object",
@@ -13,7 +13,7 @@
           "items": {
             "type": "string"
           },
-          "description": "実行中のエンジン名。agent-loop / agent-flow / dashboard。旧値 kiro-loop は読取互換のみで agent-loop へ正規化する。将来 agent-project / agent-amigos を足せるよう語彙は開いている"
+          "description": "実行中のエンジン名。agent-loop / agent-flow / dashboard。将来 agent-project / agent-amigos を足せるよう語彙は開いている"
         },
         "workloads": {
           "type": "array",

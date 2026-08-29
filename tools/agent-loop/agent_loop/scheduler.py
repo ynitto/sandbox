@@ -272,9 +272,10 @@ def validate_entries(
             if errors:
                 raise ValueError(f"entry {name!r}: operation が不正です: {'; '.join(errors[:2])}")
 
-        # ステートマシンはハーネス（headless）専用の実行形。対話ペインを前提にした機能と
-        # 反復・受入条件は、噛み合わないまま黙って無視すると「設定したのに効かない」に
-        # なるので、読み込みで断る。受入の宣言先はワークフローの `check:`。
+        # ステートマシンは**実行形**（コマンド面の 1 行で起こす）。噛み合わない宣言は、
+        # 黙って無視すると「設定したのに効かない」になるので読み込みで断る。
+        # oneshot / clean_session / target は経路をペインへ移した段階では未検証なので、
+        # fail-closed のまま据え置く（緩めるなら組合せを 1 つずつ実測してから）。
         if statemachine is not None:
             if mode == "ralph":
                 raise ValueError(
@@ -283,7 +284,7 @@ def validate_entries(
             if oneshot or clean_session is not None or target:
                 raise ValueError(
                     f"entry {name!r}: statemachine と oneshot / clean_session / target は"
-                    "併用できません（ハーネスは対話ペインを持ちません）")
+                    "併用できません（この組合せは未検証です）")
             if slash:
                 raise ValueError(
                     f"entry {name!r}: statemachine と slash は併用できません"
@@ -292,11 +293,8 @@ def validate_entries(
                 raise ValueError(
                     f"entry {name!r}: statemachine と acceptance は併用できません"
                     "（受入はワークフローの `check:` で宣言します）")
-            if str(entry.get("session") or "").strip().lower() == "keep":
-                raise ValueError(
-                    f"entry {name!r}: statemachine は session: per-run です"
-                    "（実行のたびにハーネスを起こすので keep は保てません）")
-            session = "per-run"
+            # `session` は触らない。対話ペインを持つ CLI では 1 セッションを保ったまま
+            # 実行形の 1 行を送るので、keep も per-run もそのまま意味を持つ。
 
         if mode == "ralph" and oneshot:
             raise ValueError(f"entry {name!r}: mode=ralph と oneshot は併用できません")
@@ -1186,6 +1184,31 @@ class PeriodicScheduler:
                 return self._external_profiles.get(name) or _CLI_PROFILE
         return _CLI_PROFILE
 
+    def _statemachine_pane_prompt(self, entry: "dict[str, Any]",
+                                  dispatch_entry: "dict[str, Any]",
+                                  profile: "Any") -> "str | None":
+        """`statemachine:` を宣言した entry を、対話ペインへ送る 1 行にする。
+
+        綴りは受け手のコマンド面で決まる——agent-herd の一族（共通 TUI）は `/sm`、
+        クラウド CLI はスキル発動文（agentcore.loopentry.statemachine_command）。
+        宣言が壊れていれば None（呼び出し側が失敗として記帳する）。
+        """
+        try:
+            spec = _loopentry.statemachine_spec(
+                entry, prompt=str(dispatch_entry.get("prompt", "")))
+        except _loopentry.LoopEntryError as exc:
+            log.error("[%s] ステートマシンの宣言が不正です: %s",
+                      str(entry.get("name", "")), exc)
+            return None
+        if spec is None:
+            return None
+        cli_spec = getattr(profile, "spec", None) or getattr(_CLI_PROFILE, "spec", None)
+        # 定義ローダは cliprofile と同じ 1 つ（agentcore.agentcli）。zipapp でも
+        # リポジトリ実行でも同じ解決を通す。
+        mod = _import_agentcli()
+        slash = bool(mod and mod.is_herd_family(cli_spec))
+        return _loopentry.statemachine_command(spec, slash=slash)
+
     def _entry_route(self, entry: "dict[str, Any] | None") -> "tuple[Any, str]":
         """entry 1 件のプロファイルと実行経路（'interactive' | 'per-run'）。
 
@@ -1195,12 +1218,11 @@ class PeriodicScheduler:
         oneshot / デーモン再起動）で入れ替わる。
         解決に失敗したら黙って別 CLI で走らせず、プロセス全体のプロファイルへ倒す。
         """
-        # `statemachine:` はハーネス（headless）でしか回らない。CLI を解決できなくても
-        # 対話ペインへ倒さない——倒すと本文だけがペインへ流れ、ワークフローは
-        # 一度も実行されないまま「送った」ことになる。
-        forced = bool((entry or {}).get("statemachine"))
+        # `statemachine:` でも経路は変えない（実行形はコマンド面の 1 行で表す。
+        # `cliprofile.resolve_entry_profile` を見よ）。ペインを持たない CLI だけが
+        # per-run へ落ちる。
         fallback = (_CLI_PROFILE,
-                    "per-run" if (forced or getattr(_CLI_PROFILE, "is_headless", False) is True)
+                    "per-run" if getattr(_CLI_PROFILE, "is_headless", False) is True
                     else "interactive")
         try:
             profile, route = resolve_entry_profile(
@@ -1394,8 +1416,10 @@ class PeriodicScheduler:
             # 実行ペインの結果契約は statemachine / run の `RESULT {json}` と同じ形にする
             # （dashboard 定常業務の「今すぐ実行」ペインと読み方を揃える。output は長い
             # ので落とし、判定に要る要素だけ）。
-            keys = (("ok", "escalate", "finalState", "logFile", "files") if workflow
-                    else ("ok", "verified", "verifiedBy", "files", "evidenceErrors"))
+            keys = (("ok", "escalate", "finalState", "stopReason", "logFile", "files")
+                    if workflow
+                    else ("ok", "verified", "verifiedBy", "stopReason", "files",
+                          "evidenceErrors"))
             _harness_toolloop._tl_progress("RESULT " + json.dumps(
                 {k: result.get(k) for k in keys if k in result},
                 ensure_ascii=False), "agent-loop")
@@ -2220,6 +2244,14 @@ class PeriodicScheduler:
                 return self._dispatch_headless(
                     req, entry=entry, dispatch_entry=dispatch_entry, exec_meta=exec_meta,
                     profile=entry_profile, cwd=cwd, root_id=root_id)
+            if entry.get("statemachine"):
+                # ペインへ送るのは**実行形の 1 行**であって本文ではない。宣言の読み方も
+                # 綴りも agent-herd・dashboard と同じ 1 実装（agentcore.loopentry）。
+                text = self._statemachine_pane_prompt(entry, dispatch_entry, entry_profile)
+                if text is None:
+                    self._fail_execution(req, None, reason="statemachine_invalid")
+                    return "discard"
+                dispatch_entry["prompt"] = text
 
         # ---- external pane ----
         if target_kind == "external":

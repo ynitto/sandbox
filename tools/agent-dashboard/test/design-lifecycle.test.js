@@ -85,6 +85,100 @@ test('設計中は設計確認を無効化し、設計完了後だけ確認操�
   }
 });
 
+test('実装中と完了は作業準備一覧に出さず、左の実行一覧で追う', () => {
+  const previousEsc = global.esc;
+  const previous = {
+    selectedRun: workflowUi._state.selectedRun,
+    runDetail: workflowUi._state.runDetail,
+    preparationItems: workflowUi._state.preparationItems,
+  };
+  global.esc = (value) => String(value);
+  try {
+    workflowUi._state.selectedRun = '';
+    workflowUi._state.runDetail = null;
+    workflowUi._state.preparationItems = [
+      { id: 'prep-wait', title: '実装待ちの仕事', phase: 'implementation-ready', route: 'direct', cwd: '/repo' },
+      { id: 'prep-run', title: '実装中の仕事', phase: 'implementing', route: 'direct', cwd: '/repo' },
+      { id: 'prep-done', title: '完了した仕事', phase: 'completed', route: 'direct', cwd: '/repo' },
+    ];
+    const html = workflowUi.runHtml({});
+    assert.match(html, /実装待ちの仕事/);
+    assert.doesNotMatch(html, /実装中の仕事/);
+    assert.doesNotMatch(html, /完了した仕事/);
+    assert.match(html, /1件/);
+    assert.match(html, /id="wf-active-title">実行中/);
+    assert.match(html, /実行中のワークフローはありません/);
+  } finally {
+    workflowUi._state.selectedRun = previous.selectedRun;
+    workflowUi._state.runDetail = previous.runDetail;
+    workflowUi._state.preparationItems = previous.preparationItems;
+    global.esc = previousEsc;
+  }
+});
+
+test('トップ画面の実行中枠は終端していない run だけを作業準備と同じカードで出す', () => {
+  const previousEsc = global.esc;
+  const previous = {
+    selectedRun: workflowUi._state.selectedRun,
+    runDetail: workflowUi._state.runDetail,
+    preparationItems: workflowUi._state.preparationItems,
+  };
+  global.esc = (value) => String(value);
+  try {
+    workflowUi._state.selectedRun = '';
+    workflowUi._state.runDetail = null;
+    workflowUi._state.preparationItems = [];
+    const html = workflowUi.runHtml({
+      runs: [
+        {
+          runId: 'run-live', status: 'running', request: 'README を直す',
+          workspace: { cwd: '/repo' }, total: 4, counts: { done: 1, failed: 0 },
+        },
+        {
+          runId: 'run-plan', status: 'planning', request: '設計を進める',
+        },
+        {
+          runId: 'run-done', status: 'done', request: '終わった仕事',
+        },
+        {
+          runId: 'run-failed', status: 'failed', request: '失敗した仕事',
+        },
+      ],
+      runInbox: [
+        { id: 'run-live', title: '実装中の仕事', purpose: 'implementation' },
+        { id: 'run-plan', title: '', purpose: 'design' },
+      ],
+    });
+    const activeAt = html.indexOf('id="wf-active-title">実行中');
+    const queueAt = html.indexOf('id="wf-queue-title">作業準備');
+    assert.ok(queueAt >= 0 && activeAt > queueAt, '実行中は作業準備の下に置く');
+    const active = html.slice(activeAt);
+    assert.match(active, /実装中の仕事/);
+    assert.match(active, /設計を進める/);
+    assert.match(active, /data-open-run="run-live"/);
+    assert.match(active, /1\/4 工程/);
+    assert.match(active, /設計 · 対象フォルダ未指定/);
+    assert.doesNotMatch(active, /終わった仕事/);
+    assert.doesNotMatch(active, /失敗した仕事/);
+    assert.match(html, />2件</);
+  } finally {
+    workflowUi._state.selectedRun = previous.selectedRun;
+    workflowUi._state.runDetail = previous.runDetail;
+    workflowUi._state.preparationItems = previous.preparationItems;
+    global.esc = previousEsc;
+  }
+});
+
+test('ワークフロー領域の着地点は実行待ちトップである', () => {
+  workflowUi._state.selectedRun = 'run-1';
+  workflowUi._state.runDetail = { runId: 'run-1' };
+  workflowUi._state.selectedPreparation = 'prep-1';
+  assert.strictEqual(workflowUi.showTop(), 'workflow-run');
+  assert.strictEqual(workflowUi._state.selectedRun, '');
+  assert.equal(workflowUi._state.runDetail, null);
+  assert.strictEqual(workflowUi._state.selectedPreparation, '');
+});
+
 test('設計ペインはセッションと現在内容を分け、実行中の工程進捗を表示する', () => {
   const previousEsc = global.esc;
   const previousProseHtml = global.proseHtml;

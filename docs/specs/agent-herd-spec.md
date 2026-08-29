@@ -1,814 +1,882 @@
-# agent-herd 仕様書 — 入口の綴り・実行系の契約・終了状態
+# agent-herd 利用ガイド兼 CLI 仕様
 
-> 設計の「なぜ」は [`docs/designs/agent-herd-design.md`](../designs/agent-herd-design.md)、
-> CLI 定義の共通契約は [`docs/specs/agent-cli-spec.md`](./agent-cli-spec.md)、
-> 利用手順は `tools/agent-tools/README.md`。
-> 対象実装: `tools/agent-tools/agentcore/agentcore/` の `herdcli.py` / `hostenv.py` /
-> `aider_adapter.py` / `ollama_adapter.py` /
-> `ollama_{loop,context,events,skills,tui,replay}.py` / `harness/` /
-> `tools/agent-tools/install.sh`。
-> 位置づけ: **本書が綴りの正典**。設計書は判断の理由を、本書は「打つと何が起きるか」を固定する。
-> 実装と食い違ったら、どちらかが間違っているので直すまで作業を止める。
+`agent-herd` は、LAN 上の Ollama を対話、単発処理、ファイル編集、定型処理から使うための
+コマンドである。前半は利用手順、後半は CLI と出力の契約を扱う。
 
----
+設計判断は[設計書](../designs/agent-herd-design.md)、CLI 定義ファイルの形式は
+[agent-cli 仕様書](./agent-cli-spec.md)に分けてある。実装は
+`tools/agent-tools/agentcore/agentcore/` と `tools/agent-tools/install.sh` にある。
 
-## 1. 何であるか
+## まず動かす
 
-`agent-herd` は **LAN 上の ollama を動かす実行系の唯一の入口**である。実体は agentcore を
-同梱した zipapp 1 ファイルで、`agent-aider` / `agent-ollama` は同じ
-ファイルへのハードリンクとして置かれる。
-opencode は同梱を外した（このハードで成立しないことが実測済み。設計 2026-08-27 §6。
-使う人は `agents/opencode.json` を自分で置けば定義経由で呼べるが、adapter が持っていた
-usage 実測と preflight は付かない）。
+### 前提
 
-**クラウド CLI（claude / codex / kiro / copilot / cursor）はこの入口を通らない。**
-それらの `agents/*.json` の `command` は素の CLI を指したままである（設計 §3.8）。
+- macOS、Linux、WSL のいずれか
+- Python 3.11 以上
+- 接続できる Ollama サーバーと、使用するモデル
+- `aider` バックエンドでファイルを編集する場合は Aider CLI
 
----
+以下では既定モデルの `gemma4:e4b` を使う。別のモデルを使う場合は、コマンドの
+`--model` またはモデル名を置き換える。
 
-## 2. ディスパッチ
+### インストール
 
-```
-basename(argv[0])       解決されるサブコマンド        残りの引数
-  agent-aider       →   aider                        argv 全部
-  agent-ollama      →   ollama                       argv 全部
-  agent-herd        →   argv[0] をサブコマンドとして  argv[1:]
-  それ以外           →   argv[0] をサブコマンドとして  argv[1:]
-```
-
-分岐はこの 1 回だけである。`agent-aider X` と `agent-herd aider X` は**同じ関数に同じ引数で**
-届く（テスト: `test_herdcli.Argv0DispatchTests`）。
-
-「それ以外」があるのは、開発木から `python3 -m agentcore.herdcli defs` のように叩くため。
-
-**別名（argv[0]）はフラグより先に決まる。** `agent-ollama --tui` の `--tui` は adapter の
-ものであって入口のものではない——ここが逆転すると、adapter だけが知っているフラグを
-入口が「受け取りません」で落とす。入口自身のフラグ（§3.3）が効くのは
-`agent-herd` として呼ばれたときだけである。
-
----
-
-## 3. サブコマンド
-
-**サブコマンドは adapter の名前であって定義の名前ではない。** これが名前空間の規約である。
-
-| 綴り | 実体 | 引数の扱い |
-|---|---|---|
-| `aider …` | `aider_adapter.main` | adapter へ素通し |
-| `ollama …` | `ollama_adapter.main` | adapter へ素通し |
-| `edit …` | `editagent.main` | adapter へ素通し |
-| `chat [<cli>] [--model M]` | `herdcli.cmd_chat` | 閉じている（下記以外は拒否） |
-| `defs [<名前>] [--json] [--model M] [--purpose P]` | `herdcli.cmd_defs` | 同上 |
-| `exec <cli> [オプション]` | `herdcli.cmd_exec` | 同上 |
-| `harness statemachine --workflow PATH` | `agentcore.harness.statemachine.cmd_statemachine` | 閉じている |
-| `harness run PROMPT…` | `agentcore.harness.toolloop.cmd_run` | 閉じている |
-| `status [LOG]` | `ollama --status` の別名 | 素通し |
-| `follow [LOG]` | `ollama --follow` の別名 | 素通し |
-| `replay [PATH] …` | `ollama --replay` の別名 | 素通し |
-
-`status` / `follow` / `replay` は**別名であって第 2 実装ではない**。`agent-ollama --status`
-の綴りも残るので、既存の手順書は書き換え不要。
-
-### 3.1 引数面が「素通し」か「閉じている」か
-
-- **adapter サブコマンド**（`aider` / `ollama` / `edit` / 観測別名）は引数を 1 つも解釈
-  せず adapter へ渡す。adapter 側の `--help` がその面の正典。
-- **入口が持つサブコマンド**（`chat` / `defs` / `exec`）は引数面が閉じている。未知のオプションは
-  終了コード 2 で拒否する（黙って下へ流さない——流すと「効いたつもり」が起きる）。
-
-### 3.2 入口自身のオプション
-
-| 綴り | 動作 | 終了コード |
-|---|---|---|
-| `--help` / `-h` / `help` | 一覧を stdout へ | 0 |
-| `--version` / `version` | `agent-herd <agentcore.__version__>` を stdout へ | 0 |
-
-各 adapter の詳細は `agent-herd ollama --help`（= `agent-ollama --help` と同一本文）。
-
-### 3.3 トップレベルのフラグ（クラウド CLI と同型の入口）
-
-設計: [2026-08-27 クラウド CLI を正とした入口の再構成](../plans/2026-08-27-agent-herd-cloud-cli-parity-slash-dispatch-design.md) §3.1。
-
-**引数なしなら対話、`-p` なら非対話 1 回。** claude / codex と同じ形である。先頭がフラグ
-（または引数なし）のとき、`agent-herd` は自分への指定として読む。
-
-| 綴り | 意味 | 落ちる先 |
-|---|---|---|
-| （引数なし） | 対話（TUI）で開く | `interactive_cmd` — `chat` と同じ |
-| `-p ["…"]` / `--prompt` | 1 回だけ実行する。値を省くと本文は stdin | `headless_cmd` — `exec` と同じ |
-| `--agent <名前>` | バックエンド。**`agents/<名前>.json` の定義名**（`ollama-json` のような profile 綴りも解ける） | `load_cli` |
-| `--model <モデル>` | モデル | 同上 |
-| `--purpose <用途>` | 用途の 1 語。起動形の調停は §13 のルータ | `slashroute.resolve` |
-| `--readonly` | 読み取り専用（対話でも効く） | `*_cmd(readonly=True)` |
-| `--dir <パス>` / `-d` | 作業ディレクトリ（このプロセスの cwd） | `os.chdir` |
-| `--continue` | 直前のセッションを続ける（下記 §3.4） | 宣言 or 材料の再構築 |
-| `--resume <ID>` | ID を指定して再開する。ID は**ログの名前**（`agent-herd status` / `@agent-log` に出る綴り） | 同上 |
-
-**新しい実行経路は足していない。** ここがやるのは、既に `chat` と `exec` が持っている
-当て先へフラグを翻訳することだけである。`--agent` が定義名を取ることで、「adapter 名」
-という概念が外から消える。
-
-位置引数は受け取らない（本文は `-p` か stdin）——受け取ると `agent-herd ollama` が
-「ollama という本文」と紛れる。未知のフラグは終了コード 2 で拒否する。
-
-### 3.4 セッション継続の実体
-
-設計 §4 は「`--continue` を受けるなら、実体が何かを仕様書に書く」と要求している。
-**実体は 2 つあり、どちらになるかは定義が決める。**
-
-| バックエンド | 実体 | 宣言 |
-|---|---|---|
-| ネイティブのセッション機能を持つ CLI（claude / codex / copilot / cursor） | その CLI に任せる。文脈は向こう側に残るので、こちらは材料を組み直さない | `continue_args` / `resume_args`（[agent-cli 仕様書](./agent-cli-spec.md) §2.1） |
-| 持たない自前 CLI（`ollama` / `aider`） | **材料の再構築**。前回の会話を本文の頭へ載せて渡す | 宣言なし（自分の JSONL ログが材料） |
-
-ローカルの単発実行は毎回新しいプロセスなので、後者に「セッション」は存在しない。
-継続と呼べるのは材料を組み直すことだけである。
-
-- 材料に載せるのは**直近 6 メッセージ**（`_CONTINUE_MAX_MESSAGES`）。全履歴を積むと
-  継続のたびに文脈が太る（F4）。
-- 読むのは**自分の JSONL ログだけ**である。他 CLI のネイティブストアを読むのは
-  agent-audit の仕事で、そちらのパーサを agentcore へ写すと同じ形式に 2 実装ができる（C7）。
-- 材料は本文と一緒に渡すものなので、**自前 CLI の継続は `-p` でだけ受ける**。対話起動に
-  `--continue` を付けた場合は `-p` を案内して終了コード 2 で止まる。
-- 宣言も材料も無いときは**明示エラー**（終了コード 2）。黙って新規セッションとして走らせない
-  ——出力からは見分けが付かないので、「継続したつもりで毎回まっさらに走る」が静かに起きる。
-
-argv 断片の差し込み位置は**サブコマンドの直後・オプションの前**である。codex の継続は
-`codex exec resume --last` というサブコマンドで、`exec` のオプション列の後ろに置くと別の
-意味になる——フラグ形（claude の `--continue`）はどこに置いても同じなので、この位置なら
-両方が成り立つ。
-
----
-
-## 4. 定義経由の 2 系統
-
-| | adapter サブコマンド | `exec` |
-|---|---|---|
-| 綴り | `agent-herd ollama --format json gemma4:e4b` | `agent-herd exec ollama-json --model gemma4:e4b` |
-| argv を決めるもの | 打った人 | `agentcore.agentcli`（定義） |
-| 定義を読むか | 読まない | 読む（`variants` / `readonly` が効く） |
-| 名前の空間 | `aider` / `ollama` | `agents/*.json` の全定義 |
-
-### 4.0-0 ローカルが 2 定義ある理由と、選び方（結論: 選ばなくてよい）
-
-`aider` と `ollama` はどちらも `relative_cost: 0` のローカル実行系だが、**役割の分担は
-宣言が持っており、人が選ぶ場面はほとんど無い。**
-
-- **15 用途（`verify` / `judge` / `extract` / `retrieve` / `split` …）は、どちらを base に
-  しても同じ `ollama` の profile へ振り替わる**（`variants`）。ここでは base の選択が
-  結果に影響しない。唯一の差は `split` で、`aider` 経路だけ `ollama-list-thinking` を指す
-  （2026-08-23 の役割割り当てにそう記録されている）。
-- **実際に分かれるのは「編集・実装を誰がやるか」の 1 点だけ**である。base が `aider` なら
-  渡したファイルを直す single-shot の編集役、`ollama` なら bash のツールループになる。
-
-その 1 点は実測が決めている——`aider / gemma4:e4b` は T2/T4 で 9/9、ツールループ側の
-コード worker は退行する（自前の編集エンジンでも T4 は 0/3。§9.2・設計 §11 未決 5）。
-したがって **ローカルの base は `aider` に置けばよく、判定・抽出・検索は宣言が自動で
-`ollama` の profile へ回す**。`ollama` を base にする理由は「編集もツールループでやりたい」
-ときだけで、実測はそれを支持していない。
-
-`agent-herd defs` の一覧はこの分担を各定義の下へ 1 行で出す（宣言から導くので、
-`variants` を変えれば表示も変わる）。
-
-### 4.0 用途別の起動形は profile であって別エージェントではない
-
-`agents/*.json` は **1 ファイル = 1 エージェント**である。同梱定義は **8 件**
-（`aider` / `ollama` / `claude` / `codex` / `kiro` / `copilot` / `cursor` /
-`vscode-copilot`）で、用途で使い分ける起動差は定義の中の `profiles` に置く:
-
-```
-$ agent-herd defs
-解決できる定義:
-  aider
-  claude
-  …
-  ollama    profiles: json, list, list-thinking, read, verify
-```
-
-`ollama-list` のような従来の綴りはそのまま解決でき（`base=ollama / profile=list`）、
-返る spec の `name` は正典の `"ollama"`、起動差は `profile` が持つ。**台帳と格付けへ書く
-`agent_cli` は常に正典名**（`agentcli.canonical_name()` を通す）——用途の次元は
-`operation_class` / `purpose` の列が持っており、`agent_cli` へ畳み込むと同じ次元の二重表現に
-なって 1 実行系の実測が偽の候補へ割れる。
-
-profile は base を継ぐが、**`interactive` と `variants` は継承しない**（継承すると対話面を
-持たない役割に base の TUI が生え、agent-dashboard の実行経路が変わる）。`env` は base へ
-重ね、他は宣言があれば置き換える（`[]` の宣言も「置き換え」として扱う）。実ファイルが profile
-より優先されるので、独立させたくなったら `ollama-list.json` を置けばよい。
-
-#### ollama の起動形の割当
-
-| 起動形 | 従来の綴り | 既定モデル | autonomy | think | write モード | readonly モード | 対話 |
-|---|---|---|---|---|---|---|:-:|
-| base | `ollama` | `gemma4:e4b` | tool-loop | `off`（対話だけ `on`） | `--tools bash --max-rounds 12 --command-timeout 900` | 道具なし | ✓（`--tui`） |
-| `json` | `ollama-json` | `gemma4:e4b` | single-shot | `off` | `--format json`、道具なし | 同左 | — |
-| `list` | `ollama-list` | `gemma4:e4b` | single-shot | `off` | `--format array`、道具なし | 同左 | — |
-| `list-thinking` | `ollama-list-thinking` | `gemma4:e4b` | single-shot | `on` + `temperature 0` | `--format` なし・道具なし | 同左 | — |
-| `read` | `ollama-read` | `gemma4:e4b` | tool-loop | `off` | `--tools read --max-rounds 30 --command-timeout 900` | 道具なし | — |
-| `verify` | `ollama-verify` | `gemma4:12b` | single-shot | `off` | `--format json --stall-timeout 180`、道具なし | 同左 | — |
-
-base の `variants` は 12 用途（`planner` `evaluator` `filter` `judge` `reduce` `extract`
-`plan` `review` `prioritize` `route` `adjudicate` `assess`）を `ollama-json` へ、`split` を
-`ollama-list` へ、`retrieve` を `ollama-read` へ、`verify` を `ollama-verify` へ振り替える。
-`json` profile は `split` / `retrieve` を、`verify` profile は `split` を持つ（variants は
-継承しないので、必要な profile だけが自分で宣言する）。
-
-**全起動形が `relative_cost: 0` と `readonly: enforced` を宣言し、base の `session_log` を継ぐ。**
-`errors` は base と各 profile がそれぞれ宣言する（`read` は「スキルと `--tools` セットが
-噛み合いません」、`verify` は gemma4:12b の停止性に固有の縮退基準を持つなど、局面ごとに
-hint が違うため）。
-
-think はヘッドレスの 6 起動形中 5 つで `off` である。例外は `list-thinking` だけで、
-`--format` の文法制約を外したうえで `--think on` と `AGENT_OLLAMA_OPTIONS={"temperature":0}` を
-宣言する（gemma4:e4b の split で意味的な完全被覆を安定させるため）。`--tui` の対話起動も
-`--think on` を持つ——人が画面で思考を読める場面である。
-
-`--format json`（ollama の JSON モード）は**トップレベルを必ずオブジェクトにする**ので、配列を
-返す契約（agent-flow の split）はプロンプトで何を書いても満たせない。`list` profile は
-structured outputs のスキーマ `{"type":"array","items":{"type":"string"}}` を渡してトップレベル
-配列を表現する。要素を string に固定するのは、split の要素が下流で map ゴールへ文字列として
-埋め込まれるためである。
-
-base の readonly にツールを付けないのは、CLI 契約上の強制力に嘘を入れないためである。
-`read` profile は write として呼ばれる役割に読取ツールだけを与える別の起動形で、汎用の base を
-安全側へ書き換えない。
-
-### 4.1 `defs`
-
-```
-agent-herd defs                          # 解決できる定義名を列挙（探索順の和集合・重複排除）
-agent-herd defs <名前>                    # 1 件の実効 argv（write / readonly / chat）と宣言
-agent-herd defs <名前> --json             # 同じものを 1 行 JSON で
-agent-herd defs <名前> --model M          # モデルを差し替えて argv を見る
-agent-herd defs <名前> --purpose <用途>    # variant 解決を通してから見る
-```
-
-JSON のキー: `name` / `path` / `requested` / `profile` / `profiles` / `resolved_via_variant` /
-`headless_autonomy` / `readonly` / `relative_cost` / `default_model` / `model` / `prompt_via` /
-`variants` / `argv_write` / `argv_readonly` / `argv_interactive` / `timeout`。
-
-**`defs` は第 2 実装を持たない。** 出す argv は `agentcli.headless_cmd()` が返すものそのもの
-で、エンジンが組むのと同一であることをテストが縛る（`test_herdcli.DefsTests`）。
-
-終了コード: 0 = 出力した / 1 = 定義が解決できない / 2 = オプションの誤り。
-
-### 4.2 `exec`
-
-```
-agent-herd exec <cli> [--model M] [--purpose P] [--readonly] [--file PATH]… [--read PATH]…
-```
-
-本文は **stdin**。端末が繋がっているとき（人が引数だけ打って Enter したとき）は読まずに
-本文なしとして進む——プロンプトも出さずに入力待ちで固まるのが一番わかりにくい失敗だからである。
-
-`--readonly` を指定しても CLI が読み取り専用を保証しない定義（`readonly: best-effort`）では、
-`@agent-note` を stderr に出してから実行する（保証できないことを黙らない）。
-
-終了コード: 実体のものをそのまま返す / 1 = 定義が解決できない / 2 = オプションの誤り /
-127 = 実行ファイルが見つからない。
-
-**エンジンは `exec` を使わない。** 用途は人のデバッグ（「エンジンから呼ぶと落ちるが手で叩くと
-動く」を潰す）に閉じる。
-
-### 4.3 `chat`
-
-```
-agent-herd chat                     # 既定は ollama（内蔵 TUI）
-agent-herd chat <cli> [--model M]
-```
-
-定義の `interactive` ブロックを `agentcli.interactive_cmd()` で解決して起動する。
-
-- 解決した argv の先頭が**自分自身の名前**（`agent-herd` / `agent-aider` /
-  `agent-ollama`）なら **in-process** で入る。定義は配布名で書いてあるので、開発木のように
-  PATH にそれが無い環境でも動く。
-- そうでなければ `os.execvp` で置き換える（余計なプロセスを挟まない）。
-- `interactive` を持たない定義は**明示エラーで止める**（終了コード 1）。黙ってヘッドレスへ
-  倒さない——倒すと人は「対話に入ったつもり」で 1 往復だけの実行を眺めることになる。
-  対話面を足したくなったら定義に書く（エンジン改修は不要）。
-
-`ready_pattern` / `busy_pattern` 等の tmux 向けフィールドは `chat` は使わない（人が直接
-向き合う起動なので待機判定が要らない）。それらは `interactive.command` を tmux から叩く
-消費者（agent-loop / agent-dashboard）のためにある。
-
-### 4.4 `aider` の対話
-
-`agents/aider.json` は `interactive` ブロックを持つ。ヘッドレスとの差は**引き算だけ**:
-
-| ヘッドレスにあり対話に無い | なぜ落とすか |
-|---|---|
-| `--message`（`prompt_flag`） | 対話は本文を argv で渡さない |
-| `--yes-always` | 人が確認する場で押し切らない |
-| `--no-stream` / `--no-pretty` | 対話では出力を殺さない |
-
-**残すもの**: `--agent-policy gemma4-e4b-reliability-v1`・`--model ollama_chat/{model}`・
-`--no-git` / `--no-auto-commits` / `--no-check-update` / `--no-show-model-warnings` /
-`--no-analytics` / `--no-gitignore` / `--map-tokens 0`。
-
-policy と接続補完（§6）が**ヘッドレスと同じ経路**で仕込まれることをテストが縛る
-（`test_herdcli.ChatTests`）。これが崩れると「対話で試したことがヘッドレスで再現しない」に
-なる。
-
-**`interactive` を持つことと、ハーネスが要ることは別である。** aider は対話面を持ちながら
-`headless_autonomy: single-shot` なので、定型業務は従来どおり限定ツール契約のハーネスで
-回る。agent-dashboard はこれを `headlessAutonomy` で弁別する
-（`cowork.needsHeadlessHarness`）——`interactive` の有無で代理してはいけない。
-
-**ただし定型業務（ステートマシン）は、一族（`command[0]` が `agent-herd`）なら
-`headless_autonomy` によらずハーネスへ回す**（`cowork.needsStateMachineHarness`）。
-ペインへ送る本文が違うからである。定期プロンプトが送るのは人が書いた指示文で、どの CLI
-でも「読んで答える」で意味を成す。対して定型業務が送るのは起動文
-（`statemachine-use スキルで◯◯ステートマシンを実行して`）で、これを実行に変えられるのは
-自然文からスキルを見つけて自分で回すクラウド CLI だけである。一族の対話面は共通 TUI で、
-コマンド語彙は §4.7 のルート表（`/sm`）、スキルの解決は先頭の `/名前` しか見ない。
-ollama の `tool-loop` はヘッドレスの argv についての申告で、TUI は道具なしで起きる
-——ここを取り違えると、起動文が本文として推論へ流れ、モデルが「実行できません」と
-答えて終わる（2026-08-29 に踏んだ）。回した先は `/sm` を対話で打ったときと同じ実行である。
-
-### 4.5 `harness`
-
-```
-agent-herd harness statemachine (--workflow PATH | --entry NAME [--config PATH])
-                                [--agent-cli NAME] [--model M]
-                                [--param KEY=VALUE]… [--input TEXT] [--dir DIR]
-agent-herd harness run PROMPT… [--agent-cli NAME] [--model M]
-                               [--acceptance TEXT]… [--judge] [--dir DIR]
-```
-
-`--agent-cli` の既定は `aider`。フラグの綴りは `agent-loop statemachine` / `agent-loop run` と
-**同じ**にしてある。同じハーネスの 2 つの入口なので、片方だけ違う名前を人に覚えさせない。
-終了時に `RESULT {json}` を 1 行出すのも同じで、それが呼び出し側との結果契約になる。
-
-`statemachine` は `--workflow` か `--entry` の**どちらか一方**を取る（両方・どちらも無しは 2）。
-`--entry` は `agent-loop.yaml` の `prompts[]` のエントリ名で、ワークフローの位置と
-**実行条件**（`input:` のマップと、自由文としての `prompt`）をその宣言から引く
-（正典は agent-loop 仕様 §2.3.1、実装は `agentcore.loopentry` の 1 か所）。設定ファイルの
-探索順は agent-loop と同じで、`--config` で直接指すこともできる。
-
-| 打ったもの | 効くもの |
-|---|---|
-| `--param` / `--input` | エントリの宣言より**優先**（後から来た判断を勝たせる） |
-| `--agent-cli` / `--model` | 打たなければエントリの `agent_cli` / `model`、それも無ければ既定 |
-| `--dir` | 打たなければエントリの `cwd`、それも無ければカレント |
-
-デーモンを持たない `agent-herd` からでも、常駐している定常業務と**同じ条件**で 1 回だけ
-回せる——条件の解釈が入口ごとに違うと、「手で回すと通るのに定期実行だけ落ちる」が起きる。
-
-実体は `agentcore.harness`。**tmux もデーモンも設定ファイルも要らない**——tmux はコマンドを
-走らせて様子を見せる手段であって実行契約の一部ではない、という元の設計注記がそのまま効く。
-
-**本文は 1 か所にしかない。** `agentcore/harness/toolloop.py` と
-`agentcore/harness/statemachine.py` が正典で、`agent_loop/{toolloop,statemachine}.py` は
-そこへ**委譲するだけの層**である（写しも、かつての共有データファイルも無い。経緯と
-それを縛るテストは §12）。agent-loop 側は `_tl_*` / `_sm_*` を張り直さないので、
-ハーネスの名前を差し替えたいテストは `agentcore.harness.*` へ当てる。
-
-移植先の既定は agent-loop 経由と 2 点だけ違う（§6 と同じく「黙って書かない」を既定にした）:
-
-| | agent-loop 経由 | `agent-herd harness` |
-|---|---|---|
-| 台帳への記帳 | 自分の ledger へ追記 | **しない**（`harness.set_hooks` で差し込める） |
-| `selection_policy` の解決 | control.json v2 を読む | **しない**（None = 従来の pin / 既定候補で走る） |
-
-`run_prompt()` の分岐点は定義の `headless_autonomy` **ただ 1 つ**である。`single-shot` なら
-限定 4 ツール契約（read_files / write_files / run / final）を付けて回し、`tool-loop` なら
-CLI 内部のツールループへ 1 回素通しする。
-
-終了コード: 移植元が `sys.exit` で表すものをそのまま返す / 2 = 引数の誤り・未知の種別。
-
----
-
-## 5. 未知のサブコマンド
-
-黙って別解釈しない。2 通りに分ける:
-
-| 打たれたもの | 応答 | 終了コード |
-|---|---|---|
-| 解決できる**定義名**（`ollama-json` 等） | `exec` を案内する: `agent-herd exec <名前> [--model …]` | 2 |
-| それ以外 | 使えるサブコマンド一覧を出す | 2 |
-
-エラーは `[agent-error:env] agent-herd: …` の形で **stderr** へ出す（定義の `errors` 分類に
-乗る綴り）。
-
----
-
-## 6. 環境
-
-### 6.1 補完（`agentcore.hostenv`）
-
-**実装は 1 つだけ。** 3 adapter はこれを import する（再定義しない）。同一オブジェクトである
-ことをテストが `is` で縛る（`test_hostenv.HostenvIsTheOnlyImplementationTests`）——写しが
-復活すれば必ず落ちる。
-
-起動時に 1 回:
-
-1. `OLLAMA_HOST` / `OLLAMA_API_BASE` / `NO_PROXY`（か `no_proxy`）が全部そろっていれば
-   `~/.profile` は読まない（構成済みの環境へ余計な subprocess を足さない）
-2. 足りなければ `~/.profile` を `sh` の子プロセスで評価し、`OLLAMA_*` / `AGENT_OLLAMA_*` /
-   `NO_PROXY` / `no_proxy` だけを取り込む。**環境に既にある変数が常に勝つ。** 評価の失敗は
-   黙って無視する（profile が壊れていても推論を止める理由にはしない）。stdin は閉じる
-   （このプロセスの stdin はプロンプト本文なので profile に読ませない）
-3. `OLLAMA_HOST` ⇄ `OLLAMA_API_BASE` を相互補完する（前者は ollama 系 CLI、後者は
-   aider/litellm が見る。スキームが無ければ `http://` を足す）
-4. 推論ホストを `NO_PROXY` と `no_proxy` の**両方**へ追記し、両者を同じ値に揃える
-   （urllib は小文字を見る）。この段は profile の有無と無関係に必ず行う
-
-4 を怠ると接続が社内プロキシへ流れ、**504 Gateway Timeout**という「設定はしてあるのに
-動かない」形で出る。だから NO_PROXY の取り込みだけに頼らず、常に追記する。
-
-### 6.2 環境変数
-
-| 変数 | 既定 | 効く先 |
-|---|---|---|
-| `OLLAMA_HOST` / `OLLAMA_API_BASE` | — | 接続先。**片方だけでも相互に補完**する |
-| `NO_PROXY` / `no_proxy` | — | ollama のホストを常に両表記へ追記する |
-| `OLLAMA_TIMEOUT` | `600` 秒 | HTTP 全体の上限 |
-| `AGENT_OLLAMA_CONNECT_TIMEOUT` | `120` 秒 | 応答ヘッダを得るまで。到達時に `/api/version` で生存確認し、サーバが生きていれば順番待ち（`OLLAMA_NUM_PARALLEL` の空き待ち・モデルロード中）として待ち続ける。失敗したときだけ打ち切り |
-| `AGENT_OLLAMA_FIRST_TOKEN_TIMEOUT` | `0`（無制限） | prefill |
-| `AGENT_OLLAMA_STALL_TIMEOUT` | `180` 秒 | decode の無進捗 |
-| `AGENT_OLLAMA_META_TIMEOUT` | `3` 秒 | `/api/ps` `/api/show` の問い合わせ |
-| `AGENT_OLLAMA_THINK` | — | `on` / `off` / `prompt` |
-| `AGENT_OLLAMA_OPTIONS` | — | API の `options` へ渡す JSON |
-| `AGENT_OLLAMA_KEEP_ALIVE` | — | API の `keep_alive` |
-| `AGENT_OLLAMA_SYSTEM_PROMPT` | — | system プロンプトの差し替え |
-| `AGENT_OLLAMA_LOG_DIR` | `~/.agents/logs/ollama` | JSONL ログの置き場 |
-| `AGENT_OLLAMA_SKILLS_DIR` | — | スキル探索の追加先（`:` 区切り） |
-| `AGENT_OLLAMA_HISTORY` | — | TUI の履歴ファイル |
-| `AGENT_OLLAMA_NO_RICH` / `AGENT_OLLAMA_NO_READLINE` | — | `1` で rich / readline を使わない |
-
-`AGENT_OLLAMA_*` の綴りは入口の名前が変わっても据え置く（外部の手順書と `agents/*.json` の
-`env` 宣言を書き換えさせない）。
-
----
-
-## 7. 全サブコマンド共通の契約
-
-既存 adapter の契約をそのまま入口の契約に昇格させたもの。
-
-- **stdout は本文だけ。** 診断は 1 バイトも混ぜない
-- **stderr は診断と計測。** `@agent-usage tokens_in=… tokens_out=…`（その実行で使った累計 =
-  台帳向け）と `@agent-context used=… limit=… pct=… source=…`（いま文脈がどれだけ埋まって
-  いるか）は**意味が違うので行を分ける**
-- **完走しなかったら本文末尾に機械可読の封筒** `{"ok": false, "issues": [...]}`
-  （`--format json` のときは足さない）。同じことを `@agent-note` で stderr にも出すが、
-  **判定に使うのは封筒のほう**
-- **終了コードは実体のものをそのまま返す。** 入口で丸めない
-- **ログは `~/.agents/logs/<adapter>/` へ JSONL 追記。** agent-audit がセッションとして
-  読める形を変えない
-
----
-
-## 8. ollama 実行系の契約
-
-### 8.1 実行面と CLI フラグ
-
-| 面 | 入口 | 用途 |
-|---|---|---|
-| plain | `agent-herd ollama <model>` | text / JSON の単発生成。道具なし |
-| bash loop | `--tools bash` | OS ユーザー権限での汎用 work |
-| read loop | `--tools read` | 決定的ゲート付きの調査・読取 |
-| human / observe | `--tui` / `--status` / `--follow` / `--context` | 対話、進捗追尾、状態・文脈上限の取得 |
-| measure | `--replay` | 記録済みプロンプトの再生。**道具を持たない**（§8.6） |
-
-`--status` / `--follow` / `--replay` は `agent-herd status` / `follow` / `replay` としても
-打てる（§3 の別名。実体は同じフラグ）。
-
-| フラグ | 既定 | 意味 |
-|---|---|---|
-| `--model` | 定義の `default_model` | モデル（positional でも渡せる） |
-| `--tools` | `bash`（ループ時） | `bash` \| `read`。`edit` は予定名として認識し明示エラー |
-| `--format` | — | `json` \| `array` \| `text` |
-| `--think` | 定義による | `on` \| `off` \| `prompt` |
-| `--max-rounds` | `12` | ツールループのラウンド上限 |
-| `--command-timeout` | `300` 秒 | ツール 1 コマンドの上限 |
-| `--stall-timeout` | `180` 秒 | decode の無進捗上限 |
-| `--first-token-timeout` | `0`（無制限） | prefill の上限 |
-| `--context-limit` / `--context-warn-pct` | 自動解決 / `90` % | 文脈上限と警告しきい値 |
-| `--skill` / `--no-skills` | — | スキルの明示読み込み |
-| `--cwd` | 現在地 | ツールの開始位置（**sandbox ではない**） |
-| `--log` / `--no-log` | `~/.agents/logs/ollama` | JSONL ログ |
-| `--status` / `--follow` / `--context` | — | 観測 |
-| `--replay` / `--replay-limit` / `--replay-out` / `--arm` | — | 再生と腕の指定 |
-
-### 8.2 上限
-
-| 対象 | 既定 | 変えられるか |
-|---|---:|---|
-| ツールループのラウンド | 12（`read` profile は 30） | `--max-rounds` |
-| ツール 1 コマンド | 300 秒 | `--command-timeout` |
-| ツール出力の取り込み | 4,000 字（頭尾を残して詰め、何を省いたか明記） | 不可 |
-| 1 ラウンドの生成 | 4,096 トークン | 不可 |
-| 規約外応答の言い直し | 2 回 | 不可 |
-| ツール拒否 | 3 回目で `tool_denied`（連続である必要はない） | 不可 |
-| 同一 `(コマンド, 終了コード, 出力)` の連続 | 3 回で `no_progress` | 不可 |
-| 文脈の警告 | 実効上限の 90 % で 1 回だけ | `--context-warn-pct` |
-| 文脈の reserve | 512 トークン | 不可 |
-| heartbeat | 5 秒 | 不可 |
-
-待ちの上限は局面ごとに分ける。**prefill を無制限にしてあるのが要点**で、CPU 推論では
-「最初のトークンまで 10 分」が正常なため、ここに上限を置くと正常な実行を殺す。上限の判定は
-heartbeat の刻みで行うので、検知は最大 5 秒だけ遅れる。
-
-文脈上限は `--context-limit` → request options の `num_ctx` → `/api/ps` → `/api/show` の順で
-解決する。取得不能なら上限 0 として使用量だけを表示し、**知らない上限を根拠に警告・打ち切りは
-しない**。
-
-### 8.3 終了状態と出力
-
-ループの終了状態は 6 つ。
-
-| 状態 | 意味 | トリアージ |
-|---|---|---|
-| `done` | `TASK_COMPLETE` を確認した | — |
-| `no_command` | 規約外応答が続いた | — |
-| `max_rounds` | ラウンド上限 | — |
-| `no_progress` | 同一入出力の連続 3 回。同一入力の再試行では解けない | `env` |
-| `context_exhausted` | 最低限のツール結果も入らない | `env` |
-| `tool_denied` | 拒否が続いた | `env` |
-
-**`done` 以外はすべて未完了**である。最後の本文を捨てずに stdout へ返したうえで、通常本文の
-末尾へ `{"ok": false, "issues": [...]}` を足す。`--format json` は本文全体の契約を壊せないため
-封筒を足さず、外側の形式修復・検証へ委ねる。**未完了も rc=0** なので、呼び出し側は本文の
-機械可読契約を読んで判定する。
-
-stderr の行は責務を分ける。
-
-| 行 | 内容 |
-|---|---|
-| `@agent-usage` | 累計 `tokens_in` / `tokens_out`。node-budget・audit の実測値 |
-| `@agent-context` | 現在の文脈使用量 / 上限 / 比率 / 出典。**累計消費とは混ぜない** |
-| `@agent-note` | 未完了理由の人向け注記 |
-| `@agent-log` | JSONL ログのパス |
-
-接続不能・モデル未取得・スキル未配布・ツールセット不整合・`context_exhausted` は `env`、
-stall・通信断は `transient` として定義する。
-
-### 8.4 ツール
-
-| セット | 許すもの |
-|---|---|
-| `bash` | `bash -lc` へそのまま渡す。**OS ユーザー権限の範囲で無制限**であり、`cwd` は開始位置にすぎない（sandbox ではない） |
-| `read` | ファイルを変更できないコマンドと git の読取 subcommand だけ。引用外のシェルメタ文字・`find` の書込/実行述語・未知コマンドを拒否し、許可後も**シェルを介さず argv として直接実行**する |
-| `edit` | 予定名としてだけ認識し、現時点では明示エラー |
-
-判定できない形は安全側で拒否する。拒否は `tool_exec` を出す前に決めるので、実行していない
-コマンドが実行されたようにログへ残ることはない。
-
-### 8.5 スキル
-
-**明示・遅延読み込みだけ**である。`--skill <name>` またはプロンプト先頭の連続 slash 行を検出し、
-`~/.agents/skills` → `AGENT_OLLAMA_SKILLS_DIR` の追加先 → `~/.claude/skills` の順に `SKILL.md` を
-探す。frontmatter は除き、同じスキルは 1 回だけ注入する。明示指定が見つからなければ env 失敗。
-**先頭の slash 行がルート表にも宣言にもスキルにも無ければ明示エラー**で止める（§13）。
-
-`{skill_dir}` を使うスキルは同梱 script の実行を前提にするため、`read` と組み合わせた時点で env
-失敗にする（スキルを読めたのに手順だけ実行できない「成功に見える失敗」を作らない）。
-利用可能なスキルの全一覧を system prompt へ常時載せる自動選択は、prefill の固定費になるため
-行わない。
-
-### 8.6 再生（`--replay` / `agent-herd replay`）
-
-記録済みの JSONL から最初の user メッセージを取り出し、モデル・think・format を変えた腕へ同じ
-入力を当てて、腕ごとの空応答率・失敗率・所要時間と、腕をまたいだ一致率を出す。
-
-**再生は道具を持たない。** 道具ありの実行ログも入力源にできるが、記録されたコマンドは
-再実行しない——再生は測定であって副作用の再現ではなく、測るたびにワークスペースが変わっては
-ならない。この不変条件は腕の指定でも緩めない。正解ラベルとの一致率は出さない
-（ラベルは人が付けるもので、この口が引き受けるのは「同じ入力に対する出力」を再現可能な形で
-並べるところまで）。1 通りしか出力が無い件は一致率の母数に入れない。
-
-### 8.7 ログ
-
-実行中は run / skill / LLM / message / tool / context / error / end を JSONL へ追記する。
-ログ書込みや表示 sink の失敗は推論本体を止めない。`--status` は末尾から
-`{state, phase, round, last_progress_at, tokens_per_sec, context_*}` を組み立て、`--follow` と
-TUI は同じイベントを表示する。
-
----
-
-## 9. aider の adapter 契約
-
-素の CLI を直接呼ばず 1 枚噛ませているのは、**素の argv では表せないものがある**からである。
-それが無いクラウド CLI に adapter は置かない（§1・設計 §3.8）。
-
-### 9.1 `aider`
-
-Aider を CLI 契約の下に置く薄いラッパ（`agentcore/aider_adapter.py`）。`agents/aider.json`
-から `agent-herd aider … --model ollama_chat/{model}` として起動され、既定モデルは
-`gemma4:e4b`、`headless_autonomy: single-shot`（渡されたファイルを編集するだけでツールループを
-持たない）、`readonly: enforced`（`--dry-run`）。`variants` は 13 用途を宣言し、12 用途を
-`ollama-json` へ、`split` を `ollama-list-thinking` へ振り替える。
-
-| ラッパ専用オプション | 意味 |
-|---|---|
-| `--tui` | 共通 TUI（`ollama_tui`）を aider バックエンドで開く（段 12。§9.2） |
-| `--agent-policy <id>` | Aider の system prompt 先頭へ固定の reliability policy を注入する。現在の唯一の ID は `gemma4-e4b-reliability-v1`（対象 model は `ollama_chat/gemma4:e4b`） |
-| `--agent-num-ctx <整数>` | model settings の `extra_params.num_ctx` |
-| `--agent-num-predict <整数>` | model settings の `extra_params.num_predict` |
-
-これら 3 つは Aider へは渡さず、一時的な `--model-settings-file` を組み立てて先頭に差し込む
-（実行後に削除）。policy 適用時は stderr へ `@agent-policy id=<id> sha256=<12桁>` を出すので、
-実効 policy を後から観測できる。**未知の ID・対象外 model・外部 `--model-settings-file` との
-競合は黙って無効化せず、起動前に `[agent-error:env]` で失敗する**——「policy が効いている
-つもりで効いていない」を作らないため。
-
-3 つめは実測 usage で、`--analytics-log` の一時ファイルから累計トークンを読んで
-stderr の `@agent-usage tokens_in=... tokens_out=...` へ載せる（共通の usage 契約）。
-
-`~/.profile` からの環境補完（§6）も同じ理由で必要である——aider は接続先を `OLLAMA_API_BASE`
-（litellm）で読むので、補完が無いと既定の localhost へ向かうか、接続がプロキシへ流れて
-504 になる。
-
-### 9.2 `edit` — aider を使わない編集適用（対照実装）
-
-`agentcore/editagent.py` + `agentcore/editblock.py`。SEARCH/REPLACE ブロックを受けて
-`editblock` が当てる single-shot のエージェントで、探索もシェルもテスト実行も持たない。
-`--file`（編集対象。無ければ新規作成）・`--read`（参照）・`--message`・`--readonly`
-（dry-run）・`--model` を取り、実測 usage を `@agent-usage` へ出す。
-
-**なぜ同梱するのに定義が無いのか。** これは aider の去就（設計 §11 未決 5）を測るための
-対照実装で、運用の候補ではない。定義（`selfedit.json`）は `tools/agent-tools/eval/agents/`
-に置いてあり、同梱定義は 8 件のまま——`agents/` へ置くと `agent-herd defs` にも
-おすすめ構成の一族にも現れ、実測の裏付けが無いものが運用の選択肢に見える。
-
-曖昧一致の階段は aider 0.86.2 と**同じ 3 段**（完全一致 → 先頭空白のずれ → `...` 中略）で、
-上流の 4 段目（difflib）は `replace_most_similar_chunk` の途中に無条件 `return` があって
-到達しないため写していない（`test_editblock.py` が上流と同じ答えを返すことを縛る）。
-
-2026-08-29 の実測では T2gate 3/3・T4gate 0/3（aider はどちらも 3/3）で、**aider は外さない**
-と決めた。差は階段ではなくプロンプトである（設計 §11 未決 5）。
-
-### 9.3 対話面 — 共通 TUI の aider バックエンド（段 12）
-
-`agents/aider.json` の `interactive` は aider 素の TUI ではなく**共通 TUI**
-（`agent-herd aider --tui`）を起動する。前面の規約（`> ` プロンプト＝`ready_pattern`・
-turn hook・`/sm` `/edit` のハーネス回送）は ollama バックエンドと同一で、
-1 入力 = aider 1 回（`--message`）のヘッドレス実行になる。
-
-- 会話は積まない。継続に要る材料は毎回プロンプトへ書く（文脈を太らせない）
-- `--message` は adapter がターンごとに付けるので、起動 argv には現れない
-- モデル別設定（`--agent-policy` / `--agent-num-*`）があるとき `/model` での切り替えは
-  明示エラー——settings の entry は起動時のモデル名で束ねてあり、黙って外れることを許さない
-- 未知の `/x` と `/ask` `/find` は明示エラー（このバックエンドに toolset は無い）。
-  `/sm` `/edit` は TUI がヘッドレスのハーネスへ回す（§13.2 の表と同じ当て先）
-
----
-
-## 10. 配布
-
-`bash tools/agent-tools/install.sh` が作るもの:
-
-```
-~/.local/bin/agent-herd        zipapp（agentcore 同梱・rich は --with-rich のとき）
-~/.local/bin/agent-aider   ─┬─ agent-herd へのハードリンク（同一 inode）
-~/.local/bin/agent-ollama   ─┘
-```
-
-- ハードリンクが張れない FS ではコピーへ落とし、`[WARN]` を出す。インストーラは常に
-  全部を書き直すので、コピーでも版がずれることはない。過去の入れ直しで残った
-  `agent-opencode` は古い zipapp を指し続ける罠になるため、インストーラが消す
-- `--only agent-herd` でエンジンを 1 本も入れずに実行系だけ置ける（推論だけ担当する PC 向け）
-- インストール後、`agent-herd --help` と `agent-ollama --help` の両方を実行して
-  argv[0] 分岐まで踏む（「入った」と言い切る前に shebang / Python の取り違えを潰す）
-- agent-loop は別 zipapp のまま（デーモンであり契約が別）だが、同梱する agentcore に
-  `harness` が含まれる。**同時に入れ直す**運用は不変
-
-実装は Python 標準ライブラリだけで成立する。TUI の rich は任意で、無い環境では ANSI /
-readline の行指向表示へ戻る。全画面の alternate screen は使わず、agent-loop の
-`capture-pane` と `send-keys` から同じ対話面を駆動できる形を保つ。
-
----
-
-## 11. 未実装
-
-| 項目 | 状態 |
-|---|---|
-| `edit` ツールセット | 未実装。段 0〜3 の品質・節約実測が着手条件 |
-| `--patch` の決定的 SEARCH / REPLACE 適用 | 未実装。`edit` より小さい必要性が確認できたとき再検討 |
-| 走行中の read → edit / bash 昇格（`ToolPolicy`） | 未実装。read の権限不足による人手介入が実測で一定数出たときだけ着手 |
-| R3「品質は時間で買う」の実証 | `--replay` が検証の口だが、買えている証拠は `list-thinking` の 1 局面を除いてまだ無い |
-| `ollama_loop` と `harness.toolloop` の統合 | しない（設計 §2.3）。台帳で「同じ役割を両経路で流した実測」が並ぶまで判断を保留する |
-| `agent-herd stub`（`kiro-cli-stub.py` の同梱） | 未決。配布物に試験具を混ぜる是非を先に決める |
-
-`agents/*.json` のローカル定義（`aider` / `ollama` の 6 起動形）は
-`["agent-herd", "<sub>", …]` へ正典化済み。クラウド 5 件は §1 のとおり素の CLI を指したまま。
-ハーネスは `agentcore.harness` が唯一の実装で、agent-loop はそこへ委譲する（写しも共有
-データファイルも残っていない）。
-
----
-
-## 12. テスト
-
-| 何を縛るか | どこ |
-|---|---|
-| argv[0] 分岐・別名と明示形の同一性・観測別名 | `agentcore/tests/test_herdcli.py::Argv0DispatchTests` |
-| サブコマンド名の空間（定義名を adapter に化けさせない） | 同 `SubcommandNamespaceTests` |
-| `defs` が `agentcli` と同じ argv を出すこと・variant 解決 | 同 `DefsTests` |
-| `chat` の既定・policy の同一経路・対話面が無い定義の拒否・in-process 起動 | 同 `ChatTests` |
-| `exec` の argv 組み立て・引数面が閉じていること・tty を読まないこと | 同 `ExecTests` |
-| `harness` の引数解釈と種別の弁別 | 同 `HarnessTests` |
-| トップレベルのフラグ（§3.3）と、別名の引数面が素通しのままであること | 同 `TopLevelFlagsTests` / `Argv0DispatchTests` |
-| 環境補完が 1 実装であること（`is` で同一性） | `agentcore/tests/test_hostenv.py` |
-| 環境補完の振る舞い（相互補完・プロキシ迂回・両表記の一致） | 同 `CompleteOllamaEnvTests` |
-| ハーネスが単独で立つこと・本文が 1 か所であること・継ぎ目の既定 | `agentcore/tests/test_harness_standalone.py` |
-| ハーネスの振る舞い（ステートマシン完走・限定ツール契約・一時障害リトライ・timeout fallback） | `agentcore/tests/test_harness_{statemachine,control_retry,agent_timeout}.py` |
-| 同梱定義の実効 argv（旧綴りが profile として解けることを含む） | `agentcore/tests/test_agentcli.py::TestBundledGolden` |
-| 用途別の起動形が 1 エージェントの profile であること | `tests/test_agentcli_jsonvariant.py` |
-| ollama の引数解釈・ループ・文脈・スキル・再生・TUI | `agentcore/tests/test_ollama_*.py` |
-| aider の policy 合成と usage 抽出 | `agentcore/tests/test_aider_adapter.py` |
-| 共通 TUI の aider バックエンド（前面規約の共有・1 入力 1 回・ハーネス回送） | `agentcore/tests/test_aider_tui.py` |
-| agent-loop → ハーネスの委譲（別名を張らない・サブコマンドが落ちる・記帳が台帳へ着く） | agent-loop の `test/test_harness_delegation.py` |
-| コマンド面の規約・4 種の表・用途の宣言・未知コマンドの明示エラー（§13） | `agentcore/tests/test_slashroute.py` |
-| ランチャが argv を組む前に読むこと（`/sm` の起動・`/edit` の宣言・逃げ道） | `agentcore/tests/test_harness_slash_dispatch.py` |
-
-テストルートは 2 つある（`agentcore/tests/` と `agentcore/agentcore/tests/`）。CI は両方を
-明示して回す:
+リポジトリのルートで実行する。
 
 ```bash
-cd tools/agent-tools/agentcore \
-  && python3 -m unittest discover -s tests \
-  && python3 -m unittest discover -s agentcore/tests
+bash tools/agent-tools/install.sh --only agent-herd
+export PATH="$HOME/.local/bin:$PATH"
 ```
+
+`--only agent-herd` を外すと、agent-project などもまとめて更新する。TUI の色付けが必要なら
+`--with-rich` を付ける。このオプションだけはパッケージ取得にネットワークを使う。
+
+インストーラは次の 3 コマンドを置く。
+
+```text
+~/.local/bin/agent-herd
+~/.local/bin/agent-aider   # agent-herd の別名
+~/.local/bin/agent-ollama  # agent-herd の別名
+```
+
+### Ollama へ接続する
+
+Ollama が別の PC で動いている場合は、接続先を指定する。
+
+```bash
+export OLLAMA_HOST=http://YOUR_OLLAMA_HOST:11434
+```
+
+`OLLAMA_API_BASE` は `OLLAMA_HOST` から補完される。プロキシを使う環境では、Ollama の
+ホストが `NO_PROXY` と `no_proxy` に自動で追加される。環境変数は `~/.profile` に置いてもよい。
+
+モデルがサーバーに無ければ、そのサーバー側で取得する。
+
+```bash
+ollama pull gemma4:e4b
+```
+
+### 導入を確認する
+
+```bash
+agent-herd --version
+agent-herd defs
+agent-herd ollama --context gemma4:e4b
+```
+
+`defs` に `aider` と `ollama` が出れば定義を読めている。`--context` はモデルの文脈上限を
+問い合わせるだけで、推論は実行しない。
+
+最初の依頼は読み取り専用で試す。
+
+```bash
+agent-herd --readonly -p '7 * 8 の答えだけ返して'
+```
+
+結果は stdout、接続情報やトークン数は stderr に出る。シェルで結果だけをファイルへ渡せるよう、
+両者は混ぜない。
+
+> 注意: `--readonly` を外した `agent-herd -p` は定義の書き込みモードを使う。既定の
+> `ollama` 定義では、モデルが OS ユーザー権限の bash を実行できる。質問だけなら
+> `--readonly` を付ける。
+
+## 作業別の使い方
+
+### 対話する
+
+引数なしで Ollama の TUI を開く。
+
+```bash
+agent-herd
+```
+
+バックエンドとモデルを変える場合は次のように指定する。
+
+```bash
+agent-herd --agent aider --model gemma4:e4b
+agent-herd chat ollama --model gemma4:e4b
+```
+
+TUI のコマンドは `/help`、キー操作は `/keys` で確認できる。終了は `/quit`。
+
+### 一度だけ質問する
+
+本文が短ければ `-p` に続けて書く。パイプから渡すこともできる。
+
+```bash
+agent-herd --readonly -p 'このエラーの原因候補を3つ挙げて: connection reset'
+printf '%s\n' '次の文章を要約して' | agent-herd --readonly -p
+```
+
+既定は `ollama`。バックエンドや作業ディレクトリを変える場合は `--agent` と `--dir` を使う。
+
+```bash
+agent-herd --agent ollama --model gemma4:e4b --readonly --dir ./my-repo -p '質問本文'
+```
+
+### リポジトリを変更せずに調べる
+
+`ollama-read` は、読み取りコマンドだけを許可した探索用 profile（用途別の起動設定）である。
+
+```bash
+cd /path/to/repository
+printf '%s\n' '認証処理の入口と呼び出し経路を調べて' \
+  | agent-herd exec ollama-read
+```
+
+この profile はファイルの読み取りと git の参照系コマンドを使える。`agent-herd --readonly -p`
+はツールを一切与えないため、リポジトリを調べる用途には向かない。
+
+### 指定したファイルを編集する
+
+Aider に編集対象を渡す。`--file` と `--read` は複数回指定できる。
+
+```bash
+cd /path/to/repository
+printf '%s\n' 'parse_config の例外メッセージを日本語に直し、既存テストを保って' \
+  | agent-herd exec aider \
+      --file src/config.py \
+      --read tests/test_config.py
+```
+
+`--file` は編集対象、`--read` は参照だけを許すファイルである。変更せずに Aider の結果を
+確認したい場合は `--readonly` を加える。
+
+### JSON や配列で受け取る
+
+出力形式が決まっている処理は profile を指定する。
+
+```bash
+printf '%s\n' 'dependencies キーに name と reason の配列を入れて返して' \
+  | agent-herd exec ollama-json
+
+printf '%s\n' 'この作業を独立したタスクへ分割して' \
+  | agent-herd exec ollama-list
+```
+
+`ollama-json` はトップレベルがオブジェクトの JSON、`ollama-list` は文字列の JSON 配列を返す。
+purpose（用途名）から profile を選ばせることもできる。
+
+```bash
+agent-herd --readonly --purpose verify -p 'この結果は受入条件を満たすか: ...'
+```
+
+実際に起動するコマンド列は、実行前に確認できる。
+
+```bash
+agent-herd defs ollama-json
+agent-herd defs ollama --purpose verify
+agent-herd defs aider --model gemma4:e4b --json
+```
+
+### スキルを読み込む
+
+スキルは自動選択されない。名前を明示する。
+
+```bash
+printf '%s\n' '依頼本文' \
+  | agent-herd ollama --skill SKILL_NAME gemma4:e4b
+```
+
+TUI では、本文の先頭に `/SKILL_NAME` を置いてもよい。スキルが見つからなければ実行前に止まる。
+探索先とスラッシュ行の規則は「スキル」と「コマンド面」を参照。
+
+### ステートマシンを実行する
+
+ワークフローファイルを直接指定する形と、`agent-loop.yaml` の entry（登録済みの実行設定）を
+使う形がある。
+
+```bash
+agent-herd harness statemachine \
+  --workflow .agents/workflows/review.yaml \
+  --param target=docs/README.md
+
+agent-herd harness statemachine --entry nightly-review
+```
+
+1 件の依頼だけをハーネスで回す場合は `run` を使う。
+
+```bash
+agent-herd harness run 'README のリンク切れを直して' \
+  --acceptance 'README 内の相対リンクがすべて存在する'
+```
+
+どちらも tmux やデーモンを必要としない。最後に `RESULT {json}` を出すので、呼び出し側は
+その行から完了状態を判定できる。
+
+### 前回の続きを実行する
+
+```bash
+agent-herd -p '残っているテスト失敗を直して' --continue
+agent-herd -p 'このセッションの続きを要約して' --resume SESSION_ID
+```
+
+`SESSION_ID` はログのファイル名で、`agent-herd status` や stderr の `@agent-log` で確認する。
+Ollama と Aider では直近 6 メッセージを新しい依頼の前に付ける。ネイティブのセッション機能を
+持つ CLI では、その CLI の再開オプションを使う。
+
+### 長い実行を監視する
+
+別の端末から次を実行する。
+
+```bash
+agent-herd status
+agent-herd follow
+```
+
+`status` は最新ログの状態を 1 行 JSON で返す。`follow` は同じログを追尾する。CPU 推論では
+最初のトークンまで数分かかることがあるため、時間だけで停止と判断しない。`state=running` かつ
+`alive=true` なら処理は続いている。
+
+設定変更の前後を比べる場合は、記録済みの依頼を再生する。
+
+```bash
+agent-herd replay --replay-limit 20 \
+  --arm model=gemma4:e4b,think=off,format=json \
+  --arm model=gemma4:e4b,think=on,format=json
+```
+
+再生は記録されたコマンドを実行しない。モデルへの入力と出力だけを比較する。
+
+## 権限の選び方
+
+| 実行方法 | モデルが使えるもの | 主な用途 |
+|---|---|---|
+| `agent-herd --readonly -p ...` | ツールなし | 質問、要約、判断 |
+| `agent-herd exec ollama-read` | 読み取りコマンド | リポジトリ調査 |
+| `agent-herd exec aider --file ...` | 指定した編集対象 | 既知ファイルの修正 |
+| `agent-herd -p ...` | 定義の書き込みモード。既定は制限なしの bash | 自律実行 |
+| `agent-herd ollama ...` | ツールなし | Ollama adapter の単発利用 |
+| `agent-herd ollama --tools read ...` | 読み取りコマンド | adapter を直接調整した調査 |
+| `agent-herd ollama --tools bash ...` | OS ユーザー権限の bash | adapter を直接調整した実行 |
+
+`--cwd` と `--dir` は開始位置を変えるだけで、sandbox にはならない。書き込みを許したくない場合は
+`--readonly` または `ollama-read` を選ぶ。
+
+## 結果と失敗の読み方
+
+- stdout には成果本文だけが出る。
+- stderr には `@agent-usage`、`@agent-context`、`@agent-log` と診断が出る。
+- Ollama のツールループが未完了で止まると、通常の本文末尾に
+  `{"ok": false, "issues": [...]}` が付く。終了コードが 0 でも、この封筒があれば未完了である。
+- `--format json` と `--format array` では出力形式を壊さないため封筒を付けない。外側の
+  ハーネスか呼び出し側で判定する。
+- `harness` は最後の `RESULT {json}` を完了契約として使う。
+
+## よくある失敗
+
+| 症状 | 確認すること |
+|---|---|
+| `connection refused` | Ollama サーバーの起動状態と `OLLAMA_HOST` |
+| `model ... not found` | Ollama サーバー側で `ollama pull <model>` を実行したか |
+| `504 Gateway Timeout` | `OLLAMA_HOST`、`OLLAMA_API_BASE`、`NO_PROXY`、`no_proxy` |
+| `aider command not found` | Aider CLI が PATH にあるか |
+| `context_exhausted` | 依頼を分割するか、`AGENT_OLLAMA_OPTIONS` の `num_ctx` を増やす |
+| `no_progress` | 同じコマンドを繰り返している。依頼を小さくし、手順を具体化する |
+| 長時間出力がない | `agent-herd status` で `state`、`alive`、`phase` を見る |
+
+ここまでが利用手順である。以降は、CLI を呼ぶプログラムと実装者向けの外部仕様を固定する。
 
 ---
 
-## 13. コマンド面（スラッシュ）
+## CLI リファレンス
 
-設計: [2026-08-27 クラウド CLI を正とした入口の再構成](../plans/2026-08-27-agent-herd-cloud-cli-parity-slash-dispatch-design.md) §3.2・§3.3。
-実装は `agentcore.slashroute` の 1 か所（人が打つ面も engine が組む面も同じものを引く）。
+### 1. 対象と用語
 
-### 13.1 規約
+このリファレンスは、`agent-herd` のコマンド名、引数、環境変数、stdout、stderr、ログ、
+終了状態を規定する。設計理由や評価結果は対象外である。
 
-本文の**先頭から連続する** `/name [args]` の行がコマンド行である。名前は
-`^[a-z0-9][a-z0-9._-]*$`。空行でブロックが終わる（空行より後ろは本文）。
+| 用語 | 意味 | 例 |
+|---|---|---|
+| adapter | 実行プログラムへ直接つなぐ層 | `aider`、`ollama`、`edit` |
+| 定義 | `agents/*.json` に書かれた起動方法 | `aider`、`ollama`、`codex` |
+| profile | 同じ定義に属する用途別の起動差 | `ollama-json`、`ollama-read` |
+| purpose | planner や verify などの用途名 | `--purpose verify` |
 
-**ランチャは argv を組む前にこの行を読む。** 起動形（どのハーネス・どの toolset・どの
-profile・どの候補）は argv を組む前に決まらなければならないからで、判定は文字列マッチ
-だけ——**LLM は 1 回も呼ばれない**。
+`agent-herd` が直接実行する adapter は Aider と Ollama である。Claude、Codex、Kiro、Copilot、
+Cursor の定義は、それぞれの CLI を直接起動する。
 
-読んだあと、その行を CLI へ渡すか消費するかは**定義が宣言する**（`slash_native`。
-[agent-cli 仕様書](./agent-cli-spec.md) §2.4）。
+実装との対応は次のとおり。
 
-### 13.2 4 種類
+- 入口: `agentcore.herdcli`
+- 定義の解決: `agentcore.agentcli`
+- Ollama: `agentcore.ollama_adapter` と `agentcore.ollama_*`
+- Aider: `agentcore.aider_adapter`
+- ハーネス: `agentcore.harness`
+- 環境補完: `agentcore.hostenv`
 
-綴りの見え方は 1 つで、実体だけが違う。
+### 2. 起動名とディスパッチ
 
-| 種別 | 例 | 実体 | 誰が用意するか |
-|---|---|---|---|
-| A. セッション操作 | `/model` `/tools` `/think` `/ctx` `/status` `/skills` `/keys` `/help` `/quit` | コード内の関数（面が持つ） | agentcore |
-| B. 実行形 | `/ask` `/find` `/edit` `/sm <名前> [--param k=v]` | ハーネスと toolset の切替 | agentcore |
-| C. 用途 | `/verify` `/judge` … | 宣言 1 枚（§13.3） | 人・配布物 |
-| D. スキル | `/wiki-use` … | `SKILL.md` を材料へ載せる | 既存のスキル配布 |
+インストールされる 3 つの名前は同じ zipapp を指す。`basename(argv[0])` による分岐は次の 1 回だけ
+行う。
 
-A と B は**コード内の定数**で、設定ファイルにしない。人が書くのは C だけである。
-D は表に載らない——`SKILL.md` の実在がそのまま答えだから。
+```text
+agent-aider  ARGS...        -> aider   ARGS...
+agent-ollama ARGS...        -> ollama  ARGS...
+agent-herd SUBCOMMAND ...   -> SUBCOMMAND ...
+```
 
-種別 B が決めるのは道具立てとハーネスである。**ツールセットの選択がモデルの判断から
-1 語へ移る**のがこの表の要点で、弱いモデル向けの自由度削減はその副産物にすぎない。
+`agent-aider X` と `agent-herd aider X`、`agent-ollama X` と `agent-herd ollama X` は同じ関数へ
+同じ引数を渡す。別名で起動した場合、`--tui` などのフラグは adapter の引数として扱う。
 
-| 綴り | 決めるもの |
+開発木から `python3 -m agentcore.herdcli defs` のように起動した場合も、先頭の位置引数を
+サブコマンドとして扱う。
+
+### 3. コマンド一覧
+
+| コマンド | 入力 | 用途 |
+|---|---|---|
+| 引数なし | TTY | 既定の `ollama` で対話する |
+| `-p`、`--prompt` | 引数または stdin | 定義経由で 1 回実行する |
+| `aider ARGS...` | Aider の引数 | Aider adapter を直接使う |
+| `ollama ARGS...` | Ollama adapter の引数 | Ollama adapter を直接使う |
+| `edit ARGS...` | edit adapter の引数 | SEARCH/REPLACE を適用する |
+| `chat [NAME]` | TTY | 定義の対話コマンドを起動する |
+| `defs [NAME]` | なし | 定義と実効 argv を表示する |
+| `exec NAME` | stdin | 定義経由でヘッドレス実行する |
+| `harness statemachine ...` | 引数 | ステートマシンを実行する |
+| `harness run ...` | 引数 | 1 件の依頼をハーネスで実行する |
+| `status [LOG]` | JSONL ログ | 現在の状態を JSON で表示する |
+| `follow [LOG]` | JSONL ログ | 状態を追尾表示する |
+| `replay [PATH] ...` | JSONL ログ | 記録済みの依頼を再生する |
+
+`aider`、`ollama`、`edit` と観測コマンドの残りの引数は adapter が解釈する。`chat`、`defs`、
+`exec`、`harness` は、各節に記載した引数以外を終了コード 2 で拒否する。
+
+トップレベルでは、次の 2 つも受け付ける。
+
+| 引数 | 出力 | 終了コード |
+|---|---|---:|
+| `--help`、`-h`、`help` | ヘルプを stdout へ出す | 0 |
+| `--version`、`version` | `agent-herd VERSION` を stdout へ出す | 0 |
+
+adapter の引数は `agent-herd ollama --help` などで確認する。
+
+### 4. トップレベル実行
+
+#### 4.1 構文
+
+```text
+agent-herd [--agent NAME] [--model MODEL] [--purpose PURPOSE]
+           [--readonly] [--dir PATH]
+           [-p [PROMPT] | --prompt [PROMPT]]
+           [--continue | --resume SESSION_ID]
+```
+
+引数なしなら対話、`-p` または `--prompt` があれば 1 回実行になる。既定の定義名は `ollama`。
+
+| 引数 | 動作 |
 |---|---|
-| `/ask` | 道具なし（推論だけ） |
-| `/find` | `read` セット |
-| `/edit [指示]` | 編集ハーネス（`toolloop`）。どの編集適用エンジンかは §13.3 の宣言が決める |
-| `/sm <名前> [--param k=v]` | ステートマシン。名前が実在するファイルならワークフロー、そうでなければ entry |
+| `-p [TEXT]`、`--prompt [TEXT]` | `TEXT` を実行する。省略時は stdin を読む |
+| `--agent NAME` | 定義名または profile 名を選ぶ |
+| `--model MODEL` | 定義の既定モデルを上書きする |
+| `--purpose PURPOSE` | purpose と variant を解決してから起動する |
+| `--readonly` | 定義の読み取り専用 argv を使う |
+| `--dir PATH`、`-d PATH` | 起動前にカレントディレクトリを変更する |
+| `--continue` | 直前のセッションを続ける |
+| `--resume SESSION_ID` | 指定したセッションを続ける |
 
-引数はルータが食べず**本文の頭へ戻る**（`/ask 富士山の高さは?` の 1 行で送れる）。
-例外は `/sm` で、引数が起動形そのものを名指しするため食べる。
+通常の位置引数は受け付けない。依頼本文は `-p` または stdin、バックエンドは `--agent` で渡す。
+`--dir` の対象が存在しない場合と、未知のフラグを受け取った場合は終了コード 2 になる。
 
-### 13.3 用途の宣言 1 枚（種別 C）
+`-p` の直後がフラグで始まる場合、依頼本文は stdin から読む。先頭が `-` の本文は stdin で渡す。
 
-置き場と探索順は**先勝ち**で、`$AGENT_COMMANDS_DIR` →
-`<プロジェクト>/.agents/commands/` → `~/.agents/commands/` → 同梱。frontmatter は
-**平らな `key: value` だけ**（agentcore は stdlib だけで動く必要があり、PyYAML は前提に
-できない）。本文はそのままシステムプロンプトになる。
+#### 4.2 セッション継続
+
+継続方法は定義によって異なる。
+
+| 定義 | 継続方法 |
+|---|---|
+| `continue_args` または `resume_args` がある | 対象 CLI のネイティブ機能を使う |
+| 上記の宣言がない Aider と Ollama | 自分の JSONL ログから直近 6 メッセージを依頼の前に付ける |
+
+Aider と Ollama の継続は `-p` と一緒に使う。対話起動に `--continue` を付けた場合は終了コード 2。
+ログまたはネイティブの再開引数が無い定義も終了コード 2 になる。新しいセッションとしての
+代替実行は行わない。
+
+ネイティブ CLI の継続用 argv は、サブコマンドの直後、通常オプションの前に挿入する。これにより
+`codex exec resume --last` のようなサブコマンド形式を保持する。
+
+### 5. 定義経由のコマンド
+
+#### 5.1 `defs`
+
+```text
+agent-herd defs
+agent-herd defs NAME [--json] [--model MODEL] [--purpose PURPOSE]
+```
+
+名前を省略すると、探索できる定義を重複なしで列挙する。名前を指定すると、定義を解決した後の
+write、readonly、interactive の argv と宣言値を表示する。表示する argv は
+`agentcli.headless_cmd()` と `agentcli.interactive_cmd()` の結果を使う。
+
+`--json` の出力項目は次のとおり。
+
+```text
+name, path, requested, profile, profiles, resolved_via_variant,
+headless_autonomy, readonly, relative_cost, default_model, model,
+prompt_via, variants, argv_write, argv_readonly, argv_interactive, timeout
+```
+
+終了コードは 0 が表示成功、1 が定義の解決失敗、2 が引数の誤り。
+
+#### 5.2 `exec`
+
+```text
+agent-herd exec NAME [--model MODEL] [--purpose PURPOSE] [--readonly]
+                     [--file PATH]... [--read PATH]...
+```
+
+依頼本文は stdin から読む。stdin が TTY の場合は入力待ちせず、空の本文として定義を起動する。
+`--file` と `--read` は繰り返し指定できる。`--purpose` が variant を選んだ場合は、解決後の
+profile または定義を実行する。
+
+`--readonly` を指定した定義が `readonly: best-effort` の場合は、保証できないことを
+`@agent-note` で stderr へ出してから起動する。
+
+終了コードは実行先の値を返す。定義を解決できない場合は 1、引数の誤りは 2、実行ファイルが
+無い場合は 127。
+
+#### 5.3 `chat`
+
+```text
+agent-herd chat [NAME] [--model MODEL]
+```
+
+既定の定義は `ollama`。定義の `interactive.command` を解決して起動する。解決した argv の先頭が
+`agent-herd`、`agent-aider`、`agent-ollama` のいずれかなら同じプロセス内で起動し、それ以外は
+`os.execvp` で置き換える。
+
+`interactive` が無い定義は終了コード 1。ヘッドレス実行への切り替えは行わない。
+`ready_pattern` や `busy_pattern` は tmux から対話面を使う側の宣言であり、`chat` 自体は参照しない。
+
+#### 5.4 `harness`
+
+```text
+agent-herd harness statemachine (--workflow PATH | --entry NAME [--config PATH])
+                                [--agent-cli NAME] [--model MODEL]
+                                [--param KEY=VALUE]... [--input TEXT] [--dir DIR]
+
+agent-herd harness run PROMPT...
+                       [--agent-cli NAME] [--model MODEL] [--dir DIR]
+                       [--acceptance TEXT]... [--judge]
+```
+
+`--agent-cli` の既定は `aider`。`statemachine` は `--workflow` と `--entry` のどちらか一方だけを
+受け付ける。`--entry` は `agent-loop.yaml` の `prompts[]` からワークフロー、入力、作業場所、
+定義名、モデルを読む。`--config` を省略した場合の探索順は agent-loop と同じ。
+
+コマンドラインの値と entry の値が重なった場合は次の順で決める。
+
+| 項目 | 優先順 |
+|---|---|
+| パラメータ | `--param`、`--input`、entry |
+| 定義とモデル | `--agent-cli`、`--model`、entry、既定 |
+| 作業場所 | `--dir`、entry の `cwd`、現在地 |
+
+両コマンドとも tmux とデーモンを使わず、終了時に `RESULT {json}` を 1 行出す。
+`agent-herd harness` は既定では台帳へ書かず、selection policy も読まない。呼び出し側は hook で
+追加できる。
+
+ハーネスは定義の `headless_autonomy` を見て実行方法を選ぶ。`single-shot` は
+`read_files`、`write_files`、`run`、`final` の限定ツール契約を付ける。`tool-loop` は対象 CLI の
+ツールループへ 1 回渡す。
+
+引数の誤りと未知のハーネス種別は終了コード 2。それ以外はハーネス本体の終了コードを返す。
+
+### 6. 定義と profile
+
+同梱する定義は `aider`、`ollama`、`claude`、`codex`、`kiro`、`copilot`、`cursor`、
+`vscode-copilot` の 8 件。ローカル実行系の `aider` と `ollama` は `relative_cost: 0`。
+
+`aider` は対象ファイルが分かっている編集に使う。`ollama` は bash を使う探索と実行に使う。
+planner、verify、split など 15 の purpose は、どちらを基準にしても同じ Ollama profile へ解決する。
+
+| profile | 互換名 | 既定モデル | write | readonly | 対話 |
+|---|---|---|---|---|---|
+| base | `ollama` | `gemma4:e4b` | bash、最大 12 ラウンド | ツールなし | TUI、think on |
+| `json` | `ollama-json` | `gemma4:e4b` | JSON オブジェクト | 同左 | なし |
+| `list` | `ollama-list` | `gemma4:e4b` | 文字列の JSON 配列 | 同左 | なし |
+| `list-thinking` | `ollama-list-thinking` | `gemma4:e4b` | text、think on、temperature 0 | 同左 | なし |
+| `read` | `ollama-read` | `gemma4:e4b` | read ツール、最大 30 ラウンド | ツールなし | なし |
+| `verify` | `ollama-verify` | `gemma4:12b` | JSON オブジェクト | 同左 | なし |
+
+base の variant は planner、evaluator、filter、judge、reduce、extract、plan、review、prioritize、
+route、adjudicate、assess を `ollama-json`、split を `ollama-list`、retrieve を `ollama-read`、
+verify を `ollama-verify` へ振り分ける。`aider` も同じ 15 件を宣言する。
+
+`json` profile は split を `ollama-list`、retrieve を `ollama-read` へ振り分ける。
+`verify` profile は split を `ollama-list` へ振り分ける。base と `read` profile の
+`--command-timeout` は 900 秒、`verify` の `--stall-timeout` は 180 秒。
+
+profile は base の設定を継ぐが、`interactive` と `variants` は継承しない。`env` は base に重ね、
+ほかの値は profile に宣言があれば置き換える。空のリストも置き換えとして扱う。
+
+profile と同じ名前の実ファイルがある場合は実ファイルを優先する。たとえば
+`agents/ollama-list.json` があれば、`ollama` の `list` profile より先に解決する。
+
+`ollama-list` のような互換名を解決した結果では、定義名は `ollama`、profile は `list` になる。
+台帳へ記録する `agent_cli` も `ollama` に正規化する。purpose は台帳の `purpose` または
+`operation_class` に記録する。
+
+### 7. 対話ペインからの定型処理
+
+agent-loop と agent-dashboard は、`interactive` を宣言した定義を tmux ペインで起動する。
+対話面が無い定義だけをヘッドレスのハーネスへ送る。`headless_autonomy` はこの判定に使わない。
+
+ステートマシンを開始するとき、ペインへ送る先頭行は次のとおり。
+
+| 対話面 | 送る先頭行 |
+|---|---|
+| agent-herd の共通 TUI | `/sm WORKFLOW [--param KEY=VALUE]` |
+| クラウド CLI | `statemachine-use スキルでNAMEステートマシンを実行して` と入力条件 |
+
+この文字列は `agentcore.loopentry.statemachine_command` が組み立てる。共通 TUI の `/sm` は本文の
+先頭行に置く。前に共通指示などを追加すると、ルータはステートマシンとして解釈しない。
+
+### 8. コマンド面
+
+#### 8.1 先頭のスラッシュ行
+
+本文の先頭から連続する `/name [args]` の行をコマンドとして読む。名前は
+`^[a-z0-9][a-z0-9._-]*$`。空行があれば、そこから後ろは通常の本文になる。起動する profile や
+ツールを決めるため、ランチャは argv を組み立てる前にこの部分を解析する。
+
+コマンドは次の 4 種類。
+
+| 種類 | 例 | 処理するもの |
+|---|---|---|
+| セッション操作 | `/model`、`/tools`、`/status`、`/help`、`/quit` | TUI |
+| 実行形 | `/ask`、`/find`、`/edit`、`/sm` | agentcore のルータ |
+| purpose | `/verify`、`/judge` | command 宣言 |
+| スキル | `/wiki-use` | `SKILL.md` |
+
+実行形の割り当ては次のとおり。
+
+| コマンド | 実行方法 |
+|---|---|
+| `/ask TEXT` | ツールを使わずに推論する |
+| `/find TEXT` | read ツールで調べる |
+| `/edit TEXT` | 編集ハーネスを使う |
+| `/sm NAME [--param KEY=VALUE]` | ファイルまたは entry のステートマシンを使う |
+
+`/ask`、`/find`、`/edit` の引数は依頼本文の先頭へ戻す。`/sm` の引数はルータが実行条件として
+消費する。
+
+#### 8.2 purpose の宣言
+
+purpose の宣言ファイルは次の順に探索し、最初に見つかった同名ファイルを使う。
+
+```text
+$AGENT_COMMANDS_DIR
+PROJECT/.agents/commands/
+~/.agents/commands/
+同梱ディレクトリ
+```
+
+frontmatter は 1 行の `key: value` だけを受け付ける。
 
 | キー | 意味 |
 |---|---|
-| `description` | `/help` と補完に出る 1 行 |
-| `agent` | 起動形。宣言した定義の `variants` はさらに引かれる（`agent: ollama` ＋ 用途 verify → `ollama-verify`） |
-| `model` | 用途専用の既定。**人の明示と用途別順位表（実測）には負ける**（[agent-cli 仕様書](./agent-cli-spec.md) §4.1 と同じ規則） |
-| `tools` | ツールセットを 1 つだけ。`[]`＝道具なし / `[read]` / `[bash]` |
-| `output` | 出力契約（`json` 等） |
-| `argument-hint` | `/help` の左列に出る引数の型 |
-| `system-template` / `instance-template` / `observation-template` / `format-error-template` | ツールループのプロンプト外出し（設計 §3.5 / 段 13）。値は**宣言ファイルからの相対パス**で、テンプレート本文はそのファイルに置く（frontmatter は平らな 1 行値しか受けないため）。未宣言の枠は従来のコード内既定のまま——外出しは移行であって調整ではなく、既定の出力はゴールデン（`test_prompt_templates.py`）が 1 バイト単位で縛る |
+| `description` | `/help` と補完に出す説明 |
+| `agent` | 定義または profile |
+| `model` | purpose の既定モデル |
+| `tools` | `[]`、`[read]`、`[bash]` のいずれか |
+| `output` | `json` などの出力形式 |
+| `argument-hint` | `/help` に出す引数の形 |
+| `system-template` | system prompt のテンプレート |
+| `instance-template` | 最初の user message のテンプレート |
+| `observation-template` | ツール出力のテンプレート |
+| `format-error-template` | 形式エラー時の再指示テンプレート |
 
-テンプレートの置換は**知っているキーだけ**（`{task}` `{cwd}` `{toolset}` `{done_marker}`
-`{exit_code}` `{output}` `{read_commands}` `{read_git_subcommands}`）。未知の `{...}` は
-そのまま残るので、本文に JSON の例を書ける。枠は 4 つ——`system`（役割と規約）・
-`instance`（最初の user メッセージ。既定は task そのまま）・`observation`（ツール出力の
-詰め方）・`format-error`（規約から外れたときの言い直し）。
+テンプレートのパスは宣言ファイルからの相対パス。置換対象は `{task}`、`{cwd}`、`{toolset}`、
+`{done_marker}`、`{exit_code}`、`{output}`、`{read_commands}`、`{read_git_subcommands}`。
+ほかの `{...}` はそのまま残す。
 
-**名前空間はスキル・種別 A / B と 1 つ**である。同名を両方置かない（先勝ちで、もう片方が
-黙って効かなくなる）。同梱しているのは `edit.md` の 1 枚だけで、**aider の名前が出るのは
-そこだけ**である——編集適用の実装を差し替える変更は将来この 1 行で済む。
+スキル、セッション操作、実行形、purpose は同じ名前空間を使う。同名を複数の種類に置かない。
+同梱する purpose 宣言は `edit.md`。
 
-### 13.4 知らない名前は止まる
+先頭のスラッシュ名がどの種類にも無い場合は、推論を始めずにエラーにする。`/tmp を消して` の
+ような通常の文を先頭から送りたい場合は、先頭に空行を 1 つ置く。
 
-ルート表にも宣言にもスキルにも無い先頭コマンド行は**明示エラー**で止める。黙って本文
-として推論へ流さない——打ち間違えた `/verfy` が「なぜか普通の依頼として実行された」に
-なるのを防ぐ（層3 でスキルが解決できないときに起動時 fail fast にしているのと同じ方針）。
+### 9. 環境
 
-規約が先頭ブロックしか見ない以上、`/tmp を消して` のような普通の依頼も先頭に来れば
-コマンド行に見える。エラー文は**逃げ道まで書く**——本文として送るには先頭に空行を
-1 つ入れる。1 回実行（`harness run` / `agent-loop run`）はこの空行を落とさない。
+#### 9.1 接続情報の補完
+
+起動時に `agentcore.hostenv` が次の処理を 1 回行う。
+
+1. `OLLAMA_HOST`、`OLLAMA_API_BASE`、`NO_PROXY` または `no_proxy` がそろっていれば
+   `~/.profile` を読まない。
+2. 足りない場合は `~/.profile` を子プロセスで評価し、`OLLAMA_*`、`AGENT_OLLAMA_*`、
+   `NO_PROXY`、`no_proxy` だけを取り込む。現在の環境変数を優先する。
+3. `OLLAMA_HOST` と `OLLAMA_API_BASE` を相互に補完する。スキームが無ければ `http://` を付ける。
+4. Ollama のホストを `NO_PROXY` と `no_proxy` の両方へ追加し、2 つを同じ値にする。
+
+`~/.profile` の評価に失敗した場合は現在の環境で続行する。評価用プロセスの stdin は閉じる。
+
+#### 9.2 環境変数
+
+| 変数 | 既定 | 用途 |
+|---|---|---|
+| `OLLAMA_HOST` | なし | Ollama の接続先 |
+| `OLLAMA_API_BASE` | なし | Aider と LiteLLM の接続先 |
+| `NO_PROXY`、`no_proxy` | なし | プロキシを通さないホスト |
+| `OLLAMA_TIMEOUT` | `600` 秒 | HTTP 全体の上限 |
+| `AGENT_OLLAMA_CONNECT_TIMEOUT` | `120` 秒 | 応答ヘッダを待つ時間 |
+| `AGENT_OLLAMA_FIRST_TOKEN_TIMEOUT` | `0` | 最初のトークンまで。0 は無制限 |
+| `AGENT_OLLAMA_STALL_TIMEOUT` | `180` 秒 | decode 中の無進捗時間 |
+| `AGENT_OLLAMA_META_TIMEOUT` | `3` 秒 | `/api/ps` と `/api/show` の問い合わせ |
+| `AGENT_OLLAMA_THINK` | モデル既定 | `on`、`off`、`prompt` |
+| `AGENT_OLLAMA_OPTIONS` | なし | API の `options` に渡す JSON |
+| `AGENT_OLLAMA_KEEP_ALIVE` | なし | API の `keep_alive` |
+| `AGENT_OLLAMA_SYSTEM_PROMPT` | なし | system prompt の差し替え |
+| `AGENT_OLLAMA_LOG_DIR` | `~/.agents/logs/ollama` | JSONL ログのディレクトリ |
+| `AGENT_OLLAMA_SKILLS_DIR` | なし | 追加のスキル探索先。`:` 区切り |
+| `AGENT_OLLAMA_HISTORY` | 実装既定 | TUI の履歴ファイル |
+| `AGENT_OLLAMA_NO_RICH` | なし | `1` で rich を使わない |
+| `AGENT_OLLAMA_NO_READLINE` | なし | `1` で readline を使わない |
+
+`AGENT_OLLAMA_*` の名前は `agent-herd`、`agent-aider`、`agent-ollama` のどの起動名でも同じ。
+
+### 10. stdout、stderr、終了コード
+
+#### 10.1 共通出力
+
+- stdout には成果本文だけを出す。
+- stderr には診断と計測を出す。
+- adapter の終了コードは入口で変換しない。
+- Ollama のログは `~/.agents/logs/ollama/` に JSONL で追記する。
+
+stderr の機械可読行は次のとおり。
+
+| 接頭辞 | 内容 |
+|---|---|
+| `@agent-usage` | 実行中に消費した `tokens_in` と `tokens_out` の累計 |
+| `@agent-context` | 現在の文脈使用量、上限、比率、算出元 |
+| `@agent-note` | 未完了や保証範囲についての注記 |
+| `@agent-log` | JSONL ログのパス |
+| `@agent-policy` | Aider に適用した policy ID とハッシュ |
+
+エラー分類は `[agent-error:env]` または `[agent-error:transient]` の形で stderr へ出す。
+接続不能、モデル未取得、スキル未配布、ツール不整合、文脈不足は `env`。通信断と生成中の
+stall は `transient`。
+
+#### 10.2 入口の終了コード
+
+| 終了コード | 意味 |
+|---:|---|
+| 0 | 表示成功、または実行先が 0 を返した |
+| 1 | 定義を解決できない、対話面が無い |
+| 2 | 引数またはコマンドの誤り |
+| 127 | 実行ファイルが見つからない |
+
+Ollama のツールループでは、未完了でも途中成果を返すため終了コードが 0 になる場合がある。
+呼び出し側は「Ollama の終了状態」で定める封筒も確認する。
+
+### 11. Ollama adapter
+
+#### 11.1 構文とモード
+
+```text
+agent-herd ollama [OPTIONS] MODEL
+agent-ollama [OPTIONS] MODEL
+```
+
+依頼本文は stdin から受け取る。
+
+| モード | 指定 | 動作 |
+|---|---|---|
+| 単発 | 指定なし | ツールを使わずに 1 回生成する |
+| bash loop | `--tools` または `--tools bash` | bash を使うツールループ |
+| read loop | `--tools read` | 読み取りコマンドだけを使うツールループ |
+| TUI | `--tui` | 対話する |
+| 状態 | `--status [LOG]` | 1 行 JSON を返す |
+| 追尾 | `--follow [LOG]` | JSONL ログを追尾する |
+| 文脈照会 | `--context MODEL` | 推論せず文脈上限を調べる |
+| 再生 | `--replay [PATH]` | 記録済みの依頼を再生する |
+
+#### 11.2 オプション
+
+| オプション | 既定 | 動作 |
+|---|---|---|
+| `--model MODEL` | 位置引数 | モデルを指定する |
+| `--tools [bash\|read]` | `bash` | ツールループを有効にする |
+| `--format json\|array\|text` | `text` | 出力文法を制限する |
+| `--think on\|off\|prompt` | 環境またはモデル既定 | 思考モードを選ぶ |
+| `--max-rounds N` | `12` | ツールループの最大ラウンド |
+| `--command-timeout SEC` | `300` | 1 コマンドの上限 |
+| `--stall-timeout SEC` | `180` | decode 中の無進捗上限。0 は無効 |
+| `--first-token-timeout SEC` | `0` | 最初のトークンまでの上限。0 は無制限 |
+| `--context-limit N` | 自動 | 文脈上限を明示する |
+| `--context-warn-pct P` | `90` | 文脈警告の割合。0 は無効 |
+| `--skill NAME` | なし | スキルを読み込む。複数指定可 |
+| `--no-skills` | 無効 | 先頭スラッシュ行によるスキル展開を止める |
+| `--cwd DIR` | 現在地 | ツールの開始位置を変える |
+| `--log PATH` | ログディレクトリ | ログの置き場を変える |
+| `--no-log` | 無効 | ログを書かない |
+| `--arm SPEC` | なし | 再生条件を追加する。複数指定可 |
+| `--replay-limit N` | 実装既定 | 再生件数を制限する |
+| `--replay-out PATH` | ログディレクトリ | 再生結果の JSONL を書く |
+
+`--format json` はトップレベルをオブジェクトに制限する。配列が必要なら `--format array` を使う。
+`--think on` と `--format json` を同時に指定した場合は think を off にする。`--think prompt` は
+system prompt の先頭に `<|think|>` を置くため、この強制 off の対象外。
+
+#### 11.3 上限とタイムアウト
+
+| 対象 | 既定 | 変更方法 |
+|---|---:|---|
+| ツールループ | 12 ラウンド | `--max-rounds` |
+| read profile | 30 ラウンド | `--max-rounds` |
+| ツール 1 コマンド | 300 秒 | `--command-timeout` |
+| ツール出力の取り込み | 4,000 字 | 変更不可 |
+| 1 ラウンドの生成 | 4,096 トークン | 変更不可 |
+| 規約外応答の再指示 | 2 回 | 変更不可 |
+| ツール拒否 | 3 回目で停止 | 変更不可 |
+| 同じコマンド、終了コード、出力 | 3 回連続で停止 | 変更不可 |
+| 文脈の予備 | 512 トークン | 変更不可 |
+| heartbeat | 5 秒 | 変更不可 |
+
+最初のトークンまでの待機は既定で無制限。生成が始まった後に `stall-timeout` のあいだ進捗が
+無ければ停止する。
+
+応答ヘッダを `AGENT_OLLAMA_CONNECT_TIMEOUT` の時間内に受け取れない場合は `/api/version` で
+サーバーを確認する。サーバーが生きていれば queue として待ち続け、30 秒ごとに再確認する。
+3 回続けて生存確認に失敗した場合だけ停止する。
+
+文脈上限は `--context-limit`、request の `num_ctx`、`/api/ps`、`/api/show` の順で決める。
+どれも取得できなければ、使用量だけを表示し、割合による警告と停止は行わない。
+
+#### 11.4 ツール
+
+| セット | 許可範囲 |
+|---|---|
+| `bash` | `bash -lc` にそのまま渡す。OS ユーザー権限の範囲で制限しない |
+| `read` | 読み取りコマンドと git の参照系 subcommand。シェルを介さず argv で実行する |
+| `edit` | 未実装。指定するとエラー |
+
+`read` は引用外のシェルメタ文字、書き込みを伴う `find` の述語、未知のコマンドを拒否する。
+拒否したコマンドは実行ログの `tool_exec` に記録しない。`--cwd` は開始位置の指定であり、
+sandbox ではない。
+
+#### 11.5 スキル
+
+スキルは `--skill NAME` または本文先頭のスラッシュ行で指定する。次の順に `SKILL.md` を探す。
+
+```text
+~/.agents/skills
+$AGENT_OLLAMA_SKILLS_DIR の各ディレクトリ
+~/.claude/skills
+```
+
+frontmatter を除いた本文を 1 回だけプロンプトへ加える。指定したスキルが無ければ `env` エラー。
+`{skill_dir}` を使うスキルは同梱スクリプトの実行を前提とするため、`read` ツールとの組み合わせを
+拒否する。スキル一覧を system prompt へ常時加える処理は行わない。
+
+#### 11.6 終了状態
+
+| 状態 | 完了 | 意味 | 分類 |
+|---|:---:|---|---|
+| `done` | yes | `TASK_COMPLETE` を確認した | なし |
+| `no_command` | no | ツール呼び出し規約に合わない応答が続いた | なし |
+| `max_rounds` | no | 最大ラウンドに達した | なし |
+| `no_progress` | no | 同じコマンドと結果が 3 回続いた | `env` |
+| `context_exhausted` | no | 最低限のツール結果も文脈に入らない | `env` |
+| `tool_denied` | no | ツール拒否が 3 回に達した | `env` |
+
+`done` 以外でも最後の本文は stdout へ返す。通常の text 出力では、その末尾に次の封筒を加える。
+
+```json
+{"ok": false, "issues": ["未完了の理由"]}
+```
+
+未完了でも終了コードは 0。`--format json` と `--format array` では出力契約を壊すため
+封筒を加えない。
+
+#### 11.7 ログと再生
+
+実行中は run、skill、LLM、message、tool、context、error、end のイベントを JSONL へ追記する。
+ログ書き込みと表示の失敗は推論を停止させない。
+
+`status` はログ末尾から `state`、`phase`、`round`、`last_progress_at`、`tokens_per_sec`、
+`context_*` を組み立てる。`follow` と TUI も同じイベントを表示する。
+
+`replay` は各ログの最初の user message を使う。`--arm` には `model`、`think`、`format`、`label`、
+`repeat` を指定できる。出力は腕ごとの空応答率、失敗率、所要時間と、腕をまたいだ一致率。
+1 件ごとの結果は `--replay-out` の JSONL へ書く。
+
+再生時はツールを与えず、記録されたコマンドも実行しない。1 種類の出力しか得られなかった依頼は
+一致率の母数に入れない。正解ラベルとの一致率は計算しない。
+
+### 12. Aider adapter
+
+#### 12.1 構文
+
+```text
+agent-herd aider [AIDER_ARGS...]
+agent-aider [AIDER_ARGS...]
+```
+
+adapter 専用のオプションを取り除いた後、残りを Aider CLI へ渡す。
+
+| オプション | 動作 |
+|---|---|
+| `--tui` | 共通 TUI を Aider バックエンドで開く |
+| `--agent-policy ID` | system prompt の先頭に固定 policy を加える |
+| `--agent-num-ctx N` | model settings の `num_ctx` を設定する |
+| `--agent-num-predict N` | model settings の `num_predict` を設定する |
+
+使用できる policy ID は `gemma4-e4b-reliability-v1`、対象モデルは
+`ollama_chat/gemma4:e4b`。未知の ID、対象外モデル、外部の `--model-settings-file` との併用は
+起動前に `env` エラーにする。
+
+adapter は一時的な analytics log からトークン数を読み、`@agent-usage` を stderr へ出す。
+policy を適用した場合は `@agent-policy id=ID sha256=HASH` も出す。一時ファイルは実行後に削除する。
+
+Aider の共通 TUI は 1 入力ごとに 1 回 `aider --message` を実行する。会話履歴は自動で積まない。
+`/sm` と `/edit` はハーネスへ渡す。`/ask`、`/find`、未知のスラッシュ名はエラー。
+
+モデル別の policy または `--agent-num-*` を付けて起動した TUI では、`/model` で別モデルへ
+切り替えない。設定対象から外れるためエラーになる。
+
+#### 12.2 `edit` adapter
+
+```text
+agent-herd edit --model MODEL --file PATH [--read PATH]...
+                [--message TEXT] [--dir DIR] [--readonly] [--think on|off]
+```
+
+`edit` は SEARCH/REPLACE ブロックを生成し、完全一致、先頭空白の差、`...` 中略の順で適用する。
+ファイル探索、シェル、テスト実行は行わない。`--model` と 1 件以上の `--file` が必須。
+`--file` が存在しない場合は新規作成、`--readonly` は dry-run。`--message` を省略した場合は
+stdin から依頼本文を読む。
+
+この adapter は比較評価用で、同梱の `agents/*.json` には定義を置かない。定義経由で通常の編集を
+行う場合は `aider` を使う。
+
+### 13. 配布
+
+```text
+bash tools/agent-tools/install.sh [--only agent-herd]
+                                  [--prefix DIR]
+                                  [--with-rich]
+```
+
+既定の出力は次のとおり。
+
+```text
+~/.local/bin/agent-herd
+~/.local/bin/agent-aider
+~/.local/bin/agent-ollama
+```
+
+`agent-aider` と `agent-ollama` は `agent-herd` へのハードリンク。ハードリンクを作れない
+ファイルシステムではコピーし、警告を出す。インストーラは毎回 3 つを同じ版へ更新する。
+旧版の `agent-opencode` が残っている場合は削除する。
+
+`--only agent-herd` は agent-project などを入れずに実行系だけを置く。`--prefix` は出力先を変える。
+`--with-rich` は rich を zipapp に同梱する。rich の取得に失敗した場合は ANSI 表示で続行する。
+
+インストール後は `agent-herd --help` と `agent-ollama --help` を実行し、zipapp と起動名の分岐を
+確認する。agent-loop は別の zipapp なので、agentcore の契約を更新した場合は agent-loop も
+同時に入れ直す。

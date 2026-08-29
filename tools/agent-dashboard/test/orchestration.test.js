@@ -489,8 +489,8 @@ test('制御: readStatus は status/*.json を読み fresh 判定を付ける', 
   const now = new Date();
   const fresh = new Date(now.getTime() - 30 * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
   const stale = new Date(now.getTime() - 600 * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
-  fs.writeFileSync(path.join(statusDir, 'kiro-loop-1.json'), JSON.stringify({
-    tool: 'kiro-loop', workload: 'routine', pid: 1, revision_applied: 3,
+  fs.writeFileSync(path.join(statusDir, 'agent-loop-1.json'), JSON.stringify({
+    tool: 'agent-loop', workload: 'routine', pid: 1, revision_applied: 3,
     lifecycle: 'run', fresh_after_sec: 120, ts: fresh,
   }));
   fs.writeFileSync(path.join(statusDir, 'agent-flow-2.json'), JSON.stringify({
@@ -500,7 +500,7 @@ test('制御: readStatus は status/*.json を読み fresh 判定を付ける', 
   const rows = control.readStatus(dir);
   const byTool = Object.fromEntries(rows.map((r) => [r.tool, r]));
   assert.strictEqual(rows.length, 2); // 壊れた行は無視
-  assert.strictEqual(byTool['kiro-loop'].fresh, true); // 30s 経過 → 猶予 360s 以内
+  assert.strictEqual(byTool['agent-loop'].fresh, true); // 30s 経過 → 猶予 360s 以内
   assert.strictEqual(byTool['agent-flow'].fresh, false); // 600s 経過 → stale
   // 欠損ディレクトリでも空配列
   assert.deepStrictEqual(control.readStatus(tmpdir('orch-empty-')), []);

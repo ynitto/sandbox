@@ -182,10 +182,23 @@ function upsertManagedAgentPrompt(rawText, item, prompt) {
     lines.push('', 'prompts:');
     promptsAt = lines.length - 1;
   }
-  const body = String(prompt).replace(/\r\n/g, '\n').split('\n').map((line) => `      ${line}`);
   const schedule = String(item.schedule || '').trim();
   const interval = parseIntervalMinutes(schedule);
-  const block = [marker, `  - name: ${yamlDq(item.name || item.id)}`, '    prompt: |', ...body];
+  const block = [marker, `  - name: ${yamlDq(item.name || item.id)}`];
+  // ステートマシンは **`statemachine:` の宣言**で書く。散文（「statemachine-use スキルで
+  // ◯◯ステートマシンを実行して」）を prompt に置くと、デーモンからは普通の定期プロンプト
+  // に見えてハーネス固定にならず、本文だけがペインへ流れてワークフローは一度も走らない
+  // （agent-loop の scheduler は `statemachine:` を見て per-run のハーネスへ倒す）。
+  // 値の綴りは名前 1 語で足りる——`.statemachine/<名前>/workflow.yaml` への展開は
+  // agentcore.loopentry（正典）と discover.statemachineRef が同じ規則で行う。
+  const machine = item.type === 'state-machine'
+    ? String(item.workflow || item.id || '').trim() : '';
+  if (machine) block.push(`    statemachine: ${yamlDq(machine)}`);
+  // 自由文は条件（`input` パラメータ 1 個ぶん）として渡る。無ければ行ごと書かない。
+  const text = String(prompt).replace(/\r\n/g, '\n');
+  if (!machine || text.trim()) {
+    block.push('    prompt: |', ...text.split('\n').map((line) => `      ${line}`));
+  }
   if (schedule) block.push(interval != null ? `    interval_minutes: ${interval}` : `    cron: ${yamlDq(schedule)}`);
   block.push('    enabled: true', '');
   lines.splice(promptsAt + 1, 0, ...block);

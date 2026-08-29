@@ -644,6 +644,12 @@ class SessionManager:
         このペインで未注入 or revision が変わったときだけ前置し、覚えた revision を更新する。
         不在 / 破損 / 無効 / 既にマーカー混入済みはすべて no-op（フェイルセーフ）。"""
         global _INSTRUCTIONS_REV_APPLIED
+        # **コマンド面の 1 行には前置しない。** `/sm` `/edit` のような実行形は本文の
+        # 先頭行でなければルータが読まず（先頭ブロックしか見ない）、前置するとただの
+        # 本文に化けてワークフローが走らない。指示は次の普通のプロンプトで入る
+        # ——revision を「適用済み」にしないのはそのためである。
+        if str(prompt_text or "").lstrip().startswith("/"):
+            return prompt_text
         try:
             data = _load_instructions()
             block = render_instructions_block(data)

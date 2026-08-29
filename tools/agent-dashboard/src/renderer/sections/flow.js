@@ -702,6 +702,11 @@ function renderFlowDetail() {
     </div>
     ${runTaskOutcomeHtml(outcome)}
     ${finalVerificationFailureHtml(finalVerificationFailure)}
+    ${req.body ? `<details class="flow-request-details">
+      <summary>依頼内容を表示</summary>
+      <div class="flow-request-body">${proseHtml(req.body)}</div>
+    </details>` : ''}
+    ${typeof publicationHtml === 'function' ? publicationHtml(run, { recover: false }) : ''}
     ${adviceBanner}
     ${
       run.tombstone
@@ -724,10 +729,6 @@ function renderFlowDetail() {
     ${runByPcHtml(run)}
     <div class="flow-primary-actions">${runArtifactsButtonHtml(run)} ${resubmit} ${reconcileBtn} ${holdBtn} ${cancelBtn} ${deleteBtn}</div>
     ${relationshipStrip({ run })}
-    ${req.body ? `<details class="flow-request-details">
-      <summary>依頼内容を表示</summary>
-      <div class="flow-request-body">${proseHtml(req.body)}</div>
-    </details>` : ''}
   </section>`;
 
   const hasPlanChanges = (run.planRevisions || []).length > 1;

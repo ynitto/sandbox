@@ -4,10 +4,11 @@
 // Linux ではローカルの bash で実行する（agent-loop の exec と同じ流儀）。
 //
 // ダッシュボードから呼ぶのは LLM を使わない決定的なサブコマンドだけ
-// （collect / usage / stats / doctor / seed）。extract / distill などの LLM 段は呼ばない —
+// （collect / qualify / usage / stats / doctor / seed）。extract / distill などの LLM 段は呼ばない —
 // LLM の消費リズムは agent-audit 側の間隔・蓄積ゲート設定が正で、GUI から
 // 不用意に駆動しない。usage / stats は --json の出力をそのまま契約として読む
-// （集計ロジックをこちらへ複製しない）。
+// （集計ロジックをこちらへ複製しない）。**dashboard は qualifications.json を書かない。**
+// collect のあとに qualify --apply を起こすだけ（writer は agent-audit）。
 const { spawn } = require('child_process');
 
 const exec = require('../../routines/main/exec');
@@ -119,6 +120,16 @@ function collect(cfg, runShell = defaultRunShell) {
       detail: detailOf(r),
       error: r.ok ? '' : failureMessage(r, '収集に失敗しました'),
     };
+    // 収集できた本番 receipt から適格性を更新する。失敗しても収集自体は成功のまま
+    // （次の周期で再試行できる。空ファイルは qualify 側が作らない）。
+    if (r.ok) {
+      const q = await runShell(buildScript(settings, ['qualify', '--apply']), 60000, settings.distro);
+      let summary = null;
+      try { summary = parseJson(q.stdout); } catch { summary = null; }
+      lastCollect.qualify = q.ok
+        ? { ok: true, applied: Boolean(summary && summary.applied), summary }
+        : { ok: false, error: failureMessage(q, '適格性の更新に失敗しました'), detail: detailOf(q) };
+    }
     return { ...lastCollect, busy: false, lastCollect };
   })();
   collectInFlight = running.finally(() => { collectInFlight = null; });

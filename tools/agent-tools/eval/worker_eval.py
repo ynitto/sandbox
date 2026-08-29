@@ -45,6 +45,12 @@ MODEL = "qwen3.5:9b"        # --model で上書き
 CLI = "agent-ollama"        # --cli で上書き（agent-ollama | aider）
 AGENT_POLICY = None          # None = agents/aider.json の本番設定をそのまま継承
 NUM_PREDICT = 0             # --num-predict で上書き（0 = 上限なし。aider 経路のみ）
+# ツールループの呼び出し回数上限（agent-ollama 経路のみ。0 = 宣言しない＝定義の write_args
+# のまま）。制限付き実行案 §6 の「回数制限のみ」腕を引くための口。
+# **環境変数（AGENT_MAX_TOOL_ROUNDS*）では引けない**——定義の write_args が
+# `--max-rounds 12` を宣言していて、宣言は環境変数に勝つ（agentcore.limits の優先順）。
+# 測定条件が定義の予算を黙って上書きしない設計なので、腕もここで宣言して台帳へ残す。
+MAX_ROUNDS = 0
 NUM_CTX = 0                 # --num-ctx で上書き（0 = Aider / model の既定）
 SAMPLING: dict = {}         # --temperature / --top-p / --top-k で上書き（空 = 宣言しない）
 RESAMPLE = 1                # --resample で上書き（1 = 引き直さない＝従来と同一の道）
@@ -1010,6 +1016,25 @@ def aider_settings(model: str, num_ctx: "int | None" = None, num_predict: int = 
     return path
 
 
+def ollama_argv() -> "list[str]":
+    """agent-ollama を worker として 1 回だけ回す argv（`agents/ollama.json` を読んで組む）。
+
+    定義に無いのは呼び出し回数上限の腕（`--max-rounds`）だけ。**環境変数では引けない**
+    ——定義の `write_args` が既に `--max-rounds` を宣言していて、宣言は環境変数に勝つ
+    （`agentcore.limits` の優先順）。測定条件が運用の宣言を黙って上書きしない設計なので、
+    腕はここで宣言して台帳へ残す。
+    """
+    args = list(WRITE_ARGS)
+    if MAX_ROUNDS > 0:
+        # 定義側の宣言を**消してから**置き換える。同じフラグを 2 回並べて後勝ちに賭けると、
+        # 定義が並び順を変えた日に静かに元へ戻る（aider の --map-tokens で踏んだ罠）。
+        while "--max-rounds" in args:
+            index = args.index("--max-rounds")
+            del args[index:index + 2]
+        args += ["--max-rounds", str(MAX_ROUNDS)]
+    return ["agent-ollama", MODEL, *args]
+
+
 def aider_argv(task: dict) -> "list[str]":
     """aider を worker として 1 回だけ回す argv（`agents/aider.json` を読んで組む）。
 
@@ -1092,12 +1117,20 @@ def classify(rc: int, wall: float, out: str, err: str) -> str:
 def _agent_markers(stderr: str) -> dict:
     """Extract stable adapter markers without duplicating policy text in the harness."""
     markers = {"policy_id": None, "policy_sha256": None,
-               "tokens_in": None, "tokens_out": None}
+               "tokens_in": None, "tokens_out": None, "model_settings": None}
     for line in stderr.splitlines():
         if line.startswith("@agent-policy "):
             fields = dict(field.split("=", 1) for field in line.split()[1:] if "=" in field)
             markers["policy_id"] = fields.get("id")
             markers["policy_sha256"] = fields.get("sha256")
+        elif line.startswith("@agent-settings "):
+            # adapter が管理する実効 settings。**ここでは組み立てない**——組み立てると
+            # 「adapter が何を書いたか」ではなく「ハーネスが何を書いたと思っているか」を
+            # 台帳へ残すことになる（08-18 §7.2）。
+            try:
+                markers["model_settings"] = json.loads(line.split(None, 1)[1])
+            except (IndexError, ValueError):
+                pass
         elif line.startswith("@agent-usage "):
             fields = dict(field.split("=", 1) for field in line.split()[1:] if "=" in field)
             try:
@@ -1143,7 +1176,22 @@ def slice_reads(step: dict, wt: Path) -> "tuple[dict, dict]":
     return {**step, "read": tuple(reads)}, info
 
 
-def invoke(step: dict, wt: Path) -> "tuple[int, str, str, float]":
+def _settings_from_argv(argv: "list[str]") -> "str | None":
+    """argv が名指しした `--model-settings-file` の中身（無ければ None）。
+
+    腕の条件を台帳だけで復元するための材料。sampling の腕はこのファイルで宣言するので、
+    ファイル名だけ残しても後から中身が分からない（一時ディレクトリは消える）。
+    """
+    if "--model-settings-file" not in argv:
+        return None
+    path = Path(argv[argv.index("--model-settings-file") + 1])
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+
+def invoke(step: dict, wt: Path) -> "tuple[int, str, str, float, list]":
     """1 回だけエージェントを起こす。argv とプロンプトの作り方は経路ごとの正典に従う。"""
     step, _slice_info = slice_reads(step, wt)
     # selfedit は aider と同じ「対象ファイルが決まった single-shot の編集」なので、
@@ -1157,7 +1205,7 @@ def invoke(step: dict, wt: Path) -> "tuple[int, str, str, float]":
                                    files=step.get("files") or (),
                                    read_files=step.get("read") or ())["argv"]
     else:
-        argv = ["agent-ollama", MODEL, *WRITE_ARGS]
+        argv = ollama_argv()
     started = time.time()
     try:
         p = subprocess.run(argv, input=prompt, cwd=wt,
@@ -1173,7 +1221,7 @@ def invoke(step: dict, wt: Path) -> "tuple[int, str, str, float]":
             return value or ""
         rc, out, err = -1, captured(exc.stdout), captured(exc.stderr)
         err = err + ("\n" if err else "") + "TIMEOUT"
-    return rc, out, err, time.time() - started
+    return rc, out, err, time.time() - started, argv
 
 
 def snapshot_worktree(wt: Path) -> dict:
@@ -1255,9 +1303,16 @@ def run_steps(task: dict, wt: Path) -> "tuple[list[dict], str, str]":
                 restore_worktree(wt, snapshot)
             goal, ok = step["goal"], False
             for attempt in range(1 + int(step.get("max_retries") or 0)):
-                rc, out, err, wall = invoke({**step, "goal": goal}, wt)
+                rc, out, err, wall, argv = invoke({**step, "goal": goal}, wt)
+                markers = _agent_markers(err)
+                # 実行 argv 全体と実効 model settings を残す（08-18 §7.2 の残り 2 項目）。
+                # adapter が管理する settings は marker が正、それが無い腕
+                # （--agent-policy off 等）は argv が名指ししたファイルの中身が正。
                 rec = dict(step=n, draw=draw, attempt=attempt + 1, wall=round(wall, 1),
-                           mode=classify(rc, wall, out, err), **_agent_markers(err))
+                           mode=classify(rc, wall, out, err), argv=list(argv),
+                           **{**markers,
+                              "model_settings": markers["model_settings"]
+                              or _settings_from_argv(argv)})
                 if gate is None:
                     trace.append(rec)
                     break
@@ -1315,6 +1370,8 @@ def run_one(tid: str, i: int) -> dict:
                read_mode=task.get("read_mode"),
                slice=(slice_reads(task, wt)[1] or None) if task.get("slice") else None,
                num_ctx=NUM_CTX or None, num_predict=NUM_PREDICT or None,
+               # 呼び出し回数上限の腕。null は「宣言しなかった」＝定義の write_args のまま。
+               max_rounds=MAX_ROUNDS or None,
                policy_id=policy_id,
                policy_sha256=policy_sha256, ok=ok, mode=mode,
                # sampling は台帳に必ず残す。null は「宣言しなかった」＝ aider / ollama の
@@ -1345,7 +1402,7 @@ def run_one(tid: str, i: int) -> dict:
 
 def main() -> None:
     global WALL_LIMIT, MODEL, CLI, AGENT_POLICY, NUM_CTX, NUM_PREDICT, SAMPLING
-    global RESAMPLE, AIDER_VERSION, HARNESS, HARNESS_COMMANDS_DIR
+    global RESAMPLE, AIDER_VERSION, HARNESS, HARNESS_COMMANDS_DIR, MAX_ROUNDS
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default=MODEL,
                     help="測るモデル。別モデルの判定はここだけ変えればよい")
@@ -1363,6 +1420,9 @@ def main() -> None:
                          "収束しない課題の壁時計を切るレバー")
     ap.add_argument("--num-ctx", type=int, default=NUM_CTX,
                     help="Aider managed model settings の context size（0 で未指定）")
+    ap.add_argument("--max-rounds", type=int, default=MAX_ROUNDS,
+                    help="ツールループの呼び出し回数上限（agent-ollama 経路のみ・0 で未指定＝"
+                         "定義の write_args のまま）。制限付き実行案 §6 の「回数制限のみ」腕")
     # sampling（aider 経路のみ）。**未指定なら 1 バイトも宣言しない**ので、
     # これまでの測定条件（aider / ollama の既定）がそのまま再現される。
     ap.add_argument("--temperature", type=float, default=None,
@@ -1384,6 +1444,7 @@ def main() -> None:
     AGENT_POLICY = args.agent_policy
     NUM_PREDICT = args.num_predict
     NUM_CTX = args.num_ctx
+    MAX_ROUNDS = args.max_rounds
     SAMPLING = {k: v for k, v in (("temperature", args.temperature),
                                   ("top_p", args.top_p), ("top_k", args.top_k))
                 if v is not None}
@@ -1404,6 +1465,13 @@ def main() -> None:
                          "と併用できません。編集適用の実装差だけを測ってください")
     if NUM_CTX < 0 or NUM_PREDICT < 0:
         raise SystemExit("--num-ctx / --num-predict は 0 以上で指定してください")
+    if MAX_ROUNDS < 0:
+        raise SystemExit("--max-rounds は 0 以上で指定してください（0 = 定義のまま）")
+    if MAX_ROUNDS and CLI != "agent-ollama":
+        # aider は自分の直し直し（max_reflections）を持ち、ハーネスは周を数えない。
+        # 効かない宣言を受け取ると、腕の名前だけが台帳に残って中身が伴わない。
+        raise SystemExit("--max-rounds は agent-ollama 経路のみです"
+                         "（aider は単発 worker でツールループを持ちません）")
     HARNESS = str(args.harness or "default").strip()
     if HARNESS != "default":
         # 腕は**名前だけにしない**。名前が実際の設定を指していないと、条件の違う数字が
@@ -1449,8 +1517,12 @@ def main() -> None:
         sample = " ".join(aider_argv((first.get("steps") or [first])[0])[:-2])
         print(f"model={MODEL} cli=aider argv={sample} …（出所: agents/aider.json）")
     else:
-        print(f"model={MODEL} cli={CLI} argv={' '.join(WRITE_ARGS)} "
-              f"（出所: {WRITE_ARGS_SOURCE}）")
+        # **実際に打つ argv を出す**（定義の write_args そのままではない）。腕で上限を
+        # 差し替えたのにヘッダが定義の値を出していると、条件を隠したまま測ることになる
+        # ——実測 2026-08-29 でこれを踏んだ（ヘッダは 12、実行は 3 / 2）。
+        print(f"model={MODEL} cli={CLI} argv={' '.join(ollama_argv()[2:])} "
+              f"（出所: {WRITE_ARGS_SOURCE}"
+              + (f" + 腕 --max-rounds {MAX_ROUNDS}" if MAX_ROUNDS else "") + "）")
     print(f"wall_limit={WALL_LIMIT:.0f}s tasks={tids} repeat={args.repeat}")
     print(f"agent_policy={AGENT_POLICY or '本番定義を継承'}")
     # 腕の条件を起動行にも出す。「宣言しなかった」と「既定値を宣言した」は別物なので、

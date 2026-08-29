@@ -42,6 +42,29 @@ test('実行時方針のおすすめは agent-control / agent-flow の自動決�
   assert.strictEqual(workflowUi.executionOverridesForMode('recommended', {}), null);
 });
 
+test('ワークフロー実行概要は依頼本文を折りたたみ、見出しと重複させない', () => {
+  const previousEsc = global.esc;
+  global.esc = (value) => String(value);
+  workflowUi._state.runView = 'overview';
+  try {
+    const html = workflowUi.runDetailHtml({
+      run: {
+        runId: 'run-req', status: 'done', request: 'タイトル行\n\n## 目的\n本文です',
+        nodes: { work: { id: 'work', state: 'done' } },
+      },
+      inbox: { title: '', request: 'タイトル行\n\n## 目的\n本文です', plan: { name: '自動' } },
+      events: [],
+    });
+    assert.match(html, />タイトル行</);
+    assert.match(html, /依頼内容を表示/);
+    assert.match(html, /## 目的/);
+    assert.doesNotMatch(html, /<pre class="qf-output">タイトル行/);
+    assert.doesNotMatch(html, /wf-publication-meta/);
+  } finally {
+    global.esc = previousEsc;
+  }
+});
+
 test('ワークフローの工程タブは選択ノードをプロジェクト実行と同じ詳細表示へ渡す', () => {
   const previousEsc = global.esc;
   const previousRenderTaskFlow = global.renderTaskFlow;
@@ -196,7 +219,7 @@ test('明示された publication not-required は旧 run の unknown と区別�
   assert.strictEqual(legacy.state, 'unknown');
 });
 
-test('公開失敗の詳細は控えめなメタ情報と緊急復旧操作として描画する', () => {
+test('公開失敗の詳細は折りたたみ内の状態と緊急復旧操作として描画する', () => {
   const previousEsc = global.esc;
   global.esc = (value) => String(value)
     .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
@@ -210,10 +233,10 @@ test('公開失敗の詳細は控えめなメタ情報と緊急復旧操作と�
         },
       } } } },
     });
-    assert.match(html, /wf-publication-meta/);
-    assert.match(html, /保存: ローカル/);
-    assert.match(html, /公開: 公開失敗/);
+    assert.doesNotMatch(html, /wf-publication-meta/);
+    assert.doesNotMatch(html, /保存: ローカル/);
     assert.match(html, /保存と公開の詳細/);
+    assert.match(html, /<dt>状態<\/dt><dd><code>公開失敗<\/code><\/dd>/);
     assert.match(html, /data-force-complete/);
   } finally {
     global.esc = previousEsc;

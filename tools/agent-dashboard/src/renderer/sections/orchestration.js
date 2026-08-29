@@ -342,6 +342,7 @@ function orchExecutionPolicyPanelHtml(overview) {
     Number(a.min_remaining_ratio || 0) - Number(b.min_remaining_ratio || 0))[0] || {}).tier || 'small';
   const candidateCount = new Set(((overview.qualifications || {}).candidates || []).map((candidate) =>
     `${candidate.agent_cli || ''}\u0000${candidate.model || ''}`)).size;
+  // agent-resource-controller は画面の定期評価ハートビート。利用者向けのサービス名ではない。
   const controllerStatus = (overview.status || []).find((record) => record.tool === 'agent-resource-controller');
   const controllerTs = Date.parse((controllerStatus && controllerStatus.ts) || '');
   const controllerFresh = controllerStatus && Number.isFinite(controllerTs)
@@ -349,7 +350,7 @@ function orchExecutionPolicyPanelHtml(overview) {
   const controllerHtml = controllerFresh
     ? ''
     : '<div class="orch-policy-result orch-policy-error" role="status"><strong>自動制御が停止しています</strong>'
-      + '<span>最後に反映した方針で実行を続けます。DashboardまたはResource Controllerを起動してください。</span></div>';
+      + '<span>最後に反映した方針で実行を続けます。</span></div>';
   const saveResult = state.orchPolicyResult;
   const resultHtml = saveResult && !saveResult.ok
     ? `<div class="orch-policy-result orch-policy-error" role="alert"><strong>一部未反映です</strong>
@@ -391,7 +392,6 @@ function orchExecutionPolicyPanelHtml(overview) {
       <dl class="orch-policy-rules">
         <div><dt>通常時</dt><dd>${esc(orchTierLabel(activeNormalTier))}までの候補を利用</dd></div>
         <div><dt>残量低下時</dt><dd>${esc(orchTierLabel(lowTier))}までの候補を利用</dd></div>
-        <div><dt>候補選択</dt><dd>適格性 → 利用可能性 → 優先順位</dd></div>
       </dl>
       <p><strong>エージェント／モデル候補: ${candidateCount}件</strong></p>
       <details class="orch-policy-candidates"><summary>候補の使い分けを見る</summary>
@@ -443,15 +443,11 @@ function orchTierEditorRowHtml(key, tier = {}) {
 function orchRecommendationPanelHtml(state) {
   const rec = state.orchRecommendation;
   if (!rec) return '';
-  if (!rec.exists) {
-    return `<section class="orch-panel orch-recommend-panel">
-      <header><span class="summary-kicker">実測から決まる初期設定</span>
-        <h3>おすすめ構成</h3></header>
-      <p class="muted">おすすめ構成が見つかりません（${esc(rec.file || '')}）。
-        評価ハーネスで生成してください:</p>
-      <pre class="mono">python3 tools/agent-tools/eval/recommend.py --output ${esc(rec.file || '~/.agents/recommendation.json')}</pre>
-    </section>`;
-  }
+  // **無いときは何も出さない。** 以前はここで「recommend.py で生成してください」と
+  // 促していたが、おすすめ構成は要らない——実行レベルには使う CLI を 1 つ直書きすれば
+  // よく、`herd` と書いた場合も定義の既定モデルへ展開される。持っている人だけが
+  // 点検・適用の口を使う（生成を促すのは、管理面の都合を利用者の宿題にしていた）。
+  if (!rec.exists) return '';
   const checks = (rec.preflight || []).map((row) => {
     const mark = row.ok ? '✓' : (row.advisory ? '△' : '✗');
     const remedy = row.remedy
@@ -600,7 +596,9 @@ function orchConcurrencyPanelHtml(overview) {
 
 // 4. 実行サービスの状態と操作
 function orchStatusPanelHtml(overview) {
-  const status = overview.status || [];
+  // ハートビート status は実行サービスではないので、稼働表の件数・ツール名に混ぜない。
+  const status = (overview.status || []).filter((record) =>
+    String(record.tool || '') !== 'agent-resource-controller');
   const control = overview.control || { workloads: {}, revision: 0 };
   const desiredRev = Number(control.revision || 0);
   const workloads = [...new Set([
@@ -970,9 +968,10 @@ function globalSettingsAppHtml() {
   return `<div class="global-settings-card">
     <header class="global-settings-card-heading">
       <span class="summary-kicker">アプリ</span>
-      <h2>表示と通知</h2>
-      <p class="muted">画面更新と通知の動作を設定します。</p>
+      <h2>このアプリの動作</h2>
+      <p class="muted">画面の更新、通知、このアプリ自身が使うAIを設定します。</p>
     </header>
+    <h3>表示と通知</h3>
     <p class="field-help">プロジェクト一覧は実行エンジンから自動で受け取ります。</p>
     <div class="row2">
       <div class="field"><label for="cfg-refresh">表示の更新間隔（秒）</label><input id="cfg-refresh" type="number" min="0" step="1" /></div>
@@ -987,25 +986,21 @@ function globalSettingsAppHtml() {
       </select>
       <p class="field-help">閲覧専用では、監視・コメント・承認だけを行います。実行用の環境設定は不要です。</p>
     </div>
-    <fieldset class="global-settings-fieldset">
-      <legend>Dashboard AI</legend>
-      <p class="field-help">相談、Doctor、下書きなど、このアプリ自身が呼び出すAIだけに適用します。
-        ワークフロー、ミッション、定常業務など各エンジンの実行設定は変えません。</p>
-      <div class="row2">
-        <div class="field"><label for="cfg-consult-agent">エージェント</label>
-          <select id="cfg-consult-agent">${consultAgentOptionsHtml()}</select></div>
-        <div class="field"><label for="cfg-consult-model">モデル</label>
-          <input id="cfg-consult-model" type="text" placeholder="実行方針に従う"></div>
-      </div>
-      <div class="field"><label for="cfg-agent-timeout">応答を待つ時間（秒）</label>
-        <input id="cfg-agent-timeout" type="number" min="30" step="1"></div>
-    </fieldset>
-    <div class="field">
-      <label>セットアップ診断</label>
-      <p class="field-help">受け取ったプロジェクトのフォルダが正しく共有できるか確認します。</p>
-      <div class="row"><button type="button" id="btn-setup-diagnostics">診断する</button></div>
-      <div id="setup-diagnostics-result" class="muted" aria-live="polite"></div>
+    <h3>Dashboard AI</h3>
+    <p class="field-help">相談、Doctor、下書きなど、このアプリ自身が呼び出すAIだけに適用します。
+      ワークフロー、ミッション、定常業務など各エンジンの実行設定は変えません。</p>
+    <div class="row2">
+      <div class="field"><label for="cfg-consult-agent">エージェント</label>
+        <select id="cfg-consult-agent">${consultAgentOptionsHtml()}</select></div>
+      <div class="field"><label for="cfg-consult-model">モデル</label>
+        <input id="cfg-consult-model" type="text" placeholder="実行方針に従う"></div>
     </div>
+    <div class="field"><label for="cfg-agent-timeout">応答を待つ時間（秒）</label>
+      <input id="cfg-agent-timeout" type="number" min="30" step="1"></div>
+    <h3>セットアップ診断</h3>
+    <p class="field-help">受け取ったプロジェクトのフォルダが正しく共有できるか確認します。</p>
+    <div class="row"><button type="button" id="btn-setup-diagnostics">診断する</button></div>
+    <div id="setup-diagnostics-result" class="muted" aria-live="polite"></div>
     <div class="settings-save-actions"><button type="button" id="btn-save-app-settings" class="primary-inline">保存</button></div>
   </div>`;
 }
@@ -1029,17 +1024,6 @@ function consultAgentOptionsHtml() {
     options.push(`<option value="${esc(current)}" selected>${esc(current)}（定義が見つかりません）</option>`);
   }
   return options.join('');
-}
-
-function globalSettingsAssistantHtml() {
-  return `<section class="orch-panel">
-    <header class="row"><div>
-      <span class="summary-kicker">画面内AI</span>
-      <h3>Dashboard AI</h3>
-      <p class="muted">エージェント、モデル、待ち時間は「アプリ」の Dashboard AI で設定します。</p>
-    </div></header>
-    <div class="settings-save-actions"><button type="button" data-global-settings-target="app">アプリ設定を開く</button></div>
-  </section>`;
 }
 
 function globalSettingsSyncHtml() {
@@ -1193,10 +1177,9 @@ function globalSettingsIntegrationsHtml() {
 }
 
 function globalSettingsAgentsHtml(overview) {
-  if (!overview) return `${globalSettingsAssistantHtml()}<div class="empty compact">エージェント情報を読み込んでいます。</div>`;
-  if (overview.error) return `${globalSettingsAssistantHtml()}<div class="empty compact"><strong>エージェント情報を読み込めませんでした</strong><span>${esc(overview.error)}</span></div>`;
-  return `${globalSettingsAssistantHtml()}
-    ${orchInventoryPanelHtml(overview)}`;
+  if (!overview) return '<div class="empty compact">エージェント情報を読み込んでいます。</div>';
+  if (overview.error) return `<div class="empty compact"><strong>エージェント情報を読み込めませんでした</strong><span>${esc(overview.error)}</span></div>`;
+  return orchInventoryPanelHtml(overview);
 }
 
 // 「利用状況」= この端末の利用量をまとめて見る場所。**数字は agent-audit の集計へ一本化**した。

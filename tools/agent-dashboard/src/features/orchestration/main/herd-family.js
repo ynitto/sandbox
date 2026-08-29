@@ -47,39 +47,53 @@ function isHerdCandidate(candidate) {
 
 // この端末で解決できる一族の定義名（探索順・先勝ち・検証エラーのある定義は除く）。
 function members(cfg) {
-  const found = [];
+  return memberRows(cfg).map((row) => row.name);
+}
+
+// 一族の定義名と、その定義が言う既定モデル。実測がまだ無いときの展開先に使う。
+function memberRows(cfg) {
+  const found = new Map();
   for (const dropin of agents.list(cfg).dropins) {
     if (dropin.shadowed || (dropin.errors || []).length) continue;
     const spec = dropin.spec;
     if (!isPlainObject(spec) || !Array.isArray(spec.command) || !spec.command.length) continue;
     if (String(spec.command[0] || '').trim() !== HERD_ENTRYPOINT) continue;
-    found.push(String(dropin.name || '').trim().toLowerCase());
+    const name = String(dropin.name || '').trim().toLowerCase();
+    if (!name || found.has(name)) continue;
+    found.set(name, { name, model: String(spec.default_model || '').trim() });
   }
-  return [...new Set(found.filter(Boolean))].sort();
+  return [...found.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
 // 実測が知っている `(agent_cli, model)` のうち、一族に属するものを宣言順で返す。
 //
 // **モデルは実測が決める。** 候補行がモデルを書いていればその 1 つに縛り、
 // 空なら一族のどのモデルでも候補になれる（どれが選ばれるかは用途別の順位表が決める）。
-function expandCandidate(candidate, { memberNames, qualifications }) {
+function expandCandidate(candidate, { memberNames, memberModels, qualifications }) {
   const pinned = String((candidate && candidate.model) || '').trim();
   const allowed = new Set(memberNames);
   const rows = [];
   const seen = new Set();
+  const push = (cli, model) => {
+    if (!allowed.has(cli) || !model) return;
+    if (pinned && model !== pinned) return;
+    const id = candidateKey(cli, model);
+    if (seen.has(id)) return;
+    seen.add(id);
+    rows.push({ agent_cli: cli, model });
+  };
   const known = isPlainObject(qualifications) && Array.isArray(qualifications.candidates)
     ? qualifications.candidates : [];
   for (const entry of known) {
     if (!isPlainObject(entry)) continue;
-    const cli = String(entry.agent_cli || '').trim().toLowerCase();
-    const model = String(entry.model || '').trim();
-    if (!allowed.has(cli) || !model) continue;
-    if (pinned && model !== pinned) continue;
-    const id = candidateKey(cli, model);
-    if (seen.has(id)) continue;
-    seen.add(id);
-    rows.push({ agent_cli: cli, model });
+    push(String(entry.agent_cli || '').trim().toLowerCase(), String(entry.model || '').trim());
   }
+  if (rows.length) return rows;
+  // **実測がまだ無くても一族は使える。** 実測（qualifications）が決めるのは「どの用途に
+  // どれが向くか」であって、一族が動くかどうかではない。ここで空を返すと、`herd` と
+  // 書いた人が qualifications.json を自分で用意させられる——それは管理面の都合で、
+  // 使う側が知らされるべき話ではない。定義が言う既定モデルへ展開する。
+  for (const row of (memberModels || [])) push(row.name, row.model);
   return rows;
 }
 
@@ -88,7 +102,7 @@ function expandCandidate(candidate, { memberNames, qualifications }) {
 // 展開できない（実測がまだ無い・一族の定義が入っていない）ときは **その行を落とす**。
 // 推測で 1 つ選ぶと「設定したのと違うものが動く」を新しく作ることになる——呼び出し側は
 // 候補ゼロとして扱い、理由を人へ見せる。
-function expandTiers(tiers, { memberNames, qualifications }) {
+function expandTiers(tiers, { memberNames, memberModels, qualifications }) {
   if (!isPlainObject(tiers)) return { tiers: {}, expanded: false, unresolved: [] };
   const out = {};
   const unresolved = [];
@@ -112,7 +126,7 @@ function expandTiers(tiers, { memberNames, qualifications }) {
         continue;
       }
       expanded = true;
-      const rows = expandCandidate(candidate, { memberNames, qualifications });
+      const rows = expandCandidate(candidate, { memberNames, memberModels, qualifications });
       if (!rows.length) unresolved.push({ tier: name, ...candidate });
       for (const row of rows) {
         const id = candidateKey(row.agent_cli, row.model);
@@ -150,6 +164,7 @@ function allowedAgentNames(cfg) {
 
 module.exports = {
   HERD,
+  memberRows,
   candidateKey,
   HERD_ENTRYPOINT,
   isHerdCandidate,

@@ -50,6 +50,16 @@ for (const leaked of ['（S3）', '（既定非表示）', '（憲章には直�
   '（送信は人が確定します）', '（完了済みは温存）', '（タスクを積み直して本体に実行させます）']) {
   assert.ok(!html.includes(leaked) && !flow.includes(leaked), `UI に内部説明を出しません: ${leaked}`);
 }
+const appSettingsMarkup = orchestration.slice(
+  orchestration.indexOf('function globalSettingsAppHtml('),
+  orchestration.indexOf('function consultAgentOptionsHtml(')
+);
+assert.ok(appSettingsMarkup.includes('<h3>Dashboard AI</h3>')
+  && appSettingsMarkup.includes('<h3>表示と通知</h3>')
+  && appSettingsMarkup.includes('<h3>セットアップ診断</h3>'),
+  'アプリ設定の各節は同期・外部連携と同じ見出し階層にします');
+assert.ok(!appSettingsMarkup.includes('<fieldset'),
+  'アプリ設定の Dashboard AI を枠付き fieldset で浮かせません');
 assert.ok(!html.includes('AI 補完'));
 assert.ok(!flow.includes('エージェント CLI の実行環境'));
 assert.ok(flow.includes('承認を待っています。要対応タブで確認してください。'));
@@ -86,6 +96,10 @@ for (const id of ['strategy', 'normal-tier', 'token-limit', 'switch-timing', 'on
   assert.ok(executionPolicyMarkup.includes(`id="orch-policy-${id}"`), `カスタム主要入力 ${id}`);
 }
 assert.ok(!executionPolicyMarkup.includes('ローカル優先'), '節約を実行場所で説明しません');
+assert.ok(!executionPolicyMarkup.includes('Resource Controller'),
+  '自動制御の停止案内に内部コンポーネント名を出しません');
+assert.ok(!executionPolicyMarkup.includes('Dashboardまたは'),
+  '自動制御の停止案内に内部の起動手順を出しません');
 assert.ok(orchestrationIpc.includes('qualifications: qualifications.load(cfg)'),
   '候補詳細は適格性の正典を読み取り専用で表示します');
 

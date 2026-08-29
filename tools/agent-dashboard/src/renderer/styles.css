@@ -1337,7 +1337,12 @@ pre.mono {
 .flow-request-body .md p:first-child { margin-top: 0; }
 .flow-request-body .md p:last-child { margin-bottom: 0; }
 .flow-request-details { margin-top: 14px; }
-.flow-request-details summary { color: var(--muted); cursor: pointer; }
+.flow-request-details summary,
+.wf-publication-details > summary {
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 14px;
+}
 .flow-run-heading h2 { line-height: 1.35; }
 .node-goal .md { margin-top: 4px; }
 .node-goal .md p { margin: 2px 0; }
@@ -4197,11 +4202,9 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
 .wf-event-list { display: grid; gap: 8px; margin: 0; padding-left: 22px; }
 .wf-event-list time { color: var(--muted); margin-right: 8px; }
 .wf-run-meta { margin: -8px 0 12px; color: var(--muted); font-size: 12px; }
-.wf-publication { margin: -4px 0 14px; color: var(--muted); font-size: 12px; }
+.wf-publication { margin: -4px 0 14px; color: var(--muted); }
 .wf-publication.warn { color: var(--warn); }
-.wf-publication-meta { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 0; }
 .wf-publication-details { margin-top: 5px; color: var(--fg); }
-.wf-publication-details > summary { color: var(--muted); cursor: pointer; }
 .wf-publication-details dl { display: grid; gap: 4px; margin: 8px 0; }
 .wf-publication-details dl > div { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 8px; }
 .wf-publication-details dt { color: var(--muted); }

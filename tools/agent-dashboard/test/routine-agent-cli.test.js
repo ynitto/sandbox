@@ -424,6 +424,62 @@ test('定常業務一覧からの実行（runLoop）も全体設定どおりの 
   });
 });
 
+test('実行レベルの `herd` は実測が無くても具体候補へ展開する（見せる・起こす）', () => {
+  // 人が書くのは「ローカルを使うか」の 1 語だけ（aider と ollama の使い分けは用途ごとに
+  // 違うので、人に選ばせると必ずどれかの用途で外れる）。展開は実測（qualifications）が
+  // 決める。展開しないまま見せると `herd` が選べてしまい、起こす段で
+  // 「agents/herd.json が無い」で落ちる。
+  const config = configWithControl({ workloads: { routine: { agent_cli: 'kiro' } } });
+  writeProfiles(config, {
+    tiers: { basic: { order: 1, label: '単純作業', candidates: [{ agent_cli: 'herd', model: '' }] } },
+  });
+  const dir = config.orchestration.controlDir;
+  // **実測（qualifications.json）が無くても回る。** 実測が決めるのは「どの用途にどれが
+  // 向くか」で、一族が使えるかどうかではない。ここで止めると、herd と書いた人が
+  // 管理面のファイルを自分で用意させられる。
+  const withoutMeasurements = cowork.resolveRoutineAgent(config, emptyRepo(), 'basic');
+  assert.ok(['aider', 'ollama'].includes(withoutMeasurements.cli), withoutMeasurements.cli);
+  assert.strictEqual(withoutMeasurements.model, 'gemma4:e4b', '定義の既定モデルで展開する');
+  fs.writeFileSync(path.join(dir, 'qualifications.json'), `${JSON.stringify({
+    version: 1, revision: 1,
+    candidates: [{ agent_cli: 'aider', model: 'gemma4:e4b' }, { agent_cli: 'ollama', model: 'gemma4:e4b' }],
+  })}\n`);
+  const resolved = cowork.resolveRoutineAgent(config, emptyRepo(), 'basic');
+  assert.ok(['aider', 'ollama'].includes(resolved.cli), `一族の実在メンバーへ解ける: ${resolved.cli}`);
+  assert.strictEqual(resolved.model, 'gemma4:e4b');
+  const rows = cowork.overview({ ...config, cowork: {} }).routineTiers;
+  assert.deepStrictEqual(rows.map((r) => r.agent_cli).sort(), ['aider', 'ollama'],
+    '一覧にも具体候補で出す（herd の 1 語を選ばせない）');
+  // 宣言そのものは書き換えない（実測が更新されたら追従できなくなる）。
+  assert.match(fs.readFileSync(path.join(dir, 'profiles.json'), 'utf8'), /"agent_cli": "herd"/);
+});
+
+test('クラウド CLI の定常業務も同じく対話ペインで起こす', () => {
+  // 経路は 1 本（tmux + send-keys）。一族・クラウドで変わるのは送る本文だけ。
+  const repo = emptyRepo();
+  fs.mkdirSync(path.join(repo, '.agents'), { recursive: true });
+  fs.writeFileSync(path.join(repo, '.agents', 'agent-loop.yml'), [
+    'prompts:',
+    '  - name: "毎朝レビュー"',
+    '    prompt: 直近の変更をレビューしてください',
+    '    interval_minutes: 60',
+    '',
+  ].join('\n'));
+  const config = configWithControl({
+    workloads: { routine: { agent_cli: 'kiro', model: 'claude-haiku-4.5' } },
+  });
+  config.cowork = {
+    loopProvider: 'agent-loop',
+    loopCommand: 'agent-loop',
+    items: [{ id: '毎朝レビュー', type: 'loop', name: '毎朝レビュー', repo }],
+  };
+  withWin32(() => {
+    const body = fs.readFileSync(cowork.runLoop(config, '毎朝レビュー').scriptFile, 'utf8');
+    assert.ok(body.includes("'kiro-cli' 'chat'"), '対話 CLI をそのまま起こす');
+    assert.ok(!body.includes("'agent-loop' 'run'"), 'ハーネスへは回さない');
+  });
+});
+
 test('呼び出し側が解決済みの起動条件を渡したら、実行側は再解決しない', () => {
   // 開始コマンドの計画と実際の起動が別々に解決すると、送る先と送る中身がずれる。
   const launch = {

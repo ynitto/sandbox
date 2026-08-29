@@ -136,6 +136,18 @@ class BuildQualificationsTests(unittest.TestCase):
         qual = doc["candidates"][0]["qualifications"]["existing-test-repair"]
         self.assertEqual(qual["status"], "unknown")
 
+    def test_qualified_valid_until_does_not_slide_on_requalify(self):
+        existing = {"revision": 1, "evaluation_profiles": {}, "candidates": [{
+            "agent_cli": "aider", "model": "gemma4:e4b",
+            "qualifications": {"existing-test-repair": {
+                "qualification_id": "q1", "status": "qualified",
+                "valid_until": "2026-08-20T00:00:00Z"}}}]}
+        stats = {("aider", "gemma4:e4b", "existing-test-repair"): self.entry(6, 6)}
+        doc = qualifications.build_qualifications(existing, stats, now=NOW)
+        qual = doc["candidates"][0]["qualifications"]["existing-test-repair"]
+        self.assertEqual(qual["status"], "qualified")
+        self.assertEqual(qual["valid_until"], "2026-08-20T00:00:00Z")
+
     def test_document_passes_contract_validation(self):
         from agentcore.executioncontract import qualifications_errors
         stats = {("aider", "gemma4:e4b", "existing-test-repair"): self.entry(6, 6)}
@@ -167,14 +179,39 @@ class CmdQualifyTests(AuditTestCase):
     def test_apply_writes_and_bumps_revision(self):
         path = os.path.join(self.tmp, "q.json")
         args = self.make_args(apply=True, window_days=0, qualifications_file=path)
-        summary = qualifications.cmd_qualify(args, self._store_with_receipts())
+        store = self._store_with_receipts()
+        summary = qualifications.cmd_qualify(args, store)
         self.assertTrue(summary["applied"])
         with open(path, encoding="utf-8") as f:
             doc = json.load(f)
         self.assertEqual(doc["revision"], 1)
-        # 2 回目は revision が進む
-        summary2 = qualifications.cmd_qualify(args, self._store_with_receipts())
-        self.assertTrue(summary2["applied"])
+        summary2 = qualifications.cmd_qualify(args, store)
+        self.assertFalse(summary2["applied"])
+        self.assertTrue(summary2["unchanged"])
+        with open(path, encoding="utf-8") as f:
+            self.assertEqual(json.load(f)["revision"], 1)
+
+    def test_apply_does_not_create_empty_file_without_receipts(self):
+        path = os.path.join(self.tmp, "q.json")
+        args = self.make_args(apply=True, window_days=0, qualifications_file=path)
+        summary = qualifications.cmd_qualify(args, self.make_store())
+        self.assertFalse(summary["applied"])
+        self.assertTrue(summary["unchanged"])
+        self.assertFalse(os.path.exists(path))
+
+    def test_apply_writes_when_samples_change(self):
+        path = os.path.join(self.tmp, "q.json")
+        args = self.make_args(apply=True, window_days=0, qualifications_file=path)
+        store = self._store_with_receipts(6)
+        qualifications.cmd_qualify(args, store)
+        store.append_record({
+            "id": "aud-r6", "_epoch": NOW.timestamp() - 60,
+            "kind": "result", "source": "flow-bus", "workload": "flow",
+            "agent_cli": "aider", "model": "gemma4:e4b",
+            "operation_class": "existing-test-repair", "status": "done",
+            "execution_decision": dict(DECISION)})
+        summary = qualifications.cmd_qualify(args, store)
+        self.assertTrue(summary["applied"])
         with open(path, encoding="utf-8") as f:
             self.assertEqual(json.load(f)["revision"], 2)
 

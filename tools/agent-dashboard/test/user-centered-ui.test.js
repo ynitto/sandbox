@@ -107,6 +107,14 @@ assert.ok(workflowFeature.includes('id="wf-run-policy-custom" hidden'),
   '役割・機能ごとの指定はカスタム選択時だけ表示します');
 assert.ok(workflowFeature.includes('id="wf-create-task"') && workflowFeature.includes('class="wf-queue"'),
   '実行タブはタスク作成と実行待ち一覧を分離します');
+assert.ok(workflowFeature.indexOf('id="wf-queue-title">作業準備')
+  < workflowFeature.indexOf('id="wf-active-title">実行中'),
+  '実行待ちトップは作業準備の下に実行中の run 一覧を置きます');
+assert.ok(workflowFeature.includes('open: feature.showTop'),
+  '左のワークフローメニューは実行待ちトップへ着地します');
+assert.ok(renderer.includes('typeof areaHooks.open === \'function\'')
+  || renderer.includes('typeof areaHooks.open === "function"'),
+  '領域ナビは領域が決めた着地点へ戻します');
 assert.match(renderer, /\{ id: 'workflows', label: 'ワークフロー', list: 'workflows',[\s\S]*?desc: '実行待ちのタスクを作成/,
   'ワークフローは共通ヘッダーに領域タイトルを表示します');
 assert.match(renderer, /\{ id: 'missions', label: 'ミッション',[\s\S]*?desc: '複数のエージェントで役割を分担し、まとまった作業を進めます。' \}/,
@@ -475,6 +483,9 @@ for (const id of ['btn-save-app-settings', 'btn-save-sync-settings',
 assert.ok(renderer.includes('Dashboard AI')
   && renderer.includes('id="cfg-consult-agent"') && renderer.includes('id="cfg-consult-model"'),
   'Dashboard 固有のAI上書きはアプリ設定へまとめます');
+assert.ok(!renderer.includes('function globalSettingsAssistantHtml(')
+  && !renderer.includes('data-global-settings-target'),
+  'エージェントタブにアプリ設定への案内カードを置きません');
 assert.ok(renderer.includes('class="settings-save-actions"'), 'カードの保存位置を共通化します');
 assert.ok(css.includes('.settings-save-actions'), '保存フッターを同じ配置で描画します');
 const renderAmigosSource = renderer.slice(
@@ -522,7 +533,9 @@ const auditFeatureSource = fs.readFileSync(
 assert.ok(auditFeatureSource.includes('orchBudgetPanelHtml('),
   '監査の面は集計が取れないとき台帳集計へフォールバックします');
 assert.ok(!agentSettingsSource.includes('orchMatrixPanelHtml(') && agentSettingsSource.includes('orchInventoryPanelHtml('),
-  'エージェントタブは自動設定対象外の待ち時間とエージェント定義だけを表示します');
+  'エージェントタブはエージェント定義だけを表示します');
+assert.ok(!agentSettingsSource.includes('Dashboard AI') && !agentSettingsSource.includes('cfg-consult-agent'),
+  'エージェントタブにアプリの Dashboard AI 設定を重複表示しません');
 assert.ok(instructionSettingsSource.includes('orchInstructionsPanelHtml(')
   && instructionSettingsSource.includes('orchSessionCommandsPanelHtml('), '共通指示タブに指示と開始コマンドを表示します');
 assert.ok(workflowFeature.includes("root.orchMethodsPanelHtml({ tuning: ov.tuning, methodsCatalog: ov.methodsCatalog })"),
@@ -541,7 +554,8 @@ assert.deepStrictEqual(['単純作業', '軽量', '標準', '高性能'].map(orc
   '日本語の入力値は保存前に内部tierへ戻します');
 const policySource = grab('orchExecutionPolicyPanelHtml');
 assert.ok(policySource.includes('<dt>通常時</dt>') && policySource.includes('<dt>残量低下時</dt>')
-  && policySource.includes('<dt>候補選択</dt>'), '通常表示は候補表でなく方針を3行で要約します');
+  && !policySource.includes('<dt>候補選択</dt>'),
+  '通常表示は候補表でなく、変わる方針（通常時・残量低下時）だけを要約します');
 assert.ok(policySource.includes('<details class="orch-policy-candidates">')
   && policySource.includes('<summary>候補の使い分けを見る</summary>'),
   '候補の組み合わせと理由は閉じた詳細へ置きます');
@@ -728,10 +742,24 @@ assert.ok(renderer.includes('aria-current="${state.selectedDir === p.dir'),
 const flowOverview = renderer.slice(renderer.indexOf('const overviewView ='), renderer.indexOf('const graphView ='));
 assert.ok(flowOverview.indexOf('${adviceBanner}') < flowOverview.indexOf('flow-progress-block'),
   '次に必要な対応を進捗より先に表示します');
-assert.ok(flowOverview.indexOf('flow-progress-block') < flowOverview.indexOf('flow-request-details'),
-  '長い依頼内容は進捗と操作の後ろへ移します');
+assert.ok(flowOverview.indexOf('flow-request-details') < flowOverview.indexOf('publicationHtml('),
+  '依頼内容は保存と公開の詳細より先に表示します');
 assert.ok(flowOverview.includes('<details class="flow-request-details">'),
   '依頼内容は必要なときだけ展開します');
+assert.ok(flowOverview.includes('publicationHtml(run, { recover: false })'),
+  'プロジェクト実行にも保存と公開の詳細を出します');
+assert.ok(workflowFeature.includes('<summary>依頼内容を表示</summary>'),
+  'ワークフロー実行にも依頼内容の折りたたみを出します');
+assert.ok(workflowFeature.indexOf('flow-request-details') < workflowFeature.indexOf('${publicationBlock}'),
+  'ワークフローでも依頼内容は保存と公開の詳細より先に表示します');
+assert.ok(workflowFeature.includes('flow-request-body') || workflowFeature.includes('依頼内容を表示'),
+  'ワークフローの依頼本文はプロジェクトと同じ折りたたみに入れます');
+assert.ok(!workflowFeature.includes('wf-publication-meta'),
+  'ワークフローの保存と公開は折りたたみ外へ重複表示しません');
+assert.match(css, /\.flow-request-details summary,\s*\.wf-publication-details > summary\s*\{[^}]*font-size:\s*14px/s,
+  '依頼内容と保存と公開の折りたたみ見出しは同じ大きさです');
+assert.doesNotMatch(css, /\.wf-publication\s*\{[^}]*font-size:\s*12px/s,
+  '保存と公開の詳細だけ小さくしません');
 assert.match(css, /\.sync-action\s*\{[^}]*min-height:\s*44px/s);
 assert.match(css, /@media \(max-width: 900px\)[\s\S]*?#tabs\s*\{[^}]*flex-wrap:\s*wrap/s,
   '狭い幅でも設定タブを横スクロールの外へ隠しません');
@@ -861,6 +889,7 @@ assert.ok(renderer.includes('>閲覧・レビュー専用</option>'), '閲覧ロ
 assert.ok(!renderer.includes('登録された clone がありません'), '診断結果に clone などの開発用語を出しません');
 assert.ok(!renderer.includes('（役割: viewer）'), '診断結果に内部ロール名を括弧付きで出しません');
 assert.ok(!renderer.includes('再配分しました（computed を更新）'), '内部実装語をトーストに出しません');
+assert.ok(!renderer.includes('Resource Controller'), '内部の Resource Controller 名を UI に出しません');
 assert.ok(!html.includes('なぜ（why）'), 'スキーマフィールド名 why をラベルに出しません');
 assert.ok(!html.includes('（scope）'), 'スキーマフィールド名 scope をラベルに出しません');
 assert.ok(!html.includes('（out_of_scope）'), 'スキーマフィールド名 out_of_scope をラベルに出しません');

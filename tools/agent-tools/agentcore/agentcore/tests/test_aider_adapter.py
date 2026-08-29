@@ -176,6 +176,55 @@ class TestAiderAdapter(unittest.TestCase):
         self.assertIn("@agent-usage tokens_in=7 tokens_out=3", stderr)
         self.assertTrue(all(not path.exists() for path in seen))
 
+    # --- 一時 settings の作成・書込が失敗する経路（実装計画 §1-5 の残り契約） ---
+    #
+    # ここが素通しだと、**中身の無い settings を指したまま aider が起動しうる**——
+    # policy が黙って外れる形の失敗になる。作成失敗も書込失敗も、理由を出して閉じ、
+    # 一時ファイルを残さないことを縛る。
+
+    def test_settings_creation_failure_fails_closed(self):
+        # 1 回目（analytics log）は本物、2 回目（settings）だけ落とす。
+        real_mkstemp = aider_adapter.tempfile.mkstemp
+        made: "list[Path]" = []
+
+        def mkstemp(*args, **kwargs):
+            if made:
+                raise OSError("no space")
+            fd, name = real_mkstemp(*args, **kwargs)
+            made.append(Path(name))
+            return fd, name
+
+        with mock.patch.object(aider_adapter.tempfile, "mkstemp", side_effect=mkstemp):
+            rc, stderr, calls, _ = self.run_adapter([
+                "--agent-policy", aider_adapter.POLICY_ID,
+                "--model", aider_adapter.POLICY_MODEL])
+        self.assertEqual(rc, 2)
+        self.assertIn("could not create managed model settings", stderr)
+        self.assertEqual(calls, [], "aider は起動しない")
+        self.assertTrue(all(not path.exists() for path in made), "一時ファイルは残さない")
+
+    def test_settings_write_failure_fails_closed_and_leaves_no_file(self):
+        made: "list[Path]" = []
+        real_mkstemp = aider_adapter.tempfile.mkstemp
+
+        def mkstemp(*args, **kwargs):
+            fd, name = real_mkstemp(*args, **kwargs)
+            made.append(Path(name))
+            return fd, name
+
+        with mock.patch.object(aider_adapter.tempfile, "mkstemp", side_effect=mkstemp), \
+                mock.patch.object(aider_adapter.json, "dump",
+                                  side_effect=OSError("disk full")):
+            rc, stderr, calls, _ = self.run_adapter([
+                "--agent-policy", aider_adapter.POLICY_ID,
+                "--model", aider_adapter.POLICY_MODEL])
+        self.assertEqual(rc, 2)
+        self.assertIn("could not write managed model settings", stderr)
+        self.assertEqual(calls, [], "aider は起動しない")
+        self.assertTrue(made)
+        self.assertTrue(all(not path.exists() for path in made),
+                        "一時ファイルは残さない")
+
 
 if __name__ == "__main__":
     unittest.main()

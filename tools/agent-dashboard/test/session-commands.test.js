@@ -67,7 +67,7 @@ test('save は patch をマージし revision を単調増加させ未知キー�
   assert.strictEqual(raw.future_key, 'keep', '未知キーは書換で失われない');
 });
 
-test('旧 engine は警告つきで読み、新規保存では agent-loop だけを書く', () => {
+test('kiro-loop は agent-loop の別名にしない（条件はそのまま残る）', () => {
   const dir = tmpdir('sesscmd-legacy-engine-');
   fs.writeFileSync(path.join(dir, 'session.json'), JSON.stringify({
     version: 1,
@@ -75,11 +75,9 @@ test('旧 engine は警告つきで読み、新規保存では agent-loop だけ
     commands: [{ id: 'legacy', run: 'echo hi', when: { engines: ['kiro-loop'] } }],
   }));
   const loaded = sc.loadSessionCommands(dir);
-  assert.ok(loaded.warnings[0].includes('非推奨'));
-  assert.deepStrictEqual(loaded.commands[0].when.engines, ['agent-loop']);
-  sc.saveSessionCommands(cfgWith(dir), {});
-  const raw = JSON.parse(fs.readFileSync(path.join(dir, 'session.json'), 'utf8'));
-  assert.deepStrictEqual(raw.commands[0].when.engines, ['agent-loop']);
+  assert.deepStrictEqual(loaded.warnings, undefined);
+  assert.deepStrictEqual(loaded.commands[0].when.engines, ['kiro-loop']);
+  assert.strictEqual(sc.matchesWhen({ engines: ['kiro-loop'] }, { engine: 'agent-loop' }), false);
 });
 
 test('save は ID か実行内容が欠けた行と ID 重複を拒否する', () => {
@@ -125,10 +123,9 @@ test('プレースホルダ展開はクォートを足さない（引用は利�
   assert.strictEqual(out, 'cd /w/my repo && ls');
 });
 
-test('when は指定した軸をすべて満たし、旧 loop 名も新名として通る', () => {
+test('when は指定した軸をすべて満たす', () => {
   const when = { engines: ['agent-loop'], workloads: ['routine'] };
   assert.strictEqual(sc.matchesWhen(when, { engine: 'agent-loop', workload: 'routine' }), true);
-  assert.strictEqual(sc.matchesWhen({ engines: ['kiro-loop'] }, { engine: 'agent-loop' }), true);
   assert.strictEqual(sc.matchesWhen(when, { engine: 'agent-flow', workload: 'routine' }), false);
   assert.strictEqual(sc.matchesWhen(null, { engine: 'agent-flow' }), true, '省略は全適用');
   assert.strictEqual(sc.matchesWhen(when, {}), true, '判定材料が無い軸では絞らない');

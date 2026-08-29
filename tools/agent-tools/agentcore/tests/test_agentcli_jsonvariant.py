@@ -100,15 +100,21 @@ class ShippedDefinitionTests(unittest.TestCase):
         agentcli.clear_cache()
         self.addCleanup(agentcli.clear_cache)
 
-    def test_aider_split_resolves_to_the_thinking_list_variant(self):
-        """Aider/Gemma の split は Thinking を使える専用起動形へ振り替わる。"""
-        variant = agentcli.resolve_variant("aider", "split", project_dir=self.repo)
-        self.assertEqual(variant["agent_cli"], "ollama-list-thinking")
-        spec = agentcli.load_cli("ollama-list-thinking", project_dir=self.repo)
+    def test_split_resolves_to_the_same_variant_from_both_local_bases(self):
+        """split の起動形は base に依らない（用途が同じなら起動形も同じ）。
+
+        以前は aider 経路だけ `ollama-list-thinking` を指していた。あれに実測は無く
+        （split 4/6 は `--format array` の数字）、同じ用途へ 2 つの答えを持つ理由が
+        無かったので 2026-08-29 に測ってあるほうへ統一した。`list-thinking` の起動形
+        自体は残す——think の効きを測り直す（計画 P(2)）ときの対照になる。
+        """
+        for base in ("aider", "ollama"):
+            with self.subTest(base=base):
+                variant = agentcli.resolve_variant(base, "split", project_dir=self.repo)
+                self.assertEqual(variant["agent_cli"], "ollama-list")
+        spec = agentcli.load_cli("ollama-list", project_dir=self.repo)
         cmd = spec["command"]
-        self.assertEqual(cmd[cmd.index("--think") + 1], "on")
-        self.assertNotIn("--format", cmd)
-        self.assertEqual(json.loads(spec["env"]["AGENT_OLLAMA_OPTIONS"])["temperature"], 0)
+        self.assertEqual(cmd[cmd.index("--format") + 1], "array")
 
     def test_aider_enables_the_fixed_reliability_policy_once(self):
         spec = agentcli.load_cli("aider", project_dir=self.repo)

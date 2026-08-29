@@ -34,7 +34,7 @@ import threading
 import time
 from pathlib import Path
 
-from agentcore import slashroute
+from agentcore import limits, slashroute, stopreason
 from agentcore.harness import _borrowed
 
 # `slashroute` は host の事情を持たない（stdlib の re だけ）ルート表なので、継ぎ目を
@@ -51,7 +51,22 @@ def _node_budget_record(*args, **kwargs):
     return _borrowed.node_budget_record(*args, **kwargs)
 
 
-_TL_MAX_TOOL_ROUNDS = 8
+_TL_MAX_TOOL_ROUNDS = limits.DEFAULT_TOOL_ROUNDS
+# 上限の決め方は `agentcore.limits` の 1 実装が持つ（宣言 ＞ 環境変数 ＞ 層の既定）。
+# ここに置いていた頃は `ollama_loop` から借りられず、同じ「回数上限」が 2 通りの決まり方を
+# 持っていた——A1 が潰したかったのはまさにそれなので、名前だけ借りる。
+_TL_MAX_ROUNDS_ENV = limits.MAX_ROUNDS_ENV
+_TL_MAX_ROUNDS_WRITE_ENV = limits.MAX_ROUNDS_WRITE_ENV
+_tl_positive_int = limits.positive_int
+
+
+def _tl_max_rounds(declared: "str | int | None" = None, *, write: bool = False,
+                   default: "int | None" = None) -> int:
+    """このループで許すモデル呼び出し回数（`limits.max_rounds` の別名）。"""
+    return limits.max_rounds(declared, write=write,
+                             default=default if default is not None else _TL_MAX_TOOL_ROUNDS)
+
+
 _TL_MAX_TOOL_TIMEOUT_SEC = 300
 _TL_MAX_AUTO_READ_BYTES = 32768
 _TL_HARNESS_TIMEOUT_SEC = 30
@@ -1279,7 +1294,9 @@ def run_goal(*, goal: str, cwd: str, agent: dict, log_file: str,
     """
     root = os.path.realpath(str(cwd))
     criteria = list(acceptance or [])
-    rounds = int(max_rounds or _TL_MAX_TOOL_ROUNDS)
+    rounds = _tl_max_rounds(max_rounds)
+    # 上限まで回り切ったときの既定。break する枝がそれぞれ自分の理由で上書きする。
+    stop_reason = stopreason.MAX_ROUNDS
     declared = [str(n).strip() for n in (skills or []) if str(n).strip()]
     names: list[str] = []
     for n in declared + _tl_action_skill_names(goal):
@@ -1349,6 +1366,7 @@ def run_goal(*, goal: str, cwd: str, agent: dict, log_file: str,
 
         if request["type"] == "final":
             output = request["output"]
+            stop_reason = stopreason.FINAL
             break
 
         if request["type"] == "read_files":
@@ -1406,6 +1424,7 @@ def run_goal(*, goal: str, cwd: str, agent: dict, log_file: str,
             if _tl_verified(criteria, root) and not pending_run_error and not acceptance_evidence_errors(
                     criteria, cwd=root, touched=touched, stamps_before=stamps_before):
                 _tl_progress("受入条件を満たしました（final を待たずに完了）", tag)
+                stop_reason = stopreason.VERIFIED
                 break
             continue
 
@@ -1447,8 +1466,13 @@ def run_goal(*, goal: str, cwd: str, agent: dict, log_file: str,
     if pending_run_error:
         outcome["evidenceErrors"].append(pending_run_error)
         outcome["ok"] = False
+        # 失敗したままのコマンドは「回り切った」より具体的な理由なので、そちらを名乗る。
+        # 完了側（final / verified）を上書きはしない——出た成果の事実は消さない。
+        if stop_reason == stopreason.MAX_ROUNDS:
+            stop_reason = stopreason.RUN_ERROR
     # ここだけは本文の有無も見る（層3 は本文が成果物そのものであることがある）。
     outcome["ok"] = bool(output) and outcome["ok"]
+    outcome["stopReason"] = stop_reason
     _tl_append_log(log_file, {"event": "goal_done", **outcome})
     return {**outcome, "output": output, "logFile": log_file}
 
@@ -1485,6 +1509,9 @@ def run_cli_loop(*, goal: str, cwd: str, agent: dict, log_file: str,
     outcome = acceptance_outcome(criteria, cwd=cwd, stamps_before=stamps_before,
                                  agent=agent, log_file=log_file, output=output,
                                  judge=judge, git_before=git_before)
+    # 層2 は CLI が自分でループを回すので、こちらから見える停止理由は「戻ってきた」だけ
+    # ——回数上限も反復もこの層では観測できない。名乗れるのは final に相当する事実のみ。
+    outcome["stopReason"] = stopreason.FINAL
     _tl_append_log(log_file, {"event": "goal_done", **outcome})
     return {**outcome, "output": output, "logFile": log_file}
 

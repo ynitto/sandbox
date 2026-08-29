@@ -1,20 +1,153 @@
-# agent-flow 仕様書
+# agent-flow 利用ガイド兼 CLI 仕様
 
-> 最終更新: 2026-08-20（実装と全面照合。完了条件・公開レコード・CI 取り込み・`force-complete` を追記し、
-> 数値と一覧を実装に合わせた。GitLab は同梱プラグイン 1 つの扱いへ落とした）
-> 対象: `tools/agent-flow/`（`agent_flow` パッケージ）
->
-> 本書は「**何ができて、何を設定でき、どんな規約と制約があるか**」を書きます。
-> なぜそう決めたかは[設計書](../designs/agent-flow-design.md)、導入手順と操作の手引きは
-> `tools/agent-flow/README.md` にあります。
->
-> 実装と食い違いを見つけたら、実装が正です。見つけた人が本書を直してください。
+`agent-flow` は、1 件の要求をタスクグラフへ分け、複数の worker で実行し、検証と作り直しまで
+進めるワークフローエンジンである。状態はバス上の JSON ファイルに残るため、同じ run ID から
+再開できる。共有 git リポジトリをバスにすれば複数 PC でも動く。
 
-agent-flow は、自然言語の要求をタスクグラフへ分解して実行し、結果を評価して作り直しまで回す分散ワークフローエンジンです。単位は 1 要求 = 1 run で、cron 的な定期実行は持ちません。プロセス間の通信はバス上の JSON ファイルだけで、バスの実体はローカルディレクトリでも共有 git リポジトリでも同じコードで動きます。
+前半は単発実行と監視の手順、後半はグラフ、バス、設定、終了条件の契約を扱う。設計判断は
+[設計書](../designs/agent-flow-design.md)に分けてある。
 
-動作要件は Python 3（標準ライブラリのみ。PyYAML は YAML 設定を使う場合だけ要ります）と、git バス・状態共有・ワークスペースを使う場合の git です。エージェント CLI（kiro-cli / claude / codex / ollama など）は `agents/<name>.json` 契約で解決し、別途 PATH 上に必要です。stub executor を使えば CLI なしでプロトコル全体の動作を確認できます。
+## まず動かす
 
----
+### 前提とインストール
+
+- Python 3.11 以上
+- YAML 設定を使う場合は PyYAML
+- git バスや書き込み先リポジトリを使う場合は git
+- 実運用では `agents/*.json` に定義されたエージェント CLI
+
+リポジトリのルートでインストールする。
+
+```bash
+bash tools/agent-tools/install.sh
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+`agent-flow` だけを入れ直す場合は `--only agent-flow` を付ける。
+
+### CLI なしでプロトコルを確認する
+
+stub planner と stub executor は LLM を呼ばない。最初はこの組み合わせで、バスと run の
+ライフサイクルを確認する。
+
+```bash
+mkdir -p .agents/flow-bus
+agent-flow --bus .agents/flow-bus run \
+  "setup -> build -> test; write docs" \
+  --workers 2 \
+  --planner stub \
+  --executor stub \
+  --poll 0.2
+```
+
+標準出力に run ID と進捗が出る。終了後に一覧と結果を確認する。
+
+```bash
+agent-flow --bus .agents/flow-bus status --list
+agent-flow --bus .agents/flow-bus result --json
+```
+
+`result` が最終結果を返せば、計画、worker、終端処理まで動いている。
+
+## 作業別の使い方
+
+### エージェント CLI で1件実行する
+
+```bash
+agent-flow --agent-cli codex run \
+  "認証エラーの原因を調べ、修正案と検証結果をまとめて" \
+  --workers 3
+```
+
+書き込み先を省略した run は読み取り専用。リポジトリを変更する場合は `--workspace` を指定する。
+
+```bash
+agent-flow \
+  --agent-cli codex \
+  --workspace /path/to/YOUR_REPOSITORY \
+  run "README の導入手順を直し、リンクを検証して"
+```
+
+agent-flow は作業用 clone と `af/RUN_ID` ブランチを作り、変更があれば commit と push を行う。
+push できない run は完了にならない。
+
+### 実行中の run を監視する
+
+```bash
+agent-flow --bus .agents/flow-bus --run-id YOUR_RUN_ID status
+agent-flow --bus .agents/flow-bus --run-id YOUR_RUN_ID status --follow --until-done
+agent-flow --bus .agents/flow-bus --run-id YOUR_RUN_ID result --json
+```
+
+`status` は進捗、`result` は成果を返す。`phase` は planning、executing、evaluating、verifying、
+finalizing のいずれか。終端 `status` は done、failed、cancelled のいずれかになる。
+
+### 中断した run を再開する
+
+```bash
+agent-flow --bus .agents/flow-bus --run-id YOUR_RUN_ID run
+```
+
+要求を省略すると、保存済みの計画と結果を読み、未完了ノードから続ける。完了済みノードは
+再実行しない。
+
+### グラフを自分で固定する
+
+```bash
+agent-flow run "YOUR_REQUEST" --plan-file YOUR_PLAN.json
+```
+
+`--plan-file` の `nodes` を検証して、そのまま実行する。不正な plan を自動 planner へ
+切り替える処理は行わず、run を failed にする。
+
+### inbox の要求を受理する
+
+`participate` は受理と回収を 1 巡だけ行い、実行すべき run ID を返す。run 自体は起動しない。
+
+```bash
+agent-flow --bus .agents/flow-bus participate --json
+agent-flow --bus .agents/flow-bus --run-id YOUR_RUN_ID run --from-inbox
+```
+
+通常は `agent-project serve` がこの2段を周期実行する。手動実行は診断や復旧に使う。
+
+### 複数 PC で分散する
+
+```bash
+agent-flow \
+  --git git@example.com:team/flow-bus.git \
+  --git-branch agent-flow-bus \
+  run "YOUR_REQUEST" \
+  --workers 3
+```
+
+各 PC は同じ `--git` と branch を指定する。claim の勝者だけがノードを実行する。成果物の
+リポジトリとバスは分ける。
+
+### 停止、診断、掃除を行う
+
+```bash
+agent-flow --bus .agents/flow-bus cancel YOUR_RUN_ID --reason "要件変更"
+agent-flow --bus .agents/flow-bus doctor
+agent-flow --bus .agents/flow-bus gc --dry-run
+```
+
+`cancel` は run を cancelled に確定する。`gc` は最初に `--dry-run` で対象を確認する。
+環境や設定を安全に修復する場合だけ `doctor --fix` を使う。
+
+## コマンドの選び方
+
+| コマンド | 動作 | 常駐プロセス |
+|---|---|---|
+| `run` | 新規 run または既存 run を完走させる | 不要 |
+| `participate` | 受理、回収、孤児検出を1巡する | 不要 |
+| `status` | 状態と進捗を表示する | 不要 |
+| `result` | 終端した成果を表示する | 不要 |
+| `orchestrate`、`work` | 内部の役割を単独起動する | 通常は直接使わない |
+
+ここまでが通常の利用手順である。以降は run の状態、設定キー、バス上のファイル、上限を固定する。
+
+## CLI リファレンス
 
 ## 1. できること
 
@@ -34,9 +167,9 @@ run の現在段階は `meta.json` の `phase` で表します。グラフ進捗
 
 phase が無い古い run や未知の値は、status とグラフから汎用表示へ縮退します（完了率 100% なら「完了処理中」、グラフ無しなら「計画中」、それ以外は「実行中」）。
 
-**完了条件は「全ノード done」ではなく「終端の検証が緑」です。** どこからも依存されていない `kind: verify` ノードの判定を `_normalize_verify` の 1 実装（構造化 `data.ok` → 本文の verify=pass/fail の順に読み、どちらも無い曖昧な出力は fail）で読み、1 つでも赤・判定不能なら run は `failed` で終端し、`meta.failure_reason` に `[verification]` タグが付きます。判定結果は `final.json` の `verification`（`state`: passed / failed / pending / none）に残ります。終端 verify を持たない run（`state: none`）の終端条件は従来どおりです。
+完了条件は「全ノード done」ではなく「終端の検証が緑」です。どこからも依存されていない `kind: verify` ノードの判定を `_normalize_verify` の 1 実装（構造化 `data.ok` → 本文の verify=pass/fail の順に読み、どちらも無い曖昧な出力は fail）で読み、1 つでも赤・判定不能なら run は `failed` で終端し、`meta.failure_reason` に `[verification]` タグが付きます。判定結果は `final.json` の `verification`（`state`: passed / failed / pending / none）に残ります。終端 verify を持たない run（`state: none`）の終端条件は従来どおりです。
 
-書込先（workspace）のある run は、さらに**リモートへ push できたこと**が完了条件に入ります（§3.8）。
+書込先（workspace）のある run は、さらにリモートへ push できたことが完了条件に入ります（§3.8）。
 
 ### 1.2 計画の 4 経路
 
@@ -94,9 +227,9 @@ kind は 13 種で、正典は `agentcore.nodecontract.VALID_KINDS` です。
 
 サブコマンドを省略すると案内を出して rc=2 で終了します。裸起動を黙って常駐にすると、常駐体（`agent-project serve`）と二重に回って inbox の要求を奪い合うためです。未知の executor 名も起動前に rc=2 で断ります。
 
-グローバル引数は run 全体の器（バス・転送・実行資源）に関わるものだけです: `--config` `--bus` `--run-id` `--git` `--git-branch` `--git-subdir` `--board` `--node-declaration` `--state-git`（`-branch` / `-subdir` / `-interval`）`--executor-dir` `--workspace` `--verification-plan` `--reference`（繰り返し可）`--agent-cli` `--lease` `--argv-limit` `--keep-clone` `--cleanup-per-node` `--no-global-instructions` `--context-file` `--knowledge-file` `--no-session-commands`。`--tier` はありません。tier は agent-control の workload 宣言から読みます（§2.5）。これに加えて `--execution-overrides` が 1 つありますが `--help` には出しません——親（`run`）が解決済みの L4 固定を子（`orchestrate`）へ argv で運ぶための内部の口で、人が書く引数ではありません（人が渡す経路は inbox 要求の `execution_overrides`＝§3.1）。
+グローバル引数は run 全体の器（バス・転送・実行資源）に関わるものだけです: `--config` `--bus` `--run-id` `--git` `--git-branch` `--git-subdir` `--board` `--node-declaration` `--state-git`（`-branch` / `-subdir` / `-interval`）`--executor-dir` `--workspace` `--verification-plan` `--reference`（繰り返し可）`--agent-cli` `--lease` `--argv-limit` `--keep-clone` `--cleanup-per-node` `--no-global-instructions` `--context-file` `--knowledge-file` `--no-session-commands`。`--tier` はありません。tier は agent-control の workload 宣言から読みます（§2.5）。これに加えて `--execution-overrides` が 1 つありますが `--help` には出しません。親（`run`）が解決済みの L4 固定を子（`orchestrate`）へ argv で運ぶための内部の口で、人が書く引数ではありません（人が渡す経路は inbox 要求の `execution_overrides`＝§3.1）。
 
-**計画パラメータは `run` / `orchestrate`（＝実際に計画するサブコマンド）の引数**で、グローバルではありません。計画しないサブコマンドに書くと usage エラー（rc=2）で断ります。グローバルに置いていた頃は `agent-flow --granularity finest doctor` のような指定を受理して黙って捨てていました。`run` と `orchestrate` は同じ定義を共有するので、同じ名前・同じ既定・同じ choices です。`--help` では 2 群に分かれます:
+計画パラメータは `run` / `orchestrate`（＝実際に計画するサブコマンド）の引数で、グローバルではありません。計画しないサブコマンドに書くと usage エラー（rc=2）で断ります。グローバルに置いていた頃は `agent-flow --granularity finest doctor` のような指定を受理して黙って捨てていました。`run` と `orchestrate` は同じ定義を共有するので、同じ名前・同じ既定・同じ choices です。`--help` では 2 群に分かれます:
 
 | 群 | 引数 | 決まるタイミング |
 |---|---|---|
@@ -111,7 +244,7 @@ kind は 13 種で、正典は `agentcore.nodecontract.VALID_KINDS` です。
 
 ### 2.1 ファイルの場所と優先順位
 
-ファイル名は `agent-flow.{yaml,yml,json}`。探索順は `--config` の明示指定、カレントディレクトリ直下、`./.agents/`、`./.agent/`（旧ホーム互換。cwd が `~` のときは見ない）、`~/.agents/` の順で、最初に見つかった 1 つだけを読みます。優先順位は **CLI 引数 > inbox 要求（§3.1）> 設定ファイル > 組み込み既定**。PyYAML がなければ JSON で同じキーが使えます。旧キー `kiro_timeout` は `agent_timeout` の別名として受理します。
+ファイル名は `agent-flow.{yaml,yml,json}`。探索順は `--config` の明示指定、カレントディレクトリ直下、`./.agents/`、`./.agent/`（旧ホーム互換。cwd が `~` のときは見ない）、`~/.agents/` の順で、最初に見つかった 1 つだけを読みます。優先順位は CLI 引数 > inbox 要求（§3.1）> 設定ファイル > 組み込み既定。PyYAML がなければ JSON で同じキーが使えます。旧キー `kiro_timeout` は `agent_timeout` の別名として受理します。
 
 キーと既定値の正典は `CONFIG_DEFAULTS`（`agent_flow/config.py`）、注釈つきの実例は `tools/agent-flow/agent-flow.yaml.example` です。以下は主なキーです。
 
@@ -172,7 +305,7 @@ kind は 13 種で、正典は `agentcore.nodecontract.VALID_KINDS` です。
 
 CLI 定義そのものの契約（探索順・フィールド・`variants` / `relative_cost` / `readonly` の意味・失敗トリアージのクラス）は [`docs/specs/agent-cli-spec.md`](./agent-cli-spec.md) が正典です。ここではエンジン側の割り当てだけを定めます。
 
-`agents:` のキーは役割（`planner` / `evaluator` / `worker`）と個別の kind で、値は `{agent_cli, model, readonly, fallbacks}` です。解決順は agent-control の上書き、`agents[役割]`、kind なら `agents.worker`、グローバル `agent_cli` の順。planner と evaluator は明示しない限り readonly で起動します。`fallbacks` は内容失敗の初回だけ、`relative_cost` が厳密に大きい最初の候補へ昇格する宣言です（**定義ファイル側のフィールドではなくエンジン側の設定**です。CLI 定義が持つのは `relative_cost` だけ）。
+`agents:` のキーは役割（`planner` / `evaluator` / `worker`）と個別の kind で、値は `{agent_cli, model, readonly, fallbacks}` です。解決順は agent-control の上書き、`agents[役割]`、kind なら `agents.worker`、グローバル `agent_cli` の順。planner と evaluator は明示しない限り readonly で起動します。`fallbacks` は内容失敗の初回だけ、`relative_cost` が厳密に大きい最初の候補へ昇格する宣言です（定義ファイル側のフィールドではなくエンジン側の設定です。CLI 定義が持つのは `relative_cost` だけ）。
 
 JSON 契約の役割（planner / evaluator / filter / judge / reduce / extract）・配列契約の split・根拠を読む retrieve・検証専用チューニングを使う verify は、CLI 定義の用途別の変種（`variants`。用途キー→振り替え先の agent_cli 名）へそれぞれ起動形を振り替えます。variant は「1 つのエージェント（例 ollama）を用途で使い分ける」実体で、振り替え後のモデルも明示指定が無ければ変種自身の既定モデルへ寄せます（例: `verify` → `ollama-verify`・`gemma4:12b`）。
 
@@ -230,7 +363,7 @@ tier（実行段）は `control.workloads.flow.tier` を読みます。`basic` �
 
 `plan` と `verification_plan` は inbox が唯一の権威です。呼び出し側が argv へ転記する必要はなく、argv とバスの両方にあるときだけ CLI 引数が勝ちます。`tier` は inbox のキーではありません（agent-control の workload 宣言から読みます）。
 
-計画パラメータ `pattern` / `granularity` / `split_policy` のキー名は設定ファイルのキー（snake_case）と同じで、値の語彙も CLI と同一です。優先順位は **CLI 引数 > inbox 要求 > 設定ファイル > 組み込み既定** — 要求は run 単位の意思なのでそのノードの `agent-flow.yaml` より強く、人がその場で打った CLI 引数には負けます。キーが無い・空文字なら設定ファイルと既定に従います（投入側が「指定しない」を表現できます）。語彙外の値は起動前に断ります（rc=2）: 解決関数は未知値を既定へ丸めるため、素通しすると誤記が「指定したのに効かない run」として静かに走るからです。
+計画パラメータ `pattern` / `granularity` / `split_policy` のキー名は設定ファイルのキー（snake_case）と同じで、値の語彙も CLI と同一です。優先順位は CLI 引数 > inbox 要求 > 設定ファイル > 組み込み既定 — 要求は run 単位の意思なのでそのノードの `agent-flow.yaml` より強く、人がその場で打った CLI 引数には負けます。キーが無い・空文字なら設定ファイルと既定に従います（投入側が「指定しない」を表現できます）。語彙外の値は起動前に断ります（rc=2）: 解決関数は未知値を既定へ丸めるため、素通しすると誤記が「指定したのに効かない run」として静かに走るからです。
 
 `workspace` に作業ブランチと別の `target` がある run は、system node `base-sync` が先頭に入り、全 root ノードはその完了後に開始します。target がすでに作業ブランチの祖先なら no-op、進んでいれば通常 merge、競合時だけ worker に競合ファイルの編集を任せます（履歴操作は渡さない）。競合解消に失敗した run は integration failure として終端し、fetch 失敗だけが transient です。
 
@@ -374,25 +507,25 @@ commit 後・push 前に、agent-flow は復旧 ref `refs/agent-flow/recovery/<r
 
 `force-complete <run-id> --reason <理由>` は、`publication.state == "failed"` のノードだけを対象に remote の該当ブランチを問い合わせ、期待 commit が remote tip の祖先であることを確かめてから `published-manually` へ書き換え、run を done へ戻します。検証なしで done にする口はありません。理由・検証時刻・remote tip は `meta.manual_publication_recovery` と監査イベントに残ります。
 
-公開後の CI は `ci_status_command` を宣言したときだけ取り込みます（§2.6）。コマンドは標準出力へ `{"state": ..., "url": ..., "checks": [...]}` を返し、実行時に `AGENT_CI_URL` / `AGENT_CI_BRANCH` / `AGENT_CI_COMMIT` / `AGENT_CI_REPOSITORY` が環境変数で渡ります。状態は `passed` / `failed` / `running` / `unknown` の 4 値へ正規化し（GitHub の success、GitLab の failed など系統ごとの語も吸収します）、**読めない出力・コマンド失敗・タイムアウトはすべて `unknown`** です。緑には倒しません。結果は各ノードの `publication.ci` と `final.ci` へ書き戻します。
+公開後の CI は `ci_status_command` を宣言したときだけ取り込みます（§2.6）。コマンドは標準出力へ `{"state": ..., "url": ..., "checks": [...]}` を返し、実行時に `AGENT_CI_URL` / `AGENT_CI_BRANCH` / `AGENT_CI_COMMIT` / `AGENT_CI_REPOSITORY` が環境変数で渡ります。状態は `passed` / `failed` / `running` / `unknown` の 4 値へ正規化し（GitHub の success、GitLab の failed など系統ごとの語も吸収します）、読めない出力・コマンド失敗・タイムアウトはすべて `unknown` です。緑には倒しません。結果は各ノードの `publication.ci` と `final.ci` へ書き戻します。
 
 ---
 
 ## 4. 規約
 
-**名義の綴り**: バスと板に書く名義は `agentcore.protocol.safe_name` の 1 規則で揃えます。読みも同じ規則です。claim の `<who>` は `<node_id>-w<i>`（auto-heal の世代は `<node_id>-h<n>w<i>`）で、PC 名が入ります。
+名義の綴り: バスと板に書く名義は `agentcore.protocol.safe_name` の 1 規則で揃えます。読みも同じ規則です。claim の `<who>` は `<node_id>-w<i>`（auto-heal の世代は `<node_id>-h<n>w<i>`）で、PC 名が入ります。
 
-**終端語彙**: 書くのは正典の綴り（`cancelled`）だけ。読みは旧綴り（`canceled`）も終端として寛容に受けます。
+終端語彙: 書くのは正典の綴り（`cancelled`）だけ。読みは旧綴り（`canceled`）も終端として寛容に受けます。
 
-**作業ブランチ**: 既定 `af/<run-id>`（spec で `branch` を明示すればそちら）。エージェントは編集だけを行い、commit と push は agent-flow が行います。変更がなければ push しません。commit 失敗（hook・identity 未設定・index.lock）は無視せず明示的に失敗させます。無視して push すると、エージェントの編集を含まない古い HEAD が「変更が入ったつもりの成果」として done になるためです。ステージ済みの差分には末尾空白の自動修正と競合マーカーの検査が入ります。リトライの世代交代では新 run の `base` を旧ブランチへ差し替え、確定済み commit を失いません。
+作業ブランチ: 既定 `af/<run-id>`（spec で `branch` を明示すればそちら）。エージェントは編集だけを行い、commit と push は agent-flow が行います。変更がなければ push しません。commit 失敗（hook・identity 未設定・index.lock）は無視せず明示的に失敗させます。無視して push すると、エージェントの編集を含まない古い HEAD が「変更が入ったつもりの成果」として done になるためです。ステージ済みの差分には末尾空白の自動修正と競合マーカーの検査が入ります。リトライの世代交代では新 run の `base` を旧ブランチへ差し替え、確定済み commit を失いません。
 
-**park の順序**: wait 記録を書いてから claim を解放します。逆にすると、その隙間で死んだときに wait を失います。park 記録の生存リースは `max(watch_interval × 3, 300)` 秒で、監視主体が消えるとノードは `pending` へ縮退します。
+park の順序: wait 記録を書いてから claim を解放します。逆にすると、その隙間で死んだときに wait を失います。park 記録の生存リースは `max(watch_interval × 3, 300)` 秒で、監視主体が消えるとノードは `pending` へ縮退します。
 
-**心拍**: 生存リースは orchestrator 自身が張り、リース窓の 1/3 ごとに `meta.json` を書いて push まで行います（git バスで未コミットのまま残すと pull --rebase が失敗し続けるため）。計画・評価・検証のようにメインスレッドが長く塞がる区間も別スレッドが同じ間隔で更新します。
+心拍: 生存リースは orchestrator 自身が張り、リース窓の 1/3 ごとに `meta.json` を書いて push まで行います（git バスで未コミットのまま残すと pull --rebase が失敗し続けるため）。計画・評価・検証のようにメインスレッドが長く塞がる区間も別スレッドが同じ間隔で更新します。
 
-**イベントの計画差分**: 初期計画は `planned.tasks`、以後の `replan` と `inflight_amend` は理由と `changes`（`added` / `replaced` / `updated` / `removed`）を残します。`inflight_amend` は静止を待たず、決着済みノードに載った人の指摘（`data.guidance` / `notes` / 差し戻しコメント）を**待機中のノードの spec だけ**へ決定的に反映する経路です（実行中・監視中・終端のノードは触りません。ノードの追加は静止時の評価役に委ねます）。`graph.json` の `deps` は実行上の依存、イベントの差分は計画変更の時系列で、意味が違います。利用側は混ぜて表示しません。
+イベントの計画差分: 初期計画は `planned.tasks`、以後の `replan` と `inflight_amend` は理由と `changes`（`added` / `replaced` / `updated` / `removed`）を残します。`inflight_amend` は静止を待たず、決着済みノードに載った人の指摘（`data.guidance` / `notes` / 差し戻しコメント）を待機中のノードの spec だけへ決定的に反映する経路です（実行中・監視中・終端のノードは触りません。ノードの追加は静止時の評価役に委ねます）。`graph.json` の `deps` は実行上の依存、イベントの差分は計画変更の時系列で、意味が違います。利用側は混ぜて表示しません。
 
-**手法注入（tuning）**: `$AGENT_TUNING_DIR/tuning.json` の `methods` / `trials` を role 別に注入します。variant を名乗るのは手法を実際に注入できた実行だけで、1 つも効かなかった実行は trial として記録しません。
+手法注入（tuning）: `$AGENT_TUNING_DIR/tuning.json` の `methods` / `trials` を role 別に注入します。variant を名乗るのは手法を実際に注入できた実行だけで、1 つも効かなかった実行は trial として記録しません。
 
 ---
 

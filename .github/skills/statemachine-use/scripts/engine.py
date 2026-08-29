@@ -38,6 +38,9 @@ class StateConfig:
     check_on_exhausted: str = "escalate"  # "escalate" | "continue" | "error"
     check_feedback: bool = True          # 再投入時に検査の出力を課題文へ足すか
     check_error: str = ""                # 宣言が壊れている場合の理由（validate が報告する）
+    # 外部ハーネスの 1 ステート内ツールループに許す呼び出し回数（0 = 宣言なし＝ハーネスの既定）。
+    # このエンジン自身は使わない——宣言の置き場をここにするための素通しである。
+    max_tool_rounds: int = 0
 
 
 @dataclass
@@ -81,6 +84,27 @@ class WorkflowDefinition:
 CHECK_ON_EXHAUSTED = ("escalate", "continue", "error")
 CHECK_DEFAULT_TIMEOUT_SEC = 120
 CHECK_OUTPUT_LIMIT = 2000
+# 再投入で戻す材料は、まず**失敗した行だけを選ぶ**（制限付き実行案 §7「テスト失敗 →
+# 失敗テストに絞って一度修正する」）。選ぶだけで、何が起きたかの判断はしない——
+# 新しい失敗分類器は書かない。拾うのは short summary の `FAILED` / `ERROR` 行と、
+# pytest が失敗の中身として印字する `E   ` 行（AssertionError・SyntaxError・
+# ImportError はすべてこの形で出る）。
+# **agent-tools 側のハーネス（agentcore/harness/statemachine.py）と同じ答えを返すこと**を
+# あちらの契約テストが縛る。
+FAILED_TEST_RE = re.compile(r"^(?:FAILED|ERROR)\s+\S+.*$", re.M)
+PYTEST_ERROR_RE = re.compile(r"^E {2,}\S.*$", re.M)
+CHECK_SELECTED_LIMIT = 1200
+CHECK_SELECTED_LINES = 12
+
+
+def failing_lines(detail: str) -> "list[str]":
+    """検査出力から失敗テストと失敗理由の行だけを選ぶ（空 = 選別できない）。"""
+    selected: list = []
+    for pattern in (FAILED_TEST_RE, PYTEST_ERROR_RE):
+        for line in [m.strip() for m in pattern.findall(detail)][:CHECK_SELECTED_LINES]:
+            if line not in selected:
+                selected.append(line)
+    return selected
 
 # 検査結果がコンテキストへ入れるキー。condition_rule はここだけを見れば遷移を決められる。
 # agent-loop 側のハーネス（tools/agent-loop/agent_loop/statemachine.py）も同じ名前で入れる。
@@ -158,15 +182,31 @@ def check_context(status: "int | None", stdout: str = "", stderr: str = "",
 
 
 def check_feedback_note(check: dict, result: dict, attempt: int, attempts: int) -> str:
-    """再投入時に課題文へ足す診断。実測では受入は同じで再試行が 28% 速くなる。"""
+    """再投入時に課題文へ足す診断。実測では受入は同じで再試行が 28% 速くなる。
+
+    出力はまず選別する（`failing_lines`）。選別できなければ末尾を切り詰めて渡し、
+    **切り詰めた事実を書く**——静かに落とすと、材料が足りなかったのかモデルが読めなかった
+    のかを後から分けられない。
+    """
     argv = " ".join([check["command"], *check["args"]])
     detail = "\n".join(x for x in (result.get("error", ""), result.get("stderr", ""),
                                    result.get("stdout", "")) if x).strip()
+    body = ""
+    if detail:
+        selected = failing_lines(detail)
+        if selected:
+            body = ("Failing tests (selected from the check output):\n"
+                    + "\n".join(selected)[:CHECK_SELECTED_LIMIT] + "\n")
+        else:
+            body = (f"Check output (last {CHECK_OUTPUT_LIMIT} characters; "
+                    "the earlier output was omitted):\n"
+                    if len(detail) > CHECK_OUTPUT_LIMIT else "Check output:\n")
+            body += detail[-CHECK_OUTPUT_LIMIT:] + "\n"
     return (
         f"Retry {attempt}/{attempts - 1}: the declared check failed "
         f"(exit status {result['context']['check_status']}).\n"
         f"Check command: {argv}\n"
-        + (f"Check output:\n{detail[-CHECK_OUTPUT_LIMIT:]}\n" if detail else "")
+        + body
         + "Fix the work so this exact command succeeds. Do not modify the check itself."
     )
 
@@ -268,6 +308,7 @@ def load_workflow(path: str | Path) -> WorkflowDefinition:
             check_retries=int(sdef.get("check_retries", sdef.get("max_retries", 0)) or 0),
             check_on_exhausted=str(sdef.get("check_on_exhausted", "escalate")).strip(),
             check_feedback=bool(sdef.get("check_feedback", True)),
+            max_tool_rounds=int(sdef.get("max_tool_rounds", 0) or 0),
             check_error=check_error,
         )
 
@@ -350,6 +391,10 @@ def validate_workflow(wf: WorkflowDefinition) -> list[str]:
                 f"'{state.check_on_exhausted}'（{' | '.join(CHECK_ON_EXHAUSTED)}）")
         if state.check_retries < 0:
             errors.append(f"ステート '{state_id}' の check_retries は 0 以上で指定してください")
+        if state.max_tool_rounds < 0:
+            errors.append(
+                f"ステート '{state_id}' の max_tool_rounds は 0 以上で指定してください"
+                "（0 = 宣言なし）")
     # 検査結果のキーを見る condition_rule が、検査を宣言していないステートから出ていないか。
     # 検査が無ければキーも無く、evaluate_condition_rule は None（= LLM 評価へフォールバック）を
     # 返す——「決定的に見ているつもりが自己申告で決まっていた」に静かに戻る経路をここで塞ぐ。

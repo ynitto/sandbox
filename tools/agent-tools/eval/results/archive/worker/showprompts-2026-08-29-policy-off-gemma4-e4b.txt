@@ -1,0 +1,143 @@
+────────────────────────────────────────────────────────────────────────────────
+Warning: ollama_chat/gemma4:e4b expects these environment variables
+- OLLAMA_API_BASE: Not set
+You can skip this check with --no-show-model-warnings
+
+https://aider.chat/docs/llms/warnings.html
+
+Aider v0.86.2
+Model: ollama_chat/gemma4:e4b with whole edit format
+Git repo: none
+Repo-map: disabled
+Added ../../../../../../../Users/nitto/.agents/skills/INDEX.md to the chat 
+(read-only).
+-------
+SYSTEM Act as an expert software developer.
+SYSTEM Take requests for changes to the supplied code.
+SYSTEM If the request is ambiguous, ask questions.
+SYSTEM 
+SYSTEM Once you understand the request you MUST:
+SYSTEM 1. Determine if any code changes are needed.
+SYSTEM 2. Explain any needed changes.
+SYSTEM 3. If changes are needed, output a copy of each file that needs changes.
+SYSTEM 
+SYSTEM To suggest changes to a file you MUST return the entire content of the updated file.
+SYSTEM You MUST use this *file listing* format:
+SYSTEM 
+SYSTEM path/to/filename.js
+SYSTEM ```
+SYSTEM // entire file content ...
+SYSTEM // ... goes in between
+SYSTEM ```
+SYSTEM 
+SYSTEM Every *file listing* MUST use this format:
+SYSTEM - First line: the filename with any originally provided path; no extra markup, punctuation, comments, etc. **JUST** the filename with path.
+SYSTEM - Second line: opening ```
+SYSTEM - ... entire content of the file ...
+SYSTEM - Final line: closing ```
+SYSTEM 
+SYSTEM To suggest changes to a file you MUST return a *file listing* that contains the entire content of the file.
+SYSTEM *NEVER* skip, omit or elide content from a *file listing* using "..." or by adding comments like "... rest of code..."!
+SYSTEM Create a new file you MUST return a *file listing* which includes an appropriate filename, including any appropriate path.
+SYSTEM 
+SYSTEM 
+-------
+USER Change the greeting to be more casual
+-------
+ASSISTANT Ok, I will:
+ASSISTANT 
+ASSISTANT 1. Switch the greeting text from "Hello" to "Hey".
+ASSISTANT 
+ASSISTANT show_greeting.py
+ASSISTANT ```
+ASSISTANT import sys
+ASSISTANT 
+ASSISTANT def greeting(name):
+ASSISTANT     print(f"Hey {name}")
+ASSISTANT 
+ASSISTANT if __name__ == '__main__':
+ASSISTANT     greeting(sys.argv[1])
+ASSISTANT ```
+-------
+USER I switched to a new code base. Please don't consider the above files or try to edit them any longer.
+-------
+ASSISTANT Ok.
+-------
+USER Here are some READ ONLY files, provided for your reference.
+USER Do not edit these files!
+USER 
+USER ../../../../../../../Users/nitto/.agents/skills/INDEX.md
+USER ```
+USER # 利用できるスキルの索引
+USER 
+USER スキル本体は `/Users/nitto/.agents/skills/<名前>/SKILL.md`。**必要になったものだけ** `/read` でチャットへ
+USER 足すこと（全部を読み込むと本題の材料が入らない）。
+USER 
+USER ## よく使うもの
+USER 
+USER - `agent-reviewer` — 入力された成果物を分析し、適切な perspectives を自律選択してサブエージェントを並列起動し、集約レビューを返…
+USER - `agentic-search` — 検索を「単発の retrieve」から「エージェントが反復する探索ループ」へ引き上げる共有スキル
+USER - `api-designer` — REST API の設計・OpenAPI 仕様生成・既存仕様レビューを支援する
+USER - `aws-architecture-diagram` — Draw.io XML形式のAWSアーキテクチャ図を生成するスキル
+USER - `brainstorming` — 創作作業の前に必ず使うスキル
+USER - `decomposition` — 複雑なタスクを詳細で実行可能な小さなタスク一覧に分解するスキル
+USER - `empirical-prompt-tuning` — プロンプト・スキル・スラッシュコマンドを反復的に改善する実証的チューニングスキル
+USER - `git-skill-manager` — スキルのインストール（pull）・チーム公開（push）・品質評価・非推奨化・アーカイブなど、Gitリポジトリを介したエ…
+USER - `gitlab-idd` — GitLab イシューを非同期タスクキューとして使うイシュー駆動開発スキル
+USER - `grill-with-docs` — 計画・設計をラウンド制の反復質問で徹底的に詰めながら、確定した用語を CONTEXT.md に、重い決定を docs/a…
+USER - `karpathy-guidelines` — LLMのコーディングミスを減らすための行動規範
+USER - `ltm-use` — セッションをまたいで知識・決定事項を継続させたいときのスキル
+USER - `patent-coach` — 特許出願前の構想・整理フェーズ専用
+USER - `patent-writer` — 発明内容が固まった後の書類作成・編集フェーズ専用
+USER - `persona-use` — 「ペルソナをロードして」「ペルソナを初期化して」「ペルソナをリセットして」「ペルソナを一括更新して」「ユーザーの好みを読…
+USER - `presenter` — JSONスペックからPowerPointを生成するスキル
+USER - `react-frontend-coder` — React + TypeScriptで画面実装、最適化、ユニットテストまで一体で進める統合スキル
+USER - `requirements-definer` — ユーザーとの対話を通じて要件ドキュメントを作成し、requirements.md として出力する
+USER - `scrum-master` — 複数ゴール・複数スプリントにまたがるプロジェクトを管理するオーケストレーター
+USER - `self-checking` — 成果物（コード・調査・ドキュメント）をルーブリックと自動チェックで定量評価し、PASSになるまで改善を繰り返すスキル
+USER - `sincerity` — 事実性、十分な出典、透明性を重視し、検証可能な正確さを最優先する回答を作成するスキル
+USER - `skill-creator` — スキルの作成・改善・外部取得を担うメタスキル
+USER - `skill-evaluator` — スキルそのものを評価・確認・採点するときに使う
+USER - `skill-mentor` — 1セッション・1ゴールで完結する軽量委譲オーケストレーター
+USER - `skill-selector` — 単一タスクに最適なプライマリスキルと補助スキルを選択・推薦するメタスキル
+USER - `slop-police` — AIで書いた日本語を、人間が書いた文章に戻す
+USER - `spec-to-readable-html` — Markdown やテキスト仕様書を、要約・構造再編・図表・チャート・ソーストレーサビリティ付きの読みやすい HTML …
+USER - `sprint-reviewer` — スプリント完了後のレビューとレトロスペクティブを第三者視点で実施する
+USER - `systematic-debugging` — バグ修正・ランタイム計装・テスト失敗解消を担う統合デバッグスキル
+USER - `team-builder` — agent-amigos 向けに、ミッション（ゴール）だけから最適なノード役割と各役割へ渡すプロンプトを設計し、miss…
+USER - `technical-writer` — 外向け技術ドキュメントを高品質に即時作成するスキル
+USER - `test-driven-development` — TDD（テスト駆動開発）を Red-Green-Refactor サイクルで実行し、C1カバレッジ100%を達成する
+USER 
+USER ## その他（名前のみ。用途は SKILL.md を読むこと）
+USER 
+USER `agent-cli-proxy`, `agent-flow`, `agent-loop-messaging`, `agent-project`, `architecture-deepener`, `backlog-planner`, `backlog-verifier`, `bruno-e2e-builder`, `ci-cd-configurator`, `codd-gate`, `code-simplifier`, `code-to-specs`, `codebase-onboarding`, `commit-pr-writer`, `contract-driven-development`, `council-system`, `deep-research`, `dependency-auditor`, `dependency-upgrader`, `doc-coauthoring`, `doc-drift-detector`, `domain-modeler`, `dynamodb-designer`, `estimation`, `failure-driven-development`, `flow-planner`, `flow-worker`, `gitlab-efficiency-metrics`, `gitlab-gatekeeper`, `incident-responder`, `jenkins-use`, `legacy-modernizer`, `meeting-minutes`, `mermaid-diagrammer`, `moltbook-use`, `ms365-copilot-use`, `observability-designer`, `obsidian-use`, `outlook-use`, `performance-profiler`, `privacy-compliance`, `redmine-use`, `risk-driven-development`, `runbook-author`, `show-me`, `slo-designer`, `spec-value-finder`, `statemachine-use`, `table-spec-extractor`, `teams-use`, `tech-harvester`, `ui-designer`, `webapp-testing`, `wiki-use`, `windows-app-automation`, `wisdom-sonnet-4-6`, `xlsx-report-builder`
+USER ```
+-------
+ASSISTANT Ok, I will use these files as references.
+-------
+USER I am not sharing any files that you can edit yet.
+-------
+ASSISTANT Ok.
+-------
+USER Hello!
+USER 
+USER To suggest changes to a file you MUST return the entire content of the updated file.
+USER You MUST use this *file listing* format:
+USER 
+USER path/to/filename.js
+USER ```
+USER // entire file content ...
+USER // ... goes in between
+USER ```
+USER 
+USER Every *file listing* MUST use this format:
+USER - First line: the filename with any originally provided path; no extra markup, punctuation, comments, etc. **JUST** the filename with path.
+USER - Second line: opening ```
+USER - ... entire content of the file ...
+USER - Final line: closing ```
+USER 
+USER To suggest changes to a file you MUST return a *file listing* that contains the entire content of the file.
+USER *NEVER* skip, omit or elide content from a *file listing* using "..." or by adding comments like "... rest of code..."!
+USER Create a new file you MUST return a *file listing* which includes an appropriate filename, including any appropriate path.
+USER 
+USER 

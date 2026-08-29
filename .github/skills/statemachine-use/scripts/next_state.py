@@ -174,6 +174,7 @@ def main() -> None:
             "check_retries": state.check_retries,
             "check_on_exhausted": state.check_on_exhausted,
             "check_feedback": state.check_feedback,
+            "max_tool_rounds": state.max_tool_rounds,
         }, ensure_ascii=False, indent=2))
         return
 

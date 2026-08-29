@@ -113,6 +113,33 @@ test('doctor は非ゼロ終了でも本文を返し、投げない', async () =
   assert.match(result.error, /exit 2/);
 });
 
+test('collect 成功後に qualify --apply を起こす（dashboard は qualifications.json を書かない）', async () => {
+  const scripts = [];
+  const result = await audit.collect({}, async (script) => {
+    scripts.push(script);
+    return script.includes("'qualify'")
+      ? okResult('{"applied":true,"revision":2,"unchanged":false}')
+      : okResult('新規レコード 1 件');
+  });
+  assert.equal(result.ok, true);
+  assert.equal(scripts.length, 2);
+  assert.match(scripts[0], /'collect'/);
+  assert.match(scripts[1], /'qualify' '--apply'/);
+  assert.equal(result.qualify.ok, true);
+  assert.equal(result.qualify.applied, true);
+});
+
+test('collect が失敗したときは qualify を呼ばない', async () => {
+  const scripts = [];
+  const result = await audit.collect({}, async (script) => {
+    scripts.push(script);
+    return { ok: false, status: 2, stdout: '', stderr: '源泉が読めません', error: '' };
+  });
+  assert.equal(result.ok, false);
+  assert.equal(scripts.length, 1);
+  assert.equal(result.qualify, undefined);
+});
+
 test('collect は多重実行をビジーとして直列化する', async () => {
   let release;
   const gate = new Promise((resolve) => { release = resolve; });

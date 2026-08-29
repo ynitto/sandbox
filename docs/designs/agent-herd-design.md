@@ -108,6 +108,49 @@ profile は接続先、コスト、出力の取得方法など、エージェン
 `interactive`、`variants`、`slash_native` は引き継がない。これらは起動形ごとの性質であり、
 継承すると single-shot profile に TUI が生えたり、用途の振り替えが二重に掛かったりする。
 
+### ローカル2定義の差
+
+`aider` と `ollama` はどちらも `relative_cost: 0` のローカル実行系で、入口も既定モデルも同じ
+（`agent-herd` / `gemma4:e4b`）。人がどちらを選ぶかで結果が変わるのは編集の担い手だけである。
+判定・抽出・検索・分割は、どちらを base にしても同じ `ollama` の profile へ振り替わる。
+
+| 項目 | `aider` | `ollama` | 差の理由 |
+|---|---|---|---|
+| `headless_autonomy` | `single-shot` | `tool-loop` | 渡されたファイルを直すだけか、自分で bash を回すか。外側のハーネスが要るかどうかがここで決まる |
+| `prompt_via` / `prompt_flag` | argv `--message` | stdin | CLI の作法 |
+| `file_flag` / `read_flag` | `--file` / `--read` | なし | Aider はチャットに入っていないファイルを編集しない。渡さないと着手せず「説明だけ返す」で終わる |
+| `write_args` | なし（権限は起動 argv に内蔵） | `--tools bash --max-rounds 12 --command-timeout 900` | ツールループの有無がそのまま出る |
+| `readonly_args` | `--dry-run`（適用しない） | `--think off`（道具を付けない＝副作用が起きない） | 担保の仕方が違う。どちらも `readonly: enforced` |
+| `slash_native` | false | true | ヘッドレスで先頭のコマンド行を CLI へ残すか、ランチャが消費するか |
+| `profiles` | なし | `json` `list` `list-thinking` `read` `verify` | 用途別の起動形は `ollama` 側が実体を持つ |
+| `session_log` | なし | `~/.agents/logs/ollama`（usage つき） | 下記 |
+
+`variants` の15用途は2定義で一致する。以前は `split` だけ base によって振り替え先が違い、
+`aider` 経路のみ `ollama-list-thinking` を指していた。実測があるのは `--format array`
+（`ollama-list`）の 4/6 のほうで、Thinking 版に split の数字はない。同じ用途に2つの答えを
+持つ理由がないため、測ってあるほうへ統一した（2026-08-29）。`list-thinking` の起動形自体は
+残す。think の効きを測り直すときの対照になるためで、いまはどの用途もそこへ振り替わらない。
+
+`slash_native` はヘッドレスの話であり、対話面の `/sm` とは別の層である。段12以降、対話面は
+両者とも共通 TUI で、`/sm` や `/edit` は TUI 側のルータが読む。`aider` が `slash_native: false`
+なのは、ヘッドレスで `agent-herd aider` を呼んだときにコマンド行をランチャが消費するという意味で、
+対話ペインで `/sm` が効かないという意味ではない。
+
+`session_log` の欠落は宣言漏れではなく実体の欠落である。`aider_adapter` は Aider の
+`--analytics-log` を一時ファイルへ書かせ、`@agent-usage` を読み取った直後に消す。残るものが
+ないので宣言できない。結果として agent-audit の transcript 収集は `ollama` 側だけで、
+`agent-audit doctor` はこれを未収集として明示する。usage の実測は `@agent-usage` 経由で
+両方から取れるため、格付けに使う数値そのものは欠けない。
+
+base をどちらに置くかは実測が決めている。`aider / gemma4:e4b` はコード編集で T2/T4 9/9、
+ツールループ側のコード worker は退行する（自前の編集エンジンでも T4 は 0/3）。したがって
+ローカルの base は `aider` に置き、判定・抽出・検索は宣言が自動で `ollama` の profile へ回す。
+`ollama` を base にする理由は編集もツールループでやりたいときだけで、実測はそれを支持しない。
+
+人に選ばせない口も用意してある。実行レベルの候補には `herd` の1語を書けばよく、具体の
+`(agent_cli, model)` は管理面が埋める。実測（`qualifications.json`）があればそれを使い、
+無ければ一族の定義が言う既定モデルへ展開する。
+
 ### 解決順
 
 ヘッドレス実行では、次の順で起動形を決める。

@@ -101,6 +101,29 @@ _PROFILE_FIELDS = (
 )
 
 
+# 一族（ローカル実行系）の入口。`command[0]` がこれなら agent-herd の共通 TUI を持つ
+# ——判定は綴りだけで済む（定義に family フィールドを足さない）。dashboard 側の写しは
+# `agent-dashboard/src/features/orchestration/main/herd-family.js`。
+HERD_ENTRYPOINT = "agent-herd"
+
+
+def is_herd_family(spec: "dict | None") -> bool:
+    """この定義が agent-herd の一族か（対話面が我々の共通 TUI か）。
+
+    共通 TUI はコマンド面としてルート表（`/sm` `/edit` …）を持つ。クラウド CLI は
+    それを知らないので、送る 1 行の綴りがこの判定で変わる。
+    """
+    if not isinstance(spec, dict):
+        return False
+    for key in ("command", "interactive"):
+        argv = spec.get(key)
+        if key == "interactive":
+            argv = (argv or {}).get("command") if isinstance(argv, dict) else None
+        if isinstance(argv, (list, tuple)) and argv and str(argv[0]).strip() == HERD_ENTRYPOINT:
+            return True
+    return False
+
+
 def canonical_name(name: str, project_dir=None) -> str:
     """台帳・格付けのキーに使う正典の agent_cli 名。
 

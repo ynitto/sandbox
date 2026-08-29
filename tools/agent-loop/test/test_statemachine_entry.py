@@ -1,8 +1,9 @@
 """定期プロンプトの `statemachine:` 実行の回帰。
 
-entry がステートマシンを宣言したら、デーモンは対話ペインへ本文を送るのではなく
-ハーネスのステートマシン実行へ回す。実行条件（`input:` のマップと、自由文としての
-`prompt`）の読み方は agent-herd・dashboard と同じ 1 実装（agentcore.loopentry）。
+entry がステートマシンを宣言したら、デーモンは**実行形の 1 行**を送る——対話ペインを
+持つ CLI にはペインへ（一族は `/sm`、クラウド CLI はスキル発動文）、持たない CLI だけ
+ヘッドレスのハーネスへ。実行条件（`input:` のマップと、自由文としての `prompt`）の
+読み方と 1 行の綴りは agent-herd・dashboard と同じ 1 実装（agentcore.loopentry）。
 
 仕様: docs/specs/agent-loop-spec.md §2.3 / §3.5。
 """
@@ -47,12 +48,10 @@ class EntryValidationTest(unittest.TestCase):
         }])
         self.assertEqual(len(entries), 1)
 
-    def test_a_statemachine_entry_is_a_per_run_session(self):
-        self.assertEqual(self._one()["session"], "per-run")
-
-    def test_an_explicit_keep_session_is_refused_instead_of_silently_flipped(self):
-        with self.assertRaises(ValueError):
-            self._one(session="keep")
+    def test_the_session_declaration_is_left_alone(self):
+        # 経路はペインなので、1 セッションを保つ（keep）ことに意味がある。
+        self.assertEqual(self._one()["session"], "keep")
+        self.assertEqual(self._one(session="per-run")["session"], "per-run")
 
     def test_features_that_need_an_interactive_pane_are_refused(self):
         for extra in ({"oneshot": True}, {"clean_session": 3}, {"target": "reviewer"},
@@ -81,7 +80,7 @@ class EntryValidationTest(unittest.TestCase):
 
 
 class RouteTest(unittest.TestCase):
-    """宣言があれば対話 CLI でもハーネス（per-run）へ回す。"""
+    """対話面を持つ CLI はペイン、持たない CLI だけハーネス（per-run）。"""
 
     def setUp(self):
         self.dir = tempfile.mkdtemp()
@@ -94,23 +93,57 @@ class RouteTest(unittest.TestCase):
         al._CONTROL_CACHE["mtime"] = None
         al._CONTROL_CACHE["data"] = {}
 
-    def test_an_interactive_cli_still_takes_the_harness_route(self):
+    def test_an_interactive_cli_takes_the_pane_route(self):
+        # state ごとにヘッドレス起動すると、起動と文脈の再構築が state の数だけ掛かる。
+        # ペインなら 1 セッションで通る——実行形はコマンド面の 1 行で表す。
         _, route = al.resolve_entry_profile(
             {"agent_cli": "loopy"},
             {"name": "sm", "statemachine": ".statemachine/digest/workflow.yaml"},
             project_dir=self.dir)
+        self.assertEqual(route, "interactive")
+
+    def test_a_cli_without_a_pane_still_takes_the_harness_route(self):
+        _write_cli(self.dir, "paneless", {
+            "command": ["paneless"], "headless_autonomy": "single-shot",
+        })
+        _, route = al.resolve_entry_profile(
+            {"agent_cli": "paneless"},
+            {"name": "sm", "statemachine": ".statemachine/digest/workflow.yaml"},
+            project_dir=self.dir)
         self.assertEqual(route, "per-run")
 
-    def test_no_resolvable_cli_still_takes_the_harness_route(self):
-        # agent_cli を書いていない（従来の kiro 経路の）設定でも、対話ペインへ倒さない
-        # ——倒すと本文だけがペインへ流れ、ワークフローが一度も実行されない。
+    def test_the_pane_line_is_a_slash_command_for_the_herd_family(self):
+        # 一族（共通 TUI）はコマンド面のルート表を持つので `/sm` を受ける。クラウド CLI は
+        # 知らないので、自分でスキルを見つけられる発動文を送る。
+        _write_cli(self.dir, "herdy", {
+            "command": ["agent-herd", "ollama", "{model}"], "default_model": "m",
+            "headless_autonomy": "tool-loop",
+            "interactive": {"command": ["agent-herd", "ollama", "--tui", "{model}"]},
+        })
+        entry = {"name": "sm", "statemachine": ".statemachine/digest/workflow.yaml",
+                 "input": {"topic": "llm"}}
+        sched = al.PeriodicScheduler.__new__(al.PeriodicScheduler)
+        sched._workspace = self.dir
+        sched._tool_config = {}
+        sched._launch_drift = {}
+        for cli, expected in (("herdy", "/sm .statemachine/digest/workflow.yaml --param topic=llm"),
+                              ("loopy", "statemachine-use スキルでdigestステートマシンを実行して")):
+            with self.subTest(cli=cli):
+                profile, route = al.resolve_entry_profile(
+                    {"agent_cli": cli}, entry, project_dir=self.dir)
+                self.assertEqual(route, "interactive")
+                line = sched._statemachine_pane_prompt(entry, {"prompt": ""}, profile)
+                self.assertTrue(line.startswith(expected), line)
+
+    def test_the_route_does_not_decide_the_shape_for_the_legacy_pane(self):
+        # agent_cli を書いていない（従来の kiro 経路の）設定もペインのまま。
         sched = al.PeriodicScheduler.__new__(al.PeriodicScheduler)
         sched._workspace = self.dir
         sched._tool_config = {}
         sched._launch_drift = {}
         _, route = sched._entry_route(
             {"name": "sm", "statemachine": ".statemachine/digest/workflow.yaml"})
-        self.assertEqual(route, "per-run")
+        self.assertEqual(route, "interactive")
 
     def test_a_missing_workflow_stops_the_daemon_at_startup(self):
         problems = al.check_headless_entries(

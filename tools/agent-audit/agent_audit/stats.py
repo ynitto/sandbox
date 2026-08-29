@@ -53,10 +53,58 @@ def aggregate_stats(store: Store, period: str) -> dict:
             "decisions": decisions}
 
 
+# 局所修正の適格判定を「拒否」へ配線しない代わりに置いた観測の、**解除条件**
+# （2026-08-22 §4.3 A2）。しきい値を超えたら人が再評価する。数える実装が無いと保留は
+# 原理的に解けないので（棚卸し 2026-08-29 §2.1）、判定はここ 1 か所に置く。
+LOCAL_PATCH_REEVALUATION_RATIO = 1.0 / 3.0
+LOCAL_PATCH_CLI = "aider"
+
+
+def local_patch_blocker_stats(store: Store, period: str, *,
+                              cli: str = LOCAL_PATCH_CLI) -> dict:
+    """局所修正 worker の receipt から、不適格な割り当ての比率を出す（LLM 不使用）。
+
+    **分母は「done しなかったノード」**。flow の result status は done / failed の 2 値で、
+    落ちたノードは再試行の梯子で上位候補か人へ回る——08-22 が言う「escalate したノード」は
+    receipt 上ではこれにあたる（receipt に escalate という状態は無いので、この読み替えが
+    唯一の解釈である）。分子はそのうち `local_patch_blockers` 付き、つまり
+    **機械判定が最初から不適格と言っていたのに割り当てられていた**ものである。
+
+    `samples` が 0 のときは比率を出さない。0/0 を「問題なし」と読ませないため、
+    呼び手は `samples` を先に見る。
+    """
+    floor = _period_floor(period)
+    nodes = failed = with_blockers = 0
+    reasons: "dict[str, int]" = {}
+    for rec in store.iter_records(since_epoch=floor):
+        if rec.get("kind") != "result" or str(rec.get("agent_cli") or "") != cli:
+            continue
+        ts = parse_iso(rec.get("ts"))
+        if floor and (ts is None or ts < floor):
+            continue
+        nodes += 1
+        if str(rec.get("status") or "") == "done":
+            continue
+        failed += 1
+        blockers = [str(v) for v in (rec.get("local_patch_blockers") or []) if str(v)]
+        if not blockers:
+            continue
+        with_blockers += 1
+        for reason in blockers:
+            reasons[reason] = reasons.get(reason, 0) + 1
+    ratio = (with_blockers / failed) if failed else 0.0
+    return {"period": period, "agent_cli": cli, "nodes": nodes, "samples": failed,
+            "with_blockers": with_blockers, "ratio": round(ratio, 4),
+            "threshold": round(LOCAL_PATCH_REEVALUATION_RATIO, 4),
+            "reevaluate": bool(failed) and ratio >= LOCAL_PATCH_REEVALUATION_RATIO,
+            "blockers": dict(sorted(reasons.items(), key=lambda kv: (-kv[1], kv[0])))}
+
+
 def cmd_stats(args) -> int:
     store = Store(resolve_audit_dir(args))
     period = getattr(args, "period", None) or "month"
     data = aggregate_stats(store, period)
+    data["local_patch"] = local_patch_blocker_stats(store, period)
     if getattr(args, "json", False):
         print(json.dumps(scrub_obj(data), ensure_ascii=False, indent=1))
         return 0
@@ -81,6 +129,20 @@ def cmd_stats(args) -> int:
         for d in data["decisions"]:
             print(f"  {d['decision']}: {d['agreement_rate']:.1%} "
                   f"({d['matches']}/{d['samples']})")
+    lp = data["local_patch"]
+    print(f"\n局所修正の適格（{lp['agent_cli']}・観測のみ。しきい値 {lp['threshold']:.0%}）")
+    if not lp["samples"]:
+        # 0/0 を「不適格な割り当ては起きていない」と読ませない。measure していないだけである。
+        print(f"  受入判定の材料がありません（{lp['agent_cli']} の result receipt "
+              f"{lp['nodes']} 件・うち未 done 0 件）")
+    else:
+        print(f"  未 done のうち blockers 付き: {lp['with_blockers']}/{lp['samples']} "
+              f"({lp['ratio']:.1%})")
+        for reason, n in lp["blockers"].items():
+            print(f"    {reason}: {n}")
+        if lp["reevaluate"]:
+            print("  → しきい値到達。局所修正の適格判定を拒否へ配線するかを再評価する"
+                  "（計画 2026-08-22 §4.3 A2）")
     return 0
 
 

@@ -38,7 +38,8 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from agentcore import ollama_context, ollama_events, ollama_loop, ollama_skills, slashroute
+from agentcore import (limits, ollama_context, ollama_events, ollama_loop,
+                       ollama_skills, slashroute)
 
 USAGE = """使い方: agent-ollama [オプション] <model>
 
@@ -174,7 +175,9 @@ def parse_args(tokens: "list[str]") -> dict:
         "tui": False, "help": False, "format": None,
         "think": None, "think_prompt": None, "skills": [], "skills_enabled": True,
         "stall_timeout": None, "first_token_timeout": None,
-        "max_rounds": ollama_loop.DEFAULT_MAX_ROUNDS,
+        # 宣言（`--max-rounds`）が無いときだけ環境変数を見る。解決はループの後（toolset が
+        # 決まってからでないと「編集の周か」が分からない）。
+        "max_rounds": None,
         "command_timeout": ollama_loop.DEFAULT_COMMAND_TIMEOUT_SEC,
         "cwd": None, "log": None, "no_log": False,
         "follow": False, "status": False, "log_target": None,
@@ -274,6 +277,13 @@ def parse_args(tokens: "list[str]") -> dict:
             opts["model"] = token
         else:
             raise ArgError(f"引数が多すぎます: {token}")
+    # 上限の決め方は `agentcore.limits` の 1 実装（宣言 ＞ 環境変数 ＞ 層の既定）。
+    # 宣言は CLI 定義の `write_args` に載る `--max-rounds` で、腕を引くための環境変数は
+    # **宣言が無いときだけ**効く——ここを逆にすると、定義が決めた予算を測定条件が黙って
+    # 上書きすることになる。
+    opts["max_rounds"] = limits.max_rounds(
+        opts["max_rounds"], write=ollama_loop.toolset_writes(opts["toolset"]),
+        default=ollama_loop.DEFAULT_MAX_ROUNDS)
     return opts
 
 

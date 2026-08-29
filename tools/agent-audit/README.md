@@ -68,7 +68,7 @@ app-server、Copilot は `/usage`、Kiro は ACP の組み込み usage から取
 同じ値が続く場合もnode-budget台帳には収集成功ごとにsnapshotを追記し、Resource Controllerが
 観測の鮮度を判断できるようにする。監査ストア側の同一snapshotは従来どおり重複排除する。
 
-定期実行は同梱 `audit-calibrate-hook.py` が collect → calibrate → extract → distill --review →
+定期実行は同梱 `audit-calibrate-hook.py` が collect → qualify --apply → calibrate → extract → distill --review →
 tune --apply を順に実行する。
 extract / distill には間隔・蓄積ゲートがあるので、**高頻度で駆動しても LLM 消費は
 設定したリズムを超えない**（`--force` はゲートだけを飛ばす。上限と予算は飛ばせない）。

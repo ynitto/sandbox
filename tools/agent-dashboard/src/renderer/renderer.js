@@ -1779,6 +1779,12 @@ async function switchArea(id) {
     uiLog('area has no visible tab', area.id);
     if (area.id !== 'home') return switchArea('home');
   }
+  // 領域ナビを押したら、その領域が決めた着地点へ戻す（直前の詳細・別タブを残さない）。
+  const areaHooks = featureTabs.get(area.id);
+  if (areaHooks && typeof areaHooks.open === 'function') {
+    const tab = areaHooks.open() || (visible[0] && visible[0].dataset.tab);
+    if (tab) return switchTab(tab);
+  }
   const current = document.querySelector('.tab.active');
   if (!current || !visible.includes(current)) {
     if (visible.length) return switchTab(visible[0].dataset.tab);

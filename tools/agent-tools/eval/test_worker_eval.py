@@ -23,7 +23,7 @@ class RunStepsTest(unittest.TestCase):
         """invoke の差し替え。呼ばれた goal を順に記録する。"""
         def fake(step, wt):
             self.goals.append(step["goal"])
-            return 0, "out", "", 1.0
+            return 0, "out", "", 1.0, ["aider", "--message", step["goal"]]
         self.addCleanup(mock.patch.object(w, "invoke", fake).stop)
         mock.patch.object(w, "invoke", fake).start()
         return results
@@ -81,7 +81,7 @@ class ResampleTest(unittest.TestCase):
 
         def fake_invoke(step, wt):
             self.goals.append(step["goal"])
-            return 0, "out", "", 1.0
+            return 0, "out", "", 1.0, ["aider", "--message", step["goal"]]
 
         def fake_snapshot(wt):
             self.snapshots.append(wt)
@@ -349,10 +349,26 @@ class AiderPolicyArgvTest(unittest.TestCase):
     def test_adapter_markers_are_parsed_as_typed_ledger_values(self):
         markers = w._agent_markers(
             "@agent-policy id=gemma4-e4b-reliability-v1 sha256=abc123\n"
+            '@agent-settings {"extra_params": {"num_ctx": 8192}, "name": "m"}\n'
             "@agent-usage tokens_in=12 tokens_out=4\n")
         self.assertEqual(markers, {
             "policy_id": "gemma4-e4b-reliability-v1", "policy_sha256": "abc123",
-            "tokens_in": 12, "tokens_out": 4})
+            "tokens_in": 12, "tokens_out": 4,
+            "model_settings": {"extra_params": {"num_ctx": 8192}, "name": "m"}})
+
+    def test_model_settings_marker_is_optional(self):
+        # marker を出さない腕（--agent-policy off・managed settings 無し）でも落ちない。
+        # その場合の実効 settings は argv が名指しするファイルから拾う。
+        markers = w._agent_markers("@agent-usage tokens_in=1 tokens_out=1\n")
+        self.assertIsNone(markers["model_settings"])
+
+    def test_effective_model_settings_are_read_from_the_named_file(self):
+        path = pathlib.Path(tempfile.mkdtemp(prefix="worker-eval-settings-")) / "s.yml"
+        path.write_text("- name: ollama_chat/m\n", encoding="utf-8")
+        argv = ["aider", "--model-settings-file", str(path), "--message", "G"]
+
+        self.assertEqual(w._settings_from_argv(argv), "- name: ollama_chat/m\n")
+        self.assertIsNone(w._settings_from_argv(["aider", "--message", "G"]))
 
 
 class TextTaskCheckerTest(unittest.TestCase):
@@ -514,3 +530,40 @@ class HarnessArmTests(unittest.TestCase):
             done = self._run("--cli", "aider", "--harness", f"templates:{tmp}")
         self.assertNotEqual(done.returncode, 0)
         self.assertIn("agent-ollama 経路のみ", done.stdout + done.stderr)
+
+
+class MaxRoundsArmTest(unittest.TestCase):
+    """呼び出し回数上限の腕（制限付き実行案 §6「回数制限のみ」）。
+
+    **環境変数では引けない**。定義の `write_args` が `--max-rounds 12` を宣言していて、
+    宣言は環境変数に勝つ（`agentcore.limits` の優先順）——測定条件が定義の予算を黙って
+    上書きしない設計なので、腕は宣言側で引いて台帳へ残す。
+    """
+
+    def setUp(self):
+        self.old = (w.MODEL, w.MAX_ROUNDS)
+        w.MODEL = "gemma4:e4b"
+        self.addCleanup(self.restore)
+
+    def restore(self):
+        w.MODEL, w.MAX_ROUNDS = self.old
+
+    def test_unspecified_keeps_the_shipped_budget(self):
+        w.MAX_ROUNDS = 0
+        argv = w.ollama_argv()
+        self.assertEqual(argv.count("--max-rounds"), 1)
+        self.assertEqual(argv[argv.index("--max-rounds") + 1], "12")
+
+    def test_arm_replaces_the_shipped_budget_exactly_once(self):
+        # 並べて後勝ちに賭けない（定義が並び順を変えた日に静かに元へ戻る）。
+        w.MAX_ROUNDS = 3
+        argv = w.ollama_argv()
+        self.assertEqual(argv.count("--max-rounds"), 1)
+        self.assertEqual(argv[argv.index("--max-rounds") + 1], "3")
+
+    def test_the_rest_of_the_shipped_argv_is_untouched(self):
+        # 腕は上限 1 つだけを動かす。ほかの宣言（think / tools / timeout）は定義のまま。
+        w.MAX_ROUNDS = 2
+        argv = w.ollama_argv()
+        for flag in ("--think", "--tools", "--command-timeout"):
+            self.assertEqual(argv.count(flag), 1, flag)

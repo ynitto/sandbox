@@ -241,8 +241,10 @@ test('人が明示したモデルは変種の既定より優先される（エ�
 
 test('aider の split / retrieve / verify はそれぞれ別の起動形へ振り替わる', () => {
   const entry = effectiveAgents.effectiveFor({}, 'aider');
+  // split の振り替え先は base に依らない（用途が同じなら起動形も同じ）。以前は aider 経路
+  // だけ `list-thinking` を指していたが、実測は `--format array` の側にある（2026-08-29 統一）。
   const split = entry.rows.find((r) => r.purpose === 'split');
-  assertVariantResolution(split, { base: 'ollama', profile: 'list-thinking' });
+  assertVariantResolution(split, { base: 'ollama', profile: 'list' });
 
   // retrieve を base のまま走らせると read tool を失う（ollama 側と同じ事情）。
   const retrieve = entry.rows.find((r) => r.purpose === 'retrieve');

@@ -309,9 +309,12 @@ class JsonVariantRoutingTests(unittest.TestCase):
         # 配列を表現できないので、配列用の起動形（--format array）へ振り替える。
         self.assertEqual(kf._agent_for("split")[0], "ollama-list")
 
-    def test_aider_split_swaps_to_the_thinking_list_variant(self):
+    def test_the_split_variant_does_not_depend_on_the_base_cli(self):
+        # 用途が同じなら起動形も同じ。base が aider か ollama かで split の起動形が変わって
+        # いたが、`ollama-list-thinking` に実測は無く（split 4/6 は `--format array` の
+        # 数字）、同じ用途に 2 つの答えを持つ理由が無かった（2026-08-29 に統一）。
         kf._AGENT_CLI = "aider"
-        self.assertEqual(kf._agent_for("split")[0], "ollama-list-thinking")
+        self.assertEqual(kf._agent_for("split")[0], "ollama-list")
 
     def test_verify_swaps_to_its_own_tuned_variant(self):
         # ollama-verify は他の変種から辿られない——variants 経由がこの用途への唯一の入口。

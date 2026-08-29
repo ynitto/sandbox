@@ -449,7 +449,12 @@ test('dashboard 管理項目はプロンプトと予約済み定型業務を .ag
   const texts = discover.agentLoopPromptTexts(raw);
   assert.deepStrictEqual(entries.map((entry) => entry.name).sort(), ['リリース', '日次確認'].sort());
   assert.ok(texts.includes('課題を確認して'));
-  assert.ok(texts.some((text) => text.includes('statemachine-use スキルでreleaseステートマシンを実行して')));
+  // 定型業務は `statemachine:` の宣言で書く。散文を prompt に置くと、デーモンからは
+  // 普通の定期プロンプトに見えてハーネス固定にならず、本文だけがペインへ流れる。
+  assert.ok(/\n {4}statemachine: "release"\n/.test(raw), raw);
+  assert.ok(!raw.includes('statemachine-use スキルで'), '実行を本文の言い回しに託さない');
+  const declared = entries.find((entry) => entry.name === 'リリース');
+  assert.strictEqual(declared.statemachine, 'release', '正典（loopentry）と同じ規則で読み戻せる');
 });
 
 // --- 設定ファイルの探索先（agent-loop が読む場所が正） ---

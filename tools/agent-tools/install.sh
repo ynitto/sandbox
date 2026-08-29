@@ -39,6 +39,11 @@ ALL_ENGINES=(agent-project agent-flow agent-amigos agent-audit)
 
 INSTALL_PREFIX="${HOME}/.local/bin"
 ENGINES=("${ALL_ENGINES[@]}")
+# `--only agent-herd` はエンジンを 1 本も入れない＝ENGINES が空になる。bash 3.2（macOS の
+# 既定）では `set -u` 下で空配列の `[*]` / `[@]` が unbound になるので、展開は必ず
+# 空許容の形（`${A[@]+...}` / `${A[*]:-}`）で書く——ここを素で書くと、文書化してある
+# 「実行系だけ置く」経路が起動直後に落ちる。
+engines_label() { echo "${ENGINES[*]:-agent-herd のみ}"; }
 WITH_SERVICE=0
 HOST_CONFIG=""
 WITH_RICH=0
@@ -95,7 +100,7 @@ AGENTCORE_PKG="${SHARED_DIR}/agentcore/agentcore"
 
 echo ""
 echo "========================================"
-echo "  agent tools インストーラー（${ENGINES[*]}）"
+echo "  agent tools インストーラー（$(engines_label)）"
 echo "========================================"
 echo ""
 
@@ -310,7 +315,7 @@ fi
 # 3. エンジン固有の付帯物
 # ---------------------------------------------------------------------------
 installed() {
-  case " ${ENGINES[*]} " in *" $1 "*) return 0 ;; *) return 1 ;; esac
+  case " ${ENGINES[*]:-} " in *" $1 "*) return 0 ;; *) return 1 ;; esac
 }
 
 # エージェント CLI 定義（agents/<name>.json）をユーザー共通の置き場へ配る。
@@ -468,7 +473,7 @@ fi
 
 echo ""
 echo "========================================"
-ok "インストール完了！（${ENGINES[*]}）"
+ok "インストール完了！（$(engines_label)）"
 echo "========================================"
 echo ""
 echo "  導入手順の正典: docs/guides/single-resident-setup.md"
@@ -500,7 +505,7 @@ if installed agent-audit; then
   echo ""
 fi
 echo "  設定の雛形:"
-for engine in "${ENGINES[@]}"; do
+for engine in "${ENGINES[@]+"${ENGINES[@]}"}"; do
   for f in "${TOOLS_DIR}/${engine}"/*.example; do
     [[ -f "$f" ]] && echo "    ${f}"
   done

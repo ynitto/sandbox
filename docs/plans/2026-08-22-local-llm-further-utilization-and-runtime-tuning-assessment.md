@@ -101,6 +101,10 @@ prefill も削れるが、主目的は**能力の底上げ**（見落とし面�
 - 実装は agentcore 内の前処理モジュール 1 本（決定的・LLM なし・標準ライブラリ +
   パーサ 1 依存）。抽出失敗時はファイル全体へフォールバックし、黙って欠落させない。
 - Python 以外の言語はパーサ対応分だけ順次。まず自リポジトリの主要言語（Python / JS）。
+  **2026-08-29 に Python 限定で確定した**——他言語のパーサは install.sh のオフライン完結を
+  壊す。非 Python は原本へ倒れ `unsupported-language` の receipt が残る（安全側）。
+  再評価の条件は「非 Python の fallback が適格ノードの相当割合を占めると receipt で分かったとき」
+  （[08-27 改善案 案 B](2026-08-27-agent-tools-local-llm-effective-improvement-proposals.md)）。
 - 「対象が計画時に決まっている」適格条件は変えない。探索の代替ではない。
 
 **測り方。** T1 / T3 セルでスライスあり / なしを比較。見るのは受入率・
@@ -122,6 +126,34 @@ system prefix が毎回入れ替わり、固定 policy や役割プロンプト�
 独立 step だけ。効果は log_stats の TTFT 分布で before/after を見る。TTFT が
 入力長にほぼ依存しない現状（事実 6）では**効果が小さい可能性がある**——
 だからこそ測定が安いこの案は「測って駄目なら捨てる」で良い。
+
+### 2026-08-29 実測 — 前提は成り立つ。実装は 1 箇所で済んだ
+
+**スケジューラを触る前に前提だけを測った**（`eval/prefix_cache_probe.py`）。同じ長さ・
+同じ本数・同じ本文で、消化順だけを `A A A B B B`（batched）と `A B A B A B`（interleaved）に
+変え、ollama が返す `prompt_eval_duration` を見る。接頭辞は 2904 トークン
+（本番の役割骨格 + policy と同じ帯）。gemma4:e4b・20 呼び出し・生成は 1 トークンで打ち切り。
+
+| 腕 | prefill 合計 | 中央値 |
+|---|---|---|
+| batched | **23.5s** | **0.53s** |
+| interleaved | 70.2s | 3.68s |
+
+**合計で約 3.0 倍**（3 回引いて 3.02 / 3.22 / 2.98 と安定）。1 呼び出しあたりおよそ
+**2.3 秒**の節約になる。台帳 `eval/results/archive/worker/prefix-cache-2026-08-29-gemma4-e4b.json`。
+
+**`prompt_eval_count` では判定できない。** キャッシュに当たっても数は落ちない（全リクエストで
+2904 のまま）。落ちるのは時間のほうで、初版の判定はここを間違えて「痕跡なし」と出していた。
+
+**採否は 1 呼び出しの重さで決まる。** 節約は接頭辞ぶんの秒数で**固定**なので:
+
+- コード仕事（1 周 200〜300 秒）では 2.3 秒は誤差——**採用理由にならない**。
+- 判定・抽出・split（1 呼び出し 9〜13 秒）では 2 割前後——**効く帯に入る**。
+
+**実装。** `agent_flow/work.py` の `pick_claimable` に「直前と同じ種別を先に見る」を足した
+（3 行）。元の順は `random.shuffle`＝既に任意なので、任意さを保ったままキャッシュに優しい側へ
+寄せるだけである。`list.sort` は安定なので、同種別の中の順序は shuffle のまま——
+ワーカー間の衝突回避（shuffle の目的）は壊れない。モデル・プロンプト・契約はどれも触っていない。
 
 ### 案 4 ○ 小型サブモデル（e2b 級）の適材適所 — 天井の役割から壁時計を回収する
 
@@ -419,7 +451,7 @@ README は manifest を「比較条件」と説明しているが、**腕を変�
 
 | # | 項目 | 出典と含意 |
 |---|---|---|
-| C1 | **リランカー** | ltm-use の「やらないこと」。理由は *ollama に rerank の口が無い / 生成モデル代用は 1 クエリ数十秒*。**本書の案 B（ランタイム）が通ればこの制約自体が動く**（llama.cpp 系は rerank の口を持つ）。案 B の副次的な判定材料として並べる |
+| C1 | ~~**リランカー**~~ | ltm-use の「やらないこと」。理由は *ollama に rerank の口が無い / 生成モデル代用は 1 クエリ数十秒*。当初は案 B（ランタイム）が通れば制約が動くとして案 B の副次的な判定材料に並べたが、**2026-08-29 に案 B から切り離して閉じた**（下記 §4.3） |
 | C2 | **候補生成 + 決定的検算の未投入面** | next-eval-plan §2 の順 4（grep パターン・パス候補・テスト名）は「未投入」のまま。E6 が決定化したのは filter / judge の**判定**側で、こちらは**生成**側。案 1 と同じ「モデルは候補だけ・機械が検算」の形で、しかも誤りが存在チェックで無害化される |
 | C3 | **read 調査 → 材料生成** | next-eval-plan §2 の順 5。**案 2（スライシング）はこの下流にあたる**——上流が未評価のまま下流だけ作った形なので、案 2 の A/B では「read 調査でファイルを絞る段」を固定条件として明記する |
 | C4 | **ltm-use の未決 3 点** | しきい値のコーパスサイズ依存（210 件で 0.11）・クエリ埋め込みのキャッシュ・全文 vs 要約（先頭 4000 字で長い記憶が不利か未測定） |
@@ -434,7 +466,7 @@ README は manifest を「比較条件」と説明しているが、**腕を変�
 |---:|---|---|
 | **0** | **A1**（案 1 の腕を a 族 / b 族で分ける）+ **A3**（`run_suite` の条件透過）。**A2** は「拒否を配線するか / 測定値の位置づけを明記するか」の判断だけ先に決める | 数時間 |
 | 1 | 案 1 の A/B（段 0 の切り分けを入れた形で） | 半日 + 壁時計 |
-| 2 | 案 B 検証（iGPU prefill）。効けば **C1（リランカー）** の可否も同時に判明する | 半日 |
+| 2 | 案 B 検証（iGPU prefill）。**C1（リランカー）は 2026-08-29 に切り離して閉じたので、案 B 単独の判定になった** | 半日 |
 | 3 | 案 2（決定的スライシング）。**C3** を固定条件として宣言してから測る | 2〜3 日 |
 | 独立 | **B2**（MoE の RAM 実測・数分）→ **B4**（bge-m3 の実装・受入基準は既定） | 各当日 |
 | 後続 | **B1**（P9 の最小 eval。planner → project:verify → dashboard doctor の順）・**B3**（12b の暴走率と縮退基準）・**C2** | — |
@@ -452,13 +484,13 @@ dashboard doctor）・C1・C5 が残る。`[x]` は「閉じた」、`[~]` は�
 | # | 状態 | 何をしたか | 置き場 |
 |---|---|---|---|
 | A1 | [x] | worker_eval の全課題に失敗の族 `family`（a / b）を宣言させ、台帳へ残し、集計末尾に族別 escalate を出す。引き直しの推奨コマンドへ T3gate を加え、採用条件を「**(a) 族**の escalate 率が下がること」に改めた。宣言漏れは契約テストで落ちる | `eval/worker_eval.py` / `test_worker_eval.py` / README「族を分けて読む」 |
-| A2 | [~] | **拒否は当面配線しない**と決めた。Resolver が拒否するには候補側に「局所修正専用」の能力属性が要り、selection_policy の schema・Compiler・dashboard へ波及する。代わりに claim メタの `local_patch_blockers`（観測）で不適格割り当ての頻度を数え、ハーネスの escalate 率は**運用値でなく上限**として読む。再評価条件: escalate した aider ノードの 1/3 以上が blockers 付きになったとき。assessment の Phase 4 チェックリストは実装と突き合わせ直した（1・2 は観測まで、3・4 は入っている） | [2026-08-18 assessment §9 Phase 4](2026-08-18-agent-aider-improvement-assessment.md) |
+| A2 | [~] | **拒否は当面配線しない**と決めた。Resolver が拒否するには候補側に「局所修正専用」の能力属性が要り、selection_policy の schema・Compiler・dashboard へ波及する。代わりに claim メタの `local_patch_blockers`（観測）で不適格割り当ての頻度を数え、ハーネスの escalate 率は**運用値でなく上限**として読む。再評価条件: escalate した aider ノードの 1/3 以上が blockers 付きになったとき。**2026-08-29 に数える実装を足した**（`agent-audit stats` の「局所修正の適格」節・`stats.local_patch_blocker_stats`）——それまで観測は receipt へ入るだけで集計が無く、この解除条件は原理的に発火しなかった。receipt には escalate という状態が無いので、分母は **done しなかった aider ノード**と読み替えてある。`samples` が 0 のときは発火しない（0/0 を「問題なし」と読ませない）。assessment の Phase 4 チェックリストは実装と突き合わせ直した（1・2 は観測まで、3・4 は入っている） | [2026-08-18 assessment §9 Phase 4](2026-08-18-agent-aider-improvement-assessment.md) |
 | A3 | [x] | `run_suite.py` が `--tasks / --agent-policy / --num-ctx / --num-predict / --temperature / --top-p / --top-k / --resample` を worker_eval へ透過し、**指定したものだけ**を manifest の `worker_arm` に flag 名のまま残す。未指定は 1 バイトも渡さない | `eval/run_suite.py` / `test_run_suite.py` |
 | B1 | [x] | **3 面とも最小セルを足した（coverage: planner・project:verify・dashboard doctor/* を direct。missing 34 → 28）。** (1) `planner_eval.py`: flow-planner `plan.py` を本番引数で呼ぶ構造チェッカー 4 ケース。最初の 1 本で**経路不通**を発見——Phase 3 の「JSON 配列のみ」契約は ollama の JSON モードで満たせず、agent-ollama 経路の flow-planner は必ず落ちて stub へ黙って縮退していた。`{"tasks": [...]}` へ改め（flow-planner v1.0.1）、実測 e4b: 鎖 2/3・fan-out 3/3・列挙 1/3・単一 0/3。列挙の外れ方（split の後ろの静的 map/reduce）は engine の約束違反なので `gate_tasks` に決定的検査を足した（再測は次の腕）。(2) `project_verify_eval.py`: 本番の charter 達成条件プロンプト + 本番の正規化。**本番の局所 verify 変種（ollama-verify・道具なし・JSON のみ）では成立しない**——12b は criteria を返さず散文 JSON（contract 3/3）、e4b は捏造 pass 12/12 条件、道具を持たせた e4b でも 0/3（字面 grep の偽陰性）。局所で成立する verify は決定的コマンドだけで、自然文の達成条件は道具を持つ候補か人へ。(3) `doctor_eval.py`: 本番 `doctorPrompt` を node で呼ぶ 4 モード、見出し契約 + 構成的言及で e4b **12/12**——材料が全部スナップショットにある「読んで指す」役割は e4b で足りる | `eval/planner_eval.py` / `project_verify_eval.py` / `doctor_eval.py` / eval README |
 | B2 | [~] | **机上 + 道具まで**: 重みは registry manifest で **16.75 GiB**（e4b 8.95 / 12b 7.04）。**16 GB 機は重みだけで不成立で閉じた**（この Mac では pull しない）。32 GB 機の成立判定は `eval/moe_ram_probe.py` を書いた——ollama API と OS の数字で num_ctx ごとの常駐・load・prefill/decode を測り、「常駐 > 物理 − 余白 3 GiB」で機械判定する（pull はしない設計。人が承認してから対象機で `ollama pull gemma4:26b` → probe 実行、数分）。残るのは対象機での実行だけ | `eval/moe_ram_probe.py` / eval README |
 | B3 | [x] | **暴走率**: 12b 単発 JSON 呼び出しの停止は 2/27 → 95% 区間 **2.1〜23.4%**（Wilson）。`--stall-timeout 180` なら 1 呼び出しの期待コストは 13 s（区間 4〜42 s）で、「再投入 1 回で回収」の形は保てる。**縮退基準を決めた**: 同じ呼び出しで再投入後も続いたら e4b へ縮退。verify CLI 定義の hint に書いた。**機械配線も入れた**（同日）: flow の `run_agent` が transient 上限に達したら候補ごとの失敗回数（`_CANDIDATE_ATTEMPTS`）を Resolver へ渡して再解決し、別候補が返れば attempt 1 から 1 段だけ下りる。policy の `retry_limit` がこの基準の表現で、判断は Resolver の 1 実装のまま（**2026-08-26 訂正**: 併記していた「候補順 12b → e4b」は実体が無かった。e4b は `bounded-review` が blocked なのでレビュー役の候補に載らず、縮退先が存在しない——再投入を使い切れば park する）。縮退は result の `execution_decision.fallback_from` と実効 `agent_cli` に写る。明示指定（per-call `agent`・run 固定）は対象外。登録簿の寿命は run × control revision（別 run のノードを claim するか revision が上がれば消える） | `agent_flow/agent.py` / `work.py` / `agents/ollama-verify.json` |
 | B4 | [x] | **実装し、受け入れ基準を両空間で満たした。** ltm-use v5.5.0: `embeddings.py`（索引 `.memory-embeddings.json`・`build_index --embeddings`・save 時 1 件追加）、`recall_memory` の段構え（TF-IDF 最上位 < 0.11 のときだけ bge-m3・合成なし・失敗しない）。ハーネス（261 件・妨害込み）: paraphrase hit@5 35% → 60%、lexical 100% 維持。本番経路（実記憶 75 件）: lexical 80% → 95%、paraphrase 25% → 85%。本番の TF-IDF は title / summary / tags だけで作るので、ハーネスより弱く、しきい値未満へ落ちる lexical が 6/20 あったが埋め込みで拾えた | [設計書](../designs/ltm-use-embedding-recall-design.md) / `.github/skills/ltm-use` / `eval/retrieval_eval.py`（`cascade_ranker`） |
-| C1 | [ ] | 案 B（段 2）待ち。変更なし | — |
+| C1 | [x] | **案 B から切り離し、測らずに閉じた（2026-08-29）。** 待ち先の案 B は iGPU のある実機が要る案で、23 日間動いていない——待っていて自然に判定が出る形ではなく、C1 は「保留の保留」になっていた。切り離したうえで単独に見ると、動機のほうが先に弱くなっている: B4 の段構えが本番経路で paraphrase 25% → 85%・lexical 80% → 95% を出し、受け入れ基準を満たしている。上積みの費用（別モデル種別の常駐・1 クエリ数十秒の代用）に見合う取りこぼしが観測されていない。**復活の条件は段構えが落とす問いが実運用で出ることで、ランタイムの都合ではない** | [設計書「やらないこと」](../designs/ltm-use-embedding-recall-design.md) |
 | C2 | [x] | **腕を作って 1 本引いた。** `eval/candidate_eval.py`（grep パターン・パス候補・テスト名。正解は合成リポジトリの内容から決定的に導き、候補の誤りは機械が落とす）。実測（e4b・各 3）: パス 3/3・テスト名 3/3（捏造 0・無害化は一度も働かなかった）、regex 0/3（regex を作らず当たる行そのものを返す読み違い）。本番へ入れる順は「選ぶ」候補（read_allocation のパス・verify のテスト名）から | `eval/candidate_eval.py` |
 | C3 | [x] | 案 2 の A/B で「read 調査でファイルを絞る段」を固定条件にすると §4.1 へ書いた | §4.1 案 2 |
 | C4 | [~] | 3 点のうち 2 点を測った。**しきい値**: 本番空間（実記憶 75 件）で掃引——0.11 で lexical 95% / paraphrase 85%、0.13〜0.15 で lexical 100%。差は 1 問（n = 20）なので既定 0.11 は据え置き、数百件で再掃引。**全文 vs 要約**: 差は 1 問以内・長い記憶が不利な証拠なし（要約だけの索引は 4 倍速いが 75 件では意味が無い）。**クエリ埋め込みのキャッシュ**は未測 | [設計書「未決」](../designs/ltm-use-embedding-recall-design.md) |
@@ -471,6 +503,12 @@ dashboard doctor）・C1・C5 が残る。`[x]` は「閉じた」、`[~]` は�
 (b) に同じ壁時計を 3 倍払って同じ欠落を受け取る（T3gate 中央値 1257s → 3452s）。機構は設計どおり
 動いた（T1gate の 1 本で再投入 2 回の後に引き直しの 1 本目で通った）が数字を動かさない。
 `check_on_exhausted` の既定は escalate のまま。詳細は eval README「引き直しの腕」の実測節。
+
+**その (b) 族が 2026-08-29 に動いた。** 動かしたのは引き直しでも再投入でもなく、
+**成果物を割ったこと**である——schema 1 ファイルと契約テスト 1 ファイルの 2 手順へ分けた
+`T3splitgate` は同条件で **3/3**（T3gate は 0/3）。分割側は 6 呼び出しすべてが再投入 0 回で、
+各手順が 1 回目に通った。§4.2 A1 が書いた「(b) 族が動かないなら成果物を 1 つに割る」は
+実測で裏づけられたことになる。壁時計も分割側が安い（中央値 561s 対 1151s）。
 
 消化の途中で見つけたこと。**この Mac の `~/.agents/agents/aider.json` は 2026-08-15 の配布のままで、
 `--agent-policy gemma4-e4b-reliability-v1`（2026-08-19 に定義へ入れた）を持たない。** eval の契約テスト

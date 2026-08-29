@@ -87,26 +87,10 @@ function configPath() {
   return path.join(app.getPath('userData'), 'config.json');
 }
 
-// 制御面の改称で変わった設定キーの旧名 → 新名。**既定で補完されるのは「欠けているキー」
-// だけなので、キー名が変わると利用者の設定は黙って既定へ戻る。** 読み込み時に付け替えて、
-// 次の保存で新しい名前に定着させる（旧名は落とす。両方残すとどちらが効くか決まらない）。
-const LEGACY_CONFIG_KEYS = { kiroLoop: 'routines' };
-
-function migrateLegacyKeys(raw) {
-  if (!isPlainObject(raw)) return raw;
-  const out = { ...raw };
-  for (const [oldKey, newKey] of Object.entries(LEGACY_CONFIG_KEYS)) {
-    if (!isPlainObject(out[oldKey])) continue;
-    out[newKey] = deepMerge(out[oldKey], isPlainObject(out[newKey]) ? out[newKey] : {});
-    delete out[oldKey];
-  }
-  return out;
-}
-
 function loadConfig() {
   try {
     const raw = fs.readFileSync(configPath(), 'utf8');
-    return deepMerge(DEFAULT_CONFIG(), migrateLegacyKeys(JSON.parse(raw)));
+    return deepMerge(DEFAULT_CONFIG(), JSON.parse(raw));
   } catch {
     return deepMerge(DEFAULT_CONFIG(), {});
   }
@@ -136,5 +120,4 @@ module.exports = {
   saveConfig,
   configPath,
   deepMerge,
-  migrateLegacyKeys,
 };

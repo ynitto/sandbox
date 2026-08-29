@@ -99,12 +99,29 @@ def _quiesced(bus: Bus, nodes: dict) -> bool:
     return True
 
 
-def pick_claimable(bus: Bus):
+def pick_claimable(bus: Bus, prefer_kind: str = ""):
+    """claim できるノードを 1 つ選ぶ。`prefer_kind` は直前に消化した種別。
+
+    柱3 / C9 — **同じ種別を続けて消化すると推論サーバの接頭辞キャッシュに当たる**。
+    役割の骨格と固定 policy は呼び出し間で不変なので、直前と接頭辞が一致すればその分の
+    prefill が丸ごと消える。実測（`eval/prefix_cache_probe.py`・gemma4:e4b・接頭辞 2904 tok）で
+    prefill 中央値が **2.83s → 0.35s（3.0 倍差）**、20 呼び出しの合計で 52.0s → 17.2s だった。
+
+    **順序の入れ替えはここだけで、モデル・プロンプト・契約はどれも触らない**（08-22 案 3）。
+    元の順は `random.shuffle` ——つまり既に任意である。任意の順を、同じ任意さのまま
+    キャッシュに優しい側へ寄せるだけなので、ワーカー間の衝突回避（shuffle の目的）は
+    `sort` が安定であることで保たれる（同種別の中の順序は shuffle のまま）。
+
+    **節約は接頭辞ぶんの秒数で固定**である点に注意する。1 周が数百秒のコード仕事では
+    誤差だが、1 呼び出しが十数秒の判定・抽出系では効く帯に入る。
+    """
     graph = bus.read_graph()
     if not graph:
         return None
     items = list(graph["nodes"].items())
     random.shuffle(items)  # ワーカー間の衝突を減らす
+    if prefer_kind:
+        items.sort(key=lambda kv: kv[1].get("kind", "work") != prefer_kind)
     for nid, node in items:
         if bus.node_state(nid) == "pending" and deps_satisfied(bus, node):
             return nid, node
@@ -140,6 +157,10 @@ def cmd_work(args) -> int:
     time.sleep(random.uniform(0, args.poll))  # 負荷分散: 起動位相をずらす
 
     idle_polls = 0
+    # 直前に消化した種別。次の claim で同じ種別を優先し、接頭辞キャッシュに当てる
+    # （`pick_claimable` の docstring に実測）。**claim できたときだけ**更新する
+    # ——競り負けや park で更新すると、実際には走っていない種別へ寄せることになる。
+    last_kind = ""
     while True:
         bus.sync_pull()
         status = bus.get_status()
@@ -154,7 +175,7 @@ def cmd_work(args) -> int:
             time.sleep(args.poll)
             continue
 
-        candidate = pick_claimable(bus)
+        candidate = pick_claimable(bus, last_kind)
         if candidate is None:
             if not args.keep_alive:
                 # デーモン起動の短命ワーカー: 仕事が無くなったら少し待って終了（オンデマンド）
@@ -175,6 +196,7 @@ def cmd_work(args) -> int:
         if not bus.try_claim(nid, who, args.lease):
             continue  # 競り負け
         log(who, f"claim 成功: {nid} [{kind}] — {node['goal'][:55]}")
+        last_kind = kind
         # 実行に使うエージェント（agent executor のみ）。実効解決（control 上書き・縮退込み）は
         # ここでしか分からないので、claimed イベントと result に事実として残す——読み手
         # （dashboard のノード詳細）に設定からの再解決（同じ規則の 2 実装）をさせない。

@@ -29,12 +29,6 @@ const ON_ERRORS = ['warn', 'fail'];
 const WHEN_KEYS = ['engines', 'workloads', 'agent_cli'];
 // chat モードを送れるのは常駐系（セッションが長寿命なエンジン）だけ。
 const CHAT_CAPABLE_ENGINES = ['agent-loop', 'dashboard'];
-const LEGACY_ENGINE = 'kiro-loop';
-
-function canonicalEngine(value) {
-  const engine = String(value || '').trim();
-  return engine === LEGACY_ENGINE ? 'agent-loop' : engine;
-}
 
 function expandHome(p) {
   if (!p) return p;
@@ -82,9 +76,7 @@ function normalizeWhen(w) {
   const out = {};
   for (const key of WHEN_KEYS) {
     if (!Array.isArray(w[key])) continue;
-    const values = [...new Set(w[key]
-      .map((v) => (key === 'engines' ? canonicalEngine(v) : String(v || '').trim()))
-      .filter(Boolean))];
+    const values = [...new Set(w[key].map((v) => String(v || '').trim()).filter(Boolean))];
     if (values.length) out[key] = values;
   }
   return Object.keys(out).length ? out : null;
@@ -135,10 +127,6 @@ function loadSessionCommands(dir) {
   const commands = (Array.isArray(raw.commands) ? raw.commands : [])
     .map(normalizeCommand)
     .filter(Boolean);
-  const warnings = (Array.isArray(raw.commands) ? raw.commands : []).some((command) =>
-    isPlainObject(command) && isPlainObject(command.when)
-      && Array.isArray(command.when.engines) && command.when.engines.includes(LEGACY_ENGINE)
-  ) ? ["engine 'kiro-loop' は非推奨です。'agent-loop' として読み込み、次回保存時に更新します。"] : [];
   return {
     version: 1,
     revision: Number.isFinite(Number(raw.revision)) ? Number(raw.revision) : 0,
@@ -147,7 +135,6 @@ function loadSessionCommands(dir) {
     max_total_timeout: clampMaxTotalTimeout(raw.max_total_timeout),
     updated_at: raw.updated_at,
     updated_by: raw.updated_by,
-    warnings,
     _raw: raw, // additive: 未知キーを保持し、書換時に土台とする
   };
 }
@@ -175,7 +162,7 @@ function matchesWhen(when, ctx) {
   ];
   for (const [key, value] of axes) {
     if (!w[key]) continue;
-    const v = key === 'engines' ? canonicalEngine(value) : String(value == null ? '' : value).trim();
+    const v = String(value == null ? '' : value).trim();
     if (!v) continue;
     if (!w[key].includes(v)) return false;
   }
@@ -199,7 +186,7 @@ function renderBundlePrompt(items, revision) {
 // 返す各要素は skip の理由を持つため、UI は除外された行もグレーで残せる。
 function plan(data, ctx) {
   const c = isPlainObject(ctx) ? ctx : {};
-  const engine = canonicalEngine(c.engine);
+  const engine = String(c.engine || '').trim();
   const out = [];
   if (!isPlainObject(data) || data.enabled === false) return out;
   const commands = Array.isArray(data.commands) ? data.commands : [];
@@ -317,5 +304,4 @@ module.exports = {
   ON_ERRORS,
   CHAT_STRATEGIES,
   renderBundlePrompt,
-  canonicalEngine,
 };

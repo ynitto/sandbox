@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Collect audit records and calibrate node-budget rates without an LLM prompt."""
+"""Collect audit records, refresh candidate qualifications, and calibrate rates without an LLM prompt."""
 from __future__ import annotations
 
 import os
@@ -16,6 +16,7 @@ def check(hook_config: dict[str, Any] | None = None) -> None:
         base += ["--budget-dir", os.path.expanduser(str(nested["budget_dir"]))]
     commands = (
         (["collect"], False),
+        (["qualify", "--apply"], False),
         (["calibrate", "--write"], False),
         (["extract"], True),
         (["distill", "--review"], True),

@@ -35,7 +35,7 @@
     "route": "ollama-json",
     "adjudicate": "ollama-json",
     "assess": "ollama-json",
-    "split": "ollama-list-thinking",
+    "split": "ollama-list",
     "retrieve": "ollama-read",
     "verify": "ollama-verify"
   },

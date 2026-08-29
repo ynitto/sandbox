@@ -1,312 +1,539 @@
 # agent-loop 設計書
 
-> 最終更新: 2026-08-21（実装と突き合わせて全面改訂。契約と設定の一覧は仕様書へ寄せ、本書は判断に絞った）
-> 実装: `tools/agent-loop/`（`agent_loop` パッケージ・27 モジュール・約 12,700 行）／ テスト 46 ファイル・497 件
-> 本書は「なぜこう決めたか」だけを書きます。何ができて何を設定できるかは[仕様書](../specs/agent-loop-spec.md)、
-> クラス構成と処理フローは `tools/agent-loop/DESIGN.md`、設定の書き方は `tools/agent-loop/README.md` にあります。
-> 関連: [エージェント CLI プラグイン設計](./agent-cli-plugin-design.md) ／
-> [段階的機能拡張](../plans/2026-08-08-agent-loop-phased-enhancement-design.md) ／
-> [Phase 2 詳細設計](../plans/2026-08-08-agent-loop-phase2-detailed-design.md) ／
-> [ターン完了 hook 設計](../plans/2026-08-12-agent-loop-turn-completion-hooks-design.md)
+> 最終更新：2026-08-29
 >
-> 旧 kiro-loop 系 4 文書とその agent-loop クローン 4 件、`agent-loop-slash-property-design.md` の
-> 計 9 文書を本書へ統合済みです（付録 B）。
+> 対象実装：`tools/agent-loop/`
+>
+> 外部契約と設定項目：[agent-loop 仕様書](../specs/agent-loop-spec.md)
+>
+> 実装資料：[`tools/agent-loop/DESIGN.md`](../../tools/agent-loop/DESIGN.md)
+>
+> 操作方法：[`tools/agent-loop/README.md`](../../tools/agent-loop/README.md)
+>
+> 関連設計：[エージェント CLI プラグイン](./agent-cli-plugin-design.md) / [agent-herd](./agent-herd-design.md)
 
 ## TL;DR
 
-agent-loop は、YAML に書いたプロンプトを定期送信するデーモンです。定期発火だけでなく、フックの判断・外部システムからの HTTP POST・他エージェントのメッセージ・CLI からの単発 send も、同じ 1 本の配送経路でエージェント CLI へ流します。
+agent-loop は、定期予定、フック、Webhook、inbox、CLIから届いたrequestをエージェントCLIへ配送する常駐プロセスである。requestの受付、実行枠、セッション、完了検知を一か所で管理し、入力元ごとの送信処理を持たない。
 
-判断は 5 つ挙げますが、骨格を決めているのは次の 3 つです。
+設計の軸は次の三点。
 
-- 入力経路が 5 つあっても、**送ってよいかを決める場所は `PeriodicScheduler` の dispatch gate ただ 1 か所**にする
-- 送信元固有の知識（GitLab のヘッダ名や payload 構造）はフックスクリプトに閉じ、コアは受信とルーティングと配送しか知らない
-- 実行経路の分かれ目は tmux の有無ではなく、**ツールループを CLI が内蔵するかどうか**。内蔵しない CLI には 4 種のツールだけを供給し、完了は受入条件で機械照合する
+1. daemonが扱う入力を共通dispatch requestへ変換し、`PeriodicScheduler`だけが送信可否を決める。
+2. エージェントCLIの実行経路は、対話ペインを保持できるか、per-runで起動するか、限定ツールループが必要かで分ける。tmuxの有無は経路判定に使わない。
+3. 配送完了、ターン完了、受入確認を別の状態として扱う。CLI自身の完了通知を優先し、使えない場合だけ画面監視へ戻る。
 
-却下した主要案は、汎用 workflow engine への作り替え（agent-loop の責務を越える）、webhook を使い捨てペインで処理する案（所定の固定セッションへ流す要件に合わない）、頻度や状態遷移を LLM に決めさせる案です。
+汎用workflow engineと永続メッセージブローカーは採用しなかった。agent-loopは実行予定と配送を担当し、複雑な状態遷移はstatemachineハーネス、失われて困るイベントの再取得は送信元の冪等なpollingへ任せる。
 
-読むべき人は、agent-loop を運用する人、フックを書く人、本設計を別フォークへ移植する人です。
+本書はscheduler、session、hook連携を変更する開発者と、CLI定義を追加する開発者向けである。設定キー、HTTP応答、ファイル形式の全項目は仕様書を参照する。
 
-### 本書が扱う 8 機能
+## 1. 目的と範囲
 
-| # | 機能 | 固定送信に何を足すか |
-|---|------|---------------------|
-| 1 | イベントフック（pull 型） | スケジュール発火のたびに `check()` を呼び、送信可否と文面をスクリプトで決める |
-| 2 | 汎用 inbound Webhook（push 型） | 外部システムの HTTP POST を `handle(ctx)` でプロンプトへ変換する |
-| 3 | エージェント間メッセージング | ファイルベースの inbox 経由で非同期の依頼と返信を配送する |
-| 4 | 動的インターバル | 無風時はポーリング間隔を伸ばし、イベント到来で最短へ戻す |
-| 5 | エージェント CLI の差し替え | 駆動する CLI を `agents/<name>.json` 契約で選び、headless CLI も同じ枠で動かす |
-| 6 | `slash` プロパティ | 本文の前に CLI コマンドを独立送信する |
-| 7 | ステートマシンハーネス | headless CLI に `statemachine-use` の定型業務を完走させる |
-| 8 | `statemachine` プロパティ | エントリからステートマシンを名指しし、実行条件を宣言で持たせる |
+### 1.1 目標
 
-いずれも実装済みです。残っている未接続部分は末尾「未実装として残っているもの」にまとめました。
+- daemon管理下の入力を同じ背圧と同時実行制御へ通す
+- busy、cooldown、実行枠不足ではrequestを保留し、送信可能になったtickで再試行する
+- CLIごとの起動方法と完了検知を定義ファイルから解決する
+- 設定不備や一つのhookの故障で、稼働中の別entryを巻き込まない
+- 実行結果に、誰がどの方法で完了と受入を確認したかを残す
 
-## 背景と課題
+### 1.2 非目標
 
-素の駆動方式は `interval_minutes`（または `cron`）による固定スケジュールだけで、送る文面も YAML に書いた固定テキストだけでした。この単純さは美点ですが、実運用では次の 4 つに当たります。
+- at-least-onceまたはexactly-onceの配送
+- 任意のworkflowを定義する実行エンジン
+- エージェントCLI本体の改造
+- daemon再起動をまたぐRalphの途中再開
+- verifierや限定ツールのOSレベル隔離
+- external paneの起動、停止、実行枠管理
 
-| 限界 | 症状 | 対応する拡張 |
-|---|---|---|
-| 文面もタイミングも固定 | 「新しい issue があるときだけ、その内容で」ができない | 機能 1 |
-| 外部イベントに即応できない | MR が開かれてから次のポーリングまで最大 1 周期待つ | 機能 2 |
-| エージェント同士が会話できない | オーケストレータからワーカーへの委譲手段が無い | 機能 3 |
-| 無風でも一定頻度で叩き続ける | 深夜や週末に GitLab API を 288 回/日 無駄叩きする | 機能 4 |
+### 1.3 不変条件
 
-拡張を足すほど「どこから来た送信か」で分岐が増え、busy 判定と slot 管理が入力経路ごとに散らばります。解くべき問いは、公開契約を壊さずに配送判定を 1 か所へ寄せられるか、でした。
+1. schedule、hook、Webhook、inbox、daemon宛ての`send`は`PeriodicScheduler`のdispatch gateを通す。
+2. managed requestは`SlotMonitor`のactive ownershipを一件だけ持つ。同時実行制御が有効な経路は、送信前にslotも取得する。
+3. 設定とCLI定義の組合せ違反は実行前に検出する。reload失敗時は現行設定を維持する。
+4. 完了通知と画面監視が同時に成立しても、最初にactive recordを取得した経路だけが完了処理を行う。
 
-### 目標
+デーモン内の対話コンソールにある`send`は管理操作としてペインへ直接送る。通常のdispatch queueとsemaphoreを通らない例外なので、自動処理や外部連携には使わない。
 
-- スケジュール・フック・Webhook・inbox・CLI send を 1 つの送信経路（スケジューラの dispatch）に合流させる
-- 既存 YAML と既存フックの後方互換を壊さない（未指定なら従来挙動のまま）
-- GitLab / GitHub / 自作システムのどれが相手でも、コアを書き換えずフックの差し替えで対応できる
+## 2. プロセス構成
 
-### 非目標
+### 2.1 実行単位
 
-- メッセージや Webhook の at-least-once 配送保証。キューはインメモリ（inbox のみファイル永続）で、取りこぼせないイベントはポーリング併用で冪等に取りに行く運用とします
-- エージェント CLI 自体の改造。agent-loop はテキストを送り、結果を見えるところに置くだけに徹します
-- LLM による適応判断。動的インターバルの知能はヒューリスティクスに限定します
-- 汎用の workflow engine。ステートマシンが受理するのは `statemachine-use` の 1 経路だけです
+```mermaid
+flowchart TD
+    Main["main thread\n対話コンソール"]
+    Scheduler["PeriodicScheduler\n1秒tick"]
+    Slot["SlotMonitor\n2秒poll"]
+    Session["session-monitor\n死活とhealth"]
+    Inbox["InboxWatcher"]
+    Webhook["WebhookServer"]
+    Headless["per-run thread"]
+    Tmux["managed tmux panes"]
+    Files["request / command / status files"]
 
-## 全体像
-
-この節の抽象度はコンポーネントです。5 つの入力が 1 つの dispatch gate に合流し、そこから先は経路によらず同じ判定を通ります。
-
-```
-                    ┌──────────────────────── agent-loop デーモン ────────────────────────┐
- 固定スケジュール ──▶ schedule prompt                                                     │
- event hook ─────────▶ schedule 発火 → check()（pull・機能 1）                             │
- 外部システム ──HTTP─▶ WebhookServer ── handle(ctx) → 外部 deque（機能 2）                 │
- 他エージェント ─file─▶ InboxWatcher ── JSON file（機能 3）                                │
- CLI send ──────file─▶ send-requests ── atomic claim                                      │
-                    │                   ▼                                                  │
-                    │       request ID 付き共通 dispatch queue                            │
-                    │                   ▼                                                  │
-                    │ lifecycle → preflight → session → slot → ready → _dispatch_prompt   │
-                    └───────────────────▼──────────────────────────────────────────────────┘
-                                    tmux ペイン（エージェント CLI）
+    Main --> Scheduler
+    Inbox --> Scheduler
+    Webhook --> Scheduler
+    Files --> Scheduler
+    Scheduler --> Tmux
+    Scheduler --> Headless
+    Tmux --> Slot
+    Slot --> Scheduler
+    Session --> Tmux
+    Session --> Files
 ```
 
-| | 機能 1 フック | 機能 2 Webhook | 機能 3 メッセージング | 機能 4 動的インターバル |
-|--|--|--|--|--|
-| 起点 | agent-loop（スケジュール発火） | 外部システム（HTTP） | 他エージェント（CLI） | agent-loop（発火結果の観測） |
-| 方向 | pull | push | push（ファイル経由） | 頻度制御のみ |
-| フック契約 | `check(config?) -> str \| dict \| None` | `handle(ctx) -> dict \| None` | なし（JSON スキーマ） | なし（activity / idle を観測） |
-| 実行スレッド | timeout 付き hook thread | HTTP サーバ | InboxWatcher | scheduler |
-| 永続性 | フック自身の状態ファイル | インメモリ deque（at-most-once） | ファイル（`.processed/` 移動まで未処理） | `~/.agents/loop-adaptive/` |
+一つのdaemonは一つの起動ディレクトリを担当する。同じディレクトリで生きているdaemonが見つかれば、二本目は起動しない。tmux外から起動した場合は専用sessionを作り、その中で自分を再実行する。
 
-## 主要な設計判断
+主なスレッドは次のとおり。
 
-### 1. 公開契約は保ったまま、配送判定を 1 か所へ畳む
-
-**判断**: schedule / event hook / webhook / inbox / CLI send を request ID 付きの共通 dispatch request へ正規化し、`PeriodicScheduler` を唯一の配送判定箇所にする。YAML・フック・ファイルの公開契約は変えない。
-
-**文脈**: 入力元ごとに busy・slot・lifecycle の判定が分かれていたため、要求の消失と完了の誤判定が起きていました。Phase 1 では公開面に手を触れず、内部だけを共通化しています。
-
-**選択肢と却下理由**: 呼び出し箇所ごとの個別強化は判定の重複を残します。汎用 workflow engine への全面改造は、定期送信という agent-loop の責務を越えます。
-
-**トレードオフ**: daemon が request をメモリキューへ受理した直後にクラッシュしても永続再送はせず、従来の at-most-once 境界を維持します。
-
-**確信度**: 高い。入力経路ごとの回帰テストで固定しています。
-
-### 2. pull と push を対称の契約にし、provider 固有はフックへ閉じる
-
-**判断**: pull 型は `check(config=None) -> str | dict | None`、push 型は `handle(ctx) -> dict | None`。どちらも「None なら何もしない」「モジュールは `importlib` と mtime キャッシュでロードする」という同じ規約に載せる。イベント種別の判定、HMAC 署名検証、payload 構造の知識はすべてフック側に置き、コアが持つのは HTTP 受信・ルーティング・汎用共有シークレット照合・キュー・テンプレート注入だけにする。
-
-**文脈**: pull はフックが自分でデータを取りに行くので文面まで組み立てられますが、push では受信 payload の解釈（フックの仕事）と文言（設定の仕事）を分けたい、という非対称があります。加えて GitLab 前提で作ると、GitHub の `X-Hub-Signature-256` や Slack の body 内 `type` を足すたびにコアへ分岐が増えます。
-
-**選択肢と却下理由**: push でも完成プロンプトを返させる案は、文言を変えるたびにフックスクリプトの編集が要り、パースと文言の責務が混ざるため却下しました。pull の dict 戻り値は、既存の文字列戻り値を残した後方互換の追加に留めています。
-
-**トレードオフ**: 契約が 2 種類になり、フック作者は署名検証まで自前で書きます。代わりにコアは送信元を一切知らず、GitLab を参照しない最小フック（`ctx.payload` をそのまま返す `generic-webhook.py`）が同じコアで動くことが汎用性の検証になっています。
-
-**確信度**: 高い。provider 非依存はユーザー確認済みの確定事項です（2026-07-10）。
-
-### 3. 実送信は scheduler の背圧機構だけを通す
-
-**判断**: HTTP スレッドと InboxWatcher は tmux やセマフォを直接触らず、キューへ積むところで手を放す。セッション準備・同時実行数制御・保留と再試行は scheduler 側の既存機構が一手に担う。
-
-**文脈**: Webhook は送信元のタイムアウトがあるため受信スレッドをブロックできず、inbox は処理できるまで保留する必要があります。どちらも自前で排他を持つと、セマフォの二重管理と競合が生まれます。
-
-**選択肢と却下理由**: Webhook の宛先を InboxWatcher に向け、毎回エフェメラルなペインで処理する案は、所定の固定セッションへ流すという要件に合わず却下しました（ユーザー確認済み、2026-07-09）。
-
-**トレードオフ**: 即時性は 1 ポーリングサイクル（1 秒）ぶん犠牲になりますが、fresh_context・cwd・セマフォといったエントリ属性がどの経路でもそのまま効きます。
-
-**確信度**: 高い。
-
-### 4. 実行経路は tmux の有無ではなく、ツールループの所在で分ける
-
-**判断**: 対話ペインで駆動する経路に加えて、実行のたびに subprocess を起こす headless 経路を持つ。分岐点は定義の `headless_autonomy` が申告する「探索・編集・コマンド実行のループを CLI が内蔵するか」であり、`interactive` 節の有無ではない。tmux はどちらの経路でも、送る手段と見る手段として同じように使う。
-
-**文脈**: 対話経路で agent-loop が薄くて済んでいたのは、ループが CLI の中で回っていたからです。ループを持たない CLI に同じ扱いをすると着手すらしません（aider はチャットに入っているファイルしか編集しません）。
-
-**選択肢と却下理由**: 対話ペインを必須にする案は、ペインを持たない CLI を締め出します。逆に全部を headless へ寄せる案は、会話文脈を保つ既存運用を壊します。そこで既定は従来どおり対話キープのままにし、headless は `session: per-run` の opt-in にしました。
-
-**トレードオフ**: 経路が 2 つに増えます。headless では fresh_context のコンテキスト破棄と `slash` が効かず（警告のうえスキップ）、ralph 多段と external target は起動時に明示エラーで断ります。黙って劣化させないことを優先しました。
-
-**確信度**: 高い。デーモンの headless 枝と単発の `run` サブコマンドが同じ 1 実装を通るので、経路差による証跡ゲートの抜けは生まれません。
-
-### 5. 完了は自然文の受入条件から機械照合する
-
-**判断**: ツールループを持たない CLI（層 3）の done を、自然文の受入条件 `acceptance` に書かれたバッククォート内のプロジェクト内パスから決める。実在するか・この実行で触れたか・実際に変わったかを LLM を介さず照合し、確かめられなければ失敗側へ倒す。
-
-**文脈**: 各 state が出力契約を持つステートマシンと違い、定期プロンプトはゴールだけあって受入条件がありません。ツール実行を供給しても、これだけでは done を機械検証できません。
-
-**選択肢と却下理由**: 決定的なシェルコマンドを人に書かせる方式は、環境差で大半が失敗するうえ、たまたま通る劣化した検証を人が見抜けません。合否を LLM に判定させる案は自己承認の穴が戻ります。人は自然文だけを書き、語彙は統一 verify の `task_acceptance_criteria` に揃えて新しい書式を作りませんでした。
-
-**トレードオフ**: 機械が確かめられるのは、宣言された成果物が出来て変わったかまでです。パスを含まない基準——「レポートに前週比が含まれている」のような文——は、この層では誰も見ません。副産物として、基準文が名指ししたファイルはツールループの初期割付にも使われ、ファイルを渡さないと着手しない問題が受入条件を書くことで解けました。
-
-**判定層は後から足しましたが、既定では走らせません**（`acceptance_judge`）。パスを含まない基準を読み取り専用の検証エージェントに判定させる層で、有効にしたときは fail-closed——判定できなかった基準は「満たしていない」に倒します。判定を頼まれて判定できなかったことを pass と記録すると、機械層を入れる前より悪くなるからです。既定 off にしてあるのは、判定のために CLI をもう 1 回起こすからで、「ファイルが更新されたか」だけの定期プロンプトに毎回もう 1 回分のトークンを払う理由はありません。判定役は `agents/<name>.json` の `verify` 変種へ振り替えます——作業した当人に採点させるのが最も弱い構成なので、どのモデルに検証させるかは定義側の責務にしました（agent-flow / agent-project と同じ口を使い、新しい設定面を人に書かせない）。
-
-**確信度**: 中くらい。機械層は動いていますが、自然文の基準を証跡付きで判定する層が未実装なので、検証範囲は成果物の有無と変化までに留まります。
-
-## 機能ごとの「なぜ」
-
-契約・設定キー・上限は[仕様書](../specs/agent-loop-spec.md)にあります。ここには、そこからは読み取れない判断だけを残します。
-
-### 既読化の境界は `check()` ではなく `ack()`（機能 1）
-
-イベントを既読にするのは、フックが文面を返した時点ではなく、tmux 送信が成功した後の `ack()` です。schedule はエントリごとに最大 1 件を保留し、発火を queue へ受理した時点で `next_run_at` を進め、busy や slot 上限では同じ request を保留して次の発火を 1 件へ coalesce します。こうしておくと、受付前の延期でイベントを取りこぼしません。
-
-`hooks` を配列にしたとき、**プロンプトを返したフックの数だけ dispatch request を作ります**。まとめて 1 本のプロンプトにしない理由は、フックごとに `ack()` の相手が違うからです。連結してしまうと、片方のイベントだけ処理できたときに、もう片方まで既読になります。重複排除のキーもフック単位で、隣のフックが同じ本文を返しても互いを消しません。
-
-フックの `check()` は 30 秒で scheduler 側の待機を打ち切りますが、Python thread 自体は強制終了できません。だから打ち切ったフックは完了まで隔離して、同じフックの thread を増殖させない形にしています。フック作者側の注意は 2 つで、ネットワーク呼び出しには 30 秒より短い timeout を置くこと、`exec_module` がモジュールのトップレベルを実行するので副作用は `check()` の中に閉じることです。
-
-### webhook は 500 を返さず、キューはエントリの外に置く（機能 2）
-
-フックの例外を 500 ではなく 200 で握るのは、送信元が 5xx にリトライを重ねて毎回同じ例外で嵐になるのを避けるためです（確定事項）。同じ理由で、ルート解決は表を持たず毎リクエスト最新エントリから引きます。設定リロード後に古い宛先が残らないためです。
-
-キューはエントリ dict の中ではなく、scheduler が `name` をキーに独立保有する bounded deque です。エントリ dict に持たせると、設定リロードでエントリを全置換するたびに未処理 webhook が捨てられ、`_run_loop` の浅いコピーとも競合します。enqueue（HTTP スレッド）と drain（scheduler スレッド）は同一ロック下でのみ deque を操作し、queue へ受理できなければ deque の先頭へ戻します。
-
-bind の既定を `127.0.0.1` にして公開と TLS 終端を前段へ任せたのは、SaaS からの受信にトンネルやリバースプロキシがどのみち要るからです。コアが持つのは共有シークレットの `hmac.compare_digest` 比較までで、HMAC 署名方式はフックが `ctx.raw` から再計算します。
-
-**移植コントラクト（フォーク向け）。** webhook 機能が host に求めるのは次の能力だけです。等価物が無いフォークは先にそこを用意します。
-
-| # | 能力 | agent-loop での実体 |
-|---|------|---------------------|
-| C1 | 常駐ループの存在（処理を差し込める） | `PeriodicScheduler._run_loop` |
-| C2 | 名前付き送信先の解決 | エントリ `name` / `id` から `SessionManager` ペイン |
-| C3 | プロンプト送信 API（session 準備と排他制御込み） | `ensure_session` + `_try_acquire_slot` + `_dispatch_prompt` |
-| C4 | 設定の正規化フック（`webhook` フィールドを通せる） | `_set_entries` |
-| C5 | 起動と停止の配線 | `main()` / `_cleanup()` |
-| C6 | モジュール動的ロード（任意） | `_load_hook_module` |
-
-ペインを遅延起動するフォークでは、初回 webhook が session 準備待ちで保留されます。dispatch queue から消さず、準備完了後に同じ request を再試行してください。
-
-### `reply_to` はメッセージ ID 専用（機能 3）
-
-`send` はデバッグと手動操作、`msg` は非同期のエージェント間通信、と使い分けます。確定点は `.processed/` への移動で、受付や送信に失敗したらファイルを保持します。
-
-`reply_to` は返信元の**メッセージ ID 専用**で、返信先のエージェント名には `from` を使います。かつて旧 kiro-loop 実装が未指定時にエージェント名へフォールバックする非互換を持っており、inbox を共有していたぶんだけ実害が出ました（[2026-08-02 監査](../reviews/2026-08-02-agent-tools-family-bug-audit.md) D2、解消済み）。片側だけスキーマを変えると壊れる、という教訓がこの一本化の由来です。
-
-未実装のロードマップとして、優先度・TTL・配送確認・`inbox --watch`・broadcast・添付（P1）、名前解決レジストリ・SQLite ストア・WebSocket / gRPC への移行（P2）を置いています。
-
-### 適応の知能は増やさない（機能 4）
-
-判断材料は通常の dispatch で得られる送信成功とスキップ、それに過去の発火履歴だけに限り、適応のために新しい API 呼び出しを増やしません。LLM も使いません。目的が GitLab サーバの負荷削減なので、賢く決める処理自体が負荷を生んでは本末転倒です。固定時刻に意味がある `cron` エントリには適用しません。
-
-### 差し替えの適用点は既存のセッション境界（機能 5）
-
-本書で最も厚い機能です。定義の解決と argv 組み立ては agentcore.agentcli へ委譲します。ローダは言語ごとに 1 実装という不変条件（[agent-cli-plugin 設計](./agent-cli-plugin-design.md) §4）を守るため、agent-loop に第二のローダを書きません。未知や壊れた定義はデーモン起動時に明示エラーで止め、黙って kiro へ倒しません（`send` などの補助コマンドだけは WARNING で続行します）。
-
-解決順は control.json の `workloads.routine`（予算枯渇時の `degraded` 差し替えを含む）、entry、全体設定、既定の順です。entry を管理面より上に置かないのは、上書きできると予算が枯れても degrade が効かない entry ができてしまうためです。
-
-適用点はセッション境界で、境界は既存のものを使い新設しません。無限キープで実行中に切り替わらないことは受け入れます。会話文脈を保つと選んだ以上、途中で実行主体が入れ替わる方が害が大きいからです。agent-loop は終了時に全ペインを畳むので、再起動が確実な境界になります。
-
-**待機判定は CLI ごとに違います。** 従来はプロンプト記号の正規表現 1 本でしたが、有効な判定方法は CLI のタイプで変わります。
-
-| CLI のタイプ | 例 | 有効な判定 |
-|---|---|---|
-| 処理中はプロンプトが消える | kiro-cli | ready の消失を処理中とみなす（従来ヒューリスティクス） |
-| 入力欄を出したまま処理する TUI | claude（`(esc to interrupt)`）/ codex | ready が消えないので、処理中マーカー（`busy_pattern`）の検出が正 |
-| 安定したマーカーを持たない | 素朴な REPL | 画面が N 秒変化しなければ待機（`idle_quiet_sec`） |
-
-そこで契約へ `busy_pattern` と `idle_quiet_sec` を足し、agent-loop 側は `CliProfile` という 1 つの判定器に畳みました。SlotMonitor の状態遷移も、プロンプト消失から再出現までではなく、非待機から待機までへ一般化しています。
-
-**完了は画面推定より CLI 自身の通知を先に見ます。** 画面から busy と ready を読む方法は、表示文言や TUI 構造が変わると誤判定します。対応を申告した CLI では、その CLI 自身が出すターン完了イベントを先に見て、取れないときだけ画面監視へ戻します。新しい通信路は作りません——CLI の hook は `agent-loop hook-event` を呼んでインスタンス単位のファイル mailbox へ書くだけで、SlotMonitor が画面判定より先にそれを claim します。hook 自身はセマフォを解放せず、ネイティブ通知と画面監視が競合しても、追跡レコードを先に取った側だけがコールバックを 1 回実行します。注入するのは **agent-loop が起動した pane だけ**で、利用者の global / project 設定にも、agent-loop の外で起動した CLI にも触りません。詳細は[ターン完了 hook 設計](../plans/2026-08-12-agent-loop-turn-completion-hooks-design.md)が正典です。
-
-**層 3 の限定ツール契約は機能 7 と共用**です。パス正規化・シェル禁止・実行ファイルの所在限定・JSON パーサ・コンテキスト節約・小型モデル向けのプロンプト規律を 1 実装に保ちます。違いはゴールの与え方だけで、機能 7 は state のアクション 1 つ、こちらは定期プロンプト 1 件を渡します。同じ護りを 2 実装に分けると、片方だけ穴が塞がった状態が静かに生まれます。
-
-`acceptance` の無い層 3 の entry は、警告して実行したうえで結果を検証なしとして記録します（done の根拠にはしません）。移行のため起動は止めません。層 2 では警告しません。従来どおり自由文で動くので、新方式に従わないこと自体は問題ではないからです。
-
-### 失敗の粒度と送信順（機能 6）
-
-`slash` で決めたのは、失敗の粒度と送信順の 2 つです。不正な要素はその要素だけを捨ててエントリ全体は無効化しません（タイポで定期駆動が止まらないようにするためです）。送信順は、fresh context の破棄コマンド、`slash` を宣言順に 1 件ずつ、`prompt` 本文で、各コマンドは本文へ連結せず独立入力とし、失敗した時点で後続を止めます。応答完了は待ちません。
-
-コマンドを本文へ埋め込まず YAML の構造として分離したのは、本文を変えずにコマンドだけ差し替えられるようにするためです。CLI からエントリを追加する `prompt-add --slash` は設けず、YAML 編集を設定の正としました。
-
-### 状態遷移を LLM に選ばせない（機能 7）
-
-ワークフロー検証・初期状態・遷移確定は `statemachine-use` のスクリプトを正典として呼び、ハーネスは現在のアクション 1 つの実行だけを受け持ちます。LLM へ渡すのは現在のアクションと条件の真偽判定だけで、次の状態も後続のアクションも見せません。
-
-ローカルモデル向けに文脈も絞ります。ワークフロー全体ではなく現在のアクションと必要なスキルだけを渡し、大きい入力はプロンプト本文へ展開せず CLI の読み取りフラグ（aider の `--read`）で渡し、コマンド出力は末尾の要約とログパスだけを次の往復へ載せます。
-
-v1 の制約は 3 つです。受理するのは 1 経路だけで、2 つ目のスキルを載せるまで汎用のプラグイン登録基盤は作らず、同じ入力と結果契約へハンドラを足せる関数境界だけを保ちます。OS レベルの副作用隔離は持たず、argv・cwd・実行ファイル・パスの検証と監査ログを境界とします。そしてハーネスはツール不足を補うものであり、小型モデルの文脈理解や長文生成能力そのものは保証しません。
-
-### 実行条件は自由文ではなく宣言で持つ（機能 8）
-
-機能 7 で「ステートマシンを回す口」は入りましたが、**どのステートマシンを、どの条件で回すか**は設定に書けませんでした。定期実行させる側は `prompt` へ「digest ステートマシンを実行して」と書き、agent-dashboard はその**本文の言い回しから対を推測**していました。本文を書き換えただけで対が外れ、画面の「今すぐ実行」が別のものを動かす、という壊れ方をします。
-
-そこで `statemachine:` を宣言として足しました。宣言があるときは推測しません（推測は宣言の無い既存設定のためだけに残ります）。宣言したエントリは対話ペインを使わないので `session: per-run` に固定し、ペイン前提の機能（`oneshot` / `clean_session` / `target` / `slash`）と反復（`mode: ralph`）との併用は読み込みで断ります。受入も同様で、`check:` がワークフロー側にある以上、`acceptance` を並べると同じ検証が 2 か所に立ちます。
-
-**実行条件は `input:` のマップを正典にしました。** 自由文（`prompt`）も残しますが、届く先はワークフローの `input` パラメータ 1 個ぶんに限ります。判断の理由は 3 つです。
-
-1. ワークフローは自分のパラメータ面（`{{topic}}` と `context:`）を宣言している。マップはその面と 1:1 なので、キーの過不足を**実行前に**突き合わせられる——設定の読み込み時と、dashboard の入力欄の両方で。自由文はどのキーへ入るかを実行時にモデルが解釈するしかない
-2. 自由文が確実に届くのは 1 スロットだけ。条件が 2 つ以上あるものを自由文で書くと割り付けは推測になり、外した実行は `check:` まで進んでから落ちる（1 回ぶんの課金と時間を捨てる）
-3. 実行ログに `--param topic=llm` としてそのまま残るので、後から同じ条件で引き直せる
-
-自由文を捨てなかったのは、入力面が丸ごと自由文であるワークフロー（`{{input}}` だけを読むもの）で `input: {input: "…"}` と書かせるのが冗長だからです。**名前のある条件は `input:`、名前の無い自由文は `prompt`** という切り分けにして、両方が同じ `input` スロットを指した設定は片方を勝たせず落とします。
-
-宣言の解釈は 1 実装（`agentcore.loopentry`）に閉じ、常駐デーモン・`agent-herd harness statemachine --entry`・agent-dashboard の「今すぐ実行」がそれを引きます。入口ごとに解釈を持つと、「手で回すと通るのに定期実行だけ落ちる」が起きます。dashboard 側（JS）は同じ規則の実装を持ちますが、正典はこのモジュールと仕様書です。
-
-## 共通実行基盤: Phase 1 / Phase 2
-
-2026-08-08 の[段階的機能拡張](../plans/2026-08-08-agent-loop-phased-enhancement-design.md)で、個別入力経路の公開契約を保ったまま内部配送と実行形態を拡張しました。設定・状態遷移・失敗境界は [Phase 2 詳細設計](../plans/2026-08-08-agent-loop-phase2-detailed-design.md)を正とします。
-
-| Phase 1 の領域 | 確定した境界 |
+| 実行単位 | 担当 |
 |---|---|
-| 配送 | 全入力を request ID 付きの共通 dispatch queue へ合流。priority / FIFO / schedule 1 件 coalesce / 短時間重複排除 |
-| CLI send | daemon 稼働時は `~/.agents/send-requests/` へ atomic 投函。`--wait` は同じ request ID の遷移だけを待つ |
-| hook / preflight | event hook は 30 秒 timeout と送信後 `ack()`、preflight は 15 秒 timeout・例外時 fail-open。`--force` だけが preflight を迂回できる |
-| lifecycle / reload | `pause` / `resume` / `cancel` / `drain` と transactional reload。不正設定時は稼働中の設定と pane を維持 |
-| 回復 / 診断 | dead pane と stale slot は常時回復。input / freeze / RSS / memory 回復は安全境界か opt-in を守り、`doctor` は非破壊の修復だけを行う |
+| main thread | stdinの管理コマンド、起動と終了 |
+| `periodic-scheduler` | request受付、予定発火、lifecycle、dispatch |
+| `slot-monitor` | native turn event、画面監視、失敗分類、slot解放 |
+| `session-monitor` | 死亡paneの再起動、memoryとRSSの監視、状態投影 |
+| `inbox-watcher` | inboxファイルの走査とrequest化 |
+| WebhookのHTTP thread | 受信、hook呼び出し、route別dequeへの投入 |
+| `headless-<id>` | per-runのsubprocessまたは限定ツールループ |
 
-Phase 2 では新しい workflow engine を作らず、通常 request を作る dispatch adapter と、pane の再利用と破棄を切り替える session policy として追加しました。実行形態は有界反復の Ralph・warm-up と実行後破棄の oneshot・成功 N 回ごとの clean session、ad-hoc send は `--model` と detached worktree の `--sandbox` と限定迂回の `--force`、ほかに外部 pane への配送、event replay や接続先解決や file watch といったフック、secret 値を prompt に含めない environment handoff と zipapp 限定の `update` です。Ralph の daemon 再起動後の途中再開、任意 workflow、dirty sandbox の自動削除、source / pip インストールの自己更新は非目標としました。
+### 2.2 コンポーネント
 
-管理面からの pull 型の注入が 2 つ載っています。`agent-tuning` は `$AGENT_TUNING_DIR` の `tuning.json` を共通契約とし、エントリの `tuning_profile` で prompt 注入と pane 起動環境を選びます。**グローバル指示**（agent-instructions）は agent-loop 側に設定キーを持たず、`revision` が変わったペインにだけ送信プロンプト先頭へ前置します。どちらも設定不在・破損・`enabled: false` は定常送信を止めない no-op で、失敗しても送信は続きます。管理面が配るものが増えても、エンジン側で止まる箇所を増やさない、という共通の倒し方です。
-
-## 未実装として残っているもの
-
-かつてここに挙げていた 3 件（動的インターバルの error 遷移・自然文基準の判定層・headless ログの tmux ウィンドウ）は 2026-08-21 に実装しました。判定層とウィンドウは opt-in です（[仕様書](../specs/agent-loop-spec.md) §2.5・§3.4・§4）。残りは次のとおりです。
-
-- **フックが次回間隔を明示指定する口と、EWMA などによる予測**。動的インターバルの知能はヒューリスティクスに限る、という非目標のままにしています
-- **判定層のラウンド内実行**。判定は実行が終わってから 1 回だけで、落とした基準をその実行のうちに直す機会がありません。ラウンドごとに判定させるとコストが基準の数だけ増えるので、この形にしています
-- **Ralph の途中再開**。daemon 再起動をまたいで再開せず、dirty な sandbox も自動削除しません
-
-## 付録
-
-### A. 実装を変えたときに更新する文書
-
-新しい拡張を実装するときは、本書の該当節に加えて次を更新します。
-
-- [仕様書](../specs/agent-loop-spec.md) — 設定キー・契約・上限（本書より先に効く正典）
-- `tools/agent-loop/DESIGN.md` — クラス構成、`_run_loop` フロー、「新しいプロンプトオプションを追加する」節
-- `tools/agent-loop/agent-loop.yaml.example` — 設定サンプル
-- `tools/agent-loop/README.md` — 利用者向け概要
-- 同梱フックの docstring — 契約変更がある場合
-
-### B. 統合した旧文書と kiro-loop からの移行
-
-ループ拡張の 8 文書を 2026-08-06 に、`slash` の 1 文書を 2026-08-09 に本書へ統合し、削除しました。
-
-| 旧文書（kiro-loop 版 / agent-loop クローン版） | 作成日 | 本書の節 |
+| コンポーネント | 責務 | 持たない責務 |
 |---|---|---|
-| `kiro-loop-event-hook-design.md` / `agent-loop-event-hook-design.md` | 2026-05-12 | 機能 1 |
-| `kiro-loop-agent-messaging-design.md` / `agent-loop-agent-messaging-design.md` | 2026-05-23 | 機能 3 |
-| `kiro-loop-gitlab-webhook-design.md` / `agent-loop-gitlab-webhook-design.md` | 2026-07-09 | 機能 2 |
-| `kiro-loop-adaptive-interval-design.md` / `agent-loop-adaptive-interval-design.md` | 2026-07-05 | 機能 4 |
-| `agent-loop-slash-property-design.md` | 2026-08-06 | 機能 6 |
+| `PeriodicScheduler` | entryの予定、pending queue、lifecycle、dispatch、execution記録 | CLI画面の完了判定 |
+| `SessionManager` | managed paneの生成、送信、再起動、cleanup、状態投影 | requestの優先順位 |
+| `GlobalSemaphore` | 複数daemonをまたぐ実行枠とcooldown | ターン完了の判断 |
+| `SlotMonitor` | active turnの所有、完了と失敗の検知、slot解放 | 新しいrequestの受付 |
+| `CliProfile` | 起動argv、ready、busy、error、turn completionの定義 | entryの予定 |
+| `WebhookServer` | HTTP受信、共有secret、hook起動 | provider固有のpayload解釈 |
+| `InboxWatcher` | inboxファイルをrequestへ変換 | tmuxへの直接送信 |
+| `agentcore.harness` | headless tool-loop、受入判定、statemachine実行 | 定期予定とsession管理 |
 
-統合にあたり、実装検証で追記されていた確定事項（フック例外は 200 で握る、`secret_header` の既定値、パススルー挙動、`reply_to` の意味の統一など）は agent-loop クローン版の記述を正として採り、コードの行番号参照と実装当時の変更量見積り表は落としました。
+### 2.3 設定の適用
 
-`kiro-loop` から `agent-loop` への改称と旧実装の退役は完了しています（[改称方針](./agent-tools-rename-design.md) §6、手順は[資源効率計画](../plans/2026-08-08-agent-tools-resource-efficiency-plan.md) F13）。旧系統に存在したのはイベントフック・Webhook・メッセージングの 3 つだけで、残りは agent-loop でのみ実装しました。設定と状態のホームは `~/.kiro/` から `~/.agents/` へ移し、`event_hook` は `hooks` へ、`event_hook_config` は `hook_config` へ、環境変数 `KIRO_LOOP_EVENT_HOOK_FALLBACK` は `AGENT_LOOP_EVENT_HOOK_FALLBACK` へ改名しています。
+設定ファイルは起動時に読み、entryを副作用なしで正規化してからschedulerへ渡す。entry IDを省略した場合は、位置と名前から決定的に作る。reloadをまたいで同じentryと判定し、`next_run_at`やoneshotのprocess-local状態を引き継ぐためである。
 
-**残した旧名は 2 種類だけ**で、どちらも意図的です。1 つは `~/.kiro/` に残るスロットとエージェント inbox の置き場で、稼働中のものを移設する実利が無いためそのままにしています。もう 1 つは `session.json` の engine 値 `kiro-loop` で、読み取り互換のためだけに残し、読んだら警告して `agent-loop` として扱い、新規保存では書きません。それ以外の箇所で旧名が残っていたら、それは改称の取りこぼしです（2026-08-21 に CLI のヘルプ文言、動的ロードの合成モジュール名、一括置換で壊れた由来コメントを処置しました）。
+CLIとmodelは実行時に解決する。管理面が明示した選択、entry、共通設定、CLI定義の既定値を使い、対話経路では新しい設定をsession境界で適用する。既存paneの起動指紋と新しいargv、cwd、profileが違う場合、実行を捨てず現行paneで続け、`restart_required`を状態へ出す。
+
+設定ファイルの探索順と上書き規則は[仕様書の設定節](../specs/agent-loop-spec.md#2-設定)に定める。
+
+## 3. 配送設計
+
+### 3.1 共通request
+
+すべての入力は次の内部形式へ変換する。
+
+```text
+DispatchRequest
+  id           request単位の識別子
+  source       schedule / hook / webhook / inbox / send / ralph
+  entry_id     実行設定の参照先
+  prompt       送信する本文
+  cwd          作業ディレクトリ
+  priority     high / normal / low
+  created_at   受付時刻
+  dedupe_key   entry_idとpromptのhash
+  ack          入力元へ返す確定処理
+  meta         execution、session、waitなどの内部情報
+```
+
+この形式は内部契約であり、設定ファイルや外部APIには公開しない。公開面を増やさず、入力元ごとの差を`source`、`ack`、`meta`へ閉じ込める。
+
+### 3.2 入力と受付確定点
+
+入力元によって永続性が違う。`pending`へ入ったあとの共通動作だけを揃え、受付前の保証まで同じとはみなさない。
+
+| 入力 | requestになる場所 | 受付の確定 | daemon停止時 |
+|---|---|---|---|
+| schedule | schedulerの期限判定 | process内の`pending` | 次回起動後に予定から再生成 |
+| pull hook | `check()`の戻り値 | process内の`pending`。`ack()`は実送信後 | hook側の未既読状態から再取得できる |
+| Webhook | route別bounded deque | HTTP 202 | dequeと`pending`は失われる |
+| inbox | `InboxWatcher` | 元ファイルを保持したまま`pending` | 次回のwatchで再受付。実送信後に`.processed/`へ移す |
+| CLI `send` | `send-requests/`のJSON | daemonがatomic claimし、`pending`へ入れた時点 | 受付前のファイルは残る。受付後は失われることがある |
+
+Webhook hookが`None`を返すか例外になった場合はHTTP 200を返す。500で送信元の自動retryを誘発すると、同じhook例外が短時間に繰り返されるためである。取りこぼせないイベントはpull hookを併用し、外部IDで冪等に再取得する。
+
+### 3.3 requestの状態
+
+```mermaid
+stateDiagram-v2
+    [*] --> accepted
+    accepted --> pending
+    pending --> pending: busy / cooldown / slot不足
+    pending --> discarded: debounce / preflight不許可 / 設定消失
+    pending --> sent: pane送信またはper-run起動
+    sent --> active
+    active --> completed: ターン完了と受入確認
+    active --> failed: pane死亡 / timeout / 受入失敗
+    discarded --> [*]
+    completed --> [*]
+    failed --> [*]
+```
+
+`dispatch_completed`は送信が終わった時点の記録で、実行完了を意味しない。実行完了は`execution_terminal`と`send-responses/<request-id>.json`で追う。
+
+短時間に同じentryと本文が来た場合は、3秒のdebounceで成功扱いとして捨てる。同じentryのscheduleはpendingに一件だけ残す。oneshot実行中の重複も一件だけ`overlap_pending`へ保持する。
+
+queueはhighを先頭群へ置き、normalとlowは受付順で後ろへ積む。deferしたrequestは優先群の先頭へ戻し、そのtickを終える。空回りは防げるが、送れない先頭requestが後続を待たせるhead-of-line blockingは残る。
+
+### 3.4 schedulerのtick
+
+`PeriodicScheduler`は一秒ごとに次の順で処理する。
+
+1. agent-controlとnode budgetを読み、状態を投影する。
+2. 検証済みのreloadを適用し、pause、resume、cancel、drainのcommandを取り込む。
+3. lifecycleを`stop > drain > control pause > budget > local pause > run`の順で判定する。
+4. `run`ならCLI send、Webhook deque、期限到来のscheduleとpull hookを`pending`へ移す。
+5. oneshotの事前起動を行い、pendingの先頭からdispatchを試す。
+6. queue depth、active count、healthを`loop-state/<pid>.json`へ書く。
+
+pause中は新しい予定を発火せずpendingも送らない。drain中は開始済みRalphのchildだけを処理する。
+
+### 3.5 dispatch gate
+
+requestは次の判定を順に通る。
+
+```mermaid
+flowchart LR
+    L["lifecycle"] --> P["preflight"]
+    P --> R["route"]
+    R --> S["session準備"]
+    S --> O["active ownership"]
+    O --> B["ready / busy"]
+    B --> C["slot / cooldown"]
+    C --> D["dispatch"]
+```
+
+preflightは15秒で打ち切る。例外とtimeoutはfail-openで送信を続ける。`send --force`はpreflightとvisual readyだけを迂回し、既存のactive ownership、slot、cleanup失敗は迂回しない。
+
+session準備、ready、slotのいずれかが一時的に満たせない場合は`defer`とし、requestをpendingへ戻す。構造違反、存在しないentry、解決不能なexecution metadataは`discard`または`failed`で閉じる。
+
+## 4. 実行経路
+
+### 4.1 経路の選択
+
+```mermaid
+flowchart TD
+    Entry["正規化済みentry"] --> SM{"statemachine宣言"}
+    SM -- yes --> State["per-run statemachine harness"]
+    SM -- no --> Profile["CliProfileを解決"]
+    Profile --> Interactive{"対話paneを保持できる"}
+    Interactive -- yes --> Pane["managed interactive pane"]
+    Interactive -- no --> Autonomy{"headless_autonomy"}
+    Autonomy -- tool-loop --> Process["CLI subprocess"]
+    Autonomy -- single-shot --> Harness["限定tool-loop"]
+```
+
+`session: per-run`を明示したentryと、対話面を持たないCLIはper-runへ送る。`statemachine`宣言も必ずper-runである。tmuxは対話CLIかどうかの判定に使わず、headlessのログを見せるためにも使える。
+
+### 4.2 対話pane
+
+`SessionManager`はentryごとにmanaged paneを持ち、`set-buffer`、`paste-buffer`、Enterの順で本文を送る。CLI固有の`ready_pattern`、`busy_pattern`、`idle_quiet_sec`は`CliProfile`が解決する。
+
+既定のpersistent policyではpaneを残し、会話履歴を次回へ持ち越す。`fresh_context`はCLI定義のclear commandを本文より先に送る。`slash`は一件ずつ独立送信し、途中で失敗した場合は本文を送らない。
+
+### 4.3 per-run
+
+`headless_autonomy: tool-loop`のCLIはsubprocessを一度起動し、終了コードで完了を判定する。`single-shot`のCLIには`agentcore.harness.toolloop`が次の操作だけを供給する。
+
+- 作業ディレクトリ内のファイルを読む、書く
+- argv配列で許可された実行ファイルを起動する
+- 最終結果を返す
+
+shellの起動、作業ディレクトリ外への書き込み、symlink経由の逸脱は拒否する。詳細な引数と上限は[仕様書の限定ツール契約](../specs/agent-loop-spec.md#34-限定ツール契約と受入条件)に置く。
+
+per-runは`ensure_session`、paneのready判定、`SlotMonitor`を通らない。`headless:<root-id>`という合成slotを取得し、worker threadが終了時に解放する。進行記録はheadless runのJSONLへ書き、設定されていればtmux paneまたはwindowでtailする。
+
+### 4.4 statemachine
+
+`statemachine` entryの解釈は`agentcore.loopentry`、実行は`agentcore.harness.statemachine`を正本とする。agent-loop、agent-herd、dashboardが同じworkflow pathと`input`を使う。
+
+workflowが宣言するparameterとentryの`input`は実行前に照合する。`prompt`はworkflowの`input`一項目へ渡す簡略記法に限る。`input.input`と`prompt`が競合する設定は読み込みで拒否する。
+
+statemachineは自分の`check`で遷移を確定するため、entryの`acceptance`、Ralph、oneshot、clean session、external target、slashとは併用しない。決定的検査が再投入上限に達した場合は終了コード3と`escalate: true`を返し、上位の実行段へ判断を渡す。
+
+### 4.5 session policy
+
+| policy | paneとslotの扱い |
+|---|---|
+| persistent | paneを保持し、turnごとにslotを取得して解放 |
+| oneshot | 実行前にpaneを用意し、完了後に破棄。重複発火は一件へまとめる |
+| clean session | N回成功したあとpaneを建て直す |
+| Ralph | 同じpaneとslot leaseを反復全体で保持し、最大回数で終了 |
+| sandbox | detached git worktreeを作り、終了後にmanaged paneを片付ける |
+| external | 既存tmux paneへ送る。agent-loopは生成、停止、slot取得をしない |
+| per-run | paneを持たず、実行ごとにsubprocessまたはharnessを起動 |
+
+## 5. 完了と受入
+
+### 5.1 三つの境界
+
+| 境界 | 意味 | 主な記録 |
+|---|---|---|
+| 受付 | requestをpendingへ保持した | `request_accepted` |
+| 配送 | CLIへ本文を渡した | `dispatch_sent`、hook `ack()`、inboxの`.processed/`移動 |
+| 実行 | ターン完了と受入処理を終えた | `execution_terminal`、`send-response` |
+
+Webhookの202と`dispatch_completed`は実行完了を表さない。外部呼び出し側が完了を待つ場合は`send --wait`または`run`の`RESULT`契約を使う。
+
+### 5.2 ターン完了
+
+対話paneでは、CLI定義が`interactive.turn_completion`を申告していればnative eventを先に見る。agent-loopが起動したpaneだけにprivateなhook設定を注入し、eventはinstance、pane、dispatch、generation、tokenを照合してから受理する。
+
+native eventが使えない場合は画面を監視する。CLIごとにbusyからreadyへの復帰、readyの消失と再出現、一定時間の画面静止を使い分ける。native eventと画面監視が競合しても、`SlotMonitor`のactive recordを先に取得した側だけがcallbackする。
+
+per-runはsubprocessの終了で完了を知る。external paneは画面監視だけを使い、native hookを注入しない。
+
+### 5.3 失敗分類とfreeze
+
+ターン末尾の画面はCLI定義の`errors[]`で分類する。`quota`、`auth`、`env`は失敗、`transient`は完了として上位の再投入判断へ返す。quotaはnode budgetの観測へ記帳する。
+
+busy中に画面hashが変わらない時間が上限を超えた場合はfreezeとしてpaneを再起動する。未設定時はCLI定義のtimeout、定義にも無ければ共通値を使う。`0`を明示した場合だけ無効になる。slotの総保持時間を制限する`slot_timeout_seconds`とは別の判定である。
+
+### 5.4 受入条件
+
+`acceptance`は自然文の配列である。機械層は、バッククォート内のプロジェクト相対パスについて次を照合する。
+
+1. 実行後に存在する。
+2. 実行前後の指紋が違う。
+3. git管理下では、statusの前後差もtouched一覧へ加える。
+
+対話paneはdispatch直前に指紋とgit snapshotを取り、ターン完了時に`agentcore.harness.toolloop.acceptance_outcome`で照合する。headlessも同じ実装を使う。条件が欠けるかファイルが変わっていなければ`acceptance_failed`になる。
+
+パスを含まない条件は、headlessで`acceptance_judge`を有効にした場合だけ読み取り専用の検証エージェントへ渡す。CLI定義に`verify` variantがあれば作業者と分ける。判定役の起動失敗、timeout、JSON不正、基準欠落はすべて不合格とする。対話paneではjudgeを起動できず、起動時に警告して機械層だけを使う。
+
+`verifiedBy`は`machine`、`judge`、`machine+judge`、空文字のいずれかである。受入条件が無い実行と、パスを抽出できずjudgeも使わない実行は`verified: false`のまま完了できる。これは検証済みのdoneとして扱わない。
+
+現実装には一つ例外がある。対話paneで指紋取得または照合処理そのものが例外になった場合、ログを残して検証なしの実行完了へ進む。通常の証拠不足はfailだが、検証器の故障はfail-openである。`acceptance_checked`が残らないので監査時に識別できるものの、仕様書のfail条件とは一致していない。修正されるまでは、この経路を強い完了保証に使わない。
+
+## 6. 外部入力
+
+### 6.1 pull hook
+
+予定時刻になるとentryの各`check(config)`を独立に呼ぶ。文字列またはdictが返ればhookごとにrequestを一件作り、`None`ならそのhookは無風とする。複数hookの本文は連結しない。配送後の`ack()`もhookごとに対応させるためである。
+
+`check()`は30秒で待機を打ち切る。Python threadは強制終了できないため、完了またはreloadまで同じhookを隔離し、threadを増やさない。hookのmoduleはmtimeで再読込する。
+
+### 6.2 Webhook
+
+コアが扱うのはHTTP、body上限、route、共有secret、bounded dequeだけである。イベント種別、provider固有の署名、payloadの解釈は`handle(ctx)`を持つhookへ置く。
+
+routeはentry名から作り、requestごとに現在のentryを引き直す。reload前のroute tableを保持しない。hookが返したdictをentryのprompt templateへ注入し、未定義のplaceholderは文字列のまま残す。
+
+route別dequeは上限を超えると最古のイベントを捨てて警告する。HTTP threadはtmux、session、semaphoreへ触れず、enqueue後すぐに202を返す。
+
+### 6.3 inbox
+
+inboxメッセージはファイルで受け、送信元、件名、本文、返信コマンドをpromptへ変換する。`reply_to`には返信元のmessage IDを入れ、返信先は`from`から解決する。
+
+同じファイルがpendingまたは送信中なら再投入しない。tmuxへ送信できた時点で`.processed/`へ移し、送信前の失敗では元ファイルを残す。inboxのschemaと旧`~/.kiro/`配置は[仕様書](../specs/agent-loop-spec.md#33-inbox-メッセージ)に置く。
+
+## 7. lifecycleと回復
+
+### 7.1 状態
+
+```mermaid
+stateDiagram-v2
+    [*] --> run
+    run --> paused: control / budget / local pause / memory
+    paused --> run: 条件解消
+    run --> draining: drain
+    paused --> draining: drain
+    draining --> stopped: active_count = 0
+    run --> stopped: control stop / signal
+    paused --> stopped: control stop / signal
+    stopped --> [*]
+```
+
+`pause`は新しいdispatchを止めるが、daemonとpaneは残す。local pauseだけは`resume`で解除できる。control、budget、memoryによるpauseは、それぞれの条件が解消するまで残る。
+
+`drain`は新規受付を止め、開始済みRalphのchildを除くpending、Webhook deque、oneshotのoverlapを捨てる。drain開始時に同じworkspaceの未受付`send-request`も取り除く。active executionがなくなればdaemonを終了する。
+
+`cancel`はmanaged paneとexecutionを止め、pending chainとslotを片付ける。external paneは所有していないため停止を拒否する。
+
+### 7.2 reload
+
+reloadは新しいentry、external pane、environment handoffを先に検証し、次のscheduler tickで一括交換する。検証に失敗した場合は現行entryとpaneを維持する。
+
+同じIDのentryは予定時刻とoneshot状態を引き継ぐ。削除されたentryのschedule requestとWebhook queueは落とす。名前変更でroute keyが変わったWebhook queueは新しいkeyへ移す。sessionの生成と破棄は`SessionManager.sync_entries`が行う。
+
+### 7.3 障害処理
+
+| 事象 | 処理 |
+|---|---|
+| hookの例外、戻り値不正 | その発火をskipし、ほかのentryを続ける |
+| hookのtimeout | そのhookを隔離し、reloadまたは完了まで再起動しない |
+| Webhook bind失敗 | HTTPだけ無効にし、daemonは続ける |
+| preflight例外、timeout | fail-openで送信する |
+| managed pane死亡 | session-monitorが再起動する |
+| pane freeze | active turnを失敗にし、paneを再起動する |
+| stale slot | 起動時にPIDと時刻を検査して掃除する |
+| semaphoreのfile I/O失敗 | 実行許可へ倒す。可用性を選ぶため二重実行の余地がある |
+| headless process失敗 | executionをfailedにし、slotを解放する |
+| 不正なreload | 現行設定を維持する |
+| daemon crash | process内pending、Webhook queue、Ralph途中状態を失う |
+
+### 7.4 終了
+
+signalまたは対話コンソールの終了では、Webhook、InboxWatcher、scheduler、SlotMonitor、SessionManagerの順に止める。SessionManagerはmanaged paneとstate fileを片付ける。external paneには触らない。
+
+`drain`は実行中の完了を待つ。通常のsignal終了はactive executionを永続化せず、次回起動で再開しない。
+
+## 8. 状態ファイル
+
+process内の正規化済みentry、`pending`、`_executions`、`_sessions`が実行時の正本である。ファイルは外部受付、複数daemonの実行枠、操作、観測に使う。
+
+```text
+~/.agents/
+├── agent-loop.yaml
+├── slots/
+├── send-requests/
+├── send-responses/
+├── loop-commands/<pid>/
+├── loop-control/
+├── loop-adaptive/
+├── loop-hooks/<instance-id>/
+├── loop-state/<pid>.json
+└── runs/headless/
+
+~/.kiro/
+└── agents/<agent-name>/inbox/
+```
+
+`~/.kiro/agents/`は旧kiro-loopとの稼働互換のために残した配置である。移設する場合は、受信daemonとinbox送信側を同じ停止点で切り替える必要がある。
+
+各ファイルの形式と保持期間は[仕様書のファイル一覧](../specs/agent-loop-spec.md#付録-ファイルとディレクトリ)を参照する。ただし同付録のslotパスは旧記述で、現行実装は`~/.agents/slots/`を使う。
+
+## 9. 実装上の境界
+
+### 9.1 fragment合成
+
+`agent_loop/__init__.py`は、`_head`から`cli`までのfragmentを依存順に一つの共有`globals()`へ`exec`して合成する。各fragmentは通常のPython submoduleとして独立importする前提を持たない。
+
+fragmentの並び替え、分離、名前変更では、共有名前空間へ現れる順序とテストのpatch先が変わる。外から使う機能はCLIか明示した共有契約を入口にする。
+
+### 9.2 agentcoreとの境界
+
+次の処理はagent-loop内へ複製しない。
+
+| 処理 | 正本 |
+|---|---|
+| CLI定義とargv、error分類 | `agentcore.agentcli` |
+| single-shotの限定ツールループと受入判定 | `agentcore.harness.toolloop` |
+| statemachine実行 | `agentcore.harness.statemachine` |
+| entryの`statemachine`と`input`解釈 | `agentcore.loopentry` |
+
+`toolloop.py`と`statemachine.py`は委譲層で、共有関数をagent-loopのglobalsへ張り直さない。張り直すとテストのpatchが成功したように見えて実体に届かないため、呼び出し側はmodule経由で参照する。
+
+### 9.3 変更時の検査
+
+- 新しい入力経路は`make_dispatch_request`から`_accept_request`へ合流させる
+- requestを永続化する場合は、受付、配送、実行のどこを確定点にするか決める
+- 新しいsession policyはslot leaseの取得者と解放者を一つにする
+- CLI完了通知を追加する場合は、token、generation、pane ownershipを検査する
+- entry項目を追加する場合は、起動時validation、reload時の引継ぎ、設定例、仕様書を同時に更新する
+- 受入判定を変更する場合は`agentcore.harness`側から直し、interactiveとheadlessの両方を検査する
+- dashboardのstatemachine起動条件を変える場合は`agentcore.loopentry`との一致を確認する
+
+## 10. 現在の制約
+
+- 配送はat-most-onceで、Webhookとprocess内pendingはdaemon再起動で失われる
+- 対話paneでは`acceptance_judge`が動かず、ファイル証拠の機械層だけになる
+- 対話paneの証拠取得処理が例外になった場合はfail-openになる
+- Ralphはdaemon再起動後に再開せず、dirty sandboxを自動削除しない
+- external paneはGlobalSemaphoreの対象外で、agent-loopから停止できない
+- adaptive intervalは送信結果に基づくheuristicだけを使い、hookから次回時刻を指定できない
+- `low` priorityは独立した実行群を持たず、normalと同じ受付列に並ぶ
+
+## 付録 A. ADR
+
+### ADR-001：配送判定をPeriodicSchedulerへ集約する
+
+状態：採用
+
+判断：daemon管理下の入力を共通dispatch requestへ変換し、lifecycle、preflight、session、ready、slotの判定を`PeriodicScheduler`だけで行う。
+
+文脈：入力元が個別にtmuxとsemaphoreへ触ると、busy時の消失、二重slot、完了監視の抜けが経路ごとに発生する。
+
+見送った案：入力元ごとに送信処理を強化する案と、全体を汎用workflow engineへ作り替える案。
+
+代償：schedulerが配送の要所になる。先頭requestのdeferで一tickを終えるため、head-of-line blockingも起こりうる。
+
+見直し条件：一つのpending列が実運用でentry間の飢餓を起こし、entry別queueでも同じ所有規則を保てる場合。
+
+確信度：高
+
+### ADR-002：配送保証をat-most-onceに留める
+
+状態：採用
+
+判断：schedulerのpendingとWebhook queueはprocess内に置き、daemon crash後の自動再送を行わない。永続性が必要な入力はpull hookまたはinboxで再取得する。
+
+文脈：agent-loopのpromptは副作用を持ちうる。receiptと冪等keyを持たないまま自動再送すると、重複実行を確定できない。
+
+見送った案：全入力を永続queueへ保存して起動時に再送する案と、外部brokerを必須にする案。
+
+代償：Webhookの202後やCLI sendのprocess内受付後にdaemonが落ちるとrequestを失う。送信元が必要な保証を選ぶ必要がある。
+
+見直し条件：全実行に外部冪等keyと完了receiptを必須化できる場合。
+
+確信度：高
+
+### ADR-003：provider固有処理をhookへ置く
+
+状態：採用
+
+判断：pullは`check()`と`ack()`、pushは`handle(ctx)`をhook契約とし、GitLabやGitHubのevent種別、署名、payload解釈をコアへ入れない。
+
+文脈：providerごとにheader、署名方式、payloadが違う。コアへ分岐を足すとHTTP受信と業務判定が同じ変更単位になる。
+
+見送った案：provider別receiverをコアに持つ案と、push hookが完成promptを返す案。
+
+代償：hook作者が署名検証を実装する。pushではpayloadの解釈とprompt templateが別ファイルになる。
+
+見直し条件：複数hookで同じ署名処理の不整合が繰り返され、共有provider libraryが必要になった場合。
+
+確信度：高
+
+### ADR-004：CLIの能力とsession policyで実行経路を選ぶ
+
+状態：採用
+
+判断：対話面を持つCLIはmanaged pane、headless tool-loopはsubprocess、single-shotは限定ツールハーネス、statemachineは専用ハーネスへ送る。
+
+文脈：対話CLIが自分で持つ探索と編集のloopを、single-shot CLIは持たない。同じ一回送信として扱うと、後者はファイルを触らず終了する。
+
+見送った案：すべてのCLIを対話paneへ入れる案と、既存の対話運用をすべてper-runへ移す案。
+
+代償：実行経路と完了検知が複数になる。組合せ違反をentry validationで止め、受入判定は共有実装へ寄せる必要がある。
+
+見直し条件：CLI定義が共通のtool protocolと完了receiptを提供し、対話とheadlessの差をadapterだけで吸収できる場合。
+
+確信度：高
+
+### ADR-005：ターン完了と受入確認を分離する
+
+状態：採用
+
+判断：native turn eventまたは画面監視でターン終了を検知したあと、受入条件の証拠を別に照合してexecutionを確定する。
+
+文脈：paneがreadyへ戻ったことは、CLIが入力待ちになった事実しか表さない。成果物が作られたか、今回変更されたかは別の検査が要る。
+
+見送った案：ready復帰だけで成功とする案、作業したモデルの自己申告を採用する案、全実行で検証エージェントを必須にする案。
+
+代償：interactiveでは報告本文を安定して取得できずjudgeが使えない。ファイル指紋を取れない例外時のfail-openも残っている。
+
+見直し条件：対話paneが構造化`RESULT`を返し、報告本文とreceiptを安定して取得できる場合。
+
+確信度：中
+
+## 付録 B. 採用しない設計
+
+| 案 | 採用しない理由 |
+|---|---|
+| 入力元のthreadがtmuxへ直接送る | session ownershipとslot管理が入力経路ごとに分裂する |
+| Webhook hookの例外をHTTP 500にする | 送信元の自動retryが同じ失敗を短時間に繰り返す |
+| 複数pull hookの本文を一つに連結する | `ack()`の対象を個別に確定できない |
+| LLMに次回intervalを決めさせる | 負荷削減のための判断自体がAPI負荷と費用を生む |
+| free textからstatemachineとinputを推測する | 文言変更で別workflowを起動しても実行前に検知できない |
+| external paneをcancel時に停止する | agent-loopが起動していないprocessを所有したことになる |

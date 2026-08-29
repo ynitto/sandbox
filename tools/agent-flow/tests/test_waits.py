@@ -439,10 +439,10 @@ class SessionCommandsTests(unittest.TestCase):
     def test_when_is_and_joined_and_absent_axes_pass(self):
         when = {"engines": ["agent-flow"], "workloads": ["flow"]}
         self.assertTrue(kf.session_command_matches(when, {"engine": "agent-flow", "workload": "flow"}))
-        self.assertFalse(kf.session_command_matches(when, {"engine": "kiro-loop", "workload": "flow"}))
-        self.assertTrue(kf.session_command_matches(None, {"engine": "kiro-loop"}))
+        self.assertFalse(kf.session_command_matches(when, {"engine": "agent-loop", "workload": "flow"}))
+        self.assertTrue(kf.session_command_matches(None, {"engine": "agent-loop"}))
         self.assertTrue(kf.session_command_matches(when, {}))
-        self.assertTrue(kf.session_command_matches(
+        self.assertFalse(kf.session_command_matches(
             {"engines": ["kiro-loop"]}, {"engine": "agent-loop"}))
 
     def test_chat_is_skipped_on_single_shot_engine(self):
@@ -517,24 +517,13 @@ class SessionCommandsTests(unittest.TestCase):
         self.assertFalse(kf.run_session_commands("w1", {"engine": "agent-flow"}))
         self.assertLess(time.time() - started, 4, "timeout で打ち切る")
 
-    def test_legacy_engine_warns_once_and_still_matches(self):
-        """旧 engine 値 `kiro-loop` は agent-loop として読み、警告は 1 回だけ出す。
-
-        正規化だけして黙っていると設定が古いままになり、毎回警告すると
-        （run ごとにワーカーが起きるので）同じ 1 行がログを埋める。
-        """
-        kf._SESSION_COMMANDS_LEGACY_WARNED = False
-        self.addCleanup(setattr, kf, "_SESSION_COMMANDS_LEGACY_WARNED", False)
+    def test_legacy_engine_does_not_alias_agent_loop(self):
         marker = os.path.join(self.dir, "legacy.txt")
         self._write({"commands": [
             {"id": "legacy", "run": f"echo x > {marker}", "when": {"engines": ["kiro-loop"]}},
         ]})
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            self.assertTrue(kf.run_session_commands("w1", {"engine": "agent-loop"}))
-            self.assertTrue(kf.run_session_commands("w1", {"engine": "agent-loop"}))
-        self.assertTrue(os.path.exists(marker), "旧値でも when が一致して実行される")
-        self.assertEqual(buf.getvalue().count("非推奨"), 1, "警告はプロセスにつき 1 回")
+        self.assertTrue(kf.run_session_commands("w1", {"engine": "agent-loop"}))
+        self.assertFalse(os.path.exists(marker), "kiro-loop は agent-loop の別名ではない")
 
     def test_env_opt_out_disables_everything(self):
         marker = os.path.join(self.dir, "never.txt")

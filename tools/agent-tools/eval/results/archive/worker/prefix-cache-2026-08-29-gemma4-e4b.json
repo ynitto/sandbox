@@ -1,0 +1,346 @@
+[
+ {
+  "arm": "batched",
+  "runs": 20,
+  "prefill_total_sec": 23.54,
+  "prefill_median_sec": 0.532,
+  "prompt_eval_count_first": 2904,
+  "prompt_eval_count_min": 2904,
+  "prompt_eval_count_max": 2905,
+  "wall_total_sec": 23.67,
+  "rows": [
+   {
+    "seq": 1,
+    "role": "ワーカー",
+    "wall_sec": 3.4,
+    "prompt_eval_count": 2904,
+    "prompt_eval_sec": 3.388,
+    "load_sec": 0.001
+   },
+   {
+    "seq": 2,
+    "role": "ワーカー",
+    "wall_sec": 0.426,
+    "prompt_eval_count": 2904,
+    "prompt_eval_sec": 0.419,
+    "load_sec": 0.003
+   },
+   {
+    "seq": 3,
+    "role": "ワーカー",
+    "wall_sec": 0.434,
+    "prompt_eval_count": 2904,
+    "prompt_eval_sec": 0.429,
+    "load_sec": 0.001
+   },
+   {
+    "seq": 4,
+    "role": "ワーカー",
+    "wall_sec": 0.418,
+    "prompt_eval_count": 2904,
+    "prompt_eval_sec": 0.414,
+    "load_sec": 0.001
+   },
+   {
+    "seq": 5,
+    "role": "ワーカー",
+    "wall_sec": 0.412,
+    "prompt_eval_count": 2904,
+    "prompt_eval_sec": 0.408,
+    "load_sec": 0.001
+   },
+   {
+    "seq": 6,
+    "role": "評価役",
+    "wall_sec": 3.47,
+    "prompt_eval_count": 2904,
+    "prompt_eval_sec": 3.456,
+    "load_sec": 0.002
+   },
+   {
+    "seq": 7,
+    "role": "評価役",
+    "wall_sec": 0.496,
+    "prompt_eval_count": 2904,
+    "prompt_eval_sec": 0.492,
+    "load_sec": 0.001
+   },
+   {
+    "seq": 8,
+    "role": "評価役",
+    "wall_sec": 0.456,
+    "prompt_eval_count": 2904,
+    "prompt_eval_sec": 0.452,
+    "load_sec": 0.001
+   },
+   {
+    "seq": 9,
+    "role": "評価役",
+    "wall_sec": 0.432,
+    "prompt_eval_count": 2904,
+    "prompt_eval_sec": 0.427,
+    "load_sec": 0.001
+   },
+   {
+    "seq": 10,
+    "role": "評価役",
+    "wall_sec": 0.413,
+    "prompt_eval_count": 2905,
+    "prompt_eval_sec": 0.409,
+    "load_sec": 0.001
+   },
+   {
+    "seq": 1,
+    "role": "ワーカー",
+    "wall_sec": 4.467,
+    "prompt_eval_count": 2904,
+    "prompt_eval_sec": 4.455,
+    "load_sec": 0.001
+   },
+   {
+    "seq": 2,
+    "role": "ワーカー",
+    "wall_sec": 0.599,
+    "prompt_eval_count": 2904,
+    "prompt_eval_sec": 0.595,
+    "load_sec": 0.001
+   },
+   {
+    "seq": 3,
+    "role": "ワーカー",
+    "wall_sec": 0.56,
+    "prompt_eval_count": 2904,
+    "prompt_eval_sec": 0.556,
+    "load_sec": 0.001
+   },
+   {
+    "seq": 4,
+    "role": "ワーカー",
+    "wall_sec": 0.524,
+    "prompt_eval_count": 2904,
+    "prompt_eval_sec": 0.519,
+    "load_sec": 0.001
+   },
+   {
+    "seq": 5,
+    "role": "ワーカー",
+    "wall_sec": 0.509,
+    "prompt_eval_count": 2904,
+    "prompt_eval_sec": 0.504,
+    "load_sec": 0.001
+   },
+   {
+    "seq": 6,
+    "role": "評価役",
+    "wall_sec": 4.35,
+    "prompt_eval_count": 2904,
+    "prompt_eval_sec": 4.336,
+    "load_sec": 0.001
+   },
+   {
+    "seq": 7,
+    "role": "評価役",
+    "wall_sec": 0.592,
+    "prompt_eval_count": 2904,
+    "prompt_eval_sec": 0.587,
+    "load_sec": 0.001
+   },
+   {
+    "seq": 8,
+    "role": "評価役",
+    "wall_sec": 0.594,
+    "prompt_eval_count": 2904,
+    "prompt_eval_sec": 0.589,
+    "load_sec": 0.001
+   },
+   {
+    "seq": 9,
+    "role": "評価役",
+    "wall_sec": 0.568,
+    "prompt_eval_count": 2904,
+    "prompt_eval_sec": 0.563,
+    "load_sec": 0.001
+   },
+   {
+    "seq": 10,
+    "role": "評価役",
+    "wall_sec": 0.551,
+    "prompt_eval_count": 2905,
+    "prompt_eval_sec": 0.546,
+    "load_sec": 0.001
+   }
+  ]
+ },
+ {
+  "arm": "interleaved",
+  "runs": 20,
+  "prefill_total_sec": 70.22,
+  "prefill_median_sec": 3.677,
+  "prompt_eval_count_first": 2904,
+  "prompt_eval_count_min": 2904,
+  "prompt_eval_count_max": 2905,
+  "wall_total_sec": 70.55,
+  "rows": [
+   {
+    "seq": 1,
+    "role": "ワーカー",
+    "wall_sec": 0.387,
+    "prompt_eval_count": 2904,
+    "prompt_eval_sec": 0.376,
+    "load_sec": 0.001
+   },
+   {
+    "seq": 2,
+    "role": "評価役",
+    "wall_sec": 0.385,
+    "prompt_eval_count": 2904,
+    "prompt_eval_sec": 0.373,
+    "load_sec": 0.001
+   },
+   {
+    "seq": 3,
+    "role": "ワーカー",
+    "wall_sec": 3.596,
+    "prompt_eval_count": 2904,
+    "prompt_eval_sec": 3.585,
+    "load_sec": 0.001
+   },
+   {
+    "seq": 4,
+    "role": "評価役",
+    "wall_sec": 3.487,
+    "prompt_eval_count": 2904,
+    "prompt_eval_sec": 3.467,
+    "load_sec": 0.001
+   },
+   {
+    "seq": 5,
+    "role": "ワーカー",
+    "wall_sec": 3.398,
+    "prompt_eval_count": 2904,
+    "prompt_eval_sec": 3.385,
+    "load_sec": 0.001
+   },
+   {
+    "seq": 6,
+    "role": "評価役",
+    "wall_sec": 3.467,
+    "prompt_eval_count": 2904,
+    "prompt_eval_sec": 3.455,
+    "load_sec": 0.001
+   },
+   {
+    "seq": 7,
+    "role": "ワーカー",
+    "wall_sec": 3.496,
+    "prompt_eval_count": 2904,
+    "prompt_eval_sec": 3.482,
+    "load_sec": 0.001
+   },
+   {
+    "seq": 8,
+    "role": "評価役",
+    "wall_sec": 3.422,
+    "prompt_eval_count": 2904,
+    "prompt_eval_sec": 3.406,
+    "load_sec": 0.001
+   },
+   {
+    "seq": 9,
+    "role": "ワーカー",
+    "wall_sec": 3.6,
+    "prompt_eval_count": 2904,
+    "prompt_eval_sec": 3.585,
+    "load_sec": 0.001
+   },
+   {
+    "seq": 10,
+    "role": "評価役",
+    "wall_sec": 3.894,
+    "prompt_eval_count": 2905,
+    "prompt_eval_sec": 3.882,
+    "load_sec": 0.001
+   },
+   {
+    "seq": 1,
+    "role": "ワーカー",
+    "wall_sec": 3.63,
+    "prompt_eval_count": 2904,
+    "prompt_eval_sec": 3.617,
+    "load_sec": 0.001
+   },
+   {
+    "seq": 2,
+    "role": "評価役",
+    "wall_sec": 3.749,
+    "prompt_eval_count": 2904,
+    "prompt_eval_sec": 3.737,
+    "load_sec": 0.001
+   },
+   {
+    "seq": 3,
+    "role": "ワーカー",
+    "wall_sec": 4.257,
+    "prompt_eval_count": 2904,
+    "prompt_eval_sec": 4.239,
+    "load_sec": 0.002
+   },
+   {
+    "seq": 4,
+    "role": "評価役",
+    "wall_sec": 3.877,
+    "prompt_eval_count": 2904,
+    "prompt_eval_sec": 3.838,
+    "load_sec": 0.001
+   },
+   {
+    "seq": 5,
+    "role": "ワーカー",
+    "wall_sec": 4.474,
+    "prompt_eval_count": 2904,
+    "prompt_eval_sec": 4.454,
+    "load_sec": 0.001
+   },
+   {
+    "seq": 6,
+    "role": "評価役",
+    "wall_sec": 4.149,
+    "prompt_eval_count": 2904,
+    "prompt_eval_sec": 4.126,
+    "load_sec": 0.001
+   },
+   {
+    "seq": 7,
+    "role": "ワーカー",
+    "wall_sec": 4.161,
+    "prompt_eval_count": 2904,
+    "prompt_eval_sec": 4.144,
+    "load_sec": 0.001
+   },
+   {
+    "seq": 8,
+    "role": "評価役",
+    "wall_sec": 4.203,
+    "prompt_eval_count": 2904,
+    "prompt_eval_sec": 4.189,
+    "load_sec": 0.001
+   },
+   {
+    "seq": 9,
+    "role": "ワーカー",
+    "wall_sec": 4.421,
+    "prompt_eval_count": 2904,
+    "prompt_eval_sec": 4.399,
+    "load_sec": 0.001
+   },
+   {
+    "seq": 10,
+    "role": "評価役",
+    "wall_sec": 4.497,
+    "prompt_eval_count": 2905,
+    "prompt_eval_sec": 4.482,
+    "load_sec": 0.001
+   }
+  ]
+ }
+]

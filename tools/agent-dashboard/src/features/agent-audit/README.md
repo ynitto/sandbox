@@ -45,7 +45,7 @@ agent-audit が集計した「実測のトークン利用量」である。台�
 
 | 操作 | サブコマンド | 備考 |
 |---|---|---|
-| 利用状況を収集 / 定期収集 | `collect` | 実行記録と対応CLI quotaを増分収集。main プロセス内で直列化する |
+| 利用状況を収集 / 定期収集 | `collect` → `qualify --apply` | 実行記録と対応CLI quotaを増分収集したあと、本番 receipt から適格性を更新する。main プロセス内で直列化する。**dashboard は qualifications.json を書かない**（起動するだけ） |
 | トークン利用量 | `usage --period … --by … --json` | JSON 出力が dashboard 向けの契約。集計ロジックはこちらへ複製しない |
 | 利用状況の 1 枚 | `usage`（`--by workload` と `--by agent_cli`） | main 側の `summary()` が 2 軸を 1 往復で取り、合計を畳む |
 | 実行品質 | `stats --period … --json` | 同上 |

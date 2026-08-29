@@ -1,15 +1,188 @@
-# agent-amigos 仕様書
+# agent-amigos 利用ガイド兼 CLI 仕様
 
-> 設計の「なぜ」は [`docs/designs/agent-amigos-design.md`](../designs/agent-amigos-design.md)、
-> 使い方は [`tools/agent-amigos/README.md`](../../tools/agent-amigos/README.md)。
-> 本書は**契約**（バスのレイアウト・設定キー・CLI・上限・語彙）を引く場所です。
-> 対象: `tools/agent-amigos/`（`agent_amigos` パッケージ・23 モジュール・約 5,900 行）
-> 正典スキーマ: [`mission`](../../schemas/mission.schema.json) /
-> [`delivery`](../../schemas/delivery.schema.json) /
-> [`amigos-command`](../../schemas/amigos-command.schema.json) /
-> [`node-budget`](../../schemas/node-budget.schema.json)
+agent-amigos は、1 つの成果物を複数の役割に分け、担当エージェント同士で相談させながら統合する CLI です。依頼は「設計書と役割表を渡す」方法と、「ゴールだけ渡して役割表から作らせる」方法の 2 通りがあります。
+
+本書の前半はミッションの出し方と受け取り方、後半はバス、状態、設定、CLI のリファレンスです。設計判断の背景は[設計書](../designs/agent-amigos-design.md)、追加の運用例は [`tools/agent-amigos/README.md`](../../tools/agent-amigos/README.md) を参照してください。
+
+対象は `tools/agent-amigos/` の `agent_amigos` パッケージです。正典スキーマは [`mission`](../../schemas/mission.schema.json)、[`delivery`](../../schemas/delivery.schema.json)、[`amigos-command`](../../schemas/amigos-command.schema.json)、[`node-budget`](../../schemas/node-budget.schema.json) です。
+
+## まず動かす
+
+### インストール
+
+Python 3 が必要です。共通インストーラで agent-project、agent-flow とまとめて入れると、共有ライブラリと契約の版が揃います。
+
+```bash
+bash tools/agent-tools/install.sh
+agent-amigos --help
+```
+
+agent-amigos だけを入れる場合は次の通りです。
+
+```bash
+bash tools/agent-tools/install.sh --only agent-amigos
+```
+
+### 1 台でプロトコルを試す
+
+最初はローカルバスと `stub` を使います。`stub` は LLM を呼ばないため、役割の募集、進行、統合、受入の流れだけを確認できます。
+
+作業ディレクトリに、次のような `design-doc.md` を用意します。
+
+```markdown
+# 動作確認
+
+## 目的
+agent-amigos の協働フローを確認する。
+
+## 成果物
+役割ごとの成果を統合し、動作確認結果を納品する。
+
+## 受入基準
+必須ロールが完了し、統合成果物が作られていること。
+```
+
+続けて `roles.yaml` を用意します。動作確認では待ち時間をなくすため、オーナーがすぐに役割を引き受ける設定にします。
+
+```yaml
+mission:
+  title: agent-amigos の動作確認
+  goal: design-doc.md の受入基準を満たす
+  staffing_policy: self-staff
+  staffing_timeout: 0
+  acceptance: manual
+  convergence:
+    done_when: all-required-done
+    quiescence_turns: 0
+roles:
+  - id: worker
+    title: 動作確認担当
+    mission: 動作確認結果を result.md にまとめる
+    deliverables: [result.md]
+    required: true
+```
+
+ローカルバスを初期化してミッションを公示します。
+
+```bash
+agent-amigos init-bus --bus .agents/amigos-bus
+agent-amigos post \
+  --bus .agents/amigos-bus \
+  --design design-doc.md \
+  --roles roles.yaml \
+  --agent-cli stub
+```
+
+`post` が表示したミッション ID を使って進行させます。
+
+```bash
+agent-amigos drive \
+  --bus .agents/amigos-bus \
+  --mission-id MISSION_ID \
+  --agent-cli stub
+```
+
+別の端末で状態を確認します。`reviewing` になったら成果を確認し、受け入れます。
+
+```bash
+agent-amigos status MISSION_ID --bus .agents/amigos-bus
+agent-amigos accept MISSION_ID --bus .agents/amigos-bus
+agent-amigos deliveries -v
+```
+
+`accept` すると統合成果物がホームの `deliveries/` へ搬出されます。手元の別ディレクトリへ確認用に取り出すだけなら `collect` を使います。
+
+```bash
+agent-amigos collect MISSION_ID \
+  --bus .agents/amigos-bus \
+  --out ./mission-result
+```
+
+## ミッションを依頼する
+
+### 役割を自分で決める
+
+設計書と役割表がある場合は `post` を使います。
+
+```bash
+agent-amigos post \
+  --bus .agents/amigos-bus \
+  --design design-doc.md \
+  --roles roles.yaml \
+  --agent-cli codex
+```
+
+役割表には、各ロールの目的、成果物、必須かどうか、必要な能力タグ、使用するエージェント CLI を書きます。書式は [`tools/agent-amigos/roles.yaml.example`](../../tools/agent-amigos/roles.yaml.example) を起点にしてください。
+
+公示後、その端末で完了まで進めるなら `--drive` を付けます。受入方式が `manual` の場合は、別の端末または dashboard から結果を確認して `accept` か `reject` を実行します。
+
+### ゴールから役割を作る
+
+役割分担を決めていない場合は `build-team` を使います。既定では役割表を表示するだけで、公示しません。
+
+```bash
+agent-amigos build-team \
+  --goal "社内 FAQ ボットの MVP を納品する" \
+  --capabilities python,frontend \
+  --agent-cli codex \
+  --out roles.yaml
+```
+
+出力を確認してから `post` するのが通常の流れです。設計から公示、実行まで一度に進める場合は明示します。
+
+```bash
+agent-amigos build-team \
+  --goal "社内 FAQ ボットの MVP を納品する" \
+  --title "FAQ ボット" \
+  --agent-cli codex \
+  --post \
+  --drive
+```
+
+`build-team` の役割設計には実際のエージェント CLI が必要で、`stub` は使えません。
+
+## 進行中の操作
+
+状態を見るだけなら `status`、エージェントへ連絡するなら `say` を使います。
+
+```bash
+agent-amigos status MISSION_ID --bus .agents/amigos-bus
+agent-amigos say MISSION_ID \
+  --bus .agents/amigos-bus \
+  --to reviewer \
+  --type question \
+  --subject "受入条件の確認" \
+  --body "性能測定は今回の受入範囲に含めますか"
+```
+
+成果を受け入れられない場合は、修正内容を具体的に返します。
+
+```bash
+agent-amigos reject MISSION_ID \
+  --bus .agents/amigos-bus \
+  --feedback "README に実行例を追加して再提出してください"
+```
+
+`reject` は新しいラウンドを開始します。前ラウンドの完了宣言は引き継がれません。
+
+## 常駐運用と複数 PC
+
+agent-amigos 自身は daemon ではありません。PC ごとの常駐処理は `agent-project serve` が担い、募集への参加とエージェントの手番を必要なときだけ起動します。二重実行を避けるため、常駐環境で `join` を別途起動し続けないでください。
+
+1 台ではローカルディレクトリをバスにします。複数 PC では専用の Git リポジトリを用意し、全ノードで同じ `git+<url>` を指定します。
+
+```bash
+agent-amigos post \
+  --bus git+ssh://git@git.example.local/team/amigos-bus.git \
+  --design design-doc.md \
+  --roles roles.yaml
+```
+
+各ノードの能力タグ、使用する CLI、対象バスは `.agents/agent-amigos.yaml` に置けます。探索順はカレントディレクトリ、`.agents/`、`~/.agents/` です。
 
 ---
+
+## CLI リファレンス
 
 ## 1. 用語
 
@@ -49,13 +222,13 @@
   events/<who>.jsonl                 # 追記専用の監査ログ。予算会計の原本
 ```
 
-公示は正規化 **JSON** で置きます。オーナーの入力は YAML でよいが、post の時点で変換します
+公示は正規化 JSON で置きます。オーナーの入力は YAML でよいが、post の時点で変換します
 （読み手に PyYAML を要求しないため）。
 
 ### 2.2 書き込み所有権
 
-git バスでコンフリクトを起こさないよう、書き込み権をパス単位で分けます。**この表が
-「3-way 裁定は不要」の根拠**です。
+git バスでコンフリクトを起こさないよう、書き込み権をパス単位で分けます。この表が
+「3-way 裁定は不要」の根拠です。
 
 | パス | 書く人 |
 |---|---|
@@ -66,7 +239,7 @@ git バスでコンフリクトを起こさないよう、書き込み権をパ�
 | `artifacts/<role>/*` | そのロールの確定 amigo のみ |
 | `deliverable/*` | integrator のみ |
 
-既読フラグは**バスに書きません**。各 amigo が自分の status にカーソル（最後に見た ulid）を
+既読フラグはバスに書きません。各 amigo が自分の status にカーソル（最後に見た ulid）を
 持つだけです。
 
 ### 2.3 転送層
@@ -81,7 +254,7 @@ GitBus は専用のバスリポジトリを切って使います。`main` には
 参加ノードは `main` を軽く poll して募集を見つけ、daemon のサイクルは毎回 `list_missions()` の
 全件を `bus.mission(mid)` に通して未終端のミッションブランチをすべて clone します。
 
-pull は間隔律速（既定 15 秒）。ただし **claim の勝者確認だけは常に最新化**します
+pull は間隔律速（既定 15 秒）。ただし claim の勝者確認だけは常に最新化します
 （鮮度がプロトコルの正しさに効くのはそこだけだから）。push 競合は `pull --rebase` からの
 指数バックオフで、force push はしません。転送の実体は `agentcore.transport.GitTransport` で、
 3 エンジンが同じ実装を共有します。
@@ -97,7 +270,7 @@ pull は間隔律速（既定 15 秒）。ただし **claim の勝者確認だ�
 
 ### 3.1 ライフサイクル
 
-状態は専用フィールドを持たず、**ファイルの存在から導出**します（`derive_phase`）。
+状態は専用フィールドを持たず、ファイルの存在から導出します（`derive_phase`）。
 
 ```
  open（募集中）──必須ロール充足──▶ working ──収束──▶ integrating ──▶ reviewing
@@ -109,8 +282,8 @@ pull は間隔律速（既定 15 秒）。ただし **claim の勝者確認だ�
 
 終端は `done` / `cancelled` / `failed` の 3 つです。`failed` になるのは、予算が尽きて
 `on_exhausted: fail` のとき、または `staffing_policy: fail` で募集が `staffing_timeout` を
-超えても必須ロールが埋まらなかったときで、**いずれもまだ誰も手番を取っていないミッションに
-限ります**（走り出した後の欠員は再募集の領分）。
+超えても必須ロールが埋まらなかったときで、いずれもまだ誰も手番を取っていないミッションに
+限ります（走り出した後の欠員は再募集の領分）。
 
 差し戻しは `rejections/` にファイルを 1 つ増やし、その件数がそのままラウンド番号になります。
 旧ラウンドの完了宣言は自動的に無効になります。
@@ -132,7 +305,7 @@ partial 統合の後で本来の完了へ到達した場合は完全版で統合
 
 ### 3.3 claim と lease
 
-lease 内の全 claim のうち **`(ts, node)` 昇順の先頭 1 件**が勝者です。全ノードが同じ集合から
+lease 内の全 claim のうち `(ts, node)` 昇順の先頭 1 件が勝者です。全ノードが同じ集合から
 同じ勝者を導くので、ローカルでも git でも二重アサインが起きません。実体は
 `agentcore.protocol` で、agent-flow のタスク claim・委譲板の入札と同じ仕様です。
 
@@ -141,8 +314,8 @@ lease 内の全 claim のうち **`(ts, node)` 昇順の先頭 1 件**が勝者�
 | `first-come`（既定） | claim 勝者がそのまま確定。オーナーは `roster.json` へ鏡写しするだけ |
 | `owner-picks` | claim は応募止まり。オーナーが `assign` で書いた者だけが確定 |
 
-lease が切れ、かつ away 宣言も無ければクラッシュとみなして再募集します。**lease は liveness の
-信号であって progress ではありません**——ハングは CLI 定義の `timeout` で塞ぎます。
+lease が切れ、かつ away 宣言も無ければクラッシュとみなして再募集します。lease は liveness の
+信号であって progress ではありません。ハングは CLI 定義の `timeout` で塞ぎます。
 
 `state: away`（`resume_at` 付き）の間は lease が切れてもロールを奪いません。`resume_at` +
 grace（既定 7,200 秒）を超えたら通常の再募集へ戻ります。
@@ -166,7 +339,7 @@ grace（既定 7,200 秒）を超えたら通常の再募集へ戻ります。
 ### 4.2 アクション封筒
 
 エージェント CLI の出力は封筒として受け取り、ランナーが検証してからバスへ書きます
-（LLM にファイルを触らせない）。**`kind` は 4 種だけ**です。
+（LLM にファイルを触らせない）。`kind` は 4 種だけです。
 
 ```json
 {"actions": [
@@ -183,10 +356,10 @@ events に残し、次ターンのプロンプトで LLM へ差し戻します�
 
 ### 4.3 会話の規約
 
-- **question には answer か owner へのエスカレーションで必ず応じる**。`question_timeout`
+- question には answer か owner へのエスカレーションで必ず応じる。`question_timeout`
   （既定 2 ターン）を過ぎた未回答はランナーが `decision-request` へ昇格します。ただし
-  **宛先が away の間は時計を止め**、代わりに送信側へ不在を 1 度だけ知らせます
-- **設計を左右する合意はオーナーが `decisions.jsonl` に書いて確定する**。design doc の改訂も
+  宛先が away の間は時計を止め、代わりに送信側へ不在を 1 度だけ知らせます
+- 設計を左右する合意はオーナーが `decisions.jsonl` に書いて確定する。design doc の改訂も
   オーナーのみで、amigo は `request` で提案するに留まります
 
 ---
@@ -220,22 +393,22 @@ $AGENT_BUDGET_DIR（既定 ~/.agents/budget/）
   ledger/<YYYYMMDD>.jsonl   # 記帳（UTC 日付・追記専用、1 実行 1 行）
 ```
 
-amigos は `workload: amigos`、`ref: <mission-id>/<role>` で記帳します。トークンは**実測できた
-行だけ**台帳に書き、未報告行は読み出し側が `rates` で推定します（台帳には事実だけを書き、
+amigos は `workload: amigos`、`ref: <mission-id>/<role>` で記帳します。トークンは実測できた
+行だけ台帳に書き、未報告行は読み出し側が `rates` で推定します（台帳には事実だけを書き、
 推定値は書かない）。
 
 超過するとそのノードの amigo は CLI ターンを開始せず paused になります（`[node-budget]` タグ
-付きでオーナーへ 1 度だけ通知）。**ミッションは殺しません**。
+付きでオーナーへ 1 度だけ通知）。ミッションは殺しません。
 
 ---
 
 ## 6. 設定ファイル
 
 `agent-amigos.yaml`（PyYAML 無し環境は `agent-amigos.json`・同じキー）。優先順位は
-**CLI > 設定ファイル > 組み込み既定**。探索順は `--config` 明示 → `<cwd>/agent-amigos.*` →
+CLI > 設定ファイル > 組み込み既定。探索順は `--config` 明示 → `<cwd>/agent-amigos.*` →
 `<cwd>/.agents/agent-amigos.*` → `<cwd>/.agent/agent-amigos.*` → `~/.agents/agent-amigos.*`。
 
-設定ファイルのあるディレクトリが**ノードのホーム**（＝既定のバス）になり、agent-dashboard の
+設定ファイルのあるディレクトリがノードのホーム（＝既定のバス）になり、agent-dashboard の
 自動発見マーカーも兼ねます。グローバル設定（`~/.agents/`）のときのホームは cwd です。
 
 | キー | 既定 | 意味 |
@@ -255,7 +428,7 @@ amigos は `workload: amigos`、`ref: <mission-id>/<role>` で記帳します。
 | `board_workdir` | `null` | `git+` 板のクローン作業領域 |
 | `board_lease` | `900.0` | 板入札の lease（秒） |
 
-**キーはここに無いものが黙って無視されます。** 設定に書いたのに効かないときは、まず綴りを
+キーはここに無いものが黙って無視されます。設定に書いたのに効かないときは、まず綴りを
 確認してください。
 
 ### 6.1 環境変数
@@ -294,7 +467,7 @@ amigos は `workload: amigos`、`ref: <mission-id>/<role>` で記帳します。
 | `convergence.consensus_min` | `2` | 合意判定に要る最小回答席数 |
 | `budget.*` | §5.1 | |
 | `conductor.enabled` | `false` | 自律コンダクタ。`cli` / `max_ops`(3) / `max_total_ops`(12) / `interval_rounds`(1) |
-| `workspace.repo` | — | コード成果物用。**opaque passthrough**（§9） |
+| `workspace.repo` | — | コード成果物用。opaque passthrough（§9） |
 
 ### 7.2 ロール側
 
@@ -305,7 +478,7 @@ amigos は `workload: amigos`、`ref: <mission-id>/<role>` で記帳します。
 | `required` | 必須ロールか（収束判定と募集の対象） |
 | `agent_cli` / `model` | このロールを演じる CLI とモデル |
 | `requires.tags` / `.cli` / `.repos` | 応募できるノードの条件 |
-| `collaborates_with` | 会話のヒント。**実行順序の強制ではない** |
+| `collaborates_with` | 会話のヒント。実行順序の強制ではない |
 | `approver` | `done_when: reviewer-approved` の承認者 |
 | `builtin: integrator` | 統合ロール。省略時はオーナーノードが自動補充 |
 | `seats: N` | `<role>#0..#N-1` の具体席へ静的に展開する |
@@ -314,7 +487,7 @@ amigos は `workload: amigos`、`ref: <mission-id>/<role>` で記帳します。
 | `topology` | `complete`（既定）/ `ring` / `star` / `tree`（`rounds>=1` のみ） |
 | `aggregate_answer` / `aggregate_score` | 集約が読むファイル名（既定 `ANSWER.md` / `SCORE`） |
 
-同期討論は**全席の round-(k-1) が揃うまで round-k へ進めない**バリアを課します。バリアは
+同期討論は全席の round-(k-1) が揃うまで round-k へ進めないバリアを課します。バリアは
 ファイルの存在で判定するので、非同期のターンループ上でも決定的に同期します。
 
 ---
@@ -325,16 +498,16 @@ LLM 実行は [`agent-cli`](../../schemas/agent-cli.schema.json) のプラグイ
 （`agents/<name>.json`）をそのまま使い、解釈は `agentcore.agentcli` の 1 実装です
 （amigos 側の `agentcli.py` は薄い再輸出）。amigos 側に CLI 分岐コードは書きません。
 
-同梱定義はリポジトリ直下 `agents/` にあり、**base 8 種**（`aider` / `claude` / `codex` /
+同梱定義はリポジトリ直下 `agents/` にあり、base 8 種（`aider` / `claude` / `codex` /
 `copilot` / `cursor` / `kiro` / `ollama` / `vscode-copilot`）です。用途別の起動差は
 `ollama` の `profiles`（`json` / `list` / `list-thinking` / `read` / `verify`）が持ちます。amigos は headless 呼び出し（1 ターン 1 回・封筒を返させる）なので、
 `interactive` 節の有無は問いません。
 
-**CLI の解決順は 管理面 > ノード既定 > ロール指定** です。管理面は
+CLI の解決順は 管理面 > ノード既定 > ロール指定 です。管理面は
 [`agent-control`](../../schemas/agent-control.schema.json)（`~/.agents/control/control.json`）で、
 ロール別に CLI とモデルを横断上書きできます。
 
-**どこからも決まらない場合は `stub` へ落とさず環境エラーにします。** 既定を stub にすると、
+どこからも決まらない場合は `stub` へ落とさず環境エラーにします。既定を stub にすると、
 設定を読み落とした経路でダミー応答の成果物がそのまま統合・納品まで進みます。
 
 `stub` は LLM を使わず決定的に封筒を組み立てる検証用の実装で、プロトコル層のテストはすべて
@@ -345,22 +518,22 @@ LLM 実行は [`agent-cli`](../../schemas/agent-cli.schema.json) のプラグイ
 | クラス | 挙動 |
 |---|---|
 | `transient` | そのターンをリトライ |
-| `quota` / `auth` / `env` | その amigo を **paused** にして status へタグ付き理由を書き、オーナーへ 1 度だけ通知。ロールは lease を保持したまま待機し、環境を直せば続きから走る |
+| `quota` / `auth` / `env` | その amigo を paused にして status へタグ付き理由を書き、オーナーへ 1 度だけ通知。ロールは lease を保持したまま待機し、環境を直せば続きから走る |
 
 ---
 
 ## 9. 受入と納品
 
-integrator の完了で reviewing に入ります。integrator は **LLM を使いません**——`artifacts/*` を
+integrator の完了で reviewing に入ります。integrator は LLM を使いません。`artifacts/*` を
 走査して `deliverable/` へコピーし、由来ロールと SHA-256 の先頭 16 桁を `MANIFEST.json` に
 残すだけの決定的な処理です。
 
 `acceptance: manual` なら人が `accept` / `reject` を叩きます。`agent` ならオーナーノードの
 エージェント CLI が design doc と deliverable を突き合わせて自動判定し、`review_rounds` 回
 差し戻しても受からなければ人へ `decision-request` を上げて止まります（無限ループを作らない）。
-**`final.json` を書けるのはオーナーノードだけ**、という不変条件は自動判定でも変わりません。
+`final.json` を書けるのはオーナーノードだけ、という不変条件は自動判定でも変わりません。
 
-**accept は納品棚への搬出を伴います。** バスの `deliverable/` は gc の対象なので、そこにしか
+accept は納品棚への搬出を伴います。バスの `deliverable/` は gc の対象なので、そこにしか
 成果物が無い状態を残しません。accept が成立した時点でオーナーホームの
 `<home>/deliveries/<mission-id>/` へ搬出し、納品書 `delivery.json`
 （正典: [`delivery.schema.json`](../../schemas/delivery.schema.json)）と受領一覧
@@ -375,7 +548,7 @@ integrator の完了で reviewing に入ります。integrator は **LLM を使�
 | コード | `workspace.repo` の統合ブランチ | 参照だけ |
 | 10MB 超のファイル | 元の場所 | 参照だけ（`exported: false`） |
 
-**`workspace` は opaque passthrough です。** `export_delivery` が納品書に書くのは
+`workspace` は opaque passthrough です。`export_delivery` が納品書に書くのは
 `{"repo": …, "branch": "amigos/<mission-id>/integration"}` という参照文字列だけで、
 checkout・ブランチ作成・マージを行うコードはありません。amigo 自身が対象リポジトリを
 どう扱うかは各ロールの裁量です。
@@ -405,7 +578,7 @@ agent-amigos say          <mid> --to <role|all|owner> --body "..."
 agent-amigos cancel       <mid>  /  gc [--keep-days N] [--deliveries-keep-days N]
 ```
 
-**サブコマンド無しの裸起動は案内を出して終わります。** 黙って常駐すると常駐体
+サブコマンド無しの裸起動は案内を出して終わります。黙って常駐すると常駐体
 （`agent-project serve`）と二重に回って claim を奪い合うためです。
 
 ### 10.1 外部からの指示
@@ -426,19 +599,19 @@ agent-amigos cancel       <mid>  /  gc [--keep-days N] [--deliveries-keep-days N
 出力契約は `{"target": "amigos", "pattern": "<id|none>", "mission": {…}, "roles": [ … ]}` で、
 `normalize_mission` で検証してから post 経路へ合流します。
 
-カタログは [`patterns/<id>.json`](../../.github/skills/team-builder/patterns/) に **37 件**
+カタログは [`patterns/<id>.json`](../../.github/skills/team-builder/patterns/) に 37 件
 （契約は同ディレクトリの `references/pattern.schema.json`）。
 
 | tier | 件数 | 扱い |
 |---|---:|---|
-| `high` | 8 | `build-team` 実行時にカタログをプロンプトへ注入し、**自動選択**の対象にする |
+| `high` | 8 | `build-team` 実行時にカタログをプロンプトへ注入し、自動選択の対象にする |
 | `medium` | 29 | 自動選択に入れない。`--pattern <id>` で明示指定したときだけ使う |
 
 `high` の 8 件は `self-refine` / `metagpt-sop` / `agentcoder` / `multiagent-debate` /
 `mixture-of-agents` / `chateval` / `self-consistency` / `least-to-most` です。
 
 うち 3 件（`tree-of-thoughts` / `graph-of-thoughts` / `lats`）は `target: agent-flow` で
-登録されており、選ばれると roles ではなく **agent-flow への委譲封筒**
+登録されており、選ばれると roles ではなく agent-flow への委譲封筒
 （`schemas/delegation.schema.json` の op=post / workload=flow）を出力します。
 
 カタログを持たない 3 件（DyLAN / AgentVerse / meta-prompting）は自律コンダクタで表現します。
@@ -460,7 +633,7 @@ agent-amigos cancel       <mid>  /  gc [--keep-days N] [--deliveries-keep-days N
 | 1 ターンの CLI 実行 | CLI 定義の `timeout` | 定義側 |
 | 同時実行 amigo | PC 単位のマーカー（`~/.agents/amigos/turns/*.json`、pid 入り）で律速 | — |
 
-新着もやることも無ければ**エージェント CLI を呼びません**（idle ターン）。idle が続いたら
+新着もやることも無ければエージェント CLI を呼びません（idle ターン）。idle が続いたら
 status の書き込み自体も止めます（心拍の鮮度維持だけ 60 秒おき）。
 
 ---
@@ -470,7 +643,7 @@ status の書き込み自体も止めます（心拍の鮮度維持だけ 60 秒
 | 項目 | 状態 |
 |---|---|
 | コード成果物のブランチ運用 | 納品書に参照文字列を書くだけ。checkout・ブランチ作成・マージのコードは無い（§9） |
-| 前任の引き継ぎ材料の自動合成 | `_build_prompt` が組み込むのは後任**自身**の status とアーティファクト一覧だけ。前任の status / events / artifacts はバスに残るが、参照は後任の裁量 |
+| 前任の引き継ぎ材料の自動合成 | `_build_prompt` が組み込むのは後任自身の status とアーティファクト一覧だけ。前任の status / events / artifacts はバスに残るが、参照は後任の裁量 |
 | ノードの可用性ウィンドウ宣言 | 未実装。`owner-picks` の判断材料にできない |
 | `acceptance: codd-gate` | 将来拡張。現状は `manual` / `agent` のみ受け付ける |
 | `pairwise-rank` パターン | 設計方針として ranker ロール（approver）に委ねる。プリミティブは足さない |

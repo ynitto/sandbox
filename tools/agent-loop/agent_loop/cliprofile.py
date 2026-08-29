@@ -338,10 +338,12 @@ def resolve_entry_profile(config: "dict[str, Any]", entry: "dict[str, Any] | Non
     profile = _resolve_cli_profile(merged, project_dir=project_dir)
     if profile is not None and profile.is_headless:
         return profile, "per-run"
-    if e.get("statemachine"):
-        # ステートマシンはハーネス（限定ツールループ）で回す実行形。対話 CLI を指定して
-        # いても対話ペインへは送らない——送っても workflow.yaml は実行されない。
-        return profile, "per-run"
+    # ステートマシンは**実行形**であって経路ではない。対話ペインを持つ CLI では、
+    # コマンド面の 1 行（一族は `/sm`、クラウド CLI はスキル発動文）をペインへ送る
+    # ——受けた側がハーネスなりスキルなりで回す。state ごとにヘッドレス起動すると、
+    # CLI の起動・文脈の再構築・システムプロンプトの再送が state の数だけ掛かる
+    # （クラウド CLI ではトークン消費が跳ねる）。ペインを持たない CLI は上の
+    # `is_headless` 分岐で既に per-run へ落ちている。
     if str(e.get("session") or "keep") == "per-run":
         return profile, "per-run"
     return profile, "interactive"
@@ -368,6 +370,16 @@ def check_headless_entries(config: "dict[str, Any]", entries: "list[dict[str, An
         except CliProfileError as exc:
             fatal.append(f"定期プロンプト「{name}」のエージェントを解決できません: {exc}")
             continue
+        if entry.get("statemachine"):
+            # 宣言したワークフローが実在するかは、最初の LLM 実行より前に知りたい
+            # （無ければ dispatch のたびに 1 回ぶん起こして落ちる）。**経路によらず見る**
+            # ——ペインへ `/sm` を送る形でも、当て先が無ければ同じところで落ちる。
+            base = Path(entry.get("cwd") or project_dir or Path.cwd()).expanduser()
+            workflow = base / str(entry.get("statemachine"))
+            if not workflow.is_file():
+                fatal.append(f"定期プロンプト「{name}」: ステートマシン定義が見つかりません: "
+                             f"{workflow}")
+            continue
         if route != "per-run":
             # 対話ペイン経路。受入条件の機械層はターン境界で回る（設計 2026-08-27 §7.3 B）
             # が、判定層（judge）はエージェントの**報告本文**を要るのでまだ走らない。
@@ -377,15 +389,6 @@ def check_headless_entries(config: "dict[str, Any]", entries: "list[dict[str, An
                     "定期プロンプト「%s」: 対話ペイン経路では受入条件の判定層（acceptance_judge）は"
                     "まだ走りません。機械層（ファイル指紋の照合）だけで検証し、`verifiedBy` には"
                     "judge が出ません。", name)
-            continue
-        if entry.get("statemachine"):
-            # 宣言したワークフローが実在するかは、最初の LLM 実行より前に知りたい
-            # （無ければ dispatch のたびに 1 回ぶん起こして落ちる）。
-            base = Path(entry.get("cwd") or project_dir or Path.cwd()).expanduser()
-            workflow = base / str(entry.get("statemachine"))
-            if not workflow.is_file():
-                fatal.append(f"定期プロンプト「{name}」: ステートマシン定義が見つかりません: "
-                             f"{workflow}")
             continue
         if profile is None:
             continue

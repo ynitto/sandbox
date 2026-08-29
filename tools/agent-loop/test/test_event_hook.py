@@ -338,7 +338,8 @@ class ResourceControlHookTests(unittest.TestCase):
             self.assertIsNone(calibrate_hook.check(cfg))
         base = ["/tmp/agent-audit", "--audit-dir", "/tmp/audit", "--budget-dir", "/tmp/budget"]
         self.assertEqual([c.args[0] for c in run.call_args_list], [
-            base + ["collect"], base + ["calibrate", "--write"],
+            base + ["collect"], base + ["qualify", "--apply"],
+            base + ["calibrate", "--write"],
             base + ["extract"], base + ["distill", "--review"],
             base + ["tune", "--apply"],
         ])

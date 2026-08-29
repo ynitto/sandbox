@@ -77,8 +77,9 @@ const GOLDEN = {
     readonly: ['agent-herd', 'ollama', '--think', 'off', '--format', 'array', 'M'],
   },
   'ollama-list-thinking': {
-    // Aider/Gemma の split 用。array grammar は thinking にも掛かるため外し、意味的な
-    // 完全被覆を考えられる single-shot として分離する。
+    // think の効きを測り直す（計画 P(2)）ときの対照。array grammar は thinking にも
+    // 掛かるため外した single-shot。**どの用途もここへは振り替わらない**——split は
+    // 実測のある `--format array`（ollama-list）に統一した（2026-08-29）。
     write: ['agent-herd', 'ollama', '--think', 'on', 'M'],
     readonly: ['agent-herd', 'ollama', '--think', 'on', 'M'],
   },

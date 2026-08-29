@@ -25,6 +25,7 @@ import time
 import uuid
 from pathlib import Path
 
+from agentcore import stopreason
 from agentcore.harness import _borrowed
 from agentcore.harness.toolloop import (  # noqa: F401  (本文が toolloop から借りる名前)
     ToolLoopError,
@@ -52,6 +53,7 @@ from agentcore.harness.toolloop import (  # noqa: F401  (本文が toolloop か�
     _tl_resolve_agent,
     _tl_resolve_skill,
     _tl_run_agent,
+    _tl_max_rounds,
     _tl_run_control,
     _tl_skill_declared_scripts,
     _tl_skill_scripts,
@@ -296,7 +298,8 @@ def _sm_write_success_output(*, workflow_path: str, state_id: str, state: dict,
 
 def _sm_execute_action(*, workflow_path: str, state_id: str, state: dict, context: dict,
                        cwd: str, agent: dict, log_file: str, touched: set,
-                       check_note: str = "", retry_paths: "list[str] | None" = None) -> str:
+                       check_note: str = "", retry_paths: "list[str] | None" = None,
+                       max_tool_rounds: "int | None" = None) -> str:
     action = _sm_workflow_action(workflow_path, state_id, state)
     rendered = _sm_render_template(action["text"], context)
     if check_note:
@@ -330,10 +333,14 @@ def _sm_execute_action(*, workflow_path: str, state_id: str, state: dict, contex
     seed_paths = [str(p) for p in ((retry_paths if check_note and retry_paths else None)
                                    or declared) if str(p).strip()]
     seeded = False
+    # このステートで許す呼び出し回数。宣言（`max_tool_rounds`）＞ 環境変数 ＞ 既定で、
+    # `write:` を持つステートだけ別の環境変数を見る（レビュー P1-2 の arm）。
+    rounds = _tl_max_rounds(max_tool_rounds, write=bool(declared),
+                            default=_SM_MAX_TOOL_ROUNDS)
     for attempt in range(max_attempts):
         history: list[str] = []
         evidence: set = set()
-        for _round in range(_SM_MAX_TOOL_ROUNDS):
+        for _round in range(rounds):
             request = None
             if seed_paths and not seeded and not attempt:
                 # 編集の周から入る（制御周スキップ）。制御席へ「次の一手」を訊くと、
@@ -589,7 +596,9 @@ def _sm_state_check_spec(*, scripts: dict, workflow_path: str, state_id: str,
     return {"check": spec.get("check") if isinstance(spec.get("check"), dict) else None,
             "retries": retries,
             "on_exhausted": _sm_scalar(spec.get("check_on_exhausted")) or "escalate",
-            "feedback": spec.get("check_feedback") is not False}
+            "feedback": spec.get("check_feedback") is not False,
+            # ステート単位の呼び出し上限（未宣言なら None＝層の既定と環境変数に任せる）。
+            "max_tool_rounds": spec.get("max_tool_rounds")}
 
 
 def _sm_check_context(status, stdout: str, stderr: str, error: str) -> dict:
@@ -619,8 +628,41 @@ def _sm_run_check(check: dict, *, state_id: str, cwd: str, log_file: str) -> dic
     return {**result, "ok": context["check_ok"] == "true", "argv": argv, "context": context}
 
 
+# 失敗だけを拾う決定的パーサ（レビュー P2 / 制限付き実行案 §7「テスト失敗 → 失敗テストに
+# 絞って一度修正する」）。**分類器ではない**——pytest が既に印字している行を選ぶだけで、
+# 何が起きたかの判断はしない。新しい失敗分類器は書かない（レビュー P2 の但し書き）。
+#
+# 拾うのは 2 種類。(1) short summary の `FAILED` / `ERROR` 行＝どのテストが落ちたか。
+# (2) `E   ` で始まる行＝pytest が指し示した失敗の中身（AssertionError・SyntaxError・
+# ImportError はすべてこの形で出る）。どちらも出所は検査コマンドの実出力で、
+# ハーネスが文言を作ることはない。
+_SM_FAILED_TEST_RE = re.compile(r"^(?:FAILED|ERROR)\s+\S+.*$", re.M)
+_SM_PYTEST_ERROR_RE = re.compile(r"^E {2,}\S.*$", re.M)
+# 選別後の上限。末尾切り詰めより小さくてよい——選んだ行しか入らない。
+_SM_CHECK_SELECTED_LIMIT = 1200
+# 1 種類あたりの行数。落ちたテストが 40 件あるときに全部返すと選別の意味が消える。
+_SM_CHECK_SELECTED_LINES = 12
+
+
+def _sm_failing_lines(detail: str) -> "list[str]":
+    """検査出力から失敗テストと失敗理由の行だけを選ぶ（空 = 選別できない）。"""
+    selected: list = []
+    for pattern in (_SM_FAILED_TEST_RE, _SM_PYTEST_ERROR_RE):
+        found = [line.strip() for line in pattern.findall(detail)]
+        # 同じ行が FAILURES 節と summary 節の両方に出ることがある。順序は保って重複だけ落とす。
+        for line in found[:_SM_CHECK_SELECTED_LINES]:
+            if line not in selected:
+                selected.append(line)
+    return selected
+
+
 def _sm_check_note(result: dict, attempt: int, attempts: int, *, feedback: bool) -> str:
-    """検査が落ちた後の再投入で課題文へ足す文。検査そのものは書き換えさせない。"""
+    """検査が落ちた後の再投入で課題文へ足す文。検査そのものは書き換えさせない。
+
+    出力は**まず選別**する（失敗テストと失敗理由の行だけ）。選別できなければ従来どおり
+    末尾を切り詰めて渡し、**切り詰めた事実を書く**——静かに落とすと、材料が足りないのか
+    モデルが読めなかったのかを後から分けられない（`context_slice` と同じ 2 原則）。
+    """
     head = (f"Retry {attempt}/{attempts - 1}: the declared check failed "
             f"(exit status {result['context']['check_status']}).")
     tail = "Fix the work so this exact command succeeds. Do not modify the check itself."
@@ -628,9 +670,18 @@ def _sm_check_note(result: dict, attempt: int, attempts: int, *, feedback: bool)
         return f"{head}\n{tail}"
     detail = "\n".join(x for x in (result["error"], result["stderr"], result["stdout"])
                        if x).strip()
-    return (f"{head}\nCheck command: {' '.join(result['argv'])}\n"
-            + (f"Check output:\n{detail[-_SM_CHECK_OUTPUT_LIMIT:]}\n" if detail else "")
-            + tail)
+    body = ""
+    if detail:
+        selected = _sm_failing_lines(detail)
+        if selected:
+            body = ("Failing tests (selected from the check output):\n"
+                    + "\n".join(selected)[:_SM_CHECK_SELECTED_LIMIT] + "\n")
+        else:
+            body = (f"Check output (last {_SM_CHECK_OUTPUT_LIMIT} characters; "
+                    "the earlier output was omitted):\n"
+                    if len(detail) > _SM_CHECK_OUTPUT_LIMIT else "Check output:\n")
+            body += detail[-_SM_CHECK_OUTPUT_LIMIT:] + "\n"
+    return f"{head}\nCheck command: {' '.join(result['argv'])}\n" + body + tail
 
 
 def _sm_next_state_contract_error(help_text: str) -> str:
@@ -779,6 +830,7 @@ def run_statemachine(*, workflow_path: str, cwd: str, parameters: "dict | None" 
             _sm_progress(f"terminal: {current}")
             return {**_sm_terminal_status(current, last_output),
                     "stdout": last_output, "stderr": "", "finalState": current,
+                    "stopReason": stopreason.TERMINAL_STATE,
                     "logFile": log_file, "files": sorted(touched)}
         _sm_append_log(log_file, {"event": "state", "state": current, "step": step + 1})
         _sm_progress(f"state: {current} (step {step + 1}/{max_steps})")
@@ -795,7 +847,8 @@ def run_statemachine(*, workflow_path: str, cwd: str, parameters: "dict | None" 
                 last_output = _sm_execute_action(
                     workflow_path=workflow_file, state_id=current, state=state, context=context,
                     cwd=root, agent=agent, log_file=log_file, touched=touched,
-                    check_note=note, retry_paths=retry_paths).strip()
+                    check_note=note, retry_paths=retry_paths,
+                    max_tool_rounds=gate["max_tool_rounds"]).strip()
             except StateMachineHarnessError:
                 if not attempt or not gate["check"]:
                     raise
@@ -835,6 +888,7 @@ def run_statemachine(*, workflow_path: str, cwd: str, parameters: "dict | None" 
             if not escalate:
                 raise StateMachineHarnessError(reason)
             return {"ok": False, "escalate": True, "error": reason, "stdout": last_output,
+                    "stopReason": stopreason.CHECK_EXHAUSTED,
                     "stderr": str(checked["stderr"] or checked["stdout"] or "")
                     [-_SM_CHECK_OUTPUT_LIMIT:],
                     "finalState": current, "logFile": log_file, "files": sorted(touched),
@@ -847,7 +901,8 @@ def run_statemachine(*, workflow_path: str, cwd: str, parameters: "dict | None" 
             on_none = _sm_scalar(config.get("on_no_transition")) or "error"
             if on_none == "stop":
                 return {"ok": True, "stdout": last_output, "stderr": "",
-                        "finalState": current, "logFile": log_file, "files": sorted(touched)}
+                        "finalState": current, "stopReason": stopreason.TERMINAL_STATE,
+                        "logFile": log_file, "files": sorted(touched)}
             if on_none in workflow["states"]:
                 nxt = on_none
             else:
@@ -856,6 +911,7 @@ def run_statemachine(*, workflow_path: str, cwd: str, parameters: "dict | None" 
         current = nxt
     if _sm_scalar(config.get("on_max_steps")) == "stop":
         return {"ok": True, "stdout": last_output, "stderr": "", "finalState": current,
+                "stopReason": stopreason.MAX_STEPS,
                 "logFile": log_file, "files": sorted(touched)}
     raise StateMachineHarnessError(f"最大ステップ数 ({max_steps}) に到達しました")
 

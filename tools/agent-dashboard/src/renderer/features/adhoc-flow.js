@@ -3,12 +3,17 @@
 (function expose(root, factory) {
   const feature = factory(root);
   if (typeof module !== 'undefined' && module.exports) module.exports = feature;
+  if (typeof root.publicationHtml !== 'function') {
+    root.publicationHtml = feature.publicationHtml;
+    root.publicationPresentation = feature.publicationPresentation;
+  }
   if (typeof root.registerFeatureTab === 'function') {
     root.registerFeatureTab('workflows', {
       refresh: feature.refresh,
       refreshNeeds: feature.refreshNeeds,
       available: () => true,
       badge: feature.badge,
+      open: feature.showTop,
     });
     root.registerFeatureTab('workflow-run', {
       render: feature.render,
@@ -523,31 +528,29 @@
     return { state: ci.state, label, tone, url: String(ci.url || ''), checks };
   }
 
-  function publicationHtml(run) {
+  function publicationHtml(run, options = {}) {
     const view = publicationPresentation(run || {});
-    const shortCommit = view.commit ? view.commit.slice(0, 12) : '';
-    const branch = view.branch ? ` · ${view.branch}` : '';
-    const commit = shortCommit ? ` · ${shortCommit}` : '';
-    const rows = [
+    const rowItems = [
+      view.state !== 'unknown' ? ['状態', view.label] : null,
       view.url ? ['公開先', view.url] : null,
       view.local ? ['ローカル保存先', view.local] : null,
       view.branch ? ['ブランチ', view.branch] : null,
       view.commit ? ['コミット', view.commit] : null,
       view.recoveryRef ? ['復旧 ref', view.recoveryRef] : null,
       view.reason ? ['手動復旧理由', view.reason] : null,
-    ].filter(Boolean).map(([key, value]) => `<div><dt>${esc(key)}</dt><dd><code>${esc(value)}</code></dd></div>`).join('');
+    ].filter(Boolean);
+    const rows = rowItems.map(([key, value]) => `<div><dt>${esc(key)}</dt><dd><code>${esc(value)}</code></dd></div>`).join('');
     const ci = ciPresentation(run || {});
     const ciRows = ci.checks.map((check) =>
       `<div><dt>${esc(check.name)}</dt><dd><code>${esc(check.state || '不明')}</code>${
         check.url ? ` <code>${esc(check.url)}</code>` : ''}</dd></div>`).join('');
     const quote = (value) => `'${String(value || '').replaceAll("'", `'"'"'`)}'`;
-    const manual = view.canForceComplete
+    const recover = options.recover !== false;
+    const manual = recover && view.canForceComplete
       ? `git -C ${quote(view.local)} push ${quote(view.url)} ${quote(`${view.recoveryRef}:refs/heads/${view.branch}`)}`
       : '';
+    if (!rowItems.length && ci.state === 'none' && !manual) return '';
     return `<div class="wf-publication ${esc(view.tone)}">
-      <p class="wf-publication-meta" role="status"><span>保存: ${view.local ? 'ローカル' : '記録なし'}</span>
-        <span>公開: ${esc(view.label)}${esc(branch)}${esc(commit)}</span>
-        ${ci.state === 'none' ? '' : `<span class="wf-ci-state wf-ci-${esc(ci.state)}">${esc(ci.label)}</span>`}</p>
       <details class="wf-publication-details"><summary>保存と公開の詳細</summary>
         ${rows ? `<dl>${rows}</dl>` : '<p class="muted">この run には公開記録がありません。</p>'}
         ${ci.state === 'none' ? '' : `<dl class="wf-ci-checks">
@@ -1139,10 +1142,19 @@
     const events = (detail.events || []).map((event) => `<div><time>${esc(event.ts || '')}</time>
       <strong>${esc(event.kind || event.event || '更新')}</strong>${event.node ? ` · ${esc(event.node)}` : ''}${event.status ? ` · ${esc(event.status)}` : ''}</div>`).join('');
     const request = String(inbox.request || run.request || '').trim();
-    const requestLines = request.split(/\r?\n/);
-    const firstLine = requestLines.find((line) => line.trim()) || '';
+    const req = typeof root.splitRequest === 'function'
+      ? root.splitRequest(request)
+      : (() => {
+          const lines = request.split('\n').map((line) => line.trimEnd());
+          const nonempty = lines.map((line, index) => ({ line: line.trim(), index })).filter((item) => item.line);
+          if (!nonempty.length) return { title: '', body: '' };
+          return {
+            title: nonempty[0].line,
+            body: lines.slice(nonempty[0].index + 1).join('\n').trim(),
+          };
+        })();
     const title = String(inbox.title || '').trim()
-      || firstLine.replace(/^\s*#{1,6}\s*/, '').replace(/^\s*[-*+]\s*/, '').trim()
+      || String(req.title || '').replace(/^\s*#{1,6}\s*/, '').replace(/^\s*[-*+]\s*/, '').trim()
       || `ワークフロー ${run.runId || st.selectedRun}`;
     const nodes = Object.values(run.nodes || {});
     const counts = nodes.reduce((all, node) => {
@@ -1167,12 +1179,17 @@
         : '';
     } catch { /* グラフ本体と他の実行情報は表示し続ける */ }
     const verify = integrationVerifyPresentation(run);
-    const publication = publicationPresentation(run);
-    const publicationBlock = publicationHtml(run);
+    const publicationBlock = publicationHtml(run, { recover: true });
+    const requestBody = req.body;
+    const requestBodyHtml = requestBody
+      ? (typeof root.proseHtml === 'function'
+        ? `<div class="flow-request-body">${root.proseHtml(requestBody)}</div>`
+        : `<pre class="qf-output">${esc(requestBody)}</pre>`)
+      : '';
     const finalSummary = String((run.final && run.final.summary) || '').trim();
     const overviewView = `<section class="flow-overview-view">
       <div class="flow-run-heading"><div><span class="summary-kicker">選択中の作業</span><h2>${esc(title)}</h2>
-        <p class="wf-run-meta">${esc(flowName)}${publication.branch ? ` · ${esc(publication.branch)}` : ''}</p></div>
+        <p class="wf-run-meta">${esc(flowName)}</p></div>
         <div class="flow-heading-actions"><button type="button" id="wf-new-run">実行待ちへ戻る</button>
           ${folder ? consultControlHtml('workflows') : ''}</div></div>
       <section class="flow-outcome-status" aria-label="実行の状態と作業フォルダ">
@@ -1183,6 +1200,7 @@
     ? `<code title="${esc(folder)}">${esc(folder)}</code>`
     : '<strong class="muted">記録なし</strong>'}</div>
       </section>
+      ${requestBodyHtml ? `<details class="flow-request-details"><summary>依頼内容を表示</summary>${requestBodyHtml}</details>` : ''}
       ${publicationBlock}
       <div class="advice-banner advice-${advice.cls}"><span class="advice-chip advice-${advice.cls}">${esc(advice.label)}</span>
         <span>${esc(advice.text)}</span></div>
@@ -1198,7 +1216,6 @@
       <div class="flow-primary-actions">${terminal
     ? '<button type="button" id="wf-resubmit">再実行</button><button type="button" class="danger" id="wf-delete-run">削除</button>'
     : '<button type="button" class="danger" id="wf-cancel">中止</button>'}</div>
-      ${request ? `<details class="flow-request-details"><summary>依頼内容を表示</summary><pre class="qf-output">${esc(request)}</pre></details>` : ''}
     </section>`;
     const graphView = `<div class="flow-graph-workspace"><section class="flow-graph-surface">
       <div class="flow-section-heading"><div><span class="summary-kicker">作業の流れ</span><h2>工程</h2></div>
@@ -1405,6 +1422,40 @@
     return 'review';
   }
 
+  // 作業準備は、まだ人の操作が残っている項目だけ。走っている run は直下の「実行中」で追う。
+  const WORKFLOW_QUEUE_PHASES = new Set([
+    'design-ready', 'designing', 'design-review', 'implementation-ready', 'queued',
+  ]);
+  const WORKFLOW_ACTIVE_STATUSES = new Set([
+    'planning', 'pending', 'inbox', 'running', 'claimed', 'working',
+  ]);
+
+  function activeRunTitle(run, inbox) {
+    const titled = String((inbox && inbox.title) || '').trim();
+    if (titled) return titled;
+    const request = String((run && run.request) || '').trim();
+    if (!request) return String((run && run.runId) || '');
+    return request.split('\n').map((line) => line.trim()).find(Boolean) || String(run.runId);
+  }
+
+  function activeRunChip(status) {
+    const value = String(status || '');
+    if (value === 'planning' || value === 'pending' || value === 'inbox') {
+      return { tone: 'review', label: '計画中' };
+    }
+    return { tone: 'running', label: '実行中' };
+  }
+
+  function showTop() {
+    setSelectedRun('');
+    st.runDetail = null;
+    st.selectedPreparation = '';
+    st.notice = '';
+    st.runView = 'overview';
+    st.executionDialog = null;
+    return 'workflow-run';
+  }
+
   function preparationActionsHtml(item) {
     const id = esc(item.id);
     return `<button type="button" data-preparation-delete="${id}">削除</button>
@@ -1421,8 +1472,10 @@
         <p class="qf-notice" role="status"${st.notice ? '' : ' hidden'}>${esc(st.notice)}</p>
         ${runDetailHtml(st.runDetail)}</section>`;
     }
-    const prepared = st.preparationItems || [];
+    const prepared = (st.preparationItems || []).filter((item) => WORKFLOW_QUEUE_PHASES.has(item.phase));
     const queued = st.queuedTasks || [];
+    const inboxByRun = new Map((ov.runInbox || []).map((item) => [String(item.id), item]));
+    const active = (ov.runs || []).filter((run) => WORKFLOW_ACTIVE_STATUSES.has(String(run.status || '')));
     const phaseLabel = (phase) => ({
       'design-ready': '設計開始待ち', designing: '設計中', 'design-review': '設計確認',
       'implementation-ready': '実装待ち', queued: '実行待ち', implementing: '実装中', completed: '完了',
@@ -1438,6 +1491,24 @@
             <small>${esc(routeLabel(item.route))} · ${esc(item.cwd || '対象フォルダ未指定')}</small></div>
           <div class="qf-row">${preparationActionsHtml(item)}</div></article>`).join('')
           : '<div class="empty">準備中のタスクはありません。「タスクを作成」から追加できます。</div>'}
+      </section>
+      <section class="wf-queue" aria-labelledby="wf-active-title"><div class="wf-section-head"><div>
+        <h3 id="wf-active-title">実行中</h3><span class="muted">${active.length}件</span></div></div>
+        ${active.length ? active.map((run) => {
+          const inbox = inboxByRun.get(String(run.runId)) || {};
+          const chip = activeRunChip(run.status);
+          const purpose = inbox.purpose === 'design' ? '設計' : '実装';
+          const folder = folderPath(run.workspace) || folderPath(run.cwd) || '対象フォルダ未指定';
+          const done = Number((run.counts && run.counts.done) || 0)
+            + Number((run.counts && run.counts.failed) || 0);
+          const total = Number(run.total || 0);
+          const meta = [purpose, folder, total ? `${done}/${total} 工程` : ''].filter(Boolean).join(' · ');
+          return `<article class="wf-queue-item" data-active-run="${esc(run.runId)}">
+          <div><span class="status-chip wf-preparation-phase st-${chip.tone}">${esc(chip.label)}</span><strong>${esc(activeRunTitle(run, inbox))}</strong>
+            <small>${esc(meta)}</small></div>
+          <div class="qf-row"><button type="button" class="primary-inline" data-open-run="${esc(run.runId)}">詳細を見る</button></div></article>`;
+        }).join('')
+          : '<div class="empty">実行中のワークフローはありません。</div>'}
       </section>
       ${queued.length ? `<details class="wf-legacy-queue"><summary>以前の実行待ち ${queued.length}件</summary>${queued.map((task) => `<article class="wf-queue-item" data-wf-task="${esc(task.id)}">
         <div><strong>${esc(task.title)}</strong><small>${esc(task.cwd || '対象フォルダ未指定')}</small></div>
@@ -2925,6 +2996,14 @@
       st.busy = '';
       await refresh();
     });
+    pane.querySelectorAll('[data-open-run]').forEach((button) => button.addEventListener('click', async () => {
+      setSelectedRun(button.dataset.openRun);
+      st.runView = 'overview';
+      try { st.runDetail = await api().adhocFlowRun({ runId: st.selectedRun }); }
+      catch (err) { st.notice = String((err && err.message) || err); }
+      renderSidebar();
+      renderRun();
+    }));
     pane.querySelectorAll('[data-run-id]').forEach((row) => row.addEventListener('click', async () => {
       setSelectedRun(row.dataset.runId);
       try { st.runDetail = await api().adhocFlowRun({ runId: st.selectedRun }); }
@@ -3429,6 +3508,8 @@
     refresh,
     refreshNeeds,
     badge,
+    showTop,
+    runHtml,
     statusLabel,
     publicationPresentation,
     publicationHtml,

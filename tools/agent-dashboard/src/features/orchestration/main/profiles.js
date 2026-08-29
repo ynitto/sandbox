@@ -348,8 +348,17 @@ function candidateForTier(tiers, tier, usage, nowMs) {
   return picked ? { ...picked.candidate } : null;
 }
 
+// 宣言（`herd` の 1 語）を実測で具体候補へ展開した profiles。**候補を選ぶ側・起こす側は
+// こちらを読む。** 編集画面は宣言のまま（`load`）を読む——展開を書き戻さないのと同じ理由で、
+// 人の意図は「ローカルにおまかせ」であって、その時点の実測ではない。
+// 展開できない行は落ちる（`herdUnresolved` に理由が残る）。推測で 1 つ選ぶと
+// 「設定したのと違うものが動く」を新しく作ることになる。
+function loadResolved(cfg) {
+  return expandedProfiles(cfg, load(cfg), qualifications.load(cfg));
+}
+
 function resolveTier(cfg, tier) {
-  return candidateForTier(load(cfg).tiers, tier, budget.usage(cfg), Date.now());
+  return candidateForTier(loadResolved(cfg).tiers, tier, budget.usage(cfg), Date.now());
 }
 
 // 1ワークロード分の決定。予算が決めるtargetTierと、quota反映後の実効tierを分離する。
@@ -517,8 +526,10 @@ function expandedProfiles(cfg, profiles, qualificationDoc) {
   const hasHerd = Object.values(profiles.tiers || {})
     .some((spec) => (spec.candidates || []).some(herdFamily.isHerdCandidate));
   if (!hasHerd) return { ...profiles, herdUnresolved: [] };
+  const memberModels = herdFamily.memberRows(cfg);
   const { tiers, unresolved } = herdFamily.expandTiers(profiles.tiers, {
-    memberNames: herdFamily.members(cfg),
+    memberNames: memberModels.map((row) => row.name),
+    memberModels,
     qualifications: qualificationDoc,
   });
   return { ...profiles, tiers, herdUnresolved: unresolved };
@@ -669,6 +680,7 @@ module.exports = {
   resolveProfilesDir,
   loadProfiles,
   load,
+  loadResolved,
   save,
   decide,
   candidateForTier,

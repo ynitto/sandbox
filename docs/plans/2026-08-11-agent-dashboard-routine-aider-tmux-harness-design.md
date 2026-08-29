@@ -116,7 +116,10 @@ agent-loop statemachine --workflow .statemachine/<name>/workflow.yaml \
 - 段の選択・検証（`resolveTier`）、実行前ダイアログ、パラメータ検証は前設計のまま。
 - interactive 対応 CLI（kiro / claude / ollama 等）の既存 tmux 経路は変更しない。
 - aider に偽の `interactive` 定義は追加しない（素の対話 aider はステートマシンを
-  完遂できないという前設計の判断を維持する）。
+  完遂できないという前設計の判断を維持する）。ここで却下しているのは素の aider ペインへ
+  プロンプトを送る形である。段 12 で入った共通 TUI 経由の `interactive`
+  （`agents/aider.json` の `agent-herd aider --tui`）はツールループを外から与えるので、
+  完遂できないという反対理由が当たらず、この禁止の対象ではない。
 
 ## データフロー
 
@@ -166,7 +169,7 @@ agent-loop statemachine --workflow .statemachine/<name>/workflow.yaml \
 | 決定日 | 2026-08-11 |
 | 決定者 | ユーザー |
 | 採用案 | agent-loop へのステートマシンハーネス移植と tmux ウィンドウ実行（モデル指定つき） |
-| 却下案 | aider の偽 interactive 定義＋プロンプト送信（完遂できない）、in-process 実行器の温存（見えない・再利用できない） |
+| 却下案 | aider の偽 interactive 定義＋プロンプト送信（完遂できない。「偽」は素の aider ペインへ送る形を指す。共通 TUI 経由の interactive は反対理由が当たらず、段 12 で採用した）、in-process 実行器の温存（見えない・再利用できない） |
 | 主な理由 | 実行の可視化と実行境界の WSL 側への移動を、既存の限定ツール契約と statemachine-use 正典を保ったまま実現できるため |
 | トレードオフ | ハーネスの実装が JS から Python へ移る（dashboard の in-process 実行器は削除） |
 | 再評価条件 | 2 つ目の headless スキルを追加する、または agent-loop の定期駆動からステートマシンを直接発火したくなった場合 |
