@@ -334,45 +334,91 @@ def parse_tool_input(raw: str) -> dict:
     return value
 
 
-# --agent が使うツール。ここだけは名前を知っている——だから使う前に実物のスキーマと
-# 突き合わせる（下の check_agent_input）。素の入口は --call で、そちらは何も知らない。
-AGENT_TOOL = "runSubagent"
+# --agent が既定で持たせるツール。**明示した名前だけを通す allowlist** で、
+# VS Code に新しいツールが増えても勝手には入らない——読み取り専用という約束を、
+# 名前を数える側ではなく載せる側で守る。書き込み系が要るなら --agent-tools で明示する。
+READ_ONLY_TOOLS = (
+    "copilot_readFile",
+    "copilot_listDirectory",
+    "copilot_findFiles",
+    "copilot_findTextInFiles",
+    "copilot_searchCodebase",
+    "copilot_searchWorkspaceSymbols",
+    "copilot_readProjectStructure",
+    "copilot_findTestFiles",
+    "copilot_getChangedFiles",
+    "copilot_getErrors",
+)
 
 
-def derive_description(prompt: str) -> str:
-    """runSubagent が要求する短い説明を依頼文から作る。
-
-    人が読む見出しなので、モデルを呼んでまで作らない（1 手番ぶんの枠を使わない）。
-    """
-    text = " ".join(prompt.split())
-    return text[:40] if text else "task"
-
-
-def agent_input(prompt: str, description: str | None, agent_name: str | None) -> dict:
-    payload = {"prompt": prompt, "description": description or derive_description(prompt)}
-    if agent_name:
-        payload["agentName"] = agent_name
-    return payload
+def agent_tools(payload: dict, requested: str | None) -> list[str]:
+    """使わせるツールを決める。VS Code に無い名前は落とす（既定）か、明示なら失敗させる。"""
+    registered = {tool.get("name") for tool in payload.get("tools") or []}
+    if requested:
+        names = [name.strip() for name in requested.split(",") if name.strip()]
+        missing = [name for name in names if name not in registered]
+        if missing:
+            raise RuntimeError(
+                f"VS Code に登録されていないツールです: {', '.join(missing)}（--tools で一覧）")
+        return names
+    # 既定は allowlist と実在の積。環境差で欠けるものは黙って外す。
+    return [name for name in READ_ONLY_TOOLS if name in registered]
 
 
-def check_agent_input(tool: dict, payload: dict) -> None:
-    """--agent が組む形が実物のスキーマと合っているか確かめる。
+def run_agent(endpoint: dict[str, object], prompt: str, tools: list[str], family: str | None,
+              timeout: float, on_event) -> dict:
+    """エージェントを 1 回走らせる。往復の途中経過は on_event へ流す。"""
+    body: dict[str, object] = {"messages": [{"role": "user", "content": prompt}], "tools": tools}
+    if family:
+        body["family"] = family
+    req = urllib.request.Request(
+        _path_url(endpoint, "/v1/agent"),
+        data=json.dumps(body).encode(),
+        headers={"Authorization": f"Bearer {endpoint['token']}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    with _urlopen(req, timeout) as response:
+        return _consume_agent_stream(response, on_event)
 
-    スキーマは VS Code のものなので、こちらの都合で変わらない。合わなくなったら
-    黙って壊れた入力を送らず、素の --call へ案内する。
-    """
-    schema = tool.get("inputSchema") or {}
-    missing = set(schema.get("required") or []) - set(payload)
-    if missing:
-        raise RuntimeError(
-            f"{AGENT_TOOL} の必須項目を --agent が埋められません: {', '.join(sorted(missing))}"
-            f"（--call {AGENT_TOOL} で直接渡してください）")
-    properties = schema.get("properties")
-    unknown = set(payload) - set(properties) if properties else set()
-    if unknown:
-        raise RuntimeError(
-            f"{AGENT_TOOL} が受け取らない項目を --agent が渡そうとしています: "
-            f"{', '.join(sorted(unknown))}（--call {AGENT_TOOL} で直接渡してください）")
+
+def _consume_agent_stream(response, on_event) -> dict:
+    chunks: list[str] = []
+    done = None
+    for line in response:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"bridge の応答を解釈できません: {exc}") from exc
+        if "error" in event and "tool" not in event:
+            raise RuntimeError(f"bridge error: {event['error']}")
+        if "delta" in event:
+            chunks.append(event["delta"])
+        on_event(event)
+        if event.get("done"):
+            done = event
+    if done is None:
+        raise RuntimeError("エージェントの応答が途中で切れました")
+    return {"text": done.get("text") or "".join(chunks),
+            "rounds": done.get("rounds"), "model": done.get("model")}
+
+
+def format_agent_event(event: dict) -> str | None:
+    """途中経過の 1 行。何をしているか見えないまま黙るのが一番困るので出す。"""
+    if "tool" in event:
+        if event.get("ok"):
+            return None  # 成功は呼び出し行だけで足りる
+        if "error" in event:
+            return f"  ! {event['tool']}: {event['error']}"
+        argument = json.dumps(event.get("input") or {}, ensure_ascii=False)
+        if len(argument) > 120:
+            argument = argument[:117] + "…"
+        return f"  → {event['tool']} {argument}"
+    if event.get("done"):
+        return f"  （{event.get('rounds')} 往復）"
+    return None
 
 
 def format_tools(payload: dict) -> str:
@@ -487,12 +533,11 @@ def main() -> int:
     parser.add_argument("--tools", action="store_true",
                         help="VS Code に登録されているツールの一覧を出す（vscode.lm.tools）")
     parser.add_argument("--agent", metavar="TASK",
-                        help=f"タスクを VS Code のエージェント（{AGENT_TOOL}）へ丸ごと投げる"
+                        help="VS Code のツールを使わせながらタスクを解かせる"
                              "（- で標準入力から読む）")
-    parser.add_argument("--agent-name", metavar="NAME",
-                        help="呼ぶエージェント名（省略時は VS Code の既定エージェント）")
-    parser.add_argument("--description", metavar="TEXT",
-                        help="--agent の短い説明（省略時は依頼文から作る）")
+    parser.add_argument("--agent-tools", metavar="NAMES",
+                        help="--agent に持たせるツールをカンマ区切りで明示"
+                             "（既定は読み取り専用のみ）")
     parser.add_argument("--call", metavar="TOOL",
                         help="ツールを 1 つ呼ぶ。--input を省くと inputSchema を表示する")
     parser.add_argument("--input", metavar="JSON",
@@ -526,15 +571,27 @@ def main() -> int:
             prompt = sys.stdin.read() if args.agent == "-" else args.agent
             if not prompt.strip():
                 raise RuntimeError("--agent の依頼文が空です")
-            payload = agent_input(prompt, args.description, args.agent_name)
-            tool = find_tool(fetch_tools(endpoint, args.timeout), AGENT_TOOL)
-            if tool is None:
+            tools = agent_tools(fetch_tools(endpoint, args.timeout), args.agent_tools)
+            if not tools:
                 raise RuntimeError(
-                    f"この VS Code には {AGENT_TOOL} がありません"
-                    "（--tools で一覧。無い環境ではエージェントを丸投げできません）")
-            check_agent_input(tool, payload)
-            result = call_tool(endpoint, AGENT_TOOL, payload, args.timeout)
-            print_tool_result(result, args.json)
+                    "使えるツールが 1 つもありません（--tools で一覧、--agent-tools で明示）")
+            events: list[dict] = []
+
+            def on_event(event: dict) -> None:
+                events.append(event)
+                if args.json:
+                    return
+                line = format_agent_event(event)
+                if line:
+                    print(line, file=sys.stderr)
+
+            result = run_agent(endpoint, prompt, tools, args.family, args.timeout, on_event)
+            if args.json:
+                print(json.dumps({**result, "tools": tools, "events": events}, ensure_ascii=False))
+            elif result["text"].strip():
+                print(result["text"])
+            else:
+                print("エージェントはテキストを返しませんでした。", file=sys.stderr)
             return 0
         if args.call:
             if args.input is None:

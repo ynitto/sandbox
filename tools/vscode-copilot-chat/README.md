@@ -335,41 +335,69 @@ AIエージェント（GitHub Copilot / Claude Code）の能力を拡張する�
 それでもテキストが 1 つも取れなければ、標準出力へは何も出さず、標準エラーへ理由と
 `--json` を案内します。空行を出すと「空文字が返った」と紛らわしいためです。
 
-## エージェントへ丸投げする（現状は使えません）
+## エージェント（ツールを使わせて解かせる）
 
-> **この入口は今のところ動きません。** `runSubagent` は `toolInvocationToken` を必須に
-> しており、チャットの外から呼ぶこの bridge には渡すものがありません。フラグと検査は
-> 残していますが、実行すると上記のエラーで止まります。
->
-> 動かすには拡張側に chat participant を登録し、チャット経由で受け取った本物の
-> `toolInvocationToken` を使う必要があります（チャットパネルが経路に入ります）。
+`POST /v1/agent` は、VS Code のツールをモデルに持たせてループを回します。CLI からは
+`--agent` です。
 
 ```bash
-vscode-copilot-chat --agent "テストが落ちているので直して"
-vscode-copilot-chat --agent "この repo の構造を調べて" --agent-name Explore
+vscode-copilot-chat --agent "この repo の構造を調べて"
 vscode-copilot-chat --agent - < task.md
 ```
 
-| フラグ | 対応する項目 |
-|---|---|
-| `--agent TASK` | `prompt`（必須）。`-` で標準入力から読む |
-| `--description TEXT` | `description`（必須）。省略時は依頼文の先頭 40 文字から作る |
-| `--agent-name NAME` | `agentName`。省略時は VS Code の既定エージェント |
+```console
+$ vscode-copilot-chat --agent "テストの置き場を調べて"
+  → copilot_findFiles {"query": "**/test_*.py"}
+  → copilot_readFile {"filePath": "…"}
+  （3 往復）
+テストは tools/<名前>/tests に置かれています。…
+```
 
-`--agent-name` には VS Code のカスタムエージェント名を渡す想定です（`.github/agents/`
-に置いたもの）。ただし上記のとおり、この経路自体が今は通りません。
+途中経過（どのツールを何で呼んだか）は**標準エラー**へ、最終的な答えは**標準出力**へ
+出ます。パイプに乗るのは答えだけです。何をしているか見えないまま数分黙るのが一番
+困るので、往復は逐次出します。
 
-`model` を指定したいときは `--call runSubagent` で直接渡してください。
+**ツール本体も承認ダイアログも VS Code のもの**です。ここが持っているのは「どのツールを
+呼ぶか決めさせて、結果を返して、また訊く」というループだけで、ファイルを読む・書く・
+探すの実装は 1 つも持ちません。
 
-### `--agent` だけはツールの名前を知っている
+### 既定は読み取り専用
 
-このツールに限り、CLI が `runSubagent` という名前と 2 つの必須項目を知っています。
-`--call` の「何も知らない」方針の例外なので、**送る前に実物のスキーマと突き合わせます**
-（必須項目が増えた・名前が変わった、を検出したら送らずに `--call` を案内する）。
-決め打ちが静かに壊れるのを防ぐためです。
+持たせるツールは**明示した名前だけを通す allowlist** です。
 
-エージェントの実行は長くかかります。既定の応答待ちは 300 秒なので、足りなければ
-`--timeout` を伸ばしてください（切れると接続が落ち、VS Code 側もそこで止まります）。
+```text
+copilot_readFile        copilot_listDirectory   copilot_findFiles
+copilot_findTextInFiles copilot_searchCodebase  copilot_searchWorkspaceSymbols
+copilot_readProjectStructure  copilot_findTestFiles
+copilot_getChangedFiles copilot_getErrors
+```
+
+**VS Code に新しいツールが増えても勝手には入りません。** 読み取り専用という約束を、
+名前を数える側（除外リスト）ではなく載せる側（許可リスト）で守るためです。allowlist に
+あって VS Code に無いものは黙って外れます。
+
+書き込み・実行系を使わせるなら `--agent-tools` で明示します。**そのツールが実際に
+動く**ので、何を渡すか分かった上で使ってください。
+
+```bash
+vscode-copilot-chat --agent "この関数名を直して" \
+  --agent-tools copilot_readFile,copilot_replaceString
+```
+
+明示した名前が VS Code に無ければ、黙って外さずに失敗します——頼んだ道具を使わない
+エージェントになるより、無いと言われるほうがましです。
+
+### ループの作法
+
+- **ツールの失敗はモデルへ返します。** 落として黙ると同じ呼び出しを繰り返すだけです。
+  失敗も `! ツール名: 理由` として画面に出ます
+- **手番は呼び出しを Assistant 側・結果を User 側へ積みます**（`callId` で対応が付く）。
+  片方だけ積むと次の往復でモデルが文脈を失います
+- 既定 12 往復で打ち切ります。答えに至らなければ失敗として返します
+- 実行は長くかかります。既定の応答待ちは 300 秒なので、足りなければ `--timeout` を
+  伸ばしてください（切れると接続が落ち、VS Code 側もそこで止まります）
+
+`--json` を付けると、最終的な答え・往復数・使ったツール・イベントの全記録が出ます。
 
 ## テスト
 

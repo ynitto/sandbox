@@ -597,73 +597,126 @@ def test_explicit_code_bin_is_not_second_guessed(tmp_path):
             assert "/my/code" in str(exc)
 
 
-# --- エージェントへ丸投げする（案3 の入口） -------------------------------------
+# --- エージェント（案3: 自前のツールループ） -----------------------------------
 
 
-REAL_SUBAGENT_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "prompt": {"type": "string"},
-        "description": {"type": "string"},
-        "agentName": {"type": "string"},
-        "model": {"type": "string"},
-    },
-    "required": ["prompt", "description"],
-}
-REAL_SUBAGENT_TOOL = {"name": "runSubagent", "description": "Run a subagent.",
-                      "inputSchema": REAL_SUBAGENT_SCHEMA}
+AGENT_TOOLS = {"tools": [
+    {"name": "copilot_readFile"}, {"name": "copilot_findFiles"},
+    {"name": "copilot_replaceString"}, {"name": "run_in_terminal"},
+]}
 
 
-def test_agent_input_fills_both_required_fields():
-    payload = client.agent_input("テストを直して", None, None)
-    assert payload == {"prompt": "テストを直して", "description": "テストを直して"}
-    client.check_agent_input(REAL_SUBAGENT_TOOL, payload)
+def test_default_tools_are_read_only_and_exclude_writers():
+    chosen = client.agent_tools(AGENT_TOOLS, None)
+    assert "copilot_readFile" in chosen and "copilot_findFiles" in chosen
+    # 書き込み・実行系は allowlist に無いので既定では載らない。
+    assert "copilot_replaceString" not in chosen
+    assert "run_in_terminal" not in chosen
 
 
-def test_description_is_derived_without_calling_the_model():
-    long = "一行目です。\n二行目です。" + "あ" * 100
-    payload = client.agent_input(long, None, None)
-    assert len(payload["description"]) == 40
-    assert "\n" not in payload["description"]
-    # 空白だけの依頼でも空の description は作らない（required を満たせなくなる）。
-    assert client.agent_input("   ", None, None)["description"] == "task"
+def test_a_new_vscode_tool_does_not_join_by_itself():
+    """VS Code 側に増えたツールが勝手に入らない（allowlist は載せる側で守る）。"""
+    payload = {"tools": [{"name": "copilot_readFile"}, {"name": "brand_new_writer"}]}
+    assert client.agent_tools(payload, None) == ["copilot_readFile"]
 
 
-def test_explicit_description_and_agent_name_win():
-    payload = client.agent_input("やって", "fix the tests", "Explore")
-    assert payload == {"prompt": "やって", "description": "fix the tests", "agentName": "Explore"}
-    client.check_agent_input(REAL_SUBAGENT_TOOL, payload)
+def test_missing_allowlisted_tools_are_dropped_quietly():
+    assert client.agent_tools({"tools": [{"name": "copilot_readFile"}]}, None) == ["copilot_readFile"]
+    assert client.agent_tools({"tools": []}, None) == []
 
 
-def test_agent_name_is_omitted_when_not_given():
-    assert "agentName" not in client.agent_input("やって", None, None)
+def test_explicit_tools_are_taken_as_given():
+    chosen = client.agent_tools(AGENT_TOOLS, "copilot_replaceString, run_in_terminal")
+    assert chosen == ["copilot_replaceString", "run_in_terminal"]
 
 
-def test_check_agent_input_catches_a_new_required_field():
-    """スキーマが増えたら黙って壊れた入力を送らず、--call へ案内する。"""
-    tool = {"inputSchema": {**REAL_SUBAGENT_SCHEMA, "required": ["prompt", "description", "cwd"]}}
+def test_explicit_unregistered_tool_fails_rather_than_being_dropped():
     try:
-        client.check_agent_input(tool, client.agent_input("やって", None, None))
-        assert False, "a new required field must be reported"
+        client.agent_tools(AGENT_TOOLS, "copilot_readFile,nope")
+        assert False, "must fail"
     except RuntimeError as exc:
-        assert "cwd" in str(exc) and "--call" in str(exc)
+        assert "nope" in str(exc)
 
 
-def test_check_agent_input_catches_a_renamed_field():
-    tool = {"inputSchema": {"properties": {"prompt": {}, "summary": {}},
-                            "required": ["prompt"]}}
+def _agent_stream(events):
+    payload = "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in events).encode()
+    captured = {}
+    server, thread = _serve_once(payload, "application/x-ndjson", captured)
+    seen = []
     try:
-        client.check_agent_input(tool, client.agent_input("やって", None, None))
-        assert False, "a renamed field must be reported"
+        result = client.run_agent(
+            {"url": f"http://127.0.0.1:{server.server_port}/v1/chat", "token": "s"},
+            "調べて", ["copilot_readFile"], None, 5, seen.append)
+    finally:
+        thread.join()
+        server.server_close()
+    return result, seen, captured
+
+
+def test_run_agent_sends_the_task_and_the_tool_list():
+    result, _, captured = _agent_stream([
+        {"delta": "答え"}, {"done": True, "text": "答え", "rounds": 2, "model": {"id": "m"}}])
+    assert captured["body"] == {"messages": [{"role": "user", "content": "調べて"}],
+                                "tools": ["copilot_readFile"]}
+    assert result == {"text": "答え", "rounds": 2, "model": {"id": "m"}}
+
+
+def test_run_agent_reports_tool_calls_as_they_happen():
+    _, seen, _ = _agent_stream([
+        {"tool": "copilot_readFile", "input": {"filePath": "/a"}},
+        {"tool": "copilot_readFile", "ok": True},
+        {"delta": "答え"},
+        {"done": True, "text": "答え", "rounds": 2},
+    ])
+    assert [e.get("tool") for e in seen if "tool" in e] == ["copilot_readFile"] * 2
+
+
+def test_run_agent_falls_back_to_the_deltas_when_done_has_no_text():
+    result, _, _ = _agent_stream([{"delta": "あ"}, {"delta": "い"}, {"done": True, "rounds": 1}])
+    assert result["text"] == "あい"
+
+
+def test_run_agent_raises_on_a_stream_error():
+    try:
+        _agent_stream([{"delta": "途中"}, {"error": "モデルが落ちた"}])
+        assert False, "must raise"
     except RuntimeError as exc:
-        assert "description" in str(exc) and "--call" in str(exc)
+        assert "モデルが落ちた" in str(exc)
 
 
-def test_check_agent_input_accepts_a_schema_without_properties():
-    client.check_agent_input({"inputSchema": {}}, client.agent_input("やって", None, None))
+def test_a_tool_error_is_not_a_stream_error():
+    """ツール 1 個の失敗でループ全体を落とさない（モデルへ返して続ける）。"""
+    result, seen, _ = _agent_stream([
+        {"tool": "copilot_readFile", "error": "no such file"},
+        {"delta": "見つかりませんでした"},
+        {"done": True, "text": "見つかりませんでした", "rounds": 2},
+    ])
+    assert result["text"] == "見つかりませんでした"
+    assert any(e.get("error") == "no such file" for e in seen)
 
 
-def _main_agent(argv, *, tools, stdin_text=""):
+def test_run_agent_rejects_a_truncated_stream():
+    try:
+        _agent_stream([{"delta": "途中で切れた"}])
+        assert False, "must raise"
+    except RuntimeError as exc:
+        assert "途中で切れました" in str(exc)
+
+
+def test_progress_lines_show_calls_and_errors_but_not_successes():
+    assert client.format_agent_event({"tool": "t", "input": {"a": 1}}) == '  → t {"a": 1}'
+    assert client.format_agent_event({"tool": "t", "ok": True}) is None
+    assert client.format_agent_event({"tool": "t", "error": "x"}) == "  ! t: x"
+    assert client.format_agent_event({"done": True, "rounds": 3}) == "  （3 往復）"
+    assert client.format_agent_event({"delta": "本文"}) is None
+
+
+def test_long_tool_input_is_truncated_in_the_progress_line():
+    line = client.format_agent_event({"tool": "t", "input": {"q": "あ" * 300}})
+    assert len(line) < 140 and line.endswith("…")
+
+
+def _main_agent(argv, *, tools, result=None, stdin_text=""):
     stdin = mock.Mock()
     stdin.isatty.return_value = True
     stdin.read.return_value = stdin_text
@@ -672,48 +725,44 @@ def _main_agent(argv, *, tools, stdin_text=""):
          mock.patch.object(client, "read_endpoint", return_value={"url": "u", "token": "t"}), \
          mock.patch.object(client, "repl", return_value=0) as repl, \
          mock.patch.object(client, "fetch_tools", return_value=tools), \
-         mock.patch.object(client, "call_tool", return_value={"text": "done"}) as call:
+         mock.patch.object(client, "run_agent",
+                           return_value=result or {"text": "答え", "rounds": 1}) as run:
         code = client.main()
-    return code, repl, call
+    return code, repl, run
 
 
-def test_agent_invokes_run_subagent():
-    code, repl, call = _main_agent(["--agent", "テストを直して"],
-                                   tools={"tools": [REAL_SUBAGENT_TOOL]})
+def test_agent_runs_the_loop_with_read_only_tools():
+    code, repl, run = _main_agent(["--agent", "調べて"], tools=AGENT_TOOLS)
     assert code == 0 and not repl.called
-    assert call.call_args.args[1] == "runSubagent"
-    assert call.call_args.args[2] == {"prompt": "テストを直して", "description": "テストを直して"}
+    assert run.call_args.args[1] == "調べて"
+    assert run.call_args.args[2] == ["copilot_readFile", "copilot_findFiles"]
+
+
+def test_agent_tools_flag_overrides_the_allowlist():
+    code, _, run = _main_agent(["--agent", "直して", "--agent-tools", "copilot_replaceString"],
+                               tools=AGENT_TOOLS)
+    assert code == 0
+    assert run.call_args.args[2] == ["copilot_replaceString"]
 
 
 def test_agent_reads_the_task_from_stdin_with_a_dash():
-    code, _, call = _main_agent(["--agent", "-"], tools={"tools": [REAL_SUBAGENT_TOOL]},
-                                stdin_text="長い依頼文")
-    assert code == 0
-    assert call.call_args.args[2]["prompt"] == "長い依頼文"
-
-
-def test_agent_passes_the_agent_name_through():
-    code, _, call = _main_agent(["--agent", "調べて", "--agent-name", "Explore"],
-                                tools={"tools": [REAL_SUBAGENT_TOOL]})
-    assert code == 0
-    assert call.call_args.args[2]["agentName"] == "Explore"
-
-
-def test_agent_says_so_when_the_tool_is_absent():
-    code, _, call = _main_agent(["--agent", "やって"], tools={"tools": []})
-    assert code == 1 and not call.called
+    code, _, run = _main_agent(["--agent", "-"], tools=AGENT_TOOLS, stdin_text="長い依頼")
+    assert code == 0 and run.call_args.args[1] == "長い依頼"
 
 
 def test_agent_refuses_an_empty_task():
-    code, _, call = _main_agent(["--agent", "   "], tools={"tools": [REAL_SUBAGENT_TOOL]})
-    assert code == 1 and not call.called
+    code, _, run = _main_agent(["--agent", "   "], tools=AGENT_TOOLS)
+    assert code == 1 and not run.called
 
 
-def test_agent_does_not_invoke_when_the_schema_moved():
-    moved = {"name": "runSubagent",
-             "inputSchema": {"properties": {"prompt": {}}, "required": ["prompt", "cwd"]}}
-    code, _, call = _main_agent(["--agent", "やって"], tools={"tools": [moved]})
-    assert code == 1 and not call.called
+def test_agent_says_so_when_no_tool_survives():
+    code, _, run = _main_agent(["--agent", "調べて"], tools={"tools": [{"name": "run_in_terminal"}]})
+    assert code == 1 and not run.called
+
+
+def test_agent_does_not_enter_the_repl_on_a_tty():
+    code, repl, run = _main_agent(["--agent", "調べて"], tools=AGENT_TOOLS)
+    assert code == 0 and run.called and not repl.called
 
 
 # --- タイムアウトの伝え方 -------------------------------------------------------
