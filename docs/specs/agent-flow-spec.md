@@ -207,6 +207,12 @@ kind は 13 種で、正典は `agentcore.nodecontract.VALID_KINDS` です。
 
 `extract` は根拠付きの項目取り出し（`data.records[].fields` + `evidence[]`）、`retrieve` は read 系ツールで根拠を実際に読む取得（`data.sources[]`）です。planner が未知の kind を出したら `work` に丸めます。自由記述の kind では本文中の JSON 風断片を `data` に昇格させません。
 
+`filter` / `judge` は `decision`（判定契約）を宣言できます。宣言があるとモデルは候補ごとの**事実の抽出だけ**を行い、採否と最良案は `agentcore.nodecontract.decide_candidates` が機械的に決めます。宣言は `facts`（転記できる項目。型は `bool` / `int` / `string`）と `criteria`（残す条件・AND）から成り、`judge` は `tie_break`（`min` / `max`。同値は id 昇順）で順位を付けます。正典はスキーマの `$defs.decision` です。多基準の採否をモデルに訊くと、宣言していない条件を自分で足して絞り込むためこの形にしています。
+
+宣言があるノードでは役割行を「抽出役」へ差し替え、抽出契約の依頼文を goal の末尾へ足し、プロンプトは組み込みに固定します（flow-worker スキルの古い版が「選べ」の役割行を出すと契約と食い違うため）。成果は `data` に `kept` / `undecided` / `winner` / `facts` / `decided_by: "machine"` で返ります。事実が欠けた候補は `undecided` に残り、`undecided` があるとき・`judge` で勝者が 1 つに絞れないときは `{"ok": false}` を立てて失敗終端させます。黙って合否へ倒さず、再試行・評価役・人へ返すためです。
+
+宣言の受け口は 2 つあります。planner には filter / judge へ必ず付けるよう求め、形が壊れた宣言や filter / judge 以外への宣言は剥がして従来のモデル判定へ倒します。ユーザー定義フロー（§3.2）では同じ不正を `UserPlanError` で拒みます——人が書いた宣言を黙って無効化すると、機械判定のつもりでモデル判定が走ります。
+
 `kind: verify` は run 内の反復と完了条件を制御する工程で、agent-project の verification plan を判定する専用 verifier（§3.3）とは別物です。前者が task の done を主張することはできません。
 
 #### 1.4 操作コマンド
@@ -384,7 +390,13 @@ tier（実行段）は `control.workloads.flow.tier` を読みます。`basic` �
      "tier": "small",                   // pinned-tier として記録。手法判定の when.tiers にも効く
      "readonly": true,                   // executor まで伝播。書き込み権限を付与しない
      "read_allocation": [...], "dependency_input": "full", "retries": 2},
-    {"id": "ok?", "kind": "human", "deps": ["a"],
+    {"id": "pick", "kind": "judge", "deps": ["a"],   // decision は filter / judge だけ（§1.3）
+     "goal": "候補から 1 つ選ぶ",
+     "decision": {"facts": [{"name": "extra_deps", "type": "bool"},
+                            {"name": "lines", "type": "int"}],
+                  "criteria": [{"fact": "extra_deps", "op": "eq", "value": false}],
+                  "tie_break": {"fact": "lines", "op": "min"}}},
+    {"id": "ok?", "kind": "human", "deps": ["pick"],
      "interaction": {"mode": "approval", "prompt": "...", "timeout_seconds": 604800}}
   ]
 }

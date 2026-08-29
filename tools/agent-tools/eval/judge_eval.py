@@ -224,38 +224,32 @@ REQUEST = ("run ログから日次のトークン消費レポートを作る仕�
 # （e4b の適格領域 6/6）で、判定は agentcore.nodecontract.decide_candidates（機械）。
 # F2 / J1 と同じ素材・同じ正解で、パイプに組み替えた形が F1 並み（3/3 帯）に届くかを測る。
 
-FACT_GOAL = (
-    "各候補について機械可読の事実だけを抽出する。**判定・選択はしない**。出力は JSON "
-    '{"facts":[{"id":"c1","tests":"pass","extra_deps":false,"lines":30}, ...]} だけ。\n'
-    "- tests: 「テスト: pass」なら \"pass\"、fail や実行時エラーなら \"fail\"、"
-    "未実行なら \"none\"\n"
-    "- extra_deps: 標準ライブラリ以外の追加依存が要るなら true、標準ライブラリのみなら false\n"
-    "- lines: 行数の整数\n"
-    "6 候補（c1〜c6）すべてを facts に含めること。")
+# 判定契約は**本番のノード宣言と同じ形**（agent-flow の node.decision / schemas の
+# $defs.decision）。依頼文も正規化も agentcore.nodecontract の 1 実装を呼ぶ——ここへ
+# 写すと、本番の文面が変わった日に測定だけが古い文面のまま通り続ける。
+DECISION = {
+    "facts": [
+        {"name": "tests", "type": "string", "values": ["pass", "fail", "none"],
+         "description": "「テスト: pass」なら pass、fail や実行時エラーなら fail、未実行なら none"},
+        {"name": "extra_deps", "type": "bool",
+         "description": "標準ライブラリ以外の追加依存が要るなら true、標準ライブラリのみなら false"},
+        {"name": "lines", "type": "int", "description": "行数"},
+    ],
+    "criteria": [{"fact": "extra_deps", "op": "eq", "value": False}],
+}
+JUDGE_DECISION = dict(
+    DECISION,
+    criteria=[{"fact": "tests", "op": "eq", "value": "pass"},
+              {"fact": "extra_deps", "op": "eq", "value": False}],
+    tie_break={"fact": "lines", "op": "min"})
 
-
-def _norm_facts(data) -> "list[dict]":
-    """モデル出力の facts を decide_candidates の入力へ正規化（表記ゆれの吸収だけ。
-    値の欠落・不明値は None のまま渡す——undecided として機械側が扱う）。"""
-    facts = data.get("facts") if isinstance(data, dict) else None
-    out = []
-    for f in facts if isinstance(facts, list) else []:
-        if not isinstance(f, dict):
-            continue
-        rec: dict = {"id": str(f.get("id") or "").strip()}
-        tests = str(f.get("tests") or "").strip().lower()
-        rec["tests"] = tests if tests in ("pass", "fail", "none") else None
-        deps = f.get("extra_deps")
-        rec["extra_deps"] = deps if isinstance(deps, bool) else None
-        lines = f.get("lines")
-        rec["lines"] = lines if isinstance(lines, int) and not isinstance(lines, bool) else None
-        out.append(rec)
-    return out
+FACT_GOAL = (engine.fact_extraction_directive(DECISION)
+             or "（判定契約をこの木から解決できませんでした）")
 
 
 def check_pipe_filter(data):
     decision = engine.decide_candidates(
-        [{"fact": "extra_deps", "op": "eq", "value": False}], _norm_facts(data))
+        DECISION["criteria"], engine.normalize_facts(DECISION, data))
     if decision is None:
         return False, "decide_candidates がこの木に無い"
     if decision["undecided"]:
@@ -268,9 +262,8 @@ def check_pipe_filter(data):
 
 def check_pipe_judge(data):
     decision = engine.decide_candidates(
-        [{"fact": "tests", "op": "eq", "value": "pass"},
-         {"fact": "extra_deps", "op": "eq", "value": False}],
-        _norm_facts(data), tie_break={"fact": "lines", "op": "min"})
+        JUDGE_DECISION["criteria"], engine.normalize_facts(JUDGE_DECISION, data),
+        tie_break=JUDGE_DECISION["tie_break"])
     if decision is None:
         return False, "decide_candidates がこの木に無い"
     if decision["undecided"]:
