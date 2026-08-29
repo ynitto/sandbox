@@ -88,6 +88,31 @@ QUERIES = [
 ]
 
 
+STYLES = ("lexical", "paraphrase")
+
+
+def load_queries(path):
+    """クエリ集合を JSON から読む（既定は組み込み）。返すのは `(訊き方の名前, 行)`。
+
+    コーパスが替われば正解も替わるので、掃引のたびにスクリプトを書き換えない口にする。
+    訊き方は 2 通りに固定しない——`styles` を宣言すれば 3 通り以上も測れる（行は
+    `[<styles と同数のクエリ>..., [gold, ...]]`）。同じ「用語で探す」でも、題名をなぞる
+    長い訊き方と数語だけの短い訊き方では TF-IDF の出方がまるで違う。"""
+    if not path:
+        return STYLES, [({"lexical": a, "paraphrase": b}, golds) for a, b, golds in QUERIES]
+    data = json.loads(pathlib.Path(path).expanduser().read_text(encoding="utf-8"))
+    rows = data.get("queries") if isinstance(data, dict) else data
+    styles = tuple(data.get("styles") or STYLES) if isinstance(data, dict) else STYLES
+    out = []
+    for row in rows:
+        *texts, golds = row
+        if len(texts) != len(styles):
+            raise SystemExit(f"クエリ行の要素数が styles={styles} と合いません: {row[:1]}")
+        out.append((dict(zip(styles, (str(t) for t in texts))),
+                    [str(g) for g in golds]))
+    return styles, out
+
+
 def load_corpus(distractors: bool = True) -> "list[tuple[str, str]]":
     """(相対パス, 本文) の一覧。正解は ltm の記憶にだけ置く。
 
@@ -194,6 +219,31 @@ def cascade_ranker(tfidf, emb, threshold: float):
     return rank
 
 
+def production_ranker(memory_dir: str, threshold: float, limit: int = 30):
+    """**本番経路そのもの** — `recall_memory.search_with_index` を呼ぶ（写さない）。
+
+    ハーネスの TF-IDF は本文全文で作るが、本番のコーパスは title / summary / tags だけで
+    作る。最上位コサインの出方が違うので、しきい値はこちらで測らないと決められない
+    （設計 ltm-use-embedding-recall-design の「未決」1 点目）。
+    """
+    sys.path.insert(0, str(SIMILARITY.parent))
+    import memory_utils  # noqa: PLC0415
+    import recall_memory  # noqa: PLC0415
+
+    base = memory_utils.load_config()
+    memory_utils.load_config = lambda: {**base, "embedding_threshold": threshold}
+    memory_utils.refresh_index(memory_dir)
+
+    def rank(query: str):
+        results = recall_memory.search_with_index(
+            memory_dir, query.split(), None, limit)
+        rank.fired += bool(results) and results[0].get("ranker") == "embedding"
+        return [r["entry"]["filepath"] for r in results]
+
+    rank.fired = 0
+    return rank
+
+
 def hybrid_ranker(rankers, weights=(1.0, 1.0), kk: int = 60):
     """RRF（順位の逆数で足す）。スコアの尺度が違う腕を混ぜる定番で、正規化が要らない。"""
     def rank(query: str):
@@ -209,13 +259,13 @@ def hybrid_ranker(rankers, weights=(1.0, 1.0), kk: int = 60):
 # ------------------------------------------------------------------ 採点
 
 
-def score(rank, k: int, style: str) -> dict:
+def score(rank, k: int, style: str, queries) -> dict:
     hit1 = hitk = 0
     rr = 0.0
     misses = []
     latencies = []
-    for lexical, paraphrase, golds in QUERIES:
-        query = lexical if style == "lexical" else paraphrase
+    for texts, golds in queries:
+        query = texts[style]
         t0 = time.time()
         ranked = rank(query)
         latencies.append(time.time() - t0)
@@ -228,9 +278,45 @@ def score(rank, k: int, style: str) -> dict:
         else:
             misses.append((query, ranked[0], (best + 1) if best is not None else None))
         rr += 1 / (best + 1) if best is not None else 0.0
-    n = len(QUERIES)
+    n = len(queries)
     return {"hit@1": hit1 / n, f"hit@{k}": hitk / n, "MRR": rr / n,
             "query_sec_p50": sorted(latencies)[n // 2], "misses": misses}
+
+
+def run_production(args, styles, queries, thresholds) -> int:
+    """本番経路でしきい値を掃引する。精度と**発火率**を同時に出す——段構えは
+    「弱い問いだけ埋め込みへ落とす」形なので、全問い発火なら実質は埋め込み単独である。"""
+    memory_dir = str(MEMORY_DIR)
+    missing = sorted({g for _, golds in queries for g in golds}
+                     - {str(p.relative_to(MEMORY_DIR)) for p in MEMORY_DIR.rglob("*.md")})
+    if missing:
+        print(f"正解に指定したファイルが記憶にありません: {missing}", file=sys.stderr)
+        return 1
+    print(f"本番経路（recall_memory.search_with_index） / 記憶 "
+          f"{len(list(MEMORY_DIR.rglob('*.md')))} 件 / クエリ {len(queries)} 件 × "
+          f"{len(styles)} 通り"
+          f"（{memory_dir}）\n")
+
+    report = {"mode": "production", "memory_dir": memory_dir, "k": args.k,
+              "queries": len(queries), "styles": {}}
+    for style in styles:
+        print(f"\n########## 訊き方: {style}")
+        print(f"{'しきい値':>10} | {'hit@1':>6} {'hit@' + str(args.k):>6} {'MRR':>6} | 発火")
+        rows = {}
+        for threshold in thresholds:
+            rank = production_ranker(memory_dir, threshold)
+            r = score(rank, args.k, style, queries)
+            r["fired"] = rank.fired
+            rows[f"{threshold:g}"] = {k: v for k, v in r.items() if k != "misses"}
+            print(f"{threshold:>10g} | {r['hit@1']:>5.0%} {r[f'hit@{args.k}']:>6.0%} "
+                  f"{r['MRR']:>6.3f} | {rank.fired}/{len(queries)}")
+        report["styles"][style] = rows
+    if args.output:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n",
+                               encoding="utf-8")
+        print(f"\n結果: {args.output}")
+    return 0
 
 
 def main() -> int:
@@ -245,26 +331,36 @@ def main() -> int:
                     help="記憶だけを対象にする（妨害文書を混ぜない）")
     ap.add_argument("--rrf-weight", type=float, default=1.0,
                     help="RRF で埋め込み側に掛ける重み（1.0 = 対等）")
-    ap.add_argument("--cascade-threshold", type=float, default=0.11,
-                    help="段構えのしきい値（TF-IDF 最上位コサインがこれ未満なら埋め込み）")
+    ap.add_argument("--cascade-threshold", default="0.11",
+                    help="段構えのしきい値（TF-IDF 最上位コサインがこれ未満なら埋め込み）。"
+                         "--production ではカンマ区切りで掃引できる（inf = 埋め込み単独）")
+    ap.add_argument("--queries", help="クエリ集合の JSON（既定は組み込み）")
+    ap.add_argument("--production", action="store_true",
+                    help="ハーネスのコーパスを作らず、本番の recall 経路を直接測る")
     ap.add_argument("--cache", default="/tmp/agent-retrieval-eval-index.json",
                     help="埋め込み索引のキャッシュ先")
     ap.add_argument("--output", type=pathlib.Path,
                     help="全 arm の機械可読な指標を JSON でも保存する")
     args = ap.parse_args()
 
+    styles, queries = load_queries(args.queries)
+    thresholds = [float(t) for t in str(args.cascade_threshold).split(",")]
+
+    if args.production:
+        return run_production(args, styles, queries, thresholds)
+
     docs = load_corpus(distractors=not args.no_distractors)
     if not docs:
         print(f"コーパスが空です: {MEMORY_DIR}", file=sys.stderr)
         return 1
-    gold_missing = sorted({g for _, _, golds in QUERIES for g in golds}
+    gold_missing = sorted({g for _, golds in queries for g in golds}
                           - {name for name, _ in docs})
     if gold_missing:
         print(f"正解に指定したファイルがコーパスにありません: {gold_missing}", file=sys.stderr)
         return 1
     memories = sum(1 for name, _ in docs if not name.startswith("[distractor]"))
     print(f"コーパス {len(docs)} 件（記憶 {memories} + 妨害 {len(docs) - memories}） / "
-          f"クエリ {len(QUERIES)} 件 × 2 通りの訊き方 （{MEMORY_DIR}）\n")
+          f"クエリ {len(queries)} 件 × {len(styles)} 通りの訊き方 （{MEMORY_DIR}）\n")
 
     arms = [("TF-IDF（現行 similarity.py）", tfidf_ranker(docs))]
     if not args.tfidf_only:
@@ -276,18 +372,18 @@ def main() -> int:
             arms.append((f"埋め込み（{args.model}）", emb))
             arms.append((f"RRF 併用（TF-IDF 1 : {args.model} {args.rrf_weight:g}）",
                          hybrid_ranker([arms[0][1], emb], weights=(1.0, args.rrf_weight))))
-            arms.append((f"段構え（TF-IDF 最上位 < {args.cascade_threshold:g} で {args.model}）",
-                         cascade_ranker(arms[0][1], emb, args.cascade_threshold)))
+            arms.append((f"段構え（TF-IDF 最上位 < {thresholds[0]:g} で {args.model}）",
+                         cascade_ranker(arms[0][1], emb, thresholds[0])))
 
     report = {"model": args.model, "k": args.k, "chars": args.chars,
               "documents": len(docs), "memories": memories, "styles": {}}
-    for style in ("lexical", "paraphrase"):
+    for style in styles:
         print(f"\n########## 訊き方: {style}"
               + ("（記憶の用語をそのまま使う）" if style == "lexical"
                  else "（用語を思い出せず意味だけで探す）"))
         results = []
         for label, rank in arms:
-            r = score(rank, args.k, style)
+            r = score(rank, args.k, style, queries)
             results.append((label, r))
             print(f"\n=== {label}")
             print(f"  hit@1 {r['hit@1']:.0%}  hit@{args.k} {r[f'hit@{args.k}']:.0%}  "

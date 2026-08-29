@@ -1,0 +1,171 @@
+{
+  "memory_dir": "~/.claude/memory/home",
+  "note": "本番経路（recall_memory.search_with_index）の掃引用。lexical は題名をなぞる長い訊き方、lexical_short は同じ用語を数語だけ打つ訊き方（実際の recall はこちらに近い）、paraphrase は用語を思い出せず意味だけで探す訊き方。正解はコーパス内の相対パスで固定する。",
+  "queries": [
+    [
+      "agent-dashboard の renderer で window.prompt が使えない",
+      "window.prompt renderer",
+      "画面側で入力を求める小窓を出そうとしたら例外になった",
+      [
+        "debugging/agent-dashboard-renderer-window-prompt-procedural.md"
+      ]
+    ],
+    [
+      "ollama の JSON モードは配列を返せない flow-planner Phase 3",
+      "ollama JSON 配列",
+      "計画づくりのローカル経路が黙って代替へ落ちていた原因",
+      [
+        "debugging/flow-planner-agent-ollama-phase-3-procedural.md"
+      ]
+    ],
+    [
+      "agent-flow run の workspace 契約は meta が唯一の権威",
+      "workspace meta 権威",
+      "リモートへ変更が上がらず成果の枝も生まれない",
+      [
+        "operations/agent-flow-run-workspace-meta-procedural.md"
+      ]
+    ],
+    [
+      "kiro state sync コミット洪水の根本原因と対策",
+      "state sync コミット洪水",
+      "状態の保存が延々と履歴を積み続けて止まらなくなった障害",
+      [
+        "operations/kiro-state-sync-procedural.md"
+      ]
+    ],
+    [
+      "kiro-state 同期の書き手 1 本化と plumbing マージ",
+      "kiro-state 書き手",
+      "状態の保存が復旧できないところまで詰んだ件の恒久対策",
+      [
+        "kiro-flow/kiro-state-mvp-1-plumbing-procedural.md"
+      ]
+    ],
+    [
+      "非ログイン子プロセスの ollama 接続 504 はプロキシ直撃",
+      "ollama 504 プロキシ",
+      "別プロセスから呼ぶと環境変数が届かず通信が外へ出てしまう",
+      [
+        "troubleshooting/ollama-504-procedural.md"
+      ]
+    ],
+    [
+      "kiro-flow.yaml の agents 設定が黙って無視される罠",
+      "agents 設定 無視",
+      "設定に書いたモデル名が効かないのにエラーも出ない",
+      [
+        "tools/kiro-project-kiro-flow-agents-procedural.md"
+      ]
+    ],
+    [
+      "弱いモデルへ指示を足す口は tuning.json の methods",
+      "tuning.json methods",
+      "小さいモデルにだけ規律を足したいときどこへ書くか",
+      [
+        "operations/tuning-json-methods-procedural.md"
+      ]
+    ],
+    [
+      "tier:basic で効くのは分解ではなく決定的な検査と再投入",
+      "tier:basic 再投入",
+      "小型モデルの受入を上げた支配因子は何だったか",
+      [
+        "tools/tier-basic-procedural.md"
+      ]
+    ],
+    [
+      "案 1 引き直し不採用と案 2 スライシングの実測結論",
+      "スライシング 実測",
+      "投げ直しと切り分け、どちらが安く済んだかの実測",
+      [
+        "tools/1-2-procedural.md"
+      ]
+    ],
+    [
+      "ltm-use 埋め込み段構え bge-m3 の有効化と受け入れの測り方",
+      "bge-m3 段構え",
+      "言い換えた訊き方でも過去の知見が引けるようにした仕組み",
+      [
+        "operations/ltm-use-bge-m3-procedural.md"
+      ]
+    ],
+    [
+      "worktree セッションの編集先とダッシュボードテスト",
+      "worktree 編集先",
+      "別の作業場所で走っているとき、どのパスへ書き込むか",
+      [
+        "operations/worktree-procedural.md"
+      ]
+    ],
+    [
+      "agent-loop headless の小型モデル向けハーネス調整",
+      "agent-loop headless 偽 done",
+      "小さいモデルが終わったと嘘をつく・永久に失敗する",
+      [
+        "tools/agent-loop-headless-procedural.md"
+      ]
+    ],
+    [
+      "needs は status の投影で両方向に整合させる",
+      "needs status 投影",
+      "片付いたはずの札が画面から消えずに残り続ける",
+      [
+        "design/needs-status-procedural.md"
+      ]
+    ],
+    [
+      "kiro-project でバックログが生成されない no-acceptance ゲート",
+      "no-acceptance バックログ",
+      "目標は書いたのに仕事が一件も積まれない",
+      [
+        "tools/kiro-project-no-acceptance-procedural.md"
+      ]
+    ],
+    [
+      "kiro-project のテストは中立 cwd で実行する",
+      "kiro-project テスト cwd",
+      "テストを回したら実物の置き場へ書き込まれてしまった",
+      [
+        "operations/kiro-project-cwd-procedural.md"
+      ]
+    ],
+    [
+      "kiro-projects-viewer の git 同期が本体リポジトリの index を汚す",
+      "viewer git index 汚す",
+      "人が触っていないファイルが大量に取り込み待ちへ入る",
+      [
+        "tools/kiro-projects-viewer-git-index-procedural.md"
+      ]
+    ],
+    [
+      "agent-project の charter 達成条件 verify は ollama-verify では成立しない",
+      "charter verify ollama-verify",
+      "検査していないのに合格と報告してくるモデル",
+      [
+        "debugging/agent-project-charter-verify-verify-ollama-verify-.md"
+      ]
+    ],
+    [
+      "段 tier の運搬と語彙の統一 手法パックの when.tiers",
+      "tier 語彙 統一",
+      "実行の重さの区分をどこで揃えたか",
+      [
+        "design/tier-procedural.md"
+      ]
+    ],
+    [
+      "ollama の会話が dashboard で見えない原因の三層切り分け",
+      "dashboard 会話 見えない",
+      "やり取りの中身を画面で見ようとすると空になる",
+      [
+        "debugging/ollama-dashboard-procedural.md"
+      ]
+    ]
+  ],
+  "styles": [
+    "lexical",
+    "lexical_short",
+    "paraphrase"
+  ]
+}
