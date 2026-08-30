@@ -44,8 +44,8 @@
 | reduce・evaluator | e4b 単発 JSON | 6/6・5/6 |
 | テキストのレビュー・検証 | `ollama / gemma4:12b`（`ollama-verify` 変種） | text-eval 6/6。暴走 2/27 → 再投入 1 回 + e4b 縮退配線済み（B3） |
 | 多基準 filter / judge | 決定化パイプ（P4・実装済み）。残る裁定だけクラウド | E6: F2P/J1P 3/3 |
-| planner（flow） | **クラウド維持**。e4b は鎖 2/3・fan-out 3/3・列挙 1/3・単一 0/3 で部分的 | B1 planner_eval |
-| project の verify（自然文 criteria） | **ローカル不成立**（12b は散文 JSON・e4b は捏造 pass）。決定的コマンドだけローカル圏 | B1 project_verify_eval |
+| planner（flow） | 本書の時点では**クラウド維持**（e4b は鎖 2/3・fan-out 3/3・列挙 1/3・単一 0/3）。**08-30 に更新**——ゲート + 正規化を足して PL2〜PL6 が 3/3、PL1 のみ 2/3 | B1 planner_eval → [08-30 の割り当て表](2026-08-30-measured-improvements-intake.md) |
+| project の verify（自然文 criteria） | **ローカル不成立**（12b は散文 JSON・e4b は捏造 pass）。決定的コマンドだけローカル圏。**08-24 にこの結果を根拠として自然文 verifier ごと撤去**（役割が本番に無くなったので、モデルの割り当て対象ではない） | B1 project_verify_eval・コミット `5de9a23ec` |
 | dashboard doctor（4 モード） | `gemma4:e4b` で足りる（12/12） | B1 doctor_eval |
 | コード worker としての 12b | 禁止（tier 候補に入れない） | wall 600/1800 とも 0 完走 |
 | 記憶検索 | bge-m3（ltm-use v5.5.0 実装済み・生成モデルと独立） | B4 |
