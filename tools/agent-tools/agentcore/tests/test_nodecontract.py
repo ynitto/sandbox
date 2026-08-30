@@ -263,5 +263,40 @@ class DeliverableSlotTest(unittest.TestCase):
         self.assertNotIn("scope", slots[1]["operation"])   # 宣言に無い書込先を作らない
 
 
+class DependencyGapTests(unittest.TestCase):
+    """依存が申告した欠落を、集約系の成果へ機械が運ぶ（統合役は落とす: SY2 0/5）。"""
+
+    DEPS = {
+        "t1": {"output": "12 件中 10 件を索引にまとめた",
+               "data": {"warnings": ["ITEM-11.md と ITEM-12.md は読み取りに失敗"]}},
+        "t2": {"output": "report.md へ書き出した", "data": {"issues": ["行数は 10 行"]}},
+        "t3": {"output": "自由記述だけの依存（本文に欠落を書いている）", "data": None},
+    }
+
+    def test_collects_only_structured_declarations(self):
+        gaps = nodecontract.collect_dependency_gaps(self.DEPS)
+        self.assertEqual([g[0] for g in gaps], ["t1", "t2"])   # 散文の t3 は拾わない
+        self.assertIn("ITEM-11.md", gaps[0][1])
+
+    def test_carries_what_the_model_dropped(self):
+        text, data = nodecontract.carry_dependency_gaps(self.DEPS, "索引を作成しました。", None)
+        self.assertIn(nodecontract.GAP_HEADING, text)
+        self.assertIn("ITEM-11.md と ITEM-12.md は読み取りに失敗", text)
+        self.assertEqual([g["dep"] for g in data["gaps"]], ["t1", "t2"])
+
+    def test_does_not_repeat_what_the_model_already_carried(self):
+        body = ("ITEM-11.md と ITEM-12.md は読み取りに失敗したため未収録。"
+                "行数は 10 行。")
+        text, data = nodecontract.carry_dependency_gaps(self.DEPS, body, None)
+        self.assertEqual(text, body)
+        self.assertEqual(len(data["gaps"]), 2)   # 運搬済みでも記録は残す
+
+    def test_no_declaration_leaves_the_result_untouched(self):
+        """申告が無ければ data を dict へ変えない——下流の形を無意味に動かさない。"""
+        self.assertEqual(
+            nodecontract.carry_dependency_gaps({"t1": {"output": "x", "data": None}}, "text", None),
+            ("text", None))
+
+
 if __name__ == "__main__":
     unittest.main()

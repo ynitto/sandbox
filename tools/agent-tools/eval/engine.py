@@ -274,6 +274,17 @@ def fact_extraction_directive(decision):
     return fn(decision) if fn is not None else None
 
 
+def carry_dependency_gaps(dep_results, text: str, data):
+    """集約結果へ依存の申告した欠落を運ぶ。本番（agentcore.nodecontract）を呼ぶ（写さない）。
+
+    無い木では入力をそのまま返す——機械が運ばない条件で測ったことは missing() に残る。
+    """
+    nodecontract = _nodecontract()
+    fn = (_need(nodecontract, "carry_dependency_gaps", "carry_dependency_gaps（欠落の運搬）")
+          if nodecontract is not None else None)
+    return fn(dep_results, text, data) if fn is not None else (text, data)
+
+
 def operation_contract_errors(contract):
     """処理契約の形式検査。本番（agentcore.nodecontract）を呼ぶ（写さない）。"""
     nodecontract = _nodecontract()

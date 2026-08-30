@@ -157,6 +157,22 @@ class OutputSanitizeTests(unittest.TestCase):
         d = kf._reconcile_count({"primes": [2, 3, 5], "count": 99, "range": {"min": 2}})
         self.assertEqual(d["count"], 3)
 
+    def test_synthesize_carries_dependency_gaps(self):
+        """統合役は依存が申告した欠落を落とす（SY2 0/5）ので、機械が転記する。"""
+        deps = {"t1": {"output": "索引を作った",
+                       "data": {"warnings": ["ITEM-11.md は読み取りに失敗"]}},
+                "t2": {"output": "書き出した", "data": None}}
+        text, data = kf._nodecontract.carry_dependency_gaps(deps, "索引を作成しました。", None)
+        self.assertIn("ITEM-11.md は読み取りに失敗", text)
+        self.assertEqual(data["gaps"], [{"dep": "t1", "note": "ITEM-11.md は読み取りに失敗"}])
+        # 本文が既に運べているときは重ねない
+        carried, _ = kf._nodecontract.carry_dependency_gaps(
+            deps, "ITEM-11.md は読み取りに失敗したため未収録。", None)
+        self.assertNotIn(kf._nodecontract.GAP_HEADING, carried)
+        # 申告が無ければ data を dict へ変えない（下流の形を無意味に動かさない）
+        self.assertEqual(kf._nodecontract.carry_dependency_gaps(
+            {"t1": {"output": "x"}}, "text", None), ("text", None))
+
     def test_reconcile_count_skips_when_ambiguous(self):
         # count 無し / 複数リスト / 非 dict は変更しない
         self.assertEqual(kf._reconcile_count({"primes": [2, 3]}), {"primes": [2, 3]})

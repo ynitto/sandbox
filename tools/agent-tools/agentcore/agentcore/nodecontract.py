@@ -72,6 +72,58 @@ def validate_node_data(kind: str, data):
     return data
 
 
+# --- 依存が申告した欠落の運搬（集約系）------------------------------------------------
+# 統合役（synthesize）は依存の申告した欠落を落とす（実測 2026-08-30: SY2 0/5。1 本は
+# 「矛盾や欠落は認められず」と逆の結論まで書いた）。プロンプトの実行規律は「欠落は結論に
+# 反映したうえで明記する」と言っているが、**言わせても直らない**——この日の 4 例と同じ。
+#
+# だから機械が運ぶ。欠落は依存の result に既にある事実なので、モデルに書き写させる必要が
+# 無い（F2P・PR1P と同じ形＝モデルは事実、判断と転記は機械）。集められるのは構造化された
+# 申告だけである——`{"ok": false}` を返した依存は failed になって `deps_satisfied` を通らず
+# 集約役まで届かないので、done の依存が持てる欠落は契約の `warnings`（extract / retrieve）と
+# `issues` に限られる。散文だけの申告は機械には拾えない（拾えないことを認めて残す）。
+
+_GAP_KEYS = ("warnings", "issues")
+GAP_HEADING = "【引き継いだ欠落】"
+
+
+def collect_dependency_gaps(dep_results) -> "list[tuple[str, str]]":
+    """依存の result から、申告された欠落を `(依存 id, 本文)` で集める。
+
+    見るのは `data.warnings` / `data.issues` の文字列配列だけ。自由記述の本文は読まない
+    ——本文から欠落を読み取るのはモデルの仕事で、そこが落ちるから機械を足している。
+    """
+    gaps: list[tuple[str, str]] = []
+    for dep_id, result in (dep_results or {}).items():
+        data = result.get("data") if isinstance(result, dict) else None
+        if not isinstance(data, dict):
+            continue
+        for key in _GAP_KEYS:
+            for item in data.get(key) or []:
+                text = str(item).strip()
+                if text:
+                    gaps.append((str(dep_id), text))
+    return gaps
+
+
+def carry_dependency_gaps(dep_results, text: str, data):
+    """集約結果へ、依存が申告した欠落を機械的に追記した `(text, data)` を返す。
+
+    既に本文へ書かれている欠落は重ねない（モデルが運べたぶんはそのまま）。1 件も無ければ
+    入力をそのまま返す——`data` を無意味に dict へ変えない。
+    """
+    gaps = collect_dependency_gaps(dep_results)
+    if not gaps:
+        return text, data
+    missing = [(dep_id, body) for dep_id, body in gaps if body not in (text or "")]
+    merged = {**data} if isinstance(data, dict) else {}
+    merged["gaps"] = [{"dep": dep_id, "note": body} for dep_id, body in gaps]
+    if not missing:
+        return text, merged
+    lines = "\n".join(f"- [{dep_id}] {body}" for dep_id, body in missing)
+    return f"{text}\n\n{GAP_HEADING}（依存の申告から機械が転記）\n{lines}", merged
+
+
 # --- 処理契約（operation contract, §3.4）----------------------------------------------
 
 # 局所修正（T2/T4 相当）の変更量の目安。事前判定でなく、実行後の diff 検算で使う。

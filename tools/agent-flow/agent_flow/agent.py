@@ -1515,6 +1515,11 @@ def execute_agent(kind: str, goal: str, dep_results: dict, model: str | None,
         data = _reconcile_count(data)
     elif kind == "verify":
         data = _normalize_verify(text, data)
+    elif kind == "synthesize":
+        # 依存が申告した欠落（契約の warnings / issues）は機械が運ぶ。統合役はそれを落として
+        # 完成物のように書く（実測 2026-08-30: SY2 0/5）。実行規律で言わせても直らないので、
+        # 既に result にある事実のほうを転記する（F2P・PR1P と同じ形）。
+        text, data = _nodecontract.carry_dependency_gaps(deps, text, data)
     elif pipe:
         text, data = _apply_decision(pipe, kind, text, data, prompt, model, agent)
     return text, data
