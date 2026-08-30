@@ -453,11 +453,27 @@ copilot>   [debug] 往復 2  user:string(4) / assistant:string(6) / user:string(
            / user:LanguageModelToolResultPart(c1:LanguageModelTextPart)
 ```
 
-**既知の未解決:** 履歴のある対話でツールを呼ぶと、次の往復が
-`messages with role 'tool' must be a response to a preceeding message with 'tool_calls'`
-で 400 になることがあります。履歴の無い単発（`--agent`）では同じ形が通るので、
-先頭に付く `assistant:string` が効いている疑いがありますが、確かめられていません。
-当たったときは `/clear` で履歴を捨てると通ります。
+この口が、下の「ツール結果はテキストへ畳む」を突き止めた道具です。役割は enum の数値
+（`1`=user / `2`=assistant）、クラス名は拡張が minify されていれば短い記号になります。
+
+### ツール結果はテキストへ畳む
+
+**prompt-tsx の部品をそのまま返すと 400 になります。**
+
+```console
+$ vscode-copilot --agent-tools copilot_getChangedFiles --agent "変更されたファイルを教えて"
+vscode-copilot: bridge error: Request Failed: 400 {"error":{"message":"Invalid parameter:
+messages with role 'tool' must be a response to a preceeding message with 'tool_calls'."}}
+```
+
+積み方は正しく、履歴の有無にも依りません（`--debug` で確認済み）。分かれ目は**ツール結果
+の中身**でした——テキストを返すツール（`copilot_readProjectStructure`）では同じ往復が
+通り、prompt-tsx を返すツール（`copilot_getChangedFiles`）で落ちます。
+
+そこで結果は `--call` と同じ `collectText` でテキストへ畳んでからモデルへ返します。
+VS Code の prompt-tsx 変換に依らずに済みます。本文が 1 つも取れないツールには
+`(このツールは本文を返しませんでした)` を返します——**空の結果を積むのは、空の
+assistant を積むのと同じ穴**だからです。
 
 ### ループの作法
 
