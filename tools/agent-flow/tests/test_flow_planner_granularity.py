@@ -192,6 +192,30 @@ class ScopeAndGateTests(unittest.TestCase):
         out = plan.strip_unrequested_deliverables(tasks, "集計スクリプトを作る")
         self.assertEqual(out[0]["operation"]["deliverables"], ["src/a.py"])
 
+    def test_strip_drops_static_split_successors_transitively(self):
+        """split → map → reduce を下流ごと落とす（e4b は作り直しても同じ形を書く。
+        実測 2026-08-30: PL3 0/3・3 本ともゲート発火）。落とした仕事は engine の
+        動的展開（`<split>-m*` / `<split>-reduce`）が持つ。"""
+        tasks = [{"id": "s", "goal": "[scope] notes/ 列挙", "deps": [], "kind": "split"},
+                 {"id": "m", "goal": "[scope] 各ファイル", "deps": ["s"], "kind": "map"},
+                 {"id": "r", "goal": "集約", "deps": ["m"], "kind": "reduce"},
+                 {"id": "pre", "goal": "[scope] 前処理", "deps": [], "kind": "work"}]
+        out = plan.strip_static_split_successors(tasks)
+        self.assertEqual([t["id"] for t in out], ["s", "pre"])
+
+    def test_strip_split_successors_is_kind_agnostic(self):
+        tasks = [{"id": "s", "goal": "[scope] 列挙", "deps": [], "kind": "split"},
+                 {"id": "w", "goal": "[scope] 各ファイル処理", "deps": ["s"], "kind": "work"}]
+        self.assertEqual([t["id"] for t in plan.strip_static_split_successors(tasks)], ["s"])
+
+    def test_strip_split_successors_is_a_no_op_without_split_or_successor(self):
+        chain = [{"id": "a", "goal": "x", "deps": [], "kind": "work"},
+                 {"id": "b", "goal": "y", "deps": ["a"], "kind": "work"}]
+        self.assertEqual(plan.strip_static_split_successors(chain), chain)
+        lone_split = [{"id": "s", "goal": "列挙", "deps": [], "kind": "split"},
+                      {"id": "w", "goal": "独立", "deps": [], "kind": "work"}]
+        self.assertEqual(plan.strip_static_split_successors(lone_split), lone_split)
+
     def test_gate_count_out_of_range(self):
         tasks = [
             {"id": "t1", "goal": "[scope] a.py\n[out_of_scope] x\none", "deps": [], "kind": "work"},
@@ -294,6 +318,26 @@ class Phase3RetryTests(unittest.TestCase):
             tasks = plan.phase3_build("req", analysis, strategy, None, "fine")
         self.assertEqual(calls["n"], 2)
         self.assertEqual(len([t for t in tasks if t["kind"] == "work"]), 4)
+
+    def test_static_split_successors_are_stripped_after_failed_retry(self):
+        """再生成しても同じ split → map → reduce が返る形（PL3 の実測）は、
+        返す前に正規化が下流を外す——ゲートで言わせ、残りは機械が落とす。"""
+        stubborn = [{"id": "s", "goal": "[scope] notes/ 列挙", "deps": [], "kind": "split"},
+                    {"id": "m", "goal": "[scope] 各ファイル", "deps": ["s"], "kind": "map"},
+                    {"id": "r", "goal": "集約", "deps": ["m"], "kind": "reduce"}]
+        calls = {"n": 0}
+
+        def fake_agent(prompt, model):
+            calls["n"] += 1
+            return json.dumps(stubborn)
+
+        analysis = {"subtasks": ["a"], "complexity": "moderate"}
+        strategy = {"patterns": ["map-reduce"], "parallelism": 3,
+                    "reason": "r", "composite_template": None, "review": False}
+        with mock.patch.object(plan, "run_agent", side_effect=fake_agent):
+            tasks = plan.phase3_build("req", analysis, strategy, None, "fine")
+        self.assertEqual(calls["n"], 2)      # ゲートは 1 度作り直させる
+        self.assertEqual([t["id"] for t in tasks], ["s"])
 
 
 if __name__ == "__main__":

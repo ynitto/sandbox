@@ -1462,6 +1462,15 @@ kind 非依存にした修正が効くのは `work` / `generate` で書かれた
 この 3 本はどれも map / reduce だった（修正前のゲートでも捕まる形）。台帳
 `results/archive/ledger-2026-08-30-planner-pl3-gate-remeasure-gemma4-e4b.jsonl`。
 
+**作り直しで直らないぶんも機械が落とす（同日）——PL3 0/3 → 3/3。** `tie_break`・
+要求外成果物と同じ扱いにした: ゲートで 1 度作り直させ、それでも残る split への静的依存は
+`strip_static_split_successors` が**下流ごと**外して運ぶ（直接の後段だけ外すと残りの deps が
+宙に浮く。落とした仕事は engine の動的展開 `<split>-m*` / `<split>-reduce` が持つ——静的後段は
+その複製である）。再測 n=3 は 3/3（101 / 107 / 121 秒）。台帳の stderr には 3 本とも
+「split の後ろの静的ノードを落としました」が残っており、**e4b は今回も同じ形を書いた**——
+直ったのはモデルではなく運搬である。台帳
+`results/archive/ledger-2026-08-30-planner-pl3-strip-gemma4-e4b.jsonl`。
+
 ハーネス側の欠陥も 1 つ直した。`planner_eval` の壁時計上限は `subprocess.run(timeout=)` に
 任せていたが、plan.py が起動する**孫プロセス（エージェント CLI）がパイプを握ったまま**なので
 上限で親を殺しても `communicate()` が EOF を待ち続ける（実際に 70 分走り続けた）。

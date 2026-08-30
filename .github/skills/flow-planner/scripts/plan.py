@@ -841,6 +841,44 @@ def strip_unrequested_deliverables(tasks: list[dict], context_text: str) -> list
     return tasks
 
 
+def strip_static_split_successors(tasks: list[dict]) -> list[dict]:
+    """split へ静的に依存するノードを下流ごと落として運ぶ（ゲートの後始末）。
+
+    engine は split 完了後に要素ごとの `<split>-m*` と `<split>-reduce` を動的生成する。
+    静的に置いた map は全件を 1 ノードで受け、reduce は展開結果を見ない。ゲートは
+    1 度作り直させるが、e4b は不合格理由を渡されても split → map → reduce を書き直す
+    （実測 2026-08-30: PL3 0/3・3 本ともゲート発火）。`filter` の `tie_break`・要求外の
+    成果物と同じ扱いで、ゲートで直らなかったぶんだけ機械が外す。
+
+    下流ごと落とすのは、直接の後段だけ外すと残りの deps が宙に浮くため。落とした仕事は
+    消えない——要素ごとの処理と集約は engine の動的展開が持つ（静的後段はその複製である）。
+    """
+    split_ids = {str(t.get("id")) for t in tasks
+                 if isinstance(t, dict) and t.get("kind") == "split"}
+    if not split_ids:
+        return tasks
+    doomed: set = set()
+    changed = True
+    while changed:
+        changed = False
+        for t in tasks:
+            if not isinstance(t, dict) or t.get("kind") == "split":
+                continue
+            tid = str(t.get("id"))
+            if tid in doomed:
+                continue
+            if {str(d) for d in (t.get("deps") or [])} & (split_ids | doomed):
+                doomed.add(tid)
+                changed = True
+    if not doomed:
+        return tasks
+    print(f"[flow-planner] split の後ろの静的ノードを落としました "
+          f"({', '.join(sorted(doomed))})——要素ごとの処理と集約は実行時に動的展開される",
+          file=sys.stderr)
+    return [t for t in tasks
+            if not (isinstance(t, dict) and str(t.get("id")) in doomed)]
+
+
 def gate_tasks(tasks: list[dict], target: str, require_split: bool = False,
                context_text: str = "") -> list[str]:
     """決定的ゲート。不合格理由のリスト（空なら合格）。
@@ -1029,6 +1067,7 @@ def phase3_build(request: str, analysis: dict, strategy: dict,
         )
         tasks = _build(retry_note)
         # 再生成後も不合格ならそのまま返す（呼び出し側で使える最小成果を落とさない）
+    tasks = strip_static_split_successors(tasks)
     return strip_unrequested_deliverables(tasks, f"{request}\n{subtasks}")
 
 
