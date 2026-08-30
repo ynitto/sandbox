@@ -366,6 +366,54 @@ MCP サーバの道具も環境ごとに違うので、セットには括らず�
 当てにはしないでください——`copilot_createNewWorkspace` は誰にも止められず動きました。
 git が綺麗な状態で試すのが安全です。
 
+### ファイルを編集させる
+
+`--write` を付けるとツール既定が `read,write` になり、`--file` / `--read` で対象を渡せます。
+
+```bash
+printf 'この関数名を直して\n' | vscode-copilot --write --file src/a.py --read docs/spec.md
+```
+
+**権限を決めるのは `--write` であって `--file` ではありません。** `--file` は「どれが対象か」を
+示すだけで、`--write` が無ければ読むだけです。ハーネスは読み取りの手番でも `--file` を
+渡してくるので、ここを取り違えると読むだけの手番で書き込みツールが載ります。
+
+パスは絶対に直してモデルへ渡します。VS Code のツールはワークスペース相対のパスを
+受け取らないためです。渡した依頼文の前には次が付きます。
+
+```text
+編集してよいファイル（これ以外は書き換えない）:
+- /abs/path/src/a.py
+参考（読むだけ。書き換えない）:
+- /abs/path/docs/spec.md
+```
+
+**提示していないツールは実行しません。** モデルが提示外の名前を返しても、拡張が
+invoke せずに `tool error` としてモデルへ返します。allowlist を「渡す側」だけで守ると、
+読み取り専用の手番で書き込みツールが動きえます（スタブで実際に起きました）。
+
+### agent-herd のハーネス engine として使う
+
+`agents/vscode-copilot.json` が `write_args` / `file_flag` / `read_flag` を宣言しているので、
+`agent-herd harness` の engine に指定できます。
+
+```bash
+agent-herd harness run --agent-cli vscode-copilot ...
+```
+
+`headless_autonomy` は `single-shot` です。ハーネスが `read_files` / `write_files` / `run` /
+`final` の契約を供給し、`write_files` の手番だけ `--write` が付きます。
+
+```text
+readonly=False → vscode-copilot --write --read spec.md --file a.py
+readonly=True  → vscode-copilot         --read spec.md --file a.py
+```
+
+**bridge のワークスペースと作業ディレクトリがずれていると噛み合いません。** 拡張は
+最初に起こしたときの cwd をワークスペースとして開きます。絶対パスを渡すので読み書きは
+できますが、`copilot_searchCodebase` のような探索は別のワークスペースを見ます。別の
+リポジトリで使うときは bridge を閉じてから起こし直してください。
+
 ### ループの作法
 
 - **ツールの失敗はモデルへ返します。** 落として黙ると同じ呼び出しを繰り返すだけです。

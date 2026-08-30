@@ -411,6 +411,27 @@ def agent_tools(payload: dict, requested: str | None) -> list[str]:
     return list(dict.fromkeys(names))
 
 
+def file_context(files, read_files, writable: bool) -> str:
+    """依頼文の前に置く、対象ファイルの申し送り。
+
+    **パスは絶対にする。** VS Code のツールはワークスペース相対のパスを受け取らない
+    （実測で copilot_readFile は絶対パスを要求した）。
+    """
+    lines: list[str] = []
+    targets = [str(Path(path).resolve()) for path in (files or ())]
+    context = [str(Path(path).resolve()) for path in (read_files or ())]
+    if targets:
+        # 読み取り専用の呼び出しでも呼び出し側は --file を渡してくる。権限を決めるのは
+        # --write であって --file ではない——ここを取り違えると読むだけの手番で書く。
+        lines.append("編集してよいファイル（これ以外は書き換えない）:" if writable
+                     else "対象ファイル（今回は読むだけ。書き換えない）:")
+        lines += [f"- {path}" for path in targets]
+    if context:
+        lines.append("参考（読むだけ。書き換えない）:")
+        lines += [f"- {path}" for path in context]
+    return "\n".join(lines) + "\n\n" if lines else ""
+
+
 def run_agent(endpoint: dict[str, object], prompt: str, tools: list[str], family: str | None,
               timeout: float, on_event) -> dict:
     """エージェントを 1 回走らせる。往復の途中経過は on_event へ流す。"""
@@ -584,7 +605,13 @@ def main() -> int:
     parser.add_argument("--agent-tools", metavar="NAMES",
                         help="--agent に持たせるツールをカンマ区切りで指定。"
                              "セット名（read/write/run/web）とツール名を混ぜて書ける"
-                             "（既定は read）")
+                             "（既定は read。--write のときは read,write）")
+    parser.add_argument("--write", action="store_true",
+                        help="ファイルの編集を許す（ツール既定が read,write になる）")
+    parser.add_argument("--file", metavar="PATH", action="append",
+                        help="編集対象ファイル。--write と併せて使う（繰り返し可）")
+    parser.add_argument("--read", metavar="PATH", action="append",
+                        help="参考にするだけのファイル（繰り返し可）")
     parser.add_argument("--call", metavar="TOOL",
                         help="ツールを 1 つ呼ぶ。--input を省くと inputSchema を表示する")
     parser.add_argument("--input", metavar="JSON",
@@ -600,7 +627,8 @@ def main() -> int:
     parser.add_argument("--code-bin", default="code", help="Windows側のcode command（既定: code）")
     args = parser.parse_args()
     # 端末から引数なしで起動したら対話。パイプ入力は従来どおり片道実行のまま。
-    one_off = args.tools or args.call or args.agent
+    as_agent = bool(args.agent or args.write or args.file or args.read)
+    one_off = args.tools or args.call or as_agent
     interactive = args.interactive or (args.prompt is None and not one_off and sys.stdin.isatty())
     if interactive and args.json:
         parser.error("--json は対話モードでは使えません")
@@ -616,11 +644,16 @@ def main() -> int:
             payload = fetch_tools(endpoint, args.timeout)
             print(json.dumps(payload, ensure_ascii=False) if args.json else format_tools(payload))
             return 0
-        if args.agent:
-            prompt = sys.stdin.read() if args.agent == "-" else args.agent
+        if as_agent:
+            if args.agent is not None:
+                prompt = sys.stdin.read() if args.agent == "-" else args.agent
+            else:
+                prompt = args.prompt if args.prompt is not None else sys.stdin.read()
             if not prompt.strip():
-                raise RuntimeError("--agent の依頼文が空です")
-            tools = agent_tools(fetch_tools(endpoint, args.timeout), args.agent_tools)
+                raise RuntimeError("依頼文が空です")
+            prompt = file_context(args.file, args.read, args.write) + prompt
+            requested = args.agent_tools or ("read,write" if args.write else None)
+            tools = agent_tools(fetch_tools(endpoint, args.timeout), requested)
             if not tools:
                 raise RuntimeError(
                     "使えるツールが 1 つもありません（--tools で一覧、--agent-tools で明示）")

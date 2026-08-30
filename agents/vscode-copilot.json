@@ -10,6 +10,9 @@
   "empty_output_is_error": true,
   "readonly": "enforced",
   "readonly_args": [],
+  "write_args": ["--write"],
+  "file_flag": "--file",
+  "read_flag": "--read",
   "interactive": {
     "command": ["vscode-copilot", "--interactive"],
     "ready_pattern": "^copilot> ?$",

@@ -828,6 +828,60 @@ def test_agent_says_so_when_no_tool_survives():
     assert code == 1 and not run.called
 
 
+# --- 編集モード（agent-herd のハーネス engine 契約） ---
+
+
+def test_write_offers_the_write_set_without_asking():
+    code, _, run = _main_agent(["--write", "直して"], tools=AGENT_TOOLS)
+    assert code == 0
+    assert run.call_args.args[2] == ["copilot_readFile", "copilot_findFiles",
+                                     "copilot_replaceString"]
+
+
+def test_files_alone_stay_read_only():
+    """--file は対象を示すだけ。権限を決めるのは --write。
+
+    ハーネスは読み取りの手番でも --file を渡してくる（readonly=True で write_args が
+    落ちるだけ）。ここを取り違えると、読むだけの手番で書き込みツールが載る。
+    """
+    code, _, run = _main_agent(["--file", "a.py", "見て"], tools=AGENT_TOOLS)
+    assert code == 0
+    assert run.call_args.args[2] == ["copilot_readFile", "copilot_findFiles"]
+
+
+def test_agent_tools_still_wins_over_write():
+    code, _, run = _main_agent(["--write", "--agent-tools", "read", "直して"], tools=AGENT_TOOLS)
+    assert run.call_args.args[2] == ["copilot_readFile", "copilot_findFiles"]
+
+
+def test_file_paths_reach_the_model_as_absolute_paths():
+    """VS Code のツールは相対パスを受け取らない（実測）。"""
+    code, _, run = _main_agent(["--write", "--file", "a.py", "--read", "spec.md", "直して"],
+                               tools=AGENT_TOOLS)
+    assert code == 0
+    prompt = run.call_args.args[1]
+    assert str(Path("a.py").resolve()) in prompt
+    assert str(Path("spec.md").resolve()) in prompt
+    assert prompt.endswith("直して")
+
+
+def test_the_header_says_read_only_when_write_is_absent():
+    _, _, run = _main_agent(["--file", "a.py", "見て"], tools=AGENT_TOOLS)
+    assert "書き換えない" in run.call_args.args[1]
+    assert "編集してよいファイル" not in run.call_args.args[1]
+
+
+def test_write_reads_the_task_from_stdin():
+    code, _, run = _main_agent(["--write", "--file", "a.py"], tools=AGENT_TOOLS,
+                               stdin_text="ハーネスからの依頼")
+    assert code == 0 and run.call_args.args[1].endswith("ハーネスからの依頼")
+
+
+def test_file_context_is_empty_without_files():
+    assert client.file_context(None, None, True) == ""
+    assert client.file_context([], [], False) == ""
+
+
 def test_agent_does_not_enter_the_repl_on_a_tty():
     code, repl, run = _main_agent(["--agent", "調べて"], tools=AGENT_TOOLS)
     assert code == 0 and run.called and not repl.called
