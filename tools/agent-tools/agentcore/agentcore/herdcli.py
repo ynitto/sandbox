@@ -26,7 +26,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from agentcore import agentcli, slashroute
+from agentcore import agentcli, procgroup, slashroute
 
 PROG = "agent-herd"
 
@@ -101,6 +101,9 @@ HELP = f"""使い方: {PROG} [オプション]              # クラウド CLI �
   工程（tmux もデーモンも要らない）:
     harness statemachine … ステートマシンを完走させる
     harness run PROMPT…    プロンプト 1 件を 1 回実行する
+
+  判定（抽出 → 機械判定。採否はモデルではなく機械が決める）:
+    decide --decision <契約>  候補（stdin）から事実を抽出し、契約どおりに選別する
 
   観測（LLM を呼ばない）:
     status [LOG]          いまの進捗を 1 行 JSON で返す
@@ -384,6 +387,112 @@ def _run_argv(built: dict) -> int:
 
 
 # ---------------------------------------------------------------------------
+# decide — 抽出 → 機械判定（決定化パイプ）の入口
+# ---------------------------------------------------------------------------
+DEFAULT_DECIDE_CLI = "ollama-json"
+
+
+def cmd_decide(argv, *, err=None, runner=None, stdin=None, out=None) -> int:
+    """判定契約に沿って候補を選別する。**モデルは事実の抽出だけ、採否は機械が決める。**
+
+    多基準の採否をモデルに訊くと 0/5、事実だけ抽出させて機械が決めると 5/5（実測
+    2026-08-29）。この差は本番（agent-flow の filter / judge）では効いていたが、
+    agent-herd から直に使う口が無く、statemachine やスクリプトは各自でモデルへ
+    「選べ」と訊くしかなかった。
+
+    判定規則はここに書かない——`agentcore.nodecontract` の 1 実装
+    （fact_extraction_directive → normalize_facts → decide_candidates）を並べるだけ。
+    2 実装に割れると、同じ契約で本番と CLI の結論が変わる。
+    """
+    err = err or sys.stderr
+    out = out or sys.stdout
+    tokens = list(argv)
+    decision_arg = None
+    name = DEFAULT_DECIDE_CLI
+    model = None
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        if token in ("--decision", "--agent", "--model"):
+            if i + 1 >= len(tokens):
+                _err(f"{token} には値が必要です", err=err)
+                return 2
+            i += 1
+            if token == "--decision":
+                decision_arg = tokens[i]
+            elif token == "--agent":
+                name = tokens[i]
+            else:
+                model = tokens[i]
+        else:
+            _err(f"decide は {token} を受け取りません"
+                 "（契約は --decision、候補の本文は stdin）", err=err)
+            return 2
+        i += 1
+    if not decision_arg:
+        _err("--decision に判定契約（JSON のパスか JSON そのもの）が必要です", err=err)
+        return 2
+
+    from agentcore import llmjson, nodecontract
+
+    try:
+        path = Path(decision_arg).expanduser()
+        raw = path.read_text(encoding="utf-8") if path.is_file() else decision_arg
+        decision = json.loads(raw)
+    except (OSError, ValueError) as exc:
+        _err(f"判定契約を読めません: {exc}", err=err)
+        return 2
+    errors = nodecontract.decision_contract_errors(decision)
+    if errors:
+        # 黙って「モデルに訊く」へ倒さない。倒すと、宣言したのに機械判定が効いていない
+        # という一番わかりにくい形になる（この設計が潰そうとしているもの）。
+        _err("判定契約が不正です: " + " / ".join(errors), err=err)
+        return 2
+
+    body = _read_prompt(stdin)
+    if not body.strip():
+        _err("候補の本文が空です（stdin で渡します）", err=err)
+        return 2
+    prompt = nodecontract.fact_extraction_directive(decision) + "\n\n候補:\n" + body
+    try:
+        spec = agentcli.load_cli(name)
+        built = agentcli.headless_cmd(spec, model, prompt, readonly=True)
+    except agentcli.AgentCliError as exc:
+        _err(str(exc), err=err)
+        return 1
+    run = runner or _capture_argv
+    rc, text = run(built)
+    if rc != 0:
+        _err(f"{name} が失敗しました（rc={rc}）", err=err)
+        return 1
+    try:
+        data = llmjson.extract_json(text, what="抽出結果")
+    except ValueError as exc:
+        _err(f"抽出結果を JSON として読めません: {exc}", err=err)
+        return 1
+    facts = nodecontract.normalize_facts(decision, data)
+    result = nodecontract.decide_candidates(decision.get("criteria"), facts,
+                                            tie_break=decision.get("tie_break"))
+    print(json.dumps(result, ensure_ascii=False), file=out)
+    # 欠測が残る＝機械が決め切れていない。静かに合否へ倒さず、終了コードで伝える。
+    return 1 if result["undecided"] else 0
+
+
+def _capture_argv(built: dict) -> "tuple[int, str]":
+    """定義どおりに 1 回実行し、(終了コード, stdout) を返す。"""
+    env = dict(os.environ)
+    env.update(built.get("env") or {})
+    try:
+        result = procgroup.run(built["argv"], env=env, capture_output=True, text=True,
+                               encoding="utf-8", errors="replace",
+                               input=built.get("stdin"))
+    except FileNotFoundError:
+        _err(f"{built['argv'][0]} が見つかりません")
+        return 127, ""
+    return result.returncode, result.stdout or ""
+
+
+# ---------------------------------------------------------------------------
 # chat — 対話の統合入口
 # ---------------------------------------------------------------------------
 DEFAULT_CHAT_CLI = "ollama"
@@ -639,6 +748,8 @@ HARNESS_HELP = f"""使い方: {PROG} harness <種別> [オプション]
   run のみ:
     --acceptance TEXT  受入条件（繰り返し可。省略すると done を機械検証できない）
     --judge            パスを含まない受入条件を検証エージェントに判定させる
+    --deliverable PATH 成果物のパス（繰り返し可）。2 つ以上なら 1 スロット 1 回ずつ
+                       実行する（小さいモデルは 2 つ同時だと片方を落とす）
 
   実体は agentcore.harness（agent_loop からの移植）。agent-loop 経由と同じ契約で、
   終了時に `RESULT {{json}}` を 1 行出す。tmux で様子を見せたいときは、このコマンドを
@@ -682,6 +793,9 @@ def cmd_harness(argv, *, err=None, runner=None) -> int:
         parser.add_argument("prompt", nargs="+")
         parser.add_argument("--acceptance", action="append", default=[])
         parser.add_argument("--judge", action="store_true")
+        # 成果物スロット。2 つ以上なら 1 スロット 1 回の直列で実行する（割り方は
+        # agentcore.nodecontract の 1 実装。agent-flow の planner 経路と同じ）。
+        parser.add_argument("--deliverable", action="append", default=[])
     try:
         args = parser.parse_args(tokens)
     except SystemExit as exc:               # argparse は 2 で落ちる。入口の綴りへ揃える
@@ -754,13 +868,15 @@ def main(argv=None, prog=None) -> int:
         return cmd_chat(rest)
     if sub == "harness":
         return cmd_harness(rest)
+    if sub == "decide":
+        return cmd_decide(rest)
 
     # 未知。定義名なら exec を案内する（黙って別解釈しない）。
     if _known_definition(sub):
         _err(f"{sub!r} は定義であって adapter ではありません。"
              f"定義を指定して回すなら: {PROG} exec {sub} [--model <モデル>]")
         return 2
-    known = sorted({*ADAPTERS, *OBSERVE_ALIASES, "defs", "exec", "chat", "harness"})
+    known = sorted({*ADAPTERS, *OBSERVE_ALIASES, "defs", "exec", "chat", "harness", "decide"})
     _err(f"未知のサブコマンド: {sub!r}（使えるのは {', '.join(known)}）")
     return 2
 

@@ -1605,6 +1605,26 @@ def _tl_statemachine_args(args: argparse.Namespace, spec: str, work_dir: Path):
         agent_cli=getattr(args, "agent_cli", None), model=getattr(args, "model", None))
 
 
+def _tl_deliverable_slots(goal: str, deliverables: "list[str]") -> "list[str]":
+    """`--deliverable` が 2 つ以上なら、1 スロット 1 回ぶんの依頼文へ割る。
+
+    小さいモデルは成果物を 2 つ同時に渡されると片方を丸ごと落とし、再投入を何度積んでも
+    同じ落ち方をする（実測 2026-08-29: 一括 0/3・分割 3/3・再投入 0）。割り方も文面も
+    本番と同じ 1 実装（`agentcore.nodecontract`）から引く——ここに写しを置くと、
+    「機械が割った形」を測っているつもりで別の形を測ることになる。
+    """
+    paths = [str(d).strip() for d in (deliverables or []) if str(d).strip()]
+    if len(paths) < 2:
+        return []
+    from agentcore import nodecontract
+    slots = nodecontract.split_by_deliverables({
+        "id": "run", "goal": goal, "kind": "work",
+        "operation": {"operation_class": "feature", "deliverables": paths,
+                      "scope": {"write": paths}},
+    })
+    return [str(s.get("goal") or goal) for s in (slots or [])]
+
+
 def cmd_run(args: argparse.Namespace, cwd: Path) -> None:
     """run サブコマンド: プロンプト 1 件をその場で 1 回実行する（デーモン不要）。
 
@@ -1691,8 +1711,18 @@ def cmd_run(args: argparse.Namespace, cwd: Path) -> None:
                  "機械が照合できるのはこの表記だけで、グロブや文章だけの条件は判定されません"
                  "（--judge で検証エージェントに判定させられます）。")
                 + "実行はしますが結果は「検証なし」として記録します。", "run")
-        result = run_prompt(goal=goal, cwd=str(work_dir), agent=agent, log_file=log_file,
-                            acceptance=acceptance, tag="run", judge=judge)
+        slots = _tl_deliverable_slots(goal, getattr(args, "deliverable", None) or [])
+        if slots:
+            _tl_progress(f"成果物 {len(slots)} 件 → 1 スロット 1 回で {len(slots)} 回実行します"
+                         "（小さいモデルは 2 つ同時に渡されると片方を落とす）", "run")
+        result = None
+        for i, slot in enumerate(slots or [goal]):
+            if slots:
+                _tl_progress(f"スロット {i + 1}/{len(slots)}", "run")
+            result = run_prompt(goal=slot, cwd=str(work_dir), agent=agent, log_file=log_file,
+                                acceptance=acceptance, tag="run", judge=judge)
+            if not result.get("ok"):
+                break               # 失敗したスロットの先は走らせない（直列の意味が消える）
         print("RESULT " + json.dumps(result, ensure_ascii=False))
         sys.exit(0 if result.get("ok") else 1)
     except ToolLoopError as exc:

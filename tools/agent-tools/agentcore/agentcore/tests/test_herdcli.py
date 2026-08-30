@@ -316,6 +316,78 @@ class ExecTests(unittest.TestCase):
         self.assertIn("--tools", err.getvalue())
 
 
+class DecideTests(unittest.TestCase):
+    """`decide` — モデルは事実の抽出だけ、採否は機械（nodecontract）が決める。
+
+    多基準の採否をモデルに訊くと 0/5、抽出 → 機械判定なら 5/5（実測 2026-08-29）。
+    判定規則をここへ写さないこと（写すと同じ契約で本番と CLI の結論が割れる）。
+    """
+
+    DECISION = {
+        "facts": [{"name": "extra_deps", "type": "bool"},
+                  {"name": "lines", "type": "int"}],
+        "criteria": [{"fact": "extra_deps", "op": "eq", "value": False}],
+    }
+    FACTS = json.dumps({"facts": [
+        {"id": "c1", "extra_deps": True, "lines": 30},
+        {"id": "c2", "extra_deps": False, "lines": 48},
+        {"id": "c3", "extra_deps": False, "lines": 41},
+    ]})
+
+    def _run(self, decision, reply, argv=()):
+        out, err = io.StringIO(), io.StringIO()
+        seen = {}
+
+        def runner(built):
+            seen["prompt"] = built.get("stdin") or ""
+            return 0, reply
+
+        rc = herdcli.cmd_decide(["--decision", json.dumps(decision), *argv],
+                                stdin=io.StringIO("[c1] …\n[c2] …\n[c3] …"),
+                                runner=runner, out=out, err=err)
+        return rc, out.getvalue().strip(), err.getvalue(), seen
+
+    def test_the_machine_decides_not_the_model(self):
+        rc, out, _err, seen = self._run(self.DECISION, self.FACTS)
+        self.assertEqual(rc, 0)
+        self.assertEqual(json.loads(out)["kept"], ["c2", "c3"])
+        # モデルへ渡すのは「どの項目をどの型で書き出すか」だけ。条件は載せない。
+        self.assertIn("extra_deps", seen["prompt"])
+        self.assertNotIn("criteria", seen["prompt"])
+
+    def test_tie_break_picks_a_single_winner(self):
+        decision = dict(self.DECISION, tie_break={"fact": "lines", "op": "min"})
+        rc, out, _err, _seen = self._run(decision, self.FACTS)
+        self.assertEqual(rc, 0)
+        self.assertEqual(json.loads(out)["winner"], "c3")
+
+    def test_a_missing_fact_is_undecided_and_nonzero(self):
+        """欠測を静かに合否へ倒さない（人 / 上位へ返す）。"""
+        reply = json.dumps({"facts": [{"id": "c1", "lines": 30}]})
+        rc, out, _err, _seen = self._run(self.DECISION, reply)
+        self.assertEqual(json.loads(out)["undecided"], ["c1"])
+        self.assertEqual(rc, 1)
+
+    def test_a_broken_contract_fails_instead_of_asking_the_model(self):
+        err = io.StringIO()
+        rc = herdcli.cmd_decide(
+            ["--decision", json.dumps({"facts": [], "criteria": "not-a-list"})],
+            stdin=io.StringIO("候補"), runner=lambda b: (0, "{}"), err=err)
+        self.assertEqual(rc, 2)
+        self.assertIn("判定契約が不正", err.getvalue())
+
+    def test_the_contract_can_be_a_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "decision.json"
+            path.write_text(json.dumps(self.DECISION), encoding="utf-8")
+            out = io.StringIO()
+            rc = herdcli.cmd_decide(["--decision", str(path)],
+                                    stdin=io.StringIO("[c1] …"),
+                                    runner=lambda b: (0, self.FACTS), out=out)
+        self.assertEqual(rc, 0)
+        self.assertEqual(json.loads(out.getvalue())["kept"], ["c2", "c3"])
+
+
 class HarnessTests(unittest.TestCase):
     """引数の綴りは `agent-loop statemachine` / `agent-loop run` と揃える。
 
@@ -348,6 +420,29 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(args.prompt, ["タスク本文"])
         self.assertEqual(args.acceptance, ["X がある"])
         self.assertTrue(args.judge)
+
+    def test_run_takes_deliverable_slots(self):
+        seen = []
+        rc = herdcli.cmd_harness(
+            ["run", "実装とテストを作る", "--deliverable", "src/x.py",
+             "--deliverable", "tests/test_x.py"],
+            runner=lambda kind, args, cwd: seen.append((kind, args)) or 0)
+        self.assertEqual(rc, 0)
+        self.assertEqual(seen[0][1].deliverable, ["src/x.py", "tests/test_x.py"])
+
+    def test_two_deliverables_become_one_call_each(self):
+        """成果物 2 つを一括で渡すと小さいモデルは片方を落とす（実測: 一括 0/3・分割 3/3）。
+        割り方の文面は agentcore.nodecontract の 1 実装から引く（写さない）。"""
+        from agentcore.harness import toolloop
+        slots = toolloop._tl_deliverable_slots("実装とテストを作る",
+                                               ["src/x.py", "tests/test_x.py"])
+        self.assertEqual(len(slots), 2)
+        self.assertIn("`src/x.py` の 1 つだけ", slots[0])
+        self.assertIn("tests/test_x.py", slots[0])       # 残りは「ここでは作らない」
+        self.assertIn("`tests/test_x.py` の 1 つだけ", slots[1])
+        # 1 つ以下なら割らない（従来どおり 1 回）
+        self.assertEqual(toolloop._tl_deliverable_slots("実装", ["src/x.py"]), [])
+        self.assertEqual(toolloop._tl_deliverable_slots("実装", []), [])
 
     def test_a_missing_required_flag_fails_instead_of_running(self):
         """--workflow 無しで走り出さない（argparse の 2 を入口の 2 へ揃える）。"""
