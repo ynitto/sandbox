@@ -107,6 +107,20 @@ def patterns() -> dict:
     return getattr(_FLOW, "PATTERNS", None) or {}
 
 
+def normalize_verify(data, text: str = ""):
+    """verify 成果の正規化。**本番の実装**（`waits._normalize_verify`）をそのまま呼ぶ。
+
+    ゲートが実際にどう倒れるかを測るので、写して緩めない——本番は JSON が欠けても
+    本文の `verify=pass` / `verify=fail` から `ok` を導き、どちらも無ければ fail に倒す。
+    """
+    fn = _need(_FLOW, "_normalize_verify", "_normalize_verify（verify 成果の正規化）")
+    if fn is None:
+        return None
+    body = text or (data if isinstance(data, str) else json.dumps(data, ensure_ascii=False,
+                                                                  default=str))
+    return fn(body, data if isinstance(data, dict) else None)
+
+
 # ---------------------------------------------------------------- 起動形の解決
 
 

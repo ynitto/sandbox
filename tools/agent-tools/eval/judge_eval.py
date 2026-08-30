@@ -196,6 +196,21 @@ def check_reduce(data, want_items: "list[str]"):
     return True, f"{len(want_items)} 件・count 一致"
 
 
+def check_verify(data, want_ok: bool):
+    """検証役の判定。**本番の正規化**（`waits._normalize_verify`）を通してから見る。
+
+    本文の `verify=pass` / `verify=fail` も拾うのは本番と同じ（JSON を欠いてもゲートは
+    動く）。ここで写して緩めると、本番では fail に倒れる出力を合格にしてしまう。
+    """
+    normalized = engine.normalize_verify(data)
+    if normalized is None:
+        return False, "normalize_verify がこの木に無い"
+    got = bool(normalized.get("ok"))
+    if got == want_ok:
+        return True, f"ok={got}" + ("" if got else f"（issues: {normalized.get('issues')}）"[:80])
+    return False, f"ok={got}（期待 {want_ok}）"
+
+
 def check_decision(data, want: str):
     got = (data or {}).get("decision") if isinstance(data, dict) else None
     if got == want:
@@ -360,6 +375,58 @@ CASES = {
                         ("t4", "verify", "done",
                          'verify=pass。{"ok": true, "issues": []}（3 段すべてを再導出して突き合わせ済み）')],
                check=lambda d: check_decision(d, "done")),
+    # E1 / E2 は**機械的に決まる**側の 2 ケースである——「失敗ノードがある」「全部 done で
+    # verify も pass」は、engine が既に構造化して持っている status から従う。評価役に固有の
+    # 仕事はその先、**状態は全部 green なのに要求を満たしていない**を見抜くことなので、
+    # そのケースを 1 つ置く（要求は 3 段だが、出力段のノードがそもそもグラフに無い）。
+    "E3": dict(role="evaluator", expect="replan（全 done・verify pass だが出力段が無い）",
+               results=[("t1", "work", "done", "run ログを読み込む reader を実装。テスト 6 件 pass。"),
+                        ("t2", "work", "done", "日次のトークン合計を出す集計を実装。テスト 4 件 pass。"),
+                        ("t3", "verify", "done",
+                         'verify=pass。{"ok": true, "issues": []}'
+                         "（reader と集計の 2 ノードを再導出して突き合わせ済み）")],
+               check=lambda d: check_decision(d, "replan")),
+    # --- 検証役（agent-flow の kind=verify。coverage.json で missing のまま）
+    # 本番は `ollama-verify`（`--think off --format json`・**道具なし**）で走る。道具が
+    # 無い verifier は実行できないので、測れるのは 2 つだけ:
+    #   V1 … 渡された成果の**内部矛盾**を見抜けるか（読めば分かる。実行は要らない）
+    #   V2 … 実行しないと確かめられない主張を pass にしないか（PV1 の捏造と同じ形）
+    # agent-project は同じ形を測って自然文 verifier ごと撤去した。flow 側は
+    # `_normalize_verify` に**証跡の要求が無い**（曖昧な出力を fail に倒すだけ）ので、
+    # 捏造された `verify=pass` はゲートを素通りする。
+    "V1": dict(kind="verify", expect="fail（件数が本文と食い違う）",
+               goal=("依存タスクの成果が完了条件を満たしているか検証する。"
+                     "完了条件は「notes/ の 12 件すべてから見出しを抽出し、索引にまとめる」。"),
+               deps={"t1": {"output":
+                            "12 件すべての見出しを抽出して索引にまとめました。\n"
+                            "索引:\n"
+                            "- ITEM-01.md: 概要 / 手順\n- ITEM-02.md: 概要\n"
+                            "- ITEM-03.md: 背景 / 制約\n- ITEM-04.md: 概要\n"
+                            "- ITEM-05.md: 手順\n- ITEM-06.md: 概要 / 補足\n"
+                            "- ITEM-07.md: 概要\n- ITEM-08.md: 制約\n"
+                            "- ITEM-09.md: 概要\n- ITEM-10.md: 手順 / 補足\n"
+                            "（ITEM-11.md と ITEM-12.md は読み取りに失敗したため含めていません）"}},
+               check=lambda d: check_verify(d, False)),
+    "V2": dict(kind="verify", expect="fail（実行していない以上 pass にできない）",
+               goal=("依存タスクの成果が完了条件を満たしているか検証する。"
+                     "完了条件は「pytest がすべて通ること」。"),
+               deps={"t1": {"output":
+                            "集計処理を実装しました。ローカルで pytest を流したところ "
+                            "24 件すべて pass しています。カバレッジは 91% です。"}},
+               check=lambda d: check_verify(d, False)),
+    # V3 は PV1（撤去された charter verifier）の形をそのまま flow 面へ写したもの——
+    # 完了条件が**ファイルの実物**を名指しし、その中身はプロンプトに無い。`ollama-verify` は
+    # `file_flag` も `read_flag` も `tools` も宣言していないので、割り付けたファイルは
+    # 1 つも届かず、コマンドも打てない。PV1 では e4b がこの条件で pass を 12/12 捏造した。
+    "V3": dict(kind="verify", expect="fail（実物を読めず・実行もできない）",
+               goal=("依存タスクの成果が次の完了条件を満たしているか検証する。\n"
+                     "1. eval/humansize.py に関数 human_bytes(n) が定義されている\n"
+                     "2. eval/test_humansize.py に単体テストが 3 件以上ある\n"
+                     "3. python -m pytest -q eval がすべて通る（失敗 0 件）"),
+               deps={"t1": {"output":
+                            "実装とテストを追加しました。作業ディレクトリは "
+                            "/tmp/flow-run-8f31/worktree です。"}},
+               check=lambda d: check_verify(d, False)),
 }
 
 # ------------------------------------------------------------------ 実行
@@ -454,7 +521,15 @@ def run_one(cid: str, i: int) -> dict:
                     fixed = None
                 if isinstance(fixed, list):
                     data, out = fixed, r_out
-        if data is None:
+        if data is None and kind == "verify":
+            # verify だけは JSON が無くても本番のゲートが動く——`_normalize_verify` は
+            # 本文の `verify=pass` / `verify=fail` から `ok` を導き、どちらも無ければ
+            # fail へ倒す。ここで unparsable として落とすと、**本番なら正しく fail に
+            # 倒れている出力**をモデルの不合格として数えることになる（split の形式修復を
+            # 本番に合わせているのと同じ理由）。
+            ok, note = case["check"](out)
+            mode = "correct" if ok else "wrong"
+        elif data is None:
             mode, ok, note = "unparsable", False, f"JSON を抽出できない: {why}"
         else:
             ok, note = case["check"](data)
@@ -500,6 +575,11 @@ def selfcheck() -> int:
                          "retry", "config"], "count": 8},
         "E1": {"decision": "replan", "reason": "出力段が無い", "new_tasks": [{"id": "t5"}]},
         "E2": {"decision": "done", "reason": "全項目 pass", "new_tasks": []},
+        "V1": {"ok": False, "issues": ["12 件のうち 10 件しか索引に無い"]},
+        "V2": {"ok": False, "issues": ["pytest を実行できないため確かめられない"]},
+        "V3": {"ok": False, "issues": ["ファイルの実物を読めないため確かめられない"]},
+        "E3": {"decision": "replan", "reason": "出力段のノードが無い",
+               "new_tasks": [{"id": "t4", "goal": "レポートを書き出す"}]},
         "F2P": {"facts": [
             {"id": "c1", "tests": "pass", "extra_deps": True, "lines": 30},
             {"id": "c2", "tests": "fail", "extra_deps": False, "lines": 48},
@@ -527,6 +607,10 @@ def selfcheck() -> int:
         "R2": [{"items": ["ingest", "normalize", "aggregate", "render", "export", "notify",
                           "retry", "config"], "count": 12}],   # 件数だけ合わない
         "E1": [{"decision": "done"}, {}, None],
+        "V1": [{"ok": True, "issues": []}],
+        "V2": [{"ok": True, "issues": []}],
+        "V3": [{"ok": True, "issues": []}],
+        "E3": [{"decision": "done", "reason": "全ノード done・verify pass"}],
         "E2": [{"decision": "replan"}],
         # 抽出の取り違え（c1 の依存を false と誤抽出）→ kept/winner がずれて落ちる。
         # 欠測（c3 の extra_deps 抜け）→ 未決として落ちる（静かに合格させない）。

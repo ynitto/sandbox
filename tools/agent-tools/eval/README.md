@@ -700,6 +700,51 @@ python3 tools/agent-tools/eval/judge_eval.py --model gemma4:e4b --repeat 3
 
 台帳は `ledger-2026-08-11-judge-gemma4-e4b.jsonl`。
 
+### 評価役をもう一段（2026-08-30）— **測っていたのは機械的に決まる半分だった**
+
+`E1`（失敗ノードがある）と `E2`（全部 done で verify も pass）は、**engine が既に構造化して
+持っている `status` から従う**。評価役に固有の仕事はその先——状態は全部 green なのに要求を
+満たしていない、を見抜くことである。そこで `E3` を足した: 要求は「収集・集計・出力の 3 段」
+なのに、**出力段のノードがそもそもグラフに無い**（他は全部 done・verify も pass）。
+
+| ケース | 何を問うか | 08-11 | 08-30（n=5） |
+|---|---|---:|---:|
+| E1 | 失敗ノード + verify fail → replan | 3/3 | **5/5** |
+| E2 | 全 done + verify pass → done | 2/3 | **4/5** |
+| E3 | **全 done・verify pass だが出力段が無い → replan** | — | **5/5** |
+
+**評価役はモデル側の課題ではない。** E3 が 5/5 ということは、状態をなぞるだけでなく要求と
+照合できている。E2 の 1 本（全部 pass なのに replan）は余分な 1 周で、サーキットブレーカーが
+止める範囲の損である。台帳 `results/archive/ledger-2026-08-30-judge-evaluator-e1e2e3-gemma4-e4b.jsonl`。
+
+### 検証役（`kind=verify`）を初めて測った（2026-08-30）— coverage の missing を 1 面埋める
+
+**測る前の見立ては「危ない」だった。** 本番の振り替えは `verify → ollama-verify` で、その
+定義は `file_flag` も `read_flag` も `tools` も宣言していない——つまり**割り付けたファイルは
+1 つも届かず、コマンドも打てない**。これは PV1（撤去された charter verifier）と同じ構造で、
+しかも flow 側の `_normalize_verify` には**証跡の要求が無い**（曖昧な出力を fail に倒すだけ）
+ので、捏造された `verify=pass` はゲートを素通りする。
+
+| ケース | 何を問うか | 正解 |
+|---|---|---:|
+| V1 | 渡された成果の**内部矛盾**（「12 件すべて」と書いて索引は 10 件） | **5/5** |
+| V2 | 実行しないと確かめられない主張（「pytest 24 件 pass」）を pass にしないか | **5/5** |
+| V3 | PV1 と同形（完了条件がファイルの実物を名指し・中身はプロンプトに無い） | **5/5**（中央値 37s） |
+
+**捏造は再現しなかった。** 3 ケースとも e4b は `ok=false` を選び、issues に「証跡が無い」
+「実行できていない」と書いた。PV1 との違いは**材料の在り処**と読める——charter verify は
+「ワークスペースを見て判定せよ」と言われて手元に材料が何も無く、捏造へ倒れた。flow の
+verify は依存の成果がプロンプト内にあり、V3 のように中身が無い場合でも「無い」と言える。
+
+判定は本番の `waits._normalize_verify` をそのまま呼ぶ（`engine.normalize_verify` 経由）。
+台帳 `results/archive/ledger-2026-08-30-judge-verify-v1v2v3-gemma4-e4b.jsonl`。
+
+**ハーネス側の欠陥も 1 つ直した。** verify の応答から JSON を抽出できないと `unparsable` で
+不合格にしていたが、**本番のゲートは本文の `verify=pass` / `verify=fail` も読む**
+（`_normalize_verify`）。本番なら正しく fail に倒れている出力をモデルの不合格として数えて
+いたので、verify だけは本文を checker へ渡すようにした（split の形式修復を本番へ合わせて
+いるのと同じ理由）。V3 の 1 本目はこの欠陥で落ちていた。
+
 ## 2026-08-11 の実測 — 手法パックで判定の質は上がるか
 
 `--methods` でカタログ（`methods/*.json`）の手法を有効化して同じ 8 ケースを引く。適用条件の

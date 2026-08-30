@@ -8,7 +8,7 @@
       "generate": "indirect",
       "classify": "missing",
       "synthesize": "missing",
-      "verify": "missing",
+      "verify": "direct",
       "filter": "direct",
       "judge": "direct",
       "reduce": "direct",
