@@ -799,12 +799,27 @@ def _normalize_goal(goal: str) -> str:
     return _NORM_RE.sub(" ", g).strip()
 
 
-def gate_tasks(tasks: list[dict], target: str, require_split: bool = False) -> list[str]:
+_DECLARED_PATH_RE = re.compile(r"[\w][\w./-]*\.[A-Za-z0-9]{1,8}")
+
+
+def _mentioned_paths(text: str) -> set:
+    """本文が名指ししているファイルパス。basename で照合するので拡張子まで取る。"""
+    return {m.group(0) for m in _DECLARED_PATH_RE.finditer(text or "")}
+
+
+def gate_tasks(tasks: list[dict], target: str, require_split: bool = False,
+               context_text: str = "") -> list[str]:
     """決定的ゲート。不合格理由のリスト（空なら合格）。
 
     work 系が無いグラフ（split のみ / classify のみ等の実行時展開）は個数・scope を検査しない。
     require_split=True（列挙駆動の force）のときは split ノードの存在も検査する——強制した
     のに split が出ないと、対象単位のノードが実行時に展開されず「まとめて 1 ノード」に戻る。
+
+    context_text は要求本文と Phase 1 の分析。**要求がパスを名指ししているときだけ**、
+    そこに無い成果物の宣言を落とす（実測 2026-08-30: PL5 の失敗は要求が求めていない
+    `docs/human_bytes_spec.md` を deliverables に足した回だった。宣言した成果物は
+    engine が 1 スロット 1 ノードへ割るので、余分な 1 つがそのまま余分な 1 手順になる）。
+    要求がパスを名指ししていないときは何も言わない——そこでの推測は planner の仕事である。
     """
     issues: list[str] = []
     if require_split and not any(isinstance(t, dict) and t.get("kind") == "split" for t in tasks):
@@ -882,6 +897,15 @@ def gate_tasks(tasks: list[dict], target: str, require_split: bool = False) -> l
         if path and len(ids) > 1:
             issues.append(f"{path} を {len(ids)} ノードが作る（{', '.join(ids[:3])}）"
                           "——成果物 1 つの作り手は 1 ノードにすること")
+
+    mentioned = _mentioned_paths(context_text)
+    if mentioned:
+        allowed = mentioned | {path.rsplit("/", 1)[-1] for path in mentioned}
+        for path in sorted(owners):
+            if path and path not in allowed and path.rsplit("/", 1)[-1] not in allowed:
+                issues.append(f"{path} は要求にも Phase 1 の分析にも出てこない"
+                              "——要求が名指ししていない成果物を宣言しない"
+                              "（宣言した分だけ手順が増える）")
 
     work = [t for t in tasks if isinstance(t, dict) and t.get("kind") in WORK_KINDS]
     if not work:
@@ -962,7 +986,8 @@ def phase3_build(request: str, analysis: dict, strategy: dict,
     # 列挙駆動を強制したときは split の存在も決定的に見る（強制の実効性はここで担保される）
     need_split = (analysis.get("enumeration_decision") or {}).get("mode") == "force"
     tasks = _build()
-    issues = gate_tasks(tasks, granularity_target, require_split=need_split)
+    issues = gate_tasks(tasks, granularity_target, require_split=need_split,
+                        context_text=f"{request}\n{subtasks}")
     if issues:
         retry_note = (
             "直前のグラフは粒度ゲート不合格。次を必ず守って作り直すこと:\n- "

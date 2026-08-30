@@ -147,6 +147,31 @@ class ScopeAndGateTests(unittest.TestCase):
                                 "deliverables": ["eval/test_x.py"]}}]
         self.assertTrue(any("2 ノードが作る" in x for x in plan.gate_tasks(tasks, "coarse")))
 
+    def test_gate_rejects_a_deliverable_the_request_never_named(self):
+        """実測 2026-08-30: PL5 の失敗は、要求に無い docs/... を deliverables に足した回。"""
+        tasks = [{"id": "t1", "goal": "[scope] eval/humansize.py\n実装", "deps": [], "kind": "work",
+                  "operation": {"operation_class": "feature",
+                                "deliverables": ["eval/humansize.py", "docs/spec.md"]}}]
+        issues = plan.gate_tasks(tasks, "coarse",
+                                 context_text="eval/humansize.py に human_bytes を実装する")
+        self.assertTrue(any("要求にも Phase 1" in x for x in issues))
+
+    def test_gate_accepts_deliverables_the_request_named(self):
+        """basename で照合する（要求が `humansize.py` とだけ書く形を落とさない）。"""
+        tasks = [{"id": "t1", "goal": "[scope] eval/humansize.py\n実装", "deps": [], "kind": "work",
+                  "operation": {"operation_class": "feature",
+                                "deliverables": ["eval/humansize.py", "eval/test_humansize.py"]}}]
+        issues = plan.gate_tasks(tasks, "coarse",
+                                 context_text="humansize.py と test_humansize.py を作る")
+        self.assertFalse([x for x in issues if "要求にも Phase 1" in x])
+
+    def test_gate_is_silent_when_the_request_names_no_path(self):
+        """パスを名指ししない要求では推測が planner の仕事——ここで叱らない。"""
+        tasks = [{"id": "t1", "goal": "[scope] src\n実装", "deps": [], "kind": "work",
+                  "operation": {"operation_class": "feature", "deliverables": ["src/a.py"]}}]
+        issues = plan.gate_tasks(tasks, "coarse", context_text="集計スクリプトを作る")
+        self.assertFalse([x for x in issues if "要求にも Phase 1" in x])
+
     def test_gate_count_out_of_range(self):
         tasks = [
             {"id": "t1", "goal": "[scope] a.py\n[out_of_scope] x\none", "deps": [], "kind": "work"},
