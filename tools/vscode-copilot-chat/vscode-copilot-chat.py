@@ -360,19 +360,55 @@ READ_ONLY_TOOLS = (
     "copilot_getErrors",
 )
 
+# --agent-tools に書ける短縮名。長い名前を毎回並べるためだけに用途を諦めさせない。
+# **どれも allowlist のまま**で、セットに載っている名前しか入りません。
+# ここに置かないもの:
+#   - copilot_createNewWorkspace … 空入力で実行され、ワークスペースが開いて拡張ホストごと
+#     落ちた（実測）。用途が「今のリポジトリで作業する」と噛み合わないので名指しでだけ使う。
+#   - runSubagent … toolInvocationToken を要求するのでこの bridge からは呼べない。
+#   - MCP サーバの道具 … 環境ごとに違う。カテゴリで括れないので名指しで。
+TOOL_SETS = {
+    "read": READ_ONLY_TOOLS,
+    "write": (
+        "copilot_applyPatch",
+        "copilot_replaceString",
+        "copilot_createFile",
+        "copilot_createDirectory",
+    ),
+    "run": (
+        "run_in_terminal",
+        "get_terminal_output",
+        "runTests",
+    ),
+    "web": (
+        "copilot_fetchWebPage",
+    ),
+}
+
 
 def agent_tools(payload: dict, requested: str | None) -> list[str]:
-    """使わせるツールを決める。VS Code に無い名前は落とす（既定）か、明示なら失敗させる。"""
+    """使わせるツールを決める。
+
+    `requested` はカンマ区切りで、セット名（TOOL_SETS）とツール名を混ぜて書けます。
+    **名指しは失敗させ、セットは実在するものだけ通します**——名前で頼まれたものを黙って
+    落とすと「頼んだ道具を使わないエージェント」になり、カテゴリで頼まれたものを
+    落とさないと環境差だけで失敗するためです。
+    """
     registered = {tool.get("name") for tool in payload.get("tools") or []}
-    if requested:
-        names = [name.strip() for name in requested.split(",") if name.strip()]
-        missing = [name for name in names if name not in registered]
-        if missing:
-            raise RuntimeError(
-                f"VS Code に登録されていないツールです: {', '.join(missing)}（--tools で一覧）")
-        return names
-    # 既定は allowlist と実在の積。環境差で欠けるものは黙って外す。
-    return [name for name in READ_ONLY_TOOLS if name in registered]
+    items = [item.strip() for item in (requested or "read").split(",") if item.strip()]
+    names: list[str] = []
+    missing: list[str] = []
+    for item in items:
+        if item in TOOL_SETS:
+            names.extend(name for name in TOOL_SETS[item] if name in registered)
+            continue
+        (names if item in registered else missing).append(item)
+    if missing:
+        raise RuntimeError(
+            f"VS Code に登録されていないツールです: {', '.join(missing)}"
+            f"（--tools で一覧、セット名は {'/'.join(TOOL_SETS)}）")
+    # 重複は落とし、書かれた順は保つ。同じ道具を 2 回モデルへ見せる意味はない。
+    return list(dict.fromkeys(names))
 
 
 def run_agent(endpoint: dict[str, object], prompt: str, tools: list[str], family: str | None,
@@ -546,8 +582,9 @@ def main() -> int:
                         help="VS Code のツールを使わせながらタスクを解かせる"
                              "（- で標準入力から読む）")
     parser.add_argument("--agent-tools", metavar="NAMES",
-                        help="--agent に持たせるツールをカンマ区切りで明示"
-                             "（既定は読み取り専用のみ）")
+                        help="--agent に持たせるツールをカンマ区切りで指定。"
+                             "セット名（read/write/run/web）とツール名を混ぜて書ける"
+                             "（既定は read）")
     parser.add_argument("--call", metavar="TOOL",
                         help="ツールを 1 つ呼ぶ。--input を省くと inputSchema を表示する")
     parser.add_argument("--input", metavar="JSON",

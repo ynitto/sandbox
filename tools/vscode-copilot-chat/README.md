@@ -328,16 +328,43 @@ copilot_getChangedFiles copilot_getErrors
 名前を数える側（除外リスト）ではなく載せる側（許可リスト）で守るためです。allowlist に
 あって VS Code に無いものは黙って外れます。
 
-書き込み・実行系を使わせるなら `--agent-tools` で明示します。**そのツールが実際に
-動く**ので、何を渡すか分かった上で使ってください。
+### 用途で持たせ替える
+
+`--agent-tools` はカンマ区切りで、**セット名とツール名を混ぜて**書けます。
+
+| セット | 中身 |
+|---|---|
+| `read`（既定） | 上の 10 個 |
+| `write` | `copilot_applyPatch` `copilot_replaceString` `copilot_createFile` `copilot_createDirectory` |
+| `run` | `run_in_terminal` `get_terminal_output` `runTests` |
+| `web` | `copilot_fetchWebPage` |
 
 ```bash
-vscode-copilot-chat --agent "この関数名を直して" \
-  --agent-tools copilot_readFile,copilot_replaceString
+vscode-copilot-chat --agent-tools read,write --agent "この関数名を直して"
+vscode-copilot-chat --agent-tools read,run  --agent "落ちているテストを調べて"
+vscode-copilot-chat --agent-tools read,copilot_replaceString --agent "…"
 ```
 
-明示した名前が VS Code に無ければ、黙って外さずに失敗します——頼んだ道具を使わない
-エージェントになるより、無いと言われるほうがましです。
+**`--agent-tools` は既定に足すのではなく置き換えます。** 書き込みだけ渡すと、モデルは
+読めないまま直そうとします。`read,write` のように読む側も一緒に書いてください。
+
+セットも allowlist のままです。次の 2 つはどのセットにも入れていません。
+
+- `copilot_createNewWorkspace` … 空入力で実行され、ワークスペースが開いて拡張ホストごと
+  落ちました（実測）。「今のリポジトリで作業する」という用途と噛み合いません。
+- `runSubagent` … `toolInvocationToken` を要求するのでこの bridge からは呼べません。
+
+どちらも名指しでなら渡せます。止めているのは、カテゴリを頼んだだけで付いてくることです。
+MCP サーバの道具も環境ごとに違うので、セットには括らず名指しにしています。
+
+**名指しとセットで扱いが違います。** 名前で書いたものが VS Code に無ければ失敗します
+——頼んだ道具を使わないエージェントになるより、無いと言われるほうがましです。セットは
+カテゴリの依頼なので、環境に無いものは黙って外します（`run` を頼んだのに `runTests` が
+無いだけで止まっては困ります）。
+
+書き込み・実行系は**そのツールが実際に動きます**。承認ダイアログが必ず止めてくれると
+当てにはしないでください——`copilot_createNewWorkspace` は誰にも止められず動きました。
+git が綺麗な状態で試すのが安全です。
 
 ### ループの作法
 

@@ -651,6 +651,61 @@ def test_explicit_unregistered_tool_fails_rather_than_being_dropped():
         assert "nope" in str(exc)
 
 
+# --- セット名（read/write/run/web） ---
+
+
+def test_set_names_expand_to_their_tools():
+    chosen = client.agent_tools(AGENT_TOOLS, "write")
+    assert chosen == ["copilot_replaceString"]  # AGENT_TOOLS に居る write はこれだけ
+
+
+def test_sets_and_names_can_be_mixed():
+    chosen = client.agent_tools(AGENT_TOOLS, "read,copilot_replaceString")
+    assert "copilot_readFile" in chosen and "copilot_findFiles" in chosen
+    assert chosen[-1] == "copilot_replaceString"
+
+
+def test_several_sets_can_be_given_at_once():
+    chosen = client.agent_tools(AGENT_TOOLS, "write,run")
+    assert chosen == ["copilot_replaceString", "run_in_terminal"]
+
+
+def test_read_is_the_default_set():
+    assert client.agent_tools(AGENT_TOOLS, "read") == client.agent_tools(AGENT_TOOLS, None)
+
+
+def test_a_set_drops_tools_this_vscode_does_not_have():
+    """セットはカテゴリの依頼。環境に無いものが 1 つあるだけで失敗させない。"""
+    assert client.agent_tools({"tools": [{"name": "runTests"}]}, "run") == ["runTests"]
+
+
+def test_a_named_tool_still_fails_even_beside_a_set():
+    """セットと混ぜても、名指しは黙って落とさない。"""
+    try:
+        client.agent_tools(AGENT_TOOLS, "read,nope")
+        assert False, "must fail"
+    except RuntimeError as exc:
+        assert "nope" in str(exc)
+        assert "read" in str(exc)  # 使えるセット名を案内する
+
+
+def test_overlapping_sets_do_not_repeat_a_tool():
+    payload = {"tools": [{"name": "copilot_readFile"}]}
+    assert client.agent_tools(payload, "read,read,copilot_readFile") == ["copilot_readFile"]
+
+
+def test_sets_never_carry_the_tools_we_kept_out():
+    """空入力で拡張ホストを落とした copilot_createNewWorkspace と、呼べない runSubagent。"""
+    payload = {"tools": [{"name": n} for n in
+                         ("copilot_createNewWorkspace", "runSubagent", "copilot_applyPatch")]}
+    for name in client.TOOL_SETS:
+        chosen = client.agent_tools(payload, name)
+        assert "copilot_createNewWorkspace" not in chosen
+        assert "runSubagent" not in chosen
+    # 名指しなら使える（止めるのはセットに載せることだけ）。
+    assert client.agent_tools(payload, "copilot_createNewWorkspace") == ["copilot_createNewWorkspace"]
+
+
 def _agent_stream(events):
     payload = "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in events).encode()
     captured = {}
