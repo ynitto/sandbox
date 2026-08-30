@@ -202,6 +202,9 @@ dashboard の `task-guide` は `normalizeTaskGuide` が `risks` を改行連結�
 
 ## 参照
 
+- **次の計画**: [全面測定のあとに残った「形」の直し](2026-08-31-shape-fixes-after-full-coverage.md)
+  — plan の分割・repo_map の前置き落とし・review への材料供給と、その受入基準
+
 - [消化まとめ](2026-08-30-session-summary-local-llm-roles.md) — 結論・役割表・未測定の棚卸し
 - [取り込み計画](2026-08-30-measured-improvements-intake.md) — 割り当て表とケース別の実力
 - [eval README](../../tools/agent-tools/eval/README.md) — 各ケースの実測と外し方
