@@ -766,6 +766,21 @@ def _sm_load_workflow_dict(workflow_file: str) -> dict:
     return workflow
 
 
+def _sm_crowded_write_states(workflow: dict) -> "list[tuple[str, list[str]]]":
+    """`write:` に 2 つ以上のファイルを宣言している state（空なら規約どおり）。"""
+    crowded = []
+    for sid, state in (workflow.get("states") or {}).items():
+        if not isinstance(state, dict):
+            continue
+        declared = state.get("write")
+        paths = [str(p).strip() for p in
+                 ([declared] if isinstance(declared, str) else list(declared or []))
+                 if str(p).strip()]
+        if len(paths) > 1:
+            crowded.append((str(sid), paths))
+    return crowded
+
+
 def run_statemachine(*, workflow_path: str, cwd: str, parameters: "dict | None" = None,
                      agent: dict, decision: "dict | None" = None) -> dict:
     """ステートマシンを headless エージェントで完走させる。
@@ -781,6 +796,16 @@ def run_statemachine(*, workflow_path: str, cwd: str, parameters: "dict | None" 
     root = os.path.realpath(str(cwd))
     workflow_file = _sm_project_path(root, workflow_path)
     workflow = _sm_load_workflow_dict(workflow_file)
+    crowded = _sm_crowded_write_states(workflow)
+    if crowded:
+        # 1 ステート 1 成果物。小さいモデルは成果物を 2 つ同時に渡されると片方を丸ごと
+        # 落とし、再投入を何度積んでも同じ落ち方をする（実測 2026-08-29: 一括 0/3・
+        # 1 成果物ずつ 3/3）。定型業務が通っていたのは 1 ステート 1 成果物に割れていた
+        # からで、宣言でそれを崩せるままにしない——投入前に落とす。
+        raise StateMachineHarnessError(
+            "write は 1 ステート 1 ファイルです（2 つ以上ある state: "
+            + "; ".join(f"{sid}: {', '.join(paths)}" for sid, paths in crowded)
+            + "）。成果物ごとに state を割り、それぞれに check を付けてください")
     if decision is not None and decision.get("selected"):
         missing = sorted(sid for sid, st in (workflow.get("states") or {}).items()
                          if isinstance(st, dict) and st.get("write") and not st.get("check"))

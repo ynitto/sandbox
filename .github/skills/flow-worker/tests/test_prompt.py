@@ -83,6 +83,35 @@ def test_judge_and_filter_structured_tail():
     assert '"kept"' in p
 
 
+DECISION = {"facts": [{"name": "extra_deps", "type": "bool"}],
+            "criteria": [{"fact": "extra_deps", "op": "eq", "value": False}]}
+
+
+def test_decision_switches_the_role_to_extraction():
+    """判定契約があるノードは「抽出役」。役割行が「選別役…kept を添える」のままだと、
+    抽出契約を渡してもモデルが判定へ滑り戻る（実測 2026-08-29: F2P 1/3）。"""
+    for kind in ("filter", "judge"):
+        p = fw.build({"role": "worker", "kind": kind, "goal": "候補を扱う",
+                      "decision": DECISION})
+        assert "抽出役" in p
+        assert "タスク(extract)" in p
+        assert "選別役" not in p and "審判役" not in p
+        assert '"kept"' not in p and '"winner"' not in p
+
+
+def test_without_a_decision_the_role_is_unchanged():
+    p = fw.build({"role": "worker", "kind": "filter", "goal": "選別"})
+    assert "選別役" in p and '"kept"' in p
+
+
+def test_capabilities_declares_decision_support():
+    """agent-flow はこの宣言を見て、判定契約を渡してよい版かを決める。"""
+    r = subprocess.run([sys.executable, SCRIPT, "--capabilities"],
+                       capture_output=True, text=True, timeout=30)
+    assert r.returncode == 0
+    assert "decision" in json.loads(r.stdout)["capabilities"]
+
+
 def test_map_prompt_keeps_single_item_rule():
     p = fw.build({"role": "worker", "kind": "map", "goal": "各要素を処理"})
     assert "与えられた1要素だけに適用" in p

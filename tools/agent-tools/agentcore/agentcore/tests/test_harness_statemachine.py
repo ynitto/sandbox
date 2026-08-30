@@ -1546,5 +1546,27 @@ class SkillPythonTest(unittest.TestCase):
             self.assertTrue(sm._sm_python_ok(sm._sm_python_command()))
 
 
+
+class OneDeliverablePerStateTests(unittest.TestCase):
+    """1 ステート 1 成果物。宣言でこの規約を崩せるままにしない。
+
+    小さいモデルは成果物 2 つを同時に渡されると片方を丸ごと落とす（実測 2026-08-29:
+    一括 0/3・1 成果物ずつ 3/3）。定型業務（T7 / T8）が通っていたのは 1 ステート
+    1 成果物に割れていたからで、そこが規約であることを機械で縛る。
+    """
+
+    def test_two_writes_in_one_state_are_refused(self):
+        crowded = sm._sm_crowded_write_states({"states": {
+            "impl": {"write": ["src/x.py", "tests/test_x.py"]},
+            "one": {"write": "src/y.py"},
+            "none": {},
+        }})
+        self.assertEqual(crowded, [("impl", ["src/x.py", "tests/test_x.py"])])
+
+    def test_one_write_per_state_passes(self):
+        self.assertEqual(sm._sm_crowded_write_states({"states": {
+            "a": {"write": "src/x.py"}, "b": {"write": ["tests/test_x.py"]}}}), [])
+
+
 if __name__ == "__main__":
     unittest.main()

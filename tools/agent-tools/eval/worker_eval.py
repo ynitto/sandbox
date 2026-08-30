@@ -1258,6 +1258,90 @@ def invoke(step: dict, wt: Path) -> "tuple[int, str, str, float, list]":
     return rc, out, err, time.monotonic() - started, argv
 
 
+EVIDENCE_CHARS = 8000   # 1 ファイルあたり台帳へ残す本文の上限（課題の成果物はどれも小さい）
+
+
+def collect_evidence(wt: Path) -> dict:
+    """受入判定に使った材料（変更されたファイルの本文と diff の要約）を控える。
+
+    `planner_eval` は宣言を台帳へ残したおかげで、**チェッカーの欠陥に気付いたあと
+    走り直さずに再判定できた**（PL5 の 0/3 は測定側の誤りで、再判定すると 2/3 だった）。
+    実装系も同じ理由で材料を残す——受入は 1 回 200〜600 秒かかるので、チェッカーを直す
+    たびに引き直していては条件が変わる。`--recheck` が台帳だけを入力に再判定する。
+    """
+    def git(*args) -> str:
+        r = subprocess.run(["git", *args], cwd=wt, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace")
+        return r.stdout if r.returncode == 0 else ""
+
+    files = []
+    for line in git("status", "--porcelain", "-uall").splitlines():
+        rel = line[3:].strip().strip('"')
+        path = wt / rel
+        if not rel or not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        files.append({"path": rel, "status": line[:2].strip(),
+                      "bytes": path.stat().st_size,
+                      "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                      "text": text[:EVIDENCE_CHARS],
+                      "truncated": len(text) > EVIDENCE_CHARS})
+    return {"diff_stat": git("diff", "--stat", "HEAD").strip(), "files": files}
+
+
+def restore_evidence(wt: Path, evidence: dict) -> None:
+    """台帳の証跡から作業ツリーを組み直す（`--recheck` 用）。"""
+    for entry in (evidence or {}).get("files") or []:
+        if entry.get("truncated"):
+            raise ValueError(f"{entry['path']}: 本文が切り詰められていて再現できません")
+        path = wt / str(entry["path"])
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(entry.get("text") or "", encoding="utf-8")
+
+
+def recheck_ledger(path: Path) -> int:
+    """台帳だけを入力に受入を再計算し、記録と食い違う行を報告する。
+
+    走り直さない——チェッカーを直したときに知りたいのは「同じ成果物を今の規則で
+    判定するとどうなるか」であって、モデルをもう一度引いた結果ではない。
+    """
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    rows = [r for r in rows if r.get("evidence")]
+    if not rows:
+        raise SystemExit(f"再判定できる行がありません（evidence を持つ行が 0 件）: {path}")
+    changed = 0
+    for row in rows:
+        tid = str(row.get("task") or "")
+        task = TASKS.get(tid)
+        if task is None:
+            print(f"  {tid}#{row.get('iter')}: 知らない課題（この木にケースが無い）")
+            continue
+        wt = WORK / f"recheck-{tid}-{row.get('iter')}"
+        shutil.rmtree(wt, ignore_errors=True)
+        subprocess.run(["git", "worktree", "prune"], cwd=REPO, capture_output=True)
+        subprocess.run(["git", "worktree", "add", "--detach", str(wt),
+                        str(row.get("base_rev") or "HEAD")],
+                       cwd=REPO, capture_output=True, text=True, check=True)
+        try:
+            task["seed"](wt)
+            restore_evidence(wt, row["evidence"])
+            ok, note = task["check"](wt)
+        except Exception as e:  # noqa: BLE001 — 再判定の事故も 1 行として残す
+            ok, note = False, f"recheck error: {e}"
+        finally:
+            subprocess.run(["git", "worktree", "remove", "--force", str(wt)],
+                           cwd=REPO, capture_output=True)
+        mark = "=" if ok == row.get("checker_pass") else "≠"
+        changed += mark == "≠"
+        print(f"  {tid}#{row.get('iter')}: 台帳 {row.get('checker_pass')} "
+              f"{mark} 再判定 {ok}  {note[:90]}")
+    print(f"\n{len(rows)} 行を再判定・記録と食い違い {changed} 件")
+    return 0
+
+
 def snapshot_worktree(wt: Path) -> dict:
     """手順を始める前の作業ツリーを控える（引き直しで戻すため）。
 
@@ -1351,7 +1435,9 @@ def run_steps(task: dict, wt: Path) -> "tuple[list[dict], str, str]":
                     trace.append(rec)
                     break
                 ok, feedback = gate(wt)
-                trace.append({**rec, "gate": ok, "gate_note": feedback[:160]})
+                # ゲートの出力は材料そのもの。160 字で切ると「何を見て落としたか」が
+                # 台帳から読めなくなる（再判定の入力にならない）。
+                trace.append({**rec, "gate": ok, "gate_note": feedback[:2000]})
                 if ok:
                     break
                 goal = step["goal"] + REPAIR_NOTE.format(feedback)
@@ -1376,10 +1462,14 @@ def run_one(tid: str, i: int) -> dict:
     # aider は自前のシステムプロンプトと編集ループを持つので、flow-worker の
     # プロンプト（報告契約・worktree 規約）は渡さない——渡すと道具の作法と二重になる。
     # 課題文（goal）とチェッカーは両経路で同一なので、比較は成立する。
+    base_rev = subprocess.run(["git", "rev-parse", "HEAD"], cwd=wt, capture_output=True,
+                              text=True).stdout.strip()
     trace, out, err = run_steps(task, wt)
     wall = sum(s["wall"] for s in trace)
 
     mode = trace[-1]["mode"] if trace else "empty"
+    # 判定の**前**に材料を控える（判定が落ちても材料は残る）。
+    evidence = collect_evidence(wt)
     try:
         ok, note = task["check"](wt)
     except Exception as e:  # noqa: BLE001 — チェッカーの事故は fail 扱いで記録
@@ -1426,6 +1516,9 @@ def run_one(tid: str, i: int) -> dict:
                # ——`len(trace) - 手順数` で数えると両者が混ざる。引き直しの無い
                # 既存の腕では、この式は従来と同じ値を返す。
                retry_count=sum(1 for call in trace if call.get("attempt", 1) > 1),
+               # 受入判定に使った材料。台帳だけを入力に再判定できるようにする
+               # （`--recheck <台帳>`）。base_rev は組み直す土台の revision。
+               base_rev=base_rev, evidence=evidence,
                trace=trace)
     draws = rec["draws"]
     print(f"  {tid}#{i}: {'PASS' if ok else 'FAIL':4s} {mode:24s} "
@@ -1438,6 +1531,8 @@ def main() -> None:
     global WALL_LIMIT, MODEL, CLI, AGENT_POLICY, NUM_CTX, NUM_PREDICT, SAMPLING
     global RESAMPLE, AIDER_VERSION, HARNESS, HARNESS_COMMANDS_DIR, MAX_ROUNDS
     ap = argparse.ArgumentParser()
+    ap.add_argument("--recheck", metavar="LEDGER",
+                    help="台帳だけを入力に受入を再判定する（モデルは呼ばない）")
     ap.add_argument("--model", default=MODEL,
                     help="測るモデル。別モデルの判定はここだけ変えればよい")
     ap.add_argument("--repeat", type=int, default=3)
@@ -1472,6 +1567,9 @@ def main() -> None:
                     help="ゲート付き手順を最大 N 回まで引き直す（既定 1 = 引き直さない）。"
                          "再投入を使い切ってから作業ツリーを戻して独立に抽選し直す")
     args = ap.parse_args()
+    if args.recheck:
+        # 再判定はモデルを呼ばないので、腕の検証（sampling / policy 等）を通さずに帰る。
+        raise SystemExit(recheck_ledger(Path(args.recheck).expanduser()))
     WALL_LIMIT = args.wall
     MODEL = args.model
     CLI = args.cli
