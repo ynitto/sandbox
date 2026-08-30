@@ -359,7 +359,7 @@ class TestBundledGolden(_Isolated):
         "kiro": {
             "write": ["kiro-cli", "chat", "--no-interactive", "--trust-all-tools",
                       "--model", "M", "P"],
-            "readonly": ["kiro-cli", "chat", "--no-interactive", "--trust-tools=",
+            "readonly": ["kiro-cli", "chat", "--no-interactive", "--trust-tools=fs_read",
                          "--model", "M", "P"],
             "interactive": ["kiro-cli", "chat", "--trust-all-tools", "--model", "M"],
         },
@@ -367,7 +367,7 @@ class TestBundledGolden(_Isolated):
             "write": ["claude", "-p", "--output-format", "text",
                       "--dangerously-skip-permissions", "--model", "M"],
             "readonly": ["claude", "-p", "--output-format", "text",
-                         "--permission-mode", "plan", "--tools", "", "--model", "M"],
+                         "--permission-mode", "plan", "--model", "M"],
             "interactive": ["claude", "--model", "M"],
         },
         "copilot": {

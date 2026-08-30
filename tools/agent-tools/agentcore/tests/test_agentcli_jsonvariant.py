@@ -200,6 +200,31 @@ class ShippedDefinitionTests(unittest.TestCase):
             spec = agentcli.load_cli(f"ollama-{role}", project_dir=self.repo)
             self.assertIsNone(spec.get("interactive"), role)
 
+    def test_readonly_is_no_writes_not_no_tools_on_capable_containers(self):
+        """readonly は「書かない」の宣言であって「道具ゼロ」ではない。
+
+        器の強い CLI（クラウド）では読み取りの道具を残す——高性能モデルは適度な自由度
+        （プロンプト外の材料を自分で読める）を持たせたほうが良く、書込の禁止は
+        CLI 側の読み取り専用モードが担う（codex の --sandbox read-only が元からこの姿勢。
+        claude は対話面の readonly が既に plan モードだけだった——ヘッドレスを揃えた）。
+        道具ゼロの手当ては、道具でプロンプト内の整形を壊す小さいモデル（ローカルの器）
+        にだけ掛ける。
+        """
+        claude = agentcli.load_cli("claude", project_dir=self.repo)
+        self.assertEqual(claude["readonly_args"], ["--permission-mode", "plan"])
+        self.assertEqual(claude["interactive"]["readonly_args"], claude["readonly_args"],
+                         "ヘッドレスと対話面で readonly の姿勢を揃える")
+        kiro = agentcli.load_cli("kiro", project_dir=self.repo)
+        self.assertEqual(kiro["readonly_args"], ["--trust-tools=fs_read"],
+                         "退避時に既に信頼していた読み取り道具を、非退避でも同じにする")
+        codex = agentcli.load_cli("codex", project_dir=self.repo)
+        self.assertEqual(codex["readonly_args"], ["--sandbox", "read-only"])
+        # ローカルの器は道具ゼロのまま——道具を持った e4b はプロンプト内で完結する整形を
+        # シェルで解こうとして壊す（実測 2026-08-30: map 2/5・道具ゼロで 5/5）。
+        ollama = agentcli.load_cli("ollama", project_dir=self.repo)
+        self.assertIn("--tools", ollama["write_args"])
+        self.assertNotIn("--tools", ollama["readonly_args"])
+
     def test_the_json_container_declares_json_object_only(self):
         """`--format json` の器は宣言でオブジェクト限定と分かる（plan の契約分岐が読む）。"""
         self.assertTrue(

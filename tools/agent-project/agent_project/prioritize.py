@@ -133,8 +133,10 @@ def _agent_readonly(purpose: str) -> bool:
 
     既定は現状のまま write——挙動を黙って変えない。宣言してよいのは**読まない系**
     （材料を全部プロンプトで受け取り、文章か JSON を返すだけ）の処理に限る。読む系
-    （repo_map / doctor / review）を readonly にすると、クラウド CLI の readonly 実装が
-    ツールを大きく削るため探索そのものを失う（適用拡大設計 §5）。
+    （repo_map / doctor / review）を readonly にすると、CLI によっては readonly 実装が
+    ツールを大きく削るため探索そのものを失う（適用拡大設計 §5。claude / kiro / codex は
+    2026-08-31 に読み取り道具を残す姿勢へ揃えたが、copilot の `--available-tools=` は
+    いまも道具ゼロ）。
 
     `_agent_for` に相乗りさせず別関数にしてあるのは、あちらの戻り値（cli, model）が
     agent-control・node-budget の縮退まで畳んだ「実効エージェント」で、権限は

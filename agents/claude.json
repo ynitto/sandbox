@@ -9,7 +9,7 @@
   "output": "stdout",
   "empty_output_is_error": true,
   "write_args": ["--dangerously-skip-permissions"],
-  "readonly_args": ["--permission-mode", "plan", "--tools", ""],
+  "readonly_args": ["--permission-mode", "plan"],
   "continue_args": ["--continue"],
   "resume_args": ["--resume", "{session}"],
   "readonly": "enforced",
