@@ -27,6 +27,26 @@ def _repo_head_sha(url: str, branch: str = "") -> "str | None":
     return out[0] if r.returncode == 0 and out else None
 
 
+# 要約本文の始まり（見出し・箇条書き・番号付き）。この手前は前置き＝作業メモとして落とす。
+# repo_map は道具ループ（`--tools bash`）で走る面で、モデルの最終ターンは調査の作業報告に
+# なりやすい。本番はその本文をそのまま `context/<repo>.md` に保存して planner へ渡すので、
+# **前置きがそのまま計画の材料になる**。プロンプトは既に「要約本文のみ」と言っている
+# （＝言わせるのは済んでいる）ので、残りは機械が落とす。
+_REPO_MAP_BODY_RE = re.compile(r"(?m)^[ \t]{0,3}(?:#{1,6}[ \t]+\S|[-*+][ \t]+\S|\d+\.[ \t]+\S)")
+
+
+def _repo_map_strip_preamble(body: str) -> "tuple[str, int]":
+    """要約本文の手前（前置き）を落とし、(本文, 落とした字数) を返す。
+
+    本文の始まりが 1 つも無い出力は**要約になっていない**（調査の作業報告だけ）ので空にする
+    ——保存しなければ従来の「生成なし」と同じ扱いになり、作業メモが planner へ渡らない。
+    """
+    m = _REPO_MAP_BODY_RE.search(body or "")
+    if not m:
+        return "", len(body or "")
+    return body[m.start():].strip(), m.start()
+
+
 def _repo_map_generate(cfg: "Config", spec: dict) -> str:
     """repo を一時 worktree に用意してエージェントに理解を要約させる（有界・失敗は空）。"""
     tmp = tempfile.mkdtemp(prefix="agent-repomap-")
@@ -38,7 +58,14 @@ def _repo_map_generate(cfg: "Config", spec: dict) -> str:
             "- 構造（主要ディレクトリと役割）\n- 主要モジュールと責務\n"
             "- ビルド・テスト・リンタの実行コマンド\n- 命名・実装の規約（読み取れる範囲で）\n"
             "出力は要約本文のみ（前置き・後書きなし）。")
-        return _run_agent_cli(prompt, cfg.model, purpose="repo_map").strip()[:4000]
+        raw = _run_agent_cli(prompt, cfg.model, purpose="repo_map").strip()
+        body, dropped = _repo_map_strip_preamble(raw)
+        if dropped:
+            append_journal(cfg.journal,
+                           f"repo-map: 前置きを {dropped} 字落とした"
+                           f"（{spec.get('name') or spec.get('url')}"
+                           + ("・本文が残らなかったので生成なし" if not body else "") + "）")
+        return body[:4000]
     except Exception:  # noqa: BLE001  clone 失敗・エージェント不在・タイムアウトは生成なし
         return ""
     finally:
@@ -109,6 +136,15 @@ def repo_map_context(cfg: "Config", names: "list[str] | None" = None,
     return "\n\n".join(parts)
 
 
+# 1 件ずつ出させる契約（split → map と同じ形。件数の制御は本体が持つ）。
+# 必須セクション 6 つ × 複数タスクを 1 回の JSON 配列で出させると、`--format json`
+# （本番の `plan` は `ollama-json` へ振り替わる＝**オブジェクト**しか返せない）と衝突し、
+# 実測 5 回のうち 4 回はタスク 0 件になっていた（2026-08-31）。
+PLAN_ONE_AT_A_TIME = (
+    "\n\n出力は **JSON オブジェクト 1 件のみ**（タスク 1 件）。配列にしないこと。"
+    " これ以上足すべきタスクが無ければ {\"done\": true} だけを返すこと。オブジェクトは")
+
+
 def _plan_decompose_prompt(charter: "Charter", granularity: "str | None" = None,
                            context: str = "") -> str:
     return (
@@ -119,7 +155,8 @@ def _plan_decompose_prompt(charter: "Charter", granularity: "str | None" = None,
         + "\n\n" + _charter_owns_note(charter)
         + (f"\n\n参考文脈（プロジェクトルール・リポジトリ理解。分解の粒度と verify の精度に使う）:\n{context}"
            if context else "")
-        + "\n\n出力は JSON 配列のみ。各要素は {\"title\": str, …} で、"
+        + PLAN_ONE_AT_A_TIME
+        + " {\"title\": str, …} で、"
         " 各タスクには次を**必ず**付けること（人が実行前にレビューする材料であり、欠けると"
         "そのタスクは draft に落ちて実行されない）:"
         " **\"why\": str（憲章のどの目標に効くか・1〜2 文）**、"
@@ -130,8 +167,8 @@ def _plan_decompose_prompt(charter: "Charter", granularity: "str | None" = None,
         "検証エージェントが基準ごとに実行して証跡付きで判定し、全 pass のみが完了の根拠になる。"
         "シェルコマンドを 1 行合成して書かないこと——確かめ方は検証エージェントが決める）**、"
         " **\"size\": \"S\"|\"M\"|\"L\"（規模感）**。"
-        " タスク間に順序依存があれば **\"after\": [\"先行タスクの title\"]**（配列内の先行タスク・"
-        "任意）を付けること（依存グラフとして実行順と並列性の判断に使われる。循環は不可）。"
+        " タスク間に順序依存があれば **\"after\": [\"先行タスクの title\"]**（**既に出したタスク**の"
+        "title・任意）を付けること（依存グラフとして実行順と並列性の判断に使われる。循環は不可）。"
         " 各タスクには **\"workspace\": \"name\"（唯一の書込先・必須）** を付ける。workspace は"
         " **受入基準が触るパスの owns を持つリポジトリ**にすること。読むだけの他リポジトリは"
         " \"refs\": [\"name\", ...] に入れる（書込先にはしない）。"
@@ -177,6 +214,12 @@ def assign_plan_workspace(charter: "Charter", spec: dict) -> dict:
     spec.pop("repos", None)                                   # repos は廃止: workspace/refs へ置換
     if ws is not None:
         spec["workspace"] = ws.get("name") or ws["url"]
+    elif not smap.get(hint):
+        # 候補に無い名前は**残さない**。プランナーは書込先を訊かれて「（なし、ファイル単位の
+        # 作業のため）」のような散文や成果物のファイル名を書くことがあり、それがそのまま
+        # タスクの書込先として下流（route / act）へ流れていた。決まらないときは空にして
+        # 決定的解決（rule → owns → 既定 → 候補が 1 つ）へ倒す＝docstring どおりの動き。
+        spec["workspace"] = ""
     if ref_names:
         spec["refs"] = ",".join(ref_names)
     return spec
@@ -257,9 +300,15 @@ def _backlog_existing_summary(cfg: "Config", charter_tag: "str | None") -> "list
 
 
 def build_planner_input(cfg: "Config", charter: "Charter", charter_tag: "str | None" = None,
-                        notes: str = "", retry: str = "") -> dict:
-    """backlog-planner スキルへ渡す入力（契約は .github/skills/backlog-planner/SKILL.md）。"""
+                        notes: str = "", retry: str = "",
+                        produced: "list[str] | None" = None) -> dict:
+    """backlog-planner スキルへ渡す入力（契約は .github/skills/backlog-planner/SKILL.md）。
+
+    `produced` は**この分解で既に出したタスクの題**。1 件ずつ出させる契約
+    （`PLAN_ONE_AT_A_TIME`）で、重複を避けさせ `after` の参照先を与えるために渡す。
+    """
     return {
+        "produced": list(produced or []),
         "charter": build_charter_request(charter),
         "owns": _charter_owns_note(charter),
         "granularity": (cfg.granularity or "coarse"),
@@ -325,8 +374,11 @@ def _builtin_planner_extras(spec: dict) -> str:
     graves = "\n".join(
         f"- {g['title']}" + (f" — 却下理由: {g['reason']}" if g.get("reason") else "")
         for g in (spec.get("tombstones") or []) if g.get("title"))
+    produced = "\n".join(f"- {t}" for t in (spec.get("produced") or []) if t)
     return (
-        _block("既存タスク（このバージョンのバックログ。**タイトルが違っても、これらと意図が"
+        _block("この分解で既に出したタスク（**同じ・似たものを出さない**。"
+               "\"after\" の参照先にはこの題を使う）", produced)
+        + _block("既存タスク（このバージョンのバックログ。**タイトルが違っても、これらと意図が"
                "同じ・似ているタスクは出力しない**——保留・実行中・レビュー中のものも、言い換えや"
                "粒度を変えた再提案をしないこと）", existing)
         + _block("却下済み（人が明示的に廃止したタスク。**同じものはもちろん、意図が似ている"
@@ -374,10 +426,67 @@ def _plan_retry_note(bad: "list[tuple[str, list[str]]]") -> str:
         for title, missing in bad[:20])
 
 
+# 1 回の分解で受け取るタスクの上限（件数の制御は**本体が持つ**）。粒度の目安と同じ語彙で、
+# モデルが「もう無い」と言わなかったときの止め所。
+_PLAN_MAX_ITEMS = {"coarse": 10, "fine": 20, "finest": 30}
+
+
+def _plan_item_from_output(out: str) -> "dict | None":
+    """1 件契約の受け方。本番の `plan` は `ollama-json`（`--format json`）へ振り替わり、
+    **オブジェクトしか返せない**ので、オブジェクト 1 件で受ける。`{"task": {...}}` /
+    `{"tasks": [{...}]}` の 1 段の包みは剥がす。title が無ければ「もう出すものが無い」
+    （`{"done": true}`）とみなして None を返す。"""
+    obj = _extract_json_object_loose(out)
+    if not isinstance(obj, dict):
+        return None
+    if str(obj.get("title") or "").strip():
+        return obj
+    for v in obj.values():
+        if isinstance(v, dict) and str(v.get("title") or "").strip():
+            return v
+        if isinstance(v, list) and v and isinstance(v[0], dict) \
+                and str(v[0].get("title") or "").strip():
+            return v[0]
+    return None
+
+
+def _plan_next_spec(cfg: "Config", charter: "Charter", charter_tag: "str | None",
+                    notes: str, produced: "list[str]", strict: bool) -> "dict | None":
+    """次の 1 件をプランナーから受け取る。欠落は**機械で見て 1 回だけ再要求**する。
+    もう出すものが無い（または呼び出しに失敗した）なら None。"""
+    retry, spec = "", None
+    for _ in range(2):
+        pin = build_planner_input(cfg, charter, charter_tag, notes=notes, retry=retry,
+                                  produced=produced)
+        try:
+            out = _run_agent_cli(build_planner_prompt(cfg, pin, charter),
+                                 cfg.model, purpose="plan")
+        except (OSError, RuntimeError, subprocess.SubprocessError) as e:
+            append_journal(cfg.journal, f"project plan: 分解に失敗（{e}）")
+            return spec
+        item = _plan_item_from_output(out)
+        if item is None:
+            return spec
+        spec = _plan_spec_from_item(charter, item)
+        missing = _validate_backlog_spec(spec)
+        if not missing or not strict:
+            return spec
+        retry = _plan_retry_note([(spec["title"], missing)])
+        append_journal(cfg.journal,
+                       f"project plan: 「{spec['title']}」の必須セクション欠落 "
+                       f"{missing} → 1 回だけ再要求する")
+    return spec
+
+
 def plan_via_agent(cfg: "Config", charter: "Charter", charter_tag: "str | None" = None,
                    notes: str = "") -> "list[dict]":
     """charter を backlog-planner スキルに分解させ、タスク spec 群を得る。
     知能は委譲し、取り込み（enqueue）は本体が決定的に行う。失敗時は空（plan を諦め人へ）。
+
+    **1 件ずつ出させて機械が集める**（`split` → `map` と同じ形）。必須セクション 6 つ ×
+    複数タスクを 1 回の JSON 配列で出させていた頃は、`--format json` で走る本番の起動形と
+    衝突して 5 回中 4 回がタスク 0 件だった（2026-08-31 の実測）。件数の制御はここが持ち、
+    プランナーには「次の 1 件だけ」を訊く。
 
     必須セクション（why / 作業概要 / 受入基準 / 規模感）の欠落は**機械で見て 1 回だけ再要求**し、
     それでも欠けるタスクは**捨てずに、人の目に入る場所へ置く**。捨てると人には「プランナーが
@@ -390,24 +499,19 @@ def plan_via_agent(cfg: "Config", charter: "Charter", charter_tag: "str | None" 
     どちらでも**未記入のまま実行されることはない**。
     """
     strict = str(getattr(cfg, "plan_sections", "required") or "required") == "required"
-    retry = ""
+    cap = _PLAN_MAX_ITEMS.get(str(getattr(cfg, "granularity", "") or "coarse").lower(), 10)
     specs: "list[dict]" = []
-    for attempt in range(2):
-        pin = build_planner_input(cfg, charter, charter_tag, notes=notes, retry=retry)
-        try:
-            out = _run_agent_cli(build_planner_prompt(cfg, pin, charter),
-                                 cfg.model, purpose="plan")
-        except (OSError, RuntimeError, subprocess.SubprocessError) as e:
-            append_journal(cfg.journal, f"project plan: 分解に失敗（{e}）")
-            return []
-        specs = [_plan_spec_from_item(charter, i) for i in (_extract_json_array(out) or [])
-                 if isinstance(i, dict) and str(i.get("title", "")).strip()]
-        bad = [(sp["title"], m) for sp in specs if (m := _validate_backlog_spec(sp))]
-        if not bad or not strict or attempt == 1:
+    produced: "list[str]" = []
+    for _ in range(cap):
+        sp = _plan_next_spec(cfg, charter, charter_tag, notes, produced, strict)
+        if sp is None:
             break
-        retry = _plan_retry_note(bad)
-        append_journal(cfg.journal,
-                       f"project plan: 必須セクション欠落 {len(bad)} 件 → 1 回だけ再要求する")
+        if sp["title"] in produced:       # 同じ題を繰り返し始めたら進んでいない＝打ち切る
+            append_journal(cfg.journal,
+                           f"project plan: 「{sp['title']}」を繰り返したので分解を打ち切る")
+            break
+        specs.append(sp)
+        produced.append(sp["title"])
     for sp in specs:                       # 2 回目も欠けたものは捨てずに人の目へ回す
         missing = _validate_backlog_spec(sp)
         if not (missing and strict):
@@ -447,13 +551,73 @@ def review_via_stub(cfg: "Config", charter: "Charter") -> "list[dict]":
     return []
 
 
-def _review_prompt(charter: "Charter", granularity: "str | None" = None) -> str:
+# レビュアへ渡す完了済みの上限（archive は際限なく育つので直近だけ）。
+_REVIEW_DONE_LIMIT = 30
+
+
+def _acceptance_report(results: "list | None") -> str:
+    """決定的な受入コマンドの判定結果（機械が実行した事実）を 1 行ずつにする。"""
+    rows = []
+    for row in (results or []):
+        try:
+            cmd, ok, msg = row[0], row[1], (row[2] if len(row) > 2 else "")
+        except (TypeError, IndexError):
+            continue
+        line = f"- {'PASS' if ok else 'FAIL'}: {cmd}"
+        if not ok and str(msg or "").strip():
+            line += f" — {str(msg).strip()[:160]}"
+        rows.append(line)
+    return "\n".join(rows)
+
+
+def _review_progress_summary(cfg: "Config", charter_tag: "str | None" = None) -> str:
+    """成果物の状態（完了済み・残り）。**レビュアが当否を判断できる唯一の材料**である。
+
+    憲章だけを見せると、モデルは何が未達かを推測して書く（実測 RV1 の落ち方は
+    `workspace` に成果物のファイル名を書く形）。PV1（撤去された charter verifier）と
+    同じ「材料が手元に無い」構造なので、道具ではなく材料を届ける。
+    """
+    rows: "list[str]" = []
+    done: "list[tuple[float, str]]" = []
+    for t in load_tasks(cfg.backlog):
+        if not task_belongs_to_charter(t, charter_tag):
+            continue
+        if t.norm_status() == "done":
+            done.append((0.0, t.title))
+        else:
+            rows.append(f"- 残り（{t.norm_status()}）: {t.title}")
+    adir = cfg.archive_dir()
+    if adir.exists():
+        for path in adir.glob("*.md"):
+            try:
+                t = parse_task(path.read_text(encoding="utf-8"), path.stem)
+                mtime = path.stat().st_mtime
+            except (OSError, ValueError):
+                continue
+            if t.norm_status() == "done" and task_belongs_to_charter(t, charter_tag):
+                done.append((mtime, t.title))
+    done.sort(key=lambda x: x[0], reverse=True)
+    return "\n".join([f"- 完了: {title}" for _, title in done[:_REVIEW_DONE_LIMIT]] + rows)
+
+
+def _review_prompt(charter: "Charter", granularity: "str | None" = None,
+                   acceptance: str = "", progress: str = "") -> str:
+    def _block(title: str, body: str) -> str:
+        body = (body or "").strip()
+        return f"\n\n## {title}\n{body}" if body else ""
+
     return (
         "あなたは成果物を批判的にレビューする敵対的レビュアです。以下の憲章の目標・成果物に対し、"
         "現状の成果物がまだ満たせていない点（短絡的達成・抜け漏れ・品質不足）を洗い出してください。"
         "改善タスクの粒度: " + plan_granularity_directive(granularity) + "\n\n"
         + build_charter_request(charter)
         + "\n\n" + _charter_owns_note(charter)
+        + _block("決定的な受入コマンドの判定結果（機械が実行した事実。**全 PASS でも"
+                 "成果物が揃っているとは限らない**——この短絡を疑うのがあなたの仕事）", acceptance)
+        + _block("成果物の現状（バックログの完了済みと残り。**ここに無い成果物は誰も作っていない**）",
+                 progress)
+        + "\n\n憲章の成果物・目標と上の現状を突き合わせ、**まだ誰も手を付けていないもの**と"
+        "**done になっているが目標を満たしていないもの**を指摘してください。"
         + "\n\n出力は JSON 配列のみ。各要素は {\"title\": str,"
         " \"acceptance\": [str, …]（受入基準・自然文。検証エージェントが基準ごとに実行して"
         "証跡付きで判定する。シェルコマンドを 1 行合成して書かないこと）,"
@@ -463,12 +627,21 @@ def _review_prompt(charter: "Charter", granularity: "str | None" = None) -> str:
         " 問題が無ければ空配列 [] を返してください。")
 
 
-def review_via_agent(cfg: "Config", charter: "Charter") -> "list[dict]":
+def review_via_agent(cfg: "Config", charter: "Charter", results: "list | None" = None,
+                     charter_tag: "str | None" = None) -> "list[dict]":
     """敵対的レビュー（opt-in）。成果物 vs 目標の不足を改善タスク [{title, acceptance}] として返す。
     plan と同様、各タスクに書込先 workspace を必ず明示する（旧 "verify" の受け取りは
-    P1-A8 でやめた——新規データに裸の verify を書かない）。"""
+    P1-A8 でやめた——新規データに裸の verify を書かない）。
+
+    `results` は呼び出し元（`_project_evaluate`）が**その場で実行した**受入コマンドの判定
+    （再実行はしない）。これと backlog / archive の要約が、レビュアが当否を判断できる材料である。
+    """
     try:
-        out = _run_agent_cli(_review_prompt(charter, cfg.granularity), cfg.model, purpose="review")
+        out = _run_agent_cli(
+            _review_prompt(charter, cfg.granularity,
+                           acceptance=_acceptance_report(results),
+                           progress=_review_progress_summary(cfg, charter_tag)),
+            cfg.model, purpose="review")
     except (OSError, RuntimeError, subprocess.SubprocessError) as e:
         append_journal(cfg.journal, f"project review: レビューに失敗（{e}）")
         return []

@@ -218,6 +218,7 @@ map-reduce は split を1つだけ（map は実行時展開）。classify-and-ac
 9. 依存成果は既定 digest（要約・成果物参照のみ）。完全な構造化データが不可欠なノードだけ dependency_input="full" を宣言する
 10. work/generate ノードには処理契約 operation を付け、そのノードが作る成果物のパスを deliverables に列挙する（scope.write と一致させ、検証コマンドがあれば verification.commands に argv の配列で書く）。**成果物が 2 つ以上あるノードを自分で 2 つに割らない**——エンジンが 1 成果物 1 ノードの直列へ割る
 11. filter/judge ノードには判定契約 decision を付ける。facts は候補の本文から転記できる項目だけ（type は bool/int/string、string は values で取りうる値を列挙）、criteria は残す条件（AND・op は eq/ne）、tie_break は最良案を 1 つに絞る順位基準（fact と min/max）。**選別・比較の観点を goal の自由文に書かず、decision の条件として宣言する**（採否はモデルではなく機械が決める）
+12. **readonly=true は kind ではなく材料の在り処で決める**。読むものが要求文と依存の成果だけで、ディスクへ書くものが無いノードには readonly=true を付ける（kind が work/generate でも同じ）。道具が落ち、余計なシェル探索で中身を壊さない。read_allocation を割り付けたノードと、ファイルを作る・直すノード（operation.deliverables を持つもの）には付けない
 
 ## サブタスク（Phase 1 で特定済み・骨格）
 
@@ -229,7 +230,7 @@ JSON オブジェクトのみ（`tasks` 配列を 1 つ持つ。配列を裸で�
 ```json
 {{"tasks": [
   {{"id": "t1", "goal": "[scope] path\\n[out_of_scope] ...\\n具体的な目標", "deps": [], "kind": "work", "read_allocation": [{{"path": "src/x.py", "range": "10-40", "reason": "変更箇所", "slice": true, "symbols": ["Class.method"]}}], "dependency_input": "digest", "operation": {{"operation_class": "feature", "scope": {{"read": ["src"], "write": ["src/x.py", "tests/test_x.py"]}}, "deliverables": ["src/x.py", "tests/test_x.py"], "verification": {{"commands": [["python", "-m", "pytest", "-q", "tests"]]}}}}}},
-  {{"id": "t2", "goal": "候補から条件を満たすものを残す", "deps": ["t1"], "kind": "filter", "decision": {{"facts": [{{"name": "extra_deps", "type": "bool", "description": "追加依存が要るか"}}], "criteria": [{{"fact": "extra_deps", "op": "eq", "value": false}}]}}}},
+  {{"id": "t2", "goal": "候補から条件を満たすものを残す", "deps": ["t1"], "kind": "filter", "readonly": true, "decision": {{"facts": [{{"name": "extra_deps", "type": "bool", "description": "追加依存が要るか"}}], "criteria": [{{"fact": "extra_deps", "op": "eq", "value": false}}]}}}},
   ...
 ]}}
 ```
@@ -1216,6 +1217,11 @@ def normalize_tasks(tasks: list) -> list[dict]:
             node["read_allocation"] = reads[:32]
         if t.get("dependency_input") == "full":
             node["dependency_input"] = "full"
+        # 道具の有無の宣言。材料がプロンプト内で完結するノードは readonly で呼ぶと
+        # `--tools` が落ちる（道具を持った小さいモデルは、プロンプトだけで解ける整形を
+        # シェルで解こうとして中身を壊す）。運ぶだけで、判断は planner が書いたとおり。
+        if t.get("readonly") is True:
+            node["readonly"] = True
         # 処理契約（operation）と判定契約（decision）はそのまま運ぶ。形の検査は
         # agent-flow 側の 1 実装（agentcore.nodecontract）が持つ——ここで写して
         # 検査すると、契約が変わった日にスキルだけ古い規則で落とすようになる。

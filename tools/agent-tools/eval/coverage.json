@@ -5,7 +5,7 @@
       "planner": "direct",
       "evaluator": "direct",
       "work": "direct",
-      "generate": "indirect",
+      "generate": "direct",
       "classify": "direct",
       "synthesize": "direct",
       "verify": "direct",

@@ -494,12 +494,14 @@ class PlannerSkillTests(unittest.TestCase):
             def fake(prompt, model, purpose=""):
                 calls.append(prompt)
                 if len(calls) == 1:
-                    return json.dumps([{"title": "T", "workspace": "app"}])   # 全欠落
-                return json.dumps([self._item()])
+                    return json.dumps({"title": "T", "workspace": "app"})     # 全欠落
+                if len(calls) == 2:
+                    return json.dumps(self._item())
+                return json.dumps({"done": True})                             # もう無い
 
             with mock.patch.object(km, "_run_agent_cli", fake):
                 specs = km.plan_via_agent(cfg, ch)
-            self.assertEqual(len(calls), 2, "欠落は 1 回だけ再要求する")
+            self.assertEqual(len(calls), 3, "欠落は 1 回だけ再要求し、そのあと次の 1 件を訊く")
             self.assertIn("未記入", calls[1], "何が欠けたかを添えて出し直させる")
             self.assertEqual(specs[0]["acceptance"], ["基準A", "基準B"])
             self.assertNotIn("status", specs[0])
@@ -535,7 +537,7 @@ class PlannerSkillTests(unittest.TestCase):
             d = Path(d)
             cfg = self._cfg(d, plan_sections="warn")
             ch = _charter(cfg)
-            bad = json.dumps([{"title": "T", "workspace": "app"}])
+            bad = json.dumps({"title": "T", "workspace": "app"})
             calls = []
 
             def fake(prompt, model, purpose=""):
@@ -544,8 +546,28 @@ class PlannerSkillTests(unittest.TestCase):
 
             with mock.patch.object(km, "_run_agent_cli", fake):
                 specs = km.plan_via_agent(cfg, ch)
-            self.assertEqual(len(calls), 1, "warn は再要求しない")
+            self.assertEqual(len(specs), 1, "同じ題を繰り返したら打ち切る")
+            self.assertTrue(all("未記入" not in c for c in calls), "warn は再要求しない")
             self.assertNotIn("status", specs[0])
+
+    def test_repeated_title_stops_the_loop(self):
+        """1 件ずつ出させる契約の止め所——同じ題を返し始めたら進んでいない。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = self._cfg(d)
+            ch = _charter(cfg)
+            calls = []
+
+            def fake(prompt, model, purpose=""):
+                calls.append(prompt)
+                return json.dumps({"tasks": [self._item("同じ題")]})   # 包みも 1 段は剥がす
+
+            with mock.patch.object(km, "_run_agent_cli", fake):
+                specs = km.plan_via_agent(cfg, ch)
+            self.assertEqual([sp["title"] for sp in specs], ["同じ題"])
+            self.assertEqual(len(calls), 2, "2 件目で打ち切る（上限まで回さない）")
+            self.assertEqual(km.build_planner_input(cfg, ch, produced=["同じ題"])["produced"],
+                             ["同じ題"], "既に出した題はプランナー入力に載る")
 
     def test_planned_title_is_recorded(self):
         with tempfile.TemporaryDirectory() as d:
@@ -562,8 +584,10 @@ class PlannerSkillTests(unittest.TestCase):
             d = Path(d)
             cfg = self._cfg(d, plan_sections="warn")
             ch = _charter(cfg)
-            out = json.dumps([self._item("A", size="l"), self._item("B", size="でかい")])
-            with mock.patch.object(km, "_run_agent_cli", lambda *a, **k: out):
+            outs = iter([json.dumps(self._item("A", size="l")),
+                         json.dumps(self._item("B", size="でかい")),
+                         json.dumps({"done": True})])
+            with mock.patch.object(km, "_run_agent_cli", lambda *a, **k: next(outs)):
                 specs = km.plan_via_agent(cfg, ch)
             self.assertEqual(specs[0]["size"], "L")
             self.assertNotIn("size", specs[1])

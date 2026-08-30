@@ -94,6 +94,12 @@ def _coerce_tasks(raw, existing=()):
         # 「判断役だが要約で足りる」を宣言する側の意思表示になる（既定より強い）。
         if str(t.get("dependency_input") or "").strip().lower() in ("full", "digest"):
             node["dependency_input"] = str(t["dependency_input"]).strip().lower()
+        # 道具の有無の宣言。材料がプロンプト内で完結するノードは readonly で呼ぶと
+        # `--tools` が落ちる——道具を持った小さいモデルは、プロンプトだけで解ける整形を
+        # シェルで解こうとして中身を壊す（実測 map 1/5・道具ゼロなら 5/5）。
+        # human はエージェントを呼ばないので宣言できない（ユーザー定義フローの検証と同じ規則）。
+        if t.get("readonly") is True and kind != "human":
+            node["readonly"] = True
         replaces = str(t.get("replaces") or "").strip()
         if replaces:
             node["replaces"] = replaces
@@ -1031,6 +1037,11 @@ def plan_strategy_agent(request: str, model: str | None, review="auto", granular
         "tie_break は最良案を 1 つに絞る順位基準（judge で条件だけでは絞りきれないとき）。"
         "goal には選別・比較の観点を自由文で書かず、decision の条件として宣言してください"
         "（採否はモデルではなく機械が決めます）。\n"
+        "**readonly: true は kind ではなく材料の在り処で決めてください**——"
+        "そのノードが読むものが要求文と依存の成果だけで、ディスクへ書くものが無いなら "
+        "readonly: true を付けます（kind が work / generate でも同じです）。道具が落ち、"
+        "余計なシェル探索で中身を壊さなくなります。read_allocation を割り付けたノードと、"
+        "ファイルを作る・直すノード（operation.deliverables があるもの）には付けないこと。\n"
         "work/generate ノードには、最初に読むべき path・任意の range・reason を read_allocation に割り付けてください。"
         "大きい Python 参照で対象 symbol を正確に特定できる場合だけ、slice=true と symbols を追加できます。"
         "小さいファイル、編集対象が曖昧な場合、Python 以外では slice を付けないでください。\n\n"

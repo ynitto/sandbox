@@ -359,12 +359,13 @@ class PlanAfterTests(unittest.TestCase):
     def test_plan_via_agent_captures_after_titles(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
-            cfg = cfg_for(d)
+            cfg = cfg_for(d, plan_sections="warn")   # ここで見るのは after の受け取りだけ
             charter = self._charter(d)
-            out = ('[{"title": "モデルを作る", "verify": "test -f m.py"},'
-                   ' {"title": "API を作る", "verify": "test -f api.py",'
-                   '  "after": ["モデルを作る"]}]')
-            with mock.patch.object(km, "_run_agent_cli", return_value=out):
+            outs = iter(['{"title": "モデルを作る", "verify": "test -f m.py"}',
+                         '{"title": "API を作る", "verify": "test -f api.py",'
+                         ' "after": ["モデルを作る"]}',
+                         '{"done": true}'])
+            with mock.patch.object(km, "_run_agent_cli", lambda *a, **k: next(outs)):
                 specs = km.plan_via_agent(cfg, charter)
             self.assertEqual(specs[1]["after_titles"], ["モデルを作る"])
             self.assertNotIn("after_titles", specs[0].get("after_titles") or [])

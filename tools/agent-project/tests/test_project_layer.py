@@ -326,6 +326,17 @@ class TestProjectLayer(unittest.TestCase):
                                             "workspace": "spec"})  # owns 無し指定は無効
         self.assertEqual(sp2["workspace"], "lib")           # → verify パスの owns で確定
 
+    def test_assign_plan_workspace_drops_unknown_names(self):
+        # 候補に無い名前（散文・成果物のファイル名）は捨てて、決定的解決へ倒す
+        ch = km.parse_charter(
+            "# Charter: r\n## goal\nx\n## repos\n"
+            "- app = https://git/app.git\n  - desc: 参照のみ\n  - base: main\n")
+        sp = km.assign_plan_workspace(
+            ch, {"title": "t", "workspace": "（なし、ファイル単位の作業のため）"})
+        self.assertEqual(sp["workspace"], "")
+        sp2 = km.assign_plan_workspace(ch, {"title": "t", "workspace": "app"})
+        self.assertEqual(sp2["workspace"], "app")       # owns 未宣言でも実在する repo は残す
+
     def test_plan_via_agent_sets_workspace(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
@@ -1596,13 +1607,15 @@ class TestProjectLayer(unittest.TestCase):
             cfg = cfg_for(d, review_project=True, max_project_cycles=1)
             seen = {"n": 0}
 
-            def reviewer(ch):
+            def reviewer(ch, results=None):
                 seen["n"] += 1
+                seen["results"] = results       # 受入判定は材料としてレビュアへ渡る
                 return [{"title": "テストを追加", "verify": "true"}]
 
             km.cmd_project(cfg, planner=lambda ch: [], reviewer=reviewer,
                            runner=lambda c: _drained())
             self.assertEqual(seen["n"], 1)      # acceptance 全 PASS でも敵対的レビューが走る
+            self.assertTrue(all(ok for _, ok, _ in seen["results"]))   # 判定結果が届いている
             titles = [t.title for t in km.load_tasks(cfg.backlog)]
             self.assertIn("テストを追加", titles)
 

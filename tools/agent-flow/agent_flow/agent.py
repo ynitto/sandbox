@@ -1495,19 +1495,9 @@ def execute_agent(kind: str, goal: str, dep_results: dict, model: str | None,
                         f"{kind} の結果契約を修復できませんでした: {repair_error}") from repair_error
     elif kind in _ENVELOPE_KINDS:
         # 本文は自由記述のまま保つが、末尾の完了可否 envelope だけは機械判定へ渡す。
-        # generate も対象にする: プロンプト側は実装系の全 kind（work / generate / map）へ
-        # 「未完了なら {"ok": false} を付けろ」と指示しており、work だけ読んでいたため
-        # generate ノードの自己申告した未完了が done として通っていた（map は
-        # STRUCTURED_KINDS の JSON 抽出で拾われる）。
-        # 本文中の JSON 例を誤採用しないよう、契約どおり末尾にある {"ok": ...} に限定する。
-        matches = list(re.finditer(r'\{\s*"ok"\s*:', text))
-        if matches:
-            try:
-                envelope = json.loads(text[matches[-1].start():].strip())
-            except (ValueError, TypeError):
-                envelope = None
-            if isinstance(envelope, dict) and isinstance(envelope.get("ok"), bool):
-                data = envelope
+        envelope = envelope_data(text)
+        if envelope is not None:
+            data = envelope
     if slice_receipts:
         data = {**(data if isinstance(data, dict) else {}),
                 "context_slices": slice_receipts}
@@ -1523,6 +1513,25 @@ def execute_agent(kind: str, goal: str, dep_results: dict, model: str | None,
     elif pipe:
         text, data = _apply_decision(pipe, kind, text, data, prompt, model, agent)
     return text, data
+
+
+def envelope_data(text: str) -> "dict | None":
+    """本文末尾の完了可否 envelope `{"ok": ...}` を取り出す（`_ENVELOPE_KINDS` の受け方）。
+
+    generate も対象にする: プロンプト側は実装系の全 kind（work / generate / map）へ
+    「未完了なら {"ok": false} を付けろ」と指示しており、work だけ読んでいたため
+    generate ノードの自己申告した未完了が done として通っていた（map は
+    STRUCTURED_KINDS の JSON 抽出で拾われる）。
+    本文中の JSON 例を誤採用しないよう、契約どおり**末尾にある** {"ok": ...} に限定する。
+    """
+    matches = list(re.finditer(r'\{\s*"ok"\s*:', text or ""))
+    if not matches:
+        return None
+    try:
+        envelope = json.loads(text[matches[-1].start():].strip())
+    except (ValueError, TypeError):
+        return None
+    return envelope if isinstance(envelope, dict) and isinstance(envelope.get("ok"), bool) else None
 
 
 def _apply_decision(decision: dict, kind: str, text: str, data, prompt: str,

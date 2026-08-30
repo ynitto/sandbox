@@ -4,6 +4,10 @@
 LLM は呼ばない。**プロンプトを組み立てるだけ**で、実行・予算管理・失敗トリアージは
 agent-project 側が持つ（backlog-verifier と同じ形）。
 
+**タスクは 1 件ずつ**出させる（件数の制御は agent-project が持つ）。必須項目 6 つ ×
+複数タスクを 1 回の JSON 配列で出させると、`--format json` で走るローカル CLI の起動形と
+衝突して 0 件になる（2026-08-31 の実測: 5 回中 4 回）。既に出した題は `produced` で渡る。
+
 Usage:
     echo '<入力 JSON>' | python3 prompt.py
     → プロンプト本文を stdout に出力
@@ -93,6 +97,7 @@ def build_prompt(spec: dict) -> str:
     tombstones = [t for t in (spec.get("tombstones") or []) if isinstance(t, dict)]
     notes = str(spec.get("notes") or "").strip()
     retry = str(spec.get("retry") or "").strip()
+    produced = [str(t).strip() for t in (spec.get("produced") or []) if str(t).strip()]
 
     head = (
         "あなたはプロジェクトを実行可能なタスクへ分解するプランナーです。"
@@ -121,14 +126,19 @@ def build_prompt(spec: dict) -> str:
                    "違う切り口なら出してよいが、なぜ違うのかを why に書くこと）",
                    _tombstone_block(tombstones))
     body += _block("観点メモ（人が書き溜めたもの。ここからもタスクを起こす）", notes)
+    body += _block("この分解で既に出したタスク（**同じ・似たものを出さない**。"
+                   '`"after"` の参照先にはこの題を使う）',
+                   "\n".join(f"- {t}" for t in produced))
     if retry:
         body += _block("⚠ 前回の出力に不足がありました（**必須項目をすべて埋めて出し直してください**）",
                        retry)
 
     tail = (
         "\n## 出力\n"
-        "**JSON 配列のみ**を出力してください（前置き・後書き・コードフェンス外の説明は不要）。\n\n"
-        "各要素の必須項目:\n"
+        "**JSON オブジェクト 1 件のみ**（タスク 1 件）を出力してください"
+        "（配列にしない・前置き・後書き・コードフェンス外の説明は不要）。\n"
+        "**これ以上足すべきタスクが無ければ `{\"done\": true}` だけ**を返してください。\n\n"
+        "必須項目:\n"
         '- `"title"`: タスクの題\n'
         '- `"why"`: このタスクが憲章のどの目標に効くか（1〜2 文）\n'
         '- `"desc"`: **作業概要の配列**。① 変更対象（リポジトリと主要ファイル/モジュールの見込み）'
@@ -147,12 +157,12 @@ def build_prompt(spec: dict) -> str:
         '- `"paths"`: このタスクが触る見込みのパスの配列（書込先の owns 突き合わせに使う）\n'
         '- `"refs"`: 読むだけの参照リポジトリ名の配列（書込先にはしない）\n'
         '- `"out_of_scope"` / `"hints"`: やらないこと / 実装の手がかり\n'
-        '- `"after"`: 先行タスクの `title` の配列（この配列内のタスクのみ。循環は不可）\n'
+        '- `"after"`: 先行タスクの `title` の配列（**既に出したタスク**の題のみ。循環は不可）\n'
         '- `"cohort_items"`: 同じ手順を多数の対象に繰り返すタスクは 1 件ずつ列挙せず、'
         '`"…{item}…"` の 1 件にまとめて対象一覧をここに置く\n\n'
         "例:\n"
         '```json\n'
-        '[{"title": "CLI チャットの起動先を選べるようにする",\n'
+        '{"title": "CLI チャットの起動先を選べるようにする",\n'
         '  "why": "憲章の「どのリポジトリでも即座に作業を始められる」に直接効く",\n'
         '  "desc": ["変更対象: agent-dashboard（renderer/sections/chat.js, main/nodeRepos.js）", '
         '"候補の解決関数と起動先ドロップダウンを追加する", '
@@ -162,7 +172,7 @@ def build_prompt(spec: dict) -> str:
         '  "acceptance": ["起動先ドロップダウンに宣言済みリポジトリが並ぶ",\n'
         '                 "宣言が無いリポジトリは非活性で理由付きで表示される",\n'
         '                 "既存の tmux セッション名の付け方を壊していない"],\n'
-        '  "size": "M", "workspace": "agent-dashboard"}]\n'
+        '  "size": "M", "workspace": "agent-dashboard"}\n'
         '```\n'
     )
     return head + body + tail

@@ -280,7 +280,7 @@ def _project_evaluate(cfg: "Config", charter: "Charter", pid: str, state: dict,
     improved: list[Task] = []
     findings: list[dict] = []
     if cfg.review_project and passed == total:  # 短絡的達成を疑い敵対的レビュー（opt-in）
-        findings = _tag(review_fn(charter))
+        findings = _tag(review_fn(charter, results))
         improved += _enqueue_specs(cfg, findings, _existing_titles(cfg, charter_tag or None),
                                    cfg.learn_threshold, charter=charter_tag or None)
     failing = [cmd for cmd, ok, _ in results if not ok]
@@ -378,8 +378,10 @@ def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop, hea
     plan_fn = planner or ((lambda ch: plan_via_stub(cfg, ch)) if stub_mode
                           else (lambda ch: plan_via_agent(
                               cfg, ch, charter_name if multi else None)))
-    review_fn = reviewer or ((lambda ch: review_via_stub(cfg, ch)) if stub_mode
-                             else (lambda ch: review_via_agent(cfg, ch)))
+    # レビュアは判定結果（受入コマンドの PASS/FAIL）も受け取る——材料が無いと当否を判断できない。
+    review_fn = reviewer or ((lambda ch, rs=None: review_via_stub(cfg, ch)) if stub_mode
+                             else (lambda ch, rs=None: review_via_agent(
+                                 cfg, ch, rs, charter_name if multi else None)))
     # このパス開始時点で「人が承認済み・charter も承認時から無変更」だったか。
     # 下のガードの早期 return に加え、replan（差分ゼロ）等でガードを抜けて再評価した場合にも、
     # 新しい仕事が何も無ければ末尾で accepted を維持する（converged へ降格して承認済み

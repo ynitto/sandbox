@@ -212,6 +212,13 @@ def agent_readonly(purpose: str) -> bool:
     return bool(fn(purpose)) if fn is not None else False
 
 
+def envelope_data(text: str):
+    """work / generate の完了 envelope（末尾の `{"ok": ...}`）の受け方。**本番の 1 実装**を呼ぶ
+    （`agent.envelope_data`）——写すと、契約が変わった日に測定だけ古い規則で読むことになる。"""
+    fn = _need(_FLOW, "envelope_data", "envelope_data（完了 envelope の受け方）")
+    return fn(text) if fn is not None else None
+
+
 def worker_role(kind: str) -> str:
     """kind の役割行（出力契約の本文）。本番の `WORKER_ROLES` をそのまま読む（写さない）。"""
     roles = _need(_FLOW, "WORKER_ROLES", "WORKER_ROLES（kind 別の役割行）")

@@ -265,6 +265,41 @@ PL6_REQUEST = (
 )
 
 
+# 材料がプロンプト内で完結する要求（ファイルを 1 つも読まない・書かない）。道具を持った
+# 小さいモデルは、プロンプトだけで解ける整形をシェルで解こうとして中身を壊す
+# （実測: map は本番の起動形 `--tools bash` で 2/5、道具ゼロなら 5/5）。道具を落とす口は
+# `node.readonly` の宣言しかないので、**planner が材料の在り処を見て宣言できるか**を測る。
+# 役割ごと readonly にはできない——split がファイルを配る flow では map に読み取りが要る。
+PL7_REQUEST = (
+    "次の 3 件の問い合わせ本文を、それぞれ 1 行（30 字以内）の要約へ整形し、最後に 3 行の"
+    "一覧へまとめてください。**本文はこの指示にすべて含まれています**（読むファイルは"
+    "ありません）。ファイルは作らず、結果は応答の本文で返します。\n"
+    "1) 請求書の PDF が文字化けする。フォント埋め込みが原因らしい。\n"
+    "2) ログイン後に前の画面へ戻れない。戻るボタンが無効のまま。\n"
+    "3) 月次レポートの合計が 1 日ぶんずれている。集計の締め時刻の問題。"
+)
+
+
+def check_pl7(data: dict) -> tuple[bool, str]:
+    """道具の要らないノードに readonly が付くか（`--tools` はこの宣言でしか落ちない）。
+
+    正解は要求から従う（構成的ラベル）: この要求にはディスクを読む・書くノードが 1 つも
+    無いので、**全ノードが readonly** である。宣言が届いたかどうかだけを見る——本番の
+    受け取り（`_coerce_tasks` / スキルの `normalize_tasks`）を通ったあとの値で判定する。
+    """
+    tasks = data["tasks"]
+    declared = [t for t in tasks if t.get("readonly") is True]
+    reads = [t["id"] for t in tasks if t.get("read_allocation")]
+    tail = f"・read_allocation を割り付けた: {reads}" if reads else ""
+    if not declared:
+        return False, f"readonly を宣言したノードが 0/{len(tasks)}{tail}"
+    if len(declared) < len(tasks):
+        missing = [t["id"] for t in tasks if t.get("readonly") is not True]
+        return False, (f"readonly を宣言したのは {len(declared)}/{len(tasks)}"
+                       f"（未宣言 {missing}）{tail}")
+    return True, f"{len(tasks)} ノードすべて readonly{tail}"
+
+
 def _produce_nodes(tasks: list[dict]) -> list[dict]:
     return [t for t in tasks if t.get("kind", "work") in ("work", "generate")]
 
@@ -348,6 +383,7 @@ CASES = {
     "PL4": dict(genre="単一（過分解の検出）", request=PL4_REQUEST, check=check_pl4),
     "PL5": dict(genre="宣言（成果物スロット）", request=PL5_REQUEST, check=check_pl5),
     "PL6": dict(genre="宣言（判定契約）", request=PL6_REQUEST, check=check_pl6),
+    "PL7": dict(genre="宣言（道具の有無）", request=PL7_REQUEST, check=check_pl7),
 }
 
 # ------------------------------------------------------------------ 実行
@@ -437,7 +473,8 @@ def run_one(cid: str, i: int) -> dict:
                # 再判定できるように。goal 全文を残しているのと同じ理由。
                graph=[{"id": t.get("id"), "kind": t.get("kind"), "deps": t.get("deps"),
                        "goal": str(t.get("goal") or ""),
-                       **{k: t[k] for k in ("operation", "decision") if isinstance(t.get(k), dict)}}
+                       **{k: t[k] for k in ("operation", "decision") if isinstance(t.get(k), dict)},
+                       **({"readonly": True} if t.get("readonly") is True else {})}
                       for t in tasks],
                stderr_tail=err.strip()[-300:])
     if engine.missing():
@@ -479,6 +516,10 @@ def selfcheck() -> int:
                  ["fan-out-and-synthesize"]),
         "PL5": g([{"id": "t1", "goal": "実装とテスト", "deps": [], "kind": "work",
                    "operation": OP_TWO}], ["fan-out-and-synthesize"]),
+        "PL7": g([{"id": "m1", "goal": "3 件を要約", "deps": [], "kind": "map",
+                   "readonly": True},
+                  {"id": "r", "goal": "一覧へまとめる", "deps": ["m1"], "kind": "reduce",
+                   "readonly": True}], ["map-reduce"]),
         "PL6": g([{"id": "g1", "goal": "案 1", "deps": [], "kind": "generate"},
                   {"id": "f", "goal": "条件を満たす案を残す", "deps": ["g1"], "kind": "filter",
                    "decision": {"facts": [{"name": "extra_deps", "type": "bool"}],
@@ -536,6 +577,11 @@ def selfcheck() -> int:
                                  "criteria": [{"fact": "tests", "op": "eq",
                                                "value": "pass"}]}}],
                   ["generate-and-filter"])],                         # facts に無い fact を条件に
+        "PL7": [g([{"id": "m1", "goal": "3 件を要約", "deps": [], "kind": "map"}],
+                  ["map-reduce"]),                                     # 宣言が無い（道具付きで走る）
+                g([{"id": "m1", "goal": "要約", "deps": [], "kind": "map", "readonly": True},
+                   {"id": "r", "goal": "まとめ", "deps": ["m1"], "kind": "reduce"}],
+                  ["map-reduce"])],                                    # 一部だけ宣言
     }
     contract_bad = [
         g([{"id": "a", "goal": "x", "deps": ["zz"], "kind": "work"}], []),      # 無い deps

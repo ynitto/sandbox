@@ -154,6 +154,28 @@ def assess_clear() -> "ap.Task":
                    extra=[("acceptance", "tests/test_docs.py が通る")])
 
 
+# review の材料。本番は `_project_evaluate` が**その場で実行した**受入コマンドの判定を
+# レビュアへ渡す（レビューが走るのは `passed == total` のときだけ＝全 PASS）。
+REVIEW_RESULTS = [("python -m pytest -q tests", True, "")]
+
+# charter の成果物 3 つのうち、**render.py だけを意図的に未達**にしておく（backlog には
+# ingest / aggregate の done しか無い）。当否はここを指せるかで測る。
+REVIEW_DONE_TITLES = ["ingest.py で run ログを読み込む", "aggregate.py で日次集計を出す"]
+RV1_GOLD = ("render", "markdown")
+
+
+def review_config(cwd: str):
+    """review 用の Config。**完了済みタスクを archive に仕込む**——本番の
+    `_review_progress_summary` がここから「何が done で何が残っているか」を読む。"""
+    cfg = project_config(cwd)
+    adir = cfg.archive_dir()
+    adir.mkdir(parents=True, exist_ok=True)
+    for n, title in enumerate(REVIEW_DONE_TITLES, 1):
+        t = ap.Task(id=f"t{n}", title=title, status="done", verify="python -m pytest -q tests")
+        (adir / f"{t.id}.md").write_text(ap.serialize_task(t), encoding="utf-8")
+    return cfg
+
+
 def _sample_repo(cwd: str) -> str:
     """repo_map 用の小さな git リポジトリを作って返す（本番は URL を shallow clone する）。"""
     root = pathlib.Path(cwd) / "sample-repo"
@@ -336,18 +358,17 @@ def check_repo_map(text: str, want: "list[list[str]]"):
 
 
 def check_review(specs):
-    """敵対的レビュー。**判断の当否は測らない**——本番のプロンプトには憲章しか入らず、
-    現状の成果物は 1 文字も届かないからである（CLI も `ollama-json` で道具なし＝
-    PV1 と同じ「材料が無い」構造）。何が未達かを当てられる材料が無い以上、当否を採点すると
-    モデルではなく配線を測ることになる。
+    """敵対的レビュー。**判断の当否まで見る**（2026-08-31 に材料を届けたので測れるようになった）。
 
-    代わりに、材料なしでも決定的に見える 2 点を見る——(1) 本番の受け方を通った各項目が
-    契約（title / acceptance / workspace）を満たすか (2) **charter に無いリポジトリを
-    書いていないか**（捏造の面）。空配列も正解（本番が「問題が無ければ []」と言っている）。
+    本番のプロンプトには受入コマンドの判定結果と backlog / archive の要約が入る——charter の
+    成果物 3 つのうち `render.py` だけが誰も作っていない状態を仕込んであるので、
+    そこを指せるかが当否である。あわせて材料なしでも見えていた 2 点も見る:
+    (1) 各項目が契約（title / acceptance）を満たすか (2) charter に無いリポジトリを
+    書いていないか（捏造の面）。**空配列は不合格**——未達が実在する素材だからである。
     """
     names = {r.get("name") for r in charter().repo_specs}
     if not specs:
-        return True, "所見なし＝空配列（材料が無い面での安全側）"
+        return False, "所見なし（未達の成果物が実在する素材）"
     broken = [sp.get("title", "?")[:20] for sp in specs
               if not str(sp.get("title") or "").strip() or not sp.get("acceptance")]
     if broken:
@@ -355,7 +376,12 @@ def check_review(specs):
     stray = [w for sp in specs if (w := _named_workspace(sp)) and w not in names]
     if stray:
         return False, f"charter に無いリポジトリ: {stray[0]}"
-    return True, f"{len(specs)} 件・契約充足・捏造なし"
+    hit = [sp for sp in specs
+           if any(g in f"{sp.get('title', '')} {sp.get('why', '')} "
+                  f"{sp.get('acceptance', '')}".lower() for g in RV1_GOLD)]
+    if not hit:
+        return False, f"未達（render.py）を指していない: {specs[0].get('title', '?')[:40]}"
+    return True, f"{len(specs)} 件・未達を指摘: {hit[0].get('title', '?')[:40]}"
 
 
 def check_distill(pair, verbatim, forbidden: "list[str]"):
@@ -447,8 +473,9 @@ CASES = {
                                                          {"url": _sample_repo(cwd), "base": ""}),
                 check=lambda t: check_repo_map(
                     t, [["ingest"], ["tests", "テスト"], ["make test", "pytest", "Makefile"]])),
-    "RV1": dict(purpose="review", expect="契約充足・捏造なし（材料が無い面）",
-                driver=lambda cwd: ap.review_via_agent(project_config(cwd), charter()),
+    "RV1": dict(purpose="review", expect="未達の成果物（render.py）を指摘",
+                driver=lambda cwd: ap.review_via_agent(review_config(cwd), charter(),
+                                                       REVIEW_RESULTS),
                 check=check_review),
     "DS1": dict(purpose="distill", expect="固有名詞を引き上げた 1 行",
                 driver=lambda cwd: ap.distill_learn(
@@ -623,7 +650,8 @@ def selfcheck() -> int:
                  "desc": "run ログを読む", "scope": "ingest.py", "risks": "なし",
                  "acceptance": ["テストが通る"], "size": "S", "workspace": "agent-tools"}],
         "RM1": "構造: src/ingest.py と tests。テストは make test で実行する。",
-        "RV1": [{"title": "テストを足す", "acceptance": ["pytest が通る"],
+        "RV1": [{"title": "render.py が無く Markdown 表を出力できない",
+                 "acceptance": ["render.py が日次集計を Markdown 表で出力する"],
                  "workspace": "agent-tools"}],
         "DS1": ("請求まわりの丸め仕様の変更", "税込みの端数処理は仕様の丸め方向へ統一する"),
         "PR1": [PRIORITIZE_TASKS[2], PRIORITIZE_TASKS[0], PRIORITIZE_TASKS[3],
@@ -657,8 +685,12 @@ def selfcheck() -> int:
                 [{"title": "x", "why": "w", "desc": "d", "scope": "s", "risks": "r",
                   "acceptance": ["a"], "size": "S", "workspace": "docs-site"}]],  # 無い書込先
         "RM1": ["", "このリポジトリは Python 製です。", "ingest だけ読みました"],
-        "RV1": [[{"title": "", "acceptance": ["a"]}],                  # title 欠落
-                [{"title": "x", "acceptance": ["a"], "workspace": "unknown-repo"}]],
+        "RV1": [[],                                                    # 所見なし（未達は実在する）
+                [{"title": "", "acceptance": ["render.py が無い"]}],       # title 欠落
+                [{"title": "テストを足す", "acceptance": ["pytest が通る"],
+                  "workspace": "agent-tools"}],                          # 未達を指していない
+                [{"title": "render.py を作る", "acceptance": ["a"],
+                  "workspace": "unknown-repo"}]],
         "DS1": [("請求書 PDF の出力を追加する",
                  "issue #4821 で指摘したとおり、billing/pdf.py の丸めが仕様と違います。"
                  "税込みの端数は切り上げに統一してください。"),           # 生フォールバック

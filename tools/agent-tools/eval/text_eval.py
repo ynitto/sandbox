@@ -237,6 +237,8 @@ def check_an2(data):
 
 
 PR1_BUDGET = 10
+# 施策表（`PR1_MENU` の素材と同じ値・1 実装）。転記の照合にも、診断のコスト計算にも使う。
+PR1_MENU_TABLE = {"p1": (4, 50), "p2": (5, 45), "p3": (3, 30), "p4": (6, 70), "p5": (7, 60)}
 
 
 def _best_combo(menu: dict, budget: int) -> "list[str]":
@@ -264,7 +266,7 @@ def check_pr1_pipe(data):
         cost, effect = _as_int(row.get("cost")), _as_int(row.get("effect"))
         if pid and cost is not None and effect is not None:
             menu[pid] = (cost, effect)
-    want = {"p1": (4, 50), "p2": (5, 45), "p3": (3, 30), "p4": (6, 70), "p5": (7, 60)}
+    want = PR1_MENU_TABLE
     missing = sorted(set(want) - set(menu))
     if missing:
         return False, f"転記の欠落: {missing}"
@@ -278,13 +280,25 @@ def check_pr1_pipe(data):
 
 
 def check_pr1(data):
+    """組合せ最適（素の腕）。**診断に正解を混ぜない**——`--repair` はこの note を
+    そのまま再投入の材料にするので、`期待 p1+p4` と書くと本番で再現しない助けを測ることになる。
+    書けるのは本番の機械が言えることだけ: 宣言された予算・一覧に無い id・自己申告コストの整合。
+    最適でないことは（本番の機械には分からないので）理由を添えずに落とす。
+    """
     if not isinstance(data, dict) or not isinstance(data.get("picks"), list):
         return False, "picks 配列が無い"
     picks = {str(p).strip().lower() for p in data["picks"]}
+    unknown = sorted(picks - set(PR1_MENU_TABLE))
+    if unknown:
+        return False, f"一覧に無い施策: {unknown}"
+    cost = sum(PR1_MENU_TABLE[p][0] for p in picks)
+    declared = _as_int(data.get("total_cost"))
+    if declared != cost:
+        return False, f"total_cost={data.get('total_cost')!r}（選んだ施策の合計は {cost}）"
+    if cost > PR1_BUDGET:
+        return False, f"予算超過: コスト合計 {cost} > 予算 {PR1_BUDGET}"
     if picks != {"p1", "p4"}:
-        return False, f"picks={sorted(picks)}（期待 p1+p4=効果 120/予算 10）"
-    if _as_int(data.get("total_cost")) != 10:
-        return False, f"total_cost={data.get('total_cost')!r}（期待 10）"
+        return False, f"picks={sorted(picks)}・コスト {cost}（予算内だが不合格）"
     return True, "一意最適 p1+p4 を選定・コスト計算も一致"
 
 
@@ -530,7 +544,7 @@ def selfcheck() -> int:
         "RV2": {"violations": ["S2", "S3", "S6"], "reason": "アーカイブ移動も違反とみなした"},
     }
     # PR1 の「一意最適」を総当たりで検算する（素材を変えたら正解が変わるため）。
-    menu = {"p1": (4, 50), "p2": (5, 45), "p3": (3, 30), "p4": (6, 70), "p5": (7, 60)}
+    menu = PR1_MENU_TABLE
     best = max((combo for combo in _powerset(menu)
                 if sum(menu[p][0] for p in combo) <= 10),
                key=lambda c: sum(menu[p][1] for p in c))
