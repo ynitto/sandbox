@@ -310,7 +310,15 @@ README の「運用」に置き、**コーパスを移したとき・記憶が�
 （深夜のスリープを挟んだ走行は除外した）。**n は 3〜5 なので率として語らない**——
 0 と満点の差だけを差として読む。
 
-### 実装系（`worker_eval`・aider）
+見出しは**実装済みのハーネス 1 本につき 1 つ**。どれも合否は決定的なチェッカーが出し、
+判定役（LLM）は呼ばない。台帳は `tools/agent-tools/eval/results/archive/`。
+
+### `worker_eval` — 実装系（局所修正の受入率・aider 経由）
+
+```bash
+python3 tools/agent-tools/eval/worker_eval.py --model gemma4:e4b --tasks T1,T2,T3 --repeat 3
+python3 tools/agent-tools/eval/worker_eval.py --recheck <台帳>     # 走り直さず再判定
+```
 
 | ケース | 何を測るか | 正解 | 中央値 | 出どころ |
 |---|---|---:|---:|---|
@@ -329,7 +337,14 @@ README の「運用」に置き、**コーパスを移したとき・記憶が�
 | T6noat / T6slicenoat | 同・自動テストの往復無し | 3/3 / 3/3 | 63 / 70s | 08-24 |
 | T7digest / T8log | 定型のテキスト業務 | **未測定** | — | ケースだけある |
 
-### 判定系（`judge_eval`・ollama-json・policy off・n=5）
+### `judge_eval` — 判定系（split / filter / judge / reduce / evaluator）
+
+`ollama-json`・policy off・n=5。
+
+```bash
+python3 tools/agent-tools/eval/judge_eval.py --model gemma4:e4b --repeat 5
+python3 tools/agent-tools/eval/judge_eval.py --selfcheck           # LLM を呼ばない
+```
 
 | ケース | 何を測るか | 正解 | 中央値 |
 |---|---|---:|---:|
@@ -343,7 +358,13 @@ README の「運用」に置き、**コーパスを移したとき・記憶が�
 
 F2P / J1P は本番の依頼文へ差し替えた 2026-08-29 の再測でも 3/3 / 3/3（中央値 7s）。
 
-### 計画系（`planner_eval`・ollama-json・n=3）
+### `planner_eval` — 計画系（要求 → タスクグラフ。本番の flow-planner を回す）
+
+`ollama-json`・n=3。
+
+```bash
+python3 tools/agent-tools/eval/planner_eval.py --model gemma4:e4b --cases PL5,PL6 --repeat 3
+```
 
 | ケース | 何を測るか | 正解 | 中央値 |
 |---|---|---:|---:|
@@ -354,17 +375,72 @@ F2P / J1P は本番の依頼文へ差し替えた 2026-08-29 の再測でも 3/3
 | PL5 | 成果物スロットの宣言 | 2/3 | 116s |
 | PL6 | 判定契約の宣言（`tie_break` 修正後） | 3/3 | 281s |
 
-### そのほか
+### `text_eval` — 読解系（要約・抽出・分析・整形・レビュー）
 
-| ハーネス | ケース | 正解 | 中央値 | 備考 |
+```bash
+python3 tools/agent-tools/eval/text_eval.py --model gemma4:e4b --repeat 3
+```
+
+| ケース | 何を測るか | 正解 | 中央値 | 備考 |
 |---|---|---:|---:|---|
-| `text_eval`（e4b・08-14） | AN1 / AN2 / EX1 / EX2 / SM1 | 3/3 | 2〜6s | 分析・抽出・短い要約は通る |
-| 同 | PR1 / SM2 | 2/3 / 1/3 | 6s / 5s | 整形・長い要約で崩れる |
-| 同 | RV1 / RV2 | 1/3 / 1/3 | 3s / 2s | **レビューだけ 12b が要る**（12b は 3/3） |
-| `candidate_eval`（08-23） | CG1 / CG2 / CG3 | 0/3 / 3/3 / 3/3 | 3 / 1 / 1s | regex の合成だけ落ちる |
-| `doctor_eval`（08-23） | DR1〜DR4 | 3/3 | 14〜40s | 環境診断は通る |
-| `project_verify_eval`（08-23） | PV1 | 0/6（e4b）/ 0/3（12b） | 46s / 17s | 受入判定は両方とも通らない |
-| `retrieval_eval`（本番経路・61 件） | lexical / paraphrase | hit@1 100% / 60% | — | しきい値 0.11。hit@5 は 100% / 80% |
+| AN1 / AN2 / EX1 / EX2 / SM1 | 分析・抽出・短い要約 | 3/3 | 2〜6s | 08-14 |
+| PR1 / SM2 | 整形・長い要約 | 2/3 / 1/3 | 6s / 5s | 崩れる |
+| RV1 / RV2 | レビュー | 1/3 / 1/3 | 3s / 2s | **ここだけ 12b が要る**（12b は 3/3） |
+
+### `candidate_eval` — 生成系（候補はモデル・検算は機械）
+
+```bash
+python3 tools/agent-tools/eval/candidate_eval.py --model gemma4:e4b --repeat 3
+```
+
+| ケース | 何を測るか | 正解 | 中央値 |
+|---|---|---:|---:|
+| CG1 | grep に当たる regex の候補 | 0/3 | 3s |
+| CG2 / CG3 | 触るパス / テスト名の候補 | 3/3 / 3/3 | 1s / 1s |
+
+### `doctor_eval` — 環境診断（dashboard の Doctor 4 モード）
+
+```bash
+python3 tools/agent-tools/eval/doctor_eval.py --model gemma4:e4b --repeat 3
+```
+
+| ケース | 何を測るか | 正解 | 中央値 |
+|---|---|---:|---:|
+| DR1〜DR4 | 読み取り専用の助言 4 モード | 3/3 | 14〜40s |
+
+### `project_verify_eval` — 受入判定（agent-project の charter verifier）
+
+```bash
+python3 tools/agent-tools/eval/project_verify_eval.py --model gemma4:e4b --arm verify --repeat 3
+```
+
+| ケース | 何を測るか | 正解 | 中央値 |
+|---|---|---:|---:|
+| PV1 | 達成条件の判定 | 0/6（e4b）/ 0/3（12b） | 46s / 17s |
+
+### `retrieval_eval` — 記憶検索（ltm-use の recall 経路）
+
+```bash
+python3 tools/agent-tools/eval/retrieval_eval.py --production \
+    --cascade-threshold 0,0.05,0.08,0.11,0.15,0.2,inf
+```
+
+| 訊き方 | hit@1 | hit@5 | 備考 |
+|---|---:|---:|---|
+| lexical（61 件・`~/.claude`） | 100% | 100% | しきい値 0.11 |
+| paraphrase（同上） | 60% | 80% | 同上 |
+
+**掃引の前に索引の有無を見る。** 未構築だと全しきい値で発火 0 になり、「段構えは効かない」
+という誤った表が出る（`build_index.py --stats` の「埋め込み」行）。
+
+### LLM を呼ばないもの（測定の土台）
+
+| ハーネス | 何をするか |
+|---|---|
+| `coverage_eval.py` | 評価対象の呼び出し面と測定の有無を一覧・検査する |
+| `prefix_cache_probe.py` | 接頭辞キャッシュが効くかを確かめる（案 3 の前提） |
+| `moe_ram_probe.py` | MoE 候補が物理 RAM に収まるかを測る（B2 の前提） |
+| `run_suite.py` / `recommend.py` / `qualification_seed.py` | 腕をまとめて回す・台帳から適格性と推奨構成を出す |
 
 ### 読み方
 
