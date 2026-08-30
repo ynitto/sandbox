@@ -21,4 +21,7 @@ case ":${PATH}:" in
   *":${BIN_DIR}:"*) ;;
   *) printf 'Note: %s is not on PATH. Add it to your shell profile.\n' "${BIN_DIR}" ;;
 esac
-printf 'Run: vscode-copilot-chat --start "hello"\n'
+# 既に bridge が動いていると、CLI はそれを使い回す（二重起動を避けるため）。入れ替えた
+# 拡張を読ませるには、その VS Code ウィンドウを一度閉じる必要がある。
+printf 'Note: bridge が起動中なら、その VS Code ウィンドウを閉じてください（新しい拡張は次の起動から）。\n'
+printf 'Run: vscode-copilot-chat "hello"\n'

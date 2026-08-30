@@ -286,7 +286,7 @@ def _main_with(argv, isatty):
     stdin.read.return_value = "piped prompt"
     with mock.patch.object(client.sys, "argv", ["vscode-copilot-chat", *argv]), \
          mock.patch.object(client.sys, "stdin", stdin), \
-         mock.patch.object(client, "read_endpoint", return_value={"url": "u", "token": "t"}), \
+         mock.patch.object(client, "ensure_bridge", return_value={"url": "u", "token": "t"}), \
          mock.patch.object(client, "repl", return_value=0) as repl, \
          mock.patch.object(client, "request", _FakeAsk("A1")) as request:
         code = client.main()
@@ -390,7 +390,7 @@ def test_tools_flag_does_not_enter_the_repl_on_a_tty():
     stdin.isatty.return_value = True
     with mock.patch.object(client.sys, "argv", ["vscode-copilot-chat", "--tools"]), \
          mock.patch.object(client.sys, "stdin", stdin), \
-         mock.patch.object(client, "read_endpoint", return_value={"url": "u", "token": "t"}), \
+         mock.patch.object(client, "ensure_bridge", return_value={"url": "u", "token": "t"}), \
          mock.patch.object(client, "repl", return_value=0) as repl, \
          mock.patch.object(client, "fetch_tools", return_value={"tools": []}) as fetch:
         code = client.main()
@@ -447,7 +447,7 @@ def _main_call(argv, *, tools=None, call_result=None):
     stdin.read.return_value = '{"prompt": "stdin から"}'
     with mock.patch.object(client.sys, "argv", ["vscode-copilot-chat", *argv]), \
          mock.patch.object(client.sys, "stdin", stdin), \
-         mock.patch.object(client, "read_endpoint", return_value={"url": "u", "token": "t"}), \
+         mock.patch.object(client, "ensure_bridge", return_value={"url": "u", "token": "t"}), \
          mock.patch.object(client, "repl", return_value=0) as repl, \
          mock.patch.object(client, "fetch_tools", return_value=tools or {"tools": []}) as fetch, \
          mock.patch.object(client, "call_tool", return_value=call_result or {"text": "ok"}) as call:
@@ -503,14 +503,27 @@ def test_missing_required_lists_only_what_is_absent():
     assert client.missing_required({}, {}) == []
 
 
-def test_connection_refused_points_at_start():
+def test_connection_refused_points_at_auto_start():
     error = client.urllib.error.URLError(ConnectionRefusedError(61, "Connection refused"))
     with mock.patch.object(client.urllib.request, "urlopen", side_effect=error):
         try:
             client._urlopen(mock.Mock(), 5)
             assert False, "must raise"
         except RuntimeError as exc:
-            assert "--start" in str(exc)
+            assert "--no-start" in str(exc)
+
+
+def test_404_is_reported_as_a_stale_extension():
+    """404 は「その口が無い＝拡張が古い」。生の not found では何をすべきか分からない。"""
+    error = client.urllib.error.HTTPError(
+        "http://127.0.0.1/v1/agent", 404, "not found", {}, io.BytesIO(b'{"error":"not found"}'))
+    with mock.patch.object(client.urllib.request, "urlopen", side_effect=error):
+        try:
+            client._urlopen(mock.Mock(), 5)
+            assert False, "must raise"
+        except RuntimeError as exc:
+            assert "拡張が古い" in str(exc)
+            assert "閉じて" in str(exc)
 
 
 def test_call_on_an_unregistered_tool_fails_with_a_hint():
@@ -722,7 +735,7 @@ def _main_agent(argv, *, tools, result=None, stdin_text=""):
     stdin.read.return_value = stdin_text
     with mock.patch.object(client.sys, "argv", ["vscode-copilot-chat", *argv]), \
          mock.patch.object(client.sys, "stdin", stdin), \
-         mock.patch.object(client, "read_endpoint", return_value={"url": "u", "token": "t"}), \
+         mock.patch.object(client, "ensure_bridge", return_value={"url": "u", "token": "t"}), \
          mock.patch.object(client, "repl", return_value=0) as repl, \
          mock.patch.object(client, "fetch_tools", return_value=tools), \
          mock.patch.object(client, "run_agent",
@@ -870,3 +883,106 @@ def test_json_output_carries_the_non_text_parts(capsys):
     out, err = capsys.readouterr()
     assert json.loads(out) == result
     assert err == ""
+
+
+# --- 自動起動（--start を打たなくても立ち上がる） -------------------------------
+
+
+LIVE = {"url": "http://127.0.0.1:32190/v1/chat", "token": "t"}
+
+
+def _ensure(*, endpoint=LIVE, listening, read_fails=False, auto_start=True, tmp_path=None):
+    """ensure_bridge を、接続判定と起動を差し替えて呼ぶ。"""
+    launched = []
+    listening_calls = []
+
+    def read_endpoint(_path):
+        if read_fails:
+            raise RuntimeError("bridge endpoint を読めません")
+        return endpoint
+
+    def is_listening(ep, timeout=2.0):
+        listening_calls.append(ep)
+        # listening が list なら呼ばれた順に返す（起動前 False → 起動後 True）
+        return listening.pop(0) if isinstance(listening, list) else listening
+
+    def start_bridge(path, port, cwd, code_bin):
+        launched.append({"port": port, "cwd": cwd, "code_bin": code_bin})
+        return {"url": f"http://127.0.0.1:{port}/v1/chat", "token": "fresh"}
+
+    with mock.patch.object(client, "read_endpoint", read_endpoint), \
+         mock.patch.object(client, "bridge_is_listening", is_listening), \
+         mock.patch.object(client, "start_bridge", start_bridge), \
+         mock.patch.object(client, "wait_for_bridge", lambda *a, **k: None):
+        result = client.ensure_bridge(Path("/e.json"), 32190, Path("/w"), "code", 5, auto_start)
+    return result, launched
+
+
+def test_a_live_bridge_is_reused_and_not_relaunched():
+    """二重に起こすと 2 つ目の拡張ホストが同じ port を掴めない。"""
+    endpoint, launched = _ensure(listening=True)
+    assert endpoint == LIVE
+    assert launched == []
+
+
+def test_a_dead_bridge_is_started():
+    endpoint, launched = _ensure(listening=[False, True])
+    assert launched == [{"port": 32190, "cwd": Path("/w"), "code_bin": "code"}]
+    assert endpoint["token"] == "fresh"
+
+
+def test_a_missing_endpoint_file_starts_too():
+    """--start を一度も打っていない人でも、そのまま使える。"""
+    endpoint, launched = _ensure(read_fails=True, listening=[True])
+    assert len(launched) == 1
+    assert endpoint["token"] == "fresh"
+
+
+def test_no_start_refuses_to_launch():
+    try:
+        _ensure(listening=False, auto_start=False)
+        assert False, "must fail"
+    except RuntimeError as exc:
+        assert "--no-start" in str(exc)
+
+
+def test_no_start_surfaces_a_broken_endpoint_file():
+    try:
+        _ensure(read_fails=True, listening=False, auto_start=False)
+        assert False, "must fail"
+    except RuntimeError as exc:
+        assert "読めません" in str(exc)
+
+
+def test_a_bridge_that_never_comes_up_is_reported():
+    """起こしたのに繋がらないのを黙って通すと、後段が謎の接続断になる。"""
+    try:
+        _ensure(read_fails=True, listening=[False])
+        assert False, "must fail"
+    except RuntimeError as exc:
+        assert "install.sh" in str(exc)
+
+
+def test_launch_is_announced_so_the_wait_is_not_silent():
+    told = []
+    with mock.patch.object(client, "read_endpoint", side_effect=RuntimeError("no file")), \
+         mock.patch.object(client, "bridge_is_listening", return_value=True), \
+         mock.patch.object(client, "start_bridge", return_value=LIVE), \
+         mock.patch.object(client, "wait_for_bridge", lambda *a, **k: None):
+        client.ensure_bridge(Path("/e"), 32190, Path("/w"), "code", 5, True,
+                             notify=lambda: told.append(1))
+    assert told == [1]
+
+
+def test_a_live_bridge_says_nothing():
+    told = []
+    with mock.patch.object(client, "read_endpoint", return_value=LIVE), \
+         mock.patch.object(client, "bridge_is_listening", return_value=True), \
+         mock.patch.object(client, "start_bridge", side_effect=AssertionError("must not launch")):
+        client.ensure_bridge(Path("/e"), 32190, Path("/w"), "code", 5, True,
+                             notify=lambda: told.append(1))
+    assert told == []
+
+
+def test_bridge_address_comes_from_the_endpoint_url():
+    assert client.bridge_address({"url": "http://127.0.0.1:32191/v1/chat"}) == ("127.0.0.1", 32191)

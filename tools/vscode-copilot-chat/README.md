@@ -21,12 +21,21 @@ vscode-copilot-chat (Python CLI)   ← 会話履歴はここが持つ
 
 ```bash
 bash tools/vscode-copilot-chat/install.sh
-vscode-copilot-chat --start "このリポジトリを要約して"
+vscode-copilot-chat "このリポジトリを要約して"
 ```
 
-`--start` はカレントディレクトリを開く VS Code を起こします。**どちらの経路を使うかは
-OS 名ではなく道具の有無で決めます**——`powershell.exe` と `wslpath` が両方あれば WSL、
-無ければ同じ OS 上の VS Code です（WSL は Linux を名乗るので platform 名では分かれません）。
+**起動は要りません。** bridge へ繋がらなければ、カレントディレクトリを開く VS Code を
+自動で起こして待ちます。既に動いていれば起こしません——同じ `--user-data-dir` で二重に
+起こすと、2 つ目の拡張ホストが同じ port を掴めないためです。自動で起こしてほしくない
+ときは `--no-start` を付けます（落ちていればそのまま失敗します）。
+
+**入れ替えたときは bridge を一度閉じてください。** `install.sh` を再実行しても、動いている
+拡張ホストは古いコードのままです。CLI は動いている bridge を使い回すので（二重起動を
+避けるため）、新しい拡張が載るのはそのウィンドウを閉じて次に起こしたときです。
+
+**どちらの経路で起こすかは OS 名ではなく道具の有無で決めます**——`powershell.exe` と
+`wslpath` が両方あれば WSL、無ければ同じ OS 上の VS Code です（WSL は Linux を名乗るので
+platform 名では分かれません）。
 
 | | 起こし方 | `--user-data-dir` |
 |---|---|---|
@@ -49,7 +58,7 @@ PATH にありません。CLI は `/Applications/Visual Studio Code.app` と
 別の場所・Insiders などを使う場合は `--code-bin` で指定してください。
 
 ```bash
-vscode-copilot-chat --code-bin '/path/to/code' --start "…"
+vscode-copilot-chat --code-bin '/path/to/code' "…"
 ```
 
 `install.sh` が拡張を置くのは `~/.vscode/extensions` です。Insiders を使う場合は
@@ -57,12 +66,15 @@ vscode-copilot-chat --code-bin '/path/to/code' --start "…"
 
 インストーラが CLI を置く `~/.local/bin` が PATH に無ければその旨を表示します。
 
-起動だけを行う場合と、同じbridgeへ続けて問い合わせる場合:
+先に立ち上げておきたい場合（初回の待ちを問い合わせから外したいとき）は `--start-only`
+です。使える状態になるまで待ってから終わります。
 
 ```bash
-vscode-copilot-chat --start-only --start --port 32191
-vscode-copilot-chat "次の質問"
+vscode-copilot-chat --start-only --port 32191
+vscode-copilot-chat --port 32191 "次の質問"
 ```
+
+`--start` は互換のために受け付けますが、自動起動が既定になったので要りません。
 
 初回リクエスト時に VS Code がモデル利用の同意を求める場合は許可してください。モデルが
 見つからない場合は、Copilot Chat がインストール済み・サインイン済み・組織ポリシーで
@@ -125,7 +137,7 @@ Bearer token を提示します。リクエスト上限は 4 MiB です（会話
 エンドポイントファイルは両プロセスで `VSCODE_COPILOT_BRIDGE_FILE` を設定すれば変更でき
 ます。トークンを含むため、共有・コミットしないでください。
 
-API は `POST /v1/chat`・`GET /v1/tools`・`POST /v1/tool` の 3 つです。いずれも Bearer token が要ります。
+API は `POST /v1/chat`・`GET /v1/tools`・`POST /v1/tool`・`POST /v1/agent` の 4 つです。いずれも Bearer token が要ります。
 
 **会話状態は CLI 側が持ち、拡張は毎回すべての手番を受け取る状態を持たない変換器**でいます。
 bridge を再起動しても会話が消えず、複数の CLI セッションが 1 つの拡張を同時に使えます。
@@ -243,66 +255,6 @@ vscode-copilot-chat: runSubagent は chat request の中からしか呼べませ
 
 調べるときは `--call` で **1 つずつ・有効な入力で・そのツールが実際に動くと理解した上で**
 呼んでください。読み取り専用のもの（`copilot_readFile` など）から試すのが安全です。
-
-## ツールを呼ぶ
-
-`POST /v1/tool` は `vscode.lm.invokeTool` をそのまま通します。CLI からは `--call` です。
-**何を渡すかはこちらでは決めません**——入力スキーマは VS Code が持っていて、検証も
-VS Code が行います。ツールごとの知識をこの repo に置くと、環境差で必ず古くなります。
-
-```bash
-vscode-copilot-chat --call runSubagent                        # inputSchema を見る
-vscode-copilot-chat --call runSubagent --input '{"prompt":"テストを直して"}'
-echo '{"prompt":"…"}' | vscode-copilot-chat --call runSubagent --input -
-```
-
-`--input` を省くとそのツールの説明と `inputSchema` を表示します。まずこれを見てから
-渡す JSON を決めてください。
-
-呼び出しは chat request の外なので `toolInvocationToken` は `undefined` です。進捗 UI は
-出ませんが**承認ダイアログは出ます**——ターミナル実行などはそこで人が止められます。
-
-### 一覧に並んでいても呼べないツールがある
-
-**`toolInvocationToken` を必須にしているツールは、この bridge からは呼べません。**
-このトークンは「chat participant が chat request を処理している文脈」でしか手に入らず、
-チャットの外から呼ぶ経路には存在しないためです。実機で確認できているのは
-`runSubagent` がこれに当たることです。
-
-```console
-$ vscode-copilot-chat --call runSubagent --input '{"prompt":"…","description":"…"}'
-vscode-copilot-chat: runSubagent は chat request の中からしか呼べません（…）
-```
-
-`--tools` に並ぶことと呼べることは別です。**どのツールがこの制約を持つかは `--probe`
-で調べられます。**
-
-```console
-$ vscode-copilot-chat --probe
-  呼べそう   copilot_readFile
-      入力検証で止まった: bridge error (500): missing required property: filePath
-  呼べない   runSubagent
-      toolInvocationToken が要る
-  未確認    runTests
-      必須項目が無く、空入力で動きうるので試さない
-
-呼べない 1 / 呼べそう 2 / 実行された 0 / 未確認 1
-トークン検査は入力検証より先に出ることを確認済み。「呼べそう」はゲートされていないと読んでよい。
-```
-
-**なぜ副作用が出ないか。** `--probe` が送るのは `{}` だけで、しかも `required` が
-空でないツールにしか送りません。必須項目がある以上 `{}` は入力検証で必ず落ちるので、
-ツール本体は動きません。`runTests` のように**必須項目が無い**（引数なしで走りうる）
-ツールは、試さずに「未確認」として残します。
-
-**「呼べそう」をどこまで信じてよいか。** 判定の前提は「VS Code が入力検証より先に
-トークンを見る」ことです。`--probe` はこれを実地で確かめます——不正な入力を送って
-なおトークンのエラーが返るツールが 1 つでもあれば、順序が示せたことになります。
-1 つも無い場合はその旨を出力に書き、「呼べそう」は『トークンで止まらなかった』以上の
-意味を持たないものとして扱います。
-
-確実なのは実際に有効な入力で 1 回呼んでみることです。`--probe` は当たりを付けるための
-道具で、証明ではありません。
 
 応答は text part を連結した `text` と、部品ごとの `content` です。
 
