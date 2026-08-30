@@ -19,6 +19,7 @@ TEST_DIRS = {
     "agent-amigos": ROOT / "tools/agent-amigos/tests",
     "agent-loop": ROOT / "tools/agent-loop/test",
     "agent-audit": ROOT / "tools/agent-audit/tests",
+    "agent-herd": ROOT / "tools/agent-tools/agentcore/agentcore/tests",
     "agent-ollama": ROOT / "tools/agent-tools/agentcore/agentcore/tests",
     "agent-aider": ROOT / "tools/agent-tools/agentcore/agentcore/tests",
 }
@@ -82,12 +83,20 @@ def run_cloud(agent_cli: str, request: str, timeout: float) -> dict:
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if "--local" in argv:
+        # 実機 E2E（一時 prefix へ install して実バイナリを叩く）。引数面が別なので丸ごと委譲する。
+        sys.path.insert(0, str(HERE))
+        import local
+        return local.main([a for a in argv if a != "--local"])
     parser = argparse.ArgumentParser(description="agent-tools scenario E2E runner (mock by default)")
     parser.add_argument("--engine", choices=[*TEST_DIRS, "all"], default="all")
     parser.add_argument("--scenario", action="append", default=[], help="scenario id (repeatable)")
     parser.add_argument("--list", action="store_true")
     parser.add_argument("--json", action="store_true", help="emit one JSON report")
     parser.add_argument("--timeout", type=float, default=300)
+    parser.add_argument("--local", action="store_true",
+                        help="mock ではなくこの PC の実バイナリで測る（local.py へ委譲）")
     parser.add_argument("--agent-cli", metavar="NAME",
                         help="OPT-IN: replace mocks with one billable agent-flow cloud smoke test")
     parser.add_argument("--request", default="次の文字列をそのまま返してください: agent-e2e-ok")

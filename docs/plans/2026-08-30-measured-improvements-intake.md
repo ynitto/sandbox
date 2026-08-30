@@ -339,7 +339,7 @@ python3 tools/agent-tools/eval/worker_eval.py --recheck <台帳>     # 走り直
 | T5 / T5slice / T5noread | 大きい参照を読んで直す | 3/3 / 3/3 / 0/3 | 214 / 144 / 216s | 08-23 |
 | T6 / T6slice | 2 千行級（約 2 万 token）の参照 | 3/3 / 3/3 | 579 / 99s | 08-24 |
 | T6noat / T6slicenoat | 同・自動テストの往復無し | 3/3 / 3/3 | 63 / 70s | 08-24 |
-| T7digest / T8log | 定型のテキスト業務 | **未測定** | — | ケースだけある |
+| T7digest / T8log | 定型のテキスト業務（一発版） | 3/3 / 3/3 | 68 / 89s | 08-30 |
 
 ### `judge_eval` — 判定系（split / filter / judge / reduce / evaluator）
 
@@ -412,15 +412,16 @@ python3 tools/agent-tools/eval/doctor_eval.py --model gemma4:e4b --repeat 3
 |---|---|---:|---:|
 | DR1〜DR4 | 読み取り専用の助言 4 モード | 3/3 | 14〜40s |
 
-### `project_verify_eval` — 受入判定（agent-project の charter verifier）
+### `project_verify_eval` — 受入判定（**廃止済み経路の来歴**）
 
-```bash
-python3 tools/agent-tools/eval/project_verify_eval.py --model gemma4:e4b --arm verify --repeat 3
-```
+**現行のハーネスではない。** 測っていた本番経路（charter の自然文 verifier）は、この実測を
+根拠に 2026-08-24 で撤去された。いま project acceptance が機械評価するのは charter の
+決定的コマンドだけで、自然文は人の検収へ回る。腕を引こうとするとその旨を告げて終了する
+（プロンプトビルダーが本番に無い）。
 
-| ケース | 何を測るか | 正解 | 中央値 |
+| ケース | 何を測っていたか | 正解 | 中央値 |
 |---|---|---:|---:|
-| PV1 | 達成条件の判定 | 0/6（e4b）/ 0/3（12b） | 46s / 17s |
+| PV1 | 達成条件の判定（撤去済み） | 0/6（e4b）/ 0/3（12b） | 46s / 17s |
 
 ### `retrieval_eval` — 記憶検索（ltm-use の recall 経路）
 

@@ -208,6 +208,53 @@ class ScopeAndGateTests(unittest.TestCase):
                  {"id": "w", "goal": "[scope] 各ファイル処理", "deps": ["s"], "kind": "work"}]
         self.assertEqual([t["id"] for t in plan.strip_static_split_successors(tasks)], ["s"])
 
+    def test_gate_rejects_same_file_split_across_nodes_at_coarse(self):
+        """coarse では同じファイルの作業が 2 ノードに分かれていること自体が過分解。
+        レンジ（1〜3）では捕まらないので別に見る。fine / finest では言わない。"""
+        tasks = [{"id": "t1", "goal": "[scope] README.md\n読む", "deps": [], "kind": "work"},
+                 {"id": "t2", "goal": "[scope] README.md\n直す", "deps": ["t1"], "kind": "work"}]
+        self.assertTrue(any("1 ノードにまとめる" in x for x in plan.gate_tasks(tasks, "coarse")))
+        self.assertFalse([x for x in plan.gate_tasks(tasks, "fine") if "1 ノードにまとめる" in x])
+
+    def test_collapse_folds_work_nodes_that_touch_the_same_file(self):
+        """1 行の修正を「読む → 直す → 適用する」に切る形（PL4 の実測）を 1 ノードへ。
+        deps は生存ノードへ張り替え、落としたノードの本文は goal に残す。"""
+        tasks = [{"id": "t1", "goal": "[scope] README.md\n1 行目を読む", "deps": [], "kind": "work"},
+                 {"id": "t2", "goal": "[scope] README.md\nInstal を Install へ直す",
+                  "deps": ["t1"], "kind": "generate"},
+                 {"id": "t3", "goal": "[scope] README.md\n修正を適用する", "deps": ["t2"],
+                  "kind": "work"},
+                 {"id": "v", "goal": "差分を確認", "deps": ["t3"], "kind": "verify"}]
+        out = plan.collapse_same_scope_work(tasks, "coarse")
+        self.assertEqual([t["id"] for t in out], ["t1", "v"])
+        self.assertEqual(out[1]["deps"], ["t1"])            # verify の依存が生存側へ
+        self.assertNotIn("t1", out[0]["deps"])              # 自己依存は作らない
+        for body in ("1 行目を読む", "Instal を Install へ直す", "修正を適用する"):
+            self.assertIn(body, out[0]["goal"])
+
+    def test_collapse_merges_declared_deliverables(self):
+        tasks = [{"id": "a", "goal": "[scope] src/x.py\n実装", "deps": [], "kind": "work",
+                  "operation": {"operation_class": "feature", "deliverables": ["src/x.py"]}},
+                 {"id": "b", "goal": "[scope] src/x.py\n仕上げ", "deps": ["a"], "kind": "work",
+                  "operation": {"operation_class": "feature", "deliverables": ["src/x.py", "src/y.py"]}},
+                 {"id": "c", "goal": "[scope] src/x.py\n整える", "deps": ["b"], "kind": "work"},
+                 {"id": "d", "goal": "[scope] other/z.py\n別件", "deps": [], "kind": "work"}]
+        out = plan.collapse_same_scope_work(tasks, "coarse")
+        self.assertEqual([t["id"] for t in out], ["a", "d"])
+        self.assertEqual(out[0]["operation"]["deliverables"], ["src/x.py", "src/y.py"])
+
+    def test_collapse_leaves_fine_and_finest_alone(self):
+        """1 ファイルを段へ切ることが目的の粒度では畳まない（tier=basic は finest）。"""
+        tasks = [{"id": "a", "goal": "[scope] src/x.py\n実装", "deps": [], "kind": "work"},
+                 {"id": "b", "goal": "[scope] src/x.py\n仕上げ", "deps": ["a"], "kind": "work"}]
+        self.assertEqual(plan.collapse_same_scope_work(tasks, "fine"), tasks)
+        self.assertEqual(plan.collapse_same_scope_work(tasks, "finest"), tasks)
+
+    def test_collapse_keeps_nodes_that_touch_different_files(self):
+        tasks = [{"id": f"t{i}", "goal": f"[scope] src/m{i}.py\n実装{i}", "deps": [], "kind": "work"}
+                 for i in range(1, 5)]
+        self.assertEqual(plan.collapse_same_scope_work(tasks, "coarse"), tasks)
+
     def test_strip_split_successors_is_a_no_op_without_split_or_successor(self):
         chain = [{"id": "a", "goal": "x", "deps": [], "kind": "work"},
                  {"id": "b", "goal": "y", "deps": ["a"], "kind": "work"}]

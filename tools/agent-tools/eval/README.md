@@ -1471,6 +1471,13 @@ kind 非依存にした修正が効くのは `work` / `generate` で書かれた
 直ったのはモデルではなく運搬である。台帳
 `results/archive/ledger-2026-08-30-planner-pl3-strip-gemma4-e4b.jsonl`。
 
+**同じ規則が engine 側にもある**（`agent_flow.orchestrate._collapse_split_successors`——
+展開前に静的後段を外す。B2 で入れた）。**本番の最終防衛はあちら**で、planner 側で先に
+外すのは、この skill の出力が engine を通らない経路（別の実行系・`planner_eval`・人の
+レビュー）にも同じ形で届くためである。skill は engine を import できない（対象リポジトリを
+選ばない単体スクリプトなので）ぶん、規則を変えるときは 2 つを揃える必要がある
+——片方だけ緩めると、planner が壊れた形を出して engine が黙って直す状態へ戻る。
+
 ハーネス側の欠陥も 1 つ直した。`planner_eval` の壁時計上限は `subprocess.run(timeout=)` に
 任せていたが、plan.py が起動する**孫プロセス（エージェント CLI）がパイプを握ったまま**なので
 上限で親を殺しても `communicate()` が EOF を待ち続ける（実際に 70 分走り続けた）。
@@ -1534,10 +1541,12 @@ acceptance は charter に明記された deterministic command だけを機械�
 来歴として残す。
 
 ```bash
-python3 tools/agent-tools/eval/project_verify_eval.py --selfcheck
-python3 tools/agent-tools/eval/project_verify_eval.py --model gemma4:12b --arm verify   # 本番の変種
-python3 tools/agent-tools/eval/project_verify_eval.py --model gemma4:e4b  --arm tools    # 道具あり
+python3 tools/agent-tools/eval/project_verify_eval.py --selfcheck   # 判定側だけは今も回る
 ```
+
+**測る腕はもう引けない（2026-08-30 確認）。** 撤去でプロンプトビルダーごと消えているので、
+`--arm verify` / `--arm tools` はその旨を告げて終了する。写しを置いて動かし続けない——
+本番のプロンプトを測る腕が、本番に無いプロンプトを測り始める。以下は当時の記録である。
 
 腕は 2 つ。`verify` は本番の verify 変種 `ollama-verify`（`--format json`・**道具なし**）で、道具が
 無い verifier は何も確かめられないので pass が 1 つでもあれば**捏造**（実行していない証跡を書いた）。

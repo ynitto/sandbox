@@ -4,14 +4,81 @@
   "description": "Expose VS Code's Language Model API to an authenticated localhost CLI.",
   "version": "0.1.0",
   "publisher": "local",
-  "engines": { "vscode": "^1.90.0" },
-  "categories": ["Other"],
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
   "main": "./extension.js",
-  "activationEvents": ["onStartupFinished"],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "contributes": {
-    "commands": [{
-      "command": "vscodeCopilotBridge.restart",
-      "title": "Copilot Bridge: Restart Local Server"
-    }]
+    "commands": [
+      {
+        "command": "vscodeCopilotBridge.restart",
+        "title": "Copilot Bridge: Restart Local Server"
+      }
+    ],
+    "languageModelTools": [
+      {
+        "name": "bridge_replaceString",
+        "displayName": "Replace String (bridge)",
+        "modelDescription": "Replace one exact literal string in a file. The oldString must appear exactly once; include surrounding lines to make it unique. Paths must be absolute and inside the open workspace. Use this instead of copilot_replaceString or copilot_applyPatch, which do not work outside VS Code's own chat.",
+        "tags": [
+          "bridge",
+          "edit"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "filePath": {
+              "type": "string",
+              "description": "The absolute path to the file to edit."
+            },
+            "oldString": {
+              "type": "string",
+              "description": "The exact literal text to replace. Must occur exactly once in the file."
+            },
+            "newString": {
+              "type": "string",
+              "description": "The text to write in its place. Pass an empty string to delete."
+            }
+          },
+          "required": [
+            "filePath",
+            "oldString",
+            "newString"
+          ]
+        }
+      },
+      {
+        "name": "bridge_createFile",
+        "displayName": "Write File (bridge)",
+        "modelDescription": "Write a file with the given content, creating it if needed. An existing file is replaced whole, so use bridge_replaceString for partial edits. Paths must be absolute and inside the open workspace. Use this instead of copilot_createFile, which does not work outside VS Code's own chat.",
+        "tags": [
+          "bridge",
+          "edit"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "filePath": {
+              "type": "string",
+              "description": "The absolute path to the file to write."
+            },
+            "content": {
+              "type": "string",
+              "description": "The full content of the file."
+            }
+          },
+          "required": [
+            "filePath",
+            "content"
+          ]
+        }
+      }
+    ]
   }
 }

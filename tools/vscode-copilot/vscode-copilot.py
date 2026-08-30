@@ -371,9 +371,13 @@ READ_ONLY_TOOLS = (
 TOOL_SETS = {
     "read": READ_ONLY_TOOLS,
     "write": (
-        "copilot_applyPatch",
-        "copilot_replaceString",
-        "copilot_createFile",
+        # **Copilot の編集ツールはここに置けません。** chat request の外から呼ぶと
+        # copilot_applyPatch は `Missing patch text or stream`、copilot_replaceString は
+        # `no prompt context found`、copilot_createFile は `Invalid stream` で必ず落ちます
+        # （どれも Copilot 自身のチャットループしか入れない prompt context を要求する）。
+        # 代わりに bridge 拡張が自分で登録した 2 つを使います。
+        "bridge_replaceString",
+        "bridge_createFile",
         "copilot_createDirectory",
     ),
     "run": (

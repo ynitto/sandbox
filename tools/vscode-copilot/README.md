@@ -110,7 +110,7 @@ copilot> さっきの要約を3行にして
 $ vscode-copilot -i --write
 copilot> src/a.py を読んで、この関数名を直して
   → copilot_readFile {"filePath":"…"}
-  → copilot_replaceString {"filePath":"…"}
+  → bridge_replaceString {"filePath":"…"}
 直しました。  （3 往復）
 copilot> /tools off
 tools: off（素の会話に戻ります）
@@ -214,6 +214,7 @@ vscode-copilot --tools --json   # inputSchema を含む全文
 | VS Code 本体 | `runSubagent` `run_in_terminal` `get_terminal_output` `runTests` `manage_todo_list` |
 | Copilot Chat 拡張 | `copilot_readFile` `copilot_applyPatch` `copilot_replaceString` `copilot_searchCodebase` |
 | VS Code に設定した MCP サーバ | 設定しだい |
+| この bridge 拡張 | `bridge_replaceString` `bridge_createFile` |
 
 **中身は VS Code のバージョン・設定・入れている MCP サーバで変わります。**
 どのツールが使えるかを手元の一覧で決め打ちせず、この口で実測してください。
@@ -264,10 +265,21 @@ vscode-copilot: runSubagent は chat request の中からしか呼べません�
 |---|---|---|
 | `runSubagent` | **呼べない** | `toolInvocationToken is required for this tool` |
 | `copilot_readFile` | **呼べる** | 有効な入力で呼び、ファイルの中身が返った |
-| `copilot_applyPatch` `copilot_createFile` `copilot_createDirectory` `copilot_editNotebook` `copilot_createNewJupyterNotebook` `copilot_fetchWebPage` `copilot_createNewWorkspace` | 呼べる | トークンのエラーが返らず、ツール本体まで到達した |
+| `copilot_applyPatch` | **呼べない** | `Missing patch text or stream` |
+| `copilot_replaceString` | **呼べない** | `no prompt context found` |
+| `copilot_createFile` | **呼べない** | `Invalid stream` |
+| `copilot_createDirectory` `copilot_editNotebook` `copilot_createNewJupyterNotebook` `copilot_fetchWebPage` `copilot_createNewWorkspace` | 呼べる | トークンのエラーが返らず、ツール本体まで到達した |
 
-`copilot_*` 系の編集・読み取りツールはゲートされていません。**`vscode.lm` の tool calling を
-自前で回す形は成立します。**
+**Copilot の編集ツールは chat request の外からは動きません。** どれも invoke の頭で
+`this._promptContext?.stream` を要求していて、その `_promptContext` は Copilot 自身の
+チャットループが `resolveInput()` 経由でしか入れません（`vscode.lm.invokeTool` は
+`resolveInput` を呼ばない）。`runSubagent` と違って**トークンのエラーは返らず、ツール本体まで
+届いてから落ちます**——`Missing patch text or stream` は patch が空だという意味ではなく、
+patch を渡していても stream が無ければ同じ文言で落ちます。**編集は bridge が自前の
+ツールで持ちます**（下の「編集ツールは bridge が持つ」）。
+
+読み取り系・実行系はゲートされていません。**`vscode.lm` の tool calling を自前で回す形は
+成立します。**
 
 ### 自動で総当たりしてはいけない
 
@@ -361,14 +373,14 @@ copilot_getChangedFiles copilot_getErrors
 | セット | 中身 |
 |---|---|
 | `read`（既定） | 上の 10 個 |
-| `write` | `copilot_applyPatch` `copilot_replaceString` `copilot_createFile` `copilot_createDirectory` |
+| `write` | `bridge_replaceString` `bridge_createFile` `copilot_createDirectory` |
 | `run` | `run_in_terminal` `get_terminal_output` `runTests` |
 | `web` | `copilot_fetchWebPage` |
 
 ```bash
 vscode-copilot --agent-tools read,write --agent "この関数名を直して"
 vscode-copilot --agent-tools read,run  --agent "落ちているテストを調べて"
-vscode-copilot --agent-tools read,copilot_replaceString --agent "…"
+vscode-copilot --agent-tools read,bridge_replaceString --agent "…"
 ```
 
 **`--agent-tools` は既定に足すのではなく置き換えます。** 書き込みだけ渡すと、モデルは
@@ -391,6 +403,36 @@ MCP サーバの道具も環境ごとに違うので、セットには括らず�
 書き込み・実行系は**そのツールが実際に動きます**。承認ダイアログが必ず止めてくれると
 当てにはしないでください——`copilot_createNewWorkspace` は誰にも止められず動きました。
 git が綺麗な状態で試すのが安全です。
+
+### 編集ツールは bridge が持つ
+
+**Copilot の編集ツールは chat request の外からは動きません**（上の実測表）。なので
+`write` セットに載せるのは、この拡張が自分で登録した 2 つです。
+
+| ツール | 入力 | 動き |
+|---|---|---|
+| `bridge_replaceString` | `filePath` `oldString` `newString` | 厳密一致で **1 箇所だけ**置換する。0 件も複数件も失敗させる |
+| `bridge_createFile` | `filePath` `content` | 丸ごと書く。既存ファイルは中身を置き換える |
+
+patch 形式は起こしていません。差分の当て直しを自前で実装する価値はなく、「1 箇所だけ
+置換」と「丸ごと書く」で足ります。**0 件・複数件を失敗させるのは、「どこかが変わった」を
+黙って返すとモデルが直った気で次の手番へ進むためです。**
+
+置換はドキュメント経由で行い、保存までやります。エディタに未保存の変更があるとき
+`fs` へ直に書くと、それを黙って捨てることになります。
+
+**書き込み先はワークスペースの中だけです。** パスを組み立てるのはモデルで、打ち間違いも
+思い違いもワークスペースの外へ届きます——読むのと違って戻せません。
+
+```console
+$ vscode-copilot --call bridge_replaceString --input '{"filePath":"/etc/hosts", …}'
+vscode-copilot: bridge error: ワークスペースの外へは書けません: /etc/hosts（… の下だけ）
+```
+
+**拡張を入れ直さないと使えません。** `install.sh` を通していない VS Code では
+`bridge_*` が `vscode.lm.tools` に居らず、セットはカテゴリの依頼なので**黙って外れます**
+（`write` を頼んでも編集ツールが 1 つも載りません）。入れ直したら bridge のウィンドウを
+閉じ、`vscode-copilot --tools | grep bridge_` で見えるか確かめてください。
 
 ### ファイルを編集させる
 
@@ -449,7 +491,7 @@ VS Code の変換の向こうで 400 が返るとき、手前で持っていた�
 ```console
 $ vscode-copilot -i --write --debug
 copilot>   [debug] 往復 2  user:string(4) / assistant:string(6) / user:string(95)
-           / assistant:LanguageModelToolCallPart(c1:copilot_applyPatch)
+           / assistant:LanguageModelToolCallPart(c1:bridge_replaceString)
            / user:LanguageModelToolResultPart(c1:LanguageModelTextPart)
 ```
 

@@ -85,7 +85,18 @@ def build_prompt(wd: pathlib.Path) -> str:
     charter = types.SimpleNamespace(name="billing-kit", goal="月額課金の日割りと請求合計を正しく計算する")
     rev = subprocess.run(["git", "rev-parse", "HEAD"], cwd=wd, capture_output=True,
                          text=True).stdout.strip()
-    return ap._charter_criteria_prompt(cfg, charter, [c for c, _ in CRITERIA], wd, rev)
+    builder = getattr(ap, "_charter_criteria_prompt", None)
+    if builder is None:
+        # 2026-08-24 に本番から撤去された（自然文 verifier は成立しないという、この腕の
+        # 実測そのものが根拠）。写しを置いて動かし続けない——本番のプロンプトを測る腕が、
+        # 本番に無いプロンプトを測り始める。台帳は eval README の「廃止済み」節に残る。
+        raise SystemExit(
+            "この腕は測れません: 本番の自然文 verifier（agent_project._charter_criteria_prompt）は"
+            "2026-08-24 に撤去されました。\n"
+            "現行の project acceptance は charter の決定的コマンドだけを機械評価します"
+            "（自然文は人の検収へ）。実測の記録は eval README の"
+            "「廃止済み agent-project verify の評価記録」を参照。")
+    return builder(cfg, charter, [c for c, _ in CRITERIA], wd, rev)
 
 
 def argv_for(arm: str, prompt: str) -> "tuple[list[str], str | None]":

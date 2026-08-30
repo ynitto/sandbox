@@ -251,6 +251,97 @@ async function invokeToolByName(body, cancellationToken) {
   return toolResultToJson(result);
 }
 
+// --- bridge が自分で持つ編集ツール -------------------------------------------
+//
+// **Copilot の編集ツールは chat request の外から呼べません。** 実測（2026-08-30）:
+// `copilot_applyPatch` は `Missing patch text or stream`、`copilot_replaceString` は
+// `no prompt context found`、`copilot_createFile` は `Invalid stream` で必ず落ちます。
+// どれも invoke の頭で `this._promptContext?.stream` を要求していて、その
+// `_promptContext` は Copilot 自身のチャットループが `resolveInput()` 経由でしか
+// 入れません（`vscode.lm.invokeTool` は `resolveInput` を呼ばない）。runSubagent が
+// `toolInvocationToken` を要求するのと同じ壁で、こちらからは越えられません。
+//
+// なので編集はここで持ちます。patch 形式は起こしません——差分の当て直しを自前で
+// 実装する価値はなく、「厳密一致で 1 箇所だけ置換」と「丸ごと書く」で足ります。
+
+function workspaceRoots() {
+  return ((vscode.workspace && vscode.workspace.workspaceFolders) || [])
+    .map(folder => folder && folder.uri && folder.uri.fsPath).filter(Boolean);
+}
+
+// 書き込み先はワークスペースの中だけにする。パスを組み立てるのはモデルで、
+// 打ち間違いも思い違いもワークスペースの外へ届く——読むのと違って戻せない。
+function writableUri(input) {
+  if (typeof input !== 'string' || !input.trim()) {
+    throw new Error('filePath は絶対パスの文字列で渡してください');
+  }
+  const target = path.resolve(input);
+  const roots = workspaceRoots();
+  if (!roots.length) {
+    throw new Error('VS Code がフォルダを開いていないので、書き込んでよい場所を決められません');
+  }
+  if (!roots.some(root => target === root || target.startsWith(root + path.sep))) {
+    throw new Error(`ワークスペースの外へは書けません: ${target}（${roots.join(', ')} の下だけ）`);
+  }
+  return vscode.Uri.file(target);
+}
+
+function toolText(message) {
+  return new vscode.LanguageModelToolResult([new vscode.LanguageModelTextPart(message)]);
+}
+
+const BRIDGE_TOOLS = {
+  // 厳密一致で 1 箇所だけ置換する。0 件も複数件も失敗させる——「どこかが変わった」を
+  // 黙って返すと、モデルは直った気で次の手番へ進む。
+  bridge_replaceString: {
+    async invoke(options) {
+      const { filePath, oldString, newString } = options.input || {};
+      if (typeof oldString !== 'string' || !oldString) {
+        throw new Error('oldString は空でない文字列で渡してください');
+      }
+      if (typeof newString !== 'string') throw new Error('newString は文字列で渡してください');
+      const uri = writableUri(filePath);
+      // ドキュメント経由で編集する。エディタに未保存の変更があるとき fs へ直に書くと、
+      // それを黙って捨てることになる。
+      const document = await vscode.workspace.openTextDocument(uri);
+      const text = document.getText();
+      const at = text.indexOf(oldString);
+      if (at < 0) throw new Error(`oldString がファイルに見つかりません: ${uri.fsPath}`);
+      if (text.indexOf(oldString, at + oldString.length) >= 0) {
+        throw new Error(
+          `oldString が複数の場所と一致します。前後の行を足して 1 箇所に絞ってください: ${uri.fsPath}`);
+      }
+      const range = new vscode.Range(document.positionAt(at), document.positionAt(at + oldString.length));
+      const edit = new vscode.WorkspaceEdit();
+      edit.replace(uri, range, newString);
+      if (!await vscode.workspace.applyEdit(edit)) {
+        throw new Error(`編集を適用できませんでした: ${uri.fsPath}`);
+      }
+      // 保存まで済ませる。開いたバッファの中だけ直しても、呼び出し側からは何も
+      // 変わっていない。
+      if (!await document.save()) throw new Error(`保存できませんでした: ${uri.fsPath}`);
+      return toolText(`Replaced 1 occurrence in ${uri.fsPath}`);
+    },
+  },
+  // 丸ごと書く。既存ファイルは中身を置き換える（部分的に直すなら
+  // bridge_replaceString を使う）。
+  bridge_createFile: {
+    async invoke(options) {
+      const { filePath, content } = options.input || {};
+      if (typeof content !== 'string') throw new Error('content は文字列で渡してください');
+      const uri = writableUri(filePath);
+      // ponytail: 未保存のエディタがあれば、この書き込みは競合する（VS Code 側で
+      // 「ディスクが変わった」になる）。丸ごと置き換える道具なので今はこれで足りる。
+      await vscode.workspace.fs.writeFile(uri, Buffer.from(content, 'utf8'));
+      return toolText(`Wrote ${content.length} chars to ${uri.fsPath}`);
+    },
+  },
+};
+
+function registerBridgeTools() {
+  return Object.entries(BRIDGE_TOOLS).map(([name, tool]) => vscode.lm.registerTool(name, tool));
+}
+
 const DEFAULT_MAX_ROUNDS = 12;
 
 // **モデルはワークスペースの場所を知らない。** Copilot のファイルツールは絶対パスしか
@@ -504,6 +595,7 @@ function activate(context) {
   };
   start();
   context.subscriptions.push(
+    ...registerBridgeTools(),
     vscode.commands.registerCommand('vscodeCopilotBridge.restart', start),
     { dispose: () => server && server.close() },
     { dispose: () => {

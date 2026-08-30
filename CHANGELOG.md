@@ -7,6 +7,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### vscode-copilot: 編集が通るようになった
+
+- **Copilot の編集ツールは chat request の外からは動かない。** `copilot_applyPatch` は
+  `Missing patch text or stream`、`copilot_replaceString` は `no prompt context found`、
+  `copilot_createFile` は `Invalid stream` で必ず落ちる。どれも invoke の頭で
+  `this._promptContext?.stream` を要求していて、その `_promptContext` は Copilot 自身の
+  チャットループが `resolveInput()` 経由でしか入れない（`vscode.lm.invokeTool` は
+  `resolveInput` を呼ばない）。`runSubagent` と違ってトークンのエラーは返らず、
+  ツール本体まで届いてから落ちるので、**「patch が空」に見えて実は patch は届いている**。
+- 編集は bridge 拡張が自分で持つようにした。`bridge_replaceString`（厳密一致で 1 箇所だけ
+  置換。0 件も複数件も失敗させる）と `bridge_createFile`（丸ごと書く）を登録し、`write`
+  セットをこの 2 つ＋`copilot_createDirectory` へ差し替えた。patch 形式は起こしていない。
+- 書き込み先はワークスペースの中だけに限る。パスを組み立てるのはモデルで、打ち間違いも
+  ワークスペースの外へ届く——読むのと違って戻せない。
+- 置換はドキュメント経由で行い保存までやる。未保存のエディタがあるとき `fs` へ直に書くと、
+  それを黙って捨てることになる。
+- `install.sh` が拡張 manifest の走査キャッシュ（`extensions.user.cache`）を消すようにした。
+  ファイルを上書きしても拡張フォルダは増減しないのでキャッシュは当たったままで、入れ直した
+  直後の起動が古い `package.json` で動いていた（`Tool "bridge_replaceString" was not
+  contributed.`）。
+
 ### agent-tools: 宣言外のファイル変更が観測できるようになった
 
 設計: [2026-08-27 クラウド CLI を正とした入口の再構成](./docs/plans/2026-08-27-agent-herd-cloud-cli-parity-slash-dispatch-design.md)

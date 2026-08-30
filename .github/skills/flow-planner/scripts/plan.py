@@ -841,8 +841,92 @@ def strip_unrequested_deliverables(tasks: list[dict], context_text: str) -> list
     return tasks
 
 
+def _scope_header(goal: str) -> str:
+    """goal の scope 宣言部（`[scope]` 行）。マーカーが無ければ 1 行目を見る。"""
+    lines = (goal or "").splitlines()
+    for line in lines:
+        if _SCOPE_MARKER_RE.search(line):
+            return line
+    return lines[0] if lines else ""
+
+
+def _scope_body(goal: str) -> str:
+    """goal から `[scope]` / `[out_of_scope]` の宣言行を除いた本文。"""
+    keep = [line for line in (goal or "").splitlines()
+            if not _SCOPE_MARKER_RE.search(line)
+            and not re.search(r"\[out_of_scope\]", line, re.I)]
+    return "\n".join(keep).strip()
+
+
+def collapse_same_scope_work(tasks: list[dict], target: str) -> list[dict]:
+    """coarse のとき、同じファイルを触る成果ノードを 1 つへ畳む。
+
+    e4b は 1 行の修正でも「読む → 特定する → 直す → 適用する」を別ノードへ切る
+    （実測 2026-08-30: PL4 1/3。成果ノード 3〜4 個で、どれも同じ 1 ファイルを触る）。
+    ゲートは作り直させるが e4b は同じ形を書く——`tie_break` / 要求外の成果物 /
+    split の静的後段と同じなので、同じ扱いで機械が畳む。
+
+    畳む条件は**同じファイルを触ること**。既にある「成果物 1 つの作り手は 1 ノード」を
+    宣言（deliverables）から scope へ広げたもので、根拠も同じ——同じファイルを 2 ノードが
+    触ると、並走したとき編集が衝突し、直列でも 1 呼び出しぶん余計に払う。
+
+    **coarse に限る**のは、fine / finest では 1 ファイルを段へ切ること自体が目的だから
+    ——`tier=basic` は auto を finest へ倒して小さい state を作らせる（ワーカーの能力が
+    律速なので、そこで畳むと分解の意味が消える）。coarse は「小さい仕事を小さいまま置く」
+    粒度なので、同じファイルが 2 ノードに分かれていること自体が過分解である。
+    レンジ検査では捕まらない——coarse のレンジは 1〜3 で、3 ノードは範囲内に収まる。
+    """
+    if target != "coarse":
+        return tasks
+    work = [t for t in tasks if isinstance(t, dict) and t.get("kind") in WORK_KINDS]
+    if len(work) < 2:
+        return tasks
+    groups: dict = {}
+    for t in work:
+        paths = _mentioned_paths(_scope_header(str(t.get("goal", ""))))
+        if paths:
+            groups.setdefault(frozenset(paths), []).append(t)
+    merged_into: dict = {}
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        head, rest = members[0], members[1:]
+        bodies = [_scope_body(str(head.get("goal", "")))]
+        for t in rest:
+            merged_into[str(t.get("id"))] = str(head.get("id"))
+            body = _scope_body(str(t.get("goal", "")))
+            if body:
+                bodies.append(body)
+            declared = (t.get("operation") or {}).get("deliverables") or []
+            if declared:
+                op = head.setdefault("operation", dict(t["operation"]))
+                op["deliverables"] = list(dict.fromkeys(
+                    [str(d) for d in (op.get("deliverables") or [])] + [str(d) for d in declared]))
+        header = _scope_header(str(head.get("goal", "")))
+        head["goal"] = "\n".join([header] + [b for b in bodies if b]) if header else "\n".join(bodies)
+    if not merged_into:
+        return tasks
+    print(f"[flow-planner] 同じファイルを触る成果ノードを畳みました "
+          f"({', '.join(f'{k}→{v}' for k, v in sorted(merged_into.items()))})",
+          file=sys.stderr)
+    out = []
+    for t in tasks:
+        if not isinstance(t, dict) or str(t.get("id")) in merged_into:
+            continue
+        tid = str(t.get("id"))
+        deps = [merged_into.get(str(d), str(d)) for d in (t.get("deps") or [])]
+        t["deps"] = list(dict.fromkeys(d for d in deps if d != tid))
+        out.append(t)
+    return out
+
+
 def strip_static_split_successors(tasks: list[dict]) -> list[dict]:
     """split へ静的に依存するノードを下流ごと落として運ぶ（ゲートの後始末）。
+
+    engine 側（`agent_flow.orchestrate._collapse_split_successors`）が展開前に同じ形を
+    外すので、**本番の最終防衛はあちら**である。ここで先に外すのは、この経路が engine を
+    通らない planner 出力（別の実行系・planner_eval・人のレビュー）にも同じ形で届くため。
+    規則を変えるときは 2 つを揃える（片方だけ緩めると engine が黙って直す形へ戻る）。
 
     engine は split 完了後に要素ごとの `<split>-m*` と `<split>-reduce` を動的生成する。
     静的に置いた map は全件を 1 ノードで受け、reduce は展開結果を見ない。ゲートは
@@ -982,6 +1066,18 @@ def gate_tasks(tasks: list[dict], target: str, require_split: bool = False,
     work = [t for t in tasks if isinstance(t, dict) and t.get("kind") in WORK_KINDS]
     if not work:
         return issues
+    if target == "coarse":
+        # coarse は「小さい仕事を小さいまま置く」粒度。同じファイルが 2 ノードに分かれて
+        # いること自体が過分解で、レンジ検査では捕まらない（1〜3 の範囲に収まってしまう）。
+        touched: dict = {}
+        for t in work:
+            for path in _mentioned_paths(_scope_header(str(t.get("goal", "")))):
+                touched.setdefault(path, []).append(str(t.get("id")))
+        for path, ids in sorted(touched.items()):
+            if len(ids) > 1:
+                issues.append(f"{path} を {len(ids)} ノードが触る（{', '.join(ids[:3])}）"
+                              "——同じファイルの作業は 1 ノードにまとめること"
+                              "（読む・特定する・直すは 1 ノードの中の手順である）")
     lo, hi = work_node_range(target)
     n = len(work)
     if n < lo or n > hi:
@@ -1068,6 +1164,7 @@ def phase3_build(request: str, analysis: dict, strategy: dict,
         tasks = _build(retry_note)
         # 再生成後も不合格ならそのまま返す（呼び出し側で使える最小成果を落とさない）
     tasks = strip_static_split_successors(tasks)
+    tasks = collapse_same_scope_work(tasks, granularity_target)
     return strip_unrequested_deliverables(tasks, f"{request}\n{subtasks}")
 
 

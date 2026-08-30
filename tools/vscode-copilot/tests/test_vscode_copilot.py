@@ -1,6 +1,7 @@
 import importlib.util
 import io
 import json
+import re
 import threading
 from unittest import mock
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -615,7 +616,7 @@ def test_explicit_code_bin_is_not_second_guessed(tmp_path):
 
 AGENT_TOOLS = {"tools": [
     {"name": "copilot_readFile"}, {"name": "copilot_findFiles"},
-    {"name": "copilot_replaceString"}, {"name": "run_in_terminal"},
+    {"name": "bridge_replaceString"}, {"name": "run_in_terminal"},
 ]}
 
 
@@ -623,7 +624,7 @@ def test_default_tools_are_read_only_and_exclude_writers():
     chosen = client.agent_tools(AGENT_TOOLS, None)
     assert "copilot_readFile" in chosen and "copilot_findFiles" in chosen
     # 書き込み・実行系は allowlist に無いので既定では載らない。
-    assert "copilot_replaceString" not in chosen
+    assert "bridge_replaceString" not in chosen
     assert "run_in_terminal" not in chosen
 
 
@@ -639,8 +640,8 @@ def test_missing_allowlisted_tools_are_dropped_quietly():
 
 
 def test_explicit_tools_are_taken_as_given():
-    chosen = client.agent_tools(AGENT_TOOLS, "copilot_replaceString, run_in_terminal")
-    assert chosen == ["copilot_replaceString", "run_in_terminal"]
+    chosen = client.agent_tools(AGENT_TOOLS, "bridge_replaceString, run_in_terminal")
+    assert chosen == ["bridge_replaceString", "run_in_terminal"]
 
 
 def test_explicit_unregistered_tool_fails_rather_than_being_dropped():
@@ -656,18 +657,18 @@ def test_explicit_unregistered_tool_fails_rather_than_being_dropped():
 
 def test_set_names_expand_to_their_tools():
     chosen = client.agent_tools(AGENT_TOOLS, "write")
-    assert chosen == ["copilot_replaceString"]  # AGENT_TOOLS に居る write はこれだけ
+    assert chosen == ["bridge_replaceString"]  # AGENT_TOOLS に居る write はこれだけ
 
 
 def test_sets_and_names_can_be_mixed():
-    chosen = client.agent_tools(AGENT_TOOLS, "read,copilot_replaceString")
+    chosen = client.agent_tools(AGENT_TOOLS, "read,bridge_replaceString")
     assert "copilot_readFile" in chosen and "copilot_findFiles" in chosen
-    assert chosen[-1] == "copilot_replaceString"
+    assert chosen[-1] == "bridge_replaceString"
 
 
 def test_several_sets_can_be_given_at_once():
     chosen = client.agent_tools(AGENT_TOOLS, "write,run")
-    assert chosen == ["copilot_replaceString", "run_in_terminal"]
+    assert chosen == ["bridge_replaceString", "run_in_terminal"]
 
 
 def test_read_is_the_default_set():
@@ -694,14 +695,36 @@ def test_overlapping_sets_do_not_repeat_a_tool():
     assert client.agent_tools(payload, "read,read,copilot_readFile") == ["copilot_readFile"]
 
 
+def test_the_write_set_matches_the_tools_the_extension_registers():
+    """`write` の bridge_* が、拡張の登録と package.json の宣言と揃っている。
+
+    3 つのどれかがずれると黙って壊れる——contribution の無い名前は registerTool が
+    活性化ごと落とし、CLI 側の綴りが違えばセットからそのツールだけ静かに落ちる。
+    """
+    extension_dir = SCRIPT.parent / "extension"
+    manifest = json.loads((extension_dir / "package.json").read_text(encoding="utf-8"))
+    declared = {tool["name"] for tool in manifest["contributes"]["languageModelTools"]}
+    source = (extension_dir / "extension.js").read_text(encoding="utf-8")
+    registered = set(re.findall(r"^  (bridge_\w+): \{$", source, re.MULTILINE))
+    wanted = {name for name in client.TOOL_SETS["write"] if name.startswith("bridge_")}
+    assert wanted and wanted == declared == registered
+
+
 def test_sets_never_carry_the_tools_we_kept_out():
-    """空入力で拡張ホストを落とした copilot_createNewWorkspace と、呼べない runSubagent。"""
+    """空入力で拡張ホストを落とした copilot_createNewWorkspace、呼べない runSubagent、
+    chat の外では動かない Copilot の編集ツール。"""
     payload = {"tools": [{"name": n} for n in
-                         ("copilot_createNewWorkspace", "runSubagent", "copilot_applyPatch")]}
+                         ("copilot_createNewWorkspace", "runSubagent", "copilot_applyPatch",
+                          "copilot_replaceString", "copilot_createFile")]}
     for name in client.TOOL_SETS:
         chosen = client.agent_tools(payload, name)
         assert "copilot_createNewWorkspace" not in chosen
         assert "runSubagent" not in chosen
+        # Copilot の編集ツールは chat の外から呼ぶと必ず落ちる（prompt context を要求する）。
+        # セットで配ると「書けるつもりの手番」が丸ごと無駄になる。
+        assert "copilot_applyPatch" not in chosen
+        assert "copilot_replaceString" not in chosen
+        assert "copilot_createFile" not in chosen
     # 名指しなら使える（止めるのはセットに載せることだけ）。
     assert client.agent_tools(payload, "copilot_createNewWorkspace") == ["copilot_createNewWorkspace"]
 
@@ -807,10 +830,10 @@ def test_agent_runs_the_loop_with_read_only_tools():
 
 
 def test_agent_tools_flag_overrides_the_allowlist():
-    code, _, run = _main_agent(["--agent", "直して", "--agent-tools", "copilot_replaceString"],
+    code, _, run = _main_agent(["--agent", "直して", "--agent-tools", "bridge_replaceString"],
                                tools=AGENT_TOOLS)
     assert code == 0
-    assert run.call_args.args[2] == ["copilot_replaceString"]
+    assert run.call_args.args[2] == ["bridge_replaceString"]
 
 
 def test_agent_reads_the_task_from_stdin_with_a_dash():
@@ -918,7 +941,7 @@ def test_write_offers_the_write_set_without_asking():
     code, _, run = _main_agent(["--write", "直して"], tools=AGENT_TOOLS)
     assert code == 0
     assert run.call_args.args[2] == ["copilot_readFile", "copilot_findFiles",
-                                     "copilot_replaceString"]
+                                     "bridge_replaceString"]
 
 
 def test_files_alone_stay_read_only():
@@ -980,7 +1003,7 @@ def test_interactive_with_write_starts_with_tools_not_a_one_off_run():
     assert code == 0
     assert repl.called and not run.called
     assert repl.call_args.args[1].tools == ["copilot_readFile", "copilot_findFiles",
-                                            "copilot_replaceString"]
+                                            "bridge_replaceString"]
 
 
 def test_plain_interactive_has_no_tools():

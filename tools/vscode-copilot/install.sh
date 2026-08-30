@@ -15,18 +15,28 @@ if command -v powershell.exe >/dev/null 2>&1 && command -v wslpath >/dev/null 2>
   powershell.exe -NoProfile -NonInteractive -Command \
     '$dst=Join-Path $env:USERPROFILE ".vscode\extensions\local.vscode-copilot-bridge-0.1.0";' \
     'New-Item -ItemType Directory -Force $dst | Out-Null;' \
-    "Copy-Item -Force '${WIN_SOURCE}\\package.json','${WIN_SOURCE}\\extension.js' \$dst"
+    "Copy-Item -Force '${WIN_SOURCE}\\package.json','${WIN_SOURCE}\\extension.js' \$dst;" \
+    '$cache=Join-Path $env:LOCALAPPDATA "vscode-copilot-bridge\CachedProfilesData";' \
+    'if (Test-Path $cache) { Get-ChildItem -Path $cache -Recurse -Filter extensions.user.cache | Remove-Item -Force }'
   printf 'Installed Windows VS Code extension and WSL CLI: %s\n' "${BIN_DIR}/vscode-copilot"
 else
   EXT_DIR="${HOME}/.vscode/extensions/local.vscode-copilot-bridge-0.1.0"
   mkdir -p "${EXT_DIR}"
   cp "${ROOT}/extension/package.json" "${ROOT}/extension/extension.js" "${EXT_DIR}/"
+  rm -f "${HOME}"/.vscode-copilot-bridge/user-data/CachedProfilesData/*/extensions.user.cache
   printf 'Installed extension: %s\nInstalled CLI: %s\n' "${EXT_DIR}" "${BIN_DIR}/vscode-copilot"
 fi
 case ":${PATH}:" in
   *":${BIN_DIR}:"*) ;;
   *) printf 'Note: %s is not on PATH. Add it to your shell profile.\n' "${BIN_DIR}" ;;
 esac
+# VS Code は走査した拡張の manifest を user-data-dir へキャッシュする。ファイルを
+# 上書きしても拡張フォルダは増減しないのでキャッシュは当たったままで、**次の起動では
+# 古い package.json が使われる**。実測（2026-08-30）: 新しい contributes を足した直後の
+# 起動で `Tool "bridge_replaceString" was not contributed.` になり、拡張本体だけが
+# 新しい状態で起きた（キャッシュは 3 秒後に自動で捨てられるので、もう一度起こすと直る
+# ——それを待たせないために、ここで消す）。
+#
 # 既に bridge が動いていると、CLI はそれを使い回す（二重起動を避けるため）。入れ替えた
 # 拡張を読ませるには、その VS Code ウィンドウを一度閉じる必要がある。
 printf 'Note: bridge が起動中なら、その VS Code ウィンドウを閉じてください（新しい拡張は次の起動から）。\n'
