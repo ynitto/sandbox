@@ -8,7 +8,7 @@
 それ以外は同じ OS 上の VS Code を起こします。
 
 ```text
-vscode-copilot-chat (Python CLI)   ← 会話履歴はここが持つ
+vscode-copilot (Python CLI)   ← 会話履歴はここが持つ
   └─ HTTP + Bearer token / 127.0.0.1
       └─ VS Code Extension        ← 状態を持たない変換器
           └─ vscode.lm.selectChatModels({ vendor: "copilot" })
@@ -20,8 +20,8 @@ vscode-copilot-chat (Python CLI)   ← 会話履歴はここが持つ
 前提は VS Code、GitHub Copilot Chat、Python 3 です。
 
 ```bash
-bash tools/vscode-copilot-chat/install.sh
-vscode-copilot-chat "このリポジトリを要約して"
+bash tools/vscode-copilot/install.sh
+vscode-copilot "このリポジトリを要約して"
 ```
 
 **起動は要りません。** bridge へ繋がらなければ、カレントディレクトリを開く VS Code を
@@ -58,7 +58,7 @@ PATH にありません。CLI は `/Applications/Visual Studio Code.app` と
 別の場所・Insiders などを使う場合は `--code-bin` で指定してください。
 
 ```bash
-vscode-copilot-chat --code-bin '/path/to/code' "…"
+vscode-copilot --code-bin '/path/to/code' "…"
 ```
 
 `install.sh` が拡張を置くのは `~/.vscode/extensions` です。Insiders を使う場合は
@@ -70,8 +70,8 @@ vscode-copilot-chat --code-bin '/path/to/code' "…"
 です。使える状態になるまで待ってから終わります。
 
 ```bash
-vscode-copilot-chat --start-only --port 32191
-vscode-copilot-chat --port 32191 "次の質問"
+vscode-copilot --start-only --port 32191
+vscode-copilot --port 32191 "次の質問"
 ```
 
 `--start` は互換のために受け付けますが、自動起動が既定になったので要りません。
@@ -86,8 +86,8 @@ vscode-copilot-chat --port 32191 "次の質問"
 応答は届いた端から流れます。
 
 ```console
-$ vscode-copilot-chat
-vscode-copilot-chat 対話モード。/help でコマンド一覧、Ctrl-D で終了。
+$ vscode-copilot
+vscode-copilot 対話モード。/help でコマンド一覧、Ctrl-D で終了。
 copilot> このリポジトリを要約して
 （応答が逐次流れる）
 copilot> さっきの要約を3行にして
@@ -108,9 +108,9 @@ copilot> さっきの要約を3行にして
 **パイプ入力は従来どおり片道実行のまま**です（標準入力が端末でなければ対話に入りません）。
 
 ```bash
-vscode-copilot-chat < error.log
-printf 'このエラーを説明して' | vscode-copilot-chat
-vscode-copilot-chat --family gpt-4o --json "短く挨拶して"
+vscode-copilot < error.log
+printf 'このエラーを説明して' | vscode-copilot
+vscode-copilot --family gpt-4o --json "短く挨拶して"
 ```
 
 ## tmux から自動運転する
@@ -177,8 +177,8 @@ HTTP status 付きの JSON エラーで返ります。書き始めた後の失�
 そのまま返します。CLI からは `--tools` です。
 
 ```bash
-vscode-copilot-chat --tools          # 名前・タグ・説明の 1 行目
-vscode-copilot-chat --tools --json   # inputSchema を含む全文
+vscode-copilot --tools          # 名前・タグ・説明の 1 行目
+vscode-copilot --tools --json   # inputSchema を含む全文
 ```
 
 並ぶのは 3 種類です。
@@ -203,9 +203,9 @@ vscode-copilot-chat --tools --json   # inputSchema を含む全文
 VS Code が行います。ツールごとの知識をこの repo に置くと、環境差で必ず古くなります。
 
 ```bash
-vscode-copilot-chat --call runSubagent                        # inputSchema を見る
-vscode-copilot-chat --call runSubagent --input '{"prompt":"テストを直して"}'
-echo '{"prompt":"…"}' | vscode-copilot-chat --call runSubagent --input -
+vscode-copilot --call runSubagent                        # inputSchema を見る
+vscode-copilot --call runSubagent --input '{"prompt":"テストを直して"}'
+echo '{"prompt":"…"}' | vscode-copilot --call runSubagent --input -
 ```
 
 `--input` を省くとそのツールの説明と `inputSchema` を表示します。まずこれを見てから
@@ -226,8 +226,8 @@ echo '{"prompt":"…"}' | vscode-copilot-chat --call runSubagent --input -
 `runSubagent` がこれに当たることです。
 
 ```console
-$ vscode-copilot-chat --call runSubagent --input '{"prompt":"…","description":"…"}'
-vscode-copilot-chat: runSubagent は chat request の中からしか呼べません（…）
+$ vscode-copilot --call runSubagent --input '{"prompt":"…","description":"…"}'
+vscode-copilot: runSubagent は chat request の中からしか呼べません（…）
 ```
 
 `--tools` に並ぶことと呼べることは別です。
@@ -272,7 +272,7 @@ prompt-tsx で返すツールがあり、素朴に文字列部品だけを見る
 なります。木を辿ってテキストノードを出現順に連結し、`text` に載せます。
 
 ```console
-$ vscode-copilot-chat --call copilot_readFile --input '{"filePath":"…","startLine":1,"endLine":20}'
+$ vscode-copilot --call copilot_readFile --input '{"filePath":"…","startLine":1,"endLine":20}'
 # Agent Skills
 
 AIエージェント（GitHub Copilot / Claude Code）の能力を拡張するスキル集。
@@ -293,12 +293,12 @@ AIエージェント（GitHub Copilot / Claude Code）の能力を拡張する�
 `--agent` です。
 
 ```bash
-vscode-copilot-chat --agent "この repo の構造を調べて"
-vscode-copilot-chat --agent - < task.md
+vscode-copilot --agent "この repo の構造を調べて"
+vscode-copilot --agent - < task.md
 ```
 
 ```console
-$ vscode-copilot-chat --agent "テストの置き場を調べて"
+$ vscode-copilot --agent "テストの置き場を調べて"
   → copilot_findFiles {"query": "**/test_*.py"}
   → copilot_readFile {"filePath": "…"}
   （3 往復）
@@ -340,9 +340,9 @@ copilot_getChangedFiles copilot_getErrors
 | `web` | `copilot_fetchWebPage` |
 
 ```bash
-vscode-copilot-chat --agent-tools read,write --agent "この関数名を直して"
-vscode-copilot-chat --agent-tools read,run  --agent "落ちているテストを調べて"
-vscode-copilot-chat --agent-tools read,copilot_replaceString --agent "…"
+vscode-copilot --agent-tools read,write --agent "この関数名を直して"
+vscode-copilot --agent-tools read,run  --agent "落ちているテストを調べて"
+vscode-copilot --agent-tools read,copilot_replaceString --agent "…"
 ```
 
 **`--agent-tools` は既定に足すのではなく置き換えます。** 書き込みだけ渡すと、モデルは
@@ -381,6 +381,6 @@ git が綺麗な状態で試すのが安全です。
 ## テスト
 
 ```bash
-python3 -m pytest tools/vscode-copilot-chat/tests            # CLI
+python3 -m pytest tools/vscode-copilot/tests            # CLI
 python3 -m unittest discover -s test                          # tmux 待機判定（tools/agent-loop で実行）
 ```

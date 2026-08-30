@@ -541,7 +541,7 @@ def repl(endpoint: dict[str, object], session: Session, timeout: float, stream=s
         stream.write(text)
         stream.flush()
 
-    emit("vscode-copilot-chat 対話モード。/help でコマンド一覧、Ctrl-D で終了。\n")
+    emit("vscode-copilot 対話モード。/help でコマンド一覧、Ctrl-D で終了。\n")
     while True:
         try:
             line = input(PROMPT)
@@ -567,7 +567,7 @@ def repl(endpoint: dict[str, object], session: Session, timeout: float, stream=s
             # 接続が切れると拡張側が CancellationToken を落とすので、モデルも止まる。
             emit("\n中断しました。\n")
         except RuntimeError as exc:
-            emit(f"\nvscode-copilot-chat: {exc}\n")
+            emit(f"\nvscode-copilot: {exc}\n")
 
 
 def main() -> int:
@@ -673,7 +673,7 @@ def main() -> int:
             parser.error("prompt が空です")
         result = session.ask(endpoint, prompt, args.timeout, None)
     except RuntimeError as exc:
-        print(f"vscode-copilot-chat: {exc}", file=sys.stderr)
+        print(f"vscode-copilot: {exc}", file=sys.stderr)
         return 1
     print(json.dumps(result, ensure_ascii=False) if args.json else result["text"])
     return 0

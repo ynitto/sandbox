@@ -6,7 +6,7 @@ from unittest import mock
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
-SCRIPT = Path(__file__).resolve().parents[1] / "vscode-copilot-chat.py"
+SCRIPT = Path(__file__).resolve().parents[1] / "vscode-copilot.py"
 SPEC = importlib.util.spec_from_file_location("client", SCRIPT)
 client = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(client)
@@ -284,7 +284,7 @@ def _main_with(argv, isatty):
     stdin = mock.Mock()
     stdin.isatty.return_value = isatty
     stdin.read.return_value = "piped prompt"
-    with mock.patch.object(client.sys, "argv", ["vscode-copilot-chat", *argv]), \
+    with mock.patch.object(client.sys, "argv", ["vscode-copilot", *argv]), \
          mock.patch.object(client.sys, "stdin", stdin), \
          mock.patch.object(client, "ensure_bridge", return_value={"url": "u", "token": "t"}), \
          mock.patch.object(client, "repl", return_value=0) as repl, \
@@ -388,7 +388,7 @@ def test_format_tools_says_so_when_empty():
 def test_tools_flag_does_not_enter_the_repl_on_a_tty():
     stdin = mock.Mock()
     stdin.isatty.return_value = True
-    with mock.patch.object(client.sys, "argv", ["vscode-copilot-chat", "--tools"]), \
+    with mock.patch.object(client.sys, "argv", ["vscode-copilot", "--tools"]), \
          mock.patch.object(client.sys, "stdin", stdin), \
          mock.patch.object(client, "ensure_bridge", return_value={"url": "u", "token": "t"}), \
          mock.patch.object(client, "repl", return_value=0) as repl, \
@@ -445,7 +445,7 @@ def _main_call(argv, *, tools=None, call_result=None):
     stdin = mock.Mock()
     stdin.isatty.return_value = True
     stdin.read.return_value = '{"prompt": "stdin から"}'
-    with mock.patch.object(client.sys, "argv", ["vscode-copilot-chat", *argv]), \
+    with mock.patch.object(client.sys, "argv", ["vscode-copilot", *argv]), \
          mock.patch.object(client.sys, "stdin", stdin), \
          mock.patch.object(client, "ensure_bridge", return_value={"url": "u", "token": "t"}), \
          mock.patch.object(client, "repl", return_value=0) as repl, \
@@ -788,7 +788,7 @@ def _main_agent(argv, *, tools, result=None, stdin_text=""):
     stdin = mock.Mock()
     stdin.isatty.return_value = True
     stdin.read.return_value = stdin_text
-    with mock.patch.object(client.sys, "argv", ["vscode-copilot-chat", *argv]), \
+    with mock.patch.object(client.sys, "argv", ["vscode-copilot", *argv]), \
          mock.patch.object(client.sys, "stdin", stdin), \
          mock.patch.object(client, "ensure_bridge", return_value={"url": "u", "token": "t"}), \
          mock.patch.object(client, "repl", return_value=0) as repl, \
