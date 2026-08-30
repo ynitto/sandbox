@@ -20,6 +20,8 @@ import json
 import os
 import subprocess
 
+from agentcore import procgroup
+
 PLAN_VERSION = 1
 RECEIPT_VERSION = 1
 INTEGRATION_VERSION = 2
@@ -231,9 +233,11 @@ def run_plan_command(cmd: str, cwd: "str | None", timeout: float,
     def _once() -> "tuple[dict, int | None]":
         e: dict = {}
         try:
-            proc = subprocess.run(cmd, shell=True, cwd=cwd, timeout=timeout, env=run_env,
-                                  capture_output=True, text=True, encoding="utf-8",
-                                  errors="replace")
+            # 上限は group ごと（`procgroup`）。検証コマンドは test runner や
+            # コンテナを孫として起こすので、直接の子だけを殺すと孫が生き残る。
+            proc = procgroup.run(cmd, shell=True, cwd=cwd, timeout=timeout, env=run_env,
+                                 capture_output=True, text=True, encoding="utf-8",
+                                 errors="replace")
         except subprocess.TimeoutExpired:
             e.update(exit_code=124, note=f"タイムアウト（{int(timeout)}s）")
             return e, 124

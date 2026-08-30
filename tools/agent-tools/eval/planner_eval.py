@@ -20,7 +20,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import signal
 import subprocess
 import sys
 import tempfile
@@ -380,38 +379,20 @@ def call(case: dict) -> "tuple[int, str, str, float]":
     cmd = [sys.executable, str(PLAN_SCRIPT), case["request"], "--agent-cli", AGENT_CLI,
            "--model", MODEL, "--granularity", GRANULARITY, "--review", "false",
            "--probe-root", root]
-    started = time.time()
-    # プロセスグループごと起こす。plan.py は各フェーズでエージェント CLI（孫プロセス）を
-    # 起動するので、上限で plan.py だけを殺しても**孫がパイプを握ったまま**で
-    # communicate() が EOF を待ち続ける——上限が事実上効かなくなる（2026-08-29 に 70 分
-    # 走り続けた。時計は 900s のままだった）。上限で group を落として初めて上限が効く。
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                            cwd=root, env=_skill_env(), start_new_session=True)
+    started = time.monotonic()
+    # 打ち切りはプロセスグループごと（engine.run_process）。plan.py は各フェーズで
+    # エージェント CLI（孫プロセス）を起動するので、上限で plan.py だけを殺しても
+    # **孫がパイプを握ったまま**で communicate() が EOF を待ち続ける——上限が事実上
+    # 効かなくなる（2026-08-29 に 70 分走り続けた。時計は 900s のままだった）。
+    # 経過は monotonic で計る（壁時計はマシンのスリープを含む）。
     try:
-        out, err = proc.communicate(timeout=WALL_LIMIT)
-        rc = proc.returncode
-    except subprocess.TimeoutExpired:
-        _kill_group(proc)
-        try:
-            out, err = proc.communicate(timeout=30)
-        except subprocess.TimeoutExpired:   # 孫がまだ握っている（読まずに諦める）
-            out, err = "", ""
-        rc, err = -1, (err or "") + "TIMEOUT"
-    return rc, out, err, time.time() - started
-
-
-def _kill_group(proc: "subprocess.Popen") -> None:
-    """子とその子孫（エージェント CLI）をまとめて落とす。"""
-    for sig in (signal.SIGTERM, signal.SIGKILL):
-        try:
-            os.killpg(os.getpgid(proc.pid), sig)
-        except (ProcessLookupError, PermissionError):
-            return
-        try:
-            proc.wait(timeout=10)
-            return
-        except subprocess.TimeoutExpired:
-            continue
+        p = engine.run_process(cmd, capture_output=True, text=True, timeout=WALL_LIMIT,
+                               cwd=root, env=_skill_env())
+        rc, out, err = p.returncode, p.stdout, p.stderr
+    except subprocess.TimeoutExpired as exc:
+        rc, out = -1, (exc.stdout or "")
+        err = (exc.stderr or "") + "TIMEOUT"
+    return rc, out, err, time.monotonic() - started
 
 
 def judge(case: dict, rc: int, out: str, err: str, wall: float):

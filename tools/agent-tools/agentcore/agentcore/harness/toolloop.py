@@ -34,7 +34,7 @@ import threading
 import time
 from pathlib import Path
 
-from agentcore import limits, slashroute, stopreason
+from agentcore import limits, procgroup, slashroute, stopreason
 from agentcore.harness import _borrowed
 
 # `slashroute` は host の事情を持たない（stdlib の re だけ）ルート表なので、継ぎ目を
@@ -463,7 +463,9 @@ def _tl_run_watched(argv: "list[str]", *, cwd: str, env: dict, stdin: "str | Non
     """
     result = {"status": None, "stdout": "", "stderr": "", "error": ""}
     try:
-        proc = subprocess.Popen(
+        # プロセスグループごと起こす（`procgroup`）。打ち切りで孫まで落とすため——
+        # 直接の子だけを殺すと、その下の推論クライアントが生き残って GPU を占め続ける。
+        proc = procgroup.popen(
             argv, cwd=cwd, env=env,
             stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -545,15 +547,7 @@ def _tl_run_watched(argv: "list[str]", *, cwd: str, env: dict, stdin: "str | Non
                                f"{_TL_AGENT_WALL_CEILING_SEC / 3600:.0f} 時間）")
         else:
             continue
-        proc.terminate()
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                pass
+        procgroup.kill_group(proc)
         break
 
     for t in threads:
@@ -576,7 +570,7 @@ def _tl_exec_argv(command: str, args: "list[str]", *, cwd: str, timeout_sec: flo
     `idle=True` は `timeout_sec` を**無進捗の上限**として使う（エージェント CLI の
     呼び出し）。理由は `_tl_run_watched` に書いた。
     """
-    started = time.time()
+    started = time.monotonic()
     argv = [command, *args]
     _tl_append_log(log_file, {"event": "start", "argv": argv, "cwd": cwd,
                               "timeoutMs": int(timeout_sec * 1000),
@@ -596,7 +590,8 @@ def _tl_exec_argv(command: str, args: "list[str]", *, cwd: str, timeout_sec: flo
                                      idle_sec=max(1.0, float(timeout_sec)),
                                      beacon_path=beacon_path)
         else:
-            proc = subprocess.run(
+            # 上限は group ごと（`procgroup`）。`subprocess.run` は直接の子しか殺さない。
+            proc = procgroup.run(
                 argv, cwd=cwd, input=stdin, env=merged_env,
                 capture_output=True, text=True, errors="replace",
                 timeout=max(1.0, float(timeout_sec)))
@@ -628,7 +623,7 @@ def _tl_exec_argv(command: str, args: "list[str]", *, cwd: str, timeout_sec: flo
             pass
     _tl_append_log(log_file, {
         "event": "finish", "argv": argv, "cwd": cwd,
-        "durationMs": int((time.time() - started) * 1000),
+        "durationMs": int((time.monotonic() - started) * 1000),
         "status": result["status"], "error": result["error"],
         "stdout": result["stdout"], "stderr": result["stderr"],
     })

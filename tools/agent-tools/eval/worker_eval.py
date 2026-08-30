@@ -1126,8 +1126,13 @@ def _aider_argv_legacy(task: dict) -> "list[str]":
 
 
 def classify(rc: int, wall: float, out: str, err: str) -> str:
-    """失敗様式のラベル。台帳を後から数えられるようにする。"""
-    if wall >= WALL_LIMIT:
+    """失敗様式のラベル。台帳を後から数えられるようにする。
+
+    上限超過は**打ち切った事実**（rc と TIMEOUT マーカー）で決める。壁時計との比較は
+    マシンのスリープを含むので、受入が PASS した実行に timeout の札を貼っていた
+    （実測 2026-08-30: T3autosplit#2）。壁時計は人が読む所要時間としてだけ残す。
+    """
+    if rc == -1 and "TIMEOUT" in (err or ""):
         return "timeout"
     if rc != 0:
         return "cli_error"
@@ -1232,13 +1237,16 @@ def invoke(step: dict, wt: Path) -> "tuple[int, str, str, float, list]":
                                    read_files=step.get("read") or ())["argv"]
     else:
         argv = ollama_argv()
-    started = time.time()
+    # 上限は group ごと（engine.run_process）。孫（エージェント CLI・推論クライアント）を
+    # 残すと次の実行が順番待ちになる。経過は monotonic——壁時計はマシンのスリープを含む
+    # ので、上限内に終わった実行を timeout と記録していた（実測 2026-08-29〜30）。
+    started = time.monotonic()
     try:
-        p = subprocess.run(argv, input=prompt, cwd=wt,
-                           env={**os.environ, "OLLAMA_API_BASE": OLLAMA_API_BASE,
-                                **({"AGENT_COMMANDS_DIR": HARNESS_COMMANDS_DIR}
-                                   if HARNESS_COMMANDS_DIR else {})},
-                           capture_output=True, text=True, timeout=WALL_LIMIT)
+        p = engine.run_process(argv, input=prompt, cwd=wt,
+                               env={**os.environ, "OLLAMA_API_BASE": OLLAMA_API_BASE,
+                                    **({"AGENT_COMMANDS_DIR": HARNESS_COMMANDS_DIR}
+                                       if HARNESS_COMMANDS_DIR else {})},
+                               capture_output=True, text=True, timeout=WALL_LIMIT)
         rc, out, err = p.returncode, p.stdout, p.stderr
     except subprocess.TimeoutExpired as exc:
         def captured(value):
@@ -1247,7 +1255,7 @@ def invoke(step: dict, wt: Path) -> "tuple[int, str, str, float, list]":
             return value or ""
         rc, out, err = -1, captured(exc.stdout), captured(exc.stderr)
         err = err + ("\n" if err else "") + "TIMEOUT"
-    return rc, out, err, time.time() - started, argv
+    return rc, out, err, time.monotonic() - started, argv
 
 
 def snapshot_worktree(wt: Path) -> dict:

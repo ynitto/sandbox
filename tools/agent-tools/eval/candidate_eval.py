@@ -223,20 +223,26 @@ def build_prompt(case: dict) -> str:
 
 def call(prompt: str) -> "tuple[int, str, str, float]":
     argv = [a.replace("{model}", MODEL) for a in CMD]
-    started = time.time()
+    # 上限は group ごと（engine.run_process）。孫（エージェント CLI・推論クライアント）を
+    # 残すと次の実行が順番待ちになる。経過は monotonic——壁時計はマシンのスリープを含む
+    # ので、上限内に終わった実行を timeout と記録していた（実測 2026-08-29〜30）。
+    started = time.monotonic()
     try:
-        p = subprocess.run(argv, input=prompt, capture_output=True, text=True,
-                           timeout=WALL_LIMIT, env={**os.environ, **CMD_ENV})
+        p = engine.run_process(argv, input=prompt, capture_output=True, text=True,
+                               timeout=WALL_LIMIT, env={**os.environ, **CMD_ENV})
         rc, out, err = p.returncode, p.stdout, p.stderr
     except subprocess.TimeoutExpired:
         rc, out, err = -1, "", "TIMEOUT"
-    return rc, out, err, time.time() - started
+    return rc, out, err, time.monotonic() - started
 
 
 def judge(case: dict, rc: int, out: str, err: str, wall: float):
     data = None
-    if wall >= WALL_LIMIT:
-        mode, ok, note = "timeout", False, "上限超過"
+    # 上限超過は**打ち切った事実**（rc と TIMEOUT マーカー）で判定する。壁時計との比較は
+    # マシンのスリープを含むので、上限内に終わった実行を timeout と記録していた
+    # （実測 2026-08-30: 受入 PASS のまま mode=timeout）。
+    if rc == -1 and "TIMEOUT" in (err or ""):
+        mode, ok, note = "timeout", False, f"上限超過（{WALL_LIMIT:.0f}s で打ち切り）"
     elif rc != 0:
         mode, ok, note = "cli_error", False, (err.strip()[-120:] or f"rc={rc}")
     elif not out.strip():

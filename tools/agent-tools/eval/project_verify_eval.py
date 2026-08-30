@@ -97,20 +97,22 @@ def argv_for(arm: str, prompt: str) -> "tuple[list[str], str | None]":
 
 def call(arm: str, wd: pathlib.Path, prompt: str) -> "tuple[int, str, str, float]":
     argv, stdin = argv_for(arm, prompt)
-    started = time.time()
+    # 上限は group ごと（engine.run_process）。経過は monotonic、上限超過の判定は
+    # 打ち切りの事実で行う（理由は engine.run_process と worker_eval.classify）。
+    started = time.monotonic()
     try:
         # tools 腕が pytest を実際に叩けるよう、リポジトリの venv を PATH の先頭へ（無ければそのまま）。
         path = os.environ.get("PATH", "")
         if VENV_PY.exists():
             path = f"{VENV_PY.parent}{os.pathsep}{path}"
-        p = subprocess.run(argv, input=stdin, capture_output=True, text=True, cwd=wd,
-                           timeout=WALL_LIMIT,
-                           env={**os.environ, "PATH": path, "AGENT_OLLAMA_THINK": "off",
-                                "NO_COLOR": "1"})
+        p = engine.run_process(argv, input=stdin, capture_output=True, text=True, cwd=wd,
+                               timeout=WALL_LIMIT,
+                               env={**os.environ, "PATH": path, "AGENT_OLLAMA_THINK": "off",
+                                    "NO_COLOR": "1"})
         rc, out, err = p.returncode, p.stdout, p.stderr
     except subprocess.TimeoutExpired:
         rc, out, err = -1, "", "TIMEOUT"
-    return rc, out, err, time.time() - started
+    return rc, out, err, time.monotonic() - started
 
 
 def judge(arm: str, body: str) -> "tuple[bool, str, dict]":
@@ -144,8 +146,9 @@ def run_one(i: int) -> dict:
     prompt = build_prompt(wd)
     rc, out, err, wall = call(ARM, wd, prompt)
     data: dict = {}
-    if wall >= WALL_LIMIT:
-        mode, ok, note = "timeout", False, "上限超過"
+    # 上限超過は打ち切った事実で判定する（壁時計はマシンのスリープを含む）。
+    if rc == -1 and "TIMEOUT" in (err or ""):
+        mode, ok, note = "timeout", False, f"上限超過（{WALL_LIMIT:.0f}s で打ち切り）"
     elif rc != 0:
         mode, ok, note = "cli_error", False, (err.strip()[-160:] or f"rc={rc}")
     elif not out.strip():

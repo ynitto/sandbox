@@ -1390,6 +1390,14 @@ planner スキルの正規化で **`filter` の `tie_break` だけを落とし�
 `kind` が map / reduce のときしか見ていなかった——e4b は同じ形を `work` で書いて素通りしていた。
 engine（`plan_strategy_user`）は kind に関係なく拒むので、ゲートもそちらへ揃えた。
 
+**ゲートを直しても PL3 は動かなかった（2026-08-30 再測・n=3）。** 3 本とも `split → map →
+reduce` を静的に書き、3 本とも**ゲートは発火している**（同じグラフを `gate_tasks` に掛けると
+`t2: split の後ろに静的 map ノードを置かない` が出る）。つまり残っているのは検出ではなく
+**作り直し**で、e4b は不合格理由を渡されても同じ形を書き直す。所要は 111 / 133 / 137 秒。
+kind 非依存にした修正が効くのは `work` / `generate` で書かれた別の外し方に対してで、
+この 3 本はどれも map / reduce だった（修正前のゲートでも捕まる形）。台帳
+`results/archive/ledger-2026-08-30-planner-pl3-gate-remeasure-gemma4-e4b.jsonl`。
+
 ハーネス側の欠陥も 1 つ直した。`planner_eval` の壁時計上限は `subprocess.run(timeout=)` に
 任せていたが、plan.py が起動する**孫プロセス（エージェント CLI）がパイプを握ったまま**なので
 上限で親を殺しても `communicate()` が EOF を待ち続ける（実際に 70 分走り続けた）。

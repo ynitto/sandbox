@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[3]
@@ -26,7 +27,7 @@ def _load():
     import sys
     sys.path.insert(0, str(REPO / "tools/agent-flow"))
     sys.path.insert(0, str(REPO / "tools/agent-tools/agentcore"))
-    flow = methods = None
+    flow = methods = procgroup = None
     try:
         import agent_flow as flow  # noqa: PLC0415
     except Exception as e:  # noqa: BLE001 — エンジンが読めない木でも測定は続ける
@@ -35,10 +36,14 @@ def _load():
         from agentcore import methods  # noqa: PLC0415
     except Exception as e:  # noqa: BLE001
         _MISSING.append(f"agentcore.methods ({e})")
-    return flow, methods
+    try:
+        from agentcore import procgroup  # noqa: PLC0415
+    except Exception as e:  # noqa: BLE001
+        _MISSING.append(f"agentcore.procgroup ({e})")
+    return flow, methods, procgroup
 
 
-_FLOW, _METHODS = _load()
+_FLOW, _METHODS, _PROCGROUP = _load()
 
 
 def _need(obj, name: str, what: str):
@@ -52,6 +57,26 @@ def _need(obj, name: str, what: str):
 def missing() -> "list[str]":
     """この木で使えなかったエンジン機能。起動行と台帳へ出すためのもの。"""
     return list(_MISSING)
+
+
+# ---------------------------------------------------------------- 子の起こし方
+
+
+def run_process(argv, **kwargs):
+    """子を**プロセスグループごと**起こし、上限では group ごと落とす。
+
+    `subprocess.run(timeout=…)` は直接の子しか殺さない。ハーネスが起こす agent-herd は
+    その下でエージェント CLI（さらにその下で推論クライアント）を起こすので、上限で親だけ
+    殺しても孫がパイプを握ったまま `communicate()` が EOF を待つ——**上限が効かない**
+    （実測 2026-08-29: 上限 900 秒の実行が 70 分続き、殺したはずの推論が朝まで GPU を
+    占めた）。実装は本番（`agentcore.procgroup`）を呼ぶ——写さない。
+
+    無い木では素の `subprocess.run` へ倒す（孫は残る。倒したことは `missing()` に出る）。
+    """
+    fn = _need(_PROCGROUP, "run", "procgroup.run（プロセスグループごとの打ち切り）")
+    if fn is None:
+        return subprocess.run(argv, **kwargs)
+    return fn(argv, **kwargs)
 
 
 # ---------------------------------------------------------------- 応答の解釈

@@ -393,14 +393,17 @@ def call(prompt: str, cmd: "list[str] | None" = None,
     if THINK_OVERRIDE and "--think" in raw:
         raw[raw.index("--think") + 1] = THINK_OVERRIDE
     argv = [a.replace("{model}", MODEL) for a in raw if a not in DROP_ARGS]
-    started = time.time()
+    # 上限は group ごと（engine.run_process）。孫（エージェント CLI・推論クライアント）を
+    # 残すと次の実行が順番待ちになる。経過は monotonic——壁時計はマシンのスリープを含む
+    # ので、上限内に終わった実行を timeout と記録していた（実測 2026-08-29〜30）。
+    started = time.monotonic()
     try:
-        p = subprocess.run(argv, input=prompt, capture_output=True, text=True,
-                           timeout=WALL_LIMIT, env={**os.environ, **(command_env or {})})
+        p = engine.run_process(argv, input=prompt, capture_output=True, text=True,
+                               timeout=WALL_LIMIT, env={**os.environ, **(command_env or {})})
         rc, out, err = p.returncode, p.stdout, p.stderr
     except subprocess.TimeoutExpired:
         rc, out, err = -1, "", "TIMEOUT"
-    return rc, out, err, time.time() - started
+    return rc, out, err, time.monotonic() - started
 
 
 def run_one(cid: str, i: int) -> dict:
@@ -416,8 +419,11 @@ def run_one(cid: str, i: int) -> dict:
     repaired = False
 
     data = None
-    if wall >= WALL_LIMIT:
-        mode, ok, note = "timeout", False, "上限超過"
+    # 上限超過は**打ち切った事実**（rc と TIMEOUT マーカー）で判定する。壁時計との比較は
+    # マシンのスリープを含むので、上限内に終わった実行を timeout と記録していた
+    # （実測 2026-08-30: 受入 PASS のまま mode=timeout）。
+    if rc == -1 and "TIMEOUT" in (err or ""):
+        mode, ok, note = "timeout", False, f"上限超過（{WALL_LIMIT:.0f}s で打ち切り）"
     elif rc != 0:
         mode, ok, note = "cli_error", False, (err.strip()[-120:] or f"rc={rc}")
     elif not out.strip():
