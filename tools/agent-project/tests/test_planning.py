@@ -365,7 +365,8 @@ class PlanAfterTests(unittest.TestCase):
                          '{"title": "API を作る", "verify": "test -f api.py",'
                          ' "after": ["モデルを作る"]}',
                          '{"done": true}'])
-            with mock.patch.object(km, "_run_agent_cli", lambda *a, **k: next(outs)):
+            with mock.patch.object(km, "_plan_object_only", lambda cfg: True), \
+                    mock.patch.object(km, "_run_agent_cli", lambda *a, **k: next(outs)):
                 specs = km.plan_via_agent(cfg, charter)
             self.assertEqual(specs[1]["after_titles"], ["モデルを作る"])
             self.assertNotIn("after_titles", specs[0].get("after_titles") or [])
@@ -420,6 +421,33 @@ class RepoMapTests(unittest.TestCase):
         cdir.mkdir(parents=True, exist_ok=True)
         (cdir / f"{name}.md").write_text(
             f"<!-- head: {sha} -->\n# リポジトリ理解: {name}\n\n{body}\n", encoding="utf-8")
+
+    def test_strip_preamble_drops_only_a_long_lead_before_structure(self):
+        """前置き落としは長い作業報告だけを落とす（要約を痩せさせない）。
+
+        - 概要 1〜2 文（短い前置き）は要約の書き出しなので残す
+        - 散文だけの要約は正当な形なので**全捨てしない**（読めているのに「生成なし」へ
+          倒すのが 2026-08-31 の落とし穴だった）
+        - 構造化本文の手前の長い散文（作業報告）だけを落とす
+        """
+        lead = "このリポジトリは agent ファミリーのモノレポである。テストは unittest で回す。"
+        body = "## 構造\n- tools/agent-flow: フロー実行\n\n## テスト\npython -m unittest\n"
+        kept, dropped = km._repo_map_strip_preamble(lead + "\n\n" + body)
+        self.assertEqual(dropped, 0, "短い概要段落は前置きではなく要約の一部")
+        self.assertTrue(kept.startswith("このリポジトリは"))
+
+        prose = "主要ディレクトリは tools/ 配下にあり、ビルドは不要。命名は日本語コメント中心。"
+        kept, dropped = km._repo_map_strip_preamble(prose)
+        self.assertEqual((kept, dropped), (prose, 0), "散文だけの要約は全捨てしない")
+
+        memo = ("調査を開始する。まず ls でディレクトリを確認した。次に README を読み、"
+                "テストの実行方法を探した。以下の手順で、収集した情報を整理し、"
+                "最終的な要約を組み立てる方針とする。ここまでの作業ログを記す。"
+                "続いて各モジュールの責務を確認した。") * 2
+        kept, dropped = km._repo_map_strip_preamble(memo + "\n\n" + body)
+        self.assertGreater(dropped, 0, "長い作業報告は落とす")
+        self.assertTrue(kept.startswith("## 構造"))
+        self.assertNotIn("作業ログ", kept)
 
     def test_repo_map_context_reads_and_filters(self):
         with tempfile.TemporaryDirectory() as d:

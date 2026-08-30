@@ -34,17 +34,30 @@ def _repo_head_sha(url: str, branch: str = "") -> "str | None":
 # （＝言わせるのは済んでいる）ので、残りは機械が落とす。
 _REPO_MAP_BODY_RE = re.compile(r"(?m)^[ \t]{0,3}(?:#{1,6}[ \t]+\S|[-*+][ \t]+\S|\d+\.[ \t]+\S)")
 
+# 落とさずに残す前置きの上限（字）。概要 1〜2 文（「このリポジトリは…のモノレポである」）は
+# 正当な要約の書き出しで、落とすと planner から全体像が消える——自由文の器（クラウド CLI）は
+# この形で書き出すことが多い。実測（2026-08-31 台帳）の作業報告はこれより長い複数行で、
+# この上限では残らない。
+_REPO_MAP_LEAD_MAX = 200
+
 
 def _repo_map_strip_preamble(body: str) -> "tuple[str, int]":
-    """要約本文の手前（前置き）を落とし、(本文, 落とした字数) を返す。
+    """要約本文の手前（前置き＝作業報告）を落とし、(本文, 落とした字数) を返す。
 
-    本文の始まりが 1 つも無い出力は**要約になっていない**（調査の作業報告だけ）ので空にする
-    ——保存しなければ従来の「生成なし」と同じ扱いになり、作業メモが planner へ渡らない。
+    落とすのは**構造化された本文（見出し・箇条書き）の手前に長い散文があるとき**だけ:
+
+    - 前置きが短い（`_REPO_MAP_LEAD_MAX` 以内）なら残す——概要段落は要約の一部で、
+      作業報告ではない
+    - 本文の始まりが 1 つも無い出力は**そのまま残す**——散文だけの要約は正当な形
+      （構造は義務ではない）。全捨てすると、読めているのに「生成なし」へ倒れる。
+      実測の「作業報告だけ」の失敗（2026-08-31: RM1 の失点）は本文ゼロ・`no_command` で、
+      ここへは来ない
     """
-    m = _REPO_MAP_BODY_RE.search(body or "")
-    if not m:
-        return "", len(body or "")
-    return body[m.start():].strip(), m.start()
+    text = (body or "").strip()
+    m = _REPO_MAP_BODY_RE.search(text)
+    if not m or m.start() <= _REPO_MAP_LEAD_MAX:
+        return text, 0
+    return text[m.start():].strip(), m.start()
 
 
 def _repo_map_generate(cfg: "Config", spec: dict) -> str:
@@ -63,8 +76,7 @@ def _repo_map_generate(cfg: "Config", spec: dict) -> str:
         if dropped:
             append_journal(cfg.journal,
                            f"repo-map: 前置きを {dropped} 字落とした"
-                           f"（{spec.get('name') or spec.get('url')}"
-                           + ("・本文が残らなかったので生成なし" if not body else "") + "）")
+                           f"（{spec.get('name') or spec.get('url')}）")
         return body[:4000]
     except Exception:  # noqa: BLE001  clone 失敗・エージェント不在・タイムアウトは生成なし
         return ""
@@ -144,9 +156,17 @@ PLAN_ONE_AT_A_TIME = (
     "\n\n出力は **JSON オブジェクト 1 件のみ**（タスク 1 件）。配列にしないこと。"
     " これ以上足すべきタスクが無ければ {\"done\": true} だけを返すこと。オブジェクトは")
 
+# 配列で一括に受ける契約（自由文の器＝クラウド CLI ほか向け）。1 件ずつはオブジェクトしか
+# 返せない器（`json_object_only`）への手当てであって、配列を返せる器でまで払うと
+# タスク K 件に K+1 回の呼び出し（毎回 charter 全文）を課すことになる。器で分ける
+# （`_plan_object_only`）——一般則「`--format json` の面に配列契約を書かない」の対偶で、
+# 配列を返せる面から配列契約を取り上げる理由も無い。
+PLAN_ARRAY = "\n\n出力は JSON 配列のみ。各要素は"
+
 
 def _plan_decompose_prompt(charter: "Charter", granularity: "str | None" = None,
-                           context: str = "") -> str:
+                           context: str = "", contract: str = "single") -> str:
+    one = contract != "array"
     return (
         "あなたはプロジェクトを実行可能なタスクに分解するプランナーです。以下の憲章を、"
         "それぞれ独立に検証できるタスクへ分解してください。"
@@ -155,7 +175,7 @@ def _plan_decompose_prompt(charter: "Charter", granularity: "str | None" = None,
         + "\n\n" + _charter_owns_note(charter)
         + (f"\n\n参考文脈（プロジェクトルール・リポジトリ理解。分解の粒度と verify の精度に使う）:\n{context}"
            if context else "")
-        + PLAN_ONE_AT_A_TIME
+        + (PLAN_ONE_AT_A_TIME if one else PLAN_ARRAY)
         + " {\"title\": str, …} で、"
         " 各タスクには次を**必ず**付けること（人が実行前にレビューする材料であり、欠けると"
         "そのタスクは draft に落ちて実行されない）:"
@@ -167,8 +187,9 @@ def _plan_decompose_prompt(charter: "Charter", granularity: "str | None" = None,
         "検証エージェントが基準ごとに実行して証跡付きで判定し、全 pass のみが完了の根拠になる。"
         "シェルコマンドを 1 行合成して書かないこと——確かめ方は検証エージェントが決める）**、"
         " **\"size\": \"S\"|\"M\"|\"L\"（規模感）**。"
-        " タスク間に順序依存があれば **\"after\": [\"先行タスクの title\"]**（**既に出したタスク**の"
-        "title・任意）を付けること（依存グラフとして実行順と並列性の判断に使われる。循環は不可）。"
+        " タスク間に順序依存があれば **\"after\": [\"先行タスクの title\"]**（"
+        + ("**既に出したタスク**の title・任意" if one else "配列内の先行タスク・任意")
+        + "）を付けること（依存グラフとして実行順と並列性の判断に使われる。循環は不可）。"
         " 各タスクには **\"workspace\": \"name\"（唯一の書込先・必須）** を付ける。workspace は"
         " **受入基準が触るパスの owns を持つリポジトリ**にすること。読むだけの他リポジトリは"
         " \"refs\": [\"name\", ...] に入れる（書込先にはしない）。"
@@ -301,13 +322,17 @@ def _backlog_existing_summary(cfg: "Config", charter_tag: "str | None") -> "list
 
 def build_planner_input(cfg: "Config", charter: "Charter", charter_tag: "str | None" = None,
                         notes: str = "", retry: str = "",
-                        produced: "list[str] | None" = None) -> dict:
+                        produced: "list[str] | None" = None,
+                        contract: str = "single") -> dict:
     """backlog-planner スキルへ渡す入力（契約は .github/skills/backlog-planner/SKILL.md）。
 
     `produced` は**この分解で既に出したタスクの題**。1 件ずつ出させる契約
     （`PLAN_ONE_AT_A_TIME`）で、重複を避けさせ `after` の参照先を与えるために渡す。
+    `contract` は出力契約の選択（"single" = 1 件ずつ / "array" = 配列で一括）。
+    器で決まる（`_plan_object_only`）——スキル側は写しを持たず、この値に従う。
     """
     return {
+        "contract": ("array" if contract == "array" else "single"),
         "produced": list(produced or []),
         "charter": build_charter_request(charter),
         "owns": _charter_owns_note(charter),
@@ -343,7 +368,8 @@ def build_planner_prompt(cfg: "Config", spec: dict, charter: "Charter") -> str:
         except (OSError, subprocess.SubprocessError) as e:
             print(f">>> 警告: {skill} スキルを実行できませんでした（組み込みへ）: {e}", file=sys.stderr)
     ctx = "\n\n".join(x for x in (spec.get("rules") or "", spec.get("repo_context") or "") if x)
-    return _plan_decompose_prompt(charter, spec.get("granularity"), context=ctx) \
+    return _plan_decompose_prompt(charter, spec.get("granularity"), context=ctx,
+                                  contract=str(spec.get("contract") or "single")) \
         + _builtin_planner_extras(spec)
 
 
@@ -468,6 +494,48 @@ def _items_from_output(out: str) -> "list[dict]":
     return [one] if one else []
 
 
+def _plan_object_only(cfg: "Config") -> bool:
+    """本番の `plan` が **JSON オブジェクト 1 件しか返せない器**で走るか。
+
+    定義に問い合わせる（argv の綴りでは判定しない）——器の性質は agents/*.json の
+    `json_object_only`（ollama の json profile が true）。自由文の器（クラウド CLI ほか）は
+    False で、配列契約 1 回で受ける——1 件ずつはオブジェクト限定の器への手当てであり、
+    配列を返せる器でまで払うとタスク K 件に K+1 回（毎回 charter 全文）を課す。
+    定義が引けないときは 1 件ずつへ倒す（どちらの器でも動く側）。
+    """
+    try:
+        cli, _ = _agent_for("plan")
+        return bool(load_agent_plugin(cli).get("json_object_only"))
+    except Exception:  # noqa: BLE001  定義欠落・解決不能は起動時に別途表面化する
+        return True
+
+
+def _plan_array_specs(cfg: "Config", charter: "Charter", charter_tag: "str | None",
+                      notes: str, strict: bool) -> "list[dict]":
+    """配列契約 1 回で受ける（自由文の器向け・従来の受け方）。
+    必須セクションの欠落は**機械で見て 1 回だけ再要求**する。失敗は空（plan を諦め人へ）。"""
+    retry = ""
+    specs: "list[dict]" = []
+    for attempt in range(2):
+        pin = build_planner_input(cfg, charter, charter_tag, notes=notes, retry=retry,
+                                  contract="array")
+        try:
+            out = _run_agent_cli(build_planner_prompt(cfg, pin, charter),
+                                 cfg.model, purpose="plan")
+        except (OSError, RuntimeError, subprocess.SubprocessError) as e:
+            append_journal(cfg.journal, f"project plan: 分解に失敗（{e}）")
+            return []
+        specs = [_plan_spec_from_item(charter, i) for i in (_extract_json_array(out) or [])
+                 if isinstance(i, dict) and str(i.get("title", "")).strip()]
+        bad = [(sp["title"], m) for sp in specs if (m := _validate_backlog_spec(sp))]
+        if not bad or not strict or attempt == 1:
+            return specs
+        retry = _plan_retry_note(bad)
+        append_journal(cfg.journal,
+                       f"project plan: 必須セクション欠落 {len(bad)} 件 → 1 回だけ再要求する")
+    return specs
+
+
 def _plan_next_spec(cfg: "Config", charter: "Charter", charter_tag: "str | None",
                     notes: str, produced: "list[str]", strict: bool) -> "dict | None":
     """次の 1 件をプランナーから受け取る。欠落は**機械で見て 1 回だけ再要求**する。
@@ -501,10 +569,11 @@ def plan_via_agent(cfg: "Config", charter: "Charter", charter_tag: "str | None" 
     """charter を backlog-planner スキルに分解させ、タスク spec 群を得る。
     知能は委譲し、取り込み（enqueue）は本体が決定的に行う。失敗時は空（plan を諦め人へ）。
 
-    **1 件ずつ出させて機械が集める**（`split` → `map` と同じ形）。必須セクション 6 つ ×
-    複数タスクを 1 回の JSON 配列で出させていた頃は、`--format json` で走る本番の起動形と
-    衝突して 5 回中 4 回がタスク 0 件だった（2026-08-31 の実測）。件数の制御はここが持ち、
-    プランナーには「次の 1 件だけ」を訊く。
+    **出力契約は器で選ぶ**（`_plan_object_only`）。オブジェクトしか返せない器
+    （`--format json`＝ollama-json 系）では 1 件ずつ出させて機械が集める（`split` → `map` と
+    同じ形）——配列契約のままだと起動形と衝突して 5 回中 4 回がタスク 0 件だった
+    （2026-08-31 の実測）。配列を返せる器（クラウド CLI ほか）では従来どおり配列 1 回で
+    受ける——1 件ずつを課すとタスク K 件に K+1 回の呼び出し（毎回 charter 全文）を払う。
 
     必須セクション（why / 作業概要 / 受入基準 / 規模感）の欠落は**機械で見て 1 回だけ再要求**し、
     それでも欠けるタスクは**捨てずに、人の目に入る場所へ置く**。捨てると人には「プランナーが
@@ -517,19 +586,22 @@ def plan_via_agent(cfg: "Config", charter: "Charter", charter_tag: "str | None" 
     どちらでも**未記入のまま実行されることはない**。
     """
     strict = str(getattr(cfg, "plan_sections", "required") or "required") == "required"
-    cap = _PLAN_MAX_ITEMS.get(str(getattr(cfg, "granularity", "") or "coarse").lower(), 10)
     specs: "list[dict]" = []
-    produced: "list[str]" = []
-    for _ in range(cap):
-        sp = _plan_next_spec(cfg, charter, charter_tag, notes, produced, strict)
-        if sp is None:
-            break
-        if sp["title"] in produced:       # 同じ題を繰り返し始めたら進んでいない＝打ち切る
-            append_journal(cfg.journal,
-                           f"project plan: 「{sp['title']}」を繰り返したので分解を打ち切る")
-            break
-        specs.append(sp)
-        produced.append(sp["title"])
+    if not _plan_object_only(cfg):
+        specs = _plan_array_specs(cfg, charter, charter_tag, notes, strict)
+    else:
+        cap = _PLAN_MAX_ITEMS.get(str(getattr(cfg, "granularity", "") or "coarse").lower(), 10)
+        produced: "list[str]" = []
+        for _ in range(cap):
+            sp = _plan_next_spec(cfg, charter, charter_tag, notes, produced, strict)
+            if sp is None:
+                break
+            if sp["title"] in produced:   # 同じ題を繰り返し始めたら進んでいない＝打ち切る
+                append_journal(cfg.journal,
+                               f"project plan: 「{sp['title']}」を繰り返したので分解を打ち切る")
+                break
+            specs.append(sp)
+            produced.append(sp["title"])
     for sp in specs:                       # 2 回目も欠けたものは捨てずに人の目へ回す
         missing = _validate_backlog_spec(sp)
         if not (missing and strict):

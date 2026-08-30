@@ -113,12 +113,27 @@ def _scan(text: str):
     return payload or control
 
 
+def _prose_only(text: str) -> str:
+    """フェンスと行内引用を潰した地の文。
+
+    地の文へ**引用の器なしに**置かれた JSON は、フェンスより主張が強い——フェンスは
+    例示・引用の器でもあり、自由文の器（クラウド CLI）は「本文に成果の JSON・後ろに
+    『参考までに例:』のフェンス」という形で書く（2026-08-31 に実挙動で確認）。逆に
+    道具ループの途中経過はフェンスか行内引用に入るので、ここを潰してから走査すれば
+    実測で拾えていた形（フェンスの最終成果・行内引用の成果）を隠さない。
+    """
+    return _INLINE.sub(" ", _FENCE.sub(" ", text or ""))
+
+
 def extract_json(text: str, *, what: str = "エージェント出力"):
     """LLM 出力から JSON を寛容に取り出す。
 
-    順に試す: (1) 素の `json.loads`、(2) ``` フェンスの中身（**最後に現れる**成功を採る
-    ——道具ループでは途中経過が先に、最終成果が最後に来る）、(3) 最初の `{`／`[` から
-    最後の `}`／`]` までの切り出し（フェンスが無い出力のための従来の寛容さ）。
+    順に試す: (1) 素の `json.loads`、(2) **地の文**（フェンス・行内引用を除いた本文）の
+    走査——引用の器なしに置かれた JSON は成果の主張であり、後続のフェンス（例示・引用で
+    ありうる）に隠させない、(3) ``` フェンスの中身（**最後に現れる**成功を採る——道具
+    ループでは途中経過が先に、最終成果が最後に来る）、(4) 行内のバッククォート引用、
+    (5) 本文全体の走査、(6) 最初の `{`／`[` から最後の `}`／`]` までの切り出し
+    （従来の寛容さ）。
 
     `what` は失敗時のメッセージにだけ使う。呼び出し側が「何の出力か」を言えると、
     ログを読む人が prompt を特定できる（agent-flow は "planner 出力"、agent-amigos は
@@ -128,8 +143,8 @@ def extract_json(text: str, *, what: str = "エージェント出力"):
         return json.loads(text)
     except json.JSONDecodeError:
         pass
-    picked = (_pick(_FENCE.findall(text or "")) or _pick(_INLINE.findall(text or ""))
-              or _scan(text or ""))
+    picked = (_scan(_prose_only(text)) or _pick(_FENCE.findall(text or ""))
+              or _pick(_INLINE.findall(text or "")) or _scan(text or ""))
     if picked is not None:
         return picked[0]
     for opn, cls in (("{", "}"), ("[", "]")):
