@@ -173,21 +173,29 @@ def _tui_repl(forwarded, managed):
     ハーネス回送）で、1 入力 = aider 1 回（`--message`）。会話は積まない——継続が
     要る材料は毎回プロンプトへ書く（文脈を太らせない。F4）。
     """
-    from agentcore import ollama_tui, slashroute
+    from agentcore import ollama_skills, ollama_tui, slashroute
     base_model = _option_value(forwarded, "--model") or ""
     stripped = _strip_option(forwarded, "--model")
 
     def runner(prompt, *, model, tools, think, renderer):
         del tools, think, renderer      # aider は single-shot の編集役（toolset を持たない）
-        parsed = slashroute.parse_line(prompt, casefold=True)
-        command = slashroute.lookup(parsed[0]) if parsed else None
-        if parsed and command is None:
-            # 未知の /x を本文として aider へ流さない（設計 §3.2: 明示エラーで止まる）。
-            raise RuntimeError(f"未知のコマンドです: /{parsed[0]}（/help で一覧）")
-        if command is not None and command.kind == slashroute.KIND_SHAPE:
+        # 先頭ブロックの読みはルータ 1 実装に任せる。**表だけを引くと（lookup）、宣言と
+        # スキルが「未知」に落ちる**——TUI は /skills で一覧を出し Tab で補完し /help で
+        # 「展開されます」と言うので、advertised と working がずれる。
+        launch = slashroute.plan(prompt, skill_exists=ollama_skills.skill_exists)
+        if launch.harness:
             raise RuntimeError(
-                f"/{command.name} は aider バックエンドでは効きません"
+                f"/{launch.commands[0][0]} は aider バックエンドでは効きません"
                 "（編集は /edit でハーネスへ回るか、agent-ollama の TUI を使ってください）")
+        # aider が汲めるのはスキルと本文だけ。起動形の知識（toolset・出力契約・用途専用の
+        # モデル）は持てない。**`tools` は False も意味を持つ**（/ask＝道具なし）ので
+        # `is not None` で見る——真偽で見ると /ask が黙って素通りし、指定が消えたまま走る。
+        if (launch.tools is not None or launch.toolset or launch.output
+                or launch.model or launch.system):
+            raise RuntimeError(
+                f"/{launch.commands[0][0]} は aider バックエンドでは効きません"
+                "（起動形を持てません。agent-ollama の TUI を使ってください）")
+        prompt, _loaded = ollama_skills.expand(prompt, plan=launch)
         if model != base_model and (managed["policy"] is not None
                                     or managed["num_ctx"] is not None
                                     or managed["num_predict"] is not None):
@@ -199,8 +207,11 @@ def _tui_repl(forwarded, managed):
         return _run_once([*stripped, "--model", model] if model else list(stripped), prompt)
 
     try:
+        # event_log=False: このバックエンドは JSONL を書かない（--analytics-log は
+        # @agent-usage を読んだ直後に消す）。宣言しないと /ctx と /status が別の
+        # ollama 実行の数字を今のセッションのものとして出す。
         return ollama_tui.repl(runner, model=base_model, tools=False, think=None,
-                               label="agent-aider")
+                               label="agent-aider", event_log=False)
     except KeyboardInterrupt:
         return 130
 

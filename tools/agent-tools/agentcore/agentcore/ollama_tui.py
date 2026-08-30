@@ -461,7 +461,7 @@ class LineReader:
 
 
 def repl(runner, *, model: str, tools: bool, think: "bool | None" = None,
-         out=None, in_=None, label: str = "agent-ollama") -> int:
+         out=None, in_=None, label: str = "agent-ollama", event_log: bool = True) -> int:
     """共通 TUI の対話ループ（`agent-ollama --tui` / `agent-aider --tui`）。
 
     行指向に徹する（1 行読んで 1 回実行）。tmux `send-keys` は「文字列 + Enter」を
@@ -473,6 +473,11 @@ def repl(runner, *, model: str, tools: bool, think: "bool | None" = None,
     （実体は adapter 側。ここは描画と入力だけを持つ）。バックエンドが違っても
     前面の規約（`> ` プロンプト＝ready_pattern・turn hook）は同じになる
     （設計 2026-08-27 §7.1: 判定がバックエンドによらず 1 つ）。
+
+    `event_log` は「このバックエンドが観測ログ（JSONL）を書くか」。書かないと宣言した
+    面では `/ctx` `/status` を断る——既定で読みにいく `ollama_events.read_status()` は
+    パス無しだと `~/.agents/logs/ollama` の最新を返すので、黙って通すと**無関係な別の
+    実行の数字が今のセッションのものとして出る**。
     """
     out = out or sys.stdout
     in_ = in_ or sys.stdin
@@ -482,7 +487,8 @@ def repl(runner, *, model: str, tools: bool, think: "bool | None" = None,
     print("'/help' でローカルコマンド一覧"
           + ("、'/keys' でキー操作。" if reader.enabled else "。"), file=out)
     try:
-        return _loop(reader, runner, model=model, tools=tools, think=think, out=out)
+        return _loop(reader, runner, model=model, tools=tools, think=think, out=out,
+                     event_log=event_log)
     finally:
         reader.close()
 
@@ -533,7 +539,20 @@ def _run_harness_here(text: str, out) -> int:
         return 1
 
 
-def _loop(reader, runner, *, model: str, tools: bool, think: "bool | None", out) -> int:
+def _no_event_log(name: str) -> str:
+    """観測ログを書かないバックエンドでの `/ctx` `/status` の返事。
+
+    **黙って ollama のログを読んではいけない。** `ollama_events.read_status()` は
+    引数なしだと `~/.agents/logs/ollama` の最新を返すので、aider の TUI で叩くと
+    「無関係な別の実行の数字」が、あたかも今のセッションのもののように出る。
+    数字が出ないより、出まかせの数字のほうが危ない。
+    """
+    return (f"/{name} はこのバックエンドでは使えません"
+            "（観測ログを書かないため。agent-ollama の TUI で使ってください）")
+
+
+def _loop(reader, runner, *, model: str, tools: bool, think: "bool | None", out,
+          event_log: bool = True) -> int:
     while True:
         try:
             line = reader.read("> ")
@@ -592,6 +611,9 @@ def _loop(reader, runner, *, model: str, tools: bool, think: "bool | None", out)
                     model = arg
                 print(f"model={model}", file=out)
             elif command.name == "ctx":
+                if not event_log:
+                    print(_no_event_log(command.name), file=out)
+                    continue
                 snap = ollama_events.read_status()
                 if not snap.get("context_used"):
                     print("まだ文脈使用量を観測していません（1 回実行すると出ます）。", file=out)
@@ -599,6 +621,9 @@ def _loop(reader, runner, *, model: str, tools: bool, think: "bool | None", out)
                     print(f"  {context_text(snap.get('context_used'), snap.get('context_limit'), snap.get('context_pct'))}"
                           f"  実測元={snap.get('context_source', '')}", file=out)
             elif command.name == "status":
+                if not event_log:
+                    print(_no_event_log(command.name), file=out)
+                    continue
                 import json as _json
                 print(_json.dumps(ollama_events.read_status(), ensure_ascii=False), file=out)
             continue

@@ -324,6 +324,33 @@ class TestRepl(unittest.TestCase):
                              out=out, in_=io.StringIO(script))
         return rc, out.getvalue(), calls
 
+    def test_ctx_and_status_refuse_when_the_backend_writes_no_log(self):
+        """観測ログを書かない面では断る。**出まかせの数字より、出ないほうがまし。**
+
+        read_status() はパス無しだと ~/.agents/logs/ollama の最新を返すので、素通しすると
+        無関係な別の実行の数字が今のセッションのものとして出る（aider バックエンドで実際に
+        そうなっていた）。
+        """
+        out = io.StringIO()
+        with mock.patch.object(ollama_tui.ollama_events, "read_status") as read:
+            rc = ollama_tui.repl(lambda p, **k: "本文", model="m", tools=False, out=out,
+                                 in_=io.StringIO("/ctx\n/status\n/quit\n"), event_log=False)
+        self.assertEqual(rc, 0)
+        self.assertFalse(read.called, "ログを書かない面から ollama のログを読まない")
+        self.assertIn("/ctx はこのバックエンドでは使えません", out.getvalue())
+        self.assertIn("/status はこのバックエンドでは使えません", out.getvalue())
+
+    def test_ctx_and_status_still_work_where_the_log_exists(self):
+        out = io.StringIO()
+        with mock.patch.object(ollama_tui.ollama_events, "read_status",
+                               return_value={"context_used": 10, "context_limit": 100,
+                                             "context_pct": 10.0}) as read:
+            rc = ollama_tui.repl(lambda p, **k: "本文", model="m", tools=False, out=out,
+                                 in_=io.StringIO("/status\n/quit\n"))
+        self.assertEqual(rc, 0)
+        self.assertTrue(read.called)
+        self.assertIn("context_used", out.getvalue())
+
     def test_local_commands_do_not_reach_the_model(self):
         rc, text, calls = self._run("/help\n/tools on\n/think off\n/model x\n/quit\n")
         self.assertEqual(rc, 0)
