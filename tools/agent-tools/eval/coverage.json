@@ -19,9 +19,9 @@
       "human": "deterministic"
     },
     "agent-project": {
-      "route": "missing",
+      "route": "direct",
       "plan": "missing",
-      "doctor": "missing",
+      "doctor": "direct",
       "repo_map": "missing",
       "review": "missing",
       "distill": "missing",

@@ -931,6 +931,65 @@ readonly を宣言できるか」になる。台帳
 planner・evaluator・filter・judge・reduce・extract・retrieve・map の全部が同じ穴を踏んでいた
 ——道具付きで走る面ほど散文が増えるので、`--tools` を持つ役割で効く。
 
+### agent-project の `route` / `doctor`（2026-08-30）— `project_eval.py` を新設
+
+`coverage.json` の missing から、**引き継ぎが「安い」と見立てた 2 面**を測った。ハーネスは
+`project_eval.py`（新設）で、agent_project は断片を 1 名前空間へ exec 合成するパッケージなので
+`import agent_project` すればプロンプトのビルダー（`_route_agent_prompt` / `_doctor_prompt`）も
+受け方（`_extract_json_obj` / `_parse_doctor_findings`）もそのまま呼べる。起動形の解決も
+**agent-project の実装**（`_slashroute.resolve` と `_agent_readonly`）に訊く——agent-flow の
+ものではない（同じ `variants` 宣言へ行き着くが経路は別実装で、readonly の既定も違う）。
+
+| 処理 | 本番の起動形 | 素材 |
+|---|---|---|
+| `route` | `ollama-json`（`--think off --format json`・道具なし） | プロンプト内で完結 |
+| `doctor` | base `ollama`（`--think off --tools bash --max-rounds 12`） | プロンプト内（道具は余分） |
+
+| ケース | 何を問うか | 正解 | 中央値 |
+|---|---|---:|---:|
+| RO1（route） | 3 候補から「評価ハーネスへの追加」を owns グロブ抜きで選ぶ | **5/5** | 1s |
+| RO2（route） | 同じく「管理 UI の変更」 | **5/5** | 1s |
+| RO3（route） | **どの候補にも属さない仕事**（本番の契約は「判断できなければ空」） | **3/5** | 1s |
+| PD1（doctor） | `command not found` の連発を `env` へ | **4/5** | 33s |
+| PD2（doctor） | 上限 20 秒に対する打ち切り連発を `config` へ | **3/5** | 28s |
+| PD3（doctor） | traceback を `program` へ（逆向きの面） | **5/5** | 20s |
+
+**route は決定論が決められないときだけ呼ばれる面で、選ぶ側は強い。** 落ちるのは棄権
+（RO3 2/5 が `docs-site` を選んだ）——**「決められない」と言えないほうが弱い**のは
+retrieve の RT2（4/5）と同じ並びで、ただし route のほうが誤りの代償が大きい（誤った
+リポジトリへコミットする）。本番は候補名と一致しない答えを捨てて既定へ倒すが、
+**候補名と一致する誤答は素通りする**。
+
+**doctor は 3 カテゴリのうち `config` が弱い。** `env`（4/5）と `program`（5/5）は通るのに、
+`config` は 3/5 で、外し方は 2 つ——`program` へも流す（本番のプロンプトは「env/config で
+説明できるものを安易に program にしない」と明示している）と、所見を 1 件も出さない。
+
+**測る前に 2 つ直した（どちらも「その面は本番にあるか」の一段深い形）。**
+
+1. **`config` の初版は決定層と重なっていた。** 「protect 未設定」を仕込んでいたが、本番は
+   これを決定的に検出して自動修正まで持っている（`doctor_audit_findings` が
+   `fix_action: policy-protect` を付け、`_ensure_policy_protect` が追記する）——モデルに
+   訊く必要が無い面である。決定層が覆っていない**設定どうしの矛盾**（上限 20 秒に対して
+   毎回打ち切り）へ差し替えた。
+2. **受け方の写しが 4 か所にあった。** `_parse_doctor_findings`（agent-project と
+   agent-flow の 2 つ）・`_extract_id_array`・`_extract_json_obj` が、いずれも
+   `agentcore.llmjson` を通さず「最初の `[` から最後の `]`」を自前で書いていた。全部を
+   1 実装へ寄せた（C7）。
+
+**寄せた効果は数字に出た。** doctor の失敗 8 本は基準線で**全部が「所見を抽出できない」**
+だったが、寄せた後は 1 本だけになり、残りは中身の誤りとして見えるようになった。
+
+| | 基準線（写しのまま） | 1 実装へ寄せた後 |
+|---|---:|---:|
+| PD1（env） | 2/5 | **4/5** |
+| PD2（config・旧素材） | 0/5 | 1/5 |
+| PD3（program） | 5/5 | 5/5 |
+| 器で落ちた回 | 8/8 | **1/8** |
+
+台帳 `results/archive/ledger-2026-08-30-project-route-doctor-baseline-gemma4-e4b.jsonl`
+（基準線）・`ledger-2026-08-30-project-doctor-unifiedparser-gemma4-e4b.jsonl`（寄せた後）・
+`ledger-2026-08-30-project-doctor-config-uncovered-gemma4-e4b.jsonl`（差し替えた config）。
+
 ## 2026-08-11 の実測 — 手法パックで判定の質は上がるか
 
 `--methods` でカタログ（`methods/*.json`）の手法を有効化して同じ 8 ケースを引く。適用条件の

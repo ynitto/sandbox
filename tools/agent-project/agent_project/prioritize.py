@@ -3,6 +3,8 @@ from __future__ import annotations
 # 単体 import しない。agent_project/__init__.py が共有名前空間へ順に exec 合成する。
 # 優先順位付け（正準ループ ①②）
 # ---------------------------------------------------------------------------
+# LLM 応答からの JSON 抽出は agentcore の 1 実装を使う（写しを置かない・C7）。
+from agentcore import llmjson as _llmjson  # noqa: E402
 def consumable_tasks(tasks: "list[Task]") -> "list[Task]":
     return [t for t in tasks if t.consumable()]
 
@@ -54,24 +56,23 @@ def ready_after_deps(tasks: "list[Task]") -> "list[Task]":
 
 
 def _extract_id_array(text: str) -> "list[str] | None":
-    start, end = text.find("["), text.rfind("]")
-    if start < 0 or end <= start:
-        return None
+    """応答から ID の配列を取り出す。抽出は `agentcore.llmjson`（1 実装・C7）。"""
     try:
-        arr = json.loads(text[start:end + 1])
-    except Exception:  # noqa: BLE001
+        arr = _llmjson.unwrap_list(_llmjson.extract_json(text, what="エージェント出力"))
+    except ValueError:
         return None
     return [str(x) for x in arr] if isinstance(arr, list) else None
 
 
 def _extract_json_obj(text: str) -> "dict | None":
-    """応答から最初の JSON オブジェクト {...} を取り出す（説明文が混じっても拾う）。"""
-    start, end = text.find("{"), text.rfind("}")
-    if start < 0 or end <= start:
-        return None
+    """応答から JSON オブジェクト {...} を取り出す（説明文やフェンスが混じっても拾う）。
+
+    抽出は `agentcore.llmjson` の 1 実装を使う——寛容さの規則がツールごとにずれると、
+    同じモデル応答が経路によって通ったり落ちたりする（C7）。
+    """
     try:
-        obj = json.loads(text[start:end + 1])
-    except Exception:  # noqa: BLE001
+        obj = _llmjson.extract_json(text, what="エージェント出力")
+    except ValueError:
         return None
     return obj if isinstance(obj, dict) else None
 

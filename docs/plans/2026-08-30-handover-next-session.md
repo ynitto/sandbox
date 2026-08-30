@@ -112,12 +112,27 @@ planner / evaluator / filter / judge / reduce / extract / retrieve / map の全�
 落ちる。役割ごと readonly にはできない（split がファイルを配る flow では map に読み取りが
 要る）ので、測るのは「planner が材料の在り処を見て `readonly` を宣言できるか」になる。
 
-### (b) 未測定 22 面のうち安いもの
+### (a'') agent-project の `route` / `doctor` — 測った（`project_eval.py` 新設）
+
+`route` は決定論が決められないときだけ呼ばれる面で、**選ぶ側は強い**（RO1・RO2 とも 5/5）。
+落ちるのは**棄権**——どの候補にも属さない仕事で 2/5 が `docs-site` を選んだ。本番は候補名と
+一致しない答えなら捨てて既定へ倒すが、**一致する誤答は素通りする**（誤ったリポジトリへ
+コミットする）。`doctor` は `env` 4/5・`program` 5/5 に対し **`config` 3/5**。
+
+**測る前に受け方の写しを 4 か所畳んだ。** 両 doctor の `_parse_doctor_findings`・
+`_extract_id_array`・`_extract_json_obj` が `agentcore.llmjson` を通さず自前の切り出しを
+持っていた。寄せると doctor は 7/15 → 12/15 で、**器で落ちた回は 8/8 → 1/8**。
+
+**素材も 1 つ差し替えた。** `config` の初版（protect 未設定）は本番が決定的に検出して
+自動修正まで持っており、モデルに訊く必要が無かった。**「その面は本番にあるか」は
+「その故障を機械が既に決めていないか」まで見る。**
+
+### (b) 未測定 20 面のうち安いもの
 
 | 面 | 見込み | 理由 |
 |---|---|---|
-| agent-project `route` | ○ の公算 | 単一基準の分類族（F1 5/5）。ただし**道具付きで測る**（§2） |
-| agent-project `doctor` | ○ の公算 | dashboard の doctor 4 面が 3/3 |
+| ~~agent-project `route`~~ | **測った** | 選ぶ 5/5・5/5、棄権 3/5（`project_eval.py`） |
+| ~~agent-project `doctor`~~ | **測った** | env 4/5・program 5/5・config 3/5（受け方を 1 実装へ寄せて 7/15 → 12/15） |
 | agent-project `review`・`adjudicate` | **12b 側の確認** | レビュー族。e4b で通す前提を置かない |
 | agent-project `assess`・`prioritize`・`distill` | **決定化の候補** | 多基準ならモデルに訊かず `decision` 契約へ |
 | agent-project `plan`・`repo_map` | `planner_eval` 同型のチェッカーが要る | 構造で測る |

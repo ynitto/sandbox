@@ -1192,12 +1192,13 @@ def _doctor_prompt(signals: dict, deterministic: "list[dict]", table: bool = Fal
 
 
 def _parse_doctor_findings(text: str) -> "list[dict] | None":
-    start, end = text.find("["), text.rfind("]")
-    if start < 0 or end <= start:
-        return None
+    # 抽出は `agentcore.llmjson` の 1 実装を使う（写しを置かない・C7）。素朴な
+    # 「最初の `[` から最後の `]`」は、道具ループのモデルが成果物をフェンスに入れて
+    # 前後に作業報告を書くと壊れる——実測 2026-08-30: doctor の失敗 8 本のうち 5 本が
+    # **正しい所見を持ったまま** None になっていた。
     try:
-        arr = json.loads(text[start:end + 1])
-    except Exception:  # noqa: BLE001
+        arr = _llmjson.unwrap_list(_llmjson.extract_json(text, what="doctor 出力"))
+    except ValueError:
         return None
     if not isinstance(arr, list):
         return None

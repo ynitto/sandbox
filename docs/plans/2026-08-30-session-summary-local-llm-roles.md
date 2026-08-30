@@ -40,8 +40,9 @@ failed になって集約役まで届かず、done の依存が構造化して�
 PV1（撤去された charter verifier）が捏造したのは道具が無かったからではなく、
 **手元に材料が何も無かった**からである——材料がプロンプト内にあれば e4b は「無い」と言える。
 
-**測定面は 11 → 17 に増えた**（`coverage.json` の direct）。増えたのは verify・classify・
-map・extract・retrieve・synthesize の 6 面。未測定は 22 面（§6 に棚卸し）。
+**測定面は 11 → 19 に増えた**（`coverage.json` の direct）。増えたのは verify・classify・
+map・extract・retrieve・synthesize の 6 面と、agent-project の route・doctor。
+未測定は 20 面（§6 に棚卸し）。
 
 **そして最後に測った 2 面が、それまでの数字の前提を崩した。** `retrieve` を測るために
 起動形を本番から取り直したところ、ハーネスは定義の `command` だけを読んでいて、profile が
@@ -158,7 +159,7 @@ argv は `command` と一致する——つまり過去の測定のうち動い�
 
 ## 6. 残っているもの
 
-**未測定は 22 面**（`coverage.json`）。agent-flow の 5 面を同日に測った——`extract` 5/5、
+**未測定は 20 面**（`coverage.json`）。agent-flow の 5 面を同日に測った——`extract` 5/5、
 `retrieve` 4/5・4/5、`synthesize` 4/5・**0/5**、そして起動形を直して引き直した `classify`
 4/5・`map` **1/5**。危ないと踏んだ `extract` / `retrieve`（証跡の捏造が本番の機械検査を
 素通りする面）は引用の逐語照合まで通して捏造 0 件で、見立ては当たった。外れたのは 2 つで、
@@ -204,8 +205,18 @@ argv は `command` と一致する——つまり過去の測定のうち動い�
    "warnings": [...]}` と書かせれば同じ経路に乗る。**言わせて直るかは未測定**なので、
    プロンプトへ足す前に測る（この日の 5 例は全部「言わせても直らない」だった）。
 
-**面としての次は agent-project の `route` / `doctor`。** どちらも ○ の公算（単一基準の
-分類族・dashboard の doctor 4 面が 3/3）で、チェッカーを新しく設計しなくてよい。
+**面としての次は agent-project の `route` / `doctor`——これも測った（`project_eval.py` 新設）。**
+`route` は選ぶ側が 5/5・5/5 で、落ちるのは**棄権**（RO3 3/5。どの候補にも属さない仕事で
+2 回 `docs-site` を選んだ）。`doctor` は `env` 4/5・`program` 5/5 に対し **`config` 3/5** で、
+外し方は「`program` へも流す」と「所見を 1 件も出さない」。
+
+測る前に 2 つ直した。**受け方の写しが 4 か所**（両 doctor の `_parse_doctor_findings`・
+`_extract_id_array`・`_extract_json_obj`）で `agentcore.llmjson` を通さず自前の切り出しを
+持っており、寄せると doctor は 7/15 → 12/15、**器で落ちた回は 8/8 → 1/8** になった。
+もう 1 つは素材で、`config` の初版が決定層と重なっていた（protect 未設定は本番が決定的に
+検出して自動修正まで持つ）——モデルに訊く必要の無い面だったので、決定層が覆っていない
+設定の矛盾へ差し替えた。**「その面は本番にあるか」は、面の有無だけでなく
+「その故障を機械が既に決めていないか」まで見る。**
 
 **測る前に必ず確かめること。** この日 9 回踏んだ——**その面は本番にあるか**（PV1 は撤去済み、
 S2 は本番が要求しない形）、**本番の受け方を写しているか**（verify は本文も読む・classify は

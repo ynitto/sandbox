@@ -10,6 +10,7 @@ from __future__ import annotations
 #   agent-project の doctor からの連携呼び出しでも使える（同一スキーマの findings を返す）。
 # --------------------------------------------------------------------------
 from agentcore import promptrender  # noqa: E402
+from agentcore import llmjson as _llmjson  # noqa: E402
 
 _DOCTOR_CATEGORIES = ("env", "config", "program")
 _DOCTOR_SEVERITIES = ("critical", "warn", "info")
@@ -184,12 +185,11 @@ def _doctor_prompt(signals: dict, deterministic: "list[dict]", table: bool = Fal
 
 
 def _parse_doctor_findings(text: str) -> "list[dict] | None":
-    start, end = text.find("["), text.rfind("]")
-    if start < 0 or end <= start:
-        return None
+    # 抽出は `agentcore.llmjson` の 1 実装（写しを置かない・C7）。agent-project の doctor と
+    # 同じ穴を踏んでいた——フェンスの後ろに角括弧を含む散文が 1 行あるだけで None になる。
     try:
-        arr = json.loads(text[start:end + 1])
-    except Exception:  # noqa: BLE001
+        arr = _llmjson.unwrap_list(_llmjson.extract_json(text, what="doctor 出力"))
+    except ValueError:
         return None
     if not isinstance(arr, list):
         return None

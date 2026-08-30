@@ -40,6 +40,39 @@ _FENCE = re.compile(r"```[A-Za-z0-9_+-]*\s*\n(.*?)```", re.DOTALL)
 _INLINE = re.compile(r"`([^`\n]+)`")
 
 
+def _reparse(value):
+    """二重エンコードを 1 段だけ剥がす。JSON 文字列の中身がまた JSON、という形が実際に出る
+    （実測 2026-08-30: doctor の 1 本がフェンスの中へ `"[{...}]"` を書いた）。"""
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return value
+    return value
+
+
+def _pick(blocks):
+    """候補（フェンス／行内引用）から 1 つ選び `(値,)` で返す。1 つも無ければ None。
+
+    **後ろほど優先**（道具ループでは途中経過が先・最終成果が最後に来る）、そのうえで
+    **器（オブジェクト / 配列）を優先**する。器を見ずに最後の 1 つを採ると、末尾の
+    引用文（ただの文字列）が本物の配列を隠す。
+    """
+    container = last = None
+    for block in blocks:
+        body = block.strip()
+        if not body:
+            continue
+        try:
+            value = _reparse(json.loads(body))
+        except json.JSONDecodeError:
+            continue
+        last = (value,)
+        if isinstance(value, (dict, list)):
+            container = (value,)
+    return container or last
+
+
 def extract_json(text: str, *, what: str = "エージェント出力"):
     """LLM 出力から JSON を寛容に取り出す。
 
@@ -55,24 +88,9 @@ def extract_json(text: str, *, what: str = "エージェント出力"):
         return json.loads(text)
     except json.JSONDecodeError:
         pass
-    fenced = None
-    for block in _FENCE.findall(text or ""):
-        try:
-            fenced = json.loads(block.strip())
-        except json.JSONDecodeError:
-            continue
-    if fenced is not None:
-        return fenced
-    for span in _INLINE.findall(text or ""):
-        body = span.strip()
-        if not body.startswith(("{", "[")):
-            continue
-        try:
-            fenced = json.loads(body)
-        except json.JSONDecodeError:
-            continue
-    if fenced is not None:
-        return fenced
+    picked = _pick(_FENCE.findall(text or "")) or _pick(_INLINE.findall(text or ""))
+    if picked is not None:
+        return picked[0]
     for opn, cls in (("{", "}"), ("[", "]")):
         i, j = text.find(opn), text.rfind(cls)
         if i != -1 and j > i:
