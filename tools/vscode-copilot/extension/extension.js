@@ -253,6 +253,21 @@ async function invokeToolByName(body, cancellationToken) {
 
 const DEFAULT_MAX_ROUNDS = 12;
 
+// **モデルはワークスペースの場所を知らない。** Copilot のファイルツールは絶対パスしか
+// 受け取らないのに（`Invalid input path: README.md. Be sure to use an absolute path.`）、
+// どこを起点にすればよいかを知らせる口が無かった。実測（2026-08-30）: `/README.md`
+// `./README.md` `agents/README.md` を当てずっぽうで叩き続け、12 往復を使い切った。
+// 場所を知っているのは拡張（VS Code が開いているフォルダ）なので、ここで渡す。
+function workspaceNote() {
+  const folders = (vscode.workspace && vscode.workspace.workspaceFolders) || [];
+  const roots = folders.map(folder => folder && folder.uri && folder.uri.fsPath).filter(Boolean);
+  if (!roots.length) return '';
+  return 'いま開いているワークスペース:\n'
+    + roots.map(root => `- ${root}`).join('\n')
+    + '\n\nファイルを扱うツールへ渡すパスは、この下の**絶対パス**にすること'
+    + '（相対パスは受け付けられない）。\n\n';
+}
+
 // デバッグ用に「送った形」だけを写す（本文は出さない——依頼文が丸ごとログへ出ると困る）。
 function describeMessage(message) {
   const content = message.content;
@@ -289,6 +304,22 @@ function resolveTools(names) {
 
 // モデルにツールを持たせて回す。ツール本体も承認も VS Code のものを使い、ここが持つのは
 // 「どのツールを呼ぶか決めさせて、結果を返して、また訊く」というループだけ。
+function withWorkspaceNote(body) {
+  const note = workspaceNote();
+  if (!note) return body;
+  if (Array.isArray(body.messages) && body.messages.length) {
+    const messages = body.messages.slice();
+    const last = messages[messages.length - 1];
+    if (last && last.role === 'user' && typeof last.content === 'string') {
+      messages[messages.length - 1] = { ...last, content: note + last.content };
+      return { ...body, messages };
+    }
+    return body;
+  }
+  if (typeof body.prompt === 'string') return { ...body, prompt: note + body.prompt };
+  return body;
+}
+
 async function runAgent(body, cancellationToken, emit) {
   const tools = resolveTools(body.tools);
   const offered = new Set(tools.map(tool => tool.name));
@@ -299,9 +330,12 @@ async function runAgent(body, cancellationToken, emit) {
     throw Object.assign(new Error('no Copilot chat model is available in VS Code'), { status: 503 });
   }
   const model = models[0];
-  const messages = toMessages(body);
+  // 環境の申し送りは**いまの手番の頭**へ置く。別のメッセージとして足すと、履歴の
+  // 並び（user/assistant の交互）が崩れる。
+  const messages = toMessages(withWorkspaceNote(body));
   const maxRounds = Number.isInteger(body.maxRounds) && body.maxRounds > 0
     ? body.maxRounds : DEFAULT_MAX_ROUNDS;
+  let lastToolError = '';
 
   for (let round = 1; round <= maxRounds; round++) {
     // 何を送ったのかは、失敗してからでは分からない。VS Code の変換の向こうで
@@ -343,6 +377,7 @@ async function runAgent(body, cancellationToken, emit) {
         const message = `tool not offered for this request: ${call.name}`;
         results.push(new vscode.LanguageModelToolResultPart(
           call.callId, [new vscode.LanguageModelTextPart(`tool error: ${message}`)]));
+        lastToolError = `${call.name}: ${message}`;
         emit({ tool: call.name, error: message });
         continue;
       }
@@ -360,13 +395,17 @@ async function runAgent(body, cancellationToken, emit) {
         const message = error && error.message ? error.message : String(error);
         results.push(new vscode.LanguageModelToolResultPart(
           call.callId, [new vscode.LanguageModelTextPart(`tool error: ${message}`)]));
+        lastToolError = `${call.name}: ${message}`;
         emit({ tool: call.name, error: message });
       }
     }
     messages.push(vscode.LanguageModelChatMessage.User(results));
   }
+  // 打ち切りだけを伝えても、何に詰まっていたのかが分からない。最後のツール失敗を添える
+  // ——実測で「絶対パスが要る」を 12 回繰り返して終わった（それが見えないと直せない）。
   throw Object.assign(
-    new Error(`gave up after ${maxRounds} rounds without a final answer`), { status: 409 });
+    new Error(`gave up after ${maxRounds} rounds without a final answer`
+      + (lastToolError ? `（最後のツール失敗: ${lastToolError}）` : '')), { status: 409 });
 }
 
 // エージェントは何往復もするので常に NDJSON で流す。何をしているか見えないまま

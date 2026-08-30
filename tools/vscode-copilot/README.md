@@ -475,6 +475,39 @@ VS Code の prompt-tsx 変換に依らずに済みます。本文が 1 つも取
 `(このツールは本文を返しませんでした)` を返します——**空の結果を積むのは、空の
 assistant を積むのと同じ穴**だからです。
 
+### ワークスペースの場所はこちらから教える
+
+**モデルはワークスペースの場所を知りません。** Copilot のファイルツールは絶対パスしか
+受け取らないので、知らせないと当てずっぽうが始まります。
+
+```console
+  → copilot_readFile {"filePath": "README.md"}
+  ! copilot_readFile: Invalid input path: README.md. Be sure to use an absolute path.
+  → copilot_readFile {"filePath": "/README.md"}
+  ! copilot_readFile: File /README.md does not exist
+```
+
+実測でこれを 12 往復ぶん繰り返して打ち切られました。場所を知っているのは拡張
+（VS Code が開いているフォルダ）なので、依頼文の頭にこちらから書きます。
+
+```text
+いま開いているワークスペース:
+- /Users/nitto/sandbox
+
+ファイルを扱うツールへ渡すパスは、この下の**絶対パス**にすること（相対パスは
+受け付けられない）。
+```
+
+置くのは**いまの手番の頭**です。別のメッセージとして足すと、履歴の並び
+（user/assistant の交互）が崩れます。
+
+打ち切りのときは最後のツール失敗も添えます——何に詰まっていたかが見えないと直せません。
+
+```console
+vscode-copilot: bridge error: gave up after 12 rounds without a final answer
+（最後のツール失敗: copilot_readFile: Invalid input path: README.md. …）
+```
+
 ### 長い結果は切る
 
 ツール結果は 1 件 16000 文字までです。超えた分は切って、**切ったことをモデルへ言葉で
