@@ -10,6 +10,11 @@ name: CI
 #                agent-project のスイートに含まれる。
 #   2. dashboard … agent-dashboard の `npm test`（node のみで走る・依存の導入は不要）。
 #   3. docs    … 利用者向け文書の内部名検査（R10）とその検査自身の単体テスト。
+#   4. vscode-copilot … このスイートだけ pytest 形式（tmp_path などを使う）なので
+#                独立したジョブにする。**上の python matrix へ足してはいけない**——
+#                あちらは `unittest discover` で、pytest 形式のテストは 1 件も収集
+#                されないまま緑になる（無いより悪い）。拡張は JS なので構文検査だけ
+#                添える（実体はスタブ越しの手検証で押さえている）。
 #
 # 各ジョブは独立に落ちてよい（fail-fast: false）——1 パッケージの失敗で他の結果が
 # 見えなくなると、直す順番を決める材料が減る。
@@ -106,6 +111,22 @@ jobs:
       - name: npm test
         working-directory: tools/agent-dashboard
         run: npm test
+
+  vscode-copilot:
+    name: python (vscode-copilot)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: 依存（このスイートは pytest 形式）
+        run: python -m pip install --upgrade pip pytest
+      - name: pytest
+        run: python -m pytest tools/vscode-copilot/tests -q
+      - name: 拡張の構文検査
+        run: node --check tools/vscode-copilot/extension/extension.js
 
   docs:
     name: docs (R10 検査)

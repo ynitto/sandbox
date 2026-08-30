@@ -189,6 +189,22 @@ class BoardRepo:
     def node_path(self, node_id: str) -> str:
         return os.path.join(self.dir, "nodes", f"{_safe_node(node_id)}.json")
 
+    @staticmethod
+    def _without_stamps(rec: dict) -> dict:
+        """内容の比較から時計を外す。
+
+        **`heartbeat` を外すだけでは足りない。** `budget.observed_at` が同じ時刻の写しで
+        （`resident_cli._node_capability` が heartbeat をそのまま渡す）、外さないと秒を
+        またぐたび「内容が変わった」と判定される。tick は 30 秒間隔なので前回書いた秒とは
+        必ず違い、**間引きが一度も効かないまま毎 tick 板へ書いていた**（docstring が避けよう
+        としている「無意味なコミット」がそのまま起きる）。
+        """
+        out = {k: v for k, v in rec.items() if k != "heartbeat"}
+        budget = out.get("budget")
+        if isinstance(budget, dict):
+            out["budget"] = {k: v for k, v in budget.items() if k != "observed_at"}
+        return out
+
     def write_node(self, cap: dict, *, heartbeat_interval: float = 300.0) -> bool:
         """ノードの能力宣言 `nodes/<node-id>.json` を書く（書いたら True・S3-5 / P1-a）。
 
@@ -207,9 +223,7 @@ class BoardRepo:
             except (OSError, ValueError):
                 cur = None
             if isinstance(cur, dict):
-                same = {k: v for k, v in cur.items() if k != "heartbeat"} == \
-                    {k: v for k, v in cap.items() if k != "heartbeat"}
-                if same:
+                if self._without_stamps(cur) == self._without_stamps(cap):
                     age = time.time() - _iso_age_base(cur.get("heartbeat"))
                     if age < max(0.0, float(heartbeat_interval)):
                         return False

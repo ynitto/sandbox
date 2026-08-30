@@ -1508,6 +1508,31 @@ class ResidentBoardTickTests(unittest.TestCase):
             self._tick()
         self.assertEqual(path.read_text(encoding="utf-8"), first)
 
+    def test_rate_limit_survives_a_second_boundary(self):
+        """秒をまたいでも間引きが効くこと。
+
+        上の tick 越しの検査は、5 回が同じ秒に収まると素通りする（実際 CI で秒をまたいだ
+        ときだけ落ちた）。ここは時刻を作って決定的に押さえる。**heartbeat を外すだけでは
+        足りない**——budget.observed_at が同じ時刻の写しで、外し忘れると秒をまたぐたび
+        「内容が変わった」と判定され、tick は 30 秒間隔なので間引きが一度も効かない。
+        """
+        now = datetime.now(timezone.utc)
+
+        def cap(offset):
+            stamp = (now + timedelta(seconds=offset)).isoformat(
+                timespec="seconds").replace("+00:00", "Z")
+            return {"node": "pc-a", "tags": ["python"], "heartbeat": stamp,
+                    "fresh_after_sec": 1200.0,
+                    "budget": {"contract_version": 1, "observed_at": stamp,
+                               "source": "local-ledger"}}
+
+        board = km.BoardRepo(str(self.board))
+        self.assertTrue(board.write_node(cap(0), heartbeat_interval=300.0), "初回は書く")
+        self.assertFalse(board.write_node(cap(1), heartbeat_interval=300.0),
+                         "秒をまたいだだけでは書かない")
+        self.assertFalse(board.write_node(cap(30), heartbeat_interval=300.0),
+                         "30 秒後の tick でも書かない")
+
     def test_declaration_change_is_written_immediately(self):
         # 内容が変わったときは間隔に関わらず書く（宣言の変更が反映されない方が害が大きい）。
         self._tick()
