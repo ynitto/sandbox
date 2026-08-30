@@ -503,14 +503,27 @@ def test_missing_required_lists_only_what_is_absent():
     assert client.missing_required({}, {}) == []
 
 
-def test_connection_refused_points_at_start():
+def test_connection_refused_points_at_auto_start():
     error = client.urllib.error.URLError(ConnectionRefusedError(61, "Connection refused"))
     with mock.patch.object(client.urllib.request, "urlopen", side_effect=error):
         try:
             client._urlopen(mock.Mock(), 5)
             assert False, "must raise"
         except RuntimeError as exc:
-            assert "--start" in str(exc)
+            assert "--no-start" in str(exc)
+
+
+def test_404_is_reported_as_a_stale_extension():
+    """404 は「その口が無い＝拡張が古い」。生の not found では何をすべきか分からない。"""
+    error = client.urllib.error.HTTPError(
+        "http://127.0.0.1/v1/agent", 404, "not found", {}, io.BytesIO(b'{"error":"not found"}'))
+    with mock.patch.object(client.urllib.request, "urlopen", side_effect=error):
+        try:
+            client._urlopen(mock.Mock(), 5)
+            assert False, "must raise"
+        except RuntimeError as exc:
+            assert "拡張が古い" in str(exc)
+            assert "閉じて" in str(exc)
 
 
 def test_call_on_an_unregistered_tool_fails_with_a_hint():

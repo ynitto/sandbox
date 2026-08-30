@@ -187,13 +187,23 @@ def _urlopen(req: urllib.request.Request, timeout: float):
             message = json.load(exc).get("error", exc.reason)
         except Exception:
             message = exc.reason
+        # CLI は自分の知っている口しか叩かない。404 が返るのは、動いている拡張が
+        # その口を持たない古い版だということ。install.sh を流しても、動いている
+        # 拡張ホストは古いままなので、閉じるまで入れ替わらない。
+        if exc.code == 404:
+            raise RuntimeError(
+                "bridge の拡張が古いようです（このリクエストの口がありません）。"
+                "install.sh を流し直したうえで、bridge の VS Code ウィンドウを"
+                "一度閉じてください（動いている bridge は使い回されるので、"
+                "閉じるまで新しい拡張が載りません）。") from exc
         raise RuntimeError(f"bridge error ({exc.code}): {message}") from exc
     except urllib.error.URLError as exc:
         if isinstance(exc.reason, TimeoutError):
             raise RuntimeError(f"bridge への接続がタイムアウトしました（--timeout {timeout:g}）") from exc
         raise RuntimeError(
             f"bridge に接続できません: {exc.reason}"
-            "（VS Code 側が落ちているかもしれません。--start で起こし直せます）") from exc
+            "（VS Code 側が落ちているかもしれません。--no-start を外すと自動で"
+            "起こし直します）") from exc
     except TimeoutError as exc:
         # 応答待ちのタイムアウトは URLError に包まれず素で上がってくる。
         raise RuntimeError(
