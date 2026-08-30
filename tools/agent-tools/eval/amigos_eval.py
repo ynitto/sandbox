@@ -230,21 +230,30 @@ def check_debate(text: str, peers: "list[str]"):
     return True, f"{len(body)} 字・{len(hit)} 件の主張へ言及"
 
 
+# 本番の適用側（`AmigoRunner._apply`）が解釈する種別。**識別子は `kind`** で、`type` は
+# `send` の中のメッセージ種別である（写しではなく実装から拾った綴り——ここを取り違えると、
+# 正しい封筒を「契約違反」と数える。実測 2026-08-30 に 0/5 を出した原因がこれだった）。
+ACTION_KINDS = {"send", "write_artifact", "update_status", "declare_done"}
+
+
 def check_actions(actions, allowed: "set[str]"):
     """役割の 1 ターン。本番は `{"actions": [...]}` の封筒を要求する。
 
-    見るのは (1) 封筒が取れたか (2) 各アクションに種別があるか
+    見るのは (1) 封筒が取れたか (2) 各アクションの `kind` が本番の解釈できる種別か
     (3) **宛先が実在する role か**（捏造した相手へ送ると板に届かない）。
     """
     if not isinstance(actions, list) or not actions:
         return False, "アクションが 0 件"
     for act in actions:
-        if not isinstance(act, dict) or not str(act.get("type") or "").strip():
-            return False, f"type の無いアクション: {str(act)[:40]}"
+        kind = str(act.get("kind") or "").strip() if isinstance(act, dict) else ""
+        if not kind:
+            return False, f"kind の無いアクション: {str(act)[:40]}"
+        if kind not in ACTION_KINDS:
+            return False, f"本番が解釈できない kind: {kind}"
         to = str(act.get("to") or "").strip()
         if to and to not in allowed:
             return False, f"存在しない宛先: {to}"
-    return True, f"{len(actions)} アクション（{', '.join(sorted({str(a.get('type')) for a in actions}))}）"
+    return True, f"{len(actions)} アクション（{', '.join(sorted({str(a.get('kind')) for a in actions}))}）"
 
 
 # ------------------------------------------------------------------ ケース定義
@@ -364,8 +373,8 @@ def selfcheck() -> int:
         "CO1": {"add": [], "prune": [], "reason": "編成は足りている"},
         "AC1": "rejected",
         "DB1": "月またぎで壊れるという指摘に同意する。月境界のテストを足したい。",
-        "RA1": [{"type": "note", "body": "集計を実装した"},
-                {"type": "message", "to": "integrator", "body": "集計できました"}],
+        "RA1": [{"kind": "update_status", "note": "集計を実装した"},
+                {"kind": "send", "to": "integrator", "type": "info", "body": "集計できました"}],
     }
     bad = {
         "TB1": [({}, [], {}), ({}, [ROLES["collector"]], {}),
@@ -377,8 +386,9 @@ def selfcheck() -> int:
                 {"add": [], "prune": ["ghost"]}],
         "AC1": ["accepted", "skipped", "escalated"],
         "DB1": ['{"claim": "x"}', "", "特に意見はありません。"],
-        "RA1": [[], [{"body": "type が無い"}],
-                [{"type": "message", "to": "ghost", "body": "x"}]],
+        "RA1": [[], [{"body": "kind が無い"}],
+                [{"kind": "send", "to": "ghost", "body": "x"}],
+                [{"kind": "teleport"}]],          # 本番が解釈できない種別
     }
     fails = []
     for cid, case in CASES.items():

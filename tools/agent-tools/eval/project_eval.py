@@ -190,7 +190,8 @@ def _agent_runner(cwd: str):
         rc, out, err, wall = call(prompt, argv, cwd)
         _LAST_CALLS.append({"purpose": purpose, "rc": rc, "wall": round(wall, 1),
                             "prompt_chars": len(prompt), "out_chars": len(out),
-                            "err": (err or "").strip()[-200:]})
+                            "err": (err or "").strip()[-200:],
+                            "tail": (out or "").strip()[-300:]})
         if rc != 0 or not out.strip():
             # 本番と同じ形の失敗（呼び出し側が握って決定的フォールバックへ倒す）
             raise RuntimeError(err.strip()[-160:] or f"rc={rc}")
@@ -557,7 +558,8 @@ def run_driver(cid: str, i: int, case: dict) -> dict:
                 wall=round(wall, 1), note=note, calls=len(_LAST_CALLS),
                 prompt_chars=max((c["prompt_chars"] for c in _LAST_CALLS), default=0),
                 out_chars=max((c["out_chars"] for c in _LAST_CALLS), default=0),
-                answer=json.dumps(result, ensure_ascii=False, default=str)[:300], log="")
+                answer=json.dumps(result, ensure_ascii=False, default=str)[:300], log="",
+                tail=(_LAST_CALLS[-1]["tail"] if _LAST_CALLS else ""))
 
 
 def run_one(cid: str, i: int) -> dict:

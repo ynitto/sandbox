@@ -214,21 +214,27 @@ def check_enqueue_assist(f, want_after: str):
 
 
 def check_task_guide(f, forbidden: "list[str]"):
-    """意図と境界の補完。必須キーの型と、**材料に無い固有名を書かない**を見る。"""
+    """意図と境界の補完。**本番の正規化を通した後の形**で見る。
+
+    `normalizeTaskGuide` は risks を改行連結の**文字列**へ、acceptance を配列へ畳み、
+    size が S/M/L でなければ空文字にする（＝提案なし扱い）。ハーネスがこれより厳しいと、
+    本番なら受かっている出力を失点に数える。だから見るのは意味のある 3 点だけ——
+    (1) キーが揃っているか (2) why / acceptance が埋まっているか
+    (3) **材料に無い固有名を書いていないか**（憶測で境界を発明しない、が本番の依頼文）。
+    """
     for key in ("why", "desc", "scope", "acceptance", "risks", "size"):
         if key not in f:
             return False, f"{key} が無い（契約のキー欠落）"
-    if not isinstance(f.get("risks"), list) or not isinstance(f.get("acceptance"), list):
-        return False, "risks / acceptance が配列でない"
+    if not isinstance(f.get("acceptance"), list):
+        return False, "acceptance が配列でない（本番の正規化を通っていない）"
     if not f.get("why") or not f.get("acceptance"):
         return False, "why / acceptance が空"
-    if f.get("size") not in ("S", "M", "L"):
-        return False, f"size={f.get('size')}（契約は S/M/L）"
     blob = json.dumps(f, ensure_ascii=False)
     invented = [w for w in forbidden if w in blob]
     if invented:
         return False, f"材料に無い固有名を書いた: {invented[0]}"
-    return True, f"size={f['size']}・受入 {len(f['acceptance'])} 件"
+    size = f.get("size") or "（提案なし）"
+    return True, f"size={size}・受入 {len(f['acceptance'])} 件"
 
 
 def check_task_candidates(f):
@@ -362,7 +368,8 @@ def run_one(cid: str, i: int) -> dict:
             mode = "correct" if ok else "wrong"
     rec = dict(case=cid, assist_mode=case["mode"], iter=i, model=MODEL, ok=ok, mode=mode,
                wall=round(wall, 1), note=note, prompt_chars=len(prompt), out_chars=len(out),
-               answer=json.dumps(fields, ensure_ascii=False, default=str)[:300])
+               answer=json.dumps(fields, ensure_ascii=False, default=str)[:300],
+               tail=(out or "").strip()[-300:])
     if engine.missing():
         rec["engine_missing"] = engine.missing()
     print(f"  {cid}#{i}: {'PASS' if ok else 'FAIL':4s} {mode:11s} {wall:6.1f}s  {note[:66]}",
@@ -388,9 +395,10 @@ def selfcheck() -> int:
                                  "note": "", "why": "月をまたぐと合計がずれるため"}]},
         "EA1": {"after": ["T2"], "priority": 5, "note": "", "rationale": "集計の後",
                 "adjustments": []},
+        # 本番の正規化を通した形（risks は改行連結の文字列・acceptance は配列）
         "TG1": {"why": "レポートを人が読めるようにするため", "desc": "集計結果を表にする",
                 "scope": "render.py", "out_of_scope": "", "constraints": "", "hints": "",
-                "risks": ["なし"], "acceptance": ["reports/digest.md に表が出る"], "size": "S",
+                "risks": "なし", "acceptance": ["reports/digest.md に表が出る"], "size": "S",
                 "demo": "", "rationale": ""},
         "SC1": {"tasks": [{"title": "前日比を出す", "desc": "", "acceptance": ["前日比が出る"],
                            "priority": 0, "after": [], "why": ""},
@@ -416,10 +424,12 @@ def selfcheck() -> int:
                 {"suggestions": [{"title": "別のこと", "after": [], "why": "x"}]}],
         "EA1": [{"after": ["T9"], "adjustments": []},
                 {"after": [], "adjustments": []}],
-        "TG1": [{"why": "", "desc": "", "scope": "", "acceptance": [], "risks": [], "size": "S"},
+        "TG1": [{"why": "", "desc": "", "scope": "", "acceptance": [], "risks": "", "size": "S"},
                 {"why": "w", "desc": "d", "scope": "payments/", "out_of_scope": "",
-                 "constraints": "", "hints": "", "risks": ["なし"], "acceptance": ["a"],
-                 "size": "S"}],
+                 "constraints": "", "hints": "", "risks": "なし", "acceptance": ["a"],
+                 "size": "S"},
+                {"why": "w", "desc": "d", "scope": "s", "risks": "なし",
+                 "acceptance": "配列でない", "size": "S"}],
         "SC1": [{"tasks": []},
                 {"tasks": [{"title": "x", "acceptance": [], "after": []}]},
                 {"tasks": [{"title": "x", "acceptance": ["a"], "after": ["T9"]}]}],

@@ -40,9 +40,10 @@ failed になって集約役まで届かず、done の依存が構造化して�
 PV1（撤去された charter verifier）が捏造したのは道具が無かったからではなく、
 **手元に材料が何も無かった**からである——材料がプロンプト内にあれば e4b は「無い」と言える。
 
-**測定面は 11 → 19 に増えた**（`coverage.json` の direct）。増えたのは verify・classify・
-map・extract・retrieve・synthesize の 6 面と、agent-project の route・doctor。
-未測定は 20 面（§6 に棚卸し）。
+**測定面は 11 → 39 になり、`coverage.json` の missing は 0 になった。** 残っていた 20 面
+（agent-project 7・agent-dashboard 8・agent-amigos 5）をハーネス 3 本で全部測った。
+未測定は 0、`indirect` が 1（`generate`＝work と同じ実行族）、`deterministic` が 1
+（`human`＝LLM を呼ばない）。
 
 **そして最後に測った 2 面が、それまでの数字の前提を崩した。** `retrieve` を測るために
 起動形を本番から取り直したところ、ハーネスは定義の `command` だけを読んでいて、profile が

@@ -20,35 +20,35 @@
     },
     "agent-project": {
       "route": "direct",
-      "plan": "missing",
+      "plan": "direct",
       "doctor": "direct",
-      "repo_map": "missing",
-      "review": "missing",
-      "distill": "missing",
-      "prioritize": "missing",
-      "adjudicate": "missing",
-      "assess": "missing"
+      "repo_map": "direct",
+      "review": "direct",
+      "distill": "direct",
+      "prioritize": "direct",
+      "adjudicate": "direct",
+      "assess": "direct"
     },
     "agent-dashboard": {
-      "method-draft": "missing",
-      "acceptance-draft": "missing",
+      "method-draft": "direct",
+      "acceptance-draft": "direct",
       "doctor/consultation": "direct",
       "doctor/failure-diagnosis": "direct",
       "doctor/plan-critique": "direct",
       "doctor/delivery-rationale": "direct",
-      "followup-suggest": "missing",
-      "enqueue-assist": "missing",
-      "task-guide": "missing",
-      "source-task-candidates": "missing",
-      "charter/draft": "missing",
-      "charter/refine": "missing"
+      "followup-suggest": "direct",
+      "enqueue-assist": "direct",
+      "task-guide": "direct",
+      "source-task-candidates": "direct",
+      "charter/draft": "direct",
+      "charter/refine": "direct"
     },
     "agent-amigos": {
-      "team-builder": "missing",
-      "conductor": "missing",
-      "acceptance": "missing",
-      "debate": "missing",
-      "role-actions": "missing"
+      "team-builder": "direct",
+      "conductor": "direct",
+      "acceptance": "direct",
+      "debate": "direct",
+      "role-actions": "direct"
     }
   }
 }

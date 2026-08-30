@@ -990,6 +990,64 @@ retrieve の RT2（4/5）と同じ並びで、ただし route のほうが誤り
 （基準線）・`ledger-2026-08-30-project-doctor-unifiedparser-gemma4-e4b.jsonl`（寄せた後）・
 `ledger-2026-08-30-project-doctor-config-uncovered-gemma4-e4b.jsonl`（差し替えた config）。
 
+### 残り 20 面を全部測った（2026-08-30〜31）— `coverage.json` の missing が 0 になった
+
+`agent-project` の 7 面・`agent-dashboard` の 8 面・`agent-amigos` の 5 面。ハーネスは
+3 本で、いずれも**本番の関数をそのまま走らせる**——プロンプトの組み立てだけでなく、
+受け方・正規化・リトライまで本番のコードが回る。ハーネスがやるのは argv を本番と同じに
+組んで実行することだけで、判定は本番の戻り値に対して行う。
+
+| ハーネス | 差し替える口 | 素材の組み方 |
+|---|---|---|
+| `project_eval.py` | `_run_agent_cli`（agent-project の単一チョークポイント） | Config は `build_config`、Charter は `parse_charter`、ミッション素材は本番の型 |
+| `dashboard_eval.py` | node 経由で `agent.js` の export を呼ぶ | ビルダーと `normalize*` を本番から |
+| `amigos_eval.py` | `agentcli.run_agent`（amigos の単一チョークポイント） | ミッションは `post_mission` で立てる |
+
+#### 実測（`gemma4:e4b`・各 5 回）
+
+| ツール | 面 | 正解 | 落ち方 |
+|---|---|---:|---|
+| agent-project | `prioritize` | **5/5** | — |
+| agent-project | `assess`（リスク / 曖昧さ） | **5/5・5/5** | — |
+| agent-project | `adjudicate`（requeue / escalate） | 4/5・**5/5** | — |
+| agent-project | `distill` | 4/5 | 固有名詞を残す |
+| agent-project | `review` | 2/5 | `workspace` にファイル名を書く（捏造） |
+| agent-project | `repo_map` | 1/5 | 読めてはいるが要約でなく作業メモを返す |
+| agent-project | `plan` | 1/5 | **出力が途中で切れる**（長い JSON 配列） |
+| agent-dashboard | `method-draft` / `acceptance-draft` / `enqueue-assist` / `charter/draft` / `charter/refine` | **5/5**（各） | — |
+| agent-dashboard | `followup-suggest` / `source-task-candidates` | 4/5（各） | JSON を返さない回 |
+| agent-dashboard | `task-guide` | 2/5（正規化に合わせた後。合わせる前は 0/5） | JSON を返さない回 |
+| agent-amigos | `team-builder` | 4/5 | 予約語（`owner`）を role id にする |
+| agent-amigos | `conductor` | 4/5 | JSON を返さない回 |
+| agent-amigos | `acceptance` | 2/5（引き直しは 3/3） | JSON を返さない回 |
+| agent-amigos | `debate` | 3/5 | 他者の主張に触れない |
+| agent-amigos | `role-actions` | **4/5**（`kind` 修正後。修正前は 0/5） | CLI が本文をほぼ返さない回 |
+
+**通る面と落ちる面の境目は「短い契約か」だった。** 5/5 が並ぶのは、出力が短く形の決まった
+面（順序の配列・3 つの整数・1 つの ID・数行の JSON）である。落ちるのは長い自由記述を
+JSON に詰める面（`plan` は途中で切れ、`repo_map` は要約でなく作業メモになる）。
+**道具ループを持つ面ほど散文が増える**のは map / doctor と同じ傾向で、この日の
+「器で落ちる」の族に入る。
+
+#### ハーネス側の欠陥を 3 件直した（どれも「本番より厳しい」）
+
+1. **契約の綴りを本番から取っていなかった。** amigos のアクション封筒の識別子は
+   `type` ではなく **`kind`**（`type` は `send` の中のメッセージ種別）。`type` を要求して
+   いたので、**正しい封筒を契約違反と数えて 0/5** を出していた。有効な種別は本番の適用側
+   （`_apply_actions`）から拾う。
+2. **正規化後の形を見ていなかった。** dashboard の `task-guide` は `normalizeTaskGuide` が
+   `risks` を改行連結の**文字列**へ畳む（配列ではない）。配列を要求して 0/5 にしていた。
+3. **素材を使い回して本番の冪等性に当たっていた。** `assess` は採点を `task.extra` へ
+   書き戻すので、同じ Task を使い回すと 2 回目以降は LLM を呼ばない（`no_call`）。
+   呼ぶたびに作り直す。
+
+**3 件とも症状は同じ「モデルが落ちて見える」で、原因はハーネスにある。** この日だけで
+受け方・起動形・素材の 3 層すべてで踏んだ——**測る前に本番の実装を読む**以外に防ぎ方は無い。
+
+台帳 `results/archive/ledger-2026-08-30-project-all9-gemma4-e4b.jsonl`・
+`ledger-2026-08-30-dashboard-assist8-gemma4-e4b.jsonl`・
+`ledger-2026-08-30-amigos-5-gemma4-e4b.jsonl`。
+
 ## 2026-08-11 の実測 — 手法パックで判定の質は上がるか
 
 `--methods` でカタログ（`methods/*.json`）の手法を有効化して同じ 8 ケースを引く。適用条件の
