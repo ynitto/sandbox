@@ -35,6 +35,7 @@ PROMPT_BUILDER = Path(os.environ.get(
 LEDGER_DIR = Path(os.environ.get("CANDIDATE_EVAL_DIR", "/tmp/agent-candidate-eval"))
 MODEL = "gemma4:e4b"
 WALL_LIMIT = 600.0
+RETRIES = 0        # 決定的検算つき再投入の回数（既定 0 = 従来の腕）
 _FALLBACK_CMD = ["agent-ollama", "--think", "off", "--format", "json", "{model}"]
 CMD, CMD_SOURCE = engine.load_cmd("ollama-json", _FALLBACK_CMD)
 CMD_ENV = engine.load_env("ollama-json")
@@ -161,6 +162,33 @@ def check_cg1(data) -> tuple[bool, str]:
     return False, f"正解の行集合を出す regex が無い（候補 {len(cands)}・機械が落とした {dropped}）"
 
 
+def diagnose_cg1(data) -> str:
+    """候補ごとの機械の観測を、モデルへ返す診断文にする（`--retry` の材料）。
+
+    **正解の行集合は使わない。** 本番の機械は「その regex が何に当たったか」しか知らない
+    ——正解を持っているのは eval だけなので、「当てるべき行を落としている」と言った瞬間に、
+    本番では再現しない助けを測ることになる（廃止済み verify を測り続けたのと同じ罠）。
+    ここで渡すのは実行結果そのもの（コンパイルの可否・当たった行）だけで、その良し悪しは
+    モデルが判断する。
+    """
+    lines = []
+    for c in _candidates(data)[:5]:
+        hits = grep_lines(c)
+        if hits is None:
+            lines.append(f"- `{c}` … Python の正規表現としてコンパイルできない")
+        elif not hits:
+            lines.append(f"- `{c}` … どの行にも当たらない")
+        else:
+            sample = ", ".join(f"{p}:{n}" for p, n in sorted(hits)[:6])
+            more = "" if len(hits) <= 6 else f" ほか {len(hits) - 6} 行"
+            lines.append(f"- `{c}` … {len(hits)} 行に当たった（{sample}{more}）")
+    if not lines:
+        lines.append("- 候補が 1 つも取れなかった（`candidates` が空か、JSON が壊れている）")
+    return ("直前の候補を実際に走らせた結果は次のとおり。当たった行が要求どおりか"
+            "自分で確かめ、**正規表現そのもの**を（コードの断片ではなく）出し直すこと:\n"
+            + "\n".join(lines))
+
+
 def check_cg2(data) -> tuple[bool, str]:
     cands = _candidates(data)[:5]
     if not cands:
@@ -187,7 +215,7 @@ def check_cg3(data) -> tuple[bool, str]:
 
 CASES = {
     "CG1": dict(
-        genre="grep パターン", check=check_cg1,
+        genre="grep パターン", check=check_cg1, diagnose=diagnose_cg1,
         goal=("次の小さなリポジトリで、関数 prorate が**定義されている行と呼び出されている行**を"
               "すべて（そしてそれだけを）当てる Python 正規表現の候補を最大 3 つ挙げる。"
               "散文中の単語（docs の説明）には当てない。出力は JSON オブジェクト "
@@ -263,8 +291,17 @@ def run_one(cid: str, i: int) -> dict:
     prompt = build_prompt(case)
     rc, out, err, wall = call(prompt)
     data, mode, ok, note = judge(case, rc, out, err, wall)
+    retries = 0
+    # 決定的検算つき再投入（既定 0 = 従来の腕）。診断は機械の観測だけで、正解は渡さない。
+    while not ok and retries < RETRIES and case.get("diagnose"):
+        retries += 1
+        rc, out, err, again = call(case["diagnose"](data) + "\n\n" + prompt)
+        wall += again
+        data, mode, ok, note = judge(case, rc, out, err, again)
+        note = f"{note}（再投入 {retries}）"
     rec = dict(case=cid, genre=case["genre"], iter=i, model=MODEL, ok=ok, mode=mode,
                wall=round(wall, 1), note=note, prompt_chars=len(prompt), out_chars=len(out),
+               retries=retries,
                candidates=_candidates(data)[:5] if data is not None else None)
     if engine.missing():
         rec["engine_missing"] = engine.missing()
@@ -309,24 +346,27 @@ def selfcheck() -> int:
 
 
 def main() -> None:
-    global MODEL, WALL_LIMIT
+    global MODEL, WALL_LIMIT, RETRIES
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default=MODEL)
     ap.add_argument("--repeat", type=int, default=3)
     ap.add_argument("--cases", default=",".join(CASES))
     ap.add_argument("--wall", type=float, default=WALL_LIMIT)
+    ap.add_argument("--retry", type=int, default=RETRIES,
+                    help="不合格なら機械の検算結果を添えて投げ直す回数（既定 0）")
     ap.add_argument("--selfcheck", action="store_true")
     args = ap.parse_args()
     if args.selfcheck:
         raise SystemExit(selfcheck())
-    MODEL, WALL_LIMIT = args.model, args.wall
+    MODEL, WALL_LIMIT, RETRIES = args.model, args.wall, max(0, args.retry)
     LEDGER_DIR.mkdir(parents=True, exist_ok=True)
     ledger = LEDGER_DIR / "ledger.jsonl"
     cids = [c.strip() for c in args.cases.split(",") if c.strip()]
     print(f"model={MODEL} argv={' '.join(CMD)}（出所: {CMD_SOURCE}）")
     if engine.missing():
         print(f"engine 欠落: {engine.missing()}")
-    print(f"wall_limit={WALL_LIMIT:.0f}s cases={cids} repeat={args.repeat}\n")
+    print(f"wall_limit={WALL_LIMIT:.0f}s cases={cids} repeat={args.repeat} "
+          f"retry={RETRIES}\n")
     rows = []
     for cid in cids:
         for i in range(1, args.repeat + 1):

@@ -236,6 +236,47 @@ def check_an2(data):
     return False, f"cause={cause!r}（期待 svc-payment@2.1.3）"
 
 
+PR1_BUDGET = 10
+
+
+def _best_combo(menu: dict, budget: int) -> "list[str]":
+    """予算内で effect 合計が最大の組合せ（総当たり）。`selfcheck` と同じ 1 実装。"""
+    return max((combo for combo in _powerset(menu)
+                if sum(menu[p][0] for p in combo) <= budget),
+               key=lambda c: sum(menu[p][1] for p in c))
+
+
+def check_pr1_pipe(data):
+    """PR1P: モデルは cost / effect を**転記するだけ**で、組合せは機械が総当たりで決める。
+
+    素の PR1 は 2/3 で、外し方は 2 本とも「予算を超える組合せを選ぶ」だった
+    （`p1,p3,p4` = 13 人日・`p1,p4,p5` = 17 人日）。**選ばせるのをやめると外れようがない**
+    ——F2 → F2P（多基準の選別）と同じ形で、README の「実運用ではモデルに選ばせず
+    決定化する」をそのまま腕にしたものである。ここで測るのは転記の正しさだけ。
+    """
+    if not isinstance(data, dict) or not isinstance(data.get("items"), list):
+        return False, "items 配列が無い"
+    menu = {}
+    for row in data["items"]:
+        if not isinstance(row, dict):
+            continue
+        pid = str(row.get("id", "")).strip().lower()
+        cost, effect = _as_int(row.get("cost")), _as_int(row.get("effect"))
+        if pid and cost is not None and effect is not None:
+            menu[pid] = (cost, effect)
+    want = {"p1": (4, 50), "p2": (5, 45), "p3": (3, 30), "p4": (6, 70), "p5": (7, 60)}
+    missing = sorted(set(want) - set(menu))
+    if missing:
+        return False, f"転記の欠落: {missing}"
+    wrong = sorted(p for p in want if menu[p] != want[p])
+    if wrong:
+        return False, f"転記の誤り: {', '.join(f'{p}={menu[p]}（正 {want[p]}）' for p in wrong)}"
+    picks = set(_best_combo(menu, PR1_BUDGET))
+    if picks != {"p1", "p4"}:
+        return False, f"機械の最適解が {sorted(picks)}（転記は正しいのに不一致＝検算側の欠陥）"
+    return True, f"転記 5 件 → 機械が最適化 picks={sorted(picks)}"
+
+
 def check_pr1(data):
     if not isinstance(data, dict) or not isinstance(data.get("picks"), list):
         return False, "picks 配列が無い"
@@ -325,6 +366,12 @@ CASES = {
                       '{"picks":["p?",...],"total_cost":<整数>,"reason":"..."}。'
                       + _JSON_ONLY + "\n\n" + PR1_MENU),
                 check=check_pr1),
+    "PR1P": dict(genre="propose", expect="決定化: 転記→機械が総当たりで p1+p4",
+                 goal=("次の施策一覧を、判断せずにそのまま転記する。**どれを選ぶかは"
+                       "答えないこと**（組合せは機械が決める）。出力は JSON "
+                       '{"items":[{"id":"p?","cost":<整数>,"effect":<整数>},...]}。'
+                       + _JSON_ONLY + "\n\n" + PR1_MENU),
+                 check=check_pr1_pipe),
     # --- 評価・レビュー系
     "RV1": dict(genre="review", expect="植え込み 3 バグ中 2 件以上・乱れ撃ちなし",
                 goal=("次の Python コードをレビューし、動作上のバグだけを指摘する。"
@@ -450,6 +497,11 @@ def selfcheck() -> int:
         "AN1": {"winner": "v4", "reason": "0.90 同率のうち cost 最小"},
         "AN2": {"cause": "svc-payment@2.1.3", "reason": "依存とタイミングが一致"},
         "PR1": {"picks": ["p1", "p4"], "total_cost": 10, "reason": "効果 120 で最大"},
+        "PR1P": {"items": [{"id": "p1", "cost": 4, "effect": 50},
+                            {"id": "p2", "cost": 5, "effect": 45},
+                            {"id": "p3", "cost": 3, "effect": 30},
+                            {"id": "p4", "cost": 6, "effect": 70},
+                            {"id": "p5", "cost": 7, "effect": 60}]},
         "RV1": {"findings": [{"line": 4, "issue": "off-by-one"},
                              {"line": 1, "issue": "可変デフォルト引数"},
                              {"line": 15, "issue": "昇順 sort で下位を返す"}]},
@@ -465,6 +517,12 @@ def selfcheck() -> int:
         "AN1": {"winner": "v2", "reason": "受入数がまず多い"},
         "AN2": {"cause": "svc-search@0.9.9", "reason": "直近のデプロイ"},
         "PR1": {"picks": ["p4", "p5"], "total_cost": 13, "reason": "効果の大きい 2 つ"},
+        # 転記の誤り（p4 の cost を 4 と書く）。選ばせていないので、外れるのはここだけ。
+        "PR1P": {"items": [{"id": "p1", "cost": 4, "effect": 50},
+                            {"id": "p2", "cost": 5, "effect": 45},
+                            {"id": "p3", "cost": 3, "effect": 30},
+                            {"id": "p4", "cost": 4, "effect": 70},
+                            {"id": "p5", "cost": 7, "effect": 60}]},
         "RV1": {"findings": [{"line": 10, "issue": "総和"}, {"line": 2, "issue": "open"},
                              {"line": 6, "issue": "return"}, {"line": 11, "issue": "+="},
                              {"line": 16, "issue": "slice"}, {"line": 3, "issue": "split"},
