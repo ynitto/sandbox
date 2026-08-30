@@ -201,6 +201,30 @@ async function invokeToolByName(body, cancellationToken) {
 
 const DEFAULT_MAX_ROUNDS = 12;
 
+// デバッグ用に「送った形」だけを写す（本文は出さない——依頼文が丸ごとログへ出ると困る）。
+function describeMessage(message) {
+  const content = message.content;
+  if (typeof content === 'string') return { role: message.role, content: `string(${content.length})` };
+  if (!Array.isArray(content)) return { role: message.role, content: typeof content };
+  return {
+    role: message.role,
+    content: content.map(part => {
+      const kind = part && part.constructor ? part.constructor.name : typeof part;
+      if (part instanceof vscode.LanguageModelToolCallPart) return `${kind}(${part.callId}:${part.name})`;
+      if (part instanceof vscode.LanguageModelToolResultPart) {
+        // 中身の部品まで見る。**ツール結果の形も疑わしい**——prompt-tsx を返すツールと
+        // 文字列を返すツールで、モデル側の変換が同じとは限らない。
+        const inner = Array.isArray(part.content)
+          ? part.content.map(c => (c && c.constructor ? c.constructor.name : typeof c)).join('+')
+          : typeof part.content;
+        return `${kind}(${part.callId}:${inner})`;
+      }
+      if (part instanceof vscode.LanguageModelTextPart) return `${kind}(${String(part.value).length})`;
+      return kind;
+    }),
+  };
+}
+
 // 使うツールは呼び出し側が名前で指定する。ここは vscode.lm.tools に居るものだけを
 // 通す——居ない名前を黙って捨てると「頼んだ道具を使わないエージェント」になる。
 function resolveTools(names) {
@@ -228,6 +252,9 @@ async function runAgent(body, cancellationToken, emit) {
     ? body.maxRounds : DEFAULT_MAX_ROUNDS;
 
   for (let round = 1; round <= maxRounds; round++) {
+    // 何を送ったのかは、失敗してからでは分からない。VS Code の変換の向こうで
+    // 400 が返るとき、手前で持っていた形が唯一の手がかりになる。
+    if (body.debug) emit({ debug: { round, messages: messages.map(describeMessage) } });
     const response = await model.sendRequest(messages, { tools }, cancellationToken);
     const parts = [];
     const calls = [];
@@ -246,7 +273,12 @@ async function runAgent(body, cancellationToken, emit) {
 
     // 手番を積み直す。呼び出しを Assistant 側へ、結果を User 側へ入れるのが契約で、
     // callId で対応が付く。片方だけ積むと次の往復でモデルが文脈を失う。
-    messages.push(vscode.LanguageModelChatMessage.Assistant(parts));
+    // 空文字の text part を混ぜない。**空の assistant を積むと 400 で弾かれ続ける**のは
+    // 履歴で既に踏んでいる（toMessages が空文字を拒む理由がそれ）。同じ穴が手番の中にも
+    // ある——モデルはツール呼び出しの前に空や改行だけの text を吐くことがある。
+    const speech = parts.filter(
+      part => !(part instanceof vscode.LanguageModelTextPart) || String(part.value).trim());
+    messages.push(vscode.LanguageModelChatMessage.Assistant(speech));
     const results = [];
     for (const call of calls) {
       emit({ tool: call.name, input: call.input });

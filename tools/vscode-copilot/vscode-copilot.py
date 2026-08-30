@@ -434,7 +434,7 @@ def file_context(files, read_files, writable: bool) -> str:
 
 
 def run_agent(endpoint: dict[str, object], prompt: str, tools: list[str], family: str | None,
-              timeout: float, on_event, history=None) -> dict:
+              timeout: float, on_event, history=None, debug: bool = False) -> dict:
     """エージェントを 1 回走らせる。往復の途中経過は on_event へ流す。
 
     `history` を渡すと、その続きとして走らせる（対話でツールを使うとき）。ツール往復の
@@ -442,6 +442,8 @@ def run_agent(endpoint: dict[str, object], prompt: str, tools: list[str], family
     """
     messages = [*(history or []), {"role": "user", "content": prompt}]
     body: dict[str, object] = {"messages": messages, "tools": tools}
+    if debug:
+        body["debug"] = True
     if family:
         body["family"] = family
     req = urllib.request.Request(
@@ -498,6 +500,12 @@ def agent_progress(on_delta):
 
 def format_agent_event(event: dict) -> str | None:
     """途中経過の 1 行。何をしているか見えないまま黙るのが一番困るので出す。"""
+    if "debug" in event:
+        info = event["debug"]
+        shapes = " / ".join(
+            f"{m['role']}:{m['content'] if isinstance(m['content'], str) else ','.join(m['content'])}"
+            for m in info.get("messages") or ())
+        return f"  [debug] 往復 {info.get('round')}  {shapes}"
     if "tool" in event:
         if event.get("ok"):
             return None  # 成功は呼び出し行だけで足りる
@@ -539,10 +547,12 @@ def is_command(line: str) -> bool:
 class Session:
     """1 つの対話。履歴は拡張ではなく手元に持つ（bridge を再起動しても会話が続く）。"""
 
-    def __init__(self, family: str | None = None, tools: list[str] | None = None):
+    def __init__(self, family: str | None = None, tools: list[str] | None = None,
+                 debug: bool = False):
         self.messages: list[dict[str, str]] = []
         self.family = family
         self.tools = tools or None
+        self.debug = debug
 
     def set_tools(self, argument: str, endpoint, timeout: float) -> tuple[str, str]:
         """`/tools` の中身。引数なしは表示、`off` で素の会話へ戻す。
@@ -592,7 +602,7 @@ class Session:
         try:
             if self.tools:
                 result = run_agent(endpoint, text, self.tools, self.family, timeout,
-                                   agent_progress(on_delta), history=history)
+                                   agent_progress(on_delta), history=history, debug=self.debug)
             else:
                 result = request(endpoint, self.messages, self.family, timeout, on_delta)
             # 空の応答を履歴へ入れると、次の手番が「本文が空の assistant」を送って
@@ -660,6 +670,8 @@ def main() -> int:
                         help="--agent に持たせるツールをカンマ区切りで指定。"
                              "セット名（read/write/run/web）とツール名を混ぜて書ける"
                              "（既定は read。--write のときは read,write）")
+    parser.add_argument("--debug", action="store_true",
+                        help="毎往復、bridge へ送ったメッセージの形を標準エラーへ出す")
     parser.add_argument("--write", action="store_true",
                         help="ファイルの編集を許す（ツール既定が read,write になる）")
     parser.add_argument("--file", metavar="PATH", action="append",
@@ -721,7 +733,8 @@ def main() -> int:
                 if line:
                     print(line, file=sys.stderr)
 
-            result = run_agent(endpoint, prompt, tools, args.family, args.timeout, on_event)
+            result = run_agent(endpoint, prompt, tools, args.family, args.timeout, on_event,
+                               debug=args.debug)
             if args.json:
                 print(json.dumps({**result, "tools": tools, "events": events}, ensure_ascii=False))
             elif result["text"].strip():
@@ -752,7 +765,7 @@ def main() -> int:
             result = call_tool(endpoint, args.call, tool_input, args.timeout)
             print_tool_result(result, args.json)
             return 0
-        session = Session(args.family)
+        session = Session(args.family, debug=args.debug)
         if interactive:
             if as_agent:
                 # 対話でも道具を持てる。`-i --write` は「読み書きできる対話」を意味する。

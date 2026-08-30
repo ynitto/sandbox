@@ -440,6 +440,25 @@ readonly=True  → vscode-copilot         --read spec.md --file a.py
 できますが、`copilot_searchCodebase` のような探索は別のワークスペースを見ます。別の
 リポジトリで使うときは bridge を閉じてから起こし直してください。
 
+### 送った形を見る（`--debug`）
+
+VS Code の変換の向こうで 400 が返るとき、手前で持っていた形が唯一の手がかりです。
+`--debug` を付けると、毎往復その形を標準エラーへ出します（本文は出しません——依頼文が
+丸ごとログへ残らないよう、長さと部品の種類だけ）。
+
+```console
+$ vscode-copilot -i --write --debug
+copilot>   [debug] 往復 2  user:string(4) / assistant:string(6) / user:string(95)
+           / assistant:LanguageModelToolCallPart(c1:copilot_applyPatch)
+           / user:LanguageModelToolResultPart(c1:LanguageModelTextPart)
+```
+
+**既知の未解決:** 履歴のある対話でツールを呼ぶと、次の往復が
+`messages with role 'tool' must be a response to a preceeding message with 'tool_calls'`
+で 400 になることがあります。履歴の無い単発（`--agent`）では同じ形が通るので、
+先頭に付く `assistant:string` が効いている疑いがありますが、確かめられていません。
+当たったときは `/clear` で履歴を捨てると通ります。
+
 ### ループの作法
 
 - **ツールの失敗はモデルへ返します。** 落として黙ると同じ呼び出しを繰り返すだけです。

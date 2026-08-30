@@ -836,7 +836,8 @@ def test_a_tool_turn_carries_the_whole_history():
     session = client.Session(tools=["copilot_readFile"])
     seen = {}
 
-    def fake_run_agent(endpoint, prompt, tools, family, timeout, on_event, history=None):
+    def fake_run_agent(endpoint, prompt, tools, family, timeout, on_event, history=None,
+                       debug=False):
         seen["prompt"] = prompt
         seen["history"] = history
         return {"text": "読みました", "rounds": 2}
