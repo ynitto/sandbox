@@ -51,6 +51,20 @@ envelope を求めており、成功したと思っているワーカーは何�
 欠落を正確に名指しする。**無視されていたのではなく訊いていなかった**面である。受入 3/5 には
 届かないので本番のプロンプトへはまだ足さない——次の手は契約側（成功時も envelope を必須にする）。
 
+**本番対策の棚卸しで穴が 3 つ出た（同日・表は[取り込み計画](2026-08-30-measured-improvements-intake.md)の
+「機械はどこにあるか」）。**
+
+1. **`review` の受け方**（塞いだ）——`plan` と同じ `_extract_json_array` で受けていたので、
+   所見 1 件をオブジェクトで返した回が「所見なし」になっていた。本番では
+   **指摘があったのに収束する**（`passed == total and not improved`）。1 件許容の
+   `_items_from_output` へ寄せた
+2. **`map` の `readonly` は静的ノードにしか届かない**——`split` から実行時に生える
+   map / reduce / gate は `continuation._expand_splits` が `id` / `goal` / `deps` / `kind`
+   だけで作る。map-reduce の map はここで生まれるので、道具を外す口は実運用に未到達
+3. **本番に機械が無い行が 2 つ**——制約つき要約（字数・必須言及の機械検査）と組合せ最適
+   （予算内の部分集合最適）は `text_eval` のチェッカーにしかない。`decide_candidates` は
+   AND 条件 + tie_break まで
+
 **§6 の積み残しは 1 件だけ閉じた。** `text_eval --repair` の診断から正解を抜いた
 （`check_pr1` が返せるのは宣言された制約と自己申告の整合だけ・PR1 + `--repair` の 2/3 は
 修正前の数字で本番では再現しない）。**残りは手を付けていない**——`judge_eval --methods` の

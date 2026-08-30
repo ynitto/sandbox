@@ -462,6 +462,45 @@ regex 生成（CG1）は違う——落ち方が「regex を書く仕事だと�
 どこにも無い）。N 件を K 組へ配るのは算術で、モデルに訊く仕事ではない。ケースは能力の
 記録として残すが、割り当ての行にはしない（PV1 と同じ扱い）。
 
+### 機械はどこにあるか（本番／ハーネス）— 2026-08-31 の棚卸し
+
+**「形を整えて通る」は、その形を整える機械が本番にあって初めて意味を持つ。** 表の
+「形を整えて」列を 1 行ずつ実装まで辿った結果:
+
+| 行 | 機械の実装 | 本番で発火するか |
+|---|---|---|
+| 実装（成果物 2 つ以上） | `nodecontract.split_by_deliverables`・`patterns._expand_deliverable_slots`・`agent-herd harness run --deliverable` | ○ |
+| 実装（大きい参照を読む） | `agent.prepare_read_allocation_files`（slice receipt を result に残す） | ○ |
+| 選別・比較（多基準） | `agent._apply_decision` + `nodecontract.decide_candidates` | ○ |
+| 計画（タスクグラフ） | flow-planner の `normalize_tasks` と `patterns._coerce_tasks`（規則は 2 層） | ○ |
+| 統合（依存の欠落運搬） | `nodecontract.carry_dependency_gaps` | ○ |
+| 分解（`plan`） | `plan._plan_next_spec` / `_items_from_output` | ○ |
+| 敵対的レビュー（`review`） | `plan._review_prompt` の材料 2 つ + `_items_from_output` | ○ |
+| 要素ごとの適用（`map`） | `node.readonly`（planner → skill → engine） | **△ 静的ノードだけ** |
+| 制約つきの要約（SM2） | `text_eval --repair` のチェッカー | **× ハーネスのみ** |
+| 組合せ最適（PR1P） | `text_eval._best_combo`（総当たり） | **× ハーネスのみ** |
+| 上流の欠落申告（GW1W） | ハーネスの `instructions` | **×（意図的・受入未達）** |
+
+**× の 2 行は「本番にその機械が無い」。** 制約つき要約の機械検査（字数・必須言及・数値の
+捏造なし）は本番に無く、`_repair_json_output` が直すのは**器だけ**である（statemachine の
+`check` は人が検査コマンドを書いたときだけ効く）。組合せ最適も同じで、`decide_candidates` が
+持つのは AND 条件と tie_break だけ——**予算内の部分集合最適は実装されていない**。
+どちらも「eval では 3/3 だが、本番で同じ要求が来たらモデルに丸投げになる」状態である。
+
+**△ の `map` は口が半分しか通っていない。** `readonly` は planner が書いた**静的ノード**には
+運ばれるが、`split` から実行時に生える map / reduce / gate は
+`continuation._expand_splits` が `id` / `goal` / `deps` / `kind` だけで作るので、
+**宣言が伝播しない**。map-reduce の map はまさにここで生まれるので、道具を外す口は
+実運用の map には届いていない。伝播させるかは「split が配った要素がファイルかどうか」で
+変わるため、単純なコピーでは危ない（ファイルを配る split の map は読み取りが要る）。
+
+**受け方の穴を 1 つ塞いだ（同日）。** `review` は `plan` と同じ `_extract_json_array` で
+受けており、**所見を 1 件だけオブジェクトで返した回は「所見なし」になっていた**——
+`--format json` は配列を返せないので、モデルは 1 件のとき素直にオブジェクトを返す。
+本番の意味は重い: `review` の所見ゼロは「acceptance 全 PASS かつ改善ゼロ＝収束」へ直結する
+ので、**指摘があったのに収束していた**ことになる。plan と同じ 1 件許容の受け方
+（`_items_from_output`）へ寄せた。
+
 ## 参考: いまの実力（ケース別の正解率と所要時間）
 
 台帳から集計した現状。**モデルは `gemma4:e4b`**（ローカル実行の既定）、実装系は aider 経由、

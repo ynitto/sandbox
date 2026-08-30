@@ -450,6 +450,24 @@ def _plan_item_from_output(out: str) -> "dict | None":
     return None
 
 
+def _items_from_output(out: str) -> "list[dict]":
+    """配列契約の受け方。**1 件だけ返された回を 0 件と読まない。**
+
+    本番の `plan` / `review` は `ollama-json`（`--format json`）で走り、この器は
+    **オブジェクトしか返せない**——モデルは 1 件のとき配列をやめてオブジェクトを返す。
+    `_extract_json_array` は「最初の釣り合った `[...]`」を拾うので、そこから本文中の配列
+    （`desc` / `acceptance`）を先に取り、dict 要素 0 件＝「1 件も出なかった」になる。
+    plan では実測で 5 回中 4 回これを踏んでいた（2026-08-31）。review も同じ受け方で、
+    **所見 1 件は黙って「所見なし」になり、プロジェクトはそのまま収束していた。**
+    """
+    items = [i for i in (_extract_json_array(out) or [])
+             if isinstance(i, dict) and str(i.get("title", "")).strip()]
+    if items:
+        return items
+    one = _plan_item_from_output(out)      # 1 件だけのオブジェクト（包み 1 段も剥がす）
+    return [one] if one else []
+
+
 def _plan_next_spec(cfg: "Config", charter: "Charter", charter_tag: "str | None",
                     notes: str, produced: "list[str]", strict: bool) -> "dict | None":
     """次の 1 件をプランナーから受け取る。欠落は**機械で見て 1 回だけ再要求**する。
@@ -645,17 +663,15 @@ def review_via_agent(cfg: "Config", charter: "Charter", results: "list | None" =
     except (OSError, RuntimeError, subprocess.SubprocessError) as e:
         append_journal(cfg.journal, f"project review: レビューに失敗（{e}）")
         return []
-    arr = _extract_json_array(out) or []
     specs = []
-    for i in arr:
-        if isinstance(i, dict) and str(i.get("title", "")).strip():
-            sp = {"title": str(i["title"]).strip(),
-                  "acceptance": coerce_multiline(i.get("acceptance")),
-                  "workspace": _strip_code(str(i.get("workspace") or "").strip()),
-                  "refs": _coerce_repos(i.get("refs")) or _coerce_repos(i.get("repos")),
-                  **({"why": str(i.get("why") or "").strip()} if str(i.get("why") or "").strip() else {}),
-                  "source": "review"}
-            specs.append(assign_plan_workspace(charter, sp))
+    for i in _items_from_output(out):
+        sp = {"title": str(i["title"]).strip(),
+              "acceptance": coerce_multiline(i.get("acceptance")),
+              "workspace": _strip_code(str(i.get("workspace") or "").strip()),
+              "refs": _coerce_repos(i.get("refs")) or _coerce_repos(i.get("repos")),
+              **({"why": str(i.get("why") or "").strip()} if str(i.get("why") or "").strip() else {}),
+              "source": "review"}
+        specs.append(assign_plan_workspace(charter, sp))
     return specs
 
 

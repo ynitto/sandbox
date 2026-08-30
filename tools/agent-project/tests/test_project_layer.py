@@ -326,6 +326,23 @@ class TestProjectLayer(unittest.TestCase):
                                             "workspace": "spec"})  # owns 無し指定は無効
         self.assertEqual(sp2["workspace"], "lib")           # → verify パスの owns で確定
 
+    def test_review_reads_a_single_finding_object(self):
+        # 本番の review は --format json（オブジェクトしか返せない）で走る。所見 1 件を
+        # オブジェクトで返した回を「所見なし」と読むと、プロジェクトはそのまま収束する。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            write_charter(d, "# Charter: r\n## goal\nx\n## repos\n"
+                          "- app = https://git/app.git\n  - owns: **\n  - base: main\n")
+            cfg = cfg_for(d, executor="agent")
+            ch = km.parse_charter((d / "charter.md").read_text(encoding="utf-8"))
+            out = ('{"title": "render.py が無い", "acceptance": ["Markdown 表が出る"], '
+                   '"workspace": "app"}')
+            with mock.patch.object(km, "_run_agent_cli", lambda *a, **k: out):
+                specs = km.review_via_agent(cfg, ch, [("pytest -q", True, "")])
+            self.assertEqual([sp["title"] for sp in specs], ["render.py が無い"])
+            with mock.patch.object(km, "_run_agent_cli", lambda *a, **k: "[]"):
+                self.assertEqual(km.review_via_agent(cfg, ch), [])   # 空は空のまま
+
     def test_assign_plan_workspace_drops_unknown_names(self):
         # 候補に無い名前（散文・成果物のファイル名）は捨てて、決定的解決へ倒す
         ch = km.parse_charter(
