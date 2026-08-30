@@ -8,7 +8,7 @@
 それ以外は同じ OS 上の VS Code を起こします。
 
 ```text
-vscode-copilot-chat (Python CLI)   ← 会話履歴はここが持つ
+vscode-copilot (Python CLI)   ← 会話履歴はここが持つ
   └─ HTTP + Bearer token / 127.0.0.1
       └─ VS Code Extension        ← 状態を持たない変換器
           └─ vscode.lm.selectChatModels({ vendor: "copilot" })
@@ -20,8 +20,8 @@ vscode-copilot-chat (Python CLI)   ← 会話履歴はここが持つ
 前提は VS Code、GitHub Copilot Chat、Python 3 です。
 
 ```bash
-bash tools/vscode-copilot-chat/install.sh
-vscode-copilot-chat "このリポジトリを要約して"
+bash tools/vscode-copilot/install.sh
+vscode-copilot "このリポジトリを要約して"
 ```
 
 **起動は要りません。** bridge へ繋がらなければ、カレントディレクトリを開く VS Code を
@@ -58,7 +58,7 @@ PATH にありません。CLI は `/Applications/Visual Studio Code.app` と
 別の場所・Insiders などを使う場合は `--code-bin` で指定してください。
 
 ```bash
-vscode-copilot-chat --code-bin '/path/to/code' "…"
+vscode-copilot --code-bin '/path/to/code' "…"
 ```
 
 `install.sh` が拡張を置くのは `~/.vscode/extensions` です。Insiders を使う場合は
@@ -70,8 +70,8 @@ vscode-copilot-chat --code-bin '/path/to/code' "…"
 です。使える状態になるまで待ってから終わります。
 
 ```bash
-vscode-copilot-chat --start-only --port 32191
-vscode-copilot-chat --port 32191 "次の質問"
+vscode-copilot --start-only --port 32191
+vscode-copilot --port 32191 "次の質問"
 ```
 
 `--start` は互換のために受け付けますが、自動起動が既定になったので要りません。
@@ -86,8 +86,8 @@ vscode-copilot-chat --port 32191 "次の質問"
 応答は届いた端から流れます。
 
 ```console
-$ vscode-copilot-chat
-vscode-copilot-chat 対話モード。/help でコマンド一覧、Ctrl-D で終了。
+$ vscode-copilot
+vscode-copilot 対話モード。/help でコマンド一覧、Ctrl-D で終了。
 copilot> このリポジトリを要約して
 （応答が逐次流れる）
 copilot> さっきの要約を3行にして
@@ -108,9 +108,9 @@ copilot> さっきの要約を3行にして
 **パイプ入力は従来どおり片道実行のまま**です（標準入力が端末でなければ対話に入りません）。
 
 ```bash
-vscode-copilot-chat < error.log
-printf 'このエラーを説明して' | vscode-copilot-chat
-vscode-copilot-chat --family gpt-4o --json "短く挨拶して"
+vscode-copilot < error.log
+printf 'このエラーを説明して' | vscode-copilot
+vscode-copilot --family gpt-4o --json "短く挨拶して"
 ```
 
 ## tmux から自動運転する
@@ -177,8 +177,8 @@ HTTP status 付きの JSON エラーで返ります。書き始めた後の失�
 そのまま返します。CLI からは `--tools` です。
 
 ```bash
-vscode-copilot-chat --tools          # 名前・タグ・説明の 1 行目
-vscode-copilot-chat --tools --json   # inputSchema を含む全文
+vscode-copilot --tools          # 名前・タグ・説明の 1 行目
+vscode-copilot --tools --json   # inputSchema を含む全文
 ```
 
 並ぶのは 3 種類です。
@@ -203,9 +203,9 @@ vscode-copilot-chat --tools --json   # inputSchema を含む全文
 VS Code が行います。ツールごとの知識をこの repo に置くと、環境差で必ず古くなります。
 
 ```bash
-vscode-copilot-chat --call runSubagent                        # inputSchema を見る
-vscode-copilot-chat --call runSubagent --input '{"prompt":"テストを直して"}'
-echo '{"prompt":"…"}' | vscode-copilot-chat --call runSubagent --input -
+vscode-copilot --call runSubagent                        # inputSchema を見る
+vscode-copilot --call runSubagent --input '{"prompt":"テストを直して"}'
+echo '{"prompt":"…"}' | vscode-copilot --call runSubagent --input -
 ```
 
 `--input` を省くとそのツールの説明と `inputSchema` を表示します。まずこれを見てから
@@ -226,8 +226,8 @@ echo '{"prompt":"…"}' | vscode-copilot-chat --call runSubagent --input -
 `runSubagent` がこれに当たることです。
 
 ```console
-$ vscode-copilot-chat --call runSubagent --input '{"prompt":"…","description":"…"}'
-vscode-copilot-chat: runSubagent は chat request の中からしか呼べません（…）
+$ vscode-copilot --call runSubagent --input '{"prompt":"…","description":"…"}'
+vscode-copilot: runSubagent は chat request の中からしか呼べません（…）
 ```
 
 `--tools` に並ぶことと呼べることは別です。
@@ -272,7 +272,7 @@ prompt-tsx で返すツールがあり、素朴に文字列部品だけを見る
 なります。木を辿ってテキストノードを出現順に連結し、`text` に載せます。
 
 ```console
-$ vscode-copilot-chat --call copilot_readFile --input '{"filePath":"…","startLine":1,"endLine":20}'
+$ vscode-copilot --call copilot_readFile --input '{"filePath":"…","startLine":1,"endLine":20}'
 # Agent Skills
 
 AIエージェント（GitHub Copilot / Claude Code）の能力を拡張するスキル集。
@@ -293,12 +293,12 @@ AIエージェント（GitHub Copilot / Claude Code）の能力を拡張する�
 `--agent` です。
 
 ```bash
-vscode-copilot-chat --agent "この repo の構造を調べて"
-vscode-copilot-chat --agent - < task.md
+vscode-copilot --agent "この repo の構造を調べて"
+vscode-copilot --agent - < task.md
 ```
 
 ```console
-$ vscode-copilot-chat --agent "テストの置き場を調べて"
+$ vscode-copilot --agent "テストの置き場を調べて"
   → copilot_findFiles {"query": "**/test_*.py"}
   → copilot_readFile {"filePath": "…"}
   （3 往復）
@@ -328,16 +328,91 @@ copilot_getChangedFiles copilot_getErrors
 名前を数える側（除外リスト）ではなく載せる側（許可リスト）で守るためです。allowlist に
 あって VS Code に無いものは黙って外れます。
 
-書き込み・実行系を使わせるなら `--agent-tools` で明示します。**そのツールが実際に
-動く**ので、何を渡すか分かった上で使ってください。
+### 用途で持たせ替える
+
+`--agent-tools` はカンマ区切りで、**セット名とツール名を混ぜて**書けます。
+
+| セット | 中身 |
+|---|---|
+| `read`（既定） | 上の 10 個 |
+| `write` | `copilot_applyPatch` `copilot_replaceString` `copilot_createFile` `copilot_createDirectory` |
+| `run` | `run_in_terminal` `get_terminal_output` `runTests` |
+| `web` | `copilot_fetchWebPage` |
 
 ```bash
-vscode-copilot-chat --agent "この関数名を直して" \
-  --agent-tools copilot_readFile,copilot_replaceString
+vscode-copilot --agent-tools read,write --agent "この関数名を直して"
+vscode-copilot --agent-tools read,run  --agent "落ちているテストを調べて"
+vscode-copilot --agent-tools read,copilot_replaceString --agent "…"
 ```
 
-明示した名前が VS Code に無ければ、黙って外さずに失敗します——頼んだ道具を使わない
-エージェントになるより、無いと言われるほうがましです。
+**`--agent-tools` は既定に足すのではなく置き換えます。** 書き込みだけ渡すと、モデルは
+読めないまま直そうとします。`read,write` のように読む側も一緒に書いてください。
+
+セットも allowlist のままです。次の 2 つはどのセットにも入れていません。
+
+- `copilot_createNewWorkspace` … 空入力で実行され、ワークスペースが開いて拡張ホストごと
+  落ちました（実測）。「今のリポジトリで作業する」という用途と噛み合いません。
+- `runSubagent` … `toolInvocationToken` を要求するのでこの bridge からは呼べません。
+
+どちらも名指しでなら渡せます。止めているのは、カテゴリを頼んだだけで付いてくることです。
+MCP サーバの道具も環境ごとに違うので、セットには括らず名指しにしています。
+
+**名指しとセットで扱いが違います。** 名前で書いたものが VS Code に無ければ失敗します
+——頼んだ道具を使わないエージェントになるより、無いと言われるほうがましです。セットは
+カテゴリの依頼なので、環境に無いものは黙って外します（`run` を頼んだのに `runTests` が
+無いだけで止まっては困ります）。
+
+書き込み・実行系は**そのツールが実際に動きます**。承認ダイアログが必ず止めてくれると
+当てにはしないでください——`copilot_createNewWorkspace` は誰にも止められず動きました。
+git が綺麗な状態で試すのが安全です。
+
+### ファイルを編集させる
+
+`--write` を付けるとツール既定が `read,write` になり、`--file` / `--read` で対象を渡せます。
+
+```bash
+printf 'この関数名を直して\n' | vscode-copilot --write --file src/a.py --read docs/spec.md
+```
+
+**権限を決めるのは `--write` であって `--file` ではありません。** `--file` は「どれが対象か」を
+示すだけで、`--write` が無ければ読むだけです。ハーネスは読み取りの手番でも `--file` を
+渡してくるので、ここを取り違えると読むだけの手番で書き込みツールが載ります。
+
+パスは絶対に直してモデルへ渡します。VS Code のツールはワークスペース相対のパスを
+受け取らないためです。渡した依頼文の前には次が付きます。
+
+```text
+編集してよいファイル（これ以外は書き換えない）:
+- /abs/path/src/a.py
+参考（読むだけ。書き換えない）:
+- /abs/path/docs/spec.md
+```
+
+**提示していないツールは実行しません。** モデルが提示外の名前を返しても、拡張が
+invoke せずに `tool error` としてモデルへ返します。allowlist を「渡す側」だけで守ると、
+読み取り専用の手番で書き込みツールが動きえます（スタブで実際に起きました）。
+
+### agent-herd のハーネス engine として使う
+
+`agents/vscode-copilot.json` が `write_args` / `file_flag` / `read_flag` を宣言しているので、
+`agent-herd harness` の engine に指定できます。
+
+```bash
+agent-herd harness run --agent-cli vscode-copilot ...
+```
+
+`headless_autonomy` は `single-shot` です。ハーネスが `read_files` / `write_files` / `run` /
+`final` の契約を供給し、`write_files` の手番だけ `--write` が付きます。
+
+```text
+readonly=False → vscode-copilot --write --read spec.md --file a.py
+readonly=True  → vscode-copilot         --read spec.md --file a.py
+```
+
+**bridge のワークスペースと作業ディレクトリがずれていると噛み合いません。** 拡張は
+最初に起こしたときの cwd をワークスペースとして開きます。絶対パスを渡すので読み書きは
+できますが、`copilot_searchCodebase` のような探索は別のワークスペースを見ます。別の
+リポジトリで使うときは bridge を閉じてから起こし直してください。
 
 ### ループの作法
 
@@ -354,6 +429,6 @@ vscode-copilot-chat --agent "この関数名を直して" \
 ## テスト
 
 ```bash
-python3 -m pytest tools/vscode-copilot-chat/tests            # CLI
+python3 -m pytest tools/vscode-copilot/tests            # CLI
 python3 -m unittest discover -s test                          # tmux 待機判定（tools/agent-loop で実行）
 ```

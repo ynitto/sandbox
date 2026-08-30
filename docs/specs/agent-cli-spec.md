@@ -323,7 +323,7 @@ agent-audit が CLI 自身の transcript を収集するための宣言です。
 
 `relative_cost: 0` はローカル実行（`ollama`（profile 含む）・`aider`）です。
 これらは `agent-herd` を入口に持ち、クラウド 6 種は素の CLI を指したままです（`vscode-copilot`
-だけは素の CLI ではなく自作ブリッジ `vscode-copilot-chat` を指します——VS Code の
+だけは素の CLI ではなく自作ブリッジ `vscode-copilot` を指します——VS Code の
 Language Model API は編集中の VS Code プロセスの中にしか無く、argv から直接は呼べないため）。詳細は
 [`docs/specs/agent-herd-spec.md`](./agent-herd-spec.md)。
 

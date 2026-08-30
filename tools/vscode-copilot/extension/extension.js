@@ -215,6 +215,7 @@ function resolveTools(names) {
 // 「どのツールを呼ぶか決めさせて、結果を返して、また訊く」というループだけ。
 async function runAgent(body, cancellationToken, emit) {
   const tools = resolveTools(body.tools);
+  const offered = new Set(tools.map(tool => tool.name));
   const selector = { vendor: 'copilot' };
   if (body.family) selector.family = body.family;
   const models = await vscode.lm.selectChatModels(selector);
@@ -249,6 +250,18 @@ async function runAgent(body, cancellationToken, emit) {
     const results = [];
     for (const call of calls) {
       emit({ tool: call.name, input: call.input });
+      if (!offered.has(call.name)) {
+        // 渡していないツールは実行しない。**allowlist は渡す側だけでなく実行する側でも
+        // 守る。** モデルが提示外の名前を返すことはあり、ここを素通しすると読み取り
+        // 専用の手番で書き込みツールが動く（定義が readonly: enforced を名乗る以上、
+        // それは嘘になる）。実測でスタブが提示外の copilot_applyPatch を呼び、
+        // ファイルが書き換わった。
+        const message = `tool not offered for this request: ${call.name}`;
+        results.push(new vscode.LanguageModelToolResultPart(
+          call.callId, [new vscode.LanguageModelTextPart(`tool error: ${message}`)]));
+        emit({ tool: call.name, error: message });
+        continue;
+      }
       try {
         const result = await vscode.lm.invokeTool(
           call.name, { toolInvocationToken: undefined, input: call.input }, cancellationToken);
