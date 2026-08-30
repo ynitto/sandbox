@@ -208,6 +208,19 @@ class ScopeAndGateTests(unittest.TestCase):
                  {"id": "w", "goal": "[scope] 各ファイル処理", "deps": ["s"], "kind": "work"}]
         self.assertEqual([t["id"] for t in plan.strip_static_split_successors(tasks)], ["s"])
 
+    def test_mentioned_paths_does_not_glue_japanese_particles(self):
+        """`\\w` は日本語も拾う。助詞が頭に付くと要求のパスと一致せず、宣言剥がしが
+        正当な成果物まで落とす（実測 2026-08-30: PL4 の goal が `をREADME.md`）。"""
+        self.assertEqual(plan._mentioned_paths("修正をREADME.mdの1行目に適用"), {"README.md"})
+        self.assertEqual(plan._mentioned_paths("docs/spec.mdを更新する"), {"docs/spec.md"})
+
+    def test_collapse_reads_paths_from_the_body_when_scope_is_missing(self):
+        """`[scope]` を落としたノードも同じファイルなら畳む（e4b は実際に落とす）。"""
+        tasks = [{"id": "a", "goal": "[scope] README.md\n1 行目を読む", "deps": [], "kind": "work"},
+                 {"id": "b", "goal": "修正をREADME.mdの1行目に適用する", "deps": ["a"], "kind": "work"}]
+        out = plan.collapse_same_scope_work(tasks, "coarse")
+        self.assertEqual([t["id"] for t in out], ["a"])
+
     def test_gate_rejects_same_file_split_across_nodes_at_coarse(self):
         """coarse では同じファイルの作業が 2 ノードに分かれていること自体が過分解。
         レンジ（1〜3）では捕まらないので別に見る。fine / finest では言わない。"""

@@ -799,7 +799,10 @@ def _normalize_goal(goal: str) -> str:
     return _NORM_RE.sub(" ", g).strip()
 
 
-_DECLARED_PATH_RE = re.compile(r"[\w][\w./-]*\.[A-Za-z0-9]{1,8}")
+# パス文字は ASCII に限る。`\w` は日本語も拾うので、`をREADME.md` のように助詞が
+# 頭にくっついた 1 語が取れてしまい、**要求が名指ししたパスと一致しなくなる**
+# ——`strip_unrequested_deliverables` はそれを「要求に無い成果物」として落とす。
+_DECLARED_PATH_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_./-]*\.[A-Za-z0-9]{1,8}")
 
 
 def _mentioned_paths(text: str) -> set:
@@ -842,12 +845,16 @@ def strip_unrequested_deliverables(tasks: list[dict], context_text: str) -> list
 
 
 def _scope_header(goal: str) -> str:
-    """goal の scope 宣言部（`[scope]` 行）。マーカーが無ければ 1 行目を見る。"""
-    lines = (goal or "").splitlines()
-    for line in lines:
+    """goal が触るファイルを読む部分。`[scope]` 行があればそこ、無ければ goal 全体。
+
+    マーカーの欠落で読めなくならないようにする（`has_scope` も「マーカー**または**
+    本文中のパス」で見ている）。実測 2026-08-30: e4b は PL4 の 3 ノードのうち 2 つで
+    `[scope]` 行を落とし、本文にだけ `README.md` を書いた。
+    """
+    for line in (goal or "").splitlines():
         if _SCOPE_MARKER_RE.search(line):
             return line
-    return lines[0] if lines else ""
+    return goal or ""
 
 
 def _scope_body(goal: str) -> str:
