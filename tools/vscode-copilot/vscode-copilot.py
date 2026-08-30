@@ -360,19 +360,76 @@ READ_ONLY_TOOLS = (
     "copilot_getErrors",
 )
 
+# --agent-tools に書ける短縮名。長い名前を毎回並べるためだけに用途を諦めさせない。
+# **どれも allowlist のまま**で、セットに載っている名前しか入りません。
+# ここに置かないもの:
+#   - copilot_createNewWorkspace … 空入力で実行され、ワークスペースが開いて拡張ホストごと
+#     落ちた（実測）。用途が「今のリポジトリで作業する」と噛み合わないので名指しでだけ使う。
+#   - runSubagent … toolInvocationToken を要求するのでこの bridge からは呼べない。
+#   - MCP サーバの道具 … 環境ごとに違う。カテゴリで括れないので名指しで。
+TOOL_SETS = {
+    "read": READ_ONLY_TOOLS,
+    "write": (
+        "copilot_applyPatch",
+        "copilot_replaceString",
+        "copilot_createFile",
+        "copilot_createDirectory",
+    ),
+    "run": (
+        "run_in_terminal",
+        "get_terminal_output",
+        "runTests",
+    ),
+    "web": (
+        "copilot_fetchWebPage",
+    ),
+}
+
 
 def agent_tools(payload: dict, requested: str | None) -> list[str]:
-    """使わせるツールを決める。VS Code に無い名前は落とす（既定）か、明示なら失敗させる。"""
+    """使わせるツールを決める。
+
+    `requested` はカンマ区切りで、セット名（TOOL_SETS）とツール名を混ぜて書けます。
+    **名指しは失敗させ、セットは実在するものだけ通します**——名前で頼まれたものを黙って
+    落とすと「頼んだ道具を使わないエージェント」になり、カテゴリで頼まれたものを
+    落とさないと環境差だけで失敗するためです。
+    """
     registered = {tool.get("name") for tool in payload.get("tools") or []}
-    if requested:
-        names = [name.strip() for name in requested.split(",") if name.strip()]
-        missing = [name for name in names if name not in registered]
-        if missing:
-            raise RuntimeError(
-                f"VS Code に登録されていないツールです: {', '.join(missing)}（--tools で一覧）")
-        return names
-    # 既定は allowlist と実在の積。環境差で欠けるものは黙って外す。
-    return [name for name in READ_ONLY_TOOLS if name in registered]
+    items = [item.strip() for item in (requested or "read").split(",") if item.strip()]
+    names: list[str] = []
+    missing: list[str] = []
+    for item in items:
+        if item in TOOL_SETS:
+            names.extend(name for name in TOOL_SETS[item] if name in registered)
+            continue
+        (names if item in registered else missing).append(item)
+    if missing:
+        raise RuntimeError(
+            f"VS Code に登録されていないツールです: {', '.join(missing)}"
+            f"（--tools で一覧、セット名は {'/'.join(TOOL_SETS)}）")
+    # 重複は落とし、書かれた順は保つ。同じ道具を 2 回モデルへ見せる意味はない。
+    return list(dict.fromkeys(names))
+
+
+def file_context(files, read_files, writable: bool) -> str:
+    """依頼文の前に置く、対象ファイルの申し送り。
+
+    **パスは絶対にする。** VS Code のツールはワークスペース相対のパスを受け取らない
+    （実測で copilot_readFile は絶対パスを要求した）。
+    """
+    lines: list[str] = []
+    targets = [str(Path(path).resolve()) for path in (files or ())]
+    context = [str(Path(path).resolve()) for path in (read_files or ())]
+    if targets:
+        # 読み取り専用の呼び出しでも呼び出し側は --file を渡してくる。権限を決めるのは
+        # --write であって --file ではない——ここを取り違えると読むだけの手番で書く。
+        lines.append("編集してよいファイル（これ以外は書き換えない）:" if writable
+                     else "対象ファイル（今回は読むだけ。書き換えない）:")
+        lines += [f"- {path}" for path in targets]
+    if context:
+        lines.append("参考（読むだけ。書き換えない）:")
+        lines += [f"- {path}" for path in context]
+    return "\n".join(lines) + "\n\n" if lines else ""
 
 
 def run_agent(endpoint: dict[str, object], prompt: str, tools: list[str], family: str | None,
@@ -505,7 +562,7 @@ def repl(endpoint: dict[str, object], session: Session, timeout: float, stream=s
         stream.write(text)
         stream.flush()
 
-    emit("vscode-copilot-chat 対話モード。/help でコマンド一覧、Ctrl-D で終了。\n")
+    emit("vscode-copilot 対話モード。/help でコマンド一覧、Ctrl-D で終了。\n")
     while True:
         try:
             line = input(PROMPT)
@@ -531,7 +588,7 @@ def repl(endpoint: dict[str, object], session: Session, timeout: float, stream=s
             # 接続が切れると拡張側が CancellationToken を落とすので、モデルも止まる。
             emit("\n中断しました。\n")
         except RuntimeError as exc:
-            emit(f"\nvscode-copilot-chat: {exc}\n")
+            emit(f"\nvscode-copilot: {exc}\n")
 
 
 def main() -> int:
@@ -546,8 +603,15 @@ def main() -> int:
                         help="VS Code のツールを使わせながらタスクを解かせる"
                              "（- で標準入力から読む）")
     parser.add_argument("--agent-tools", metavar="NAMES",
-                        help="--agent に持たせるツールをカンマ区切りで明示"
-                             "（既定は読み取り専用のみ）")
+                        help="--agent に持たせるツールをカンマ区切りで指定。"
+                             "セット名（read/write/run/web）とツール名を混ぜて書ける"
+                             "（既定は read。--write のときは read,write）")
+    parser.add_argument("--write", action="store_true",
+                        help="ファイルの編集を許す（ツール既定が read,write になる）")
+    parser.add_argument("--file", metavar="PATH", action="append",
+                        help="編集対象ファイル。--write と併せて使う（繰り返し可）")
+    parser.add_argument("--read", metavar="PATH", action="append",
+                        help="参考にするだけのファイル（繰り返し可）")
     parser.add_argument("--call", metavar="TOOL",
                         help="ツールを 1 つ呼ぶ。--input を省くと inputSchema を表示する")
     parser.add_argument("--input", metavar="JSON",
@@ -563,7 +627,8 @@ def main() -> int:
     parser.add_argument("--code-bin", default="code", help="Windows側のcode command（既定: code）")
     args = parser.parse_args()
     # 端末から引数なしで起動したら対話。パイプ入力は従来どおり片道実行のまま。
-    one_off = args.tools or args.call or args.agent
+    as_agent = bool(args.agent or args.write or args.file or args.read)
+    one_off = args.tools or args.call or as_agent
     interactive = args.interactive or (args.prompt is None and not one_off and sys.stdin.isatty())
     if interactive and args.json:
         parser.error("--json は対話モードでは使えません")
@@ -579,11 +644,16 @@ def main() -> int:
             payload = fetch_tools(endpoint, args.timeout)
             print(json.dumps(payload, ensure_ascii=False) if args.json else format_tools(payload))
             return 0
-        if args.agent:
-            prompt = sys.stdin.read() if args.agent == "-" else args.agent
+        if as_agent:
+            if args.agent is not None:
+                prompt = sys.stdin.read() if args.agent == "-" else args.agent
+            else:
+                prompt = args.prompt if args.prompt is not None else sys.stdin.read()
             if not prompt.strip():
-                raise RuntimeError("--agent の依頼文が空です")
-            tools = agent_tools(fetch_tools(endpoint, args.timeout), args.agent_tools)
+                raise RuntimeError("依頼文が空です")
+            prompt = file_context(args.file, args.read, args.write) + prompt
+            requested = args.agent_tools or ("read,write" if args.write else None)
+            tools = agent_tools(fetch_tools(endpoint, args.timeout), requested)
             if not tools:
                 raise RuntimeError(
                     "使えるツールが 1 つもありません（--tools で一覧、--agent-tools で明示）")
@@ -636,7 +706,7 @@ def main() -> int:
             parser.error("prompt が空です")
         result = session.ask(endpoint, prompt, args.timeout, None)
     except RuntimeError as exc:
-        print(f"vscode-copilot-chat: {exc}", file=sys.stderr)
+        print(f"vscode-copilot: {exc}", file=sys.stderr)
         return 1
     print(json.dumps(result, ensure_ascii=False) if args.json else result["text"])
     return 0

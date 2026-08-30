@@ -120,7 +120,7 @@ chat モードのように、人が `/skill-name` と書いたテキストを送
 | `ollama-read.json` | 同上 + `--tools read` | enforced（write でも読み取り専用コマンドだけ） |
 | `ollama-verify.json` | 同上 + `--format json --stall-timeout 180` | enforced（道具なし。テキスト検証役。既定 gemma4:12b——負けは全部タイムアウトなので stall + transient 分類の再投入で受け、コード worker の候補には入れない） |
 | `aider.json` | `agent-aider`（aider + ollama_chat） | enforced（`--dry-run`）。single-shot——渡されたファイルを編集するだけでツールループを持たない |
-| `vscode-copilot.json` | `vscode-copilot-chat`（VS Code の Language Model API へ橋渡し） | enforced（モデルを呼ぶだけでファイルもコマンドも触らない）。single-shot——ツールを持たないので呼び出し側がループを供給する |
+| `vscode-copilot.json` | `vscode-copilot`（VS Code の Language Model API へ橋渡し） | enforced（モデルを呼ぶだけでファイルもコマンドも触らない）。single-shot——ツールを持たないので呼び出し側がループを供給する |
 
 **ローカルが 2 つある理由（結論: 選ばなくてよい）。** `aider` と `ollama` は、15 用途
 （verify / judge / extract / retrieve / split …）についてはどちらを base にしても同じ
@@ -134,7 +134,7 @@ docs/plans/2026-08-27 設計 §6）。使う人は `agents/opencode.json` を自
 
 `vscode-copilot.json` も本体を直接呼ばない。VS Code の Language Model API は
 **編集中の VS Code プロセスの中にしか無い**ので、拡張が localhost に立てた認証付きの口へ
-CLI から問い合わせる（`tools/vscode-copilot-chat`）。Copilot の枠でモデルと会話できるが、
+CLI から問い合わせる（`tools/vscode-copilot`）。Copilot の枠でモデルと会話できるが、
 VS Code の Agent mode が持つ built-in tools・ファイル編集・ターミナル実行は**含まない**
 ——`headless_autonomy: single-shot` はそのことの申告でもある。
 

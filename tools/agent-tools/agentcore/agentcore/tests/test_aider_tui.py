@@ -18,7 +18,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from agentcore import aider_adapter, herdcli, ollama_tui  # noqa: E402
+from agentcore import aider_adapter, herdcli, ollama_skills, ollama_tui  # noqa: E402
 
 BUNDLED = Path(__file__).resolve().parents[5] / "agents"
 
@@ -103,6 +103,44 @@ class AiderBackendRunnerTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             runner("/ask 富士山の高さは?", model=self.MODEL, tools=False,
                    think=None, renderer=None)
+
+    def test_a_real_skill_is_expanded_not_called_unknown(self):
+        """/help と /skills と Tab が案内するものを、runner が「未知」と言わないこと。
+
+        表だけを引く（lookup）と宣言もスキルも None になり、実在するスキル名が
+        「未知のコマンドです」で弾かれる——広告している面と実際に動く面がずれる。
+        """
+        runner = self._runner()
+        with mock.patch.object(ollama_skills, "skill_exists", lambda name: name == "tidy"), \
+             mock.patch.object(ollama_skills, "expand",
+                               lambda prompt, **kw: ("スキル本文\n" + kw["plan"].body, [])), \
+             mock.patch.object(aider_adapter.subprocess, "run",
+                               return_value=mock.Mock(returncode=0, stdout="編集した")) as run:
+            body = runner("/tidy\nfoo.py を直して", model=self.MODEL, tools=False,
+                          think=None, renderer=None)
+        self.assertEqual(body, "編集した")
+        self.assertEqual(run.call_args.args[0][-1], "スキル本文\nfoo.py を直して")
+
+    def test_ask_is_refused_even_though_it_asks_for_no_tools(self):
+        """`tools` は False も意味を持つ（/ask＝道具なし）。
+
+        真偽で見ると /ask が黙って素通りし、指定が消えたまま aider が走る。
+        """
+        runner = self._runner()
+        with mock.patch.object(aider_adapter.subprocess, "run") as run:
+            with self.assertRaises(RuntimeError):
+                runner("/ask 富士山の高さは?", model=self.MODEL, tools=False,
+                       think=None, renderer=None)
+        self.assertFalse(run.called, "断ったのに aider を起こさない")
+
+    def test_this_backend_declares_it_writes_no_log(self):
+        """/ctx と /status が別の ollama 実行の数字を出さないための宣言。"""
+        seen = {}
+        with mock.patch.object(ollama_tui, "repl",
+                               side_effect=lambda runner, **kw: seen.update(kw) or 0):
+            aider_adapter._tui_repl(["--model", self.MODEL],
+                                    {"policy": None, "num_ctx": None, "num_predict": None})
+        self.assertIs(seen["event_log"], False)
 
     def test_model_switch_with_managed_settings_is_refused(self):
         """settings の entry は起動時モデル名で束ねてある——黙って外さない。"""

@@ -129,7 +129,7 @@ class CopilotProfileTest(unittest.TestCase):
 
 
 class VscodeCopilotProfileTest(unittest.TestCase):
-    """自作 REPL（tools/vscode-copilot-chat）の待機判定。
+    """自作 REPL（tools/vscode-copilot）の待機判定。
 
     プロンプト文字列は CLI 側の定数 PROMPT が正で、定義の ready_pattern はそれを追う。
     片方だけ変えると tmux 自動運転が黙って「常に処理中」になるので、ここで固定する。
@@ -161,7 +161,7 @@ class VscodeCopilotProfileTest(unittest.TestCase):
         self.assertFalse(self.profile.is_ready("copilot> 次の質問"))
 
     def test_ready_pattern_matches_the_cli_prompt_constant(self):
-        source = (HERE.parents[1] / "vscode-copilot-chat" / "vscode-copilot-chat.py").read_text(
+        source = (HERE.parents[1] / "vscode-copilot" / "vscode-copilot.py").read_text(
             encoding="utf-8")
         prompt = re.search(r'^PROMPT = "(.*)"$', source, re.MULTILINE).group(1)
         self.assertTrue(self.profile.is_ready(f"answer\n{prompt}"))

@@ -6,7 +6,7 @@ from unittest import mock
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
-SCRIPT = Path(__file__).resolve().parents[1] / "vscode-copilot-chat.py"
+SCRIPT = Path(__file__).resolve().parents[1] / "vscode-copilot.py"
 SPEC = importlib.util.spec_from_file_location("client", SCRIPT)
 client = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(client)
@@ -284,7 +284,7 @@ def _main_with(argv, isatty):
     stdin = mock.Mock()
     stdin.isatty.return_value = isatty
     stdin.read.return_value = "piped prompt"
-    with mock.patch.object(client.sys, "argv", ["vscode-copilot-chat", *argv]), \
+    with mock.patch.object(client.sys, "argv", ["vscode-copilot", *argv]), \
          mock.patch.object(client.sys, "stdin", stdin), \
          mock.patch.object(client, "ensure_bridge", return_value={"url": "u", "token": "t"}), \
          mock.patch.object(client, "repl", return_value=0) as repl, \
@@ -388,7 +388,7 @@ def test_format_tools_says_so_when_empty():
 def test_tools_flag_does_not_enter_the_repl_on_a_tty():
     stdin = mock.Mock()
     stdin.isatty.return_value = True
-    with mock.patch.object(client.sys, "argv", ["vscode-copilot-chat", "--tools"]), \
+    with mock.patch.object(client.sys, "argv", ["vscode-copilot", "--tools"]), \
          mock.patch.object(client.sys, "stdin", stdin), \
          mock.patch.object(client, "ensure_bridge", return_value={"url": "u", "token": "t"}), \
          mock.patch.object(client, "repl", return_value=0) as repl, \
@@ -445,7 +445,7 @@ def _main_call(argv, *, tools=None, call_result=None):
     stdin = mock.Mock()
     stdin.isatty.return_value = True
     stdin.read.return_value = '{"prompt": "stdin から"}'
-    with mock.patch.object(client.sys, "argv", ["vscode-copilot-chat", *argv]), \
+    with mock.patch.object(client.sys, "argv", ["vscode-copilot", *argv]), \
          mock.patch.object(client.sys, "stdin", stdin), \
          mock.patch.object(client, "ensure_bridge", return_value={"url": "u", "token": "t"}), \
          mock.patch.object(client, "repl", return_value=0) as repl, \
@@ -651,6 +651,61 @@ def test_explicit_unregistered_tool_fails_rather_than_being_dropped():
         assert "nope" in str(exc)
 
 
+# --- セット名（read/write/run/web） ---
+
+
+def test_set_names_expand_to_their_tools():
+    chosen = client.agent_tools(AGENT_TOOLS, "write")
+    assert chosen == ["copilot_replaceString"]  # AGENT_TOOLS に居る write はこれだけ
+
+
+def test_sets_and_names_can_be_mixed():
+    chosen = client.agent_tools(AGENT_TOOLS, "read,copilot_replaceString")
+    assert "copilot_readFile" in chosen and "copilot_findFiles" in chosen
+    assert chosen[-1] == "copilot_replaceString"
+
+
+def test_several_sets_can_be_given_at_once():
+    chosen = client.agent_tools(AGENT_TOOLS, "write,run")
+    assert chosen == ["copilot_replaceString", "run_in_terminal"]
+
+
+def test_read_is_the_default_set():
+    assert client.agent_tools(AGENT_TOOLS, "read") == client.agent_tools(AGENT_TOOLS, None)
+
+
+def test_a_set_drops_tools_this_vscode_does_not_have():
+    """セットはカテゴリの依頼。環境に無いものが 1 つあるだけで失敗させない。"""
+    assert client.agent_tools({"tools": [{"name": "runTests"}]}, "run") == ["runTests"]
+
+
+def test_a_named_tool_still_fails_even_beside_a_set():
+    """セットと混ぜても、名指しは黙って落とさない。"""
+    try:
+        client.agent_tools(AGENT_TOOLS, "read,nope")
+        assert False, "must fail"
+    except RuntimeError as exc:
+        assert "nope" in str(exc)
+        assert "read" in str(exc)  # 使えるセット名を案内する
+
+
+def test_overlapping_sets_do_not_repeat_a_tool():
+    payload = {"tools": [{"name": "copilot_readFile"}]}
+    assert client.agent_tools(payload, "read,read,copilot_readFile") == ["copilot_readFile"]
+
+
+def test_sets_never_carry_the_tools_we_kept_out():
+    """空入力で拡張ホストを落とした copilot_createNewWorkspace と、呼べない runSubagent。"""
+    payload = {"tools": [{"name": n} for n in
+                         ("copilot_createNewWorkspace", "runSubagent", "copilot_applyPatch")]}
+    for name in client.TOOL_SETS:
+        chosen = client.agent_tools(payload, name)
+        assert "copilot_createNewWorkspace" not in chosen
+        assert "runSubagent" not in chosen
+    # 名指しなら使える（止めるのはセットに載せることだけ）。
+    assert client.agent_tools(payload, "copilot_createNewWorkspace") == ["copilot_createNewWorkspace"]
+
+
 def _agent_stream(events):
     payload = "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in events).encode()
     captured = {}
@@ -733,7 +788,7 @@ def _main_agent(argv, *, tools, result=None, stdin_text=""):
     stdin = mock.Mock()
     stdin.isatty.return_value = True
     stdin.read.return_value = stdin_text
-    with mock.patch.object(client.sys, "argv", ["vscode-copilot-chat", *argv]), \
+    with mock.patch.object(client.sys, "argv", ["vscode-copilot", *argv]), \
          mock.patch.object(client.sys, "stdin", stdin), \
          mock.patch.object(client, "ensure_bridge", return_value={"url": "u", "token": "t"}), \
          mock.patch.object(client, "repl", return_value=0) as repl, \
@@ -771,6 +826,60 @@ def test_agent_refuses_an_empty_task():
 def test_agent_says_so_when_no_tool_survives():
     code, _, run = _main_agent(["--agent", "調べて"], tools={"tools": [{"name": "run_in_terminal"}]})
     assert code == 1 and not run.called
+
+
+# --- 編集モード（agent-herd のハーネス engine 契約） ---
+
+
+def test_write_offers_the_write_set_without_asking():
+    code, _, run = _main_agent(["--write", "直して"], tools=AGENT_TOOLS)
+    assert code == 0
+    assert run.call_args.args[2] == ["copilot_readFile", "copilot_findFiles",
+                                     "copilot_replaceString"]
+
+
+def test_files_alone_stay_read_only():
+    """--file は対象を示すだけ。権限を決めるのは --write。
+
+    ハーネスは読み取りの手番でも --file を渡してくる（readonly=True で write_args が
+    落ちるだけ）。ここを取り違えると、読むだけの手番で書き込みツールが載る。
+    """
+    code, _, run = _main_agent(["--file", "a.py", "見て"], tools=AGENT_TOOLS)
+    assert code == 0
+    assert run.call_args.args[2] == ["copilot_readFile", "copilot_findFiles"]
+
+
+def test_agent_tools_still_wins_over_write():
+    code, _, run = _main_agent(["--write", "--agent-tools", "read", "直して"], tools=AGENT_TOOLS)
+    assert run.call_args.args[2] == ["copilot_readFile", "copilot_findFiles"]
+
+
+def test_file_paths_reach_the_model_as_absolute_paths():
+    """VS Code のツールは相対パスを受け取らない（実測）。"""
+    code, _, run = _main_agent(["--write", "--file", "a.py", "--read", "spec.md", "直して"],
+                               tools=AGENT_TOOLS)
+    assert code == 0
+    prompt = run.call_args.args[1]
+    assert str(Path("a.py").resolve()) in prompt
+    assert str(Path("spec.md").resolve()) in prompt
+    assert prompt.endswith("直して")
+
+
+def test_the_header_says_read_only_when_write_is_absent():
+    _, _, run = _main_agent(["--file", "a.py", "見て"], tools=AGENT_TOOLS)
+    assert "書き換えない" in run.call_args.args[1]
+    assert "編集してよいファイル" not in run.call_args.args[1]
+
+
+def test_write_reads_the_task_from_stdin():
+    code, _, run = _main_agent(["--write", "--file", "a.py"], tools=AGENT_TOOLS,
+                               stdin_text="ハーネスからの依頼")
+    assert code == 0 and run.call_args.args[1].endswith("ハーネスからの依頼")
+
+
+def test_file_context_is_empty_without_files():
+    assert client.file_context(None, None, True) == ""
+    assert client.file_context([], [], False) == ""
 
 
 def test_agent_does_not_enter_the_repl_on_a_tty():
