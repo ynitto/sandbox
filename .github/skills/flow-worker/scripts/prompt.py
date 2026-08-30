@@ -57,6 +57,19 @@ ROLE_LINES = {
     "verify": "検証役。依存の成果を鵜呑みにせず独立に検算する。",
 }
 
+# 判定契約（payload の decision）があるときの役割行。採否は agent-flow 側の機械
+# （agentcore.decide_candidates）が決めるので、モデルの仕事は事実の転記だけになる。
+# 役割行が「選別役…kept を添える」のままだと、抽出契約を渡してもモデルが判定へ滑り戻る
+# （実測 2026-08-29: 役割行が判定契約と食い違うと F2P が 1/3）。
+EXTRACT_ROLE_LINE = ("抽出役。候補ごとの事実だけを機械可読な JSON で書き出す。"
+                     "採否の判定・最良案の選択はしない。")
+DECISION_KINDS = ("filter", "judge")
+
+# このビルダーが解釈できる payload の拡張。agent-flow はこれを見て、判定契約のある
+# ノードを組み込みプロンプトへ固定するかどうかを決める（古い版へ判定契約を渡すと、
+# 上の食い違いがそのまま起きる）。`prompt.py --capabilities` で読める。
+CAPABILITIES = ["decision"]
+
 # 実装系 kind（三つの約束をフル適用する）。集約・選別系は軽量規律のみ。
 EXEC_KINDS = ("work", "generate", "map")
 
@@ -177,6 +190,12 @@ def build_worker_prompt(p: dict) -> str:
     """worker/verify の各 kind 向けプロンプト。"""
     kind = str(p.get("kind") or "work")
     role = ROLE_LINES.get(kind, ROLE_LINES["work"])
+    # 判定契約があるノードは役割も見出しも「抽出」にする。見出しが filter / judge のまま
+    # だと、役割行だけ書き換えてもモデルが判定へ滑り戻る（agent-flow 組み込みと同じ扱い）。
+    # 抽出契約の本文は agent-flow が goal の末尾へ足して渡す（文面の正典は agentcore 側）。
+    label = kind
+    if kind in DECISION_KINDS and isinstance(p.get("decision"), dict) and p["decision"]:
+        role, label = EXTRACT_ROLE_LINE, "extract"
     parts = []
     # グローバル指示（agent-instructions）: agent-flow が run スナップショットから渡す描画済み
     # ブロック（マーカー付き）。ノード全体の基準として先頭へ置く。個別タスク・全体文脈・
@@ -187,7 +206,7 @@ def build_worker_prompt(p: dict) -> str:
         parts.append("上記の共通指示はノード全体の基準です。個別タスクの指示・全体文脈・"
                      "プロジェクト規則と矛盾する場合は、それらを優先してください。")
     parts.append(f"あなたは分散 Dynamic Workflow の{role}")
-    parts.append(f"タスク({kind}): {p.get('goal', '')}")
+    parts.append(f"タスク({label}): {p.get('goal', '')}")
     if p.get("request"):
         parts.append("【全体文脈】この run の元要求（担当は上記タスクのみ。全体を一人でやり直さない）: "
                      + _trim(p["request"], 400))
@@ -246,6 +265,10 @@ def build(payload: dict) -> str:
 
 
 def main() -> int:
+    if "--capabilities" in sys.argv[1:]:
+        # agent-flow の対応版検出用。payload を読まずに答える（stdin を待たない）。
+        sys.stdout.write(json.dumps({"capabilities": CAPABILITIES}, ensure_ascii=False))
+        return 0
     try:
         payload = json.load(sys.stdin)
         if not isinstance(payload, dict):

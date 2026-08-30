@@ -10,6 +10,8 @@ ollama は呼ばない（embed_texts を差し替える）。見たいのは 4 �
 """
 from __future__ import annotations
 
+import contextlib
+import io
 import sys
 import tempfile
 import unittest
@@ -90,6 +92,31 @@ class EmbeddingCascadeTest(unittest.TestCase):
             results = _search(c.dir, "同時に走らせたときの取り合い")
         self.assertEqual(self.calls, [])
         self.assertTrue(all(r["ranker"] == "tfidf" for r in results))
+
+    def test_missing_index_is_announced_once(self):
+        """索引が無いときは黙って倒れない（呼び出しの失敗は 1 行出るのに、欠落だけ黙っていた）。"""
+        c = _Corpus(with_embeddings=False)
+        self.addCleanup(c.close)
+        recall_memory._STAGE_NOTICES.clear()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            _search(c.dir, "同時に走らせたときの取り合い")
+        self.assertIn("埋め込み段", err.getvalue())
+        self.assertIn("不発火", err.getvalue())
+        again = io.StringIO()
+        with contextlib.redirect_stderr(again):
+            _search(c.dir, "別の問い")
+        self.assertEqual(again.getvalue(), "", "同じ機で毎回出さない（プロセスあたり 1 回）")
+
+    def test_no_notice_when_both_indexes_exist(self):
+        c = _Corpus(with_embeddings=True)
+        self.addCleanup(c.close)
+        recall_memory._STAGE_NOTICES.clear()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), \
+                mock.patch.object(embeddings, "embed_texts", self._fake_embed([0, 0, 1])):
+            _search(c.dir, "JWT 有効期限 15 分")
+        self.assertEqual(err.getvalue(), "")
 
     def test_confident_tfidf_does_not_call_embeddings(self):
         c = _Corpus(with_embeddings=True)

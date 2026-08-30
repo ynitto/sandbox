@@ -243,8 +243,15 @@ def _collapse_split_successors(nodes: dict) -> dict:
             if any(d in tainted for d in n.get("deps", [])):
                 tainted.add(i)
                 changed = True
-    for i in tainted - splits:  # split 自体は残し、後段だけ落とす
+    removed = sorted(tainted - splits)
+    for i in removed:  # split 自体は残し、後段だけ落とす
         nodes.pop(i, None)
+    if removed:
+        # 黙って外さない。ユーザー定義フロー（plan_strategy_user）は同じ形をエラーで
+        # 拒むのに、planner 経路はノードごと消えたことが誰にも見えなかった——
+        # 「計画したのに実行されないノード」を読み手が数えられるようにする。
+        log("planner", f"split の静的後段を展開前に外しました: {', '.join(removed)}"
+                       "（要素ごとの処理と集約は split 完了後に実行時へ動的展開されます）")
     return nodes
 
 

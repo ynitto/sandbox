@@ -569,6 +569,21 @@ class GraphHealthTests(unittest.TestCase):
         # 循環が断ち切られ、トポロジカル順が成立する（少なくとも片方の deps が空）
         self.assertTrue(nodes["a"]["deps"] == [] or nodes["b"]["deps"] == [])
 
+    def test_static_split_successors_are_removed_and_announced(self):
+        """planner 出力の split 静的後段は展開前に外す。ユーザー定義フローは同じ形を
+        エラーで拒むので、planner 経路だけが**黙って**通ることのないようにする
+        （実測 2026-08-30: e4b は PL3 で 3/3 この形を書いた）。"""
+        nodes = {"s": {"id": "s", "goal": "列挙", "deps": [], "kind": "split"},
+                 "m": {"id": "m", "goal": "各要素", "deps": ["s"], "kind": "map"},
+                 "w": {"id": "w", "goal": "集約", "deps": ["m"], "kind": "work"},
+                 "free": {"id": "free", "goal": "無関係", "deps": [], "kind": "work"}}
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            kf._sanitize_graph(nodes)
+        self.assertEqual(sorted(nodes), ["free", "s"])
+        self.assertIn("split の静的後段", out.getvalue())
+        self.assertIn("m", out.getvalue())
+
     def test_self_loop_dropped(self):
         nodes = {"a": {"id": "a", "goal": "", "deps": ["a"], "kind": "work"}}
         kf._sanitize_graph(nodes)

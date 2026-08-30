@@ -172,6 +172,26 @@ class ScopeAndGateTests(unittest.TestCase):
         issues = plan.gate_tasks(tasks, "coarse", context_text="集計スクリプトを作る")
         self.assertFalse([x for x in issues if "要求にも Phase 1" in x])
 
+    def test_strip_drops_only_the_unrequested_deliverable(self):
+        """ゲートで直らなかったぶんは機械が外す（filter の tie_break と同じ扱い）。"""
+        tasks = [{"id": "t1", "goal": "実装", "deps": [], "kind": "work",
+                  "operation": {"operation_class": "feature",
+                                "deliverables": ["eval/humansize.py", "notes/cases.md"]}},
+                 {"id": "t2", "goal": "テスト観点を洗う", "deps": [], "kind": "generate",
+                  "operation": {"operation_class": "feature",
+                                "deliverables": ["notes/cases.md"]}}]
+        out = plan.strip_unrequested_deliverables(
+            tasks, "eval/humansize.py と eval/test_humansize.py を作る")
+        self.assertEqual(out[0]["operation"]["deliverables"], ["eval/humansize.py"])
+        self.assertNotIn("operation", out[1])       # 全部落ちたら宣言ごと外す
+        self.assertEqual(out[1]["goal"], "テスト観点を洗う")   # 仕事は goal が持つ
+
+    def test_strip_is_a_no_op_when_the_request_names_no_path(self):
+        tasks = [{"id": "t1", "goal": "実装", "deps": [], "kind": "work",
+                  "operation": {"operation_class": "feature", "deliverables": ["src/a.py"]}}]
+        out = plan.strip_unrequested_deliverables(tasks, "集計スクリプトを作る")
+        self.assertEqual(out[0]["operation"]["deliverables"], ["src/a.py"])
+
     def test_gate_count_out_of_range(self):
         tasks = [
             {"id": "t1", "goal": "[scope] a.py\n[out_of_scope] x\none", "deps": [], "kind": "work"},

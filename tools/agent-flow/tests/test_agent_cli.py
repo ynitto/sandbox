@@ -1705,6 +1705,53 @@ class DecisionPipeTests(unittest.TestCase):
         self.assertIs(data["ok"], False)
         self.assertEqual(data["facts"], [])
 
+    def test_decision_reaches_the_skill_only_when_it_declares_support(self):
+        """判定契約は payload で渡す。ただし解釈できる版だけ——古い版の役割行
+        （`filter` = 「選別役…kept を添える」）は抽出契約と食い違い、モデルが判定へ
+        滑り戻る（実測 2026-08-29: F2P 1/3）。"""
+        seen = {}
+
+        def fake_skill(payload):
+            seen["payload"] = payload
+            return "スキルが描いたプロンプト"
+
+        for caps, expect_skill in ((True, True), (False, False)):
+            seen.clear()
+            with mock.patch.object(kf, "_flow_worker_prompt", side_effect=fake_skill), \
+                 mock.patch.object(kf, "_flow_worker_supports", return_value=caps), \
+                 mock.patch.object(kf, "run_agent",
+                                   side_effect=lambda prompt, model, purpose="", **_kw: (
+                                       seen.setdefault("prompt", prompt), self.FACTS)[1]):
+                kf.execute_agent("filter", "候補から選ぶ", self.CANDIDATES, None,
+                                 decision=self.DECISION)
+            if expect_skill:
+                self.assertEqual(seen["prompt"], "スキルが描いたプロンプト")
+                self.assertEqual(seen["payload"]["decision"], self.DECISION)
+                # 抽出契約は goal の末尾に付いて渡る（文面の正典は agentcore 側）。
+                self.assertIn("facts", seen["payload"]["goal"])
+            else:
+                self.assertNotIn("payload", seen)      # 古い版へは渡さない
+                self.assertIn("採否の判定・最良案の選択はしない", seen["prompt"])
+
+    def test_skill_and_builtin_render_the_same_contract(self):
+        """スキル経由でも組み込み経由でも、判定契約ノードの役割は「抽出」に揃う
+        （実測 2026-08-29: 役割行が抽出契約と食い違うと F2P が 1/3 へ落ちる）。"""
+        prompts = {}
+        for arm in ("skill", "builtin"):
+            with mock.patch.object(kf, "_flow_worker_supports",
+                                   return_value=(arm == "skill")), \
+                 mock.patch.object(kf, "run_agent",
+                                   side_effect=lambda prompt, model, purpose="", **_kw: (
+                                       prompts.__setitem__(arm, prompt), self.FACTS)[1]):
+                kf.execute_agent("filter", "候補から選ぶ", self.CANDIDATES, None,
+                                 decision=self.DECISION)
+        if prompts["skill"] == prompts["builtin"]:
+            self.skipTest("flow-worker スキルが無い木（組み込みへ倒れている）")
+        for arm, prompt in prompts.items():
+            self.assertIn("採否の判定・最良案の選択はしない", prompt, arm)
+            self.assertNotIn("選別役", prompt, arm)
+            self.assertIn("タスク(extract):", prompt, arm)
+
     def test_broken_decision_falls_back_to_model_judgement(self):
         broken = {"facts": [], "criteria": "not-a-list"}
         prompt, text, data = self._run("filter", broken, '{"kept": ["c3"]}')

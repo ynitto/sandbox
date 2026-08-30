@@ -1248,6 +1248,40 @@ def execute_stub(kind: str, goal: str, dep_results: dict, model: str | None,
 
 # flow-worker スキルの prompt.py の解決結果メモ（プロセス内。未発見 = None も記憶する）。
 _worker_skill_script: "dict[str, str | None]" = {}
+_worker_skill_caps: "dict[str, frozenset]" = {}
+
+
+def _flow_worker_capabilities(script: str) -> frozenset:
+    """スキルのビルダーが解釈できる payload 拡張（`prompt.py --capabilities`）。
+
+    宣言しない版は空集合＝未対応として扱う。判定契約を未対応の版へ渡すと、役割行
+    （`filter` = 「選別役…kept を添える」）が抽出契約と食い違い、モデルが判定へ滑り戻る
+    （実測 2026-08-29: F2P が 1/3）。だから対応版を検出できるまで組み込みに固定する。
+    """
+    if script in _worker_skill_caps:
+        return _worker_skill_caps[script]
+    caps: frozenset = frozenset()
+    try:
+        proc = subprocess.run([sys.executable, script, "--capabilities"],
+                              capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", timeout=30)
+        if proc.returncode == 0:
+            data = json.loads(proc.stdout or "{}")
+            caps = frozenset(str(c) for c in (data.get("capabilities") or []))
+    except Exception:  # noqa: BLE001 — 読めない版は未対応として扱う（run は止めない）
+        caps = frozenset()
+    _worker_skill_caps[script] = caps
+    return caps
+
+
+def _flow_worker_supports(capability: str) -> bool:
+    skill = (_WORKER_SKILL or "").strip().lower()
+    if not skill or skill in ("none", "builtin", "off"):
+        return False
+    if skill not in _worker_skill_script:
+        _worker_skill_script[skill] = _find_skill_script(skill, "prompt.py")
+    script = _worker_skill_script[skill]
+    return bool(script) and capability in _flow_worker_capabilities(script)
 
 
 def _flow_worker_prompt(payload: dict) -> "str | None":
@@ -1319,9 +1353,9 @@ def execute_agent(kind: str, goal: str, dep_results: dict, model: str | None,
                   ' {"ok": true|false, "issues": ["..."]} を必ず添える。',
     }.get(kind, "ワーカー。次のタスクだけを完了し成果物を出力。")
     if pipe:
-        # 役割行と依頼文を「抽出」へ差し替える。goal へ後置するので、組み込みプロンプトでも
-        # 同じ文面が効く（スキル経路は下で使わない——古い版が「選べ」の役割行を出すと
-        # 抽出契約と食い違うため、判定契約があるノードでは組み込みに固定する）。
+        # 役割行と依頼文を「抽出」へ差し替える。goal へ後置するので、組み込みでもスキル
+        # 経路でも同じ文面が効く。スキルへ渡すのは判定契約を解釈できる版だけ——古い版は
+        # 「選べ」の役割行を出し、抽出契約と食い違ってモデルが判定へ滑り戻る（F2P 1/3）。
         role = ("抽出役。候補ごとの事実だけを機械可読な JSON で書き出す。"
                 "採否の判定・最良案の選択はしない。")
         goal = goal + "\n\n" + _nodecontract.fact_extraction_directive(pipe)
@@ -1334,8 +1368,12 @@ def execute_agent(kind: str, goal: str, dep_results: dict, model: str | None,
     read_note = render_read_allocation(read_allocation)
     # flow-worker スキルがあれば実行規律入りプロンプトを使う（無ければ従来の組み込み）。
     # 出力契約（verify の JSON・split の配列等）はスキル側でも同一に保たれている。
-    prompt = None if pipe else _flow_worker_prompt({
+    use_skill = (not pipe) or _flow_worker_supports("decision")
+    prompt = _flow_worker_prompt({
         "role": "worker", "kind": kind, "goal": goal, "request": request,
+        # 判定契約。未対応の版は未知キーとして無視する（そのとき use_skill は False なので
+        # ここへは来ないが、payload の形はどちらでも壊れない）。
+        **({"decision": pipe} if pipe else {}),
         "deps": {d: {"output": _dep_text(r), "data": _dep_data(r)} for d, r in deps.items()},
         "repo_instruction": repo_instruction, "artifact_note": art_note,
         "workspace": workspace, "references": references or [],
@@ -1344,7 +1382,7 @@ def execute_agent(kind: str, goal: str, dep_results: dict, model: str | None,
         # 差分修復リトライのブリーフ（未対応スキルは未知キーとして無視するだけ＝壊れない）。
         "repair_note": repair_note,
         "read_note": read_note,
-    })
+    }) if use_skill else None
     if not prompt:
         # 判定契約があるノードは kind の表示も extract にする——見出しが filter / judge の
         # ままだと、役割行を書き換えてもモデルが判定へ滑り戻る（eval F2P の実測）。

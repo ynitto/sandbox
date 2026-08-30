@@ -106,12 +106,17 @@ def _coerce_tasks(raw, existing=()):
         # 処理契約（設計 2026-08-15 §3.4）。自由文 goal だけで候補を決めないための
         # 構造化条件で、形が契約に合うものだけを運ぶ（壊れた宣言は無いのと同じ）。
         operation = t.get("operation")
+        # 剥がした事実はノードにも残す（log は run ディレクトリの外へ出ないので、
+        # dashboard / audit から「宣言したのに効かなかったノード」を数えられない）。
+        # claim / result のメタへは work.py が operation_class と同じ置き場で運ぶ。
+        dropped = []
         if isinstance(operation, dict):
             errors = _nodecontract.operation_contract_errors(operation)
             if errors:
                 # 黙って剥がさない。剥がした宣言は「宣言したのに効かない」を作る
                 # （成果物スロット分割も局所修正判定も、宣言が唯一の入口である）。
                 log("planner", f"処理契約を無視: {tid}（{errors[0]}）")
+                dropped.append({"contract": "operation", "reason": errors[0]})
             else:
                 node["operation"] = operation
         # 判定契約（filter / judge）。宣言があればモデルには事実の抽出だけをさせ、採否は
@@ -119,14 +124,19 @@ def _coerce_tasks(raw, existing=()):
         decision = t.get("decision")
         if isinstance(decision, dict):
             if kind not in ("filter", "judge"):
-                log("planner", f"判定契約を無視: {tid}（kind={kind} には宣言できません）")
+                reason = f"kind={kind} には宣言できません"
+                log("planner", f"判定契約を無視: {tid}（{reason}）")
+                dropped.append({"contract": "decision", "reason": reason})
             else:
                 errors = _nodecontract.decision_contract_errors(decision)
                 if errors:
                     log("planner", f"判定契約を無視: {tid}（{errors[0]}）"
                                    "——この節点はモデル判定のまま走ります")
+                    dropped.append({"contract": "decision", "reason": errors[0]})
                 else:
                     node["decision"] = decision
+        if dropped:
+            node["contract_dropped"] = dropped
         # 工程ごとの追加ルール（planner/評価役が選んだもの）。存在する id・role が合う
         # ものだけを goal へ複製する（dashboard がノードへ複製するのと同じ作法。
         # 実行時にカタログを読み直さないので、後から run tuning が変わっても効果は変わらない）。

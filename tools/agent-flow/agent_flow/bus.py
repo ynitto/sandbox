@@ -469,7 +469,8 @@ class Bus:
                      selection_reason: "str | None" = None,
                      execution_decision: "dict | None" = None,
                      operation_class: "str | None" = None,
-                     local_patch_blockers: "list[str] | None" = None) -> None:
+                     local_patch_blockers: "list[str] | None" = None,
+                     contract_dropped: "list | None" = None) -> None:
         """ノードの結果を確定する。
 
         `node` は**実行した PC**（node_id の正規形）。`who`（worker の名義）にも PC 名は
@@ -511,6 +512,9 @@ class Bus:
             rec["operation_class"] = operation_class
         if local_patch_blockers:
             rec["local_patch_blockers"] = list(local_patch_blockers)
+        if contract_dropped:
+            # 宣言（operation / decision）が形式不正で剥がされた事実と理由。
+            rec["contract_dropped"] = list(contract_dropped)
         if data is not None:  # 構造化成果（任意）。エージェント間を JSON で流す
             rec["data"] = data
         if context_allocation is not None:

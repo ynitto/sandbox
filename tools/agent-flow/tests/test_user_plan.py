@@ -462,6 +462,21 @@ class PlanDecisionContractTests(unittest.TestCase):
         self.assertNotIn("decision", tasks[1])
         self.assertNotIn("decision", tasks[2])   # filter / judge 以外へは運ばない
 
+    def test_dropped_contracts_are_recorded_on_the_node(self):
+        """剥がした事実は log だけでなくノードにも残す（log は run ディレクトリの外へ
+        出ないので、audit / dashboard から「宣言したのに効かなかった」を数えられない）。"""
+        tasks = kf._coerce_tasks([
+            {"id": "f1", "goal": "選別", "kind": "filter", "decision": self.DECISION},
+            {"id": "f2", "goal": "選別", "kind": "filter", "decision": {"criteria": []}},
+            {"id": "w", "goal": "実装", "kind": "work", "decision": self.DECISION,
+             "operation": {"operation_class": "feature", "scope": "オブジェクトでない"}},
+        ])
+        self.assertNotIn("contract_dropped", tasks[0])
+        self.assertEqual([d["contract"] for d in tasks[1]["contract_dropped"]], ["decision"])
+        self.assertTrue(tasks[1]["contract_dropped"][0]["reason"])
+        self.assertEqual(sorted(d["contract"] for d in tasks[2]["contract_dropped"]),
+                         ["decision", "operation"])
+
 
 class DeliverableSlotExpansionTests(unittest.TestCase):
     """成果物スロットの機械分割: planner 経路では割り、ユーザー定義フローでは割らない。"""

@@ -41,6 +41,34 @@ MEM_ID_RE = re.compile(r"^mem-\d{8}-\d+$")
 
 # ─── インデックス検索 ────────────────────────────────────────
 
+_STAGE_NOTICES: set = set()
+
+
+def _notice_dead_stages(memory_dir: str, tfidf_live: bool, use_hybrid: bool) -> None:
+    """索引が無くて段が発火しないことを 1 行伝える。
+
+    `embeddings.enabled()` は索引の有無しか見ないので、索引が無い機では埋め込み段が
+    **一度も走らないまま** TF-IDF へ倒れる。呼び出しが失敗したときは 1 行出るのに、
+    索引が無いときだけ何も出なかった——2026-08-29 に、両方の索引が未構築のまま
+    言い換えの問いが 0 件を返し続けていた機がある。
+
+    出すのは stderr（--json の出力を汚さない）。プロセスあたり memory_dir ごとに 1 回。
+    """
+    if not use_hybrid:
+        return                              # 段を使わない指定は不発火ではない
+    dead = []
+    if not tfidf_live:
+        dead.append("TF-IDF 段（.memory-corpus.json）")
+    if not embeddings.enabled(memory_dir):
+        dead.append("埋め込み段（.memory-embeddings.json）")
+    key = (memory_dir, tuple(dead))
+    if not dead or key in _STAGE_NOTICES:
+        return
+    _STAGE_NOTICES.add(key)
+    print(f"[ltm-use] {' / '.join(dead)}は索引が無いため不発火です（{memory_dir}）。"
+          "作る: python build_index.py --embeddings", file=sys.stderr)
+
+
 def _score_index_entry(entry: dict, keywords: list[str]) -> int:
     """インデックスエントリのスコアを計算する（title/summary/tags のみ、高速）"""
     title = entry.get("title", "").lower()
@@ -196,6 +224,9 @@ def search_with_index(memory_dir: str, keywords: list[str],
                 candidates.append((kw_score, entry, kw_score))
 
     # ── 段構え: TF-IDF が自信を持てないときだけ埋め込みで採点し直す ──
+    # 索引の有無で判定する（クエリ側のベクトルは、語が corpus に無いだけでも空になる
+    # ——それを「索引が無い」と伝えると嘘になる）。
+    _notice_dead_stages(memory_dir, bool(corpus and corpus.get("doc_vectors")), use_hybrid)
     if query_vector and corpus and embeddings.enabled(memory_dir):
         threshold = float(memory_utils.load_config().get("embedding_threshold", 0.11))
         if top_tfidf < threshold:

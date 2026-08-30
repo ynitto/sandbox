@@ -232,6 +232,10 @@ def cmd_work(args) -> int:
         # 理由（blockers）も残す——読み手（audit / E6 ハーネス）が再判定しないため（§8.3）。
         operation = node.get("operation") if isinstance(node.get("operation"), dict) else None
         op_meta = {}
+        # 契約が形式不正で剥がされた事実（planner 経路が記録）。log は run ディレクトリの
+        # 外へ出ないので、claim / result にも残して audit / dashboard から数えられるようにする。
+        if isinstance(node.get("contract_dropped"), list) and node["contract_dropped"]:
+            op_meta["contract_dropped"] = node["contract_dropped"]
         if operation:
             op_meta["operation_class"] = str(operation.get("operation_class") or "") or None
             if (operation.get("scope") or {}).get("write"):

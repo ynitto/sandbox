@@ -807,6 +807,40 @@ def _mentioned_paths(text: str) -> set:
     return {m.group(0) for m in _DECLARED_PATH_RE.finditer(text or "")}
 
 
+def strip_unrequested_deliverables(tasks: list[dict], context_text: str) -> list[dict]:
+    """要求が名指ししていない成果物の宣言を落として運ぶ（ゲートの後始末）。
+
+    ゲートは 1 度作り直させるが、e4b はそれでも中間ファイル（`test_test_cases.md` 等）を
+    宣言し続ける（実測 2026-08-30: PL5 の失敗 1/3 がこれ）。宣言した成果物は engine が
+    1 スロット 1 ノードへ割るので、余分な 1 つがそのまま余分な 1 手順になる——
+    `filter` の `tie_break` と同じ扱いで、ゲートで直らなかったぶんだけ機械が外す。
+
+    落とすのは deliverables の要素だけで、ノードも goal も触らない（そのノードの仕事は
+    宣言ではなく goal が持つ）。全部落ちたら `operation` ごと外す——空の deliverables を
+    残すと engine 側の契約検査に引っかかり、宣言全体が剥がされる。
+    """
+    mentioned = _mentioned_paths(context_text)
+    if not mentioned:
+        return tasks                      # 要求がパスを名指ししない＝推測は planner の仕事
+    allowed = mentioned | {path.rsplit("/", 1)[-1] for path in mentioned}
+    for t in tasks:
+        if not isinstance(t, dict) or not isinstance(t.get("operation"), dict):
+            continue
+        declared = [str(d) for d in (t["operation"].get("deliverables") or [])]
+        kept = [d for d in declared
+                if d in allowed or d.rsplit("/", 1)[-1] in allowed]
+        if len(kept) == len(declared):
+            continue
+        dropped = [d for d in declared if d not in kept]
+        print(f"[flow-planner] {t.get('id')}: 要求に無い成果物の宣言を落としました "
+              f"({', '.join(dropped)})", file=sys.stderr)
+        if kept:
+            t["operation"]["deliverables"] = kept
+        else:
+            t.pop("operation", None)
+    return tasks
+
+
 def gate_tasks(tasks: list[dict], target: str, require_split: bool = False,
                context_text: str = "") -> list[str]:
     """決定的ゲート。不合格理由のリスト（空なら合格）。
@@ -995,7 +1029,7 @@ def phase3_build(request: str, analysis: dict, strategy: dict,
         )
         tasks = _build(retry_note)
         # 再生成後も不合格ならそのまま返す（呼び出し側で使える最小成果を落とさない）
-    return tasks
+    return strip_unrequested_deliverables(tasks, f"{request}\n{subtasks}")
 
 
 def normalize_tasks(tasks: list) -> list[dict]:
