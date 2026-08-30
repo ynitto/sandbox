@@ -828,6 +828,88 @@ def test_agent_says_so_when_no_tool_survives():
     assert code == 1 and not run.called
 
 
+# --- 対話でツールを使う ---
+
+
+def test_a_tool_turn_carries_the_whole_history():
+    """ツール手番でも履歴は手元が持つ。拡張は状態を持たない。"""
+    session = client.Session(tools=["copilot_readFile"])
+    seen = {}
+
+    def fake_run_agent(endpoint, prompt, tools, family, timeout, on_event, history=None):
+        seen["prompt"] = prompt
+        seen["history"] = history
+        return {"text": "読みました", "rounds": 2}
+
+    with mock.patch.object(client, "run_agent", fake_run_agent):
+        session.ask({}, "Q1", 1, None)
+        session.ask({}, "Q2", 1, None)
+    assert seen["prompt"] == "Q2"
+    assert seen["history"] == [{"role": "user", "content": "Q1"},
+                               {"role": "assistant", "content": "読みました"}]
+
+
+def test_only_the_answer_lands_in_history_not_the_tool_traffic():
+    session = client.Session(tools=["copilot_readFile"])
+    with mock.patch.object(client, "run_agent",
+                           return_value={"text": "結論", "rounds": 5}):
+        session.ask({}, "調べて", 1, None)
+    assert session.messages == [{"role": "user", "content": "調べて"},
+                                {"role": "assistant", "content": "結論"}]
+
+
+def test_a_failed_tool_turn_is_not_kept_either():
+    session = client.Session(tools=["copilot_readFile"])
+    with mock.patch.object(client, "run_agent", side_effect=RuntimeError("落ちた")):
+        try:
+            session.ask({}, "Q1", 1, None)
+            assert False, "must raise"
+        except RuntimeError:
+            pass
+    assert session.messages == []
+
+
+def test_without_tools_the_turn_stays_a_plain_chat():
+    session = client.Session()
+    ask = _FakeAsk("A1")
+    with mock.patch.object(client, "request", ask), \
+         mock.patch.object(client, "run_agent") as agent:
+        session.ask({}, "Q1", 1, None)
+    assert not agent.called
+
+
+def test_progress_shows_both_text_and_tool_lines():
+    seen = []
+    emit = client.agent_progress(seen.append)
+    emit({"delta": "本文"})
+    emit({"tool": "copilot_readFile", "input": {"filePath": "/a"}})
+    emit({"tool": "copilot_readFile", "ok": True})
+    emit({"done": True, "rounds": 2})
+    assert seen[0] == "本文"
+    assert "copilot_readFile" in seen[1]
+    assert "2 往復" in seen[-1]
+    assert len(seen) == 3, "成功したツールは呼び出し行だけで足りる"
+
+
+def test_slash_tools_shows_sets_and_turns_off():
+    session = client.Session(tools=["copilot_readFile"])
+    assert session.command("/tools")[1] == "tools: copilot_readFile"
+    assert session.command("/tools off")[1].startswith("tools: off")
+    assert session.tools is None
+    assert session.command("/tools")[1] == "tools: off"
+
+
+def test_slash_tools_checks_the_names_now_not_next_turn():
+    session = client.Session()
+    with mock.patch.object(client, "fetch_tools", return_value=AGENT_TOOLS):
+        good = session.command("/tools read", {"url": "u", "token": "t"}, 5)
+        bad = session.command("/tools nope", {"url": "u", "token": "t"}, 5)
+    assert session.tools == ["copilot_readFile", "copilot_findFiles"]
+    assert "nope" in bad[1]
+    assert session.tools == ["copilot_readFile", "copilot_findFiles"], "失敗で今の設定を壊さない"
+    assert "copilot_readFile" in good[1]
+
+
 # --- 編集モード（agent-herd のハーネス engine 契約） ---
 
 
@@ -880,6 +962,35 @@ def test_write_reads_the_task_from_stdin():
 def test_file_context_is_empty_without_files():
     assert client.file_context(None, None, True) == ""
     assert client.file_context([], [], False) == ""
+
+
+def test_interactive_with_write_starts_with_tools_not_a_one_off_run():
+    """`-i --write` は「読み書きできる対話」。片道実行へ落ちない。"""
+    stdin = mock.Mock()
+    stdin.isatty.return_value = True
+    stdin.read.return_value = ""
+    with mock.patch.object(client.sys, "argv", ["vscode-copilot", "-i", "--write"]), \
+         mock.patch.object(client.sys, "stdin", stdin), \
+         mock.patch.object(client, "ensure_bridge", return_value={"url": "u", "token": "t"}), \
+         mock.patch.object(client, "fetch_tools", return_value=AGENT_TOOLS), \
+         mock.patch.object(client, "run_agent") as run, \
+         mock.patch.object(client, "repl", return_value=0) as repl:
+        code = client.main()
+    assert code == 0
+    assert repl.called and not run.called
+    assert repl.call_args.args[1].tools == ["copilot_readFile", "copilot_findFiles",
+                                            "copilot_replaceString"]
+
+
+def test_plain_interactive_has_no_tools():
+    stdin = mock.Mock()
+    stdin.isatty.return_value = True
+    with mock.patch.object(client.sys, "argv", ["vscode-copilot", "-i"]), \
+         mock.patch.object(client.sys, "stdin", stdin), \
+         mock.patch.object(client, "ensure_bridge", return_value={"url": "u", "token": "t"}), \
+         mock.patch.object(client, "repl", return_value=0) as repl:
+        client.main()
+    assert repl.call_args.args[1].tools is None
 
 
 def test_agent_does_not_enter_the_repl_on_a_tty():

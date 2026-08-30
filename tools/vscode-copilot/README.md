@@ -98,7 +98,33 @@ copilot> さっきの要約を3行にして
 | `/help` | コマンド一覧 |
 | `/clear` | 会話履歴を捨てて新しい会話を始める |
 | `/model [family]` | モデル family を表示・変更（引数なしで既定へ戻す） |
+| `/tools [SETS]` | ツールを表示・変更（`/tools read,write`、`/tools off` で素の会話） |
 | `/exit` `/quit` | 終了（Ctrl-D も同じ） |
+
+### 対話でツールを使う
+
+**既定の対話はツールを持ちません**（素のモデル呼び出しなので、リポジトリを読めません）。
+道具を持たせるには起動時のフラグか `/tools` を使います。
+
+```console
+$ vscode-copilot -i --write
+copilot> src/a.py を読んで、この関数名を直して
+  → copilot_readFile {"filePath":"…"}
+  → copilot_replaceString {"filePath":"…"}
+直しました。  （3 往復）
+copilot> /tools off
+tools: off（素の会話に戻ります）
+```
+
+`-i --agent-tools read` のように種類を指定することもできます。`/tools` の名前は**その場で**
+VS Code の一覧と突き合わせます——次の手番まで黙っていると、打ち間違いに気づくのが
+1 往復ぶん遅れるためです。
+
+**履歴は手元が持ちます。** ツール手番でも会話全体を毎回送るので、道具を途中で入れても
+切っても文脈は続きます。往復の中身（ツール呼び出しと結果）は手番の中で閉じ、履歴には
+最後の本文だけが残ります。
+
+`agent-herd chat vscode-copilot` から入った対話も同じです。
 
 応答の途中で Ctrl-C を押すと、その手番を中断します（接続が切れると拡張側が
 `CancellationToken` を落とすので、モデルも止まります）。プロンプトで押した場合は入力を
