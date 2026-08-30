@@ -25,6 +25,7 @@ HELP = """\
 /help            このヘルプ
 /clear           会話履歴を捨てて新しい会話を始める
 /model [family]  モデル family を表示・変更（例: /model gpt-4o、引数なしで解除）
+/tools [SETS]    ツールを表示・変更（例: /tools read,write、/tools off で素の会話）
 /exit            終了（Ctrl-D でも同じ）"""
 
 
@@ -433,9 +434,14 @@ def file_context(files, read_files, writable: bool) -> str:
 
 
 def run_agent(endpoint: dict[str, object], prompt: str, tools: list[str], family: str | None,
-              timeout: float, on_event) -> dict:
-    """エージェントを 1 回走らせる。往復の途中経過は on_event へ流す。"""
-    body: dict[str, object] = {"messages": [{"role": "user", "content": prompt}], "tools": tools}
+              timeout: float, on_event, history=None) -> dict:
+    """エージェントを 1 回走らせる。往復の途中経過は on_event へ流す。
+
+    `history` を渡すと、その続きとして走らせる（対話でツールを使うとき）。ツール往復の
+    中身は持ち帰らない——手番の中で閉じ、履歴には最後の本文だけが残る。
+    """
+    messages = [*(history or []), {"role": "user", "content": prompt}]
+    body: dict[str, object] = {"messages": messages, "tools": tools}
     if family:
         body["family"] = family
     req = urllib.request.Request(
@@ -470,6 +476,24 @@ def _consume_agent_stream(response, on_event) -> dict:
         raise RuntimeError("エージェントの応答が途中で切れました")
     return {"text": done.get("text") or "".join(chunks),
             "rounds": done.get("rounds"), "model": done.get("model")}
+
+
+def agent_progress(on_delta):
+    """エージェントの途中経過を対話画面へ流す。
+
+    本文はそのまま、道具の出入りは 1 行。**何も見えないまま数十秒黙るのが一番困る**
+    ので、片道実行と同じものを対話でも出す。
+    """
+    def emit(event: dict) -> None:
+        if on_delta is None:
+            return
+        if "delta" in event:
+            on_delta(event["delta"])
+            return
+        line = format_agent_event(event)
+        if line:
+            on_delta(f"{line}\n")
+    return emit
 
 
 def format_agent_event(event: dict) -> str | None:
@@ -515,11 +539,34 @@ def is_command(line: str) -> bool:
 class Session:
     """1 つの対話。履歴は拡張ではなく手元に持つ（bridge を再起動しても会話が続く）。"""
 
-    def __init__(self, family: str | None = None):
+    def __init__(self, family: str | None = None, tools: list[str] | None = None):
         self.messages: list[dict[str, str]] = []
         self.family = family
+        self.tools = tools or None
 
-    def command(self, line: str) -> tuple[str, str]:
+    def set_tools(self, argument: str, endpoint, timeout: float) -> tuple[str, str]:
+        """`/tools` の中身。引数なしは表示、`off` で素の会話へ戻す。
+
+        名前は**その場で** VS Code の一覧と突き合わせる。次の手番まで黙っていると、
+        打ち間違いに気づくのが 1 往復ぶん遅れる。
+        """
+        if not argument:
+            return "continue", ("tools: " + (", ".join(self.tools) if self.tools else "off"))
+        if argument in ("off", "none"):
+            self.tools = None
+            return "continue", "tools: off（素の会話に戻ります）"
+        if endpoint is None:
+            return "continue", "tools はこの画面では変えられません"
+        try:
+            resolved = agent_tools(fetch_tools(endpoint, timeout), argument)
+        except RuntimeError as exc:
+            return "continue", f"vscode-copilot: {exc}"
+        if not resolved:
+            return "continue", "使えるツールが 1 つもありません（--tools で一覧）"
+        self.tools = resolved
+        return "continue", "tools: " + ", ".join(resolved)
+
+    def command(self, line: str, endpoint=None, timeout: float = 60) -> tuple[str, str]:
         """スラッシュコマンドを処理して (action, 表示テキスト) を返す。action は continue|exit。"""
         parts = line.strip().split(maxsplit=1)
         name = parts[0]
@@ -534,13 +581,20 @@ class Session:
         if name == "/model":
             self.family = argument or None
             return "continue", f"model family: {self.family or '(既定)'}"
+        if name == "/tools":
+            return self.set_tools(argument, endpoint, timeout)
         return "continue", f"未知のコマンドです: {name}（/help でコマンド一覧）"
 
     def ask(self, endpoint: dict[str, object], text: str, timeout: float, on_delta) -> dict:
         """1 手番。失敗したターンは履歴に残さない（次の質問が壊れた文脈を引きずらない）。"""
+        history = list(self.messages)
         self.messages.append({"role": "user", "content": text})
         try:
-            result = request(endpoint, self.messages, self.family, timeout, on_delta)
+            if self.tools:
+                result = run_agent(endpoint, text, self.tools, self.family, timeout,
+                                   agent_progress(on_delta), history=history)
+            else:
+                result = request(endpoint, self.messages, self.family, timeout, on_delta)
             # 空の応答を履歴へ入れると、次の手番が「本文が空の assistant」を送って
             # 400 で弾かれ続ける。失敗として扱い、会話を汚さずに終わらせる。
             if not result["text"].strip():
@@ -575,7 +629,7 @@ def repl(endpoint: dict[str, object], session: Session, timeout: float, stream=s
         if not line.strip():
             continue
         if is_command(line):
-            action, message = session.command(line)
+            action, message = session.command(line, endpoint, timeout)
             if action == "exit":
                 return 0
             if message:
@@ -644,7 +698,7 @@ def main() -> int:
             payload = fetch_tools(endpoint, args.timeout)
             print(json.dumps(payload, ensure_ascii=False) if args.json else format_tools(payload))
             return 0
-        if as_agent:
+        if as_agent and not interactive:
             if args.agent is not None:
                 prompt = sys.stdin.read() if args.agent == "-" else args.agent
             else:
@@ -700,6 +754,13 @@ def main() -> int:
             return 0
         session = Session(args.family)
         if interactive:
+            if as_agent:
+                # 対話でも道具を持てる。`-i --write` は「読み書きできる対話」を意味する。
+                requested = args.agent_tools or ("read,write" if args.write else None)
+                session.tools = agent_tools(fetch_tools(endpoint, args.timeout), requested)
+                if not session.tools:
+                    raise RuntimeError(
+                        "使えるツールが 1 つもありません（--tools で一覧、--agent-tools で明示）")
             return repl(endpoint, session, args.timeout)
         prompt = args.prompt if args.prompt is not None else sys.stdin.read()
         if not prompt.strip():

@@ -15,6 +15,7 @@
   "read_flag": "--read",
   "interactive": {
     "command": ["vscode-copilot", "--interactive"],
+    "write_args": ["--write"],
     "ready_pattern": "^copilot> ?$",
     "ready_tail_lines": 2,
     "clear_command": "/clear",
