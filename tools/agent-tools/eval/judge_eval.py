@@ -196,6 +196,86 @@ def check_reduce(data, want_items: "list[str]"):
     return True, f"{len(want_items)} 件・count 一致"
 
 
+# 抽出役の素材。正解（3 件の id）も証跡の照合先も、この辞書から決まる。
+EXTRACT_SOURCES = {
+    "r1": "1: 09:14 billing-api が 5xx を返し始めた\n2: 影響は checkout のみ",
+    "r2": "1: 10:02 svc-payment のデプロイ直後に遅延が出た\n2: ロールバックで復旧",
+    "r3": "1: 11:30 notify-worker がキューを詰まらせた\n2: 再起動で解消",
+}
+EXTRACT_SOURCES_TEXT = "\n\n".join(f"--- {sid}\n{body}" for sid, body in EXTRACT_SOURCES.items())
+MP1_HEADINGS = ["# 概要", "## 手順", "### 補足"]
+
+
+def check_headings(data):
+    """map 役。**この 1 要素だけ**を処理したか（件数へ化けていないか）を見る。
+
+    見出しの表記ゆれ（`#` を落とす・前後の空白）は許すが、本文中の `#`（コメント記号）を
+    拾ったら不正解——「1 要素だけに適用する」の失敗は、たいてい拾いすぎか集計への化けで出る。
+    """
+    items = data if isinstance(data, list) else (data or {}).get("headings") \
+        if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        if isinstance(data, dict) and len(data) == 1:
+            only = next(iter(data.values()))
+            items = only if isinstance(only, list) else None
+    if not isinstance(items, list):
+        return False, f"配列でない（{type(data).__name__}）"
+    got = [str(x).strip().lstrip("#").strip() for x in items]
+    want = [h.lstrip("#").strip() for h in MP1_HEADINGS]
+    if got == want:
+        return True, f"見出し {len(got)} 件（{', '.join(got)}）"
+    return False, f"見出し {got}（期待 {want}）"
+
+
+def check_class(value, want: str):
+    """分類役。本番の役割行が求めるのは **`class=<ラベル>` の本文**（JSON 契約ではない）。
+
+    受け取るのは生のテキストで、`class=bug` も `{"class": "bug"}` も拾う——本番の下流は
+    前者の形を読むが、JSON で返す出力を器の違いだけで不正解にはしない。
+    """
+    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
+    m = re.search(r'class["\s]*[=:]\s*["\']?([A-Za-z0-9_-]+)', text)
+    got = m.group(1) if m else ""
+    if got == want:
+        return True, f"class={got}"
+    return False, f"class={got or '無し'}（期待 {want}）"
+
+
+def check_extract_records(data, sources: dict, want_ids: set):
+    """抽出役。本番の契約検査（`validate_node_data`）を通したうえで、**証跡が実在するか**を見る。
+
+    `validate_node_data` が見るのは器だけ（`source_id` / `locator` / `excerpt` が空でない）で、
+    引用が素材に実際にあるかは検査しない——つまり**捏造した証跡は本番の機械検査を素通りする**。
+    ここでは引用が素材の逐語部分列であること、`source_id` が渡した素材のものであることまで
+    見る。PV1（撤去された charter verifier）が踏んだのと同じ形の穴を、抽出面で測る。
+    """
+    validated = engine.validate_node_data("extract", data)
+    if validated is None:
+        return False, "validate_node_data がこの木に無い"
+    if isinstance(validated, str):          # NodeDataError のメッセージ
+        return False, f"契約違反: {validated}"
+    records = validated["records"]
+    got_ids, fabricated = set(), []
+    for rec in records:
+        fields = rec.get("fields") or {}
+        rid = str(fields.get("id") or fields.get("ITEM") or "").strip()
+        if rid:
+            got_ids.add(rid)
+        for ev in rec.get("evidence") or []:
+            sid = str(ev.get("source_id") or "").strip()
+            excerpt = str(ev.get("excerpt") or "").strip()
+            body = sources.get(sid)
+            if body is None:
+                fabricated.append(f"{sid}（素材に無い source_id）")
+            elif excerpt and excerpt not in body:
+                fabricated.append(f"{sid}: {excerpt[:30]}…（素材に無い引用）")
+    if fabricated:
+        return False, f"証跡の捏造 {len(fabricated)} 件: {fabricated[0]}"
+    if got_ids != want_ids:
+        return False, f"records の id {sorted(got_ids)}（期待 {sorted(want_ids)}）"
+    return True, f"{len(records)} 件・証跡はすべて素材の逐語"
+
+
 def check_verify(data, want_ok: bool):
     """検証役の判定。**本番の正規化**（`waits._normalize_verify`）を通してから見る。
 
@@ -427,6 +507,34 @@ CASES = {
                             "実装とテストを追加しました。作業ディレクトリは "
                             "/tmp/flow-run-8f31/worktree です。"}},
                check=lambda d: check_verify(d, False)),
+    # --- coverage.json で missing だった flow の 3 面（2026-08-30）
+    # どれも毎回の flow で走る。`classify` / `map` は「読んで指す」族なので通る見込みが
+    # 高いが、`extract` だけは**証跡の捏造が本番の機械検査を素通りする**——
+    # `validate_node_data` は器（source_id / locator / excerpt が空でない）しか見ない。
+    "CL1": dict(kind="classify", expect="class=bug",
+                goal=("次の問い合わせを bug / feature / question のいずれかへ分類する。\n"
+                      "本文: 「請求書の合計が税込みで 1 円ずれます。v4.1 では正しかったので、"
+                      "v4.2 で変わったのだと思います。再現手順は添付のとおりです。」"),
+                check=lambda v: check_class(v, "bug")),
+    "MP1": dict(kind="map", expect="この 1 要素だけの見出し 3 件",
+                goal=("次の 1 ファイルから Markdown の見出し（# で始まる行）だけを抜き出し、"
+                      "JSON 配列で出力する。**この 1 件だけを処理し、件数の集計や他ファイルの"
+                      "話に変えないこと**。\n\n"
+                      "--- ITEM-07.md\n"
+                      "# 概要\n本節は請求の丸めを扱う。\n"
+                      "## 手順\n1. 入力を読む\n2. 税率を掛ける\n"
+                      "本文中の # はコメント記号であって見出しではない。\n"
+                      "### 補足\n端数は切り上げ。\n"),
+                check=lambda d: check_headings(d)),
+    "EX1F": dict(kind="extract", expect="3 件・証跡はすべて素材の逐語",
+                 goal=("次の 3 つの記録から、障害の発生時刻とサービス名を抽出する。"
+                       "出力は本番の抽出契約に従い "
+                       '{"records": [{"fields": {"id": "<記録 id>", "service": "...", '
+                       '"time": "..."}, "evidence": [{"source_id": "<記録 id>", '
+                       '"locator": "<行番号など>", "excerpt": "<素材からの逐語引用>"}]}]}。'
+                       "**excerpt は素材にある文字列をそのまま写すこと**（要約や言い換えを"
+                       "書かない）。\n\n" + EXTRACT_SOURCES_TEXT),
+                 check=lambda d: check_extract_records(d, EXTRACT_SOURCES, {"r1", "r2", "r3"})),
 }
 
 # ------------------------------------------------------------------ 実行
@@ -521,7 +629,35 @@ def run_one(cid: str, i: int) -> dict:
                     fixed = None
                 if isinstance(fixed, list):
                     data, out = fixed, r_out
-        if data is None and kind == "verify":
+        # extract / retrieve も本番（agent.py）は契約検査に落ちたら形式修復を 1 回入れる。
+        # 実測 2026-08-30: e4b の外し方 2/5 は**器だけ**（`{"records": [...]}` を付けず
+        # 裸の配列を返す。中身の証跡は素材の逐語で正しい）——本番なら救えている失敗を
+        # 不合格に数えないため、同じ 1 回を写す。違反理由も本番と同じく契約検査から取る。
+        if kind in ("extract", "retrieve"):
+            first = engine.validate_node_data(kind, data)
+            if isinstance(first, str):
+                repair = (f"{prompt}\n\n[前回の出力は契約違反でした]\n"
+                          f"前回の出力（先頭 400 文字）: {out[:400]}\n"
+                          f"違反: {first}\n"
+                          "説明・前置き・コードフェンスを付けず、指示された JSON だけを"
+                          "再出力してください。")
+                r_rc, r_out, r_err, r_wall = call(repair, cmd, command_env)
+                wall += r_wall
+                repaired = True
+                if r_rc == 0 and r_out.strip():
+                    try:
+                        fixed = extract_json(r_out)
+                    except Exception:  # noqa: BLE001
+                        fixed = None
+                    if fixed is not None:
+                        data, out = fixed, r_out
+        if kind == "classify":
+            # 分類役の本番契約は `class=<ラベル>` の**本文**で、JSON ではない
+            # （振り替え先も `ollama` で `--format json` が付かない）。JSON 抽出の
+            # 失敗で不合格に数えると、本番なら読めている出力を落とすことになる。
+            ok, note = case["check"](out)
+            mode = "correct" if ok else "wrong"
+        elif data is None and kind == "verify":
             # verify だけは JSON が無くても本番のゲートが動く——`_normalize_verify` は
             # 本文の `verify=pass` / `verify=fail` から `ok` を導き、どちらも無ければ
             # fail へ倒す。ここで unparsable として落とすと、**本番なら正しく fail に
@@ -578,6 +714,18 @@ def selfcheck() -> int:
         "V1": {"ok": False, "issues": ["12 件のうち 10 件しか索引に無い"]},
         "V2": {"ok": False, "issues": ["pytest を実行できないため確かめられない"]},
         "V3": {"ok": False, "issues": ["ファイルの実物を読めないため確かめられない"]},
+        "CL1": "分類の結果は class=bug です。",
+        "MP1": ["# 概要", "## 手順", "### 補足"],
+        "EX1F": {"records": [
+            {"fields": {"id": "r1", "service": "billing-api", "time": "09:14"},
+             "evidence": [{"source_id": "r1", "locator": "1",
+                          "excerpt": "09:14 billing-api が 5xx を返し始めた"}]},
+            {"fields": {"id": "r2", "service": "svc-payment", "time": "10:02"},
+             "evidence": [{"source_id": "r2", "locator": "1",
+                          "excerpt": "10:02 svc-payment のデプロイ直後に遅延が出た"}]},
+            {"fields": {"id": "r3", "service": "notify-worker", "time": "11:30"},
+             "evidence": [{"source_id": "r3", "locator": "1",
+                          "excerpt": "11:30 notify-worker がキューを詰まらせた"}]}]},
         "E3": {"decision": "replan", "reason": "出力段のノードが無い",
                "new_tasks": [{"id": "t4", "goal": "レポートを書き出す"}]},
         "F2P": {"facts": [
@@ -610,6 +758,15 @@ def selfcheck() -> int:
         "V1": [{"ok": True, "issues": []}],
         "V2": [{"ok": True, "issues": []}],
         "V3": [{"ok": True, "issues": []}],
+        "CL1": ["分類の結果は class=feature です。"],
+        # 本文中の # をコメント記号ごと拾った形（拾いすぎ）と、件数へ化けた形
+        "MP1": [["# 概要", "## 手順", "# はコメント記号であって見出しではない", "### 補足"],
+                {"count": 3}],
+        # 証跡を言い換えた形（器は合っているので validate_node_data は通る）
+        "EX1F": [{"records": [
+            {"fields": {"id": "r1", "service": "billing-api", "time": "09:14"},
+             "evidence": [{"source_id": "r1", "locator": "1",
+                          "excerpt": "billing-api でエラーが発生した"}]}]}],
         "E3": [{"decision": "done", "reason": "全ノード done・verify pass"}],
         "E2": [{"decision": "replan"}],
         # 抽出の取り違え（c1 の依存を false と誤抽出）→ kept/winner がずれて落ちる。

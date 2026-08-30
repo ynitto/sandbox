@@ -85,11 +85,13 @@ N 件を K 組へ配るのは算術で、モデルに訊く仕事ではない。
 
 ## 6. 残っているもの
 
-**未測定は 27 面**（`coverage.json`）。内訳と、いまの知見からの見込み:
+**未測定は 24 面**（`coverage.json`）。agent-flow の `classify` / `map` / `extract` は同日に
+測って **5/5・5/5・5/5**——見立てどおり「読んで指す」族は e4b で足りた。危ないと踏んだ
+`extract`（証跡の捏造が本番の機械検査を素通りする面）も、引用が素材の逐語かまで照合して
+捏造 0 件だった。残りの内訳と見込み:
 
 | 面 | 見込み | 理由 |
 |---|---|---|
-| agent-flow の `classify` / `extract` / `map` | ○ の公算が高い | 毎回の flow で走る。どれも「読んで指す」族（EX/AN/DR が 3/3） |
 | agent-flow の `synthesize` / `retrieve` | ○ の公算 | 集約は R1/R2 が 5/5 |
 | agent-project の `review` / `adjudicate` | 12b 側の確認 | レビュー族（RV は e4b 1/3・12b 3/3） |
 | agent-dashboard の 8 面・agent-amigos の 5 面 | 未評価 | 下書き系が多く、決定的チェッカーの設計から要る |

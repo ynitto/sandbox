@@ -107,6 +107,21 @@ def patterns() -> dict:
     return getattr(_FLOW, "PATTERNS", None) or {}
 
 
+def validate_node_data(kind: str, data):
+    """ノード成果の契約検査。**本番の実装**（`agentcore.nodecontract`）をそのまま呼ぶ。
+
+    契約違反はメッセージ（str）で返す——例外の型をハーネス側へ持ち出すと、本番の
+    エラー分類に触らずに済ませられなくなる。この木に実装が無ければ None。
+    """
+    nc = _need(_FLOW, "_nodecontract", "nodecontract（ノード成果の契約検査）")
+    if nc is None:
+        return None
+    try:
+        return nc.validate_node_data(kind, data)
+    except Exception as e:  # noqa: BLE001 — NodeDataError（本番も同じ形で弾く）
+        return str(e)
+
+
 def normalize_verify(data, text: str = ""):
     """verify 成果の正規化。**本番の実装**（`waits._normalize_verify`）をそのまま呼ぶ。
 
