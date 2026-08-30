@@ -127,17 +127,38 @@ planner / evaluator / filter / judge / reduce / extract / retrieve / map の全�
 自動修正まで持っており、モデルに訊く必要が無かった。**「その面は本番にあるか」は
 「その故障を機械が既に決めていないか」まで見る。**
 
-### (b) 未測定 20 面のうち安いもの
+### (b) 未測定だった 20 面 — **全部測った**（2026-08-31・`coverage.json` の missing は 0）
 
-| 面 | 見込み | 理由 |
+ハーネス 3 本を新設・拡張した。いずれも**本番の関数をそのまま走らせる**（受け方・正規化・
+リトライまで本番のコードが回る）:
+
+| ハーネス | 差し替える口 |
+|---|---|
+| `project_eval.py`（拡張） | `_run_agent_cli`（agent-project の単一チョークポイント） |
+| `dashboard_eval.py`（新設） | node 経由で `agent.js` の export（ビルダーと `normalize*`） |
+| `amigos_eval.py`（新設） | `agentcli.run_agent`（amigos の単一チョークポイント） |
+
+**通る面と落ちる面の境目は、役割の難しさではなく出力の形だった。**
+
+| 出力の形 | 面 | 結果 |
 |---|---|---|
-| ~~agent-project `route`~~ | **測った** | 選ぶ 5/5・5/5、棄権 3/5（`project_eval.py`） |
-| ~~agent-project `doctor`~~ | **測った** | env 4/5・program 5/5・config 3/5（受け方を 1 実装へ寄せて 7/15 → 12/15） |
-| agent-project `review`・`adjudicate` | **12b 側の確認** | レビュー族。e4b で通す前提を置かない |
-| agent-project `assess`・`prioritize`・`distill` | **決定化の候補** | 多基準ならモデルに訊かず `decision` 契約へ |
-| agent-project `plan`・`repo_map` | `planner_eval` 同型のチェッカーが要る | 構造で測る |
-| agent-dashboard 8 面 | **チェッカーの設計から要る** | 下書き系は正解が一意でない。候補生成系は「選ぶ / 作る」で見込みが割れる |
-| agent-amigos 5 面 | **未評価** | 合議なので手続き（発言順・役割宣言・打ち切り）を決定的に見る形になる |
+| 短く固い | prioritize・assess・adjudicate・dashboard の下書き 5 面 | **5/5 が並ぶ** |
+| 中くらい | followup-suggest・source-task-candidates・team-builder・conductor・role-actions・distill | 4/5 |
+| 長い自由記述を JSON へ | `plan`（途中で切れる）・`repo_map`（要約でなく作業メモ） | **1/5** |
+
+**次に手を入れるならこの 2 つ。** どちらも「モデルを替える」ではなく形の問題である:
+
+1. **`plan` の出力が長すぎる。** 必須セクション 6 つ × 複数タスクを 1 回の JSON 配列で
+   出させており、途中で切れる。1 タスクずつ出させる（`split` と同じ分割）か、セクションを
+   分けて 2 回に割るのが素直。
+2. **`repo_map` は読めているのに要約を返さない。** 作業メモを返す回が多く、本番はそれを
+   そのまま `context/<repo>.md` に保存して planner へ渡す。出力契約のゲート
+   （前置きを機械が落とす）が効く形である。
+
+**材料が届いていない面がもう 1 つ見つかった。** agent-project の `review` は
+「現状の成果物が満たせていない点」を問うのに、プロンプトに入るのは charter だけで
+成果物の状態は 1 文字も無い（CLI も道具なし）。PV1 と同じ構造なので、判断の当否ではなく
+契約と捏造だけを測った（2/5）。**この面は配線を直さない限りモデルを替えても動かない。**
 
 ### (c) 積み残しの小物
 
@@ -145,7 +166,7 @@ planner / evaluator / filter / judge / reduce / extract / retrieve / map の全�
   E6-2 の数字は本番で再現しないので、診断を答え無しへ直すか、腕ごと `PR1P` へ置き換える
 - `judge_eval` の `--methods` 経路は今回触っていない（手法パックの効果は未再測）
 
-## 4. 測る前に必ず確かめる 3 点（この日 8 件踏んだ）
+## 4. 測る前に必ず確かめる 3 点（この日 11 件踏んだ）
 
 1. **その役割は本番にあるか。** PV1 は 08-24 に撤去済み（測っていたのは残骸）。
    S2（8 ファイルを 4 グループへ）は本番の split が要求しない形——本番は
@@ -157,6 +178,14 @@ planner / evaluator / filter / judge / reduce / extract / retrieve / map の全�
    読む。`classify` の契約は `class=<ラベル>` の本文（JSON ではない）。
    `extract` / `retrieve` は契約検査に落ちたら**形式修復を 1 回**入れる。
    写さないとハーネスだけが厳しくなり、本番なら救えている出力を失点に数える。
+
+**4 つ目: 契約の綴りと正規化後の形を本番から取る（2026-08-31 に 3 件踏んだ）。**
+amigos のアクション封筒の識別子は `type` ではなく **`kind`**（`type` は `send` の中の
+メッセージ種別）で、`type` を要求して**正しい封筒を契約違反と数えていた**（0/5 → 4/5）。
+dashboard の `task-guide` は `normalizeTaskGuide` が `risks` を改行連結の文字列へ畳むのに
+配列を要求していた（0/5 → 2/5）。`assess` は本番が採点を `task.extra` へ書き戻すので、
+素材の Task を使い回すと 2 回目以降は LLM を呼ばない（1/5 → 5/5）。
+**受け方・起動形・素材の 3 層すべてで同じ事故が起きる。**
 
 **もう 1 つ: 診断に正解を混ぜない。** 再投入の材料は「本番の機械が言えること」だけ
 （宣言された制約への違反・実行結果そのもの）。`GOLD_*` 由来の情報を返すと、
