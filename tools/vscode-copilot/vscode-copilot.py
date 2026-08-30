@@ -434,7 +434,8 @@ def file_context(files, read_files, writable: bool) -> str:
 
 
 def run_agent(endpoint: dict[str, object], prompt: str, tools: list[str], family: str | None,
-              timeout: float, on_event, history=None, debug: bool = False) -> dict:
+              timeout: float, on_event, history=None, debug: bool = False,
+              max_tool_chars: int | None = None) -> dict:
     """エージェントを 1 回走らせる。往復の途中経過は on_event へ流す。
 
     `history` を渡すと、その続きとして走らせる（対話でツールを使うとき）。ツール往復の
@@ -444,6 +445,8 @@ def run_agent(endpoint: dict[str, object], prompt: str, tools: list[str], family
     body: dict[str, object] = {"messages": messages, "tools": tools}
     if debug:
         body["debug"] = True
+    if max_tool_chars:
+        body["maxToolResultChars"] = max_tool_chars
     if family:
         body["family"] = family
     req = urllib.request.Request(
@@ -508,6 +511,11 @@ def format_agent_event(event: dict) -> str | None:
         return f"  [debug] 往復 {info.get('round')}  {shapes}"
     if "tool" in event:
         if event.get("ok"):
+            if event.get("truncated"):
+                # 切ったことは黙らない。**モデルは全部見たつもりで結論を出す**ので、
+                # 人にも見えていないと、根拠の欠けた答えを鵜呑みにする。
+                return (f"  … {event['tool']}: 結果が長いので {event['limit']} 文字で切りました"
+                        f"（全体 {event['truncated']} 文字）")
             return None  # 成功は呼び出し行だけで足りる
         if "error" in event:
             return f"  ! {event['tool']}: {event['error']}"
@@ -548,11 +556,12 @@ class Session:
     """1 つの対話。履歴は拡張ではなく手元に持つ（bridge を再起動しても会話が続く）。"""
 
     def __init__(self, family: str | None = None, tools: list[str] | None = None,
-                 debug: bool = False):
+                 debug: bool = False, max_tool_chars: int | None = None):
         self.messages: list[dict[str, str]] = []
         self.family = family
         self.tools = tools or None
         self.debug = debug
+        self.max_tool_chars = max_tool_chars
 
     def set_tools(self, argument: str, endpoint, timeout: float) -> tuple[str, str]:
         """`/tools` の中身。引数なしは表示、`off` で素の会話へ戻す。
@@ -602,7 +611,8 @@ class Session:
         try:
             if self.tools:
                 result = run_agent(endpoint, text, self.tools, self.family, timeout,
-                                   agent_progress(on_delta), history=history, debug=self.debug)
+                                   agent_progress(on_delta), history=history, debug=self.debug,
+                                   max_tool_chars=self.max_tool_chars)
             else:
                 result = request(endpoint, self.messages, self.family, timeout, on_delta)
             # 空の応答を履歴へ入れると、次の手番が「本文が空の assistant」を送って
@@ -670,6 +680,9 @@ def main() -> int:
                         help="--agent に持たせるツールをカンマ区切りで指定。"
                              "セット名（read/write/run/web）とツール名を混ぜて書ける"
                              "（既定は read。--write のときは read,write）")
+    parser.add_argument("--max-tool-chars", type=int, metavar="N",
+                        help="ツール結果 1 件の上限文字数（既定 16000。超えた分は切って"
+                             "モデルへ伝える）")
     parser.add_argument("--debug", action="store_true",
                         help="毎往復、bridge へ送ったメッセージの形を標準エラーへ出す")
     parser.add_argument("--write", action="store_true",
@@ -734,7 +747,7 @@ def main() -> int:
                     print(line, file=sys.stderr)
 
             result = run_agent(endpoint, prompt, tools, args.family, args.timeout, on_event,
-                               debug=args.debug)
+                               debug=args.debug, max_tool_chars=args.max_tool_chars)
             if args.json:
                 print(json.dumps({**result, "tools": tools, "events": events}, ensure_ascii=False))
             elif result["text"].strip():
@@ -765,7 +778,7 @@ def main() -> int:
             result = call_tool(endpoint, args.call, tool_input, args.timeout)
             print_tool_result(result, args.json)
             return 0
-        session = Session(args.family, debug=args.debug)
+        session = Session(args.family, debug=args.debug, max_tool_chars=args.max_tool_chars)
         if interactive:
             if as_agent:
                 # 対話でも道具を持てる。`-i --write` は「読み書きできる対話」を意味する。

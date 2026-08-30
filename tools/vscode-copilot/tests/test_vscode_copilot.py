@@ -837,7 +837,7 @@ def test_a_tool_turn_carries_the_whole_history():
     seen = {}
 
     def fake_run_agent(endpoint, prompt, tools, family, timeout, on_event, history=None,
-                       debug=False):
+                       debug=False, max_tool_chars=None):
         seen["prompt"] = prompt
         seen["history"] = history
         return {"text": "読みました", "rounds": 2}
