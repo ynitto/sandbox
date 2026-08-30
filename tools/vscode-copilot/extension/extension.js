@@ -166,7 +166,24 @@ function collectText(node, out) {
 //
 // 本文の取り出しは --call と同じ collectText を使う。ここで畳んでおけば、VS Code の
 // prompt-tsx 変換に依らずに済む。
-function toolResultParts(result) {
+// ツール結果 1 件の上限（文字数）。トークン数の代わりに文字数で測る——正確な
+// トークン化はモデル依存で、ここでは持てない。**大きく見積もる側へ倒す**（日本語は
+// おおむね 1 文字 1 トークン）。
+//
+// 実測（2026-08-30）: copilot_getChangedFiles をそのまま返して
+// `Message exceeds token limit` になった。往復ごとに積み上がるので、1 件が通っても
+// 数往復で溢れる。切り詰めたことはモデルへ言葉で伝える——黙って削ると、モデルは
+// 「全部見た」つもりで結論を出す。
+const MAX_TOOL_RESULT_CHARS = 16000;
+
+function truncateForModel(text, limit) {
+  if (text.length <= limit) return text;
+  return text.slice(0, limit)
+    + `\n\n…（結果が長いので ${limit} 文字で切りました。`
+    + `全体は ${text.length} 文字あります。範囲を絞って呼び直してください）`;
+}
+
+function toolResultParts(result, limit) {
   const parts = [];
   for (const part of (result && result.content) || []) {
     if (part instanceof vscode.LanguageModelTextPart) {
@@ -183,8 +200,11 @@ function toolResultParts(result) {
   }
   // 空のまま返さない。「道具は動いたが何も言わない」を、モデルには言葉で伝える
   // （空の結果を積むのは、空の assistant を積むのと同じ穴）。
-  if (!parts.length) parts.push(new vscode.LanguageModelTextPart('(このツールは本文を返しませんでした)'));
-  return parts;
+  if (!parts.length) return { parts: [new vscode.LanguageModelTextPart('(このツールは本文を返しませんでした)')], full: 0 };
+  // 上限は部品ごとではなく結果 1 件で見る。部品ごとに切ると、部品数だけ上限が増える。
+  const text = parts.map(part => part.value).join('');
+  const capped = truncateForModel(text, limit || MAX_TOOL_RESULT_CHARS);
+  return { parts: [new vscode.LanguageModelTextPart(capped)], full: text.length };
 }
 
 function toolResultToJson(result) {
@@ -329,8 +349,12 @@ async function runAgent(body, cancellationToken, emit) {
       try {
         const result = await vscode.lm.invokeTool(
           call.name, { toolInvocationToken: undefined, input: call.input }, cancellationToken);
-        results.push(new vscode.LanguageModelToolResultPart(call.callId, toolResultParts(result)));
-        emit({ tool: call.name, ok: true });
+        const folded = toolResultParts(result, body.maxToolResultChars);
+        results.push(new vscode.LanguageModelToolResultPart(call.callId, folded.parts));
+        const limit = body.maxToolResultChars || MAX_TOOL_RESULT_CHARS;
+        emit(folded.full > limit
+          ? { tool: call.name, ok: true, truncated: folded.full, limit }
+          : { tool: call.name, ok: true });
       } catch (error) {
         // 失敗もモデルへ返す。黙って落とすと同じ呼び出しを繰り返すだけになる。
         const message = error && error.message ? error.message : String(error);
