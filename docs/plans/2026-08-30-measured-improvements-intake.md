@@ -5,6 +5,31 @@
 > 出どころ: [eval README](../../tools/agent-tools/eval/README.md) の各節と
 > [残タスク棚卸し](2026-08-29-local-llm-open-items-inventory.md)。
 
+## 実施状況（2026-08-30 実行）
+
+**A〜G はすべて着地した。** ケース別の実測は下の各節に追記してある。残っているのは
+1 つだけ——**PL3 は 0/3 のまま**で、ゲートは 3 本とも発火しているのに e4b が作り直しでも
+同じ形（split の静的後段）を書く。検出ではなく作り直しの問題として残る。
+
+| 項 | 状態 | 実測 |
+|---|---|---|
+| Z1〜Z4 | 着地（3 コミット） | — |
+| Z5 | 測った | **PL3 0/3**。ゲートは 3 本とも発火。e4b は書き直しても同じ形 |
+| A1・A2 | 実装 | 打ち切り後に孫が残らないこと（無進捗・天井・`run` の 3 経路）をテストで固定 |
+| A3 | 実装 | `agent-herd decide` が F2P / J1P と同じ結論（kept=c2,c3,c5,c6 / winner=c3） |
+| A4 | 実装 | `harness run --deliverable`。T3 素材で `T3autosplit`（3/3）と手順文がバイト一致 |
+| B1・B2 | 実装 | 剥がした宣言を claim / result へ・split の静的後段の除去を log へ |
+| C1 | 実装 | スキルが `--capabilities` で申告した版にだけ判定契約を渡す |
+| D1 | 反映 | 6 つのエージェントホームへ同期（flow-planner / flow-worker / ltm-use / statemachine-use） |
+| D2 | 実装 | **PL5 ゲートのみ 2/3 → ゲート + 正規化で落とす 3/3** |
+| E1 | 実装 | eval 7 本が共有ヘルパ経由（4 本の予定だったが doctor / project_verify も同じ罠だった） |
+| E2 | 実装 | `worker_eval --recheck <台帳>` で走り直さずに再判定できる |
+| F1 | 実装 | 索引が無いと recall が 1 行伝える |
+| F2 | 手順化 + 再現 | 0.11 の行は記録どおり。**実記憶の埋め込み索引が未構築だった**（F1 が伝える形） |
+| G1 | 規約化 | `write` 2 つ以上は投入前に落ちる |
+
+---
+
 ## 結論
 
 **実行層（agent-herd / agentcore）に 2 件、いま最も安く効く。** どちらも「打ち切りが効いていない」
@@ -38,6 +63,12 @@
 **受け入れ条件。** Z1〜Z4 は commit まで。Z5 は `planner_eval --cases PL3 --repeat 3` を
 マシンが起きている時間帯に引き、結果を eval README の PL3 節へ追記する（率としては語らない）。
 
+**結果（2026-08-30）。** Z1〜Z4 は commit 済み。Z5 は引いた——**3 本とも FAIL**（111 / 133 /
+137 秒）。3 本とも `split → map → reduce` を静的に書き、同じグラフを `gate_tasks` に掛けると
+ゲートは発火する。つまり残るのは検出ではなく**作り直し**の問題である。kind 非依存にした
+修正が効くのは `work` / `generate` で書かれた別の外し方に対してで、この 3 本は修正前の
+ゲートでも捕まる形だった。台帳 `ledger-2026-08-30-planner-pl3-gate-remeasure-gemma4-e4b.jsonl`。
+
 **見積り。** Z1〜Z4 は 30 分（レビューと commit）。Z5 は実行時間 10 分程度。
 
 ---
@@ -60,6 +91,12 @@ plan.py が起動する孫（エージェント CLI）がパイプを握った�
 `_tl_run_watched` の無進捗打ち切り・天井打ち切りの両方で確かめる。
 
 **見積り。** 半日。
+
+**結果。** `agentcore/procgroup.py`（`popen` / `kill_group` / `run`）を 1 実装として置き、
+`toolloop`（無進捗・天井・非 idle）・`verifycontract.run_plan_command`・eval 7 本が呼ぶ。
+受入は `agentcore/tests/test_procgroup.py` で固定した——孫がパイプを握ったまま親を殺す
+形を作り、3 経路それぞれで孫が消えることを見る（素の `subprocess.run` では孫が残ることも
+確かめてある）。
 
 ### A2. 上限は monotonic で計り、記録は「打ち切った事実」で書く
 
@@ -91,6 +128,10 @@ plan.py が起動する孫（エージェント CLI）がパイプを握った�
 
 **見積り。** 1 日。
 
+**結果。** `agent-herd decide --decision <契約|パス>`（候補は stdin）。同じ素材で
+`kept=["c2","c3","c5","c6"]` / `winner="c3"` ——eval の期待値と一致。欠測が残るときは
+`undecided` を出して終了コード 1（静かに合否へ倒さない）。
+
 ### A4. 成果物スロットを実行層でも割る
 
 **根拠（実測）。** 成果物 2 つの仕事を一括で渡すと 0/3、1 スロット 1 呼び出しに割ると 3/3
@@ -103,6 +144,21 @@ plan.py が起動する孫（エージェント CLI）がパイプを握った�
 **受け入れ条件。** `worker_eval` の T3 素材を CLI 経由で流し、T3autosplit と同じ 3/3 帯に入ること。
 
 **見積り。** 1 日。
+
+**結果。** `agent-herd harness run --deliverable PATH`（繰り返し可）。割り方も文面も
+`nodecontract.split_by_deliverables` / `deliverable_slot_directive` から引く。
+
+受入は**手順文の一致**で取った——T3 の成果物 2 つを CLI へ渡すと、`T3autosplit`（実測 3/3）
+の 2 手順と**バイト単位で同じ goal** が出る（下のコードで確認）。CLI 経由で aider を
+引き直しても測るのは同じ手順文に対する同じモデルなので、腕を 1 本足すより一致を見るほうが
+条件が固定される。
+
+```python
+from agentcore.harness import toolloop
+import worker_eval as we
+toolloop._tl_deliverable_slots(we.T3_GOAL, we.T3_OPERATION["deliverables"]) \
+    == [s["goal"] for s in we.TASKS["T3autosplit"]["steps"]]   # True
+```
 
 ### やらないこと
 
