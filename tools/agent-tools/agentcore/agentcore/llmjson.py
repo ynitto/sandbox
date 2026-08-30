@@ -28,13 +28,24 @@ engine ごとに書き分けると調整が人手に落ちる。
 from __future__ import annotations
 
 import json
+import re
+
+# ``` フェンスの中身（言語タグは任意）。道具ループを回すモデルは、成果物をフェンスに入れて
+# その前後に作業報告を書く——**後置きの散文に角括弧が 1 つあるだけ**で、素朴な
+# 「最初の `[` から最後の `]`」は散文ごと巻き込んで壊れる（実測 2026-08-30: map の
+# 不合格 4/5 がこれ。どの出力にも正しい JSON 配列がフェンスの中にあった）。
+_FENCE = re.compile(r"```[A-Za-z0-9_+-]*\s*\n(.*?)```", re.DOTALL)
+# 行内のバッククォート引用。フェンスを使わず `["a","b"]` と本文へ埋めて返す癖があり、
+# その周りの散文にも角括弧が出る（実測 2026-08-30: map の 1 本がこれで、中身は正しかった）。
+_INLINE = re.compile(r"`([^`\n]+)`")
 
 
 def extract_json(text: str, *, what: str = "エージェント出力"):
     """LLM 出力から JSON を寛容に取り出す。
 
-    素の `json.loads` で通ればそれを返し、駄目なら最初の `{`／`[` から最後の `}`／`]` までを
-    切り出して試す（前置き・後置きの散文や ``` フェンスを跨いで拾うため）。
+    順に試す: (1) 素の `json.loads`、(2) ``` フェンスの中身（**最後に現れる**成功を採る
+    ——道具ループでは途中経過が先に、最終成果が最後に来る）、(3) 最初の `{`／`[` から
+    最後の `}`／`]` までの切り出し（フェンスが無い出力のための従来の寛容さ）。
 
     `what` は失敗時のメッセージにだけ使う。呼び出し側が「何の出力か」を言えると、
     ログを読む人が prompt を特定できる（agent-flow は "planner 出力"、agent-amigos は
@@ -44,6 +55,24 @@ def extract_json(text: str, *, what: str = "エージェント出力"):
         return json.loads(text)
     except json.JSONDecodeError:
         pass
+    fenced = None
+    for block in _FENCE.findall(text or ""):
+        try:
+            fenced = json.loads(block.strip())
+        except json.JSONDecodeError:
+            continue
+    if fenced is not None:
+        return fenced
+    for span in _INLINE.findall(text or ""):
+        body = span.strip()
+        if not body.startswith(("{", "[")):
+            continue
+        try:
+            fenced = json.loads(body)
+        except json.JSONDecodeError:
+            continue
+    if fenced is not None:
+        return fenced
     for opn, cls in (("{", "}"), ("[", "]")):
         i, j = text.find(opn), text.rfind(cls)
         if i != -1 and j > i:
