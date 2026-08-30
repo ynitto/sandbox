@@ -73,6 +73,46 @@ def _pick(blocks):
     return container or last
 
 
+# ツールループ CLI が本文の後ろへ足す制御封筒。**payload ではない**ので、本文に本物の
+# 成果 JSON があるのにこれが後続すると、素朴な「最初の { から最後の }」は 2 つをまたいで
+# 壊れる（実測 2026-08-30: amigos の conductor / acceptance / role-actions がこれで
+# 全滅していた——モデルは正しい JSON を返していた）。
+_CONTROL_KEYS = ({"ok"}, {"ok", "issues"})
+
+
+def _is_control_envelope(value) -> bool:
+    return isinstance(value, dict) and set(value) in _CONTROL_KEYS
+
+
+def _scan(text: str):
+    """連結された JSON 値を走査し、payload として使える最後の器を `(値,)` で返す。
+
+    後ろほど優先するのは他の段と同じ（最終成果が最後に来る）。ただし制御封筒は飛ばす
+    ——あれは CLI が足すものでモデルの成果ではない。1 つも無ければ None。
+    """
+    decoder = json.JSONDecoder()
+    payload = control = None
+    i, n = 0, len(text)
+    while i < n:
+        if text[i] not in "{[":
+            i += 1
+            continue
+        try:
+            value, end = decoder.raw_decode(text, i)
+        except ValueError:
+            i += 1
+            continue
+        # 読めた値の**中**は走査しない（`issues: ["x"]` のような入れ子を成果と取り違える）
+        i = max(end, i + 1)
+        if not isinstance(value, (dict, list)):
+            continue
+        if _is_control_envelope(value):
+            control = (value,)
+        else:
+            payload = (value,)
+    return payload or control
+
+
 def extract_json(text: str, *, what: str = "エージェント出力"):
     """LLM 出力から JSON を寛容に取り出す。
 
@@ -88,7 +128,8 @@ def extract_json(text: str, *, what: str = "エージェント出力"):
         return json.loads(text)
     except json.JSONDecodeError:
         pass
-    picked = _pick(_FENCE.findall(text or "")) or _pick(_INLINE.findall(text or ""))
+    picked = (_pick(_FENCE.findall(text or "")) or _pick(_INLINE.findall(text or ""))
+              or _scan(text or ""))
     if picked is not None:
         return picked[0]
     for opn, cls in (("{", "}"), ("[", "]")):

@@ -45,6 +45,26 @@ class ExtractJsonTests(unittest.TestCase):
         """フェンスも行内引用も無い出力は従来どおり切り出しで拾う。"""
         self.assertEqual(llmjson.extract_json('前置き {"a": 1} 後置き'), {"a": 1})
 
+    def test_trailing_control_envelope_does_not_hide_the_payload(self):
+        """ツールループ CLI が後ろへ足す `{"ok": false, ...}` は payload ではない。
+
+        実測 2026-08-30: amigos の conductor / acceptance / role-actions は、モデルが正しい
+        JSON を返しているのに、この封筒が後続して「最初の { から最後の }」が壊れ全滅していた。
+        """
+        text = ('{"add": [], "prune": [], "reason": "編成は足りている"}\n\n'
+                '{"ok": false, "issues": ["規約どおりの完了宣言を出せず打ち切りました"]}')
+        self.assertEqual(llmjson.extract_json(text)["reason"], "編成は足りている")
+
+    def test_control_envelope_alone_is_still_returned(self):
+        """封筒しか無いときは封筒を返す（verify の正規化はこれを読む）。"""
+        self.assertEqual(llmjson.extract_json('{"ok": true, "issues": []}'),
+                         {"ok": True, "issues": []})
+
+    def test_nested_arrays_are_not_mistaken_for_the_payload(self):
+        """読めた値の中は走査しない（`issues: [...]` を成果と取り違えない）。"""
+        text = '雑談 {"actions": [{"type": "note"}]} 続き'
+        self.assertEqual(llmjson.extract_json(text), {"actions": [{"type": "note"}]})
+
     def test_no_json_raises_with_the_caller_label(self):
         with self.assertRaises(ValueError) as ctx:
             llmjson.extract_json("成果報告のみでデータがありません。", what="planner 出力")

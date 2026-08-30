@@ -60,6 +60,17 @@ def extract_list(text: str):
     ``["a", "b"], ["c", "d"]`` のように外側の配列なしで返すことがある。この形は
     各グループと要素が一意なので、再推論せず ``["a,b", "c,d"]`` へ畳める。
     数値・object・混在配列は意味が決まらないため受理せず、呼び出し側の形式修復へ回す。"""
+    # グループ表現（外側の配列なしで並ぶ文字列配列）は**先に**畳む。共有の JSON 抽出は
+    # 連結された JSON を走査して最後の器を返すので（制御封筒対策・agentcore.llmjson）、
+    # ここを後回しにすると `["a","b"], ["c","d"]` が最後の 1 グループだけになる。
+    try:
+        grouped = json.loads(f"[{text.strip()}]")
+    except (json.JSONDecodeError, ValueError):
+        grouped = None
+    if (isinstance(grouped, list) and len(grouped) > 1
+            and all(isinstance(g, list) and g and all(isinstance(i, str) for i in g)
+                    for g in grouped)):
+        return [",".join(group) for group in grouped]
     try:
         data = unwrap_list(extract_json(text))
     except (ValueError, json.JSONDecodeError) as original:
