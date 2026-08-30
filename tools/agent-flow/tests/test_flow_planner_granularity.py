@@ -68,6 +68,85 @@ class ScopeAndGateTests(unittest.TestCase):
                          {"id": "r", "goal": "集約", "deps": ["s"], "kind": "reduce"}]
         self.assertTrue(any("静的 reduce" in x for x in plan.gate_tasks(direct_reduce, "coarse")))
 
+    def test_gate_rejects_any_static_successor_of_split(self):
+        """kind を問わず落とす。map / reduce だけ見ていたとき、e4b は同じ形を work で書いて
+        素通りしていた（planner_eval PL3 0/3・2026-08-29）。engine 側（plan_strategy_user）は
+        kind に関係なく split への静的依存を拒む。"""
+        tasks = [{"id": "s", "goal": "[scope] notes/ 列挙", "deps": [], "kind": "split"},
+                 {"id": "w", "goal": "[scope] notes/ 各ファイルの見出し抽出", "deps": ["s"],
+                  "kind": "work"}]
+        self.assertTrue(any("静的 work" in x for x in plan.gate_tasks(tasks, "coarse")))
+
+    def test_gate_rejects_declarations_that_the_engine_would_strip(self):
+        """宣言の器が壊れていると engine が剥がす＝宣言したのに効かない。ここで作り直させる。"""
+        broken_decision = [{"id": "f", "goal": "[scope] 候補\n残す", "deps": [], "kind": "filter"}]
+        self.assertTrue(any("decision が無い" in x
+                            for x in plan.gate_tasks(broken_decision, "coarse")))
+        tie = [{"id": "f", "goal": "[scope] 候補\n残す", "deps": [], "kind": "judge",
+                "decision": {"facts": [{"name": "lines", "type": "int"}],
+                             "criteria": [{"fact": "lines", "op": "ne", "value": 0}],
+                             "tie_break": "lines が最小"}}]
+        self.assertTrue(any("tie_break" in x for x in plan.gate_tasks(tie, "coarse")))
+        empty_deliverables = [{"id": "t", "goal": "[scope] src/a.py\n実装", "deps": [],
+                               "kind": "work", "operation": {"operation_class": "feature"}}]
+        self.assertTrue(any("deliverables が空" in x
+                            for x in plan.gate_tasks(empty_deliverables, "coarse")))
+        # 成果物を作らないノードに operation が無いのは正常（宣言は必須にしない）
+        no_contract = [{"id": "t", "goal": "[scope] src/a.py\n調べる", "deps": [], "kind": "work"}]
+        self.assertEqual(plan.gate_tasks(no_contract, "coarse"), [])
+
+    def test_gate_rejects_facts_that_were_never_declared(self):
+        """実測 2026-08-29: e4b は facts に無い fact を tie_break / criteria に書く。
+        engine はその decision を丸ごと剥がす（＝モデル判定へ戻る）ので、ここで作り直させる。"""
+        undeclared_tie = [{"id": "j", "goal": "[scope] 候補\n最良を選ぶ", "deps": [], "kind": "judge",
+                           "decision": {"facts": [{"name": "extra_deps", "type": "bool"}],
+                                        "criteria": [{"fact": "extra_deps", "op": "eq",
+                                                      "value": False}],
+                                        "tie_break": {"fact": "lines", "op": "min"}}}]
+        self.assertTrue(any("tie_break の fact" in x
+                            for x in plan.gate_tasks(undeclared_tie, "coarse")))
+        undeclared_criteria = [{"id": "f", "goal": "[scope] 候補\n残す", "deps": [], "kind": "filter",
+                                "decision": {"facts": [{"name": "extra_deps", "type": "bool"}],
+                                             "criteria": [{"fact": "tests", "op": "eq",
+                                                           "value": "pass"}]}}]
+        self.assertTrue(any("criteria の fact" in x
+                            for x in plan.gate_tasks(undeclared_criteria, "coarse")))
+
+    def test_gate_rejects_tie_break_on_filter(self):
+        """順位基準が要るのは judge。filter に付けても使われず、器が崩れると宣言ごと消える。"""
+        tasks = [{"id": "f", "goal": "[scope] 候補\n残す", "deps": [], "kind": "filter",
+                  "decision": {"facts": [{"name": "lines", "type": "int"}],
+                               "criteria": [{"fact": "lines", "op": "ne", "value": 0}],
+                               "tie_break": {"fact": "lines", "op": "min"}}}]
+        self.assertTrue(any("filter に tie_break" in x for x in plan.gate_tasks(tasks, "coarse")))
+
+    def test_filter_tie_break_is_dropped_not_carried(self):
+        """使われない 1 語（filter の tie_break）のために decision ごと剥がされるのを避ける。
+        judge の tie_break は使われるので落とさない。"""
+        out = plan.normalize_tasks([
+            {"id": "f", "goal": "g", "kind": "filter",
+             "decision": {"facts": [{"name": "x", "type": "bool"}],
+                          "criteria": [{"fact": "x", "op": "eq", "value": True}],
+                          "tie_break": {"fact": "y", "op": "min"}}},
+            {"id": "j", "goal": "g", "kind": "judge",
+             "decision": {"facts": [{"name": "x", "type": "int"}],
+                          "criteria": [{"fact": "x", "op": "ne", "value": 0}],
+                          "tie_break": {"fact": "x", "op": "min"}}}])
+        by_id = {t["id"]: t for t in out}
+        self.assertNotIn("tie_break", by_id["f"]["decision"])
+        self.assertEqual(by_id["f"]["decision"]["criteria"][0]["fact"], "x")  # 本体は残す
+        self.assertIn("tie_break", by_id["j"]["decision"])
+
+    def test_gate_rejects_two_nodes_making_the_same_deliverable(self):
+        """実測 2026-08-29: 同じテストファイルを 2 ノードが宣言した（どちらが作るのか決まらない）。"""
+        tasks = [{"id": "t1", "goal": "[scope] a.py\n実装", "deps": [], "kind": "work",
+                  "operation": {"operation_class": "feature",
+                                "deliverables": ["eval/test_x.py"]}},
+                 {"id": "t2", "goal": "[scope] test_x.py\nテスト", "deps": ["t1"], "kind": "work",
+                  "operation": {"operation_class": "feature",
+                                "deliverables": ["eval/test_x.py"]}}]
+        self.assertTrue(any("2 ノードが作る" in x for x in plan.gate_tasks(tasks, "coarse")))
+
     def test_gate_count_out_of_range(self):
         tasks = [
             {"id": "t1", "goal": "[scope] a.py\n[out_of_scope] x\none", "deps": [], "kind": "work"},

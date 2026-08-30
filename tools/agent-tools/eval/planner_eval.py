@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -248,12 +249,106 @@ def check_pl4(data: dict) -> tuple[bool, str]:
     return True, f"{len(tasks)} ノード {sorted(set(kinds))}"
 
 
+# 宣言（operation.deliverables / decision）は §1・§2 の機構の**唯一の入口**である。
+# planner が書かなければ、機械判定も成果物スロット分割も本番で一度も発火しない。
+# 判定は本番の検査関数（agentcore.nodecontract）をそのまま呼ぶ——ここで写して緩めると
+# 「eval は通るのに本番では剥がされる宣言」を合格にしてしまう。
+
+PL5_REQUEST = (
+    "eval/humansize.py に関数 human_bytes(n) を実装し、その単体テストを "
+    "eval/test_humansize.py に追加する。成果物はこの 2 ファイルで、ほかは変更しない。"
+    "検証は python -m pytest -q eval で行う。"
+)
+
+PL6_REQUEST = (
+    "集計スクリプトの実装案を 3 つ並列に作り、そのうち**追加の依存ライブラリが要らないもの**"
+    "だけを残す。残す条件はこれだけで、ほかの観点（テストの有無・行数など）では絞らない。"
+)
+
+
+def _produce_nodes(tasks: list[dict]) -> list[dict]:
+    return [t for t in tasks if t.get("kind", "work") in ("work", "generate")]
+
+
+PL5_FILES = ("eval/humansize.py", "eval/test_humansize.py")
+
+
+def check_pl5(data: dict) -> tuple[bool, str]:
+    """成果物 2 つの要求で、**1 呼び出し 1 成果物**まで宣言が届くか。
+
+    正解は要求から従う（構成的ラベル）: 要求が名指しした 2 ファイルが、本番の分割器を
+    通したあとに**それぞれ別のスロットの唯一の成果物**になっていること。ノードを 1 つに
+    まとめて宣言しても 2 つに分けて宣言してもよい（engine が割る）。成果物を作らない
+    ノード（調査・締めくくり）に宣言が無いのは減点しない——宣言が要るのは作るノードだけ。
+    """
+    tasks = data["tasks"]
+    # 分割が効くのは work / generate だけ（nodecontract.SPLITTABLE_KINDS）。集約・検証ノードに
+    # 付いた宣言はスロットに関係しないので、ここでは見ない。
+    declared = [t for t in _produce_nodes(tasks) if isinstance(t.get("operation"), dict)]
+    if not declared:
+        return False, "operation を宣言したノードが無い（宣言が無ければ機構は発火しない）"
+    broken = []
+    for node in declared:
+        errors = engine.operation_contract_errors(node["operation"])
+        if errors is None:
+            return False, "operation_contract_errors がこの木に無い"
+        if errors:
+            broken.append(f"{node['id']}: {errors[0]}")
+    if broken:
+        return False, f"契約が不正（engine が剥がす）: {broken[:2]}"
+    slots = []
+    for node in declared:
+        slots.extend(engine.split_by_deliverables(node) or [node])
+    owners: dict = {}
+    for slot in slots:
+        files = [str(d) for d in (slot.get("operation", {}).get("deliverables") or [])]
+        if len(files) != 1:
+            return False, f"{slot['id']} が成果物 {len(files)} 件（1 スロット 1 成果物にならない）"
+        owners.setdefault(files[0], []).append(slot["id"])
+    missing = [f for f in PL5_FILES if f not in owners]
+    if missing:
+        return False, f"要求が名指しした成果物にスロットが無い: {missing}"
+    duplicated = [f for f in PL5_FILES if len(owners[f]) > 1]
+    if duplicated:
+        return False, f"同じ成果物を複数のスロットが作る: {duplicated}"
+    invented = sorted(set(owners) - set(PL5_FILES))
+    if invented:
+        return False, f"要求に無い成果物を宣言した: {invented}"
+    return True, f"{len(slots)} スロット / 成果物 {sorted(owners)}"
+
+
+def check_pl6(data: dict) -> tuple[bool, str]:
+    """選別を伴う要求で、filter / judge に判定契約が付くか（付かなければモデル判定のまま）。"""
+    tasks = data["tasks"]
+    gates = [t for t in tasks if t.get("kind") in ("filter", "judge")]
+    if not gates:
+        return False, "filter / judge ノードが無い"
+    declared = [t for t in gates if isinstance(t.get("decision"), dict)]
+    if not declared:
+        return False, f"decision を宣言した判定ノードが 0/{len(gates)}"
+    for node in declared:
+        errors = engine.decision_contract_errors(node["decision"])
+        if errors is None:
+            return False, "decision_contract_errors がこの木に無い"
+        if errors:
+            return False, f"{node['id']} の decision が不正: {errors[0]}"
+        if not (node["decision"].get("criteria") or []):
+            return False, f"{node['id']} の criteria が空（残す条件が宣言されていない）"
+    if len(declared) < len(gates):
+        return False, f"decision を宣言したのは {len(declared)}/{len(gates)} ノード"
+    facts = sorted({str(f.get("name")) for node in declared
+                    for f in (node["decision"].get("facts") or [])})
+    return True, f"判定ノード {len(declared)} 件・facts {facts}"
+
+
 CASES = {
     "PL1": dict(genre="順序（鎖）", request=PL1_REQUEST, check=check_pl1),
     "PL2": dict(genre="fan-out + 統合", request=PL2_REQUEST, check=check_pl2),
     "PL3": dict(genre="列挙（map-reduce）", request=PL3_REQUEST, check=check_pl3,
                 probe_files=[f"notes/ITEM-{i:02d}.md" for i in range(1, 13)]),
     "PL4": dict(genre="単一（過分解の検出）", request=PL4_REQUEST, check=check_pl4),
+    "PL5": dict(genre="宣言（成果物スロット）", request=PL5_REQUEST, check=check_pl5),
+    "PL6": dict(genre="宣言（判定契約）", request=PL6_REQUEST, check=check_pl6),
 }
 
 # ------------------------------------------------------------------ 実行
@@ -286,19 +381,46 @@ def call(case: dict) -> "tuple[int, str, str, float]":
            "--model", MODEL, "--granularity", GRANULARITY, "--review", "false",
            "--probe-root", root]
     started = time.time()
+    # プロセスグループごと起こす。plan.py は各フェーズでエージェント CLI（孫プロセス）を
+    # 起動するので、上限で plan.py だけを殺しても**孫がパイプを握ったまま**で
+    # communicate() が EOF を待ち続ける——上限が事実上効かなくなる（2026-08-29 に 70 分
+    # 走り続けた。時計は 900s のままだった）。上限で group を落として初めて上限が効く。
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                            cwd=root, env=_skill_env(), start_new_session=True)
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=WALL_LIMIT,
-                           cwd=root, env=_skill_env())
-        rc, out, err = p.returncode, p.stdout, p.stderr
+        out, err = proc.communicate(timeout=WALL_LIMIT)
+        rc = proc.returncode
     except subprocess.TimeoutExpired:
-        rc, out, err = -1, "", "TIMEOUT"
+        _kill_group(proc)
+        try:
+            out, err = proc.communicate(timeout=30)
+        except subprocess.TimeoutExpired:   # 孫がまだ握っている（読まずに諦める）
+            out, err = "", ""
+        rc, err = -1, (err or "") + "TIMEOUT"
     return rc, out, err, time.time() - started
+
+
+def _kill_group(proc: "subprocess.Popen") -> None:
+    """子とその子孫（エージェント CLI）をまとめて落とす。"""
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(os.getpgid(proc.pid), sig)
+        except (ProcessLookupError, PermissionError):
+            return
+        try:
+            proc.wait(timeout=10)
+            return
+        except subprocess.TimeoutExpired:
+            continue
 
 
 def judge(case: dict, rc: int, out: str, err: str, wall: float):
     data = None
-    if wall >= WALL_LIMIT:
-        mode, ok, note = "timeout", False, "上限超過"
+    # 上限超過の判定は**壁時計ではなく打ち切りの事実**（rc / TIMEOUT マーカー）で行う。
+    # 壁時計はマシンのスリープを含むので、monotonic で計る上限と一致しない——
+    # 夜間に走らせると「上限内で終わったのに timeout」と記録されていた。
+    if rc == -1 and "TIMEOUT" in (err or ""):
+        mode, ok, note = "timeout", False, f"上限超過（{WALL_LIMIT:.0f}s で打ち切り）"
     elif rc != 0:
         mode, ok, note = "cli_error", False, (err.strip()[-160:] or f"rc={rc}")
     elif not out.strip():
@@ -330,8 +452,12 @@ def run_one(cid: str, i: int) -> dict:
                patterns=list(strategy.get("patterns") or []),
                granularity_resolved=strategy.get("granularity"),
                # goal は全文で残す（チェッカーを直したとき台帳から再判定できるように）。
+               # 宣言（operation / decision）も残す——チェッカーを直したとき台帳から
+               # 再判定できるように。goal 全文を残しているのと同じ理由。
                graph=[{"id": t.get("id"), "kind": t.get("kind"), "deps": t.get("deps"),
-                       "goal": str(t.get("goal") or "")} for t in tasks],
+                       "goal": str(t.get("goal") or ""),
+                       **{k: t[k] for k in ("operation", "decision") if isinstance(t.get(k), dict)}}
+                      for t in tasks],
                stderr_tail=err.strip()[-300:])
     if engine.missing():
         rec["engine_missing"] = engine.missing()
@@ -341,6 +467,12 @@ def run_one(cid: str, i: int) -> dict:
 
 
 # ------------------------------------------------------------------ selfcheck
+
+
+OP_TWO = {"operation_class": "feature",
+          "scope": {"read": ["eval"], "write": ["eval/humansize.py", "eval/test_humansize.py"]},
+          "deliverables": ["eval/humansize.py", "eval/test_humansize.py"],
+          "verification": {"commands": [["python", "-m", "pytest", "-q", "eval"]]}}
 
 
 def selfcheck() -> int:
@@ -364,6 +496,14 @@ def selfcheck() -> int:
                  ["map-reduce"]),
         "PL4": g([{"id": "t", "goal": "README のタイポ修正", "deps": [], "kind": "work"}],
                  ["fan-out-and-synthesize"]),
+        "PL5": g([{"id": "t1", "goal": "実装とテスト", "deps": [], "kind": "work",
+                   "operation": OP_TWO}], ["fan-out-and-synthesize"]),
+        "PL6": g([{"id": "g1", "goal": "案 1", "deps": [], "kind": "generate"},
+                  {"id": "f", "goal": "条件を満たす案を残す", "deps": ["g1"], "kind": "filter",
+                   "decision": {"facts": [{"name": "extra_deps", "type": "bool"}],
+                                "criteria": [{"fact": "extra_deps", "op": "eq",
+                                              "value": False}]}}],
+                 ["generate-and-filter"]),
     }
     bad = {
         "PL1": [g([{"id": "a", "goal": "KIRBY-A", "deps": [], "kind": "work"},
@@ -397,6 +537,24 @@ def selfcheck() -> int:
                 g([{"id": "a", "goal": "分類", "deps": [], "kind": "classify"},
                    {"id": "b", "goal": "直す", "deps": ["a"], "kind": "work"}],
                   ["classify-and-act"])],                            # 余計な判定ノード
+        "PL5": [g([{"id": "t1", "goal": "実装とテスト", "deps": [], "kind": "work"}],
+                  ["fan-out-and-synthesize"]),                       # 宣言が無い（機構が発火しない）
+                g([{"id": "t1", "goal": "実装", "deps": [], "kind": "work",
+                    "operation": {"operation_class": "feature",
+                                  "deliverables": ["eval/humansize.py"]}},
+                   {"id": "t2", "goal": "テスト", "deps": ["t1"], "kind": "work"}],
+                  ["fan-out-and-synthesize"]),                       # 片方の成果物にスロットが無い
+                g([{"id": "t1", "goal": "実装とテストと計画", "deps": [], "kind": "work",
+                    "operation": {"operation_class": "feature",
+                                  "deliverables": [*PL5_FILES, "plan.md"]}}],
+                  ["fan-out-and-synthesize"])],                      # 要求に無い成果物を足した
+        "PL6": [g([{"id": "f", "goal": "追加依存の要らない案だけ残す", "deps": [],
+                    "kind": "filter"}], ["generate-and-filter"]),    # decision が無い
+                g([{"id": "f", "goal": "残す", "deps": [], "kind": "filter",
+                    "decision": {"facts": [{"name": "extra_deps", "type": "bool"}],
+                                 "criteria": [{"fact": "tests", "op": "eq",
+                                               "value": "pass"}]}}],
+                  ["generate-and-filter"])],                         # facts に無い fact を条件に
     }
     contract_bad = [
         g([{"id": "a", "goal": "x", "deps": ["zz"], "kind": "work"}], []),      # 無い deps

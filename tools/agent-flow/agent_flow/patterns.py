@@ -106,14 +106,27 @@ def _coerce_tasks(raw, existing=()):
         # 処理契約（設計 2026-08-15 §3.4）。自由文 goal だけで候補を決めないための
         # 構造化条件で、形が契約に合うものだけを運ぶ（壊れた宣言は無いのと同じ）。
         operation = t.get("operation")
-        if isinstance(operation, dict) and not _nodecontract.operation_contract_errors(operation):
-            node["operation"] = operation
+        if isinstance(operation, dict):
+            errors = _nodecontract.operation_contract_errors(operation)
+            if errors:
+                # 黙って剥がさない。剥がした宣言は「宣言したのに効かない」を作る
+                # （成果物スロット分割も局所修正判定も、宣言が唯一の入口である）。
+                log("planner", f"処理契約を無視: {tid}（{errors[0]}）")
+            else:
+                node["operation"] = operation
         # 判定契約（filter / judge）。宣言があればモデルには事実の抽出だけをさせ、採否は
         # 機械（decide_candidates）が決める。形が崩れた宣言は運ばない＝従来のモデル判定のまま。
         decision = t.get("decision")
-        if (kind in ("filter", "judge") and isinstance(decision, dict)
-                and not _nodecontract.decision_contract_errors(decision)):
-            node["decision"] = decision
+        if isinstance(decision, dict):
+            if kind not in ("filter", "judge"):
+                log("planner", f"判定契約を無視: {tid}（kind={kind} には宣言できません）")
+            else:
+                errors = _nodecontract.decision_contract_errors(decision)
+                if errors:
+                    log("planner", f"判定契約を無視: {tid}（{errors[0]}）"
+                                   "——この節点はモデル判定のまま走ります")
+                else:
+                    node["decision"] = decision
         # 工程ごとの追加ルール（planner/評価役が選んだもの）。存在する id・role が合う
         # ものだけを goal へ複製する（dashboard がノードへ複製するのと同じ作法。
         # 実行時にカタログを読み直さないので、後から run tuning が変わっても効果は変わらない）。

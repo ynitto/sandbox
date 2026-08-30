@@ -213,6 +213,10 @@ kind は 13 種で、正典は `agentcore.nodecontract.VALID_KINDS` です。
 
 宣言の受け口は 2 つあります。planner には filter / judge へ必ず付けるよう求め、形が壊れた宣言や filter / judge 以外への宣言は剥がして従来のモデル判定へ倒します。ユーザー定義フロー（§3.2）では同じ不正を `UserPlanError` で拒みます。人が書いた宣言を黙って無効化すると、機械判定のつもりでモデル判定が走るためです。
 
+`work` / `generate` は処理契約 `operation` の `deliverables`（成果物スロット）を宣言できます。2 つ以上あるノードは、planner 経路（`_coerce_tasks`）で **1 スロット 1 ノードの直列**へ機械が割ります（`<id>-d1` → `<id>-d2` …・後続の依存は最後のスロットへ付け替え・差し替え宣言 `replaces` も最後のスロットにだけ残す）。各スロットは goal の末尾に「この手順で作る成果物は 1 つだけ」の定型文を持ち、`deliverables` と `scope.write` も自分のスロットだけへ絞られます。分割そのものは `agentcore.nodecontract.split_by_deliverables` が 1 実装で持ち、上限は 4 スロット（超える宣言は割りません）。
+
+小さいモデルは成果物を 2 つ同時に渡されると片方を丸ごと落とし、再投入を何度積んでも同じ落ち方をするためです（実測: 一括 0/3・機械分割 3/3・再投入 0）。ユーザー定義フロー（§3.2）では割りません——人が描いた形は意図そのものだからです。
+
 `kind: verify` は run 内の反復と完了条件を制御する工程で、agent-project の verification plan を判定する専用 verifier（§3.3）とは別物です。前者が task の done を主張することはできません。
 
 #### 1.4 操作コマンド

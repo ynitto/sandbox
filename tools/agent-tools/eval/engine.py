@@ -173,6 +173,24 @@ def fact_extraction_directive(decision):
     return fn(decision) if fn is not None else None
 
 
+def operation_contract_errors(contract):
+    """処理契約の形式検査。本番（agentcore.nodecontract）を呼ぶ（写さない）。"""
+    nodecontract = _nodecontract()
+    if nodecontract is None:
+        return None
+    fn = _need(nodecontract, "operation_contract_errors", "operation_contract_errors（処理契約検査）")
+    return fn(contract) if fn is not None else None
+
+
+def decision_contract_errors(decision):
+    """判定契約の形式検査。同上——planner が書いた宣言を本番と同じ規則で受理 / 却下する。"""
+    nodecontract = _nodecontract()
+    if nodecontract is None:
+        return None
+    fn = _need(nodecontract, "decision_contract_errors", "decision_contract_errors（判定契約検査）")
+    return fn(decision) if fn is not None else None
+
+
 def split_by_deliverables(node):
     """成果物スロットの機械分割。本番（agentcore.nodecontract）を呼ぶ（写さない）——
     「機械が割った形」を測るのだから、割り方の実装は本番と同じでなければ意味がない。"""

@@ -216,6 +216,8 @@ map-reduce は split を1つだけ（map は実行時展開）。classify-and-ac
 7. id は短く（t1, t2, ... / classify, filter, synth, gate 等）
 8. work/generate ノードには最初に読むべき範囲を read_allocation=[{{"path":"...","range":"任意","reason":"..."}}] で割り付ける。大きい Python 参照で対象を正確に特定できる場合だけ slice=true, symbols=["Class.method"] を追加する
 9. 依存成果は既定 digest（要約・成果物参照のみ）。完全な構造化データが不可欠なノードだけ dependency_input="full" を宣言する
+10. work/generate ノードには処理契約 operation を付け、そのノードが作る成果物のパスを deliverables に列挙する（scope.write と一致させ、検証コマンドがあれば verification.commands に argv の配列で書く）。**成果物が 2 つ以上あるノードを自分で 2 つに割らない**——エンジンが 1 成果物 1 ノードの直列へ割る
+11. filter/judge ノードには判定契約 decision を付ける。facts は候補の本文から転記できる項目だけ（type は bool/int/string、string は values で取りうる値を列挙）、criteria は残す条件（AND・op は eq/ne）、tie_break は最良案を 1 つに絞る順位基準（fact と min/max）。**選別・比較の観点を goal の自由文に書かず、decision の条件として宣言する**（採否はモデルではなく機械が決める）
 
 ## サブタスク（Phase 1 で特定済み・骨格）
 
@@ -226,7 +228,8 @@ map-reduce は split を1つだけ（map は実行時展開）。classify-and-ac
 JSON オブジェクトのみ（`tasks` 配列を 1 つ持つ。配列を裸で返さない）:
 ```json
 {{"tasks": [
-  {{"id": "t1", "goal": "[scope] path\\n[out_of_scope] ...\\n具体的な目標", "deps": [], "kind": "work", "read_allocation": [{{"path": "src/x.py", "range": "10-40", "reason": "変更箇所", "slice": true, "symbols": ["Class.method"]}}], "dependency_input": "digest"}},
+  {{"id": "t1", "goal": "[scope] path\\n[out_of_scope] ...\\n具体的な目標", "deps": [], "kind": "work", "read_allocation": [{{"path": "src/x.py", "range": "10-40", "reason": "変更箇所", "slice": true, "symbols": ["Class.method"]}}], "dependency_input": "digest", "operation": {{"operation_class": "feature", "scope": {{"read": ["src"], "write": ["src/x.py", "tests/test_x.py"]}}, "deliverables": ["src/x.py", "tests/test_x.py"], "verification": {{"commands": [["python", "-m", "pytest", "-q", "tests"]]}}}}}},
+  {{"id": "t2", "goal": "候補から条件を満たすものを残す", "deps": ["t1"], "kind": "filter", "decision": {{"facts": [{{"name": "extra_deps", "type": "bool", "description": "追加依存が要るか"}}], "criteria": [{{"fact": "extra_deps", "op": "eq", "value": false}}]}}}},
   ...
 ]}}
 ```
@@ -812,11 +815,74 @@ def gate_tasks(tasks: list[dict], target: str, require_split: bool = False) -> l
     # 受け、reduce は展開結果を見ない（planner_eval 2026-08-23: e4b が 2/3 でこの形を書いた）。
     split_ids = {str(t.get("id")) for t in tasks if isinstance(t, dict) and t.get("kind") == "split"}
     for t in tasks:
-        if not isinstance(t, dict) or t.get("kind") not in ("map", "reduce"):
+        if not isinstance(t, dict) or not split_ids:
             continue
         if any(str(d) in split_ids for d in (t.get("deps") or [])):
+            # kind を問わず落とす。engine（plan_strategy_user）は split への静的依存を
+            # kind に関係なく拒む。map / reduce だけ見ていたとき、e4b は同じ形を
+            # work / generate の kind で書いて素通りしていた（planner_eval PL3 0/3）。
             issues.append(f"{t.get('id')}: split の後ろに静的 {t.get('kind')} ノードを置かない"
-                          "（map / reduce は split 完了後に実行時へ動的展開される。split 1 つに留めること）")
+                          "（要素ごとの処理と集約は split 完了後に実行時へ動的展開される。"
+                          "split 1 つに留めること）")
+    # 宣言（operation / decision）は agent-flow 側の機構の唯一の入口で、形が崩れた宣言は
+    # engine が剥がす＝宣言したのに効かない状態になる。ここでは**在るか・器が合っているか**
+    # だけを見る（値の正当性は engine の 1 実装が判定する）。
+    for t in tasks:
+        if not isinstance(t, dict):
+            continue
+        kind = t.get("kind", "work")
+        if kind in ("work", "generate"):
+            contract = t.get("operation")
+            # ファイルを作らないノード（調査・締めくくり等）もあるので**宣言は必須にしない**。
+            # 宣言したのに器が壊れている（engine が剥がす）形だけを落とす。
+            if isinstance(contract, dict) and not [
+                    d for d in (contract.get("deliverables") or []) if str(d).strip()]:
+                issues.append(f"{t.get('id')}: operation.deliverables が空"
+                              "（成果物を作るノードならパスを列挙し、作らないなら operation を付けない）")
+        elif kind in ("filter", "judge"):
+            decision = t.get("decision")
+            if not isinstance(decision, dict):
+                issues.append(f"{t.get('id')}: decision が無い"
+                              "（残す条件を facts / criteria として宣言すること）")
+                continue
+            if not isinstance(decision.get("facts"), list) or not decision["facts"]:
+                issues.append(f"{t.get('id')}: decision.facts が空"
+                              "（候補から転記できる項目を列挙すること）")
+            if not isinstance(decision.get("criteria"), list) or not decision["criteria"]:
+                issues.append(f"{t.get('id')}: decision.criteria が空"
+                              "（残す条件を fact / op / value で宣言すること）")
+            names = {str(f.get("name")) for f in (decision.get("facts") or [])
+                     if isinstance(f, dict) and str(f.get("name") or "").strip()}
+            for c in (decision.get("criteria") or []):
+                if isinstance(c, dict) and names and str(c.get("fact")) not in names:
+                    issues.append(f"{t.get('id')}: criteria の fact '{c.get('fact')}' を "
+                                  "facts で宣言していない（宣言していない項目では絞れない）")
+            tie = decision.get("tie_break")
+            if tie is None:
+                pass
+            elif not isinstance(tie, dict):
+                issues.append(f"{t.get('id')}: decision.tie_break は "
+                              '{{"fact": "...", "op": "min"|"max"}} のオブジェクトで書くこと')
+            elif kind == "filter":
+                # 順位基準は「最良案を 1 つ選ぶ」ための宣言。filter は残す/落とすだけなので
+                # 使われないうえ、器が崩れていると engine が decision ごと剥がす。
+                issues.append(f"{t.get('id')}: filter に tie_break は付けない"
+                              "（順位基準が要るのは judge）")
+            elif names and str(tie.get("fact")) not in names:
+                issues.append(f"{t.get('id')}: tie_break の fact '{tie.get('fact')}' を "
+                              "facts で宣言していない")
+
+    owners: dict = {}
+    for t in tasks:
+        if not isinstance(t, dict) or not isinstance(t.get("operation"), dict):
+            continue
+        for d in (t["operation"].get("deliverables") or []):
+            owners.setdefault(str(d).strip(), []).append(str(t.get("id")))
+    for path, ids in owners.items():
+        if path and len(ids) > 1:
+            issues.append(f"{path} を {len(ids)} ノードが作る（{', '.join(ids[:3])}）"
+                          "——成果物 1 つの作り手は 1 ノードにすること")
+
     work = [t for t in tasks if isinstance(t, dict) and t.get("kind") in WORK_KINDS]
     if not work:
         return issues
@@ -948,6 +1014,21 @@ def normalize_tasks(tasks: list) -> list[dict]:
             node["read_allocation"] = reads[:32]
         if t.get("dependency_input") == "full":
             node["dependency_input"] = "full"
+        # 処理契約（operation）と判定契約（decision）はそのまま運ぶ。形の検査は
+        # agent-flow 側の 1 実装（agentcore.nodecontract）が持つ——ここで写して
+        # 検査すると、契約が変わった日にスキルだけ古い規則で落とすようになる。
+        for key in ("operation", "decision"):
+            if isinstance(t.get(key), dict) and t[key]:
+                node[key] = t[key]
+        # filter の tie_break は使われない（順位基準は judge のためのもの）。器が崩れていると
+        # engine は decision を丸ごと剥がすので、**使われない宣言のために判定契約ごと失う**。
+        # ゲートで 1 度は書き直させたうえで、それでも残るこの 1 語だけは落として運ぶ
+        # （実測 2026-08-30: e4b は作り直しても filter に tie_break を書き続けた）。
+        if node.get("kind") == "filter" and isinstance(node.get("decision"), dict) \
+                and "tie_break" in node["decision"]:
+            node["decision"] = {k: v for k, v in node["decision"].items() if k != "tie_break"}
+            print(f"[flow-planner] {tid}: filter の tie_break を落としました"
+                  "（順位基準は judge のもの。decision 本体はそのまま運ぶ）", file=sys.stderr)
         normalized.append(node)
     if not normalized:
         raise ValueError("No valid tasks generated")
