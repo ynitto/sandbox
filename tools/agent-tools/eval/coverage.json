@@ -7,7 +7,7 @@
       "work": "direct",
       "generate": "indirect",
       "classify": "direct",
-      "synthesize": "missing",
+      "synthesize": "direct",
       "verify": "direct",
       "filter": "direct",
       "judge": "direct",
@@ -15,7 +15,7 @@
       "split": "direct",
       "map": "direct",
       "extract": "direct",
-      "retrieve": "missing",
+      "retrieve": "direct",
       "human": "deterministic"
     },
     "agent-project": {

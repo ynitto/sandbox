@@ -85,6 +85,58 @@ class MissingEngineTests(unittest.TestCase):
         with mock.patch.object(engine, "_FLOW", _Flow):
             self.assertEqual(engine.extract_list("group"), ["group"])
 
+    def test_production_argv_carries_the_profile_arguments(self):
+        """起動形は `command` ではなく本番の組み立て（`headless_cmd`）から取る。
+
+        `command` だけを読むと profile が足す道具・ラウンド上限（retrieve の
+        `--tools read --max-rounds 30`）が落ち、**道具の無い起動形**で測ることになる。
+        """
+        class _Cli:
+            @staticmethod
+            def load_cli(name):
+                return {"command": ["agent-herd", "ollama", "{model}"]}
+
+            @staticmethod
+            def headless_cmd(spec, model, prompt, readonly=False):
+                argv = ["agent-herd", "ollama", model]
+                return {"argv": argv if readonly else argv + ["--tools", "read"]}
+
+        stub = mock.Mock(spec=["_agentcli"])
+        stub._agentcli = _Cli
+        with mock.patch.object(engine, "_FLOW", stub):
+            argv, source = engine.production_argv("ollama-read", "M", False)
+            self.assertEqual(argv, ["agent-herd", "ollama", "M", "--tools", "read"])
+            self.assertIn("headless_cmd", source)
+        self.assertEqual(engine.missing(), [])
+
+    def test_production_argv_falls_back_to_command_and_says_so(self):
+        """組み立てられない木では `command` へ倒し、倒したことを残す。"""
+        class _Cli:
+            @staticmethod
+            def load_cli(name):
+                return {"command": ["agent-herd", "ollama", "{model}"]}
+
+            @staticmethod
+            def headless_cmd(spec, model, prompt, readonly=False):
+                raise RuntimeError("この木にはまだ無い")
+
+        stub = mock.Mock(spec=["_agentcli"])
+        stub._agentcli = _Cli
+        with mock.patch.object(engine, "_FLOW", stub):
+            argv, _source = engine.production_argv("ollama-read", "M", False, ["fallback"])
+            self.assertEqual(argv, ["agent-herd", "ollama", "{model}"])
+        self.assertTrue(any("headless_cmd" in gap for gap in engine.missing()))
+
+    def test_agent_readonly_and_worker_role_degrade_without_the_engine(self):
+        """役割別 readonly と役割行が無い木では、道具ありへ倒しつつ欠けたことを残す。"""
+        with mock.patch.object(engine, "_FLOW", object()):
+            self.assertFalse(engine.agent_readonly("retrieve"))
+            self.assertEqual(engine.worker_role("retrieve"), "")
+            self.assertEqual(engine.structured_kinds(), frozenset())
+        gaps = engine.missing()
+        self.assertTrue(any("_agent_readonly" in gap for gap in gaps))
+        self.assertTrue(any("WORKER_ROLES" in gap for gap in gaps))
+
     def test_load_env_uses_the_selected_cli_definition(self):
         class _Cli:
             @staticmethod

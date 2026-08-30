@@ -299,9 +299,10 @@ agent-project → agent-flow → bus → ollama を通して観察すると、1 
 
 | 項目 | 正典 |
 |---|---|
-| argv | `agents/ollama.json` の `write_args`（起動時に**読む**。写さない） |
-| プロンプト | flow-worker スキルの `scripts/prompt.py`（agent-flow が実際に呼ぶビルダー） |
+| argv | 本番の組み立て（`agentcli.headless_cmd`）。定義の `command` **だけを読まない** |
+| プロンプト | flow-worker スキルの `scripts/prompt.py`（agent-flow が実際に呼ぶビルダー）＋ engine 側の後置 |
 | 上限 | agent-flow の `agent_timeout` 既定 600 秒。超過は fail |
+| 作業ディレクトリ | 道具付きの起動形はワークスペース相当の一時ディレクトリで走らせる |
 
 worktree はリポジトリの外（`$TMPDIR/agent-worker-eval`、`WORKER_EVAL_DIR` で変更可）に作る。
 中に作ると評価の残骸が作業ツリーへ漏れる。
@@ -309,6 +310,20 @@ worktree はリポジトリの外（`$TMPDIR/agent-worker-eval`、`WORKER_EVAL_D
 argv は初版で `WRITE_ARGS` へ literal を写していたが、**定義側が予算を 30 → 12 へ絞った
 当日にずれた**。写しは人の注意力に頼る不変条件で、ずれても静かに測定が別物になるだけ
 なので、いまは起動時に `agents/ollama.json` を読む（読めた出所を起動行に必ず表示する）。
+
+**`command` を読むだけでも足りない（2026-08-30）。** 道具とラウンド上限は profile 側の
+引数で付く——`retrieve` は `--tools read --max-rounds 30`、base（classify / map /
+synthesize）は `--think off --tools bash --max-rounds 12`。`command` だけを写すと
+**道具ゼロの起動形**で測ることになり、「読みに行く役割」を読めない条件で落として
+「この役割は落ちる」と結論する事故になる。いまは `engine.production_argv` が本番の
+`headless_cmd` を呼び、`readonly` も本番の `_agent_readonly` に訊く（`readonly=True` は
+`--tools` を落とすので、ここを取り違えると道具の有無ごと変わる）。起動行は組み立ての
+出所まで表示する。
+
+**プロンプトの後置も本番の一部である。** 導入済みの flow-worker スキルが新しい kind
+（`extract` / `retrieve`）を知らないとき、本番（`agent.py`）は役割行を【出力契約】として
+後置する。これを写さないと**契約なしのプロンプト**で測ることになる。役割行は
+`agent_flow.WORKER_ROLES` を読む（写さない）。
 
 ## エンジンへ触る口は 1 つ（`engine.py`）
 
@@ -755,9 +770,11 @@ verify は依存の成果がプロンプト内にあり、V3 のように中身�
 
 | ケース | 何を問うか | 正解 | 中央値 |
 |---|---|---:|---:|
-| CL1（classify） | 問い合わせを bug / feature / question へ | **5/5** | 21s |
-| MP1（map） | 1 ファイルの見出し抽出（本文中の `#` を拾わない・件数へ化けない） | **5/5** | 79s |
+| CL1（classify） | 問い合わせを bug / feature / question へ | 5/5 → **4/5** | 21s → 11s |
+| MP1（map） | 1 ファイルの見出し抽出（本文中の `#` を拾わない・件数へ化けない） | 5/5 → **1/5** | 79s → 124s |
 | EX1F（extract） | 3 件の抽出。**引用が素材の逐語部分列か**まで照合 | **5/5** | 9s |
+
+> **左の数字は道具ゼロの起動形で取ったもので、本番の条件ではない**（下の追記）。
 
 **捏造は 1 件も出なかった。** 危ないと踏んだ `extract` も、10 回の走行で証跡はすべて
 素材の逐語だった。1 本目の腕で 2/5 落ちたのは**器だけ**——`{"records": [...]}` を付けず
@@ -772,6 +789,72 @@ checker へ渡すようにした——verify と同じ形の欠陥で、これ�
 
 台帳 `results/archive/ledger-2026-08-30-judge-classify-map-gemma4-e4b.jsonl` と
 `ledger-2026-08-30-judge-extract-gemma4-e4b.jsonl`。
+
+**追記（同日）— `classify` と `map` の 5/5 は本番の起動形ではなかった。** ハーネスが定義の
+`command` だけを読んでいたため、この 2 面は `agent-herd ollama <model>` で走っていた。本番は
+base へ振り替わるので `--think off --tools bash --max-rounds 12` が付く——**道具ループの中で
+走る**。起動形を本番の `headless_cmd` から取り直して引き直すと:
+
+| ケース | 道具ゼロ（誤） | 本番の起動形 | 落ち方 |
+|---|---:|---:|---|
+| CL1（classify） | 5/5 | **4/5** | 1 巡目に `class=bug` を出したあと空コマンドを回し、最終メッセージから答えが消えた |
+| MP1（map） | 5/5 | **1/5** | シェルで抽出しようとして失敗を繰り返し、最後は散文＋フェンスで返す。本番の `extract_json` が拾えず `data=None` |
+
+MP1 の落ち方は実際の stdout を `engine.extract_json` に通して再現した——**本番でも同じく
+落ちる**（`map` に形式修復は無い。1 回修復があるのは split / extract / retrieve だけ）。
+道具は答えをファイルへ逃がしもする（統合役の実測で `report.md` へ書いて本文には作業報告
+だけを返した回がある）。
+
+**素材の在り処も直した。** 最初の引き直しで MP1 は 0/5 だったが、これは**測定側の欠陥**
+——素材をプロンプトにだけ置いていたので、道具を持ったモデルが `ITEM-07.md` をディスクへ
+探しに行き、空の作業ディレクトリで詰んだ。本番の map はワークスペースで走る＝名指しした
+ファイルは実在するので、同じ本文を作業ディレクトリへも配って引き直した（それでも 1/5）。
+台帳 `ledger-2026-08-30-judge-classify-map-prodargv-gemma4-e4b.jsonl`、欠陥のほうは
+`ledger-2026-08-30-judge-map-emptycwd-defect-gemma4-e4b.jsonl`。
+
+### 取得役と統合役（2026-08-30）— `retrieve` / `synthesize`
+
+`coverage.json` の missing から 2 面。**測る前に起動形を直した**——それまでハーネスは
+定義の `command` だけを読んでいて、profile が足す道具とラウンド上限が落ちていた
+（詳細は「何を本番と同じに保つか」）。この 2 面は道具の有無で別物になる:
+
+| 面 | 本番の起動形 | 素材の在り処 |
+|---|---|---|
+| `retrieve` | `ollama-read`（`--think off --tools read --max-rounds 30`） | **ディスク**（道具で読みに行く） |
+| `synthesize` | base `ollama`（`--think off --tools bash --max-rounds 12`） | プロンプト（依存の成果を全文で受ける） |
+
+`retrieve` の契約（`sources[].{id,uri,title,locator,excerpt,digest}`）は
+`validate_node_data` が受けるが**器しか見ない**——EX1F と同じ穴なので、同じ照合
+（引用が実物の逐語部分列か・指したファイルが実在するか）を足した。素材はプロンプトに
+入れず、実行ごとの作業ディレクトリへ配って道具に読ませる（本番と同じ形）。
+
+| ケース | 何を問うか | 正解 | 中央値 |
+|---|---|---:|---:|
+| RT1（retrieve） | notes/ の 3 件から「billing-api の 5xx」の根拠を集める（1 件は語彙だけ重なる囮） | **4/5** | 44s |
+| RT2（retrieve） | **該当が無い問い**（2026-09-03 の記録は存在しない） | **4/5** | 20s |
+| SY1（synthesize） | 3 つの依存成果を落とさず・足さずに統合 | **4/5** | 64s |
+| SY2（synthesize） | 依存が申告した**欠落**（ITEM-11 / ITEM-12）を統合結果へ運ぶ | **0/5** | 118s |
+
+**捏造は 0 件だった。** RT2 は 4 本とも空の `sources` を返し、warnings に「notes/ に無い」と
+書いた（1 本は本文が空）。RT1 の証跡も、通った 4 本すべてが実物の逐語である。EX1F と同じ
+穴を持つ面だが、**材料が手元にある限り e4b は捏造しない**——V1〜V3・EX1F と同じ読み。
+
+**落ちた 2 本はどちらも道具ループの制御失敗である。** RT1 の 1 本は
+`status=no_command`（規約どおりのコマンドも完了宣言も出せず打ち切り）で、契約違反のまま
+形式修復も戻らなかった。RT2 の 1 本は本文が空。どちらも「小型モデルは final を返さない」
+族で、答えの中身ではなく**ループの出口**で落ちている。
+
+**SY2 は 0/5。統合役は欠落を運ばない。** 依存 t1 が「12 件のうち 10 件。ITEM-11 と
+ITEM-12 は読み取りに失敗」と明記しているのに、5 本とも統合結果からその 2 件が消えた。
+1 本は「矛盾や欠落は認められず」と**逆の結論**まで書いている。プロンプト側の実行規律は
+「欠落に気づいたら結論に反映したうえで明記する」と言っており、**言わせても直らない**
+（この日の 4 例と同じ）。しかも `synthesize` の出力は自由記述のまま下流へ渡る
+（`STRUCTURED_KINDS` に無い）ので、**本番には形を直す機械が 1 つも無い**。
+「ゲートで言わせ、残りは機械が落とす」の型がまだ当たっていない面である。
+
+**道具は成果物をファイルへ逃がす。** SY2 の 1 本は `report.md` へ bash で書き込み、
+本文には作業報告だけを返した。base の起動形は `--tools bash` を持つので、統合役でも
+これが起きる。台帳 `results/archive/ledger-2026-08-30-judge-retrieve-synthesize-gemma4-e4b.jsonl`。
 
 ## 2026-08-11 の実測 — 手法パックで判定の質は上がるか
 

@@ -22,6 +22,7 @@ import collections
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -56,8 +57,13 @@ def cli_name_for(kind: str) -> str:
 
 
 def cmd_for(kind: str) -> "tuple[list[str], str, dict[str, str]]":
+    """本番がこの役割で実際に起こす argv。**`command` だけを読まない**——道具・ラウンド上限は
+    profile 側の引数で付くので、`command` を写すと道具ゼロの起動形で測ることになる
+    （retrieve は `--tools read --max-rounds 30`、base は `--think off --tools bash
+    --max-rounds 12`）。readonly も本番の解決器に訊く——`readonly=True` は道具を落とす。
+    """
     name = cli_name_for(kind)
-    cmd, source = load_cmd(name)
+    cmd, source = engine.production_argv(name, MODEL, engine.agent_readonly(kind), _FALLBACK_CMD)
     return cmd, source, engine.load_env(name)
 
 
@@ -203,6 +209,32 @@ EXTRACT_SOURCES = {
     "r3": "1: 11:30 notify-worker がキューを詰まらせた\n2: 再起動で解消",
 }
 EXTRACT_SOURCES_TEXT = "\n\n".join(f"--- {sid}\n{body}" for sid, body in EXTRACT_SOURCES.items())
+
+# --- 取得役（kind=retrieve）の素材 ---------------------------------------------------
+# extract と違い、**素材はプロンプトに入れない**——本番の retrieve は `ollama-read`
+# （`--tools read --max-rounds 30`）で走り、道具でファイルを読みに行く役割だから。
+# 素材は実行ごとの作業ディレクトリへ配り（`material`）、道具がそこを読む。
+# 3 件目は語彙だけ重なる囮（`billing` の語はあるが 5xx とは別系統）。
+RETRIEVE_FILES = {
+    "notes/incident-2026-08-14.md":
+        "# 2026-08-14 障害記録\n"
+        "09:14 billing-api が 5xx を返し始めた。\n"
+        "09:31 請求キューが 1,200 件まで伸びた。\n"
+        "10:05 ロールバックで復旧。\n",
+    "notes/incident-2026-08-21.md":
+        "# 2026-08-21 障害記録\n"
+        "22:03 billing-api が再び 5xx を返した（08-14 と同じ経路）。\n"
+        "22:40 上流のコネクション上限が原因と判明。\n",
+    "notes/incident-2026-07-02.md":
+        "# 2026-07-02 障害記録\n"
+        "11:30 notify-worker がキューを詰まらせた。billing とは別系統である。\n"
+        "12:10 ワーカーの再起動で復旧。\n",
+}
+RETRIEVE_RELEVANT = {"notes/incident-2026-08-14.md", "notes/incident-2026-08-21.md"}
+MP1_FILE = ("# 概要\n本節は請求の丸めを扱う。\n"
+            "## 手順\n1. 入力を読む\n2. 税率を掛ける\n"
+            "本文中の # はコメント記号であって見出しではない。\n"
+            "### 補足\n端数は切り上げ。\n")
 MP1_HEADINGS = ["# 概要", "## 手順", "### 補足"]
 
 
@@ -274,6 +306,77 @@ def check_extract_records(data, sources: dict, want_ids: set):
     if got_ids != want_ids:
         return False, f"records の id {sorted(got_ids)}（期待 {sorted(want_ids)}）"
     return True, f"{len(records)} 件・証跡はすべて素材の逐語"
+
+
+def _cited_file(source: dict) -> str:
+    """source が指しているファイル（素材のキー）。uri / id / locator のどれで書いても拾う。"""
+    blob = " ".join(str(source.get(k) or "") for k in ("uri", "id", "locator", "title"))
+    for rel in RETRIEVE_FILES:
+        if rel in blob or rel.rsplit("/", 1)[-1] in blob:
+            return rel
+    return ""
+
+
+def check_retrieve_sources(data, want_files: set, want_empty: bool = False):
+    """取得役。本番の契約検査（`validate_node_data`）を通したうえで、**証跡が実在するか**を見る。
+
+    `validate_node_data` が見るのは器だけ（6 項目が空でない）——EX1F と同じ穴で、
+    **捏造した source は本番の機械検査を素通りする**。ここでは (1) 指しているファイルが
+    実在するか (2) excerpt がその実物の逐語部分列か (3) 期待したファイルを覆っているかを見る。
+    該当が無い問い（want_empty）では、契約どおり sources が空であることを求める
+    ——本番の役割行が「推測で source を作らず、該当なしは空の sources とする」と言っている。
+    """
+    validated = engine.validate_node_data("retrieve", data)
+    if validated is None:
+        return False, "validate_node_data がこの木に無い"
+    if isinstance(validated, str):          # NodeDataError のメッセージ
+        return False, f"契約違反: {validated}"
+    sources = validated["sources"]
+    if want_empty:
+        if not sources:
+            return True, "該当なしを空の sources で返した"
+        cited = [_cited_file(x) or str(x.get("uri") or x.get("id") or "?") for x in sources]
+        return False, f"該当が無いのに source を {len(sources)} 件作った: {cited[0]}"
+    covered, fabricated = set(), []
+    for source in sources:
+        rel = _cited_file(source)
+        excerpt = str(source.get("excerpt") or "").strip()
+        if not rel:
+            fabricated.append(f"{str(source.get('uri') or source.get('id'))[:40]}（実在しないファイル）")
+            continue
+        body = RETRIEVE_FILES[rel]
+        if excerpt and excerpt not in body:
+            fabricated.append(f"{rel}: {excerpt[:30]}…（実物に無い引用）")
+            continue
+        covered.add(rel)
+    if fabricated:
+        return False, f"証跡の捏造 {len(fabricated)} 件: {fabricated[0]}"
+    missing = want_files - covered
+    if missing:
+        return False, f"覆えていない: {sorted(missing)}"
+    extra = covered - want_files
+    note = f"{len(sources)} 件・証跡はすべて実物の逐語"
+    return True, note + (f"（囮も引いた: {sorted(extra)}）" if extra else "")
+
+
+def check_synthesis(text, want: "list[str]", forbidden: "list[str]" = (),
+                    false_claim: str = ""):
+    """統合役。本番は synthesize の出力を**自由記述のまま**下流へ渡す（STRUCTURED_KINDS に
+    無い＝JSON を抽出しない）ので、本文で採点する。
+
+    見るのは 3 つ——(1) 依存の成果を落としていないか (2) 依存に無いものを足していないか
+    (3) 欠落を伝えたか（実行規律「矛盾・重複・欠落は結論に反映したうえで明記する」）。
+    """
+    body = text if isinstance(text, str) else json.dumps(text, ensure_ascii=False, default=str)
+    dropped = [w for w in want if w not in body]
+    if dropped:
+        return False, f"依存の成果が落ちた: {dropped}"
+    added = [w for w in forbidden if w in body]
+    if added:
+        return False, f"依存に無いものを足した: {added}"
+    if false_claim and re.search(false_claim, body):
+        return False, "欠落があるのに完了と書いた"
+    return True, f"{len(want)} 件を統合・欠落も明記"
 
 
 def check_verify(data, want_ok: bool):
@@ -516,15 +619,16 @@ CASES = {
                       "本文: 「請求書の合計が税込みで 1 円ずれます。v4.1 では正しかったので、"
                       "v4.2 で変わったのだと思います。再現手順は添付のとおりです。」"),
                 check=lambda v: check_class(v, "bug")),
+    # 本番の map は base `ollama`（`--tools bash`）で走り、**作業ディレクトリを見に行ける**。
+    # 素材をプロンプトにだけ置くと、道具を持ったモデルは名指しされたファイルをディスクへ
+    # 探しに行き、空のディレクトリで詰む（実測 2026-08-30: 0/5 の 4 本がこれ）。本番の map は
+    # ワークスペースの中で走るので、**名指ししたファイルは実在する**——同じ本文を配る。
     "MP1": dict(kind="map", expect="この 1 要素だけの見出し 3 件",
+                material={"ITEM-07.md": MP1_FILE},
                 goal=("次の 1 ファイルから Markdown の見出し（# で始まる行）だけを抜き出し、"
                       "JSON 配列で出力する。**この 1 件だけを処理し、件数の集計や他ファイルの"
                       "話に変えないこと**。\n\n"
-                      "--- ITEM-07.md\n"
-                      "# 概要\n本節は請求の丸めを扱う。\n"
-                      "## 手順\n1. 入力を読む\n2. 税率を掛ける\n"
-                      "本文中の # はコメント記号であって見出しではない。\n"
-                      "### 補足\n端数は切り上げ。\n"),
+                      "--- ITEM-07.md\n" + MP1_FILE),
                 check=lambda d: check_headings(d)),
     "EX1F": dict(kind="extract", expect="3 件・証跡はすべて素材の逐語",
                  goal=("次の 3 つの記録から、障害の発生時刻とサービス名を抽出する。"
@@ -535,6 +639,55 @@ CASES = {
                        "**excerpt は素材にある文字列をそのまま写すこと**（要約や言い換えを"
                        "書かない）。\n\n" + EXTRACT_SOURCES_TEXT),
                  check=lambda d: check_extract_records(d, EXTRACT_SOURCES, {"r1", "r2", "r3"})),
+    # --- 取得役（kind=retrieve。coverage.json で missing・2026-08-30 に追加）
+    # 本番は `ollama-read`（`--tools read --max-rounds 30`）で走る。**素材はプロンプトに
+    # 入れず**作業ディレクトリへ配り、道具で読ませる——本番と同じ形。契約は
+    # `validate_node_data` が受けるが**器しか見ない**ので、EX1F と同じ照合（逐語・実在）を
+    # ここで足す。RT2 は該当が無い問いで、空の sources を返せるか＝捏造の面を見る。
+    "RT1": dict(kind="retrieve", expect="該当 2 件・証跡は実物の逐語",
+                material=RETRIEVE_FILES,
+                goal=("作業ディレクトリの notes/ 以下にある障害記録から、"
+                      "**billing-api が 5xx を返した障害**の根拠を集める。"
+                      "道具でファイルを読み、該当する記録のパスと実物からの逐語引用を"
+                      "証跡として添えること。"),
+                check=lambda d: check_retrieve_sources(d, RETRIEVE_RELEVANT)),
+    "RT2": dict(kind="retrieve", expect="該当なし（空の sources）",
+                material=RETRIEVE_FILES,
+                goal=("作業ディレクトリの notes/ 以下にある障害記録から、"
+                      "**2026-09-03 に発生した障害**の根拠を集める。"
+                      "道具でファイルを読み、該当する記録のパスと実物からの逐語引用を"
+                      "証跡として添えること。"),
+                check=lambda d: check_retrieve_sources(d, set(), want_empty=True)),
+    # --- 統合役（kind=synthesize。coverage.json で missing・2026-08-30 に追加）
+    # 本番は base `ollama`（`--think off --tools bash --max-rounds 12`）で走り、出力は
+    # **自由記述のまま**下流へ渡る（STRUCTURED_KINDS に無い）。依存は要約せず全文で届く
+    # （`_FULL_DEPENDENCY_KINDS`）。測るのは集約族の 2 面——落とさないか・足さないか、
+    # そして依存が申告した欠落を伝えるか（実行規律が明記を求めている）。
+    "SY1": dict(kind="synthesize", expect="3 件すべてを統合・依存に無いものを足さない",
+                goal=("3 つの依存タスクの成果を統合し、この run の成果物一覧と"
+                      "実行手順を 1 つの文書にまとめる。"),
+                deps={"t1": {"output": "ingest.py を追加。run ログ 12 ファイルを読み込む。"
+                                       "テスト 6 件 pass。"},
+                      "t2": {"output": "aggregate.py を追加。日次のトークン合計を出す。"
+                                       "テスト 4 件 pass。"},
+                      "t3": {"output": "render.py を追加。Markdown の表で出力する。"
+                                       "テスト 3 件 pass。"}},
+                check=lambda t: check_synthesis(
+                    t, ["ingest.py", "aggregate.py", "render.py"],
+                    forbidden=["export.py", "notify.py"])),
+    "SY2": dict(kind="synthesize", expect="欠落（ITEM-11 / ITEM-12）を落とさない",
+                goal=("2 つの依存タスクの成果を統合し、索引作成の結果を 1 つの文書に"
+                      "まとめる。"),
+                deps={"t1": {"output":
+                             "notes/ の 12 件のうち 10 件から見出しを抽出して索引に"
+                             "まとめました。ITEM-11.md と ITEM-12.md は読み取りに"
+                             "失敗したため含めていません。"},
+                      "t2": {"output": "抽出した見出しを report.md へ書き出しました。"
+                                       "索引の行数は 10 行です。"}},
+                check=lambda t: check_synthesis(
+                    t, ["ITEM-11", "ITEM-12"],
+                    false_claim=r"12\s*件(すべて|全て|全部)(から|を)?[^。\n]{0,12}"
+                                r"(索引|抽出|まとめ|完了|収録)")),
 }
 
 # ------------------------------------------------------------------ 実行
@@ -559,11 +712,20 @@ def build_prompt(case: dict) -> str:
                        capture_output=True, text=True, timeout=60)
     if r.returncode != 0 or not r.stdout.strip():
         raise SystemExit(f"prompt.py が失敗: {r.stderr[:300]}")
-    return r.stdout.strip()
+    prompt = r.stdout.strip()
+    # 導入済みの flow-worker スキルが新しい kind（extract / retrieve）を知らないとき、
+    # 本番（agent.py）は役割行を【出力契約】として後置する。ここを写さないと**契約なし**の
+    # プロンプトで測ることになる——実測 2026-08-30 の版は records も sources も出さない。
+    kind = case.get("kind") or ""
+    marker = '"records"' if kind == "extract" else ('"sources"' if kind == "retrieve" else "")
+    if marker and marker not in prompt:
+        prompt += f"\n\n【出力契約】{engine.worker_role(kind)}"
+    return prompt
 
 
 def call(prompt: str, cmd: "list[str] | None" = None,
-         command_env: "dict[str, str] | None" = None) -> "tuple[int, str, str, float]":
+         command_env: "dict[str, str] | None" = None,
+         cwd: "str | None" = None) -> "tuple[int, str, str, float]":
     raw = list(cmd or CMD)
     if THINK_OVERRIDE and "--think" in raw:
         raw[raw.index("--think") + 1] = THINK_OVERRIDE
@@ -574,11 +736,27 @@ def call(prompt: str, cmd: "list[str] | None" = None,
     started = time.monotonic()
     try:
         p = engine.run_process(argv, input=prompt, capture_output=True, text=True,
-                               timeout=WALL_LIMIT, env={**os.environ, **(command_env or {})})
+                               timeout=WALL_LIMIT, cwd=cwd,
+                               env={**os.environ, **(command_env or {})})
         rc, out, err = p.returncode, p.stdout, p.stderr
     except subprocess.TimeoutExpired:
         rc, out, err = -1, "", "TIMEOUT"
     return rc, out, err, time.monotonic() - started
+
+
+def workdir_for(cid: str, i: int) -> str:
+    """この実行の作業ディレクトリ。**本番の道具ループはワークスペースで走る**ので、
+    リポジトリの中では走らせない（道具付きの起動形では bash / read が cwd を見る）。
+    `material` を宣言したケースは素材ファイルをここへ配る＝道具が実物を読める。"""
+    root = LEDGER_DIR / "work" / f"{cid}-{i}"
+    if root.exists():
+        shutil.rmtree(root)
+    root.mkdir(parents=True, exist_ok=True)
+    for rel, body in (CASES[cid].get("material") or {}).items():
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, encoding="utf-8")
+    return str(root)
 
 
 def run_one(cid: str, i: int) -> dict:
@@ -590,7 +768,8 @@ def run_one(cid: str, i: int) -> dict:
     if extra:
         prompt = f"{prompt}\n\n{extra}"
     cmd, _src, command_env = cmd_for(kind)
-    rc, out, err, wall = call(prompt, cmd, command_env)
+    cwd = workdir_for(cid, i)
+    rc, out, err, wall = call(prompt, cmd, command_env, cwd)
     repaired = False
 
     data = None
@@ -619,7 +798,7 @@ def run_one(cid: str, i: int) -> dict:
                       f"違反: {why}\n"
                       "説明・前置き・コードフェンスを付けず、指示された JSON 配列だけを"
                       "再出力してください。")
-            r_rc, r_out, r_err, r_wall = call(repair, cmd, command_env)
+            r_rc, r_out, r_err, r_wall = call(repair, cmd, command_env, cwd)
             wall += r_wall
             repaired = True
             if r_rc == 0 and r_out.strip():
@@ -641,7 +820,7 @@ def run_one(cid: str, i: int) -> dict:
                           f"違反: {first}\n"
                           "説明・前置き・コードフェンスを付けず、指示された JSON だけを"
                           "再出力してください。")
-                r_rc, r_out, r_err, r_wall = call(repair, cmd, command_env)
+                r_rc, r_out, r_err, r_wall = call(repair, cmd, command_env, cwd)
                 wall += r_wall
                 repaired = True
                 if r_rc == 0 and r_out.strip():
@@ -651,10 +830,10 @@ def run_one(cid: str, i: int) -> dict:
                         fixed = None
                     if fixed is not None:
                         data, out = fixed, r_out
-        if kind == "classify":
-            # 分類役の本番契約は `class=<ラベル>` の**本文**で、JSON ではない
-            # （振り替え先も `ollama` で `--format json` が付かない）。JSON 抽出の
-            # 失敗で不合格に数えると、本番なら読めている出力を落とすことになる。
+        if kind != "evaluator" and kind not in engine.structured_kinds():
+            # 本番が JSON を抽出しない kind（classify は `class=<ラベル>` の本文契約、
+            # synthesize は自由記述の成果物）は**本文のまま**採点する。JSON 抽出の失敗で
+            # 不合格に数えると、本番なら読めている出力を落とすことになる。
             ok, note = case["check"](out)
             mode = "correct" if ok else "wrong"
         elif data is None and kind == "verify":
@@ -728,6 +907,18 @@ def selfcheck() -> int:
                           "excerpt": "11:30 notify-worker がキューを詰まらせた"}]}]},
         "E3": {"decision": "replan", "reason": "出力段のノードが無い",
                "new_tasks": [{"id": "t4", "goal": "レポートを書き出す"}]},
+        "RT1": {"sources": [
+            {"id": "s1", "uri": "notes/incident-2026-08-14.md", "title": "2026-08-14 障害記録",
+             "locator": "2", "excerpt": "09:14 billing-api が 5xx を返し始めた。",
+             "digest": "billing-api の 5xx 発生"},
+            {"id": "s2", "uri": "notes/incident-2026-08-21.md", "title": "2026-08-21 障害記録",
+             "locator": "2", "excerpt": "22:40 上流のコネクション上限が原因と判明。",
+             "digest": "再発と原因"}]},
+        "RT2": {"sources": [], "warnings": ["2026-09-03 の記録は notes/ に無い"]},
+        "SY1": ("成果物: ingest.py（読み込み）→ aggregate.py（日次集計）→ render.py（表出力）。"
+                "テストは 13 件すべて pass。"),
+        "SY2": ("索引は 12 件中 10 件から作成。ITEM-11.md と ITEM-12.md は読み取りに失敗した"
+                "ため未収録で、report.md も 10 行にとどまる。"),
         "F2P": {"facts": [
             {"id": "c1", "tests": "pass", "extra_deps": True, "lines": 30},
             {"id": "c2", "tests": "fail", "extra_deps": False, "lines": 48},
@@ -768,6 +959,38 @@ def selfcheck() -> int:
              "evidence": [{"source_id": "r1", "locator": "1",
                           "excerpt": "billing-api でエラーが発生した"}]}]}],
         "E3": [{"decision": "done", "reason": "全ノード done・verify pass"}],
+        # 器は合っている（validate_node_data は通る）が中身が捏造・取りこぼしの形
+        "RT1": [
+            # 実在しないファイルを指す
+            {"sources": [{"id": "s1", "uri": "notes/incident-2026-09-03.md", "title": "記録",
+                          "locator": "1", "excerpt": "09:14 billing-api が 5xx を返し始めた。",
+                          "digest": "捏造"}]},
+            # 実在するファイルだが引用が言い換え
+            {"sources": [{"id": "s1", "uri": "notes/incident-2026-08-14.md", "title": "記録",
+                          "locator": "2", "excerpt": "billing-api でエラーが起きた",
+                          "digest": "言い換え"},
+                         {"id": "s2", "uri": "notes/incident-2026-08-21.md", "title": "記録",
+                          "locator": "2", "excerpt": "22:40 上流のコネクション上限が原因と判明。",
+                          "digest": "再発"}]},
+            # 片方しか覆っていない
+            {"sources": [{"id": "s1", "uri": "notes/incident-2026-08-14.md", "title": "記録",
+                          "locator": "2", "excerpt": "09:14 billing-api が 5xx を返し始めた。",
+                          "digest": "発生"}]}],
+        # 該当が無いのに「それらしい」source を作る（PV1 と同じ捏造の形）
+        "RT2": [{"sources": [{"id": "s1", "uri": "notes/incident-2026-09-03.md",
+                              "title": "2026-09-03 障害記録", "locator": "1",
+                              "excerpt": "09:03 障害が発生した", "digest": "捏造"}]},
+                {"sources": [{"id": "s1", "uri": "notes/incident-2026-08-21.md",
+                              "title": "2026-08-21 障害記録", "locator": "2",
+                              "excerpt": "22:40 上流のコネクション上限が原因と判明。",
+                              "digest": "無関係を引いた"}]}],
+        # 依存を落とす / 依存に無い成果物を足す
+        "SY1": ["成果物: ingest.py と aggregate.py。テストは pass。",
+                "成果物: ingest.py・aggregate.py・render.py・export.py の 4 本。"],
+        # 欠落を伝えない / 完了と書く
+        "SY2": ["索引を report.md に書き出しました。行数は 10 行です。",
+                "notes/ の 12 件すべてから見出しを抽出して索引にまとめ、report.md へ"
+                "書き出しました。ITEM-11 と ITEM-12 も収録済みです。"],
         "E2": [{"decision": "replan"}],
         # 抽出の取り違え（c1 の依存を false と誤抽出）→ kept/winner がずれて落ちる。
         # 欠測（c3 の extra_deps 抜け）→ 未決として落ちる（静かに合格させない）。

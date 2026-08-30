@@ -102,6 +102,12 @@ def extract_list(text: str):
     return fn(text) if fn is not None else unwrap_list(extract_json(text))
 
 
+def structured_kinds() -> frozenset:
+    """本番が JSON を抽出しようとする kind。ここに無い kind の出力は**本文のまま**下流へ
+    渡るので、JSON を抽出できないことを失点として数えてはいけない（classify / synthesize）。"""
+    return getattr(_FLOW, "STRUCTURED_KINDS", None) or frozenset()
+
+
 def patterns() -> dict:
     """evaluator へ渡すパターン目録。無ければ空（プロンプトが短くなる）。"""
     return getattr(_FLOW, "PATTERNS", None) or {}
@@ -193,6 +199,47 @@ def headless_cmd(name: str, model: str, prompt: str, **kwargs) -> dict:
     """本番と同じ argv 組み立て。ファイル受け渡し等の新しい口はここを通す。"""
     cli = _agentcli()
     return cli.headless_cmd(cli.load_cli(name), model, prompt, **kwargs)
+
+
+def agent_readonly(purpose: str) -> bool:
+    """この役割を読み取り専用で呼ぶか。**本番の解決器**（`_agent_readonly`）を呼ぶ。
+
+    ここを間違えると道具の有無ごと変わる——`readonly=True` は `--tools` を落とすので、
+    本番が道具付きで走らせている役割（retrieve の read セット・base の bash セット）を
+    道具ゼロで測ることになる。無い木では False（＝道具あり）へ倒す。
+    """
+    fn = _need(_FLOW, "_agent_readonly", "_agent_readonly（役割別の readonly 解決）")
+    return bool(fn(purpose)) if fn is not None else False
+
+
+def worker_role(kind: str) -> str:
+    """kind の役割行（出力契約の本文）。本番の `WORKER_ROLES` をそのまま読む（写さない）。"""
+    roles = _need(_FLOW, "WORKER_ROLES", "WORKER_ROLES（kind 別の役割行）")
+    if roles is None:
+        return ""
+    return roles.get(kind) or getattr(_FLOW, "DEFAULT_WORKER_ROLE", "")
+
+
+def production_argv(name: str, model: str, readonly: bool,
+                    fallback: "list[str] | None" = None) -> "tuple[list[str], str]":
+    """本番がその役割で実際に起こす argv。**profile の引数（道具・ラウンド上限）まで含む**。
+
+    `agents/<name>.json` の `command` だけを読むと、`--tools read --max-rounds 30`
+    （retrieve）や `--think off --tools bash --max-rounds 12`（base）が落ちる——道具の
+    無い起動形で測って「この役割は落ちる」と結論する事故になる。組み立ては本番の
+    `headless_cmd` に任せ、引けない木では `command` へ倒す（倒したことは missing に残る）。
+    """
+    cli = _agentcli()
+    if cli is not None:
+        try:
+            built = cli.headless_cmd(cli.load_cli(name), model, "", readonly=readonly)
+            argv = [str(a) for a in built.get("argv") or []]
+            if argv:
+                return argv, f"agents/{name}.json（headless_cmd・readonly={readonly}）"
+        except Exception as e:  # noqa: BLE001 — 組み立てられないなら command へ倒す
+            if "headless_cmd" not in str(_MISSING):
+                _MISSING.append(f"headless_cmd（本番の argv 組み立て: {e}）")
+    return load_cmd(name, list(fallback or []))
 
 
 # ---------------------------------------------------------------- 決定化パイプ（P4 / E6）
