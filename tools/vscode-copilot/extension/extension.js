@@ -155,6 +155,38 @@ function collectText(node, out) {
   if (node.node) collectText(node.node, out);
 }
 
+// ツール結果を、モデルへ返せる形（テキスト部品）へ畳む。
+//
+// **prompt-tsx の部品をそのまま返すと 400 になる。** 実測（2026-08-30）: 結果が
+// prompt-tsx の copilot_getChangedFiles を呼ぶと、次の往復が
+// `messages with role 'tool' must be a response to a preceeding message with
+// 'tool_calls'` で落ちる。こちらが積む形（呼び出しを Assistant へ、結果を User へ、
+// callId で対応）は --debug で正しいことを確認済みで、履歴の有無にも依らない。
+// テキストを返すツール（copilot_readProjectStructure）では同じ往復が通る。
+//
+// 本文の取り出しは --call と同じ collectText を使う。ここで畳んでおけば、VS Code の
+// prompt-tsx 変換に依らずに済む。
+function toolResultParts(result) {
+  const parts = [];
+  for (const part of (result && result.content) || []) {
+    if (part instanceof vscode.LanguageModelTextPart) {
+      parts.push(part);
+      continue;
+    }
+    if (typeof part.value === 'string') {
+      parts.push(new vscode.LanguageModelTextPart(part.value));
+      continue;
+    }
+    const collected = [];
+    collectText(serializablePart(part.value), collected);
+    if (collected.length) parts.push(new vscode.LanguageModelTextPart(collected.join('')));
+  }
+  // 空のまま返さない。「道具は動いたが何も言わない」を、モデルには言葉で伝える
+  // （空の結果を積むのは、空の assistant を積むのと同じ穴）。
+  if (!parts.length) parts.push(new vscode.LanguageModelTextPart('(このツールは本文を返しませんでした)'));
+  return parts;
+}
+
 function toolResultToJson(result) {
   const content = [];
   const texts = [];
@@ -297,7 +329,7 @@ async function runAgent(body, cancellationToken, emit) {
       try {
         const result = await vscode.lm.invokeTool(
           call.name, { toolInvocationToken: undefined, input: call.input }, cancellationToken);
-        results.push(new vscode.LanguageModelToolResultPart(call.callId, result.content));
+        results.push(new vscode.LanguageModelToolResultPart(call.callId, toolResultParts(result)));
         emit({ tool: call.name, ok: true });
       } catch (error) {
         // 失敗もモデルへ返す。黙って落とすと同じ呼び出しを繰り返すだけになる。
