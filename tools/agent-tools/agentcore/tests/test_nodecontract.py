@@ -152,6 +152,60 @@ class DecideCandidatesTest(unittest.TestCase):
         self.assertEqual(decision["winner"], "c3", "条件だけで 1 つに絞れたら順位基準は要らない")
 
 
+class OptimizeSubsetTest(unittest.TestCase):
+    """部分集合最適（optimize・2026-08-31）。予算内で目的値最大の組合せを機械が選ぶ。
+
+    素の実測（text-eval PR1）の外し方は「予算を超える組合せを選ぶ」——選ばせるのを
+    やめる側の機械。picks を出せない条件では None（誤った確定より人 / 上位へ返す）。
+    """
+
+    MENU = [{"id": "p1", "cost": 4, "effect": 50}, {"id": "p2", "cost": 5, "effect": 45},
+            {"id": "p3", "cost": 3, "effect": 30}, {"id": "p4", "cost": 6, "effect": 70},
+            {"id": "p5", "cost": 7, "effect": 60}]
+    OPT = {"maximize": "effect", "budget": {"fact": "cost", "limit": 10}}
+
+    def test_picks_the_budget_optimal_subset(self):
+        decision = nodecontract.decide_candidates([], self.MENU, optimize=self.OPT)
+        self.assertEqual(decision["picks"], ["p1", "p4"])
+
+    def test_without_optimize_no_picks_key(self):
+        decision = nodecontract.decide_candidates([], self.MENU)
+        self.assertNotIn("picks", decision)
+
+    def test_undecided_blocks_picks(self):
+        menu = [dict(f) for f in self.MENU]
+        del menu[0]["cost"]
+        decision = nodecontract.decide_candidates(
+            [{"fact": "cost", "op": "ne", "value": None}], menu, optimize=self.OPT)
+        self.assertIsNone(decision.get("picks", None))
+
+    def test_non_numeric_fact_yields_none_not_a_guess(self):
+        menu = [dict(f) for f in self.MENU]
+        menu[1]["effect"] = "45"
+        decision = nodecontract.decide_candidates([], menu, optimize=self.OPT)
+        self.assertIsNone(decision["picks"])
+
+    def test_too_many_candidates_yield_none(self):
+        menu = [{"id": f"x{i:02d}", "cost": 1, "effect": i} for i in range(17)]
+        decision = nodecontract.decide_candidates([], menu, optimize=self.OPT)
+        self.assertIsNone(decision["picks"])
+
+    def test_empty_budget_fits_nothing(self):
+        decision = nodecontract.decide_candidates(
+            [], self.MENU, optimize={"maximize": "effect", "budget": {"fact": "cost", "limit": 2}})
+        self.assertEqual(decision["picks"], [])
+
+    def test_contract_errors_cover_optimize(self):
+        base = {"facts": [{"name": "cost", "type": "int"}, {"name": "effect", "type": "int"}],
+                "criteria": []}
+        self.assertEqual(nodecontract.decision_contract_errors(
+            {**base, "optimize": self.OPT}), [])
+        errors = nodecontract.decision_contract_errors(
+            {**base, "optimize": {"maximize": "roi", "budget": {"fact": "cost", "limit": "10"}}})
+        self.assertTrue(any("maximize" in e for e in errors))
+        self.assertTrue(any("limit" in e for e in errors))
+
+
 class DecisionContractTest(unittest.TestCase):
     DECISION = {
         "facts": [{"name": "extra_deps", "type": "bool", "description": "追加依存が要るか"},

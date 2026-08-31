@@ -41,7 +41,7 @@
   ],
   "readonly_args": [
     "--think",
-    "off"
+    "on"
   ],
   "readonly": "enforced",
   "interactive": {

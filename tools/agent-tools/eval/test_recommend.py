@@ -23,7 +23,11 @@ SCHEMA = _ROOT / "schemas" / "agent-recommendation.schema.json"
 
 def _build():
     os.environ.setdefault("KIRO_AGENTS_DIR", str(_ROOT / "agents"))
-    return recommend.build_recommendation(ARCHIVE, generated_at=GENERATED_AT, revision=1)
+    # project_dir を同梱 agents/ に固定する。無指定だと探索順（plugin_dirs）が cwd/agents を
+    # 見るため、eval/ を cwd に走らせたときだけ対照実験専用の定義（agents/selfedit.json・
+    # command[0] は agent-herd）が一族に混ざり、members の golden が cwd で揺れる。
+    return recommend.build_recommendation(ARCHIVE, generated_at=GENERATED_AT, revision=1,
+                                          project_dir=_ROOT)
 
 
 class RecommendationTests(unittest.TestCase):

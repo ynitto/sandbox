@@ -300,6 +300,52 @@ def check_pl7(data: dict) -> tuple[bool, str]:
     return True, f"{len(tasks)} ノードすべて readonly{tail}"
 
 
+# 機械で確かめられる制約（字数上限・必須の言及）を verification.commands へ落とせるか。
+# 制約つき要約の機械は text_eval のチェッカーにしかなく、本番で同じ要求が来たらモデルの
+# 自己申告に丸投げだった（§9-2）。本番の機械はシェル（wc / grep）で既に書ける——planner が
+# 書くかどうかだけが欠けている（プロンプトへ規則を足した 2026-08-31 の宣言面）。
+PL8_REQUEST = (
+    "次の 3 件のリリースノート本文（この指示に全文が含まれます）から要点を 1 つの要約へ"
+    "まとめ、summary.md へ保存してください。制約は 2 つ: (a) 要約は 220 字以内 "
+    "(b) 唯一の破壊的変更である「Python 3.9 サポート終了」へ必ず言及する。\n"
+    "本文1: v4.2.0 で Python 3.9 のサポートを終了した（3.10 以上が必須になる）。\n"
+    "本文2: 添付 API の再試行間隔を 2 秒から 5 秒へ延ばした。\n"
+    "本文3: ログ出力の既定を JSON Lines へ変更した（旧形式はオプションで残る）。"
+)
+
+
+def check_pl8(data: dict) -> tuple[bool, str]:
+    """要求の機械で確かめられる制約が verification.commands へ落ちるか。
+
+    正解は要求から従う（構成的ラベル）: summary.md を作るノードの検証コマンドが
+    字数上限（220）と必須言及（3.9）を機械で確かめる形になっていること。コマンドの
+    綴りは固定しない——数字 220 と 3.9 が**コマンド側**（goal の自由文ではなく）に
+    現れていれば、シェルが判定する形になっている。
+    """
+    tasks = data["tasks"]
+    declared = [t for t in _produce_nodes(tasks) if isinstance(t.get("operation"), dict)]
+    if not declared:
+        return False, "operation を宣言したノードが無い"
+    owners = [t for t in declared
+              if any("summary.md" in str(d) for d in (t["operation"].get("deliverables") or []))]
+    if not owners:
+        return False, "summary.md を成果物に宣言したノードが無い"
+    for node in owners:
+        errors = engine.operation_contract_errors(node["operation"])
+        if errors:
+            return False, f"{node['id']} の operation が不正（engine が剥がす）: {errors[0]}"
+    commands = [" ".join(str(a) for a in argv)
+                for node in owners
+                for argv in ((node["operation"].get("verification") or {}).get("commands") or [])]
+    joined = " ".join(commands)
+    if not commands:
+        return False, "verification.commands が空（制約が自己申告のまま）"
+    missing = [want for want in ("220", "3.9") if want not in joined]
+    if missing:
+        return False, f"コマンドが制約を確かめていない（{missing} が現れない）: {commands[:2]}"
+    return True, f"制約 2 つをコマンドで検査: {commands[:2]}"
+
+
 def _produce_nodes(tasks: list[dict]) -> list[dict]:
     return [t for t in tasks if t.get("kind", "work") in ("work", "generate")]
 
@@ -384,6 +430,7 @@ CASES = {
     "PL5": dict(genre="宣言（成果物スロット）", request=PL5_REQUEST, check=check_pl5),
     "PL6": dict(genre="宣言（判定契約）", request=PL6_REQUEST, check=check_pl6),
     "PL7": dict(genre="宣言（道具の有無）", request=PL7_REQUEST, check=check_pl7),
+    "PL8": dict(genre="宣言（機械検査の制約）", request=PL8_REQUEST, check=check_pl8),
 }
 
 # ------------------------------------------------------------------ 実行
@@ -526,6 +573,15 @@ def selfcheck() -> int:
                                 "criteria": [{"fact": "extra_deps", "op": "eq",
                                               "value": False}]}}],
                  ["generate-and-filter"]),
+        "PL8": g([{"id": "t1", "goal": "要約を作る", "deps": [], "kind": "generate",
+                   "operation": {"operation_class": "feature",
+                                 "scope": {"write": ["summary.md"]},
+                                 "deliverables": ["summary.md"],
+                                 "verification": {"commands": [
+                                     ["bash", "-lc",
+                                      "test $(wc -m < summary.md) -le 220 && "
+                                      "grep -q '3.9' summary.md"]]}}}],
+                 ["fan-out-and-synthesize"]),
     }
     bad = {
         "PL1": [g([{"id": "a", "goal": "KIRBY-A", "deps": [], "kind": "work"},
@@ -582,6 +638,19 @@ def selfcheck() -> int:
                 g([{"id": "m1", "goal": "要約", "deps": [], "kind": "map", "readonly": True},
                    {"id": "r", "goal": "まとめ", "deps": ["m1"], "kind": "reduce"}],
                   ["map-reduce"])],                                    # 一部だけ宣言
+        "PL8": [g([{"id": "t1", "goal": "220 字以内・3.9 に言及して summary.md を作る",
+                    "deps": [], "kind": "generate",
+                    "operation": {"operation_class": "feature",
+                                  "scope": {"write": ["summary.md"]},
+                                  "deliverables": ["summary.md"]}}],
+                  ["fan-out-and-synthesize"]),      # 制約が goal の自由文だけ（自己申告のまま）
+                g([{"id": "t1", "goal": "要約を作る", "deps": [], "kind": "generate",
+                    "operation": {"operation_class": "feature",
+                                  "scope": {"write": ["summary.md"]},
+                                  "deliverables": ["summary.md"],
+                                  "verification": {"commands": [
+                                      ["python", "-m", "pytest", "-q", "tests"]]}}}],
+                  ["fan-out-and-synthesize"])],     # コマンドはあるが制約を確かめていない
     }
     contract_bad = [
         g([{"id": "a", "goal": "x", "deps": ["zz"], "kind": "work"}], []),      # 無い deps

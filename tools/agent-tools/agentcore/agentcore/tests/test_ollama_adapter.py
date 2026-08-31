@@ -595,25 +595,27 @@ class TestContractDefinition(unittest.TestCase):
         self.assertNotIn("--tools", readonly, "readonly はツールを持たない = enforced が真")
         self.assertEqual(spec["readonly"], "enforced")
 
-    def test_think_is_off_for_every_headless_role(self):
-        """think はヘッドレスの全役割で off。人が待てる TUI にだけ残す。
+    def test_think_is_off_for_headless_write_and_on_for_readonly(self):
+        """think は write（道具ループ）で off・readonly で on・TUI で on。
 
-        思考自体は thinking フィールドで本文と分離済みなので成果物は汚れない——問題は
-        費用対効果で、実測（2026-08-10・ログ 236 本）では on の 3 経路が全滅した。
-        write は 1 ラウンドが思考だけで 7700 トークン・12 分（p90 942 秒に対し
-        `agent_timeout` は 600 秒）、readonly は中央値 1000 秒、`--format` 併用は
-        文法が thinking から掛かって本文が空（39/39 件）。思考が品質に変換される証拠が
-        1 件も取れていないので、on へ戻すならオフライン再生で先に示すこと。"""
+        write off の根拠は実測（2026-08-10・ログ 236 本）: on は 1 ラウンドが思考だけで
+        7700 トークン・12 分（p90 942 秒に対し `agent_timeout` は 600 秒）。`--format`
+        併用も文法が thinking から掛かって本文が空（39/39 件）——json/list 変種も off のまま。
+        readonly on は 2026-08-31 の反転で、旧注記の「on へ戻すならオフライン再生で先に
+        示すこと」を満たした実測が根拠: readonly は材料がプロンプト内で完結する面で思考が
+        唯一の計算になり、e4b の MP1（道具ゼロ）は think off 1/5 → on 5/5・中央値 46 秒
+        （台帳 ledger-2026-08-31-judge-map-readonly-{thinkoff,prod}-gemma4-e4b.jsonl）。
+        2026-08-10 の「readonly on は中央値 1000 秒」は当時のモデル（qwen 系）の数字。"""
         spec = agentcli.load_cli("ollama")
         write = agentcli.headless_cmd(spec, "M", "P")["argv"]
         readonly = agentcli.headless_cmd(spec, "M", "P", readonly=True)["argv"]
         self.assertEqual(write[write.index("--think") + 1], "off")
-        self.assertEqual(readonly[readonly.index("--think") + 1], "off")
+        self.assertEqual(readonly[readonly.index("--think") + 1], "on")
         opts = ollama_adapter.parse_args(_adapter_args(write))
         self.assertIs(opts["think"], False, "定義の argv がそのまま解釈できる")
         self.assertEqual(opts["toolset"], "bash")
         self.assertEqual(opts["max_rounds"], 12, "write の予算は絞ってある（read は 30）")
-        self.assertIs(ollama_adapter.parse_args(_adapter_args(readonly))["think"], False)
+        self.assertIs(ollama_adapter.parse_args(_adapter_args(readonly))["think"], True)
         self.assertEqual(agentcli.interactive_cmd(spec, "M")[
             agentcli.interactive_cmd(spec, "M").index("--think") + 1], "on")
 

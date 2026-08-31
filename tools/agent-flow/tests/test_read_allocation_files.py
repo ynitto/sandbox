@@ -19,7 +19,9 @@ class ReadAllocationFilesTests(unittest.TestCase):
         seen = {}
 
         def fake_run(cmd, **kwargs):
-            seen["argv"] = cmd
+            # 1 回目（タスク本体）の argv を固定する。envelope 無しの応答には修復呼び出しが
+            # 続くので、上書きすると本体でなく修復の起動形を測ってしまう。
+            seen.setdefault("argv", cmd)
             return mock.Mock(returncode=0, stdout="done", stderr="")
 
         with mock.patch.object(agent_flow, "_agent_for", return_value=(cli, "qwen3.5:9b")), \

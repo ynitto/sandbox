@@ -56,14 +56,24 @@ def cli_name_for(kind: str) -> str:
     return engine.cli_name_for(kind, BASE_CLI)
 
 
-def cmd_for(kind: str) -> "tuple[list[str], str, dict[str, str]]":
+def cmd_for(kind: str, case: "dict | None" = None) -> "tuple[list[str], str, dict[str, str]]":
     """本番がこの役割で実際に起こす argv。**`command` だけを読まない**——道具・ラウンド上限は
     profile 側の引数で付くので、`command` を写すと道具ゼロの起動形で測ることになる
     （retrieve は `--tools read --max-rounds 30`、base は `--think off --tools bash
     --max-rounds 12`）。readonly も本番の解決器に訊く——`readonly=True` は道具を落とす。
+
+    実行時に split から生まれる kind（map / reduce）はノード単位の `readonly` を継ぎうる。
+    ケースが `split_origin`（生みの親 split のノード宣言と配った要素）を宣言していれば、
+    継ぐかどうかを**本番の伝播規則**（`continuation._split_child_readonly`）に訊く——
+    ハーネスが手で readonly を書くと、規則が変わった日に測定だけ古い起動形になる。
     """
     name = cli_name_for(kind)
-    cmd, source = engine.production_argv(name, MODEL, engine.agent_readonly(kind), _FALLBACK_CMD)
+    readonly = engine.agent_readonly(kind)
+    origin = (case or {}).get("split_origin")
+    if origin:
+        readonly = readonly or engine.split_child_readonly(
+            origin.get("node") or {}, origin.get("items") or [])
+    cmd, source = engine.production_argv(name, MODEL, readonly, _FALLBACK_CMD)
     return cmd, source, engine.load_env(name)
 
 
@@ -666,8 +676,12 @@ CASES = {
     # 素材をプロンプトにだけ置くと、道具を持ったモデルは名指しされたファイルをディスクへ
     # 探しに行き、空のディレクトリで詰む（実測 2026-08-30: 0/5 の 4 本がこれ）。本番の map は
     # ワークスペースの中で走るので、**名指ししたファイルは実在する**——同じ本文を配る。
+    # MP1 の map は**本文が対象要素として届く**形（readonly な split が依存のリストを配る
+    # flow の子）。`_split_child_readonly` の伝播（2026-08-31）でノードは readonly を継ぎ、
+    # 起動形から道具が落ちる——道具ありは 2/5・道具ゼロは 5/5 の実測差がある面。
     "MP1": dict(kind="map", expect="この 1 要素だけの見出し 3 件",
                 material={"ITEM-07.md": MP1_FILE},
+                split_origin=dict(node={"readonly": True}, items=[MP1_FILE]),
                 goal=("次の 1 ファイルから Markdown の見出し（# で始まる行）だけを抜き出し、"
                       "JSON 配列で出力する。**この 1 件だけを処理し、件数の集計や他ファイルの"
                       "話に変えないこと**。\n\n"
@@ -835,7 +849,7 @@ def run_one(cid: str, i: int) -> dict:
     extra, applied = method_text(kind)
     if extra:
         prompt = f"{prompt}\n\n{extra}"
-    cmd, _src, command_env = cmd_for(kind)
+    cmd, _src, command_env = cmd_for(kind, case)
     cwd = workdir_for(cid, i)
     rc, out, err, wall = call(prompt, cmd, command_env, cwd)
     repaired = False
@@ -898,6 +912,11 @@ def run_one(cid: str, i: int) -> dict:
                         fixed = None
                     if fixed is not None:
                         data, out = fixed, r_out
+        # work / generate の欠けた envelope をレイヤ2 で言わせる修復は**本番に無い**
+        # （2026-08-31 に入れて測り、撤去した）。実測: 道具つき修復はタスクをやり直して 0/5・
+        # readonly 修復は完動しても `{"ok": true, "warnings": []}` しか返さず（欠落の申告は
+        # 生成時にしか出ない）、+1 呼び出しの費用だけが残った。台帳
+        # ledger-2026-08-31-judge-generate-envelope-{toolrepair,rorepair}-gemma4-e4b.jsonl。
         if kind == "synthesize" and not case.get("no_carry"):
             # 本番（agent.py）は統合結果へ依存の申告した欠落を機械的に転記する。写さないと
             # **本番なら運ばれている欠落**をモデルの失点として数える。`no_carry` は診断用の
@@ -1151,8 +1170,9 @@ def main() -> None:
     LEDGER_DIR.mkdir(parents=True, exist_ok=True)
     ledger = LEDGER_DIR / "ledger.jsonl"
     seen = []
-    for kind in dict.fromkeys(CASES[c].get("kind") or "evaluator" for c in cids):
-        cmd, src, _command_env = cmd_for(kind)
+    for c in cids:
+        kind = CASES[c].get("kind") or "evaluator"
+        cmd, src, _command_env = cmd_for(kind, CASES[c])
         line = f"{kind}: {' '.join(a for a in cmd if a not in DROP_ARGS)} （出所: {src}）"
         # 宣言した手法が when で落ちて 1 つも効いていない、を黙って測らない。
         applied = method_text(kind)[1]

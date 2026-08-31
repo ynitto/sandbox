@@ -96,7 +96,7 @@ PD1_SIGNALS = signals([
 # 本番が既に決定的に検出して自動修正まで持っている（`doctor_audit_findings` が
 # `fix_action: policy-protect` を付け、`_ensure_policy_protect` が追記する）——
 # モデルに訊く必要が無い面を測っていた（「その面は本番にあるか」の一段深い形）。
-# いま仕込むのは**設定どうしの矛盾**: 上限 20 秒に対して実行が毎回それを超えている。
+# いま仕込むのは**設定と実行の矛盾**: 上限 20 秒に対して実行が毎回それを超えている。
 # 決定的チェックにこの組み合わせは無く、シグナルから読むしかない。
 PD2_SIGNALS = signals([
     "[worker] タスク t-201 開始",
@@ -105,6 +105,11 @@ PD2_SIGNALS = signals([
     "[worker] タスク t-202 打ち切り（agent_timeout=20s 超過）",
     "[worker] タスク t-203 打ち切り（agent_timeout=20s 超過）",
 ], config={"agent_timeout": 20, "agent_cli": "ollama", "model": "gemma4:e4b"})
+# 「設定どうしの矛盾」（実行ログ不要・config だけで分かる面）は一度 PD4 として測り
+# **0/5** だった（2026-08-31・台帳 ledger-2026-08-31-project-doctor-config-gemma4-e4b.jsonl）。
+# 製品内部の規則（stub では repo_map を生成しない等）は材料に無く、モデルには判定しようが
+# ない——protect 未設定と同じ「決定層の面」なので、`_config_contradiction_findings` へ
+# 決定的チェックとして移し、ケースごと撤去した。ここに残るのは**設定と実行の矛盾**（PD2）だけ。
 PD3_SIGNALS = signals([
     "[worker] タスク t-301 を開始",
     'Traceback (most recent call last):',
@@ -324,13 +329,22 @@ def _named_workspace(spec: dict) -> str:
 def check_plan(specs):
     """分解。判定は**本番の決定的ゲート**（`_validate_backlog_spec`）をそのまま使う。
 
-    見るのは 3 点——(1) タスクが 1 件以上あるか (2) 必須セクション
+    見るのは 4 点——(1) タスクが 1 件以上あるか (2) 必須セクション
     （why / desc / scope / risks / acceptance / size）が全タスクで埋まっているか
-    (3) 書込先が charter の repos の中か。本番は欠落を 1 回だけ再要求し、それでも欠ける
-    ものは人の目へ回す（捨てない）——その 1 回もこのハーネスでは本番の関数が回している。
+    (3) 書込先が charter の repos の中か (4) 件数の下限。本番は欠落を 1 回だけ再要求し、
+    それでも欠けるものは人の目へ回す（捨てない）——その 1 回もこのハーネスでは本番の
+    関数が回している。
+
+    (4) は 2026-08-31 の追加: 1 件ずつ出させる分割（A）で「1 件だけ返して打ち切る」回も
+    必須セクションが埋まっていれば合格になっていた。成果物 3 つの charter を 1 タスクで
+    覆う分解は考えにくいので、成果物数の過半を下限にする（3 つなら 2 件以上）。
     """
     if not specs:
         return False, "タスクが 0 件"
+    floor = max(1, (len(charter().deliverables) + 1) // 2)
+    if len(specs) < floor:
+        return False, (f"タスク {len(specs)} 件（成果物 {len(charter().deliverables)} 件の "
+                       f"charter に対し下限 {floor} 件未満）")
     names = {r.get("name") for r in charter().repo_specs} or {"agent-tools"}
     bad = [(sp.get("title", "?")[:20], m) for sp in specs if (m := ap._validate_backlog_spec(sp))]
     if bad:
@@ -648,6 +662,9 @@ def selfcheck() -> int:
         # driver ケースは本番の戻り値をそのまま渡す
         "PP1": [{"title": "ingest.py を実装する", "why": "読み込みが無い",
                  "desc": "run ログを読む", "scope": "ingest.py", "risks": "なし",
+                 "acceptance": ["テストが通る"], "size": "S", "workspace": "agent-tools"},
+                {"title": "aggregate.py を実装する", "why": "集計が無い",
+                 "desc": "日次のトークンを集計する", "scope": "aggregate.py", "risks": "なし",
                  "acceptance": ["テストが通る"], "size": "S", "workspace": "agent-tools"}],
         "RM1": "構造: src/ingest.py と tests。テストは make test で実行する。",
         "RV1": [{"title": "render.py が無く Markdown 表を出力できない",
@@ -683,7 +700,10 @@ def selfcheck() -> int:
                            ensure_ascii=False), "[]"],
         "PP1": [[], [{"title": "x", "acceptance": ["a"]}],            # 0 件 / 必須セクション欠落
                 [{"title": "x", "why": "w", "desc": "d", "scope": "s", "risks": "r",
-                  "acceptance": ["a"], "size": "S", "workspace": "docs-site"}]],  # 無い書込先
+                  "acceptance": ["a"], "size": "S", "workspace": "docs-site"}],  # 無い書込先
+                [{"title": "全部まとめてやる", "why": "w", "desc": "d", "scope": "s",
+                  "risks": "r", "acceptance": ["a"], "size": "L",
+                  "workspace": "agent-tools"}]],  # 成果物 3 つに対して 1 件（下限 2 未満）
         "RM1": ["", "このリポジトリは Python 製です。", "ingest だけ読みました"],
         "RV1": [[],                                                    # 所見なし（未達は実在する）
                 [{"title": "", "acceptance": ["render.py が無い"]}],       # title 欠落
@@ -738,6 +758,14 @@ def main() -> None:
         raise SystemExit(selfcheck())
     MODEL, BASE_CLI, WALL_LIMIT = args.model, args.base_cli, args.wall
     cids = [c.strip() for c in args.cases.split(",") if c.strip() in CASES]
+
+    # 実ホームの agent-control / node-budget を隔離する（amigos_eval と同じ理由）。
+    # control に purpose の上書き（例: plan → cursor）があると、argv は BASE_CLI から
+    # 組むのに**器の判定**（`_plan_object_only` → `_agent_for`）だけ上書き先を読み、
+    # 「配列契約を object-only の器へ投げる」測定になる（実測 2026-08-31: PP1 が
+    # これで 1/5 に見えた。落ちていたのは面でなくハーネスの隔離）。
+    for key, sub in (("AGENT_CONTROL_DIR", "control"), ("AGENT_BUDGET_DIR", "node-budget")):
+        os.environ[key] = str(LEDGER_DIR / "isolated" / sub)
 
     LEDGER_DIR.mkdir(parents=True, exist_ok=True)
     ledger = LEDGER_DIR / "ledger.jsonl"

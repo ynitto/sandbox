@@ -179,6 +179,60 @@ class ChunkEvenlyTests(unittest.TestCase):
         self.assertEqual([len(c) for c in kf._chunk_evenly([1, 2, 3], 0)], [1, 1, 1])
 
 
+class SplitChildReadonlyTests(unittest.TestCase):
+    """readonly の伝播: 「split が readonly かつ要素が in-band」のときだけ子へ継ぐ。
+
+    継げない側を守るのが本体——readonly な split でも、配った要素がパス形なら
+    map に読み取りが要るので継がない（継ぐと道具ゼロの map がファイルを読めず flow が壊れる）。
+    """
+
+    def _expand(self, items, readonly=True, review=True):
+        nodes = {"split1": {"goal": "分解", "deps": [], "kind": "split"}}
+        if readonly:
+            nodes["split1"]["readonly"] = True
+        results = {"split1": {"status": "done", "output": "[split]", "data": items}}
+        return _by_id(kf._expand_splits(nodes, results, 50, review, "req", False, 8))
+
+    def test_inline_items_inherit_readonly_on_all_children(self):
+        ids = self._expand(["丸め規則の本文その1", "丸め規則の本文その2", "本文3つ目"])
+        for tid, t in ids.items():
+            self.assertIs(t.get("readonly"), True, tid)
+
+    def test_path_items_do_not_inherit(self):
+        ids = self._expand(["src/a.py", "src/b.py"])
+        for tid, t in ids.items():
+            self.assertNotIn("readonly", t, tid)
+
+    def test_bare_filename_counts_as_path(self):
+        ids = self._expand(["ITEM-07.md", "ITEM-08.md"])
+        for tid, t in ids.items():
+            self.assertNotIn("readonly", t, tid)
+
+    def test_non_readonly_split_never_propagates(self):
+        ids = self._expand(["本文だけの要素"], readonly=False)
+        for tid, t in ids.items():
+            self.assertNotIn("readonly", t, tid)
+
+    def test_dict_items_with_path_values_do_not_inherit(self):
+        ids = self._expand([{"file": "src/a.py", "issue": "丸め誤り"}])
+        for tid, t in ids.items():
+            self.assertNotIn("readonly", t, tid)
+
+    def test_intermediate_reduces_and_gates_inherit_too(self):
+        items = [f"本文その{i}" for i in range(1, 21)]
+        ids = self._expand(items)
+        self.assertIn("split1-rc1", ids)        # 幅 8 超で中間 reduce が立つ形
+        for tid, t in ids.items():
+            self.assertIs(t.get("readonly"), True, tid)
+
+    def test_exemplar_first_pilot_inherits(self):
+        nodes = {"split1": {"goal": "分解", "deps": [], "kind": "split", "readonly": True}}
+        results = {"split1": {"status": "done", "output": "[split]", "data": ["本文A", "本文B"]}}
+        ids = _by_id(kf._expand_splits(nodes, results, 50, False, "req", True, 8))
+        self.assertIs(ids["split1-m1"].get("readonly"), True)
+        self.assertIs(ids["split1-pilot"].get("readonly"), True)
+
+
 class ConfigDefaultTests(unittest.TestCase):
     def test_reduce_width_default_is_eight(self):
         self.assertEqual(kf.CONFIG_DEFAULTS["reduce_width"], 8)

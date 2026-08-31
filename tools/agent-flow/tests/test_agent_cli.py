@@ -782,6 +782,24 @@ class FlowWorkerSkillTests(unittest.TestCase):
         # EXEC_KINDS のうち JSON 抽出をしない kind = 封筒を読むべき kind。
         want = {k for k in module.EXEC_KINDS if k not in kf.STRUCTURED_KINDS}
         self.assertEqual(set(kf._ENVELOPE_KINDS), want)
+        # プロンプト側の宣言（ENVELOPE_KINDS）とも一致させる——成功時も必須の envelope
+        # 契約（EXEC_CONTRACT）を指示する kind と読む kind が食い違うと、書かせた封筒を
+        # 読まない／読めない封筒を待つ、のどちらかが黙って起きる。
+        self.assertEqual(set(kf._ENVELOPE_KINDS), set(module.ENVELOPE_KINDS))
+
+    def test_work_prompt_requires_envelope_even_on_success(self):
+        """成功時も完了 envelope を必須にする（2026-08-31 の契約変更）。
+
+        既定の契約が失敗時だけだった間、成功したと思っているワーカーは何も書かず
+        （実測 GW1 0/5）、部分的な欠落が散文にしか残らなかった。散文の欠落は機械
+        （carry_dependency_gaps）が運べない——warnings へ書かせる指示が契約に要る。"""
+        for kind in ("work", "generate"):
+            prompt = self._capture_prompt(kf.execute_agent, kind, "g", {}, None)
+            self.assertIn("成功でも省略しない", prompt, kind)
+            self.assertIn('{"ok": true, "warnings":', prompt, kind)
+        # map は構造化出力（JSON 配列）——envelope を混ぜる指示を出さない。
+        prompt = self._capture_prompt(kf.execute_agent, "map", "g", {}, None)
+        self.assertNotIn("成功でも省略しない", prompt)
 
     def test_execute_agent_verify_skill_prompt_keeps_contract(self):
         prompt = self._capture_prompt(kf.execute_agent, "verify", "検証する", {}, None)
@@ -962,8 +980,11 @@ class AgentOverrideTests(unittest.TestCase):
             kf.execute_agent("work", "設計する", {}, None,
                              references=[{"url": "https://example.invalid/repo.git",
                                           "local": repo}], readonly=True)
-        self.assertEqual(run.call_args.kwargs["cwd"], repo)
-        self.assertIs(run.call_args.kwargs["readonly"], True)
+        # 見るのは 1 回目（タスク本体）。envelope 無しの応答にはレイヤ2 の修復呼び出しが
+        # 続くので、call_args（最後の呼び出し）では本体の起動形を読めない。
+        first = run.call_args_list[0]
+        self.assertEqual(first.kwargs["cwd"], repo)
+        self.assertIs(first.kwargs["readonly"], True)
 
 
 class TestAgentPluginAndTriage(unittest.TestCase):

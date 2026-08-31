@@ -133,10 +133,11 @@ def _agent_readonly(purpose: str) -> bool:
 
     既定は現状のまま write——挙動を黙って変えない。宣言してよいのは**読まない系**
     （材料を全部プロンプトで受け取り、文章か JSON を返すだけ）の処理に限る。読む系
-    （repo_map / doctor / review）を readonly にすると、CLI によっては readonly 実装が
-    ツールを大きく削るため探索そのものを失う（適用拡大設計 §5。claude / kiro / codex は
-    2026-08-31 に読み取り道具を残す姿勢へ揃えたが、copilot の `--available-tools=` は
-    いまも道具ゼロ）。
+    （doctor / review）を readonly にすると、CLI によっては readonly 実装がツールを
+    大きく削るため探索そのものを失う（適用拡大設計 §5。claude / kiro / codex に続き
+    copilot も 2026-08-31 に `--available-tools=view,grep,glob` で読み取り道具を残す
+    姿勢へ揃えた。ローカルの器＝ollama の readonly は道具ゼロのまま——そちらは実測済みの
+    手当てである）。
 
     `_agent_for` に相乗りさせず別関数にしてあるのは、あちらの戻り値（cli, model）が
     agent-control・node-budget の縮退まで畳んだ「実効エージェント」で、権限は
@@ -144,6 +145,12 @@ def _agent_readonly(purpose: str) -> bool:
     """
     cfg = _RUNTIME_CONFIG
     ov = ((cfg.agents if cfg is not None else {}) or {}).get(purpose) or {}
+    # repo_map は 2026-08-31 に「読まない系」へ作り変えた——材料（git ls-files + 主要
+    # ファイルの先頭）は機械が集めてプロンプトへ入れる（_repo_map_material）。実測の失点は
+    # 道具ループの出口（本文ゼロ・status=no_command）で、道具を持たせる理由が無くなった。
+    # 設定 `agents.repo_map.readonly: false` で従来どおり道具ありへ戻せる。
+    if purpose == "repo_map":
+        return bool(ov.get("readonly", True))
     return bool(ov.get("readonly"))
 
 

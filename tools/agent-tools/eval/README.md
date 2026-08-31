@@ -964,6 +964,14 @@ retrieve の RT2（4/5）と同じ並びで、ただし route のほうが誤り
 `config` は 3/5 で、外し方は 2 つ——`program` へも流す（本番のプロンプトは「env/config で
 説明できるものを安易に program にしない」と明示している）と、所見を 1 件も出さない。
 
+> **追記（2026-08-31・§9-7）— 落ち方を 2 形に分けた。** 「設定どうしの矛盾」（実行ログ
+> 不要・config だけで分かる。素材は stub × repo_map）を PD4 として引くと **0/5**
+> ——製品内部の規則はモデルの材料に無く、判定しようがない。protect 未設定と同じ
+> 「決定層の面」なので `_config_contradiction_findings`（決定的チェック）へ移し、
+> ケースごと撤去した。「設定と実行の矛盾」（PD2）は同日 1/5（過去 3/5・自己一貫性が
+> 低い面）で、こちらがモデルに残る弱さである。台帳
+> `ledger-2026-08-31-project-doctor-config-gemma4-e4b.jsonl`。
+
 **測る前に 2 つ直した（どちらも「その面は本番にあるか」の一段深い形）。**
 
 1. **`config` の初版は決定層と重なっていた。** 「protect 未設定」を仕込んでいたが、本番は
@@ -1020,7 +1028,7 @@ retrieve の RT2（4/5）と同じ並びで、ただし route のほうが誤り
 | agent-amigos | `team-builder` | 4/5 | 予約語（`owner`）を role id にする |
 | agent-amigos | `conductor` | 4/5 | JSON を返さない回 |
 | agent-amigos | `acceptance` | 2/5（引き直しは 3/3） | JSON を返さない回 |
-| agent-amigos | `debate` | 3/5 | 他者の主張に触れない |
+| agent-amigos | `debate` | 3/5 → **4/5**（引用ゲート後） | 他者の主張に触れない |
 | agent-amigos | `role-actions` | **4/5**（`kind` 修正後。修正前は 0/5） | CLI が本文をほぼ返さない回 |
 
 **通る面と落ちる面の境目は「短い契約か」だった。** 5/5 が並ぶのは、出力が短く形の決まった
@@ -1028,6 +1036,12 @@ retrieve の RT2（4/5）と同じ並びで、ただし route のほうが誤り
 JSON に詰める面（`plan` は途中で切れ、`repo_map` は要約でなく作業メモになる）。
 **道具ループを持つ面ほど散文が増える**のは map / doctor と同じ傾向で、この日の
 「器で落ちる」の族に入る。
+
+> **追記（2026-08-31・§9-8）— `debate` に引用ゲートを入れて 3/5 → 4/5。** 本番の
+> `_llm_debate` が前ラウンドの引用（各 peer の先頭文）を応答位置の直前へ機械が置き、
+> 「引用へ 1 つずつ触れてから主張を述べる」を書き出しに求める形（引用の選択をモデルに
+> 任せない）。落ちた 1 本は引用ゲートがあっても触れない回で、e4b の揺れの範囲。台帳
+> `ledger-2026-08-31-amigos-debate-quotegate-gemma4-e4b.jsonl`。
 
 #### ハーネス側の欠陥を 3 件直した（どれも「本番より厳しい」）
 
@@ -1084,6 +1098,16 @@ JSON に詰める面（`plan` は途中で切れ、`repo_map` は要約でなく
 5 回の呼び出し数は 2 / 6 / 7 / 10 / 10 回（タスク 1 / 5 / 6 / 10 / 10 件）。**下限は測っていない**
 ——3 成果物の charter に 1 件だけ返した回（#4）も、必須セクションが埋まっていれば合格になる。
 
+> **追記（2026-08-31・§9-5）— 下限を足して引き直した。** `check_plan` に成果物数の過半
+> （3 つなら 2 件以上）の下限を追加。最初の引き直し 1/5 は**ハーネスの隔離漏れ**だった
+> ——実機 agent-control の `plan → cursor/grok-4.5` 上書きを器判定（`_plan_object_only` →
+> `_agent_for`）だけが読み、argv（ollama-json）と食い違って「配列契約を object-only の器へ
+> 投げる」測定になっていた（本番では器も呼び出しも同じ上書き先へ揃うので起きない）。
+> `project_eval` に amigos と同じ `AGENT_CONTROL_DIR` / `AGENT_BUDGET_DIR` 隔離を入れて
+> 再測 **4/5**（呼び出し 5〜10 回・タスク 4〜10 件。落ちた 1 本は初手 `{"done": true}` の
+> 揺れで下限検査の誤発火は 0）。台帳 `ledger-2026-08-31-project-plan-floor-gemma4-e4b.jsonl`
+> （隔離漏れの腕は `…-controlleak-defect-…`）。
+
 #### `review` は材料が届いた瞬間に当否まで通った
 
 `_review_prompt` に入るのは charter だけで、成果物の状態は 1 文字も渡っていなかった
@@ -1133,6 +1157,15 @@ plan と同じ 1 件許容の受け方（`_items_from_output`）へ寄せた。�
 成果ではなく作業報告を返す・返さない）。`repo_map` は clone したリポジトリを読む面なので
 `readonly` で道具を落とすことはできない。次の手は「材料を機械が集めてプロンプトへ入れる」
 （`git ls-files` + 主要ファイルの先頭）で、それは道具を外せる形へ面ごと作り変える話になる。
+
+### repo_map の作り変え（2026-08-31・RM1 引き直し）— 2/5 → **5/5**
+
+§9-4 の実施。材料（`git ls-files` + README / ビルド定義の先頭・有界）は機械が集めて
+プロンプトへ入れ（`_repo_map_material`）、道具を外した（purpose=repo_map は readonly 既定
+——設定 `agents.repo_map.readonly: false` で戻せる）。起動形は readonly の
+`agent-herd ollama e4b --think on`（think 反転後）。1 本で形を確かめてから n=5:
+**5/5・中央値 51 秒・全走行が呼び出し 1 回**。道具ループの出口（本文ゼロ・`no_command`）は
+族ごと消えた。台帳 `ledger-2026-08-31-project-repomap-remake-gemma4-e4b.jsonl`。
 
 ### planner は `readonly` を宣言できるか（2026-08-31・PL7）
 
@@ -1194,6 +1227,53 @@ ITEM-11 と ITEM-12 は存在しない"`）。この日の「言わせても直�
 台帳 `results/archive/ledger-2026-08-31-judge-generate-gapchannel-gemma4-e4b.jsonl`。
 これで `coverage.json` の `generate` は indirect → **direct**（直接測った面 40）。
 
+### 契約を必須へ・修復を入れて外した（同日夜・§9-3）
+
+「成功時も envelope を必須」を 2 段で実装して測った。**どちらも受入（3/5）に届かない。**
+
+| 腕 | 形 | 正解 | 落ち方 |
+|---|---|---:|---|
+| 必須契約（EXEC_CONTRACT）のみ | 出力契約に「成功でも省略しない」を明記 | 1/5 | envelope は書く回が増えたが `warnings: []`——**散文では欠落を明言しながら**構造化しない（SY2 と同族） |
+| ＋道具つき修復 | 欠落時にレイヤ2 で 1 回言わせる（タスクと同じ起動形） | 0/5 | **修復ラウンドがタスクをやり直す**（3 ラウンド回ってファイルを作り envelope を書かない） |
+| ＋readonly 修復 | 修復だけ readonly（in-band・道具ゼロ・think on） | 1/5 | 修復は完動し全回 ```` ```json {"ok": true, "warnings": []} ```` を返す——**形は直るが申告は生成時にしか出ない** |
+
+**修復は撤去した**（全 work / generate に +1 呼び出しの費用だけが残る）。EXEC_CONTRACT は
+残す——唯一の合格（inline で ITEM-11/12 を名指し）は契約から出ており、repo_map の
+前置き落とし（B）と同じ「言わせるゲートは残すが点にはならない」扱い。観察を 2 つ:
+(1) 修復の返しはフェンス付きで、末尾限定の `envelope_data` はこれを読めない（inline でも
+フェンスで書く器が来たら同じ穴。直すなら llmjson のフェンス処理へ寄せてから測る）
+(2) 欠落の申告は**生成時の自己検査**にしか現れない。プロンプト側の手は尽きたので、残る
+候補は機械側——goal が明示的な件数・一覧を持つときに要求と成果を決定的に突き合わせる形
+（未設計・未測定）。台帳
+`ledger-2026-08-31-judge-generate-envelope-{toolrepair,rorepair}-gemma4-e4b.jsonl`。
+
+### 実行時 map への readonly 伝播と think の反転（2026-08-31・MP1）
+
+§9-1（形直し計画）の実装。`_expand_splits` が生む map / reduce / gate は `id` / `goal` /
+`deps` / `kind` だけで作られ、`readonly` 宣言が届かなかった——伝播規則を決めて運んだ:
+**split 自身が readonly かつ配った要素にパス形が混ざらないとき**だけ子へ継ぐ
+（`continuation._split_child_readonly`。split の宣言だけでは危ない——readonly な split が
+ファイル一覧を配る flow では map に読み取りが要る。要素の形だけでも危ない——split 自身が
+道具で組んだ要素には宣言側の判断が無い）。ハーネスはケースの `split_origin` 宣言から
+**本番の伝播規則に訊いて**起動形を決める（手で readonly を書かない）。
+
+引き直すと **1/5**——道具は落ちたのに、指示ブロック（【全体文脈】【三つの約束】…）を
+見出しとして混ぜる新しい落ち方。旧 5/5 との差分は道具ではなく **think** だった:
+旧「道具ゼロ」は `command` だけの起動形（think はモデル既定＝on・wall 38〜100s）、
+readonly の起動形は `readonly_args` の `--think off`（wall 1〜33s）。切り分けの腕:
+
+| 腕 | 起動形 | 正解 | 中央値 |
+|---|---|---:|---:|
+| readonly（--think off） | `agent-herd ollama e4b --think off` | 1/5 | 5s |
+| readonly + --think on（上書き） | 同 + on | 4/5 | 54s |
+| readonly（定義を on へ変更後・本番形） | `agent-herd ollama e4b --think on` | **5/5** | 46s |
+
+**readonly_args を `--think on` へ反転した。** readonly は材料がプロンプト内で完結する面で、
+思考が唯一の計算になる。2026-08-10 の「readonly on は中央値 1000 秒」（think 全 off の根拠）
+は当時のモデル（qwen 系）の数字で、herd の既定（gemma4）では再現しない。write（道具ループ）
+と `--format` 併用の off はそのまま。台帳
+`ledger-2026-08-31-judge-map-readonly-{thinkoff,thinkon-override,prod}-gemma4-e4b.jsonl`。
+
 ## 2026-08-11 の実測 — 手法パックで判定の質は上がるか
 
 `--methods` でカタログ（`methods/*.json`）の手法を有効化して同じ 8 ケースを引く。適用条件の
@@ -1238,6 +1318,14 @@ python3 tools/agent-tools/eval/judge_eval.py --repeat 3 --cases F1,F2,J1,J2,R1,R
 `answer` 列に上記のキーが残っている）。以後の測定では、どの行にどの手法が効いたかが
 `methods` 列に入る——宣言した手法が `when` で落ちて 1 つも効いていない実行を、効いた前提で
 数えないため。同じ理由で、実行前のヘッダにも役割ごとの適用結果を出す。
+
+> **追記（2026-08-31）— 起動形を直した後の再測（§9-6）。** `production_argv` 化の後、
+> 同じ 8 ケース × 3 を同じ 2 腕で引き直した: 手法なし **19/24**・手法あり **18/24**
+> （filter 3/6 は両腕同値・judge 4/6 → 3/6・reduce / evaluator は両腕 6/6）。復唱キーの
+> 混入は 0/24 のまま（カタログ修正が起動形の変更をまたいで保たれている）。結論は 08-11 と
+> 同じ——**合計は動かない**（基準線の揺れ幅 14〜19 の中）。手法パックはこの 8 ケースでは
+> 足しても引いてもいない。台帳
+> `ledger-2026-08-31-judge-methods-{baseline,pack}-prodargv-qwen35-9b.jsonl`。
 
 ### 狙い撃ちの規律も効かない — filter / judge はプロンプトでは直らない
 
@@ -1594,6 +1682,21 @@ PR1 の残差は制約検査でなく**組合せ最適の選択誤り＝P4 系**
 （`予算超過: コスト合計 13 > 予算 10`）。予算内だが最適でない出力は理由を添えずに落とす
 （本番の機械にはそれが最適でないと分からないため）。**上の PR1 + `--repair` の 2/3 は
 この修正前の数字で、本番では再現しない**——比較に使うなら `PR1P` の 3/3 を見る。
+
+**機械を本番へ入れた（2026-08-31・§9-2）。** それまで組合せの総当たりは**このハーネスに
+しか無かった**。`decide_candidates` に `optimize`（`{"maximize": <fact>, "budget":
+{"fact": <fact>, "limit": N}}`・予算内で目的値最大の部分集合・総当たり上限 16 で picks を
+出す。確定できない条件では picks を出さない=undecided と同じ倒し方）を実装し、planner
+規則（filter / judge の decision）へ宣言口を足し、PR1P の検算を本番の 1 実装へ差し替えて
+引き直した——**3/3**（台帳 `ledger-2026-08-31-text-pr1p-production-optimize-gemma4-e4b.jsonl`）。
+
+**制約つき要約の相方（字数・必須言及）は planner の宣言面として測った（PL8・0/3）。**
+機械はシェル（`wc -m` / `grep`）で既に書けるので、planner 規則（両層）へ「機械で確かめられる
+制約は verification.commands へ落とす」を足して測った——e4b は **0/3**（operation ごと
+書かない / commands 空 / 字数だけ書いて言及を落とす）。PL5 / PL7 と同じ**宣言面の弱さ**で、
+規則が届いた形跡はある（#3 は `wc -m` を書いた）が確度が無い。この宣言はクラウド planner
+向けの口として残し、e4b の flow では期待しない。台帳
+`ledger-2026-08-31-planner-pl8-verifycommands-gemma4-e4b.jsonl`。
 
 ### E7: strategy=economy の定型 flow — クラウド消費 0 の受入
 

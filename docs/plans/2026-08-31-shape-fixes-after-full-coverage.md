@@ -276,6 +276,43 @@ planner の規則文（規則 12）は PL7 で実測した文言なので触っ�
 - `collapse_same_scope_work`（coarse の同一ファイル畳み込み）は当面そのまま——並走の
   編集衝突を防ぐ側の理由が器に依らない
 
+## 11. §9 の消化記録（2026-08-31・同日夜）
+
+実測はすべて `gemma4:e4b`（§9-6 の手法パックのみ qwen3.5:9b・過去と同じ枠）。
+
+| # | 項目 | 結果 | 判定 |
+|---|---|---|---|
+| 1 | map の readonly 伝播 | `_split_child_readonly`（split が readonly かつ要素が非パス形のときだけ子へ継ぐ）を実装。MP1 を本番の起動形で引き直すと 1/5——**旧 5/5 の正体は道具ゼロでなく think だった**。readonly_args を `--think on` へ反転して **5/5**（中央値 46s） | **採用** |
+| 2 | 制約つき要約・組合せ最適の機械 | 組合せ最適は `decide_candidates` に `optimize`（予算内の部分集合最適・総当たり上限 16）を実装し、PR1P の検算を本番の 1 実装へ差し替えて **3/3**。字数・必須言及は planner 規則（両層）へ「機械で確かめられる制約は verification.commands へ」を追加し PL8 で測定——e4b は **0/3**（宣言面の弱さ。PL5/PL7 と同族。宣言口はクラウド planner 向けに残す） | **機械は本番入り**（組合せ側クローズ・宣言側はクラウド向け口のみ） |
+| 3 | 成功時 envelope 必須 | 3 腕で測った: 必須契約のみ **1/5**（envelope は書くが `warnings: []`——散文で欠落を明言しながら構造化しない）・道具つき修復 **0/5**（修復ラウンドがタスクをやり直す）・readonly 修復 **1/5**（修復は完動するが `{"ok": true, "warnings": []}` しか返らない——申告は生成時にしか出ない）。**修復は撤去**（全 work/generate に +1 呼び出しの費用だけ残る）。契約文は B の前例（言わせるゲートは残す）で残置 | **不採用**（残る候補は機械側: goal の明示件数と成果の決定的突き合わせ・未設計） |
+| 4 | repo_map の受入未達 | 面を作り変え: 材料（ls-files + 主要ファイル先頭）を機械が集めてプロンプトへ・readonly 既定・道具ゼロ。RM1 **2/5 → 5/5**（呼び出し 1 回・中央値 51s） | **採用** |
+| 5 | plan の件数下限 | `check_plan` に成果物数の過半を下限とする検査を追加（3 つなら 2 件以上）。初回の引き直し 1/5 は**ハーネスの隔離漏れ**（実機 agent-control の plan→cursor 上書きを器判定だけが読み、argv と食い違った）。隔離を入れて再測 **4/5**（1 件ずつモード・呼び出し 5〜10 回。落ちた 1 本は初手 `done:true` の揺れで、下限検査の誤発火は 0） | **採用** |
+| 6 | judge_eval --methods 再測 | 起動形修正後・同じ 8 ケース × 3 × 2 腕（qwen3.5:9b）: 基準 **19/24**・手法 **18/24**・復唱キー混入 0/24。合計は動かない（基準線の揺れ幅 14〜19 の中）——08-11 と同結論 | **測了**（手法パックはこの 8 ケースで足しも引きもしない） |
+| 7 | doctor config | 落ち方を 2 形に分けた: **設定どうしの矛盾（PD4）は 0/5**＝決定層の面（`_config_contradiction_findings` へ決定的チェックを実装し、ケースごと撤去）。設定と実行の矛盾（PD2）は 1/5（過去 3/5・自己一貫性の低い面）でモデルに残る弱さ | **決定層へ移管** |
+| 8 | debate の引用 | `_llm_debate` に引用ゲート（機械が各 peer の先頭文を前置きし、引用ごとの応答を書き出しに要求）。DB1 **3/5 → 4/5** | **採用** |
+| 9 | review の配列契約 | 触らない。理由を用意した: 実測 5/5・受け方は 1 件許容（`_items_from_output`）済み・`--format json` の器でも 1 件オブジェクトは受かる。壊れていない契約を器の一般則だけで書き換えると RV1 の引き直しコストだけが残る | **見送り（理由つき）** |
+| - | 既存失敗テスト | `test_herd_members_...` は cwd 依存（eval/ から走ると `plugin_dirs` が cwd/agents の対照定義 selfedit.json を拾う）。golden は正しいので、テストの `project_dir` を同梱 agents/ に固定 | 修正済 |
+
+**§10.4 の積み残し:**
+
+- copilot の readonly: 実機 `--help` とプローブ 2 本で確認し、`--available-tools=view,grep,glob`
+  （読み取り 3 道具だけ残す）へ変更。組み込み道具名の一覧も取得済み（bash / view / create /
+  edit / grep / glob / task ほか）
+- `strip_unrequested_deliverables` の緩和: **未着手のまま**。クラウド planner での剥がれ方の
+  実測（課金呼び出し）が先で、この日はローカル面の消化を優先した
+- `collapse_same_scope_work`: 計画どおりそのまま（理由が器に依らない）
+
+**波及で直したもの:**
+
+- **backlog-planner / flow-worker / flow-planner のホーム写しが古かった**（§10 の「5 ホーム
+  同期」の積み残しそのもの）。`contract` 入力未対応の写しをテストが読み、配列契約テストが
+  落ち続けていた。5 ホーム（~/.agents / ~/.kiro / ~/.claude / ~/.copilot / ~/.codex）へ同期
+- **project_eval に agent-control の隔離が無かった**（amigos_eval は隔離済み）。実機の
+  上書き（plan→cursor/grok-4.5）が器判定だけに効き、PP1 が 1/5 に見えた。`AGENT_CONTROL_DIR`
+  / `AGENT_BUDGET_DIR` を台帳ディレクトリ配下へ隔離
+- **`~/.agents/agents/ollama.json` が古かった**（`json_object_only` 無し）。§10 の器分岐が
+  実機で不発になる状態だったので、copilot.json と合わせて配布物を同期
+
 ## 参照
 
 - [消化まとめ](2026-08-30-session-summary-local-llm-roles.md) — 結論・役割表・全面の実測

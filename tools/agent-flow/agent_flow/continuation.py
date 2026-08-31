@@ -27,8 +27,42 @@ def _chunk_evenly(items: list, width: int) -> "list[list]":
     return out
 
 
+def _looks_like_path(x) -> bool:
+    """split が配った要素が「ディスク上の実物への参照」に見えるか。
+    パス形の要素を配る flow では map に読み取りが要るので readonly を継げない。
+    誤検知（文章をパスと読む）は最適化を失うだけだが、見逃し（パスを文章と読む）は
+    道具を失った map がファイルを読めず flow ごと壊すので、判定は参照側へ倒す。"""
+    if isinstance(x, dict):
+        return any(_looks_like_path(v) for v in x.values())
+    if isinstance(x, (list, tuple)):
+        return any(_looks_like_path(v) for v in x)
+    if not isinstance(x, str):
+        return False
+    s = x.strip()
+    if not s or "\n" in s or " " in s or len(s) > 260:
+        return False
+    if "/" in s or "\\" in s:
+        return True
+    return bool(re.match(r"^[\w-]+\.[A-Za-z0-9]{1,8}$", s))
+
+
+def _split_child_readonly(node: dict, items: list) -> bool:
+    """split が実行時に生む map / reduce / gate へ `readonly` 宣言を継ぐか。
+
+    継ぐのは「split 自身が readonly（材料が要求文と依存の成果だけ）」かつ
+    「配った要素にパス形が混ざらない」とき——このとき子の材料は goal と依存成果に
+    全部入っており、道具は要らない（e4b 実測: map は道具ありで 2/5・道具ゼロで 5/5）。
+    split の宣言だけを継ぐのは危ない: readonly な split（依存のリストを分配するだけ）が
+    ファイル一覧を配る flow では map に読み取りが要る。要素の形だけで決めるのも危ない:
+    要素が inline でも split 自身が道具で読んで組んだ要素なら宣言側の判断が無い。
+    実行時 map の正典の出口は bus の data（ファイルを書く工程は operation.deliverables を
+    持つ work / generate として計画される）なので、in-band の map から道具を落とすのは
+    設計と揃う。"""
+    return node.get("readonly") is True and not any(_looks_like_path(it) for it in items)
+
+
 def _emit_reduce_tree(nid: str, map_ids: list, width: int, review: bool,
-                      intent: str, new: list) -> list:
+                      intent: str, new: list, readonly: bool = False) -> list:
     """最終 reduce が受ける依存 id を返し、必要なら中間 reduce と検証 gate を new へ積む。
 
     map が width 以下なら**従来と完全に同じ構造**（gate 1 つ・id も不変）を返す。
@@ -37,27 +71,32 @@ def _emit_reduce_tree(nid: str, map_ids: list, width: int, review: bool,
     入力は gate 済みなので、2 段目以降に gate は積まない。
 
     生成 id に `-r<数字>` を含めないこと（`_retry_depth` が作り直し回数と誤読する）。"""
+    def _spec(spec):
+        if readonly:
+            spec["readonly"] = True
+        new.append(spec)
+
     chunks = _chunk_evenly(list(map_ids), width)
     if len(chunks) <= 1:                      # 従来構造（id を含めて不変）
         if not review:
             return list(map_ids)
         gid = f"{nid}-gate"
-        new.append({"id": gid, "goal": f"{nid} の map 結果を集約前に検証",
-                    "deps": list(map_ids), "kind": "verify"})
+        _spec({"id": gid, "goal": f"{nid} の map 結果を集約前に検証",
+               "deps": list(map_ids), "kind": "verify"})
         return list(map_ids) + [gid]
     level_ids: list = []
     for i, chunk in enumerate(chunks, start=1):
         deps = list(chunk)
         if review:
             gid = f"{nid}-gate{i}"
-            new.append({"id": gid, "goal": f"{nid} の map 結果（第{i}群・{len(chunk)} 件）を集約前に検証",
-                        "deps": list(chunk), "kind": "verify"})
+            _spec({"id": gid, "goal": f"{nid} の map 結果（第{i}群・{len(chunk)} 件）を集約前に検証",
+                   "deps": list(chunk), "kind": "verify"})
             deps = deps + [gid]
         rid = f"{nid}-rc{i}"
         goal = (f"{intent}（第{i}群 {len(chunk)} 件ぶんの中間集約。最終集約へ渡す中間成果として"
                 "まとめる。ここでは最終整形をしない）" if intent
                 else f"{nid} 第{i}群（{len(chunk)} 件）の中間集約")
-        new.append({"id": rid, "goal": goal, "deps": deps, "kind": "reduce"})
+        _spec({"id": rid, "goal": goal, "deps": deps, "kind": "reduce"})
         level_ids.append(rid)
     level = 2                                  # 中間 reduce がまだ幅を超えるなら木を深くする
     while len(level_ids) > width:
@@ -66,7 +105,7 @@ def _emit_reduce_tree(nid: str, map_ids: list, width: int, review: bool,
             rid = f"{nid}-rc{level}-{i}"
             goal = (f"{intent}（第{level}段の中間集約・第{i}群 {len(chunk)} 件。最終集約へ渡す）"
                     if intent else f"{nid} 第{level}段・第{i}群の中間集約")
-            new.append({"id": rid, "goal": goal, "deps": list(chunk), "kind": "reduce"})
+            _spec({"id": rid, "goal": goal, "deps": list(chunk), "kind": "reduce"})
             nxt.append(rid)
         level_ids = nxt
         level += 1
@@ -120,6 +159,15 @@ def _expand_splits(nodes: dict, results: dict, max_fanout: int,
             if clamped is not None:
                 clamped.append({"node": nid, "total": total, "kept": len(items)})
         intent = (request or node.get("goal", "")).strip()
+        # 実行時に生む子へ readonly を継ぐか（材料が in-band で完結する flow だけ）。
+        # 道具を持った小さいモデルはプロンプト内で解ける整形をシェルで壊す
+        # （実測 map 2/5 → 道具ゼロ 5/5）ので、継げるときは継ぐ。
+        child_ro = _split_child_readonly(node, items)
+
+        def _mspec(spec):
+            if child_ro:
+                spec["readonly"] = True
+            return spec
 
         def _mgoal(i, item):
             return f"{intent}（対象要素: {item}）" if intent else f"{nid} 要素{i+1}: {item}"
@@ -137,10 +185,10 @@ def _expand_splits(nodes: dict, results: dict, max_fanout: int,
         if exemplar_first:
             if m1 not in have:
                 # Stage 1: pilot map 1件＋その検証ゲートだけを出す（残りはまだ展開しない）
-                new.append({"id": m1, "goal": _mgoal(0, items[0]), "deps": [], "kind": "map"})
-                new.append({"id": pilot_gate,
-                            "goal": f"先行1件(map)を検証し、残りに使う手順・基準を固める: {intent}"[:200],
-                            "deps": [m1], "kind": "verify"})
+                new.append(_mspec({"id": m1, "goal": _mgoal(0, items[0]), "deps": [], "kind": "map"}))
+                new.append(_mspec({"id": pilot_gate,
+                                   "goal": f"先行1件(map)を検証し、残りに使う手順・基準を固める: {intent}"[:200],
+                                   "deps": [m1], "kind": "verify"}))
                 continue
             if results.get(pilot_gate, {}).get("status") != "done":
                 continue  # pilot ゲート通過まで残りは展開しない
@@ -149,21 +197,22 @@ def _expand_splits(nodes: dict, results: dict, max_fanout: int,
             for i, item in enumerate(items[1:], start=1):
                 mid = f"{nid}-m{i+1}"
                 map_ids.append(mid)
-                new.append({"id": mid, "goal": _mgoal(i, item),
-                            "deps": [m1, pilot_gate], "kind": "map"})
+                new.append(_mspec({"id": mid, "goal": _mgoal(i, item),
+                                   "deps": [m1, pilot_gate], "kind": "map"}))
         else:
             map_ids = []
             for i, item in enumerate(items):
                 mid = f"{nid}-m{i+1}"
                 map_ids.append(mid)
                 # 要素だけでなく「何をするか」を渡さないと map が意図を失う
-                new.append({"id": mid, "goal": _mgoal(i, item), "deps": [], "kind": "map"})
+                new.append(_mspec({"id": mid, "goal": _mgoal(i, item), "deps": [], "kind": "map"}))
 
         # 集約前の事前チェック / 敵対的レビューの gate と、幅を超えた分の中間 reduce を積む。
         # 幅以下なら従来と同じ（gate 1 つ・reduce は map 全件に依存）。
-        reduce_deps = _emit_reduce_tree(nid, map_ids, reduce_width, review, intent, new)
-        new.append({"id": f"{nid}-reduce", "goal": reduce_goal,
-                    "deps": reduce_deps, "kind": "reduce"})
+        reduce_deps = _emit_reduce_tree(nid, map_ids, reduce_width, review, intent, new,
+                                        readonly=child_ro)
+        new.append(_mspec({"id": f"{nid}-reduce", "goal": reduce_goal,
+                           "deps": reduce_deps, "kind": "reduce"}))
     return new
 
 

@@ -18,6 +18,23 @@ class TestDoctor(unittest.TestCase):
         kw.setdefault("auto_adjudicate", False)
         return cfg_for(Path(d), **kw)
 
+    def test_stub_with_repo_map_is_a_deterministic_config_finding(self):
+        """設定どうしの矛盾（stub × repo_map）は決定層が検出する——モデルに訊かない。
+
+        e4b の実測（2026-08-31・PD4 0/5）: 製品内部の規則（`ensure_repo_maps` は stub で
+        生成しない）は材料に無く、モデルには判定しようがない面だった。"""
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(d, executor="stub", repo_map=True)
+            hits = [f for f in km._config_contradiction_findings(cfg)
+                    if "repo_map" in f["title"]]
+            self.assertEqual(len(hits), 1)
+            self.assertEqual(hits[0]["category"], "config")
+            # 矛盾が無ければ無所見（agent executor・repo_map off の両方）
+            self.assertEqual(km._config_contradiction_findings(
+                self._cfg(d, executor="agent", repo_map=True)), [])
+            self.assertEqual(km._config_contradiction_findings(
+                self._cfg(d, executor="stub", repo_map=False)), [])
+
     def test_unpushed_commits_are_reported(self):
         """origin へ未 push のコミットを検出する。
 

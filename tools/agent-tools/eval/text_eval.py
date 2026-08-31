@@ -241,13 +241,6 @@ PR1_BUDGET = 10
 PR1_MENU_TABLE = {"p1": (4, 50), "p2": (5, 45), "p3": (3, 30), "p4": (6, 70), "p5": (7, 60)}
 
 
-def _best_combo(menu: dict, budget: int) -> "list[str]":
-    """予算内で effect 合計が最大の組合せ（総当たり）。`selfcheck` と同じ 1 実装。"""
-    return max((combo for combo in _powerset(menu)
-                if sum(menu[p][0] for p in combo) <= budget),
-               key=lambda c: sum(menu[p][1] for p in c))
-
-
 def check_pr1_pipe(data):
     """PR1P: モデルは cost / effect を**転記するだけ**で、組合せは機械が総当たりで決める。
 
@@ -255,6 +248,10 @@ def check_pr1_pipe(data):
     （`p1,p3,p4` = 13 人日・`p1,p4,p5` = 17 人日）。**選ばせるのをやめると外れようがない**
     ——F2 → F2P（多基準の選別）と同じ形で、README の「実運用ではモデルに選ばせず
     決定化する」をそのまま腕にしたものである。ここで測るのは転記の正しさだけ。
+
+    機械は**本番の 1 実装**（`decide_candidates` の `optimize`・2026-08-31 に本番へ入れた）
+    を呼ぶ——それまでは harness 内の総当たりで完結しており、「本番に機械が無い行」だった
+    （§9-2）。素材の一意最適そのものは selfcheck が独立の総当たりで検算する。
     """
     if not isinstance(data, dict) or not isinstance(data.get("items"), list):
         return False, "items 配列が無い"
@@ -273,7 +270,10 @@ def check_pr1_pipe(data):
     wrong = sorted(p for p in want if menu[p] != want[p])
     if wrong:
         return False, f"転記の誤り: {', '.join(f'{p}={menu[p]}（正 {want[p]}）' for p in wrong)}"
-    picks = set(_best_combo(menu, PR1_BUDGET))
+    verdict = engine.decide_candidates(
+        [], [{"id": pid, "cost": c, "effect": e} for pid, (c, e) in menu.items()],
+        optimize={"maximize": "effect", "budget": {"fact": "cost", "limit": PR1_BUDGET}})
+    picks = set((verdict or {}).get("picks") or [])
     if picks != {"p1", "p4"}:
         return False, f"機械の最適解が {sorted(picks)}（転記は正しいのに不一致＝検算側の欠陥）"
     return True, f"転記 5 件 → 機械が最適化 picks={sorted(picks)}"

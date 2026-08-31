@@ -1027,7 +1027,11 @@ def plan_strategy_agent(request: str, model: str | None, review="auto", granular
         '"deliverables": ["src/a.py", "tests/test_a.py"], '
         '"verification": {"commands": [["python", "-m", "pytest", "-q", "tests"]]}}}）。'
         "成果物が 2 つ以上あるノードは、エンジンが 1 成果物 1 手順の直列へ割ります"
-        "（自分で「実装とテストを分けた 2 ノード」を書く必要はありません）。\n"
+        "（自分で「実装とテストを分けた 2 ノード」を書く必要はありません）。"
+        "要求に**機械で確かめられる制約**（字数上限・必須の言及など）があれば、テストと同様に "
+        "verification.commands へ落としてください（例: [\"bash\", \"-lc\", "
+        "\"test $(wc -m < summary.md) -le 220 && grep -q '3.9' summary.md\"]）。"
+        "制約の充足をモデルの自己申告に残さないこと。\n"
         "filter / judge のノードには decision を必ず付けてください: "
         '{"facts": [{"name":"extra_deps","type":"bool","description":"追加依存が要るか"}], '
         '"criteria": [{"fact":"extra_deps","op":"eq","value":false}], '

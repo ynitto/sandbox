@@ -186,7 +186,46 @@ def _creates_test_schema_doc(path: str) -> bool:
     return name.endswith((".md", ".rst"))
 
 
-def decide_candidates(criteria, facts, *, tie_break=None) -> dict:
+# optimize（部分集合最適）の総当たり上限。2^16 = 65536 組合せまで——候補がこれを超える
+# 部分集合最適は「機械が解く仕事」でも総当たりでは解かない（picks を出さず人 / 上位へ返す）。
+# ponytail: 総当たり上限 16。超える規模が実際に来たら DP / 近似へ上げる。
+_OPTIMIZE_MAX_CANDIDATES = 16
+
+
+def _optimize_picks(optimize, kept) -> "list[str] | None":
+    """予算内で目的値の合計を最大にする部分集合（総当たり・決定的）。
+
+    確定できない条件（数値でない事実・候補過多・予算が数値でない）では None——
+    誤った確定より picks 無しで返す（undecided と同じ倒し方）。同点は id 昇順の
+    辞書順で最初の組合せ（列挙順が決定的なので結果も決定的）。
+    """
+    if not isinstance(optimize, dict) or not kept:
+        return None
+    gain = str(optimize.get("maximize") or "")
+    budget = optimize.get("budget") or {}
+    cost = str(budget.get("fact") or "")
+    limit = budget.get("limit")
+    if not gain or not cost or not isinstance(limit, (int, float)) or isinstance(limit, bool):
+        return None
+    rows = sorted(kept, key=lambda f: str(f["id"]))
+    if len(rows) > _OPTIMIZE_MAX_CANDIDATES:
+        return None
+    for f in rows:
+        for key in (gain, cost):
+            if not isinstance(f.get(key), (int, float)) or isinstance(f.get(key), bool):
+                return None
+    best, best_gain = [], None
+    for mask in range(1 << len(rows)):
+        combo = [rows[i] for i in range(len(rows)) if mask >> i & 1]
+        if sum(f[cost] for f in combo) > limit:
+            continue
+        total = sum(f[gain] for f in combo)
+        if best_gain is None or total > best_gain:
+            best, best_gain = combo, total
+    return [str(f["id"]) for f in best]
+
+
+def decide_candidates(criteria, facts, *, tie_break=None, optimize=None) -> dict:
     """多基準 filter / judge の決定的判定部（P4 決定化パイプ。旧計画 §P4 / 実装計画 E6）。
 
     モデルに多基準判定を訊かない——モデル（extract・適格 6/6）または構造化生成が出した
@@ -197,6 +236,11 @@ def decide_candidates(criteria, facts, *, tie_break=None) -> dict:
       複数のときの順位基準（同値は id 昇順）。
     - **事実が欠けた候補は落とさず undecided へ**——欠測を静かに合格 / 不合格にしない。
       undecided が残る限り winner は出さない（誤った確定より人 / 上位へ返す）。
+    - ``optimize={"maximize": <fact>, "budget": {"fact": <fact>, "limit": N}}`` は
+      **部分集合最適**（2026-08-31 追加）: kept から予算内で目的値の合計が最大の組合せを
+      機械が総当たりで選び ``picks`` に返す。モデルに組合せを選ばせない——素の実測
+      （text-eval PR1）の外し方は「予算を超える組合せを選ぶ」で、転記だけさせて機械が
+      解くと外れようがない（PR1P。F2 → F2P と同じ形）。undecided が残る間は出さない。
     """
     kept: list = []
     undecided: list = []
@@ -228,9 +272,12 @@ def decide_candidates(criteria, facts, *, tie_break=None) -> dict:
         # 条件だけで 1 つに絞れたなら順位基準は要らない（judge が tie_break を宣言して
         # いなくても winner を出す。欠測が残る間は従来どおり出さない）。
         winner = str(kept[0]["id"])
-    return {"kept": [str(f["id"]) for f in kept],
-            "undecided": [str(f["id"]) for f in undecided],
-            "winner": winner}
+    result = {"kept": [str(f["id"]) for f in kept],
+              "undecided": [str(f["id"]) for f in undecided],
+              "winner": winner}
+    if optimize is not None and not undecided:
+        result["picks"] = _optimize_picks(optimize, kept)
+    return result
 
 
 def local_patch_blockers(contract, *, existing_paths=None) -> "list[str]":
@@ -332,6 +379,24 @@ def decision_contract_errors(decision) -> "list[str]":
                 errors.append(f"tie_break の fact が facts にありません: {fact or '(空)'}")
             if tie_break.get("op") not in ("min", "max"):
                 errors.append("tie_break.op は min / max のいずれかです")
+    optimize = decision.get("optimize")
+    if optimize is not None:
+        if not isinstance(optimize, dict):
+            errors.append("optimize はオブジェクトである必要があります")
+        else:
+            gain = str(optimize.get("maximize") or "")
+            if names and gain not in names:
+                errors.append(f"optimize.maximize の fact が facts にありません: {gain or '(空)'}")
+            budget = optimize.get("budget")
+            if not isinstance(budget, dict):
+                errors.append("optimize.budget はオブジェクトである必要があります")
+            else:
+                cost = str(budget.get("fact") or "")
+                if names and cost not in names:
+                    errors.append(f"optimize.budget.fact が facts にありません: {cost or '(空)'}")
+                limit = budget.get("limit")
+                if not isinstance(limit, (int, float)) or isinstance(limit, bool):
+                    errors.append("optimize.budget.limit は数値である必要があります")
     return errors
 
 

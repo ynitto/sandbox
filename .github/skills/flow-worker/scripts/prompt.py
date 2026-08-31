@@ -73,6 +73,24 @@ CAPABILITIES = ["decision"]
 # 実装系 kind（三つの約束をフル適用する）。集約・選別系は軽量規律のみ。
 EXEC_KINDS = ("work", "generate", "map")
 
+# 完了 envelope を必須にする kind（実行系のうち本文が自由記述のもの）。map は構造化出力
+# （JSON 配列）なので envelope を混ぜない——末尾の {"ok": ...} が data として誤抽出される。
+# agent-flow 側の受け（_ENVELOPE_KINDS）と一致すること（tests/test_agent_cli.py が突き合わせる）。
+ENVELOPE_KINDS = ("work", "generate")
+
+# work / generate の出力契約。envelope は**成功時も必須**にする——既定の契約が
+# 「未完了なら ok:false」の失敗時だけだったため、成功したと思っているワーカーは何も
+# 書かず、部分的な欠落（12 件要求で 10 件だけ処理）が散文にしか残らなかった
+# （実測 2026-08-31: 素 0/5・条件付きで言わせて 2/5。訊いていなかった面）。
+# warnings に載った欠落だけが下流の機械（carry_dependency_gaps）で集約役まで運ばれる。
+EXEC_CONTRACT = """\
+成果物を簡潔に直接出力してください。前置き・作業過程の逐語は書かない。
+本文の末尾に完了 envelope を必ず添える（成功でも省略しない）:
+JSON {"ok": true, "warnings": ["要求のうち満たせなかった点（無ければ空配列 []）"]}
+（目標を完了できなかった場合は {"ok": false, "issues": ["未完了の理由"]}）。
+欠落・部分的な成果は warnings に名指しで書く——本文の散文だけに書いた欠落は
+下流の機械に届かない。"""
+
 # --------------------------------------------------------------------------
 # 三つの約束 — flow-worker の実行規律（worker 向け）
 # --------------------------------------------------------------------------
@@ -231,6 +249,8 @@ def build_worker_prompt(p: dict) -> str:
         parts.append("依存タスクの成果:\n" + deps)
     if kind == "verify":
         parts.append("【出力契約】" + VERIFY_CONTRACT)
+    elif kind in ENVELOPE_KINDS:
+        parts.append("【出力契約】" + EXEC_CONTRACT)
     else:
         parts.append("【出力契約】成果物を簡潔に直接出力してください。前置き・作業過程の逐語は書かない。")
     return "\n\n".join(parts)

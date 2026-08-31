@@ -374,7 +374,7 @@ class TestBundledGolden(_Isolated):
             "write": ["copilot", "-s", "--allow-all-tools", "--no-color",
                       "--allow-all-paths", "--model", "M", "-p", "P"],
             "readonly": ["copilot", "-s", "--allow-all-tools", "--no-color",
-                         "--available-tools=", "--disable-builtin-mcps",
+                         "--available-tools=view,grep,glob", "--disable-builtin-mcps",
                          "--no-custom-instructions", "--model", "M", "-p", "P"],
             "interactive": ["copilot", "--model", "M"],
         },
@@ -391,14 +391,17 @@ class TestBundledGolden(_Isolated):
             # 予算は write だけ 12 ラウンドへ絞ってある（read セットの ollama-read は 30
             # のまま）。実測の空回り run に「もう少し回れば畳めた」形跡が無く、30 まで
             # 回せること自体がターンの食いつぶしだった。読取は 1 ラウンドが安いので別。
-            # think はヘッドレスの全役割で off。実測（2026-08-10・ログ 236 本）で on の
-            # 経路が 3 つとも壊れていた: write は 1 ラウンドが思考だけで 7700 トークン・
-            # 12 分（p90 942 秒 > agent_timeout 600 秒）、readonly は中央値 1000 秒、
-            # --format 併用は本文が空になる（文法が thinking から掛かる。39/39 件）。
-            # 人が待てる TUI だけ on を残す。
+            # think は write（道具ループ）と format 併用で off。実測（2026-08-10・ログ
+            # 236 本）で write の on は 1 ラウンドが思考だけで 7700 トークン・12 分
+            # （p90 942 秒 > agent_timeout 600 秒）、--format 併用は本文が空になる
+            # （文法が thinking から掛かる。39/39 件）。
+            # readonly だけ on（2026-08-31 に反転）: readonly は材料がプロンプト内で完結する
+            # 面で、思考が唯一の計算になる。e4b の実測（MP1・道具ゼロ）は think off 1/5 →
+            # on 5/5・中央値 46 秒。2026-08-10 の「readonly on は中央値 1000 秒」は当時の
+            # モデル（qwen 系）の数字で、herd の既定（gemma4）では再現しない。
             "write": ["agent-herd", "ollama", "M", "--think", "off", "--tools", "bash",
                       "--max-rounds", "12", "--command-timeout", "900"],
-            "readonly": ["agent-herd", "ollama", "M", "--think", "off"],
+            "readonly": ["agent-herd", "ollama", "M", "--think", "on"],
             "interactive": ["agent-herd", "ollama", "--tui", "--think", "on", "M"],
         },
         "ollama-json": {

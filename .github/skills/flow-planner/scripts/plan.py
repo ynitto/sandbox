@@ -216,7 +216,7 @@ map-reduce は split を1つだけ（map は実行時展開）。classify-and-ac
 7. id は短く（t1, t2, ... / classify, filter, synth, gate 等）
 8. work/generate ノードには最初に読むべき範囲を read_allocation=[{{"path":"...","range":"任意","reason":"..."}}] で割り付ける。大きい Python 参照で対象を正確に特定できる場合だけ slice=true, symbols=["Class.method"] を追加する
 9. 依存成果は既定 digest（要約・成果物参照のみ）。完全な構造化データが不可欠なノードだけ dependency_input="full" を宣言する
-10. work/generate ノードには処理契約 operation を付け、そのノードが作る成果物のパスを deliverables に列挙する（scope.write と一致させ、検証コマンドがあれば verification.commands に argv の配列で書く）。**成果物が 2 つ以上あるノードを自分で 2 つに割らない**——エンジンが 1 成果物 1 ノードの直列へ割る
+10. work/generate ノードには処理契約 operation を付け、そのノードが作る成果物のパスを deliverables に列挙する（scope.write と一致させ、検証コマンドがあれば verification.commands に argv の配列で書く）。**成果物が 2 つ以上あるノードを自分で 2 つに割らない**——エンジンが 1 成果物 1 ノードの直列へ割る。要求に**機械で確かめられる制約**（字数上限・必須の言及など）があれば、テストと同様に verification.commands へ落とす（例: ["bash", "-lc", "test $(wc -m < summary.md) -le 220 && grep -q '3.9' summary.md"]）。制約の充足をモデルの自己申告に残さない
 11. filter/judge ノードには判定契約 decision を付ける。facts は候補の本文から転記できる項目だけ（type は bool/int/string、string は values で取りうる値を列挙）、criteria は残す条件（AND・op は eq/ne）、tie_break は最良案を 1 つに絞る順位基準（fact と min/max）。**選別・比較の観点を goal の自由文に書かず、decision の条件として宣言する**（採否はモデルではなく機械が決める）
 12. **readonly=true は kind ではなく材料の在り処で決める**。読むものが要求文と依存の成果だけで、ディスクへ書くものが無いノードには readonly=true を付ける（kind が work/generate でも同じ）。道具が落ち、余計なシェル探索で中身を壊さない。read_allocation を割り付けたノードと、ファイルを作る・直すノード（operation.deliverables を持つもの）には付けない
 

@@ -925,7 +925,8 @@ class CallExecutorDispatchTests(unittest.TestCase):
         captured = {}
 
         def fake_run_agent(prompt, model, purpose="", cwd=None, **_kw):
-            captured["cwd"] = cwd
+            # 1 回目（タスク本体）の cwd を固定する（envelope 修復の 2 回目で上書きしない）。
+            captured.setdefault("cwd", cwd)
             return "成果"
 
         with mock.patch.object(kf, "run_agent", side_effect=fake_run_agent):

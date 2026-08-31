@@ -1053,10 +1053,29 @@ def _node_record_is_fresh(rec: dict) -> bool:
     return age <= fresh
 
 
-def doctor_audit_findings(cfg: "Config") -> "list[dict]":
-    """compute_audit の未達チェックを config カテゴリの finding に変換（決定的）。"""
-    a = compute_audit(cfg)
+def _config_contradiction_findings(cfg: "Config") -> "list[dict]":
+    """設定どうしの矛盾を決定的に検出する（LLM 不要）。
+
+    規則で書ける矛盾はモデルに訊かない（protect 未設定と同じ判断）。e4b の実測
+    （2026-08-31・PD4）でもこの形は 0/5 だった——製品内部の規則（stub では repo_map を
+    生成しない等）は材料に無く、モデルには判定しようがない。"""
     out: list[dict] = []
+    if str(getattr(cfg, "executor", "") or "") == "stub" and bool(getattr(cfg, "repo_map", False)):
+        out.append({
+            "category": "config", "severity": "warn",
+            "title": "repo_map: true は executor=stub では効きません",
+            "evidence": "ensure_repo_maps は stub executor で生成をスキップする"
+                        "（設定の組み合わせが矛盾）",
+            "fix": "executor を agent にするか、repo_map を外す",
+            "source": "deterministic"})
+    return out
+
+
+def doctor_audit_findings(cfg: "Config") -> "list[dict]":
+    """compute_audit の未達チェックと設定どうしの矛盾を config カテゴリの finding に変換
+    （決定的）。"""
+    a = compute_audit(cfg)
+    out: list[dict] = _config_contradiction_findings(cfg)
     for c in a["checks"]:
         if c["ok"] or c["severity"] == "info":
             continue

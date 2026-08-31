@@ -68,15 +68,19 @@ class AgentOverrideTests(unittest.TestCase):
         self.assertEqual(km._agent_for("repo_map")[0], "ollama")
 
     def test_readonly_is_declared_per_purpose(self):
-        """権限は役割の性質で決まる。既定は現状のまま write（黙って挙動を変えない）。"""
+        """権限は役割の性質で決まる。既定は write——例外は repo_map（2026-08-31 に
+        材料を機械が集める「読まない系」へ作り変えた面）で、こちらは readonly 既定。"""
         km._RUNTIME_CONFIG.agents = km._normalize_agent_overrides({
             "adjudicate": {"agent_cli": "ollama", "readonly": True},
             "plan": {"readonly": "yes"},            # bool 以外は落とす
             "repo_map": {"agent_cli": "kiro"}})
         self.assertTrue(km._agent_readonly("adjudicate"))
         self.assertFalse(km._agent_readonly("plan"))
-        self.assertFalse(km._agent_readonly("repo_map"))
+        self.assertTrue(km._agent_readonly("repo_map"))   # 未指定 → readonly 既定
         self.assertFalse(km._agent_readonly("verify"))   # 未指定 → 既定の write
+        km._RUNTIME_CONFIG.agents = km._normalize_agent_overrides({
+            "repo_map": {"readonly": False}})            # 設定で従来の道具ありへ戻せる
+        self.assertFalse(km._agent_readonly("repo_map"))
 
     def test_readonly_purpose_drops_the_write_args(self):
         """受け入れ基準: readonly 宣言した purpose の argv に write_args が乗らない。"""

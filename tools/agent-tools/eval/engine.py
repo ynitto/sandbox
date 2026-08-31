@@ -212,11 +212,22 @@ def agent_readonly(purpose: str) -> bool:
     return bool(fn(purpose)) if fn is not None else False
 
 
+def split_child_readonly(split_node: dict, items: list) -> bool:
+    """split が実行時に生む map / reduce / gate が `readonly` 宣言を継ぐか。
+    **本番の伝播規則**（`continuation._split_child_readonly`）に訊く——写すと、規則が
+    変わった日に測定だけ古い規則で起動形を決めることになる。無い木では False（＝道具あり）。
+    """
+    fn = _need(_FLOW, "_split_child_readonly", "_split_child_readonly（split 子への readonly 伝播）")
+    return bool(fn(split_node, items)) if fn is not None else False
+
+
 def envelope_data(text: str):
     """work / generate の完了 envelope（末尾の `{"ok": ...}`）の受け方。**本番の 1 実装**を呼ぶ
     （`agent.envelope_data`）——写すと、契約が変わった日に測定だけ古い規則で読むことになる。"""
     fn = _need(_FLOW, "envelope_data", "envelope_data（完了 envelope の受け方）")
     return fn(text) if fn is not None else None
+
+
 
 
 def worker_role(kind: str) -> str:
@@ -263,13 +274,24 @@ def _nodecontract():
     return nodecontract
 
 
-def decide_candidates(criteria, facts, tie_break=None):
-    """多基準判定の決定的部分。本番（agentcore.nodecontract）を呼ぶ（写さない）。"""
+def decide_candidates(criteria, facts, tie_break=None, optimize=None):
+    """多基準判定の決定的部分。本番（agentcore.nodecontract）を呼ぶ（写さない）。
+    optimize（部分集合最適・2026-08-31）は古い木では未対応——渡されたのに落ちる木では
+    TypeError になるので、その測定だけを missing に落とす。"""
     nodecontract = _nodecontract()
     if nodecontract is None:
         return None
     fn = _need(nodecontract, "decide_candidates", "decide_candidates（決定的判定）")
-    return fn(criteria, facts, tie_break=tie_break) if fn is not None else None
+    if fn is None:
+        return None
+    if optimize is None:
+        return fn(criteria, facts, tie_break=tie_break)
+    try:
+        return fn(criteria, facts, tie_break=tie_break, optimize=optimize)
+    except TypeError:
+        if "optimize" not in str(_MISSING):
+            _MISSING.append("decide_candidates の optimize（部分集合最適）")
+        return None
 
 
 def fact_extraction_directive(decision):

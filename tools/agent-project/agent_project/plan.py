@@ -60,17 +60,71 @@ def _repo_map_strip_preamble(body: str) -> "tuple[str, int]":
     return text[m.start():].strip(), m.start()
 
 
+# 材料収集の上限。プロンプトへ入れる量を有界に保つ（無制限だと大きい repo で planner の
+# 文脈ごと押し出す）。切り捨ては材料の側に注記する（黙って捨てない）。
+_REPO_MAP_LS_MAX = 400          # ls-files の行数
+_REPO_MAP_HEAD_LINES = 60       # 主要ファイル 1 件から読む行数
+_REPO_MAP_MATERIAL_MAX = 8000   # 材料全体の字数
+_REPO_MAP_KEY_FILES = ("README.md", "README.rst", "README", "Makefile",
+                       "pyproject.toml", "package.json", "setup.py", "setup.cfg")
+
+
+def _repo_map_material(dest: str) -> str:
+    """repo_map の材料を機械が集める（`git ls-files` + 主要ファイルの先頭）。
+
+    構造はファイル一覧から、ビルド・テストのコマンドと規約は README / ビルド定義の
+    先頭から読める。道具に探索させると最終ターンが作業報告になる（実測 2026-08-31:
+    失点は本文ゼロ・`status=no_command`）ので、材料は機械が集めてプロンプトで渡す。
+    """
+    try:
+        r = subprocess.run(["git", "-C", dest, "ls-files"], capture_output=True,
+                           text=True, encoding="utf-8", errors="replace", timeout=30)
+        files = (r.stdout or "").splitlines() if r.returncode == 0 else []
+    except (OSError, subprocess.SubprocessError):
+        files = []
+    parts = []
+    if files:
+        listing = "\n".join(files[:_REPO_MAP_LS_MAX])
+        if len(files) > _REPO_MAP_LS_MAX:
+            listing += f"\n…（他 {len(files) - _REPO_MAP_LS_MAX} 件は省略）"
+        parts.append(f"## ファイル一覧（git ls-files）\n{listing}")
+    for name in _REPO_MAP_KEY_FILES:
+        path = Path(dest) / name
+        if not path.is_file():
+            continue
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
+        except OSError:
+            continue
+        head = "".join(lines[:_REPO_MAP_HEAD_LINES])
+        if head.strip():
+            parts.append(f"## {name}（先頭）\n{head}")
+    return "\n\n".join(parts)[:_REPO_MAP_MATERIAL_MAX]
+
+
 def _repo_map_generate(cfg: "Config", spec: dict) -> str:
-    """repo を一時 worktree に用意してエージェントに理解を要約させる（有界・失敗は空）。"""
+    """repo を一時 worktree に用意し、機械が集めた材料からエージェントに理解を
+    要約させる（有界・失敗は空）。
+
+    2026-08-31 の作り変え: 以前は clone 先を道具（`--tools bash`）で探索させていた。
+    実測の失点は道具ループの出口（本文ゼロ・`status=no_command`）だったので、材料を
+    機械が集めてプロンプトへ入れ、道具を外した（purpose=repo_map は readonly 既定）。
+    材料が集まらない repo（git が読めない）は従来の clone 失敗と同じ「生成なし」へ倒す。
+    """
     tmp = tempfile.mkdtemp(prefix="agent-repomap-")
     dest = str(Path(tmp) / "repo")
     try:
         _clone_repo_shallow(spec["url"], spec.get("base") or "", dest)
+        material = _repo_map_material(dest)
+        if not material.strip():
+            return ""
         prompt = (
-            f"ローカルのリポジトリ {dest} を調査し、次を Markdown で 2000 字以内に要約してください。\n"
+            "次の材料はあるリポジトリのファイル一覧と主要ファイルの先頭です。"
+            "この材料だけから、次を Markdown で 2000 字以内に要約してください。\n"
             "- 構造（主要ディレクトリと役割）\n- 主要モジュールと責務\n"
             "- ビルド・テスト・リンタの実行コマンド\n- 命名・実装の規約（読み取れる範囲で）\n"
-            "出力は要約本文のみ（前置き・後書きなし）。")
+            "材料に無いことは推測で書かないこと。出力は要約本文のみ（前置き・後書きなし）。\n\n"
+            + material)
         raw = _run_agent_cli(prompt, cfg.model, purpose="repo_map").strip()
         body, dropped = _repo_map_strip_preamble(raw)
         if dropped:

@@ -1495,6 +1495,11 @@ def execute_agent(kind: str, goal: str, dep_results: dict, model: str | None,
                         f"{kind} の結果契約を修復できませんでした: {repair_error}") from repair_error
     elif kind in _ENVELOPE_KINDS:
         # 本文は自由記述のまま保つが、末尾の完了可否 envelope だけは機械判定へ渡す。
+        # envelope は成功時も書くよう契約している（2026-08-31・EXEC_CONTRACT）が、
+        # 欠けたときのレイヤ2 修復は**入れない**——実測（GW1・e4b）で修復は完動しても
+        # `{"ok": true, "warnings": []}` しか返さず（欠落の申告は生成時にしか出ない）、
+        # 全 work/generate に +1 呼び出しの費用だけが残った（道具つき修復は 0/5・
+        # readonly 修復でも申告 0）。台帳 ledger-2026-08-31-judge-generate-envelope-*。
         envelope = envelope_data(text)
         if envelope is not None:
             data = envelope
@@ -1545,7 +1550,8 @@ def _apply_decision(decision: dict, kind: str, text: str, data, prompt: str,
         repaired = _repair_json_output(prompt, text, kind, "facts が空です", model, agent=agent)
         facts = _nodecontract.normalize_facts(decision, repaired)
     verdict = _nodecontract.decide_candidates(
-        decision.get("criteria"), facts, tie_break=decision.get("tie_break"))
+        decision.get("criteria"), facts, tie_break=decision.get("tie_break"),
+        optimize=decision.get("optimize"))
     out = {**verdict, "facts": facts, "decided_by": "machine"}
     if not facts:
         out["ok"] = False
@@ -1557,7 +1563,15 @@ def _apply_decision(decision: dict, kind: str, text: str, data, prompt: str,
         out["ok"] = False
         head = (f"[judge] 勝者を確定できませんでした（残り {len(verdict['kept'])} 件。"
                 "tie_break の宣言か条件の追加が要る）")
+    elif decision.get("optimize") is not None and verdict.get("picks") is None:
+        # 部分集合最適を宣言したのに確定できない（数値でない事実・候補過多）——winner と
+        # 同じフェイルクローズ（誤った確定より人 / 上位へ返す）。
+        out["ok"] = False
+        head = f"[{kind}] 組合せを確定できませんでした（optimize の事実が数値でないか候補過多）"
     else:
-        head = (f"[judge] winner={verdict['winner']}" if kind == "judge"
-                else f"[filter] 採用={','.join(verdict['kept']) or '(なし)'}")
+        if verdict.get("picks") is not None:
+            head = f"[{kind}] 採用={','.join(verdict['picks']) or '(なし)'}（予算内の最適組合せ）"
+        else:
+            head = (f"[judge] winner={verdict['winner']}" if kind == "judge"
+                    else f"[filter] 採用={','.join(verdict['kept']) or '(なし)'}")
     return f"{head}\n{text}", out
