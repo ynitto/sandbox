@@ -378,6 +378,72 @@ CPU 推論では prefill に10分以上かかることがある。そこで一�
 `--agent codex` を使えば定義経由で起動できるが、エンジンが通常実行する command は素の CLI の
 ままである。adapter が必要になった場合だけ追加する。
 
+## 役割ごとの代替可否
+
+ローカル herd（既定 `gemma4:e4b`・レビューのみ `gemma4:12b`）へ任せる役割の確定表。
+判定の根拠は `tools/agent-tools/eval` の実測で、表の eval 列はそのシナリオ番号
+（台帳とチェッカーの対応は [eval README](../../tools/agent-tools/eval/README.md)）。
+機械列に実装箇所を挙げた役割は、**その機械が発火して初めて成立する**——機械を迂回する
+呼び出し方（宣言を落とす・材料を渡さない）をした場合、この表の判定は適用されない。
+機械の実装は herd 本体（agentcore）に限らず消費側（agent-flow / agent-project /
+agent-amigos）にもある。herd はどの役割にも同じ argv 契約で応え、役割を成立させる形の
+手当ては呼び出し側が持つ——この分担は ADR-1 の帰結である。
+
+### 素のまま任せる
+
+モデルへ丸ごと渡して成立する役割。機械は形式修復（`agent._repair_json_output`・
+split / extract / retrieve に 1 回）と寛容パーサだけで、内容には介在しない。
+
+| 役割 | eval |
+|---|---|
+| 実装（成果物 1 つ・局所修正） | T1min・T2・T4 |
+| 定型のテキスト業務 | T7digest・T8log |
+| 選別・比較（単一基準） | F1・J2 |
+| 集約（reduce）・分割（split） | R1・R2・S1 |
+| 分析・抽出・短い要約 | AN・EX・SM1・EX1F |
+| 候補生成（選ぶ: パス・テスト名） | CG2・CG3 |
+| 環境診断（dashboard doctor 4 モード） | DR1〜DR4 |
+| ルーティング（`route`。決定論で決まらないときだけ呼ぶ） | RO1〜RO3 |
+| 評価役・検証役・分類 | E1〜E3・V1〜V3・CL1 |
+| 取得（`retrieve`。`ollama-read` profile・道具 read） | RT1・RT2 |
+| 統合（`synthesize`。落とさず足さず） | SY1 |
+| 順序付け・事前採点・門番・蒸留 | PR1・AS1〜2・AD1〜2・DS1 |
+| dashboard の下書き・候補提案 | MD1・AC1・EA1・CD1・CR1・FS1・SC1 |
+| チーム編成・合議の手続き（amigos） | TB1・CO1・RA1 |
+
+稼働診断（`doctor`）もここに入るが、config カテゴリのうち「設定と実行の矛盾」は弱いまま
+任せる（代替が無い。PD1〜PD3）。「設定どうしの矛盾」は後述のとおりモデルに訊かない。
+
+### 機械を前提に任せる
+
+機械が形を整えることで成立する役割。左が役割、中央が**どこに入れたどの処理か**。
+
+| 役割 | 機械（実装箇所と処理） | eval |
+|---|---|---|
+| 実装（成果物 2 つ以上） | `nodecontract.split_by_deliverables` と `patterns._expand_deliverable_slots` が 1 成果物 1 呼び出しの直列へ割る。単発実行は `agent-herd harness run --deliverable` | T3autosplit |
+| 実装（大きい参照を読む） | `agent.prepare_read_allocation_files` が Python 参照を symbol slice の一時ファイルへ差し替え、判断を result の receipt に残す | T5slice・T6slice |
+| 選別・比較（多基準） | decision 契約。モデルは事実の転記のみ、採否は `agent._apply_decision` → `nodecontract.decide_candidates`（AND 条件 + tie_break・欠測は undecided） | F2P・J1P |
+| 組合せ最適（予算内で効果最大） | `nodecontract.decide_candidates` の `optimize`。予算内で目的値最大の部分集合を総当たり（候補上限 16）で選び、undecided では確定しない | PR1P |
+| 計画（タスクグラフ） | `patterns._coerce_tasks` と flow-planner スキルの `normalize_tasks`（規則は 2 層）が静的後段の除去・同一ファイル併合・宣言の器直しを行う | PL1〜PL6 |
+| 要素ごとの適用（`map`） | `continuation._split_child_readonly` が split の readonly 宣言を実行時の map / reduce / gate へ伝播する（split が readonly かつ配った要素が非パス形のときのみ）。readonly の起動形（`agents/ollama.json` の `readonly_args`）は道具ゼロ・think on | MP1 |
+| 統合（依存が申告した欠落を運ぶ） | `nodecontract.carry_dependency_gaps` が依存の `warnings` / `issues` を集約結果へ転記する | SY2P |
+| 分解（agent-project `plan`） | `plan._plan_next_spec` が 1 件ずつ受け取り件数は本体が持つ（器の分岐は `_plan_object_only`: `json_object_only` の器だけ 1 件契約）。受け方は 1 件許容の `_items_from_output`、件数下限は成果物数の過半 | PP1 |
+| 敵対的レビュー（agent-project `review`） | `plan._review_prompt` へ決定的材料 2 つ（acceptance コマンドの判定結果・backlog / archive の要約）を注入。受け方は `_items_from_output` | RV1（project_eval） |
+| リポジトリ理解（`repo_map`） | `plan._repo_map_material` が材料（`git ls-files` + README / ビルド定義の先頭・有界）を機械収集してプロンプトへ入れ、purpose=repo_map は readonly 既定（`prioritize._agent_readonly`）で道具ゼロ | RM1 |
+| 討議（amigos `debate`） | `agent_amigos/runner._llm_debate` が前ラウンドの引用（各 peer の先頭文）を応答位置の直前に機械で前置きし、引用ごとの応答を出力契約に含める | DB1 |
+| 制約つきの要約（字数・必須言及） | 検査は `operation.verification.commands` のシェル（`wc -m` / `grep`）で機械化。宣言を促す規則は planner プロンプト 2 層（`patterns.py` / flow-planner スキル）にあるが、宣言はクラウド planner に期待する（PL8） | SM2・PL8 |
+
+### 任せない
+
+| 役割 | 決定 | eval |
+|---|---|---|
+| コードレビューの網羅 | **12b へ割り当て**（唯一のモデル差し替え） | RV1・RV2（text_eval） |
+| 候補生成（作る: regex） | herd に担い手なし。機械でも代替できないため、クラウド CLI か人 | CG1 |
+| 上流の欠落申告（work / generate の完了 envelope） | 担わせない。欠落の申告は生成時の自己検査にしか現れず、後追いの修復は機械化しない（契約文 EXEC_CONTRACT は flow-worker スキルに残す） | GW1・GW1W |
+| 受入判定（自然文の達成条件） | 役割ごと撤去。charter の決定的コマンド全 PASS と人の approve だけが done の根拠 | — |
+| 設定どうしの矛盾検出 | モデルに訊かない。`doctor._config_contradiction_findings`（決定的チェック）が config 所見を出す | —（PD4 は撤去済み） |
+| 記憶検索 | 生成モデルと独立（`bge-m3`） | retrieval_eval |
+
 ## 変更時の境界
 
 新しい用途を足す場合は `commands/<purpose>.md` と必要な `variants` を追加する。engine に
@@ -463,8 +529,12 @@ readonly の扱いが分かれる。反対に、定義だけで動くクラウ�
 
 却下案：全体 timeout 1本、think の一律 on、一律 off、道具付き replay は採らない。
 
-代償と見直し：profile ごとの測定が要る。現在 think を有効にするヘッドレス profile は
-`list-thinking` だけで、他は off。再生結果で改善が確認できた場合に限り変える。確信度は中程度。
+代償と見直し：profile ごとの測定が要る。think を有効にするヘッドレス経路は
+`list-thinking` profile と base の readonly 起動形（`readonly_args`）の 2 つ。後者は
+2026-08-31 に off → on へ反転した——readonly は道具ゼロで材料がプロンプト内に完結する
+経路であり、思考が唯一の計算になる（e4b の MP1 実測: off 1/5 / on 5/5。off 側の根拠
+「readonly on は中央値 1000 秒」は qwen 系の数字で gemma4 では再現しない）。write と
+`--format` 併用の off は維持。以後も改善を実測で確認できた場合に限り変える。確信度は中程度。
 
 ## 付録B 未実装
 
