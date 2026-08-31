@@ -738,6 +738,34 @@ class FlowWorkerSkillTests(unittest.TestCase):
         self.assertEqual(text, reply)
         self.assertEqual(data, {"ok": False, "issues": ["未完了"]})
 
+    def test_requested_material_gaps_are_machine_carried_into_warnings(self):
+        """要求素材の実在検査（2026-08-31）: goal が名指しした連番素材が workspace に
+        無ければ、機械が warnings へ書く——モデルの申告には期待しない（GW1 実測:
+        契約でも修復でも申告は出ない）。warnings に載れば集約役まで既存経路で運ばれる。"""
+        ws = tempfile.mkdtemp(prefix="agent-flow-material-")
+        self.addCleanup(shutil.rmtree, ws, ignore_errors=True)
+        notes = os.path.join(ws, "notes")
+        os.makedirs(notes)
+        for i in range(1, 11):
+            with open(os.path.join(notes, f"ITEM-{i:02d}.md"), "w", encoding="utf-8") as f:
+                f.write(f"# {i}\n")
+        goal = ("notes/ の ITEM-01 から ITEM-12 までの 12 件から見出しを集めて索引を作る")
+        with mock.patch.object(kf, "run_agent", return_value="索引を作りました"):
+            text, data = kf.execute_agent("generate", goal, {}, None,
+                                          workspace={"clone": ws})
+        self.assertTrue(any("ITEM-11" in w and "ITEM-12" in w
+                            for w in (data or {}).get("warnings", [])),
+                        f"機械の warnings が無い: {data}")
+        self.assertIn("ITEM-11", text)
+        # 素材が揃っていれば黙る（data を無意味に dict へ変えない）
+        for i in (11, 12):
+            with open(os.path.join(notes, f"ITEM-{i:02d}.md"), "w", encoding="utf-8") as f:
+                f.write("# x\n")
+        with mock.patch.object(kf, "run_agent", return_value="索引を作りました"):
+            _text, data = kf.execute_agent("generate", goal, {}, None,
+                                           workspace={"clone": ws})
+        self.assertIsNone(data)
+
     def test_generate_terminal_ok_false_is_structured_too(self):
         # プロンプトは実行系の全 kind へ「未完了なら {"ok": false}」と指示している。
         # work だけ読んでいた間、generate の自己申告した未完了が done で通っていた。

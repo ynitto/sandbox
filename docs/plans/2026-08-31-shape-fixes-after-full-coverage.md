@@ -298,9 +298,20 @@ planner の規則文（規則 12）は PL7 で実測した文言なので触っ�
 - copilot の readonly: 実機 `--help` とプローブ 2 本で確認し、`--available-tools=view,grep,glob`
   （読み取り 3 道具だけ残す）へ変更。組み込み道具名の一覧も取得済み（bash / view / create /
   edit / grep / glob / task ほか）
-- `strip_unrequested_deliverables` の緩和: **未着手のまま**。クラウド planner での剥がれ方の
-  実測（課金呼び出し）が先で、この日はローカル面の消化を優先した
+- `strip_unrequested_deliverables` の緩和: **測って見送りで決着（2026-09-01・PL9）**。
+  テストを誘う素材（成果物の名指しは 1 ファイル・検証は pytest）でも copilot は有効 3 本とも
+  要求どおり 1 ファイルだけを宣言し、strip は一度も発火しなかった——剥がされて困る宣言が
+  観測されない以上、requested 判定は緩めない
 - `collapse_same_scope_work`: 計画どおりそのまま（理由が器に依らない）
+
+**翌日の続き（2026-09-01・残 4 件の消化）:**
+
+| 件 | 結果 |
+|---|---|
+| 欠落申告の機械側候補 | **実装して採用（GW1P 5/5）**。`nodecontract.requested_material_gaps`（goal の連番名指し・範囲 × 作業ディレクトリの実物）＋ `carry_requested_material_gaps`（warnings へ転記・誤検知は「2 件以上かつ 1 件は実在」で黙る側へ）。execute_agent が work / generate へ適用し、既存の `carry_dependency_gaps` 経路で集約役まで届く |
+| PL8 のクラウド側 | **copilot（--model auto）3/3**。宣言は synthesize 側・必須言及は regex エスケープ——ハーネスの狭さ 2 つ（kind 絞り・素朴な部分文字列照合）を直して確定。e4b は再判定でも 0/3 |
+| strip の緩和 | 上記のとおり**見送りで決着** |
+| 順序依存テスト 2 件 | `NodeBudgetV2AndControlTests` の setUp で `_RUNTIME_CONFIG` を自前で立てて修正（単独・固定順・ランダム順すべて緑） |
 
 **波及で直したもの:**
 

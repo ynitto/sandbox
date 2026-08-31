@@ -1247,6 +1247,21 @@ ITEM-11 と ITEM-12 は存在しない"`）。この日の「言わせても直�
 （未設計・未測定）。台帳
 `ledger-2026-08-31-judge-generate-envelope-{toolrepair,rorepair}-gemma4-e4b.jsonl`。
 
+### 機械側で閉じた（2026-09-01・GW1P）— **5/5**
+
+上の「残る候補」を実装して測った。`nodecontract.requested_material_gaps` が goal の
+名指し（`PREFIX-数字` の集合・`ITEM-01 から ITEM-12` の範囲表記は中間も展開）と
+作業ディレクトリの実物を突き合わせ、実在しないものを
+`carry_requested_material_gaps` が warnings と本文注記へ機械転記する——モデルには
+訊かない。誤検知は黙る側へ倒す（**2 件以上**のトークンがあり**少なくとも 1 件は実在**
+するときだけ判定。1 件も実在しなければ版番号などとみなす）。warnings に載れば下流の
+集約役まで既存経路（`carry_dependency_gaps`）で運ばれる。
+
+GW1 と同じ素材（12 件要求・10 件だけ実在）を本番の起動形で 5 本: **5/5**、全回
+ITEM-11 / ITEM-12 を名指し。GW1（モデルの申告 0〜1/5）→ GW1P（機械 5/5）は
+SY2（0/5）→ SY2P（5/5）と同じ対で、**欠落の事実チャネルはここでも機械が勝つ**。
+台帳 `ledger-2026-09-01-judge-generate-materialgaps-gemma4-e4b.jsonl`。
+
 ### 実行時 map への readonly 伝播と think の反転（2026-08-31・MP1）
 
 §9-1（形直し計画）の実装。`_expand_splits` が生む map / reduce / gate は `id` / `goal` /
@@ -1698,6 +1713,17 @@ PR1 の残差は制約検査でなく**組合せ最適の選択誤り＝P4 系**
 向けの口として残し、e4b の flow では期待しない。台帳
 `ledger-2026-08-31-planner-pl8-verifycommands-gemma4-e4b.jsonl`。
 
+> **追記（2026-09-01）— クラウド側を測った: copilot（--model auto）で 3/3。** 3 本とも
+> `test $(wc -m < summary.md) -le 220 && grep …` の形で両制約をコマンド化した。数字が
+> 出るまでにハーネスの狭さを 2 つ直した（どちらも「本番より厳しい」族）:
+> (1) チェッカーが work / generate しか見ていなかった——copilot は「抽出 3 → synthesize が
+> summary.md を書く」と分解して**宣言を synthesize に置く**。本番の受け取り
+> （`_coerce_tasks`）は operation を kind を問わず運ぶので、kind で絞らない
+> (2) 必須言及の照合が素朴な部分文字列だった——regex で書く planner は
+> `grep -Eq 'Python 3\.9'` とエスケープする。バックスラッシュを剥がしてから照合する。
+> e4b は再判定でも 0/3 のまま（実力どおり）。台帳
+> `ledger-2026-09-01-planner-pl8-pl9-copilot-auto.jsonl`。
+
 ### E7: strategy=economy の定型 flow — クラウド消費 0 の受入
 
 隔離 control（v2・economy・候補=ollama/gemma4:e4b のみ・dual-write）で
@@ -2099,6 +2125,16 @@ PL5 の残り 1/3 は、要求が名指ししていない成果物を `deliverab
 
 ゲートは 3 つ足してある: `criteria` / `tie_break` の fact を `facts` で宣言していない、
 `filter` に `tie_break` を付けている、同じ成果物を 2 ノード以上が宣言している。
+
+> **追記（2026-09-01・PL9）— strip の緩和は見送り（クラウドで測って根拠が出なかった）。**
+> §10.4 の懸念「強いモデルが意図して足す補助成果物（テスト等）まで剥がしているのでは」を
+> 観測腕 PL9 で測った——成果物として名指しするのは 1 ファイルだけ・検証は pytest と言って
+> テストを誘う素材。copilot（--model auto）の有効 3 本（probe 1 + 本測 2）は**全て要求どおり
+> 1 ファイルだけを宣言**し、strip は一度も発火しなかった（D2 ゲートが上流で効いている形）。
+> 剥がされて困る宣言が観測されない以上、requested 判定は緩めない——並走の編集衝突を防ぐ
+> 側の理由（`collapse_same_scope_work` と同じ）が勝つ。残る観察 1 件: 3 本中 1 本で copilot が
+> 壊れた JSON を返し plan.py が cli_error（器の揺れ。形式修復の対象にするかは別件）。台帳
+> `ledger-2026-09-01-planner-pl8-pl9-copilot-auto.jsonl`。
 
 （PL5 の率は途中で 0/3 と読んだ時期がある。チェッカーが**集約・検証ノードに付いた宣言まで**
 スロット判定に数えていたためで、分割が効くのは work / generate だけである。台帳に宣言を

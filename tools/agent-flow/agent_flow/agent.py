@@ -1503,6 +1503,11 @@ def execute_agent(kind: str, goal: str, dep_results: dict, model: str | None,
         envelope = envelope_data(text)
         if envelope is not None:
             data = envelope
+        # 欠落の申告はモデルに訊かない（契約でも修復でも出ない——上の注記）。かわりに
+        # 機械が見える事実だけを warnings へ書く: goal が名指しした素材（連番の集合・範囲）
+        # のうち作業ディレクトリに実在しないもの。warnings に載れば下流の集約役まで
+        # carry_dependency_gaps の既存経路で運ばれる。
+        text, data = _nodecontract.carry_requested_material_gaps(goal, agent_cwd, text, data)
     if slice_receipts:
         data = {**(data if isinstance(data, dict) else {}),
                 "context_slices": slice_receipts}

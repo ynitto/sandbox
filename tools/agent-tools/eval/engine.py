@@ -303,6 +303,23 @@ def fact_extraction_directive(decision):
     return fn(decision) if fn is not None else None
 
 
+def carry_requested_material_gaps(goal: str, cwd, text: str, data):
+    """work / generate の結果へ要求素材の欠落を機械転記する。本番（agentcore.nodecontract）を
+    呼ぶ（写さない）。無い木では入力をそのまま返す——機械無しの条件は missing() に残る。"""
+    nodecontract = _nodecontract()
+    if nodecontract is None:
+        return text, data
+    fn = _need(nodecontract, "carry_requested_material_gaps",
+               "carry_requested_material_gaps（要求素材の実在検査）")
+    return fn(goal, cwd, text, data) if fn is not None else (text, data)
+
+
+def gap_heading() -> str:
+    """機械転記の見出し（本番の定数）。チェッカーが綴りを写さないための窓口。"""
+    nodecontract = _nodecontract()
+    return str(getattr(nodecontract, "GAP_HEADING", "") or "") if nodecontract else ""
+
+
 def carry_dependency_gaps(dep_results, text: str, data):
     """集約結果へ依存の申告した欠落を運ぶ。本番（agentcore.nodecontract）を呼ぶ（写さない）。
 

@@ -431,7 +431,7 @@ split / extract / retrieve に 1 回）と寛容パーサだけで、内容に�
 | 敵対的レビュー（agent-project `review`） | `plan._review_prompt` へ決定的材料 2 つ（acceptance コマンドの判定結果・backlog / archive の要約）を注入。受け方は `_items_from_output` | RV1（project_eval） |
 | リポジトリ理解（`repo_map`） | `plan._repo_map_material` が材料（`git ls-files` + README / ビルド定義の先頭・有界）を機械収集してプロンプトへ入れ、purpose=repo_map は readonly 既定（`prioritize._agent_readonly`）で道具ゼロ | RM1 |
 | 討議（amigos `debate`） | `agent_amigos/runner._llm_debate` が前ラウンドの引用（各 peer の先頭文）を応答位置の直前に機械で前置きし、引用ごとの応答を出力契約に含める | DB1 |
-| 制約つきの要約（字数・必須言及） | 検査は `operation.verification.commands` のシェル（`wc -m` / `grep`）で機械化。宣言を促す規則は planner プロンプト 2 層（`patterns.py` / flow-planner スキル）にあるが、宣言はクラウド planner に期待する（PL8） | SM2・PL8 |
+| 制約つきの要約（字数・必須言及） | 検査は `operation.verification.commands` のシェル（`wc -m` / `grep`）で機械化。宣言を促す規則は planner プロンプト 2 層（`patterns.py` / flow-planner スキル）にあり、宣言はクラウド planner が担う（copilot 3/3・e4b 0/3。宣言は成果物を持つノードなら kind を問わない——`_coerce_tasks` は operation を kind で絞らない） | SM2・PL8 |
 
 ### 任せない
 
@@ -439,7 +439,7 @@ split / extract / retrieve に 1 回）と寛容パーサだけで、内容に�
 |---|---|---|
 | コードレビューの網羅 | **12b へ割り当て**（唯一のモデル差し替え） | RV1・RV2（text_eval） |
 | 候補生成（作る: regex） | herd に担い手なし。機械でも代替できないため、クラウド CLI か人 | CG1 |
-| 上流の欠落申告（work / generate の完了 envelope） | 担わせない。欠落の申告は生成時の自己検査にしか現れず、後追いの修復は機械化しない（契約文 EXEC_CONTRACT は flow-worker スキルに残す） | GW1・GW1W |
+| 上流の欠落申告（work / generate の完了 envelope） | モデルには担わせない（申告は生成時の自己検査にしか現れず、後追いの修復は機械化しない。契約文 EXEC_CONTRACT は flow-worker スキルに残す）。**欠落の事実チャネルは機械が持つ**: `nodecontract.requested_material_gaps` が goal の連番名指し（集合・範囲）と作業ディレクトリの実物を突き合わせ、`carry_requested_material_gaps` が warnings へ転記する（`execute_agent` が work / generate へ適用。誤検知は「2 件以上かつ 1 件は実在」のガードで黙る側へ倒す） | GW1・GW1W・GW1P |
 | 受入判定（自然文の達成条件） | 役割ごと撤去。charter の決定的コマンド全 PASS と人の approve だけが done の根拠 | — |
 | 設定どうしの矛盾検出 | モデルに訊かない。`doctor._config_contradiction_findings`（決定的チェック）が config 所見を出す | —（PD4 は撤去済み） |
 | 記憶検索 | 生成モデルと独立（`bge-m3`） | retrieval_eval |

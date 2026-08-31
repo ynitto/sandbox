@@ -323,7 +323,11 @@ def check_pl8(data: dict) -> tuple[bool, str]:
     現れていれば、シェルが判定する形になっている。
     """
     tasks = data["tasks"]
-    declared = [t for t in _produce_nodes(tasks) if isinstance(t.get("operation"), dict)]
+    # kind は絞らない——本番の受け取り（`_coerce_tasks`）は operation を kind を問わず運ぶ。
+    # クラウド planner は「抽出 3 ノード → synthesize が summary.md を書く」と分解し、宣言を
+    # synthesize 側に置く（実測 2026-09-01: copilot 3/3 がこの形）。work / generate に限ると
+    # 正しい宣言を「無い」と数える＝ハーネスが本番より厳しくなる。
+    declared = [t for t in tasks if isinstance(t.get("operation"), dict)]
     if not declared:
         return False, "operation を宣言したノードが無い"
     owners = [t for t in declared
@@ -337,13 +341,45 @@ def check_pl8(data: dict) -> tuple[bool, str]:
     commands = [" ".join(str(a) for a in argv)
                 for node in owners
                 for argv in ((node["operation"].get("verification") or {}).get("commands") or [])]
-    joined = " ".join(commands)
+    # regex で書く planner は必須言及をエスケープする（`grep -Eq 'Python 3\.9'`——実測
+    # 2026-09-01: copilot 3 本中 2 本）。素朴な部分文字列照合はこれを落とすので、
+    # バックスラッシュを剥がしてから照合する。
+    joined = " ".join(commands).replace("\\", "")
     if not commands:
         return False, "verification.commands が空（制約が自己申告のまま）"
     missing = [want for want in ("220", "3.9") if want not in joined]
     if missing:
         return False, f"コマンドが制約を確かめていない（{missing} が現れない）: {commands[:2]}"
     return True, f"制約 2 つをコマンドで検査: {commands[:2]}"
+
+
+# strip_unrequested_deliverables の剥がれ方を観測する腕（§10.4）。要求が名指しする成果物は
+# 1 ファイルだけだが、検証を pytest と言っているので**強いモデルは意図してテストを足す**
+# ——その宣言がゲートと strip でどう扱われるかを見る（剥がした中身は台帳の stderr_tail に
+# `[flow-planner] ... 要求に無い成果物の宣言を落としました` として残る）。
+PL9_REQUEST = (
+    "eval/humansize.py に関数 human_bytes(n) を実装してください。バイト数を人が読みやすい"
+    "単位（KB / MB / GB）の文字列へ変換する 1 関数です。成果物として名指しするのは"
+    "この 1 ファイルだけです。検証は python -m pytest -q eval で行います。"
+)
+
+
+def check_pl9(data: dict) -> tuple[bool, str]:
+    """要求成果物（eval/humansize.py）の宣言が届くか。**剥がれ方の観測が主目的**——
+    合否は「名指しした 1 ファイルが宣言に残っているか」だけで判定し、要求外の宣言が
+    残ったか・剥がされたかは note と台帳（graph / stderr_tail）で読む。"""
+    tasks = data["tasks"]
+    declared = [t for t in _produce_nodes(tasks) if isinstance(t.get("operation"), dict)]
+    if not declared:
+        return False, "operation を宣言したノードが無い"
+    files = sorted({str(d) for t in declared
+                    for d in (t["operation"].get("deliverables") or [])})
+    wanted = [f for f in files
+              if f.endswith("humansize.py") and "test" not in f.rsplit("/", 1)[-1]]
+    if not wanted:
+        return False, f"要求した成果物が宣言に無い: {files}"
+    extras = sorted(set(files) - set(wanted))
+    return True, f"成果物 {files}（要求外の残存 {extras or 'なし'}）"
 
 
 def _produce_nodes(tasks: list[dict]) -> list[dict]:
@@ -431,6 +467,7 @@ CASES = {
     "PL6": dict(genre="宣言（判定契約）", request=PL6_REQUEST, check=check_pl6),
     "PL7": dict(genre="宣言（道具の有無）", request=PL7_REQUEST, check=check_pl7),
     "PL8": dict(genre="宣言（機械検査の制約）", request=PL8_REQUEST, check=check_pl8),
+    "PL9": dict(genre="観測（要求外成果物の剥がれ方）", request=PL9_REQUEST, check=check_pl9),
 }
 
 # ------------------------------------------------------------------ 実行
@@ -582,6 +619,11 @@ def selfcheck() -> int:
                                       "test $(wc -m < summary.md) -le 220 && "
                                       "grep -q '3.9' summary.md"]]}}}],
                  ["fan-out-and-synthesize"]),
+        "PL9": g([{"id": "t1", "goal": "human_bytes を実装", "deps": [], "kind": "work",
+                   "operation": {"operation_class": "feature",
+                                 "scope": {"write": ["eval/humansize.py"]},
+                                 "deliverables": ["eval/humansize.py"]}}],
+                 ["fan-out-and-synthesize"]),
     }
     bad = {
         "PL1": [g([{"id": "a", "goal": "KIRBY-A", "deps": [], "kind": "work"},
@@ -651,6 +693,13 @@ def selfcheck() -> int:
                                   "verification": {"commands": [
                                       ["python", "-m", "pytest", "-q", "tests"]]}}}],
                   ["fan-out-and-synthesize"])],     # コマンドはあるが制約を確かめていない
+        "PL9": [g([{"id": "t1", "goal": "human_bytes を実装", "deps": [], "kind": "work"}],
+                  ["fan-out-and-synthesize"]),      # 宣言が無い
+                g([{"id": "t1", "goal": "実装", "deps": [], "kind": "work",
+                    "operation": {"operation_class": "feature",
+                                  "scope": {"write": ["eval/test_humansize.py"]},
+                                  "deliverables": ["eval/test_humansize.py"]}}],
+                  ["fan-out-and-synthesize"])],     # テストだけ宣言（要求成果物が無い）
     }
     contract_bad = [
         g([{"id": "a", "goal": "x", "deps": ["zz"], "kind": "work"}], []),      # 無い deps

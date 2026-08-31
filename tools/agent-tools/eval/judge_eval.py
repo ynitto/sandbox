@@ -501,6 +501,20 @@ GAP_INSTRUCTION = ('完了はしたが一部を満たせなかった場合は、
                    "（未完了として ok:false にするのではなく、done のまま欠落を申告する）。")
 
 
+def check_gap_machine(text: str):
+    """機械転記の腕（GW1P）。要求素材の実在検査（`carry_requested_material_gaps`）が、
+    goal の名指しと作業ディレクトリの実物を突き合わせて欠落を書く——モデルには訊かない。
+    採点は本文の機械注記で行う（data.warnings と同時に書かれる 1 実装の出力）。"""
+    head = engine.gap_heading()
+    if not head or head not in (text or ""):
+        return False, "機械の転記注記が無い（実在検査が発火していない）"
+    tail = (text or "").split(head, 1)[1]
+    named = [k for k in ("ITEM-11", "ITEM-12") if k in tail]
+    if len(named) < 2:
+        return False, f"機械注記に欠落が揃っていない（{named or 'なし'}）"
+    return True, f"機械が転記: {named}"
+
+
 def check_gap_envelope(text: str):
     """上流が欠落を**構造化して**申告するか。受け方は本番の 1 実装（`envelope_data`）。
 
@@ -763,6 +777,12 @@ CASES = {
     "GW1W": dict(kind="generate", expect="欠落を warnings で申告（言わせる）",
                  material=GAP_FILES, goal=GAP_GOAL, instructions=GAP_INSTRUCTION,
                  check=lambda t: check_gap_envelope(t)),
+    # GW1P は**本番の経路**（機械が要求素材の実在を検査して warnings へ転記）。GW1 / GW1W が
+    # モデルの申告そのものを見る腕であるのに対し、こちらは「モデルに訊かない」側の機械を
+    # 本番の 1 実装で通す——SY2 → SY2P と同じ対の形。
+    "GW1P": dict(kind="generate", expect="欠落（ITEM-11 / ITEM-12）を機械が転記",
+                 material=GAP_FILES, goal=GAP_GOAL, material_carry=True,
+                 check=check_gap_machine),
     "SY2W": dict(kind="synthesize", expect="欠落を運ぶ（機械なし・診断用の腕）",
                  no_carry=True, goal=SY2_GOAL, deps=SY2_DEPS,
                  check=lambda t: check_synthesis(t, ["ITEM-11", "ITEM-12"])),
@@ -917,6 +937,13 @@ def run_one(cid: str, i: int) -> dict:
         # readonly 修復は完動しても `{"ok": true, "warnings": []}` しか返さず（欠落の申告は
         # 生成時にしか出ない）、+1 呼び出しの費用だけが残った。台帳
         # ledger-2026-08-31-judge-generate-envelope-{toolrepair,rorepair}-gemma4-e4b.jsonl。
+        # かわりに本番は要求素材の実在検査を機械で行う（carry_requested_material_gaps）。
+        # GW1（モデルの申告そのものを見る腕）を汚さないため、適用はケースの宣言で選ぶ
+        # （SY2W の no_carry と同じ「機械の有無を腕で分ける」形）。
+        if kind in ("work", "generate") and case.get("material_carry"):
+            envelope = engine.envelope_data(out)   # 本番と同じ順: envelope を先に読む
+            out, data = engine.carry_requested_material_gaps(
+                case.get("goal") or "", cwd, out, envelope if envelope is not None else data)
         if kind == "synthesize" and not case.get("no_carry"):
             # 本番（agent.py）は統合結果へ依存の申告した欠落を機械的に転記する。写さないと
             # **本番なら運ばれている欠落**をモデルの失点として数える。`no_carry` は診断用の
@@ -1017,6 +1044,9 @@ def selfcheck() -> int:
                  '{"ok": true, "warnings": ["ITEM-11 が見つからない", "ITEM-12 が見つからない"]}'),
         "SY2W": "索引は 10 件。ITEM-11.md と ITEM-12.md は読み取り失敗のため未収録。",
         "SY2P": "索引は 10 件。ITEM-11.md と ITEM-12.md は読み取り失敗のため未収録。",
+        "GW1P": ("索引を作りました。\n\n" + engine.gap_heading()
+                 + "（要求素材の実在検査から機械が転記）\n"
+                 "- 要求が名指しした素材が作業ディレクトリに見つからない: ITEM-11, ITEM-12"),
         "F2P": {"facts": [
             {"id": "c1", "tests": "pass", "extra_deps": True, "lines": 30},
             {"id": "c2", "tests": "fail", "extra_deps": False, "lines": 48},
@@ -1091,6 +1121,9 @@ def selfcheck() -> int:
                 '索引を作りました。\n{"ok": true}',
                 '索引を作れませんでした。\n{"ok": false, "issues": ["ITEM-11 と ITEM-12 が無い"]}'],
         "GW1W": ['索引を作りました（10 件）。\n{"ok": true, "warnings": ["一部を収録できなかった"]}'],
+        "GW1P": ["索引を作りました。ITEM-11 と ITEM-12 は見つかりませんでした。",  # 散文のみ（機械注記なし）
+                 "索引を作りました。\n\n" + engine.gap_heading()
+                 + "（要求素材の実在検査から機械が転記）\n- 見つからない: ITEM-11"],  # 片方だけ
         "SY2W": ["索引を report.md に書き出しました。行数は 10 行です。"],
         "SY2P": ["索引を report.md に書き出しました。行数は 10 行です。"],
         "SY2": ["索引を report.md に書き出しました。行数は 10 行です。",

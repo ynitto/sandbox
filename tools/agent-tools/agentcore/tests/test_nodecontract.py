@@ -1,6 +1,9 @@
 import json
 import pathlib
+import shutil
+import tempfile
 import unittest
+from pathlib import Path
 
 from agentcore import nodecontract
 
@@ -350,6 +353,69 @@ class DependencyGapTests(unittest.TestCase):
         self.assertEqual(
             nodecontract.carry_dependency_gaps({"t1": {"output": "x", "data": None}}, "text", None),
             ("text", None))
+
+
+class RequestedMaterialGapTests(unittest.TestCase):
+    """要求素材の決定的突き合わせ（2026-08-31）。欠落申告はモデルに訊かず機械が書く。
+
+    誤検知（文章の連番を素材と読む）は偽の欠落として下流を汚すので、判定は黙る側へ倒す
+    ——「2 件以上」かつ「少なくとも 1 件は実在」のときだけ欠落を返す。
+    """
+
+    GOAL = ("作業ディレクトリの notes/ にある ITEM-01 から ITEM-12 までの 12 件について、"
+            "各ファイルの見出しを集めて索引を作る。")
+
+    def _ws(self, count=10):
+        d = tempfile.mkdtemp(prefix="nc-material-")
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        notes = Path(d) / "notes"
+        notes.mkdir()
+        for i in range(1, count + 1):
+            (notes / f"ITEM-{i:02d}.md").write_text(f"# {i}\n", encoding="utf-8")
+        return d
+
+    def test_range_expansion_finds_the_missing_tail(self):
+        gaps = nodecontract.requested_material_gaps(self.GOAL, self._ws(10))
+        self.assertEqual(gaps, ["ITEM-11", "ITEM-12"])
+
+    def test_all_present_is_silent(self):
+        self.assertEqual(nodecontract.requested_material_gaps(self.GOAL, self._ws(12)), [])
+
+    def test_none_present_is_silent_tokens_are_not_material(self):
+        """1 件も実在しない＝トークンは素材の名ではない（版番号など）。黙る。"""
+        d = tempfile.mkdtemp(prefix="nc-empty-")
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        self.assertEqual(nodecontract.requested_material_gaps(
+            "v4.2-1 から v4.2-3 の変更を要約する", d), [])
+
+    def test_single_token_is_silent(self):
+        self.assertEqual(nodecontract.requested_material_gaps(
+            "ITEM-07 を要約する", self._ws(10)), [])
+
+    def test_no_cwd_is_silent(self):
+        self.assertEqual(nodecontract.requested_material_gaps(self.GOAL, None), [])
+
+    def test_carry_writes_warnings_and_text_once(self):
+        text, data = nodecontract.carry_requested_material_gaps(
+            self.GOAL, self._ws(10), "索引を作りました", {"ok": True, "warnings": []})
+        self.assertIn("ITEM-11, ITEM-12", data["warnings"][0])
+        self.assertIs(data["ok"], True, "ok には触らない（欠落＝失敗ではない）")
+        self.assertIn(nodecontract.GAP_HEADING, text)
+        # 冪等: もう一度通しても重ねない
+        text2, data2 = nodecontract.carry_requested_material_gaps(
+            self.GOAL, self._ws(10), text, data)
+        self.assertEqual(data2["warnings"], data["warnings"])
+        self.assertEqual(text2, text)
+
+    def test_carry_without_gaps_keeps_data_shape(self):
+        self.assertEqual(nodecontract.carry_requested_material_gaps(
+            self.GOAL, self._ws(12), "t", None), ("t", None))
+
+    def test_carry_creates_data_when_model_wrote_no_envelope(self):
+        _text, data = nodecontract.carry_requested_material_gaps(
+            self.GOAL, self._ws(10), "本文だけ", None)
+        self.assertNotIn("ok", data, "完了可否を機械が捏造しない")
+        self.assertEqual(len(data["warnings"]), 1)
 
 
 if __name__ == "__main__":

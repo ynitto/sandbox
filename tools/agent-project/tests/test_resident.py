@@ -275,6 +275,12 @@ class NodeBudgetV2AndControlTests(unittest.TestCase):
         # `~/.agents/control` を読む（テスト順で agent_cli 系が落ちる原因だった）。
         self.addCleanup(os.environ.__setitem__, "AGENT_CONTROL_DIR", _prev_control)
         km._CONTROL_CACHE["mtime"] = None
+        # _RUNTIME_CONFIG を自前で立てる。無指定だと「他のテストが先に設定した」順序に
+        # 依存し、このクラス単独・-p no:randomly では None のまま `.agents =` が落ちる。
+        self._runtime = km._RUNTIME_CONFIG
+        km._RUNTIME_CONFIG = types.SimpleNamespace(
+            agent_cli="kiro", agent_timeout=300.0, agents={}, argv_limit=0)
+        self.addCleanup(setattr, km, "_RUNTIME_CONFIG", self._runtime)
 
     def _budget(self, cfg):
         with open(os.path.join(self.dir, "config.json"), "w", encoding="utf-8") as f:

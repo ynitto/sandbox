@@ -7,6 +7,8 @@ scope・成果物数・既存検査を構造化して照合する（柱3 / C9・
 from __future__ import annotations
 
 import posixpath
+import re
+from pathlib import Path
 
 
 VALID_KINDS = frozenset({
@@ -122,6 +124,88 @@ def carry_dependency_gaps(dep_results, text: str, data):
         return text, merged
     lines = "\n".join(f"- [{dep_id}] {body}" for dep_id, body in missing)
     return f"{text}\n\n{GAP_HEADING}（依存の申告から機械が転記）\n{lines}", merged
+
+
+# --- 要求素材の決定的突き合わせ（2026-08-31・§9-3 の後継）------------------------------
+# 上流（work / generate）は欠落を構造化して申告しない——契約で必須にしても・レイヤ2 で
+# 言わせ直しても、申告は生成時の自己検査にしか出ない（GW1 実測: 素 0/5・契約 1/5・修復 1/5）。
+# そこでモデルに訊くのをやめ、**機械が見える事実**だけを warnings へ書く: goal が名指しした
+# 素材（連番トークンの集合・範囲）のうち、作業ディレクトリに実在しないもの。
+
+_MATERIAL_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9_.]*-\d{1,4}")
+_MATERIAL_RANGE_RE = re.compile(
+    r"([A-Za-z][A-Za-z0-9_.]*-)(\d{1,4})\s*(?:から|〜|～|~|to|through)\s*\1?(\d{1,4})")
+_MATERIAL_TOKEN_CAP = 64      # 展開する連番の上限（暴走防止。超えたら検査しない）
+_MATERIAL_SCAN_CAP = 5000     # 作業ディレクトリを走査するエントリ数の上限
+
+
+def requested_material_gaps(goal: str, cwd) -> "list[str]":
+    """goal が名指しした素材トークンのうち、作業ディレクトリに実在しないものを返す。
+
+    検査するのは**連番の集合が要求されている形**だけ:
+
+    - トークンは `PREFIX-数字`（例 ITEM-07・REQ-123）。範囲表記
+      （`ITEM-01 から ITEM-12`・`〜`・`to`）は同じ幅のゼロ詰めで中間も展開する
+    - **2 件以上**のトークンがあり、**少なくとも 1 件は実在する**ときだけ判定する——
+      1 件も実在しなければトークンは素材の名ではない（版番号・チケット番号など）と
+      みなして黙る。誤検知（文章の連番を素材と読む）は偽の欠落報告として下流を汚すので、
+      判定は黙る側へ倒す
+    - 実在は「名前にトークンを含むファイルがあるか」（走査は `_MATERIAL_SCAN_CAP` で有界）
+    """
+    if not goal or not cwd:
+        return []
+    try:
+        root = Path(str(cwd))
+        if not root.is_dir():
+            return []
+    except (OSError, ValueError):
+        return []
+    tokens: "set[str]" = set(_MATERIAL_TOKEN_RE.findall(goal))
+    for prefix, start, end in _MATERIAL_RANGE_RE.findall(goal):
+        lo, hi = int(start), int(end)
+        if lo > hi or hi - lo >= _MATERIAL_TOKEN_CAP:
+            continue
+        width = len(start)
+        tokens.update(f"{prefix}{i:0{width}d}" for i in range(lo, hi + 1))
+    if len(tokens) < 2 or len(tokens) > _MATERIAL_TOKEN_CAP:
+        return []
+    names: "set[str]" = set()
+    try:
+        for i, path in enumerate(root.rglob("*")):
+            if i >= _MATERIAL_SCAN_CAP:
+                break
+            if ".git" in path.parts:
+                continue
+            names.add(path.name)
+    except OSError:
+        return []
+    exists = {tok for tok in tokens if any(tok in name for name in names)}
+    if not exists:
+        return []
+    return sorted(tokens - exists)
+
+
+def carry_requested_material_gaps(goal: str, cwd, text: str, data):
+    """work / generate の結果へ、要求素材の欠落を機械的に追記した `(text, data)` を返す。
+
+    warnings へ書くのは `collect_dependency_gaps` が読む場所だから——ここに載れば下流の
+    集約役まで既存の経路（`carry_dependency_gaps`）で運ばれる。ok には触らない
+    （完了可否はモデルの申告のまま。欠落＝失敗ではない）。既に本文が名指ししている
+    欠落も warnings には載せる（散文は下流の機械が読めない）。1 件も無ければ入力を
+    そのまま返す——`data` を無意味に dict へ変えない。
+    """
+    gaps = requested_material_gaps(goal, cwd)
+    if not gaps:
+        return text, data
+    note = "要求が名指しした素材が作業ディレクトリに見つからない: " + ", ".join(gaps)
+    merged = {**data} if isinstance(data, dict) else {}
+    warnings = [str(w) for w in (merged.get("warnings") or [])]
+    if note not in warnings:
+        warnings.append(note)
+    merged["warnings"] = warnings
+    if note in (text or ""):
+        return text, merged
+    return f"{text}\n\n{GAP_HEADING}（要求素材の実在検査から機械が転記）\n- {note}", merged
 
 
 # --- 処理契約（operation contract, §3.4）----------------------------------------------
