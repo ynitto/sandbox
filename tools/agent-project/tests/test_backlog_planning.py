@@ -302,7 +302,16 @@ class PlannedTitleTests(unittest.TestCase):
 
 
 class PlannerSkillTests(unittest.TestCase):
-    """S6-1/S6-2: backlog-planner スキルと必須セクションの決定的ゲート。"""
+    """S6-1/S6-2: backlog-planner スキルと必須セクションの決定的ゲート。
+
+    出力契約は器で分岐する（`_plan_object_only`）。この組は **1 件ずつ（オブジェクト限定の
+    器）** に固定して従来の検証を保つ——環境の定義解決に依存させない。配列契約側は
+    PlannerContractRoutingTests が見る。"""
+
+    def setUp(self):
+        p = mock.patch.object(km, "_plan_object_only", lambda cfg: True)
+        p.start()
+        self.addCleanup(p.stop)
 
     def _cfg(self, d: Path, **kw):
         return cfg_for(d, executor="agent", **kw)
@@ -605,6 +614,96 @@ class PlannerSkillTests(unittest.TestCase):
                 self.assertEqual(km.plan_via_agent(cfg, ch), [])
 
 
+class PlannerContractRoutingTests(unittest.TestCase):
+    """plan の出力契約は**器で選ぶ**（2026-08-31 の 1 件ずつ化の適用範囲を器へ限定）。
+
+    1 件ずつはオブジェクトしか返せない器（`--format json`＝`json_object_only`）への
+    手当てであり、配列を返せる器（クラウド CLI ほか）へ課すとタスク K 件に K+1 回の
+    呼び出し（毎回 charter 全文）を払う。ここでは (a) 定義の宣言どおりに器を読むこと、
+    (b) 配列の器では配列契約 1 回で受けること、を固定する。"""
+
+    def _cfg(self, d: Path, **kw):
+        return cfg_for(d, executor="agent", **kw)
+
+    def _item(self, title="T", **kw):
+        base = {"title": title, "why": "目標に効く", "desc": "変更対象と手順",
+                "scope": ["src/**"], "risks": ["なし"],
+                "acceptance": ["基準A", "基準B"], "size": "M", "workspace": "app"}
+        base.update(kw)
+        return base
+
+    def test_object_only_is_read_from_the_definition_not_the_spelling(self):
+        with mock.patch.object(km, "_agent_for", lambda purpose: ("ollama-json", None)), \
+                mock.patch.object(km, "load_agent_plugin",
+                                  lambda cli: {"json_object_only": True}):
+            self.assertTrue(km._plan_object_only(None))
+        with mock.patch.object(km, "_agent_for", lambda purpose: ("kiro", None)), \
+                mock.patch.object(km, "load_agent_plugin", lambda cli: {}):
+            self.assertFalse(km._plan_object_only(None))
+
+    def test_unresolvable_definition_falls_to_one_at_a_time(self):
+        # 1 件ずつはどちらの器でも動く側。定義が引けないだけで plan を止めない
+        def boom(cli):
+            raise RuntimeError("定義がありません")
+        with mock.patch.object(km, "_agent_for", lambda purpose: ("kiro", None)), \
+                mock.patch.object(km, "load_agent_plugin", boom):
+            self.assertTrue(km._plan_object_only(None))
+
+    def test_array_container_plans_in_one_call(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = self._cfg(d)
+            ch = _charter(cfg)
+            calls = []
+
+            def fake(prompt, model, purpose=""):
+                calls.append(prompt)
+                return json.dumps([self._item("A"), self._item("B")])
+
+            with mock.patch.object(km, "_plan_object_only", lambda cfg: False), \
+                    mock.patch.object(km, "_run_agent_cli", fake):
+                specs = km.plan_via_agent(cfg, ch)
+            self.assertEqual([sp["title"] for sp in specs], ["A", "B"])
+            self.assertEqual(len(calls), 1, "配列の器はタスク数に呼び出し回数を比例させない")
+            self.assertIn("JSON 配列のみ", calls[0])
+            self.assertNotIn("オブジェクト 1 件のみ", calls[0])
+
+    def test_array_contract_retries_missing_sections_once(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = self._cfg(d, plan_review=True)
+            ch = _charter(cfg)
+            calls = []
+
+            def fake(prompt, model, purpose=""):
+                calls.append(prompt)
+                return json.dumps([{"title": "T", "workspace": "app"}])   # 必須欠落のまま
+
+            with mock.patch.object(km, "_plan_object_only", lambda cfg: False), \
+                    mock.patch.object(km, "_run_agent_cli", fake):
+                specs = km.plan_via_agent(cfg, ch)
+            self.assertEqual(len(calls), 2, "欠落は 1 回だけ再要求する")
+            self.assertIn("未記入", calls[1])
+            self.assertEqual(specs[0]["status"], "proposed", "2 回目も欠けたら人の目へ")
+
+    def test_single_container_prompt_keeps_the_object_contract(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = self._cfg(d)
+            ch = _charter(cfg)
+            seen = []
+
+            def fake(prompt, model, purpose=""):
+                seen.append(prompt)
+                return json.dumps({"done": True})
+
+            with mock.patch.object(km, "_plan_object_only", lambda cfg: True), \
+                    mock.patch.object(km, "_run_agent_cli", fake):
+                km.plan_via_agent(cfg, ch)
+            self.assertIn("オブジェクト 1 件のみ", seen[0])
+            self.assertNotIn("JSON 配列のみ", seen[0])
+
+
 class ShippedPlannerSkillTests(unittest.TestCase):
     """同梱スキル（.github/skills/backlog-planner）の出力契約。
 
@@ -680,6 +779,17 @@ class ShippedPlannerSkillTests(unittest.TestCase):
         finest = self._run({"charter": "目標", "granularity": "finest"})
         self.assertIn("ユーザーストーリー相当", coarse)
         self.assertIn("原子的に分解", finest)
+
+    def test_contract_selects_the_output_shape(self):
+        # 契約は agent-project が器に問い合わせて渡す（スキルは写しを持たない）。
+        # 既定（single）は 1 件ずつ、array は配列一括——両方の文言が生きていること。
+        single = self._run({"charter": "目標"})
+        self.assertIn("オブジェクト 1 件のみ", single)
+        self.assertIn('{"done": true}', single)
+        arr = self._run({"charter": "目標", "contract": "array"})
+        self.assertIn("JSON 配列のみ", arr)
+        self.assertNotIn("オブジェクト 1 件のみ", arr)
+        self.assertIn('[{"title"', arr, "例も配列の形で示す")
 
     def test_bad_input_is_rejected(self):
         proc = subprocess.run([sys.executable, str(self.SCRIPT)], input="not json",

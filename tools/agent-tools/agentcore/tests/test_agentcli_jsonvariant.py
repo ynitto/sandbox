@@ -92,6 +92,36 @@ class ResolveVariantTests(unittest.TestCase):
             agentcli.load_cli("toy", project_dir=self.root)
 
 
+class JsonObjectOnlyFieldTests(unittest.TestCase):
+    """器の性質 `json_object_only` の宣言（出力契約の分岐は argv の綴りではなくこれを読む）。
+
+    agent-project の plan は、この宣言が真の器でだけ「1 件ずつ」契約へ切り替える
+    ——配列を返せる器（クラウド CLI ほか）に 1 件ずつを課すと、タスク K 件に
+    K+1 回の呼び出しを払う（2026-08-31 の 1 件ずつ化の適用範囲の限定）。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.dir = self.root / "agents"
+        self.dir.mkdir()
+        agentcli.clear_cache()
+        self.addCleanup(self._tmp.cleanup)
+        self.addCleanup(agentcli.clear_cache)
+
+    def test_default_is_free_text(self):
+        _write_cli(self.dir, "toy")
+        self.assertFalse(agentcli.load_cli("toy", project_dir=self.root)["json_object_only"])
+
+    def test_profile_can_declare_it_without_leaking_to_the_base(self):
+        _write_cli(self.dir, "toy", profiles={
+            "json": {"command": ["toy-bin", "--format", "json"], "json_object_only": True}})
+        self.assertTrue(
+            agentcli.load_cli("toy-json", project_dir=self.root)["json_object_only"])
+        self.assertFalse(
+            agentcli.load_cli("toy", project_dir=self.root)["json_object_only"],
+            "base は自由文の器のまま")
+
+
 class ShippedDefinitionTests(unittest.TestCase):
     """同梱の ollama / aider 定義が用途別の変種を申告していること（設計 §4.3 の実体）。"""
 
@@ -169,6 +199,39 @@ class ShippedDefinitionTests(unittest.TestCase):
         for role in ("json", "list", "read", "verify"):
             spec = agentcli.load_cli(f"ollama-{role}", project_dir=self.repo)
             self.assertIsNone(spec.get("interactive"), role)
+
+    def test_readonly_is_no_writes_not_no_tools_on_capable_containers(self):
+        """readonly は「書かない」の宣言であって「道具ゼロ」ではない。
+
+        器の強い CLI（クラウド）では読み取りの道具を残す——高性能モデルは適度な自由度
+        （プロンプト外の材料を自分で読める）を持たせたほうが良く、書込の禁止は
+        CLI 側の読み取り専用モードが担う（codex の --sandbox read-only が元からこの姿勢。
+        claude は対話面の readonly が既に plan モードだけだった——ヘッドレスを揃えた）。
+        道具ゼロの手当ては、道具でプロンプト内の整形を壊す小さいモデル（ローカルの器）
+        にだけ掛ける。
+        """
+        claude = agentcli.load_cli("claude", project_dir=self.repo)
+        self.assertEqual(claude["readonly_args"], ["--permission-mode", "plan"])
+        self.assertEqual(claude["interactive"]["readonly_args"], claude["readonly_args"],
+                         "ヘッドレスと対話面で readonly の姿勢を揃える")
+        kiro = agentcli.load_cli("kiro", project_dir=self.repo)
+        self.assertEqual(kiro["readonly_args"], ["--trust-tools=fs_read"],
+                         "退避時に既に信頼していた読み取り道具を、非退避でも同じにする")
+        codex = agentcli.load_cli("codex", project_dir=self.repo)
+        self.assertEqual(codex["readonly_args"], ["--sandbox", "read-only"])
+        # ローカルの器は道具ゼロのまま——道具を持った e4b はプロンプト内で完結する整形を
+        # シェルで解こうとして壊す（実測 2026-08-30: map 2/5・道具ゼロで 5/5）。
+        ollama = agentcli.load_cli("ollama", project_dir=self.repo)
+        self.assertIn("--tools", ollama["write_args"])
+        self.assertNotIn("--tools", ollama["readonly_args"])
+
+    def test_the_json_container_declares_json_object_only(self):
+        """`--format json` の器は宣言でオブジェクト限定と分かる（plan の契約分岐が読む）。"""
+        self.assertTrue(
+            agentcli.load_cli("ollama-json", project_dir=self.repo)["json_object_only"])
+        for name in ("ollama", "ollama-list", "claude", "kiro", "codex", "copilot"):
+            self.assertFalse(
+                agentcli.load_cli(name, project_dir=self.repo)["json_object_only"], name)
 
     def test_ollama_declares_the_retrieve_variant(self):
         # retrieve は根拠を実際に読める必要がある。ollama-json へ寄せると read tool を失う。

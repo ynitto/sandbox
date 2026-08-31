@@ -92,6 +92,7 @@ _PROFILE_FIELDS = (
     "continue_args", "resume_args",
     "headless_autonomy", "default_model", "timeout", "env", "readonly", "prompt_via",
     "prompt_flag", "file_flag", "read_flag", "model_flag", "empty_output_is_error",
+    "json_object_only",
     "output", "skill_command_prefix", "relative_cost", "interactive", "variants",
     "slash_native",
     # errors は本来エージェント単位の性質だが、実際には役割ごとに調整されている
@@ -360,6 +361,11 @@ def normalize(name: str, raw: dict, path) -> dict:
         "env": dict(env_raw),
         "timeout": raw.get("timeout"),
         "empty_output_is_error": bool(raw.get("empty_output_is_error", True)),
+        # この起動形が **JSON オブジェクト 1 件しか返せない**か（ollama の `--format json` 等、
+        # 制約付きデコードの器）。呼び出し側はこれを見て出力契約を選ぶ——配列契約を
+        # 書いてよいか・1 件ずつ訊くべきかは器の性質であり、argv の綴りでは判定しない
+        # （綴り判定を許すと定義を差し替えた日に静かに壊れる）。未宣言は False＝自由文。
+        "json_object_only": bool(raw.get("json_object_only", False)),
         # 用途（role/kind/purpose 名。例 "planner" "split" "verify" "retrieve"）ごとに
         # 自動で振り替える変種の名前。空 = 変種なし。「どの用途で振り替えるか」はエンジン側の
         # 語彙（呼び出し元が対象の用途集合を持つ）、「その用途にはこの変種を使う」は

@@ -34,8 +34,10 @@ function test(name, fn) {
 test('buildCommand: kiro は kiro-cli chat にプロンプトを argv 渡し（読み取り専用）', () => {
   const c = agent.buildCommand('kiro', '', 'PROMPT');
   assert.strictEqual(c.command, 'kiro-cli');
-  assert.deepStrictEqual(c.args.slice(0, 3), ['chat', '--no-interactive', '--trust-tools=']);
-  assert.ok(!c.args.includes('--trust-all-tools'), '助言のみ＝ツールを信頼しない');
+  // 読み取り専用＝「書かない」の宣言であって道具ゼロではない。fs_read は退避時に既に
+  // 信頼していた道具で、非退避でも同じ（readonly の適度な自由度・2026-08-31）。
+  assert.deepStrictEqual(c.args.slice(0, 3), ['chat', '--no-interactive', '--trust-tools=fs_read']);
+  assert.ok(!c.args.includes('--trust-all-tools'), '助言のみ＝書く道具は信頼しない');
   assert.strictEqual(c.args[c.args.length - 1], 'PROMPT');
   assert.strictEqual(c.stdin, null);
 });
@@ -140,12 +142,12 @@ test('buildCommand: codex・cursor・ollamaでもcharter補完を実行できる
   assert.strictEqual(ollama.stdin, 'PROMPT');
 });
 
-test('buildDoctorCommand: 全CLIが読み取り専用またはツール無しで起動する', () => {
+test('buildDoctorCommand: 全CLIが読み取り専用で起動する（道具ゼロは要求しない）', () => {
   const claude = agent.buildDoctorCommand('claude', '', 'P', '/project');
   assert.ok(claude.args.includes('plan') && claude.args.includes('--no-session-persistence'));
-  assert.deepStrictEqual(
-    claude.args.slice(claude.args.indexOf('--tools'), claude.args.indexOf('--tools') + 2),
-    ['--tools', '']);
+  // plan モードは読み取り道具を残したまま書込を拒む（対話面と同じ姿勢）。道具ゼロ
+  // （--tools ''）は器の強い CLI から探索まで奪っていた（readonly の適度な自由度・2026-08-31）
+  assert.ok(!claude.args.includes('--tools'), '読み取り道具は残す');
   const copilot = agent.buildDoctorCommand('copilot', '', 'P', '/project');
   assert.ok(copilot.args.includes('--available-tools='));
   const codex = agent.buildDoctorCommand('codex', '', 'P', '/project');
@@ -732,7 +734,7 @@ test('対話診断は読み取り専用・セッション永続化なしで起�
   assert.strictEqual(spec.readonlyWarning, '', 'claude は readonly: enforced');
   const kiro = agent.interactiveLaunchSpec({ agent: { cli: 'kiro' } }, null,
                                            { readonly: true, noSession: true });
-  assert.deepStrictEqual(kiro.chatCommand, ['kiro-cli', 'chat', '--trust-tools=']);
+  assert.deepStrictEqual(kiro.chatCommand, ['kiro-cli', 'chat', '--trust-tools=fs_read']);
   assert.match(kiro.readonlyWarning, /保証しません/,
     'best-effort の CLI では「保証できない」ことを人に見せる（防御は持たない）');
 });

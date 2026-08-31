@@ -16,7 +16,7 @@
     "--trust-all-tools"
   ],
   "readonly_args": [
-    "--trust-tools="
+    "--trust-tools=fs_read"
   ],
   "readonly": "best-effort",
   "no_session_args": [],
@@ -41,7 +41,7 @@
       "--trust-all-tools"
     ],
     "readonly_args": [
-      "--trust-tools="
+      "--trust-tools=fs_read"
     ],
     "ready_pattern": "^[[:space:]]*[>?❯›][[:space:]]*$|!>|│[[:space:]]*[>❯›]|ask a question|describe a task",
     "ready_timeout_sec": 60,

@@ -80,6 +80,7 @@
       "write_args": [],
       "readonly_args": [],
       "headless_autonomy": "single-shot",
+      "json_object_only": true,
       "variants": {
         "split": "ollama-list",
         "retrieve": "ollama-read"

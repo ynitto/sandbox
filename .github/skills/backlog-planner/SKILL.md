@@ -53,17 +53,22 @@ echo '<入力 JSON>' | python3 scripts/prompt.py
 | `tombstones` | 墓標 `[{title, reason}]`（人が却下・削除したタスク） |
 | `notes` | 観点メモの本文（`distill-notes` のときのみ） |
 | `retry` | 前回出力の欠落セクション（再要求時のみ） |
-| `produced` | **この分解で既に出したタスクの題** `[str]`。1 件ずつ出させる契約なので、同じ・似たものを出さないための入力であり、`after` の参照先でもある |
+| `produced` | **この分解で既に出したタスクの題** `[str]`。1 件ずつ出させる契約（`contract: single`）で、同じ・似たものを出さないための入力であり、`after` の参照先でもある |
+| `contract` | 出力契約。`single`（既定）＝タスク 1 件ずつ / `array`＝配列で一括。**器で決まる**——判断は agent-project が定義（`json_object_only`）に問い合わせて持ち、このスキルは写しを持たない |
 
 ### 出力
 
-タスク spec の **JSON オブジェクト 1 件のみ**（配列にしない）。**もう出すものが無ければ
-`{"done": true}`** を返す——件数の制御は agent-project 側が持ち、`done` か上限
-（`_PLAN_MAX_ITEMS`）まで 1 件ずつ訊きに来る。
-
+**`contract: single`（既定）**: タスク spec の **JSON オブジェクト 1 件のみ**（配列にしない）。
+**もう出すものが無ければ `{"done": true}`** を返す——件数の制御は agent-project 側が持ち、
+`done` か上限（`_PLAN_MAX_ITEMS`）まで 1 件ずつ訊きに来る。
 必須項目 6 つ × 複数タスクを 1 回の配列で出させると、ローカル CLI の起動形
 （`--format json`＝オブジェクトしか返せない）と衝突して 0 件になる
-（2026-08-31 の実測: 5 回中 4 回）。キーは:
+（2026-08-31 の実測: 5 回中 4 回）。
+
+**`contract: array`**: タスク spec の **JSON 配列 1 回**（自由文の器＝クラウド CLI ほか向け。
+配列を返せる器に 1 件ずつを課すと、タスク K 件に K+1 回の呼び出しを払う）。
+
+キーは:
 
 | キー | 必須 | 内容 |
 |---|---|---|
@@ -77,14 +82,14 @@ echo '<入力 JSON>' | python3 scripts/prompt.py
 | `workspace` | ● | 唯一の書込先 repo 名（`owns` を持つもの） |
 | `refs` | | 読むだけの参照 repo |
 | `out_of_scope` / `hints` | | やらないこと / 実装の手がかり |
-| `after` | | 先行タスクの `title`（**`produced` にある題**のみ・循環不可） |
+| `after` | | 先行タスクの `title`（single は **`produced` にある題**・array は同じ配列内の題のみ・循環不可） |
 | `verify` | | 書けるなら決定的シェルコマンド（**書けないなら省く**。無理に書かせない） |
 | `cohort_items` | | 同じ手順を多対象に繰り返すときの対象一覧（`{item}` 展開） |
 
 ## 不変条件（agent-project 側が機械的に強制する）
 
-0. **1 件ずつ受け取る**。agent-project が `produced` を伸ばしながら `done` か上限まで
-   呼び、集めるのは本体（`split` → `map` と同じ形）
+0. **`contract: single` では 1 件ずつ受け取る**。agent-project が `produced` を伸ばしながら
+   `done` か上限まで呼び、集めるのは本体（`split` → `map` と同じ形）。`array` では配列 1 回
 1. **必須セクション欠落は 1 回だけ再要求**（その 1 件について） → なお欠落なら `status: draft` で投入し、
    欠落項目を票に書く。**捨てない**（沈黙で落とすと、charter が悪いのかスキルが壊れたのか
    人が切り分けられない）

@@ -65,6 +65,24 @@ class ExtractJsonTests(unittest.TestCase):
         text = '雑談 {"actions": [{"type": "note"}]} 続き'
         self.assertEqual(llmjson.extract_json(text), {"actions": [{"type": "note"}]})
 
+    def test_bare_answer_beats_a_trailing_example_fence(self):
+        """地の文の JSON はフェンスより主張が強い（自由文の器＝クラウド CLI の形）。
+
+        「本文に成果の JSON・後ろに『参考までに例:』のフェンス」で、フェンス優先だと
+        例のほうを成果として採ってしまう（2026-08-31 に実挙動で確認した誤採用）。
+        """
+        text = ('結果は以下のとおりです。\n\n'
+                '{"items": ["a", "b"], "ok2": true}\n\n'
+                '参考までに、期待される形式の例:\n'
+                '```json\n{"items": ["example"]}\n```\n')
+        self.assertEqual(llmjson.extract_json(text)["items"], ["a", "b"])
+
+    def test_quoted_draft_does_not_beat_the_fenced_final(self):
+        """行内引用の途中経過は地の文ではない——フェンスの最終成果を隠さない。"""
+        text = ('一度目の試行が `{"draft": true}` で失格。修正しました:\n'
+                '```json\n{"final": true}\n```')
+        self.assertEqual(llmjson.extract_json(text), {"final": True})
+
     def test_no_json_raises_with_the_caller_label(self):
         with self.assertRaises(ValueError) as ctx:
             llmjson.extract_json("成果報告のみでデータがありません。", what="planner 出力")
