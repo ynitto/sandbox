@@ -137,8 +137,9 @@ test('buildCommand: codex・cursor・ollamaでもcharter補完を実行できる
   const ollama = agent.buildCommand('ollama', 'qwen3', 'PROMPT');
   assert.strictEqual(ollama.command, 'agent-herd', 'headless は統合入口（usage 計測ラッパー）経由');
   // 読み取り専用なので --tools は付かない（ツールは write のときだけ生える）。
-  // think はヘッドレスでは off（TUI だけ on。agents/ollama.json の readonly_args）。
-  assert.deepStrictEqual(ollama.args, ['ollama', 'qwen3', '--think', 'off']);
+  // think は readonly ヘッドレスと TUI で on・write は off（agents/ollama.json。
+  // 2026-08-31 反転: MP1 off 1/5 → on 5/5・中央値 46s）。
+  assert.deepStrictEqual(ollama.args, ['ollama', 'qwen3', '--think', 'on']);
   assert.strictEqual(ollama.stdin, 'PROMPT');
 });
 
@@ -149,7 +150,8 @@ test('buildDoctorCommand: 全CLIが読み取り専用で起動する（道具ゼ
   // （--tools ''）は器の強い CLI から探索まで奪っていた（readonly の適度な自由度・2026-08-31）
   assert.ok(!claude.args.includes('--tools'), '読み取り道具は残す');
   const copilot = agent.buildDoctorCommand('copilot', '', 'P', '/project');
-  assert.ok(copilot.args.includes('--available-tools='));
+  // 道具ゼロ（--available-tools=）から読み取り 3 道具へ（§10.4 実機確認・2026-08-31）
+  assert.ok(copilot.args.includes('--available-tools=view,grep,glob'));
   const codex = agent.buildDoctorCommand('codex', '', 'P', '/project');
   assert.ok(codex.args.includes('read-only') && codex.args.includes('--ephemeral'));
   const cursor = agent.buildDoctorCommand('cursor', '', 'P', '/project');

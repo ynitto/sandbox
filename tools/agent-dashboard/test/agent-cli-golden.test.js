@@ -41,7 +41,7 @@ const GOLDEN = {
     write: ['copilot', '-s', '--allow-all-tools', '--no-color',
             '--allow-all-paths', '--model', 'M', '-p', 'P'],
     readonly: ['copilot', '-s', '--allow-all-tools', '--no-color',
-               '--available-tools=', '--disable-builtin-mcps',
+               '--available-tools=view,grep,glob', '--disable-builtin-mcps',
                '--no-custom-instructions', '--model', 'M', '-p', 'P'],
     interactive: ['copilot', '--model', 'M'],
   },
@@ -56,13 +56,14 @@ const GOLDEN = {
     // 予算は write だけ 12 ラウンドへ絞ってある（read セットの ollama-read は 30 のまま）。
     // 実測の空回り run に「もう少し回れば畳めた」形跡が無く、30 まで回せること自体が
     // ターンの食いつぶしだった。読取は 1 ラウンドが安いので絞らない。
-    // think はヘッドレスの全役割で off（実測 2026-08-10・ログ 236 本）。write は 1 ラウンドの
-    // 思考だけで 7700 トークン・12 分（p90 942 秒 > agent_timeout 600 秒）、readonly は
-    // 中央値 1000 秒、--format 併用は文法が thinking から掛かって本文が空（39/39 件）。
-    // 人が待てる TUI だけ on。
+    // think は write ヘッドレスだけ off（1 ラウンドの思考で 7700 トークン・12 分、
+    // p90 942 秒 > agent_timeout 600 秒。実測 2026-08-10・ログ 236 本）。readonly は
+    // on へ反転（2026-08-31: MP1 off 1/5 → on 5/5・中央値 46s。「readonly on は中央値
+    // 1000 秒」は qwen 時代の数字）。--format を使う profile は文法が thinking から
+    // 掛かって本文が空（39/39 件）なので off のまま。TUI も on。
     write: ['agent-herd', 'ollama', 'M', '--think', 'off', '--tools', 'bash',
             '--max-rounds', '12', '--command-timeout', '900'],
-    readonly: ['agent-herd', 'ollama', 'M', '--think', 'off'],
+    readonly: ['agent-herd', 'ollama', 'M', '--think', 'on'],
     interactive: ['agent-herd', 'ollama', '--tui', '--think', 'on', 'M'],
   },
   'ollama-json': {
