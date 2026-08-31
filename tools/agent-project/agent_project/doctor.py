@@ -898,6 +898,47 @@ def doctor_host_config_findings(host=None) -> "list[dict]":
     return out
 
 
+def doctor_agent_defs_findings(project_dir=None) -> "list[dict]":
+    """同梱のエージェント定義（agents/*.json）と配布物（~/.agents/agents/）のドリフト検査。
+
+    **どの doctor が見るべき面か**（設計判断・2026-08-31）: 配布物は agent-herd 専用の
+    持ち物ではない。定義は agentcore.agentcli を通じて全エンジン（project / flow / amigos /
+    audit / herd / loop）が読み、実害も plan の器分岐（json_object_only 欠落）や claude /
+    kiro の readonly 姿勢と、herd の外で出た。配布の書き手（install.sh）は一族の統合
+    インストーラで、その完了時に案内される「構成の検査」の入口が agent-project doctor
+    ——residency・host.yaml・node_id と同じ **PC 単位の面**をここが既に担っている。
+    agent-herd に doctor は存在せず、1 検査のために新しい診断面は作らない。検査の実体
+    （探索順・同梱 dir の知識）は `agentcore.agentcli.bundled_drift` に置いたので、herd が
+    将来 doctor を持てば同じ 1 実装を呼べる（C7: 写しを作らない）。
+
+    fix は install.sh 再実行の**案内に留める**——毎回の手動 cp が再発源で、個別 cp を
+    案内するとまた 1 ファイルだけ直して残りが漏れる。--fix でも実行しない（インストーラの
+    実行は診断コマンドの副作用として大きすぎる）。title は定義ごとに変える——
+    `_dedupe_findings` は (category, title) で畳むので、同じ題だと何件ドリフトしているかの
+    内訳が消える。"""
+    try:
+        drift = _agentcli.bundled_drift(project_dir)
+    except Exception:  # noqa: BLE001 — doctor は検査対象の不備で落ちない
+        return []
+    out: "list[dict]" = []
+    for d in drift:
+        if d["reason"] == "missing":
+            title = f"エージェント定義が配布されていない: {d['name']}.json"
+            evidence = (f"同梱 {d['bundled']} の配布物 {d['dist']} が無い。zipapp 配布の"
+                        "エンジンは同梱定義を持ち出せないため、この定義は配布インストール"
+                        "では未知の agent_cli になる")
+        else:
+            title = f"エージェント定義の配布物が同梱と食い違う: {d['name']}.json"
+            evidence = (f"配布物 {d['dist']} の内容が同梱 {d['bundled']} と異なる。"
+                        "探索順は配布物を同梱より先に解決するため、同梱定義への修正は"
+                        f"実機に届かない（この環境で効くのは {d['resolved']}）")
+        out.append({"category": "env", "severity": "warn", "title": title,
+                    "evidence": evidence,
+                    "fix": "bash tools/agent-tools/install.sh を再実行して配布物を同梱定義へ"
+                           "揃える（1 ファイルだけの手動 cp は他の定義の直し漏れを残す）"})
+    return out
+
+
 def structure_counts() -> dict:
     """断片合成と CLI 入口の対応を数える（W15・純関数）。
 
@@ -1374,6 +1415,7 @@ def cmd_doctor(cfg: "Config", fix: bool = False, as_json: bool = False,
                      + doctor_structure_findings()
                      + doctor_node_id_spelling_findings()
                      + doctor_host_projects_findings()
+                     + doctor_agent_defs_findings()
                      + node_id_cutover_findings(cfg, cutover_from or ""))
     for f in deterministic:
         f["source"] = "check"
@@ -1404,6 +1446,7 @@ def cmd_doctor(cfg: "Config", fix: bool = False, as_json: bool = False,
                  + doctor_structure_findings()
                  + doctor_node_id_spelling_findings()
                  + doctor_host_projects_findings()
+                 + doctor_agent_defs_findings()
                  + node_id_cutover_findings(cfg, cutover_from or "")}
         for f in findings:
             if f.get("source") == "check" and not f.get("resolved"):

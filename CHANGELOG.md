@@ -7,6 +7,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-tools: 同梱定義と配布物のドリフトを doctor が検出するようになった
+
+- **同梱の `agents/*.json` を直しても実機に届かないことがあった。** install.sh が
+  `~/.agents/agents/` へ配る写しは探索順で同梱より先に解決されるため、写しが古いままだと
+  修正が静かに不発になる（ollama.json の json_object_only 欠落で plan の器分岐が実機不発、
+  readonly_args の think 反転が届かない、claude/kiro の readonly 姿勢が古いまま——短期間に
+  3 度、毎回手動 cp で復旧していた）。
+- `agent-project doctor` に決定的チェックを足した（category=env・warn・LLM 不要）。同梱と
+  配布物のハッシュ比較で差分と「配られていない定義」を所見にし、fix は install.sh 再実行の
+  案内に留める——個別 cp を案内するとまた 1 ファイルだけ直して残りが漏れる。--fix でも
+  インストーラは実行しない（診断コマンドの副作用として大きすぎる）。
+- **見る面は agent-project doctor に決めた。** 定義は agentcore を通じて全エンジンが読み、
+  実害も plan の器分岐や claude/kiro の readonly 姿勢と agent-herd の外で出ている——配布物は
+  herd の領分ではなく、PC 単位の面（residency・host.yaml・node_id と同族）。agent-herd に
+  doctor は無く、1 検査のために新しい診断面は作らない。検査の実体
+  （`agentcore.agentcli.bundled_drift`）は探索順の持ち主である agentcore に置いたので、
+  herd が将来 doctor を持てば同じ 1 実装を呼べる。
+- 意図した上書き（`$KIRO_AGENTS_DIR`・プロジェクトの `agents/`・`~/.kiro/agents` が勝つ
+  名前）と、install.sh を実行していない開発機・zipapp 配布（同梱 dir が無い＝配布物が正）
+  には言わない——first-wins の契約へ恒久警告を浴びせない。
+
 ### vscode-copilot: 編集が通るようになった
 
 - **Copilot の編集ツールは chat request の外からは動かない。** `copilot_applyPatch` は
