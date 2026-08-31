@@ -1296,6 +1296,26 @@ test('実行時に増える工程もカードと編集画面の両方へ同じ�
   assert.strictEqual(routeVisual.nodes.find((node) => node.runtime).label, '専門作業');
 });
 
+test('人の確認を追加するとサムネイルと編集画面の共通モデルへ差し戻し経路を補う', () => {
+  const pattern = { id: 'human-review', template: { nodes: [
+    { id: 'work', kind: 'work', deps: [] },
+    { id: 'review', kind: 'human', deps: ['work'] },
+  ] } };
+  const workflow = workflowUi.workflowFromPattern(pattern, 'small');
+  const visual = workflowUi.visualWorkflow(workflow);
+  const revise = visual.nodes.find((node) => node.id === 'review--runtime-revise');
+
+  assert.ok(revise, '新しく置いた人の確認にも差し戻し工程を表示する');
+  assert.strictEqual(revise.label, '差し戻して再作業');
+  assert.deepStrictEqual(revise.deps, ['review']);
+  assert.deepStrictEqual(revise.runtimeReturns, ['work']);
+  assert.strictEqual(revise.runtime, true, '保存する DAG ではなく読み取り専用の実行時表現にする');
+  assert.deepStrictEqual(workflowUi.patternColumns(pattern), workflowUi.workflowColumns(visual),
+    '雛形サムネイルとノード編集 UI が同じ差し戻し込みモデルを使う');
+  assert.deepStrictEqual(workflowUi.patternColumns(pattern),
+    [['開始'], ['作業'], ['人の確認', '作業'], ['終了']]);
+});
+
 test('初期画面は保存済み・一から作る・雛形を同じカード導線にまとめる', () => {
   const previousEsc = global.esc;
   global.esc = (value) => String(value);
