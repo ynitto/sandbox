@@ -39,6 +39,7 @@
   const DESIGN_USER_REVIEW = '__design-user-review__';
   const DESIGN_COMPLETE = '__design-complete__';
   const DESIGN_REVISE = '__design-revise__';
+  const REVIEW_REVISE_SUFFIX = '--runtime-revise';
   const KIND_META = {
     work: ['作業', '依頼に対して成果を作る'],
     generate: ['生成', '異なる候補を作る'],
@@ -1724,6 +1725,22 @@
         exit.clear();
         exit.add(DESIGN_COMPLETE);
       }
+    }
+    // 人の承認は「通過する」だけでなく、理由付きで前工程へ差し戻せる。設計フローの
+    // Dashboard 確認だけに専用表現を持たせると、実装フローへ人の確認を追加した直後や
+    // 雛形サムネイルでは差し戻し経路が見えない。保存する DAG は変えず、どちらも同じ
+    // 読み取り専用ノードと戻り線を合成して、実行時の分岐であることを示す。
+    for (const review of nodes.filter((node) => node.kind === 'human' && !node.runtime)) {
+      const returns = (review.deps || []).filter((id) => nodes.some((node) => node.id === id));
+      if (!returns.length) continue;
+      nodes.push({
+        id: `${review.id}${REVIEW_REVISE_SUFFIX}`,
+        label: '差し戻して再作業',
+        goal: '差し戻し理由を反映して前の工程をやり直す',
+        kind: 'work', deps: [review.id], x: Number(review.x), y: Number(review.y) + 180,
+        runtime: true, lifecycle: true, runtimeRole: '再作業', runtimeLabel: '差し戻し時',
+        runtimeReturns: returns,
+      });
     }
     return { ...workflow, nodes, exit: [...exit] };
   }
