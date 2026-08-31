@@ -248,7 +248,15 @@ async function main() {
   assert.ok(src.includes('run(parameters, executionChoice)'), '実行条件とパラメータを一回の実行へだけ渡す');
   assert.ok(src.includes('api.coworkRunStateMachine(id, parameters, executionChoice)'),
     'state-machine IPCへ選んだ実行条件を渡す');
-  assert.ok(src.includes('type="text" autocomplete="off" required'), '初版は必須の文字列入力だけにする');
+  // 入力欄の器はワークフローの `{{key}}` 投入と共有する 1 実装（parameter-fields.js）。
+  // 定常業務側で作り直すと、同じ `{{key}}` に別の入力規則が生まれる。
+  const parameterFieldsSrc = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'renderer', 'parameter-fields.js'), 'utf8');
+  assert.ok(parameterFieldsSrc.includes('type="text"')
+    && parameterFieldsSrc.includes('autocomplete="off" required'), '初版は必須の文字列入力だけにする');
+  assert.ok(src.includes("parameterFields.fieldsHtml(keys, {"), '入力欄は共有実装で組む');
+  assert.ok(src.includes("parameterFields.readValues(fields, 'data-cowork-parameter')"),
+    '入力値の読み取りも共有実装を使う');
   assert.ok(src.includes('dlg.showModal()'), 'HTML dialog をモーダル表示する');
   assert.ok(src.includes("dlg.addEventListener('cancel', onCancel)"), 'Escape では実行せず閉じる');
   console.log('ok - 今すぐ実行は段と入力を HTML ダイアログで確定する');

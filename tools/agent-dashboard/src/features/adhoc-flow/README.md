@@ -178,6 +178,44 @@ git pull / commit / push もしない。
 同期する仕組みであり、成果物リポジトリの設定配布には流用しない。agent-project の状態同期へ
 載せる案も、任意の成果物リポジトリと状態リポジトリの所有権を混ぜるため採用しない。
 
+## 流用（過去の run・セッションをもう一度使う）
+
+設計: `docs/plans/2026-08-31-agent-session-reuse-rerun-design.md`。新しい実行系・状態ストアは
+作らず、既存の投函口（agent-flow の inbox）・保存形ワークフロー・反復機構へ載せる。
+
+- **編集付き再実行（fork）**: 実行詳細の「再実行」は二択。「同じ入力で再実行」は従来の逐語複製、
+  「入力を編集して再実行」は旧 inbox 記録をプリフィルしたフォームを開き、依頼内容・対象フォルダ・
+  フロー・分け方を直して投函する。**`inherit_from` は使わない**——世代交代（先行 run の墓標化・
+  削除）ではなく分岐なので、旧 run は参照として残し、系譜は `root_run_id` / `previous_run_id` で
+  繋ぐ。変えた契約キーは inbox の `edited_fields` に残る。plan を差し替えたときは旧 run の
+  `pattern` を連れて行かず、書込先を変えたときは一貫性ゲートの検証計画を組み直す。
+  agent-project 管理下のタスク（`req-…-r<n>-v<rev>`）は対象外——そちらは既存の `revise` が正。
+- **セッションの蒸留**: 「利用状況」のセッション一覧から「このセッションを種に」。ローカルの
+  会話を読み、AI が要求文またはワークフローの下書きを作り、人が編集して確定する。
+  **transcript を直接再実行の入力にしない**。本文は下書きの材料にするだけで、inbox・保存形・
+  状態リポジトリのどこにも書かない。蒸留物が正本なので、30 日の GC で transcript が消えても
+  流用資産は残る。過去 run を種にする経路は LLM を通さない（inbox 記録から決定的に写す）。
+  agent-audit は読み手のまま——transcript を読むのは dashboard で、書き先は adhoc inbox と
+  ワークフローライブラリだけ。
+- **複製元（`source`）**: 保存形の任意フィールド。`session/<agent_cli>/<session_id>` か
+  `run/<run-id>`。作業ルールの `source: methods/<id>@<hash>` と同じ流儀で、来歴であって定義では
+  ないので digest の対象にしない。
+- **`{{key}}`**: 保存形の goal / 依頼文に書ける入力パラメータ。検出・検証・置換は定常業務の
+  実行条件ダイアログと同じ 1 実装（`src/base/main/template-parameters.js` ＋ 画面側の
+  `src/renderer/parameter-fields.js`）。予約語（`{{request}}`・statemachine の組み込み変数）は
+  従来の意味を保ち入力扱いしない。型は文字列だけで、未入力・未定義キーは投函前に断る。
+- **一括投函**: パラメータ行 × テンプレートで n 本の adhoc run をまとめて投函する。各 run は
+  自分の `workspace` を持つ（**1 run = 1 workspace は維持**）ので、成果物のリポジトリまたぎは
+  行分割で満たす。投函前に「件数 × 概算予算」の確認と件数上限を必ず通し、同時に投函した run は
+  `batch_id` で束ねる。担当を宣言していないリポジトリの行は確認画面で印を付けるだけで、
+  板への公示は既存の「委譲」画面が担う（投函口が勝手に公示しない）。
+- 反復の残り 2 形は既存機構へ振り分ける。**run 内の map** は `split → map×N → reduce`
+  （`--max-fanout` で有界）で、テンプレートのパラメータは split ノードの goal に置いた
+  `{{key}}` へそのまま入る（投函前の置換が split への配線を兼ねる。専用の配線口は作らない）。
+  **収束までの反復**は run 内の `loop-until-done`（`max_iterations` で有界）か fork チェーン、
+  目標駆動の自動反復は agent-project（charter）。**定期反復**は定常業務（routines /
+  agent-loop）へテンプレートを登録する（登録導線は未接続。設計の段階導入 4 の項目）。
+
 ## バックログ連携
 
 実行前レビューと再実行で同じフロー一覧を選べる。選択は `backlog/<task-id>.flow.json` に固定し、agent-project が `--pattern` または `--plan-file` として agent-flow へ渡す。sidecar が無い場合は自動。

@@ -55,7 +55,28 @@ module.exports = {
   adhocFlowRun: (invoke) => (payload) => invoke('adhocFlow:run', payload || {}),
   adhocFlowInteractionResponse: (invoke) => (payload) => invoke('adhocFlow:interactionResponse', payload || {}),
   adhocFlowSubmit: (invoke) => (payload) => invoke('adhocFlow:submit', payload || {}),
-  adhocFlowResubmit: (invoke) => (payload) => invoke('adhocFlow:resubmit', payload || {}),
+  // 編集付き再実行。plan は渡さず、フロー選択（id / scope / repository）だけを送る
+  // ——定義の解決と plan 化は main が行う（他の投入口と同じ規則）。
+  adhocFlowResubmit: (invoke) => (payload) => {
+    const value = { ...(payload && typeof payload === 'object' ? payload : {}) };
+    if (value.edits && typeof value.edits === 'object') {
+      const edits = { ...value.edits };
+      delete edits.plan;
+      if (edits.selection && typeof edits.selection === 'object') {
+        edits.selection = { ...edits.selection, ...designRefOnly(edits.selection) };
+        delete edits.selection.definition;
+        delete edits.selection.plan;
+      }
+      value.edits = edits;
+    }
+    return invoke('adhocFlow:resubmit', value);
+  },
+  adhocFlowRunInput: (invoke) => (payload) => invoke('adhocFlow:runInput', payload || {}),
+  adhocFlowDistillSession: (invoke) => (payload) => invoke('adhocFlow:distillSession', payload || {}),
+  adhocFlowDistillRun: (invoke) => (payload) => invoke('adhocFlow:distillRun', payload || {}),
+  adhocFlowSaveDistilled: (invoke) => (payload) => invoke('adhocFlow:saveDistilled', payload || {}),
+  adhocFlowBatchPreview: (invoke) => (payload) => invoke('adhocFlow:batchPreview', payload || {}),
+  adhocFlowBatchSubmit: (invoke) => (payload) => invoke('adhocFlow:batchSubmit', payload || {}),
   adhocFlowCancel: (invoke) => (payload) => invoke('adhocFlow:cancel', payload || {}),
   adhocFlowForceComplete: (invoke) => (payload) => invoke('adhocFlow:forceComplete', payload || {}),
   adhocFlowDeleteRun: (invoke) => (payload) => invoke('adhocFlow:deleteRun', payload || {}),

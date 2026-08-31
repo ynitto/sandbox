@@ -622,37 +622,12 @@ function resolveItem(config, id) {
 // 実行プロンプトの解決（ウィンドウ実行 = agent-loop を介さず tmux + kiro-cli へ直接送る用）
 // ---------------------------------------------------------------------------
 
-const TEMPLATE_PARAMETER_RE = /\{\{\s*([A-Za-z_][A-Za-z0-9_.-]*)\s*\}\}/g;
-const LOOP_PARAMETER_RE = /\{\{\s*([A-Za-z_][A-Za-z0-9_.-]*)\s*\}\}|(?<!\{)\{([A-Za-z_][A-Za-z0-9_.-]*)\}(?!\})/g;
-
-function templateParameterKeys(...texts) {
-  const keys = [];
-  const seen = new Set();
-  for (const text of texts) {
-    for (const match of String(text || '').matchAll(TEMPLATE_PARAMETER_RE)) {
-      if (!seen.has(match[1])) {
-        seen.add(match[1]);
-        keys.push(match[1]);
-      }
-    }
-  }
-  return keys;
-}
-
-function loopParameterKeys(...texts) {
-  const keys = [];
-  const seen = new Set();
-  for (const text of texts) {
-    for (const match of String(text || '').matchAll(LOOP_PARAMETER_RE)) {
-      const key = match[1] || match[2];
-      if (!seen.has(key)) {
-        seen.add(key);
-        keys.push(key);
-      }
-    }
-  }
-  return keys;
-}
+// 検出・検証・置換は base/main/template-parameters.js の 1 実装を共有する
+// （保存形ワークフローの `{{key}}` も同じ実装を使う。C7）。
+const {
+  templateParameterKeys, loopParameterKeys, validateParameters, applyParameters,
+  RUNTIME_CONTEXT_KEYS,
+} = require('../../../base/main/template-parameters');
 
 // ステートマシン定義（.statemachine/<name>/workflow.yaml）の参照先を解決する。
 function stateMachineFilePath(item, cwd, config) {
@@ -695,19 +670,12 @@ function contextValue(context, key) {
   return value;
 }
 
-// statemachine 実行器が自分で作って注入する変数。workflow の `context:` に値が無く、
+// statemachine 実行器が自分で作って注入する変数（RUNTIME_CONTEXT_KEYS）は
+// base/main/template-parameters.js が正典。workflow の `context:` に値が無く、
 // action / condition / on_enter / on_exit から参照されていても**ユーザー入力として要求しない**
 // ——人が入れる値ではなく、実行器が実行開始時とステート実行中に生成するため。
-// 正典は statemachine-use の references/schema.md「Context Variable Reference」と、
-// それを実装する engine.py / agent-loop の statemachine ハーネス（_sm_initial_context）。
-//   実行開始時に注入: today / now / history / step_count / last_output / current_state / context
-//   ステート実行中に注入: 決定的検査（check）の check_status / check_ok / check_output
 // 履歴変数（history.<state_id>）とステート出力変数（output_key）は参照側で別に除く。
-// `input` はここへ入れない——実行器ではなく人が渡す値（`--input`）なので必須入力のまま。
-const RUNTIME_CONTEXT_KEYS = new Set([
-  'today', 'now', 'history', 'step_count', 'last_output', 'current_state', 'context',
-  'check_status', 'check_ok', 'check_output',
-]);
+// `input` はそこへ入れない——実行器ではなく人が渡す値（`--input`）なので必須入力のまま。
 
 // statemachine-use の正式なテンプレート面だけを読む。action_file / condition_file と
 // 自動探索ファイルもエンジンと同じ優先順で解決し、実行中に生成される変数は入力にしない。
@@ -833,25 +801,6 @@ function routineParameterSpec(config, item) {
     if (!Object.prototype.hasOwnProperty.call(spec.defaults, key) && !spec.keys.includes(key)) spec.keys.push(key);
   }
   return applyEntryConditions(spec, item, pairedBody);
-}
-
-function validateParameters(spec, raw) {
-  if (spec.error) throw new Error(`入力パラメータを確認できません: ${spec.error}`);
-  const values = raw == null ? {} : raw;
-  if (!isPlainObject(values)) throw new Error('入力パラメータの形式が不正です');
-  const unknown = Object.keys(values).filter((key) => !spec.keys.includes(key));
-  if (unknown.length) throw new Error(`未定義の入力パラメータです: ${unknown.join(', ')}`);
-  const missing = spec.keys.filter((key) => !Object.prototype.hasOwnProperty.call(values, key)
-    || String(values[key]).trim() === '');
-  if (missing.length) throw new Error(`入力してください: ${missing.join(', ')}`);
-  return Object.fromEntries(spec.keys.map((key) => [key, String(values[key]).trim()]));
-}
-
-function applyParameters(prompt, values) {
-  return String(prompt || '').replace(LOOP_PARAMETER_RE, (whole, doubleKey, singleKey) => {
-    const key = doubleKey || singleKey;
-    return Object.prototype.hasOwnProperty.call(values, key) ? values[key] : whole;
-  });
 }
 
 function stateMachineParameterBlock(values) {

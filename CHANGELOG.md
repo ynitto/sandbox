@@ -7,6 +7,51 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-dashboard: 過去の run・セッションを流用して実行できるようになった
+
+- **「参考にして、入力を変えて、もう一度実行する」入口が無かった。** できたのは同一入力の
+  完全複製（再実行）とタスクの積み直しだけで、(1) 過去 run の入力を編集して再投入する、
+  (2) agent-flow run を持たない素の CLI セッションを種にする、(3) その流用を n 件へ展開して
+  繰り返す、の 3 つが欠けていた（設計:
+  `docs/plans/2026-08-31-agent-session-reuse-rerun-design.md`）。
+- **編集付き再実行（fork）**: 実行詳細の「再実行」を「同じ入力で再実行」「入力を編集して
+  再実行」の二択にした。後者は旧 inbox 記録をプリフィルして開き、依頼内容・対象フォルダ・
+  フロー・分け方を直してから投函する。**`inherit_from` は使わない**——入力を変えた再実行は
+  世代交代（先行 run の墓標化・削除）ではなく分岐なので、旧 run は参照として残し、系譜は
+  既存の `root_run_id` / `previous_run_id` だけで繋ぐ。何を変えたかは inbox の
+  `edited_fields` に残す。plan を差し替えた再実行は旧 run の `pattern` を連れて行かない
+  （plan と pattern の同時指定は agent-flow が failed 終端させる）。書込先を変えたときは
+  一貫性ゲートの検証計画も組み直す（古い digest のままだと receipt が捨てられ続ける）。
+- **セッションの蒸留**: 「利用状況」にセッション一覧と「このセッションを種に」を足した。
+  ローカルの会話を読み、AI が要求文またはワークフローの下書きを作り、**確定は人**（C4）。
+  確定した蒸留物は 1 回だけ投函するか、ワークフローライブラリへ保存する。
+  **transcript を直接再実行の入力にはしない**——会話本文は下書きの材料にするだけで、
+  inbox・保存形・状態リポジトリのどこにも書かない。蒸留物が正本なので、30 日の GC で
+  transcript が消えても流用資産は残る。保存形には複製元 `source`
+  （`session/<cli>/<id>` ／ `run/<run-id>`）だけが付く。
+- **`{{key}}` を保存形テンプレートへも許した**。検出・検証・置換は定常業務の実行条件
+  ダイアログと同じ 1 実装を共有する（`src/base/main/template-parameters.js` ＋
+  `src/renderer/parameter-fields.js`。C7: 2 実装にしない）。予約語（`{{request}}`・
+  statemachine の組み込み変数）は従来の意味を保ち入力扱いしない。未入力・未定義キーは
+  投函前に断る——`{{key}}` のまま走らせると、依頼文の文字列がそのまま指示として実行される。
+- **一括投函**: パラメータ行 × テンプレートで n 本の adhoc run をまとめて投函する。行ごとに
+  `workspace` を持つので「1 run = 1 workspace」は崩さず、成果物のリポジトリまたぎをここで
+  満たす（読み取りのまたぎは従来どおり `references`）。**投函前に「件数 × 概算予算」の確認と
+  件数上限を必ず通す**（C1）。同時に投函した run は `batch_id` で束ねる。担当を宣言して
+  いないリポジトリの行は確認画面で印を付けるだけで、委譲は既存の「委譲」画面が担う
+  （投函口が板へ勝手に公示しない）。
+- 契約の変更はすべて任意キーの追加で互換。agent-flow inbox に `edited_fields` / `batch_id`
+  （既存の `root_run_id` / `previous_run_id` も spec へ明文化）、
+  `schemas/agent-workflow.schema.json` に `source` と goal の `{{key}}` の意味を足した。
+  新しいエンジン・デーモン・ストアは作っていない。
+
+### agent-audit: sessions の JSON 出力もスクラブを通すようになった
+
+- `sessions --json` だけが他の export 系（usage / stats / report / tasks）と違いスクラブを
+  通っていなかった。読み手はこの本文を画面へ出すだけでなく、dashboard の「このセッションを
+  種に」で**要求文の下書き材料として LLM へ渡す**——資格情報らしいトークンとホーム絶対パスが
+  そこで初めてノード外へ出る経路になっていた。cleaning は従来どおり readers が通す。
+
 ### agent-tools: 同梱定義と配布物のドリフトを doctor が検出するようになった
 
 - **同梱の `agents/*.json` を直しても実機に届かないことがあった。** install.sh が

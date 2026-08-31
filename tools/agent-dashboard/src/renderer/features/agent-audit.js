@@ -87,6 +87,13 @@
   let lastAutoAt = 0;
   let autoBusy = false;
   let autoCollectTried = false;   // 初回の自動収集はセッション中 1 回だけ試す
+  // 素の CLI セッションの流用（docs/plans/2026-08-31-agent-session-reuse-rerun-design.md §2）。
+  // 一覧はメタデータだけ。本文（transcript）はこの画面へ持ってこない——蒸留の材料として
+  // main が読むだけで、下書きになった時点で本文は捨てる。
+  let sessionsData = null;
+  let sessionsBusy = false;
+  let sessionsError = '';
+  let seed = null;   // { cli, sessionId, kind, busy, error, draft }
 
   function fmtTokens(n) {
     const v = Number(n) || 0;
@@ -546,7 +553,86 @@
       <header class="row"><h3>実行品質</h3></header>
       ${statsTableHtml(statsData)}
     </section>
+    ${sessionsPanelHtml()}
+    ${seedDialogHtml()}
     ${knowledgeSummaryHtml(knowledgeData)}`;
+  }
+
+  // --- 素の CLI セッションを種にする（流用の入口） -----------------------------
+  //
+  // 対話利用・agent-loop / cowork のセッションは agent-flow run を持たないので、run の
+  // 再実行では拾えない。ここから「蒸留 → 人が確定 → 投函またはライブラリ保存」へ渡す。
+  // **transcript 本文はこの画面には出さない**（会話そのものを見る導線は工程詳細の
+  // 「会話を見る」が持つ）。ここで扱うのは蒸留物だけ。
+
+  function sessionsPanelHtml() {
+    const rows = (sessionsData && sessionsData.sessions) || [];
+    const body = rows.length
+      ? `<table class="audit-table"><thead><tr><th>エージェント</th><th>作業フォルダ</th>
+          <th>往復</th><th>最終更新</th><th></th></tr></thead><tbody>${rows.map((row) => `<tr>
+          <td>${escHtml(row.agent_cli || '')}</td>
+          <td class="mono">${escHtml(row.cwd || '（不明）')}</td>
+          <td>${Number(row.turns) || 0}</td>
+          <td>${escHtml(fmtShortWhen(new Date((Number(row.updated_at) || 0) * 1000).toISOString()))}</td>
+          <td><button type="button" class="primary-inline" data-audit-seed="${escHtml(row.native_id)}"
+            data-audit-seed-cli="${escHtml(row.agent_cli || '')}">このセッションを種に</button></td>
+        </tr>`).join('')}</tbody></table>`
+      : `<p class="muted">${sessionsBusy ? '会話の記録を探しています…' : 'この端末に会話の記録がありません。'}</p>`;
+    return `<section class="orch-panel audit-sessions" aria-labelledby="audit-sessions-title">
+      <header class="row"><h3 id="audit-sessions-title">最近のセッション</h3>
+        <div class="audit-actions">
+          <button type="button" id="audit-sessions-load"${sessionsBusy ? ' disabled' : ''}>${
+  sessionsBusy ? '読み込み中…' : '一覧を読み込む'}</button></div></header>
+      <p class="muted">対話で行った作業を、もう一度実行できる依頼文やフローへ起こせます。
+        会話の本文はこの端末から出ません。</p>
+      ${sessionsError ? `<p class="audit-error" role="alert">${escHtml(sessionsError)}</p>` : ''}
+      ${body}</section>`;
+  }
+
+  function seedDraftFieldsHtml(draft) {
+    if (draft && draft.kind === 'workflow' && draft.workflow) {
+      const nodes = Array.isArray(draft.workflow.nodes) ? draft.workflow.nodes : [];
+      return `<label class="field">フロー名
+          <input id="audit-seed-name" value="${escHtml(draft.workflow.name || '')}"></label>
+        <label class="field">説明
+          <input id="audit-seed-description" value="${escHtml(draft.workflow.description || '')}"></label>
+        <fieldset class="design-assignments"><legend>工程（${nodes.length}件）</legend>${nodes.map((node, index) =>
+    `<label class="field">${escHtml(node.label || node.id)}
+          <textarea data-audit-seed-goal="${index}" rows="3">${escHtml(node.goal || '')}</textarea></label>`).join('')}
+        </fieldset>`;
+    }
+    return `<label class="field">タスク名
+        <input id="audit-seed-title" value="${escHtml((draft && draft.title) || '')}"></label>
+      <label class="field">依頼内容
+        <textarea id="audit-seed-request" rows="12">${escHtml((draft && draft.request) || '')}</textarea></label>
+      <label class="field">対象フォルダ
+        <input id="audit-seed-cwd" value="${escHtml((draft && draft.cwd) || '')}" placeholder="/path/to/repository"></label>`;
+  }
+
+  function seedDialogHtml() {
+    if (!seed) return '';
+    const draft = seed.draft;
+    const workflow = draft && draft.kind === 'workflow';
+    return `<dialog id="audit-seed-dialog" class="task-create-dialog"><div class="dialog-heading">
+      <h2>このセッションを種に</h2>
+      <button type="button" class="wf-icon-button" data-audit-seed-close aria-label="閉じる">×</button></div>
+      <div class="dialog-scroll-body">
+        <p class="field-help">下書きは AI が作ります。内容を確認・編集してから確定してください
+          （確定するまで何も実行されません）。複製元: ${escHtml(seed.source || '')}</p>
+        <div class="row"><label>作るもの
+          <select id="audit-seed-kind"${seed.busy ? ' disabled' : ''}>
+            <option value="request"${workflow ? '' : ' selected'}>依頼文（1 回だけ実行する）</option>
+            <option value="workflow"${workflow ? ' selected' : ''}>ワークフロー（保存して繰り返す）</option>
+          </select></label>
+          <button type="button" id="audit-seed-draft"${seed.busy ? ' disabled' : ''}>${
+  escHtml(seed.busy || '下書きを作り直す')}</button></div>
+        ${seed.error ? `<p class="audit-error" role="alert">${escHtml(seed.error)}</p>` : ''}
+        ${seedDraftFieldsHtml(draft)}
+      </div>
+      <div class="dialog-actions"><span class="spacer"></span>
+        <button type="button" data-audit-seed-close>キャンセル</button>
+        <button type="button" class="primary-inline" id="audit-seed-confirm"${seed.busy ? ' disabled' : ''}>${
+  workflow ? 'ライブラリへ保存' : 'この内容で実行'}</button></div></dialog>`;
   }
 
   // 記憶3層（persona/ltm/wiki）+ moltbook の要約点数だけを出す最小限の面
@@ -733,6 +819,117 @@
     return Boolean(tabpane && tabpane.classList.contains('active'));
   }
 
+  async function loadSessions() {
+    if (!root.api || !root.api.agentAuditSessions || sessionsBusy) return;
+    sessionsBusy = true;
+    sessionsError = '';
+    render();
+    try {
+      sessionsData = await root.api.agentAuditSessions({ limit: 20 });
+    } catch (err) {
+      sessionsError = String((err && err.message) || err);
+    }
+    sessionsBusy = false;
+    render();
+  }
+
+  // 蒸留は AI 下書きまで。失敗しても入口は閉じず、空フォームへ縮退する
+  // （`with_transcripts` が無効な端末では本文が無いので下書きが作れない）。
+  async function requestSeedDraft() {
+    if (!seed || !root.api || !root.api.adhocFlowDistillSession) return;
+    seed = { ...seed, busy: '下書きを作っています…', error: '' };
+    render();
+    try {
+      const result = await root.api.adhocFlowDistillSession({
+        cli: seed.cli, sessionId: seed.sessionId, kind: seed.kind, cwd: seed.cwd,
+      });
+      seed = { ...seed, busy: '', error: '', source: result.source, draft: { ...result.draft, cwd: seed.cwd } };
+    } catch (err) {
+      seed = {
+        ...seed,
+        busy: '',
+        error: `${String((err && err.message) || err)} — 内容を自分で書いて確定できます。`,
+        draft: seed.kind === 'workflow'
+          ? { kind: 'workflow', workflow: { id: `session-${Date.now()}`, name: '', description: '', purpose: 'implementation', nodes: [] } }
+          : { kind: 'request', title: '', request: '', cwd: seed.cwd },
+      };
+    }
+    render();
+  }
+
+  function openSeed(cli, sessionId) {
+    const row = ((sessionsData && sessionsData.sessions) || [])
+      .find((item) => String(item.native_id) === String(sessionId)) || {};
+    seed = {
+      cli: String(cli || row.agent_cli || ''),
+      sessionId: String(sessionId || ''),
+      cwd: String(row.cwd || ''),
+      kind: 'request',
+      busy: '',
+      error: '',
+      source: `session/${cli}/${sessionId}`,
+      draft: null,
+    };
+    render();
+    requestSeedDraft();
+  }
+
+  function readSeedDraft(pane) {
+    const draft = (seed && seed.draft) || {};
+    const value = (id) => String(pane.querySelector(`#${id}`)?.value || '');
+    if (draft.kind === 'workflow' && draft.workflow) {
+      const nodes = (draft.workflow.nodes || []).map((node, index) => ({
+        ...node,
+        goal: String(pane.querySelector(`[data-audit-seed-goal="${index}"]`)?.value || node.goal || ''),
+      }));
+      return { ...draft, workflow: { ...draft.workflow, name: value('audit-seed-name'), description: value('audit-seed-description'), nodes } };
+    }
+    return { ...draft, kind: 'request', title: value('audit-seed-title'), request: value('audit-seed-request'), cwd: value('audit-seed-cwd') };
+  }
+
+  function wireSeedDialog(pane) {
+    const dialog = pane.querySelector('#audit-seed-dialog');
+    if (!dialog) return;
+    const close = () => { seed = null; if (dialog.open) dialog.close(); render(); };
+    for (const button of pane.querySelectorAll('[data-audit-seed-close]')) {
+      button.addEventListener('click', close);
+    }
+    dialog.addEventListener('cancel', (event) => { event.preventDefault(); close(); });
+    const kindSelect = pane.querySelector('#audit-seed-kind');
+    if (kindSelect) {
+      kindSelect.addEventListener('change', () => {
+        seed = { ...seed, kind: kindSelect.value, draft: null };
+        requestSeedDraft();
+      });
+    }
+    pane.querySelector('#audit-seed-draft')?.addEventListener('click', () => {
+      seed = { ...seed, draft: null };
+      requestSeedDraft();
+    });
+    pane.querySelector('#audit-seed-confirm')?.addEventListener('click', async () => {
+      if (!seed || seed.busy) return;
+      const draft = readSeedDraft(pane);
+      seed = { ...seed, draft, busy: '確定中…', error: '' };
+      render();
+      try {
+        if (draft.kind === 'workflow') {
+          // 蒸留物はワークフローライブラリ（自分用）へ。共有は通常の Git 運用が配る。
+          await root.api.adhocFlowSaveDistilled({ workflow: draft.workflow, source: seed.source });
+        } else {
+          if (!String(draft.request || '').trim()) throw new Error('依頼内容を入力してください');
+          await root.api.adhocFlowSubmit({
+            title: draft.title, request: draft.request, cwd: draft.cwd, selection: { type: 'auto' },
+          });
+        }
+        seed = null;
+      } catch (err) {
+        seed = { ...seed, busy: '', error: String((err && err.message) || err) };
+      }
+      render();
+    });
+    if (seed && !dialog.open) dialog.showModal();
+  }
+
   function wire(pane) {
     const on = (id, event, fn) => {
       const element = pane.querySelector(`#${id}`);
@@ -749,6 +946,11 @@
       by = event.target.value;
       loadData();
     });
+    on('audit-sessions-load', 'click', loadSessions);
+    for (const button of pane.querySelectorAll('[data-audit-seed]')) {
+      button.addEventListener('click', () => openSeed(button.dataset.auditSeedCli, button.dataset.auditSeed));
+    }
+    wireSeedDialog(pane);
     on('audit-save', 'click', () => saveSettings(pane));
     on('audit-agent-limits-save', 'click', () => saveAgentLimits(pane));
     for (const input of pane.querySelectorAll('.audit-settings input')) {
@@ -851,6 +1053,9 @@
     escHtml, fmtTokens, fmtSeconds, fmtShortWhen, pairsText,
     usageTableHtml, statsTableHtml, settingsHtml, settingsPanelHtml, collectStatusHtml, panelHtml,
     agentLimitSettingsHtml, knowledgeSummaryHtml,
+    sessionsPanelHtml, seedDialogHtml, seedDraftFieldsHtml,
+    _seed: (value) => { if (value !== undefined) seed = value; return seed; },
+    _sessions: (value) => { if (value !== undefined) sessionsData = value; return sessionsData; },
     workloadTableHtml, agentTableHtml, gaugeHtml, ledgerFallbackHtml,
     render, refresh, wire, reveal, portalCardHtml,
   };
