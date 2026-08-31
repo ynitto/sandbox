@@ -35,6 +35,60 @@ class TestDoctor(unittest.TestCase):
             self.assertEqual(km._config_contradiction_findings(
                 self._cfg(d, executor="stub", repo_map=False)), [])
 
+    def test_agent_defs_drift_is_an_env_finding(self):
+        """同梱 agents/*.json と配布物 ~/.agents/agents/ のドリフト検査（3 度実害が出た面）。
+
+        検査の実体は agentcore.agentcli.bundled_drift（探索順の持ち主）にあり、doctor は
+        env 所見への変換だけを担う。fix は install.sh 再実行の案内——毎回の手動 cp が
+        再発源で、個別 cp を案内するとまた 1 ファイルだけ直して残りが漏れる。"""
+        with tempfile.TemporaryDirectory() as d:
+            bundled = km._agentcli._bundled_dir()
+            self.assertIsNotNone(bundled, "リポジトリ直接実行では同梱 dir を解決できる")
+            home = Path(d) / "agents-home"
+            dist = home / "agents"
+            dist.mkdir(parents=True)
+            for src in bundled.glob("*.json"):
+                shutil.copy(src, dist / src.name)
+            stale = dist / "ollama.json"
+            stale.write_text(stale.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+            env = {"AGENT_PROJECT_AGENTS_HOME": str(home), "HOME": d, "USERPROFILE": d}
+            with mock.patch.dict(os.environ, env):
+                os.environ.pop("KIRO_AGENTS_DIR", None)   # patch.dict が終了時に戻す
+                findings = km.doctor_agent_defs_findings(project_dir=d)
+            self.assertEqual([f["title"] for f in findings],
+                             ["エージェント定義の配布物が同梱と食い違う: ollama.json"])
+            self.assertEqual(findings[0]["category"], "env")
+            self.assertEqual(findings[0]["severity"], "warn")
+            self.assertIn("install.sh", findings[0]["fix"], "fix は再インストールの案内")
+            # 写しが同梱と一致すれば無所見（配り直しで解消したことが観測できる）
+            shutil.copy(bundled / "ollama.json", stale)
+            with mock.patch.dict(os.environ, env):
+                os.environ.pop("KIRO_AGENTS_DIR", None)
+                self.assertEqual(km.doctor_agent_defs_findings(project_dir=d), [])
+
+    def test_cmd_doctor_includes_agent_defs_drift(self):
+        """`agent-project doctor` から到達できること（呼び出し元の無い検査を作らない）。"""
+        with tempfile.TemporaryDirectory() as d:
+            bundled = km._agentcli._bundled_dir()
+            home = Path(d) / "agents-home"
+            dist = home / "agents"
+            dist.mkdir(parents=True)
+            for src in bundled.glob("*.json"):
+                shutil.copy(src, dist / src.name)
+            (dist / "ollama.json").write_text('{"command": ["stale"]}', encoding="utf-8")
+            cfg = self._cfg(Path(d) / "proj")
+            km.ensure_dirs(cfg)
+            buf = io.StringIO()
+            with mock.patch.dict(os.environ,
+                                 {"AGENT_PROJECT_AGENTS_HOME": str(home),
+                                  "HOME": d, "USERPROFILE": d}), \
+                 contextlib.redirect_stdout(buf):
+                os.environ.pop("KIRO_AGENTS_DIR", None)
+                km.cmd_doctor(cfg, fix=False, as_json=True, agent_run=lambda p, m: "[]",
+                              flow_finder=lambda c, fix: [])
+            titles = {f["title"] for f in json.loads(buf.getvalue())["findings"]}
+            self.assertIn("エージェント定義の配布物が同梱と食い違う: ollama.json", titles)
+
     def test_unpushed_commits_are_reported(self):
         """origin へ未 push のコミットを検出する。
 

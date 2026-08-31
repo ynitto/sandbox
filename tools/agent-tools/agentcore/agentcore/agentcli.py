@@ -33,6 +33,7 @@ UI の応答性のため JS の自前ローダを持ち（Python を起こすと
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -215,6 +216,62 @@ def plugin_dirs(project_dir=None) -> "list[Path]":
     if bundled:
         dirs.append(bundled)
     return dirs
+
+
+def bundled_drift(project_dir=None, bundled: "Path | None" = None) -> "list[dict]":
+    """同梱定義（リポジトリの agents/）と配布物（`~/.agents/agents/`）の食い違いを検出する
+    （決定的・読み取り専用）。
+
+    配布物は install.sh が同梱定義を cp して作る写しで、独自定義の置き場ではない
+    （install.sh 自身が「この置き場は同梱定義の更新で上書きします」と案内する）。したがって
+    ここに差があるのは常に「配り直し忘れ」——探索順（`plugin_dirs`）は配布物を同梱より先に
+    解決するため、同梱定義を直しても実機は古い配布物で動き続け、修正が静かに届かない
+    （実際に起きた: ollama.json の json_object_only 欠落で plan の器分岐が実機で不発、
+    readonly_args の think 反転が届かない、claude/kiro の readonly 姿勢が古いまま——
+    いずれも気づいてから手動 cp で直す、を短期間に 3 度繰り返した）。
+
+    返り値は 1 定義 1 レコード:
+      {"name", "bundled", "dist", "reason": "differs"|"missing", "resolved"}
+    - 同梱 dir が無い（zipapp 配布で動いている）＝配布物が正なので検査対象なし。
+    - 配布 dir が無い（install.sh を一度も実行していない開発機）も無言——リポジトリ直接
+      実行では探索順の最後で同梱定義が解決されるので、写しが無いことは害にならない。
+    - 探索順で配布物より上位（$KIRO_AGENTS_DIR・プロジェクトの agents/・~/.kiro/agents）の
+      別ファイルが勝つ名前は対象外。first-wins の上書きは契約（上に置けば同梱定義を
+      上書きできる）で、意図した上書きへ恒久警告を出さない。
+    - 配布物が **無い** のも所見にする（reason="missing"）。zipapp 配布のエンジンは同梱
+      定義を持ち出せないため、配られていない定義は配布インストールでは未知の agent_cli
+      になる——新しい定義を足して配り忘れる、は差分と同じドリフトの一種。
+    """
+    src_dir = Path(bundled) if bundled else _bundled_dir()
+    if src_dir is None:
+        return []
+    src_dir = src_dir.resolve()
+    dist_dir = (_agents_home() / "agents").resolve()
+    if src_dir == dist_dir or not dist_dir.is_dir():
+        return []
+    out: "list[dict]" = []
+    for src in sorted(src_dir.glob("*.json")):
+        name = src.stem
+        try:
+            resolved = next((d / f"{name}.json" for d in plugin_dirs(project_dir)
+                             if (d / f"{name}.json").is_file()), None)
+            if resolved is not None:
+                resolved = resolved.resolve()
+                if resolved.parent not in (src_dir, dist_dir):
+                    continue            # 意図した上書きが勝っている（first-wins は契約）
+            dist = dist_dir / f"{name}.json"
+            if not dist.is_file():
+                reason = "missing"
+            elif (hashlib.sha256(dist.read_bytes()).hexdigest()
+                  != hashlib.sha256(src.read_bytes()).hexdigest()):
+                reason = "differs"
+            else:
+                continue
+        except OSError:
+            continue                    # 読めないものは判定不能（誤検知よりノイズの少なさ）
+        out.append({"name": name, "bundled": str(src), "dist": str(dist),
+                    "reason": reason, "resolved": str(resolved or src)})
+    return out
 
 
 def _strs(raw, field: str, path) -> "list[str]":
