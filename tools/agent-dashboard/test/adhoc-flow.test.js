@@ -2423,8 +2423,11 @@ test('保持期限の掃除は終端済み・未対応なしの古い run だけ
   };
   makeRun('old-done', 'done', '2026-08-01T00:00:00Z');
   makeRun('old-running', 'running', '2026-08-01T00:00:00Z');
+  // 期限切れ判定（flow.readRun）は注入した now ではなく実時刻を見るので、固定日付を書くと
+  // その日を過ぎた時点でこの run が「期限切れ＝掃除してよい」に変わり、テストが日付で壊れる。
+  // 意図は「未対応の確認が残っている run は保持する」なので、期限は常に未来に置く。
   makeRun('old-waiting', 'done', '2026-08-01T00:00:00Z', {
-    interaction_id: 'ix-1', expires_at: '2026-09-01T00:00:00Z',
+    interaction_id: 'ix-1', expires_at: new Date(Date.now() + 30 * 86400000).toISOString(),
   });
   makeRun('recent-done', 'done', '2026-08-10T00:00:00Z');
   assert.deepStrictEqual(adhoc.sweepExpiredRuns(cfg, now), ['old-done']);

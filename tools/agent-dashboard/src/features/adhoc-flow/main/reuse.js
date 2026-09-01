@@ -28,11 +28,24 @@ const BATCH_MAX_ROWS = 20;
 // あればそちらを使い、無いときだけこの数字で「桁」を示す（0 件と言い切らない）。
 const FALLBACK_TOKENS_PER_RUN = 120000;
 
-const DRAFT_KINDS = ['request', 'workflow'];
+// 蒸留物の 3 形。どれも「もう一度実行できる形」だが、載る機構が違う。
+//   request      … 1 回だけの adhoc 投函
+//   workflow     … 保存形ワークフロー（agent-flow の工程グラフ）
+//   statemachine … 定常業務（statemachine-use のステートマシン）。繰り返し・定期実行が要る
+//                  手順向けで、**YAML を書くのは statemachine-use スキル**（下記）
+const DRAFT_KINDS = ['request', 'workflow', 'statemachine'];
 
 function draftKind(raw) {
   const kind = String(raw || '').trim();
   return DRAFT_KINDS.includes(kind) ? kind : 'request';
+}
+
+// `.statemachine/<machine>/` のフォルダ名。cowork の generateStateMachine と同じ規則で、
+// 受け側でも同じ検査が走る（ここは投入前に人へ直させるための整形）。
+function sanitizeMachineId(raw, fallback = 'routine') {
+  const clean = String(raw || '').trim().toLowerCase()
+    .replace(/[^a-z0-9_.-]+/g, '-').replace(/^[-.]+|[-.]+$/g, '');
+  return clean && clean !== '.' && clean !== '..' ? clean.slice(0, 60) : fallback;
 }
 
 // --- 蒸留（セッション → 再利用できる要求文 / ワークフロー） -------------------
@@ -85,6 +98,45 @@ function workflowDraftPrompt(body, hint, kinds) {
     + '- goal は単独で読んで実行できる命令文にする。会話の経緯は書かない。\n\n'
     + (String(hint || '').trim() ? `利用者の補足:\n${String(hint).trim()}\n\n` : '')
     + `記録:\n${body}`;
+}
+
+// 定常業務（statemachine-use）の下書き。**YAML は書かせない。**
+// `.statemachine/<machine>/workflow.yaml` の書式の正典は statemachine-use スキルで、
+// 生成もそのスキルの作成モードが行う（cowork.generateStateMachine が対話 CLI を起こす）。
+// ここで作るのは作成モードへ渡す**手順の指示文**だけ——dashboard が YAML を組み立てると、
+// スキルとダッシュボードでステートマシンの書式が 2 実装になる（C7）。
+//
+// 指示文の形はスキルの分解原則に合わせる（SKILL.md「手順を状態遷移として分解する」）:
+// 1 ステート 1 成果物・成功は機械が測れる形・分岐条件はステートではなく遷移に書く。
+function statemachineDraftPrompt(body, hint) {
+  return 'あなたは過去の作業ログから、繰り返し実行できる定型業務の手順書を起こす編集者です。\n'
+    + '次の記録を読み、同じ種類の作業を毎回同じ手順で回すための**作成指示**を書いてください。\n'
+    + 'YAML は書かないでください（実際の定義は statemachine-use スキルが作ります）。\n\n'
+    + `規則:\n${DISTILL_RULES}\n`
+    + '- 形式: {"name":"業務名","machine":"英小文字とハイフンの識別名",'
+    + '"instruction":"手順の指示文（Markdown可）"}\n'
+    + '- instruction は次を順に含める:\n'
+    + '  1. この業務の目的（1〜2 文）\n'
+    + '  2. 工程の並び。**1 工程 1 成果物**にする（成果物が 2 つあるなら工程を割る）\n'
+    + '  3. 各工程の成功をどう確かめるか。コマンドで測れるなら、そのコマンドを書く\n'
+    + '  4. 分岐がある場合は「どの出力なら次へ進み、どの出力ならやり直すか」\n'
+    + '  5. 終了条件（どうなったら完了か）\n'
+    + '- 会話の経緯・その場限りの相談は書かない。毎回同じように読める手順にする。\n\n'
+    + (String(hint || '').trim() ? `利用者の補足:\n${String(hint).trim()}\n\n` : '')
+    + `記録:\n${body}`;
+}
+
+function normalizeStatemachineDraft(obj, { name: fallbackName } = {}) {
+  const instruction = String((obj && obj.instruction) || '').trim();
+  if (!instruction) throw new Error('エージェントの応答に手順がありません');
+  const name = String((obj && obj.name) || '').trim() || String(fallbackName || '').trim() || '定型業務';
+  return {
+    kind: 'statemachine',
+    name,
+    machine: sanitizeMachineId((obj && obj.machine) || name, `routine-${Date.now()}`),
+    instruction,
+    parameters: templateParameters.inputParameterKeys(instruction),
+  };
 }
 
 function normalizeRequestDraft(obj) {
@@ -169,16 +221,21 @@ async function distillSession(config, { cli, sessionId, kind, hint, cwd } = {}, 
   }
   const wanted = draftKind(kind);
   const resolved = agent.resolveDashboardAgent(config, cwd, { purpose: 'session-distill' });
-  const prompt = wanted === 'workflow'
-    ? workflowDraftPrompt(body, hint, adhoc.NODE_KINDS.filter((item) => item !== 'human'))
-    : requestDraftPrompt(body, hint);
+  const prompts = {
+    workflow: () => workflowDraftPrompt(body, hint, adhoc.NODE_KINDS.filter((item) => item !== 'human')),
+    statemachine: () => statemachineDraftPrompt(body, hint),
+    request: () => requestDraftPrompt(body, hint),
+  };
   const raw = await agent.runDashboardAgent(config, resolved, 'session-distill',
-    () => agent.runAgent(resolved, prompt, cwd));
+    () => agent.runAgent(resolved, prompts[wanted](), cwd));
   const obj = agent.extractJson(raw);
   if (!obj) throw new Error(`エージェントの応答からJSONを取り出せませんでした: ${String(raw).slice(0, 120)}…`);
-  const draft = wanted === 'workflow'
-    ? normalizeWorkflowDraft(obj, { id: draftWorkflowId('session'), tier: DRAFT_TIER })
-    : normalizeRequestDraft(obj);
+  const drafts = {
+    workflow: () => normalizeWorkflowDraft(obj, { id: draftWorkflowId('session'), tier: DRAFT_TIER }),
+    statemachine: () => normalizeStatemachineDraft(obj),
+    request: () => normalizeRequestDraft(obj),
+  };
+  const draft = drafts[wanted]();
   const source = adhoc.workflowSourceFromSession(agentCliName, nativeId);
   return {
     draft: { ...draft, source },
@@ -208,6 +265,9 @@ function distillRun(config, { runId, kind } = {}) {
   const source = adhoc.workflowSourceFromRun(id);
   const request = String(record.request || '').trim();
   const plan = record.plan && Array.isArray(record.plan.nodes) ? record.plan : null;
+  // 定型業務（statemachine）への蒸留は素の CLI セッションだけの経路にする。run は
+  // 既に工程グラフを持っているので、繰り返しはフォーク・一括投函・保存形テンプレートで
+  // 足りる——同じ仕事の入口を 2 つ作らない（C7）。
   if (draftKind(kind) === 'workflow') {
     if (!plan) throw new Error('この run は工程グラフを持たないため、フローとして保存できません');
     const nodes = plan.nodes.filter((node) => node && node.kind !== 'human').map((node, index) => ({
@@ -391,8 +451,11 @@ module.exports = {
   transcriptDigest,
   requestDraftPrompt,
   workflowDraftPrompt,
+  statemachineDraftPrompt,
+  sanitizeMachineId,
   normalizeRequestDraft,
   normalizeWorkflowDraft,
+  normalizeStatemachineDraft,
   distillSession,
   distillRun,
   saveDistilled,

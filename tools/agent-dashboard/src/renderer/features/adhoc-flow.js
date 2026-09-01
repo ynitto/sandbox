@@ -1254,6 +1254,7 @@
       <div class="flow-primary-actions">${terminal
     ? `<button type="button" id="wf-resubmit" title="この実行と同じ入力でもう一度実行します">同じ入力で再実行</button>
        <button type="button" id="wf-resubmit-edit" title="依頼内容・対象フォルダ・フローを直してから実行します。元の実行は残ります">入力を編集して再実行</button>
+       ${inbox.plan ? '<button type="button" id="wf-save-template" title="この実行の工程をワークフローとして保存し、次から選べるようにします">テンプレートとして保存</button>' : ''}
        <button type="button" class="danger" id="wf-delete-run">削除</button>`
     : '<button type="button" class="danger" id="wf-cancel">中止</button>'}</div>
       ${runLineageHtml(detail)}
@@ -3469,6 +3470,19 @@
       await refresh();
     });
     $id('wf-resubmit-edit')?.addEventListener('click', () => openForkDialog(st.selectedRun));
+    // この run の入力を保存形テンプレートへ昇格する。複製元（run/<run-id>）が付くので、
+    // どの実行から生まれたテンプレートかを後から辿れる（C8）。
+    $id('wf-save-template')?.addEventListener('click', async (event) => {
+      event.currentTarget.disabled = true;
+      try {
+        const { draft, source } = await api().adhocFlowDistillRun({
+          runId: st.selectedRun, kind: 'workflow',
+        });
+        const saved = await api().adhocFlowSaveDistilled({ workflow: draft.workflow, source });
+        st.notice = `ワークフローとして保存しました · ${saved.saved.name}`;
+      } catch (err) { st.notice = String((err && err.message) || err); }
+      await refresh();
+    });
     wireForkDialog(pane);
     $id('wf-cancel')?.addEventListener('click', async () => {
       try { await api().adhocFlowCancel({ runId: st.selectedRun }); }

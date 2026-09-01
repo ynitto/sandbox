@@ -35,6 +35,7 @@ const cowork = require('../src/features/cowork/main/cowork');
 const exec = require('../src/features/routines/main/exec');
 const parameterFields = require('../src/renderer/parameter-fields');
 const workflowUi = require('../src/renderer/features/adhoc-flow');
+const auditUi = require('../src/renderer/features/agent-audit');
 
 function tmpdir(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -262,6 +263,49 @@ test('蒸留したフローは保存形として検証を通り、複製元が�
   assert.strictEqual(saved._scope, 'user');
 });
 
+// --- §2 定型業務（statemachine-use）への蒸留 ---------------------------------
+
+test('定型業務の蒸留は YAML を書かせず、作成モードへ渡す手順だけを求める', () => {
+  const prompt = reuse.statemachineDraftPrompt('[User] 毎週これをやる', '');
+  assert.match(prompt, /YAML は書かないでください/);
+  assert.match(prompt, /statemachine-use スキルが作ります/);
+  // スキルの分解原則（1 ステート 1 成果物・成功は機械が測る）を指示に載せる
+  assert.match(prompt, /1 工程 1 成果物/);
+  assert.match(prompt, /コマンドで測れるなら/);
+  assert.match(prompt, /終了条件/);
+  // 出力は下書きの 3 項目だけ（定義そのものは受け取らない）
+  assert.match(prompt, /"name".*"machine".*"instruction"/);
+});
+
+test('定型業務の識別名は .statemachine/<id>/ に置ける形へ整える', () => {
+  assert.strictEqual(reuse.sanitizeMachineId('Weekly Digest'), 'weekly-digest');
+  assert.strictEqual(reuse.sanitizeMachineId('../escape'), 'escape');
+  assert.strictEqual(reuse.sanitizeMachineId('..', 'fallback'), 'fallback');
+  assert.strictEqual(reuse.sanitizeMachineId('', 'fallback'), 'fallback');
+  // 受け側（cowork.generateStateMachine）が通す文字集合に収まること
+  assert.match(reuse.sanitizeMachineId('週次まとめ v2'), /^[A-Za-z0-9_.-]+$/);
+});
+
+test('定型業務の下書きは手順が空なら受け取らない', () => {
+  assert.throws(() => reuse.normalizeStatemachineDraft({ name: 'x', machine: 'y' }), /手順がありません/);
+  const draft = reuse.normalizeStatemachineDraft({
+    name: '週次まとめ', machine: 'Weekly Digest', instruction: '{{repo}} の変更をまとめる',
+  });
+  assert.strictEqual(draft.kind, 'statemachine');
+  assert.strictEqual(draft.machine, 'weekly-digest');
+  assert.deepStrictEqual(draft.parameters, ['repo'], '手順の `{{key}}` も入力パラメータとして拾う');
+});
+
+test('run からは定型業務を作らない（繰り返しはフォーク・一括投函が担う）', () => {
+  const cfg = { adhocFlow: { busDir: tmpdir('reuse-run-sm-') } };
+  withStubbedExec(() => {
+    const first = adhoc.submit(cfg, { request: '依頼' });
+    // 未知の kind は request へ倒れる（statemachine の枝を run 側に作らない）
+    const draft = reuse.distillRun(cfg, { runId: first.runId, kind: 'statemachine' });
+    assert.strictEqual(draft.draft.kind, 'request');
+  });
+});
+
 test('蒸留のプロンプトは会話の再生ではなく一般化を求め、秘密の書き写しを禁じる', () => {
   const prompt = reuse.requestDraftPrompt('[User] 依頼\n\n[Assistant] 応答', '');
   assert.match(prompt, /一般化/);
@@ -432,6 +476,54 @@ test('入力ダイアログは全項目が埋まるまで実行できない', ()
   } finally {
     workflowUi._state.parameterDialog = null;
     global.esc = previousEsc;
+  }
+});
+
+test('セッションの行き先は 3 つ（依頼文 / ワークフロー / 定型業務）', () => {
+  const previousState = global.state;
+  global.state = { cowork: { roots: ['/repo-a', '/repo-b'] } };
+  try {
+    auditUi._sessions({ sessions: [{ native_id: 's1', agent_cli: 'claude', cwd: '/repo-a', turns: 4, updated_at: 0 }] });
+    auditUi._seed({
+      cli: 'claude', sessionId: 's1', cwd: '/repo-a', repo: '/repo-a', kind: 'statemachine',
+      busy: '', error: '', source: 'session/claude/s1',
+      draft: { kind: 'statemachine', name: '週次まとめ', machine: 'weekly-digest', instruction: '手順' },
+    });
+    const html = auditUi.seedDialogHtml();
+    for (const kind of ['request', 'workflow', 'statemachine']) {
+      assert.ok(html.includes(`value="${kind}"`), `行き先 ${kind} を選べる`);
+    }
+    // 作成先は登録済みフォルダからの選択だけ（任意パスへ .statemachine/ を作らせない）
+    assert.match(html, /id="audit-seed-repo"/);
+    assert.match(html, /<option value="\/repo-a" selected>/);
+    assert.match(html, /id="audit-seed-machine"/);
+    assert.match(html, /id="audit-seed-instruction"/);
+    assert.match(html, /定型業務を作成/);
+    // YAML はこの画面では書かない（書式の正典は statemachine-use スキル）
+    assert.match(html, /statemachine-use スキル/);
+    assert.ok(!html.includes('id="audit-seed-confirm" disabled'), '作成先があれば確定できる');
+  } finally {
+    auditUi._seed(null);
+    auditUi._sessions(null);
+    global.state = previousState;
+  }
+});
+
+test('登録済みフォルダが無い端末では定型業務を作らせない', () => {
+  const previousState = global.state;
+  global.state = { cowork: { roots: [] } };
+  try {
+    auditUi._seed({
+      cli: 'claude', sessionId: 's1', kind: 'statemachine', busy: '', error: '',
+      source: 'session/claude/s1',
+      draft: { kind: 'statemachine', name: '', machine: '', instruction: '手順' },
+    });
+    const html = auditUi.seedDialogHtml();
+    assert.match(html, /id="audit-seed-confirm" disabled/);
+    assert.match(html, /フォルダを登録してください/);
+  } finally {
+    auditUi._seed(null);
+    global.state = previousState;
   }
 });
 

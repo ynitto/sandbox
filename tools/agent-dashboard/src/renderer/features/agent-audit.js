@@ -589,7 +589,33 @@
       ${body}</section>`;
   }
 
+  // 定型業務の作成先。登録済みフォルダ（cowork の走査ルートと同じ集合）からだけ選ばせる
+  // ——任意パスへ `.statemachine/` を作らせない（C1）。
+  function coworkRoots() {
+    const cowork = (root.state || {}).cowork || {};
+    return Array.isArray(cowork.roots) ? cowork.roots.map(String).filter(Boolean) : [];
+  }
+
   function seedDraftFieldsHtml(draft) {
+    if (draft && draft.kind === 'statemachine') {
+      const roots = coworkRoots();
+      const selected = String(draft.repo || seed.repo || roots[0] || '');
+      return `<label class="field">業務名
+          <input id="audit-seed-name" value="${escHtml(draft.name || '')}"></label>
+        <label class="field">識別名（<code>.statemachine/&lt;識別名&gt;/</code>）
+          <input id="audit-seed-machine" value="${escHtml(draft.machine || '')}"></label>
+        <label class="field">作成先フォルダ
+          ${roots.length
+    ? `<select id="audit-seed-repo">${roots.map((dir) =>
+      `<option value="${escHtml(dir)}"${dir === selected ? ' selected' : ''}>${escHtml(dir)}</option>`).join('')}</select>`
+    : '<span class="muted">登録済みのフォルダがありません。定常業務の設定でフォルダを登録してください。</span>'}
+        </label>
+        <label class="field">手順（statemachine-use の作成モードへ渡します）
+          <textarea id="audit-seed-instruction" rows="14">${escHtml(draft.instruction || '')}</textarea></label>
+        <p class="muted">確定すると外部ターミナルでエージェントが起動し、
+          <code>.statemachine/</code> 以下に定義を作ります。YAML はこの画面では書きません
+          （書式の正典は statemachine-use スキルです）。作成後は定常業務の一覧に自動で現れます。</p>`;
+    }
     if (draft && draft.kind === 'workflow' && draft.workflow) {
       const nodes = Array.isArray(draft.workflow.nodes) ? draft.workflow.nodes : [];
       return `<label class="field">フロー名
@@ -609,10 +635,20 @@
         <input id="audit-seed-cwd" value="${escHtml((draft && draft.cwd) || '')}" placeholder="/path/to/repository"></label>`;
   }
 
+  // 蒸留物の行き先は 3 つ。どれも「確定するまで何も起きない」で揃える（C4）。
+  const SEED_KINDS = [
+    ['request', '依頼文（1 回だけ実行する）', 'この内容で実行'],
+    ['workflow', 'ワークフロー（保存して繰り返す）', 'ライブラリへ保存'],
+    ['statemachine', '定型業務（手順を決めて何度も回す）', '定型業務を作成'],
+  ];
+
   function seedDialogHtml() {
     if (!seed) return '';
     const draft = seed.draft;
-    const workflow = draft && draft.kind === 'workflow';
+    const kind = String((draft && draft.kind) || seed.kind || 'request');
+    const confirmLabel = (SEED_KINDS.find(([id]) => id === kind) || SEED_KINDS[0])[2];
+    // 作成先が 1 つも無ければ定型業務は作れない（登録済みフォルダからしか作らない）。
+    const blocked = kind === 'statemachine' && !coworkRoots().length;
     return `<dialog id="audit-seed-dialog" class="task-create-dialog"><div class="dialog-heading">
       <h2>このセッションを種に</h2>
       <button type="button" class="wf-icon-button" data-audit-seed-close aria-label="閉じる">×</button></div>
@@ -620,9 +656,8 @@
         <p class="field-help">下書きは AI が作ります。内容を確認・編集してから確定してください
           （確定するまで何も実行されません）。複製元: ${escHtml(seed.source || '')}</p>
         <div class="row"><label>作るもの
-          <select id="audit-seed-kind"${seed.busy ? ' disabled' : ''}>
-            <option value="request"${workflow ? '' : ' selected'}>依頼文（1 回だけ実行する）</option>
-            <option value="workflow"${workflow ? ' selected' : ''}>ワークフロー（保存して繰り返す）</option>
+          <select id="audit-seed-kind"${seed.busy ? ' disabled' : ''}>${SEED_KINDS.map(([id, label]) =>
+    `<option value="${id}"${id === kind ? ' selected' : ''}>${label}</option>`).join('')}
           </select></label>
           <button type="button" id="audit-seed-draft"${seed.busy ? ' disabled' : ''}>${
   escHtml(seed.busy || '下書きを作り直す')}</button></div>
@@ -631,8 +666,8 @@
       </div>
       <div class="dialog-actions"><span class="spacer"></span>
         <button type="button" data-audit-seed-close>キャンセル</button>
-        <button type="button" class="primary-inline" id="audit-seed-confirm"${seed.busy ? ' disabled' : ''}>${
-  workflow ? 'ライブラリへ保存' : 'この内容で実行'}</button></div></dialog>`;
+        <button type="button" class="primary-inline" id="audit-seed-confirm"${
+  seed.busy || blocked ? ' disabled' : ''}>${escHtml(seed.busy || confirmLabel)}</button></div></dialog>`;
   }
 
   // 記憶3層（persona/ltm/wiki）+ moltbook の要約点数だけを出す最小限の面
@@ -835,6 +870,19 @@
 
   // 蒸留は AI 下書きまで。失敗しても入口は閉じず、空フォームへ縮退する
   // （`with_transcripts` が無効な端末では本文が無いので下書きが作れない）。
+  // 下書きが作れない端末（`with_transcripts` が無効・エージェント CLI が無い等）でも
+  // 入口は閉じない。空フォームへ縮退し、人が自分で書いて確定できるようにする。
+  function emptySeedDraft(kind, cwd) {
+    if (kind === 'workflow') {
+      return { kind: 'workflow',
+        workflow: { id: `session-${Date.now()}`, name: '', description: '', purpose: 'implementation', nodes: [] } };
+    }
+    if (kind === 'statemachine') {
+      return { kind: 'statemachine', name: '', machine: '', instruction: '' };
+    }
+    return { kind: 'request', title: '', request: '', cwd };
+  }
+
   async function requestSeedDraft() {
     if (!seed || !root.api || !root.api.adhocFlowDistillSession) return;
     seed = { ...seed, busy: '下書きを作っています…', error: '' };
@@ -849,9 +897,7 @@
         ...seed,
         busy: '',
         error: `${String((err && err.message) || err)} — 内容を自分で書いて確定できます。`,
-        draft: seed.kind === 'workflow'
-          ? { kind: 'workflow', workflow: { id: `session-${Date.now()}`, name: '', description: '', purpose: 'implementation', nodes: [] } }
-          : { kind: 'request', title: '', request: '', cwd: seed.cwd },
+        draft: emptySeedDraft(seed.kind, seed.cwd),
       };
     }
     render();
@@ -860,10 +906,13 @@
   function openSeed(cli, sessionId) {
     const row = ((sessionsData && sessionsData.sessions) || [])
       .find((item) => String(item.native_id) === String(sessionId)) || {};
+    const roots = coworkRoots();
     seed = {
       cli: String(cli || row.agent_cli || ''),
       sessionId: String(sessionId || ''),
       cwd: String(row.cwd || ''),
+      // 定型業務の作成先。会話の作業フォルダが登録済みならそこを既定にする。
+      repo: roots.find((dir) => dir === String(row.cwd || '')) || roots[0] || '',
       kind: 'request',
       busy: '',
       error: '',
@@ -877,6 +926,16 @@
   function readSeedDraft(pane) {
     const draft = (seed && seed.draft) || {};
     const value = (id) => String(pane.querySelector(`#${id}`)?.value || '');
+    if (draft.kind === 'statemachine') {
+      return {
+        ...draft,
+        kind: 'statemachine',
+        name: value('audit-seed-name'),
+        machine: value('audit-seed-machine'),
+        repo: value('audit-seed-repo'),
+        instruction: value('audit-seed-instruction'),
+      };
+    }
     if (draft.kind === 'workflow' && draft.workflow) {
       const nodes = (draft.workflow.nodes || []).map((node, index) => ({
         ...node,
@@ -911,17 +970,37 @@
       const draft = readSeedDraft(pane);
       seed = { ...seed, draft, busy: '確定中…', error: '' };
       render();
+      let notice;
       try {
         if (draft.kind === 'workflow') {
           // 蒸留物はワークフローライブラリ（自分用）へ。共有は通常の Git 運用が配る。
           await root.api.adhocFlowSaveDistilled({ workflow: draft.workflow, source: seed.source });
+          notice = 'ワークフローライブラリへ保存しました';
+        } else if (draft.kind === 'statemachine') {
+          // **YAML はここでは書かない。** 定義を作るのは statemachine-use スキルの作成モードで、
+          // 起動は定常業務の既存経路（cowork:generateStateMachine）をそのまま使う——
+          // 作成の入口を 2 つにしないため。作成後は定常業務の一覧が自動で拾う。
+          if (!String(draft.instruction || '').trim()) throw new Error('手順を入力してください');
+          if (!String(draft.repo || '').trim()) throw new Error('作成先フォルダを選んでください');
+          const launched = await root.api.coworkGenerateStateMachine({
+            repo: draft.repo,
+            name: String(draft.name || '').trim(),
+            machine: String(draft.machine || '').trim(),
+            instruction: draft.instruction,
+          });
+          if (!launched || !launched.ok) {
+            throw new Error(String((launched && launched.error) || '定型業務の作成を開始できませんでした'));
+          }
+          notice = '外部ターミナルで定型業務の作成を開始しました';
         } else {
           if (!String(draft.request || '').trim()) throw new Error('依頼内容を入力してください');
           await root.api.adhocFlowSubmit({
             title: draft.title, request: draft.request, cwd: draft.cwd, selection: { type: 'auto' },
           });
+          notice = '実行を投函しました';
         }
         seed = null;
+        if (notice && typeof root.toast === 'function') root.toast(notice, true);
       } catch (err) {
         seed = { ...seed, busy: '', error: String((err && err.message) || err) };
       }
