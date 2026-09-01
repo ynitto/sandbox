@@ -370,6 +370,14 @@ tier（実行段）は `control.workloads.flow.tier` を読みます。`basic` �
 | `granularity` | str | 分解の粒度（`auto` / `coarse` / `fine` / `finest`）。L2 分け方 |
 | `split_policy` | str | 分割の単位（`behavior` / `file`）。L2 分け方 |
 | `execution_overrides` | dict | 役割・kind ごとの実行資源の固定（L4）。`{version: 1, roles: {...}, kinds: {...}}` の各項が `{tier, agent_cli, model}`。受理した項目は `pinned` として結果に残る。未知キーは加算的互換のため黙って無視する |
+| `root_run_id` | str | 系譜: この仕事の最初の run-id。再実行を別の仕事として並べないための束ね鍵 |
+| `previous_run_id` | str | 系譜: 直前の試行の run-id |
+| `edited_fields` | list[str] | 入力を編集した再実行（fork）で**実際に変えた契約キー**（`request` / `plan` / `workspace` / `references` / `execution_overrides` / `granularity` / `split_policy`）。何を変えた再実行かの証跡 |
+| `batch_id` | str | 一括投函（パラメータ行 × テンプレート）で同時に投函した run の束ね鍵 |
+
+系譜の 4 キー（`root_run_id` / `previous_run_id` / `edited_fields` / `batch_id`）はエンジンが読まない**投入側の記録**です。書き手は投函者（agent-dashboard）で、読み手も投函者（一覧の束ね・来歴表示）です。エンジンにとっては未知キーなので、載っていなくても実行は変わりません。
+
+入力を編集した再実行は `inherit_from` を使いません。`inherit_from` は世代交代＝リトライの機構で先行 run を墓標化して削除しますが、入力を変えた再実行は**分岐（fork）**であり、旧 run は参照として残すためです（[設計書](../designs/agent-flow-design.md) §6.3 の「新世代の request が正」、agent-project の「plan が変わったら inherit しない」と同じ判断）。入力を変えない再実行はこれまでどおり逐語複製です。
 
 `plan` と `verification_plan` は inbox が唯一の権威です。呼び出し側が argv へ転記する必要はなく、argv とバスの両方にあるときだけ CLI 引数が勝ちます。`tier` は inbox のキーではありません（agent-control の workload 宣言から読みます）。
 

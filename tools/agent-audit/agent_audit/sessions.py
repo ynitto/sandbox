@@ -80,5 +80,11 @@ def cmd_sessions(args) -> int:
     payload = {"sessions": out[:limit]}
     if declared is not None:
         payload["cli"] = declared
-    print(json.dumps(payload, ensure_ascii=False))
+    # 本文はノイズ除去（cleaning）済みで readers から届く。JSON 出力は他の export 系
+    # （usage / stats / report / tasks）と同じ決定的スクラバも通す——読み手はこの本文を
+    # 画面へ出すだけでなく、要求文・ワークフローの下書き材料として LLM へ渡すため
+    # （docs/plans/2026-08-31-agent-session-reuse-rerun-design.md §2）。資格情報らしい
+    # トークンとホーム絶対パスがそこで初めてノード外へ出る経路を塞ぐ。
+    from .scrub import scrub_obj
+    print(json.dumps(scrub_obj(payload), ensure_ascii=False))
     return 0

@@ -33,7 +33,10 @@
       "properties": {
         "id": {"type": "string", "minLength": 1},
         "label": {"type": "string", "description": "画面の表示名。省略時は id"},
-        "goal": {"type": "string", "minLength": 1},
+        "goal": {
+          "type": "string", "minLength": 1,
+          "description": "この工程で行うこと。`{{key}}` は**投入時の入力パラメータ**で、agent-dashboard が投函前に人の入力で置換する（検出・検証・置換は定常業務の実行条件ダイアログと同じ 1 実装）。予約語は入力扱いせず従来の意味を保つ: `{{request}}` は投入 plan で要求テキストへ置換される（置換はエンジンの 1 か所だけ）、statemachine の組み込み変数（today / now / history / step_count / last_output / current_state / context / check_status / check_ok / check_output）は実行器が注入する。未入力・未定義キーは投函前に断る（`{{key}}` のまま実行させない）"
+        },
         "kind": {"$ref": "#/$defs/nodeKind"},
         "tier": {
           "type": "string",
@@ -176,6 +179,11 @@
     "id": {"type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$"},
     "name": {"type": "string", "minLength": 1},
     "description": {"type": "string"},
+    "source": {
+      "type": "string",
+      "pattern": "^(session/[A-Za-z0-9_.-]+/[A-Za-z0-9_.:@-]+|run/[A-Za-z0-9_.-]+)$",
+      "description": "複製元（provenance）。過去 run の入力から起こしたなら `run/<run-id>`、素の CLI セッションから蒸留したなら `session/<agent_cli>/<session_id>`。手書きは省略する。nodeMethod の `source` と同じ「複製元表記」の流儀で、**来歴であって定義ではない**ので digest の対象外（同じ工程グラフを別の種から起こしても実行される形は変わらない）。会話本文（transcript）はここにも他のどこにも書かない — agent-audit の不変条件どおり、蒸留物だけが保存形になる"
+    },
     "purpose": {"$ref": "#/$defs/purpose"},
     "libraryVisibility": {
       "enum": ["library", "internal"],

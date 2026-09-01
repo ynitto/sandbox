@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const adhoc = require('./adhoc');
+const reuse = require('./reuse');
 const designSession = require('./design-session');
 const taskQueue = require('./task-queue');
 const preparation = require('../../preparation/main/preparation');
@@ -331,6 +332,9 @@ function registerIpc(ctx) {
           purpose: String(inbox.purpose || 'implementation'),
           root_run_id: String(inbox.root_run_id || ''),
           previous_run_id: String(inbox.previous_run_id || ''),
+          // 流用の来歴。何を変えた再実行か（fork）と、どの一括投函の 1 本か。
+          edited_fields: Array.isArray(inbox.edited_fields) ? inbox.edited_fields.map(String) : [],
+          batch_id: String(inbox.batch_id || ''),
         };
       }),
       presets: (cfg.adhocFlow && cfg.adhocFlow.presets) || [],
@@ -338,8 +342,11 @@ function registerIpc(ctx) {
         const discovered = sourceFolders.length
           ? sourceFolders.flatMap((folder) => adhoc.listWorkflows(cfg, { cwd: folder, includeInternal: true }))
           : adhoc.listWorkflows(cfg, { includeInternal: true });
+        // 保存形の `{{key}}` は投入時の入力パラメータ。検出は main の 1 実装
+        // （base/main/template-parameters）で、画面は出た順に入力欄を並べるだけにする。
         return [...new Map(discovered.map((workflow) => [
-          `${workflow._scope}:${workflow._repository || ''}:${workflow.id}`, workflow,
+          `${workflow._scope}:${workflow._repository || ''}:${workflow.id}`,
+          { ...workflow, parameters: adhoc.workflowParameterKeys(workflow) },
         ])).values()];
       })(),
       patterns: adhoc.patternCatalog(cfg),
@@ -409,7 +416,80 @@ function registerIpc(ctx) {
     return result;
   });
 
-  handle('adhocFlow:resubmit', ({ runId } = {}) => adhoc.resubmit(loadConfig(), String(runId || '')));
+  // 再実行は 2 通り。edits なしは従来の逐語複製、edits ありは**編集付き再実行（fork）**で、
+  // 旧 run は墓標化せず参照として残す（inherit_from は使わない）。
+  //
+  // plan は Renderer から受け取らない。フロー選択（id / scope / repository）だけを受け、
+  // 定義の解決と plan 化は main が行う——他の投入口（snapshotSelection）と同じ規則。
+  handle('adhocFlow:resubmit', ({ runId, edits } = {}) => {
+    const cfg = loadConfig();
+    if (!edits || typeof edits !== 'object') return adhoc.resubmit(cfg, String(runId || ''));
+    const clean = { ...edits };
+    delete clean.plan;
+    if (Object.prototype.hasOwnProperty.call(edits, 'selection')) {
+      const selected = edits.selection && typeof edits.selection === 'object'
+        ? edits.selection : { type: 'auto' };
+      const snapshot = adhoc.snapshotSelection(cfg, {
+        type: String(selected.type || 'auto'),
+        ...(selected.id ? { id: selected.id } : {}),
+        ...(selected.scope ? { scope: selected.scope } : {}),
+        ...(selected.nodeAssignments ? { nodeAssignments: selected.nodeAssignments } : {}),
+      }, { cwd: String(clean.cwd || selected.repository || ''), purpose: 'implementation' });
+      clean.plan = snapshot.type === 'custom'
+        ? { name: snapshot.name, nodes: snapshot.nodes, ...(snapshot.evaluate ? { evaluate: true } : {}) }
+        : null;
+      delete clean.selection;
+    }
+    return adhoc.resubmit(cfg, String(runId || ''), clean);
+  });
+
+  // 編集付き再実行のプリフィル材料。旧 inbox 記録のうち、人が編集できる契約項目だけを
+  // 返す（バスのファイルパスや実行契約全体は Renderer へ渡さない）。
+  handle('adhocFlow:runInput', ({ runId } = {}) => {
+    const cfg = loadConfig();
+    const record = adhoc.readInbox(adhoc.resolveBusDir(cfg), String(runId || ''));
+    if (!record) throw new Error(`inbox 記録が見つかりません: ${runId}`);
+    return {
+      input: {
+        runId: String(record.id || runId || ''),
+        title: String(record.title || ''),
+        request: String(record.request || ''),
+        purpose: String(record.purpose || 'implementation'),
+        cwd: String((record.workspace && record.workspace.local) || ''),
+        referenceCwds: (Array.isArray(record.references) ? record.references : [])
+          .map((item) => String((item && item.local) || '')).filter(Boolean),
+        planName: String((record.plan && record.plan.name) || ''),
+        pattern: String(record.pattern || ''),
+        granularity: String(record.granularity || ''),
+        splitPolicy: String(record.split_policy || ''),
+        executionOverrides: record.execution_overrides || null,
+        rootRunId: String(record.root_run_id || ''),
+        previousRunId: String(record.previous_run_id || ''),
+        editedFields: Array.isArray(record.edited_fields) ? record.edited_fields.map(String) : [],
+        batchId: String(record.batch_id || ''),
+      },
+      editableFields: adhoc.RESUBMIT_EDITABLE_FIELDS.slice(),
+    };
+  });
+
+  // --- 流用（セッション / run を種にする・バッチ投函） -------------------------
+  // 蒸留は AI 下書きまで（確定は人）。transcript 本文はここから外へ出さない。
+  handle('adhocFlow:distillSession', (payload = {}) => reuse.distillSession(loadConfig(), {
+    cli: payload.cli, sessionId: payload.sessionId, kind: payload.kind,
+    hint: payload.hint, cwd: payload.cwd,
+  }));
+
+  handle('adhocFlow:distillRun', ({ runId, kind } = {}) =>
+    reuse.distillRun(loadConfig(), { runId: String(runId || ''), kind }));
+
+  handle('adhocFlow:saveDistilled', ({ workflow, source } = {}) => ({
+    saved: reuse.saveDistilled(loadConfig(), { workflow, source }),
+  }));
+
+  handle('adhocFlow:batchPreview', ({ rows, parameterKeys } = {}) =>
+    reuse.batchPreview(loadConfig(), { rows, parameterKeys }));
+
+  handle('adhocFlow:batchSubmit', (payload = {}) => reuse.batchSubmit(loadConfig(), payload));
 
   handle('adhocFlow:cancel', ({ runId, reason } = {}) => {
     const cfg = loadConfig();
@@ -565,11 +645,25 @@ function registerIpc(ctx) {
   handle('designSession:delete', ({ id } = {}) => ({
     deleted: designSession.deleteSession(loadConfig(), String(id || '')),
   }));
-  handle('workflowTask:list', () => ({ tasks: taskQueue.list(loadConfig()) }));
+  // 実行待ちタスクにも、投入時に必要な `{{key}}` を付ける。検出は main の 1 実装で、
+  // 画面は入力欄を出すかどうかを判断するだけ（キーの推測を画面へ持たせない）。
+  handle('workflowTask:list', () => {
+    const cfg = loadConfig();
+    return {
+      tasks: taskQueue.list(cfg).map((task) => {
+        const selection = task.selection && typeof task.selection === 'object' ? task.selection : {};
+        const workflow = String(selection.type || '') === 'custom' && selection.id
+          ? adhoc.loadWorkflow(cfg, String(selection.id), { cwd: task.cwd, scope: selection.scope })
+          : null;
+        return { ...task, parameters: adhoc.workflowParameterKeys(workflow, task.request) };
+      }),
+    };
+  });
   handle('workflowTask:create', (payload) => ({ task: taskQueue.create(loadConfig(), payload || {}) }));
   handle('workflowTask:delete', ({ id } = {}) => ({ deleted: taskQueue.remove(loadConfig(), String(id || '')) }));
-  handle('workflowTask:execute', ({ id } = {}) =>
-    taskQueue.execute(loadConfig(), String(id || ''), (payload) => adhoc.submit(loadConfig(), payload)));
+  handle('workflowTask:execute', ({ id, parameters } = {}) =>
+    taskQueue.execute(loadConfig(), String(id || ''),
+      (payload) => adhoc.submit(loadConfig(), payload), parameters || null));
   handle('preparation:list', (filters) => ({
     items: preparation.listItems(loadConfig(), filters || {}),
   }));

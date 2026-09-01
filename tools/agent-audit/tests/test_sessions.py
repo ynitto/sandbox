@@ -84,6 +84,25 @@ class SessionsCmdTests(AuditTestCase):
     def test_cli_block_absent_without_cli_filter(self):
         self.assertNotIn("cli", self._payload())
 
+    def test_json_output_is_scrubbed(self):
+        # 読み手はこの本文を画面へ出すだけでなく、要求文・ワークフローの下書き材料として
+        # LLM へ渡す（dashboard の「このセッションを種に」）。他の export 系と同じく
+        # 資格情報らしいトークンとホーム絶対パスを伏せてから返す。
+        home = os.path.expanduser("~")
+        path = os.path.join(self.store_dir, "s-secret.jsonl")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "type": "user", "timestamp": "2026-08-03T13:00:00Z", "sessionId": "s-secret",
+                "cwd": f"{home}/repo",
+                "message": {"role": "user",
+                            "content": "token=ghp_abcdefghijklmnop で直して"},
+            }, ensure_ascii=False) + "\n")
+        got = self._run("--cli", "fakecli", "--messages", "s-secret")
+        self.assertEqual(len(got), 1)
+        self.assertEqual(got[0]["cwd"], "~/repo")
+        self.assertNotIn("ghp_abcdefghijklmnop", got[0]["messages"][0]["text"])
+        self.assertIn("[REDACTED]", got[0]["messages"][0]["text"])
+
 
 if __name__ == "__main__":
     unittest.main()

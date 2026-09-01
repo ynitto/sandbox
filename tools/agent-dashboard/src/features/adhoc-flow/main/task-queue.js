@@ -85,7 +85,9 @@ function remove(config, id) {
   return true;
 }
 
-function execute(config, id, submit) {
+// `parameters` は保存形テンプレートの `{{key}}` に入れる値。検証（未定義キー・未入力の
+// 拒否）と置換は submit 側の 1 実装が行うので、ここは運ぶだけ。
+function execute(config, id, submit, parameters = null) {
   const task = get(config, id);
   if (!task) throw new Error(`実行待ちタスクが見つかりません: ${id}`);
   const result = submit({
@@ -96,6 +98,7 @@ function execute(config, id, submit) {
     executionOverrides: task.executionOverrides,
     granularity: task.granularity,
     splitPolicy: task.splitPolicy,
+    ...(parameters ? { parameters } : {}),
   });
   remove(config, id);
   return { ...result, task };

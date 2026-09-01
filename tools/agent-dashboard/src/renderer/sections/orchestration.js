@@ -2550,11 +2550,11 @@ function openCoworkParametersDialog(routine, run) {
   if (currentIndex < 0) currentIndex = matchIndex(currentTier, currentCandidate);
   if (currentIndex < 0) currentIndex = tiers.findIndex((tier) => tier.id === currentTier);
   if (currentIndex >= 0) tierSelect.value = String(currentIndex);
-  fields.innerHTML = keys.map((key, index) => `<div class="field">
-    <label for="cowork-parameter-${index}">${esc(key)}</label>
-    <input id="cowork-parameter-${index}" data-cowork-parameter="${esc(key)}" type="text" autocomplete="off" required>
-  </div>`).join('');
-  const inputs = [...fields.querySelectorAll('[data-cowork-parameter]')];
+  // 入力欄の器は parameter-fields.js の 1 実装（ワークフローの `{{key}}` 投入と共有）。
+  fields.innerHTML = parameterFields.fieldsHtml(keys, {
+    prefix: 'cowork-parameter', attribute: 'data-cowork-parameter',
+  });
+  const inputs = parameterFields.inputsIn(fields, 'data-cowork-parameter');
   let running = false;
   const validate = () => {
     submit.disabled = running || inputs.some((input) => !input.value.trim());
@@ -2581,7 +2581,7 @@ function openCoworkParametersDialog(routine, run) {
     submit.textContent = '実行中…';
     cancel.disabled = true;
     validate();
-    const parameters = Object.fromEntries(inputs.map((input) => [input.dataset.coworkParameter, input.value.trim()]));
+    const parameters = parameterFields.readValues(fields, 'data-cowork-parameter');
     const executionChoice = tiers[Number(tierSelect.value)] || null;
     let res;
     try {

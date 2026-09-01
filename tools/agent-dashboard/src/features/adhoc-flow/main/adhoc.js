@@ -21,6 +21,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { agentHomeSubdir } = require('../../../base/main/agent-home');
+const templateParameters = require('../../../base/main/template-parameters');
 const exec = require('../../routines/main/exec');
 const flow = require('../../agent-project/main/flow');
 const tuning = require('../../orchestration/main/tuning');
@@ -127,6 +128,51 @@ function workflowId(raw) {
     throw new Error('フロー id が不正です');
   }
   return id || `workflow-${Date.now()}`;
+}
+
+// 保存形の複製元表記（provenance）。値は蒸留・昇格の元になった素材で、作業ルール
+// （nodeMethod）の `source: "methods/<id>@<hash>"` と同じ流儀に揃える。
+//   session/<agent_cli>/<session_id> … 素の CLI セッションから蒸留したもの
+//   run/<run-id>                     … 過去 run の入力から起こしたもの
+// 手書きは省略（空）。**本文（transcript）は決して持たない** — 持つのは出どころだけ。
+const WORKFLOW_SOURCE_RE = /^(?:session\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.:@-]+|run\/[A-Za-z0-9_.-]+)$/;
+
+function normalizeWorkflowSource(raw) {
+  const value = String(raw == null ? '' : raw).trim();
+  if (!value) return '';
+  if (!WORKFLOW_SOURCE_RE.test(value)) {
+    throw new Error(`複製元の表記が不正です: ${value}（session/<cli>/<id> または run/<run-id>）`);
+  }
+  return value;
+}
+
+function workflowSourceFromSession(cli, sessionId) {
+  return normalizeWorkflowSource(`session/${String(cli || '').trim()}/${String(sessionId || '').trim()}`);
+}
+
+function workflowSourceFromRun(runId) {
+  return normalizeWorkflowSource(`run/${String(runId || '').trim()}`);
+}
+
+// 保存形テンプレートの入力パラメータ。goal と要求文の `{{key}}` を拾い、予約語
+// （`{{request}}`・statemachine の組み込み変数）は入力扱いしない。検出は
+// base/main/template-parameters.js の 1 実装（定常業務と共有）。
+function workflowParameterKeys(workflow, ...extraTexts) {
+  const nodes = Array.isArray(workflow && workflow.nodes) ? workflow.nodes : [];
+  return templateParameters.inputParameterKeys(
+    ...nodes.map((node) => (node && node.goal) || ''), ...extraTexts);
+}
+
+// 投入直前の置換。要求文と plan の goal だけを対象にする（人が書いた面）。
+function applyPlanParameters(plan, values) {
+  if (!plan || !Array.isArray(plan.nodes) || !Object.keys(values).length) return plan;
+  return {
+    ...plan,
+    nodes: plan.nodes.map((node) => ({
+      ...node,
+      goal: templateParameters.applyParameters(node.goal, values),
+    })),
+  };
 }
 
 function normalizeExpectedPurpose(raw) {
@@ -290,11 +336,15 @@ function normalizeWorkflow(raw, options = {}) {
     }
   }
   const now = new Date().toISOString();
+  // 複製元は来歴であって定義ではないので digest（workflowDefinition）の対象にしない
+  // ——同じ工程グラフを別のセッションから起こしても、実行される形は同じ。
+  const source = normalizeWorkflowSource(raw.source);
   return {
     version: 2,
     id: workflowId(raw.id),
     name,
     description: String(raw.description || '').trim(),
+    ...(source ? { source } : {}),
     purpose,
     libraryVisibility: raw.libraryVisibility === 'internal' ? 'internal' : 'library',
     entry,
@@ -1136,7 +1186,7 @@ function forceComplete(config, { runId, reason } = {}) {
 
 function submit(config, {
   title, request, preset, cwd, selection, purpose, executionOverrides, coherenceGate,
-  granularity, splitPolicy,
+  granularity, splitPolicy, parameters, batchId,
 } = {}) {
   const req = String(request || '').trim();
   if (!req) throw new Error('要求テキストは必須です');
@@ -1167,22 +1217,31 @@ function submit(config, {
   if (coherenceGate && !workspace) {
     throw new Error('一貫性ゲートには Git リポジトリの選択が必要です（差分ゲートは書込先で判定します）');
   }
+  let plan = p ? planFromPreset(p) : null;
+  if (snapshot.type === 'custom') {
+    plan = { name: snapshot.name, nodes: snapshot.nodes, ...(snapshot.evaluate ? { evaluate: true } : {}) };
+  }
+  // テンプレートの `{{key}}` は投函前にここで埋める。予約語（`{{request}}`）は値を持たない
+  // ので素通しし、置換はエンジンの 1 か所に残す。未入力・未定義キーはフェイルクローズ
+  // ——`{{key}}` のまま走らせると、要求文の文字列がそのまま指示として実行されてしまう。
+  const parameterKeys = workflowParameterKeys(plan, req);
+  const parameterValues = templateParameters.validateParameters(
+    { keys: parameterKeys, error: '' }, parameters);
+  const filledRequest = templateParameters.applyParameters(req, parameterValues);
+  plan = applyPlanParameters(plan, parameterValues);
   const rec = {
     id: runId,
     ...(String(title || '').trim() ? { title: String(title).trim() } : {}),
-    request: req,
+    request: filledRequest,
     submitter: SUBMITTER,
     purpose: effectivePurpose,
     ...(effectivePurpose === 'design' ? { readonly: true } : {}),
     workspace,
     references,
+    ...(String(batchId || '').trim() ? { batch_id: String(batchId).trim() } : {}),
     submitted_at: new Date().toISOString(),
   };
   if (coherenceGate) rec.verification_plan = buildVerificationPlan(config, { runId, workspace });
-  let plan = p ? planFromPreset(p) : null;
-  if (snapshot.type === 'custom') {
-    plan = { name: snapshot.name, nodes: snapshot.nodes, ...(snapshot.evaluate ? { evaluate: true } : {}) };
-  }
   if (snapshot.type === 'pattern') rec.pattern = snapshot.pattern;
   if (plan) rec.plan = plan;
   const execution = normalizeExecutionOverrides(config, executionOverrides);
@@ -1245,19 +1304,80 @@ function submit(config, {
   };
 }
 
+// 編集付き再実行（fork）で上書きできる入力。キー名は inbox 契約（agent-flow spec §3.1）
+// のものに揃える——`edited_fields` に残すのはこの語彙で、画面のフォーム名ではない。
+const RESUBMIT_EDITABLE_FIELDS = ['request', 'plan', 'workspace', 'references',
+  'execution_overrides', 'granularity', 'split_policy'];
+
+// 画面から届いた編集を inbox 契約の値へ揃える。**plan と workspace / references は
+// Renderer の値をそのまま載せない**——plan は呼び出し側（IPC）が参照から読み直した
+// main 由来の値だけを受け、フォルダは gitWorkspace で共有リモートを確かめてから spec に
+// する（任意パス・任意グラフを投函経路へ通さない。C1）。
+function normalizeResubmitEdits(config, old, raw) {
+  const edits = raw && typeof raw === 'object' ? raw : {};
+  const values = {};
+  const has = (key) => Object.prototype.hasOwnProperty.call(edits, key);
+  if (has('request')) {
+    const request = String(edits.request || '').trim();
+    if (!request) throw new Error('要求テキストは必須です');
+    values.request = request;
+  }
+  if (has('plan')) {
+    // null / 未指定は「plan を外して planner に任せる」。
+    values.plan = edits.plan && typeof edits.plan === 'object' && Array.isArray(edits.plan.nodes)
+      && edits.plan.nodes.length ? edits.plan : null;
+  }
+  if (has('cwd')) {
+    const cwd = String(edits.cwd || '').trim();
+    values.workspace = cwd ? gitWorkspace(config, cwd) : null;
+  }
+  if (has('referenceCwds')) {
+    const list = Array.isArray(edits.referenceCwds) ? edits.referenceCwds : [];
+    values.references = list.map((item) => String(item || '').trim()).filter(Boolean)
+      .map((item) => gitWorkspace(config, item));
+  }
+  if (has('executionOverrides')) {
+    values.execution_overrides = normalizeExecutionOverrides(config, edits.executionOverrides);
+  }
+  if (has('granularity') || has('splitPolicy')) {
+    const planning = normalizePlanning({
+      granularity: has('granularity') ? edits.granularity : old.granularity,
+      splitPolicy: has('splitPolicy') ? edits.splitPolicy : old.split_policy,
+    }) || {};
+    if (has('granularity')) values.granularity = planning.granularity || '';
+    if (has('splitPolicy')) values.split_policy = planning.split_policy || '';
+  }
+  // 実際に値が変わったキーだけを証跡に残す（同じ値を送り直しただけの「編集」は編集ではない）。
+  const fields = RESUBMIT_EDITABLE_FIELDS.filter((key) =>
+    Object.prototype.hasOwnProperty.call(values, key)
+    && JSON.stringify(values[key] == null ? null : values[key])
+      !== JSON.stringify(old[key] == null ? null : old[key]));
+  return { values, fields };
+}
+
 // 再投入: 旧 run の inbox 記録（自分が書いた契約）を新しい id で写す。plan も引き継ぐ。
 // 旧 run が消えていても inbox 記録が残っていれば再投入できる。
-function resubmit(config, runId) {
+//
+// `edits` を渡すと**編集付き再実行（fork）**になる。世代交代（`inherit_from` で先行 run を
+// 墓標化して消す）ではなく分岐なので、旧 run は参照として残し、系譜は既存の
+// `root_run_id` / `previous_run_id` だけで繋ぐ（agent-project の「plan が変わったら
+// inherit しない」と同じ判断）。何を変えた再実行かは `edited_fields` に残す（C8）。
+function resubmit(config, runId, edits = null) {
   const busDir = resolveBusDir(config);
   const old = readInbox(busDir, runId);
   if (!old) throw new Error(`inbox 記録が見つかりません: ${runId}`);
   const purpose = normalizeExpectedPurpose(old.purpose || 'implementation') || 'implementation';
-  if (purpose === 'design' && old.pattern) {
+  const edit = edits ? normalizeResubmitEdits(config, old, edits) : { values: {}, fields: [] };
+  const pattern = Object.prototype.hasOwnProperty.call(edit.values, 'plan') && edit.values.plan
+    ? '' : old.pattern;
+  if (purpose === 'design' && pattern) {
     throw new Error('設計runへ実装用パターンを再投入できません');
   }
   const next = newRunId();
   const rec = {
     ...old,
+    ...Object.fromEntries(Object.entries(edit.values)
+      .filter(([, value]) => value !== null && value !== '' && value !== undefined)),
     id: next,
     // 再実行を左メニューで別の仕事に見せないため、最初の run と直前の run を記録する。
     // 古い inbox にはこの情報がないので、最初の再実行時は指定された run を起点にする。
@@ -1265,11 +1385,32 @@ function resubmit(config, runId) {
     previous_run_id: String(runId),
     purpose,
     // 古いinboxにworkspaceが残っていても、再投入で設計runの契約を復元する。
-    workspace: purpose === 'design' ? null : (old.workspace || null),
+    workspace: purpose === 'design' ? null
+      : (Object.prototype.hasOwnProperty.call(edit.values, 'workspace')
+        ? edit.values.workspace : (old.workspace || null)),
     ...(purpose === 'design' ? { readonly: true } : {}),
+    ...(edit.fields.length ? { edited_fields: edit.fields } : {}),
     submitted_at: new Date().toISOString(),
   };
+  // 空へ戻した項目はキーごと落とす（「未指定＝設定に従う」を表現できるようにする）。
+  for (const [key, value] of Object.entries(edit.values)) {
+    if (key !== 'workspace' && (value === null || value === '' || value === undefined)) delete rec[key];
+  }
+  // plan を差し替えた（または外した）再実行に、旧 run の標準パターン指定は連れて行かない
+  // ——agent-flow は plan と pattern の同時指定を failed 終端させる。
+  if (Object.prototype.hasOwnProperty.call(edit.values, 'plan')) {
+    if (edit.values.plan) delete rec.pattern;
+    else if (old.pattern) rec.pattern = old.pattern;
+  }
   if (purpose === 'design') delete rec.verification_plan;
+  // 一貫性ゲートの検証計画は task-id と書込先に紐づく digest つき。入力を変えた fork では
+  // 組み直す——古い digest のまま走ると receipt がフェイルクローズで捨てられ続ける。
+  if (edit.fields.length && rec.verification_plan) {
+    if (!rec.workspace) delete rec.verification_plan;
+    else rec.verification_plan = buildVerificationPlan(config, { runId: next, workspace: rec.workspace });
+  }
+  // fork は世代交代ではないので、旧 run を墓標化する `inherit_from` は引き継がない。
+  if (edit.fields.length) delete rec.inherit_from;
   writeJsonAtomic(path.join(busDir, 'inbox', `${next}.json`), rec);
   // 旧 run の手法スナップショットも新 run へ写す（同条件の再実行）
   let tuningDir = null;
@@ -1362,6 +1503,13 @@ module.exports = {
   digestWorkflow: workflowDigest,
   registeredRepositoryRoot,
   normalizeWorkflow,
+  normalizeWorkflowSource,
+  workflowSourceFromSession,
+  workflowSourceFromRun,
+  workflowParameterKeys,
+  applyPlanParameters,
+  RESUBMIT_EDITABLE_FIELDS,
+  normalizeResubmitEdits,
   saveWorkflow,
   loadWorkflow,
   listWorkflows,

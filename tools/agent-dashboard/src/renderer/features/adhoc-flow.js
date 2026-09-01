@@ -129,8 +129,21 @@
       designFlowCatalogKey: '', designFlowCatalog: null, designFlowKey: '', designFlow: null,
       designFlowCatalogError: '', designFlowError: '' },
     executionDialog: null,
+    // 流用（docs/plans/2026-08-31-agent-session-reuse-rerun-design.md）。
+    // fork  … 入力を編集して再実行するダイアログの状態
+    // batch … パラメータ行 × テンプレートの一括投函（確認まで進めてから投函する）
+    fork: null,
+    batch: null,
+    // 保存形テンプレートの `{{key}}` を投入前に埋めるダイアログ
+    parameterDialog: null,
   };
   const esc = (s) => root.esc(String(s == null ? '' : s));
+  // `{{key}}` 入力欄の器は parameter-fields.js（定常業務の実行条件ダイアログと共有）。
+  // index.html はこのファイルより先に読み込むのでブラウザでは常に居る。
+  const parameterFields = () => {
+    if (root.parameterFields) return root.parameterFields;
+    try { return require('../parameter-fields'); } catch { return null; }
+  };
 
   function captureWorkflowUiState(container) {
     if (!container) return null;
@@ -1120,6 +1133,30 @@
     }
   }
 
+  // 流用の来歴。inbox が持つ系譜キーだけで組み立てる（推測で束ねない）。
+  const EDITED_FIELD_LABELS = {
+    request: '依頼内容', plan: 'フロー', workspace: '対象フォルダ', references: '参照フォルダ',
+    execution_overrides: 'エージェント指定', granularity: '分解の粒度', split_policy: '分割の単位',
+  };
+
+  function runLineageHtml(detail) {
+    const inbox = (detail && detail.inbox) || {};
+    const edited = Array.isArray(inbox.edited_fields) ? inbox.edited_fields : [];
+    const previous = String(inbox.previous_run_id || '');
+    const batch = String(inbox.batch_id || '');
+    if (!edited.length && !previous && !batch) return '';
+    const rows = [
+      previous ? `<div><dt>元にした実行</dt><dd><button type="button" class="chip"
+        data-open-run="${esc(previous)}">${esc(previous)}</button></dd></div>` : '',
+      edited.length ? `<div><dt>変更した入力</dt><dd>${
+        esc(edited.map((field) => EDITED_FIELD_LABELS[field] || field).join('、'))}</dd></div>` : '',
+      batch ? `<div><dt>一括投函</dt><dd>${esc(batch)}</dd></div>` : '',
+    ].filter(Boolean).join('');
+    return `<section class="wf-run-lineage"><div class="flow-section-heading"><div>
+      <span class="summary-kicker">この実行の来歴</span><h2>流用のあと</h2></div></div>
+      <dl class="task-preparation-summary">${rows}</dl></section>`;
+  }
+
   function runDetailHtml(detail) {
     if (!detail || !detail.run) return '';
     const run = detail.run;
@@ -1215,8 +1252,13 @@
         <span class="summary-kicker">今回の成果</span><h2>実行結果</h2></div></div>
         <pre class="qf-output">${esc(finalSummary.slice(0, 3000))}</pre></section>` : ''}
       <div class="flow-primary-actions">${terminal
-    ? '<button type="button" id="wf-resubmit">再実行</button><button type="button" class="danger" id="wf-delete-run">削除</button>'
+    ? `<button type="button" id="wf-resubmit" title="この実行と同じ入力でもう一度実行します">同じ入力で再実行</button>
+       <button type="button" id="wf-resubmit-edit" title="依頼内容・対象フォルダ・フローを直してから実行します。元の実行は残ります">入力を編集して再実行</button>
+       ${inbox.plan ? '<button type="button" id="wf-save-template" title="この実行の工程をワークフローとして保存し、次から選べるようにします">テンプレートとして保存</button>' : ''}
+       <button type="button" class="danger" id="wf-delete-run">削除</button>`
     : '<button type="button" class="danger" id="wf-cancel">中止</button>'}</div>
+      ${runLineageHtml(detail)}
+      ${forkDialogHtml(st.overview || {})}
     </section>`;
     const graphView = `<div class="flow-graph-workspace"><section class="flow-graph-surface">
       <div class="flow-section-heading"><div><span class="summary-kicker">作業の流れ</span><h2>工程</h2></div>
@@ -1454,6 +1496,8 @@
     st.notice = '';
     st.runView = 'overview';
     st.executionDialog = null;
+    st.fork = null;
+    st.parameterDialog = null;
     return 'workflow-run';
   }
 
@@ -1518,7 +1562,30 @@
       ${st.selectedPreparation && st.design.current ? `<div id="wf-design-host">${designCardHtml()}</div>` : ''}
       ${workflowTaskDialogHtml(ov)}
       ${st.executionDialog ? executionPreviewDialogHtml() : ''}
+      ${parameterDialogHtml()}
     </section>`;
+  }
+
+  // 保存形テンプレートの `{{key}}` を投入前に埋める。全項目が非空になるまで実行できない
+  // ——`{{key}}` のまま投函すると、依頼文の文字列がそのまま指示として実行されてしまう。
+  function parameterDialogHtml() {
+    const state = st.parameterDialog;
+    if (!state) return '';
+    const fields = parameterFields();
+    return `<dialog id="wf-parameter-dialog" class="task-create-dialog"><div class="dialog-heading">
+      <h2>実行に必要な入力</h2>
+      <button type="button" class="wf-icon-button" data-wf-parameter-close aria-label="閉じる">${ICONS.close}</button></div>
+      <div class="dialog-scroll-body">
+        <p class="field-help">「${esc(state.title || '')}」の実行に必要な入力です。すべて埋めると実行できます。</p>
+        ${state.error ? `<p role="alert" class="qf-failure">${esc(state.error)}</p>` : ''}
+        <div id="wf-parameter-fields">${fields
+    ? fields.fieldsHtml(state.keys, { prefix: 'wf-parameter', values: state.values })
+    : ''}</div>
+      </div>
+      <div class="dialog-actions"><span class="spacer"></span>
+        <button type="button" data-wf-parameter-close>キャンセル</button>
+        <button type="button" class="primary-inline" id="wf-parameter-run" disabled>${
+  esc(state.busy || '実行')}</button></div></dialog>`;
   }
 
   // 実装を開始する前のフロー表示。実装フローは自動で計画されるため、確定済みノードの
@@ -2028,14 +2095,133 @@
       ${miniFlowHtml(pattern)}<b>編集を始める →</b></button>`;
   }
 
+  // 保存形の複製元表記（`source`）。どのセッション・run から生まれたテンプレートかを
+  // 一覧でも辿れるようにする（C8）。本文は持たないので、出せるのはこの 1 行だけ。
+  function workflowSourceLabel(workflow) {
+    const source = String((workflow && workflow.source) || '').trim();
+    if (!source) return '';
+    const [kind, ...rest] = source.split('/');
+    if (kind === 'run') return `run ${rest.join('/')} から`;
+    if (kind === 'session') return `${rest[0] || ''} のセッションから`;
+    return source;
+  }
+
   function savedWorkflowCardHtml(workflow) {
     const nodes = Array.isArray(workflow.nodes) ? workflow.nodes.length : 0;
     const readonly = workflowIsReadonly(workflow);
-    return `<button type="button" class="wf-template-card wf-saved-card" data-workflow-id="${esc(workflow.id)}">
-      <strong>${esc(workflow.name || workflow.id)}</strong>
-      <small>${esc(workflow.description || `${nodes}工程のワークフロー`)}</small>
-      <span class="wf-card-meta">${nodes}工程 · ${readonly ? `${esc(workflowScopeLabel(workflow))}（読み取り専用）` : '自分用（編集できます）'}</span>
-      <b>${readonly ? '内容を見る →' : '編集する →'}</b></button>`;
+    const parameters = Array.isArray(workflow.parameters) ? workflow.parameters : [];
+    const source = workflowSourceLabel(workflow);
+    const design = workflowIsDesign(workflow);
+    return `<article class="wf-template-card wf-saved-card">
+      <button type="button" class="wf-saved-open" data-workflow-id="${esc(workflow.id)}">
+        <strong>${esc(workflow.name || workflow.id)}</strong>
+        <small>${esc(workflow.description || `${nodes}工程のワークフロー`)}</small>
+        <span class="wf-card-meta">${nodes}工程 · ${readonly ? `${esc(workflowScopeLabel(workflow))}（読み取り専用）` : '自分用（編集できます）'}${
+  source ? ` · ${esc(source)}` : ''}${parameters.length ? ` · 入力 ${parameters.length} 項目` : ''}</span>
+        <b>${readonly ? '内容を見る →' : '編集する →'}</b></button>
+      ${design ? '' : `<div class="qf-row wf-saved-actions">
+        <button type="button" data-workflow-batch="${esc(workflow.id)}"
+          title="パラメータの行ごとに1本ずつ、まとめて実行を投函します">一括投函</button></div>`}
+    </article>`;
+  }
+
+  // --- 流用: 入力を編集して再実行（fork） -------------------------------------
+  // 旧 run の inbox 記録をプリフィルして開き、確定時に投函する。世代交代ではないので
+  // 旧 run は残り、系譜は root_run_id / previous_run_id で繋がる。
+
+  function forkDialogHtml(ov) {
+    const fork = st.fork;
+    if (!fork) return '';
+    const input = fork.input || {};
+    const histories = (ov.cwdHistory || []).map((cwd) => `<option value="${esc(cwd)}"></option>`).join('');
+    const planning = fork.preview
+      ? planningFieldsHtml(fork.preview, { granularity: fork.granularity, splitPolicy: fork.splitPolicy })
+      : '';
+    return `<dialog id="wf-fork-dialog" class="task-create-dialog"><div class="dialog-heading">
+      <h2>入力を編集して再実行</h2>
+      <button type="button" class="wf-icon-button" data-wf-fork-close aria-label="閉じる">${ICONS.close}</button></div>
+      <div class="dialog-scroll-body">
+        <p class="field-help">元の実行 ${esc(input.runId || '')} は消えません。編集した項目は証跡として記録されます。</p>
+        ${fork.error ? `<p role="alert" class="qf-failure">${esc(fork.error)}</p>` : ''}
+        <label class="field">依頼内容
+          <textarea id="wf-fork-request" rows="10">${esc(fork.request || '')}</textarea></label>
+        <label class="field">対象フォルダ
+          <input id="wf-fork-cwd" list="wf-fork-cwd-list" value="${esc(fork.cwd || '')}" placeholder="/path/to/repository"></label>
+        <datalist id="wf-fork-cwd-list">${histories}</datalist>
+        <label class="field">フロー
+          <select id="wf-fork-flow"><option value="keep" selected>元の実行のまま（${
+  esc(input.planName || input.pattern || '自動')}）</option>${flowOptions(ov)}</select></label>
+        ${planning}
+      </div>
+      <div class="dialog-actions"><span class="spacer"></span>
+        <button type="button" data-wf-fork-close>キャンセル</button>
+        <button type="button" class="primary-inline" id="wf-fork-submit" ${fork.busy ? 'disabled' : ''}>${
+  esc(fork.busy || 'この内容で再実行')}</button></div></dialog>`;
+  }
+
+  // --- 流用: 一括投函（パラメータ行 × テンプレート） ---------------------------
+  // 「n 件 × 概算予算」の確認を必ず 1 回挟んでから投函する（C1）。実行は常駐体が
+  // node-budget の枠内で消化し、この画面は投函するだけ。
+
+  function batchEstimateHtml(estimate) {
+    if (!estimate) return '';
+    const tokens = (value) => Number(value || 0).toLocaleString('ja-JP');
+    return `<dl class="task-preparation-summary">
+      <div><dt>投函する件数</dt><dd>${estimate.count} 件（上限 ${estimate.maxRows} 件）</dd></div>
+      <div><dt>1 本あたりの概算</dt><dd>${tokens(estimate.perRunTokens)} トークン${
+  estimate.measured ? `（直近 ${estimate.sampleRuns} 本の実測平均）` : '（実測がないため既定値）'}</dd></div>
+      <div><dt>合計の概算</dt><dd>${tokens(estimate.estimatedTokens)} トークン</dd></div>
+      ${estimate.tokenCap ? `<div><dt>今期の残り</dt><dd>${tokens(estimate.remainingTokens)} トークン${
+  estimate.exceeds ? ' — <strong>上限を超える見込みです</strong>' : ''}</dd></div>` : ''}
+    </dl>`;
+  }
+
+  // 行 × キーの表。1 行ぶんの入力は単発実行の入力ダイアログと同じ「文字列・全項目必須」で、
+  // 検証は main（validateParameters）が正典。
+  function batchRowsHtml(batch) {
+    const keys = batch.keys || [];
+    return `<table class="wf-batch-table"><thead><tr><th>#</th><th>対象フォルダ</th>${
+  keys.map((key) => `<th>${esc(key)}</th>`).join('')}<th></th></tr></thead><tbody>${
+  batch.rows.map((row, index) => `<tr data-wf-batch-row="${index}">
+        <td>${index + 1}</td>
+        <td><input data-wf-batch-cwd="${index}" value="${esc(row.cwd || '')}" placeholder="/path/to/repository"></td>
+        ${keys.map((key) => `<td><input data-wf-batch-parameter="${esc(key)}" data-wf-batch-index="${index}"
+          value="${esc((row.parameters || {})[key] || '')}"></td>`).join('')}
+        <td><button type="button" data-wf-batch-remove="${index}" aria-label="${index + 1} 行目を削除">×</button></td>
+      </tr>`).join('')}</tbody></table>`;
+  }
+
+  function batchDialogHtml() {
+    const batch = st.batch;
+    if (!batch) return '';
+    const preview = batch.preview;
+    const unregistered = preview ? (preview.rows || []).filter((row) => row.unregistered) : [];
+    return `<dialog id="wf-batch-dialog" class="task-create-dialog"><div class="dialog-heading">
+      <h2>一括投函 — ${esc(batch.name || batch.workflowId)}</h2>
+      <button type="button" class="wf-icon-button" data-wf-batch-close aria-label="閉じる">${ICONS.close}</button></div>
+      <div class="dialog-scroll-body">
+        ${batch.error ? `<p role="alert" class="qf-failure">${esc(batch.error)}</p>` : ''}
+        <p class="field-help">1 行が 1 本の実行になります。行ごとに対象フォルダを変えられます
+          （成果物のリポジトリまたぎはここで満たします）。</p>
+        <label class="field">共通の依頼内容
+          <textarea id="wf-batch-request" rows="5">${esc(batch.request || '')}</textarea></label>
+        ${batchRowsHtml(batch)}
+        <div class="qf-row"><button type="button" id="wf-batch-add-row">行を追加</button></div>
+        ${preview ? `<section class="wf-batch-confirm"><h3>投函前の確認</h3>
+          ${batchEstimateHtml(preview.estimate)}
+          ${unregistered.length ? `<p class="field-help">この端末が担当を宣言していないリポジトリが
+            ${unregistered.length} 行あります（${esc(unregistered.map((row) => row.cwd).join('、'))}）。
+            そのまま投函するとこの端末で実行します。担当ノードへ任せる場合は「委譲」画面から公示してください。</p>` : ''}
+        </section>` : ''}
+      </div>
+      <div class="dialog-actions"><span class="spacer"></span>
+        <button type="button" data-wf-batch-close>キャンセル</button>
+        ${preview
+    ? `<button type="button" id="wf-batch-back">内容を直す</button>
+       <button type="button" class="primary-inline" id="wf-batch-submit" ${batch.busy ? 'disabled' : ''}>${
+  esc(batch.busy || `${preview.estimate.count} 件を投函する`)}</button>`
+    : `<button type="button" class="primary-inline" id="wf-batch-check" ${batch.busy ? 'disabled' : ''}>${
+  esc(batch.busy || '件数と概算を確認')}</button>`}</div></dialog>`;
   }
 
   function designTemplateCardHtml(workflow) {
@@ -2075,7 +2261,8 @@
           ${ICONS.plus}
           <strong>一から作る</strong><small>空のキャンバスから工程を追加します。</small><b>編集を始める →</b></button>
           ${patterns.map(templateCardHtml).join('')}${methodPatterns.map(templateCardHtml).join('')}${
-  internalDesign.map(designTemplateCardHtml).join('')}</div></section></section>`;
+  internalDesign.map(designTemplateCardHtml).join('')}</div></section>
+      ${batchDialogHtml()}</section>`;
   }
 
   function patternChoices(ov, purpose = st.workflowPurpose) {
@@ -2598,6 +2785,218 @@
     });
   }
 
+  // --- 流用の配線 -------------------------------------------------------------
+
+  function wireParameterDialog(pane) {
+    const dialog = $id('wf-parameter-dialog');
+    if (!dialog) return;
+    const fields = parameterFields();
+    const body = $id('wf-parameter-fields');
+    const submit = $id('wf-parameter-run');
+    const close = () => { st.parameterDialog = null; if (dialog.open) dialog.close(); renderRun(); };
+    const validate = () => {
+      if (submit) submit.disabled = !!st.parameterDialog.busy || !(fields && fields.complete(body));
+    };
+    pane.querySelectorAll('[data-wf-parameter-close]').forEach((button) => button.addEventListener('click', close));
+    dialog.addEventListener('cancel', (event) => { event.preventDefault(); close(); });
+    (fields ? fields.inputsIn(body) : []).forEach((input) => input.addEventListener('input', validate));
+    submit?.addEventListener('click', async () => {
+      const state = st.parameterDialog;
+      if (!state || state.busy) return;
+      const values = fields ? fields.readValues(body) : {};
+      st.parameterDialog = { ...state, values, busy: '実行中…', error: '' };
+      renderRun();
+      try {
+        const result = await api().workflowTaskExecute({ id: state.id, parameters: values });
+        st.parameterDialog = null;
+        setSelectedRun(result.runId);
+        st.notice = `実行を開始しました · ${result.runId}`;
+        await refresh();
+      } catch (err) {
+        st.parameterDialog = { ...state, values, busy: '', error: String((err && err.message) || err) };
+        renderRun();
+      }
+    });
+    validate();
+    if (st.parameterDialog && !dialog.open) dialog.showModal();
+  }
+
+  async function openForkDialog(runId) {
+    st.fork = { runId, busy: '読み込み中…', error: '' };
+    renderRun();
+    try {
+      const [{ input }, preview] = await Promise.all([
+        api().adhocFlowRunInput({ runId }),
+        api().adhocFlowExecutionPreview({}).catch(() => null),
+      ]);
+      st.fork = {
+        runId,
+        input,
+        preview: preview && preview.preview,
+        request: input.request,
+        cwd: input.cwd,
+        granularity: input.granularity,
+        splitPolicy: input.splitPolicy,
+        busy: '',
+        error: '',
+      };
+    } catch (err) {
+      st.fork = null;
+      st.notice = `再実行の入力を読み込めませんでした: ${String((err && err.message) || err)}`;
+    }
+    renderRun();
+  }
+
+  function wireForkDialog(pane) {
+    const dialog = $id('wf-fork-dialog');
+    if (!dialog) return;
+    const close = () => { st.fork = null; if (dialog.open) dialog.close(); renderRun(); };
+    pane.querySelectorAll('[data-wf-fork-close]').forEach((button) => button.addEventListener('click', close));
+    dialog.addEventListener('cancel', (event) => { event.preventDefault(); close(); });
+    dialog.querySelectorAll('[data-exec-planning]').forEach((select) => select.addEventListener('change', () => {
+      if (!st.fork) return;
+      st.fork[select.dataset.execPlanning] = select.value;
+    }));
+    $id('wf-fork-submit')?.addEventListener('click', async () => {
+      const fork = st.fork;
+      if (!fork || fork.busy) return;
+      const input = fork.input || {};
+      // 送るのは**変えた項目だけ**。同じ値まで送ると、証跡（edited_fields）が
+      // 「編集していない項目を編集した」と読める。
+      const edits = {};
+      const request = String($id('wf-fork-request')?.value || '').trim();
+      const cwd = String($id('wf-fork-cwd')?.value || '').trim();
+      const flow = String($id('wf-fork-flow')?.value || '');
+      const granularity = String(fork.granularity || '');
+      const splitPolicy = String(fork.splitPolicy || '');
+      if (request !== String(input.request || '')) edits.request = request;
+      if (cwd !== String(input.cwd || '')) edits.cwd = cwd;
+      if (flow && flow !== 'keep') edits.selection = selectionFrom(flow);
+      if (granularity !== String(input.granularity || '')) edits.granularity = granularity;
+      if (splitPolicy !== String(input.splitPolicy || '')) edits.splitPolicy = splitPolicy;
+      if (!Object.keys(edits).length) {
+        st.fork = { ...fork, error: '変更がありません。同じ入力で再実行する場合は前の画面のボタンを使ってください。' };
+        renderRun();
+        return;
+      }
+      st.fork = { ...fork, busy: '投函中…', error: '' };
+      renderRun();
+      try {
+        const result = await api().adhocFlowResubmit({ runId: fork.runId, edits });
+        st.fork = null;
+        setSelectedRun(result.runId);
+        st.notice = `入力を編集して再実行しました · ${result.runId}`;
+        await refresh();
+      } catch (err) {
+        st.fork = { ...fork, busy: '', error: String((err && err.message) || err) };
+        renderRun();
+      }
+    });
+    if (st.fork && !dialog.open) dialog.showModal();
+  }
+
+  function emptyBatchRow(keys) {
+    return { cwd: '', parameters: Object.fromEntries((keys || []).map((key) => [key, ''])) };
+  }
+
+  function openBatchDialog(workflow) {
+    const keys = Array.isArray(workflow.parameters) ? workflow.parameters : [];
+    st.batch = {
+      workflowId: workflow.id,
+      scope: workflow._scope || 'user',
+      repository: workflow._repository || '',
+      name: workflow.name || workflow.id,
+      keys,
+      request: '',
+      rows: [emptyBatchRow(keys), emptyBatchRow(keys)],
+      preview: null,
+      busy: '',
+      error: '',
+    };
+    renderSettings();
+  }
+
+  function readBatchRows(dialog) {
+    const batch = st.batch;
+    return batch.rows.map((row, index) => ({
+      cwd: String(dialog.querySelector(`[data-wf-batch-cwd="${index}"]`)?.value || '').trim(),
+      parameters: Object.fromEntries((batch.keys || []).map((key) => [key,
+        String(dialog.querySelector(
+          `[data-wf-batch-parameter="${key}"][data-wf-batch-index="${index}"]`)?.value || '').trim()])),
+    }));
+  }
+
+  function wireBatchDialog(pane) {
+    const dialog = $id('wf-batch-dialog');
+    if (!dialog) return;
+    const close = () => { st.batch = null; if (dialog.open) dialog.close(); renderSettings(); };
+    const capture = () => {
+      if (!st.batch) return;
+      st.batch.rows = readBatchRows(dialog);
+      st.batch.request = String($id('wf-batch-request')?.value || '');
+    };
+    pane.querySelectorAll('[data-wf-batch-close]').forEach((button) => button.addEventListener('click', close));
+    dialog.addEventListener('cancel', (event) => { event.preventDefault(); close(); });
+    $id('wf-batch-add-row')?.addEventListener('click', () => {
+      capture();
+      st.batch.rows.push(emptyBatchRow(st.batch.keys));
+      st.batch.preview = null;
+      renderSettings();
+    });
+    dialog.querySelectorAll('[data-wf-batch-remove]').forEach((button) => button.addEventListener('click', () => {
+      capture();
+      st.batch.rows.splice(Number(button.dataset.wfBatchRemove), 1);
+      st.batch.preview = null;
+      renderSettings();
+    }));
+    $id('wf-batch-back')?.addEventListener('click', () => {
+      st.batch.preview = null;
+      renderSettings();
+    });
+    // 投函前の確認は必ず 1 回通す（件数・概算予算）。確認せずに投函する口は作らない。
+    $id('wf-batch-check')?.addEventListener('click', async () => {
+      capture();
+      st.batch.busy = '確認中…';
+      st.batch.error = '';
+      renderSettings();
+      try {
+        const preview = await api().adhocFlowBatchPreview({
+          rows: st.batch.rows, parameterKeys: st.batch.keys,
+        });
+        st.batch = { ...st.batch, preview, busy: '' };
+      } catch (err) {
+        st.batch = { ...st.batch, busy: '', error: String((err && err.message) || err) };
+      }
+      renderSettings();
+    });
+    $id('wf-batch-submit')?.addEventListener('click', async () => {
+      const batch = st.batch;
+      if (!batch || !batch.preview || batch.busy) return;
+      st.batch = { ...batch, busy: '投函中…', error: '' };
+      renderSettings();
+      try {
+        const result = await api().adhocFlowBatchSubmit({
+          rows: batch.rows,
+          parameterKeys: batch.keys,
+          confirmed: true,
+          request: batch.request,
+          selection: { type: 'custom', id: batch.workflowId, scope: batch.scope, repository: batch.repository },
+        });
+        const count = (result.submitted || []).length;
+        st.batch = null;
+        st.notice = result.failed
+          ? `${count} 件を投函しましたが、${result.failed.index + 1} 行目で止まりました: ${result.failed.error}`
+          : `${count} 件を投函しました · ${result.batchId}`;
+        await refresh();
+        renderSettings();
+      } catch (err) {
+        st.batch = { ...batch, busy: '', error: String((err && err.message) || err) };
+        renderSettings();
+      }
+    });
+    if (st.batch && !dialog.open) dialog.showModal();
+  }
+
   function wireRun(pane) {
     if (!pane) return;
     const reopenTaskDialog = () => {
@@ -2928,9 +3327,18 @@
       renderRun();
     }));
     pane.querySelectorAll('[data-wf-task-execute]').forEach((button) => button.addEventListener('click', async () => {
+      const id = button.dataset.wfTaskExecute;
+      const task = (st.queuedTasks || []).find((row) => String(row.id) === String(id)) || {};
+      // 保存形テンプレートの `{{key}}` は投入前に人が埋める。1 項目でもあればダイアログを開き、
+      // 無ければ従来どおり直ちに実行する（検出は main が済ませてある）。
+      if (Array.isArray(task.parameters) && task.parameters.length) {
+        st.parameterDialog = { id, title: task.title || '', keys: task.parameters, values: {}, error: '', busy: '' };
+        renderRun();
+        return;
+      }
       button.disabled = true;
       try {
-        const result = await api().workflowTaskExecute({ id: button.dataset.wfTaskExecute });
+        const result = await api().workflowTaskExecute({ id });
         setSelectedRun(result.runId);
         st.notice = `実行を開始しました · ${result.runId}`;
         await refresh();
@@ -2940,6 +3348,7 @@
         renderRun();
       }
     }));
+    wireParameterDialog(pane);
     $id('wf-new-run')?.addEventListener('click', () => {
       setSelectedRun('');
       st.runDetail = null;
@@ -3060,6 +3469,21 @@
       } catch (err) { st.notice = String((err && err.message) || err); }
       await refresh();
     });
+    $id('wf-resubmit-edit')?.addEventListener('click', () => openForkDialog(st.selectedRun));
+    // この run の入力を保存形テンプレートへ昇格する。複製元（run/<run-id>）が付くので、
+    // どの実行から生まれたテンプレートかを後から辿れる（C8）。
+    $id('wf-save-template')?.addEventListener('click', async (event) => {
+      event.currentTarget.disabled = true;
+      try {
+        const { draft, source } = await api().adhocFlowDistillRun({
+          runId: st.selectedRun, kind: 'workflow',
+        });
+        const saved = await api().adhocFlowSaveDistilled({ workflow: draft.workflow, source });
+        st.notice = `ワークフローとして保存しました · ${saved.saved.name}`;
+      } catch (err) { st.notice = String((err && err.message) || err); }
+      await refresh();
+    });
+    wireForkDialog(pane);
     $id('wf-cancel')?.addEventListener('click', async () => {
       try { await api().adhocFlowCancel({ runId: st.selectedRun }); }
       catch (err) { st.notice = String((err && err.message) || err); }
@@ -3255,6 +3679,12 @@
       st.dirty = false; resetSelection(); renderSettings();
       if (found && workflowIsDesign(found)) loadDesignAssignmentPreview(st.editor);
     }));
+    // 一括投函はテンプレートの編集画面へ入らない（保存形はそのまま、行だけを与える）。
+    pane.querySelectorAll('[data-workflow-batch]').forEach((button) => button.addEventListener('click', () => {
+      const found = (ov.workflows || []).find((item) => item.id === button.dataset.workflowBatch);
+      if (found) openBatchDialog(found);
+    }));
+    wireBatchDialog(pane);
     pane.querySelectorAll('[data-design-template-id]').forEach((button) => button.addEventListener('click', () => {
       if (!canLeave()) return;
       const found = (ov.workflows || []).find((item) => item.id === button.dataset.designTemplateId);
@@ -3582,6 +4012,13 @@
     workflowLibraryHtml,
     patternChoices,
     workflowTaskDialogHtml,
+    workflowSourceLabel,
+    runLineageHtml,
+    forkDialogHtml,
+    batchDialogHtml,
+    batchEstimateHtml,
+    parameterDialogHtml,
+    EDITED_FIELD_LABELS,
     connectionError,
     consultTarget,
     connectWorkflow,
