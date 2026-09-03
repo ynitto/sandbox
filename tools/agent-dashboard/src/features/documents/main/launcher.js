@@ -1,0 +1,74 @@
+'use strict';
+
+// 他の制御面への依存を閉じ込めるアダプタ。documents の本体（store / rules / sidecar /
+// prompts）はこのモジュール以外から agent-project / cowork / loopProvider を参照しない。
+// テストは module.exports の関数を差し替えて起動系を切り離せる（documents.js は呼ぶたびに
+// `launcher.launchWindow(...)` とプロパティ経由で参照する）。
+//
+// 2 種類の起動:
+//   launchWindow … 文書フォルダを cwd にした**書き込み可**の対話ウィンドウ。定常業務の
+//                  アドホック起動と同じ部品（CLI/モデル解決・共通指示の前置・セッション開始
+//                  コマンド）で起こす。interactive を持たない CLI は agent-loop の単発実行へ落とす
+//   advise       … 読み取り専用のヘッドレス助言（Dashboard AI と同じ解決・予算・記帳）
+
+const DOCUMENT_WORKLOAD = 'documents';
+const SESSION_PREFIX = 'agent-doc';
+
+// require は関数の中で行う（読み込み時に他の制御面を引き込まない）。
+function agentModule() {
+  return require('../../agent-project/main/agent');
+}
+
+function coworkModule() {
+  return require('../../cowork/main/cowork');
+}
+
+// この端末で文書作成に使うエージェント（表示にも起動にも同じ解決を通す）。
+function resolveDocumentAgent(config, cwd) {
+  return agentModule().resolveAgent(config, cwd, { workload: DOCUMENT_WORKLOAD });
+}
+
+function describeAgent(config, cwd) {
+  const r = resolveDocumentAgent(config, cwd);
+  return { cli: r.cli, model: r.model, source: r.source, interactive: !!(r.spec && r.spec.interactive) };
+}
+
+function launchWindow(config, { cwd, prompt, title, sessionKey, message }) {
+  const cowork = coworkModule();
+  const agent = agentModule();
+  const { runChatWindow } = require('../../cowork/main/loopProvider');
+  const selected = resolveDocumentAgent(config, cwd);
+  const fullPrompt = cowork.withGlobalInstructions(config, prompt);
+  if (cowork.needsHeadlessHarness(selected.spec)) {
+    return cowork.runHeadlessRoutine(config, {
+      cwd, prompt: fullPrompt, acceptance: [], selected, title, record: () => {},
+    });
+  }
+  const launch = agent.interactiveLaunchSpec(config, cwd, { workload: DOCUMENT_WORKLOAD, resolved: selected });
+  const res = runChatWindow({
+    chatCommand: launch.chatCommand,
+    prompt: fullPrompt,
+    cwd,
+    sessionCommands: cowork.planSessionCommands(config, cwd, {
+      agentCli: launch.cli, skillCommandPrefix: launch.skillCommandPrefix,
+    }),
+    readyPattern: launch.readyPattern,
+    readyTimeoutSec: launch.readyTimeoutSec,
+    sessionKey,
+    sessionPrefix: SESSION_PREFIX,
+    title,
+    message: message || `別ウィンドウで ${launch.cli} を起動しました`,
+  });
+  return { ...res, cli: launch.cli, model: launch.model };
+}
+
+async function advise(config, cwd, purpose, prompt) {
+  const agent = agentModule();
+  const resolved = agent.resolveDashboardAgent(config, cwd, { purpose });
+  const raw = await agent.runDashboardAgent(config, resolved, purpose, () => agent.runAgent(resolved, prompt, cwd));
+  const text = agent.stripFence(raw);
+  if (!String(text || '').trim()) throw new Error('エージェントの応答が空でした');
+  return { text, cli: resolved.cli, model: resolved.model, source: resolved.source };
+}
+
+module.exports = { DOCUMENT_WORKLOAD, SESSION_PREFIX, resolveDocumentAgent, describeAgent, launchWindow, advise };

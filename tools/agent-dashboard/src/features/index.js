@@ -18,6 +18,8 @@
 // - adhoc-flow … プロジェクトを立てない agent-flow 単発 run の投入・監視と、
 //                 フロービルダー（保存済みフロー定義 → submit_request の plan）・
 //                 成果のタスク昇格（S21・S22）
+// - documents … 文書ルールに沿ってエージェント CLI に文書（Word / PowerPoint / Excel /
+//               Markdown / draw.io）を作らせ、検証し、改訂履歴のサイドカーを残す制御面
 //
 // 新しい制御面を足す手順:
 //   1. src/features/<id>/ を agent-project や routines を雛形に作る
@@ -38,6 +40,7 @@ function loadFeatures() {
     require('./participation'),
     require('./agent-audit'),
     require('./adhoc-flow'),
+    require('./documents'),
   ];
 }
 
