@@ -22,7 +22,7 @@ test('features に各制御面が並ぶ', () => {
   const ids = features.map((f) => f.id);
   assert.deepStrictEqual(ids,
     ['agent-project', 'routines', 'cowork', 'amigos', 'orchestration', 'delegation', 'participation',
-     'agent-audit', 'adhoc-flow']);
+     'agent-audit', 'adhoc-flow', 'documents']);
 });
 
 test('各 feature が registerIpc / preloadApi / configDefaults を持つ', () => {
@@ -329,6 +329,14 @@ test('base / feature の入口ファイルが存在する', () => {
     'features/agent-audit/README.md',
     'features/agent-audit/main/audit.js',
     'features/agent-audit/main/ipc.js',
+    'features/documents/index.js',
+    'features/documents/config.js',
+    'features/documents/preload.js',
+    'features/documents/README.md',
+    'features/documents/main/documents.js',
+    'features/documents/main/rules.js',
+    'features/documents/main/prompts.js',
+    'features/documents/main/ipc.js',
   ]) {
     assert.ok(fs.existsSync(path.join(root, rel)), rel);
   }
@@ -346,6 +354,8 @@ test('HTML に data-feature マーカーがある', () => {
   assert.ok(html.includes('tab-orchestration'));
   assert.ok(html.includes('data-feature="participation"'));
   assert.ok(html.includes('tab-participation'));
+  assert.ok(html.includes('data-feature="documents"'));
+  assert.ok(html.includes('tab-document-list'));
   // agent-audit は独立タブを持たない（全体設定「利用状況」へ差し込む面）。
   // 画面側の配線はスクリプトの読み込みだけで、data-feature マーカーは持たない。
   assert.ok(html.includes('features/agent-audit.js'));

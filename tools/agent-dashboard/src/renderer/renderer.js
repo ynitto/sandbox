@@ -245,6 +245,8 @@ const AREAS = [
   { id: 'missions', label: 'ミッション',
     desc: '複数のエージェントで役割を分担し、まとまった作業を進めます。' },
   { id: 'routines', label: '定常業務', list: 'routines', desc: '繰り返す作業を、この端末で動かします。' },
+  { id: 'documents', label: 'ドキュメント',
+    desc: '文書ルールに沿って、エージェントに文書を作らせて検証します。' },
   { id: 'participation', label: '参加', ownHeader: true },
   { id: 'usage', label: '利用状況', desc: 'この端末で使ったトークンと、実行の品質。' },
   { id: 'settings', label: '全体設定', footer: true, ownHeader: true },
