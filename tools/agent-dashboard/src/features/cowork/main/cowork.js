@@ -1786,7 +1786,7 @@ module.exports = {
   applyManagedItems, stateMachineCreationPrompt,
   inspectCoworkRoot, setCoworkRoot,
   templateParameterKeys, stateMachineInputSpec, stateMachineFilePath, resolveLoopAcceptance,
-  needsHeadlessHarness,
+  needsHeadlessHarness, runHeadlessRoutine,
   isHerdFamily,
   stateMachineSlashCommand,
   routineParameterSpec, validateParameters, applyParameters, stateMachineParameterBlock,

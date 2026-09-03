@@ -4775,3 +4775,59 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
   margin: 8px 0 0;
 }
 #dlg-cowork-work .cowork-procedure-entry { align-items: center; gap: 10px; margin-top: 8px; }
+
+/* ======== ドキュメント領域（features/documents.js） ======== */
+.docs-shell { display: flex; flex-direction: column; gap: 10px; height: 100%; min-height: 0; }
+.docs-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.docs-toolbar-note { font-size: 12px; }
+.docs-agent-line { margin: 0; font-size: 12px; }
+.docs-notice {
+  margin: 0; padding: 8px 12px; border-radius: 8px;
+  background: var(--bg3); border: 1px solid var(--border); color: var(--fg);
+}
+.docs-notice.is-ok { border-color: var(--green); }
+.docs-notice.is-error { border-color: var(--red); }
+.docs-master-detail { flex: 1; min-height: 0; }
+.docs-list { display: flex; flex-direction: column; gap: 6px; }
+.docs-list-item {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 4px;
+  width: 100%; text-align: left; padding: 10px 12px;
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 10px; color: var(--fg);
+}
+.docs-list-item:hover { border-color: var(--accent); }
+.docs-list-item.active { border-color: var(--accent); background: var(--bg3); }
+.docs-list-title { font-weight: 600; }
+.docs-list-meta { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; font-size: 12px; }
+.docs-list-sub { font-size: 12px; }
+.docs-detail-panel { padding-right: 4px; }
+.docs-detail { display: flex; flex-direction: column; gap: 14px; }
+.docs-detail-head { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; align-items: flex-start; }
+.docs-detail-head h3 { margin: 2px 0 4px; }
+.docs-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.docs-facts { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; margin: 0; }
+.docs-facts dt { color: var(--muted); font-size: 12px; padding-top: 2px; }
+.docs-facts dd { margin: 0; min-width: 0; }
+.docs-section h4 { margin: 0 0 6px; font-size: 14px; }
+.docs-sidecar { font-weight: 400; font-size: 12px; margin-left: 6px; }
+.docs-table-wrap { overflow-x: auto; }
+.docs-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.docs-table th, .docs-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.docs-table th { color: var(--muted); font-weight: 600; font-size: 12px; }
+.docs-relation { font-size: 12px; }
+.docs-inputs { margin: 0; padding-left: 18px; }
+.docs-file { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; color: var(--muted); }
+.docs-history, .docs-rule-body {
+  padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg2);
+  max-height: 60vh; overflow: auto;
+}
+.docs-pre { white-space: pre-wrap; margin: 0; font-size: 13px; }
+.docs-warn { color: var(--yellow); }
+.docs-checks { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+.docs-check { display: inline-flex; align-items: center; gap: 6px; font-weight: 400; margin: 0; }
+.docs-check input { width: auto; margin: 0; }
+.docs-field-label { display: block; color: var(--fg); margin-bottom: 5px; font-weight: 600; }
+.docs-path-row { display: flex; gap: 6px; }
+.docs-path-row input { flex: 1; }
+.docs-inline-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+.docs-rule-editor { font-size: 12.5px; line-height: 1.5; }
+.docs-settings .global-settings-card { max-width: 760px; }

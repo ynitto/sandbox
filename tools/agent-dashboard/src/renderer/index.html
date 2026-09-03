@@ -133,6 +133,9 @@
         <button class="tab" data-tab="workflow-needs" data-area="workflows" data-feature="adhoc-flow" id="tab-btn-workflow-needs">要対応 <span id="workflow-needs-badge" class="badge hidden"></span></button>
         <button class="tab" data-tab="workflow-edit" data-area="workflows" data-feature="adhoc-flow" id="tab-btn-workflow-edit">編集</button>
         <button class="tab" data-tab="workflow-settings" data-area="workflows" data-feature="adhoc-flow" id="tab-btn-workflow-settings">設定</button>
+        <button class="tab" data-tab="document-list" data-area="documents" data-feature="documents" id="tab-btn-document-list">文書</button>
+        <button class="tab" data-tab="document-rules" data-area="documents" data-feature="documents" id="tab-btn-document-rules">文書ルール</button>
+        <button class="tab" data-tab="document-settings" data-area="documents" data-feature="documents" id="tab-btn-document-settings">設定</button>
         <button class="tab" data-tab="usage" data-area="usage" data-feature="agent-audit" id="tab-btn-usage">利用量</button>
         <button class="tab" data-tab="usage-settings" data-area="usage" data-feature="agent-audit"
           id="tab-btn-usage-settings">設定</button>
@@ -159,6 +162,9 @@
         <div id="tab-workflow-needs" class="tabpane" data-feature="adhoc-flow"></div>
         <div id="tab-workflow-edit" class="tabpane" data-feature="adhoc-flow"></div>
         <div id="tab-workflow-settings" class="tabpane" data-feature="adhoc-flow"></div>
+        <div id="tab-document-list" class="tabpane" data-feature="documents"></div>
+        <div id="tab-document-rules" class="tabpane" data-feature="documents"></div>
+        <div id="tab-document-settings" class="tabpane" data-feature="documents"></div>
         <div id="tab-usage" class="tabpane" data-feature="agent-audit"></div>
         <div id="tab-usage-settings" class="tabpane" data-feature="agent-audit"></div>
         <div id="tab-project-settings" class="tabpane" data-feature="agent-project"></div>
@@ -205,6 +211,156 @@
     <div id="routine-agent-dialog-body"></div>
   </dialog>
 
+
+  <!-- ======== ドキュメント（文書ルールに沿った文書作成） ======== -->
+  <dialog id="dlg-docs-create" class="wide docs-dialog" data-feature="documents" aria-labelledby="docs-create-title">
+    <form method="dialog">
+      <h2 id="docs-create-title">文書を作る</h2>
+      <p class="muted">エージェントは別ウィンドウで起動し、書き始める前に読者・目的・範囲・用語・体裁などを徹底的に質問します。答えながら進めてください。</p>
+      <div class="row2">
+        <div class="field">
+          <label for="docs-create-name">文書の名前</label>
+          <input id="docs-create-name" autocomplete="off" placeholder="例: 2026年度 提案書" />
+        </div>
+        <div class="field">
+          <label for="docs-create-rule">文書ルール</label>
+          <select id="docs-create-rule"></select>
+          <small class="muted">対象・目的・体裁・区分をまとめたファイル。無くても質問で決められます。</small>
+        </div>
+      </div>
+      <div class="field">
+        <span class="docs-field-label">出力する形式（複数可）</span>
+        <div id="docs-create-formats" class="docs-checks"></div>
+        <small class="muted">複数のときは互いに関連づけて作ります（例: Word の本文と、その図の draw.io）。</small>
+      </div>
+      <div class="field">
+        <span class="docs-field-label">進め方</span>
+        <div class="docs-checks">
+          <label class="check docs-check"><input type="radio" name="docs-create-mode" value="whole" checked /> 一気に作る（質問が出尽くしてから全体を作る）</label>
+          <label class="check docs-check"><input type="radio" name="docs-create-mode" value="section" /> 区分ごとに作る（章ごとに質問・作成・確認を繰り返す）</label>
+        </div>
+      </div>
+      <div class="field">
+        <label for="docs-create-prompt">依頼内容</label>
+        <textarea id="docs-create-prompt" rows="6" placeholder="何の文書を、誰に向けて、何のために作るか。分かっていることを書きます。足りない点は質問されます。"></textarea>
+      </div>
+      <div class="field">
+        <span class="docs-field-label">入力ファイル</span>
+        <div id="docs-create-inputs"></div>
+        <button type="button" id="btn-docs-create-add-input">ファイルを追加</button>
+        <small class="muted">文書フォルダの inputs/ へ写しを置き、エージェントはそれを読みます。</small>
+      </div>
+      <p id="docs-create-status" class="muted" aria-live="polite"></p>
+      <div class="dialog-actions">
+        <button id="btn-docs-create-cancel" value="cancel" type="button">キャンセル</button>
+        <button id="btn-docs-create-ok" class="primary-inline" value="default">作成を始める</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-docs-resume" data-feature="documents" aria-labelledby="docs-resume-title">
+    <form method="dialog">
+      <h2 id="docs-resume-title">続きを依頼</h2>
+      <p class="muted">改訂履歴の決めごとを踏まえて、同じフォルダで作業を続けます。区分ごとに作っている文書は「次の区分へ」のように指示します。</p>
+      <div class="field">
+        <label for="docs-resume-instruction">依頼する内容</label>
+        <textarea id="docs-resume-instruction" rows="6" placeholder="例: 第3章を書き足して。数値は inputs/ の集計表に合わせて。"></textarea>
+      </div>
+      <p id="docs-resume-status" class="muted" aria-live="polite"></p>
+      <div class="dialog-actions">
+        <button id="btn-docs-resume-cancel" value="cancel" type="button">キャンセル</button>
+        <button id="btn-docs-resume-ok" class="primary-inline" value="default">始める</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-docs-verify" class="wide" data-feature="documents" aria-labelledby="docs-verify-title">
+    <form method="dialog">
+      <h2 id="docs-verify-title">検証する</h2>
+      <p class="muted">用語のブレ・整合性・論理性・つながり・人間のわかりやすさ・AI 臭の排除は自動で見ます。専門分野のレビュー結果があれば、ここに貼ると同じ検証で扱います。直すかどうかは一つずつ確認されます。</p>
+      <div class="field">
+        <label for="docs-verify-review">専門分野のレビュー結果（任意）</label>
+        <textarea id="docs-verify-review" rows="8" placeholder="例: 3.2 節の前提が法改正前の内容。図2の分類は現行の区分と違う。"></textarea>
+      </div>
+      <p id="docs-verify-status" class="muted" aria-live="polite"></p>
+      <div class="dialog-actions">
+        <button id="btn-docs-verify-cancel" value="cancel" type="button">キャンセル</button>
+        <button id="btn-docs-verify-ok" class="primary-inline" value="default">検証を始める</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-docs-feedback" data-feature="documents" aria-labelledby="docs-feedback-title">
+    <form method="dialog">
+      <h2 id="docs-feedback-title">フィードバック</h2>
+      <p class="muted">完成した文書への感想・次回に活かしたい点を書くと、改訂履歴と合わせて文書ルールの案にします。案は確認してから保存します。</p>
+      <div class="field">
+        <label for="docs-feedback-text">フィードバック</label>
+        <textarea id="docs-feedback-text" rows="6" placeholder="例: 冒頭の結論が長すぎた。数値の出典は脚注にまとめる方が読みやすい。"></textarea>
+      </div>
+      <div class="field">
+        <span class="docs-field-label">反映先</span>
+        <div class="docs-checks">
+          <label class="check docs-check"><input type="radio" name="docs-feedback-target" value="existing" /> 既存の文書ルールを更新する</label>
+          <label class="check docs-check"><input type="radio" name="docs-feedback-target" value="new" checked /> 新しい文書ルールにする</label>
+        </div>
+      </div>
+      <div class="field" id="docs-feedback-rule-field" hidden>
+        <label for="docs-feedback-rule">更新する文書ルール</label>
+        <select id="docs-feedback-rule"></select>
+      </div>
+      <div class="field" id="docs-feedback-name-field">
+        <label for="docs-feedback-name">新しいルールの名前</label>
+        <input id="docs-feedback-name" autocomplete="off" />
+      </div>
+      <p id="docs-feedback-status" class="muted" aria-live="polite"></p>
+      <div class="dialog-actions">
+        <button id="btn-docs-feedback-cancel" value="cancel" type="button">キャンセル</button>
+        <button id="btn-docs-feedback-ok" class="primary-inline" value="default">ルールの案を作る</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-docs-rule" class="wide docs-dialog" data-feature="documents" aria-labelledby="docs-rule-title">
+    <form method="dialog">
+      <h2 id="docs-rule-title">ルールを作る</h2>
+      <div class="row2">
+        <div class="field">
+          <label for="docs-rule-name">ルールの名前</label>
+          <input id="docs-rule-name" autocomplete="off" placeholder="例: 提案書" />
+        </div>
+        <div class="field">
+          <span class="docs-field-label">対応する形式</span>
+          <div id="docs-rule-formats" class="docs-checks"></div>
+        </div>
+      </div>
+      <div id="docs-rule-draft-box">
+        <div class="row2">
+          <div class="field">
+            <label for="docs-rule-template">テンプレート（任意）</label>
+            <textarea id="docs-rule-template" rows="5" placeholder="雛形や既存文書の説明。構成の骨子でも構いません。"></textarea>
+          </div>
+          <div class="field">
+            <label for="docs-rule-draft">原案</label>
+            <textarea id="docs-rule-draft" rows="5" placeholder="誰に何のために、どんな体裁で、何を書くか。箇条書きで十分です。"></textarea>
+          </div>
+        </div>
+        <div class="docs-inline-actions">
+          <button type="button" id="btn-docs-rule-expand">AI で膨らませる</button>
+          <small class="muted">対象と目的・テンプレート・定型と体裁・記述内容・注意点・区分の節に分けて書き起こします。</small>
+        </div>
+      </div>
+      <div class="field">
+        <label for="docs-rule-content">本文</label>
+        <textarea id="docs-rule-content" class="mono docs-rule-editor" rows="18" spellcheck="false"></textarea>
+      </div>
+      <p id="docs-rule-status" class="muted" aria-live="polite"></p>
+      <div class="dialog-actions">
+        <button id="btn-docs-rule-cancel" value="cancel" type="button">キャンセル</button>
+        <button id="btn-docs-rule-save" class="primary-inline" value="default">保存</button>
+      </div>
+    </form>
+  </dialog>
 
   <!-- ======== 定常業務の編集 ======== -->
   <dialog id="dlg-cowork-work">
@@ -921,6 +1077,7 @@
   <script src="features/participation.js"></script>
   <script src="features/agent-audit.js"></script>
   <script src="features/adhoc-flow.js"></script>
+  <script src="features/documents.js"></script>
   <script src="bootstrap.js"></script>
 </body>
 </html>
