@@ -10,7 +10,9 @@
 //     … 読み取り専用の助言。返るのは文書ルールの本文だけで、ファイルへ書くのは人が
 //        編集して確定したあとの dashboard（C4: AI 下書き＋人の確定）。
 
-const { RULE_SECTIONS, FORMATS, formatLabel } = require('./rules');
+const { RULE_SECTIONS } = require('./rules');
+const formats = require('./formats');
+const sidecar = require('./sidecar');
 
 // 質問で必ず埋める観点。「徹底的に質問する」の中身をここで固定する。
 const QUESTION_AREAS = [
@@ -37,16 +39,6 @@ const VERIFY_CHECKS = [
   ['ルール適合', '文書ルール（対象と目的・定型と体裁・記述内容・注意点）に沿っているか'],
 ];
 
-// 形式ごとの作り方の手掛かり。スキル名は本リポジトリの skills/ にあるものを挙げる
-// （使えるならスキル経由、無ければ同等のライブラリで自作する）。
-const FORMAT_HINTS = {
-  docx: 'Word（.docx）。doc-coauthoring スキルがあればその流儀で構成を決め、生成は python-docx または docx ライブラリで行う。見出しスタイル・目次・ページ番号を雛形に合わせる。',
-  pptx: 'PowerPoint（.pptx）。presenter スキル（JSON スペック → pptx）があれば使う。無ければ python-pptx。1 スライド 1 メッセージ、発表者ノートに根拠を残す。',
-  xlsx: 'Excel（.xlsx）。xlsx-report-builder スキル（JSON スペック → xlsx）があれば使う。無ければ openpyxl。数式は値でなく式で入れ、シート名と見出し行を固定する。',
-  md: 'Markdown（.md）。見出し階層を 3 段まで、表は GFM。リンク先は相対パスで実在させる。',
-  'drawio.svg': 'draw.io 図（.drawio.svg）。SVG の中に draw.io の図データ（content 属性の mxfile）を埋め込んだ「編集できる SVG」で書く。図の要素名は本文の用語と一致させる。',
-};
-
 function fence(text) {
   const body = String(text || '').trim();
   if (!body) return '（なし）';
@@ -57,8 +49,9 @@ function bullets(list) {
   return list.map((s) => `- ${s}`).join('\n');
 }
 
-function formatsBlock(formats) {
-  return (formats || []).map((f) => `- ${formatLabel(f)}: ${FORMAT_HINTS[f] || ''}`).join('\n');
+// 形式ごとの作り方の手掛かりはカタログ（formats.js）が持つ。
+function formatsBlock(formatIds) {
+  return (formatIds || []).map((f) => `- ${formats.formatLabel(f)}: ${formats.formatHint(f)}`).join('\n');
 }
 
 function inputsBlock(inputs) {
@@ -78,20 +71,11 @@ function sidecarRules(sidecarFile, manifestFile) {
     `改訂履歴はサイドカー \`${sidecarFile}\` に残します。**成果物を書き換えるたびに**次の形で末尾へ追記してください。`,
     '',
     '```',
-    '## <YYYY-MM-DD HH:MM> — <何をしたか 1 行>（エージェント）',
-    '',
-    '### 変更',
-    '- <ファイル名>: <何をどう変えたか>',
-    '',
-    '### 利用者の意図',
-    '- <質問への回答や指示から読み取った意図。決めごとはここに残す>',
-    '',
-    '### 指摘事項',
-    '- <レビューで受けた指摘と、どう扱ったか（対応／保留／却下と理由）>',
+    sidecar.entryTemplate(),
     '```',
     '',
     `成果物の一覧は \`${manifestFile}\` の \`outputs\` に書きます（配列。要素は`
-      + ' `{"file": "…", "format": "docx|pptx|xlsx|md|drawio.svg", "role": "その文書の役割",'
+      + ` \`{"file": "…", "format": "${formats.FORMATS.map((f) => f.id).join('|')}", "role": "その文書の役割",`
       + ' "relatedTo": ["関連するファイル名"], "relation": "関係の説明"}`）。'
       + '複数ファイルを作るときは、どれが主でどれが従か、参照関係（図は本文のどの章を表すか等）を relation に書きます。',
     '他のキーは変えないでください（dashboard が読みます）。',
@@ -236,7 +220,7 @@ function verifyPrompt({ name, setDir, review, rule, sidecarFile, manifestFile, o
 
 function ruleFormatSpec() {
   const sections = RULE_SECTIONS.map(([, label, help]) => `- \`## ${label}\` … ${help}`).join('\n');
-  const formats = FORMATS.map(([id, label]) => `${id}（${label}）`).join(' / ');
+  const formatList = formats.FORMATS.map((f) => `${f.id}（${f.label}）`).join(' / ');
   return [
     '文書ルールは 1 つの Markdown ファイルで、次の書式に**厳密に**従います。',
     '',
@@ -254,7 +238,7 @@ function ruleFormatSpec() {
     '節（すべて必須。この順で `##` 見出し）:',
     sections,
     '',
-    `formats に書ける値: ${formats}`,
+    `formats に書ける値: ${formatList}`,
     '「区分」は `- 名前 — 説明` の箇条書きで、文書を意味のまとまりで分けたものです（章立て）。',
     '出力は**ルール本文だけ**にしてください。前置き・後書き・コードフェンスは付けません。',
   ].join('\n');
@@ -341,7 +325,6 @@ function feedbackRulePrompt({ name, feedback, history, rule, target }) {
 module.exports = {
   QUESTION_AREAS,
   VERIFY_CHECKS,
-  FORMAT_HINTS,
   createPrompt,
   resumePrompt,
   verifyPrompt,

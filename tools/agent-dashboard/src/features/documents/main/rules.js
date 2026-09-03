@@ -32,30 +32,8 @@ const RULE_SECTIONS = [
   ['divisions', '区分', '意味的区分（章立て）の一覧。1 行 1 区分「- 名前 — 説明」。区分ごと作成の単位。'],
 ];
 
-const FORMATS = [
-  ['docx', 'Word', '.docx'],
-  ['pptx', 'PowerPoint', '.pptx'],
-  ['xlsx', 'Excel', '.xlsx'],
-  ['md', 'Markdown', '.md'],
-  ['drawio.svg', 'draw.io 図（SVG）', '.drawio.svg'],
-];
-
-const FORMAT_IDS = new Set(FORMATS.map(([id]) => id));
-
-function normalizeFormats(raw) {
-  const list = Array.isArray(raw) ? raw : String(raw || '').split(/[,\s]+/);
-  const out = [];
-  for (const item of list) {
-    const id = String(item || '').trim().toLowerCase().replace(/^\./, '');
-    if (FORMAT_IDS.has(id) && !out.includes(id)) out.push(id);
-  }
-  return out;
-}
-
-function formatLabel(id) {
-  const row = FORMATS.find(([f]) => f === id);
-  return row ? row[1] : String(id || '');
-}
+const formats = require('./formats');
+const { FORMATS, normalizeFormats, formatLabel } = formats;
 
 // ファイル名にできる識別子。日本語はそのまま残し、区切り・記号だけを '-' にする。
 function slugify(name) {

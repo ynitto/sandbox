@@ -24,6 +24,10 @@ const rules = require('../src/features/documents/main/rules');
 const prompts = require('../src/features/documents/main/prompts');
 const documents = require('../src/features/documents/main/documents');
 const agent = require('../src/features/agent-project/main/agent');
+const launcher = require('../src/features/documents/main/launcher');
+const sidecar = require('../src/features/documents/main/sidecar');
+const formats = require('../src/features/documents/main/formats');
+const store = require('../src/features/documents/main/store');
 
 const SAMPLE_RULE = [
   '---', 'name: 提案書', 'formats: docx, pptx', '---', '# 文書ルール: 提案書', '',
@@ -290,5 +294,102 @@ test('feature 登録: id / IPC 入口 / preload API', () => {
   for (const ch of ['documents:overview', 'documents:create', 'documents:verify', 'documents:feedback',
     'documents:ruleDraft', 'documents:ruleSave', 'documents:pickInputs', 'documents:pickFolder']) {
     assert.ok(channels.includes(ch), ch);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 分離と単一の正典（拡張性・独立性・保守性の契約）
+// ---------------------------------------------------------------------------
+
+test('起動系は launcher に閉じ、差し替えれば他の制御面なしで作成・続き・検証が通る', () => {
+  const { config, workspaceDir } = makeEnv();
+  const orig = launcher.launchWindow;
+  const launches = [];
+  launcher.launchWindow = (_cfg, args) => {
+    launches.push(args);
+    return { ok: true, launched: true, message: 'stub', session: 'stub' };
+  };
+  try {
+    const created = documents.create(config, { name: '議事録', formats: ['md'], ruleFile: 'proposal.md', prompt: '定例会' });
+    assert.equal(created.launch.ok, true);
+    assert.equal(launches[0].cwd, path.join(workspaceDir, '議事録'));
+    assert.equal(launches[0].sessionKey, 'doc:議事録');
+    assert.match(launches[0].title, /文書を作成: 議事録/);
+    assert.ok(launches[0].prompt.includes('定例会') && launches[0].prompt.includes('顧客の決裁者向け'));
+    documents.resume(config, { id: '議事録', instruction: '次へ' });
+    documents.verify(config, { id: '議事録', review: '' });
+    assert.deepEqual(launches.map((l) => l.title), ['文書を作成: 議事録', '文書の続き: 議事録', '文書を検証: 議事録']);
+    const detail = documents.get(config, { id: '議事録' });
+    assert.equal(detail.lastAction.kind, 'verify');
+    assert.equal((detail.history.match(/^## /gm) || []).length, 3, 'サイドカーに 3 項目');
+  } finally {
+    launcher.launchWindow = orig;
+  }
+});
+
+test('操作の表（SESSION_KINDS）が overview.actions と一致し、画面は表示名を複製しない', () => {
+  const { config } = makeEnv();
+  const ov = documents.overview(config);
+  const kinds = [...Object.keys(documents.SESSION_KINDS), ...Object.keys(documents.ADVICE_KINDS)];
+  assert.deepEqual(ov.actions.map((a) => a.kind), kinds);
+  assert.deepEqual(ov.modes.map((m) => m.id), ['whole', 'section']);
+  assert.deepEqual(ov.formats.map((f) => f.id), formats.FORMATS.map((f) => f.id));
+  for (const [kind, spec] of Object.entries(documents.SESSION_KINDS)) {
+    for (const key of ['label', 'history', 'title', 'message', 'prompt', 'entry']) assert.ok(spec[key], `${kind}.${key}`);
+  }
+});
+
+test('サイドカーの見出しは 1 か所（sidecar.js）から書き手と依頼文の両方へ出る', () => {
+  const entry = sidecar.historyEntry({ kind: 'x', intent: ['a'] });
+  const template = sidecar.entryTemplate();
+  for (const [, label] of sidecar.ENTRY_SECTIONS) {
+    assert.ok(entry.includes(`### ${label}`), `entry ${label}`);
+    assert.ok(template.includes(`### ${label}`), `template ${label}`);
+  }
+  const prompt = prompts.createPrompt({ name: 'n', setDir: '/w', mode: 'whole', formats: ['md'], rule: null,
+    inputs: [], request: 'r', sidecarFile: 'n.history.md', manifestFile: 'document.json', divisions: [] });
+  assert.ok(prompt.includes(template), '依頼文の雛形はサイドカーの正典から出る');
+});
+
+test('形式のカタログは formats.js が 1 か所で持ち、判定・表示名・依頼文の手掛かりを供給する', () => {
+  for (const f of formats.FORMATS) {
+    assert.equal(formats.formatOf(`x${f.ext}`), f.id, f.id);
+    assert.equal(formats.formatLabel(f.id), f.label);
+    assert.ok(formats.formatHint(f.id), `${f.id} の手掛かり`);
+  }
+  assert.equal(formats.formatOf('a.svg'), '', 'draw.io でない SVG は形式として数えない');
+  assert.deepEqual(formats.normalizeFormats('[docx, PPTX, .md, zip]'), ['docx', 'pptx', 'md']);
+  const prompt = prompts.createPrompt({ name: 'n', setDir: '/w', mode: 'whole', formats: ['xlsx'], rule: null,
+    inputs: [], request: 'r', sidecarFile: 's', manifestFile: 'm', divisions: [] });
+  assert.ok(prompt.includes(formats.formatHint('xlsx')));
+});
+
+test('成果物の走査はサブフォルダも見る（inputs/ と隠しフォルダは除く）', () => {
+  const { config } = makeEnv();
+  const orig = launcher.launchWindow;
+  launcher.launchWindow = () => ({ ok: true });
+  try {
+    const created = documents.create(config, { name: '設計書', formats: ['md', 'drawio.svg'], prompt: 'x' });
+    const dir = created.set.dir;
+    fs.mkdirSync(path.join(dir, 'figures', 'deep'), { recursive: true });
+    fs.mkdirSync(path.join(dir, '.cache'));
+    fs.writeFileSync(path.join(dir, '設計書.md'), '# a');
+    fs.writeFileSync(path.join(dir, 'figures', '構成.drawio.svg'), '<svg/>');
+    fs.writeFileSync(path.join(dir, 'figures', 'deep', 'x.md'), '');
+    fs.writeFileSync(path.join(dir, '.cache', 'y.md'), '');
+    fs.writeFileSync(path.join(dir, 'inputs', 'z.md'), '');
+    const files = store.scanOutputs(dir, created.set.id, store.readManifest(dir)).map((o) => o.file);
+    assert.deepEqual(files, ['figures/deep/x.md', 'figures/構成.drawio.svg', '設計書.md']);
+  } finally {
+    launcher.launchWindow = orig;
+  }
+});
+
+test('本体（store / rules / sidecar / prompts / formats）は他の制御面を require しない', () => {
+  const dir = path.join(__dirname, '..', 'src', 'features', 'documents', 'main');
+  for (const name of ['store.js', 'rules.js', 'sidecar.js', 'prompts.js', 'formats.js', 'documents.js']) {
+    const src = fs.readFileSync(path.join(dir, name), 'utf8');
+    assert.ok(!/require\(['"]\.\.\/\.\.\/(agent-project|cowork|orchestration)/.test(src),
+      `${name} は他の制御面へ直接依存しない（launcher.js だけが依存する）`);
   }
 });

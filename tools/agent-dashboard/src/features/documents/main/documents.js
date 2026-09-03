@@ -1,223 +1,105 @@
 'use strict';
 
-// 文書（Document）— 文書ルールに沿ってエージェント CLI に文書を作らせる制御面の本体。
+// 文書（Document）— 文書ルールに沿ってエージェント CLI に文書を作らせる制御面の用途層。
 //
-// 置き場:
-//   <workspaceDir>/<id>/                 … 1 文書 = 1 フォルダ（成果物はここに直接置かれる）
-//   <workspaceDir>/<id>/document.json    … 文書の定義（名前・形式・ルール・入力・成果物の一覧）
-//   <workspaceDir>/<id>/<id>.history.md  … 改訂履歴のサイドカー（変更・利用者の意図・指摘事項）
-//   <workspaceDir>/<id>/inputs/          … 入力ファイルの写し（エージェントが相対パスで読める）
-//   <rulesDir>/<slug>.md                 … 文書ルール（1 物理ファイル。rules.js）
-//
-// エージェントの起動は 2 種類:
-//   作成・続き・検証 … 文書フォルダを cwd にした**書き込み可**の対話ウィンドウ（定常業務の
-//                     アドホック起動と同じ経路 runChatWindow / runHeadlessRoutine）。
-//                     徹底的な質問・区分ごとの確認・指摘の取捨は人との対話が本体なので、
-//                     dashboard 内で往復させず外部ターミナルで進める。
-//   ルールの下書き   … 読み取り専用のヘッドレス助言（resolveDashboardAgent / runAgent）。
-//                     返った本文は画面で人が編集し、保存は dashboard が rulesDir へ書く（C4）。
+// 役割分担:
+//   formats.js  … 対応形式のカタログ（形式を足すのはここだけ）
+//   rules.js    … 文書ルール（1 物理ファイル）の書式と読み書き
+//   sidecar.js  … 改訂履歴の書式と追記
+//   store.js    … 文書フォルダ・定義（document.json）・成果物の走査
+//   prompts.js  … 依頼文（決定的）
+//   launcher.js … 他の制御面へのアダプタ（対話ウィンドウ起動・ヘッドレス助言）
+//   documents.js（このファイル）… 上を組み合わせた用途: 作成・続き・検証・ルール化
 //
 // dashboard が自分で書くのは document.json・サイドカーの「人が起こした行」・文書ルールだけ。
-// 成果物そのものは書かない。
+// 成果物そのものは書かない（エージェントの対話セッションが書く）。
 
 const fs = require('fs');
 const path = require('path');
-const { sharedHomeRoot } = require('../../../base/main/agent-home');
+const formats = require('./formats');
 const rules = require('./rules');
+const sidecar = require('./sidecar');
+const store = require('./store');
 const prompts = require('./prompts');
+const launcher = require('./launcher');
 
-const DOCUMENT_WORKLOAD = 'documents';
-const MANIFEST = 'document.json';
-const INPUTS_DIR = 'inputs';
-const MODES = new Set(['whole', 'section']);
+// 対話セッションを起こす操作の表。新しい操作（例: 翻訳・要約）はここに 1 行足し、
+// prompts.js に依頼文を 1 つ足せば、画面は overview.actions から自動で拾う。
+//   label    … 画面の操作名・一覧の「最後の操作」表示
+//   history  … サイドカーの項目名
+//   title    … 外部ウィンドウのタイトル
+//   message  … 起動直後に画面へ出す文
+//   prompt   … 依頼文の組み立て（sessionContext の戻りと payload を受ける）
+//   entry    … サイドカーへ先に残す項目（payload を受ける）
+//   validate … 入力検証（payload を受け、不正なら throw）
+const SESSION_KINDS = {
+  create: {
+    label: '作成を依頼',
+    history: '作成の依頼',
+    title: (name) => `文書を作成: ${name}`,
+    message: '別ウィンドウで文書の作成を始めました。まず質問に答えてください。',
+    prompt: (ctx, payload) => prompts.createPrompt({
+      ...ctx, mode: ctx.manifest.mode, formats: ctx.manifest.formats, request: payload.request,
+      inputs: ctx.manifest.inputs, divisions: ctx.rule && ctx.rule.parsed ? ctx.rule.parsed.divisions : [],
+    }),
+    entry: (ctx, payload) => ({
+      intent: [
+        payload.request || '（依頼文なし。入力ファイルから作る）',
+        `出力形式: ${ctx.manifest.formats.map(formats.formatLabel).join(' / ')}`,
+        `進め方: ${MODE_LABELS[ctx.manifest.mode] || ctx.manifest.mode}`,
+        ctx.rule ? `文書ルール: ${ctx.rule.name}（${path.basename(ctx.rule.file)}）` : '文書ルール: なし',
+        ...ctx.manifest.inputs.map((it) => `入力: ${it.name}（元: ${it.source}）`),
+      ],
+    }),
+  },
+  resume: {
+    label: '続きを依頼',
+    history: '続きの依頼',
+    title: (name) => `文書の続き: ${name}`,
+    message: '別ウィンドウで続きの作業を始めました。',
+    validate: (payload) => {
+      if (!payload.instruction) throw new Error('続けて依頼する内容を入力してください');
+    },
+    prompt: (ctx, payload) => prompts.resumePrompt({ ...ctx, instruction: payload.instruction }),
+    entry: (_ctx, payload) => ({ intent: [payload.instruction] }),
+  },
+  verify: {
+    label: '検証を依頼',
+    history: '検証の依頼',
+    title: (name) => `文書を検証: ${name}`,
+    message: '別ウィンドウで検証を始めました。指摘を確認して、直すものを選んでください。',
+    prompt: (ctx, payload) => prompts.verifyPrompt({ ...ctx, review: payload.review }),
+    entry: (_ctx, payload) => ({
+      intent: ['汎用の検証（用語・整合性・論理性・つながり・わかりやすさ・AI 臭）を依頼'],
+      findings: payload.review ? [`ドメインのレビュー結果（利用者入力）:\n${payload.review}`] : [],
+    }),
+  },
+};
 
-function cfgOf(config) {
-  return (config && config.documents) || {};
-}
+// ヘッドレス助言で終わる操作（対話セッションは起こさない）。画面の表示名だけをここで持つ。
+const ADVICE_KINDS = {
+  feedback: { label: 'フィードバック', history: '完成後のフィードバック' },
+};
 
-function expandHome(p) {
-  return String(p || '').replace(/^~(?=$|\/|\\)/, sharedHomeRoot());
-}
+const MODE_LABELS = { whole: '一気に作る', section: '区分ごとに作る' };
 
-function workspaceDir(config) {
-  const raw = String(cfgOf(config).workspaceDir || '').trim();
-  return raw ? path.resolve(expandHome(raw)) : path.join(sharedHomeRoot(), '.agents', 'documents');
-}
-
-function rulesDir(config) {
-  const raw = String(cfgOf(config).rulesDir || '').trim();
-  return raw ? path.resolve(expandHome(raw)) : path.join(sharedHomeRoot(), '.agents', 'document-rules');
-}
-
-function sidecarName(id) {
-  return `${id}.history.md`;
-}
-
-function stamp(d = new Date()) {
-  const p = (n) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
-}
-
-// サイドカーへ 1 項目を追記する。エージェントにも同じ形で書かせる（prompts.sidecarRules）。
-function historyEntry({ kind, by = '利用者', at = new Date(), changes = [], intent = [], findings = [] }) {
-  const list = (items) => {
-    const rows = (items || []).map((s) => String(s || '').trim()).filter(Boolean);
-    return rows.length ? rows.map((s) => `- ${s.replace(/\r?\n/g, '\n  ')}`).join('\n') : '- （なし）';
-  };
+// 画面へ渡す操作の一覧（一覧の「最後の操作」表示に使う）。
+function actionCatalog() {
   return [
-    `## ${stamp(at)} — ${kind}（${by}）`,
-    '',
-    '### 変更',
-    list(changes),
-    '',
-    '### 利用者の意図',
-    list(intent),
-    '',
-    '### 指摘事項',
-    list(findings),
-    '',
-  ].join('\n');
+    ...Object.entries(SESSION_KINDS).map(([kind, k]) => ({ kind, label: k.label })),
+    ...Object.entries(ADVICE_KINDS).map(([kind, k]) => ({ kind, label: k.label })),
+  ];
 }
 
-function appendSidecar(setDir, id, entry) {
-  const file = path.join(setDir, sidecarName(id));
-  const exists = fs.existsSync(file);
-  const head = exists ? '' : `# 改訂履歴: ${id}\n\n`
-    + '変更・利用者の意図・指摘事項を時系列で残す。文書ルールの元になる。\n\n';
-  fs.appendFileSync(file, `${head}${exists ? '\n' : ''}${entry}`, 'utf8');
-  return file;
-}
-
-function readSidecar(setDir, id) {
-  try {
-    return fs.readFileSync(path.join(setDir, sidecarName(id)), 'utf8');
-  } catch {
-    return '';
-  }
-}
-
-function readManifest(setDir) {
-  const raw = fs.readFileSync(path.join(setDir, MANIFEST), 'utf8');
-  const m = JSON.parse(raw);
-  if (!m || typeof m !== 'object' || Array.isArray(m)) throw new Error('document.json が壊れています');
-  return m;
-}
-
-function writeManifest(setDir, manifest) {
-  const target = path.join(setDir, MANIFEST);
-  const tmp = `${target}.tmp.${process.pid}`;
-  fs.writeFileSync(tmp, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
-  fs.renameSync(tmp, target);
-}
-
-function formatOf(file) {
-  const lower = String(file || '').toLowerCase();
-  // 長い拡張子（.drawio.svg）を先に見る
-  const sorted = [...rules.FORMATS].sort((a, b) => b[2].length - a[2].length);
-  const row = sorted.find(([, , ext]) => lower.endsWith(ext));
-  return row ? row[0] : '';
-}
-
-// フォルダの実ファイルから成果物を数える。document.json の outputs はエージェントが書く
-// 補足（役割・関係）で、無くても一覧は出る——記録漏れで成果物が見えなくなるのを避ける。
-function scanOutputs(setDir, id, manifest) {
-  let names;
-  try {
-    names = fs.readdirSync(setDir, { withFileTypes: true })
-      .filter((d) => d.isFile() && !d.name.startsWith('.'))
-      .map((d) => d.name);
-  } catch {
-    return [];
-  }
-  const skip = new Set([MANIFEST, sidecarName(id)]);
-  const declared = new Map();
-  for (const o of Array.isArray(manifest && manifest.outputs) ? manifest.outputs : []) {
-    if (o && o.file) declared.set(String(o.file), o);
-  }
-  const out = [];
-  for (const name of names.sort((a, b) => a.localeCompare(b, 'ja'))) {
-    if (skip.has(name) || name.endsWith('.tmp') || /\.tmp\.\d+$/.test(name)) continue;
-    let size = 0;
-    let mtime = '';
-    try {
-      const st = fs.statSync(path.join(setDir, name));
-      size = st.size;
-      mtime = st.mtime.toISOString();
-    } catch { /* 消えた直後は 0 のまま */ }
-    const d = declared.get(name) || {};
-    out.push({
-      file: name,
-      path: path.join(setDir, name),
-      format: formatOf(name) || String(d.format || ''),
-      role: String(d.role || ''),
-      relatedTo: Array.isArray(d.relatedTo) ? d.relatedTo.map(String) : [],
-      relation: String(d.relation || ''),
-      size,
-      updatedAt: mtime,
-    });
-  }
-  return out;
-}
-
-function listInputs(setDir) {
-  try {
-    return fs.readdirSync(path.join(setDir, INPUTS_DIR)).filter((n) => !n.startsWith('.'))
-      .map((name) => ({ name, path: path.join(setDir, INPUTS_DIR, name) }));
-  } catch {
-    return [];
-  }
-}
-
-function setSummary(setDir, id) {
-  const manifest = readManifest(setDir);
-  const outputs = scanOutputs(setDir, id, manifest);
-  const last = outputs.map((o) => o.updatedAt).filter(Boolean).sort().pop() || '';
-  return {
-    id,
-    dir: setDir,
-    name: String(manifest.name || id),
-    formats: rules.normalizeFormats(manifest.formats),
-    mode: MODES.has(manifest.mode) ? manifest.mode : 'whole',
-    rule: manifest.rule && manifest.rule.file ? { file: manifest.rule.file, name: manifest.rule.name || '' } : null,
-    createdAt: String(manifest.createdAt || ''),
-    updatedAt: last || String(manifest.updatedAt || manifest.createdAt || ''),
-    lastAction: manifest.lastAction || null,
-    outputCount: outputs.length,
-  };
-}
-
-function listSets(config) {
-  const root = workspaceDir(config);
-  let names;
-  try {
-    names = fs.readdirSync(root, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name);
-  } catch {
-    return [];
-  }
-  const out = [];
-  for (const id of names) {
-    const dir = path.join(root, id);
-    if (!fs.existsSync(path.join(dir, MANIFEST))) continue;
-    try {
-      out.push(setSummary(dir, id));
-    } catch { /* 壊れた定義はスキップ（OS で直す） */ }
-  }
-  return out.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
-}
-
-function resolveSet(config, id) {
-  const key = String(id || '').trim();
-  if (!key || key === '.' || key === '..' || /[\\/]/.test(key)) throw new Error('文書の識別子が不正です');
-  const dir = path.join(workspaceDir(config), key);
-  if (!fs.existsSync(path.join(dir, MANIFEST))) throw new Error(`文書が見つかりません: ${key}`);
-  return { id: key, dir };
-}
+// ---------------------------------------------------------------------------
+// 読み取り
+// ---------------------------------------------------------------------------
 
 function loadRuleFor(config, manifest) {
   const ref = manifest && manifest.rule && manifest.rule.file;
   if (!ref) return null;
   try {
-    return rules.readRule(rulesDir(config), ref);
+    return rules.readRule(store.rulesDir(config), ref);
   } catch (e) {
     return { file: ref, name: (manifest.rule && manifest.rule.name) || '', content: '', error: e.message };
   }
@@ -225,16 +107,16 @@ function loadRuleFor(config, manifest) {
 
 // 表示に要るものを 1 往復で返す（定義・成果物・入力・履歴・ルール）。
 function get(config, { id } = {}) {
-  const { dir, id: key } = resolveSet(config, id);
-  const manifest = readManifest(dir);
+  const { dir, id: key } = store.resolveSet(config, id);
+  const manifest = store.readManifest(dir);
   const rule = loadRuleFor(config, manifest);
   return {
-    ...setSummary(dir, key),
+    ...store.setSummary(dir, key, manifest),
     request: String(manifest.request || ''),
-    inputs: listInputs(dir),
-    outputs: scanOutputs(dir, key, manifest),
-    history: readSidecar(dir, key),
-    sidecar: path.join(dir, sidecarName(key)),
+    inputs: store.listInputs(dir),
+    outputs: store.scanOutputs(dir, key, manifest),
+    history: sidecar.readSidecar(dir, key),
+    sidecar: path.join(dir, sidecar.sidecarName(key)),
     // 参照は定義に書いたファイル名（rulesDir 内の相対名）で返す。読めたときの絶対パスは
     // 表示に要らないうえ、画面がそのまま別の IPC へ渡すと置き場の外扱いになる。
     rule: rule ? {
@@ -244,20 +126,13 @@ function get(config, { id } = {}) {
   };
 }
 
-// この端末で文書作成に使うエージェント（表示用。起動時にも同じ解決を通す）。
-function resolveDocumentAgent(config, cwd) {
-  const agent = require('../../agent-project/main/agent');
-  return agent.resolveAgent(config, cwd, { workload: DOCUMENT_WORKLOAD });
-}
-
 function overview(config) {
   const errors = [];
-  const ws = workspaceDir(config);
-  const rd = rulesDir(config);
+  const ws = store.workspaceDir(config);
+  const rd = store.rulesDir(config);
   let agentInfo = null;
   try {
-    const r = resolveDocumentAgent(config, ws);
-    agentInfo = { cli: r.cli, model: r.model, source: r.source, interactive: !!(r.spec && r.spec.interactive) };
+    agentInfo = launcher.describeAgent(config, ws);
   } catch (e) {
     errors.push(`エージェントの解決: ${e.message}`);
   }
@@ -266,304 +141,166 @@ function overview(config) {
     rulesDir: rd,
     workspaceExists: fs.existsSync(ws),
     rulesDirExists: fs.existsSync(rd),
-    sets: listSets(config),
+    sets: store.listSets(config),
     rules: rules.listRules(rd),
     agent: agentInfo,
-    formats: rules.FORMATS.map(([id, label]) => ({ id, label })),
+    formats: formats.formatOptions(),
     sections: rules.RULE_SECTIONS.map(([key, label, help]) => ({ key, label, help })),
+    modes: Object.entries(MODE_LABELS).map(([id, label]) => ({ id, label })),
+    actions: actionCatalog(),
     errors,
   };
 }
 
-// 空いている文書 id（同名があれば -2, -3 …）。
-function availableSetId(root, name) {
-  const slug = rules.slugify(name) || 'document';
-  let id = slug;
-  let i = 2;
-  while (fs.existsSync(path.join(root, id))) {
-    id = `${slug}-${i}`;
-    i += 1;
-  }
-  return id;
+// ---------------------------------------------------------------------------
+// 対話セッション（作成・続き・検証）
+// ---------------------------------------------------------------------------
+
+// 依頼文に共通で渡す文脈（文書名・フォルダ・ルール・成果物・サイドカー名）。
+function sessionContext(config, dir, id, manifest) {
+  return {
+    name: String(manifest.name || id),
+    setDir: dir,
+    manifest,
+    rule: loadRuleFor(config, manifest),
+    outputs: store.scanOutputs(dir, id, manifest),
+    sidecarFile: sidecar.sidecarName(id),
+    manifestFile: store.MANIFEST,
+  };
 }
 
-function copyInputs(setDir, sources) {
-  const dir = path.join(setDir, INPUTS_DIR);
-  fs.mkdirSync(dir, { recursive: true });
-  const out = [];
-  const used = new Set();
-  for (const src of sources) {
-    const from = String(src || '').trim();
-    if (!from) continue;
-    let st;
-    try {
-      st = fs.statSync(from);
-    } catch {
-      throw new Error(`入力ファイルが見つかりません: ${from}`);
-    }
-    if (!st.isFile()) throw new Error(`入力はファイルだけを指定できます: ${from}`);
-    let name = path.basename(from);
-    const ext = path.extname(name);
-    const stem = name.slice(0, name.length - ext.length);
-    let i = 2;
-    while (used.has(name.toLowerCase())) {
-      name = `${stem}-${i}${ext}`;
-      i += 1;
-    }
-    used.add(name.toLowerCase());
-    fs.copyFileSync(from, path.join(dir, name));
-    out.push({ name, source: from });
-  }
-  return out;
-}
-
-// 対話ウィンドウ（書き込み可）で文書フォルダを cwd にエージェントを起こす。
-// CLI/モデルの解決・共通指示の前置・セッション開始コマンドは定常業務のアドホック起動と
-// 同じ部品を使う（起動器を増やさない）。
-function launchWindow(config, { cwd, prompt, title, sessionKey, message }) {
-  const cowork = require('../../cowork/main/cowork');
-  const { runChatWindow } = require('../../cowork/main/loopProvider');
-  const agent = require('../../agent-project/main/agent');
-  const selected = resolveDocumentAgent(config, cwd);
-  const fullPrompt = cowork.withGlobalInstructions(config, prompt);
-  if (cowork.needsHeadlessHarness(selected.spec)) {
-    return cowork.runHeadlessRoutine(config, {
-      cwd, prompt: fullPrompt, acceptance: [], selected, title, record: () => {},
-    });
-  }
-  const launch = agent.interactiveLaunchSpec(config, cwd, { workload: DOCUMENT_WORKLOAD, resolved: selected });
-  const res = runChatWindow({
-    chatCommand: launch.chatCommand,
-    prompt: fullPrompt,
-    cwd,
-    sessionCommands: cowork.planSessionCommands(config, cwd, {
-      agentCli: launch.cli, skillCommandPrefix: launch.skillCommandPrefix,
-    }),
-    readyPattern: launch.readyPattern,
-    readyTimeoutSec: launch.readyTimeoutSec,
-    sessionKey,
-    sessionPrefix: 'agent-doc',
-    title,
-    message: message || `別ウィンドウで ${launch.cli} を起動しました`,
+// 操作の共通手順: 入力検証 → 定義の lastAction 更新 → サイドカーへ依頼を記録 → 依頼文 → 起動。
+// 起動に失敗しても（外部ターミナルが無い等）記録は残るので、「続きを依頼」からやり直せる。
+function startSession(config, kind, { dir, id, payload }) {
+  const spec = SESSION_KINDS[kind];
+  if (!spec) throw new Error(`未知の操作です: ${kind}`);
+  if (typeof spec.validate === 'function') spec.validate(payload);
+  const current = store.touchManifest(dir, { lastAction: { kind, at: new Date().toISOString() } });
+  const ctx = sessionContext(config, dir, id, current);
+  sidecar.appendSidecar(dir, id, sidecar.historyEntry({ kind: spec.history, ...spec.entry(ctx, payload) }));
+  const prompt = spec.prompt(ctx, payload);
+  const launch = launcher.launchWindow(config, {
+    cwd: dir, prompt, sessionKey: `doc:${id}`, title: spec.title(ctx.name), message: spec.message,
   });
-  return { ...res, cli: launch.cli, model: launch.model };
-}
-
-function touchManifest(dir, patch) {
-  const manifest = readManifest(dir);
-  const next = { ...manifest, ...patch, updatedAt: new Date().toISOString() };
-  writeManifest(dir, next);
-  return next;
+  return { set: get(config, { id }), launch };
 }
 
 function create(config, payload = {}) {
   const name = String(payload.name || '').trim();
-  const formats = rules.normalizeFormats(payload.formats);
-  const mode = MODES.has(payload.mode) ? payload.mode : 'whole';
+  const formatIds = formats.normalizeFormats(payload.formats);
   const request = String(payload.prompt || '').trim();
-  const sources = Array.isArray(payload.inputs) ? payload.inputs : [];
+  const inputs = Array.isArray(payload.inputs) ? payload.inputs : [];
   if (!name) throw new Error('文書の名前を入力してください');
-  if (!formats.length) throw new Error('出力する形式を 1 つ以上選んでください');
-  if (!request && !sources.length) throw new Error('依頼内容か入力ファイルのどちらかを指定してください');
-  let rule = null;
-  if (String(payload.ruleFile || '').trim()) {
-    rule = rules.readRule(rulesDir(config), payload.ruleFile);
-  }
-  const root = workspaceDir(config);
-  fs.mkdirSync(root, { recursive: true });
-  const id = availableSetId(root, name);
-  const dir = path.join(root, id);
-  fs.mkdirSync(dir, { recursive: true });
-  const inputs = copyInputs(dir, sources);
-  const now = new Date();
-  const manifest = {
-    version: 1,
-    id,
-    name,
-    formats,
-    mode,
-    rule: rule ? { file: path.basename(rule.file), name: rule.name } : null,
-    request,
-    inputs,
-    outputs: [],
-    createdAt: now.toISOString(),
-    updatedAt: now.toISOString(),
-    lastAction: { kind: 'create', at: now.toISOString() },
-  };
-  writeManifest(dir, manifest);
-  appendSidecar(dir, id, historyEntry({
-    kind: '作成の依頼', at: now,
-    intent: [
-      request || '（依頼文なし。入力ファイルから作る）',
-      `出力形式: ${formats.map(rules.formatLabel).join(' / ')}`,
-      `進め方: ${mode === 'section' ? '区分ごとに作る' : '一気に作る'}`,
-      rule ? `文書ルール: ${rule.name}（${path.basename(rule.file)}）` : '文書ルール: なし',
-      ...inputs.map((it) => `入力: ${it.name}（元: ${it.source}）`),
-    ],
-  }));
-  const prompt = prompts.createPrompt({
-    name, setDir: dir, mode, formats, rule, inputs, request,
-    sidecarFile: sidecarName(id), manifestFile: MANIFEST,
-    divisions: rule ? rule.parsed.divisions : [],
+  if (!formatIds.length) throw new Error('出力する形式を 1 つ以上選んでください');
+  if (!request && !inputs.length) throw new Error('依頼内容か入力ファイルのどちらかを指定してください');
+  const rule = String(payload.ruleFile || '').trim() ? rules.readRule(store.rulesDir(config), payload.ruleFile) : null;
+  const { id, dir } = store.createSet(config, {
+    name, formats: formatIds, mode: payload.mode, rule, request, inputs,
   });
-  const launch = launchWindow(config, {
-    cwd: dir, prompt, sessionKey: `doc:${id}`, title: `文書を作成: ${name}`,
-    message: '別ウィンドウで文書の作成を始めました。まず質問に答えてください。',
-  });
-  return { set: get(config, { id }), launch };
+  return startSession(config, 'create', { dir, id, payload: { request } });
 }
 
 function resume(config, payload = {}) {
-  const { dir, id } = resolveSet(config, payload.id);
-  const instruction = String(payload.instruction || '').trim();
-  if (!instruction) throw new Error('続けて依頼する内容を入力してください');
-  const manifest = touchManifest(dir, { lastAction: { kind: 'resume', at: new Date().toISOString() } });
-  const rule = loadRuleFor(config, manifest);
-  appendSidecar(dir, id, historyEntry({ kind: '続きの依頼', intent: [instruction] }));
-  const prompt = prompts.resumePrompt({
-    name: manifest.name, setDir: dir, instruction, rule,
-    sidecarFile: sidecarName(id), manifestFile: MANIFEST,
-    outputs: scanOutputs(dir, id, manifest),
+  const { dir, id } = store.resolveSet(config, payload.id);
+  return startSession(config, 'resume', {
+    dir, id, payload: { instruction: String(payload.instruction || '').trim() },
   });
-  const launch = launchWindow(config, {
-    cwd: dir, prompt, sessionKey: `doc:${id}`, title: `文書の続き: ${manifest.name}`,
-    message: '別ウィンドウで続きの作業を始めました。',
-  });
-  return { set: get(config, { id }), launch };
 }
 
 function verify(config, payload = {}) {
-  const { dir, id } = resolveSet(config, payload.id);
-  const review = String(payload.review || '').trim();
-  const manifest = touchManifest(dir, { lastAction: { kind: 'verify', at: new Date().toISOString() } });
-  const rule = loadRuleFor(config, manifest);
-  appendSidecar(dir, id, historyEntry({
-    kind: '検証の依頼',
-    intent: ['汎用の検証（用語・整合性・論理性・つながり・わかりやすさ・AI 臭）を依頼'],
-    findings: review ? [`ドメインのレビュー結果（利用者入力）:\n${review}`] : [],
-  }));
-  const prompt = prompts.verifyPrompt({
-    name: manifest.name, setDir: dir, review, rule,
-    sidecarFile: sidecarName(id), manifestFile: MANIFEST,
-    outputs: scanOutputs(dir, id, manifest),
+  const { dir, id } = store.resolveSet(config, payload.id);
+  return startSession(config, 'verify', {
+    dir, id, payload: { review: String(payload.review || '').trim() },
   });
-  const launch = launchWindow(config, {
-    cwd: dir, prompt, sessionKey: `doc:${id}`, title: `文書を検証: ${manifest.name}`,
-    message: '別ウィンドウで検証を始めました。指摘を確認して、直すものを選んでください。',
-  });
-  return { set: get(config, { id }), launch };
 }
 
 // ---------------------------------------------------------------------------
-// ルールの下書き（ヘッドレス・読み取り専用の助言）
+// ルールの下書き（ヘッドレス・読み取り専用の助言。保存は人が確認してから rules.saveRule）
 // ---------------------------------------------------------------------------
 
-async function advise(config, cwd, purpose, prompt) {
-  const agent = require('../../agent-project/main/agent');
-  const resolved = agent.resolveDashboardAgent(config, cwd, { purpose });
-  const raw = await agent.runDashboardAgent(config, resolved, purpose, () => agent.runAgent(resolved, prompt, cwd));
-  const text = agent.stripFence(raw);
-  if (!String(text || '').trim()) throw new Error('エージェントの応答が空でした');
-  return { text, cli: resolved.cli, model: resolved.model, source: resolved.source };
-}
-
-function safeAdviseCwd(config) {
-  const dir = rulesDir(config);
+function adviseCwd(config) {
+  const dir = store.rulesDir(config);
   try {
     fs.mkdirSync(dir, { recursive: true });
   } catch { /* 作れなければ cwd 無しで起動する */ }
   return fs.existsSync(dir) ? dir : undefined;
 }
 
-async function draftRule(config, payload = {}) {
-  const name = String(payload.name || '').trim();
-  const formats = rules.normalizeFormats(payload.formats);
-  const draft = String(payload.draft || '').trim();
-  const template = String(payload.template || '').trim();
-  if (!draft && !template) throw new Error('原案かテンプレートのどちらかを入力してください');
-  const prompt = prompts.ruleDraftPrompt({ name, formats, draft, template });
-  const res = await advise(config, safeAdviseCwd(config), 'document-rule-draft', prompt);
-  const content = rules.normalizeRuleText(res.text, { name, formats });
+async function ruleAdvice(config, cwd, purpose, prompt, { name, formats: formatIds }) {
+  const res = await launcher.advise(config, cwd, purpose, prompt);
+  const content = rules.normalizeRuleText(res.text, { name, formats: formatIds });
   return { content, parsed: rules.parseRule(content), cli: res.cli, model: res.model, source: res.source };
 }
 
+async function draftRule(config, payload = {}) {
+  const name = String(payload.name || '').trim();
+  const formatIds = formats.normalizeFormats(payload.formats);
+  const draft = String(payload.draft || '').trim();
+  const template = String(payload.template || '').trim();
+  if (!draft && !template) throw new Error('原案かテンプレートのどちらかを入力してください');
+  const prompt = prompts.ruleDraftPrompt({ name, formats: formatIds, draft, template });
+  return ruleAdvice(config, adviseCwd(config), 'document-rule-draft', prompt, { name, formats: formatIds });
+}
+
 async function ruleFromHistory(config, payload = {}) {
-  const { dir, id } = resolveSet(config, payload.id);
-  const manifest = readManifest(dir);
-  const history = readSidecar(dir, id);
+  const { dir, id } = store.resolveSet(config, payload.id);
+  const manifest = store.readManifest(dir);
+  const history = sidecar.readSidecar(dir, id);
   if (!history.trim()) throw new Error('改訂履歴がまだありません');
-  const rule = loadRuleFor(config, manifest);
   const name = String(payload.name || '').trim() || `${manifest.name}のルール`;
+  const formatIds = formats.normalizeFormats(manifest.formats);
   const prompt = prompts.ruleFromHistoryPrompt({
-    name, formats: rules.normalizeFormats(manifest.formats), history, rule,
+    name, formats: formatIds, history, rule: loadRuleFor(config, manifest),
     manifest: JSON.stringify(manifest, null, 2),
   });
-  const res = await advise(config, dir, 'document-rule-from-history', prompt);
-  const content = rules.normalizeRuleText(res.text, { name, formats: manifest.formats });
-  return { content, name, parsed: rules.parseRule(content), cli: res.cli, model: res.model };
+  const res = await ruleAdvice(config, dir, 'document-rule-from-history', prompt, { name, formats: formatIds });
+  return { ...res, name };
 }
 
 // 完成後のフィードバックを、既存ルールの更新案か新規ルールの案にする。
 // フィードバック本文はサイドカーへ先に残す——ルール化を保存しなくても意図は文書側に残る。
 async function feedback(config, payload = {}) {
-  const { dir, id } = resolveSet(config, payload.id);
+  const { dir, id } = store.resolveSet(config, payload.id);
   const text = String(payload.feedback || '').trim();
   if (!text) throw new Error('フィードバックを入力してください');
   const target = payload.target === 'existing' ? 'existing' : 'new';
-  const manifest = readManifest(dir);
-  let rule = null;
-  if (target === 'existing') {
-    const ref = String(payload.ruleFile || (manifest.rule && manifest.rule.file) || '').trim();
-    if (!ref) throw new Error('更新する文書ルールを選択してください');
-    rule = rules.readRule(rulesDir(config), ref);
-  } else if (manifest.rule && manifest.rule.file) {
-    rule = loadRuleFor(config, manifest);
-  }
-  appendSidecar(dir, id, historyEntry({
-    kind: '完成後のフィードバック',
+  const manifest = store.readManifest(dir);
+  const ref = String(payload.ruleFile || (manifest.rule && manifest.rule.file) || '').trim();
+  if (target === 'existing' && !ref) throw new Error('更新する文書ルールを選択してください');
+  const rule = target === 'existing' ? rules.readRule(store.rulesDir(config), ref) : loadRuleFor(config, manifest);
+  sidecar.appendSidecar(dir, id, sidecar.historyEntry({
+    kind: ADVICE_KINDS.feedback.history,
     intent: [text],
     findings: [target === 'existing' ? `文書ルール「${rule.name}」の更新案を作成` : '新しい文書ルールの案を作成'],
   }));
-  touchManifest(dir, { lastAction: { kind: 'feedback', at: new Date().toISOString() } });
-  const history = readSidecar(dir, id);
-  const name = target === 'existing' ? rule.name
-    : String(payload.name || '').trim() || `${manifest.name}のルール`;
-  const prompt = prompts.feedbackRulePrompt({ name: manifest.name, feedback: text, history, rule, target });
-  const res = await advise(config, dir, 'document-rule-feedback', prompt);
-  const content = rules.normalizeRuleText(res.text, { name, formats: manifest.formats });
-  return {
-    content, name, target,
-    file: target === 'existing' ? path.basename(rule.file) : '',
-    parsed: rules.parseRule(content), cli: res.cli, model: res.model,
-  };
+  store.touchManifest(dir, { lastAction: { kind: 'feedback', at: new Date().toISOString() } });
+  const name = target === 'existing' ? rule.name : String(payload.name || '').trim() || `${manifest.name}のルール`;
+  const prompt = prompts.feedbackRulePrompt({
+    name: manifest.name, feedback: text, history: sidecar.readSidecar(dir, id), rule, target,
+  });
+  const res = await ruleAdvice(config, dir, 'document-rule-feedback', prompt,
+    { name, formats: formats.normalizeFormats(manifest.formats) });
+  return { ...res, name, target, file: target === 'existing' ? path.basename(rule.file) : '' };
 }
 
+// ---------------------------------------------------------------------------
+// 設定
+// ---------------------------------------------------------------------------
+
 function saveSettings(config, saveConfig, payload = {}) {
-  const next = {
+  const current = (config && config.documents) || {};
+  const pick = (key) => String(payload[key] == null ? current[key] : payload[key]).trim();
+  return saveConfig({
     ...config,
-    documents: {
-      ...cfgOf(config),
-      workspaceDir: String(payload.workspaceDir == null ? cfgOf(config).workspaceDir : payload.workspaceDir).trim(),
-      rulesDir: String(payload.rulesDir == null ? cfgOf(config).rulesDir : payload.rulesDir).trim(),
-    },
-  };
-  return saveConfig(next);
+    documents: { ...current, workspaceDir: pick('workspaceDir'), rulesDir: pick('rulesDir') },
+  });
 }
 
 module.exports = {
-  DOCUMENT_WORKLOAD,
-  MANIFEST,
-  INPUTS_DIR,
-  workspaceDir,
-  rulesDir,
-  sidecarName,
-  historyEntry,
-  appendSidecar,
-  readSidecar,
-  readManifest,
-  scanOutputs,
-  formatOf,
-  listSets,
+  SESSION_KINDS,
+  ADVICE_KINDS,
+  MODE_LABELS,
+  actionCatalog,
   get,
   overview,
   create,
@@ -573,6 +310,19 @@ module.exports = {
   ruleFromHistory,
   feedback,
   saveSettings,
-  launchWindow,
-  availableSetId,
+  // 互換の再輸出（ipc.js とテストが短い名前で使う）
+  DOCUMENT_WORKLOAD: launcher.DOCUMENT_WORKLOAD,
+  MANIFEST: store.MANIFEST,
+  INPUTS_DIR: store.INPUTS_DIR,
+  workspaceDir: store.workspaceDir,
+  rulesDir: store.rulesDir,
+  listSets: store.listSets,
+  scanOutputs: store.scanOutputs,
+  readManifest: store.readManifest,
+  availableSetId: store.availableSetId,
+  sidecarName: sidecar.sidecarName,
+  historyEntry: sidecar.historyEntry,
+  appendSidecar: sidecar.appendSidecar,
+  readSidecar: sidecar.readSidecar,
+  formatOf: formats.formatOf,
 };

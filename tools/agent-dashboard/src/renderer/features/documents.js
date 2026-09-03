@@ -19,9 +19,10 @@
       available: () => true,
       open: () => 'document-list',
     });
-    root.registerFeatureTab('document-list', { render: feature.render, available: () => true });
-    root.registerFeatureTab('document-rules', { render: feature.render, available: () => true });
-    root.registerFeatureTab('document-settings', { render: feature.render, available: () => true });
+    // 各タブは自分のペインだけを描く（コアは登録名ごとに render を呼ぶ）。
+    root.registerFeatureTab('document-list', { render: () => feature.renderTab('document-list'), available: () => true });
+    root.registerFeatureTab('document-rules', { render: () => feature.renderTab('document-rules'), available: () => true });
+    root.registerFeatureTab('document-settings', { render: () => feature.renderTab('document-settings'), available: () => true });
   }
   if (typeof root.registerPortalCard === 'function') {
     root.registerPortalCard('documents', { order: 35, html: feature.portalCardHtml });
@@ -37,8 +38,13 @@
   // 古典スクリプトからは名前で届く。テスト（Node）では root.state を見る。
   const appState = () => (typeof state !== 'undefined' ? state : (root.state || {}));
 
-  const MODE_LABELS = { whole: '一気に作る', section: '区分ごとに作る' };
-  const ACTION_LABELS = { create: '作成を依頼', resume: '続きを依頼', verify: '検証を依頼', feedback: 'フィードバック' };
+  // 操作名・進め方の表示名は main（documents.js の表）が正典。overview で受け取る。
+  const catalogLabel = (list, id) => {
+    const row = ((st.overview && st.overview[list]) || []).find((x) => (x.kind || x.id) === id);
+    return row ? row.label : String(id || '');
+  };
+  const modeLabel = (id) => catalogLabel('modes', id);
+  const actionLabel = (id) => catalogLabel('actions', id);
 
   const st = {
     overview: null,
@@ -164,7 +170,7 @@
   function setItemHtml(s) {
     const on = s.id === st.selected;
     const formats = (s.formats || []).map((f) => `<span class="label-chip">${esc(formatLabel(f))}</span>`).join('');
-    const last = s.lastAction ? `${ACTION_LABELS[s.lastAction.kind] || s.lastAction.kind} ${fmtWhen(s.lastAction.at)}` : '';
+    const last = s.lastAction ? `${actionLabel(s.lastAction.kind)} ${fmtWhen(s.lastAction.at)}` : '';
     return `<button type="button" class="docs-list-item ${on ? 'active' : ''}" data-docs-set="${esc(s.id)}" aria-current="${on ? 'true' : 'false'}">
       <span class="docs-list-title">${esc(s.name)}</span>
       <span class="docs-list-meta">${formats}${s.outputCount ? `<span class="muted">成果物 ${s.outputCount}</span>` : '<span class="muted">成果物なし</span>'}</span>
@@ -204,7 +210,7 @@
     return `<div class="docs-detail">
       <div class="docs-detail-head">
         <div>
-          <span class="summary-kicker">${esc(MODE_LABELS[d.mode] || d.mode)}</span>
+          <span class="summary-kicker">${esc(modeLabel(d.mode))}</span>
           <h3>${esc(d.name)}</h3>
           <p class="muted">${(d.formats || []).map((f) => `<span class="label-chip">${esc(formatLabel(f))}</span>`).join(' ')}</p>
         </div>
@@ -364,19 +370,24 @@
   // 描画と配線
   // -------------------------------------------------------------------------
 
-  function render() {
-    const panes = [
-      ['tab-document-list', listPaneHtml],
-      ['tab-document-rules', rulesPaneHtml],
-      ['tab-document-settings', settingsPaneHtml],
-    ];
-    for (const [id, html] of panes) {
-      const pane = $(id);
-      if (!pane) continue;
-      pane.innerHTML = html();
-      wirePane(pane);
-    }
+  const PANES = {
+    'document-list': listPaneHtml,
+    'document-rules': rulesPaneHtml,
+    'document-settings': settingsPaneHtml,
+  };
+
+  function renderTab(name) {
+    const html = PANES[name];
+    const pane = $(`tab-${name}`);
+    if (!html || !pane) return;
+    pane.innerHTML = html();
+    wirePane(pane);
     wireDialogs();
+  }
+
+  // 状態が変わったときは 3 タブとも描き直す（選択・通知はタブをまたいで共有している）。
+  function render() {
+    for (const name of Object.keys(PANES)) renderTab(name);
   }
 
   function wirePane(pane) {
@@ -778,6 +789,7 @@
   return {
     refresh,
     render,
+    renderTab,
     portalCardHtml,
     listPaneHtml,
     rulesPaneHtml,
@@ -786,6 +798,5 @@
     detailHtml,
     ruleDetailHtml,
     state: st,
-    MODE_LABELS,
   };
 });

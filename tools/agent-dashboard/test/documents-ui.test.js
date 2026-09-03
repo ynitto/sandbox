@@ -58,7 +58,11 @@ test('成果物の表は形式・役割と関係・更新を見せ、ファイ�
 });
 
 test('文書の詳細は続き・検証・フィードバック・履歴からルールの入口と改訂履歴を持つ', () => {
-  ui.state.overview = { formats: [{ id: 'md', label: 'Markdown' }], sets: [], rules: [] };
+  ui.state.overview = {
+    formats: [{ id: 'md', label: 'Markdown' }], sets: [], rules: [],
+    modes: [{ id: 'whole', label: '一気に作る' }, { id: 'section', label: '区分ごとに作る' }],
+    actions: [{ kind: 'verify', label: '検証を依頼' }],
+  };
   ui.state.selected = 'spec';
   ui.state.detail = {
     id: 'spec', name: '仕様書', mode: 'section', formats: ['md'], dir: '/w/spec', sidecar: '/w/spec/spec.history.md',
@@ -75,6 +79,15 @@ test('文書の詳細は続き・検証・フィードバック・履歴から�
   assert.match(out, /作成の依頼/);
   ui.state.selected = '';
   assert.match(ui.detailHtml(), /左の文書を選ぶ/);
+});
+
+test('操作名と進め方の表示名は main の表から受け取る（画面に複製しない）', () => {
+  const src = fs.readFileSync(path.join(rendererDir, 'features', 'documents.js'), 'utf8');
+  assert.ok(!/ACTION_LABELS|MODE_LABELS/.test(src), '表示名の表を画面側に持たない');
+  ui.state.loaded = true;
+  ui.state.overview = { formats: [], sets: [{ id: 'a', name: 'A', formats: [], lastAction: { kind: 'resume', at: '' } }],
+    rules: [], modes: [], actions: [{ kind: 'resume', label: '続きを依頼' }] };
+  assert.match(ui.listPaneHtml(), /続きを依頼/);
 });
 
 test('ホームのカードは件数と入口だけを出す', () => {
