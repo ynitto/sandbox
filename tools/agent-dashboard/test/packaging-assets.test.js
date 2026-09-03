@@ -87,6 +87,67 @@ test('glob 判定そのものが効いている', () => {
   assert.ok(!matches('package.json', 'src/package.json'));
 });
 
+// main / preload が require するモジュールも同じ罠に落ちる。src/ の外（scripts/ など）を
+// 相対 require すると、開発起動では在るので動くが、dist:portable の exe では起動直後に
+// 「Cannot find module」がネイティブダイアログで出て開けない（main.js が
+// scripts/resource-control.js を読んでいて実際に起きた）。src/ 配下の全 JS の相対 require と、
+// package.json の main が build.files に載っていることを機械的に確かめる。
+function jsFilesUnder(dir) {
+  const out = [];
+  for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, ent.name);
+    if (ent.isDirectory()) out.push(...jsFilesUnder(full));
+    else if (ent.isFile() && ent.name.endsWith('.js')) out.push(full);
+  }
+  return out;
+}
+
+// `require('./x')` / `require("../y")` の相対指定だけ拾う（パッケージ名・組み込みは対象外）。
+// 変数を挟む動的 require は静的には追えないので、この検査の範囲外。
+// コメント中の `require('./features')` のような説明文を拾わないよう、ブロック / 行コメントは
+// 先に落とす（URL の `//` は直前の `:` で区別する）。
+function relativeRequires(file) {
+  const src = fs.readFileSync(file, 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:'"`])\/\/.*$/gm, '$1');
+  const out = [];
+  for (const m of src.matchAll(/require\(\s*['"](\.{1,2}\/[^'"]+)['"]\s*\)/g)) out.push(m[1]);
+  return out;
+}
+
+// Node の解決規則のうち、このリポジトリで使う範囲：そのまま / .js 付与 / ディレクトリの index.js
+function resolveRelative(fromFile, spec) {
+  const base = path.resolve(path.dirname(fromFile), spec);
+  for (const candidate of [base, `${base}.js`, `${base}.json`, path.join(base, 'index.js')]) {
+    if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) return candidate;
+  }
+  return null;
+}
+
+test('src/ 配下の相対 require 先は実在し、build.files に載っている', () => {
+  const patterns = pkg.build.files;
+  let checked = 0;
+  for (const file of jsFilesUnder(path.join(ROOT, 'src'))) {
+    for (const spec of relativeRequires(file)) {
+      const target = resolveRelative(file, spec);
+      const from = path.relative(ROOT, file).split(path.sep).join('/');
+      assert.ok(target, `${from} の require('${spec}') が解決できない`);
+      const rel = path.relative(ROOT, target).split(path.sep).join('/');
+      assert.ok(patterns.some((p) => matches(p, rel)),
+        `${from} が require する ${rel} が build.files に載っていない（パッケージ版で起動時に落ちる）`);
+      checked += 1;
+    }
+  }
+  assert.ok(checked >= 50, `相対 require を抽出できていない: ${checked}`);
+});
+
+test('package.json の main は build.files に載っている', () => {
+  const main = String(pkg.main || '');
+  assert.ok(main, 'package.json に main が無い');
+  assert.ok(fs.existsSync(path.join(ROOT, main)), `main が存在しない: ${main}`);
+  assert.ok(pkg.build.files.some((p) => matches(p, main)), `${main} が build.files に載っていない`);
+});
+
 // 同梱の CLI 定義（agents/<name>.json）は **アプリのソースツリーの外**（リポジトリ直下）に
 // あるので build.files では入らない。入っていないと、パッケージ版で ~/.agents/agents/ が
 // 無い端末（install.py 未実行）ではどの CLI も解決できず、AI 機能が全滅する。
