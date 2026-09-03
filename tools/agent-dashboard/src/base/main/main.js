@@ -4,7 +4,9 @@ const { app, BrowserWindow } = require('electron');
 const path = require('path');
 const { registerIpcHandlers } = require('./ipc');
 const { loadConfig } = require('./config');
-const resourceControl = require('../../../scripts/resource-control');
+// 資源制御の本体は src/ の中に置く。scripts/ 配下を require すると、build.files に
+// 入らないため dist:portable の exe が起動直後に落ちる（packaging-assets.test.js 参照）。
+const resourceControl = require('../../features/orchestration/main/resource-control');
 
 // 環境変数のプロキシ設定を Chromium に引き継ぐ（gitlab-review-viewer と同じ）。
 // GitLab API 呼び出し（net.fetch）がこの設定を経由する。

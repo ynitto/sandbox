@@ -1,6 +1,7 @@
 'use strict';
 
-// ヘッドレス資源制御（scripts/resource-control.js）のテスト。
+// 資源制御の駆動体（src/features/orchestration/main/resource-control.js）と、その
+// ヘッドレス CLI 入口（scripts/resource-control.js）のテスト。
 //
 // このスクリプトが S8 の成果物そのもの——「dashboard を開いていなくても段の降格・復帰と
 // 配分の再計算が進む」を担う唯一の駆動体なので、ここが動かなければ機能が無いのと同じ。
@@ -11,7 +12,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const resourceControl = require('../scripts/resource-control');
+const resourceControl = require('../src/features/orchestration/main/resource-control');
 const budget = require('../src/features/orchestration/main/budget');
 
 let passed = 0;
