@@ -9,7 +9,8 @@
 //      **YAML は書かない**（書式の正典は statemachine-use スキル。C7）。
 //   3. 作成の起動は自由文と同じ入口（generateStateMachine の payload.procedure）を通す。
 //   4. 道具の確認は LLM を使わない診断コマンドだけを呼び、結果を人が読める 1 行にする。
-//   5. 画面の工程種別の綴りは main と同じ（表示と検査がずれない）。
+//   5. 工程の種類の正典は main の種別カタログ 1 か所で、画面はそれを IPC で受け取って描く
+//      （種類を足すときに画面へ写しを足さない）。
 
 const assert = require('assert');
 const fs = require('fs');
@@ -43,6 +44,7 @@ function sample() {
         check: 'winauto wait name:=完了 --app 勤怠管理' },
       { kind: 'browser', target: 'https://intra.example/list', detail: '申請一覧を開き {{month}} の行を読み取る' },
       { kind: 'command', target: 'python3 scripts/export.py --month {{month}}' },
+      { kind: 'skill', target: 'redmine-use', detail: '{{month}} のチケット一覧を取得する' },
       { kind: 'agent', title: '判断', detail: '差し戻しが要るか判断する。{{last_output}} を材料にする',
         outcomes: [{ label: 'APPROVED', to: 'next' }, { label: 'RETRY ONCE', to: 'step:2' }, { label: 'NG', to: 'abort' }] },
     ],
@@ -52,11 +54,16 @@ function sample() {
 async function main() {
   test('工程列を正規化し、入力パラメータは予約語を除いて拾う', () => {
     const spec = procedure.normalizeProcedure(sample());
-    assert.deepStrictEqual(spec.steps.map((s) => s.id), ['step_1', 'step_2', 'step_3', 'step_4']);
+    assert.strictEqual(spec.version, procedure.PROCEDURE_VERSION, '保存する工程列には版を付ける');
+    assert.deepStrictEqual(spec.steps.map((s) => s.id), ['step_1', 'step_2', 'step_3', 'step_4', 'step_5']);
     assert.strictEqual(spec.steps[1].title, '', '名前を省いた工程は空のまま（見出しは種類で代える）');
     assert.deepStrictEqual(spec.parameters, ['month'], '{{last_output}} は実行時変数なので入力にしない');
-    assert.strictEqual(spec.steps[3].outcomes[1].label, 'RETRY_ONCE', 'ラベルの空白は _ にする（第 1 行の startswith 比較）');
-    assert.strictEqual(spec.steps[3].outcomes[1].to, 'step:2');
+    assert.strictEqual(spec.steps[4].outcomes[1].label, 'RETRY_ONCE', 'ラベルの空白は _ にする（第 1 行の startswith 比較）');
+    assert.strictEqual(spec.steps[4].outcomes[1].to, 'step:2');
+    assert.strictEqual(procedure.skillFor(spec.steps[0]), 'windows-app-automation', '種類に固定の移譲先');
+    assert.strictEqual(procedure.skillFor(spec.steps[3]), 'redmine-use', '工程が名前で指定する移譲先');
+    assert.strictEqual(procedure.skillFor(spec.steps[2]), '', 'コマンド実行は移譲しない');
+    assert.throws(() => procedure.normalizeProcedure({ ...sample(), version: 99 }), /対応していない版/);
   });
 
   test('不備は人が直せる文言で断る', () => {
@@ -72,6 +79,8 @@ async function main() {
       [{ purpose: 'x', steps: [{ kind: 'agent', detail: 'a', outcomes: [{ label: 'A', to: 'jump' }] }] }, /行き先が不正/],
       [{ purpose: 'x', steps: [{ kind: 'agent', detail: 'a', outcomes: [{ label: 'A', to: 'next' }, { label: 'A', to: 'done' }] }] }, /重複/],
       [{ purpose: 'x', steps: [{ kind: 'agent', detail: 'a', outcomes: [{ label: '', to: 'next' }] }] }, /ラベルの無い/],
+      [{ purpose: 'x', steps: [{ kind: 'skill', target: '', detail: 'a' }] }, /スキル名を入力/],
+      [{ purpose: 'x', steps: [{ kind: 'skill', target: 'Redmine Use', detail: 'a' }] }, /スキル名が不正/],
     ];
     for (const [raw, re] of cases) {
       assert.throws(() => procedure.normalizeProcedure(raw), re, JSON.stringify(raw));
@@ -85,6 +94,8 @@ async function main() {
     assert.ok(text.includes('`windows-app-automation` スキル'));
     assert.ok(text.includes('`playwright-cli` スキル'));
     assert.ok(text.includes('`winauto` コマンド'));
+    assert.ok(text.includes('アクション本文で `redmine-use` スキルへ移譲すると明記する'), 'スキルに任せる工程は名前で名指し');
+    assert.ok(!text.includes('対象（スキル名）'), 'スキル名は移譲先として書き、対象欄には出さない');
     // 決定的検査の宣言と、宣言した工程からの遷移条件
     assert.ok(text.includes('`check: winauto wait name:=完了 --app 勤怠管理`'));
     assert.ok(text.includes('equals:check_ok:true'));
@@ -93,6 +104,7 @@ async function main() {
     assert.ok(text.includes('RETRY_ONCE → 工程 2 へ進む'));
     assert.ok(text.includes('NG → 失敗として終了する'));
     assert.ok(text.includes('APPROVED → 完了として終了する'), '最後の工程の next は完了');
+    assert.ok(text.includes('SKILL.md に書かれた使い方'), '使う種類の案内だけ載る');
     // 名前を省いた工程は種類だけの見出し
     assert.ok(text.includes('### 工程 2: 画面操作（ブラウザ）\n'));
     assert.ok(!text.includes('画面操作（ブラウザ）（画面操作'));
@@ -110,7 +122,7 @@ async function main() {
   test('画面操作の無い手順には道具の案内を出さない', () => {
     const spec = procedure.normalizeProcedure({ purpose: 'x', steps: [{ kind: 'agent', detail: '要約する' }] });
     const text = procedure.procedureInstruction(spec);
-    assert.ok(!text.includes('playwright-cli') && !text.includes('winauto'));
+    assert.ok(!text.includes('playwright-cli') && !text.includes('winauto') && !text.includes('SKILL.md'));
     assert.ok(text.includes('OK（できた）または FAILED'), '判断の無い工程は OK / FAILED の契約');
     assert.ok(!text.includes('## 入力パラメータ'), 'パラメータが無ければ節を出さない');
   });
@@ -150,8 +162,9 @@ async function main() {
     assert.ok(all[1].summary.includes('pywinauto'), all[1].summary);
     assert.ok(all[1].hint, '未準備の道具には入れ方を添える');
 
-    const onlyBrowser = await procedure.toolStatus({ kinds: ['browser'], capture });
-    assert.deepStrictEqual(onlyBrowser.map((t) => t.id), ['playwright-cli'], '工程が頼る道具だけを確かめる');
+    const onlyBrowser = await procedure.toolStatus({ kinds: ['browser', 'skill', 'command', 'agent'], capture });
+    assert.deepStrictEqual(onlyBrowser.map((t) => t.id), ['playwright-cli'], '工程が頼る道具だけを確かめる（診断の無い種類は飛ばす）');
+    assert.deepStrictEqual(procedure.toolsFor([]).map((t) => t.id), ['playwright-cli', 'winauto'], '種類を渡さなければ診断できる道具すべて');
 
     const missing = await procedure.toolStatus({ kinds: ['windows'],
       capture: async () => ({ ok: false, status: -1, stdout: '', stderr: '', error: 'spawn winauto ENOENT' }) });
@@ -162,12 +175,14 @@ async function main() {
   test('IPC の入口は確認・道具の 2 つだけで、作成は既存チャネルを使う', () => {
     const invoked = [];
     const invoke = (channel, payload) => { invoked.push([channel, payload]); return Promise.resolve(); };
+    preload.coworkProcedureCatalog(invoke)();
     preload.coworkProcedurePreview(invoke)({ procedure: {} });
     preload.coworkProcedureTools(invoke)({ repo: '/r', kinds: ['browser'] });
-    assert.deepStrictEqual(invoked.map(([c]) => c), ['cowork:procedurePreview', 'cowork:procedureTools']);
+    assert.deepStrictEqual(invoked.map(([c]) => c), ['cowork:procedureCatalog', 'cowork:procedurePreview', 'cowork:procedureTools']);
     assert.strictEqual(typeof preload.coworkProcedureCreate, 'undefined', '作成の入口を増やさない');
     const ipc = fs.readFileSync(path.join(__dirname, '..', 'src', 'features', 'cowork', 'main', 'ipc.js'), 'utf8');
-    assert.ok(ipc.includes("handle('cowork:procedurePreview'") && ipc.includes("handle('cowork:procedureTools'"));
+    assert.ok(ipc.includes("handle('cowork:procedureCatalog'") && ipc.includes("handle('cowork:procedurePreview'")
+      && ipc.includes("handle('cowork:procedureTools'"));
     assert.ok(!ipc.includes('cowork:procedureCreate'));
   });
 
@@ -177,9 +192,15 @@ async function main() {
     assert.ok(rendererSrc.includes('id="btn-cowork-procedure"'));
     assert.ok(rendererSrc.includes('data-cowork-procedure="${index}"'));
     assert.ok(rendererSrc.includes('function openRoutineProcedureDialog('));
+    const builderFile = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'sections', 'procedure.js'), 'utf8');
+    assert.ok(builderFile.includes('function openRoutineProcedureDialog('), 'ビルダーは独立したセクションファイルに置く');
+    assert.ok(html.includes('<script src="sections/procedure.js"></script>'));
+    for (const forbidden of ['loopProvider', 'agent-loop.yml', 'coworkRunStateMachine', 'coworkSaveWork']) {
+      assert.ok(!builderFile.includes(forbidden), `ビルダーは実行・保存の経路に触れない: ${forbidden}`);
+    }
     assert.ok(rendererSrc.includes('function createRoutineProcedure('));
     // 作成は自由文と同じ API を通す（payload.procedure）
-    const create = rendererSrc.slice(rendererSrc.indexOf('async function createRoutineProcedure('),
+    const create = rendererSrc.slice(rendererSrc.indexOf('function routineProcedureItem('),
       rendererSrc.indexOf('function openRoutineProcedureDialog('));
     assert.ok(create.includes('api.coworkGenerateStateMachine({'));
     assert.ok(create.includes('procedure: routineProcedurePayload(draft)'));
@@ -192,16 +213,26 @@ async function main() {
     assert.ok(!dialog.includes('ステートマシン') && !dialog.includes('statemachine'));
   });
 
-  test('画面の工程種別の綴りは main と同じ', () => {
-    const line = rendererSrc.slice(rendererSrc.indexOf('const ROUTINE_STEP_KINDS = ['),
-      rendererSrc.indexOf('];', rendererSrc.indexOf('const ROUTINE_STEP_KINDS = [')) + 2);
-    // eslint-disable-next-line no-new-func
-    const kinds = new Function(`${line}\nreturn ROUTINE_STEP_KINDS;`)();
-    assert.deepStrictEqual(kinds.map((k) => k.id), procedure.STEP_KIND_IDS);
-    for (const kind of kinds) {
-      assert.strictEqual(kind.label, procedure.STEP_KINDS[kind.id].label, kind.id);
-      assert.strictEqual(kind.targetLabel, procedure.STEP_KINDS[kind.id].targetLabel, kind.id);
+  test('工程の種類の正典は main の種別カタログで、画面は写しを持たない', () => {
+    const cat = cowork.procedureCatalog();
+    assert.strictEqual(cat.version, procedure.PROCEDURE_VERSION);
+    assert.deepStrictEqual(cat.kinds.map((k) => k.id), procedure.STEP_KIND_IDS);
+    for (const kind of cat.kinds) {
+      assert.ok(kind.label && kind.description && kind.detail && typeof kind.detail.required === 'boolean', kind.id);
+      for (const hidden of ['skill', 'guidance', 'tool', 'skillFromTarget']) {
+        assert.ok(!(hidden in kind), `画面へ渡すカタログに ${hidden} は含めない（${kind.id}）`);
+      }
     }
+    assert.strictEqual(cat.kinds.find((k) => k.id === 'agent').check, null, 'AI の処理に確認コマンド欄は無い');
+    assert.strictEqual(cat.kinds.find((k) => k.id === 'skill').target.required, true);
+    // 画面は種類を書き写さず、カタログ（state.procedureCatalog）から描く
+    const builder = rendererSrc.slice(rendererSrc.indexOf('function routineProcedureCatalog('));
+    assert.ok(!/const ROUTINE_STEP_KINDS\b/.test(rendererSrc));
+    assert.ok(builder.includes('api.coworkProcedureCatalog()'));
+    for (const label of ['画面操作（ブラウザ）', 'Windows アプリ', 'スキルに任せる', 'コマンド実行']) {
+      assert.ok(!builder.includes(`'${label}`), `種類の表示名を画面に書かない: ${label}`);
+    }
+    assert.ok(builder.includes('kind.target.label') && builder.includes('kind.detail.label') && builder.includes('kind.check.placeholder'));
   });
 
   test('判断欄の 1 行は「ラベル: 行き先」で、行き先を省けば次へ進む', () => {

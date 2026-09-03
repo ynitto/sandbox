@@ -1190,6 +1190,12 @@ function procedureInstruction(raw) {
   return { procedure: spec, instruction: procedure.procedureInstruction(spec), parameters: spec.parameters };
 }
 
+// 画面が工程の種類（入力欄・表示名）を描く材料。正典は procedure.js の 1 か所で、
+// 画面に写しを持たせない（種類を足すときに 2 か所を直さない）。
+function procedureCatalog() {
+  return { kinds: procedure.catalog(), version: procedure.PROCEDURE_VERSION };
+}
+
 // 画面の「指示文を確認」。起動せずに正規形・指示文・入力パラメータだけを返す。
 function procedurePreview(config, payload = {}) {
   const built = procedureInstruction(payload.procedure);
@@ -1768,7 +1774,7 @@ function saveWork(config, saveConfig, { items, branch, createBranch, push } = {}
 
 module.exports = {
   overview, runLoop, runStateMachine, generateStateMachine, runAdhoc, adhocRoots,
-  procedureInstruction, procedurePreview, procedureTools,
+  procedureInstruction, procedurePreview, procedureTools, procedureCatalog,
   saveWork, itemsOf, wslPath, dynamicState,
   resolveItem, findItem, dedupeItems, applyDiscoveredEdits, gitCommitFiles,
   invalidateDiscoverCache, decodeCliOutput, viewerRepo,

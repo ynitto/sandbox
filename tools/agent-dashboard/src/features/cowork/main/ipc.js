@@ -14,6 +14,7 @@ function registerIpc(ctx) {
   handle('cowork:generateStateMachine', (payload) => cowork.generateStateMachine(loadConfig(), payload || {}));
   // 手順ビルダー（定型手順）: 工程列 → 指示文の確認と、画面操作が頼る CLI の診断。
   // 作成の起動は上の generateStateMachine（payload.procedure）を通す——入口を増やさない。
+  handle('cowork:procedureCatalog', () => cowork.procedureCatalog());
   handle('cowork:procedurePreview', (payload) => cowork.procedurePreview(loadConfig(), payload || {}));
   handle('cowork:procedureTools', (payload) => cowork.procedureTools(loadConfig(), payload || {}));
   // アドホック起動（M2）: 登録フォルダ + 自由文で対話 CLI を起動する（項目非依存）

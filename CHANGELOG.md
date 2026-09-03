@@ -27,6 +27,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   投入前に断る。工程列は作業項目に残るので「手順を組み立て直す」から作り直せる。
 - **道具を確認**: 画面操作の工程が頼る CLI がこの端末から呼べるかを、LLM を使わない診断
   （`playwright-cli --version` / `winauto doctor --output json`）だけで示す。
+- **種類の正典は 1 か所。** 工程の種類（表示名・入力欄・移譲先スキル・指示文の案内・道具の
+  診断）は main の種別カタログ（`STEP_KINDS`）に 1 項目ずつ宣言し、画面は
+  `cowork:procedureCatalog` で受け取って描く。種類を足すのはその配列へ 1 項目足すだけで、
+  画面・指示文・診断がそろって増える。「スキルに任せる」（`redmine-use` / `outlook-use` など
+  リポジトリの `*-use` スキルを名前で名指し）はその形で足した最初の種類。画面のコードは
+  `renderer/sections/procedure.js` に独立させ、実行・保存の経路には触れない。工程列の
+  正規形は `version` を持ち、形を変えるときに古い項目を読み分けられる。
 
 ### agent-dashboard: 過去の run・セッションを流用して実行できるようになった
 

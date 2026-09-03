@@ -59,12 +59,13 @@
 
 ```js
 {
+  version: 1,                          // 正規形の版。形を変えるときに上げ、古い項目を読み分ける
   purpose: '目的（1〜2 文）',
   steps: [{
-    kind: 'browser' | 'windows' | 'command' | 'agent',
+    kind: 'browser' | 'windows' | 'skill' | 'command' | 'agent',
     title: '短い名前（省略可）',
     detail: '何をするか',               // command は補足（省略可）
-    target: 'URL | アプリ名 | argv',     // agent は持たない
+    target: 'URL | アプリ名 | スキル名 | argv',   // agent は持たない
     check: 'argv（省略可）',             // 完了の確認コマンド。終了コード 0 で通過
     outcomes: [{ label: 'APPROVED', to: 'next' | 'step:<n>' | 'done' | 'abort' }],
   }],
@@ -80,12 +81,26 @@
   ハーネスの制約と同じ理由——黙って別物を実行させない。
 - 本文の `{{key}}` は入力パラメータ。検出は template-parameters を共有し、予約語は除く。
 
+### 1.1 種類の正典は main の種別カタログ 1 か所
+
+工程の種類は `procedure.js` の `STEP_KINDS` に 1 項目ずつ宣言する。1 項目が持つのは、画面が
+入力欄を描く材料（表示名・説明・対象欄・内容欄・確認コマンド欄）、指示文が名指しする移譲先
+スキル（種類に固定か、工程が名前で指定するか）、指示文「使う道具」節の案内、道具の診断
+（コマンド・引数・出力の読み方・未準備時の案内）。画面は `cowork:procedureCatalog` で
+描画用の部分だけを受け取り、種類の写しを持たない（テストが固定する）。
+
+**種類を足す手順は 1 手**——この配列へ 1 項目足す。画面のボタン・入力欄、指示文の案内、
+道具の診断がそろって増える。「スキルに任せる」（`redmine-use` / `outlook-use` などリポジトリの
+`*-use` スキルを名前で名指し）はこの形で足した最初の種類で、社内システムごとのスキルを
+そのまま工程にできる。
+
 ### 2. 指示文への変換（main の 1 実装）
 
 `features/cowork/main/procedure.js` が正規化（`normalizeProcedure`）と指示文生成
 （`procedureInstruction`）を担う。指示文は Markdown で、スキルの分解原則に沿う:
 
-- 「使う道具」節で、使う種類のスキルだけを名指しする（`playwright-cli` / `windows-app-automation`）。
+- 「使う道具」節で、使う種類の案内だけを載せる（カタログの `guidance`。`playwright-cli` /
+  `windows-app-automation` / 名指ししたスキルの SKILL.md に書かれた使い方だけを使う、等）。
   偵察してから操作する（snapshot / `winauto tree` → 操作 → 読み取り）、想定外の画面では
   FAILED を返して別の操作を試さない、秘密情報を本文に書かない、を書く。
 - 「工程」節は 1 工程 1 見出し。対象・内容・移譲先スキル・`check` の宣言（宣言した工程からは
@@ -98,6 +113,8 @@
 ### 3. 入口と起動 — 増やさない
 
 - 作業タブに「手順を組み立てる」を足す。設定変更ダイアログの手順付き作業からも同じ画面へ移れる。
+  画面のコードは `renderer/sections/procedure.js` に独立させ、cowork 側に頼るのは作業項目の
+  下書き・選択中フォルダ・描き直しだけにする（実行・保存の経路には触れない）。
 - 「作成を開始」は `cowork:generateStateMachine` に `payload.procedure` を渡す。main が指示文へ
   変換し、従来どおり `stateMachineCreationPrompt` で作成モードを起動する。戻り値に指示文と
   正規化した工程列を含め、画面は作業項目に `procedure` と `instruction` を残す。

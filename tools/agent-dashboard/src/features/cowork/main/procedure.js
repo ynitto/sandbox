@@ -1,57 +1,34 @@
 'use strict';
 
 // 定型手順（Routine Procedure）— 社内システムやローカルルールに特化した定型業務を、
-// 画面操作（ブラウザ / Windows アプリ）・コマンド実行・AI の処理（生成・判断）の工程列として
-// 組み立て、statemachine-use スキルの**作成モードへ渡す指示文**へ決定的に変換する。
+// 画面操作（ブラウザ / Windows アプリ）・スキルへの移譲・コマンド実行・AI の処理（生成・判断）
+// の工程列として組み立て、statemachine-use スキルの**作成モードへ渡す指示文**へ決定的に変換する。
 //
-// 担当は 3 つ。どれも新しい実行系・状態ストアを作らない。
-//   1. 正規化（normalizeProcedure）… renderer から届いた工程列を信頼せず、種類・分岐先・
+// 担当は 4 つ。どれも新しい実行系・状態ストアを作らない。
+//   1. 種別カタログ（STEP_KINDS / catalog）… 工程の種類の正典。表示名・入力欄・移譲先スキル・
+//      指示文の案内・道具の診断をここ 1 か所で宣言し、renderer は IPC で受け取って描く。
+//      種類を足すときはこの配列へ 1 項目足すだけで、画面・指示文・診断がそろって増える。
+//   2. 正規化（normalizeProcedure）… renderer から届いた工程列を信頼せず、種類・分岐先・
 //      検査コマンドの形をここで検査する（画面が拾えなかった不備を main が最後に断る）。
-//   2. 指示文（procedureInstruction）… スキルの分解原則（1 ステート 1 工程・成功は機械が
+//   3. 指示文（procedureInstruction）… スキルの分解原則（1 ステート 1 工程・成功は機械が
 //      測れる形・分岐は遷移に書く・移譲先スキルを名指しする）に沿う Markdown を組む。
 //      **YAML は書かない。** `.statemachine/<machine>/workflow.yaml` の書式の正典は
-//      statemachine-use スキルで、書式をここに写すと 2 実装になる（C7）。
-//   3. 道具の確認（toolStatus）… 画面操作の工程が頼る CLI（playwright-cli / winauto）が
-//      この端末から呼べるかを、LLM を使わない診断コマンドだけで確かめる。
+//      statemachine-use スキルで、書式をここに写すと 2 実装になる（C7）。工程列（正規形）は
+//      実行系に依らない形にしてあり、指示文の組み立てだけが statemachine-use 向けである。
+//   4. 道具の確認（toolStatus）… 工程が頼る CLI がこの端末から呼べるかを、LLM を使わない
+//      診断コマンドだけで確かめる。
 //
 // 工程が頼る道具はどれも**エージェント CLI のシェルから呼べる CLI**である。ヘッドレスの
 // ハーネス（agent-loop statemachine）はシェルを介さず argv を直接実行するので、
-// 指示文でもパイプ・リダイレクトを使わない形に倒す（検査コマンドはここで断る）。
+// 指示文でもパイプ・リダイレクトを使わない形に倒す（コマンドと検査コマンドはここで断る）。
+//
+// このモジュールが依存するのは template-parameters（`{{key}}` の 1 実装）だけで、
+// cowork.js・Electron・ファイルシステムには触れない（単体で検査できる）。
 
 const templateParameters = require('../../../base/main/template-parameters');
 
-// 工程の種類。`skill` は作成モードがアクション本文へ名指しする移譲先
-// （`` `skill-name` スキル `` の記法が無いとハーネスはスキルを読み込まない）。
-const STEP_KINDS = {
-  browser: {
-    label: '画面操作（ブラウザ）',
-    skill: 'playwright-cli',
-    tool: 'playwright-cli',
-    targetLabel: 'URL',
-  },
-  windows: {
-    label: '画面操作（Windows アプリ）',
-    skill: 'windows-app-automation',
-    tool: 'winauto',
-    targetLabel: 'アプリ',
-  },
-  command: {
-    label: 'コマンド実行',
-    skill: '',
-    tool: '',
-    targetLabel: 'コマンド',
-  },
-  agent: {
-    label: 'AI の処理（生成・判断）',
-    skill: '',
-    tool: '',
-    targetLabel: '',
-  },
-};
-const STEP_KIND_IDS = Object.keys(STEP_KINDS);
-
-// 判断の行き先。`step:<n>` は 1 始まりの工程番号。
-const OUTCOME_TARGETS = ['next', 'done', 'abort'];
+// 工程列（正規形）の版。項目に保存した工程列を後から読むときの目印で、形を変えるときに上げる。
+const PROCEDURE_VERSION = 1;
 
 // 上限。画面が組める量であると同時に、作成モードが 1 セッションで読み切れる量。
 const MAX_STEPS = 30;
@@ -61,6 +38,119 @@ const MAX_TEXT = 4000;
 // statemachine-use の `check` はシェルを介さない。含まれていたら投入前に断る
 // （黙って別物を実行させない——検知装置が別物を測るのは検知が無いより悪い）。
 const SHELL_META_RE = /[|&;<>`\n]|\$\(/;
+
+// スキル名。`.github/skills/<name>/` のフォルダ名と同じ字種。
+const SKILL_NAME_RE = /^[a-z0-9][a-z0-9._-]*$/;
+
+// 道具の診断。`probe` は出力の読み方（version = 1 行目を版として示す / doctor = JSON の checks を読む）。
+const TOOL_PLAYWRIGHT = {
+  id: 'playwright-cli',
+  label: 'ブラウザ操作（playwright-cli）',
+  command: 'playwright-cli',
+  args: ['--version'],
+  probe: 'version',
+  hint: 'install.py が @playwright/cli を入れます（npm が必要）。',
+};
+const TOOL_WINAUTO = {
+  id: 'winauto',
+  label: 'Windows アプリ操作（winauto）',
+  command: 'winauto',
+  args: ['doctor', '--output', 'json'],
+  probe: 'doctor',
+  hint: 'tools/winauto/install.py を実行し、winauto doctor で橋渡しを確認します。',
+};
+
+// 工程の種類の正典。
+//   label / description / target / detail / check … renderer が入力欄を描く材料（catalog() で渡す）
+//   skill / skillFromTarget                        … 指示文が名指しする移譲先
+//   guidance                                       … 指示文「使う道具」節に載せる案内（使う種類のぶんだけ）
+//   tool                                           … 道具の診断（無ければ診断しない）
+const STEP_KINDS = [
+  {
+    id: 'browser',
+    label: '画面操作（ブラウザ）',
+    description: 'Web 画面を開いて操作し、表示内容を読み取る',
+    skill: 'playwright-cli',
+    target: { label: 'URL', placeholder: 'https://…', required: false },
+    detail: { label: '内容', required: true,
+      placeholder: '例: ログイン後に「申請一覧」を開き、今日の日付の行を読み取る' },
+    check: { placeholder: '例: python3 scripts/check_list.py' },
+    guidance: '- ブラウザの操作は `playwright-cli` スキル（`playwright-cli` コマンド）で行う。'
+      + ' 操作の前に snapshot で要素を確かめ、操作の後も snapshot か画面のテキストで結果を読み取る。'
+      + ' セレクタや URL は工程に書いたものだけを使い、想定と違う画面が出たら FAILED を返す。',
+    tool: TOOL_PLAYWRIGHT,
+  },
+  {
+    id: 'windows',
+    label: '画面操作（Windows アプリ）',
+    description: 'Windows のデスクトップアプリを操作し、表示内容を読み取る',
+    skill: 'windows-app-automation',
+    target: { label: 'アプリ', placeholder: '例: 勤怠管理', required: false },
+    detail: { label: '内容', required: true,
+      placeholder: '例: メニュー「集計」→「月次」を開き、対象月 {{month}} を入力して「出力」を押す' },
+    check: { placeholder: '例: winauto wait name:=完了 --app 勤怠管理' },
+    guidance: '- Windows アプリの操作は `windows-app-automation` スキル（`winauto` コマンド）で行う。'
+      + ' `winauto tree` / `winauto wait` で要素を確かめてから `click` / `type` / `keys` を送り、'
+      + ' 結果は `get-text` で読み取る。セレクタは `auto_id:=` を優先し、無ければ `name:=` を使う。',
+    tool: TOOL_WINAUTO,
+  },
+  {
+    id: 'skill',
+    label: 'スキルに任せる',
+    description: '社内システム向けのスキル（redmine-use、outlook-use など）に工程を任せる',
+    skill: '',
+    skillFromTarget: true,
+    target: { label: 'スキル名', placeholder: '例: redmine-use', required: true, pattern: 'skill' },
+    detail: { label: '内容', required: true,
+      placeholder: '例: 対象月のチケット一覧を取得し、未完了のものを表にする' },
+    check: { placeholder: '例: test -s out/tickets.md' },
+    guidance: '- スキルに任せる工程は、名指ししたスキルの SKILL.md に書かれた使い方とスクリプトだけを使う。'
+      + ' スキルが見つからなければ FAILED を返し、代わりの手段を探さない。',
+    tool: null,
+  },
+  {
+    id: 'command',
+    label: 'コマンド実行',
+    description: '決まったコマンドを実行する（シェルは介さない）',
+    skill: '',
+    target: { label: 'コマンド', placeholder: '例: python3 scripts/export.py --month {{month}}',
+      required: true, pattern: 'argv' },
+    detail: { label: '補足', required: false, placeholder: '補足（任意）' },
+    check: { placeholder: '例: test -s out/report.csv' },
+    guidance: '- コマンドは書いてある argv をそのまま実行する。シェル（パイプ・リダイレクト）は介さない。',
+    tool: null,
+  },
+  {
+    id: 'agent',
+    label: 'AI の処理（生成・判断）',
+    description: '前の工程の結果を材料に、文章を作る・分類する・次へ進むか判断する',
+    skill: '',
+    target: null,
+    detail: { label: '内容', required: true,
+      placeholder: '例: 読み取った申請内容を要約し、差し戻しが必要か判断する' },
+    check: null,
+    guidance: '- AI の処理の工程は、前の工程の出力（{{last_output}} / output_key）だけを材料にし、画面やファイルを勝手に操作しない。',
+    tool: null,
+  },
+];
+const STEP_KIND_IDS = STEP_KINDS.map((k) => k.id);
+const STEP_KIND_BY_ID = new Map(STEP_KINDS.map((k) => [k.id, k]));
+
+// renderer へ渡す種別カタログ。入力欄を描くのに要る項目だけで、移譲先・案内・診断は含めない
+// （画面が知る必要が無く、知らせると画面側に写しが生まれる）。
+function catalog() {
+  return STEP_KINDS.map((k) => ({
+    id: k.id,
+    label: k.label,
+    description: k.description,
+    target: k.target ? { label: k.target.label, placeholder: k.target.placeholder, required: !!k.target.required } : null,
+    detail: { label: k.detail.label, placeholder: k.detail.placeholder, required: !!k.detail.required },
+    check: k.check ? { placeholder: k.check.placeholder } : null,
+  }));
+}
+
+// 判断の行き先。`step:<n>` は 1 始まりの工程番号。
+const OUTCOME_TARGETS = ['next', 'done', 'abort'];
 
 // 実行時に注入される変数は入力にしない（正典は template-parameters）。
 function parameterKeys(spec) {
@@ -93,33 +183,39 @@ function parseOutcomeTarget(raw, stepIndex, stepCount) {
   throw new Error(`工程 ${stepIndex + 1} の判断の行き先が不正です: ${raw}`);
 }
 
-function normalizeCheck(raw, stepIndex) {
-  const value = text(raw, 500);
-  if (!value) return '';
+function rejectShellMeta(value, what, stepIndex) {
   if (SHELL_META_RE.test(value)) {
-    throw new Error(`工程 ${stepIndex + 1} の確認コマンドにシェル記号は使えません`
+    throw new Error(`工程 ${stepIndex + 1} の${what}にシェル記号は使えません`
       + '（パイプやリダイレクトが要るならスクリプトにまとめてください）');
+  }
+}
+
+function normalizeTarget(kind, raw, index) {
+  if (!kind.target) return '';
+  const value = text(raw, 500);
+  if (!value) {
+    if (kind.target.required) {
+      throw new Error(`工程 ${index + 1}（${kind.label}）に${kind.target.label}を入力してください`);
+    }
+    return '';
+  }
+  if (kind.target.pattern === 'argv') rejectShellMeta(value, 'コマンド', index);
+  if (kind.target.pattern === 'skill' && !SKILL_NAME_RE.test(value)) {
+    throw new Error(`工程 ${index + 1} のスキル名が不正です: ${value}（英小文字・数字・ハイフン）`);
   }
   return value;
 }
 
 function normalizeStep(raw, index, stepCount) {
   const item = raw && typeof raw === 'object' ? raw : {};
-  const kind = STEP_KIND_IDS.includes(String(item.kind || '')) ? String(item.kind) : '';
+  const kind = STEP_KIND_BY_ID.get(String(item.kind || ''));
   if (!kind) throw new Error(`工程 ${index + 1} の種類が不正です`);
-  const title = text(item.title, 80);
   const detail = text(item.detail);
-  const target = text(item.target, 500);
-  if (kind === 'command' && !target) {
-    throw new Error(`工程 ${index + 1}（コマンド実行）にコマンドを入力してください`);
+  if (kind.detail.required && !detail) {
+    throw new Error(`工程 ${index + 1}（${kind.label}）の${kind.detail.label}を入力してください`);
   }
-  if (kind === 'command' && SHELL_META_RE.test(target)) {
-    throw new Error(`工程 ${index + 1} のコマンドにシェル記号は使えません`
-      + '（パイプやリダイレクトが要るならスクリプトにまとめてください）');
-  }
-  if (kind !== 'command' && !detail) {
-    throw new Error(`工程 ${index + 1}（${STEP_KINDS[kind].label}）の内容を入力してください`);
-  }
+  const check = kind.check ? text(item.check, 500) : '';
+  if (check) rejectShellMeta(check, '確認コマンド', index);
   const rawOutcomes = Array.isArray(item.outcomes) ? item.outcomes : [];
   if (rawOutcomes.length > MAX_OUTCOMES) {
     throw new Error(`工程 ${index + 1} の判断は ${MAX_OUTCOMES} 件までです`);
@@ -134,11 +230,11 @@ function normalizeStep(raw, index, stepCount) {
   });
   return {
     id: `step_${index + 1}`,
-    kind,
-    title,
+    kind: kind.id,
+    title: text(item.title, 80),
     detail,
-    target,
-    check: normalizeCheck(item.check, index),
+    target: normalizeTarget(kind, item.target, index),
+    check,
     outcomes,
   };
 }
@@ -146,10 +242,15 @@ function normalizeStep(raw, index, stepCount) {
 // renderer から届いた手順を検査して正規形にする。落ちるときは人が直せる文言で落とす。
 function normalizeProcedure(raw) {
   const src = raw && typeof raw === 'object' ? raw : {};
+  const version = src.version == null ? PROCEDURE_VERSION : Number(src.version);
+  if (!(version >= 1 && version <= PROCEDURE_VERSION)) {
+    throw new Error(`この工程列は対応していない版です（version ${src.version}）`);
+  }
   const steps = Array.isArray(src.steps) ? src.steps : [];
   if (!steps.length) throw new Error('工程を 1 つ以上追加してください');
   if (steps.length > MAX_STEPS) throw new Error(`工程は ${MAX_STEPS} 件までです`);
   const spec = {
+    version: PROCEDURE_VERSION,
     purpose: text(src.purpose, 2000),
     steps: steps.map((step, index) => normalizeStep(step, index, steps.length)),
     finish: text(src.finish, 2000),
@@ -160,33 +261,25 @@ function normalizeProcedure(raw) {
   return spec;
 }
 
-// --- 指示文 -----------------------------------------------------------------
+// --- 指示文（statemachine-use の作成モード向け） ----------------------------------
 
-function toolGuidance(kinds) {
-  const lines = [];
-  if (kinds.has('browser')) {
-    lines.push(
-      '- ブラウザの操作は `playwright-cli` スキル（`playwright-cli` コマンド）で行う。'
-      + ' 操作の前に snapshot で要素を確かめ、操作の後も snapshot か画面のテキストで結果を読み取る。'
-      + ' セレクタや URL は工程に書いたものだけを使い、想定と違う画面が出たら FAILED を返す。',
-    );
-  }
-  if (kinds.has('windows')) {
-    lines.push(
-      '- Windows アプリの操作は `windows-app-automation` スキル（`winauto` コマンド）で行う。'
-      + ' `winauto tree` / `winauto wait` で要素を確かめてから `click` / `type` / `keys` を送り、'
-      + ' 結果は `get-text` で読み取る。セレクタは `auto_id:=` を優先し、無ければ `name:=` を使う。',
-    );
-  }
-  if (kinds.has('command')) {
-    lines.push('- コマンドは書いてある argv をそのまま実行する。シェル（パイプ・リダイレクト）は介さない。');
-  }
-  if (kinds.has('agent')) {
-    lines.push('- AI の処理の工程は、前の工程の出力（{{last_output}} / output_key）だけを材料にし、画面やファイルを勝手に操作しない。');
-  }
-  lines.push('- 画面操作とコマンドの工程は、結果を機械で確かめられるなら `check` を宣言する（宣言した工程からは `equals:check_ok:true` で進む）。');
-  lines.push('- どの工程でも、秘密情報（パスワード・トークン）をアクション本文に書かない。必要なら入力パラメータにする。');
-  return lines;
+// 工程が名指しする移譲先スキル。種類に固定のもの（ブラウザ / Windows）と、工程が名前で
+// 指定するもの（スキルに任せる）がある。
+function skillFor(step) {
+  const kind = STEP_KIND_BY_ID.get(step.kind);
+  if (!kind) return '';
+  return kind.skill || (kind.skillFromTarget ? step.target : '');
+}
+
+const COMMON_GUIDANCE = [
+  '- 画面操作・スキル・コマンドの工程は、結果を機械で確かめられるなら `check` を宣言する（宣言した工程からは `equals:check_ok:true` で進む）。',
+  '- どの工程でも、秘密情報（パスワード・トークン）をアクション本文に書かない。必要なら入力パラメータにする。',
+];
+
+function toolGuidance(steps) {
+  const used = new Set(steps.map((s) => s.kind));
+  const lines = STEP_KINDS.filter((k) => used.has(k.id) && k.guidance).map((k) => k.guidance);
+  return [...lines, ...COMMON_GUIDANCE];
 }
 
 function outcomeTargetLabel(to, index, stepCount) {
@@ -198,21 +291,21 @@ function outcomeTargetLabel(to, index, stepCount) {
 }
 
 function stepSection(step, index, stepCount) {
-  const kind = STEP_KINDS[step.kind];
+  const kind = STEP_KIND_BY_ID.get(step.kind);
   // 名前を省いた工程は種類だけで見出しにする（「画面操作 2（画面操作）」の重複を作らない）。
   const lines = [step.title
     ? `### 工程 ${index + 1}: ${step.title}（${kind.label}）`
     : `### 工程 ${index + 1}: ${kind.label}`];
-  if (step.kind === 'command') {
+  if (kind.target && kind.target.pattern === 'argv') {
     lines.push(`- 実行するコマンド（argv）: \`${step.target}\``);
-    if (step.detail) lines.push(`- 補足: ${step.detail.replace(/\n/g, '\n  ')}`);
-  } else {
-    if (step.target) lines.push(`- 対象${kind.targetLabel ? `（${kind.targetLabel}）` : ''}: ${step.target}`);
-    lines.push(`- 内容:\n  ${step.detail.replace(/\n/g, '\n  ')}`);
+  } else if (step.target && !kind.skillFromTarget) {
+    lines.push(`- 対象（${kind.target.label}）: ${step.target}`);
   }
-  if (kind.skill) {
-    lines.push(`- アクション本文で \`${kind.skill}\` スキルへ移譲すると明記する。`);
+  if (step.detail) {
+    lines.push(`- ${kind.detail.label}:\n  ${step.detail.replace(/\n/g, '\n  ')}`);
   }
+  const skill = skillFor(step);
+  if (skill) lines.push(`- アクション本文で \`${skill}\` スキルへ移譲すると明記する。`);
   if (step.check) {
     lines.push(`- 完了の確認: \`check: ${step.check}\` を宣言し、通ったときだけ次へ進む（check_retries: 1）。`);
   }
@@ -231,11 +324,10 @@ function stepSection(step, index, stepCount) {
 
 // 作成モードへ渡す指示文。読む相手はスキルを持つエージェントで、人が読んでも手順書として通る形にする。
 function procedureInstruction(spec) {
-  const kinds = new Set(spec.steps.map((s) => s.kind));
   const stepCount = spec.steps.length;
   const parts = [];
   parts.push(`## 目的\n${spec.purpose}`);
-  parts.push(`## 使う道具\n${toolGuidance(kinds).join('\n')}`);
+  parts.push(`## 使う道具\n${toolGuidance(spec.steps).join('\n')}`);
   parts.push(`## 工程（この順に 1 ステート 1 工程で割る）\n\n${spec.steps.map((s, i) => stepSection(s, i, stepCount)).join('\n\n')}`);
   if (spec.parameters.length) {
     parts.push('## 入力パラメータ\n'
@@ -255,27 +347,6 @@ function procedureInstruction(spec) {
 }
 
 // --- 道具の確認 ---------------------------------------------------------------
-
-// LLM を使わない診断コマンドだけを呼ぶ。`doctor` / `--version` は読み取り専用で、
-// winauto のデスクトップロックも取らない。
-const TOOLS = [
-  {
-    id: 'playwright-cli',
-    kinds: ['browser'],
-    label: 'ブラウザ操作（playwright-cli）',
-    command: 'playwright-cli',
-    args: ['--version'],
-    hint: 'install.py が @playwright/cli を入れます（npm が必要）。',
-  },
-  {
-    id: 'winauto',
-    kinds: ['windows'],
-    label: 'Windows アプリ操作（winauto）',
-    command: 'winauto',
-    args: ['doctor', '--output', 'json'],
-    hint: 'tools/winauto/install.py を実行し、winauto doctor で橋渡しを確認します。',
-  },
-];
 
 function summarizeDoctor(stdout, stderr) {
   const raw = String(stdout || '').trim();
@@ -297,25 +368,36 @@ function summarizeVersion(stdout, stderr) {
   return { ok: true, summary: line ? `利用可能（${line.slice(0, 80)}）` : '利用可能' };
 }
 
+// kinds が頼る道具を（同じ道具は 1 回だけ）並べる。kinds が空なら診断できる道具すべて。
+function toolsFor(kinds) {
+  const wanted = new Set(Array.isArray(kinds) ? kinds : []);
+  const out = [];
+  const seen = new Set();
+  for (const kind of STEP_KINDS) {
+    if (!kind.tool || (wanted.size && !wanted.has(kind.id)) || seen.has(kind.tool.id)) continue;
+    seen.add(kind.tool.id);
+    out.push(kind.tool);
+  }
+  return out;
+}
+
 // `capture(command, args, { cwd, timeoutMs })` は loopProvider.runCommandCapture と同じ形
-// （テストでは差し替える）。kinds を渡すと、その工程が頼る道具だけを確かめる。
+// （テストでは差し替える）。LLM を使わない診断コマンドだけを呼ぶ（`doctor` / `--version` は
+// 読み取り専用で、winauto のデスクトップロックも取らない）。
 async function toolStatus({ cwd = '', kinds = [], capture, timeoutMs = 20000 } = {}) {
   if (typeof capture !== 'function') throw new Error('道具の確認に使う実行関数がありません');
-  const wanted = new Set(Array.isArray(kinds) ? kinds : []);
-  const targets = wanted.size ? TOOLS.filter((t) => t.kinds.some((k) => wanted.has(k))) : TOOLS;
   const out = [];
-  for (const tool of targets) {
+  for (const tool of toolsFor(kinds)) {
     let res;
     try {
       res = await capture(tool.command, tool.args, { cwd, timeoutMs });
     } catch (err) {
       res = { ok: false, status: -1, stdout: '', stderr: '', error: String((err && err.message) || err) };
     }
-    const failedToRun = !res || res.status === -1 || res.error;
     let verdict;
-    if (failedToRun) {
+    if (!res || res.status === -1 || res.error) {
       verdict = { ok: false, summary: `コマンドを起動できません: ${(res && res.error) || tool.command}` };
-    } else if (tool.id === 'winauto') {
+    } else if (tool.probe === 'doctor') {
       verdict = summarizeDoctor(res.stdout, res.stderr);
     } else if (res.ok) {
       verdict = summarizeVersion(res.stdout, res.stderr);
@@ -328,15 +410,18 @@ async function toolStatus({ cwd = '', kinds = [], capture, timeoutMs = 20000 } =
 }
 
 module.exports = {
+  PROCEDURE_VERSION,
   STEP_KINDS,
   STEP_KIND_IDS,
   OUTCOME_TARGETS,
   MAX_STEPS,
   MAX_OUTCOMES,
-  TOOLS,
+  catalog,
   normalizeProcedure,
   procedureInstruction,
   parameterKeys,
   outcomeLabel,
+  skillFor,
+  toolsFor,
   toolStatus,
 };
