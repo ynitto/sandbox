@@ -21,6 +21,7 @@ const sessionCommands = require('../../orchestration/main/sessionCommands');
 const profiles = require('../../orchestration/main/profiles');
 const agentCli = require('../../agent-project/main/agentCli');
 const herdFamily = require('../../orchestration/main/herd-family');
+const procedure = require('./procedure');
 
 // 設定に書かれたフォルダ表記を、このビュアーで開けるパスへ揃える（discover と同じ規則）。
 // WSL の Linux 絶対パスは Windows ビュアーでは UNC へ翻訳する（そうしないと C:\home\… に化ける）。
@@ -441,6 +442,8 @@ function normalizeItem(item, i, cfg, stateOpts, config) {
     workflow: item.workflow || item.file || '',
     prompt: item.prompt || '',
     instruction: item.instruction || '',
+    // 手順ビルダーで組んだ工程列。作り直しの種として項目と一緒に持ち回る（実体ファイルには書かない）。
+    ...(item.procedure && typeof item.procedure === 'object' ? { procedure: item.procedure } : {}),
     description: item.description || '',
     command: type === 'state-machine' ? (cfg.stateMachineCommand || 'statemachine-use') : (cfg.loopCommand || cfg.loopProvider || 'agent-loop'),
     source: 'config',
@@ -1179,11 +1182,48 @@ function stateMachineCreationPrompt(name, machine, instruction) {
     + `指示:\n${instruction}`;
 }
 
+// 手順ビルダー（定型手順）の工程列を、作成モードへ渡す指示文へ決定的に変換する。
+// 自由文の `instruction` と同じ 1 本の入口（generateStateMachine）へ載せるための前処理で、
+// YAML はここでも書かない（書式の正典は statemachine-use スキル）。
+function procedureInstruction(raw) {
+  const spec = procedure.normalizeProcedure(raw);
+  return { procedure: spec, instruction: procedure.procedureInstruction(spec), parameters: spec.parameters };
+}
+
+// 画面が工程の種類（入力欄・表示名）を描く材料。正典は procedure.js の 1 か所で、
+// 画面に写しを持たせない（種類を足すときに 2 か所を直さない）。
+function procedureCatalog() {
+  return { kinds: procedure.catalog(), version: procedure.PROCEDURE_VERSION };
+}
+
+// 画面の「指示文を確認」。起動せずに正規形・指示文・入力パラメータだけを返す。
+function procedurePreview(config, payload = {}) {
+  const built = procedureInstruction(payload.procedure);
+  const name = String(payload.name || '').trim() || '定型業務';
+  const machine = String(payload.machine || '').trim() || 'routine';
+  return { ...built, prompt: stateMachineCreationPrompt(name, machine, built.instruction) };
+}
+
+// 画面操作の工程が頼る CLI をこの端末から呼べるかの確認。LLM を使わない診断コマンドだけを
+// 呼び、cwd は登録済みフォルダのときだけそこへ寄せる（win32 は wsl.exe 経由＝実行と同じ側）。
+function procedureTools(config, payload = {}) {
+  const raw = String(payload.repo || '').trim();
+  const folder = raw ? _resolveRoot(raw, config) : '';
+  const registered = folder ? adhocRoots(config).find((r) => _pathKey(r) === _pathKey(folder)) : '';
+  return procedure.toolStatus({
+    cwd: registered || '',
+    kinds: Array.isArray(payload.kinds) ? payload.kinds : [],
+    capture: runCommandCapture,
+  });
+}
+
 function generateStateMachine(config, payload = {}) {
   const repo = String(payload.repo || '').trim();
   const name = String(payload.name || '').trim();
   const machine = String(payload.machine || '').trim();
-  const instruction = String(payload.instruction || '').trim();
+  // 手順ビルダーからは工程列（procedure）が届く。自由文と同じ入口へ載せる前に指示文へ変換する。
+  const built = payload.procedure ? procedureInstruction(payload.procedure) : null;
+  const instruction = built ? built.instruction : String(payload.instruction || '').trim();
   if (!repo || !name || !instruction) throw new Error('名前と定型業務の手順を入力してください');
   if (!/^[A-Za-z0-9_.-]+$/.test(machine) || machine === '.' || machine === '..') {
     throw new Error('定型業務の識別名が不正です');
@@ -1192,7 +1232,7 @@ function generateStateMachine(config, payload = {}) {
   if (!gitRoot.ok) throw new Error('選択中の作業フォルダは Git リポジトリではありません');
   const prompt = withGlobalInstructions(config, stateMachineCreationPrompt(name, machine, instruction));
   const plan = routineLaunchPlan(config, repo);
-  return runChatWindow({
+  const res = runChatWindow({
     ...plan.launch,
     prompt,
     cwd: repo,
@@ -1201,6 +1241,8 @@ function generateStateMachine(config, payload = {}) {
     title: '定型業務を作成',
     message: '外部ターミナルで定型業務の作成を開始しました',
   });
+  // 画面は返ってきた指示文を項目へ保存する（設定変更ダイアログの「定型業務の手順」に映る）。
+  return built ? { ...res, instruction, procedure: built.procedure, parameters: built.parameters } : res;
 }
 
 // ---------------------------------------------------------------------------
@@ -1732,6 +1774,7 @@ function saveWork(config, saveConfig, { items, branch, createBranch, push } = {}
 
 module.exports = {
   overview, runLoop, runStateMachine, generateStateMachine, runAdhoc, adhocRoots,
+  procedureInstruction, procedurePreview, procedureTools, procedureCatalog,
   saveWork, itemsOf, wslPath, dynamicState,
   resolveItem, findItem, dedupeItems, applyDiscoveredEdits, gitCommitFiles,
   invalidateDiscoverCache, decodeCliOutput, viewerRepo,

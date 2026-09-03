@@ -2419,6 +2419,7 @@ function coworkSelectedDetailHtml(entry, observed, busyId) {
       </div>
       <div class="cowork-selected-actions">
         <button data-cowork-edit="${index}" ${busyId ? 'disabled' : ''}>設定変更</button>
+        ${item.procedure ? `<button data-cowork-procedure="${index}" ${busyId ? 'disabled' : ''}>手順を組み立て直す</button>` : ''}
         <button class="cowork-primary-run" data-cowork-run="${esc(id)}" data-cowork-type="${esc(item.type || 'loop')}" data-cowork-name="${esc(item.name || id)}"
           ${busyId || disabledWork || parameterError ? 'disabled' : ''}${parameterError ? ` title="${esc(parameterError)}"` : ''}>${busyId === id ? '実行中…' : '今すぐ実行'}</button>
       </div>
@@ -2610,6 +2611,8 @@ function bindCoworkDetailActions(root, folder) {
     openCoworkHistory(btn.dataset.coworkHistory, btn.dataset.coworkName || '')));
   root.querySelectorAll('[data-cowork-edit]').forEach((btn) => btn.addEventListener('click', () =>
     openCoworkWorkDialog(Number(btn.dataset.coworkEdit))));
+  root.querySelectorAll('[data-cowork-procedure]').forEach((btn) => btn.addEventListener('click', () =>
+    openRoutineProcedureDialog(Number(btn.dataset.coworkProcedure))));
   root.querySelectorAll('[data-cowork-delete]').forEach((btn) => btn.addEventListener('click', () => {
     const index = Number(btn.dataset.coworkDelete);
     const deleting = coworkDraft()[index];
@@ -2728,6 +2731,7 @@ function renderCoworkWorkspace() {
         <div class="row cowork-toolbar-actions">
           <button id="btn-routine-adhoc">作業依頼</button>
           <button id="btn-cowork-add">追加</button>
+          <button id="btn-cowork-procedure" title="画面操作・コマンド・AI の処理を並べて定型業務を作る">手順を組み立てる</button>
           <button id="btn-cowork-save">変更を保存</button>
           <button id="btn-cowork-refresh" title="最新の状態を確認">更新</button>
         </div>
@@ -2742,6 +2746,8 @@ function renderCoworkWorkspace() {
   bindCoworkRoutineSelector(el);
   const addBtn = $('btn-cowork-add');
   if (addBtn) addBtn.addEventListener('click', () => openCoworkWorkDialog(-1));
+  const procedureBtn = $('btn-cowork-procedure');
+  if (procedureBtn) procedureBtn.addEventListener('click', () => openRoutineProcedureDialog(-1));
   const adhocBtn = $('btn-routine-adhoc');
   if (adhocBtn) adhocBtn.addEventListener('click', openRoutineAdhocDialog);
   const dropRootBtn = $('btn-cowork-drop-root');

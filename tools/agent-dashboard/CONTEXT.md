@@ -108,6 +108,14 @@ _使わない_: セッションリプレイ, 会話の再送
 **セッションからの定型業務作成**:
 蒸留の行き先の 1 つ。手順が決まっていて何度も回す仕事を `.statemachine/<識別名>/` のステートマシンにする。蒸留物は **YAML ではなく作成モードへ渡す手順の指示文**で、定義を書くのは statemachine-use スキルの作成モード（起動は定常業務の既存経路 `cowork:generateStateMachine` の 1 本）。dashboard は YAML を組み立てない——書式の正典をスキルと画面の 2 か所に置かないため。作成先は登録済みフォルダからの選択だけ。作成後の登録操作は不要で、定常業務の発見が自動で拾う。過去 run からは作らない（run はフォーク・一括投函・保存形テンプレートで足りる）。
 
+**定型手順（Routine Procedure）**:
+社内システムやローカルルールに特化した定型業務を、**画面操作（ブラウザ / Windows アプリ）・スキルに任せる・コマンド実行・AI の処理（生成・判断）**の工程列として組み立てたもの。画面操作はエージェント CLI から呼べる CLI（ブラウザは `playwright-cli` スキル、Windows アプリは `windows-app-automation` スキルの `winauto`）へ移譲し、社内システム向けの `*-use` スキルは名前で名指しして、API や CLI の無いプログラムと連携する。工程列（正規形）は `version` を持ち、実行系に依らない形で作業項目に残す。判断の分岐は工程の出力契約（第 1 行のラベル）と遷移で表し、完了の確認はコマンドの終了コード（`check`）で測る。
+_使わない_: RPA シナリオ, マクロ, 自動操作スクリプト
+
+**手順ビルダー（Procedure Builder）**:
+定常業務の作業タブから開く、定型手順を組み立てる画面（「手順を組み立てる」、実装は `src/renderer/sections/procedure.js`）。**工程の種類の正典は main の種別カタログ**（`src/features/cowork/main/procedure.js` の `STEP_KINDS`）で、表示名・入力欄・移譲先スキル・指示文の案内・道具の診断を 1 項目に持ち、画面は `cowork:procedureCatalog` で受け取って描く（画面に種類の写しを置かない）。工程列（`procedure`）は作業項目に残し、main が**作成モードへ渡す指示文へ決定的に変換**する（分岐先・シェル記号・必須項目の検査もそこ）。作成の起動は自由文の手順付き作業と同じ `cowork:generateStateMachine` の 1 本で、dashboard は YAML を書かない。画面操作が頼る CLI の準備状況は「道具を確認」で LLM を使わない診断（`playwright-cli --version` / `winauto doctor`）だけを呼んで示す。
+_使わない_: ワークフローエディタ（agent-flow の工程グラフ編集は別物）, シナリオ作成
+
 **複製元（Source）**:
 保存形ワークフローの任意フィールド `source`。値は `session/<agent_cli>/<session_id>` か `run/<run-id>`、手書きなら省略。作業ルール（nodeMethod）の `source: "methods/<id>@<hash>"` と同じ流儀。来歴であって定義ではないので digest の対象にしない。
 

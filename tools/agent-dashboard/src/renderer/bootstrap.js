@@ -34,6 +34,12 @@ async function init() {
   $('btn-technical-info-close').addEventListener('click', () => $('dlg-technical-info').close());
   $('btn-node-chat-close').addEventListener('click', () => $('dlg-node-chat').close());
   $('btn-cw-cancel').addEventListener('click', () => $('dlg-cowork-work').close());
+  // 手順付き作業は、自由文の代わりに工程を並べて組み立てる画面へ移れる（作成の入口は同じ）。
+  $('btn-cw-procedure').addEventListener('click', () => {
+    const index = state.coworkEditIndex;
+    $('dlg-cowork-work').close();
+    openRoutineProcedureDialog(index);
+  });
   $('cw-type').addEventListener('change', updateCoworkWorkFields);
   $('btn-cw-ok').addEventListener('click', async (ev) => { ev.preventDefault(); await applyCoworkWorkDialog(); });
   setupAmigosDialogs();
