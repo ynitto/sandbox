@@ -176,6 +176,20 @@
     <div id="routine-adhoc-dialog-body" class="dialog-scroll-body"></div>
   </dialog>
 
+  <!-- ======== 手順ビルダー（定型手順）: 画面操作・コマンド・AI の処理を並べて定型業務を作る ======== -->
+  <dialog id="dlg-routine-procedure" class="routine-procedure-dialog wide" data-feature="cowork"
+    aria-labelledby="routine-procedure-dialog-title">
+    <header class="dialog-heading">
+      <div><span class="summary-kicker">定型業務</span><h2 id="routine-procedure-dialog-title">手順を組み立てる</h2></div>
+      <button type="button" id="btn-rp-cancel" aria-label="手順の組み立てを閉じる">閉じる</button>
+    </header>
+    <div id="routine-procedure-dialog-body" class="dialog-scroll-body"></div>
+    <div class="dialog-actions">
+      <button type="button" id="btn-rp-preview">指示文を確認</button>
+      <button type="button" id="btn-rp-create" class="primary-inline">作成を開始</button>
+    </div>
+  </dialog>
+
   <!-- ======== 選択中の定常業務の実行状況 ======== -->
   <dialog id="dlg-routine-agent" class="routine-agent-dialog" data-feature="routines" aria-labelledby="routine-agent-dialog-title">
     <header class="dialog-heading">
@@ -218,6 +232,10 @@
         <label for="cw-instruction">定型業務の手順</label>
         <textarea id="cw-instruction" rows="6" placeholder="判断や分岐を含む一連の手順を文章で入力"></textarea>
         <small class="muted cowork-kind-help">入力した手順に沿って、作業を順番に進めます。</small>
+        <div class="row cowork-procedure-entry">
+          <button type="button" id="btn-cw-procedure">工程を並べて組み立てる</button>
+          <small class="muted">画面操作（ブラウザ / Windows アプリ）やコマンドと AI の判断を順に並べる画面へ移ります。</small>
+        </div>
       </div>
       <div class="field">
         <label for="cw-schedule">実行予定</label>

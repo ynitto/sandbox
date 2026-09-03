@@ -7,6 +7,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-dashboard: 画面操作と AI の判断を並べて定型業務を組み立てられるようになった
+
+- **API や CLI の無い社内システムを相手にする定型作業に、エージェントを載せる入口が無かった。**
+  定常業務（statemachine-use）は手順を自由文で書いて作成モードへ渡す形だけで、「ブラウザで
+  一覧を開いて読む → Windows アプリで出力する → 結果を AI が判断して分岐する」のような
+  工程列を、道具の使い分けまで含めて毎回書き下ろすことになっていた（設計:
+  `docs/plans/2026-09-03-agent-dashboard-routine-procedure-builder-design.md`）。
+- **手順ビルダー（定型手順）**: 定常業務の作業タブに「手順を組み立てる」を足した。画面操作
+  （ブラウザ = `playwright-cli` スキル / Windows アプリ = `windows-app-automation` スキルの
+  `winauto`）・コマンド実行・AI の処理（生成・判断）を工程として並べ、判断の分岐は
+  「ラベル: 行き先」、完了の確認はコマンドの終了コード（`check`）、実行時の入力は `{{key}}` で
+  書く。設定変更ダイアログの手順付き作業からも同じ画面へ移れる。
+- **画面は YAML を書かない。** 工程列は main（`features/cowork/main/procedure.js`）が検査して
+  作成モードへ渡す指示文へ決定的に変換し、起動は自由文と同じ `cowork:generateStateMachine`
+  の 1 本を通す（C7: 書式の正典はスキル、作成の入口は 1 つ）。指示文はスキルの分解原則
+  （1 ステート 1 工程・移譲先スキルの名指し・分岐は遷移・成功は機械が測れる形）に沿わせ、
+  ヘッドレスのハーネスがシェルを介さないことに合わせてコマンドと確認コマンドのシェル記号は
+  投入前に断る。工程列は作業項目に残るので「手順を組み立て直す」から作り直せる。
+- **道具を確認**: 画面操作の工程が頼る CLI がこの端末から呼べるかを、LLM を使わない診断
+  （`playwright-cli --version` / `winauto doctor --output json`）だけで示す。
+
 ### agent-dashboard: 過去の run・セッションを流用して実行できるようになった
 
 - **「参考にして、入力を変えて、もう一度実行する」入口が無かった。** できたのは同一入力の
