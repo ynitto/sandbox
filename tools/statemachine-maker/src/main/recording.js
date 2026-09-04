@@ -314,15 +314,23 @@ function playwrightArgs(...rest) {
   return [`-s=${RECORD_SESSION}`, ...rest];
 }
 
+// 失敗の理由が書かれている行を拾う。CLI は先頭に見出しや空行を置き、原因はその下に来る
+// ことがある（最初の 1 行だけ見せると「### Error」で終わってしまう）。
 function firstLine(res) {
-  return (String((res && (res.stderr || res.stdout)) || '').split(/\r?\n/).find(Boolean) || '').slice(0, 200);
+  const lines = String((res && (res.stderr || res.stdout)) || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const meaningful = lines.find((l) => /error|not found|cannot|enoent|failed|見つかり/i.test(l) && !/^#+\s*Error$/i.test(l));
+  return String(meaningful || lines[0] || '').slice(0, 200);
 }
 
 function browserOpenHint(detail) {
   const body = String(detail || '');
-  if (/XServer|X server|\$?DISPLAY|xvfb|Wayland/i.test(body)) return '（画面の無い環境ではブラウザを開けません。別の端末で取った記録を貼り付けてください）';
-  if (/ENOENT|not found|見つかりません/i.test(body)) return '（playwright-cli をこの端末から呼べません。`npm install -g @playwright/cli` を実行し、「道具」で確かめてください）';
-  if (/install|Executable doesn't exist|browser.*download/i.test(body)) return '（ブラウザの実体が入っていません。`playwright-cli install-browser` を実行してください）';
+  if (/XServer|X server|\$?DISPLAY|xvfb|Wayland/i.test(body)) return '（画面の無い環境ではブラウザを開けません。別のパソコンで取った記録を貼り付けてください）';
+  // 記録に使うブラウザは既定で Chrome。入っていない環境が一番よく詰まる。
+  if (/distribution|is not found at|Executable doesn't exist|install/i.test(body)) {
+    return '（記録に使うブラウザが見つかりません。既定は Chrome です。'
+      + '`playwright-cli install-browser chrome` を実行するか、Chrome を入れてください）';
+  }
+  if (/ENOENT|not found|見つかりません/i.test(body)) return '（playwright-cli をこの端末から呼べません。`npm install -g @playwright/cli` を実行し、設定の「準備の確認」で確かめてください）';
   return '';
 }
 

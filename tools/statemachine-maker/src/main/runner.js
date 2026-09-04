@@ -7,12 +7,14 @@
 // どれもシェルを介さない（argv を直接渡す）。この端末の PATH にある実体をそのまま呼ぶ。
 
 const { spawn } = require('child_process');
+const command = require('./command');
 
-function capture(command, args, { cwd = '', timeoutMs = 60000, env = process.env } = {}) {
+function capture(name, args, { cwd = '', timeoutMs = 60000, env = process.env } = {}) {
+  const spec = command.spawnSpec(name, args, { cwd, env });
   return new Promise((resolve) => {
     let child;
     try {
-      child = spawn(command, args, { cwd: cwd || undefined, env, windowsHide: true, shell: false });
+      child = spawn(spec.command, spec.args, spec.options);
     } catch (err) {
       resolve({ ok: false, status: -1, stdout: '', stderr: '', error: String((err && err.message) || err) });
       return;
@@ -40,11 +42,12 @@ function isRunning() {
 }
 
 // onLine(kind, text) に stdout / stderr を行単位で流し、終了で { code } を返す。
-function stream(command, args, { cwd = '', env = process.env, onLine, onExit } = {}) {
+function stream(name, args, { cwd = '', env = process.env, onLine, onExit } = {}) {
   if (running) throw new Error('別の実行が進行中です。終わるか停止してから始めてください');
+  const spec = command.spawnSpec(name, args, { cwd, env });
   let child;
   try {
-    child = spawn(command, args, { cwd: cwd || undefined, env, windowsHide: true, shell: false });
+    child = spawn(spec.command, spec.args, spec.options);
   } catch (err) {
     throw new Error(`起動できません: ${(err && err.message) || err}`, { cause: err });
   }
@@ -76,8 +79,9 @@ function stop() {
   return true;
 }
 
-function spawnRecorder({ command, args, cwd = '' }) {
-  const child = spawn(command, args, { cwd: cwd || undefined, windowsHide: true, shell: false });
+function spawnRecorder({ command: name, args, cwd = '' }) {
+  const spec = command.spawnSpec(name, args, { cwd });
+  const child = spawn(spec.command, spec.args, spec.options);
   let stderr = '';
   child.stderr.on('data', (d) => { stderr += d.toString('utf8'); });
   child.stdout.on('data', () => {});

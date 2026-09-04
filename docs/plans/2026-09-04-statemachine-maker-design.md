@@ -101,6 +101,22 @@ dashboard の版 2 に、ステート ID・検査の再投入回数・終端ス�
 - スキルの `examples/*.yaml` 全部が、**画面で直せない工程ゼロ・知らせゼロ**で読み戻せ、書き直しても
   ステート集合と遷移の数が変わらず `--dry-run` を通る（結合テストで固定）。
 
+### 道具の呼び方 — Windows の `.cmd` / `.bat`（2026-09-04 追記）
+
+`playwright-cli` と `winauto` は npm やインストーラが **`.cmd` / `.bat`** として置く。Windows では
+これを名前だけで spawn できない。詰まるのは 2 段階ある。
+
+1. Node の spawn が PATH を引くとき補うのは `.exe` だけ（CreateProcess の規則）。
+   `playwright-cli` では `.cmd` に行き着かず ENOENT になる。
+2. 見つけても `.cmd` / `.bat` は直接 spawn できない（新しめの Node は拒む）。
+
+初版はこれを踏んでいて、**Windows では記録が始まらなかった**（「ブラウザを開けませんでした」）。
+`src/main/command.js` が PATH と PATHEXT で実体を探し、`.cmd` / `.bat` なら
+`cmd /d /s /c "…"` に載せる（`shell: true` は使わない——引用が Node と cmd の 2 段で
+解釈され、日本語や空白入りの引数が壊れる）。起動の口（capture / stream / spawnRecorder）は
+すべてこの 1 実装を通る。agent-dashboard の `screen-tools.js` と同じ結論で、あちらは
+「どちら側（Windows / WSL）で呼ぶか」まで持つが、こちらは行き来をしないので解決だけ持つ。
+
 ### 記録
 
 規則は dashboard の `recording.js` と同じ（要素は role と名前・値は `{{key}}`・パスワードは例にも残さない・
