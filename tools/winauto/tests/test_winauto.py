@@ -197,7 +197,7 @@ class DoctorTest(unittest.TestCase):
         self.assertNotIn("doctor", winauto.LOCKED_COMMANDS)
 
     def test_locked_commands_cover_input_stealing_commands(self):
-        for command in ("click", "type", "keys", "launch", "screenshot", "run"):
+        for command in ("click", "type", "select", "keys", "launch", "screenshot", "run"):
             self.assertIn(command, winauto.LOCKED_COMMANDS)
 
 
@@ -482,6 +482,63 @@ class RecordContractTest(unittest.TestCase):
         class _WithConstant:
             UIA_Invoke_InvokedEventId = 12345
         self.assertEqual(winauto._uia_id(_WithConstant(), "UIA_Invoke_InvokedEventId"), 12345)
+
+
+class SelectCommandTest(unittest.TestCase):
+    """一覧・コンボからの選択。`click` は畳まれたコンボを開くだけ、`type` は編集できない
+    コンボで例外になるので、どちらでも代われない（record の `select` を再現する口）。"""
+
+    def test_select_is_wired_into_the_cli(self):
+        self.assertIn("select", winauto.COMMAND_MAP)
+        args = winauto.build_parser().parse_args(
+            ["select", "name:=種別", "緊急", "--app", "kintai"])
+        self.assertEqual(args.command, "select")
+        self.assertEqual(args.selector, "name:=種別")
+        self.assertEqual(args.value, "緊急")
+        self.assertIsNone(args.index)
+
+    def test_value_is_optional_so_index_can_be_used_instead(self):
+        args = winauto.build_parser().parse_args(["select", "name:=種別", "--index", "2"])
+        self.assertIsNone(args.value)
+        self.assertEqual(args.index, 2)
+
+    def test_select_takes_the_desktop_lock(self):
+        """フォーカスとマウスを奪う（畳まれたコンボは開いてから押す）。"""
+        self.assertIn("select", winauto.LOCKED_COMMANDS)
+
+    def test_api_path_prefers_index_over_text(self):
+        calls = []
+
+        class _Elem:
+            def select(self, target):
+                calls.append(target)
+
+        winauto._select_by_api(_Elem(), "緊急", None)
+        winauto._select_by_api(_Elem(), "緊急", 2)
+        self.assertEqual(calls, ["緊急", 2])
+
+    def test_expand_path_opens_then_clicks_the_item(self):
+        """select() を実装しない要素のための逃げ道。開いてから項目を押す。"""
+        events = []
+
+        class _Item:
+            def click_input(self):
+                events.append("click")
+
+        class _Elem:
+            def expand(self):
+                events.append("expand")
+
+            def child_window(self, title):
+                events.append(f"find:{title}")
+                return _Item()
+
+        winauto._select_by_expand(_Elem(), "緊急", None)
+        self.assertEqual(events, ["expand", "find:緊急", "click"])
+
+    def test_expand_path_refuses_an_index(self):
+        with self.assertRaises(RuntimeError):
+            winauto._select_by_expand(object(), None, 2)
 
 
 class RecordCommandWiringTest(unittest.TestCase):

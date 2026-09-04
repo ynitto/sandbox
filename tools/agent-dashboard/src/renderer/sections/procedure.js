@@ -248,51 +248,55 @@ function routineProcedureHtml() {
   </section>`;
 }
 
-// 人の操作を記録して工程に起こす。ブラウザは playwright-cli の記録（開始 → 人が操作 → 終了）を
-// main が呼び、Windows アプリは winauto の操作イベント（JSONL）の貼り付けを受ける。どちらも
-// 返ってくるのは工程列で、上の一覧に足すだけ（作成・保存の経路には触れない）。
+// 人の操作を記録して工程に起こす。ブラウザは playwright-cli の記録、Windows アプリは
+// `winauto record` を別ウィンドウで起こして停止ファイルで止める（どちらも main が呼ぶ）。
+// 別の端末で取った記録は貼り付けで受ける。返ってくるのは工程列で、上の一覧に足すだけ
+// （作成・保存の経路には触れない）。
 function routineRecordingHtml(draft) {
   const rec = draft.recording;
   const kinds = routineProcedureCatalog().filter((k) => k.recordable);
   if (!kinds.length || !api.coworkProcedureRecording) return '';
-  const canRecordBrowser = kinds.some((k) => k.id === 'browser');
-  const sourceOptions = kinds.map((k) => `<option value="${esc(k.id)}" ${rec.source === k.id ? 'selected' : ''}>${esc(k.label)}</option>`).join('');
+  const windows = rec.source === 'windows';
+  const sourceOptions = kinds.map((k) =>
+    `<option value="${esc(k.id)}" ${rec.source === k.id ? 'selected' : ''}>${esc(k.label)}</option>`).join('');
+  const target = windows
+    ? { field: 'app', value: rec.app, label: 'アプリ（ウィンドウ名・プロセス名・PID）', placeholder: '例: 勤怠管理' }
+    : { field: 'url', value: rec.url, label: '記録を始める URL', placeholder: 'https://…' };
+  const note = windows
+    ? '別ウィンドウで winauto が動きます。そのウィンドウで Ctrl+C を押しても止まります。'
+    : '見える形でブラウザが開きます。開かないときは下の「別の端末で取った記録」から貼り付けてください。';
+  const pasteHint = windows
+    ? `対象の PC で <code>winauto record --app ${esc(rec.app || '&lt;アプリ&gt;')} --output events.jsonl</code> を実行し、操作してから <code>Ctrl+C</code> で止めて、できたファイルの中身を貼り付けます。`
+    : '別の端末で <code>playwright-cli recording-stop</code> が印字した内容を貼り付けます。';
+  const pastePlaceholder = windows
+    ? '例: {&quot;event&quot;:&quot;invoke&quot;,&quot;app&quot;:&quot;勤怠管理&quot;,&quot;window&quot;:&quot;月次集計&quot;,&quot;control_type&quot;:&quot;Button&quot;,&quot;name&quot;:&quot;出力&quot;,&quot;auto_id&quot;:&quot;btnExport&quot;}'
+    : '例: await page.getByRole(\'button\', { name: \'ログイン\' }).click();';
   return `<details class="routine-procedure-recording" ${rec.active || rec.text || rec.message ? 'open' : ''}>
     <summary>操作を記録する（人がやって見せた操作を工程に起こす）</summary>
     <p class="muted">要素は名前と種類で残し、入力した値は <code>{{key}}</code> の入力パラメータに置き換えます。待機・確認・分岐は作成モードの AI が補います。</p>
-    ${canRecordBrowser ? `<div class="row2">
-      <div class="field">
-        <label for="rp-rec-url">ブラウザで記録する URL</label>
-        <input id="rp-rec-url" class="mono" data-rp-rec="url" value="${esc(rec.url)}" placeholder="https://…（記録を開始すると見える形でブラウザが開きます）" ${rec.active ? 'disabled' : ''}>
-      </div>
-      <div class="field routine-procedure-recording-actions">
-        <label>&nbsp;</label>
-        <div class="row">
-          <button type="button" id="btn-rp-rec-start" ${rec.active || rec.busy ? 'disabled' : ''}>記録を開始</button>
-          <button type="button" id="btn-rp-rec-stop" class="primary-inline" ${!rec.active || rec.busy ? 'disabled' : ''}>記録を終了して工程に起こす</button>
-        </div>
-      </div>
-    </div>` : ''}
     <div class="row2">
       <div class="field">
-        <label for="rp-rec-source">貼り付ける記録の種類</label>
-        <select id="rp-rec-source" data-rp-rec="source">${sourceOptions}</select>
+        <label for="rp-rec-source">記録の種類</label>
+        <select id="rp-rec-source" data-rp-rec="source" ${rec.active ? 'disabled' : ''}>${sourceOptions}</select>
       </div>
       <div class="field">
-        <label for="rp-rec-app">${rec.source === 'windows' ? 'アプリ名' : 'URL（任意）'}</label>
-        <input id="rp-rec-app" data-rp-rec="app" value="${esc(rec.app)}" placeholder="${rec.source === 'windows' ? '例: 勤怠管理' : 'https://…'}">
+        <label for="rp-rec-target">${esc(target.label)}</label>
+        <input id="rp-rec-target" class="mono" data-rp-rec="${target.field}" value="${esc(target.value)}" placeholder="${esc(target.placeholder)}" ${rec.active ? 'disabled' : ''}>
       </div>
     </div>
-    <div class="field">
-      <label for="rp-rec-text">記録の貼り付け</label>
-      <small class="muted">${rec.source === 'windows'
-    ? `対象の PC で <code>winauto record --app ${esc(rec.app || '<アプリ>')} --output events.jsonl</code> を実行し、操作してから <code>Ctrl+C</code> で止めて、できたファイルの中身を貼り付けます。`
-    : '別の端末で取った <code>playwright-cli recording-stop</code> の出力も貼り付けられます。'}</small>
-      <textarea id="rp-rec-text" class="mono" data-rp-rec="text" rows="4" placeholder="${rec.source === 'windows'
-    ? '例: {&quot;event&quot;:&quot;invoke&quot;,&quot;app&quot;:&quot;勤怠管理&quot;,&quot;window&quot;:&quot;月次集計&quot;,&quot;control_type&quot;:&quot;Button&quot;,&quot;name&quot;:&quot;出力&quot;,&quot;auto_id&quot;:&quot;btnExport&quot;}'
-    : '例: playwright-cli recording-stop の出力（await page.getByRole(…).click(); の行）'}">${esc(rec.text)}</textarea>
-      <div class="row"><button type="button" id="btn-rp-rec-import" ${rec.busy ? 'disabled' : ''}>貼り付けた記録を工程に起こす</button></div>
+    <div class="row routine-procedure-recording-actions">
+      <button type="button" id="btn-rp-rec-start" ${rec.active || rec.busy ? 'disabled' : ''}>記録を開始</button>
+      <button type="button" id="btn-rp-rec-stop" class="primary-inline" ${!rec.active || rec.busy ? 'disabled' : ''}>記録を終了して工程に起こす</button>
+      <span class="muted">${note}</span>
     </div>
+    <details class="routine-procedure-paste" ${rec.text ? 'open' : ''}>
+      <summary>別の端末で取った記録を貼り付ける</summary>
+      <div class="field">
+        <small class="muted">${pasteHint}</small>
+        <textarea id="rp-rec-text" class="mono" data-rp-rec="text" rows="4" placeholder="${pastePlaceholder}">${esc(rec.text)}</textarea>
+        <div class="row"><button type="button" id="btn-rp-rec-import" ${rec.busy ? 'disabled' : ''}>貼り付けた記録を工程に起こす</button></div>
+      </div>
+    </details>
     <p id="rp-rec-message" class="${rec.ok ? 'muted' : 'cowork-item-error'}" ${rec.message ? '' : 'hidden'}>${esc(rec.message)}</p>
   </details>`;
 }
@@ -383,10 +387,8 @@ async function routineRecording(action) {
   const draft = routineProcedureDraft();
   const rec = draft.recording;
   if (rec.busy || !api.coworkProcedureRecording) return;
-  const payload = action === 'import'
-    ? { action, repo: draft.repo, source: rec.source, text: rec.text,
-      url: rec.source === 'browser' ? rec.app : '', app: rec.source === 'windows' ? rec.app : '' }
-    : { action, repo: draft.repo, url: rec.url };
+  const payload = { action, repo: draft.repo, source: rec.source, url: rec.url, app: rec.app };
+  if (action === 'import') payload.text = rec.text;
   if (action === 'import' && !String(rec.text || '').trim()) {
     rec.message = '記録を貼り付けてください';
     rec.ok = false;
@@ -394,7 +396,9 @@ async function routineRecording(action) {
     return;
   }
   rec.busy = true;
-  rec.message = action === 'start' ? 'ブラウザを開いています…' : action === 'stop' ? '記録を工程に起こしています…' : '読み取っています…';
+  rec.message = action === 'start'
+    ? (rec.source === 'windows' ? '記録を開始しています…' : 'ブラウザを開いています…')
+    : action === 'stop' ? '記録を工程に起こしています…' : '読み取っています…';
   rec.ok = true;
   renderRoutineProcedureBody();
   let res;
@@ -413,12 +417,16 @@ async function routineRecording(action) {
   }
   if (action === 'start') {
     rec.active = true;
-    rec.message = '開いたブラウザで操作してください。終わったら「記録を終了して工程に起こす」を押します';
+    rec.message = rec.source === 'windows'
+      ? '別ウィンドウで記録を始めました。アプリを操作してから「記録を終了して工程に起こす」を押します（そのウィンドウで Ctrl+C でも止まります）'
+      : '開いたブラウザで操作してください。終わったら「記録を終了して工程に起こす」を押します';
     rec.ok = true;
     renderRoutineProcedureBody();
     return;
   }
-  rec.active = false;
+  // 貼り付けでは記録中の表示を消さない（記録中に別端末の記録を足すことはできるが、
+  // 走っている recorder はまだ止まっていない——止めていないのに止まった顔をしない）。
+  if (action === 'stop') rec.active = false;
   if (action === 'import') rec.text = '';
   const steps = Array.isArray(res.steps) ? res.steps : [];
   for (const step of steps) draft.steps.push(routineStepFromRecorded(step));

@@ -292,7 +292,7 @@ WSL_WRAPPER_TEMPLATE = r"""#!/bin/bash
 # 意味を持つ引数」だけを wslpath -w で Windows パスへ変換してから渡す。変換するのは
 #
 #   * screenshot / codegen / record の --output の値（他コマンドの --output は
-#     text|json の書式指定なので触らない）
+#     text|json の書式指定なので触らない）と、record の --stop-file の値
 #   * run サブコマンドの script 位置引数
 #   * '/' で始まり、実在する（か親ディレクトリが実在する）絶対パス
 #
@@ -342,6 +342,10 @@ for a in "$@"; do
         ARGS+=("$a")
       fi
       continue ;;
+    --stop-file)
+      ARGS+=("$a"); NEXT_IS_PATH=1; continue ;;
+    --stop-file=*)
+      ARGS+=("--stop-file=$(_convert "${a#--stop-file=}")"); continue ;;
     -*)
       ARGS+=("$a"); continue ;;
   esac

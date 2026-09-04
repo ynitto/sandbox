@@ -4783,7 +4783,9 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
   border-radius: 8px;
 }
 .routine-procedure-recording > summary { cursor: pointer; font-weight: 600; }
-.routine-procedure-recording-actions .row { gap: 6px; flex-wrap: wrap; }
+.routine-procedure-recording-actions { gap: 8px; flex-wrap: wrap; align-items: center; margin: 8px 0; }
+.routine-procedure-paste { margin: 8px 0 0; }
+.routine-procedure-paste > summary { cursor: pointer; font-size: 12px; }
 .routine-procedure-recorded { margin: 0 0 10px; font-size: 12px; }
 .routine-procedure-recorded > summary { cursor: pointer; }
 .routine-procedure-recorded ol { margin: 6px 0; padding-left: 20px; max-height: 160px; overflow: auto; }

@@ -9,8 +9,8 @@
 //   1. ブラウザ … `playwright-cli recording-start` → 人が操作 → `recording-stop` が印字する
 //      Playwright コード行（`await page.getByRole('button', { name: 'ログイン' }).click();`）。
 //      CLI 自身の操作（`playwright-cli click e5` 等）も同じ形のコードを印字するので同じ読み方で通る。
-//   2. Windows アプリ … `winauto` の操作イベント（JSONL。1 行 1 イベント）。winauto にはまだ
-//      記録コマンドが無いので、ここが**受け口の契約**になる（`WINAUTO_EVENT_KINDS`）。
+//   2. Windows アプリ … `winauto record` が書く操作イベント（JSONL。1 行 1 イベント）。
+//      契約は `WINAUTO_EVENT_KINDS`（winauto 側の `RECORD_EVENT_KINDS` と両端で固定してある）。
 //
 // 変換の方針:
 //   - 要素は role と名前（`getByRole` / `auto_id:=` / `name:=`）で持ち、ref（`e15`）や座標は捨てる。
@@ -381,12 +381,33 @@ function firstLine(res) {
   return (String((res && (res.stderr || res.stdout)) || '').split(/\r?\n/).find(Boolean) || '').slice(0, 200);
 }
 
+// 見える形でブラウザを開けなかったときの次の一手。win32 の dashboard は WSL 側の
+// playwright-cli を呼ぶので、WSL に表示先が無い環境では必ずここで落ちる。原因は出力に
+// 出ているのに「開けませんでした」だけでは動きようがないので、原因ごとに手当てを添える。
+function browserOpenHint(detail) {
+  const body = String(detail || '');
+  if (/XServer|X server|\$?DISPLAY|xvfb|Wayland/i.test(body)) {
+    return '（WSL 側に画面がありません。Windows 11 の WSLg を有効にするか、Windows 側で取った'
+      + '記録を「別の端末で取った記録」から貼り付けてください）';
+  }
+  if (/ENOENT|not found|見つかりません/i.test(body)) {
+    return '（playwright-cli をこの端末から呼べません。「道具を確認」で確かめてください）';
+  }
+  if (/install|Executable doesn't exist|browser.*download/i.test(body)) {
+    return '（ブラウザの実体が入っていません。`playwright-cli install-browser` を実行してください）';
+  }
+  return '';
+}
+
 // 記録を始める: ブラウザを見える形で開き（人が操作する）、記録を開始する。
 async function recordBrowserStart({ cwd = '', url = '', capture, timeoutMs = 60000 } = {}) {
   if (typeof capture !== 'function') throw new Error('記録に使う実行関数がありません');
   const target = text(url, 500);
   const opened = await capture(PLAYWRIGHT_CLI, playwrightArgs('open', '--headed', ...(target ? [target] : [])), { cwd, timeoutMs });
-  if (!opened || !opened.ok) throw new Error(`ブラウザを開けませんでした: ${(opened && opened.error) || firstLine(opened) || PLAYWRIGHT_CLI}`);
+  if (!opened || !opened.ok) {
+    const detail = (opened && opened.error) || firstLine(opened) || PLAYWRIGHT_CLI;
+    throw new Error(`ブラウザを開けませんでした: ${detail}${browserOpenHint(`${detail} ${(opened && opened.stderr) || ''}`)}`);
+  }
   const started = await capture(PLAYWRIGHT_CLI, playwrightArgs('recording-start'), { cwd, timeoutMs });
   if (!started || !started.ok) throw new Error(`記録を開始できませんでした: ${(started && started.error) || firstLine(started)}`);
   return { ok: true, session: RECORD_SESSION, url: target };
@@ -404,8 +425,110 @@ async function recordBrowserStop({ cwd = '', url = '', capture, timeoutMs = 6000
   return stepsFromRecording({ source: 'browser', text: raw, url });
 }
 
+// --- Windows アプリの記録の開始・終了（winauto record の呼び出し） -----------------------
+
+const WINAUTO_CLI = 'winauto';
+
+// 一時ファイルの置き場。**WSL 側の POSIX パス**で持つ——win32 の dashboard は
+// `wsl.exe` 越しに winauto を呼び、ラッパーが `--output` / `--stop-file` を Windows パスへ
+// 変換して Windows Python に渡す。読み戻しも同じ `wsl.exe` 越しなので、両側が同じ実体を見る。
+const RECORD_DIR = '/tmp/agent-dashboard';
+const RECORD_SETTLE_TRIES = 8;
+const RECORD_SETTLE_WAIT_MS = 400;
+
+// 記録中の一時ファイルの綴りは **main が決めて覚える**。画面から受け取ったパスで
+// ファイルを読み書きすると、画面が指した任意の場所を触れることになる（画面は信頼しない）。
+let activeWindowsRecording = null;
+
+function windowsRecordingState() {
+  return activeWindowsRecording;
+}
+
+function resetWindowsRecording() {
+  activeWindowsRecording = null;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => { setTimeout(resolve, ms); });
+}
+
+// 書き終わりを待つ。record は 1 行ずつ flush するので途中を読んでも壊れないが、止めた直後は
+// まだ最後の数行が出ていないことがある。2 回続けて同じ中身になったら書き終わりとみなす。
+async function readSettled(capture, file, cwd, wait) {
+  let previous = '';
+  for (let i = 0; i < RECORD_SETTLE_TRIES; i += 1) {
+    await wait(RECORD_SETTLE_WAIT_MS);
+    const res = await capture('cat', [file], { cwd, timeoutMs: 20000 });
+    const body = res && res.ok ? String(res.stdout || '') : '';
+    if (body && body === previous) return body;
+    previous = body;
+  }
+  return previous;
+}
+
+// 記録を始める: `winauto record` を別ウィンドウ（tmux）で走らせる。人はそのウィンドウで
+// 進行を見られ、Ctrl+C でも止められる（画面の「終了」は停止ファイルで止める）。
+async function recordWindowsStart({ cwd = '', app = '', capture, openWindow, id = '' } = {}) {
+  if (typeof capture !== 'function' || typeof openWindow !== 'function') {
+    throw new Error('記録に使う実行関数がありません');
+  }
+  const name = text(app, 120);
+  if (!name) throw new Error('記録するアプリ（ウィンドウ名・プロセス名・PID）を入力してください');
+  if (activeWindowsRecording) {
+    throw new Error('すでに記録中です。先に「記録を終了して工程に起こす」を押してください');
+  }
+  const key = String(id || Date.now().toString(36));
+  const out = `${RECORD_DIR}/record-${key}.jsonl`;
+  const stop = `${RECORD_DIR}/record-${key}.stop`;
+  // 枠は**外部コマンドを呼ぶ前に**取る。await を跨いでから代入すると、二重に押された
+  // 「記録を開始」が両方とも上の検査を通り抜け、2 本目が 1 本目の一時ファイルを忘れさせる。
+  const reserved = { app: name, out, stop, cwd };
+  activeWindowsRecording = reserved;
+  try {
+    const made = await capture('mkdir', ['-p', RECORD_DIR], { cwd, timeoutMs: 20000 });
+    if (!made || !made.ok) {
+      throw new Error(`記録の置き場を作れませんでした: ${(made && made.error) || firstLine(made) || RECORD_DIR}`);
+    }
+    const res = openWindow({
+      command: WINAUTO_CLI,
+      args: ['record', '--app', name, '--output', out, '--stop-file', stop],
+      cwd,
+      sessionKey: 'winauto-record',
+      title: '操作の記録',
+      message: '別ウィンドウで記録を開始しました。アプリを操作してください',
+    });
+    if (!res || !res.ok) {
+      throw new Error(`記録を開始できませんでした: ${(res && res.error) || 'ウィンドウを開けませんでした'}`);
+    }
+  } catch (err) {
+    // 自分が取った枠のときだけ返す（後から始まった記録の枠を消さない）。
+    if (activeWindowsRecording === reserved) activeWindowsRecording = null;
+    throw err;
+  }
+  return { ok: true, source: 'windows', app: name, output: out };
+}
+
+// 記録を終える: 停止ファイルを置いて `winauto record` を止め、書けた JSONL を工程列へ。
+async function recordWindowsStop({ capture, wait = sleep } = {}) {
+  if (typeof capture !== 'function') throw new Error('記録に使う実行関数がありません');
+  const rec = activeWindowsRecording;
+  if (!rec) throw new Error('記録が始まっていません（「記録を開始」から始めてください）');
+  // 停止ファイルを置いた時点で記録は終わり。この先で失敗しても「記録中」へは戻さない
+  // （戻すと、止まっている recorder を相手に終了を押し続けることになる）。
+  activeWindowsRecording = null;
+  await capture('touch', [rec.stop], { cwd: rec.cwd, timeoutMs: 20000 });
+  const raw = await readSettled(capture, rec.out, rec.cwd, wait);
+  await capture('rm', ['-f', rec.out, rec.stop], { cwd: rec.cwd, timeoutMs: 20000 });
+  if (!raw.trim()) {
+    throw new Error('記録が空です。記録のウィンドウにエラーが出ていないか確かめてください'
+      + `（書き出し先: ${rec.out}）`);
+  }
+  return stepsFromRecording({ source: 'windows', text: raw, app: rec.app });
+}
+
 module.exports = {
   OPS,
+  RECORD_DIR,
   WINAUTO_EVENT_KINDS,
   RECORD_SESSION,
   parsePlaywrightLine,
@@ -415,6 +538,11 @@ module.exports = {
   describeOp,
   stepsFromOps,
   stepsFromRecording,
+  browserOpenHint,
   recordBrowserStart,
   recordBrowserStop,
+  recordWindowsStart,
+  recordWindowsStop,
+  windowsRecordingState,
+  resetWindowsRecording,
 };

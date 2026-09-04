@@ -183,7 +183,7 @@ winauto は**入力・フォーカスを奪うコマンドをファイルロッ�
 
 | | コマンド |
 |---|---|
-| ロックを取る | `launch` `click` `type` `keys` `screenshot` `run` `inspect` `codegen` |
+| ロックを取る | `launch` `click` `type` `select` `keys` `screenshot` `run` `inspect` `codegen` |
 | ロックを取らない | `apps` `tree` `get-text` `wait` `doctor` `record` |
 
 読み取り専用をロック対象から外してあるのは、長い `wait` がロックを占有して他の発行を
@@ -215,7 +215,7 @@ WINAUTO_LOCK_TIMEOUT=600 winauto click ...                # 環境変数でも�
 
 - `scripts/element_inspector.py` — UIツリーの探索・セレクタの特定（最初に必ず実行）
 - `scripts/app_launcher.py` — アプリ起動・待機・コマンド実行・終了を一括管理
-- `tools/winauto/winauto.py` — Playwright 風の統合 CLI（inspect/click/type/screenshot/codegen/record）
+- `tools/winauto/winauto.py` — Playwright 風の統合 CLI（inspect/click/type/select/screenshot/codegen/record）
 
 **最初に `--help` を実行して利用方法を確認する。必要になるまでスクリプト本体は読まない。**
 
@@ -290,9 +290,8 @@ winauto record --app 勤怠管理 --output events.jsonl
 
 記録の 1 行は**そのまま打てる argv ではなく、何が起きたかの事実**である。再現するときは
 `launch` → `winauto launch`、`window` → その画面を `winauto wait` で待つ、
-`click` / `toggle` → `winauto click`、`value` → `winauto type` と読み替える。
-**`select`（一覧・コンボからの選択）に対応する winauto のコマンドは無い**ので、
-要素を確かめてから pywinauto の `select()` を使うスクリプトを書く。
+`click` / `toggle` → `winauto click`、`value` → `winauto type`、
+`select` → `winauto select <セレクタ> <項目名>` と読み替える。
 
 agent-dashboard の「手順を組み立てる → 操作を記録する」に貼り付けると、工程列に変換される。
 

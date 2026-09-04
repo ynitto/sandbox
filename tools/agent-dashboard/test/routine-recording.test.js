@@ -165,7 +165,7 @@ async function main() {
     assert.ok(winText.includes('`check: winauto wait name:=完了 --app 勤怠管理`'));
     // 種類ごとの対応表が載り、無いコマンドは無いと書く
     assert.ok(winText.includes('`click` / `check` / `uncheck` → `winauto click`'), winText);
-    assert.ok(winText.includes('`select`（一覧・コンボからの選択）に対応する winauto の コマンドは無い'), winText);
+    assert.ok(winText.includes('`select` → `winauto select <セレクタ> <項目名>`'), winText);
     assert.ok(!winText.includes('`playwright-cli <操作>'), 'ブラウザの案内は Windows だけの手順に出さない');
   });
 
@@ -204,9 +204,80 @@ async function main() {
       /操作が記録されていません/);
     await assert.rejects(recording.recordBrowserStart({ capture: async () => ({ ok: false, status: -1, stdout: '', stderr: '', error: 'spawn playwright-cli ENOENT' }) }),
       /ブラウザを開けませんでした: spawn playwright-cli ENOENT/);
+    // 開けない原因ごとに次の一手を添える（win32 の dashboard は WSL 側の CLI を呼ぶので、
+    // 表示先が無い環境では必ずここで落ちる。「開けませんでした」だけでは動きようがない）。
+    await assert.rejects(recording.recordBrowserStart({ capture: async () => ({
+      ok: false, status: 1, stdout: '', stderr: 'Looks like you launched a headed browser without having a XServer running.' }) }),
+    /WSLg/);
+    assert.ok(recording.browserOpenHint('Executable doesn\'t exist at /root/.cache/ms-playwright').includes('install-browser'));
+    assert.strictEqual(recording.browserOpenHint('なにか別の失敗'), '', '心当たりが無いときは足さない');
     await assert.rejects(cowork.procedureRecording({}, { action: 'dance' }), /記録の操作が不正/);
     const imported = await cowork.procedureRecording({}, { action: 'import', source: 'windows', text: WINAUTO_RECORDING, app: '勤怠管理' });
     assert.strictEqual(imported.steps.length, 3, '貼り付けは CLI を呼ばずに変換だけ行う');
+  });
+
+  await test('Windows の記録は winauto record を別ウィンドウで起こし、停止ファイルで止める', async () => {
+    recording.resetWindowsRecording();
+    const calls = [];
+    const windows = [];
+    const capture = async (command, args) => {
+      calls.push([command, ...args]);
+      if (command === 'cat') return { ok: true, status: 0, stdout: WINAUTO_RECORDING, stderr: '' };
+      return { ok: true, status: 0, stdout: '', stderr: '' };
+    };
+    const openWindow = (spec) => { windows.push(spec); return { ok: true }; };
+    const started = await recording.recordWindowsStart({
+      cwd: '/r', app: '勤怠管理', capture, openWindow, id: 'test1' });
+    assert.strictEqual(started.ok, true);
+    assert.strictEqual(started.app, '勤怠管理');
+    assert.deepStrictEqual(calls, [['mkdir', '-p', recording.RECORD_DIR]], '置き場を作ってから起こす');
+    assert.deepStrictEqual(windows[0].args, ['record', '--app', '勤怠管理',
+      '--output', `${recording.RECORD_DIR}/record-test1.jsonl`,
+      '--stop-file', `${recording.RECORD_DIR}/record-test1.stop`]);
+    assert.strictEqual(windows[0].command, 'winauto');
+    assert.strictEqual(windows[0].cwd, '/r');
+    // 一時ファイルの綴りは main が決めて覚える（画面から来たパスで読み書きしない）
+    assert.strictEqual(recording.windowsRecordingState().out, `${recording.RECORD_DIR}/record-test1.jsonl`);
+    await assert.rejects(recording.recordWindowsStart({ app: 'x', capture, openWindow }), /すでに記録中/);
+
+    calls.length = 0;
+    const stopped = await recording.recordWindowsStop({ capture, wait: async () => {} });
+    assert.deepStrictEqual(calls.map((c) => c[0]), ['touch', 'cat', 'cat', 'rm'],
+      '停止ファイルを置き、2 回続けて同じ中身になるまで読み、後片付けする');
+    assert.strictEqual(calls[0][1], `${recording.RECORD_DIR}/record-test1.stop`);
+    assert.strictEqual(stopped.steps.length, 3, '読めた JSONL はそのまま工程列になる');
+    assert.strictEqual(recording.windowsRecordingState(), null);
+    await assert.rejects(recording.recordWindowsStop({ capture }), /記録が始まっていません/);
+  });
+
+  await test('Windows の記録: 開始に失敗したら記録中にしない。空の記録は書き出し先を添えて断る', async () => {
+    recording.resetWindowsRecording();
+    const capture = async () => ({ ok: true, status: 0, stdout: '', stderr: '' });
+    await assert.rejects(recording.recordWindowsStart({ app: 'x', capture,
+      openWindow: () => ({ ok: false, error: '端末が見つかりません' }) }), /端末が見つかりません/);
+    assert.strictEqual(recording.windowsRecordingState(), null, '失敗したら枠を返す（もう一度押せる）');
+
+    await recording.recordWindowsStart({ app: 'x', capture, openWindow: () => ({ ok: true }), id: 'empty' });
+    await assert.rejects(recording.recordWindowsStop({ capture, wait: async () => {} }),
+      /記録が空です[\s\S]*record-empty\.jsonl/);
+    assert.strictEqual(recording.windowsRecordingState(), null);
+
+    recording.resetWindowsRecording();
+    await assert.rejects(recording.recordWindowsStart({ app: '', capture, openWindow: () => ({ ok: true }) }),
+      /アプリ（ウィンドウ名・プロセス名・PID）を入力してください/);
+  });
+
+  await test('main の振り分け: source で記録の種類を分け、cwd は登録済みフォルダに限る', async () => {
+    recording.resetWindowsRecording();
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'features', 'cowork', 'main', 'cowork.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function procedureRecording('), src.indexOf('function generateStateMachine('));
+    assert.ok(fn.includes("source === 'windows'"));
+    assert.ok(fn.includes('recording.recordWindowsStart({ cwd, app: payload.app,'));
+    assert.ok(fn.includes('openWindow: runCommandWindow'));
+    assert.ok(fn.includes('recording.recordWindowsStop({ capture: runCommandCapture })'));
+    assert.ok(!/payload\.(out|stop|output|file)/.test(fn), '一時ファイルのパスを画面から受け取らない');
+    await assert.rejects(cowork.procedureRecording({}, { action: 'stop', source: 'windows' }),
+      /記録が始まっていません/);
   });
 
   test('配線: IPC は記録の 1 チャネルだけ増え、作成の入口は増えない。画面は記録の入口と工程の記録表示を持つ', () => {
@@ -224,9 +295,14 @@ async function main() {
     for (const kind of cat.kinds) assert.ok(!('recordedLine' in kind), '綴りの関数は画面へ渡さない');
     const builder = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'sections', 'procedure.js'), 'utf8');
     for (const needle of ['id="btn-rp-rec-start"', 'id="btn-rp-rec-stop"', 'id="btn-rp-rec-import"', 'function routineRecording(',
-      'routine-procedure-recorded', 'data-rp-unrecord', 'api.coworkProcedureRecording(']) {
+      'routine-procedure-recorded', 'data-rp-unrecord', 'api.coworkProcedureRecording(',
+      'id="rp-rec-source"', 'id="rp-rec-target"']) {
       assert.ok(builder.includes(needle), needle);
     }
+    // 開始・終了・貼り付けはどれも記録の種類を送る（main が種類で振り分ける）
+    const send = builder.slice(builder.indexOf('async function routineRecording('));
+    assert.ok(send.includes('const payload = { action, repo: draft.repo, source: rec.source, url: rec.url, app: rec.app };'));
+    assert.ok(builder.includes('winauto record --app'), '貼り付けの案内に取り方を書く');
     assert.ok(builder.includes('recorded: Array.isArray(step.recorded) ? step.recorded : []'), '記録は工程と一緒に持ち回る');
     for (const forbidden of ['loopProvider', 'agent-loop.yml', 'coworkRunStateMachine', 'coworkSaveWork', 'workflow.yaml']) {
       assert.ok(!builder.includes(forbidden), `ビルダーは実行・保存の経路に触れない: ${forbidden}`);

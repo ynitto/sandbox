@@ -12,6 +12,7 @@ Commands:
   inspect     Interactive element inspector (REPL)
   click       Click an element by selector
   type        Type text into an element
+  select      Select an item in a combo box, list, or tab
   keys        Send key sequence to an element
   get-text    Get text content of an element
   screenshot  Capture a screenshot of the app window
@@ -35,6 +36,7 @@ Examples:
   winauto tree --app notepad
   winauto click "name:=OK" --app notepad
   winauto type "control:=Edit" "Hello World" --app notepad
+  winauto select "name:=種別" "緊急" --app kintai
   winauto screenshot --app notepad --output /tmp/notepad.png
   winauto codegen notepad.exe --output test_notepad.py
   winauto record --app notepad --output events.jsonl
@@ -102,7 +104,8 @@ DEFAULT_LOCK_TIMEOUT = 300.0
 # ロックする。読み取り専用の apps / tree / get-text / wait / doctor / record はロックしない
 # ——長い wait がロックを占有して他の発行を止めてしまわないようにするため。record は
 # 人が操作している数分間ずっと動くので、なおさら占有させない（読むだけで何も奪わない）。
-LOCKED_COMMANDS = {"launch", "click", "type", "keys", "screenshot", "run", "inspect", "codegen"}
+LOCKED_COMMANDS = {"launch", "click", "type", "select", "keys", "screenshot", "run",
+                   "inspect", "codegen"}
 
 
 def _lock_path() -> Path:
@@ -655,6 +658,80 @@ def cmd_type(args):
         print(json.dumps({"status": "ok", "selector": args.selector, "text": args.text}))
     else:
         print(f"Typed into '{args.selector}': {args.text!r}")
+
+
+# ---------------------------------------------------------------------------
+# Command: select
+# ---------------------------------------------------------------------------
+#
+# 一覧・コンボ・タブから項目を選ぶ。`click` でも `type` でも代われない:
+#
+#   * `click` は畳まれたコンボを開くだけで、開いた先の項目は別のポップアップ配下にいる
+#     （元のウィンドウからセレクタで辿れない）。
+#   * `type` は `set_text` を呼ぶので、編集できないコンボ（DropDownList）では例外になる。
+#
+# `record` が書く `select` イベントを再現する口でもある。ここが無いと、記録した選択を
+# 「動く綴りが無い操作」として毎回エージェントに考えさせることになっていた。
+
+# 選択の当て方。pywinauto のラッパーが持つ select() が本命で、持っていない要素のために
+# 「開いて項目を押す」を残す（Menu 由来のコンボなど、select() を実装しない種類がある）。
+def _select_by_api(elem, value, index):
+    target = index if index is not None else value
+    elem.select(target)
+
+
+def _select_by_expand(elem, value, index):
+    if index is not None:
+        raise RuntimeError("インデックス指定はこの要素では使えません（項目名で指定してください）")
+    elem.expand()
+    time.sleep(0.3)
+    elem.child_window(title=value).click_input()
+
+
+def cmd_select(args):
+    _require_windows()
+    pyw = _import_pywinauto()
+
+    app = connect_app(pyw, args.app, args.backend)
+    win = get_top_window(app)
+    elem = resolve_selector(win, args.selector)
+    elem.wait("enabled", timeout=args.timeout)
+
+    index = None
+    if args.index is not None:
+        index = args.index
+    elif args.value is None:
+        raise ValueError("選ぶ項目を指定してください（項目名の位置引数か --index）")
+
+    attempts = []
+    for name, fn in (("select", _select_by_api), ("expand+click", _select_by_expand)):
+        try:
+            fn(elem, args.value, index)
+            break
+        except Exception as e:
+            attempts.append(f"{name}: {e}")
+    else:
+        raise RuntimeError(
+            f"'{args.selector}' で選択できませんでした。試した方法: " + " / ".join(attempts)
+            + "。`winauto tree` で要素の種類を確かめてください")
+
+    # 選べたことを結果で見せる（読めない種類もあるので取れなければ黙って省く）。
+    selected = ""
+    try:
+        selected = str(elem.selected_text() or "")
+    except Exception:
+        try:
+            selected = str(elem.window_text() or "")
+        except Exception:
+            selected = ""
+
+    chosen = args.value if index is None else f"#{index}"
+    if args.output == "json":
+        print(json.dumps({"status": "ok", "selector": args.selector,
+                          "value": chosen, "selected": selected}, ensure_ascii=False))
+    else:
+        print(f"Selected: {chosen} in {args.selector}"
+              + (f" (now: {selected})" if selected else ""))
 
 
 # ---------------------------------------------------------------------------
@@ -1284,6 +1361,16 @@ def cmd_record(args):
         "toggle": _uia_id(uia_mod, "UIA_ToggleToggleStatePropertyId"),
     }
 
+    # 停止ファイル。人が Ctrl+C を押せないところ（別ウィンドウで走らせて、止めるのは
+    # 画面のボタン）から止めるための口である。信号を使わないのは、WSL 越し・
+    # ラッパー越しに Windows Python まで届かないため——ファイルなら両側から見える。
+    stop_file = Path(args.stop_file) if args.stop_file else None
+    if stop_file is not None:
+        try:
+            stop_file.unlink()        # 前回の残骸で即座に止まらないように
+        except OSError:
+            pass
+
     out = open(args.output, "w", encoding="utf-8") if args.output else sys.stdout
     sink = RecordSink(out, args.app, max_events=args.max_events)
     recorder = _UiaRecorder(sink, ids, pid, window_title)
@@ -1312,13 +1399,19 @@ def cmd_record(args):
         print(f"書き出し先: {args.output or '標準出力'}", file=sys.stderr)
         if args.duration:
             print(f"{args.duration:.0f} 秒後に自動で止めます。先に止めるなら Ctrl+C。", file=sys.stderr)
+        elif stop_file is not None:
+            print(f"アプリを操作してください。Ctrl+C か、{stop_file} が作られると止まります。",
+                  file=sys.stderr)
         else:
             print("アプリを操作してください。終わったら Ctrl+C で止めます。", file=sys.stderr)
         print("打鍵そのものは記録しません（入力欄の確定値と、押した要素だけを残します）。",
               file=sys.stderr)
 
         deadline = time.time() + args.duration if args.duration else 0.0
-        _pump_until(lambda: recorder.stopped or sink.full, deadline)
+        _pump_until(
+            lambda: recorder.stopped or sink.full
+            or (stop_file is not None and stop_file.exists()),
+            deadline)
     except KeyboardInterrupt:
         pass                          # Ctrl+C は「録り終えた」の合図。異常ではない
     finally:
@@ -1330,6 +1423,11 @@ def cmd_record(args):
         sink.close()
         if out is not sys.stdout:
             out.close()
+        if stop_file is not None:
+            try:
+                stop_file.unlink()
+            except OSError:
+                pass
 
     print(f"記録した操作: {sink.count} 件", file=sys.stderr)
     if args.output:
@@ -1611,6 +1709,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--timeout", type=float, default=10.0)
     p.add_argument("--output", choices=["text", "json"], default="text")
 
+    # --- select ---
+    p = sub.add_parser("select", help="Select an item in a combo box, list, or tab")
+    p.add_argument("selector", help="Element selector (the combo box / list itself)")
+    p.add_argument("value", nargs="?", help="Item text to select")
+    p.add_argument("--index", type=int, default=None, metavar="N",
+                   help="Select by position instead of text")
+    p.add_argument("--app", metavar="NAME_OR_PID", help="Process name, title, or PID")
+    p.add_argument("--backend", choices=["uia", "win32"], default="uia")
+    p.add_argument("--timeout", type=float, default=10.0)
+    p.add_argument("--output", choices=["text", "json"], default="text")
+
     # --- keys ---
     p = sub.add_parser("keys", help="Send key sequence")
     p.add_argument("keys", help="Key combo (e.g. ^a, {ENTER}, ^s)")
@@ -1670,6 +1779,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Stop after this many seconds (default: until Ctrl+C)")
     p.add_argument("--max-events", type=int, default=0, metavar="N",
                    help="Stop after N recorded events (default: unlimited)")
+    p.add_argument("--stop-file", metavar="PATH", default=None,
+                   help="Stop when this file appears (for stopping from another process)")
 
     # --- run ---
     p = sub.add_parser("run", help="Run an automation script")
@@ -1691,6 +1802,7 @@ COMMAND_MAP = {
     "inspect": cmd_inspect,
     "click": cmd_click,
     "type": cmd_type,
+    "select": cmd_select,
     "keys": cmd_keys,
     "get-text": cmd_get_text,
     "screenshot": cmd_screenshot,

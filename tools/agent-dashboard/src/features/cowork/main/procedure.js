@@ -112,13 +112,12 @@ const STEP_KINDS = [
       return `${op.op} ${JSON.stringify(op.target)}${value}`;
     },
     // 記録の 1 行は「何が起きたか」であって、そのまま打てる argv ではない。winauto の
-    // コマンドへの対応をここで示す——**綴りを騙らない**（`select` に対応するコマンドは
-    // 無いので、無いと書く。あるふりをすると、動かない argv をそのまま定義に書かれる）。
+    // コマンドへの対応をここで示す（**綴りを騙らない**——対応するコマンドが無いものは
+    // 無いと書く。あるふりをすると、動かない argv をそのまま定義に書かれる）。
     recordedGuidance: '- 記録の行は `<操作> <セレクタ> [値]` で、winauto では次のように行う。'
       + ' `launch` → `winauto launch`、`window` → その画面が出るのを `winauto wait` で待つ、'
       + ' `click` / `check` / `uncheck` → `winauto click`、`fill` / `type` → `winauto type`、'
-      + ' `keys` → `winauto keys`。**`select`（一覧・コンボからの選択）に対応する winauto の'
-      + ' コマンドは無い**ので、`windows-app-automation` スキルの手順（要素を確かめてから選ぶ）で行う。',
+      + ' `select` → `winauto select <セレクタ> <項目名>`、`keys` → `winauto keys`。',
   },
   {
     id: 'skill',

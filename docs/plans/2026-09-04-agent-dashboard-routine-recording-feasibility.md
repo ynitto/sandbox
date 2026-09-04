@@ -196,9 +196,9 @@ A を採る。B は A の後段としてなら意味がある（説明文の整�
 | ブラウザの記録 → 工程 → 指示文 | **実装済み**（本 PR） | playwright-cli 0.1.19 で実測 |
 | Windows アプリの記録の受け口（JSONL → 工程） | **実装済み**（本 PR） | 契約は `WINAUTO_EVENT_KINDS` |
 | `winauto record` コマンド | **実装済み**（§5.1） | comtypes の UIA イベント購読 → JSONL。`LOCKED_COMMANDS` に入れない（読み取り専用・数分動く）。`doctor` に `uia_events` の検査を足した |
-| dashboard から `record` を起こす | **未実装** | 今は「対象 PC で `winauto record` を実行 → Ctrl+C → 貼り付け」。画面から起こすには長時間プロセスの管理（開始・停止・出力先・WSL 跨ぎ）が要り、ブラウザの start/stop とは別の設計になる |
-| `winauto select` | **未実装** | 記録の `select` を再現する専用コマンドが無い。今は `windows-app-automation` スキルの手順（要素を確かめて pywinauto の `select()`）に委ねる |
-| 記録の実行環境 | 制約あり | Windows の dashboard は wsl.exe 経由で `playwright-cli` を呼ぶ。見える形で開くには WSLg か、`attach --cdp=` で Windows 側の Chrome/Edge に接続する設定（`.playwright/cli.config.json` の `browser.cdpEndpoint`）が要る。この判断は環境ごとなので画面で強制しない |
+| dashboard から `record` を起こす | **実装済み**（§5.2） | 別ウィンドウ（tmux）で走らせ、停止ファイルで止める |
+| `winauto select` | **実装済み** | 一覧・コンボ・タブから選ぶ副命令。`click` は畳まれたコンボを開くだけ、`type` は編集できないコンボで例外になるので、どちらでも代われなかった。記録の `select` を再現する口でもある |
+| ブラウザの記録の実行環境 | **制約あり（手当て済み）** | Windows の dashboard は wsl.exe 経由で `playwright-cli` を呼ぶので、見える形で開くには WSL 側に画面が要る（Windows 11 の WSLg なら既定で有る）。無い環境では開かないので、**落ちた理由ごとに次の一手を出す**（`browserOpenHint`: 画面が無い / CLI が無い / ブラウザの実体が無い）。逃げ道は「別の端末で取った記録の貼り付け」で、これは常に使える |
 | 作成モードが記録を読み違える | 未計測 | 指示文の「記録した操作」節と案内で担保する。事例が出たら案内の文言を足す（YAML の直接指定へは倒さない） |
 | 判断の分岐（AI の処理の工程） | 記録からは出ない | 記録は 1 本道。分岐は人が「AI の処理」工程を足し、判断欄に書く（従来どおり） |
 
@@ -222,6 +222,29 @@ winauto record --app 1234 --duration 120              # 秒で止める / --max-
 `WINAUTO_EVENT_KINDS`、差は `keys` だけ）。`doctor` の `uia_events` は購読可否を見るが
 **warn 止まり**である——購読できなくても `click` / `type` / `tree` は動くので、終了コードを
 1 にする（＝橋が壊れている）意味にはしない。
+
+### 5.2 dashboard から記録を起こす
+
+ブラウザと Windows で**止め方が違う**。ブラウザは `recording-stop` を呼べば止まるが、
+`winauto record` は人が操作している間ずっと走る別プロセスで、止める合図を送る先がいる。
+
+信号（SIGINT）は使えない。win32 の dashboard → `wsl.exe` → ラッパー → Windows Python と
+挟まっていて、途中で落ちるからである。代わりに**停止ファイル**を使う
+（`winauto record --stop-file <PATH>`）。ファイルなら WSL 側からも Windows 側からも同じ実体が
+見え、挟まっているものを 1 つも増やさない。
+
+```
+開始 → runCommandWindow で `winauto record --app X --output <out> --stop-file <stop>`
+       （別ウィンドウの tmux。人はそこで進行を見られ、Ctrl+C でも止められる）
+終了 → <stop> を touch → recorder が気づいて flush して終了
+       → <out> を 2 回続けて同じ中身になるまで読む（止めた直後は最後の数行がまだ出ていない）
+       → 工程列へ変換 → 一時ファイルを消す
+```
+
+一時ファイルの綴りは **main が決めて覚える**。画面から受け取ったパスで読み書きすると、
+画面が指した任意の場所を触れることになる（画面は信頼しない、と同じ理由）。パスは
+**WSL 側の POSIX パス**で持ち、ラッパーが `--output` / `--stop-file` を Windows パスへ変換する
+——読み戻しも同じ `wsl.exe` 越しなので、両側が同じ実体を見る。
 
 ## 6. 非目標
 

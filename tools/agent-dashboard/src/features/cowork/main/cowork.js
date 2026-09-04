@@ -1218,21 +1218,28 @@ function procedureTools(config, payload = {}) {
   });
 }
 
-// 人の操作の記録 → 工程列。ブラウザは playwright-cli の recording-start / recording-stop を
-// この端末（win32 は wsl.exe 経由＝実行と同じ側）で呼び、Windows アプリは winauto の操作イベント
-// （JSONL）を貼り付けで受ける。どちらも変換は recording.js の 1 実装で、返すのは手順ビルダーの
+// 人の操作の記録 → 工程列。ブラウザは playwright-cli の recording-start / recording-stop、
+// Windows アプリは `winauto record` を別ウィンドウで起こして停止ファイルで止める。どちらも
+// この端末（win32 は wsl.exe 経由＝実行と同じ側）で呼ぶ。別の端末で取った記録は貼り付け
+// （import）で受ける。どれも変換は recording.js の 1 実装で、返すのは手順ビルダーの
 // 工程列（raw 形）だけ——ここから先は手で組んだ工程と同じ経路（procedurePreview /
 // generateStateMachine）を通り、YAML は書かない。cwd は登録済みフォルダのときだけそこへ寄せる。
 function procedureRecording(config, payload = {}) {
   const action = String(payload.action || '').trim();
+  const source = String(payload.source || 'browser').trim();
   const raw = String(payload.repo || '').trim();
   const folder = raw ? _resolveRoot(raw, config) : '';
   const cwd = (folder && adhocRoots(config).find((r) => _pathKey(r) === _pathKey(folder))) || '';
   if (action === 'start') {
-    return recording.recordBrowserStart({ cwd, url: payload.url, capture: runCommandCapture });
+    return source === 'windows'
+      ? recording.recordWindowsStart({ cwd, app: payload.app,
+        capture: runCommandCapture, openWindow: runCommandWindow })
+      : recording.recordBrowserStart({ cwd, url: payload.url, capture: runCommandCapture });
   }
   if (action === 'stop') {
-    return recording.recordBrowserStop({ cwd, url: payload.url, capture: runCommandCapture });
+    return source === 'windows'
+      ? recording.recordWindowsStop({ capture: runCommandCapture })
+      : recording.recordBrowserStop({ cwd, url: payload.url, capture: runCommandCapture });
   }
   if (action === 'import') {
     return Promise.resolve(recording.stepsFromRecording({
