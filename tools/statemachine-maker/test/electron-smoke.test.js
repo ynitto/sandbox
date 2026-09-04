@@ -44,7 +44,7 @@ function whySkip(binary, pw) {
   return '';
 }
 
-test('実機: 起動して一覧が描画され、定義を開くと工程が並ぶ', async (t) => {
+test('実機: 起動して一覧が描画され、開くと工程が並ぶ', async (t) => {
   const binary = electronBinary();
   const pw = playwright();
   const skip = whySkip(binary, pw);
@@ -62,7 +62,7 @@ test('実機: 起動して一覧が描画され、定義を開くと工程が並
   });
   const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'smk-userdata-'));
   fs.writeFileSync(path.join(userData, 'config.json'),
-    JSON.stringify({ recentRoots: [root], skillDir: '', agent: 'claude', model: '' }), 'utf8');
+    JSON.stringify({ roots: [root], lastRoot: root, skillDir: '', agent: 'claude', model: '' }), 'utf8');
 
   const app = await pw._electron.launch({
     executablePath: binary,
@@ -80,16 +80,25 @@ test('実機: 起動して一覧が描画され、定義を開くと工程が並
     assert.ok((await win.evaluate(() => document.getElementById('main').innerHTML)).length > 0,
       '#main が空（renderer が動いていない＝真っ白）');
     assert.strictEqual(await win.evaluate(() => typeof window.api), 'object', 'preload の窓口が無い');
+    // 左は登録したフォルダだけ、右はそのフォルダのステートマシン
+    assert.strictEqual(await win.evaluate(() => document.querySelectorAll('.folder-list li').length), 1,
+      '登録したフォルダだけが並ぶ');
 
     await win.click('.machine-card[data-open="smoke"]');
     await win.waitForSelector('[data-step="1"]', { timeout: 20000 });
-    // 畳んだカードは 1 文の要約、カードの間に遷移が出る
+    // 畳んだカードは 1 文の要約、カードの間に「次にどこへ行くか」が人の言葉で出る
     assert.match(await win.textContent('[data-step="0"] .sentence'), /考える/);
-    assert.match(await win.textContent('.edge[data-edge="0"]'), /OK/);
+    assert.match(await win.textContent('.edge[data-edge="0"]'), /できた/);
 
     // カードを押すと開いて編集欄になる
     await win.click('[data-step="0"] .step-head');
     await win.waitForSelector('[data-step="0"] .step-body [data-field="detail"]', { timeout: 10000 });
+
+    // 実際に描かれた文字にも内部の用語を出さない
+    const shown = await win.evaluate(() => document.body.innerText);
+    for (const term of ['output_validator', 'condition_rule', 'check_ok', 'last_output', '--dry-run', 'workflow.yaml', '遷移']) {
+      assert.ok(!shown.includes(term), `画面に内部の用語が出ています: ${term}`);
+    }
 
     assert.deepStrictEqual(errors, [], '画面でエラーが出ている');
   } finally {

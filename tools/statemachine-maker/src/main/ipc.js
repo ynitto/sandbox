@@ -33,9 +33,12 @@ function skillDirFor(root) {
   return tools.findSkillDir({ root, configured: config.load(userData()).skillDir, appRoot: APP_ROOT });
 }
 
+// 触ってよいのは**登録したフォルダだけ**。登録に無いパスは、実在していても断る。
 function requireRoot(payload) {
   const root = String(payload.root || '').trim();
-  if (!root || !tools.isDir(root)) throw new Error('フォルダを選んでください');
+  if (!root) throw new Error('フォルダを選んでください');
+  if (!config.isRegistered(userData(), root)) throw new Error('登録していないフォルダです');
+  if (!tools.isDir(root)) throw new Error('フォルダが見つかりません');
   return root;
 }
 
@@ -75,29 +78,17 @@ function registerIpcHandlers(getWindow) {
   });
   handle('theme:openCss', () => shell.openPath(theme.ensureCustomCss(userData())));
 
-  handle('root:choose', async () => {
-    const res = await dialog.showOpenDialog(getWindow(), { properties: ['openDirectory'], title: 'ステートマシンを置くフォルダを選ぶ' });
-    if (res.canceled || !res.filePaths.length) return null;
-    const root = res.filePaths[0];
-    config.remember(userData(), root);
-    return root;
-  });
-  handle('workflow:choose', async () => {
-    // 既存の workflow.yaml を直接指す。ルートは `.statemachine/<識別名>/workflow.yaml` から逆算する。
+  // フォルダの登録。**見に行くのは登録したフォルダの `.statemachine/` だけ**で、
+  // 画面から届いたパスをそのまま開かない（登録に無ければ下の requireRoot が断る）。
+  handle('root:add', async () => {
     const res = await dialog.showOpenDialog(getWindow(), {
-      properties: ['openFile'], title: '既存の workflow.yaml を選ぶ', filters: [{ name: 'workflow.yaml', extensions: ['yaml', 'yml'] }],
+      properties: ['openDirectory'], title: 'ステートマシンを置くフォルダを登録する',
     });
     if (res.canceled || !res.filePaths.length) return null;
-    const file = res.filePaths[0];
-    const dir = path.dirname(file);
-    const parent = path.dirname(dir);
-    if (path.basename(parent) !== store.DIR) {
-      throw new Error(`選んだファイルは .statemachine/<識別名>/workflow.yaml の形ではありません: ${file}`);
-    }
-    const root = path.dirname(parent);
-    config.remember(userData(), root);
-    return { root, machine: path.basename(dir) };
+    return config.addRoot(userData(), res.filePaths[0]);
   });
+  handle('root:remove', (p) => config.removeRoot(userData(), p.root));
+  handle('root:select', (p) => config.save(userData(), { lastRoot: String(p.root || '') }));
 
   handle('machine:list', (p) => store.list(requireRoot(p)));
   handle('machine:read', (p) => store.read(requireRoot(p), String(p.machine || '')));
@@ -120,19 +111,19 @@ function registerIpcHandlers(getWindow) {
   });
 
   handle('tools:status', (p) => {
-    const root = String(p.root || '').trim();
+    const root = p.root ? requireRoot(p) : '';
     return tools.toolStatus({ cwd: root, capture: runner.capture, skillDir: skillDirFor(root) });
   });
 
   handle('recording:start', (p) => {
-    const root = String(p.root || '').trim();
+    const root = p.root ? requireRoot(p) : '';
     if (p.source === 'windows') {
       return recording.recordWindowsStart({ cwd: root, app: p.app, spawnRecorder: runner.spawnRecorder });
     }
     return recording.recordBrowserStart({ cwd: root, url: p.url, capture: runner.capture });
   });
   handle('recording:stop', (p) => {
-    const root = String(p.root || '').trim();
+    const root = p.root ? requireRoot(p) : '';
     return p.source === 'windows'
       ? recording.recordWindowsStop({})
       : recording.recordBrowserStop({ cwd: root, url: p.url, capture: runner.capture });
@@ -142,7 +133,7 @@ function registerIpcHandlers(getWindow) {
 
   handle('instruction:get', (p) => {
     const spec = model.normalizeProcedure(p.spec);
-    const root = String(p.root || '').trim();
+    const root = p.root ? requireRoot(p) : '';
     const machineDir = root && spec.machine && store.exists(root, spec.machine) ? `.statemachine/${spec.machine}/` : '';
     return { instruction: instruction.creationInstruction(spec, { machineDir }), prompt: instruction.creationPrompt(spec, { machineDir }) };
   });
@@ -158,8 +149,8 @@ function registerIpcHandlers(getWindow) {
     if (!py) throw new Error('Python を起動できません（「道具」を確認してください）');
     const script = path.join(skillDir, 'scripts', 'run_machine.py');
     const args = [script, workflow];
-    const mode = p.mode === 'run' ? 'run' : 'dry-run';
-    if (mode === 'dry-run') args.push('--dry-run');
+    const mode = p.mode === 'run' ? 'run' : 'check';
+    if (mode === 'check') args.push('--dry-run');
     else {
       const cfg = config.load(userData());
       const agent = String(p.agent || cfg.agent || 'claude');
@@ -180,22 +171,7 @@ function registerIpcHandlers(getWindow) {
     return { ...started, command: [py.command, ...args].join(' '), mode };
   });
   handle('run:stop', () => runner.stop());
-  handle('run:command', async (p) => {
-    // 手で実行するときのコマンド（このツール無しで動くことの案内）。
-    const root = requireRoot(p);
-    const machine = String(p.machine || '');
-    const skillDir = skillDirFor(root);
-    const rel = skillDir ? path.relative(root, path.join(skillDir, 'scripts', 'run_machine.py')).split(path.sep).join('/') : '.github/skills/statemachine-use/scripts/run_machine.py';
-    const cfg = config.load(userData());
-    return {
-      cwd: root,
-      dryRun: `python ${rel} .statemachine/${machine}/workflow.yaml --dry-run`,
-      run: `python ${rel} .statemachine/${machine}/workflow.yaml --agent ${cfg.agent || 'claude'}`,
-      skillDir,
-    };
-  });
 
-  handle('shell:openPath', (p) => shell.openPath(String(p.target || '')));
   handle('shell:openTerminal', (p) => openTerminal(requireRoot(p)));
   handle('clipboard:write', (p) => { clipboard.writeText(String(p.text || '')); return true; });
 }
