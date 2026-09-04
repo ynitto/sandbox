@@ -1,0 +1,51 @@
+{
+  "name": "statemachine-maker",
+  "version": "0.1.0",
+  "description": "statemachine-use スキルで動くステートマシン（.statemachine/<名前>/）を、工程列と人の操作の記録から組み立て・編集する Electron アプリ",
+  "author": "sandbox",
+  "license": "MIT",
+  "main": "src/main/main.js",
+  "scripts": {
+    "start": "electron .",
+    "lint": "eslint .",
+    "test": "node --test test/*.test.js",
+    "dist": "electron-builder --win",
+    "dist:portable": "electron-builder --win portable"
+  },
+  "dependencies": {
+    "yaml": "2.9.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "electron": "^43.0.0",
+    "electron-builder": "^26.15.3",
+    "eslint": "^10.9.1",
+    "globals": "^17.12.0"
+  },
+  "build": {
+    "appId": "jp.sandbox.statemachine-maker",
+    "productName": "Statemachine Maker",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "src/**/*",
+      "package.json",
+      "node_modules/yaml/**"
+    ],
+    "win": {
+      "icon": "assets/icon.ico",
+      "target": [
+        "portable",
+        "nsis"
+      ]
+    },
+    "portable": {
+      "artifactName": "${name}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}

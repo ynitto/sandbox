@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:" />
+  <title>Statemachine Maker</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header id="topbar">
+    <div class="brand"><span class="brand-mark">◇</span> Statemachine Maker</div>
+    <div class="root-box">
+      <span class="muted">フォルダ</span>
+      <span id="root-path" class="mono root-path" title="">未選択</span>
+      <button type="button" id="btn-root">フォルダを選ぶ</button>
+      <button type="button" id="btn-open-yaml" title="既存の .statemachine/&lt;識別名&gt;/workflow.yaml を直接開く">workflow.yaml を開く</button>
+      <select id="recent-roots" title="最近開いたフォルダ"><option value="">最近開いたフォルダ</option></select>
+    </div>
+    <div class="top-actions">
+      <button type="button" id="btn-new" class="primary">＋ 新しいステートマシン</button>
+    </div>
+  </header>
+  <div id="layout">
+    <aside id="sidebar">
+      <div class="side-head"><h2>ステートマシン</h2><button type="button" id="btn-reload" title="一覧を更新">更新</button></div>
+      <ul id="machine-list" class="machine-list"></ul>
+      <p class="muted small side-note">フォルダ直下の <code>.statemachine/&lt;識別名&gt;/</code> を一覧します。定義は statemachine-use スキルだけで動きます。</p>
+    </aside>
+    <main id="editor"></main>
+    <aside id="inspector">
+      <nav class="tabs" id="tabs">
+        <button type="button" data-tab="step" class="is-active">工程</button>
+        <button type="button" data-tab="record">記録</button>
+        <button type="button" data-tab="files">定義</button>
+        <button type="button" data-tab="ai">AI 補完</button>
+        <button type="button" data-tab="run">実行</button>
+        <button type="button" data-tab="tools">道具</button>
+      </nav>
+      <div id="panel"></div>
+    </aside>
+  </div>
+  <div id="toast" hidden></div>
+  <script src="renderer.js"></script>
+</body>
+</html>
