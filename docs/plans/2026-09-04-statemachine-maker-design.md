@@ -110,7 +110,17 @@ agent-dashboard の 3 カラム・タブ構成は持ち込まず、ワークフ�
 | 畳んだカードは「動詞で始まる 1 文の要約」だけ。細部はシェブロンの先 | Apple Shortcuts のパラメータ要約（[Design great actions for Shortcuts](https://developer.apple.com/videos/play/wwdc2021/10283/)） | 「勤怠管理 で 集計を出力」「ブラウザで 申請一覧を読む」のように verb + 名前。補足は種類・対象・検査・記録の件数だけ |
 | 分岐は横に広げず縦に積む | Power Automate の新デザイナー（[Classic vs modern designer](https://learn.microsoft.com/en-us/power-automate/classic-vs-modern-designer)） | カードの間に遷移（`OK → 次へ` / `RETRY → 工程 2 へ戻る`）を縦に並べる。戻る遷移は色で目立たせる |
 
-画面は 2 つだけ（一覧と編集）。記録・定義・AI 補完・実行・設定は `<dialog>` で、常設の領域を増やさない。
+画面は 2 つだけ（一覧と編集）。記録・中身・AI・動かす・設定は `<dialog>` で、常設の領域を増やさない。
+
+**フォルダは登録して使う**（2026-09-04 追加）。見に行くのは登録したフォルダの `.statemachine/` だけで、
+画面から届いたパスは `config.isRegistered` を通らなければ main が断る。一覧は左に登録したフォルダ、
+右にそのフォルダのステートマシンを並べる。任意のファイルを開く口（旧 `workflow:choose`）と、生パスを
+開く口（旧 `shell:openPath`）は落とした——入口が 1 つなら、触る範囲も 1 つで済む。
+
+**画面に出す言葉に内部の用語を入れない**（2026-09-04 追加）。YAML の項目名・コマンドの綴り・ステートの
+呼び名は、人が読む言葉に直してから出す（対応表は README）。これは好みではなく**壊れ方の予防**でもある
+——`--dry-run` や `output_validator` が画面に出ていると、読む人はそれを打つ場所や書き換える場所を探す。
+検査は 2 つ: 画面の原文を見る静的検査（`test/app.test.js`）と、実機で描画された文字を見る煙試験。
 
 **カスタマイズ**: 色・余白・幅・文字はすべて `:root` の CSS 変数。2 段で上書きする。
 

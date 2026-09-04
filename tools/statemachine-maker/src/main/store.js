@@ -39,7 +39,8 @@ function list(root) {
     const wf = path.join(base, name, 'workflow.yaml');
     const s = stat(wf);
     if (!s || !s.isFile()) continue;
-    const head = String(readText(wf) || '').split(/\r?\n/).slice(0, 40);
+    const body = String(readText(wf) || '');
+    const head = body.split(/\r?\n/).slice(0, 40);
     const pick = (key) => {
       const line = head.find((l) => new RegExp(`^${key}:\\s*`).test(l));
       return line ? line.replace(new RegExp(`^${key}:\\s*`), '').replace(/^["']|["']$/g, '').trim() : '';
@@ -49,6 +50,8 @@ function list(root) {
       dir: path.join(base, name),
       name: pick('name') || name,
       description: pick('description'),
+      // 一覧に出す工程の数（作業のあるステートの数）。表示だけに使う概算。
+      steps: (body.match(/^ {4}action(?:_file)?:/gm) || []).length,
       maker: !!stat(path.join(base, name, 'maker.json')),
       updatedAt: s.mtimeMs,
     });

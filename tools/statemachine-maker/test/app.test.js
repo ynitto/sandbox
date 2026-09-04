@@ -75,14 +75,45 @@ test('作成モードへの指示文は工程・遷移・道具を載せ、YAML 
   assert.ok(prompt.includes('.statemachine/kintai/'));
 });
 
-test('設定はユーザーデータの 1 ファイルで、最近のフォルダは重複せず 10 件まで', () => {
+test('設定は登録したフォルダを持ち、旧版の「最近開いたフォルダ」から引き継ぐ', () => {
   const dir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'smk-cfg-'));
-  assert.deepStrictEqual(config.load(dir), config.DEFAULTS);
-  for (let i = 0; i < 12; i += 1) config.remember(dir, `/r/${i}`);
-  config.remember(dir, '/r/11');
-  const cfg = config.load(dir);
-  assert.strictEqual(cfg.recentRoots.length, 10);
-  assert.strictEqual(cfg.recentRoots[0], '/r/11');
+  assert.deepStrictEqual(config.load(dir).roots, []);
+  // 旧版の設定は登録フォルダとして読み替える（作り直させない）
+  fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ recentRoots: ['/a', '/b'] }), 'utf8');
+  const migrated = config.load(dir);
+  assert.deepStrictEqual(migrated.roots, ['/a', '/b']);
+  assert.strictEqual(migrated.lastRoot, '/a');
+  assert.ok(!('recentRoots' in migrated), '古い項目は残さない');
+  // 登録・解除
+  assert.deepStrictEqual(config.addRoot(dir, '/c').roots, ['/a', '/b', '/c']);
+  assert.strictEqual(config.load(dir).lastRoot, '/c', '登録したフォルダを開く');
+  assert.deepStrictEqual(config.addRoot(dir, '/a').roots, ['/b', '/c', '/a'], '二重に登録しない');
+  const dropped = config.removeRoot(dir, '/a');
+  assert.deepStrictEqual(dropped.roots, ['/b', '/c']);
+  assert.ok(dropped.roots.includes(dropped.lastRoot), '外したフォルダは開いたままにしない');
+  assert.ok(config.isRegistered(dir, '/b') && !config.isRegistered(dir, '/a'));
+});
+
+test('登録していないフォルダは触らない（main が断る）', () => {
+  const ipc = read('main/ipc.js');
+  assert.match(ipc, /config\.isRegistered\(/, 'requireRoot が登録を確かめること');
+  for (const channel of ['machine:list', 'machine:read', 'machine:save', 'machine:openFolder']) {
+    assert.ok(ipc.includes(`handle('${channel}'`), `${channel} が無い`);
+  }
+  assert.ok(!ipc.includes("handle('workflow:choose'"), '任意のファイルを開く口は持たない');
+});
+
+// 画面に出す言葉に内部の綴りを混ぜない（コメントは対象外）。
+test('画面の言葉に内部の用語が漏れていない', () => {
+  const source = read('renderer/renderer.js')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .split('\n').map((l) => l.replace(/(^|\s)\/\/.*$/, '')).join('\n');
+  const banned = ['output_validator', 'condition_rule', 'check_ok', 'last_output', 'startswith:',
+    '--dry-run', '--agent', '--input', '--model', 'run_machine', 'maker.json', 'workflow.yaml',
+    '.statemachine', 'statemachine-use', 'YAML', 'ステート ID', '遷移', '終了コード'];
+  for (const term of banned) {
+    assert.ok(!source.includes(term), `画面の言葉に内部の用語が混ざっています: ${term}`);
+  }
 });
 
 test('スキルの所在は選んだフォルダから上へ辿って見つける', () => {
