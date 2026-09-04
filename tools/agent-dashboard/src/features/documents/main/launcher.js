@@ -14,6 +14,21 @@
 const DOCUMENT_WORKLOAD = 'documents';
 const SESSION_PREFIX = 'agent-doc';
 
+// エージェント（WSL 側）から見たパス。
+//
+// 文書と文書ルールのフォルダは **Windows 側**に置く（store.js の homeRoot）が、
+// 作成・続き・検証・助言のどれもエージェントは **WSL の中**で走る。
+// `C:\Users\me\.agents\documents\提案書` のまま渡すと `cd` も刺さらず、依頼文に混ぜれば
+// エージェントは存在しないパスを探しに行く。**WSL へ渡る値はすべてここを通す**
+// ——起動の cwd（runChatWindow / runCommandWindow が内部で同じ変換をする）だけでなく、
+// 依頼文に書く作業フォルダ（prompts の setDir）も同じ表記で揃える。
+// win32 以外は素通し（ホームも実行も同じ Linux 側なので変換するものが無い）。
+function agentPath(p) {
+  const s = String(p || '');
+  if (process.platform !== 'win32' || !s) return s;
+  return require('../../../base/main/wsl').toWslPath(s);
+}
+
 // require は関数の中で行う（読み込み時に他の制御面を引き込まない）。
 function agentModule() {
   return require('../../agent-project/main/agent');
@@ -62,13 +77,20 @@ function launchWindow(config, { cwd, prompt, title, sessionKey, message }) {
   return { ...res, cli: launch.cli, model: launch.model };
 }
 
+// ヘッドレスの助言。対話ウィンドウ（必ず wsl.exe 経由で開く）と揃えて、win32 では
+// **常に WSL 側**で走らせる——置き場が Windows パスになった分、cwd が WSL UNC かどうかで
+// 経路を決める runCommand の既定では Windows ネイティブ起動へ倒れ、WSL にしか入っていない
+// エージェント CLI が「見つからない」になる。cwd の WSL 表記への変換は runAgent が行う。
 async function advise(config, cwd, purpose, prompt) {
   const agent = agentModule();
   const resolved = agent.resolveDashboardAgent(config, cwd, { purpose });
-  const raw = await agent.runDashboardAgent(config, resolved, purpose, () => agent.runAgent(resolved, prompt, cwd));
+  const raw = await agent.runDashboardAgent(config, resolved, purpose,
+    () => agent.runAgent(resolved, prompt, cwd, { wsl: process.platform === 'win32' }));
   const text = agent.stripFence(raw);
   if (!String(text || '').trim()) throw new Error('エージェントの応答が空でした');
   return { text, cli: resolved.cli, model: resolved.model, source: resolved.source };
 }
 
-module.exports = { DOCUMENT_WORKLOAD, SESSION_PREFIX, resolveDocumentAgent, describeAgent, launchWindow, advise };
+module.exports = {
+  DOCUMENT_WORKLOAD, SESSION_PREFIX, agentPath, resolveDocumentAgent, describeAgent, launchWindow, advise,
+};

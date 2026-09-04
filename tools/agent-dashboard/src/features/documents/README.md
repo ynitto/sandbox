@@ -14,7 +14,7 @@
 | `main/sidecar.js` | 改訂履歴の書式（見出しの正典）と追記。書き手（dashboard）と依頼文の雛形を同じ表から作る | なし |
 | `main/store.js` | 文書フォルダ・定義（document.json）・入力の写し・成果物の走査 | なし（`base/agent-home` のみ） |
 | `main/prompts.js` | 依頼文（決定的） | なし |
-| `main/launcher.js` | **他の制御面へのアダプタ**（対話ウィンドウ起動・ヘッドレス助言）。agent-project / cowork / loopProvider への依存はここに閉じる | あり |
+| `main/launcher.js` | **他の制御面へのアダプタ**（対話ウィンドウ起動・ヘッドレス助言）と、エージェント（WSL 側）から見たパス `agentPath`。agent-project / cowork / loopProvider への依存はここに閉じる | あり |
 | `main/documents.js` | 用途層。操作の表 `SESSION_KINDS`（作成・続き・検証）と、ルール化の 3 経路 | launcher 経由のみ |
 | `main/ipc.js` / `preload.js` | IPC の入口 | — |
 
@@ -25,6 +25,18 @@
   検証できる（`test/documents.test.js`）。
 
 ## 置き場（1 文書 = 1 フォルダ、1 ルール = 1 ファイル）
+
+**置き場はこの端末（Windows）側のホーム。エージェントへ渡すときだけ WSL 表記へ直す。**
+ここに置くのは人が Word / PowerPoint / Excel / draw.io で開く実ファイルで、開く主体は
+Windows のアプリの方である（共有ホーム——Windows では WSL 側を UNC `\\wsl$\…` で指す——は
+control.json のような**エンジンと分け合う状態**の置き場で、性質が違う）。UNC に置くと
+Office の保護ビュー・自動保存・最近使った項目が不安定になり、エクスプローラからも辿りにくい。
+一方でエージェントは WSL の中で走るので、**WSL へ渡る値はすべて `launcher.agentPath` を通す**
+（`C:\Users\me\.agents\documents\提案書` → `/mnt/c/Users/me/.agents/documents/提案書`）。
+通す先は 2 つ——依頼文に書く作業フォルダ（`prompts` の `setDir`）と、起動の cwd
+（こちらは `runChatWindow` / `runCommandWindow` が内部で同じ変換をするので実パスのまま渡す）。
+変換の正典は `base/main/wsl.js`（cowork・定常業務の実行層と同じ表）。win32 以外はホームも実行も
+同じ Linux 側なので、この分岐は何も変えない。
 
 ```
 <workspaceDir>/<id>/                 文書フォルダ（既定 ~/.agents/documents/<id>/）
@@ -70,6 +82,11 @@ formats: docx, pptx
 | 作成 / 続き / 検証 | 文書フォルダを cwd にした**対話ウィンドウ**（`runChatWindow`。interactive を持たない CLI は `runHeadlessRoutine`） | 書き込み可 | 成果物・`document.json` の `outputs`・サイドカーの追記 |
 | ルールの下書き（原案から／改訂履歴から／フィードバックから） | **ヘッドレスの助言**（`resolveDashboardAgent` → `runAgent`） | 読み取り専用 | 何も書かない。本文を画面へ返し、人が編集して保存（dashboard が `rulesDir` へ書く） |
 
+どちらも win32 では **WSL の中**で走る（対話ウィンドウは `wsl.exe` 経由で開き、ヘッドレスの
+助言は `runAgent` に `wsl` を渡して同じ側へ揃える）。置き場が Windows パスになった分、
+cwd が WSL UNC かどうかで経路を決める `runCommand` の既定に任せると、助言だけが Windows
+ネイティブ起動へ倒れて「CLI が見つからない」になる。
+
 作成・続き・検証を外部ターミナルにするのは、**徹底的な質問**（読者・目的・範囲・用語・
 構成・体裁・根拠・禁止事項・合否基準・納期）・区分ごとの確認・指摘の取捨が人との対話そのもの
 だから。dashboard 内で往復を作らず、定常業務のアドホック起動と同じ部品（CLI/モデルの解決・
@@ -107,8 +124,11 @@ dashboard は人が起こした行（作成・続き・検証・フィードバ�
 
 ## 設定（`config.documents`）
 
-- `workspaceDir` … 文書フォルダの置き場。空なら共有ホームの `~/.agents/documents`
-- `rulesDir` … 文書ルールの置き場。空なら `~/.agents/document-rules`
+- `workspaceDir` … 文書フォルダの置き場。空ならこの端末のホームの `~/.agents/documents`
+- `rulesDir` … 文書ルールの置き場。空なら同じく `~/.agents/document-rules`
+- 既定を Windows 側へ移す前の置き場（共有ホーム＝WSL 側）に既に中身があるときは、そちらを
+  使い続ける——既定を替えた日に、それまでの文書とルールが画面から消えないように。引っ越したい
+  ときは「置き場」で新しいフォルダを指定する（アプリはファイルを勝手に動かさない）。
 
 ## 検証
 

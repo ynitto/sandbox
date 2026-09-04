@@ -6,38 +6,12 @@ function shellQuote(s) {
   return `'${String(s).replace(/'/g, `'"'"'`)}'`;
 }
 
-function isWslPath(p) {
-  const s = String(p || '');
-  return /^\\\\wsl(?:\$|\.localhost)\\/i.test(s) || /^\//.test(s);
-}
-
-function wslPath(p) {
-  const s = String(p || '');
-  const unc = s.replace(/\//g, '\\').match(/^\\\\wsl(?:\$|\.localhost)\\[^\\]+(.*)$/i);
-  if (unc) return (unc[1] || '').replace(/\\/g, '/') || '/';
-  return s;
-}
-
-function wslDistro(p) {
-  const s = String(p || '');
-  const unc = s.replace(/\//g, '\\').match(/^\\\\wsl(?:\$|\.localhost)\\([^\\]+)/i);
-  return unc ? unc[1] : '';
-}
-
-// Windows ドライブパス（C:\foo\bar）→ WSL の /mnt/c/foo/bar。該当しなければ ''。
-function winDriveToWsl(p) {
-  const m = String(p || '').replace(/\//g, '\\').match(/^([A-Za-z]):(\\.*)?$/);
-  if (!m) return '';
-  const rest = (m[2] || '').replace(/\\/g, '/').replace(/\/+$/, '');
-  return `/mnt/${m[1].toLowerCase()}${rest}`;
-}
+// パス表記の変換は base/main/wsl.js が正典（cowork・定常業務・documents で共有する）。
+const { isWslPath, wslPath, wslDistro, winDriveToWsl, toWslPath } = require('../../../base/main/wsl');
 
 // repo（WSL UNC / POSIX / Windows ドライブ）を WSL 側の Linux パスへ寄せる。
 // Windows ドライブ上のリポジトリでも agent-loop のペイン cwd（/mnt/c/...）と照合できる。
-function toWslCwd(p) {
-  if (isWslPath(p)) return wslPath(p);
-  return winDriveToWsl(p) || String(p || '');
-}
+const toWslCwd = toWslPath;
 
 function decodeCliOutput(buf) {
   if (buf == null) return '';

@@ -22,6 +22,7 @@ const path = require('path');
 const { spawn } = require('child_process');
 const { readToolConfig } = require('./toolconfig');
 const { agentDirCandidates } = require('../../../base/main/agent-home');
+const wslMain = require('../../../base/main/wsl');
 const { parseYaml } = require('../../../base/main/yaml');
 
 // エージェント CLI 定義（agents/<name>.json）。**組み込み（kiro/claude/copilot/codex）も
@@ -555,7 +556,25 @@ function commandResultText(command, code, stdout, stderr, { emptyOutputIsError =
     : `${command} は正常終了しましたが、応答本文が空でした`);
 }
 
-function runCommand({ command, args, stdin, cwd, env, outputFile, emptyOutputIsError }, timeoutMs) {
+// win32 で子プロセスを WSL 側で走らせるときの行き先（cd 先の Linux パスとディストロ）。
+//
+//   ・cwd が WSL UNC          … そのディストロの中で cd する（従来からの経路）
+//   ・呼び出し側が wsl を指定  … 既定のディストロで、Windows ドライブパスを /mnt/<drive> へ
+//                               直して cd する。**フォルダは Windows・エージェントは WSL**
+//                               という組み合わせ（documents の置き場）がこれにあたる
+//
+// どちらでもなければ null ＝ Windows ネイティブでそのまま起動する（既定の振る舞い）。
+function wslRoute(cwd, wsl) {
+  if (process.platform !== 'win32' || !cwd) return null;
+  if (/^\\\\wsl(?:\$|\.localhost)\\/i.test(cwd)) {
+    return { distro: wslMain.wslDistro(cwd), dir: wslMain.wslPath(cwd) };
+  }
+  if (!wsl) return null;
+  const dir = wslMain.winDriveToWsl(cwd);
+  return dir ? { distro: '', dir } : null;
+}
+
+function runCommand({ command, args, stdin, cwd, env, outputFile, emptyOutputIsError, wsl }, timeoutMs) {
   // argv 配列で渡し、cmd.exe 経由の再クオートを避ける（Windows で改行付きプロンプトが
   // 先頭行で切れる・8191 文字制限に当たるのを防ぐ）。PATHEXT で .exe/.cmd は解決される。
   return new Promise((resolve, reject) => {
@@ -563,14 +582,12 @@ function runCommand({ command, args, stdin, cwd, env, outputFile, emptyOutputIsE
     let spawnArgs = args;
     let spawnCwd = cwd || undefined;
 
-    if (process.platform === 'win32' && cwd && /^\\\\wsl(?:\$|\.localhost)\\/i.test(cwd)) {
-      const unc = cwd.replace(/\//g, '\\').match(/^\\\\wsl(?:\$|\.localhost)\\([^\\]+)(.*)$/i);
-      const distro = unc ? unc[1] : '';
-      const linuxDir = unc ? (unc[2] || '').replace(/\\/g, '/') || '/' : '/';
+    const route = wslRoute(cwd, wsl);
+    if (route) {
       const shellEscape = (s) => `'${String(s).replace(/'/g, `'"'"'`)}'`;
-      const script = `export LANG=C.UTF-8 LC_ALL=C.UTF-8; cd ${shellEscape(linuxDir)} && ${shellEscape(command)} ${args.map(shellEscape).join(' ')}`;
+      const script = `export LANG=C.UTF-8 LC_ALL=C.UTF-8; cd ${shellEscape(route.dir)} && ${shellEscape(command)} ${args.map(shellEscape).join(' ')}`;
       spawnCmd = 'wsl.exe';
-      spawnArgs = distro ? ['-d', distro, '-e', 'sh', '-lc', script] : ['-e', 'sh', '-lc', script];
+      spawnArgs = route.distro ? ['-d', route.distro, '-e', 'sh', '-lc', script] : ['-e', 'sh', '-lc', script];
       spawnCwd = undefined;
     }
 
@@ -626,9 +643,11 @@ function runCommand({ command, args, stdin, cwd, env, outputFile, emptyOutputIsE
 // dir（プロジェクトディレクトリ）を cwd として渡す。WSL UNC の場合は runCommand が
 // wsl.exe 経由で実行するため、CLI が WSL 側にしか無い環境でも charter 補完が動く。
 // 起動コマンドは agents/<name>.json の宣言（argv テンプレ・prompt_via・timeout 等）で組み立てる。
-function runAgent({ model, timeoutMs, spec }, prompt, dir) {
+// options.wsl: win32 で、cwd が WSL UNC でなくても WSL 側で走らせる（documents のように
+// 置き場が Windows・エージェントが WSL のとき）。cwd の WSL 表記への変換は wslRoute が行う。
+function runAgent({ model, timeoutMs, spec }, prompt, dir, options = {}) {
   const built = buildCommand(spec, model, prompt);
-  return runCommand({ ...built, cwd: safeCwd(dir) }, built.timeoutMs || timeoutMs);
+  return runCommand({ ...built, cwd: safeCwd(dir), wsl: !!options.wsl }, built.timeoutMs || timeoutMs);
 }
 
 // 応答から最初の JSON オブジェクト {...} を取り出す（説明文が混じっても拾う。
