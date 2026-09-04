@@ -10,7 +10,8 @@
     "lint": "eslint .",
     "test": "node --test test/*.test.js",
     "dist": "electron-builder --win",
-    "dist:portable": "electron-builder --win portable"
+    "dist:portable": "electron-builder --win portable",
+    "smoke": "xvfb-run -a node --test test/electron-smoke.test.js"
   },
   "dependencies": {
     "yaml": "2.9.0"

@@ -22,16 +22,10 @@ test('main / preload / renderer は構文検査を通る', () => {
   }
 });
 
-test('renderer が呼ぶ api.* は preload にあり、preload のチャネルは ipc.js が受ける', () => {
-  const preload = read('preload.js');
-  const renderer = read('renderer/renderer.js');
-  const ipc = read('main/ipc.js');
-  const exposed = new Set([...preload.matchAll(/^\s{2}(\w+): /gm)].map((m) => m[1]));
-  const used = new Set([...renderer.matchAll(/\bapi\.(\w+)\(/g)].map((m) => m[1]));
-  for (const name of used) assert.ok(exposed.has(name), `preload に無い api: ${name}`);
-  const channels = [...preload.matchAll(/invoke\('([\w:]+)'/g)].map((m) => m[1]);
-  for (const ch of channels) assert.ok(ipc.includes(`handle('${ch}'`), `ipc.js が受けないチャネル: ${ch}`);
-  assert.ok(read('main/main.js').includes('contextIsolation: true') && read('main/main.js').includes('sandbox: true'));
+// api.* とチャネルの対応は test/preload-contract.test.js（窓口の契約）が見る。ここは窓の設定だけ。
+test('窓の設定は contextIsolation / sandbox を保ち、CSP を宣言する', () => {
+  const main = read('main/main.js');
+  assert.ok(main.includes('contextIsolation: true') && main.includes('sandbox: true'));
   assert.ok(read('renderer/index.html').includes("script-src 'self'"));
 });
 

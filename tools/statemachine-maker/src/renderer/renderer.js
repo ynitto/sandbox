@@ -7,7 +7,10 @@
 // 記録・定義・AI 補完・実行・設定はダイアログ。コンパイル・検査・読み戻し・記録の変換は main に頼む。
 // 色・余白・文字は CSS 変数で、設定（theme.json）とユーザー CSS（custom.css）が上書きする。
 
-const api = window.api;
+// `api` は preload の contextBridge が window へ定義したもの（**再定義できない**
+// non-configurable なプロパティ）。ここで `const api = window.api` と受けると、
+// スクリプトの実行前に "Identifier 'api' has already been declared" で落ち、
+// renderer が 1 行も動かない（＝画面が真っ白になる）。だから宣言せずそのまま使う。
 const $ = (id) => document.getElementById(id);
 
 const state = {
