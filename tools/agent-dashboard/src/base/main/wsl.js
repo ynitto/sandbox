@@ -18,6 +18,50 @@
 
 const { spawnSync } = require('child_process');
 
+// ---------------------------------------------------------------------------
+// パス表記の変換（Windows ↔ WSL）— 正典はここ 1 か所
+// ---------------------------------------------------------------------------
+//
+// Windows 側のフォルダを WSL で走るものへ渡すときは、必ずここを通して WSL 表記へ直す。
+// `C:\Users\me\.agents\documents` のまま渡すと WSL の `cd` も CLI も刺さらず、
+// 依頼文に混ぜればエージェントが存在しないパスを探しに行く。
+// cowork（loopProvider）・定常業務（routines/exec）・documents はここを共有する。
+
+function isWslPath(p) {
+  const s = String(p || '');
+  return /^\\\\wsl(?:\$|\.localhost)\\/i.test(s) || /^\//.test(s);
+}
+
+// WSL UNC（\\wsl$\Ubuntu\home\me）→ /home/me。UNC でなければ入力のまま。
+function wslPath(p) {
+  const s = String(p || '');
+  const unc = s.replace(/\//g, '\\').match(/^\\\\wsl(?:\$|\.localhost)\\[^\\]+(.*)$/i);
+  if (unc) return (unc[1] || '').replace(/\\/g, '/') || '/';
+  return s;
+}
+
+// WSL UNC からディストロ名を取り出す。UNC でなければ ''（＝既定のディストロに任せる）。
+function wslDistro(p) {
+  const s = String(p || '');
+  const unc = s.replace(/\//g, '\\').match(/^\\\\wsl(?:\$|\.localhost)\\([^\\]+)/i);
+  return unc ? unc[1] : '';
+}
+
+// Windows ドライブパス（C:\foo\bar）→ WSL の /mnt/c/foo/bar。該当しなければ ''。
+function winDriveToWsl(p) {
+  const m = String(p || '').replace(/\//g, '\\').match(/^([A-Za-z]):(\\.*)?$/);
+  if (!m) return '';
+  const rest = (m[2] || '').replace(/\\/g, '/').replace(/\/+$/, '');
+  return `/mnt/${m[1].toLowerCase()}${rest}`;
+}
+
+// WSL 側から見たパス。UNC もドライブパスも Linux パスへ直し、
+// どちらでもない（既に POSIX・空）ときは入力をそのまま返す。
+function toWslPath(p) {
+  if (isWslPath(p)) return wslPath(p);
+  return winDriveToWsl(p) || String(p || '');
+}
+
 const NUL_RE = new RegExp(String.fromCharCode(0), 'g');
 
 // bash は動いたが起動スクリプトが見えなかったことを表す終了コード。
@@ -138,6 +182,11 @@ function wslHomeDir(run = defaultRunner) {
 
 module.exports = {
   SCRIPT_MISSING_EXIT,
+  isWslPath,
+  wslPath,
+  wslDistro,
+  winDriveToWsl,
+  toWslPath,
   decodeWslOutput,
   extractWindowsPath,
   launchArgs,

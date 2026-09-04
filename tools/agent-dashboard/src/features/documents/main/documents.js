@@ -157,10 +157,12 @@ function overview(config) {
 // ---------------------------------------------------------------------------
 
 // 依頼文に共通で渡す文脈（文書名・フォルダ・ルール・成果物・サイドカー名）。
+// setDir は **エージェントから見た表記**（Windows 側の置き場は WSL 表記へ直す）。
+// 依頼文の「作業フォルダは …」と、起動する cwd を同じ表記に揃える。
 function sessionContext(config, dir, id, manifest) {
   return {
     name: String(manifest.name || id),
-    setDir: dir,
+    setDir: launcher.agentPath(dir),
     manifest,
     rule: loadRuleFor(config, manifest),
     outputs: store.scanOutputs(dir, id, manifest),

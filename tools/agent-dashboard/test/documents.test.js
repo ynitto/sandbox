@@ -60,6 +60,17 @@ function withWin32(fn) {
   }
 }
 
+// 非同期の経路（助言）用。完了まで win32 を保つ（同期版は await の前に戻してしまう）。
+async function withWin32Async(fn) {
+  const orig = Object.getOwnPropertyDescriptor(process, 'platform');
+  Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+  try {
+    return await fn();
+  } finally {
+    if (orig) Object.defineProperty(process, 'platform', orig);
+  }
+}
+
 test('文書ルールは front matter と 6 節を読み、区分の箇条書きを構造化する', () => {
   const parsed = rules.parseRule(SAMPLE_RULE);
   assert.equal(parsed.name, '提案書');
@@ -325,6 +336,78 @@ test('起動系は launcher に閉じ、差し替えれば他の制御面なし�
   } finally {
     launcher.launchWindow = orig;
   }
+});
+
+test('置き場の既定は Windows 側のホーム（共有ホーム＝WSL 側の UNC ではない）', () => {
+  // 文書と文書ルールは人が Word / Excel / draw.io で開く実ファイルなので、この端末側に置く。
+  // 共有ホーム（Windows では \\wsl$\… の UNC）は control.json のようなエンジンと分け合う
+  // 状態の置き場で、性質が違う。
+  fs.mkdirSync(path.join(HOME_STUB, '.agents', 'documents'), { recursive: true });
+  fs.mkdirSync(path.join(HOME_STUB, '.agents', 'document-rules'), { recursive: true });
+  for (const on of [false, true]) {
+    const run = () => {
+      assert.equal(store.workspaceDir({}), path.join(HOME_STUB, '.agents', 'documents'));
+      assert.equal(store.rulesDir({}), path.join(HOME_STUB, '.agents', 'document-rules'));
+      assert.equal(store.homeRoot(), HOME_STUB);
+    };
+    if (on) withWin32(run); else run();
+  }
+  // ~ もこの端末のホームへ展開する（共有ホームへ逃がさない）
+  assert.equal(store.workspaceDir({ documents: { workspaceDir: '~/docs' } }), path.join(HOME_STUB, 'docs'));
+});
+
+test('WSL へ渡すパスは WSL 表記へ直す（win32 以外は素通し）', () => {
+  withWin32(() => {
+    assert.equal(launcher.agentPath('C:\\Users\\me\\.agents\\documents\\提案書'),
+      '/mnt/c/Users/me/.agents/documents/提案書');
+    assert.equal(launcher.agentPath('\\\\wsl$\\Ubuntu\\home\\me\\docs'), '/home/me/docs');
+    assert.equal(launcher.agentPath('/home/me/docs'), '/home/me/docs');
+    assert.equal(launcher.agentPath(''), '');
+  });
+  assert.equal(launcher.agentPath('C:\\docs'), 'C:\\docs', 'win32 以外は変換しない');
+});
+
+test('依頼文の作業フォルダは WSL 表記。起動の cwd は実パスのまま（変換は起動側）', () => {
+  const { config, workspaceDir } = makeEnv();
+  const origPath = launcher.agentPath;
+  const origLaunch = launcher.launchWindow;
+  const launches = [];
+  // Windows 側の置き場を WSL から見た表記に置き換える（実機の C:\… → /mnt/c/… の代わり）
+  launcher.agentPath = (p) => String(p).split(workspaceDir).join('/mnt/c/docs').replace(/\\/g, '/');
+  launcher.launchWindow = (_cfg, args) => {
+    launches.push(args);
+    return { ok: true, launched: true, session: 'stub' };
+  };
+  try {
+    documents.create(config, { name: '議事録', formats: ['md'], prompt: '定例会' });
+    documents.verify(config, { id: '議事録', review: '' });
+    for (const l of launches) {
+      assert.ok(l.prompt.includes('作業フォルダは `/mnt/c/docs/議事録`'), '依頼文は WSL 表記');
+      assert.ok(!l.prompt.includes(workspaceDir), '依頼文に Windows 側の実パスを残さない');
+      assert.equal(l.cwd, path.join(workspaceDir, '議事録'),
+        '起動の cwd は実パス（WSL 表記への変換は runChatWindow / runCommandWindow が行う）');
+    }
+  } finally {
+    launcher.agentPath = origPath;
+    launcher.launchWindow = origLaunch;
+  }
+});
+
+test('置き場が Windows パスでも、ヘッドレスの助言は WSL 側で起こす', async () => {
+  // 置き場が Windows 側になった分、cwd が WSL UNC かどうかで経路を決める既定のままだと
+  // Windows ネイティブ起動へ倒れ、WSL にしか入っていない CLI が「見つからない」になる。
+  // Linux 上のテストに wsl.exe は無く ENOENT になるので、その ENOENT が CLI 名ではなく
+  // wsl.exe を指していること＝WSL 経由であることを見る（cowork.test と同じ流儀）。
+  const spec = { ...agent.agentCli.loadCli('claude'), command: ['agent-cli-absent'] };
+  const resolved = { cli: 'agent-cli-absent', model: '', spec, timeoutMs: 5000 };
+  const winDir = 'C:\\Users\\me\\.agents\\documents\\提案書';
+  await withWin32Async(async () => {
+    await assert.rejects(agent.runAgent(resolved, 'x', winDir, { wsl: true }), /wsl\.exe/);
+    await assert.rejects(agent.runAgent(resolved, 'x', winDir), (e) => {
+      assert.ok(!/wsl\.exe/.test(e.message), `既定は従来どおり Windows ネイティブ起動: ${e.message}`);
+      return true;
+    });
+  });
 });
 
 test('操作の表（SESSION_KINDS）が overview.actions と一致し、画面は表示名を複製しない', () => {
