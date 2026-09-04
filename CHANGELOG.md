@@ -7,6 +7,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-dashboard: 人がやって見せた画面操作を、定型業務の工程に起こせるようになった
+
+- **手順ビルダーで画面操作の工程を書くには、自動化の道具の使い方を先に覚える必要があった。**
+  要素の指し方（`getByRole(...)` / `auto_id:=`）・工程の粒度・`{{key}}` にする値を、snapshot や
+  `winauto tree` を自分で取りながら文章に書き下ろすことになっていた。「人が操作したのを
+  キャプチャして AI が補完し、ステートマシンのステップにできるか」を検証した（設計と実測:
+  `docs/plans/2026-09-04-agent-dashboard-routine-recording-feasibility.md`）。
+- **結論: できる。** `@playwright/cli` 0.1.19 には `recording-start` / `recording-stop`（人の操作を
+  role と名前つきの Playwright コード行として印字）があり、実測で形を固定した。statemachine-use の
+  作成モードと `check` が補完の受け皿になる。欠けていたのは記録を工程列へ写す段だけだった。
+- **操作を記録する**（手順ビルダー）: ブラウザは URL を入れて記録を開始 → 人が操作 → 終了で
+  工程に起こす。Windows アプリと別端末の記録は貼り付けで受ける（`winauto` の操作イベント JSONL。
+  `winauto record` は未実装で、契約だけ先に置いた）。変換（`features/cowork/main/recording.js`）は
+  **決定的**——人の癖（入力前のクリック・確定後の Enter の重複）を落とし、ページ遷移・ウィンドウの
+  切り替わり・確定の操作で工程を切り、`fill` / `type` の値を `{{key}}` にして記録時の値を例に残す
+  （パスワードらしい欄は例にも残さない）。要素は role と名前で残し、ref・座標は投入前に断る。
+- **補完は作成モードのスキルに任せ、画面は推測しない。** 指示文に「記録した操作」と汎用化の案内
+  （記録に無い操作を足さない・各操作の前に待機し確定の後に読み取る・例を既定値にしない・脆い
+  ロケータは言い換えてよい）を、記録を持つ手順のときだけ載せる。工程列は版 2（工程に任意の
+  `recorded[]`）で、版 1 の項目はそのまま読める。IPC は `cowork:procedureRecording` の 1 チャネル
+  だけで、作成の入口（`cowork:generateStateMachine`）は増やさない。
+
 ### agent-dashboard: 画面操作と AI の判断を並べて定型業務を組み立てられるようになった
 
 - **API や CLI の無い社内システムを相手にする定型作業に、エージェントを載せる入口が無かった。**

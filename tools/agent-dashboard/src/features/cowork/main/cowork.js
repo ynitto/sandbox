@@ -22,6 +22,7 @@ const profiles = require('../../orchestration/main/profiles');
 const agentCli = require('../../agent-project/main/agentCli');
 const herdFamily = require('../../orchestration/main/herd-family');
 const procedure = require('./procedure');
+const recording = require('./recording');
 
 // 設定に書かれたフォルダ表記を、このビュアーで開けるパスへ揃える（discover と同じ規則）。
 // WSL の Linux 絶対パスは Windows ビュアーでは UNC へ翻訳する（そうしないと C:\home\… に化ける）。
@@ -1217,6 +1218,30 @@ function procedureTools(config, payload = {}) {
   });
 }
 
+// 人の操作の記録 → 工程列。ブラウザは playwright-cli の recording-start / recording-stop を
+// この端末（win32 は wsl.exe 経由＝実行と同じ側）で呼び、Windows アプリは winauto の操作イベント
+// （JSONL）を貼り付けで受ける。どちらも変換は recording.js の 1 実装で、返すのは手順ビルダーの
+// 工程列（raw 形）だけ——ここから先は手で組んだ工程と同じ経路（procedurePreview /
+// generateStateMachine）を通り、YAML は書かない。cwd は登録済みフォルダのときだけそこへ寄せる。
+function procedureRecording(config, payload = {}) {
+  const action = String(payload.action || '').trim();
+  const raw = String(payload.repo || '').trim();
+  const folder = raw ? _resolveRoot(raw, config) : '';
+  const cwd = (folder && adhocRoots(config).find((r) => _pathKey(r) === _pathKey(folder))) || '';
+  if (action === 'start') {
+    return recording.recordBrowserStart({ cwd, url: payload.url, capture: runCommandCapture });
+  }
+  if (action === 'stop') {
+    return recording.recordBrowserStop({ cwd, url: payload.url, capture: runCommandCapture });
+  }
+  if (action === 'import') {
+    return Promise.resolve(recording.stepsFromRecording({
+      source: payload.source, text: payload.text, url: payload.url, app: payload.app,
+    }));
+  }
+  return Promise.reject(new Error(`記録の操作が不正です: ${action || '(空)'}`));
+}
+
 function generateStateMachine(config, payload = {}) {
   const repo = String(payload.repo || '').trim();
   const name = String(payload.name || '').trim();
@@ -1774,7 +1799,7 @@ function saveWork(config, saveConfig, { items, branch, createBranch, push } = {}
 
 module.exports = {
   overview, runLoop, runStateMachine, generateStateMachine, runAdhoc, adhocRoots,
-  procedureInstruction, procedurePreview, procedureTools, procedureCatalog,
+  procedureInstruction, procedurePreview, procedureTools, procedureCatalog, procedureRecording,
   saveWork, itemsOf, wslPath, dynamicState,
   resolveItem, findItem, dedupeItems, applyDiscoveredEdits, gitCommitFiles,
   invalidateDiscoverCache, decodeCliOutput, viewerRepo,

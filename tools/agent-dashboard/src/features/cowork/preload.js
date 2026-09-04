@@ -12,6 +12,7 @@ module.exports = {
   coworkProcedureCatalog: (invoke) => () => invoke('cowork:procedureCatalog', {}),
   coworkProcedurePreview: (invoke) => (payload) => invoke('cowork:procedurePreview', payload),
   coworkProcedureTools: (invoke) => (payload) => invoke('cowork:procedureTools', payload),
+  coworkProcedureRecording: (invoke) => (payload) => invoke('cowork:procedureRecording', payload),
   coworkRunAdhoc: (invoke) => (root, prompt) => invoke('cowork:runAdhoc', { root, prompt }),
   coworkSaveWork: (invoke) => (payload) => invoke('cowork:saveWork', payload),
   coworkInspectRoot: (invoke) => (dir) => invoke('cowork:inspectRoot', { dir }),

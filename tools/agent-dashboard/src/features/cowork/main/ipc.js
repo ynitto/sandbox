@@ -17,6 +17,8 @@ function registerIpc(ctx) {
   handle('cowork:procedureCatalog', () => cowork.procedureCatalog());
   handle('cowork:procedurePreview', (payload) => cowork.procedurePreview(loadConfig(), payload || {}));
   handle('cowork:procedureTools', (payload) => cowork.procedureTools(loadConfig(), payload || {}));
+  // 人の操作の記録（開始・終了・貼り付け）。返すのは工程列だけで、作成は上の generateStateMachine を通す。
+  handle('cowork:procedureRecording', (payload) => cowork.procedureRecording(loadConfig(), payload || {}));
   // アドホック起動（M2）: 登録フォルダ + 自由文で対話 CLI を起動する（項目非依存）
   handle('cowork:runAdhoc', ({ root, prompt }) => cowork.runAdhoc(loadConfig(), { root, prompt }));
   handle('cowork:saveWork', (payload) => cowork.saveWork(loadConfig(), saveConfig, payload || {}));
