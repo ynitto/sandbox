@@ -26,6 +26,7 @@ HELP = """\
 /clear           会話履歴を捨てて新しい会話を始める
 /model [family]  モデル family を表示・変更（例: /model gpt-4o、引数なしで解除）
 /tools [SETS]    ツールを表示・変更（例: /tools read,write、/tools off で素の会話）
+/rounds [N]      ツール手番の往復上限を表示・変更（引数なしで既定へ戻す）
 /exit            終了（Ctrl-D でも同じ）"""
 
 
@@ -238,19 +239,44 @@ def tools_url(endpoint: dict[str, object]) -> str:
     return _path_url(endpoint, "/v1/tools")
 
 
+def _fetch_json(endpoint: dict[str, object], path: str, timeout: float) -> dict:
+    req = urllib.request.Request(
+        _path_url(endpoint, path),
+        headers={"Authorization": f"Bearer {endpoint['token']}"},
+        method="GET",
+    )
+    with _urlopen(req, timeout) as response:
+        return json.load(response)
+
+
 def fetch_tools(endpoint: dict[str, object], timeout: float) -> dict:
     """VS Code に今そのとき登録されているツールを取る（vscode.lm.tools）。
 
     中身は VS Code のバージョン・設定・入れている MCP サーバで変わるので、
     どのツールを使えるかは推測せずここで実測する。
     """
-    req = urllib.request.Request(
-        tools_url(endpoint),
-        headers={"Authorization": f"Bearer {endpoint['token']}"},
-        method="GET",
-    )
-    with _urlopen(req, timeout) as response:
-        return json.load(response)
+    return _fetch_json(endpoint, "/v1/tools", timeout)
+
+
+def fetch_models(endpoint: dict[str, object], timeout: float) -> dict:
+    """使える Copilot モデルの一覧（vscode.lm.selectChatModels）。
+
+    --family を省くと**先頭のモデル**が使われる。どれが先頭かは VS Code と契約で変わる
+    ので、強いモデルを使いたいなら一覧を見て --family で指名する。
+    """
+    return _fetch_json(endpoint, "/v1/models", timeout)
+
+
+def format_models(payload: dict) -> str:
+    models = payload.get("models") or []
+    if not models:
+        return "使える Copilot モデルはありません（サインインと組織ポリシーを確認してください）。"
+    lines = [f"{len(models)} 個のモデルが使えます（--family を省くと先頭を使います）。"]
+    for model in models:
+        tokens = model.get("maxInputTokens")
+        limit = f"  入力上限 {tokens:,} tokens" if isinstance(tokens, int) else ""
+        lines.append(f"  {model.get('family')}  {model.get('name')}  ({model.get('id')}){limit}")
+    return "\n".join(lines)
 
 
 class ToolNeedsChatContext(RuntimeError):
@@ -439,11 +465,14 @@ def file_context(files, read_files, writable: bool) -> str:
 
 def run_agent(endpoint: dict[str, object], prompt: str, tools: list[str], family: str | None,
               timeout: float, on_event, history=None, debug: bool = False,
-              max_tool_chars: int | None = None) -> dict:
+              max_tool_chars: int | None = None, max_rounds: int | None = None) -> dict:
     """エージェントを 1 回走らせる。往復の途中経過は on_event へ流す。
 
     `history` を渡すと、その続きとして走らせる（対話でツールを使うとき）。ツール往復の
     中身は持ち帰らない——手番の中で閉じ、履歴には最後の本文だけが残る。
+
+    `max_rounds` を省くと拡張の既定（25）。上限に達しても失敗にはならない——拡張は最後の
+    往復をツール無しで回し、「ここまで・残り」を本文として返す（`exhausted` が立つ）。
     """
     messages = [*(history or []), {"role": "user", "content": prompt}]
     body: dict[str, object] = {"messages": messages, "tools": tools}
@@ -451,6 +480,8 @@ def run_agent(endpoint: dict[str, object], prompt: str, tools: list[str], family
         body["debug"] = True
     if max_tool_chars:
         body["maxToolResultChars"] = max_tool_chars
+    if max_rounds:
+        body["maxRounds"] = max_rounds
     if family:
         body["family"] = family
     req = urllib.request.Request(
@@ -484,7 +515,8 @@ def _consume_agent_stream(response, on_event) -> dict:
     if done is None:
         raise RuntimeError("エージェントの応答が途中で切れました")
     return {"text": done.get("text") or "".join(chunks),
-            "rounds": done.get("rounds"), "model": done.get("model")}
+            "rounds": done.get("rounds"), "model": done.get("model"),
+            "exhausted": bool(done.get("exhausted"))}
 
 
 def agent_progress(on_delta):
@@ -528,7 +560,16 @@ def format_agent_event(event: dict) -> str | None:
             argument = argument[:117] + "…"
         return f"  → {event['tool']} {argument}"
     if event.get("done"):
-        return f"  （{event.get('rounds')} 往復）"
+        model = event.get("model") or {}
+        label = f"{event.get('rounds')} 往復"
+        if model.get("family"):
+            label += f"・{model['family']}"
+        if event.get("exhausted"):
+            # 上限に当たったことは隠さない。本文は「ここまで・残り」のまとめであって、
+            # 依頼が終わった報告ではない。
+            return (f"  （{label}・往復の上限 {event.get('maxRounds')} に達したので、ツール無しで"
+                    "まとめさせました。続きは次の手番で頼むか、--max-rounds で伸ばしてください）")
+        return f"  （{label}）"
     return None
 
 
@@ -560,12 +601,27 @@ class Session:
     """1 つの対話。履歴は拡張ではなく手元に持つ（bridge を再起動しても会話が続く）。"""
 
     def __init__(self, family: str | None = None, tools: list[str] | None = None,
-                 debug: bool = False, max_tool_chars: int | None = None):
+                 debug: bool = False, max_tool_chars: int | None = None,
+                 max_rounds: int | None = None):
         self.messages: list[dict[str, str]] = []
         self.family = family
         self.tools = tools or None
         self.debug = debug
         self.max_tool_chars = max_tool_chars
+        self.max_rounds = max_rounds
+
+    def set_rounds(self, argument: str) -> tuple[str, str]:
+        if not argument:
+            self.max_rounds = None
+            return "continue", "rounds: (拡張の既定)"
+        try:
+            value = int(argument)
+        except ValueError:
+            value = 0
+        if value < 2:
+            return "continue", "rounds は 2 以上の整数で指定してください（最後の 1 回はまとめに使います）"
+        self.max_rounds = value
+        return "continue", f"rounds: {value}"
 
     def set_tools(self, argument: str, endpoint, timeout: float) -> tuple[str, str]:
         """`/tools` の中身。引数なしは表示、`off` で素の会話へ戻す。
@@ -606,6 +662,8 @@ class Session:
             return "continue", f"model family: {self.family or '(既定)'}"
         if name == "/tools":
             return self.set_tools(argument, endpoint, timeout)
+        if name == "/rounds":
+            return self.set_rounds(argument)
         return "continue", f"未知のコマンドです: {name}（/help でコマンド一覧）"
 
     def ask(self, endpoint: dict[str, object], text: str, timeout: float, on_delta) -> dict:
@@ -616,7 +674,7 @@ class Session:
             if self.tools:
                 result = run_agent(endpoint, text, self.tools, self.family, timeout,
                                    agent_progress(on_delta), history=history, debug=self.debug,
-                                   max_tool_chars=self.max_tool_chars)
+                                   max_tool_chars=self.max_tool_chars, max_rounds=self.max_rounds)
             else:
                 result = request(endpoint, self.messages, self.family, timeout, on_delta)
             # 空の応答を履歴へ入れると、次の手番が「本文が空の assistant」を送って
@@ -677,6 +735,8 @@ def main() -> int:
     parser.add_argument("--json", action="store_true", help="モデル情報を含む JSON を出力")
     parser.add_argument("--tools", action="store_true",
                         help="VS Code に登録されているツールの一覧を出す（vscode.lm.tools）")
+    parser.add_argument("--models", action="store_true",
+                        help="使える Copilot モデルの一覧を出す（--family で指名する名前を調べる）")
     parser.add_argument("--agent", metavar="TASK",
                         help="VS Code のツールを使わせながらタスクを解かせる"
                              "（- で標準入力から読む）")
@@ -687,6 +747,9 @@ def main() -> int:
     parser.add_argument("--max-tool-chars", type=int, metavar="N",
                         help="ツール結果 1 件の上限文字数（既定 16000。超えた分は切って"
                              "モデルへ伝える）")
+    parser.add_argument("--max-rounds", type=int, metavar="N",
+                        help="ツール手番の往復上限（既定 25。最後の 1 回はツール無しのまとめに"
+                             "使うので、達しても答えは返る）")
     parser.add_argument("--debug", action="store_true",
                         help="毎往復、bridge へ送ったメッセージの形を標準エラーへ出す")
     parser.add_argument("--write", action="store_true",
@@ -711,10 +774,12 @@ def main() -> int:
     args = parser.parse_args()
     # 端末から引数なしで起動したら対話。パイプ入力は従来どおり片道実行のまま。
     as_agent = bool(args.agent or args.write or args.file or args.read)
-    one_off = args.tools or args.call or as_agent
+    one_off = args.tools or args.models or args.call or as_agent
     interactive = args.interactive or (args.prompt is None and not one_off and sys.stdin.isatty())
     if interactive and args.json:
         parser.error("--json は対話モードでは使えません")
+    if args.max_rounds is not None and args.max_rounds < 2:
+        parser.error("--max-rounds は 2 以上で指定してください（最後の 1 回はまとめに使います）")
     try:
         path = endpoint_path()
         endpoint = ensure_bridge(
@@ -726,6 +791,10 @@ def main() -> int:
         if args.tools:
             payload = fetch_tools(endpoint, args.timeout)
             print(json.dumps(payload, ensure_ascii=False) if args.json else format_tools(payload))
+            return 0
+        if args.models:
+            payload = fetch_models(endpoint, args.timeout)
+            print(json.dumps(payload, ensure_ascii=False) if args.json else format_models(payload))
             return 0
         if as_agent and not interactive:
             if args.agent is not None:
@@ -751,7 +820,8 @@ def main() -> int:
                     print(line, file=sys.stderr)
 
             result = run_agent(endpoint, prompt, tools, args.family, args.timeout, on_event,
-                               debug=args.debug, max_tool_chars=args.max_tool_chars)
+                               debug=args.debug, max_tool_chars=args.max_tool_chars,
+                               max_rounds=args.max_rounds)
             if args.json:
                 print(json.dumps({**result, "tools": tools, "events": events}, ensure_ascii=False))
             elif result["text"].strip():
@@ -782,7 +852,8 @@ def main() -> int:
             result = call_tool(endpoint, args.call, tool_input, args.timeout)
             print_tool_result(result, args.json)
             return 0
-        session = Session(args.family, debug=args.debug, max_tool_chars=args.max_tool_chars)
+        session = Session(args.family, debug=args.debug, max_tool_chars=args.max_tool_chars,
+                          max_rounds=args.max_rounds)
         if interactive:
             if as_agent:
                 # 対話でも道具を持てる。`-i --write` は「読み書きできる対話」を意味する。
