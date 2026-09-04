@@ -99,6 +99,7 @@ copilot> さっきの要約を3行にして
 | `/clear` | 会話履歴を捨てて新しい会話を始める |
 | `/model [family]` | モデル family を表示・変更（引数なしで既定へ戻す） |
 | `/tools [SETS]` | ツールを表示・変更（`/tools read,write`、`/tools off` で素の会話） |
+| `/rounds [N]` | ツール手番の往復上限を表示・変更（引数なしで拡張の既定 25 へ戻す） |
 | `/exit` `/quit` | 終了（Ctrl-D も同じ） |
 
 ### 対話でツールを使う
@@ -163,7 +164,8 @@ Bearer token を提示します。リクエスト上限は 4 MiB です（会話
 エンドポイントファイルは両プロセスで `VSCODE_COPILOT_BRIDGE_FILE` を設定すれば変更でき
 ます。トークンを含むため、共有・コミットしないでください。
 
-API は `POST /v1/chat`・`GET /v1/tools`・`POST /v1/tool`・`POST /v1/agent` の 4 つです。いずれも Bearer token が要ります。
+API は `POST /v1/chat`・`GET /v1/models`・`GET /v1/tools`・`POST /v1/tool`・`POST /v1/agent` の
+5 つです。いずれも Bearer token が要ります。
 
 **会話状態は CLI 側が持ち、拡張は毎回すべての手番を受け取る状態を持たない変換器**でいます。
 bridge を再起動しても会話が消えず、複数の CLI セッションが 1 つの拡張を同時に使えます。
@@ -196,6 +198,24 @@ HTTP status 付きの JSON エラーで返ります。書き始めた後の失�
 これは **モデル呼び出し**であり、VS Code Agent mode の built-in tools、ファイル編集、
 ターミナル実行を自動的に利用するものではありません。ただしツール自体は借りられます
 ——次節を参照。
+
+## モデルを選ぶ
+
+`--family` を省くと、`vscode.lm.selectChatModels({vendor:"copilot"})` が返す**先頭のモデル**を
+使います。どれが先頭かは VS Code のバージョンと Copilot の契約で変わり、強いモデルとは
+限りません。`--models` で一覧を見て、`--family` で指名してください。
+
+```console
+$ vscode-copilot --models
+3 個のモデルが使えます（--family を省くと先頭を使います）。
+  gpt-4.1  GPT-4.1  (gpt-4.1)  入力上限 128,000 tokens
+  claude-sonnet-4  Claude Sonnet 4  (claude-sonnet-4)  入力上限 200,000 tokens
+  …
+$ vscode-copilot --family claude-sonnet-4 --agent "…"
+```
+
+エージェントの終わりの行にも、どの family が答えたかが出ます（`（3 往復・gpt-4.1）`）。
+`--json` なら `maxInputTokens` も取れるので、`--max-tool-chars` の当たりを付けるのに使えます。
 
 ## VS Code のツールを見る
 
@@ -411,12 +431,32 @@ git が綺麗な状態で試すのが安全です。
 
 | ツール | 入力 | 動き |
 |---|---|---|
-| `bridge_replaceString` | `filePath` `oldString` `newString` | 厳密一致で **1 箇所だけ**置換する。0 件も複数件も失敗させる |
+| `bridge_replaceString` | `filePath` `oldString` `newString` `replaceAll?` | 厳密一致で **1 箇所だけ**置換する。0 件も複数件も失敗させる。`replaceAll: true` なら全件 |
 | `bridge_createFile` | `filePath` `content` | 丸ごと書く。既存ファイルは中身を置き換える |
 
 patch 形式は起こしていません。差分の当て直しを自前で実装する価値はなく、「1 箇所だけ
 置換」と「丸ごと書く」で足ります。**0 件・複数件を失敗させるのは、「どこかが変わった」を
 黙って返すとモデルが直った気で次の手番へ進むためです。**
+
+**失敗も成功も、次の 1 回で済む言葉で返します。** ツールの失敗は 1 往復を丸ごと食うので、
+`見つかりません` とだけ返すとモデルは読み直し（1 往復）→ 直して呼び直し（1 往復）と
+往復を溶かします。そこで結果に「ファイルの実際の行」を載せます。
+
+| 状況 | 返すもの |
+|---|---|
+| 複数一致 | 一致した行番号と、`replaceAll: true` の案内 |
+| 空白・インデントだけ違う | その旨と、該当箇所の実際の行（行番号付き） |
+| 1 行目は在るが続きが違う | 1 行目の場所と、そこからの実際の行 |
+| まったく無い | 読み直しの案内（ファイルが変わっている可能性） |
+| 成功 | 編集後の周辺行（行番号付き）。**確認のための読み直しは要りません** |
+
+```console
+  → bridge_replaceString {"filePath":"…/a.py","oldString":"def caller():\n  return old()",…}
+  ! bridge_replaceString: …/a.py: oldString は空白・インデントの違いだけで一致していません。
+    ファイルの実際の行は次のとおりです（…そのまま oldString に使うこと）:
+    5| def caller():
+    6|     return old()
+```
 
 置換はドキュメント経由で行い、保存までやります。エディタに未保存の変更があるとき
 `fs` へ直に書くと、それを黙って捨てることになります。
@@ -529,26 +569,58 @@ assistant を積むのと同じ穴**だからです。
   ! copilot_readFile: File /README.md does not exist
 ```
 
-実測でこれを 12 往復ぶん繰り返して打ち切られました。場所を知っているのは拡張
-（VS Code が開いているフォルダ）なので、依頼文の頭にこちらから書きます。
+実測でこれを 12 往復ぶん繰り返して打ち切られました（当時の既定）。場所を知っているのは
+拡張（VS Code が開いているフォルダ）なので、依頼文の頭にこちらから書きます。同じ場所で
+**往復の予算と進め方**も伝えます——上限を知らないモデルは計画できません。
 
 ```text
 いま開いているワークスペース:
 - /Users/nitto/sandbox
 
-ファイルを扱うツールへ渡すパスは、この下の**絶対パス**にすること（相対パスは
-受け付けられない）。
+ファイルを扱うツールへ渡すパスは、この下の**絶対パス**にすること（相対パスは受け付けられない）。
+
+この手番の進め方:
+- モデルへの往復は最大 25 回（ツールを呼ぶたびに 1 回消費し、最後の 1 回はツール無しでまとめる）。
+- 互いに依存しないツール呼び出し（複数ファイルの読み取り、別々のファイルの編集など）は、1 回の応答にまとめて出すこと。…
+- 一度読んだファイルを理由なく読み直さない。…
+- bridge_replaceString は成功すると編集後の周辺行を返すので、確認のための読み直しは要らない。…（write を持たせたときだけ）
+
+リポジトリの申し送り（/Users/nitto/sandbox/.github/copilot-instructions.md）:
+…
 ```
 
 置くのは**いまの手番の頭**です。別のメッセージとして足すと、履歴の並び
-（user/assistant の交互）が崩れます。
+（user/assistant の交互）が崩れます。履歴には残りません（CLI が持つのは依頼文だけ）。
 
-打ち切りのときは最後のツール失敗も添えます——何に詰まっていたかが見えないと直せません。
+**リポジトリの申し送りも読ませます。** ワークスペース直下の `.github/copilot-instructions.md`
+と `AGENTS.md` があれば、この手番の頭へ載せます（各 8000 文字まで。超えた分は切って
+その旨を書きます）。Copilot Chat は自分のループでこれを読みますが、`vscode.lm` から直に
+回すこのループには誰も入れてくれないためです。
+
+### 往復の予算
+
+**往復（モデルへの sendRequest）は既定 25 回**で、`--max-rounds N` / `/rounds N` で変えられます
+（Copilot Chat 自身の `chat.agent.maxRequests` の既定と同じ値）。以前の 12 は、読む・直す・
+確かめるを 1 往復ずつやる編集タスクでは小さな改名でも尽きました。
+
+**上限に達しても失敗にはしません。** 最後の 1 回はツールを渡さずに回すので、モデルは
+文章で答えるしかなく、「ここまでに行ったこと・残っていること」が手番の成果として返ります
+（以前は 409 で終わり、それまでの往復が言葉として何も残りませんでした）。残りが少なく
+なると、ツール結果の中に注意を添えて着地を促します。
 
 ```console
-vscode-copilot: bridge error: gave up after 12 rounds without a final answer
-（最後のツール失敗: copilot_readFile: Invalid input path: README.md. …）
+  （25 往復・gpt-4.1・往復の上限 25 に達したので、ツール無しでまとめさせました。
+    続きは次の手番で頼むか、--max-rounds で伸ばしてください）
 ```
+
+対話ならそのまま「続けて」と頼めます（まとめが履歴に残るので、次の手番はそこから
+再開できます）。片道実行では標準出力にまとめが出て、終了コードは 0 です——**本文は
+依頼が終わった報告ではない**ので、`--json` の `exhausted` か標準エラーのこの行で見分けて
+ください。
+
+注意はツール結果の**中**の text part として入れます。結果と並べて別の text part を積む形は、
+VS Code の変換の向こう（role `tool` の並び）でどう扱われるか実測が無く、結果の中の text は
+今まで通っている形だからです。
 
 ### 長い結果は切る
 
@@ -575,7 +647,8 @@ $ vscode-copilot --agent-tools copilot_getChangedFiles --agent "変更を教え�
   失敗も `! ツール名: 理由` として画面に出ます
 - **手番は呼び出しを Assistant 側・結果を User 側へ積みます**（`callId` で対応が付く）。
   片方だけ積むと次の往復でモデルが文脈を失います
-- 既定 12 往復で打ち切ります。答えに至らなければ失敗として返します
+- 既定 25 往復で、最後の 1 回はツール無しのまとめに使います（`--max-rounds` / `/rounds`）。
+  上限に達しても答えは返り、`exhausted` が立ちます
 - 実行は長くかかります。既定の応答待ちは 300 秒なので、足りなければ `--timeout` を
   伸ばしてください（切れると接続が落ち、VS Code 側もそこで止まります）
 
@@ -584,6 +657,12 @@ $ vscode-copilot --agent-tools copilot_getChangedFiles --agent "変更を教え�
 ## テスト
 
 ```bash
-python3 -m pytest tools/vscode-copilot/tests            # CLI
-python3 -m unittest discover -s test                          # tmux 待機判定（tools/agent-loop で実行）
+python3 -m pytest tools/vscode-copilot/tests                          # CLI
+node --test tools/vscode-copilot/extension/test/extension.test.js     # 拡張（vscode を差し替えて回す）
+python3 -m unittest discover -s test                                  # tmux 待機判定（tools/agent-loop で実行）
 ```
+
+拡張のテストは本物の VS Code を起こしません。`extension/test/fake-vscode.js` が `vscode` の
+代役（メッセージ部品・`lm.tools`・`workspace.fs`・`applyEdit`）を持ち、往復の予算・
+メッセージの積み方・`bridge_replaceString` の診断を固定します。VS Code の変換の向こうで
+起きること（400 の形など）はこれでは見えないので、そこは `--debug` と実機で確かめます。

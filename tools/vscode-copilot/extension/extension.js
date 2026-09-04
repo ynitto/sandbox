@@ -290,12 +290,80 @@ function toolText(message) {
   return new vscode.LanguageModelToolResult([new vscode.LanguageModelTextPart(message)]);
 }
 
+// --- 置換の失敗を、次の 1 回で直せる言葉にする ---------------------------------
+//
+// **ツールの失敗は 1 往復を丸ごと食う。** `oldString が見つかりません` とだけ返すと、
+// モデルは copilot_readFile で読み直し（1 往復）、直して呼び直す（1 往復）。失敗の
+// 理由と「ファイルの実際の行」をここで返せば、読み直しの往復が要らない。
+// 同じ理由で成功時も編集後の周辺行を返す——「直ったか確かめる」読み直しを省く。
+
+function lineNumberAt(text, offset) {
+  let line = 1;
+  for (let i = 0; i < offset && i < text.length; i++) if (text.charCodeAt(i) === 10) line++;
+  return line;
+}
+
+function findAll(text, needle) {
+  const offsets = [];
+  for (let at = text.indexOf(needle); at >= 0; at = text.indexOf(needle, at + needle.length)) {
+    offsets.push(at);
+  }
+  return offsets;
+}
+
+// 行番号付きで from..to（1 始まり、両端含む）を出す。モデルが oldString を組み立て
+// 直すときの材料なので、行の中身は 1 文字も変えない。
+function numberedLines(text, from, to) {
+  const lines = text.split('\n');
+  const start = Math.max(1, from);
+  const end = Math.min(lines.length, to);
+  const width = String(end).length;
+  const out = [];
+  for (let n = start; n <= end; n++) out.push(`${String(n).padStart(width)}| ${lines[n - 1]}`);
+  return out.join('\n');
+}
+
+function regionAround(text, startOffset, endOffset, context) {
+  const first = lineNumberAt(text, startOffset);
+  const last = lineNumberAt(text, Math.max(startOffset, endOffset - 1));
+  return { first, last, listing: numberedLines(text, first - context, last + context) };
+}
+
+const normalizeSpace = value => value.split('\n').map(line => line.trim().replace(/[ \t]+/g, ' ')).join('\n');
+
+// 見つからなかったときに何を返すか。優先順位は「空白だけの違い」→「1 行目は在るが続きが
+// 違う」→「まったく無い」。どれも、返した行をそのまま oldString に使えば次で通る形にする。
+function explainMissing(text, oldString) {
+  const wanted = oldString.split('\n');
+  const loose = findAll(normalizeSpace(text), normalizeSpace(oldString));
+  const lines = text.split('\n');
+  // 目印にするのは最初の**空でない**行。oldString が改行で始まっていても手がかりを失わない。
+  const lead = Math.max(0, wanted.findIndex(line => line.trim()));
+  const firstWanted = (wanted[lead] || '').trim();
+  const heads = [];
+  if (firstWanted) {
+    lines.forEach((line, index) => { if (line.trim() === firstWanted) heads.push(index + 1); });
+  }
+  const show = head => numberedLines(text, head - lead, head - lead + wanted.length + 1);
+  if (loose.length === 1 && heads.length) {
+    return 'oldString は空白・インデントの違いだけで一致していません。'
+      + `ファイルの実際の行は次のとおりです（行番号の後ろの文字列をそのまま oldString に使うこと）:\n${show(heads[0])}`;
+  }
+  if (heads.length) {
+    const where = heads.slice(0, 5).join(', ') + (heads.length > 5 ? ', …' : '');
+    return `oldString の 1 行目は ${where} 行目にありますが、続きが一致しません。`
+      + `${heads[0]} 行目からの実際の内容は次のとおりです（これをそのまま oldString に使うこと）:\n${show(heads[0])}`;
+  }
+  return 'oldString の 1 行目に当たる行がファイルにありません。'
+    + 'ファイルは変わっているかもしれないので、copilot_readFile で読み直してから現在の内容で呼び直してください';
+}
+
 const BRIDGE_TOOLS = {
   // 厳密一致で 1 箇所だけ置換する。0 件も複数件も失敗させる——「どこかが変わった」を
-  // 黙って返すと、モデルは直った気で次の手番へ進む。
+  // 黙って返すと、モデルは直った気で次の手番へ進む。replaceAll: true のときだけ全件。
   bridge_replaceString: {
     async invoke(options) {
-      const { filePath, oldString, newString } = options.input || {};
+      const { filePath, oldString, newString, replaceAll } = options.input || {};
       if (typeof oldString !== 'string' || !oldString) {
         throw new Error('oldString は空でない文字列で渡してください');
       }
@@ -305,22 +373,34 @@ const BRIDGE_TOOLS = {
       // それを黙って捨てることになる。
       const document = await vscode.workspace.openTextDocument(uri);
       const text = document.getText();
-      const at = text.indexOf(oldString);
-      if (at < 0) throw new Error(`oldString がファイルに見つかりません: ${uri.fsPath}`);
-      if (text.indexOf(oldString, at + oldString.length) >= 0) {
+      const hits = findAll(text, oldString);
+      if (!hits.length) throw new Error(`${uri.fsPath}: ${explainMissing(text, oldString)}`);
+      if (hits.length > 1 && !replaceAll) {
+        const where = hits.slice(0, 10).map(at => lineNumberAt(text, at)).join(', ')
+          + (hits.length > 10 ? ', …' : '');
         throw new Error(
-          `oldString が複数の場所と一致します。前後の行を足して 1 箇所に絞ってください: ${uri.fsPath}`);
+          `oldString が ${hits.length} 箇所と一致します（${where} 行目）。前後の行を足して 1 箇所に`
+          + `絞るか、全部を同じに直すなら replaceAll: true を付けてください: ${uri.fsPath}`);
       }
-      const range = new vscode.Range(document.positionAt(at), document.positionAt(at + oldString.length));
       const edit = new vscode.WorkspaceEdit();
-      edit.replace(uri, range, newString);
+      for (const at of hits) {
+        edit.replace(uri, new vscode.Range(document.positionAt(at), document.positionAt(at + oldString.length)), newString);
+      }
       if (!await vscode.workspace.applyEdit(edit)) {
         throw new Error(`編集を適用できませんでした: ${uri.fsPath}`);
       }
       // 保存まで済ませる。開いたバッファの中だけ直しても、呼び出し側からは何も
       // 変わっていない。
       if (!await document.save()) throw new Error(`保存できませんでした: ${uri.fsPath}`);
-      return toolText(`Replaced 1 occurrence in ${uri.fsPath}`);
+      const after = document.getText();
+      if (hits.length > 1) {
+        const where = hits.map(at => lineNumberAt(text, at)).join(', ');
+        return toolText(`Replaced ${hits.length} occurrences in ${uri.fsPath} (originally at lines ${where}).`);
+      }
+      const region = regionAround(after, hits[0], hits[0] + newString.length, 2);
+      return toolText(
+        `Replaced 1 occurrence in ${uri.fsPath} (now lines ${region.first}-${region.last}). `
+        + `The file around the edit now reads:\n${region.listing}`);
     },
   },
   // 丸ごと書く。既存ファイルは中身を置き換える（部分的に直すなら
@@ -333,7 +413,8 @@ const BRIDGE_TOOLS = {
       // ponytail: 未保存のエディタがあれば、この書き込みは競合する（VS Code 側で
       // 「ディスクが変わった」になる）。丸ごと置き換える道具なので今はこれで足りる。
       await vscode.workspace.fs.writeFile(uri, Buffer.from(content, 'utf8'));
-      return toolText(`Wrote ${content.length} chars to ${uri.fsPath}`);
+      const lines = content.split('\n').length;
+      return toolText(`Wrote ${content.length} chars (${lines} lines) to ${uri.fsPath}`);
     },
   },
 };
@@ -342,21 +423,99 @@ function registerBridgeTools() {
   return Object.entries(BRIDGE_TOOLS).map(([name, tool]) => vscode.lm.registerTool(name, tool));
 }
 
-const DEFAULT_MAX_ROUNDS = 12;
+// 往復（モデルへの sendRequest）の上限。Copilot Chat 自身の agent mode が
+// `chat.agent.maxRequests` の既定を 25 にしているのに合わせる。以前の 12 は、読む・
+// 直す・確かめるを 1 往復ずつ律儀にやる編集タスクではすぐ尽きた（実測: 読み書き両方を
+// 持たせると小さな改名でも上限に当たる）。上限の最後の 1 回はツール無しで「まとめ」に
+// 使うので、ツールを呼べる往復は maxRounds - 1 回。
+const DEFAULT_MAX_ROUNDS = 25;
+const MIN_MAX_ROUNDS = 2;  // 1 だとツールを一度も持てない
+
+// リポジトリが置いている申し送り。Copilot Chat は自分のループでこれを読むが、
+// `vscode.lm` から直に回すこのループには誰も入れてくれない。
+const INSTRUCTION_FILES = ['.github/copilot-instructions.md', 'AGENTS.md'];
+const MAX_INSTRUCTION_CHARS = 8000;
+
+async function readInstructionFiles(roots) {
+  const found = [];
+  for (const root of roots) {
+    for (const relative of INSTRUCTION_FILES) {
+      const uri = vscode.Uri.file(path.join(root, relative));
+      let text;
+      try {
+        text = Buffer.from(await vscode.workspace.fs.readFile(uri)).toString('utf8');
+      } catch (_) {
+        continue;  // 無いのが普通
+      }
+      if (!text.trim()) continue;
+      if (text.length > MAX_INSTRUCTION_CHARS) {
+        text = text.slice(0, MAX_INSTRUCTION_CHARS)
+          + `\n…（${MAX_INSTRUCTION_CHARS} 文字で切りました。全体は ${text.length} 文字）`;
+      }
+      found.push({ path: uri.fsPath, text });
+    }
+  }
+  return found;
+}
 
 // **モデルはワークスペースの場所を知らない。** Copilot のファイルツールは絶対パスしか
 // 受け取らないのに（`Invalid input path: README.md. Be sure to use an absolute path.`）、
 // どこを起点にすればよいかを知らせる口が無かった。実測（2026-08-30）: `/README.md`
 // `./README.md` `agents/README.md` を当てずっぽうで叩き続け、12 往復を使い切った。
 // 場所を知っているのは拡張（VS Code が開いているフォルダ）なので、ここで渡す。
-function workspaceNote() {
+//
+// 同じ場所で、往復の予算と進め方も伝える。**モデルは上限を知らなければ計画できない**
+// ——1 往復にツール 1 個ずつ、編集のたびに読み直し、では予算がいくらあっても足りない。
+async function turnNote(toolNames, maxRounds) {
   const folders = (vscode.workspace && vscode.workspace.workspaceFolders) || [];
   const roots = folders.map(folder => folder && folder.uri && folder.uri.fsPath).filter(Boolean);
   if (!roots.length) return '';
-  return 'いま開いているワークスペース:\n'
-    + roots.map(root => `- ${root}`).join('\n')
-    + '\n\nファイルを扱うツールへ渡すパスは、この下の**絶対パス**にすること'
-    + '（相対パスは受け付けられない）。\n\n';
+  const offered = new Set(toolNames || []);
+  const lines = ['いま開いているワークスペース:', ...roots.map(root => `- ${root}`), '',
+    'ファイルを扱うツールへ渡すパスは、この下の**絶対パス**にすること（相対パスは受け付けられない）。',
+    '',
+    'この手番の進め方:',
+    `- モデルへの往復は最大 ${maxRounds} 回（ツールを呼ぶたびに 1 回消費し、最後の 1 回はツール無しでまとめる）。`,
+    '- 互いに依存しないツール呼び出し（複数ファイルの読み取り、別々のファイルの編集など）は、'
+      + '1 回の応答にまとめて出すこと。1 個ずつ順に呼ぶと往復を無駄にする。',
+    '- 一度読んだファイルを理由なく読み直さない。ツールの失敗は理由が返るので、それに従って 1 回で直す。'];
+  if (offered.has('bridge_replaceString')) {
+    lines.push(
+      '- bridge_replaceString は成功すると編集後の周辺行を返すので、確認のための読み直しは要らない。'
+        + '同じ文字列を全部置き換えるなら replaceAll: true を使う（1 箇所ずつ呼ばない）。',
+      '- bridge_replaceString が失敗したら、返ってきたファイルの実際の行をそのまま oldString に使って呼び直す。');
+  }
+  const instructions = await readInstructionFiles(roots);
+  for (const file of instructions) {
+    lines.push('', `リポジトリの申し送り（${file.path}）:`, file.text.trim());
+  }
+  return lines.join('\n') + '\n\n';
+}
+
+// 残り往復が少ないときに、最後のツール結果へ添える注意。上限に当たってから
+// 「gave up」で終わるより、着地させるほうが手番の成果が残る。
+function budgetNote(round, maxRounds) {
+  const remaining = maxRounds - round;  // この往復の後に残る回数（最後の 1 回はツール無し）
+  if (remaining === 1) {
+    return '（注意: 次がこの手番の最後の往復で、ツールは使えません。ここまでの結果を踏まえて、'
+      + '行ったこと・残っていることを含めた最終回答を書くこと）';
+  }
+  if (remaining >= 2 && remaining <= 3) {
+    return `（注意: ツールを使える往復は残り ${remaining - 1} 回です。必要な呼び出しはまとめて出し、`
+      + 'その後の応答で結論を書くこと）';
+  }
+  return '';
+}
+
+function listModels() {
+  return vscode.lm.selectChatModels({ vendor: 'copilot' }).then(models => ({
+    models: models.map(model => ({
+      ...describeModel(model),
+      vendor: model.vendor,
+      version: model.version,
+      maxInputTokens: model.maxInputTokens,
+    })),
+  }));
 }
 
 // デバッグ用に「送った形」だけを写す（本文は出さない——依頼文が丸ごとログへ出ると困る）。
@@ -395,8 +554,7 @@ function resolveTools(names) {
 
 // モデルにツールを持たせて回す。ツール本体も承認も VS Code のものを使い、ここが持つのは
 // 「どのツールを呼ぶか決めさせて、結果を返して、また訊く」というループだけ。
-function withWorkspaceNote(body) {
-  const note = workspaceNote();
+function withNote(body, note) {
   if (!note) return body;
   if (Array.isArray(body.messages) && body.messages.length) {
     const messages = body.messages.slice();
@@ -421,18 +579,22 @@ async function runAgent(body, cancellationToken, emit) {
     throw Object.assign(new Error('no Copilot chat model is available in VS Code'), { status: 503 });
   }
   const model = models[0];
+  const maxRounds = Math.max(MIN_MAX_ROUNDS,
+    Number.isInteger(body.maxRounds) && body.maxRounds > 0 ? body.maxRounds : DEFAULT_MAX_ROUNDS);
   // 環境の申し送りは**いまの手番の頭**へ置く。別のメッセージとして足すと、履歴の
   // 並び（user/assistant の交互）が崩れる。
-  const messages = toMessages(withWorkspaceNote(body));
-  const maxRounds = Number.isInteger(body.maxRounds) && body.maxRounds > 0
-    ? body.maxRounds : DEFAULT_MAX_ROUNDS;
-  let lastToolError = '';
+  const messages = toMessages(withNote(body, await turnNote(body.tools, maxRounds)));
+  const summary = text => ({ text, model: describeModel(model), maxRounds });
 
   for (let round = 1; round <= maxRounds; round++) {
+    // **最後の往復はツールを渡さない。** 上限に当たって 409 で終わると、それまでの
+    // 往復（読んだこと・書き換えたこと）が言葉として何も残らない。ツールを外せば
+    // モデルは文章で答えるしかなく、「ここまで・残り」が手番の成果として返る。
+    const finalRound = round === maxRounds;
     // 何を送ったのかは、失敗してからでは分からない。VS Code の変換の向こうで
     // 400 が返るとき、手前で持っていた形が唯一の手がかりになる。
     if (body.debug) emit({ debug: { round, messages: messages.map(describeMessage) } });
-    const response = await model.sendRequest(messages, { tools }, cancellationToken);
+    const response = await model.sendRequest(messages, finalRound ? {} : { tools }, cancellationToken);
     const parts = [];
     const calls = [];
     let text = '';
@@ -446,7 +608,13 @@ async function runAgent(body, cancellationToken, emit) {
         calls.push(part);
       }
     }
-    if (!calls.length) return { text, rounds: round, model: describeModel(model) };
+    if (!calls.length) return { ...summary(text), rounds: round, exhausted: finalRound };
+    if (finalRound) {
+      // ツールを渡していないのに呼び出しが来た。実行はしない（提示外は実行しない、と
+      // 同じ規則）。本文があればそれを答えとして返す。
+      for (const call of calls) emit({ tool: call.name, error: 'round budget exhausted; not run' });
+      return { ...summary(text), rounds: round, exhausted: true };
+    }
 
     // 手番を積み直す。呼び出しを Assistant 側へ、結果を User 側へ入れるのが契約で、
     // callId で対応が付く。片方だけ積むと次の往復でモデルが文脈を失う。
@@ -466,9 +634,7 @@ async function runAgent(body, cancellationToken, emit) {
         // それは嘘になる）。実測でスタブが提示外の copilot_applyPatch を呼び、
         // ファイルが書き換わった。
         const message = `tool not offered for this request: ${call.name}`;
-        results.push(new vscode.LanguageModelToolResultPart(
-          call.callId, [new vscode.LanguageModelTextPart(`tool error: ${message}`)]));
-        lastToolError = `${call.name}: ${message}`;
+        results.push({ callId: call.callId, parts: [new vscode.LanguageModelTextPart(`tool error: ${message}`)] });
         emit({ tool: call.name, error: message });
         continue;
       }
@@ -476,7 +642,7 @@ async function runAgent(body, cancellationToken, emit) {
         const result = await vscode.lm.invokeTool(
           call.name, { toolInvocationToken: undefined, input: call.input }, cancellationToken);
         const folded = toolResultParts(result, body.maxToolResultChars);
-        results.push(new vscode.LanguageModelToolResultPart(call.callId, folded.parts));
+        results.push({ callId: call.callId, parts: folded.parts });
         const limit = body.maxToolResultChars || MAX_TOOL_RESULT_CHARS;
         emit(folded.full > limit
           ? { tool: call.name, ok: true, truncated: folded.full, limit }
@@ -484,19 +650,19 @@ async function runAgent(body, cancellationToken, emit) {
       } catch (error) {
         // 失敗もモデルへ返す。黙って落とすと同じ呼び出しを繰り返すだけになる。
         const message = error && error.message ? error.message : String(error);
-        results.push(new vscode.LanguageModelToolResultPart(
-          call.callId, [new vscode.LanguageModelTextPart(`tool error: ${message}`)]));
-        lastToolError = `${call.name}: ${message}`;
+        results.push({ callId: call.callId, parts: [new vscode.LanguageModelTextPart(`tool error: ${message}`)] });
         emit({ tool: call.name, error: message });
       }
     }
-    messages.push(vscode.LanguageModelChatMessage.User(results));
+    // 残り往復の注意は**最後のツール結果の中**へ入れる。ツール結果と並べて別の text part を
+    // 積む形は、VS Code の変換の向こう（role 'tool' の並び）でどう扱われるか実測が無い。
+    // 結果の中の text part は今まで通っている形なので、そこへ足すのが安全側。
+    const note = budgetNote(round, maxRounds);
+    if (note) results[results.length - 1].parts.push(new vscode.LanguageModelTextPart(`\n\n${note}`));
+    messages.push(vscode.LanguageModelChatMessage.User(
+      results.map(entry => new vscode.LanguageModelToolResultPart(entry.callId, entry.parts))));
   }
-  // 打ち切りだけを伝えても、何に詰まっていたのかが分からない。最後のツール失敗を添える
-  // ——実測で「絶対パスが要る」を 12 回繰り返して終わった（それが見えないと直せない）。
-  throw Object.assign(
-    new Error(`gave up after ${maxRounds} rounds without a final answer`
-      + (lastToolError ? `（最後のツール失敗: ${lastToolError}）` : '')), { status: 409 });
+  throw new Error('unreachable: the final round returns');  // finalRound は必ず return する
 }
 
 // エージェントは何往復もするので常に NDJSON で流す。何をしているか見えないまま
@@ -516,7 +682,8 @@ async function streamAgent(response, body, cancellationToken) {
   try {
     const result = await runAgent(body, cancellationToken, event => { start(); write(event); });
     start();
-    write({ done: true, text: result.text, rounds: result.rounds, model: result.model });
+    write({ done: true, text: result.text, rounds: result.rounds, maxRounds: result.maxRounds,
+      exhausted: Boolean(result.exhausted), model: result.model });
     response.end();
   } catch (error) {
     if (!started) throw error;
@@ -528,8 +695,8 @@ async function streamAgent(response, body, cancellationToken) {
 function createServer(token) {
   return http.createServer(async (request, response) => {
     const route = `${request.method} ${request.url}`;
-    if (route !== 'POST /v1/chat' && route !== 'POST /v1/tool'
-        && route !== 'POST /v1/agent' && route !== 'GET /v1/tools') {
+    if (route !== 'POST /v1/chat' && route !== 'POST /v1/tool' && route !== 'POST /v1/agent'
+        && route !== 'GET /v1/tools' && route !== 'GET /v1/models') {
       json(response, 404, { error: 'not found' });
       return;
     }
@@ -537,9 +704,9 @@ function createServer(token) {
       json(response, 401, { error: 'unauthorized' });
       return;
     }
-    if (route === 'GET /v1/tools') {
+    if (route === 'GET /v1/tools' || route === 'GET /v1/models') {
       try {
-        json(response, 200, listTools());
+        json(response, 200, route === 'GET /v1/tools' ? listTools() : await listModels());
       } catch (error) {
         console.error('[vscode-copilot-bridge]', error);
         json(response, 500, { error: error.message || String(error) });
@@ -609,3 +776,8 @@ function activate(context) {
 function deactivate() {}
 
 module.exports = { activate, deactivate };
+// テストから中身を叩くための口（VS Code の外では `vscode` を差し替えて読み込む）。
+module.exports._internal = {
+  runAgent, BRIDGE_TOOLS, turnNote, budgetNote, explainMissing, listModels, toolResultParts,
+  DEFAULT_MAX_ROUNDS, MIN_MAX_ROUNDS,
+};
