@@ -22,11 +22,13 @@
 // ハーネス（agent-loop statemachine）はシェルを介さず argv を直接実行するので、
 // 指示文でもパイプ・リダイレクトを使わない形に倒す（コマンドと検査コマンドはここで断る）。
 //
-// このモジュールが依存するのは template-parameters（`{{key}}` の 1 実装）だけで、
-// cowork.js・Electron・ファイルシステムには触れない（単体で検査できる）。
+// このモジュールが依存するのは template-parameters（`{{key}}` の 1 実装）と screen-tools
+// （道具をどちら側で呼ぶかの 1 実装）だけで、cowork.js・Electron には触れない
+// （単体で検査できる）。
 
 const templateParameters = require('../../../base/main/template-parameters');
 const recording = require('./recording');
+const screenTools = require('./screen-tools');
 
 // 工程列（正規形）の版。項目に保存した工程列を後から読むときの目印で、形を変えるときに上げる。
 //   1 … 初版
@@ -457,16 +459,25 @@ function toolsFor(kinds) {
   return out;
 }
 
-// `capture(command, args, { cwd, timeoutMs })` は loopProvider.runCommandCapture と同じ形
-// （テストでは差し替える）。LLM を使わない診断コマンドだけを呼ぶ（`doctor` / `--version` は
-// 読み取り専用で、winauto のデスクトップロックも取らない）。
-async function toolStatus({ cwd = '', kinds = [], capture, timeoutMs = 20000 } = {}) {
+// `capture(command, args, { cwd, timeoutMs, native })` は loopProvider.runCommandCapture と
+// 同じ形（テストでは差し替える）。LLM を使わない診断コマンドだけを呼ぶ（`doctor` /
+// `--version` は読み取り専用で、winauto のデスクトップロックも取らない）。
+//
+// **どちら側の実体を見たかまで報告する。** win32 では Windows 側と WSL 側の両方に入りうるし、
+// 片側にしか入れていない端末もある。「未準備」とだけ言われても、どちらへ入れればよいのか
+// 分からない（実際、Windows にしか winauto を入れていない端末では WSL 側を見て未準備に
+// 見えていた）。
+async function toolStatus({ cwd = '', kinds = [], capture,
+  resolve = screenTools.resolveScreenTool, timeoutMs = 20000 } = {}) {
   if (typeof capture !== 'function') throw new Error('道具の確認に使う実行関数がありません');
   const out = [];
   for (const tool of toolsFor(kinds)) {
+    const resolved = resolve(tool.command);
+    const where = screenTools.whereLabel(resolved);
     let res;
     try {
-      res = await capture(tool.command, tool.args, { cwd, timeoutMs });
+      res = await capture(resolved.command, tool.args,
+        { cwd, timeoutMs, native: !!resolved.native });
     } catch (err) {
       res = { ok: false, status: -1, stdout: '', stderr: '', error: String((err && err.message) || err) };
     }
@@ -480,7 +491,14 @@ async function toolStatus({ cwd = '', kinds = [], capture, timeoutMs = 20000 } =
     } else {
       verdict = { ok: false, summary: (String(res.stderr || res.stdout || '').split(/\r?\n/).find(Boolean) || '終了コードが 0 ではありません').slice(0, 200) };
     }
-    out.push({ id: tool.id, label: tool.label, ok: verdict.ok, summary: verdict.summary, hint: verdict.ok ? '' : tool.hint });
+    out.push({
+      id: tool.id,
+      label: tool.label,
+      ok: verdict.ok,
+      // 見た側を添える（同じ「利用可能」でも Windows 側か WSL 側かで意味が違う）。
+      summary: where ? `${verdict.summary}（${where}）` : verdict.summary,
+      hint: verdict.ok ? '' : tool.hint,
+    });
   }
   return out;
 }

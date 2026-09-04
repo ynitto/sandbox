@@ -198,7 +198,8 @@ A を採る。B は A の後段としてなら意味がある（説明文の整�
 | `winauto record` コマンド | **実装済み**（§5.1） | comtypes の UIA イベント購読 → JSONL。`LOCKED_COMMANDS` に入れない（読み取り専用・数分動く）。`doctor` に `uia_events` の検査を足した |
 | dashboard から `record` を起こす | **実装済み**（§5.2） | 別ウィンドウ（tmux）で走らせ、停止ファイルで止める |
 | `winauto select` | **実装済み** | 一覧・コンボ・タブから選ぶ副命令。`click` は畳まれたコンボを開くだけ、`type` は編集できないコンボで例外になるので、どちらでも代われなかった。記録の `select` を再現する口でもある |
-| ブラウザの記録の実行環境 | **制約あり（手当て済み）** | Windows の dashboard は wsl.exe 経由で `playwright-cli` を呼ぶので、見える形で開くには WSL 側に画面が要る（Windows 11 の WSLg なら既定で有る）。無い環境では開かないので、**落ちた理由ごとに次の一手を出す**（`browserOpenHint`: 画面が無い / CLI が無い / ブラウザの実体が無い）。逃げ道は「別の端末で取った記録の貼り付け」で、これは常に使える |
+| 画面操作の道具をどちら側で呼ぶか | **実装済み**（§5.3） | win32 は Windows 側の実体を先に探し、無ければ WSL 経由へ落ちる。AI の解釈・拡張の道具は WSL 側のまま |
+| ブラウザの記録の実行環境 | **制約あり（手当て済み）** | Windows 側に `playwright-cli` が入っていればそちらが選ばれ、普段使いのブラウザが出る。WSL 側の実体しか無い端末では WSL に画面（WSLg）が要るので、**落ちた理由ごとに次の一手を出す**（`browserOpenHint`: 画面が無い / CLI が無い / ブラウザの実体が無い）。逃げ道は「別の端末で取った記録の貼り付け」で、これは常に使える |
 | 作成モードが記録を読み違える | 未計測 | 指示文の「記録した操作」節と案内で担保する。事例が出たら案内の文言を足す（YAML の直接指定へは倒さない） |
 | 判断の分岐（AI の処理の工程） | 記録からは出ない | 記録は 1 本道。分岐は人が「AI の処理」工程を足し、判断欄に書く（従来どおり） |
 
@@ -222,6 +223,40 @@ winauto record --app 1234 --duration 120              # 秒で止める / --max-
 `WINAUTO_EVENT_KINDS`、差は `keys` だけ）。`doctor` の `uia_events` は購読可否を見るが
 **warn 止まり**である——購読できなくても `click` / `type` / `tree` は動くので、終了コードを
 1 にする（＝橋が壊れている）意味にはしない。
+
+### 5.3 どちら側の実体を呼ぶか — 画面操作の道具は Windows 側
+
+`playwright-cli` と `winauto` は **Windows のデスクトップを触る道具**である。AI の解釈・拡張
+（エージェント CLI・agent-loop・statemachine-use のハーネス）が WSL 側にあるのとは立場が逆で、
+当初はすべてを `wsl.exe` 経由で呼んでいたため遠回りになっていた。
+
+| 道具 | WSL 経由で呼ぶと |
+|---|---|
+| `winauto` | WSL のラッパーは結局 Windows の `python.exe` を exec する。Electron → `wsl.exe` → bash → `python.exe` と 2 回跨ぐぶん、パス変換とロケールの取り違えが増える。**Windows にしか入れていない端末では WSL 側に実体が無く「未準備」に見えていた** |
+| `playwright-cli` | WSL の中でブラウザを開こうとする。WSLg の無い環境では見える形で開けず、人の操作を記録できない。Windows 側なら普段使いのブラウザがそのまま出る |
+
+そこで **win32 では Windows 側の実体を先に探し、見つかればそれを直接呼ぶ**
+（`src/features/cowork/main/screen-tools.js`）。見つからなければ従来どおり `wsl.exe` 経由へ
+落ちるので、片側にしか入れていない端末でも動き続ける。**AI の解釈・拡張の道具はこの扱いを
+受けない**——あちらは WSL 側が正しい（`cliSpawnSpec` の既定は今までどおり `wsl.exe` 経由で、
+`options.native` を立てたときだけネイティブへ倒れる）。
+
+決めごとが 3 つ連動する。**別々に決めると必ず食い違う**ので、1 か所（`screenToolKit`）で組む。
+
+| 連動するもの | ネイティブ（Windows 側） | WSL 側 |
+|---|---|---|
+| 実体の呼び方 | `cmd /d /s /c "…"`（`.bat` / `.cmd` は直接 spawn できない） | `wsl.exe -e sh -lc "…"` |
+| 一時ファイルの綴り | `%TEMP%\agent-dashboard\…` | `/tmp/agent-dashboard/…` |
+| 読み書き | main プロセスから直接 `fs` | 実行と同じ `wsl.exe` 越し（`cat` / `touch` / `rm`） |
+| 記録の窓 | Windows のコンソール（一時 `.cmd`） | WSL の端末 + tmux（一時 `.sh`） |
+
+Windows 側の探索は **PATHEXT を補う**。npm のグローバル導入は `playwright-cli.cmd`、winauto の
+Windows インストーラは `winauto.bat` を置くので、拡張子なしの名前だけを見る POSIX 流の探索
+では**どちらも見つからない**。優先順は PATHEXT のままにする（Windows 自身がその順で解決するので、
+ここで独自の順を作らない）。
+
+「道具を確認」は**どちら側で見つけたか**まで出す。同じ「利用可能」でも意味が違うし、
+「未準備」とだけ言われても、どちらへ入れればよいのか分からない。
 
 ### 5.2 dashboard から記録を起こす
 

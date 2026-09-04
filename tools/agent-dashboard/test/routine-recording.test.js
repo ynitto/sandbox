@@ -21,6 +21,7 @@ process.env.HOME = HOME_STUB;
 process.env.USERPROFILE = HOME_STUB;
 
 const recording = require('../src/features/cowork/main/recording');
+const screenTools = require('../src/features/cowork/main/screen-tools');
 const procedure = require('../src/features/cowork/main/procedure');
 const cowork = require('../src/features/cowork/main/cowork');
 const preload = require('../src/features/cowork/preload');
@@ -216,7 +217,7 @@ async function main() {
     assert.strictEqual(imported.steps.length, 3, '貼り付けは CLI を呼ばずに変換だけ行う');
   });
 
-  await test('Windows の記録は winauto record を別ウィンドウで起こし、停止ファイルで止める', async () => {
+  await test('Windows の記録（WSL 側の実体）: winauto record を窓で起こし、停止ファイルで止める', async () => {
     recording.resetWindowsRecording();
     const calls = [];
     const windows = [];
@@ -225,45 +226,78 @@ async function main() {
       if (command === 'cat') return { ok: true, status: 0, stdout: WINAUTO_RECORDING, stderr: '' };
       return { ok: true, status: 0, stdout: '', stderr: '' };
     };
+    const tool = { name: 'winauto', native: false, command: 'winauto', where: 'wsl' };
+    const files = screenTools.fileOps(tool, { capture, cwd: '/r' });
     const openWindow = (spec) => { windows.push(spec); return { ok: true }; };
     const started = await recording.recordWindowsStart({
-      cwd: '/r', app: '勤怠管理', capture, openWindow, id: 'test1' });
+      cwd: '/r', app: '勤怠管理', tool, files, openWindow, id: 'test1' });
     assert.strictEqual(started.ok, true);
     assert.strictEqual(started.app, '勤怠管理');
-    assert.deepStrictEqual(calls, [['mkdir', '-p', recording.RECORD_DIR]], '置き場を作ってから起こす');
+    assert.deepStrictEqual(calls, [['mkdir', '-p', '/tmp/agent-dashboard']], '置き場を作ってから起こす');
     assert.deepStrictEqual(windows[0].args, ['record', '--app', '勤怠管理',
-      '--output', `${recording.RECORD_DIR}/record-test1.jsonl`,
-      '--stop-file', `${recording.RECORD_DIR}/record-test1.stop`]);
+      '--output', '/tmp/agent-dashboard/record-test1.jsonl',
+      '--stop-file', '/tmp/agent-dashboard/record-test1.stop']);
     assert.strictEqual(windows[0].command, 'winauto');
     assert.strictEqual(windows[0].cwd, '/r');
     // 一時ファイルの綴りは main が決めて覚える（画面から来たパスで読み書きしない）
-    assert.strictEqual(recording.windowsRecordingState().out, `${recording.RECORD_DIR}/record-test1.jsonl`);
-    await assert.rejects(recording.recordWindowsStart({ app: 'x', capture, openWindow }), /すでに記録中/);
+    assert.strictEqual(recording.windowsRecordingState().out, '/tmp/agent-dashboard/record-test1.jsonl');
+    await assert.rejects(recording.recordWindowsStart({ app: 'x', tool, files, openWindow }), /すでに記録中/);
 
     calls.length = 0;
-    const stopped = await recording.recordWindowsStop({ capture, wait: async () => {} });
+    const stopped = await recording.recordWindowsStop({ wait: async () => {} });
     assert.deepStrictEqual(calls.map((c) => c[0]), ['touch', 'cat', 'cat', 'rm'],
       '停止ファイルを置き、2 回続けて同じ中身になるまで読み、後片付けする');
-    assert.strictEqual(calls[0][1], `${recording.RECORD_DIR}/record-test1.stop`);
+    assert.strictEqual(calls[0][1], '/tmp/agent-dashboard/record-test1.stop');
     assert.strictEqual(stopped.steps.length, 3, '読めた JSONL はそのまま工程列になる');
     assert.strictEqual(recording.windowsRecordingState(), null);
-    await assert.rejects(recording.recordWindowsStop({ capture }), /記録が始まっていません/);
+    await assert.rejects(recording.recordWindowsStop({}), /記録が始まっていません/);
+  });
+
+  await test('Windows の記録（Windows 側の実体）: 実体・一時ファイル・窓が同じ側で揃う', async () => {
+    recording.resetWindowsRecording();
+    const disk = new Map();
+    const fsImpl = {
+      mkdirSync: () => {},
+      writeFileSync: (file, body) => { disk.set(file, body); },
+      readFileSync: (file) => {
+        if (!disk.has(file)) throw new Error('ENOENT');
+        return disk.get(file);
+      },
+      unlinkSync: (file) => { disk.delete(file); },
+    };
+    const tool = { name: 'winauto', native: true, command: 'C:\\Tools\\winauto.bat', where: 'windows' };
+    const files = screenTools.fileOps(tool, { env: { TEMP: 'C:\\Temp' }, fsImpl });
+    const windows = [];
+    await recording.recordWindowsStart({ cwd: 'C:\\work', app: '勤怠管理', tool, files,
+      openWindow: (spec) => { windows.push(spec); return { ok: true }; }, id: 'win1' });
+    // Windows 側の実体に POSIX パスを渡しても書けない。綴りは呼ぶ側に揃う。
+    assert.strictEqual(windows[0].command, 'C:\\Tools\\winauto.bat');
+    assert.deepStrictEqual(windows[0].args, ['record', '--app', '勤怠管理',
+      '--output', 'C:\\Temp\\agent-dashboard\\record-win1.jsonl',
+      '--stop-file', 'C:\\Temp\\agent-dashboard\\record-win1.stop']);
+    // 記録の中身は main プロセスから直接読める（同じ Windows なので wsl.exe を挟まない）
+    disk.set('C:\\Temp\\agent-dashboard\\record-win1.jsonl', WINAUTO_RECORDING);
+    const stopped = await recording.recordWindowsStop({ wait: async () => {} });
+    assert.strictEqual(stopped.steps.length, 3);
+    assert.ok(!disk.has('C:\\Temp\\agent-dashboard\\record-win1.jsonl'), '後片付けする');
   });
 
   await test('Windows の記録: 開始に失敗したら記録中にしない。空の記録は書き出し先を添えて断る', async () => {
     recording.resetWindowsRecording();
     const capture = async () => ({ ok: true, status: 0, stdout: '', stderr: '' });
-    await assert.rejects(recording.recordWindowsStart({ app: 'x', capture,
+    const tool = { name: 'winauto', native: false, command: 'winauto', where: 'wsl' };
+    const files = screenTools.fileOps(tool, { capture });
+    await assert.rejects(recording.recordWindowsStart({ app: 'x', tool, files,
       openWindow: () => ({ ok: false, error: '端末が見つかりません' }) }), /端末が見つかりません/);
     assert.strictEqual(recording.windowsRecordingState(), null, '失敗したら枠を返す（もう一度押せる）');
 
-    await recording.recordWindowsStart({ app: 'x', capture, openWindow: () => ({ ok: true }), id: 'empty' });
-    await assert.rejects(recording.recordWindowsStop({ capture, wait: async () => {} }),
+    await recording.recordWindowsStart({ app: 'x', tool, files, openWindow: () => ({ ok: true }), id: 'empty' });
+    await assert.rejects(recording.recordWindowsStop({ wait: async () => {} }),
       /記録が空です[\s\S]*record-empty\.jsonl/);
     assert.strictEqual(recording.windowsRecordingState(), null);
 
     recording.resetWindowsRecording();
-    await assert.rejects(recording.recordWindowsStart({ app: '', capture, openWindow: () => ({ ok: true }) }),
+    await assert.rejects(recording.recordWindowsStart({ app: '', tool, files, openWindow: () => ({ ok: true }) }),
       /アプリ（ウィンドウ名・プロセス名・PID）を入力してください/);
   });
 
@@ -272,10 +306,15 @@ async function main() {
     const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'features', 'cowork', 'main', 'cowork.js'), 'utf8');
     const fn = src.slice(src.indexOf('function procedureRecording('), src.indexOf('function generateStateMachine('));
     assert.ok(fn.includes("source === 'windows'"));
-    assert.ok(fn.includes('recording.recordWindowsStart({ cwd, app: payload.app,'));
-    assert.ok(fn.includes('openWindow: runCommandWindow'));
-    assert.ok(fn.includes('recording.recordWindowsStop({ capture: runCommandCapture })'));
+    assert.ok(fn.includes('recording.recordWindowsStart({ cwd, app: payload.app, ...kit })'));
+    assert.ok(fn.includes("screenToolKit('winauto', cwd)"));
+    assert.ok(fn.includes("screenTools.resolveScreenTool('playwright-cli')"));
+    assert.ok(fn.includes('recording.recordWindowsStop({})'));
     assert.ok(!/payload\.(out|stop|output|file)/.test(fn), '一時ファイルのパスを画面から受け取らない');
+    // 実体・一時ファイル・窓は 1 か所で組む（別々に決めると食い違う）
+    const kit = src.slice(src.indexOf('function screenToolKit('), src.indexOf('function procedureRecording('));
+    assert.ok(kit.includes('screenTools.fileOps(tool,'));
+    assert.ok(kit.includes('tool.native ? runNativeWindow : runCommandWindow'));
     await assert.rejects(cowork.procedureRecording({}, { action: 'stop', source: 'windows' }),
       /記録が始まっていません/);
   });

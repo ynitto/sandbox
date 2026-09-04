@@ -23,6 +23,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   **決定的**——人の癖（入力前のクリック・確定後の Enter の重複）を落とし、ページ遷移・ウィンドウの
   切り替わり・確定の操作で工程を切り、`fill` / `type` の値を `{{key}}` にして記録時の値を例に残す
   （パスワードらしい欄は例にも残さない）。要素は role と名前で残し、ref・座標は投入前に断る。
+- **画面操作の道具は Windows 側の実体を呼ぶ。** `playwright-cli` / `winauto` は Windows の
+  デスクトップを触る道具なのに、Windows の dashboard からも `wsl.exe` 経由で呼んでいた。
+  `winauto` の WSL ラッパーは結局 Windows の `python.exe` を exec するので 2 回跨ぐ遠回りで、
+  **Windows にしか入れていない端末では WSL 側に実体が無く「未準備」に見えていた**。
+  `playwright-cli` は WSL の中でブラウザを開こうとするため、WSLg の無い環境では記録を
+  始められなかった。win32 では Windows 側の実体（`winauto.bat` / `playwright-cli.cmd`。
+  PATHEXT を補って探す）を先に見て、見つかればそれを直接呼ぶ。見つからなければ従来どおり
+  WSL 経由へ落ちる。**AI の解釈・拡張（エージェント CLI・agent-loop・statemachine の
+  ハーネス）はこの扱いを受けない**——あちらは WSL 側が正しい。どちら側かは一時ファイルの
+  綴り・読み書きの経路・記録の窓も決めるので 1 か所で組む。「道具を確認」はどちら側で
+  見つけたかまで出す。
 - **記録はダッシュボードから始めて止められる。** Windows アプリの記録は
   `winauto record` を別ウィンドウ（tmux）で走らせ、「記録を終了して工程に起こす」で
   **停止ファイル**（`--stop-file`）を置いて止める。信号で止めないのは、win32 では
