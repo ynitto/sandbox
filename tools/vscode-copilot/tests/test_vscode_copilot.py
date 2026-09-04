@@ -386,6 +386,31 @@ def test_format_tools_says_so_when_empty():
     assert "ツールはありません" in client.format_tools({"tools": []})
 
 
+def test_models_flag_lists_families_with_their_limits():
+    stdin = mock.Mock()
+    stdin.isatty.return_value = True
+    payload = {"models": [
+        {"id": "gpt-4.1", "family": "gpt-4.1", "name": "GPT-4.1", "maxInputTokens": 128000},
+        {"id": "claude", "family": "claude-sonnet-4", "name": "Claude Sonnet 4"},
+    ]}
+    with mock.patch.object(client.sys, "argv", ["vscode-copilot", "--models"]), \
+         mock.patch.object(client.sys, "stdin", stdin), \
+         mock.patch.object(client, "ensure_bridge", return_value={"url": "u", "token": "t"}), \
+         mock.patch.object(client, "repl", return_value=0) as repl, \
+         mock.patch.object(client, "fetch_models", return_value=payload) as fetch, \
+         mock.patch("builtins.print") as printed:
+        code = client.main()
+    assert code == 0 and fetch.called and not repl.called
+    text = printed.call_args.args[0]
+    assert "2 個のモデル" in text and "先頭を使います" in text
+    assert "gpt-4.1  GPT-4.1  (gpt-4.1)  入力上限 128,000 tokens" in text
+    assert "claude-sonnet-4  Claude Sonnet 4  (claude)" in text
+
+
+def test_format_models_says_so_when_empty():
+    assert "ありません" in client.format_models({"models": []})
+
+
 def test_tools_flag_does_not_enter_the_repl_on_a_tty():
     stdin = mock.Mock()
     stdin.isatty.return_value = True
@@ -749,7 +774,30 @@ def test_run_agent_sends_the_task_and_the_tool_list():
         {"delta": "答え"}, {"done": True, "text": "答え", "rounds": 2, "model": {"id": "m"}}])
     assert captured["body"] == {"messages": [{"role": "user", "content": "調べて"}],
                                 "tools": ["copilot_readFile"]}
-    assert result == {"text": "答え", "rounds": 2, "model": {"id": "m"}}
+    assert result == {"text": "答え", "rounds": 2, "model": {"id": "m"}, "exhausted": False}
+
+
+def test_run_agent_passes_the_round_budget_only_when_given():
+    captured = {}
+    payload = b'{"done":true,"text":"x","rounds":1}\n'
+    server, thread = _serve_once(payload, "application/x-ndjson", captured)
+    client.run_agent({"url": f"http://127.0.0.1:{server.server_port}/v1/chat", "token": "s"},
+                     "調べて", ["copilot_readFile"], None, 5, lambda _: None, max_rounds=40)
+    thread.join()
+    server.server_close()
+    assert captured["body"]["maxRounds"] == 40
+
+
+def test_an_exhausted_turn_is_an_answer_not_an_error():
+    """上限に当たっても、拡張はツール無しでまとめを返す。CLI はそれを答えとして扱い、
+    上限に当たったことだけを exhausted で持ち帰る。"""
+    result, _, _ = _agent_stream([
+        {"tool": "copilot_readFile", "input": {}},
+        {"done": True, "text": "ここまで直した。残りは b.py", "rounds": 25, "maxRounds": 25,
+         "exhausted": True},
+    ])
+    assert result["text"] == "ここまで直した。残りは b.py"
+    assert result["exhausted"] is True
 
 
 def test_run_agent_reports_tool_calls_as_they_happen():
@@ -802,6 +850,17 @@ def test_progress_lines_show_calls_and_errors_but_not_successes():
     assert client.format_agent_event({"delta": "本文"}) is None
 
 
+def test_the_done_line_names_the_model_and_says_when_the_budget_ran_out():
+    """どのモデルが答えたかは見えるべき——--family を省くと先頭のモデルで、それが何かは
+    環境しだい。上限に当たったことも隠さない（本文は依頼が終わった報告ではない）。"""
+    line = client.format_agent_event({"done": True, "rounds": 3, "model": {"family": "gpt-4.1"}})
+    assert line == "  （3 往復・gpt-4.1）"
+    line = client.format_agent_event({"done": True, "rounds": 25, "maxRounds": 25, "exhausted": True,
+                                      "model": {"family": "gpt-4.1"}})
+    assert "25 往復・gpt-4.1" in line
+    assert "上限 25" in line and "--max-rounds" in line
+
+
 def test_long_tool_input_is_truncated_in_the_progress_line():
     line = client.format_agent_event({"tool": "t", "input": {"q": "あ" * 300}})
     assert len(line) < 140 and line.endswith("…")
@@ -836,6 +895,18 @@ def test_agent_tools_flag_overrides_the_allowlist():
     assert run.call_args.args[2] == ["bridge_replaceString"]
 
 
+def test_max_rounds_reaches_the_agent_and_rejects_too_small_a_budget():
+    code, _, run = _main_agent(["--agent", "直して", "--max-rounds", "40"], tools=AGENT_TOOLS)
+    assert code == 0 and run.call_args.kwargs["max_rounds"] == 40
+    _, _, run = _main_agent(["--agent", "直して"], tools=AGENT_TOOLS)
+    assert run.call_args.kwargs["max_rounds"] is None, "省けば拡張の既定に任せる"
+    try:
+        _main_agent(["--agent", "直して", "--max-rounds", "1"], tools=AGENT_TOOLS)
+        assert False, "must fail"
+    except SystemExit as exc:
+        assert exc.code == 2
+
+
 def test_agent_reads_the_task_from_stdin_with_a_dash():
     code, _, run = _main_agent(["--agent", "-"], tools=AGENT_TOOLS, stdin_text="長い依頼")
     assert code == 0 and run.call_args.args[1] == "長い依頼"
@@ -860,7 +931,7 @@ def test_a_tool_turn_carries_the_whole_history():
     seen = {}
 
     def fake_run_agent(endpoint, prompt, tools, family, timeout, on_event, history=None,
-                       debug=False, max_tool_chars=None):
+                       debug=False, max_tool_chars=None, max_rounds=None):
         seen["prompt"] = prompt
         seen["history"] = history
         return {"text": "読みました", "rounds": 2}
@@ -921,6 +992,22 @@ def test_slash_tools_shows_sets_and_turns_off():
     assert session.command("/tools off")[1].startswith("tools: off")
     assert session.tools is None
     assert session.command("/tools")[1] == "tools: off"
+
+
+def test_slash_rounds_sets_the_budget_for_tool_turns():
+    session = client.Session(tools=["copilot_readFile"])
+    assert session.command("/rounds 40")[1] == "rounds: 40"
+    assert session.max_rounds == 40
+    # 1 だとツールを一度も持てない。拡張側でも 2 へ上げるが、打った人にはここで言う。
+    assert "2 以上" in session.command("/rounds 1")[1]
+    assert "2 以上" in session.command("/rounds abc")[1]
+    assert session.max_rounds == 40, "失敗で今の設定を壊さない"
+    assert session.command("/rounds")[1] == "rounds: (拡張の既定)"
+    assert session.max_rounds is None
+    with mock.patch.object(client, "run_agent", return_value={"text": "ok", "rounds": 1}) as run:
+        session.command("/rounds 7")
+        session.ask({}, "Q", 1, None)
+    assert run.call_args.kwargs["max_rounds"] == 7
 
 
 def test_slash_tools_checks_the_names_now_not_next_turn():

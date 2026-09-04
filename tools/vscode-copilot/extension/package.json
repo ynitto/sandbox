@@ -25,7 +25,7 @@
       {
         "name": "bridge_replaceString",
         "displayName": "Replace String (bridge)",
-        "modelDescription": "Replace one exact literal string in a file. The oldString must appear exactly once; include surrounding lines to make it unique. Paths must be absolute and inside the open workspace. Use this instead of copilot_replaceString or copilot_applyPatch, which do not work outside VS Code's own chat.",
+        "modelDescription": "Replace one exact literal string in a file. The oldString must appear exactly once; include surrounding lines to make it unique, or pass replaceAll: true to replace every occurrence (e.g. a rename). On success the result shows the edited region with line numbers, so there is no need to read the file again to verify. On failure the result shows the file's actual lines; reuse them verbatim as oldString. Paths must be absolute and inside the open workspace. Use this instead of copilot_replaceString or copilot_applyPatch, which do not work outside VS Code's own chat.",
         "tags": [
           "bridge",
           "edit"
@@ -44,6 +44,10 @@
             "newString": {
               "type": "string",
               "description": "The text to write in its place. Pass an empty string to delete."
+            },
+            "replaceAll": {
+              "type": "boolean",
+              "description": "Replace every occurrence of oldString instead of requiring exactly one. Default false."
             }
           },
           "required": [
