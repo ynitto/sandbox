@@ -80,7 +80,7 @@ test('実機: 起動して一覧が描画され、開くと工程が並ぶ', asy
     assert.ok((await win.evaluate(() => document.getElementById('main').innerHTML)).length > 0,
       '#main が空（renderer が動いていない＝真っ白）');
     assert.strictEqual(await win.evaluate(() => typeof window.api), 'object', 'preload の窓口が無い');
-    // 左は登録したフォルダだけ、右はそのフォルダのステートマシン
+    // 右は登録したフォルダだけ、左はそのフォルダのステートマシン
     assert.strictEqual(await win.evaluate(() => document.querySelectorAll('.folder-list li').length), 1,
       '登録したフォルダだけが並ぶ');
 

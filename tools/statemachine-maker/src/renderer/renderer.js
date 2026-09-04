@@ -323,13 +323,15 @@ function homeHtml() {
         <button type="button" class="primary" id="h-new">＋ 新規</button>
       </div>
       <div class="matrix">${cards}<button type="button" class="machine-card new" id="h-new-card">＋ 新しいステートマシン</button></div>`
-    : '<div class="blank"><h2>左のフォルダを選びます</h2></div>';
+    : '<div class="blank"><h2>右のフォルダを選びます</h2></div>';
+  // ステートマシンを左、登録したフォルダを右に置く。読む順（内容 → 切り替え）に合わせて
+  // DOM もこの順にする（タブ移動と読み上げが見た目とずれない）。
   return `<div class="home">
+    <section class="machine-pane">${body}</section>
     <aside class="folder-pane">
       <div class="pane-head"><h2>フォルダ</h2><button type="button" class="tiny" id="h-add" title="フォルダを登録">＋</button></div>
       <ul class="folder-list">${list}</ul>
     </aside>
-    <section class="machine-pane">${body}</section>
   </div>`;
 }
 
