@@ -16,7 +16,7 @@ function createWindow() {
     minWidth: 980,
     minHeight: 640,
     title: 'Statemachine Maker',
-    backgroundColor: '#f6f7f9',
+    backgroundColor: '#f7f7f8',
     icon: path.join(APP_ROOT, 'assets', 'icon.ico'),
     webPreferences: {
       preload: path.join(SRC_ROOT, 'preload.js'),

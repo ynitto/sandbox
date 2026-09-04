@@ -35,11 +35,33 @@ test('renderer が呼ぶ api.* は preload にあり、preload のチャネル�
   assert.ok(read('renderer/index.html').includes("script-src 'self'"));
 });
 
-test('画面はライトトーン（地は白系、意味のある色だけ）', () => {
+test('画面はライトトーンで、色・余白・文字は CSS 変数（設定とユーザー CSS が上書きできる）', () => {
   const css = read('renderer/styles.css');
-  assert.match(css, /--bg: #f6f7f9/);
-  assert.match(css, /--bg2: #ffffff/);
-  assert.ok(read('main/main.js').includes("backgroundColor: '#f6f7f9'"));
+  assert.match(css, /--bg: #f7f7f8/);
+  assert.match(css, /--card: #ffffff/);
+  for (const v of ['--accent', '--space', '--card-pad', '--font-size', '--column-width', '--kind-browser', '--kind-agent']) assert.ok(css.includes(`${v}:`), v);
+  assert.ok(read('main/main.js').includes("backgroundColor: '#f7f7f8'"));
+  assert.ok(read('renderer/index.html').includes('id="custom-css"'), 'ユーザー CSS の差し込み口');
+  const theme = require('../src/main/theme');
+  const vars = theme.cssVariables({ accent: '#112233', density: 'compact', fontSize: 16, kindColors: { agent: '#445566', bogus: '#000000' } });
+  assert.strictEqual(vars['--accent'], '#112233');
+  assert.strictEqual(vars['--font-size'], '16px');
+  assert.strictEqual(vars['--space'], '8px');
+  assert.strictEqual(vars['--kind-agent'], '#445566');
+  assert.strictEqual(vars['--kind-browser'], theme.DEFAULTS.kindColors.browser, '不正な値・未知の種類は既定に戻る');
+  assert.strictEqual(theme.normalize({ accent: 'red', fontSize: 99 }).accent, theme.DEFAULTS.accent);
+  const dir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'smk-theme-'));
+  assert.strictEqual(theme.load(dir).customCss, '');
+  theme.ensureCustomCss(dir);
+  assert.ok(theme.load(dir).customCss.includes('--accent'), '雛形は変数の名前を教える');
+});
+
+test('編集画面は 1 列: 工程カードがその場で開き、カードの間に遷移、右ペインとタブを持たない', () => {
+  const renderer = read('renderer/renderer.js');
+  const html = read('renderer/index.html');
+  assert.ok(renderer.includes('step-head') && renderer.includes('step-body') && renderer.includes('class="edge"'));
+  assert.ok(!html.includes('id="inspector"') && !html.includes('id="tabs"'));
+  assert.ok(/<dialog id="dlg-(record|files|ai|run|settings)"/.test(html), '補助機能はダイアログ');
 });
 
 test('作成モードへの指示文は工程・遷移・道具を載せ、YAML の骨組みは書かない', () => {

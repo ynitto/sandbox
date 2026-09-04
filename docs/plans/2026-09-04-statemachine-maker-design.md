@@ -100,13 +100,24 @@ Windows 以外の OS では Windows の記録は「貼り付け」だけにす�
 - Windows アプリの工程は Windows 上でしか動かないことを注意に出す（道具の性質で、定義の書き方では避けられない）。
 - 実行は `python`（Windows）/ `python3`（他）を先に探して使う。
 
-### 画面
+### 画面 — 既存（agent-dashboard）を下敷きにしない
 
-3 カラムのライトトーン。左: フォルダの `.statemachine/*` 一覧。中央: 定義の頭（名前・識別名・目的）と工程の
-フロー。1 枚のカードに **番号・種類（色）・名前・何をするか（対象と内容）・検査・遷移（ラベル → 行き先）** を
-載せ、戻る遷移は黄で目立たせる。カードの間の「＋」で挿入。末尾に完了 / 失敗の終端。右: 選んだ工程の編集
-（種類・名前・ID・対象・内容・検査・判断・記録した操作）／記録／定義（書かれるファイルの中身）／AI 補完／
-実行（`--dry-run` と実行の出力を流す）／道具と設定。
+agent-dashboard の 3 カラム・タブ構成は持ち込まず、ワークフローアプリの型を調べて組み直した。
+
+| 型 | 出どころ | 採ったこと |
+|---|---|---|
+| 1 列の工程カード。選んだカードだけがその場で開いて設定欄になる | Zapier の Zap エディタ（[Use the editor to build and view your Zaps](https://help.zapier.com/hc/en-us/articles/16722578092429-Use-the-editor-to-build-and-view-your-Zap-workflows)） | 右ペイン・タブを持たない。開くのは常に 1 枚。カードの間の「＋」で挿入 |
+| 畳んだカードは「動詞で始まる 1 文の要約」だけ。細部はシェブロンの先 | Apple Shortcuts のパラメータ要約（[Design great actions for Shortcuts](https://developer.apple.com/videos/play/wwdc2021/10283/)） | 「勤怠管理 で 集計を出力」「ブラウザで 申請一覧を読む」のように verb + 名前。補足は種類・対象・検査・記録の件数だけ |
+| 分岐は横に広げず縦に積む | Power Automate の新デザイナー（[Classic vs modern designer](https://learn.microsoft.com/en-us/power-automate/classic-vs-modern-designer)） | カードの間に遷移（`OK → 次へ` / `RETRY → 工程 2 へ戻る`）を縦に並べる。戻る遷移は色で目立たせる |
+
+画面は 2 つだけ（一覧と編集）。記録・定義・AI 補完・実行・設定は `<dialog>` で、常設の領域を増やさない。
+
+**カスタマイズ**: 色・余白・幅・文字はすべて `:root` の CSS 変数。2 段で上書きする。
+
+1. `theme.json`（設定画面）… アクセント色・密度（余白）・文字サイズ・種類ごとの色。main が変数へ変換して当てる。
+2. `custom.css`（userData。設定画面から開く）… 人が自由に書く CSS。雛形に変数の名前を載せる。
+
+どちらも userData に置き、定義（`.statemachine/`）には混ぜない。
 
 ## 検討した案
 
@@ -125,7 +136,7 @@ Windows 以外の OS では Windows の記録は「貼り付け」だけにす�
 ## 検証
 
 ```bash
-cd tools/statemachine-maker && npm test        # 25 テスト。結合はスキルの run_machine.py --dry-run
+cd tools/statemachine-maker && npm test        # 26 テスト。結合はスキルの run_machine.py --dry-run
 ```
 
 CI に `statemachine-maker (npm test)` を足した（python + PyYAML を入れて結合テストを走らせる）。

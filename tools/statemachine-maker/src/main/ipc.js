@@ -10,6 +10,7 @@ const tools = require('./tools');
 const runner = require('./runner');
 const instruction = require('./instruction');
 const config = require('./config');
+const theme = require('./theme');
 
 const APP_ROOT = path.join(__dirname, '..', '..');
 
@@ -63,6 +64,16 @@ function registerIpcHandlers(getWindow) {
   handle('config:get', () => config.load(userData()));
   handle('config:save', (p) => config.save(userData(), p.config));
   handle('catalog:get', () => ({ kinds: model.catalog(), version: model.PROCEDURE_VERSION, platform: process.platform }));
+  // 見た目: theme.json の値（CSS 変数へ）と custom.css（そのまま）。定義には混ぜない。
+  handle('theme:get', () => {
+    const loaded = theme.load(userData());
+    return { ...loaded, variables: theme.cssVariables(loaded.theme), defaults: theme.DEFAULTS };
+  });
+  handle('theme:save', (p) => {
+    const saved = theme.save(userData(), p.theme);
+    return { theme: saved, variables: theme.cssVariables(saved) };
+  });
+  handle('theme:openCss', () => shell.openPath(theme.ensureCustomCss(userData())));
 
   handle('root:choose', async () => {
     const res = await dialog.showOpenDialog(getWindow(), { properties: ['openDirectory'], title: 'ステートマシンを置くフォルダを選ぶ' });
