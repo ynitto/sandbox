@@ -146,8 +146,10 @@ async function main() {
 
   await test('道具の確認は診断コマンドだけを呼び、結果を 1 行に畳む', async () => {
     const calls = [];
-    const capture = async (command, args) => {
+    const natives = [];
+    const capture = async (command, args, options = {}) => {
       calls.push([command, ...args]);
+      natives.push(!!options.native);
       if (command === 'winauto') {
         return { ok: false, status: 1, stdout: JSON.stringify({ scope: 'wsl', ok: false,
           checks: [{ name: 'interop', ok: true }, { name: 'pywinauto', ok: false, detail: 'not installed' }] }), stderr: '' };
@@ -156,11 +158,23 @@ async function main() {
     };
     const all = await procedure.toolStatus({ cwd: '', kinds: ['browser', 'windows'], capture });
     assert.deepStrictEqual(calls, [['playwright-cli', '--version'], ['winauto', 'doctor', '--output', 'json']]);
+    assert.deepStrictEqual(natives, [false, false], 'Windows 以外では従来どおりその場の PATH から呼ぶ');
     assert.strictEqual(all[0].ok, true);
     assert.ok(all[0].summary.includes('0.4.2'));
     assert.strictEqual(all[1].ok, false);
     assert.ok(all[1].summary.includes('pywinauto'), all[1].summary);
     assert.ok(all[1].hint, '未準備の道具には入れ方を添える');
+
+    // どちら側の実体を見たかまで報告する（Windows にしか入れていない端末で「未準備」に
+    // 見えていた。「未準備」だけでは、どちらへ入れればよいのか分からない）。
+    calls.length = 0;
+    const onWindows = await procedure.toolStatus({ kinds: ['browser'], capture,
+      resolve: () => ({ name: 'playwright-cli', native: true, where: 'windows',
+        command: 'C:\\npm\\playwright-cli.cmd' }) });
+    assert.deepStrictEqual(calls, [['C:\\npm\\playwright-cli.cmd', '--version']],
+      '解決した実体をそのまま呼ぶ');
+    assert.ok(onWindows[0].summary.endsWith('（Windows 側）'), onWindows[0].summary);
+    calls.length = 0;
 
     const onlyBrowser = await procedure.toolStatus({ kinds: ['browser', 'skill', 'command', 'agent'], capture });
     assert.deepStrictEqual(onlyBrowser.map((t) => t.id), ['playwright-cli'], '工程が頼る道具だけを確かめる（診断の無い種類は飛ばす）');

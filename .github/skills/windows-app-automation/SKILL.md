@@ -135,7 +135,7 @@ cmd.exe /c python .github/skills/windows-app-automation/scripts/element_inspecto
   `cmd.exe` 経由だと WSL の cwd に対して「CMD does not support UNC paths as current
   directories」を吐き、出力を読むエージェントを惑わせるため
 - **引数のパス変換はラッパーが行うが、変換対象は限定されている**。変換されるのは
-  `screenshot` / `codegen` の `--output` の値、`run` のスクリプト位置引数、
+  `screenshot` / `codegen` / `record` の `--output` の値、`run` のスクリプト位置引数、
   および `/` で始まる絶対パスだけ。セレクタ（`name:=OK`）や `type` に渡す入力テキストは
   **変換しない**（同名のファイルが cwd にあるだけで壊れるのを避けるため）
 - `winauto run` に渡す**スクリプトの中身**のパスは Windows パス（`C:/...`）で書く
@@ -183,8 +183,8 @@ winauto は**入力・フォーカスを奪うコマンドをファイルロッ�
 
 | | コマンド |
 |---|---|
-| ロックを取る | `launch` `click` `type` `keys` `screenshot` `run` `inspect` `codegen` |
-| ロックを取らない | `apps` `tree` `get-text` `wait` `doctor` |
+| ロックを取る | `launch` `click` `type` `select` `keys` `screenshot` `run` `inspect` `codegen` |
+| ロックを取らない | `apps` `tree` `get-text` `wait` `doctor` `record` |
 
 読み取り専用をロック対象から外してあるのは、長い `wait` がロックを占有して他の発行を
 止めてしまわないようにするため。
@@ -215,7 +215,7 @@ WINAUTO_LOCK_TIMEOUT=600 winauto click ...                # 環境変数でも�
 
 - `scripts/element_inspector.py` — UIツリーの探索・セレクタの特定（最初に必ず実行）
 - `scripts/app_launcher.py` — アプリ起動・待機・コマンド実行・終了を一括管理
-- `tools/winauto/winauto.py` — Playwright 風の統合 CLI（inspect/click/type/screenshot/codegen）
+- `tools/winauto/winauto.py` — Playwright 風の統合 CLI（inspect/click/type/select/screenshot/codegen/record）
 
 **最初に `--help` を実行して利用方法を確認する。必要になるまでスクリプト本体は読まない。**
 
@@ -273,6 +273,27 @@ python tools/winauto/winauto.py codegen notepad.exe --output test_notepad.py
 ```
 
 または、手動で直接スクリプトを書く（Step 1 で取得したセレクタを使う）。
+
+**人にやって見せてもらう（record）** — 手順が言葉で書き取りにくいときは、操作を記録する。
+
+```bash
+winauto record --app 勤怠管理 --output events.jsonl
+# 人がアプリを操作する → Ctrl+C で止める
+```
+
+1 行 1 JSON（JSONL）で、押した要素・入力欄の確定値・選択・チェック・ウィンドウの
+切り替わりが残る。**打鍵そのものは記録しない**——低レベルキーボードフックは
+デスクトップ全体のキーロガーになり、対象アプリ以外へ打ったパスワードまで拾うため。
+入力欄へ打った文字は `value` として、キーボードから開いたメニューは `invoke` として
+残るので、実務上の穴は「UI に対応物の無いショートカット」だけである（必要なら
+`{"event":"keys",...}` の行を手で足す）。
+
+記録の 1 行は**そのまま打てる argv ではなく、何が起きたかの事実**である。再現するときは
+`launch` → `winauto launch`、`window` → その画面を `winauto wait` で待つ、
+`click` / `toggle` → `winauto click`、`value` → `winauto type`、
+`select` → `winauto select <セレクタ> <項目名>` と読み替える。
+
+agent-dashboard の「手順を組み立てる → 操作を記録する」に貼り付けると、工程列に変換される。
 
 ### Step 3: 実行する
 

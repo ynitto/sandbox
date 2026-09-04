@@ -12,11 +12,13 @@ Commands:
   inspect     Interactive element inspector (REPL)
   click       Click an element by selector
   type        Type text into an element
+  select      Select an item in a combo box, list, or tab
   keys        Send key sequence to an element
   get-text    Get text content of an element
   screenshot  Capture a screenshot of the app window
   wait        Wait for an element to appear
   codegen     Generate a Python automation script template
+  record      Record what a human does in an app as JSONL events
   run         Execute an automation script
 
 Selector syntax:
@@ -34,8 +36,10 @@ Examples:
   winauto tree --app notepad
   winauto click "name:=OK" --app notepad
   winauto type "control:=Edit" "Hello World" --app notepad
+  winauto select "name:=種別" "緊急" --app kintai
   winauto screenshot --app notepad --output /tmp/notepad.png
   winauto codegen notepad.exe --output test_notepad.py
+  winauto record --app notepad --output events.jsonl
   winauto run test_notepad.py
 """
 
@@ -46,6 +50,7 @@ import time
 import shutil
 import argparse
 import textwrap
+import threading
 import subprocess
 from contextlib import contextmanager
 from pathlib import Path
@@ -96,9 +101,11 @@ LOCK_ENV_FILE = "WINAUTO_LOCK_FILE"
 DEFAULT_LOCK_TIMEOUT = 300.0
 
 # デスクトップの状態を変える（フォーカス・マウス・キーボードを奪う）コマンドだけを
-# ロックする。読み取り専用の apps / tree / get-text / wait / doctor はロックしない
-# ——長い wait がロックを占有して他の発行を止めてしまわないようにするため。
-LOCKED_COMMANDS = {"launch", "click", "type", "keys", "screenshot", "run", "inspect", "codegen"}
+# ロックする。読み取り専用の apps / tree / get-text / wait / doctor / record はロックしない
+# ——長い wait がロックを占有して他の発行を止めてしまわないようにするため。record は
+# 人が操作している数分間ずっと動くので、なおさら占有させない（読むだけで何も奪わない）。
+LOCKED_COMMANDS = {"launch", "click", "type", "select", "keys", "screenshot", "run",
+                   "inspect", "codegen"}
 
 
 def _lock_path() -> Path:
@@ -654,6 +661,80 @@ def cmd_type(args):
 
 
 # ---------------------------------------------------------------------------
+# Command: select
+# ---------------------------------------------------------------------------
+#
+# 一覧・コンボ・タブから項目を選ぶ。`click` でも `type` でも代われない:
+#
+#   * `click` は畳まれたコンボを開くだけで、開いた先の項目は別のポップアップ配下にいる
+#     （元のウィンドウからセレクタで辿れない）。
+#   * `type` は `set_text` を呼ぶので、編集できないコンボ（DropDownList）では例外になる。
+#
+# `record` が書く `select` イベントを再現する口でもある。ここが無いと、記録した選択を
+# 「動く綴りが無い操作」として毎回エージェントに考えさせることになっていた。
+
+# 選択の当て方。pywinauto のラッパーが持つ select() が本命で、持っていない要素のために
+# 「開いて項目を押す」を残す（Menu 由来のコンボなど、select() を実装しない種類がある）。
+def _select_by_api(elem, value, index):
+    target = index if index is not None else value
+    elem.select(target)
+
+
+def _select_by_expand(elem, value, index):
+    if index is not None:
+        raise RuntimeError("インデックス指定はこの要素では使えません（項目名で指定してください）")
+    elem.expand()
+    time.sleep(0.3)
+    elem.child_window(title=value).click_input()
+
+
+def cmd_select(args):
+    _require_windows()
+    pyw = _import_pywinauto()
+
+    app = connect_app(pyw, args.app, args.backend)
+    win = get_top_window(app)
+    elem = resolve_selector(win, args.selector)
+    elem.wait("enabled", timeout=args.timeout)
+
+    index = None
+    if args.index is not None:
+        index = args.index
+    elif args.value is None:
+        raise ValueError("選ぶ項目を指定してください（項目名の位置引数か --index）")
+
+    attempts = []
+    for name, fn in (("select", _select_by_api), ("expand+click", _select_by_expand)):
+        try:
+            fn(elem, args.value, index)
+            break
+        except Exception as e:
+            attempts.append(f"{name}: {e}")
+    else:
+        raise RuntimeError(
+            f"'{args.selector}' で選択できませんでした。試した方法: " + " / ".join(attempts)
+            + "。`winauto tree` で要素の種類を確かめてください")
+
+    # 選べたことを結果で見せる（読めない種類もあるので取れなければ黙って省く）。
+    selected = ""
+    try:
+        selected = str(elem.selected_text() or "")
+    except Exception:
+        try:
+            selected = str(elem.window_text() or "")
+        except Exception:
+            selected = ""
+
+    chosen = args.value if index is None else f"#{index}"
+    if args.output == "json":
+        print(json.dumps({"status": "ok", "selector": args.selector,
+                          "value": chosen, "selected": selected}, ensure_ascii=False))
+    else:
+        print(f"Selected: {chosen} in {args.selector}"
+              + (f" (now: {selected})" if selected else ""))
+
+
+# ---------------------------------------------------------------------------
 # Command: keys
 # ---------------------------------------------------------------------------
 
@@ -853,6 +934,509 @@ def cmd_codegen(args):
 
 
 # ---------------------------------------------------------------------------
+# Command: record
+# ---------------------------------------------------------------------------
+#
+# 人が画面でやった操作を UI Automation のイベントとして購読し、1 行 1 JSON（JSONL）で
+# 書き出す。読み手は agent-dashboard の手順ビルダー（`src/features/cowork/main/
+# recording.js`）で、この JSONL を定型業務の工程列へ決定的に変換する。
+# **キーの綴りは読み手の契約（WINAUTO_EVENT_KINDS）が正典**なので、増やすときは両方直す。
+#
+#   {"event":"launch","app":"勤怠管理","path":"C:\\Apps\\kintai.exe"}
+#   {"event":"window","app":"勤怠管理","window":"月次集計"}
+#   {"event":"value","app":"勤怠管理","window":"月次集計","control_type":"Edit",
+#    "name":"対象月","auto_id":"txtMonth","value":"2026-09"}
+#   {"event":"select",...,"name":"種別","value":"緊急"}
+#   {"event":"toggle",...,"name":"確定済みを含む","value":"on"}
+#   {"event":"invoke",...,"name":"出力","auto_id":"btnExport"}
+#
+# 決めごとは 4 つ。
+#
+#   1. **キーボードのフックは取らない。** 打鍵そのものを記録するには低レベル
+#      キーボードフック（WH_KEYBOARD_LL）が要る。あれはデスクトップ全体のキーロガーで、
+#      対象アプリ以外に打ったパスワードまで JSONL に落ちる——その JSONL は人がそのまま
+#      AI へ貼る。危険が用途に見合わない。入力欄へ打った文字は Value の変化（`value`）で、
+#      キーボードから開いたメニューは `invoke` で拾えるので、残る穴は「UI に対応物の
+#      無いショートカット」だけである。それは記録後に `keys` の行を手で足せる
+#      （読み手は `keys` を受け付ける。この record が出さないだけ）。
+#   2. **対象アプリのプロセスに限る**（`--app` は必須）。イベントの購読はデスクトップ
+#      全体に掛けるしかないが、書き出す前に発生元の PID で捨てる。人が録画のつもりで
+#      無関係のアプリの操作まで残さない。
+#   3. **ロックを取らない**（LOCKED_COMMANDS に入れない）。読むだけで入力を奪わないし、
+#      数分続くコマンドがデスクトップロックを占有すると他の発行が全部止まる。
+#   4. **打鍵ごとに飛ぶ Value 変化は畳む。** "2" "20" "202" … を全部書くと読めない。
+#      畳みと重複除去は RecordSink の担当で、そこは Windows も pywinauto も要らない
+#      ——出力の形をこの 1 か所に閉じ込め、単体で検査できるようにしてある。
+
+# 書き出すイベントの種類。読み手はこれに `keys` を足した集合を受け付ける（上記 1）。
+RECORD_EVENT_KINDS = ("launch", "window", "invoke", "value", "select", "toggle")
+
+# Value の変化を記録する対象と、その振り分け先。アプリが勝手に書き換えるラベルや
+# ステータスバーを拾わないための絞り込みでもある（それらは Edit でも Document でもない）。
+RECORD_VALUE_TYPES = {
+    "Edit": "value", "Document": "value", "Spinner": "value", "ComboBox": "select",
+}
+
+# 直前とまったく同じ行を落とす種類。状態の通知は同じ内容で二重に飛ぶ（ComboBox の選択は
+# SelectionItem と Value の両方から来る）。`invoke` は落とさない——同じボタンを 2 回押すのは
+# 人の意図でありうる。
+RECORD_DEDUPE_KINDS = {"window", "value", "select", "toggle"}
+
+RECORD_TOGGLE_STATES = {0: "off", 1: "on", 2: "indeterminate"}
+
+
+class RecordSink:
+    """記録した操作を JSONL で書き出す。畳み・重複除去・上限の規則はここだけにある。
+
+    Windows も pywinauto も要らない純粋な層。`cmd_record` は UIA のイベントを emit() へ
+    流すだけで、出力の形を決めるのはこのクラスである（だから単体で検査できる）。
+
+    畳みの規則: `value` は同じ要素のぶんを溜めて最後の 1 件だけ書く。溜めている途中に
+    別の要素の `value` か、`value` 以外のイベントが来たら、先に溜めていた方を書く
+    ——人がやった順序は崩さない。
+    """
+
+    def __init__(self, stream, app: str, max_events: int = 0):
+        self.stream = stream
+        self.app = app
+        self.max_events = max_events
+        self.count = 0
+        self.full = False
+        self._pending = None       # 畳んでいる途中の value
+        self._pending_key = None
+        self._last = None          # 直前に書いた行（重複除去用）
+        self._lock = threading.Lock()
+
+    # --- 内部（ロックを持っている前提） ---
+
+    def _write_locked(self, record: dict) -> None:
+        self.stream.write(json.dumps(record, ensure_ascii=False) + "\n")
+        try:
+            self.stream.flush()      # 途中で落ちてもそこまでは残す
+        except Exception:
+            pass
+        self.count += 1
+        self._last = record
+        if self.max_events and self.count >= self.max_events:
+            self.full = True
+
+    def _flush_locked(self) -> None:
+        if self._pending is None:
+            return
+        record = self._pending
+        self._pending = None
+        self._pending_key = None
+        if record["event"] in RECORD_DEDUPE_KINDS and record == self._last:
+            return
+        self._write_locked(record)
+
+    # --- 入口 ---
+
+    def emit(self, kind: str, *, name: str = "", auto_id: str = "", control_type: str = "",
+             window: str = "", value=None, path: str = "") -> bool:
+        """1 件記録する。まだ受け付けるなら True、上限に達していたら False。"""
+        if kind not in RECORD_EVENT_KINDS:
+            raise ValueError(f"unknown event kind: {kind}")
+
+        record = {"event": kind, "app": self.app}
+        if window:
+            record["window"] = window
+        if control_type:
+            record["control_type"] = control_type
+        if name:
+            record["name"] = name
+        if auto_id:
+            record["auto_id"] = auto_id
+        if path:
+            record["path"] = path
+        if value is not None:
+            record["value"] = value
+
+        with self._lock:
+            if self.full:
+                return False
+            key = (control_type, auto_id, name, window)
+            if kind == "value":
+                if self._pending is not None and self._pending_key != key:
+                    self._flush_locked()
+                if self.full:
+                    return False
+                self._pending = record
+                self._pending_key = key
+                return True
+            self._flush_locked()
+            if self.full:
+                return False
+            if kind in RECORD_DEDUPE_KINDS and record == self._last:
+                return True
+            self._write_locked(record)
+            return not self.full
+
+    def flush(self) -> None:
+        with self._lock:
+            self._flush_locked()
+
+    def close(self) -> None:
+        self.flush()
+
+
+# --- UIA イベント購読（Windows 専用の薄い層） --------------------------------------
+
+# comtypes が生成した定数が名前で引けなかったときの既定値（UIAutomationClient の
+# 公開 ID。値は固定されている）。名前で引けるならそちらを使う。
+_UIA_IDS = {
+    "UIA_Invoke_InvokedEventId": 20009,
+    "UIA_SelectionItem_ElementSelectedEventId": 20012,
+    "UIA_Window_WindowOpenedEventId": 20016,
+    "UIA_ValueValuePropertyId": 30045,
+    "UIA_ToggleToggleStatePropertyId": 30086,
+}
+_UIA_TREESCOPE_SUBTREE = 7          # Element | Children | Descendants
+
+
+def _uia_id(uia_mod, name: str) -> int:
+    return int(getattr(uia_mod, name, _UIA_IDS[name]))
+
+
+def _uia_event_api():
+    """comtypes 本体・UIA 型ライブラリ・IUIAutomation を返す（pywinauto の生成物を使う）。"""
+    import comtypes
+    from pywinauto.uia_defines import IUIA
+
+    handle = IUIA()
+    uia_mod = getattr(handle, "UIA_dll", None)
+    if uia_mod is None:
+        from comtypes.gen import UIAutomationClient as uia_mod  # type: ignore[no-redef]
+    return comtypes, uia_mod, handle.iuia
+
+
+def _make_uia_handlers(comtypes_mod, uia_mod, on_automation, on_property, on_focus):
+    """comtypes の COMObject でイベントハンドラを組む（登録は呼び出し側）。"""
+
+    class _AutomationHandler(comtypes_mod.COMObject):
+        _com_interfaces_ = [uia_mod.IUIAutomationEventHandler]
+
+        def IUIAutomationEventHandler_HandleAutomationEvent(self, sender, eventID):
+            on_automation(sender, eventID)
+            return 0
+
+    class _PropertyHandler(comtypes_mod.COMObject):
+        _com_interfaces_ = [uia_mod.IUIAutomationPropertyChangedEventHandler]
+
+        def IUIAutomationPropertyChangedEventHandler_HandlePropertyChangedEvent(
+                self, sender, propertyId, newValue):
+            on_property(sender, propertyId, newValue)
+            return 0
+
+    class _FocusHandler(comtypes_mod.COMObject):
+        _com_interfaces_ = [uia_mod.IUIAutomationFocusChangedEventHandler]
+
+        def IUIAutomationFocusChangedEventHandler_HandleFocusChangedEvent(self, sender):
+            on_focus(sender)
+            return 0
+
+    return {"automation": _AutomationHandler, "property": _PropertyHandler, "focus": _FocusHandler}
+
+
+def _add_property_handler(iuia, root, handler, property_ids):
+    """プロパティ変化の購読。型ライブラリの版で口が違うので両方試す。"""
+    try:
+        iuia.AddPropertyChangedEventHandler(
+            root, _UIA_TREESCOPE_SUBTREE, None, handler, property_ids)
+        return
+    except Exception:
+        pass
+    import ctypes
+    array = (ctypes.c_int * len(property_ids))(*property_ids)
+    iuia.AddPropertyChangedEventHandlerNativeArray(
+        root, _UIA_TREESCOPE_SUBTREE, None, handler, array, len(property_ids))
+
+
+def _element_facts(element):
+    """UIA の生要素から記録に要る項目だけを読む。読めない要素は None。"""
+    try:
+        from pywinauto.uia_element_info import UIAElementInfo
+        info = UIAElementInfo(element)
+        return {
+            "control_type": str(getattr(info, "control_type", "") or ""),
+            "name": str(getattr(info, "name", "") or ""),
+            "auto_id": str(getattr(info, "automation_id", "") or ""),
+            "pid": int(getattr(info, "process_id", 0) or 0),
+        }
+    except Exception:
+        return None
+
+
+def _element_window_title(element) -> str:
+    """要素が属する最上位ウィンドウの見出し（取れなければ空）。"""
+    try:
+        from pywinauto.uia_element_info import UIAElementInfo
+        info = UIAElementInfo(element)
+        top = info.top_level_parent
+        return str(getattr(top, "name", "") or "")
+    except Exception:
+        return ""
+
+
+def _element_container_facts(element):
+    """選択された項目の入れ物（リスト・コンボ）。取れなければ None。"""
+    try:
+        from pywinauto.uia_element_info import UIAElementInfo
+        parent = UIAElementInfo(element).parent
+        if parent is None:
+            return None
+        return {
+            "control_type": str(getattr(parent, "control_type", "") or ""),
+            "name": str(getattr(parent, "name", "") or ""),
+            "auto_id": str(getattr(parent, "automation_id", "") or ""),
+            "pid": int(getattr(parent, "process_id", 0) or 0),
+        }
+    except Exception:
+        return None
+
+
+def _process_image_path(pid: int) -> str:
+    """PID から実行ファイルのパスを取る（取れなければ空文字）。"""
+    try:
+        import ctypes
+        from ctypes import wintypes
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+        kernel32.QueryFullProcessImageNameW.argtypes = [
+            wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
+
+        handle = kernel32.OpenProcess(0x1000, False, int(pid))   # QUERY_LIMITED_INFORMATION
+        if not handle:
+            return ""
+        try:
+            size = wintypes.DWORD(32768)
+            buf = ctypes.create_unicode_buffer(size.value)
+            if kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size)):
+                return buf.value
+            return ""
+        finally:
+            kernel32.CloseHandle(handle)
+    except Exception:
+        return ""
+
+
+class _UiaRecorder:
+    """UIA のイベントを RecordSink へ流す。対象 PID 以外は書き出す前に捨てる。"""
+
+    def __init__(self, sink: RecordSink, ids: dict, pid: int, window: str = ""):
+        self.sink = sink
+        self.ids = ids
+        self.pid = int(pid or 0)
+        self.window = window or ""
+        self.stopped = False
+
+    def _mine(self, facts) -> bool:
+        return bool(facts) and (not self.pid or facts["pid"] == self.pid)
+
+    def _emit(self, kind, facts=None, value=None, window=None) -> None:
+        facts = facts or {}
+        ok = self.sink.emit(
+            kind,
+            name=facts.get("name", ""),
+            auto_id=facts.get("auto_id", ""),
+            control_type=facts.get("control_type", ""),
+            window=self.window if window is None else window,
+            value=value,
+        )
+        if not ok:
+            self.stopped = True
+
+    def _set_window(self, title: str) -> None:
+        title = (title or "").strip()
+        if not title or title == self.window:
+            return
+        self.window = title
+        self._emit("window", window=title)
+
+    # --- コールバック（UIA の内部スレッドから呼ばれる） ---
+
+    def on_automation(self, sender, event_id) -> None:
+        try:
+            if self.stopped:
+                return
+            event_id = int(event_id)
+            if event_id == self.ids["window_opened"]:
+                facts = _element_facts(sender)
+                if self._mine(facts):
+                    self._set_window(facts["name"] or _element_window_title(sender))
+                return
+            facts = _element_facts(sender)
+            if not self._mine(facts):
+                return
+            if event_id == self.ids["invoked"]:
+                if not (facts["name"] or facts["auto_id"]):
+                    return          # 指せない要素は記録しても再現できない
+                self._emit("invoke", facts)
+            elif event_id == self.ids["selected"]:
+                container = _element_container_facts(sender)
+                target = container if container and (container["name"] or container["auto_id"]) else facts
+                self._emit("select", target, value=facts["name"])
+        except Exception:
+            return                   # コールバックで例外を投げると UIA 側が購読を切る
+
+    def on_property(self, sender, property_id, new_value) -> None:
+        try:
+            if self.stopped:
+                return
+            facts = _element_facts(sender)
+            if not self._mine(facts):
+                return
+            property_id = int(property_id)
+            if property_id == self.ids["value"]:
+                kind = RECORD_VALUE_TYPES.get(facts["control_type"])
+                if not kind or not (facts["name"] or facts["auto_id"]):
+                    return
+                self._emit(kind, facts, value=str(new_value if new_value is not None else ""))
+            elif property_id == self.ids["toggle"]:
+                if not (facts["name"] or facts["auto_id"]):
+                    return
+                try:
+                    state = RECORD_TOGGLE_STATES.get(int(new_value), str(new_value))
+                except (TypeError, ValueError):
+                    state = str(new_value)
+                self._emit("toggle", facts, value=state)
+        except Exception:
+            return
+
+    def on_focus(self, sender) -> None:
+        try:
+            if self.stopped:
+                return
+            facts = _element_facts(sender)
+            if not self._mine(facts):
+                return
+            self._set_window(_element_window_title(sender))
+        except Exception:
+            return
+
+
+def _pump_until(should_stop, deadline: float, interval: float = 0.05) -> None:
+    """止めるまで待つ。待っている間に Windows のメッセージを回す。
+
+    UIA のコールバックはアパートメントによっては呼び出し側スレッドのメッセージ
+    ポンプ越しに配送される。`time.sleep()` だけで待つと STA では 1 件も来ない。
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32
+    msg = wintypes.MSG()
+    while not should_stop():
+        if deadline and time.time() >= deadline:
+            return
+        while user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, 1):   # PM_REMOVE
+            user32.TranslateMessage(ctypes.byref(msg))
+            user32.DispatchMessageW(ctypes.byref(msg))
+        time.sleep(interval)
+
+
+def cmd_record(args):
+    _require_windows()
+    pyw = _import_pywinauto()
+
+    # イベントの購読は UIA にしかない（win32 バックエンドに相当物は無い）ので
+    # --backend は取らない。
+    app = connect_app(pyw, args.app, "uia")
+    pid = int(getattr(app, "process", 0) or 0)
+    try:
+        window_title = get_top_window(app).window_text()
+    except Exception:
+        window_title = ""
+
+    comtypes_mod, uia_mod, iuia = _uia_event_api()
+    root = iuia.GetRootElement()
+    ids = {
+        "invoked": _uia_id(uia_mod, "UIA_Invoke_InvokedEventId"),
+        "selected": _uia_id(uia_mod, "UIA_SelectionItem_ElementSelectedEventId"),
+        "window_opened": _uia_id(uia_mod, "UIA_Window_WindowOpenedEventId"),
+        "value": _uia_id(uia_mod, "UIA_ValueValuePropertyId"),
+        "toggle": _uia_id(uia_mod, "UIA_ToggleToggleStatePropertyId"),
+    }
+
+    # 停止ファイル。人が Ctrl+C を押せないところ（別ウィンドウで走らせて、止めるのは
+    # 画面のボタン）から止めるための口である。信号を使わないのは、WSL 越し・
+    # ラッパー越しに Windows Python まで届かないため——ファイルなら両側から見える。
+    stop_file = Path(args.stop_file) if args.stop_file else None
+    if stop_file is not None:
+        try:
+            stop_file.unlink()        # 前回の残骸で即座に止まらないように
+        except OSError:
+            pass
+
+    out = open(args.output, "w", encoding="utf-8") if args.output else sys.stdout
+    sink = RecordSink(out, args.app, max_events=args.max_events)
+    recorder = _UiaRecorder(sink, ids, pid, window_title)
+
+    # 1 行目は launch。読み手はこれを「アプリを起動する」工程の頭にする。
+    exe = _process_image_path(pid)
+    sink.emit("launch", path=exe or args.app)
+    if window_title:
+        sink.emit("window", window=window_title)
+
+    handlers = _make_uia_handlers(comtypes_mod, uia_mod,
+                                  recorder.on_automation, recorder.on_property, recorder.on_focus)
+    automation = handlers["automation"]()
+    prop = handlers["property"]()
+    focus = handlers["focus"]()
+
+    registered = False
+    try:
+        for event_id in (ids["invoked"], ids["selected"], ids["window_opened"]):
+            iuia.AddAutomationEventHandler(event_id, root, _UIA_TREESCOPE_SUBTREE, None, automation)
+        _add_property_handler(iuia, root, prop, [ids["value"], ids["toggle"]])
+        iuia.AddFocusChangedEventHandler(None, focus)
+        registered = True
+
+        print(f"winauto record — {args.app}（pid {pid}）", file=sys.stderr)
+        print(f"書き出し先: {args.output or '標準出力'}", file=sys.stderr)
+        if args.duration:
+            print(f"{args.duration:.0f} 秒後に自動で止めます。先に止めるなら Ctrl+C。", file=sys.stderr)
+        elif stop_file is not None:
+            print(f"アプリを操作してください。Ctrl+C か、{stop_file} が作られると止まります。",
+                  file=sys.stderr)
+        else:
+            print("アプリを操作してください。終わったら Ctrl+C で止めます。", file=sys.stderr)
+        print("打鍵そのものは記録しません（入力欄の確定値と、押した要素だけを残します）。",
+              file=sys.stderr)
+
+        deadline = time.time() + args.duration if args.duration else 0.0
+        _pump_until(
+            lambda: recorder.stopped or sink.full
+            or (stop_file is not None and stop_file.exists()),
+            deadline)
+    except KeyboardInterrupt:
+        pass                          # Ctrl+C は「録り終えた」の合図。異常ではない
+    finally:
+        if registered:
+            try:
+                iuia.RemoveAllEventHandlers()
+            except Exception:
+                pass
+        sink.close()
+        if out is not sys.stdout:
+            out.close()
+        if stop_file is not None:
+            try:
+                stop_file.unlink()
+            except OSError:
+                pass
+
+    print(f"記録した操作: {sink.count} 件", file=sys.stderr)
+    if args.output:
+        print(f"保存しました: {args.output}", file=sys.stderr)
+        print("agent-dashboard の「手順を組み立てる → 操作を記録する」に貼り付けると"
+              "工程になります。", file=sys.stderr)
+
+
+# ---------------------------------------------------------------------------
 # Command: run
 # ---------------------------------------------------------------------------
 
@@ -917,6 +1501,28 @@ def _doctor_lock_check() -> dict:
         fh.close()
 
 
+def _doctor_uia_events_check() -> dict:
+    """UIA のイベントを購読できるか（record が頼る唯一の仕組み）。
+
+    error ではなく warn にする——購読できなくても click / type / tree は動くので、
+    winauto 全体が使えないわけではない（doctor の終了コードは error でだけ 1 になる）。
+    """
+    try:
+        comtypes_mod, uia_mod, iuia = _uia_event_api()
+    except Exception as e:
+        return _check("uia_events", "warn",
+                      f"UI Automation のイベントを準備できません（record が使えません）: {e}")
+    try:
+        handlers = _make_uia_handlers(comtypes_mod, uia_mod,
+                                      lambda *a: None, lambda *a: None, lambda *a: None)
+        iuia.AddFocusChangedEventHandler(None, handlers["focus"]())
+        iuia.RemoveAllEventHandlers()
+        return _check("uia_events", "ok", "UI Automation のイベントを購読できます（record 可）")
+    except Exception as e:
+        return _check("uia_events", "warn",
+                      f"イベントハンドラを登録できません（record が使えません）: {e}")
+
+
 def doctor_windows() -> list:
     """Windows 側（実際に GUI を触る側）の診断。"""
     checks = [_check("platform", "ok",
@@ -946,6 +1552,7 @@ def doctor_windows() -> list:
     except Exception as e:
         checks.append(_check("desktop", "error", f"デスクトップに到達できません: {e}"))
 
+    checks.append(_doctor_uia_events_check())
     checks.append(_doctor_lock_check())
     return checks
 
@@ -1043,7 +1650,7 @@ def build_parser() -> argparse.ArgumentParser:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--version", action="version", version="winauto 1.1.0")
+    parser.add_argument("--version", action="version", version="winauto 1.2.0")
     # GUI を触るコマンドはデスクトップを排他する（LOCKED_COMMANDS 参照）。
     # サブコマンドより前に置く: winauto --no-lock click ...
     parser.add_argument("--no-lock", action="store_true",
@@ -1102,6 +1709,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--timeout", type=float, default=10.0)
     p.add_argument("--output", choices=["text", "json"], default="text")
 
+    # --- select ---
+    p = sub.add_parser("select", help="Select an item in a combo box, list, or tab")
+    p.add_argument("selector", help="Element selector (the combo box / list itself)")
+    p.add_argument("value", nargs="?", help="Item text to select")
+    p.add_argument("--index", type=int, default=None, metavar="N",
+                   help="Select by position instead of text")
+    p.add_argument("--app", metavar="NAME_OR_PID", help="Process name, title, or PID")
+    p.add_argument("--backend", choices=["uia", "win32"], default="uia")
+    p.add_argument("--timeout", type=float, default=10.0)
+    p.add_argument("--output", choices=["text", "json"], default="text")
+
     # --- keys ---
     p = sub.add_parser("keys", help="Send key sequence")
     p.add_argument("keys", help="Key combo (e.g. ^a, {ENTER}, ^s)")
@@ -1145,6 +1763,25 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--keep-open", action="store_true", help="Don't close app after inspection")
     p.add_argument("--output-fmt", choices=["text", "json"], default="text")
 
+    # --- record ---
+    p = sub.add_parser(
+        "record",
+        help="Record what a human does in an app as JSONL events",
+        description="人が対象アプリでやった操作を JSONL で記録します。"
+                    "打鍵そのものは記録せず、入力欄の確定値・押した要素・選択・"
+                    "チェック・ウィンドウの切り替わりだけを残します。"
+                    "イベントの購読は UI Automation にしかないため backend は uia 固定です。")
+    p.add_argument("--app", metavar="NAME_OR_PID", required=True,
+                   help="Process name, window title, or PID (このプロセスの操作だけを記録します)")
+    p.add_argument("--output", metavar="PATH", default=None,
+                   help="Output JSONL path (default: stdout)")
+    p.add_argument("--duration", type=float, default=0.0, metavar="SEC",
+                   help="Stop after this many seconds (default: until Ctrl+C)")
+    p.add_argument("--max-events", type=int, default=0, metavar="N",
+                   help="Stop after N recorded events (default: unlimited)")
+    p.add_argument("--stop-file", metavar="PATH", default=None,
+                   help="Stop when this file appears (for stopping from another process)")
+
     # --- run ---
     p = sub.add_parser("run", help="Run an automation script")
     p.add_argument("script", help="Path to Python automation script")
@@ -1165,11 +1802,13 @@ COMMAND_MAP = {
     "inspect": cmd_inspect,
     "click": cmd_click,
     "type": cmd_type,
+    "select": cmd_select,
     "keys": cmd_keys,
     "get-text": cmd_get_text,
     "screenshot": cmd_screenshot,
     "wait": cmd_wait,
     "codegen": cmd_codegen,
+    "record": cmd_record,
     "run": cmd_run,
 }
 

@@ -291,8 +291,8 @@ WSL_WRAPPER_TEMPLATE = r"""#!/bin/bash
 # Windows 側の Python は WSL の cwd も POSIX パスも解釈できない。そこで「パスとして
 # 意味を持つ引数」だけを wslpath -w で Windows パスへ変換してから渡す。変換するのは
 #
-#   * screenshot / codegen の --output の値（他コマンドの --output は text|json の
-#     書式指定なので触らない）
+#   * screenshot / codegen / record の --output の値（他コマンドの --output は
+#     text|json の書式指定なので触らない）と、record の --stop-file の値
 #   * run サブコマンドの script 位置引数
 #   * '/' で始まり、実在する（か親ディレクトリが実在する）絶対パス
 #
@@ -333,15 +333,19 @@ for a in "$@"; do
   case "$a" in
     --output|-o)
       ARGS+=("$a")
-      if [ "$CMD" = "screenshot" ] || [ "$CMD" = "codegen" ]; then NEXT_IS_PATH=1; fi
+      if [ "$CMD" = "screenshot" ] || [ "$CMD" = "codegen" ] || [ "$CMD" = "record" ]; then NEXT_IS_PATH=1; fi
       continue ;;
     --output=*)
-      if [ "$CMD" = "screenshot" ] || [ "$CMD" = "codegen" ]; then
+      if [ "$CMD" = "screenshot" ] || [ "$CMD" = "codegen" ] || [ "$CMD" = "record" ]; then
         ARGS+=("--output=$(_convert "${a#--output=}")")
       else
         ARGS+=("$a")
       fi
       continue ;;
+    --stop-file)
+      ARGS+=("$a"); NEXT_IS_PATH=1; continue ;;
+    --stop-file=*)
+      ARGS+=("--stop-file=$(_convert "${a#--stop-file=}")"); continue ;;
     -*)
       ARGS+=("$a"); continue ;;
   esac
@@ -530,6 +534,7 @@ def print_done_wsl(dst: Path) -> None:
     print("    winauto tree --app notepad           # UIツリー表示")
     print("    winauto click \"name:=OK\" --app myapp # ボタンクリック")
     print("    winauto screenshot --app myapp --output /tmp/sc.png")
+    print("    winauto record --app myapp --output /tmp/events.jsonl")
     print()
     print("  スクリプトは WSL パスで指定できます:")
     print("    winauto run my_automation.py")

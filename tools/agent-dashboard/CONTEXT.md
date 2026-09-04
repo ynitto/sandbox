@@ -116,6 +116,10 @@ _使わない_: RPA シナリオ, マクロ, 自動操作スクリプト
 定常業務の作業タブから開く、定型手順を組み立てる画面（「手順を組み立てる」、実装は `src/renderer/sections/procedure.js`）。**工程の種類の正典は main の種別カタログ**（`src/features/cowork/main/procedure.js` の `STEP_KINDS`）で、表示名・入力欄・移譲先スキル・指示文の案内・道具の診断を 1 項目に持ち、画面は `cowork:procedureCatalog` で受け取って描く（画面に種類の写しを置かない）。工程列（`procedure`）は作業項目に残し、main が**作成モードへ渡す指示文へ決定的に変換**する（分岐先・シェル記号・必須項目の検査もそこ）。作成の起動は自由文の手順付き作業と同じ `cowork:generateStateMachine` の 1 本で、dashboard は YAML を書かない。画面操作が頼る CLI の準備状況は「道具を確認」で LLM を使わない診断（`playwright-cli --version` / `winauto doctor`）だけを呼んで示す。
 _使わない_: ワークフローエディタ（agent-flow の工程グラフ編集は別物）, シナリオ作成
 
+**操作の記録（Recording）**:
+人が画面でやった操作を、手順ビルダーの工程に起こすこと。ブラウザは `playwright-cli` の `recording-start` / `recording-stop` が印字する Playwright コード行、Windows アプリは `winauto` の操作イベント（JSONL）を受け、`src/features/cowork/main/recording.js` が**決定的に**工程列（版 2 の `recorded[]`）へ変換する。要素は role と名前で残し（ref・座標は断る）、値は `{{key}}` にして記録時の値を例に残す（パスワードらしい欄は例にも残さない）。待機・確認・分岐の補完は作成モードのスキルの仕事で、指示文の「記録した操作」と汎用化の案内で渡す。IPC は `cowork:procedureRecording` の 1 本で、作成の入口は増やさない。
+_使わない_: レコーダー, マクロ記録, 再生
+
 **複製元（Source）**:
 保存形ワークフローの任意フィールド `source`。値は `session/<agent_cli>/<session_id>` か `run/<run-id>`、手書きなら省略。作業ルール（nodeMethod）の `source: "methods/<id>@<hash>"` と同じ流儀。来歴であって定義ではないので digest の対象にしない。
 

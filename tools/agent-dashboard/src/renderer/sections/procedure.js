@@ -41,6 +41,8 @@ function emptyRoutineProcedure(repo, index = -1) {
     index, repo, name: '', machine: '', machineTouched: false,
     purpose: '', steps: [], finish: '', notes: '',
     preview: null, tools: null, message: '', ok: true, busy: false,
+    // 人の操作の記録（ブラウザは playwright-cli の記録を開始・終了、Windows アプリは貼り付け）。
+    recording: { url: '', app: '', source: 'browser', text: '', active: false, busy: false, message: '', ok: true },
   };
 }
 
@@ -67,7 +69,7 @@ function routineOutcomesText(outcomes) {
 }
 
 function emptyRoutineStep(kind) {
-  return { kind, title: '', detail: '', target: '', check: '', outcomesText: '' };
+  return { kind, title: '', detail: '', target: '', check: '', outcomesText: '', recorded: [] };
 }
 
 // 作業項目に残した工程列から編集用の下書きを起こす。
@@ -87,6 +89,7 @@ function routineProcedureFromItem(item, index) {
     target: String(step.target || ''),
     check: String(step.check || ''),
     outcomesText: routineOutcomesText(step.outcomes),
+    recorded: Array.isArray(step.recorded) ? step.recorded : [],
   }));
   return draft;
 }
@@ -105,8 +108,29 @@ function routineProcedurePayload(draft) {
       target: step.target,
       check: step.check,
       outcomes: parseRoutineOutcomes(step.outcomesText),
+      recorded: Array.isArray(step.recorded) ? step.recorded : [],
     })),
   };
+}
+
+// 記録から起こした工程（main の raw 形）を下書きの工程へ。記録（recorded）はそのまま持ち回る。
+function routineStepFromRecorded(step) {
+  return {
+    ...emptyRoutineStep(String(step.kind || '')),
+    title: String(step.title || ''),
+    detail: String(step.detail || ''),
+    target: String(step.target || ''),
+    check: String(step.check || ''),
+    outcomesText: routineOutcomesText(step.outcomes),
+    recorded: Array.isArray(step.recorded) ? step.recorded : [],
+  };
+}
+
+// 記録した操作の 1 行表示（工程カード）。指示文の綴りは main が組むので、ここは人が読む形だけ。
+function routineRecordedLine(op) {
+  const label = op.label || op.target || '';
+  const value = op.value ? ` ${op.value}` : '';
+  return `${op.op} ${label}${value}`;
 }
 
 function routineProcedureStepHtml(step, index, count) {
@@ -121,6 +145,12 @@ function routineProcedureStepHtml(step, index, count) {
       <input id="${id('check')}" data-rp-field="check" class="mono" value="${esc(step.check)}" placeholder="${esc(kind.check.placeholder || '')}">
       <small class="muted">終了コード 0 で通過します。パイプやリダイレクトは使えません。</small>
     </div>` : '';
+  const recordedHtml = Array.isArray(step.recorded) && step.recorded.length
+    ? `<details class="routine-procedure-recorded">
+      <summary>記録した操作 ${step.recorded.length} 件（作成モードの AI が待機・確認を補って再現します）</summary>
+      <ol class="mono">${step.recorded.map((op) => `<li>${esc(routineRecordedLine(op))}</li>`).join('')}</ol>
+      <button type="button" data-rp-unrecord>記録を外す（内容の文章だけ残す）</button>
+    </details>` : '';
   return `<li class="routine-procedure-step" data-rp-step="${index}">
     <div class="routine-procedure-step-head">
       <div class="row"><span class="label-chip">工程 ${index + 1}</span><strong>${esc(kind.label)}</strong></div>
@@ -141,6 +171,7 @@ function routineProcedureStepHtml(step, index, count) {
       <label for="${id('detail')}">${esc(kind.detail.label)}${kind.detail.required ? '' : '（任意）'}</label>
       <textarea id="${id('detail')}" data-rp-field="detail" rows="3" placeholder="${esc(kind.detail.placeholder || '')}">${esc(step.detail)}</textarea>
     </div>
+    ${recordedHtml}
     ${checkHtml}
     <div class="field">
       <label for="${id('outcomes')}">判断（任意・1 行に 1 つ）</label>
@@ -188,8 +219,9 @@ function routineProcedureHtml() {
     : '<p class="cowork-item-error">工程の種類を取得できませんでした。ダイアログを開き直してください。</p>'}
       ${draft.steps.length
     ? `<ol id="rp-steps" class="routine-procedure-list">${draft.steps.map((s, i) => routineProcedureStepHtml(s, i, draft.steps.length)).join('')}</ol>`
-    : '<div class="empty compact">工程がありません。上のボタンから追加してください。</div>'}
+    : '<div class="empty compact">工程がありません。上のボタンから追加するか、下の「操作を記録する」で人の操作から起こしてください。</div>'}
     </section>
+    ${routineRecordingHtml(draft)}
     <div class="row2">
       <div class="field">
         <label for="rp-finish">終了条件（任意）</label>
@@ -216,6 +248,59 @@ function routineProcedureHtml() {
   </section>`;
 }
 
+// 人の操作を記録して工程に起こす。ブラウザは playwright-cli の記録、Windows アプリは
+// `winauto record` を別ウィンドウで起こして停止ファイルで止める（どちらも main が呼ぶ）。
+// 別の端末で取った記録は貼り付けで受ける。返ってくるのは工程列で、上の一覧に足すだけ
+// （作成・保存の経路には触れない）。
+function routineRecordingHtml(draft) {
+  const rec = draft.recording;
+  const kinds = routineProcedureCatalog().filter((k) => k.recordable);
+  if (!kinds.length || !api.coworkProcedureRecording) return '';
+  const windows = rec.source === 'windows';
+  const sourceOptions = kinds.map((k) =>
+    `<option value="${esc(k.id)}" ${rec.source === k.id ? 'selected' : ''}>${esc(k.label)}</option>`).join('');
+  const target = windows
+    ? { field: 'app', value: rec.app, label: 'アプリ（ウィンドウ名・プロセス名・PID）', placeholder: '例: 勤怠管理' }
+    : { field: 'url', value: rec.url, label: '記録を始める URL', placeholder: 'https://…' };
+  const note = windows
+    ? '別ウィンドウで winauto が動きます。そのウィンドウで Ctrl+C を押しても止まります。'
+    : '見える形でブラウザが開きます。開かないときは下の「別の端末で取った記録」から貼り付けてください。';
+  const pasteHint = windows
+    ? `対象の PC で <code>winauto record --app ${esc(rec.app || '&lt;アプリ&gt;')} --output events.jsonl</code> を実行し、操作してから <code>Ctrl+C</code> で止めて、できたファイルの中身を貼り付けます。`
+    : '別の端末で <code>playwright-cli recording-stop</code> が印字した内容を貼り付けます。';
+  const pastePlaceholder = windows
+    ? '例: {&quot;event&quot;:&quot;invoke&quot;,&quot;app&quot;:&quot;勤怠管理&quot;,&quot;window&quot;:&quot;月次集計&quot;,&quot;control_type&quot;:&quot;Button&quot;,&quot;name&quot;:&quot;出力&quot;,&quot;auto_id&quot;:&quot;btnExport&quot;}'
+    : '例: await page.getByRole(\'button\', { name: \'ログイン\' }).click();';
+  return `<details class="routine-procedure-recording" ${rec.active || rec.text || rec.message ? 'open' : ''}>
+    <summary>操作を記録する（人がやって見せた操作を工程に起こす）</summary>
+    <p class="muted">要素は名前と種類で残し、入力した値は <code>{{key}}</code> の入力パラメータに置き換えます。待機・確認・分岐は作成モードの AI が補います。</p>
+    <div class="row2">
+      <div class="field">
+        <label for="rp-rec-source">記録の種類</label>
+        <select id="rp-rec-source" data-rp-rec="source" ${rec.active ? 'disabled' : ''}>${sourceOptions}</select>
+      </div>
+      <div class="field">
+        <label for="rp-rec-target">${esc(target.label)}</label>
+        <input id="rp-rec-target" class="mono" data-rp-rec="${target.field}" value="${esc(target.value)}" placeholder="${esc(target.placeholder)}" ${rec.active ? 'disabled' : ''}>
+      </div>
+    </div>
+    <div class="row routine-procedure-recording-actions">
+      <button type="button" id="btn-rp-rec-start" ${rec.active || rec.busy ? 'disabled' : ''}>記録を開始</button>
+      <button type="button" id="btn-rp-rec-stop" class="primary-inline" ${!rec.active || rec.busy ? 'disabled' : ''}>記録を終了して工程に起こす</button>
+      <span class="muted">${note}</span>
+    </div>
+    <details class="routine-procedure-paste" ${rec.text ? 'open' : ''}>
+      <summary>別の端末で取った記録を貼り付ける</summary>
+      <div class="field">
+        <small class="muted">${pasteHint}</small>
+        <textarea id="rp-rec-text" class="mono" data-rp-rec="text" rows="4" placeholder="${pastePlaceholder}">${esc(rec.text)}</textarea>
+        <div class="row"><button type="button" id="btn-rp-rec-import" ${rec.busy ? 'disabled' : ''}>貼り付けた記録を工程に起こす</button></div>
+      </div>
+    </details>
+    <p id="rp-rec-message" class="${rec.ok ? 'muted' : 'cowork-item-error'}" ${rec.message ? '' : 'hidden'}>${esc(rec.message)}</p>
+  </details>`;
+}
+
 function renderRoutineProcedureBody() {
   const body = $('routine-procedure-dialog-body');
   if (!body) return;
@@ -240,12 +325,32 @@ function bindRoutineProcedureBody(body) {
       }
       return;
     }
+    if (el.dataset.rpRec) {
+      draft.recording[el.dataset.rpRec] = el.value;
+      return;
+    }
     const card = el.closest('[data-rp-step]');
     if (card && el.dataset.rpField) {
       const step = draft.steps[Number(card.dataset.rpStep)];
       if (step) step[el.dataset.rpField] = el.value;
     }
   };
+  const source = body.querySelector('#rp-rec-source');
+  if (source) source.addEventListener('change', () => { draft.recording.source = source.value; renderRoutineProcedureBody(); });
+  for (const btn of body.querySelectorAll('[data-rp-unrecord]')) {
+    btn.addEventListener('click', () => {
+      const step = draft.steps[Number(btn.closest('[data-rp-step]').dataset.rpStep)];
+      if (step) step.recorded = [];
+      draft.preview = null;
+      renderRoutineProcedureBody();
+    });
+  }
+  const recStart = body.querySelector('#btn-rp-rec-start');
+  if (recStart) recStart.addEventListener('click', () => routineRecording('start'));
+  const recStop = body.querySelector('#btn-rp-rec-stop');
+  if (recStop) recStop.addEventListener('click', () => routineRecording('stop'));
+  const recImport = body.querySelector('#btn-rp-rec-import');
+  if (recImport) recImport.addEventListener('click', () => routineRecording('import'));
   for (const btn of body.querySelectorAll('[data-rp-add]')) {
     btn.addEventListener('click', () => {
       draft.steps.push(emptyRoutineStep(btn.dataset.rpAdd));
@@ -275,6 +380,62 @@ function bindRoutineProcedureBody(body) {
   }
   const tools = body.querySelector('#btn-rp-tools');
   if (tools) tools.addEventListener('click', () => checkRoutineProcedureTools());
+}
+
+// 記録の開始・終了・貼り付け。返った工程列は一覧の末尾に足す（既存の工程は触らない）。
+async function routineRecording(action) {
+  const draft = routineProcedureDraft();
+  const rec = draft.recording;
+  if (rec.busy || !api.coworkProcedureRecording) return;
+  const payload = { action, repo: draft.repo, source: rec.source, url: rec.url, app: rec.app };
+  if (action === 'import') payload.text = rec.text;
+  if (action === 'import' && !String(rec.text || '').trim()) {
+    rec.message = '記録を貼り付けてください';
+    rec.ok = false;
+    renderRoutineProcedureBody();
+    return;
+  }
+  rec.busy = true;
+  rec.message = action === 'start'
+    ? (rec.source === 'windows' ? '記録を開始しています…' : 'ブラウザを開いています…')
+    : action === 'stop' ? '記録を工程に起こしています…' : '読み取っています…';
+  rec.ok = true;
+  renderRoutineProcedureBody();
+  let res;
+  try {
+    res = await api.coworkProcedureRecording(payload);
+  } catch (err) {
+    res = { error: String((err && err.message) || err) };
+  }
+  rec.busy = false;
+  if (!res || res.error) {
+    rec.message = `${action === 'start' ? '記録を開始できませんでした' : '記録を工程に起こせませんでした'}: ${(res && res.error) || '原因不明'}`;
+    rec.ok = false;
+    if (action === 'stop') rec.active = false;
+    renderRoutineProcedureBody();
+    return;
+  }
+  if (action === 'start') {
+    rec.active = true;
+    rec.message = rec.source === 'windows'
+      ? '別ウィンドウで記録を始めました。アプリを操作してから「記録を終了して工程に起こす」を押します（そのウィンドウで Ctrl+C でも止まります）'
+      : '開いたブラウザで操作してください。終わったら「記録を終了して工程に起こす」を押します';
+    rec.ok = true;
+    renderRoutineProcedureBody();
+    return;
+  }
+  // 貼り付けでは記録中の表示を消さない（記録中に別端末の記録を足すことはできるが、
+  // 走っている recorder はまだ止まっていない——止めていないのに止まった顔をしない）。
+  if (action === 'stop') rec.active = false;
+  if (action === 'import') rec.text = '';
+  const steps = Array.isArray(res.steps) ? res.steps : [];
+  for (const step of steps) draft.steps.push(routineStepFromRecorded(step));
+  draft.preview = null;
+  const params = Array.isArray(res.parameters) && res.parameters.length
+    ? `。入力パラメータの候補: ${res.parameters.map((k) => `{{${k}}}`).join(' ')}（名前は工程の内容欄で直せます）` : '';
+  rec.message = `${res.operations || 0} 件の操作から ${steps.length} 工程を起こしました${params}`;
+  rec.ok = true;
+  renderRoutineProcedureBody();
 }
 
 function setRoutineProcedureMessage(message, ok) {

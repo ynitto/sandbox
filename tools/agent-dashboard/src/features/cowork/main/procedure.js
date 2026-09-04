@@ -22,18 +22,24 @@
 // ハーネス（agent-loop statemachine）はシェルを介さず argv を直接実行するので、
 // 指示文でもパイプ・リダイレクトを使わない形に倒す（コマンドと検査コマンドはここで断る）。
 //
-// このモジュールが依存するのは template-parameters（`{{key}}` の 1 実装）だけで、
-// cowork.js・Electron・ファイルシステムには触れない（単体で検査できる）。
+// このモジュールが依存するのは template-parameters（`{{key}}` の 1 実装）と screen-tools
+// （道具をどちら側で呼ぶかの 1 実装）だけで、cowork.js・Electron には触れない
+// （単体で検査できる）。
 
 const templateParameters = require('../../../base/main/template-parameters');
+const recording = require('./recording');
+const screenTools = require('./screen-tools');
 
 // 工程列（正規形）の版。項目に保存した工程列を後から読むときの目印で、形を変えるときに上げる。
-const PROCEDURE_VERSION = 1;
+//   1 … 初版
+//   2 … 工程に `recorded[]`（人の操作の記録。recording.js が起こす）を任意で持てる
+const PROCEDURE_VERSION = 2;
 
 // 上限。画面が組める量であると同時に、作成モードが 1 セッションで読み切れる量。
 const MAX_STEPS = 30;
 const MAX_OUTCOMES = 8;
 const MAX_TEXT = 4000;
+const MAX_RECORDED = 40;
 
 // statemachine-use の `check` はシェルを介さない。含まれていたら投入前に断る
 // （黙って別物を実行させない——検知装置が別物を測るのは検知が無いより悪い）。
@@ -79,6 +85,14 @@ const STEP_KINDS = [
       + ' 操作の前に snapshot で要素を確かめ、操作の後も snapshot か画面のテキストで結果を読み取る。'
       + ' セレクタや URL は工程に書いたものだけを使い、想定と違う画面が出たら FAILED を返す。',
     tool: TOOL_PLAYWRIGHT,
+    // 人の操作の記録を持てる。記録の要素は Playwright のロケータ式（`getByRole(...)`）。
+    recordable: true,
+    recordedLine: (op) => {
+      const value = op.value ? ` ${JSON.stringify(op.value)}` : '';
+      return op.op === 'goto' ? `goto ${op.target}` : `${op.op} ${op.target}${value}`;
+    },
+    recordedGuidance: '- 記録の行は `<操作> <ロケータ式> [値]` で、`playwright-cli <操作> "<ロケータ式>" [値]`'
+      + ' として実行できる（ロケータ式は引用符で囲む）。',
   },
   {
     id: 'windows',
@@ -93,6 +107,19 @@ const STEP_KINDS = [
       + ' `winauto tree` / `winauto wait` で要素を確かめてから `click` / `type` / `keys` を送り、'
       + ' 結果は `get-text` で読み取る。セレクタは `auto_id:=` を優先し、無ければ `name:=` を使う。',
     tool: TOOL_WINAUTO,
+    // 人の操作の記録を持てる。記録の要素は winauto のセレクタ（`auto_id:=` / `name:=`）。
+    recordable: true,
+    recordedLine: (op) => {
+      const value = op.value ? ` ${JSON.stringify(op.value)}` : '';
+      return `${op.op} ${JSON.stringify(op.target)}${value}`;
+    },
+    // 記録の 1 行は「何が起きたか」であって、そのまま打てる argv ではない。winauto の
+    // コマンドへの対応をここで示す（**綴りを騙らない**——対応するコマンドが無いものは
+    // 無いと書く。あるふりをすると、動かない argv をそのまま定義に書かれる）。
+    recordedGuidance: '- 記録の行は `<操作> <セレクタ> [値]` で、winauto では次のように行う。'
+      + ' `launch` → `winauto launch`、`window` → その画面が出るのを `winauto wait` で待つ、'
+      + ' `click` / `check` / `uncheck` → `winauto click`、`fill` / `type` → `winauto type`、'
+      + ' `select` → `winauto select <セレクタ> <項目名>`、`keys` → `winauto keys`。',
   },
   {
     id: 'skill',
@@ -146,6 +173,7 @@ function catalog() {
     target: k.target ? { label: k.target.label, placeholder: k.target.placeholder, required: !!k.target.required } : null,
     detail: { label: k.detail.label, placeholder: k.detail.placeholder, required: !!k.detail.required },
     check: k.check ? { placeholder: k.check.placeholder } : null,
+    recordable: !!k.recordable,
   }));
 }
 
@@ -155,7 +183,10 @@ const OUTCOME_TARGETS = ['next', 'done', 'abort'];
 // 実行時に注入される変数は入力にしない（正典は template-parameters）。
 function parameterKeys(spec) {
   const texts = [spec.purpose, spec.finish, spec.notes];
-  for (const step of spec.steps) texts.push(step.title, step.detail, step.target, step.check);
+  for (const step of spec.steps) {
+    texts.push(step.title, step.detail, step.target, step.check);
+    for (const op of step.recorded || []) texts.push(op.value);
+  }
   return templateParameters.inputParameterKeys(...texts);
 }
 
@@ -206,6 +237,30 @@ function normalizeTarget(kind, raw, index) {
   return value;
 }
 
+// 人の操作の記録（recording.js の正規形）。画面操作の工程だけが持ち、要素は role と名前で
+// 持つ（ref や座標は受けない）。値の `{{key}}` は入力パラメータとして拾う。
+const RECORDED_OP_SET = new Set(recording.OPS);
+function normalizeRecorded(raw, index, kind) {
+  const list = Array.isArray(raw) ? raw : [];
+  if (!list.length) return [];
+  if (!kind.recordable) throw new Error(`工程 ${index + 1}（${kind.label}）は操作の記録を持てません`);
+  if (list.length > MAX_RECORDED) throw new Error(`工程 ${index + 1} の記録した操作は ${MAX_RECORDED} 件までです`);
+  return list.map((op, n) => {
+    const item = op && typeof op === 'object' ? op : {};
+    const name = String(item.op || '');
+    if (!RECORDED_OP_SET.has(name)) throw new Error(`工程 ${index + 1} の記録 ${n + 1} の操作が不正です: ${name}`);
+    const target = text(item.target, 300);
+    if (/^e\d+$/.test(target)) {
+      throw new Error(`工程 ${index + 1} の記録 ${n + 1} は要素を ref（${target}）で指しています。role と名前で指してください`);
+    }
+    const out = { op: name, target, label: text(item.label, 120) };
+    if (item.role) out.role = text(item.role, 40);
+    if (item.value) out.value = text(item.value, 300);
+    if (item.example) out.example = text(item.example, 120);
+    return out;
+  });
+}
+
 function normalizeStep(raw, index, stepCount) {
   const item = raw && typeof raw === 'object' ? raw : {};
   const kind = STEP_KIND_BY_ID.get(String(item.kind || ''));
@@ -236,6 +291,7 @@ function normalizeStep(raw, index, stepCount) {
     target: normalizeTarget(kind, item.target, index),
     check,
     outcomes,
+    recorded: normalizeRecorded(item.recorded, index, kind),
   };
 }
 
@@ -271,6 +327,16 @@ function skillFor(step) {
   return kind.skill || (kind.skillFromTarget ? step.target : '');
 }
 
+// 記録を持つ工程があるときだけ載せる案内。記録は「うまく行った 1 回」なので、再現に要る待機・
+// 確認・想定外への対処を作成モードの AI に補わせ、操作そのものは足させない（汎用化の境界）。
+const RECORDED_GUIDANCE = [
+  '- 「記録した操作」は人が 1 回やって通った操作の列である。同じ順・同じ要素で再現し、記録に無い操作を足さない。',
+  '- 記録の要素は role と名前（`getByRole` / `auto_id:=` / `name:=`）で指す。snapshot の ref（e15 など）や座標を定義に書かない。',
+  '- 各操作の前に要素が現れるのを待ち（snapshot / `winauto wait`）、確定の操作（ボタン・リンク・Enter）の後は結果の画面を読み取って確かめる。',
+  '- 記録の `{{key}}` は実行時に人が入れる入力パラメータで、「記録時の値の例」は形の参考に過ぎない。例を既定値にしない。',
+  '- 記録の名前が選択肢の文字列を含むなど脆い（例: `getByLabel(\'種別 通常緊急\')`）なら、同じ要素を指す role と名前へ言い換えてよい。',
+];
+
 const COMMON_GUIDANCE = [
   '- 画面操作・スキル・コマンドの工程は、結果を機械で確かめられるなら `check` を宣言する（宣言した工程からは `equals:check_ok:true` で進む）。',
   '- どの工程でも、秘密情報（パスワード・トークン）をアクション本文に書かない。必要なら入力パラメータにする。',
@@ -279,7 +345,12 @@ const COMMON_GUIDANCE = [
 function toolGuidance(steps) {
   const used = new Set(steps.map((s) => s.kind));
   const lines = STEP_KINDS.filter((k) => used.has(k.id) && k.guidance).map((k) => k.guidance);
-  return [...lines, ...COMMON_GUIDANCE];
+  // 記録の案内は、記録を持つ工程がある種類のぶんだけ載せる（種類ごとの綴りの対応表）。
+  const recordedKinds = new Set(steps.filter((s) => s.recorded && s.recorded.length).map((s) => s.kind));
+  const perKind = STEP_KINDS.filter((k) => recordedKinds.has(k.id) && k.recordedGuidance)
+    .map((k) => k.recordedGuidance);
+  const recorded = recordedKinds.size ? [...RECORDED_GUIDANCE, ...perKind] : [];
+  return [...lines, ...recorded, ...COMMON_GUIDANCE];
 }
 
 function outcomeTargetLabel(to, index, stepCount) {
@@ -303,6 +374,13 @@ function stepSection(step, index, stepCount) {
   }
   if (step.detail) {
     lines.push(`- ${kind.detail.label}:\n  ${step.detail.replace(/\n/g, '\n  ')}`);
+  }
+  if (step.recorded.length && kind.recordedLine) {
+    lines.push('- 記録した操作（人がやった順。要素は記録どおり role と名前で指す）:');
+    for (const op of step.recorded) {
+      const example = op.example ? ` （記録時の値の例: ${op.example}）` : '';
+      lines.push(`  - \`${kind.recordedLine(op)}\`${example}`);
+    }
   }
   const skill = skillFor(step);
   if (skill) lines.push(`- アクション本文で \`${skill}\` スキルへ移譲すると明記する。`);
@@ -381,16 +459,25 @@ function toolsFor(kinds) {
   return out;
 }
 
-// `capture(command, args, { cwd, timeoutMs })` は loopProvider.runCommandCapture と同じ形
-// （テストでは差し替える）。LLM を使わない診断コマンドだけを呼ぶ（`doctor` / `--version` は
-// 読み取り専用で、winauto のデスクトップロックも取らない）。
-async function toolStatus({ cwd = '', kinds = [], capture, timeoutMs = 20000 } = {}) {
+// `capture(command, args, { cwd, timeoutMs, native })` は loopProvider.runCommandCapture と
+// 同じ形（テストでは差し替える）。LLM を使わない診断コマンドだけを呼ぶ（`doctor` /
+// `--version` は読み取り専用で、winauto のデスクトップロックも取らない）。
+//
+// **どちら側の実体を見たかまで報告する。** win32 では Windows 側と WSL 側の両方に入りうるし、
+// 片側にしか入れていない端末もある。「未準備」とだけ言われても、どちらへ入れればよいのか
+// 分からない（実際、Windows にしか winauto を入れていない端末では WSL 側を見て未準備に
+// 見えていた）。
+async function toolStatus({ cwd = '', kinds = [], capture,
+  resolve = screenTools.resolveScreenTool, timeoutMs = 20000 } = {}) {
   if (typeof capture !== 'function') throw new Error('道具の確認に使う実行関数がありません');
   const out = [];
   for (const tool of toolsFor(kinds)) {
+    const resolved = resolve(tool.command);
+    const where = screenTools.whereLabel(resolved);
     let res;
     try {
-      res = await capture(tool.command, tool.args, { cwd, timeoutMs });
+      res = await capture(resolved.command, tool.args,
+        { cwd, timeoutMs, native: !!resolved.native });
     } catch (err) {
       res = { ok: false, status: -1, stdout: '', stderr: '', error: String((err && err.message) || err) };
     }
@@ -404,13 +491,21 @@ async function toolStatus({ cwd = '', kinds = [], capture, timeoutMs = 20000 } =
     } else {
       verdict = { ok: false, summary: (String(res.stderr || res.stdout || '').split(/\r?\n/).find(Boolean) || '終了コードが 0 ではありません').slice(0, 200) };
     }
-    out.push({ id: tool.id, label: tool.label, ok: verdict.ok, summary: verdict.summary, hint: verdict.ok ? '' : tool.hint });
+    out.push({
+      id: tool.id,
+      label: tool.label,
+      ok: verdict.ok,
+      // 見た側を添える（同じ「利用可能」でも Windows 側か WSL 側かで意味が違う）。
+      summary: where ? `${verdict.summary}（${where}）` : verdict.summary,
+      hint: verdict.ok ? '' : tool.hint,
+    });
   }
   return out;
 }
 
 module.exports = {
   PROCEDURE_VERSION,
+  MAX_RECORDED,
   STEP_KINDS,
   STEP_KIND_IDS,
   OUTCOME_TARGETS,

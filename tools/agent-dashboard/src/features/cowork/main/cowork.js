@@ -6,7 +6,7 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 const {
   makeLoopProvider, runChatWindow, isWslPath, wslPath, wslDistro, toWslCwd, shellQuote, decodeCliOutput,
-  runCommandWindow, runCommandCapture, supportsRunWindow,
+  runCommandWindow, runNativeWindow, runCommandCapture, supportsRunWindow,
 } = require('./loopProvider');
 const { _pathKey, _isPosixAbs, toViewerPath, viewerDistro } = require('../../agent-project/main/project');
 const { parseFlatYaml } = require('../../agent-project/main/toolconfig');
@@ -22,6 +22,8 @@ const profiles = require('../../orchestration/main/profiles');
 const agentCli = require('../../agent-project/main/agentCli');
 const herdFamily = require('../../orchestration/main/herd-family');
 const procedure = require('./procedure');
+const recording = require('./recording');
+const screenTools = require('./screen-tools');
 
 // 設定に書かれたフォルダ表記を、このビュアーで開けるパスへ揃える（discover と同じ規則）。
 // WSL の Linux 絶対パスは Windows ビュアーでは UNC へ翻訳する（そうしないと C:\home\… に化ける）。
@@ -1217,6 +1219,54 @@ function procedureTools(config, payload = {}) {
   });
 }
 
+// 人の操作の記録 → 工程列。ブラウザは playwright-cli の recording-start / recording-stop、
+// Windows アプリは `winauto record` を別ウィンドウで起こして停止ファイルで止める。どちらも
+// この端末（win32 は wsl.exe 経由＝実行と同じ側）で呼ぶ。別の端末で取った記録は貼り付け
+// （import）で受ける。どれも変換は recording.js の 1 実装で、返すのは手順ビルダーの
+// 工程列（raw 形）だけ——ここから先は手で組んだ工程と同じ経路（procedurePreview /
+// generateStateMachine）を通り、YAML は書かない。cwd は登録済みフォルダのときだけそこへ寄せる。
+// 記録に使う道具一式。**どちら側で呼ぶか・一時ファイルをどう綴るか・どの窓で開くかは
+// 連動する**ので、1 か所で組んで渡す（別々に決めると、Windows 側の実体へ WSL の
+// パスを渡すような食い違いが起きる）。
+function screenToolKit(name, cwd) {
+  const tool = screenTools.resolveScreenTool(name);
+  return {
+    tool,
+    files: screenTools.fileOps(tool, { capture: runCommandCapture, cwd }),
+    // ネイティブの実体は Windows のコンソールで開く（tmux 経路へ載せると WSL の中で走り、
+    // 渡した Windows パスの一時ファイルが書けない）。
+    openWindow: tool.native ? runNativeWindow : runCommandWindow,
+  };
+}
+
+function procedureRecording(config, payload = {}) {
+  const action = String(payload.action || '').trim();
+  const source = String(payload.source || 'browser').trim();
+  const raw = String(payload.repo || '').trim();
+  const folder = raw ? _resolveRoot(raw, config) : '';
+  const cwd = (folder && adhocRoots(config).find((r) => _pathKey(r) === _pathKey(folder))) || '';
+  if (action === 'start') {
+    if (source === 'windows') {
+      const kit = screenToolKit('winauto', cwd);
+      return recording.recordWindowsStart({ cwd, app: payload.app, ...kit });
+    }
+    return recording.recordBrowserStart({ cwd, url: payload.url,
+      tool: screenTools.resolveScreenTool('playwright-cli'), capture: runCommandCapture });
+  }
+  if (action === 'stop') {
+    return source === 'windows'
+      ? recording.recordWindowsStop({})
+      : recording.recordBrowserStop({ cwd, url: payload.url,
+        tool: screenTools.resolveScreenTool('playwright-cli'), capture: runCommandCapture });
+  }
+  if (action === 'import') {
+    return Promise.resolve(recording.stepsFromRecording({
+      source: payload.source, text: payload.text, url: payload.url, app: payload.app,
+    }));
+  }
+  return Promise.reject(new Error(`記録の操作が不正です: ${action || '(空)'}`));
+}
+
 function generateStateMachine(config, payload = {}) {
   const repo = String(payload.repo || '').trim();
   const name = String(payload.name || '').trim();
@@ -1774,7 +1824,7 @@ function saveWork(config, saveConfig, { items, branch, createBranch, push } = {}
 
 module.exports = {
   overview, runLoop, runStateMachine, generateStateMachine, runAdhoc, adhocRoots,
-  procedureInstruction, procedurePreview, procedureTools, procedureCatalog,
+  procedureInstruction, procedurePreview, procedureTools, procedureCatalog, procedureRecording,
   saveWork, itemsOf, wslPath, dynamicState,
   resolveItem, findItem, dedupeItems, applyDiscoveredEdits, gitCommitFiles,
   invalidateDiscoverCache, decodeCliOutput, viewerRepo,

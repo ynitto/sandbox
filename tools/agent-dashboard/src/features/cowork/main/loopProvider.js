@@ -7,7 +7,9 @@ function shellQuote(s) {
 }
 
 // パス表記の変換は base/main/wsl.js が正典（cowork・定常業務・documents で共有する）。
-const { isWslPath, wslPath, wslDistro, winDriveToWsl } = require('../../../base/main/wsl');
+const {
+  isWslPath, wslPath, wslDistro, winDriveToWsl, isWindowsDrivePath,
+} = require('../../../base/main/wsl');
 
 // cwd（WSL UNC / POSIX / Windows ドライブ）を WSL 側の Linux パスへ寄せる。
 function toWslCwd(p) {
@@ -72,16 +74,47 @@ function resultOf(res) {
   };
 }
 
+// Windows ネイティブの実体（.bat / .cmd / .exe）を呼ぶ起動仕様。
+//
+// `.bat` / `.cmd` は実行ファイルではなく cmd.exe の入力なので、**直接 spawn できない**
+// （新しめの Node は .bat/.cmd の直接起動を拒む）。`cmd /d /s /c "…"` に載せる。
+// `shell: true` は使わない——引用を Node と cmd の二重解釈に委ねることになり、日本語引数と
+// 空白入りパスが壊れる（この方針はファイル冒頭の非 win32 経路と同じ）。
+function nativeSpawnSpec(command, argv, cwd) {
+  const quote = (s) => `"${String(s).replace(/"/g, '""')}"`;
+  const line = [quote(command), ...argv.map(quote)].join(' ');
+  return {
+    command: process.env.COMSPEC || 'cmd.exe',
+    // `/s` + 全体を引用符で包む形が cmd の「最初と最後の引用符だけ剥がす」規則に合う。
+    args: ['/d', '/s', '/c', `"${line}"`],
+    options: {
+      // Node に引用を足させない（上で組んだ 1 本の行をそのまま渡す）。
+      windowsVerbatimArguments: true,
+      windowsHide: true,
+      // 渡せる形（ドライブパス）のときだけ渡す。判定の正典は base/main/wsl.js。
+      ...(isWindowsDrivePath(cwd) ? { cwd } : {}),
+    },
+  };
+}
+
 // ループ系 CLI 1 回分の起動仕様（同期 sh / 非同期 runCommandCapture の共通部分）。
 //
-// **win32 は必ず wsl.exe 経由**。agent-loop（と statemachine-use を発動するプロンプト送信、
+// **win32 は既定で wsl.exe 経由**。agent-loop（と statemachine-use を発動するプロンプト送信、
 // statemachine ハーネス）は WSL 側にしか無い想定で、Windows から直接 spawn すると ENOENT に
 // なる。cwd も Windows パス（UNC / ドライブ）のままでは子プロセスへ渡せないので、
 // WSL 側の `cd` としてスクリプトへ畳み込む。
 // LANG を明示しないと WSL 側のロケールで日本語 stderr が化けることがある。
-function cliSpawnSpec(command, args, cwd) {
+//
+// 例外が `options.native`——画面操作の道具（playwright-cli / winauto）を Windows 側の実体で
+// 呼ぶときだけ立つ。あれらは Windows のデスクトップを触る道具なので、WSL を挟むと遠回りに
+// なる（どちら側で呼ぶかの判断は screen-tools.js が持つ。ここは受け取るだけ）。
+function cliSpawnSpec(command, args, cwd, options = {}) {
   const tokens = splitCommand(command);
   const argv = (args || []).map(String);
+  if (process.platform === 'win32' && options.native) {
+    // 解決済みの実体（絶対パス）はトークン分割しない——空白入りのパスが割れる。
+    return nativeSpawnSpec(command, argv, cwd);
+  }
   if (process.platform === 'win32') {
     const linuxCwd = toWslCwd(cwd);
     const distro = wslDistro(cwd);
@@ -103,7 +136,7 @@ function cliSpawnSpec(command, args, cwd) {
 }
 
 function sh(command, args, options = {}) {
-  const spec = cliSpawnSpec(command, args, options.cwd);
+  const spec = cliSpawnSpec(command, args, options.cwd, options);
   const res = spawnSync(spec.command, spec.args, {
     ...spec.options,
     encoding: 'buffer',
@@ -645,13 +678,75 @@ function runCommandWindow({ command, args, cwd, sessionKey, title, message }) {
   return res.ok ? { ...res, session } : res;
 }
 
+// Windows ネイティブのコマンドを新しいコンソールで開く（WSL の tmux 経路の対）。
+//
+// 画面操作の道具を Windows 側の実体で呼ぶときは、窓も Windows 側で開く。tmux 経路へ載せると
+// WSL の中で走ることになり、渡した Windows パスの一時ファイルが書けない（どちら側で呼ぶかは
+// 一時ファイルの綴りも決める——screen-tools.js の注記と同じ話）。
+//
+// cmd の引用規則を避けるため、実行本体は一時 `.cmd` に書いて `start` にそれを開かせる
+// （WSL 経路が一時 `.sh` を書くのと同じ考え方）。
+function nativeWindowScript({ command, args, cwd, title }) {
+  const quote = (s) => `"${String(s).replace(/"/g, '""')}"`;
+  const lines = ['@echo off', 'chcp 65001 > nul'];
+  // タイトルは cmd のメタ文字を落としてから渡す（引用の段を増やさない）。
+  lines.push(`title ${String(title || 'agent-dashboard').replace(/[&|<>^"%]/g, ' ')}`);
+  if (isWindowsDrivePath(cwd)) lines.push(`cd /d ${quote(cwd)}`);
+  lines.push([quote(command), ...(args || []).map(quote)].join(' '));
+  lines.push('echo.');
+  lines.push('echo [agent-dashboard] 終了しました。何かキーを押すとこのウィンドウを閉じます。');
+  lines.push('pause > nul');
+  return `${lines.join('\r\n')}\r\n`;
+}
+
+function writeNativeWindowScript(script) {
+  const fsm = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const dir = path.join(os.tmpdir(), 'agent-dashboard');
+  fsm.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, `cowork-native-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.cmd`);
+  fsm.writeFileSync(file, script, 'utf8');
+  return file;
+}
+
+function runNativeWindow({ command, args, cwd, title, message }) {
+  if (process.platform !== 'win32') {
+    return { ok: false, status: -1, stdout: '', stderr: '',
+             error: 'Windows 以外ではネイティブのコンソールを開けません' };
+  }
+  let scriptFile;
+  try {
+    scriptFile = writeNativeWindowScript(nativeWindowScript({ command, args, cwd, title }));
+  } catch (e) {
+    return { ok: false, status: -1, stdout: '', stderr: '', error: `実行スクリプトを書けません: ${e.message}` };
+  }
+  try {
+    const child = spawn(process.env.COMSPEC || 'cmd.exe',
+      ['/d', '/c', 'start', '', scriptFile],
+      { stdio: 'ignore', detached: true, windowsHide: true });
+    child.on('error', () => {});   // 起動失敗で main プロセスを落とさない
+    child.unref();
+  } catch (e) {
+    return { ok: false, status: -1, stdout: '', stderr: '', error: e.message, scriptFile };
+  }
+  return {
+    ok: true, status: 0, launched: true, stdout: '', stderr: '', error: '',
+    message: message || '別ウィンドウ（Windows コンソール）で実行を開始しました',
+    windowCommand: [command, ...(args || [])].join(' '),
+    terminal: 'Windows',
+    scriptFile,
+  };
+}
+
 // 一回限りのコマンドを非表示・非同期で実行し、結果を Promise で返す（ウィンドウ非対応
 // 環境用のフォールバック。同期 spawnSync は main プロセスを実行時間ぶん止めるので使わない）。
 // 出力末尾の `RESULT {json}` 行（agent-loop statemachine の結果契約）があれば解析して返す。
 function runCommandCapture(command, args, options = {}) {
-  // 起動仕様は同期の sh() と同じ（win32 は wsl.exe 経由）。ここを直接 spawn にすると、
+  // 起動仕様は同期の sh() と同じ（win32 は既定で wsl.exe 経由）。ここを直接 spawn にすると、
   // Windows のダッシュボードから WSL 側の agent-loop を呼べない。
-  const spec = cliSpawnSpec(command, args, options.cwd);
+  // `options.native` のときだけ Windows 側の実体を直接呼ぶ（画面操作の道具）。
+  const spec = cliSpawnSpec(command, args, options.cwd, options);
   return new Promise((resolve) => {
     const out = [];
     const err = [];
@@ -763,6 +858,7 @@ module.exports = {
   runInWindow,
   chatWindowScript, chatSessionName, runChatWindow, launchWindowScript,
   commandWindowScript, runCommandWindow, runCommandCapture, cliSpawnSpec,
+  nativeWindowScript, runNativeWindow, nativeSpawnSpec,
   COMMAND_SESSION_PREFIX,
   sessionProcessLines, sessionChatLines,
   splitCommand, quoteToken, expandHome, findExecutable, terminalLaunchSpec, supportsRunWindow,

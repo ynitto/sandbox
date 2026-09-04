@@ -98,11 +98,24 @@ function decodeWslOutput(buf) {
 // 最後に来る（バナーがパスらしき文字列を含んでいても、それは先に出ている）。
 const WINDOWS_PATH_RE = /^(?:[A-Za-z]:\\|\\\\)/;
 
+// Windows の表記か（ドライブ `C:\…` か UNC `\\wsl$\…`）。
+function isWindowsPath(p) {
+  return WINDOWS_PATH_RE.test(String(p || ''));
+}
+
+// **Windows のプロセスの cwd として渡せるか。** UNC を除くのは、Windows がプロセスの
+// カレントディレクトリに UNC を持てないためである（cmd は「CMD does not support UNC paths
+// as current directories」と言って既定のフォルダへ落ちる）。渡せない cwd は渡さない方がよい
+// ——落ちた先で相対パスが別の場所を指すより、既定のままの方が読める。
+function isWindowsDrivePath(p) {
+  return /^[A-Za-z]:\\/.test(String(p || ''));
+}
+
 function extractWindowsPath(stdout) {
   const lines = String(stdout || '')
     .split(/\r?\n/)
     .map((line) => line.trim())
-    .filter((line) => WINDOWS_PATH_RE.test(line));
+    .filter(isWindowsPath);
   return lines.length ? lines[lines.length - 1] : '';
 }
 
@@ -187,6 +200,8 @@ module.exports = {
   wslDistro,
   winDriveToWsl,
   toWslPath,
+  isWindowsPath,
+  isWindowsDrivePath,
   decodeWslOutput,
   extractWindowsPath,
   launchArgs,
