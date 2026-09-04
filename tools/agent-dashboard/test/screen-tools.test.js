@@ -135,8 +135,10 @@ async function main() {
       '全体を引用符で包む（cmd /s は最初と最後の引用符だけを剥がす）');
     assert.strictEqual(spec.options.windowsVerbatimArguments, true, 'Node に引用を足させない');
     assert.strictEqual(spec.options.cwd, 'C:\\work');
-    // Windows のプロセスに POSIX パスの cwd は渡せない
+    // 渡せる形（ドライブパス）のときだけ渡す。POSIX パスは論外だし、UNC は Windows が
+    // プロセスの cwd に持てない（cmd は既定のフォルダへ落ちる）。
     assert.strictEqual('cwd' in nativeSpawnSpec('x.bat', [], '/home/me').options, false);
+    assert.strictEqual('cwd' in nativeSpawnSpec('x.bat', [], '\\\\wsl$\\Ubuntu\\home\\me').options, false);
     assert.strictEqual('cwd' in nativeSpawnSpec('x.bat', [], '').options, false);
     // 引数の引用符は "" で畳む（コマンドラインが途中で切れない）
     assert.ok(nativeSpawnSpec('x.bat', ['a"b'], '').args[3].includes('"a""b"'));
@@ -154,8 +156,9 @@ async function main() {
     assert.ok(lines.includes('cd /d "C:\\work"'));
     assert.ok(lines.includes('"C:\\Tools\\winauto.bat" "record" "--app" "勤怠 管理"'));
     assert.ok(lines.includes('pause > nul'), '終了してもすぐ閉じない（原因を持ち去らせない）');
-    // POSIX パスの cwd へは cd しない（Windows のコンソールでは意味を成さない）
+    // 渡せない cwd へは cd しない（POSIX パスは意味を成さず、UNC は cmd が受け付けない）
     assert.ok(!nativeWindowScript({ command: 'x.bat', args: [], cwd: '/home/me' }).includes('cd /d'));
+    assert.ok(!nativeWindowScript({ command: 'x.bat', args: [], cwd: '\\\\wsl$\\Ubuntu\\home' }).includes('cd /d'));
     // タイトルの cmd メタ文字は落とす（引用の段を増やさない）
     assert.ok(nativeWindowScript({ command: 'x.bat', args: [], title: 'a&b|c>d' }).includes('title a b c d'));
   });

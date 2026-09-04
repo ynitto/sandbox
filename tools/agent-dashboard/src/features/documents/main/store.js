@@ -9,6 +9,7 @@
 //   <workspaceDir>/<id>/**               … 成果物（エージェントが書く。サブフォルダも可）
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { sharedHomeRoot } = require('../../../base/main/agent-home');
 const formats = require('./formats');
@@ -25,18 +26,45 @@ function cfgOf(config) {
   return (config && config.documents) || {};
 }
 
+// 文書と文書ルールの置き場は **この端末（Windows）側のホーム**。
+//
+// 共有ホーム（`base/agent-home` の sharedHomeRoot。Windows では WSL 側のホームを
+// UNC `\\wsl$\…` で指す）は control.json のような**エンジンと分け合う状態**の置き場で、
+// ここに置くものはそれとは性質が違う——人が Word / PowerPoint / Excel / draw.io で開く
+// 実ファイルであり、開く主体は Windows のアプリの方である。UNC に置くと Office は
+// 保護ビュー・自動保存・最近使った項目のどれもが不安定になり、エクスプローラや
+// 既定のアプリ関連付けからも辿りにくい。
+//
+// エージェントは WSL 側で走るので、**渡すときに WSL 表記へ直す**
+// （`launcher.agentPath` — 依頼文の作業フォルダも、起動する cwd も同じ変換を通す）。
+// win32 以外はホームが 1 つなので、この分岐は何も変えない。
+function homeRoot() {
+  return os.homedir();
+}
+
 function expandHome(p) {
-  return String(p || '').replace(/^~(?=$|\/|\\)/, sharedHomeRoot());
+  return String(p || '').replace(/^~(?=$|\/|\\)/, homeRoot());
+}
+
+// 置き場を明示していないときの既定。
+// 旧既定（共有ホーム＝Windows では WSL 側）に既に中身があるならそちらを使い続ける
+// ——既定を Windows 側へ移した日に、それまでの文書と文書ルールが画面から消えないように。
+// 引っ越したい人は設定の「置き場」で新しいフォルダを指定する（アプリは勝手に動かさない）。
+function defaultDir(name) {
+  const here = path.join(homeRoot(), '.agents', name);
+  if (process.platform !== 'win32' || fs.existsSync(here)) return here;
+  const legacy = path.join(sharedHomeRoot(), '.agents', name);
+  return legacy !== here && fs.existsSync(legacy) ? legacy : here;
 }
 
 function workspaceDir(config) {
   const raw = String(cfgOf(config).workspaceDir || '').trim();
-  return raw ? path.resolve(expandHome(raw)) : path.join(sharedHomeRoot(), '.agents', 'documents');
+  return raw ? path.resolve(expandHome(raw)) : defaultDir('documents');
 }
 
 function rulesDir(config) {
   const raw = String(cfgOf(config).rulesDir || '').trim();
-  return raw ? path.resolve(expandHome(raw)) : path.join(sharedHomeRoot(), '.agents', 'document-rules');
+  return raw ? path.resolve(expandHome(raw)) : defaultDir('document-rules');
 }
 
 function normalizeMode(mode) {
@@ -254,6 +282,8 @@ function createSet(config, { name, formats: formatIds, mode, rule, request, inpu
 
 module.exports = {
   MANIFEST,
+  homeRoot,
+  defaultDir,
   MANIFEST_VERSION,
   INPUTS_DIR,
   MODES,

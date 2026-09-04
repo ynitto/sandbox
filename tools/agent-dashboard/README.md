@@ -750,6 +750,9 @@ GitLab の Base URL / トークン（⚙ 設定）が未設定なら自動取得
 領域ナビの「ドキュメント」で、エージェント CLI に文書（Word / PowerPoint / Excel / Markdown /
 draw.io の SVG）を作らせる。詳細は [`src/features/documents/README.md`](src/features/documents/README.md)。
 
+- **置き場はこの端末（Windows）側**。文書フォルダも文書ルールも Windows のホーム配下に置き
+  （Word / Excel / draw.io で開くのは Windows のアプリの方）、WSL で走るエージェントへ渡すときだけ
+  WSL 表記（`C:\Users\me\…` → `/mnt/c/Users/me/…`）へ直す。置き場は設定で変えられる。
 - **文書ルール**は 1 ファイル（既定 `~/.agents/document-rules/<slug>.md`）。対象と目的・テンプレート・
   定型と体裁・記述内容・注意点・区分の 6 節。原案やテンプレートを入力すると AI が節ごとに膨らませ、
   人が編集して保存する。コピー・削除は OS で行う。

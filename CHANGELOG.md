@@ -18,8 +18,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   role と名前つきの Playwright コード行として印字）があり、実測で形を固定した。statemachine-use の
   作成モードと `check` が補完の受け皿になる。欠けていたのは記録を工程列へ写す段だけだった。
 - **操作を記録する**（手順ビルダー）: ブラウザは URL を入れて記録を開始 → 人が操作 → 終了で
-  工程に起こす。Windows アプリと別端末の記録は貼り付けで受ける（`winauto` の操作イベント JSONL。
-  `winauto record` は未実装で、契約だけ先に置いた）。変換（`features/cowork/main/recording.js`）は
+  工程に起こす。Windows アプリは
+  `winauto record` を別ウィンドウで走らせて止める（別端末で取った記録は貼り付けでも受ける）。変換（`features/cowork/main/recording.js`）は
   **決定的**——人の癖（入力前のクリック・確定後の Enter の重複）を落とし、ページ遷移・ウィンドウの
   切り替わり・確定の操作で工程を切り、`fill` / `type` の値を `{{key}}` にして記録時の値を例に残す
   （パスワードらしい欄は例にも残さない）。要素は role と名前で残し、ref・座標は投入前に断る。
@@ -63,6 +63,30 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   ロケータは言い換えてよい）を、記録を持つ手順のときだけ載せる。工程列は版 2（工程に任意の
   `recorded[]`）で、版 1 の項目はそのまま読める。IPC は `cowork:procedureRecording` の 1 チャネル
   だけで、作成の入口（`cowork:generateStateMachine`）は増やさない。
+### agent-dashboard: ドキュメントの置き場を Windows 側にし、WSL へは WSL 表記で渡すようにした
+
+- **文書と文書ルールが WSL 側のホーム（UNC `\\wsl$\…`）に置かれていた。** ドキュメント制御面は
+  置き場の既定を共有ホーム（`base/agent-home` の `sharedHomeRoot`。Windows では WSL 既定
+  ディストロのホームを指す）から取っていたが、そこに置くのは control.json のような**エンジンと
+  分け合う状態**と違い、人が Word / PowerPoint / Excel / draw.io で開く実ファイルで、開く主体は
+  Windows のアプリの方である。UNC 上では Office の保護ビュー・自動保存・最近使った項目が
+  不安定になり、エクスプローラや既定のアプリ関連付けからも辿りにくかった。
+- **置き場はこの端末（Windows）側のホーム**（`~/.agents/documents` と
+  `~/.agents/document-rules`）にした。設定の「置き場」で明示したフォルダはこれまでどおり優先し、
+  `~` もこの端末のホームへ展開する。既定を移す前の置き場（WSL 側）に既に中身があるときは
+  そちらを使い続けるので、既定を替えた日に文書とルールが画面から消えることはない
+  （アプリはファイルを勝手に動かさない。引っ越しは「置き場」の指定で行う）。
+- **WSL へ渡る値は WSL 表記へ直す**（`launcher.agentPath`）。依頼文に書く作業フォルダ
+  （`C:\Users\me\.agents\documents\提案書` → `/mnt/c/Users/me/.agents/documents/提案書`）と、
+  起動の cwd の両方を同じ表記に揃える——Windows パスのままでは WSL の `cd` も刺さらず、
+  依頼文に混ぜればエージェントが存在しないパスを探しに行く。
+- **ヘッドレスの助言も WSL 側で走らせる。** ルールの下書きは `runCommand` の「cwd が WSL UNC の
+  ときだけ wsl.exe 経由」という既定に乗っていたため、置き場が Windows パスになると Windows
+  ネイティブ起動へ倒れ、WSL にしか入っていない CLI が見つからなくなる。`runAgent` に `wsl` を
+  足し、対話ウィンドウ（もともと必ず wsl.exe 経由）と同じ側へ揃えた。
+- **パス表記の変換表を 1 か所に寄せた。** 同じ実装が cowork（`loopProvider`）と定常業務
+  （`routines/exec`）に重複していたので `base/main/wsl.js` を正典にし、両者とドキュメント制御面が
+  そこを共有する。
 
 ### agent-dashboard: 画面操作と AI の判断を並べて定型業務を組み立てられるようになった
 

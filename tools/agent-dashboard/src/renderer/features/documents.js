@@ -337,7 +337,7 @@
       ${noticeHtml()}
       <div class="global-settings-card">
         <div class="global-settings-card-heading"><h3>置き場</h3>
-          <p class="muted">空欄のときは既定の場所を使います。</p></div>
+          <p class="muted">空欄のときは既定の場所（この PC のホームの <code>~/.agents/</code> の下）を使います。文書は Word や Excel で開くファイルなので、この PC 側のフォルダを指定してください（WSL で動くエージェントへは自動で WSL 表記に直して渡します）。</p></div>
         <div class="field">
           <label for="docs-set-workspace">文書を置くフォルダ</label>
           <div class="docs-path-row">

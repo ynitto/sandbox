@@ -6,31 +6,10 @@ function shellQuote(s) {
   return `'${String(s).replace(/'/g, `'"'"'`)}'`;
 }
 
-function isWslPath(p) {
-  const s = String(p || '');
-  return /^\\\\wsl(?:\$|\.localhost)\\/i.test(s) || /^\//.test(s);
-}
-
-function wslPath(p) {
-  const s = String(p || '');
-  const unc = s.replace(/\//g, '\\').match(/^\\\\wsl(?:\$|\.localhost)\\[^\\]+(.*)$/i);
-  if (unc) return (unc[1] || '').replace(/\\/g, '/') || '/';
-  return s;
-}
-
-function wslDistro(p) {
-  const s = String(p || '');
-  const unc = s.replace(/\//g, '\\').match(/^\\\\wsl(?:\$|\.localhost)\\([^\\]+)/i);
-  return unc ? unc[1] : '';
-}
-
-// Windows ドライブパス（C:\foo\bar）→ WSL の /mnt/c/foo/bar。該当しなければ ''。
-function winDriveToWsl(p) {
-  const m = String(p || '').replace(/\//g, '\\').match(/^([A-Za-z]):(\\.*)?$/);
-  if (!m) return '';
-  const rest = (m[2] || '').replace(/\\/g, '/').replace(/\/+$/, '');
-  return `/mnt/${m[1].toLowerCase()}${rest}`;
-}
+// パス表記の変換は base/main/wsl.js が正典（cowork・定常業務・documents で共有する）。
+const {
+  isWslPath, wslPath, wslDistro, winDriveToWsl, isWindowsDrivePath,
+} = require('../../../base/main/wsl');
 
 // cwd（WSL UNC / POSIX / Windows ドライブ）を WSL 側の Linux パスへ寄せる。
 function toWslCwd(p) {
@@ -112,14 +91,10 @@ function nativeSpawnSpec(command, argv, cwd) {
       // Node に引用を足させない（上で組んだ 1 本の行をそのまま渡す）。
       windowsVerbatimArguments: true,
       windowsHide: true,
-      // Windows のプロセスに POSIX パスの cwd は渡せない。渡せる形のときだけ渡す。
-      ...(cwd && !_isPosixAbsPath(cwd) ? { cwd } : {}),
+      // 渡せる形（ドライブパス）のときだけ渡す。判定の正典は base/main/wsl.js。
+      ...(isWindowsDrivePath(cwd) ? { cwd } : {}),
     },
   };
-}
-
-function _isPosixAbsPath(p) {
-  return /^\/(?!\/)/.test(String(p || ''));
 }
 
 // ループ系 CLI 1 回分の起動仕様（同期 sh / 非同期 runCommandCapture の共通部分）。
@@ -716,7 +691,7 @@ function nativeWindowScript({ command, args, cwd, title }) {
   const lines = ['@echo off', 'chcp 65001 > nul'];
   // タイトルは cmd のメタ文字を落としてから渡す（引用の段を増やさない）。
   lines.push(`title ${String(title || 'agent-dashboard').replace(/[&|<>^"%]/g, ' ')}`);
-  if (cwd && !/^\/(?!\/)/.test(cwd)) lines.push(`cd /d ${quote(cwd)}`);
+  if (isWindowsDrivePath(cwd)) lines.push(`cd /d ${quote(cwd)}`);
   lines.push([quote(command), ...(args || []).map(quote)].join(' '));
   lines.push('echo.');
   lines.push('echo [agent-dashboard] 終了しました。何かキーを押すとこのウィンドウを閉じます。');
