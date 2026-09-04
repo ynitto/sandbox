@@ -10,11 +10,16 @@ Windows/pywinauto を必要としない層だけを決定的に検証する:
     ノイズ混じり出力からの JSON 抽出。
   * WSL ラッパー（G1）… 生成される bash の引数変換。偽の wslpath と
     偽の Windows Python を PATH に置いて、実際にラッパーを実行して確かめる。
+  * record … 出力の形（JSONL）・打鍵の畳み・重複除去・上限。UIA も pywinauto も
+    要らない層（RecordSink）だけを見る。読み手（agent-dashboard の recording.js）
+    との契約はイベント種別のゴールデンで固定する。
 
     python -m unittest discover -s tools/winauto/tests
 """
 import importlib.util
+import io
 import json
+import re
 import os
 import stat
 import subprocess
@@ -310,6 +315,11 @@ class WslWrapperTest(unittest.TestCase):
         out = self._run("type", "name:=Search box", "hello world")
         self.assertEqual(out, ["type", "name:=Search box", "hello world"])
 
+    def test_record_output_path_is_converted(self):
+        out = self._run("record", "--app", "kintai", "--output", "/tmp/events.jsonl")
+        self.assertEqual(out, ["record", "--app", "kintai", "--output",
+                               r"W:\tmp\events.jsonl"])
+
     def test_falls_back_to_cmd_exe_without_direct_python(self):
         """python.exe を直接 exec できない環境では cmd.exe 経路に倒す。"""
         wrapper = installer.render_wsl_wrapper(
@@ -317,6 +327,191 @@ class WslWrapperTest(unittest.TestCase):
             win_python_unix="", win_script=r"C:\x\winauto.py")
         self.assertIn('exec cmd.exe /c "$WIN_PYTHON"', wrapper)
         self.assertIn("WIN_PYTHON_UNIX=''", wrapper)
+
+
+# ---------------------------------------------------------------------------
+# record — 出力の形と畳み
+# ---------------------------------------------------------------------------
+
+_RECORDING_JS = (_ROOT.parent / "agent-dashboard" / "src" / "features" / "cowork"
+                 / "main" / "recording.js")
+
+
+class RecordSinkTest(unittest.TestCase):
+    def sink(self, **kwargs):
+        self.buf = io.StringIO()
+        return winauto.RecordSink(self.buf, "勤怠管理", **kwargs)
+
+    def lines(self):
+        return [json.loads(line) for line in self.buf.getvalue().splitlines()]
+
+    def test_launch_and_window_shape(self):
+        sink = self.sink()
+        sink.emit("launch", path=r"C:\Apps\kintai.exe")
+        sink.emit("window", window="月次集計")
+        sink.close()
+        self.assertEqual(self.lines(), [
+            {"event": "launch", "app": "勤怠管理", "path": r"C:\Apps\kintai.exe"},
+            {"event": "window", "app": "勤怠管理", "window": "月次集計"},
+        ])
+
+    def test_element_fields_are_only_written_when_present(self):
+        """空の項目は書かない。読み手は auto_id が無いときだけ name へ落ちるので、
+        空文字の auto_id を書くと `auto_id:=` の空セレクタになってしまう。"""
+        sink = self.sink()
+        sink.emit("invoke", name="OK", control_type="Button", window="完了")
+        sink.close()
+        self.assertEqual(self.lines()[0], {
+            "event": "invoke", "app": "勤怠管理", "window": "完了",
+            "control_type": "Button", "name": "OK"})
+
+    def test_typing_is_folded_to_the_last_value(self):
+        sink = self.sink()
+        for v in ("2", "20", "202", "2026-09"):
+            sink.emit("value", name="対象月", auto_id="txtMonth",
+                      control_type="Edit", window="w", value=v)
+        sink.close()
+        self.assertEqual([r["value"] for r in self.lines()], ["2026-09"])
+        self.assertEqual(sink.count, 1)
+
+    def test_folding_keeps_the_order_of_what_the_person_did(self):
+        """溜めている value は、別の要素の value や value 以外が来たときに先に出す。"""
+        sink = self.sink()
+        sink.emit("value", name="A", control_type="Edit", value="a1")
+        sink.emit("value", name="A", control_type="Edit", value="a2")
+        sink.emit("value", name="B", control_type="Edit", value="b1")
+        sink.emit("invoke", name="送信", control_type="Button")
+        sink.emit("value", name="A", control_type="Edit", value="a3")
+        sink.close()
+        self.assertEqual([(r["event"], r.get("name"), r.get("value")) for r in self.lines()],
+                         [("value", "A", "a2"), ("value", "B", "b1"),
+                          ("invoke", "送信", None), ("value", "A", "a3")])
+
+    def test_repeated_state_notifications_are_dropped_but_clicks_are_not(self):
+        """ComboBox の選択は SelectionItem と Value の両方から二重に来る。押下は落とさない
+        ——同じボタンを 2 回押すのは人の意図でありうる。"""
+        sink = self.sink()
+        sink.emit("select", name="種別", control_type="ComboBox", value="緊急")
+        sink.emit("select", name="種別", control_type="ComboBox", value="緊急")
+        sink.emit("toggle", name="同意", control_type="CheckBox", value="on")
+        sink.emit("toggle", name="同意", control_type="CheckBox", value="on")
+        sink.emit("invoke", name="次へ", control_type="Button")
+        sink.emit("invoke", name="次へ", control_type="Button")
+        sink.close()
+        self.assertEqual([r["event"] for r in self.lines()],
+                         ["select", "toggle", "invoke", "invoke"])
+
+    def test_same_value_again_after_something_else_is_kept(self):
+        """A→B→A は人が戻った記録。直前と同じときだけ落とす。"""
+        sink = self.sink()
+        sink.emit("toggle", name="同意", control_type="CheckBox", value="on")
+        sink.emit("toggle", name="同意", control_type="CheckBox", value="off")
+        sink.emit("toggle", name="同意", control_type="CheckBox", value="on")
+        sink.close()
+        self.assertEqual([r["value"] for r in self.lines()], ["on", "off", "on"])
+
+    def test_max_events_stops_accepting(self):
+        sink = self.sink(max_events=2)
+        self.assertTrue(sink.emit("invoke", name="1", control_type="Button"))
+        self.assertFalse(sink.emit("invoke", name="2", control_type="Button"))
+        self.assertFalse(sink.emit("invoke", name="3", control_type="Button"))
+        sink.close()
+        self.assertEqual([r["name"] for r in self.lines()], ["1", "2"])
+
+    def test_unknown_kind_is_refused(self):
+        sink = self.sink()
+        with self.assertRaises(ValueError):
+            sink.emit("keylog", name="x")
+
+    def test_each_line_is_flushed_so_a_crash_keeps_what_was_recorded(self):
+        sink = self.sink()
+        sink.emit("invoke", name="OK", control_type="Button")
+        self.assertEqual(len(self.buf.getvalue().splitlines()), 1)
+
+    def test_japanese_stays_readable(self):
+        """人が中身を読んで貼る形式なので、非 ASCII をエスケープへ逃がさない。"""
+        sink = self.sink()
+        sink.emit("invoke", name="出力", control_type="Button")
+        sink.close()
+        self.assertIn("出力", self.buf.getvalue())
+
+
+class RecordContractTest(unittest.TestCase):
+    """読み手（agent-dashboard の recording.js）との契約を両端で固定する。"""
+
+    def _reader_kinds(self):
+        src = _RECORDING_JS.read_text(encoding="utf-8")
+        m = re.search(r"const WINAUTO_EVENT_KINDS = \[(.*?)\];", src, re.S)
+        self.assertIsNotNone(m, "recording.js に WINAUTO_EVENT_KINDS が無い")
+        return set(re.findall(r"'([a-z]+)'", m.group(1)))
+
+    @unittest.skipUnless(_RECORDING_JS.exists(), "agent-dashboard が同じ木に無い")
+    def test_every_kind_written_is_a_kind_the_reader_accepts(self):
+        self.assertTrue(set(winauto.RECORD_EVENT_KINDS) <= self._reader_kinds())
+
+    @unittest.skipUnless(_RECORDING_JS.exists(), "agent-dashboard が同じ木に無い")
+    def test_keys_is_the_only_kind_the_recorder_does_not_write(self):
+        """打鍵はフックを取らないと拾えず、あれはデスクトップ全体のキーロガーになる。
+        読み手は `keys` を受けるが（人が手で足せる）、record は書かない。"""
+        self.assertEqual(self._reader_kinds() - set(winauto.RECORD_EVENT_KINDS), {"keys"})
+
+    def test_recorder_never_installs_a_keyboard_hook(self):
+        """打鍵そのものを拾う口を呼んでいないこと。低レベルキーボードフックは
+        デスクトップ全体のキーロガーで、対象アプリ以外へ打ったパスワードまで JSONL に
+        落ちる——その JSONL は人がそのまま AI へ貼る。"""
+        src = _WINAUTO_PY.read_text(encoding="utf-8")
+        for banned in ("SetWindowsHookEx(", "SetWindowsHookExW(", "SetWindowsHookExA(",
+                       "GetAsyncKeyState(", "GetKeyboardState(", "RegisterRawInputDevices("):
+            self.assertNotIn(banned, src, f"打鍵のフックは取らない: {banned}")
+        # 呼ばない理由がソースに残っていること（次に触る人が同じ判断をたどれるように）。
+        self.assertIn("WH_KEYBOARD_LL", src)
+
+    def test_value_types_split_input_from_choice(self):
+        self.assertEqual(winauto.RECORD_VALUE_TYPES["Edit"], "value")
+        self.assertEqual(winauto.RECORD_VALUE_TYPES["ComboBox"], "select")
+
+    def test_toggle_states_are_the_words_the_reader_reads(self):
+        self.assertEqual(winauto.RECORD_TOGGLE_STATES[1], "on")
+        self.assertEqual(winauto.RECORD_TOGGLE_STATES[0], "off")
+
+    def test_uia_ids_fall_back_to_the_published_constants(self):
+        class _NoConstants:
+            pass
+        self.assertEqual(winauto._uia_id(_NoConstants(), "UIA_Invoke_InvokedEventId"), 20009)
+
+        class _WithConstant:
+            UIA_Invoke_InvokedEventId = 12345
+        self.assertEqual(winauto._uia_id(_WithConstant(), "UIA_Invoke_InvokedEventId"), 12345)
+
+
+class RecordCommandWiringTest(unittest.TestCase):
+    def test_record_is_wired_into_the_cli(self):
+        self.assertIn("record", winauto.COMMAND_MAP)
+        args = winauto.build_parser().parse_args(
+            ["record", "--app", "kintai", "--output", "/tmp/e.jsonl"])
+        self.assertEqual(args.command, "record")
+        self.assertEqual(args.app, "kintai")
+        self.assertEqual(args.duration, 0.0)
+        self.assertEqual(args.max_events, 0)
+
+    def test_app_is_required(self):
+        """対象を絞らない記録はデスクトップ全体の録画になる。"""
+        with self.assertRaises(SystemExit):
+            winauto.build_parser().parse_args(["record"])
+
+    def test_record_does_not_take_the_desktop_lock(self):
+        """読むだけで入力を奪わない。人が数分操作する間ロックを占有させない。"""
+        self.assertNotIn("record", winauto.LOCKED_COMMANDS)
+
+    def test_uia_events_check_warns_instead_of_failing_doctor(self):
+        """イベントを購読できなくても click / type は動く。doctor を error にしない
+        （error は終了コード 1 ＝ 橋が壊れている、の意味に取ってある）。"""
+        check = winauto._doctor_uia_events_check()
+        self.assertEqual(check["name"], "uia_events")
+        self.assertIn(check["status"], ("ok", "warn"))
+        if sys.platform != "win32":
+            self.assertEqual(check["status"], "warn")
+            self.assertIn("record", check["detail"])
 
 
 if __name__ == "__main__":

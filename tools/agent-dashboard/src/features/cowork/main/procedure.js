@@ -89,6 +89,8 @@ const STEP_KINDS = [
       const value = op.value ? ` ${JSON.stringify(op.value)}` : '';
       return op.op === 'goto' ? `goto ${op.target}` : `${op.op} ${op.target}${value}`;
     },
+    recordedGuidance: '- 記録の行は `<操作> <ロケータ式> [値]` で、`playwright-cli <操作> "<ロケータ式>" [値]`'
+      + ' として実行できる（ロケータ式は引用符で囲む）。',
   },
   {
     id: 'windows',
@@ -106,12 +108,17 @@ const STEP_KINDS = [
     // 人の操作の記録を持てる。記録の要素は winauto のセレクタ（`auto_id:=` / `name:=`）。
     recordable: true,
     recordedLine: (op) => {
-      if (op.op === 'launch') return `winauto launch ${JSON.stringify(op.target)}`;
-      if (op.op === 'window') return `winauto wait ${JSON.stringify(`name:=${op.target}`)}`;
-      const verb = { click: 'click', dblclick: 'click', fill: 'type', type: 'type', keys: 'keys', press: 'keys', select: 'type', check: 'click', uncheck: 'click' }[op.op] || op.op;
       const value = op.value ? ` ${JSON.stringify(op.value)}` : '';
-      return `winauto ${verb} ${JSON.stringify(op.target)}${value}`;
+      return `${op.op} ${JSON.stringify(op.target)}${value}`;
     },
+    // 記録の 1 行は「何が起きたか」であって、そのまま打てる argv ではない。winauto の
+    // コマンドへの対応をここで示す——**綴りを騙らない**（`select` に対応するコマンドは
+    // 無いので、無いと書く。あるふりをすると、動かない argv をそのまま定義に書かれる）。
+    recordedGuidance: '- 記録の行は `<操作> <セレクタ> [値]` で、winauto では次のように行う。'
+      + ' `launch` → `winauto launch`、`window` → その画面が出るのを `winauto wait` で待つ、'
+      + ' `click` / `check` / `uncheck` → `winauto click`、`fill` / `type` → `winauto type`、'
+      + ' `keys` → `winauto keys`。**`select`（一覧・コンボからの選択）に対応する winauto の'
+      + ' コマンドは無い**ので、`windows-app-automation` スキルの手順（要素を確かめてから選ぶ）で行う。',
   },
   {
     id: 'skill',
@@ -323,8 +330,7 @@ function skillFor(step) {
 // 確認・想定外への対処を作成モードの AI に補わせ、操作そのものは足させない（汎用化の境界）。
 const RECORDED_GUIDANCE = [
   '- 「記録した操作」は人が 1 回やって通った操作の列である。同じ順・同じ要素で再現し、記録に無い操作を足さない。',
-  '- 記録の要素は role と名前（`getByRole` / `auto_id:=` / `name:=`）で指す。snapshot の ref（e15 など）や座標を定義に書かない。'
-    + ' ブラウザの記録の行は `playwright-cli <操作> "<ロケータ式>" [値]` の形でそのまま再現できる（ロケータ式は引用符で囲んで渡す）。',
+  '- 記録の要素は role と名前（`getByRole` / `auto_id:=` / `name:=`）で指す。snapshot の ref（e15 など）や座標を定義に書かない。',
   '- 各操作の前に要素が現れるのを待ち（snapshot / `winauto wait`）、確定の操作（ボタン・リンク・Enter）の後は結果の画面を読み取って確かめる。',
   '- 記録の `{{key}}` は実行時に人が入れる入力パラメータで、「記録時の値の例」は形の参考に過ぎない。例を既定値にしない。',
   '- 記録の名前が選択肢の文字列を含むなど脆い（例: `getByLabel(\'種別 通常緊急\')`）なら、同じ要素を指す role と名前へ言い換えてよい。',
@@ -338,7 +344,11 @@ const COMMON_GUIDANCE = [
 function toolGuidance(steps) {
   const used = new Set(steps.map((s) => s.kind));
   const lines = STEP_KINDS.filter((k) => used.has(k.id) && k.guidance).map((k) => k.guidance);
-  const recorded = steps.some((s) => s.recorded && s.recorded.length) ? RECORDED_GUIDANCE : [];
+  // 記録の案内は、記録を持つ工程がある種類のぶんだけ載せる（種類ごとの綴りの対応表）。
+  const recordedKinds = new Set(steps.filter((s) => s.recorded && s.recorded.length).map((s) => s.kind));
+  const perKind = STEP_KINDS.filter((k) => recordedKinds.has(k.id) && k.recordedGuidance)
+    .map((k) => k.recordedGuidance);
+  const recorded = recordedKinds.size ? [...RECORDED_GUIDANCE, ...perKind] : [];
   return [...lines, ...recorded, ...COMMON_GUIDANCE];
 }
 

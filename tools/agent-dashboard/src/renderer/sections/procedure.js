@@ -285,6 +285,9 @@ function routineRecordingHtml(draft) {
     </div>
     <div class="field">
       <label for="rp-rec-text">記録の貼り付け</label>
+      <small class="muted">${rec.source === 'windows'
+    ? `対象の PC で <code>winauto record --app ${esc(rec.app || '<アプリ>')} --output events.jsonl</code> を実行し、操作してから <code>Ctrl+C</code> で止めて、できたファイルの中身を貼り付けます。`
+    : '別の端末で取った <code>playwright-cli recording-stop</code> の出力も貼り付けられます。'}</small>
       <textarea id="rp-rec-text" class="mono" data-rp-rec="text" rows="4" placeholder="${rec.source === 'windows'
     ? '例: {&quot;event&quot;:&quot;invoke&quot;,&quot;app&quot;:&quot;勤怠管理&quot;,&quot;window&quot;:&quot;月次集計&quot;,&quot;control_type&quot;:&quot;Button&quot;,&quot;name&quot;:&quot;出力&quot;,&quot;auto_id&quot;:&quot;btnExport&quot;}'
     : '例: playwright-cli recording-stop の出力（await page.getByRole(…).click(); の行）'}">${esc(rec.text)}</textarea>

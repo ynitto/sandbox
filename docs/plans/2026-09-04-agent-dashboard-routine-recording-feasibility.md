@@ -5,10 +5,11 @@
 > 問い: **手順ビルダーで playwright-cli / winauto を使う工程を書く手順が分かりにくい。人が操作したのを
 > キャプチャして、AI が補完し、拡張性・汎用性を加えてステートマシンのステップにできるか。**
 >
-> 結論: **できる。ブラウザは今日から、Windows アプリは winauto に記録コマンドを 1 つ足せば同じ経路に乗る。**
+> 結論: **できる。ブラウザも Windows アプリも記録から工程を起こせる。**
 > 前提となる足場（記録の道具・決定的な変換・作成モードの AI 補完・ステートマシンの `check`）は
-> すべて既にあり、欠けていたのは「記録を工程列へ写す段」だけだった。この文書の設計はその段を
-> 足したもので、プロトタイプ（`src/features/cowork/main/recording.js`）とテストを同時に入れている。
+> ブラウザ側にはすべて既にあり、欠けていたのは「記録を工程列へ写す段」だけだった。Windows 側は
+> 記録そのものが無かったので `winauto record` を足した。実装は変換（`src/features/cowork/main/
+> recording.js`）と記録（`tools/winauto/winauto.py`）で、テストを同時に入れている。
 
 ## 1. 何が分かりにくかったか
 
@@ -65,23 +66,25 @@ await page.getByRole('link', { name: '次へ' }).click();
 2. **脆いロケータ** — `getByLabel('種別 通常緊急')` のように、ラベルに選択肢の文字列が混ざる。
 3. **待機・確認が無い** — 記録は「うまく行った 1 回」で、要素が出るまでの待機・結果の読み取り・想定外の画面の扱いを含まない。
 
-### 2.2 Windows アプリ — winauto に記録は無いが、足せる原始機能は揃っている
+### 2.2 Windows アプリ — 記録は無かったので足した（`winauto record`）
 
-`tools/winauto/winauto.py`（1.1.0）の副命令は `doctor / apps / launch / tree / inspect / click / type /
-keys / get-text / screenshot / wait / codegen / run` で、**記録（record）に当たるものは無い**。
-`codegen` は「アプリを起動して要素ツリーをコメントに入れた Python の雛形を書く」だけで、操作は拾わない。
+調査時点の `tools/winauto/winauto.py`（1.1.0）の副命令は `doctor / apps / launch / tree / inspect /
+click / type / keys / get-text / screenshot / wait / codegen / run` で、**記録（record）に当たるものは
+無かった**。`codegen` は「アプリを起動して要素ツリーをコメントに入れた Python の雛形を書く」だけで、
+操作は拾わない。
 
-ただし記録に要る材料はある:
+必要な材料は揃っていたので、`winauto record`（1.2.0）として足した（§5）:
 
 | 要るもの | 今あるもの |
 |---|---|
 | 要素の名前・auto_id・種類・矩形 | `element_to_dict()`（JSON。`tree --output json` が使う） |
 | どのウィンドウが前面か | `Desktop(backend).windows()` / `app.top_window()` |
 | イベントの購読 | pywinauto が依存する `comtypes` の UI Automation（`IUIAutomation.AddAutomationEventHandler` — Invoke / 値の変更 / 選択 / トグル / フォーカスの変化） |
-| 出力の契約 | **無かった** → 本設計の JSONL（§3.2）で置く |
+| 出力の契約 | **無かった** → 本設計の JSONL（§3.2）で置いた |
 
-つまり `winauto record --app <名前> --output events.jsonl` は、UIA のイベントを購読して
-`element_to_dict()` の情報を 1 行 1 JSON で書き出すコマンドとして、既存の部品で作れる（§5）。
+`winauto record --app <名前> --output events.jsonl` は、UIA のイベント（Invoke / Value の変化 /
+選択 / トグル / ウィンドウの出現 / フォーカスの変化）をデスクトップ全体で購読し、**発生元の PID が
+対象アプリのものだけ**を JSONL で書き出す。詳細と決めごとは §5.1。
 
 ### 2.3 ステートマシン側 — 補完の受け皿は既にある
 
@@ -129,8 +132,12 @@ keys / get-text / screenshot / wait / codegen / run` で、**記録（record）�
   選択肢＝定数のまま残す。記録時の値は「例」として残し、パスワードらしい欄（`パスワード` /
   `password` / `token` / `暗証` …）は例にも残さない。key はラベルが ASCII ならそれ、そうでなければ
   `input_N`（人が画面で直す）。
-- **確認コマンドの候補。** Windows は確定の後に出たウィンドウ名から `winauto wait name:=<画面> --app <アプリ>`。
-  ブラウザは argv で測れる確認が無いので空にし、作成モードに snapshot / テキストの読み取りで確かめさせる。
+- **確認コマンドの候補。** Windows は `winauto wait name:=<画面> --app <アプリ>`。測るのは
+  **その工程がもたらした変化**なので、見るのは「次の工程が始まったときのウィンドウ」である
+  ——工程の最中に既に出ていたウィンドウを待っても、押す前から真なので何も検知しない
+  （検知装置が別のものを測るのは検知が無いことより悪い。[決定的検査設計](../designs/statemachine-deterministic-check-design.md) §3.2）。
+  次が無い最後の工程には置かない。ブラウザは argv で測れる確認が無いので常に空にし、作成モードに
+  snapshot / テキストの読み取りで確かめさせる。
 - **推測しない。** 待機・分岐・例外は変換では足さず、指示文の案内（`RECORDED_GUIDANCE`）で作成モードへ渡す。
 
 ### 3.2 記録の入力形式
@@ -138,7 +145,7 @@ keys / get-text / screenshot / wait / codegen / run` で、**記録（record）�
 | 種類 | 形 | 出所 |
 |---|---|---|
 | ブラウザ | `recording-stop` の出力（`` ```js `` フェンス付き全文でも、`await page.…` の行だけでもよい） | playwright-cli（既存） |
-| Windows アプリ | JSONL。1 行 1 イベント: `{"event":"invoke"\|"value"\|"select"\|"toggle"\|"keys"\|"window"\|"launch", "app", "window", "control_type", "name", "auto_id", "value"}` | `winauto record`（§5 で足す。契約は `recording.js` の `WINAUTO_EVENT_KINDS`） |
+| Windows アプリ | JSONL。1 行 1 イベント: `{"event":"invoke"\|"value"\|"select"\|"toggle"\|"keys"\|"window"\|"launch", "app", "window", "control_type", "name", "auto_id", "value"}` | `winauto record`（§5.1。契約は `recording.js` の `WINAUTO_EVENT_KINDS`） |
 
 ### 3.3 工程列（正規形）の変更 — version 2
 
@@ -151,9 +158,12 @@ keys / get-text / screenshot / wait / codegen / run` で、**記録（record）�
 ```
 
 - `recorded` を持てるのは種別カタログで `recordable: true` の種類（ブラウザ / Windows アプリ）だけ。
-- 指示文の工程節に「記録した操作」（`fill getByRole(...) "{{input_1}}"` / `winauto click "auto_id:=btnExport"`）を
-  載せ、「使う道具」節に汎用化の案内（記録に無い操作を足さない・ref を書かない・待機と読み取りを
-  足す・例を既定値にしない・脆いロケータは言い換えてよい）を、記録を持つ手順のときだけ載せる。
+- 指示文の工程節に「記録した操作」を `<操作> <要素> [値]` の形で載せる（`fill getByRole(...) "{{input_1}}"` /
+  `click "auto_id:=btnExport"`）。**これは「何が起きたか」であって、そのまま打てる argv ではない。**
+  道具のコマンドへの読み替えは「使う道具」節の対応表で示し、**無いコマンドは無いと書く**
+  （`select` に当たる winauto のコマンドは無い。あるふりをすると、動かない argv がそのまま定義に入る）。
+  同じ節に汎用化の案内（記録に無い操作を足さない・ref を書かない・待機と読み取りを足す・
+  例を既定値にしない・脆いロケータは言い換えてよい）を、記録を持つ手順のときだけ載せる。
 - 記録の `{{key}}` は入力パラメータとして拾う（`parameterKeys` が `recorded[].value` も読む）。
 
 ### 3.4 画面と入口
@@ -185,10 +195,33 @@ A を採る。B は A の後段としてなら意味がある（説明文の整�
 |---|---|---|
 | ブラウザの記録 → 工程 → 指示文 | **実装済み**（本 PR） | playwright-cli 0.1.19 で実測 |
 | Windows アプリの記録の受け口（JSONL → 工程） | **実装済み**（本 PR） | 契約は `WINAUTO_EVENT_KINDS` |
-| `winauto record` コマンド | **未実装** | comtypes の UIA イベント購読 + `element_to_dict()` で JSONL を書く。`LOCKED_COMMANDS` に入れず（読み取り専用）、`doctor` に購読可否の検査を足す |
+| `winauto record` コマンド | **実装済み**（§5.1） | comtypes の UIA イベント購読 → JSONL。`LOCKED_COMMANDS` に入れない（読み取り専用・数分動く）。`doctor` に `uia_events` の検査を足した |
+| dashboard から `record` を起こす | **未実装** | 今は「対象 PC で `winauto record` を実行 → Ctrl+C → 貼り付け」。画面から起こすには長時間プロセスの管理（開始・停止・出力先・WSL 跨ぎ）が要り、ブラウザの start/stop とは別の設計になる |
+| `winauto select` | **未実装** | 記録の `select` を再現する専用コマンドが無い。今は `windows-app-automation` スキルの手順（要素を確かめて pywinauto の `select()`）に委ねる |
 | 記録の実行環境 | 制約あり | Windows の dashboard は wsl.exe 経由で `playwright-cli` を呼ぶ。見える形で開くには WSLg か、`attach --cdp=` で Windows 側の Chrome/Edge に接続する設定（`.playwright/cli.config.json` の `browser.cdpEndpoint`）が要る。この判断は環境ごとなので画面で強制しない |
 | 作成モードが記録を読み違える | 未計測 | 指示文の「記録した操作」節と案内で担保する。事例が出たら案内の文言を足す（YAML の直接指定へは倒さない） |
 | 判断の分岐（AI の処理の工程） | 記録からは出ない | 記録は 1 本道。分岐は人が「AI の処理」工程を足し、判断欄に書く（従来どおり） |
+
+### 5.1 `winauto record` の決めごと
+
+```bash
+winauto record --app 勤怠管理 --output events.jsonl   # 操作して Ctrl+C で止める
+winauto record --app 1234 --duration 120              # 秒で止める / --max-events N でも止まる
+```
+
+| 決めごと | 理由 |
+|---|---|
+| **キーボードのフックは取らない** | 打鍵を拾うには低レベルフック（`WH_KEYBOARD_LL`）が要る。あれはデスクトップ全体のキーロガーで、対象アプリ以外へ打ったパスワードまで JSONL に落ちる——その JSONL は人がそのまま AI へ貼る。入力欄の文字は Value の変化（`value`）、キーボードで開いたメニューは `invoke` で拾えるので、残る穴は「UI に対応物の無いショートカット」だけ。読み手は `keys` を受けるので手で足せる |
+| **`--app` は必須**（対象 PID 以外は捨てる） | 購読はデスクトップ全体に掛けるしかないが、書き出す前に発生元の PID で捨てる。録画のつもりで無関係のアプリの操作を残さない |
+| **ロックを取らない** | 読むだけで入力を奪わない。人が数分操作する間デスクトップロックを占有すると他の発行が全部止まる |
+| **打鍵ごとの Value 変化は畳む** | `"2" "20" "202" …` を全部書くと読めない。同じ要素のぶんを溜めて最後の 1 件だけ書き、別の要素や別の種類が来たら先に出す（人がやった順は崩さない） |
+| **状態の二重通知は落とす** | ComboBox の選択は SelectionItem と Value の両方から来る。直前とまったく同じ行だけ落とす（`invoke` は落とさない——同じボタンを 2 回押すのは人の意図でありうる） |
+| **出力の形は `RecordSink` 1 か所** | Windows も pywinauto も要らない層に閉じ込めてあるので、畳み・重複除去・上限を単体で検査できる |
+
+イベント種別の契約は両端のテストで固定する（`RECORD_EVENT_KINDS` ⊆ 読み手の
+`WINAUTO_EVENT_KINDS`、差は `keys` だけ）。`doctor` の `uia_events` は購読可否を見るが
+**warn 止まり**である——購読できなくても `click` / `type` / `tree` は動くので、終了コードを
+1 にする（＝橋が壊れている）意味にはしない。
 
 ## 6. 非目標
 
@@ -203,6 +236,9 @@ cd tools/agent-dashboard
 node test/routine-recording.test.js     # 記録 → 工程列 → 指示文（実測の出力を固定）
 node test/routine-procedure.test.js     # 手順ビルダー（版 2 で従来の項目も読める）
 npm run lint && npm test
+
+cd ../..
+python -m unittest discover -s tools/winauto/tests   # record の出力の形・畳み・契約
 ```
 
 playwright-cli の記録の実測（再現手順）:
@@ -225,5 +261,5 @@ playwright-cli recording-stop            # → 上記の ```js … ``` が印字
 | 却下案 | dashboard 内蔵 AI による工程の推測（後段としては可）、RPA ランナー、記録コードの直接実行 |
 | 主な理由 | playwright-cli が role/名前つきの記録を既に持ち、statemachine-use の作成モードと `check` が補完の受け皿になる。欠けていたのは写す段だけ |
 | 前設計との関係 | [定型手順ビルダー設計](./2026-09-03-agent-dashboard-routine-procedure-builder-design.md)の非目標「画面操作の記録（レコーダー）」を再評価した。当時の理由は「要素の特定はエージェントが偵察する」だったが、記録は偵察を**置き換えるのではなく前段に置く**（偵察＝待機と読み取りは残る） |
-| トレードオフ | Windows アプリは `winauto record` を足すまで貼り付けだけ。ブラウザの記録は環境（WSLg / CDP 接続）に依る |
+| トレードオフ | dashboard から起こせるのはブラウザの記録だけで、Windows は貼り付け（`winauto record` は端末で回す）。ブラウザの記録は環境（WSLg / CDP 接続）に依る |
 | 再評価条件 | 作成モードが記録を読み違える事例が続く（案 B を後段に足す）、`winauto record` の UIA イベントが取れないアプリが多い（ポーリング差分方式へ） |

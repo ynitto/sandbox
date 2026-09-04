@@ -40,6 +40,10 @@ const VALUE_OPS = new Set(['fill', 'type']);
 // パスワードらしい欄。値は例にも残さない。
 const SECRET_RE = /pass(word)?|パスワード|暗証|secret|token|トークン|pin\b|otp|認証コード/i;
 
+// 確認コマンド（`check`）に載せられない文字。ハーネスはシェルを介さないので、ウィンドウ名や
+// アプリ名にシェル記号が混じるときは確認コマンドを作らない（作ると工程列ごと投入前に落ちる）。
+const SHELL_META_RE = /[|&;<>`\n]|\$\(/;
+
 const MAX_OPS = 200;
 const MAX_STEP_OPS = 12;
 const MAX_TEXT = 300;
@@ -306,6 +310,19 @@ function recordedEntry(op) {
   return out;
 }
 
+// 工程の完了をハーネスが測れる確認コマンド。**測るのはこの工程がもたらした変化**なので、
+// 見るのは「次の工程が始まったときのウィンドウ」である（この工程の最中に既に出ていた
+// ウィンドウを待っても、押す前から真なので何も検知しない——検知装置が別のものを測るのは
+// 検知が無いことより悪い）。次が無い最後の工程には確認を置かない。
+// ブラウザには argv で測れる確認が無いので常に空にし、作成モードに読み取りで確かめさせる。
+function checkFor(kind, nextGroup, app) {
+  if (kind !== 'windows' || !app) return '';
+  const ctx = nextGroup && nextGroup.context;
+  const opened = ctx && ctx.op === 'window' ? text(ctx.target, 120) : '';
+  if (!opened || SHELL_META_RE.test(opened) || SHELL_META_RE.test(app)) return '';
+  return `winauto wait name:=${opened} --app ${app}`;
+}
+
 // 操作列 → 工程列（procedure.js の raw 形）。kind は 'browser' | 'windows'。
 function stepsFromOps(kind, ops, { url = '', app = '' } = {}) {
   const cleaned = parameterize(dedupe(ops.slice(0, MAX_OPS)));
@@ -313,7 +330,7 @@ function stepsFromOps(kind, ops, { url = '', app = '' } = {}) {
   let currentUrl = url;
   let currentApp = app;
   const steps = [];
-  for (const group of groups) {
+  for (const [index, group] of groups.entries()) {
     const ctx = group.context;
     if (ctx && ctx.op === 'goto') currentUrl = ctx.target;
     if (ctx && (ctx.op === 'launch' || ctx.op === 'window') && ctx.app) currentApp = ctx.app;
@@ -323,15 +340,12 @@ function stepsFromOps(kind, ops, { url = '', app = '' } = {}) {
     const recorded = [];
     if (ctx && !ctx.inherited) recorded.push(recordedEntry(ctx));
     for (const op of group.ops) recorded.push(recordedEntry(op));
-    const lastWindow = kind === 'windows' ? [...group.ops, ctx].filter(Boolean).map((o) => o.window).filter(Boolean).pop() : '';
     steps.push({
       kind,
       title: stepTitle(group),
       target: kind === 'browser' ? currentUrl : currentApp,
       detail: lines.map((l, i) => `${i + 1}. ${l}`).join('\n'),
-      // Windows は「確定の後にウィンドウ（画面）が出た」ことを wait で測れる。ブラウザは
-      // ハーネスが argv で測れる確認コマンドが無いので空にし、作成モードに読み取りで確かめさせる。
-      check: kind === 'windows' && lastWindow && currentApp ? `winauto wait name:=${lastWindow} --app ${currentApp}` : '',
+      check: checkFor(kind, groups[index + 1], currentApp),
       outcomes: [],
       recorded,
     });

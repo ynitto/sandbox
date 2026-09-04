@@ -118,9 +118,19 @@ async function main() {
     assert.strictEqual(summary.recorded[1].target, 'auto_id:=txtMonth', 'auto_id があればそれを優先する');
     assert.strictEqual(summary.recorded[2].target, 'name:=種別 >> control:=ComboBox', '無ければ name と control');
     assert.strictEqual(summary.recorded[3].op, 'check');
-    assert.strictEqual(summary.check, 'winauto wait name:=月次集計 --app 勤怠管理');
-    assert.strictEqual(res.steps[2].check, 'winauto wait name:=完了 --app 勤怠管理');
     assert.strictEqual(res.steps[0].recorded[0].op, 'launch');
+    // 確認コマンドは**この工程がもたらした変化**を測る。押す前から出ているウィンドウを
+    // 待っても何も検知しないので、見るのは「次の工程が始まったときのウィンドウ」。
+    assert.strictEqual(res.steps[0].check, 'winauto wait name:=月次集計 --app 勤怠管理', '起動は主画面が出たことで測る');
+    assert.strictEqual(summary.check, 'winauto wait name:=完了 --app 勤怠管理', '「出力」を押した結果は完了画面で測る');
+    assert.strictEqual(res.steps[2].check, '', '次が無い最後の工程には確認を置かない');
+    // ウィンドウ名にシェル記号があると工程列ごと投入前に落ちるので、確認を作らない。
+    const meta = recording.stepsFromRecording({ source: 'windows', app: '勤怠管理', text: [
+      '{"event":"invoke","app":"a","window":"w1","control_type":"Button","name":"実行"}',
+      '{"event":"window","app":"a","window":"完了 | 集計"}',
+      '{"event":"invoke","app":"a","window":"完了 | 集計","control_type":"Button","name":"OK"}',
+    ].join('\n') });
+    assert.strictEqual(meta.steps[0].check, '');
   });
 
   test('記録を持つ工程は正規形に残り、指示文に「記録した操作」と汎用化の案内が載る（YAML は書かない）', () => {
@@ -133,6 +143,8 @@ async function main() {
     assert.ok(text.includes('- 記録した操作（人がやった順。要素は記録どおり role と名前で指す）:'));
     assert.ok(text.includes("- `fill getByRole('textbox', { name: 'ユーザー名' }) \"{{input_1}}\"` （記録時の値の例: taro）"), text);
     assert.ok(text.includes("- `click getByRole('button', { name: 'ログイン' })`"));
+    assert.ok(text.includes('`playwright-cli <操作> "<ロケータ式>" [値]` として実行できる'), 'ブラウザは記録の行がそのまま argv になる');
+    assert.ok(!text.includes('winauto click'), 'ブラウザだけの手順に Windows の案内は出さない');
     assert.ok(!text.includes('p@ss'));
     assert.ok(text.includes('記録に無い操作を足さない'));
     assert.ok(text.includes('snapshot の ref（e15 など）や座標を定義に書かない'));
@@ -146,9 +158,15 @@ async function main() {
     // Windows の記録は winauto の綴りで載る
     const win = recording.stepsFromRecording({ source: 'windows', text: WINAUTO_RECORDING, app: '勤怠管理' });
     const winText = procedure.procedureInstruction(procedure.normalizeProcedure({ purpose: 'x', steps: win.steps }));
-    assert.ok(winText.includes('- `winauto type "auto_id:=txtMonth" "{{input_1}}"` （記録時の値の例: 2026-09）'), winText);
-    assert.ok(winText.includes('- `winauto click "auto_id:=btnExport"`'));
-    assert.ok(winText.includes('`check: winauto wait name:=月次集計 --app 勤怠管理`'));
+    // 記録の行は「何が起きたか」で、そのまま打てる argv ではない（綴りを騙らない）。
+    assert.ok(winText.includes('- `fill "auto_id:=txtMonth" "{{input_1}}"` （記録時の値の例: 2026-09）'), winText);
+    assert.ok(winText.includes('- `click "auto_id:=btnExport"`'));
+    assert.ok(winText.includes('- `select "name:=種別 >> control:=ComboBox" "通常"`'));
+    assert.ok(winText.includes('`check: winauto wait name:=完了 --app 勤怠管理`'));
+    // 種類ごとの対応表が載り、無いコマンドは無いと書く
+    assert.ok(winText.includes('`click` / `check` / `uncheck` → `winauto click`'), winText);
+    assert.ok(winText.includes('`select`（一覧・コンボからの選択）に対応する winauto の コマンドは無い'), winText);
+    assert.ok(!winText.includes('`playwright-cli <操作>'), 'ブラウザの案内は Windows だけの手順に出さない');
   });
 
   test('記録の不備は投入前に断る（ref・座標・記録を持てない種類・件数）', () => {
