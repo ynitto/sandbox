@@ -85,6 +85,32 @@ function normalize(raw, name, file) {
       hint: String((e && e.hint) || ''),
     })),
     session: SESSION[String(raw.name || name)] || null,
+    interactive: normalizeInteractive(raw),
+  };
+}
+
+// interactive 節（tmux で対話起動する形）。無い定義は対話起動を提供しない（null）。
+// 継承の規則は schema のとおり: readonly / continue / resume / no_session は省略時にトップを継承、
+// write_args はヘッドレス専用の危険フラグを含むので継承しない。
+function normalizeInteractive(raw) {
+  const i = raw && raw.interactive;
+  if (!i || typeof i !== 'object' || !Array.isArray(i.command) || !i.command.length) return null;
+  const inherit = (key) => (Array.isArray(i[key]) ? strs(i[key]) : strs(raw[key]));
+  return {
+    command: strs(i.command),
+    writeArgs: strs(i.write_args),
+    readonlyArgs: inherit('readonly_args'),
+    continueArgs: inherit('continue_args'),
+    resumeArgs: inherit('resume_args'),
+    noSessionArgs: inherit('no_session_args'),
+    readyPattern: i.ready_pattern != null ? String(i.ready_pattern) : '',
+    readyTimeoutSec: Number(i.ready_timeout_sec) > 0 ? Number(i.ready_timeout_sec) : 60,
+    readyTailLines: Number(i.ready_tail_lines) > 0 ? Number(i.ready_tail_lines) : 3,
+    busyPattern: i.busy_pattern != null ? String(i.busy_pattern) : '',
+    failurePattern: i.failure_pattern != null ? String(i.failure_pattern) : '',
+    idleQuietSec: Number(i.idle_quiet_sec) > 0 ? Number(i.idle_quiet_sec) : 0,
+    clearCommand: i.clear_command != null ? String(i.clear_command) : '/clear',
+    promptInject: i.prompt_inject === 'file' ? 'file' : 'send-keys',
   };
 }
 
@@ -132,9 +158,11 @@ function list(repo) {
         const spec = normalize(JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')), key, path.join(dir, f));
         seen.set(key, {
           name: key,
+          command: spec.command[0],
           available: !!resolvePath(spec.command[0]),
           readonly: spec.readonly,
           session: spec.session ? spec.session.kind : (spec.continueArgs.length ? 'continue' : 'replay'),
+          interactive: !!spec.interactive,
         });
       } catch { /* 壊れた定義は一覧に出さない（選んだときに load が理由を言う） */ }
     }
@@ -231,6 +259,43 @@ function turnCmd(spec, { prompt, model = '', readonly = false, cliSession = '', 
   };
 }
 
+// 対話起動（tmux）1 回分の argv。ヘッドレスと違い、プロンプトは含まない（あとから send-keys で送る）。
+//   組み立て: interactive.command + [continue|resume] + (write_args | readonly_args) + model_flag model
+//   再開の作法はヘッドレスと同じ SESSION 表（claude / copilot は UUID を発行して --session-id）。
+//   tmux セッションが生きている限り CLI 自身が会話を保つので、resume が要るのは起動し直すときだけ。
+function interactiveCmd(spec, { model = '', readonly = false, cliSession = '', history = [] } = {}) {
+  const inter = spec.interactive;
+  if (!inter) throw new Error(`${spec.name} は対話起動（interactive）の定義を持ちません`);
+  const vars = { model: String(model || spec.defaultModel || ''), session: cliSession };
+  const holder = {};
+  const strategy = spec.session;
+  let mintedSession = '';
+  let frag = [];
+  let warning = '';
+  if (cliSession) {
+    frag = (strategy && strategy.resumeArgs) || inter.resumeArgs;
+    if (!frag.length) { warning = `${spec.name} はセッション再開の argv を持たないため、新しい会話として起動します`; }
+  } else if (strategy && strategy.kind === 'mint') {
+    mintedSession = crypto.randomUUID();
+    vars.session = mintedSession;
+    frag = strategy.newArgs;
+  } else if (history.length && inter.continueArgs.length) {
+    frag = inter.continueArgs;
+    warning = `${spec.name} は「直前のセッション」を続ける形で再開します（同じ CLI を並行して使っていると混線しえます）`;
+  } else if (history.length) {
+    warning = `${spec.name} は会話の再開手段を持たないため、CLI 側の文脈は失われます（この画面の履歴は残る）`;
+  }
+  let argv = expand(inter.command, vars, holder);
+  argv = insertAfterSubcommand(argv, expand(frag, vars, holder));
+  argv = argv.concat(expand(readonly ? inter.readonlyArgs : inter.writeArgs, vars, holder));
+  if (vars.model && spec.modelFlag && !inter.command.some((t) => t.includes('{model}'))) argv.push(spec.modelFlag, vars.model);
+  return {
+    argv, mintedSession, env: spec.env, warning,
+    readonlyWarning: (readonly && spec.readonly !== 'enforced')
+      ? `${spec.name} は読み取り専用を保証しません（ファイル変更やコマンド実行が起こりえます）` : '',
+  };
+}
+
 // kiro の一覧（[{cwd, sessions:[{sessionId, updatedAt}]}]）から、このターンの後に更新された最新を選ぶ。
 function pickListedSession(json, cwd, sinceMs) {
   let groups;
@@ -251,6 +316,6 @@ function classifyError(spec, blob) {
 }
 
 module.exports = {
-  SESSION, searchDirs, load, list, resolvePath, turnCmd, insertAfterSubcommand,
-  replayPrompt, pickListedSession, classifyError,
+  SESSION, searchDirs, load, list, resolvePath, turnCmd, interactiveCmd, insertAfterSubcommand,
+  replayPrompt, pickListedSession, classifyError, normalizeInteractive,
 };

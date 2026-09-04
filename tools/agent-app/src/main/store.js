@@ -9,7 +9,10 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
-const DEFAULTS = { repos: [], lastRepo: '', lastCli: 'copilot', lastModel: '', lastReadonly: false };
+// wslDistro … Windows で、ドライブパス（C:\…）のリポジトリを扱う WSL ディストロ（'' なら既定）
+// transport … 'tmux'（対話起動。既定）| 'headless'（1 ターン 1 プロセス）
+// view      … 最後に開いていた画面（chat | files）
+const DEFAULTS = { repos: [], lastRepo: '', lastCli: 'copilot', lastModel: '', lastReadonly: false, wslDistro: '', transport: 'tmux', view: 'chat', lastFiles: {} };
 const MAX_REPOS = 30;
 
 function configPath(userData) { return path.join(userData, 'config.json'); }
@@ -22,6 +25,10 @@ function normalize(raw) {
   next.lastCli = String(next.lastCli || DEFAULTS.lastCli);
   next.lastModel = String(next.lastModel || '');
   next.lastReadonly = Boolean(next.lastReadonly);
+  next.wslDistro = String(next.wslDistro || '').trim();
+  next.transport = next.transport === 'headless' ? 'headless' : 'tmux';
+  next.view = next.view === 'files' ? 'files' : 'chat';
+  next.lastFiles = next.lastFiles && typeof next.lastFiles === 'object' ? next.lastFiles : {};
   return next;
 }
 
@@ -70,13 +77,14 @@ function writeSession(userData, sess) {
   return sess;
 }
 
-function createSession(userData, { repo, cli, model = '', readonly = false }) {
+function createSession(userData, { repo, cli, model = '', readonly = false, transport = 'tmux' }) {
   if (!repo) throw new Error('リポジトリを選んでください');
   if (!cli) throw new Error('エージェントを選んでください');
   const now = new Date().toISOString();
   return writeSession(userData, {
     id: crypto.randomUUID(), repo: String(repo), cli: String(cli), model: String(model || ''),
-    readonly: Boolean(readonly), title: '', cliSession: '', messages: [], createdAt: now, updatedAt: now,
+    readonly: Boolean(readonly), transport: transport === 'headless' ? 'headless' : 'tmux',
+    title: '', cliSession: '', messages: [], createdAt: now, updatedAt: now,
   });
 }
 
@@ -89,7 +97,7 @@ function listSessions(userData, repo) {
     try {
       const s = JSON.parse(fs.readFileSync(path.join(sessionsDir(userData), f), 'utf8'));
       if (repo && s.repo !== repo) continue;
-      out.push({ id: s.id, repo: s.repo, cli: s.cli, model: s.model, readonly: s.readonly, title: s.title, updatedAt: s.updatedAt, count: (s.messages || []).length });
+      out.push({ id: s.id, repo: s.repo, cli: s.cli, model: s.model, readonly: s.readonly, transport: s.transport || 'headless', title: s.title, updatedAt: s.updatedAt, count: (s.messages || []).length });
     } catch { /* 壊れたファイルは一覧に出さない */ }
   }
   return out.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
@@ -97,7 +105,7 @@ function listSessions(userData, repo) {
 
 function updateSession(userData, id, patch) {
   const sess = readSession(userData, id);
-  const allowed = ['title', 'model', 'readonly', 'cliSession'];
+  const allowed = ['title', 'model', 'readonly', 'cliSession', 'transport'];
   for (const k of allowed) if (patch && k in patch) sess[k] = patch[k];
   return writeSession(userData, sess);
 }

@@ -8,7 +8,11 @@ async function invoke(channel, args) {
   return res.data;
 }
 
+const on = (channel) => (cb) => ipcRenderer.on(channel, (_ev, p) => cb(p));
+
 contextBridge.exposeInMainWorld('api', {
+  platform: process.platform,
+  hostInfo: () => invoke('host:info'),
   getConfig: () => invoke('config:get'),
   saveConfig: (patch) => invoke('config:save', { patch }),
   addRepo: () => invoke('repo:add'),
@@ -22,10 +26,25 @@ contextBridge.exposeInMainWorld('api', {
   send: (id, prompt) => invoke('turn:send', { id, prompt }),
   stop: (id) => invoke('turn:stop', { id }),
   running: () => invoke('turn:running'),
+  termOpen: (id, cols, rows) => invoke('term:open', { id, cols, rows }),
+  termRestart: (id, cols, rows) => invoke('term:restart', { id, cols, rows }),
+  termState: (id) => invoke('term:state', { id }),
+  termWatch: (id) => invoke('term:watch', { id }),
+  termUnwatch: (id) => invoke('term:unwatch', { id }),
+  termKeys: (id, data) => invoke('term:keys', { id, data }),
+  termResize: (id, cols, rows) => invoke('term:resize', { id, cols, rows }),
+  termKill: (id) => invoke('term:kill', { id }),
+  listDir: (repo, rel) => invoke('fs:list', { repo, rel }),
+  readFile: (repo, rel) => invoke('fs:read', { repo, rel }),
+  findFiles: (repo, query) => invoke('fs:find', { repo, query }),
   changes: (repo) => invoke('git:changes', { repo }),
   fileDiff: (repo, file) => invoke('git:file', { repo, file }),
   openFolder: (repo) => invoke('shell:openFolder', { repo }),
-  onTurnStarted: (cb) => ipcRenderer.on('turn:started', (_ev, p) => cb(p)),
-  onTurnLine: (cb) => ipcRenderer.on('turn:line', (_ev, p) => cb(p)),
-  onTurnDone: (cb) => ipcRenderer.on('turn:done', (_ev, p) => cb(p)),
+  openFile: (repo, rel) => invoke('shell:openFile', { repo, rel }),
+  showFile: (repo, rel) => invoke('shell:showFile', { repo, rel }),
+  onTurnStarted: on('turn:started'),
+  onTurnLine: on('turn:line'),
+  onTurnDone: on('turn:done'),
+  onTermScreen: on('term:screen'),
+  onTermPhase: on('term:phase'),
 });
