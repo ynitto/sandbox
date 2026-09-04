@@ -153,16 +153,31 @@ function outcomeLabel(raw) {
 
 const OUTCOME_TARGETS = ['next', 'done', 'abort'];
 
-function parseOutcomeTarget(raw, index, stepCount) {
-  const value = text(raw, 20).toLowerCase();
-  if (OUTCOME_TARGETS.includes(value)) return value;
-  const m = /^step:(\d+)$/.exec(value);
+// 次にどこへ行くかの決め方。既存の定義を読み戻しても画面で直せるように 4 つ持つ。
+//   label  … 結果の第 1 行が〈語〉で始まるとき     → condition_rule: startswith:last_output:<語>
+//   text   … 文章で書いた条件（AI が YES/NO で見る） → condition: <文章>
+//   always … いつでも（無条件）                     → 条件を付けない
+//   rule   … 条件式そのまま（既存の定義を保つ口）    → condition_rule: <式>
+// text と always を持たなかったころは、この形の定義を「画面で直せない」として原文のまま
+// 抱えていた。手で書いた定義はほとんどがこの形なので、読み戻して直せる意味が薄かった。
+const OUTCOME_WHENS = ['label', 'text', 'always', 'rule'];
+
+// 行き先は next / done / abort / step:n のほか、`end:<ステートID>` も取る。
+// 手で書いた定義は終わり方を 2 つより多く持つ（承認・条件付き承認・差し戻し…）ので、
+// 終端を 2 つに決め打つと、そこへ行く工程がまるごと「画面で直せない」になっていた。
+function parseOutcomeTarget(raw, index, stepCount, endIds) {
+  const value = text(raw, 80);
+  const lower = value.toLowerCase();
+  if (OUTCOME_TARGETS.includes(lower)) return lower;
+  const m = /^step:(\d+)$/.exec(lower);
   if (m) {
     const n = Number(m[1]);
-    if (n < 1 || n > stepCount) throw new Error(`工程 ${index + 1} の判断が存在しない工程 ${n} を指しています`);
+    if (n < 1 || n > stepCount) throw new Error(`工程 ${index + 1} の行き先が存在しない工程 ${n} を指しています`);
     return `step:${n}`;
   }
-  throw new Error(`工程 ${index + 1} の判断の行き先が不正です: ${raw}`);
+  const e = /^end:(.+)$/.exec(value);
+  if (e && endIds && endIds.has(e[1])) return `end:${e[1]}`;
+  throw new Error(`工程 ${index + 1} の行き先が不正です: ${raw}`);
 }
 
 function rejectShellMeta(value, what, index) {
@@ -212,7 +227,30 @@ function defaultStepId(index) {
   return `step_${index + 1}`;
 }
 
-function normalizeStep(raw, index, stepCount, usedIds) {
+// 1 行ぶんの「次にどこへ行くか」。`when` の無い古い形（{label, to}）は label として読む。
+function normalizeOutcome(raw, index, stepCount, seen, endIds) {
+  const o = raw && typeof raw === 'object' ? raw : {};
+  const when = OUTCOME_WHENS.includes(o.when) ? o.when : 'label';
+  const to = parseOutcomeTarget(o.to, index, stepCount, endIds);
+  if (when === 'text') {
+    const body = text(o.text, 1000).replace(/\n+/g, ' ');
+    if (!body) throw new Error(`工程 ${index + 1} に、条件の文章が空の行があります`);
+    return { when, text: body, to };
+  }
+  if (when === 'rule') {
+    const rule = text(o.rule, 300).replace(/\n+/g, ' ');
+    if (!rule) throw new Error(`工程 ${index + 1} に、条件式が空の行があります`);
+    return { when, rule, to };
+  }
+  if (when === 'always') return { when, to };
+  const label = outcomeLabel(o.label);
+  if (!label) throw new Error(`工程 ${index + 1} に、結果の名前が空の行があります`);
+  if (seen.has(label)) throw new Error(`工程 ${index + 1} の結果の名前が重複しています: ${label}`);
+  seen.add(label);
+  return { when: 'label', label, to };
+}
+
+function normalizeStep(raw, index, stepCount, usedIds, endIds) {
   const item = raw && typeof raw === 'object' ? raw : {};
   const kind = STEP_KIND_BY_ID.get(String(item.kind || ''));
   if (!kind) throw new Error(`工程 ${index + 1} の種類が不正です`);
@@ -232,13 +270,7 @@ function normalizeStep(raw, index, stepCount, usedIds) {
   const rawOutcomes = rawTransitions ? [] : (Array.isArray(item.outcomes) ? item.outcomes : []);
   if (rawOutcomes.length > MAX_OUTCOMES) throw new Error(`工程 ${index + 1} の判断は ${MAX_OUTCOMES} 件までです`);
   const seen = new Set();
-  const outcomes = rawOutcomes.map((o) => {
-    const label = outcomeLabel(o && o.label);
-    if (!label) throw new Error(`工程 ${index + 1} の判断にラベルの無い行があります`);
-    if (seen.has(label)) throw new Error(`工程 ${index + 1} の判断ラベルが重複しています: ${label}`);
-    seen.add(label);
-    return { label, to: parseOutcomeTarget(o && o.to, index, stepCount) };
-  });
+  const outcomes = rawOutcomes.map((o) => normalizeOutcome(o, index, stepCount, seen, endIds));
   return {
     id, kind: kind.id, title: text(item.title, 80), detail,
     target: normalizeTarget(kind, item.target, index),
@@ -267,6 +299,9 @@ function normalizeProcedure(raw) {
     throw new Error(`識別名が不正です: ${machine}（英数字・ハイフン・アンダースコア・ドット）`);
   }
   const usedIds = new Set();
+  const preserved = normalizePreserved(src.preserved);
+  const ends = normalizeEnds(src.ends, preserved);
+  const endIds = new Set(ends.map((e) => e.id));
   const spec = {
     version: PROCEDURE_VERSION,
     name: text(src.name, 120),
@@ -275,12 +310,13 @@ function normalizeProcedure(raw) {
     finish: text(src.finish, 2000),
     notes: text(src.notes, 2000),
     maxSteps: Math.max(1, Math.min(500, Number(src.maxSteps) || 30)),
-    steps: steps.map((step, index) => normalizeStep(step, index, steps.length, usedIds)),
+    ends,
+    steps: steps.map((step, index) => normalizeStep(step, index, steps.length, usedIds, endIds)),
     terminals: {
       done: normalizeTerminal(src.terminals && src.terminals.done, 'complete', '完了'),
       abort: normalizeTerminal(src.terminals && src.terminals.abort, 'failed', '失敗として終了'),
     },
-    preserved: normalizePreserved(src.preserved),
+    preserved,
   };
   if (spec.terminals.done.id === spec.terminals.abort.id) throw new Error('完了と失敗の終端ステート ID が同じです');
   for (const t of [spec.terminals.done.id, spec.terminals.abort.id]) {
@@ -289,6 +325,21 @@ function normalizeProcedure(raw) {
   if (!spec.name) throw new Error('名前を入力してください');
   spec.parameters = parameterKeys(spec);
   return spec;
+}
+
+// 完了・中止のほかの終わり方（手で書いた定義が持つ終端）。原文の states に在るものだけを許す。
+function normalizeEnds(raw, preserved) {
+  const list = Array.isArray(raw) ? raw : [];
+  const out = [];
+  const seen = new Set();
+  for (const item of list) {
+    const id = text(item && item.id, 60);
+    const state = preserved.states[id];
+    if (!id || seen.has(id) || !state || !state.terminal) continue;
+    seen.add(id);
+    out.push({ id, description: text(item.description, 120) || text(state.description, 120) || id });
+  }
+  return out;
 }
 
 // 画面で表せない部分（原文のまま保持して書き戻す）。
@@ -315,8 +366,11 @@ function parameterKeys(spec) {
 
 // --- 遷移の解決（画面表示とコンパイルの両方が使う） ------------------------------------
 
+// 出力契約（第 1 行の語）に使えるのは label の行だけ。文章の条件や無条件だけの工程には
+// 契約が無い——そこへ勝手に契約を足すと、手で書いた定義の意味を変えてしまう。
 function stepLabels(step) {
-  return step.outcomes.length ? step.outcomes.map((o) => o.label) : DEFAULT_LABELS.slice();
+  if (!step.outcomes.length) return DEFAULT_LABELS.slice();
+  return step.outcomes.filter((o) => o.when === 'label').map((o) => o.label);
 }
 
 // 工程 index の遷移一覧。{ label, to: 'next'|'done'|'abort'|'step:n', target: state_id, gated }
@@ -327,19 +381,20 @@ function stepTransitions(spec, index) {
     if (to === 'next') return nextId;
     if (to === 'done') return spec.terminals.done.id;
     if (to === 'abort') return spec.terminals.abort.id;
+    if (to.startsWith('end:')) return to.slice('end:'.length);
     return spec.steps[Number(to.slice('step:'.length)) - 1].id;
   };
   if (step.rawTransitions) return [];
   if (step.outcomes.length) {
-    return step.outcomes.map((o) => ({ label: o.label, to: o.to, target: resolve(o.to), gated: !!step.check }));
+    return step.outcomes.map((o) => ({ ...o, target: resolve(o.to), gated: !!step.check }));
   }
   if (step.check) {
     // 検査を宣言した工程は、ハーネスが測った事実で進む（モデルの OK は材料に入れない）。
-    return [{ label: '', to: 'next', target: nextId, gated: true }];
+    return [{ when: 'always', to: 'next', target: nextId, gated: true }];
   }
   return [
-    { label: 'OK', to: 'next', target: nextId, gated: false },
-    { label: 'FAILED', to: 'abort', target: spec.terminals.abort.id, gated: false },
+    { when: 'label', label: 'OK', to: 'next', target: nextId, gated: false },
+    { when: 'label', label: 'FAILED', to: 'abort', target: spec.terminals.abort.id, gated: false },
   ];
 }
 
@@ -347,6 +402,11 @@ function describeTarget(spec, index, to) {
   const count = spec.steps.length;
   if (to === 'done') return '完了';
   if (to === 'abort') return '失敗として終了';
+  if (to.startsWith('end:')) {
+    const id = to.slice('end:'.length);
+    const end = (spec.ends || []).find((e) => e.id === id);
+    return end ? end.description : id;
+  }
   if (to === 'next') return index + 1 < count ? `工程 ${index + 2} へ` : '完了';
   const n = Number(String(to).slice('step:'.length));
   if (n === index + 1) return 'この工程をやり直す';
@@ -361,9 +421,13 @@ function kindOf(step) {
 
 function outputFormatLine(step) {
   if (step.rawTransitions) return '**出力形式:** 第1行に結果を表す一語（遷移条件が見る語）を返してください。';
-  const labels = stepLabels(step);
   if (!step.outcomes.length) return '**出力形式:** 第1行に OK（完了）または FAILED（できなかった）だけを返してください。';
-  return `**出力形式:** 第1行に ${labels.join(' / ')} のいずれか一語だけを返してください。`;
+  const labels = stepLabels(step);
+  // 文章の条件だけの工程には第 1 行の契約が無い。無いものを在るように書かない。
+  if (!labels.length) return '**出力形式:** 何をどうしたか、結果が判別できるように短く返してください。';
+  const rest = step.outcomes.length - labels.length;
+  return `**出力形式:** 第1行に ${labels.join(' / ')} のいずれか一語`
+    + (rest ? 'を書き、続けて結果の要点を短く書いてください。' : 'だけを返してください。');
 }
 
 function actionMarkdown(spec, index) {
@@ -403,8 +467,13 @@ function buildWorkflow(spec) {
   for (const step of spec.steps) {
     const kind = kindOf(step);
     const node = { description: step.title || kind.label, action_file: `actions/${step.id}.md` };
-    if (!step.rawTransitions) {
-      node.output_validator = `startswith:${stepLabels(step).join(',')}`;
+    // 第 1 行の契約を書けるのは、行き先が**すべて**結果の名前で決まるときだけ。
+    // 文章の条件や無条件が混ざる工程に契約を足すと、名前で始まらない出力が失敗扱いになり、
+    // 元の定義では通っていた道が通らなくなる。
+    const labels = stepLabels(step);
+    const byLabelOnly = !step.outcomes.length || step.outcomes.every((o) => o.when === 'label');
+    if (!step.rawTransitions && labels.length && byLabelOnly) {
+      node.output_validator = `startswith:${labels.join(',')}`;
       node.max_retries = 1;
     }
     if (step.check) {
@@ -419,25 +488,34 @@ function buildWorkflow(spec) {
   const transitions = [];
   spec.steps.forEach((step, index) => {
     stepTransitions(spec, index).forEach((t, n) => {
+      const item = { from: step.id, to: t.target };
       const rules = [];
-      if (t.gated) rules.push('equals:check_ok:true');
-      if (t.label) rules.push(`startswith:last_output:${t.label}`);
-      transitions.push({ from: step.id, to: t.target, condition_rule: rules.join(';'), priority: n + 1 });
+      // 検査の関門は決定論の側にだけ足す。文章の条件と混ぜると、実行側は condition_rule を
+      // 優先して文章を読まない——「両方を満たしたとき」のつもりが片方だけになる。
+      if (t.gated && t.when !== 'text') rules.push('equals:check_ok:true');
+      if (t.when === 'label') rules.push(`startswith:last_output:${t.label}`);
+      if (t.when === 'rule') rules.push(t.rule);
+      if (rules.length) item.condition_rule = rules.join(';');
+      if (t.when === 'text') item.condition = t.text;
+      item.priority = n + 1;
+      transitions.push(item);
     });
   });
   for (const raw of preserved.transitions) transitions.push(raw);
 
-  // 終端ステートは、どこかから遷移されるものだけ書く（誰も行かない終端を足して、
-  // 既存の定義のステート集合を変えない）。
+  // 終わり方。**原文にあったものはそのまま書き戻す**（本文を持つ終端もあるので、
+  // 説明だけの形に作り直すと中身が消える）。行き先から外れても消さない。
+  for (const [id, raw] of Object.entries(preserved.states)) {
+    if (!states[id]) states[id] = raw;
+  }
+  // 原文に無い終わり方は、どこかから行くときだけ作る（誰も行かない終端を足さない）。
   const referenced = new Set(transitions.map((t) => t.to));
   for (const key of ['done', 'abort']) {
     const term = spec.terminals[key];
+    if (states[term.id]) continue;
     if (referenced.has(term.id) || (key === 'done' && !spec.steps.some((s) => !s.rawTransitions) && !preserved.transitions.length)) {
       states[term.id] = { description: term.description, terminal: true };
     }
-  }
-  for (const [id, raw] of Object.entries(preserved.states)) {
-    if (!states[id]) states[id] = raw;
   }
 
   const config = { on_no_transition: 'error', ...preserved.config };
@@ -482,6 +560,7 @@ function makerSidecar(spec) {
     notes: spec.notes,
     maxSteps: spec.maxSteps,
     terminals: spec.terminals,
+    ends: spec.ends,
     steps: spec.steps,
   };
 }
@@ -604,18 +683,16 @@ function detectKind(body) {
   return { kind: 'skill', target: m[1] };
 }
 
+// 条件式を「検査の関門」「結果の名前」「そのまま保つ残り」に分ける。
+// 結果の名前として読むのは `startswith:last_output:<語>`（このアプリが書く形）だけ。
+// `equals:analysis_result:PASS` のような別の形は、名前に読み替えると書き戻しで別物になる
+// ——そういうものは式のまま持って、画面では式として見せる。
 function parseRule(rule) {
   const parts = String(rule || '').split(';').map((s) => s.trim()).filter(Boolean);
-  let gated = false;
-  let label = '';
-  let other = false;
-  for (const p of parts) {
-    if (p === 'equals:check_ok:true') { gated = true; continue; }
-    const m = /^(startswith|equals):(last_output|[A-Za-z_][A-Za-z0-9_]*):(.+)$/.exec(p);
-    if (m) { label = m[3]; continue; }
-    other = true;
-  }
-  return { gated, label, other, empty: !parts.length };
+  const gated = parts.includes('equals:check_ok:true');
+  const rest = parts.filter((p) => p !== 'equals:check_ok:true');
+  const m = rest.length === 1 ? /^startswith:last_output:(.+)$/.exec(rest[0]) : null;
+  return { gated, label: m ? m[1] : '', rest: m ? [] : rest, empty: !parts.length };
 }
 
 // 遷移をたどって工程の順を決める（initial から主経路 → 残り）。
@@ -666,6 +743,11 @@ function decompile({ workflowText, files = {}, makerJson = '' } = {}) {
   }
   if (!terminals.done) terminals.done = { id: 'complete', description: '完了' };
   if (!terminals.abort) terminals.abort = { id: 'failed', description: '失敗として終了' };
+  // 完了・中止のほかの終わり方も、そのまま行き先に選べるようにする。
+  const ends = terminalIds
+    .filter((id) => id !== terminals.done.id && id !== terminals.abort.id)
+    .map((id) => ({ id, description: text(states[id].description, 120) || id }));
+  const endIds = new Set(ends.map((e) => e.id));
 
   const order = sidecar ? sidecar.steps.map((s) => s.id) : orderStates(workflow);
   const managed = new Set(order);
@@ -683,12 +765,11 @@ function decompile({ workflowText, files = {}, makerJson = '' } = {}) {
     const fromSidecar = sidecar ? sidecar.steps[index] : null;
     const kindId = fromSidecar ? fromSidecar.kind : detected.kind;
     const kind = STEP_KIND_BY_ID.get(kindId) || STEP_KIND_BY_ID.get('agent');
-    // 遷移 → 判断。1 つでも画面で表せない遷移（自然言語条件・無条件・未知の行き先）があれば、
-    // その工程の遷移は**すべて**原文のまま持つ（rawTransitions）。半分だけ生成すると、既定の
-    // OK/FAILED が原文の遷移と混ざって意味が変わる。
+    // 遷移 → 「次にどこへ行くか」。条件式・文章の条件・無条件のどれも画面の行に写す。
+    // 原文のまま抱えるのは、画面に置き場が無いものだけ（外部ファイルの条件・知らない行き先）。
     const own = transitions.filter((t) => t.from === id).sort((a, b) => Number(a.priority || 0) - Number(b.priority || 0));
     const outcomes = [];
-    let gatedNext = false;
+    let gatedAlways = false;
     let raw = false;
     for (const t of own) {
       const rule = parseRule(t.condition_rule);
@@ -696,22 +777,29 @@ function decompile({ workflowText, files = {}, makerJson = '' } = {}) {
       let to;
       if (target === terminals.done.id) to = 'done';
       else if (target === terminals.abort.id) to = 'abort';
+      else if (endIds.has(target)) to = `end:${target}`;
       else if (indexOf.has(target)) to = indexOf.get(target) === index + 1 ? 'next' : `step:${indexOf.get(target) + 1}`;
       if (to === 'done' && index + 1 >= order.length) to = 'next';
-      if (!to || rule.other || rule.empty || (!rule.label && !(rule.gated && to === 'next'))) { raw = true; break; }
-      if (!rule.label) { gatedNext = true; continue; }
-      outcomes.push({ label: rule.label, to });
+      if (!to || t.condition_file) { raw = true; break; }
+      if (rule.rest.length) { outcomes.push({ when: 'rule', rule: rule.rest.join(';'), to }); continue; }
+      if (rule.label) { outcomes.push({ when: 'label', label: rule.label, to }); continue; }
+      if (t.condition) { outcomes.push({ when: 'text', text: String(t.condition).trim().replace(/\s+/g, ' '), to }); continue; }
+      if (rule.gated && to === 'next') { gatedAlways = true; continue; }
+      outcomes.push({ when: 'always', to });
     }
-    if (raw && !fromSidecar) warnings.push(`ステート '${id}' の遷移は画面で編集できない形（自然言語条件・無条件遷移など）なので原文のまま保持します`);
-    const isDefault = outcomes.length === 2
-      && outcomes[0].label === 'OK' && outcomes[0].to === 'next'
-      && outcomes[1].label === 'FAILED' && outcomes[1].to === 'abort';
-    const isGatedDefault = gatedNext && !outcomes.length && state.check;
+    if (raw && !fromSidecar) {
+      warnings.push(`ステート '${id}' には、この画面に置き場の無い遷移（別ファイルの条件・知らない行き先）があるので原文のまま保持します`);
+    }
+    const isLabel = (o, label, to) => o.when === 'label' && o.label === label && o.to === to;
+    const isDefault = outcomes.length === 2 && isLabel(outcomes[0], 'OK', 'next') && isLabel(outcomes[1], 'FAILED', 'abort');
+    const isGatedDefault = gatedAlways && !outcomes.length && state.check;
     const stepOutcomes = fromSidecar ? fromSidecar.outcomes : (raw || isDefault || isGatedDefault ? [] : outcomes);
 
     const isRaw = fromSidecar ? !!fromSidecar.rawTransitions : raw;
+    // 第 1 行の契約を書き直さない工程では、元の宣言をそのまま持ち回る（消さない）。
+    const byLabelOnly = !stepOutcomes.length || stepOutcomes.every((o) => o.when === 'label');
     const extras = {};
-    const known = isRaw ? KNOWN_RAW : KNOWN;
+    const known = isRaw || !byLabelOnly ? KNOWN_RAW : KNOWN;
     for (const [k, v] of Object.entries(state)) if (!known.has(k)) extras[k] = v;
     if (Object.keys(extras).length) stateExtras[id] = extras;
 
@@ -734,9 +822,11 @@ function decompile({ workflowText, files = {}, makerJson = '' } = {}) {
 
   const unmanagedStates = {};
   for (const [id, st] of Object.entries(states)) {
-    if (managed.has(id) || id === terminals.done.id || id === terminals.abort.id) continue;
+    // 終わり方は原文のまま持ち回る（本文を持つ終端を、説明だけの形に作り直さない）。
+    if (managed.has(id)) continue;
     unmanagedStates[id] = st;
-    warnings.push(`ステート '${id}' は画面で編集できないので原文のまま保持します`);
+    // 終わり方は行き先として選べるので知らせない。作業のあるステートだけ知らせる。
+    if (!(st && st.terminal)) warnings.push(`ステート '${id}' は画面で編集できないので原文のまま保持します`);
   }
   const rawIds = new Set(steps.filter((s) => s.rawTransitions).map((s) => s.id));
   const unmanagedTransitions = transitions.filter((t) => !managed.has(t.from) || rawIds.has(t.from));
@@ -757,6 +847,7 @@ function decompile({ workflowText, files = {}, makerJson = '' } = {}) {
     notes: sidecar ? sidecar.notes : '',
     maxSteps: Number((workflow.config && workflow.config.max_steps) || (sidecar && sidecar.maxSteps) || 30),
     terminals,
+    ends,
     steps,
     preserved,
   };

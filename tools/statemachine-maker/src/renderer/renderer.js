@@ -89,7 +89,7 @@ function newSpec() {
   return {
     version: 3, name: '', machine: '', purpose: '', finish: '', notes: '', maxSteps: 30,
     terminals: { done: { id: 'complete', description: '完了' }, abort: { id: 'failed', description: '中止' } },
-    steps: [], preserved: null,
+    ends: [], steps: [], preserved: null,
   };
 }
 
@@ -118,15 +118,50 @@ function nextsOf(spec, index) {
   const where = (to) => {
     if (to === 'done') return { text: '完了', cls: 'done' };
     if (to === 'abort') return { text: '中止', cls: 'abort' };
+    if (to.startsWith('end:')) return { text: endName(spec, to.slice(4)), cls: 'done' };
     if (to === 'next') return index + 1 < count ? { text: `次へ（${index + 2}）`, cls: '' } : { text: '完了', cls: 'done' };
     const n = Number(String(to).slice(5));
     if (n === index + 1) return { text: 'この工程をやり直す', cls: 'back' };
     return n <= index ? { text: `${n} へ戻る`, cls: 'back' } : { text: `${n} へ`, cls: '' };
   };
-  if (step.rawTransitions) return [{ label: '文章の条件', cls: 'raw', text: 'この画面では直せません' }];
-  if (step.outcomes.length) return step.outcomes.map((o) => ({ label: o.label || '（結果）', cls: step.check ? 'gate' : '', ...where(o.to) }));
+  if (step.rawTransitions) return [{ label: '別ファイルの条件', cls: 'raw', text: 'この画面では直せません' }];
+  if (step.outcomes.length) return step.outcomes.map((o) => ({ ...whenChip(o), cls: step.check ? 'gate' : '', ...where(o.to) }));
   if (step.check) return [{ label: '確認できたら', cls: 'gate', ...where('next') }];
   return [{ label: 'できた', cls: 'ok', ...where('next') }, { label: 'できなかった', cls: 'ng', ...where('abort') }];
+}
+
+// 完了・中止のほかの終わり方（手で書いた定義が持つもの）の呼び名。
+function endName(spec, id) {
+  const end = (spec.ends || []).find((e) => e.id === id);
+  return (end && end.description) || id;
+}
+
+// 行き先の決め方の 4 つ。画面ではこの言葉で見せる。
+const WHENS = [
+  { id: 'label', label: '結果の名前で', hint: '出力の 1 行目がこの語で始まったら', placeholder: '例: 承認' },
+  { id: 'text', label: '文章の条件で', hint: 'この文にあてはまるか AI が見ます', placeholder: '例: 出力に「保留」が含まれる' },
+  { id: 'always', label: 'いつでも', hint: '条件なしで進みます', placeholder: '' },
+  { id: 'rule', label: '条件式で', hint: '読み込んだ条件式をそのまま保ちます', placeholder: '条件式' },
+];
+
+function whenOf(o) {
+  return WHENS.find((w) => w.id === (o.when || 'label')) || WHENS[0];
+}
+
+// 行に入れた言葉。「いつでも」には言葉が要らないが、決め方を戻したときに書き直させない
+// ように、前に入れていたものを覚えておく（保存時には main が落とす）。
+function outcomeValue(o) {
+  if (o.when === 'text') return o.text || '';
+  if (o.when === 'rule') return o.rule || '';
+  if (o.when === 'always') return o.text || o.rule || o.label || '';
+  return o.label || '';
+}
+
+function whenChip(o) {
+  if (o.when === 'text') { const t = String(o.text || ''); return { label: `もし「${t.length > 18 ? `${t.slice(0, 18)}…` : t}」` }; }
+  if (o.when === 'always') return { label: 'そのまま' };
+  if (o.when === 'rule') return { label: '条件式' };
+  return { label: o.label || '（結果の名前）' };
 }
 
 // 畳んだカードの 1 文。動詞で始め、細かいことは開いてから。
@@ -327,8 +362,11 @@ function editorHtml() {
   } else {
     spec.steps.forEach((_s, i) => { parts.push(stepHtml(spec, i)); parts.push(edgeHtml(spec, i)); });
   }
-  parts.push(`<div class="terminal"><span class="icon">✓</span><span class="name">完了</span></div>`);
-  parts.push(`<div class="terminal abort"><span class="icon">✕</span><span class="name">中止</span></div>`);
+  parts.push('<div class="terminal"><span class="icon">✓</span><span class="name">完了</span></div>');
+  for (const e of spec.ends || []) {
+    parts.push(`<div class="terminal"><span class="icon">✓</span><span class="name">${esc(e.description)}</span></div>`);
+  }
+  parts.push('<div class="terminal abort"><span class="icon">✕</span><span class="name">中止</span></div>');
   parts.push(`<div class="notes" id="notes">${notesHtml()}</div>`);
   return `<div class="editor">${parts.join('')}</div>`;
 }
@@ -381,17 +419,30 @@ function stepBodyHtml(spec, index) {
     <small>うまくいったときだけ次へ進みます。書かなければ AI の申告で進みます。</small></div>` : '';
   const dest = (to) => {
     const opts = [['next', index + 1 < spec.steps.length ? `次へ（${index + 2}）` : '次へ（完了）'], ['done', '完了'], ['abort', '中止']];
+    for (const e of spec.ends || []) opts.push([`end:${e.id}`, e.description]);
     spec.steps.forEach((_s, i) => { opts.push([`step:${i + 1}`, `${i + 1} へ${i < index ? '戻る' : i === index ? '（やり直す）' : ''}`]); });
     return opts.map(([v, l]) => `<option value="${v}" ${v === to ? 'selected' : ''}>${esc(l)}</option>`).join('');
   };
+  const branchRow = (o, i) => {
+    const w = whenOf(o);
+    const value = o.when === 'always'
+      ? '<input disabled placeholder="（条件なし）">'
+      : `<input data-bfield="value" value="${esc(outcomeValue(o))}" placeholder="${esc(w.placeholder)}" ${o.when === 'rule' ? 'class="mono"' : ''}>`;
+    return `<div class="branch-row" data-branch="${i}">
+      <select data-bfield="when" title="${esc(w.hint)}">${WHENS.map((x) => `<option value="${x.id}" ${x.id === w.id ? 'selected' : ''}>${esc(x.label)}</option>`).join('')}</select>
+      ${value}
+      <select data-bfield="to">${dest(o.to)}</select>
+      <button type="button" data-bremove title="削除">✕</button>
+    </div>`;
+  };
   const branches = step.rawTransitions
     ? `<div class="section-title">次にどこへ行くか</div>
-      <small class="muted">文章で書かれた条件が入っているため、この画面では直せません。そのまま残します。</small>
+      <small class="muted">別のファイルに書かれた条件など、この画面に置き場の無い形が入っています。そのまま残します。</small>
       <div><button type="button" class="tiny" data-unraw>この画面で直せる形にする</button></div>`
-    : `<div class="section-title">結果で分ける（任意）</div>
-      <small class="muted">分けないときは「できた → 次へ」「できなかった → 中止」です。</small>
-      ${step.outcomes.map((o, i) => `<div class="branch-row" data-branch="${i}"><input data-bfield="label" value="${esc(o.label)}" placeholder="結果の名前"><select data-bfield="to">${dest(o.to)}</select><button type="button" data-bremove title="削除">✕</button></div>`).join('')}
-      <div><button type="button" class="tiny" data-badd>＋ 分け方を足す</button></div>`;
+    : `<div class="section-title">次にどこへ行くか（任意）</div>
+      <small class="muted">何も足さなければ「できた → 次へ」「できなかった → 中止」です。上から順に見て、最初にあてはまったところへ進みます。</small>
+      ${step.outcomes.map(branchRow).join('')}
+      <div><button type="button" class="tiny" data-badd>＋ 行き先を足す</button></div>`;
   return `<div class="step-body">
     <div class="field"><label>種類</label><div class="seg">${seg}</div></div>
     <div class="field"><label>名前（任意）</label><input data-field="title" value="${esc(step.title)}" placeholder="例: 申請一覧を開く"></div>
@@ -470,14 +521,25 @@ function bindStep(card) {
   }
   for (const row of body.querySelectorAll('[data-branch]')) {
     const i = Number(row.dataset.branch);
+    const outcome = step.outcomes[i];
     for (const el of row.querySelectorAll('[data-bfield]')) {
-      el.addEventListener(el.tagName === 'SELECT' ? 'change' : 'input', () => { step.outcomes[i][el.dataset.bfield] = el.value; markDirty(); refreshEdge(index); });
+      el.addEventListener(el.tagName === 'SELECT' ? 'change' : 'input', () => {
+        const field = el.dataset.bfield;
+        if (field === 'to') { outcome.to = el.value; markDirty(); refreshEdge(index); return; }
+        if (field === 'value') { setOutcomeValue(outcome, el.value); markDirty(); refreshEdge(index); return; }
+        // 決め方を変えたら、入れていた言葉は持ち越す（入れ直させない）
+        const carried = outcomeValue(outcome);
+        outcome.when = el.value;
+        setOutcomeValue(outcome, carried);
+        markDirty();
+        render();
+      });
     }
     row.querySelector('[data-bremove]').addEventListener('click', () => { step.outcomes.splice(i, 1); markDirty(); render(); });
   }
   const on = (sel, fn) => { const el = body.querySelector(sel); if (el) el.addEventListener('click', fn); };
   on('[data-badd]', () => {
-    step.outcomes.push({ label: '', to: 'next' });
+    step.outcomes.push({ when: 'label', label: '', to: 'next' });
     markDirty();
     render();
     const inputs = document.querySelectorAll(`[data-step="${index}"] [data-branch] input`);
@@ -512,6 +574,12 @@ function bindStep(card) {
     markDirty();
     render();
   });
+}
+
+function setOutcomeValue(o, value) {
+  if (o.when === 'text') o.text = value;
+  else if (o.when === 'rule') o.rule = value;
+  else if (o.when !== 'always') o.label = value;
 }
 
 function refreshHead(index) {

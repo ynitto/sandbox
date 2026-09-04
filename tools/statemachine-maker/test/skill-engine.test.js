@@ -62,6 +62,10 @@ test('スキルの例を読み戻して書き直した定義も --dry-run を通
     // 例の中には actions/*.md を前提にするものがある。読み戻しは本文が無くても落ちない。
     const read = store.read(root, machine);
     assert.ok(read.raw.steps.length >= 1, name);
+    // 手で書いた定義でも、工程はすべて画面で直せる形に写る
+    assert.deepStrictEqual(read.raw.steps.filter((s) => s.rawTransitions).map((s) => s.id), [],
+      `${name}: 画面で直せない工程が残っている`);
+    assert.deepStrictEqual(read.warnings, [], `${name}: ${read.warnings.join(' / ')}`);
     const raw = { ...read.raw, name: read.raw.name || machine };
     for (const s of raw.steps) if (!s.detail) s.detail = `（${s.id}）`;
     store.save(root, raw);

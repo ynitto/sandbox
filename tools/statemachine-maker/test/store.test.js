@@ -64,7 +64,11 @@ test('スキルの例（手書きの定義）を読み戻して書き直して�
   const read = store.read(root, 'gated');
   assert.deepStrictEqual(read.raw.steps.map((s) => s.id), ['implement', 'review']);
   assert.strictEqual(read.raw.steps[0].check, 'python3 -m pytest tests/test_humansize.py -q');
-  assert.deepStrictEqual(read.raw.steps[1].outcomes, [{ label: 'APPROVED', to: 'next' }, { label: 'CHANGES', to: 'abort' }]);
+  // `startswith:verdict:APPROVED` は結果の名前ではなく式（別のキーを見ている）。
+  // 名前に読み替えると書き戻しで別物になるので、式のまま持つ。
+  assert.deepStrictEqual(read.raw.steps[1].outcomes, [
+    { when: 'rule', rule: 'startswith:verdict:APPROVED', to: 'next' },
+    { when: 'rule', rule: 'startswith:verdict:CHANGES', to: 'abort' }]);
   const saved = store.save(root, read.raw);
   const again = store.read(root, 'gated');
   assert.strictEqual(again.workflow.states.implement.write, 'src/humansize.py', 'write の割付は保持される');

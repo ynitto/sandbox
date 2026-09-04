@@ -27,6 +27,14 @@ function kindLabel(id) {
   return kind ? kind.label : id;
 }
 
+// 遷移の条件を 1 行で言い表す（指示文にそのまま載る）。
+function describeWhen(t) {
+  if (t.when === 'label') return `第 1 行が ${t.label} で始まる`;
+  if (t.when === 'text') return `条件（自然言語）: ${t.text}`;
+  if (t.when === 'rule') return `条件式: ${t.rule}`;
+  return t.gated ? '検査が通る' : '無条件';
+}
+
 function stepSection(spec, index) {
   const step = spec.steps[index];
   const lines = [`### 工程 ${index + 1}（${step.id}）: ${step.title || kindLabel(step.kind)}（${kindLabel(step.kind)}）`];
@@ -44,10 +52,16 @@ function stepSection(spec, index) {
   }
   if (step.check) lines.push(`- 完了の確認: \`check: ${step.check}\`（check_retries: ${step.checkRetries}）。通ったときだけ次へ進む。`);
   const transitions = model.stepTransitions(spec, index);
-  lines.push(`- 出力契約: 第 1 行に ${model.stepLabels(step).join(' / ')} のいずれかだけを書く。`);
+  const labels = model.stepLabels(step);
+  const byLabelOnly = !step.outcomes.length || step.outcomes.every((o) => o.when === 'label');
+  if (labels.length && byLabelOnly) {
+    lines.push(`- 出力契約: 第 1 行に ${labels.join(' / ')} のいずれかだけを書く。`);
+  } else if (labels.length) {
+    lines.push(`- 出力契約: 第 1 行に ${labels.join(' / ')} のいずれかを書き、続けて結果の要点を書く（他の道は文章の条件で決まる）。`);
+  }
   lines.push('- 遷移（分岐はアクション本文ではなく transitions に書く）:');
   for (const t of transitions) {
-    lines.push(`  - ${t.label || '検査が通る'} → ${model.describeTarget(spec, index, t.to)}（${t.target}）`);
+    lines.push(`  - ${describeWhen(t)} → ${model.describeTarget(spec, index, t.to)}（${t.target}）`);
   }
   return lines.join('\n');
 }
