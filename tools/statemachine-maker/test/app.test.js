@@ -29,33 +29,66 @@ test('窓の設定は contextIsolation / sandbox を保ち、CSP を宣言する
   assert.ok(read('renderer/index.html').includes("script-src 'self'"));
 });
 
-test('画面はライトトーンで、色・余白・文字は CSS 変数（設定とユーザー CSS が上書きできる）', () => {
+test('画面は固定デザインで、見た目のカスタマイズを公開しない', () => {
   const css = read('renderer/styles.css');
-  assert.match(css, /--bg: #f7f7f8/);
-  assert.match(css, /--card: #ffffff/);
-  for (const v of ['--accent', '--space', '--card-pad', '--font-size', '--column-width', '--kind-browser', '--kind-agent']) assert.ok(css.includes(`${v}:`), v);
-  assert.ok(read('main/main.js').includes("backgroundColor: '#f7f7f8'"));
-  assert.ok(read('renderer/index.html').includes('id="custom-css"'), 'ユーザー CSS の差し込み口');
-  const theme = require('../src/main/theme');
-  const vars = theme.cssVariables({ accent: '#112233', density: 'compact', fontSize: 16, kindColors: { agent: '#445566', bogus: '#000000' } });
-  assert.strictEqual(vars['--accent'], '#112233');
-  assert.strictEqual(vars['--font-size'], '16px');
-  assert.strictEqual(vars['--space'], '8px');
-  assert.strictEqual(vars['--kind-agent'], '#445566');
-  assert.strictEqual(vars['--kind-browser'], theme.DEFAULTS.kindColors.browser, '不正な値・未知の種類は既定に戻る');
-  assert.strictEqual(theme.normalize({ accent: 'red', fontSize: 99 }).accent, theme.DEFAULTS.accent);
-  const dir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'smk-theme-'));
-  assert.strictEqual(theme.load(dir).customCss, '');
-  theme.ensureCustomCss(dir);
-  assert.ok(theme.load(dir).customCss.includes('--accent'), '雛形は変数の名前を教える');
+  assert.match(css, /--bg: #f6f7f9/);
+  assert.match(css, /--surface: #fff(?:fff)?/);
+  assert.match(css, /--primary: #2563eb/);
+  assert.ok(read('main/main.js').includes("backgroundColor: '#f6f7f9'"));
+
+  const sources = [
+    read('renderer/index.html'),
+    read('renderer/renderer.js'),
+    read('preload.js'),
+    read('main/ipc.js'),
+  ].join('\n');
+  for (const term of ['custom-css', 'getTheme', 'saveTheme', 'openCustomCss', 'theme:get', 'theme:save', 'theme:openCss']) {
+    assert.ok(!sources.includes(term), `見た目設定の公開面が残っています: ${term}`);
+  }
+  assert.ok(!fs.existsSync(path.join(SRC, 'main', 'theme.js')), '見た目設定モジュールを残さない');
 });
 
-test('編集画面は 1 列: 工程カードがその場で開き、カードの間に遷移、右ペインとタブを持たない', () => {
+test('ホームは左のフォルダから右のワークフロー一覧へ読める', () => {
   const renderer = read('renderer/renderer.js');
-  const html = read('renderer/index.html');
-  assert.ok(renderer.includes('step-head') && renderer.includes('step-body') && renderer.includes('class="edge"'));
-  assert.ok(!html.includes('id="inspector"') && !html.includes('id="tabs"'));
-  assert.ok(/<dialog id="dlg-(record|files|ai|run|settings)"/.test(html), '補助機能はダイアログ');
+  const css = read('renderer/styles.css');
+  assert.match(renderer, /<div class="home">\s*<aside class="folder-pane">[\s\S]*<section class="machine-pane">/);
+  assert.ok(renderer.includes('新しいワークフロー'));
+  assert.match(css, /\.home\s*\{[^}]*grid-template-columns:\s*240px minmax\(0, 1fr\)/);
+  assert.match(css, /\.folder-pane\s*\{[^}]*border-right:/);
+});
+
+test('編集画面は左のフローと右の編集パネルを分離し、狭い画面では一方だけを表示する', () => {
+  const renderer = read('renderer/renderer.js');
+  const css = read('renderer/styles.css');
+  assert.match(renderer, /<div class="editor-shell[^"]*">[\s\S]*<section class="flow-pane">[\s\S]*<aside class="inspector"/);
+  assert.ok(renderer.includes('function inspectorHtml('));
+  assert.ok(!renderer.includes("${open ? stepBodyHtml(spec, index) : ''}"), '工程カードの中にフォームを展開しない');
+  assert.match(css, /\.editor-shell\s*\{[^}]*grid-template-columns:\s*minmax\(360px, 1fr\) 400px/);
+  assert.match(css, /@media \(max-width: 899px\)[\s\S]*\.editor-shell\.is-inspecting \.flow-pane\s*\{\s*display:\s*none/);
+});
+
+test('主要操作と工程設定は省略語や直訳調の文言を使わない', () => {
+  const renderer = read('renderer/renderer.js');
+  for (const label of ['操作を記録', 'テスト・実行', '生成ファイル', 'AIで補完', '実行環境', '実行方法', '工程名', '次の工程', '回答が指定の言葉で始まる', '条件に当てはまる', '詳細条件', '構成を確認']) {
+    assert.ok(renderer.includes(label), `表示文言がありません: ${label}`);
+  }
+  for (const oldLabel of ['>記録</button>', '>中身</button>', '>AI</button>', '>動かす</button>', '<label>種類</label>', '<label>名前（任意）</label>', '次にどこへ行くか（任意）']) {
+    assert.ok(!renderer.includes(oldLabel), `古い表示文言が残っています: ${oldLabel}`);
+  }
+  assert.ok(renderer.includes('class="more-menu"'), '補助操作は「その他」にまとめる');
+  assert.ok(renderer.includes('class="branch-if">もし') && renderer.includes('class="branch-then">なら'), '条件を文章として読める');
+});
+
+test('ダイアログは用途別の幅を持ち、狭い画面で横スクロールを作らない', () => {
+  const renderer = read('renderer/renderer.js');
+  const css = read('renderer/styles.css');
+  for (const [id, size] of [['dlg-record', 'record'], ['dlg-files', 'files'], ['dlg-ai', 'work'], ['dlg-run', 'work'], ['dlg-settings', 'settings']]) {
+    assert.match(renderer, new RegExp(`dialog\\('${id}'[^\\n]+, '${size}',`), `${id} の幅指定`);
+    assert.ok(css.includes(`.dlg-${size}`), `${size} の幅規則`);
+  }
+  assert.match(css, /\.dlg-body\s*\{[^}]*overflow-x:\s*hidden/);
+  assert.match(css, /@media \(max-width: 719px\)[\s\S]*\.grid2\s*\{\s*grid-template-columns:\s*1fr/);
+  assert.match(css, /overflow-wrap:\s*anywhere/);
 });
 
 test('作成モードへの指示文は工程・遷移・道具を載せ、YAML の骨組みは書かない', () => {
@@ -78,6 +111,7 @@ test('作成モードへの指示文は工程・遷移・道具を載せ、YAML 
 test('設定は登録したフォルダを持ち、旧版の「最近開いたフォルダ」から引き継ぐ', () => {
   const dir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'smk-cfg-'));
   assert.deepStrictEqual(config.load(dir).roots, []);
+  assert.strictEqual(config.load(dir).agent, 'aider', '初期値は agent-tools harness の標準定義');
   // 旧版の設定は登録フォルダとして読み替える（作り直させない）
   fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ recentRoots: ['/a', '/b'] }), 'utf8');
   const migrated = config.load(dir);
@@ -92,6 +126,18 @@ test('設定は登録したフォルダを持ち、旧版の「最近開いた�
   assert.deepStrictEqual(dropped.roots, ['/b', '/c']);
   assert.ok(dropped.roots.includes(dropped.lastRoot), '外したフォルダは開いたままにしない');
   assert.ok(config.isRegistered(dir, '/b') && !config.isRegistered(dir, '/a'));
+});
+
+test('使うAIの候補と実行は agent-tools の公開インターフェースに従う', () => {
+  const preload = read('preload.js');
+  const renderer = read('renderer/renderer.js');
+  const ipc = read('main/ipc.js');
+
+  assert.ok(preload.includes("invoke('agents:list'"), 'agent-tools の定義一覧を公開する');
+  assert.ok(renderer.includes('api.listAgents('), '画面は定義一覧を取得する');
+  assert.ok(!renderer.includes("['claude', 'copilot', 'kiro', 'anthropic']"), 'AI名を画面へ直書きしない');
+  assert.ok(ipc.includes("handle('agents:list'"), 'main が定義一覧を返す');
+  assert.ok(ipc.includes('tools.agentHerdRunSpec('), '実行は agent-herd harness を使う');
 });
 
 test('登録していないフォルダは触らない（main が断る）', () => {

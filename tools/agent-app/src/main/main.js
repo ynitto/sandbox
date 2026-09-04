@@ -5,19 +5,17 @@ const path = require('path');
 const { registerIpcHandlers } = require('./ipc');
 
 const SRC_ROOT = path.join(__dirname, '..');
-const APP_ROOT = path.join(SRC_ROOT, '..');
 
 let mainWindow = null;
 
 function createWindow() {
   const win = new BrowserWindow({
-    width: 1440,
-    height: 920,
-    minWidth: 720,
-    minHeight: 640,
-    title: 'Statemachine Maker',
+    width: 1480,
+    height: 940,
+    minWidth: 900,
+    minHeight: 600,
+    title: 'Agent App',
     backgroundColor: '#f6f7f9',
-    icon: path.join(APP_ROOT, 'assets', 'icon.ico'),
     webPreferences: {
       preload: path.join(SRC_ROOT, 'preload.js'),
       contextIsolation: true,

@@ -23,9 +23,8 @@ const APP = path.join(__dirname, '..');
 
 function electronBinary() {
   try {
-    const p = require.resolve('electron');
-    const dist = path.join(path.dirname(p), 'dist', process.platform === 'win32' ? 'electron.exe' : 'electron');
-    return fs.existsSync(dist) ? dist : '';
+    const binary = require('electron');
+    return typeof binary === 'string' && fs.existsSync(binary) ? binary : '';
   } catch { return ''; }
 }
 
@@ -33,6 +32,9 @@ function playwright() {
   for (const id of ['playwright', 'playwright-core']) {
     try { return require(id); } catch { /* 次を試す */ }
   }
+  const nodePrefix = path.dirname(path.dirname(process.execPath));
+  const bundled = path.join(nodePrefix, 'lib', 'node_modules', '@playwright', 'cli', 'node_modules', 'playwright-core');
+  try { return require(bundled); } catch { /* 次を試す */ }
   const global = path.join('/opt/node22/lib/node_modules', 'playwright');
   try { return require(global); } catch { return null; }
 }
@@ -74,15 +76,33 @@ test('実機: 起動して一覧が描画され、開くと工程が並ぶ', asy
     const win = await app.firstWindow();
     win.on('pageerror', (e) => errors.push(`${e.name}: ${e.message}`));
     win.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
+    const resize = async (width) => {
+      await app.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0].setSize(size.width, size.height), { width, height: 800 });
+      await win.waitForTimeout(100);
+    };
+    const assertNoHorizontalOverflow = async (label) => {
+      const metrics = await win.evaluate(() => ({
+        viewport: document.documentElement.clientWidth,
+        page: document.documentElement.scrollWidth,
+        mainClient: document.getElementById('main').clientWidth,
+        mainScroll: document.getElementById('main').scrollWidth,
+      }));
+      assert.ok(metrics.page <= metrics.viewport && metrics.mainScroll <= metrics.mainClient,
+        `${label} で横スクロールが発生: ${JSON.stringify(metrics)}`);
+    };
 
     // 画面に中身が出ていること。ここが空なら「真っ白」の再発。
     await win.waitForSelector('.machine-card', { timeout: 20000 });
     assert.ok((await win.evaluate(() => document.getElementById('main').innerHTML)).length > 0,
       '#main が空（renderer が動いていない＝真っ白）');
     assert.strictEqual(await win.evaluate(() => typeof window.api), 'object', 'preload の窓口が無い');
-    // 右は登録したフォルダだけ、左はそのフォルダのステートマシン
+    // 左は登録したフォルダ、右はそのフォルダのワークフロー
     assert.strictEqual(await win.evaluate(() => document.querySelectorAll('.folder-list li').length), 1,
       '登録したフォルダだけが並ぶ');
+    for (const width of [760, 980, 1440]) {
+      await resize(width);
+      await assertNoHorizontalOverflow(`ホーム ${width}px`);
+    }
 
     await win.click('.machine-card[data-open="smoke"]');
     await win.waitForSelector('[data-step="1"]', { timeout: 20000 });
@@ -90,9 +110,47 @@ test('実機: 起動して一覧が描画され、開くと工程が並ぶ', asy
     assert.match(await win.textContent('[data-step="0"] .sentence'), /考える/);
     assert.match(await win.textContent('.edge[data-edge="0"]'), /できた/);
 
-    // カードを押すと開いて編集欄になる
+    // カードを押すと右側の編集パネルに設定が出る
     await win.click('[data-step="0"] .step-head');
-    await win.waitForSelector('[data-step="0"] .step-body [data-field="detail"]', { timeout: 10000 });
+    await win.waitForSelector('.inspector .step-body [data-field="detail"]', { timeout: 10000 });
+
+    for (const width of [760, 980, 1440]) {
+      await resize(width);
+      await assertNoHorizontalOverflow(`${width}px`);
+    }
+
+    await resize(760);
+    assert.strictEqual(await win.isVisible('.flow-pane'), false, '狭い画面では選択中の編集だけを表示する');
+    assert.strictEqual(await win.isVisible('.inspector'), true);
+    if (process.env.SMK_SCREENSHOT_NARROW) await win.screenshot({ path: process.env.SMK_SCREENSHOT_NARROW });
+    await win.click('[data-inspector-back]');
+    assert.strictEqual(await win.isVisible('.flow-pane'), true, '「流れに戻る」で工程一覧へ戻る');
+
+    await resize(1440);
+    await win.click('[data-step="0"] .step-head');
+    const columns = await win.evaluate(() => {
+      const flow = document.querySelector('.flow-pane').getBoundingClientRect();
+      const inspector = document.querySelector('.inspector').getBoundingClientRect();
+      return { flow: Math.round(flow.width), inspector: Math.round(inspector.width) };
+    });
+    assert.ok(columns.flow > columns.inspector && Math.abs(columns.inspector - 400) <= 2, JSON.stringify(columns));
+    if (process.env.SMK_SCREENSHOT) await win.screenshot({ path: process.env.SMK_SCREENSHOT });
+
+    // もっとも狭い対応幅で全ダイアログの横あふれを確認する。
+    await resize(760);
+    for (const id of ['b-record', 'b-files', 'b-ai', 'b-run', 'b-settings']) {
+      await win.evaluate((buttonId) => document.getElementById(buttonId).click(), id);
+      const dialogId = { 'b-record': 'dlg-record', 'b-files': 'dlg-files', 'b-ai': 'dlg-ai', 'b-run': 'dlg-run', 'b-settings': 'dlg-settings' }[id];
+      await win.waitForFunction((target) => document.getElementById(target).open, dialogId);
+      const box = await win.evaluate((target) => {
+        const dlg = document.getElementById(target);
+        const body = dlg.querySelector('.dlg-body');
+        const rect = dlg.getBoundingClientRect();
+        return { left: rect.left, right: rect.right, viewport: innerWidth, client: body.clientWidth, scroll: body.scrollWidth };
+      }, dialogId);
+      assert.ok(box.left >= 0 && box.right <= box.viewport && box.scroll <= box.client, `${dialogId}: ${JSON.stringify(box)}`);
+      await win.evaluate((target) => document.getElementById(target).close(), dialogId);
+    }
 
     // 実際に描かれた文字にも内部の用語を出さない
     const shown = await win.evaluate(() => document.body.innerText);

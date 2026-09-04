@@ -533,7 +533,7 @@ function buildWorkflow(spec) {
 function workflowYaml(spec, workflow) {
   const doc = new YAML.Document(workflow);
   doc.commentBefore = ` ${spec.name} — statemachine-maker が生成した定義。\n`
-    + ' 実行: python .github/skills/statemachine-use/scripts/run_machine.py <このファイル> --agent claude\n'
+    + ' 実行: agent-herd harness statemachine --workflow <このファイル> --agent-cli <agents/ の定義名>\n'
     + ' 検証: 同スクリプトに --dry-run。書式の正典は statemachine-use スキル（references/schema.md）。';
   return doc.toString({ lineWidth: 0 });
 }

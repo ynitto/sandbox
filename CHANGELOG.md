@@ -7,6 +7,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-app: GitHub Copilot App 風のデスクトップを足した（`tools/agent-app`）
+ローカルリポジトリを登録して、`agents/*.json` のエージェント CLI（copilot / claude / codex / kiro …）と
+会話形式で作業する Electron アプリ。GitHub 連携は持たない。1 ターン = ヘッドレス起動 1 回で、
+再開は claude / copilot が `--session-id`、codex が `--json` の thread_id、kiro が `--list-sessions` の最新、
+それ以外は履歴の再送。右に作業ツリーの変更ビュー、Agent / Ask の切り替え、会話の並行実行と停止。
+
 ### agent-dashboard: 人がやって見せた画面操作を、定型業務の工程に起こせるようになった
 
 - **手順ビルダーで画面操作の工程を書くには、自動化の道具の使い方を先に覚える必要があった。**

@@ -1,0 +1,15 @@
+{
+  "name": "agent-app",
+  "version": "0.1.0",
+  "description": "GitHub Copilot App 風のデスクトップ。agents/*.json の CLI 定義（copilot / claude / codex / kiro …）をローカルリポジトリに対して会話形式で動かす Electron アプリ",
+  "author": "sandbox",
+  "license": "MIT",
+  "main": "src/main/main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test test/*.test.js"
+  },
+  "devDependencies": {
+    "electron": "43.6.0"
+  }
+}

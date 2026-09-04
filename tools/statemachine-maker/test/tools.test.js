@@ -1,0 +1,79 @@
+'use strict';
+
+// 「準備の確認」は CLI が起動するだけでなく、操作記録のコマンドを持つことまで確かめる。
+
+const { test } = require('node:test');
+const assert = require('node:assert');
+const tools = require('../src/main/tools');
+
+function baseCapture(help) {
+  return async (command, args) => {
+    if (command === 'python3') return { ok: true, status: 0, stdout: 'Python 3.13.0', stderr: '' };
+    if (command === 'playwright-cli' && args.includes('--version')) return { ok: true, status: 0, stdout: '0.1.18', stderr: '' };
+    if (command === 'playwright-cli' && args.includes('--help')) return { ok: true, status: 0, stdout: help, stderr: '' };
+    return { ok: false, status: 1, stdout: '', stderr: '' };
+  };
+}
+
+test('準備の確認は記録コマンドの無い playwright-cli を利用不可にする', async () => {
+  const statuses = await tools.toolStatus({ capture: baseCapture('open [url]\ntracing-start\n') });
+  const pw = statuses.find((item) => item.id === 'playwright-cli');
+  assert.strictEqual(pw.ok, false);
+  assert.match(pw.summary, /0\.1\.18.*操作の記録に未対応/);
+  assert.match(pw.hint, /@latest/);
+});
+
+test('準備の確認は recording-start と recording-stop の両方があれば利用可能にする', async () => {
+  const statuses = await tools.toolStatus({ capture: baseCapture('recording-start\nrecording-stop\n') });
+  const pw = statuses.find((item) => item.id === 'playwright-cli');
+  assert.strictEqual(pw.ok, true);
+  assert.match(pw.summary, /利用可能.*0\.1\.18/);
+  assert.strictEqual(pw.hint, '');
+});
+
+test('使うAIは agent-tools の定義一覧から取得する', async () => {
+  const calls = [];
+  const definitions = await tools.agentDefinitions({
+    cwd: '/project',
+    capture: async (command, args, options) => {
+      calls.push({ command, args, options });
+      return {
+        ok: true,
+        status: 0,
+        stdout: JSON.stringify({ definitions: ['claude', 'codex', 'custom', 'claude'] }),
+        stderr: '',
+      };
+    },
+  });
+
+  assert.deepStrictEqual(definitions, ['claude', 'codex', 'custom']);
+  assert.deepStrictEqual(calls, [{
+    command: 'agent-herd',
+    args: ['defs', '--json'],
+    options: { cwd: '/project', timeoutMs: 20000 },
+  }]);
+});
+
+test('実行は agent-tools の statemachine harness 契約を使う', () => {
+  const spec = tools.agentHerdRunSpec({
+    workflow: '/project/.statemachine/review/workflow.yaml',
+    root: '/project',
+    agent: 'codex',
+    model: 'gpt-5',
+    input: 'レビューを開始',
+    context: { ticket: 'ABC-123' },
+  });
+
+  assert.deepStrictEqual(spec, {
+    command: 'agent-herd',
+    args: [
+      'harness', 'statemachine',
+      '--workflow', '/project/.statemachine/review/workflow.yaml',
+      '--agent-cli', 'codex',
+      '--dir', '/project',
+      '--model', 'gpt-5',
+      '--input', 'レビューを開始',
+      '--param', 'ticket=ABC-123',
+    ],
+  });
+});

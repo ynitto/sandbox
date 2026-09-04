@@ -1,11 +1,10 @@
 'use strict';
 
 // 画面は 2 つ。
-//   一覧 … 左に登録したフォルダ、右にそのフォルダのステートマシン（マトリクス）。
+//   一覧 … 左に登録したフォルダ、右にそのフォルダのワークフロー（マトリクス）。
 //          見に行くのは登録したフォルダの `.statemachine/` だけ。
-//   編集 … 工程カードを縦 1 列に並べ、選んだカードだけがその場で開いて設定欄になる。
-//          カードの間に「次にどこへ行くか」を出す。
-// 記録・中身・AI・動かす・設定はダイアログ。組み立てと検査は main に頼む。
+//   編集 … 左に工程の流れ、右に選んだ工程の設定を置く。
+// 記録・生成ファイル・AI 補完・実行環境はダイアログ。組み立てと検査は main に頼む。
 //
 // **画面に出す言葉に内部の用語を持ち込まない**（YAML の項目名・コマンドの綴り・ステートの
 // 呼び名など）。人が読む言葉に直してから出す。綴りそのものが要る欄（確認コマンドなど）だけ
@@ -20,11 +19,11 @@ const state = {
   config: { roots: [], lastRoot: '' },
   root: '',
   machines: [],
+  agents: [],
   catalog: { kinds: [], platform: '' },
-  theme: null,
   view: 'home',
   current: null,     // { machine, isNew, spec, dirty, warnings, dir }
-  open: -1,          // 開いている工程
+  open: null,        // 選択中の工程番号、'workflow'、または未選択
   pickerAt: -1,      // 追加の種類を選んでいる位置
   preview: null, ai: null, tools: null,
   recording: { source: 'browser', url: '', app: '', text: '', active: false, busy: false, message: '', ok: true },
@@ -57,6 +56,23 @@ function folderName(p) {
   return String(p || '').replace(/[\\/]+$/, '').split(/[\\/]/).pop() || p;
 }
 
+function selectedAgent(preferred = '') {
+  if (state.agents.includes(preferred)) return preferred;
+  if (state.agents.includes('aider')) return 'aider';
+  return state.agents[0] || '';
+}
+
+function agentOptions(preferred = '') {
+  const selected = selectedAgent(preferred);
+  if (!state.agents.length) return '<option value="">利用できる AI がありません</option>';
+  return state.agents.map((name) => `<option value="${esc(name)}" ${name === selected ? 'selected' : ''}>${esc(name)}</option>`).join('');
+}
+
+async function loadAgents() {
+  state.agents = (await guard('AI 一覧', () => api.listAgents(state.root))) || [];
+  state.run.agent = selectedAgent(state.run.agent || state.config.agent);
+}
+
 // 一覧の 2 行目は「どこに置いてあるか」だけ分かればよいので、親フォルダまで。
 function folderWhere(p) {
   const clean = String(p || '').replace(/[\\/]+$/, '');
@@ -67,16 +83,6 @@ function folderWhere(p) {
 function saveNameFrom(name) {
   const ascii = String(name || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
   return ascii || `sm-${Date.now().toString(36)}`;
-}
-
-// --- 見た目（設定とユーザー CSS） --------------------------------------------------------
-
-function applyTheme(res) {
-  if (!res) return;
-  state.theme = res;
-  const root = document.documentElement;
-  for (const [k, v] of Object.entries(res.variables || {})) root.style.setProperty(k, v);
-  $('custom-css').textContent = res.customCss || '';
 }
 
 // --- 手順の形 -------------------------------------------------------------------------
@@ -138,10 +144,10 @@ function endName(spec, id) {
 
 // 行き先の決め方の 4 つ。画面ではこの言葉で見せる。
 const WHENS = [
-  { id: 'label', label: '結果の名前で', hint: '出力の 1 行目がこの語で始まったら', placeholder: '例: 承認' },
-  { id: 'text', label: '文章の条件で', hint: 'この文にあてはまるか AI が見ます', placeholder: '例: 出力に「保留」が含まれる' },
-  { id: 'always', label: 'いつでも', hint: '条件なしで進みます', placeholder: '' },
-  { id: 'rule', label: '条件式で', hint: '読み込んだ条件式をそのまま保ちます', placeholder: '条件式' },
+  { id: 'label', label: '回答が指定の言葉で始まる', hint: '回答の先頭を確認します', placeholder: '例: APPROVED' },
+  { id: 'text', label: '条件に当てはまる', hint: '入力した条件を AI が確認します', placeholder: '例: 回答に「保留」が含まれる' },
+  { id: 'always', label: '常に', hint: '条件なしで進みます', placeholder: '' },
+  { id: 'rule', label: '詳細条件', hint: '読み込んだ詳細条件を保持します', placeholder: '詳細条件' },
 ];
 
 function whenOf(o) {
@@ -159,9 +165,9 @@ function outcomeValue(o) {
 
 function whenChip(o) {
   if (o.when === 'text') { const t = String(o.text || ''); return { label: `もし「${t.length > 18 ? `${t.slice(0, 18)}…` : t}」` }; }
-  if (o.when === 'always') return { label: 'そのまま' };
-  if (o.when === 'rule') return { label: '条件式' };
-  return { label: o.label || '（結果の名前）' };
+  if (o.when === 'always') return { label: '常に' };
+  if (o.when === 'rule') return { label: '詳細条件' };
+  return { label: o.label || '（指定の言葉）' };
 }
 
 // 畳んだカードの 1 文。動詞で始め、細かいことは開いてから。
@@ -184,7 +190,7 @@ async function selectRoot(root) {
   if (!root || root === state.root) return;
   state.root = root;
   await guard('フォルダ', () => api.selectRoot(root));
-  await loadMachines();
+  await Promise.all([loadMachines(), loadAgents()]);
   render();
 }
 
@@ -193,7 +199,7 @@ async function addFolder() {
   if (!cfg) return;
   state.config = cfg;
   state.root = cfg.lastRoot;
-  await loadMachines();
+  await Promise.all([loadMachines(), loadAgents()]);
   render();
 }
 
@@ -203,7 +209,7 @@ async function removeFolder(root) {
   if (!cfg) return;
   state.config = cfg;
   if (state.root === root) state.root = cfg.lastRoot;
-  await loadMachines();
+  await Promise.all([loadMachines(), loadAgents()]);
   render();
 }
 
@@ -221,7 +227,7 @@ async function openMachine(machine) {
   raw.steps = raw.steps.map((s) => ({ ...emptyStep(s.kind), ...s, outcomes: s.outcomes || [], recorded: s.recorded || [] }));
   state.current = { machine, isNew: false, spec: raw, dirty: false, warnings: res.warnings || [], dir: res.dir };
   state.view = 'editor';
-  state.open = -1;
+  state.open = null;
   state.preview = null;
   state.ai = null;
   state.run.lines = [];
@@ -232,7 +238,7 @@ function newMachine() {
   if (!state.root) { toast('先にフォルダを登録してください', true); return; }
   state.current = { machine: '', isNew: true, spec: newSpec(), dirty: true, warnings: [], dir: '' };
   state.view = 'editor';
-  state.open = -1;
+  state.open = null;
   state.preview = null;
   state.ai = null;
   render();
@@ -255,6 +261,7 @@ function render() {
   renderBar();
   const main = $('main');
   const editing = state.view === 'editor' && state.current;
+  document.body.classList.toggle('is-editing', !!editing);
   main.innerHTML = editing ? editorHtml() : homeHtml();
   if (editing) bindEditor(main); else bindHome(main);
 }
@@ -266,18 +273,20 @@ function renderBar() {
   const right = $('bar-right');
   if (!editing) {
     center.innerHTML = '';
-    right.innerHTML = '<button type="button" id="b-settings" class="ghost" title="設定">⚙</button>';
+    right.innerHTML = '<button type="button" id="b-settings" class="ghost">実行環境</button>';
     $('b-settings').addEventListener('click', openSettings);
     return;
   }
   const spec = state.current.spec;
   center.innerHTML = `<input class="title-input" id="m-name" value="${esc(spec.name)}" placeholder="名前を付ける（例: 月次の勤怠集計）" aria-label="名前">`;
   right.innerHTML = `<span id="dirty-mark" class="dirty" ${state.current.dirty ? '' : 'hidden'}>● 未保存</span>
-    <button type="button" id="b-record" class="ghost">記録</button>
-    <button type="button" id="b-files" class="ghost">中身</button>
-    <button type="button" id="b-ai" class="ghost">AI</button>
-    <button type="button" id="b-run" class="ghost" ${state.current.isNew ? 'disabled title="保存すると動かせます"' : ''}>動かす</button>
-    <button type="button" id="b-settings" class="ghost" title="設定">⚙</button>
+    <button type="button" id="b-record" class="ghost">操作を記録</button>
+    <button type="button" id="b-run" class="ghost" ${state.current.isNew ? 'disabled title="保存すると実行できます"' : ''}>テスト・実行</button>
+    <details class="more-menu"><summary>その他</summary><div class="menu-panel">
+      <button type="button" id="b-files" class="ghost">生成ファイル</button>
+      <button type="button" id="b-ai" class="ghost">AIで補完</button>
+      <button type="button" id="b-settings" class="ghost">実行環境</button>
+    </div></details>
     <button type="button" id="b-save" class="primary">保存</button>`;
   let touched = !state.current.isNew || !!spec.machine;
   $('m-name').addEventListener('input', (e) => {
@@ -295,14 +304,14 @@ function renderBar() {
   $('b-save').addEventListener('click', saveMachine);
 }
 
-// --- 一覧（左: フォルダ／右: ステートマシン） -----------------------------------------------
+// --- 一覧（左: フォルダ／右: ワークフロー） -----------------------------------------------
 
 function homeHtml() {
   const roots = state.config.roots || [];
   if (!roots.length) {
     return `<div class="blank">
       <h2>フォルダを登録します</h2>
-      <p>登録したフォルダの中に置いたステートマシンだけを扱います。</p>
+      <p>登録したフォルダのワークフローを表示します。</p>
       <div class="row"><button type="button" class="primary" id="h-add">フォルダを登録</button></div>
     </div>`;
   }
@@ -322,16 +331,16 @@ function homeHtml() {
         <div><h1>${esc(folderName(state.root))}</h1><div class="where">${esc(state.root)}</div></div>
         <button type="button" class="primary" id="h-new">＋ 新規</button>
       </div>
-      <div class="matrix">${cards}<button type="button" class="machine-card new" id="h-new-card">＋ 新しいステートマシン</button></div>`
-    : '<div class="blank"><h2>右のフォルダを選びます</h2></div>';
-  // ステートマシンを左、登録したフォルダを右に置く。読む順（内容 → 切り替え）に合わせて
+      <div class="matrix">${cards}<button type="button" class="machine-card new" id="h-new-card">＋ 新しいワークフロー</button></div>`
+    : '<div class="blank"><h2>左のフォルダを選んでください</h2></div>';
+  // 登録したフォルダを左、ワークフローを右に置く。読む順（切り替え → 内容）に合わせて
   // DOM もこの順にする（タブ移動と読み上げが見た目とずれない）。
   return `<div class="home">
-    <section class="machine-pane">${body}</section>
     <aside class="folder-pane">
       <div class="pane-head"><h2>フォルダ</h2><button type="button" class="tiny" id="h-add" title="フォルダを登録">＋</button></div>
       <ul class="folder-list">${list}</ul>
     </aside>
+    <section class="machine-pane">${body}</section>
   </div>`;
 }
 
@@ -350,15 +359,10 @@ function bindHome(main) {
 function editorHtml() {
   const spec = state.current.spec;
   const parts = [];
-  parts.push(`<div class="overview">
-    <textarea class="purpose" id="m-purpose" rows="1" placeholder="何をする手順かを 1〜2 文で">${esc(spec.purpose)}</textarea>
-    <details><summary>詳しい設定</summary><div class="grid2" style="margin-top:8px">
-      <div class="field"><label for="m-save-name">保存名</label><input id="m-save-name" class="mono" value="${esc(spec.machine)}" placeholder="英数字とハイフン" ${state.current.isNew ? '' : 'readonly title="作ったあとは変えられません"'}><small>フォルダの中でこの名前で保存されます。</small></div>
-      <div class="field"><label for="m-max">進める回数の上限</label><input id="m-max" type="number" min="1" max="500" value="${esc(spec.maxSteps)}"><small>やり直しが続いたときに、ここで止まります。</small></div>
-      <div class="field"><label for="m-finish">終わりの目安</label><textarea id="m-finish" rows="2" placeholder="どうなったら終わりか">${esc(spec.finish)}</textarea></div>
-      <div class="field"><label for="m-notes">気をつけること</label><textarea id="m-notes" rows="2" placeholder="例: 承認は押さない（人が行う）">${esc(spec.notes)}</textarea></div>
-    </div></details>
-  </div>`);
+  parts.push(`<button type="button" class="workflow-card ${state.open === 'workflow' ? 'is-selected' : ''}" data-workflow-settings>
+    <span class="workflow-card-title">ワークフロー設定</span>
+    <span class="workflow-card-purpose">${esc(spec.purpose || '目的と終了条件を設定')}</span>
+  </button>`);
   if (!spec.steps.length) {
     parts.push(`<div class="empty-steps"><p>最初の工程を選びます。</p>${pickerHtml(0)}</div>`);
   } else {
@@ -370,7 +374,31 @@ function editorHtml() {
   }
   parts.push('<div class="terminal abort"><span class="icon">✕</span><span class="name">中止</span></div>');
   parts.push(`<div class="notes" id="notes">${notesHtml()}</div>`);
-  return `<div class="editor">${parts.join('')}</div>`;
+  const mode = state.open == null ? 'no-selection' : 'is-inspecting';
+  return `<div class="editor-shell ${mode}">
+    <section class="flow-pane"><div class="flow-content">${parts.join('')}</div></section>
+    <aside class="inspector" aria-label="編集パネル">${inspectorHtml(spec)}</aside>
+  </div>`;
+}
+
+function inspectorHtml(spec) {
+  const back = '<button type="button" class="ghost inspector-back" data-inspector-back>‹ 流れに戻る</button>';
+  if (state.open === 'workflow') {
+    return `${back}<div class="inspector-head"><div><span class="eyebrow">ワークフロー</span><h2>基本設定</h2></div></div>
+      <div class="inspector-body workflow-body">
+        <div class="field"><label for="m-purpose">目的</label><textarea id="m-purpose" rows="3" placeholder="このワークフローで行うこと">${esc(spec.purpose)}</textarea></div>
+        <div class="field"><label for="m-save-name">保存名</label><input id="m-save-name" class="mono" value="${esc(spec.machine)}" placeholder="英数字とハイフン" ${state.current.isNew ? '' : 'readonly title="作成後は変更できません"'}></div>
+        <div class="field"><label for="m-finish">終了条件</label><textarea id="m-finish" rows="3" placeholder="どの状態になったら完了か">${esc(spec.finish)}</textarea></div>
+        <div class="field"><label for="m-notes">注意事項</label><textarea id="m-notes" rows="3" placeholder="例: 承認操作は行わない">${esc(spec.notes)}</textarea></div>
+        <details class="more"><summary>詳細設定</summary><div class="field details-body"><label for="m-max">最大工程数</label><input id="m-max" type="number" min="1" max="500" value="${esc(spec.maxSteps)}"></div></details>
+      </div>`;
+  }
+  if (Number.isInteger(state.open) && spec.steps[state.open]) {
+    const step = spec.steps[state.open];
+    return `${back}<div class="inspector-head"><div><span class="eyebrow">工程 ${state.open + 1}</span><h2>${esc(step.title || kindOf(step.kind).label)}</h2></div></div>
+      <div class="inspector-body">${stepBodyHtml(spec, state.open)}</div>`;
+  }
+  return '<div class="inspector-empty"><strong>工程を選択</strong><span>左のカードを選ぶと、ここで内容を編集できます。</span></div>';
 }
 
 function notesHtml() {
@@ -390,13 +418,13 @@ function stepHtml(spec, index) {
   const step = spec.steps[index];
   const kind = kindOf(step.kind);
   const s = summary(step);
-  const open = state.open === index;
+  const selected = state.open === index;
   const sub = [kind.label];
   if (step.target && step.kind !== 'command') sub.push(`<span class="mono">${esc(step.target)}</span>`);
   if (step.check) sub.push('<span class="chk">✓ 確認あり</span>');
   if (step.recorded && step.recorded.length) sub.push(`<span class="rec">● 記録 ${step.recorded.length} 件</span>`);
-  return `<div class="step" data-step="${index}"><div class="step-card ${open ? 'is-open' : ''}">
-    <div class="step-head" role="button" tabindex="0" aria-expanded="${open}">
+  return `<div class="step" data-step="${index}"><div class="step-card ${selected ? 'is-selected' : ''}">
+    <div class="step-head" role="button" tabindex="0" aria-pressed="${selected}">
       <span class="step-icon k-${esc(step.kind)}">${index + 1}</span>
       <span class="step-summary">
         <div class="sentence">${s.empty ? `<span class="v">${esc(s.text)}（内容を入れます）</span>` : `${s.v ? `<span class="v">${esc(s.v)}</span> ` : ''}${esc(s.text)}`}</div>
@@ -404,7 +432,6 @@ function stepHtml(spec, index) {
       </span>
       <span class="step-right"><span class="chev">›</span></span>
     </div>
-    ${open ? stepBodyHtml(spec, index) : ''}
   </div></div>`;
 }
 
@@ -416,9 +443,9 @@ function stepBodyHtml(spec, index) {
   const recorded = step.recorded && step.recorded.length ? `<div class="field"><label>記録した操作（${step.recorded.length} 件）</label>
     <ol class="rec-list">${step.recorded.map((op) => `<li>${esc(op.op)} ${esc(op.label || op.target)}${op.value ? ` ${esc(op.value)}` : ''}${op.example ? ` <span class="muted">(例: ${esc(op.example)})</span>` : ''}</li>`).join('')}</ol>
     <div><button type="button" class="tiny" data-unrecord>記録を外す</button></div></div>` : '';
-  const check = kind.check ? `<div class="field"><label>できたか確かめるコマンド（任意）</label>
+  const check = kind.check ? `<div class="field"><label>完了確認（任意）</label>
     <input data-field="check" class="mono" value="${esc(step.check)}" placeholder="${esc(kind.check.placeholder || '')}">
-    <small>うまくいったときだけ次へ進みます。書かなければ AI の申告で進みます。</small></div>` : '';
+    <small>成功した場合だけ次へ進みます。</small></div>` : '';
   const dest = (to) => {
     const opts = [['next', index + 1 < spec.steps.length ? `次へ（${index + 2}）` : '次へ（完了）'], ['done', '完了'], ['abort', '中止']];
     for (const e of spec.ends || []) opts.push([`end:${e.id}`, e.description]);
@@ -431,32 +458,33 @@ function stepBodyHtml(spec, index) {
       ? '<input disabled placeholder="（条件なし）">'
       : `<input data-bfield="value" value="${esc(outcomeValue(o))}" placeholder="${esc(w.placeholder)}" ${o.when === 'rule' ? 'class="mono"' : ''}>`;
     return `<div class="branch-row" data-branch="${i}">
-      <select data-bfield="when" title="${esc(w.hint)}">${WHENS.map((x) => `<option value="${x.id}" ${x.id === w.id ? 'selected' : ''}>${esc(x.label)}</option>`).join('')}</select>
-      ${value}
-      <select data-bfield="to">${dest(o.to)}</select>
+      <span class="branch-if">もし</span>
+      <select class="branch-when" data-bfield="when" title="${esc(w.hint)}">${WHENS.map((x) => `<option value="${x.id}" ${x.id === w.id ? 'selected' : ''}>${esc(x.label)}</option>`).join('')}</select>
+      <span class="branch-value">${value}</span>
+      <span class="branch-then">なら</span>
+      <select class="branch-to" data-bfield="to">${dest(o.to)}</select>
       <button type="button" data-bremove title="削除">✕</button>
     </div>`;
   };
   const branches = step.rawTransitions
-    ? `<div class="section-title">次にどこへ行くか</div>
-      <small class="muted">別のファイルに書かれた条件など、この画面に置き場の無い形が入っています。そのまま残します。</small>
-      <div><button type="button" class="tiny" data-unraw>この画面で直せる形にする</button></div>`
-    : `<div class="section-title">次にどこへ行くか（任意）</div>
-      <small class="muted">何も足さなければ「できた → 次へ」「できなかった → 中止」です。上から順に見て、最初にあてはまったところへ進みます。</small>
+    ? `<div class="section-title">次の工程</div>
+      <small class="muted">この画面で編集できない条件を保持しています。</small>
+      <div><button type="button" class="tiny" data-unraw>標準の条件に置き換える</button></div>`
+    : `<div class="section-title">次の工程</div>
       ${step.outcomes.map(branchRow).join('')}
-      <div><button type="button" class="tiny" data-badd>＋ 行き先を足す</button></div>`;
+      <div><button type="button" class="tiny" data-badd>＋ 条件を追加</button></div>`;
   return `<div class="step-body">
-    <div class="field"><label>種類</label><div class="seg">${seg}</div></div>
-    <div class="field"><label>名前（任意）</label><input data-field="title" value="${esc(step.title)}" placeholder="例: 申請一覧を開く"></div>
+    <div class="field"><label>実行方法</label><div class="seg">${seg}</div></div>
+    <div class="field"><label>工程名</label><input data-field="title" value="${esc(step.title)}" placeholder="例: 申請一覧を開く"></div>
     ${target}
     <div class="field"><label>${esc(kind.detail.label)}${kind.detail.required ? '' : '（任意）'}</label><textarea data-field="detail" rows="5" placeholder="${esc(kind.detail.placeholder || '')}">${esc(step.detail)}</textarea>
-      <small>毎回変わる値は <code>{{ }}</code> で囲みます（例: <code>{{month}}</code>）。動かすときに聞かれます。</small></div>
+      <small>毎回変わる値は <code>{{month}}</code> のように入力します。</small></div>
     ${recorded}
     ${check}
     ${branches}
-    <details class="more"><summary>詳しい設定</summary><div class="grid2" style="margin-top:8px">
-      <div class="field"><label>工程の記号</label><input data-field="id" class="mono" value="${esc(step.id)}" placeholder="step_${index + 1}"><small>他の工程から戻るときの目印です。</small></div>
-      ${kind.check ? `<div class="field"><label>やり直す回数</label><input data-field="checkRetries" type="number" min="0" max="5" value="${esc(step.checkRetries)}"><small>確認に通らなかったとき、この回数まで同じ工程をやり直します。</small></div>` : ''}
+    <details class="more"><summary>詳細設定</summary><div class="grid2" style="margin-top:8px">
+      <div class="field"><label>工程ID</label><input data-field="id" class="mono" value="${esc(step.id)}" placeholder="step_${index + 1}"></div>
+      ${kind.check ? `<div class="field"><label>再試行回数</label><input data-field="checkRetries" type="number" min="0" max="5" value="${esc(step.checkRetries)}"></div>` : ''}
     </div></details>
     <div class="step-actions">
       <div class="left"><button type="button" class="tiny" data-move="up" ${index === 0 ? 'disabled' : ''}>↑ 上へ</button><button type="button" class="tiny" data-move="down" ${index === spec.steps.length - 1 ? 'disabled' : ''}>↓ 下へ</button></div>
@@ -488,21 +516,28 @@ function bindEditor(main) {
   bindTop('m-notes', 'notes');
   const purpose = main.querySelector('#m-purpose');
   if (purpose) { const grow = () => { purpose.style.height = 'auto'; purpose.style.height = `${purpose.scrollHeight + 2}px`; }; purpose.addEventListener('input', grow); grow(); }
+  const workflowSettings = main.querySelector('[data-workflow-settings]');
+  if (workflowSettings) workflowSettings.addEventListener('click', () => { state.open = 'workflow'; state.pickerAt = -1; render(); });
+  const inspectorBack = main.querySelector('[data-inspector-back]');
+  if (inspectorBack) inspectorBack.addEventListener('click', () => { state.open = null; render(); });
   for (const b of main.querySelectorAll('[data-add]')) b.addEventListener('click', () => insertStep(Number(b.closest('[data-at]').dataset.at), b.dataset.add));
   for (const b of main.querySelectorAll('[data-insert]')) b.addEventListener('click', () => { const at = Number(b.dataset.insert); state.pickerAt = state.pickerAt === at ? -1 : at; render(); });
   for (const card of main.querySelectorAll('[data-step]')) bindStep(card);
+  const stepBody = main.querySelector('.inspector .step-body');
+  if (stepBody && Number.isInteger(state.open)) bindStepBody(stepBody, state.open);
 }
 
 function bindStep(card) {
-  const spec = state.current.spec;
   const index = Number(card.dataset.step);
-  const step = spec.steps[index];
   const head = card.querySelector('.step-head');
-  const toggle = () => { state.open = state.open === index ? -1 : index; state.pickerAt = -1; render(); scrollToStep(index); };
-  head.addEventListener('click', toggle);
-  head.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } });
-  const body = card.querySelector('.step-body');
-  if (!body) return;
+  const select = () => { state.open = index; state.pickerAt = -1; render(); scrollToStep(index); };
+  head.addEventListener('click', select);
+  head.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); select(); } });
+}
+
+function bindStepBody(body, index) {
+  const spec = state.current.spec;
+  const step = spec.steps[index];
   for (const el of body.querySelectorAll('[data-field]')) {
     el.addEventListener('input', () => {
       step[el.dataset.field] = el.dataset.field === 'checkRetries' ? Number(el.value) : el.value;
@@ -544,7 +579,7 @@ function bindStep(card) {
     step.outcomes.push({ when: 'label', label: '', to: 'next' });
     markDirty();
     render();
-    const inputs = document.querySelectorAll(`[data-step="${index}"] [data-branch] input`);
+    const inputs = document.querySelectorAll('.inspector [data-branch] input');
     if (inputs.length) inputs[inputs.length - 1].focus();
   });
   on('[data-unrecord]', () => { step.recorded = []; markDirty(); render(); });
@@ -572,7 +607,7 @@ function bindStep(card) {
     if (!confirm(`${index + 1} 番目の工程を削除しますか？`)) return;
     spec.steps.splice(index, 1);
     dropTargets(spec, index);
-    state.open = -1;
+    state.open = null;
     markDirty();
     render();
   });
@@ -591,9 +626,9 @@ function refreshHead(index) {
   tmp.innerHTML = stepHtml(state.current.spec, index);
   const fresh = tmp.querySelector('.step-head');
   card.querySelector('.step-head').replaceWith(fresh);
-  const toggle = () => { state.open = state.open === index ? -1 : index; render(); };
-  fresh.addEventListener('click', toggle);
-  fresh.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } });
+  const select = () => { state.open = index; state.pickerAt = -1; render(); };
+  fresh.addEventListener('click', select);
+  fresh.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); select(); } });
   refreshEdge(index);
 }
 
@@ -636,7 +671,7 @@ function insertStep(at, kindId) {
   state.pickerAt = -1;
   markDirty();
   render();
-  const first = document.querySelector(`[data-step="${at}"] [data-field="title"]`);
+  const first = document.querySelector('.inspector [data-field="title"]');
   if (first) first.focus();
 }
 
@@ -672,8 +707,9 @@ async function saveMachine() {
 
 // --- ダイアログ -------------------------------------------------------------------------
 
-function dialog(id, title, bodyHtml) {
+function dialog(id, title, size, bodyHtml) {
   const dlg = $(id);
+  dlg.className = `dlg-${size}`;
   dlg.innerHTML = `<div class="dlg-head"><h2>${esc(title)}</h2><button type="button" class="ghost" data-close>閉じる</button></div><div class="dlg-body">${bodyHtml}</div>`;
   dlg.querySelector('[data-close]').addEventListener('click', () => dlg.close());
   if (!dlg.open) dlg.showModal();
@@ -686,20 +722,20 @@ function openRecord() {
   const windows = rec.source === 'windows';
   const onWindows = state.catalog.platform === 'win32';
   const target = windows ? { field: 'app', value: rec.app, label: 'アプリ', placeholder: '例: 勤怠管理' } : { field: 'url', value: rec.url, label: '始める URL', placeholder: 'https://…' };
-  const dlg = dialog('dlg-record', '操作を記録して工程にする', `
-    <p class="small muted" style="margin:0">人がやって見せた操作から工程を作ります。入力した値は <code>{{ }}</code> の毎回変える値になります（パスワードらしい値は残しません）。</p>
+  const dlg = dialog('dlg-record', '操作を記録', 'record', `
+    <p class="small muted" style="margin:0">入力値は変数として取り込み、パスワードは保存しません。</p>
     <div class="grid2">
       <div class="field"><label>記録するもの</label><select id="r-source" ${rec.active ? 'disabled' : ''}>${kinds.map((k) => `<option value="${esc(k.id)}" ${rec.source === k.id ? 'selected' : ''}>${esc(k.label)}</option>`).join('')}</select></div>
       <div class="field"><label>${esc(target.label)}</label><input id="r-target" class="mono" data-rec="${target.field}" value="${esc(target.value)}" placeholder="${esc(target.placeholder)}" ${rec.active ? 'disabled' : ''}></div>
     </div>
     <div class="row"><button type="button" id="r-start" ${rec.active || rec.busy || (windows && !onWindows) ? 'disabled' : ''}>記録を始める</button>
-      <button type="button" id="r-stop" class="primary" ${!rec.active || rec.busy ? 'disabled' : ''}>終えて工程にする</button>
+      <button type="button" id="r-stop" class="primary" ${!rec.active || rec.busy ? 'disabled' : ''}>終了して工程を作成</button>
       <span class="small muted">${windows ? (onWindows ? '操作したあとに終えてください。' : 'Windows のアプリは Windows でだけ記録できます。') : '見える形でブラウザが開きます。'}</span></div>
     <p id="r-message" class="msg ${rec.ok ? '' : 'err'}" ${rec.message ? '' : 'hidden'}>${esc(rec.message)}</p>
-    <details ${rec.text ? 'open' : ''}><summary>別のパソコンで取った記録を貼り付ける</summary>
+    <details ${rec.text ? 'open' : ''}><summary>記録を貼り付ける</summary>
       <div class="field" style="margin-top:8px">
         <textarea id="r-text" class="mono" rows="6" placeholder="記録した内容を貼り付けます">${esc(rec.text)}</textarea>
-        <div><button type="button" id="r-import" ${rec.busy ? 'disabled' : ''}>貼り付けた記録を工程にする</button></div>
+        <div><button type="button" id="r-import" ${rec.busy ? 'disabled' : ''}>工程を作成</button></div>
       </div></details>`);
   dlg.querySelector('#r-source').addEventListener('change', (e) => { rec.source = e.target.value; openRecord(); });
   dlg.querySelector('#r-target').addEventListener('input', (e) => { rec[e.target.dataset.rec] = e.target.value; });
@@ -735,7 +771,7 @@ async function recordingAction(action) {
   }
   if (action === 'start') {
     rec.active = true;
-    rec.message = '操作してください。終わったら「終えて工程にする」を押します。';
+    rec.message = '操作後に「終了して工程を作成」を押してください。';
     openRecord();
     return;
   }
@@ -748,24 +784,21 @@ async function recordingAction(action) {
   markDirty();
   rec.message = '';
   $('dlg-record').close();
-  state.open = spec.steps.length - steps.length;
+  state.open = steps.length ? spec.steps.length - steps.length : null;
   render();
-  scrollToStep(state.open);
+  if (state.open != null) scrollToStep(state.open);
   toast(`${steps.length} 工程を作りました`);
 }
 
 async function openFiles() {
-  const dlg = dialog('dlg-files', 'できあがるもの', '<p class="muted small">組み立てています…</p>');
+  const dlg = dialog('dlg-files', '生成ファイル', 'files', '<p class="muted small">生成中…</p>');
   const res = state.preview || await previewMachine();
   if (!res) { dlg.querySelector('.dlg-body').innerHTML = '<p class="msg err">組み立てられませんでした</p>'; return; }
   const files = res.files || {};
   const names = Object.keys(files);
   if (!names.includes(state.fileTab)) state.fileTab = names[0] || '';
   const paint = () => {
-    dlg.querySelector('.dlg-body').innerHTML = `<div class="row" style="justify-content:space-between">
-        <span class="small muted">保存すると、フォルダにこの中身で書き出されます。このアプリが無くても動きます。</span>
-        ${state.current.isNew ? '' : '<button type="button" class="tiny" id="f-open">フォルダを開く</button>'}
-      </div>
+    dlg.querySelector('.dlg-body').innerHTML = `${state.current.isNew ? '' : '<div class="row"><button type="button" class="tiny" id="f-open">フォルダを開く</button></div>'}
       ${res.errors && res.errors.length ? `<div class="msg err">${res.errors.map(esc).join('\n')}</div>` : ''}
       <div class="file-tabs">${names.map((n) => `<button type="button" data-file="${esc(n)}" class="${n === state.fileTab ? 'is-on' : ''}">${esc(n)}</button>`).join('')}</div>
       <pre>${esc(files[state.fileTab] || '')}</pre>`;
@@ -777,11 +810,11 @@ async function openFiles() {
 }
 
 async function openAi() {
-  const dlg = dialog('dlg-ai', 'AI に仕上げてもらう', '<p class="muted small">用意しています…</p>');
+  const dlg = dialog('dlg-ai', 'AIで補完', 'work', '<p class="muted small">準備中…</p>');
   const res = state.ai || await guard('用意', () => api.instruction(state.root, specPayload()));
   if (!res) { dlg.querySelector('.dlg-body').innerHTML = '<p class="msg err">用意できませんでした（名前と工程を確かめてください）</p>'; return; }
   state.ai = res;
-  dlg.querySelector('.dlg-body').innerHTML = `<p class="small muted" style="margin:0">この文をコピーして AI のターミナルに貼ると、待ち時間の入れ方や結果の読み取り方を補ってくれます。作った手順は AI 無しでも動きます。</p>
+  dlg.querySelector('.dlg-body').innerHTML = `<p class="small muted" style="margin:0">指示文をコピーし、エージェント CLI に貼り付けます。</p>
     <div class="row"><button type="button" id="ai-copy" class="primary">コピー</button><button type="button" id="ai-terminal">フォルダでターミナルを開く</button></div>
     <pre>${esc(res.prompt)}</pre>`;
   dlg.querySelector('#ai-copy').addEventListener('click', async () => { await api.copyText(res.prompt); toast('コピーしました'); });
@@ -792,25 +825,28 @@ function openRun() {
   const run = state.run;
   const cur = state.current;
   if (cur.isNew) return;
-  const agent = run.agent || state.config.agent || 'claude';
-  const dlg = dialog('dlg-run', '動かす', `
+  const agent = selectedAgent(run.agent || state.config.agent);
+  run.agent = agent;
+  const dlg = dialog('dlg-run', 'テスト・実行', 'work', `
     ${cur.dirty ? '<p class="msg" style="color:var(--warn)">保存していない変更があります。動くのは保存した内容です。</p>' : ''}
-    <div class="row"><button type="button" id="run-check" ${run.running ? 'disabled' : ''}>点検する</button><button type="button" id="run-go" class="primary" ${run.running ? 'disabled' : ''}>動かす</button><button type="button" id="run-stop" class="danger" ${run.running ? '' : 'disabled'}>止める</button>
-      <span class="small muted">点検は、手順に抜けがないかを見るだけです。</span></div>
+    <div class="row"><button type="button" id="run-check" ${run.running ? 'disabled' : ''}>構成を確認</button><button type="button" id="run-go" class="primary" ${run.running ? 'disabled' : ''}>実行</button><button type="button" id="run-stop" class="danger" ${run.running ? '' : 'disabled'}>停止</button></div>
     <div class="grid2">
-      <div class="field"><label>使う AI</label><select id="run-agent">${['claude', 'copilot', 'kiro', 'anthropic'].map((a) => `<option value="${a}" ${a === agent ? 'selected' : ''}>${a}</option>`).join('')}</select></div>
+      <div class="field"><label>使う AI</label><select id="run-agent" ${state.agents.length ? '' : 'disabled'}>${agentOptions(agent)}</select></div>
       <div class="field"><label>最初に渡す文（任意）</label><input id="run-input" value="${esc(run.input)}"></div>
     </div>
     <div class="log" id="run-log">${run.lines.map((l) => `<div class="${l.kind === 'stderr' ? 'e' : ''}">${esc(l.line)}</div>`).join('') || '<span class="muted">ここに様子が出ます</span>'}</div>`);
   dlg.querySelector('#run-agent').addEventListener('change', (e) => { run.agent = e.target.value; });
   dlg.querySelector('#run-input').addEventListener('input', (e) => { run.input = e.target.value; });
   dlg.querySelector('#run-check').addEventListener('click', () => startRun('check'));
-  dlg.querySelector('#run-go').addEventListener('click', () => startRun('run'));
+  const go = dlg.querySelector('#run-go');
+  if (!state.agents.length) go.disabled = true;
+  go.addEventListener('click', () => startRun('run'));
   dlg.querySelector('#run-stop').addEventListener('click', () => api.runStop());
 }
 
 async function startRun(mode) {
   const run = state.run;
+  if (mode === 'run' && !run.agent) { toast('実行環境で使う AI を確認してください', true); return; }
   run.lines = [];
   run.running = true;
   openRun();
@@ -831,61 +867,38 @@ function appendLog(entry) {
   log.scrollTop = log.scrollHeight;
 }
 
-const ACCENTS = ['#3b5bdb', '#0f8b8d', '#7c3aed', '#c2410c', '#1f9d55', '#1c1f26'];
-
 function openSettings() {
   const cfg = state.config;
-  const defaults = (state.theme && state.theme.defaults) || { kindColors: {} };
-  const th = (state.theme && state.theme.theme) || { accent: '#3b5bdb', density: 'comfortable', fontSize: 14, kindColors: {} };
-  const kinds = state.catalog.kinds;
-  const dlg = dialog('dlg-settings', '設定', `
-    <div class="section-title">見た目</div>
-    <div class="field"><label>色</label><div class="swatches">${ACCENTS.map((c) => `<button type="button" class="swatch ${c === th.accent ? 'is-on' : ''}" data-accent="${c}" style="background:${c}" title="${c}"></button>`).join('')}<input type="color" id="t-accent" value="${esc(th.accent)}" style="width:44px;height:28px;padding:2px"></div></div>
+  const agent = selectedAgent(cfg.agent);
+  const dlg = dialog('dlg-settings', '実行環境', 'settings', `
     <div class="grid2">
-      <div class="field"><label>間隔</label><select id="t-density"><option value="comfortable" ${th.density === 'comfortable' ? 'selected' : ''}>ゆったり</option><option value="compact" ${th.density === 'compact' ? 'selected' : ''}>詰める</option></select></div>
-      <div class="field"><label>文字の大きさ</label><input id="t-font" type="number" min="11" max="20" value="${esc(th.fontSize)}"></div>
-    </div>
-    <div class="field"><label>種類ごとの色</label><div class="kind-colors">${kinds.map((k) => `<label>${esc(k.short)}<input type="color" data-kind-color="${esc(k.id)}" value="${esc((th.kindColors || {})[k.id] || (defaults.kindColors || {})[k.id] || '#888888')}"></label>`).join('')}</div></div>
-    <div class="row"><button type="button" id="t-save" class="primary">見た目を保存</button><button type="button" id="t-css">自分で書く（CSS）</button><button type="button" id="t-reload">読み直す</button><button type="button" id="t-reset" class="ghost">元に戻す</button></div>
-    <div class="section-title">動かすとき</div>
-    <div class="grid2">
-      <div class="field"><label>使う AI</label><select id="c-agent">${['claude', 'copilot', 'kiro', 'anthropic'].map((a) => `<option value="${a}" ${a === (cfg.agent || 'claude') ? 'selected' : ''}>${a}</option>`).join('')}</select></div>
+      <div class="field"><label>使う AI（agent-tools）</label><select id="c-agent" ${state.agents.length ? '' : 'disabled'}>${agentOptions(agent)}</select></div>
       <div class="field"><label>モデル（任意）</label><input id="c-model" class="mono" value="${esc(cfg.model || '')}"></div>
     </div>
-    <div class="field"><label>手順を動かす仕組みの置き場（自動で見つからないときだけ）</label><input id="c-skill" class="mono" value="${esc(cfg.skillDir || '')}"></div>
-    <div class="row"><button type="button" id="c-save">保存</button></div>
-    <div class="section-title">準備の確認</div>
-    <div class="row"><button type="button" id="tools-check">確かめる</button></div>
+    <div class="field"><label>構成確認用スキルの場所（任意）</label><input id="c-skill" class="mono" value="${esc(cfg.skillDir || '')}" placeholder="通常は自動で検出します"></div>
+    <div class="row"><button type="button" id="c-save" class="primary">保存</button><button type="button" id="tools-check">接続を確認</button></div>
     <div id="tools-list">${state.tools ? toolsHtml(state.tools) : ''}</div>`);
-  const pick = (c) => { dlg.querySelector('#t-accent').value = c; for (const s of dlg.querySelectorAll('.swatch')) s.classList.toggle('is-on', s.dataset.accent === c); };
-  for (const s of dlg.querySelectorAll('.swatch')) s.addEventListener('click', () => pick(s.dataset.accent));
-  const themeForm = () => ({
-    accent: dlg.querySelector('#t-accent').value, density: dlg.querySelector('#t-density').value, fontSize: Number(dlg.querySelector('#t-font').value),
-    kindColors: Object.fromEntries([...dlg.querySelectorAll('[data-kind-color]')].map((el) => [el.dataset.kindColor, el.value])),
-  });
-  dlg.querySelector('#t-save').addEventListener('click', async () => {
-    const saved = await guard('保存', () => api.saveTheme(themeForm()));
-    if (saved) { applyTheme({ ...state.theme, theme: saved.theme, variables: saved.variables }); toast('保存しました'); }
-  });
-  dlg.querySelector('#t-reset').addEventListener('click', async () => {
-    const saved = await guard('見た目', () => api.saveTheme(defaults));
-    if (saved) { applyTheme({ ...state.theme, theme: saved.theme, variables: saved.variables }); openSettings(); }
-  });
-  dlg.querySelector('#t-css').addEventListener('click', () => guard('CSS', () => api.openCustomCss()));
-  dlg.querySelector('#t-reload').addEventListener('click', async () => { applyTheme(await guard('見た目', () => api.getTheme())); toast('読み直しました'); });
   dlg.querySelector('#c-save').addEventListener('click', async () => {
-    const next = { ...cfg, agent: dlg.querySelector('#c-agent').value, model: dlg.querySelector('#c-model').value.trim(), skillDir: dlg.querySelector('#c-skill').value.trim() };
+    const next = { ...cfg, agent: dlg.querySelector('#c-agent').value || cfg.agent, model: dlg.querySelector('#c-model').value.trim(), skillDir: dlg.querySelector('#c-skill').value.trim() };
     const saved = await guard('保存', () => api.saveConfig(next));
     if (saved) { state.config = saved; toast('保存しました'); }
   });
   dlg.querySelector('#tools-check').addEventListener('click', async () => {
     const btn = dlg.querySelector('#tools-check');
     btn.disabled = true;
-    btn.textContent = '確かめています…';
+    btn.textContent = '確認中…';
     const res = await guard('確認', () => api.toolStatus(state.root));
     state.tools = res || state.tools;
+    const definitions = await guard('AI 一覧', () => api.listAgents(state.root));
+    if (definitions) {
+      const current = dlg.querySelector('#c-agent').value || cfg.agent;
+      state.agents = definitions;
+      const select = dlg.querySelector('#c-agent');
+      select.innerHTML = agentOptions(current);
+      select.disabled = !state.agents.length;
+    }
     btn.disabled = false;
-    btn.textContent = '確かめる';
+    btn.textContent = '接続を確認';
     dlg.querySelector('#tools-list').innerHTML = state.tools ? toolsHtml(state.tools) : '';
   });
 }
@@ -899,18 +912,17 @@ function toolsHtml(tools) {
 async function init() {
   state.catalog = (await guard('準備', () => api.catalog())) || state.catalog;
   state.config = (await guard('設定', () => api.getConfig())) || state.config;
-  applyTheme(await guard('見た目', () => api.getTheme()));
   $('btn-home').addEventListener('click', goHome);
   api.onRunLine((p) => appendLog(p));
   api.onRunExit((p) => {
     state.run.running = false;
     appendLog({ kind: p.code === 0 ? 'stdout' : 'stderr', line: p.code === 0 ? (p.mode === 'check' ? '— 点検しました。抜けはありません' : '— 終わりました') : '— 止まりました' });
     const dlg = $('dlg-run');
-    if (dlg.open) { dlg.querySelector('#run-check').disabled = false; dlg.querySelector('#run-go').disabled = false; dlg.querySelector('#run-stop').disabled = true; }
+    if (dlg.open) { dlg.querySelector('#run-check').disabled = false; dlg.querySelector('#run-go').disabled = !state.agents.length; dlg.querySelector('#run-stop').disabled = true; }
   });
   window.addEventListener('beforeunload', (e) => { if (state.current && state.current.dirty) { e.preventDefault(); e.returnValue = ''; } });
   state.root = state.config.lastRoot || (state.config.roots || [])[0] || '';
-  if (state.root) await loadMachines();
+  await Promise.all([state.root ? loadMachines() : Promise.resolve(), loadAgents()]);
   render();
 }
 

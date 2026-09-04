@@ -85,6 +85,7 @@ test('ブラウザの記録の開始・終了は playwright-cli を記録専用�
   const calls = [];
   const capture = async (command, args) => {
     calls.push([command, ...args]);
+    if (args.includes('--help')) return { ok: true, status: 0, stdout: 'recording-start\nrecording-stop\n', stderr: '' };
     if (args.includes('recording-stop')) return { ok: true, status: 0, stdout: BROWSER_RECORDING, stderr: '' };
     return { ok: true, status: 0, stdout: '', stderr: '' };
   };
@@ -93,14 +94,30 @@ test('ブラウザの記録の開始・終了は playwright-cli を記録専用�
   const res = await recording.recordBrowserStop({ url: 'https://intra.example/login', capture });
   assert.strictEqual(res.steps.length, 3);
   assert.deepStrictEqual(calls.map((c) => c.slice(0, 3)), [
+    ['playwright-cli', '--help'],
     ['playwright-cli', `-s=${recording.RECORD_SESSION}`, 'open'],
     ['playwright-cli', `-s=${recording.RECORD_SESSION}`, 'recording-start'],
     ['playwright-cli', `-s=${recording.RECORD_SESSION}`, 'recording-stop'],
     ['playwright-cli', `-s=${recording.RECORD_SESSION}`, 'close'],
   ]);
-  assert.ok(calls[0].includes('--headed'));
-  const failing = async () => ({ ok: false, status: 1, stdout: '', stderr: 'Missing X server or $DISPLAY' });
+  assert.ok(calls[1].includes('--headed'));
+  const failing = async (_command, args) => args.includes('--help')
+    ? { ok: true, status: 0, stdout: 'recording-start\nrecording-stop\n', stderr: '' }
+    : { ok: false, status: 1, stdout: '', stderr: 'Missing X server or $DISPLAY' };
   await assert.rejects(() => recording.recordBrowserStart({ capture: failing }), /画面の無い環境/);
+});
+
+test('記録に未対応の playwright-cli はブラウザを開く前に更新方法を示して止める', async () => {
+  const calls = [];
+  const capture = async (command, args) => {
+    calls.push([command, ...args]);
+    return { ok: true, status: 0, stdout: 'open [url]\ntracing-start\n', stderr: '' };
+  };
+  await assert.rejects(
+    () => recording.recordBrowserStart({ url: 'https://example.com', capture }),
+    /操作記録に対応していません.*@latest/,
+  );
+  assert.deepStrictEqual(calls, [['playwright-cli', '--help']], '未対応と分かった後にブラウザを開かない');
 });
 
 test('Windows の記録は winauto record を子プロセスで走らせ、停止ファイルで止めて JSONL を読む', async () => {

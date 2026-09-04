@@ -309,9 +309,17 @@ function stepsFromRecording({ source, text: raw, url = '', app = '' } = {}) {
 
 const RECORD_SESSION = 'statemachine-maker-record';
 const PLAYWRIGHT_CLI = 'playwright-cli';
+const PLAYWRIGHT_RECORDING_COMMANDS = ['recording-start', 'recording-stop'];
 
 function playwrightArgs(...rest) {
   return [`-s=${RECORD_SESSION}`, ...rest];
+}
+
+// --version が成功しても、古い playwright-cli には操作記録のコマンドが無い。
+// コマンド一覧そのものを見て、開始と終了が揃っていることを確かめる。
+function supportsPlaywrightRecording(raw) {
+  const body = String(raw || '');
+  return PLAYWRIGHT_RECORDING_COMMANDS.every((name) => new RegExp(`^\\s*${name}\\b`, 'm').test(body));
 }
 
 // 失敗の理由が書かれている行を拾う。CLI は先頭に見出しや空行を置き、原因はその下に来る
@@ -338,6 +346,15 @@ function browserOpenHint(detail) {
 async function recordBrowserStart({ cwd = '', url = '', capture, timeoutMs = 60000 } = {}) {
   if (typeof capture !== 'function') throw new Error('記録に使う実行関数がありません');
   const target = text(url, 500);
+  const capabilities = await capture(PLAYWRIGHT_CLI, ['--help'], { cwd, timeoutMs });
+  if (!capabilities || !capabilities.ok) {
+    const detail = (capabilities && capabilities.error) || firstLine(capabilities) || PLAYWRIGHT_CLI;
+    throw new Error(`playwright-cli の機能を確認できませんでした: ${detail}${browserOpenHint(`${detail} ${(capabilities && capabilities.stderr) || ''}`)}`);
+  }
+  if (!supportsPlaywrightRecording(`${capabilities.stdout || ''}\n${capabilities.stderr || ''}`)) {
+    throw new Error('この playwright-cli はブラウザの操作記録に対応していません。'
+      + '`npm install -g @playwright/cli@latest` で更新してから、もう一度「準備の確認」を実行してください');
+  }
   const opened = await capture(PLAYWRIGHT_CLI, playwrightArgs('open', '--headed', ...(target ? [target] : [])), { cwd, timeoutMs });
   if (!opened || !opened.ok) {
     const detail = (opened && opened.error) || firstLine(opened) || PLAYWRIGHT_CLI;
@@ -421,6 +438,7 @@ module.exports = {
   OPS,
   WINAUTO_EVENT_KINDS,
   RECORD_SESSION,
+  supportsPlaywrightRecording,
   parsePlaywrightLine,
   parsePlaywrightRecording,
   parseWinautoEvent,

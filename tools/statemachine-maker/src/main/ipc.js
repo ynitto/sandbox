@@ -10,7 +10,6 @@ const tools = require('./tools');
 const runner = require('./runner');
 const instruction = require('./instruction');
 const config = require('./config');
-const theme = require('./theme');
 
 const APP_ROOT = path.join(__dirname, '..', '..');
 
@@ -67,16 +66,6 @@ function registerIpcHandlers(getWindow) {
   handle('config:get', () => config.load(userData()));
   handle('config:save', (p) => config.save(userData(), p.config));
   handle('catalog:get', () => ({ kinds: model.catalog(), version: model.PROCEDURE_VERSION, platform: process.platform }));
-  // 見た目: theme.json の値（CSS 変数へ）と custom.css（そのまま）。定義には混ぜない。
-  handle('theme:get', () => {
-    const loaded = theme.load(userData());
-    return { ...loaded, variables: theme.cssVariables(loaded.theme), defaults: theme.DEFAULTS };
-  });
-  handle('theme:save', (p) => {
-    const saved = theme.save(userData(), p.theme);
-    return { theme: saved, variables: theme.cssVariables(saved) };
-  });
-  handle('theme:openCss', () => shell.openPath(theme.ensureCustomCss(userData())));
 
   // フォルダの登録。**見に行くのは登録したフォルダの `.statemachine/` だけ**で、
   // 画面から届いたパスをそのまま開かない（登録に無ければ下の requireRoot が断る）。
@@ -114,6 +103,10 @@ function registerIpcHandlers(getWindow) {
     const root = p.root ? requireRoot(p) : '';
     return tools.toolStatus({ cwd: root, capture: runner.capture, skillDir: skillDirFor(root) });
   });
+  handle('agents:list', (p) => {
+    const root = p.root ? requireRoot(p) : '';
+    return tools.agentDefinitions({ cwd: root, capture: runner.capture });
+  });
 
   handle('recording:start', (p) => {
     const root = p.root ? requireRoot(p) : '';
@@ -138,37 +131,45 @@ function registerIpcHandlers(getWindow) {
     return { instruction: instruction.creationInstruction(spec, { machineDir }), prompt: instruction.creationPrompt(spec, { machineDir }) };
   });
 
-  // スキルのスクリプトで検証・実行する。出力は行単位で renderer へ流す。
+  // 構成確認はスキルのスクリプト、本実行は agent-tools の harness を使う。
+  // 出力はどちらも行単位で renderer へ流す。
   handle('run:start', async (p, event) => {
     const root = requireRoot(p);
     const machine = String(p.machine || '');
     const workflow = path.join(store.machineDir(root, machine), 'workflow.yaml');
-    const skillDir = skillDirFor(root);
-    if (!skillDir) throw new Error('statemachine-use スキルのスクリプトが見つかりません（「道具」を確認してください）');
-    const py = await pythonFor();
-    if (!py) throw new Error('Python を起動できません（「道具」を確認してください）');
-    const script = path.join(skillDir, 'scripts', 'run_machine.py');
-    const args = [script, workflow];
     const mode = p.mode === 'run' ? 'run' : 'check';
-    if (mode === 'check') args.push('--dry-run');
-    else {
+    let command;
+    let args;
+    if (mode === 'check') {
+      const skillDir = skillDirFor(root);
+      if (!skillDir) throw new Error('statemachine-use スキルのスクリプトが見つかりません（「実行環境」を確認してください）');
+      const py = await pythonFor();
+      if (!py) throw new Error('Python を起動できません（「実行環境」を確認してください）');
+      command = py.command;
+      args = [path.join(skillDir, 'scripts', 'run_machine.py'), workflow, '--dry-run'];
+    } else {
       const cfg = config.load(userData());
-      const agent = String(p.agent || cfg.agent || 'claude');
-      args.push('--agent', agent);
-      if (p.model || cfg.model) args.push('--model', String(p.model || cfg.model));
-      if (p.input) args.push('--input', String(p.input));
-      for (const [k, v] of Object.entries(p.context || {})) args.push('--context', `${k}=${v}`);
-      if (p.verbose) args.push('--verbose');
+      const agent = String(p.agent || cfg.agent || 'aider');
+      const definitions = await tools.agentDefinitions({ cwd: root, capture: runner.capture });
+      if (!definitions.includes(agent)) throw new Error(`使う AI「${agent}」は agent-tools に定義されていません`);
+      const spec = tools.agentHerdRunSpec({
+        workflow, root, agent,
+        model: p.model || cfg.model,
+        input: p.input,
+        context: p.context,
+      });
+      command = spec.command;
+      args = spec.args;
     }
     const sender = event.sender;
     const send = (channel, payload) => { if (!sender.isDestroyed()) sender.send(channel, payload); };
-    const started = runner.stream(py.command, args, {
+    const started = runner.stream(command, args, {
       cwd: root,
       env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
       onLine: (kind, line) => send('run:line', { kind, line }),
       onExit: ({ code }) => send('run:exit', { code, mode }),
     });
-    return { ...started, command: [py.command, ...args].join(' '), mode };
+    return { ...started, command: [command, ...args].join(' '), mode };
   });
   handle('run:stop', () => runner.stop());
 

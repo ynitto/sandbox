@@ -1,7 +1,7 @@
 'use strict';
 
 // 設定は userData の 1 ファイル。持つのは「登録したフォルダ」「最後に選んだフォルダ」
-// 「スキルのフォルダ」「動かすときに使う AI」だけ。ステートマシンそのものは登録した
+// 「スキルのフォルダ」「動かすときに使う agent-tools の定義名」だけ。ステートマシンそのものは登録した
 // フォルダの `.statemachine/` にしか置かない（このアプリが無くても動く）。
 
 const fs = require('fs');
@@ -11,7 +11,7 @@ const DEFAULTS = {
   roots: [],        // 登録したフォルダ。ここに無いフォルダは見に行かない
   lastRoot: '',     // 起動時に開くフォルダ
   skillDir: '',
-  agent: 'claude',
+  agent: 'aider',
   model: '',
 };
 

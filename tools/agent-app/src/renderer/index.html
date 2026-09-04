@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'">
+  <title>Agent App</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app">
+    <aside id="side">
+      <div class="side-head"><span>リポジトリ</span><button id="repo-add" class="small">追加</button></div>
+      <ul id="repos" class="list"></ul>
+      <div class="side-head"><span>会話</span><button id="session-new" class="small primary">新しい会話</button></div>
+      <ul id="sessions" class="list"></ul>
+    </aside>
+
+    <main id="chat">
+      <header id="chat-head">
+        <div id="chat-title" class="title">リポジトリを登録して会話を始める</div>
+        <label>エージェント <select id="cli"></select></label>
+        <label>モデル <input id="model" placeholder="既定" size="14"></label>
+        <label class="check"><input type="checkbox" id="readonly"> 読み取り専用（Ask）</label>
+        <span class="spacer"></span>
+        <button id="changes-toggle" class="small">変更</button>
+        <button id="open-folder" class="small">フォルダを開く</button>
+        <button id="session-delete" class="small danger" hidden>削除</button>
+      </header>
+      <div id="notice" hidden></div>
+      <section id="messages"></section>
+      <footer id="composer">
+        <textarea id="prompt" rows="3" placeholder="依頼を書く（Enter で送信、Shift+Enter で改行）"></textarea>
+        <div class="composer-actions">
+          <button id="send" class="primary">送信</button>
+          <button id="stop" class="danger" hidden>停止</button>
+        </div>
+      </footer>
+    </main>
+
+    <aside id="changes" hidden>
+      <div class="side-head"><span>変更（作業ツリー）</span><button id="changes-refresh" class="small">更新</button></div>
+      <ul id="changed-files" class="list"></ul>
+      <pre id="diff"></pre>
+    </aside>
+  </div>
+  <script src="renderer.js"></script>
+</body>
+</html>
