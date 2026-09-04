@@ -68,7 +68,7 @@ test('作成モードへの指示文は工程・遷移・道具を載せ、YAML 
   assert.ok(text.includes('`playwright-cli` スキル'));
   assert.ok(text.includes('- {{month}}'));
   assert.ok(text.includes('`check: python check.py`'));
-  assert.ok(text.includes('NG → 工程 1 へ戻る（step_1）'));
+  assert.ok(text.includes('第 1 行が NG で始まる → 工程 1 へ戻る（step_1）'), text);
   assert.ok(!text.includes('initial_state:') && !text.includes('states:') && !text.includes('transitions:'));
   const prompt = instruction.creationPrompt(spec, { machineDir: '.statemachine/kintai/' });
   assert.ok(prompt.startsWith('statemachine-use スキルの作成モードで'));
