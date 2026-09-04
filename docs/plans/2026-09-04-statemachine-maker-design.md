@@ -136,10 +136,23 @@ agent-dashboard の 3 カラム・タブ構成は持ち込まず、ワークフ�
 ## 検証
 
 ```bash
-cd tools/statemachine-maker && npm test        # 26 テスト。結合はスキルの run_machine.py --dry-run
+cd tools/statemachine-maker && npm test        # 往復・記録・保存・結合・実機の起動
+xvfb-run -a npm run smoke                      # 実機の起動だけ（表示先の無い Linux）
 ```
 
 CI に `statemachine-maker (npm test)` を足した（python + PyYAML を入れて結合テストを走らせる）。
+
+**実機を起こす検査を入れた理由（事故の記録）**: 初版は画面の確認をブラウザに `window.api` を
+差し替えて行い、Electron を起動しなかった。そのため `renderer.js` の `const api = window.api;` が
+`contextBridge` の置く **再定義できない** `window.api` と衝突し、スクリプトが 1 行も実行されずに
+**画面が真っ白**になる事故をすり抜けた（CSS だけ効くので静的なヘッダーだけが残り、コンソールにも
+自分のログが出ないので原因が見えにくい）。代入で作った `window.api` は configurable なので、
+ブラウザでの確認では**構造的に再現できない**——だから押さえは 2 つに分けた。
+
+| 検査 | 見るもの | 走る場所 |
+|---|---|---|
+| `test/preload-contract.test.js` | preload が公開する名前を renderer がトップレベルで宣言していないこと | いつでも（CI 含む） |
+| `test/electron-smoke.test.js` | Electron を実際に起動し、一覧・工程・カードの開閉が描画されること | electron のバイナリ・表示先・playwright があるとき（CI では skip） |
 
 ## Decision Record
 

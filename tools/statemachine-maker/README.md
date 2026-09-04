@@ -58,11 +58,23 @@ statemachine-use の作成モードの原則に沿う（`SKILL.md` ステップ 
 
 ```bash
 cd tools/statemachine-maker
-npm test          # 往復・記録・保存・結合（スキルの run_machine.py --dry-run）
+npm test          # 往復・記録・保存・結合（スキルの run_machine.py --dry-run）・実機の起動
+npm run smoke     # 実機の起動だけを xvfb 越しに走らせる（表示先の無い Linux 用）
 npm run lint      # eslint（devDependencies が要る）
 ```
 
-結合テストは python3 + PyYAML があるときだけ走る（無ければ skip）。
+- 結合テスト（スキルの `run_machine.py --dry-run`）は python3 + PyYAML があるときだけ走る。
+- **実機の起動**（`test/electron-smoke.test.js`）は Electron を本当に立ち上げ、画面が描画される
+  ことまで見る。electron のバイナリ・表示先・playwright が揃っているときだけ走り、CI（実行時
+  依存だけを入れる）では skip される。表示先の無い Linux では `npm run smoke` を使う。
+
+### 画面を直すときの落とし穴
+
+renderer で **`const api = …` のように preload が公開した名前を宣言してはいけない**。
+`contextBridge` が置く `window.api` は再定義できないので、宣言するとスクリプトの実行前に
+`Identifier 'api' has already been declared` で落ち、**画面が真っ白**になる（自分のログも出ない）。
+ブラウザに `window.api` を代入して描く確認ではこの事故は再現しないため、
+`test/preload-contract.test.js`（静的検査）と実機の起動の 2 つで押さえている。
 
 ## 設計
 
