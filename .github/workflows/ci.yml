@@ -9,6 +9,8 @@ name: CI
 #                設定キーの構造テスト（CONFIG_DEFAULTS → Config の到達性）は
 #                agent-project のスイートに含まれる。
 #   2. dashboard … agent-dashboard の `npm test`（node のみで走る・依存の導入は不要）。
+#      statemachine-maker … 同じく `npm test`。生成した定義を statemachine-use スキルの
+#      run_machine.py --dry-run に通す結合テストを含むので python も要る。
 #   3. docs    … 利用者向け文書の内部名検査（R10）とその検査自身の単体テスト。
 #   4. vscode-copilot … このスイートだけ pytest 形式（tmp_path などを使う）なので
 #                独立したジョブにする。**上の python matrix へ足してはいけない**——
@@ -111,6 +113,30 @@ jobs:
         run: npm install --omit=dev --no-audit --no-fund --ignore-scripts
       - name: npm test
         working-directory: tools/agent-dashboard
+        run: npm test
+
+  statemachine-maker:
+    name: statemachine-maker (npm test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      # 結合テストは statemachine-use スキルの本物のスクリプト（run_machine.py --dry-run）で
+      # 生成した定義を検証する。スクリプトは PyYAML だけを要る。
+      - name: PyYAML（スキルのスクリプト用）
+        run: python -m pip install --upgrade pip pyyaml
+      # 実行時依存（`yaml`）だけ入れる。electron は入れない（テストは起動しない）。
+      - name: 実行時依存の導入
+        working-directory: tools/statemachine-maker
+        run: npm install --omit=dev --no-audit --no-fund --ignore-scripts
+      - name: npm test
+        working-directory: tools/statemachine-maker
         run: npm test
 
   vscode-copilot:

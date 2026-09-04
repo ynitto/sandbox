@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:" />
+  <title>Statemachine Maker</title>
+  <link rel="stylesheet" href="styles.css" />
+  <style id="custom-css"></style>
+</head>
+<body>
+  <header id="bar">
+    <div class="bar-left">
+      <button type="button" id="btn-home" class="ghost" title="一覧へ戻る" hidden>‹ 一覧</button>
+      <span class="brand">Statemachine Maker</span>
+    </div>
+    <div class="bar-center" id="bar-center"></div>
+    <div class="bar-right" id="bar-right"></div>
+  </header>
+  <main id="main"></main>
+  <dialog id="dlg-record"></dialog>
+  <dialog id="dlg-files"></dialog>
+  <dialog id="dlg-ai"></dialog>
+  <dialog id="dlg-run"></dialog>
+  <dialog id="dlg-settings"></dialog>
+  <div id="toast" hidden></div>
+  <script src="renderer.js"></script>
+</body>
+</html>
