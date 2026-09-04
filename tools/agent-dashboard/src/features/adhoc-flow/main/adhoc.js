@@ -1132,12 +1132,29 @@ function writeRunTuning(config, runId, methods) {
 
 // --- 投入と起動 ---------------------------------------------------------------
 
+// 同じ秒に作った run id を覚えておき、ぶつかったら引き直す。秒が変われば捨てる。
+// 乱数 4 桁だけでは 1/9000 でぶつかり、同じ秒に投函した 2 本が同じ id になって
+// inbox の記録を上書きし合う（submit と resubmit を続けて呼ぶと実際に当たる）。
+let runIdStamp = '';
+let runIdsInStamp = new Set();
+
 function newRunId() {
   const t = new Date();
   const pad = (n) => String(n).padStart(2, '0');
   const stamp = `${t.getFullYear()}${pad(t.getMonth() + 1)}${pad(t.getDate())}`
     + `-${pad(t.getHours())}${pad(t.getMinutes())}${pad(t.getSeconds())}`;
-  return `adhoc-${stamp}-${Math.floor(1000 + Math.random() * 9000)}`;
+  if (stamp !== runIdStamp) {
+    runIdStamp = stamp;
+    runIdsInStamp = new Set();
+  }
+  let id = '';
+  // 9000 通りを使い切ることは実際には起きないが、引き直しが終わらない形にはしない。
+  for (let i = 0; i < 20; i += 1) {
+    id = `adhoc-${stamp}-${Math.floor(1000 + Math.random() * 9000)}`;
+    if (!runIdsInStamp.has(id)) break;
+  }
+  runIdsInStamp.add(id);
+  return id;
 }
 
 // 起動シェル行の組み立て（テスト可能にするため純関数で切り出す）。
@@ -1486,6 +1503,7 @@ function listProjects(config) {
 
 module.exports = {
   SUBMITTER,
+  newRunId,
   NODE_KINDS,
   WORKFLOW_PURPOSES,
   COHERENCE_COMMAND,

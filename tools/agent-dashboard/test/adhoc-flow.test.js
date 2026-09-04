@@ -2374,6 +2374,15 @@ test('起動失敗（agent-flow 不在）は投函後でもエラーとして返
   }
 });
 
+test('run id は同じ秒に何本作ってもぶつからない', () => {
+  // 乱数 4 桁だけだった頃は 1/9000 でぶつかり、同じ秒に投函した 2 本が同じ id になって
+  // inbox の記録を上書きし合っていた（submit → resubmit を続けて呼ぶと実際に当たる）。
+  const ids = new Set();
+  for (let i = 0; i < 3000; i += 1) ids.add(adhoc.newRunId());
+  assert.strictEqual(ids.size, 3000, '同じ秒に作った run id が重複した');
+  for (const id of ids) assert.match(id, /^adhoc-\d{8}-\d{6}-\d{4}$/, 'id の形は変えない');
+});
+
 test('resubmit が inbox 記録（plan 込み）と手法スナップショットを新 run へ写す', () => {
   const { cfg } = methodsFixture();
   cfg.adhocFlow.busDir = tmpdir('adhoc-bus4-');
