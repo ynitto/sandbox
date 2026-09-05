@@ -90,7 +90,7 @@ class PlanBuildTests(unittest.TestCase):
     def test_write_workspace_plan_requires_target_integration(self):
         t = _task(self.d, lines=["verify: `pytest -q`"])
         ws = {"url": "repo", "branch": "ap/T1", "target": "main"}
-        with mock.patch.object(km, "_workspace_spec_for", return_value=ws):
+        with mock.patch.object(km, "_workspace_specs_for", return_value=[ws]):
             plan = km.build_task_verification_plan(self.cfg, t)
         self.assertEqual(plan["version"], 2)
         self.assertEqual(plan["integration"], {"target": "main"})

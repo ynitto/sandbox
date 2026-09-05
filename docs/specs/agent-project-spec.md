@@ -288,6 +288,7 @@ host.yaml のトップレベルの綻び（未知キー・層違い・型違い�
 |---|---|---|
 | `plan_review` | true | 実行前レビュー。status を明示しない新規投入はすべて `proposed` で入る |
 | `planner` / `route_planner` | — / agent | 優先順位付けとルーティングの計画役 |
+| `multi_workspace` | false | 書込先が複数になること（workset）を許すか。true のとき、`owns` が複数 repo にヒットしたタスクを「両方に書く」と読む。人の明示 `- workspace: a, b` と `route: ... -> a+b` はこの設定に関係なく効く。auto-route（LLM）には複数を選ばせない |
 | `planner_skill` | backlog-planner | 分解のプロンプト・出力契約を供給するスキル（見つからなければ組み込みへ落ちる） |
 | `plan_sections` | required | 必須項目（why / desc / acceptance / size）の欠落を 1 回再要求し、なお欠ければ人の目へ回す（`warn` は注記だけ） |
 | `assess` | true | 複雑さ・リスク・曖昧さの採点 |
@@ -391,11 +392,13 @@ agent-project 側の責務は plan の生成と receipt の検算です。
 - 書込 workspace では、検証時の target revision と、その revision が成果へ統合済みという判定も照合する
 - 固定コマンドがすべて終了コード 0、全基準が証跡付き pass、最新 target を含むときだけ done 候補にする
 
+書込先が複数（workset）のタスクでは version 3 の plan を作ります。`workspaces[]` は **`--workspace` に載せた要素名と同じ語彙**でなければなりません（runner はその名前で clone を引くため）。統合対象は `integration.targets{name: target}` として要素ごとに固定し、固定コマンドの `cwd` は既定＝primary 相対のままにします——どのコマンドがどの repo のものかはタスク md に書かれていないためで、横断の検証は runner が渡す `$AGENT_REPO_<NAME>` で他要素を参照します。書込先が 1 つのタスクの plan は version 1/2 のまま変わりません（同じ条件の検証を版だけの理由で別 plan にしない）。
+
 差分の常設基準は基準リストの最後に足します。`- no_diff: <理由>` を書いたタスクでは、この基準の述語が「宣言した成果物ファイルが対象 revision に実在し、その内容を判定で参照したこと」へ差し替わります（基準そのものは消えません）。決定的な no-progress ガードも同じ宣言で外れます。
 
 回帰（`regression_cmd`）は `verification_plan` に畳みません。グローバル検査で、パスも差分基準（`$AGENT_BASE_REV`）も git-bus ルート（workdir）を前提に書かれており、成果 repo の clone 上で走らせるとゲート自体が壊れるためです。重複実行の解消（同一コマンドの digest 畳み込み）は plan の正規化段で plan 内にだけ効きます。
 
-receipt を採用できないタスク（receipt 欠落・検算不一致・dry-run / stub 実行）は、agent-project 自身が local runner として plan の固定コマンドを一度だけ実行します。書込 workspace の plan では同じ target 統合判定も行い、両方を同じ契約の receipt にして検算します。target を取得できなければ pass を作らず inconclusive に倒します。自然文基準の判定は agent-flow runner だけが行い、local runner では inconclusive（委譲・人送り）に倒します。
+receipt を採用できないタスク（receipt 欠落・検算不一致・dry-run / stub 実行）は、agent-project 自身が local runner として plan の固定コマンドを一度だけ実行します。書込 workspace の plan では同じ target 統合判定も行い、両方を同じ契約の receipt にして検算します。version 3 の plan では検証の clone を要素ごとに用意し、`AGENT_WORKSET_ROOT` と `AGENT_REPO_<NAME>` を渡して要素ごとの revision と統合結果を返します。clone を用意できないまま version 3 の plan を実行することはありません（判定材料の不足として全件 inconclusive に倒します）。target を取得できなければ pass を作らず inconclusive に倒します。自然文基準の判定は agent-flow runner だけが行い、local runner では inconclusive（委譲・人送り）に倒します。
 
 `inconclusive` は修正リトライを消費させず、まず別ノードへ検証だけを委譲し、それでも決着しなければ人へ回します。1 件だけ検証条件を変えるときはタスクの `verify_agent`（CLI・モデル・待ち時間）を `verification_plan.policy.agent` に載せます。条件は digest の一部なので古い receipt は採用されず、実際の条件と所要時間は receipt の `verified_with` に残ります。
 
@@ -597,7 +600,8 @@ done は、対象 revision と検証計画に一致する receipt の PASS で�
 
 - 検証環境の隔離はしません。証跡の再実行検算、外部検証ノードの allowlist、verifier のサンドボックスや許可コマンド列挙は持ちません。`verify_side_effects` は検証エージェントへ渡す指示で、機構では強制しません。担保は receipt の証拠確認による事後検知に置きます
 - フォージ実装は GitLab と GitHub だけです。gitea / codeberg は検出して 1 回警告し、MR/PR の自動作成と決着は行いません。未対応フォージとトークン欠落のどちらでも、検収は dashboard のボタン決着が正式な契約になります
-- MR/PR は自動作成しません。作るのは人が `mr-create` を押したときだけです（統合は done 確定時に機械が行います）
+- MR/PR は自動作成しません。作るのは人が `mr-create` を押したときだけです（統合は done 確定時に機械が行います）。書込先が複数（workset）のタスクでは**要素ごとに 1 本**立て、承認時の自動決着・target 鮮度検査・作業ブランチ消失の再承認も要素ごとに行い、**全要素が成立したときだけ** done を確定します（複数 remote への統合は原子的にできないので、成立した要素はそのまま残します）
+- 書込先が複数（workset）のタスクは委譲公示板へ出しません。`workspaces` を知らない請負ノードはそれを未知キーとして無視し primary だけに書き、記録には成功として残る（静かな部分実行）ためです。入札選別の契約版（`agentcore.board.CONTRACT_VERSION`）は完全一致なので、フリートを静止点で一斉に上げるまでは依頼側が出さないのが唯一の安全弁で、その間はローカル実行へ倒します
 - charter 分解は自動起動しません。人の明示要求（`replan` / dashboard のボタン）だけが分解を走らせます
 - 意図の同一性を機械スコアで決めません。機械が投入を止めるのは、現役タスクまたは墓標と正規化タイトルが完全一致したときだけです。類似どまりの候補は止めず、プランナー入力への提示と注記に留めます。差し替えた `planner_skill` が言い換えを出す余地は残ります（隠さない設計上の限界）
 - イベント台帳を持ちません。事実は「誰に属するか」で分けます。人の編集はタスク本体に、墓標は専用ファイルに。`tombstones.md` はイベントログではなく「現在の墓標一覧」です

@@ -840,13 +840,14 @@ def _act_board(task: Task, cfg: "Config") -> "tuple":
     _pin_last_run(cfg, task, did)
     term, ok, msg = _board_result_once(board, did)
     if not term:
-        spec = _workspace_spec_for(cfg, task)
+        specs = _workspace_specs_for(cfg, task)
+        spec = specs[0] if specs else None
         refs = task_reference_specs(cfg, task)
         # board 委譲は請負側が別マシン（--context-file のようなローカル参照を渡せない）ため、
         # stable_prefix が有効でも charter/rules/repo_map は本文へ埋め込む。
         env = task_to_delegation(task, spec, workload=cfg.board_workload, delegation_id=did,
                                  request=build_request(task, cfg, force_inline_context=True),
-                                 references=refs)
+                                 references=refs, workset=specs)
         if board.write_post(env):          # 新規のときだけ push（無駄な空 commit を作らない）
             board.sync_push(f"post {did}")
         term, ok, msg = _board_result_once(board, did)   # 直後にもう一度（同一 cycle 内解決対応）
@@ -920,13 +921,19 @@ def delegate_verification(cfg: "Config", task: "Task", verification: dict,
                                     "特定できないため）")
         return False
     did = _verify_delegation_id(task, cfg, rev)
-    spec = _workspace_spec_for(cfg, task)
+    specs = _workspace_specs_for(cfg, task)
+    blocked = workset_offload_blocked(specs)
+    if blocked:
+        append_journal(cfg.journal,
+                       f"cycle {cycle}: {task.id} 検証委譲は見送り（人へ回します）: {blocked}")
+        return False
+    spec = specs[0] if specs else None
     try:
         board = BoardRepo(cfg.board, workdir=cfg.board_workdir)
         board.sync_pull()
         env = task_to_delegation(task, spec, workload="flow", delegation_id=did,
                                  request=_verification_request(task, cfg, criteria, reasons),
-                                 references=task_reference_specs(cfg, task))
+                                 references=task_reference_specs(cfg, task), workset=specs)
         env["title"] = f"検証: {task.title or task.id}"
         env["verification_plan"] = plan   # 請負側 agent-flow の runner が同じ plan を実行する
         if board.write_post(env):
@@ -981,7 +988,15 @@ def act_via_agent_flow(task: Task, cfg: "Config", location: str = "local") -> "t
     if last and run_id_for(cfg, task) == last and _run_resumable(cfg, last):
         return _act_run(task, cfg, use_git=False)
     if location == "board":
-        return _act_board(task, cfg)
+        # 書込先が複数（workset）ある仕事は、フリートの委譲契約が対応するまで板へ出さない
+        # ——`workspaces` を知らないノードは primary だけに書き、記録には成功として残る
+        # （静かな部分実行）。見送りは失敗ではないのでローカル実行へ倒す（設計 §5.7）。
+        blocked = workset_offload_blocked(_workspace_specs_for(cfg, task))
+        if blocked:
+            append_journal(cfg.journal,
+                           f"board 委譲を見送りローカル実行へ: {task.id} — {blocked}")
+        else:
+            return _act_board(task, cfg)
     return _act_run(task, cfg, use_git=False)
 
 

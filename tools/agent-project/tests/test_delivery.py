@@ -387,7 +387,8 @@ class TestTaskBranchAndDeliveryReview(unittest.TestCase):
 
             with mock.patch.object(km, "ensure_task_mr",
                                    side_effect=AssertionError("MR を自動作成した")), \
-                 mock.patch.object(km, "_task_work_branch", return_value=("release", "ap/T1")), \
+                 mock.patch.object(km, "_task_work_branches", return_value=[
+                     {"name": "", "url": "", "target": "release", "branch": "ap/T1", "path": ""}]), \
                  mock.patch.object(km, "work_branch_changes",
                                    return_value=("origin/ap/T1", ["src/a.py"])), \
                  mock.patch.object(km.subprocess, "run", side_effect=run):
@@ -549,7 +550,8 @@ class TestTaskBranchAndDeliveryReview(unittest.TestCase):
                 return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
             with mock.patch.object(km, "ensure_task_mr", return_value=""), \
-                 mock.patch.object(km, "_task_work_branch", return_value=("release", "ap/T1")), \
+                 mock.patch.object(km, "_task_work_branches", return_value=[
+                     {"name": "", "url": "", "target": "release", "branch": "ap/T1", "path": ""}]), \
                  mock.patch.object(km, "work_branch_changes", return_value=("origin/ap/T1", ["src/a.py"])), \
                  mock.patch.object(km.subprocess, "run", side_effect=run):
                 ok, msg = km.finalize_task_delivery(cfg, t)
@@ -575,7 +577,8 @@ class TestTaskBranchAndDeliveryReview(unittest.TestCase):
                 return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
             with mock.patch.object(km, "ensure_task_mr", return_value=""), \
-                 mock.patch.object(km, "_task_work_branch", return_value=("release", "ap/T1")), \
+                 mock.patch.object(km, "_task_work_branches", return_value=[
+                     {"name": "", "url": "", "target": "release", "branch": "ap/T1", "path": ""}]), \
                  mock.patch.object(km, "work_branch_changes",
                                    return_value=("origin/ap/T1", ["src/a.py"])), \
                  mock.patch.object(km.subprocess, "run", side_effect=run):

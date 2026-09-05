@@ -7,6 +7,30 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-project: 複数リポジトリへ同時に書くタスクをルーティング・検証・納品できる（workset P2）
+
+agent-flow 側（P1）に続き、制御層が書込先の**集合**を扱えるようになった。設計:
+[docs/plans/2026-09-05-agent-flow-multi-workspace-design.md](docs/plans/2026-09-05-agent-flow-multi-workspace-design.md) §6.3。
+
+- **既定では従来どおり 1 つに決まる。** 集合になるのは (a) 人の明示 `- workspace: a, b`、
+  (b) `policy.md` の `route: <パターン> -> a+b`、(c) 設定 `multi_workspace: true` のもとで
+  `owns` が複数 repo にヒットした、の 3 つだけ。**auto-route（LLM）には複数を選ばせない**
+  ——「どこに書くか」の判断を増やす場所ではない。
+- `resolve_workset` / `_workspace_specs_for` / `_task_work_branches` が集合を返し、
+  primary だけが要る従来の呼び出し（`resolve_workspace` 等）はその先頭を返す。
+- **`--workspace` を要素ごとに渡す。** 2 要素以上のときだけ要素名（repos レジストリのエントリ名）
+  を載せ、agent-flow の `deliveries[]` と検証計画の `workspaces[]` が同じ語彙で要素を指す。
+- **検証計画 version 3 を生成**し、local runner も要素ごとの clone・`AGENT_REPO_<NAME>`・
+  要素ごとの revision と統合結果で判定する。検証の clone も要素ごとに用意する。
+- **MR/PR は要素ごとに 1 本**（`- mr_coords:` に座標、primary は従来の `- mr_url:` のまま）。
+  承認時の自動決着・target 鮮度検査・作業ブランチ消失の再承認も要素ごとで、**全要素が
+  成立したときだけ** done を確定する。検収の納品エントリも write 行が要素ごとに並ぶ。
+- **委譲公示板へは出さない（当面）。** `workspaces` を知らない請負ノードは primary だけに書き、
+  記録には成功として残る（静かな部分実行）。入札選別の契約版は完全一致なので、フリートを
+  一斉に上げるまで（設計 §7 の P4）依頼側が出さないのが唯一の安全弁——集合タスクは
+  ローカル実行へ倒し、その旨を journal に残す。封筒の形（`workspaces[]` / `requires.repos` /
+  `requires.contract_version`）は先に用意してある。
+
 ### agent-flow: 1 run が複数リポジトリへ同時に書けるようになった（workset）
 
 API を提供する repo とそれを呼ぶ repo のように、**1 つの変更が複数 repo で同時に成立して初めて
