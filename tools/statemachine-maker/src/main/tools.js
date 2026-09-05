@@ -98,6 +98,19 @@ function agentHerdRunSpec({ workflow, root, agent, model = '', input = '', conte
   return { command: 'agent-herd', args };
 }
 
+// AI 支援はファイルを書かせず、単発の構造化応答だけを受け取る。
+function agentAssistRunSpec({ root, agent, model = '', prompt = '' } = {}) {
+  const args = [
+    '--agent', String(agent || ''),
+    '--purpose', 'plan',
+    '--readonly',
+    '--dir', String(root || ''),
+  ];
+  if (model) args.push('--model', String(model));
+  args.push('-p', String(prompt || ''));
+  return { command: 'agent-herd', args };
+}
+
 // `capture(command, args, { cwd, timeoutMs })` → { ok, status, stdout, stderr, error }
 async function toolStatus({ cwd = '', capture, skillDir = '' } = {}) {
   if (typeof capture !== 'function') throw new Error('道具の確認に使う実行関数がありません');
@@ -173,6 +186,6 @@ async function toolStatus({ cwd = '', capture, skillDir = '' } = {}) {
 }
 
 module.exports = {
-  SKILL_REL, findSkillDir, findPython, agentDefinitions, agentHerdRunSpec,
+  SKILL_REL, findSkillDir, findPython, agentDefinitions, agentHerdRunSpec, agentAssistRunSpec,
   toolStatus, summarizeDoctor, isDir,
 };

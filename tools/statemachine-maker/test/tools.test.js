@@ -77,3 +77,24 @@ test('実行は agent-tools の statemachine harness 契約を使う', () => {
     ],
   });
 });
+
+test('AI支援は agent-tools を読み取り専用・単発で起動する', () => {
+  const spec = tools.agentAssistRunSpec({
+    root: '/project',
+    agent: 'codex',
+    model: 'gpt-5',
+    prompt: 'JSON だけを返してください',
+  });
+
+  assert.deepStrictEqual(spec, {
+    command: 'agent-herd',
+    args: [
+      '--agent', 'codex',
+      '--purpose', 'plan',
+      '--readonly',
+      '--dir', '/project',
+      '--model', 'gpt-5',
+      '-p', 'JSON だけを返してください',
+    ],
+  });
+});

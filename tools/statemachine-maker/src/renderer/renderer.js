@@ -4,7 +4,7 @@
 //   一覧 … 左に登録したフォルダ、右にそのフォルダのワークフロー（マトリクス）。
 //          見に行くのは登録したフォルダの `.statemachine/` だけ。
 //   編集 … 左に工程の流れ、右に選んだ工程の設定を置く。
-// 記録・生成ファイル・AI 補完・実行環境はダイアログ。組み立てと検査は main に頼む。
+// 記録・生成ファイル・AI 支援・実行環境はダイアログ。組み立てと検査は main に頼む。
 //
 // **画面に出す言葉に内部の用語を持ち込まない**（YAML の項目名・コマンドの綴り・ステートの
 // 呼び名など）。人が読む言葉に直してから出す。綴りそのものが要る欄（確認コマンドなど）だけ
@@ -25,7 +25,9 @@ const state = {
   current: null,     // { machine, isNew, spec, dirty, warnings, dir }
   open: null,        // 選択中の工程番号、'workflow'、または未選択
   pickerAt: -1,      // 追加の種類を選んでいる位置
-  preview: null, ai: null, tools: null,
+  preview: null, tools: null,
+  aiDraft: { mode: 'draft', phase: 'input', requestId: '', busy: false, request: '', history: [], questions: [], answers: {}, result: null, error: '', message: '' },
+  aiReview: { mode: 'review', phase: 'input', requestId: '', busy: false, focus: '', scope: null, history: [], questions: [], answers: {}, result: null, error: '', message: '' },
   recording: { source: 'browser', url: '', app: '', text: '', active: false, busy: false, message: '', ok: true },
   run: { lines: [], running: false, input: '', agent: '' },
   fileTab: '',
@@ -60,6 +62,23 @@ function selectedAgent(preferred = '') {
   if (state.agents.includes(preferred)) return preferred;
   if (state.agents.includes('aider')) return 'aider';
   return state.agents[0] || '';
+}
+
+function resetAi(flow, keepInput = false) {
+  const kept = keepInput
+    ? { request: flow.request || '', focus: flow.focus || '', scope: flow.scope || null }
+    : {};
+  Object.assign(flow, {
+    phase: 'input', requestId: '', busy: false, request: '', focus: '', scope: null,
+    history: [], questions: [], answers: {}, result: null, error: '', message: '', ...kept,
+  });
+}
+
+function cancelAi(flow) {
+  if (!flow.busy) return;
+  const requestId = flow.requestId === 'pending' ? '' : flow.requestId;
+  api.aiStop(requestId).catch(() => {});
+  resetAi(flow, true);
 }
 
 function agentOptions(preferred = '') {
@@ -188,6 +207,8 @@ async function loadMachines() {
 
 async function selectRoot(root) {
   if (!root || root === state.root) return;
+  cancelAi(state.aiDraft);
+  cancelAi(state.aiReview);
   state.root = root;
   await guard('フォルダ', () => api.selectRoot(root));
   await Promise.all([loadMachines(), loadAgents()]);
@@ -195,6 +216,8 @@ async function selectRoot(root) {
 }
 
 async function addFolder() {
+  cancelAi(state.aiDraft);
+  cancelAi(state.aiReview);
   const cfg = await guard('フォルダの登録', () => api.addRoot());
   if (!cfg) return;
   state.config = cfg;
@@ -205,6 +228,8 @@ async function addFolder() {
 
 async function removeFolder(root) {
   if (!confirm(`${folderName(root)} を一覧から外しますか？（フォルダの中身は消えません）`)) return;
+  cancelAi(state.aiDraft);
+  cancelAi(state.aiReview);
   const cfg = await guard('フォルダ', () => api.removeRoot(root));
   if (!cfg) return;
   state.config = cfg;
@@ -215,12 +240,15 @@ async function removeFolder(root) {
 
 function goHome() {
   if (state.current && state.current.dirty && state.view === 'editor' && !confirm('保存していない変更があります。一覧へ戻りますか？')) return;
+  cancelAi(state.aiReview);
   state.view = 'home';
   state.current = null;
   render();
 }
 
 async function openMachine(machine) {
+  cancelAi(state.aiDraft);
+  cancelAi(state.aiReview);
   const res = await guard('読み込み', () => api.readMachine(state.root, machine));
   if (!res) return;
   const raw = res.raw;
@@ -229,18 +257,20 @@ async function openMachine(machine) {
   state.view = 'editor';
   state.open = null;
   state.preview = null;
-  state.ai = null;
+  resetAi(state.aiReview);
   state.run.lines = [];
   render();
 }
 
 function newMachine() {
   if (!state.root) { toast('先にフォルダを登録してください', true); return; }
+  cancelAi(state.aiDraft);
+  cancelAi(state.aiReview);
   state.current = { machine: '', isNew: true, spec: newSpec(), dirty: true, warnings: [], dir: '' };
   state.view = 'editor';
   state.open = null;
   state.preview = null;
-  state.ai = null;
+  resetAi(state.aiReview);
   render();
   const t = document.querySelector('.title-input');
   if (t) t.focus();
@@ -250,7 +280,7 @@ function markDirty() {
   if (!state.current) return;
   state.current.dirty = true;
   state.preview = null;
-  state.ai = null;
+  if (!state.aiReview.busy) resetAi(state.aiReview, true);
   const el = $('dirty-mark');
   if (el) el.hidden = false;
 }
@@ -280,11 +310,11 @@ function renderBar() {
   const spec = state.current.spec;
   center.innerHTML = `<input class="title-input" id="m-name" value="${esc(spec.name)}" placeholder="名前を付ける（例: 月次の勤怠集計）" aria-label="名前">`;
   right.innerHTML = `<span id="dirty-mark" class="dirty" ${state.current.dirty ? '' : 'hidden'}>● 未保存</span>
-    <button type="button" id="b-record" class="ghost">操作を記録</button>
+    <button type="button" id="b-ai" class="ghost">AIで見直す</button>
     <button type="button" id="b-run" class="ghost" ${state.current.isNew ? 'disabled title="保存すると実行できます"' : ''}>テスト・実行</button>
     <details class="more-menu"><summary>その他</summary><div class="menu-panel">
+      <button type="button" id="b-record" class="ghost">操作を記録</button>
       <button type="button" id="b-files" class="ghost">生成ファイル</button>
-      <button type="button" id="b-ai" class="ghost">AIで補完</button>
       <button type="button" id="b-settings" class="ghost">実行環境</button>
     </div></details>
     <button type="button" id="b-save" class="primary">保存</button>`;
@@ -298,7 +328,7 @@ function renderBar() {
   if (saveName) saveName.addEventListener('input', () => { touched = true; });
   $('b-record').addEventListener('click', openRecord);
   $('b-files').addEventListener('click', openFiles);
-  $('b-ai').addEventListener('click', openAi);
+  $('b-ai').addEventListener('click', openAiReview);
   $('b-run').addEventListener('click', openRun);
   $('b-settings').addEventListener('click', openSettings);
   $('b-save').addEventListener('click', saveMachine);
@@ -329,9 +359,9 @@ function homeHtml() {
   const body = state.root
     ? `<div class="machine-head">
         <div><h1>${esc(folderName(state.root))}</h1><div class="where">${esc(state.root)}</div></div>
-        <button type="button" class="primary" id="h-new">＋ 新規</button>
+        <div class="row"><button type="button" class="primary" id="h-ai-draft">AIで下書き</button><button type="button" id="h-new">手動で作成</button></div>
       </div>
-      <div class="matrix">${cards}<button type="button" class="machine-card new" id="h-new-card">＋ 新しいワークフロー</button></div>`
+      <div class="matrix">${cards}</div>`
     : '<div class="blank"><h2>左のフォルダを選んでください</h2></div>';
   // 登録したフォルダを左、ワークフローを右に置く。読む順（切り替え → 内容）に合わせて
   // DOM もこの順にする（タブ移動と読み上げが見た目とずれない）。
@@ -347,8 +377,8 @@ function homeHtml() {
 function bindHome(main) {
   const on = (id, fn) => { const el = main.querySelector(`#${id}`); if (el) el.addEventListener('click', fn); };
   on('h-add', addFolder);
+  on('h-ai-draft', openAiDraft);
   on('h-new', newMachine);
-  on('h-new-card', newMachine);
   for (const b of main.querySelectorAll('[data-root]')) b.addEventListener('click', () => selectRoot(b.dataset.root));
   for (const b of main.querySelectorAll('[data-drop]')) b.addEventListener('click', () => removeFolder(b.dataset.drop));
   for (const b of main.querySelectorAll('[data-open]')) b.addEventListener('click', () => openMachine(b.dataset.open));
@@ -809,16 +839,237 @@ async function openFiles() {
   paint();
 }
 
-async function openAi() {
-  const dlg = dialog('dlg-ai', 'AIで補完', 'work', '<p class="muted small">準備中…</p>');
-  const res = state.ai || await guard('用意', () => api.instruction(state.root, specPayload()));
-  if (!res) { dlg.querySelector('.dlg-body').innerHTML = '<p class="msg err">用意できませんでした（名前と工程を確かめてください）</p>'; return; }
-  state.ai = res;
-  dlg.querySelector('.dlg-body').innerHTML = `<p class="small muted" style="margin:0">指示文をコピーし、エージェント CLI に貼り付けます。</p>
-    <div class="row"><button type="button" id="ai-copy" class="primary">コピー</button><button type="button" id="ai-terminal">フォルダでターミナルを開く</button></div>
-    <pre>${esc(res.prompt)}</pre>`;
-  dlg.querySelector('#ai-copy').addEventListener('click', async () => { await api.copyText(res.prompt); toast('コピーしました'); });
-  dlg.querySelector('#ai-terminal').addEventListener('click', () => guard('ターミナル', () => api.openTerminal(state.root)));
+function aiAgentHtml() {
+  const agent = selectedAgent(state.config.agent);
+  return `<p class="ai-agent">使うAI: <strong>${esc(agent || '未設定')}</strong></p>`;
+}
+
+function aiBusyHtml(flow) {
+  return `<div class="ai-busy" role="status"><span class="spinner" aria-hidden="true"></span><div><strong>${esc(flow.message || 'AIが検討しています…')}</strong><span>この画面を閉じても処理は続きます。</span></div></div>
+    <div class="row"><button type="button" class="danger" data-ai-stop>中止</button></div>`;
+}
+
+function aiQuestionsHtml(flow) {
+  return `<p class="muted small">判断に必要な点だけ確認します。回答すると、内容を含めてもう一度見直します。</p>
+    <div class="ai-question-list">${flow.questions.map((question) => `<div class="ai-question">
+      <label for="answer-${esc(question.id)}">${esc(question.text)}</label>
+      ${question.reason ? `<p>${esc(question.reason)}</p>` : ''}
+      <textarea id="answer-${esc(question.id)}" data-ai-answer="${esc(question.id)}" rows="2" placeholder="${esc(question.example || '回答を入力')}">${esc(flow.answers[question.id] || '')}</textarea>
+    </div>`).join('')}</div>
+    <div class="row"><button type="button" class="primary" data-ai-answer-send>回答して続ける</button><button type="button" data-ai-back>最初からやり直す</button></div>`;
+}
+
+function assumptionsHtml(items) {
+  return items && items.length
+    ? `<div class="ai-assumptions"><strong>前提</strong><ul>${items.map((item) => `<li>${esc(item)}</li>`).join('')}</ul></div>`
+    : '';
+}
+
+function openAiDraft() {
+  if (!state.root) { toast('先にフォルダを登録してください', true); return; }
+  const flow = state.aiDraft;
+  let body;
+  if (flow.busy) {
+    body = `${aiAgentHtml()}${aiBusyHtml(flow)}`;
+  } else if (flow.phase === 'questions') {
+    body = `${aiAgentHtml()}${flow.result && flow.result.summary ? `<p>${esc(flow.result.summary)}</p>` : ''}${aiQuestionsHtml(flow)}`;
+  } else if (flow.phase === 'result' && flow.result && flow.result.candidate) {
+    const candidate = flow.result.candidate;
+    body = `${aiAgentHtml()}<div class="ai-summary"><span class="ai-kicker">下書きができました</span><h3>${esc(candidate.name)}</h3><p>${esc(flow.result.summary || candidate.purpose || '')}</p></div>
+      <ol class="ai-step-list">${candidate.steps.map((step) => `<li><span>${esc(step.title || kindOf(step.kind).label)}</span><small>${esc(kindOf(step.kind).short)}</small></li>`).join('')}</ol>
+      ${assumptionsHtml(flow.result.assumptions)}
+      ${(flow.result.warnings || []).length ? `<p class="msg" style="color:var(--warn)">${flow.result.warnings.map(esc).join('\n')}</p>` : ''}
+      <div class="row"><button type="button" class="primary" data-ai-open-draft>編集画面で確認</button><button type="button" data-ai-back>作り直す</button></div>`;
+  } else {
+    body = `${aiAgentHtml()}${flow.error ? `<p class="msg err">${esc(flow.error)}</p>` : ''}
+      <div class="field"><label for="ai-draft-request">作りたいワークフロー</label><textarea id="ai-draft-request" rows="6" placeholder="例: 毎朝、申請一覧を確認し、不備がある申請をまとめて担当者へ知らせたい">${esc(flow.request)}</textarea><small>目的と大まかな流れだけで始められます。</small></div>
+      <div class="row"><button type="button" class="primary" data-ai-start-draft ${state.agents.length ? '' : 'disabled'}>下書きを作る</button></div>`;
+  }
+  const dlg = dialog('dlg-ai-draft', 'AIで下書き', 'work', `<div class="ai-flow">${body}</div>`);
+  bindAiCommon(dlg, flow, openAiDraft);
+  const request = dlg.querySelector('#ai-draft-request');
+  if (request) request.addEventListener('input', (event) => { flow.request = event.target.value; });
+  const start = dlg.querySelector('[data-ai-start-draft]');
+  if (start) start.addEventListener('click', () => startAi(flow));
+  const open = dlg.querySelector('[data-ai-open-draft]');
+  if (open) open.addEventListener('click', importAiDraft);
+}
+
+function reviewScopeValue(scope) {
+  return scope && scope.type === 'step' ? `step:${scope.stepId}` : 'workflow';
+}
+
+function openAiReview() {
+  const flow = state.aiReview;
+  assignIds(state.current.spec);
+  if (!flow.scope) {
+    const selected = Number.isInteger(state.open) && state.current.spec.steps[state.open];
+    flow.scope = selected ? { type: 'step', stepId: selected.id } : { type: 'workflow' };
+  }
+  let body;
+  if (flow.busy) {
+    body = `${aiAgentHtml()}${aiBusyHtml(flow)}`;
+  } else if (flow.phase === 'questions') {
+    body = `${aiAgentHtml()}${flow.result && flow.result.summary ? `<p>${esc(flow.result.summary)}</p>` : ''}${aiQuestionsHtml(flow)}`;
+  } else if (flow.phase === 'result' && flow.result) {
+    body = reviewResultHtml(flow.result);
+  } else {
+    const options = state.current.spec.steps.map((step, index) => `<option value="step:${esc(step.id)}" ${reviewScopeValue(flow.scope) === `step:${step.id}` ? 'selected' : ''}>工程 ${index + 1}: ${esc(step.title || kindOf(step.kind).label)}</option>`).join('');
+    body = `${aiAgentHtml()}${flow.error ? `<p class="msg err">${esc(flow.error)}</p>` : ''}
+      <div class="grid2"><div class="field"><label for="ai-review-scope">見直す範囲</label><select id="ai-review-scope"><option value="workflow" ${reviewScopeValue(flow.scope) === 'workflow' ? 'selected' : ''}>ワークフロー全体</option>${options}</select></div>
+      <div class="field"><label for="ai-review-focus">特に見てほしい点（任意）</label><input id="ai-review-focus" value="${esc(flow.focus)}" placeholder="例: 再試行が多すぎないか"></div></div>
+      <div class="ai-checks"><span>整合性</span><span>効率性</span><span>エラー処理</span><span>エッジケース</span></div>
+      <div class="row"><button type="button" class="primary" data-ai-start-review ${state.agents.length ? '' : 'disabled'}>見直す</button></div>`;
+  }
+  const dlg = dialog('dlg-ai', 'AIで見直す', 'work', `<div class="ai-flow">${body}</div>`);
+  bindAiCommon(dlg, flow, openAiReview);
+  const scope = dlg.querySelector('#ai-review-scope');
+  if (scope) scope.addEventListener('change', (event) => {
+    flow.scope = event.target.value === 'workflow' ? { type: 'workflow' } : { type: 'step', stepId: event.target.value.slice(5) };
+  });
+  const focus = dlg.querySelector('#ai-review-focus');
+  if (focus) focus.addEventListener('input', (event) => { flow.focus = event.target.value; });
+  const start = dlg.querySelector('[data-ai-start-review]');
+  if (start) start.addEventListener('click', () => startAi(flow));
+  const all = dlg.querySelector('[data-ai-all]');
+  if (all) all.addEventListener('change', () => {
+    for (const item of dlg.querySelectorAll('[data-ai-change]')) item.checked = all.checked;
+  });
+  const apply = dlg.querySelector('[data-ai-apply]');
+  if (apply) apply.addEventListener('click', () => applyAiReview(dlg));
+}
+
+function reviewResultHtml(result) {
+  const findings = (result.findings || []).map((item) => {
+    const severity = { error: '要対応', warning: '確認', suggestion: '提案' }[item.severity] || '提案';
+    return `<li class="${esc(item.severity)}"><span>${esc(severity)}</span><div><strong>${esc(item.title)}</strong>${item.detail ? `<p>${esc(item.detail)}</p>` : ''}</div></li>`;
+  }).join('');
+  const changes = (result.changes || []).map((item) => `<label class="ai-change">
+    <input type="checkbox" data-ai-change value="${esc(item.id)}" checked>
+    <span><strong>${esc(item.title)}</strong><details><summary>変更内容</summary><div class="ai-compare"><pre>${esc(JSON.stringify(item.before, null, 2))}</pre><span aria-hidden="true">→</span><pre>${esc(JSON.stringify(item.after, null, 2))}</pre></div></details></span>
+  </label>`).join('');
+  return `${aiAgentHtml()}<div class="ai-summary"><span class="ai-kicker">見直し結果</span><p>${esc(result.summary || '確認が終わりました。')}</p></div>
+    ${findings ? `<ul class="ai-findings">${findings}</ul>` : ''}
+    ${assumptionsHtml(result.assumptions)}
+    ${changes ? `<div class="ai-select-head"><strong>反映する提案</strong><label><input type="checkbox" data-ai-all checked> すべて選択</label></div><div class="ai-change-list">${changes}</div>
+      <div class="row"><button type="button" class="primary" data-ai-apply>選んだ提案を反映</button><button type="button" data-ai-back>見直し直す</button></div>`
+    : '<p class="msg ai-no-change">変更の提案はありません。現在の内容で問題ありません。</p><div class="row"><button type="button" data-ai-back>もう一度見直す</button></div>'}`;
+}
+
+function bindAiCommon(dlg, flow, repaint) {
+  const stop = dlg.querySelector('[data-ai-stop]');
+  if (stop) stop.addEventListener('click', async () => {
+    stop.disabled = true;
+    await guard('中止', () => api.aiStop(flow.requestId === 'pending' ? '' : flow.requestId));
+  });
+  for (const answer of dlg.querySelectorAll('[data-ai-answer]')) {
+    answer.addEventListener('input', (event) => { flow.answers[event.target.dataset.aiAnswer] = event.target.value; });
+  }
+  const send = dlg.querySelector('[data-ai-answer-send]');
+  if (send) send.addEventListener('click', () => {
+    const missing = flow.questions.find((question) => !String(flow.answers[question.id] || '').trim());
+    if (missing) { toast('すべての質問に回答してください', true); return; }
+    flow.history.push(...flow.questions.map((question) => ({ question: question.text, answer: flow.answers[question.id].trim() })));
+    flow.questions = [];
+    flow.answers = {};
+    startAi(flow);
+  });
+  const back = dlg.querySelector('[data-ai-back]');
+  if (back) back.addEventListener('click', () => { resetAi(flow, true); repaint(); });
+}
+
+async function startAi(flow) {
+  if (flow.busy) return;
+  if (flow.mode === 'draft' && !String(flow.request || '').trim()) { toast('作りたいワークフローを入力してください', true); return; }
+  flow.busy = true;
+  flow.phase = 'processing';
+  flow.error = '';
+  flow.result = null;
+  flow.requestId = 'pending';
+  flow.message = 'AIが検討しています…';
+  const repaint = flow.mode === 'draft' ? openAiDraft : openAiReview;
+  repaint();
+  const payload = {
+    root: state.root, mode: flow.mode, agent: selectedAgent(state.config.agent), history: flow.history,
+    ...(flow.mode === 'draft'
+      ? { request: flow.request }
+      : { spec: specPayload(), scope: flow.scope, focus: flow.focus }),
+  };
+  try {
+    const started = await api.aiStart(payload);
+    if (flow.busy && flow.requestId === 'pending') flow.requestId = started.requestId;
+  } catch (err) {
+    flow.busy = false;
+    flow.phase = 'input';
+    flow.requestId = '';
+    flow.error = String((err && err.message) || err);
+    repaint();
+  }
+}
+
+function receiveAiProgress(payload) {
+  const flow = payload.mode === 'draft' ? state.aiDraft : payload.mode === 'review' ? state.aiReview
+    : (state.aiDraft.requestId === payload.requestId ? state.aiDraft : state.aiReview);
+  if (!flow.busy || (flow.requestId !== 'pending' && flow.requestId !== payload.requestId)) return;
+  flow.requestId = payload.requestId;
+  flow.message = payload.message || flow.message;
+  const dlg = $(flow.mode === 'draft' ? 'dlg-ai-draft' : 'dlg-ai');
+  if (dlg.open) (flow.mode === 'draft' ? openAiDraft : openAiReview)();
+}
+
+function receiveAiResult(payload) {
+  const flow = payload.mode === 'draft' ? state.aiDraft : state.aiReview;
+  if (!flow.busy || (flow.requestId !== 'pending' && flow.requestId !== payload.requestId)) return;
+  flow.requestId = payload.requestId;
+  flow.busy = false;
+  if (payload.cancelled) {
+    flow.phase = 'input';
+    flow.error = '';
+  } else if (!payload.ok) {
+    flow.phase = 'input';
+    flow.error = payload.error || 'AIの処理に失敗しました';
+  } else {
+    flow.result = payload.result;
+    flow.questions = payload.result.questions || [];
+    flow.phase = payload.result.status === 'questions' ? 'questions' : 'result';
+  }
+  const dlg = $(flow.mode === 'draft' ? 'dlg-ai-draft' : 'dlg-ai');
+  if (dlg.open) (flow.mode === 'draft' ? openAiDraft : openAiReview)();
+}
+
+function importAiDraft() {
+  const result = state.aiDraft.result;
+  if (!result || !result.candidate) return;
+  const spec = JSON.parse(JSON.stringify(result.candidate));
+  state.current = { machine: spec.machine || '', isNew: true, spec, dirty: true, warnings: result.warnings || [], dir: '' };
+  state.view = 'editor';
+  state.open = null;
+  state.preview = null;
+  $('dlg-ai-draft').close();
+  resetAi(state.aiDraft);
+  resetAi(state.aiReview);
+  render();
+}
+
+async function applyAiReview(dlg) {
+  const flow = state.aiReview;
+  const ids = [...dlg.querySelectorAll('[data-ai-change]:checked')].map((input) => input.value);
+  if (!ids.length) { toast('反映する提案を選んでください', true); return; }
+  const button = dlg.querySelector('[data-ai-apply]');
+  button.disabled = true;
+  button.textContent = '確認中…';
+  const res = await guard('提案の反映', () => api.aiApply({
+    base: specPayload(), candidate: flow.result.candidate, ids, baseFingerprint: flow.result.baseFingerprint,
+  }));
+  if (!res) { button.disabled = false; button.textContent = '選んだ提案を反映'; return; }
+  state.current.spec = res.spec;
+  state.current.dirty = true;
+  state.current.warnings = res.warnings || [];
+  state.preview = null;
+  resetAi(flow);
+  dlg.close();
+  render();
+  toast(`${ids.length} 件の提案を反映しました（未保存）`);
 }
 
 function openRun() {
@@ -914,6 +1165,8 @@ async function init() {
   state.config = (await guard('設定', () => api.getConfig())) || state.config;
   $('btn-home').addEventListener('click', goHome);
   api.onRunLine((p) => appendLog(p));
+  api.onAiProgress((p) => receiveAiProgress(p));
+  api.onAiResult((p) => receiveAiResult(p));
   api.onRunExit((p) => {
     state.run.running = false;
     appendLog({ kind: p.code === 0 ? 'stdout' : 'stderr', line: p.code === 0 ? (p.mode === 'check' ? '— 点検しました。抜けはありません' : '— 終わりました') : '— 止まりました' });

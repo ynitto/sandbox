@@ -26,7 +26,8 @@ npm start
 
 構成確認には Python 3 と PyYAML、statemachine-use スキル（`.github/skills/statemachine-use/scripts/`）が要る。
 スキルは選んだフォルダから上へ辿って探し、見つからなければ「その他 → 実行環境」でフォルダを指定する。
-AI を使う実行は agent-tools の `agent-herd harness statemachine` に統一している。候補は
+AI を使う実行は agent-tools に統一している。ワークフロー本体は `agent-herd harness statemachine`、
+下書き・見直しは `agent-herd --purpose plan --readonly` で動く。候補は
 `agent-herd defs --json` から取得するため、プロジェクトやユーザー環境の `agents/*.json` に追加した定義も画面へ反映される。
 準備されていない場合は、リポジトリのルートで `bash tools/agent-tools/install.sh` を実行する。
 
@@ -35,13 +36,19 @@ AI を使う実行は agent-tools の `agent-herd harness statemachine` に統�
 | したいこと | 操作 |
 |---|---|
 | フォルダを増やす | 左の「フォルダ」の ＋。登録したフォルダだけを見に行く |
-| 新しく作る | 「＋ 新しいワークフロー」→ 名前を入力 →「ワークフロー設定」で目的を入力 → 工程を追加 → 保存 |
+| 要望から下書きを作る | 「AIで下書き」→ やりたいことを入力 → 必要な質問に回答 → 下書きを編集画面で確認して保存 |
+| 手動で新しく作る | 「手動で作成」→ 名前を入力 →「ワークフロー設定」で目的を入力 → 工程を追加 → 保存 |
 | 人の操作から起こす | 「操作を記録」。URL を入れて開始 → 開いたブラウザで操作 →「終了して工程を作成」。別の端末で取った記録も貼り付けられる |
 | 分岐を設定する | 工程を選び、「次の工程」で「もし 条件 なら 行き先」を追加する。条件は上から順に評価される |
 | 完了を機械で確認する | 工程の「完了確認」にコマンドを書く。成功した場合だけ次へ進む |
 | 既存を編集する | 一覧から選び、左の工程カードを選択して右パネルで編集する |
 | テスト・実行 | 「テスト・実行」で「構成を確認」または「実行」を選ぶ |
-| AI に補完させる | 「その他 → AIで補完」で指示文をコピーし、エージェント CLI に貼る |
+| AI に見直させる | 編集画面の「AIで見直す」→ 全体または工程を選択 → 提案ごとに選んで反映 |
+
+AI はファイルを直接変更しない。下書きは未保存の編集内容として開き、見直し結果も利用者が選んだ提案だけを
+未保存の内容へ反映する。見直しでは整合性・効率性・エラー処理・エッジケースを毎回確認する。情報が足りない
+場合は質問カードを表示し、回答を含めて最初から再評価する。応答の形式や候補が不正な場合は一度だけ修正を
+依頼し、それでも検証を通らなければ何も反映しない。
 
 ## 生成する定義の形
 
@@ -137,3 +144,5 @@ renderer で **`const api = …` のように preload が公開した名前を�
 [docs/plans/2026-09-04-statemachine-maker-design.md](../../docs/plans/2026-09-04-statemachine-maker-design.md)
 
 [docs/plans/2026-09-05-statemachine-maker-ui-redesign-design.md](../../docs/plans/2026-09-05-statemachine-maker-ui-redesign-design.md)
+
+[docs/plans/2026-09-05-statemachine-maker-ai-assistance-design.md](../../docs/plans/2026-09-05-statemachine-maker-ai-assistance-design.md)

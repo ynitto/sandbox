@@ -8,8 +8,6 @@ const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
-const instruction = require('../src/main/instruction');
-const model = require('../src/main/model');
 const config = require('../src/main/config');
 const tools = require('../src/main/tools');
 
@@ -52,7 +50,7 @@ test('ホームは左のフォルダから右のワークフロー一覧へ読�
   const renderer = read('renderer/renderer.js');
   const css = read('renderer/styles.css');
   assert.match(renderer, /<div class="home">\s*<aside class="folder-pane">[\s\S]*<section class="machine-pane">/);
-  assert.ok(renderer.includes('新しいワークフロー'));
+  assert.ok(renderer.includes('AIで下書き') && renderer.includes('手動で作成'));
   assert.match(css, /\.home\s*\{[^}]*grid-template-columns:\s*240px minmax\(0, 1fr\)/);
   assert.match(css, /\.folder-pane\s*\{[^}]*border-right:/);
 });
@@ -69,7 +67,7 @@ test('編集画面は左のフローと右の編集パネルを分離し、狭�
 
 test('主要操作と工程設定は省略語や直訳調の文言を使わない', () => {
   const renderer = read('renderer/renderer.js');
-  for (const label of ['操作を記録', 'テスト・実行', '生成ファイル', 'AIで補完', '実行環境', '実行方法', '工程名', '次の工程', '回答が指定の言葉で始まる', '条件に当てはまる', '詳細条件', '構成を確認']) {
+  for (const label of ['操作を記録', 'テスト・実行', '生成ファイル', 'AIで見直す', 'AIで下書き', '実行環境', '実行方法', '工程名', '次の工程', '回答が指定の言葉で始まる', '条件に当てはまる', '詳細条件', '構成を確認']) {
     assert.ok(renderer.includes(label), `表示文言がありません: ${label}`);
   }
   for (const oldLabel of ['>記録</button>', '>中身</button>', '>AI</button>', '>動かす</button>', '<label>種類</label>', '<label>名前（任意）</label>', '次にどこへ行くか（任意）']) {
@@ -82,7 +80,7 @@ test('主要操作と工程設定は省略語や直訳調の文言を使わな�
 test('ダイアログは用途別の幅を持ち、狭い画面で横スクロールを作らない', () => {
   const renderer = read('renderer/renderer.js');
   const css = read('renderer/styles.css');
-  for (const [id, size] of [['dlg-record', 'record'], ['dlg-files', 'files'], ['dlg-ai', 'work'], ['dlg-run', 'work'], ['dlg-settings', 'settings']]) {
+  for (const [id, size] of [['dlg-record', 'record'], ['dlg-files', 'files'], ['dlg-ai-draft', 'work'], ['dlg-ai', 'work'], ['dlg-run', 'work'], ['dlg-settings', 'settings']]) {
     assert.match(renderer, new RegExp(`dialog\\('${id}'[^\\n]+, '${size}',`), `${id} の幅指定`);
     assert.ok(css.includes(`.dlg-${size}`), `${size} の幅規則`);
   }
@@ -91,21 +89,17 @@ test('ダイアログは用途別の幅を持ち、狭い画面で横スクロ�
   assert.match(css, /overflow-wrap:\s*anywhere/);
 });
 
-test('作成モードへの指示文は工程・遷移・道具を載せ、YAML の骨組みは書かない', () => {
-  const spec = model.normalizeProcedure({ name: '勤怠', machine: 'kintai', purpose: '集計', steps: [
-    { kind: 'browser', target: 'https://x', detail: '一覧を読む {{month}}', check: 'python check.py' },
-    { kind: 'agent', detail: '判断', outcomes: [{ label: 'OK2', to: 'done' }, { label: 'NG', to: 'step:1' }] },
-  ] });
-  const text = instruction.creationInstruction(spec, { machineDir: '.statemachine/kintai/' });
-  assert.ok(text.includes('## 既存の定義') && text.includes('.statemachine/kintai/'));
-  assert.ok(text.includes('`playwright-cli` スキル'));
-  assert.ok(text.includes('- {{month}}'));
-  assert.ok(text.includes('`check: python check.py`'));
-  assert.ok(text.includes('第 1 行が NG で始まる → 工程 1 へ戻る（step_1）'), text);
-  assert.ok(!text.includes('initial_state:') && !text.includes('states:') && !text.includes('transitions:'));
-  const prompt = instruction.creationPrompt(spec, { machineDir: '.statemachine/kintai/' });
-  assert.ok(prompt.startsWith('statemachine-use スキルの作成モードで'));
-  assert.ok(prompt.includes('.statemachine/kintai/'));
+test('AI支援は下書きと見直しを分け、候補を保存せず選択反映する', () => {
+  const renderer = read('renderer/renderer.js');
+  const preload = read('preload.js');
+  const ipc = read('main/ipc.js');
+  assert.ok(renderer.includes("dialog('dlg-ai-draft', 'AIで下書き'") && renderer.includes("dialog('dlg-ai', 'AIで見直す'"));
+  assert.ok(renderer.includes('data-ai-answer') && renderer.includes('data-ai-change'));
+  assert.ok(renderer.includes('編集画面で確認') && renderer.includes('未保存'));
+  assert.ok(preload.includes("invoke('ai:start'") && preload.includes("invoke('ai:apply'"));
+  assert.ok(ipc.includes("handle('ai:start'") && ipc.includes("handle('ai:apply'"));
+  assert.ok(ipc.includes('tools.agentAssistRunSpec(') && ipc.includes('aiDiff.apply('));
+  assert.ok(!renderer.includes('指示文をコピー') && !preload.includes("invoke('instruction:get'"));
 });
 
 test('設定は登録したフォルダを持ち、旧版の「最近開いたフォルダ」から引き継ぐ', () => {
@@ -138,6 +132,7 @@ test('使うAIの候補と実行は agent-tools の公開インターフェー�
   assert.ok(!renderer.includes("['claude', 'copilot', 'kiro', 'anthropic']"), 'AI名を画面へ直書きしない');
   assert.ok(ipc.includes("handle('agents:list'"), 'main が定義一覧を返す');
   assert.ok(ipc.includes('tools.agentHerdRunSpec('), '実行は agent-herd harness を使う');
+  assert.ok(ipc.includes('tools.agentAssistRunSpec('), 'AI支援は agent-herd の読み取り専用起動を使う');
 });
 
 test('登録していないフォルダは触らない（main が断る）', () => {
