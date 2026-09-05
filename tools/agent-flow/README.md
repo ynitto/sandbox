@@ -114,8 +114,8 @@
   結果には要素ごとの `deliveries[]` と、そこから導いた集約 `publication`（最悪状態・公開できた repo 名）が載る。
   複数 remote への push は原子的にできないので、**片方だけ公開できた半公開は隠さず記録**し、resume で
   失敗した要素だけを再 push する。**要素が 1 つのときは従来と形も意味も変わらない**（`workspaces[]` /
-  `deliveries[]` は複数要素のときだけ現れる）。gitlab executor は起票先を 1 URL からしか解決できないため、
-  2 要素以上の run を **fail-close で断る**。設計は
+  `deliveries[]` は複数要素のときだけ現れる）。gitlab executor は**要素ごとに 1 イシュー**を起票し、
+  全部が承認されて初めてノードが done になる（1 つでも却下ならその時点で却下）。設計は
   [docs/plans/2026-09-05-agent-flow-multi-workspace-design.md](../../docs/plans/2026-09-05-agent-flow-multi-workspace-design.md)。
 - **書込先のルーティングは agent-project（制御層）が担当**：「どのタスクをどのワークスペースへ」は agent-project の
   charter `## repos`（`owns:` 担当パス）と `route:` ルールが決め、`--workspace` として渡す。agent-flow は渡された

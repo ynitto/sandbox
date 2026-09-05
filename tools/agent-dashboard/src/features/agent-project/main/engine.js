@@ -32,7 +32,7 @@ const AGENTS_DIRNAME = '.agents';
 // この画面が読める状況ファイルの版（実行側 resident/status.py の CONTRACT_VERSION と対）。
 // 食い違うノードは「更新漏れ」として表示する——黙って一部の情報を欠いたまま「正常」に
 // 見せると、更新し忘れた PC がいつまでも気づかれない（設計 §6・実装計画 W2-5）。
-const EXPECTED_CONTRACT_VERSION = 1;
+const EXPECTED_CONTRACT_VERSION = 2;
 
 let _homeCache = { at: 0, key: '', dir: '' };
 

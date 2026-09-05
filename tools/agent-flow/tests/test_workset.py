@@ -7,12 +7,13 @@
   - 集合が 1 要素のときは従来の単一 workspace と**形も意味も変わらない**（§5.1 不変条件 3）。
   - 要素ごとに同じ規律（作業ブランチ・commit/push・publication・復旧 ref・base-sync）を適用する。
   - 片方の push が失敗しても残りの要素を finalize し、半公開を記録に残す（§5.5）。
-  - 複数の書込先を扱えない executor（gitlab）は fail-close で断る（§5.7）。
+  - gitlab executor は書込先ごとに 1 イシューを起票し、全部の承認で初めて done にする（§5.7）。
 """
 import os as _os, sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
 from _shared import *  # noqa: E402,F401,F403
 import argparse
+from unittest import mock
 
 from agentcore import verifycontract as vc
 
@@ -496,32 +497,240 @@ class VerifyPlanWorksetTests(unittest.TestCase):
         self.assertEqual(task["workspaces"], ["web"])
 
 
-class GitlabExecutorFailCloseTests(unittest.TestCase):
-    """複数の書込先を扱えない executor は、黙って primary へ倒さず明確に断る（§5.7）。"""
+class GitlabExecutorWorksetTests(unittest.TestCase):
+    """書込先ごとに 1 イシューを起票し、全部の承認で初めて done にする（§5.7・P4）。"""
 
-    def _execute(self):
+    def _module(self):
         path = pathlib.Path(__file__).resolve().parent.parent / "executors" / "gitlab.py"
         spec = importlib.util.spec_from_file_location("kf_gitlab_executor", path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        return module.execute
+        return module
 
-    def test_refuses_a_workset_with_more_than_one_element(self):
-        with self.assertRaisesRegex(RuntimeError, "複数ある run"):
-            self._execute()("work", "g", {}, workspace={"url": "https://x/api.git"},
-                            workset=[{"name": "api", "url": "https://x/api.git"},
-                                     {"name": "web", "url": "https://x/web.git"}])
+    def _elements(self):
+        return [{"name": "api", "url": "https://x/api.git", "base": "main"},
+                {"name": "web", "url": "https://x/web.git", "base": "trunk"}]
 
-    def test_doctor_reports_the_same_refusal_before_submitting(self):
+    def test_doctor_no_longer_refuses_a_workset(self):
         args = argparse.Namespace(
             executor="gitlab", workspace=['{"url": "https://x/api.git", "name": "api"}',
                                           '{"url": "https://x/web.git", "name": "web"}'])
-        titles = [f["title"] for f in kf.workset_capability_findings(args)]
-        self.assertIn("gitlab executor は複数の書込先（workset）を受けない", titles)
+        findings = kf.workset_capability_findings(args)
+        titles = [f["title"] for f in findings]
+        self.assertIn("gitlab executor は書込先ごとに 1 イシューを起票する", titles)
+        self.assertEqual([f["severity"] for f in findings], ["info"])
 
     def test_no_finding_for_a_single_write_target(self):
         args = argparse.Namespace(executor="gitlab", workspace=["https://x/api.git"])
         self.assertEqual(kf.workset_capability_findings(args), [])
+
+    def test_element_tokens_differ_so_reattach_is_unambiguous(self):
+        m = self._module()
+        single = m._element_token("kf-abc", "api", multi=False)
+        self.assertEqual(single, "kf-abc")          # N=1 は従来のトークンのまま
+        a = m._element_token("kf-abc", "api", multi=True)
+        b = m._element_token("kf-abc", "web", multi=True)
+        self.assertNotEqual(a, b)
+        self.assertTrue(a.startswith("kf-abc-"))
+
+    def test_single_element_workset_is_not_treated_as_a_set(self):
+        m = self._module()
+        ws = {"url": "https://x/api.git"}
+        self.assertEqual(m._workset_elements(ws, [{"url": "https://x/api.git"}]), [ws])
+
+    def test_one_issue_per_element_with_its_own_project_and_target(self):
+        m = self._module()
+        created = []
+
+        def fake_create(host, token, project, title, body, labels):
+            created.append({"project": project, "title": title, "body": body})
+            return {"iid": 10 + len(created), "web_url": f"https://x/{project}/-/issues/1"}
+
+        with mock.patch.object(m, "_resolve_token", return_value="t"), \
+                mock.patch.object(m, "_find_open_issue_by_token", return_value=None), \
+                mock.patch.object(m, "_create_issue", side_effect=fake_create), \
+                mock.patch.object(m, "_check_workset_decision",
+                                  return_value={"decision": None, "text": None, "data": None,
+                                                "active_seen": False, "mrs": 0}) as checked, \
+                mock.patch.dict(os.environ, {"AGENT_FLOW_DEFER_WAITS": "1"}, clear=False):
+            with self.assertRaises(m.DeferDecision) as caught:
+                m.execute("work", "g", {}, art_dir="/b/runs/r1/artifacts/t1",
+                          workspace=self._elements()[0], workset=self._elements())
+        self.assertEqual([c["project"] for c in created], ["api", "web"])
+        # どの書込先のイシューかがタイトルだけで分かる（レビュアーは 2 件を並べて見る）
+        self.assertTrue(created[0]["title"].startswith("[agent-flow][api] "))
+        self.assertNotEqual(created[0]["body"], created[1]["body"])  # 要素ごとのトークン
+        defer = caught.exception.defer
+        self.assertEqual([i["name"] for i in defer["issues"]], ["api", "web"])
+        self.assertEqual(defer["expected_targets"], {"api": "main", "web": "trunk"})
+        # 単数形も primary で埋まる（park 記録を 1 件しか見ない道具のため）
+        self.assertEqual(defer["issue"]["name"], "api")
+        self.assertEqual(defer["expected_target"], "main")
+        self.assertEqual(checked.call_count, 1)
+
+    def test_a_single_element_still_parks_with_the_old_singular_record(self):
+        m = self._module()
+        with mock.patch.object(m, "_resolve_token", return_value="t"), \
+                mock.patch.object(m, "_find_open_issue_by_token", return_value=None), \
+                mock.patch.object(m, "_create_issue",
+                                  return_value={"iid": 7, "web_url": "u"}), \
+                mock.patch.object(m, "_check_decision",
+                                  return_value={"decision": None, "text": None, "data": None,
+                                                "active_seen": False, "mrs": 0}), \
+                mock.patch.dict(os.environ, {"AGENT_FLOW_DEFER_WAITS": "1"}, clear=False):
+            with self.assertRaises(m.DeferDecision) as caught:
+                m.execute("work", "g", {}, art_dir="/b/runs/r1/artifacts/t1",
+                          workspace={"url": "https://x/api.git", "base": "main"})
+        defer = caught.exception.defer
+        self.assertEqual(defer["issue"]["iid"], 7)
+        self.assertNotIn("issues", defer)            # 複数形のキーは足さない
+        self.assertNotIn("expected_targets", defer)
+
+
+class GitlabWorksetDecisionTests(unittest.TestCase):
+    """要素ごとの決着を AND で畳む。"""
+
+    def _module(self):
+        path = pathlib.Path(__file__).resolve().parent.parent / "executors" / "gitlab.py"
+        spec = importlib.util.spec_from_file_location("kf_gitlab_executor", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def _issues(self):
+        return [{"host": "h", "project": "x/api", "iid": 1, "url": "u1", "name": "api"},
+                {"host": "h", "project": "x/web", "iid": 2, "url": "u2", "name": "web"}]
+
+    def _decision(self, per_project: dict):
+        def fake(host, token, project, iid, url, cfg, active_seen, expected_target=""):
+            return per_project[project]
+        return fake
+
+    def test_all_approved_is_approved_and_keeps_every_element(self):
+        m = self._module()
+        ok = lambda name: {"decision": "approved", "text": f"{name} ok", "data": {"n": name},
+                           "active_seen": True, "mrs": 1}
+        with mock.patch.object(m, "_check_decision",
+                               side_effect=self._decision({"x/api": ok("api"), "x/web": ok("web")})):
+            r = m._check_workset_decision(self._issues(), "t", {}, False,
+                                          {"api": "main", "web": "trunk"})
+        self.assertEqual(r["decision"], "approved")
+        self.assertEqual([e["name"] for e in r["data"]["elements"]], ["api", "web"])
+        self.assertIn("## api", r["text"])
+        self.assertIn("## web", r["text"])
+
+    def test_one_rejection_rejects_the_node(self):
+        m = self._module()
+        with mock.patch.object(m, "_check_decision", side_effect=self._decision({
+                "x/api": {"decision": "approved", "text": "a", "data": {},
+                          "active_seen": True, "mrs": 1},
+                "x/web": {"decision": "rejected", "text": "だめ", "data": {"decision": "rejected"},
+                          "active_seen": True, "mrs": 1}})):
+            r = m._check_workset_decision(self._issues(), "t", {}, False, {})
+        self.assertEqual(r["decision"], "rejected")
+        self.assertEqual(r["data"]["element"], "web")
+        self.assertIn("[web]", r["text"])
+
+    def test_partial_approval_keeps_waiting(self):
+        m = self._module()
+        with mock.patch.object(m, "_check_decision", side_effect=self._decision({
+                "x/api": {"decision": "approved", "text": "a", "data": {},
+                          "active_seen": True, "mrs": 1},
+                "x/web": {"decision": None, "text": None, "data": None,
+                          "active_seen": False, "mrs": 0}})):
+            r = m._check_workset_decision(self._issues(), "t", {}, False, {})
+        self.assertIsNone(r["decision"])
+        self.assertTrue(r["active_seen"])            # 片方が動いていれば猶予を延ばす
+
+    def test_a_transient_failure_on_one_element_does_not_kill_the_run(self):
+        m = self._module()
+        def flaky(host, token, project, iid, url, cfg, active_seen, expected_target=""):
+            if project == "x/web":
+                raise RuntimeError("HTTP 502")
+            return {"decision": "approved", "text": "a", "data": {}, "active_seen": True, "mrs": 1}
+        with mock.patch.object(m, "_check_decision", side_effect=flaky):
+            r = m._check_workset_decision(self._issues(), "t", {}, False, {})
+        self.assertIsNone(r["decision"])             # 却下でも承認でもなく次巡へ
+
+    def test_poll_folds_a_workset_park_record(self):
+        m = self._module()
+        with mock.patch.object(m, "_resolve_token", return_value="t"), \
+                mock.patch.object(m, "_check_workset_decision",
+                                  return_value={"decision": "approved", "text": "t",
+                                                "data": {"d": 1}, "active_seen": True,
+                                                "mrs": 0}) as folded:
+            r = m.poll({"issues": self._issues(), "expected_targets": {"api": "main"}})
+        self.assertEqual(r["decision"], "approved")
+        self.assertEqual(folded.call_args[0][4], {"api": "main"})
+
+    def test_cancel_closes_every_element_issue(self):
+        m = self._module()
+        closed = []
+        with mock.patch.object(m, "_resolve_token", return_value="t"), \
+                mock.patch.object(m, "_add_note"), \
+                mock.patch.object(m, "_close_issue",
+                                  side_effect=lambda h, t, p, i: closed.append(i)):
+            m.on_cancel([{"issues": self._issues()}])
+        self.assertEqual(closed, [1, 2])
+
+
+class GitlabWorksetWaitRecordTests(unittest.TestCase):
+    """park 記録は要素ごとのイシューを持ち、単数形の run では形が変わらない。"""
+
+    def test_workset_defer_carries_the_plural_keys(self):
+        rec = kf.build_wait_record("t1", "w", "work", {
+            "executor": "gitlab", "issue": {"iid": 1, "name": "api"},
+            "issues": [{"iid": 1, "name": "api"}, {"iid": 2, "name": "web"}],
+            "expected_target": "main", "expected_targets": {"api": "main", "web": "trunk"},
+        }, 60.0)
+        self.assertEqual([i["iid"] for i in rec["issues"]], [1, 2])
+        self.assertEqual(rec["expected_targets"], {"api": "main", "web": "trunk"})
+        self.assertEqual(rec["issue"]["iid"], 1)
+
+    def test_single_defer_keeps_the_old_record_shape(self):
+        rec = kf.build_wait_record("t1", "w", "work", {
+            "executor": "gitlab", "issue": {"iid": 1}, "expected_target": "main"}, 60.0)
+        self.assertNotIn("issues", rec)
+        self.assertNotIn("expected_targets", rec)
+
+
+class BoardResultWorksetTests(unittest.TestCase):
+    """板の result.json は要素ごとの成果を載せる（P4・board.schema.json §result）。"""
+
+    def _extras(self, nodes, results):
+        return kf._board_deliveries(nodes, results)
+
+    def test_each_element_carries_its_branch_and_commit(self):
+        nodes = {"t1": {}}
+        results = {"t1": {"finished_at": "2026-09-05T00:00:00Z", "data": {"deliveries": [
+            {"name": "api", "publication": {"state": "published", "url": "u1",
+                                            "branch": "af/x", "commit": "a" * 40}},
+            {"name": "web", "publication": {"state": "not-required", "url": "u2"}}]}}}
+        self.assertEqual(self._extras(nodes, results), [
+            {"name": "api", "url": "u1", "branch": "af/x", "commit": "a" * 40},
+            {"name": "web", "url": "u2"}])   # 変更なしの要素は commit を持たない
+
+    def test_a_single_element_run_writes_no_deliveries(self):
+        nodes = {"t1": {}}
+        results = {"t1": {"data": {"deliveries": [
+            {"name": "api", "publication": {"state": "published", "branch": "af/x"}}]}}}
+        self.assertEqual(self._extras(nodes, results), [])
+
+    def test_the_last_published_node_wins_per_element(self):
+        # 同じ作業ブランチへ積み増すので、要素の成果は最後の commit。グラフの定義順ではなく
+        # finished_at で決める（定義順は実行順と一致しない）。
+        nodes = {"late": {}, "early": {}}
+        results = {
+            "late": {"finished_at": "2026-09-05T02:00:00Z", "data": {"deliveries": [
+                {"name": "api", "publication": {"branch": "af/x", "commit": "b" * 40}},
+                {"name": "web", "publication": {"branch": "af/x"}}]}},
+            "early": {"finished_at": "2026-09-05T01:00:00Z", "data": {"deliveries": [
+                {"name": "api", "publication": {"branch": "af/x", "commit": "a" * 40}},
+                {"name": "web", "publication": {"branch": "af/x"}}]}},
+        }
+        got = self._extras(nodes, results)
+        self.assertEqual(got[0]["commit"], "b" * 40)
+        self.assertEqual([e["name"] for e in got], ["api", "web"])
 
 
 class CiWorksetTests(unittest.TestCase):

@@ -2653,6 +2653,14 @@ async function aiEnqueueAssist() {
 // 書込先（workspace）の選択肢: リポジトリ一覧（repos.json）のうち owns を持つ＝書込先の
 // エントリ名。空 = 自動ルーティング（owns と paths の突き合わせ）。モノレポは path 別の
 // エントリ名で担当フォルダを指せる。既存値がリストに無くても消さない（選択肢に足す）。
+//
+// **複数選択できる**（`multiple`）。選んだ順ではなく選択肢の並び順が書込先の順になり、
+// 先頭が primary。タスクファイルへは `- workspace: a, b` のカンマ区切りで載る
+// （agent-project の `resolve_workset` が同じ表記を読む）。
+function workspaceSelection(selected) {
+  return String(selected || '').split(',').map((item) => item.trim()).filter(Boolean);
+}
+
 function fillWorkspaceSelect(select, p, selected) {
   if (!select) return;
   const names = [];
@@ -2663,21 +2671,36 @@ function fillWorkspaceSelect(select, p, selected) {
       if (owns) names.push(name);
     }
   }
-  if (selected && !names.includes(selected)) names.push(selected);
+  const picked = workspaceSelection(selected);
+  for (const name of picked) if (!names.includes(name)) names.push(name);
   select.replaceChildren();
-  const auto = document.createElement('option');
-  auto.value = '';
-  auto.textContent = '自動（担当範囲から推定）';
-  select.appendChild(auto);
+  // 複数選択では「自動」を選択肢として置かない——`auto` と `api` を同時に選べてしまい、
+  // 「自動なのに指定もある」という読めない状態が作れる。何も選ばなければ自動。
+  if (!select.multiple) {
+    const auto = document.createElement('option');
+    auto.value = '';
+    auto.textContent = '自動（担当範囲から推定）';
+    select.appendChild(auto);
+  }
   for (const name of names) {
     const option = document.createElement('option');
     option.value = name;
     option.textContent = name;
+    option.selected = picked.includes(name);
     select.appendChild(option);
   }
-  select.value = selected || '';
+  if (!select.multiple) select.value = picked[0] || '';
   const field = $('enq-workspace-field');
   if (field) field.classList.toggle('hidden', !names.length);
+}
+
+// 選択された書込先をタスクの `workspace` 値へ。1 つなら従来どおりの素の名前、
+// 複数なら `a, b`（順は選択肢の並び＝先頭が primary）。
+function readWorkspaceSelect(select) {
+  if (!select) return '';
+  if (!select.multiple) return String(select.value || '');
+  return [...select.options].filter((o) => o.selected && o.value)
+    .map((o) => o.value).join(', ');
 }
 
 async function submitEnqueue() {
@@ -2697,7 +2720,7 @@ async function submitEnqueue() {
     id: $('enq-id').value,
     after: $('enq-after').value,
     charter: $('enq-charter').value,
-    workspace: $('enq-workspace') ? $('enq-workspace').value : '',
+    workspace: readWorkspaceSelect($('enq-workspace')),
     ...Object.fromEntries(ENQUEUE_PASSTHROUGH_KEYS.map((k) => [k, extra[k] || ''])),
   };
   // 構造化フォーム（案5・案3）。passthrough の空値を上書きするため spread の後に読む。

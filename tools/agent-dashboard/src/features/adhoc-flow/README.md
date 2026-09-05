@@ -39,6 +39,9 @@
   フォルダの `agent-flow.yaml` を黙って上書きしないため。優先順位は CLI 引数 > inbox 要求 >
   設定ファイル > 既定で、語彙外の値は投入前に断る。
 - 実装 run は inbox の `workspace` に cwd のリポジトリと現在の branch/HEAD を固定し、成果は `af/<run-id>` branch に保存する。
+- 書込先は**複数指定できる**（追加の書込先）。2 つ以上あるときだけ inbox に `workspaces[]`（順序つき・
+  先頭が primary）が載り、一貫性ゲートの検証計画は `--workspace` を要素の数だけ繰り返して組む。
+  1 つのときは形も見え方も従来のまま——`workspaces` も要素ごとの表示も現れない。
 - 設計 run は `workspace: null` の短命な読み取り専用 run とする。対象 cwd を参照してもファイルを変更せず、
   commit / push / ブランチ作成を禁止し、`af/` ブランチを作らない。agent-flow の run / plan / workspace 契約は
  変更せず、設計と実装は別 run ID で履歴に表示する。
@@ -222,7 +225,7 @@ git pull / commit / push もしない。
   `src/renderer/parameter-fields.js`）。予約語（`{{request}}`・statemachine の組み込み変数）は
   従来の意味を保ち入力扱いしない。型は文字列だけで、未入力・未定義キーは投函前に断る。
 - **一括投函**: パラメータ行 × テンプレートで n 本の adhoc run をまとめて投函する。各 run は
-  自分の `workspace` を持つ（**1 run = 1 workspace は維持**）ので、成果物のリポジトリまたぎは
+  自分の書込先を持つ（**行＝run は維持**）ので、成果物のリポジトリまたぎは
   行分割で満たす。投函前に「件数 × 概算予算」の確認と件数上限を必ず通し、同時に投函した run は
   `batch_id` で束ねる。担当を宣言していないリポジトリの行は確認画面で印を付けるだけで、
   板への公示は既存の「委譲」画面が担う（投函口が勝手に公示しない）。
