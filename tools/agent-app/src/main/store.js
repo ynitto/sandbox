@@ -2,7 +2,9 @@
 
 // userData の中だけを読み書きする。
 //   config.json          … 登録したリポジトリと最後に選んだもの
-//   sessions/<id>.json   … 会話 1 つ = 1 ファイル（リポジトリ・CLI・モード・メッセージ列・CLI 側のセッション ID）
+//   sessions/<id>.json   … 会話 1 つ = 1 ファイル（リポジトリ・次のターンの CLI / モデル / モード・
+//                          メッセージ列・CLI ごとのセッション ID）
+//   attachments/<id>/    … 添付ファイル（attachments.js）
 // リポジトリ側には何も置かない（CLI 自身が持つセッションログは CLI の管轄）。
 
 const fs = require('fs');
@@ -73,8 +75,38 @@ function sessionPath(userData, id) {
   return path.join(sessionsDir(userData), `${id}.json`);
 }
 
+// 会話の形を揃える。
+//   cli / model / readonly … **次のターン**の既定（ターンごとに変えられる。最後に使ったもの）
+//   cliSessions            … CLI 名 → { id, seen }。id は CLI 側のセッション ID（'' なら再開手段なし）、
+//                            seen はその CLI の文脈に入っているメッセージ数（別の CLI で進めた分は
+//                            次にその CLI へ戻るときに追いつかせる）
+//   live                   … tmux で今動いている CLI の起動条件 { cli, model, readonly }（無ければ null）
+// 以前の形（cliSession 1 つ）はここで cliSessions へ写す。
+function normalizeSession(sess) {
+  if (!sess.cliSessions || typeof sess.cliSessions !== 'object') sess.cliSessions = {};
+  if (sess.cliSession && !sess.cliSessions[sess.cli]) {
+    sess.cliSessions[sess.cli] = { id: String(sess.cliSession), seen: (sess.messages || []).length };
+  }
+  delete sess.cliSession;
+  if (!sess.live || typeof sess.live !== 'object') sess.live = null;
+  return sess;
+}
+
 function readSession(userData, id) {
-  return JSON.parse(fs.readFileSync(sessionPath(userData, id), 'utf8'));
+  return normalizeSession(JSON.parse(fs.readFileSync(sessionPath(userData, id), 'utf8')));
+}
+
+// その CLI のセッション情報（無ければ null）
+function cliEntry(sess, cli) {
+  const e = sess.cliSessions && sess.cliSessions[String(cli || '')];
+  return e && typeof e === 'object' ? { id: String(e.id || ''), seen: Number(e.seen) || 0 } : null;
+}
+
+function setCliEntry(userData, id, cli, patch) {
+  const sess = readSession(userData, id);
+  const cur = cliEntry(sess, cli) || { id: '', seen: 0 };
+  sess.cliSessions[String(cli)] = { ...cur, ...(patch || {}) };
+  return writeSession(userData, sess);
 }
 
 function writeSession(userData, sess) {
@@ -94,8 +126,20 @@ function createSession(userData, { repo, cli, model = '', readonly = false, tran
     id: crypto.randomUUID(), repo: String(repo), cli: String(cli), model: String(model || ''),
     readonly: Boolean(readonly), transport: transport === 'headless' ? 'headless' : 'tmux',
     worktree: String(worktree || ''), branch: String(branch || ''),
-    title: '', cliSession: '', messages: [], createdAt: now, updatedAt: now,
+    title: '', cliSessions: {}, live: null, messages: [], createdAt: now, updatedAt: now,
   });
+}
+
+// 会話をぜんぶ読む（添付の掃除など、中身が要るとき）
+function readAllSessions(userData) {
+  let names;
+  try { names = fs.readdirSync(sessionsDir(userData)); } catch { return []; }
+  const out = [];
+  for (const f of names) {
+    if (!f.endsWith('.json')) continue;
+    try { out.push(readSession(userData, f.slice(0, -5))); } catch { /* 壊れたファイルは飛ばす */ }
+  }
+  return out;
 }
 
 function listSessions(userData, repo) {
@@ -119,8 +163,13 @@ function listSessions(userData, repo) {
 
 function updateSession(userData, id, patch) {
   const sess = readSession(userData, id);
-  const allowed = ['title', 'model', 'readonly', 'cliSession', 'transport'];
+  const allowed = ['title', 'cli', 'model', 'readonly', 'transport', 'live'];
   for (const k of allowed) if (patch && k in patch) sess[k] = patch[k];
+  if (patch && 'cli' in patch) sess.cli = String(sess.cli || '');
+  if (patch && 'model' in patch) sess.model = String(sess.model || '');
+  if (patch && 'readonly' in patch) sess.readonly = Boolean(sess.readonly);
+  if (patch && 'transport' in patch) sess.transport = sess.transport === 'headless' ? 'headless' : 'tmux';
+  if (patch && 'live' in patch) sess.live = sess.live && typeof sess.live === 'object' ? sess.live : null;
   return writeSession(userData, sess);
 }
 
@@ -139,4 +188,5 @@ function removeSession(userData, id) {
 module.exports = {
   DEFAULTS, loadConfig, saveConfig, addRepo, removeRepo, isRegistered,
   createSession, readSession, listSessions, updateSession, appendMessage, removeSession,
+  normalizeSession, cliEntry, setCliEntry, sessionsDir, readAllSessions,
 };

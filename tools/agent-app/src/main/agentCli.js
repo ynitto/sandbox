@@ -71,6 +71,7 @@ function normalize(raw, name, file) {
     promptVia: raw.prompt_via === 'argv' ? 'argv' : 'stdin',
     promptFlag: raw.prompt_flag != null ? String(raw.prompt_flag) : null,
     modelFlag: raw.model_flag != null ? String(raw.model_flag) : null,
+    fileFlag: raw.file_flag != null ? String(raw.file_flag) : null,
     defaultModel: raw.default_model != null ? String(raw.default_model) : '',
     output: raw.output === 'file' ? 'file' : 'stdout',
     env: raw.env && typeof raw.env === 'object' ? raw.env : {},
@@ -197,16 +198,28 @@ function expand(tokens, vars, holder) {
   return out;
 }
 
-// セッション機能の無い CLI 向け: これまでの会話をプロンプトへ再送する。
-function replayPrompt(history, prompt) {
-  const lines = history.map((m) => `[${m.role === 'user' ? 'user' : 'assistant'}] ${m.text}`);
-  return `これまでの会話（同じセッションの続きとして扱うこと）:\n${lines.join('\n\n')}\n\n---\n新しい依頼:\n${prompt}`;
+// この CLI がまだ見ていないやり取りをプロンプトの前に付ける。
+//   resumed=false … セッション機能の無い CLI や、この会話で初めて使う CLI（全部を再送する）
+//   resumed=true  … 自分のセッションは再開できたが、その後に別の CLI（や別の起動）で進んだ分がある
+function replayPrompt(history, prompt, { resumed = false } = {}) {
+  const lines = history.map((m) => {
+    const who = m.role === 'user' ? (m.cli ? `user → ${m.cli}` : 'user') : (m.cli ? `assistant (${m.cli})` : 'assistant');
+    const files = (m.attachments || []).map((a) => a.rel || a.name).filter(Boolean);
+    return `[${who}] ${m.text}${files.length ? `\n（添付: ${files.join(', ')}）` : ''}`;
+  });
+  const head = resumed
+    ? 'この会話には、あなたのセッションの外で進んだやり取りがある（別のエージェントが答えた分など）。同じ会話の続きとして扱うこと:'
+    : 'これまでの会話（同じセッションの続きとして扱うこと）:';
+  return `${head}\n${lines.join('\n\n')}\n\n---\n新しい依頼:\n${prompt}`;
 }
 
 // 1 ターン分の起動仕様（実行はしない・決定的。UUID の発行だけは乱数）。
 //   cliSession … 既に分かっている CLI 側のセッション ID（空なら初回）
-//   history    … これまでの会話（再送フォールバック用）
-function turnCmd(spec, { prompt, model = '', readonly = false, cliSession = '', history = [] } = {}) {
+//   history    … この CLI が**まだ見ていない**やり取り。セッションを再開できる CLI なら、別の
+//                CLI で進めた分だけ（無ければ空）。再開手段の無い CLI なら会話の全部
+//   files      … 添付ファイルのパス（file_flag を宣言する CLI にだけ argv で渡す。本文には
+//                呼び出し側が書いてある）
+function turnCmd(spec, { prompt, model = '', readonly = false, cliSession = '', history = [], files = [] } = {}) {
   const vars = { model: String(model || spec.defaultModel || ''), session: cliSession };
   const holder = {};
   const strategy = spec.session;
@@ -216,12 +229,15 @@ function turnCmd(spec, { prompt, model = '', readonly = false, cliSession = '', 
   if (cliSession) {
     frag = (strategy && strategy.resumeArgs) || spec.resumeArgs;
     if (!frag.length) throw new Error(`${spec.name} はセッション再開の argv を持ちません`);
+    if (history.length) text = replayPrompt(history, text, { resumed: true });
   } else if (strategy && strategy.kind === 'mint') {
     mintedSession = crypto.randomUUID();
     vars.session = mintedSession;
     frag = strategy.newArgs;
+    if (history.length) text = replayPrompt(history, text);
   } else if (strategy) {
     frag = [];                                   // capture / list は初回に何も足さない
+    if (history.length) text = replayPrompt(history, text);
   } else if (history.length && spec.continueArgs.length) {
     // ponytail: --continue は「直前のセッション」で、同じ CLI を並行して使うと混線する。
     // 直すなら SESSION に ID の拾い方を足す。
@@ -236,6 +252,7 @@ function turnCmd(spec, { prompt, model = '', readonly = false, cliSession = '', 
   if (vars.model && spec.modelFlag && !spec.command.some((t) => t.includes('{model}'))) {
     argv.push(spec.modelFlag, vars.model);
   }
+  if (spec.fileFlag) for (const f of files) argv.push(spec.fileFlag, String(f));
   argv = argv.concat(expand(spec.commandSuffix, vars, holder));
   let stdin = null;
   if (spec.promptVia === 'argv') {
@@ -272,8 +289,10 @@ function interactiveCmd(spec, { model = '', readonly = false, cliSession = '', h
   let mintedSession = '';
   let frag = [];
   let warning = '';
+  let resumed = false;             // CLI 側の文脈を引き継げたか（false なら履歴を最初の依頼で追いつかせる）
   if (cliSession) {
     frag = (strategy && strategy.resumeArgs) || inter.resumeArgs;
+    resumed = frag.length > 0;
     if (!frag.length) { warning = `${spec.name} はセッション再開の argv を持たないため、新しい会話として起動します`; }
   } else if (strategy && strategy.kind === 'mint') {
     mintedSession = crypto.randomUUID();
@@ -281,16 +300,17 @@ function interactiveCmd(spec, { model = '', readonly = false, cliSession = '', h
     frag = strategy.newArgs;
   } else if (history.length && inter.continueArgs.length) {
     frag = inter.continueArgs;
+    resumed = true;
     warning = `${spec.name} は「直前のセッション」を続ける形で再開します（同じ CLI を並行して使っていると混線しえます）`;
   } else if (history.length) {
-    warning = `${spec.name} は会話の再開手段を持たないため、CLI 側の文脈は失われます（この画面の履歴は残る）`;
+    warning = `${spec.name} は会話の再開手段を持たないため、これまでのやり取りを最初の依頼に添えて起動します`;
   }
   let argv = expand(inter.command, vars, holder);
   argv = insertAfterSubcommand(argv, expand(frag, vars, holder));
   argv = argv.concat(expand(readonly ? inter.readonlyArgs : inter.writeArgs, vars, holder));
   if (vars.model && spec.modelFlag && !inter.command.some((t) => t.includes('{model}'))) argv.push(spec.modelFlag, vars.model);
   return {
-    argv, mintedSession, env: spec.env, warning,
+    argv, mintedSession, resumed, env: spec.env, warning,
     readonlyWarning: (readonly && spec.readonly !== 'enforced')
       ? `${spec.name} は読み取り専用を保証しません（ファイル変更やコマンド実行が起こりえます）` : '',
   };

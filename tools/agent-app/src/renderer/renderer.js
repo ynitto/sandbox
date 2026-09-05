@@ -10,6 +10,7 @@ const state = {
   current: null,        // 開いている会話（store の中身）
   draft: false,         // 「新しい会話」を押してまだ 1 通も送っていない
   running: new Set(),   // 応答中の会話 ID
+  pending: new Set(),   // 送信中（main が CLI を起動し直している間など）の会話 ID
   logs: new Map(),      // 会話 ID → 応答中に流れた行（ヘッドレス）
   tails: new Map(),     // 会話 ID → 端末の末尾（tmux）
   phases: new Map(),    // 会話 ID → { phase, detail }
@@ -21,6 +22,7 @@ const state = {
   diffText: '',
   worktrees: [],           // git worktree list の結果
   worktree: '',            // 「新しい会話」で選んでいる作業フォルダ（'' はリポジトリ本体）
+  attachments: [],         // 次の依頼に付ける添付 [{ id, name, size } | { rel, name }]
 };
 
 const $ = (id) => document.getElementById(id);
@@ -40,6 +42,7 @@ function notice(text, kind = '') {
 }
 
 const PHASE_LABEL = { starting: '起動中', ready: '待機', busy: '応答中', attention: '確認待ち', dead: '終了', gone: 'セッション消失' };
+const fmtSize = (n) => (n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`);
 
 function isTmux(sess) { return !!sess && sess.transport === 'tmux'; }
 
@@ -272,14 +275,15 @@ function renderAgents() {
 function renderHeader() {
   const cur = state.current;
   $('chat-title').textContent = cur ? (cur.title || '（無題）') : (state.repo ? `${basename(state.repo)} で新しい会話` : 'リポジトリを登録して会話を始める');
-  $('cli').disabled = !state.draft;
-  if (cur) { $('cli').value = cur.cli; $('model').value = cur.model || ''; $('readonly').checked = !!cur.readonly; }
+  // エージェント・モデル・モードは「次のターン」のもの。会話を開いていても変えられる
+  $('cli').disabled = !state.repo;
+  if (cur) { if ([...$('cli').options].some((o) => o.value === cur.cli)) $('cli').value = cur.cli; $('model').value = cur.model || ''; $('readonly').checked = !!cur.readonly; }
   else { $('model').value = state.config.lastModel || ''; $('readonly').checked = !!state.config.lastReadonly; }
   $('session-delete').hidden = !cur;
-  const busy = !!cur && state.running.has(cur.id);
+  const busy = !!cur && (state.running.has(cur.id) || state.pending.has(cur.id));
   $('send').hidden = busy;
   $('stop').hidden = !busy;
-  $('send').disabled = !state.repo;
+  $('send').disabled = !state.repo || (!!cur && state.pending.has(cur.id));
   const tm = isTmux(cur);
   $('term-toggle').hidden = !tm;
   $('term-toggle').classList.toggle('on', tm && state.termOpen);
@@ -297,10 +301,43 @@ function renderHeader() {
 
 // ---- 中央: メッセージ --------------------------------------------------------
 
+// 添付の印。id 持ち（写したファイル）は既定のアプリで開き、rel 持ち（作業フォルダの中）はビュアーで開く
+function chipNode(a, { onRemove = null } = {}) {
+  const c = el('span', `chip${a.rel ? ' repo' : ''}${onRemove ? '' : ' link'}`);
+  c.append(el('span', 'name', a.rel || a.name));
+  if (a.size != null) c.append(el('span', 'sub', fmtSize(a.size)));
+  c.title = a.rel ? `${a.rel}（作業フォルダの中。パスを伝えるだけで写さない）` : a.name;
+  if (onRemove) {
+    const x = el('button', 'x', '×');
+    x.title = '外す';
+    x.onclick = (e) => { e.stopPropagation(); onRemove(); };
+    c.append(x);
+  } else if (a.rel) {
+    c.onclick = () => { showView('files'); Files.setRoot(state.repo, activeWorktree(), {}).then(() => Files.openFile(a.rel)).then(() => Files.reveal(a.rel)); };
+  } else if (a.id) {
+    c.onclick = () => api.openAttachment(a.id, a.name).catch((e) => notice(e.message, 'error'));
+  }
+  return c;
+}
+
 function messageNode(m) {
   const n = el('div', `msg ${m.role}`);
-  if (m.role === 'user') n.textContent = m.text;
-  else {
+  if (m.role === 'user') {
+    // どのエージェント・モデル・モードへ出した依頼か（ターンごとに変わりうる）
+    if (m.cli) {
+      const who = el('div', 'who');
+      who.append(el('span', 'tag', m.cli));
+      if (m.model) who.append(el('span', 'tag', m.model));
+      if (m.readonly) who.append(el('span', 'tag', 'Ask'));
+      n.append(who);
+    }
+    n.append(document.createTextNode(m.text || ''));
+    if (m.attachments && m.attachments.length) {
+      const files = el('div', 'files');
+      for (const a of m.attachments) files.append(chipNode(a));
+      n.append(files);
+    }
+  } else {
     const body = el('div');
     n.append(body);
     if (m.text) MD.mount(body, m.text).catch(() => { body.textContent = m.text; });
@@ -352,7 +389,7 @@ function renderMessages() {
   const cur = state.current;
   if (!cur) {
     box.append(el('div', 'msg assistant', state.repo
-      ? 'エージェントとモードを選んで、下に依頼を書く。応答中でも別の会話を開いて並行して進められる。'
+      ? 'エージェント・モデル・モードを選んで、下に依頼を書く（ターンごとに変えられる）。ファイルは「添付」かドロップ・貼り付けで付けられる。応答中でも別の会話を開いて並行して進められる。'
       : '左の「追加」でローカルリポジトリを登録する。'));
     return;
   }
@@ -415,29 +452,43 @@ function toggleTerm(open) {
   if (state.termOpen && state.current) { Term.refit(); Term.focus(); }
 }
 
+// 次のターンの起動条件（画面の上で選んでいるもの）
+function turnOptions() {
+  return { cli: $('cli').value, model: $('model').value.trim(), readonly: $('readonly').checked };
+}
+
 async function sendPrompt() {
   const text = $('prompt').value.trim();
-  if (!text || !state.repo) return;
+  if ((!text && !state.attachments.length) || !state.repo) return;
+  const opts = turnOptions();
+  const agent = state.agents.find((a) => a.name === opts.cli && a.available);
+  if (!agent) { notice('使えるエージェントがない', 'error'); return; }
   try {
     if (!state.current) {
-      const cli = $('cli').value;
-      const agent = state.agents.find((a) => a.name === cli && a.available);
-      if (!agent) throw new Error('使えるエージェントがない');
       const transport = (state.config.transport === 'tmux' && state.host && state.host.tmux && agent.interactive) ? 'tmux' : 'headless';
-      state.current = await api.createSession({ repo: state.repo, cli, model: $('model').value.trim(), readonly: $('readonly').checked, transport, worktree: state.worktree });
+      state.current = await api.createSession({ repo: state.repo, ...opts, transport, worktree: state.worktree });
       state.draft = false;
-      state.config = await api.saveConfig({ lastCli: cli, lastModel: $('model').value.trim(), lastReadonly: $('readonly').checked });
-      if (transport === 'tmux') await attachTerm(state.current.id);
     }
+    state.config = await api.saveConfig({ lastCli: opts.cli, lastModel: opts.model, lastReadonly: opts.readonly });
     const id = state.current.id;
+    const wasTmux = isTmux(state.current);
     state.logs.set(id, []);
     state.tails.set(id, '');
-    $('send').disabled = true;
-    await api.send(id, text);
+    // 送信中（CLI の起動し直しを含む）は phase の更新で描き直しても送信ボタンを戻さない
+    state.pending.add(id);
+    renderHeader();
+    let res;
+    try { res = await api.send(id, text, { ...opts, attachments: state.attachments }); } finally { state.pending.delete(id); }
     $('prompt').value = '';
+    state.attachments = [];
+    renderAttachments();
     state.running.add(id);
     state.current = await api.readSession(id);
     state.sessions = await api.listSessions(state.repo);
+    // tmux で起動（し直）したなら端末ミラーをつなぎ直す。ヘッドレスの CLI へ移ったなら外す
+    if (isTmux(state.current)) { if (!wasTmux || res.restarted || Term.current() !== id) await attachTerm(id); }
+    else Term.detach();
+    if (res.warning) notice(res.warning);
     renderHeader();
     renderMessages();
     renderSessions();
@@ -445,6 +496,57 @@ async function sendPrompt() {
     notice(err.message, 'error');
     renderHeader();
   }
+}
+
+// ---- 添付 --------------------------------------------------------------------
+
+function renderAttachments() {
+  const row = $('attach-row');
+  row.replaceChildren();
+  row.hidden = !state.attachments.length;
+  state.attachments.forEach((a, i) => row.append(chipNode(a, { onRemove: () => removeAttachment(i) })));
+}
+
+function addAttachments(list) {
+  for (const a of list) {
+    if (a.rel && state.attachments.some((x) => x.rel === a.rel)) continue;
+    state.attachments.push(a);
+  }
+  renderAttachments();
+}
+
+function removeAttachment(i) {
+  const [a] = state.attachments.splice(i, 1);
+  if (a && a.id) api.discardAttachment(a.id).catch(() => {});
+  renderAttachments();
+}
+
+// ドロップ・貼り付けで届いた File を main へ写す（中身を送る。画面は生のパスを持たない）
+async function stageFiles(fileList) {
+  const files = [...(fileList || [])].filter((f) => f && f.size != null);
+  if (!files.length) return;
+  const staged = [];
+  for (const f of files) {
+    try {
+      const buf = new Uint8Array(await f.arrayBuffer());
+      staged.push(await api.stageAttachment(f.name || 'image.png', buf));
+    } catch (err) { notice(err.message, 'error'); }
+  }
+  addAttachments(staged);
+}
+
+async function pickAttachments() {
+  try { addAttachments(await api.pickAttachments()); } catch (err) { notice(err.message, 'error'); }
+}
+
+// 「ファイル」画面で開いているファイルを、写さずにパスで添える
+function attachOpenFile() {
+  const f = Files.state.open;
+  if (!f) { notice('ファイルを開いてから押す'); return; }
+  const wt = Files.state.worktree || '';
+  if (wt !== activeWorktree()) { notice('見ているフォルダが会話の作業フォルダと違う。会話の作業フォルダの中のファイルだけ添付できる', 'error'); return; }
+  addAttachments([{ rel: f.rel, name: f.rel.split('/').pop() }]);
+  notice(`添付に加えた: ${f.rel}（次の依頼に付く）`);
 }
 
 async function onTurnDone({ id, message }) {
@@ -553,20 +655,35 @@ async function init() {
   $('prompt').addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); if (!$('send').hidden && !$('send').disabled) sendPrompt(); }
   });
-  $('cli').onchange = async () => { if (state.draft) state.config = await api.saveConfig({ lastCli: $('cli').value }); };
-  $('model').onchange = async () => {
-    const model = $('model').value.trim();
-    if (state.current) state.current = await api.updateSession(state.current.id, { model });
-    state.config = await api.saveConfig({ lastModel: model });
-    if (state.current && isTmux(state.current)) notice('モデルの変更は次に CLI を起動し直したときから効く（「再起動」）');
-  };
-  $('readonly').onchange = async () => {
-    const readonly = $('readonly').checked;
-    if (state.current) state.current = await api.updateSession(state.current.id, { readonly });
-    state.config = await api.saveConfig({ lastReadonly: readonly });
-    if (state.current && isTmux(state.current)) notice('モードの変更は次に CLI を起動し直したときから効く（「再起動」）');
+  // 上の選択は「次のターン」の起動条件。会話にも覚えさせ（開き直しても残る）、tmux で動いている
+  // CLI と違えば次の依頼のときに起動し直す（claude / copilot は --resume で文脈を引き継ぐ）
+  const onTurnOptionChange = async (key) => {
+    const opts = turnOptions();
+    if (state.current) state.current = await api.updateSession(state.current.id, { [key]: opts[key] });
+    state.config = await api.saveConfig({ lastCli: opts.cli, lastModel: opts.model, lastReadonly: opts.readonly });
+    if (state.current && isTmux(state.current) && state.current.live) {
+      const live = state.current.live;
+      const same = live.cli === opts.cli && String(live.model || '') === opts.model && !!live.readonly === opts.readonly;
+      notice(same ? '' : `次の依頼から ${opts.cli}${opts.model ? `（${opts.model}）` : ''}${opts.readonly ? '・Ask' : ''} で続ける（CLI を起動し直す）`);
+    }
     renderSessions();
   };
+  $('cli').onchange = () => onTurnOptionChange('cli');
+  $('model').onchange = () => onTurnOptionChange('model');
+  $('readonly').onchange = () => onTurnOptionChange('readonly');
+  // 添付: ボタン・ドロップ・貼り付け・「ファイル」画面から
+  $('attach').onclick = pickAttachments;
+  $('viewer-attach').onclick = attachOpenFile;
+  const composer = $('composer');
+  composer.addEventListener('dragover', (e) => { if (e.dataTransfer && [...e.dataTransfer.types].includes('Files')) { e.preventDefault(); composer.classList.add('drop'); } });
+  composer.addEventListener('dragleave', () => composer.classList.remove('drop'));
+  composer.addEventListener('drop', (e) => { e.preventDefault(); composer.classList.remove('drop'); if (state.repo) stageFiles(e.dataTransfer.files); });
+  $('prompt').addEventListener('paste', (e) => {
+    const files = e.clipboardData ? [...e.clipboardData.files] : [];
+    if (!files.length || !state.repo) return;
+    e.preventDefault();
+    stageFiles(files.map((f, i) => (f.name ? f : new File([f], `paste-${Date.now().toString(36)}-${i}.${(f.type.split('/')[1] || 'bin')}`, { type: f.type }))));
+  });
   $('changes-toggle').onclick = () => { state.changesOpen = !state.changesOpen; $('changes').hidden = !state.changesOpen; $('changes-toggle').classList.toggle('on', state.changesOpen); if (state.changesOpen) refreshChanges(); Term.refit(); };
   $('changes-refresh').onclick = () => { refreshWorktrees(); refreshChanges(); };
   $('diff-style').onclick = () => { state.diffSide = !state.diffSide; $('diff-style').classList.toggle('on', state.diffSide); renderDiff(state.diffText); };

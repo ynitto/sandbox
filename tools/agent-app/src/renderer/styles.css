@@ -99,6 +99,9 @@ label.check { cursor: pointer; }
 .msg.user { align-self: flex-end; background: var(--accent-bg); white-space: pre-wrap; }
 .msg.assistant { align-self: flex-start; background: var(--panel); border: 1px solid var(--line); min-width: 240px; }
 .msg .meta { font-size: 11px; color: var(--muted); margin-top: 6px; }
+.msg .who { font-size: 11px; color: var(--muted); margin-bottom: 4px; white-space: normal; }
+.msg .who .tag { margin-right: 4px; background: var(--panel); }
+.msg .files { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; white-space: normal; }
 .msg .err { margin-top: 6px; padding: 6px 10px; border-radius: 6px; background: var(--del); color: var(--danger); font-size: 12px; white-space: pre-wrap; }
 .msg details { margin-top: 6px; }
 .msg summary { cursor: pointer; font-size: 12px; color: var(--muted); }
@@ -142,9 +145,23 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 #term-host { flex: 1; min-height: 0; padding: 4px 0 0 6px; }
 #term-host .xterm { height: 100%; }
 
-#composer { display: flex; gap: 8px; padding: 12px 16px; background: var(--panel); border-top: 1px solid var(--line); }
+#composer { display: flex; flex-direction: column; gap: 6px; padding: 12px 16px; background: var(--panel); border-top: 1px solid var(--line); }
+#composer.drop { outline: 2px dashed var(--accent); outline-offset: -4px; }
+.composer-main { display: flex; gap: 8px; }
 #composer textarea { flex: 1; resize: vertical; min-height: 60px; }
 .composer-actions { display: flex; flex-direction: column; gap: 6px; }
+.attach-row { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.chip {
+  display: inline-flex; align-items: center; gap: 4px; max-width: 320px; padding: 1px 6px 1px 8px; border-radius: 10px;
+  border: 1px solid var(--line); background: var(--code-bg); font-size: 11px; color: var(--text); cursor: default; white-space: nowrap;
+}
+.chip .name { overflow: hidden; text-overflow: ellipsis; }
+.chip .sub { margin-left: 2px; }
+.chip.repo { border-color: var(--accent); background: var(--accent-bg); }
+.chip.link { cursor: pointer; }
+.chip.link:hover { border-color: var(--accent); }
+.chip .x { border: 0; background: none; padding: 0 2px; color: var(--muted); font-size: 13px; line-height: 1; cursor: pointer; }
+.chip .x:hover { color: var(--danger); }
 
 /* ---- ファイル ---- */
 #files { flex-direction: row; }

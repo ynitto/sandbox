@@ -23,7 +23,12 @@ contextBridge.exposeInMainWorld('api', {
   readSession: (id) => invoke('session:read', { id }),
   updateSession: (id, patch) => invoke('session:update', { id, patch }),
   removeSession: (id) => invoke('session:remove', { id }),
-  send: (id, prompt) => invoke('turn:send', { id, prompt }),
+  // opts: { cli, model, readonly, attachments: [{ id, name } | { rel, name }] } — ターンごとに変えられる
+  send: (id, prompt, opts) => invoke('turn:send', { id, prompt, ...(opts || {}) }),
+  pickAttachments: () => invoke('attach:pick'),
+  stageAttachment: (name, bytes) => invoke('attach:stage', { name, bytes }),
+  discardAttachment: (id) => invoke('attach:discard', { id }),
+  openAttachment: (id, name) => invoke('attach:open', { id, name }),
   stop: (id) => invoke('turn:stop', { id }),
   running: () => invoke('turn:running'),
   termOpen: (id, cols, rows) => invoke('term:open', { id, cols, rows }),
