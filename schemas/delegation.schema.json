@@ -38,13 +38,29 @@
         },
         "workspace": {
           "type": "object",
-          "description": "成果物の唯一の書込先リポジトリ（repos.schema.json のエントリ形 url/path/base）。flow: submit_request.workspace / amigos: mission.workspace（passthrough）",
+          "description": "成果物の書込先リポジトリ（repos.schema.json のエントリ形 url/path/base）。workspaces がある公示では workspaces[0]（primary）と同じもの。flow: submit_request.workspace / amigos: mission.workspace（passthrough）",
           "properties": {
             "url": {"type": "string"},
             "path": {"type": "string"},
             "base": {"type": "string"}
           },
           "additionalProperties": true
+        },
+        "workspaces": {
+          "type": "array",
+          "description": "成果物の書込先の集合（workset）。順序付きで先頭が primary＝workspace と一致していなければならない。1 要素なら workspace だけを載せる従来形と同じ意味なので、複数要素のときだけ付ける。**2 要素以上の公示は requires.contract_version: 2 を必ず付ける** — workspaces を知らない旧ノードは workspace.url だけを見て入札し primary にしか書かないため、版で fail-close させる（設計: docs/plans/2026-09-05-agent-flow-multi-workspace-design.md §5.7）",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {"type": "string", "description": "repos レジストリのエントリ名。ノード内・記録内の repo 参照はこの名前を使う"},
+              "url": {"type": "string"},
+              "path": {"type": "string"},
+              "base": {"type": "string"},
+              "target": {"type": "string"}
+            },
+            "additionalProperties": true
+          }
         },
         "verification_plan": {
           "$ref": "verification-plan.schema.json",

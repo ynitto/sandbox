@@ -8,12 +8,19 @@
 | レイヤ | 役割 | リポジトリの扱い |
 |---|---|---|
 | **agent-project**（制御・ルーティング層） | バックログの優先順位付け・verify ゲート・決定記録 | タスクを**ちょうど1つの書込先ワークスペース**へルーティングし `--workspace` で渡す。参照リポジトリは `--reference` で構造化伝搬する |
-| **agent-flow**（実行層） | タスク分解・worker 実行・bus 同期 | 渡された**唯一のワークスペース**を clone し、作業ブランチ `af/<run-id>` を作って worker へ渡す。変更があれば commit/push する |
+| **agent-flow**（実行層） | タスク分解・worker 実行・bus 同期 | 渡された**書込先の集合（workset。既定は 1 要素）**を要素ごとに clone し、作業ブランチ `af/<run-id>` を作って worker へ渡す。変更があった要素だけ commit/push する |
 
 ## 基本原則
 
-1. **1 run（=バックログ単位）= 1 ワークスペース（唯一の書込先）。** agent-flow の入口で 1 つに固定。
-   複数リポジトリへまたがる変更は、agent-project が **repo 別タスクへ分割**し `after`（依存）で順序付ける。
+1. **1 run（=バックログ単位）= 1 workset（書込先の集合。既定は 1 要素）。** agent-project は現状
+   **ちょうど 1 つ**へルーティングする（下の解決順は変わっていない）。複数リポジトリへまたがる変更は、
+   これまでどおり agent-project が **repo 別タスクへ分割**し `after`（依存）で順序付ける。
+   実行層（agent-flow）は既に集合を受け取れる——`--workspace` を繰り返し渡すと要素ごとに
+   commit/push し、要素ごとの `deliveries[]` を返す。「1 つの変更が複数 repo で同時に成立して
+   初めて検証できる」仕事のための口で、**agent-project 側のルーティングを集合へ広げるのは
+   別段階（設計 §7 の P2）**。集合の中身を決めるのは常に依頼側で、agent-flow の planner は
+   増減しない。正典設計:
+   [複数リポジトリ（workset）設計](../../docs/plans/2026-09-05-agent-flow-multi-workspace-design.md)。
 2. **リポジトリの同一性は (url, path, base)。** 同 URL でも path（モノレポのフォルダ）や base（作業ブランチ）が
    違えば別ワークスペース。
 3. **書き込みは agent-flow が掌握。** エージェントは作業ツリーを編集するだけ。agent-flow が作業ブランチへ commit し、

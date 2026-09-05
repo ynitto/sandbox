@@ -6,11 +6,13 @@
   "type": "object",
   "required": ["version", "task_id", "plan_digest", "result_rev", "verdict", "commands", "criteria"],
   "properties": {
-    "version": {"type": "integer", "enum": [1, 2], "description": "1=従来契約、2=target統合結果付き。解釈できない版は採用しない"},
+    "version": {"type": "integer", "enum": [1, 2, 3], "description": "1=従来契約、2=target統合結果付き、3=workset（要素ごとの revision と統合結果）。解釈できない版は採用しない"},
     "task_id": {"type": "string"},
     "plan_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "description": "実行した plan の digest。投入時の正本と一致しなければ採用しない"},
-    "result_rev": {"type": "string", "description": "検証した成果 revision（コミット SHA）。採用対象の成果 revision と一致しなければ採用しない"},
+    "result_rev": {"type": "string", "description": "検証した成果 revision（コミット SHA）。採用対象の成果 revision と一致しなければ採用しない。version 3 では primary の revision（要素ごとは revisions）"},
     "workspace": {"type": "string"},
+    "workspaces": {"type": "array", "items": {"type": "string"}, "description": "version 3 で検証した workset 要素名。plan.workspaces と同順・同内容でなければ採用しない"},
+    "revisions": {"type": "object", "additionalProperties": {"type": "string"}, "description": "version 3 の要素ごとの成果 revision（要素名 → コミット SHA）。キーは workspaces と一致していなければ採用しない"},
     "verdict": {"type": "string", "enum": ["pass", "fail", "inconclusive"], "description": "全体判定。採用側は自称を信用せず中身から再導出して照合する"},
     "commands": {
       "type": "array",
@@ -72,6 +74,22 @@
         "conflict_files": {"type": "array", "items": {"type": "string"}}
       },
       "additionalProperties": false
+    },
+    "integrations": {
+      "type": "array",
+      "description": "version 3 の要素ごとの target 統合結果（targets のある要素だけ・plan.workspaces の順）。1 要素でも fail なら全体 fail",
+      "items": {
+        "type": "object",
+        "required": ["target", "target_rev", "verdict", "conflict_files"],
+        "properties": {
+          "name": {"type": "string", "description": "workset 要素名"},
+          "target": {"type": "string", "minLength": 1},
+          "target_rev": {"type": "string", "description": "inconclusive のときだけ空を許す"},
+          "verdict": {"type": "string", "enum": ["pass", "fail", "inconclusive"]},
+          "conflict_files": {"type": "array", "items": {"type": "string"}}
+        },
+        "additionalProperties": false
+      }
     },
     "started_at": {"type": "string", "description": "ISO8601 UTC"},
     "finished_at": {"type": "string", "description": "ISO8601 UTC"},

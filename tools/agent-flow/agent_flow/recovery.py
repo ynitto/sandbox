@@ -7,6 +7,11 @@ class PublicationRecoveryError(ValueError):
 
 
 def _failed_publications(bus: Bus) -> list:
+    """failed ノードの (node_id, result, publication, index) を返す。
+
+    workset の run では 1 ノードが複数の publication を持ちうる（半公開＝一部は published、
+    一部は failed）。復旧するのは failed の要素だけで、published の要素はそのまま残す
+    （§5.5）。`index` は書き戻し先: None＝`data.publication` / 整数＝`data.deliveries[i]`。"""
     found = []
     for node_id in bus.task_ids():
         result = bus.read_result(node_id) or {}
@@ -17,7 +22,14 @@ def _failed_publications(bus: Bus) -> list:
         if data.get("error_class") != "workspace_publish" or publication.get("state") != "failed":
             raise PublicationRecoveryError(
                 f"node {node_id} は publication failure ではないため強制復旧できません")
-        found.append((node_id, result, publication))
+        deliveries = data.get("deliveries") if isinstance(data.get("deliveries"), list) else None
+        if deliveries:
+            for i, record in enumerate(deliveries):
+                pub = record.get("publication") if isinstance(record, dict) else None
+                if isinstance(pub, dict) and pub.get("state") == "failed":
+                    found.append((node_id, result, pub, i))
+            continue
+        found.append((node_id, result, publication, None))
     if not found:
         raise PublicationRecoveryError("復旧可能な publication failure がありません")
     return found
@@ -87,25 +99,43 @@ def force_complete_publication(bus: Bus, run_id: str, reason: str, verifier=None
     failures = _failed_publications(bus)
     verify = verifier or verify_remote_publication
     verified = []
-    for node_id, _result, publication in failures:
+    for node_id, _result, publication, index in failures:
         receipt = verify(publication)
         if not isinstance(receipt, dict) or not receipt.get("remote_tip"):
-            raise PublicationRecoveryError(f"node {node_id} の remote 公開を確認できません")
-        verified.append({"node": node_id, **receipt})
+            label = str(publication.get("name") or "")
+            raise PublicationRecoveryError(
+                f"node {node_id}{f'（{label}）' if label else ''} の remote 公開を確認できません")
+        # 要素名まで監査記録へ残す——どの repo の手動 push を確認して done にしたのかを、
+        # あとから publication の url を突き合わせ直さずに読めるようにする（§5.5）。
+        name = str(publication.get("name") or "")
+        verified.append({"node": node_id, **({"name": name} if name else {}),
+                         **({"index": index} if index is not None else {}), **receipt})
 
     stamp = now_iso()
     audit = {"reason": why, "verified_at": stamp, "publications": verified}
-    for node_id, result, publication in failures:
+    for node_id in dict.fromkeys(node_id for node_id, _r, _p, _i in failures):
+        result = next(r for n, r, _p, _i in failures if n == node_id)
         original_output = str(result.get("output") or "")
         data = dict(result.get("data") or {})
-        repaired_publication = dict(publication)
-        repaired_publication["state"] = "published-manually"
-        repaired_publication["verified_at"] = stamp
-        repaired_publication["reason"] = why
-        receipt = next(item for item in verified if item["node"] == node_id)
-        repaired_publication["remote_tip"] = receipt["remote_tip"]
+        deliveries = [dict(d) if isinstance(d, dict) else d
+                      for d in (data.get("deliveries") or [])]
+        for item in [v for v in verified if v["node"] == node_id]:
+            index = item.get("index")
+            source = (deliveries[index].get("publication") if index is not None
+                      and index < len(deliveries) and isinstance(deliveries[index], dict)
+                      else data.get("publication")) or {}
+            repaired = {**dict(source), "state": "published-manually",
+                        "verified_at": stamp, "reason": why,
+                        "remote_tip": item["remote_tip"]}
+            if index is None:
+                data["publication"] = repaired
+            else:
+                deliveries[index]["publication"] = repaired
         data.pop("error_class", None)
-        data["publication"] = repaired_publication
+        if deliveries:
+            data["deliveries"] = deliveries
+            # 集約は要素ごとの結果から導き直す（失敗が残っていれば failed のまま）。
+            data["publication"] = aggregate_publication(deliveries) or data.get("publication")
         data["forced_completion"] = {"reason": why, "verified_at": stamp,
                                      "original_output": original_output}
         result["status"] = "done"
@@ -133,7 +163,7 @@ def force_complete_publication(bus: Bus, run_id: str, reason: str, verifier=None
     if status == "done":
         _recovered_final(bus, audit)
     bus.event("force-complete", "publication-recovered", run=run_id, status=status,
-              reason=why, nodes=[node_id for node_id, _result, _publication in failures])
+              reason=why, nodes=list(dict.fromkeys(n for n, _r, _p, _i in failures)))
     bus.sync_push(f"force-complete publication run {run_id}: {why}")
     return {"run_id": run_id, "status": status, "remaining": remaining,
             "publications": verified}

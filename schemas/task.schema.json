@@ -121,8 +121,9 @@
     "track": { "type": "string", "description": "同種タスク群の名（--auto-level の実績連動昇格の単位）" },
     "followup": { "type": ["array", "string"], "items": { "type": "string" }, "description": "done 時の派生タスク（次の作業 :: verify）" },
     "workspace": {
-      "type": "string",
-      "description": "書込先ワークスペース（repos レジストリの repo 名）。ルーティングの明示指定"
+      "type": ["string", "array"],
+      "items": { "type": "string" },
+      "description": "書込先ワークスペース（repos レジストリの repo 名）。ルーティングの明示指定。配列は workset（同時に書き込む複数リポジトリ）で、順序の先頭が primary。1 要素の配列と文字列は同じ意味"
     },
     "refs": { "type": ["array", "string"], "items": { "type": "string" }, "description": "参照リポジトリ（repo 名/URL。読むだけ）" },
     "paths": {

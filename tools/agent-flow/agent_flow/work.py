@@ -128,6 +128,48 @@ def pick_claimable(bus: Bus, prefer_kind: str = ""):
     return None
 
 
+def node_workset(workset, node) -> "list[dict]":
+    """このノードが用意する workset。既定は run の全要素（ノードは repo を知らない＝repo-blind）。
+
+    ノードが `workspaces: [name...]` を宣言していればその要素だけへ絞る（§5.6・任意）。
+    使うのは base-sync（要素ごと 1 ノード）と、明示的にそう書かれた user plan で、
+    planner の出力契約は変えない。未知の名前は無視し、全部が未知なら絞り込まない
+    ——絞り込みの綴り間違いで「書込先ゼロ」の静かな読み取り専用実行にしないため。"""
+    picked = node.get("workspaces") if isinstance(node, dict) else None
+    if not isinstance(picked, list) or not picked:
+        return list(workset or [])
+    want = {str(w).strip() for w in picked if str(w or "").strip()}
+    narrowed = [e for e in (workset or []) if str(e.get("name") or "") in want]
+    return narrowed or list(workset or [])
+
+
+def merge_delivery_record(rdata, deliveries, multi: bool):
+    """finalize の結果を result の data へ載せる（記録の形はここが 1 実装）。
+
+    - 1 要素（従来）: 変更があれば `delivery`、無ければ `publication: not-required`。形も
+      キーも旧来と同じ——読み手（agent-project / dashboard / CI 取り込み）を版で分岐させない。
+    - 複数要素: 要素ごとの `deliveries[]` と、そこから導いた集約 `publication`
+      （最悪状態・公開できた要素名）。`delivery` は primary に変更があったときだけ残す
+      （旧読み手が primary の成果だけを見て従来どおり動けるように）。"""
+    if not deliveries:
+        return rdata
+    base = rdata if isinstance(rdata, dict) else {}
+    if not multi:
+        record = deliveries[0]
+        publication = record.get("publication") or {}
+        if str(publication.get("state") or "") == "not-required":
+            # workspace は有るが commit 対象の差分が無い。読み手が「古い result で公開状態
+            # 不明」と「公開不要」を推測で混同しないよう、事実を明示する。
+            return {**base, "publication": dict(publication)}
+        return {**base, "delivery": record}
+    out = {**base, "deliveries": deliveries,
+           "publication": aggregate_publication(deliveries) or {}}
+    primary = deliveries[0]
+    if str((primary.get("publication") or {}).get("state") or "") != "not-required":
+        out["delivery"] = primary
+    return out
+
+
 def cmd_work(args) -> int:
     who = args.node_id
     bus = make_bus(args, who)
@@ -282,22 +324,35 @@ def cmd_work(args) -> int:
         # これにより大きな成果物は output/data に貼らずファイル参照で受け渡せる。
         art_dir = bus.ensure_artifact_dir(nid)
         dep_arts = {d: bus.node_artifact_dir(d) for d in node.get("deps", [])}
-        # ワークスペース（この run の唯一の書込先）を temp 領域へ clone し、作業ブランチ af/<run_id>
-        # を base から作ってエージェントへ渡す（書込先が無ければ読み取り専用 run）。
+        # workset（この run の書込先の集合）を temp 領域へ clone し、要素ごとに作業ブランチ
+        # af/<run_id> を base から作ってエージェントへ渡す（書込先が無ければ読み取り専用 run）。
+        # ノードが `workspaces` で絞り込んでいればその要素だけを用意する（§5.6）。
         goal = node["goal"]
-        ws = bus.run_workspace()
-        references = bus.run_references()
+        run_workset = bus.run_workset()
+        workset = node_workset(run_workset, node)
+        # clone 前の primary。clone に失敗しても park/cleanup の分岐が「書込先が有ったか」を
+        # 判定できるよう、try の外で束縛しておく。
+        ws = workset_primary(workset)
+        references = drop_workset_references(bus.run_references(), run_workset)
         ref_note = reference_instruction(references)
         # 実行中は心拍で lease を延長し続け、長時間タスクでも再 claim されないようにする
         hb = Heartbeat(bus, nid, who, args.lease)
         hb.start()
         rdata = None
-        delivery = None
+        deliveries: "list[dict]" = []
         try:
-            ws = ensure_workspace_clone(ws, args.run_id)
+            workset = ensure_workset(workset, args.run_id)
+            # エージェントの cwd は primary の clone（現行どおり）。他要素は指示ブロックへ
+            # 絶対パスで列挙する——cwd を親ディレクトリにすると、cwd を「そのプロジェクトの
+            # ルート」と解釈する CLI（aider 等）が壊れる（§5.3）。
+            ws = workset_primary(workset)
+            # `name:相対パス` 接頭辞をここで絶対パスへ解く。以降（agent.py の参照解決・
+            # プロンプト描画）は primary 相対か絶対パスだけを見ればよくなる。
+            read_allocation = [{**row, "path": workset_path(workset, row["path"])}
+                               for row in read_allocation]
             # 作業指示は goal に結合せず別引数で渡す（goal を汚さない）。
             instruction = "\n".join(
-                s for s in (workspace_instruction(ws) if ws else "", ref_note) if s)
+                s for s in (workset_instruction(workset), ref_note) if s)
             if kind == "base-sync":
                 rdata = sync_workspace_base(ws)
                 if rdata.get("status") == "conflict":
@@ -306,7 +361,7 @@ def cmd_work(args) -> int:
                                  "Git コマンドは実行せず、各ファイルの競合を内容に沿って解消してください。")
                     output, agent_data = call_executor(
                         execute_agent, "work", sync_goal, dep_results, args.model,
-                        art_dir, dep_arts, instruction, workspace=ws,
+                        art_dir, dep_arts, instruction, workspace=ws, workset=workset,
                         references=references, request=run_request,
                         instructions=run_instructions,
                         prompt_table=bool(getattr(args, "prompt_table", False)),
@@ -321,6 +376,7 @@ def cmd_work(args) -> int:
             else:
                 output, rdata = call_executor(execute, kind, goal, dep_results, args.model,
                                               art_dir, dep_arts, instruction, workspace=ws,
+                                              workset=workset,
                                               references=references, request=run_request,
                                               instructions=run_instructions,
                                               prompt_table=bool(getattr(args, "prompt_table", False)),
@@ -335,9 +391,9 @@ def cmd_work(args) -> int:
                     rdata["error_class"] = failure_class
                 rstatus = "failed"
             else:
-                # エージェントが編集したらワークスペースの作業ブランチへ commit して push する
+                # エージェントが編集したら**要素ごとに**作業ブランチへ commit して push する
                 # （変更が無ければ何もしない＝調査タスク等ではブランチを作らない）。
-                delivery = finalize_workspace(ws, args.run_id, nid)
+                deliveries = finalize_workset(workset, args.run_id, nid, kind)
                 rstatus = "done"
         except Exception as e:  # noqa: BLE001 — 結果として記録する
             # park シグナル（DeferDecision.defer）: 承認待ち等で未決着＝終端 result を書かず、
@@ -394,15 +450,7 @@ def cmd_work(args) -> int:
 
         # 生成された中間成果物を run_dir 相対パスで記録（後続・status から発見できる）
         artifacts = [os.path.relpath(p, bus.run_dir) for p in bus.list_artifacts(nid)]
-        if delivery:  # ワークスペースへ push したブランチ/コミットを result に残す（消費側が追跡）
-            rdata = {**(rdata if isinstance(rdata, dict) else {}), "delivery": delivery}
-        elif ws and rstatus == "done":
-            # workspace は有るが commit 対象の差分が無い。読み手が「古い result で公開状態不明」と
-            # 「公開不要」を推測で混同しないよう、事実を明示する。
-            rdata = {**(rdata if isinstance(rdata, dict) else {}), "publication": {
-                "state": "not-required", "url": ws.get("url"), "branch": ws.get("branch"),
-                "attempted_at": now_iso(),
-            }}
+        rdata = merge_delivery_record(rdata, deliveries, multi=len(workset) > 1)
         output, context_allocation = extract_read_report(output, read_allocation)
         method_app = _last_methods(kind) if args.executor == "agent" else {"methods": [], "trial": None}
         # 候補ベースの縮退（run_agent が transient 上限で Resolver の次候補へ下りた）を result へ写す。

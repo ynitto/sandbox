@@ -7,6 +7,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-flow: 1 run が複数リポジトリへ同時に書けるようになった（workset）
+
+API を提供する repo とそれを呼ぶ repo のように、**1 つの変更が複数 repo で同時に成立して初めて
+検証できる**仕事のための口。設計:
+[docs/plans/2026-09-05-agent-flow-multi-workspace-design.md](docs/plans/2026-09-05-agent-flow-multi-workspace-design.md)（P0 契約 + P1 agent-flow 本体）。
+
+- **`--workspace` を繰り返し指定できる。** 指定順がそのまま書込先の集合（workset）で、先頭が
+  primary（エージェントの作業ディレクトリ・集合を知らない読み手が見る書込先）。要素ごとに
+  同じ規律（作業ブランチ `af/<run-id>`・commit/push・publication・復旧 ref・base-sync・CI）を適用する。
+- **要素が 1 つのときは形も意味も変わらない。** `workspaces[]` / `deliveries[]` は複数要素のときだけ
+  現れ、`workspace` / `delivery` / `publication` は従来のまま（旧い読み手はそのまま動く）。
+- **半公開を隠さない。** 複数 remote への push は原子的にできないので、片方が失敗しても残りの要素を
+  finalize してから失敗させ、成功した要素は published のまま残す。resume では失敗した要素だけが
+  再 push される。`force-complete` と復旧 ref の gc も要素ごとに回る。
+- **誤編集を機械的に止める。** `path` を宣言した要素は、範囲外の変更が staged にあれば finalize で失敗する
+  （複数 repo を同時に開くぶん、指示だけに頼らない）。
+- **検証計画 version 3。** `workspaces[]` / `commands[].cwd` / `integration.targets{}` を持ち、runner は
+  全要素を用意して `AGENT_WORKSET_ROOT` と `AGENT_REPO_<NAME>` を渡す。receipt は要素ごとの
+  `revisions{}` と `integrations[]` を返す。書込先が 2 つ以上ある run に version 1/2 の plan が来たら
+  inconclusive（「もう片方の repo は見ていない pass」を作らない）。
+- **gitlab executor は 2 要素以上を fail-close で断る**（起票先を 1 URL からしか解決できないため）。
+  doctor も投函前に同じ理由を出す。
+- ルーティング（どこへ書くか）を決めるのは依頼側のままで、planner は集合を増減しない。
+  agent-project 側を集合へ広げるのは次段階（設計 §7 の P2）。
+
 ### agent-app: エージェント・モデル・モードをターンごとに変えられ、依頼にファイルを添付できる
 
 - **エージェント・モデル・モード（Agent / Ask）は会話を作ったあとも変えられる。** 上の選択は

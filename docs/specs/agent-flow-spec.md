@@ -358,8 +358,9 @@ tier（実行段）は `control.workloads.flow.tier` を読みます。`basic` �
 | `id` | str | 要求 id = run-id（ファイル名と同一） |
 | `request` | str | 要求文 |
 | `submitter` | str | 投入者名義 |
-| `workspace` | dict \| null | 唯一の書込先リポジトリ spec（`{url, local, path, base, target, branch, desc}`）。null なら読み取り専用 run |
-| `references` | list[dict] | 参照リポジトリ（読むだけ） |
+| `workspace` | dict \| null | 書込先リポジトリ spec（`{name, url, local, path, base, target, branch, desc}`）。`workspaces` があるときはその先頭（primary）と同一。null なら読み取り専用 run |
+| `workspaces` | list[dict] | 書込先の集合（workset）。順序付きで先頭が primary。**2 要素以上のときだけ載る**（1 要素は `workspace` だけの従来形と同じ意味）。`workspaces[0]` と `workspace` が食い違う要求は投入時に断る |
+| `references` | list[dict] | 参照リポジトリ（読むだけ）。`workspaces` と url が重なる要素は落とす（書込先の契約が勝つ） |
 | `readonly` | bool | true なら動的追加ノードを含む run 全体で executor の書き込み権限を禁止 |
 | `submitted_at` | str (ISO) | 投入時刻。孤児 inbox の gc 年齢判定に使う |
 | `inherit_from` | str | リトライ時の先行 run-id。done の成果を引き継ぐ（世代交代の判断は[設計書](../designs/agent-flow-design.md)） |
@@ -426,7 +427,7 @@ tier（実行段）は `control.workloads.flow.tier` を読みます。`basic` �
 
 実装の正典は `agentcore.verifycontract` の 1 実装で、agent-project の local runner と共有します。schema は `schemas/verification-plan.schema.json` と `schemas/verification-receipt.schema.json` です。
 
-plan は `{version, task_id, workspace, commands[], criteria[], integration?, policy?, digest}`。`digest` は digest 自身を除いた canonical JSON の SHA-256 で、`policy` も digest 対象です（条件を変えた検証は別の plan）。criterion id は出現順 `C1, C2, ...` が正典です。壊れた plan（digest 不一致・未知版）は実行せず receipt も書きません。
+plan は `{version, task_id, workspace, workspaces?, commands[], criteria[], integration?, policy?, digest}`。`digest` は digest 自身を除いた canonical JSON の SHA-256 で、`policy` も digest 対象です（条件を変えた検証は別の plan）。criterion id は出現順 `C1, C2, ...` が正典です。壊れた plan（digest 不一致・未知版）は実行せず receipt も書きません。
 
 実行規則は次のとおりです。
 
@@ -439,11 +440,13 @@ plan は `{version, task_id, workspace, commands[], criteria[], integration?, po
 | 自然文 criterion の verdict が読めない | fail（フェイルクローズ） |
 | verifier の CLI 不在・利用上限・タイムアウト | 全基準 inconclusive |
 
-実行場所は workspace 宣言のある run なら該当 repo の clone、無い run ならプロセスの cwd です。宣言があるのに clone を用意できなければ cwd に倒さず inconclusive にします。固定コマンドには差分基準 `$AGENT_BASE_REV` を渡します（clone では成果 HEAD、cwd では投入時に meta へ固定した `base_rev`）。同じ `plan_digest` × 同じ `result_rev` の receipt があれば再実行しません。
+実行場所は workspace 宣言のある run なら該当 repo の clone、無い run ならプロセスの cwd です。宣言があるのに clone を用意できなければ cwd に倒さず inconclusive にします。固定コマンドには差分基準 `$AGENT_BASE_REV` を渡します（clone では成果 HEAD、cwd では投入時に meta へ固定した `base_rev`）。同じ `plan_digest` × 同じ `result_rev` の receipt があれば再実行しません（version 3 では要素ごとの `revisions` まで一致したときだけ）。
+
+version 3（workset）は検証場所を複数持ちます。`workspaces[]` が検証対象の要素名（先頭が primary）、`commands[].cwd` がそのコマンドを走らせる要素（省略は primary 相対＝1 要素契約と同じ）、`integration.targets{name: target}` が要素ごとの統合対象です。runner は全要素を用意し、`AGENT_WORKSET_ROOT` と要素ごとの `AGENT_REPO_<NAME>=<clone>` を環境変数で渡します（横断の統合テストが 2 つ目以降の repo を参照する唯一の口）。receipt には要素ごとの `revisions{name: rev}` と `integrations[]` が載り、`result_rev` は primary の revision です。**書込先が 2 つ以上ある run に version 1/2 の plan（検証場所が 1 つ）が来たら inconclusive** にします——primary だけで判定すると「もう片方の repo は見ていない pass」になるためで、判定材料の不足は fail（成果物の欠陥）ではありません。
 
 receipt の必須フィールドは `version` `task_id` `plan_digest` `result_rev` `verdict` `commands` `criteria`。実際に使った条件と所要時間は `verified_with` に残しますが、採否の判定には使いません。全体判定は receipt の自称 `verdict` を信じず再導出します（証跡の無い pass は fail）。version 2 では `integration.target` を固定し、target revision が成果 revision の祖先でない限り integration は pass になりません。
 
-`fail` は同じ run の修正ループへ戻します。不合格点を列挙した `verify-fix-<n>` ノード（integration fail なら `base-sync-<n>`）を LLM なしで決定的に注入し、`max_iterations` で有界です。
+`fail` は同じ run の修正ループへ戻します。不合格点を列挙した `verify-fix-<n>` ノード（integration fail なら `base-sync-<n>`。workset では整合していない要素だけを `workspaces` で絞った base-sync）を LLM なしで決定的に注入し、`max_iterations` で有界です。
 
 #### 3.4 executor プラグイン
 
@@ -485,11 +488,12 @@ def execute(kind, goal, dep_results, model, art_dir, dep_arts) -> (text, data)
   inbox/claims/<run-id>/<who>.json  受理の claim
   inbox/cancels/<run-id>.json       キャンセルマーカー
   runs/<run-id>/
-    meta.json          request・status・phase・workspace・references・readonly・instructions・
+    meta.json          request・status・phase・workspace・workspaces（複数の書込先のときだけ）・
+                       references・readonly・instructions・
                        リース簿記（orch_lease_until / heartbeat_at）・resume_*・heal_*・
                        superseded・failure_reason・base_rev・manual_publication_recovery
     graph.json         strategy + nodes{id: {goal, deps, kind, retries?, agent?, tier?, readonly?,
-                       read_allocation?, dependency_input?, interaction?}} + iteration
+                       workspaces?, read_allocation?, dependency_input?, interaction?}} + iteration
     tasks/<id>.json    ノード仕様
     claims/<id>/<who>.json
     waits/<id>.json    park 記録（wait_lease_until を含む。秘密は載せない）

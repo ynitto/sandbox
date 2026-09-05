@@ -216,6 +216,12 @@ def _node_entry(t):
         e["agent"] = t["agent"]
     if t.get("readonly") is True:
         e["readonly"] = True
+    # ノード単位の書込先の絞り込み（§5.6・任意）。planner は出さない——出すのは
+    # base-sync の注入（要素ごと 1 ノード）と、明示的にそう書かれた user plan だけ。
+    if isinstance(t.get("workspaces"), list):
+        picked = [str(w).strip() for w in t["workspaces"] if str(w or "").strip()]
+        if picked:
+            e["workspaces"] = picked
     if t.get("tier"):  # 固定実行レベル（pinned-tier の記録と手法判定が読む）
         e["tier"] = str(t["tier"])
     # human ノードの interaction はグラフにも保持する。worker は claim 時に graph の node を
@@ -450,10 +456,24 @@ def cmd_orchestrate(args) -> int:
                  f"（引き継ぎ {info['seeded_nodes']} ノード・削除={info['deleted']}）")
         bus.sync_push(f"inherit {inh} -> {args.run_id}: {info['reason']}")
     inbox_request = bus.read_inbox(args.run_id) or {}
-    bus.ensure_run(args.request, parse_workspace(getattr(args, "workspace", None)),
-                   parse_references(getattr(args, "references", None)),
+    # 書込先は集合（workset）で受ける。`--workspace` は繰り返し指定でき、先頭が primary。
+    # 集合の中身を決めるのは依頼側で、ここでは受け取った順序をそのまま run の契約にする。
+    workset = parse_workset(getattr(args, "workspace", None))
+    ws_errs = workset_errors(workset)
+    if ws_errs:
+        # 解釈できない書込先の集合では実行しない（fail-close）。meta を作ってから終端させる
+        # ——run が存在しないまま失敗すると daemon が同じ要求を毎 poll 受理し直す。
+        log(who, "workset が不正です（fail-close）: " + "; ".join(ws_errs))
+        bus.ensure_run(args.request, None, [], None,
+                       readonly=inbox_request.get("readonly") is True)
+        _finalize_run(bus, args, 0, failure="[workset] " + "; ".join(ws_errs))
+        return 2
+    bus.ensure_run(args.request, workset_primary(workset),
+                   drop_workset_references(
+                       parse_references(getattr(args, "references", None)), workset),
                    parse_verification_plan(getattr(args, "verification_plan", None)),
-                   readonly=inbox_request.get("readonly") is True)
+                   readonly=inbox_request.get("readonly") is True,
+                   workspaces=workset)
     bus.note_executor(getattr(args, "executor", None) or "agent")   # viewer の表示切替用
     _deleg_raw = getattr(args, "delegation", None)                  # 委譲公示板由来の来歴（board）
     if _deleg_raw:
@@ -545,9 +565,7 @@ def cmd_orchestrate(args) -> int:
         graph = {"strategy": strategy,
                  "nodes": {t["id"]: _node_entry(t) for t in tasks},
                  "iteration": 0}
-        base_sync = inject_base_sync(graph["nodes"], bus.run_workspace())
-        if base_sync:
-            tasks.append(base_sync)
+        tasks.extend(inject_base_syncs(graph["nodes"], bus.run_workset()))
         if _plan_gate_enabled(args, strategy):
             # 計画承認ゲート（オプトイン）: root を全てゲート依存に付け替え、人の承認までは
             # base-sync 含め何も実行させない。差し戻し（rejected）は評価ループが検知して再計画。
@@ -613,9 +631,7 @@ def cmd_orchestrate(args) -> int:
                 graph["nodes"] = keep
                 for t in tasks:
                     graph["nodes"][t["id"]] = _node_entry(t)
-                base_sync = inject_base_sync(graph["nodes"], bus.run_workspace())
-                if base_sync:
-                    tasks.append(base_sync)
+                tasks.extend(inject_base_syncs(graph["nodes"], bus.run_workset()))
                 graph["strategy"] = strategy
                 gate = _insert_plan_gate(graph, tasks, args, attempt=gs["attempt"] + 1)
                 _sanitize_graph(graph["nodes"])

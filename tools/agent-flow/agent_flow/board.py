@@ -367,10 +367,18 @@ def poll_board(bus_local: "Bus", args, node_id: str) -> "list[str]":
         # ので正しく落とされている。だが請負側が自分の local を載せる実装が無かったため、板
         # 経由の仕事は手元に同じリポジトリがあっても毎回ネットワーク越しにミラーを取り直して
         # いた（C3「flow/amigos の git clone のリモート負荷」そのもの）。
+        # 公示が workset（複数の書込先）を載せていれば要素ごとに local を埋める。
+        # 板の公示に local は載らない（ホスト固有の絶対パスは共有できない）ので、
+        # 請負側が自分の host.yaml から要素ごとに解決する（S3 を集合へ広げただけ）。
+        posted_set = post.get("workspaces") if isinstance(post.get("workspaces"), list) else None
+        ws_set = [_repolocal.merge_local(e) for e in (posted_set or []) if isinstance(e, dict)]
         ws = _repolocal.merge_local(post.get("workspace") or None)
+        if ws_set and ws and str(ws_set[0].get("url") or "") == str(ws.get("url") or ""):
+            ws_set[0] = {**ws_set[0], **{k: v for k, v in ws.items() if v}}
         bus_local.submit_request(
             did, _board_request(post), f"agent-board:{node_id}",
-            workspace=ws or None,
+            workspace=(ws_set[0] if ws_set else ws) or None,
+            workspaces=ws_set or None,
             references=post.get("references") or [],
             delegation={"id": did, "board": True},
             # 統一 verify: 公示に検証計画が載っていれば、ローカル run の専用 runner が同じ plan を

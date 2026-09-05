@@ -87,7 +87,7 @@
   **sparse checkout** でそのサブツリーだけを展開する（無関係なファイルを取得しない）。各ノードは起動毎に
   バスを clone するため、**初回 clone もネットワーク障害に備えて指数バックオフでリトライ**する（push/pull と
   同様）。委譲される側（実作業ノード）のワークスペース clone も同様にリトライする。
-- **1 run = 1 ワークスペース（唯一の書込先）**：`run` に `--workspace <url|JSON>`（**ちょうど1つ**）を渡すと、その
+- **1 run = 1 workset（書込先の集合。既定は 1 要素）**：`run` に `--workspace <url|JSON>` を渡すと、その
   run の **worker がワークスペースを temp 領域に用意し、作業ブランチ `af/<run-id>` を `base` から作ってエージェントへ
   渡す**（「ここで編集せよ。commit/push は agent-flow がやる」）。作業ツリーは **URL 単位のホスト共有 bare ミラー
   （`--mirror --filter=blob:none`）から detached worktree を生やして用意**する（フル clone を「初回 1 回+増分」へ圧縮し
@@ -104,9 +104,25 @@
   **リポジトリの同一性は (url, path, base)**（同 URL でも path（モノレポのフォルダ）や base（作業ブランチ）が違えば別）。
   作業指示は `workspace_instruction` で「path 配下のみ変更・MR/PR ターゲット=target」を伝え、gitlab executor 経由なら
   **起票先プロジェクトをこのワークスペース URL から解決**してイシュー本文にも載る。
+- **複数リポジトリを同時に変える（workset）**：`--workspace` は**繰り返し指定でき**、指定した順序が
+  そのまま書込先の集合（workset）になる。**先頭が primary**（エージェントの作業ディレクトリであり、
+  集合を知らない読み手が見る書込先）。API を出す repo とそれを呼ぶ repo のように「1 つの変更が
+  複数 repo で同時に成立して初めて検証できる」仕事のための口で、要素ごとに同じ規律
+  （作業ブランチ `af/<run-id>`・commit/push・publication・復旧 ref・base-sync・CI 取り込み）を適用する。
+  エージェントには要素ごとの clone パス・変更してよい path・ブランチを列挙して渡し、
+  **列挙した以外の場所は変更させない**（`path` を宣言した要素は finalize で範囲外の変更を機械的に弾く）。
+  結果には要素ごとの `deliveries[]` と、そこから導いた集約 `publication`（最悪状態・公開できた repo 名）が載る。
+  複数 remote への push は原子的にできないので、**片方だけ公開できた半公開は隠さず記録**し、resume で
+  失敗した要素だけを再 push する。**要素が 1 つのときは従来と形も意味も変わらない**（`workspaces[]` /
+  `deliveries[]` は複数要素のときだけ現れる）。gitlab executor は起票先を 1 URL からしか解決できないため、
+  2 要素以上の run を **fail-close で断る**。設計は
+  [docs/plans/2026-09-05-agent-flow-multi-workspace-design.md](../../docs/plans/2026-09-05-agent-flow-multi-workspace-design.md)。
 - **書込先のルーティングは agent-project（制御層）が担当**：「どのタスクをどのワークスペースへ」は agent-project の
-  charter `## repos`（`owns:` 担当パス）と `route:` ルールが1つに決め、`--workspace` として渡す。agent-flow は渡された
-  ワークスペースを厳格に守る側に徹し、ノード単位の repo 割り当ては行わない（run 内の全ノードが同一ワークスペースを共有）。
+  charter `## repos`（`owns:` 担当パス）と `route:` ルールが決め、`--workspace` として渡す。agent-flow は渡された
+  **集合**を厳格に守る側に徹し、planner は集合を増減しない。ノードは既定で repo を知らない（repo-blind）——
+  run 内の全ノードが同じ workset を共有し、agent-flow は**エージェントが実際に編集した repo だけ**を finalize する。
+  ノード単位の絞り込み（`workspaces: [name]`）は任意の後付けで、使うのは要素ごとの base-sync と
+  明示的にそう書かれた user plan だけ（LLM planner には repo 選択を持たせない）。
 - **参照リポジトリ（読むだけ）は `--reference` で構造化伝搬**：書き込まない参照用リポジトリは clone 管理せず、
   `--reference <url|JSON>`（複数可）として run メタに載せる。worker はそれをエージェントのプロンプト（参照節）と
   **gitlab イシュー本文の『## 参照リポジトリ』節**に描画する（要求本文へ畳むと分解後のノード/イシューに届かないため）。
