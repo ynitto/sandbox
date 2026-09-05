@@ -308,6 +308,15 @@
       || folderPath(inbox.cwd) || folderPath(inbox.workspace);
   }
 
+  // 一覧に出す書込先のラベル。集合の run は「先頭 ＋ ほか N 件」で畳む——2 つ分の URL を
+  // 並べると 1 行に収まらず、どちらが primary かも読めない。1 要素では従来の 1 本のまま。
+  function runFolderLabel(run) {
+    const set = Array.isArray(run && run.workspaces) ? run.workspaces : [];
+    const head = folderPath(run && run.workspace) || folderPath(run && run.cwd);
+    if (set.length > 1) return `${head || folderPath(set[0])} ほか ${set.length - 1} 件`;
+    return head;
+  }
+
   function consultTarget() {
     const dir = st.selectedRun ? runFolder(st.runDetail) : '';
     return {
@@ -401,61 +410,92 @@
         checks: Array.isArray(raw.checks) ? raw.checks : [],
       };
     };
+    // 書込先ごとのフォールバック元。要素名で引き、名前が無い（＝1 要素の）run では
+    // 従来どおり `run.workspace` を返す。ここが要素ごとにならないと、2 repo の run で
+    // 「公開先」も「ローカル保存先」も primary のものが 2 行並ぶ（設計 §5.5）。
+    const workspaces = Array.isArray(run && run.workspaces) ? run.workspaces : [];
+    const specOf = (name) => (name
+      ? workspaces.find((w) => w && String(w.name || '') === String(name))
+      : null) || (run && run.workspace) || {};
+
     const records = Object.values((run && run.nodes) || {}).flatMap((node) => {
       const data = node && node.data && typeof node.data === 'object' ? node.data : {};
-      const direct = data.publication && typeof data.publication === 'object' ? data.publication : null;
       const delivery = data.delivery && typeof data.delivery === 'object' ? data.delivery : null;
+      // 書込先が複数の run は `deliveries[]` を持つ。要素ごとに 1 レコードへ展開する
+      // ——1 つに畳むと、片方だけ失敗した半公開が「失敗」か「成功」のどちらか一色になる。
+      const list = Array.isArray(data.deliveries) ? data.deliveries : null;
+      if (list) {
+        return list.flatMap((entry) => {
+          const record = entry && typeof entry.publication === 'object' ? entry.publication : null;
+          if (!record) return [];
+          return [{ ...record, name: String((entry && entry.name) || record.name || ''),
+            ci: ciOf(record, entry) }];
+        });
+      }
+      const direct = data.publication && typeof data.publication === 'object' ? data.publication : null;
       const nested = delivery && delivery.publication && typeof delivery.publication === 'object'
         ? delivery.publication : null;
       const record = direct || nested;
       return record ? [{ ...record, ci: ciOf(record, delivery) }] : [];
     });
     const ci = records.map((record) => record.ci).find(Boolean) || null;
-    const failed = records.find((record) => record.state === 'failed');
-    if (failed) {
-      const recovery = failed.recovery && typeof failed.recovery === 'object' ? failed.recovery : {};
-      return {
-        state: 'failed', label: '公開失敗', tone: 'warn',
-        url: String(failed.url || (run.workspace && run.workspace.url) || ''),
-        local: String(recovery.repository || (run.workspace && run.workspace.local) || ''),
-        branch: String(failed.branch || ''), commit: String(failed.commit || ''),
-        recoveryRef: String(recovery.ref || ''),
-        canForceComplete: Boolean(recovery.repository && recovery.ref && failed.branch && failed.commit),
-        ci,
-      };
+
+    // 1 レコード → 1 行の見え方。集約も要素ごとの行もこの 1 関数から作るので、
+    // 「集約では公開済みなのに要素の行は失敗」のような食い違いが構造的に起きない。
+    const viewOf = (record) => {
+      if (!record) {
+        return { state: 'unknown', label: '公開状態を確認できません', tone: 'muted',
+          name: '', url: '', local: '', branch: '', commit: '', recoveryRef: '',
+          canForceComplete: false, ci };
+      }
+      const spec = specOf(record.name);
+      const name = String(record.name || '');
+      const base = { name, ci: record.ci || ci,
+        url: String(record.url || spec.url || ''),
+        branch: String(record.branch || ''), commit: String(record.commit || '') };
+      if (record.state === 'failed') {
+        const recovery = record.recovery && typeof record.recovery === 'object' ? record.recovery : {};
+        return { ...base, state: 'failed', label: '公開失敗', tone: 'warn',
+          local: String(recovery.repository || spec.local || ''),
+          recoveryRef: String(recovery.ref || ''),
+          canForceComplete: Boolean(recovery.repository && recovery.ref
+            && record.branch && record.commit) };
+      }
+      if (record.state === 'published-manually') {
+        return { ...base, state: 'published-manually', label: '手動公開済み', tone: 'muted',
+          local: String(spec.local || ''), recoveryRef: '',
+          reason: String(record.reason || ''), canForceComplete: false };
+      }
+      if (record.state === 'published') {
+        return { ...base, state: 'published', label: '公開済み', tone: 'muted',
+          local: String(spec.local || ''), recoveryRef: '', canForceComplete: false };
+      }
+      if (record.state === 'not-required') {
+        return { ...base, state: 'not-required', label: '変更なし', tone: 'muted',
+          local: String(spec.local || ''), commit: '', recoveryRef: '',
+          canForceComplete: false };
+      }
+      return { ...base, state: 'unknown', label: '公開状態を確認できません', tone: 'muted',
+        local: '', recoveryRef: '', canForceComplete: false };
+    };
+
+    // 集約は「一番重い状態が勝つ」（failed > published-manually > published > not-required）。
+    // 半公開を成功に見せないための順序で、agent-flow の集約と同じ規則。
+    const worst = ['failed', 'published-manually', 'published', 'not-required']
+      .map((state) => records.find((record) => record.state === state)).find(Boolean) || null;
+    const view = viewOf(worst);
+    // 要素ごとの行は**書込先が複数のときだけ**足す。1 要素の run の見え方は 1 バイトも
+    // 変えない（設計 §5.1 不変条件 3）。順序は run の workspaces に合わせる。
+    const named = records.filter((record) => record.name);
+    if (named.length > 1) {
+      const order = workspaces.map((w) => String((w && w.name) || ''));
+      const sorted = [...named].sort((a, b) => {
+        const ai = order.indexOf(String(a.name)); const bi = order.indexOf(String(b.name));
+        return (ai < 0 ? order.length : ai) - (bi < 0 ? order.length : bi);
+      });
+      view.elements = sorted.map(viewOf);
     }
-    const manual = records.find((record) => record.state === 'published-manually');
-    if (manual) {
-      return {
-        state: 'published-manually', label: '手動公開済み', tone: 'muted',
-        url: String(manual.url || (run.workspace && run.workspace.url) || ''),
-        local: String((run.workspace && run.workspace.local) || ''),
-        branch: String(manual.branch || ''), commit: String(manual.commit || ''),
-        recoveryRef: '', reason: String(manual.reason || ''), canForceComplete: false, ci,
-      };
-    }
-    const published = records.find((record) => record.state === 'published');
-    if (published) {
-      return {
-        state: 'published', label: '公開済み', tone: 'muted',
-        url: String(published.url || (run.workspace && run.workspace.url) || ''),
-        local: String((run.workspace && run.workspace.local) || ''),
-        branch: String(published.branch || ''), commit: String(published.commit || ''),
-        recoveryRef: '', canForceComplete: false, ci,
-      };
-    }
-    const noChange = records.find((record) => record.state === 'not-required');
-    if (noChange) {
-      return {
-        state: 'not-required', label: '変更なし', tone: 'muted',
-        url: String(noChange.url || (run.workspace && run.workspace.url) || ''),
-        local: String((run.workspace && run.workspace.local) || ''),
-        branch: String(noChange.branch || ''), commit: '', recoveryRef: '',
-        canForceComplete: false, ci,
-      };
-    }
-    return { state: 'unknown', label: '公開状態を確認できません', tone: 'muted',
-      url: '', local: '', branch: '', commit: '', recoveryRef: '', canForceComplete: false, ci };
+    return view;
   }
 
   // 終端の統合検証（P1）。run の完了条件は「全ノード done」ではなく「終端の検証が緑」。
@@ -554,6 +594,15 @@
       view.reason ? ['手動復旧理由', view.reason] : null,
     ].filter(Boolean);
     const rows = rowItems.map(([key, value]) => `<div><dt>${esc(key)}</dt><dd><code>${esc(value)}</code></dd></div>`).join('');
+    // 書込先が複数の run は、集約の下に要素ごとの状態を並べる。集約だけだと「片方は公開
+    // 済み・片方は失敗」の半公開が 1 行に潰れ、どの repo を復旧すればよいか読めない。
+    const elements = Array.isArray(view.elements) ? view.elements : [];
+    const elementRows = elements.map((e) => {
+      const detail = [e.branch, e.commit && e.commit.slice(0, 12), e.url]
+        .filter(Boolean).map((value) => `<code>${esc(value)}</code>`).join(' ');
+      return `<div><dt>${esc(e.name)}</dt><dd><code>${esc(e.label)}</code>${
+        detail ? ` ${detail}` : ''}</dd></div>`;
+    }).join('');
     const ci = ciPresentation(run || {});
     const ciRows = ci.checks.map((check) =>
       `<div><dt>${esc(check.name)}</dt><dd><code>${esc(check.state || '不明')}</code>${
@@ -563,10 +612,12 @@
     const manual = recover && view.canForceComplete
       ? `git -C ${quote(view.local)} push ${quote(view.url)} ${quote(`${view.recoveryRef}:refs/heads/${view.branch}`)}`
       : '';
-    if (!rowItems.length && ci.state === 'none' && !manual) return '';
+    if (!rowItems.length && ci.state === 'none' && !manual && !elementRows) return '';
     return `<div class="wf-publication ${esc(view.tone)}">
       <details class="wf-publication-details"><summary>保存と公開の詳細</summary>
         ${rows ? `<dl>${rows}</dl>` : '<p class="muted">この run には公開記録がありません。</p>'}
+        ${elementRows ? `<p class="muted">書込先ごとの状態（${elements.length} 件）</p>
+          <dl class="wf-publication-elements">${elementRows}</dl>` : ''}
         ${ci.state === 'none' ? '' : `<dl class="wf-ci-checks">
           <div><dt>CI</dt><dd><code>${esc(ci.label)}</code>${ci.url ? ` <code>${esc(ci.url)}</code>` : ''}</dd></div>
           ${ciRows}</dl>`}
@@ -1543,7 +1594,7 @@
           const inbox = inboxByRun.get(String(run.runId)) || {};
           const chip = activeRunChip(run.status);
           const purpose = inbox.purpose === 'design' ? '設計' : '実装';
-          const folder = folderPath(run.workspace) || folderPath(run.cwd) || '対象フォルダ未指定';
+          const folder = runFolderLabel(run) || '対象フォルダ未指定';
           const done = Number((run.counts && run.counts.done) || 0)
             + Number((run.counts && run.counts.failed) || 0);
           const total = Number(run.total || 0);
@@ -2147,6 +2198,10 @@
           <textarea id="wf-fork-request" rows="10">${esc(fork.request || '')}</textarea></label>
         <label class="field">対象フォルダ
           <input id="wf-fork-cwd" list="wf-fork-cwd-list" value="${esc(fork.cwd || '')}" placeholder="/path/to/repository"></label>
+        <label class="field">追加の書込先（1 行 1 フォルダ・任意）
+          <textarea id="wf-fork-cwds" rows="2" placeholder="/path/to/another-repository">${
+  esc((fork.cwds || []).join('\n'))}</textarea>
+          <small class="field-help">上の対象フォルダが主。ここに足したフォルダにも同じ実行が書き込みます（工程ごとに commit・push・レビューが 1 セットずつ増えます）。</small></label>
         <datalist id="wf-fork-cwd-list">${histories}</datalist>
         <label class="field">フロー
           <select id="wf-fork-flow"><option value="keep" selected>元の実行のまま（${
@@ -2835,6 +2890,7 @@
         preview: preview && preview.preview,
         request: input.request,
         cwd: input.cwd,
+        cwds: Array.isArray(input.cwds) ? input.cwds : [],
         granularity: input.granularity,
         splitPolicy: input.splitPolicy,
         busy: '',
@@ -2866,11 +2922,18 @@
       const edits = {};
       const request = String($id('wf-fork-request')?.value || '').trim();
       const cwd = String($id('wf-fork-cwd')?.value || '').trim();
+      const cwds = String($id('wf-fork-cwds')?.value || '')
+        .split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
       const flow = String($id('wf-fork-flow')?.value || '');
       const granularity = String(fork.granularity || '');
       const splitPolicy = String(fork.splitPolicy || '');
       if (request !== String(input.request || '')) edits.request = request;
       if (cwd !== String(input.cwd || '')) edits.cwd = cwd;
+      // 追加の書込先を変えたときだけ送る。`cwd` と `cwds` は同じ集合の別々の入口なので、
+      // 片方だけ届いても main 側が旧記録からもう片方を補って順序（先頭＝primary）を保つ。
+      if (JSON.stringify(cwds) !== JSON.stringify(Array.isArray(input.cwds) ? input.cwds : [])) {
+        edits.cwds = cwds;
+      }
       if (flow && flow !== 'keep') edits.selection = selectionFrom(flow);
       if (granularity !== String(input.granularity || '')) edits.granularity = granularity;
       if (splitPolicy !== String(input.splitPolicy || '')) edits.splitPolicy = splitPolicy;
@@ -3959,6 +4022,7 @@
     runHtml,
     statusLabel,
     publicationPresentation,
+    runFolderLabel,
     publicationHtml,
     integrationVerifyPresentation,
     ciPresentation,

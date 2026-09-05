@@ -373,7 +373,8 @@ test('一括投函は行ごとに workspace を持ち、同じ batch_id で束�
       ['git@example.com:o/a.git', 'git@example.com:o/b.git']);
     assert.deepStrictEqual([...new Set(records.map((rec) => rec.batch_id))], [result.batchId],
       '1 回の一括投函は 1 つの batch_id で束ねる');
-    // 1 run = 1 workspace は崩さない（行ごとに別の run）
+    // 行＝run は崩さない（行ごとに別の run。1 本の run が書込先の集合を持てるように
+    // なった後も、バッチが 1 行を 2 run に割ることはない）
     assert.strictEqual(new Set(result.submitted.map((row) => row.runId)).size, 2);
   }, shell);
 });

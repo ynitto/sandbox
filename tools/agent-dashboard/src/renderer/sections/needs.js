@@ -725,20 +725,27 @@ function runArtifactViewModel(project, run) {
         sanitizeTaskId(item.taskId || item.id) === key)
     : null;
   const needDelivery = (need && need.delivery) || [];
-  const workspace = (run && run.workspace) || null;
-  const workspaceDelivery = workspace && ((project && project.workspace) || workspace.url)
-    ? [{
-        name: workspace.desc || '成果リポジトリ',
-        role: 'write',
-        url: workspace.url || '',
-        path: (project && project.workspace) || '',
-        base: workspace.base || '',
-        target: workspace.target || workspace.base || '',
-        branch: workspace.branch || '',
-        ref: workspace.branch || '',
-        files: [],
-      }]
-    : [];
+  // 書込先ごとに 1 行。集合の run は要素の数だけ、1 要素の run は従来どおり 1 行になる。
+  // 名前は要素名（集合の run では必ず付く）→ 役割説明 → 既定の順で決める——2 repo の run で
+  // 「成果リポジトリ」が 2 行並ぶと、どちらがどれか読めない。
+  const multi = Array.isArray(run && run.workspaces) && run.workspaces.length > 1;
+  const workset = multi ? run.workspaces : [(run && run.workspace) || null].filter(Boolean);
+  const workspaceDelivery = workset
+    .filter((workspace) => (project && project.workspace) || workspace.url)
+    .map((workspace) => ({
+      name: workspace.name || workspace.desc || '成果リポジトリ',
+      role: 'write',
+      url: workspace.url || '',
+      // 集合の run だけ要素の担当フォルダを使う。1 要素の run はプロジェクト登録フォルダの
+      // まま——同じ「path」でも前者は repo 内の担当範囲、後者はローカルのフォルダで意味が
+      // 違い、1 要素の見え方をここで変える理由がない。
+      path: (multi ? workspace.path : '') || (project && project.workspace) || '',
+      base: workspace.base || '',
+      target: workspace.target || workspace.base || '',
+      branch: workspace.branch || '',
+      ref: workspace.branch || '',
+      files: [],
+    }));
   const needMrs = (need && need.mrUrls) || (need && need.mrUrl ? [need.mrUrl] : []);
   const runMrs = [...new Set(((run && run.gitlabIssues) || []).flatMap((issue) =>
     (issue.mergedMrs || []).map((mr) => String((mr && (mr.web_url || mr.url)) || '')).filter(Boolean)

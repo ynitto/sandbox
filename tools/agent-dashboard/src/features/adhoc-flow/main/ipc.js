@@ -407,10 +407,14 @@ function registerIpc(ctx) {
   handle('adhocFlow:submit', (payload) => {
     const cfg = loadConfig();
     const result = adhoc.submit(cfg, payload || {});
-    const cwd = String((payload && payload.cwd) || '').trim();
-    if (cwd) {
+    // 履歴は選ばれた書込先を**全部**覚える（新しいものが先頭）。2 repo の run を投函した
+    // 次の投函で、追加した方のフォルダが候補から消えていると選び直す手間が戻ってしまう。
+    const picked = [String((payload && payload.cwd) || ''),
+      ...(Array.isArray(payload && payload.cwds) ? payload.cwds : [])]
+      .map((item) => String(item || '').trim()).filter(Boolean);
+    if (picked.length) {
       const old = (cfg.adhocFlow && cfg.adhocFlow.cwdHistory) || [];
-      const cwdHistory = [cwd, ...old.filter((p) => p !== cwd)].slice(0, 20);
+      const cwdHistory = [...new Set([...picked, ...old])].slice(0, 20);
       saveConfig({ ...cfg, adhocFlow: { ...cfg.adhocFlow, cwdHistory } });
     }
     return result;
@@ -456,6 +460,9 @@ function registerIpc(ctx) {
         request: String(record.request || ''),
         purpose: String(record.purpose || 'implementation'),
         cwd: String((record.workspace && record.workspace.local) || ''),
+        // 追加の書込先（primary を除いた残り）。1 要素の run では空配列＝画面の表示も従来どおり。
+        cwds: (Array.isArray(record.workspaces) ? record.workspaces : []).slice(1)
+          .map((item) => String((item && item.local) || '')).filter(Boolean),
         referenceCwds: (Array.isArray(record.references) ? record.references : [])
           .map((item) => String((item && item.local) || '')).filter(Boolean),
         planName: String((record.plan && record.plan.name) || ''),

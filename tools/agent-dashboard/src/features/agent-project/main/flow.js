@@ -124,6 +124,21 @@ function nodeTaskToken(runId, nodeId) {
   return 'kf-' + crypto.createHash('sha1').update(key).digest('hex').slice(0, 12);
 }
 
+// 書込先ごとのイシュートークン（executors/gitlab.py の `_element_token` と同じ規則）。
+// 集合の run では要素ごとに 1 イシューが立ち、トークンも要素ごとに違う——1 つの
+// トークンで全部を探すと、どのイシューも見つからないか、片方だけ当たって残りが
+// 「イシュー無し」に見える。1 要素の run では空配列＝従来の `taskToken` だけを使う。
+function nodeTaskTokens(runId, nodeId, workspaces) {
+  const list = Array.isArray(workspaces) ? workspaces : [];
+  if (list.length <= 1) return [];
+  const base = nodeTaskToken(runId, nodeId);
+  return list.map((w) => {
+    const name = String((w && w.name) || '');
+    const safe = (name.replace(/[^0-9A-Za-z-]/g, '-').replace(/^-+|-+$/g, '') || 'e').toLowerCase();
+    return { name, url: String((w && w.url) || ''), token: `${base}-${safe}` };
+  });
+}
+
 // ---------------------------------------------------------------------------
 // gitlab executor の決着（承認/却下）をビュアー側で「先読み」する（クローズ済みイシューの反映）
 // ---------------------------------------------------------------------------
@@ -359,6 +374,7 @@ function readRun(runDir) {
       ),
       interaction: interactionByNode.get(id) || null,
       taskToken: nodeTaskToken(runId, id),
+      taskTokens: nodeTaskTokens(runId, id, meta.workspaces),
     };
   }
 
@@ -433,7 +449,10 @@ function readRun(runDir) {
     alive: TERMINAL.has(status) ? null : runAlive(meta, now),
     heartbeatAt: meta.heartbeat_at || null,
     resumeCount: Number(meta.resume_count || 0), // 孤児を自動再開した回数（進捗でリセット）
-    workspace: meta.workspace || null, // 唯一の書込先（gitlab executor の起票先解決に使う）
+    workspace: meta.workspace || null, // 書込先の先頭（primary。gitlab executor の起票先解決に使う）
+    // 書込先が複数の run だけが持つ集合（先頭が primary）。1 要素の run では出さない。
+    ...(Array.isArray(meta.workspaces) && meta.workspaces.length > 1
+      ? { workspaces: meta.workspaces } : {}),
     references: Array.isArray(meta.references) ? meta.references : [],
     executor: meta.executor || null, // この run を駆動した executor（orchestrator が記録）
     // GitLab 連携の UI（突き合わせ・イシュー検索・レビュー導線）を出すか。
@@ -955,6 +974,7 @@ function summarizeTombstone(tomb) {
       parkActiveSeen: false,
       rejected: Boolean(record && record.decision === 'rejected'),
       taskToken: nodeTaskToken(runId, id),
+      taskTokens: nodeTaskTokens(runId, id, meta.workspaces),
     };
   }
   const counts = { done: 0, failed: 0, claimed: 0, pending: 0, waiting: 0, parked: 0 };
@@ -990,6 +1010,8 @@ function summarizeTombstone(tomb) {
     heartbeatAt: null,
     resumeCount: 0,
     workspace: meta.workspace || null,
+    ...(Array.isArray(meta.workspaces) && meta.workspaces.length > 1
+      ? { workspaces: meta.workspaces } : {}),
     references: Array.isArray(meta.references) ? meta.references : [],
     executor: meta.executor || null,
     gitlabish: meta.executor ? meta.executor === 'gitlab' : gitlabIssues.length > 0,
@@ -1056,6 +1078,8 @@ function listRuns(busDir, limit = 30) {
 
 module.exports = {
   readRun,
+  // トークン導出は executor（Python）との写しなので、テストが突き合わせられるよう公開する。
+  _nodeTaskTokens: nodeTaskTokens,
   writeInteractionResponse,
   isCancelled,
   parseRunId,

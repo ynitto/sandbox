@@ -119,6 +119,15 @@ def _delegation_result_extras(bus_run: "Bus") -> dict:
                 reject_guidance = out[i + len(_REJECT_MARK):].strip()[:1500]
                 break
     extras: dict = {}
+    deliveries = _board_deliveries(nodes, results)
+    if deliveries:
+        # 書込先が複数の公示は、要素ごとの成果（ブランチ・commit）を板へ載せる。依頼側は
+        # これを見て「どの repo のどのブランチを採るか」を要素ごとに決める——primary の
+        # ブランチだけ返すと、2 つ目以降の成果は板の記録から消える（board.schema.json §result）。
+        extras["deliveries"] = deliveries
+        primary = str(deliveries[0].get("branch") or "")
+        if primary:
+            extras["branch"] = primary        # 1 要素の公示と同じ読み口（primary の作業ブランチ）
     receipt = read_json(os.path.join(bus_run.run_dir, "receipt.json"))
     if isinstance(receipt, dict):
         # 統一 verify の receipt は板の result へそのまま載せる。依頼側は「板が成功終端で
@@ -131,6 +140,45 @@ def _delegation_result_extras(bus_run: "Bus") -> dict:
     if discoveries:
         extras["discoveries"] = discoveries
     return extras
+
+
+def _board_deliveries(nodes: dict, results: dict) -> "list[dict]":
+    """完了 run の結果ノードから、板 result.json 用の要素ごとの成果を組み立てる。
+
+    要素の順は run の workset（＝公示の `workspaces`）の順で、先頭が primary。同じ要素へ
+    複数のノードが公開した run では**後に公開したものが勝つ**ので、ノードは
+    `finished_at`（結果の確定時刻）順に見る——同じ作業ブランチへ積み増すため最後の commit が
+    その要素の成果で、グラフの定義順ではそれを取り違える。変更の無かった要素
+    （not-required）は `commit` を持たないまま名前だけ残す（「書かなかった」ことも成果の一部）。
+
+    1 要素の run では `deliveries` を作らない（従来どおり空を返す）——公示の形を N=1 で
+    変えないため（設計 §5.1 不変条件 3）。"""
+    order: "list[str]" = []
+    found: "dict[str, dict]" = {}
+    ordered = sorted(nodes, key=lambda n: (str((results.get(n) or {}).get("finished_at") or ""), n))
+    for nid in ordered:
+        data = (results.get(nid) or {}).get("data")
+        if not isinstance(data, dict):
+            continue
+        records = data.get("deliveries")
+        if not isinstance(records, list) or len(records) <= 1:
+            continue
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            name = str(record.get("name") or "")
+            if not name:
+                continue
+            pub = record.get("publication") if isinstance(record.get("publication"), dict) else {}
+            entry = {"name": name}
+            for key in ("url", "branch", "commit", "target"):
+                value = str(record.get(key) or pub.get(key) or "")
+                if value:
+                    entry[key] = value
+            if name not in found:
+                order.append(name)
+            found[name] = entry
+    return [found[name] for name in order]
 
 
 def report_board_results(bus_local: "Bus", board: "Bus", node_id: str) -> "list[str]":

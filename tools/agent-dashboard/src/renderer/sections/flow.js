@@ -486,6 +486,42 @@ function gitlabConfigured() {
   return Boolean(gl && gl.baseUrl && gl.token);
 }
 
+// この run の突き合わせ先（repo URL ＋ 要素名）。書込先が複数なら要素の数だけ、
+// 1 つ（または旧 run）なら primary だけ。要素名は per-node のトークンを引く鍵。
+function worksetQueries(run) {
+  const list = Array.isArray(run && run.workspaces) ? run.workspaces : [];
+  if (list.length > 1) {
+    return list.map((w) => ({ url: String((w && w.url) || ''), name: String((w && w.name) || '') }))
+      .filter((q) => q.url);
+  }
+  const url = String((run && run.workspace && run.workspace.url) || '');
+  return url ? [{ url, name: '' }] : [];
+}
+
+// ノードの、その書込先ぶんのイシュートークン。集合の run は要素ごとに別トークン
+// （main 側 nodeTaskTokens が executor と同じ規則で作る）。名前が無ければ従来の 1 本。
+function elementToken(node, name) {
+  if (!name) return String((node && node.taskToken) || '');
+  const hit = (Array.isArray(node && node.taskTokens) ? node.taskTokens : [])
+    .find((t) => t && String(t.name) === String(name));
+  return hit ? String(hit.token || '') : '';
+}
+
+// 要素ごとの突き合わせ結果を、ノード 1 件へ畳む。**決着したものが勝つ**（reconciled）
+// ——1 要素でもクローズされていれば、そのノードには人の決着が付いている。要素名は
+// どの repo のイシューだったかが分かるように残す。
+function mergeReconciled(results) {
+  const byId = new Map();
+  for (const { query, nodes } of results) {
+    for (const rec of nodes) {
+      const tagged = query.name ? { ...rec, element: query.name } : rec;
+      const prev = byId.get(rec.id);
+      if (!prev || (!prev.reconciled && tagged.reconciled)) byId.set(rec.id, tagged);
+    }
+  }
+  return [...byId.values()];
+}
+
 // 同じ run を短時間に何度も自動突き合わせしない律速（手動ボタンは無視して即実行）。
 const AUTO_RECONCILE_THROTTLE_MS = 60000;
 
@@ -494,7 +530,7 @@ const AUTO_RECONCILE_THROTTLE_MS = 60000;
 function maybeAutoReconcile(run) {
   if (!run || run.archived || !gitlabConfigured()) return; // アーカイブは読み取り専用の写し＝突き合わせ対象外
   if (!run.gitlabish) return; // gitlab executor の run 以外にイシューは存在しない＝API を叩かない
-  if (!(run.workspace && run.workspace.url)) return;
+  if (!worksetQueries(run).length) return;
   if (!reconcilableNodes(run).length) return;
   const e = reconcileEntry(run.runId);
   if (e && e.loading) return; // 取得中
@@ -509,27 +545,39 @@ async function reconcileFlowRun(opts) {
   const auto = !!(opts && opts.auto);
   const run = state.flowRun && state.flowRun.run;
   if (!run) return;
-  const repoUrl = run.workspace && run.workspace.url;
-  if (!repoUrl) {
+  // 突き合わせ先は書込先ごと。集合の run は要素ごとに 1 イシューが立ち（P4）、トークンも
+  // 要素ごとに違うので、repo と token を組にして 1 巡ずつ問い合わせる。1 要素の run では
+  // 従来どおり primary へ 1 回だけ——問い合わせ回数も結果の形も変わらない。
+  const queries = worksetQueries(run);
+  if (!queries.length) {
     if (!auto) toast('この実行には対応する GitLab リポジトリがありません');
     return;
   }
-  const nodes = reconcilableNodes(run).map((n) => ({ id: n.id, taskToken: n.taskToken, state: n.state }));
   const prev = reconcileEntry(run.runId) || {};
   state.flowReconcile[run.runId] = { loading: true, at: prev.at || 0, byNode: prev.byNode || {} };
   renderFlow();
-  const res = await guard('GitLab 突き合わせ', () => api.glReconcileRun({ repoUrl, nodes }));
-  if (res === undefined) {
-    state.flowReconcile[run.runId] = { loading: false, at: Date.now(), byNode: prev.byNode || {} };
-    renderFlow();
-    return;
+  const results = [];
+  for (const q of queries) {
+    const nodes = reconcilableNodes(run)
+      .map((n) => ({ id: n.id, taskToken: elementToken(n, q.name), state: n.state }))
+      .filter((n) => n.taskToken);
+    if (!nodes.length) continue;
+    // eslint-disable-next-line no-await-in-loop
+    const r = await guard('GitLab 突き合わせ', () => api.glReconcileRun({ repoUrl: q.url, nodes }));
+    if (r === undefined) {
+      state.flowReconcile[run.runId] = { loading: false, at: Date.now(), byNode: prev.byNode || {} };
+      renderFlow();
+      return;
+    }
+    if (!r.enabled) {
+      state.flowReconcile[run.runId] = { loading: false, at: Date.now(), byNode: {} };
+      if (!auto) toast('GitLabとの接続が設定されていません。全体設定で接続情報を入力してください');
+      renderFlow();
+      return;
+    }
+    results.push({ query: q, nodes: r.nodes || [] });
   }
-  if (!res.enabled) {
-    state.flowReconcile[run.runId] = { loading: false, at: Date.now(), byNode: {} };
-    if (!auto) toast('GitLabとの接続が設定されていません。全体設定で接続情報を入力してください');
-    renderFlow();
-    return;
-  }
+  const res = { nodes: mergeReconciled(results) };
   const byNode = {};
   for (const rec of res.nodes || []) byNode[rec.id] = rec;
   state.flowReconcile[run.runId] = { loading: false, at: Date.now(), byNode };
@@ -685,7 +733,7 @@ function renderFlowDetail() {
   const rec = reconcileEntry(run.runId) || null;
   const recHits = rec ? Object.values(rec.byNode || {}).filter((r) => r.reconciled).length : 0;
   const reconcileBtn =
-    hasOpenNodes && run.workspace && run.workspace.url
+    hasOpenNodes && worksetQueries(run).length
       ? `<button class="chip" id="flow-reconcile" ${rec && rec.loading ? 'disabled' : ''}
           title="関連する GitLab イシューの最新状態を取得して表示に反映します">${
             rec && rec.loading ? '取得中…' : '⟳ GitLab 最新化'

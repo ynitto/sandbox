@@ -58,6 +58,13 @@ function validateEnvelope(env) {
     out.title = String(env.title || '').trim();
     out.design = typeof env.design === 'string' ? env.design : '';
     out.workspace = isObj(env.workspace) ? env.workspace : null;
+    // 書込先の集合（順序つき・先頭が primary）。2 要素以上のときだけ載せる——1 要素の公示は
+    // 従来どおり `workspace` だけで、封筒の形が N=1 で変わらない（設計 §5.1 不変条件 3）。
+    // ここは**素通しではなく明示の写し**にする: この関数は許可キーだけを新しい object へ
+    // 組み直すので、書き忘れたキーはエラーにならず**黙って消える**。集合が消えると primary
+    // だけに書かれて成功として記録される（静かな部分実行）ので、消えていい種類の値ではない。
+    const workset = Array.isArray(env.workspaces) ? env.workspaces.filter(isObj) : [];
+    if (workset.length > 1) out.workspaces = workset;
     out.references = Array.isArray(env.references) ? env.references.filter(isObj) : [];
 
     const policy = isObj(env.policy) ? env.policy : {};

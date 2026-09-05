@@ -55,19 +55,20 @@ from .repolocal import normalize_repo_url
 # `.agents/engine/status.json`（画面の語彙）。分けないのは、フリート更新を静止点で
 # 一斉に行う規律（C13）の下では「板だけ新しい」状態を作らないため——分けた瞬間に
 # 「板は互換だが画面は非互換」という中間状態が正当になり、更新漏れの説明が 2 系統になる。
-CONTRACT_VERSION = 1
+CONTRACT_VERSION = 2
 
-# 書込先が複数（workset）ある公示を安全に配れるようになる契約版。要素ごとに commit/push し
+# 書込先が複数（workset）ある公示を安全に配れる契約版。要素ごとに commit/push し
 # `deliveries[]` を返せる請負側でなければ、`workspaces` を未知キーとして無視して **primary
 # だけに書く**（静かな部分実行）ため、版でしか止められない。`contract_compatible` は完全一致
-# なので、この版へ上げるにはフリート全体を静止点で一斉に更新する必要がある（C13）——それが
-# 済むまで依頼側は workset タスクを板へ出さない（`workset_posts_supported` が偽）。
+# なので、この版へ上げるにはフリート全体を静止点で一斉に更新する必要がある（C13）。
+# P4 でその一斉更新を行い、`CONTRACT_VERSION` をこの版へ上げた——版 1 のままのノードは
+# workset の公示に入札しない（fail-close）。
 # 設計: docs/plans/2026-09-05-agent-flow-multi-workspace-design.md §5.7・§7 の P4。
 WORKSET_CONTRACT_VERSION = 2
 
 
 def workset_posts_supported(declared: "int | None" = None) -> bool:
-    """このフリートが書込先の集合を持つ公示を扱えるか（P4 で CONTRACT_VERSION を上げると真）。"""
+    """このフリートが書込先の集合を持つ公示を扱えるか（P4 で真になった）。"""
     version = CONTRACT_VERSION if declared is None else declared
     return version is not None and version >= WORKSET_CONTRACT_VERSION
 
