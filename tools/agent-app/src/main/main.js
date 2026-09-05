@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, shell } = require('electron');
 const path = require('path');
 const { registerIpcHandlers } = require('./ipc');
 
@@ -24,6 +24,9 @@ function createWindow() {
     },
   });
   win.setMenuBarVisibility(false);
+  // Markdown プレビューや応答の中のリンクで画面が遷移しないように。外部 URL は既定のブラウザへ。
+  win.webContents.on('will-navigate', (e, url) => { e.preventDefault(); if (/^https?:/i.test(url)) shell.openExternal(url); });
+  win.webContents.setWindowOpenHandler(({ url }) => { if (/^https?:/i.test(url)) shell.openExternal(url); return { action: 'deny' }; });
   win.loadFile(path.join(SRC_ROOT, 'renderer', 'index.html'));
   win.on('closed', () => { if (mainWindow === win) mainWindow = null; });
   mainWindow = win;

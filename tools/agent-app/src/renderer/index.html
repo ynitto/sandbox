@@ -2,8 +2,11 @@
 <html lang="ja">
 <head>
   <meta charset="utf-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:">
   <title>Agent App</title>
+  <link rel="stylesheet" href="vendor/xterm.css">
+  <link rel="stylesheet" href="vendor/highlight-github.min.css">
+  <link rel="stylesheet" href="vendor/diff2html.min.css">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -12,37 +15,144 @@
       <div class="side-head"><span>リポジトリ</span><button id="repo-add" class="small">追加</button></div>
       <ul id="repos" class="list"></ul>
       <div class="side-head"><span>会話</span><button id="session-new" class="small primary">新しい会話</button></div>
-      <ul id="sessions" class="list"></ul>
+      <ul id="sessions" class="list grow"></ul>
+      <div id="side-foot">
+        <label id="wsl-row" hidden>WSL ディストロ <input id="wsl-distro" placeholder="既定" size="10" title="C:\ 配下のリポジトリを扱う WSL ディストロ。\\wsl$\<名前>\ のリポジトリはパスから決まる"></label>
+        <label class="check" title="tmux で CLI を対話起動する（外すと 1 ターン 1 プロセスのヘッドレス実行）"><input type="checkbox" id="use-tmux"> tmux で対話起動</label>
+        <label class="check" title="会話ごとに git worktree で作業フォルダを分ける（外すと常にリポジトリ本体で作業する）"><input type="checkbox" id="use-worktree"> 作業フォルダを分ける</label>
+        <div id="host-status" class="sub"></div>
+      </div>
     </aside>
 
-    <main id="chat">
+    <main id="main">
       <header id="chat-head">
-        <div id="chat-title" class="title">リポジトリを登録して会話を始める</div>
+        <div class="title-row">
+          <div id="chat-title" class="title">リポジトリを登録して会話を始める</div>
+          <span id="phase" class="phase" hidden></span>
+          <button id="term-restart" class="small" hidden title="tmux セッションを作り直して CLI を起動し直す">再起動</button>
+        </div>
+        <nav class="views">
+          <button id="view-chat" class="tab on">会話</button>
+          <button id="view-files" class="tab">ファイル</button>
+        </nav>
         <label>エージェント <select id="cli"></select></label>
         <label>モデル <input id="model" placeholder="既定" size="14"></label>
         <label class="check"><input type="checkbox" id="readonly"> 読み取り専用（Ask）</label>
+        <label>作業フォルダ <select id="worktree" title="会話ごとに git worktree で作業フォルダを分ける"></select></label>
+        <button id="wt-manage" class="small" title="作業フォルダ（git worktree）を作る・消す">…</button>
         <span class="spacer"></span>
+        <button id="term-toggle" class="small" hidden title="CLI の端末をそのまま見る・操作する">端末</button>
         <button id="changes-toggle" class="small">変更</button>
         <button id="open-folder" class="small">フォルダを開く</button>
         <button id="session-delete" class="small danger" hidden>削除</button>
       </header>
       <div id="notice" hidden></div>
-      <section id="messages"></section>
-      <footer id="composer">
-        <textarea id="prompt" rows="3" placeholder="依頼を書く（Enter で送信、Shift+Enter で改行）"></textarea>
-        <div class="composer-actions">
-          <button id="send" class="primary">送信</button>
-          <button id="stop" class="danger" hidden>停止</button>
-        </div>
-      </footer>
+
+      <section id="chat" class="view">
+        <section id="messages"></section>
+        <section id="term-drawer" hidden>
+          <div class="drawer-head">
+            <span id="term-name" class="sub"></span>
+            <span class="spacer"></span>
+            <span class="sub">キー入力はそのまま CLI へ届く（Esc で中断、tmux -L agent-app attach でも開ける）</span>
+            <button id="term-close" class="small">閉じる</button>
+          </div>
+          <div id="term-host"></div>
+        </section>
+        <footer id="composer">
+          <textarea id="prompt" rows="3" placeholder="依頼を書く（Enter で送信、Shift+Enter で改行）"></textarea>
+          <div class="composer-actions">
+            <button id="send" class="primary">送信</button>
+            <button id="stop" class="danger" hidden>停止</button>
+          </div>
+        </footer>
+      </section>
+
+      <section id="files" class="view" hidden>
+        <aside id="tree-pane">
+          <div class="tree-tools">
+            <select id="tree-root" title="見るフォルダ（リポジトリ本体 / 作業フォルダ）"></select>
+            <button id="tree-refresh" class="small" title="ツリーを読み直す">更新</button>
+          </div>
+          <div class="tree-tools">
+            <input id="tree-filter" placeholder="名前で絞り込み">
+          </div>
+          <ul id="tree" class="tree"></ul>
+          <ul id="tree-results" class="tree" hidden></ul>
+        </aside>
+        <section id="viewer">
+          <div id="viewer-head" hidden>
+            <div id="viewer-path" class="path"></div>
+            <span id="viewer-meta" class="sub"></span>
+            <span class="spacer"></span>
+            <span id="viewer-mode" class="seg" hidden>
+              <button id="viewer-mode-code" class="small">コード</button><button id="viewer-mode-preview" class="small">プレビュー</button>
+            </span>
+            <button id="viewer-wrap" class="small" title="長い行を折り返す">折り返し</button>
+            <button id="viewer-reload" class="small">再読込</button>
+            <button id="viewer-show" class="small" title="フォルダで表示">場所</button>
+            <button id="viewer-open" class="small" title="既定のアプリで開く">開く</button>
+          </div>
+          <div id="viewer-body" class="viewer-body"><div class="viewer-empty">ツリーからファイルを選ぶ</div></div>
+        </section>
+      </section>
     </main>
 
     <aside id="changes" hidden>
-      <div class="side-head"><span>変更（作業ツリー）</span><button id="changes-refresh" class="small">更新</button></div>
+      <div class="side-head">
+        <span id="changes-where">変更</span>
+        <span>
+          <span class="seg">
+            <button id="scope-worktree" class="small on" title="まだコミットしていない変更">作業ツリー</button><button id="scope-branch" class="small" title="分岐元から積んだコミット">ブランチ</button>
+          </span>
+          <button id="diff-style" class="small" title="並べて表示 / 1 列表示">並べて</button>
+          <button id="changes-refresh" class="small">更新</button>
+        </span>
+      </div>
       <ul id="changed-files" class="list"></ul>
-      <pre id="diff"></pre>
+      <div id="diff"></div>
     </aside>
   </div>
+
+  <dialog id="wt-dialog">
+    <div class="dlg-head"><strong>作業フォルダ（git worktree）</strong><span class="spacer"></span><button id="wt-close" class="small">閉じる</button></div>
+    <div class="dlg-body">
+      <p class="sub">会話ごとに別のフォルダ・別のブランチで作業する。本体（登録したフォルダ）はそのまま残るので、並行して進めても混ざらない。置き場は <code>&lt;リポジトリ&gt;/.worktrees/&lt;名前&gt;</code>。</p>
+      <div class="wt-form">
+        <label>ブランチ <input id="wt-branch" placeholder="feature/xxx" size="24"></label>
+        <label>分岐元 <input id="wt-base" placeholder="現在の HEAD" size="14"></label>
+        <button id="wt-create" class="primary small">作る</button>
+      </div>
+      <div id="wt-path" class="sub"></div>
+      <div id="wt-error" class="dlg-error" hidden></div>
+      <table class="wt-table"><tbody id="wt-list"></tbody></table>
+    </div>
+  </dialog>
+
+  <script src="vendor/xterm.js"></script>
+  <script src="vendor/addon-fit.js"></script>
+  <script src="vendor/highlight.min.js"></script>
+  <script src="vendor/hljs/dockerfile.min.js"></script>
+  <script src="vendor/hljs/powershell.min.js"></script>
+  <script src="vendor/hljs/nginx.min.js"></script>
+  <script src="vendor/hljs/protobuf.min.js"></script>
+  <script src="vendor/hljs/vim.min.js"></script>
+  <script src="vendor/hljs/x86asm.min.js"></script>
+  <script src="vendor/hljs/elixir.min.js"></script>
+  <script src="vendor/hljs/erlang.min.js"></script>
+  <script src="vendor/hljs/haskell.min.js"></script>
+  <script src="vendor/hljs/julia.min.js"></script>
+  <script src="vendor/hljs/ocaml.min.js"></script>
+  <script src="vendor/hljs/fortran.min.js"></script>
+  <script src="vendor/hljs/verilog.min.js"></script>
+  <script src="vendor/hljs/vhdl.min.js"></script>
+  <script src="vendor/marked.umd.js"></script>
+  <script src="vendor/purify.min.js"></script>
+  <script src="vendor/mermaid.min.js"></script>
+  <script src="vendor/diff2html-ui.min.js"></script>
+  <script src="md.js"></script>
+  <script src="term.js"></script>
+  <script src="files.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>

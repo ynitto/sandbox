@@ -3,9 +3,15 @@
 const { ipcMain, dialog, shell, app } = require('electron');
 const { spawn, execFile } = require('child_process');
 const fs = require('fs');
+const path = require('path');
 const agentCli = require('./agentCli');
 const store = require('./store');
 const git = require('./git');
+const files = require('./files');
+const host = require('./host');
+const tmux = require('./tmux');
+const worktree = require('./worktree');
+const { stripAnsi, cleanAnswer, lineEmitter } = require('./text');
 
 function userData() { return app.getPath('userData'); }
 
@@ -31,17 +37,47 @@ function requireRepo(repo) {
   return dir;
 }
 
-// Windows では npm の global 導入が `copilot.cmd` を置く。Node の spawn は `.cmd` を直接起動
-// できないので cmd /c に載せる（shell: true は引用が二重に解釈されて壊れるので使わない）。
-function spawnSpec(command, args) {
-  if (process.platform !== 'win32') return { command, args, extra: {} };
-  const file = agentCli.resolvePath(command) || command;
-  if (!/\.(cmd|bat)$/i.test(file)) return { command: file, args, extra: {} };
-  const quote = (s) => `"${String(s).replace(/"/g, '""')}"`;
+function distroFor(repo) {
+  return host.hostOf(repo, store.loadConfig(userData()).wslDistro).distro;
+}
+
+// 作業フォルダ。画面から受け取るのは worktree の**名前**だけで、生のパスは受け取らない
+// （名前は worktree.checkName が形を検査するので `..` を持ち込めない）。
+function dirsOf(repo, name, { mustExist = false } = {}) {
+  const dirs = worktree.dirsFor(requireRepo(repo), name || '');
+  if (mustExist && dirs.name) {
+    let st;
+    try { st = fs.statSync(dirs.fsDir); } catch { st = null; }
+    if (!st || !st.isDirectory()) {
+      throw new Error(`作業フォルダが見つかりません: ${worktree.SUBDIR}/${dirs.name}（この画面の外で消された可能性があります）`);
+    }
+  }
+  return dirs;
+}
+
+function sessionDirs(sess) {
+  return dirsOf(sess.repo, sess.worktree || '');
+}
+
+// 「ブランチ全体」の差分の分岐元。登録したフォルダ（＝ふつうは本体の worktree）の今のブランチ。
+async function mainBranch(repo, distro) {
+  const r = await host.shellFor(distro).exec(['git', '-C', host.toHostPath(repo), 'rev-parse', '--abbrev-ref', 'HEAD'], { timeoutMs: 20000 });
+  const name = r.ok ? r.output.trim() : '';
+  return name && name !== 'HEAD' ? name : '';
+}
+
+// ---- ヘッドレス（1 ターン 1 プロセス）。tmux が無いときの代替 --------------------------
+
+// Windows では CLI は WSL に居るので wsl.exe -e bash -lc に載せる（cwd も WSL 表記へ）。
+// Linux / macOS はそのまま起動する。
+function spawnSpec(command, args, { cwd = '', env = {}, distro = '' } = {}) {
+  if (process.platform !== 'win32') return { command, args, extra: { cwd, env: { ...process.env, ...env }, detached: true } };
+  const exportsStr = Object.entries(env).map(([k, v]) => `export ${k}=${host.sq(v)};`).join(' ');
+  const script = `${exportsStr} cd ${host.sq(host.toHostPath(cwd))} && exec ${host.quoteArgv([command, ...args])}`;
   return {
-    command: process.env.COMSPEC || 'cmd.exe',
-    args: ['/d', '/s', '/c', `"${[quote(file), ...args.map(quote)].join(' ')}"`],
-    extra: { windowsVerbatimArguments: true },
+    command: 'wsl.exe',
+    args: [...(distro ? ['-d', distro] : []), '-e', 'bash', '-lc', script],
+    extra: { windowsHide: true },
   };
 }
 
@@ -52,29 +88,8 @@ function capture(argv, cwd) {
   });
 }
 
-// 走っているターン。セッション ID → 子プロセス。セッションが違えば同時に走ってよい。
+// 走っているヘッドレスのターン。セッション ID → 子プロセス。
 const running = new Map();
-
-// 端末向けの装飾を剥がす。kiro は --no-interactive でも色と入力欄の `> ` を出す。
-function stripAnsi(text) {
-  return String(text).replace(/\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07|\x1b[()][A-Z0-9]/g, '');
-}
-
-function cleanAnswer(text) {
-  return stripAnsi(text).trim().replace(/^>\s+/, '');
-}
-
-function lineEmitter(onLine) {
-  let buf = '';
-  return (chunk) => {
-    buf += chunk.toString('utf8');
-    let i;
-    while ((i = buf.indexOf('\n')) >= 0) {
-      onLine(stripAnsi(buf.slice(0, i)).replace(/\r$/, ''));
-      buf = buf.slice(i + 1);
-    }
-  };
-}
 
 function killTree(child) {
   try {
@@ -85,10 +100,11 @@ function killTree(child) {
   }
 }
 
-function runTurn(id, prompt, send) {
+function runHeadless(id, prompt, send) {
   const ud = userData();
   const sess = store.readSession(ud, id);
   const repo = requireRepo(sess.repo);
+  const dirs = dirsOf(sess.repo, sess.worktree || '', { mustExist: true });
   if (running.has(id)) throw new Error('このセッションは応答中です');
   const text = String(prompt || '').trim();
   if (!text) throw new Error('依頼が空です');
@@ -101,14 +117,10 @@ function runTurn(id, prompt, send) {
   if (turn.mintedSession) store.updateSession(ud, id, { cliSession: turn.mintedSession });
 
   const startedAt = Date.now();
-  const spec2 = spawnSpec(turn.command, turn.args);
+  const spec2 = spawnSpec(turn.command, turn.args, { cwd: dirs.fsDir, env: turn.env, distro: distroFor(repo) });
   let child;
   try {
-    child = spawn(spec2.command, spec2.args, {
-      cwd: repo, env: { ...process.env, ...turn.env }, windowsHide: true,
-      detached: process.platform !== 'win32',          // 停止で孫プロセスまで止める（グループごと）
-      ...spec2.extra,
-    });
+    child = spawn(spec2.command, spec2.args, { windowsHide: true, ...spec2.extra });
   } catch (err) {
     throw new Error(`起動できません: ${(err && err.message) || err}`);
   }
@@ -145,7 +157,7 @@ function runTurn(id, prompt, send) {
         const m = turn.capture.exec(stdout);
         if (m) store.updateSession(ud, id, { cliSession: m[1] });
       } else if (!stopped && turn.listArgs) {
-        const sid = agentCli.pickListedSession(await capture(turn.listArgs, repo), repo, startedAt);
+        const sid = agentCli.pickListedSession(await capture(turn.listArgs, dirs.fsDir), dirs.hostDir, startedAt);
         if (sid) store.updateSession(ud, id, { cliSession: sid });
       }
     } catch { /* ID が拾えなくても次のターンは履歴の再送で続く */ }
@@ -162,14 +174,121 @@ function runTurn(id, prompt, send) {
   return { pid: child.pid, argv: turn.argv };
 }
 
+// ---- tmux（対話起動）。会話 ID → Conversation ----------------------------------------
+
+const conversations = new Map();
+
+async function openConversation(id, send, { cols, rows, fresh = false } = {}) {
+  const ud = userData();
+  const sess = store.readSession(ud, id);
+  const repo = requireRepo(sess.repo);
+  const cfg = store.loadConfig(ud);
+  const existing = conversations.get(id);
+  if (existing && !fresh) {
+    if (cols && rows) await existing.resize(cols, rows);
+    return { name: existing.name, phase: existing.phase, detail: existing.detail, reused: true, warning: '' };
+  }
+  const spec = agentCli.load(sess.cli, repo);
+  const { distro, shell } = host.hostOf(repo, cfg.wslDistro);
+  const cwd = dirsOf(sess.repo, sess.worktree || '', { mustExist: true }).hostDir;
+  const info = await host.probe(distro);
+  if (!info.ok) throw new Error(info.error || 'ホストのシェルを起動できません');
+  if (!info.tmux) throw new Error(process.platform === 'win32' ? 'WSL に tmux が見つかりません（sudo apt install tmux）' : 'tmux が見つかりません');
+  const history = sess.messages.filter((m) => m.role === 'user' || m.role === 'assistant');
+  const launch = agentCli.interactiveCmd(spec, { model: sess.model, readonly: sess.readonly, cliSession: sess.cliSession, history });
+  const conv = new tmux.Conversation({
+    id, shell, cwd, argv: launch.argv, patterns: tmux.compilePatterns(spec.interactive), cols, rows,
+    emit: (channel, payload) => send(channel, payload),
+  });
+  if (existing) { await existing.kill(); conversations.delete(id); }
+  conversations.set(id, conv);
+  let opened;
+  try {
+    opened = await conv.open({ reuse: !fresh });
+  } catch (err) {
+    conversations.delete(id);
+    throw err;
+  }
+  if (!opened.reused && launch.mintedSession) store.updateSession(ud, id, { cliSession: launch.mintedSession });
+  const warning = [launch.readonlyWarning, opened.reused ? '' : launch.warning].filter(Boolean).join('\n');
+  return { name: conv.name, phase: conv.phase, detail: conv.detail, reused: opened.reused, warning, argv: launch.argv };
+}
+
+async function runTmux(id, prompt, send) {
+  const ud = userData();
+  const text = String(prompt || '').trim();
+  if (!text) throw new Error('依頼が空です');
+  let conv = conversations.get(id);
+  if (!conv || conv.closed) { await openConversation(id, send); conv = conversations.get(id); }
+  if (conv.turn) throw new Error('このセッションは応答中です');
+  await conv.waitReady();
+  store.appendMessage(ud, id, { role: 'user', text });
+  await conv.send(text, (message) => {
+    try { store.appendMessage(ud, id, message); } catch (err) { message.error = `${message.error}\n保存できません: ${err.message}`.trim(); }
+    send('turn:done', { id, message });
+  });
+  send('turn:started', { id, argv: [], warning: '' });
+  return { name: conv.name };
+}
+
+// 起動中なら入力受付まで待つ（定義の ready_timeout_sec）。
+tmux.Conversation.prototype.waitReady = function waitReady() {
+  const limit = this.patterns.readyTimeoutSec * 1000 + 2000;
+  const start = Date.now();
+  return new Promise((resolve, reject) => {
+    const tick = () => {
+      if (this.phase === 'dead' || this.phase === 'gone') return reject(new Error(this.detail || 'CLI が終了しています'));
+      if (this.phase !== 'starting') return resolve();
+      if (Date.now() - start > limit) return resolve();      // 検出できないまま送る（画面で分かる）
+      return setTimeout(tick, 200);
+    };
+    tick();
+  });
+};
+
+// ---- 登録 ------------------------------------------------------------------------
+
+// 定義ごとの「使える」印はホスト側の PATH で引く（Windows では WSL の中）。
+const availCache = new Map();
+async function hostAvailability(distro, commands) {
+  const key = `${distro}|${commands.join(',')}`;
+  const hit = availCache.get(key);
+  if (hit && Date.now() - hit.at < 60000) return hit.map;
+  const sh = host.shellFor(distro);
+  const script = `for c in ${commands.map(host.sq).join(' ')}; do printf '%s=%s\\n' "$c" "$(command -v "$c" 2>/dev/null || true)"; done`;
+  const r = await sh.run(script, { timeoutMs: 20000 });
+  const map = new Map();
+  if (r.ok) for (const line of r.output.split('\n')) { const m = line.match(/^([^=]+)=(.*)$/); if (m) map.set(m[1], m[2].trim()); }
+  availCache.set(key, { at: Date.now(), map });
+  return r.ok ? map : null;
+}
+
+async function listAgents(repo) {
+  const defs = agentCli.list(repo);
+  const distro = repo ? distroFor(repo) : store.loadConfig(userData()).wslDistro;
+  const map = await hostAvailability(distro, [...new Set(defs.map((d) => d.command))]);
+  if (!map) return defs;                                     // ホストに聞けない → ローカル PATH の判定のまま
+  return defs.map((d) => ({ ...d, available: !!map.get(d.command) }));
+}
+
 function registerIpcHandlers(getWindow) {
   const send = (channel, payload) => {
     const win = getWindow();
     if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
   };
 
+  handle('host:info', async () => {
+    const cfg = store.loadConfig(userData());
+    const info = await host.probe(process.platform === 'win32' ? cfg.wslDistro : '');
+    return { platform: process.platform, distro: cfg.wslDistro, ...info, socket: tmux.SOCKET };
+  });
   handle('config:get', () => store.loadConfig(userData()));
-  handle('config:save', (p) => store.saveConfig(userData(), p.patch));
+  handle('config:save', (p) => {
+    const before = store.loadConfig(userData());
+    const next = store.saveConfig(userData(), p.patch);
+    if (before.wslDistro !== next.wslDistro) { host.closeAll(); availCache.clear(); }
+    return next;
+  });
 
   handle('repo:add', async () => {
     const res = await dialog.showOpenDialog(getWindow(), { properties: ['openDirectory'], title: 'リポジトリを登録する' });
@@ -177,26 +296,106 @@ function registerIpcHandlers(getWindow) {
     return store.addRepo(userData(), res.filePaths[0]);
   });
   handle('repo:remove', (p) => store.removeRepo(userData(), p.repo));
-  handle('agents:list', (p) => agentCli.list(p.repo ? requireRepo(p.repo) : ''));
+  handle('agents:list', (p) => listAgents(p.repo ? requireRepo(p.repo) : ''));
 
   handle('session:list', (p) => store.listSessions(userData(), p.repo || ''));
-  handle('session:create', (p) => store.createSession(userData(), { ...p, repo: requireRepo(p.repo) }));
+  handle('session:create', async (p) => {
+    const repo = requireRepo(p.repo);
+    let branch = '';
+    if (p.worktree) branch = (await worktree.find(repo, p.worktree, distroFor(repo))).branch;
+    return store.createSession(userData(), { ...p, repo, branch });
+  });
   handle('session:read', (p) => store.readSession(userData(), p.id));
   handle('session:update', (p) => store.updateSession(userData(), p.id, p.patch));
-  handle('session:remove', (p) => {
+  handle('session:remove', async (p) => {
     if (running.has(p.id)) running.get(p.id).stop();
+    const conv = conversations.get(p.id);
+    if (conv) { conversations.delete(p.id); await conv.kill(); }
     return store.removeSession(userData(), p.id);
   });
 
-  handle('turn:send', (p) => runTurn(p.id, p.prompt, send));
-  handle('turn:stop', (p) => { const c = running.get(p.id); if (c) c.stop(); return !!c; });
-  handle('turn:running', () => [...running.keys()]);
+  handle('turn:send', (p) => {
+    const sess = store.readSession(userData(), p.id);
+    return sess.transport === 'tmux' ? runTmux(p.id, p.prompt, send) : runHeadless(p.id, p.prompt, send);
+  });
+  handle('turn:stop', async (p) => {
+    const c = running.get(p.id);
+    if (c) { c.stop(); return true; }
+    const conv = conversations.get(p.id);
+    return conv ? conv.stop() : false;
+  });
+  handle('turn:running', () => [...running.keys(), ...[...conversations.values()].filter((c) => c.turn).map((c) => c.id)]);
 
-  handle('git:changes', (p) => git.changes(requireRepo(p.repo)));
-  handle('git:file', (p) => git.fileDiff(requireRepo(p.repo), String(p.file || '')));
-  handle('shell:openFolder', (p) => shell.openPath(requireRepo(p.repo)));
+  // 端末（tmux）
+  handle('term:open', (p) => openConversation(p.id, send, { cols: p.cols, rows: p.rows }));
+  handle('term:restart', (p) => openConversation(p.id, send, { cols: p.cols, rows: p.rows, fresh: true }));
+  handle('term:state', (p) => {
+    const conv = conversations.get(p.id);
+    return conv ? { name: conv.name, phase: conv.phase, detail: conv.detail, busy: !!conv.turn } : null;
+  });
+  handle('term:watch', (p) => { const c = conversations.get(p.id); if (c) c.watch(); return !!c; });
+  handle('term:unwatch', (p) => { const c = conversations.get(p.id); if (c) c.unwatch(); return !!c; });
+  handle('term:keys', (p) => { const c = conversations.get(p.id); if (!c) throw new Error('端末が開いていない'); return c.keys(String(p.data || '')); });
+  handle('term:resize', (p) => { const c = conversations.get(p.id); return c ? c.resize(p.cols, p.rows) : false; });
+  handle('term:kill', async (p) => { const c = conversations.get(p.id); if (!c) return false; conversations.delete(p.id); await c.kill(); return true; });
 
-  app.on('before-quit', () => { for (const c of running.values()) c.stop(); });
+  // 作業フォルダ（git worktree）
+  handle('wt:list', (p) => { const repo = requireRepo(p.repo); return worktree.list(repo, distroFor(repo)); });
+  handle('wt:create', async (p) => {
+    const repo = requireRepo(p.repo);
+    return worktree.create(repo, { branch: p.branch, base: p.base, name: p.name }, distroFor(repo));
+  });
+  handle('wt:remove', async (p) => {
+    const repo = requireRepo(p.repo);
+    const name = worktree.checkName(p.name);
+    // その作業フォルダで動いている会話の tmux セッションを先に止める（開いたままだと git が断る）
+    const ud = userData();
+    for (const s of store.listSessions(ud, repo)) {
+      if (s.worktree !== name) continue;
+      if (running.has(s.id)) running.get(s.id).stop();
+      const conv = conversations.get(s.id);
+      if (conv) { conversations.delete(s.id); await conv.kill(); }
+    }
+    return worktree.remove(repo, name, { force: !!p.force, deleteBranch: !!p.deleteBranch, forceBranch: !!p.forceBranch }, distroFor(repo));
+  });
+
+  // リポジトリのファイル（作業フォルダの中を見る）
+  handle('fs:list', (p) => files.listDir(dirsOf(p.repo, p.worktree).fsDir, p.rel || ''));
+  handle('fs:read', (p) => files.readFile(dirsOf(p.repo, p.worktree).fsDir, p.rel || ''));
+  handle('fs:find', (p) => files.find(dirsOf(p.repo, p.worktree).fsDir, p.query || '', 200));
+
+  handle('git:changes', async (p) => {
+    const repo = requireRepo(p.repo);
+    const distro = distroFor(repo);
+    const dirs = dirsOf(repo, p.worktree, { mustExist: true });
+    const scope = p.scope === 'branch' ? 'branch' : 'worktree';
+    const base = scope === 'branch' && dirs.name ? await mainBranch(repo, distro) : '';
+    return git.changes(dirs.hostDir, distro, { scope, base });
+  });
+  handle('git:file', async (p) => {
+    const repo = requireRepo(p.repo);
+    const distro = distroFor(repo);
+    const dirs = dirsOf(repo, p.worktree, { mustExist: true });
+    const scope = p.scope === 'branch' ? 'branch' : 'worktree';
+    const base = scope === 'branch' && dirs.name ? await mainBranch(repo, distro) : '';
+    return git.fileDiff(dirs.hostDir, String(p.file || ''), distro, { scope, base });
+  });
+  handle('shell:openFolder', (p) => shell.openPath(dirsOf(p.repo, p.worktree, { mustExist: true }).fsDir));
+  handle('shell:openFile', (p) => {
+    const { target } = files.resolveInside(dirsOf(p.repo, p.worktree).fsDir, p.rel || '');
+    return shell.openPath(target);
+  });
+  handle('shell:showFile', (p) => {
+    const { target } = files.resolveInside(dirsOf(p.repo, p.worktree).fsDir, p.rel || '');
+    shell.showItemInFolder(path.normalize(target));
+    return true;
+  });
+
+  app.on('before-quit', () => {
+    for (const c of running.values()) c.stop();
+    for (const c of conversations.values()) c.detach();     // tmux セッションは残す（次回に再接続する）
+    host.closeAll();
+  });
 }
 
 module.exports = { registerIpcHandlers, spawnSpec, lineEmitter, stripAnsi, cleanAnswer };
