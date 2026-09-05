@@ -10,16 +10,40 @@
   const state = { repo: '', worktree: '', open: null, mode: 'code', wrap: false, expanded: new Set(), filterTimer: null };
 
   const LANG_LABEL = { javascript: 'JS', typescript: 'TS', python: 'Python', markdown: 'Markdown', json: 'JSON', yaml: 'YAML', xml: 'XML/HTML', bash: 'Shell', plaintext: 'Text', csharp: 'C#', cpp: 'C++' };
+  const FILE_ICON_PATHS = {
+    folder: ['M3.5 7.5h6l2 2h9v9.5h-17z', 'M3.5 7.5V5h6l2 2h9v2.5'],
+    image: ['M5 4h14v16H5z', 'm7 17 3.5-4 2.5 2.5 2-2.5 2 4', 'M9 9h.01'],
+    document: ['M6 3h8l4 4v14H6z', 'M14 3v5h4', 'M9 12h6M9 16h6'],
+    file: ['M6 3h8l4 4v14H6z', 'M14 3v5h4'],
+  };
   const fmtSize = (n) => (n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`);
+
+  function fileIcon(entry) {
+    const kind = entry.type === 'dir' ? 'folder'
+      : /\.(png|jpe?g|gif|webp|svg|bmp|ico|avif)$/i.test(entry.name) ? 'image'
+        : entry.language === 'markdown' ? 'document' : 'file';
+    const span = el('span', 'icon');
+    span.setAttribute('aria-hidden', 'true');
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    for (const d of FILE_ICON_PATHS[kind]) {
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('d', d);
+      svg.append(path);
+    }
+    span.append(svg);
+    return span;
+  }
 
   // ---- ツリー ----------------------------------------------------------------
 
   function nodeFor(entry) {
     const li = el('li', `node ${entry.type}`);
     li.dataset.rel = entry.rel;
-    const row = el('div', 'row');
+    const row = el('button', 'row');
+    row.type = 'button';
     row.append(el('span', 'arrow', entry.type === 'dir' ? '▸' : ''));
-    row.append(el('span', 'icon', entry.type === 'dir' ? '📁' : iconFor(entry)));
+    row.append(fileIcon(entry));
     row.append(el('span', 'name', entry.name));
     if (entry.type === 'file' && entry.size) row.append(el('span', 'size', fmtSize(entry.size)));
     li.append(row);
@@ -32,14 +56,6 @@
       row.onclick = () => openFile(entry.rel);
     }
     return li;
-  }
-
-  function iconFor(entry) {
-    const l = entry.language;
-    if (l === 'markdown') return '📝';
-    if (/\.(png|jpe?g|gif|webp|svg|bmp|ico|avif)$/i.test(entry.name)) return '🖼';
-    if (l) return '📄';
-    return '▫';
   }
 
   async function loadChildren(li, rel) {
@@ -113,8 +129,9 @@
       box.replaceChildren();
       for (const h of hits) {
         const li = el('li', `node ${h.type}`);
-        const row = el('div', 'row');
-        row.append(el('span', 'icon', h.type === 'dir' ? '📁' : '📄'), el('span', 'name', h.rel));
+        const row = el('button', 'row');
+        row.type = 'button';
+        row.append(fileIcon({ ...h, name: h.rel, language: '' }), el('span', 'name', h.rel));
         row.title = h.rel;
         row.onclick = () => { if (h.type === 'file') openFile(h.rel); };
         li.append(row);

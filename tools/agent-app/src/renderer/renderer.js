@@ -68,21 +68,30 @@ function worktreeUI() {
 
 // ---- 左: リポジトリと会話 ------------------------------------------------
 
+async function addRepo() {
+  const cfg = await api.addRepo();
+  if (!cfg) return;
+  state.config = cfg;
+  await selectRepo(cfg.lastRepo);
+}
+
 function renderRepos() {
   const ul = $('repos');
   ul.replaceChildren();
   for (const repo of state.config.repos) {
-    const li = el('li', repo === state.repo ? 'active' : '');
-    li.title = repo;
-    li.append(el('span', 'grow', basename(repo)));
+    const li = el('li', `row-item${repo === state.repo ? ' active' : ''}`);
+    const pick = el('button', 'list-pick');
+    pick.title = repo;
+    pick.append(el('span', 'grow', basename(repo)));
+    pick.onclick = () => selectRepo(repo);
+    li.append(pick);
     const x = el('button', 'x', '×');
     x.title = '登録を外す';
     x.onclick = async (e) => { e.stopPropagation(); if (confirm(`${basename(repo)} の登録を外す？（会話は残る）`)) { state.config = await api.removeRepo(repo); await selectRepo(state.config.lastRepo); } };
     li.append(x);
-    li.onclick = () => selectRepo(repo);
     ul.append(li);
   }
-  if (!state.config.repos.length) ul.append(el('li', 'empty', '「追加」でローカルリポジトリを登録する'));
+  if (!state.config.repos.length) ul.append(el('li', 'empty', '登録すると、会話と自動化をリポジトリごとに整理できます。'));
 }
 
 function renderSessions() {
@@ -91,13 +100,16 @@ function renderSessions() {
   for (const s of state.sessions) {
     const ph = state.phases.get(s.id);
     const cls = [state.current && s.id === state.current.id ? 'active' : '', state.running.has(s.id) ? 'running' : (ph && ph.phase === 'attention' ? 'attention' : '')];
-    const li = el('li', cls.join(' '));
+    const li = el('li', `row-item ${cls.join(' ')}`);
+    const pick = el('button', 'list-pick');
     const body = el('span', 'grow');
     body.append(el('div', '', s.title || '（無題）'));
-    const where = s.worktree ? `・${s.branch || s.worktree}` : '';
-    body.append(el('div', 'sub', `${s.cli}${s.readonly ? '・Ask' : ''}${s.transport === 'tmux' ? '・tmux' : ''}${where} · ${s.count} 通`));
-    li.append(body);
-    li.onclick = () => openSession(s.id);
+    const where = s.worktree ? ` · ${s.branch || s.worktree}` : '';
+    const status = state.running.has(s.id) ? '応答中' : (ph && ph.phase === 'attention' ? '確認待ち' : `${s.count}件`);
+    body.append(el('div', 'sub', `${s.cli}${s.readonly ? ' · Ask' : ''}${where} · ${status}`));
+    pick.append(body);
+    pick.onclick = () => openSession(s.id);
+    li.append(pick);
     ul.append(li);
   }
   if (!state.sessions.length) ul.append(el('li', 'empty', state.repo ? 'まだ会話がない' : ''));
@@ -155,6 +167,7 @@ function renderWorktreeSelect() {
   sel.disabled = !state.draft;            // 会話ごとに固定（tmux の cwd も CLI の文脈もそこで始まっている）
   sel.title = state.draft ? '会話ごとに git worktree で作業フォルダを分ける'
     : 'この会話の作業フォルダ（会話を作ったあとは変えられない）';
+  renderRunSettingsSummary();
 }
 
 // ブランチ名 → フォルダ名（main の worktree.js と同じ規則。画面で先に見せるため）
@@ -273,6 +286,16 @@ function renderAgents() {
   if ([...sel.options].some((o) => o.value === want)) sel.value = want;
 }
 
+function renderRunSettingsSummary() {
+  const summary = $('run-settings-summary');
+  if (!summary) return;
+  const agent = $('cli').value || 'エージェント未設定';
+  const model = $('model').value.trim();
+  const mode = $('readonly').checked ? 'Ask' : '実行';
+  const location = activeWorktree() ? '分離フォルダ' : 'リポジトリ本体';
+  summary.textContent = [agent, model, mode, location].filter(Boolean).join(' · ');
+}
+
 function renderHeader() {
   const cur = state.current;
   $('chat-title').textContent = cur ? (cur.title || '（無題）') : (state.repo ? `${basename(state.repo)} で新しい会話` : 'リポジトリを登録して会話を始める');
@@ -280,6 +303,10 @@ function renderHeader() {
   $('cli').disabled = !state.repo;
   if (cur) { if ([...$('cli').options].some((o) => o.value === cur.cli)) $('cli').value = cur.cli; $('model').value = cur.model || ''; $('readonly').checked = !!cur.readonly; }
   else { $('model').value = state.config.lastModel || ''; $('readonly').checked = !!state.config.lastReadonly; }
+  $('session-new').disabled = !state.repo;
+  $('changes-toggle').disabled = !state.repo;
+  $('chat-more').hidden = !state.repo;
+  $('composer').hidden = !state.repo;
   $('session-delete').hidden = !cur;
   const busy = !!cur && (state.running.has(cur.id) || state.pending.has(cur.id));
   $('send').hidden = busy;
@@ -298,6 +325,8 @@ function renderHeader() {
   $('term-restart').hidden = !(ph && (ph.phase === 'dead' || ph.phase === 'gone'));
   $('term-drawer').hidden = !(tm && state.termOpen);
   $('term-name').textContent = ph && ph.name ? `tmux -L agent-app attach -t ${ph.name}` : '';
+  $('run-settings').hidden = !state.repo;
+  renderRunSettingsSummary();
 }
 
 // ---- 中央: メッセージ --------------------------------------------------------
@@ -317,6 +346,13 @@ function chipNode(a, { onRemove = null } = {}) {
     c.onclick = () => { showView('files'); Files.setRoot(state.repo, activeWorktree(), {}).then(() => Files.openFile(a.rel)).then(() => Files.reveal(a.rel)); };
   } else if (a.id) {
     c.onclick = () => api.openAttachment(a.id, a.name).catch((e) => notice(e.message, 'error'));
+  }
+  if (!onRemove && c.onclick) {
+    c.tabIndex = 0;
+    c.setAttribute('role', 'button');
+    c.onkeydown = (event) => {
+      if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); c.click(); }
+    };
   }
   return c;
 }
@@ -389,9 +425,17 @@ function renderMessages() {
   box.replaceChildren();
   const cur = state.current;
   if (!cur) {
-    box.append(el('div', 'msg assistant', state.repo
-      ? 'エージェント・モデル・モードを選んで、下に依頼を書く（ターンごとに変えられる）。ファイルは「添付」かドロップ・貼り付けで付けられる。応答中でも別の会話を開いて並行して進められる。'
-      : '左の「追加」でローカルリポジトリを登録する。'));
+    const empty = el('div', 'empty-state');
+    empty.append(el('h2', '', state.repo ? '何をしたいですか？' : 'リポジトリから始めましょう'));
+    empty.append(el('p', '', state.repo
+      ? '下の入力欄に依頼を書けば、新しい会話が始まります。'
+      : '作業するローカルリポジトリを登録してください。'));
+    if (!state.repo) {
+      const button = el('button', 'primary', 'リポジトリを追加');
+      button.onclick = () => addRepo().catch((err) => notice(err.message, 'error'));
+      empty.append(button);
+    }
+    box.append(empty);
     return;
   }
   for (const m of cur.messages) box.append(messageNode(m));
@@ -603,6 +647,11 @@ async function refreshChanges() {
     li.title = `${f.file}（ダブルクリックでファイルを開く）`;
     li.onclick = async () => { [...ul.children].forEach((c) => c.classList.remove('active')); li.classList.add('active'); renderDiff(await api.fileDiff(state.repo, wt, f.file, scope)); };
     li.ondblclick = () => { if (f.label !== '削除') { showView('files'); Files.setRoot(state.repo, wt, {}).then(() => Files.openFile(f.file)).then(() => Files.reveal(f.file)); } };
+    li.tabIndex = 0;
+    li.setAttribute('role', 'button');
+    li.onkeydown = (event) => {
+      if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); li.click(); }
+    };
     ul.append(li);
   }
   if (res.error) ul.append(el('li', 'empty', res.error));
@@ -618,6 +667,8 @@ function showView(view) {
   $('files').hidden = state.view !== 'files';
   $('view-chat').classList.toggle('on', state.view === 'chat');
   $('view-files').classList.toggle('on', state.view === 'files');
+  $('view-chat').setAttribute('aria-current', state.view === 'chat' ? 'page' : 'false');
+  $('view-files').setAttribute('aria-current', state.view === 'files' ? 'page' : 'false');
   api.saveConfig({ view: state.view }).catch(() => {});
   if (state.view === 'chat') Term.refit();
 }
@@ -629,9 +680,15 @@ async function showArea(area, { persist = true } = {}) {
   $('main').hidden = automation;
   $('automation').hidden = !automation;
   $('area-work').classList.toggle('on', !automation);
-  $('area-work').setAttribute('aria-pressed', String(!automation));
   $('area-automation').classList.toggle('on', automation);
-  $('area-automation').setAttribute('aria-pressed', String(automation));
+  if (automation) {
+    $('area-work').removeAttribute('aria-current');
+    $('area-automation').setAttribute('aria-current', 'page');
+  } else {
+    $('area-work').setAttribute('aria-current', 'page');
+    $('area-automation').removeAttribute('aria-current');
+  }
+  setSidebar(false);
   $('changes').hidden = automation || !state.changesOpen;
   if (automation) {
     const frame = $('automation-frame');
@@ -643,6 +700,13 @@ async function showArea(area, { persist = true } = {}) {
     Term.refit();
   }
   if (persist) state.config = await api.saveConfig({ area: state.area });
+}
+
+function setSidebar(open) {
+  $('app').classList.toggle('sidebar-open', !!open);
+  $('side-backdrop').hidden = !open;
+  $('nav-toggle').setAttribute('aria-expanded', String(!!open));
+  $('nav-toggle').setAttribute('aria-label', open ? 'メニューを閉じる' : 'メニューを開く');
 }
 
 // ---- 配線 --------------------------------------------------------------------
@@ -660,9 +724,10 @@ async function init() {
   $('area-work').onclick = () => showArea('work').catch((err) => notice(err.message, 'error'));
   $('area-automation').onclick = () => showArea('automation').catch((err) => notice(err.message, 'error'));
 
-  $('repo-add').onclick = async () => { const cfg = await api.addRepo(); if (cfg) { state.config = cfg; await selectRepo(cfg.lastRepo); } };
+  $('repo-add').onclick = () => addRepo().catch((err) => notice(err.message, 'error'));
   $('session-new').onclick = () => newDraft();
   $('session-delete').onclick = async () => {
+    $('chat-more').open = false;
     if (!state.current || !confirm(isTmux(state.current) ? 'この会話を削除する？（tmux セッションも終了する）' : 'この会話を削除する？')) return;
     const wt = state.current.worktree || '';
     Term.detach();
@@ -694,6 +759,7 @@ async function init() {
       const same = live.cli === opts.cli && String(live.model || '') === opts.model && !!live.readonly === opts.readonly;
       notice(same ? '' : `次の依頼から ${opts.cli}${opts.model ? `（${opts.model}）` : ''}${opts.readonly ? '・Ask' : ''} で続ける（CLI を起動し直す）`);
     }
+    renderRunSettingsSummary();
     renderSessions();
   };
   $('cli').onchange = () => onTurnOptionChange('cli');
@@ -717,13 +783,17 @@ async function init() {
   $('diff-style').onclick = () => { state.diffSide = !state.diffSide; $('diff-style').classList.toggle('on', state.diffSide); renderDiff(state.diffText); };
   $('scope-worktree').onclick = () => { state.diffScope = 'worktree'; refreshChanges(); };
   $('scope-branch').onclick = () => { state.diffScope = 'branch'; refreshChanges(); };
-  $('open-folder').onclick = () => state.repo && api.openFolder(state.repo, activeWorktree()).catch((e) => notice(e.message, 'error'));
+  $('open-folder').onclick = () => {
+    $('chat-more').open = false;
+    if (state.repo) api.openFolder(state.repo, activeWorktree()).catch((e) => notice(e.message, 'error'));
+  };
   $('worktree').onchange = () => { if (state.draft) selectWorktree($('worktree').value); };
   $('wt-manage').onclick = async () => {
     if (!state.repo) return;
     dialogError('');
     await refreshWorktrees();
     renderWorktreeList();
+    $('run-settings').open = false;
     $('wt-dialog').showModal();
   };
   $('wt-close').onclick = () => $('wt-dialog').close();
@@ -767,6 +837,22 @@ async function init() {
     renderHostStatus();
     await selectRepo(state.repo);
   };
+  $('settings-open').onclick = () => { setSidebar(false); $('app-settings').showModal(); };
+  $('settings-close').onclick = () => $('app-settings').close();
+  $('nav-toggle').onclick = () => setSidebar(!$('app').classList.contains('sidebar-open'));
+  $('side-backdrop').onclick = () => setSidebar(false);
+  document.addEventListener('click', (event) => {
+    for (const id of ['chat-more', 'run-settings']) {
+      const details = $(id);
+      if (details.open && !details.contains(event.target)) details.open = false;
+    }
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape') return;
+    $('chat-more').open = false;
+    $('run-settings').open = false;
+    setSidebar(false);
+  });
 
   api.onTurnStarted(({ id, warning }) => { if (state.current && state.current.id === id && warning) notice(warning); });
   api.onTurnLine(({ id, kind, text }) => {

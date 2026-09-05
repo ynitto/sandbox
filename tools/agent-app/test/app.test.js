@@ -33,6 +33,22 @@ test('main / ipc / preload / renderer は構文検査を通る', () => {
   assert.match(fs.readFileSync(path.join(SRC, 'renderer/styles.css'), 'utf8'), /\[hidden\]\s*\{\s*display:\s*none\s*!important/);
 });
 
+test('画面は主要メニュー・会話・詳細設定の順に情報を分ける', () => {
+  const html = fs.readFileSync(path.join(SRC, 'renderer/index.html'), 'utf8');
+  const css = fs.readFileSync(path.join(SRC, 'renderer/styles.css'), 'utf8');
+  assert.match(html, /<nav id="areas" class="app-menu"[^>]*aria-label="主要メニュー"/);
+  assert.match(html, /id="area-work" class="on" aria-current="page"[\s\S]*?<span>会話<\/span>/);
+  assert.ok(html.indexOf('id="session-new"') < html.indexOf('id="work-sidebar-context"'), '新しい会話を一覧より先に置く');
+  assert.ok(html.indexOf('id="cli"') > html.indexOf('id="composer"'), '実行条件を入力欄の近くへ置く');
+  assert.ok(html.indexOf('id="use-tmux"') > html.indexOf('id="app-settings"'), '高度な環境設定をダイアログへ置く');
+  assert.match(html, /id="prompt"[^>]*placeholder="エージェントに依頼する"/);
+  assert.match(css, /button:focus-visible[\s\S]*outline:/);
+  assert.match(css, /@media \(max-width: 820px\)[\s\S]*sidebar-open/);
+  assert.match(css, /@media \(prefers-reduced-motion: reduce\)/);
+  assert.doesNotMatch(fs.readFileSync(path.join(SRC, 'renderer/files.js'), 'utf8'), /📁|📄|📝|🖼/);
+  assert.match(fs.readFileSync(path.join(SRC, 'renderer/renderer.js'), 'utf8'), /el\('button', 'list-pick'\)/);
+});
+
 test('preload の窓口と ipc のチャネルが 1 対 1', () => {
   const pre = fs.readFileSync(path.join(SRC, 'preload.js'), 'utf8');
   const ipc = fs.readFileSync(path.join(SRC, 'main/ipc.js'), 'utf8');
@@ -74,6 +90,12 @@ test('自動化は agent-app の登録リポジトリと設定を共有する', 
   }), {
     lastRepo: '/repo/a', automationSkillDir: '/next', automationAgent: 'aider', automationModel: '',
   });
+});
+
+test('自動化フレームは親画面の preload API へ接続する', () => {
+  const renderer = fs.readFileSync(path.join(SRC, 'renderer/vendor/statemachine/renderer.js'), 'utf8');
+  assert.match(renderer, /window\.parent\.api\.automation/);
+  assert.doesNotMatch(renderer, /window\.parent\.automationBridge/);
 });
 
 // 同梱定義から出る argv。権限フラグと prompt の渡し方は agent-dashboard のゴールデンと同じ。

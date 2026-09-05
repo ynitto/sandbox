@@ -10,12 +10,12 @@ let mainWindow = null;
 
 function createWindow() {
   const win = new BrowserWindow({
-    width: 1480,
-    height: 940,
-    minWidth: 900,
-    minHeight: 600,
+    width: 1360,
+    height: 860,
+    minWidth: 720,
+    minHeight: 560,
     title: 'Agent App',
-    backgroundColor: '#f6f7f9',
+    backgroundColor: '#f5f6f8',
     webPreferences: {
       preload: path.join(SRC_ROOT, 'preload.js'),
       contextIsolation: true,

@@ -2,6 +2,7 @@
 <html lang="ja">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:">
   <title>Agent App</title>
   <link rel="stylesheet" href="vendor/xterm.css">
@@ -11,21 +12,45 @@
 </head>
 <body>
   <div id="app">
-    <aside id="side">
-      <nav id="areas" aria-label="主要メニュー">
-        <button type="button" id="area-work" class="on" aria-pressed="true">作業</button>
-        <button type="button" id="area-automation" aria-pressed="false">自動化</button>
-      </nav>
-      <div class="side-head"><span>リポジトリ</span><button id="repo-add" class="small">追加</button></div>
-      <ul id="repos" class="list"></ul>
-      <div class="side-head"><span>会話</span><button id="session-new" class="small primary">新しい会話</button></div>
-      <ul id="sessions" class="list grow"></ul>
-      <div id="side-foot">
-        <label id="wsl-row" hidden>WSL ディストロ <input id="wsl-distro" placeholder="既定" size="10" title="C:\ 配下のリポジトリを扱う WSL ディストロ。\\wsl$\<名前>\ のリポジトリはパスから決まる"></label>
-        <label class="check" title="tmux で CLI を対話起動する（外すと 1 ターン 1 プロセスのヘッドレス実行）"><input type="checkbox" id="use-tmux"> tmux で対話起動</label>
-        <label class="check" title="会話ごとに git worktree で作業フォルダを分ける（外すと常にリポジトリ本体で作業する）"><input type="checkbox" id="use-worktree"> 作業フォルダを分ける</label>
-        <div id="host-status" class="sub"></div>
+    <button type="button" id="nav-toggle" class="icon-button" aria-label="メニューを開く" aria-expanded="false">
+      <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+    </button>
+    <button type="button" id="side-backdrop" aria-label="メニューを閉じる" hidden></button>
+
+    <aside id="side" aria-label="サイドバー">
+      <div class="side-brand">
+        <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M8 9.5 12 7l4 2.5v5L12 17l-4-2.5zM12 3v4M5 7l3 2.5m11-2.5-3 2.5M5 17l3-2.5m11 2.5-3-2.5M12 17v4"/></svg></span>
+        <span>Agent App</span>
       </div>
+
+      <button type="button" id="session-new" class="primary side-primary">
+        <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+        <span>新しい会話</span>
+      </button>
+
+      <div class="side-label">メニュー</div>
+      <nav id="areas" class="app-menu" aria-label="主要メニュー">
+        <button type="button" id="area-work" class="on" aria-current="page">
+          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M8 10h8M8 14h5M5 19l1.2-3.2A7 7 0 1 1 19 12a7 7 0 0 1-7 7z"/></svg>
+          <span>会話</span>
+        </button>
+        <button type="button" id="area-automation">
+          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M8 7h8M8 12h5M8 17h8M5 4h14v16H5z"/></svg>
+          <span>自動化</span>
+        </button>
+      </nav>
+
+      <div id="work-sidebar-context">
+        <div class="side-head"><span>リポジトリ</span><button id="repo-add" class="small quiet">追加</button></div>
+        <ul id="repos" class="list repo-list"></ul>
+        <div class="side-head"><span>最近の会話</span></div>
+        <ul id="sessions" class="list grow"></ul>
+      </div>
+
+      <button type="button" id="settings-open" class="side-settings">
+        <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7zM19 13.5v-3l-2-.6a7 7 0 0 0-.7-1.6l1-1.9-2.1-2.1-1.9 1A7 7 0 0 0 11.5 5L11 3H8l-.6 2a7 7 0 0 0-1.7.7l-1.8-1-2.2 2.2 1 1.8A7 7 0 0 0 2 10.5l-2 .5v3l2 .6a7 7 0 0 0 .7 1.7l-1 1.8 2.2 2.2 1.8-1a7 7 0 0 0 1.7.7l.6 2h3l.5-2a7 7 0 0 0 1.8-.7l1.9 1 2.1-2.1-1-1.9a7 7 0 0 0 .7-1.7z" transform="translate(1.5 -0.5) scale(.88)"/></svg>
+        <span>設定</span>
+      </button>
     </aside>
 
     <main id="main">
@@ -33,24 +58,24 @@
         <div class="title-row">
           <div id="chat-title" class="title">リポジトリを登録して会話を始める</div>
           <span id="phase" class="phase" hidden></span>
-          <button id="term-restart" class="small" hidden title="tmux セッションを作り直して CLI を起動し直す">再起動</button>
         </div>
-        <nav class="views">
-          <button id="view-chat" class="tab on">会話</button>
-          <button id="view-files" class="tab">ファイル</button>
+        <nav class="views" aria-label="会話の表示">
+          <button type="button" id="view-chat" class="tab on">会話</button>
+          <button type="button" id="view-files" class="tab">ファイル</button>
         </nav>
-        <label title="次のターンで使うエージェント（ターンごとに変えられる）">エージェント <select id="cli"></select></label>
-        <label title="次のターンで使うモデル（ターンごとに変えられる。空なら CLI の既定）">モデル <input id="model" placeholder="既定" size="14"></label>
-        <label class="check" title="次のターンのモード（ターンごとに変えられる）"><input type="checkbox" id="readonly"> 読み取り専用（Ask）</label>
-        <label>作業フォルダ <select id="worktree" title="会話ごとに git worktree で作業フォルダを分ける"></select></label>
-        <button id="wt-manage" class="small" title="作業フォルダ（git worktree）を作る・消す">…</button>
         <span class="spacer"></span>
-        <button id="term-toggle" class="small" hidden title="CLI の端末をそのまま見る・操作する">端末</button>
-        <button id="changes-toggle" class="small">変更</button>
-        <button id="open-folder" class="small">フォルダを開く</button>
-        <button id="session-delete" class="small danger" hidden>削除</button>
+        <button type="button" id="term-restart" class="small" hidden title="CLIを起動し直す">再起動</button>
+        <button type="button" id="term-toggle" class="small" hidden>端末</button>
+        <button type="button" id="changes-toggle" class="small">変更を確認</button>
+        <details id="chat-more" class="more-menu">
+          <summary aria-label="その他の操作">その他</summary>
+          <div class="menu-panel">
+            <button type="button" id="open-folder">フォルダを開く</button>
+            <button type="button" id="session-delete" class="danger" hidden>会話を削除</button>
+          </div>
+        </details>
       </header>
-      <div id="notice" hidden></div>
+      <div id="notice" role="status" aria-live="polite" hidden></div>
 
       <section id="chat" class="view">
         <section id="messages"></section>
@@ -64,13 +89,34 @@
           <div id="term-host"></div>
         </section>
         <footer id="composer">
-          <div id="attach-row" class="attach-row" hidden></div>
-          <div class="composer-main">
-            <textarea id="prompt" rows="3" placeholder="依頼を書く（Enter で送信、Shift+Enter で改行。ファイルはドロップか貼り付けでも添付できる）"></textarea>
-            <div class="composer-actions">
-              <button id="send" class="primary">送信</button>
-              <button id="stop" class="danger" hidden>停止</button>
-              <button id="attach" class="small" title="ファイルを添付する（複数可。ドラッグ＆ドロップや画像の貼り付けでも足せる）">添付</button>
+          <div class="composer-shell">
+            <div id="attach-row" class="attach-row" hidden></div>
+            <label class="sr-only" for="prompt">エージェントへの依頼</label>
+            <textarea id="prompt" rows="3" placeholder="エージェントに依頼する"></textarea>
+            <div class="composer-toolbar">
+              <button type="button" id="attach" class="quiet" title="ファイルを添付する">
+                <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m8.5 12.5 6.8-6.8a3 3 0 0 1 4.2 4.2l-8.7 8.7a5 5 0 0 1-7.1-7.1l8.4-8.4"/></svg>
+                <span>添付</span>
+              </button>
+              <details id="run-settings" class="run-settings">
+                <summary><span id="run-settings-summary">実行設定</span></summary>
+                <div class="settings-popover">
+                  <div class="popover-head">次の依頼の実行設定</div>
+                  <label>エージェント<select id="cli"></select></label>
+                  <label>モデル<input id="model" placeholder="自動" size="14"></label>
+                  <label class="setting-check"><input type="checkbox" id="readonly"><span><strong>Askモード</strong><small>調査と提案だけを行います</small></span></label>
+                  <div class="worktree-setting">
+                    <label>作業フォルダ<select id="worktree" title="会話ごとに分ける作業フォルダ"></select></label>
+                    <button type="button" id="wt-manage" class="small quiet">管理</button>
+                  </div>
+                </div>
+              </details>
+              <span class="spacer"></span>
+              <span class="send-hint">Enterで送信</span>
+              <button type="button" id="stop" class="danger action-button" hidden>停止</button>
+              <button type="button" id="send" class="primary action-button" aria-label="依頼を送信">
+                <span>送信</span><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m5 12 14-7-4 14-3-6zM5 12l7 1"/></svg>
+              </button>
             </div>
           </div>
         </footer>
@@ -126,6 +172,16 @@
       <div id="diff"></div>
     </aside>
   </div>
+
+  <dialog id="app-settings">
+    <div class="dlg-head"><strong>設定</strong><span class="spacer"></span><button type="button" id="settings-close" class="small quiet">閉じる</button></div>
+    <div class="dlg-body settings-list">
+      <label class="setting-check"><input type="checkbox" id="use-tmux"><span><strong>対話セッションを維持</strong><small>tmuxを使って、エージェントとの会話を継続します</small></span></label>
+      <label class="setting-check"><input type="checkbox" id="use-worktree"><span><strong>会話ごとに作業を分離</strong><small>Git worktreeで同時作業の変更が混ざらないようにします</small></span></label>
+      <label id="wsl-row" class="setting-field" hidden><span><strong>WSLディストリビューション</strong><small>Windows上で利用する環境</small></span><input id="wsl-distro" placeholder="既定" size="12"></label>
+      <div class="environment-status"><strong>実行環境</strong><div id="host-status" class="sub"></div></div>
+    </div>
+  </dialog>
 
   <dialog id="wt-dialog">
     <div class="dlg-head"><strong>作業フォルダ（git worktree）</strong><span class="spacer"></span><button id="wt-close" class="small">閉じる</button></div>
