@@ -72,6 +72,7 @@ function normalize(raw, name, file) {
     promptFlag: raw.prompt_flag != null ? String(raw.prompt_flag) : null,
     modelFlag: raw.model_flag != null ? String(raw.model_flag) : null,
     fileFlag: raw.file_flag != null ? String(raw.file_flag) : null,
+    skillCommandPrefix: raw.skill_command_prefix != null ? String(raw.skill_command_prefix) : '/',
     defaultModel: raw.default_model != null ? String(raw.default_model) : '',
     output: raw.output === 'file' ? 'file' : 'stdout',
     env: raw.env && typeof raw.env === 'object' ? raw.env : {},

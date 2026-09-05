@@ -3,17 +3,24 @@
 // 画面の状態は 1 か所。保存は main（store）がやり、ここは表示と操作だけ。
 const state = {
   config: null,
-  area: 'work',
+  area: 'conversation',
   host: null,           // host:info（platform / tmux の有無）
   repo: '',
   agents: [],
   sessions: [],
+  tasks: [],
+  workflows: [],
+  workflowRuns: [],
+  selectedTask: '',
+  selectedWorkflow: '',
+  areaError: '',
   current: null,        // 開いている会話（store の中身）
   draft: false,         // 「新しい会話」を押してまだ 1 通も送っていない
   running: new Set(),   // 応答中の会話 ID
   pending: new Set(),   // 送信中（main が CLI を起動し直している間など）の会話 ID
   logs: new Map(),      // 会話 ID → 応答中に流れた行（ヘッドレス）
   tails: new Map(),     // 会話 ID → 端末の末尾（tmux）
+  liveParts: new Map(), // 会話 ID → { thinking, information }（構造化された応答中イベント）
   phases: new Map(),    // 会話 ID → { phase, detail }
   changesOpen: false,
   termOpen: false,
@@ -24,6 +31,9 @@ const state = {
   worktrees: [],           // git worktree list の結果
   worktree: '',            // 「新しい会話」で選んでいる作業フォルダ（'' はリポジトリ本体）
   attachments: [],         // 次の依頼に付ける添付 [{ id, name, size } | { rel, name }]
+  settingsSkills: [],
+  settingsActions: [],
+  settingsAgents: [],
 };
 
 const $ = (id) => document.getElementById(id);
@@ -76,22 +86,22 @@ async function addRepo() {
 }
 
 function renderRepos() {
-  const ul = $('repos');
-  ul.replaceChildren();
-  for (const repo of state.config.repos) {
-    const li = el('li', `row-item${repo === state.repo ? ' active' : ''}`);
-    const pick = el('button', 'list-pick');
-    pick.title = repo;
-    pick.append(el('span', 'grow', basename(repo)));
-    pick.onclick = () => selectRepo(repo);
-    li.append(pick);
-    const x = el('button', 'x', '×');
-    x.title = '登録を外す';
-    x.onclick = async (e) => { e.stopPropagation(); if (confirm(`${basename(repo)} の登録を外す？（会話は残る）`)) { state.config = await api.removeRepo(repo); await selectRepo(state.config.lastRepo); } };
-    li.append(x);
-    ul.append(li);
+  const select = $('repo-select');
+  select.replaceChildren();
+  if (!state.config.repos.length) {
+    const option = el('option', '', 'リポジトリを追加してください');
+    option.value = '';
+    select.append(option);
   }
-  if (!state.config.repos.length) ul.append(el('li', 'empty', '登録すると、会話と自動化をリポジトリごとに整理できます。'));
+  for (const repo of state.config.repos) {
+    const option = el('option', '', basename(repo));
+    option.value = repo;
+    option.title = repo;
+    select.append(option);
+  }
+  select.value = state.repo;
+  select.disabled = !state.config.repos.length;
+  $('repo-remove').disabled = !state.repo;
 }
 
 function renderSessions() {
@@ -115,6 +125,143 @@ function renderSessions() {
   if (!state.sessions.length) ul.append(el('li', 'empty', state.repo ? 'まだ会話がない' : ''));
 }
 
+function scheduleLabel(schedule) {
+  if (!schedule) return '定期実行なし';
+  if (schedule.kind === 'interval') return `${schedule.minutes}分ごと`;
+  if (schedule.kind === 'daily') return `毎日 ${schedule.time}`;
+  if (schedule.kind === 'weekly') {
+    const days = ['日', '月', '火', '水', '木', '金', '土'];
+    return `${(schedule.days || []).map((day) => days[day]).join('・')} ${schedule.time}`;
+  }
+  return '定期実行あり';
+}
+
+function renderTaskItems() {
+  const ul = $('tasks');
+  ul.replaceChildren();
+  for (const task of state.tasks) {
+    const latest = (task.history || [])[0];
+    const status = latest ? (latest.ok ? '完了' : latest.escalate ? '要確認' : '失敗') : '未実行';
+    const li = el('li', `row-item${task.machine === state.selectedTask ? ' active' : ''}`);
+    const pick = el('button', 'list-pick');
+    const body = el('span', 'grow');
+    body.append(el('div', '', task.name || task.machine));
+    body.append(el('div', 'sub', `${status} · ${scheduleLabel(task.schedule)}`));
+    pick.append(body);
+    pick.onclick = () => selectAreaItem('tasks', task.machine);
+    li.append(pick);
+    ul.append(li);
+  }
+  if (!state.tasks.length) ul.append(el('li', 'empty', state.areaError || (state.repo ? 'まだタスクがない' : '')));
+}
+
+function workflowState(workflow) {
+  const run = state.workflowRuns.find((item) => item.workflowId === workflow.id || item.input?.workflowId === workflow.id);
+  const labels = { launching: '起動中', planning: '計画中', executing: '実行中', waiting: '要確認', stalled: '要確認', done: '完了', failed: '失敗', cancelled: '停止済み' };
+  return run ? (labels[run.state] || run.state || '実行中') : workflow.valid === false ? '要修正' : '未実行';
+}
+
+function renderWorkflowItems() {
+  const ul = $('workflows');
+  ul.replaceChildren();
+  for (const workflow of state.workflows) {
+    const status = workflowState(workflow);
+    const li = el('li', `row-item${workflow.id === state.selectedWorkflow ? ' active' : ''}${status === '要確認' ? ' attention' : ''}`);
+    const pick = el('button', 'list-pick');
+    const body = el('span', 'grow');
+    body.append(el('div', '', workflow.name || workflow.id));
+    body.append(el('div', 'sub', `${status}${workflow.nodes ? ` · ${workflow.nodes}工程` : ''}`));
+    pick.append(body);
+    pick.onclick = () => selectAreaItem('workflows', workflow.id);
+    li.append(pick);
+    ul.append(li);
+  }
+  if (!state.workflows.length) ul.append(el('li', 'empty', state.areaError || (state.repo ? 'まだワークフローがない' : '')));
+}
+
+function renderAreaContext() {
+  const info = AgentNavigation.areaInfo(state.area);
+  $('area-list-title').textContent = info.label;
+  $('session-new').setAttribute('aria-label', info.createLabel);
+  $('session-new').title = info.createLabel;
+  for (const id of ['sessions', 'tasks', 'workflows']) $(id).hidden = id !== info.listId;
+  if (state.area === 'conversation') renderSessions();
+  else if (state.area === 'tasks') renderTaskItems();
+  else renderWorkflowItems();
+}
+
+async function loadAreaItems() {
+  state.areaError = '';
+  if (!state.repo || state.area === 'conversation') { renderAreaContext(); return; }
+  try {
+    if (state.area === 'tasks') {
+      const [snapshot, definitions] = await Promise.all([
+        api.automation.runSnapshot(state.repo),
+        api.automation.listMachines(state.repo),
+      ]);
+      state.tasks = AgentNavigation.taskItems(snapshot, definitions);
+      const remembered = (state.config.lastTask || {})[state.repo] || state.selectedTask;
+      state.selectedTask = state.tasks.some((item) => item.machine === remembered) ? remembered : (state.tasks[0]?.machine || '');
+    } else {
+      const [workflows, runs] = await Promise.all([
+        api.automation.flowList(state.repo),
+        api.automation.flowRunList(state.repo, 30),
+      ]);
+      state.workflows = workflows || [];
+      state.workflowRuns = runs || [];
+      const remembered = (state.config.lastWorkflow || {})[state.repo] || state.selectedWorkflow;
+      state.selectedWorkflow = state.workflows.some((item) => item.id === remembered) ? remembered : (state.workflows[0]?.id || '');
+    }
+  } catch (err) {
+    state.areaError = (err && err.message) || String(err);
+    if (state.area === 'tasks') state.tasks = [];
+    else { state.workflows = []; state.workflowRuns = []; }
+  }
+  renderAreaContext();
+}
+
+function frameMessage(action = '') {
+  return {
+    type: 'agent-app:navigate', area: state.area, root: state.repo,
+    selected: state.area === 'tasks' ? state.selectedTask : state.selectedWorkflow,
+    action,
+  };
+}
+
+function syncWorkspaceFrame(action = '') {
+  if (state.area === 'conversation') return;
+  const frame = $('automation-frame');
+  if (frame.getAttribute('src') === 'about:blank') { frame.setAttribute('src', frame.dataset.src); return; }
+  if (frame.contentWindow) frame.contentWindow.postMessage(frameMessage(action), '*');
+}
+
+window.addEventListener('message', async (event) => {
+  const frame = $('automation-frame');
+  if (event.source !== frame.contentWindow) return;
+  const payload = event.data;
+  if (!payload || payload.type !== 'agent-app:changed' || payload.root !== state.repo || payload.area !== state.area) return;
+  if (payload.selected) {
+    const key = payload.area === 'tasks' ? 'lastTask' : 'lastWorkflow';
+    if (payload.area === 'tasks') state.selectedTask = payload.selected;
+    else state.selectedWorkflow = payload.selected;
+    state.config = await api.saveConfig({ [key]: { ...(state.config[key] || {}), [state.repo]: payload.selected } });
+  }
+  await loadAreaItems();
+});
+
+async function selectAreaItem(area, id) {
+  if (area === 'tasks') {
+    state.selectedTask = id;
+    state.config = await api.saveConfig({ lastTask: { ...(state.config.lastTask || {}), [state.repo]: id } });
+  } else {
+    state.selectedWorkflow = id;
+    state.config = await api.saveConfig({ lastWorkflow: { ...(state.config.lastWorkflow || {}), [state.repo]: id } });
+  }
+  renderAreaContext();
+  syncWorkspaceFrame();
+  setSidebar(false);
+}
+
 async function selectRepo(repo) {
   state.repo = repo || '';
   if (repo) state.config = await api.saveConfig({ lastRepo: repo });
@@ -126,6 +273,8 @@ async function selectRepo(repo) {
   renderRepos();
   renderAgents();
   newDraft();
+  await loadAreaItems();
+  syncWorkspaceFrame();
   if (state.changesOpen) refreshChanges();
   Files.setRoot(state.repo, activeWorktree(), { lastFile: (state.config.lastFiles || {})[state.repo] || '' }).catch(() => {});
 }
@@ -270,6 +419,20 @@ async function selectWorktree(name) {
 
 // ---- 上: エージェント・モデル・モード ------------------------------------
 
+const POLICY_VIEW = {
+  recommended: { label: 'おすすめ', tier: 'medium' },
+  saving: { label: '節約', tier: 'small' },
+  quality: { label: '品質重視', tier: 'large' },
+  direct: { label: '直接指定', tier: '' },
+};
+
+function selectedExecution(policy = $('policy').value) {
+  if (policy === 'direct') return { policy, tier: '', cli: $('cli').value, model: $('model').value.trim() };
+  const view = POLICY_VIEW[policy] || POLICY_VIEW.recommended;
+  const tier = state.config.execution.tiers[view.tier];
+  return { policy, tier: view.tier, cli: tier.cli, model: tier.model || '' };
+}
+
 function renderAgents() {
   const sel = $('cli');
   sel.replaceChildren();
@@ -289,11 +452,14 @@ function renderAgents() {
 function renderRunSettingsSummary() {
   const summary = $('run-settings-summary');
   if (!summary) return;
-  const agent = $('cli').value || 'エージェント未設定';
-  const model = $('model').value.trim();
+  const selected = selectedExecution();
+  const policy = POLICY_VIEW[selected.policy] || POLICY_VIEW.recommended;
+  const agent = selected.cli || 'エージェント未設定';
+  const model = selected.model;
   const mode = $('readonly').checked ? 'Ask' : '実行';
   const location = activeWorktree() ? '分離フォルダ' : 'リポジトリ本体';
-  summary.textContent = [agent, model, mode, location].filter(Boolean).join(' · ');
+  summary.textContent = [policy.label, `${agent}${model ? ` / ${model}` : ''}`, mode, location].filter(Boolean).join(' · ');
+  $('direct-agent-settings').hidden = selected.policy !== 'direct';
 }
 
 function renderHeader() {
@@ -301,8 +467,17 @@ function renderHeader() {
   $('chat-title').textContent = cur ? (cur.title || '（無題）') : (state.repo ? `${basename(state.repo)} で新しい会話` : 'リポジトリを登録して会話を始める');
   // エージェント・モデル・モードは「次のターン」のもの。会話を開いていても変えられる
   $('cli').disabled = !state.repo;
-  if (cur) { if ([...$('cli').options].some((o) => o.value === cur.cli)) $('cli').value = cur.cli; $('model').value = cur.model || ''; $('readonly').checked = !!cur.readonly; }
-  else { $('model').value = state.config.lastModel || ''; $('readonly').checked = !!state.config.lastReadonly; }
+  $('policy').disabled = !state.repo;
+  if (cur) {
+    $('policy').value = cur.policy || 'direct';
+    if ([...$('cli').options].some((o) => o.value === cur.cli)) $('cli').value = cur.cli;
+    $('model').value = cur.model || '';
+    $('readonly').checked = !!cur.readonly;
+  } else {
+    $('policy').value = state.config.execution.defaultPolicy;
+    $('model').value = state.config.lastModel || '';
+    $('readonly').checked = !!state.config.execution.defaultReadonly;
+  }
   $('session-new').disabled = !state.repo;
   $('changes-toggle').disabled = !state.repo;
   $('chat-more').hidden = !state.repo;
@@ -357,8 +532,59 @@ function chipNode(a, { onRemove = null } = {}) {
   return c;
 }
 
+function informationText(item) {
+  if (!item) return '';
+  if (item.type === 'file') return `${item.action || 'modified'} · ${item.title || ''}`;
+  return item.title || item.text || '';
+}
+
+function responseDisclosure(kind, title, items, { open = false, running = false, raw = null } = {}) {
+  const values = Array.isArray(items) ? items.filter(Boolean) : [];
+  if (!values.length && !running && !raw) return null;
+  const details = el('details', `response-disclosure ${kind}`);
+  details.open = open;
+  const summary = el('summary');
+  summary.append(el('span', 'disclosure-title', title));
+  if (running) summary.append(el('span', 'spin'));
+  else if (values.length) summary.append(el('span', 'disclosure-count', `${values.length}件`));
+  details.append(summary);
+  const body = el('div', 'disclosure-body');
+  if (running && !values.length) body.append(el('div', 'response-item running', 'エージェントが依頼を処理しています'));
+  for (const item of values) {
+    const row = el('div', `response-item ${item.status || ''}`);
+    row.append(el('span', 'response-dot'));
+    const content = el('div', 'response-item-body');
+    content.append(el('div', 'response-item-title', kind === 'information' ? informationText(item) : (item.text || item.title || '')));
+    if (item.detail) content.append(el('pre', 'response-detail', item.detail));
+    row.append(content);
+    body.append(row);
+  }
+  if (raw) body.append(raw);
+  details.append(body);
+  return details;
+}
+
+function rawExecutionNode(id, tmuxMode) {
+  const details = el('details', 'raw-execution');
+  details.append(el('summary', '', '生ログ'));
+  if (tmuxMode) {
+    const tail = el('pre', 'tail', state.tails.get(id) || '');
+    details.append(tail);
+    const link = el('div', 'link');
+    const button = el('button', 'small', '端末で見る・操作する');
+    button.onclick = () => toggleTerm(true);
+    link.append(button);
+    details.append(link);
+  } else {
+    const log = el('div', 'log');
+    for (const line of state.logs.get(id) || []) log.append(logLine(line));
+    details.append(log);
+  }
+  return details;
+}
+
 function messageNode(m) {
-  const n = el('div', `msg ${m.role}`);
+  const n = el('div', m.role === 'user' ? 'msg user' : 'response-turn');
   if (m.role === 'user') {
     // どのエージェント・モデル・モードへ出した依頼か（ターンごとに変わりうる）
     if (m.cli) {
@@ -375,44 +601,46 @@ function messageNode(m) {
       n.append(files);
     }
   } else {
+    const who = el('div', 'response-who');
+    if (m.cli) who.append(el('span', 'tag', m.cli));
+    if (m.model) who.append(el('span', 'tag', m.model));
+    if (m.tier) who.append(el('span', 'tag', m.tier));
+    if (who.children.length) n.append(who);
+    const parts = m.parts && typeof m.parts === 'object' ? m.parts : {};
+    const thinking = responseDisclosure('thinking', '思考・進捗', parts.thinking, { open: false });
+    if (thinking) n.append(thinking);
+    const answer = el('div', 'msg assistant answer-bubble');
     const body = el('div');
-    n.append(body);
+    answer.append(body);
     if (m.text) MD.mount(body, m.text).catch(() => { body.textContent = m.text; });
-    if (m.error) n.append(el('div', 'err', m.error));
+    if (m.error) answer.append(el('div', 'err', m.error));
+    n.append(answer);
     const meta = [];
     if (m.elapsedMs != null) meta.push(`${Math.round(m.elapsedMs / 1000)} 秒`);
     if (m.code != null && m.code !== 0) meta.push(`終了コード ${m.code}`);
     if (m.stopped) meta.push('停止');
-    if (meta.length) n.append(el('div', 'meta', meta.join(' · ')));
+    const information = [...(Array.isArray(parts.information) ? parts.information : [])];
+    if (meta.length && !information.length) information.push({ type: 'status', title: '実行結果', detail: meta.join(' · '), status: m.error ? 'error' : 'success' });
+    const infoHasError = information.some((item) => item && item.status === 'error');
+    const info = responseDisclosure('information', '実行情報', information, { open: !!(m.error || m.stopped || (m.code != null && m.code !== 0) || infoHasError) });
+    if (info) n.append(info);
   }
   return n;
 }
 
 function workingNode(id, tmuxMode) {
-  const n = el('div', 'msg assistant working');
+  const n = el('div', 'response-turn working');
   n.id = `working-${id}`;
-  const head = el('div', 'head');
-  head.append(el('span', 'spin'));
   const ph = state.phases.get(id);
-  head.append(el('span', 'label', ph && ph.phase === 'attention' ? '端末で確認を求めている' : '応答中…'));
-  n.append(head);
-  if (tmuxMode) {
-    const tail = el('pre', 'tail', state.tails.get(id) || '');
-    n.append(tail);
-    const link = el('div', 'link');
-    const b = el('button', 'small', '端末で見る・操作する');
-    b.onclick = () => toggleTerm(true);
-    link.append(b);
-    n.append(link);
-  } else {
-    const d = el('details');
-    d.open = true;
-    d.append(el('summary', '', 'ログ'));
-    const log = el('div', 'log');
-    for (const line of state.logs.get(id) || []) log.append(logLine(line));
-    d.append(log);
-    n.append(d);
-  }
+  const parts = state.liveParts.get(id) || { thinking: [], information: [] };
+  const thinking = [...(Array.isArray(parts.thinking) ? parts.thinking : [])];
+  const liveInformation = Array.isArray(parts.information) ? parts.information : [];
+  if (ph && ph.phase === 'attention') thinking.push({ text: '端末で確認を求めています', status: 'attention' });
+  n.append(responseDisclosure('thinking', '思考・進捗', thinking, { open: true, running: true }));
+  const info = responseDisclosure('information', '実行情報', liveInformation, {
+    open: liveInformation.some((item) => item.status === 'error'), raw: rawExecutionNode(id, tmuxMode),
+  });
+  if (info) n.append(info);
   return n;
 }
 
@@ -499,14 +727,20 @@ function toggleTerm(open) {
 
 // 次のターンの起動条件（画面の上で選んでいるもの）
 function turnOptions() {
-  return { cli: $('cli').value, model: $('model').value.trim(), readonly: $('readonly').checked };
+  const selected = selectedExecution();
+  return {
+    policy: selected.policy,
+    ...(selected.policy === 'direct' ? { cli: selected.cli, model: selected.model } : {}),
+    readonly: $('readonly').checked,
+  };
 }
 
 async function sendPrompt() {
   const text = $('prompt').value.trim();
   if ((!text && !state.attachments.length) || !state.repo) return;
   const opts = turnOptions();
-  const agent = state.agents.find((a) => a.name === opts.cli && a.available);
+  const selected = selectedExecution(opts.policy);
+  const agent = state.agents.find((a) => a.name === selected.cli && a.available);
   if (!agent) { notice('使えるエージェントがない', 'error'); return; }
   try {
     if (!state.current) {
@@ -514,11 +748,14 @@ async function sendPrompt() {
       state.current = await api.createSession({ repo: state.repo, ...opts, transport, worktree: state.worktree });
       state.draft = false;
     }
-    state.config = await api.saveConfig({ lastCli: opts.cli, lastModel: opts.model, lastReadonly: opts.readonly });
+    if (opts.policy === 'direct') {
+      state.config = await api.saveConfig({ lastCli: opts.cli, lastModel: opts.model, lastReadonly: opts.readonly });
+    }
     const id = state.current.id;
     const wasTmux = isTmux(state.current);
     state.logs.set(id, []);
     state.tails.set(id, '');
+    state.liveParts.set(id, { thinking: [], information: [] });
     // 送信中（CLI の起動し直しを含む）は phase の更新で描き直しても送信ボタンを戻さない
     state.pending.add(id);
     renderHeader();
@@ -596,6 +833,7 @@ function attachOpenFile() {
 
 async function onTurnDone({ id, message }) {
   state.running.delete(id);
+  state.liveParts.delete(id);
   if (state.current && state.current.id === id) {
     try { state.current = await api.readSession(id); } catch { state.current.messages.push(message); }
     renderHeader();
@@ -604,6 +842,16 @@ async function onTurnDone({ id, message }) {
   state.sessions = await api.listSessions(state.repo);
   renderSessions();
   if (state.changesOpen) refreshChanges();
+}
+
+function addLivePart(id, key, item) {
+  const parts = state.liveParts.get(id) || { thinking: [], information: [] };
+  const list = Array.isArray(parts[key]) ? parts[key] : [];
+  list.push(item);
+  if (list.length > 200) list.shift();
+  parts[key] = list;
+  state.liveParts.set(id, parts);
+  if (state.current && state.current.id === id) renderMessages();
 }
 
 // ---- 右: 変更 ----------------------------------------------------------------
@@ -674,25 +922,24 @@ function showView(view) {
 }
 
 async function showArea(area, { persist = true } = {}) {
-  const automation = area === 'automation';
-  state.area = automation ? 'automation' : 'work';
-  $('app').classList.toggle('automation-mode', automation);
-  $('main').hidden = automation;
-  $('automation').hidden = !automation;
-  $('area-work').classList.toggle('on', !automation);
-  $('area-automation').classList.toggle('on', automation);
-  if (automation) {
-    $('area-work').removeAttribute('aria-current');
-    $('area-automation').setAttribute('aria-current', 'page');
-  } else {
-    $('area-work').setAttribute('aria-current', 'page');
-    $('area-automation').removeAttribute('aria-current');
+  state.area = AgentNavigation.normalizeArea(area);
+  const workspace = state.area !== 'conversation';
+  $('app').classList.toggle('workspace-mode', workspace);
+  $('main').hidden = workspace;
+  $('automation').hidden = !workspace;
+  const buttons = { conversation: $('area-work'), tasks: $('area-tasks'), workflows: $('area-workflows') };
+  for (const [name, button] of Object.entries(buttons)) {
+    const selected = name === state.area;
+    button.classList.toggle('on', selected);
+    if (selected) button.setAttribute('aria-current', 'page');
+    else button.removeAttribute('aria-current');
   }
+  renderAreaContext();
   setSidebar(false);
-  $('changes').hidden = automation || !state.changesOpen;
-  if (automation) {
-    const frame = $('automation-frame');
-    if (frame.getAttribute('src') === 'about:blank') frame.setAttribute('src', frame.dataset.src);
+  $('changes').hidden = workspace || !state.changesOpen;
+  if (workspace) {
+    await loadAreaItems();
+    syncWorkspaceFrame();
   } else {
     const latest = await api.getConfig();
     state.config = latest;
@@ -709,6 +956,187 @@ function setSidebar(open) {
   $('nav-toggle').setAttribute('aria-label', open ? 'メニューを閉じる' : 'メニューを開く');
 }
 
+// ---- 設定 --------------------------------------------------------------------
+
+function selectSettingsTab(name) {
+  for (const button of document.querySelectorAll('[data-settings-tab]')) {
+    const selected = button.dataset.settingsTab === name;
+    button.classList.toggle('on', selected);
+    button.setAttribute('aria-selected', String(selected));
+  }
+  for (const panel of document.querySelectorAll('[data-settings-panel]')) panel.hidden = panel.dataset.settingsPanel !== name;
+}
+
+function fillAgentSelect(select, value) {
+  select.replaceChildren();
+  const seen = new Set();
+  for (const agent of state.settingsAgents) {
+    const option = el('option', '', `${agent.name}${agent.available ? '' : '（現在は利用不可）'}`);
+    option.value = agent.name;
+    select.append(option);
+    seen.add(agent.name);
+  }
+  if (value && !seen.has(value)) {
+    const option = el('option', '', `${value}（定義が見つかりません）`);
+    option.value = value;
+    select.append(option);
+  }
+  if (value) select.value = value;
+}
+
+function renderRecommendedSkills() {
+  const box = $('recommended-skills');
+  box.replaceChildren();
+  for (const [index, skill] of state.settingsSkills.entries()) {
+    const chip = el('span', 'setting-chip');
+    chip.append(el('span', '', skill));
+    const remove = el('button', 'quiet', '×');
+    remove.type = 'button';
+    remove.setAttribute('aria-label', `${skill}を外す`);
+    remove.onclick = () => { state.settingsSkills.splice(index, 1); renderRecommendedSkills(); };
+    chip.append(remove);
+    box.append(chip);
+  }
+  if (!state.settingsSkills.length) box.append(el('span', 'sub', '設定なし'));
+}
+
+function renderStartupActions() {
+  const box = $('startup-actions');
+  box.replaceChildren();
+  for (const [index, action] of state.settingsActions.entries()) {
+    const row = el('div', 'startup-row');
+    const type = el('select');
+    for (const [value, label] of [['skill', 'スキル'], ['command', 'コマンド']]) {
+      const option = el('option', '', label);
+      option.value = value;
+      type.append(option);
+    }
+    type.value = action.type;
+    type.setAttribute('aria-label', '種類');
+    const value = el('input');
+    value.value = action.value || '';
+    value.placeholder = action.type === 'skill' ? 'スキル名' : '例: npm test';
+    value.setAttribute('aria-label', '内容');
+    const onError = el('select');
+    for (const [optionValue, label] of [['warn', '失敗時: 続行'], ['fail', '失敗時: 停止']]) {
+      const option = el('option', '', label);
+      option.value = optionValue;
+      onError.append(option);
+    }
+    onError.value = action.onError || 'warn';
+    onError.hidden = action.type === 'skill';
+    onError.setAttribute('aria-label', '失敗時');
+    const controls = el('span', 'startup-controls');
+    const up = el('button', 'small quiet', '↑');
+    const down = el('button', 'small quiet', '↓');
+    const remove = el('button', 'small quiet danger', '×');
+    up.type = down.type = remove.type = 'button';
+    up.disabled = index === 0;
+    down.disabled = index === state.settingsActions.length - 1;
+    up.title = '上へ'; down.title = '下へ'; remove.title = '削除';
+    up.onclick = () => { [state.settingsActions[index - 1], state.settingsActions[index]] = [state.settingsActions[index], state.settingsActions[index - 1]]; renderStartupActions(); };
+    down.onclick = () => { [state.settingsActions[index], state.settingsActions[index + 1]] = [state.settingsActions[index + 1], state.settingsActions[index]]; renderStartupActions(); };
+    remove.onclick = () => { state.settingsActions.splice(index, 1); renderStartupActions(); };
+    type.onchange = () => { action.type = type.value; if (action.type === 'skill') action.onError = 'warn'; renderStartupActions(); };
+    value.oninput = () => { action.value = value.value; };
+    onError.onchange = () => { action.onError = onError.value; };
+    controls.append(up, down, remove);
+    row.append(type, value, onError, controls);
+    box.append(row);
+  }
+  if (!state.settingsActions.length) box.append(el('div', 'sub settings-empty', '起動時アクションはありません'));
+}
+
+function settingsPatch() {
+  const checkedPolicy = document.querySelector('input[name="default-policy"]:checked');
+  const tiers = {};
+  for (const tier of ['small', 'medium', 'large']) {
+    tiers[tier] = { cli: $(`tier-${tier}-cli`).value, model: $(`tier-${tier}-model`).value.trim() };
+  }
+  return {
+    transport: $('use-tmux').checked ? 'tmux' : 'headless',
+    useWorktree: $('use-worktree').checked,
+    wslDistro: $('wsl-distro').value.trim(),
+    instructions: {
+      enabled: $('instruction-enabled').checked,
+      text: $('instruction-text').value,
+      skills: state.settingsSkills,
+      startupActions: state.settingsActions,
+    },
+    execution: {
+      defaultPolicy: checkedPolicy ? checkedPolicy.value : 'recommended',
+      defaultReadonly: $('default-readonly').checked,
+      maxConcurrent: Number($('max-concurrent').value),
+      tiers,
+    },
+  };
+}
+
+async function openSettings() {
+  state.config = await api.getConfig();
+  const instructions = state.config.instructions;
+  const execution = state.config.execution;
+  state.settingsSkills = [...instructions.skills];
+  state.settingsActions = instructions.startupActions.map((action) => ({ ...action }));
+  state.settingsAgents = state.agents.length ? state.agents : await api.listAgents('').catch(() => []);
+  $('use-tmux').checked = state.config.transport === 'tmux';
+  $('use-worktree').checked = state.config.useWorktree;
+  $('wsl-distro').value = state.config.wslDistro || '';
+  $('instruction-enabled').checked = instructions.enabled;
+  $('instruction-text').value = instructions.text || '';
+  $('instruction-count').textContent = `${$('instruction-text').value.length} / 8000`;
+  renderRecommendedSkills();
+  renderStartupActions();
+  for (const tier of ['small', 'medium', 'large']) {
+    fillAgentSelect($(`tier-${tier}-cli`), execution.tiers[tier].cli);
+    $(`tier-${tier}-model`).value = execution.tiers[tier].model || '';
+  }
+  const policy = document.querySelector(`input[name="default-policy"][value="${execution.defaultPolicy}"]`);
+  if (policy) policy.checked = true;
+  $('default-readonly').checked = execution.defaultReadonly;
+  $('max-concurrent').value = execution.maxConcurrent;
+  $('settings-error').hidden = true;
+  $('settings-status').textContent = '';
+  const candidates = await api.listSkills(state.repo).catch(() => []);
+  $('skill-options').replaceChildren(...candidates.map((name) => {
+    const option = el('option'); option.value = name; return option;
+  }));
+  selectSettingsTab('app');
+  setSidebar(false);
+  $('app-settings').showModal();
+}
+
+async function saveSettings() {
+  const button = $('settings-save');
+  const before = state.config;
+  button.disabled = true;
+  $('settings-error').hidden = true;
+  try {
+    state.config = await api.saveConfig(settingsPatch());
+    state.settingsSkills = [...state.config.instructions.skills];
+    state.settingsActions = state.config.instructions.startupActions.map((action) => ({ ...action }));
+    $('settings-status').textContent = '保存しました';
+    if (before.wslDistro !== state.config.wslDistro) {
+      try { state.host = await api.hostInfo(); } catch (error) { state.host = { platform: api.platform, tmux: '', error: error.message }; }
+      renderHostStatus();
+      await selectRepo(state.repo);
+    } else {
+      if (!state.config.useWorktree && !state.current) {
+        state.worktree = '';
+        await Files.setRoot(state.repo, '', {});
+      }
+      await refreshWorktrees();
+      renderAgents();
+      renderHeader();
+    }
+  } catch (error) {
+    $('settings-error').textContent = error.message;
+    $('settings-error').hidden = false;
+  } finally {
+    button.disabled = false;
+  }
+}
+
 // ---- 配線 --------------------------------------------------------------------
 
 async function init() {
@@ -721,11 +1149,23 @@ async function init() {
   showView(state.config.view);
   await showArea(state.config.area, { persist: false });
 
-  $('area-work').onclick = () => showArea('work').catch((err) => notice(err.message, 'error'));
-  $('area-automation').onclick = () => showArea('automation').catch((err) => notice(err.message, 'error'));
+  $('area-work').onclick = () => showArea('conversation').catch((err) => notice(err.message, 'error'));
+  $('area-tasks').onclick = () => showArea('tasks').catch((err) => notice(err.message, 'error'));
+  $('area-workflows').onclick = () => showArea('workflows').catch((err) => notice(err.message, 'error'));
+  $('automation-frame').addEventListener('load', () => syncWorkspaceFrame());
 
-  $('repo-add').onclick = () => addRepo().catch((err) => notice(err.message, 'error'));
-  $('session-new').onclick = () => newDraft();
+  $('repo-select').onchange = () => selectRepo($('repo-select').value).catch((err) => notice(err.message, 'error'));
+  $('repo-add').onclick = () => { $('repo-more').open = false; addRepo().catch((err) => notice(err.message, 'error')); };
+  $('repo-remove').onclick = async () => {
+    $('repo-more').open = false;
+    if (!state.repo || !confirm(`${basename(state.repo)} の登録を外す？（会話は残る）`)) return;
+    state.config = await api.removeRepo(state.repo);
+    await selectRepo(state.config.lastRepo);
+  };
+  $('session-new').onclick = () => {
+    if (state.area === 'conversation') newDraft();
+    else syncWorkspaceFrame('new');
+  };
   $('session-delete').onclick = async () => {
     $('chat-more').open = false;
     if (!state.current || !confirm(isTmux(state.current) ? 'この会話を削除する？（tmux セッションも終了する）' : 'この会話を削除する？')) return;
@@ -752,16 +1192,25 @@ async function init() {
   // CLI と違えば次の依頼のときに起動し直す（claude / copilot は --resume で文脈を引き継ぐ）
   const onTurnOptionChange = async (key) => {
     const opts = turnOptions();
-    if (state.current) state.current = await api.updateSession(state.current.id, { [key]: opts[key] });
-    state.config = await api.saveConfig({ lastCli: opts.cli, lastModel: opts.model, lastReadonly: opts.readonly });
+    const selected = selectedExecution(opts.policy);
+    if (state.current) {
+      const patch = key === 'policy' ? { policy: opts.policy, tier: selected.tier }
+        : key === 'readonly' ? { readonly: opts.readonly }
+          : { [key]: selected[key] };
+      state.current = await api.updateSession(state.current.id, patch);
+    }
+    const configPatch = { lastReadonly: opts.readonly };
+    if (opts.policy === 'direct') { configPatch.lastCli = selected.cli; configPatch.lastModel = selected.model; }
+    state.config = await api.saveConfig(configPatch);
     if (state.current && isTmux(state.current) && state.current.live) {
       const live = state.current.live;
-      const same = live.cli === opts.cli && String(live.model || '') === opts.model && !!live.readonly === opts.readonly;
-      notice(same ? '' : `次の依頼から ${opts.cli}${opts.model ? `（${opts.model}）` : ''}${opts.readonly ? '・Ask' : ''} で続ける（CLI を起動し直す）`);
+      const same = live.cli === selected.cli && String(live.model || '') === selected.model && !!live.readonly === opts.readonly;
+      notice(same ? '' : `次の依頼から ${selected.cli}${selected.model ? `（${selected.model}）` : ''}${opts.readonly ? '・Ask' : ''} で続ける（CLI を起動し直す）`);
     }
     renderRunSettingsSummary();
     renderSessions();
   };
+  $('policy').onchange = () => onTurnOptionChange('policy');
   $('cli').onchange = () => onTurnOptionChange('cli');
   $('model').onchange = () => onTurnOptionChange('model');
   $('readonly').onchange = () => onTurnOptionChange('readonly');
@@ -819,26 +1268,19 @@ async function init() {
       renderHeader();
     } catch (err) { notice(err.message, 'error'); }
   };
-  $('use-tmux').checked = state.config.transport === 'tmux';
-  $('use-tmux').onchange = async () => { state.config = await api.saveConfig({ transport: $('use-tmux').checked ? 'tmux' : 'headless' }); renderAgents(); };
-  $('use-worktree').checked = state.config.useWorktree;
-  $('use-worktree').onchange = async () => {
-    state.config = await api.saveConfig({ useWorktree: $('use-worktree').checked });
-    // 切ったら新しい会話は本体で始める（既にある worktree と会話はそのまま残る）
-    if (!state.config.useWorktree) { state.worktree = ''; await Files.setRoot(state.repo, '', {}); }
-    await refreshWorktrees();
-    renderHeader();
-    if (state.changesOpen) refreshChanges();
+  for (const button of document.querySelectorAll('[data-settings-tab]')) button.onclick = () => selectSettingsTab(button.dataset.settingsTab);
+  $('instruction-text').oninput = () => { $('instruction-count').textContent = `${$('instruction-text').value.length} / 8000`; };
+  $('skill-add').onclick = () => {
+    const name = $('skill-entry').value.trim().replace(/^[$/]+/, '');
+    if (name && !state.settingsSkills.includes(name)) state.settingsSkills.push(name);
+    $('skill-entry').value = '';
+    renderRecommendedSkills();
   };
-  $('wsl-distro').value = state.config.wslDistro || '';
-  $('wsl-distro').onchange = async () => {
-    state.config = await api.saveConfig({ wslDistro: $('wsl-distro').value.trim() });
-    try { state.host = await api.hostInfo(); } catch (err) { state.host = { platform: api.platform, tmux: '', error: err.message }; }
-    renderHostStatus();
-    await selectRepo(state.repo);
-  };
-  $('settings-open').onclick = () => { setSidebar(false); $('app-settings').showModal(); };
+  $('skill-entry').onkeydown = (event) => { if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); $('skill-add').click(); } };
+  $('startup-add').onclick = () => { state.settingsActions.push({ type: 'skill', value: '', onError: 'warn' }); renderStartupActions(); };
+  $('settings-open').onclick = () => openSettings().catch((error) => notice(error.message, 'error'));
   $('settings-close').onclick = () => $('app-settings').close();
+  $('settings-save').onclick = saveSettings;
   $('nav-toggle').onclick = () => setSidebar(!$('app').classList.contains('sidebar-open'));
   $('side-backdrop').onclick = () => setSidebar(false);
   document.addEventListener('click', (event) => {
@@ -854,7 +1296,17 @@ async function init() {
     setSidebar(false);
   });
 
-  api.onTurnStarted(({ id, warning }) => { if (state.current && state.current.id === id && warning) notice(warning); });
+  api.onTurnStarted(({ id, warning }) => {
+    state.running.add(id);
+    if (!state.liveParts.has(id)) state.liveParts.set(id, { thinking: [], information: [] });
+    if (state.current && state.current.id === id) {
+      if (warning) notice(warning);
+      renderHeader();
+      renderMessages();
+    }
+  });
+  api.onTurnProgress(({ id, item }) => addLivePart(id, 'thinking', item));
+  api.onTurnInfo(({ id, item }) => addLivePart(id, 'information', item));
   api.onTurnLine(({ id, kind, text }) => {
     const lines = state.logs.get(id) || [];
     lines.push({ kind, text });
@@ -874,8 +1326,7 @@ async function init() {
     state.phases.set(p.id, { phase: p.phase, detail: p.detail, name: p.name });
     if (state.current && state.current.id === p.id) {
       renderHeader();
-      const label = document.querySelector(`#working-${p.id} .label`);
-      if (label) label.textContent = p.phase === 'attention' ? '端末で確認を求めている' : '応答中…';
+      renderMessages();
       if (p.phase === 'attention' && !state.termOpen) notice('CLI が端末で確認を求めている。「端末」を開いて答える');
       else if (p.phase !== 'attention' && $('notice').textContent.startsWith('CLI が端末で確認')) notice('');
     }

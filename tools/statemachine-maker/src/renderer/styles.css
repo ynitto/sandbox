@@ -114,6 +114,10 @@ h1, h2, h3 { margin: 0; font-weight: 650; }
 .execution-item:hover { background: var(--surface); }
 .execution-item.is-on { background: var(--accent-soft); border-color: transparent; color: var(--accent); }
 .execution-detail { min-width: 0; max-width: 900px; display: grid; gap: 12px; }
+.task-detail-tabs { display: flex; gap: 4px; margin: 2px 0 6px; border-bottom: 1px solid var(--line); }
+.task-detail-tabs button { margin-bottom: -1px; padding: 8px 12px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; color: var(--muted); background: transparent; }
+.task-detail-tabs button:hover { color: var(--text); background: var(--soft); }
+.task-detail-tabs button.is-on { border-bottom-color: var(--accent); color: var(--text); }
 .execution-title { min-width: 0; display: flex; justify-content: space-between; align-items: start; gap: 12px; padding-bottom: 4px; }
 .execution-title > div { min-width: 0; }
 .execution-title h2 { font-size: 20px; overflow-wrap: anywhere; }
@@ -149,6 +153,54 @@ h1, h2, h3 { margin: 0; font-weight: 650; }
 .run-history p { margin: 2px 0 0; color: var(--ng); font-size: 12px; overflow-wrap: anywhere; }
 .history-log { min-width: 0; border-top: 1px solid var(--line); padding-top: 12px; display: grid; gap: 8px; }
 .history-log pre { max-height: 320px; overflow: auto; font-family: var(--mono); }
+
+/* 複数AIワークフロー: 既存の実行画面と同じ2カラム・カード・状態色を使う。 */
+.flow-home-head { display: flex; justify-content: space-between; align-items: start; gap: 16px; margin-bottom: 16px; }
+.flow-home-head h2 { font-size: 20px; }
+.flow-home-head p { margin: 3px 0 0; color: var(--muted); }
+.flow-home-head select { width: auto; min-width: 180px; }
+.flow-layout { grid-template-columns: minmax(190px, 240px) minmax(0, 1fr); }
+.flow-side { max-height: calc(100vh - 190px); overflow-y: auto; padding-right: 4px; }
+.flow-side-head { display: flex; justify-content: space-between; align-items: center; min-height: 30px; padding: 0 8px; color: var(--muted); font-size: 12px; font-weight: 650; }
+.flow-side-head .tiny { min-height: 26px; width: 28px; padding: 0; }
+.flow-run-head { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+.flow-overview { gap: 8px; }
+.flow-node-summary, .flow-run-nodes { list-style: none; padding: 0; margin: 0; display: grid; }
+.flow-node-summary li { min-width: 0; display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 10px; padding: 10px 0; border-top: 1px solid var(--line); }
+.flow-node-summary li:first-child { border-top: 0; }
+.flow-node-state { width: 28px; height: 28px; display: grid; place-items: center; border-radius: 50%; background: var(--bg); color: var(--muted); font-size: 12px; font-weight: 650; }
+.flow-node-summary li > div { min-width: 0; display: grid; gap: 2px; }
+.flow-node-summary small { color: var(--muted); }
+.flow-node-summary p { margin: 2px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.flow-editor { min-width: 0; display: grid; gap: 12px; padding-bottom: 72px; }
+.flow-node-list { display: grid; gap: 10px; }
+.flow-node-card { min-width: 0; display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: 12px; padding: 16px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
+.flow-node-number { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 50%; background: #edf0f4; border: 1px solid var(--line-strong); font-weight: 700; }
+.flow-node-form { min-width: 0; display: grid; gap: 12px; }
+.flow-node-more summary { color: var(--muted); cursor: pointer; font-weight: 600; }
+.flow-deps { display: flex; flex-wrap: wrap; gap: 6px; }
+.flow-deps label { display: inline-flex; gap: 6px; align-items: center; padding: 5px 8px; border: 1px solid var(--line); border-radius: 8px; font-size: 12px; }
+.flow-deps input { width: auto; }
+.flow-human { display: grid; gap: 10px; margin-top: 10px; padding: 12px; background: var(--warn-soft); border-radius: 9px; }
+.flow-add-node { border-style: dashed; min-height: 46px; color: var(--accent); }
+.flow-sticky-actions { position: sticky; bottom: 0; display: flex; gap: 8px; padding: 12px; background: rgba(255, 255, 255, 0.94); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); backdrop-filter: blur(8px); }
+.flow-issues { margin: 0; padding: 10px 12px 10px 30px; border-radius: 9px; background: var(--warn-soft); font-size: 12.5px; }
+.flow-issues .err { color: var(--ng); }
+.flow-issues .warn { color: var(--warn); }
+.flow-progress { height: 8px; overflow: hidden; border-radius: 999px; background: var(--bg); }
+.flow-progress span { display: block; min-width: 4px; height: 100%; border-radius: inherit; background: var(--accent); transition: width 0.2s ease; }
+.flow-request { margin: 0; padding: 10px 12px; border-left: 3px solid var(--line-strong); white-space: pre-wrap; overflow-wrap: anywhere; }
+.flow-answer-card { border-color: #f1d18a; }
+.flow-answer-card h3 { font-size: 15px; }
+.flow-run-nodes li { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 10px; align-items: start; padding: 11px 0; border-top: 1px solid var(--line); }
+.flow-run-nodes li:first-child { border-top: 0; }
+.flow-run-nodes li > div { min-width: 0; }
+.flow-run-nodes p { margin: 2px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.flow-run-nodes small { color: var(--muted); }
+.flow-run-nodes details { margin-top: 7px; }
+.flow-run-nodes summary { color: var(--accent); cursor: pointer; font-size: 12px; }
+.flow-run-nodes pre, .flow-result-text { max-height: 420px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--mono); font-size: 12px; }
+.flow-log { height: 320px; margin: 0; }
 
 /* ---------- 編集: 左にフロー、右に選択中の設定 ---------- */
 .editor-shell { display: grid; grid-template-columns: minmax(360px, 1fr) 400px; height: 100%; min-width: 0; overflow: hidden; }
@@ -319,6 +371,9 @@ dialog::backdrop { background: rgba(20, 24, 40, 0.25); }
   .execution-layout { display: block; }
   .execution-list { position: static; display: flex; overflow-x: auto; gap: 6px; padding-bottom: 10px; margin-bottom: 8px; }
   .execution-item { flex: 0 0 min(220px, 72vw); }
+  .flow-home-head { align-items: stretch; flex-direction: column; }
+  .flow-home-head select { width: 100%; }
+  .flow-side { max-height: none; }
   .editor-shell { display: block; }
   .editor-shell.is-inspecting .flow-pane { display: none; }
   .editor-shell.no-selection .inspector { display: none; }
@@ -346,6 +401,8 @@ dialog::backdrop { background: rgba(20, 24, 40, 0.25); }
   .machine-pane { overflow: visible; padding: 20px 14px 48px; }
   .machine-head { align-items: flex-start; flex-direction: column; }
   .matrix { grid-template-columns: 1fr; }
+  .flow-node-card { grid-template-columns: 1fr; }
+  .flow-node-number { width: 28px; height: 28px; }
   .bar-center .title-input { font-size: 14px; }
   body.is-editing #b-run { display: none; }
 }

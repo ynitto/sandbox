@@ -15,6 +15,7 @@
 //
 // git への書き込みはここだけ（worktree の追加・削除とブランチ作成）。変更ビューは読むだけ。
 
+const fs = require('fs');
 const path = require('path');
 const host = require('./host');
 
@@ -100,7 +101,13 @@ async function list(repo, distro = '', { withStatus = true } = {}) {
   const { shell, cwd } = shellOf(repo, distro);
   const r = await shell.exec(['git', '-C', cwd, 'worktree', 'list', '--porcelain'], { timeoutMs: 20000 });
   if (!r.ok) return { items: [], root: '', error: r.error || r.output || 'git リポジトリではありません' };
-  const root = host.joinHost(cwd, SUBDIR);
+  // macOS の /var は /private/var への symlink。git は実体側を返すため、比較する基準も
+  // realpath に揃えないとアプリ自身が作った worktree を「外部のもの」と誤判定する。
+  let comparableCwd = cwd;
+  if (process.platform !== 'win32') {
+    try { comparableCwd = fs.realpathSync(repo); } catch { /* 一覧の git 結果を優先する */ }
+  }
+  const root = host.joinHost(comparableCwd, SUBDIR);
   const raw = parseList(r.output);
   const items = raw.map((w, i) => {
     const under = w.path.startsWith(`${root}/`) ? w.path.slice(root.length + 1) : '';
@@ -144,7 +151,7 @@ async function ensureExcluded(repo, distro = '') {
 //   base   … 分岐元（空なら現在の HEAD）
 // 既にあるブランチはそのまま持ってくる（`-b` を付けない）。他の worktree で
 // チェックアウト中のブランチは git が断るので、その理由をそのまま返す。
-async function create(repo, { branch, base = '', name = '' } = {}, distro = '') {
+async function create(repo, { branch, base = '', name = '', fetchRemote = false } = {}, distro = '') {
   const br = String(branch || '').trim();
   if (!br) throw new Error('ブランチ名を入れてください');
   const wtName = checkName(name || slug(br));
@@ -161,14 +168,21 @@ async function create(repo, { branch, base = '', name = '' } = {}, distro = '') 
 
   const dirs = dirsFor(repo, wtName);
   const exists = await shell.exec(['git', '-C', cwd, 'show-ref', '--verify', '--quiet', `refs/heads/${br}`], { timeoutMs: 15000 });
+  let remote = { ok: false };
+  if (!exists.ok && fetchRemote) {
+    const fetched = await shell.exec(['git', '-C', cwd, 'fetch', 'origin', `refs/heads/${br}:refs/remotes/origin/${br}`], { timeoutMs: 120000 });
+    if (!fetched.ok) throw new Error(`成果ブランチを取得できません: ${(fetched.error || fetched.output || '').split('\n').slice(-3).join('\n')}`);
+    remote = await shell.exec(['git', '-C', cwd, 'show-ref', '--verify', '--quiet', `refs/remotes/origin/${br}`], { timeoutMs: 15000 });
+  }
   await ensureExcluded(repo, distro);
 
   const argv = ['git', '-C', cwd, 'worktree', 'add'];
   if (exists.ok) argv.push(dirs.hostDir, br);                       // 既にあるブランチを持ってくる
+  else if (remote.ok) argv.push('--track', '-b', br, dirs.hostDir, `origin/${br}`); // agent-flow が公開したブランチ
   else argv.push('-b', br, dirs.hostDir, ...(baseRef ? [baseRef] : []));
   const r = await shell.exec(argv, { timeoutMs: 120000 });
   if (!r.ok) throw new Error(`worktree を作れません: ${(r.error || r.output || '').split('\n').slice(-4).join('\n')}`);
-  return { name: wtName, branch: br, path: dirs.hostDir, reusedBranch: exists.ok };
+  return { name: wtName, branch: br, path: dirs.hostDir, reusedBranch: exists.ok, trackedRemote: remote.ok };
 }
 
 // 片付ける。中に変更が残っていると git が断る（force で押し切れる）。
@@ -188,7 +202,7 @@ async function remove(repo, name, { force = false, deleteBranch = false, forceBr
   if (deleteBranch && wt.branch) {
     const b = await shell.exec(['git', '-C', cwd, 'branch', forceBranch ? '-D' : '-d', wt.branch], { timeoutMs: 30000 });
     out.branchRemoved = b.ok;
-    if (!b.ok) out.branchError = (b.error || b.output || '').split('\n').slice(-2).join('\n');
+    if (!b.ok) out.branchError = `ブランチを削除できません（未マージの可能性があります）\n${(b.error || b.output || '').split('\n').slice(-3).join('\n')}`;
   }
   return out;
 }

@@ -12,6 +12,9 @@ const ai = require('./ai');
 const aiDiff = require('./ai-diff');
 const config = require('./config');
 const agentLoop = require('./agent-loop');
+const flowModel = require('./flow-model');
+const flowStore = require('./flow-store');
+const agentFlow = require('./agent-flow');
 
 const APP_ROOT = path.join(__dirname, '..', '..');
 
@@ -25,7 +28,13 @@ function handle(channel, fn) {
     try {
       return { ok: true, data: await fn(args || {}, event) };
     } catch (err) {
-      return { ok: false, error: err && err.message ? err.message : String(err) };
+      return {
+        ok: false,
+        error: err && err.message ? err.message : String(err),
+        ...(err && err.code ? { code: err.code } : {}),
+        ...(err && err.detail ? { detail: err.detail } : {}),
+        ...(err && err.issues ? { issues: err.issues } : {}),
+      };
     }
   });
 }
@@ -160,6 +169,46 @@ function registerIpcHandlers(getWindow, options = {}) {
     const root = p.root ? selectedRoot(p) : '';
     return tools.agentDefinitions({ cwd: root, capture: runner.capture });
   });
+
+  // 複数 AI のワークフロー。定義は root 内、実行状態は agent-flow の共有 bus が正典。
+  register('flow:catalog', () => agentFlow.catalog(runner.capture));
+  register('flow:list', (p) => flowStore.list(selectedRoot(p)));
+  register('flow:read', (p) => flowStore.read(selectedRoot(p), p.id));
+  register('flow:save', (p) => flowStore.save(selectedRoot(p), p.workflow, p.mode));
+  register('flow:delete', (p) => flowStore.remove(selectedRoot(p), p.id));
+  register('flow:preview', (p) => {
+    selectedRoot(p);
+    return flowModel.preview(p.workflow, p.request, p.parameters);
+  });
+  register('flow:context', async (p) => {
+    const root = selectedRoot(p);
+    const cfg = settings.load(getUserData());
+    const result = await agentFlow.context({
+      root, capture: runner.capture, agentDefinitions: tools.agentDefinitions,
+      defaults: { agent: cfg.agent, model: cfg.model },
+    });
+    result.capabilities.openDelivery = !!(options.hooks && options.hooks.openDelivery);
+    return result;
+  });
+  register('flow:run:start', async (p) => {
+    const root = selectedRoot(p);
+    const cfg = settings.load(getUserData());
+    const getContext = () => agentFlow.context({
+      root, capture: runner.capture, agentDefinitions: tools.agentDefinitions,
+      defaults: { agent: cfg.agent, model: cfg.model },
+    });
+    return agentFlow.start(p, { root, getContext, startDetached: runner.startDetached });
+  });
+  register('flow:run:list', (p) => agentFlow.listRuns(selectedRoot(p), p.limit));
+  register('flow:run:read', (p) => agentFlow.readRun(selectedRoot(p), p.runId));
+  register('flow:run:cancel', (p) => agentFlow.cancel(selectedRoot(p), p.runId, p.reason, runner.capture));
+  register('flow:run:respond', (p) => agentFlow.respond(selectedRoot(p), p.runId, p.interactionId, p.answer));
+  register('flow:run:result', (p) => agentFlow.result(selectedRoot(p), p.runId, runner.capture));
+  register('flow:run:log', (p) => agentFlow.readLog(selectedRoot(p), p.runId, p.bytes));
+  register('flow:run:delete', (p) => agentFlow.deleteRun(selectedRoot(p), p.runId));
+  register('flow:run:openDelivery', (p) => agentFlow.openDelivery(
+    selectedRoot(p), p.runId, options.hooks && options.hooks.openDelivery,
+  ));
   register('run:snapshot', (p) => agentLoop.inspect({ root: selectedRoot(p), capture: runner.capture }));
   register('run:schedule', (p) => agentLoop.saveSchedule({
     root: selectedRoot(p), payload: p.schedule, capture: runner.capture,

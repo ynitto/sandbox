@@ -14,6 +14,7 @@
 // const で受けるとスクリプトごと落ちて画面が真っ白になる。test/preload-contract.test.js）。
 
 const $ = (id) => document.getElementById(id);
+const embedded = document.body.classList.contains('embedded');
 
 const state = {
   config: { roots: [], lastRoot: '' },
@@ -23,7 +24,7 @@ const state = {
   catalog: { kinds: [], platform: '' },
   view: 'home',
   homeTab: 'run',
-  execution: { loading: false, snapshot: null, selected: '', scheduleOpen: false, scheduleDraft: null, log: null },
+  execution: { loading: false, snapshot: null, selected: '', detailTab: 'overview', scheduleOpen: false, scheduleDraft: null, log: null },
   current: null,     // { machine, isNew, spec, dirty, warnings, dir }
   open: null,        // 選択中の工程番号、'workflow'、または未選択
   pickerAt: -1,      // 追加の種類を選んでいる位置
@@ -45,6 +46,11 @@ function toast(message, error = false) {
   el.hidden = false;
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { el.hidden = true; }, error ? 6000 : 2600);
+}
+
+function notifyHost(area, selected = '') {
+  if (!embedded) return;
+  window.parent.postMessage({ type: 'agent-app:changed', area, root: state.root, selected }, '*');
 }
 
 async function guard(what, fn) {
@@ -242,6 +248,7 @@ async function selectRoot(root) {
   await guard('フォルダ', () => api.selectRoot(root));
   await Promise.all([loadMachines(), loadAgents()]);
   await loadExecutionSnapshot();
+  flowFeature.rootChanged();
   render();
 }
 
@@ -254,6 +261,7 @@ async function addFolder() {
   state.root = cfg.lastRoot;
   await Promise.all([loadMachines(), loadAgents()]);
   await loadExecutionSnapshot();
+  flowFeature.rootChanged();
   render();
 }
 
@@ -267,6 +275,7 @@ async function removeFolder(root) {
   if (state.root === root) state.root = cfg.lastRoot;
   await Promise.all([loadMachines(), loadAgents()]);
   await loadExecutionSnapshot();
+  flowFeature.rootChanged();
   render();
 }
 
@@ -391,12 +400,17 @@ function homeHtml() {
   const workflowActions = state.homeTab === 'workflows'
     ? '<div class="row"><button type="button" class="primary" id="h-ai-draft">AIで下書き</button><button type="button" id="h-new">手動で作成</button></div>'
     : '';
+  const homeContent = state.homeTab === 'run'
+    ? executionHtml()
+    : state.homeTab === 'flows'
+      ? flowFeature.html()
+      : `<div class="matrix">${cards}</div>`;
   const body = state.root
     ? `<div class="machine-head">
         <div><h1>${esc(folderName(state.root))}</h1><div class="where">${esc(state.root)}</div></div>${workflowActions}
       </div>
-      <div class="home-tabs" role="tablist"><button type="button" data-home-tab="run" class="${state.homeTab === 'run' ? 'is-on' : ''}">実行</button><button type="button" data-home-tab="workflows" class="${state.homeTab === 'workflows' ? 'is-on' : ''}">ワークフロー</button></div>
-      ${state.homeTab === 'run' ? executionHtml() : `<div class="matrix">${cards}</div>`}`
+      <div class="home-tabs" role="tablist"><button type="button" data-home-tab="run" class="${state.homeTab === 'run' ? 'is-on' : ''}">実行</button><button type="button" data-home-tab="workflows" class="${state.homeTab === 'workflows' ? 'is-on' : ''}">ワークフロー</button><button type="button" data-home-tab="flows" class="${state.homeTab === 'flows' ? 'is-on' : ''}">AIワークフロー</button></div>
+      ${homeContent}`
     : '<div class="blank"><h2>左のフォルダを選んでください</h2></div>';
   // 登録したフォルダを左、ワークフローを右に置く。読む順（切り替え → 内容）に合わせて
   // DOM もこの順にする（タブ移動と読み上げが見た目とずれない）。
@@ -417,14 +431,29 @@ function bindHome(main) {
   for (const b of main.querySelectorAll('[data-root]')) b.addEventListener('click', () => selectRoot(b.dataset.root));
   for (const b of main.querySelectorAll('[data-drop]')) b.addEventListener('click', () => removeFolder(b.dataset.drop));
   for (const b of main.querySelectorAll('[data-open]')) b.addEventListener('click', () => openMachine(b.dataset.open));
-  for (const b of main.querySelectorAll('[data-home-tab]')) b.addEventListener('click', () => { state.homeTab = b.dataset.homeTab; render(); });
+  for (const b of main.querySelectorAll('[data-home-tab]')) b.addEventListener('click', async () => {
+    state.homeTab = b.dataset.homeTab;
+    render();
+    if (state.homeTab === 'flows') await flowFeature.activate();
+  });
   for (const b of main.querySelectorAll('[data-run-machine]')) b.addEventListener('click', () => {
     state.execution.selected = b.dataset.runMachine;
+    state.execution.detailTab = 'overview';
     state.execution.scheduleOpen = false;
     state.execution.scheduleDraft = null;
     state.run.parameters = {};
     state.run.result = null;
     state.run.error = '';
+    render();
+  });
+  for (const button of main.querySelectorAll('[data-task-tab]')) button.addEventListener('click', () => {
+    const tab = button.dataset.taskTab;
+    if (tab === 'steps') {
+      const machine = selectedExecutionMachine();
+      if (machine) openMachine(machine.machine);
+      return;
+    }
+    state.execution.detailTab = tab;
     render();
   });
   on('run-edit', () => { const machine = selectedExecutionMachine(); if (machine) openMachine(machine.machine); });
@@ -437,6 +466,7 @@ function bindHome(main) {
   for (const button of main.querySelectorAll('[data-history-log]')) button.addEventListener('click', () => openHistoryLog(button.dataset.historyLog));
   for (const input of main.querySelectorAll('[data-run-param]')) input.addEventListener('input', () => { state.run.parameters[input.dataset.runParam] = input.value; });
   bindScheduleEditor(main);
+  if (state.homeTab === 'flows') flowFeature.bind(main);
 }
 
 function goRun(machine) {
@@ -445,6 +475,7 @@ function goRun(machine) {
   state.current = null;
   state.homeTab = 'run';
   state.execution.selected = machine;
+  state.execution.detailTab = 'overview';
   state.execution.scheduleDraft = null;
   state.run.result = null;
   state.run.error = '';
@@ -467,6 +498,38 @@ function dateLabel(value) {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString('ja-JP', { dateStyle: 'short', timeStyle: 'short' });
 }
+
+const flowFeature = window.createFlowFeature({
+  name: embedded ? 'ワークフロー' : 'AIワークフロー',
+  changed: (area, selected) => notifyHost(area, selected),
+  root: () => state.root,
+  config: () => state.config,
+  agents: () => state.agents,
+  isActive: () => state.view === 'home' && state.homeTab === 'flows',
+  refresh: render,
+  guard,
+  toast,
+  escape: esc,
+  dateLabel,
+  bridge: {
+    catalog: () => api.flowCatalog(),
+    list: (root) => api.flowList(root),
+    read: (root, id) => api.flowRead(root, id),
+    save: (root, workflow, mode) => api.flowSave(root, workflow, mode),
+    remove: (root, id) => api.flowDelete(root, id),
+    preview: (root, workflow, request, parameters) => api.flowPreview(root, workflow, request, parameters),
+    context: (root) => api.flowContext(root),
+    runStart: (payload) => api.flowRunStart(payload),
+    runList: (root, limit) => api.flowRunList(root, limit),
+    runRead: (root, runId) => api.flowRunRead(root, runId),
+    runCancel: (root, runId, reason) => api.flowRunCancel(root, runId, reason),
+    runRespond: (root, runId, interactionId, answer) => api.flowRunRespond(root, runId, interactionId, answer),
+    runResult: (root, runId) => api.flowRunResult(root, runId),
+    runLog: (root, runId) => api.flowRunLog(root, runId),
+    runDelete: (root, runId) => api.flowRunDelete(root, runId),
+    openDelivery: (root, runId) => api.flowRunOpenDelivery(root, runId),
+  },
+});
 
 function executionHtml() {
   const machines = executionMachines();
@@ -506,12 +569,18 @@ function executionDetailHtml(machine) {
     ? `<p class="run-result ${state.run.result.ok ? 'ok' : state.run.result.escalate ? 'warn' : 'ng'}">${state.run.result.ok ? '実行が完了しました' : state.run.result.escalate ? `確認が必要です${state.run.result.error ? `: ${esc(state.run.result.error)}` : ''}` : esc(state.run.result.error || '実行に失敗しました')}</p>`
     : state.run.error ? `<p class="run-result ng">${esc(state.run.error)}</p>` : '';
   const log = state.run.lines.map((line) => `<div class="${line.kind === 'stderr' ? 'e' : ''}">${esc(line.line)}</div>`).join('') || '<span class="muted">実行すると、ここに進行状況が表示されます。</span>';
-  return `<header class="execution-title"><div><span class="eyebrow">ワークフロー</span><h2>${esc(machine.name)}</h2>${machine.description ? `<p>${esc(machine.description)}</p>` : ''}</div><button type="button" class="ghost" id="run-edit">編集</button></header>
-    ${snapshot.available === false ? `<p class="run-result warn">${esc(snapshot.error || '実行基盤に接続できませんでした')}</p>` : ''}
-    <section class="execution-card run-card"><div class="execution-card-head"><div><h3>手動実行</h3><p>使うAI: ${esc(selectedAgent(state.run.agent || state.config.agent) || '未設定')}${state.config.model ? ` / ${esc(state.config.model)}` : ''}</p></div><span class="status ${state.run.running ? 'active' : ''}">${state.run.running ? '実行中' : '待機中'}</span></div>
-      ${inputs}<div class="row"><button type="button" class="primary" id="run-start" ${state.run.running || snapshot.available === false || !state.agents.length ? 'disabled' : ''}>実行</button><button type="button" id="run-check" ${state.run.running ? 'disabled' : ''}>構成を確認</button><button type="button" class="danger" id="run-stop" ${state.run.running ? '' : 'disabled'}>停止</button></div>${result}<div class="log" id="run-log">${log}</div></section>
-    <section class="execution-card"><div class="execution-card-head"><div><h3>定期実行</h3><p>${esc(scheduleMeta)} · ${esc(daemonStatus)}</p></div><div class="row"><button type="button" id="daemon-toggle" ${snapshot.available === false || (!machine.schedule && !daemon.running) ? 'disabled' : ''}>${daemon.running ? '自動実行を停止' : '自動実行を開始'}</button><button type="button" id="schedule-toggle">${state.execution.scheduleOpen ? '閉じる' : machine.schedule ? '変更' : '設定'}</button></div></div>${state.execution.scheduleOpen ? scheduleEditorHtml(machine) : ''}</section>
-    <section class="execution-card"><div class="execution-card-head"><div><h3>実行履歴</h3><p>直近の手動実行と定期実行</p></div></div>${history ? `<ul class="run-history">${history}</ul>` : '<p class="muted small">実行履歴はまだありません。</p>'}${historyLog}</section>`;
+  const detail = state.execution.detailTab === 'history'
+    ? `<section class="execution-card"><div class="execution-card-head"><div><h3>実行履歴</h3><p>直近の手動実行と定期実行</p></div></div>${history ? `<ul class="run-history">${history}</ul>` : '<p class="muted small">実行履歴はまだありません。</p>'}${historyLog}</section>`
+    : state.execution.detailTab === 'overview' ? `${snapshot.available === false ? `<p class="run-result warn">${esc(snapshot.error || '実行基盤に接続できませんでした')}</p>` : ''}
+      <section class="execution-card run-card"><div class="execution-card-head"><div><h3>手動実行</h3><p>使うAI: ${esc(selectedAgent(state.run.agent || state.config.agent) || '未設定')}${state.config.model ? ` / ${esc(state.config.model)}` : ''}</p></div><span class="status ${state.run.running ? 'active' : ''}">${state.run.running ? '実行中' : '待機中'}</span></div>
+        ${inputs}<div class="row"><button type="button" class="primary" id="run-start" ${state.run.running || snapshot.available === false || !state.agents.length ? 'disabled' : ''}>実行</button><button type="button" id="run-check" ${state.run.running ? 'disabled' : ''}>構成を確認</button><button type="button" class="danger" id="run-stop" ${state.run.running ? '' : 'disabled'}>停止</button></div>${result}<div class="log" id="run-log">${log}</div></section>
+      <section class="execution-card"><div class="execution-card-head"><div><h3>定期実行</h3><p>${esc(scheduleMeta)} · ${esc(daemonStatus)}</p></div><div class="row"><button type="button" id="daemon-toggle" ${snapshot.available === false || (!machine.schedule && !daemon.running) ? 'disabled' : ''}>${daemon.running ? '自動実行を停止' : '自動実行を開始'}</button><button type="button" id="schedule-toggle">${state.execution.scheduleOpen ? '閉じる' : machine.schedule ? '変更' : '設定'}</button></div></div>${state.execution.scheduleOpen ? scheduleEditorHtml(machine) : ''}</section>` : '';
+  return `<header class="execution-title"><div><span class="eyebrow">タスク</span><h2>${esc(machine.name)}</h2>${machine.description ? `<p>${esc(machine.description)}</p>` : ''}</div></header>
+    <nav class="task-detail-tabs" role="tablist" aria-label="タスク詳細">
+      <button type="button" role="tab" data-task-tab="overview" aria-selected="${state.execution.detailTab === 'overview'}" class="${state.execution.detailTab === 'overview' ? 'is-on' : ''}">概要</button>
+      <button type="button" role="tab" data-task-tab="steps" aria-selected="false">手順</button>
+      <button type="button" role="tab" data-task-tab="history" aria-selected="${state.execution.detailTab === 'history'}" class="${state.execution.detailTab === 'history' ? 'is-on' : ''}">履歴</button>
+    </nav>${detail}`;
 }
 
 function ensureScheduleDraft(machine) {
@@ -570,6 +639,7 @@ async function saveSchedule() {
   state.execution.scheduleOpen = false;
   state.execution.scheduleDraft = null;
   render();
+  notifyHost('tasks', machine.machine);
   toast(result.applied ? '定期実行を保存し、反映しました' : '定期実行を保存しました');
 }
 
@@ -946,6 +1016,7 @@ async function saveMachine() {
   toast('保存しました');
   await loadMachines();
   render();
+  notifyHost('tasks', res.machine);
 }
 
 // --- ダイアログ -------------------------------------------------------------------------
@@ -1359,6 +1430,48 @@ function toolsHtml(tools) {
 
 // --- 起動 -----------------------------------------------------------------------------
 
+let initPromise;
+
+async function navigateEmbedded(payload) {
+  if (!embedded) return;
+  if (initPromise) await initPromise;
+  const area = payload.area === 'workflows' ? 'workflows' : 'tasks';
+  const homeTab = area === 'workflows' ? 'flows' : 'run';
+  const root = String(payload.root || '');
+
+  state.homeTab = homeTab;
+  state.view = 'home';
+  state.current = null;
+  if (root && root !== state.root) await selectRoot(root);
+  if (!root && state.root) {
+    state.root = '';
+    state.machines = [];
+    state.execution.snapshot = null;
+    flowFeature.rootChanged();
+  }
+
+  if (homeTab === 'flows') {
+    await flowFeature.activate();
+    if (payload.selected) await flowFeature.select(payload.selected);
+    if (payload.action === 'new') flowFeature.create();
+    else render();
+    return;
+  }
+
+  if (payload.selected && executionMachines().some((machine) => machine.machine === payload.selected)) {
+    if (state.execution.selected !== payload.selected) state.execution.detailTab = 'overview';
+    state.execution.selected = payload.selected;
+  }
+  if (payload.action === 'new') newMachine();
+  else render();
+}
+
+window.addEventListener('message', (event) => {
+  const payload = event.data;
+  if (!payload || payload.type !== 'agent-app:navigate') return;
+  navigateEmbedded(payload).catch((error) => toast(error.message || String(error), true));
+});
+
 async function init() {
   state.catalog = (await guard('準備', () => api.catalog())) || state.catalog;
   state.config = (await guard('設定', () => api.getConfig())) || state.config;
@@ -1372,6 +1485,7 @@ async function init() {
     state.run.result = p.result || { ok: p.code === 0 };
     state.run.error = p.error || '';
     appendLog({ kind: state.run.result.ok ? 'stdout' : 'stderr', line: state.run.result.ok ? (p.mode === 'check' ? '— 構成を確認しました' : '— 実行が完了しました') : '— 実行を完了できませんでした' });
+    notifyHost('tasks', state.execution.selected);
     if (state.view === 'home' && state.homeTab === 'run') render();
     loadExecutionSnapshot().then(() => { if (state.view === 'home' && state.homeTab === 'run') render(); });
   });
@@ -1382,4 +1496,4 @@ async function init() {
   render();
 }
 
-init();
+initPromise = init();

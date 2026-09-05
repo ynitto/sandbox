@@ -4,6 +4,7 @@
 // agent-app の「登録リポジトリ」と設定ファイルだけをアダプトする。
 const makerIpc = require('statemachine-maker/src/main/ipc');
 const store = require('../store');
+const worktree = require('../worktree');
 
 function automationConfig(config) {
   const cfg = config && typeof config === 'object' ? config : {};
@@ -43,6 +44,15 @@ function registerAutomationIpc({ getWindow, userData, appRoot }) {
     config: configAdapter(),
     userData,
     appRoot,
+    hooks: {
+      openDelivery: async (root, delivery) => {
+        const branch = String(delivery.branch || '').trim();
+        const result = await worktree.create(root, {
+          branch, name: worktree.slug(branch), fetchRemote: true,
+        }, store.loadConfig(userData()).wslDistro);
+        return { kind: 'worktree', name: result.name, branch: result.branch };
+      },
+    },
   });
 }
 

@@ -10,15 +10,18 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const settings = require('./settings');
 
 // wslDistro    … Windows で、ドライブパス（C:\…）のリポジトリを扱う WSL ディストロ（'' なら既定）
 // transport    … 'tmux'（対話起動。既定）| 'headless'（1 ターン 1 プロセス）
 // useWorktree  … 会話ごとに git worktree で作業フォルダを分ける機能を使うか（既定 true）
-// view         … 最後に開いていた画面（chat | files）
+// area         … 最後に開いていた主要領域（conversation | tasks | workflows）
+// view         … 会話領域で最後に開いていた画面（chat | files）
 // lastWorktree … リポジトリ → 最後に選んだ作業フォルダ名（'' はリポジトリ本体）
 const DEFAULTS = {
   repos: [], lastRepo: '', lastCli: 'copilot', lastModel: '', lastReadonly: false,
-  wslDistro: '', transport: 'tmux', useWorktree: true, area: 'work', view: 'chat', lastFiles: {}, lastWorktree: {},
+  wslDistro: '', transport: 'tmux', useWorktree: true, area: 'conversation', view: 'chat', lastFiles: {}, lastWorktree: {},
+  lastTask: {}, lastWorkflow: {},
   automationSkillDir: '', automationAgent: 'aider', automationModel: '',
 };
 const MAX_REPOS = 30;
@@ -36,13 +39,32 @@ function normalize(raw) {
   next.wslDistro = String(next.wslDistro || '').trim();
   next.transport = next.transport === 'headless' ? 'headless' : 'tmux';
   next.useWorktree = next.useWorktree !== false;
-  next.area = next.area === 'automation' ? 'automation' : 'work';
+  next.area = next.area === 'automation' ? 'tasks'
+    : ['tasks', 'workflows'].includes(next.area) ? next.area : 'conversation';
   next.view = next.view === 'files' ? 'files' : 'chat';
   next.lastFiles = next.lastFiles && typeof next.lastFiles === 'object' ? next.lastFiles : {};
   next.lastWorktree = next.lastWorktree && typeof next.lastWorktree === 'object' ? next.lastWorktree : {};
+  next.lastTask = next.lastTask && typeof next.lastTask === 'object' ? next.lastTask : {};
+  next.lastWorkflow = next.lastWorkflow && typeof next.lastWorkflow === 'object' ? next.lastWorkflow : {};
   next.automationSkillDir = String(next.automationSkillDir || '').trim();
   next.automationAgent = String(next.automationAgent || 'aider').trim() || 'aider';
   next.automationModel = String(next.automationModel || '').trim();
+  const userSettings = settings.normalize(next);
+  const rawInstructions = next.instructions && typeof next.instructions === 'object' ? next.instructions : {};
+  const rawExecution = next.execution && typeof next.execution === 'object' ? next.execution : {};
+  const rawTiers = rawExecution.tiers && typeof rawExecution.tiers === 'object' ? rawExecution.tiers : {};
+  next.instructions = { ...rawInstructions, ...userSettings.instructions };
+  next.execution = {
+    ...rawExecution,
+    ...userSettings.execution,
+    tiers: {
+      ...rawTiers,
+      ...Object.fromEntries(Object.entries(userSettings.execution.tiers).map(([tier, value]) => [
+        tier,
+        { ...(rawTiers[tier] && typeof rawTiers[tier] === 'object' ? rawTiers[tier] : {}), ...value },
+      ])),
+    },
+  };
   return next;
 }
 
@@ -51,9 +73,37 @@ function loadConfig(userData) {
 }
 
 function saveConfig(userData, patch) {
-  const next = normalize({ ...loadConfig(userData), ...(patch || {}) });
+  const current = loadConfig(userData);
+  const p = patch && typeof patch === 'object' ? patch : {};
+  const executionPatch = p.execution && typeof p.execution === 'object' ? p.execution : null;
+  const instructionsPatch = p.instructions && typeof p.instructions === 'object' ? p.instructions : null;
+  const merged = { ...current, ...p };
+  if (executionPatch) {
+    const tierPatches = executionPatch.tiers && typeof executionPatch.tiers === 'object' ? executionPatch.tiers : {};
+    const tiers = { ...current.execution.tiers };
+    for (const [tier, value] of Object.entries(tierPatches)) {
+      tiers[tier] = {
+        ...(tiers[tier] && typeof tiers[tier] === 'object' ? tiers[tier] : {}),
+        ...(value && typeof value === 'object' ? value : {}),
+      };
+    }
+    merged.execution = {
+      ...current.execution,
+      ...executionPatch,
+      tiers,
+    };
+  }
+  if (instructionsPatch) merged.instructions = { ...current.instructions, ...instructionsPatch };
+  const next = normalize(merged);
   fs.mkdirSync(userData, { recursive: true });
-  fs.writeFileSync(configPath(userData), `${JSON.stringify(next, null, 2)}\n`, 'utf8');
+  const target = configPath(userData);
+  const temp = `${target}.tmp-${process.pid}`;
+  try {
+    fs.writeFileSync(temp, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
+    fs.renameSync(temp, target);
+  } finally {
+    try { fs.unlinkSync(temp); } catch { /* rename 済み、または未作成 */ }
+  }
   return next;
 }
 
@@ -94,6 +144,8 @@ function normalizeSession(sess) {
   }
   delete sess.cliSession;
   if (!sess.live || typeof sess.live !== 'object') sess.live = null;
+  sess.policy = ['recommended', 'saving', 'quality', 'direct'].includes(sess.policy) ? sess.policy : 'direct';
+  sess.tier = ['small', 'medium', 'large'].includes(sess.tier) ? sess.tier : '';
   return sess;
 }
 
@@ -104,7 +156,10 @@ function readSession(userData, id) {
 // その CLI のセッション情報（無ければ null）
 function cliEntry(sess, cli) {
   const e = sess.cliSessions && sess.cliSessions[String(cli || '')];
-  return e && typeof e === 'object' ? { id: String(e.id || ''), seen: Number(e.seen) || 0 } : null;
+  if (!e || typeof e !== 'object') return null;
+  const entry = { id: String(e.id || ''), seen: Number(e.seen) || 0 };
+  if ('setupApplied' in e) entry.setupApplied = Boolean(e.setupApplied);
+  return entry;
 }
 
 function setCliEntry(userData, id, cli, patch) {
@@ -123,13 +178,14 @@ function writeSession(userData, sess) {
 
 // worktree … 作業フォルダの名前（'' はリポジトリ本体）。作ったあとは変えない——
 // tmux セッションの cwd も CLI 側の文脈もそこで始まっているため。
-function createSession(userData, { repo, cli, model = '', readonly = false, transport = 'tmux', worktree = '', branch = '' }) {
+function createSession(userData, { repo, cli, model = '', readonly = false, policy = 'direct', tier = '', transport = 'tmux', worktree = '', branch = '' }) {
   if (!repo) throw new Error('リポジトリを選んでください');
   if (!cli) throw new Error('エージェントを選んでください');
   const now = new Date().toISOString();
   return writeSession(userData, {
     id: crypto.randomUUID(), repo: String(repo), cli: String(cli), model: String(model || ''),
-    readonly: Boolean(readonly), transport: transport === 'headless' ? 'headless' : 'tmux',
+    readonly: Boolean(readonly), policy: String(policy || 'direct'), tier: String(tier || ''),
+    transport: transport === 'headless' ? 'headless' : 'tmux',
     worktree: String(worktree || ''), branch: String(branch || ''),
     title: '', cliSessions: {}, live: null, messages: [], createdAt: now, updatedAt: now,
   });
@@ -158,6 +214,7 @@ function listSessions(userData, repo) {
       if (repo && s.repo !== repo) continue;
       out.push({
         id: s.id, repo: s.repo, cli: s.cli, model: s.model, readonly: s.readonly,
+        policy: s.policy || 'direct', tier: s.tier || '',
         transport: s.transport || 'headless', worktree: s.worktree || '', branch: s.branch || '',
         title: s.title, updatedAt: s.updatedAt, count: (s.messages || []).length,
       });
@@ -168,11 +225,13 @@ function listSessions(userData, repo) {
 
 function updateSession(userData, id, patch) {
   const sess = readSession(userData, id);
-  const allowed = ['title', 'cli', 'model', 'readonly', 'transport', 'live'];
+  const allowed = ['title', 'cli', 'model', 'readonly', 'policy', 'tier', 'transport', 'live'];
   for (const k of allowed) if (patch && k in patch) sess[k] = patch[k];
   if (patch && 'cli' in patch) sess.cli = String(sess.cli || '');
   if (patch && 'model' in patch) sess.model = String(sess.model || '');
   if (patch && 'readonly' in patch) sess.readonly = Boolean(sess.readonly);
+  if (patch && 'policy' in patch) sess.policy = ['recommended', 'saving', 'quality', 'direct'].includes(sess.policy) ? sess.policy : 'direct';
+  if (patch && 'tier' in patch) sess.tier = ['small', 'medium', 'large'].includes(sess.tier) ? sess.tier : '';
   if (patch && 'transport' in patch) sess.transport = sess.transport === 'headless' ? 'headless' : 'tmux';
   if (patch && 'live' in patch) sess.live = sess.live && typeof sess.live === 'object' ? sess.live : null;
   return writeSession(userData, sess);

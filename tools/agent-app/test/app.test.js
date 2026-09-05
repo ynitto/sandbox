@@ -16,13 +16,14 @@ const git = require('../src/main/git');
 const files = require('../src/main/files');
 const text = require('../src/main/text');
 const attachments = require('../src/main/attachments');
+const settings = require('../src/main/settings');
 const automationIpc = require('../src/main/automation/ipc');
 
 const SRC = path.join(__dirname, '..', 'src');
 
 test('main / ipc / preload / renderer は構文検査を通る', () => {
-  for (const f of ['main/main.js', 'main/ipc.js', 'main/automation/ipc.js', 'main/agentCli.js', 'main/store.js', 'main/git.js', 'main/host.js', 'main/tmux.js', 'main/files.js', 'main/text.js', 'main/attachments.js',
-    'preload.js', 'renderer/renderer.js', 'renderer/md.js', 'renderer/term.js', 'renderer/files.js', 'renderer/vendor/statemachine/renderer.js']) {
+  for (const f of ['main/main.js', 'main/ipc.js', 'main/automation/ipc.js', 'main/agentCli.js', 'main/store.js', 'main/settings.js', 'main/sessionSetup.js', 'main/executionGate.js', 'main/response.js', 'main/skills.js', 'main/git.js', 'main/host.js', 'main/tmux.js', 'main/files.js', 'main/text.js', 'main/attachments.js',
+    'preload.js', 'renderer/renderer.js', 'renderer/md.js', 'renderer/term.js', 'renderer/files.js', 'renderer/navigation.js', 'renderer/vendor/statemachine/flow.js', 'renderer/vendor/statemachine/renderer.js']) {
     execFileSync(process.execPath, ['--check', path.join(SRC, f)]);
   }
   const main = fs.readFileSync(path.join(SRC, 'main/main.js'), 'utf8');
@@ -38,7 +39,7 @@ test('画面は主要メニュー・会話・詳細設定の順に情報を分�
   const css = fs.readFileSync(path.join(SRC, 'renderer/styles.css'), 'utf8');
   assert.match(html, /<nav id="areas" class="app-menu"[^>]*aria-label="主要メニュー"/);
   assert.match(html, /id="area-work" class="on" aria-current="page"[\s\S]*?<span>会話<\/span>/);
-  assert.ok(html.indexOf('id="session-new"') < html.indexOf('id="work-sidebar-context"'), '新しい会話を一覧より先に置く');
+  assert.ok(html.indexOf('id="session-new"') < html.indexOf('id="sessions"'), '新規作成を選択中領域の一覧見出しへ置く');
   assert.ok(html.indexOf('id="cli"') > html.indexOf('id="composer"'), '実行条件を入力欄の近くへ置く');
   assert.ok(html.indexOf('id="use-tmux"') > html.indexOf('id="app-settings"'), '高度な環境設定をダイアログへ置く');
   assert.match(html, /id="prompt"[^>]*placeholder="エージェントに依頼する"/);
@@ -47,6 +48,169 @@ test('画面は主要メニュー・会話・詳細設定の順に情報を分�
   assert.match(css, /@media \(prefers-reduced-motion: reduce\)/);
   assert.doesNotMatch(fs.readFileSync(path.join(SRC, 'renderer/files.js'), 'utf8'), /📁|📄|📝|🖼/);
   assert.match(fs.readFileSync(path.join(SRC, 'renderer/renderer.js'), 'utf8'), /el\('button', 'list-pick'\)/);
+});
+
+test('config.json の主要設定を三つの設定画面から UI コントロールで編集できる', () => {
+  const html = fs.readFileSync(path.join(SRC, 'renderer/index.html'), 'utf8');
+  const renderer = fs.readFileSync(path.join(SRC, 'renderer/renderer.js'), 'utf8');
+  assert.match(html, /data-settings-tab="app"[^>]*>アプリ</);
+  assert.match(html, /data-settings-tab="instructions"[^>]*>共通指示</);
+  assert.match(html, /data-settings-tab="execution"[^>]*>実行制御</);
+  assert.match(html, /id="instruction-enabled"/);
+  assert.match(html, /id="instruction-text"[^>]*maxlength="8000"/);
+  assert.match(html, /id="recommended-skills"/);
+  assert.match(html, /id="startup-actions"/);
+  for (const tier of ['small', 'medium', 'large']) {
+    assert.match(html, new RegExp(`id="tier-${tier}-cli"`));
+    assert.match(html, new RegExp(`id="tier-${tier}-model"`));
+  }
+  assert.match(html, /name="default-policy"[^>]*value="recommended"/);
+  assert.match(html, /name="default-policy"[^>]*value="saving"/);
+  assert.match(html, /name="default-policy"[^>]*value="quality"/);
+  assert.match(html, /id="max-concurrent"[^>]*min="1"[^>]*max="8"/);
+  assert.match(html, /id="settings-save"/);
+  assert.doesNotMatch(html, /id="config-json"|設定JSON/);
+  assert.match(renderer, /function openSettings/);
+  assert.match(renderer, /function settingsPatch/);
+  assert.match(renderer, /function renderStartupActions/);
+  assert.match(renderer, /api\.listSkills/);
+});
+
+test('エージェント応答を思考・回答・実行情報の三層で表示する', () => {
+  const renderer = fs.readFileSync(path.join(SRC, 'renderer/renderer.js'), 'utf8');
+  const css = fs.readFileSync(path.join(SRC, 'renderer/styles.css'), 'utf8');
+  assert.match(renderer, /function responseDisclosure/);
+  assert.match(renderer, /'思考・進捗'/);
+  assert.match(renderer, /'実行情報'/);
+  assert.match(renderer, /'msg assistant answer-bubble'/);
+  assert.match(renderer, /api\.onTurnProgress/);
+  assert.match(renderer, /api\.onTurnInfo/);
+  assert.match(css, /\.response-turn/);
+  assert.match(css, /\.answer-bubble/);
+  assert.match(css, /\.response-disclosure/);
+});
+
+test('主要メニューは会話・タスク・ワークフローの三領域だけを表示する', () => {
+  const html = fs.readFileSync(path.join(SRC, 'renderer/index.html'), 'utf8');
+  const menu = html.match(/<nav id="areas"[\s\S]*?<\/nav>/)?.[0] || '';
+  assert.match(menu, /id="area-work"[\s\S]*?<span>会話<\/span>/);
+  assert.match(menu, /id="area-tasks"[\s\S]*?<span>タスク<\/span>/);
+  assert.match(menu, /id="area-workflows"[\s\S]*?<span>ワークフロー<\/span>/);
+  assert.doesNotMatch(menu, /id="area-automation"|<span>自動化<\/span>/);
+});
+
+test('リポジトリ選択と作成操作は選択中領域の一覧にまとめる', () => {
+  const html = fs.readFileSync(path.join(SRC, 'renderer/index.html'), 'utf8');
+  assert.match(html, /id="repository-context"[\s\S]*?id="repo-select"/);
+  const context = html.match(/<div id="area-sidebar-context"[\s\S]*?<\/div>\s*<button[^>]+id="settings-open"/)?.[0] || '';
+  assert.match(context, /id="area-list-title"/);
+  assert.match(context, /id="session-new"[^>]*aria-label="新しい会話"/);
+  assert.ok(html.indexOf('id="session-new"') > html.indexOf('id="areas"'), '作成操作を主要メニューより後へ置く');
+  assert.doesNotMatch(html, /<ul id="repos"/);
+});
+
+test('旧領域を三領域へ移行し、各領域の表示名を返す', () => {
+  const navigation = require('../src/renderer/navigation');
+  assert.strictEqual(navigation.normalizeArea('work'), 'conversation');
+  assert.strictEqual(navigation.normalizeArea('automation'), 'tasks');
+  assert.strictEqual(navigation.normalizeArea('workflows'), 'workflows');
+  assert.strictEqual(navigation.normalizeArea('unknown'), 'conversation');
+  assert.deepStrictEqual(navigation.areaInfo('tasks'), { label: 'タスク', createLabel: '新しいタスク', listId: 'tasks' });
+});
+
+test('実行状態を取得できない場合も保存済み定義をタスク一覧へ出す', () => {
+  const { taskItems } = require('../src/renderer/navigation');
+  const saved = [{ machine: 'release-check', name: 'リリース確認' }];
+  assert.deepStrictEqual(taskItems({ available: false, machines: [] }, saved), [{
+    machine: 'release-check', name: 'リリース確認', parameters: [], schedule: null, history: [],
+  }]);
+  const runtime = [{ machine: 'release-check', name: 'リリース確認', history: [{ ok: true }] }];
+  assert.strictEqual(taskItems({ available: true, machines: runtime }, saved), runtime);
+  assert.deepStrictEqual(taskItems(), []);
+  assert.deepStrictEqual(taskItems({ machines: 'invalid' }, null), []);
+});
+
+test('ナビゲーション契約はブラウザでは window へ公開する', () => {
+  const modulePath = require.resolve('../src/renderer/navigation');
+  const originalWindow = global.window;
+  try {
+    global.window = {};
+    delete require.cache[modulePath];
+    require(modulePath);
+    assert.strictEqual(global.window.AgentNavigation.areaInfo('workflows').label, 'ワークフロー');
+  } finally {
+    if (originalWindow === undefined) delete global.window;
+    else global.window = originalWindow;
+    delete require.cache[modulePath];
+    require(modulePath);
+  }
+});
+
+test('設定は三領域とリポジトリごとの最後のタスク・ワークフローを保存する', () => {
+  const ud = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-app-navigation-'));
+  assert.strictEqual(store.saveConfig(ud, { area: 'automation' }).area, 'tasks');
+  assert.strictEqual(store.saveConfig(ud, { area: 'workflows' }).area, 'workflows');
+  const config = store.saveConfig(ud, {
+    area: 'tasks', lastTask: { '/repo/a': 'release-check' }, lastWorkflow: { '/repo/a': 'parallel-review' },
+  });
+  assert.deepStrictEqual(config.lastTask, { '/repo/a': 'release-check' });
+  assert.deepStrictEqual(config.lastWorkflow, { '/repo/a': 'parallel-review' });
+});
+
+test('領域切替はタスクとワークフローを独立してフレームへ伝える', () => {
+  const renderer = fs.readFileSync(path.join(SRC, 'renderer/renderer.js'), 'utf8');
+  assert.match(renderer, /AgentNavigation\.normalizeArea/);
+  assert.match(renderer, /\$\('area-tasks'\)\.onclick\s*=\s*\(\)\s*=>\s*showArea\('tasks'\)/);
+  assert.match(renderer, /\$\('area-workflows'\)\.onclick\s*=\s*\(\)\s*=>\s*showArea\('workflows'\)/);
+  assert.match(renderer, /type:\s*'agent-app:navigate'/);
+  assert.doesNotMatch(renderer, /\$\('area-automation'\)/);
+});
+
+test('埋め込み画面は親の領域選択に従い、独自のフォルダと主要タブを表示しない', () => {
+  const renderer = fs.readFileSync(path.join(__dirname, '..', '..', 'statemachine-maker', 'src', 'renderer', 'renderer.js'), 'utf8');
+  const css = fs.readFileSync(path.join(SRC, 'renderer/automation-frame.css'), 'utf8');
+  assert.match(renderer, /agent-app:navigate/);
+  assert.match(renderer, /area === 'workflows' \? 'flows' : 'run'/);
+  assert.match(css, /body\.embedded \.folder-pane[\s\S]*display:\s*none/);
+  assert.match(css, /body\.embedded \.home-tabs[\s\S]*display:\s*none/);
+});
+
+test('タスク詳細は概要・手順・履歴に分かれ、定期実行は概要で管理する', () => {
+  const renderer = fs.readFileSync(path.join(__dirname, '..', '..', 'statemachine-maker', 'src', 'renderer', 'renderer.js'), 'utf8');
+  assert.match(renderer, /detailTab:\s*'overview'/);
+  assert.match(renderer, /class="task-detail-tabs"[^>]*role="tablist"/);
+  assert.match(renderer, /data-task-tab="overview"[\s\S]*>概要</);
+  assert.match(renderer, /data-task-tab="steps"[\s\S]*>手順</);
+  assert.match(renderer, /data-task-tab="history"[\s\S]*>履歴</);
+  assert.match(renderer, /state\.execution\.detailTab === 'history'/);
+  assert.match(renderer, /state\.execution\.detailTab === 'overview'[\s\S]*<h3>定期実行<\/h3>/);
+  assert.match(renderer, /querySelectorAll\('\[data-task-tab\]'\)/);
+});
+
+test('埋め込み時の名称は自動化や AI ワークフローではなく三領域の語彙に揃える', () => {
+  const frame = fs.readFileSync(path.join(SRC, 'renderer/automation-frame.html'), 'utf8');
+  const shell = fs.readFileSync(path.join(SRC, 'renderer/index.html'), 'utf8');
+  const flow = fs.readFileSync(path.join(__dirname, '..', '..', 'statemachine-maker', 'src', 'renderer', 'flow.js'), 'utf8');
+  const renderer = fs.readFileSync(path.join(__dirname, '..', '..', 'statemachine-maker', 'src', 'renderer', 'renderer.js'), 'utf8');
+  assert.doesNotMatch(`${frame}\n${shell}`, />自動化</);
+  assert.match(frame, /<span class="brand">タスク<\/span>/);
+  assert.match(flow, /const featureName = ctx\.name \|\| 'AIワークフロー'/);
+  assert.match(renderer, /name:\s*embedded \? 'ワークフロー' : 'AIワークフロー'/);
+});
+
+test('タスクとワークフローの変更は親の一覧へ通知して再読込する', () => {
+  const shell = fs.readFileSync(path.join(SRC, 'renderer/renderer.js'), 'utf8');
+  const maker = fs.readFileSync(path.join(__dirname, '..', '..', 'statemachine-maker', 'src', 'renderer', 'renderer.js'), 'utf8');
+  const flow = fs.readFileSync(path.join(__dirname, '..', '..', 'statemachine-maker', 'src', 'renderer', 'flow.js'), 'utf8');
+  assert.match(maker, /type:\s*'agent-app:changed'/);
+  assert.match(flow, /ctx\.changed\('workflows'/);
+  assert.match(shell, /event\.source !== frame\.contentWindow/);
+  assert.match(shell, /payload\.type !== 'agent-app:changed'[\s\S]*loadAreaItems\(\)/);
+});
+
+test('領域一覧の新規ワークフロー操作は選択中の項目を編集しない', () => {
+  const flow = fs.readFileSync(path.join(__dirname, '..', '..', 'statemachine-maker', 'src', 'renderer', 'flow.js'), 'utf8');
+  assert.match(flow, /function create\(\)\s*{\s*view\.workflow = null;\s*startEditor\(null, false\);/);
 });
 
 test('preload の窓口と ipc のチャネルが 1 対 1', () => {
@@ -96,6 +260,17 @@ test('自動化フレームは親画面の preload API へ接続する', () => {
   const renderer = fs.readFileSync(path.join(SRC, 'renderer/vendor/statemachine/renderer.js'), 'utf8');
   assert.match(renderer, /window\.parent\.api\.automation/);
   assert.doesNotMatch(renderer, /window\.parent\.automationBridge/);
+});
+
+test('自動化フレームへ AI ワークフローの画面と IPC を同じ境界で載せる', () => {
+  const html = fs.readFileSync(path.join(SRC, 'renderer/automation-frame.html'), 'utf8');
+  const preload = fs.readFileSync(path.join(SRC, 'preload.js'), 'utf8');
+  const flow = fs.readFileSync(path.join(SRC, 'renderer/vendor/statemachine/flow.js'), 'utf8');
+  assert.ok(html.includes('vendor/statemachine/flow.js'));
+  assert.ok(flow.includes('AIワークフロー'));
+  assert.ok(preload.includes("invoke('automation:flow:run:start'"));
+  assert.ok(preload.includes("invoke('automation:flow:run:respond'"));
+  assert.ok(preload.includes("invoke('automation:flow:run:openDelivery'"));
 });
 
 // 同梱定義から出る argv。権限フラグと prompt の渡し方は agent-dashboard のゴールデンと同じ。
@@ -216,6 +391,16 @@ test('応答から端末の装飾と kiro の入力欄を剥がす', () => {
   assert.deepStrictEqual(ipc.turnSpec(sess, { prompt: 'p', cli: 'Codex', model: '', readonly: true }), { cli: 'codex', model: '', readonly: true, text: 'p' });
   assert.throws(() => ipc.turnSpec(sess, { prompt: ' ' }), /空/);
   assert.strictEqual(ipc.turnSpec(sess, { prompt: '', attachments: [{ rel: 'a' }] }).text, '', '添付だけの依頼は通す');
+  const config = settings.normalize({});
+  config.execution.tiers.small = { cli: 'codex', model: 'small-model' };
+  assert.deepStrictEqual(ipc.executionSpec(sess, { prompt: ' p ', policy: 'saving' }, config), {
+    cli: 'codex', model: 'small-model', readonly: false, text: 'p',
+    policy: 'saving', tier: 'small', source: 'policy',
+  });
+  assert.deepStrictEqual(ipc.executionSpec(sess, { prompt: 'p', policy: 'direct', cli: 'kiro', model: 'm2', readonly: true }, config), {
+    cli: 'kiro', model: 'm2', readonly: true, text: 'p',
+    policy: 'direct', tier: '', source: 'direct',
+  });
   assert.ok(ipc.sameLaunch({ cli: 'a', model: '', readonly: false }, { cli: 'a', readonly: 0 }));
   assert.ok(!ipc.sameLaunch({ cli: 'a', model: 'x' }, { cli: 'a', model: 'y' }));
   assert.ok(!ipc.sameLaunch(null, { cli: 'a' }));
@@ -277,24 +462,26 @@ test('店: 会話の作成・追記・一覧・更新・削除', () => {
   const ud = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-app-'));
   store.addRepo(ud, '/repo/a');
   assert.ok(store.isRegistered(ud, '/repo/a') && !store.isRegistered(ud, '/repo/b'));
-  const s = store.createSession(ud, { repo: '/repo/a', cli: 'claude', readonly: true });
+  const s = store.createSession(ud, { repo: '/repo/a', cli: 'claude', readonly: true, policy: 'saving', tier: 'small' });
   assert.strictEqual(s.transport, 'tmux', '既定は tmux');
   store.appendMessage(ud, s.id, { role: 'user', text: '最初の依頼\n2 行目' });
   store.appendMessage(ud, s.id, { role: 'assistant', text: '答え', code: 0 });
-  store.updateSession(ud, s.id, { cli: 'codex', model: 'm', ignored: 'no', transport: 'headless', worktree: 'other', live: { cli: 'codex', model: 'm', readonly: false } });
+  store.updateSession(ud, s.id, { cli: 'codex', model: 'm', policy: 'quality', tier: 'large', ignored: 'no', transport: 'headless', worktree: 'other', live: { cli: 'codex', model: 'm', readonly: false } });
   store.setCliEntry(ud, s.id, 'claude', { id: 'X' });
   store.setCliEntry(ud, s.id, 'claude', { seen: 2 });
+  store.setCliEntry(ud, s.id, 'claude', { setupApplied: true });
   const got = store.readSession(ud, s.id);
   assert.strictEqual(got.worktree, '', '作業フォルダは会話を作ったあとは変えられない');
   assert.strictEqual(got.title, '最初の依頼');
   assert.deepStrictEqual([got.cli, got.model], ['codex', 'm'], 'エージェントとモデルは「次のターン」の既定として変えられる');
-  assert.deepStrictEqual(store.cliEntry(got, 'claude'), { id: 'X', seen: 2 }, 'CLI ごとにセッション ID と見た数を持つ');
+  assert.deepStrictEqual([got.policy, got.tier], ['quality', 'large']);
+  assert.deepStrictEqual(store.cliEntry(got, 'claude'), { id: 'X', seen: 2, setupApplied: true }, 'CLI ごとにセッション ID・見た数・初回設定の適用を持つ');
   assert.strictEqual(store.cliEntry(got, 'codex'), null);
   assert.deepStrictEqual(got.live, { cli: 'codex', model: 'm', readonly: false });
   assert.strictEqual(got.transport, 'headless');
   assert.strictEqual(got.ignored, undefined);
   assert.strictEqual(got.messages.length, 2);
-  assert.strictEqual(store.listSessions(ud, '/repo/a')[0].cli, 'codex');
+  assert.deepStrictEqual([store.listSessions(ud, '/repo/a')[0].cli, store.listSessions(ud, '/repo/a')[0].policy], ['codex', 'quality']);
   // 以前の形（cliSession 1 つ）は読むときに cliSessions へ写す
   const legacyId = '00000000-0000-4000-8000-000000000001';
   fs.writeFileSync(path.join(store.sessionsDir(ud), `${legacyId}.json`), JSON.stringify({ id: legacyId, repo: '/repo/a', cli: 'claude', cliSession: 'OLD', messages: [{ role: 'user', text: 'a' }, { role: 'assistant', text: 'b' }], updatedAt: '2026-01-01T00:00:00Z' }));

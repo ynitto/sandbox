@@ -7,6 +7,8 @@
 // どれもシェルを介さない（argv を直接渡す）。この端末の PATH にある実体をそのまま呼ぶ。
 
 const { spawn } = require('child_process');
+const fs = require('fs');
+const path = require('path');
 const command = require('./command');
 const MAX_STREAM_OUTPUT = 1024 * 1024;
 
@@ -107,16 +109,25 @@ function stop(kind = '') {
   return true;
 }
 
-function startDetached(name, args, { cwd = '', env = process.env, spawnProcess = spawn } = {}) {
+function startDetached(name, args, { cwd = '', env = process.env, logFile = '', spawnProcess = spawn } = {}) {
   const spec = command.spawnSpec(name, args, { cwd, env });
   return new Promise((resolve, reject) => {
     let child;
+    let output = null;
     try {
-      child = spawnProcess(spec.command, spec.args, { ...spec.options, detached: true, stdio: 'ignore' });
+      if (logFile) {
+        fs.mkdirSync(path.dirname(logFile), { recursive: true });
+        output = fs.openSync(logFile, 'a');
+      }
+      child = spawnProcess(spec.command, spec.args, {
+        ...spec.options, detached: true, stdio: logFile ? ['ignore', output, output] : 'ignore',
+      });
     } catch (err) {
+      if (output != null) try { fs.closeSync(output); } catch { /* 既に閉じている */ }
       reject(new Error(`起動できません: ${(err && err.message) || err}`, { cause: err }));
       return;
     }
+    if (output != null) try { fs.closeSync(output); } catch { /* 子プロセスが fd を持っている */ }
     child.once('error', (err) => reject(new Error(`起動できません: ${(err && err.message) || err}`, { cause: err })));
     child.once('spawn', () => {
       child.unref();

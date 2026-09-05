@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:">
-  <title>自動化</title>
+  <title>タスクとワークフロー</title>
   <link rel="stylesheet" href="vendor/statemachine/styles.css">
   <link rel="stylesheet" href="automation-frame.css">
 </head>
@@ -12,7 +12,7 @@
   <header id="bar">
     <div class="bar-left">
       <button type="button" id="btn-home" class="ghost" title="一覧へ戻る" hidden>‹ 一覧</button>
-      <span class="brand">自動化</span>
+      <span class="brand">タスク</span>
     </div>
     <div class="bar-center" id="bar-center"></div>
     <div class="bar-right" id="bar-right"></div>
@@ -25,6 +25,7 @@
   <dialog id="dlg-run"></dialog>
   <dialog id="dlg-settings"></dialog>
   <div id="toast" role="status" aria-live="polite" hidden></div>
+  <script src="vendor/statemachine/flow.js"></script>
   <script src="vendor/statemachine/renderer.js"></script>
 </body>
 </html>

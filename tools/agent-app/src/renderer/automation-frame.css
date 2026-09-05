@@ -7,7 +7,24 @@ body.embedded [role="button"]:focus-visible {
   outline-offset: 2px;
 }
 body.embedded button.primary { min-height: 40px; }
-body.embedded .machine-head h1::before { content: 'リポジトリ: '; color: var(--muted); font-weight: 500; }
+body.embedded .folder-pane,
+body.embedded .home-tabs,
+body.embedded .machine-head,
+body.embedded .execution-list,
+body.embedded .flow-home-head {
+  display: none;
+}
+body.embedded .home,
+body.embedded .execution-layout,
+body.embedded .flow-layout {
+  display: block;
+}
+body.embedded .machine-pane {
+  min-width: 0;
+  padding: 20px;
+}
+body.embedded:not(.is-editing) #bar { display: none; }
+body.embedded:not(.is-editing) #main { height: 100vh; }
 @media (prefers-reduced-motion: reduce) {
   body.embedded *, body.embedded *::before, body.embedded *::after {
     animation-duration: 0.01ms !important;

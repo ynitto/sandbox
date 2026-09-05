@@ -6,6 +6,7 @@
 //   python --version              … スキルの構成確認スクリプトを動かす
 //   agent-herd defs --json        … agent-tools の AI 定義を列挙する
 //   agent-loop --version          … 手動・定期実行の入口
+//   agent-flow patterns --json    … 複数 AI ワークフローの実行基盤
 // スキルのスクリプトは「選んだフォルダから上へ辿って .github/skills/statemachine-use を探す →
 // このアプリが置かれたリポジトリ → 設定で指定したパス」の順で見つける。
 
@@ -134,6 +135,18 @@ async function toolStatus({ cwd = '', capture, skillDir = '' } = {}) {
     summary: loop && loop.ok ? `利用可能（${firstLine(loop) || 'version 不明'}）`
       : `起動できません: ${(loop && (loop.error || firstLine(loop))) || 'agent-loop'}`,
     hint: loop && loop.ok ? '' : 'tools/agent-loop/install.sh を実行し、agent-loop を PATH に通してください。',
+  });
+  const flow = await capture('agent-flow', ['patterns', '--json'], { cwd, timeoutMs: 10000 });
+  let flowPatterns = [];
+  if (flow && flow.ok) {
+    try { flowPatterns = JSON.parse(String(flow.stdout || '[]')); } catch { flowPatterns = []; }
+  }
+  out.push({
+    id: 'agent-flow', label: '複数AIワークフロー（agent-flow）', ok: !!(flow && flow.ok && Array.isArray(flowPatterns)),
+    summary: flow && flow.ok && Array.isArray(flowPatterns)
+      ? `利用可能（標準パターン ${flowPatterns.length} 件）`
+      : `起動できません: ${(flow && (flow.error || firstLine(flow))) || 'agent-flow'}`,
+    hint: flow && flow.ok && Array.isArray(flowPatterns) ? '' : 'tools/agent-flow/install.sh を実行し、agent-flow を PATH に通してください。',
   });
   const pw = await capture('playwright-cli', ['--version'], { cwd, timeoutMs: 20000 });
   const pwHelp = pw && pw.ok

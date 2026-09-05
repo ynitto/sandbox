@@ -12,6 +12,11 @@ const host = require('./host');
 const tmux = require('./tmux');
 const worktree = require('./worktree');
 const attachments = require('./attachments');
+const settings = require('./settings');
+const sessionSetup = require('./sessionSetup');
+const response = require('./response');
+const { createGate } = require('./executionGate');
+const skills = require('./skills');
 const { registerAutomationIpc } = require('./automation/ipc');
 const { stripAnsi, cleanAnswer, lineEmitter } = require('./text');
 
@@ -23,7 +28,13 @@ function handle(channel, fn) {
     try {
       return { ok: true, data: await fn(args || {}, event) };
     } catch (err) {
-      return { ok: false, error: err && err.message ? err.message : String(err) };
+      return {
+        ok: false,
+        error: err && err.message ? err.message : String(err),
+        ...(err && err.code ? { code: err.code } : {}),
+        ...(err && err.detail ? { detail: err.detail } : {}),
+        ...(err && err.issues ? { issues: err.issues } : {}),
+      };
     }
   });
 }
@@ -92,6 +103,12 @@ function capture(argv, cwd) {
 
 // 走っているヘッドレスのターン。セッション ID → 子プロセス。
 const running = new Map();
+const turnGate = createGate();
+
+function emitResponseParts(send, id, added) {
+  for (const item of (added && added.thinking) || []) send('turn:progress', { id, item });
+  for (const item of (added && added.information) || []) send('turn:info', { id, item });
+}
 
 function killTree(child) {
   try {
@@ -115,6 +132,17 @@ function turnSpec(sess, p) {
   const text = String(p.prompt || '').trim();
   if (!text && !(p.attachments || []).length) throw new Error('依頼が空です');
   return { cli, model, readonly, text };
+}
+
+// 保存済みの起動方針を、そのターンで実際に使う CLI / model へ解決する。
+// policy を持たない旧画面・旧セッションは、それまでの直接指定の意味を保つ。
+function executionSpec(sess, p, config) {
+  const legacyDirect = !p.policy;
+  const selected = settings.resolve(config, legacyDirect ? {
+    policy: 'direct', cli: p.cli || sess.cli, model: p.model != null ? p.model : sess.model,
+  } : p);
+  const base = turnSpec(sess, { ...p, cli: selected.cli, model: selected.model });
+  return { ...base, policy: selected.policy, tier: selected.tier, source: selected.source };
 }
 
 // 添付ファイルを確かめ、依頼文の末尾に「どこにあるか」を添える。
@@ -150,7 +178,9 @@ function runHeadless(id, turn, send) {
   const repo = requireRepo(sess.repo);
   const dirs = dirsOf(sess.repo, sess.worktree || '', { mustExist: true });
   if (running.has(id)) throw new Error('このセッションは応答中です');
-  const { cli, model, readonly, text, prompt, atts, files: attFiles, spec } = turn;
+  const { cli, model, readonly, text, prompt, atts, files: attFiles, spec, policy, tier } = turn;
+  const collector = response.createCollector(cli);
+  for (const item of turn.setupInformation || []) collector.addInformation(item);
   const history = sess.messages.filter((m) => m.role === 'user' || m.role === 'assistant');
   const entry = store.cliEntry(sess, cli);
   // その CLI がまだ見ていない分だけ再送する（セッション ID が無い CLI は毎回ぜんぶ）
@@ -158,7 +188,7 @@ function runHeadless(id, turn, send) {
   const cmd = agentCli.turnCmd(spec, {
     prompt, model, readonly, cliSession: entry ? entry.id : '', history: unseen, files: attFiles,
   });
-  store.appendMessage(ud, id, { role: 'user', text, cli, model, readonly, attachments: atts });
+  store.appendMessage(ud, id, { role: 'user', text, cli, model, readonly, policy, tier, attachments: atts });
   if (cmd.mintedSession) store.setCliEntry(ud, id, cli, { id: cmd.mintedSession });
 
   const startedAt = Date.now();
@@ -167,17 +197,23 @@ function runHeadless(id, turn, send) {
   try {
     child = spawn(spec2.command, spec2.args, { windowsHide: true, ...spec2.extra });
   } catch (err) {
+    turn.release();
     throw new Error(`起動できません: ${(err && err.message) || err}`);
   }
   running.set(id, child);
-  send('turn:started', { id, argv: cmd.argv, warning: cmd.readonlyWarning });
+  send('turn:started', { id, argv: cmd.argv, warning: [turn.setupWarning, cmd.readonlyWarning].filter(Boolean).join('\n') });
+  send('turn:progress', { id, item: { text: `${cli} を起動しました`, status: 'running' } });
+  for (const item of turn.setupInformation || []) send('turn:info', { id, item });
 
   let stdout = '';
   let stderr = '';
   let stopped = false;
   child.stdout.on('data', (d) => { stdout += d.toString('utf8'); });
   child.stderr.on('data', (d) => { stderr += d.toString('utf8'); });
-  child.stdout.on('data', lineEmitter((line) => send('turn:line', { id, kind: 'stdout', text: line })));
+  child.stdout.on('data', lineEmitter((line) => {
+    send('turn:line', { id, kind: 'stdout', text: line });
+    emitResponseParts(send, id, collector.push(line));
+  }));
   child.stderr.on('data', lineEmitter((line) => send('turn:line', { id, kind: 'stderr', text: line })));
   child.on('error', (err) => { stderr += `\n起動エラー: ${(err && err.message) || err}`; });
   child.stdin.on('error', () => { /* 先に終わった CLI へ書いた EPIPE */ });
@@ -206,10 +242,16 @@ function runHeadless(id, turn, send) {
         sid = agentCli.pickListedSession(await capture(cmd.listArgs, dirs.fsDir), dirs.hostDir, startedAt) || sid;
       }
     } catch { /* ID が拾えなくても次のターンは履歴の再送で続く */ }
+    collector.addInformation({
+      type: 'status', title: stopped ? `${cli} を停止` : `${cli} の実行`,
+      status: failed ? 'error' : 'success',
+      detail: `${Math.round((Date.now() - startedAt) / 1000)} 秒${code != null ? ` · 終了コード ${code}` : ''}`,
+    });
     const message = {
-      role: 'assistant', cli, model,
+      role: 'assistant', cli, model, policy, tier,
       text: answer || (stopped ? '（停止した）' : `（応答なし。終了コード ${code}）`),
       code, elapsedMs: Date.now() - startedAt, stopped,
+      parts: collector.parts(),
       // 失敗の理由は定義の errors が分類できればその hint、できなければ末尾数行（認証切れのように stdout へ出す CLI もある）
       error: !failed ? '' : (rule ? rule.hint : (stderr.trim() || stdout.trim()).split('\n').slice(-6).join('\n')),
     };
@@ -218,6 +260,7 @@ function runHeadless(id, turn, send) {
       // セッション ID が分かる CLI は、ここまでのやり取りをその CLI が見たものとして覚える
       if (sid) store.setCliEntry(ud, id, cli, { id: sid, seen: saved.messages.length });
     } catch (err) { message.error = `${message.error}\n保存できません: ${err.message}`.trim(); }
+    turn.release();
     send('turn:done', { id, message });
   });
   return { pid: child.pid, argv: cmd.argv };
@@ -303,7 +346,7 @@ async function closeConversation(id) {
 
 async function runTmux(id, turn, send) {
   const ud = userData();
-  const { cli, model, readonly, text, prompt, atts } = turn;
+  const { cli, model, readonly, text, prompt, atts, policy, tier } = turn;
   const want = { cli, model, readonly };
   let conv = conversations.get(id);
   let opened = null;
@@ -327,44 +370,104 @@ async function runTmux(id, turn, send) {
   const history = sess.messages.filter((m) => m.role === 'user' || m.role === 'assistant');
   const unseen = history.slice(conv.seen);
   const full = unseen.length ? agentCli.replayPrompt(unseen, prompt, { resumed: conv.resumed }) : prompt;
-  store.appendMessage(ud, id, { role: 'user', text, cli, model, readonly, attachments: atts });
+  store.appendMessage(ud, id, { role: 'user', text, cli, model, readonly, policy, tier, attachments: atts });
   await conv.send(full, (message) => {
+    message.cli = cli;
+    message.model = model;
+    message.policy = policy;
+    message.tier = tier;
+    message.parts = {
+      thinking: [],
+      information: [
+        ...(turn.setupInformation || []),
+        { type: 'status', title: `${cli} の対話セッション`, status: message.error ? 'error' : 'success', detail: '' },
+      ],
+    };
     try {
-      const saved = store.appendMessage(ud, id, { ...message, cli, model });
+      const saved = store.appendMessage(ud, id, message);
       conv.seen = saved.messages.length;
       store.setCliEntry(ud, id, cli, { seen: saved.messages.length });
     } catch (err) { message.error = `${message.error}\n保存できません: ${err.message}`.trim(); }
+    turn.release();
     send('turn:done', { id, message });
   });
-  send('turn:started', { id, argv: [], warning: opened ? opened.warning : '' });
-  return { name: conv.name, restarted: !!(opened && opened.restarted), warning: opened ? opened.warning : '' };
+  const warning = [turn.setupWarning, opened ? opened.warning : ''].filter(Boolean).join('\n');
+  send('turn:started', { id, argv: [], warning });
+  send('turn:progress', { id, item: { text: `${cli} が依頼を処理しています`, status: 'running' } });
+  for (const item of turn.setupInformation || []) send('turn:info', { id, item });
+  return { name: conv.name, restarted: !!(opened && opened.restarted), warning };
 }
 
 // 1 ターン。CLI・モデル・モードはターンごとに決め、tmux か ヘッドレスかもここで決める
 // （対話定義を持つ CLI で tmux が使えるなら tmux）。
-async function runTurn(id, p, send) {
+async function runTurn(id, p, send, { config = null, release = () => {} } = {}) {
   const ud = userData();
   const sess = store.readSession(ud, id);
   const repo = requireRepo(sess.repo);
   const dirs = dirsOf(sess.repo, sess.worktree || '', { mustExist: true });
-  const base = turnSpec(sess, p);
+  const cfg = config || store.loadConfig(ud);
+  const base = executionSpec(sess, p, cfg);
   const spec = agentCli.load(base.cli, repo);
-  const cfg = store.loadConfig(ud);
+  const available = (await listAgents(repo)).find((item) => item.name === base.cli);
+  if (!available || !available.available) {
+    const error = new Error(`${base.cli} はこの実行環境で利用できません。設定の tier または直接指定を確認してください`);
+    error.code = 'AGENT_UNAVAILABLE';
+    throw error;
+  }
   let transport = 'headless';
   if (cfg.transport === 'tmux' && spec.interactive) {
     const info = await host.probe(distroFor(repo));
     if (info.ok && info.tmux) transport = 'tmux';
   }
-  const { prompt, atts, files: attFiles } = withAttachments(ud, base.text, p.attachments, dirs);
-  const turn = { ...base, prompt, atts, files: attFiles, spec };
+  const attached = withAttachments(ud, base.text, p.attachments, dirs);
+  let setupInformation = [];
+  let setupWarning = '';
+  let setupPrompt = '';
+  // CLI ごとの最初の起動だけに開始アクションを適用する。既存 entry は設定変更後も再実行しない。
+  if (!store.cliEntry(sess, base.cli)) {
+    const plan = sessionSetup.planActions(cfg.instructions.startupActions, spec);
+    const startup = await sessionSetup.runCommands(plan.commands, (command, timeoutMs) => {
+      const script = `cd ${host.sq(dirs.hostDir)} && ${command}`;
+      return host.shellFor(distroFor(repo)).run(script, { timeoutMs });
+    });
+    setupInformation = startup.information;
+    setupWarning = startup.warning;
+    setupPrompt = plan.skillPrompt;
+    store.setCliEntry(ud, id, base.cli, { setupApplied: true });
+  }
+  const firstPrompt = setupPrompt
+    ? `セッション開始時に、まず次のスキルコマンドを実行してください。\n${setupPrompt}\n\n${attached.prompt}`
+    : attached.prompt;
+  const prompt = sessionSetup.withInstructions(firstPrompt, cfg.instructions);
+  const turn = { ...base, prompt, atts: attached.atts, files: attached.files, spec, setupInformation, setupWarning, release };
   // 次のターンの既定として覚える（画面はこれを出す）
-  store.updateSession(ud, id, { cli: base.cli, model: base.model, readonly: base.readonly, transport });
+  store.updateSession(ud, id, {
+    cli: base.cli, model: base.model, readonly: base.readonly,
+    policy: base.policy, tier: base.tier, transport,
+  });
   if (transport === 'headless') {
     // ヘッドレスの CLI へ移るなら、動いていた tmux の CLI は止める（同時に 2 つは持たない）
     if (conversations.has(id) || sess.live) await closeConversation(id);
     return runHeadless(id, turn, send);
   }
   return runTmux(id, turn, send);
+}
+
+async function guardedRunTurn(id, p, send) {
+  const cfg = store.loadConfig(userData());
+  turnGate.acquire(id, cfg.execution.maxConcurrent);
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    turnGate.release(id, cfg.execution.maxConcurrent);
+  };
+  try {
+    return await runTurn(id, p, send, { config: cfg, release });
+  } catch (error) {
+    release();
+    throw error;
+  }
 }
 
 // 起動中なら入力受付まで待つ（定義の ready_timeout_sec）。
@@ -440,13 +543,22 @@ function registerIpcHandlers(getWindow) {
   });
   handle('repo:remove', (p) => store.removeRepo(userData(), p.repo));
   handle('agents:list', (p) => listAgents(p.repo ? requireRepo(p.repo) : ''));
+  handle('skills:list', (p) => skills.list(p.repo ? requireRepo(p.repo) : ''));
 
   handle('session:list', (p) => store.listSessions(userData(), p.repo || ''));
   handle('session:create', async (p) => {
     const repo = requireRepo(p.repo);
+    const cfg = store.loadConfig(userData());
+    const selected = settings.resolve(cfg, p.policy ? p : {
+      policy: 'direct', cli: p.cli || cfg.execution.tiers.medium.cli, model: p.model,
+    });
     let branch = '';
     if (p.worktree) branch = (await worktree.find(repo, p.worktree, distroFor(repo))).branch;
-    return store.createSession(userData(), { ...p, repo, branch });
+    return store.createSession(userData(), {
+      ...p, repo, branch, cli: selected.cli, model: selected.model,
+      policy: selected.policy, tier: selected.tier,
+      readonly: p.readonly != null ? p.readonly : cfg.execution.defaultReadonly,
+    });
   });
   handle('session:read', (p) => store.readSession(userData(), p.id));
   handle('session:update', (p) => store.updateSession(userData(), p.id, p.patch));
@@ -458,7 +570,7 @@ function registerIpcHandlers(getWindow) {
     return store.removeSession(userData(), p.id);
   });
 
-  handle('turn:send', (p) => runTurn(p.id, p, send));
+  handle('turn:send', (p) => guardedRunTurn(p.id, p, send));
 
   // 添付ファイル
   handle('attach:pick', async () => {
@@ -479,7 +591,11 @@ function registerIpcHandlers(getWindow) {
     const conv = conversations.get(p.id);
     return conv ? conv.stop() : false;
   });
-  handle('turn:running', () => [...running.keys(), ...[...conversations.values()].filter((c) => c.turn).map((c) => c.id)]);
+  handle('turn:running', () => [...new Set([
+    ...turnGate.snapshot(store.loadConfig(userData()).execution.maxConcurrent).ids,
+    ...running.keys(),
+    ...[...conversations.values()].filter((c) => c.turn).map((c) => c.id),
+  ])]);
 
   // 端末（tmux）
   handle('term:open', (p) => openConversation(p.id, send, { cols: p.cols, rows: p.rows }));
@@ -553,4 +669,4 @@ function registerIpcHandlers(getWindow) {
   });
 }
 
-module.exports = { registerIpcHandlers, spawnSpec, lineEmitter, stripAnsi, cleanAnswer, withAttachments, turnSpec, sameLaunch };
+module.exports = { registerIpcHandlers, spawnSpec, lineEmitter, stripAnsi, cleanAnswer, withAttachments, turnSpec, executionSpec, sameLaunch };

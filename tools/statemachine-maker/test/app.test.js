@@ -15,7 +15,7 @@ const SRC = path.join(__dirname, '..', 'src');
 const read = (p) => fs.readFileSync(path.join(SRC, p), 'utf8');
 
 test('main / preload / renderer は構文検査を通る', () => {
-  for (const f of ['main/main.js', 'main/ipc.js', 'preload.js', 'renderer/renderer.js']) {
+  for (const f of ['main/main.js', 'main/ipc.js', 'main/flow-model.js', 'main/flow-store.js', 'main/agent-flow.js', 'preload.js', 'renderer/flow.js', 'renderer/renderer.js']) {
     execFileSync(process.execPath, ['--check', path.join(SRC, f)]);
   }
 });
@@ -51,10 +51,25 @@ test('ホームはフォルダ・実行対象・実行詳細の順に読める',
   const css = read('renderer/styles.css');
   assert.match(renderer, /<div class="home">\s*<aside class="folder-pane">[\s\S]*<section class="machine-pane">/);
   assert.ok(renderer.includes('data-home-tab="run"') && renderer.includes('data-home-tab="workflows"'));
+  assert.ok(renderer.includes('data-home-tab="flows"'), '既存のホーム階層に AI ワークフローを加える');
   assert.ok(renderer.includes('実行履歴') && renderer.includes('定期実行'));
   assert.match(css, /\.home\s*\{[^}]*grid-template-columns:\s*240px minmax\(0, 1fr\)/);
   assert.match(css, /\.execution-layout\s*\{[^}]*grid-template-columns:\s*minmax\(180px, 240px\) minmax\(0, 1fr\)/);
   assert.match(css, /\.folder-pane\s*\{[^}]*border-right:/);
+});
+
+test('AIワークフローは既存のカードと2カラムを使い、編集・実行・回答・成果を一続きに扱う', () => {
+  const renderer = read('renderer/renderer.js');
+  const flow = read('renderer/flow.js');
+  const css = read('renderer/styles.css');
+  assert.ok(renderer.includes('window.createFlowFeature('));
+  for (const action of ['data-flow-new', 'data-flow-edit', 'data-flow-start', 'data-flow-answer', 'data-flow-result', 'data-flow-open-delivery']) {
+    assert.ok(flow.includes(action), action);
+  }
+  assert.match(flow, /execution-layout flow-layout/);
+  assert.match(flow, /execution-card/);
+  assert.match(css, /\.flow-layout\s*\{[^}]*grid-template-columns:/);
+  assert.ok(flow.includes('AIワークフロー') && flow.includes('読み取り専用で実行する'));
 });
 
 test('編集画面は左のフローと右の編集パネルを分離し、狭い画面では一方だけを表示する', () => {

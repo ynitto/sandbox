@@ -4,7 +4,13 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 async function invoke(channel, args) {
   const res = await ipcRenderer.invoke(channel, args);
-  if (!res || !res.ok) throw new Error(res && res.error ? res.error : `${channel} が失敗しました`);
+  if (!res || !res.ok) {
+    const err = new Error(res && res.error ? res.error : `${channel} が失敗しました`);
+    if (res && res.code) err.code = res.code;
+    if (res && res.detail) err.detail = res.detail;
+    if (res && res.issues) err.issues = res.issues;
+    throw err;
+  }
   return res.data;
 }
 
@@ -32,6 +38,22 @@ contextBridge.exposeInMainWorld('api', {
   aiApply: (payload) => invoke('ai:apply', payload),
   onAiProgress: (cb) => ipcRenderer.on('ai:progress', (_ev, payload) => cb(payload)),
   onAiResult: (cb) => ipcRenderer.on('ai:result', (_ev, payload) => cb(payload)),
+  flowCatalog: () => invoke('flow:catalog'),
+  flowList: (root) => invoke('flow:list', { root }),
+  flowRead: (root, id) => invoke('flow:read', { root, id }),
+  flowSave: (root, workflow, mode) => invoke('flow:save', { root, workflow, mode }),
+  flowDelete: (root, id) => invoke('flow:delete', { root, id }),
+  flowPreview: (root, workflow, request, parameters) => invoke('flow:preview', { root, workflow, request, parameters }),
+  flowContext: (root) => invoke('flow:context', { root }),
+  flowRunStart: (payload) => invoke('flow:run:start', payload),
+  flowRunList: (root, limit) => invoke('flow:run:list', { root, limit }),
+  flowRunRead: (root, runId) => invoke('flow:run:read', { root, runId }),
+  flowRunCancel: (root, runId, reason) => invoke('flow:run:cancel', { root, runId, reason }),
+  flowRunRespond: (root, runId, interactionId, answer) => invoke('flow:run:respond', { root, runId, interactionId, answer }),
+  flowRunResult: (root, runId) => invoke('flow:run:result', { root, runId }),
+  flowRunLog: (root, runId, bytes) => invoke('flow:run:log', { root, runId, bytes }),
+  flowRunDelete: (root, runId) => invoke('flow:run:delete', { root, runId }),
+  flowRunOpenDelivery: (root, runId) => invoke('flow:run:openDelivery', { root, runId }),
   runSnapshot: (root) => invoke('run:snapshot', { root }),
   saveRunSchedule: (root, schedule) => invoke('run:schedule', { root, schedule }),
   setRunDaemon: (root, action) => invoke('run:daemon', { root, action }),

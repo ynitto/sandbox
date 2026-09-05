@@ -174,3 +174,27 @@ test('統合: git リポジトリでないフォルダはエラーを返す（�
   assert.deepStrictEqual(res.items, []);
   host.closeAll();
 });
+
+test('統合: agent-flow が origin へ公開したブランチを取得して作業フォルダで開く', { skip: !hasGit && 'git が無い' }, async () => {
+  const { repo, run } = makeRepo();
+  const remote = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-app-wt-remote-'));
+  execFileSync('git', ['init', '--bare', '-q', remote], { stdio: 'pipe' });
+  try {
+    run(['remote', 'add', 'origin', remote]);
+    run(['push', '-q', '-u', 'origin', 'main']);
+    run(['checkout', '-qb', 'af/published']);
+    fs.writeFileSync(path.join(repo, 'published.txt'), 'agent-flow result\n');
+    run(['add', 'published.txt']);
+    run(['commit', '-qm', 'publish']);
+    run(['push', '-q', 'origin', 'af/published']);
+    run(['checkout', '-q', 'main']);
+    run(['branch', '-D', 'af/published']);
+    run(['update-ref', '-d', 'refs/remotes/origin/af/published']);
+
+    const made = await worktree.create(repo, { branch: 'af/published', fetchRemote: true });
+    assert.strictEqual(made.trackedRemote, true);
+    assert.ok(fs.existsSync(path.join(worktree.dirsFor(repo, made.name).fsDir, 'published.txt')));
+  } finally {
+    host.closeAll();
+  }
+});

@@ -4,7 +4,13 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 async function invoke(channel, args) {
   const res = await ipcRenderer.invoke(channel, args);
-  if (!res || !res.ok) throw new Error(res && res.error ? res.error : `${channel} が失敗しました`);
+  if (!res || !res.ok) {
+    const err = new Error(res && res.error ? res.error : `${channel} が失敗しました`);
+    if (res && res.code) err.code = res.code;
+    if (res && res.detail) err.detail = res.detail;
+    if (res && res.issues) err.issues = res.issues;
+    throw err;
+  }
   return res.data;
 }
 
@@ -18,12 +24,13 @@ contextBridge.exposeInMainWorld('api', {
   addRepo: () => invoke('repo:add'),
   removeRepo: (repo) => invoke('repo:remove', { repo }),
   listAgents: (repo) => invoke('agents:list', { repo }),
+  listSkills: (repo) => invoke('skills:list', { repo }),
   listSessions: (repo) => invoke('session:list', { repo }),
   createSession: (payload) => invoke('session:create', payload),
   readSession: (id) => invoke('session:read', { id }),
   updateSession: (id, patch) => invoke('session:update', { id, patch }),
   removeSession: (id) => invoke('session:remove', { id }),
-  // opts: { cli, model, readonly, attachments: [{ id, name } | { rel, name }] } — ターンごとに変えられる
+  // opts: { policy, cli?, model?, readonly, attachments }。cli/model は direct のときだけ使う。
   send: (id, prompt, opts) => invoke('turn:send', { id, prompt, ...(opts || {}) }),
   pickAttachments: () => invoke('attach:pick'),
   stageAttachment: (name, bytes) => invoke('attach:stage', { name, bytes }),
@@ -74,6 +81,22 @@ contextBridge.exposeInMainWorld('api', {
     aiApply: (payload) => invoke('automation:ai:apply', payload),
     onAiProgress: on('automation:ai:progress'),
     onAiResult: on('automation:ai:result'),
+    flowCatalog: () => invoke('automation:flow:catalog'),
+    flowList: (root) => invoke('automation:flow:list', { root }),
+    flowRead: (root, id) => invoke('automation:flow:read', { root, id }),
+    flowSave: (root, workflow, mode) => invoke('automation:flow:save', { root, workflow, mode }),
+    flowDelete: (root, id) => invoke('automation:flow:delete', { root, id }),
+    flowPreview: (root, workflow, request, parameters) => invoke('automation:flow:preview', { root, workflow, request, parameters }),
+    flowContext: (root) => invoke('automation:flow:context', { root }),
+    flowRunStart: (payload) => invoke('automation:flow:run:start', payload),
+    flowRunList: (root, limit) => invoke('automation:flow:run:list', { root, limit }),
+    flowRunRead: (root, runId) => invoke('automation:flow:run:read', { root, runId }),
+    flowRunCancel: (root, runId, reason) => invoke('automation:flow:run:cancel', { root, runId, reason }),
+    flowRunRespond: (root, runId, interactionId, answer) => invoke('automation:flow:run:respond', { root, runId, interactionId, answer }),
+    flowRunResult: (root, runId) => invoke('automation:flow:run:result', { root, runId }),
+    flowRunLog: (root, runId, bytes) => invoke('automation:flow:run:log', { root, runId, bytes }),
+    flowRunDelete: (root, runId) => invoke('automation:flow:run:delete', { root, runId }),
+    flowRunOpenDelivery: (root, runId) => invoke('automation:flow:run:openDelivery', { root, runId }),
     runSnapshot: (root) => invoke('automation:run:snapshot', { root }),
     saveRunSchedule: (root, schedule) => invoke('automation:run:schedule', { root, schedule }),
     setRunDaemon: (root, action) => invoke('automation:run:daemon', { root, action }),
@@ -84,6 +107,8 @@ contextBridge.exposeInMainWorld('api', {
     onRunExit: on('automation:run:exit'),
   },
   onTurnStarted: on('turn:started'),
+  onTurnProgress: on('turn:progress'),
+  onTurnInfo: on('turn:info'),
   onTurnLine: on('turn:line'),
   onTurnDone: on('turn:done'),
   onTermScreen: on('term:screen'),
