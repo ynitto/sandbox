@@ -691,16 +691,25 @@ charter.md（goal / constraints / assumptions / deliverables / acceptance=受入
   repos.json を自動生成**して外部ツール（codd-gate の `--repos` 等）へ渡す（`_meta` マーカー付き・
   正は charter のまま追従。手で管理したくなったら `_meta` を消す）。以下の `## repos` の説明は
   レジストリの内容の説明としてそのまま当てはまる。大規模・複数リポジトリ運用で「どのタスクを
-  どのリポジトリへコミットするか」を**制御層（agent-project）が1つに決め**、agent-flow へ `--workspace`（唯一の書込先）として
-  渡す。charter の `## repos` を repo レジストリとし、各 repo に `- owns:`（担当パスのグロブ）を付けると**書込先候補
+  どのリポジトリへコミットするか」を**制御層（agent-project）が決め**、agent-flow へ `--workspace`（書込先の集合。
+  既定は 1 つ）として渡す。charter の `## repos` を repo レジストリとし、各 repo に `- owns:`（担当パスのグロブ）を付けると**書込先候補
   （ワークスペース）**になる。**owns を書かない repo は参照リポジトリ（読むだけ）**で、書込先にはせず agent-flow へ
   `--reference` で構造化伝搬する（clone しない。エージェントのプロンプトと gitlab イシューの参照節に描画される）。
-  1 タスク（=1 agent-flow run）が書き込むのはちょうど 1 リポジトリ。複数 repo にまたがる変更は repo 別タスクへ
+  1 タスク（=1 agent-flow run）が書き込むのは既定でちょうど 1 リポジトリ。複数 repo にまたがる変更は repo 別タスクへ
   分割し `after` で順序付ける。
+  - **例外: 同時に成立して初めて検証できる変更（workset）**。API を出す repo とそれを呼ぶ repo のように、
+    片方だけでは検証が通らない（または通っても意味が無い）仕事は、1 タスクの書込先を**集合**にできる。
+    集合になるのは (a) 人の明示 `- workspace: a, b`、(b) `policy.md` の `route: <パターン> -> a+b`、
+    (c) 設定 `multi_workspace: true` のもとで `owns` が複数 repo にヒットした、の 3 つだけで、
+    **auto-route（LLM）には複数を選ばせない**。集合のときは `--workspace` を要素ごとに渡し、
+    agent-flow が要素ごとに commit/push・MR/PR・検証（計画 version 3）・納品エントリを作る。
+    順序の先頭が primary（エージェントの作業ディレクトリ・集合を知らない読み手が見る書込先）。
+    設計は [複数リポジトリ（workset）設計](../../docs/plans/2026-09-05-agent-flow-multi-workspace-design.md)。
   - **解決順（上が優先・決定はタスク md の `- workspace:`/`- routed_by:` に書き戻して安定/監査可能）**:
     1. タスクの `- workspace: <name>`（明示）  2. `policy.md` の `route: <パターン> -> <name>`（決定論）
-    3. `owns:` のパスグロブ × タスクの `- paths:` ヒント（決定論推定）  4. auto-route（`route_planner: agent` のとき LLM が
-    desc/owns から1つ推定）  5. `default_workspace` 設定 / 書込先候補が1つだけならそれ。
+    3. `owns:` のパスグロブ × タスクの `- paths:` ヒント（決定論推定。複数 repo にヒットしたときは
+    `multi_workspace: true` のときだけ全ヒットを集合として採る）  4. auto-route（`route_planner: agent` のとき LLM が
+    desc/owns から1つ推定。**常に 1 つ**）  5. `default_workspace` 設定 / 書込先候補が1つだけならそれ。
   - **リポジトリの同一性は (url, path, base)**：モノレポは「同じ url で path と owns を変えた複数エントリ」でフォルダ別の
     ワークスペースに、ブランチ別は base を変えて区別する。`path`/`base`/`target`/`desc` は構造化 `--workspace`（JSON）として
     agent-flow へ伝搬し、worker は `af/<run-id>` ブランチを base から作って作業、変更があれば agent-flow が commit/push する。

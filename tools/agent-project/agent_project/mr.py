@@ -237,10 +237,8 @@ def forge_available(cfg: "Config", url: str) -> str:
     return ""
 
 
-def _task_mr_coords(task: "Task") -> "tuple[str, str, str, str] | None":
-    """タスクに記録済みの MR 座標 (scheme, host, project, iid)。無ければ None。"""
-    iid = str(task.get("mr_iid") or "").strip()
-    pj = str(task.get("mr_project") or "")
+def _parse_mr_project(pj: str, iid: str) -> "tuple[str, str, str, str] | None":
+    """`<scheme>://<host>|<project>` ＋ iid → (scheme, host, project, iid)。壊れていれば None。"""
     if not iid or "|" not in pj:
         return None
     endpoint, proj = pj.split("|", 1)
@@ -251,74 +249,168 @@ def _task_mr_coords(task: "Task") -> "tuple[str, str, str, str] | None":
     return scheme, host, proj, iid
 
 
+def _task_mr_coords(task: "Task") -> "tuple[str, str, str, str] | None":
+    """タスクに記録済みの primary の MR 座標 (scheme, host, project, iid)。無ければ None。
+    書込先が複数ある（workset）タスクの全要素は `_task_mr_records`。"""
+    return _parse_mr_project(str(task.get("mr_project") or ""),
+                            str(task.get("mr_iid") or "").strip())
+
+
+def _task_mr_records(task: "Task") -> "list[dict]":
+    """タスクの MR を**要素ごとに**返す（`{name, url, coords}`。順序は primary から）。
+
+    `- mr_coords:` に要素ごとの座標を JSON で持つ。書込先が 1 つのタスクは
+    `- mr_url/-mr_iid/-mr_project` の従来 3 行だけを持ち、ここは 1 件を返す
+    ——記録の形も読み手も 1 要素では変わらない。"""
+    raw = str(task.get("mr_coords") or "").strip()
+    if raw:
+        try:
+            data = json.loads(raw)
+        except (ValueError, TypeError):
+            data = None
+        if isinstance(data, list):
+            out: "list[dict]" = []
+            for item in data:
+                if not isinstance(item, dict):
+                    continue
+                coords = _parse_mr_project(str(item.get("project") or ""),
+                                           str(item.get("iid") or "").strip())
+                if coords:
+                    out.append({"name": str(item.get("name") or ""),
+                                "url": str(item.get("url") or ""), "coords": coords})
+            if out:
+                return out
+    coords = _task_mr_coords(task)
+    return [{"name": "", "url": str(task.get("mr_url") or ""), "coords": coords}] if coords else []
+
+
+def _record_task_mrs(task: "Task", records: "list[dict]") -> None:
+    """要素ごとの MR をタスク md へ書き戻す。primary は従来の 3 行（旧読み手はそのまま動く）、
+    2 要素以上のときだけ `- mr_coords:` / `- mr_urls:` を足す。"""
+    task.drop("mr_url", "mr_iid", "mr_project", "mr_coords", "mr_urls")
+    if not records:
+        return
+    first = records[0]
+    scheme, host, proj, iid = first["coords"]
+    task.extra += [("mr_url", first["url"]), ("mr_iid", iid),
+                   ("mr_project", f"{scheme}://{host}|{proj}")]
+    if len(records) <= 1:
+        return
+    task.extra += [
+        ("mr_coords", json.dumps(
+            [{"name": r["name"], "url": r["url"], "iid": r["coords"][3],
+              "project": f"{r['coords'][0]}://{r['coords'][1]}|{r['coords'][2]}"}
+             for r in records], ensure_ascii=False)),
+        ("mr_urls", json.dumps({r["name"] or r["url"]: r["url"] for r in records},
+                               ensure_ascii=False))]
+
+
+def _ensure_element_mr(cfg: "Config", task: "Task", spec: dict) -> "dict | None":
+    """workset の 1 要素について ap/<task-id> → target の MR/PR を用意する（冪等）。
+
+    フォージ無し・URL を解釈できない要素は None（従来どおり記録のみで続行）。要素ごとに
+    同じ規律で 1 本ずつ立てる——横断の変更でも repo ごとにレビューと決着が要るためで、
+    ブランチ名を全要素で揃えてあるので人は同じ名前で追える。"""
+    url = str(spec.get("url") or "")
+    parsed = _gl_parse_repo(url)
+    forge = forge_available(cfg, url)
+    if not parsed or not forge:
+        return None                     # フォージ無し運用（S4-6）＝従来どおり記録のみで続行
+    scheme, host, proj = parsed
+    source = task_branch_name(cfg, task)
+    target = spec.get("target") or spec.get("base") or "main"
+    label = str(spec.get("name") or "")
+    if forge == "github":
+        token = _gh_token()
+        found = _gh_api(scheme, host, token, "GET", f"/repos/{proj}/pulls",
+                        params={"head": f"{proj.split('/', 1)[0]}:{source}", "state": "open"})
+        mr = found[0] if isinstance(found, list) and found else None
+        if mr is None:
+            mr = _gh_api(scheme, host, token, "POST", f"/repos/{proj}/pulls", data={
+                "head": source, "base": target,
+                "title": f"[agent-project] {task.id}: {task.title[:80]}",
+                "body": f"agent-project タスク {task.id} の成果物（ブランチ {source}）。",
+            })
+        return {"name": label, "url": str(mr.get("html_url") or ""),
+                "coords": (scheme, host, proj, str(mr.get("number") or ""))}
+    token = _gl_token()
+    ep = _gl_quote(proj)
+    found = _gl_api(scheme, host, token, "GET", f"/projects/{ep}/merge_requests",
+                    params={"source_branch": source, "state": "opened"})
+    mr = found[0] if isinstance(found, list) and found else None
+    if mr is None:
+        mr = _gl_api(scheme, host, token, "POST", f"/projects/{ep}/merge_requests",
+                     data={"source_branch": source, "target_branch": target,
+                           "title": f"[agent-project] {task.id}: {task.title[:80]}",
+                           "description": f"agent-project タスク {task.id} の成果物"
+                                          f"（ブランチ {source}。承認でクリーンなら自動マージ）",
+                           "remove_source_branch": True})
+    return {"name": label, "url": str(mr.get("web_url") or ""),
+            "coords": (scheme, host, proj, str(mr.get("iid") or ""))}
+
+
 def ensure_task_mr(cfg: "Config", task: "Task") -> str:
-    """review 到達時に ap/<task-id> → target の MR/PR を用意する（冪等）。"""
+    """review 到達時に ap/<task-id> → target の MR/PR を**書込先の要素ごとに**用意する（冪等）。
+    戻り値は primary の URL（従来どおり）。"""
     if not getattr(cfg, "task_branch", False):
         return ""
     if task.get("mr_url"):
         return str(task.get("mr_url"))
-    spec = _workspace_spec_for(cfg, task)
-    if not spec or not spec.get("url"):
+    specs = _workspace_specs_for(cfg, task)
+    specs = [sp for sp in specs if sp.get("url")]
+    if not specs:
         return ""
-    parsed = _gl_parse_repo(spec["url"])
-    forge = forge_available(cfg, spec["url"])
-    if not parsed or not forge:
-        return ""                       # フォージ無し運用（S4-6）＝従来どおり記録のみで続行
-    scheme, host, proj = parsed
-    source = task_branch_name(cfg, task)
-    target = spec.get("target") or spec.get("base") or "main"
     try:
-        if forge == "github":
-            token = _gh_token()
-            found = _gh_api(scheme, host, token, "GET", f"/repos/{proj}/pulls",
-                            params={"head": f"{proj.split('/', 1)[0]}:{source}", "state": "open"})
-            mr = found[0] if isinstance(found, list) and found else None
-            if mr is None:
-                mr = _gh_api(scheme, host, token, "POST", f"/repos/{proj}/pulls", data={
-                    "head": source, "base": target,
-                    "title": f"[agent-project] {task.id}: {task.title[:80]}",
-                    "body": f"agent-project タスク {task.id} の成果物（ブランチ {source}）。",
-                })
-            task.drop("mr_url", "mr_iid", "mr_project")
-            task.extra += [("mr_url", str(mr.get("html_url") or "")),
-                           ("mr_iid", str(mr.get("number") or "")),
-                           ("mr_project", f"{scheme}://{host}|{proj}")]
-            append_journal(cfg.journal, f"タスク PR 用意: {task.id} → {mr.get('html_url', '')}")
-            return str(mr.get("html_url") or "")
-        token = _gl_token()
-        ep = _gl_quote(proj)
-        found = _gl_api(scheme, host, token, "GET", f"/projects/{ep}/merge_requests",
-                        params={"source_branch": source, "state": "opened"})
-        mr = found[0] if isinstance(found, list) and found else None
-        if mr is None:
-            mr = _gl_api(scheme, host, token, "POST", f"/projects/{ep}/merge_requests",
-                         data={"source_branch": source, "target_branch": target,
-                               "title": f"[agent-project] {task.id}: {task.title[:80]}",
-                               "description": f"agent-project タスク {task.id} の成果物"
-                                              f"（ブランチ {source}。承認でクリーンなら自動マージ）",
-                               "remove_source_branch": True})
-        task.drop("mr_url", "mr_iid", "mr_project")
-        task.extra += [("mr_url", str(mr.get("web_url") or "")),
-                       ("mr_iid", str(mr.get("iid") or "")),
-                       ("mr_project", f"{scheme}://{host}|{proj}")]
-        append_journal(cfg.journal, f"タスク MR 用意: {task.id} → {mr.get('web_url', '')}")
-        return str(mr.get("web_url") or "")
+        records = [r for r in (_ensure_element_mr(cfg, task, sp) for sp in specs) if r]
     except RuntimeError as e:
         append_journal(cfg.journal, f"タスク MR の用意に失敗（記録のみで続行）: {task.id}: {e}")
         return ""
+    if not records:
+        return ""
+    _record_task_mrs(task, records)
+    where = "・".join(f"{r['name'] or 'primary'}: {r['url']}" for r in records)
+    append_journal(cfg.journal, f"タスク MR 用意: {task.id} → {where}")
+    return records[0]["url"]
 
 
 def finalize_task_mr(cfg: "Config", task: "Task") -> "tuple[bool, str]":
     """approve（検収承認）時にタスク MR を Stage 2（gitlab executor）と同一規則で自動決着する:
     クリーン（コンフリクト無し・未解決ディスカッション無し）→ マージ（ソースブランチ削除）、
     差分なし → クローズ、未クリーン → 差し戻しコメントを付けて (False, 理由)（done にしない）。
-    MR 無し・GitLab 未設定は (True, "")＝従来どおり done 確定のみ。"""
-    coords = _task_mr_coords(task)
-    if coords is None:
+    MR 無し・GitLab 未設定は (True, "")＝従来どおり done 確定のみ。
+
+    書込先が複数（workset）なら**要素ごとに決着**し、**全部が成立したときだけ成功**にする
+    ——1 つでも決着していない repo があるのに done にすると、統合されていない成果が完了に
+    なる。複数 remote への統合は原子的にできないので、成功した要素はそのまま（マージ済み）
+    残し、失敗した要素の理由を返す（人が解消して再 approve すれば残りだけが進む）。"""
+    records = _task_mr_records(task)
+    if not records:
         return True, ""
+    if len(records) == 1:
+        # 1 要素は従来の経路そのまま（成果の在処は `_source_repo` が解決する）。
+        return _finalize_one_mr(cfg, task, records[0]["coords"])
+    oks: "list[str]" = []
+    bad: "list[str]" = []
+    for rec in records:
+        ok, why = _finalize_one_mr(cfg, task, rec["coords"], per_element=True)
+        label = rec["name"] or rec["coords"][2]
+        (oks if ok else bad).append(f"{label}: {why or 'ok'}")
+    if bad:
+        return False, _unintegrated_message(bad, oks)
+    return True, "; ".join(oks)
+
+
+def _finalize_one_mr(cfg: "Config", task: "Task",
+                     coords: "tuple[str, str, str, str]",
+                     per_element: bool = False) -> "tuple[bool, str]":
+    """MR/PR 1 本の自動決着（規則は従来どおり）。
+
+    `per_element` は書込先が複数（workset）のとき。「成果が target に入っているか」を
+    その要素の repo で確かめる——primary の repo で見ても他要素の統合は判定できない。"""
     scheme, host, proj, iid = coords
+    element = _element_for_project(cfg, task, coords) if per_element else None
     if _forge_kind(f"{scheme}://{host}/{proj}") == "github":
-        return _finalize_github_pr(cfg, task, scheme, host, proj, iid)
+        return _finalize_github_pr(cfg, task, scheme, host, proj, iid, element)
     token = _gl_token()
     if not token:
         return True, "GitLab トークン無し（MR は手動で決着してください）"
@@ -332,7 +424,7 @@ def finalize_task_mr(cfg: "Config", task: "Task") -> "tuple[bool, str]":
             # 未マージのクローズを「決着済み」と読んで done にすると、統合されていない成果が
             # 完了になる。人が MR を閉じたなら、それは却下か作り直しの意思表示。ただし別経路で
             # 成果が target に入っていることもあるので、そこだけは確かめてから倒す。
-            integrated = _integrated_externally(cfg, task)
+            integrated = _integrated_externally(cfg, task, element)
             if integrated:
                 return True, integrated
             return False, ("MR が未マージでクローズされています（成果は target へ統合されて"
@@ -370,7 +462,8 @@ def finalize_task_mr(cfg: "Config", task: "Task") -> "tuple[bool, str]":
 
 
 def _finalize_github_pr(cfg: "Config", task: "Task", scheme: str, host: str,
-                        proj: str, iid: str) -> "tuple[bool, str]":
+                        proj: str, iid: str,
+                        element: "dict | None" = None) -> "tuple[bool, str]":
     token = _gh_token()
     if not token:
         return True, "GitHub トークン無し（PR は手動で決着してください）"
@@ -379,7 +472,7 @@ def _finalize_github_pr(cfg: "Config", task: "Task", scheme: str, host: str,
         if pr.get("merged"):
             return True, "PR はマージ済み（人が画面でマージした場合を含む）"
         if str(pr.get("state")) == "closed":
-            integrated = _integrated_externally(cfg, task)
+            integrated = _integrated_externally(cfg, task, element)
             return (True, integrated) if integrated else (False, "PR が未マージでクローズされています")
         reviews = _gh_api(scheme, host, token, "GET", f"/repos/{proj}/pulls/{iid}/reviews",
                           params={"per_page": 100})
@@ -400,7 +493,21 @@ def _finalize_github_pr(cfg: "Config", task: "Task", scheme: str, host: str,
         return False, f"PR の決着に失敗（解消/再試行してください）: {e}"
 
 
-def _integrated_externally(cfg: "Config", task: "Task") -> str:
+def _element_for_project(cfg: "Config", task: "Task",
+                         coords: "tuple[str, str, str, str] | None") -> "dict | None":
+    """MR の座標（host/project）に対応する workset 要素。見つからなければ None（＝primary）。"""
+    if not coords:
+        return None
+    _scheme, host, proj, _iid = coords
+    for el in _task_work_branches(cfg, task):
+        parsed = _gl_parse_repo(str(el.get("url") or ""))
+        if parsed and parsed[1] == host and parsed[2] == proj:
+            return el
+    return None
+
+
+def _integrated_externally(cfg: "Config", task: "Task",
+                           element: "dict | None" = None) -> str:
     """検証済み成果が既に target へ入っているか。入っていればその旨、入っていなければ空。
 
     人が GitLab の画面で MR をマージした場合（作業ブランチは remove_source_branch で消える）と、
@@ -410,11 +517,17 @@ def _integrated_externally(cfg: "Config", task: "Task") -> str:
     verified = _verified_result_rev(task)
     if not verified:
         return ""
-    work = _task_work_branch(cfg, task)
-    if work is None:
-        return ""
-    target = work[0]
-    repo = _source_repo(cfg, task)
+    if element is not None:
+        target = str(element.get("target") or "main")
+        repo = resolve_delivery_repo(cfg, str(element.get("url") or ""))
+        label = f"（{element.get('name')}）" if element.get("name") else ""
+    else:
+        work = _task_work_branch(cfg, task)
+        if work is None:
+            return ""
+        target = work[0]
+        repo = _source_repo(cfg, task)
+        label = ""
 
     def run(*args: str):
         return subprocess.run(["git", "-C", str(repo), *args], capture_output=True,
@@ -424,7 +537,7 @@ def _integrated_externally(cfg: "Config", task: "Task") -> str:
         return ""
     if run("merge-base", "--is-ancestor", verified, f"origin/{target}").returncode != 0:
         return ""
-    return f"検証済み成果 {verified[:12]} は {target} へ統合済み（外部でマージ）"
+    return f"検証済み成果 {verified[:12]} は {target} へ統合済み（外部でマージ）{label}"
 
 
 def _verified_result_rev(task: "Task") -> str:
@@ -454,11 +567,46 @@ def finalize_task_delivery(cfg: "Config", task: "Task") -> "tuple[bool, str]":
     if _task_mr_coords(task) is not None:
         return finalize_task_mr(cfg, task)
 
-    work = _task_work_branch(cfg, task)
-    if work is None:
+    elements = _task_work_branches(cfg, task)
+    if not elements:
         return True, ""  # 書込 workspace を持たない読み取り専用・旧形式タスク
-    target, branch = work
-    repo = _source_repo(cfg, task)
+    if len(elements) == 1:
+        return _merge_task_element(cfg, task, elements[0], primary=True)
+    # 書込先が複数（workset）: 要素ごとに統合し、**全部が成立したときだけ**成功にする。
+    # 複数 remote への統合は原子的にできないので、成功した要素はそのまま残し（既に target に
+    # 入っている＝再実行は冪等成功になる）、失敗した要素の理由を返す。
+    oks: "list[str]" = []
+    bad: "list[str]" = []
+    for i, el in enumerate(elements):
+        ok, why = _merge_task_element(cfg, task, el, primary=(i == 0))
+        label = el.get("name") or el.get("url") or "?"
+        (oks if ok else bad).append(f"{label}: {why or 'ok'}")
+    if bad:
+        return False, _unintegrated_message(bad, oks)
+    return True, "; ".join(oks)
+
+
+# 「統合できていない書込先がある」失敗メッセージの形。読み手（commands.approve）が
+# 失敗した要素だけを機械的に取り出せるよう、成功分は括弧の後ろへ分けて書く。
+UNINTEGRATED_PREFIX = "統合できていない書込先があります — "
+
+
+def _unintegrated_message(bad: "list[str]", oks: "list[str]") -> str:
+    return (UNINTEGRATED_PREFIX + "; ".join(bad)
+            + (f"（統合済み: {', '.join(o.split(':', 1)[0] for o in oks)}）" if oks else ""))
+
+
+def _merge_task_element(cfg: "Config", task: "Task", element: dict,
+                        primary: bool = True) -> "tuple[bool, str]":
+    """workset の 1 要素の作業ブランチを target へ統合する（フォージ無し運用の経路）。
+
+    規則は 1 要素だったときと同じ——fast-forward か、競合しない通常マージだけを通し、
+    競合したら一切解決せずに理由を返す（review を維持し、成果未反映のまま done にしない）。"""
+    target, branch = str(element.get("target") or "main"), str(element.get("branch") or "")
+    if not branch:
+        return True, ""
+    repo = (_source_repo(cfg, task) if primary
+            else resolve_delivery_repo(cfg, str(element.get("url") or "")))
 
     def run(*args: str):
         return subprocess.run(["git", "-C", str(repo), *args], capture_output=True,
@@ -469,7 +617,7 @@ def finalize_task_delivery(cfg: "Config", task: "Task") -> "tuple[bool, str]":
         # 作業ブランチが消えている。人が MR を画面からマージした（remove_source_branch）ときの
         # 通常の姿なので、まず「もう入っているか」を確かめる。ここを見ないと、人がマージして
         # くれた成果ほど「ブランチが無い」で承認できなくなる。
-        integrated = _integrated_externally(cfg, task)
+        integrated = _integrated_externally(cfg, task, None if primary else element)
         if integrated:
             return True, integrated
         return False, f"作業ブランチ {branch} を解決できないため、{target} へマージできません"
@@ -530,12 +678,51 @@ def finalize_task_delivery(cfg: "Config", task: "Task") -> "tuple[bool, str]":
 
 
 def review_target_fresh(cfg: "Config", task: "Task") -> "tuple[bool, str]":
-    """検証時 target が現在も同じかを確認する。証跡が無い旧タスクは従来互換で通す。"""
+    """検証時 target が現在も同じかを確認する。証跡が無い旧タスクは従来互換で通す。
+
+    書込先が複数（workset）なら**要素ごとに**確認し、1 つでも動いていれば承認しない
+    ——片方の repo だけ最新 target を含む成果は「同時に成立する」検証になっていない。"""
+    gates = _gate_targets(task)
+    if len(gates) > 1:
+        bad = []
+        for g in gates:
+            ok, why = _element_target_fresh(cfg, task, g)
+            if not ok:
+                bad.append(f"{g.get('name') or g.get('target')}: {why}")
+        return (False, "; ".join(bad)) if bad else (True, "")
+    return _element_target_fresh(cfg, task, gates[0] if gates else {})
+
+
+def _gate_targets(task: "Task") -> "list[dict]":
+    """承認ゲートに記録した検証時 target（要素ごと。1 要素なら従来の 2 行から 1 件）。"""
+    raw = str(task.get("gate_targets") or "").strip()
+    if raw:
+        try:
+            data = json.loads(raw)
+        except (ValueError, TypeError):
+            data = None
+        if isinstance(data, list):
+            out = [{"name": str(r.get("name") or ""), "target": str(r.get("target") or ""),
+                    "rev": str(r.get("rev") or "")}
+                   for r in data if isinstance(r, dict) and r.get("target") and r.get("rev")]
+            if out:
+                return out
     target = str(task.get("gate_target") or "").strip()
-    verified = str(task.get("gate_target_rev") or "").strip()
+    rev = str(task.get("gate_target_rev") or "").strip()
+    return [{"name": "", "target": target, "rev": rev}] if target and rev else []
+
+
+def _element_target_fresh(cfg: "Config", task: "Task", gate: dict) -> "tuple[bool, str]":
+    """1 要素の target が検証時から動いていないか（規則は従来どおり）。"""
+    target = str(gate.get("target") or "").strip()
+    verified = str(gate.get("rev") or "").strip()
     if not target or not verified:
         return True, ""
-    repo = _source_repo(cfg, task)
+    name = str(gate.get("name") or "")
+    element = next((el for el in _task_work_branches(cfg, task)
+                    if name and el.get("name") == name), None)
+    repo = (resolve_delivery_repo(cfg, str(element.get("url") or "")) if element
+            else _source_repo(cfg, task))
 
     def run(*args: str):
         return subprocess.run(["git", "-C", str(repo), *args], capture_output=True,
@@ -888,14 +1075,22 @@ def _settle_review(cfg, task, act_msg, git_base, branch, ev, vmsg, protect_hits,
     ref = extract_delivery_ref(act_msg, cfg, git_base)
     task.status = "review"
     task.drop("gate_ref", "gate_vmsg", "gate_ts", "gate_protect",
-              "gate_target", "gate_target_rev")
+              "gate_target", "gate_target_rev", "gate_targets")
     task.set("gate_ref", ref)
     task.set("gate_ts", ts)
     task.set("gate_branch", branch)             # approve 時の受領書に所在（ブランチ）を引き継ぐ
     task.set("gate_vmsg", vmsg.replace("\n", " ")[:200])
     if isinstance(verification, dict):
-        integration = verification.get("integration")
-        if isinstance(integration, dict) and integration.get("verdict") == "pass":
+        # 書込先が複数（workset）なら要素ごとの統合結果も残す。承認時の鮮度検査
+        # （`review_target_fresh`）が「どの repo の target が動いたか」を要素ごとに見る。
+        records = [r for r in (verification.get("integrations") or []) if isinstance(r, dict)]
+        passed = [r for r in records if r.get("verdict") == "pass"]
+        if len(records) > 1 and len(passed) == len(records):
+            task.set("gate_targets", json.dumps(
+                [{"name": str(r.get("name") or ""), "target": str(r.get("target") or ""),
+                  "rev": str(r.get("target_rev") or "")} for r in passed], ensure_ascii=False))
+        integration = verification.get("integration") or (passed[0] if passed else None)
+        if isinstance(integration, dict) and integration.get("verdict", "pass") == "pass":
             task.set("gate_target", str(integration.get("target") or ""))
             task.set("gate_target_rev", str(integration.get("target_rev") or ""))
     # 「なぜ人の番なのか」を、失敗の理由と読み違えられない書き方にする。ここは verify が通った
@@ -1249,7 +1444,7 @@ def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle
         # workspace 指定タスクは git-bus ルート（workdir）でなく該当 repo のクローン内（指定 branch・
         # クローンのルート）で検証する。verify はリポジトリ直下からの相対で書かれる規約なので path
         # 配下には潜らない。明示 verify_cwd はそれを優先。
-        vcwd, vtmp = _task_verify_cwd(cfg, task)
+        vcwd, vtmp, vclones = _task_verify_worktrees(cfg, task)
         venv = verify_env
         if vtmp and (vcwd / ".git").exists():          # 一時 clone は差分基準を clone の HEAD に取り直す
             head = _git_out(vcwd, "rev-parse", "HEAD").strip()
@@ -1262,7 +1457,7 @@ def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle
         # flake 判定（verify_confirm）は plan の policy として receipt runner が実行する。
         _rev_head = _git_out(vcwd, "rev-parse", "HEAD").strip() if (vcwd / ".git").exists() else ""
         adopted = settle_from_receipt(cfg, task, build_task_verification_plan(cfg, task),
-                                      _rev_head, vcwd, venv)
+                                      _rev_head, vcwd, venv, vclones)
         if adopted is not None:
             ok, flaky, vmsg, verification = adopted
         else:

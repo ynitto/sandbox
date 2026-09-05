@@ -3,6 +3,45 @@ from __future__ import annotations
 # 単体 import しない。agent_project/__init__.py が共有名前空間へ順に exec 合成する。
 # 人の操作コマンド（いずれも案件毎の決定記録を残す）
 # ---------------------------------------------------------------------------
+_MISSING_BRANCH_RE = re.compile(
+    r"作業ブランチ (?P<branch>\S+) を解決できないため、\S+ へマージできません")
+
+
+def _missing_branch_acks(mr_msg: str) -> "list[str] | None":
+    """統合失敗が「作業ブランチを解決できない」だけなら、その再承認の鍵を返す（他は None）。
+
+    1 要素のときの鍵はブランチ名そのもの——既に記録済みの `delivery_missing_branch_ack` を
+    そのまま効かせるため（人が一度承認した確認をこの変更で無効にしない）。複数要素では
+    `<要素名>|<ブランチ>` の列で、全要素ぶんが揃って初めて自動統合を省略する。"""
+    text = str(mr_msg or "")
+    if not text.startswith(UNINTEGRATED_PREFIX):
+        m = _MISSING_BRANCH_RE.fullmatch(text)
+        return [m.group("branch")] if m else None
+    body = text[len(UNINTEGRATED_PREFIX):].split("（統合済み:", 1)[0]
+    keys: "list[str]" = []
+    for part in body.split("; "):
+        label, _sep, why = part.partition(": ")
+        m = _MISSING_BRANCH_RE.fullmatch(why.strip())
+        if not m:
+            return None                    # 1 つでも別の理由の失敗があれば再承認では通さない
+        keys.append(f"{label.strip()}|{m.group('branch')}")
+    return keys or None
+
+
+def _recorded_acks(task) -> set:
+    """タスクに記録済みの再承認の鍵（1 要素は文字列、複数要素は JSON 配列）。"""
+    raw = str(task.get("delivery_missing_branch_ack") or "").strip()
+    if not raw:
+        return set()
+    if raw.startswith("["):
+        try:
+            data = json.loads(raw)
+        except (ValueError, TypeError):
+            return set()
+        return {str(x) for x in data} if isinstance(data, list) else set()
+    return {raw}
+
+
 def approve_review_done(cfg: Config, t: Task, reason: str) -> "tuple[bool, str]":
     """review（検収待ち）タスクの承認を done 確定させる共通経路。
     CLI の approve と needs の空 [x]（チェックのみ＝承認）の両方から呼ばれる——
@@ -19,17 +58,25 @@ def approve_review_done(cfg: Config, t: Task, reason: str) -> "tuple[bool, str]"
                                   "phase": PHASE_VERIFY, "verdict": VERIFY_FAILED})
         return False, f"{tid}: {stale_msg}"
     mr_ok, mr_msg = finalize_task_delivery(cfg, t)
-    missing_branch = re.fullmatch(
-        r"作業ブランチ (.+) を解決できないため、.+ へマージできません", mr_msg
-    ) if not mr_ok else None
-    if missing_branch:
-        branch = missing_branch.group(1)
-        if t.get("delivery_missing_branch_ack") == branch:
-            mr_ok = True
-            mr_msg = f"作業ブランチ {branch} の消失を人が再承認（自動統合を省略）"
-        else:
-            t.set("delivery_missing_branch_ack", branch)
-            persist_task(cfg, t)
+    missing_branch = None
+    if not mr_ok:
+        acks = _missing_branch_acks(mr_msg)
+        if acks is not None:
+            # 失敗が「作業ブランチを解決できない」だけ（＝人が外部でマージした可能性）。
+            # 1 要素なら鍵はブランチ名そのもの（従来の記録がそのまま効く）、複数要素なら
+            # 要素ごとの鍵の列で、**全要素を再承認したときだけ**自動統合を省略する。
+            missing_branch = acks
+            recorded = _recorded_acks(t)
+            if recorded and set(acks) <= recorded:
+                mr_ok = True
+                mr_msg = (f"作業ブランチ {acks[0]} の消失を人が再承認（自動統合を省略）"
+                          if len(acks) == 1 else
+                          f"書込先 {', '.join(acks)} の作業ブランチ消失を人が再承認"
+                          "（自動統合を省略）")
+            else:
+                t.set("delivery_missing_branch_ack",
+                      acks[0] if len(acks) == 1 else json.dumps(acks, ensure_ascii=False))
+                persist_task(cfg, t)
     if not mr_ok:
         mr_url = str(t.get("mr_url") or "")
         delivery = delivery_entries(cfg, t, mr_url=mr_url)
@@ -53,7 +100,7 @@ def approve_review_done(cfg: Config, t: Task, reason: str) -> "tuple[bool, str]"
     t.status = "done"
     autonomy_record(cfg, t, clean=True)          # 検収承認＝手戻りなし。track の信頼を上げる
     t.drop("gate_ref", "gate_ts", "gate_vmsg", "gate_branch", "gate_target", "gate_target_rev",
-           "delivery_missing_branch_ack")
+           "gate_targets", "delivery_missing_branch_ack")
     # review 時に保持した所在（ref/ブランチ）を受領書へ引き継ぐ（どこに成果物があるかを残す）
     gate_ev = (f"- 成果物: {ref}\n- 所在: {cfg.workdir}"
                + (f" / ブランチ {gate_branch}" if gate_branch else "")) if ref else ""

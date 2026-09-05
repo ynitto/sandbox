@@ -476,9 +476,9 @@ def receipt_overall(receipt: dict) -> str:
     elif receipt.get("version") == WORKSET_VERSION and receipt.get("integrations") is not None:
         # v3 は要素ごとの統合結果。1 要素でも整合していなければ run 全体を fail に倒す
         # （片方だけ最新 target を含む成果は「同時に成立する」検証になっていない）。
+        # 空リストは「統合対象を持つ要素が無い」＝制約なし（plan との員数照合は
+        # `receipt_errors` の仕事で、ここは「通ったか」だけを見る）。
         checked = (receipt["integrations"] if isinstance(receipt["integrations"], list) else [None])
-        if not checked:
-            return "fail"
     for record in checked:
         if not isinstance(record, dict):
             return "fail"
