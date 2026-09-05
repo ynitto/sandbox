@@ -16,12 +16,13 @@ const git = require('../src/main/git');
 const files = require('../src/main/files');
 const text = require('../src/main/text');
 const attachments = require('../src/main/attachments');
+const automationIpc = require('../src/main/automation/ipc');
 
 const SRC = path.join(__dirname, '..', 'src');
 
 test('main / ipc / preload / renderer は構文検査を通る', () => {
-  for (const f of ['main/main.js', 'main/ipc.js', 'main/agentCli.js', 'main/store.js', 'main/git.js', 'main/host.js', 'main/tmux.js', 'main/files.js', 'main/text.js', 'main/attachments.js',
-    'preload.js', 'renderer/renderer.js', 'renderer/md.js', 'renderer/term.js', 'renderer/files.js']) {
+  for (const f of ['main/main.js', 'main/ipc.js', 'main/automation/ipc.js', 'main/agentCli.js', 'main/store.js', 'main/git.js', 'main/host.js', 'main/tmux.js', 'main/files.js', 'main/text.js', 'main/attachments.js',
+    'preload.js', 'renderer/renderer.js', 'renderer/md.js', 'renderer/term.js', 'renderer/files.js', 'renderer/vendor/statemachine/renderer.js']) {
     execFileSync(process.execPath, ['--check', path.join(SRC, f)]);
   }
   const main = fs.readFileSync(path.join(SRC, 'main/main.js'), 'utf8');
@@ -35,21 +36,44 @@ test('main / ipc / preload / renderer は構文検査を通る', () => {
 test('preload の窓口と ipc のチャネルが 1 対 1', () => {
   const pre = fs.readFileSync(path.join(SRC, 'preload.js'), 'utf8');
   const ipc = fs.readFileSync(path.join(SRC, 'main/ipc.js'), 'utf8');
+  const makerIpc = fs.readFileSync(path.join(__dirname, '..', '..', 'statemachine-maker', 'src', 'main', 'ipc.js'), 'utf8');
   const invoked = [...pre.matchAll(/invoke\('([\w:]+)'/g)].map((m) => m[1]);
-  const handled = [...ipc.matchAll(/handle\('([\w:]+)'/g)].map((m) => m[1]);
+  const handled = [
+    ...[...ipc.matchAll(/handle\('([\w:]+)'/g)].map((m) => m[1]),
+    ...[...makerIpc.matchAll(/register\('([\w:]+)'/g)].map((m) => `automation:${m[1]}`),
+  ];
   assert.deepStrictEqual([...new Set(invoked)].sort(), handled.sort());
 });
 
 test('index.html が読むスクリプトは vendor.js が写すものと画面のもので揃う', () => {
-  const html = fs.readFileSync(path.join(SRC, 'renderer/index.html'), 'utf8');
+  const html = [
+    fs.readFileSync(path.join(SRC, 'renderer/index.html'), 'utf8'),
+    fs.readFileSync(path.join(SRC, 'renderer/automation-frame.html'), 'utf8'),
+  ].join('\n');
   const vendor = require('../scripts/vendor');
   const names = new Set(vendor.FILES.map(([, name]) => name));
   for (const m of html.matchAll(/(?:src|href)="vendor\/([^"]+)"/g)) {
     const f = m[1];
     if (f.startsWith('hljs/')) assert.ok(vendor.HLJS_EXTRA.includes(f.slice(5).replace('.min.js', '')), f);
+    else if (f === 'statemachine/renderer.js') assert.ok(fs.existsSync(path.join(SRC, 'renderer', 'vendor', f)), f);
     else assert.ok(names.has(f), `vendor.js が写さない: ${f}`);
   }
   for (const m of html.matchAll(/src="([^"/]+\.js)"/g)) assert.ok(fs.existsSync(path.join(SRC, 'renderer', m[1])), m[1]);
+});
+
+test('自動化は agent-app の登録リポジトリと設定を共有する', () => {
+  const cfg = automationIpc.automationConfig({
+    repos: ['/repo/a', '/repo/b'], lastRepo: '/repo/b',
+    automationSkillDir: '/skill', automationAgent: 'codex', automationModel: 'm',
+  });
+  assert.deepStrictEqual(cfg, {
+    roots: ['/repo/a', '/repo/b'], lastRoot: '/repo/b', skillDir: '/skill', agent: 'codex', model: 'm',
+  });
+  assert.deepStrictEqual(automationIpc.automationPatch({
+    roots: ['/ignored'], lastRoot: '/repo/a', skillDir: '/next', agent: 'aider', model: '',
+  }), {
+    lastRepo: '/repo/a', automationSkillDir: '/next', automationAgent: 'aider', automationModel: '',
+  });
 });
 
 // 同梱定義から出る argv。権限フラグと prompt の渡し方は agent-dashboard のゴールデンと同じ。

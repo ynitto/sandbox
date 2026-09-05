@@ -30,15 +30,15 @@ function handle(channel, fn) {
   });
 }
 
-function skillDirFor(root) {
-  return tools.findSkillDir({ root, configured: config.load(userData()).skillDir, appRoot: APP_ROOT });
+function skillDirFor(root, settings = config, getUserData = userData, appRoot = APP_ROOT) {
+  return tools.findSkillDir({ root, configured: settings.load(getUserData()).skillDir, appRoot });
 }
 
 // 触ってよいのは**登録したフォルダだけ**。登録に無いパスは、実在していても断る。
-function requireRoot(payload) {
+function requireRoot(payload, settings = config, getUserData = userData) {
   const root = String(payload.root || '').trim();
   if (!root) throw new Error('フォルダを選んでください');
-  if (!config.isRegistered(userData(), root)) throw new Error('登録していないフォルダです');
+  if (!settings.isRegistered(getUserData(), root)) throw new Error('登録していないフォルダです');
   if (!tools.isDir(root)) throw new Error('フォルダが見つかりません');
   return root;
 }
@@ -47,11 +47,19 @@ function pythonFor() {
   return tools.findPython(runner.capture);
 }
 
-function registerIpcHandlers(getWindow) {
+function registerIpcHandlers(getWindow, options = {}) {
   let activeAi = null;
+  const channelPrefix = String(options.channelPrefix || '');
+  const settings = options.config || config;
+  const getUserData = options.userData || userData;
+  const appRoot = options.appRoot || APP_ROOT;
+  const channel = (name) => `${channelPrefix}${name}`;
+  const register = (name, fn) => handle(channel(name), fn);
+  const selectedRoot = (payload) => requireRoot(payload, settings, getUserData);
+  const selectedSkillDir = (root) => skillDirFor(root, settings, getUserData, appRoot);
 
   function sendTo(sender, channel, payload) {
-    if (sender && !sender.isDestroyed()) sender.send(channel, payload);
+    if (sender && !sender.isDestroyed()) sender.send(`${channelPrefix}${channel}`, payload);
   }
 
   function finishAi(job, payload) {
@@ -108,85 +116,85 @@ function registerIpcHandlers(getWindow) {
     return started;
   }
 
-  handle('config:get', () => config.load(userData()));
-  handle('config:save', (p) => config.save(userData(), p.config));
-  handle('catalog:get', () => ({ kinds: model.catalog(), version: model.PROCEDURE_VERSION, platform: process.platform }));
+  register('config:get', () => settings.load(getUserData()));
+  register('config:save', (p) => settings.save(getUserData(), p.config));
+  register('catalog:get', () => ({ kinds: model.catalog(), version: model.PROCEDURE_VERSION, platform: process.platform }));
 
   // フォルダの登録。**見に行くのは登録したフォルダの `.statemachine/` だけ**で、
   // 画面から届いたパスをそのまま開かない（登録に無ければ下の requireRoot が断る）。
-  handle('root:add', async () => {
+  register('root:add', async () => {
     const res = await dialog.showOpenDialog(getWindow(), {
       properties: ['openDirectory'], title: 'ステートマシンを置くフォルダを登録する',
     });
     if (res.canceled || !res.filePaths.length) return null;
-    return config.addRoot(userData(), res.filePaths[0]);
+    return settings.addRoot(getUserData(), res.filePaths[0]);
   });
-  handle('root:remove', (p) => config.removeRoot(userData(), p.root));
-  handle('root:select', (p) => config.save(userData(), { lastRoot: String(p.root || '') }));
+  register('root:remove', (p) => settings.removeRoot(getUserData(), p.root));
+  register('root:select', (p) => settings.save(getUserData(), { lastRoot: String(p.root || '') }));
 
-  handle('machine:list', (p) => store.list(requireRoot(p)));
-  handle('machine:read', (p) => store.read(requireRoot(p), String(p.machine || '')));
-  handle('machine:exists', (p) => store.exists(requireRoot(p), String(p.machine || '')));
-  handle('machine:preview', (p) => {
+  register('machine:list', (p) => store.list(selectedRoot(p)));
+  register('machine:read', (p) => store.read(selectedRoot(p), String(p.machine || '')));
+  register('machine:exists', (p) => store.exists(selectedRoot(p), String(p.machine || '')));
+  register('machine:preview', (p) => {
     // 保存せずにコンパイルの結果だけ返す。検証エラーは投げずに一覧で返す（画面に並べる）。
     let spec;
     try { spec = model.normalizeProcedure(p.spec); } catch (err) { return { errors: [err.message], files: {}, warnings: [] }; }
     const { workflow, files } = model.compile(spec);
     return { spec, files, errors: model.validateWorkflow(workflow, files), warnings: model.portabilityWarnings(spec) };
   });
-  handle('machine:save', (p) => {
-    const root = requireRoot(p);
+  register('machine:save', (p) => {
+    const root = selectedRoot(p);
     const res = store.save(root, p.spec);
     return { dir: res.dir, written: res.written, warnings: res.warnings, machine: res.spec.machine };
   });
-  handle('machine:openFolder', (p) => {
-    const root = requireRoot(p);
+  register('machine:openFolder', (p) => {
+    const root = selectedRoot(p);
     return shell.openPath(store.machineDir(root, String(p.machine || '')));
   });
 
-  handle('tools:status', (p) => {
-    const root = p.root ? requireRoot(p) : '';
-    return tools.toolStatus({ cwd: root, capture: runner.capture, skillDir: skillDirFor(root) });
+  register('tools:status', (p) => {
+    const root = p.root ? selectedRoot(p) : '';
+    return tools.toolStatus({ cwd: root, capture: runner.capture, skillDir: selectedSkillDir(root) });
   });
-  handle('agents:list', (p) => {
-    const root = p.root ? requireRoot(p) : '';
+  register('agents:list', (p) => {
+    const root = p.root ? selectedRoot(p) : '';
     return tools.agentDefinitions({ cwd: root, capture: runner.capture });
   });
-  handle('run:snapshot', (p) => agentLoop.inspect({ root: requireRoot(p), capture: runner.capture }));
-  handle('run:schedule', (p) => agentLoop.saveSchedule({
-    root: requireRoot(p), payload: p.schedule, capture: runner.capture,
+  register('run:snapshot', (p) => agentLoop.inspect({ root: selectedRoot(p), capture: runner.capture }));
+  register('run:schedule', (p) => agentLoop.saveSchedule({
+    root: selectedRoot(p), payload: p.schedule, capture: runner.capture,
   }));
-  handle('run:daemon', (p) => {
-    const root = requireRoot(p);
+  register('run:daemon', (p) => {
+    const root = selectedRoot(p);
     if (!['start', 'stop'].includes(p.action)) throw new Error('自動実行の操作が不正です');
     return p.action === 'stop'
       ? agentLoop.stopDaemon({ root, capture: runner.capture })
       : agentLoop.startDaemon({ root, startDetached: runner.startDetached });
   });
-  handle('run:log', (p) => agentLoop.readLog({
-    root: requireRoot(p), identity: p.identity, capture: runner.capture,
+  register('run:log', (p) => agentLoop.readLog({
+    root: selectedRoot(p), identity: p.identity, capture: runner.capture,
   }));
 
-  handle('recording:start', (p) => {
-    const root = p.root ? requireRoot(p) : '';
+  register('recording:start', (p) => {
+    const root = p.root ? selectedRoot(p) : '';
     if (p.source === 'windows') {
       return recording.recordWindowsStart({ cwd: root, app: p.app, spawnRecorder: runner.spawnRecorder });
     }
     return recording.recordBrowserStart({ cwd: root, url: p.url, capture: runner.capture });
   });
-  handle('recording:stop', (p) => {
-    const root = p.root ? requireRoot(p) : '';
+  register('recording:stop', (p) => {
+    const root = p.root ? selectedRoot(p) : '';
     return p.source === 'windows'
       ? recording.recordWindowsStop({})
       : recording.recordBrowserStop({ cwd: root, url: p.url, capture: runner.capture });
   });
-  handle('recording:import', (p) => recording.stepsFromRecording({ source: p.source, text: p.text, url: p.url, app: p.app }));
-  handle('recording:state', () => ({ windows: recording.windowsRecordingState() }));
+  register('recording:import', (p) => recording.stepsFromRecording({ source: p.source, text: p.text, url: p.url, app: p.app }));
+  register('recording:state', () => ({ windows: recording.windowsRecordingState() }));
 
-  handle('ai:start', async (p, event) => {
-    const root = requireRoot(p);
+  register('ai:start', async (p, event) => {
+    const root = selectedRoot(p);
     const mode = p.mode === 'review' ? 'review' : 'draft';
-    const cfg = config.load(userData());
+    const cfg = settings.load(getUserData());
     const agent = String(p.agent || cfg.agent || 'aider');
     const definitions = await tools.agentDefinitions({ cwd: root, capture: runner.capture });
     if (!definitions.includes(agent)) throw new Error(`使う AI「${agent}」は agent-tools に定義されていません`);
@@ -218,7 +226,7 @@ function registerIpcHandlers(getWindow) {
       throw err;
     }
   });
-  handle('ai:stop', (p) => {
+  register('ai:stop', (p) => {
     if (!activeAi || (p.requestId && p.requestId !== activeAi.requestId)) return false;
     const job = activeAi;
     job.cancelled = true;
@@ -227,7 +235,7 @@ function registerIpcHandlers(getWindow) {
     sendTo(job.sender, 'ai:result', { requestId: job.requestId, mode: job.mode, ok: false, cancelled: true, error: '中止しました' });
     return stopped;
   });
-  handle('ai:apply', (p) => {
+  register('ai:apply', (p) => {
     const base = model.normalizeProcedure(p.base);
     if (!p.baseFingerprint || ai.fingerprint(base) !== p.baseFingerprint) {
       throw new Error('見直し後に内容が変わりました。もう一度AIで見直してください');
@@ -237,22 +245,22 @@ function registerIpcHandlers(getWindow) {
 
   // 構成確認はスキル、本実行は agent-loop を入口に agent-tools の harness を使う。
   // 出力はどちらも行単位で renderer へ流す。
-  handle('run:start', async (p, event) => {
-    const root = requireRoot(p);
+  register('run:start', async (p, event) => {
+    const root = selectedRoot(p);
     const machine = String(p.machine || '');
     const workflow = path.join(store.machineDir(root, machine), 'workflow.yaml');
     const mode = p.mode === 'run' ? 'run' : 'check';
     let command;
     let args;
     if (mode === 'check') {
-      const skillDir = skillDirFor(root);
+      const skillDir = selectedSkillDir(root);
       if (!skillDir) throw new Error('statemachine-use スキルのスクリプトが見つかりません（「実行環境」を確認してください）');
       const py = await pythonFor();
       if (!py) throw new Error('Python を起動できません（「実行環境」を確認してください）');
       command = py.command;
       args = [path.join(skillDir, 'scripts', 'run_machine.py'), workflow, '--dry-run'];
     } else {
-      const cfg = config.load(userData());
+      const cfg = settings.load(getUserData());
       const agent = String(p.agent || cfg.agent || 'aider');
       const definitions = await tools.agentDefinitions({ cwd: root, capture: runner.capture });
       if (!definitions.includes(agent)) throw new Error(`使う AI「${agent}」は agent-tools に定義されていません`);
@@ -273,8 +281,8 @@ function registerIpcHandlers(getWindow) {
       cwd: root,
       kind: 'run',
       env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
-      onLine: (kind, line) => send('run:line', { requestId, machine, kind, line }),
-      onExit: ({ code, stdout, stderr, truncated }) => send('run:exit', {
+      onLine: (kind, line) => send(channel('run:line'), { requestId, machine, kind, line }),
+      onExit: ({ code, stdout, stderr, truncated }) => send(channel('run:exit'), {
         requestId, machine, code, mode,
         result: mode === 'run' ? agentLoop.parseResult(stdout, code) : { ok: code === 0 },
         error: truncated ? '実行ログが大きいため一部を省略しました' : '',
@@ -283,7 +291,7 @@ function registerIpcHandlers(getWindow) {
     });
     return { ...started, requestId, mode };
   });
-  handle('run:stop', () => runner.stop('run'));
+  register('run:stop', () => runner.stop('run'));
 }
 
 module.exports = { registerIpcHandlers };

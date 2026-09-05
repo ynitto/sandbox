@@ -1,0 +1,17 @@
+/* agent-app 内で使うときだけの補正。基礎デザインは statemachine-maker と共有する。 */
+body.embedded { background: #f6f7f9; }
+body.embedded button:focus-visible,
+body.embedded summary:focus-visible,
+body.embedded [role="button"]:focus-visible {
+  outline: 3px solid #cfe0ff;
+  outline-offset: 2px;
+}
+body.embedded button.primary { min-height: 40px; }
+body.embedded .machine-head h1::before { content: 'リポジトリ: '; color: var(--muted); font-weight: 500; }
+@media (prefers-reduced-motion: reduce) {
+  body.embedded *, body.embedded *::before, body.embedded *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

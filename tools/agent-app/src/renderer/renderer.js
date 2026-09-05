@@ -3,6 +3,7 @@
 // 画面の状態は 1 か所。保存は main（store）がやり、ここは表示と操作だけ。
 const state = {
   config: null,
+  area: 'work',
   host: null,           // host:info（platform / tmux の有無）
   repo: '',
   agents: [],
@@ -621,6 +622,29 @@ function showView(view) {
   if (state.view === 'chat') Term.refit();
 }
 
+async function showArea(area, { persist = true } = {}) {
+  const automation = area === 'automation';
+  state.area = automation ? 'automation' : 'work';
+  $('app').classList.toggle('automation-mode', automation);
+  $('main').hidden = automation;
+  $('automation').hidden = !automation;
+  $('area-work').classList.toggle('on', !automation);
+  $('area-work').setAttribute('aria-pressed', String(!automation));
+  $('area-automation').classList.toggle('on', automation);
+  $('area-automation').setAttribute('aria-pressed', String(automation));
+  $('changes').hidden = automation || !state.changesOpen;
+  if (automation) {
+    const frame = $('automation-frame');
+    if (frame.getAttribute('src') === 'about:blank') frame.setAttribute('src', frame.dataset.src);
+  } else {
+    const latest = await api.getConfig();
+    state.config = latest;
+    if (state.repo !== latest.lastRepo) await selectRepo(latest.lastRepo);
+    Term.refit();
+  }
+  if (persist) state.config = await api.saveConfig({ area: state.area });
+}
+
 // ---- 配線 --------------------------------------------------------------------
 
 async function init() {
@@ -631,6 +655,10 @@ async function init() {
   for (const id of await api.running()) state.running.add(id);
   await selectRepo(state.config.lastRepo);
   showView(state.config.view);
+  await showArea(state.config.area, { persist: false });
+
+  $('area-work').onclick = () => showArea('work').catch((err) => notice(err.message, 'error'));
+  $('area-automation').onclick = () => showArea('automation').catch((err) => notice(err.message, 'error'));
 
   $('repo-add').onclick = async () => { const cfg = await api.addRepo(); if (cfg) { state.config = cfg; await selectRepo(cfg.lastRepo); } };
   $('session-new').onclick = () => newDraft();

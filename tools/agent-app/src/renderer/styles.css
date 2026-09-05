@@ -46,7 +46,20 @@ label.check { cursor: pointer; }
 .seg button:first-child { border-radius: 6px 0 0 6px; margin-left: 0; }
 .seg button:last-child { border-radius: 0 6px 6px 0; }
 
-#app { display: grid; grid-template-columns: 260px minmax(0, 1fr) auto; height: 100vh; }
+#app { display: grid; grid-template-columns: 260px minmax(0, 1fr) auto; grid-template-areas: "side main changes"; height: 100vh; }
+#side { grid-area: side; }
+#main { grid-area: main; }
+#changes { grid-area: changes; }
+#automation { grid-area: main; min-width: 0; min-height: 0; height: 100vh; background: var(--bg); }
+#automation-frame { display: block; width: 100%; height: 100%; border: 0; background: var(--bg); }
+#areas { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 10px 10px 8px; border-bottom: 1px solid var(--line); }
+#areas button { min-height: 38px; padding: 6px 10px; border-color: transparent; background: transparent; color: var(--muted); font-weight: 600; }
+#areas button:hover { background: var(--code-bg); color: var(--text); }
+#areas button.on { background: var(--accent-bg); color: var(--accent); border-color: transparent; }
+#app.automation-mode { grid-template-columns: 104px minmax(0, 1fr); grid-template-areas: "side main"; }
+#app.automation-mode #side > :not(#areas) { display: none !important; }
+#app.automation-mode #areas { grid-template-columns: 1fr; padding: 12px 8px; border-bottom: 0; gap: 6px; }
+#app.automation-mode #areas button { min-height: 44px; }
 #side, #changes { background: var(--panel); border-right: 1px solid var(--line); overflow: hidden; display: flex; flex-direction: column; min-height: 0; }
 #side .list.grow { flex: 1; overflow: auto; }
 #changes { border-right: 0; border-left: 1px solid var(--line); width: 520px; }

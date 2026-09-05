@@ -18,7 +18,8 @@ const crypto = require('crypto');
 // lastWorktree … リポジトリ → 最後に選んだ作業フォルダ名（'' はリポジトリ本体）
 const DEFAULTS = {
   repos: [], lastRepo: '', lastCli: 'copilot', lastModel: '', lastReadonly: false,
-  wslDistro: '', transport: 'tmux', useWorktree: true, view: 'chat', lastFiles: {}, lastWorktree: {},
+  wslDistro: '', transport: 'tmux', useWorktree: true, area: 'work', view: 'chat', lastFiles: {}, lastWorktree: {},
+  automationSkillDir: '', automationAgent: 'aider', automationModel: '',
 };
 const MAX_REPOS = 30;
 
@@ -35,9 +36,13 @@ function normalize(raw) {
   next.wslDistro = String(next.wslDistro || '').trim();
   next.transport = next.transport === 'headless' ? 'headless' : 'tmux';
   next.useWorktree = next.useWorktree !== false;
+  next.area = next.area === 'automation' ? 'automation' : 'work';
   next.view = next.view === 'files' ? 'files' : 'chat';
   next.lastFiles = next.lastFiles && typeof next.lastFiles === 'object' ? next.lastFiles : {};
   next.lastWorktree = next.lastWorktree && typeof next.lastWorktree === 'object' ? next.lastWorktree : {};
+  next.automationSkillDir = String(next.automationSkillDir || '').trim();
+  next.automationAgent = String(next.automationAgent || 'aider').trim() || 'aider';
+  next.automationModel = String(next.automationModel || '').trim();
   return next;
 }
 
