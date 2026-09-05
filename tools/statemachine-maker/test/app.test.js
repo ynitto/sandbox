@@ -99,7 +99,7 @@ test('AI支援は下書きと見直しを分け、候補を保存せず選択反
   assert.ok(renderer.includes('data-ai-answer') && renderer.includes('data-ai-change'));
   assert.ok(renderer.includes('編集画面で確認') && renderer.includes('未保存'));
   assert.ok(preload.includes("invoke('ai:start'") && preload.includes("invoke('ai:apply'"));
-  assert.ok(ipc.includes("handle('ai:start'") && ipc.includes("handle('ai:apply'"));
+  assert.ok(ipc.includes("register('ai:start'") && ipc.includes("register('ai:apply'"));
   assert.ok(ipc.includes('tools.agentAssistRunSpec(') && ipc.includes('aiDiff.apply('));
   assert.ok(!renderer.includes('指示文をコピー') && !preload.includes("invoke('instruction:get'"));
 });
@@ -132,18 +132,18 @@ test('使うAIの候補と実行は agent-tools の公開インターフェー�
   assert.ok(preload.includes("invoke('agents:list'"), 'agent-tools の定義一覧を公開する');
   assert.ok(renderer.includes('api.listAgents('), '画面は定義一覧を取得する');
   assert.ok(!renderer.includes("['claude', 'copilot', 'kiro', 'anthropic']"), 'AI名を画面へ直書きしない');
-  assert.ok(ipc.includes("handle('agents:list'"), 'main が定義一覧を返す');
+  assert.ok(ipc.includes("register('agents:list'"), 'main が定義一覧を返す');
   assert.ok(ipc.includes('agentLoop.runSpec('), '実行は agent-loop から agent-tools harness へ渡す');
   assert.ok(ipc.includes('tools.agentAssistRunSpec('), 'AI支援は agent-herd の読み取り専用起動を使う');
 });
 
 test('登録していないフォルダは触らない（main が断る）', () => {
   const ipc = read('main/ipc.js');
-  assert.match(ipc, /config\.isRegistered\(/, 'requireRoot が登録を確かめること');
+  assert.match(ipc, /settings\.isRegistered\(/, 'requireRoot が注入された設定で登録を確かめること');
   for (const channel of ['machine:list', 'machine:read', 'machine:save', 'machine:openFolder']) {
-    assert.ok(ipc.includes(`handle('${channel}'`), `${channel} が無い`);
+    assert.ok(ipc.includes(`register('${channel}'`), `${channel} が無い`);
   }
-  assert.ok(!ipc.includes("handle('workflow:choose'"), '任意のファイルを開く口は持たない');
+  assert.ok(!ipc.includes("register('workflow:choose'"), '任意のファイルを開く口は持たない');
 });
 
 // 画面に出す言葉に内部の綴りを混ぜない（コメントは対象外）。

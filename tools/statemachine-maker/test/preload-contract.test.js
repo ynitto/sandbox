@@ -53,6 +53,6 @@ test('renderer が使う api.* は preload にあり、その IPC チャネル�
     assert.ok(exposedKeys.has(m[1]), `preload に無い api: ${m[1]}`);
   }
   for (const m of preload.matchAll(/invoke\('([\w:]+)'/g)) {
-    assert.ok(ipc.includes(`handle('${m[1]}'`), `ipc.js が受けないチャネル: ${m[1]}`);
+    assert.ok(ipc.includes(`register('${m[1]}'`), `ipc.js が受けないチャネル: ${m[1]}`);
   }
 });
