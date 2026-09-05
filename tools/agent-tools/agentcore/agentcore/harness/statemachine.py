@@ -989,12 +989,24 @@ def _sm_parse_params(pairs: "list[str]", input_value: "str | None") -> dict:
     return params
 
 
-def cmd_statemachine(args: argparse.Namespace, cwd: Path) -> None:
+def cmd_statemachine(args: argparse.Namespace, cwd: Path, *, result_recorder=None) -> None:
     """statemachine サブコマンド: aider 等の headless CLI でステートマシンを完走させる。"""
     work_dir = Path(getattr(args, "dir", None) or cwd).expanduser().resolve()
     if not work_dir.is_dir():
         print(f"[agent-loop] ERROR: ディレクトリが存在しません: {work_dir}", file=sys.stderr)
         sys.exit(1)
+    plan = None
+    workflow_path = getattr(args, "workflow", None)
+    agent = {}
+
+    def notify(result):
+        if not callable(result_recorder) or not workflow_path:
+            return
+        try:
+            result_recorder(work_dir, workflow_path, result, agent, plan)
+        except Exception as exc:
+            print(f"[agent-loop] WARNING: 実行履歴を記録できません: {exc}", file=sys.stderr)
+
     try:
         plan, work_dir = _sm_entry_plan(args, work_dir)
         if not plan and not getattr(args, "workflow", None):
@@ -1039,6 +1051,7 @@ def cmd_statemachine(args: argparse.Namespace, cwd: Path) -> None:
             _sm_progress(f"entry: {getattr(args, 'entry', '')}（{plan['config']}）")
         result = run_statemachine(workflow_path=workflow_path, cwd=str(work_dir),
                                   parameters=params, agent=agent, decision=decision)
+        notify(result)
         print("RESULT " + json.dumps(result, ensure_ascii=False))
         # 3 = 検査の再投入上限に達した（この段では解けない）。呼び出し側が RESULT を
         # 読まずに終了コードだけで昇格へ振り分けられるようにする。非 0 を失敗として
@@ -1047,6 +1060,8 @@ def cmd_statemachine(args: argparse.Namespace, cwd: Path) -> None:
             sys.exit(3)
         sys.exit(0 if result.get("ok") else 1)
     except StateMachineHarnessError as exc:
-        print("RESULT " + json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+        failure = {"ok": False, "error": str(exc)}
+        notify(failure)
+        print("RESULT " + json.dumps(failure, ensure_ascii=False))
         print(f"[agent-loop] ERROR: {exc}", file=sys.stderr)
         sys.exit(1)

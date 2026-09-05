@@ -1379,6 +1379,7 @@ class PeriodicScheduler:
         # このスレッドの進行表示（_tl_progress）を実行ログへ振り向ける。デーモンの stdout は
         # コントロールペインなので、そのまま print させると実行の様子が controller に混ざる。
         _harness_toolloop._TL_PROGRESS_LOCAL.view_file = view_file
+        repository_started_at = _utc_iso()
         try:
             agent = _harness_toolloop._tl_resolve_agent(
                 profile.name, profile.model or "", work_dir)
@@ -1423,6 +1424,26 @@ class PeriodicScheduler:
             _harness_toolloop._tl_progress("RESULT " + json.dumps(
                 {k: result.get(k) for k in keys if k in result},
                 ensure_ascii=False), "agent-loop")
+            if workflow:
+                try:
+                    record_repository_run(work_dir, {
+                        "runId": str(req.get("id") or uuid.uuid4().hex),
+                        "workflow": workflow,
+                        "entryName": name,
+                        "source": "scheduled",
+                        "startedAt": repository_started_at,
+                        "finishedAt": _utc_iso(),
+                        "ok": result.get("ok") is True,
+                        "escalate": result.get("escalate") is True,
+                        "finalState": result.get("finalState") or "",
+                        "stopReason": result.get("stopReason") or "",
+                        "error": result.get("error") or "",
+                        "logFile": result.get("logFile") or "",
+                        "agentCli": profile.name,
+                        "model": profile.model or "",
+                    })
+                except Exception as exc:
+                    log.warning("[%s] 実行履歴を記録できませんでした: %s", name, exc)
         finally:
             _harness_toolloop._TL_PROGRESS_LOCAL.view_file = None
 

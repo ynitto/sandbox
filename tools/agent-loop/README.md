@@ -108,6 +108,9 @@ agent-loop run [--agent-cli NAME] [--model MODEL] [--acceptance TEXT ...] [--jud
 agent-loop statemachine (--workflow PATH | --entry NAME [--config PATH])
                         [--agent-cli NAME] [--model MODEL]
                         [--param KEY=VALUE ...] [--input TEXT] [-d DIR]
+agent-loop inspect --json [-d DIR]
+agent-loop schedule --json [-d DIR]     # stdin: 単純な定期実行のJSON
+agent-loop log --json [-d DIR]          # stdin: workflow と runId のJSON
 agent-loop pause | resume | cancel TARGET | drain | reload
 agent-loop doctor [--json] [--fix]
 agent-loop update
@@ -149,6 +152,11 @@ agent-loop --version
   `next_state.py` が確定します。終了時に `RESULT {json}` を 1 行出力します
   （dashboard はこの行を実行結果の契約として読みます）。`--workflow` は作業ディレクトリ
   内のパスに限ります（dashboard からは cwd 相対で渡されます）。
+- `inspect` / `schedule` / `log` は statemachine-maker などの薄い管理画面向け境界です。
+  `inspect` はリポジトリ内のワークフロー・単純な予定・次回時刻・実行履歴・daemon状態をまとめて返します。
+  `schedule` は毎日・毎週・一定間隔だけを検査してから設定ファイルへ原子的に保存し、稼働中daemonへ
+  reloadを要求します。`log` は履歴の `workflow` と `runId` で照合し、リポジトリ内の対応ログだけを返します。
+  複雑なcronやその他の既存設定はこの画面用境界では書き換えません。
 - **決定的検査（`check`）**。ステートが検査コマンドを宣言していると、アクションの後に
   ハーネスがそれを実行し、**終了コードを遷移の材料にします**（`check_status` / `check_ok` /
   `check_output` が `condition_rule` から見える）。`output_validator` が見るのはモデルが

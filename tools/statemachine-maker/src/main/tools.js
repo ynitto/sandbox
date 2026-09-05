@@ -5,6 +5,7 @@
 //   winauto doctor --output json  … Windows アプリ操作（Windows 上でのみ意味がある）
 //   python --version              … スキルの構成確認スクリプトを動かす
 //   agent-herd defs --json        … agent-tools の AI 定義を列挙する
+//   agent-loop --version          … 手動・定期実行の入口
 // スキルのスクリプトは「選んだフォルダから上へ辿って .github/skills/statemachine-use を探す →
 // このアプリが置かれたリポジトリ → 設定で指定したパス」の順で見つける。
 
@@ -85,19 +86,6 @@ async function agentDefinitions({ cwd = '', capture } = {}) {
   return [...new Set(definitions.map((name) => String(name || '').trim()).filter(Boolean))];
 }
 
-function agentHerdRunSpec({ workflow, root, agent, model = '', input = '', context = {} } = {}) {
-  const args = [
-    'harness', 'statemachine',
-    '--workflow', String(workflow || ''),
-    '--agent-cli', String(agent || ''),
-    '--dir', String(root || ''),
-  ];
-  if (model) args.push('--model', String(model));
-  if (input) args.push('--input', String(input));
-  for (const [key, value] of Object.entries(context || {})) args.push('--param', `${key}=${value}`);
-  return { command: 'agent-herd', args };
-}
-
 // AI 支援はファイルを書かせず、単発の構造化応答だけを受け取る。
 function agentAssistRunSpec({ root, agent, model = '', prompt = '' } = {}) {
   const args = [
@@ -140,6 +128,13 @@ async function toolStatus({ cwd = '', capture, skillDir = '' } = {}) {
       hint: 'tools/agent-tools/install.sh を実行し、agent-herd を PATH に通してください。',
     });
   }
+  const loop = await capture('agent-loop', ['--version'], { cwd, timeoutMs: 10000 });
+  out.push({
+    id: 'agent-loop', label: '実行と定期実行（agent-loop）', ok: !!(loop && loop.ok),
+    summary: loop && loop.ok ? `利用可能（${firstLine(loop) || 'version 不明'}）`
+      : `起動できません: ${(loop && (loop.error || firstLine(loop))) || 'agent-loop'}`,
+    hint: loop && loop.ok ? '' : 'tools/agent-loop/install.sh を実行し、agent-loop を PATH に通してください。',
+  });
   const pw = await capture('playwright-cli', ['--version'], { cwd, timeoutMs: 20000 });
   const pwHelp = pw && pw.ok
     ? await capture('playwright-cli', ['--help'], { cwd, timeoutMs: 20000 })
@@ -186,6 +181,6 @@ async function toolStatus({ cwd = '', capture, skillDir = '' } = {}) {
 }
 
 module.exports = {
-  SKILL_REL, findSkillDir, findPython, agentDefinitions, agentHerdRunSpec, agentAssistRunSpec,
+  SKILL_REL, findSkillDir, findPython, agentDefinitions, agentAssistRunSpec,
   toolStatus, summarizeDoctor, isDir,
 };

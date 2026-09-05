@@ -11,6 +11,7 @@ const runner = require('./runner');
 const ai = require('./ai');
 const aiDiff = require('./ai-diff');
 const config = require('./config');
+const agentLoop = require('./agent-loop');
 
 const APP_ROOT = path.join(__dirname, '..', '..');
 
@@ -151,6 +152,20 @@ function registerIpcHandlers(getWindow) {
     const root = p.root ? requireRoot(p) : '';
     return tools.agentDefinitions({ cwd: root, capture: runner.capture });
   });
+  handle('run:snapshot', (p) => agentLoop.inspect({ root: requireRoot(p), capture: runner.capture }));
+  handle('run:schedule', (p) => agentLoop.saveSchedule({
+    root: requireRoot(p), payload: p.schedule, capture: runner.capture,
+  }));
+  handle('run:daemon', (p) => {
+    const root = requireRoot(p);
+    if (!['start', 'stop'].includes(p.action)) throw new Error('自動実行の操作が不正です');
+    return p.action === 'stop'
+      ? agentLoop.stopDaemon({ root, capture: runner.capture })
+      : agentLoop.startDaemon({ root, startDetached: runner.startDetached });
+  });
+  handle('run:log', (p) => agentLoop.readLog({
+    root: requireRoot(p), identity: p.identity, capture: runner.capture,
+  }));
 
   handle('recording:start', (p) => {
     const root = p.root ? requireRoot(p) : '';
@@ -220,7 +235,7 @@ function registerIpcHandlers(getWindow) {
     return aiDiff.apply({ base, candidate: p.candidate, ids: p.ids });
   });
 
-  // 構成確認はスキルのスクリプト、本実行は agent-tools の harness を使う。
+  // 構成確認はスキル、本実行は agent-loop を入口に agent-tools の harness を使う。
   // 出力はどちらも行単位で renderer へ流す。
   handle('run:start', async (p, event) => {
     const root = requireRoot(p);
@@ -241,25 +256,32 @@ function registerIpcHandlers(getWindow) {
       const agent = String(p.agent || cfg.agent || 'aider');
       const definitions = await tools.agentDefinitions({ cwd: root, capture: runner.capture });
       if (!definitions.includes(agent)) throw new Error(`使う AI「${agent}」は agent-tools に定義されていません`);
-      const spec = tools.agentHerdRunSpec({
-        workflow, root, agent,
-        model: p.model || cfg.model,
-        input: p.input,
-        context: p.context,
+      const parameters = p.parameters && typeof p.parameters === 'object'
+        ? p.parameters
+        : { ...(p.context && typeof p.context === 'object' ? p.context : {}), ...(p.input ? { input: p.input } : {}) };
+      const spec = agentLoop.runSpec({
+        root, machine, agent,
+        model: p.model || cfg.model, parameters,
       });
       command = spec.command;
       args = spec.args;
     }
+    const requestId = randomUUID();
     const sender = event.sender;
     const send = (channel, payload) => { if (!sender.isDestroyed()) sender.send(channel, payload); };
     const started = runner.stream(command, args, {
       cwd: root,
       kind: 'run',
       env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
-      onLine: (kind, line) => send('run:line', { kind, line }),
-      onExit: ({ code }) => send('run:exit', { code, mode }),
+      onLine: (kind, line) => send('run:line', { requestId, machine, kind, line }),
+      onExit: ({ code, stdout, stderr, truncated }) => send('run:exit', {
+        requestId, machine, code, mode,
+        result: mode === 'run' ? agentLoop.parseResult(stdout, code) : { ok: code === 0 },
+        error: truncated ? '実行ログが大きいため一部を省略しました' : '',
+        stderr,
+      }),
     });
-    return { ...started, command: [command, ...args].join(' '), mode };
+    return { ...started, requestId, mode };
   });
   handle('run:stop', () => runner.stop('run'));
 }

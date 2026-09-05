@@ -18,8 +18,8 @@ const SKILL = path.join(REPO, '.github', 'skills', 'statemachine-use');
 const RUNNER = path.join(SKILL, 'scripts', 'run_machine.py');
 
 function python() {
-  for (const cmd of ['python3', 'python']) {
-    const res = spawnSync(cmd, ['-c', 'import yaml'], { encoding: 'utf8' });
+  for (const cmd of [process.env.PYTHON, 'python3', 'python'].filter(Boolean)) {
+    const res = spawnSync(cmd, ['-c', 'import sys,yaml;raise SystemExit(0 if sys.version_info >= (3,10) else 1)'], { encoding: 'utf8' });
     if (res.status === 0) return cmd;
   }
   return '';

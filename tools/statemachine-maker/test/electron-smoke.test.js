@@ -122,7 +122,7 @@ else {
     };
 
     // 画面に中身が出ていること。ここが空なら「真っ白」の再発。
-    await win.waitForSelector('.machine-card', { timeout: 20000 });
+    await win.waitForSelector('.execution-item', { timeout: 20000 });
     assert.ok((await win.evaluate(() => document.getElementById('main').innerHTML)).length > 0,
       '#main が空（renderer が動いていない＝真っ白）');
     assert.strictEqual(await win.evaluate(() => typeof window.api), 'object', 'preload の窓口が無い');
@@ -135,6 +135,8 @@ else {
     }
     await resize(760);
     if (process.env.SMK_SCREENSHOT_HOME) await win.screenshot({ path: process.env.SMK_SCREENSHOT_HOME });
+    await win.click('[data-home-tab="workflows"]');
+    await win.waitForSelector('.machine-card[data-open="smoke"]');
     await win.click('#h-ai-draft');
     await win.waitForFunction(() => document.getElementById('dlg-ai-draft').open);
     assert.match(await win.textContent('#dlg-ai-draft'), /作りたいワークフロー/);
@@ -191,9 +193,9 @@ else {
 
     // もっとも狭い対応幅で全ダイアログの横あふれを確認する。
     await resize(760);
-    for (const id of ['b-record', 'b-files', 'b-run', 'b-settings', 'b-ai']) {
+    for (const id of ['b-record', 'b-files', 'b-settings', 'b-ai']) {
       await win.evaluate((buttonId) => document.getElementById(buttonId).click(), id);
-      const dialogId = { 'b-record': 'dlg-record', 'b-files': 'dlg-files', 'b-ai': 'dlg-ai', 'b-run': 'dlg-run', 'b-settings': 'dlg-settings' }[id];
+      const dialogId = { 'b-record': 'dlg-record', 'b-files': 'dlg-files', 'b-ai': 'dlg-ai', 'b-settings': 'dlg-settings' }[id];
       await win.waitForFunction((target) => document.getElementById(target).open, dialogId);
       const box = await win.evaluate((target) => {
         const dlg = document.getElementById(target);

@@ -46,12 +46,14 @@ test('画面は固定デザインで、見た目のカスタマイズを公開�
   assert.ok(!fs.existsSync(path.join(SRC, 'main', 'theme.js')), '見た目設定モジュールを残さない');
 });
 
-test('ホームは左のフォルダから右のワークフロー一覧へ読める', () => {
+test('ホームはフォルダ・実行対象・実行詳細の順に読める', () => {
   const renderer = read('renderer/renderer.js');
   const css = read('renderer/styles.css');
   assert.match(renderer, /<div class="home">\s*<aside class="folder-pane">[\s\S]*<section class="machine-pane">/);
-  assert.ok(renderer.includes('AIで下書き') && renderer.includes('手動で作成'));
+  assert.ok(renderer.includes('data-home-tab="run"') && renderer.includes('data-home-tab="workflows"'));
+  assert.ok(renderer.includes('実行履歴') && renderer.includes('定期実行'));
   assert.match(css, /\.home\s*\{[^}]*grid-template-columns:\s*240px minmax\(0, 1fr\)/);
+  assert.match(css, /\.execution-layout\s*\{[^}]*grid-template-columns:\s*minmax\(180px, 240px\) minmax\(0, 1fr\)/);
   assert.match(css, /\.folder-pane\s*\{[^}]*border-right:/);
 });
 
@@ -80,7 +82,7 @@ test('主要操作と工程設定は省略語や直訳調の文言を使わな�
 test('ダイアログは用途別の幅を持ち、狭い画面で横スクロールを作らない', () => {
   const renderer = read('renderer/renderer.js');
   const css = read('renderer/styles.css');
-  for (const [id, size] of [['dlg-record', 'record'], ['dlg-files', 'files'], ['dlg-ai-draft', 'work'], ['dlg-ai', 'work'], ['dlg-run', 'work'], ['dlg-settings', 'settings']]) {
+  for (const [id, size] of [['dlg-record', 'record'], ['dlg-files', 'files'], ['dlg-ai-draft', 'work'], ['dlg-ai', 'work'], ['dlg-settings', 'settings']]) {
     assert.match(renderer, new RegExp(`dialog\\('${id}'[^\\n]+, '${size}',`), `${id} の幅指定`);
     assert.ok(css.includes(`.dlg-${size}`), `${size} の幅規則`);
   }
@@ -131,7 +133,7 @@ test('使うAIの候補と実行は agent-tools の公開インターフェー�
   assert.ok(renderer.includes('api.listAgents('), '画面は定義一覧を取得する');
   assert.ok(!renderer.includes("['claude', 'copilot', 'kiro', 'anthropic']"), 'AI名を画面へ直書きしない');
   assert.ok(ipc.includes("handle('agents:list'"), 'main が定義一覧を返す');
-  assert.ok(ipc.includes('tools.agentHerdRunSpec('), '実行は agent-herd harness を使う');
+  assert.ok(ipc.includes('agentLoop.runSpec('), '実行は agent-loop から agent-tools harness へ渡す');
   assert.ok(ipc.includes('tools.agentAssistRunSpec('), 'AI支援は agent-herd の読み取り専用起動を使う');
 });
 

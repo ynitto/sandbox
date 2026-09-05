@@ -35,6 +35,7 @@ _FRAGMENTS = (
     "session",
     "sandbox",
     "scheduler",
+    "repository_ui",
     "webhook",
     "doctor",
     "interactive",

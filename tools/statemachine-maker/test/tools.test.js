@@ -9,6 +9,7 @@ const tools = require('../src/main/tools');
 function baseCapture(help) {
   return async (command, args) => {
     if (command === 'python3') return { ok: true, status: 0, stdout: 'Python 3.13.0', stderr: '' };
+    if (command === 'agent-loop') return { ok: true, status: 0, stdout: 'agent-loop 1.2.3', stderr: '' };
     if (command === 'playwright-cli' && args.includes('--version')) return { ok: true, status: 0, stdout: '0.1.18', stderr: '' };
     if (command === 'playwright-cli' && args.includes('--help')) return { ok: true, status: 0, stdout: help, stderr: '' };
     return { ok: false, status: 1, stdout: '', stderr: '' };
@@ -29,6 +30,13 @@ test('準備の確認は recording-start と recording-stop の両方があれ�
   assert.strictEqual(pw.ok, true);
   assert.match(pw.summary, /利用可能.*0\.1\.18/);
   assert.strictEqual(pw.hint, '');
+});
+
+test('準備の確認に自動実行基盤の状態を含める', async () => {
+  const statuses = await tools.toolStatus({ capture: baseCapture('recording-start\nrecording-stop\n') });
+  const loop = statuses.find((item) => item.id === 'agent-loop');
+  assert.strictEqual(loop.ok, true);
+  assert.match(loop.summary, /agent-loop 1\.2\.3/);
 });
 
 test('使うAIは agent-tools の定義一覧から取得する', async () => {
@@ -52,30 +60,6 @@ test('使うAIは agent-tools の定義一覧から取得する', async () => {
     args: ['defs', '--json'],
     options: { cwd: '/project', timeoutMs: 20000 },
   }]);
-});
-
-test('実行は agent-tools の statemachine harness 契約を使う', () => {
-  const spec = tools.agentHerdRunSpec({
-    workflow: '/project/.statemachine/review/workflow.yaml',
-    root: '/project',
-    agent: 'codex',
-    model: 'gpt-5',
-    input: 'レビューを開始',
-    context: { ticket: 'ABC-123' },
-  });
-
-  assert.deepStrictEqual(spec, {
-    command: 'agent-herd',
-    args: [
-      'harness', 'statemachine',
-      '--workflow', '/project/.statemachine/review/workflow.yaml',
-      '--agent-cli', 'codex',
-      '--dir', '/project',
-      '--model', 'gpt-5',
-      '--input', 'レビューを開始',
-      '--param', 'ticket=ABC-123',
-    ],
-  });
 });
 
 test('AI支援は agent-tools を読み取り専用・単発で起動する', () => {

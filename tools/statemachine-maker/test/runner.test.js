@@ -5,6 +5,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { EventEmitter } = require('node:events');
 const runner = require('../src/main/runner');
 const tools = require('../src/main/tools');
 const ai = require('../src/main/ai');
@@ -26,6 +27,32 @@ test('AI応答の収集量には上限がある', () => {
   collector.push('stdout', Buffer.from('123456789'));
   collector.finish();
   assert.deepStrictEqual(collector.result(), { stdout: '12345', stderr: '', truncated: true });
+});
+
+test('短いコマンドへ設定JSONを標準入力で渡せる', async () => {
+  const input = '{"enabled":true,"kind":"daily"}';
+  const result = await runner.capture(process.execPath, [
+    '-e', 'process.stdin.setEncoding("utf8");let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>process.stdout.write(s));',
+  ], { input, timeoutMs: 5000 });
+
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(result.stdout, input);
+});
+
+test('自動実行プロセスはアプリから独立して起動する', async () => {
+  const calls = [];
+  const child = new EventEmitter();
+  child.pid = 4321;
+  child.unref = () => { child.unreferenced = true; };
+  const started = runner.startDetached('agent-loop', ['--no-auto-attach'], {
+    cwd: '/project',
+    spawnProcess: (...args) => { calls.push(args); process.nextTick(() => child.emit('spawn')); return child; },
+  });
+
+  assert.deepStrictEqual(await started, { pid: 4321 });
+  assert.strictEqual(child.unreferenced, true);
+  assert.strictEqual(calls[0][2].detached, true);
+  assert.strictEqual(calls[0][2].stdio, 'ignore');
 });
 
 test('偽のagent-herdを読み取り専用契約で起動し、末尾改行なしの候補を受け取る', async (t) => {

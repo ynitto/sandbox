@@ -10,7 +10,7 @@ const { spawn } = require('child_process');
 const command = require('./command');
 const MAX_STREAM_OUTPUT = 1024 * 1024;
 
-function capture(name, args, { cwd = '', timeoutMs = 60000, env = process.env } = {}) {
+function capture(name, args, { cwd = '', timeoutMs = 60000, env = process.env, input = '' } = {}) {
   const spec = command.spawnSpec(name, args, { cwd, env });
   return new Promise((resolve) => {
     let child;
@@ -32,6 +32,7 @@ function capture(name, args, { cwd = '', timeoutMs = 60000, env = process.env } 
     child.stderr.on('data', (d) => { stderr += d.toString('utf8'); });
     child.on('error', (err) => { clearTimeout(timer); finish({ ok: false, status: -1, stdout, stderr, error: String((err && err.message) || err) }); });
     child.on('close', (code) => { clearTimeout(timer); finish({ ok: code === 0, status: code, stdout, stderr, error: '' }); });
+    child.stdin.end(String(input == null ? '' : input));
   });
 }
 
@@ -106,6 +107,24 @@ function stop(kind = '') {
   return true;
 }
 
+function startDetached(name, args, { cwd = '', env = process.env, spawnProcess = spawn } = {}) {
+  const spec = command.spawnSpec(name, args, { cwd, env });
+  return new Promise((resolve, reject) => {
+    let child;
+    try {
+      child = spawnProcess(spec.command, spec.args, { ...spec.options, detached: true, stdio: 'ignore' });
+    } catch (err) {
+      reject(new Error(`起動できません: ${(err && err.message) || err}`, { cause: err }));
+      return;
+    }
+    child.once('error', (err) => reject(new Error(`起動できません: ${(err && err.message) || err}`, { cause: err })));
+    child.once('spawn', () => {
+      child.unref();
+      resolve({ pid: child.pid });
+    });
+  });
+}
+
 function spawnRecorder({ command: name, args, cwd = '' }) {
   const spec = command.spawnSpec(name, args, { cwd });
   const child = spawn(spec.command, spec.args, spec.options);
@@ -119,4 +138,4 @@ function spawnRecorder({ command: name, args, cwd = '' }) {
   return { pid: child.pid, wait: () => exited };
 }
 
-module.exports = { capture, stream, stop, isRunning, spawnRecorder, createOutputCollector, MAX_STREAM_OUTPUT };
+module.exports = { capture, stream, stop, isRunning, startDetached, spawnRecorder, createOutputCollector, MAX_STREAM_OUTPUT };

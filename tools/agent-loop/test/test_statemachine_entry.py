@@ -170,6 +170,10 @@ class DispatchTest(unittest.TestCase):
 
     def setUp(self):
         self.dir = tempfile.mkdtemp()
+        workflow = Path(self.dir, ".statemachine", "digest", "workflow.yaml")
+        workflow.parent.mkdir(parents=True)
+        workflow.write_text("name: digest\nstates:\n  done:\n    terminal: true\n",
+                            encoding="utf-8")
         self.sched = al.PeriodicScheduler.__new__(al.PeriodicScheduler)
         self.sched._lock = threading.RLock()
         self.sched._workspace = self.dir
@@ -230,6 +234,20 @@ class DispatchTest(unittest.TestCase):
         self.sched._fail_execution.assert_called_once()
         self.assertEqual(self.sched._fail_execution.call_args.kwargs["reason"],
                          "statemachine_failed")
+
+    def test_a_scheduled_result_is_visible_in_repository_history(self):
+        with tempfile.TemporaryDirectory() as history_dir, \
+             mock.patch.dict(os.environ, {"AGENT_LOOP_RUN_HISTORY_DIR": history_dir}):
+            self._run(self._entry(), "", {
+                "ok": True, "finalState": "done", "stopReason": "terminal_state",
+                "logFile": str(Path(self.dir, ".statemachine-use", "logs", "run.jsonl")),
+                "files": [],
+            })
+            history = al.repository_snapshot(self.dir)["machines"][0]["history"]
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0]["source"], "scheduled")
+        self.assertEqual(history[0]["entryName"], "sm")
+        self.assertEqual(history[0]["finalState"], "done")
 
     def test_an_entry_without_a_declaration_still_runs_the_prompt_harness(self):
         req = {"id": "r1", "entry_id": "e1", "prompt": "本文", "meta": {}}

@@ -98,8 +98,57 @@ h1, h2, h3 { margin: 0; font-weight: 650; }
 .machine-card .meta { color: var(--muted); font-size: 12px; margin-top: auto; }
 .machine-card.new { border-style: dashed; color: var(--accent); align-content: center; justify-items: center; font-weight: 600; box-shadow: none; }
 .blank { text-align: center; color: var(--muted); padding: 72px 20px; }
+.blank.compact { padding-block: 48px; }
 .blank h2 { color: var(--fg); margin-bottom: 6px; font-size: 19px; }
 .blank .row { justify-content: center; margin-top: 16px; }
+
+/* リポジトリの実行: 対象を選び、同じ場所で入力・進行・履歴まで確認する。 */
+.home-tabs { display: flex; gap: 4px; margin: -4px 0 16px; border-bottom: 1px solid var(--line); }
+.home-tabs button { border: 0; border-radius: 0; background: transparent; color: var(--muted); padding: 8px 14px 10px; border-bottom: 2px solid transparent; }
+.home-tabs button.is-on { color: var(--accent); border-bottom-color: var(--accent); font-weight: 650; }
+.execution-layout { display: grid; grid-template-columns: minmax(180px, 240px) minmax(0, 1fr); gap: 20px; align-items: start; }
+.execution-list { min-width: 0; display: grid; gap: 4px; position: sticky; top: 0; }
+.execution-item { min-width: 0; display: grid; gap: 2px; text-align: left; border-color: transparent; background: transparent; padding: 9px 11px; }
+.execution-item strong, .execution-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.execution-item span { color: var(--muted); font-size: 11.5px; }
+.execution-item:hover { background: var(--surface); }
+.execution-item.is-on { background: var(--accent-soft); border-color: transparent; color: var(--accent); }
+.execution-detail { min-width: 0; max-width: 900px; display: grid; gap: 12px; }
+.execution-title { min-width: 0; display: flex; justify-content: space-between; align-items: start; gap: 12px; padding-bottom: 4px; }
+.execution-title > div { min-width: 0; }
+.execution-title h2 { font-size: 20px; overflow-wrap: anywhere; }
+.execution-title p { color: var(--muted); margin: 3px 0 0; }
+.execution-card { min-width: 0; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; display: grid; gap: 14px; box-shadow: var(--shadow); }
+.execution-card-head { min-width: 0; display: flex; justify-content: space-between; align-items: start; gap: 10px; }
+.execution-card-head > div { min-width: 0; }
+.execution-card-head h3 { font-size: 15px; }
+.execution-card-head p { margin: 2px 0 0; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.status { display: inline-flex; flex: none; border-radius: 999px; padding: 2px 8px; background: var(--bg); color: var(--muted); font-size: 11px; font-weight: 650; }
+.status.active { color: var(--accent); background: var(--accent-soft); }
+.status.ok { color: var(--ok); background: var(--ok-soft); }
+.status.warn { color: var(--warn); background: var(--warn-soft); }
+.status.ng { color: var(--ng); background: var(--ng-soft); }
+.run-inputs { display: grid; gap: 7px; }
+.run-inputs h3 { font-size: 12.5px; color: var(--muted); }
+.run-input-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 9px; }
+.run-result { margin: 0; padding: 8px 10px; border-radius: 8px; font-size: 12.5px; overflow-wrap: anywhere; }
+.run-result.ok { color: var(--ok); background: var(--ok-soft); }
+.run-result.warn { color: var(--warn); background: var(--warn-soft); }
+.run-result.ng { color: var(--ng); background: var(--ng-soft); }
+.run-card .log { height: 210px; }
+.schedule-editor { min-width: 0; display: grid; gap: 12px; padding-top: 2px; }
+.check-label { display: inline-flex; width: fit-content; align-items: center; gap: 7px; font-weight: 600; }
+.check-label input, .weekday-row input { width: auto; }
+.weekday-row { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
+.weekday-row label { display: inline-flex; gap: 4px; align-items: center; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; font-size: 12px; }
+.run-history { list-style: none; padding: 0; margin: 0; display: grid; }
+.run-history li { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px; align-items: start; padding: 9px 0; border-top: 1px solid var(--line); }
+.run-history li:first-child { border-top: 0; }
+.run-history li > div { min-width: 0; display: grid; }
+.run-history small { color: var(--muted); overflow-wrap: anywhere; }
+.run-history p { margin: 2px 0 0; color: var(--ng); font-size: 12px; overflow-wrap: anywhere; }
+.history-log { min-width: 0; border-top: 1px solid var(--line); padding-top: 12px; display: grid; gap: 8px; }
+.history-log pre { max-height: 320px; overflow: auto; font-family: var(--mono); }
 
 /* ---------- 編集: 左にフロー、右に選択中の設定 ---------- */
 .editor-shell { display: grid; grid-template-columns: minmax(360px, 1fr) 400px; height: 100%; min-width: 0; overflow: hidden; }
@@ -267,6 +316,9 @@ dialog::backdrop { background: rgba(20, 24, 40, 0.25); }
 #toast.err { background: var(--ng); }
 
 @media (max-width: 899px) {
+  .execution-layout { display: block; }
+  .execution-list { position: static; display: flex; overflow-x: auto; gap: 6px; padding-bottom: 10px; margin-bottom: 8px; }
+  .execution-item { flex: 0 0 min(220px, 72vw); }
   .editor-shell { display: block; }
   .editor-shell.is-inspecting .flow-pane { display: none; }
   .editor-shell.no-selection .inspector { display: none; }

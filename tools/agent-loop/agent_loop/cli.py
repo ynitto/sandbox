@@ -341,6 +341,42 @@ def main() -> None:
         help="作業ディレクトリ（省略時: カレントディレクトリ）",
     )
 
+    inspect_parser = subparsers.add_parser(
+        "inspect",
+        help="リポジトリのステートマシン実行状態を表示する",
+    )
+    inspect_parser.add_argument(
+        "--json", action="store_true", help="機械可読な JSON を出力する",
+    )
+    inspect_parser.add_argument(
+        "--dir", "-d", default=None, metavar="DIR",
+        help="対象リポジトリ（省略時: カレントディレクトリ）",
+    )
+
+    schedule_parser = subparsers.add_parser(
+        "schedule",
+        help="ステートマシンの単純な定期実行を保存する",
+    )
+    schedule_parser.add_argument(
+        "--json", action="store_true", help="stdin の JSON を読み、JSON で結果を返す",
+    )
+    schedule_parser.add_argument(
+        "--dir", "-d", default=None, metavar="DIR",
+        help="対象リポジトリ（省略時: カレントディレクトリ）",
+    )
+
+    log_parser = subparsers.add_parser(
+        "log",
+        help="ステートマシンの実行履歴に対応するログを表示する",
+    )
+    log_parser.add_argument(
+        "--json", action="store_true", help="stdin の履歴指定を読み、JSON で結果を返す",
+    )
+    log_parser.add_argument(
+        "--dir", "-d", default=None, metavar="DIR",
+        help="対象リポジトリ（省略時: カレントディレクトリ）",
+    )
+
     msg_parser = subparsers.add_parser(
         "msg",
         help="エージェントの受信ボックスにメッセージを投函する",
@@ -445,7 +481,19 @@ def main() -> None:
         return
 
     if args.subcommand == "statemachine":
-        _harness_statemachine.cmd_statemachine(args, cwd)
+        cmd_repository_statemachine(args, cwd)
+        return
+
+    if args.subcommand == "inspect":
+        cmd_repository_inspect(args, cwd)
+        return
+
+    if args.subcommand == "schedule":
+        cmd_repository_schedule(args, cwd)
+        return
+
+    if args.subcommand == "log":
+        cmd_repository_log(args, cwd)
         return
 
     if args.subcommand == "msg":

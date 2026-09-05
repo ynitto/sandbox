@@ -1513,6 +1513,19 @@ class EscalationExitCodeTest(unittest.TestCase):
     def test_escalation_has_its_own_code(self):
         self.assertEqual(self._exit_code({"ok": False, "escalate": True}), 3)
 
+    def test_startup_failure_is_reported_to_the_result_recorder(self):
+        args = argparse.Namespace(workflow="w.yaml", dir=None, param=[], input=None,
+                                  agent_cli="broken", model="")
+        recorder = mock.Mock()
+        with patch_harness("_sm_entry_plan", return_value=(None, pathlib.Path(os.getcwd()))), \
+                patch_harness("_sm_resolve_agent", side_effect=sm.StateMachineHarnessError("AIを起動できません")), \
+                mock.patch("sys.stdout", new=io.StringIO()), mock.patch("sys.stderr", new=io.StringIO()):
+            with self.assertRaises(SystemExit) as caught:
+                sm.cmd_statemachine(args, pathlib.Path(os.getcwd()), result_recorder=recorder)
+
+        self.assertEqual(caught.exception.code, 1)
+        self.assertEqual(recorder.call_args.args[2], {"ok": False, "error": "AIを起動できません"})
+
 
 class ParamParsingTest(unittest.TestCase):
     def test_param_pairs_and_input(self):

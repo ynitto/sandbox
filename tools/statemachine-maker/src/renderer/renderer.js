@@ -22,6 +22,8 @@ const state = {
   agents: [],
   catalog: { kinds: [], platform: '' },
   view: 'home',
+  homeTab: 'run',
+  execution: { loading: false, snapshot: null, selected: '', scheduleOpen: false, scheduleDraft: null, log: null },
   current: null,     // { machine, isNew, spec, dirty, warnings, dir }
   open: null,        // 選択中の工程番号、'workflow'、または未選択
   pickerAt: -1,      // 追加の種類を選んでいる位置
@@ -29,7 +31,7 @@ const state = {
   aiDraft: { mode: 'draft', phase: 'input', requestId: '', busy: false, request: '', history: [], questions: [], answers: {}, result: null, error: '', message: '' },
   aiReview: { mode: 'review', phase: 'input', requestId: '', busy: false, focus: '', scope: null, history: [], questions: [], answers: {}, result: null, error: '', message: '' },
   recording: { source: 'browser', url: '', app: '', text: '', active: false, busy: false, message: '', ok: true },
-  run: { lines: [], running: false, input: '', agent: '' },
+  run: { lines: [], running: false, agent: '', parameters: {}, requestId: '', result: null, error: '' },
   fileTab: '',
 };
 
@@ -205,6 +207,33 @@ async function loadMachines() {
   state.machines = state.root ? ((await guard('一覧の取得', () => api.listMachines(state.root))) || []) : [];
 }
 
+async function loadExecutionSnapshot() {
+  if (!state.root) { state.execution.snapshot = null; return; }
+  state.execution.loading = true;
+  const snapshot = await guard('実行情報', () => api.runSnapshot(state.root));
+  state.execution.loading = false;
+  state.execution.snapshot = snapshot || {
+    available: false, machines: [], history: [], daemon: { running: false }, error: '実行情報を取得できませんでした',
+  };
+  const machines = executionMachines();
+  if (!machines.some((machine) => machine.machine === state.execution.selected)) {
+    state.execution.selected = machines[0] ? machines[0].machine : '';
+    state.execution.scheduleDraft = null;
+    state.execution.log = null;
+    state.run.parameters = {};
+  }
+}
+
+function executionMachines() {
+  const remote = state.execution.snapshot && state.execution.snapshot.machines;
+  if (Array.isArray(remote) && remote.length) return remote;
+  return state.machines.map((machine) => ({ ...machine, parameters: [], schedule: null, history: [] }));
+}
+
+function selectedExecutionMachine() {
+  return executionMachines().find((machine) => machine.machine === state.execution.selected) || null;
+}
+
 async function selectRoot(root) {
   if (!root || root === state.root) return;
   cancelAi(state.aiDraft);
@@ -212,6 +241,7 @@ async function selectRoot(root) {
   state.root = root;
   await guard('フォルダ', () => api.selectRoot(root));
   await Promise.all([loadMachines(), loadAgents()]);
+  await loadExecutionSnapshot();
   render();
 }
 
@@ -223,6 +253,7 @@ async function addFolder() {
   state.config = cfg;
   state.root = cfg.lastRoot;
   await Promise.all([loadMachines(), loadAgents()]);
+  await loadExecutionSnapshot();
   render();
 }
 
@@ -235,6 +266,7 @@ async function removeFolder(root) {
   state.config = cfg;
   if (state.root === root) state.root = cfg.lastRoot;
   await Promise.all([loadMachines(), loadAgents()]);
+  await loadExecutionSnapshot();
   render();
 }
 
@@ -329,7 +361,7 @@ function renderBar() {
   $('b-record').addEventListener('click', openRecord);
   $('b-files').addEventListener('click', openFiles);
   $('b-ai').addEventListener('click', openAiReview);
-  $('b-run').addEventListener('click', openRun);
+  $('b-run').addEventListener('click', () => goRun(state.current.machine));
   $('b-settings').addEventListener('click', openSettings);
   $('b-save').addEventListener('click', saveMachine);
 }
@@ -356,12 +388,15 @@ function homeHtml() {
     <span class="desc">${esc(m.description || '')}</span>
     <span class="meta">${m.steps ? `${m.steps} 工程` : ''}</span>
   </button>`).join('');
+  const workflowActions = state.homeTab === 'workflows'
+    ? '<div class="row"><button type="button" class="primary" id="h-ai-draft">AIで下書き</button><button type="button" id="h-new">手動で作成</button></div>'
+    : '';
   const body = state.root
     ? `<div class="machine-head">
-        <div><h1>${esc(folderName(state.root))}</h1><div class="where">${esc(state.root)}</div></div>
-        <div class="row"><button type="button" class="primary" id="h-ai-draft">AIで下書き</button><button type="button" id="h-new">手動で作成</button></div>
+        <div><h1>${esc(folderName(state.root))}</h1><div class="where">${esc(state.root)}</div></div>${workflowActions}
       </div>
-      <div class="matrix">${cards}</div>`
+      <div class="home-tabs" role="tablist"><button type="button" data-home-tab="run" class="${state.homeTab === 'run' ? 'is-on' : ''}">実行</button><button type="button" data-home-tab="workflows" class="${state.homeTab === 'workflows' ? 'is-on' : ''}">ワークフロー</button></div>
+      ${state.homeTab === 'run' ? executionHtml() : `<div class="matrix">${cards}</div>`}`
     : '<div class="blank"><h2>左のフォルダを選んでください</h2></div>';
   // 登録したフォルダを左、ワークフローを右に置く。読む順（切り替え → 内容）に合わせて
   // DOM もこの順にする（タブ移動と読み上げが見た目とずれない）。
@@ -382,6 +417,184 @@ function bindHome(main) {
   for (const b of main.querySelectorAll('[data-root]')) b.addEventListener('click', () => selectRoot(b.dataset.root));
   for (const b of main.querySelectorAll('[data-drop]')) b.addEventListener('click', () => removeFolder(b.dataset.drop));
   for (const b of main.querySelectorAll('[data-open]')) b.addEventListener('click', () => openMachine(b.dataset.open));
+  for (const b of main.querySelectorAll('[data-home-tab]')) b.addEventListener('click', () => { state.homeTab = b.dataset.homeTab; render(); });
+  for (const b of main.querySelectorAll('[data-run-machine]')) b.addEventListener('click', () => {
+    state.execution.selected = b.dataset.runMachine;
+    state.execution.scheduleOpen = false;
+    state.execution.scheduleDraft = null;
+    state.run.parameters = {};
+    state.run.result = null;
+    state.run.error = '';
+    render();
+  });
+  on('run-edit', () => { const machine = selectedExecutionMachine(); if (machine) openMachine(machine.machine); });
+  on('run-start', () => startRun('run'));
+  on('run-check', () => startRun('check'));
+  on('run-stop', () => api.runStop());
+  on('schedule-toggle', () => { state.execution.scheduleOpen = !state.execution.scheduleOpen; render(); });
+  on('schedule-save', saveSchedule);
+  on('daemon-toggle', toggleDaemon);
+  for (const button of main.querySelectorAll('[data-history-log]')) button.addEventListener('click', () => openHistoryLog(button.dataset.historyLog));
+  for (const input of main.querySelectorAll('[data-run-param]')) input.addEventListener('input', () => { state.run.parameters[input.dataset.runParam] = input.value; });
+  bindScheduleEditor(main);
+}
+
+function goRun(machine) {
+  if (!machine) return;
+  state.view = 'home';
+  state.current = null;
+  state.homeTab = 'run';
+  state.execution.selected = machine;
+  state.execution.scheduleDraft = null;
+  state.run.result = null;
+  state.run.error = '';
+  loadExecutionSnapshot().then(render);
+}
+
+function scheduleLabel(schedule) {
+  if (!schedule) return '未設定';
+  if (schedule.kind === 'interval') return `${schedule.minutes} 分ごと`;
+  if (schedule.kind === 'daily') return `毎日 ${schedule.time}`;
+  if (schedule.kind === 'weekly') {
+    const labels = ['日', '月', '火', '水', '木', '金', '土'];
+    return `${(schedule.days || []).map((day) => labels[day]).join('・')} ${schedule.time}`;
+  }
+  return '詳細設定あり';
+}
+
+function dateLabel(value) {
+  if (!value) return '';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString('ja-JP', { dateStyle: 'short', timeStyle: 'short' });
+}
+
+function executionHtml() {
+  const machines = executionMachines();
+  if (state.execution.loading) return '<div class="blank compact"><p>実行情報を読み込んでいます…</p></div>';
+  if (!machines.length) return '<div class="blank compact"><h2>実行できるワークフローがありません</h2><p>ワークフローを作成すると、ここから実行できます。</p></div>';
+  const selected = selectedExecutionMachine() || machines[0];
+  const list = machines.map((machine) => {
+    const latest = (machine.history || [])[0];
+    const status = latest ? (latest.ok ? '完了' : latest.escalate ? '要確認' : '失敗') : '未実行';
+    return `<button type="button" class="execution-item ${machine.machine === selected.machine ? 'is-on' : ''}" data-run-machine="${esc(machine.machine)}"><strong>${esc(machine.name)}</strong><span>${esc(status)} · ${esc(scheduleLabel(machine.schedule))}</span></button>`;
+  }).join('');
+  return `<div class="execution-layout"><aside class="execution-list" aria-label="実行するワークフロー">${list}</aside><section class="execution-detail">${executionDetailHtml(selected)}</section></div>`;
+}
+
+function executionDetailHtml(machine) {
+  const snapshot = state.execution.snapshot || {};
+  const daemon = snapshot.daemon || { running: false };
+  const scheduleAgent = machine.schedule && (machine.schedule.agentCli || state.config.agent);
+  const scheduleModel = machine.schedule && (machine.schedule.model || state.config.model);
+  const scheduleMeta = machine.schedule
+    ? [scheduleLabel(machine.schedule), machine.schedule.nextAt ? `次回 ${dateLabel(machine.schedule.nextAt)}` : '', scheduleAgent ? `AI ${scheduleAgent}${scheduleModel ? ` / ${scheduleModel}` : ''}` : ''].filter(Boolean).join(' · ')
+    : scheduleLabel(machine.schedule);
+  const daemonStatus = daemon.activeCount
+    ? `${daemon.activeCount} 件を実行中${daemon.queueDepth ? `、${daemon.queueDepth} 件待機` : ''}`
+    : daemon.running ? (daemon.queueDepth ? `${daemon.queueDepth} 件待機` : '自動実行は稼働中') : '自動実行は停止中';
+  const parameters = machine.parameters || [];
+  const inputs = parameters.length ? `<div class="run-inputs"><h3>実行条件</h3><div class="run-input-grid">${parameters.map((name) => `<div class="field"><label>${esc(name)}</label><input data-run-param="${esc(name)}" value="${esc(state.run.parameters[name] || '')}"></div>`).join('')}</div></div>` : '';
+  const history = (machine.history || []).map((item) => {
+    const status = item.ok ? '完了' : item.escalate ? '要確認' : '失敗';
+    const cls = item.ok ? 'ok' : item.escalate ? 'warn' : 'ng';
+    return `<li><span class="status ${cls}">${status}</span><div><strong>${item.source === 'scheduled' ? '定期実行' : '手動実行'}</strong><small>${esc(dateLabel(item.finishedAt || item.startedAt))}${item.agentCli ? ` · ${esc(item.agentCli)}` : ''}${item.model ? ` / ${esc(item.model)}` : ''}</small>${item.error ? `<p>${esc(item.error)}</p>` : ''}</div>${item.logFile ? `<button type="button" class="tiny" data-history-log="${esc(item.runId)}">ログ</button>` : ''}</li>`;
+  }).join('');
+  const historyLog = state.execution.log
+    ? `<div class="history-log"><div class="execution-card-head"><strong>実行ログ</strong><button type="button" class="tiny" data-history-log="">閉じる</button></div>${state.execution.log.error ? `<p class="run-result ng">${esc(state.execution.log.error)}</p>` : `<pre>${esc(state.execution.log.text || '')}</pre>${state.execution.log.truncated ? '<small class="muted">末尾のみ表示しています。</small>' : ''}`}</div>`
+    : '';
+  const result = state.run.result
+    ? `<p class="run-result ${state.run.result.ok ? 'ok' : state.run.result.escalate ? 'warn' : 'ng'}">${state.run.result.ok ? '実行が完了しました' : state.run.result.escalate ? `確認が必要です${state.run.result.error ? `: ${esc(state.run.result.error)}` : ''}` : esc(state.run.result.error || '実行に失敗しました')}</p>`
+    : state.run.error ? `<p class="run-result ng">${esc(state.run.error)}</p>` : '';
+  const log = state.run.lines.map((line) => `<div class="${line.kind === 'stderr' ? 'e' : ''}">${esc(line.line)}</div>`).join('') || '<span class="muted">実行すると、ここに進行状況が表示されます。</span>';
+  return `<header class="execution-title"><div><span class="eyebrow">ワークフロー</span><h2>${esc(machine.name)}</h2>${machine.description ? `<p>${esc(machine.description)}</p>` : ''}</div><button type="button" class="ghost" id="run-edit">編集</button></header>
+    ${snapshot.available === false ? `<p class="run-result warn">${esc(snapshot.error || '実行基盤に接続できませんでした')}</p>` : ''}
+    <section class="execution-card run-card"><div class="execution-card-head"><div><h3>手動実行</h3><p>使うAI: ${esc(selectedAgent(state.run.agent || state.config.agent) || '未設定')}${state.config.model ? ` / ${esc(state.config.model)}` : ''}</p></div><span class="status ${state.run.running ? 'active' : ''}">${state.run.running ? '実行中' : '待機中'}</span></div>
+      ${inputs}<div class="row"><button type="button" class="primary" id="run-start" ${state.run.running || snapshot.available === false || !state.agents.length ? 'disabled' : ''}>実行</button><button type="button" id="run-check" ${state.run.running ? 'disabled' : ''}>構成を確認</button><button type="button" class="danger" id="run-stop" ${state.run.running ? '' : 'disabled'}>停止</button></div>${result}<div class="log" id="run-log">${log}</div></section>
+    <section class="execution-card"><div class="execution-card-head"><div><h3>定期実行</h3><p>${esc(scheduleMeta)} · ${esc(daemonStatus)}</p></div><div class="row"><button type="button" id="daemon-toggle" ${snapshot.available === false || (!machine.schedule && !daemon.running) ? 'disabled' : ''}>${daemon.running ? '自動実行を停止' : '自動実行を開始'}</button><button type="button" id="schedule-toggle">${state.execution.scheduleOpen ? '閉じる' : machine.schedule ? '変更' : '設定'}</button></div></div>${state.execution.scheduleOpen ? scheduleEditorHtml(machine) : ''}</section>
+    <section class="execution-card"><div class="execution-card-head"><div><h3>実行履歴</h3><p>直近の手動実行と定期実行</p></div></div>${history ? `<ul class="run-history">${history}</ul>` : '<p class="muted small">実行履歴はまだありません。</p>'}${historyLog}</section>`;
+}
+
+function ensureScheduleDraft(machine) {
+  if (state.execution.scheduleDraft && state.execution.scheduleDraft.machine === machine.machine) return state.execution.scheduleDraft;
+  const schedule = machine.schedule && !machine.schedule.advanced ? machine.schedule : { enabled: true, kind: 'daily', time: '09:00', days: [1], input: {} };
+  state.execution.scheduleDraft = {
+    machine: machine.machine, enabled: schedule.enabled !== false, kind: schedule.kind || 'daily',
+    time: schedule.time || '09:00', minutes: schedule.minutes || 60,
+    days: [...(schedule.days || [1])], input: { ...(schedule.input || {}) },
+  };
+  return state.execution.scheduleDraft;
+}
+
+function scheduleEditorHtml(machine) {
+  if (machine.schedule && machine.schedule.advanced) return '<p class="run-result warn">この予定は詳細設定で管理されています。画面からは変更できません。</p>';
+  const draft = ensureScheduleDraft(machine);
+  const timing = draft.kind === 'interval'
+    ? `<div class="field"><label>間隔（分）</label><input id="schedule-minutes" type="number" min="1" value="${esc(draft.minutes)}"></div>`
+    : `<div class="field"><label>時刻</label><input id="schedule-time" type="time" value="${esc(draft.time)}"></div>${draft.kind === 'weekly' ? `<div class="weekday-row">${['日', '月', '火', '水', '木', '金', '土'].map((label, day) => `<label><input type="checkbox" data-schedule-day="${day}" ${draft.days.includes(day) ? 'checked' : ''}>${label}</label>`).join('')}</div>` : ''}`;
+  const inputs = (machine.parameters || []).map((name) => `<div class="field"><label>${esc(name)}</label><input data-schedule-param="${esc(name)}" value="${esc(draft.input[name] || '')}"></div>`).join('');
+  return `<div class="schedule-editor"><label class="check-label"><input id="schedule-enabled" type="checkbox" ${draft.enabled ? 'checked' : ''}>有効にする</label><div class="grid2"><div class="field"><label>繰り返し</label><select id="schedule-kind"><option value="daily" ${draft.kind === 'daily' ? 'selected' : ''}>毎日</option><option value="weekly" ${draft.kind === 'weekly' ? 'selected' : ''}>毎週</option><option value="interval" ${draft.kind === 'interval' ? 'selected' : ''}>一定間隔</option></select></div>${timing}</div>${inputs ? `<div class="run-inputs"><h3>実行条件</h3><div class="run-input-grid">${inputs}</div></div>` : ''}<div class="row"><button type="button" class="primary" id="schedule-save">保存</button></div></div>`;
+}
+
+function bindScheduleEditor(main) {
+  const machine = selectedExecutionMachine();
+  if (!machine || !state.execution.scheduleOpen || (machine.schedule && machine.schedule.advanced)) return;
+  const draft = ensureScheduleDraft(machine);
+  const enabled = main.querySelector('#schedule-enabled');
+  const kind = main.querySelector('#schedule-kind');
+  const time = main.querySelector('#schedule-time');
+  const minutes = main.querySelector('#schedule-minutes');
+  if (enabled) enabled.addEventListener('change', () => { draft.enabled = enabled.checked; });
+  if (kind) kind.addEventListener('change', () => { draft.kind = kind.value; render(); });
+  if (time) time.addEventListener('input', () => { draft.time = time.value; });
+  if (minutes) minutes.addEventListener('input', () => { draft.minutes = Number(minutes.value); });
+  for (const day of main.querySelectorAll('[data-schedule-day]')) day.addEventListener('change', () => {
+    const value = Number(day.dataset.scheduleDay);
+    draft.days = day.checked ? [...new Set([...draft.days, value])].sort() : draft.days.filter((item) => item !== value);
+  });
+  for (const input of main.querySelectorAll('[data-schedule-param]')) input.addEventListener('input', () => { draft.input[input.dataset.scheduleParam] = input.value; });
+}
+
+async function saveSchedule() {
+  const machine = selectedExecutionMachine();
+  if (!machine) return;
+  const draft = ensureScheduleDraft(machine);
+  const schedule = draft.kind === 'interval'
+    ? { kind: 'interval', minutes: draft.minutes }
+    : { kind: draft.kind, time: draft.time, ...(draft.kind === 'weekly' ? { days: draft.days } : {}) };
+  const result = await guard('定期実行の保存', () => api.saveRunSchedule(state.root, {
+    workflow: machine.workflow, enabled: draft.enabled, schedule, input: draft.input,
+    agentCli: selectedAgent(state.config.agent), model: state.config.model || '',
+  }));
+  if (!result) return;
+  await loadExecutionSnapshot();
+  state.execution.scheduleOpen = false;
+  state.execution.scheduleDraft = null;
+  render();
+  toast(result.applied ? '定期実行を保存し、反映しました' : '定期実行を保存しました');
+}
+
+async function toggleDaemon() {
+  const daemon = (state.execution.snapshot && state.execution.snapshot.daemon) || { running: false };
+  const action = daemon.running ? 'stop' : 'start';
+  const result = await guard(action === 'start' ? '自動実行の開始' : '自動実行の停止', () => api.setRunDaemon(state.root, action));
+  if (!result) return;
+  toast(action === 'start' ? '自動実行の起動を受け付けました' : '自動実行の停止を受け付けました');
+  setTimeout(async () => { await loadExecutionSnapshot(); if (state.view === 'home') render(); }, 500);
+}
+
+async function openHistoryLog(runId) {
+  if (!runId) { state.execution.log = null; render(); return; }
+  const machine = selectedExecutionMachine();
+  if (!machine) return;
+  state.execution.log = { runId, text: '読み込んでいます…', truncated: false };
+  render();
+  try {
+    const result = await api.runLog(state.root, { workflow: machine.workflow, runId });
+    state.execution.log = { runId, ...result };
+  } catch (err) {
+    state.execution.log = { runId, error: String((err && err.message) || err) };
+  }
+  render();
 }
 
 // --- 編集 -----------------------------------------------------------------------------
@@ -1072,37 +1285,23 @@ async function applyAiReview(dlg) {
   toast(`${ids.length} 件の提案を反映しました（未保存）`);
 }
 
-function openRun() {
-  const run = state.run;
-  const cur = state.current;
-  if (cur.isNew) return;
-  const agent = selectedAgent(run.agent || state.config.agent);
-  run.agent = agent;
-  const dlg = dialog('dlg-run', 'テスト・実行', 'work', `
-    ${cur.dirty ? '<p class="msg" style="color:var(--warn)">保存していない変更があります。動くのは保存した内容です。</p>' : ''}
-    <div class="row"><button type="button" id="run-check" ${run.running ? 'disabled' : ''}>構成を確認</button><button type="button" id="run-go" class="primary" ${run.running ? 'disabled' : ''}>実行</button><button type="button" id="run-stop" class="danger" ${run.running ? '' : 'disabled'}>停止</button></div>
-    <div class="grid2">
-      <div class="field"><label>使う AI</label><select id="run-agent" ${state.agents.length ? '' : 'disabled'}>${agentOptions(agent)}</select></div>
-      <div class="field"><label>最初に渡す文（任意）</label><input id="run-input" value="${esc(run.input)}"></div>
-    </div>
-    <div class="log" id="run-log">${run.lines.map((l) => `<div class="${l.kind === 'stderr' ? 'e' : ''}">${esc(l.line)}</div>`).join('') || '<span class="muted">ここに様子が出ます</span>'}</div>`);
-  dlg.querySelector('#run-agent').addEventListener('change', (e) => { run.agent = e.target.value; });
-  dlg.querySelector('#run-input').addEventListener('input', (e) => { run.input = e.target.value; });
-  dlg.querySelector('#run-check').addEventListener('click', () => startRun('check'));
-  const go = dlg.querySelector('#run-go');
-  if (!state.agents.length) go.disabled = true;
-  go.addEventListener('click', () => startRun('run'));
-  dlg.querySelector('#run-stop').addEventListener('click', () => api.runStop());
-}
-
 async function startRun(mode) {
   const run = state.run;
+  const machine = selectedExecutionMachine();
+  if (!machine) return;
+  run.agent = selectedAgent(run.agent || state.config.agent);
   if (mode === 'run' && !run.agent) { toast('実行環境で使う AI を確認してください', true); return; }
   run.lines = [];
+  run.result = null;
+  run.error = '';
   run.running = true;
-  openRun();
-  const res = await guard('実行', () => api.runStart({ root: state.root, machine: state.current.machine, mode, agent: run.agent || state.config.agent, input: run.input }));
-  if (!res) { run.running = false; openRun(); return; }
+  render();
+  const res = await guard('実行', () => api.runStart({
+    root: state.root, machine: machine.machine, mode,
+    agent: run.agent, model: state.config.model || '', parameters: run.parameters,
+  }));
+  if (!res) { run.running = false; render(); return; }
+  run.requestId = res.requestId || '';
 }
 
 function appendLog(entry) {
@@ -1168,14 +1367,18 @@ async function init() {
   api.onAiProgress((p) => receiveAiProgress(p));
   api.onAiResult((p) => receiveAiResult(p));
   api.onRunExit((p) => {
+    if (state.run.requestId && p.requestId && state.run.requestId !== p.requestId) return;
     state.run.running = false;
-    appendLog({ kind: p.code === 0 ? 'stdout' : 'stderr', line: p.code === 0 ? (p.mode === 'check' ? '— 点検しました。抜けはありません' : '— 終わりました') : '— 止まりました' });
-    const dlg = $('dlg-run');
-    if (dlg.open) { dlg.querySelector('#run-check').disabled = false; dlg.querySelector('#run-go').disabled = !state.agents.length; dlg.querySelector('#run-stop').disabled = true; }
+    state.run.result = p.result || { ok: p.code === 0 };
+    state.run.error = p.error || '';
+    appendLog({ kind: state.run.result.ok ? 'stdout' : 'stderr', line: state.run.result.ok ? (p.mode === 'check' ? '— 構成を確認しました' : '— 実行が完了しました') : '— 実行を完了できませんでした' });
+    if (state.view === 'home' && state.homeTab === 'run') render();
+    loadExecutionSnapshot().then(() => { if (state.view === 'home' && state.homeTab === 'run') render(); });
   });
   window.addEventListener('beforeunload', (e) => { if (state.current && state.current.dirty) { e.preventDefault(); e.returnValue = ''; } });
   state.root = state.config.lastRoot || (state.config.roots || [])[0] || '';
   await Promise.all([state.root ? loadMachines() : Promise.resolve(), loadAgents()]);
+  if (state.root) await loadExecutionSnapshot();
   render();
 }
 
