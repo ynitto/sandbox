@@ -125,17 +125,38 @@ def collect_ci_status(publication: dict, command: str, wait_seconds: float = 0.0
 
 
 def _published_publications(bus) -> list:
-    """公開に成功した結果ノードの (node_id, result, publication) を返す。"""
+    """公開に成功した結果ノードの (node_id, result, publication, index) を返す。
+
+    `index` は書き戻し先の指定: None＝`data.publication` / `"delivery"`＝`data.delivery.publication` /
+    整数＝`data.deliveries[i].publication`。workset の run は要素ごとに別のブランチ・別の
+    commit を公開するので、CI も要素ごとに引いて要素ごとの記録へ戻す（先頭勝ちで 1 つに
+    畳むと、2 つ目以降の repo の CI が run の判断から消える）。"""
     found = []
     for node_id in bus.task_ids():
         result = bus.read_result(node_id) or {}
         data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        deliveries = data.get("deliveries") if isinstance(data.get("deliveries"), list) else None
+        if deliveries:
+            for i, record in enumerate(deliveries):
+                publication = record.get("publication") if isinstance(record, dict) else None
+                if not isinstance(publication, dict):
+                    continue
+                if str(publication.get("state") or "") in ("published", "published-manually"):
+                    # 要素名は記録側（deliveries[i].name）が正典。publication へ写っていない
+                    # 古い記録でも「どの repo の CI か」を落とさない。
+                    named = {"name": str(record.get("name") or "")} if record.get("name") else {}
+                    found.append((node_id, result, {**named, **publication}, i))
+            continue
         delivery = data.get("delivery") if isinstance(data.get("delivery"), dict) else {}
-        publication = data.get("publication") if isinstance(data.get("publication"), dict) else \
-            (delivery.get("publication") if isinstance(delivery.get("publication"), dict) else {})
+        if isinstance(data.get("publication"), dict):
+            publication, where = data["publication"], None
+        elif isinstance(delivery.get("publication"), dict):
+            publication, where = delivery["publication"], "delivery"
+        else:
+            continue
         if str(publication.get("state") or "") not in ("published", "published-manually"):
             continue
-        found.append((node_id, result, publication))
+        found.append((node_id, result, publication, where))
     return found
 
 
@@ -160,24 +181,46 @@ def attach_ci_results(bus, args, collector=None) -> "dict | None":
     collect = collector or collect_ci_status
     cache: dict = {}
     states = []
-    for node_id, result, publication in records:
-        commit = str(publication.get("commit") or "")
-        if commit not in cache:
-            cache[commit] = collect(
+    repositories: "list[dict]" = []
+    for node_id, result, publication, where in records:
+        # commit だけをキーにすると、同じ commit を別 repo が持つことは無い一方で、
+        # workset の要素ごとに違う commit を引くので自然に要素ごとの問い合わせになる。
+        key = (str(publication.get("url") or ""), str(publication.get("commit") or ""))
+        if key not in cache:
+            cache[key] = collect(
                 publication, command,
                 float(getattr(args, "ci_wait_seconds", 0) or 0),
                 float(getattr(args, "ci_poll_seconds", 30) or 30))
-        report = cache[commit]
+        report = cache[key]
         if not report:
             continue
         states.append(report.get("state"))
+        name = str(publication.get("name") or "")
+        repositories.append({**({"name": name} if name else {}),
+                             "url": str(publication.get("url") or ""),
+                             "state": report.get("state"),
+                             **({"url_ci": report["url"]} if report.get("url") else {})})
         data = dict(result.get("data") or {})
-        if isinstance(data.get("publication"), dict):
-            data["publication"] = {**data["publication"], "ci": report}
-        elif isinstance(data.get("delivery"), dict):
+        if isinstance(where, int):
+            deliveries = [dict(d) if isinstance(d, dict) else d
+                          for d in (data.get("deliveries") or [])]
+            if where >= len(deliveries) or not isinstance(deliveries[where], dict):
+                continue
+            deliveries[where]["publication"] = {
+                **(deliveries[where].get("publication") or {}), "ci": report}
+            data["deliveries"] = deliveries
+            data["publication"] = {**(data.get("publication") or {}),
+                                   "ci": {"state": _worst_ci_state(
+                                       {str((d.get("publication") or {}).get("ci", {}).get("state")
+                                            or "") for d in deliveries
+                                        if isinstance(d, dict)} - {""}),
+                                       "checked_at": now_iso()}}
+        elif where == "delivery" and isinstance(data.get("delivery"), dict):
             delivery = dict(data["delivery"])
             delivery["publication"] = {**(delivery.get("publication") or {}), "ci": report}
             data["delivery"] = delivery
+        elif where is None and isinstance(data.get("publication"), dict):
+            data["publication"] = {**data["publication"], "ci": report}
         else:
             continue
         result["data"] = data
@@ -185,6 +228,11 @@ def attach_ci_results(bus, args, collector=None) -> "dict | None":
     if not states:
         return None
     overall = _worst_ci_state(set(states))
-    urls = [str((cache.get(c) or {}).get("url") or "") for c in cache]
-    return {"state": overall, "checked_at": now_iso(),
-            **({"url": next((u for u in urls if u), "")} if any(urls) else {})}
+    urls = [str((v or {}).get("url") or "") for v in cache.values()]
+    out = {"state": overall, "checked_at": now_iso(),
+           **({"url": next((u for u in urls if u), "")} if any(urls) else {})}
+    if any(r.get("name") for r in repositories):
+        # 要素ごとの CI 状態も残す（run 集約の url 先頭勝ちだけでは「どの repo が赤か」が
+        # 分からない）。1 要素の run では name が無いのでキー自体を足さない。
+        out["repositories"] = repositories
+    return out

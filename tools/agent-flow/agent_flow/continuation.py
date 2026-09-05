@@ -62,7 +62,8 @@ def _split_child_readonly(node: dict, items: list) -> bool:
 
 
 def _emit_reduce_tree(nid: str, map_ids: list, width: int, review: bool,
-                      intent: str, new: list, readonly: bool = False) -> list:
+                      intent: str, new: list, readonly: bool = False,
+                      workspaces: "list[str] | None" = None) -> list:
     """最終 reduce が受ける依存 id を返し、必要なら中間 reduce と検証 gate を new へ積む。
 
     map が width 以下なら**従来と完全に同じ構造**（gate 1 つ・id も不変）を返す。
@@ -74,6 +75,8 @@ def _emit_reduce_tree(nid: str, map_ids: list, width: int, review: bool,
     def _spec(spec):
         if readonly:
             spec["readonly"] = True
+        if workspaces:
+            spec["workspaces"] = list(workspaces)   # 親の書込先絞り込みを継ぐ（§5.6）
         new.append(spec)
 
     chunks = _chunk_evenly(list(map_ids), width)
@@ -164,9 +167,15 @@ def _expand_splits(nodes: dict, results: dict, max_fanout: int,
         # （実測 map 2/5 → 道具ゼロ 5/5）ので、継げるときは継ぐ。
         child_ro = _split_child_readonly(node, items)
 
+        # ノード単位の書込先の絞り込み（§5.6）は親から子へそのまま継ぐ。動的に生えた
+        # ノードだけが run の全要素を用意すると、親が意図的に外した repo を触る余地が戻る。
+        child_ws = [str(w) for w in (node.get("workspaces") or []) if str(w or "").strip()]
+
         def _mspec(spec):
             if child_ro:
                 spec["readonly"] = True
+            if child_ws:
+                spec["workspaces"] = list(child_ws)
             return spec
 
         def _mgoal(i, item):
@@ -210,7 +219,7 @@ def _expand_splits(nodes: dict, results: dict, max_fanout: int,
         # 集約前の事前チェック / 敵対的レビューの gate と、幅を超えた分の中間 reduce を積む。
         # 幅以下なら従来と同じ（gate 1 つ・reduce は map 全件に依存）。
         reduce_deps = _emit_reduce_tree(nid, map_ids, reduce_width, review, intent, new,
-                                        readonly=child_ro)
+                                        readonly=child_ro, workspaces=child_ws)
         new.append(_mspec({"id": f"{nid}-reduce", "goal": reduce_goal,
                            "deps": reduce_deps, "kind": "reduce"}))
     return new
@@ -282,6 +291,8 @@ def continue_stub(request: str, nodes: dict, results: dict, iteration: int,
                         spec = {"id": rid, "goal": f"[retry] {goal}", "deps": [],
                                 "kind": nodes.get(dep, {}).get("kind", "work"),
                                 "replaces": dep, "retries": tries + 1}
+                        if nodes.get(dep, {}).get("workspaces"):
+                            spec["workspaces"] = list(nodes[dep]["workspaces"])
                         if agent:
                             spec["agent"] = agent
                         # 固定実行レベルは作り直しでも維持する（固定は迂回されない契約）
@@ -309,6 +320,8 @@ def continue_stub(request: str, nodes: dict, results: dict, iteration: int,
                     spec = {"id": rid, "goal": f"[retry] {goal}", "deps": [],
                             "kind": node.get("kind", "work"),
                             "replaces": nid, "retries": tries + 1}
+                    if node.get("workspaces"):   # 書込先の絞り込みは作り直しでも維持する
+                        spec["workspaces"] = list(node["workspaces"])
                     if agent:
                         spec["agent"] = agent
                     if node.get("tier"):  # 固定実行レベルは作り直しでも維持する
@@ -417,6 +430,8 @@ def _inflight_amend_pending(bus, graph, who, args, consumed_fb: set) -> int:
                 "kind": entry.get("kind", "work")}
         if entry.get("retries"):
             spec["retries"] = entry["retries"]
+        if entry.get("workspaces"):   # 書込先の絞り込みは goal の書き換えで落とさない
+            spec["workspaces"] = list(entry["workspaces"])
         bus.write_task(spec)                           # 待機ノードの spec を書き換え（claim 前なので安全）
         updated.append(nid)
     if updated:

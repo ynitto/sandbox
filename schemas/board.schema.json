@@ -116,7 +116,23 @@
         "resolved_by": {"type": "string", "description": "この result.json を書いたノード id（落札ノード自身）"},
         "resolved_at": {"type": "string", "description": "確定時刻（ISO8601 UTC）"},
         "accepted": {"type": "boolean", "description": "受入まで含めて確定したか（acceptance: manual/agent）"},
-        "branch": {"type": "string", "description": "採用成果の作業ブランチ（コード成果物）"},
+        "branch": {"type": "string", "description": "採用成果の作業ブランチ（コード成果物）。workset の公示では primary の作業ブランチ（要素ごとは deliveries）"},
+        "deliveries": {
+          "type": "array",
+          "description": "workset（複数の書込先）の要素ごとの成果。要素の順は公示の workspaces と同じで、先頭が primary。変更の無かった要素は commit を持たない。1 要素の公示では従来どおり branch だけを載せる",
+          "items": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {
+              "name": {"type": "string", "description": "repos レジストリのエントリ名（公示の workspaces[].name）"},
+              "url": {"type": "string"},
+              "branch": {"type": "string"},
+              "commit": {"type": "string"},
+              "target": {"type": "string"}
+            },
+            "additionalProperties": true
+          }
+        },
         "delivery": {"type": "string", "description": "納品棚への搬出先（delivery.schema.json）。amigos 経路のときのみ"},
         "result_notes": {"type": "array", "items": {"type": "object"}, "description": "人コメント（gitlab executor 等が data.notes に載せる承認/却下コメント）。実装計画 W1-9 — submit の結果読み戻しと等価にするための追加"},
         "discoveries": {"type": "array", "items": {"type": "string"}, "description": "実行中に発見した恒常制約（各ノードの data.constraints を集約したもの）。実装計画 W1-9"},

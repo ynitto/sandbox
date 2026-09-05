@@ -40,12 +40,17 @@ def call_executor(execute, kind: str, goal: str, dep_results: dict, model: "str 
                   references: "list[dict] | None" = None, request: str = "", instructions: str = "",
                   prompt_table: bool = False, repair: "dict | None" = None, context: str = "",
                   read_allocation: "list[dict] | None" = None, agent: "dict | None" = None,
-                  readonly: bool = False, decision: "dict | None" = None):
+                  readonly: bool = False, decision: "dict | None" = None,
+                  workset: "list[dict] | None" = None):
     """executor を呼ぶ単一の入口。
     - `repo_instruction`（ワークスペース＋参照の作業指示テキスト）は、受け取れる executor には**別引数**で
       渡して goal を汚さない（gitlab のイシュータイトル/目的が指示で埋まらないようにする）。
     - `workspace`（構造化 spec dict: url/path/base/target）は、受け取れる executor へそのまま渡す
-      （gitlab は起票先プロジェクトをこの url から解決する）。
+      （gitlab は起票先プロジェクトをこの url から解決する）。workset（複数の書込先）の run では
+      **primary** が入る——集合を知らない executor が先頭要素で従来どおり動けるようにするため。
+    - `workset`（書込先の集合）は、受け取れる executor だけへ渡す。受け取れない executor は
+      集合を知らないまま primary へ書く経路になるので、**複数要素を扱えない executor は
+      自分で fail-close する責任がある**（gitlab executor がそうしている）。
     - `references`（参照リポジトリ spec 列）も、受け取れる executor へそのまま渡す
       （gitlab はイシュー本文に参照節を出す）。
     - `prompt_table`（案 K-2・オプトイン）は、受け取れる executor へそのまま渡す（deps の
@@ -62,6 +67,8 @@ def call_executor(execute, kind: str, goal: str, dep_results: dict, model: "str 
         kwargs["repo_instruction"] = repo_instruction
     if workspace is not None and _executor_accepts(execute, "workspace"):
         kwargs["workspace"] = workspace
+    if workset and _executor_accepts(execute, "workset"):
+        kwargs["workset"] = workset
     if references and _executor_accepts(execute, "references"):
         kwargs["references"] = references
     if request and _executor_accepts(execute, "request"):

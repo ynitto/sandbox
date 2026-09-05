@@ -244,9 +244,15 @@ def cmd_gc(args) -> int:
         print(f"{tag}削除: {rid} (status={meta.get('status')}, age={_age_hours(meta):.1f}h)")
         if not args.dry_run:
             bus.remove_run(rid)
-            workspace = meta.get("workspace")
-            if isinstance(workspace, dict):
-                _delete_recovery_ref(workspace, rid)
+            # 復旧 ref は workset の要素ごとに（別 repo なので同名でよい）。1 要素なら
+            # 従来どおり 1 つ消す。集合を回らないと、2 つ目以降の repo に hidden ref が
+            # 永久に残る（消えた run の commit を手元に留め続ける）。
+            workset = meta.get("workspaces")
+            if not (isinstance(workset, list) and workset):
+                workset = [meta.get("workspace")]
+            for workspace in workset:
+                if isinstance(workspace, dict):
+                    _delete_recovery_ref(workspace, rid)
 
     # 孤児 inbox 要求の掃除: run を伴わない inbox 要求は、daemon がこれを「新規要求」と誤認して
     # 再び orchestrator を起動し **不要な run を走らせる**原因になる（受理ゲートは run_exists のみ）。

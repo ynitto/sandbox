@@ -237,11 +237,19 @@ verification plan は成果 revision が確定してから、同じ workspace �
 
 ## 5. workspace と公開
 
-### 5.1 書き込み先は run に 1 つ
+### 5.1 書き込み先は run が受け取った集合（workset）
 
 workspace を指定した run は、run 専用の作業 branch を使います。worker は同じ run の作業先を共有し、agent は編集だけを行います。commit と push は agent-flow が担当します。参照リポジトリは読み取り専用で、workspace と同じ扱いにしません。
 
-target が作業 branch より進んでいる場合、`base-sync` が先に統合します。競合がなければ機械的に merge し、競合したファイルの内容だけを executor に直させます。履歴操作を agent へ渡しません。target を含められなければ integration failure です。
+書き込み先は 1 つに限りません。run は書込先の**順序付き集合（workset）**を受け取り、先頭を primary と呼びます。既定は 1 要素で、そのときは従来の単一 workspace と形も意味も変わりません。**どこへ書くかを決めるのは依頼側（agent-project / dashboard / 板）で、agent-flow の planner は集合を増減しません。** ノードは既定で repo を知りません（repo-blind）——worker が workset 全体を用意し、agent が実際に編集した repo だけを agent-flow が finalize します。集合の各要素には同じ規律を要素ごとに適用します（同名の作業 branch・commit と push・publication・復旧 ref・base-sync・CI の取り込み）。
+
+要素の同一性は従来どおり (url, path, base) です。同じ url を持つ要素は base が等しくなければなりません——要素ごとの作業 branch は同名なので、同 url・別 base のままでは 1 本の branch の起点が矛盾するためです（明示 branch で分ける経路だけ許します）。同 url・同 base・別 path の要素は 1 つの clone を共有し、変更を許す範囲はその path の和集合になります。
+
+複数の書込先を持つ run では、エージェントの作業ディレクトリは primary の clone のままにし、他の要素は指示ブロックへ絶対パスで列挙します。cwd を親ディレクトリへ移すと、cwd を「そのプロジェクトのルート」と解釈する CLI が壊れるためです。`path` を宣言した要素は finalize が範囲外の変更を機械的に弾きます——複数 repo を同時に開くと誤編集の余地が増えるので、指示だけに頼りません。
+
+target が作業 branch より進んでいる場合、`base-sync` が先に統合します。競合がなければ機械的に merge し、競合したファイルの内容だけを executor に直させます。履歴操作を agent へ渡しません。target を含められなければ integration failure です。base-sync は**要素ごとに 1 ノード**（`base-sync@<name>`）で、root は全ての base-sync に依存します。1 つでも target を取り込まないまま作業を始めると、その repo だけ古い起点の上で検証することになるためです。
+
+正典設計: [複数リポジトリ（workset）設計](../plans/2026-09-05-agent-flow-multi-workspace-design.md)。
 
 ### 5.2 commit と push
 
@@ -256,6 +264,12 @@ commit が失敗した場合は node を失敗させます。古い HEAD を pus
 push 前には `refs/agent-flow/recovery/<run-id>` をローカルの元 repository に作ります。push 成功後に削除し、失敗時は残します。remote が進んだことによる non-fast-forward だけを fetch、rebase、再 push の対象にします。認証、権限、ネットワークの失敗を rebase で覆い隠しません。
 
 手動復旧は `force-complete` から行います。期待 commit が remote branch に含まれることを検証してから `published-manually` へ更新し、理由と remote tip を監査記録へ残します。検証なしで run を done に変える入口はありません。
+
+### 5.3 半公開を隠さない
+
+複数 remote への push は原子的にできません。要素 A が published、要素 B が failed になったノードは、B の失敗で打ち切らずに残りの要素も finalize してから failed にします。先に失敗した要素で止めると、他の要素が「commit も push もされていない」のか「されたが記録が無い」のか区別できなくなるためです。成功した要素の publication は published のまま残し、run 全体の完了条件は「全要素の publication が published（変更ゼロの要素は not-required）」とします。
+
+再開（resume）では失敗ノードが pending へ戻り、A は差分ゼロで not-required、B だけが再 push されます。A の commit は既に remote にあり、作業ツリーは同じ作業 branch から作り直すためです。`force-complete` と復旧 ref の gc も要素ごとに回ります。
 
 ## 6. 失敗と回復
 

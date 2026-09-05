@@ -55,15 +55,22 @@ class Bus:
     def ensure_run(self, request: str, workspace: "dict | None" = None,
                    references: "list[dict] | None" = None,
                    verification_plan: "dict | None" = None,
-                   readonly: bool = False) -> None:
+                   readonly: bool = False, workspaces: "list[dict] | None" = None) -> None:
         self.ensure_dirs()
+        # workset（書込先の集合）。`workspaces` があればそれが正典で、`workspace` は
+        # primary（先頭要素）として引き続き載る＝旧読み手はそのまま動く。1 要素のときは
+        # `workspaces` を書かない——meta の形を N=1 で変えないため（§5.2）。
+        workset = normalize_workset(workspaces if workspaces is not None
+                                    else ([workspace] if workspace else []))
+        workspace = workset_primary(workset) or workspace
         meta = read_json(self.meta_path)
         if meta is None:
             meta = {
                 "request": request,
-                # この run（=バックログ単位）の唯一の書込先リポジトリ（worker が clone し、
+                # この run（=バックログ単位）の書込先リポジトリの primary（worker が clone し、
                 # 作業ブランチを作って作業する）。None なら読み取り専用 run（commit/push しない）。
                 "workspace": workspace or None,
+                **({"workspaces": workset} if len(workset) > 1 else {}),
                 # 参照リポジトリ（読むだけ・書き込まない）。executor がイシュー/プロンプトに描画する。
                 "references": list(references or []),
                 # run 全体の実行権限。動的 fan-out / replan で後から追加されたノードも
@@ -98,7 +105,18 @@ class Bus:
         if isinstance(workspace, dict) and workspace.get("url") \
                 and not (isinstance(cur_ws, dict) and cur_ws.get("url")):
             meta["workspace"] = workspace
+            if len(workset) > 1:
+                meta["workspaces"] = workset
             changed = True
+        elif len(workset) > 1 and not meta.get("workspaces") \
+                and isinstance(cur_ws, dict) and cur_ws.get("url"):
+            # 「無い → 有る」の補充は workset 全体で行う。primary だけが載っている run に
+            # 後から集合が渡ってきたら、primary が同じときに限り集合で補う（既存要素の
+            # 差し替えはしない＝世代交代が旧ブランチへ差した base を壊さない）。
+            if str(workset[0].get("url") or "") == str(cur_ws.get("url") or ""):
+                meta["workspaces"] = [{**workset[0], **cur_ws, "name": workset[0].get("name")}] \
+                    + workset[1:]
+                changed = True
         # verification_plan は最新の投入正本へ更新する。settle は常に「今の正本」と検算する
         # ため、作成時の古い plan（例: workspace 未解決時の digest）のままだと runner の
         # receipt が fail-close で捨てられ続ける。inherit 直後（_seed_from は plan を
@@ -171,10 +189,24 @@ class Bus:
         return True
 
     def run_workspace(self) -> "dict | None":
-        """この run の唯一の書込先ワークスペース spec（meta に記録）。無ければ None（読み取り専用 run）。"""
+        """この run の書込先 primary の spec（meta に記録）。無ければ None（読み取り専用 run）。
+
+        workset（複数の書込先）の run でも **primary を返す**——このアクセサを読む旧来の
+        呼び出し（gitlab executor の起票先解決等）が、集合を知らないまま先頭要素で
+        従来どおり動けるようにするため。集合が要る呼び出しは `run_workset()` を使う。"""
+        return workset_primary(self.run_workset())
+
+    def run_workset(self) -> "list[dict]":
+        """この run の書込先の集合（順序付き・先頭が primary）。読み取り専用 run では空。
+
+        `meta.workspaces` があればそれが正典。無ければ `meta.workspace` 1 件を 1 要素の
+        workset として読む（旧 run・1 要素 run はここを通って従来と同じ結果になる）。"""
         meta = read_json(self.meta_path) or {}
+        raw = meta.get("workspaces")
+        if isinstance(raw, list) and raw:
+            return normalize_workset(raw)
         w = meta.get("workspace")
-        return w if isinstance(w, dict) and w.get("url") else None
+        return normalize_workset([w]) if isinstance(w, dict) and w.get("url") else []
 
     def run_references(self) -> "list[dict]":
         """この run の参照リポジトリ spec 一覧（読むだけ。meta に記録、executor が描画する）。"""
@@ -798,13 +830,18 @@ class Bus:
                 write_json_atomic(self.result_path(nid), res)
                 seeded += 1
         old_meta = read_json(old.meta_path) or {}
-        ws = old_meta.get("workspace")
-        if isinstance(ws, dict) and ws.get("url"):
-            ws = dict(ws)
-            ws["base"] = run_branch_name(old_id)       # 旧ブランチから派生＝done の commit を保つ
+        # 世代交代は **要素ごとに** base を旧ブランチ af/<old-id> へ差し替える（§5.2）。
+        # 1 要素なら従来と同じ 1 回の差し替えになる。
+        old_set = old_meta.get("workspaces")
+        if not (isinstance(old_set, list) and old_set):
+            old_set = [old_meta["workspace"]] if isinstance(old_meta.get("workspace"), dict) else []
+        seeded_set = [{**e, "base": run_branch_name(old_id)}
+                      for e in normalize_workset(old_set)]
+        ws = workset_primary(seeded_set)
         write_json_atomic(self.meta_path, {
             "request": (request or "").strip() or old_meta.get("request", ""),
             "workspace": ws or None,
+            **({"workspaces": seeded_set} if len(seeded_set) > 1 else {}),
             "references": list(old_meta.get("references") or []),
             "readonly": old_meta.get("readonly") is True,
             "status": "planning",
@@ -998,6 +1035,8 @@ class Bus:
         meta = {
             "request": req.get("request", ""),
             "workspace": req.get("workspace"),
+            **({"workspaces": req["workspaces"]} if isinstance(req.get("workspaces"), list)
+               and req["workspaces"] else {}),
             "references": list(req.get("references") or []),
             "readonly": req.get("readonly") is True,
             "status": "failed",
@@ -1020,6 +1059,8 @@ class Bus:
         write_json_atomic(v.meta_path, {
             "request": req.get("request", ""),
             "workspace": req.get("workspace"),
+            **({"workspaces": req["workspaces"]} if isinstance(req.get("workspaces"), list)
+               and req["workspaces"] else {}),
             "references": list(req.get("references") or []),
             "readonly": req.get("readonly") is True,
             "status": "cancelled",
@@ -1096,12 +1137,26 @@ class Bus:
                        verification_plan: "dict | None" = None,
                        plan: "dict | None" = None,
                        pattern: "str | None" = None,
-                       readonly: bool = False) -> None:
+                       readonly: bool = False,
+                       workspaces: "list[dict] | None" = None) -> None:
+        # 投入側は書込先の集合（workset）を渡せる。`workspace` は primary として必ず載せる
+        # ——`workspaces` を知らない旧 orchestrator も primary へは正しく書けるようにする。
+        # `workspaces[0]` と `workspace` が食い違う要求は黙って直さずここで断る（§5.2）。
+        workset = normalize_workset(workspaces if workspaces is not None
+                                    else ([workspace] if workspace else []))
+        primary = workset_primary(workset)
+        if workspace and primary and str(workspace.get("url") or "") != str(primary.get("url") or ""):
+            raise ValueError("workspaces[0] と workspace が食い違っています"
+                             f"（{primary.get('url')} / {workspace.get('url')}）")
+        errs = workset_errors(workset)
+        if errs:
+            raise ValueError("workset が不正です: " + "; ".join(errs))
         rec = {
             "id": req_id,
             "request": request,
             "submitter": submitter,
-            "workspace": workspace or None,   # 唯一の書込先を daemon の orchestrate へ伝搬する
+            "workspace": primary or workspace or None,  # primary を daemon の orchestrate へ伝搬する
+            **({"workspaces": workset} if len(workset) > 1 else {}),
             "references": list(references or []),  # 参照リポジトリも daemon の orchestrate へ伝搬する
             "submitted_at": now_iso(),
         }

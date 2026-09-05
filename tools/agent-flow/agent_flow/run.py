@@ -299,8 +299,12 @@ def _planning_args(args, request: "dict | None" = None) -> list:
 
 def _spawn_orchestrator(base: list, args, req_id: str, req: dict):
     """要求 req を担当する orchestrator を base argv から起動する（daemon のオンデマンド起動）。"""
-    ws = req.get("workspace")   # 要求に紐づく唯一の書込先ワークスペースを run meta へ載せる
-    ws_args = ["--workspace", json.dumps(ws, ensure_ascii=False)] if ws else []
+    # 要求に紐づく書込先（workset。無ければ workspace 1 件）を run meta へ載せる
+    _wss = req.get("workspaces") if isinstance(req.get("workspaces"), list) else None
+    ws = req.get("workspace")
+    ws_args: list = []
+    for w in (_wss or ([ws] if ws else [])):
+        ws_args += ["--workspace", json.dumps(w, ensure_ascii=False)]
     for r in (req.get("references") or []):   # 参照リポジトリも run meta へ伝搬する
         ws_args += ["--reference", json.dumps(r, ensure_ascii=False)]
     vp = req.get("verification_plan")         # 統一 verify の検証計画も run meta へ伝搬する
@@ -401,9 +405,12 @@ def _apply_inbox_request(bus: Bus, args) -> None:
         return
     if not getattr(args, "request", ""):
         args.request = rec.get("request", "")
+    # 書込先は集合（workset）で来ることがある。`workspaces` があればそれが正典で、
+    # 無ければ `workspace` 1 件（従来形）。argv には要素ごとに --workspace を並べる。
+    wss = rec.get("workspaces") if isinstance(rec.get("workspaces"), list) else None
     ws = rec.get("workspace")
-    if ws and not getattr(args, "workspace", None):
-        args.workspace = json.dumps(ws, ensure_ascii=False)
+    if (wss or ws) and not getattr(args, "workspace", None):
+        args.workspace = [json.dumps(w, ensure_ascii=False) for w in (wss or [ws])]
     refs = rec.get("references") or []
     if refs and not getattr(args, "references", None):
         args.references = [json.dumps(r, ensure_ascii=False) for r in refs]
@@ -468,8 +475,8 @@ def cmd_run(args) -> int:
     bus_root = os.path.abspath(args.bus)
     # グローバル引数（バス・転送・run_id・ワークスペース・分解粒度）を子プロセスへ引き継ぐ
     base = _child_base(args, bus_root) + ["--run-id", run_id]
-    if getattr(args, "workspace", None):
-        base += ["--workspace", args.workspace]   # 唯一の書込先を orchestrator/worker へ伝搬
+    for w in (getattr(args, "workspace", None) or []):
+        base += ["--workspace", w]                # 書込先（workset の要素）を orchestrator/worker へ伝搬
     for r in (getattr(args, "references", None) or []):
         base += ["--reference", r]                # 参照リポジトリを orchestrator/worker へ伝搬
     if getattr(args, "verification_plan", None):

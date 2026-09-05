@@ -6,9 +6,15 @@
   "type": "object",
   "required": ["version", "task_id", "commands", "criteria", "digest"],
   "properties": {
-    "version": {"type": "integer", "enum": [1, 2], "description": "1=従来契約、2=target統合付き。解釈できない版の plan は実行しない（fail-close）"},
+    "version": {"type": "integer", "enum": [1, 2, 3], "description": "1=従来契約、2=target統合付き、3=workset（複数の書込先）対応。解釈できない版の plan は実行しない（fail-close）"},
     "task_id": {"type": "string", "description": "対象タスク id。charter acceptance では project/charter を指す id（例 charter:<名前>）"},
-    "workspace": {"type": "string", "description": "検証対象の書込先ワークスペース名（無ければ空）"},
+    "workspace": {"type": "string", "description": "検証対象の書込先ワークスペース名（無ければ空）。version 3 では workspaces[0]（primary）と同じ値"},
+    "workspaces": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1},
+      "description": "version 3 の検証対象 workset。要素名（repos レジストリのエントリ名）の順序付き集合で、先頭が primary。commands[].cwd と integration.targets はこの語彙で要素を指す。version 1/2 の plan には無い"
+    },
     "commands": {
       "type": "array",
       "description": "固定検証コマンド。文字列を変えずに実行し、全件終了コード 0 が要求される。正規化段で完全一致コマンドは 1 つへ畳む（task 固有と regression の重複実行の解消）",
@@ -17,7 +23,8 @@
         "required": ["command"],
         "properties": {
           "command": {"type": "string", "description": "POSIX sh で実行される 1 論理コマンド"},
-          "source": {"type": "string", "enum": ["user", "legacy", "template", "policy"], "description": "user=利用者の明示 / legacy=旧 verify: の読み替え / template=verify_template の展開 / policy=project policy 由来の固定 gate（回帰等）"}
+          "source": {"type": "string", "enum": ["user", "legacy", "template", "policy"], "description": "user=利用者の明示 / legacy=旧 verify: の読み替え / template=verify_template の展開 / policy=project policy 由来の固定 gate（回帰等）"},
+          "cwd": {"type": "string", "description": "このコマンドを実行する workset 要素の名前（version 3 のみ）。省略は primary 相対＝1 要素契約と同じ意味。同じコマンド文字列でも cwd が違えば別のコマンドとして扱う（正規化で畳まない）"}
         },
         "additionalProperties": false
       }
@@ -56,10 +63,11 @@
     },
     "integration": {
       "type": "object",
-      "description": "version 2 の書込workspaceで検証対象へ含めるtarget",
-      "required": ["target"],
-      "properties": {"target": {"type": "string", "minLength": 1}},
-      "additionalProperties": false
+      "description": "検証対象へ含める target。version 2 は単数 target（唯一の書込先）、version 3 は要素ごとの targets（キーは workspaces の要素でなければならない）",
+      "oneOf": [
+        {"required": ["target"], "properties": {"target": {"type": "string", "minLength": 1}}, "additionalProperties": false},
+        {"required": ["targets"], "properties": {"targets": {"type": "object", "minProperties": 1, "additionalProperties": {"type": "string", "minLength": 1}}}, "additionalProperties": false}
+      ]
     },
     "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "description": "digest フィールドを除いた canonical JSON の SHA-256"}
   },

@@ -110,6 +110,30 @@ def execution_by_pc(bus, node_ids) -> "list[tuple[str, int]]":
     return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
 
 
+def _publication_lines(node_results: dict) -> "list[str]":
+    """要素ごとの公開状態を 1 行ずつ描く（workset の run だけ）。
+
+    半公開（一部 published・一部 failed）を run の 1 状態へ畳むと、どの repo が remote に
+    届いていないのかが画面から消える。要素名つきで並べるのはそのため（§5.5）。"""
+    lines: "list[str]" = []
+    for nid, res in node_results.items():
+        data = res.get("data") if isinstance(res.get("data"), dict) else {}
+        deliveries = data.get("deliveries") if isinstance(data.get("deliveries"), list) else None
+        if not deliveries:
+            continue
+        for record in deliveries:
+            if not isinstance(record, dict):
+                continue
+            pub = record.get("publication") if isinstance(record.get("publication"), dict) else {}
+            state = str(pub.get("state") or "unknown")
+            commit = str(pub.get("commit") or "")[:12]
+            ci = str((pub.get("ci") or {}).get("state") or "")
+            lines.append(f"{nid}  [{record.get('name') or record.get('url')}] {state}"
+                         + (f"  {record.get('branch')}@{commit}" if commit else "")
+                         + (f"  ci={ci}" if ci else ""))
+    return lines
+
+
 def _render_status(bus, run_id, events):
     """公式 Dynamic Workflows 風のダッシュボード表示。
     進捗バー / エージェント（タスク）状態ツリー / 直近アクティビティ / 最終サマリ。"""
@@ -129,6 +153,13 @@ def _render_status(bus, run_id, events):
     L.append(f"╭─ agent-flow ── run {run_id} ── [{(status or '?').upper()}]  ⏱ {_elapsed(meta)}")
     if meta.get("request"):
         L.append(f"│  request : {meta['request'][:78]}")
+    workset = meta.get("workspaces") if isinstance(meta.get("workspaces"), list) else None
+    if workset:
+        # 書込先が複数ある run は、どこへ書くつもりなのかを最初に見せる（1 要素の run は
+        # 従来どおり出さない＝画面を変えない）。
+        L.append("│  targets : " + "  ".join(
+            f"{e.get('name') or e.get('url')}" + (f"→{e['target']}" if e.get("target") else "")
+            for e in workset if isinstance(e, dict)))
     if status not in TERMINAL:
         phase = _PHASE_LABELS.get(meta.get("phase"))
         if not phase:
@@ -175,6 +206,10 @@ def _render_status(bus, run_id, events):
 
     if status in TERMINAL:
         node_results = {nid: bus.read_result(nid) or {} for nid in nodes}
+        pubs = _publication_lines(node_results)
+        if pubs:
+            L.append("├─ publications")
+            L.extend(f"│  {line}" for line in pubs)
         sink_ids = _final_result_nodes(nodes, node_results)
         if sink_ids:
             L.append("├─ result")

@@ -295,5 +295,137 @@ class ReceiptTests(unittest.TestCase):
         self.assertTrue(any("version" in e for e in vc.receipt_errors(r, plan=p, expected_rev="abc123")))
 
 
+class WorksetPlanTests(unittest.TestCase):
+    """version 3（workset）— 複数の書込先を検証できる契約。
+
+    1 要素のときは version 1/2 のまま作る（同じ条件の検証を版だけの理由で別 plan にしない）。
+    設計: docs/plans/2026-09-05-agent-flow-multi-workspace-design.md §5.4。
+    """
+
+    def test_single_workspace_still_builds_v1(self):
+        p = vc.build_plan("T-1", commands=["true"], workspaces=["api"])
+        self.assertEqual(p["version"], 1)
+        self.assertNotIn("workspaces", p)
+        self.assertEqual(p["workspace"], "api")
+        self.assertEqual(vc.plan_errors(p), [])
+
+    def test_two_workspaces_build_v3(self):
+        p = vc.build_plan("T-1", commands=["true"], workspaces=["api", "web"])
+        self.assertEqual(p["version"], 3)
+        self.assertEqual(p["workspaces"], ["api", "web"])
+        self.assertEqual(p["workspace"], "api")           # primary は従来キーにも載る
+        self.assertEqual(vc.plan_errors(p), [])
+
+    def test_command_cwd_makes_the_same_string_two_commands(self):
+        # 同じコマンド文字列でも別 repo で走らせるなら別の検証。畳むと片方が黙って走らない。
+        p = vc.build_plan("T-1", workspaces=["api", "web"],
+                          commands=[{"command": "make test"},
+                                    {"command": "make test", "cwd": "web"}])
+        self.assertEqual(len(p["commands"]), 2)
+        self.assertEqual(vc.plan_command_cwd(p["commands"][0], p), "api")   # 省略は primary
+        self.assertEqual(vc.plan_command_cwd(p["commands"][1], p), "web")
+
+    def test_cwd_outside_the_workset_is_refused(self):
+        with self.assertRaisesRegex(ValueError, "workset 外"):
+            vc.build_plan("T-1", workspaces=["api", "web"],
+                          commands=[{"command": "true", "cwd": "docs"}])
+
+    def test_targets_are_bound_per_element_and_into_the_digest(self):
+        a = vc.build_plan("T-1", commands=["true"], workspaces=["api", "web"],
+                          integration={"targets": {"api": "develop", "web": "main"}})
+        b = vc.build_plan("T-1", commands=["true"], workspaces=["api", "web"],
+                          integration={"targets": {"api": "develop", "web": "release"}})
+        self.assertEqual(vc.plan_targets(a), {"api": "develop", "web": "main"})
+        self.assertNotEqual(a["digest"], b["digest"])
+        self.assertEqual(vc.plan_errors(a), [])
+
+    def test_v2_target_reads_as_the_primary_target(self):
+        p = vc.build_plan("T-1", commands=["true"], workspace="api",
+                          integration={"target": "develop"})
+        self.assertEqual(p["version"], 2)
+        self.assertEqual(vc.plan_targets(p), {"api": "develop"})
+
+    def test_workspaces_on_a_v1_plan_is_rejected(self):
+        p = vc.build_plan("T-1", commands=["true"], workspace="api")
+        p["workspaces"] = ["api"]
+        p["digest"] = vc.plan_digest(p)
+        self.assertTrue(any("version 3 以外" in e for e in vc.plan_errors(p)))
+
+    def test_v3_plan_without_workspaces_is_rejected(self):
+        p = vc.build_plan("T-1", commands=["true"], workspaces=["api", "web"])
+        del p["workspaces"]
+        p["digest"] = vc.plan_digest(p)
+        self.assertTrue(any("workspaces が無い" in e for e in vc.plan_errors(p)))
+
+
+class WorksetReceiptTests(unittest.TestCase):
+    def _plan(self):
+        return vc.build_plan("T-1", criteria=["基準"], commands=["true"],
+                             workspaces=["api", "web"],
+                             integration={"targets": {"api": "main", "web": "main"}})
+
+    def _receipt(self, plan, **kw):
+        args = dict(
+            result_rev="a" * 40,
+            commands=[{"command": "true", "exit_code": 0}],
+            criteria=[{"id": "C1", "text": "基準", "verdict": "pass",
+                       "evidence": [{"kind": "command"}]}],
+            revisions={"api": "a" * 40, "web": "b" * 40},
+            integrations=[{"name": "api", "target": "main", "target_rev": "c" * 40,
+                           "verdict": "pass", "conflict_files": []},
+                          {"name": "web", "target": "main", "target_rev": "d" * 40,
+                           "verdict": "pass", "conflict_files": []}])
+        args.update(kw)
+        return vc.build_receipt(plan, **args)
+
+    def test_a_complete_v3_receipt_is_accepted(self):
+        plan = self._plan()
+        r = self._receipt(plan)
+        self.assertEqual(r["verdict"], "pass")
+        self.assertEqual(r["workspaces"], ["api", "web"])
+        self.assertEqual(sorted(r["revisions"]), ["api", "web"])
+        self.assertEqual(vc.receipt_errors(r, plan=plan, expected_rev="a" * 40), [])
+
+    def test_one_element_behind_its_target_fails_the_whole_receipt(self):
+        plan = self._plan()
+        r = self._receipt(plan)
+        r["integrations"][1]["verdict"] = "fail"
+        self.assertEqual(vc.receipt_overall(r), "fail")
+
+    def test_missing_revisions_are_not_accepted(self):
+        plan = self._plan()
+        r = self._receipt(plan, revisions={"api": "a" * 40})
+        self.assertTrue(any("revisions" in e
+                            for e in vc.receipt_errors(r, plan=plan, expected_rev="a" * 40)))
+
+    def test_integration_targets_must_match_the_plan(self):
+        plan = self._plan()
+        r = self._receipt(plan)
+        r["integrations"] = r["integrations"][:1]
+        self.assertTrue(any("integration targets" in e
+                            for e in vc.receipt_errors(r, plan=plan, expected_rev="a" * 40)))
+
+    def test_v1_and_v2_receipts_are_unchanged(self):
+        # 版上げで旧契約の判定が動かないこと（新旧両方を通す契約テスト）。
+        p1 = vc.build_plan("T-1", criteria=["基準"], commands=["true"], workspace="api")
+        r1 = vc.build_receipt(p1, result_rev="a" * 40,
+                              commands=[{"command": "true", "exit_code": 0}],
+                              criteria=[{"id": "C1", "verdict": "pass",
+                                         "evidence": [{"kind": "command"}]}])
+        self.assertEqual(r1["verdict"], "pass")
+        self.assertNotIn("workspaces", r1)
+        self.assertNotIn("revisions", r1)
+        self.assertEqual(vc.receipt_errors(r1, plan=p1, expected_rev="a" * 40), [])
+
+        p2 = vc.build_plan("T-1", commands=["true"], workspace="api",
+                           integration={"target": "main"})
+        r2 = vc.build_receipt(p2, result_rev="a" * 40,
+                              commands=[{"command": "true", "exit_code": 0}],
+                              integration={"target": "main", "target_rev": "c" * 40,
+                                           "verdict": "pass", "conflict_files": []})
+        self.assertEqual(r2["verdict"], "pass")
+        self.assertEqual(vc.receipt_errors(r2, plan=p2, expected_rev="a" * 40), [])
+
+
 if __name__ == "__main__":
     unittest.main()

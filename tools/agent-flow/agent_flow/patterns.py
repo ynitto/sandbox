@@ -100,6 +100,11 @@ def _coerce_tasks(raw, existing=()):
         # human はエージェントを呼ばないので宣言できない（ユーザー定義フローの検証と同じ規則）。
         if t.get("readonly") is True and kind != "human":
             node["readonly"] = True
+        # 書込先の絞り込み（§5.6・任意）。planner のプロンプトには repo 選択の指示を入れない
+        # ——判断（どこに書くか）は依頼側に置く方針を保つ——が、指定が来たら落とさずに運ぶ。
+        picked = [str(w).strip() for w in (t.get("workspaces") or []) if str(w or "").strip()]
+        if picked:
+            node["workspaces"] = picked
         replaces = str(t.get("replaces") or "").strip()
         if replaces:
             node["replaces"] = replaces
@@ -847,6 +852,16 @@ def plan_strategy_user(plan: dict, request: str, tier: str = ""):
             raise UserPlanError(f"ノード {tid} の human には readonly を指定できません")
         if readonly:
             node["readonly"] = True
+        workspaces = t.get("workspaces")
+        if workspaces is not None:
+            if not isinstance(workspaces, list) or not all(
+                    isinstance(w, str) and w.strip() for w in workspaces):
+                raise UserPlanError(
+                    f"ノード {tid} の workspaces は書込先名の配列で指定してください")
+            # 名前が run の workset に無い場合は worker 側が絞り込みを無視する（全要素を
+            # 用意する）。ここで run の集合と突き合わせないのは、plan の検証時点では
+            # workset がまだ確定していない経路（inbox 要求の plan）があるため。
+            node["workspaces"] = [w.strip() for w in workspaces]
         agent = t.get("agent")
         if kind == "human":
             if agent is not None:
@@ -979,7 +994,8 @@ def plan_strategy_agent(request: str, model: str | None, review="auto", granular
     granularity で分解の細かさを指示し、返ってきた並列数も粒度倍率でスケールする。
     policy で分割の単位（behavior=振る舞い縦割り・既定 / file=ファイル水平分割）を指示する。
     tier=basic では basic ワーカー向けの分解指示（1 ノード = 1 短手順・具体的な goal）を足す。
-    ワークスペース（唯一の書込先）は run 単位なので、ノードへの repo 割当はしない。
+    書込先（workset）は run 単位なので、ノードへの repo 割当はしない——どこへ書くかを
+    決めるのは依頼側で、planner の出力へ repo 判断を持ち込まない（設計 §5.6）。
 
     `context`（案 H・オプトイン）: agent-flow が run の meta へ固定したプロジェクト文脈
     （charter/rules.md/リポジトリ理解）スナップショット。stable_prefix 有効時、

@@ -109,13 +109,15 @@ def build_parser() -> argparse.ArgumentParser:
                         "負荷を一定に保つ律速。0 で毎同期")
     p.add_argument("--executor-dir", dest="executor_dir", default=None,
                    help="executor プラグイン（<name>.py）の追加検索ディレクトリ（設定 executor_dir と同義）")
-    p.add_argument("--workspace", dest="workspace", default=None,
-                   help="この run（=バックログ単位）の唯一の書込先リポジトリ。素の URL でも、構造化 JSON "
-                        "（{url,local,path,base,target,desc}）でも可。worker が temp 領域へ clone し、作業ブランチ "
-                        "af/<run-id> を base から作って作業、変更があれば agent-flow が commit/push する。"
-                        "local は公開失敗時の復旧refを保持する元repo、path はモノレポの作業フォルダ、"
-                        "target は MR/PR のターゲットブランチ。"
-                        "省略時は読み取り専用 run")
+    p.add_argument("--workspace", dest="workspace", action="append", default=None,
+                   help="この run（=バックログ単位）の書込先リポジトリ（複数可＝workset）。素の URL でも、"
+                        "構造化 JSON（{name,url,local,path,base,target,desc}）でも可。worker が temp 領域へ "
+                        "clone し、作業ブランチ af/<run-id> を base から作って作業、変更があれば agent-flow が "
+                        "リポジトリごとに commit/push する。name は repos レジストリのエントリ名（記録・"
+                        "検証計画が要素を指す鍵。省略時は URL から導出）、local は公開失敗時の復旧 ref を"
+                        "保持する元 repo、path はモノレポの作業フォルダ、target は MR/PR のターゲットブランチ。"
+                        "**複数指定したときは先頭が primary**（エージェントの作業ディレクトリ・旧読み手が"
+                        "見る唯一の書込先）。省略時は読み取り専用 run")
     p.add_argument("--verification-plan", dest="verification_plan", default=None,
                    help="統一 verify の検証計画（verification-plan.schema.json 準拠の JSON）。"
                         "agent-project が確定して渡す。成果 revision 確定後に専用 runner が一度だけ"
@@ -200,8 +202,9 @@ def build_parser() -> argparse.ArgumentParser:
                        help="固定コマンド（複数可。exit 0=pass / 非0=fail / 127=inconclusive）")
     vplan.add_argument("--criterion", dest="criteria", action="append", default=None,
                        help="自然文の受入基準（複数可。verifier セッションが判定する）")
-    vplan.add_argument("--workspace", dest="plan_workspace", default=None,
-                       help="検証対象リポジトリ（plan.workspace に記録）")
+    vplan.add_argument("--workspace", dest="plan_workspace", action="append", default=None,
+                       help="検証対象リポジトリ名（複数可）。1 件なら plan.workspace、"
+                            "2 件以上なら version 3 の plan.workspaces に記録し、先頭を primary とする")
     vplan.set_defaults(func=cmd_verify_plan)
 
     orch = sub.add_parser("orchestrate", help="計画役")

@@ -14,9 +14,12 @@ closed イシュー）を残す台帳として機能する。`auto_merge: false`
 
 プラグイン契約:
     execute(kind, goal, dep_results, model=None, art_dir=None, dep_arts=None,
-            repo_instruction="", workspace=None, references=None) -> (text, data)
-    ※ goal は本来の目的のみ。workspace（その run の唯一の書込先 spec dict: url/path/base/target）は
-      起票先プロジェクトの解決とイシューの『## 対象リポジトリ』節に使う。references（参照リポジトリ
+            repo_instruction="", workspace=None, references=None, workset=None) -> (text, data)
+    ※ goal は本来の目的のみ。workspace（書込先 spec dict: url/path/base/target。workset の run では
+      primary）は起票先プロジェクトの解決とイシューの『## 対象リポジトリ』節に使う。
+      workset（書込先の集合）は**受けるが実行はしない**——この executor は起票先も MR の期待
+      ターゲットも 1 URL からしか解決できないので、2 要素以上は fail-close で断る（設計:
+      docs/plans/2026-09-05-agent-flow-multi-workspace-design.md §5.7）。references（参照リポジトリ
       spec の列・読むだけ）は『## 参照リポジトリ』節に載せる。repo_instruction はローカルエージェント
       向けの指示なのでイシューには使わない。
 
@@ -25,7 +28,7 @@ create-issue / get-issue / get-comments を移植）。外部の gitlab-idd ス�
 起動は不要で、gl.py へのフォールバックも行わない。
 
 起票先プロジェクト URL とトークンの解決:
-    - **起票先 URL**: その run の唯一の書込先である **ワークスペース URL** が優先。無ければ
+    - **起票先 URL**: その run の書込先（複数あるなら primary）の **ワークスペース URL** が優先。無ければ
       agent-flow.yaml の `gitlab.repo_url` をフォールバックに使う（git remote origin 等への
       曖昧なフォールバックは無い＝誤起票を防ぐ）。
     - **トークン**: agent-flow.yaml には置かず、gl.py と同じ場所から解決する。優先順は
@@ -901,7 +904,8 @@ def _issue_body(kind: str, goal: str, dep_results: dict,
 
 def execute(kind: str, goal: str, dep_results: dict, model=None,
             art_dir=None, dep_arts=None, repo_instruction: str = "",
-            workspace: "dict | None" = None, references: "list[dict] | None" = None):
+            workspace: "dict | None" = None, references: "list[dict] | None" = None,
+            workset: "list[dict] | None" = None):
     """opt-in のワーカーバス: タスクを GitLab イシューにして委譲し、レビュー決着を待って自動承認する。
 
     1. イシューを起票（status:open,assignee:any ＋ 優先度）。ただし**冪等**で、同じタスク
@@ -934,6 +938,17 @@ def execute(kind: str, goal: str, dep_results: dict, model=None,
     `repo_instruction` はローカルエージェント向けの指示なのでイシューには使わない）。
     """
     cfg = _config()
+    # 書込先が複数（workset）の run は**受けない**。この executor は起票先プロジェクトも MR の
+    # 期待ターゲットも「1 つの workspace URL」から決定的に解決する構造で、集合を渡されても
+    # primary にしか起票できない。黙って primary だけへ起票すると、2 つ目以降の repo の変更が
+    # 誰にもレビューされないまま自動マージ判定へ進む。明確に断る方が安全（設計:
+    # docs/plans/2026-09-05-agent-flow-multi-workspace-design.md §5.7・P1 は fail-close）。
+    if isinstance(workset, list) and len(workset) > 1:
+        names = ", ".join(str(e.get("name") or e.get("url") or "") for e in workset)
+        raise RuntimeError(
+            "gitlab executor: 書込先が複数ある run（workset）には対応していません"
+            f"（{len(workset)} 件: {names}）。1 リポジトリずつの run に分けるか、"
+            "別の executor を使ってください。")
     # opt-in 前提チェック（誤って選んだときに無限待ちにしない）: 起票先 URL とトークンを起票前に解決。
     workspace_url = str((workspace or {}).get("url") or "")
     expected_target = _workspace_target(workspace)  # 自動マージ時の MR ターゲット検証（不明なら ""）

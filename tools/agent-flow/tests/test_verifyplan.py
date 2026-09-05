@@ -323,12 +323,13 @@ class VerifyPlanCliTests(unittest.TestCase):
              "--workspace", "/repo"])
         self.assertIs(args.func, kf.cmd_verify_plan)
         self.assertEqual(args.commands, ["true"])
-        self.assertEqual(args.plan_workspace, "/repo")
+        # 検証対象は複数指定できる（workset）。1 件でも append なので配列で来る。
+        self.assertEqual(args.plan_workspace, ["/repo"])
         self.assertIsNone(args.workspace, "グローバル --workspace（run の書込先）とは別物")
 
     def test_builds_digest_stamped_plan(self):
         args = argparse.Namespace(
-            task_id="run-1", criteria=None, plan_workspace="/repo",
+            task_id="run-1", criteria=None, plan_workspace=["/repo"],
             commands=['codd-gate verify --base "$AGENT_BASE_REV"'])
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
