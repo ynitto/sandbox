@@ -315,16 +315,17 @@ class BoardOffloadGateTests(unittest.TestCase):
     def test_single_target_is_never_blocked(self):
         self.assertEqual(km.workset_offload_blocked([{"url": "https://git/api.git"}]), "")
 
-    def test_two_targets_are_blocked_until_the_fleet_contract_supports_them(self):
-        why = km.workset_offload_blocked([{"url": "https://git/api.git"},
-                                          {"url": "https://git/web.git"}])
-        self.assertIn("板へ出しません", why)
+    def test_two_targets_pass_now_that_the_fleet_contract_is_raised(self):
+        # P4 で agentcore.board.CONTRACT_VERSION を 2 へ上げた＝集合の公示を配れる。
+        self.assertEqual(km.workset_offload_blocked([{"url": "https://git/api.git"},
+                                                     {"url": "https://git/web.git"}]), "")
 
-    def test_the_gate_opens_when_the_fleet_contract_is_raised(self):
-        with mock.patch.object(km._boardrules, "CONTRACT_VERSION",
-                               km._boardrules.WORKSET_CONTRACT_VERSION):
-            self.assertEqual(km.workset_offload_blocked([{"url": "https://git/api.git"},
-                                                         {"url": "https://git/web.git"}]), "")
+    def test_the_gate_still_closes_for_a_fleet_left_on_the_old_version(self):
+        # 版を戻した（＝更新漏れの）フリートでは、静かな部分実行の代わりに断る。
+        with mock.patch.object(km._boardrules, "CONTRACT_VERSION", 1):
+            why = km.workset_offload_blocked([{"url": "https://git/api.git"},
+                                              {"url": "https://git/web.git"}])
+        self.assertIn("板へ出しません", why)
 
     def test_the_envelope_carries_every_target_and_the_required_version(self):
         t = km.Task(id="T1", title="横断")

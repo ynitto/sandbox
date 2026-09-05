@@ -102,6 +102,12 @@ def build_wait_record(nid, who, kind, defer: dict, watch_interval: float) -> dic
         "issue": defer.get("issue"),                 # throttled は None（イシュー未作成）
         "task_token": defer.get("task_token"),       # 秘密ではない（再アタッチ用の決定的トークン）
         "expected_target": defer.get("expected_target", ""),  # MR ターゲット検証（park を跨いで保つ）
+        # 書込先が複数（workset）の park は要素ごとに 1 イシュー。単数形（`issue` /
+        # `expected_target`）は primary で埋まっているので、記録を読むだけの道具は従来どおり
+        # 動く。**キーは値があるときだけ足す**——1 要素の park の形を変えないため。
+        **({"issues": defer["issues"]} if defer.get("issues") else {}),
+        **({"expected_targets": defer["expected_targets"]}
+           if defer.get("expected_targets") else {}),
         "throttled": bool(defer.get("throttled")),
         "reason": defer.get("reason", "wait"),
         "active_seen": bool(defer.get("active_seen")),
@@ -163,16 +169,23 @@ def _service_one_wait(v: Bus, rec: dict, poll, watch_interval: float,
     # 締切超過（人が動かないまま timeout / approved_timeout）→ failed（消費者の永久待機を防ぐ）
     dl = _wait_deadline(rec)
     if dl is not None and time.time() >= dl:
+        listed = [i for i in (rec.get("issues") or []) if isinstance(i, dict)]
         iid = (rec.get("issue") or {}).get("iid")
+        # 集合の park は「どのイシューが期限内に決着しなかったか」を残す（1 件だけ書くと、
+        # 残り 1 件は承認済みだったのか未着手だったのかが記録から読めない）。
+        label = ", ".join(f"{i.get('name')} #{i.get('iid')}" for i in listed) or f"#{iid}"
         phase = "MR の決着" if rec.get("active_seen") else "レビュー/MR 作成"
         _finish_wait(v, rec, "failed",
-                     f"[gitlab] park タイムアウト: イシュー #{iid} が期限内に {phase} に至らず",
-                     {"decision": "rejected", "reason": "park-timeout", "issue_iid": iid})
-        log(daemon_id, f"park タイムアウト: {nid}（#{iid}）→ failed")
+                     f"[gitlab] park タイムアウト: イシュー {label} が期限内に {phase} に至らず",
+                     {"decision": "rejected", "reason": "park-timeout", "issue_iid": iid,
+                      **({"issue_iids": [i.get("iid") for i in listed]} if listed else {})})
+        log(daemon_id, f"park タイムアウト: {nid}（{label}）→ failed")
         return
     try:
         r = poll({"issue": rec.get("issue"), "active_seen": rec.get("active_seen", False),
-                  "expected_target": rec.get("expected_target", "")})
+                  "expected_target": rec.get("expected_target", ""),
+                  "issues": rec.get("issues") or [],
+                  "expected_targets": rec.get("expected_targets") or {}})
     except Exception as e:  # noqa: BLE001 — poll 失敗は run を止めない。lease を更新して次回再試行
         log(daemon_id, f"service_waits poll 失敗（無視して次回再試行）: {nid}: {e}")
         rec["next_poll_at"] = time.time() + max(watch_interval, float(rec.get("poll_interval", 30) or 30))

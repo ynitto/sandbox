@@ -41,6 +41,10 @@ function submitPost(busDir, env) {
     request: buildRequest(env),
     submitter: env.requested_by || 'agent-dashboard',
     workspace: env.workspace || null,
+    // 書込先が複数の公示は、その集合ごと agent-flow の inbox へ渡す（primary だけ渡すと
+    // 2 つ目以降の repo が実行されないまま run が成功で終わる）。
+    ...(Array.isArray(env.workspaces) && env.workspaces.length > 1
+      ? { workspaces: env.workspaces } : {}),
     references: Array.isArray(env.references) ? env.references : [],
     submitted_at: env.requested_at || nowIso(),
   };

@@ -89,10 +89,12 @@ def doctor_env_findings(args, which=shutil.which) -> "list[dict]":
 def workset_capability_findings(args) -> "list[dict]":
     """渡された書込先の集合（workset）を、この設定で本当に実行できるかを先に見る。
 
-    複数の書込先を宣言していても gitlab executor は起票先を 1 URL からしか解決できず、
-    実行時に fail-close で断る（executors/gitlab.py）。投函してから断られるより、
-    doctor の時点で同じ理由を出す方が安い。集合が不正（同 url・別 base）なら orchestrate も
-    fail-close するので、ここでも同じ判定（`workset_errors`）を出す。"""
+    集合が不正（同 url・別 base）なら orchestrate が fail-close するので、投函してから
+    断られるより doctor の時点で同じ判定（`workset_errors`）を出す方が安い。
+
+    gitlab executor は要素ごとに 1 イシューを起票できるようになったので（P4）、ここでの
+    「複数の書込先は受けない」所見は無くなった。代わりに**起票が要素の数だけ増える**ことを
+    情報として出す——2 repo の run は 2 件のレビュー待ちになるので、人の手番が倍になる。"""
     workset = parse_workset(getattr(args, "workspace", None))
     if len(workset) <= 1:
         return []
@@ -105,12 +107,12 @@ def workset_capability_findings(args) -> "list[dict]":
             "fix": "同じリポジトリの要素は base を揃えるか、明示 branch で分ける"})
     if str(getattr(args, "executor", "") or "") == "gitlab":
         findings.append({
-            "category": "config", "severity": "critical",
-            "title": "gitlab executor は複数の書込先（workset）を受けない",
+            "category": "config", "severity": "info",
+            "title": "gitlab executor は書込先ごとに 1 イシューを起票する",
             "evidence": f"--workspace が {len(workset)} 件"
-                        f"（{', '.join(workset_names(workset))}）。起票先プロジェクトと MR の"
-                        "期待ターゲットを 1 つの workspace URL から解決する構造のため断る",
-            "fix": "1 リポジトリずつの run に分けるか、別の executor を使う"})
+                        f"（{', '.join(workset_names(workset))}）。要素ごとに独立した委譲になり、"
+                        "全部が承認されて初めてノードが done になる",
+            "fix": "レビュー待ちが要素の数だけ並ぶ。1 件ずつ回したいなら run を分ける"})
     return findings
 
 

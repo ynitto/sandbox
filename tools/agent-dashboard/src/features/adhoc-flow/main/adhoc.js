@@ -944,11 +944,16 @@ function executionAssignmentPreview(config) {
 
 const COHERENCE_COMMAND = 'codd-gate verify --base "$AGENT_BASE_REV"';
 
-function buildVerificationPlan(config, { runId, workspace }) {
+function buildVerificationPlan(config, { runId, workspace, workspaces }) {
   const c = cfgOf(config);
   const cmd = String(c.agentFlowCommand || '').trim() || 'agent-flow';
   const q = exec.shellQuote;
-  const line = `${cmd} verify-plan --task-id ${q(runId)} --workspace ${q(workspace.url)}`
+  // 書込先が複数ある run では `--workspace` を要素の数だけ繰り返す。エンジンはそれを見て
+  // 検証計画を version 3（要素ごとの clone・cwd・統合ターゲット）で組む——1 つだけ渡すと
+  // 「検証場所が不足」で inconclusive に倒れる（設計 §5.4）。
+  const elements = Array.isArray(workspaces) && workspaces.length ? workspaces : [workspace];
+  const flags = elements.map((e) => ` --workspace ${q(workspaceToken(e))}`).join('');
+  const line = `${cmd} verify-plan --task-id ${q(runId)}${flags}`
     + ` --command ${q(COHERENCE_COMMAND)}`;
   const result = exec.shInWsl(line, 10000, c.distro || '');
   let plan = null;
@@ -961,6 +966,66 @@ function buildVerificationPlan(config, { runId, workspace }) {
       String(result.stderr || result.stdout || '').trim().slice(0, 300)}`);
   }
   return plan;
+}
+
+// 投函が受け取るフォルダの列。`cwd`（従来の単数）を先頭に、`cwds`（追加の書込先）を続ける
+// ——先頭が primary という順序をここで決める。重複と空文字はここで落とす。
+function worksetFolders(cwd, cwds) {
+  const list = [cwd, ...(Array.isArray(cwds) ? cwds : [])]
+    .map((item) => String(item || '').trim()).filter(Boolean);
+  return [...new Set(list)];
+}
+
+// `--workspace` に渡すトークン。素の URL では要素名を運べないので、集合の run では
+// agent-flow が受ける JSON 形（{url,name,base,...}）で渡す。1 要素の run は従来どおり
+// URL だけ——エンジン側で名前が付かず、記録の形が N=1 で変わらない（設計 §5.1 不変条件 3）。
+function workspaceToken(spec) {
+  const e = spec && typeof spec === 'object' ? spec : {};
+  if (!e.name) return String(e.url || '');
+  const out = { url: String(e.url || ''), name: String(e.name) };
+  for (const key of ['path', 'base', 'target', 'desc']) {
+    if (e[key]) out[key] = String(e[key]);
+  }
+  return JSON.stringify(out);
+}
+
+// 書込先の集合につける要素名。エンジンの `normalize_workset`（_repo_name → gitbus._safe）と
+// **同じ規則**で URL 末尾から導く——名前は明示すればそちらが優先されるが、両側の導出が
+// 割れていると「画面が付けた名前」と「エンジンが付けたはずの名前」が食い違い、検証計画の
+// `workspaces[]` が runner の clone を指せなくなる。許す文字も置換文字（`_`）も向こうに
+// 合わせる。重複したら -2, -3 … を足して一意にする（これも向こうと同じ）。
+function worksetName(url, taken) {
+  let base = String(url || '').replace(/\/+$/, '').split('/').pop() || 'repo';
+  if (base.endsWith('.git')) base = base.slice(0, -4);
+  base = base.replace(/[^0-9A-Za-z._-]/g, '_') || 'repo';
+  if (!taken.has(base)) return base;
+  let n = 2;
+  while (taken.has(`${base}-${n}`)) n += 1;
+  return `${base}-${n}`;
+}
+
+// 選ばれたフォルダの列 → 書込先の集合。順序が意味を持つ（先頭が primary）。同じフォルダを
+// 2 回選んでも 1 要素に畳む——同じ clone を 2 回作っても書ける範囲は増えず、要素名だけが
+// 増えて記録が読みにくくなる。
+function gitWorkset(config, cwds) {
+  const list = (Array.isArray(cwds) ? cwds : [cwds])
+    .map((item) => String(item || '').trim()).filter(Boolean);
+  const out = [];
+  const seen = new Set();
+  const taken = new Set();
+  for (const item of list) {
+    const spec = gitWorkspace(config, item);
+    const key = `${spec.url}\u0000${spec.path || ''}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(spec);
+  }
+  if (out.length <= 1) return out;          // 1 要素には名前を付けない（N=1 の形を保つ）
+  return out.map((spec) => {
+    const name = worksetName(spec.url, taken);
+    taken.add(name);
+    return { ...spec, name };
+  });
 }
 
 function gitWorkspace(config, cwd) {
@@ -1202,7 +1267,7 @@ function forceComplete(config, { runId, reason } = {}) {
 }
 
 function submit(config, {
-  title, request, preset, cwd, selection, purpose, executionOverrides, coherenceGate,
+  title, request, preset, cwd, cwds, selection, purpose, executionOverrides, coherenceGate,
   granularity, splitPolicy, parameters, batchId,
 } = {}) {
   const req = String(request || '').trim();
@@ -1227,10 +1292,13 @@ function submit(config, {
   const busDir = resolveBusDir(config);
   fs.mkdirSync(path.join(busDir, 'inbox'), { recursive: true });
 
-  // cwd は設計フローの参照解決と、origin 情報を持つ読み取り専用 reference に使う。
-  // 設計runは workspace=null のままなので、af/<run-id> 用の書込ブランチは作られない。
-  const workspace = effectivePurpose === 'design' ? null : (cwd ? gitWorkspace(config, cwd) : null);
-  const references = effectivePurpose === 'design' && cwd ? [gitWorkspace(config, cwd)] : [];
+  // cwd（＋追加の cwds）は設計フローの参照解決と、origin 情報を持つ読み取り専用 reference に
+  // 使う。設計runは workspace=null のままなので、af/<run-id> 用の書込ブランチは作られない。
+  // 書込先が 2 つ以上のときだけ `workspaces` を足す——1 つの run の記録の形を N=1 で変えない。
+  const folders = worksetFolders(cwd, cwds);
+  const workset = effectivePurpose === 'design' ? [] : gitWorkset(config, folders);
+  const workspace = workset.length ? workset[0] : null;
+  const references = effectivePurpose === 'design' ? folders.map((f) => gitWorkspace(config, f)) : [];
   if (coherenceGate && !workspace) {
     throw new Error('一貫性ゲートには Git リポジトリの選択が必要です（差分ゲートは書込先で判定します）');
   }
@@ -1254,11 +1322,15 @@ function submit(config, {
     purpose: effectivePurpose,
     ...(effectivePurpose === 'design' ? { readonly: true } : {}),
     workspace,
+    ...(workset.length > 1 ? { workspaces: workset } : {}),
     references,
     ...(String(batchId || '').trim() ? { batch_id: String(batchId).trim() } : {}),
     submitted_at: new Date().toISOString(),
   };
-  if (coherenceGate) rec.verification_plan = buildVerificationPlan(config, { runId, workspace });
+  if (coherenceGate) {
+    rec.verification_plan = buildVerificationPlan(
+      config, { runId, workspace, workspaces: workset });
+  }
   if (snapshot.type === 'pattern') rec.pattern = snapshot.pattern;
   if (plan) rec.plan = plan;
   const execution = normalizeExecutionOverrides(config, executionOverrides);
@@ -1323,7 +1395,7 @@ function submit(config, {
 
 // 編集付き再実行（fork）で上書きできる入力。キー名は inbox 契約（agent-flow spec §3.1）
 // のものに揃える——`edited_fields` に残すのはこの語彙で、画面のフォーム名ではない。
-const RESUBMIT_EDITABLE_FIELDS = ['request', 'plan', 'workspace', 'references',
+const RESUBMIT_EDITABLE_FIELDS = ['request', 'plan', 'workspace', 'workspaces', 'references',
   'execution_overrides', 'granularity', 'split_policy'];
 
 // 画面から届いた編集を inbox 契約の値へ揃える。**plan と workspace / references は
@@ -1344,9 +1416,16 @@ function normalizeResubmitEdits(config, old, raw) {
     values.plan = edits.plan && typeof edits.plan === 'object' && Array.isArray(edits.plan.nodes)
       && edits.plan.nodes.length ? edits.plan : null;
   }
-  if (has('cwd')) {
-    const cwd = String(edits.cwd || '').trim();
-    values.workspace = cwd ? gitWorkspace(config, cwd) : null;
+  if (has('cwd') || has('cwds')) {
+    // 書込先の編集は集合として受ける。`cwd` は先頭（primary）、`cwds` は追加の要素。
+    // 片方だけ送られたときはもう片方を旧記録から補い、順序（＝primary）を壊さない。
+    const cwd = has('cwd') ? String(edits.cwd || '').trim()
+      : String((old.workspace && old.workspace.local) || '');
+    const extra = has('cwds') ? (Array.isArray(edits.cwds) ? edits.cwds : [])
+      : ((old.workspaces || []).slice(1).map((e) => String((e && e.local) || '')));
+    const workset = gitWorkset(config, worksetFolders(cwd, extra));
+    values.workspace = workset.length ? workset[0] : null;
+    values.workspaces = workset.length > 1 ? workset : null;
   }
   if (has('referenceCwds')) {
     const list = Array.isArray(edits.referenceCwds) ? edits.referenceCwds : [];
@@ -1413,6 +1492,11 @@ function resubmit(config, runId, edits = null) {
   for (const [key, value] of Object.entries(edit.values)) {
     if (key !== 'workspace' && (value === null || value === '' || value === undefined)) delete rec[key];
   }
+  // 書込先を 1 つへ減らした fork では `workspaces` を残さない——1 要素の run に複数形の
+  // キーがあると、読み手が「集合の run」と誤読する（N=1 は形も変えない）。
+  if (purpose === 'design' || !Array.isArray(rec.workspaces) || rec.workspaces.length <= 1) {
+    delete rec.workspaces;
+  }
   // plan を差し替えた（または外した）再実行に、旧 run の標準パターン指定は連れて行かない
   // ——agent-flow は plan と pattern の同時指定を failed 終端させる。
   if (Object.prototype.hasOwnProperty.call(edit.values, 'plan')) {
@@ -1424,7 +1508,10 @@ function resubmit(config, runId, edits = null) {
   // 組み直す——古い digest のまま走ると receipt がフェイルクローズで捨てられ続ける。
   if (edit.fields.length && rec.verification_plan) {
     if (!rec.workspace) delete rec.verification_plan;
-    else rec.verification_plan = buildVerificationPlan(config, { runId: next, workspace: rec.workspace });
+    else {
+      rec.verification_plan = buildVerificationPlan(
+        config, { runId: next, workspace: rec.workspace, workspaces: rec.workspaces });
+    }
   }
   // fork は世代交代ではないので、旧 run を墓標化する `inherit_from` は引き継がない。
   if (edit.fields.length) delete rec.inherit_from;
@@ -1543,6 +1630,8 @@ module.exports = {
   executionAssignmentPreview,
   snapshotSelection,
   gitWorkspace,
+  gitWorkset,
+  worksetFolders,
   normalizePreset,
   planFromPreset,
   availableMethods,

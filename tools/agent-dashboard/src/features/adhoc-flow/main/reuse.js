@@ -8,7 +8,8 @@
 //               保存形・state repo のどこにも書かない（agent-audit の不変条件）。
 //   §3 系譜   … 蒸留物には複製元 `source`（session/<cli>/<id> ／ run/<run-id>）を付ける。
 //   §5 バッチ … パラメータ行 × テンプレート → n 本の adhoc run。行ごとに workspace を
-//               持つので「1 run = 1 workspace」は崩さず、リポジトリまたぎを満たす。
+//               持つので **行＝run** は崩さず、リポジトリまたぎを満たす（1 本の run が
+//               複数の書込先を持てるようになった後も、バッチの単位は行のまま）。
 //               件数上限と概算予算の確認を投函前に必ず通す（C1・C7）。
 //
 // 実行はどれも既存の adhoc.submit（inbox 投函 → agent-flow 起動）に載せる。
@@ -412,7 +413,8 @@ function newBatchId() {
 }
 
 // n 本の adhoc run を 1 つの batch_id で投函する。各 run は自分の workspace を持つので
-// 「1 run = 1 workspace」は崩さない。1 件でも失敗したらそこで止める——同じ原因で n 件
+// **行＝run** は崩さない（1 本の run が書込先の集合を持てるようになっても、バッチの単位は
+// 行のまま）。1 件でも失敗したらそこで止める——同じ原因で n 件
 // 失敗させても人が読む情報は増えない（止まることを先に約束する。C1）。
 function batchSubmit(config, payload = {}) {
   const { rows, parameterKeys, confirmed, ...base } = payload;

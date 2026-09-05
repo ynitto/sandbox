@@ -304,7 +304,17 @@ function nodeIssueBlock(run, node) {
   const rec = e && e.byNode ? e.byNode[node.id] : null;
   const found = cached ? cached.issue : rec ? recToIssue(rec) : undefined;
   const reconciled = rec && rec.reconciled ? rec.reconciled : null; // 'done' | 'failed' | null
-  const repoUrl = run.workspace && run.workspace.url;
+  // 書込先が複数の run では、この工程のイシューも要素ごとに立っている（P4）。「探す」ボタンも
+  // 要素ごとに出す——1 本のボタンで primary だけを探すと、2 つ目の repo のイシューは画面から
+  // 辿れない。1 要素の run では従来どおりボタン 1 本（trailing の name は空）。
+  const searchTargets = (Array.isArray(node.taskTokens) && node.taskTokens.length
+    ? node.taskTokens.map((t) => ({
+      name: String((t && t.name) || ''), url: String((t && t.url) || ''),
+      token: String((t && t.token) || '') }))
+    : [{ name: '', url: String((run.workspace && run.workspace.url) || ''),
+      token: String(node.taskToken || '') }])
+    .filter((t) => t.url && t.token);
+  const repoUrl = searchTargets.length ? searchTargets[0].url : '';
 
   const rows = [];
   const url = node.issueUrl || (found && found.url);
@@ -366,10 +376,10 @@ function nodeIssueBlock(run, node) {
     if (cached && found === null) {
       rows.push(`<div class="muted">関連イシューは見つかりませんでした（イシュー作成前か、GitLab 連携外の作業です）</div>`);
     } else {
-      rows.push(
-        `<button id="btn-find-issue" data-token="${esc(node.taskToken)}" data-repo="${esc(repoUrl)}"
-          title="この工程に対応する GitLab イシューを検索します">関連イシューを探す</button>`
-      );
+      rows.push(searchTargets.map((t, i) => `<button ${i === 0 ? 'id="btn-find-issue" ' : ''}${
+        i === 0 ? '' : 'data-find-issue '}data-token="${esc(t.token)}" data-repo="${esc(t.url)}"
+          title="この工程に対応する GitLab イシューを検索します">関連イシューを探す${
+        t.name ? `（${esc(t.name)}）` : ''}</button>`).join('\n'));
     }
   }
   if (!rows.length) return '';
@@ -1007,6 +1017,11 @@ function bindFlowDetail(root) {
   if (rc) rc.addEventListener('click', () => reconcileFlowRun());
   const fi = root.querySelector('#btn-find-issue');
   if (fi) fi.addEventListener('click', () => findNodeIssue(fi));
+  // 書込先が複数の工程は「探す」が要素の数だけ並ぶ（2 本目以降）。同じハンドラを使う
+  // ——検索は repo と token をボタンから読むので、要素ごとの違いはそこに載っている。
+  for (const btn of root.querySelectorAll('#flow-detail button[data-find-issue]')) {
+    btn.addEventListener('click', () => findNodeIssue(btn));
+  }
   for (const btn of root.querySelectorAll('#flow-detail button[data-review]')) {
     btn.addEventListener('click', () =>
       guard('レビュー起動', async () => {

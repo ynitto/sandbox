@@ -17,8 +17,9 @@ closed イシュー）を残す台帳として機能する。`auto_merge: false`
             repo_instruction="", workspace=None, references=None, workset=None) -> (text, data)
     ※ goal は本来の目的のみ。workspace（書込先 spec dict: url/path/base/target。workset の run では
       primary）は起票先プロジェクトの解決とイシューの『## 対象リポジトリ』節に使う。
-      workset（書込先の集合）は**受けるが実行はしない**——この executor は起票先も MR の期待
-      ターゲットも 1 URL からしか解決できないので、2 要素以上は fail-close で断る（設計:
+      workset（書込先の集合）は **要素ごとに 1 イシュー** へ展開する——起票先も MR の期待
+      ターゲットも要素の URL から決まるので、要素の数だけ独立した委譲になる。全イシューが
+      承認されて初めてノードが done になり、1 つでも却下されれば却下（設計:
       docs/plans/2026-09-05-agent-flow-multi-workspace-design.md §5.7）。references（参照リポジトリ
       spec の列・読むだけ）は『## 参照リポジトリ』節に載せる。repo_instruction はローカルエージェント
       向けの指示なのでイシューには使わない。
@@ -806,6 +807,62 @@ def _workspace_target(workspace: "dict | None") -> str:
     return str(ws.get("target") or ws.get("base") or "").strip()
 
 
+# --- 書込先の集合（workset）------------------------------------------------
+#
+# この executor は「起票先プロジェクト」と「MR の期待ターゲット」を書込先の URL から決める。
+# 書込先が複数ある run では、その 2 つが要素ごとに違う——だから **要素ごとに 1 イシュー**
+# へ展開する（1 つのイシューに 2 repo 分の作業を混ぜると、レビュアーはどちらの MR を見て
+# 承認すればよいか決められず、自動マージのターゲット検証も効かない）。
+# 決着は全要素の AND: 全部承認で done、1 つでも却下で却下（設計 §5.7・§7 の P4）。
+
+
+def _workset_elements(workspace: "dict | None",
+                      workset: "list[dict] | None") -> "list[dict]":
+    """起票の対象になる書込先の並び。
+
+    **N=1 は従来どおり `workspace` だけを見る**——記録も `issue` / `expected_target` の単数形の
+    ままにして、既存 run の park 記録と 1 バイトも変えない（設計 §5.1 不変条件 3）。
+    `workset` が 2 要素以上のときだけ集合として扱う。"""
+    if isinstance(workset, list) and len(workset) > 1:
+        return [e for e in workset if isinstance(e, dict)]
+    return [workspace or {}]
+
+
+def _element_name(spec: "dict | None", index: int = 0) -> str:
+    """要素の表示名。agent-flow の `normalize_workset` が N>1 の要素に必ず `name` を付けるので
+    通常はそれを使い、素の spec が来たときだけ URL の末尾（`.git` を落とす）へ倒す。"""
+    spec = spec or {}
+    name = str(spec.get("name") or "").strip()
+    if name:
+        return name
+    base = str(spec.get("url") or "").rstrip("/").split("/")[-1]
+    if base.endswith(".git"):
+        base = base[:-4]
+    return base or f"repo-{index + 1}"
+
+
+def _element_token(task_token: "str | None", name: str, multi: bool) -> "str | None":
+    """要素ごとの冪等トークン。単一要素の run では **従来のトークンそのまま**（既に立っている
+    イシューへ再アタッチできる形を壊さない）。集合の run では要素名を混ぜて要素ごとに別の
+    トークンにする——同じ run の 2 つのイシューが同じトークンを持つと、再 claim の検索が
+    どちらへ再アタッチするか決められない。"""
+    if not task_token or not multi:
+        return task_token
+    return f"{task_token}-{_safe_component(name)}"
+
+
+# ASCII の英数字だけを通す（`str.isalnum()` は Unicode 対応で「あ」も真になる）。トークンは
+# GitLab の検索クエリに載るうえ、dashboard 側（flow.js の nodeTaskTokens）が同じ規則で
+# 組み直すので、**両側で同じ文字集合**でなければ再アタッチも突き合わせも外れる。
+_TOKEN_SAFE = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-")
+
+
+def _safe_component(name: str) -> str:
+    """トークンに混ぜても検索が壊れない要素名（ASCII 英数字と `-` だけ）。"""
+    out = "".join(c if c in _TOKEN_SAFE else "-" for c in str(name))
+    return out.strip("-").lower() or "e"
+
+
 def _workspace_section(workspace: "dict | None") -> "list[str]":
     """対象リポジトリ節（GitLab Markdown）を構造化 workspace から組み立てる。
     リモートの人間ワーカー向けなので、ローカルの clone パス（作業ディレクトリ）は載せない。
@@ -938,21 +995,6 @@ def execute(kind: str, goal: str, dep_results: dict, model=None,
     `repo_instruction` はローカルエージェント向けの指示なのでイシューには使わない）。
     """
     cfg = _config()
-    # 書込先が複数（workset）の run は**受けない**。この executor は起票先プロジェクトも MR の
-    # 期待ターゲットも「1 つの workspace URL」から決定的に解決する構造で、集合を渡されても
-    # primary にしか起票できない。黙って primary だけへ起票すると、2 つ目以降の repo の変更が
-    # 誰にもレビューされないまま自動マージ判定へ進む。明確に断る方が安全（設計:
-    # docs/plans/2026-09-05-agent-flow-multi-workspace-design.md §5.7・P1 は fail-close）。
-    if isinstance(workset, list) and len(workset) > 1:
-        names = ", ".join(str(e.get("name") or e.get("url") or "") for e in workset)
-        raise RuntimeError(
-            "gitlab executor: 書込先が複数ある run（workset）には対応していません"
-            f"（{len(workset)} 件: {names}）。1 リポジトリずつの run に分けるか、"
-            "別の executor を使ってください。")
-    # opt-in 前提チェック（誤って選んだときに無限待ちにしない）: 起票先 URL とトークンを起票前に解決。
-    workspace_url = str((workspace or {}).get("url") or "")
-    expected_target = _workspace_target(workspace)  # 自動マージ時の MR ターゲット検証（不明なら ""）
-    host, project, url_base = _resolve_project(cfg, workspace_url)
     token = _resolve_token(cfg)
     if not token:
         conn_label = str(cfg.get("conn_label") or "default")
@@ -960,35 +1002,89 @@ def execute(kind: str, goal: str, dep_results: dict, model=None,
             "gitlab executor: GitLab トークンが見つかりません。connections.yaml の "
             f"gitlab/{conn_label}、環境変数 GITLAB_TOKEN/GL_TOKEN、または ~/.bashrc 等に "
             "設定してください（agent-flow.yaml には置きません）。")
-
-    # タスクトークン（art_dir 由来・決定的）。再 claim 時はまず同じトークンの open イシューを
-    # 探し、あれば**再アタッチ**して二重起票を防ぐ。無ければマーカーを埋め込んで新規起票する。
+    elements = _workset_elements(workspace, workset)
+    multi = len(elements) > 1
     task_token = _task_token(art_dir)
-    iid = url = None
+    # 起票（要素ごとに 1 件）。**opt-in 前提チェックを起票より先に済ませる**のは従来どおり
+    # ——誤って選んだときに無限待ちへ入れないため。集合の run では 1 要素目の起票後に 2 要素目の
+    # URL が壊れていると分かるのが最悪なので、全要素の起票先を**先に**解決してから起票へ進む。
+    targets = []
+    for index, spec in enumerate(elements):
+        host, project, url_base = _resolve_project(cfg, str((spec or {}).get("url") or ""))
+        targets.append({
+            "name": _element_name(spec, index), "spec": spec, "host": host,
+            "project": project, "url_base": url_base,
+            "expected_target": _workspace_target(spec),  # 自動マージ時の MR ターゲット検証（不明なら ""）
+            "token": _element_token(task_token, _element_name(spec, index), multi),
+        })
+    for t in targets:
+        t["iid"], t["url"] = _ensure_issue(
+            t, token, cfg, kind, goal, dep_results, references, multi)
+
+    if not multi:
+        # 単一の書込先: 記録も待機も従来の単数形のまま（§5.1 不変条件 3）。
+        t = targets[0]
+        return _settle_single(t, token, cfg, art_dir)
+    return _settle_workset(targets, token, cfg, art_dir)
+
+
+def _ensure_issue(target: dict, token: str, cfg: dict, kind: str, goal: str,
+                  dep_results: dict, references, multi: bool) -> "tuple":
+    """1 要素ぶんのイシューを用意して (iid, url) を返す。
+
+    タスクトークン（art_dir 由来・決定的）で **同じトークンの open イシューをまず探し**、
+    あれば再アタッチして二重起票を防ぐ（worker が夜間停止などで殺され lease 失効後に
+    再 claim されても新しいイシューを立てない）。無ければマーカーを埋め込んで起票する。"""
+    host, project = target["host"], target["project"]
+    task_token = target["token"]
     if task_token:
         found = _find_open_issue_by_token(host, token, project, task_token)
         if found:
             iid, url = found
             _log(f"既存の open イシュー #{iid} に再アタッチ（二重起票を回避, token={task_token}）: {url}")
+            return iid, url
 
-    if iid is None:
-        title = f"[agent-flow] {goal.strip()[:80]}"
-        body = _issue_body(kind, goal, dep_results, workspace, references)
-        if task_token:
-            body = f"{body}\n\n{_task_marker(task_token)}"
-        labels = str(cfg.get("labels") or "status:open,assignee:any")
-        priority = str(cfg.get("priority") or "").strip()
-        if priority:
-            labels = f"{labels},{priority}"
+    title = f"[agent-flow] {goal.strip()[:80]}"
+    if multi:
+        # 集合の run では、どの書込先のイシューかがタイトルだけで分かるようにする
+        # （レビュアーは 2 件を並べて見るので、本文を開かないと区別できないのは事故のもと）。
+        title = f"[agent-flow][{target['name']}] {goal.strip()[:80]}"
+    body = _issue_body(kind, goal, dep_results, target["spec"], references)
+    if task_token:
+        body = f"{body}\n\n{_task_marker(task_token)}"
+    labels = str(cfg.get("labels") or "status:open,assignee:any")
+    priority = str(cfg.get("priority") or "").strip()
+    if priority:
+        labels = f"{labels},{priority}"
 
-        created = _create_issue(host, token, project, title, body, labels)
+    created = _create_issue(host, token, project, title, body, labels)
 
-        iid = created.get("iid") or created.get("id")
-        url = created.get("web_url", "")
-        if not iid:
-            raise RuntimeError(f"GitLab イシューの作成に失敗しました: {str(created)[:200]}")
-        _log(f"イシュー #{iid} を起票し関連 MR の決着待ち（{url_base}）: {url}")
+    iid = created.get("iid") or created.get("id")
+    url = created.get("web_url", "")
+    if not iid:
+        raise RuntimeError(f"GitLab イシューの作成に失敗しました: {str(created)[:200]}")
+    _log(f"イシュー #{iid} を起票し関連 MR の決着待ち（{target['url_base']}）: {url}")
+    return iid, url
 
+
+def _defer_common(cfg: dict, art_dir, active_seen: bool) -> dict:
+    """park 記録の共通部分（単数形・集合で同じ）。"""
+    return {
+        "executor": "gitlab",
+        "task_token": _task_token(art_dir),
+        "active_seen": bool(active_seen),
+        "poll_interval": _as_float(cfg.get("poll_interval"), 300.0),
+        "timeout": _as_float(cfg.get("timeout"), 0.0),
+        "approved_timeout": _as_float(cfg.get("approved_timeout"), 0.0),
+        "throttled": False,
+        "reason": "human-approval-wait",
+    }
+
+
+def _settle_single(t: dict, token: str, cfg: dict, art_dir):
+    """書込先 1 つの決着待ち（従来の経路。park 記録は `issue` / `expected_target` の単数形）。"""
+    host, project, iid, url = t["host"], t["project"], t["iid"], t["url"]
+    expected_target = t["expected_target"]
     # deferral（park）: 環境変数 AGENT_FLOW_DEFER_WAITS=1 のとき（＝daemon/run が service_waits で
     # 面倒を見るとき）は worker をブロックせず、1 回だけ決着を確認して未決着なら DeferDecision を
     # 投げる。未設定（standalone `work` 等・監視主体なし）は従来どおりブロック待機へフォールバック。
@@ -1000,18 +1096,40 @@ def execute(kind: str, goal: str, dep_results: dict, model=None,
             _raise_from_payload(r["text"], r["data"])
         _log(f"イシュー #{iid}: 未決着のため park（承認待ちを worker から切り離す）: {url}")
         raise DeferDecision(f"gitlab: イシュー #{iid} は承認待ち（park）", {
-            "executor": "gitlab",
+            **_defer_common(cfg, art_dir, r["active_seen"]),
             "issue": {"host": host, "project": project, "iid": iid, "url": url},
-            "task_token": _task_token(art_dir),
             "expected_target": expected_target,  # park を跨いで MR ターゲット検証を保つ
-            "active_seen": bool(r["active_seen"]),
-            "poll_interval": _as_float(cfg.get("poll_interval"), 300.0),
-            "timeout": _as_float(cfg.get("timeout"), 0.0),
-            "approved_timeout": _as_float(cfg.get("approved_timeout"), 0.0),
-            "throttled": False,
-            "reason": "human-approval-wait",
         })
     return _wait_for_decision(host, token, project, iid, url, cfg, expected_target)
+
+
+def _settle_workset(targets: "list[dict]", token: str, cfg: dict, art_dir):
+    """書込先が複数の決着待ち。park 記録は `issues[]` / `expected_targets{}` の複数形。
+
+    要素ごとに独立したイシューなので、決着も要素ごとに付く。ノードの決着は **AND**:
+    全要素が承認されて初めて done、1 つでも却下されたらその時点で却下（残りの承認待ちを
+    続けても、この run の成果は既に採用されないので待つ意味がない）。"""
+    issues = [{"host": t["host"], "project": t["project"], "iid": t["iid"],
+               "url": t["url"], "name": t["name"]} for t in targets]
+    expected_targets = {t["name"]: t["expected_target"] for t in targets}
+    labels = ", ".join(f"{t['name']} #{t['iid']}" for t in targets)
+    if os.environ.get("AGENT_FLOW_DEFER_WAITS") == "1":
+        r = _check_workset_decision(issues, token, cfg, False, expected_targets)
+        if r["decision"] == "approved":
+            return r["text"], r["data"]
+        if r["decision"] == "rejected":
+            _raise_from_payload(r["text"], r["data"])
+        _log(f"イシュー {labels}: 未決着のため park（承認待ちを worker から切り離す）")
+        raise DeferDecision(f"gitlab: イシュー {labels} は承認待ち（park）", {
+            **_defer_common(cfg, art_dir, r["active_seen"]),
+            "issues": issues,
+            "expected_targets": expected_targets,
+            # 単数形も primary で埋める。park 記録を読む道具（status 表示・cancel の後始末）が
+            # 1 件しか見なくても、少なくとも主たるイシューには辿り着ける。
+            "issue": dict(issues[0]),
+            "expected_target": expected_targets.get(issues[0]["name"], ""),
+        })
+    return _wait_for_workset_decision(issues, token, cfg, expected_targets)
 
 
 _CLOSE_REQUEST_MARKER = "<!-- agent-flow:close-request -->"
@@ -1111,19 +1229,105 @@ def _check_decision(host, token, project, iid, url, cfg, active_seen,
             "active_seen": now_active, "mrs": len(mrs)}
 
 
+def _check_workset_decision(issues: "list[dict]", token: str, cfg: dict,
+                            active_seen: bool, expected_targets: "dict | None" = None) -> dict:
+    """要素ごとのイシューを **1 巡だけ** 確認し、ノード 1 個ぶんの決着へ畳む。
+
+    畳み方（AND）:
+      - どれか 1 つでも却下 → 却下。残りの承認待ちは意味がない（この run の成果はもう採用
+        されない）ので、その場で却下として返す。**まだ open な他要素のイシューは閉じない**
+        ——やり直しの委譲先として人が読む場所なので、勝手に消さない。
+      - 全部承認 → 承認。text は要素ごとの結果を並べたもの、data は要素名で引ける形。
+      - それ以外 → 未決着。`active_seen` は 1 つでも動いていれば真（人が動き出した兆候）。
+
+    1 要素の一過性エラー（ネットワーク断・5xx）は**全体を落とさない**。その要素だけ未決着に
+    倒して次巡へ回す——2 repo のうち片方の GitLab が瞬断しただけで run を殺さないため。"""
+    targets = expected_targets or {}
+    per, approved, active = [], [], bool(active_seen)
+    for iss in issues:
+        name = str(iss.get("name") or "")
+        try:
+            r = _check_decision(iss.get("host"), token, iss.get("project"), iss.get("iid"),
+                                iss.get("url", ""), cfg, active_seen,
+                                str(targets.get(name) or ""))
+        except RuntimeError as e:
+            _log(f"イシュー #{iss.get('iid')}（{name}）の確認に失敗（未決着として次回再試行）: {e}")
+            continue
+        active = active or bool(r["active_seen"])
+        if r["decision"] == "rejected":
+            text = f"[{name}] {r['text'] or ''}".strip()
+            data = dict(r["data"] or {})
+            data["element"] = name
+            _log(f"イシュー #{iss.get('iid')}（{name}）が却下。ノード全体を却下として決着させる")
+            return {"decision": "rejected", "text": text, "data": data,
+                    "active_seen": True, "mrs": r["mrs"]}
+        if r["decision"] == "approved":
+            approved.append(name)
+            per.append({"name": name, "iid": iss.get("iid"), "url": iss.get("url", ""),
+                        "text": r["text"] or "", "data": r["data"]})
+    if len(approved) != len(issues):
+        return {"decision": None, "text": None, "data": None,
+                "active_seen": active, "mrs": 0}
+    text = "\n\n".join(f"## {e['name']}\n{e['text']}".rstrip() for e in per)
+    data = {"decision": "approved",
+            "elements": [{k: e[k] for k in ("name", "iid", "url")} for e in per],
+            "results": {e["name"]: e["data"] for e in per}}
+    return {"decision": "approved", "text": text, "data": data,
+            "active_seen": True, "mrs": 0}
+
+
+def _wait_for_workset_decision(issues: "list[dict]", token: str, cfg: dict,
+                               expected_targets: "dict | None" = None):
+    """要素ごとのイシューが全部決着するまで待つ（ブロック版・deferral 無効時のフォールバック）。
+    判定は `_check_workset_decision` に集約し、ここはループ・猶予延長・全体タイムアウトだけを持つ
+    （単数形の `_wait_for_decision` と同じ骨格）。"""
+    interval = _as_float(cfg.get("poll_interval"), 300.0)
+    timeout = _as_float(cfg.get("timeout"), 0.0)
+    approved_timeout = _as_float(cfg.get("approved_timeout"), 0.0)
+    deadline = (time.time() + timeout) if timeout > 0 else None
+    active_seen = False
+    labels = ", ".join(f"{i.get('name')} #{i.get('iid')}" for i in issues)
+
+    while True:
+        r = _check_workset_decision(issues, token, cfg, active_seen, expected_targets)
+        if r["decision"] == "approved":
+            return r["text"], r["data"]
+        if r["decision"] == "rejected":
+            _raise_from_payload(r["text"], r["data"])
+        if not active_seen and r["active_seen"]:
+            active_seen = True
+            deadline = (time.time() + approved_timeout) if approved_timeout > 0 else None
+            _log(f"イシュー {labels}: 人の作業を検知。決着待ちの猶予を延長"
+                 f"（{approved_timeout:.0f}s, 0=無限）")
+        if deadline is not None and time.time() >= deadline:
+            phase = "MR の決着（全マージ/却下クローズ）" if active_seen else "レビュー/MR 作成"
+            raise RuntimeError(f"イシュー {labels} が期限内に {phase} に至りませんでした")
+        time.sleep(max(0.0, interval))
+
+
 def poll(state: dict) -> dict:
     """service_waits（daemon/run の監視主体）が park 済みイシューを **1 回だけ** 再確認する入口。
     ブロックしない。決着なら {"decision": "approved"|"rejected", "text", "data"} を返し、
     未決着なら {"decision": None, "active_seen": bool}。トークンは connections から再解決する
     （バス上の park 記録に秘密を残さないため）。一過性エラーは decision=None で握り（次回再試行）。"""
     cfg = _config()
-    iss = state.get("issue") or {}
+    token = _resolve_token(cfg)
+    if not token:
+        return {"decision": None, "active_seen": bool(state.get("active_seen"))}
+    # 集合の park（`issues[]`）は要素ごとに確認して AND で畳む。単数形（`issue`）の記録は
+    # 従来どおり 1 件だけ見る——古い park 記録もそのまま決着させられる。
+    issues = [i for i in (state.get("issues") or [])
+              if isinstance(i, dict) and i.get("host") and i.get("project")
+              and i.get("iid") is not None]
+    if len(issues) > 1:
+        r = _check_workset_decision(issues, token, cfg, bool(state.get("active_seen")),
+                                    state.get("expected_targets") or {})
+        return {"decision": r["decision"], "text": r["text"], "data": r["data"],
+                "active_seen": r["active_seen"]}
+    iss = issues[0] if issues else (state.get("issue") or {})
     host, project, iid = iss.get("host"), iss.get("project"), iss.get("iid")
     url = iss.get("url", "")
     if not (host and project and iid is not None):
-        return {"decision": None, "active_seen": bool(state.get("active_seen"))}
-    token = _resolve_token(cfg)
-    if not token:
         return {"decision": None, "active_seen": bool(state.get("active_seen"))}
     try:
         r = _check_decision(host, token, project, iid, url, cfg, bool(state.get("active_seen")),
@@ -1146,17 +1350,20 @@ def on_cancel(records: "list[dict]") -> None:
     if not token:
         return
     for rec in records or []:
-        iss = (rec or {}).get("issue") or {}
-        host, project, iid = iss.get("host"), iss.get("project"), iss.get("iid")
-        if not (host and project and iid is not None):
-            continue
-        try:
-            _add_note(host, token, project, iid,
-                      "agent-flow: run がキャンセルされたため、この委譲を取り下げます。")
-            _close_issue(host, token, project, iid)
-            _log(f"イシュー #{iid} を cancel 後始末でクローズ: {iss.get('url', '')}")
-        except RuntimeError as e:
-            _log(f"イシュー #{iid} の cancel 後始末に失敗（無視）: {e}")
+        # 集合の park は要素ごとにイシューがある。全部たたむ——1 件でも open のまま残すと、
+        # キャンセルされた run の作業を人が拾い続けてしまう。
+        listed = [i for i in ((rec or {}).get("issues") or []) if isinstance(i, dict)]
+        for iss in (listed or [(rec or {}).get("issue") or {}]):
+            host, project, iid = iss.get("host"), iss.get("project"), iss.get("iid")
+            if not (host and project and iid is not None):
+                continue
+            try:
+                _add_note(host, token, project, iid,
+                          "agent-flow: run がキャンセルされたため、この委譲を取り下げます。")
+                _close_issue(host, token, project, iid)
+                _log(f"イシュー #{iid} を cancel 後始末でクローズ: {iss.get('url', '')}")
+            except RuntimeError as e:
+                _log(f"イシュー #{iid} の cancel 後始末に失敗（無視）: {e}")
 
 
 def _wait_for_decision(host, token, project, iid, url, cfg, expected_target: str = ""):
