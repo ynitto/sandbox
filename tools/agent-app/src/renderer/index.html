@@ -12,6 +12,10 @@
 <body>
   <div id="app">
     <aside id="side">
+      <nav id="areas" aria-label="主要メニュー">
+        <button type="button" id="area-work" class="on" aria-pressed="true">作業</button>
+        <button type="button" id="area-automation" aria-pressed="false">自動化</button>
+      </nav>
       <div class="side-head"><span>リポジトリ</span><button id="repo-add" class="small">追加</button></div>
       <ul id="repos" class="list"></ul>
       <div class="side-head"><span>会話</span><button id="session-new" class="small primary">新しい会話</button></div>
@@ -102,6 +106,10 @@
         </section>
       </section>
     </main>
+
+    <section id="automation" aria-label="自動化" hidden>
+      <iframe id="automation-frame" title="自動化ワークベンチ" data-src="automation-frame.html" src="about:blank"></iframe>
+    </section>
 
     <aside id="changes" hidden>
       <div class="side-head">

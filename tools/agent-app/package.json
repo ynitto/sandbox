@@ -18,7 +18,8 @@
     "diff2html": "3.4.56",
     "dompurify": "3.4.14",
     "marked": "18.0.11",
-    "mermaid": "11.17.2"
+    "mermaid": "11.17.2",
+    "statemachine-maker": "file:../statemachine-maker"
   },
   "devDependencies": {
     "electron": "43.6.0"

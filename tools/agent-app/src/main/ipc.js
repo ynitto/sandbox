@@ -12,6 +12,7 @@ const host = require('./host');
 const tmux = require('./tmux');
 const worktree = require('./worktree');
 const attachments = require('./attachments');
+const { registerAutomationIpc } = require('./automation/ipc');
 const { stripAnsi, cleanAnswer, lineEmitter } = require('./text');
 
 function userData() { return app.getPath('userData'); }
@@ -411,6 +412,11 @@ function registerIpcHandlers(getWindow) {
     const win = getWindow();
     if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
   };
+  registerAutomationIpc({
+    getWindow,
+    userData,
+    appRoot: path.join(__dirname, '..', '..'),
+  });
   // 写したが送らずに閉じた添付を掃除する
   try { attachments.sweep(userData(), store.readAllSessions(userData())); } catch { /* 消せなくても動く */ }
 

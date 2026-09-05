@@ -22,6 +22,7 @@ const FILES = [
   ['mermaid/dist/mermaid.min.js', 'mermaid.min.js'],
   ['diff2html/bundles/js/diff2html-ui.min.js', 'diff2html-ui.min.js'],
   ['diff2html/bundles/css/diff2html.min.css', 'diff2html.min.css'],
+  ['statemachine-maker/src/renderer/styles.css', 'statemachine/styles.css'],
 ];
 
 // highlight.js の追加言語（highlight.min.js の同梱セットに無いもの）
@@ -37,12 +38,23 @@ function copy(from, to) {
 function main() {
   fs.rmSync(OUT, { recursive: true, force: true });
   for (const [from, name] of FILES) copy(from, path.join(OUT, name));
+  const automationSource = path.join(ROOT, 'node_modules', 'statemachine-maker', 'src', 'renderer', 'renderer.js');
+  if (!fs.existsSync(automationSource)) throw new Error('vendor: statemachine-maker の renderer.js が無い');
+  const bridge = `\nconst automationBridge = (() => {\n  if (window.api && window.api.automation) return window.api.automation;\n  try { return window.parent && window.parent.api && window.parent.api.automation; } catch { return null; }\n})();\nif (!automationBridge) throw new Error('自動化機能の接続を初期化できません');\n`;
+  // 先に maker 側の API 参照を変換し、その後にブリッジを挿入する。
+  // 順序を逆にすると、ブリッジ自身の window.api まで置換される。
+  const automationRenderer = fs.readFileSync(automationSource, 'utf8')
+    .replace(/\bapi\./g, 'automationBridge.')
+    .replace("'use strict';", `'use strict';${bridge}`);
+  const automationOut = path.join(OUT, 'statemachine', 'renderer.js');
+  fs.mkdirSync(path.dirname(automationOut), { recursive: true });
+  fs.writeFileSync(automationOut, automationRenderer);
   for (const lang of HLJS_EXTRA) {
     const from = `@highlightjs/cdn-assets/languages/${lang}.min.js`;
     if (fs.existsSync(path.join(ROOT, 'node_modules', from))) copy(from, path.join(OUT, 'hljs', `${lang}.min.js`));
   }
   fs.writeFileSync(path.join(OUT, 'README.md'), 'npm install（scripts/vendor.js）が生成する。手で編集しない。\n');
-  console.log(`vendor: ${FILES.length} files → ${path.relative(ROOT, OUT)}`);
+  console.log(`vendor: ${FILES.length + 1} files → ${path.relative(ROOT, OUT)}`);
 }
 
 if (require.main === module) main();
