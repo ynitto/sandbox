@@ -11,11 +11,12 @@ const crypto = require('crypto');
 
 // wslDistro    … Windows で、ドライブパス（C:\…）のリポジトリを扱う WSL ディストロ（'' なら既定）
 // transport    … 'tmux'（対話起動。既定）| 'headless'（1 ターン 1 プロセス）
+// useWorktree  … 会話ごとに git worktree で作業フォルダを分ける機能を使うか（既定 true）
 // view         … 最後に開いていた画面（chat | files）
 // lastWorktree … リポジトリ → 最後に選んだ作業フォルダ名（'' はリポジトリ本体）
 const DEFAULTS = {
   repos: [], lastRepo: '', lastCli: 'copilot', lastModel: '', lastReadonly: false,
-  wslDistro: '', transport: 'tmux', view: 'chat', lastFiles: {}, lastWorktree: {},
+  wslDistro: '', transport: 'tmux', useWorktree: true, view: 'chat', lastFiles: {}, lastWorktree: {},
 };
 const MAX_REPOS = 30;
 
@@ -31,6 +32,7 @@ function normalize(raw) {
   next.lastReadonly = Boolean(next.lastReadonly);
   next.wslDistro = String(next.wslDistro || '').trim();
   next.transport = next.transport === 'headless' ? 'headless' : 'tmux';
+  next.useWorktree = next.useWorktree !== false;
   next.view = next.view === 'files' ? 'files' : 'chat';
   next.lastFiles = next.lastFiles && typeof next.lastFiles === 'object' ? next.lastFiles : {};
   next.lastWorktree = next.lastWorktree && typeof next.lastWorktree === 'object' ? next.lastWorktree : {};

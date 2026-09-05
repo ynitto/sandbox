@@ -219,13 +219,18 @@
 
   // 作業フォルダの選択肢（一覧は renderer 側が持っている）。見る先を変えるのは setRoot だけ。
   let roots = [];
-  function renderRoots(items) {
+  let rootsEnabled = true;
+  function renderRoots(items, enabled = true) {
     roots = (items || []).filter((w) => w.main || w.selectable);
+    rootsEnabled = enabled;
     renderRootSelect();
   }
 
   function renderRootSelect() {
     const sel = $('tree-root');
+    // 作業フォルダを使わない設定のときは出さない（見ているのが本体だけなら選ぶものが無い）
+    sel.hidden = !rootsEnabled && !state.worktree;
+    if (sel.hidden) return;
     sel.replaceChildren();
     const add = (value, label) => { const o = el('option', '', label); o.value = value; sel.append(o); };
     add('', 'リポジトリ本体');

@@ -17,6 +17,9 @@
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Noto Sans Mono CJK JP", monospace;
 }
 * { box-sizing: border-box; }
+/* hidden 属性を効かせる。label や .seg のように display を明示した要素は、作者スタイルが
+   UA の `[hidden] { display: none }` に勝ってしまい、隠したつもりが出たままになる。 */
+[hidden] { display: none !important; }
 html, body { height: 100%; margin: 0; }
 body {
   font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans", "Noto Sans JP", sans-serif;
@@ -47,7 +50,6 @@ label.check { cursor: pointer; }
 #side, #changes { background: var(--panel); border-right: 1px solid var(--line); overflow: hidden; display: flex; flex-direction: column; min-height: 0; }
 #side .list.grow { flex: 1; overflow: auto; }
 #changes { border-right: 0; border-left: 1px solid var(--line); width: 520px; }
-#changes[hidden] { display: none; }
 #side-foot { border-top: 1px solid var(--line); padding: 8px 12px; display: flex; flex-direction: column; gap: 6px; }
 #side-foot label { justify-content: space-between; }
 .side-head {
@@ -90,7 +92,6 @@ label.check { cursor: pointer; }
 #notice { margin: 8px 16px 0; padding: 8px 12px; border-radius: 6px; background: var(--warn-bg); border: 1px solid #d4a72c; font-size: 12px; white-space: pre-wrap; }
 #notice.error { background: var(--del); border-color: var(--danger); }
 .view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.view[hidden] { display: none; }
 
 /* ---- 会話 ---- */
 #messages { flex: 1; overflow: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
@@ -137,7 +138,6 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 
 /* 端末ドロワー */
 #term-drawer { display: flex; flex-direction: column; height: 360px; min-height: 120px; max-height: 80%; resize: vertical; overflow: hidden; border-top: 1px solid var(--line); background: var(--term-bg); }
-#term-drawer[hidden] { display: none; }
 .drawer-head { display: flex; align-items: center; gap: 10px; padding: 4px 10px; background: var(--panel); border-bottom: 1px solid var(--line); }
 #term-host { flex: 1; min-height: 0; padding: 4px 0 0 6px; }
 #term-host .xterm { height: 100%; }
@@ -164,7 +164,6 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 .tree li.empty { color: var(--muted); font-size: 12px; padding: 4px 8px; }
 #viewer { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 #viewer-head { display: flex; align-items: center; gap: 8px; padding: 6px 12px; background: var(--panel); border-bottom: 1px solid var(--line); flex-wrap: wrap; }
-#viewer-head[hidden] { display: none; }
 #viewer-head .path { font: 12px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #viewer-head .path .sep { color: var(--muted); margin: 0 2px; }
 #viewer-head .path .leaf { font-weight: 600; }

@@ -19,6 +19,7 @@
       <div id="side-foot">
         <label id="wsl-row" hidden>WSL ディストロ <input id="wsl-distro" placeholder="既定" size="10" title="C:\ 配下のリポジトリを扱う WSL ディストロ。\\wsl$\<名前>\ のリポジトリはパスから決まる"></label>
         <label class="check" title="tmux で CLI を対話起動する（外すと 1 ターン 1 プロセスのヘッドレス実行）"><input type="checkbox" id="use-tmux"> tmux で対話起動</label>
+        <label class="check" title="会話ごとに git worktree で作業フォルダを分ける（外すと常にリポジトリ本体で作業する）"><input type="checkbox" id="use-worktree"> 作業フォルダを分ける</label>
         <div id="host-status" class="sub"></div>
       </div>
     </aside>

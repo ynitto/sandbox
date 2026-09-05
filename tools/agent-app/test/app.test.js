@@ -26,6 +26,9 @@ test('main / ipc / preload / renderer は構文検査を通る', () => {
   const main = fs.readFileSync(path.join(SRC, 'main/main.js'), 'utf8');
   assert.ok(main.includes('contextIsolation: true') && main.includes('sandbox: true'));
   assert.ok(fs.readFileSync(path.join(SRC, 'renderer/index.html'), 'utf8').includes("script-src 'self'"));
+  // 画面の出し分けは hidden 属性でやる。label や .seg のように display を明示した要素では
+  // 作者スタイルが UA の `[hidden] { display: none }` に勝ってしまうので、全体規則で押さえる。
+  assert.match(fs.readFileSync(path.join(SRC, 'renderer/styles.css'), 'utf8'), /\[hidden\]\s*\{\s*display:\s*none\s*!important/);
 });
 
 test('preload の窓口と ipc のチャネルが 1 対 1', () => {
@@ -200,6 +203,8 @@ test('店: 会話の作成・追記・一覧・更新・削除', () => {
   const cfg = store.saveConfig(ud, { wslDistro: ' Ubuntu ', transport: 'bogus', view: 'files', lastFiles: { '/repo/a': 'README.md' } });
   assert.strictEqual(cfg.wslDistro, 'Ubuntu');
   assert.strictEqual(cfg.transport, 'tmux');
+  assert.strictEqual(cfg.useWorktree, true, '作業フォルダの機能は既定で使える');
+  assert.strictEqual(store.saveConfig(ud, { useWorktree: false }).useWorktree, false, '切ったら覚える');
   assert.strictEqual(cfg.view, 'files');
   assert.strictEqual(cfg.lastFiles['/repo/a'], 'README.md');
 });
@@ -239,8 +244,11 @@ test('ファイル: ツリー・本文・言語判定・外へ出ない', () => 
   fs.writeFileSync(path.join(repo, 'src', 'deep', 'Dockerfile'), 'FROM node\n');
   fs.writeFileSync(path.join(repo, 'bin.dat'), Buffer.from([0, 1, 2, 3]));
   fs.writeFileSync(path.join(repo, 'pic.png'), Buffer.from('89504e470d0a1a0a', 'hex'));
+  // 作業フォルダの置き場（.worktrees）はリポジトリの写しなので、本体のツリーには出さない
+  fs.mkdirSync(path.join(repo, '.worktrees', 'feature-x', 'src'), { recursive: true });
+  fs.writeFileSync(path.join(repo, '.worktrees', 'feature-x', 'src', 'index.ts'), 'export const x = 1;\n');
   const root = files.listDir(repo, '');
-  assert.deepStrictEqual(root.entries.map((e) => e.name), ['src', 'bin.dat', 'pic.png', 'README.md'], 'ディレクトリ先・名前順・.git は出さない');
+  assert.deepStrictEqual(root.entries.map((e) => e.name), ['src', 'bin.dat', 'pic.png', 'README.md'], 'ディレクトリ先・名前順・.git と .worktrees は出さない');
   assert.strictEqual(root.entries.find((e) => e.name === 'README.md').language, 'markdown');
   const src = files.listDir(repo, 'src');
   assert.deepStrictEqual(src.entries.map((e) => e.rel), ['src/deep', 'src/index.ts']);
@@ -257,5 +265,8 @@ test('ファイル: ツリー・本文・言語判定・外へ出ない', () => 
   assert.throws(() => files.readFile(repo, '../../etc/passwd'), /外/);
   assert.throws(() => files.listDir(repo, '..'), /外/);
   const hits = files.find(repo, 'index');
-  assert.deepStrictEqual(hits.map((h) => h.rel), ['src/index.ts']);
+  assert.deepStrictEqual(hits.map((h) => h.rel), ['src/index.ts'], '名前検索が worktree の分だけ重複しない');
+  // 作業フォルダ自身を根にすれば、その中は普通に見える
+  const inWt = files.listDir(path.join(repo, '.worktrees', 'feature-x'), '');
+  assert.deepStrictEqual(inWt.entries.map((e) => e.name), ['src']);
 });

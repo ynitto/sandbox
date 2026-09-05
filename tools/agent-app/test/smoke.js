@@ -161,6 +161,19 @@ app.whenReady().then(async () => {
   console.log('changes head (main):', await js(win, "document.getElementById('changes-where').textContent"));
   console.log('changed files (main):', await js(win, "[...document.querySelectorAll('#changed-files li')].map(n=>n.innerText.replace(/\\n/g,' ')).join(', ')"));
   await shot(win, '16-main-changes');
+  // 機能ごと off にすると、作業フォルダの選択と … が画面から消える
+  await js(win, "(()=>{const c=document.getElementById('use-worktree'); c.checked=false; c.dispatchEvent(new Event('change'));})()");
+  await sleep(1500);
+  console.log('worktree ui off:', await js(win, "JSON.stringify({picker: document.getElementById('worktree').closest('label').hidden, manage: document.getElementById('wt-manage').hidden, root: document.getElementById('tree-root').hidden})"));
+  await shot(win, '17-worktree-off');
+  // off でも、worktree で始めた会話を開けばどこで動いているかは見える
+  await js(win, "document.querySelectorAll('#sessions li')[0].click()");
+  await sleep(1500);
+  console.log('worktree ui off (worktree の会話):', await js(win, "JSON.stringify({picker: document.getElementById('worktree').closest('label').hidden, value: document.getElementById('worktree').value, disabled: document.getElementById('worktree').disabled})"));
+  await shot(win, '18-worktree-off-session');
+  await js(win, "(()=>{const c=document.getElementById('use-worktree'); c.checked=true; c.dispatchEvent(new Event('change'));})()");
+  await sleep(1200);
+
   console.log('console errors:', JSON.stringify(errors, null, 1));
   console.log('sessions:', fs.readdirSync(path.join(ud, 'sessions')).map((f) => fs.readFileSync(path.join(ud, 'sessions', f), 'utf8')).join('\n'));
   // 会話を削除して tmux セッションも消えることを見る

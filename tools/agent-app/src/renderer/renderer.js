@@ -52,7 +52,14 @@ function activeWorktree() {
 function worktreeLabel(name) {
   if (!name) return 'リポジトリ本体';
   const w = state.worktrees.find((x) => x.name === name);
-  return w && w.branch ? `${name}（${w.branch}）` : name;
+  const branch = (w && w.branch) || (state.current && state.current.worktree === name ? state.current.branch : '');
+  return branch ? `${name}（${branch}）` : name;
+}
+
+// worktree の UI を出すか。機能を切っていても、既に worktree で始めた会話を開いたときは
+// 「どこで動いているか」が分かるように出す（選び直しはできない）。
+function worktreeUI() {
+  return !!(state.config && state.config.useWorktree) || !!(state.current && state.current.worktree);
 }
 
 // ---- 左: リポジトリと会話 ------------------------------------------------
@@ -110,7 +117,12 @@ async function selectRepo(repo) {
 // ---- 作業フォルダ（git worktree） -------------------------------------------
 
 async function refreshWorktrees() {
-  if (!state.repo) { state.worktrees = []; return; }
+  if (!state.repo || !worktreeUI()) {
+    state.worktrees = [];                 // 機能を切っているときは git にも聞かない
+    renderWorktreeSelect();
+    Files.renderRoots([], false);
+    return;
+  }
   try {
     const res = await api.listWorktrees(state.repo);
     state.worktrees = res.items || [];
@@ -118,18 +130,23 @@ async function refreshWorktrees() {
     state.worktrees = [];                 // git リポジトリでない等。本体だけで動く
   }
   renderWorktreeSelect();
-  Files.renderRoots(state.worktrees);
+  Files.renderRoots(state.worktrees, true);
 }
 
 function renderWorktreeSelect() {
   const sel = $('worktree');
+  const on = worktreeUI();
+  sel.closest('label').hidden = !on;
+  $('wt-manage').hidden = !(on && state.config && state.config.useWorktree);
+  if (!on) return;
   sel.replaceChildren();
   const cur = activeWorktree();
   const add = (value, label) => { const o = el('option', '', label); o.value = value; sel.append(o); };
   add('', 'リポジトリ本体');
   for (const w of state.worktrees.filter((x) => x.selectable)) add(w.name, `${w.name}（${w.branch || 'detached'}）`);
   // 会話が使っていた作業フォルダが消えていても、選択として見えるようにしておく
-  if (cur && !state.worktrees.some((w) => w.name === cur && w.selectable)) add(cur, `${cur}（見つからない）`);
+  // 「見つからない」と言えるのは一覧を引けたときだけ（機能を切っていると引いていない）
+  if (cur && !state.worktrees.some((w) => w.name === cur && w.selectable)) add(cur, state.worktrees.length ? `${cur}（見つからない）` : cur);
   sel.value = cur;
   sel.disabled = !state.draft;            // 会話ごとに固定（tmux の cwd も CLI の文脈もそこで始まっている）
   sel.title = state.draft ? '会話ごとに git worktree で作業フォルダを分ける'
@@ -466,8 +483,9 @@ function renderDiff(text) {
 async function refreshChanges() {
   if (!state.repo) return;
   const wt = activeWorktree();
-  const scope = state.diffScope;
-  $('scope-branch').disabled = !wt;                 // 本体には「分岐元」が無い
+  const scope = wt ? state.diffScope : 'worktree';
+  // 「ブランチ（分岐元から積んだコミット）」は worktree のときだけ意味がある
+  $('scope-worktree').closest('.seg').hidden = !wt;
   $('scope-worktree').classList.toggle('on', scope === 'worktree');
   $('scope-branch').classList.toggle('on', scope === 'branch');
   const ul = $('changed-files');
@@ -588,6 +606,15 @@ async function init() {
   };
   $('use-tmux').checked = state.config.transport === 'tmux';
   $('use-tmux').onchange = async () => { state.config = await api.saveConfig({ transport: $('use-tmux').checked ? 'tmux' : 'headless' }); renderAgents(); };
+  $('use-worktree').checked = state.config.useWorktree;
+  $('use-worktree').onchange = async () => {
+    state.config = await api.saveConfig({ useWorktree: $('use-worktree').checked });
+    // 切ったら新しい会話は本体で始める（既にある worktree と会話はそのまま残る）
+    if (!state.config.useWorktree) { state.worktree = ''; await Files.setRoot(state.repo, '', {}); }
+    await refreshWorktrees();
+    renderHeader();
+    if (state.changesOpen) refreshChanges();
+  };
   $('wsl-distro').value = state.config.wslDistro || '';
   $('wsl-distro').onchange = async () => {
     state.config = await api.saveConfig({ wslDistro: $('wsl-distro').value.trim() });

@@ -9,7 +9,10 @@ const path = require('path');
 
 const MAX_TEXT = 2 * 1024 * 1024;          // これより大きいテキストは先頭だけ
 const MAX_IMAGE = 8 * 1024 * 1024;
-const SKIP_DIRS = new Set(['.git']);
+// ツリーと検索から外すフォルダ。`.worktrees` は作業フォルダの置き場で、中身はリポジトリの
+// もう 1 つの写し——出すと本体のツリーに入れ子の複製が並び、名前検索も worktree の数だけ
+// 同じファイルを返す。中を見たいときは上の「見るフォルダ」で作業フォルダを選ぶ。
+const SKIP_DIRS = new Set(['.git', '.worktrees']);
 
 const IMAGE_MIME = {
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp',
@@ -71,7 +74,7 @@ function listDir(repo, rel = '') {
   const entries = fs.readdirSync(target, { withFileTypes: true });
   const out = [];
   for (const e of entries) {
-    if (SKIP_DIRS.has(e.name) && !cleanRel) continue;
+    if (SKIP_DIRS.has(e.name) && !cleanRel) continue;   // 外すのはツリーの根だけ（下の同名は出す）
     let type = e.isDirectory() ? 'dir' : e.isSymbolicLink() ? 'link' : 'file';
     let size = 0;
     if (type === 'link') {
@@ -127,7 +130,7 @@ function find(repo, query, limit = 200) {
     try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
     for (const e of entries) {
       if (out.length >= limit) return;
-      if (e.name === '.git' || e.name === 'node_modules') continue;
+      if ((SKIP_DIRS.has(e.name) && !rel) || e.name === '.git' || e.name === 'node_modules') continue;
       const r = rel ? `${rel}/${e.name}` : e.name;
       if (e.name.toLowerCase().includes(q)) out.push({ rel: r, type: e.isDirectory() ? 'dir' : 'file', language: e.isDirectory() ? '' : languageOf(e.name) });
       if (e.isDirectory()) walk(path.join(dir, e.name), r, depth + 1);
