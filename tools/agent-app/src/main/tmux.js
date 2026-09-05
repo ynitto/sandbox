@@ -204,6 +204,9 @@ class Conversation {
     this.rows = opts.rows || DEFAULT_ROWS;
     this.phase = 'starting';         // starting | ready | busy | attention | dead | gone
     this.detail = '';
+    this.launch = opts.launch || null;   // 今動いている CLI の起動条件 { cli, model, readonly }（ipc が入れる）
+    this.seen = 0;                       // この CLI の文脈に入っているメッセージ数（ipc が進める）
+    this.resumed = true;                 // 起動時に CLI 側の文脈を引き継げたか
     this.turn = null;                // { prompt, startedAt, before, sawBusy, readyCount, stopped, done(message) }
     this.watchers = 0;               // 端末ミラーを見ている画面の数（0 なら間隔を落とす）
     this.lastScreen = null;
@@ -219,11 +222,12 @@ class Conversation {
     return (await this.shell.run(cmdHas(this.name))).ok;
   }
 
-  // 既にある tmux セッションへつなぐか、無ければ CLI を起動する。
+  // 既にある tmux セッションへつなぐか、無ければ CLI を起動する。reuse=false なら
+  // 残っているセッションを消してから起動し直す（別の CLI・別のモデルで続けるとき）。
   async open({ reuse = true } = {}) {
-    const alive = reuse && await this.exists();
-    if (!alive) {
-      if (!alive && reuse) { /* 無いので起動 */ }
+    const alive = await this.exists();
+    if (!reuse && alive) await this.shell.run(cmdKill(this.name));
+    if (!(reuse && alive)) {
       const r = await this.shell.run(cmdNew({ name: this.name, cwd: this.cwd, argv: this.argv, cols: this.cols, rows: this.rows }), { timeoutMs: 30000 });
       if (!r.ok) throw new Error(`tmux セッションを作れません: ${r.error || r.output}`);
       this.setPhase('starting', '起動中');
@@ -232,7 +236,7 @@ class Conversation {
     }
     this.startedAt = Date.now();
     this.schedule(0);
-    return { name: this.name, reused: alive };
+    return { name: this.name, reused: reuse && alive };
   }
 
   setPhase(phase, detail = '') {

@@ -127,7 +127,7 @@ test('統合: tmux 上の疑似 CLI と会話する', { skip: !hasTmux && 'tmux 
   fs.writeFileSync(stub, STUB, { mode: 0o755 });
   const sh = new host.HostShell({ platform: 'linux' });
   const events = [];
-  const conv = new tmux.Conversation({
+  let conv = new tmux.Conversation({
     id: `t${Date.now().toString(36)}`, shell: sh, cwd: dir, argv: [stub], cols: 100, rows: 24,
     patterns: tmux.compilePatterns({ readyPattern: '^[[:space:]]*>[[:space:]]*$', busyPattern: 'esc to interrupt', readyTailLines: 3, readyTimeoutSec: 10 }),
     emit: (ch, p) => events.push([ch, p]),
@@ -159,6 +159,15 @@ test('統合: tmux 上の疑似 CLI と会話する', { skip: !hasTmux && 'tmux 
     const again = new tmux.Conversation({ id: conv.id, shell: sh, cwd: dir, argv: [stub], patterns: conv.patterns, emit() {} });
     assert.strictEqual((await again.open()).reused, true);
     again.detach();
+
+    // reuse=false は、残っているセッションを消して起動し直す（別のモデルや CLI で続けるとき）
+    conv.detach();
+    const fresh = new tmux.Conversation({ id: conv.id, shell: sh, cwd: dir, argv: [stub], patterns: conv.patterns, emit() {}, launch: { cli: 'stub', model: 'm2', readonly: false } });
+    assert.strictEqual((await fresh.open({ reuse: false })).reused, false);
+    assert.deepStrictEqual(fresh.launch, { cli: 'stub', model: 'm2', readonly: false });
+    await new Promise((resolve) => { const tick = () => (fresh.phase === 'ready' ? resolve() : setTimeout(tick, 100)); tick(); });
+    assert.ok(!(await fresh.historyText()).includes('echo: hello there'), '前の画面は残っていない');
+    conv = fresh;
 
     // CLI が終わるとペインは残り、dead になる
     const last = await new Promise((resolve, reject) => { conv.send('bye', resolve).catch(reject); });

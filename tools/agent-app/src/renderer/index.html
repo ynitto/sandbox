@@ -35,9 +35,9 @@
           <button id="view-chat" class="tab on">会話</button>
           <button id="view-files" class="tab">ファイル</button>
         </nav>
-        <label>エージェント <select id="cli"></select></label>
-        <label>モデル <input id="model" placeholder="既定" size="14"></label>
-        <label class="check"><input type="checkbox" id="readonly"> 読み取り専用（Ask）</label>
+        <label title="次のターンで使うエージェント（ターンごとに変えられる）">エージェント <select id="cli"></select></label>
+        <label title="次のターンで使うモデル（ターンごとに変えられる。空なら CLI の既定）">モデル <input id="model" placeholder="既定" size="14"></label>
+        <label class="check" title="次のターンのモード（ターンごとに変えられる）"><input type="checkbox" id="readonly"> 読み取り専用（Ask）</label>
         <label>作業フォルダ <select id="worktree" title="会話ごとに git worktree で作業フォルダを分ける"></select></label>
         <button id="wt-manage" class="small" title="作業フォルダ（git worktree）を作る・消す">…</button>
         <span class="spacer"></span>
@@ -60,10 +60,14 @@
           <div id="term-host"></div>
         </section>
         <footer id="composer">
-          <textarea id="prompt" rows="3" placeholder="依頼を書く（Enter で送信、Shift+Enter で改行）"></textarea>
-          <div class="composer-actions">
-            <button id="send" class="primary">送信</button>
-            <button id="stop" class="danger" hidden>停止</button>
+          <div id="attach-row" class="attach-row" hidden></div>
+          <div class="composer-main">
+            <textarea id="prompt" rows="3" placeholder="依頼を書く（Enter で送信、Shift+Enter で改行。ファイルはドロップか貼り付けでも添付できる）"></textarea>
+            <div class="composer-actions">
+              <button id="send" class="primary">送信</button>
+              <button id="stop" class="danger" hidden>停止</button>
+              <button id="attach" class="small" title="ファイルを添付する（複数可。ドラッグ＆ドロップや画像の貼り付けでも足せる）">添付</button>
+            </div>
           </div>
         </footer>
       </section>
@@ -89,6 +93,7 @@
               <button id="viewer-mode-code" class="small">コード</button><button id="viewer-mode-preview" class="small">プレビュー</button>
             </span>
             <button id="viewer-wrap" class="small" title="長い行を折り返す">折り返し</button>
+            <button id="viewer-attach" class="small" title="このファイルを次の依頼に添付する（写さずにパスを伝える）">会話に添付</button>
             <button id="viewer-reload" class="small">再読込</button>
             <button id="viewer-show" class="small" title="フォルダで表示">場所</button>
             <button id="viewer-open" class="small" title="既定のアプリで開く">開く</button>
