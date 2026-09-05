@@ -57,6 +57,21 @@ from .repolocal import normalize_repo_url
 # 「板は互換だが画面は非互換」という中間状態が正当になり、更新漏れの説明が 2 系統になる。
 CONTRACT_VERSION = 1
 
+# 書込先が複数（workset）ある公示を安全に配れるようになる契約版。要素ごとに commit/push し
+# `deliveries[]` を返せる請負側でなければ、`workspaces` を未知キーとして無視して **primary
+# だけに書く**（静かな部分実行）ため、版でしか止められない。`contract_compatible` は完全一致
+# なので、この版へ上げるにはフリート全体を静止点で一斉に更新する必要がある（C13）——それが
+# 済むまで依頼側は workset タスクを板へ出さない（`workset_posts_supported` が偽）。
+# 設計: docs/plans/2026-09-05-agent-flow-multi-workspace-design.md §5.7・§7 の P4。
+WORKSET_CONTRACT_VERSION = 2
+
+
+def workset_posts_supported(declared: "int | None" = None) -> bool:
+    """このフリートが書込先の集合を持つ公示を扱えるか（P4 で CONTRACT_VERSION を上げると真）。"""
+    version = CONTRACT_VERSION if declared is None else declared
+    return version is not None and version >= WORKSET_CONTRACT_VERSION
+
+
 # node-budget-summary 射影の契約版（schemas/node-budget-summary.schema.json）。
 # status/<node>.json と板 nodes/<id>.json の `budget` が同じ語彙。版不一致は非適格（fail-close）。
 BUDGET_SUMMARY_CONTRACT_VERSION = 1

@@ -258,20 +258,44 @@ def _plan_decompose_prompt(charter: "Charter", granularity: "str | None" = None,
         " 何を完了とするかを書けない曖昧なタスクは含めないでください。")
 
 
-def assign_plan_workspace(charter: "Charter", spec: dict) -> dict:
+def _multi_ws(cfg) -> bool:
+    """書込先が複数になることを許す設定（`multi_workspace`）。既定 false＝従来どおり 1 つ。"""
+    return bool(getattr(cfg, "multi_workspace", False))
+
+
+def _owns_hits_for_paths(workspaces: "list[dict]", paths: "list[str]") -> "list[dict]":
+    """パス群の owns にヒットする書込先を**全部**返す（順序は charter の並び）。"""
+    if not paths:
+        return []
+    return [s for s in workspaces if any(_owns_matches(s.get("owns", []), p) for p in paths)]
+
+
+def assign_plan_workspace(charter: "Charter", spec: dict, multi: bool = False) -> dict:
     """plan で生成した spec に**書込先 workspace を必ず明示**し、参照を refs に振り分ける。
     workspace = verify が操作するパスの owns を持つリポジトリ（プランナーが付けた workspace が
     owns を持つ書込先候補ならそれを尊重）。それ以外の charter repo・プランナーが挙げた repo は
-    すべて参照（refs）として扱う。書込先が決まらなければ何も設定しない（route 層が後段で解決）。"""
+    すべて参照（refs）として扱う。書込先が決まらなければ何も設定しない（route 層が後段で解決）。
+
+    `multi`（プロジェクト設定 `multi_workspace`）が真なら、操作パスが**複数 repo の owns に
+    跨る**ときだけ `- workspace: a, b` の集合を書く。既定は従来どおり——曖昧なら空にして
+    決定的解決（rule → owns → 既定 → 候補が 1 つ）へ倒す。プランナー（LLM）に repo を
+    増やさせるのではなく、あくまで owns という決定論の結果を畳まずに残すだけである。"""
     smap = charter_repo_spec_map(charter)
     workspaces = [s for s in charter.repo_specs if s.get("owns")]
-    ws = None
+    picked: "list[dict]" = []
     hint = _strip_code(str(spec.get("workspace") or ""))
     if hint and smap.get(hint) and smap[hint].get("owns"):     # プランナー指定（owns 持ち）を尊重
-        ws = smap[hint]
-    if ws is None:                                             # verify が操作するパスの owns で決定論的に確定
+        picked = [smap[hint]]
+    if not picked:                                             # verify が操作するパスの owns で決定論的に確定
         paths = _split_tokens(spec.get("paths")) or _verify_paths(str(spec.get("verify") or ""))
-        ws = _infer_workspace_from_paths(workspaces, paths)
+        hits = _owns_hits_for_paths(workspaces, paths)
+        if len(hits) > 1 and multi:
+            picked = hits                                      # 複数 repo に跨る＝両方に書く
+        else:
+            one = _infer_workspace_from_paths(workspaces, paths)
+            picked = [one] if one else []
+    ws = picked[0] if picked else None
+    ws_urls = {s["url"] for s in picked if s.get("url")}
     # 参照: 書込先以外の charter repo すべて＋プランナーが挙げた repos/refs（書込先 url は除く）
     ref_names: "list[str]" = []
     seen: "set[str]" = set()
@@ -282,13 +306,13 @@ def assign_plan_workspace(charter: "Charter", spec: dict) -> dict:
             cand.append(sp)
     for s in cand:
         url = s.get("url")
-        if not url or (ws and url == ws["url"]) or url in seen:
+        if not url or url in ws_urls or url in seen:
             continue
         seen.add(url)
         ref_names.append(s.get("name") or url)
     spec.pop("repos", None)                                   # repos は廃止: workspace/refs へ置換
-    if ws is not None:
-        spec["workspace"] = ws.get("name") or ws["url"]
+    if picked:
+        spec["workspace"] = ", ".join(s.get("name") or s["url"] for s in picked)
     elif not smap.get(hint):
         # 候補に無い名前は**残さない**。プランナーは書込先を訊かれて「（なし、ファイル単位の
         # 作業のため）」のような散文や成果物のファイル名を書くことがあり、それがそのまま
@@ -471,7 +495,7 @@ def _builtin_planner_extras(spec: dict) -> str:
                  str(spec.get("retry") or "")))
 
 
-def _plan_spec_from_item(charter: "Charter", item: dict) -> dict:
+def _plan_spec_from_item(charter: "Charter", item: dict, multi: bool = False) -> dict:
     """プランナー出力の 1 要素をタスク spec へ正規化する。"""
     title = str(item["title"]).strip()
     sp = {"title": title,
@@ -496,7 +520,7 @@ def _plan_spec_from_item(charter: "Charter", item: dict) -> dict:
     size = str(item.get("size") or "").strip().upper()
     if size in ("S", "M", "L"):
         sp["size"] = size
-    return assign_plan_workspace(charter, sp)
+    return assign_plan_workspace(charter, sp, multi)
 
 
 def _plan_retry_note(bad: "list[tuple[str, list[str]]]") -> str:
@@ -579,7 +603,8 @@ def _plan_array_specs(cfg: "Config", charter: "Charter", charter_tag: "str | Non
         except (OSError, RuntimeError, subprocess.SubprocessError) as e:
             append_journal(cfg.journal, f"project plan: 分解に失敗（{e}）")
             return []
-        specs = [_plan_spec_from_item(charter, i) for i in (_extract_json_array(out) or [])
+        specs = [_plan_spec_from_item(charter, i, _multi_ws(cfg))
+                 for i in (_extract_json_array(out) or [])
                  if isinstance(i, dict) and str(i.get("title", "")).strip()]
         bad = [(sp["title"], m) for sp in specs if (m := _validate_backlog_spec(sp))]
         if not bad or not strict or attempt == 1:
@@ -607,7 +632,7 @@ def _plan_next_spec(cfg: "Config", charter: "Charter", charter_tag: "str | None"
         item = _plan_item_from_output(out)
         if item is None:
             return spec
-        spec = _plan_spec_from_item(charter, item)
+        spec = _plan_spec_from_item(charter, item, _multi_ws(cfg))
         missing = _validate_backlog_spec(spec)
         if not missing or not strict:
             return spec
@@ -797,7 +822,7 @@ def review_via_agent(cfg: "Config", charter: "Charter", results: "list | None" =
               "refs": _coerce_repos(i.get("refs")) or _coerce_repos(i.get("repos")),
               **({"why": str(i.get("why") or "").strip()} if str(i.get("why") or "").strip() else {}),
               "source": "review"}
-        specs.append(assign_plan_workspace(charter, sp))
+        specs.append(assign_plan_workspace(charter, sp, _multi_ws(cfg)))
     return specs
 
 

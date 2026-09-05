@@ -459,9 +459,24 @@ def _board_delegation_id(task: "Task", cfg: "Config") -> str:
     return f"dg-{h}-{tid}-r{task.retries}{rev_sfx}"[:64]
 
 
+def workset_offload_blocked(specs: "list[dict]") -> str:
+    """書込先の集合を板へ出せない理由（出せるなら空文字）。
+
+    `workspaces` を知らない請負ノードはそれを未知キーとして無視し **primary だけに書く**。
+    記録には成功として残るので、静かな部分実行になる。入札選別の契約版
+    （`agentcore.board.CONTRACT_VERSION`）は完全一致なので、フリートを静止点で一斉に
+    上げるまで（設計 §7 の P4）依頼側が出さないのが唯一の安全弁である。"""
+    if len(specs or []) <= 1 or _boardrules.workset_posts_supported():
+        return ""
+    return (f"書込先が {len(specs)} つ（workset）ある仕事は、フリートの委譲契約が版 "
+            f"{_boardrules.WORKSET_CONTRACT_VERSION} へ上がるまで板へ出しません"
+            "（版 1 のノードは primary にしか書かないため）")
+
+
 def task_to_delegation(task: "Task", spec: "dict | None", workload: str = "flow",
                        delegation_id: "str | None" = None, request: "str | None" = None,
-                       references: "list[dict] | None" = None) -> dict:
+                       references: "list[dict] | None" = None,
+                       workset: "list[dict] | None" = None) -> dict:
     """タスク＋解決済み workspace spec から delegation post 封筒を組み立てる。
 
     goal は request（build_request の全文。省略時は task.title）をそのまま使う——ローカル run /
@@ -470,7 +485,12 @@ def task_to_delegation(task: "Task", spec: "dict | None", workload: str = "flow"
     workspace.url がそのまま「そのリポジトリを担当する board ノードだけが入札する」選別条件になる
     （board_eligible は workspace.url を URL 正規化で突き合わせる。requires.repos は追加しない —
     spec["name"] は依頼側のローカルなルーティング名で、請負側ノードが同じリポジトリを別名で
-    宣言しているとURL一致でも入札不能になる誤検出を生むため）。"""
+    宣言しているとURL一致でも入札不能になる誤検出を生むため）。
+
+    `workset`（書込先の集合）が 2 要素以上のときだけ `workspaces[]` を足し、あわせて
+    `requires.repos`（全要素の **URL**。名前ではないので上の誤検出は起きない）と
+    `requires.contract_version` を付ける——集合を知らないノードが primary だけに書く
+    「静かな部分実行」を、版の完全一致で不参加へ倒すため（設計 §5.7）。"""
     did = delegation_id or _deleg_id_from_task(task.id)
     goal = request if request else (task.title or task.id)
     env: dict = {
@@ -482,12 +502,28 @@ def task_to_delegation(task: "Task", spec: "dict | None", workload: str = "flow"
         desc = task.get("desc") or task.get("why") or ""
         if desc:
             env["design"] = str(desc)
-    if isinstance(spec, dict) and spec.get("url"):
-        ws = {"url": spec["url"]}
+
+    def _ws_view(sp: dict, named: bool) -> dict:
+        view = {"url": sp["url"]}
         for k in ("path", "base", "target"):
-            if spec.get(k):
-                ws[k] = spec[k]
-        env["workspace"] = ws
+            if sp.get(k):
+                view[k] = sp[k]
+        if named:
+            view["name"] = workset_element_name(sp)
+        return view
+
+    elements = [sp for sp in (workset or []) if isinstance(sp, dict) and sp.get("url")]
+    if isinstance(spec, dict) and spec.get("url"):
+        env["workspace"] = _ws_view(spec, named=len(elements) > 1)
+    if len(elements) > 1:
+        # 書込先の集合。`workspace` は primary として引き続き載る（集合を知らない読み手が
+        # そのまま動く）。`requires` は「この全 repo を担当するノードだけが入札する」条件で、
+        # 契約版は workset を扱えるノードだけに絞る（版 1 のノードは fail-close で不参加）。
+        env["workspaces"] = [_ws_view(sp, named=True) for sp in elements]
+        requires = env.get("requires") if isinstance(env.get("requires"), dict) else {}
+        requires["repos"] = [sp["url"] for sp in elements]
+        requires["contract_version"] = _boardrules.WORKSET_CONTRACT_VERSION
+        env["requires"] = requires
     if references:
         refs = []
         for r in references:
@@ -525,16 +561,21 @@ def cmd_board_offload(cfg: "Config", args) -> int:
         print(f"エラー: タスクが見つかりません: {args.id}", file=sys.stderr)
         return 2
     try:
-        spec, routed = resolve_workspace(cfg, task, load_policy(cfg.policy))
+        specs, routed = resolve_workset(cfg, task, load_policy(cfg.policy))
     except (OSError, ValueError) as e:
-        spec, routed = None, f"routing-error: {e}"
+        specs, routed = [], f"routing-error: {e}"
+    blocked = workset_offload_blocked(specs)
+    if blocked:
+        print(f"エラー: {blocked}", file=sys.stderr)
+        return 2
+    spec = specs[0] if specs else None
     did = _board_delegation_id(task, cfg)
     workload = getattr(args, "board_workload", None) or cfg.board_workload or "flow"
     # board 委譲は請負側が別マシン（--context-file のようなローカル参照を渡せない）ため、
     # stable_prefix が有効でも charter/rules/repo_map は本文へ埋め込む。
     env = task_to_delegation(task, spec, workload=workload, delegation_id=did,
                              request=build_request(task, cfg, force_inline_context=True),
-                             references=task_reference_specs(cfg, task))
+                             references=task_reference_specs(cfg, task), workset=specs)
     workdir = getattr(args, "board_workdir", None) or cfg.board_workdir
     path = write_board_post(board_repo, env, workdir=workdir)
     print(env["id"])

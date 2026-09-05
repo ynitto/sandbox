@@ -138,9 +138,34 @@ def _task_verify_cwd(cfg: "Config", task: "Task") -> "tuple[Path, str | None]":
     `path`（モノレポのサブフォルダ）は編集範囲/owns 用であり verify の cwd ではない。ここで
     `clone/path` に潜ると `cd api` 等の相対指定が二重になって verify が壊れ、$AGENT_BASE_REV を
     取り直す `.git` 判定（呼び出し側）も外れる。"""
+    root, tmp, _clones = _task_verify_worktrees(cfg, task)
+    return root, tmp
+
+
+def _task_verify_worktrees(cfg: "Config", task: "Task"
+                           ) -> "tuple[Path, str | None, dict[str, str]]":
+    """検証の作業ツリーを**書込先の要素ごとに**用意する。
+
+    返り値 (primary の cwd, 片付ける一時ディレクトリ or None, 要素名 → clone パス)。
+    要素が 1 つなら従来と同じ 1 clone で、clones は 1 件（呼び出し側は無視してよい）。
+    複数要素では全要素を同じ一時ディレクトリの下に並べ、runner と同じ語彙（要素名）で
+    引けるようにする——横断の固定コマンドが `$AGENT_REPO_<NAME>` で隣の repo を見るため。"""
     if cfg.verify_cwd:                              # 明示指定は常に最優先（運用の上書き）
-        return resolve_verify_cwd(cfg), None
-    spec = _workspace_spec_for(cfg, task)
+        return resolve_verify_cwd(cfg), None, {}
+    specs = _workspace_specs_for(cfg, task)
+    if len(specs) > 1:
+        tmp = tempfile.mkdtemp(prefix="agent-verify-")
+        clones: "dict[str, str]" = {}
+        try:
+            for sp in specs:
+                name = workset_element_name(sp)
+                clones[name] = str(_clone_task_element(cfg, task, sp,
+                                                       str(Path(tmp) / _safe_dir(name))))
+        except RuntimeError:
+            shutil.rmtree(tmp, ignore_errors=True)
+            raise
+        return Path(clones[workset_element_name(specs[0])]), tmp, clones
+    spec = specs[0] if specs else None
     if spec and spec.get("url"):
         tmp = tempfile.mkdtemp(prefix="agent-verify-")
         dest = str(Path(tmp) / "repo")
@@ -175,8 +200,43 @@ def _task_verify_cwd(cfg: "Config", task: "Task") -> "tuple[Path, str | None]":
                                f"（{spec['url']}@{branch or '既定'}）")
         append_journal(cfg.journal, f"verify: {task.id} を {spec['url']}@{branch or '既定'}"
                                     + (f"（path={sub}）" if sub else "") + " のクローン内で検証")
-        return root, tmp
-    return resolve_verify_cwd(cfg), None            # workspace 未指定は従来どおり workdir
+        return root, tmp, {workset_element_name(spec): str(root)}
+    return resolve_verify_cwd(cfg), None, {}        # workspace 未指定は従来どおり workdir
+
+
+def _safe_dir(name: str) -> str:
+    """要素名 → 一時ディレクトリ名（英数と - _ . 以外は畳む）。"""
+    return "".join(c if c.isalnum() or c in "-_." else "_" for c in str(name or "")) or "repo"
+
+
+def _clone_task_element(cfg: "Config", task: "Task", spec: dict, dest: str) -> Path:
+    """workset の 1 要素を検証用に clone する（成果ブランチ → 無ければ target/base）。
+
+    ブランチの選び方と失敗時の扱いは 1 要素のときと同じ規則で、要素ごとに同じ規律を
+    適用するというこの設計の骨をここでも守る（clone 失敗は黙って workdir へ倒さず
+    RuntimeError——成果の無い場所で誤判定しない）。"""
+    branch = spec.get("branch") or spec.get("target") or spec.get("base") or ""
+    if branch and branch == task_branch_name(cfg, task) \
+            and _remote_branch_exists(spec["url"], branch) is False:
+        fallback = spec.get("target") or spec.get("base") or ""
+        append_journal(cfg.journal, f"verify: {task.id} の作業ブランチ {branch} は "
+                                    f"{spec['url']} に未作成（push なし）→ "
+                                    f"{fallback or '既定ブランチ'} で検証")
+        branch = fallback
+    try:
+        _clone_repo_shallow(spec["url"], branch, dest)
+    except (OSError, RuntimeError) as e:
+        raise RuntimeError(
+            f"workspace repo の clone 失敗（{spec['url']}@{branch or '既定'}）: {e}") from e
+    root = Path(dest)
+    sub = (spec.get("path") or "").strip().strip("/")   # path は編集範囲。誤設定検出のため在処だけ確認
+    if sub and not (root / sub).is_dir():
+        raise RuntimeError(f"workspace の path が clone 内に無い: {sub}"
+                           f"（{spec['url']}@{branch or '既定'}）")
+    append_journal(cfg.journal,
+                   f"verify: {task.id} の {workset_element_name(spec)} を "
+                   f"{spec['url']}@{branch or '既定'} のクローン内で検証")
+    return root
 
 
 # ---------------------------------------------------------------------------
@@ -594,17 +654,34 @@ def build_task_verification_plan(cfg: "Config", task: "Task") -> "dict | None":
     if criteria:
         nd = str(task.get("no_diff") or "").strip()
         criteria.append(no_diff_criterion(nd) if nd else DIFF_CRITERION)
-    ws = _workspace_spec_for(cfg, task) or {}
+    specs = _workspace_specs_for(cfg, task)
+    policy = {"timeout_sec": cfg.verify_timeout, "confirm": cfg.verify_confirm,
+              # タスク単位の検証条件。digest に入るので、条件を変えると別 plan になり
+              # 以前の条件で出た receipt は検算で落ちる（違う条件の判定を混ぜない）。
+              "agent": task_verify_agent(task)}
+    if len(specs) > 1:
+        # 書込先が複数（workset）→ version 3。検証場所は要素名の列で、統合対象も要素ごと。
+        # 要素名は `--workspace` に載せる name と同じ語彙でなければならない
+        # （runner はその名前で clone を引く）。固定コマンドの cwd は既定＝primary 相対
+        # のままにする——どのコマンドがどの repo のものかはタスク md に書かれていない。
+        # 横断の検証は runner が渡す `$AGENT_REPO_<NAME>` で他要素を参照する。
+        targets = {workset_element_name(sp): str(sp.get("target") or "")
+                   for sp in specs
+                   if sp.get("branch") and sp.get("target")
+                   and sp.get("branch") != sp.get("target")}
+        return _verifycontract.build_plan(
+            task.id, criteria=criteria, commands=commands,
+            workspaces=[workset_element_name(sp) for sp in specs],
+            policy=policy,
+            integration={"targets": targets} if targets else None)
+    ws = specs[0] if specs else {}
     integration = ({"target": str(ws.get("target"))}
                    if ws.get("branch") and ws.get("target")
                    and ws.get("branch") != ws.get("target") else None)
     return _verifycontract.build_plan(
         task.id, criteria=criteria, commands=commands,
         workspace=str(ws.get("url") or ""),
-        policy={"timeout_sec": cfg.verify_timeout, "confirm": cfg.verify_confirm,
-                # タスク単位の検証条件。digest に入るので、条件を変えると別 plan になり
-                # 以前の条件で出た receipt は検算で落ちる（違う条件の判定を混ぜない）。
-                "agent": task_verify_agent(task)},
+        policy=policy,
         integration=integration)
 
 
@@ -628,13 +705,21 @@ def receipt_to_verification(receipt: dict) -> dict:
     表示・ルーティングの既存語彙が unverifiable のため）。固定コマンドの結果も criterion と同じ
     行として並べ、人が 1 つの表で読めるようにする。"""
     out: "list[dict]" = []
-    integration = receipt.get("integration")
-    if isinstance(integration, dict):
+    # 統合の判定は v2 が単数、v3（workset）が要素ごと。要素名つきで 1 行ずつ並べる——
+    # 畳むと「どの repo が最新 target を含んでいないのか」が人の読む表から消える。
+    integrations = receipt.get("integrations")
+    records = ([r for r in integrations if isinstance(r, dict)]
+               if isinstance(integrations, list) else [])
+    if not records and isinstance(receipt.get("integration"), dict):
+        records = [receipt["integration"]]
+    for integration in records:
         raw = str(integration.get("verdict") or "")
         verdict = "unverifiable" if raw == "inconclusive" else raw if raw in ("pass", "fail") else "fail"
         target = str(integration.get("target") or "target")
         target_rev = str(integration.get("target_rev") or "")
-        out.append({"id": len(out) + 1, "text": f"最新 target `{target}` が成果 revision に統合済み",
+        where = f"（{integration['name']}）" if integration.get("name") else ""
+        out.append({"id": len(out) + 1,
+                    "text": f"最新 target `{target}` が成果 revision に統合済み{where}",
                     "verdict": verdict,
                     "evidence": {"commands": [], "output": target_rev[:40], "files": []},
                     "note": ("target revision を取得できませんでした" if verdict == "unverifiable"
@@ -678,7 +763,9 @@ def receipt_to_verification(receipt: dict) -> dict:
     rec = {"criteria": out, "pass": counts["pass"], "fail": counts["fail"],
            "unverifiable": counts["unverifiable"],
            "ok": bool(out) and counts["fail"] == 0 and counts["unverifiable"] == 0,
-           "receipt": True, "integration": receipt.get("integration")}
+           "receipt": True, "integration": receipt.get("integration"),
+           **({"integrations": receipt["integrations"]}
+              if isinstance(receipt.get("integrations"), list) else {})}
     # 「何で・どれだけ待って確かめたか」を下流（決着カード）まで運ぶ。判定には使わない。
     if isinstance(receipt.get("verified_with"), dict):
         rec["verified_with"] = receipt["verified_with"]
@@ -690,8 +777,25 @@ def receipt_to_verification(receipt: dict) -> dict:
 run_plan_command = _verifycontract.run_plan_command
 
 
+def _env_repo_key(name: str) -> str:
+    """workset 要素名 → 環境変数名の後半（`AGENT_REPO_<KEY>`）。agent-flow runner と同じ規則。"""
+    return "".join(c if c.isalnum() else "_" for c in str(name or "")).upper() or "REPO"
+
+
+def _head_rev(path: "str | Path") -> str:
+    """clone の HEAD（取れなければ空）。要素ごとの成果 revision に使う。"""
+    try:
+        r = subprocess.run(["git", "-C", str(path), "rev-parse", "HEAD"],
+                           capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
 def run_local_receipt(cfg: "Config", task: "Task", plan: dict, rev: str,
-                      vcwd: "Path", env: "dict | None") -> dict:
+                      vcwd: "Path", env: "dict | None",
+                      clones: "dict[str, str] | None" = None) -> dict:
     """agent-flow runner の receipt を採用できなかったタスクの local runner（P1-A8）。
 
     plan の固定コマンドをこのノードで一度だけ実行し、同じ契約の receipt を組む
@@ -702,13 +806,43 @@ def run_local_receipt(cfg: "Config", task: "Task", plan: dict, rev: str,
     ここでは inconclusive——採用側で unverifiable（委譲/人送り）へ流れ、pass/fail を
     発明しない。rev は無ければ空のまま記録する（git の無い workdir。旧 fast path と同じ
     扱いで、成果 revision の照合は「取れる環境でだけ」効く）。"""
-    commands = [run_plan_command(str(c.get("command") or ""), str(vcwd),
-                                 cfg.verify_timeout, env, cfg.verify_confirm)
-                for c in plan.get("commands") or []]
+    workset = plan.get("version") == _verifycontract.WORKSET_VERSION
+    clones = dict(clones or {})
+    if workset and not clones:
+        # 検証場所が要素ごとに要る plan なのに clone を渡されていない。primary だけで
+        # 判定すると「もう片方の repo は見ていない pass」を作るので、判定材料の不足として
+        # 全件 inconclusive を返す（runner 側と同じ規則・§5.4）。
+        note = "検証場所が不足しています（workset の clone が用意されていません）"
+        return _verifycontract.build_receipt(
+            plan, result_rev=rev,
+            commands=[{"command": str(c.get("command") or ""), "inconclusive": True,
+                       "note": note} for c in plan.get("commands") or []],
+            criteria=[{"id": c["id"], "text": str(c.get("text") or ""),
+                       "verdict": "inconclusive", "note": note}
+                      for c in plan.get("criteria") or []],
+            verified_by=str(getattr(cfg, "node", "") or "local"), revisions={})
+    run_env = dict(env or {})
+    if len(clones) > 1:
+        # 横断の固定コマンドが 2 つ目以降の repo を参照する唯一の口（runner と同じ変数名）。
+        run_env["AGENT_WORKSET_ROOT"] = str(Path(next(iter(clones.values()))).parent)
+        for nm, path in clones.items():
+            run_env[f"AGENT_REPO_{_env_repo_key(nm)}"] = path
+    commands = [run_plan_command(
+        str(c.get("command") or ""),
+        clones.get(_verifycontract.plan_command_cwd(c, plan), str(vcwd)),
+        cfg.verify_timeout, run_env or None, cfg.verify_confirm)
+        for c in plan.get("commands") or []]
     criteria = [{"id": c["id"], "text": str(c.get("text") or ""), "verdict": "inconclusive",
                  "note": "自然文基準の判定は agent-flow runner の receipt が必要"
                          "（local runner は固定コマンドのみ実行）"}
                 for c in plan.get("criteria") or []]
+    if workset:
+        revisions = {nm: _head_rev(path) for nm, path in clones.items()}
+        return _verifycontract.build_receipt(
+            plan, result_rev=rev, commands=commands, criteria=criteria,
+            verified_by=str(getattr(cfg, "node", "") or "local"),
+            revisions=revisions,
+            integrations=_verifycontract.run_plan_integrations(plan, clones, revisions))
     integration = _verifycontract.run_plan_integration(plan, str(vcwd), rev)
     return _verifycontract.build_receipt(
         plan, result_rev=rev, commands=commands, criteria=criteria,
@@ -748,7 +882,9 @@ def _adopt_receipt(cfg: "Config", task: "Task", receipt: dict,
 
 def settle_from_receipt(cfg: "Config", task: "Task", plan: "dict | None", expected_rev: str,
                         vcwd: "Path | None" = None,
-                        env: "dict | None" = None) -> "tuple[bool, bool, str, dict] | None":
+                        env: "dict | None" = None,
+                        clones: "dict[str, str] | None" = None
+                        ) -> "tuple[bool, bool, str, dict] | None":
     """統一 verify の検算（W3 の 1 実装）。plan が無ければ None（検証材料の無いタスク）。
 
     第一経路は agent-flow runner の receipt: digest・成果 revision・証跡の検算を通った判定
@@ -771,7 +907,7 @@ def settle_from_receipt(cfg: "Config", task: "Task", plan: "dict | None", expect
                        f"{task.id} — {'; '.join(errs[:3])}")
     if vcwd is None:
         return None
-    local = run_local_receipt(cfg, task, plan, str(expected_rev or ""), vcwd, env)
+    local = run_local_receipt(cfg, task, plan, str(expected_rev or ""), vcwd, env, clones)
     return _adopt_receipt(cfg, task, local,
                           "local runner がこのノードで実行（run の receipt なし）")
 

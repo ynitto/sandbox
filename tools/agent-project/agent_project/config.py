@@ -88,6 +88,12 @@ class Config:
     # エージェント委譲で推定（charter owns: と route: の決定論を先に適用）/ none=決定論のみ（推定しない）。
     route_planner: str = "agent"
     default_workspace: str = ""    # route で決まらないタスクの既定ワークスペース（charter の name/url）。空で無効
+    # 書込先が複数になることを許すか（workset・オプトイン）。true のとき、owns が複数 repo に
+    # ヒットしたタスクを「両方に書く」と読む（既定 false は従来どおり決められないものとして
+    # auto-route / 既定へ落とす）。人の明示 `- workspace: a, b` と `route: ... -> a+b` は
+    # この設定に関係なく効く——どちらも「そう書いた」という明示だから。
+    # 設計: docs/plans/2026-09-05-agent-flow-multi-workspace-design.md §6.3。
+    multi_workspace: bool = False
     location: str = "auto"         # act の実行モード: auto / local / board
     # 委譲公示板（agent-board）への依頼側自動配線（opt-in）。空文字で無効（従来どおり）。
     # 設定すると `location: auto` は offload ポリシー一致タスクを板へ post し、入札・実行は
@@ -394,23 +400,62 @@ def _task_run_meta(cfg: "Config", task: "Task") -> dict:
         return {}
 
 
-def _task_work_branch(cfg: "Config", task: "Task") -> "tuple[str, str] | None":
-    """タスクの作業ブランチ (target, branch)。
+def _task_run_workset(cfg: "Config", task: "Task") -> "list[dict]":
+    """run メタが記録した書込先の集合。`workspaces` があればそれ、無ければ `workspace` 1 件。"""
+    meta = _task_run_meta(cfg, task)
+    raw = meta.get("workspaces")
+    if isinstance(raw, list) and raw:
+        return [w for w in raw if isinstance(w, dict) and w.get("url")]
+    ws = meta.get("workspace")
+    return [ws] if isinstance(ws, dict) and ws.get("url") else []
 
-    通常は agent-flow の run メタを正とする。検収は run GC より長く残り得るため、メタが消えた後は
-    backlog に永続化済みの workspace と task_branch 契約から同じ値を再構成する。
-    """
-    ws = (_task_run_meta(cfg, task).get("workspace") or {})
-    branch = str(ws.get("branch") or "").strip()
-    target = str(ws.get("target") or ws.get("base") or "").strip()
-    if not branch and getattr(cfg, "task_branch", False) and str(task.get("workspace") or "").strip():
-        spec = _workspace_spec_for(cfg, task) or {}
+
+def _task_work_branches(cfg: "Config", task: "Task") -> "list[dict]":
+    """タスクの作業ブランチを**書込先の要素ごとに**返す。
+
+    要素は `{name, url, target, branch, path}`。順序は run メタ（無ければ永続化済みの
+    `- workspace:`）の順で、先頭が primary。書込先が 1 つなら 1 件になる。
+
+    通常は agent-flow の run メタを正とする。検収は run GC より長く残り得るため、メタが
+    消えた後は backlog に永続化済みの workspace と task_branch 契約から同じ値を再構成する。"""
+    out: "list[dict]" = []
+    for ws in _task_run_workset(cfg, task):
+        branch = str(ws.get("branch") or "").strip()
+        target = str(ws.get("target") or ws.get("base") or "").strip()
+        if not branch:
+            continue
+        out.append({"name": str(ws.get("name") or ""), "url": str(ws.get("url") or ""),
+                    "target": target or "main", "branch": branch,
+                    "path": str(ws.get("path") or "")})
+    if out:
+        return out
+    if not (getattr(cfg, "task_branch", False) and str(task.get("workspace") or "").strip()):
+        return []
+    for spec in _workspace_specs_for(cfg, task):
         branch = str(spec.get("branch") or task_branch_name(cfg, task)).strip()
-        target = str(spec.get("target") or spec.get("base") or target).strip()
-    if not branch:
+        if not branch:
+            continue
+        out.append({"name": str(spec.get("name") or ""), "url": str(spec.get("url") or ""),
+                    "target": str(spec.get("target") or spec.get("base") or "").strip() or "main",
+                    "branch": branch, "path": str(spec.get("path") or "")})
+    if not out:
+        # charter のレジストリにも `_raw_url_spec` にも載らない生トークン（ローカルパスを
+        # そのまま書込先にした単一リポジトリ運用）。ここで拾わないとその構成では成果物の
+        # 所在が永久に解決できない（`_task_repo_url` が同じ理由で同じ落とし方をする）。
+        raw = _split_tokens(task.get("workspace"))
+        if len(raw) == 1:
+            out.append({"name": "", "url": raw[0], "target": "main",
+                        "branch": task_branch_name(cfg, task), "path": ""})
+    return out
+
+
+def _task_work_branch(cfg: "Config", task: "Task") -> "tuple[str, str] | None":
+    """タスクの primary の作業ブランチ (target, branch)。集合が要る呼び出しは
+    `_task_work_branches`（要素ごと）。書込先が無ければ None。"""
+    elements = _task_work_branches(cfg, task)
+    if not elements:
         return None
-    target = target or "main"
-    return target, branch
+    return elements[0]["target"], elements[0]["branch"]
 
 
 def work_branch_changes(cfg: "Config", base: str, branch: str,
@@ -447,6 +492,35 @@ def _repo_label(url: str, fallback: str = "") -> str:
     return fallback or s or "repo"
 
 
+def resolve_delivery_repo(cfg: "Config", url: str) -> Path:
+    """検収表示のためのローカル解決（要素ごと）。解決できなければ共有ミラー → workdir。"""
+    if not url:
+        return Path(cfg.workdir)
+    local = resolve_local_repo(url)
+    if local is not None:
+        return local
+    if "://" not in url:
+        p = Path(url).expanduser()
+        if p.is_dir():
+            return p
+    try:
+        return Path(ensure_cache(url))
+    except Exception:  # noqa: BLE001 — 解決できない要素は差分を空で出す（表示を止めない）
+        return Path(cfg.workdir)
+
+
+def _task_mr_urls(task: "Task | None") -> "dict[str, str]":
+    """`- mr_urls:` に記録した要素名 → MR URL（無ければ空）。primary は `- mr_url:`。"""
+    raw = str((task.get("mr_urls") if task else "") or "").strip()
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        return {}
+    return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+
+
 def delivery_entries(cfg: "Config", task: "Task | None" = None,
                      mr_url: str = "", max_files: int = 40) -> "list[dict]":
     """検収用のリポジトリ単位エントリ一覧（viewer の構造化ペイロード）。
@@ -456,33 +530,36 @@ def delivery_entries(cfg: "Config", task: "Task | None" = None,
     if task is None:
         return []
     meta = _task_run_meta(cfg, task)
-    ws = meta.get("workspace") or {}
-    work = _task_work_branch(cfg, task)
-    target, branch = work if work is not None else ("main", "")
     # run GC 後は永続 workspace spec を表示情報にも使う。ブランチだけ復元しても delivery が空なら
-    # 検収不能になるため、生成と承認で同じ _task_work_branch 契約を共有する。
-    persisted_ws = _workspace_spec_for(cfg, task) or {}
+    # 検収不能になるため、生成と承認で同じ `_task_work_branches` 契約を共有する。
+    elements = _task_work_branches(cfg, task)
+    target = elements[0]["target"] if elements else "main"
     entries: "list[dict]" = []
-    if branch:
-        repo = _source_repo(cfg, task)
-        ref, files = work_branch_changes(cfg, target, branch, repo=repo)
-        url = str(ws.get("url") or persisted_ws.get("url") or "")
-        name = _repo_label(url, fallback=repo.name)
-        entry = {
-            "name": name,
+    # 書込先の要素ごとに write エントリを 1 件（1 要素なら従来と同じ 1 件）。畳むと
+    # 「どの repo に何が入ったか」が検収の画面から消える。
+    mr_urls = _task_mr_urls(task)
+    for i, el in enumerate(elements):
+        url = el["url"]
+        # primary は従来どおり `_source_repo`（生の `- workspace:` トークンまで落ちる解決）。
+        # 2 つ目以降は要素の url から解決する。
+        repo = _source_repo(cfg, task) if i == 0 else resolve_delivery_repo(cfg, url)
+        ref, files = work_branch_changes(cfg, el["target"], el["branch"], repo=repo)
+        entries.append({
+            "name": el["name"] or _repo_label(url, fallback=repo.name),
             "role": "write",
             "url": url,
             "path": str(repo),
-            "base": target,
-            "target": target,
-            "branch": branch,
+            "base": el["target"],
+            "target": el["target"],
+            "branch": el["branch"],
             "ref": ref,
             "files": files[:max_files],
             "files_total": len(files),
-            "diff_cmd": f"git -C {repo} diff {target}...{ref}" if ref else "",
-            "mr_url": str(mr_url or task.get("mr_url") or "").strip(),
-        }
-        entries.append(entry)
+            "diff_cmd": f"git -C {repo} diff {el['target']}...{ref}" if ref else "",
+            # MR は要素ごとに立つ。primary は従来どおり task の `mr_url` を既定に使う。
+            "mr_url": (str(mr_url or task.get("mr_url") or "").strip() if i == 0
+                       else mr_urls.get(el["name"] or url, "")),
+        })
     # 参照リポジトリ（読取）: 差分は通常無いが、複数 repo 案件で「どの repo を見るか」を明示する
     for ref_spec in (meta.get("references") or []):
         if not isinstance(ref_spec, dict):

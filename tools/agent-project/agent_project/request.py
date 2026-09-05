@@ -232,7 +232,9 @@ def project_context_block(cfg: "Config", task: "Task | None" = None) -> str:
     pr = project_rules_context(cfg)
     if pr:
         parts.append("プロジェクトルール（rules.md・全タスク共通。必ず従うこと）:\n" + pr)
-    rm = repo_map_context(cfg, [task.get("workspace")] if task and task.get("workspace") else None)
+    # 書込先が複数（workset）なら要素ごとの理解を全部読む（1 件なら従来と同じ）。
+    rm = repo_map_context(cfg, _split_tokens(task.get("workspace")) or None) if task \
+        else repo_map_context(cfg, None)
     if rm:
         parts.append("リポジトリ理解（構造・規約・ビルド/テストコマンド）:\n" + rm)
     return "\n\n".join(parts)
@@ -319,7 +321,7 @@ def build_request(task: Task, cfg: "Config | None" = None, *,
                 base += "\n\nプロジェクトルール（rules.md・全タスク共通。必ず従うこと）:\n" + pr
             # リポジトリ理解（context/*.md・生成は opt-in repo_map / 人の手書きも可）。workspace 指定
             # タスクはその repo 分だけ、無指定はプロジェクトの全ファイル（有界）を注入する。
-            rm = repo_map_context(cfg, [task.get("workspace")] if task.get("workspace") else None)
+            rm = repo_map_context(cfg, _split_tokens(task.get("workspace")) or None)
             if rm:
                 base += "\n\nリポジトリ理解（構造・規約・ビルド/テストコマンド）:\n" + rm
         dc = decision_context(cfg, task)
@@ -439,6 +441,16 @@ def route_target(task: Task, policy: "Policy") -> str:
     return ""
 
 
+def route_targets(task: Task, policy: "Policy") -> "list[str]":
+    """`route:` ルールの右辺を書込先の集合として読む。`a+b` は「両方に書く」の明示。
+
+    区切りに `+` を使うのは、既存の 1 repo ルール（`... -> api`）を 1 文字も変えずに
+    集合を表せるため。`,` は既に repo 名の中で使わない前提が無く、policy の 1 行を
+    分割する意味も持つので避ける。"""
+    name = route_target(task, policy)
+    return [t for t in (part.strip() for part in name.split("+")) if t] if name else []
+
+
 def _glob_prefix(g: str) -> str:
     """グロブの先頭の非ワイルドカード部分（`apps/api/**` → `apps/api/`）。"""
     m = re.search(r"[*?\[]", g)
@@ -478,14 +490,19 @@ def _infer_workspace_from_paths(workspaces: "list[dict]", paths: "list[str]") ->
     return workspaces[0] if (not hits and len(workspaces) == 1) else None
 
 
-def _owns_infer(task: Task, workspaces: "list[dict]") -> "dict | None":
-    """タスクが触る予定パス（`- paths:` ヒント。無ければ固定検証コマンドから抽出）を charter の owns:
-    グロブと突き合わせ、所有するワークスペースを推定する。曖昧（複数一致）なら推定しない。"""
+def _owns_hits(task: Task, workspaces: "list[dict]") -> "list[dict]":
+    """タスクが触る予定パス（`- paths:` ヒント。無ければ固定検証コマンドから抽出）を charter の
+    owns: グロブと突き合わせ、所有するワークスペースを**全部**返す（順序は charter の並び）。"""
     paths = _split_tokens(task.get("paths")) or _verify_paths(
         " && ".join(c["command"] for c in task_verification_commands(task)))
     if not paths:
-        return None
-    hits = [s for s in workspaces if any(_owns_matches(s.get("owns", []), p) for p in paths)]
+        return []
+    return [s for s in workspaces if any(_owns_matches(s.get("owns", []), p) for p in paths)]
+
+
+def _owns_infer(task: Task, workspaces: "list[dict]") -> "dict | None":
+    """所有するワークスペースが**ちょうど 1 つ**に決まるときだけ推定する（曖昧なら推定しない）。"""
+    hits = _owns_hits(task, workspaces)
     return hits[0] if len(hits) == 1 else None
 
 
@@ -515,11 +532,32 @@ def route_agent(cfg: "Config", task: Task, workspaces: "list[dict]",
         return ""
 
 
-def resolve_workspace(cfg: "Config", task: Task, policy: "Policy") -> "tuple[dict | None, str]":
-    """タスク → ちょうど1つの書込先ワークスペース spec を決める。解決順（上が優先）:
-      1. 明示 `- workspace:`  2. policy `route:`  3. charter owns: 推定
-      4. auto-route エージェント（route_planner=agent）  5. 既定（default_workspace / 候補が1つ）
-    返り値 (spec or None, routed_by)。None は書込先なし＝読み取り専用 run（調査タスク等）。"""
+def _dedupe_specs(specs: "list[dict]") -> "list[dict]":
+    """同一性 (url, path, base) が重なる spec を初出だけ残す（順序は保つ）。"""
+    out: "list[dict]" = []
+    seen: "set[tuple]" = set()
+    for sp in specs:
+        if not sp or not sp.get("url"):
+            continue
+        key = (sp.get("url", ""), sp.get("path", ""), sp.get("base", ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(sp)
+    return out
+
+
+def resolve_workset(cfg: "Config", task: Task, policy: "Policy") -> "tuple[list[dict], str]":
+    """タスク → 書込先ワークスペースの**順序付き集合**（workset）を決める。解決順（上が優先）:
+      1. 明示 `- workspace:`（`a, b` で複数）  2. policy `route:`（`... -> a+b` で複数）
+      3. charter owns: パス推定  4. auto-route エージェント（route_planner=agent・常に 1 つ）
+      5. 既定（default_workspace / 候補が1つ）
+    返り値 (spec 列, routed_by)。空リストは書込先なし＝読み取り専用 run（調査タスク等）。
+
+    **既定では従来どおり 1 つに決める。** 集合になるのは (a) 人が `- workspace: a, b` と明示した
+    (b) `route:` ルールが `a+b` と書いてある (c) `multi_workspace: true` を設定したうえで owns
+    が複数ヒットした、のいずれか。auto-route（LLM）には複数を選ばせない——「どこに書くか」の
+    判断を増やす場所ではないため（設計 §8 非目標）。"""
     try:
         ch = charter_for_task(cfg, task)
     except (OSError, ValueError):
@@ -528,38 +566,67 @@ def resolve_workspace(cfg: "Config", task: Task, policy: "Policy") -> "tuple[dic
     smap = repo_spec_map(specs)
     workspaces = [s for s in specs if not _is_reference_repo(s)]
 
-    explicit = _strip_code(str(task.get("workspace") or "").strip())
+    explicit = _split_tokens(task.get("workspace"))
     if explicit:                                  # 1. 人/過去ルーティングの明示指定（最優先）
-        sp, alias = _repo_spec_for_token(specs, explicit)
-        sp = sp or _raw_url_spec(explicit)
-        if sp:
-            return sp, "explicit-alias" if alias else "explicit"
-    name = route_target(task, policy)             # 2. route: パターンルール（決定論）
-    if name and smap.get(name) and not _is_reference_repo(smap[name]):
-        return smap[name], "rule"
-    sp = _owns_infer(task, workspaces)            # 3. charter owns: パス推定（決定論）
-    if sp:
-        return sp, "owns"
+        picked: "list[dict]" = []
+        aliased = False
+        for tok in explicit:
+            sp, alias = _repo_spec_for_token(specs, tok)
+            sp = sp or _raw_url_spec(tok)
+            if sp:
+                picked.append(sp)
+                aliased = aliased or alias
+        if picked:
+            return _dedupe_specs(picked), "explicit-alias" if aliased else "explicit"
+    names = route_targets(task, policy)           # 2. route: パターンルール（決定論）
+    ruled = [smap[n] for n in names if smap.get(n) and not _is_reference_repo(smap[n])]
+    if ruled and len(ruled) == len(names):        # 全部が書込先として解決できたときだけ採る
+        return _dedupe_specs(ruled), "rule"
+    hits = _owns_hits(task, workspaces)           # 3. charter owns: パス推定（決定論）
+    if len(hits) == 1:
+        return hits, "owns"
+    if len(hits) > 1 and getattr(cfg, "multi_workspace", False):
+        # 複数 repo の owns に跨るタスクを「両方に書く」と読む（オプトイン）。既定では
+        # 従来どおり決められないものとして次の段へ落とす——黙って書込先を増やさない。
+        return hits, "owns"
     if cfg.route_planner == "agent" and workspaces:  # 4. auto-route エージェント（曖昧時のみ）
         nm = route_agent(cfg, task, workspaces)
         if nm and smap.get(nm) and not _is_reference_repo(smap[nm]):
-            return smap[nm], "agent"
+            return [smap[nm]], "agent"
     if cfg.default_workspace and smap.get(cfg.default_workspace):  # 5a. 既定ワークスペース
-        return smap[cfg.default_workspace], "default"
+        return [smap[cfg.default_workspace]], "default"
     if len(workspaces) == 1:                       # 5b. 書込先候補が1つだけ → それ
-        return workspaces[0], "sole"
-    return None, "none"
+        return [workspaces[0]], "sole"
+    return [], "none"
+
+
+def resolve_workspace(cfg: "Config", task: Task, policy: "Policy") -> "tuple[dict | None, str]":
+    """タスクの書込先 primary（先頭要素）を決める。集合が要る呼び出しは `resolve_workset`。
+    返り値 (spec or None, routed_by)。None は書込先なし＝読み取り専用 run（調査タスク等）。"""
+    picked, routed_by = resolve_workset(cfg, task, policy)
+    return (picked[0] if picked else None), routed_by
+
+
+def workset_field(specs: "list[dict]") -> str:
+    """workset を md の `- workspace:` 1 行へ畳む（`a, b`。順序＝先頭が primary）。"""
+    return ", ".join(str(sp.get("name") or sp.get("url") or "") for sp in specs)
 
 
 def resolve_and_persist_workspace(cfg: "Config", task: Task, policy: "Policy") -> "dict | None":
     """タスクを書込先ワークスペースへルーティングし、決定を md（`- workspace:`/`- routed_by:`）へ
-    書き戻して安定・監査可能にする（毎サイクル LLM を呼ばない）。返り値は解決した spec か None。"""
-    spec, routed_by = resolve_workspace(cfg, task, policy)
-    if spec and routed_by != "explicit":          # 正規名と一致する明示指定だけはそのまま
-        task.set("workspace", spec.get("name") or spec["url"])
+    書き戻して安定・監査可能にする（毎サイクル LLM を呼ばない）。返り値は解決した primary spec か None。"""
+    picked = resolve_and_persist_workset(cfg, task, policy)
+    return picked[0] if picked else None
+
+
+def resolve_and_persist_workset(cfg: "Config", task: Task, policy: "Policy") -> "list[dict]":
+    """`resolve_and_persist_workspace` の集合版（決定は 1 度だけ・md に書き戻す）。"""
+    picked, routed_by = resolve_workset(cfg, task, policy)
+    if picked and routed_by != "explicit":        # 正規名と一致する明示指定だけはそのまま
+        task.set("workspace", workset_field(picked))
         task.set("routed_by", routed_by)
         persist_task(cfg, task)
-    return spec
+    return picked
 
 
 def task_branch_name(cfg: "Config", task: "Task") -> str:
@@ -567,10 +634,29 @@ def task_branch_name(cfg: "Config", task: "Task") -> str:
     return f"{getattr(cfg, 'task_branch_prefix', 'ap/') or 'ap/'}{task.id}"
 
 
-def _workspace_token(spec: dict) -> str:
+def workset_element_name(spec: dict) -> str:
+    """workset 要素の正典名。記録・検証計画・環境変数がこの語彙で要素を指す。
+
+    repos レジストリのエントリ名が第一。無ければ agent-flow と**同じ規則**で URL から導く
+    ——両側で違う名前になると、検証計画の `workspaces[]` が runner の clone を指せなくなる。"""
+    name = str(spec.get("name") or "").strip()
+    if name:
+        return name
+    base = str(spec.get("url") or "").rstrip("/").split("/")[-1]
+    if base.endswith(".git"):
+        base = base[:-4]
+    safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in base)
+    return safe or "repo"
+
+
+def _workspace_token(spec: dict, named: bool = False) -> str:
     """workspace spec を agent-flow の `--workspace` 値（JSON）にする。
     url/path/base/target/desc/branch/local を伝搬。worker（作業ツリーの用意・作業ブランチ）と
     gitlab の起票先解決の双方で使われる。
+
+    `named` は書込先が複数（workset）のときだけ真にする。要素名を載せると agent-flow の
+    記録（`deliveries[]` / `publication.name`）と検証計画の `workspaces[]` が同じ語彙で
+    要素を指せる。1 要素では載せない——従来の delivery / publication の形を変えないため。
 
     `local`（手元にある同じリポジトリのクローン）はこのノードの host.yaml `repos[]` から埋める
     （S3）。落とすと worker は目の前に同じリポジトリがあってもネットワーク越しにミラーを
@@ -581,32 +667,53 @@ def _workspace_token(spec: dict) -> str:
             if spec.get(k)}
     if meta.get("desc") and len(meta["desc"]) > 300:
         meta["desc"] = meta["desc"][:300]         # argv 肥大を防ぐ（説明は有界に）
+    if named:
+        meta["name"] = workset_element_name(spec)
     return json.dumps({"url": spec["url"], **meta}, ensure_ascii=False, separators=(",", ":"))
 
 
-def _workspace_spec_for(cfg: "Config", task: Task) -> "dict | None":
-    """既に解決・永続化済みの `- workspace:`（_act_batch で確定）を charter spec へ。
-    未解決なら None（読み取り専用 run）。ルーティングはここでは行わない（決定は1度だけ）。"""
-    name = _strip_code(str(task.get("workspace") or "").strip())
-    if not name:
-        return None
+def _workspace_specs_for(cfg: "Config", task: Task) -> "list[dict]":
+    """既に解決・永続化済みの `- workspace:`（_act_batch で確定）を charter spec 列へ。
+    未解決なら空（読み取り専用 run）。ルーティングはここでは行わない（決定は1度だけ）。
+
+    `- workspace: a, b` は書込先の集合（workset）で、順序の先頭が primary。1 件なら
+    従来と同じ 1 要素のリストになる。"""
+    names = _split_tokens(task.get("workspace"))
+    if not names:
+        return []
     try:
         specs = registry_specs(cfg, charter_for_task(cfg, task))
     except (OSError, ValueError):
         specs = []
-    spec, _alias = _repo_spec_for_token(specs, name)
-    spec = spec or _raw_url_spec(name)
-    if spec and getattr(cfg, "task_branch", False):
-        # タスク単位ターゲットブランチ: agent-flow は run 毎の af/<run-id> の代わりにこのブランチへ
-        # push する（リトライも同一ブランチに積み増し、レビュー・MR の対象を 1 本に集約する）
-        spec = {**spec, "branch": task_branch_name(cfg, task)}
-    return spec
+    out: "list[dict]" = []
+    for name in names:
+        spec, _alias = _repo_spec_for_token(specs, name)
+        spec = spec or _raw_url_spec(name)
+        if not spec:
+            continue
+        if getattr(cfg, "task_branch", False):
+            # タスク単位ターゲットブランチ: agent-flow は run 毎の af/<run-id> の代わりにこの
+            # ブランチへ push する（リトライも同一ブランチに積み増し、レビュー・MR の対象を
+            # 1 本に集約する）。workset では**全要素で同名**にする——横断 MR の相関鍵になる。
+            spec = {**spec, "branch": task_branch_name(cfg, task)}
+        out.append(spec)
+    return _dedupe_specs(out)
+
+
+def _workspace_spec_for(cfg: "Config", task: Task) -> "dict | None":
+    """書込先の primary（先頭要素）。集合が要る呼び出しは `_workspace_specs_for`。"""
+    specs = _workspace_specs_for(cfg, task)
+    return specs[0] if specs else None
 
 
 def _workspace_cmd_args(cfg: "Config", task: Task) -> "list[str]":
-    """agent-flow へ渡す `--workspace`（唯一の書込先）。書込先が無ければ空＝読み取り専用 run。"""
-    spec = _workspace_spec_for(cfg, task)
-    return ["--workspace", _workspace_token(spec)] if spec else []
+    """agent-flow へ渡す `--workspace` 列（書込先の集合。先頭が primary）。
+    書込先が無ければ空＝読み取り専用 run。"""
+    specs = _workspace_specs_for(cfg, task)
+    args: "list[str]" = []
+    for spec in specs:
+        args += ["--workspace", _workspace_token(spec, named=len(specs) > 1)]
+    return args
 
 
 def _reference_token(spec: dict) -> str:
@@ -628,15 +735,16 @@ def _reference_cmd_args(cfg: "Config", task: Task) -> "list[str]":
 def task_reference_specs(cfg: "Config", task: Task) -> "list[dict]":
     """このタスクが参照する（書き込まない）リポジトリの spec 列。charter の owns: 無しエントリ全部に、
     タスクの `- refs:`（および `- repos:` に挙げた参照先）で明示したものを足す。書込先 `- workspace:`
-    に解決された url は除く（書込先は参照に含めない）。要求本文へ記述として埋め込む（clone はしない）。"""
+    に解決された url は**全要素**除く（書込先は参照に含めない——同じリポジトリに「読むだけ」と
+    「書込先」の両方の注記が出ると、エージェントに矛盾した指示を渡すことになる）。
+    要求本文へ記述として埋め込む（clone はしない）。"""
     try:
         ch = charter_for_task(cfg, task)
     except (OSError, ValueError):
         ch = None
     specs = registry_specs(cfg, ch)
     smap = repo_spec_map(specs)
-    ws = _workspace_spec_for(cfg, task)
-    ws_url = ws["url"] if ws else None
+    ws_urls = {sp["url"] for sp in _workspace_specs_for(cfg, task) if sp.get("url")}
     out: "list[dict]" = []
     seen: "set[str]" = set()
     refs = [s for s in specs if _is_reference_repo(s)]
@@ -646,7 +754,7 @@ def task_reference_specs(cfg: "Config", task: Task) -> "list[dict]":
             refs.append(sp)
     for s in refs:
         url = s.get("url")
-        if url and url not in seen and url != ws_url:   # 書込先は参照に含めない
+        if url and url not in seen and url not in ws_urls:   # 書込先は参照に含めない（全要素）
             seen.add(url)
             out.append(s)
     return out

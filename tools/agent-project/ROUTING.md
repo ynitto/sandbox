@@ -7,19 +7,23 @@
 
 | レイヤ | 役割 | リポジトリの扱い |
 |---|---|---|
-| **agent-project**（制御・ルーティング層） | バックログの優先順位付け・verify ゲート・決定記録 | タスクを**ちょうど1つの書込先ワークスペース**へルーティングし `--workspace` で渡す。参照リポジトリは `--reference` で構造化伝搬する |
+| **agent-project**（制御・ルーティング層） | バックログの優先順位付け・verify ゲート・決定記録 | タスクを**書込先ワークスペースの集合（workset。既定は 1 つ）**へルーティングし `--workspace` で渡す（複数なら繰り返し）。参照リポジトリは `--reference` で構造化伝搬する |
 | **agent-flow**（実行層） | タスク分解・worker 実行・bus 同期 | 渡された**書込先の集合（workset。既定は 1 要素）**を要素ごとに clone し、作業ブランチ `af/<run-id>` を作って worker へ渡す。変更があった要素だけ commit/push する |
 
 ## 基本原則
 
-1. **1 run（=バックログ単位）= 1 workset（書込先の集合。既定は 1 要素）。** agent-project は現状
-   **ちょうど 1 つ**へルーティングする（下の解決順は変わっていない）。複数リポジトリへまたがる変更は、
-   これまでどおり agent-project が **repo 別タスクへ分割**し `after`（依存）で順序付ける。
-   実行層（agent-flow）は既に集合を受け取れる——`--workspace` を繰り返し渡すと要素ごとに
-   commit/push し、要素ごとの `deliveries[]` を返す。「1 つの変更が複数 repo で同時に成立して
-   初めて検証できる」仕事のための口で、**agent-project 側のルーティングを集合へ広げるのは
-   別段階（設計 §7 の P2）**。集合の中身を決めるのは常に依頼側で、agent-flow の planner は
-   増減しない。正典設計:
+1. **1 run（=バックログ単位）= 1 workset（書込先の集合。既定は 1 要素）。** 既定では従来どおり
+   **ちょうど 1 つ**へルーティングする。集合になるのは次の 3 つだけで、いずれも「そう書いた」
+   という明示である:
+   - 人の明示 **`- workspace: a, b`**（順序の先頭が primary）
+   - `policy.md` の **`route: <パターン> -> a+b`**
+   - 設定 **`multi_workspace: true`** のもとで `owns` が複数 repo にヒットした
+     （既定 false では従来どおり「決められない」として次の段へ落とす）
+
+   auto-route（LLM）には複数を選ばせない。「1 つの変更が複数 repo で同時に成立して初めて
+   検証できる」仕事のための口で、単に repo をまたぐだけの仕事は**これまでどおり repo 別
+   タスクへ分割**し `after`（依存）で順序付ける。集合の中身を決めるのは常に依頼側で、
+   agent-flow の planner は増減しない。正典設計:
    [複数リポジトリ（workset）設計](../../docs/plans/2026-09-05-agent-flow-multi-workspace-design.md)。
 2. **リポジトリの同一性は (url, path, base)。** 同 URL でも path（モノレポのフォルダ）や base（作業ブランチ）が
    違えば別ワークスペース。
@@ -33,13 +37,18 @@
 
 ## ルーティングの決まり方（agent-project）
 
-`resolve_workspace(cfg, task, policy)` が次の順で**ちょうど1つ**の書込先を決める（上が優先）。決定はタスク md の
-`- workspace:` / `- routed_by:` に書き戻され、毎サイクル LLM を呼ばず安定・監査可能になる。
+`resolve_workset(cfg, task, policy)` が次の順で書込先の**集合**を決める（上が優先。既定はどの段も
+1 つ）。決定はタスク md の `- workspace:` / `- routed_by:` に書き戻され、毎サイクル LLM を呼ばず
+安定・監査可能になる。primary（先頭要素）だけが要る呼び出しは `resolve_workspace` を使う。
 
-1. タスクの **`- workspace: <name>`**（人/過去ルーティングの明示）
-2. `policy.md` の **`route: <パターン> -> <name>`**（決定論ルール。パターンは id/タイトルの部分一致）
-3. charter `## repos` の **`owns:`**（担当パスのグロブ）× タスクの `- paths:` ヒントの一致（決定論推定）
-4. **auto-route エージェント**（`route_planner: agent` のとき、charter の desc/owns から LLM が1つ推定）
+1. タスクの **`- workspace: <name>`**（人/過去ルーティングの明示）。`a, b` と書けば集合
+2. `policy.md` の **`route: <パターン> -> <name>`**（決定論ルール。パターンは id/タイトルの部分一致）。
+   右辺を `a+b` と書けば集合
+3. charter `## repos` の **`owns:`**（担当パスのグロブ）× タスクの `- paths:` ヒントの一致（決定論推定）。
+   複数 repo にヒットしたときは、設定 **`multi_workspace: true`** のときだけ全ヒットを集合として採る
+   （既定 false では従来どおり「決められない」として次の段へ）
+4. **auto-route エージェント**（`route_planner: agent` のとき、charter の desc/owns から LLM が1つ推定。
+   **常に 1 つ**——複数の書込先を LLM に選ばせない）
 5. **`default_workspace`** 設定 / 書込先候補が1つだけならそれ
 
 決まらなければ書込先なし＝**読み取り専用 run**。
@@ -51,6 +60,10 @@ charter を分解してタスクを生成する plan/review フェーズでは�
 決定論的に確定し（プランナーが付けた owns 持ちの workspace 指定は尊重）、それ以外の charter repo・
 プランナーが挙げた repo はすべて **参照（`refs`）** に振り分ける。これにより、生成直後のタスクが
 「書込先が未確定のまま」になることを防ぎ、後段の route 層は明示済みの workspace をそのまま使う。
+
+`multi_workspace: true` のときだけ、操作パスが**複数 repo の `owns` に跨る**タスクに
+`- workspace: a, b` の集合を書く。プランナー（LLM）に repo を増やさせるのではなく、
+`owns` という決定論の結果を畳まずに残すだけである。
 
 ## charter `## repos`（書込先 vs 参照）
 

@@ -79,6 +79,8 @@ CONFIG_DEFAULTS = {
     "verifications_keep": 5,
     "gc_retention_days": 30,
     "default_workspace": "",
+    # owns が複数 repo にヒットしたタスクを「両方に書く」と読む（workset・オプトイン）。
+    "multi_workspace": False,
     "location": "auto",
     "board": "",
     "board_workdir": None,
@@ -843,6 +845,7 @@ def build_config(args) -> Config:
                              getattr(args, "clock_skew_tolerance_sec", 30.0)) or 0.0)),
         route_planner=str(getattr(args, "route_planner", "agent") or "agent"),
         default_workspace=str(getattr(args, "default_workspace", "") or ""),
+        multi_workspace=bool(getattr(args, "multi_workspace", False)),
         location=args.location,
         board=str(getattr(args, "board", "") or ""),
         board_workdir=getattr(args, "board_workdir", None) or None,

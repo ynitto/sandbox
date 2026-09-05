@@ -328,18 +328,32 @@ ensure_workset(workset, run_id)
 
 ## 7. 段階導入
 
-| 段 | 内容 | 完了条件 |
-|---|---|---|
-| **P0 契約** | 仕様書 §3.1 / §3.8 に `workspaces` / `deliveries` を追記。verification-plan v3 と delegation `contract_version` の schema。ROUTING.md 原則 1 の書き換え | schema の contract test が新旧両方を通す |
-| **P1 agent-flow 本体** | §5.2〜5.5。gitlab executor は N>1 を fail-close。板は `workspaces` 付き公示を受け取らない（version 1 のまま） | N=1 の既存テスト全通過 ＋ N=2 の e2e（stub executor で 2 repo に push・片方 push 失敗で半公開が記録される・resume で失敗側だけ再 push） |
-| **P2 agent-project** | ルーティングの list 化（オプトイン）、plan v3、MR 要素ごと、delivery N write、板封筒 | 既存プロジェクト（1 repo）の loop テストが無変更で通る。2 repo プロジェクトの act → verify → review → done が回る |
-| **P3 dashboard** | 投函の複数フォルダ、公開表示、GitLab 照合、検収 | 1 repo run の画面が変わらない。2 repo run で要素ごとの publication と差分が見える |
-| **P4 gitlab executor / 板** | 要素ごと起票と `expected_targets`、板 contract_version 2 | 2 repo の委譲が起票・自動マージ・決着まで回る |
+| 段 | 内容 | 完了条件 | 状況 |
+|---|---|---|---|
+| **P0 契約** | 仕様書 §3.1 / §3.8 に `workspaces` / `deliveries` を追記。verification-plan v3 と delegation `contract_version` の schema。ROUTING.md 原則 1 の書き換え | schema の contract test が新旧両方を通す | 済 |
+| **P1 agent-flow 本体** | §5.2〜5.5。gitlab executor は N>1 を fail-close。板は `workspaces` 付き公示を受け取らない（version 1 のまま） | N=1 の既存テスト全通過 ＋ N=2 の e2e（stub executor で 2 repo に push・片方 push 失敗で半公開が記録される・resume で失敗側だけ再 push） | 済 |
+| **P2 agent-project** | ルーティングの list 化（オプトイン）、plan v3、MR 要素ごと、delivery N write、板封筒 | 既存プロジェクト（1 repo）の loop テストが無変更で通る。2 repo プロジェクトの act → verify → review → done が回る | 済（板は封筒だけ用意し、公示は P4 まで fail-close） |
+| **P3 dashboard** | 投函の複数フォルダ、公開表示、GitLab 照合、検収 | 1 repo run の画面が変わらない。2 repo run で要素ごとの publication と差分が見える | 未 |
+| **P4 gitlab executor / 板** | 要素ごと起票と `expected_targets`、板 contract_version 2 | 2 repo の委譲が起票・自動マージ・決着まで回る | 未 |
 
 **配布順序**: agent-flow を全 PC で P1 へ上げてから、agent-project / dashboard が `workspaces` を
 出し始める。旧 agent-flow は `workspaces` を未知キーとして無視し primary だけに書く（静かな部分実行）
 ため、P2 の切替は `multi_workspace: true` のオプトインと、`agent-flow --version` の下限確認
 （`doctor` に所見を足す）で守る。
+
+**実装時の逸脱（3 点）**:
+
+- base-sync のノード id は `base-sync:<name>` ではなく **`base-sync@<name>`**。ノード id は
+  `tasks/<id>.json` と `claims/<id>/` のパスになり、`:` は Windows のファイル名として不正で、
+  全 PC へ配る run 状態がそのノードでだけ壊れるため（`base-sync-<n>` とも衝突しない）。
+- 板は P2 では**封筒だけ**用意した（`workspaces[]` / `requires.repos` /
+  `requires.contract_version`）。入札選別の契約版は完全一致なので、`contract_version: 2` の
+  公示はフリートを一斉に上げるまで誰も入札できず「無言の停止」になる。そこで依頼側が
+  **N>1 の公示を出さない**（`workset_offload_blocked` でローカル実行へ倒す）。P4 で
+  `agentcore.board.CONTRACT_VERSION` を 2 へ上げると門が開く。
+- `resolve_workspace` の戻り値は list に変えず、集合版 `resolve_workset` を足して
+  `resolve_workspace` は primary を返す形にした（agent-flow の `run_workspace()` /
+  `run_workset()` と同じ分け方。旧い呼び出しと読み手を版で分岐させないため）。
 
 ## 8. 非目標
 
