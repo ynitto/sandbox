@@ -17,7 +17,10 @@ const state = {
   termOpen: false,
   view: 'chat',
   diffSide: false,
+  diffScope: 'worktree',   // 変更ビュー: 作業ツリー / ブランチ（分岐元から積んだコミット）
   diffText: '',
+  worktrees: [],           // git worktree list の結果
+  worktree: '',            // 「新しい会話」で選んでいる作業フォルダ（'' はリポジトリ本体）
 };
 
 const $ = (id) => document.getElementById(id);
@@ -39,6 +42,18 @@ function notice(text, kind = '') {
 const PHASE_LABEL = { starting: '起動中', ready: '待機', busy: '応答中', attention: '確認待ち', dead: '終了', gone: 'セッション消失' };
 
 function isTmux(sess) { return !!sess && sess.transport === 'tmux'; }
+
+// 今見ている作業フォルダ。会話を開いていればその会話のもの（会話ごとに固定）、
+// 下書き中なら選択中のもの。'' はリポジトリ本体。
+function activeWorktree() {
+  return state.current ? (state.current.worktree || '') : state.worktree;
+}
+
+function worktreeLabel(name) {
+  if (!name) return 'リポジトリ本体';
+  const w = state.worktrees.find((x) => x.name === name);
+  return w && w.branch ? `${name}（${w.branch}）` : name;
+}
 
 // ---- 左: リポジトリと会話 ------------------------------------------------
 
@@ -68,7 +83,8 @@ function renderSessions() {
     const li = el('li', cls.join(' '));
     const body = el('span', 'grow');
     body.append(el('div', '', s.title || '（無題）'));
-    body.append(el('div', 'sub', `${s.cli}${s.readonly ? '・Ask' : ''}${s.transport === 'tmux' ? '・tmux' : ''} · ${s.count} 通`));
+    const where = s.worktree ? `・${s.branch || s.worktree}` : '';
+    body.append(el('div', 'sub', `${s.cli}${s.readonly ? '・Ask' : ''}${s.transport === 'tmux' ? '・tmux' : ''}${where} · ${s.count} 通`));
     li.append(body);
     li.onclick = () => openSession(s.id);
     ul.append(li);
@@ -81,11 +97,141 @@ async function selectRepo(repo) {
   if (repo) state.config = await api.saveConfig({ lastRepo: repo });
   state.agents = repo ? await api.listAgents(repo).catch((e) => { notice(e.message, 'error'); return []; }) : [];
   state.sessions = repo ? await api.listSessions(repo) : [];
+  await refreshWorktrees();
+  state.worktree = (state.config.lastWorktree || {})[state.repo] || '';
+  if (state.worktree && !state.worktrees.some((w) => w.name === state.worktree && w.selectable)) state.worktree = '';
   renderRepos();
   renderAgents();
   newDraft();
   if (state.changesOpen) refreshChanges();
-  Files.setRepo(state.repo, { lastFile: (state.config.lastFiles || {})[state.repo] || '' }).catch(() => {});
+  Files.setRoot(state.repo, activeWorktree(), { lastFile: (state.config.lastFiles || {})[state.repo] || '' }).catch(() => {});
+}
+
+// ---- 作業フォルダ（git worktree） -------------------------------------------
+
+async function refreshWorktrees() {
+  if (!state.repo) { state.worktrees = []; return; }
+  try {
+    const res = await api.listWorktrees(state.repo);
+    state.worktrees = res.items || [];
+  } catch {
+    state.worktrees = [];                 // git リポジトリでない等。本体だけで動く
+  }
+  renderWorktreeSelect();
+  Files.renderRoots(state.worktrees);
+}
+
+function renderWorktreeSelect() {
+  const sel = $('worktree');
+  sel.replaceChildren();
+  const cur = activeWorktree();
+  const add = (value, label) => { const o = el('option', '', label); o.value = value; sel.append(o); };
+  add('', 'リポジトリ本体');
+  for (const w of state.worktrees.filter((x) => x.selectable)) add(w.name, `${w.name}（${w.branch || 'detached'}）`);
+  // 会話が使っていた作業フォルダが消えていても、選択として見えるようにしておく
+  if (cur && !state.worktrees.some((w) => w.name === cur && w.selectable)) add(cur, `${cur}（見つからない）`);
+  sel.value = cur;
+  sel.disabled = !state.draft;            // 会話ごとに固定（tmux の cwd も CLI の文脈もそこで始まっている）
+  sel.title = state.draft ? '会話ごとに git worktree で作業フォルダを分ける'
+    : 'この会話の作業フォルダ（会話を作ったあとは変えられない）';
+}
+
+// ブランチ名 → フォルダ名（main の worktree.js と同じ規則。画面で先に見せるため）
+function slug(branch) {
+  return String(branch || '').trim().replace(/[^\w.@+-]+/g, '-').replace(/^[-.]+/, '').replace(/[-.]+$/, '').slice(0, 60);
+}
+
+function dialogError(text) {
+  const n = $('wt-error');
+  n.textContent = text || '';
+  n.hidden = !text;
+}
+
+function renderWorktreeList() {
+  const tb = $('wt-list');
+  tb.replaceChildren();
+  for (const w of state.worktrees) {
+    const tr = el('tr');
+    tr.append(el('td', 'wt-name', w.main ? 'リポジトリ本体' : (w.name || w.path)));
+    tr.append(el('td', '', w.branch || `(detached ${String(w.head).slice(0, 7)})`));
+    const state_ = [];
+    if (w.dirty) state_.push(`${w.dirty} 変更`);
+    if (w.ahead) state_.push(`${w.ahead} コミット先`);
+    if (w.locked) state_.push('ロック中');
+    if (!w.main && !w.selectable) state_.push('この画面の外で作られた');
+    tr.append(el('td', 'sub', state_.join(' · ')));
+    const act = el('td', 'wt-act');
+    if (!w.main && w.name) {
+      const used = state.sessions.filter((s) => s.worktree === w.name).length;
+      const b = el('button', 'small danger', '削除');
+      b.title = used ? `この作業フォルダを使っている会話が ${used} 件ある（会話自体は残る）` : '';
+      b.onclick = () => removeWorktree(w, used);
+      act.append(b);
+    }
+    tr.append(act);
+    tb.append(tr);
+  }
+  if (!state.worktrees.length) {
+    const tr = el('tr');
+    tr.append(el('td', 'sub', 'git リポジトリではない（worktree は使えない）'));
+    tb.append(tr);
+  }
+}
+
+async function removeWorktree(w, used) {
+  const warn = [
+    `${w.name}（${w.branch || 'detached'}）を削除する？`,
+    used ? `この作業フォルダを使っている会話が ${used} 件ある（会話の記録は残るが、続きは動かせなくなる）` : '',
+    w.dirty ? `未コミットの変更が ${w.dirty} 件ある` : '',
+    w.ahead ? `本体に無いコミットが ${w.ahead} 件ある（ブランチ ${w.branch} は残す）` : '',
+  ].filter(Boolean).join('\n');
+  if (!confirm(warn)) return;
+  dialogError('');
+  try {
+    await api.removeWorktree(state.repo, w.name, { force: false });
+  } catch (err) {
+    // 未コミットの変更が残っていると git が断る。押し切るかはここで聞く
+    if (!/未コミット/.test(err.message) || !confirm(`${err.message}\n\n変更ごと削除する？`)) { dialogError(err.message); return; }
+    try { await api.removeWorktree(state.repo, w.name, { force: true }); } catch (e2) { dialogError(e2.message); return; }
+  }
+  await afterWorktreeChange();
+}
+
+async function createWorktree() {
+  const branch = $('wt-branch').value.trim();
+  if (!branch) { dialogError('ブランチ名を入れてください'); return; }
+  dialogError('');
+  $('wt-create').disabled = true;
+  try {
+    const w = await api.createWorktree(state.repo, branch, $('wt-base').value.trim(), '');
+    $('wt-branch').value = '';
+    $('wt-base').value = '';
+    $('wt-path').textContent = '';
+    await afterWorktreeChange();
+    if (state.draft) { state.worktree = w.name; await selectWorktree(w.name); }
+    notice(w.reusedBranch ? `既にあるブランチ ${w.branch} を ${w.name} に持ってきた` : `${w.name}（${w.branch}）を作った`);
+  } catch (err) {
+    dialogError(err.message);
+  } finally {
+    $('wt-create').disabled = false;
+  }
+}
+
+async function afterWorktreeChange() {
+  await refreshWorktrees();
+  renderWorktreeList();
+  state.sessions = state.repo ? await api.listSessions(state.repo) : [];
+  renderSessions();
+  if (state.changesOpen) refreshChanges();
+}
+
+// 下書きの作業フォルダを切り替える（ファイル画面と変更ビューもそこへ向ける）
+async function selectWorktree(name) {
+  state.worktree = name || '';
+  state.config = await api.saveConfig({ lastWorktree: { ...(state.config.lastWorktree || {}), [state.repo]: state.worktree } });
+  renderWorktreeSelect();
+  await Files.setRoot(state.repo, state.worktree, {});
+  if (state.changesOpen) refreshChanges();
 }
 
 // ---- 上: エージェント・モデル・モード ------------------------------------
@@ -204,6 +350,7 @@ function newDraft() {
   notice('');
   Term.detach();
   renderAgents();
+  renderWorktreeSelect();
   renderHeader();
   renderMessages();
   renderSessions();
@@ -219,9 +366,12 @@ async function openSession(id) {
   state.draft = false;
   notice('');
   renderAgents();
+  renderWorktreeSelect();
   renderHeader();
   renderMessages();
   renderSessions();
+  Files.setRoot(state.repo, activeWorktree(), {}).catch(() => {});
+  if (state.changesOpen) refreshChanges();
   if (isTmux(state.current)) attachTerm(state.current.id);
   else Term.detach();
 }
@@ -257,7 +407,7 @@ async function sendPrompt() {
       const agent = state.agents.find((a) => a.name === cli && a.available);
       if (!agent) throw new Error('使えるエージェントがない');
       const transport = (state.config.transport === 'tmux' && state.host && state.host.tmux && agent.interactive) ? 'tmux' : 'headless';
-      state.current = await api.createSession({ repo: state.repo, cli, model: $('model').value.trim(), readonly: $('readonly').checked, transport });
+      state.current = await api.createSession({ repo: state.repo, cli, model: $('model').value.trim(), readonly: $('readonly').checked, transport, worktree: state.worktree });
       state.draft = false;
       state.config = await api.saveConfig({ lastCli: cli, lastModel: $('model').value.trim(), lastReadonly: $('readonly').checked });
       if (transport === 'tmux') await attachTerm(state.current.id);
@@ -315,21 +465,27 @@ function renderDiff(text) {
 
 async function refreshChanges() {
   if (!state.repo) return;
-  let res;
-  try { res = await api.changes(state.repo); } catch (err) { renderDiff(''); $('changed-files').replaceChildren(el('li', 'empty', err.message)); return; }
+  const wt = activeWorktree();
+  const scope = state.diffScope;
+  $('scope-branch').disabled = !wt;                 // 本体には「分岐元」が無い
+  $('scope-worktree').classList.toggle('on', scope === 'worktree');
+  $('scope-branch').classList.toggle('on', scope === 'branch');
   const ul = $('changed-files');
+  let res;
+  try { res = await api.changes(state.repo, wt, scope); } catch (err) { renderDiff(''); ul.replaceChildren(el('li', 'empty', err.message)); return; }
   ul.replaceChildren();
-  $('branch').textContent = res.branch ? ` ${res.branch}` : '';
+  // 作業フォルダの表示にはブランチが入っているので、本体のときだけブランチを足す
+  $('changes-where').textContent = wt ? `変更 · ${worktreeLabel(wt)}` : `変更 · リポジトリ本体${res.branch ? ` · ${res.branch}` : ''}`;
   for (const f of res.files) {
     const li = el('li');
     li.append(el('span', 'tag', f.label), el('span', 'grow', f.file));
     li.title = `${f.file}（ダブルクリックでファイルを開く）`;
-    li.onclick = async () => { [...ul.children].forEach((c) => c.classList.remove('active')); li.classList.add('active'); renderDiff(await api.fileDiff(state.repo, f.file)); };
-    li.ondblclick = () => { if (f.label !== '削除') { showView('files'); Files.openFile(f.file).then(() => Files.reveal(f.file)); } };
+    li.onclick = async () => { [...ul.children].forEach((c) => c.classList.remove('active')); li.classList.add('active'); renderDiff(await api.fileDiff(state.repo, wt, f.file, scope)); };
+    li.ondblclick = () => { if (f.label !== '削除') { showView('files'); Files.setRoot(state.repo, wt, {}).then(() => Files.openFile(f.file)).then(() => Files.reveal(f.file)); } };
     ul.append(li);
   }
   if (res.error) ul.append(el('li', 'empty', res.error));
-  else if (!res.files.length) ul.append(el('li', 'empty', '作業ツリーは綺麗'));
+  else if (!res.files.length) ul.append(el('li', 'empty', scope === 'branch' ? '分岐元からのコミットは無い' : '作業ツリーは綺麗'));
   renderDiff(res.diff);
 }
 
@@ -360,11 +516,18 @@ async function init() {
   $('session-new').onclick = () => newDraft();
   $('session-delete').onclick = async () => {
     if (!state.current || !confirm(isTmux(state.current) ? 'この会話を削除する？（tmux セッションも終了する）' : 'この会話を削除する？')) return;
+    const wt = state.current.worktree || '';
     Term.detach();
     await api.removeSession(state.current.id);
     state.running.delete(state.current.id);
     state.phases.delete(state.current.id);
     state.sessions = await api.listSessions(state.repo);
+    // 作業フォルダは会話とは別物なので、消すかどうかは別に聞く（他の会話が使っていることもある）
+    const others = state.sessions.filter((s) => s.worktree === wt).length;
+    if (wt && !others && confirm(`作業フォルダ ${wt} も削除する？（ブランチは残る）`)) {
+      try { await api.removeWorktree(state.repo, wt, { force: false }); } catch (err) { notice(err.message, 'error'); }
+      await refreshWorktrees();
+    }
     newDraft();
   };
   $('send').onclick = sendPrompt;
@@ -387,9 +550,26 @@ async function init() {
     renderSessions();
   };
   $('changes-toggle').onclick = () => { state.changesOpen = !state.changesOpen; $('changes').hidden = !state.changesOpen; $('changes-toggle').classList.toggle('on', state.changesOpen); if (state.changesOpen) refreshChanges(); Term.refit(); };
-  $('changes-refresh').onclick = refreshChanges;
+  $('changes-refresh').onclick = () => { refreshWorktrees(); refreshChanges(); };
   $('diff-style').onclick = () => { state.diffSide = !state.diffSide; $('diff-style').classList.toggle('on', state.diffSide); renderDiff(state.diffText); };
-  $('open-folder').onclick = () => state.repo && api.openFolder(state.repo);
+  $('scope-worktree').onclick = () => { state.diffScope = 'worktree'; refreshChanges(); };
+  $('scope-branch').onclick = () => { state.diffScope = 'branch'; refreshChanges(); };
+  $('open-folder').onclick = () => state.repo && api.openFolder(state.repo, activeWorktree()).catch((e) => notice(e.message, 'error'));
+  $('worktree').onchange = () => { if (state.draft) selectWorktree($('worktree').value); };
+  $('wt-manage').onclick = async () => {
+    if (!state.repo) return;
+    dialogError('');
+    await refreshWorktrees();
+    renderWorktreeList();
+    $('wt-dialog').showModal();
+  };
+  $('wt-close').onclick = () => $('wt-dialog').close();
+  $('wt-create').onclick = createWorktree;
+  $('wt-branch').addEventListener('input', () => {
+    const s = slug($('wt-branch').value);
+    $('wt-path').textContent = s ? `フォルダ: .worktrees/${s}` : '';
+  });
+  $('wt-branch').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); createWorktree(); } });
   $('view-chat').onclick = () => showView('chat');
   $('view-files').onclick = () => showView('files');
   $('term-toggle').onclick = () => toggleTerm();

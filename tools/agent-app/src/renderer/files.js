@@ -5,7 +5,9 @@
   const $ = (id) => document.getElementById(id);
   const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };
 
-  const state = { repo: '', open: null, mode: 'code', wrap: false, expanded: new Set(), filterTimer: null };
+  // worktree … 見ているフォルダ（'' はリポジトリ本体）。main 側はこの名前だけを受け取り、
+  // <リポジトリ>/.worktrees/<名前> を組み立てる（画面から生のパスは渡さない）。
+  const state = { repo: '', worktree: '', open: null, mode: 'code', wrap: false, expanded: new Set(), filterTimer: null };
 
   const LANG_LABEL = { javascript: 'JS', typescript: 'TS', python: 'Python', markdown: 'Markdown', json: 'JSON', yaml: 'YAML', xml: 'XML/HTML', bash: 'Shell', plaintext: 'Text', csharp: 'C#', cpp: 'C++' };
   const fmtSize = (n) => (n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`);
@@ -44,7 +46,7 @@
     const kids = li.querySelector(':scope > ul.children');
     kids.replaceChildren(el('li', 'empty', '読み込み中…'));
     try {
-      const res = await api.listDir(state.repo, rel);
+      const res = await api.listDir(state.repo, state.worktree, rel);
       kids.replaceChildren();
       for (const e of res.entries) kids.append(nodeFor(e));
       if (!res.entries.length) kids.append(el('li', 'empty', '（空）'));
@@ -68,7 +70,7 @@
     if (!state.repo) { root.append(el('li', 'empty', 'リポジトリを選ぶ')); return; }
     root.append(el('li', 'empty', '読み込み中…'));
     try {
-      const res = await api.listDir(state.repo, '');
+      const res = await api.listDir(state.repo, state.worktree, '');
       root.replaceChildren();
       for (const e of res.entries) root.append(nodeFor(e));
       if (!res.entries.length) root.append(el('li', 'empty', '（空のフォルダ）'));
@@ -107,7 +109,7 @@
     box.hidden = false;
     box.replaceChildren(el('li', 'empty', '検索中…'));
     try {
-      const hits = await api.findFiles(state.repo, q);
+      const hits = await api.findFiles(state.repo, state.worktree, q);
       box.replaceChildren();
       for (const h of hits) {
         const li = el('li', `node ${h.type}`);
@@ -129,12 +131,12 @@
   async function openFile(rel, { silent = false } = {}) {
     if (!state.repo) return;
     let file;
-    try { file = await api.readFile(state.repo, rel); } catch (err) { showNotice(err.message); return; }
+    try { file = await api.readFile(state.repo, state.worktree, rel); } catch (err) { showNotice(err.message); return; }
     state.open = file;
     state.mode = file.language === 'markdown' ? (state.mdPreferred === false ? 'code' : 'preview') : 'code';
     if (!silent) markActive(rel);
     renderViewer();
-    api.saveConfig({ lastFiles: { [state.repo]: rel } }).catch(() => {});
+    if (!state.worktree) api.saveConfig({ lastFiles: { [state.repo]: rel } }).catch(() => {});
   }
 
   function showNotice(text) {
@@ -198,28 +200,50 @@
 
   // ---- 配線 --------------------------------------------------------------------
 
-  async function setRepo(repo, { lastFile = '' } = {}) {
-    if (repo === state.repo) return;
+  // 見るフォルダを決める。リポジトリか作業フォルダのどちらかが変わったら読み直す。
+  async function setRoot(repo, worktree = '', { lastFile = '' } = {}) {
+    const next = String(worktree || '');
+    if (repo === state.repo && next === state.worktree) return;
     state.repo = repo || '';
+    state.worktree = next;
     state.open = null;
     state.expanded.clear();
     $('tree-filter').value = '';
     $('tree-results').hidden = true;
     $('tree').hidden = false;
     renderViewer();
+    renderRootSelect();
     await renderRoot();
     if (lastFile) { await openFile(lastFile, { silent: true }); await reveal(lastFile); }
   }
 
+  // 作業フォルダの選択肢（一覧は renderer 側が持っている）。見る先を変えるのは setRoot だけ。
+  let roots = [];
+  function renderRoots(items) {
+    roots = (items || []).filter((w) => w.main || w.selectable);
+    renderRootSelect();
+  }
+
+  function renderRootSelect() {
+    const sel = $('tree-root');
+    sel.replaceChildren();
+    const add = (value, label) => { const o = el('option', '', label); o.value = value; sel.append(o); };
+    add('', 'リポジトリ本体');
+    for (const w of roots.filter((x) => !x.main)) add(w.name, `${w.name}（${w.branch || 'detached'}）`);
+    if (state.worktree && !roots.some((w) => w.name === state.worktree)) add(state.worktree, state.worktree);
+    sel.value = state.worktree;
+  }
+
   function init() {
+    $('tree-root').onchange = () => setRoot(state.repo, $('tree-root').value, {});
     $('tree-filter').addEventListener('input', () => { clearTimeout(state.filterTimer); state.filterTimer = setTimeout(applyFilter, 250); });
     $('tree-refresh').onclick = async () => { state.expanded.clear(); await renderRoot(); if (state.open) reveal(state.open.rel); };
     $('viewer-mode-code').onclick = () => { state.mode = 'code'; state.mdPreferred = false; renderViewer(); };
     $('viewer-mode-preview').onclick = () => { state.mode = 'preview'; state.mdPreferred = true; renderViewer(); };
     $('viewer-wrap').onclick = () => { state.wrap = !state.wrap; renderViewer(); };
     $('viewer-reload').onclick = () => state.open && openFile(state.open.rel, { silent: true });
-    $('viewer-open').onclick = () => state.open && api.openFile(state.repo, state.open.rel).catch((e) => showNotice(e.message));
-    $('viewer-show').onclick = () => state.open && api.showFile(state.repo, state.open.rel).catch(() => {});
+    $('viewer-open').onclick = () => state.open && api.openFile(state.repo, state.worktree, state.open.rel).catch((e) => showNotice(e.message));
+    $('viewer-show').onclick = () => state.open && api.showFile(state.repo, state.worktree, state.open.rel).catch(() => {});
     // プレビュー内のリンクは外へ飛ばさない（Electron の中でナビゲートさせない）
     $('viewer-body').addEventListener('click', (e) => {
       const a = e.target.closest('a[href]');
@@ -234,5 +258,5 @@
     });
   }
 
-  window.Files = { init, setRepo, openFile, reveal, state };
+  window.Files = { init, setRoot, renderRoots, openFile, reveal, state };
 })();

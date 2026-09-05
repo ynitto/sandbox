@@ -178,8 +178,9 @@ test('店: 会話の作成・追記・一覧・更新・削除', () => {
   assert.strictEqual(s.transport, 'tmux', '既定は tmux');
   store.appendMessage(ud, s.id, { role: 'user', text: '最初の依頼\n2 行目' });
   store.appendMessage(ud, s.id, { role: 'assistant', text: '答え', code: 0 });
-  store.updateSession(ud, s.id, { cliSession: 'X', ignored: 'no', transport: 'headless' });
+  store.updateSession(ud, s.id, { cliSession: 'X', ignored: 'no', transport: 'headless', worktree: 'other' });
   const got = store.readSession(ud, s.id);
+  assert.strictEqual(got.worktree, '', '作業フォルダは会話を作ったあとは変えられない');
   assert.strictEqual(got.title, '最初の依頼');
   assert.strictEqual(got.cliSession, 'X');
   assert.strictEqual(got.transport, 'headless');
@@ -187,6 +188,12 @@ test('店: 会話の作成・追記・一覧・更新・削除', () => {
   assert.strictEqual(got.messages.length, 2);
   assert.deepStrictEqual(store.listSessions(ud, '/repo/a').map((x) => x.id), [s.id]);
   assert.deepStrictEqual(store.listSessions(ud, '/repo/b'), []);
+  // 作業フォルダ（worktree）を持つ会話は、名前とブランチを覚えて一覧にも出す
+  const w = store.createSession(ud, { repo: '/repo/a', cli: 'claude', worktree: 'feature-x', branch: 'feature/x' });
+  assert.deepStrictEqual([w.worktree, w.branch], ['feature-x', 'feature/x']);
+  const listed = store.listSessions(ud, '/repo/a').find((x) => x.id === w.id);
+  assert.deepStrictEqual([listed.worktree, listed.branch], ['feature-x', 'feature/x']);
+  store.removeSession(ud, w.id);
   assert.throws(() => store.readSession(ud, '../etc'), /不正/);
   store.removeSession(ud, s.id);
   assert.deepStrictEqual(store.listSessions(ud, ''), []);

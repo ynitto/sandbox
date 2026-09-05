@@ -37,6 +37,8 @@
         <label>エージェント <select id="cli"></select></label>
         <label>モデル <input id="model" placeholder="既定" size="14"></label>
         <label class="check"><input type="checkbox" id="readonly"> 読み取り専用（Ask）</label>
+        <label>作業フォルダ <select id="worktree" title="会話ごとに git worktree で作業フォルダを分ける"></select></label>
+        <button id="wt-manage" class="small" title="作業フォルダ（git worktree）を作る・消す">…</button>
         <span class="spacer"></span>
         <button id="term-toggle" class="small" hidden title="CLI の端末をそのまま見る・操作する">端末</button>
         <button id="changes-toggle" class="small">変更</button>
@@ -68,8 +70,11 @@
       <section id="files" class="view" hidden>
         <aside id="tree-pane">
           <div class="tree-tools">
-            <input id="tree-filter" placeholder="名前で絞り込み">
+            <select id="tree-root" title="見るフォルダ（リポジトリ本体 / 作業フォルダ）"></select>
             <button id="tree-refresh" class="small" title="ツリーを読み直す">更新</button>
+          </div>
+          <div class="tree-tools">
+            <input id="tree-filter" placeholder="名前で絞り込み">
           </div>
           <ul id="tree" class="tree"></ul>
           <ul id="tree-results" class="tree" hidden></ul>
@@ -94,8 +99,11 @@
 
     <aside id="changes" hidden>
       <div class="side-head">
-        <span>変更（作業ツリー）<span id="branch" class="sub"></span></span>
+        <span id="changes-where">変更</span>
         <span>
+          <span class="seg">
+            <button id="scope-worktree" class="small on" title="まだコミットしていない変更">作業ツリー</button><button id="scope-branch" class="small" title="分岐元から積んだコミット">ブランチ</button>
+          </span>
           <button id="diff-style" class="small" title="並べて表示 / 1 列表示">並べて</button>
           <button id="changes-refresh" class="small">更新</button>
         </span>
@@ -104,6 +112,21 @@
       <div id="diff"></div>
     </aside>
   </div>
+
+  <dialog id="wt-dialog">
+    <div class="dlg-head"><strong>作業フォルダ（git worktree）</strong><span class="spacer"></span><button id="wt-close" class="small">閉じる</button></div>
+    <div class="dlg-body">
+      <p class="sub">会話ごとに別のフォルダ・別のブランチで作業する。本体（登録したフォルダ）はそのまま残るので、並行して進めても混ざらない。置き場は <code>&lt;リポジトリ&gt;/.worktrees/&lt;名前&gt;</code>。</p>
+      <div class="wt-form">
+        <label>ブランチ <input id="wt-branch" placeholder="feature/xxx" size="24"></label>
+        <label>分岐元 <input id="wt-base" placeholder="現在の HEAD" size="14"></label>
+        <button id="wt-create" class="primary small">作る</button>
+      </div>
+      <div id="wt-path" class="sub"></div>
+      <div id="wt-error" class="dlg-error" hidden></div>
+      <table class="wt-table"><tbody id="wt-list"></tbody></table>
+    </div>
+  </dialog>
 
   <script src="vendor/xterm.js"></script>
   <script src="vendor/addon-fit.js"></script>

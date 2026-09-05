@@ -150,7 +150,8 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 #files { flex-direction: row; }
 #tree-pane { width: 300px; min-width: 200px; max-width: 50%; resize: horizontal; overflow: hidden; display: flex; flex-direction: column; background: var(--panel); border-right: 1px solid var(--line); }
 .tree-tools { display: flex; gap: 6px; padding: 8px; border-bottom: 1px solid var(--line); }
-.tree-tools input { flex: 1; min-width: 0; font-size: 12px; }
+.tree-tools + .tree-tools { padding-top: 0; border-bottom: 1px solid var(--line); }
+.tree-tools input, .tree-tools select { flex: 1; min-width: 0; font-size: 12px; }
 .tree { list-style: none; margin: 0; padding: 4px 4px 12px; overflow: auto; flex: 1; font-size: 13px; }
 .tree ul { list-style: none; margin: 0; padding-left: 14px; }
 .tree .row { display: flex; align-items: center; gap: 4px; padding: 2px 6px; border-radius: 4px; cursor: pointer; white-space: nowrap; }
@@ -189,3 +190,17 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 #diff .d2h-code-line, #diff .d2h-code-side-line { font: 11px/1.4 var(--mono); }
 .tag { font-size: 10px; padding: 0 5px; border-radius: 4px; border: 1px solid var(--line); color: var(--muted); flex: none; }
 .tag.ok { color: var(--ok); border-color: var(--ok); }
+
+/* ---- 作業フォルダ（git worktree）のダイアログ ---- */
+#wt-dialog { border: 1px solid var(--line); border-radius: 10px; padding: 0; width: 720px; max-width: 92vw; color: var(--text); background: var(--panel); }
+#wt-dialog::backdrop { background: rgba(0, 0, 0, .3); }
+.dlg-head { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+.dlg-body { padding: 12px 14px 16px; }
+.dlg-body p { margin: 0 0 10px; }
+.dlg-body code { font: 12px var(--mono); background: var(--code-bg); padding: 1px 4px; border-radius: 4px; }
+.dlg-error { margin: 8px 0; padding: 6px 10px; border-radius: 6px; background: var(--del); color: var(--danger); font-size: 12px; white-space: pre-wrap; }
+.wt-form { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.wt-table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 13px; }
+.wt-table td { border-top: 1px solid var(--line); padding: 6px 8px; vertical-align: middle; }
+.wt-table td.wt-name { font-weight: 600; }
+.wt-table td.wt-act { text-align: right; width: 1%; white-space: nowrap; }

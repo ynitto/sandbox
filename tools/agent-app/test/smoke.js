@@ -106,6 +106,61 @@ app.whenReady().then(async () => {
   await js(win, "document.getElementById('tree-filter').value='util'; document.getElementById('tree-filter').dispatchEvent(new Event('input'))");
   await sleep(800);
   await shot(win, '10-filter');
+
+  // 作業フォルダ（git worktree）: 作る → その中で会話する → 本体と混ざらないことを見る
+  await js(win, "document.getElementById('view-chat').click(); document.getElementById('wt-manage').click()");
+  await sleep(1200);
+  await shot(win, '11-worktree-dialog');
+  await js(win, "document.getElementById('wt-branch').value='feature/demo'; document.getElementById('wt-branch').dispatchEvent(new Event('input'))");
+  await sleep(300);
+  console.log('wt path hint:', await js(win, "document.getElementById('wt-path').textContent"));
+  await js(win, "document.getElementById('wt-create').click()");
+  await sleep(2500);
+  console.log('wt error:', await js(win, "document.getElementById('wt-error').textContent"));
+  console.log('wt rows:', await js(win, "[...document.querySelectorAll('#wt-list tr')].map(r=>r.innerText.replace(/\\s+/g,' ').trim()).join(' | ')"));
+  await shot(win, '12-worktree-created');
+  console.log('wt dir exists:', fs.existsSync(path.join(repo, '.worktrees', 'feature-demo')));
+  console.log('main status after create:', execFileSync('git', ['-C', repo, 'status', '--porcelain', '-uall'], { encoding: 'utf8' }).split('\n').filter(Boolean).join(','));
+  await js(win, "document.getElementById('wt-close').click()");
+  await sleep(400);
+  console.log('worktree options:', await js(win, "[...document.getElementById('worktree').options].map(o=>o.value).join(',')"));
+
+  // 作業フォルダを選んで新しい会話を始める
+  await js(win, "document.getElementById('session-new').click()");
+  await sleep(300);
+  await js(win, "(()=>{const s=document.getElementById('worktree'); s.value='feature-demo'; s.dispatchEvent(new Event('change'));})()");
+  await sleep(1200);
+  await js(win, "document.getElementById('prompt').value='worktree の中で作業して'; document.getElementById('send').click()");
+  await sleep(4500);
+  const sess2 = fs.readdirSync(path.join(ud, 'sessions')).map((f) => JSON.parse(fs.readFileSync(path.join(ud, 'sessions', f), 'utf8')));
+  const wtSess = sess2.find((s) => s.worktree);
+  console.log('worktree session:', wtSess && JSON.stringify({ worktree: wtSess.worktree, branch: wtSess.branch, msgs: wtSess.messages.length }));
+  console.log('tmux cwd:', execFileSync('bash', ['-lc', `tmux -L agent-app list-panes -a -F '#{pane_current_path}' 2>/dev/null | head -2`], { encoding: 'utf8' }).trim().split('\n').join(' / '));
+  await shot(win, '13-worktree-session');
+
+  // エージェントが作業フォルダの中を書いたことにして、変更ビューが本体と分かれることを見る
+  fs.writeFileSync(path.join(repo, '.worktrees', 'feature-demo', 'src', 'index.ts'), 'export const changedInWorktree = true;\n');
+  fs.writeFileSync(path.join(repo, '.worktrees', 'feature-demo', 'ADDED.md'), '# worktree だけの追加\n');
+  await js(win, "document.getElementById('changes-toggle').click()");
+  await sleep(1800);
+  console.log('changes head (worktree):', await js(win, "document.getElementById('changes-where').textContent"));
+  console.log('changed files (worktree):', await js(win, "[...document.querySelectorAll('#changed-files li')].map(n=>n.innerText.replace(/\\n/g,' ')).join(', ')"));
+  await shot(win, '14-worktree-changes');
+  // ファイル画面も作業フォルダを向ける
+  await js(win, "document.getElementById('view-files').click()");
+  await sleep(400);
+  await js(win, "(()=>{const s=document.getElementById('tree-root'); s.value='feature-demo'; s.dispatchEvent(new Event('change'));})()");
+  await sleep(1200);
+  await js(win, "Files.openFile('ADDED.md')");
+  await sleep(1200);
+  console.log('tree root:', await js(win, "document.getElementById('tree-root').value"));
+  await shot(win, '15-worktree-files');
+  // 本体側の会話に戻すと、変更ビューも本体に戻る
+  await js(win, "document.getElementById('view-chat').click(); document.querySelectorAll('#sessions li')[1].click()");
+  await sleep(2000);
+  console.log('changes head (main):', await js(win, "document.getElementById('changes-where').textContent"));
+  console.log('changed files (main):', await js(win, "[...document.querySelectorAll('#changed-files li')].map(n=>n.innerText.replace(/\\n/g,' ')).join(', ')"));
+  await shot(win, '16-main-changes');
   console.log('console errors:', JSON.stringify(errors, null, 1));
   console.log('sessions:', fs.readdirSync(path.join(ud, 'sessions')).map((f) => fs.readFileSync(path.join(ud, 'sessions', f), 'utf8')).join('\n'));
   // 会話を削除して tmux セッションも消えることを見る

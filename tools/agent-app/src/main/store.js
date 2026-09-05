@@ -9,10 +9,14 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
-// wslDistro … Windows で、ドライブパス（C:\…）のリポジトリを扱う WSL ディストロ（'' なら既定）
-// transport … 'tmux'（対話起動。既定）| 'headless'（1 ターン 1 プロセス）
-// view      … 最後に開いていた画面（chat | files）
-const DEFAULTS = { repos: [], lastRepo: '', lastCli: 'copilot', lastModel: '', lastReadonly: false, wslDistro: '', transport: 'tmux', view: 'chat', lastFiles: {} };
+// wslDistro    … Windows で、ドライブパス（C:\…）のリポジトリを扱う WSL ディストロ（'' なら既定）
+// transport    … 'tmux'（対話起動。既定）| 'headless'（1 ターン 1 プロセス）
+// view         … 最後に開いていた画面（chat | files）
+// lastWorktree … リポジトリ → 最後に選んだ作業フォルダ名（'' はリポジトリ本体）
+const DEFAULTS = {
+  repos: [], lastRepo: '', lastCli: 'copilot', lastModel: '', lastReadonly: false,
+  wslDistro: '', transport: 'tmux', view: 'chat', lastFiles: {}, lastWorktree: {},
+};
 const MAX_REPOS = 30;
 
 function configPath(userData) { return path.join(userData, 'config.json'); }
@@ -29,6 +33,7 @@ function normalize(raw) {
   next.transport = next.transport === 'headless' ? 'headless' : 'tmux';
   next.view = next.view === 'files' ? 'files' : 'chat';
   next.lastFiles = next.lastFiles && typeof next.lastFiles === 'object' ? next.lastFiles : {};
+  next.lastWorktree = next.lastWorktree && typeof next.lastWorktree === 'object' ? next.lastWorktree : {};
   return next;
 }
 
@@ -77,13 +82,16 @@ function writeSession(userData, sess) {
   return sess;
 }
 
-function createSession(userData, { repo, cli, model = '', readonly = false, transport = 'tmux' }) {
+// worktree … 作業フォルダの名前（'' はリポジトリ本体）。作ったあとは変えない——
+// tmux セッションの cwd も CLI 側の文脈もそこで始まっているため。
+function createSession(userData, { repo, cli, model = '', readonly = false, transport = 'tmux', worktree = '', branch = '' }) {
   if (!repo) throw new Error('リポジトリを選んでください');
   if (!cli) throw new Error('エージェントを選んでください');
   const now = new Date().toISOString();
   return writeSession(userData, {
     id: crypto.randomUUID(), repo: String(repo), cli: String(cli), model: String(model || ''),
     readonly: Boolean(readonly), transport: transport === 'headless' ? 'headless' : 'tmux',
+    worktree: String(worktree || ''), branch: String(branch || ''),
     title: '', cliSession: '', messages: [], createdAt: now, updatedAt: now,
   });
 }
@@ -97,7 +105,11 @@ function listSessions(userData, repo) {
     try {
       const s = JSON.parse(fs.readFileSync(path.join(sessionsDir(userData), f), 'utf8'));
       if (repo && s.repo !== repo) continue;
-      out.push({ id: s.id, repo: s.repo, cli: s.cli, model: s.model, readonly: s.readonly, transport: s.transport || 'headless', title: s.title, updatedAt: s.updatedAt, count: (s.messages || []).length });
+      out.push({
+        id: s.id, repo: s.repo, cli: s.cli, model: s.model, readonly: s.readonly,
+        transport: s.transport || 'headless', worktree: s.worktree || '', branch: s.branch || '',
+        title: s.title, updatedAt: s.updatedAt, count: (s.messages || []).length,
+      });
     } catch { /* 壊れたファイルは一覧に出さない */ }
   }
   return out.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
