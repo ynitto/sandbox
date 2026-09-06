@@ -4,6 +4,7 @@ const { ipcMain, dialog, shell, app } = require('electron');
 const { spawn, execFile } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const agentCli = require('./agentCli');
 const store = require('./store');
 const git = require('./git');
@@ -17,10 +18,32 @@ const sessionSetup = require('./sessionSetup');
 const response = require('./response');
 const { createGate } = require('./executionGate');
 const skills = require('./skills');
+const skillSelection = require('./skillSelection');
 const { registerAutomationIpc } = require('./automation/ipc');
 const { stripAnsi, cleanAnswer, lineEmitter } = require('./text');
 
 function userData() { return app.getPath('userData'); }
+
+// 修正前に保存された Aider 応答も、読み出し時に同じ表示契約へ移す。
+// ディスク上の生データは変更せず、新しい応答は保存前に既に構造化される。
+function presentSession(sess) {
+  if (!sess || !Array.isArray(sess.messages)) return sess;
+  return {
+    ...sess,
+    messages: sess.messages.map((message) => {
+      if (!message || message.role !== 'assistant') return message;
+      const structured = response.parseTranscript(message.cli, message.text);
+      if (!structured.thinking.length) return message;
+      const parts = message.parts && typeof message.parts === 'object' ? message.parts : {};
+      const currentThinking = Array.isArray(parts.thinking) ? parts.thinking : [];
+      return {
+        ...message,
+        text: structured.text,
+        parts: { ...parts, thinking: currentThinking.length ? currentThinking : structured.thinking },
+      };
+    }),
+  };
+}
 
 // すべてのハンドラを {ok, data|error} に揃える。
 function handle(channel, fn) {
@@ -104,6 +127,7 @@ function capture(argv, cwd) {
 // 走っているヘッドレスのターン。セッション ID → 子プロセス。
 const running = new Map();
 const turnGate = createGate();
+const instanceId = crypto.randomUUID();
 
 function emitResponseParts(send, id, added) {
   for (const item of (added && added.thinking) || []) send('turn:progress', { id, item });
@@ -178,7 +202,7 @@ function runHeadless(id, turn, send) {
   const repo = requireRepo(sess.repo);
   const dirs = dirsOf(sess.repo, sess.worktree || '', { mustExist: true });
   if (running.has(id)) throw new Error('このセッションは応答中です');
-  const { cli, model, readonly, text, prompt, atts, files: attFiles, spec, policy, tier } = turn;
+  const { cli, model, readonly, text, prompt, atts, files: attFiles, spec, policy, tier, selectedSkills } = turn;
   const collector = response.createCollector(cli);
   for (const item of turn.setupInformation || []) collector.addInformation(item);
   const history = sess.messages.filter((m) => m.role === 'user' || m.role === 'assistant');
@@ -188,7 +212,7 @@ function runHeadless(id, turn, send) {
   const cmd = agentCli.turnCmd(spec, {
     prompt, model, readonly, cliSession: entry ? entry.id : '', history: unseen, files: attFiles,
   });
-  store.appendMessage(ud, id, { role: 'user', text, cli, model, readonly, policy, tier, attachments: atts });
+  store.appendMessage(ud, id, { role: 'user', text, cli, model, readonly, policy, tier, attachments: atts, skillSelection: selectedSkills });
   if (cmd.mintedSession) store.setCliEntry(ud, id, cli, { id: cmd.mintedSession });
 
   const startedAt = Date.now();
@@ -230,6 +254,8 @@ function runHeadless(id, turn, send) {
       answer = stdout;
     }
     answer = cleanAnswer(answer);
+    const structured = response.parseTranscript(cli, answer);
+    answer = structured.text;
     stderr = stripAnsi(stderr);
     const failed = stopped || code !== 0 || !answer;
     const rule = failed ? agentCli.classifyError(spec, `${stderr}\n${stdout}`) : null;
@@ -247,11 +273,13 @@ function runHeadless(id, turn, send) {
       status: failed ? 'error' : 'success',
       detail: `${Math.round((Date.now() - startedAt) / 1000)} 秒${code != null ? ` · 終了コード ${code}` : ''}`,
     });
+    const parts = collector.parts();
+    parts.thinking.push(...structured.thinking);
     const message = {
       role: 'assistant', cli, model, policy, tier,
       text: answer || (stopped ? '（停止した）' : `（応答なし。終了コード ${code}）`),
       code, elapsedMs: Date.now() - startedAt, stopped,
-      parts: collector.parts(),
+      parts,
       // 失敗の理由は定義の errors が分類できればその hint、できなければ末尾数行（認証切れのように stdout へ出す CLI もある）
       error: !failed ? '' : (rule ? rule.hint : (stderr.trim() || stdout.trim()).split('\n').slice(-6).join('\n')),
     };
@@ -305,8 +333,25 @@ async function openConversation(id, send, { cols, rows, fresh = false, launch = 
   const cmd = agentCli.interactiveCmd(spec, { model: want.model, readonly: want.readonly, cliSession: entry ? entry.id : '', history });
   const conv = new tmux.Conversation({
     id, shell, cwd, argv: cmd.argv, patterns: tmux.compilePatterns(spec.interactive), cols, rows, launch: want,
-    emit: (channel, payload) => send(channel, payload),
+    emit: (channel, payload) => {
+      if (channel === 'term:snapshot') {
+        store.addTerminalSnapshot(ud, id, {
+          agentCli: want.cli, model: want.model, reason: payload.reason, screenText: payload.screenText,
+        });
+        return;
+      }
+      send(channel, payload);
+    },
   });
+  if (restart && live) {
+    const source = existing || conv;
+    const captured = await source.capture({ history: true }).catch(() => ({ ok: false }));
+    if (captured.ok && stripAnsi(captured.screen.text).trim()) {
+      store.addTerminalSnapshot(ud, id, {
+        agentCli: live.cli, model: live.model, reason: 'agent_switch', screenText: stripAnsi(captured.screen.text),
+      });
+    }
+  }
   if (existing) { conv.watchers = existing.watchers; existing.detach(); conversations.delete(id); }
   conversations.set(id, conv);
   let opened;
@@ -326,6 +371,9 @@ async function openConversation(id, send, { cols, rows, fresh = false, launch = 
     if (cmd.mintedSession) store.setCliEntry(ud, id, want.cli, { id: cmd.mintedSession, seen: 0 });
   }
   store.updateSession(ud, id, { live: want, transport: 'tmux' });
+  store.touchTerminalSession(ud, id, {
+    name: conv.name, state: 'active', ownerInstanceId: instanceId, cli: want.cli, model: want.model,
+  });
   const warning = [cmd.readonlyWarning, opened.reused ? '' : cmd.warning].filter(Boolean).join('\n');
   return { name: conv.name, phase: conv.phase, detail: conv.detail, reused: opened.reused, restarted: !opened.reused, warning, argv: cmd.argv, launch: want };
 }
@@ -342,11 +390,28 @@ async function closeConversation(id) {
     }
   }
   store.updateSession(userData(), id, { live: null });
+  store.clearTerminalSession(userData(), id);
+}
+
+async function sweepTerminalSessions() {
+  const ud = userData();
+  for (const sess of store.staleTerminalSessions(ud)) {
+    if (conversations.has(sess.id) || running.has(sess.id)) continue;
+    const terminal = sess.terminalSession;
+    const expected = tmux.sessionName(sess.id);
+    if (!terminal || terminal.name !== expected) continue;
+    try {
+      const { shell: targetShell } = host.hostOf(sess.repo, store.loadConfig(ud).wslDistro);
+      await targetShell.run(tmux.cmdKill(expected));
+      store.clearTerminalSession(ud, sess.id);
+      store.updateSession(ud, sess.id, { live: null });
+    } catch { /* 次回の起動・定期清掃で再試行する */ }
+  }
 }
 
 async function runTmux(id, turn, send) {
   const ud = userData();
-  const { cli, model, readonly, text, prompt, atts, policy, tier } = turn;
+  const { cli, model, readonly, text, prompt, atts, policy, tier, selectedSkills } = turn;
   const want = { cli, model, readonly };
   let conv = conversations.get(id);
   let opened = null;
@@ -366,18 +431,38 @@ async function runTmux(id, turn, send) {
     conv = conversations.get(id);
     await conv.waitReady();
   }
+  // セッション開始スキルは本依頼へ連結しない。1 件ずつ独立した入力として適用し、
+  // 完了を待ってからユーザーの依頼を送る（agent-loop の chat strategy=paste と同じ境界）。
+  for (const item of turn.setupSkills || []) {
+    const result = await new Promise((resolve, reject) => {
+      const enterCount = cli === 'codex' && item.command.trim().startsWith('$') ? 2 : 1;
+      conv.send(item.command, resolve, { enterCount }).catch(reject);
+    });
+    const ok = !result.error;
+    turn.setupInformation.push({
+      type: 'command', title: item.command, status: ok ? 'success' : 'error',
+      detail: ok ? 'セッションへ適用しました' : result.error,
+    });
+    if (!ok) {
+      const message = `開始スキルの適用に失敗しました: ${item.command}`;
+      if (item.onError === 'fail') throw new Error(message);
+      turn.setupWarning = [turn.setupWarning, message].filter(Boolean).join('\n');
+    }
+  }
   const sess = store.readSession(ud, id);
   const history = sess.messages.filter((m) => m.role === 'user' || m.role === 'assistant');
   const unseen = history.slice(conv.seen);
   const full = unseen.length ? agentCli.replayPrompt(unseen, prompt, { resumed: conv.resumed }) : prompt;
-  store.appendMessage(ud, id, { role: 'user', text, cli, model, readonly, policy, tier, attachments: atts });
+  store.appendMessage(ud, id, { role: 'user', text, cli, model, readonly, policy, tier, attachments: atts, skillSelection: selectedSkills });
   await conv.send(full, (message) => {
+    const structured = response.parseTranscript(cli, message.text);
+    message.text = structured.text;
     message.cli = cli;
     message.model = model;
     message.policy = policy;
     message.tier = tier;
     message.parts = {
-      thinking: [],
+      thinking: structured.thinking,
       information: [
         ...(turn.setupInformation || []),
         { type: 'status', title: `${cli} の対話セッション`, status: message.error ? 'error' : 'success', detail: '' },
@@ -422,24 +507,43 @@ async function runTurn(id, p, send, { config = null, release = () => {} } = {}) 
   const attached = withAttachments(ud, base.text, p.attachments, dirs);
   let setupInformation = [];
   let setupWarning = '';
-  let setupPrompt = '';
+  let setupSkills = [];
   // CLI ごとの最初の起動だけに開始アクションを適用する。既存 entry は設定変更後も再実行しない。
   if (!store.cliEntry(sess, base.cli)) {
-    const plan = sessionSetup.planActions(cfg.instructions.startupActions, spec);
+    const plan = sessionSetup.planActions(cfg.instructions.startupActions, {
+      ...spec,
+      availableSkills: skills.list(repo),
+    });
     const startup = await sessionSetup.runCommands(plan.commands, (command, timeoutMs) => {
       const script = `cd ${host.sq(dirs.hostDir)} && ${command}`;
       return host.shellFor(distroFor(repo)).run(script, { timeoutMs });
     });
     setupInformation = startup.information;
-    setupWarning = startup.warning;
-    setupPrompt = plan.skillPrompt;
+    setupWarning = [plan.warning, startup.warning].filter(Boolean).join('\n');
+    setupSkills = plan.skills;
     store.setCliEntry(ud, id, base.cli, { setupApplied: true });
   }
-  const firstPrompt = setupPrompt
-    ? `セッション開始時に、まず次のスキルコマンドを実行してください。\n${setupPrompt}\n\n${attached.prompt}`
-    : attached.prompt;
-  const prompt = sessionSetup.withInstructions(firstPrompt, cfg.instructions);
-  const turn = { ...base, prompt, atts: attached.atts, files: attached.files, spec, setupInformation, setupWarning, release };
+  const selectionConfig = cfg.instructions.skillSelection || {};
+  const selectedSkills = skillSelection.select({
+    mode: p.skillMode || selectionConfig.defaultMode || 'auto',
+    text: [base.text, ...(Array.isArray(p.attachments) ? p.attachments.map((item) => item.name || item.rel || '') : [])].join('\n'),
+    requested: p.skills,
+    candidates: selectionConfig.enabled === false ? [] : selectionConfig.candidates,
+    catalog: skills.catalog(repo),
+  });
+  const skillDelivery = skillSelection.deliver(selectedSkills, spec);
+  setupInformation.push(...skillDelivery.information);
+  setupSkills.push(...skillDelivery.commands.map((command) => ({
+    command, name: command.replace(/^[$/]+/, ''), onError: selectedSkills.mode === 'manual' ? 'fail' : 'warn',
+  })));
+  // ヘッドレスには対話セッションが無いため、先頭のコマンドブロックとして同じ実行へ載せる。
+  // tmux は runTmux が 1 件ずつ先に送るので、本依頼へ混ぜない。
+  const instructedPrompt = sessionSetup.withInstructions(attached.prompt, cfg.instructions);
+  const contextualPrompt = skillDelivery.instruction ? `${skillDelivery.instruction}\n\n${instructedPrompt}` : instructedPrompt;
+  const prompt = transport === 'headless' && setupSkills.length
+    ? `${setupSkills.map((item) => item.command).join('\n')}\n\n${contextualPrompt}`
+    : contextualPrompt;
+  const turn = { ...base, prompt, atts: attached.atts, files: attached.files, spec, setupInformation, setupWarning, setupSkills, selectedSkills, release };
   // 次のターンの既定として覚える（画面はこれを出す）
   store.updateSession(ud, id, {
     cli: base.cli, model: base.model, readonly: base.readonly,
@@ -469,21 +573,6 @@ async function guardedRunTurn(id, p, send) {
     throw error;
   }
 }
-
-// 起動中なら入力受付まで待つ（定義の ready_timeout_sec）。
-tmux.Conversation.prototype.waitReady = function waitReady() {
-  const limit = this.patterns.readyTimeoutSec * 1000 + 2000;
-  const start = Date.now();
-  return new Promise((resolve, reject) => {
-    const tick = () => {
-      if (this.phase === 'dead' || this.phase === 'gone') return reject(new Error(this.detail || 'CLI が終了しています'));
-      if (this.phase !== 'starting') return resolve();
-      if (Date.now() - start > limit) return resolve();      // 検出できないまま送る（画面で分かる）
-      return setTimeout(tick, 200);
-    };
-    tick();
-  });
-};
 
 // ---- 登録 ------------------------------------------------------------------------
 
@@ -544,6 +633,18 @@ function registerIpcHandlers(getWindow) {
   handle('repo:remove', (p) => store.removeRepo(userData(), p.repo));
   handle('agents:list', (p) => listAgents(p.repo ? requireRepo(p.repo) : ''));
   handle('skills:list', (p) => skills.list(p.repo ? requireRepo(p.repo) : ''));
+  handle('skills:select', (p) => {
+    const repo = p.repo ? requireRepo(p.repo) : '';
+    const cfg = store.loadConfig(userData());
+    const selectionConfig = cfg.instructions.skillSelection || {};
+    const result = skillSelection.select({
+      mode: p.mode || selectionConfig.defaultMode || 'auto', text: p.text,
+      requested: p.selected,
+      candidates: selectionConfig.enabled === false ? [] : selectionConfig.candidates,
+      catalog: skills.catalog(repo),
+    });
+    return { ...result, selected: result.selected.map(({ content, path: skillPath, ...item }) => item) };
+  });
 
   handle('session:list', (p) => store.listSessions(userData(), p.repo || ''));
   handle('session:create', async (p) => {
@@ -560,7 +661,7 @@ function registerIpcHandlers(getWindow) {
       readonly: p.readonly != null ? p.readonly : cfg.execution.defaultReadonly,
     });
   });
-  handle('session:read', (p) => store.readSession(userData(), p.id));
+  handle('session:read', (p) => presentSession(store.readSession(userData(), p.id)));
   handle('session:update', (p) => store.updateSession(userData(), p.id, p.patch));
   handle('session:remove', async (p) => {
     if (running.has(p.id)) running.get(p.id).stop();
@@ -606,7 +707,34 @@ function registerIpcHandlers(getWindow) {
   });
   handle('term:watch', (p) => { const c = conversations.get(p.id); if (c) c.watch(); return !!c; });
   handle('term:unwatch', (p) => { const c = conversations.get(p.id); if (c) c.unwatch(); return !!c; });
-  handle('term:keys', (p) => { const c = conversations.get(p.id); if (!c) throw new Error('端末が開いていない'); return c.keys(String(p.data || '')); });
+  handle('term:submit', async (p) => {
+    const conv = conversations.get(p.id);
+    if (!conv) throw new Error('端末が開いていない');
+    const text = String(p.text || '').trim();
+    if (!text) throw new Error('送信する内容がありません');
+    const result = await conv.submit(text);
+    let warning = '';
+    try {
+      const sess = store.readSession(userData(), p.id);
+      const live = sess.live || conv.launch || {};
+      store.appendMessage(userData(), p.id, {
+        role: 'user', text, cli: live.cli || sess.cli, model: live.model || sess.model,
+        readonly: live.readonly == null ? !!sess.readonly : !!live.readonly,
+        policy: sess.policy || 'direct', tier: sess.tier || '', attachments: [],
+      });
+      store.touchTerminalSession(userData(), p.id, { state: 'active', ownerInstanceId: instanceId });
+    } catch (err) {
+      // CLI への送信自体は完了している。失敗扱いにすると入力欄が残り、二重送信を招く。
+      warning = `送信済みですが、会話履歴へ保存できませんでした: ${err.message}`;
+    }
+    return { ...result, followup: true, warning };
+  });
+  handle('term:keys', async (p) => {
+    const c = conversations.get(p.id);
+    if (!c) throw new Error('端末が開いていない');
+    // 1 キーごとのセッション保存は入力遅延を生む。期限は open/submit/終了時に更新する。
+    return c.keys(String(p.data || ''));
+  });
   handle('term:resize', (p) => { const c = conversations.get(p.id); return c ? c.resize(p.cols, p.rows) : false; });
   handle('term:kill', async (p) => { const had = conversations.has(p.id); await closeConversation(p.id); return had; });
 
@@ -662,11 +790,19 @@ function registerIpcHandlers(getWindow) {
     return true;
   });
 
+  const sweepTimer = setInterval(() => sweepTerminalSessions().catch(() => {}), 60 * 60 * 1000);
+  if (sweepTimer.unref) sweepTimer.unref();
+  setTimeout(() => sweepTerminalSessions().catch(() => {}), 0);
+
   app.on('before-quit', () => {
+    clearInterval(sweepTimer);
     for (const c of running.values()) c.stop();
-    for (const c of conversations.values()) c.detach();     // tmux セッションは残す（次回に再接続する）
+    for (const c of conversations.values()) {
+      try { store.touchTerminalSession(userData(), c.id, { state: 'idle', ownerInstanceId: instanceId }); } catch { /* 終了を続ける */ }
+      c.detach();     // tmux セッションは24時間残す（次回に再接続する）
+    }
     host.closeAll();
   });
 }
 
-module.exports = { registerIpcHandlers, spawnSpec, lineEmitter, stripAnsi, cleanAnswer, withAttachments, turnSpec, executionSpec, sameLaunch };
+module.exports = { registerIpcHandlers, spawnSpec, lineEmitter, stripAnsi, cleanAnswer, withAttachments, turnSpec, executionSpec, sameLaunch, presentSession, sweepTerminalSessions };

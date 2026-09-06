@@ -23,7 +23,7 @@ const SRC = path.join(__dirname, '..', 'src');
 
 test('main / ipc / preload / renderer は構文検査を通る', () => {
   for (const f of ['main/main.js', 'main/ipc.js', 'main/automation/ipc.js', 'main/agentCli.js', 'main/store.js', 'main/settings.js', 'main/sessionSetup.js', 'main/executionGate.js', 'main/response.js', 'main/skills.js', 'main/git.js', 'main/host.js', 'main/tmux.js', 'main/files.js', 'main/text.js', 'main/attachments.js',
-    'preload.js', 'renderer/renderer.js', 'renderer/md.js', 'renderer/term.js', 'renderer/files.js', 'renderer/navigation.js', 'renderer/vendor/statemachine/flow.js', 'renderer/vendor/statemachine/renderer.js']) {
+    'preload.js', 'renderer/renderer.js', 'renderer/md.js', 'renderer/inputMode.js', 'renderer/term.js', 'renderer/files.js', 'renderer/navigation.js', 'renderer/vendor/statemachine/flow.js', 'renderer/vendor/statemachine/renderer.js']) {
     execFileSync(process.execPath, ['--check', path.join(SRC, f)]);
   }
   const main = fs.readFileSync(path.join(SRC, 'main/main.js'), 'utf8');
@@ -48,6 +48,69 @@ test('画面は主要メニュー・会話・詳細設定の順に情報を分�
   assert.match(css, /@media \(prefers-reduced-motion: reduce\)/);
   assert.doesNotMatch(fs.readFileSync(path.join(SRC, 'renderer/files.js'), 'utf8'), /📁|📄|📝|🖼/);
   assert.match(fs.readFileSync(path.join(SRC, 'renderer/renderer.js'), 'utf8'), /el\('button', 'list-pick'\)/);
+});
+
+test('会話は依頼ごとにスキルの自動・手動・不使用を選べる', () => {
+  const html = fs.readFileSync(path.join(SRC, 'renderer/index.html'), 'utf8');
+  const renderer = fs.readFileSync(path.join(SRC, 'renderer/renderer.js'), 'utf8');
+  assert.match(html, /id="turn-skill-mode"[\s\S]*value="auto"[\s\S]*value="manual"[\s\S]*value="off"/);
+  assert.match(renderer, /skillMode:\s*state\.turnSkillMode/);
+  assert.match(renderer, /api\.selectSkills/);
+});
+
+test('tmux会話はメッセージ入力と端末操作を明示的に切り替える', () => {
+  const html = fs.readFileSync(path.join(SRC, 'renderer/index.html'), 'utf8');
+  const renderer = fs.readFileSync(path.join(SRC, 'renderer/renderer.js'), 'utf8');
+  const term = fs.readFileSync(path.join(SRC, 'renderer/term.js'), 'utf8');
+  assert.match(html, /id="input-mode-message"[^>]*aria-pressed="true"[^>]*>メッセージ</);
+  assert.match(html, /id="input-mode-terminal"[^>]*aria-pressed="false"[^>]*>端末操作</);
+  assert.match(html, /id="terminal-stage"[^>]*>[\s\S]*id="term-host"/);
+  assert.match(html, /id="terminal-keys"[^>]*hidden[\s\S]*data-terminal-key="C-c"/);
+  assert.match(html, /data-terminal-key="Enter"[^>]*aria-label="端末へEnterキーを送る"/);
+  assert.match(renderer, /Enter:\s*'\\r'/);
+  assert.doesNotMatch(html, /キー入力はそのまま CLI へ届く/);
+  assert.match(renderer, /function setInputMode/);
+  assert.doesNotMatch(renderer, /\$\('send'\)\.hidden = busy/);
+  assert.match(term, /setInputEnabled/);
+});
+
+test('会話開始前後で本文と入力欄のグリッド位置を変えない', () => {
+  const html = fs.readFileSync(path.join(SRC, 'renderer/index.html'), 'utf8');
+  const css = fs.readFileSync(path.join(SRC, 'renderer/styles.css'), 'utf8');
+  const renderer = fs.readFileSync(path.join(SRC, 'renderer/renderer.js'), 'utf8');
+  assert.match(html, /id="conversation-start"[^>]*class="conversation-start"/);
+  assert.match(css, /#chat\s*\{[^}]*display:\s*grid[^}]*grid-template-rows:\s*minmax\(0,\s*1fr\)\s+auto\s+auto/s);
+  assert.match(css, /#composer\s*\{[^}]*grid-row:\s*3/s);
+  assert.match(css, /scrollbar-gutter:\s*stable/);
+  assert.match(renderer, /\$\('conversation-start'\)\.hidden\s*=\s*!!cur/);
+});
+
+test('会話一覧の各行から対象セッションを削除できる', () => {
+  const renderer = fs.readFileSync(path.join(SRC, 'renderer/renderer.js'), 'utf8');
+  const css = fs.readFileSync(path.join(SRC, 'renderer/styles.css'), 'utf8');
+  assert.match(renderer, /function removeConversation\(/);
+  assert.match(renderer, /el\('button', 'session-remove', '削除'\)/);
+  assert.match(renderer, /removeConversation\(s\)/);
+  assert.match(css, /\.session-remove\s*\{/);
+});
+
+test('新しい会話はエージェントの起動待ちより前に一覧へ表示する', () => {
+  const renderer = fs.readFileSync(path.join(SRC, 'renderer/renderer.js'), 'utf8');
+  const created = renderer.indexOf('state.current = await api.createSession');
+  const sent = renderer.indexOf('res = await api.send', created);
+  const listed = renderer.indexOf('state.sessions = await api.listSessions(state.repo)', created);
+  const attached = renderer.indexOf('await attachTerm(state.current.id)', created);
+  assert.ok(created >= 0 && listed > created && listed < sent, { created, listed, sent });
+  assert.ok(attached > listed && attached < sent, { listed, attached, sent });
+});
+
+test('開始スキルは本依頼へ混ぜず、対話セッションへ先に1件ずつ送る', () => {
+  const ipc = fs.readFileSync(path.join(SRC, 'main/ipc.js'), 'utf8');
+  const setupSend = ipc.indexOf('conv.send(item.command, resolve, { enterCount })');
+  const userSend = ipc.indexOf('conv.send(full, (message)');
+  assert.ok(setupSend >= 0 && userSend > setupSend, { setupSend, userSend });
+  assert.match(ipc, /cli === 'codex'.*startsWith\('\$'\) \? 2 : 1/);
+  assert.doesNotMatch(ipc, /セッション開始時に、まず次のスキルコマンドを実行してください/);
 });
 
 test('config.json の主要設定を三つの設定画面から UI コントロールで編集できる', () => {
@@ -126,6 +189,8 @@ test('実行状態を取得できない場合も保存済み定義をタスク�
   }]);
   const runtime = [{ machine: 'release-check', name: 'リリース確認', history: [{ ok: true }] }];
   assert.strictEqual(taskItems({ available: true, machines: runtime }, saved), runtime);
+  const catalog = [{ id: 'entry:abc', kind: 'prompt', name: '定期レビュー', schedules: [] }];
+  assert.strictEqual(taskItems({ available: true, tasks: catalog, machines: runtime }, saved), catalog);
   assert.deepStrictEqual(taskItems(), []);
   assert.deepStrictEqual(taskItems({ machines: 'invalid' }, null), []);
 });
@@ -185,6 +250,21 @@ test('タスク詳細は概要・手順・履歴に分かれ、定期実行は�
   assert.match(renderer, /state\.execution\.detailTab === 'history'/);
   assert.match(renderer, /state\.execution\.detailTab === 'overview'[\s\S]*<h3>定期実行<\/h3>/);
   assert.match(renderer, /querySelectorAll\('\[data-task-tab\]'\)/);
+  assert.match(renderer, /snapshot\.tasks/);
+  assert.match(renderer, /id="task-run-settings" class="run-settings task-run-settings"/);
+  assert.match(renderer, /id="run-policy"/);
+  assert.match(renderer, /recommended:\s*\{ label: 'おすすめ'/);
+  assert.match(renderer, /saving:\s*\{ label: '節約'/);
+  assert.match(renderer, /quality:\s*\{ label: '品質重視'/);
+  assert.match(renderer, /direct:\s*\{ label: '直接指定'/);
+  assert.match(renderer, /id="run-agent"/);
+  assert.match(renderer, /id="run-model"/);
+  assert.match(renderer, /run-direct-settings/);
+  assert.match(renderer, /id="run-skill-mode"/);
+  assert.match(renderer, /data-run-skill/);
+  assert.match(renderer, /id="schedule-destination"/);
+  assert.match(renderer, />このリポジトリ<\/option>[\s\S]*>共通設定<\/option>/);
+  assert.match(renderer, /item\.effective === false[\s\S]*未適用/);
 });
 
 test('埋め込み時の名称は自動化や AI ワークフローではなく三領域の語彙に揃える', () => {
@@ -245,9 +325,11 @@ test('自動化は agent-app の登録リポジトリと設定を共有する', 
   const cfg = automationIpc.automationConfig({
     repos: ['/repo/a', '/repo/b'], lastRepo: '/repo/b',
     automationSkillDir: '/skill', automationAgent: 'codex', automationModel: 'm',
+    execution: { defaultPolicy: 'quality', tiers: { large: { cli: 'copilot', model: 'large' } } },
   });
   assert.deepStrictEqual(cfg, {
-    roots: ['/repo/a', '/repo/b'], lastRoot: '/repo/b', skillDir: '/skill', agent: 'codex', model: 'm',
+    roots: ['/repo/a', '/repo/b'], lastRoot: '/repo/b', skillDir: '/skill', agent: 'codex', model: 'm', instructions: {},
+    execution: { defaultPolicy: 'quality', tiers: { large: { cli: 'copilot', model: 'large' } } },
   });
   assert.deepStrictEqual(automationIpc.automationPatch({
     roots: ['/ignored'], lastRoot: '/repo/a', skillDir: '/next', agent: 'aider', model: '',
@@ -362,8 +444,15 @@ test('argv: 対話起動は interactive 節から組み、プロンプトを含�
   assert.strictEqual(kiroAgain.resumed, false, '文脈は引き継げていない（最初の依頼で追いつかせる）');
 
   const codex = agentCli.interactiveCmd(agentCli.load('codex'), { history: [{ role: 'user', text: 'x' }] });
-  assert.deepStrictEqual(codex.argv, ['codex', 'resume', '--last']);
-  assert.strictEqual(codex.resumed, true);
+  assert.deepStrictEqual(codex.argv, ['codex']);
+  assert.strictEqual(codex.resumed, false, 'IDを捕捉できていないCodexを無関係な直前セッションへ接続しない');
+
+  const copilot = agentCli.interactiveCmd(agentCli.load('copilot'));
+  assert.ok(copilot.argv.includes('--no-auto-update'));
+  assert.ok(copilot.argv.includes('--allow-all-tools'));
+  assert.ok(copilot.argv.includes('--allow-all-paths'));
+  assert.match(agentCli.load('copilot').interactive.readyPattern, /┃/);
+  assert.match(agentCli.load('copilot').interactive.busyPattern, /pending/);
   // interactive 節の無い定義は対話起動できない（一覧の印も false）
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-app-agents-'));
   fs.writeFileSync(path.join(dir, 'plain.json'), JSON.stringify({ command: ['plain-cli', '-p'], prompt_via: 'stdin' }));
@@ -419,6 +508,13 @@ test('応答から端末の装飾と kiro の入力欄を剥がす', () => {
   assert.throws(() => ipc.withAttachments(ud, 'p', [{ id: staged.id, name: 'other.png' }], { fsDir: repo }), /見つかりません/);
   assert.strictEqual(ipc.stripAnsi('plain'), 'plain');
   assert.strictEqual(ipc.cleanAnswer('> 引用ではなく入力欄\n本文'), '引用ではなく入力欄\n本文');
+  const legacyAider = ipc.presentSession({ messages: [{
+    role: 'assistant', cli: 'aider', text: '► **THINKING**\n\n考えた\n\n---\n► **ANSWER**\n\n答え\n\nTokens: 1k sent, 2 received.',
+    parts: { thinking: [], information: [{ title: 'aider の対話セッション' }] },
+  }] });
+  assert.strictEqual(legacyAider.messages[0].text, '答え');
+  assert.deepStrictEqual(legacyAider.messages[0].parts.thinking, [{ text: '考えた', status: 'done' }]);
+  assert.strictEqual(legacyAider.messages[0].parts.information.length, 1);
   assert.strictEqual(text.stripAnsi('\x1b]0;title\x07x\x1b]8;;http://a\x1b\\y'), 'xy', 'OSC は BEL でも ST でも閉じる');
   // Windows のヘッドレスは wsl.exe に載せ、cwd を WSL 表記へ直す
   const spec = ipc.spawnSpec('claude', ['-p'], { cwd: 'C:\\work\\repo', env: { A: '1' }, distro: 'Ubuntu' });
@@ -508,6 +604,36 @@ test('店: 会話の作成・追記・一覧・更新・削除', () => {
   assert.strictEqual(store.saveConfig(ud, { useWorktree: false }).useWorktree, false, '切ったら覚える');
   assert.strictEqual(cfg.view, 'files');
   assert.strictEqual(cfg.lastFiles['/repo/a'], 'README.md');
+});
+
+test('tmuxセッションは最終利用から24時間保持し旧形式も正規化する', () => {
+  const ud = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-app-terminal-session-'));
+  const session = store.createSession(ud, { repo: '/repo/a', cli: 'cursor' });
+  const now = new Date('2026-09-06T10:00:00.000Z');
+
+  const saved = store.touchTerminalSession(ud, session.id, {
+    name: 'agent-app-owned', state: 'active', ownerInstanceId: 'instance-a', cli: 'cursor', model: 'm',
+  }, now);
+
+  assert.strictEqual(saved.terminalSession.lastUsedAt, now.toISOString());
+  assert.strictEqual(saved.terminalSession.expiresAt, '2026-09-07T10:00:00.000Z');
+  assert.deepStrictEqual(saved.terminalSnapshots, []);
+  assert.deepStrictEqual(store.staleTerminalSessions(ud, new Date('2026-09-07T09:59:59.000Z')), []);
+  assert.strictEqual(store.staleTerminalSessions(ud, new Date('2026-09-07T10:00:01.000Z'))[0].id, session.id);
+});
+
+test('エージェント切替前の端末画面を上限付きスナップショットとして残す', () => {
+  const ud = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-app-terminal-snapshot-'));
+  const session = store.createSession(ud, { repo: '/repo/a', cli: 'cursor' });
+  for (let i = 0; i < 14; i += 1) {
+    store.addTerminalSnapshot(ud, session.id, {
+      agentCli: `agent-${i}`, model: 'm', reason: 'agent_switch', screenText: `screen-${i}`,
+    });
+  }
+  const saved = store.readSession(ud, session.id);
+  assert.strictEqual(saved.terminalSnapshots.length, 12);
+  assert.strictEqual(saved.terminalSnapshots[0].agentCli, 'agent-2');
+  assert.strictEqual(saved.terminalSnapshots.at(-1).screenText, 'screen-13');
 });
 
 function makeRepo() {

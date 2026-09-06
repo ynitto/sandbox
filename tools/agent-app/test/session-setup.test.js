@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const setup = require('../src/main/sessionSetup');
 const agentCli = require('../src/main/agentCli');
 
-test('共通指示と推奨スキルを今回の依頼より前へまとめる', () => {
+test('共通指示は候補スキルを全件プロンプトへ入れない', () => {
   const prompt = setup.withInstructions('画面を直して', {
     enabled: true,
     text: '回答は日本語で行う',
@@ -13,7 +13,7 @@ test('共通指示と推奨スキルを今回の依頼より前へまとめる',
   });
   assert.match(prompt, /^<!-- agent-app-instructions -->/);
   assert.ok(prompt.indexOf('回答は日本語で行う') < prompt.indexOf('画面を直して'));
-  assert.match(prompt, /推奨スキル:\n- ui-designer\n- self-checking/);
+  assert.doesNotMatch(prompt, /推奨スキル|ui-designer|self-checking/);
   assert.match(prompt, /## 今回の依頼\n画面を直して$/);
 });
 
@@ -23,14 +23,27 @@ test('開始アクションをCLI用スキル呼び出しと事前コマンド�
     { type: 'command', value: 'npm test', onError: 'fail' },
   ], { skillCommandPrefix: '$' });
   assert.deepStrictEqual(plan, {
-    skillPrompt: '$brainstorming',
+    skills: [{ command: '$brainstorming', name: 'brainstorming', onError: 'warn' }],
     commands: [{ command: 'npm test', onError: 'fail' }],
+    warning: '',
   });
+});
+
+test('非native CLIには実在するスキルだけを開始コマンドとして渡す', () => {
+  const plan = setup.planActions([
+    { type: 'skill', value: '/caveman', onError: 'warn' },
+    { type: 'skill', value: '/ponytail full', onError: 'warn' },
+  ], { skillCommandPrefix: '/', slashNative: false, availableSkills: ['caveman'] });
+  assert.deepStrictEqual(plan.skills, [
+    { command: '/caveman', name: 'caveman', onError: 'warn' },
+  ]);
+  assert.match(plan.warning, /ponytail.*aider|ponytail.*スキル/);
 });
 
 test('エージェント定義からスキル呼び出し記号を取得する', () => {
   assert.strictEqual(agentCli.load('codex').skillCommandPrefix, '$');
   assert.strictEqual(agentCli.load('claude').skillCommandPrefix, '/');
+  assert.strictEqual(agentCli.load('aider').slashNative, false);
 });
 
 test('開始コマンドは順番に実行し、warn は継続、fail は停止する', async () => {

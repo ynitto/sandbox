@@ -135,6 +135,25 @@ h1, h2, h3 { margin: 0; font-weight: 650; }
 .run-inputs { display: grid; gap: 7px; }
 .run-inputs h3 { font-size: 12.5px; color: var(--muted); }
 .run-input-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 9px; }
+.run-toolbar { min-width: 0; display: flex; align-items: center; gap: 8px; flex-wrap: nowrap; }
+.run-toolbar-spacer { min-width: 8px; flex: 1; }
+.run-toolbar > button { flex: none; white-space: nowrap; }
+.run-settings { position: relative; min-width: 0; width: fit-content; max-width: 100%; }
+.run-settings > summary { min-height: 36px; max-width: 310px; display: flex; align-items: center; padding: 7px 10px; overflow: hidden; border-radius: 8px; color: var(--muted); white-space: nowrap; text-overflow: ellipsis; cursor: pointer; list-style: none; }
+.run-settings > summary::-webkit-details-marker { display: none; }
+.run-settings > summary::before { content: ''; width: 7px; height: 7px; margin-right: 8px; flex: none; border-radius: 50%; background: var(--ok); }
+.run-settings > summary::after { content: '⌄'; flex: none; margin-left: 6px; color: var(--muted); }
+.run-settings > summary > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.run-settings > summary:hover, .run-settings[open] > summary { color: var(--fg); background: #f1f3f5; }
+.run-settings > summary:focus-visible { outline: 3px solid var(--accent-soft); }
+.settings-popover { position: absolute; z-index: 35; top: calc(100% + 8px); left: 0; width: min(380px, calc(100vw - 36px)); padding: 14px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 14px 36px rgba(31, 35, 40, .16); }
+.popover-head { margin-bottom: 12px; font-weight: 650; }
+.settings-popover > label, .direct-agent-settings > label { min-width: 0; display: grid; grid-template-columns: 100px minmax(0, 1fr); gap: 10px; align-items: center; margin-top: 10px; color: var(--fg); }
+.settings-popover select, .settings-popover input { min-width: 0; }
+.direct-agent-settings { display: contents; }
+.skill-choice-list { max-height: 150px; margin-top: 10px; padding: 8px; display: flex; flex-wrap: wrap; gap: 6px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; }
+.skill-choice { display: inline-flex; align-items: center; gap: 5px; padding: 4px 8px; border-radius: 999px; background: var(--bg); font-size: 12px; cursor: pointer; }
+.skill-choice input { width: auto; margin: 0; }
 .run-result { margin: 0; padding: 8px 10px; border-radius: 8px; font-size: 12.5px; overflow-wrap: anywhere; }
 .run-result.ok { color: var(--ok); background: var(--ok-soft); }
 .run-result.warn { color: var(--warn); background: var(--warn-soft); }
@@ -388,6 +407,8 @@ dialog::backdrop { background: rgba(20, 24, 40, 0.25); }
 
 @media (max-width: 719px) {
   .grid2 { grid-template-columns: 1fr; }
+  .run-toolbar { flex-wrap: wrap; }
+  .run-toolbar-spacer { display: none; }
   .home { grid-template-columns: 190px minmax(0, 1fr); }
   .machine-pane { padding-inline: 18px; }
   .dlg-body { padding: 14px; }
@@ -405,4 +426,17 @@ dialog::backdrop { background: rgba(20, 24, 40, 0.25); }
   .flow-node-number { width: 28px; height: 28px; }
   .bar-center .title-input { font-size: 14px; }
   body.is-editing #b-run { display: none; }
+  .run-settings { width: 100%; }
+  .run-settings > summary { max-width: 100%; }
+  .settings-popover { width: min(380px, calc(100vw - 28px)); }
+  .settings-popover > label, .direct-agent-settings > label { grid-template-columns: 1fr; gap: 4px; }
 }
+
+/* 記録を広げる（繰り返す・読み取る・確認する・失敗したら） */
+.step-summary .sub .ext { color: var(--muted); }
+.ext-block { padding: 8px 0; border-top: 1px solid var(--line); }
+.ext-block > label { display: block; font-weight: 600; margin-bottom: 4px; }
+.ext-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 8px; margin-top: 6px; }
+.ext-grid .row { gap: 6px; align-items: center; }
+.ext-add { align-items: end; }
+#r-pick { height: auto; }

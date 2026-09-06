@@ -23,7 +23,8 @@ const state = {
   liveParts: new Map(), // 会話 ID → { thinking, information }（構造化された応答中イベント）
   phases: new Map(),    // 会話 ID → { phase, detail }
   changesOpen: false,
-  termOpen: false,
+  input: InputMode.create(),
+  inputStatusTimer: null,
   view: 'chat',
   diffSide: false,
   diffScope: 'worktree',   // 変更ビュー: 作業ツリー / ブランチ（分岐元から積んだコミット）
@@ -34,6 +35,10 @@ const state = {
   settingsSkills: [],
   settingsActions: [],
   settingsAgents: [],
+  turnSkillMode: 'auto',
+  turnSkills: [],
+  turnSkillPreview: [],
+  skillPreviewTimer: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -56,6 +61,38 @@ const PHASE_LABEL = { starting: '起動中', ready: '待機', busy: '応答中',
 const fmtSize = (n) => (n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`);
 
 function isTmux(sess) { return !!sess && sess.transport === 'tmux'; }
+
+function inputStatus(kind = '', text = '', ttl = 0) {
+  clearTimeout(state.inputStatusTimer);
+  const node = $('input-status');
+  node.className = `input-status ${kind}`.trim();
+  node.textContent = text;
+  const shell = document.querySelector('.composer-shell');
+  shell.classList.toggle('error', kind === 'error');
+  if (kind === 'success') {
+    shell.classList.remove('sent');
+    requestAnimationFrame(() => shell.classList.add('sent'));
+  }
+  if (ttl) state.inputStatusTimer = setTimeout(() => inputStatus(), ttl);
+}
+
+function setInputMode(mode, { focus = true } = {}) {
+  const tmuxReady = isTmux(state.current) && !['dead', 'gone'].includes((state.phases.get(state.current.id) || {}).phase);
+  const next = mode === 'terminal' && tmuxReady ? 'terminal' : 'message';
+  state.input = InputMode.reduce(state.input, { type: next === 'terminal' ? 'terminal-focus' : 'message-focus' });
+  $('input-mode-message').setAttribute('aria-pressed', String(next === 'message'));
+  $('input-mode-terminal').setAttribute('aria-pressed', String(next === 'terminal'));
+  $('input-mode-terminal').disabled = !tmuxReady;
+  $('message-input').hidden = next !== 'message';
+  $('terminal-keys').hidden = next !== 'terminal';
+  document.querySelector('.composer-toolbar').hidden = next !== 'message';
+  $('chat').classList.toggle('input-terminal', next === 'terminal');
+  Term.setInputEnabled(next === 'terminal');
+  if (focus) {
+    if (next === 'terminal') Term.focus();
+    else $('prompt').focus();
+  }
+}
 
 // 今見ている作業フォルダ。会話を開いていればその会話のもの（会話ごとに固定）、
 // 下書き中なら選択中のもの。'' はリポジトリ本体。
@@ -104,6 +141,29 @@ function renderRepos() {
   $('repo-remove').disabled = !state.repo;
 }
 
+async function removeConversation(session) {
+  if (!session || !confirm(isTmux(session) ? 'この会話を削除する？（tmux セッションも終了する）' : 'この会話を削除する？')) return;
+  const selected = !!(state.current && state.current.id === session.id);
+  const wt = session.worktree || '';
+  if (selected) Term.detach();
+  await api.removeSession(session.id);
+  state.running.delete(session.id);
+  state.pending.delete(session.id);
+  state.phases.delete(session.id);
+  state.liveParts.delete(session.id);
+  state.logs.delete(session.id);
+  state.tails.delete(session.id);
+  state.sessions = await api.listSessions(state.repo);
+  // 作業フォルダは会話とは別物なので、他の会話が使っていないときだけ別に聞く。
+  const others = state.sessions.filter((s) => s.worktree === wt).length;
+  if (wt && !others && confirm(`作業フォルダ ${wt} も削除する？（ブランチは残る）`)) {
+    try { await api.removeWorktree(state.repo, wt, { force: false }); } catch (err) { notice(err.message, 'error'); }
+    await refreshWorktrees();
+  }
+  if (selected) newDraft();
+  else renderSessions();
+}
+
 function renderSessions() {
   const ul = $('sessions');
   ul.replaceChildren();
@@ -119,7 +179,15 @@ function renderSessions() {
     body.append(el('div', 'sub', `${s.cli}${s.readonly ? ' · Ask' : ''}${where} · ${status}`));
     pick.append(body);
     pick.onclick = () => openSession(s.id);
-    li.append(pick);
+    const remove = el('button', 'session-remove', '削除');
+    remove.type = 'button';
+    remove.title = `${s.title || '無題の会話'}を削除`;
+    remove.setAttribute('aria-label', remove.title);
+    remove.onclick = (event) => {
+      event.stopPropagation();
+      removeConversation(s).catch((err) => notice(err.message, 'error'));
+    };
+    li.append(pick, remove);
     ul.append(li);
   }
   if (!state.sessions.length) ul.append(el('li', 'empty', state.repo ? 'まだ会話がない' : ''));
@@ -136,19 +204,25 @@ function scheduleLabel(schedule) {
   return '定期実行あり';
 }
 
+function taskId(task) { return String(task && (task.id || task.machine) || ''); }
+
 function renderTaskItems() {
   const ul = $('tasks');
   ul.replaceChildren();
   for (const task of state.tasks) {
     const latest = (task.history || [])[0];
     const status = latest ? (latest.ok ? '完了' : latest.escalate ? '要確認' : '失敗') : '未実行';
-    const li = el('li', `row-item${task.machine === state.selectedTask ? ' active' : ''}`);
+    const id = taskId(task);
+    const schedules = Array.isArray(task.schedules) ? task.schedules : (task.schedule ? [task.schedule] : []);
+    const scheduleState = schedules.length ? `${schedules.filter((item) => item.effective !== false).length}/${schedules.length}件の予定` : '予定なし';
+    const kind = task.kind === 'prompt' ? 'プロンプト' : task.kind === 'hook' ? 'フック' : task.kind === 'broken' ? '要修正' : 'ステートマシン';
+    const li = el('li', `row-item${id === state.selectedTask ? ' active' : ''}`);
     const pick = el('button', 'list-pick');
     const body = el('span', 'grow');
-    body.append(el('div', '', task.name || task.machine));
-    body.append(el('div', 'sub', `${status} · ${scheduleLabel(task.schedule)}`));
+    body.append(el('div', '', task.name || task.machine || id));
+    body.append(el('div', 'sub', `${kind} · ${status} · ${scheduleState}`));
     pick.append(body);
-    pick.onclick = () => selectAreaItem('tasks', task.machine);
+    pick.onclick = () => selectAreaItem('tasks', id);
     li.append(pick);
     ul.append(li);
   }
@@ -201,7 +275,8 @@ async function loadAreaItems() {
       ]);
       state.tasks = AgentNavigation.taskItems(snapshot, definitions);
       const remembered = (state.config.lastTask || {})[state.repo] || state.selectedTask;
-      state.selectedTask = state.tasks.some((item) => item.machine === remembered) ? remembered : (state.tasks[0]?.machine || '');
+      const rememberedTask = state.tasks.find((item) => taskId(item) === remembered || item.machine === remembered);
+      state.selectedTask = rememberedTask ? taskId(rememberedTask) : taskId(state.tasks[0]);
     } else {
       const [workflows, runs] = await Promise.all([
         api.automation.flowList(state.repo),
@@ -425,6 +500,48 @@ const POLICY_VIEW = {
   quality: { label: '品質重視', tier: 'large' },
   direct: { label: '直接指定', tier: '' },
 };
+const SKILL_MODE_LABEL = { auto: '自動', manual: '手動選択', off: '使用しない' };
+
+function skillCandidates() {
+  const selection = state.config && state.config.instructions && state.config.instructions.skillSelection;
+  return selection && Array.isArray(selection.candidates) ? selection.candidates : [];
+}
+
+function renderTurnSkills() {
+  const mode = SKILL_MODE_LABEL[state.turnSkillMode] ? state.turnSkillMode : 'auto';
+  const list = $('turn-skill-list');
+  $('turn-skill-mode').value = mode;
+  list.hidden = mode === 'off';
+  list.replaceChildren();
+  if (mode === 'auto') {
+    const names = state.turnSkillPreview.map((item) => item.name);
+    list.append(el('span', 'sub', names.length ? names.join(' · ') : '該当なし'));
+    return;
+  }
+  for (const name of skillCandidates()) {
+    const label = el('label', 'skill-choice');
+    const input = el('input');
+    input.type = 'checkbox';
+    input.checked = state.turnSkills.includes(name);
+    input.onchange = () => {
+      state.turnSkills = input.checked ? [...new Set([...state.turnSkills, name])] : state.turnSkills.filter((item) => item !== name);
+      renderRunSettingsSummary();
+    };
+    label.append(input, el('span', '', name));
+    list.append(label);
+  }
+  if (!skillCandidates().length) list.append(el('span', 'sub', '候補なし'));
+}
+
+async function refreshTurnSkillPreview() {
+  if (!state.repo || state.turnSkillMode !== 'auto') { state.turnSkillPreview = []; renderTurnSkills(); renderRunSettingsSummary(); return; }
+  try {
+    const result = await api.selectSkills(state.repo, $('prompt').value, 'auto', []);
+    state.turnSkillPreview = result.selected || [];
+  } catch { state.turnSkillPreview = []; }
+  renderTurnSkills();
+  renderRunSettingsSummary();
+}
 
 function selectedExecution(policy = $('policy').value) {
   if (policy === 'direct') return { policy, tier: '', cli: $('cli').value, model: $('model').value.trim() };
@@ -458,8 +575,10 @@ function renderRunSettingsSummary() {
   const model = selected.model;
   const mode = $('readonly').checked ? 'Ask' : '実行';
   const location = activeWorktree() ? '分離フォルダ' : 'リポジトリ本体';
-  summary.textContent = [policy.label, `${agent}${model ? ` / ${model}` : ''}`, mode, location].filter(Boolean).join(' · ');
+  const skillLabel = `スキル ${SKILL_MODE_LABEL[state.turnSkillMode] || SKILL_MODE_LABEL.auto}`;
+  summary.textContent = [policy.label, `${agent}${model ? ` / ${model}` : ''}`, skillLabel, mode, location].filter(Boolean).join(' · ');
   $('direct-agent-settings').hidden = selected.policy !== 'direct';
+  renderTurnSkills();
 }
 
 function renderHeader() {
@@ -484,12 +603,11 @@ function renderHeader() {
   $('composer').hidden = !state.repo;
   $('session-delete').hidden = !cur;
   const busy = !!cur && (state.running.has(cur.id) || state.pending.has(cur.id));
-  $('send').hidden = busy;
   $('stop').hidden = !busy;
   $('send').disabled = !state.repo || (!!cur && state.pending.has(cur.id));
+  $('send').classList.toggle('sending', !!cur && state.pending.has(cur.id));
+  if (!state.pending.size) $('send').classList.remove('sending');
   const tm = isTmux(cur);
-  $('term-toggle').hidden = !tm;
-  $('term-toggle').classList.toggle('on', tm && state.termOpen);
   const ph = tm ? state.phases.get(cur.id) : null;
   $('phase').hidden = !ph;
   if (ph) {
@@ -498,8 +616,19 @@ function renderHeader() {
     $('phase').title = ph.detail || '';
   }
   $('term-restart').hidden = !(ph && (ph.phase === 'dead' || ph.phase === 'gone'));
-  $('term-drawer').hidden = !(tm && state.termOpen);
+  $('conversation-start').hidden = !!cur;
+  $('terminal-stage').hidden = !tm;
+  $('conversation-history').hidden = !cur;
+  $('conversation-history').classList.toggle('history-only', !tm);
+  if (tm && $('conversation-history').open && cur.messages && cur.messages.length) $('conversation-history').open = false;
+  $('history-count').textContent = cur && cur.messages ? `${cur.messages.length}件` : '';
+  $('term-agent').textContent = tm ? [cur.cli, cur.model].filter(Boolean).join(' · ') : '';
   $('term-name').textContent = ph && ph.name ? `tmux -L agent-app attach -t ${ph.name}` : '';
+  if (state.input.mode === 'terminal' && !tm) setInputMode('message', { focus: false });
+  else {
+    $('input-mode-terminal').disabled = !tm || !!(ph && (ph.phase === 'dead' || ph.phase === 'gone'));
+    Term.setInputEnabled(state.input.mode === 'terminal' && !$('input-mode-terminal').disabled);
+  }
   $('run-settings').hidden = !state.repo;
   renderRunSettingsSummary();
 }
@@ -571,8 +700,8 @@ function rawExecutionNode(id, tmuxMode) {
     const tail = el('pre', 'tail', state.tails.get(id) || '');
     details.append(tail);
     const link = el('div', 'link');
-    const button = el('button', 'small', '端末で見る・操作する');
-    button.onclick = () => toggleTerm(true);
+    const button = el('button', 'small', '端末を操作');
+    button.onclick = () => setInputMode('terminal');
     link.append(button);
     details.append(link);
   } else {
@@ -635,7 +764,7 @@ function workingNode(id, tmuxMode) {
   const parts = state.liveParts.get(id) || { thinking: [], information: [] };
   const thinking = [...(Array.isArray(parts.thinking) ? parts.thinking : [])];
   const liveInformation = Array.isArray(parts.information) ? parts.information : [];
-  if (ph && ph.phase === 'attention') thinking.push({ text: '端末で確認を求めています', status: 'attention' });
+  if (ph && ph.phase === 'attention') thinking.push({ text: ph.detail || '端末で確認を求めています', status: 'attention' });
   n.append(responseDisclosure('thinking', '思考・進捗', thinking, { open: true, running: true }));
   const info = responseDisclosure('information', '実行情報', liveInformation, {
     open: liveInformation.some((item) => item.status === 'error'), raw: rawExecutionNode(id, tmuxMode),
@@ -648,26 +777,38 @@ function logLine(line) {
   return el('div', line.kind, line.text);
 }
 
+function terminalSnapshotNode(snapshot) {
+  const details = el('details', 'terminal-snapshot');
+  const when = snapshot.capturedAt ? new Date(snapshot.capturedAt).toLocaleString() : '';
+  const reason = snapshot.reason === 'agent_switch' ? '切替前' : snapshot.reason === 'pane_dead' ? '終了時' : '保存済み';
+  const summary = el('summary');
+  summary.append(el('span', 'terminal-snapshot-agent', [snapshot.agentCli, snapshot.model].filter(Boolean).join(' · ') || '端末'));
+  summary.append(el('span', 'sub', `${reason}${when ? ` · ${when}` : ''}`));
+  details.append(summary, el('pre', '', snapshot.screenText || ''));
+  return details;
+}
+
 function renderMessages() {
   const box = $('messages');
+  const start = $('conversation-start-content');
   box.replaceChildren();
+  start.replaceChildren();
   const cur = state.current;
   if (!cur) {
-    const empty = el('div', 'empty-state');
-    empty.append(el('h2', '', state.repo ? '何をしたいですか？' : 'リポジトリから始めましょう'));
-    empty.append(el('p', '', state.repo
+    start.append(el('h2', '', state.repo ? '何をしたいですか？' : 'リポジトリから始めましょう'));
+    start.append(el('p', '', state.repo
       ? '下の入力欄に依頼を書けば、新しい会話が始まります。'
       : '作業するローカルリポジトリを登録してください。'));
     if (!state.repo) {
       const button = el('button', 'primary', 'リポジトリを追加');
       button.onclick = () => addRepo().catch((err) => notice(err.message, 'error'));
-      empty.append(button);
+      start.append(button);
     }
-    box.append(empty);
     return;
   }
+  for (const snapshot of cur.terminalSnapshots || []) box.append(terminalSnapshotNode(snapshot));
   for (const m of cur.messages) box.append(messageNode(m));
-  if (state.running.has(cur.id)) box.append(workingNode(cur.id, isTmux(cur)));
+  if (state.running.has(cur.id) && !isTmux(cur)) box.append(workingNode(cur.id, false));
   box.scrollTop = box.scrollHeight;
 }
 
@@ -676,6 +817,7 @@ function newDraft() {
   state.draft = !!state.repo;
   notice('');
   Term.detach();
+  setInputMode('message', { focus: false });
   renderAgents();
   renderWorktreeSelect();
   renderHeader();
@@ -701,6 +843,7 @@ async function openSession(id) {
   if (state.changesOpen) refreshChanges();
   if (isTmux(state.current)) attachTerm(state.current.id);
   else Term.detach();
+  setInputMode('message', { focus: false });
 }
 
 // tmux の会話を開く: main に tmux セッションを（無ければ起動して）持たせ、端末ミラーをつなぐ。
@@ -719,12 +862,6 @@ async function attachTerm(id) {
   }
 }
 
-function toggleTerm(open) {
-  state.termOpen = open == null ? !state.termOpen : !!open;
-  renderHeader();
-  if (state.termOpen && state.current) { Term.refit(); Term.focus(); }
-}
-
 // 次のターンの起動条件（画面の上で選んでいるもの）
 function turnOptions() {
   const selected = selectedExecution();
@@ -732,6 +869,8 @@ function turnOptions() {
     policy: selected.policy,
     ...(selected.policy === 'direct' ? { cli: selected.cli, model: selected.model } : {}),
     readonly: $('readonly').checked,
+    skillMode: state.turnSkillMode,
+    skills: state.turnSkillMode === 'manual' ? [...state.turnSkills] : [],
   };
 }
 
@@ -742,11 +881,19 @@ async function sendPrompt() {
   const selected = selectedExecution(opts.policy);
   const agent = state.agents.find((a) => a.name === selected.cli && a.available);
   if (!agent) { notice('使えるエージェントがない', 'error'); return; }
+  inputStatus('pending', `受付済み・${selected.cli}を準備中`);
   try {
     if (!state.current) {
       const transport = (state.config.transport === 'tmux' && state.host && state.host.tmux && agent.interactive) ? 'tmux' : 'headless';
       state.current = await api.createSession({ repo: state.repo, ...opts, transport, worktree: state.worktree });
       state.draft = false;
+      // CLI の起動確認に時間がかかっても、保存済みの会話はすぐ一覧に出す。
+      state.sessions = await api.listSessions(state.repo);
+      renderSessions();
+      if (isTmux(state.current)) {
+        renderHeader();
+        await attachTerm(state.current.id);
+      }
     }
     if (opts.policy === 'direct') {
       state.config = await api.saveConfig({ lastCli: opts.cli, lastModel: opts.model, lastReadonly: opts.readonly });
@@ -760,22 +907,36 @@ async function sendPrompt() {
     state.pending.add(id);
     renderHeader();
     let res;
-    try { res = await api.send(id, text, { ...opts, attachments: state.attachments }); } finally { state.pending.delete(id); }
+    try {
+      if (wasTmux && state.running.has(id) && !state.attachments.length) {
+        res = await api.termSubmit(id, text);
+      } else {
+        res = await api.send(id, text, { ...opts, attachments: state.attachments });
+      }
+    } finally { state.pending.delete(id); }
     $('prompt').value = '';
+    state.turnSkillMode = (state.config.instructions.skillSelection || {}).defaultMode || 'auto';
+    state.turnSkills = [];
+    state.turnSkillPreview = [];
     state.attachments = [];
     renderAttachments();
-    state.running.add(id);
+    if (!res.followup) state.running.add(id);
     state.current = await api.readSession(id);
     state.sessions = await api.listSessions(state.repo);
     // tmux で起動（し直）したなら端末ミラーをつなぎ直す。ヘッドレスの CLI へ移ったなら外す
     if (isTmux(state.current)) { if (!wasTmux || res.restarted || Term.current() !== id) await attachTerm(id); }
     else Term.detach();
     if (res.warning) notice(res.warning);
+    const sentAt = new Date(res.acceptedAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    inputStatus('success', `✓ ${selected.cli}へ送信済み ${sentAt}`, 4000);
+    $('send').classList.add('sent');
+    setTimeout(() => $('send').classList.remove('sent'), 700);
     renderHeader();
     renderMessages();
     renderSessions();
   } catch (err) {
     notice(err.message, 'error');
+    inputStatus('error', '送信失敗・入力内容を保持しました');
     renderHeader();
   }
 }
@@ -1061,6 +1222,11 @@ function settingsPatch() {
       enabled: $('instruction-enabled').checked,
       text: $('instruction-text').value,
       skills: state.settingsSkills,
+      skillSelection: {
+        enabled: $('skill-selection-enabled').checked,
+        defaultMode: $('default-skill-mode').value,
+        candidates: state.settingsSkills,
+      },
       startupActions: state.settingsActions,
     },
     execution: {
@@ -1084,6 +1250,8 @@ async function openSettings() {
   $('wsl-distro').value = state.config.wslDistro || '';
   $('instruction-enabled').checked = instructions.enabled;
   $('instruction-text').value = instructions.text || '';
+  $('skill-selection-enabled').checked = instructions.skillSelection.enabled;
+  $('default-skill-mode').value = instructions.skillSelection.defaultMode;
   $('instruction-count').textContent = `${$('instruction-text').value.length} / 8000`;
   renderRecommendedSkills();
   renderStartupActions();
@@ -1141,7 +1309,23 @@ async function saveSettings() {
 
 async function init() {
   state.config = await api.getConfig();
+  state.turnSkillMode = (state.config.instructions.skillSelection || {}).defaultMode || 'auto';
   try { state.host = await api.hostInfo(); } catch (err) { state.host = { platform: api.platform, tmux: '', error: err.message }; }
+  Term.configure({
+    onFocus: () => setInputMode('terminal', { focus: false }),
+    onAccepted: () => {
+      const activity = $('terminal-activity');
+      activity.classList.remove('accepted');
+      requestAnimationFrame(() => activity.classList.add('accepted'));
+    },
+    onError: () => inputStatus('error', '端末への入力に失敗しました'),
+    onEscape: () => {
+      const result = InputMode.handleEscape(state.input);
+      state.input = result.state;
+      if (!result.forward) setInputMode('message');
+      return result.forward;
+    },
+  });
   Files.init();
   renderHostStatus();
   for (const id of await api.running()) state.running.add(id);
@@ -1168,25 +1352,31 @@ async function init() {
   };
   $('session-delete').onclick = async () => {
     $('chat-more').open = false;
-    if (!state.current || !confirm(isTmux(state.current) ? 'この会話を削除する？（tmux セッションも終了する）' : 'この会話を削除する？')) return;
-    const wt = state.current.worktree || '';
-    Term.detach();
-    await api.removeSession(state.current.id);
-    state.running.delete(state.current.id);
-    state.phases.delete(state.current.id);
-    state.sessions = await api.listSessions(state.repo);
-    // 作業フォルダは会話とは別物なので、消すかどうかは別に聞く（他の会話が使っていることもある）
-    const others = state.sessions.filter((s) => s.worktree === wt).length;
-    if (wt && !others && confirm(`作業フォルダ ${wt} も削除する？（ブランチは残る）`)) {
-      try { await api.removeWorktree(state.repo, wt, { force: false }); } catch (err) { notice(err.message, 'error'); }
-      await refreshWorktrees();
-    }
-    newDraft();
+    await removeConversation(state.current);
   };
   $('send').onclick = sendPrompt;
   $('stop').onclick = () => state.current && api.stop(state.current.id);
+  $('input-mode-message').onclick = () => setInputMode('message');
+  $('input-mode-terminal').onclick = () => setInputMode('terminal');
+  $('prompt').addEventListener('focus', () => {
+    if (state.input.mode !== 'message') setInputMode('message', { focus: false });
+  });
+  const terminalKeys = {
+    Escape: '\x1b', Tab: '\t', Enter: '\r', Up: '\x1b[A', Down: '\x1b[B', Right: '\x1b[C', Left: '\x1b[D', 'C-c': '\x03',
+  };
+  for (const button of document.querySelectorAll('[data-terminal-key]')) {
+    button.onclick = () => {
+      setInputMode('terminal', { focus: false });
+      Term.sendKey(terminalKeys[button.dataset.terminalKey] || '');
+      Term.focus();
+    };
+  }
   $('prompt').addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); if (!$('send').hidden && !$('send').disabled) sendPrompt(); }
+  });
+  $('prompt').addEventListener('input', () => {
+    clearTimeout(state.skillPreviewTimer);
+    state.skillPreviewTimer = setTimeout(refreshTurnSkillPreview, 180);
   });
   // 上の選択は「次のターン」の起動条件。会話にも覚えさせ（開き直しても残る）、tmux で動いている
   // CLI と違えば次の依頼のときに起動し直す（claude / copilot は --resume で文脈を引き継ぐ）
@@ -1214,6 +1404,14 @@ async function init() {
   $('cli').onchange = () => onTurnOptionChange('cli');
   $('model').onchange = () => onTurnOptionChange('model');
   $('readonly').onchange = () => onTurnOptionChange('readonly');
+  $('turn-skill-mode').onchange = () => {
+    state.turnSkillMode = $('turn-skill-mode').value;
+    state.turnSkills = [];
+    state.turnSkillPreview = [];
+    renderTurnSkills();
+    renderRunSettingsSummary();
+    refreshTurnSkillPreview();
+  };
   // 添付: ボタン・ドロップ・貼り付け・「ファイル」画面から
   $('attach').onclick = pickAttachments;
   $('viewer-attach').onclick = attachOpenFile;
@@ -1254,8 +1452,6 @@ async function init() {
   $('wt-branch').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); createWorktree(); } });
   $('view-chat').onclick = () => showView('chat');
   $('view-files').onclick = () => showView('files');
-  $('term-toggle').onclick = () => toggleTerm();
-  $('term-close').onclick = () => toggleTerm(false);
   $('term-restart').onclick = async () => {
     if (!state.current) return;
     const id = state.current.id;
@@ -1265,6 +1461,7 @@ async function init() {
       state.phases.set(id, { phase: r.phase, detail: r.detail, name: r.name });
       notice(r.warning || '');
       await Term.attach(id, $('term-host'));
+      setInputMode('message');
       renderHeader();
     } catch (err) { notice(err.message, 'error'); }
   };
@@ -1327,8 +1524,10 @@ async function init() {
     if (state.current && state.current.id === p.id) {
       renderHeader();
       renderMessages();
-      if (p.phase === 'attention' && !state.termOpen) notice('CLI が端末で確認を求めている。「端末」を開いて答える');
-      else if (p.phase !== 'attention' && $('notice').textContent.startsWith('CLI が端末で確認')) notice('');
+      if (p.phase === 'dead' || p.phase === 'gone') {
+        setInputMode('message', { focus: false });
+        inputStatus('error', 'セッション終了');
+      }
     }
     renderSessions();
   });

@@ -3,6 +3,7 @@
 const TIERS = ['small', 'medium', 'large'];
 const POLICY_TIER = { recommended: 'medium', saving: 'small', quality: 'large' };
 const POLICIES = Object.keys(POLICY_TIER);
+const SKILL_MODES = ['auto', 'manual', 'off'];
 const MAX_INSTRUCTION_CHARS = 8000;
 
 function pair(value, fallback) {
@@ -43,11 +44,20 @@ function normalize(raw) {
   const execution = source.execution && typeof source.execution === 'object' ? source.execution : {};
   const tiers = execution.tiers && typeof execution.tiers === 'object' ? execution.tiers : {};
   const instructions = source.instructions && typeof source.instructions === 'object' ? source.instructions : {};
+  const rawSkillSelection = instructions.skillSelection && typeof instructions.skillSelection === 'object'
+    ? instructions.skillSelection : {};
+  const skillCandidates = uniqueStrings(Object.hasOwn(rawSkillSelection, 'candidates')
+    ? rawSkillSelection.candidates : instructions.skills);
   return {
     instructions: {
       enabled: instructions.enabled !== false,
       text: String(instructions.text || '').trim().slice(0, MAX_INSTRUCTION_CHARS),
-      skills: uniqueStrings(instructions.skills),
+      skills: skillCandidates,
+      skillSelection: {
+        enabled: rawSkillSelection.enabled !== false,
+        defaultMode: SKILL_MODES.includes(rawSkillSelection.defaultMode) ? rawSkillSelection.defaultMode : 'auto',
+        candidates: skillCandidates,
+      },
       startupActions: startupActions(instructions.startupActions),
     },
     execution: {
@@ -78,6 +88,6 @@ function resolve(config, request = {}) {
 }
 
 module.exports = {
-  TIERS, POLICIES, POLICY_TIER, MAX_INSTRUCTION_CHARS,
+  TIERS, POLICIES, POLICY_TIER, SKILL_MODES, MAX_INSTRUCTION_CHARS,
   normalize, resolve,
 };

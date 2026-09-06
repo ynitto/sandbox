@@ -61,6 +61,12 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
       information: [{ type: 'file', title: 'src/renderer.js', action: 'modified', status: 'success' }],
     },
   });
+  for (let index = 0; index < 60; index += 1) {
+    appStore.appendMessage(userData, session.id, {
+      role: 'user', cli: 'codex', model: 'gpt-test',
+      text: `スクロール確認 ${index + 1}: ${'履歴を十分に長くする。'.repeat(8)}`,
+    });
+  }
 
   const electron = await pw._electron.launch({
     executablePath: binary,
@@ -75,12 +81,32 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     await win.waitForSelector('#area-tasks');
     await win.waitForFunction(() => typeof document.getElementById('area-tasks').onclick === 'function', null, { timeout: 20000 });
     assert.match(await win.textContent('#side'), /会話.*タスク.*ワークフロー/s);
+    await win.locator('#conversation-start').waitFor();
+    const composerBefore = await win.locator('#composer').boundingBox();
     await win.click('#sessions .list-pick');
     await win.locator('.answer-bubble').waitFor();
-    assert.match(await win.locator('.msg.user').textContent(), /画面を確認して/);
+    assert.match(await win.locator('.msg.user').first().textContent(), /画面を確認して/);
     assert.match(await win.locator('.answer-bubble').textContent(), /確認できました/);
     assert.strictEqual(await win.locator('.response-disclosure.thinking').getAttribute('open'), null, '完了後の思考は閉じる');
     assert.strictEqual(await win.locator('.response-disclosure.information').getAttribute('open'), null, '成功時の実行情報は閉じる');
+    const historyScroll = await win.locator('#messages').evaluate((node) => {
+      const before = node.scrollTop;
+      node.scrollTop = 0;
+      const atTop = node.scrollTop;
+      node.scrollTop = node.scrollHeight;
+      const sizes = {};
+      for (const id of ['messages', 'conversation-history', 'chat', 'main', 'app']) {
+        const element = document.getElementById(id);
+        const style = getComputedStyle(element);
+        sizes[id] = { clientHeight: element.clientHeight, scrollHeight: element.scrollHeight, minHeight: style.minHeight, height: style.height, overflow: style.overflow, gridRow: style.gridRow };
+      }
+      return { before, atTop, after: node.scrollTop, clientHeight: node.clientHeight, scrollHeight: node.scrollHeight, sizes };
+    });
+    assert.ok(historyScroll.scrollHeight > historyScroll.clientHeight && historyScroll.after > historyScroll.atTop,
+      `会話履歴をスクロールできない: ${JSON.stringify(historyScroll)}`);
+    const composerAfter = await win.locator('#composer').boundingBox();
+    assert.ok(composerBefore && composerAfter && Math.abs(composerBefore.y - composerAfter.y) <= 1,
+      '会話開始前後で入力欄が動かない');
     if (process.env.AGENT_APP_CHAT_SCREENSHOT) await win.screenshot({ path: process.env.AGENT_APP_CHAT_SCREENSHOT });
 
     await win.click('#settings-open');
@@ -100,6 +126,7 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     const saved = appStore.loadConfig(userData);
     assert.strictEqual(saved.instructions.text, '回答は簡潔な日本語にする');
     assert.deepStrictEqual(saved.instructions.skills, ['self-checking']);
+    assert.deepStrictEqual(saved.instructions.skillSelection, { enabled: true, defaultMode: 'auto', candidates: ['self-checking'] });
     assert.deepStrictEqual(saved.instructions.startupActions, [{ type: 'skill', value: 'brainstorming', onError: 'warn' }]);
     assert.strictEqual(saved.execution.defaultPolicy, 'quality');
     assert.strictEqual(saved.execution.tiers.large.model, 'gpt-quality');
@@ -114,6 +141,26 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     assert.match(await win.locator('#tasks').textContent(), /リリース確認/);
     await workspace.locator('.task-detail-tabs').waitFor({ timeout: 20000 });
     assert.match(await workspace.locator('.execution-title').textContent(), /タスク.*リリース確認/s);
+    await workspace.locator('#task-run-settings').waitFor();
+    const runToolbar = workspace.locator('.run-toolbar');
+    await runToolbar.waitFor();
+    assert.doesNotMatch(await workspace.locator('.run-card').textContent(), /実行ごとにエージェントとモデルを選べます/);
+    const toolbarControls = await Promise.all(['#task-run-settings > summary', '#run-start', '#run-check', '#run-stop']
+      .map((selector) => workspace.locator(selector).boundingBox()));
+    const toolbarCenters = toolbarControls.map((box) => box && box.y + (box.height / 2));
+    assert.ok(toolbarCenters.every(Boolean) && Math.max(...toolbarCenters) - Math.min(...toolbarCenters) <= 1,
+      `manual run settings and actions should share one row: ${JSON.stringify(toolbarControls)}`);
+    assert.match(await workspace.locator('#task-run-settings-summary').textContent(), /品質重視.*copilot.*gpt-quality/);
+    await workspace.locator('#task-run-settings > summary').click();
+    await workspace.locator('#run-policy').selectOption('direct');
+    await workspace.locator('#run-direct-settings').waitFor();
+    await workspace.locator('#run-model').fill('task-model');
+    await workspace.locator('#run-skill-mode').selectOption('manual');
+    await workspace.locator('[data-run-skill="self-checking"]').check();
+    assert.match(await workspace.locator('#task-run-settings-summary').textContent(), /直接指定.*task-model/);
+    assert.match(await workspace.locator('#task-run-settings-summary').textContent(), /スキル 手動選択/);
+    await workspace.locator('#schedule-toggle').click();
+    assert.deepStrictEqual(await workspace.locator('#schedule-destination option').allTextContents(), ['このリポジトリ', '共通設定']);
     assert.strictEqual(await workspace.locator('.folder-pane').isHidden(), true, 'リポジトリ一覧が二重に表示されている');
     assert.strictEqual(await workspace.locator('.home-tabs').isHidden(), true, '主要タブが二重に表示されている');
     if (process.env.AGENT_APP_TASK_SCREENSHOT) {

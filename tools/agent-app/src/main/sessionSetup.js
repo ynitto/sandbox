@@ -6,16 +6,13 @@ function instructionBlock(instructions) {
   const source = instructions && typeof instructions === 'object' ? instructions : {};
   if (source.enabled === false) return '';
   const text = String(source.text || '').trim();
-  const skills = (Array.isArray(source.skills) ? source.skills : [])
-    .map((skill) => String(skill || '').trim()).filter(Boolean);
-  if (!text && !skills.length) return '';
+  if (!text) return '';
   const lines = [
     MARKER,
     '## 共通指示',
     '今回の依頼やリポジトリ固有の指示と競合する場合は、それらを優先してください。',
   ];
   if (text) lines.push('', text);
-  if (skills.length) lines.push('', '推奨スキル:', ...skills.map((skill) => `- ${skill}`));
   return lines.join('\n');
 }
 
@@ -31,13 +28,21 @@ function skillCommand(value, prefix) {
   return name ? `${prefix || '/'}${name}` : '';
 }
 
-function planActions(actions, { skillCommandPrefix = '/' } = {}) {
+function planActions(actions, { skillCommandPrefix = '/', slashNative = true, availableSkills = [] } = {}) {
   const skills = [];
   const commands = [];
+  const warnings = [];
+  const available = new Set(Array.isArray(availableSkills) ? availableSkills : []);
   for (const action of Array.isArray(actions) ? actions : []) {
     if (!action || action.type === 'skill') {
       const command = skillCommand(action && action.value, skillCommandPrefix);
-      if (command) skills.push(command);
+      if (!command) continue;
+      const name = String(action.value || '').trim().replace(/^[$/]+/, '').split(/\s+/, 1)[0];
+      if (!slashNative && !available.has(name)) {
+        warnings.push(`${name} は利用可能なスキルではないため、このエージェントではスキップしました`);
+        continue;
+      }
+      skills.push({ command, name, onError: action.onError === 'fail' ? 'fail' : 'warn' });
     } else if (action.type === 'command' && String(action.value || '').trim()) {
       commands.push({
         command: String(action.value).trim(),
@@ -45,7 +50,7 @@ function planActions(actions, { skillCommandPrefix = '/' } = {}) {
       });
     }
   }
-  return { skillPrompt: skills.join('\n'), commands };
+  return { skills, commands, warning: warnings.join('\n') };
 }
 
 async function runCommands(commands, run, { eachMs = 60000, totalMs = 120000 } = {}) {

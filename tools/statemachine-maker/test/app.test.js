@@ -94,6 +94,14 @@ test('主要操作と工程設定は省略語や直訳調の文言を使わな�
   assert.ok(renderer.includes('class="branch-if">もし') && renderer.includes('class="branch-then">なら'), '条件を文章として読める');
 });
 
+test('手動実行は選択したスキルを実行情報へ残す', () => {
+  const renderer = read('renderer/renderer.js');
+  const ipc = read('main/ipc.js');
+  assert.ok(ipc.includes('executionInformation:'));
+  assert.ok(ipc.includes('skillSelection:'));
+  assert.ok(renderer.includes('適用スキル:'));
+});
+
 test('ダイアログは用途別の幅を持ち、狭い画面で横スクロールを作らない', () => {
   const renderer = read('renderer/renderer.js');
   const css = read('renderer/styles.css');
@@ -148,7 +156,7 @@ test('使うAIの候補と実行は agent-tools の公開インターフェー�
   assert.ok(renderer.includes('api.listAgents('), '画面は定義一覧を取得する');
   assert.ok(!renderer.includes("['claude', 'copilot', 'kiro', 'anthropic']"), 'AI名を画面へ直書きしない');
   assert.ok(ipc.includes("register('agents:list'"), 'main が定義一覧を返す');
-  assert.ok(ipc.includes('agentLoop.runSpec('), '実行は agent-loop から agent-tools harness へ渡す');
+  assert.ok(ipc.includes('agentLoop.taskRunSpec('), '実行はタスク種別に応じて agent-loop へ渡す');
   assert.ok(ipc.includes('tools.agentAssistRunSpec('), 'AI支援は agent-herd の読み取り専用起動を使う');
 });
 

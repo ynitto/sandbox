@@ -53,6 +53,11 @@ test('UIで扱う共通指示と実行制御を安全な設定値へ揃える', 
     enabled: false,
     text: '日本語で回答する',
     skills: ['ui-designer', 'self-checking'],
+    skillSelection: {
+      enabled: true,
+      defaultMode: 'auto',
+      candidates: ['ui-designer', 'self-checking'],
+    },
     startupActions: [
       { type: 'skill', value: 'brainstorming', onError: 'fail' },
       { type: 'command', value: 'npm test', onError: 'warn' },
@@ -95,5 +100,14 @@ test('直接指定を方針より優先し、指定がなければ既定方針�
   });
   assert.deepStrictEqual(settings.resolve(config), {
     policy: 'quality', tier: 'large', cli: 'claude', model: 'opus', source: 'policy',
+  });
+});
+
+test('旧推奨スキルを自動選択の候補へ移行する', () => {
+  const normalized = settings.normalize({ instructions: { skills: ['ui-designer', 'self-checking'] } });
+  assert.deepStrictEqual(normalized.instructions.skillSelection, {
+    enabled: true,
+    defaultMode: 'auto',
+    candidates: ['ui-designer', 'self-checking'],
   });
 });

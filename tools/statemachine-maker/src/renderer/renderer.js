@@ -31,8 +31,8 @@ const state = {
   preview: null, tools: null,
   aiDraft: { mode: 'draft', phase: 'input', requestId: '', busy: false, request: '', history: [], questions: [], answers: {}, result: null, error: '', message: '' },
   aiReview: { mode: 'review', phase: 'input', requestId: '', busy: false, focus: '', scope: null, history: [], questions: [], answers: {}, result: null, error: '', message: '' },
-  recording: { source: 'browser', url: '', app: '', text: '', active: false, busy: false, message: '', ok: true },
-  run: { lines: [], running: false, agent: '', parameters: {}, requestId: '', result: null, error: '' },
+  recording: { source: 'browser', url: '', app: '', text: '', active: false, busy: false, message: '', ok: true, pick: null, extracts: 0 },
+  run: { lines: [], running: false, policy: '', agent: '', model: '', skillMode: '', skills: [], skillPreview: [], parameters: {}, requestId: '', result: null, error: '' },
   fileTab: '',
 };
 
@@ -115,7 +115,7 @@ function saveNameFrom(name) {
 // --- 手順の形 -------------------------------------------------------------------------
 
 function emptyStep(kind) {
-  return { id: '', kind, title: '', detail: '', target: '', check: '', checkRetries: 1, outcomes: [], recorded: [], rawTransitions: false };
+  return { id: '', kind, title: '', detail: '', target: '', check: '', checkRetries: 1, outcomes: [], recorded: [], extend: {}, rawTransitions: false };
 }
 
 function newSpec() {
@@ -222,8 +222,8 @@ async function loadExecutionSnapshot() {
     available: false, machines: [], history: [], daemon: { running: false }, error: '実行情報を取得できませんでした',
   };
   const machines = executionMachines();
-  if (!machines.some((machine) => machine.machine === state.execution.selected)) {
-    state.execution.selected = machines[0] ? machines[0].machine : '';
+  if (!machines.some((machine) => taskIdentity(machine) === state.execution.selected)) {
+    state.execution.selected = machines[0] ? taskIdentity(machines[0]) : '';
     state.execution.scheduleDraft = null;
     state.execution.log = null;
     state.run.parameters = {};
@@ -231,13 +231,80 @@ async function loadExecutionSnapshot() {
 }
 
 function executionMachines() {
+  const tasks = state.execution.snapshot && state.execution.snapshot.tasks;
+  if (Array.isArray(tasks) && tasks.length) return tasks;
   const remote = state.execution.snapshot && state.execution.snapshot.machines;
-  if (Array.isArray(remote) && remote.length) return remote;
-  return state.machines.map((machine) => ({ ...machine, parameters: [], schedule: null, history: [] }));
+  if (Array.isArray(remote) && remote.length) return remote.map((machine) => ({
+    id: `machine:${machine.machine}`, kind: 'statemachine', schedules: machine.schedule ? [machine.schedule] : [], ...machine,
+  }));
+  return state.machines.map((machine) => ({ id: `machine:${machine.machine}`, kind: 'statemachine', ...machine, parameters: [], schedule: null, schedules: [], history: [] }));
+}
+
+function taskIdentity(task) { return String(task && (task.id || task.machine) || ''); }
+function taskSchedules(task) {
+  if (Array.isArray(task && task.schedules)) return task.schedules;
+  return task && task.schedule ? [task.schedule] : [];
+}
+function taskKindLabel(task) {
+  return task.kind === 'prompt' ? 'プロンプト' : task.kind === 'hook' ? 'フック' : task.kind === 'broken' ? '要修正' : 'ステートマシン';
+}
+
+const RUN_POLICIES = {
+  recommended: { label: 'おすすめ', tier: 'medium' },
+  saving: { label: '節約', tier: 'small' },
+  quality: { label: '品質重視', tier: 'large' },
+  direct: { label: '直接指定', tier: '' },
+};
+
+function taskRunExecution() {
+  const execution = state.config.execution && typeof state.config.execution === 'object' ? state.config.execution : {};
+  const policy = state.run.policy || execution.defaultPolicy || 'recommended';
+  if (policy === 'direct') {
+    return { policy, agent: selectedAgent(state.run.agent || state.config.agent), model: state.run.model || state.config.model || '' };
+  }
+  const view = RUN_POLICIES[policy] || RUN_POLICIES.recommended;
+  const tier = execution.tiers && execution.tiers[view.tier] || {};
+  return { policy, agent: selectedAgent(tier.cli || state.config.agent), model: tier.model || state.config.model || '' };
+}
+
+function taskRunSettingsLabel() {
+  const selected = taskRunExecution();
+  const policy = RUN_POLICIES[selected.policy] || RUN_POLICIES.recommended;
+  const agent = selected.agent || 'エージェント未設定';
+  const selection = state.config.instructions && state.config.instructions.skillSelection || {};
+  const skillMode = state.run.skillMode || selection.defaultMode || 'auto';
+  const skillLabel = { auto: 'スキル 自動', manual: 'スキル 手動選択', off: 'スキル 使用しない' }[skillMode] || 'スキル 自動';
+  return [policy.label, `${agent}${selected.model ? ` / ${selected.model}` : ''}`, skillLabel].join(' · ');
+}
+
+function taskSkillCandidates() {
+  const selection = state.config.instructions && state.config.instructions.skillSelection;
+  return selection && Array.isArray(selection.candidates) ? selection.candidates : [];
+}
+
+function taskSkillChoicesHtml() {
+  const selection = state.config.instructions && state.config.instructions.skillSelection || {};
+  const mode = state.run.skillMode || selection.defaultMode || 'auto';
+  if (mode === 'off') return '';
+  if (mode === 'auto') return `<span class="muted small">${esc(state.run.skillPreview.map((item) => item.name).join(' · ') || '該当なし')}</span>`;
+  return taskSkillCandidates().map((name) => `<label class="skill-choice"><input type="checkbox" data-run-skill="${esc(name)}" ${state.run.skills.includes(name) ? 'checked' : ''}><span>${esc(name)}</span></label>`).join('') || '<span class="muted small">候補なし</span>';
+}
+
+async function refreshTaskSkillPreview() {
+  const machine = selectedExecutionMachine();
+  const selection = state.config.instructions && state.config.instructions.skillSelection || {};
+  const mode = state.run.skillMode || selection.defaultMode || 'auto';
+  if (!machine || mode !== 'auto' || !api.selectSkills) { state.run.skillPreview = []; return; }
+  try {
+    const result = await api.selectSkills(state.root, JSON.stringify({ task: machine, parameters: state.run.parameters }), 'auto', []);
+    state.run.skillPreview = result.selected || [];
+    const list = main.querySelector('#run-skill-list');
+    if (list) list.innerHTML = taskSkillChoicesHtml();
+  } catch { state.run.skillPreview = []; }
 }
 
 function selectedExecutionMachine() {
-  return executionMachines().find((machine) => machine.machine === state.execution.selected) || null;
+  return executionMachines().find((machine) => taskIdentity(machine) === state.execution.selected) || null;
 }
 
 async function selectRoot(root) {
@@ -293,7 +360,7 @@ async function openMachine(machine) {
   const res = await guard('読み込み', () => api.readMachine(state.root, machine));
   if (!res) return;
   const raw = res.raw;
-  raw.steps = raw.steps.map((s) => ({ ...emptyStep(s.kind), ...s, outcomes: s.outcomes || [], recorded: s.recorded || [] }));
+  raw.steps = raw.steps.map((s) => ({ ...emptyStep(s.kind), ...s, outcomes: s.outcomes || [], recorded: s.recorded || [], extend: s.extend || {} }));
   state.current = { machine, isNew: false, spec: raw, dirty: false, warnings: res.warnings || [], dir: res.dir };
   state.view = 'editor';
   state.open = null;
@@ -450,7 +517,7 @@ function bindHome(main) {
     const tab = button.dataset.taskTab;
     if (tab === 'steps') {
       const machine = selectedExecutionMachine();
-      if (machine) openMachine(machine.machine);
+      if (machine && machine.kind === 'statemachine') openMachine(machine.machine);
       return;
     }
     state.execution.detailTab = tab;
@@ -462,9 +529,53 @@ function bindHome(main) {
   on('run-stop', () => api.runStop());
   on('schedule-toggle', () => { state.execution.scheduleOpen = !state.execution.scheduleOpen; render(); });
   on('schedule-save', saveSchedule);
+  for (const button of main.querySelectorAll('[data-schedule-edit]')) button.addEventListener('click', () => {
+    const machine = selectedExecutionMachine();
+    const schedule = machine && taskSchedules(machine)[Number(button.dataset.scheduleEdit)];
+    if (!machine || !schedule) return;
+    state.execution.scheduleDraft = scheduleDraftFor(machine, schedule);
+    state.execution.scheduleOpen = true;
+    render();
+  });
   on('daemon-toggle', toggleDaemon);
   for (const button of main.querySelectorAll('[data-history-log]')) button.addEventListener('click', () => openHistoryLog(button.dataset.historyLog));
-  for (const input of main.querySelectorAll('[data-run-param]')) input.addEventListener('input', () => { state.run.parameters[input.dataset.runParam] = input.value; });
+  for (const input of main.querySelectorAll('[data-run-param]')) input.addEventListener('input', () => {
+    state.run.parameters[input.dataset.runParam] = input.value;
+    refreshTaskSkillPreview();
+  });
+  const runAgent = main.querySelector('#run-agent');
+  const runModel = main.querySelector('#run-model');
+  const runPolicy = main.querySelector('#run-policy');
+  const refreshRunSettings = () => {
+    const direct = main.querySelector('#run-direct-settings');
+    const summary = main.querySelector('#task-run-settings-summary');
+    if (direct) direct.hidden = (state.run.policy || runPolicy?.value) !== 'direct';
+    if (summary) summary.textContent = taskRunSettingsLabel();
+  };
+  if (runPolicy) runPolicy.addEventListener('change', () => { state.run.policy = runPolicy.value; refreshRunSettings(); });
+  if (runAgent) runAgent.addEventListener('change', () => { state.run.agent = runAgent.value; refreshRunSettings(); });
+  if (runModel) runModel.addEventListener('input', () => { state.run.model = runModel.value; refreshRunSettings(); });
+  const runSkillMode = main.querySelector('#run-skill-mode');
+  const bindSkillChoices = () => {
+    for (const input of main.querySelectorAll('[data-run-skill]')) input.addEventListener('change', () => {
+      state.run.skills = input.checked
+        ? [...new Set([...state.run.skills, input.dataset.runSkill])]
+        : state.run.skills.filter((name) => name !== input.dataset.runSkill);
+      refreshRunSettings();
+    });
+  };
+  if (runSkillMode) runSkillMode.addEventListener('change', () => {
+    state.run.skillMode = runSkillMode.value;
+    state.run.skills = [];
+    state.run.skillPreview = [];
+    const list = main.querySelector('#run-skill-list');
+    if (list) { list.hidden = state.run.skillMode === 'off'; list.innerHTML = taskSkillChoicesHtml(); }
+    bindSkillChoices();
+    refreshRunSettings();
+    refreshTaskSkillPreview();
+  });
+  bindSkillChoices();
+  refreshTaskSkillPreview();
   bindScheduleEditor(main);
   if (state.homeTab === 'flows') flowFeature.bind(main);
 }
@@ -474,7 +585,7 @@ function goRun(machine) {
   state.view = 'home';
   state.current = null;
   state.homeTab = 'run';
-  state.execution.selected = machine;
+  state.execution.selected = String(machine).startsWith('machine:') ? machine : `machine:${machine}`;
   state.execution.detailTab = 'overview';
   state.execution.scheduleDraft = null;
   state.run.result = null;
@@ -539,7 +650,11 @@ function executionHtml() {
   const list = machines.map((machine) => {
     const latest = (machine.history || [])[0];
     const status = latest ? (latest.ok ? '完了' : latest.escalate ? '要確認' : '失敗') : '未実行';
-    return `<button type="button" class="execution-item ${machine.machine === selected.machine ? 'is-on' : ''}" data-run-machine="${esc(machine.machine)}"><strong>${esc(machine.name)}</strong><span>${esc(status)} · ${esc(scheduleLabel(machine.schedule))}</span></button>`;
+    const schedules = taskSchedules(machine);
+    const scheduleStatus = schedules.length
+      ? `${schedules.filter((item) => item.effective !== false).length}/${schedules.length} 件の予定`
+      : '予定なし';
+    return `<button type="button" class="execution-item ${taskIdentity(machine) === taskIdentity(selected) ? 'is-on' : ''}" data-run-machine="${esc(taskIdentity(machine))}"><strong>${esc(machine.name)}</strong><span>${esc(taskKindLabel(machine))} · ${esc(status)} · ${esc(scheduleStatus)}</span></button>`;
   }).join('');
   return `<div class="execution-layout"><aside class="execution-list" aria-label="実行するワークフロー">${list}</aside><section class="execution-detail">${executionDetailHtml(selected)}</section></div>`;
 }
@@ -547,11 +662,14 @@ function executionHtml() {
 function executionDetailHtml(machine) {
   const snapshot = state.execution.snapshot || {};
   const daemon = snapshot.daemon || { running: false };
-  const scheduleAgent = machine.schedule && (machine.schedule.agentCli || state.config.agent);
-  const scheduleModel = machine.schedule && (machine.schedule.model || state.config.model);
-  const scheduleMeta = machine.schedule
-    ? [scheduleLabel(machine.schedule), machine.schedule.nextAt ? `次回 ${dateLabel(machine.schedule.nextAt)}` : '', scheduleAgent ? `AI ${scheduleAgent}${scheduleModel ? ` / ${scheduleModel}` : ''}` : ''].filter(Boolean).join(' · ')
-    : scheduleLabel(machine.schedule);
+  const schedules = taskSchedules(machine);
+  const scheduleRows = schedules.map((item, index) => {
+    const where = item.source && item.source.scope === 'global' ? '共通設定' : 'このリポジトリ';
+    const active = item.effective === false ? '<span class="status warn">未適用</span>' : '<span class="status ok">適用中</span>';
+    const next = item.nextAt ? ` · 次回 ${esc(dateLabel(item.nextAt))}` : '';
+    const edit = ['statemachine', 'prompt'].includes(machine.kind) ? `<button type="button" class="tiny" data-schedule-edit="${index}">編集</button>` : '';
+    return `<li><div><strong>${esc(item.entryName || `予定 ${index + 1}`)}</strong><small>${esc(scheduleLabel(item))}${next} · ${esc(where)}</small></div>${active}${edit}</li>`;
+  }).join('');
   const daemonStatus = daemon.activeCount
     ? `${daemon.activeCount} 件を実行中${daemon.queueDepth ? `、${daemon.queueDepth} 件待機` : ''}`
     : daemon.running ? (daemon.queueDepth ? `${daemon.queueDepth} 件待機` : '自動実行は稼働中') : '自動実行は停止中';
@@ -569,53 +687,81 @@ function executionDetailHtml(machine) {
     ? `<p class="run-result ${state.run.result.ok ? 'ok' : state.run.result.escalate ? 'warn' : 'ng'}">${state.run.result.ok ? '実行が完了しました' : state.run.result.escalate ? `確認が必要です${state.run.result.error ? `: ${esc(state.run.result.error)}` : ''}` : esc(state.run.result.error || '実行に失敗しました')}</p>`
     : state.run.error ? `<p class="run-result ng">${esc(state.run.error)}</p>` : '';
   const log = state.run.lines.map((line) => `<div class="${line.kind === 'stderr' ? 'e' : ''}">${esc(line.line)}</div>`).join('') || '<span class="muted">実行すると、ここに進行状況が表示されます。</span>';
+  const canRun = ['statemachine', 'prompt'].includes(machine.kind || 'statemachine') && !machine.error;
+  const selectedRun = taskRunExecution();
+  const direct = (state.run.policy || (state.config.execution && state.config.execution.defaultPolicy) || 'recommended') === 'direct';
+  const policyOptions = Object.entries(RUN_POLICIES).map(([value, item]) => `<option value="${value}" ${selectedRun.policy === value ? 'selected' : ''}>${item.label}</option>`).join('');
+  const selection = state.config.instructions && state.config.instructions.skillSelection || {};
+  const skillMode = state.run.skillMode || selection.defaultMode || 'auto';
+  const runFields = `<details id="task-run-settings" class="run-settings task-run-settings"><summary><span id="task-run-settings-summary">${esc(taskRunSettingsLabel())}</span></summary><div class="settings-popover"><div class="popover-head">今回の実行設定</div><label>起動方針<select id="run-policy">${policyOptions}</select></label><div id="run-direct-settings" class="direct-agent-settings" ${direct ? '' : 'hidden'}><label>エージェント<select id="run-agent" ${state.agents.length ? '' : 'disabled'}>${agentOptions(state.run.agent || state.config.agent)}</select></label><label>モデル<input id="run-model" class="mono" value="${esc(state.run.model || state.config.model || '')}" placeholder="自動"></label></div><label>スキル<select id="run-skill-mode"><option value="auto" ${skillMode === 'auto' ? 'selected' : ''}>自動</option><option value="manual" ${skillMode === 'manual' ? 'selected' : ''}>手動選択</option><option value="off" ${skillMode === 'off' ? 'selected' : ''}>使用しない</option></select></label><div id="run-skill-list" class="skill-choice-list" ${skillMode === 'off' ? 'hidden' : ''}>${taskSkillChoicesHtml()}</div></div></details>`;
+  const taskWarning = machine.error
+    ? `<p class="run-result ng">${esc(machine.error)}</p>`
+    : machine.kind === 'hook' ? '<p class="run-result warn">フックだけのタスクは定期実行で起動します。</p>' : '';
   const detail = state.execution.detailTab === 'history'
     ? `<section class="execution-card"><div class="execution-card-head"><div><h3>実行履歴</h3><p>直近の手動実行と定期実行</p></div></div>${history ? `<ul class="run-history">${history}</ul>` : '<p class="muted small">実行履歴はまだありません。</p>'}${historyLog}</section>`
     : state.execution.detailTab === 'overview' ? `${snapshot.available === false ? `<p class="run-result warn">${esc(snapshot.error || '実行基盤に接続できませんでした')}</p>` : ''}
-      <section class="execution-card run-card"><div class="execution-card-head"><div><h3>手動実行</h3><p>使うAI: ${esc(selectedAgent(state.run.agent || state.config.agent) || '未設定')}${state.config.model ? ` / ${esc(state.config.model)}` : ''}</p></div><span class="status ${state.run.running ? 'active' : ''}">${state.run.running ? '実行中' : '待機中'}</span></div>
-        ${inputs}<div class="row"><button type="button" class="primary" id="run-start" ${state.run.running || snapshot.available === false || !state.agents.length ? 'disabled' : ''}>実行</button><button type="button" id="run-check" ${state.run.running ? 'disabled' : ''}>構成を確認</button><button type="button" class="danger" id="run-stop" ${state.run.running ? '' : 'disabled'}>停止</button></div>${result}<div class="log" id="run-log">${log}</div></section>
-      <section class="execution-card"><div class="execution-card-head"><div><h3>定期実行</h3><p>${esc(scheduleMeta)} · ${esc(daemonStatus)}</p></div><div class="row"><button type="button" id="daemon-toggle" ${snapshot.available === false || (!machine.schedule && !daemon.running) ? 'disabled' : ''}>${daemon.running ? '自動実行を停止' : '自動実行を開始'}</button><button type="button" id="schedule-toggle">${state.execution.scheduleOpen ? '閉じる' : machine.schedule ? '変更' : '設定'}</button></div></div>${state.execution.scheduleOpen ? scheduleEditorHtml(machine) : ''}</section>` : '';
+      <section class="execution-card run-card"><div class="execution-card-head"><h3>手動実行</h3><span class="status ${state.run.running ? 'active' : ''}">${state.run.running ? '実行中' : '待機中'}</span></div>
+        ${taskWarning}<div class="run-toolbar">${runFields}<span class="run-toolbar-spacer"></span><button type="button" class="primary" id="run-start" ${state.run.running || snapshot.available === false || !state.agents.length || !canRun ? 'disabled' : ''}>実行</button>${machine.kind === 'statemachine' ? `<button type="button" id="run-check" ${state.run.running ? 'disabled' : ''}>構成を確認</button>` : ''}<button type="button" class="danger" id="run-stop" ${state.run.running ? '' : 'disabled'}>停止</button></div>${inputs}${result}<div class="log" id="run-log">${log}</div></section>
+      <section class="execution-card"><div class="execution-card-head"><div><h3>定期実行</h3><p>${schedules.length ? `${schedules.length} 件の予定` : '予定なし'} · ${esc(daemonStatus)}</p></div><div class="row"><button type="button" id="daemon-toggle" ${snapshot.available === false || (!schedules.length && !daemon.running) ? 'disabled' : ''}>${daemon.running ? '自動実行を停止' : '自動実行を開始'}</button>${['statemachine', 'prompt'].includes(machine.kind) ? `<button type="button" id="schedule-toggle">${state.execution.scheduleOpen ? '閉じる' : schedules.length ? '予定を編集' : '予定を追加'}</button>` : ''}</div></div>${scheduleRows ? `<ul class="run-history schedule-list">${scheduleRows}</ul>` : ''}${state.execution.scheduleOpen ? scheduleEditorHtml(machine) : ''}</section>` : '';
   return `<header class="execution-title"><div><span class="eyebrow">タスク</span><h2>${esc(machine.name)}</h2>${machine.description ? `<p>${esc(machine.description)}</p>` : ''}</div></header>
     <nav class="task-detail-tabs" role="tablist" aria-label="タスク詳細">
       <button type="button" role="tab" data-task-tab="overview" aria-selected="${state.execution.detailTab === 'overview'}" class="${state.execution.detailTab === 'overview' ? 'is-on' : ''}">概要</button>
-      <button type="button" role="tab" data-task-tab="steps" aria-selected="false">手順</button>
+      ${machine.kind === 'statemachine' ? '<button type="button" role="tab" data-task-tab="steps" aria-selected="false">手順</button>' : ''}
       <button type="button" role="tab" data-task-tab="history" aria-selected="${state.execution.detailTab === 'history'}" class="${state.execution.detailTab === 'history' ? 'is-on' : ''}">履歴</button>
     </nav>${detail}`;
 }
 
 function ensureScheduleDraft(machine) {
-  if (state.execution.scheduleDraft && state.execution.scheduleDraft.machine === machine.machine) return state.execution.scheduleDraft;
-  const schedule = machine.schedule && !machine.schedule.advanced ? machine.schedule : { enabled: true, kind: 'daily', time: '09:00', days: [1], input: {} };
-  state.execution.scheduleDraft = {
-    machine: machine.machine, enabled: schedule.enabled !== false, kind: schedule.kind || 'daily',
-    time: schedule.time || '09:00', minutes: schedule.minutes || 60,
-    days: [...(schedule.days || [1])], input: { ...(schedule.input || {}) },
-  };
+  if (state.execution.scheduleDraft && state.execution.scheduleDraft.taskId === taskIdentity(machine)) return state.execution.scheduleDraft;
+  const existing = taskSchedules(machine).find((item) => item.effective !== false) || taskSchedules(machine)[0] || null;
+  state.execution.scheduleDraft = scheduleDraftFor(machine, existing);
   return state.execution.scheduleDraft;
 }
 
+function scheduleDraftFor(machine, existing) {
+  const schedule = existing || { enabled: true, kind: 'daily', time: '09:00', days: [1], input: {} };
+  return {
+    taskId: taskIdentity(machine), entryRef: schedule.entryRef || '', fingerprint: schedule.fingerprint || '',
+    entryName: schedule.entryName || `${machine.name} の定期実行`,
+    destination: schedule.source && schedule.source.scope === 'global' ? 'global' : 'repository',
+    originalDestination: schedule.source && schedule.source.scope === 'global' ? 'global' : 'repository',
+    operation: existing ? 'save' : 'create', enabled: schedule.enabled !== false, kind: schedule.kind || 'daily',
+    time: schedule.time || '09:00', minutes: schedule.minutes || 60,
+    days: [...(schedule.days || [1])], input: { ...(schedule.input || {}) },
+  };
+}
+
 function scheduleEditorHtml(machine) {
-  if (machine.schedule && machine.schedule.advanced) return '<p class="run-result warn">この予定は詳細設定で管理されています。画面からは変更できません。</p>';
   const draft = ensureScheduleDraft(machine);
+  if (taskSchedules(machine).some((item) => item.entryRef === draft.entryRef && item.advanced)) return '<p class="run-result warn">この予定は詳細設定で管理されています。画面からは変更できません。</p>';
   const timing = draft.kind === 'interval'
     ? `<div class="field"><label>間隔（分）</label><input id="schedule-minutes" type="number" min="1" value="${esc(draft.minutes)}"></div>`
     : `<div class="field"><label>時刻</label><input id="schedule-time" type="time" value="${esc(draft.time)}"></div>${draft.kind === 'weekly' ? `<div class="weekday-row">${['日', '月', '火', '水', '木', '金', '土'].map((label, day) => `<label><input type="checkbox" data-schedule-day="${day}" ${draft.days.includes(day) ? 'checked' : ''}>${label}</label>`).join('')}</div>` : ''}`;
   const inputs = (machine.parameters || []).map((name) => `<div class="field"><label>${esc(name)}</label><input data-schedule-param="${esc(name)}" value="${esc(draft.input[name] || '')}"></div>`).join('');
-  return `<div class="schedule-editor"><label class="check-label"><input id="schedule-enabled" type="checkbox" ${draft.enabled ? 'checked' : ''}>有効にする</label><div class="grid2"><div class="field"><label>繰り返し</label><select id="schedule-kind"><option value="daily" ${draft.kind === 'daily' ? 'selected' : ''}>毎日</option><option value="weekly" ${draft.kind === 'weekly' ? 'selected' : ''}>毎週</option><option value="interval" ${draft.kind === 'interval' ? 'selected' : ''}>一定間隔</option></select></div>${timing}</div>${inputs ? `<div class="run-inputs"><h3>実行条件</h3><div class="run-input-grid">${inputs}</div></div>` : ''}<div class="row"><button type="button" class="primary" id="schedule-save">保存</button></div></div>`;
+  return `<div class="schedule-editor"><div class="grid2"><div class="field"><label>予定名</label><input id="schedule-name" value="${esc(draft.entryName)}"></div><div class="field"><label>保存先</label><select id="schedule-destination"><option value="repository" ${draft.destination === 'repository' ? 'selected' : ''}>このリポジトリ</option><option value="global" ${draft.destination === 'global' ? 'selected' : ''}>共通設定</option></select></div></div><label class="check-label"><input id="schedule-enabled" type="checkbox" ${draft.enabled ? 'checked' : ''}>有効にする</label><div class="grid2"><div class="field"><label>繰り返し</label><select id="schedule-kind"><option value="daily" ${draft.kind === 'daily' ? 'selected' : ''}>毎日</option><option value="weekly" ${draft.kind === 'weekly' ? 'selected' : ''}>毎週</option><option value="interval" ${draft.kind === 'interval' ? 'selected' : ''}>一定間隔</option></select></div>${timing}</div>${inputs ? `<div class="run-inputs"><h3>実行条件</h3><div class="run-input-grid">${inputs}</div></div>` : ''}<div class="row"><button type="button" class="primary" id="schedule-save">保存</button><button type="button" id="schedule-new">別の予定を追加</button></div></div>`;
 }
 
 function bindScheduleEditor(main) {
   const machine = selectedExecutionMachine();
-  if (!machine || !state.execution.scheduleOpen || (machine.schedule && machine.schedule.advanced)) return;
+  if (!machine || !state.execution.scheduleOpen) return;
   const draft = ensureScheduleDraft(machine);
   const enabled = main.querySelector('#schedule-enabled');
   const kind = main.querySelector('#schedule-kind');
   const time = main.querySelector('#schedule-time');
   const minutes = main.querySelector('#schedule-minutes');
+  const name = main.querySelector('#schedule-name');
+  const destination = main.querySelector('#schedule-destination');
   if (enabled) enabled.addEventListener('change', () => { draft.enabled = enabled.checked; });
   if (kind) kind.addEventListener('change', () => { draft.kind = kind.value; render(); });
   if (time) time.addEventListener('input', () => { draft.time = time.value; });
   if (minutes) minutes.addEventListener('input', () => { draft.minutes = Number(minutes.value); });
+  if (name) name.addEventListener('input', () => { draft.entryName = name.value; });
+  if (destination) destination.addEventListener('change', () => { draft.destination = destination.value; });
+  const create = main.querySelector('#schedule-new');
+  if (create) create.addEventListener('click', () => {
+    state.execution.scheduleDraft = scheduleDraftFor(machine, null);
+    render();
+  });
   for (const day of main.querySelectorAll('[data-schedule-day]')) day.addEventListener('change', () => {
     const value = Number(day.dataset.scheduleDay);
     draft.days = day.checked ? [...new Set([...draft.days, value])].sort() : draft.days.filter((item) => item !== value);
@@ -631,7 +777,10 @@ async function saveSchedule() {
     ? { kind: 'interval', minutes: draft.minutes }
     : { kind: draft.kind, time: draft.time, ...(draft.kind === 'weekly' ? { days: draft.days } : {}) };
   const result = await guard('定期実行の保存', () => api.saveRunSchedule(state.root, {
-    workflow: machine.workflow, enabled: draft.enabled, schedule, input: draft.input,
+    workflow: machine.workflow, entry: machine.entry, entryName: draft.entryName, enabled: draft.enabled, schedule, input: draft.input,
+    destination: draft.destination,
+    operation: draft.operation === 'create' || draft.destination !== draft.originalDestination ? 'create' : 'save',
+    ...(draft.destination === draft.originalDestination ? { entryRef: draft.entryRef, fingerprint: draft.fingerprint } : {}),
     agentCli: selectedAgent(state.config.agent), model: state.config.model || '',
   }));
   if (!result) return;
@@ -639,7 +788,7 @@ async function saveSchedule() {
   state.execution.scheduleOpen = false;
   state.execution.scheduleDraft = null;
   render();
-  notifyHost('tasks', machine.machine);
+  notifyHost('tasks', taskIdentity(machine));
   toast(result.applied ? '定期実行を保存し、反映しました' : '定期実行を保存しました');
 }
 
@@ -736,6 +885,7 @@ function stepHtml(spec, index) {
   if (step.target && step.kind !== 'command') sub.push(`<span class="mono">${esc(step.target)}</span>`);
   if (step.check) sub.push('<span class="chk">✓ 確認あり</span>');
   if (step.recorded && step.recorded.length) sub.push(`<span class="rec">● 記録 ${step.recorded.length} 件</span>`);
+  for (const tag of extendTags(step)) sub.push(`<span class="ext">${esc(tag)}</span>`);
   return `<div class="step" data-step="${index}"><div class="step-card ${selected ? 'is-selected' : ''}">
     <div class="step-head" role="button" tabindex="0" aria-pressed="${selected}">
       <span class="step-icon k-${esc(step.kind)}">${index + 1}</span>
@@ -748,13 +898,87 @@ function stepHtml(spec, index) {
   </div></div>`;
 }
 
+// --- 記録の拡張（繰り返す・読み取る・確認する・失敗したら） -----------------------------
+// 記録は人が 1 回通った経路しか持たない。広げ方は自由記述にせず、選択肢から選ばせて main が決まった文を書く。
+
+const EXTRACT_MODES = [['text', '全文'], ['table', '表'], ['list', '一覧の各項目']];
+const LOOP_COUNTS = [['n', '件数を決める'], ['all', 'すべて'], ['pages', '次のページも含めてすべて']];
+const LOOP_BACKS = [['', '戻らない'], ['history', '履歴を 1 つ戻る'], ['goto', '一覧の URL を開き直す']];
+const EXPECT_KINDS = [['visible', '要素が見える'], ['text', '要素に文字が含まれる'], ['count', '要素が N 件以上ある']];
+const ON_ERROR_ITEM = [['skip', 'その件を飛ばして続ける'], ['abort', '中止する']];
+const ON_ERROR_STEP = [['abort', 'すぐ中止する'], ['retry', 'やり直す'], ['agent', 'AI に別の操作を任せる']];
+
+function extractsOf(step) {
+  return (step.recorded || []).filter((op) => op.op === 'extract');
+}
+
+function extendTags(step) {
+  const ext = step.extend || {};
+  const tags = [];
+  if (ext.loop) tags.push(ext.loop.count === 'n' ? `↻ ${ext.loop.n || 3} 件` : ext.loop.count === 'pages' ? '↻ 全ページ' : '↻ すべて');
+  const n = extractsOf(step).length;
+  if (n) tags.push(`⤓ 読み取り ${n}`);
+  if (ext.expect) tags.push('◎ 確認');
+  if (ext.onError) tags.push('⚑ 失敗時');
+  return tags;
+}
+
+function options(list, value) {
+  return list.map(([v, l]) => `<option value="${esc(v)}" ${String(v) === String(value == null ? '' : value) ? 'selected' : ''}>${esc(l)}</option>`).join('');
+}
+
+function extendHtml(step) {
+  const ext = step.extend || {};
+  const loop = ext.loop;
+  const expect = ext.expect;
+  const onError = ext.onError || { item: 'abort', step: 'abort', retries: 1 };
+  const firstClick = (step.recorded || []).find((op) => op.op === 'click' && op.target);
+  const overHint = firstClick ? firstClick.target.replace(/,\s*\{\s*name:[^}]*\}\s*\)$/, ')') : "getByRole('link')";
+  const extracts = extractsOf(step);
+  return `<div class="section-title">記録を広げる</div>
+    <div class="ext-block">
+      <label class="check-label"><input type="checkbox" data-ext-on="loop" ${loop ? 'checked' : ''}> 繰り返す（同じ形の要素を順に）</label>
+      ${loop ? `<div class="ext-grid">
+        <div class="field"><label>対象（同じ形の要素）</label><input data-ext="loop.over" class="mono" value="${esc(loop.over || '')}" placeholder="${esc(overHint)}"></div>
+        <div class="field"><label>件数</label><div class="row"><select data-ext="loop.count">${options(LOOP_COUNTS, loop.count || 'n')}</select>${(loop.count || 'n') === 'n' ? `<input data-ext="loop.n" type="number" min="1" max="50" value="${esc(loop.n || 3)}" style="width:72px">` : ''}</div></div>
+        ${loop.count === 'pages' ? `<div class="field"><label>次のページの要素</label><input data-ext="loop.next" class="mono" value="${esc(loop.next || '')}" placeholder="getByRole('link', { name: '次へ' })"></div>` : ''}
+        <div class="field"><label>各件のあと</label><select data-ext="loop.back">${options(LOOP_BACKS, loop.back || '')}</select></div>
+      </div>` : ''}
+    </div>
+    <div class="ext-block">
+      <label>読み取る（画面の内容を後の工程へ渡す）</label>
+      ${extracts.length ? `<ol class="rec-list">${extracts.map((op) => `<li>${esc(op.target)} → <span class="mono">${esc(op.key || 'text')}</span>（${esc((EXTRACT_MODES.find(([v]) => v === op.mode) || EXTRACT_MODES[0])[1])}）<button type="button" class="tiny" data-ext-unextract="${esc(op.target)}|${esc(op.key || 'text')}" title="外す">✕</button></li>`).join('')}</ol>` : ''}
+      <div class="ext-grid ext-add">
+        <div class="field"><label>要素</label><input id="ext-target" class="mono" placeholder="getByRole('article')"></div>
+        <div class="field"><label>形</label><select id="ext-mode">${options(EXTRACT_MODES, 'text')}</select></div>
+        <div class="field"><label>出力名</label><input id="ext-key" class="mono" placeholder="body"></div>
+        <div class="field"><label>&nbsp;</label><button type="button" class="tiny" data-ext-extract>＋ 追加</button></div>
+      </div>
+    </div>
+    <div class="ext-block">
+      <label class="check-label"><input type="checkbox" data-ext-on="expect" ${expect ? 'checked' : ''}> 確認する（確定の後に確かめる）</label>
+      ${expect ? `<div class="ext-grid">
+        <div class="field"><label>何を</label><select data-ext="expect.kind">${options(EXPECT_KINDS, expect.kind)}</select></div>
+        <div class="field"><label>要素</label><input data-ext="expect.target" class="mono" value="${esc(expect.target || '')}" placeholder="getByRole('heading', { name: '完了' })"></div>
+        ${expect.kind !== 'visible' ? `<div class="field"><label>${expect.kind === 'count' ? '件数' : '含まれる文字'}</label><input data-ext="expect.value" value="${esc(expect.value || '')}"></div>` : ''}
+      </div>` : ''}
+    </div>
+    <div class="ext-block">
+      <label class="check-label"><input type="checkbox" data-ext-on="onError" ${ext.onError ? 'checked' : ''}> 失敗したら</label>
+      ${ext.onError ? `<div class="ext-grid">
+        ${loop ? `<div class="field"><label>1 件で失敗したら</label><select data-ext="onError.item">${options(ON_ERROR_ITEM, onError.item)}</select></div>` : ''}
+        <div class="field"><label>工程が失敗したら</label><div class="row"><select data-ext="onError.step">${options(ON_ERROR_STEP, onError.step)}</select>${onError.step === 'retry' ? `<input data-ext="onError.retries" type="number" min="1" max="5" value="${esc(onError.retries || 1)}" style="width:64px"> 回まで` : ''}</div></div>
+      </div>` : ''}
+    </div>`;
+}
+
 function stepBodyHtml(spec, index) {
   const step = spec.steps[index];
   const kind = kindOf(step.kind);
   const seg = state.catalog.kinds.map((k) => `<button type="button" data-kind="${esc(k.id)}" class="${k.id === step.kind ? 'is-on' : ''}" title="${esc(k.description)}"><span class="dot k-${esc(k.id)}"></span>${esc(k.label)}</button>`).join('');
   const target = kind.target ? `<div class="field"><label>${esc(kind.target.label)}${kind.target.required ? '' : '（任意）'}</label><input data-field="target" class="mono" value="${esc(step.target)}" placeholder="${esc(kind.target.placeholder || '')}"></div>` : '';
   const recorded = step.recorded && step.recorded.length ? `<div class="field"><label>記録した操作（${step.recorded.length} 件）</label>
-    <ol class="rec-list">${step.recorded.map((op) => `<li>${esc(op.op)} ${esc(op.label || op.target)}${op.value ? ` ${esc(op.value)}` : ''}${op.example ? ` <span class="muted">(例: ${esc(op.example)})</span>` : ''}</li>`).join('')}</ol>
+    <ol class="rec-list">${step.recorded.map((op) => `<li>${esc(op.op)} ${esc(op.label || op.target)}${op.value ? ` ${esc(op.value)}` : ''}${op.op === 'extract' ? ` → <span class="mono">${esc(op.key || 'text')}</span>` : ''}${op.example ? ` <span class="muted">(例: ${esc(op.example)})</span>` : ''}</li>`).join('')}</ol>
     <div><button type="button" class="tiny" data-unrecord>記録を外す</button></div></div>` : '';
   const check = kind.check ? `<div class="field"><label>完了確認（任意）</label>
     <input data-field="check" class="mono" value="${esc(step.check)}" placeholder="${esc(kind.check.placeholder || '')}">
@@ -793,6 +1017,7 @@ function stepBodyHtml(spec, index) {
     <div class="field"><label>${esc(kind.detail.label)}${kind.detail.required ? '' : '（任意）'}</label><textarea data-field="detail" rows="5" placeholder="${esc(kind.detail.placeholder || '')}">${esc(step.detail)}</textarea>
       <small>毎回変わる値は <code>{{month}}</code> のように入力します。</small></div>
     ${recorded}
+    ${kind.recordable ? extendHtml(step) : ''}
     ${check}
     ${branches}
     <details class="more"><summary>詳細設定</summary><div class="grid2" style="margin-top:8px">
@@ -840,6 +1065,57 @@ function bindEditor(main) {
   if (stepBody && Number.isInteger(state.open)) bindStepBody(stepBody, state.open);
 }
 
+// 修飾の編集。チェックで節を開き、値は step.extend の入れ子に書く。読み取りは recorded の extract に足す。
+function bindExtend(body, step, index) {
+  step.extend = step.extend || {};
+  const defaults = {
+    loop: () => ({ over: '', count: 'n', n: 3, back: 'goto', next: '' }),
+    expect: () => ({ kind: 'visible', target: '', value: '' }),
+    onError: () => ({ item: 'skip', step: 'abort', retries: 1 }),
+  };
+  for (const el of body.querySelectorAll('[data-ext-on]')) {
+    el.addEventListener('change', () => {
+      const key = el.dataset.extOn;
+      if (el.checked) step.extend[key] = defaults[key]();
+      else delete step.extend[key];
+      markDirty();
+      render();
+    });
+  }
+  for (const el of body.querySelectorAll('[data-ext]')) {
+    const [group, field] = el.dataset.ext.split('.');
+    const rerender = el.tagName === 'SELECT';
+    el.addEventListener(rerender ? 'change' : 'input', () => {
+      if (!step.extend[group]) step.extend[group] = defaults[group]();
+      step.extend[group][field] = el.type === 'number' ? Number(el.value) : el.value;
+      markDirty();
+      if (rerender) render(); else refreshHead(index);
+    });
+  }
+  const add = body.querySelector('[data-ext-extract]');
+  if (add) {
+    add.addEventListener('click', () => {
+      const target = body.querySelector('#ext-target').value.trim();
+      const key = body.querySelector('#ext-key').value.trim() || 'text';
+      const mode = body.querySelector('#ext-mode').value;
+      if (!target) { toast('読み取る要素を入力してください'); return; }
+      const role = (/^getByRole\('([a-z]+)'/.exec(target) || [])[1] || '';
+      step.recorded = [...(step.recorded || []), { op: 'extract', target, role, label: '', mode, key }];
+      markDirty();
+      render();
+    });
+  }
+  for (const b of body.querySelectorAll('[data-ext-unextract]')) {
+    b.addEventListener('click', () => {
+      const [target, key] = b.dataset.extUnextract.split('|');
+      const at = step.recorded.findIndex((op) => op.op === 'extract' && op.target === target && (op.key || 'text') === key);
+      if (at >= 0) step.recorded.splice(at, 1);
+      markDirty();
+      render();
+    });
+  }
+}
+
 function bindStep(card) {
   const index = Number(card.dataset.step);
   const head = card.querySelector('.step-head');
@@ -864,11 +1140,12 @@ function bindStepBody(body, index) {
       step.kind = b.dataset.kind;
       if (!next.target) step.target = '';
       if (!next.check) step.check = '';
-      if (!next.recordable) step.recorded = [];
+      if (!next.recordable) { step.recorded = []; step.extend = {}; }
       markDirty();
       render();
     });
   }
+  bindExtend(body, step, index);
   for (const row of body.querySelectorAll('[data-branch]')) {
     const i = Number(row.dataset.branch);
     const outcome = step.outcomes[i];
@@ -1046,6 +1323,7 @@ function openRecord() {
       <button type="button" id="r-stop" class="primary" ${!rec.active || rec.busy ? 'disabled' : ''}>終了して工程を作成</button>
       <span class="small muted">${windows ? (onWindows ? '操作したあとに終えてください。' : 'Windows のアプリは Windows でだけ記録できます。') : '見える形でブラウザが開きます。'}</span></div>
     <p id="r-message" class="msg ${rec.ok ? '' : 'err'}" ${rec.message ? '' : 'hidden'}>${esc(rec.message)}</p>
+    ${rec.active && !windows ? recordPickHtml(rec) : ''}
     <details ${rec.text ? 'open' : ''}><summary>記録を貼り付ける</summary>
       <div class="field" style="margin-top:8px">
         <textarea id="r-text" class="mono" rows="6" placeholder="記録した内容を貼り付けます">${esc(rec.text)}</textarea>
@@ -1057,6 +1335,30 @@ function openRecord() {
   dlg.querySelector('#r-start').addEventListener('click', () => recordingAction('start'));
   dlg.querySelector('#r-stop').addEventListener('click', () => recordingAction('stop'));
   dlg.querySelector('#r-import').addEventListener('click', () => recordingAction('import'));
+  const snap = dlg.querySelector('#r-snapshot');
+  if (snap) snap.addEventListener('click', () => recordingAction('snapshot'));
+  const pick = dlg.querySelector('#r-pick');
+  if (pick) {
+    pick.addEventListener('change', () => { rec.pick.ref = pick.value; });
+    dlg.querySelector('#r-pick-mode').addEventListener('change', (e) => { rec.pick.mode = e.target.value; });
+    dlg.querySelector('#r-pick-key').addEventListener('input', (e) => { rec.pick.key = e.target.value; });
+    dlg.querySelector('#r-extract').addEventListener('click', () => recordingAction('extract'));
+  }
+}
+
+// 記録中に「いま見えている要素」を読み取りとして挿す。要素は snapshot の一覧から選ぶ（ref は残さない）。
+function recordPickHtml(rec) {
+  const pick = rec.pick;
+  const head = `<div class="row"><button type="button" id="r-snapshot" ${rec.busy ? 'disabled' : ''}>いま見えている要素を読み取る</button>
+    <span class="small muted">${rec.extracts ? `読み取り ${rec.extracts} 件を挿しました。` : '記事の本文や表など、後の工程で使う内容を選びます。'}</span></div>`;
+  if (!pick) return head;
+  const label = (c) => `${'　'.repeat(Math.min(c.depth, 6))}${c.role}${c.name ? ` 「${c.name.slice(0, 40)}」` : ''}`;
+  return `${head}<div class="ext-grid" style="margin-top:8px">
+    <div class="field" style="grid-column: 1 / -1"><label>要素（${pick.candidates.length} 件）</label><select id="r-pick" size="8" class="mono">${pick.candidates.map((c) => `<option value="${esc(c.ref)}" ${c.ref === pick.ref ? 'selected' : ''}>${esc(label(c))}</option>`).join('')}</select></div>
+    <div class="field"><label>形</label><select id="r-pick-mode">${options(EXTRACT_MODES, pick.mode)}</select></div>
+    <div class="field"><label>出力名</label><input id="r-pick-key" class="mono" value="${esc(pick.key)}" placeholder="body"></div>
+    <div class="field"><label>&nbsp;</label><button type="button" id="r-extract" class="primary" ${rec.busy ? 'disabled' : ''}>この要素を読み取りにする</button></div>
+  </div>`;
 }
 
 async function recordingAction(action) {
@@ -1067,29 +1369,54 @@ async function recordingAction(action) {
     payload.text = rec.text;
     if (!String(rec.text || '').trim()) { rec.message = '記録を貼り付けてください'; rec.ok = false; openRecord(); return; }
   }
+  if (action === 'extract') {
+    if (!rec.pick || !rec.pick.ref) { rec.message = '読み取る要素を一覧から選んでください'; rec.ok = false; openRecord(); return; }
+    Object.assign(payload, { ref: rec.pick.ref, mode: rec.pick.mode, key: rec.pick.key });
+  }
   rec.busy = true;
   rec.ok = true;
-  rec.message = action === 'start' ? '始めています…' : '工程にしています…';
+  rec.message = { start: '始めています…', snapshot: '画面を読み取っています…', extract: '読み取りを挿しています…' }[action] || '工程にしています…';
   openRecord();
   let res;
   try {
-    res = action === 'start' ? await api.recordingStart(payload) : action === 'stop' ? await api.recordingStop(payload) : await api.recordingImport(payload);
+    res = action === 'start' ? await api.recordingStart(payload)
+      : action === 'stop' ? await api.recordingStop(payload)
+        : action === 'snapshot' ? await api.recordingSnapshot(payload)
+          : action === 'extract' ? await api.recordingExtract(payload)
+            : await api.recordingImport(payload);
   } catch (err) { res = { error: String((err && err.message) || err) }; }
   rec.busy = false;
   if (!res || res.error) {
     rec.message = (res && res.error) || 'うまくいきませんでした';
     rec.ok = false;
-    if (action === 'stop') rec.active = false;
+    if (action === 'stop') { rec.active = false; rec.pick = null; rec.extracts = 0; }
     openRecord();
     return;
   }
   if (action === 'start') {
     rec.active = true;
+    rec.pick = null;
+    rec.extracts = 0;
     rec.message = '操作後に「終了して工程を作成」を押してください。';
     openRecord();
     return;
   }
-  if (action === 'stop') rec.active = false;
+  if (action === 'snapshot') {
+    const candidates = res.candidates || [];
+    const preferred = candidates.find((c) => ['article', 'main', 'table', 'list'].includes(c.role)) || candidates[0];
+    rec.pick = { candidates, ref: preferred ? preferred.ref : '', mode: 'text', key: '' };
+    rec.message = '';
+    openRecord();
+    return;
+  }
+  if (action === 'extract') {
+    rec.extracts = res.extracts || rec.extracts + 1;
+    rec.pick = null;
+    rec.message = `「${res.op && (res.op.label || res.op.target)}」を読み取りにしました。続けて操作できます。`;
+    openRecord();
+    return;
+  }
+  if (action === 'stop') { rec.active = false; rec.pick = null; rec.extracts = 0; }
   if (action === 'import') rec.text = '';
   const spec = state.current.spec;
   const steps = Array.isArray(res.steps) ? res.steps : [];
@@ -1360,19 +1687,29 @@ async function startRun(mode) {
   const run = state.run;
   const machine = selectedExecutionMachine();
   if (!machine) return;
-  run.agent = selectedAgent(run.agent || state.config.agent);
-  if (mode === 'run' && !run.agent) { toast('実行環境で使う AI を確認してください', true); return; }
+  const selected = taskRunExecution();
+  const runAgent = selectedAgent(selected.agent);
+  if (mode === 'run' && !runAgent) { toast('実行環境で使う AI を確認してください', true); return; }
   run.lines = [];
   run.result = null;
   run.error = '';
   run.running = true;
   render();
   const res = await guard('実行', () => api.runStart({
-    root: state.root, machine: machine.machine, mode,
-    agent: run.agent, model: state.config.model || '', parameters: run.parameters,
+    root: state.root, taskId: taskIdentity(machine), machine: machine.machine || '', mode,
+    agent: runAgent, model: selected.model, parameters: run.parameters,
+    skillMode: run.skillMode || (state.config.instructions && state.config.instructions.skillSelection && state.config.instructions.skillSelection.defaultMode) || 'auto',
+    skills: run.skillMode === 'manual' ? run.skills : [],
   }));
   if (!res) { run.running = false; render(); return; }
   run.requestId = res.requestId || '';
+  if (res.skillSelection && Array.isArray(res.skillSelection.selected)) {
+    run.skillPreview = res.skillSelection.selected;
+  }
+  for (const item of Array.isArray(res.executionInformation) ? res.executionInformation : []) {
+    if (item.type === 'skill') appendLog({ kind: item.status === 'error' ? 'stderr' : 'stdout', line: `適用スキル: ${item.title}（${item.detail}）` });
+  }
+  if (res.warning) appendLog({ kind: 'stderr', line: res.warning });
 }
 
 function appendLog(entry) {
@@ -1458,7 +1795,7 @@ async function navigateEmbedded(payload) {
     return;
   }
 
-  if (payload.selected && executionMachines().some((machine) => machine.machine === payload.selected)) {
+  if (payload.selected && executionMachines().some((machine) => taskIdentity(machine) === payload.selected)) {
     if (state.execution.selected !== payload.selected) state.execution.detailTab = 'overview';
     state.execution.selected = payload.selected;
   }

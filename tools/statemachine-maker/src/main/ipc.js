@@ -223,6 +223,10 @@ function registerIpcHandlers(getWindow, options = {}) {
   register('run:log', (p) => agentLoop.readLog({
     root: selectedRoot(p), identity: p.identity, capture: runner.capture,
   }));
+  register('skills:select', async (p) => {
+    if (options.hooks && options.hooks.selectSkills) return options.hooks.selectSkills(p);
+    return { mode: p.mode || 'off', requested: [], selected: [], omitted: [] };
+  });
 
   register('recording:start', (p) => {
     const root = p.root ? selectedRoot(p) : '';
@@ -238,7 +242,11 @@ function registerIpcHandlers(getWindow, options = {}) {
       : recording.recordBrowserStop({ cwd: root, url: p.url, capture: runner.capture });
   });
   register('recording:import', (p) => recording.stepsFromRecording({ source: p.source, text: p.text, url: p.url, app: p.app }));
-  register('recording:state', () => ({ windows: recording.windowsRecordingState() }));
+  register('recording:snapshot', (p) => recording.recordBrowserSnapshot({ cwd: p.root ? selectedRoot(p) : '', capture: runner.capture }));
+  register('recording:extract', (p) => recording.recordBrowserExtract({
+    cwd: p.root ? selectedRoot(p) : '', ref: p.ref, mode: p.mode, key: p.key, capture: runner.capture,
+  }));
+  register('recording:state', () => ({ windows: recording.windowsRecordingState(), browser: recording.browserRecordingState() }));
 
   register('ai:start', async (p, event) => {
     const root = selectedRoot(p);
@@ -296,12 +304,20 @@ function registerIpcHandlers(getWindow, options = {}) {
   // 出力はどちらも行単位で renderer へ流す。
   register('run:start', async (p, event) => {
     const root = selectedRoot(p);
-    const machine = String(p.machine || '');
-    const workflow = path.join(store.machineDir(root, machine), 'workflow.yaml');
+    const taskId = String(p.taskId || p.machine || '');
+    const snapshot = await agentLoop.inspect({ root, capture: runner.capture });
+    const tasks = Array.isArray(snapshot.tasks) ? snapshot.tasks : [];
+    const task = tasks.find((item) => String(item.id || item.machine) === taskId)
+      || (p.machine ? { id: `machine:${p.machine}`, kind: 'statemachine', machine: String(p.machine) } : null);
+    if (!task) throw new Error('実行するタスクが見つかりません');
+    const machine = String(task.machine || '');
+    const workflow = machine ? path.join(store.machineDir(root, machine), 'workflow.yaml') : '';
     const mode = p.mode === 'run' ? 'run' : 'check';
     let command;
     let args;
+    let preparation = {};
     if (mode === 'check') {
+      if (task.kind !== 'statemachine') throw new Error('構成確認はステートマシンのタスクだけで使えます');
       const skillDir = selectedSkillDir(root);
       if (!skillDir) throw new Error('statemachine-use スキルのスクリプトが見つかりません（「実行環境」を確認してください）');
       const py = await pythonFor();
@@ -316,9 +332,16 @@ function registerIpcHandlers(getWindow, options = {}) {
       const parameters = p.parameters && typeof p.parameters === 'object'
         ? p.parameters
         : { ...(p.context && typeof p.context === 'object' ? p.context : {}), ...(p.input ? { input: p.input } : {}) };
-      const spec = agentLoop.runSpec({
-        root, machine, agent,
+      preparation = options.hooks && options.hooks.prepareRun
+        ? await options.hooks.prepareRun({
+          root, task, agent, model: p.model || cfg.model, parameters,
+          skillMode: p.skillMode, selectedSkills: p.skills,
+        })
+        : {};
+      const spec = agentLoop.taskRunSpec({
+        root, task, agent,
         model: p.model || cfg.model, parameters,
+        instruction: preparation.instruction || '',
       });
       command = spec.command;
       args = spec.args;
@@ -338,7 +361,12 @@ function registerIpcHandlers(getWindow, options = {}) {
         stderr,
       }),
     });
-    return { ...started, requestId, mode };
+    return {
+      ...started, requestId, mode,
+      executionInformation: Array.isArray(preparation.information) ? preparation.information : [],
+      skillSelection: preparation.skillSelection || null,
+      warning: String(preparation.warning || ''),
+    };
   });
   register('run:stop', () => runner.stop('run'));
 }
