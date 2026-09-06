@@ -215,9 +215,36 @@ statemachine-makerのadapterからだけ呼ぶ。
 定期実行編集には保存先の2択を先頭に置く。移動時だけコピー／移動を確認し、通常の保存に確認ダイアログを
 追加しない。保存ボタン自身を処理中、成功、失敗へ変化させる。
 
+### 10. 会話開始前後のレイアウトを固定しEnter仮想キーを追加する
+
+対象:
+
+- `tools/agent-app/src/renderer/index.html`
+- `tools/agent-app/src/renderer/styles.css`
+- `tools/agent-app/src/renderer/renderer.js`
+- `tools/agent-app/src/renderer/term.js`
+- `tools/agent-app/test/app.test.js`
+- `tools/agent-app/test/input-mode.test.js`
+
+会話画面の開始前と開始後を同じGrid骨格へ揃える。中央面、履歴行、composerのDOM順を固定し、状態変更では
+中央面の内容と可視性だけを変える。`history-only`によるflex配分の切替を廃止する。
+
+テストを先に追加する。
+
+- 下書き状態とtmux接続後でcomposerのDOM位置とGrid行が変わらない
+- 開始前も入力モード切替の幅と場所が維持され、端末操作だけが無効になる
+- 送信待ち、成功、失敗でcomposer外形が変わらない
+- 狭い高さでは中央面だけが縮む
+- terminal key toolbarにEnterとaria-labelがある
+- Enterが`\r`を一回だけtmuxへ送り、端末モードとフォーカスを維持する
+
+CSSでは中央面を`minmax(0, 1fr)`、履歴行とcomposerを`auto`にし、スクロール領域へ
+`scrollbar-gutter: stable`を指定する。開始前は端末とは別のニュートラルな開始面を同じGridセルに表示する。
+仮想キーボードではEnterをTabより広い主要キーとして追加する。
+
 ## Phase 5: 配布同期と検証
 
-### 10. file dependencyとvendorを同期する
+### 11. file dependencyとvendorを同期する
 
 対象:
 
@@ -228,7 +255,7 @@ statemachine-makerのadapterからだけ呼ぶ。
 statemachine-makerのsourceを正としてagent-appのfile dependencyを更新し、vendorコピーを再生成する。
 `node_modules`を手編集しない。同期後にsourceと配布物のハッシュまたは契約テストを確認する。
 
-### 11. 自動テストを実行する
+### 12. 自動テストを実行する
 
 順序:
 
@@ -244,7 +271,7 @@ statemachine-makerのsourceを正としてagent-appのfile dependencyを更新�
 - 設定保存の失敗系と競合系を含む
 - 実際のtmux/Electronを使う既存統合テストを維持
 
-### 12. Electronスモーク試験を実行する
+### 13. Electronスモーク試験を実行する
 
 fixtureで次を確認する。
 
@@ -256,6 +283,8 @@ fixtureで次を確認する。
 - repository/globalへの保存、未適用表示、コピー、移動
 - 外部編集競合、参照切れ、設定構文エラーから回復できる
 - キーボード操作、狭幅、コンソールエラーなし
+- 会話開始前後で入力欄の位置と寸法が変わらない
+- 仮想EnterでCLIの入力を確定できる
 
 Windows/WSL実機試験はリリース必須条件にしない。パス変換とホスト側比較は自動テストで固定する。
 
