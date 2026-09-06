@@ -130,6 +130,9 @@ test('config.json の主要設定を三つの設定画面から UI コントロ�
   assert.match(html, /name="default-policy"[^>]*value="recommended"/);
   assert.match(html, /name="default-policy"[^>]*value="saving"/);
   assert.match(html, /name="default-policy"[^>]*value="quality"/);
+  assert.match(html, /id="permission-mode"[\s\S]*value="confirm"[\s\S]*value="auto"[\s\S]*value="ask"/);
+  assert.match(html, /id="default-permission-mode"[\s\S]*value="confirm"[\s\S]*value="auto"[\s\S]*value="ask"/);
+  assert.doesNotMatch(html, /id="default-readonly"|id="default-auto-approve"/);
   assert.match(html, /id="max-concurrent"[^>]*min="1"[^>]*max="8"/);
   assert.match(html, /id="settings-save"/);
   assert.doesNotMatch(html, /id="config-json"|設定JSON/);
@@ -458,6 +461,8 @@ test('argv: 対話起動は interactive 節から組み、プロンプトを含�
   const first = agentCli.interactiveCmd(claude, { model: 'M' });
   assert.deepStrictEqual(first.argv, ['claude', '--session-id', first.mintedSession, '--model', 'M']);
   assert.ok(!first.argv.includes('--dangerously-skip-permissions'));
+  const approved = agentCli.interactiveCmd(claude, { model: 'M', autoApprove: true });
+  assert.ok(approved.argv.includes('--dangerously-skip-permissions'));
   const ro = agentCli.interactiveCmd(claude, { readonly: true, cliSession: 'S' });
   assert.deepStrictEqual(ro.argv, ['claude', '--resume', 'S', '--permission-mode', 'plan']);
   assert.strictEqual(ro.mintedSession, '');
@@ -503,19 +508,19 @@ test('応答から端末の装飾と kiro の入力欄を剥がす', () => {
   try { ipc = require('../src/main/ipc'); } finally { Module._load = orig; }
   assert.strictEqual(ipc.cleanAnswer('\x1b[38;5;141m> \x1b[0mみかん\n\x1b[?25h'), 'みかん');
   // ターンの起動条件は画面から届いたものが勝ち、無ければ会話の既定
-  const sess = { cli: 'claude', model: 'm1', readonly: false };
-  assert.deepStrictEqual(ipc.turnSpec(sess, { prompt: ' p ' }), { cli: 'claude', model: 'm1', readonly: false, text: 'p' });
-  assert.deepStrictEqual(ipc.turnSpec(sess, { prompt: 'p', cli: 'Codex', model: '', readonly: true }), { cli: 'codex', model: '', readonly: true, text: 'p' });
+  const sess = { cli: 'claude', model: 'm1', readonly: false, autoApprove: false };
+  assert.deepStrictEqual(ipc.turnSpec(sess, { prompt: ' p ' }), { cli: 'claude', model: 'm1', readonly: false, autoApprove: false, text: 'p' });
+  assert.deepStrictEqual(ipc.turnSpec(sess, { prompt: 'p', cli: 'Codex', model: '', readonly: true, autoApprove: true }), { cli: 'codex', model: '', readonly: true, autoApprove: true, text: 'p' });
   assert.throws(() => ipc.turnSpec(sess, { prompt: ' ' }), /空/);
   assert.strictEqual(ipc.turnSpec(sess, { prompt: '', attachments: [{ rel: 'a' }] }).text, '', '添付だけの依頼は通す');
   const config = settings.normalize({});
   config.execution.tiers.small = { cli: 'codex', model: 'small-model' };
   assert.deepStrictEqual(ipc.executionSpec(sess, { prompt: ' p ', policy: 'saving' }, config), {
-    cli: 'codex', model: 'small-model', readonly: false, text: 'p',
+    cli: 'codex', model: 'small-model', readonly: false, autoApprove: false, text: 'p',
     policy: 'saving', tier: 'small', source: 'policy',
   });
   assert.deepStrictEqual(ipc.executionSpec(sess, { prompt: 'p', policy: 'direct', cli: 'kiro', model: 'm2', readonly: true }, config), {
-    cli: 'kiro', model: 'm2', readonly: true, text: 'p',
+    cli: 'kiro', model: 'm2', readonly: true, autoApprove: false, text: 'p',
     policy: 'direct', tier: '', source: 'direct',
   });
   assert.ok(ipc.sameLaunch({ cli: 'a', model: '', readonly: false }, { cli: 'a', readonly: 0 }));

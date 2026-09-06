@@ -286,7 +286,7 @@ function turnCmd(spec, { prompt, model = '', readonly = false, cliSession = '', 
 //   組み立て: interactive.command + [continue|resume] + (write_args | readonly_args) + model_flag model
 //   再開の作法はヘッドレスと同じ SESSION 表（claude / copilot は UUID を発行して --session-id）。
 //   tmux セッションが生きている限り CLI 自身が会話を保つので、resume が要るのは起動し直すときだけ。
-function interactiveCmd(spec, { model = '', readonly = false, cliSession = '', history = [] } = {}) {
+function interactiveCmd(spec, { model = '', readonly = false, autoApprove = false, cliSession = '', history = [] } = {}) {
   const inter = spec.interactive;
   if (!inter) throw new Error(`${spec.name} は対話起動（interactive）の定義を持ちません`);
   const vars = { model: String(model || spec.defaultModel || ''), session: cliSession };
@@ -317,7 +317,8 @@ function interactiveCmd(spec, { model = '', readonly = false, cliSession = '', h
   }
   let argv = expand(inter.command, vars, holder);
   argv = insertAfterSubcommand(argv, expand(frag, vars, holder));
-  argv = argv.concat(expand(readonly ? inter.readonlyArgs : inter.writeArgs, vars, holder));
+  const permissionArgs = readonly ? inter.readonlyArgs : (autoApprove ? spec.writeArgs : inter.writeArgs);
+  argv = argv.concat(expand(permissionArgs, vars, holder));
   if (vars.model && spec.modelFlag && !inter.command.some((t) => t.includes('{model}'))) argv.push(spec.modelFlag, vars.model);
   return {
     argv, mintedSession, resumed, env: spec.env, warning,
