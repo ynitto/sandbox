@@ -222,7 +222,7 @@ test('設定は三領域とリポジトリごとの最後のタスク・ワー�
   assert.deepStrictEqual(config.lastWorkflow, { '/repo/a': 'parallel-review' });
 });
 
-test('領域切替はタスクとワークフローを独立してフレームへ伝える', () => {
+test('領域切替はタスクとワークフローを独立して共有編集面へ伝える', () => {
   const renderer = fs.readFileSync(path.join(SRC, 'renderer/renderer.js'), 'utf8');
   assert.match(renderer, /AgentNavigation\.normalizeArea/);
   assert.match(renderer, /\$\('area-tasks'\)\.onclick\s*=\s*\(\)\s*=>\s*showArea\('tasks'\)/);
@@ -231,14 +231,14 @@ test('領域切替はタスクとワークフローを独立してフレーム�
   assert.doesNotMatch(renderer, /\$\('area-automation'\)/);
 });
 
-test('埋め込み画面は親の領域選択に従い、独自のフォルダと主要タブを表示しない', () => {
+test('共有編集面は親の領域選択に従い、独自のフォルダと主要タブを表示しない', () => {
   const renderer = fs.readFileSync(path.join(__dirname, '..', '..', 'statemachine-maker', 'src', 'renderer', 'renderer.js'), 'utf8');
-  const css = fs.readFileSync(path.join(SRC, 'renderer/automation-frame.css'), 'utf8');
-  assert.match(renderer, /agent-app:navigate/);
+  const css = fs.readFileSync(path.join(SRC, 'renderer/automation-workbench.css'), 'utf8');
+  assert.match(renderer, /workbenchHost\.setController\(\{ navigate: navigateEmbedded \}\)/);
   assert.match(renderer, /state\.homeTab = 'flows'/);
   assert.match(renderer, /state\.homeTab = teachesTask \? 'teach' : 'run'/);
-  assert.match(css, /body\.embedded \.folder-pane[\s\S]*display:\s*none/);
-  assert.match(css, /body\.embedded \.home-tabs[\s\S]*display:\s*none/);
+  assert.match(css, /:host \.folder-pane[\s\S]*display:\s*none/);
+  assert.match(css, /:host \.home-tabs[\s\S]*display:\s*none/);
 });
 
 test('タスク詳細は概要・手順・履歴に分かれ、定期実行は概要で管理する', () => {
@@ -269,12 +269,11 @@ test('タスク詳細は概要・手順・履歴に分かれ、定期実行は�
 });
 
 test('埋め込み時の名称は自動化や AI ワークフローではなく三領域の語彙に揃える', () => {
-  const frame = fs.readFileSync(path.join(SRC, 'renderer/automation-frame.html'), 'utf8');
   const shell = fs.readFileSync(path.join(SRC, 'renderer/index.html'), 'utf8');
   const flow = fs.readFileSync(path.join(__dirname, '..', '..', 'statemachine-maker', 'src', 'renderer', 'flow.js'), 'utf8');
   const renderer = fs.readFileSync(path.join(__dirname, '..', '..', 'statemachine-maker', 'src', 'renderer', 'renderer.js'), 'utf8');
-  assert.doesNotMatch(`${frame}\n${shell}`, />自動化</);
-  assert.match(frame, /<span class="brand">タスク<\/span>/);
+  assert.doesNotMatch(shell, />自動化</);
+  assert.match(shell, /<statemachine-workbench/);
   assert.match(flow, /const featureName = ctx\.name \|\| 'AIワークフロー'/);
   assert.match(renderer, /name:\s*embedded \? 'ワークフロー' : 'AIワークフロー'/);
 });
@@ -285,13 +284,24 @@ test('タスクとワークフローの変更は親の一覧へ通知して再�
   const flow = fs.readFileSync(path.join(__dirname, '..', '..', 'statemachine-maker', 'src', 'renderer', 'flow.js'), 'utf8');
   assert.match(maker, /type:\s*'agent-app:changed'/);
   assert.match(flow, /ctx\.changed\('workflows'/);
-  assert.match(shell, /event\.source !== frame\.contentWindow/);
+  assert.match(shell, /statemachine:changed/);
+  assert.match(shell, /handleAutomationEvent\(event\.detail\)/);
   assert.match(shell, /payload\.type !== 'agent-app:changed'[\s\S]*loadAreaItems\(\)/);
 });
 
 test('領域一覧の新規ワークフロー操作は選択中の項目を編集しない', () => {
   const flow = fs.readFileSync(path.join(__dirname, '..', '..', 'statemachine-maker', 'src', 'renderer', 'flow.js'), 'utf8');
-  assert.match(flow, /function create\(\)\s*{\s*view\.workflow = null;\s*startEditor\(null, false\);/);
+  assert.match(flow, /function create\(\)\s*{\s*view\.workflow = null;\s*view\.creatingTeaching = true;/);
+  assert.match(flow, /data-flow-manual-new/);
+});
+
+test('ワークフロー教示と差し戻しは通常のDAG依存から分離して表示する', () => {
+  const flow = fs.readFileSync(path.join(__dirname, '..', '..', 'statemachine-maker', 'src', 'renderer', 'flow.js'), 'utf8');
+  assert.match(flow, /mode:\s*'flow-teach'/);
+  assert.match(flow, /data-flow-teaching-trial/);
+  assert.match(flow, /data-flow-teaching-confirm/);
+  assert.match(flow, /flow-rework-lane/);
+  assert.match(flow, /差し戻し/);
 });
 
 test('preload の窓口と ipc のチャネルが 1 対 1', () => {
@@ -309,7 +319,6 @@ test('preload の窓口と ipc のチャネルが 1 対 1', () => {
 test('index.html が読むスクリプトは vendor.js が写すものと画面のもので揃う', () => {
   const html = [
     fs.readFileSync(path.join(SRC, 'renderer/index.html'), 'utf8'),
-    fs.readFileSync(path.join(SRC, 'renderer/automation-frame.html'), 'utf8'),
   ].join('\n');
   const vendor = require('../scripts/vendor');
   const names = new Set(vendor.FILES.map(([, name]) => name));
@@ -339,14 +348,17 @@ test('自動化は agent-app の登録リポジトリと設定を共有する', 
   });
 });
 
-test('自動化フレームは親画面の preload API へ接続する', () => {
-  const renderer = fs.readFileSync(path.join(SRC, 'renderer/vendor/statemachine/renderer.js'), 'utf8');
-  assert.match(renderer, /window\.parent\.api\.automation/);
-  assert.doesNotMatch(renderer, /window\.parent\.automationBridge/);
+test('共有編集面は明示的な Host Adapter で agent-app の preload API へ接続する', () => {
+  const shell = fs.readFileSync(path.join(SRC, 'renderer/index.html'), 'utf8');
+  const host = fs.readFileSync(path.join(__dirname, '..', '..', 'statemachine-maker', 'src', 'renderer', 'editor-host.js'), 'utf8');
+  const vendor = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'vendor.js'), 'utf8');
+  assert.match(shell, /vendor\/statemachine\/editor-host\.js/);
+  assert.match(host, /target\.parent\.api\.automation/);
+  assert.doesNotMatch(vendor, /replace\(\/\\bapi/);
 });
 
-test('自動化フレームへ AI ワークフローの画面と IPC を同じ境界で載せる', () => {
-  const html = fs.readFileSync(path.join(SRC, 'renderer/automation-frame.html'), 'utf8');
+test('共有編集面へ AI ワークフローの画面と IPC を同じ境界で載せる', () => {
+  const html = fs.readFileSync(path.join(SRC, 'renderer/index.html'), 'utf8');
   const preload = fs.readFileSync(path.join(SRC, 'preload.js'), 'utf8');
   const flow = fs.readFileSync(path.join(SRC, 'renderer/vendor/statemachine/flow.js'), 'utf8');
   assert.ok(html.includes('vendor/statemachine/flow.js'));

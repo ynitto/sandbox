@@ -55,6 +55,65 @@ class PlanStrategyUserTests(unittest.TestCase):
             _plan([{"id": "a", "goal": "g"}], evaluate=True), "r")
         self.assertTrue(strategy["user_plan_evaluate"])
 
+    def test_rework_policy_is_kept_outside_dag_dependencies(self):
+        plan = _plan([
+            {"id": "draft", "goal": "案を作る", "kind": "generate"},
+            {"id": "review", "goal": "確認", "kind": "human", "deps": ["draft"],
+             "interaction": {"mode": "approval", "prompt": "進めますか"}},
+        ], rework=[{
+            "id": "review-back", "from": "review", "to": "draft",
+            "trigger": "human-rejected", "instruction": "指摘を反映する",
+            "max_iterations": 2, "on_exhausted": "human",
+        }])
+        strategy, tasks = kf.plan_strategy_user(plan, "r")
+        self.assertEqual(strategy["rework"][0]["id"], "review-back")
+        self.assertEqual(next(t for t in tasks if t["id"] == "review")["deps"], ["draft"])
+
+    def test_rework_policy_replaces_path_without_creating_a_cycle(self):
+        strategy, tasks = kf.plan_strategy_user(_plan([
+            {"id": "draft", "goal": "案を作る", "kind": "generate"},
+            {"id": "review", "goal": "確認", "kind": "human", "deps": ["draft"],
+             "interaction": {"mode": "approval", "prompt": "進めますか"}},
+        ], rework=[{
+            "id": "review-back", "from": "review", "to": "draft",
+            "trigger": "human-rejected", "instruction": "指摘を反映する",
+            "max_iterations": 2, "on_exhausted": "human",
+        }]), "r")
+        nodes = {task["id"]: kf._node_entry(task) for task in tasks}
+        decision, replacements, reason = kf._rework_decision(
+            strategy, nodes,
+            {"draft": {"status": "done", "output": "old"},
+             "review": {"status": "failed", "data": {"outcome": "rejected", "comment": "具体例を追加"}}},
+            0)
+        self.assertEqual(decision, "replan")
+        self.assertEqual([task["replaces"] for task in replacements], ["draft", "review"])
+        self.assertEqual(replacements[1]["deps"], [replacements[0]["id"]])
+        self.assertIn("具体例を追加", replacements[0]["goal"])
+        self.assertNotIn(replacements[1]["id"], replacements[0]["deps"])
+        self.assertIn("review-back", reason)
+
+    def test_verification_rework_stops_at_its_own_limit(self):
+        strategy, tasks = kf.plan_strategy_user(_plan([
+            {"id": "build", "goal": "実装", "kind": "work"},
+            {"id": "verify", "goal": "検証", "kind": "verify", "deps": ["build"]},
+        ], rework=[{
+            "id": "verify-back", "from": "verify", "to": "build",
+            "trigger": "verification-failed", "instruction": "失敗を修正する",
+            "max_iterations": 1, "on_exhausted": "fail",
+        }]), "r")
+        nodes = {task["id"]: kf._node_entry(task) for task in tasks}
+        first = kf._rework_decision(strategy, nodes, {
+            "build": {"status": "done"},
+            "verify": {"status": "done", "output": "verify=fail", "data": {"ok": False}},
+        }, 0)
+        self.assertEqual(first[0], "replan")
+        self.assertEqual(strategy["rework_attempts"]["verify-back"], 1)
+        stopped = kf._rework_decision(strategy, nodes, {
+            "verify": {"status": "failed", "output": "still red"},
+        }, 1)
+        self.assertEqual(stopped[0], "failed")
+        self.assertIn("上限", stopped[2])
+
     def test_agent_model_optional(self):
         _, tasks = kf.plan_strategy_user(
             _plan([{"id": "a", "goal": "g", "agent": {"agent_cli": "codex"}}]), "r")
@@ -128,6 +187,18 @@ class PlanStrategyUserTests(unittest.TestCase):
             "retries 非数値": (_plan([{"id": "a", "goal": "g", "retries": "abc"}]), "r"),
             "split への静的依存": (_plan([{"id": "s", "goal": "g", "kind": "split"},
                                           {"id": "b", "goal": "h", "deps": ["s"]}]), "r"),
+            "差し戻し先が前工程でない": (_plan([
+                {"id": "draft", "goal": "g"},
+                {"id": "review", "goal": "h", "kind": "human", "deps": ["draft"],
+                 "interaction": {"mode": "approval", "prompt": "確認"}},
+            ], rework=[{"id": "r", "from": "draft", "to": "review", "trigger": "human-rejected",
+                       "instruction": "戻す", "max_iterations": 1, "on_exhausted": "fail"}]), "r"),
+            "差し戻し回数なし": (_plan([
+                {"id": "draft", "goal": "g"},
+                {"id": "review", "goal": "h", "kind": "human", "deps": ["draft"],
+                 "interaction": {"mode": "approval", "prompt": "確認"}},
+            ], rework=[{"id": "r", "from": "review", "to": "draft", "trigger": "human-rejected",
+                       "instruction": "戻す", "max_iterations": 0, "on_exhausted": "fail"}]), "r"),
         }
         for label, (plan, req) in cases.items():
             with self.assertRaises(kf.UserPlanError, msg=label):

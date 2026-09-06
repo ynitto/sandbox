@@ -44,13 +44,13 @@ test('renderer は preload が window へ置いた名前を宣言し直さない
   }
 });
 
-test('renderer が使う api.* は preload にあり、その IPC チャネルを main が受ける', () => {
+test('renderer が使う automationHost.* は preload にあり、その IPC チャネルを main が受ける', () => {
   const preload = read('preload.js');
   const renderer = read('renderer/renderer.js');
   const ipc = read('main/ipc.js');
   const exposedKeys = new Set([...preload.matchAll(/^\s{2}(\w+): /gm)].map((m) => m[1]));
-  for (const m of renderer.matchAll(/\bapi\.(\w+)\(/g)) {
-    assert.ok(exposedKeys.has(m[1]), `preload に無い api: ${m[1]}`);
+  for (const m of renderer.matchAll(/\bautomationHost\.(\w+)\(/g)) {
+    assert.ok(exposedKeys.has(m[1]), `preload に無い automationHost: ${m[1]}`);
   }
   for (const m of preload.matchAll(/invoke\('([\w:]+)'/g)) {
     assert.ok(ipc.includes(`register('${m[1]}'`), `ipc.js が受けないチャネル: ${m[1]}`);
@@ -65,4 +65,14 @@ test('教示セッションの一覧・作成・保存・利用可能化を安�
     assert.ok(ipc.includes(`register('${channel}'`), `ipc に無いチャネル: ${channel}`);
   }
   assert.ok(ipc.includes('selectedRoot(p)'), '登録済みフォルダの境界を通す');
+});
+
+test('agent-flow教示も作成・試運転記録・利用可能化を安全なIPCだけで公開する', () => {
+  const preload = read('preload.js');
+  const ipc = read('main/ipc.js');
+  for (const channel of ['flow:teaching:list', 'flow:teaching:create', 'flow:teaching:read', 'flow:teaching:save', 'flow:teaching:trial', 'flow:teaching:confirm']) {
+    assert.ok(preload.includes(`invoke('${channel}'`), `preload に無いチャネル: ${channel}`);
+    assert.ok(ipc.includes(`register('${channel}'`), `ipc に無いチャネル: ${channel}`);
+  }
+  assert.ok(ipc.includes("mode === 'flow-teach'"), 'agent-flow 教示用のAIモードがない');
 });

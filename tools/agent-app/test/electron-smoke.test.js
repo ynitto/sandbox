@@ -133,10 +133,8 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     await win.click('#settings-close');
 
     await win.click('#area-tasks');
-    await win.waitForFunction(() => document.getElementById('automation-frame').getAttribute('src') !== 'about:blank');
-
-    const workspace = win.frameLocator('#automation-frame');
-    await win.locator('#tasks li').first().waitFor({ timeout: 20000 });
+    const workspace = win.locator('#automation-workbench');
+    await win.locator('#tasks .list-pick').first().waitFor({ timeout: 20000 });
     assert.strictEqual(await win.locator('#tasks .list-pick').count(), 1, `タスク一覧を取得できない: ${await win.locator('#tasks').textContent()} / ${errors.join(' | ')}`);
     assert.match(await win.locator('#tasks').textContent(), /リリース確認/);
     await workspace.locator('.teaching-page').waitFor({ timeout: 20000 });
@@ -193,9 +191,9 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     assert.strictEqual(await workspace.locator('[data-flow-start]').count(), 0, '編集時に実行フォームを重ねて出さない');
     await workspace.locator('[data-flow-close-editor]').click();
     await win.click('#session-new');
-    await workspace.locator('.flow-editor').waitFor();
-    assert.match(await workspace.locator('.flow-editor h2').textContent(), /新しく作る/);
-    await workspace.locator('[data-flow-close-editor]').click();
+    await workspace.locator('.teaching-create').waitFor();
+    assert.match(await workspace.locator('.teaching-create').textContent(), /新しいワークフローを教える/);
+    await workspace.locator('[data-flow-teaching-cancel]').click();
     if (process.env.AGENT_APP_FLOW_SCREENSHOT) {
       await win.screenshot({ path: process.env.AGENT_APP_FLOW_SCREENSHOT });
     }
@@ -203,7 +201,7 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
       await win.screenshot({ path: process.env.AGENT_APP_AUTOMATION_SCREENSHOT });
     }
     await win.click('#area-work');
-    assert.strictEqual(await win.locator('#main').isVisible(), true, '会話画面へ戻れない');
+    assert.strictEqual(await win.locator('body > #app > #main').isVisible(), true, '会話画面へ戻れない');
     assert.deepStrictEqual(errors, [], '画面でエラーが発生した');
   } finally {
     await electron.close();

@@ -56,3 +56,29 @@ test('予約済みの実行変数と未入力パラメータを明示する', ()
   assert.ok(result.issues.some((item) => item.code === 'parameter-reserved'));
   assert.ok(result.issues.some((item) => item.code === 'goal-has-unfilled-parameter' && item.message.includes('target')));
 });
+
+test('差し戻しは循環依存にせず有限の再作業ポリシーとして plan へ渡す', () => {
+  const raw = workflow({ rework: [{
+    id: 'review-back', from: 'check', to: 'draft', trigger: 'human-rejected',
+    instruction: '指摘を反映して案を作り直す', maxIterations: 2, onExhausted: 'human',
+  }] });
+  const result = flow.preview(raw);
+  assert.strictEqual(result.ok, true);
+  assert.deepStrictEqual(result.workflow.nodes[1].deps, ['draft']);
+  assert.deepStrictEqual(result.plan.rework, [{
+    id: 'review-back', from: 'check', to: 'draft', trigger: 'human-rejected',
+    instruction: '指摘を反映して案を作り直す', max_iterations: 2, on_exhausted: 'human',
+  }]);
+  assert.ok(result.digest);
+});
+
+test('差し戻しの向き・きっかけ・回数が不正なら保存候補にしない', () => {
+  const result = flow.preview(workflow({ rework: [
+    { id: 'forward', from: 'draft', to: 'check', trigger: 'human-rejected', instruction: '戻す', maxIterations: 1, onExhausted: 'human' },
+    { id: 'zero', from: 'check', to: 'draft', trigger: 'verification-failed', instruction: '', maxIterations: 0, onExhausted: 'unknown' },
+  ] }));
+  const codes = new Set(result.issues.map((item) => item.code));
+  for (const code of ['rework-not-backward', 'rework-trigger-mismatch', 'rework-instruction-required', 'rework-limit-invalid', 'rework-exhausted-invalid']) assert.ok(codes.has(code), code);
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.workflow, null);
+});

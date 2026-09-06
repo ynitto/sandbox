@@ -213,7 +213,8 @@
     </main>
 
     <section id="automation" aria-label="タスクとワークフロー" hidden>
-      <iframe id="automation-frame" title="タスクとワークフロー" data-src="automation-frame.html" src="about:blank"></iframe>
+      <statemachine-workbench id="automation-workbench" data-statemachine-workbench embedded
+        stylesheet="vendor/statemachine/styles.css" host-stylesheet="automation-workbench.css"></statemachine-workbench>
     </section>
 
     <aside id="changes" hidden>
@@ -327,6 +328,11 @@
   <script src="files.js"></script>
   <script src="navigation.js"></script>
   <script src="taskIntent.js"></script>
+  <script src="vendor/statemachine/workbench-element.js"></script>
+  <script src="vendor/statemachine/editor-host.js"></script>
+  <script src="vendor/statemachine/teaching.js"></script>
+  <script src="vendor/statemachine/flow.js"></script>
+  <script src="vendor/statemachine/renderer.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>

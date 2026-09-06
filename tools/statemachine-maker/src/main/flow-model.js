@@ -28,6 +28,8 @@ const KIND_INFOS = [
   constraints: { dependable, needsInteraction: kind === 'human' },
 }));
 const VALID_KINDS = new Set(KIND_INFOS.map((item) => item.kind));
+const REWORK_TRIGGERS = new Set(['human-rejected', 'verification-failed']);
+const REWORK_EXHAUSTED = new Set(['human', 'fail', 'continue']);
 
 function issue(issues, code, message, path, nodeId, level = 'error') {
   issues.push({ level, code, message, path, ...(nodeId ? { nodeId } : {}) });
@@ -133,6 +135,37 @@ function normalize(raw) {
     visited.add(node.id);
   }
   nodes.forEach(visit);
+  const reworkSeen = new Set();
+  const reaches = (from, target, seen = new Set()) => {
+    if (from === target) return true;
+    if (seen.has(from)) return false;
+    seen.add(from);
+    return (byId.get(from)?.deps || []).some((dep) => reaches(dep, target, seen));
+  };
+  const rework = (Array.isArray(src.rework) ? src.rework : []).map((value, index) => {
+    const item = plainObject(value) ? value : {};
+    const path = `rework[${index}]`;
+    const id = String(item.id || `rework_${index + 1}`).trim();
+    const from = String(item.from || '').trim();
+    const to = String(item.to || '').trim();
+    const trigger = String(item.trigger || '').trim();
+    const instruction = String(item.instruction || '').trim();
+    const maxIterations = Number(item.maxIterations ?? item.max_iterations);
+    const onExhausted = String(item.onExhausted || item.on_exhausted || '').trim();
+    if (!ID_RE.test(id) || reworkSeen.has(id)) issue(issues, 'rework-id-invalid', '差し戻しの保存名を見直してください', `${path}.id`);
+    reworkSeen.add(id);
+    if (!byId.has(from) || !byId.has(to)) issue(issues, 'rework-node-unknown', '差し戻し元または戻り先が見つかりません', path);
+    else if (from === to || !reaches(from, to)) issue(issues, 'rework-not-backward', '戻り先は前の工程から選んでください', `${path}.to`, from);
+    if (!REWORK_TRIGGERS.has(trigger)) issue(issues, 'rework-trigger-invalid', '差し戻す条件を選んでください', `${path}.trigger`, from);
+    if ((trigger === 'human-rejected' && byId.get(from)?.kind !== 'human')
+      || (trigger === 'verification-failed' && byId.get(from)?.kind !== 'verify')) {
+      issue(issues, 'rework-trigger-mismatch', '工程の種類に合う差し戻し条件を選んでください', `${path}.trigger`, from);
+    }
+    if (!instruction) issue(issues, 'rework-instruction-required', '差し戻すときの指示を入力してください', `${path}.instruction`, from);
+    if (!Number.isInteger(maxIterations) || maxIterations < 1 || maxIterations > 20) issue(issues, 'rework-limit-invalid', 'やり直す回数は1〜20回で入力してください', `${path}.maxIterations`, from);
+    if (!REWORK_EXHAUSTED.has(onExhausted)) issue(issues, 'rework-exhausted-invalid', '上限に達した後の動作を選んでください', `${path}.onExhausted`, from);
+    return { id, from, to, trigger, instruction, maxIterations, onExhausted };
+  });
   const used = new Set(nodes.flatMap((node) => node.deps));
   const now = new Date().toISOString();
   return {
@@ -145,6 +178,7 @@ function normalize(raw) {
       entry: nodes.filter((node) => !node.deps.length).map((node) => node.id).filter(Boolean),
       exit: nodes.filter((node) => !used.has(node.id)).map((node) => node.id).filter(Boolean),
       nodes,
+      ...(rework.length ? { rework } : {}),
       createdAt: String(src.createdAt || now),
       updatedAt: String(src.updatedAt || now),
     },
@@ -166,6 +200,7 @@ function definition(workflow) {
       ...(node.kind !== 'human' ? { tier: 'auto' } : {}),
       ...(node.interaction ? { interaction: node.interaction } : {}),
     })),
+    ...(workflow.rework?.length ? { rework: workflow.rework } : {}),
   };
 }
 
@@ -183,6 +218,11 @@ function planOf(workflow, values = {}) {
       deps: [...node.deps],
       ...(node.interaction ? { interaction: node.interaction } : {}),
     })),
+    ...(workflow.rework?.length ? { rework: workflow.rework.map((item) => ({
+      id: item.id, from: item.from, to: item.to, trigger: item.trigger,
+      instruction: item.instruction, max_iterations: item.maxIterations,
+      on_exhausted: item.onExhausted,
+    })) } : {}),
   };
 }
 
@@ -216,4 +256,4 @@ function preview(raw, request, rawParameters) {
   };
 }
 
-module.exports = { ID_RE, MAX_NODES, KIND_INFOS, VALID_KINDS, normalize, preview, planOf, digest, definition };
+module.exports = { ID_RE, MAX_NODES, KIND_INFOS, VALID_KINDS, REWORK_TRIGGERS, REWORK_EXHAUSTED, normalize, preview, planOf, digest, definition };

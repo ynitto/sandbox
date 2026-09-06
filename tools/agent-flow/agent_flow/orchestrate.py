@@ -128,6 +128,79 @@ def _env_failure_reason(results: dict) -> "str | None":
     return None
 
 
+def _rework_decision(strategy: dict, nodes: dict, results: dict, iteration: int):
+    """有限の差し戻しポリシーを、循環辺ではなく置換ノード列へ展開する。"""
+    policies = (strategy or {}).get("rework") or []
+    attempts = (strategy or {}).setdefault("rework_attempts", {})
+    exhausted = set((strategy or {}).get("rework_exhausted") or [])
+
+    def ancestors(nid, seen=None):
+        seen = set() if seen is None else seen
+        if nid in seen or nid not in nodes:
+            return seen
+        seen.add(nid)
+        for dep in nodes[nid].get("deps", []):
+            ancestors(dep, seen)
+        return seen
+
+    for policy in policies:
+        pid, source = str(policy.get("id") or ""), str(policy.get("from") or "")
+        if not pid or pid in exhausted or source not in nodes:
+            continue
+        result = results.get(source) or {}
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        trigger = policy.get("trigger")
+        fired = (trigger == "human-rejected" and result.get("status") == "failed"
+                 and data.get("outcome") == "rejected")
+        if trigger == "verification-failed":
+            fired = result.get("status") == "failed" or (
+                result.get("status") == "done"
+                and not _normalize_verify(str(result.get("output") or ""), data).get("ok"))
+        if not fired:
+            continue
+        count = int(attempts.get(pid) or 0)
+        limit = int(policy.get("max_iterations") or 0)
+        feedback = str(data.get("comment") or data.get("guidance")
+                       or result.get("output") or "指摘内容なし").strip()
+        if count >= limit:
+            behavior = policy.get("on_exhausted")
+            if behavior == "fail":
+                return "failed", [], f"差し戻し {pid} が上限（{limit} 回）に達しました"
+            attempts[pid] = count
+            exhausted.add(pid)
+            strategy["rework_exhausted"] = sorted(exhausted)
+            replacement = dict(nodes[source])
+            replacement_id = f"{source}-exhausted-{iteration + 1}"
+            replacement.update({"id": replacement_id, "replaces": source})
+            if behavior == "human":
+                replacement["kind"] = "human"
+                replacement["goal"] = f"差し戻し上限に達しました。続行可否を判断してください。\n最後の指摘: {feedback}"
+                replacement["interaction"] = {"mode": "approval", "prompt": "この成果で続行しますか", "audience": ["reviewer"]}
+            else:
+                replacement["kind"] = "work"
+                replacement["goal"] = f"差し戻し上限に達したため、現在の成果を採用して後続へ渡す。\n最後の指摘: {feedback}"
+                replacement.pop("interaction", None)
+            return "replan", [replacement], f"差し戻し {pid} の上限到達: {behavior}"
+
+        target = str(policy.get("to") or "")
+        source_ancestors = ancestors(source)
+        affected = [nid for nid in nodes if target in ancestors(nid) and nid in source_ancestors]
+        count += 1
+        attempts[pid] = count
+        new_ids = {nid: f"{nid}-rework-{count}" for nid in affected}
+        replacements = []
+        for nid in affected:
+            task = dict(nodes[nid])
+            task.update({"id": new_ids[nid], "replaces": nid})
+            task["deps"] = [new_ids.get(dep, dep) for dep in task.get("deps", [])]
+            if nid == target:
+                task["goal"] = (f"{task.get('goal', '')}\n\n差し戻し指示: {policy.get('instruction')}"
+                                f"\n今回の指摘: {feedback}")
+            replacements.append(task)
+        return "replan", replacements, f"差し戻し {pid} #{count}: {source} → {target}"
+    return None
+
+
 def _continue(args, bus, request, nodes, results, iteration, strategy=None):
     # 失敗トリアージ: 実行制御・環境要因の失敗が 1 つでもあれば再計画せず打ち切る。
     # planner（stub/エージェント）に依らず先に判定する（LLM 評価も同じ環境で失敗するため）。
@@ -138,6 +211,9 @@ def _continue(args, bus, request, nodes, results, iteration, strategy=None):
     # 失敗ノードは正直に failed で返す（resume が失敗ノードを pending へ戻すので、
     # 再実行の口は従来どおり残る）。plan.evaluate: true で従来の継続判断に載る。
     strat = strategy or {}
+    rework = _rework_decision(strat, nodes, results, iteration)
+    if rework:
+        return rework
     if strat.get("user_plan") and not strat.get("user_plan_evaluate"):
         # データ駆動 fan-out（split → map/reduce）だけは機械展開（LLM 無し）なので、
         # 「評価役の再計画でノードを足さない」原則の対象外。plan_strategy_user が split への
@@ -691,6 +767,11 @@ def cmd_orchestrate(args) -> int:
                 if old and old in graph["nodes"]:
                     for n in graph["nodes"].values():
                         n["deps"] = [t["id"] if d == old else d for d in n.get("deps", [])]
+                    for policy in (graph.get("strategy") or {}).get("rework", []):
+                        if policy.get("from") == old:
+                            policy["from"] = t["id"]
+                        if policy.get("to") == old:
+                            policy["to"] = t["id"]
                     del graph["nodes"][old]
             _sanitize_graph(graph["nodes"])  # 追加で混入した未知依存・循環を弾く
             graph["iteration"] = iteration

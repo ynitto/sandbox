@@ -247,7 +247,7 @@ function renderWorkflowItems() {
     const pick = el('button', 'list-pick');
     const body = el('span', 'grow');
     body.append(el('div', '', workflow.name || workflow.id));
-    body.append(el('div', 'sub', `${status}${workflow.nodes ? ` · ${workflow.nodes}工程` : ''}`));
+    body.append(el('div', 'sub', `${workflow.teaching ? workflow.teachingStatus : status}${workflow.nodes ? ` · ${workflow.nodes}工程` : ''}`));
     pick.append(body);
     pick.onclick = () => selectAreaItem('workflows', workflow.id);
     li.append(pick);
@@ -282,11 +282,18 @@ async function loadAreaItems() {
       const rememberedTask = state.tasks.find((item) => taskId(item) === remembered || item.machine === remembered);
       state.selectedTask = rememberedTask ? taskId(rememberedTask) : taskId(state.tasks[0]);
     } else {
-      const [workflows, runs] = await Promise.all([
+      const [workflows, runs, teaching] = await Promise.all([
         api.automation.flowList(state.repo),
         api.automation.flowRunList(state.repo, 30),
+        api.automation.flowTeachingList(state.repo),
       ]);
-      state.workflows = workflows || [];
+      const ready = workflows || [];
+      const labels = { draft: '理解中', 'needs-trial': '試運転待ち', 'awaiting-confirmation': '確認待ち' };
+      const drafts = (teaching || []).filter((item) => item.status !== 'ready' && !ready.some((flow) => flow.id === item.workflowId)).map((item) => ({
+        id: item.workflowId, name: item.title, nodes: 0, valid: true, teaching: true,
+        teachingStatus: labels[item.status] || item.status,
+      }));
+      state.workflows = [...drafts, ...ready];
       state.workflowRuns = runs || [];
       const remembered = (state.config.lastWorkflow || {})[state.repo] || state.selectedWorkflow;
       state.selectedWorkflow = state.workflows.some((item) => item.id === remembered) ? remembered : (state.workflows[0]?.id || '');
@@ -309,17 +316,12 @@ function frameMessage(action = '') {
   return message;
 }
 
-function syncWorkspaceFrame(action = '') {
+function syncAutomationWorkbench(action = '') {
   if (state.area === 'conversation') return;
-  const frame = $('automation-frame');
-  if (frame.getAttribute('src') === 'about:blank') { frame.setAttribute('src', frame.dataset.src); return; }
-  if (frame.contentWindow) frame.contentWindow.postMessage(frameMessage(action), '*');
+  return $('automation-workbench').navigate(frameMessage(action));
 }
 
-window.addEventListener('message', async (event) => {
-  const frame = $('automation-frame');
-  if (event.source !== frame.contentWindow) return;
-  const payload = event.data;
+async function handleAutomationEvent(payload) {
   if (payload && payload.type === 'agent-app:teaching-started' && payload.root === state.repo) {
     if (!state.pendingTaskIntent || payload.intentId !== state.pendingTaskIntent.id) return;
     state.pendingTaskIntent = null;
@@ -336,7 +338,7 @@ window.addEventListener('message', async (event) => {
     state.config = await api.saveConfig({ [key]: { ...(state.config[key] || {}), [state.repo]: payload.selected } });
   }
   await loadAreaItems();
-});
+}
 
 async function selectAreaItem(area, id) {
   if (area === 'tasks') {
@@ -347,7 +349,7 @@ async function selectAreaItem(area, id) {
     state.config = await api.saveConfig({ lastWorkflow: { ...(state.config.lastWorkflow || {}), [state.repo]: id } });
   }
   renderAreaContext();
-  syncWorkspaceFrame();
+  syncAutomationWorkbench();
   setSidebar(false);
 }
 
@@ -364,7 +366,7 @@ async function selectRepo(repo) {
   renderAgents();
   newDraft();
   await loadAreaItems();
-  syncWorkspaceFrame();
+  syncAutomationWorkbench();
   if (state.changesOpen) refreshChanges();
   Files.setRoot(state.repo, activeWorktree(), { lastFile: (state.config.lastFiles || {})[state.repo] || '' }).catch(() => {});
 }
@@ -1136,7 +1138,7 @@ async function showArea(area, { persist = true } = {}) {
   $('changes').hidden = workspace || !state.changesOpen;
   if (workspace) {
     await loadAreaItems();
-    syncWorkspaceFrame();
+    syncAutomationWorkbench();
   } else {
     const latest = await api.getConfig();
     state.config = latest;
@@ -1372,7 +1374,12 @@ async function init() {
   $('area-work').onclick = () => showArea('conversation').catch((err) => notice(err.message, 'error'));
   $('area-tasks').onclick = () => showArea('tasks').catch((err) => notice(err.message, 'error'));
   $('area-workflows').onclick = () => showArea('workflows').catch((err) => notice(err.message, 'error'));
-  $('automation-frame').addEventListener('load', () => syncWorkspaceFrame());
+  $('automation-workbench').addEventListener('statemachine:changed', (event) => {
+    handleAutomationEvent(event.detail).catch((err) => notice(err.message, 'error'));
+  });
+  $('automation-workbench').addEventListener('statemachine:teaching-started', (event) => {
+    handleAutomationEvent(event.detail).catch((err) => notice(err.message, 'error'));
+  });
 
   $('repo-select').onchange = () => selectRepo($('repo-select').value).catch((err) => notice(err.message, 'error'));
   $('repo-add').onclick = () => { $('repo-more').open = false; addRepo().catch((err) => notice(err.message, 'error')); };
@@ -1384,7 +1391,7 @@ async function init() {
   };
   $('session-new').onclick = () => {
     if (state.area === 'conversation') newDraft();
-    else syncWorkspaceFrame('new');
+    else syncAutomationWorkbench('new');
   };
   $('session-delete').onclick = async () => {
     $('chat-more').open = false;

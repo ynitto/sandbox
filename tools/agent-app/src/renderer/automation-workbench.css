@@ -1,0 +1,19 @@
+:host { display: block; height: 100%; background: #f6f7f9; color: var(--fg); }
+:host button:focus-visible,
+:host summary:focus-visible,
+:host [role="button"]:focus-visible { outline: 3px solid #bfdbfe; outline-offset: 2px; }
+:host button.primary { min-height: 40px; }
+:host .folder-pane,
+:host .home-tabs,
+:host .machine-head,
+:host .execution-list,
+:host .flow-home-head { display: none; }
+:host .home,
+:host .execution-layout,
+:host .flow-layout { grid-template-columns: minmax(0, 1fr); }
+:host .machine-pane { padding-top: 20px; }
+:host(:not(.is-editing)) #bar { display: none; }
+:host(:not(.is-editing)) #main { height: 100%; }
+@media (max-width: 760px) {
+  :host *, :host *::before, :host *::after { min-width: 0; }
+}

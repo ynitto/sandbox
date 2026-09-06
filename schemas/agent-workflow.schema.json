@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "agent-workflow.schema.json",
   "title": "ワークフロー定義 — 保存形（ライブラリ）と投入形（plan）",
-  "description": "人が描いた工程グラフの契約。**2 つの段で形が違う**: (1) ライブラリ定義（本スキーマのルート）は agent-dashboard が編集・保存する形で、`workflows/<id>.json`（同梱）/ 登録フォルダの `.agents/workflows/<id>.json` / ユーザー領域に置く。(2) 投入 plan（$defs.plan）は agent-flow へ渡す形で、inbox 要求の `plan` または `--plan-file`。ライブラリ定義 → plan の変換は agent-dashboard の planFromWorkflow が行い、そこで工程の作業ルール（nodes[].methods）は本文へ畳まれて goal へ入る（plan に methods フィールドは無い）。**グラフ不変条件（id 一意・deps の実在・循環なし・entry=ルート/exit=末端・split の後段を静的に張らない）は JSON Schema で表現できないため実装が正典**: 保存側は agent-dashboard の normalizeWorkflow、実行側は agent-flow の plan_strategy_user（不正な plan は planner へ縮退せず failed 終端）。",
+  "description": "人が教え、または描いた工程グラフの契約。**2 つの段で形が違う**: (1) ライブラリ定義（本スキーマのルート）は agent-app / agent-dashboard が編集・保存する形で、登録フォルダの `.agents/workflows/<id>.json` などに置く。(2) 投入 plan（$defs.plan）は agent-flow へ渡す形で、inbox 要求の `plan` または `--plan-file`。ライブラリ定義 → plan の変換では工程の作業ルール（nodes[].methods）を本文へ畳んで goal へ入れる（plan に methods フィールドは無い）。差し戻しは deps に循環を作らず rework として宣言し、実行時に置換ノードを生成する。**グラフ不変条件（id 一意・deps の実在・循環なし・entry=ルート/exit=末端・split の後段を静的に張らない・rework の戻り先が祖先）は JSON Schema で表現できないため実装が正典**: 保存側は各UIの正規化処理、実行側は agent-flow の plan_strategy_user（不正な plan は planner へ縮退せず failed 終端）。",
   "$defs": {
     "nodeKind": {
       "enum": ["work", "generate", "classify", "synthesize", "verify", "filter", "judge",
@@ -105,6 +105,35 @@
       },
       "additionalProperties": true
     },
+    "libraryRework": {
+      "type": "object",
+      "required": ["id", "from", "to", "trigger", "instruction", "maxIterations", "onExhausted"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$"},
+        "from": {"type": "string", "minLength": 1},
+        "to": {"type": "string", "minLength": 1},
+        "trigger": {"enum": ["human-rejected", "verification-failed"]},
+        "instruction": {"type": "string", "minLength": 1},
+        "maxIterations": {"type": "integer", "minimum": 1, "maximum": 20},
+        "onExhausted": {"enum": ["human", "fail", "continue"]}
+      },
+      "additionalProperties": false,
+      "description": "後工程から前の論理工程へ差し戻す有限回の再作業ポリシー。deps には混ぜず、実行時に replacement node を生成する"
+    },
+    "planRework": {
+      "type": "object",
+      "required": ["id", "from", "to", "trigger", "instruction", "max_iterations", "on_exhausted"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "from": {"type": "string", "minLength": 1},
+        "to": {"type": "string", "minLength": 1},
+        "trigger": {"enum": ["human-rejected", "verification-failed"]},
+        "instruction": {"type": "string", "minLength": 1},
+        "max_iterations": {"type": "integer", "minimum": 1, "maximum": 20},
+        "on_exhausted": {"enum": ["human", "fail", "continue"]}
+      },
+      "additionalProperties": false
+    },
     "decision": {
       "type": "object",
       "required": ["facts", "criteria"],
@@ -172,7 +201,8 @@
           "type": "boolean",
           "default": false,
           "description": "true で評価役の継続判断を有効化。既定は無効 — ユーザー定義フローは形が意図そのものなので、再計画でノードを足して形を変えない"
-        }
+        },
+        "rework": {"type": "array", "items": {"$ref": "#/$defs/planRework"}}
       },
       "additionalProperties": false
     }
@@ -204,6 +234,7 @@
       "description": "終了。**すべての末端ノード（他から依存されない）と一致していなければならない**（実装が検証）。design は 1 つだけ"
     },
     "nodes": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/libraryNode"}},
+    "rework": {"type": "array", "items": {"$ref": "#/$defs/libraryRework"}},
     "createdAt": {"type": "string"},
     "updatedAt": {"type": "string"}
   },

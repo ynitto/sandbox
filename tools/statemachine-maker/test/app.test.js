@@ -180,7 +180,7 @@ test('使うAIの候補と実行は agent-tools の公開インターフェー�
   const ipc = read('main/ipc.js');
 
   assert.ok(preload.includes("invoke('agents:list'"), 'agent-tools の定義一覧を公開する');
-  assert.ok(renderer.includes('api.listAgents('), '画面は定義一覧を取得する');
+  assert.ok(renderer.includes('automationHost.listAgents('), '画面は Host Adapter から定義一覧を取得する');
   assert.ok(!renderer.includes("['claude', 'copilot', 'kiro', 'anthropic']"), 'AI名を画面へ直書きしない');
   assert.ok(ipc.includes("register('agents:list'"), 'main が定義一覧を返す');
   assert.ok(ipc.includes('agentLoop.taskRunSpec('), '実行はタスク種別に応じて agent-loop へ渡す');

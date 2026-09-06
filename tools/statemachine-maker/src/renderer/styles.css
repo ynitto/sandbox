@@ -1,5 +1,5 @@
 /* 固定のニュートラル配色。色は主操作・状態・警告にだけ使う。 */
-:root {
+:root, :host {
   --bg: #f6f7f9;
   --surface: #fff;
   --text: #172033;
@@ -30,6 +30,7 @@
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
 body { background: var(--bg); color: var(--fg); font: var(--font-size)/1.55 var(--font); overflow: hidden; }
+:host { background: var(--bg); color: var(--fg); font: var(--font-size)/1.55 var(--font); overflow: hidden; }
 [hidden] { display: none !important; }
 button { font: inherit; color: var(--fg); background: var(--card); border: 1px solid var(--line-strong); border-radius: 9px; padding: 6px 12px; cursor: pointer; min-height: 34px; }
 button:hover { border-color: var(--accent); }
@@ -193,6 +194,14 @@ h1, h2, h3 { margin: 0; font-weight: 650; }
 .flow-node-summary p { margin: 2px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .flow-editor { min-width: 0; display: grid; gap: 12px; padding-bottom: 72px; }
 .flow-node-list { display: grid; gap: 10px; }
+.flow-graph-with-rework { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 14px; align-items: stretch; }
+.flow-rework-lane { width: 132px; padding: 10px; border: 1px dashed var(--warn); border-radius: 10px; background: var(--warn-soft); display: grid; gap: 10px; align-content: start; color: var(--warn); }
+.flow-rework-line { min-height: 148px; display: grid; justify-items: center; align-content: center; gap: 2px; text-align: center; }
+.flow-rework-line svg { width: 108px; height: 92px; overflow: visible; }
+.flow-rework-path { fill: none; stroke: currentColor; stroke-width: 4; stroke-linecap: round; }
+.flow-rework-line marker path { fill: currentColor; }
+.flow-rework-line span, .flow-rework-line small { font-size: 11px; }
+.flow-rework-editor { display: grid; gap: 10px; padding: 12px; margin-top: 10px; border-left: 4px solid var(--warn); border-radius: 9px; background: var(--warn-soft); }
 .flow-node-card { min-width: 0; display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: 12px; padding: 16px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
 .flow-node-number { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 50%; background: #edf0f4; border: 1px solid var(--line-strong); font-weight: 700; }
 .flow-node-form { min-width: 0; display: grid; gap: 12px; }
@@ -399,7 +408,7 @@ dialog::backdrop { background: rgba(20, 24, 40, 0.25); }
   .inspector { height: 100%; border-left: 0; }
   .inspector-back { display: inline-flex; }
   .flow-content { padding-inline: 16px; }
-  body.is-editing .brand, body.is-editing .dirty { display: none; }
+  body.is-editing .brand, body.is-editing .dirty, :host(.is-editing) .brand, :host(.is-editing) .dirty { display: none; }
   #bar { gap: 4px; padding-inline: 8px; }
   .bar-right { gap: 0; }
   .bar-right button, .more-menu > summary { padding-inline: 8px; }
@@ -425,7 +434,7 @@ dialog::backdrop { background: rgba(20, 24, 40, 0.25); }
   .flow-node-card { grid-template-columns: 1fr; }
   .flow-node-number { width: 28px; height: 28px; }
   .bar-center .title-input { font-size: 14px; }
-  body.is-editing #b-run { display: none; }
+  body.is-editing #b-run, :host(.is-editing) #b-run { display: none; }
   .run-settings { width: 100%; }
   .run-settings > summary { max-width: 100%; }
   .settings-popover { width: min(380px, calc(100vw - 28px)); }
@@ -477,6 +486,8 @@ dialog::backdrop { background: rgba(20, 24, 40, 0.25); }
 .teaching-parameters { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px; }
 
 @media (max-width: 999px) {
+  .flow-graph-with-rework { grid-template-columns: 1fr; }
+  .flow-rework-lane { width: auto; grid-template-columns: auto repeat(2, minmax(110px, 1fr)); }
   .teaching-workspace { grid-template-columns: 1fr; }
   .teaching-understanding { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .teaching-understanding h3 { grid-column: 1 / -1; }

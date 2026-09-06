@@ -1,5 +1,7 @@
 'use strict';
 
+(function initStatemachineWorkbench() {
+
 // 画面は 2 つ。
 //   一覧 … 左に登録したフォルダ、右にそのフォルダのワークフロー（マトリクス）。
 //          見に行くのは登録したフォルダの `.statemachine/` だけ。
@@ -10,11 +12,15 @@
 // 呼び名など）。人が読む言葉に直してから出す。綴りそのものが要る欄（確認コマンドなど）だけ
 // が例外で、そこは何を書くかを日本語で添える。
 //
-// `api` は preload が window へ置いた窓口。**宣言し直さない**（再定義できないので、
-// const で受けるとスクリプトごと落ちて画面が真っ白になる。test/preload-contract.test.js）。
+// アプリ固有の preload 窓口は editor-host.js が吸収する。編集実装は standalone と
+// agent-app のどちらで動くかを知らず、同じ automationHost だけを使う。
 
-const $ = (id) => document.getElementById(id);
-const embedded = document.body.classList.contains('embedded');
+const workbenchHost = document.querySelector('[data-statemachine-workbench]');
+const workbenchRoot = workbenchHost ? workbenchHost.shadowRoot : document;
+const workbenchBody = workbenchHost || document.body;
+const $ = (id) => workbenchRoot.getElementById(id);
+const embedded = !!workbenchHost;
+const automationHost = StatemachineEditorHost.resolve(window, { embedded });
 
 const state = {
   config: { roots: [], lastRoot: '' },
@@ -50,7 +56,8 @@ function toast(message, error = false) {
 
 function notifyHost(area, selected = '') {
   if (!embedded) return;
-  window.parent.postMessage({ type: 'agent-app:changed', area, root: state.root, selected }, '*');
+  const detail = { type: 'agent-app:changed', area, root: state.root, selected };
+  workbenchHost.dispatchEvent(new CustomEvent('statemachine:changed', { detail, bubbles: true }));
 }
 
 async function guard(what, fn) {
@@ -85,7 +92,7 @@ function resetAi(flow, keepInput = false) {
 function cancelAi(flow) {
   if (!flow.busy) return;
   const requestId = flow.requestId === 'pending' ? '' : flow.requestId;
-  api.aiStop(requestId).catch(() => {});
+  automationHost.aiStop(requestId).catch(() => {});
   resetAi(flow, true);
 }
 
@@ -96,7 +103,7 @@ function agentOptions(preferred = '') {
 }
 
 async function loadAgents() {
-  state.agents = (await guard('AI 一覧', () => api.listAgents(state.root))) || [];
+  state.agents = (await guard('AI 一覧', () => automationHost.listAgents(state.root))) || [];
   state.run.agent = selectedAgent(state.run.agent || state.config.agent);
 }
 
@@ -210,13 +217,13 @@ function summary(step) {
 // --- フォルダと一覧 ---------------------------------------------------------------------
 
 async function loadMachines() {
-  state.machines = state.root ? ((await guard('一覧の取得', () => api.listMachines(state.root))) || []) : [];
+  state.machines = state.root ? ((await guard('一覧の取得', () => automationHost.listMachines(state.root))) || []) : [];
 }
 
 async function loadExecutionSnapshot() {
   if (!state.root) { state.execution.snapshot = null; return; }
   state.execution.loading = true;
-  const snapshot = await guard('実行情報', () => api.runSnapshot(state.root));
+  const snapshot = await guard('実行情報', () => automationHost.runSnapshot(state.root));
   state.execution.loading = false;
   state.execution.snapshot = snapshot || {
     available: false, machines: [], history: [], daemon: { running: false }, error: '実行情報を取得できませんでした',
@@ -294,11 +301,11 @@ async function refreshTaskSkillPreview() {
   const machine = selectedExecutionMachine();
   const selection = state.config.instructions && state.config.instructions.skillSelection || {};
   const mode = state.run.skillMode || selection.defaultMode || 'auto';
-  if (!machine || mode !== 'auto' || !api.selectSkills) { state.run.skillPreview = []; return; }
+  if (!machine || mode !== 'auto' || !automationHost.selectSkills) { state.run.skillPreview = []; return; }
   try {
-    const result = await api.selectSkills(state.root, JSON.stringify({ task: machine, parameters: state.run.parameters }), 'auto', []);
+    const result = await automationHost.selectSkills(state.root, JSON.stringify({ task: machine, parameters: state.run.parameters }), 'auto', []);
     state.run.skillPreview = result.selected || [];
-    const list = document.querySelector('#run-skill-list');
+    const list = workbenchRoot.querySelector('#run-skill-list');
     if (list) list.innerHTML = taskSkillChoicesHtml();
   } catch { state.run.skillPreview = []; }
 }
@@ -312,7 +319,7 @@ async function selectRoot(root) {
   cancelAi(state.aiDraft);
   cancelAi(state.aiReview);
   state.root = root;
-  await guard('フォルダ', () => api.selectRoot(root));
+  await guard('フォルダ', () => automationHost.selectRoot(root));
   await Promise.all([loadMachines(), loadAgents()]);
   await loadExecutionSnapshot();
   flowFeature.rootChanged();
@@ -324,7 +331,7 @@ async function selectRoot(root) {
 async function addFolder() {
   cancelAi(state.aiDraft);
   cancelAi(state.aiReview);
-  const cfg = await guard('フォルダの登録', () => api.addRoot());
+  const cfg = await guard('フォルダの登録', () => automationHost.addRoot());
   if (!cfg) return;
   state.config = cfg;
   state.root = cfg.lastRoot;
@@ -340,7 +347,7 @@ async function removeFolder(root) {
   if (!confirm(`${folderName(root)} を一覧から外しますか？（フォルダの中身は消えません）`)) return;
   cancelAi(state.aiDraft);
   cancelAi(state.aiReview);
-  const cfg = await guard('フォルダ', () => api.removeRoot(root));
+  const cfg = await guard('フォルダ', () => automationHost.removeRoot(root));
   if (!cfg) return;
   state.config = cfg;
   if (state.root === root) state.root = cfg.lastRoot;
@@ -363,7 +370,7 @@ function goHome() {
 async function openMachine(machine) {
   cancelAi(state.aiDraft);
   cancelAi(state.aiReview);
-  const res = await guard('読み込み', () => api.readMachine(state.root, machine));
+  const res = await guard('読み込み', () => automationHost.readMachine(state.root, machine));
   if (!res) return;
   const raw = res.raw;
   raw.steps = raw.steps.map((s) => ({ ...emptyStep(s.kind), ...s, outcomes: s.outcomes || [], recorded: s.recorded || [], extend: s.extend || {} }));
@@ -386,7 +393,7 @@ function newMachine() {
   state.preview = null;
   resetAi(state.aiReview);
   render();
-  const t = document.querySelector('.title-input');
+  const t = workbenchRoot.querySelector('.title-input');
   if (t) t.focus();
 }
 
@@ -405,7 +412,7 @@ function render() {
   renderBar();
   const main = $('main');
   const editing = state.view === 'editor' && state.current;
-  document.body.classList.toggle('is-editing', !!editing);
+  workbenchBody.classList.toggle('is-editing', !!editing);
   main.innerHTML = editing ? editorHtml() : homeHtml();
   if (editing) bindEditor(main); else bindHome(main);
 }
@@ -534,7 +541,7 @@ function bindHome(main) {
   on('run-edit', () => { const machine = selectedExecutionMachine(); if (machine) openMachine(machine.machine); });
   on('run-start', () => startRun('run'));
   on('run-check', () => startRun('check'));
-  on('run-stop', () => api.runStop());
+  on('run-stop', () => automationHost.runStop());
   on('schedule-toggle', () => { state.execution.scheduleOpen = !state.execution.scheduleOpen; render(); });
   on('schedule-save', saveSchedule);
   for (const button of main.querySelectorAll('[data-schedule-edit]')) button.addEventListener('click', () => {
@@ -633,23 +640,25 @@ const teachingFeature = window.createTeachingFeature({
   run: (machine) => goRun(machine),
   changed: (machine) => notifyHost('tasks', `machine:${machine}`),
   started: (intentId, machine) => {
-    if (embedded) window.parent.postMessage({ type: 'agent-app:teaching-started', root: state.root, intentId, machine }, '*');
+    if (!embedded) return;
+    const detail = { type: 'agent-app:teaching-started', root: state.root, intentId, machine };
+    workbenchHost.dispatchEvent(new CustomEvent('statemachine:teaching-started', { detail, bubbles: true }));
   },
   bridge: {
-    list: (root) => api.teachingList(root),
-    create: (root, purpose, options) => api.teachingCreate(root, purpose, options),
-    read: (root, machine) => api.teachingRead(root, machine),
-    save: (root, machine, session) => api.teachingSave(root, machine, session),
-    addEvidence: (root, machine, recording, summary) => api.teachingAddEvidence(root, machine, recording, summary),
-    stage: (root, machine, generationId, trialId, approved) => api.teachingStage(root, machine, generationId, trialId, approved),
-    cleanup: (root, trialMachine) => api.teachingCleanup(root, trialMachine),
-    recordTrial: (root, machine, trial) => api.teachingRecordTrial(root, machine, trial),
-    confirm: (root, machine, generationId) => api.teachingConfirm(root, machine, generationId),
-    restore: (root, machine) => api.teachingRestore(root, machine),
-    aiStart: (payload) => api.aiStart(payload),
-    recordStart: (payload) => api.recordingStart(payload),
-    recordStop: (payload) => api.recordingStop(payload),
-    runStart: (payload) => api.runStart(payload),
+    list: (root) => automationHost.teachingList(root),
+    create: (root, purpose, options) => automationHost.teachingCreate(root, purpose, options),
+    read: (root, machine) => automationHost.teachingRead(root, machine),
+    save: (root, machine, session) => automationHost.teachingSave(root, machine, session),
+    addEvidence: (root, machine, recording, summary) => automationHost.teachingAddEvidence(root, machine, recording, summary),
+    stage: (root, machine, generationId, trialId, approved) => automationHost.teachingStage(root, machine, generationId, trialId, approved),
+    cleanup: (root, trialMachine) => automationHost.teachingCleanup(root, trialMachine),
+    recordTrial: (root, machine, trial) => automationHost.teachingRecordTrial(root, machine, trial),
+    confirm: (root, machine, generationId) => automationHost.teachingConfirm(root, machine, generationId),
+    restore: (root, machine) => automationHost.teachingRestore(root, machine),
+    aiStart: (payload) => automationHost.aiStart(payload),
+    recordStart: (payload) => automationHost.recordingStart(payload),
+    recordStop: (payload) => automationHost.recordingStop(payload),
+    runStart: (payload) => automationHost.runStart(payload),
   },
 });
 
@@ -665,23 +674,32 @@ const flowFeature = window.createFlowFeature({
   toast,
   escape: esc,
   dateLabel,
+  query: (selector) => workbenchRoot.querySelector(selector),
+  activeElement: () => workbenchRoot.activeElement || document.activeElement,
   bridge: {
-    catalog: () => api.flowCatalog(),
-    list: (root) => api.flowList(root),
-    read: (root, id) => api.flowRead(root, id),
-    save: (root, workflow, mode) => api.flowSave(root, workflow, mode),
-    remove: (root, id) => api.flowDelete(root, id),
-    preview: (root, workflow, request, parameters) => api.flowPreview(root, workflow, request, parameters),
-    context: (root) => api.flowContext(root),
-    runStart: (payload) => api.flowRunStart(payload),
-    runList: (root, limit) => api.flowRunList(root, limit),
-    runRead: (root, runId) => api.flowRunRead(root, runId),
-    runCancel: (root, runId, reason) => api.flowRunCancel(root, runId, reason),
-    runRespond: (root, runId, interactionId, answer) => api.flowRunRespond(root, runId, interactionId, answer),
-    runResult: (root, runId) => api.flowRunResult(root, runId),
-    runLog: (root, runId) => api.flowRunLog(root, runId),
-    runDelete: (root, runId) => api.flowRunDelete(root, runId),
-    openDelivery: (root, runId) => api.flowRunOpenDelivery(root, runId),
+    catalog: () => automationHost.flowCatalog(),
+    list: (root) => automationHost.flowList(root),
+    read: (root, id) => automationHost.flowRead(root, id),
+    save: (root, workflow, mode) => automationHost.flowSave(root, workflow, mode),
+    remove: (root, id) => automationHost.flowDelete(root, id),
+    preview: (root, workflow, request, parameters) => automationHost.flowPreview(root, workflow, request, parameters),
+    teachingList: (root) => automationHost.flowTeachingList(root),
+    teachingCreate: (root, purpose, options) => automationHost.flowTeachingCreate(root, purpose, options),
+    teachingRead: (root, workflowId) => automationHost.flowTeachingRead(root, workflowId),
+    teachingSave: (root, workflowId, session) => automationHost.flowTeachingSave(root, workflowId, session),
+    teachingRecordTrial: (root, workflowId, trial) => automationHost.flowTeachingRecordTrial(root, workflowId, trial),
+    teachingConfirm: (root, workflowId, generationId, digest) => automationHost.flowTeachingConfirm(root, workflowId, generationId, digest),
+    aiStart: (payload) => automationHost.aiStart(payload),
+    context: (root) => automationHost.flowContext(root),
+    runStart: (payload) => automationHost.flowRunStart(payload),
+    runList: (root, limit) => automationHost.flowRunList(root, limit),
+    runRead: (root, runId) => automationHost.flowRunRead(root, runId),
+    runCancel: (root, runId, reason) => automationHost.flowRunCancel(root, runId, reason),
+    runRespond: (root, runId, interactionId, answer) => automationHost.flowRunRespond(root, runId, interactionId, answer),
+    runResult: (root, runId) => automationHost.flowRunResult(root, runId),
+    runLog: (root, runId) => automationHost.flowRunLog(root, runId),
+    runDelete: (root, runId) => automationHost.flowRunDelete(root, runId),
+    openDelivery: (root, runId) => automationHost.flowRunOpenDelivery(root, runId),
   },
 });
 
@@ -819,7 +837,7 @@ async function saveSchedule() {
   const schedule = draft.kind === 'interval'
     ? { kind: 'interval', minutes: draft.minutes }
     : { kind: draft.kind, time: draft.time, ...(draft.kind === 'weekly' ? { days: draft.days } : {}) };
-  const result = await guard('定期実行の保存', () => api.saveRunSchedule(state.root, {
+  const result = await guard('定期実行の保存', () => automationHost.saveRunSchedule(state.root, {
     workflow: machine.workflow, entry: machine.entry, entryName: draft.entryName, enabled: draft.enabled, schedule, input: draft.input,
     destination: draft.destination,
     operation: draft.operation === 'create' || draft.destination !== draft.originalDestination ? 'create' : 'save',
@@ -838,7 +856,7 @@ async function saveSchedule() {
 async function toggleDaemon() {
   const daemon = (state.execution.snapshot && state.execution.snapshot.daemon) || { running: false };
   const action = daemon.running ? 'stop' : 'start';
-  const result = await guard(action === 'start' ? '自動実行の開始' : '自動実行の停止', () => api.setRunDaemon(state.root, action));
+  const result = await guard(action === 'start' ? '自動実行の開始' : '自動実行の停止', () => automationHost.setRunDaemon(state.root, action));
   if (!result) return;
   toast(action === 'start' ? '自動実行の起動を受け付けました' : '自動実行の停止を受け付けました');
   setTimeout(async () => { await loadExecutionSnapshot(); if (state.view === 'home') render(); }, 500);
@@ -851,7 +869,7 @@ async function openHistoryLog(runId) {
   state.execution.log = { runId, text: '読み込んでいます…', truncated: false };
   render();
   try {
-    const result = await api.runLog(state.root, { workflow: machine.workflow, runId });
+    const result = await automationHost.runLog(state.root, { workflow: machine.workflow, runId });
     state.execution.log = { runId, ...result };
   } catch (err) {
     state.execution.log = { runId, error: String((err && err.message) || err) };
@@ -1212,7 +1230,7 @@ function bindStepBody(body, index) {
     step.outcomes.push({ when: 'label', label: '', to: 'next' });
     markDirty();
     render();
-    const inputs = document.querySelectorAll('.inspector [data-branch] input');
+    const inputs = workbenchRoot.querySelectorAll('.inspector [data-branch] input');
     if (inputs.length) inputs[inputs.length - 1].focus();
   });
   on('[data-unrecord]', () => { step.recorded = []; markDirty(); render(); });
@@ -1253,7 +1271,7 @@ function setOutcomeValue(o, value) {
 }
 
 function refreshHead(index) {
-  const card = document.querySelector(`[data-step="${index}"]`);
+  const card = workbenchRoot.querySelector(`[data-step="${index}"]`);
   if (!card) return;
   const tmp = document.createElement('div');
   tmp.innerHTML = stepHtml(state.current.spec, index);
@@ -1266,13 +1284,13 @@ function refreshHead(index) {
 }
 
 function refreshEdge(index) {
-  const edge = document.querySelector(`[data-edge="${index}"] .lines`);
+  const edge = workbenchRoot.querySelector(`[data-edge="${index}"] .lines`);
   if (!edge) return;
   edge.innerHTML = nextsOf(state.current.spec, index).map((e) => `<span class="t"><span class="lbl ${e.cls}">${esc(e.label)}</span><span>→</span><span class="to ${e.cls}">${esc(e.text)}</span></span>`).join('');
 }
 
 function scrollToStep(index) {
-  const el = document.querySelector(`[data-step="${index}"]`);
+  const el = workbenchRoot.querySelector(`[data-step="${index}"]`);
   if (el) el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
 }
 
@@ -1304,7 +1322,7 @@ function insertStep(at, kindId) {
   state.pickerAt = -1;
   markDirty();
   render();
-  const first = document.querySelector('.inspector [data-field="title"]');
+  const first = workbenchRoot.querySelector('.inspector [data-field="title"]');
   if (first) first.focus();
 }
 
@@ -1312,7 +1330,7 @@ function insertStep(at, kindId) {
 
 async function previewMachine() {
   if (!state.current) return null;
-  const res = await guard('確認', () => api.previewMachine(specPayload()));
+  const res = await guard('確認', () => automationHost.previewMachine(specPayload()));
   if (!res) return null;
   state.preview = res;
   const notes = $('notes');
@@ -1326,10 +1344,10 @@ async function saveMachine() {
   if (!preview || preview.errors.length) { toast(preview ? preview.errors[0] : '保存できません', true); return; }
   const payload = specPayload();
   if (state.current.isNew) {
-    const exists = await guard('確認', () => api.machineExists(state.root, payload.machine));
+    const exists = await guard('確認', () => automationHost.machineExists(state.root, payload.machine));
     if (exists && !confirm(`「${payload.machine}」は既にあります。置き換えますか？`)) return;
   }
-  const res = await guard('保存', () => api.saveMachine(state.root, payload));
+  const res = await guard('保存', () => automationHost.saveMachine(state.root, payload));
   if (!res) return;
   Object.assign(state.current, { machine: res.machine, isNew: false, dirty: false, dir: res.dir, warnings: res.warnings || [] });
   state.current.spec.machine = res.machine;
@@ -1422,11 +1440,11 @@ async function recordingAction(action) {
   openRecord();
   let res;
   try {
-    res = action === 'start' ? await api.recordingStart(payload)
-      : action === 'stop' ? await api.recordingStop(payload)
-        : action === 'snapshot' ? await api.recordingSnapshot(payload)
-          : action === 'extract' ? await api.recordingExtract(payload)
-            : await api.recordingImport(payload);
+    res = action === 'start' ? await automationHost.recordingStart(payload)
+      : action === 'stop' ? await automationHost.recordingStop(payload)
+        : action === 'snapshot' ? await automationHost.recordingSnapshot(payload)
+          : action === 'extract' ? await automationHost.recordingExtract(payload)
+            : await automationHost.recordingImport(payload);
   } catch (err) { res = { error: String((err && err.message) || err) }; }
   rec.busy = false;
   if (!res || res.error) {
@@ -1488,7 +1506,7 @@ async function openFiles() {
       <pre>${esc(files[state.fileTab] || '')}</pre>`;
     for (const b of dlg.querySelectorAll('[data-file]')) b.addEventListener('click', () => { state.fileTab = b.dataset.file; paint(); });
     const open = dlg.querySelector('#f-open');
-    if (open) open.addEventListener('click', () => guard('フォルダ', () => api.openMachineFolder(state.root, state.current.machine)));
+    if (open) open.addEventListener('click', () => guard('フォルダ', () => automationHost.openMachineFolder(state.root, state.current.machine)));
   };
   paint();
 }
@@ -1614,7 +1632,7 @@ function bindAiCommon(dlg, flow, repaint) {
   const stop = dlg.querySelector('[data-ai-stop]');
   if (stop) stop.addEventListener('click', async () => {
     stop.disabled = true;
-    await guard('中止', () => api.aiStop(flow.requestId === 'pending' ? '' : flow.requestId));
+    await guard('中止', () => automationHost.aiStop(flow.requestId === 'pending' ? '' : flow.requestId));
   });
   for (const answer of dlg.querySelectorAll('[data-ai-answer]')) {
     answer.addEventListener('input', (event) => { flow.answers[event.target.dataset.aiAnswer] = event.target.value; });
@@ -1650,7 +1668,7 @@ async function startAi(flow) {
       : { spec: specPayload(), scope: flow.scope, focus: flow.focus }),
   };
   try {
-    const started = await api.aiStart(payload);
+    const started = await automationHost.aiStart(payload);
     if (flow.busy && flow.requestId === 'pending') flow.requestId = started.requestId;
   } catch (err) {
     flow.busy = false;
@@ -1663,6 +1681,7 @@ async function startAi(flow) {
 
 function receiveAiProgress(payload) {
   if (teachingFeature.onAiProgress(payload)) return;
+  if (flowFeature.onAiProgress(payload)) return;
   const flow = payload.mode === 'draft' ? state.aiDraft : payload.mode === 'review' ? state.aiReview
     : (state.aiDraft.requestId === payload.requestId ? state.aiDraft : state.aiReview);
   if (!flow.busy || (flow.requestId !== 'pending' && flow.requestId !== payload.requestId)) return;
@@ -1674,6 +1693,7 @@ function receiveAiProgress(payload) {
 
 function receiveAiResult(payload) {
   if (teachingFeature.onAiResult(payload)) return;
+  if (flowFeature.onAiResult(payload)) return;
   const flow = payload.mode === 'draft' ? state.aiDraft : state.aiReview;
   if (!flow.busy || (flow.requestId !== 'pending' && flow.requestId !== payload.requestId)) return;
   flow.requestId = payload.requestId;
@@ -1714,7 +1734,7 @@ async function applyAiReview(dlg) {
   const button = dlg.querySelector('[data-ai-apply]');
   button.disabled = true;
   button.textContent = '確認中…';
-  const res = await guard('提案の反映', () => api.aiApply({
+  const res = await guard('提案の反映', () => automationHost.aiApply({
     base: specPayload(), candidate: flow.result.candidate, ids, baseFingerprint: flow.result.baseFingerprint,
   }));
   if (!res) { button.disabled = false; button.textContent = '選んだ提案を反映'; return; }
@@ -1740,7 +1760,7 @@ async function startRun(mode) {
   run.error = '';
   run.running = true;
   render();
-  const res = await guard('実行', () => api.runStart({
+  const res = await guard('実行', () => automationHost.runStart({
     root: state.root, taskId: taskIdentity(machine), machine: machine.machine || '', mode,
     agent: runAgent, model: selected.model, parameters: run.parameters,
     skillMode: run.skillMode || (state.config.instructions && state.config.instructions.skillSelection && state.config.instructions.skillSelection.defaultMode) || 'auto',
@@ -1783,16 +1803,16 @@ function openSettings() {
     <div id="tools-list">${state.tools ? toolsHtml(state.tools) : ''}</div>`);
   dlg.querySelector('#c-save').addEventListener('click', async () => {
     const next = { ...cfg, agent: dlg.querySelector('#c-agent').value || cfg.agent, model: dlg.querySelector('#c-model').value.trim(), skillDir: dlg.querySelector('#c-skill').value.trim() };
-    const saved = await guard('保存', () => api.saveConfig(next));
+    const saved = await guard('保存', () => automationHost.saveConfig(next));
     if (saved) { state.config = saved; toast('保存しました'); }
   });
   dlg.querySelector('#tools-check').addEventListener('click', async () => {
     const btn = dlg.querySelector('#tools-check');
     btn.disabled = true;
     btn.textContent = '確認中…';
-    const res = await guard('確認', () => api.toolStatus(state.root));
+    const res = await guard('確認', () => automationHost.toolStatus(state.root));
     state.tools = res || state.tools;
-    const definitions = await guard('AI 一覧', () => api.listAgents(state.root));
+    const definitions = await guard('AI 一覧', () => automationHost.listAgents(state.root));
     if (definitions) {
       const current = dlg.querySelector('#c-agent').value || cfg.agent;
       state.agents = definitions;
@@ -1817,6 +1837,11 @@ let initPromise;
 async function navigateEmbedded(payload) {
   if (!embedded) return;
   if (initPromise) await initPromise;
+  const latestConfig = await guard('設定', () => automationHost.getConfig());
+  if (latestConfig) {
+    state.config = latestConfig;
+    await loadAgents();
+  }
   const area = payload.area === 'workflows' ? 'workflows' : 'tasks';
   const root = String(payload.root || '');
 
@@ -1860,20 +1885,16 @@ async function navigateEmbedded(payload) {
   else render();
 }
 
-window.addEventListener('message', (event) => {
-  const payload = event.data;
-  if (!payload || payload.type !== 'agent-app:navigate') return;
-  navigateEmbedded(payload).catch((error) => toast(error.message || String(error), true));
-});
+if (workbenchHost) workbenchHost.setController({ navigate: navigateEmbedded });
 
 async function init() {
-  state.catalog = (await guard('準備', () => api.catalog())) || state.catalog;
-  state.config = (await guard('設定', () => api.getConfig())) || state.config;
+  state.catalog = (await guard('準備', () => automationHost.catalog())) || state.catalog;
+  state.config = (await guard('設定', () => automationHost.getConfig())) || state.config;
   $('btn-home').addEventListener('click', goHome);
-  api.onRunLine((p) => { if (!teachingFeature.onRunLine(p)) appendLog(p); });
-  api.onAiProgress((p) => receiveAiProgress(p));
-  api.onAiResult((p) => receiveAiResult(p));
-  api.onRunExit(async (p) => {
+  automationHost.onRunLine((p) => { if (!teachingFeature.onRunLine(p)) appendLog(p); });
+  automationHost.onAiProgress((p) => receiveAiProgress(p));
+  automationHost.onAiResult((p) => receiveAiResult(p));
+  automationHost.onRunExit(async (p) => {
     if (await teachingFeature.onRunExit(p)) return;
     if (state.run.requestId && p.requestId && state.run.requestId !== p.requestId) return;
     state.run.running = false;
@@ -1893,3 +1914,5 @@ async function init() {
 }
 
 initPromise = init();
+
+})();

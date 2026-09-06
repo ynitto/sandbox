@@ -957,6 +957,58 @@ def plan_strategy_user(plan: dict, request: str, tier: str = ""):
         strategy["tier"] = str(tier)
     if name:
         strategy["plan_name"] = name
+    raw_rework = plan.get("rework")
+    if raw_rework is not None:
+        if not isinstance(raw_rework, list):
+            raise UserPlanError("plan.rework は配列で指定してください")
+        by_id = {task["id"]: task for task in tasks}
+
+        def is_ancestor(start, target, walked=None):
+            walked = set() if walked is None else walked
+            if start == target:
+                return True
+            if start in walked:
+                return False
+            walked.add(start)
+            return any(is_ancestor(dep, target, walked) for dep in by_id[start]["deps"])
+
+        normalized, rework_ids = [], set()
+        for index, item in enumerate(raw_rework):
+            if not isinstance(item, dict):
+                raise UserPlanError(f"rework[{index}] はオブジェクトで指定してください")
+            rid = str(item.get("id") or "").strip()
+            source = str(item.get("from") or "").strip()
+            target = str(item.get("to") or "").strip()
+            trigger = str(item.get("trigger") or "").strip()
+            instruction = str(item.get("instruction") or "").strip()
+            exhausted = str(item.get("on_exhausted") or "").strip()
+            try:
+                limit = int(item.get("max_iterations"))
+            except (TypeError, ValueError):
+                limit = 0
+            if not rid or rid in rework_ids:
+                raise UserPlanError(f"rework[{index}] の id が空または重複しています")
+            rework_ids.add(rid)
+            if source not in by_id or target not in by_id:
+                raise UserPlanError(f"差し戻し {rid} の工程が見つかりません")
+            if source == target or not is_ancestor(source, target):
+                raise UserPlanError(f"差し戻し {rid} の戻り先は前の工程を指定してください")
+            if trigger not in ("human-rejected", "verification-failed"):
+                raise UserPlanError(f"差し戻し {rid} の trigger が不正です")
+            expected_kind = "human" if trigger == "human-rejected" else "verify"
+            if by_id[source]["kind"] != expected_kind:
+                raise UserPlanError(f"差し戻し {rid} の trigger と工程種別が一致しません")
+            if not instruction:
+                raise UserPlanError(f"差し戻し {rid} の instruction が空です")
+            if limit < 1 or limit > 20:
+                raise UserPlanError(f"差し戻し {rid} の max_iterations は 1〜20 で指定してください")
+            if exhausted not in ("human", "fail", "continue"):
+                raise UserPlanError(f"差し戻し {rid} の on_exhausted が不正です")
+            normalized.append({"id": rid, "from": source, "to": target,
+                               "trigger": trigger, "instruction": instruction,
+                               "max_iterations": limit, "on_exhausted": exhausted})
+        if normalized:
+            strategy["rework"] = normalized
     # evaluate: true で評価役（evaluator-optimizer）の継続判断を有効化する。既定は無効——
     # ユーザー定義フローは形が意図そのものなので、再計画でノードを足して形を変えない。
     if plan.get("evaluate") is True:

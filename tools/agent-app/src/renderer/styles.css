@@ -100,7 +100,7 @@ svg { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; s
 #main { grid-area: main; }
 #changes { grid-area: changes; }
 #automation { grid-area: main; min-width: 0; min-height: 0; height: 100vh; background: var(--bg); }
-#automation-frame { display: block; width: 100%; height: 100%; border: 0; background: var(--bg); }
+#automation-workbench { display: block; width: 100%; height: 100%; background: var(--bg); }
 #nav-toggle { display: none; position: fixed; z-index: 50; top: 9px; left: 10px; }
 #side-backdrop { position: fixed; z-index: 39; inset: 0; border: 0; border-radius: 0; background: rgba(18, 23, 31, .38); }
 
