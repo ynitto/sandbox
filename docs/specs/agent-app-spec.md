@@ -625,6 +625,18 @@ agent-app 側のアダプト:
 | `hooks.selectSkills` | `skills:select` と同じ選定 |
 | `hooks.openDelivery` | 納品ブランチを `fetchRemote` 付きで worktree に作り `{ kind: 'worktree', name, branch }` |
 
+タスクの列挙・定期設定・実行・履歴は maker 経由で agent-loop の機械可読な境界へ届きます。
+agent-app は設定ファイルの探索も `.statemachine/` の走査も自前では行いません。
+
+| preload | 実体 |
+|---|---|
+| `runSnapshot(root)` | `agent-loop inspect --json --dir <root>` |
+| `saveRunSchedule(root, schedule)` | `agent-loop schedule --json --dir <root>`（stdin に JSON） |
+| `runLog(root, identity)` | `agent-loop log --json --dir <root>`（stdin に `{ workflow, runId }`） |
+| `runStart(payload)` | `agent-loop statemachine --workflow … --instruction <合成した指示>`、プロンプトのタスクは `agent-loop run` |
+
+契約の全項目は [agent-loop 仕様書 §3.9](./agent-loop-spec.md#39-リポジトリ実行-ui-境界) にあります。
+
 親と iframe のメッセージ:
 
 | type | 向き | フィールド |

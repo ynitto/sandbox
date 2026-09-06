@@ -393,6 +393,21 @@ maker 側の renderer は `vendor.js` が写すときに `api.` を `automationB
 本文は改変しない。maker の実行系（agent-loop の起動、`drain`、`log --json`、statemachine-use の検査）は
 maker の `agent-loop.js` / `runner.js` が担い、agent-app はコマンドの綴りを持たない。
 
+タスクの列挙・定期設定・実行・履歴は agent-loop の機械可読な境界だけを通す。agent-app も maker も、
+agent-loop の設定探索順（リポジトリ直下 → `.agents/` → `~/.agents/`）の写しを持たない。持つと、
+画面に見えるタスクと agent-loop が実際に動かすタスクがずれる。
+
+| 用途 | 呼ぶもの |
+|---|---|
+| タスク一覧と daemon 状態 | `agent-loop inspect --json --dir <repo>` |
+| 定期実行の保存 | `agent-loop schedule --json --dir <repo>`（stdin に JSON） |
+| 実行ログの読み出し | `agent-loop log --json --dir <repo>`（stdin に `{ workflow, runId }`） |
+| 手動実行 | `agent-loop statemachine --workflow … --instruction <共通指示>`、プロンプトのタスクは `agent-loop run` |
+
+`prepareRun` が合成した共通指示・開始アクション・スキル選択は、設定ファイルへ書かず
+`--instruction` の実行時オーバーレイとして渡す。契約は
+[`agent-loop 仕様書 §3.9`](../specs/agent-loop-spec.md#39-リポジトリ実行-ui-境界)にある。
+
 この構成の代償は、maker の renderer を iframe に載せるため親と子の状態同期（`postMessage`）が要ることと、
 maker 側の画面変更が agent-app の見え方へ直接波及することである。独立版 statemachine-maker は既存利用者と
 比較検証のため残す。
