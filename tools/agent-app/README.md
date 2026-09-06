@@ -5,6 +5,9 @@ GitHub Copilot App 風のデスクトップ。ローカルリポジトリを登�
 GitHub との連携は持たない。見に行くのは登録したフォルダだけで、CLI はこの PC（Windows なら WSL）に
 入っているものをそのまま呼ぶ。
 
+設計判断は [`docs/designs/agent-app-design.md`](../../docs/designs/agent-app-design.md)、IPC・設定・
+保存形式・tmux 契約・上限は [`docs/specs/agent-app-spec.md`](../../docs/specs/agent-app-spec.md) にある。
+
 - **左**: 主メニューは **会話 / タスク / ワークフロー** の 3 つ。選んだ領域の一覧とリポジトリを同じ
   サイドバーで切り替える。会話一覧では応答中・確認待ちに印が付き、
   別の会話を開いて並行して進められる。会話ごとに **git worktree** で作業フォルダを分けられる
