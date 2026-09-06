@@ -107,6 +107,7 @@ flowchart TD
 | `CliProfile` | 起動argv、ready、busy、error、turn completionの定義 | entryの予定 |
 | `WebhookServer` | HTTP受信、共有secret、hook起動 | provider固有のpayload解釈 |
 | `InboxWatcher` | inboxファイルをrequestへ変換 | tmuxへの直接送信 |
+| `repository_ui` | repository単位のタスク列挙、定期設定の検査と保存、実行履歴とログの読み出し | 画面の描画、実行そのもの |
 | `agentcore.harness` | headless tool-loop、受入判定、statemachine実行 | 定期予定とsession管理 |
 
 ### 2.3 設定の適用
@@ -116,6 +117,12 @@ flowchart TD
 CLIとmodelは実行時に解決する。管理面が明示した選択、entry、共通設定、CLI定義の既定値を使い、対話経路では新しい設定をsession境界で適用する。既存paneの起動指紋と新しいargv、cwd、profileが違う場合、実行を捨てず現行paneで続け、`restart_required`を状態へ出す。
 
 設定ファイルの探索順と上書き規則は[仕様書の設定節](../specs/agent-loop-spec.md#2-設定)に定める。
+
+GUI（agent-app / statemachine-maker）はこの探索と正規化を自前で持たない。`repository_ui`が
+`inspect` / `schedule` / `log`の3コマンドで機械可読の境界を出し、GUIはそれだけを読む。画面側に
+探索順の写しを置くと、画面に見えるタスクとschedulerが実際に動かすタスクがずれるためである。
+同じ理由で、GUIが実行時に足したい共通指示は設定へ書かず、`statemachine --instruction`の
+実行時オーバーレイとして渡す。契約は[仕様書の§3.9](../specs/agent-loop-spec.md#39-リポジトリ実行-ui-境界)にある。
 
 ## 3. 配送設計
 

@@ -98,7 +98,15 @@ agent-loop statemachine --entry "日次ダイジェスト"
 ```
 
 `--entry` は `agent-loop.yaml` の定期エントリからワークフローと入力条件を読む。手入力の
-`--param` と `--input` が設定より優先される。
+`--param` と `--input` が設定より優先される。`--instruction` は各ステートの依頼の前に置く
+共通指示で、設定ファイルは書き換えない（呼び出し側が実行時だけ足すもの。§3.9）。
+
+同じリポジトリで何が実行できるかは `inspect` が出す。
+
+```bash
+agent-loop inspect
+agent-loop inspect --json --dir /path/to/repo
+```
 
 `statemachine:` を持つ定期エントリでは、対話面のある CLI をペイン内で使う。agent-herd の
 共通 TUI には `/sm ...`、クラウド CLI には statemachine-use の依頼文を送る。対話面が無い
@@ -191,7 +199,10 @@ tmux を使うかどうかはこの層とは独立です。tmux は送る手段�
 | `ls` | 管理下の tmux セッションとペインを一覧する | 任意 |
 | `send PROMPT` | 常駐セッションへ送る。`--wait` `--priority` `--model` `--sandbox` `--force` `--ralph` | 推奨 |
 | `run PROMPT` | その場で 1 回実行する。`--agent-cli` `--model` `--acceptance` `--judge` `--dir` | 不要 |
-| `statemachine --workflow PATH` | ワークフローを headless CLI で完走させる | 不要 |
+| `statemachine --workflow PATH` | ワークフローを headless CLI で完走させる。`--entry` `--agent-cli` `--model` `--param` `--input` `--instruction` `--dir` | 不要 |
+| `inspect [--json] [--dir DIR]` | リポジトリのタスク（ステートマシンと定期エントリ）と daemon 状態を出す（§3.9） | 任意 |
+| `schedule --json [--dir DIR]` | 単純な定期実行を stdin の JSON で保存する（§3.9） | 不要 |
+| `log --json [--dir DIR]` | 実行履歴が指すログを stdin の JSON で読む（§3.9） | 不要 |
 | `msg --to AGENT [BODY]` | 相手の inbox へメッセージを投函する | 受信側に必要 |
 | `agents` | 登録済みエージェントと inbox の状態を出す | 不要 |
 | `pause` / `resume` | local pause を掛ける・外す（`resume` は agent-control / budget の pause を外さない） | 必要 |
@@ -628,6 +639,10 @@ fail-closed です。次はすべて「満たしていない」に倒します�
 
 `statemachine` は `--workflow` か `--entry` のどちらか一方を取ります（両方・どちらも無しは終了コード 2）。`--entry` はエントリ名で、ワークフローの位置と実行条件を `agent-loop.yaml` から引きます（§2.3.1）。エントリが `cwd` を宣言していて `--dir` が無ければ、そちらを作業ディレクトリにします。
 
+`--instruction TEXT` は各ステートの依頼へ前置する共通指示です。ハーネスは受け取った本文の前に `TEXT` を置き、続けて `## 今回の工程` を書きます。設定ファイルには何も残らないので、呼び出し側（agent-app / agent-dashboard）が実行のたびに渡す運用時オーバーレイとして使えます。空文字と未指定は前置しません。
+
+`statemachine` の実行は、終了時にリポジトリの実行履歴へ 1 行を追記します（§3.9）。記録は best-effort で、失敗しても実行結果には影響しません。
+
 配布の契約検査（起動時）。実行の最初に、解決した `statemachine-use` の `next_state.py` が現行契約かを `--help` で確かめます。ハーネスは `--auto-eval` を値の無いフラグとして `--context` の後ろに渡すので、古い配布（旧 `--list-conditions`）や `--auto-eval` が値を取る変種だと噛み合いません。噛み合わないときは LLM を 1 回も呼ばずに 終了コード 1 で落とし、使用中の実体のパス・探索順・再配布コマンドを返します（argparse の生エラーだけが残ると、複数ある探索先のどれが使われたのか人が特定できないため）。
 
 決定的検査に達したときの追加フィールド。ステートが `check`（`statemachine-use` の決定的検査コマンド）を宣言していて、再投入を使い切っても通らなかった場合、結果に `escalate: true` と `check`（`state` / `attempts` / `argv` / `check_status` / `check_output`）が加わり、終了コードは 3 になります。これは「失敗した」ではなく「この実行レベルでは解けない」の宣告で、呼び出し側は上位の段（より能力の高いモデル）へ回す判断に使えます。
@@ -716,6 +731,74 @@ hook は `agent-loop hook-event` を呼び、`~/.agents/loop-hooks/<instance-id>
 自身の端末なので、我々が結果行を書き込む場所がありません（共通 TUI に置き換われば供給
 できます）。いまは受入条件の判定結果を配送ログの `event=acceptance_checked` として
 機械が読める形で残しています。別系統は作りません。
+
+#### 3.9 リポジトリ実行 UI 境界
+
+`inspect` / `schedule` / `log` の 3 コマンドが、リポジトリ単位で「何が実行できて、いまどう
+なっているか」を出す機械可読の境界です。GUI（agent-app / statemachine-maker）は
+この 3 コマンドだけを使い、設定ファイルの探索も
+`.statemachine/` の走査も自前では行いません。設定の探索順、エントリの正規化、実行、履歴の
+所在をここに集めるためで、画面に見えるタスクと agent-loop が実際に動かすタスクがずれません。
+
+**`inspect [--json] [--dir DIR]`** は次を 1 度に返します。`--json` 無しでは daemon の稼働と
+タスク名だけを人向けに出します。
+
+| キー | 内容 |
+|---|---|
+| `available` | この境界が使えるか（常に `true`） |
+| `machines[]` | `.statemachine/<名前>/workflow.yaml` の要約（`machine` / `workflow` / `name` / `description` / `parameters` / `schedule` / `history`） |
+| `tasks[]` | 下記の統合タスク |
+| `configSource` | 実効設定の `{ scope: repository \| global, path }` |
+| `daemon` | `{ running, paused, pid, activeCount, queueDepth }` |
+
+`tasks[]` は「そのリポジトリのステートマシン」と「実効 cwd がそのリポジトリに一致する定期
+エントリ」の和集合です。`cwd` を省略したエントリは、その設定を持つリポジトリを実効 cwd と
+みなします。ステートマシンを参照するエントリは別タスクにせず、そのステートマシンの
+`schedules[]` へ結合します（同じ定義に複数の予定があれば複数並びます）。
+
+| `kind` | 対象 |
+|---|---|
+| `statemachine` | `.statemachine/` の定義。`id` は `machine:<名前>` |
+| `prompt` | `prompt` / `slash` を持つエントリ |
+| `hook` | `hooks` / `event_hook` を持つエントリ |
+| `broken` | `statemachine` を宣言しているが定義ファイルが無いエントリ。`error` に理由 |
+
+エントリ由来のタスクは `id`（`entry:<24 桁>`）、`entryRef`、`fingerprint`（正規化した
+エントリ本文の SHA-256）、`source`、`effective` を持ちます。`id` は設定ファイルのパス・
+配列位置・`fingerprint` から導くので、同名のエントリがあっても衝突しません。実効設定に
+隠された共通設定のエントリは、重複タスクにせず `effective: false` として予定側に残します。
+
+**`schedule --json [--dir DIR]`** は stdin の JSON（1 MiB まで）で単純な定期実行を保存します。
+
+| フィールド | 意味 |
+|---|---|
+| `workflow` | 保存対象のワークフロー参照（省略時は `entry` テンプレートだけで保存） |
+| `entryRef` / `fingerprint` | 既存エントリを編集するときの identity。`fingerprint` が読込時と違えば拒否する |
+| `operation` | `save`（既定）または `create`（保存先を変える。継承コピーの重複を作らない） |
+| `destination` | `repository`（`<repo>/.agents/agent-loop.yaml`）または `global`（`~/.agents/agent-loop.yaml`） |
+| `schedule` | 頻度。`{ kind: interval, minutes }` は `interval_minutes` へ、`{ kind: daily \| weekly, time: "HH:MM", days[] }` は `cron` へ正規化する（画面で作れない書式は拒否し、YAML の生 cron は触らない） |
+| `input` | 実行条件。ワークフローが要求するパラメータが欠けていれば保存しない |
+| `enabled` / `entryName` / `agentCli` / `model` | そのまま該当キーへ写す |
+
+戻りは `{ saved, applied, daemonRunning, workflow }`（`destination` を指定したときは
+`destination` と `path` も）。`global` へ保存するときは対象が曖昧にならないよう正規化した
+`cwd` を記録します。デーモンが動いていれば保存後に reload を要求しますが、取り込みは
+デーモン側の次の tick なので `applied` は常に `false` です。反映は次の `inspect` で確認します。
+
+未知フィールド、他リポジトリのエントリ、配列の順序は保持し、対象のエントリだけを差し替えます。
+構文エラーのある設定を推測で直して保存することはありません。
+
+**`log --json [--dir DIR]`** は stdin の `{ workflow, runId }` で、実行履歴が指すログの末尾を
+返します（`{ text, truncated }`、既定 256 KiB・上限 1 MiB）。読むのは
+`<repo>/.statemachine-use/logs/` の内側だけで、履歴に無い runId とリポジトリ外を指すパスは
+拒否します。
+
+履歴は `~/.agents/run-history/<リポジトリパスの SHA-256 先頭 24 桁>.jsonl` に置きます
+（`$AGENT_LOOP_RUN_HISTORY_DIR` で変更可）。1 行は `runId` / `workflow` / `entryName` /
+`source`（`manual` \| `scheduled`）/ `startedAt` / `finishedAt` / `ok` / `escalate` /
+`finalState` / `stopReason` / `error` / `logFile` / `agentCli` / `model` です。追記は
+best-effort で、200 件を保ち 400 件で切り詰めます。リポジトリの中には書かないので、
+成果物のリポジトリが履歴で汚れません。
 
 ---
 
@@ -821,6 +904,7 @@ headless 経路では次が変わります。黙って劣化させず、警告�
 | `~/.agents/send-requests/` | CLI send の受付キュー |
 | `~/.agents/send-responses/` | `send --wait` が読む request 単位の完了状態 |
 | `~/.agents/runs/headless/` | headless 実行の JSONL ログ |
+| `~/.agents/run-history/<hash>.jsonl` | リポジトリ単位のステートマシン実行履歴（`$AGENT_LOOP_RUN_HISTORY_DIR` で変更可。§3.9） |
 | `~/.agents/tuning/tuning.json` | agent-tuning の注入プロファイル（`$AGENT_TUNING_DIR` で変更可） |
 | `~/.kiro/slots/` | 同時実行スロットとクールダウン（`.lock` は fcntl のミューテックス） |
 | `~/.kiro/agents/<name>/inbox/` | エージェント間メッセージ（`.processed/` は処理済み） |
