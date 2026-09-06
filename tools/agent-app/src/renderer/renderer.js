@@ -595,6 +595,7 @@ function renderRunSettingsSummary() {
   const location = activeWorktree() ? '分離フォルダ' : 'リポジトリ本体';
   const skillLabel = `スキル ${SKILL_MODE_LABEL[state.turnSkillMode] || SKILL_MODE_LABEL.auto}`;
   summary.textContent = [policy.label, `${agent}${model ? ` / ${model}` : ''}`, skillLabel, mode, location].filter(Boolean).join(' · ');
+  summary.title = summary.textContent;
   $('direct-agent-settings').hidden = selected.policy !== 'direct';
   renderTurnSkills();
 }

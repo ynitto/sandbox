@@ -136,6 +136,9 @@ test('config.json の主要設定を三つの設定画面から UI コントロ�
   assert.match(html, /id="max-concurrent"[^>]*min="1"[^>]*max="8"/);
   assert.match(html, /id="settings-save"/);
   assert.doesNotMatch(html, /id="config-json"|設定JSON/);
+  assert.match(renderer, /summary\.title = summary\.textContent/);
+  const styles = fs.readFileSync(path.join(SRC, 'renderer/styles.css'), 'utf8');
+  assert.match(styles, /\.run-settings > summary > span \{[^}]*min-width: 0;[^}]*text-overflow: ellipsis;/);
   assert.match(renderer, /function openSettings/);
   assert.match(renderer, /function settingsPatch/);
   assert.match(renderer, /function renderStartupActions/);
