@@ -43,7 +43,7 @@ const GOLDEN = {
     readonly: ['copilot', '-s', '--allow-all-tools', '--no-color',
                '--available-tools=view,grep,glob', '--disable-builtin-mcps',
                '--no-custom-instructions', '--model', 'M', '-p', 'P'],
-    interactive: ['copilot', '--model', 'M'],
+    interactive: ['copilot', '--no-auto-update', '--allow-all-tools', '--allow-all-paths', '--model', 'M'],
   },
   cursor: {
     write: ['cursor-agent', '-p', '--output-format', 'text', '--force', '--model', 'M'],
