@@ -104,7 +104,11 @@ chat モードのように、人が `/skill-name` と書いたテキストを送
 判定の優先順位: `busy_pattern` マッチ → 処理中 ＞ `ready_pattern` マッチ → 待機 ＞
 `idle_quiet_sec` 静穏 → 待機 ＞ それ以外 → 処理中。
 
-## 同梱の定義（13 件）
+## 同梱の定義（8 件）
+
+**ファイル数は実エージェント数と一致する。** 用途別の起動差は別ファイルではなく `ollama.json` の
+`profiles` が持つ（下表の後半）。分けると `agent_cli` が用途ごとに増え、台帳と格付けのキー
+`(agent_cli, model, operation_class)` のうち用途の次元を二重に持つことになる。
 
 | ファイル | CLI | 読み取り専用の強制力 |
 |---|---|---|
@@ -114,13 +118,18 @@ chat モードのように、人が `/skill-name` と書いたテキストを送
 | `codex.json` | `codex exec` | enforced（`--sandbox read-only`）。スキル起動は `$name` |
 | `cursor.json` | `cursor-agent` | best-effort（`--mode ask`） |
 | `ollama.json` | `agent-ollama <model>` | enforced（readonly はツールを持たない） |
-| `ollama-json.json` | 同上 + `--format json` | enforced（道具なし。JSON 契約の役割用） |
-| `ollama-list.json` | 同上 + `--format array` | enforced（道具なし。配列契約＝split 用） |
-| `ollama-list-thinking.json` | 同上 + `--think on`（`--format` なし） | enforced（道具なし。gemma4:e4b の split 用——文法制約を外して Thinking を使い、`temperature=0` で意味的な完全被覆を安定させる） |
-| `ollama-read.json` | 同上 + `--tools read` | enforced（write でも読み取り専用コマンドだけ） |
-| `ollama-verify.json` | 同上 + `--format json --stall-timeout 180` | enforced（道具なし。テキスト検証役。既定 gemma4:12b——負けは全部タイムアウトなので stall + transient 分類の再投入で受け、コード worker の候補には入れない） |
 | `aider.json` | `agent-aider`（aider + ollama_chat） | enforced（`--dry-run`）。single-shot——渡されたファイルを編集するだけでツールループを持たない |
 | `vscode-copilot.json` | `vscode-copilot`（VS Code の Language Model API へ橋渡し） | enforced（モデルを呼ぶだけでファイルもコマンドも触らない）。single-shot——ツールを持たないので呼び出し側がループを供給する |
+
+`ollama.json` の profile（互換名は旧ファイル名と同じ綴りで解決できる）。
+
+| profile | 互換名 | 起動差 |
+|---|---|---|
+| `json` | `ollama-json` | `--format json`（道具なし。JSON 契約の役割用） |
+| `list` | `ollama-list` | `--format array`（道具なし。配列契約＝split 用） |
+| `list-thinking` | `ollama-list-thinking` | `--think on`・`--format` なし（道具なし。文法制約を外して Thinking を使い、`temperature=0` で安定させる対照用） |
+| `read` | `ollama-read` | `--tools read --max-rounds 30`（write でも読み取り専用コマンドだけ） |
+| `verify` | `ollama-verify` | `--format json --stall-timeout 180`（道具なし。テキスト検証役。既定 `gemma4:12b`） |
 
 **ローカルが 2 つある理由（結論: 選ばなくてよい）。** `aider` と `ollama` は、15 用途
 （verify / judge / extract / retrieve / split …）についてはどちらを base にしても同じ

@@ -102,12 +102,26 @@ class CodexProfileTest(unittest.TestCase):
         spec_path = HERE.parents[2] / "agents" / "codex.json"
         with spec_path.open(encoding="utf-8") as stream:
             profile = al.CliProfile("codex", json.load(stream))
-        content = (
+        # 空の入力欄と、プレースホルダー入りの入力欄はどちらも待機。
+        # 依頼本文の echo（`› 本文`）は待機ではない（送信直後を完了と誤認しない）。
+        empty_box = (
+            "› \n"
+            "\n"
+            "  gpt-5.6-luna default · ~/Workspace/sandbox-test"
+        )
+        self.assertTrue(profile.is_ready(empty_box))
+        placeholder = (
+            "› Ask Codex to do anything\n"
+            "\n"
+            "  gpt-5.6-sol medium · ~/Workspace/sandbox-test"
+        )
+        self.assertTrue(profile.is_ready(placeholder))
+        echoed = (
             "› Write tests for @filename\n"
             "\n"
             "  gpt-5.6-luna default · ~/Workspace/sandbox-test"
         )
-        self.assertTrue(profile.is_ready(content))
+        self.assertFalse(profile.is_ready(echoed))
 
 
 class CopilotProfileTest(unittest.TestCase):
@@ -115,17 +129,28 @@ class CopilotProfileTest(unittest.TestCase):
         spec_path = HERE.parents[2] / "agents" / "copilot.json"
         with spec_path.open(encoding="utf-8") as stream:
             profile = al.CliProfile("copilot", json.load(stream))
+        # 枠付き入力欄（┃ の行）の下でフッターが折り返されても、ready_tail_lines の
+        # 範囲に入力欄が残る。
         content = (
             " ~/Workspace/sandbox-test\n"
             " [main] Session: 0 AIC used\n"
-            "────────────────────────\n"
-            "❯\n"
-            "────────────────────────\n"
+            "╻▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄\n"
+            "┃\n"
+            "╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n"
             " ← open     ·/ commands · ? help · tab\n"
             " sidebar      next tab\n"
             " Auto\n"
         )
         self.assertTrue(profile.is_ready(content))
+        working = (
+            "❯ 今日の天気 (pending · ctrl+c to cancel)\n"
+            " ~/Workspace/sandbox-test Session: 0 AIC used\n"
+            "╻▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄\n"
+            "┃\n"
+            "╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n"
+            " ◎ Working esc interrupt  Auto\n"
+        )
+        self.assertFalse(profile.is_ready(working))
 
 
 class VscodeCopilotProfileTest(unittest.TestCase):
