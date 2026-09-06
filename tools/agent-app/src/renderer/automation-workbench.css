@@ -7,6 +7,7 @@
 :host .home-tabs,
 :host .machine-head,
 :host .execution-list,
+:host .teaching-page-head,
 :host .flow-home-head { display: none; }
 :host .home,
 :host .execution-layout,

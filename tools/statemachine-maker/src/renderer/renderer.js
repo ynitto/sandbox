@@ -783,17 +783,15 @@ function executionDetailHtml(machine) {
       <section class="execution-card run-card"><div class="execution-card-head"><h3>手動実行</h3><span class="status ${state.run.running ? 'active' : ''}">${state.run.running ? '実行中' : '待機中'}</span></div>
         ${taskWarning}<div class="run-toolbar">${runFields}<span class="run-toolbar-spacer"></span><button type="button" class="primary" id="run-start" ${state.run.running || snapshot.available === false || !state.agents.length || !canRun ? 'disabled' : ''}>実行</button>${machine.kind === 'statemachine' ? `<button type="button" id="run-check" ${state.run.running ? 'disabled' : ''}>構成を確認</button>` : ''}<button type="button" class="danger" id="run-stop" ${state.run.running ? '' : 'disabled'}>停止</button></div>${inputs}${result}<div class="log" id="run-log">${log}</div></section>
       <section class="execution-card"><div class="execution-card-head"><div><h3>定期実行</h3><p>${schedules.length ? `${schedules.length} 件の予定` : '予定なし'} · ${esc(daemonStatus)}</p></div><div class="row"><button type="button" id="daemon-toggle" ${snapshot.available === false || (!schedules.length && !daemon.running) ? 'disabled' : ''}>${daemon.running ? '自動実行を停止' : '自動実行を開始'}</button>${['statemachine', 'prompt'].includes(machine.kind) ? `<button type="button" id="schedule-toggle">${state.execution.scheduleOpen ? '閉じる' : schedules.length ? '予定を編集' : '予定を追加'}</button>` : ''}</div></div>${scheduleRows ? `<ul class="run-history schedule-list">${scheduleRows}</ul>` : ''}${state.execution.scheduleOpen ? scheduleEditorHtml(machine) : ''}</section>` : '';
-  // 定義があるタスクは常に「利用可能」。AIとの変更が進んでいれば、その進み具合を別の印とバナーで添える
-  // （今の版はそのまま実行できる）。ステートマシン以外（プロンプト・フック）は状態を出さない。
+  // 定義があるタスクは常に「利用可能」。AIとの変更が進んでいれば、その進み具合を印で添え、ボタンを
+  // 「変更を続ける」に変える（今の版はそのまま実行できる。実行ボタンが押せることがその証拠なので、
+  // 説明の帯は出さない）。ステートマシン以外（プロンプト・フック）は状態を出さない。
   const present = machine.kind === 'statemachine' && machine.machine ? teachingFeature.statusOf(machine.machine) : null;
   const badges = present
     ? `<span class="status ${present.status === 'ready' ? 'ok' : ''}">${esc(window.teachingStatusLabel(present.status))}</span>${present.change ? `<span class="status warn">${esc(window.teachingChangeLabel(present.change))}</span>` : ''}`
     : '';
-  const teachAction = present ? '<button type="button" data-run-teach>AIに変更を相談</button>' : '';
-  const changeBanner = present && present.change
-    ? '<div class="task-change-banner"><span>AIとの変更が進行中です。現在の版はそのまま実行できます。</span><button type="button" class="tiny" data-run-teach>変更を続ける</button></div>'
-    : '';
-  return `<header class="execution-title"><div><span class="eyebrow">タスク</span><h2>${esc(machine.name)}${badges ? ` <span class="task-badges">${badges}</span>` : ''}</h2>${machine.description ? `<p>${esc(machine.description)}</p>` : ''}</div>${teachAction ? `<div class="row">${teachAction}</div>` : ''}</header>${changeBanner}
+  const teachAction = present ? `<button type="button" data-run-teach>${present.change ? '変更を続ける' : 'AIに変更を相談'}</button>` : '';
+  return `<header class="execution-title"><div><span class="eyebrow">タスク</span><h2>${esc(machine.name)}${badges ? ` <span class="task-badges">${badges}</span>` : ''}</h2>${machine.description ? `<p>${esc(machine.description)}</p>` : ''}</div>${teachAction ? `<div class="row">${teachAction}</div>` : ''}</header>
     <nav class="task-detail-tabs" role="tablist" aria-label="タスク詳細">
       <button type="button" role="tab" data-task-tab="overview" aria-selected="${state.execution.detailTab === 'overview'}" class="${state.execution.detailTab === 'overview' ? 'is-on' : ''}">概要</button>
       ${machine.kind === 'statemachine' ? '<button type="button" role="tab" data-task-tab="steps" aria-selected="false">手順</button>' : ''}

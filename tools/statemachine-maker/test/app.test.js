@@ -161,7 +161,7 @@ test('定義があるタスクは実行詳細から開き、教示は「AIに変
   assert.ok(!renderer.includes('!!selectedTask.machine'), '既存定義を一律に教示画面へ送らない');
   assert.match(renderer, /payload\.action === 'teach'/);
   assert.ok(renderer.includes('data-run-teach') && renderer.includes('AIに変更を相談'));
-  assert.ok(renderer.includes('現在の版はそのまま実行できます'), '変更中でも今の版が実行できることを伝える');
+  assert.ok(renderer.includes('変更を続ける') && !renderer.includes('task-change-banner'), '変更中は印とボタンだけで示し、説明の帯は出さない');
   assert.ok(renderer.includes('teachingFeature.statusOf('), '実行詳細の状態は教示側の判定を使う');
   // 状態語は4つに揃え、既存定義を「試運転が必要」にしない
   assert.ok(!teachingUi.includes('試運転が必要'));

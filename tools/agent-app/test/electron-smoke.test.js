@@ -141,7 +141,7 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     await workspace.locator('.task-detail-tabs').waitFor({ timeout: 20000 });
     assert.match(await workspace.locator('.execution-title').textContent(), /タスク.*リリース確認.*利用可能/s);
     assert.strictEqual(await workspace.locator('.teaching-page').count(), 0, '既存定義を教示画面で開かない');
-    assert.strictEqual(await workspace.locator('.task-change-banner').count(), 0, '変更が進んでいないのにバナーを出さない');
+    assert.strictEqual(await workspace.locator('.teaching-page-head').isHidden(), true, 'タスクの見出しがサイドバーと二重に出ている');
     // 「AIに変更を相談」で教示画面へ。状態は利用可能のまま、進行バーは出ない
     await workspace.locator('[data-run-teach]').click();
     await workspace.locator('.teaching-page').waitFor({ timeout: 20000 });

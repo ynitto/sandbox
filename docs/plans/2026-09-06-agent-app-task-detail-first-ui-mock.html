@@ -211,13 +211,12 @@
           <div class="app narrow">
             <div class="stage">
               <div class="titlebar"><div><h4>月次レポート <span class="pill ok">利用可能</span> <span class="pill warn">変更中 · 試運転待ち</span></h4></div><span class="btn">変更を続ける</span></div>
-              <div class="banner"><span>AIとの変更が進行中です。現在の版はそのまま実行できます。</span></div>
               <div class="tabs"><span class="on">概要</span><span>手順</span><span>履歴</span></div>
               <div class="card"><div class="head"><h5>手動実行</h5><span class="pill">待機中</span></div><div class="row"><span class="btn primary">実行</span><span class="btn">構成を確認</span></div></div>
             </div>
           </div>
         </div>
-        <figcaption><strong>② 利用可能 + 変更中</strong> — 定義はあるが、AIが作った候補が試運転待ち。今の版は動くまま、置き換えは試運転と確認のあと。</figcaption>
+        <figcaption><strong>② 利用可能 + 変更中</strong> — 定義はあるが、AIが作った候補が試運転待ち。印とボタンだけで示し、説明の帯は出さない（実行ボタンが押せることが「今の版は動く」の証拠）。</figcaption>
       </figure>
       <figure>
         <div class="screen">
@@ -256,14 +255,14 @@
                 <div class="row"><span class="btn">実行画面へ戻る</span><span class="btn ghost">高度な編集</span></div>
               </div>
               <div class="chat">
-                <div class="msgs"><span class="bubble">このタスクは利用可能です。変更したいことを伝えると、今の版を残したまま候補を作り、試運転で確認してから置き換えます。</span></div>
+                <div class="msgs"><span class="bubble">変更したいことを伝えてください。今の版は、試運転で確認するまで置き換わりません。</span></div>
                 <div class="aside"><b>AIの理解</b><span>目的: 自動化統合の確認</span><span>まだ相談はありません</span></div>
               </div>
               <div class="composer"><span class="input">変更したいことを入力</span><span class="btn primary">変更を相談する</span></div>
             </div>
           </div>
         </div>
-        <figcaption><strong>相談開始前</strong> — 進行バーを出さず、案内文で「今の版は残る」と伝える。</figcaption>
+        <figcaption><strong>相談開始前</strong> — 進行バーを出さず、一文で「今の版は残る」と伝える。</figcaption>
       </figure>
       <figure>
         <div class="screen good">
@@ -298,7 +297,7 @@
         <thead><tr><th>表示</th><th>条件</th><th>実行</th><th>最初に開く画面</th></tr></thead>
         <tbody>
           <tr><td><span class="pill ok">利用可能</span></td><td><code>workflow.yaml</code> がある。<code>teaching.json</code> が無い、または status が ready</td><td>できる</td><td>実行詳細</td></tr>
-          <tr><td><span class="pill ok">利用可能</span> <span class="pill warn">変更中 · 下書き / 試運転待ち / 確認待ち</span></td><td><code>workflow.yaml</code> があり、<code>teaching.json</code> の status が ready 以外</td><td>できる（今の版）</td><td>実行詳細 + 変更中バナー</td></tr>
+          <tr><td><span class="pill ok">利用可能</span> <span class="pill warn">変更中 · 下書き / 試運転待ち / 確認待ち</span></td><td><code>workflow.yaml</code> があり、<code>teaching.json</code> の status が ready 以外</td><td>できる（今の版）</td><td>実行詳細（ボタンは「変更を続ける」）</td></tr>
           <tr><td><span class="pill">下書き</span></td><td><code>workflow.yaml</code> が無く、候補（generation）も無い</td><td>できない</td><td>教示</td></tr>
           <tr><td><span class="pill warn">試運転待ち</span></td><td><code>workflow.yaml</code> が無く、候補はあるが成功した試運転が無い</td><td>試運転のみ</td><td>教示</td></tr>
           <tr><td><span class="pill warn">確認待ち</span></td><td><code>workflow.yaml</code> が無く、成功した試運転がある</td><td>「期待どおり」で公開</td><td>教示</td></tr>

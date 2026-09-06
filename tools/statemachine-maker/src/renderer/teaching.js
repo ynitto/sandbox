@@ -269,7 +269,7 @@
     function messagesHtml(runnable) {
       const messages = view.session?.messages || [];
       const empty = runnable
-        ? '<div class="blank compact"><p>このタスクは利用可能です。変更したいことを伝えると、今の版を残したまま候補を作り、試運転で確認してから置き換えます。</p></div>'
+        ? '<div class="blank compact"><p>変更したいことを伝えてください。今の版は、試運転で確認するまで置き換わりません。</p></div>'
         : '<div class="blank compact"><p>変更したいことをAIへ伝えてください。</p></div>';
       return messages.map((item) => `<article class="teaching-message ${item.role}"><span>${item.role === 'user' ? 'あなた' : 'AI'}</span><p>${e(item.text)}</p></article>`).join('') || empty;
     }

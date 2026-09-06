@@ -145,7 +145,6 @@ else {
     await win.click('[data-teach-run]');
     await win.waitForSelector('.task-detail-tabs');
     assert.match(await win.textContent('.execution-title'), /煙試験.*利用可能/s);
-    assert.strictEqual(await win.locator('.task-change-banner').count(), 0);
     await win.click('[data-run-teach]');
     await win.waitForSelector('.teaching-workspace');
     await resize(760);
