@@ -148,6 +148,15 @@ statemachine-maker の画面で扱います。
 - タスクの「＋」は AI 教示画面を開きます。会話の利用者メッセージの「この依頼をタスクにする」からも、
   依頼本文・添付名・実行設定を引き継いで同じ画面に入れます。
 - 教示が終わると、同じタスクの概要・手順・履歴に移り、実行・定期実行・履歴を扱えます。
+- ワークフローの「＋」は「新しいワークフローを教える」画面を開きます。実現したいことを普段の言葉で
+  書いて「AIに相談する」と、AI が質問するか候補の構成を返します。「手動で作成」なら従来の工程エディタ
+  で直接組み立てます。
+- 教示中のワークフローは一覧の先頭に「理解中 / 試運転待ち / 確認待ち」の状態で並びます。候補ができたら
+  「代表的な依頼で試運転」し、結果画面で「期待どおり」か「修正が必要」を選びます。「期待どおり」の後に
+  「この内容で利用可能にする」を押すと定義として保存され、一覧の「利用可能」へ移ります。
+- ワークフローの工程には、後の工程（人の確認・検証）から前の工程へ戻す「差し戻し」を付けられます。
+  通常の依存関係とは別に、きっかけ（人が却下 / 検証失敗）・戻り先・最大回数・やり直す指示を持ち、
+  画面ではグラフの外側の専用レーンに描かれます。
 - ワークフローの実行で納品ブランチが公開された場合、「納品を開く」でそのブランチを作業フォルダとして
   開けます。
 
@@ -179,6 +188,8 @@ statemachine-maker の画面で扱います。
 | `送信失敗・入力内容を保持しました` | tmux が生きているか。「再接続」を押して再送 |
 | `セッション終了` | CLI が終了した。「再接続」か次の依頼で作り直す |
 | `件実行中で、同時実行上限 … に達しています` | 他の会話が終わってから送る。上限は設定 > 実行制御 |
+| `成功した試運転を確認してから利用可能にしてください` | ワークフローの候補を試運転し、結果画面で「期待どおり」を選ぶ |
+| `試運転後に候補が変更されています` | AI に相談して候補が変わった。もう一度試運転する |
 | `選択したスキルが見つかりません` | 手動選択したスキルが `~/.agents/skills` などに無い |
 | `作業フォルダに未コミットの変更が残っています` | 変更を退避するか「変更ごと削除」 |
 
@@ -233,13 +244,16 @@ src/
     ├── inputMode.js     入力 2 モードの遷移（純粋モジュール）
     ├── navigation.js    領域名と旧設定の読み替え（純粋モジュール）
     ├── taskIntent.js    タスク教示 intent（純粋モジュール）
-    ├── automation-frame.html  タスク・ワークフローの iframe
+    ├── automation-workbench.css  共有編集面の host stylesheet（:host への上書きだけ）
     └── vendor/          npm install 時に scripts/vendor.js が写す（git 管理外）
 ```
 
-`vendor.js` は外部ライブラリの配布物に加え、statemachine-maker の `styles.css` / `flow.js` /
-`teaching.js` / `renderer.js` を `vendor/statemachine/` へ写す。`renderer.js` は `api.` を
-`automationBridge.` へ置換し、先頭に親ウィンドウの `api.automation` へ接続するブリッジを挿入する。
+`vendor.js` は外部ライブラリの配布物に加え、statemachine-maker の `styles.css` / `editor-host.js` /
+`workbench-element.js` / `flow.js` / `teaching.js` / `renderer.js` を `vendor/statemachine/` へ**改変せずに**
+写す。`index.html` はこれらを `workbench-element` → `editor-host` → `teaching` → `flow` → `renderer` の順に
+読み、`<statemachine-workbench data-statemachine-workbench embedded stylesheet="vendor/statemachine/styles.css"
+host-stylesheet="automation-workbench.css">` を `#automation` に置く。共有ファイルを足すときは `vendor.js` の
+`FILES` と `index.html` の `<script>` を同時に更新する（`app.test.js` が対応を検査する）。
 
 ### 2. IPC 契約
 
@@ -608,9 +622,10 @@ spawn は Windows では `wsl.exe -e bash -lc 'export …; cd <cwd> && exec <arg
 | 定義 | `listMachines` `readMachine` `machineExists` `previewMachine` `saveMachine` `openMachineFolder` |
 | 実行環境 | `listAgents` `selectSkills` `toolStatus` |
 | 操作記録 | `recordingStart` `recordingStop` `recordingImport` `recordingSnapshot` `recordingExtract` `recordingState` |
-| AI | `aiStart` `aiStop` `aiApply` `onAiProgress` `onAiResult` |
-| 教示 | `teachingList` `teachingCreate` `teachingRead` `teachingSave` `teachingAddEvidence` `teachingStage` `teachingCleanup` `teachingRecordTrial` `teachingConfirm` `teachingRestore` |
+| AI | `aiStart`（`mode`: `draft` / `review` / `teach` / `flow-teach`）`aiStop` `aiApply` `onAiProgress` `onAiResult` |
+| タスク教示 | `teachingList` `teachingCreate` `teachingRead` `teachingSave` `teachingAddEvidence` `teachingStage` `teachingCleanup` `teachingRecordTrial` `teachingConfirm` `teachingRestore` |
 | ワークフロー | `flowCatalog` `flowList` `flowRead` `flowSave` `flowDelete` `flowPreview` `flowContext` `flowRunStart` `flowRunList` `flowRunRead` `flowRunCancel` `flowRunRespond` `flowRunResult` `flowRunLog` `flowRunDelete` `flowRunOpenDelivery` |
+| ワークフロー教示 | `flowTeachingList` `flowTeachingCreate` `flowTeachingRead` `flowTeachingSave` `flowTeachingRecordTrial` `flowTeachingConfirm`（§12.2） |
 | 実行 | `runSnapshot` `saveRunSchedule` `setRunDaemon` `runLog` `runStart` `runStop` `onRunLine` `onRunExit` |
 
 agent-app 側のアダプト:
@@ -637,13 +652,25 @@ agent-app は設定ファイルの探索も `.statemachine/` の走査も自前�
 
 契約の全項目は [agent-loop 仕様書 §3.9](./agent-loop-spec.md#39-リポジトリ実行-ui-境界) にあります。
 
-親と iframe のメッセージ:
+#### 12.1 親と共有編集面の同期
 
-| type | 向き | フィールド |
+画面は maker の共有 renderer をカスタム要素 `<statemachine-workbench>`（Shadow DOM）で同じウィンドウに
+載せる。maker の renderer は `[data-statemachine-workbench]` の有無で埋め込みを判定し、preload の窓口は
+`StatemachineEditorHost.resolve(window, { embedded })` が返す `window.api.automation`（無ければ親ウィンドウの
+同名）だけを使う。
+
+| 手段 | 向き | フィールド |
 |---|---|---|
-| `agent-app:navigate` | 親 → 子 | `area`、`root`、`selected`、`action`（`''` / `new`）、`intent?` |
-| `agent-app:changed` | 子 → 親 | `root`、`area`、`selected?` |
-| `agent-app:teaching-started` | 子 → 親 | `root`、`intentId`、`machine` |
+| `element.navigate(payload)`。`payload.type` は `agent-app:navigate` | 親 → 子 | `area`、`root`、`selected`、`action`（`''` / `new`）、`intent?`。controller 登録前は最後の 1 件を保留 |
+| CustomEvent `statemachine:changed`（`bubbles: true`）。`detail.type` は `agent-app:changed` | 子 → 親 | `root`、`area`、`selected?` |
+| CustomEvent `statemachine:teaching-started`（`bubbles: true`）。`detail.type` は `agent-app:teaching-started` | 子 → 親 | `root`、`intentId`、`machine` |
+
+親は `detail` を受け取ると一覧を再読込し、`lastTask` / `lastWorkflow` を保存する。`agent-app:changed` で
+`selected` が来なければ選択は変えない。
+
+`automation-workbench.css` は `:host` に対する上書きだけを持ち、maker のフォルダ欄（`.folder-pane`）、
+ホームタブ、見出し（`.machine-head` / `.flow-home-head`）、実行一覧（`.execution-list`）を隠し、
+編集中以外は `#bar` を出さない。共有 renderer の本文に Host ごとの分岐は足さない。
 
 タスク教示 intent（`taskIntent.create`）:
 
@@ -653,6 +680,52 @@ agent-app は設定ファイルの探索も `.statemachine/` の走査も自前�
 ```
 
 利用者メッセージ以外、空の本文、リポジトリ未選択は作らない。子は同じ `id` を二度消費しない。
+
+#### 12.2 ワークフロー教示（`automation:flow:teaching:*`）
+
+実装は maker 側（`flow-teaching-model.js` / `flow-teaching-store.js` / `flow-teaching-compiler.js`）で、
+agent-app は `automation:` 接頭辞で呼ぶだけである。
+
+| チャネル | preload | 引数 | 動作 |
+|---|---|---|---|
+| `flow:teaching:list` | `flowTeachingList(root)` | — | `[{ workflowId, title, purpose, status, lastTrial }]`。読めない sidecar は飛ばす |
+| `flow:teaching:create` | `flowTeachingCreate(root, purpose, { workflowId?, title? })` | 本文必須 | `workflowId` 既定は `flow-<uuid 先頭 8 桁>`、`title` 既定は本文 1 行目（80 字）。同名の下書きがあれば断る |
+| `flow:teaching:read` | `flowTeachingRead(root, workflowId)` | — | sidecar。無ければ空のセッション |
+| `flow:teaching:save` | `flowTeachingSave(root, workflowId, session)` | — | 正規化して temp + rename で保存 |
+| `flow:teaching:trial` | `flowTeachingRecordTrial(root, workflowId, trial)` | `{ id?, generationId?, runId, outcome, assessment }` | `outcome` が `passed` なら `awaiting-confirmation`、それ以外は `needs-trial` |
+| `flow:teaching:confirm` | `flowTeachingConfirm(root, workflowId, generationId, digest)` | — | その世代に `passed` の試運転があり、`digest` が一致するときだけ `ready` にし、定義を `flow:save`（create / update）で書く |
+| `ai:start` | `aiStart({ root, mode: 'flow-teach', workflowId, message?, agent?, model? })` | — | `message` があれば会話へ足してから AI を呼ぶ。応答は `questions`（`understanding.unknowns` を更新）か `candidate`（`understanding` を置き換え、世代を追加して `needs-trial`） |
+
+試運転は `flow:run:start` に `source: { type: 'draft', workflow: <世代の workflow> }` を渡す通常の実行で、
+結果画面の「期待どおり / 修正が必要」が `flow:teaching:trial` を呼ぶ。
+
+sidecar（`<repo>/.agents/workflows/.teaching/<workflowId>.json`）:
+
+| フィールド | 意味 |
+|---|---|
+| `version` | `1` |
+| `workflowId` / `title` | 保存名（`flow-model.ID_RE`）と表示名（300 字） |
+| `status` | `draft`（理解中）/ `needs-trial`（試運転待ち）/ `awaiting-confirmation`（確認待ち）/ `ready`（利用可能） |
+| `messages` | `[{ role: user|assistant, text, kind? }]`。1 件 4000 字。秘密値は `teaching-model.redact` で除く |
+| `evidence` | `{ requestExamples, resultExamples, references }` |
+| `understanding` | `purpose`、`scope`、`inputs`、`outputContract`、`constraints`、`nonGoals`、`decompositionPolicy`、`replanningPolicy`、`humanCheckpoints`、`qualityCriteria`、`unknowns` |
+| `generations` | `[{ id, createdAt, summary, workflowSpec, workflow, digest }]`。AI が候補を返すたびに追加 |
+| `activeGenerationId` / `lastSuccessfulGenerationId` | 編集中の世代と、最後に承認した世代 |
+| `trials` | `[{ id, generationId, runId, outcome: passed|failed|approval-required, assessment }]` |
+
+ワークフロー定義の差し戻し（`rework[]`、正典は `schemas/agent-workflow.schema.json`）:
+
+| フィールド | 制約 |
+|---|---|
+| `id` | 定義内で一意 |
+| `from` / `to` | 実在するノード。`to` は `from` の祖先（`deps` をたどって到達できる）で、同一は不可 |
+| `trigger` | `human-rejected`（`from` は `human`）/ `verification-failed`（`from` は `verify`） |
+| `instruction` | 必須。再計画へ渡す指示 |
+| `maxIterations` | 1〜20 |
+| `onExhausted` | `human` / `fail` / `continue` |
+
+`deps` には混ぜず、`flow-model.normalize` が保存前に検査する。投入 plan では `max_iterations` /
+`on_exhausted` に写す。
 
 ### 13. 上限一覧
 
@@ -669,6 +742,7 @@ agent-app は設定ファイルの探索も `.statemachine/` の走査も自前�
 | tmux 履歴 | 50,000 行 | 変更不可 |
 | スナップショット | 12 件 × 120,000 字 | 変更不可 |
 | tmux 保持 | 24 時間 | 変更不可 |
+| ワークフロー教示 | 会話 1 件 4000 字、表示名 300 字、差し戻し 1〜20 回 | 変更不可 |
 | ファイル本文 | テキスト 2 MB、画像 8 MB | 変更不可 |
 | 名前検索 | 200 件、深さ 12 | 変更不可 |
 | ホストコマンド | 既定 15 秒（git 20〜120 秒、tmux 起動 30 秒） | 呼び出し側 |
@@ -680,6 +754,8 @@ agent-app は設定ファイルの探索も `.statemachine/` の走査も自前�
 | `<リポジトリ>/.worktrees/<名前>` | 作業フォルダ | git（agent-app の `worktree add`） |
 | `<リポジトリ>/.git/info/exclude` | `/.worktrees/` の 1 行 | agent-app |
 | `<リポジトリ>/.statemachine/` | タスク定義、教示セッション | statemachine-maker |
+| `<リポジトリ>/.agents/workflows/<id>.json` | ワークフロー定義（`rework` を含む） | statemachine-maker |
+| `<リポジトリ>/.agents/workflows/.teaching/<id>.json` | ワークフロー教示の sidecar | statemachine-maker |
 | `<リポジトリ>/.agents/agent-loop.yaml` など | 定期実行の設定 | statemachine-maker / agent-loop |
 
 会話、設定、添付は userData にだけ書く。CLI 自身のセッションログ（`~/.claude/projects` など）は
@@ -691,11 +767,11 @@ CLI の管轄で、agent-app は ID を覚えるだけである。
 
 | ファイル | 内容 | skip 条件 |
 |---|---|---|
-| `app.test.js` | 構文、画面構造、preload と IPC の対応、vendor の対応、argv、店、tmux 保持、git、ファイル、添付 | なし |
+| `app.test.js` | 構文、画面構造、preload と IPC の対応、vendor の対応、共有編集面の Host Adapter 接続、ワークフロー教示と差し戻しの表示、argv、店、tmux 保持、git、ファイル、添付 | なし |
 | `tmux.test.js` | パス変換、画面判定、送信、抽出、キー変換、常駐シェル、疑似 CLI との統合 | 統合のみ tmux が無い |
 | `worktree.test.js` | 名前、パス、`--porcelain`、作成・削除・納品ブランチの統合 | 統合のみ git が無い |
 | `settings.test.js` / `session-setup.test.js` / `skill-selection.test.js` / `skills.test.js` / `response.test.js` / `input-mode.test.js` / `task-intent.test.js` / `execution-gate.test.js` | 各モジュールの純粋関数 | なし |
-| `electron-smoke.test.js` | Electron 実機で三領域を移動 | electron バイナリ、Playwright の Electron ドライバ、表示先のいずれかが無い |
+| `electron-smoke.test.js` | Electron 実機で三領域を移動し、ワークフローの＋で教示画面を開く | electron バイナリ、Playwright の Electron ドライバ、表示先のいずれかが無い |
 
 `test/smoke.js` は `npm test` に含めない手動スモークで、画面のある環境で疑似 CLI と会話しスクリーンショットを
 撮る（Linux では `SMOKE_OUT=/tmp/shots xvfb-run -a npx electron --no-sandbox test/smoke.js`）。

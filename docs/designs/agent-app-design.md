@@ -24,11 +24,15 @@ codex / kiro / cursor / aider …）と会話形式で作業する Electron ア�
 3. 起動方針（おすすめ / 節約 / 品質重視）は設定の tier へ決定的に写す。利用不能でも別 tier へ黙って
    倒さない。共通指示・開始アクション・スキル選択も同じ 1 か所（`runTurn`）で合成する。
 4. タスク・ワークフローは statemachine-maker の domain と IPC をそのまま借り、agent-app は登録
-   リポジトリと設定だけをアダプトして iframe に載せる。実行・定期発火・履歴は agent-loop が正典。
+   リポジトリと設定だけをアダプトする。画面は maker の共有 renderer を同じウィンドウのカスタム要素
+   `<statemachine-workbench>`（Shadow DOM）で動かし、アプリ固有の差は Host Adapter と host stylesheet に
+   閉じ込める。実行・定期発火・履歴は agent-loop が正典。
 
 却下した中心案は、node-pty で tmux へ直接 attach する構成と、CLI ごとに構造化出力アダプターを書いて
 共通メッセージへ変換する構成である。前者は Windows 配布と PTY 境界を増やし、後者は CLI の出力形式が
 変わるたびに追跡が要る。既存の capture-pane / send-keys ミラーを主表示へ昇格させる案を採った。
+タスク・ワークフローの埋め込みでは、初版の iframe + `postMessage` + vendor 時の文字列置換を、
+共有編集面（カスタム要素 + Host Adapter）へ置き換えた（ADR-4）。
 
 ## 1. 目的と境界
 
@@ -48,7 +52,8 @@ agent-app は次を一つの操作面へまとめる。
 - 起動方針・エージェント・モデル・Ask モード・作業フォルダ・スキルの、ターンごとの実行設定
 - 作業フォルダの差分（作業ツリー / ブランチ）とファイルビュアー
 - 共通指示、開始アクション、スキル候補、tier 割当の設定
-- 同じリポジトリのタスク（ステートマシン）とワークフロー（複数 AI の工程）
+- 同じリポジトリのタスク（ステートマシン）とワークフロー（複数 AI の工程）。どちらも AI に目的を
+  教え、試運転の結果を確認してから利用可能にする
 
 ### 1.2 担当しないこと
 
@@ -78,9 +83,10 @@ agent-app は次を一つの操作面へまとめる。
 ```mermaid
 flowchart LR
   U[利用者] --> R[renderer<br/>renderer.js / files.js / term.js]
-  U --> A[automation-frame<br/>statemachine-maker renderer]
+  U --> A[statemachine-workbench<br/>共有編集面 Shadow DOM<br/>maker の renderer / teaching / flow]
+  R -->|navigate / DOM イベント| A
   R -->|window.api| P[preload]
-  A -->|parent.api.automation| P
+  A -->|editor-host → window.api.automation| P
   P -->|IPC invoke| M[main<br/>ipc.js]
 
   M --> S[store / settings<br/>config.json / sessions]
@@ -105,7 +111,7 @@ renderer は経路の違いを `transport` の値として受け取るだけで�
 |---|---|---|
 | main | `src/main/*.js`、`src/main/automation/ipc.js` | 設定と会話の保存、CLI 定義の解決、tmux とヘッドレスの起動、git 読取り、worktree、添付、ダイアログ |
 | preload | `src/preload.js` | IPC チャネルを `window.api` へ写し、失敗 envelope を `Error` へ戻す。`api.automation.*` も同じ窓口 |
-| renderer | `src/renderer/*.js`、`automation-frame.html` | 画面状態、描画、入力、端末ミラーの描画。ファイル・OS・git には触れない |
+| renderer | `src/renderer/*.js`、`automation-workbench.css`、`vendor/statemachine/*`（maker の共有 renderer） | 画面状態、描画、入力、端末ミラーの描画。ファイル・OS・git には触れない |
 
 `BrowserWindow` は `contextIsolation` 有効、`nodeIntegration` 無効、preload の `sandbox` も有効である。
 renderer の CSP は `script-src 'self'` で、外部ライブラリは `npm install` 時に `scripts/vendor.js` が
@@ -123,7 +129,8 @@ renderer の CSP は `script-src 'self'` で、外部ライブラリは `npm ins
 5. 最後のリポジトリを選び、会話一覧・エージェント一覧・worktree 一覧を読む。最後の領域と表示を復元する。
 6. 起動直後と 1 時間ごとに、期限切れの tmux セッションを `sweepTerminalSessions` で回収する。
 
-タスク・ワークフローの iframe は、その領域を初めて開いたときに `src` を差し替えて遅延ロードする。
+タスク・ワークフローの共有編集面は `index.html` が同時に読み込む。maker 側の renderer が初期化を終えて
+controller を登録するまでの `navigate` は要素が保留し、登録時に最後の 1 件だけを渡す。
 
 ## 3. 画面の情報構造
 
@@ -137,7 +144,11 @@ renderer の CSP は `script-src 'self'` で、外部ライブラリは `npm ins
 |---|---|---|---|
 | 会話 | 対話セッション | 会話ヘッダー、端末ミラー、会話履歴、入力欄 / ファイルビュー | `session:list` |
 | タスク | `.statemachine/` の定義と agent-loop の設定エントリ | statemachine-maker の教示・概要・手順・履歴 | `automation:run:snapshot` + `machine:list` + `teaching:list` |
-| ワークフロー | 複数 AI の工程定義 | statemachine-maker の概要・編集・実行履歴 | `automation:flow:list` + `flow:run:list` |
+| ワークフロー | 複数 AI の工程定義と、教示中の下書き | statemachine-maker の教示・概要・編集・実行履歴 | `automation:flow:list` + `flow:run:list` + `flow:teaching:list` |
+
+ワークフロー一覧は、教示中の下書き（`ready` 以外で、まだ定義として保存されていないもの）を先頭に、
+利用可能な定義をその後ろに並べる。下書きの副題は工程数の代わりに状態ラベル
+（理解中 / 試運転待ち / 確認待ち）を出す。
 
 リポジトリは三領域の共通文脈で、領域を切り替えても変えない。領域ごと・リポジトリごとの最後の対象は
 `config.json` の `lastTask` / `lastWorkflow` / `lastWorktree` に覚える。旧設定の `work` / `automation`
@@ -160,22 +171,65 @@ renderer の CSP は `script-src 'self'` で、外部ライブラリは `npm ins
 応答は「思考・進捗」「回答」「実行情報」の三層で表示する。回答は常に展開した吹き出し、思考・進捗と
 実行情報は折りたたみで、エラー・停止・非 0 終了のときだけ実行情報を自動展開する。空の区分は出さない。
 
-### 3.3 タスク・ワークフローの埋め込み
+### 3.3 タスク・ワークフローの共有編集面
 
-`#automation` セクションの iframe が `automation-frame.html` を読み、statemachine-maker の renderer
-（`vendor.js` が `api.` を `automationBridge.` へ書き換えて写したもの）を動かす。iframe 側は親の
-`window.parent.api.automation` に接続し、独自のフォルダ一覧やホームタブは出さない。
+`#automation` セクションに置いた `<statemachine-workbench>` が、statemachine-maker の共有 renderer
+（`workbench-element.js` / `editor-host.js` / `teaching.js` / `flow.js` / `renderer.js`。`vendor.js` が
+**改変せずに**写す）を同じウィンドウで動かす。iframe も `postMessage` も使わない。
 
-親と iframe は `postMessage` で同期する。
+```text
+<statemachine-workbench data-statemachine-workbench embedded
+  stylesheet="vendor/statemachine/styles.css" host-stylesheet="automation-workbench.css">
+```
 
-| 向き | type | 内容 |
+| 部品 | 所在 | 役割 |
 |---|---|---|
-| 親 → 子 | `agent-app:navigate` | `area`、`root`、`selected`、`action`（`new` など）、`intent`（タスク教示の引き継ぎ） |
-| 子 → 親 | `agent-app:changed` | `root`、`area`、`selected`。親は一覧を再読込し、最後の対象を保存する |
-| 子 → 親 | `agent-app:teaching-started` | `root`、`intentId`、`machine`。親は intent を消費済みにし、選択を新しい machine へ移す |
+| `workbench-element.js` | maker | カスタム要素。Shadow DOM に maker の `#bar` / `#main` / ダイアログを作り、`stylesheet` と `host-stylesheet` を読む。`navigate(payload)` を controller 登録まで保留する |
+| `editor-host.js` | maker | Host Adapter。埋め込み時は `window.api.automation`（無ければ親の同名）、単体起動時は `window.api` を返す。maker の renderer はこの 1 つの窓口だけを使う |
+| `renderer.js` / `teaching.js` / `flow.js` | maker | `[data-statemachine-workbench]` の有無で embedded を判定し、DOM 参照は Shadow Root に対して行う。独自のフォルダ一覧やホームタブは出さない |
+| `automation-workbench.css` | agent-app | host stylesheet。`:host` に対する上書きだけで、フォルダ欄・ホームタブ・見出しを隠し、三領域の語彙に揃える |
+
+親と共有編集面は、メソッド呼び出しと DOM イベントで同期する。payload の形は初版の `postMessage` と
+同じで、`type` 欄もそのまま残している。
+
+| 向き | 手段 | 内容 |
+|---|---|---|
+| 親 → 子 | `element.navigate({ type: 'agent-app:navigate', … })` | `area`、`root`、`selected`、`action`（`new` など）、`intent`（タスク教示の引き継ぎ）。子は最新の設定を読み直してから画面を切り替える |
+| 子 → 親 | CustomEvent `statemachine:changed`（`detail.type = 'agent-app:changed'`） | `root`、`area`、`selected`。親は一覧を再読込し、最後の対象を保存する |
+| 子 → 親 | CustomEvent `statemachine:teaching-started`（`detail.type = 'agent-app:teaching-started'`） | `root`、`intentId`、`machine`。親は intent を消費済みにし、選択を新しい machine へ移す |
+
+`session-new`（＋）はワークフロー領域では `action: 'new'` を渡し、子は「新しいワークフローを教える」
+画面を開く（選択中の定義を編集画面にはしない）。
 
 会話の利用者メッセージにある「この依頼をタスクにする」は、依頼本文・添付名・現在の実行設定だけを
 一回限りの intent（`taskIntent.js`）へ写し、タスク領域の教示画面へ渡す。会話全体や思考ログは渡さない。
+
+### 3.4 ワークフローの教示と差し戻し
+
+ワークフローもタスクと同じ骨格で作る。実装は maker 側（`flow.js`、`flow-teaching-model.js`、
+`flow-teaching-store.js`、`flow-teaching-compiler.js`、`ai.js` の `flow-teach` モード）にあり、agent-app は
+`automation:` 経由で呼び、下書きを一覧へ合流させるだけである。
+
+```text
+目的を書く → AI に相談（質問 or 候補） → 代表的な依頼で試運転 → 期待どおり → 利用可能にする
+   draft   →        needs-trial          →   awaiting-confirmation   →        ready
+```
+
+- 教えた内容は定義とは別の sidecar `<repo>/.agents/workflows/.teaching/<id>.json` に持ち、定義の一覧探索
+  （`flow:list`）には混ざらない。候補は世代（`generations`）として積み、試運転（`trials`）は agent-flow の
+  `runId` で参照する。
+- 試運転は `flow:run:start` に `source: { type: 'draft', workflow }` で候補をそのまま渡す。結果画面で
+  「期待どおり」を選ぶと `awaiting-confirmation`、「修正が必要」なら `needs-trial` に戻る。
+- 「この内容で利用可能にする」（`flow:teaching:confirm`）は、成功した試運転がその世代にあり、digest が
+  試運転時と一致するときだけ、定義を `<repo>/.agents/workflows/<id>.json` へ保存する。
+- 「手動で作成」と「編集」は従来の DAG エディタで、AI を介さずに作れる。
+- 差し戻し（`rework`）は `deps` に混ぜず、定義の別配列に持つ。戻り先は祖先ノード、きっかけは `human`
+  ノードの却下か `verify` ノードの失敗、最大回数 1〜20 と上限後の動作（人に確認 / 失敗終了 / 続行）を
+  必須とし、`flow-model.normalize` が保存前に検査する。画面ではグラフ外側の専用レーンに描き、実行時は
+  agent-flow が置換ノードを生成する（実行グラフは常に DAG）。
+
+検討記録は [`2026-09-06-agent-app-agent-flow-teaching-workspace-design.md`](../plans/2026-09-06-agent-app-agent-flow-teaching-workspace-design.md)
+にある。
 
 ## 4. 会話の実行経路
 
@@ -389,8 +443,9 @@ statemachine-maker の domain module と IPC 実装（`statemachine-maker/src/ma
 | フック | `prepareRun` / `selectSkills` / `openDelivery` | 手動実行の指示合成、依頼単位のスキル選択、納品ブランチの worktree 展開 |
 
 チャネルは `automation:` 接頭辞で登録し、preload の `api.automation.*` と 1 対 1 に対応させる。
-maker 側の renderer は `vendor.js` が写すときに `api.` を `automationBridge.` へ書き換えるだけで、
-本文は改変しない。maker の実行系（agent-loop の起動、`drain`、`log --json`、statemachine-use の検査）は
+maker 側の renderer は `vendor.js` がそのまま写し、文字列置換をしない。アプリ固有の preload 差は
+maker の `editor-host.js`（Host Adapter）が、表示差は agent-app の `automation-workbench.css`
+（host stylesheet）が吸収する。共有 renderer の中に Host ごとの条件分岐を増やさない。maker の実行系（agent-loop の起動、`drain`、`log --json`、statemachine-use の検査）は
 maker の `agent-loop.js` / `runner.js` が担い、agent-app はコマンドの綴りを持たない。
 
 タスクの列挙・定期設定・実行・履歴は agent-loop の機械可読な境界だけを通す。agent-app も maker も、
@@ -408,9 +463,9 @@ agent-loop の設定探索順（リポジトリ直下 → `.agents/` → `~/.age
 `--instruction` の実行時オーバーレイとして渡す。契約は
 [`agent-loop 仕様書 §3.9`](../specs/agent-loop-spec.md#39-リポジトリ実行-ui-境界)にある。
 
-この構成の代償は、maker の renderer を iframe に載せるため親と子の状態同期（`postMessage`）が要ることと、
-maker 側の画面変更が agent-app の見え方へ直接波及することである。独立版 statemachine-maker は既存利用者と
-比較検証のため残す。
+この構成の代償は、maker 側の画面変更が agent-app の見え方へ直接波及することと、共有ファイルを足すたびに
+`vendor.js` と `index.html` の読込契約テストを揃える必要があることである。独立版 statemachine-maker は
+既存利用者と比較検証のため残す。
 
 ## 10. 失敗時の扱い
 
@@ -431,7 +486,9 @@ maker 側の画面変更が agent-app の見え方へ直接波及することで
 | worktree に未コミットの変更 | git が断り、「変更ごと削除」で押し切れる | 確認のうえ force |
 | 会話ファイルへ保存できない | tmux へは送信済みなので失敗扱いにせず warning で伝える | userData の書込み権限 |
 | `config.json` が壊れている | 既定値で起動する | 現在は警告も退避もない |
-| iframe が未準備 | intent を親に保持し、`load` 後に一度だけ再送 | — |
+| 共有編集面が未初期化 | 要素が最後の `navigate` を保留し、maker の renderer が controller を登録した時点で一度だけ渡す。intent は親が消費通知まで保持する | — |
+| ワークフロー教示の候補が不正 | AI 応答を `flow-model.normalize` で検査し、循環・不正な差し戻し・保存名の変更は候補として受け取らない | AI に修正を相談 |
+| 試運転前に利用可能化 | `flow:teaching:confirm` が `成功した試運転を確認してから…` で断る。試運転後に候補が変わっていれば digest 不一致で断る | 試運転をやり直す |
 
 ## 11. 検証
 
@@ -439,7 +496,7 @@ maker 側の画面変更が agent-app の見え方へ直接波及することで
 
 | テスト | 固定するもの |
 |---|---|
-| `test/app.test.js` | 画面の情報構造、三領域、preload と IPC の 1 対 1、vendor と index.html の対応、argv の組み立て、店（store）、git、ファイル、添付、tmux セッションの保持とスナップショット |
+| `test/app.test.js` | 画面の情報構造、三領域、preload と IPC の 1 対 1、vendor と index.html の対応、共有編集面が Host Adapter で接続し文字列置換を使わないこと、ワークフロー教示と差し戻しが通常の依存と分離していること、argv の組み立て、店（store）、git、ファイル、添付、tmux セッションの保持とスナップショット |
 | `test/tmux.test.js` | パス変換、画面判定（Kiro / Codex / Copilot / Cursor / Claude の実画面）、`waitReady` の attention、send-keys の畳み方、応答抽出、キー変換、常駐シェル、疑似 CLI との統合 |
 | `test/worktree.test.js` | 名前検査、パスの組み方、`--porcelain` の読み方、作成・削除・納品ブランチの統合 |
 | `test/settings.test.js` | 旧設定の tier 移行、方針解決、未知キー保持、推奨スキルの候補移行 |
@@ -447,7 +504,7 @@ maker 側の画面変更が agent-app の見え方へ直接波及することで
 | `test/skill-selection.test.js`、`test/skills.test.js` | 自動 / 手動 / 明示の選定、ネイティブとインラインの渡し方、予算超過、候補の読み方 |
 | `test/response.test.js` | codex JSONL、Aider、copilot の思考・回答分離 |
 | `test/input-mode.test.js`、`test/task-intent.test.js`、`test/execution-gate.test.js` | 入力 2 モードの遷移、教示 intent の一回限り消費、同時実行枠 |
-| `test/electron-smoke.test.js` | Electron 実機で三領域を移動し、登録済み項目を開ける |
+| `test/electron-smoke.test.js` | Electron 実機で三領域を移動し、登録済み項目を開け、ワークフローの＋が「新しいワークフローを教える」画面を開く |
 
 `test/smoke.js` は画面のある環境で疑似 CLI と会話しスクリーンショットを撮る手動スモークで、`npm test` には
 含めない。Windows / WSL の実機確認は推奨だがリリース必須条件にはしない。
@@ -464,10 +521,13 @@ maker 側の画面変更が agent-app の見え方へ直接波及することで
 - `config.json` の破損を通知せず、既定値で静かに起動する。
 - 同時実行枠は agent-app が起動したターンだけを数える。ワークフローエンジンの内部並列は対象外。
 - Windows / WSL の CJK・絵文字の表示幅と、`/mnt/c` の I/O 低下は実機でしか確かめられない。
-- タスク・ワークフローの画面は statemachine-maker の renderer を iframe に載せているため、親子の状態同期が
-  `postMessage` に依存し、maker 側の画面変更が直接波及する。
+- タスク・ワークフローの画面は statemachine-maker の共有 renderer を同じウィンドウの Shadow DOM で
+  動かしているため、maker 側の画面変更が直接波及する。見た目の調整は maker の `styles.css` を土台に
+  `:host` セレクタで上書きする形に縛られる。
+- ワークフロー教示の状態（理解中 / 試運転待ち / 確認待ち）は sidecar の `status` の写しで、agent-app は
+  一覧の副題に出すだけである。試運転の run と通常の run は履歴上で区別しない。
 
-見直しの優先順位は、設定破損の可視化、判定パターンの外部化と実測の拡充、iframe の解消の順とする。
+見直しの優先順位は、設定破損の可視化、判定パターンの外部化と実測の拡充の順とする。
 
 ## 13. 変更時の見取り図
 
@@ -479,8 +539,8 @@ maker 側の画面変更が agent-app の見え方へ直接波及することで
 | 実行設定の項目 | `src/main/settings.js`、`renderer.js` の `turnOptions` / `settingsPatch`、`index.html` | 正規化、移行、`executionSpec`、メッセージに残す項目 |
 | 開始アクション・スキル | `src/main/sessionSetup.js`、`skillSelection.js`、`automation/ipc.js` の `prepareRun` | tmux とヘッドレスの両経路、タスク手動実行 |
 | 保存形式 | `src/main/store.js` | `normalizeSession` の後方互換、`presentSession` |
-| 外部ライブラリの追加 | `scripts/vendor.js`、`index.html` | vendor と index.html の対応テスト、CSP |
-| タスク・ワークフローの機能 | statemachine-maker 側 | `api.automation.*` の対応、`automation-frame.html` の DOM、親子メッセージ |
+| 外部ライブラリ・共有ファイルの追加 | `scripts/vendor.js`、`index.html` | vendor と index.html の対応テスト、CSP |
+| タスク・ワークフローの機能 | statemachine-maker 側 | `api.automation.*` と maker preload の対応、`<statemachine-workbench>` の Shadow DOM、`navigate` payload と DOM イベント、`automation-workbench.css` の `:host` 上書き |
 
 ## 付録 A. ADR
 
@@ -518,11 +578,16 @@ maker 側の画面変更が agent-app の見え方へ直接波及することで
 ### ADR-4 タスク・ワークフローは statemachine-maker を借り、agent-app は登録と設定だけをアダプトする
 
 - 決定: maker の domain と IPC を `require` し、`automation:` 接頭辞と config adapter、3 つのフックで載せる。
-  画面は maker の renderer を iframe で動かす。
+  画面は maker の共有 renderer を、同じウィンドウのカスタム要素 `<statemachine-workbench>`（Shadow DOM）で
+  改変せずに動かす。アプリ固有の preload 差は maker の Host Adapter（`editor-host.js`）、表示差は agent-app
+  の host stylesheet に閉じ込め、親子は `navigate()` と DOM イベントで同期する。
 - 背景: 同じ仕様を agent-app 側で二重に発展させると必ずずれる。maker は独立版として残す必要もあった。
-- 却下: agent-app 独自の再実装、maker を別ウィンドウで起動する案（リポジトリ選択と実行環境が二重になる）。
-- 代償: 親子の状態同期が `postMessage` に依存し、maker 側の画面変更が直接波及する。初回は maker 側に
-  `embedded` 表示の分岐が要った。
+  初版は iframe + `postMessage` + vendor 時の `api.` → `automationBridge.` 置換で載せたが、置換の順序に
+  依存して壊れやすく、iframe 境界のぶん状態同期と CSS 調整が二重になった。
+- 却下: agent-app 独自の再実装、maker を別ウィンドウで起動する案（リポジトリ選択と実行環境が二重になる）、
+  maker の renderer を agent-app へ複製して移植する案、iframe + 文字列置換の継続。
+- 代償: maker 側の画面変更が直接波及する。共有ファイルを足すたびに `vendor.js` と読込契約テストを揃える。
+  Host 差を共有 renderer の条件分岐として増やさない規律が要る。
 - 見直し条件: maker を廃止できる場合、両アプリを同じ package graph で配布できる場合、第 3 の利用 UI が
   同じ domain を必要とした場合。
 - 確信度: 中。
@@ -548,6 +613,21 @@ maker 側の画面変更が agent-app の見え方へ直接波及することで
 - 見直し条件: 誤選定が多い、主要 CLI が統一的なスキル API を提供する、定期実行へ広げる場合。
 - 確信度: 中。
 
+### ADR-7 ワークフローもタスクと同じ教示の骨格で作り、試運転と承認なしに利用可能にしない
+
+- 決定: 目的の説明 → AI の質問と候補 → 代表的な依頼での試運転 → 利用者の承認、という進行状態
+  （理解中 / 試運転待ち / 確認待ち / 利用可能）をタスクと揃える。教えた内容は定義とは別の sidecar に持ち、
+  承認時だけ `.agents/workflows/<id>.json` へ書く。差し戻しは `deps` ではなく別配列の再作業ポリシーとして持つ。
+- 背景: 手動の DAG 編集は node の種類や依存を理解していないと使えず、タスク側の教示体験と分かれていた。
+  一方で agent-flow は固定手順の再現ではなく、入力に応じて分解・再計画するので、ステートマシンの仕事仕様を
+  そのまま流用すると柔軟性を失う。
+- 却下: ステートマシンの教示機能の複製、定義形式までの完全共通化、循環する `deps` による差し戻し、
+  試運転なしの自動公開。
+- 代償: sidecar、世代、試運転評価、再作業ポリシーの管理が増える。試運転の run は通常の実行履歴に並ぶ。
+- 見直し条件: agent-flow が高水準の workflow policy schema を正式に提供した場合、共通の教示基盤を第 3 の
+  実行ドメインも使う場合。
+- 確信度: 中。
+
 ## 付録 B. 関連文書
 
 - [`agent-app-spec.md`](../specs/agent-app-spec.md): 利用手順、IPC、設定、保存形式、上限。
@@ -560,6 +640,8 @@ maker 側の画面変更が agent-app の見え方へ直接波及することで
 - [`2026-09-06-agent-app-agent-loop-task-catalog-design.md`](../plans/2026-09-06-agent-app-agent-loop-task-catalog-design.md): タスクカタログの統合規則。
 - [`2026-09-06-agent-app-skill-selection-design.md`](../plans/2026-09-06-agent-app-skill-selection-design.md): 依頼単位スキル選択の検討記録。
 - [`2026-09-06-agent-app-ai-teaching-integration-design.md`](../plans/2026-09-06-agent-app-ai-teaching-integration-design.md): 会話からタスク教示への引き継ぎ。
+- [`2026-09-06-agent-app-agent-flow-teaching-workspace-design.md`](../plans/2026-09-06-agent-app-agent-flow-teaching-workspace-design.md)、[同 implementation-plan](../plans/2026-09-06-agent-app-agent-flow-teaching-workspace-implementation-plan.md): ワークフロー教示、世代と試運転、差し戻しの検討記録。
+- [`2026-09-06-agent-app-shared-editor-workbench-design.md`](../plans/2026-09-06-agent-app-shared-editor-workbench-design.md): iframe から共有編集面（カスタム要素 + Host Adapter）への移行の決定記録。
 
 個別画面の検討経緯は `docs/plans/` に残す。本書は、現在の実装を変更するときに必要な境界、データの流れ、
 実行経路、失敗時の扱いを持つ。
