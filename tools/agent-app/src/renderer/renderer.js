@@ -212,9 +212,10 @@ function renderTaskItems() {
   ul.replaceChildren();
   for (const task of state.tasks) {
     const latest = (task.history || [])[0];
-    const teachingLabels = { draft: '下書き', 'needs-trial': '試運転が必要', 'awaiting-confirmation': '確認待ち', ready: '利用可能' };
+    // 状態語は共有ワークベンチと同じ4つ。定義があるタスクは実行結果を出し、AIとの変更が進んでいれば「変更中」を添える。
+    const teachingLabels = { draft: '下書き', 'needs-trial': '試運転待ち', 'awaiting-confirmation': '確認待ち', ready: '利用可能' };
     const status = task.teachingStatus ? (teachingLabels[task.teachingStatus] || '下書き')
-      : latest ? (latest.ok ? '完了' : latest.escalate ? '要確認' : '失敗') : '未実行';
+      : `${latest ? (latest.ok ? '完了' : latest.escalate ? '要確認' : '失敗') : '未実行'}${task.change ? ' · 変更中' : ''}`;
     const id = taskId(task);
     const schedules = Array.isArray(task.schedules) ? task.schedules : (task.schedule ? [task.schedule] : []);
     const scheduleState = schedules.length ? `${schedules.filter((item) => item.effective !== false).length}/${schedules.length}件の予定` : '予定なし';

@@ -1,6 +1,21 @@
 'use strict';
 
 (function initTeachingFeature(global) {
+  const STATUSES = ['draft', 'needs-trial', 'awaiting-confirmation', 'ready'];
+  const STATUS_LABELS = { draft: '下書き', 'needs-trial': '試運転待ち', 'awaiting-confirmation': '確認待ち', ready: '利用可能' };
+
+  // main の teaching-model.presentStatus と同じ判定。定義（published）があるタスクは教示の進み具合に
+  // 関係なく「利用可能」で、教示ステータスは「変更がどこまで進んだか」を別の印（change）として添える。
+  // status が空（教示セッションが無い）なら変更は進んでいない。
+  function presentTeachingStatus({ published = false, status = '' } = {}) {
+    const teaching = STATUSES.includes(status) ? status : (status ? 'draft' : '');
+    if (published) return { status: 'ready', change: teaching === 'ready' ? '' : teaching, runnable: true, published: true };
+    return { status: teaching || 'draft', change: '', runnable: false, published: false };
+  }
+
+  function teachingStatusLabel(status) { return STATUS_LABELS[status] || '下書き'; }
+  function teachingChangeLabel(change) { return change ? `変更中 · ${teachingStatusLabel(change)}` : ''; }
+
   function createTeachingFeature(ctx) {
     const view = {
       loading: false,
@@ -30,13 +45,15 @@
     const e = ctx.escape;
     const root = () => ctx.root();
     const active = () => ctx.isActive();
-    const statusLabel = (status) => ({
-      draft: '下書き',
-      'needs-trial': '試運転が必要',
-      'awaiting-confirmation': '確認待ち',
-      ready: '利用可能',
-    })[status] || '下書き';
+    const statusLabel = teachingStatusLabel;
     const statusClass = (status) => status === 'ready' ? 'ok' : status === 'awaiting-confirmation' ? 'warn' : '';
+    const published = (machine) => ctx.machines().some((item) => item.machine === machine);
+    // 一覧に載った教示セッション（teaching.json がある）だけが「変更の進み具合」を持つ。
+    const taughtStatus = (machine) => {
+      const listed = view.items.find((item) => item.machine === machine && item.taught);
+      return listed ? listed.status : '';
+    };
+    const presentOf = (machine, status = taughtStatus(machine)) => presentTeachingStatus({ published: published(machine), status });
 
     function reset() {
       Object.assign(view, {
@@ -49,19 +66,22 @@
 
     async function loadItems() {
       const taught = (await ctx.guard('タスク一覧', () => ctx.bridge.list(root()))) || [];
-      const byMachine = new Map(taught.map((item) => [item.machine, item]));
+      const byMachine = new Map(taught.map((item) => [item.machine, { ...item, taught: true, published: !!item.published || published(item.machine) }]));
       for (const machine of ctx.machines()) {
+        // 定義だけがあるタスク（スキルや手で作ったもの）。教示セッションは無く、そのまま実行できる。
         if (byMachine.has(machine.machine)) continue;
         byMachine.set(machine.machine, {
           machine: machine.machine,
           title: machine.name,
-          purpose: machine.description || '既存のタスクです。AIと内容を確認できます。',
-          status: 'needs-trial',
+          purpose: machine.description || '',
+          status: '',
+          published: true,
           lastTrial: null,
-          legacy: true,
         });
       }
-      view.items = [...byMachine.values()].sort((a, b) => String(a.title).localeCompare(String(b.title), 'ja'));
+      view.items = [...byMachine.values()]
+        .map((item) => ({ ...item, view: presentTeachingStatus({ published: item.published, status: item.status }) }))
+        .sort((a, b) => String(a.title).localeCompare(String(b.title), 'ja'));
     }
 
     async function activate() {
@@ -228,14 +248,17 @@
       }));
       if (!view.session) return;
       if (matches) {
-        view.session = await ctx.guard('利用可能にする', () => ctx.bridge.confirm(
+        const confirmed = await ctx.guard('利用可能にする', () => ctx.bridge.confirm(
           root(), view.session.machine, view.trialResult.generationId,
         ));
-        await loadItems();
         view.trialResult = null;
+        if (!confirmed) { ctx.refresh(); return; }
+        view.session = confirmed;
+        await loadItems();
         ctx.toast('このタスクを利用できるようにしました');
         ctx.changed(view.session.machine);
-        ctx.refresh();
+        // 利用可能になったら、そのタスクの実行詳細へ移る（実行・定期実行・履歴はそこにある）。
+        ctx.run(view.session.machine);
       } else {
         const detail = view.trialResult.summary;
         view.trialResult = null;
@@ -243,10 +266,12 @@
       }
     }
 
-    function messagesHtml() {
+    function messagesHtml(runnable) {
       const messages = view.session?.messages || [];
-      return messages.map((item) => `<article class="teaching-message ${item.role}"><span>${item.role === 'user' ? 'あなた' : 'AI'}</span><p>${e(item.text)}</p></article>`).join('')
-        || '<div class="blank compact"><p>変更したいことをAIへ伝えてください。</p></div>';
+      const empty = runnable
+        ? '<div class="blank compact"><p>このタスクは利用可能です。変更したいことを伝えると、今の版を残したまま候補を作り、試運転で確認してから置き換えます。</p></div>'
+        : '<div class="blank compact"><p>変更したいことをAIへ伝えてください。</p></div>';
+      return messages.map((item) => `<article class="teaching-message ${item.role}"><span>${item.role === 'user' ? 'あなた' : 'AI'}</span><p>${e(item.text)}</p></article>`).join('') || empty;
     }
 
     function responseCardHtml() {
@@ -255,7 +280,7 @@
       if (!result) return '';
       if (result.status === 'questions') return result.questions.map((question) => `<article class="teaching-card question"><span class="eyebrow">確認したいこと</span><h3>${e(question.text)}</h3>${question.reason ? `<p>${e(question.reason)}</p>` : ''}${question.example ? `<small>例: ${e(question.example)}</small>` : ''}</article>`).join('');
       if (result.status === 'demonstration') return `<article class="teaching-card demonstration"><span class="eyebrow">操作を見せてください</span><h3>${e(result.demonstration.instruction)}</h3><p>${e(result.demonstration.reason)}</p><button type="button" data-teach-record-open>操作を見せる</button></article>`;
-      return `<article class="teaching-card candidate"><span class="status">試運転が必要</span><h3>タスクの進め方を準備しました</h3><p>${e(result.summary || '代表的な入力で結果を確認してください。')}</p><button type="button" class="primary" data-teach-trial>試運転する</button></article>`;
+      return `<article class="teaching-card candidate"><span class="status warn">試運転待ち</span><h3>タスクの進め方を準備しました</h3><p>${e(result.summary || '代表的な入力で結果を確認してください。')}</p><button type="button" class="primary" data-teach-trial>試運転する</button></article>`;
     }
 
     function recordHtml() {
@@ -294,10 +319,18 @@
 
     function workspaceHtml() {
       const session = view.session;
+      // 定義があるタスクは「利用可能」のまま。教示ステータスは変更の進み具合としてだけ出す。
+      // 開いただけの既存定義（会話も候補も無い）は、変更が始まっていないので進行バーを出さない。
+      const started = !!(session.messages.length || session.generations.length || session.trials.length);
+      const present = presentOf(session.machine, started ? session.status : taughtStatus(session.machine));
       const stage = session.status === 'ready' ? 4 : session.status === 'awaiting-confirmation' ? 3 : activeGeneration() ? 3 : session.evidence.length ? 2 : 1;
       const progress = ['目的を理解中', '方法を確認中', '試運転中', '利用可能'];
-      const runnable = session.status === 'ready' || ctx.machines().some((item) => item.machine === session.machine);
-      return `<div class="teaching-head"><div><span class="eyebrow">タスクを教える</span><h2>${e(session.title || session.machine)}</h2><span class="status ${statusClass(session.status)}">${e(statusLabel(session.status))}</span></div><div class="row">${runnable ? '<button type="button" class="primary" data-teach-run>実行する</button>' : ''}<button type="button" data-teach-edit>高度な編集</button></div></div><ol class="teaching-progress">${progress.map((label, index) => `<li class="${index < stage ? 'done' : index === stage - 1 ? 'current' : ''}">${e(label)}</li>`).join('')}</ol><div class="teaching-workspace"><section class="teaching-conversation" aria-label="AIとの会話"><div class="teaching-messages">${messagesHtml()}${responseCardHtml()}${recordHtml()}${approvalHtml()}${trialHtml()}</div><div class="teaching-composer"><textarea rows="3" data-teach-message placeholder="${view.result?.status === 'questions' ? '質問への回答を入力' : '変更したいことや補足を入力'}">${e(view.input)}</textarea><button type="button" class="primary" data-teach-send ${view.busy ? 'disabled' : ''}>変更を相談する</button></div></section>${understandingHtml()}</div>`;
+      const showProgress = !present.published || !!present.change;
+      const badges = `<span class="status ${statusClass(present.status)}">${e(statusLabel(present.status))}</span>${present.change ? `<span class="status warn">${e(teachingChangeLabel(present.change))}</span>` : ''}`;
+      const actions = present.published
+        ? '<button type="button" data-teach-run>実行画面へ戻る</button><button type="button" data-teach-edit>高度な編集</button>'
+        : '<button type="button" data-teach-edit>高度な編集</button>';
+      return `<div class="teaching-head"><div><span class="eyebrow">${present.published ? 'タスクの変更を相談' : 'タスクを教える'}</span><h2>${e(session.title || session.machine)}</h2><span class="teaching-badges">${badges}</span></div><div class="row">${actions}</div></div>${showProgress ? `<ol class="teaching-progress">${progress.map((label, index) => `<li class="${index < stage ? 'done' : index === stage - 1 ? 'current' : ''}">${e(label)}</li>`).join('')}</ol>` : ''}<div class="teaching-workspace"><section class="teaching-conversation" aria-label="AIとの会話"><div class="teaching-messages">${messagesHtml(present.runnable)}${responseCardHtml()}${recordHtml()}${approvalHtml()}${trialHtml()}</div><div class="teaching-composer"><textarea rows="3" data-teach-message placeholder="${view.result?.status === 'questions' ? '質問への回答を入力' : '変更したいことや補足を入力'}">${e(view.input)}</textarea><button type="button" class="primary" data-teach-send ${view.busy ? 'disabled' : ''}>変更を相談する</button></div></section>${understandingHtml()}</div>`;
     }
 
     function createHtml() {
@@ -306,7 +339,11 @@
 
     function html() {
       if (view.loading) return '<div class="blank compact"><p>タスクを読み込んでいます…</p></div>';
-      const list = view.items.map((item) => `<button type="button" class="execution-item ${item.machine === view.selected ? 'is-on' : ''}" data-teach-select="${e(item.machine)}"><strong>${e(item.title)}</strong><span>${e(statusLabel(item.status))}${item.purpose ? ` · ${e(item.purpose)}` : ''}</span></button>`).join('');
+      const list = view.items.map((item) => {
+        const present = item.view || presentTeachingStatus(item);
+        const state = [statusLabel(present.status), teachingChangeLabel(present.change)].filter(Boolean).join(' · ');
+        return `<button type="button" class="execution-item ${item.machine === view.selected ? 'is-on' : ''}" data-teach-select="${e(item.machine)}"><strong>${e(item.title)}</strong><span>${e(state)}${item.purpose ? ` · ${e(item.purpose)}` : ''}</span></button>`;
+      }).join('');
       const detail = view.creating ? createHtml() : view.session ? workspaceHtml() : '<div class="blank compact"><h2>タスクを選んでください</h2><p>新しいタスクは、目的を伝えるところから始められます。</p></div>';
       return `<div class="teaching-page"><header class="teaching-page-head"><div><h1>タスク</h1><p>AIに目的を伝え、必要なときだけ操作を見せて、結果で確認します。</p></div><button type="button" class="primary" data-teach-new>新しいタスクを教える</button></header><div class="execution-layout teaching-layout"><aside class="execution-list">${list || '<p class="muted small">まだタスクがありません。</p>'}</aside><section class="execution-detail">${detail}</section></div></div>`;
     }
@@ -387,8 +424,14 @@
       return true;
     }
 
-    return { html, bind, activate, select, create, startFromIntent, reset, rootChanged: reset, onAiProgress, onAiResult, onRunLine, onRunExit };
+    // 実行詳細など他の画面が、そのタスクの状態（利用可能か・変更が進んでいるか）を聞くための口。
+    function statusOf(machine) { return presentOf(machine); }
+
+    return { html, bind, activate, select, create, startFromIntent, reset, rootChanged: reset, onAiProgress, onAiResult, onRunLine, onRunExit, loadItems, statusOf };
   }
 
   global.createTeachingFeature = createTeachingFeature;
+  global.presentTeachingStatus = presentTeachingStatus;
+  global.teachingStatusLabel = teachingStatusLabel;
+  global.teachingChangeLabel = teachingChangeLabel;
 })(window);

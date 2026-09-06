@@ -52,6 +52,25 @@ test('教示中の下書きを実行可能なタスクと重複せず一覧へ�
   ]);
 });
 
+test('定義があるタスクはAIとの変更が進んでいても実行できる項目のまま、変更中の印だけを添える', () => {
+  const { taskItems } = require('../src/renderer/navigation');
+  const tasks = [
+    { id: 'machine:report', machine: 'report', name: '月次レポート' },
+    { id: 'machine:check', machine: 'check', name: 'リリース確認' },
+    { id: 'entry:abc', kind: 'prompt', name: '定期レビュー' },
+  ];
+  const items = taskItems({ tasks }, [], [
+    { machine: 'report', title: '月次レポート', status: 'needs-trial', published: true },
+    { machine: 'check', title: 'リリース確認', status: 'ready', published: true },
+  ]);
+  assert.deepStrictEqual(items, [
+    { id: 'machine:report', machine: 'report', name: '月次レポート', change: 'needs-trial' },
+    { id: 'machine:check', machine: 'check', name: 'リリース確認' },
+    { id: 'entry:abc', kind: 'prompt', name: '定期レビュー' },
+  ]);
+  assert.ok(!items.some((item) => item.teaching), '定義があるものを教示中の下書きとして重複させない');
+});
+
 test('リポジトリがない依頼をタスク化しない', () => {
   const { create } = require('../src/renderer/taskIntent');
   assert.throws(() => create(), /リポジトリ/);

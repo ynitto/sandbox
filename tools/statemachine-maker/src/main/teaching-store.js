@@ -56,6 +56,8 @@ function list(root) {
         title: session.title || machine,
         purpose: session.understanding.purpose,
         status: session.status,
+        // 定義があるかは画面の状態を決める（定義があれば教示の途中でも実行できる）。
+        published: store.exists(root, machine),
         lastTrial: session.trials.length ? session.trials[session.trials.length - 1] : null,
       });
     } catch { /* 壊れた下書きは個別に開いたとき理由を表示する */ }

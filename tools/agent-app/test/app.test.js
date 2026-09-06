@@ -383,6 +383,18 @@ test('会話の依頼と新しいタスクを同じAI教示画面へつなぐ', 
   assert.match(teaching, /async function startFromIntent/);
 });
 
+test('定義があるタスクは実行詳細から開き、一覧の状態語を共有ワークベンチと揃える', () => {
+  const shell = fs.readFileSync(path.join(SRC, 'renderer/renderer.js'), 'utf8');
+  const maker = fs.readFileSync(path.join(SRC, 'renderer/vendor/statemachine/renderer.js'), 'utf8');
+  const teaching = fs.readFileSync(path.join(SRC, 'renderer/vendor/statemachine/teaching.js'), 'utf8');
+  assert.ok(!maker.includes('!!selectedTask.machine'), '既存定義を一律に教示画面へ送らない');
+  assert.ok(maker.includes('data-run-teach') && maker.includes('AIに変更を相談'));
+  assert.ok(teaching.includes('function presentTeachingStatus('));
+  assert.ok(!shell.includes('試運転が必要') && !teaching.includes('試運転が必要'));
+  assert.match(shell, /'needs-trial': '試運転待ち'/);
+  assert.match(shell, /task\.change \? ' · 変更中'/);
+});
+
 // 同梱定義から出る argv。権限フラグと prompt の渡し方は agent-dashboard のゴールデンと同じ。
 test('argv: 初回ターン（write / readonly）', () => {
   const uuid = /^[0-9a-f-]{36}$/;

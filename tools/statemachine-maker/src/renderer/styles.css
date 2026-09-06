@@ -501,3 +501,13 @@ dialog::backdrop { background: rgba(20, 24, 40, 0.25); }
   .teaching-composer { grid-template-columns: 1fr; }
   .teaching-message { max-width: 96%; }
 }
+
+/* タスク詳細の状態: 名前の横に「利用可能」を1つ、AIとの変更が進んでいればその印とバナーを添える。 */
+.task-badges, .teaching-badges { display: inline-flex; flex-wrap: wrap; gap: 6px; vertical-align: middle; margin-left: 4px; }
+.teaching-badges { margin: 4px 0 0; }
+.execution-title .row { flex: none; }
+.task-change-banner { min-width: 0; display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 8px 12px; border-left: 3px solid var(--warn); border-radius: 8px; background: var(--warn-soft); color: var(--warn); font-size: 12.5px; }
+.task-change-banner button { border-color: var(--warn); color: var(--warn); background: transparent; }
+@media (max-width: 719px) {
+  .task-change-banner { flex-direction: column; align-items: flex-start; }
+}
