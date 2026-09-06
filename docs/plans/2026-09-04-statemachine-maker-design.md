@@ -45,7 +45,10 @@ tools/statemachine-maker/
   test/                    node:test。結合テストはスキルの run_machine.py を実際に呼ぶ
 ```
 
-### 工程列（正規形 version 3）
+### 工程列（正規形 version 3 → 4）
+
+version 4（2026-09-06）は工程に `extend`（繰り返す／確認する／失敗したら）と、`recorded[]` の `extract`（読み取り）を足した。
+規則は [記録拡張の設計](2026-09-06-statemachine-maker-recording-intent-extension-design.md)。版 3 はそのまま読める。
 
 dashboard の版 2 に、ステート ID・検査の再投入回数・終端ステート・原文で保持する部分を足した。
 

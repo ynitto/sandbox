@@ -20,6 +20,8 @@
   }
 
   function taskItems(snapshot, definitions) {
+    const tasks = snapshot && Array.isArray(snapshot.tasks) ? snapshot.tasks : [];
+    if (tasks.length) return tasks;
     const runtime = snapshot && Array.isArray(snapshot.machines) ? snapshot.machines : [];
     if (runtime.length) return runtime;
     return (Array.isArray(definitions) ? definitions : []).map((task) => ({

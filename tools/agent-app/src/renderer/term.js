@@ -4,19 +4,56 @@
 // キー入力を tmux send-keys へ返す。xterm は「表示とキーボード」だけで、
 // 端末の状態（スクロールバック・カーソル）は tmux 側が正。
 (function initTerm() {
-  const state = { id: '', term: null, fit: null, host: null, ro: null, cols: 120, rows: 36, lastSize: '', screenSeq: 0 };
+  const state = {
+    id: '', term: null, fit: null, host: null, ro: null, cols: 120, rows: 36, lastSize: '', screenSeq: 0,
+    inputEnabled: false, onFocus: null, onAccepted: null, onError: null, onEscape: null,
+  };
+
+  function color(name, fallback) {
+    const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    return value || fallback;
+  }
+
+  function theme() {
+    return {
+      background: color('--term-bg', '#0b0f14'), foreground: color('--term-text', '#d8dee9'),
+      cursor: color('--term-cursor', '#7dd3fc'), selectionBackground: color('--term-selection', '#334155'),
+      black: color('--term-black', '#1f2937'), red: color('--term-red', '#f87171'),
+      green: color('--term-green', '#4ade80'), yellow: color('--term-yellow', '#facc15'),
+      blue: color('--term-blue', '#60a5fa'), magenta: color('--term-magenta', '#c084fc'),
+      cyan: color('--term-cyan', '#22d3ee'), white: color('--term-white', '#e5e7eb'),
+      brightBlack: '#64748b', brightRed: '#fca5a5', brightGreen: '#86efac', brightYellow: '#fde047',
+      brightBlue: '#93c5fd', brightMagenta: '#d8b4fe', brightCyan: '#67e8f9', brightWhite: '#f8fafc',
+    };
+  }
+
+  async function sendData(data) {
+    if (!state.id || !state.inputEnabled) return false;
+    if (data === '\x1b' && state.onEscape && !state.onEscape()) return false;
+    try {
+      await api.termKeys(state.id, data);
+      if (state.onAccepted) state.onAccepted(data);
+      return true;
+    } catch (error) {
+      if (state.onError) state.onError(error);
+      return false;
+    }
+  }
 
   function ensure(hostEl) {
     if (state.term) return;
     const term = new Terminal({
       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, "Noto Sans Mono CJK JP", monospace',
-      fontSize: 12, lineHeight: 1.15, cursorBlink: false, scrollback: 0, convertEol: false, allowProposedApi: true,
-      theme: { background: '#0b0f14', foreground: '#d8dee9', cursor: '#88c0d0', selectionBackground: '#3b4252' },
+      fontSize: 12, lineHeight: 1.2, cursorBlink: false, scrollback: 0, convertEol: false, allowProposedApi: true,
+      theme: theme(),
     });
     const fit = new FitAddon.FitAddon();
     term.loadAddon(fit);
     term.open(hostEl);
-    term.onData((data) => { if (state.id) api.termKeys(state.id, data).catch(() => {}); });
+    term.onData((data) => { sendData(data); });
+    hostEl.addEventListener('pointerup', () => {
+      if (!term.hasSelection() && state.onFocus) state.onFocus();
+    });
     // xterm は 1 画面分（scrollback 0）。ホイールは tmux のコピーモードへ流さず、単に無視する。
     state.term = term; state.fit = fit; state.host = hostEl;
     state.ro = new ResizeObserver(() => refit());
@@ -58,7 +95,6 @@
     if (!id) return;
     refit();
     await api.termWatch(id).catch(() => {});
-    state.term.focus();
   }
 
   function detach() {
@@ -70,5 +106,20 @@
   function size() { return { cols: state.cols, rows: state.rows }; }
   function focus() { if (state.term) state.term.focus(); }
 
-  window.Term = { attach, detach, applyScreen, refit, size, focus, current: () => state.id };
+  function setInputEnabled(enabled) {
+    state.inputEnabled = !!enabled;
+    if (state.term) state.term.options.cursorBlink = !!enabled;
+  }
+
+  function configure(handlers = {}) {
+    state.onFocus = handlers.onFocus || null;
+    state.onAccepted = handlers.onAccepted || null;
+    state.onError = handlers.onError || null;
+    state.onEscape = handlers.onEscape || null;
+  }
+
+  window.Term = {
+    attach, detach, applyScreen, refit, size, focus, sendKey: sendData, setInputEnabled, configure,
+    current: () => state.id,
+  };
 })();

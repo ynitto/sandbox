@@ -10,16 +10,34 @@ function machineName(value) {
   return name;
 }
 
-function runSpec({ root, machine, agent = '', model = '', parameters = {} }) {
+function runSpec({ root, machine, agent = '', model = '', parameters = {}, instruction = '' }) {
   const workflow = `.statemachine/${machineName(machine)}/workflow.yaml`;
   const args = ['statemachine', '--workflow', workflow, '--dir', String(root || '')];
   if (agent) args.push('--agent-cli', String(agent));
   if (model) args.push('--model', String(model));
+  if (instruction) args.push('--instruction', String(instruction));
   for (const key of Object.keys(parameters || {}).sort()) {
     const value = parameters[key];
     if (value == null) continue;
     args.push('--param', `${key}=${value}`);
   }
+  return { command: 'agent-loop', args };
+}
+
+function taskRunSpec({ root, task, agent = '', model = '', parameters = {}, instruction = '' }) {
+  const item = task && typeof task === 'object' ? task : {};
+  if (item.kind === 'statemachine' || item.machine) {
+    return runSpec({ root, machine: item.machine, agent, model, parameters, instruction });
+  }
+  if (item.kind !== 'prompt') throw new Error('このタスクは手動実行できません');
+  const entry = item.entry && typeof item.entry === 'object' ? item.entry : {};
+  const prompt = String(entry.prompt || item.description || '').trim();
+  if (!prompt) throw new Error('手動実行するプロンプトがありません');
+  const text = [String(instruction || '').trim(), prompt].filter(Boolean).join('\n\n');
+  const args = ['run', text];
+  if (agent) args.push('--agent-cli', String(agent));
+  if (model) args.push('--model', String(model));
+  args.push('--dir', String(root || ''));
   return { command: 'agent-loop', args };
 }
 
@@ -102,4 +120,4 @@ async function readLog({ root, identity, capture }) {
   return response;
 }
 
-module.exports = { runSpec, inspect, saveSchedule, parseResult, startDaemon, stopDaemon, readLog };
+module.exports = { runSpec, taskRunSpec, inspect, saveSchedule, parseResult, startDaemon, stopDaemon, readLog };

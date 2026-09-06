@@ -96,6 +96,7 @@ class TestExpand(unittest.TestCase):
             home.add("pdf", "PDF の扱い方")
             out, loaded = ollama_skills.expand("これを要約", ["pdf"])
         self.assertIn("# スキル: pdf", out)
+        self.assertIn("ユーザーが明示的に呼び出しました", out)
         self.assertIn("PDF の扱い方", out)
         self.assertNotIn("description: せつめい", out, "frontmatter は載せない")
         self.assertTrue(out.endswith("これを要約"))

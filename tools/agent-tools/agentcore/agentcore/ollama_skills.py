@@ -114,7 +114,8 @@ def _render(name: str, path: Path, args: str) -> "tuple[str, bool]":
     head = f"# スキル: {name}"
     if args:
         head += f"（引数: {args}）"
-    return f"{head}\n\n{body}", scripts
+    activation = "このスキルはユーザーが明示的に呼び出しました。以下の手順を今回の依頼へ適用してください。"
+    return f"{head}\n\n{activation}\n\n{body}", scripts
 
 
 def skill_exists(name: str) -> bool:

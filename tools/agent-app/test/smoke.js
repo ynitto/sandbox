@@ -69,11 +69,12 @@ async function shot(win, name) {
   console.log('shot', name);
 }
 async function js(win, code) { return win.webContents.executeJavaScript(code, true); }
-// ターンが終わる（送信ボタンが戻る）まで待つ
+// ターンが終わる（tmux が待機へ戻る）まで待つ
 async function waitIdle(win, ms = 40000) {
   const start = Date.now();
   while (Date.now() - start < ms) {
-    if (!(await js(win, "document.getElementById('send').hidden")) && !(await js(win, "document.getElementById('send').disabled"))) return true;
+    if ((await js(win, "document.getElementById('phase').textContent")) === '待機'
+      && !(await js(win, "document.getElementById('send').disabled"))) return true;
     await sleep(300);
   }
   return false;
@@ -90,9 +91,11 @@ app.whenReady().then(async () => {
   console.log('host:', await js(win, "document.getElementById('host-status').textContent"));
   console.log('cli options:', await js(win, "[...document.getElementById('cli').options].map(o=>o.value+':'+o.textContent).join(',')"));
   await shot(win, '01-empty');
+  await js(win, "(()=>{const p=document.getElementById('policy'); p.value='direct'; p.dispatchEvent(new Event('change'));})()");
+  await sleep(300);
   await js(win, "document.getElementById('cli').value='stub'; document.getElementById('prompt').value='こんにちは、テストです'; document.getElementById('send').click();");
   await sleep(1500);
-  await js(win, "document.getElementById('term-toggle').click()");
+  await js(win, "document.getElementById('input-mode-terminal').click()");
   await sleep(1200);
   await shot(win, '02-working-with-terminal');
   await sleep(2500);
@@ -160,7 +163,7 @@ app.whenReady().then(async () => {
   console.log('idle:', await waitIdle(win));
   s1 = readSessions()[0];
   console.log('after switching back:', JSON.stringify({ live: s1.live, cliSessions: s1.cliSessions, count: s1.messages.length }));
-  await js(win, "document.getElementById('term-toggle').click(); document.getElementById('changes-toggle').click();");
+  await js(win, "document.getElementById('input-mode-terminal').click(); document.getElementById('changes-toggle').click();");
   await sleep(1500);
   await shot(win, '04-changes');
   await js(win, "document.getElementById('diff-style').click()");
@@ -233,7 +236,7 @@ app.whenReady().then(async () => {
   console.log('tree root:', await js(win, "document.getElementById('tree-root').value"));
   await shot(win, '15-worktree-files');
   // 本体側の会話に戻すと、変更ビューも本体に戻る
-  await js(win, "document.getElementById('view-chat').click(); document.querySelectorAll('#sessions li')[1].click()");
+  await js(win, "document.getElementById('view-chat').click(); document.querySelectorAll('#sessions .list-pick')[1].click()");
   await sleep(2000);
   console.log('changes head (main):', await js(win, "document.getElementById('changes-where').textContent"));
   console.log('changed files (main):', await js(win, "[...document.querySelectorAll('#changed-files li')].map(n=>n.innerText.replace(/\\n/g,' ')).join(', ')"));
@@ -244,7 +247,7 @@ app.whenReady().then(async () => {
   console.log('worktree ui off:', await js(win, "JSON.stringify({picker: document.getElementById('worktree').closest('label').hidden, manage: document.getElementById('wt-manage').hidden, root: document.getElementById('tree-root').hidden})"));
   await shot(win, '17-worktree-off');
   // off でも、worktree で始めた会話を開けばどこで動いているかは見える
-  await js(win, "document.querySelectorAll('#sessions li')[0].click()");
+  await js(win, "document.querySelectorAll('#sessions .list-pick')[0].click()");
   await sleep(1500);
   console.log('worktree ui off (worktree の会話):', await js(win, "JSON.stringify({picker: document.getElementById('worktree').closest('label').hidden, value: document.getElementById('worktree').value, disabled: document.getElementById('worktree').disabled})"));
   await shot(win, '18-worktree-off-session');
@@ -255,7 +258,7 @@ app.whenReady().then(async () => {
   console.log('sessions:', fs.readdirSync(path.join(ud, 'sessions')).map((f) => fs.readFileSync(path.join(ud, 'sessions', f), 'utf8')).join('\n'));
   // 会話を削除して tmux セッションも添付も消えることを見る
   const doomed = tmuxName(readSessions().find((x) => x.messages.some((m) => (m.attachments || []).length)).id);
-  await js(win, "document.getElementById('view-chat').click(); window.confirm = () => true; document.querySelectorAll('#sessions li')[1].click();");
+  await js(win, "document.getElementById('view-chat').click(); window.confirm = () => true; document.querySelectorAll('#sessions .list-pick')[1].click();");
   await sleep(800);
   await js(win, "document.getElementById('session-delete').click();");
   await sleep(1500);

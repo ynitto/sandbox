@@ -441,6 +441,25 @@ class RunStatemachineTest(unittest.TestCase):
         self.assertEqual(output.read_text(encoding="utf-8"), "stale\n")
         self.assertEqual(list(pathlib.Path(self.repo).glob("*.agent-loop-*.bak")), [])
 
+    def test_manual_common_instruction_precedes_the_state_action(self):
+        prompts = []
+
+        def fake_agent(_agent, prompt, **_kwargs):
+            prompts.append(prompt)
+            return "done"
+
+        with patch_harness("_tl_run_agent", side_effect=fake_agent):
+            result = sm._sm_execute_action(
+                workflow_path=os.path.join(
+                    self.repo, ".statemachine", "one-step", "workflow.yaml"),
+                state_id="make", state={"action_file": "actions/make.md"}, context={},
+                cwd=self.repo, agent={}, log_file=os.path.join(self.repo, "run.jsonl"),
+                touched=set(), instruction="共通指示を守る")
+
+        self.assertEqual(result, "done")
+        self.assertIn("共通指示を守る", prompts[0])
+        self.assertLess(prompts[0].index("共通指示を守る"), prompts[0].index("今回の工程"))
+
     def test_contract_without_file_change_is_rejected(self):
         output = pathlib.Path(self.repo, "out.txt")
         output.write_text("stale\n", encoding="utf-8")

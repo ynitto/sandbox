@@ -147,3 +147,68 @@ test('Windows の記録は winauto record を子プロセスで走らせ、停�
   assert.deepStrictEqual(fs.readdirSync(tmp), [], '一時ファイルは消す');
   await assert.rejects(() => recording.recordWindowsStop({}), /始まっていません/);
 });
+
+const SNAPSHOT = `### Page
+- Page URL: https://qiita.com/items/1
+### Snapshot
+\`\`\`yaml
+- generic [ref=e2]:
+  - heading "記事のタイトル" [level=1] [ref=e3]
+  - article [ref=e4]:
+    - paragraph [ref=e5]: 本文
+    - link "Learn more" [ref=e6] [cursor=pointer]
+  - table [ref=e7]
+\`\`\`
+`;
+
+test('snapshot の行を role と名前の候補にし、ref は残さずロケータ式に写す', () => {
+  const list = recording.parseSnapshot(SNAPSHOT);
+  assert.deepStrictEqual(list.map((c) => c.ref), ['e3', 'e4', 'e5', 'e6', 'e7'], 'generic は候補にしない');
+  assert.strictEqual(list[0].target, "getByRole('heading', { name: '記事のタイトル' })");
+  assert.strictEqual(list[1].target, "getByRole('article')");
+  assert.strictEqual(list[1].depth, 1);
+  assert.strictEqual(recording.roleLocator('link', "It's"), "getByRole('link', { name: 'It\\'s' })");
+});
+
+test('記録中の読み取りは stop → start で区切って順に積み、直前の工程に属する', async () => {
+  const calls = [];
+  let stops = 0;
+  const capture = async (command, args) => {
+    calls.push(args[args.length - 1] === '--help' ? '--help' : args[1]);
+    if (args.includes('--help')) return { ok: true, status: 0, stdout: 'recording-start\nrecording-stop\n', stderr: '' };
+    if (args.includes('snapshot')) return { ok: true, status: 0, stdout: SNAPSHOT, stderr: '' };
+    if (args.includes('recording-stop')) {
+      stops += 1;
+      const body = stops === 1
+        ? "```js\nawait page.goto('https://qiita.com/');\nawait page.getByRole('link', { name: 'ある記事' }).click();\n```"
+        : 'Recording stopped. No actions were recorded.';
+      return { ok: true, status: 0, stdout: body, stderr: '' };
+    }
+    return { ok: true, status: 0, stdout: '', stderr: '' };
+  };
+  recording.resetBrowserRecording();
+  await assert.rejects(() => recording.recordBrowserSnapshot({ capture }), /始まっていません/);
+  await recording.recordBrowserStart({ url: 'https://qiita.com/', capture });
+  const snap = await recording.recordBrowserSnapshot({ capture });
+  assert.strictEqual(snap.candidates.length, 5);
+  await assert.rejects(() => recording.recordBrowserExtract({ ref: 'e99', capture }), /一覧から選んで/);
+  const ins = await recording.recordBrowserExtract({ ref: 'e4', mode: 'text', key: 'Body Text', capture });
+  assert.deepStrictEqual(ins.op, { op: 'extract', target: "getByRole('article')", role: 'article', label: '', mode: 'text', key: 'body_text' });
+  assert.deepStrictEqual(recording.browserRecordingState(), { url: 'https://qiita.com/', extracts: 1 });
+  const res = await recording.recordBrowserStop({ capture });
+  assert.strictEqual(recording.browserRecordingState(), null);
+  assert.deepStrictEqual(res.steps.map((s) => s.title), ['「ある記事」リンクを押す']);
+  assert.deepStrictEqual(res.steps[0].recorded.map((op) => op.op), ['goto', 'click', 'extract'], '読み取りは確定の後でも同じ工程に入る');
+  assert.strictEqual(res.steps[0].recorded[2].key, 'body_text');
+  assert.ok(res.steps[0].detail.includes('全文を読み取る（body_text）'));
+  assert.deepStrictEqual(calls, ['--help', 'open', 'recording-start', 'snapshot', 'recording-stop', 'recording-start', 'recording-stop', 'close']);
+  // 読み取りだけで操作が無い記録は断る
+  recording.resetBrowserRecording();
+  const empty = async (_c, args) => args.includes('--help')
+    ? { ok: true, status: 0, stdout: 'recording-start\nrecording-stop\n', stderr: '' }
+    : { ok: true, status: 0, stdout: args.includes('snapshot') ? SNAPSHOT : 'No actions were recorded', stderr: '' };
+  await recording.recordBrowserStart({ capture: empty });
+  await recording.recordBrowserSnapshot({ capture: empty });
+  await recording.recordBrowserExtract({ ref: 'e4', capture: empty });
+  await assert.rejects(() => recording.recordBrowserStop({ capture: empty }), /操作が記録されていません/);
+});

@@ -36,6 +36,141 @@ test('画面の判定: ready / busy / unknown', () => {
   assert.strictEqual(kiro.readyTimeoutSec, 60);
 });
 
+test('Kiroの点字ロゴを処理中スピナーと誤認しない', () => {
+  const kiro = tmux.compilePatterns({
+    readyPattern: 'ask a question|describe a task',
+  });
+  const screen = `
+    ⣀⣴⣶⣶⣦⣀   ⣀⣴⣶⣦⣄⣀
+    ⢸⣿⣉⣁⣈⢻   ⢸⣿⣉⣁⣈⢻
+
+An early release of Kiro CLI V3 is now available!
+▸ Credits: 0.13 • Time: 2s
+Trust All Tools active, confirmations are off
+kiro_default · auto · ◔ 4%
+ask a question or describe a task ↵`;
+  assert.strictEqual(tmux.classify(screen, kiro), 'ready');
+});
+
+test('Codexのヘッダーはreadyではなく、Copilotの許可画面はattention', () => {
+  const codex = tmux.compilePatterns({
+    readyPattern: '^[[:blank:]]*[>?❯›][[:blank:]]*$|│[[:blank:]]*[>❯›][[:blank:]]*│?[[:blank:]]*$',
+    busyPattern: 'esc to interrupt',
+  });
+  const loading = '╭───────────────────────────────────────╮\n│ >_ OpenAI Codex (v0.153.4)            │\n│ model: loading   /model to change      │\n╰───────────────────────────────────────╯\n  Resuming session…';
+  assert.strictEqual(tmux.classify(loading, codex), 'busy');
+  assert.strictEqual(tmux.classify(`${loading}\n\n› `, codex), 'ready');
+  assert.strictEqual(tmux.classify('› Ask Codex to do anything\n\n  gpt-5.6-sol medium · ~/repo', codex), 'ready');
+
+  const approval = '│ Do you want to run this command? │\n│ ❯ 1. Yes │\n│   2. Yes, and don\'t ask again │\n│ enter to select · esc to cancel │';
+  assert.strictEqual(tmux.classify(approval, tmux.compilePatterns({})), 'attention');
+  assert.strictEqual(tmux.classify(`${approval}\n\n› `, tmux.compilePatterns({})), 'ready', '確認後の入力欄が出たら古い確認表示を引きずらない');
+
+  const copilot = tmux.compilePatterns({
+    readyPattern: '^[[:space:]]*┃[[:space:]]*$',
+    busyPattern: 'pending.*ctrl\\+c to cancel|working[[:space:]]+esc interrupt',
+    readyTailLines: 8,
+  });
+  const copilotReady = '● 了解。簡潔に回答。\n\n ~/repo [⎇ main%]  Session: 0.99 AIC used\n╻▄▄▄▄▄▄▄▄▄▄▄▄▄▄\n┃         \n╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n ← open sidebar · / commands · ? help · tab next tab  Auto → gpt-5.6-luna';
+  assert.strictEqual(tmux.classify(copilotReady, copilot), 'ready');
+  const copilotWorking = '❯ 今日の天気 (pending · ctrl+c to cancel)\n ~/repo Session: 0 AIC used\n╻▄▄▄▄▄▄▄▄▄▄▄▄▄▄\n┃\n╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n ◎ Working esc interrupt  Auto → mai-code-1.1-flash';
+  assert.strictEqual(tmux.classify(copilotWorking, copilot), 'busy');
+  const copilotWorkingWithBytes = '● skill(ponytail)\n╻▄▄▄▄▄▄▄▄\n┃\n╹▀▀▀▀▀▀▀▀\n ◉ Working · 25 B esc interrupt  Auto → gpt-5.6-luna';
+  assert.strictEqual(tmux.classify(copilotWorkingWithBytes, copilot), 'busy');
+
+  const copilotQuestion = `● Asking user
+╭──────────────────╮
+│ どの地域の天気ですか？ │
+│ ❯ 1. 東京             │
+│   2. 大阪             │
+│   3. Other (type your answer) │
+│ Use ↑↓ or number keys to select, Enter to confirm, Esc to cancel │
+╰──────────────────╯`;
+  assert.strictEqual(tmux.classify(copilotQuestion, copilot), 'attention');
+  assert.match(tmux.attentionDetail(copilotQuestion), /どの地域の天気ですか？/);
+  assert.match(tmux.attentionDetail(copilotQuestion), /1\. 東京/);
+});
+
+test('Cursor Agent の Add a follow-up 画面をターン完了と判定する', () => {
+  // 配布済みの ~/.agents/agents/cursor.json が古く、完了画面しか持たない場合も動くこと。
+  const cursor = tmux.compilePatterns({
+    readyPattern: 'add a follow-up',
+    busyPattern: '^[[:space:]]*[⠀-⣿]+[[:space:]]+.+$',
+  });
+  const startup = 'Cursor Agent\nTip: Use /plan to plan execution and reach the right outcome faster.\n\n→ Plan, search, build anything\n\nAuto\n~/Workspace/sandbox-test · main';
+  assert.strictEqual(tmux.classify(startup, cursor), 'ready');
+  const working = 'Cursor Agent\n\n⠀⠰⠰ Working\nTip: Use /config to customize Cursor settings and behavior.\n\n→ Add a follow-up\nAuto · 9.3%\n~/Workspace/sandbox-test · main';
+  assert.strictEqual(tmux.classify(working, cursor), 'busy');
+  const alternateSpinner = 'Cursor Agent\n\n⠠⠜ Working\nTip: Use /debug to instrument and debug complex problems.\n\n→ Add a follow-up\nAuto · 9.7%\n~/Workspace/sandbox-test · main';
+  assert.strictEqual(tmux.classify(alternateSpinner, cursor), 'busy');
+  const reading = 'Cursor Agent\n\n⠘⠆ Reading  71 tokens\nTip: Use /run-everything to skip all approvals.\n\n→ Add a follow-up\nAuto · 9.5%\n~/Workspace/sandbox-test · main';
+  assert.strictEqual(tmux.classify(reading, cursor), 'busy');
+  const screen = 'Hello. What would you like to work on?\n\n  → Add a follow-up\n\n  Auto · 9.3%\n  ~/Workspace/sandbox-test · main';
+  assert.strictEqual(tmux.classify(screen, cursor), 'ready');
+  assert.strictEqual(tmux.extractReply('Cursor Agent\n\n→ Add a follow-up', `Cursor Agent\n\n> hello\n\nHello. What would you like to work on?\n\n→ Add a follow-up\n\nAuto · 9.3%\n~/Workspace/sandbox-test · main`, 'hello'), 'Hello. What would you like to work on?');
+});
+
+test('Claude Code の workspace 信頼確認を attention として検出する', () => {
+  const screen = `Accessing workspace:\n\n/Users/me/repo\n\nQuick safety check: Is this a project you created or one you trust?\n\n❯ No, exit\n  Yes, I trust this folder\n\nEnter to confirm · Esc to cancel`;
+  assert.match(screen, tmux.ATTENTION);
+});
+
+test('waitReady は起動中の attention に依頼を送らず、確認後の ready を待つ', async () => {
+  const conv = new tmux.Conversation({ id: 'trust', shell: {}, cwd: '/tmp', argv: [], patterns: tmux.compilePatterns({}) });
+  conv.patterns.readyTimeoutSec = 0.01;
+  conv.phase = 'attention';
+  let settled = false;
+  const waiting = conv.waitReady().then(() => { settled = true; });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.strictEqual(settled, false);
+  conv.phase = 'ready';
+  await waiting;
+  assert.strictEqual(settled, true);
+});
+
+test('send-keys は複数行を1回の入力へ畳む', async () => {
+  const calls = [];
+  const shell = { run: async (command) => { calls.push(command); return { ok: true, output: '' }; } };
+  const conv = new tmux.Conversation({ id: 'one-line', shell, cwd: '/tmp', argv: [], patterns: tmux.compilePatterns({}) });
+  conv.phase = 'ready';
+  conv.historyText = async () => '';
+  conv.schedule = () => {};
+  await conv.send('開始指示\n\nhello', () => {});
+  assert.strictEqual(calls.length, 2);
+  assert.match(calls[0], /send-keys/);
+  assert.match(calls[0], /開始指示 hello/);
+  assert.doesNotMatch(calls[0], /set-buffer|paste-buffer/);
+});
+
+test('候補確定型のスキル入力はEnterを2回送る', async () => {
+  const calls = [];
+  const shell = { run: async (command) => { calls.push(command); return { ok: true, output: '' }; } };
+  const conv = new tmux.Conversation({ id: 'skill-enter', shell, cwd: '/tmp', argv: [], patterns: tmux.compilePatterns({}) });
+  conv.phase = 'ready';
+  conv.historyText = async () => '';
+  conv.schedule = () => {};
+  await conv.send('$caveman', () => {}, { enterCount: 2 });
+  assert.strictEqual(calls.length, 3);
+  assert.strictEqual(calls.filter((command) => /'Enter'/.test(command)).length, 2);
+});
+
+test('応答中でもElectron入力欄から文章回答をtmuxへ送れる', async () => {
+  const calls = [];
+  const shell = { run: async (command) => { calls.push(command); return { ok: true, output: '' }; } };
+  const conv = new tmux.Conversation({ id: 'followup', shell, cwd: '/tmp', argv: [], patterns: tmux.compilePatterns({}) });
+  conv.phase = 'attention';
+  conv.turn = { prompt: '質問', startedAt: Date.now(), before: '', sawBusy: true, readyCount: 0, stopped: false, done: () => {} };
+  conv.schedule = () => {};
+
+  const result = await conv.submit('東京');
+
+  assert.strictEqual(result.accepted, true);
+  assert.strictEqual(calls.length, 2);
+  assert.match(calls[0], /'東京'/);
+  assert.match(calls[1], /'Enter'/);
+  assert.ok(conv.turn, '実行中ターンは維持する');
+});
+
 test('応答の抽出: 入力欄・フッター・依頼の echo を除いた差分', () => {
   const before = 'Welcome to CLI\n\n╭────────╮\n│ >      │\n╰────────╯\n  ? for shortcuts';
   const after = 'Welcome to CLI\n\n> こんにちは\n\n⏺ やあ。何を手伝う？\n\n  - 1 つ目\n  - 2 つ目\n\n╭────────╮\n│ >      │\n╰────────╯\n  ? for shortcuts';
@@ -44,6 +179,14 @@ test('応答の抽出: 入力欄・フッター・依頼の echo を除いた差
   const after2 = 'x\n> 行 1\n  行 2\n答え\n> ';
   assert.strictEqual(tmux.extractReply('x\n> ', after2, '行 1\n行 2'), '答え');
   assert.strictEqual(tmux.extractReply('a\nb', 'a\nb', 'p'), '');
+});
+
+test('Copilotの枠とステータスを除き回答本文だけを抽出する', () => {
+  const before = 'Copilot v1.0.83 uses AI.\n\n● 前の回答\n\n ~/repo [⎇ main%] Session: 0.5 AIC used\n╻▄▄▄▄▄▄▄▄▄▄▄▄\n┃\n╹▀▀▀▀▀▀▀▀▀▀▀▀\n ← open sidebar · / commands · ? help · tab next tab  Auto → model';
+  const after = `${before}\n ▄▄▄▄▄▄▄▄▄▄▄▄▄\n  ❯ 今日の天気  09:02\n ▀▀▀▀▀▀▀▀▀▀▀▀▀\n ● 天気不明。場所名教えろ。今日の予報出す。\n\n ~/repo [⎇ main%] Session: 0.81 AIC used\n╻▄▄▄▄▄▄▄▄▄▄▄▄\n┃\n╹▀▀▀▀▀▀▀▀▀▀▀▀\n ← open sidebar · / commands · ? help · tab next tab  Auto → model`;
+  assert.strictEqual(tmux.extractReply(before, after, '今日の天気'), '● 天気不明。場所名教えろ。今日の予報出す。');
+  const current = `${before}\n ● skill(ponytail)\n ▄▄▄▄▄▄▄▄\n  ❯ 今日の天気 09:13\n ▀▀▀▀▀▀▀▀\n ● Fetching web content https://wttr.in/Tokyo ┃\n ● 東京の今日： ┃\n   • 天気：雨 ┃\n\n ~/repo [⎇ main%] Session: 1.4 AIC used\n╻▄▄▄▄▄▄▄▄\n┃\n╹▀▀▀▀▀▀▀▀\n ◉ Working · 25 B esc interrupt Auto → model`;
+  assert.strictEqual(tmux.extractReply(before, current, '今日の天気'), '● skill(ponytail)\n● Fetching web content https://wttr.in/Tokyo\n● 東京の今日：\n  • 天気：雨');
 });
 
 test('xterm のキー入力を send-keys の引数へ', () => {
@@ -152,8 +295,8 @@ test('統合: tmux 上の疑似 CLI と会話する', { skip: !hasTmux && 'tmux 
     conv.unwatch();
 
     const second = await new Promise((resolve, reject) => { conv.send('two\nlines', resolve).catch(reject); });
-    // 疑似 CLI は行ごとに読むので 2 回答える。依頼の echo（"> lines"）は落ちる
-    assert.strictEqual(second.text, '⏺ echo: two\n  detail line\n⏺ echo: lines\n  detail line');
+    // 行入力型 CLI にも複数行の依頼を 1 ターンとして渡す。
+    assert.strictEqual(second.text, '⏺ echo: two lines\n  detail line');
 
     // 同じ名前のセッションへ再接続できる
     const again = new tmux.Conversation({ id: conv.id, shell: sh, cwd: dir, argv: [stub], patterns: conv.patterns, emit() {} });

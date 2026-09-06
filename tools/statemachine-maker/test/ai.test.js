@@ -97,3 +97,15 @@ test('JSON以外や空の質問一覧を拒否する', () => {
     schemaVersion: 1, status: 'questions', questions: [], candidate: null,
   }), { mode: 'draft' }), /質問/);
 });
+
+test('見直しは一般化の観点を持ち、generalization の finding を受ける', () => {
+  const prompt = ai.reviewPrompt({ spec: sample(), scope: { type: 'workflow' }, focus: '' });
+  assert.match(prompt, /一般化/);
+  assert.match(prompt, /extend\.loop/);
+  const result = ai.parseEnvelope(JSON.stringify({
+    schemaVersion: 1, status: 'questions', summary: 's',
+    questions: [{ id: 'q1', text: '件数は？' }],
+    findings: [{ category: 'generalization', severity: 'suggestion', stepId: 'open', title: '繰り返しに見える', detail: '同じ形のリンクが並ぶ' }],
+  }));
+  assert.strictEqual(result.findings[0].category, 'generalization');
+});

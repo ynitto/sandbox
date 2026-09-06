@@ -63,6 +63,10 @@ function normalize(raw, name, file) {
   if (!raw || typeof raw !== 'object' || !Array.isArray(raw.command) || !raw.command.length) {
     throw new Error(`エージェント定義 ${file}: command は 1 要素以上の文字列配列が必須です`);
   }
+  if (raw.slash_native != null && typeof raw.slash_native !== 'boolean') {
+    throw new Error(`エージェント定義 ${file}: slash_native は true か false です`);
+  }
+  const headlessAutonomy = String(raw.headless_autonomy || 'single-shot');
   return {
     name: String(raw.name || name),
     file,
@@ -73,6 +77,7 @@ function normalize(raw, name, file) {
     modelFlag: raw.model_flag != null ? String(raw.model_flag) : null,
     fileFlag: raw.file_flag != null ? String(raw.file_flag) : null,
     skillCommandPrefix: raw.skill_command_prefix != null ? String(raw.skill_command_prefix) : '/',
+    slashNative: raw.slash_native == null ? headlessAutonomy === 'tool-loop' : raw.slash_native,
     defaultModel: raw.default_model != null ? String(raw.default_model) : '',
     output: raw.output === 'file' ? 'file' : 'stdout',
     env: raw.env && typeof raw.env === 'object' ? raw.env : {},
@@ -299,6 +304,10 @@ function interactiveCmd(spec, { model = '', readonly = false, cliSession = '', h
     mintedSession = crypto.randomUUID();
     vars.session = mintedSession;
     frag = strategy.newArgs;
+  } else if (strategy) {
+    // capture/list 型は ID を特定できたときだけ再開する。--last は同じ CLI の
+    // 別会話を拾うため、ID が無い場合は新規起動して未読履歴を再送する。
+    warning = `${spec.name} のセッション ID が無いため、新しい会話として起動します`;
   } else if (history.length && inter.continueArgs.length) {
     frag = inter.continueArgs;
     resumed = true;

@@ -20,7 +20,7 @@
 const YAML = require('yaml');
 const templateParameters = require('./template-parameters');
 
-const PROCEDURE_VERSION = 3;
+const PROCEDURE_VERSION = 4;
 const MAX_STEPS = 40;
 const MAX_OUTCOMES = 8;
 const MAX_TEXT = 6000;
@@ -63,9 +63,12 @@ const STEP_KINDS = [
     ],
     recordedLine: (op) => {
       const value = op.value ? ` ${JSON.stringify(op.value)}` : '';
+      if (op.op === 'extract') return `extract ${op.target} --mode ${op.mode || 'text'} --as ${op.key || 'text'}`;
       return op.op === 'goto' ? `goto ${op.target}` : `${op.op} ${op.target}${value}`;
     },
-    recordedHint: '記録の行は `<操作> <ロケータ式> [値]` で、`playwright-cli <操作> "<ロケータ式>" [値]` として実行できます。',
+    recordedHint: '記録の行は `<操作> <ロケータ式> [値]` で、`playwright-cli <操作> "<ロケータ式>" [値]` として実行できます。'
+      + '`extract` は操作ではなく読み取りの宣言で、snapshot でその要素の ref を確かめてから `playwright-cli eval "el => el.innerText" <ref>` で丸ごと取ります'
+      + '（`--mode table` は行ごと・`--mode list` は項目ごとの配列にする）。',
   },
   {
     id: 'windows',
@@ -85,10 +88,12 @@ const STEP_KINDS = [
     ],
     recordedLine: (op) => {
       const value = op.value ? ` ${JSON.stringify(op.value)}` : '';
+      if (op.op === 'extract') return `extract ${JSON.stringify(op.target)} --mode ${op.mode || 'text'} --as ${op.key || 'text'}`;
       return `${op.op} ${JSON.stringify(op.target)}${value}`;
     },
     recordedHint: '記録の行は `<操作> <セレクタ> [値]` です。`launch` → `winauto launch`、`window` → `winauto wait` で待つ、'
-      + '`click` / `check` / `uncheck` → `winauto click`、`fill` / `type` → `winauto type`、`select` → `winauto select`、`keys` → `winauto keys`。',
+      + '`click` / `check` / `uncheck` → `winauto click`、`fill` / `type` → `winauto type`、`select` → `winauto select`、`keys` → `winauto keys`、'
+      + '`extract` は読み取りの宣言で `winauto get-text` で丸ごと取る。',
   },
   {
     id: 'skill',
@@ -200,7 +205,10 @@ function normalizeTarget(kind, raw, index) {
   return value;
 }
 
-const RECORDED_OPS = new Set(['goto', 'launch', 'click', 'dblclick', 'fill', 'type', 'press', 'select', 'check', 'uncheck', 'hover', 'keys', 'window']);
+const RECORDED_OPS = new Set(['goto', 'launch', 'click', 'dblclick', 'fill', 'type', 'press', 'select', 'check', 'uncheck', 'hover', 'keys', 'window', 'extract']);
+const EXTRACT_MODES = ['text', 'table', 'list'];
+const EXTRACT_MODE_JA = { text: '全文', table: '表', list: '一覧の各項目' };
+const EXTRACT_KEY_RE = /^[a-z][a-z0-9_]{0,29}$/;
 
 function normalizeRecorded(raw, index, kind) {
   const list = Array.isArray(raw) ? raw : [];
@@ -219,8 +227,55 @@ function normalizeRecorded(raw, index, kind) {
     if (item.role) out.role = text(item.role, 40);
     if (item.value) out.value = text(item.value, 300);
     if (item.example) out.example = text(item.example, 120);
+    if (name === 'extract') {
+      if (!target) throw new Error(`工程 ${index + 1} の読み取り ${n + 1} に要素がありません`);
+      out.mode = EXTRACT_MODES.includes(item.mode) ? item.mode : 'text';
+      const key = text(item.key, 30) || 'text';
+      if (!EXTRACT_KEY_RE.test(key)) throw new Error(`工程 ${index + 1} の読み取り ${n + 1} の出力名が不正です: ${key}（英小文字始まり・英数字とアンダースコア）`);
+      out.key = key;
+    }
     return out;
   });
+}
+
+// --- 工程の修飾（記録を広げる） -------------------------------------------------------
+// 記録は「人が 1 回通った経路」しか持たない。繰り返し・確認・失敗時の扱いは記録に足さず、
+// 工程の修飾として人が選び、コンパイルが決まった文で本文に書く（読み取りは recorded の extract）。
+const LOOP_COUNTS = ['n', 'all', 'pages'];
+const LOOP_BACKS = ['', 'history', 'goto'];
+const EXPECT_KINDS = ['visible', 'text', 'count'];
+const ON_ERROR_ITEM = ['skip', 'abort'];
+const ON_ERROR_STEP = ['abort', 'retry', 'agent'];
+const MAX_LOOP = 50;
+const LOOP_FLOW_HINT = 20;
+
+function normalizeExtend(raw, index, kind) {
+  const src = raw && typeof raw === 'object' ? raw : {};
+  const out = {};
+  if (src.loop && typeof src.loop === 'object') {
+    const count = LOOP_COUNTS.includes(src.loop.count) ? src.loop.count : 'n';
+    const n = Math.max(1, Math.min(MAX_LOOP, Number(src.loop.n) || 3));
+    const over = text(src.loop.over, 300);
+    if (!over) throw new Error(`工程 ${index + 1} の繰り返しに対象（同じ形の要素）を入力してください`);
+    const back = LOOP_BACKS.includes(src.loop.back) ? src.loop.back : '';
+    out.loop = { over, count, n, back, next: count === 'pages' ? text(src.loop.next, 300) : '' };
+    if (count === 'pages' && !out.loop.next) throw new Error(`工程 ${index + 1} の繰り返しに「次のページ」の要素を入力してください`);
+  }
+  if (src.expect && typeof src.expect === 'object' && EXPECT_KINDS.includes(src.expect.kind)) {
+    const target = text(src.expect.target, 300);
+    if (!target) throw new Error(`工程 ${index + 1} の確認に要素を入力してください`);
+    const value = text(src.expect.value, 200);
+    if (src.expect.kind !== 'visible' && !value) throw new Error(`工程 ${index + 1} の確認に${src.expect.kind === 'text' ? '含まれるべき文字' : '件数'}を入力してください`);
+    out.expect = { kind: src.expect.kind, target, value: src.expect.kind === 'count' ? String(Math.max(0, Number(value) || 0)) : value };
+  }
+  if (src.onError && typeof src.onError === 'object') {
+    const item = ON_ERROR_ITEM.includes(src.onError.item) ? src.onError.item : 'abort';
+    const step = ON_ERROR_STEP.includes(src.onError.step) ? src.onError.step : 'abort';
+    const retries = Math.max(1, Math.min(5, Number(src.onError.retries) || 1));
+    if (item !== 'abort' || step !== 'abort') out.onError = { item, step, retries };
+  }
+  if (Object.keys(out).length && !kind.recordable) throw new Error(`工程 ${index + 1}（${kind.label}）は記録の拡張を持てません`);
+  return out;
 }
 
 function defaultStepId(index) {
@@ -276,6 +331,7 @@ function normalizeStep(raw, index, stepCount, usedIds, endIds) {
     target: normalizeTarget(kind, item.target, index),
     check, checkRetries, outcomes, rawTransitions,
     recorded: normalizeRecorded(item.recorded, index, kind),
+    extend: normalizeExtend(item.extend, index, kind),
   };
 }
 
@@ -419,15 +475,59 @@ function kindOf(step) {
   return STEP_KIND_BY_ID.get(step.kind);
 }
 
+// 読み取りや繰り返しを持つ工程は、第 1 行の語のあとに JSON を返す（後続の工程が {{last_output}} で受ける）。
+function jsonContract(step) {
+  const keys = (step.recorded || []).filter((op) => op.op === 'extract').map((op) => op.key);
+  const loop = step.extend && step.extend.loop;
+  if (!keys.length && !loop) return '';
+  const fields = keys.length ? keys : ['title', 'url'];
+  const item = `{${fields.map((k) => `"${k}": …`).join(', ')}}`;
+  const shape = loop ? `{"items": [${item}, …], "skipped": [説明, …]}` : item;
+  return `2 行目以降に次の形の JSON だけを書いてください: ${shape}`;
+}
+
 function outputFormatLine(step) {
-  if (step.rawTransitions) return '**出力形式:** 第1行に結果を表す一語（遷移条件が見る語）を返してください。';
-  if (!step.outcomes.length) return '**出力形式:** 第1行に OK（完了）または FAILED（できなかった）だけを返してください。';
+  const json = jsonContract(step);
+  const tail = json ? `。${json}` : '';
+  if (step.rawTransitions) return `**出力形式:** 第1行に結果を表す一語（遷移条件が見る語）を返してください${tail}。`;
+  if (!step.outcomes.length) return json ? `**出力形式:** 第1行に OK（完了）または FAILED（できなかった）だけを書き、${json}` : '**出力形式:** 第1行に OK（完了）または FAILED（できなかった）だけを返してください。';
   const labels = stepLabels(step);
   // 文章の条件だけの工程には第 1 行の契約が無い。無いものを在るように書かない。
-  if (!labels.length) return '**出力形式:** 何をどうしたか、結果が判別できるように短く返してください。';
+  if (!labels.length) return `**出力形式:** 何をどうしたか、結果が判別できるように短く返してください${tail}。`;
   const rest = step.outcomes.length - labels.length;
+  if (json) return `**出力形式:** 第1行に ${labels.join(' / ')} のいずれか一語を書き、${json}`;
   return `**出力形式:** 第1行に ${labels.join(' / ')} のいずれか一語`
     + (rest ? 'を書き、続けて結果の要点を短く書いてください。' : 'だけを返してください。');
+}
+
+// 修飾 → 本文。人が選んだものを決まった文に写す（推測で足さない）。
+const EXTEND_HEADING = '工程の拡張（人が付けた修飾。記録の操作に重ねて守る）:';
+
+function extendMarkdown(step) {
+  const ext = step.extend || {};
+  const extracts = (step.recorded || []).filter((op) => op.op === 'extract');
+  const lines = [];
+  if (ext.loop) {
+    const { over, count, n, back, next } = ext.loop;
+    const how = count === 'all' ? 'すべて' : count === 'pages' ? `すべて（このページを終えたら \`${next}\` で次のページへ進み、無くなるまで続ける）` : `先頭から ${n} 件`;
+    const ret = back === 'history' ? '履歴を 1 つ戻って一覧に戻る' : back === 'goto' ? (step.target ? `${step.target} を開き直して一覧に戻る` : '一覧の URL を開き直して一覧に戻る') : '';
+    lines.push(`- 繰り返し: 同じ形の要素 \`${over}\` を${how}、順に上の操作を行う。${ret ? `各件の後は、${ret}。` : ''}各件の結果を items の 1 要素にする。`);
+  }
+  for (const op of extracts) {
+    lines.push(`- 読み取り: \`${op.target}\` の${EXTRACT_MODE_JA[op.mode] || '全文'}を丸ごと読み取り、\`${op.key}\` として返す（要約しない・切らない）。`);
+  }
+  if (ext.expect) {
+    const { kind, target, value } = ext.expect;
+    const what = kind === 'visible' ? `\`${target}\` が見えること` : kind === 'text' ? `\`${target}\` に「${value}」が含まれること` : `\`${target}\` が ${value} 件以上あること`;
+    lines.push(`- 確認: 確定の操作の後、${what}を snapshot で確かめる。満たさなければ FAILED。`);
+  }
+  if (ext.onError) {
+    const { item, step: mode, retries } = ext.onError;
+    const perItem = ext.loop ? (item === 'skip' ? '1 件で失敗してもその件を飛ばして残りを続け、skipped に理由を書く。' : '1 件でも失敗したら FAILED。') : '';
+    const whole = mode === 'retry' ? `工程全体は ${retries} 回までやり直してよい。` : mode === 'agent' ? '想定と違う画面が出たら、目的を満たす別の操作を試してよい（記録に無い入力値は使わない）。' : '';
+    if (perItem || whole) lines.push(`- 失敗したら: ${perItem}${whole}`.trim());
+  }
+  return lines.length ? [EXTEND_HEADING, ...lines].join('\n') : '';
 }
 
 function actionMarkdown(spec, index) {
@@ -450,7 +550,11 @@ function actionMarkdown(spec, index) {
       + ' `{{key}}` は実行時に人が入れる入力パラメータで、記録時の値の例は形の参考です（既定値にしない）。');
     parts.push(lines.join('\n'));
   }
-  const rules = kind.rules.slice();
+  const extended = extendMarkdown(step);
+  if (extended) parts.push(extended);
+  let rules = kind.rules.slice();
+  // 「別の操作を試さない」は、人が「AI に任せる」を選んだ工程では修飾の文が置き換える。
+  if (step.extend && step.extend.onError && step.extend.onError.step === 'agent') rules = rules.filter((r) => !r.includes('別の操作を試さずに'));
   if (step.check) rules.push('この工程の完了は検査コマンドで測られます。検査が通る状態になってから出力を返してください。');
   rules.push('秘密情報（パスワード・トークン）を出力に書かない。');
   parts.push(`守ること:\n${rules.map((r) => `- ${r}`).join('\n')}`);
@@ -634,6 +738,10 @@ function portabilityWarnings(spec) {
       }
     }
     if (step.kind === 'windows') out.push(`工程 ${index + 1} は Windows アプリの操作なので、実行は Windows 上に限られます`);
+    const loop = step.extend && step.extend.loop;
+    if (loop && (loop.count !== 'n' || loop.n > LOOP_FLOW_HINT)) {
+      out.push(`工程 ${index + 1} の繰り返しは 1 工程の中で AI が回します。件数が多い（${LOOP_FLOW_HINT} 件超）なら、ワークフロー（agent-flow）の「分割する」→「個別に処理」に分ける方が確実です`);
+    }
     for (const o of step.outcomes) {
       const n = o.to.startsWith('step:') ? Number(o.to.slice(5)) : 0;
       if (n && n <= index + 1) out.push(`工程 ${index + 1} の「${o.label}」は工程 ${n} へ戻ります。無限ループは config.max_steps（${spec.maxSteps}）で止まります`);
@@ -665,6 +773,8 @@ function stripBoilerplate(body, kind) {
   }
   const recorded = s.search(/^記録した操作（/m);
   if (recorded >= 0) s = s.slice(0, recorded);
+  const extended = s.search(/^工程の拡張（/m);
+  if (extended >= 0) s = s.slice(0, extended);
   return s.trim();
 }
 
@@ -814,6 +924,7 @@ function decompile({ workflowText, files = {}, makerJson = '' } = {}) {
       outcomes: stepOutcomes,
       rawTransitions: raw,
       recorded: [],
+      extend: {},
     };
     step.id = id;
     if (fromSidecar && state.check && !step.check && typeof state.check === 'string') step.check = state.check;
@@ -858,6 +969,13 @@ module.exports = {
   PROCEDURE_VERSION,
   MAX_STEPS,
   MAX_OUTCOMES,
+  EXTRACT_MODES,
+  LOOP_COUNTS,
+  LOOP_BACKS,
+  EXPECT_KINDS,
+  ON_ERROR_ITEM,
+  ON_ERROR_STEP,
+  EXTEND_HEADING,
   STEP_KINDS,
   OUTCOME_TARGETS,
   TRAILER,

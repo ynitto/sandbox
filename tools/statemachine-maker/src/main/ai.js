@@ -7,7 +7,7 @@ const crypto = require('crypto');
 const model = require('./model');
 
 const SCHEMA_VERSION = 1;
-const FINDING_CATEGORIES = new Set(['consistency', 'efficiency', 'error-handling', 'edge-case']);
+const FINDING_CATEGORIES = new Set(['consistency', 'efficiency', 'error-handling', 'edge-case', 'generalization']);
 const FINDING_SEVERITIES = new Set(['error', 'warning', 'suggestion']);
 const SECRET_VALUE = /\b(password|passwd|token|secret|api[_-]?key)\s*[:=]\s*([^\s,;]+)/gi;
 
@@ -45,7 +45,7 @@ function responseContract() {
   "questions": [{"id":"q1","text":"質問","reason":"必要な理由","example":"回答例"}],
   "candidate": null または完全な maker 仕様,
   "assumptions": ["仮定"],
-  "findings": [{"category":"consistency|efficiency|error-handling|edge-case","severity":"error|warning|suggestion","stepId":"任意","title":"短い見出し","detail":"説明"}]
+  "findings": [{"category":"consistency|efficiency|error-handling|edge-case|generalization","severity":"error|warning|suggestion","stepId":"任意","title":"短い見出し","detail":"説明"}]
 }
 情報が足りなければ status を questions にして candidate は null にしてください。候補を返す場合は status を candidate にし、部分パッチではなく完全な maker 仕様を candidate に入れてください。`;
 }
@@ -89,6 +89,13 @@ function reviewPrompt({ spec, scope = { type: 'workflow' }, focus = '', history 
 - 効率性
 - エラー処理
 - エッジケース
+- 一般化（記録した操作を持つ工程は、人が 1 回通った経路しか持たない。同じ形の要素が並ぶなら繰り返し、画面の内容を後で使うなら読み取り、確定の後に確かめるべき表示があれば確認、途中で失敗しうるなら失敗時の扱いを、工程の extend と recorded の extract で提案する）
+
+工程の拡張の形（recordable な工程だけ。提案は candidate の該当工程に入れ、findings の category は generalization にする）:
+- recorded[] の extract: {"op":"extract","target":"getByRole('article')","mode":"text|table|list","key":"英小文字の出力名"}
+- extend.loop: {"over":"同じ形の要素のロケータ","count":"n|all|pages","n":件数,"back":"|history|goto","next":"次ページの要素（pages のとき）"}
+- extend.expect: {"kind":"visible|text|count","target":"要素","value":"文字か件数"}
+- extend.onError: {"item":"skip|abort","step":"abort|retry|agent","retries":1}
 
 見直す範囲: ${scopeText}
 追加の観点: ${redact(String(focus || '').trim()) || 'なし'}

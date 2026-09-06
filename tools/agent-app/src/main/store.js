@@ -25,6 +25,9 @@ const DEFAULTS = {
   automationSkillDir: '', automationAgent: 'aider', automationModel: '',
 };
 const MAX_REPOS = 30;
+const TERMINAL_TTL_MS = 24 * 60 * 60 * 1000;
+const MAX_TERMINAL_SNAPSHOTS = 12;
+const MAX_SNAPSHOT_CHARS = 120000;
 
 function configPath(userData) { return path.join(userData, 'config.json'); }
 function sessionsDir(userData) { return path.join(userData, 'sessions'); }
@@ -144,6 +147,8 @@ function normalizeSession(sess) {
   }
   delete sess.cliSession;
   if (!sess.live || typeof sess.live !== 'object') sess.live = null;
+  if (!sess.terminalSession || typeof sess.terminalSession !== 'object') sess.terminalSession = null;
+  sess.terminalSnapshots = Array.isArray(sess.terminalSnapshots) ? sess.terminalSnapshots : [];
   sess.policy = ['recommended', 'saving', 'quality', 'direct'].includes(sess.policy) ? sess.policy : 'direct';
   sess.tier = ['small', 'medium', 'large'].includes(sess.tier) ? sess.tier : '';
   return sess;
@@ -187,7 +192,7 @@ function createSession(userData, { repo, cli, model = '', readonly = false, poli
     readonly: Boolean(readonly), policy: String(policy || 'direct'), tier: String(tier || ''),
     transport: transport === 'headless' ? 'headless' : 'tmux',
     worktree: String(worktree || ''), branch: String(branch || ''),
-    title: '', cliSessions: {}, live: null, messages: [], createdAt: now, updatedAt: now,
+    title: '', cliSessions: {}, live: null, terminalSession: null, terminalSnapshots: [], messages: [], createdAt: now, updatedAt: now,
   });
 }
 
@@ -244,6 +249,52 @@ function appendMessage(userData, id, message) {
   return writeSession(userData, sess);
 }
 
+function touchTerminalSession(userData, id, patch = {}, now = new Date()) {
+  const sess = readSession(userData, id);
+  const at = now instanceof Date ? now : new Date(now);
+  const current = sess.terminalSession || {};
+  sess.terminalSession = {
+    ...current,
+    ...patch,
+    name: String(patch.name != null ? patch.name : current.name || ''),
+    state: ['starting', 'active', 'idle', 'dead'].includes(patch.state) ? patch.state : (current.state || 'active'),
+    ownerInstanceId: String(patch.ownerInstanceId != null ? patch.ownerInstanceId : current.ownerInstanceId || ''),
+    lastUsedAt: at.toISOString(),
+    expiresAt: new Date(at.getTime() + TERMINAL_TTL_MS).toISOString(),
+  };
+  return writeSession(userData, sess);
+}
+
+function clearTerminalSession(userData, id) {
+  const sess = readSession(userData, id);
+  sess.terminalSession = null;
+  return writeSession(userData, sess);
+}
+
+function staleTerminalSessions(userData, now = new Date()) {
+  const at = now instanceof Date ? now.getTime() : new Date(now).getTime();
+  return readAllSessions(userData).filter((sess) => {
+    const terminal = sess.terminalSession;
+    const expires = terminal && Date.parse(terminal.expiresAt || '');
+    return terminal && Number.isFinite(expires) && expires <= at;
+  });
+}
+
+function addTerminalSnapshot(userData, id, snapshot) {
+  const sess = readSession(userData, id);
+  const entry = {
+    id: crypto.randomUUID(),
+    agentCli: String(snapshot.agentCli || ''), model: String(snapshot.model || ''),
+    capturedAt: String(snapshot.capturedAt || new Date().toISOString()),
+    reason: ['agent_switch', 'pane_dead', 'archive'].includes(snapshot.reason) ? snapshot.reason : 'agent_switch',
+    screenText: String(snapshot.screenText || '').slice(-MAX_SNAPSHOT_CHARS),
+  };
+  sess.terminalSnapshots.push(entry);
+  sess.terminalSnapshots = sess.terminalSnapshots.slice(-MAX_TERMINAL_SNAPSHOTS);
+  writeSession(userData, sess);
+  return entry;
+}
+
 function removeSession(userData, id) {
   try { fs.unlinkSync(sessionPath(userData, id)); } catch { /* 無ければ無いでよい */ }
   return true;
@@ -253,4 +304,5 @@ module.exports = {
   DEFAULTS, loadConfig, saveConfig, addRepo, removeRepo, isRegistered,
   createSession, readSession, listSessions, updateSession, appendMessage, removeSession,
   normalizeSession, cliEntry, setCliEntry, sessionsDir, readAllSessions,
+  TERMINAL_TTL_MS, touchTerminalSession, clearTerminalSession, staleTerminalSessions, addTerminalSnapshot,
 };

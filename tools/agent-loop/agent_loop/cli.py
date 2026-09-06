@@ -337,6 +337,10 @@ def main() -> None:
         help="ワークフローの input パラメータ",
     )
     sm_parser.add_argument(
+        "--instruction", default=None, metavar="TEXT",
+        help="各ステートの依頼へ追加する共通指示",
+    )
+    sm_parser.add_argument(
         "--dir", "-d", default=None, metavar="DIR",
         help="作業ディレクトリ（省略時: カレントディレクトリ）",
     )

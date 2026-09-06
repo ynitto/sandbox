@@ -366,6 +366,14 @@ class TestRepl(unittest.TestCase):
         self.assertEqual(calls, ["直近の変更を要約"])
         self.assertIn("本文です", text)
 
+    def test_skill_only_input_is_applied_to_the_next_prompt(self):
+        with mock.patch.object(ollama_tui.ollama_skills, "skill_exists",
+                               side_effect=lambda name: name == "caveman"):
+            rc, text, calls = self._run("/caveman\nhello\n/quit\n")
+        self.assertEqual(rc, 0)
+        self.assertEqual(calls, ["/caveman\n\nhello"])
+        self.assertIn("次の依頼", text)
+
     def test_eof_ends_the_session(self):
         rc, _text, _calls = self._run("")
         self.assertEqual(rc, 0)

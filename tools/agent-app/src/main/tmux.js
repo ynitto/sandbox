@@ -21,9 +21,14 @@ const DEFAULT_COLS = 120;
 const DEFAULT_ROWS = 36;
 
 // 定義に ready_pattern が無いときの既定（schema の説明どおり: 素のプロンプト記号・枠付き入力欄・kiro の入力プレースホルダ）
-const DEFAULT_READY = '^[[:space:]]*[>?❯›][[:space:]]*$|│[[:space:]]*[>❯›]|ask a question|describe a task';
+const DEFAULT_READY = '^[[:space:]]*[>?❯›][[:space:]]*$|│[[:space:]]*[>❯›][[:space:]]*│?[[:space:]]*$|ask a question|ask codex to do anything|describe a task|plan, search, build anything|add a follow-up';
+// CLI 共通で使える意味付きの処理中表示だけを既定値にする。
+// 点字の字形だけで判定すると Kiro のロゴまで busy になるため、
+// Cursor の点字スピナーは cursor.json 固有のbusy_patternで判定する。
+const DEFAULT_BUSY = 'working.*esc[[:space:]]+interrupt|pending.*ctrl\\+c to cancel';
+const STARTING = /resuming session|model:\s+loading/i;
 // 端末側で人の判断を待っている（ツール実行の許可、y/n）らしい画面
-const ATTENTION = /do you want|allow this|permission|\[y\/n\]|\(y\/n\)|yes, and don't ask|❯\s*1\.\s*yes|approve|continue\?/i;
+const ATTENTION = /do you want|allow this|permission|\[y\/n\]|\(y\/n\)|yes, and don't ask|❯\s*1\.\s*yes|approve|continue\?|accessing workspace|trust this folder|quick safety check|asking user|other \(type your answer\)|type your answer|enter to submit, esc to cancel|use ↑↓ or number keys to select/i;
 
 function sessionName(id) {
   return `agent-app-${String(id || '').replace(/[^0-9a-zA-Z]/g, '').slice(0, 12)}`;
@@ -37,7 +42,14 @@ const CHROME = [
   /^[\s─━═╌┄┈╭╮╰╯│┃┌┐└┘├┤┬┴┼▔▁▏▕▖▗▘▙▚▛▜▝▞▟■□●○◆◇═╔╗╚╝╠╣╦╩╬]+$/,
   /^\s*[>?❯›$!]+\s*$/,
   /^\s*[│┃]\s*[>❯›]/,
-  /\? for shortcuts|esc to interrupt|ask a question|describe a task|ctrl\+c to|shift\+tab|\bcontext left\b|\d+% context|tokens used|bypass permissions|accept edits|plan mode/i,
+  /^\s*[▄▀╻╹]+\s*$/,
+  /^\s*❯\s+.+\s+\d{2}:\d{2}\s*$/,
+  /^\s*(?:~?\/).+\bSession:\s*[\d.]+\s+AIC used\s*$/i,
+  /open sidebar.*\/ commands.*tab next tab/i,
+  /\? for shortcuts|esc(?:\s+to)?\s+interrupt|ask a question|describe a task|ctrl\+c to|shift\+tab|\bcontext left\b|\d+% context|tokens used|bypass permissions|accept edits|plan mode/i,
+  /^\s*(?:→\s*)?add a follow-up\s*$/i,
+  /^\s*(?:auto|ask|agent|manual)\s*[·•]\s*\d+(?:\.\d+)?%\s*$/i,
+  /^\s*(?:\/|~\/|\.\.\/)[^·•\n]+\s*[·•]\s*[\w./-]+\s*$/i,
   /^\s*(?:\/|~|\.\.\/)?[\w.\-/~]*\s*(?:\(|\[)?(?:main|master)?(?:\)|\])?\s*$/,   // ステータス行に出る cwd / ブランチ
 ];
 function isChrome(line) {
@@ -50,20 +62,59 @@ function tailLines(text, n) {
   return lines.slice(-Math.max(1, n)).join('\n');
 }
 
+function attentionDetail(screen) {
+  const lines = String(screen).split('\n');
+  let marker = -1;
+  for (let i = 0; i < lines.length; i += 1) {
+    if (ATTENTION.test(lines[i])) marker = i;
+  }
+  if (marker < 0) return '';
+  let start = Math.max(0, marker - 8);
+  for (let i = marker; i >= start; i -= 1) {
+    if (/^\s*╭[─━═╌┄┈]+/.test(lines[i])) { start = i + 1; break; }
+  }
+  const detail = lines.slice(start, marker + 1)
+    .map((line) => line.replace(/^\s*[│┃]\s?/, '').replace(/\s?[│┃]\s*$/, '').trimEnd())
+    .filter((line) => line.trim() && !/^\s*[╭╮╰╯─━═]+\s*$/.test(line))
+    .join('\n')
+    .trim();
+  return detail.slice(0, 1200);
+}
+
+function activeAttention(tail, patterns) {
+  const lines = String(tail).split('\n');
+  let marker = -1;
+  for (let i = 0; i < lines.length; i += 1) if (ATTENTION.test(lines[i])) marker = i;
+  if (marker < 0) return false;
+  const after = lines.slice(marker + 1).join('\n');
+  return !(patterns.commonReady && patterns.commonReady.test(after));
+}
+
 // 画面（ANSI 剥がし済み）から待機 / 処理中 / 確認待ちを判定する。
-//   state: 'ready' | 'busy' | 'unknown'
+//   state: 'ready' | 'busy' | 'attention' | 'unknown'
 function classify(screen, patterns) {
   const text = String(screen);
+  const tail = tailLines(text, patterns.readyTailLines);
+  if (activeAttention(tail, patterns)) return 'attention';
   if (patterns.busy && patterns.busy.test(text)) return 'busy';
-  if (patterns.ready && patterns.ready.test(tailLines(text, patterns.readyTailLines))) return 'ready';
+  // 配布済みの古い Codex 定義は「│ >_ OpenAI Codex」まで入力欄として拾う。
+  // 共通の厳密な入力欄が見えていれば完了、起動表示しかなければ処理中とする。
+  if (patterns.commonReady && patterns.commonReady.test(tail)) return 'ready';
+  if (STARTING.test(text)) return 'busy';
+  if (patterns.ready && patterns.ready.test(tail)) return 'ready';
   return 'unknown';
 }
 
 function compilePatterns(inter) {
   const i = inter || {};
+  // 定義固有の入力欄に加え、新しい CLI 版向けの共通パターンも常に有効にする。
+  // ユーザー領域の配布済み定義が古くても、起動待ちがタイムアウトまで続かない。
+  const readyPattern = i.readyPattern ? `${DEFAULT_READY}|${i.readyPattern}` : DEFAULT_READY;
+  const busyPattern = i.busyPattern ? `${DEFAULT_BUSY}|${i.busyPattern}` : DEFAULT_BUSY;
   return {
-    ready: ereToRegExp(i.readyPattern || DEFAULT_READY) || ereToRegExp(DEFAULT_READY),
-    busy: i.busyPattern ? ereToRegExp(i.busyPattern) : null,
+    commonReady: ereToRegExp(DEFAULT_READY),
+    ready: ereToRegExp(readyPattern) || ereToRegExp(DEFAULT_READY),
+    busy: ereToRegExp(busyPattern) || ereToRegExp(DEFAULT_BUSY),
     failure: i.failurePattern ? ereToRegExp(i.failurePattern) : null,
     readyTailLines: Number(i.readyTailLines) > 0 ? Number(i.readyTailLines) : 3,
     readyTimeoutSec: Number(i.readyTimeoutSec) > 0 ? Number(i.readyTimeoutSec) : 60,
@@ -75,8 +126,9 @@ function compilePatterns(inter) {
 // 送信前の末尾にあった入力欄・フッターは上書きされて消えるので、共通の先頭部分だけを
 // 「既に見た」とみなし、その先を差分とする。差分から飾りと依頼の echo を落とす。
 function extractReply(before, after, prompt) {
-  const b = String(before).split('\n');
-  const a = String(after).split('\n');
+  const cleanEdge = (line) => String(line).replace(/\s+[│┃]\s*$/, '').replace(/[ \t]+$/, '');
+  const b = String(before).split('\n').map(cleanEdge);
+  const a = String(after).split('\n').map(cleanEdge);
   while (b.length && isChrome(b[b.length - 1])) b.pop();
   let i = 0;
   while (i < b.length && i < a.length && b[i] === a[i]) i += 1;
@@ -89,8 +141,11 @@ function extractReply(before, after, prompt) {
   // 先頭: 依頼の echo と飾り。末尾: 入力欄・フッター。
   while (delta.length && (isChrome(delta[0]) || echo(delta[0]))) delta.shift();
   while (delta.length && isChrome(delta[delta.length - 1])) delta.pop();
-  delta = delta.filter((line) => !echo(line));
-  return delta.join('\n').replace(/[ \t]+$/gm, '').trim();
+  delta = delta.filter((line) => !echo(line) && (!line.trim() || !isChrome(line)));
+  const indents = delta.filter((line) => line.trim()).map((line) => (/^ */.exec(line) || [''])[0].length);
+  const indent = indents.length ? Math.min(...indents) : 0;
+  if (indent) delta = delta.map((line) => line.trim() ? line.slice(indent) : line);
+  return delta.join('\n').replace(/[ \t]+$/gm, '').replace(/\n{3,}/g, '\n\n').trim();
 }
 
 // ---- xterm のキー入力 → tmux send-keys -------------------------------------
@@ -216,6 +271,7 @@ class Conversation {
     this.timer = null;
     this.polling = false;
     this.closed = false;
+    this.deadSnapshotSent = false;
   }
 
   async exists() {
@@ -287,19 +343,24 @@ class Conversation {
         this.emit('term:screen', { id: this.id, text: screen.text, cursor: screen.cursor, cols: screen.cols, rows: screen.rows, tail: tailLines(text, 14) });
       }
       if (screen.dead) {
+        if (!this.deadSnapshotSent) {
+          this.deadSnapshotSent = true;
+          this.emit('term:snapshot', { id: this.id, reason: 'pane_dead', screenText: text });
+        }
         this.setPhase('dead', `CLI が終了しました（終了コード ${screen.deadStatus == null ? '?' : screen.deadStatus}）`);
         if (this.turn) this.finishTurn({ error: this.detail, text: extractReply(this.turn.before, (await this.historyText()) || text, this.turn.prompt) });
         return;
       }
       let state = classify(text, this.patterns);
       if (state === 'unknown' && this.patterns.idleQuietSec > 0 && Date.now() - this.lastChangeAt >= this.patterns.idleQuietSec * 1000) state = 'ready';
-      const attention = state !== 'ready' && ATTENTION.test(text);
+      const attention = state === 'attention';
+      const attentionText = attention ? attentionDetail(text) : '';
       if (this.turn) await this.trackTurn(state, attention, text);
       else if (this.phase === 'starting') {
         if (state === 'ready') this.setPhase('ready', '');
+        else if (attention) this.setPhase('attention', attentionText || '端末で確認を求めています');
         else if (Date.now() - this.startedAt > this.patterns.readyTimeoutSec * 1000) this.setPhase('ready', '入力受付を確認できないまま待機扱い');
-        else if (attention) this.setPhase('attention', '端末で確認を求めています');
-      } else if (attention) this.setPhase('attention', '端末で確認を求めています');
+      } else if (attention) this.setPhase('attention', attentionText || '端末で確認を求めています');
       else if (state === 'ready') this.setPhase('ready', '');
       else if (state === 'busy') this.setPhase('busy', '端末側で処理中');
     } finally {
@@ -313,13 +374,31 @@ class Conversation {
     return cap.ok ? stripAnsi(cap.screen.text) : '';
   }
 
+  // 起動中の信頼確認や権限確認は、人が端末で応答するまで待つ。
+  // ready 検出のタイムアウトで依頼文を送ると、確認ダイアログの既定選択を
+  // Enter で確定して CLI を終了させるため、attention 中はタイムアウトさせない。
+  waitReady() {
+    const limit = this.patterns.readyTimeoutSec * 1000 + 2000;
+    const start = Date.now();
+    return new Promise((resolve, reject) => {
+      const tick = () => {
+        if (this.phase === 'dead' || this.phase === 'gone') return reject(new Error(this.detail || 'CLI が終了しています'));
+        if (this.phase === 'attention') return setTimeout(tick, 200);
+        if (this.phase !== 'starting') return resolve();
+        if (Date.now() - start > limit) return resolve();      // 検出できないまま送る（画面で分かる）
+        return setTimeout(tick, 200);
+      };
+      tick();
+    });
+  }
+
   async trackTurn(state, attention, text) {
     const t = this.turn;
     const elapsed = Date.now() - t.startedAt;
     if (t.stopped && state === 'ready') return this.finishTurn({ stopped: true });
     if (this.patterns.failure && this.patterns.failure.test(text)) return this.finishTurn({ error: '定義の failure_pattern に一致しました' });
     if (state === 'busy' || state === 'unknown') t.sawBusy = true;
-    if (attention) { this.setPhase('attention', '端末で確認を求めています'); t.readyCount = 0; return; }
+    if (attention) { this.setPhase('attention', attentionDetail(text) || '端末で確認を求めています'); t.readyCount = 0; return; }
     if (state === 'ready' && (t.sawBusy || elapsed > 2500)) {
       t.readyCount += 1;
       if (t.readyCount >= 2) return this.finishTurn({});
@@ -346,27 +425,39 @@ class Conversation {
   }
 
   // 依頼を送ってターンを始める。応答は done(message) で戻す。
-  async send(prompt, done) {
+  async send(prompt, done, { enterCount = 1 } = {}) {
     if (this.turn) throw new Error('このセッションは応答中です');
     if (this.phase === 'dead' || this.phase === 'gone') throw new Error('CLI が終了しています。再起動してください');
-    const text = String(prompt || '');
     const before = (await this.historyText()) || this.lastText;
-    const lines = text.split('\n');
-    if (lines.length === 1) {
-      const r = await this.shell.run(cmdKeys(this.name, ['-l', '--', text]));
-      if (!r.ok) throw new Error(`send-keys に失敗: ${r.error}`);
-    } else {
-      const buf = `agent-app-${Date.now().toString(36)}`;
-      const r = await this.shell.run(`${TMUX} set-buffer -b ${sq(buf)} -- ${sq(text)} && ${TMUX} paste-buffer -p -d -b ${sq(buf)} -t ${sq(this.name)}`);
-      if (!r.ok) throw new Error(`paste-buffer に失敗: ${r.error}`);
-    }
-    // 貼り付け直後の Enter は TUI に食われることがあるので少し待つ
-    await sleep(350);
-    const r2 = await this.shell.run(cmdKeys(this.name, ['--', 'Enter']));
-    if (!r2.ok) throw new Error(`Enter を送れません: ${r2.error}`);
+    const text = await this.writeLine(prompt, { enterCount });
     this.turn = { prompt: text, startedAt: Date.now(), before, sawBusy: false, readyCount: 0, stopped: false, done };
     this.setPhase('busy', '応答中');
     this.schedule(0);
+  }
+
+  async writeLine(prompt, { enterCount = 1 } = {}) {
+    // interactive.prompt_inject=send-keys の契約どおり、改行を 1 行へ畳む。
+    // 行入力型 TUI へ改行を貼ると、各行が別ターンとして確定されてしまう。
+    const text = String(prompt || '').replace(/\s+/g, ' ').trim();
+    const r = await this.shell.run(cmdKeys(this.name, ['-l', '--', text]));
+    if (!r.ok) throw new Error(`send-keys に失敗: ${r.error}`);
+    // Codex の `$skill` は最初の Enter が補完候補の確定、次が送信になる。
+    // 通常入力は 1 回、呼び出し側が指定した開始スキルだけ 2 回送る。
+    const submits = Math.max(1, Math.min(2, Number(enterCount) || 1));
+    for (let i = 0; i < submits; i += 1) {
+      await sleep(350);
+      const entered = await this.shell.run(cmdKeys(this.name, ['--', 'Enter']));
+      if (!entered.ok) throw new Error(`Enter を送れません: ${entered.error}`);
+    }
+    this.schedule(0);
+    return text;
+  }
+
+  // CLI が質問・承認・追加入力を待っている間も、既存ターンを壊さず文章を送る。
+  async submit(prompt) {
+    if (this.phase === 'dead' || this.phase === 'gone') throw new Error('CLI が終了しています。再起動してください');
+    const text = await this.writeLine(prompt);
+    return { accepted: true, text, acceptedAt: new Date().toISOString() };
   }
 
   // 生成を止める。claude / codex は Esc、それ以外は C-c。
@@ -419,8 +510,8 @@ async function listSessions(shell) {
 }
 
 module.exports = {
-  SOCKET, TMUX, DEFAULT_COLS, DEFAULT_ROWS, DEFAULT_READY, ATTENTION,
-  sessionName, isChrome, classify, compilePatterns, extractReply, keysToArgs,
+  SOCKET, TMUX, DEFAULT_COLS, DEFAULT_ROWS, DEFAULT_READY, DEFAULT_BUSY, ATTENTION,
+  sessionName, isChrome, attentionDetail, classify, compilePatterns, extractReply, keysToArgs,
   cmdHas, cmdNew, cmdScreen, parseScreen, cmdKeys, cmdKill, cmdResize, cmdList,
   Conversation, listSessions,
 };

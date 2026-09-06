@@ -360,3 +360,55 @@ test('移植性の注意: シェル・バックスラッシュ・exe・戻る遷
   assert.ok(warnings.some((w) => w.includes('Windows 専用の実行ファイル')));
   assert.ok(warnings.some((w) => w.includes('「AGAIN」は工程 1 へ戻ります')));
 });
+
+test('記録の拡張: 修飾は決まった文で本文に載り、sidecar で往復し、記録を持てない工程では断る', () => {
+  const raw = {
+    name: 'Qiita トレンド', steps: [
+      { kind: 'browser', title: '記事を読む', target: 'https://qiita.com/', detail: '記事を開いて本文を読む',
+        recorded: [
+          { op: 'click', target: "getByRole('link', { name: 'ある記事' })", role: 'link', label: 'ある記事' },
+          { op: 'extract', target: "getByRole('article')", role: 'article', mode: 'text', key: 'body' },
+        ],
+        extend: {
+          loop: { over: "getByRole('link')", count: 'n', n: 3, back: 'goto' },
+          expect: { kind: 'count', target: "getByRole('article')", value: '1' },
+          onError: { item: 'skip', step: 'agent' },
+        } },
+      { kind: 'agent', detail: '{{last_output}} を要約する' },
+    ],
+  };
+  const spec = model.normalizeProcedure(raw);
+  assert.strictEqual(spec.version, 4);
+  assert.deepStrictEqual(spec.steps[0].extend.loop, { over: "getByRole('link')", count: 'n', n: 3, back: 'goto', next: '' });
+  assert.deepStrictEqual(spec.steps[1].extend, {});
+  const md = model.actionMarkdown(spec, 0);
+  assert.ok(md.includes('`extract getByRole(\'article\') --mode text --as body`'));
+  assert.ok(md.includes('- 繰り返し: 同じ形の要素 `getByRole(\'link\')` を先頭から 3 件'));
+  assert.ok(md.includes('https://qiita.com/ を開き直して一覧に戻る'));
+  assert.ok(md.includes('- 読み取り: `getByRole(\'article\')` の全文を丸ごと読み取り、`body` として返す'));
+  assert.ok(md.includes('- 確認: 確定の操作の後、`getByRole(\'article\')` が 1 件以上あること'));
+  assert.ok(md.includes('- 失敗したら: 1 件で失敗してもその件を飛ばして残りを続け') && md.includes('別の操作を試してよい'));
+  assert.ok(!md.includes('別の操作を試さずに'), 'AI に任せる工程では既定の禁止を置き換える');
+  assert.ok(md.includes('{"items": [{"body": …}, …], "skipped": [説明, …]}'));
+  // 修飾の無い工程は今までどおり
+  const plain = model.normalizeProcedure({ name: 'x', steps: [{ kind: 'browser', detail: 'a' }] });
+  assert.ok(!model.actionMarkdown(plain, 0).includes('工程の拡張'));
+  assert.ok(model.actionMarkdown(plain, 0).includes('だけを返してください。'));
+  // 往復: maker.json で修飾が戻り、YAML だけからは本文に混ざらない
+  const { files } = model.compile(spec);
+  const exact = model.decompile({ workflowText: files['workflow.yaml'], files, makerJson: files['maker.json'] });
+  assert.deepStrictEqual(model.normalizeProcedure(exact.raw).steps[0].extend, spec.steps[0].extend);
+  const fromYaml = model.decompile({ workflowText: files['workflow.yaml'], files });
+  assert.strictEqual(fromYaml.raw.steps[0].detail, '記事を開いて本文を読む');
+  assert.deepStrictEqual(fromYaml.raw.steps[0].extend, {});
+  // 件数が多い繰り返しは agent-flow への注意
+  const many = model.normalizeProcedure({ ...raw, steps: [{ ...raw.steps[0], extend: { loop: { over: 'x', count: 'all' } } }] });
+  assert.ok(model.portabilityWarnings(many).some((w) => w.includes('agent-flow')));
+  assert.ok(!model.portabilityWarnings(spec).some((w) => w.includes('agent-flow')));
+  // 断る形
+  assert.throws(() => model.normalizeProcedure({ name: 'x', steps: [{ kind: 'agent', detail: 'a', extend: { loop: { over: 'x' } } }] }), /拡張を持てません/);
+  assert.throws(() => model.normalizeProcedure({ name: 'x', steps: [{ kind: 'browser', detail: 'a', extend: { loop: { count: 'n' } } }] }), /対象/);
+  assert.throws(() => model.normalizeProcedure({ name: 'x', steps: [{ kind: 'browser', detail: 'a', extend: { loop: { over: 'x', count: 'pages' } } }] }), /次のページ/);
+  assert.throws(() => model.normalizeProcedure({ name: 'x', steps: [{ kind: 'browser', detail: 'a', extend: { expect: { kind: 'text', target: 'x' } } }] }), /含まれるべき文字/);
+  assert.throws(() => model.normalizeProcedure({ name: 'x', steps: [{ kind: 'browser', detail: 'a', recorded: [{ op: 'extract', target: 'x', key: 'Bad Key' }] }] }), /出力名が不正/);
+});

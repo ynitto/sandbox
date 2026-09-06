@@ -13,6 +13,82 @@ import agent_loop as al  # noqa: E402
 
 
 class RepositorySnapshotTest(unittest.TestCase):
+    def test_multiple_schedule_entries_are_grouped_into_one_task(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            workflow = root / ".statemachine" / "digest" / "workflow.yaml"
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text(
+                "name: digest\nstates:\n  done:\n    terminal: true\n",
+                encoding="utf-8",
+            )
+            config = root / ".agents" / "agent-loop.yml"
+            config.parent.mkdir()
+            config.write_text(
+                "prompts:\n"
+                "  - name: morning\n    statemachine: digest\n    cron: '0 9 * * *'\n"
+                "  - name: evening\n    statemachine: digest\n    cron: '0 18 * * *'\n",
+                encoding="utf-8",
+            )
+
+            snapshot = al.repository_snapshot(root)
+
+            self.assertEqual(len(snapshot["tasks"]), 1)
+            self.assertEqual(snapshot["tasks"][0]["kind"], "statemachine")
+            self.assertEqual(
+                [item["entryName"] for item in snapshot["tasks"][0]["schedules"]],
+                ["morning", "evening"],
+            )
+
+    def test_global_prompt_and_hook_entries_are_filtered_by_effective_cwd(self):
+        with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as hd:
+            root = Path(td).resolve()
+            other = root.parent / "other-repository"
+            agent_home = Path(hd) / ".agents"
+            agent_home.mkdir()
+            (agent_home / "agent-loop.yaml").write_text(
+                "prompts:\n"
+                f"  - name: review\n    prompt: review changes\n    cwd: {root}\n    interval_minutes: 30\n"
+                f"  - name: hook\n    event_hook: hook.py\n    cwd: {root}\n    interval_minutes: 5\n"
+                f"  - name: elsewhere\n    prompt: skip me\n    cwd: {other}\n    interval_minutes: 10\n",
+                encoding="utf-8",
+            )
+
+            with mock.patch.object(al, "agent_home_dir", return_value=agent_home):
+                tasks = al.repository_snapshot(root)["tasks"]
+
+            self.assertEqual([(task["name"], task["kind"]) for task in tasks], [
+                ("review", "prompt"),
+                ("hook", "hook"),
+            ])
+
+    def test_shadowed_global_schedule_remains_visible_as_not_effective(self):
+        with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as hd:
+            root = Path(td).resolve()
+            workflow = root / ".statemachine" / "digest" / "workflow.yaml"
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text(
+                "name: digest\nstates:\n  done:\n    terminal: true\n",
+                encoding="utf-8",
+            )
+            local = root / ".agents" / "agent-loop.yaml"
+            local.parent.mkdir()
+            local.write_text("prompts: []\n", encoding="utf-8")
+            agent_home = Path(hd) / ".agents"
+            agent_home.mkdir()
+            (agent_home / "agent-loop.yaml").write_text(
+                "prompts:\n"
+                f"  - name: shared digest\n    statemachine: digest\n    cwd: {root}\n"
+                "    cron: '0 7 * * *'\n",
+                encoding="utf-8",
+            )
+
+            with mock.patch.object(al, "agent_home_dir", return_value=agent_home):
+                schedule = al.repository_snapshot(root)["tasks"][0]["schedules"][0]
+
+            self.assertFalse(schedule["effective"])
+            self.assertEqual(schedule["source"]["scope"], "global")
+
     def test_workflows_and_their_schedules_are_returned_together(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -121,6 +197,157 @@ class RepositorySnapshotTest(unittest.TestCase):
 
 
 class RepositoryScheduleTest(unittest.TestCase):
+    def test_prompt_entry_schedule_can_be_edited_in_its_global_config(self):
+        with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as hd:
+            root = Path(td).resolve()
+            agent_home = Path(hd) / ".agents"
+            agent_home.mkdir()
+            config = agent_home / "agent-loop.yaml"
+            config.write_text(
+                "prompts:\n"
+                f"  - name: review\n    prompt: review changes\n    cwd: {root}\n"
+                "    interval_minutes: 30\n",
+                encoding="utf-8",
+            )
+            with mock.patch.object(al, "agent_home_dir", return_value=agent_home):
+                task = al.repository_snapshot(root)["tasks"][0]
+                schedule = task["schedules"][0]
+                al.update_repository_schedule(root, {
+                    "entry": task["entry"],
+                    "entryName": "review",
+                    "entryRef": schedule["entryRef"],
+                    "fingerprint": schedule["fingerprint"],
+                    "destination": "global",
+                    "enabled": True,
+                    "schedule": {"kind": "daily", "time": "08:15"},
+                })
+
+            stored = al._read_config_file(config)["prompts"][0]
+            self.assertEqual(stored["prompt"], "review changes")
+            self.assertEqual(stored["cron"], "15 8 * * *")
+
+    def test_schedule_can_be_saved_to_the_global_config_with_an_explicit_cwd(self):
+        with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as hd:
+            root = Path(td).resolve()
+            workflow = root / ".statemachine" / "review" / "workflow.yaml"
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text(
+                "name: review\nstates:\n  done:\n    terminal: true\n",
+                encoding="utf-8",
+            )
+            agent_home = Path(hd) / ".agents"
+
+            with mock.patch.object(al, "agent_home_dir", return_value=agent_home):
+                result = al.update_repository_schedule(root, {
+                    "workflow": ".statemachine/review/workflow.yaml",
+                    "entryName": "global review",
+                    "destination": "global",
+                    "enabled": True,
+                    "schedule": {"kind": "daily", "time": "09:00"},
+                    "input": {},
+                })
+
+            stored = al._read_config_file(agent_home / "agent-loop.yaml")
+            self.assertEqual(stored["prompts"][0]["cwd"], str(root))
+            self.assertEqual(result["destination"], "global")
+
+    def test_creating_a_repository_config_inherits_the_effective_global_config(self):
+        with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as hd:
+            root = Path(td).resolve()
+            workflow = root / ".statemachine" / "review" / "workflow.yaml"
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text(
+                "name: review\nstates:\n  done:\n    terminal: true\n",
+                encoding="utf-8",
+            )
+            agent_home = Path(hd) / ".agents"
+            agent_home.mkdir()
+            global_file = agent_home / "agent-loop.yaml"
+            global_file.write_text(
+                "max_concurrent: 2\nprompts:\n"
+                f"  - name: existing\n    prompt: keep me\n    cwd: {root}\n"
+                "    interval_minutes: 60\n",
+                encoding="utf-8",
+            )
+
+            with mock.patch.object(al, "agent_home_dir", return_value=agent_home):
+                al.update_repository_schedule(root, {
+                    "workflow": ".statemachine/review/workflow.yaml",
+                    "entryName": "local review",
+                    "destination": "repository",
+                    "operation": "create",
+                    "enabled": True,
+                    "schedule": {"kind": "daily", "time": "09:00"},
+                    "input": {},
+                })
+
+            local = al._read_config_file(root / ".agents" / "agent-loop.yml")
+            self.assertEqual(local["max_concurrent"], 2)
+            self.assertEqual([item["name"] for item in local["prompts"]], ["existing", "local review"])
+            self.assertEqual(len(al._read_config_file(global_file)["prompts"]), 1)
+
+    def test_a_second_schedule_for_the_same_machine_can_be_created(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            workflow = root / ".statemachine" / "review" / "workflow.yaml"
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text(
+                "name: review\nstates:\n  done:\n    terminal: true\n",
+                encoding="utf-8",
+            )
+            config = root / ".agents" / "agent-loop.yml"
+            config.parent.mkdir()
+            config.write_text(
+                "prompts:\n  - name: morning\n    statemachine: review\n"
+                "    cron: '0 9 * * *'\n",
+                encoding="utf-8",
+            )
+
+            al.update_repository_schedule(root, {
+                "workflow": ".statemachine/review/workflow.yaml",
+                "entryName": "evening",
+                "operation": "create",
+                "enabled": True,
+                "schedule": {"kind": "daily", "time": "18:00"},
+                "input": {},
+            })
+
+            stored = al._read_config_file(config)
+            self.assertEqual([entry["name"] for entry in stored["prompts"]], ["morning", "evening"])
+
+    def test_one_of_multiple_schedules_is_updated_by_its_reference(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            workflow = root / ".statemachine" / "review" / "workflow.yaml"
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text(
+                "name: review\nstates:\n  done:\n    terminal: true\n",
+                encoding="utf-8",
+            )
+            config = root / ".agents" / "agent-loop.yml"
+            config.parent.mkdir()
+            config.write_text(
+                "prompts:\n"
+                "  - name: morning\n    statemachine: review\n    cron: '0 9 * * *'\n"
+                "  - name: evening\n    statemachine: review\n    cron: '0 18 * * *'\n",
+                encoding="utf-8",
+            )
+            schedule = al.repository_snapshot(root)["tasks"][0]["schedules"][1]
+
+            al.update_repository_schedule(root, {
+                "workflow": ".statemachine/review/workflow.yaml",
+                "entryName": "evening",
+                "entryRef": schedule["entryRef"],
+                "fingerprint": schedule["fingerprint"],
+                "enabled": True,
+                "schedule": {"kind": "daily", "time": "19:30"},
+                "input": {},
+            })
+
+            stored = al._read_config_file(config)
+            self.assertEqual(stored["prompts"][0]["cron"], "0 9 * * *")
+            self.assertEqual(stored["prompts"][1]["cron"], "30 19 * * *")
+
     def test_a_simple_schedule_is_saved_without_losing_other_entries(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

@@ -20,6 +20,24 @@ test('手動実行はagent-loopからagent-toolsのステートマシン実行�
   });
 });
 
+test('タスク種別に応じてステートマシンまたは自由プロンプトを一回実行する', () => {
+  assert.deepStrictEqual(loop.taskRunSpec({
+    root: '/project', task: { kind: 'prompt', entry: { prompt: '差分を確認する' } },
+    agent: 'copilot', model: 'gpt-5', instruction: '共通指示',
+  }), {
+    command: 'agent-loop',
+    args: ['run', '共通指示\n\n差分を確認する', '--agent-cli', 'copilot', '--model', 'gpt-5', '--dir', '/project'],
+  });
+  assert.deepStrictEqual(loop.taskRunSpec({
+    root: '/project', task: { kind: 'statemachine', machine: 'review' },
+    agent: 'codex', instruction: '共通指示', parameters: {},
+  }).args, [
+    'statemachine', '--workflow', '.statemachine/review/workflow.yaml', '--dir', '/project',
+    '--agent-cli', 'codex', '--instruction', '共通指示',
+  ]);
+  assert.throws(() => loop.taskRunSpec({ root: '/project', task: { kind: 'hook' } }), /手動実行/);
+});
+
 test('リポジトリの実行情報をagent-loopのJSON出力から取得する', async () => {
   const calls = [];
   const snapshot = await loop.inspect({

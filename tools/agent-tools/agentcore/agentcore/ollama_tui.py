@@ -553,6 +553,7 @@ def _no_event_log(name: str) -> str:
 
 def _loop(reader, runner, *, model: str, tools: bool, think: "bool | None", out,
           event_log: bool = True) -> int:
+    pending_skills: "list[str]" = []
     while True:
         try:
             line = reader.read("> ")
@@ -571,6 +572,18 @@ def _loop(reader, runner, *, model: str, tools: bool, think: "bool | None", out,
         # ここでは触らない。人が打つ面なので大小文字は無視する。
         parsed = slashroute.parse_line(text, casefold=True)
         command = slashroute.lookup(parsed[0]) if parsed else None
+        # `/skill-name` だけの入力はモデルへ空仕事として投げず、次の依頼へ載せる。
+        # セッション開始コマンドを先に送る呼び出し側でも、stateless な aider backend に
+        # スキルを実際の依頼と同じ 1 回で適用できる。
+        if (parsed and not parsed[1] and command is None
+                and slashroute.classify(parsed[0], skill_exists=ollama_skills.skill_exists)
+                == slashroute.KIND_SKILL):
+            call = "/" + parsed[0]
+            if call not in pending_skills:
+                pending_skills.append(call)
+            print(f"次の依頼へ適用するスキル: {call}", file=out)
+            _turn_hook("complete")
+            continue
         if command is not None and command.kind == slashroute.KIND_SHAPE and command.harness:
             # `/sm` `/edit` はハーネス側の実行形。対話で打たれたらルータがヘッドレス実行へ
             # 回し、結果（進捗と RESULT の 1 行）をこのペインへ出す（設計 2026-08-27 §7.5）。
@@ -630,7 +643,9 @@ def _loop(reader, runner, *, model: str, tools: bool, think: "bool | None", out,
 
         renderer = Renderer(out=out)
         try:
-            body = runner(text, model=model, tools=tools, think=think, renderer=renderer)
+            prompt = "\n".join(pending_skills) + "\n\n" + text if pending_skills else text
+            pending_skills.clear()
+            body = runner(prompt, model=model, tools=tools, think=think, renderer=renderer)
         except KeyboardInterrupt:
             renderer.finish()
             print("（中断しました）", file=out)

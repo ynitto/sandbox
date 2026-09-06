@@ -16,9 +16,12 @@
   "readonly": "best-effort",
   "no_session_args": [],
   "interactive": {
-    "command": ["copilot"],
+    "command": ["copilot", "--no-auto-update"],
+    "write_args": ["--allow-all-tools", "--allow-all-paths"],
     "turn_completion": "copilot",
     "prompt_inject": "send-keys",
+    "ready_pattern": "^[[:space:]]*┃[[:space:]]*$",
+    "busy_pattern": "pending.*ctrl\\+c to cancel|working.*esc[[:space:]]+interrupt",
     "ready_tail_lines": 8
   },
   "errors": [

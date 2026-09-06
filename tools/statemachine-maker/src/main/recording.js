@@ -15,7 +15,10 @@
 // 記録の開始・終了は、この端末の PATH にある `playwright-cli` / `winauto` を **直接** 呼ぶ
 // （WSL との橋渡しはしない）。呼ぶ関数は引数で受け取るので、ここは Electron に触れない。
 
-const OPS = ['goto', 'launch', 'click', 'dblclick', 'fill', 'type', 'press', 'select', 'check', 'uncheck', 'hover', 'keys', 'window'];
+const OPS = ['goto', 'launch', 'click', 'dblclick', 'fill', 'type', 'press', 'select', 'check', 'uncheck', 'hover', 'keys', 'window', 'extract'];
+// 読み取り（extract）は操作ではなく「この要素をこの形で返す」という宣言。記録中に人が要素を選んで挿す。
+const EXTRACT_MODES = ['text', 'table', 'list'];
+const EXTRACT_MODE_JA = { text: '全文', table: '表', list: '一覧' };
 const COMMIT_OPS = new Set(['click', 'dblclick', 'press']);
 const COMMIT_ROLES = new Set(['button', 'link', 'menuitem', 'tab', 'Button', 'MenuItem', 'Hyperlink', 'TabItem']);
 const VALUE_OPS = new Set(['fill', 'type']);
@@ -201,6 +204,8 @@ function segment(ops) {
   const open = (seed) => { cur = { context: seed, ops: [] }; groups.push(cur); };
   for (const op of ops) {
     if (op.op === 'goto' || op.op === 'launch' || op.op === 'window') { open(op); continue; }
+    // 読み取りは確定の**後**に置かれるのが自然（リンクを押して開いた画面を読む）。直前の工程に属させ、工程を増やさない。
+    if (op.op === 'extract' && cur) { cur.ops.push(op); continue; }
     if (!cur || cur.closed || cur.ops.length >= MAX_STEP_OPS) open(cur ? { ...cur.context, inherited: true } : null);
     cur.ops.push(op);
     if (isCommit(op)) cur.closed = true;
@@ -232,6 +237,7 @@ function describeOp(op) {
     case 'select': return `${quoteLabel(op)}で「${op.value}」を選ぶ`;
     case 'check': return `${quoteLabel(op)}にチェックを入れる`;
     case 'uncheck': return `${quoteLabel(op)}のチェックを外す`;
+    case 'extract': return `${quoteLabel(op)}の${EXTRACT_MODE_JA[op.mode] || '全文'}を読み取る（${op.key || 'text'}）`;
     default: return '';
   }
 }
@@ -251,7 +257,13 @@ function recordedEntry(op) {
   if (op.role) out.role = text(op.role, 40);
   if (op.value) out.value = text(op.value, MAX_TEXT);
   if (op.example) out.example = text(op.example, 120);
+  if (op.op === 'extract') { out.mode = EXTRACT_MODES.includes(op.mode) ? op.mode : 'text'; out.key = extractKey(op.key); }
   return out;
+}
+
+function extractKey(raw) {
+  const key = String(raw || '').trim().toLowerCase().replace(/[^a-z0-9_]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 30);
+  return key && /^[a-z]/.test(key) ? key : 'text';
 }
 
 // 確認コマンドは**この工程がもたらした変化**を測る。見るのは「次の工程が始まったときのウィンドウ」。
@@ -261,6 +273,34 @@ function checkFor(kind, nextGroup, app) {
   const opened = ctx && ctx.op === 'window' ? text(ctx.target, 120) : '';
   if (!opened || SHELL_META_RE.test(opened) || SHELL_META_RE.test(app)) return '';
   return `winauto wait name:=${opened} --app ${app}`;
+}
+
+// --- snapshot（読み取る要素を選ぶ材料） ------------------------------------------------
+//
+// `playwright-cli snapshot` の行は `- <role> "<name>" [level=1] [ref=e3]: 本文` の形。ref は 1 回の
+// snapshot 限りの番号なので、選んだ要素は role と名前のロケータ式（getByRole）に写して残す。
+
+const SNAPSHOT_LINE_RE = /^\s*-\s+([a-z]+)(?:\s+"((?:[^"\\]|\\.)*)")?((?:\s+\[[^\]]*\])*)\s*\[ref=(e\d+)\]/;
+const MAX_CANDIDATES = 300;
+
+function parseSnapshot(raw) {
+  const out = [];
+  for (const line of String(raw || '').split(/\r?\n/)) {
+    const m = SNAPSHOT_LINE_RE.exec(line);
+    if (!m) continue;
+    const role = m[1];
+    if (role === 'generic') continue;
+    const name = text(m[2] || '', 120);
+    const depth = Math.floor((line.length - line.trimStart().length) / 2);
+    out.push({ ref: m[4], role, name, depth, target: roleLocator(role, name) });
+    if (out.length >= MAX_CANDIDATES) break;
+  }
+  return out;
+}
+
+function roleLocator(role, name) {
+  const quoted = JSON.stringify(String(name || '')).replace(/^"|"$/g, '').replace(/'/g, "\\'");
+  return name ? `getByRole('${role}', { name: '${quoted}' })` : `getByRole('${role}')`;
 }
 
 function stepsFromOps(kind, ops, { url = '', app = '' } = {}) {
@@ -362,17 +402,72 @@ async function recordBrowserStart({ cwd = '', url = '', capture, timeoutMs = 600
   }
   const started = await capture(PLAYWRIGHT_CLI, playwrightArgs('recording-start'), { cwd, timeoutMs });
   if (!started || !started.ok) throw new Error(`記録を開始できませんでした: ${(started && started.error) || firstLine(started)}`);
+  activeBrowser = { url: target, chunks: [], candidates: [] };
   return { ok: true, source: 'browser', session: RECORD_SESSION, url: target };
+}
+
+// 記録の途中経過。読み取りを挿すたびに `recording-stop` → `recording-start` で区切り、
+// 「ここまでの操作」と「読み取り」を順に積む。順序が記録そのもので決まるので、位置を推測しない。
+//   chunks: [{ raw: '<recording-stop の出力>' } | { op: { op: 'extract', … } }]
+let activeBrowser = null;
+
+function browserRecordingState() {
+  return activeBrowser ? { url: activeBrowser.url, extracts: activeBrowser.chunks.filter((c) => c.op).length } : null;
+}
+
+function resetBrowserRecording() {
+  activeBrowser = null;
+}
+
+async function cutRecording({ cwd, capture, timeoutMs }) {
+  const stopped = await capture(PLAYWRIGHT_CLI, playwrightArgs('recording-stop'), { cwd, timeoutMs });
+  if (!stopped || !stopped.ok) throw new Error(`記録を区切れませんでした: ${(stopped && stopped.error) || firstLine(stopped)}`);
+  const raw = String(stopped.stdout || '');
+  if (!/No actions were recorded/i.test(raw)) activeBrowser.chunks.push({ raw });
+}
+
+// 記録中に「いま見えている要素」を一覧にする（読み取る要素を人が選ぶ材料）。
+async function recordBrowserSnapshot({ cwd = '', capture, timeoutMs = 60000 } = {}) {
+  if (typeof capture !== 'function') throw new Error('記録に使う実行関数がありません');
+  if (!activeBrowser) throw new Error('記録が始まっていません（「記録を始める」から始めてください）');
+  const snap = await capture(PLAYWRIGHT_CLI, playwrightArgs('snapshot'), { cwd, timeoutMs });
+  if (!snap || !snap.ok) throw new Error(`画面を読み取れませんでした: ${(snap && snap.error) || firstLine(snap)}`);
+  const candidates = parseSnapshot(snap.stdout);
+  if (!candidates.length) throw new Error('画面に読み取れる要素が見つかりません');
+  activeBrowser.candidates = candidates;
+  return { candidates };
+}
+
+// 選んだ要素を読み取りとして記録に挿す。ここまでの操作を先に区切ってから積む。
+async function recordBrowserExtract({ cwd = '', ref = '', mode = 'text', key = '', capture, timeoutMs = 60000 } = {}) {
+  if (typeof capture !== 'function') throw new Error('記録に使う実行関数がありません');
+  if (!activeBrowser) throw new Error('記録が始まっていません（「記録を始める」から始めてください）');
+  const picked = activeBrowser.candidates.find((c) => c.ref === String(ref || '').trim());
+  if (!picked) throw new Error('読み取る要素を一覧から選んでください');
+  await cutRecording({ cwd, capture, timeoutMs });
+  const op = { op: 'extract', target: picked.target, role: picked.role, label: picked.name, mode: EXTRACT_MODES.includes(mode) ? mode : 'text', key: extractKey(key) };
+  activeBrowser.chunks.push({ op });
+  const started = await capture(PLAYWRIGHT_CLI, playwrightArgs('recording-start'), { cwd, timeoutMs });
+  if (!started || !started.ok) throw new Error(`記録を再開できませんでした: ${(started && started.error) || firstLine(started)}`);
+  return { ok: true, op, extracts: activeBrowser.chunks.filter((c) => c.op).length };
 }
 
 async function recordBrowserStop({ cwd = '', url = '', capture, timeoutMs = 60000 } = {}) {
   if (typeof capture !== 'function') throw new Error('記録に使う実行関数がありません');
+  const rec = activeBrowser || { url: text(url, 500), chunks: [] };
+  activeBrowser = null;
   const stopped = await capture(PLAYWRIGHT_CLI, playwrightArgs('recording-stop'), { cwd, timeoutMs });
   await capture(PLAYWRIGHT_CLI, playwrightArgs('close'), { cwd, timeoutMs });
   if (!stopped || !stopped.ok) throw new Error(`記録を終了できませんでした: ${(stopped && stopped.error) || firstLine(stopped)}`);
   const raw = String(stopped.stdout || '');
-  if (/No actions were recorded/i.test(raw)) throw new Error('操作が記録されていません（ブラウザで操作してから終了してください）');
-  return stepsFromRecording({ source: 'browser', text: raw, url });
+  if (!/No actions were recorded/i.test(raw)) rec.chunks.push({ raw });
+  const ops = [];
+  for (const chunk of rec.chunks) {
+    if (chunk.op) ops.push(chunk.op);
+    else ops.push(...parsePlaywrightRecording(chunk.raw));
+  }
+  if (!ops.some((op) => op.op !== 'extract')) throw new Error('操作が記録されていません（ブラウザで操作してから終了してください）');
+  return { source: 'browser', ...stepsFromOps('browser', ops, { url: rec.url || text(url, 500) }) };
 }
 
 // --- Windows アプリの記録（winauto record を子プロセスで走らせる） ------------------------
@@ -436,6 +531,7 @@ async function recordWindowsStop({ timeoutMs = 15000 } = {}) {
 
 module.exports = {
   OPS,
+  EXTRACT_MODES,
   WINAUTO_EVENT_KINDS,
   RECORD_SESSION,
   supportsPlaywrightRecording,
@@ -443,12 +539,18 @@ module.exports = {
   parsePlaywrightRecording,
   parseWinautoEvent,
   parseWinautoRecording,
+  parseSnapshot,
+  roleLocator,
   describeOp,
   stepsFromOps,
   stepsFromRecording,
   browserOpenHint,
   recordBrowserStart,
+  recordBrowserSnapshot,
+  recordBrowserExtract,
   recordBrowserStop,
+  browserRecordingState,
+  resetBrowserRecording,
   recordWindowsStart,
   recordWindowsStop,
   windowsRecordingState,

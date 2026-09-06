@@ -8,6 +8,51 @@ function text(value, limit = MAX_DETAIL_CHARS) {
   return String(value == null ? '' : value).trim().slice(0, limit);
 }
 
+// Aider の TUI は構造化イベントを持たず、1 つの画面差分にバナー・思考・回答を
+// `► **THINKING**` / `► **ANSWER**` で連結して返す。生ログはそのまま保持しつつ、
+// 会話へ保存する値だけを共通レスポンスの二層へ分ける。
+function parseTranscript(cli, value) {
+  const raw = String(value == null ? '' : value);
+  const name = String(cli || '').toLowerCase();
+  if (name === 'copilot') {
+    const thinking = [];
+    const answer = [];
+    for (const line of raw.split('\n')) {
+      if (/^\s*●\s+skill\([^)]+\)\s*$/i.test(line)) continue;
+      const activity = /^\s*●\s+(Fetching web content\b.*)$/i.exec(line);
+      if (activity) {
+        thinking.push({ text: activity[1].trim(), status: 'done' });
+        continue;
+      }
+      answer.push(line);
+    }
+    return {
+      text: answer.join('\n').replace(/^\s*\n|\n\s*$/g, '').replace(/\n{3,}/g, '\n\n'),
+      thinking,
+    };
+  }
+  if (name !== 'aider') return { text: raw, thinking: [] };
+  const thinkingMarker = /^\s*►\s*\*\*THINKING\*\*\s*$/im;
+  const answerMarker = /^\s*►\s*\*\*ANSWER\*\*\s*$/im;
+  const thinkingMatch = thinkingMarker.exec(raw);
+  const answerMatch = answerMarker.exec(raw);
+  if (!thinkingMatch || !answerMatch || answerMatch.index <= thinkingMatch.index) {
+    return { text: raw, thinking: [] };
+  }
+  const cleanSection = (part) => part
+    .trim()
+    .replace(/\n\s*-{3,}\s*$/, '')
+    .trim();
+  const thought = cleanSection(raw.slice(thinkingMatch.index + thinkingMatch[0].length, answerMatch.index));
+  const answer = cleanSection(raw.slice(answerMatch.index + answerMatch[0].length))
+    .replace(/\n*Tokens:\s*[\d.]+k?\s+sent,\s*[\d.]+k?\s+received\.\s*$/i, '')
+    .trim();
+  return {
+    text: answer,
+    thinking: thought ? [{ text: thought, status: 'done' }] : [],
+  };
+}
+
 function createCollector(cli) {
   const thinking = [];
   const information = [];
@@ -59,4 +104,4 @@ function createCollector(cli) {
   };
 }
 
-module.exports = { createCollector };
+module.exports = { createCollector, parseTranscript };

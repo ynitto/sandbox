@@ -60,6 +60,53 @@ def _repository_schedule(entry: "dict[str, Any] | None") -> "dict[str, Any] | No
     return result
 
 
+def _repository_entry_identity(config_path: Path, index: int,
+                               entry: dict[str, Any]) -> tuple[str, str]:
+    body = json.dumps(entry, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    fingerprint = hashlib.sha256(body.encode("utf-8")).hexdigest()
+    seed = f"{config_path.resolve()}\n{index}\n{fingerprint}"
+    return ("entry:" + hashlib.sha256(seed.encode("utf-8")).hexdigest()[:24],
+            fingerprint)
+
+
+def _repository_entry_cwd(root: Path, entry: dict[str, Any]) -> Path:
+    raw = str(entry.get("cwd") or "").strip()
+    if not raw:
+        return root
+    value = Path(raw).expanduser()
+    return (value if value.is_absolute() else root / value).resolve()
+
+
+def _repository_source(root: Path, config_path: Path) -> dict[str, Any]:
+    try:
+        config_path.resolve().relative_to(root)
+        scope = "repository"
+    except ValueError:
+        scope = "global"
+    return {"scope": scope, "path": str(config_path.resolve())}
+
+
+def _repository_global_config_path() -> Path:
+    home = agent_home_dir()
+    return next((home / name for name in DEFAULT_CONFIG_NAMES
+                 if (home / name).is_file()), home / "agent-loop.yaml")
+
+
+def _repository_schedule_item(root: Path, config_path: Path, index: int,
+                              entry: dict[str, Any], effective: bool = True) -> dict[str, Any] | None:
+    schedule = _repository_schedule(entry)
+    if schedule is None:
+        return None
+    entry_ref, fingerprint = _repository_entry_identity(config_path, index, entry)
+    return {
+        **schedule,
+        "entryRef": entry_ref,
+        "fingerprint": fingerprint,
+        "source": _repository_source(root, config_path),
+        "effective": effective,
+    }
+
+
 def _repository_parameter_names(data: dict[str, Any]) -> list[str]:
     context = data.get("context") if isinstance(data.get("context"), dict) else {}
     required = {str(key) for key, value in context.items()
@@ -280,12 +327,19 @@ def repository_run_log(cwd: "str | Path", payload: Any, max_bytes: int = 262_144
 
 
 def update_repository_schedule(cwd: "str | Path", payload: Any) -> dict[str, Any]:
-    """UI が扱う単純な statemachine 定期設定だけを検査して保存する。"""
+    """UI が扱う単純なタスクの定期設定を検査して保存する。"""
     root = _repository_root(cwd)
     if not isinstance(payload, dict):
         raise ValueError("定期実行の内容が不正です")
-    workflow, workflow_file = _repository_workflow_path(root, str(payload.get("workflow") or ""))
-    summary = _repository_workflow_summary(workflow_file)
+    raw_workflow = str(payload.get("workflow") or "").strip()
+    workflow = ""
+    summary = {"name": str(payload.get("entryName") or "タスク"), "parameters": []}
+    if raw_workflow:
+        workflow, workflow_file = _repository_workflow_path(root, raw_workflow)
+        summary = _repository_workflow_summary(workflow_file)
+    template = payload.get("entry") if isinstance(payload.get("entry"), dict) else None
+    if not workflow and not template:
+        raise ValueError("定期実行するタスクの内容がありません")
     input_value = payload.get("input") or {}
     if not isinstance(input_value, dict):
         raise ValueError("実行条件は名前と値の組です")
@@ -295,8 +349,25 @@ def update_repository_schedule(cwd: "str | Path", payload: Any) -> dict[str, Any
     if missing:
         raise ValueError("実行条件を入力してください: " + ", ".join(missing))
 
-    path = _prompt_file(str(root))
-    data = _read_config_file(path) if path.is_file() else {}
+    destination = str(payload.get("destination") or "repository")
+    if destination not in ("repository", "global"):
+        raise ValueError("定期実行の保存先が不正です")
+    if destination == "global":
+        home = agent_home_dir()
+        path = next((home / name for name in DEFAULT_CONFIG_NAMES
+                     if (home / name).is_file()), home / "agent-loop.yaml")
+    else:
+        path = _prompt_file(str(root))
+    if path.is_file():
+        data = _read_config_file(path)
+    elif destination == "repository":
+        _, effective_path, effective_exists = load_config(root)
+        data = (_read_config_file(effective_path)
+                if effective_exists and effective_path.is_file()
+                and _repository_source(root, effective_path)["scope"] == "global"
+                else {})
+    else:
+        data = {}
     if not isinstance(data, dict):
         raise ValueError("agent-loop の設定はマップである必要があります")
     raw_entries = data.get("prompts") or []
@@ -304,29 +375,55 @@ def update_repository_schedule(cwd: "str | Path", payload: Any) -> dict[str, Any
         raise ValueError("agent-loop の prompts は配列である必要があります")
     entries = [dict(entry) if isinstance(entry, dict) else entry for entry in raw_entries]
     matches: list[int] = []
+    requested_ref = str(payload.get("entryRef") or "")
+    requested_fingerprint = str(payload.get("fingerprint") or "")
     for index, entry in enumerate(entries):
-        if not isinstance(entry, dict) or not entry.get("statemachine"):
+        if not isinstance(entry, dict):
             continue
-        try:
-            spec = _loopentry.statemachine_spec(entry)
-        except _loopentry.LoopEntryError:
-            continue
-        if spec and spec["workflow"] == workflow:
+        entry_ref, fingerprint = _repository_entry_identity(path, index, entry)
+        if requested_ref:
+            if entry_ref != requested_ref:
+                continue
+            if not requested_fingerprint or fingerprint != requested_fingerprint:
+                raise ValueError("定期実行は読み込み後に変更されました。再読み込みしてください")
             matches.append(index)
-    if len(matches) > 1:
+            continue
+        if workflow:
+            try:
+                spec = _loopentry.statemachine_spec(entry)
+            except _loopentry.LoopEntryError:
+                continue
+            if spec and spec["workflow"] == workflow:
+                matches.append(index)
+    operation = str(payload.get("operation") or "save")
+    if operation == "create":
+        # 共通設定から初めてリポジトリ設定を作る場合は、継承コピーの中に同じ entry が
+        # 既にある。保存先だけ変えた編集ではそれを更新し、「同じ予定」を二重化しない。
+        inherited = [index for index, entry in enumerate(entries)
+                     if requested_fingerprint and isinstance(entry, dict)
+                     and _repository_entry_identity(path, index, entry)[1] == requested_fingerprint]
+        matches = inherited[:1] if requested_ref else []
+    elif requested_ref and not matches:
+        raise ValueError("編集する定期実行が見つかりません。再読み込みしてください")
+    elif len(matches) > 1:
         raise ValueError("同じステートマシンの定期設定が複数あります。設定ファイルで整理してください")
 
-    entry = dict(entries[matches[0]]) if matches else {}
+    entry = dict(entries[matches[0]]) if matches else dict(template or {})
     entry.pop("cron", None)
     entry.pop("interval_minutes", None)
     entry.update({
         "name": str(payload.get("entryName") or entry.get("name")
                     or f"{summary['name']} の定期実行"),
-        "statemachine": workflow,
-        "input": {str(key): value for key, value in input_value.items()},
         **_repository_schedule_fields(payload.get("schedule")),
         "enabled": payload.get("enabled") is not False,
     })
+    if workflow:
+        entry.update({
+            "statemachine": workflow,
+            "input": {str(key): value for key, value in input_value.items()},
+        })
+    if destination == "global":
+        entry["cwd"] = str(root)
     if str(payload.get("agentCli") or "").strip():
         entry["agent_cli"] = str(payload["agentCli"]).strip()
     if "model" in payload:
@@ -336,7 +433,8 @@ def update_repository_schedule(cwd: "str | Path", payload: Any) -> dict[str, Any
         else:
             entry.pop("model", None)
     try:
-        _loopentry.statemachine_spec(entry)
+        if workflow:
+            _loopentry.statemachine_spec(entry)
         validate_entries([entry])
     except (_loopentry.LoopEntryError, ValueError) as exc:
         raise ValueError(str(exc)) from exc
@@ -354,28 +452,47 @@ def update_repository_schedule(cwd: "str | Path", payload: Any) -> dict[str, Any
             "external_panes": data.get("external_panes") or [],
             "environment_handoff": normalize_environment_handoff(data),
         })
-    return {
+    result = {
         "saved": True,
         "applied": False,
         "daemonRunning": daemon_pid is not None,
-        "workflow": workflow,
+        "workflow": workflow or None,
     }
+    if "destination" in payload:
+        result.update({"destination": destination, "path": str(path)})
+    return result
 
 
 def repository_snapshot(cwd: "str | Path", history_limit: int = 20) -> dict[str, Any]:
     """workflow、定期 entry、daemon 状態を repository 単位で返す。"""
     root = _repository_root(cwd)
-    entries = _load_prompt_file_data(str(root)).get("prompts") or []
-    by_workflow: dict[str, dict[str, Any]] = {}
-    for entry in entries if isinstance(entries, list) else []:
-        if not isinstance(entry, dict):
-            continue
-        try:
-            spec = _loopentry.statemachine_spec(entry)
-        except _loopentry.LoopEntryError:
-            continue
-        if spec:
-            by_workflow[str(spec["workflow"])] = entry
+    config, config_path, _ = load_config(root)
+    source = _repository_source(root, config_path)
+    entry_sets: list[tuple[Path, list[Any], bool]] = [
+        (config_path, config.get("prompts") or [], True),
+    ]
+    global_path = _repository_global_config_path()
+    if global_path.is_file() and global_path.resolve() != config_path.resolve():
+        global_config = _resolve_config_mappings(_read_config_file(global_path))
+        entry_sets.append((global_path, global_config.get("prompts") or [], False))
+    by_workflow: dict[str, list[tuple[Path, int, dict[str, Any], bool]]] = {}
+    selected_entries: list[tuple[Path, int, dict[str, Any], bool]] = []
+    for entry_path, entries, effective in entry_sets:
+        for index, entry in enumerate(entries if isinstance(entries, list) else []):
+            if not isinstance(entry, dict):
+                continue
+            if not effective and not str(entry.get("cwd") or "").strip():
+                continue
+            if _repository_entry_cwd(root, entry) != root:
+                continue
+            selected_entries.append((entry_path, index, entry, effective))
+            try:
+                spec = _loopentry.statemachine_spec(entry)
+            except _loopentry.LoopEntryError:
+                continue
+            if spec:
+                by_workflow.setdefault(str(spec["workflow"]), []).append(
+                    (entry_path, index, entry, effective))
 
     machines = []
     base = root / _REPOSITORY_WORKFLOW_ROOT
@@ -387,15 +504,67 @@ def repository_snapshot(cwd: "str | Path", history_limit: int = 20) -> dict[str,
                 continue
             reference = workflow_file.relative_to(root).as_posix()
             summary = _repository_workflow_summary(workflow_file)
+            schedules = [
+                schedule for schedule in
+                (_repository_schedule(entry)
+                 for _entry_path, _index, entry, _effective in by_workflow.get(reference, []))
+                if schedule is not None
+            ]
             machines.append({
                 "machine": directory.name,
                 "workflow": reference,
                 **summary,
-                "schedule": _repository_schedule(by_workflow.get(reference)),
+                "schedule": schedules[0] if schedules else None,
                 "active": None,
                 "history": _repository_history(root, reference, history_limit),
             })
-    return {"available": True, "machines": machines, "daemon": _repository_daemon(root)}
+    tasks = [{
+        "id": f"machine:{machine['machine']}",
+        "kind": "statemachine",
+        **machine,
+        "schedules": [
+            schedule for schedule in
+            (_repository_schedule_item(root, entry_path, index, entry, effective)
+             for entry_path, index, entry, effective in by_workflow.get(machine["workflow"], []))
+            if schedule is not None
+        ],
+        "effective": True,
+        "error": None,
+    } for machine in machines]
+    known_workflows = {machine["workflow"] for machine in machines}
+    for entry_path, index, entry, effective in selected_entries:
+        task_id, fingerprint = _repository_entry_identity(entry_path, index, entry)
+        try:
+            spec = _loopentry.statemachine_spec(entry)
+        except _loopentry.LoopEntryError as exc:
+            spec = None
+            entry_error = str(exc)
+        else:
+            entry_error = None
+        if spec and str(spec["workflow"]) in known_workflows:
+            continue
+        schedule = _repository_schedule_item(root, entry_path, index, entry, effective)
+        kind = "broken" if spec else (
+            "hook" if entry.get("hooks") or entry.get("event_hook") else "prompt")
+        tasks.append({
+            "id": task_id,
+            "entryRef": task_id,
+            "fingerprint": fingerprint,
+            "kind": kind,
+            "name": str(entry.get("name") or entry.get("prompt") or "名称未設定"),
+            "description": str(entry.get("prompt") or ""),
+            "cwd": str(root),
+            "workflow": str(spec["workflow"]) if spec else None,
+            "entry": dict(entry),
+            "schedules": [schedule] if schedule else [],
+            "source": _repository_source(root, entry_path),
+            "effective": effective,
+            "error": entry_error or ("ステートマシン定義が見つかりません" if spec else None),
+            "history": [],
+        })
+    return {"available": True, "machines": machines, "tasks": tasks,
+            "configSource": source,
+            "daemon": _repository_daemon(root)}
 
 
 def cmd_repository_inspect(args: argparse.Namespace, cwd: Path) -> None:

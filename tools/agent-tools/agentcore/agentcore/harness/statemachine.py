@@ -299,9 +299,12 @@ def _sm_write_success_output(*, workflow_path: str, state_id: str, state: dict,
 def _sm_execute_action(*, workflow_path: str, state_id: str, state: dict, context: dict,
                        cwd: str, agent: dict, log_file: str, touched: set,
                        check_note: str = "", retry_paths: "list[str] | None" = None,
-                       max_tool_rounds: "int | None" = None) -> str:
+                       max_tool_rounds: "int | None" = None,
+                       instruction: str = "") -> str:
     action = _sm_workflow_action(workflow_path, state_id, state)
     rendered = _sm_render_template(action["text"], context)
+    if str(instruction or "").strip():
+        rendered = f"{str(instruction).strip()}\n\n## 今回の工程\n{rendered}"
     if check_note:
         # 検査が落ちた後の再投入。測った不一致を課題文へ足す（受入は真偽だけでも変わらないが、
         # 実測では再試行が 28% 速い）。足す先は課題文そのもの——planner 周と編集周の両方が読む。
@@ -782,7 +785,8 @@ def _sm_crowded_write_states(workflow: dict) -> "list[tuple[str, list[str]]]":
 
 
 def run_statemachine(*, workflow_path: str, cwd: str, parameters: "dict | None" = None,
-                     agent: dict, decision: "dict | None" = None) -> dict:
+                     agent: dict, decision: "dict | None" = None,
+                     instruction: str = "") -> dict:
     """ステートマシンを headless エージェントで完走させる。
 
     戻り値: {ok, stdout, stderr, finalState, logFile, files}（dashboard の旧 in-process
@@ -873,6 +877,7 @@ def run_statemachine(*, workflow_path: str, cwd: str, parameters: "dict | None" 
                     workflow_path=workflow_file, state_id=current, state=state, context=context,
                     cwd=root, agent=agent, log_file=log_file, touched=touched,
                     check_note=note, retry_paths=retry_paths,
+                    instruction=instruction,
                     max_tool_rounds=gate["max_tool_rounds"]).strip()
             except StateMachineHarnessError:
                 if not attempt or not gate["check"]:
@@ -1050,7 +1055,8 @@ def cmd_statemachine(args: argparse.Namespace, cwd: Path, *, result_recorder=Non
         if plan:
             _sm_progress(f"entry: {getattr(args, 'entry', '')}（{plan['config']}）")
         result = run_statemachine(workflow_path=workflow_path, cwd=str(work_dir),
-                                  parameters=params, agent=agent, decision=decision)
+                                  parameters=params, agent=agent, decision=decision,
+                                  instruction=str(getattr(args, "instruction", None) or ""))
         notify(result)
         print("RESULT " + json.dumps(result, ensure_ascii=False))
         # 3 = 検査の再投入上限に達した（この段では解けない）。呼び出し側が RESULT を
